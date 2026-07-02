@@ -99,6 +99,10 @@ type BackendShim interface {
 
 	// SetCurrentRevision is used for init tso for leader
 	SetCurrentRevision(uint64)
+
+	// SetLeaseLookup wires the key->leaseID resolver (the server's keyLeaseIndex)
+	// so read/watch KeyValues carry their attached lease like etcd does.
+	SetLeaseLookup(func(key string) int64)
 }
 
 // implement backendShim interface
@@ -114,6 +118,11 @@ type backendShim struct {
 	metaFlight singleflight.Group
 	prevCache  *revKeyCache
 	prevFlight singleflight.Group
+
+	// leaseLookup resolves a user key to its currently-attached lease ID (0 if
+	// none), wired to the server's keyLeaseIndex via SetLeaseLookup. nil until
+	// wired (e.g. in unit tests that construct the shim directly).
+	leaseLookup func(key string) int64
 }
 
 func NewBackendShim(backend backend.Backend, metricCli metrics.Metrics) BackendShim {
@@ -957,13 +966,27 @@ func (b *backendShim) kvToEtcdKv(ctx context.Context, kv *proto.KeyValue) *mvccp
 	if meta.Version == 0 {
 		meta.Version = 1
 	}
-	return &mvccpb.KeyValue{
+	out := &mvccpb.KeyValue{
 		Key:            kv.Key,
 		Value:          rawValue,
 		Version:        int64(meta.Version),
 		CreateRevision: int64(meta.CreateRevision),
 		ModRevision:    int64(kv.Revision),
 	}
+	if b.leaseLookup != nil {
+		// etcd returns the lease attached to the key on Get/Range and in watch
+		// events; keyLeaseIndex tracks the current binding, so this is exact for
+		// latest reads and reports the current lease for historical reads (the
+		// per-version lease is not stored). Only the leader has the index
+		// populated — followers proxy reads to it. The fast path inside the
+		// resolver skips the lease mutex entirely when no key holds a lease.
+		out.Lease = b.leaseLookup(string(kv.Key))
+	}
+	return out
+}
+
+func (b *backendShim) SetLeaseLookup(fn func(key string) int64) {
+	b.leaseLookup = fn
 }
 
 func unsupported(field string) error {

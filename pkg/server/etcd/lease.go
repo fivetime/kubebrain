@@ -20,6 +20,7 @@ import (
 	"io"
 	"sort"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
@@ -211,6 +212,10 @@ func (s *RPCServer) bindKeyToLease(id int64, key string) {
 }
 
 func (s *RPCServer) bindKeyToLeaseLocked(id int64, key string) []*leaseState {
+	// caller holds leaseMu; keep the lock-free lease count in sync (multiple
+	// return paths, so update on exit). Closure so len() is read at return, not
+	// captured at defer registration.
+	defer func() { atomic.StoreInt64(&s.leasedKeyCount, int64(len(s.keyLeaseIndex))) }()
 	var changed []*leaseState
 	if previousID, ok := s.keyLeaseIndex[key]; ok {
 		if previous, exists := s.leases[previousID]; exists {
@@ -242,6 +247,7 @@ func (s *RPCServer) unbindKeyFromLease(key string) {
 		}
 		delete(s.keyLeaseIndex, key)
 	}
+	atomic.StoreInt64(&s.leasedKeyCount, int64(len(s.keyLeaseIndex)))
 	s.leaseMu.Unlock()
 	if changed != nil {
 		_ = s.persistLeaseState(context.Background(), changed)
@@ -249,6 +255,15 @@ func (s *RPCServer) unbindKeyFromLease(key string) {
 }
 
 func (s *RPCServer) leaseIDForKey(key string) int64 {
+	// Fast path: when no key holds a lease, skip the mutex entirely. This is the
+	// common case for reads (most ranges cover leaseless keys) and keeps the read
+	// hot path from serializing on leaseMu once per returned KeyValue. A key that
+	// truly has a committed lease is always counted here, so this never misses one;
+	// it only races a concurrent bind, for which returning 0 is acceptable (that
+	// write is not ordered before this read).
+	if atomic.LoadInt64(&s.leasedKeyCount) == 0 {
+		return 0
+	}
 	s.leaseMu.Lock()
 	defer s.leaseMu.Unlock()
 	return s.keyLeaseIndex[key]
@@ -323,6 +338,7 @@ func (s *RPCServer) removeLease(id int64) ([]string, error) {
 		delete(s.keyLeaseIndex, key)
 	}
 	delete(s.leases, id)
+	atomic.StoreInt64(&s.leasedKeyCount, int64(len(s.keyLeaseIndex)))
 	s.leaseMu.Unlock()
 	return keys, s.deleteLeaseState(context.Background(), id)
 }
@@ -458,6 +474,7 @@ func (s *RPCServer) applyLeaseRecords(records []leaseRecord) {
 		}
 		s.leases[st.id] = st
 	}
+	atomic.StoreInt64(&s.leasedKeyCount, int64(len(s.keyLeaseIndex)))
 }
 
 func (s *RPCServer) stopLeases() {
