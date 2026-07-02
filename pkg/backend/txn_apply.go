@@ -29,12 +29,26 @@ import (
 	"github.com/kubewharf/kubebrain/pkg/storage"
 )
 
+// ErrTxnGuardConflict is returned by TxnApply when a compare guard's key changed
+// since it was read, so the caller must re-evaluate the txn's compares (its
+// chosen branch may have flipped) and retry.
+var ErrTxnGuardConflict = errors.New("txn compare guard conflict")
+
 // TxnWriteOp is one write in a transaction: a Put (Delete=false) or a
 // single-key Delete. Value is the raw (un-enveloped) put value.
 type TxnWriteOp struct {
 	Delete bool
 	Key    []byte
 	Value  []byte
+}
+
+// TxnGuard asserts that a compared key is still live at exactly Revision when the
+// txn commits — an optimistic-concurrency guard that makes the compare and the
+// writes serializable (#4 Tier 2). Guard keys MUST be disjoint from the write
+// keys (a compared-and-written key is guarded by its own write CAS).
+type TxnGuard struct {
+	Key      []byte
+	Revision uint64
 }
 
 // TxnWriteResult is the outcome of one TxnWriteOp, all sharing the txn Revision.
@@ -61,7 +75,7 @@ type TxnWriteResult struct {
 //
 // Ops MUST target distinct keys; the caller is responsible for that (multi-write
 // to the same key needs intra-txn ordering that this batch does not model).
-func (b *backend) TxnApply(ctx context.Context, ops []TxnWriteOp) (results []TxnWriteResult, revision uint64, err error) {
+func (b *backend) TxnApply(ctx context.Context, ops []TxnWriteOp, guards []TxnGuard) (results []TxnWriteResult, revision uint64, err error) {
 	deadline := time.Now().Add(unaryRpcTimeout)
 	for {
 		if cerr := ctx.Err(); cerr != nil {
@@ -70,7 +84,7 @@ func (b *backend) TxnApply(ctx context.Context, ops []TxnWriteOp) (results []Txn
 		if time.Now().After(deadline) {
 			return nil, 0, storage.ErrUnavailable
 		}
-		results, revision, retry, err := b.tryTxnApply(ctx, ops)
+		results, revision, retry, err := b.tryTxnApply(ctx, ops, guards)
 		if retry {
 			continue
 		}
@@ -89,7 +103,7 @@ type txnPrep struct {
 	meta      EtcdMetadata
 }
 
-func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp) (results []TxnWriteResult, newRevision uint64, retry bool, err error) {
+func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []TxnGuard) (results []TxnWriteResult, newRevision uint64, retry bool, err error) {
 	preps := make([]txnPrep, 0, len(ops))
 	baseRevision := b.GetCurrentRevision()
 
@@ -180,8 +194,20 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp) (results []
 		return nil, newRevision, false, e
 	}
 
-	// Phase 3: build one batch with every op's CAS + object write.
+	// Phase 3: build one batch. Compare guards go first (lowest batch index) so a
+	// guard conflict is reported ahead of any write conflict — a changed compared
+	// key means the txn's branch may have flipped and must be re-evaluated, which
+	// takes precedence over merely re-applying a write.
 	batch := b.kv.BeginBatchWrite()
+	guardKeys := make(map[string]struct{}, len(guards))
+	for _, g := range guards {
+		gk := b.coder.EncodeRevisionKey(g.Key)
+		guardKeys[string(gk)] = struct{}{}
+		// no-op CAS: assert the key is still live at exactly g.Revision (an 8-byte
+		// live revision value); any update/delete/compaction changes the bytes.
+		revBytes := uint64ToBytes(g.Revision)
+		batch.CAS(gk, revBytes, revBytes, 0)
+	}
 	newRevLive := uint64ToBytes(newRevision)
 	newRevDeleted := append(uint64ToBytes(newRevision), 0)
 	for i := range preps {
@@ -221,8 +247,13 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp) (results []
 	if cerr := batch.Commit(ctx); cerr != nil {
 		b.notifyInvalidTxn(preps, newRevision, cerr)
 		if errors.Is(cerr, storage.ErrCASFailed) {
-			// A key changed since the pre-read; retry the whole txn against the
-			// new state (bounded by the caller loop's deadline).
+			// Distinguish a compare-guard conflict (the caller must re-evaluate the
+			// txn's branch) from a write-key conflict (just re-apply the writes).
+			if b.txnConflictIsGuard(cerr, guardKeys, len(guards) > 0) {
+				return nil, newRevision, false, ErrTxnGuardConflict
+			}
+			// A write key changed since the pre-read; retry against the new state
+			// (bounded by the caller loop's deadline) to emulate unconditional puts.
 			return nil, newRevision, true, nil
 		}
 		klog.ErrorS(cerr, "txn apply commit failed", "revision", newRevision, "ops", len(ops))
@@ -275,6 +306,23 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp) (results []
 	}
 	b.notifyBatch(events)
 	return results, newRevision, false, nil
+}
+
+// txnConflictIsGuard reports whether a commit CAS failure was on a compare-guard
+// key. When the storage error identifies the conflicting key it is matched
+// exactly; when it does not (some engines return an opaque CAS error), a txn that
+// carried guards is conservatively treated as a guard conflict so the caller
+// re-evaluates rather than spinning on an unconditional-overwrite retry.
+func (b *backend) txnConflictIsGuard(cerr error, guardKeys map[string]struct{}, hadGuards bool) bool {
+	if len(guardKeys) == 0 {
+		return false
+	}
+	var conflict *storage.Conflict
+	if errors.As(cerr, &conflict) {
+		_, ok := guardKeys[string(conflict.Key)]
+		return ok
+	}
+	return hadGuards
 }
 
 // putTxnObject writes the object value for a put, inlining metadata in compat

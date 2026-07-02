@@ -73,7 +73,7 @@ func TestTxnApplySingleRevisionAtomic(t *testing.T) {
 		{Key: cre, Value: []byte("c1")}, // create
 		{Key: upd, Value: []byte("u1")}, // update
 		{Delete: true, Key: del},        // delete
-	})
+	}, nil)
 	require.NoError(t, err)
 	require.NotZero(t, rev)
 	require.Len(t, results, 3)
@@ -117,7 +117,7 @@ func TestTxnApplyRecreateOverTombstone(t *testing.T) {
 	_ = cr
 	waitCommitted(t, b, b.GetCurrentRevision())
 
-	results, rev, err := b.TxnApply(ctx, []TxnWriteOp{{Key: key, Value: []byte("reborn")}})
+	results, rev, err := b.TxnApply(ctx, []TxnWriteOp{{Key: key, Value: []byte("reborn")}}, nil)
 	require.NoError(t, err)
 	require.True(t, results[0].Created, "put over tombstone must be a create")
 	require.EqualValues(t, 1, results[0].Meta.Version)
@@ -136,7 +136,7 @@ func TestTxnApplyNoOpDeleteConsumesNoRevision(t *testing.T) {
 	results, rev, err := b.TxnApply(ctx, []TxnWriteOp{
 		{Delete: true, Key: []byte(prefix + "/reg/ghost1")},
 		{Delete: true, Key: []byte(prefix + "/reg/ghost2")},
-	})
+	}, nil)
 	require.NoError(t, err)
 	require.Len(t, results, 2)
 	require.False(t, results[0].Deleted)
@@ -162,7 +162,7 @@ func TestTxnApplyContendedSameKeyRetries(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			_, _, e := b.TxnApply(ctx, []TxnWriteOp{{Key: key, Value: []byte(fmt.Sprintf("v%d", i+1))}})
+			_, _, e := b.TxnApply(ctx, []TxnWriteOp{{Key: key, Value: []byte(fmt.Sprintf("v%d", i+1))}}, nil)
 			errs[i] = e
 		}(i)
 	}
@@ -176,6 +176,47 @@ func TestTxnApplyContendedSameKeyRetries(t *testing.T) {
 	meta, err := b.GetEtcdMetadata(ctx, key, b.GetCurrentRevision())
 	require.NoError(t, err)
 	require.EqualValues(t, writers+1, meta.Version, "every contended write must apply exactly once")
+}
+
+// TestTxnApplyGuard verifies the #4 Tier 2 OCC guard: a txn applies when its
+// compare guard's key is unchanged, and fails with ErrTxnGuardConflict (writing
+// nothing) once the guarded key has been modified.
+func TestTxnApplyGuard(t *testing.T) {
+	b, ctx := newTxnApplyBackend(t)
+	guardKey := []byte(prefix + "/reg/guard")
+	a := []byte(prefix + "/reg/ga")
+	bk := []byte(prefix + "/reg/gb")
+
+	cr, err := b.Create(ctx, &proto.CreateRequest{Key: guardKey, Value: []byte("g")})
+	require.NoError(t, err)
+	guardRev := cr.Header.Revision
+	waitCommitted(t, b, b.GetCurrentRevision())
+
+	// guard unchanged -> applies
+	_, rev, err := b.TxnApply(ctx,
+		[]TxnWriteOp{{Key: a, Value: []byte("va")}, {Key: bk, Value: []byte("vb")}},
+		[]TxnGuard{{Key: guardKey, Revision: guardRev}})
+	require.NoError(t, err)
+	require.NotZero(t, rev)
+	waitCommitted(t, b, rev)
+	v, _ := liveValue(t, b, ctx, a)
+	require.Equal(t, "va", v)
+
+	// modify the guarded key
+	u, err := b.Update(ctx, &proto.UpdateRequest{Kv: &proto.KeyValue{Key: guardKey, Value: []byte("g2"), Revision: guardRev}})
+	require.NoError(t, err)
+	require.True(t, u.Succeeded)
+	waitCommitted(t, b, b.GetCurrentRevision())
+
+	// guard now stale -> conflict, and a/b are NOT overwritten
+	_, _, err = b.TxnApply(ctx,
+		[]TxnWriteOp{{Key: a, Value: []byte("va2")}, {Key: bk, Value: []byte("vb2")}},
+		[]TxnGuard{{Key: guardKey, Revision: guardRev}})
+	require.ErrorIs(t, err, ErrTxnGuardConflict)
+	va, _ := liveValue(t, b, ctx, a)
+	require.Equal(t, "va", va, "a must not be overwritten when the guard conflicts")
+	vb, _ := liveValue(t, b, ctx, bk)
+	require.Equal(t, "vb", vb, "b must not be overwritten when the guard conflicts")
 }
 
 // TestTxnApplyConcurrentDistinctKeys stress-tests many concurrent single-key
@@ -192,7 +233,7 @@ func TestTxnApplyConcurrentDistinctKeys(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			key := []byte(fmt.Sprintf("%s/reg/c%03d", prefix, i))
-			_, rev, err := b.TxnApply(ctx, []TxnWriteOp{{Key: key, Value: []byte("v")}})
+			_, rev, err := b.TxnApply(ctx, []TxnWriteOp{{Key: key, Value: []byte("v")}}, nil)
 			revs[i] = rev
 			errs[i] = err
 		}(i)

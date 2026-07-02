@@ -17,6 +17,7 @@ package etcd
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"time"
@@ -708,32 +709,46 @@ func txnOpsSupported(ops []*etcdserverpb.RequestOp) bool {
 }
 
 func (s *RPCServer) executeGenericTxn(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etcdserverpb.TxnResponse, error) {
-	paths, err := s.txnComparePaths(ctx, txn)
-	if err != nil {
-		return nil, err
+	deadline := time.Now().Add(unaryRpcTimeout)
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if time.Now().After(deadline) {
+			return nil, status.Errorf(codes.Unavailable, "txn still contended after %s", unaryRpcTimeout)
+		}
+		paths, guards, err := s.txnComparePathsGuarded(ctx, txn)
+		if err != nil {
+			return nil, err
+		}
+		compactRevision, err := s.backend.GetCompactRevision(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if err := validateTxnRangeRevisions(txn, paths, int64(compactRevision), int64(s.backend.GetCurrentRevision())); err != nil {
+			return nil, err
+		}
+		// Prefer the atomic single-revision path when the chosen branch is a set of
+		// distinct-key writes (#4). The compare guards make it serializable: a guard
+		// conflict means a compared key changed, so re-evaluate the compares and
+		// retry. Ineligible shapes fall back to the (unchanged) sequential path.
+		resp, handled, err := s.tryAtomicGenericTxn(ctx, txn, paths[0], guards)
+		if errors.Is(err, backend.ErrTxnGuardConflict) {
+			continue
+		}
+		if handled {
+			return resp, err
+		}
+		pathIndex := 0
+		return s.executeTxnWithPaths(ctx, txn, paths, &pathIndex)
 	}
-	compactRevision, err := s.backend.GetCompactRevision(ctx)
-	if err != nil {
-		return nil, err
-	}
-	if err := validateTxnRangeRevisions(txn, paths, int64(compactRevision), int64(s.backend.GetCurrentRevision())); err != nil {
-		return nil, err
-	}
-	// Prefer the atomic single-revision path when the chosen branch is a set of
-	// distinct-key writes (#4 Tier 1); otherwise fall back to the sequential path,
-	// which is unchanged so no shape regresses.
-	if resp, handled, err := s.tryAtomicGenericTxn(ctx, txn, paths[0]); handled {
-		return resp, err
-	}
-	pathIndex := 0
-	return s.executeTxnWithPaths(ctx, txn, paths, &pathIndex)
 }
 
 // tryAtomicGenericTxn applies the chosen path atomically when it consists solely
 // of distinct-key Put and single-key DeleteRange ops (>= 2 of them, since a
 // single op is already atomic on the sequential path). handled=false means the
 // txn shape is ineligible and the caller must use the sequential fallback.
-func (s *RPCServer) tryAtomicGenericTxn(ctx context.Context, txn *etcdserverpb.TxnRequest, succeeded bool) (*etcdserverpb.TxnResponse, bool, error) {
+func (s *RPCServer) tryAtomicGenericTxn(ctx context.Context, txn *etcdserverpb.TxnRequest, succeeded bool, guards []backend.TxnGuard) (*etcdserverpb.TxnResponse, bool, error) {
 	ops := txn.Success
 	if !succeeded {
 		ops = txn.Failure
@@ -774,18 +789,28 @@ func (s *RPCServer) tryAtomicGenericTxn(ctx context.Context, txn *etcdserverpb.T
 	if len(writeOps) < 2 {
 		return nil, false, nil
 	}
+	// A compared key that is also written is guarded by its own write CAS, but its
+	// guard revision (from the compare read) and its write's expected revision
+	// (from TxnApply's pre-read) could diverge; rather than reconcile that, drop
+	// to the sequential path when compare and write keys overlap.
+	applyGuards := guards[:0:0]
+	for _, g := range guards {
+		if _, written := seen[string(g.Key)]; written {
+			return nil, false, nil
+		}
+		applyGuards = append(applyGuards, g)
+	}
 	// Validate all put leases up front: an atomic txn must reject as a whole if a
 	// referenced lease is missing, never apply a prefix of its writes.
-	for i, op := range ops {
+	for _, op := range ops {
 		if put := op.GetRequestPut(); put != nil {
 			if err := s.ensureLeaseExists(put.Lease); err != nil {
 				return nil, true, err
 			}
-			_ = i
 		}
 	}
 
-	responses, rev, results, err := s.backend.TxnApply(ctx, writeOps, prevKv)
+	responses, rev, results, err := s.backend.TxnApply(ctx, writeOps, applyGuards, prevKv)
 	if err != nil {
 		return nil, true, err
 	}
@@ -807,11 +832,24 @@ func (s *RPCServer) tryAtomicGenericTxn(ctx context.Context, txn *etcdserverpb.T
 }
 
 func (s *RPCServer) txnComparePaths(ctx context.Context, txn *etcdserverpb.TxnRequest) ([]bool, error) {
+	paths, _, err := s.txnComparePathsGuarded(ctx, txn)
+	return paths, err
+}
+
+// txnComparePathsGuarded is txnComparePaths that additionally returns OCC guards
+// for the top-level compares it evaluated (those that decided this txn's branch).
+// The guards are used only by the atomic path; nested compares are not guarded
+// (a nested txn is never atomic-eligible and falls back to the sequential path).
+func (s *RPCServer) txnComparePathsGuarded(ctx context.Context, txn *etcdserverpb.TxnRequest) ([]bool, []backend.TxnGuard, error) {
 	succeeded := true
+	var guards []backend.TxnGuard
 	for _, cmp := range txn.Compare {
-		ok, err := s.evalCompare(ctx, cmp)
+		ok, guard, err := s.evalCompareGuarded(ctx, cmp)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
+		}
+		if guard != nil {
+			guards = append(guards, *guard)
 		}
 		if !ok {
 			succeeded = false
@@ -830,11 +868,11 @@ func (s *RPCServer) txnComparePaths(ctx context.Context, txn *etcdserverpb.TxnRe
 		}
 		nestedPaths, err := s.txnComparePaths(ctx, nested)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		paths = append(paths, nestedPaths...)
 	}
-	return paths, nil
+	return paths, guards, nil
 }
 
 func validateTxnRangeRevisions(txn *etcdserverpb.TxnRequest, paths []bool, compactRevision, currentRevision int64) error {
@@ -972,18 +1010,39 @@ func (s *RPCServer) emptyDeleteRangeResponse() *etcdserverpb.DeleteRangeResponse
 }
 
 func (s *RPCServer) evalCompare(ctx context.Context, cmp *etcdserverpb.Compare) (bool, error) {
+	ok, _, err := s.evalCompareGuarded(ctx, cmp)
+	return ok, err
+}
+
+// evalCompareGuarded evaluates a single compare and, for a single-key compare on
+// an existing key, also returns an optimistic-concurrency guard (the key's
+// current revision) that the atomic txn path can assert at commit time (#4 Tier
+// 2). No guard is returned for range compares or absent keys.
+func (s *RPCServer) evalCompareGuarded(ctx context.Context, cmp *etcdserverpb.Compare) (bool, *backend.TxnGuard, error) {
 	if len(cmp.RangeEnd) > 0 {
-		return s.evalRangeCompare(ctx, cmp)
+		ok, err := s.evalRangeCompare(ctx, cmp)
+		return ok, nil, err
 	}
 	rangeResp, err := s.backend.Get(ctx, &etcdserverpb.RangeRequest{Key: cmp.Key})
 	if err != nil {
-		return false, err
+		return false, nil, err
 	}
 	var kv *mvccpb.KeyValue
 	if len(rangeResp.Kvs) > 0 {
 		kv = rangeResp.Kvs[0]
 	}
+	ok, err := s.compareSingleKey(cmp, kv)
+	if err != nil {
+		return false, nil, err
+	}
+	var guard *backend.TxnGuard
+	if kv != nil {
+		guard = &backend.TxnGuard{Key: cmp.Key, Revision: uint64(kv.ModRevision)}
+	}
+	return ok, guard, nil
+}
 
+func (s *RPCServer) compareSingleKey(cmp *etcdserverpb.Compare, kv *mvccpb.KeyValue) (bool, error) {
 	switch cmp.Target {
 	case etcdserverpb.Compare_MOD:
 		var actual int64

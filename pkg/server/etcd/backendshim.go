@@ -70,10 +70,11 @@ type BackendShim interface {
 	DeleteRange(ctx context.Context, r *etcdserverpb.DeleteRangeRequest) (*etcdserverpb.DeleteRangeResponse, error)
 
 	// TxnApply applies a set of put/delete ops (distinct keys) atomically at a
-	// single revision, returning one etcd ResponseOp per op (in order) plus the
-	// raw results (for lease binding). prevKv[i] requests the deleted key's
-	// previous kv on delete ops.
-	TxnApply(ctx context.Context, ops []backend.TxnWriteOp, prevKv []bool) ([]*etcdserverpb.ResponseOp, uint64, []backend.TxnWriteResult, error)
+	// single revision, asserting the compare guards, and returns one etcd
+	// ResponseOp per op (in order) plus the raw results (for lease binding).
+	// prevKv[i] requests the deleted key's previous kv on delete ops. Returns
+	// backend.ErrTxnGuardConflict when a guard's key changed.
+	TxnApply(ctx context.Context, ops []backend.TxnWriteOp, guards []backend.TxnGuard, prevKv []bool) ([]*etcdserverpb.ResponseOp, uint64, []backend.TxnWriteResult, error)
 
 	// Get read a kv from storage
 	Get(ctx context.Context, r *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error)
@@ -434,8 +435,8 @@ func (b *backendShim) GetCompactRevision(ctx context.Context) (uint64, error) {
 	return b.backend.GetCompactRevision(ctx)
 }
 
-func (b *backendShim) TxnApply(ctx context.Context, ops []backend.TxnWriteOp, prevKv []bool) ([]*etcdserverpb.ResponseOp, uint64, []backend.TxnWriteResult, error) {
-	results, rev, err := b.backend.TxnApply(ctx, ops)
+func (b *backendShim) TxnApply(ctx context.Context, ops []backend.TxnWriteOp, guards []backend.TxnGuard, prevKv []bool) ([]*etcdserverpb.ResponseOp, uint64, []backend.TxnWriteResult, error) {
+	results, rev, err := b.backend.TxnApply(ctx, ops, guards)
 	if err != nil {
 		return nil, 0, nil, err
 	}
