@@ -3,7 +3,7 @@
 > 来源：Fable 5 多智能体审核（73 条已确认问题）。本文件是**持久化进度清单**，做一个勾一个（`[x]`），抗会话压缩遗忘。
 > 编号 `#N` = 审核确认清单索引；`file:line` 为大致位置。测试遵循 `docs/test_strategy_cn.md`：**真实消费端黑盒为主，内部单测只锁黑盒够不着的精确 bug**。
 
-进度：**已修 40 / 73** — Critical 3/3 ✓，High 24/32，Medium 3/17，Low 10/21。（#4 Tier 1+2 全完成；#54/#72 compact CAS 原子化）（+ #5/#27/#29 A-index e885b8d；#6/#38 etcdmeta 纳入 compaction；#15 两半完成：\x00kubebrain/ 命名空间整体纳入 compaction；#30 watch history 去点读+限流；#69 前缀路由）
+进度：**已修 41 / 73** — Critical 3/3 ✓，High 24/32，Medium 3/17，Low 11/21。（#4 Tier 1+2；#54/#72 compact CAS 原子化；#52 watch update 不误报 create）（+ #5/#27/#29 A-index e885b8d；#6/#38 etcdmeta 纳入 compaction；#15 两半完成：\x00kubebrain/ 命名空间整体纳入 compaction；#30 watch history 去点读+限流；#69 前缀路由）
 > 附带修复（不在 73 条内）：events-TTL 过期回收在多 border（etcdmeta / 多 SkippedPrefixes）下失效——`getTimeoutRevision` 会 drain 共享 compact-history 队列，原先每 border 各调一次，首个 border 耗尽旧记录后其余 border 拿到 timeoutRevision=0，静默关闭 `/events/` 过期。已改为每次 compaction 周期只计算一次并应用到所有 border（`scanner.Compact` 现接收全部 borders）。`TestCompactExpiredEvents` 覆盖。
 
 ## 已完成（PR #1: fivetime/kubebrain#1 + 81d36be）
@@ -101,8 +101,8 @@
   - **Tier 2（TOCTOU 隔离）**：compare 求值时对**存在的单键 compare** 捕获 OCC guard（`{key, 当前 revision}`），在同一 batch 里以**首位 no-op `CAS(revisionKey, R, R)`** 断言 compare key 未变。guard 冲突（compare key 变了）→ `ErrTxnGuardConflict`，etcd 层**重评 compare 并重试**（有界 deadline）；写冲突仍走 backend 内部重试。guard 与写 key **不相交**时才走原子路径（相交→回退）。使「compare→多写」可串行化。**残留**：absent compare key（无「断言不存在」CAS 原语）与 range compare 不 guard，仍是 Tier 1 语义（写原子、compare TOCTOU）——已记录。
   - 不支持形状（nested、range 读、单 op、IgnoreLease/Value、多键 range delete、compare∩write）**回退旧顺序路径，不回归**。
   - 测试：`TestTxnApply*`（单 rev 原子 / tombstone 重建 / no-op 不耗 rev / **guard 冲突不写** / 64 并发 distinct / 24 并发同 key CAS 重试无丢更新）；黑盒 `TestTxnMultiWriteSingleRevision`+`TestTxnCompareMultiWriteSingleRevision`（多写落单 rev + guarded 路径端到端）。backend+etcd 全套 + `-race` 干净；部署后全 smoke（各 txn/compare 形状）+ compat 绿。
-- [ ] **#52** [low] Watch PUT events fall back to CreateRevision=ModRevision when prev-version lookup fails — updates misreported as creates and PrevKv dropped  
-  `pkg/server/etcd/backendshim.go:750`
+- [x] **#52** [low] Watch PUT events fall back to CreateRevision=ModRevision when prev-version lookup fails — updates misreported as creates and PrevKv dropped  
+  `pkg/server/etcd/backendshim.go` `watchEventToEtcdEvent` PUT 分支 — prevKv 查询失败时原**无条件**把 `CreateRevision=ModRevision`（IsCreate 误报 true）。改为：PUT 是 update 永不是 create，**优先用值内联的 create_revision**（approach A，kvToEtcdKv 已填），仅当未知（legacy 无内联/解码失败）才用 prevKv 推导，最后兜底 `ModRevision-1` 保证 `IsCreate()=false`；PrevKv 一律附带（查询失败则 nil，但不再污染事件类型）。单测 `TestWatchPutEventKeepsInlineCreateRevisionWhenPrevKvMissing`（内联 createRev 在 prevKv=nil 时保留）+ 更正 `TestWatchEventToEtcdEventRemainsUpdateWhenPrevKvUnavailable`（原测试固化了 bug）；黑盒 `TestWatchUpdateReportsUpdateNotCreate`（update 事件 IsCreate=false、createRev 正确、PrevKv 存在）。
 - [ ] **#53** [low] Range at Revision==1888 (GetPartitionMagic) is hijacked to return partition metadata instead of data  
   `pkg/server/etcd/kv.go:77`
 - [x] **#54** [low] Apiserver compact txn emulation is non-atomic: read-check-then-two-Puts allows concurrent compactors to both 'win' and can desync the version key  

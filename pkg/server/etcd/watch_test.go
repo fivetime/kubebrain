@@ -492,7 +492,7 @@ func TestWatchEventToEtcdEventDistinguishesCreateAndUpdate(t *testing.T) {
 	require.Equal(t, updateResp.Header.Revision, updateEvent.Kv.ModRevision)
 }
 
-func TestWatchEventToEtcdEventFallsBackToCreateWhenPrevKvUnavailable(t *testing.T) {
+func TestWatchEventToEtcdEventRemainsUpdateWhenPrevKvUnavailable(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
 
@@ -509,8 +509,12 @@ func TestWatchEventToEtcdEventFallsBackToCreateWhenPrevKvUnavailable(t *testing.
 	})
 	require.NoError(t, err)
 	require.Nil(t, event.PrevKv)
-	require.True(t, (&clientv3.Event{Type: clientv3.EventTypePut, Kv: event.Kv}).IsCreate())
-	require.Equal(t, event.Kv.ModRevision, event.Kv.CreateRevision)
+	// A PUT event is an update; even without prev-kv or inline metadata it must
+	// not be misreported as a create (#52). CreateRevision is synthesized below
+	// ModRevision so clientv3.Event.IsCreate reports false.
+	require.False(t, (&clientv3.Event{Type: clientv3.EventTypePut, Kv: event.Kv}).IsCreate())
+	require.NotEqual(t, event.Kv.ModRevision, event.Kv.CreateRevision)
+	require.Equal(t, event.Kv.ModRevision-1, event.Kv.CreateRevision)
 }
 
 // scriptedWatchServer replays a fixed sequence of WatchRequests, then reports

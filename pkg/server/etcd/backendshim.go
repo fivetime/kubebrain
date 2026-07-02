@@ -856,22 +856,25 @@ func (b *backendShim) watchEventToEtcdEvent(ctx context.Context, e *proto.Event)
 		kv := b.kvToEtcdKv(ctx, e.Kv)
 		kv.ModRevision = int64(revision)
 		prevKv := b.cachedPreviousEtcdKv(e.Kv.Key, revision)
-		if prevKv == nil {
-			kv.CreateRevision = kv.ModRevision
-			return &mvccpb.Event{
-				Type: mvccpb.PUT,
-				Kv:   kv,
-			}, nil
-		}
-		kv.CreateRevision = prevKv.CreateRevision
-		if kv.CreateRevision == 0 {
-			kv.CreateRevision = prevKv.ModRevision
-		}
+		// A PUT event is an update, never a create, so its CreateRevision must
+		// differ from ModRevision (clientv3.Event.IsCreate reports create iff they
+		// are equal). Prefer the create_revision the value carries inline (approach
+		// A) — it is already set by kvToEtcdKv. Only when it is unknown (legacy
+		// events without inline metadata) derive it from the previous version, and
+		// as a last resort synthesize a value just below ModRevision. Previously a
+		// failed prev-version lookup unconditionally overwrote a correct inline
+		// create_revision with ModRevision, misreporting the update as a create and
+		// dropping PrevKv (#52).
 		if kv.CreateRevision == 0 || kv.CreateRevision == kv.ModRevision {
-			// KubeBrain's native event format does not persist create_revision.
-			// For updates, make CreateRevision differ from ModRevision so
-			// clientv3.Event.IsCreate reports false.
-			kv.CreateRevision = kv.ModRevision - 1
+			if prevKv != nil {
+				kv.CreateRevision = prevKv.CreateRevision
+				if kv.CreateRevision == 0 {
+					kv.CreateRevision = prevKv.ModRevision
+				}
+			}
+			if kv.CreateRevision == 0 || kv.CreateRevision == kv.ModRevision {
+				kv.CreateRevision = kv.ModRevision - 1
+			}
 		}
 		return &mvccpb.Event{
 			Type:   mvccpb.PUT,
