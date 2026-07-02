@@ -307,7 +307,20 @@ func (b *backendShim) Put(ctx context.Context, r *etcdserverpb.PutRequest) (*etc
 	}
 
 	var prevKv *mvccpb.KeyValue
-	for i := 0; i < 3; i++ {
+	// etcd Put is unconditional and never fails on concurrent modification. We
+	// emulate it with a Get-then-Create/Update CAS loop, so retry until it wins
+	// rather than giving up after a fixed count (which returned a spurious,
+	// non-retriable error under contention on a hot key). Bound by the caller's
+	// context plus an internal deadline so a pathological case degrades to a
+	// retriable Unavailable instead of looping forever.
+	deadline := time.Now().Add(unaryRpcTimeout)
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if time.Now().After(deadline) {
+			return nil, status.Errorf(codes.Unavailable, "put %s: still contended after %s", r.Key, unaryRpcTimeout)
+		}
 		getResp, err := b.backend.Get(ctx, &proto.GetRequest{Key: r.Key})
 		if err != nil {
 			return nil, err
@@ -351,8 +364,6 @@ func (b *backendShim) Put(ctx context.Context, r *etcdserverpb.PutRequest) (*etc
 			return resp, nil
 		}
 	}
-
-	return nil, fmt.Errorf("put failed after retries: %s", r.Key)
 }
 
 // TODO: compact is unnecessary for kube-brain ?
