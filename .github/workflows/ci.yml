@@ -54,7 +54,9 @@ jobs:
         run: |
           BACKEND_RACE_TESTS='Test(UpdateWithHugeClientRevisionDoesNotStallPipeline|DeleteWithHugeClientRevisionDoesNotStallPipeline|DeleteRangeCommitConflictDoesNotStallPipeline|UpdateMetadataReadFailureDoesNotStallPipeline|BroadcastEvictsSlowConsumerBeforeNextBatch|StreamDeliversGapFreePrefixToSlowConsumer|BackendWatchHistoryFallback|BackendWatchCatchUpAdvancesFromLastMatchingPrefixEvent|WatchEventOverflowResetsWatchState|CompactDoesNotRegressWatermark|ProcessEventsExitsOnCancelWhenConsumerStopped)$'
           go test -race ./pkg/backend -run "$BACKEND_RACE_TESTS"
-          go test -race ./pkg/server/etcd ./pkg/server/service/etcdproxy ./pkg/storage/tikv ./cmd/option
+          SERVER_ETCD_RACE_TESTS='Test(StoreMaxUint64OnlyAdvances|MinSyncedRevisionReportsSlowestWatch|WatchProgressRequestReportsSyncedNotGlobalRevision|MaintenanceBasicDiagnostics|RangeCompactedRevisionMatchesEtcd|CompactFutureAndRepeatedRevisionMatchEtcd|CompactOlderRevisionReturnsCurrentHeader|CompactReturnsRetryableErrorWhenBackendCompactsBelowRequestedRevision|CancelCompactedWatchResponseUsesBackendCompactRevisionAndErrorReason|WatchEventToEtcdEventDistinguishesCreateAndUpdate|WatchEventToEtcdEventFallsBackToCreateWhenPrevKvUnavailable)$'
+          go test -race ./pkg/server/etcd -run "$SERVER_ETCD_RACE_TESTS"
+          go test -race ./pkg/server/service/etcdproxy ./pkg/storage/tikv ./cmd/option
 
   build:
     name: Build binaries and images
