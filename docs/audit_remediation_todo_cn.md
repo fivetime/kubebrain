@@ -87,6 +87,7 @@
   `pkg/server/etcd/lease.go:464` — etcdmeta 半已根治（停写 + 纳入 compaction，见 #6）；lease-record 半（每次 keepalive 重写、在 etcd 层前缀 `\x00kubebrain/leases/`、backend 不感知该前缀）仍开放，需单独把 lease 前缀纳入 compaction 边界或改 lease 存储模型。
 - [x] **#38** [medium] Etcd metadata versions are never compacted or deleted — unbounded storage growth  
   `pkg/backend/etcdmeta.go:47` — 同 #6：etcdmeta keyspace 现随 compaction 回收旧版本（scanner 无 revision key/tombstone，只走 version-compaction 分支，保留 ≤compactRev 的最新版、删更旧版）。
+  > 部署观察：把 etcdmeta 纳入边界后，**首次** compaction 需一次性回收 46h 积压的旧 etcdmeta + 追平先前被静默关闭的 `/events/` 过期，扫描耗时较大；dev 集群上共享 120s 预算的 smoke 在 compact 步超时（非 hang、非数据错误，watermark 在下一次更高 revision 的 compaction 自愈）。稳态 compaction 是增量的、快。**候选新问题（预存在）**：`backend.Compact` 在 RPC 内**同步**跑物理扫描，超大数据集上单次 compact 可能超过 apiserver compact 上下文超时→每轮都被取消→永不追平。宜改为异步（etcd 语义：Compact 打水位即返回，物理 GC 后台进行）。已在 P1/P2 之外单列观察，未修。
 
 ### P3 — etcd 语义正确性
 

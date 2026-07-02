@@ -656,10 +656,16 @@ func main() {
 		Else(clientv3.OpPut(compareVersionKey, "version-not-matched")).
 		Commit()
 	must("compare version txn", err)
+	// The If(Version==1) compare is evaluated against the committed pre-txn state
+	// (the seed Put made version 1), so the txn succeeds. Inside the Then block the
+	// OpPut is the key's second write, bumping its version to 2, and a Range that
+	// follows a Put in the same txn observes that write (etcd reads at beginRev+1;
+	// see server/storage/mvcc/kvstore_txn.go storeTxnWrite.Range + put). So the
+	// intra-txn OpGet must report the updated value AND version 2 -- not 1.
 	if !compareVersionResp.Succeeded ||
 		len(compareVersionResp.Responses) != 2 ||
 		string(compareVersionResp.Responses[1].GetResponseRange().Kvs[0].Value) != "version-matched" ||
-		compareVersionResp.Responses[1].GetResponseRange().Kvs[0].Version != 1 {
+		compareVersionResp.Responses[1].GetResponseRange().Kvs[0].Version != 2 {
 		panic("unexpected compare version txn response")
 	}
 	fmt.Println("compare version txn ok")
