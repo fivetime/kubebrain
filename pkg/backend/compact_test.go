@@ -48,6 +48,9 @@ func TestConstructCompactBordersWithSkippedPrefixOption(t *testing.T) {
 				},
 			},
 			[][]byte{
+				// etcdmeta keyspace (leading \x00) sorts first and is now GC'd too (#6/#15)
+				encodeRevisionKey(etcdMetadataPrefix),
+				encodeRevisionKey(PrefixEnd(etcdMetadataPrefix)),
 				encodeRevisionKey([]byte("/registry/test/")),
 				encodeRevisionKey([]byte("/registry/test/events/")),
 				encodeRevisionKey([]byte("/registry/test/events0")),
@@ -61,6 +64,8 @@ func TestConstructCompactBordersWithSkippedPrefixOption(t *testing.T) {
 				Prefix: "/registry/test",
 			},
 			[][]byte{
+				encodeRevisionKey(etcdMetadataPrefix),
+				encodeRevisionKey(PrefixEnd(etcdMetadataPrefix)),
 				encodeRevisionKey([]byte("/registry/test/")),
 				encodeRevisionKey([]byte("/registry/test0")),
 			},

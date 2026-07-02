@@ -3,7 +3,8 @@
 > 来源：Fable 5 多智能体审核（73 条已确认问题）。本文件是**持久化进度清单**，做一个勾一个（`[x]`），抗会话压缩遗忘。
 > 编号 `#N` = 审核确认清单索引；`file:line` 为大致位置。测试遵循 `docs/test_strategy_cn.md`：**真实消费端黑盒为主，内部单测只锁黑盒够不着的精确 bug**。
 
-进度：**已修 27 / 73** — Critical 3/3 ✓，High 20/32，Medium 2/17，Low 2/21。（+ #5/#27/#29 A-index e885b8d）
+进度：**已修 29 / 73** — Critical 3/3 ✓，High 21/32，Medium 3/17，Low 2/21。（+ #5/#27/#29 A-index e885b8d；#6/#38 etcdmeta 纳入 compaction；#15 etcdmeta 半完成）
+> 附带修复（不在 73 条内）：events-TTL 过期回收在多 border（etcdmeta / 多 SkippedPrefixes）下失效——`getTimeoutRevision` 会 drain 共享 compact-history 队列，原先每 border 各调一次，首个 border 耗尽旧记录后其余 border 拿到 timeoutRevision=0，静默关闭 `/events/` 过期。已改为每次 compaction 周期只计算一次并应用到所有 border（`scanner.Compact` 现接收全部 borders）。`TestCompactExpiredEvents` 覆盖。
 
 ## 已完成（PR #1: fivetime/kubebrain#1 + 81d36be）
 
@@ -75,15 +76,17 @@
   `pkg/backend/watch.go:132`
 - [ ] **#69** [low] Watcher hub fans every event batch to every subscriber with per-watcher filtering, allocations, and 10k-slot channels  
   `pkg/backend/watcherhub.go:88`
+- [ ] **[opt] count-index O(log N) 增广 rank**（低优先级）  
+  `pkg/backend/countindex/countindex.go` — 现 MVP 的 `Count` 是区间遍历 O(区间键数)；分页 LIST 每页 count 范围逐页缩小，累计 O(N²/页大小)，**但仅在内存、无存储**。k8s 单资源约 15 万键时整次 LIST 的索引遍历 ~50–100ms、被对象检索（O(N) 存储）淹没，故现实够用。仅当单资源达**百万级 + 高频分页**才值得（此时遍历达秒级 CPU，且持 RLock 会短暂阻塞写）。优化 = btree 节点缓存子树活键数使 Count 变 O(log N)，不改语义/存储。**风险**：增广计数需在 Apply/Compact/Reset 时正确维护每节点子树计数（含删除后 liveAt 变化），维护 bug 会让 count 错→apiserver 分页出错/漏数据；须扩充 brute-force 交叉校验 + shadow。收益/风险比在现规模下不划算，故推后。
 
 ### P2 — 内部 keyspace 无界增长（etcdmeta/leases 在 compaction 边界外）
 
-- [~] **#6** [high] Etcd metadata keyspace (\x00kubebrain/etcdmeta/) is written per revision but lies outside all compaction borders — unbounded storage growth  
-  `pkg/backend/etcdmeta.go:13` — GROWTH STOPPED for new writes via inline metadata (ee55f24, A-core); legacy etcdmeta retirement (compaction) still pending
+- [x] **#6** [high] Etcd metadata keyspace (\x00kubebrain/etcdmeta/) is written per revision but lies outside all compaction borders — unbounded storage growth  
+  `pkg/backend/etcdmeta.go:13` — 两步根治：(1) 新写入不再落 etcdmeta，改内联到对象值信封（ee55f24, A-core）；(2) `getCompactBorders()` 现把 etcdmeta keyspace 纳入 compaction 边界，旧的 per-revision 元数据被 GC。`TestCompactRetiresLegacyEtcdMetadata` 证明 5 版本→compact→1 版本且元数据读仍正确。
 - [~] **#15** [high] Internal MVCC keys (\x00kubebrain/leases/, \x00kubebrain/etcdmeta/) lie outside compaction borders and grow without bound  
-  `pkg/server/etcd/lease.go:464` — etcdmeta half stopped (ee55f24); lease-record half (rewritten per keepalive, outside compaction) still open
-- [ ] **#38** [medium] Etcd metadata versions are never compacted or deleted — unbounded storage growth  
-  `pkg/backend/etcdmeta.go:47`
+  `pkg/server/etcd/lease.go:464` — etcdmeta 半已根治（停写 + 纳入 compaction，见 #6）；lease-record 半（每次 keepalive 重写、在 etcd 层前缀 `\x00kubebrain/leases/`、backend 不感知该前缀）仍开放，需单独把 lease 前缀纳入 compaction 边界或改 lease 存储模型。
+- [x] **#38** [medium] Etcd metadata versions are never compacted or deleted — unbounded storage growth  
+  `pkg/backend/etcdmeta.go:47` — 同 #6：etcdmeta keyspace 现随 compaction 回收旧版本（scanner 无 revision key/tombstone，只走 version-compaction 分支，保留 ≤compactRev 的最新版、删更旧版）。
 
 ### P3 — etcd 语义正确性
 

@@ -95,11 +95,10 @@ func (b *backend) compact(ctx context.Context, revision uint64) error {
 	}
 
 	borders := b.getCompactBorders()
-	for i := 0; i < len(borders); i += 2 {
-		start := borders[i]
-		end := borders[i+1]
-		b.scanner.Compact(ctx, start, end, revision)
-	}
+	// Pass all borders together so the scanner computes the events-TTL timeout
+	// revision once per cycle; see Scanner.Compact for why per-border draining of
+	// the shared compact-history queue would silently disable event expiry.
+	b.scanner.Compact(ctx, borders, revision)
 	if b.countIndex != nil {
 		b.countIndex.Compact(revision)
 	}
@@ -162,6 +161,16 @@ func (b *backend) getCompactBorders() [][]byte {
 		compactBorders = append(compactBorders, b.coder.EncodeObjectKey([]byte(key), 0))
 		compactBorders = append(compactBorders, b.coder.EncodeObjectKey(PrefixEnd([]byte(key)), 0))
 	}
+	// The etcd-metadata keyspace sorts before the user prefix (leading \x00) and
+	// was therefore never GC'd, growing without bound (#6/#15). Approach A stops
+	// new writes to it, but legacy per-revision entries remain; include it here
+	// so compaction retires superseded metadata versions. It has no revision
+	// keys or tombstones, so the scanner just keeps the latest version <=
+	// compactRev per key and deletes older ones (matching the object it belongs
+	// to, which is likewise compacted or kept).
+	compactBorders = append(compactBorders,
+		b.coder.EncodeObjectKey(etcdMetadataPrefix, 0),
+		b.coder.EncodeObjectKey(PrefixEnd(etcdMetadataPrefix), 0))
 	// sort to make sure compact in right range
 	sort.Slice(compactBorders, func(i, j int) bool {
 		return bytes.Compare(compactBorders[i], compactBorders[j]) < 0

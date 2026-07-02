@@ -86,7 +86,7 @@ func (r *scanner) Range(ctx context.Context, start []byte, end []byte, revision 
 	}
 
 	receiver := &commonResultReceiver{}
-	_, err := r.scan(ctx, start, end, revision, false, receiver)
+	_, err := r.scan(ctx, start, end, revision, false, 0, receiver)
 	if err != nil {
 		return nil, err
 	}
@@ -122,7 +122,7 @@ func (r *scanner) rangeWithLimit(ctx context.Context, start []byte, end []byte, 
 func (r *scanner) Count(ctx context.Context, start []byte, end []byte, revision uint64) (int, error) {
 	// ban the calling of Count right now
 	receiver := &emptyResultReceiver{}
-	return r.scan(ctx, start, end, revision, false, receiver)
+	return r.scan(ctx, start, end, revision, false, 0, receiver)
 }
 
 // RangeStream implements Scanner interface
@@ -133,7 +133,7 @@ func (r *scanner) RangeStream(ctx context.Context, start []byte, end []byte, rev
 
 	go func() {
 		defer close(stream)
-		_, err := r.scan(ctx, start, end, revision, false, receiver)
+		_, err := r.scan(ctx, start, end, revision, false, 0, receiver)
 		stream <- getListStreamEnd(revision, err)
 		if err != nil {
 			klog.Errorf("backend list stream with revision %d failed %v, start key is %s, end key is %s", revision, err, start, end)
@@ -192,9 +192,17 @@ func getListStreamEnd(revision uint64, err error) *proto.StreamRangeResponse {
 }
 
 // Compact implements Scanner interface
-func (r *scanner) Compact(ctx context.Context, start []byte, end []byte, revision uint64) {
+func (r *scanner) Compact(ctx context.Context, borders [][]byte, revision uint64) {
 	r.logCompactHistory(revision)
-	_, _ = r.scan(ctx, start, end, revision, true, &emptyResultReceiver{})
+	// Compute the events-TTL timeout revision once for the whole cycle. It drains
+	// the shared compact-history queue, so computing it per-border would let the
+	// first border consume the old records and leave later borders (e.g. the user
+	// prefix where /events/ keys live) with timeoutRevision=0, disabling event GC.
+	// getTimeoutRevision returns 0 when the storage engine supports native TTL.
+	timeoutRevision := r.getTimeoutRevision()
+	for i := 0; i+1 < len(borders); i += 2 {
+		_, _ = r.scan(ctx, borders[i], borders[i+1], revision, true, timeoutRevision, &emptyResultReceiver{})
+	}
 }
 
 // adjustPartitionsBorders adjust the borders of partitions to avoid object keys generated from an internal key
@@ -224,7 +232,7 @@ func (r *scanner) adjustPartitionsBorders(ps []storage.Partition) (ret []storage
 	return ps
 }
 
-func (r *scanner) scan(ctx context.Context, start []byte, end []byte, revision uint64, compact bool, receiver resultReceiver) (int, error) {
+func (r *scanner) scan(ctx context.Context, start []byte, end []byte, revision uint64, compact bool, timeoutRevision uint64, receiver resultReceiver) (int, error) {
 	store := r.store
 	if exclusiveKvStorage, ok := r.store.(storage.ExclusiveKvStorage); ok && compact {
 		klog.InfoS("compact with exclusive kv storage", "start", string(start), "end", string(end), "rev", revision)
@@ -248,11 +256,6 @@ func (r *scanner) scan(ctx context.Context, start []byte, end []byte, revision u
 	}
 
 	partitions = r.adjustPartitionsBorders(partitions)
-
-	timeoutRevision := uint64(0)
-	if compact {
-		timeoutRevision = r.getTimeoutRevision()
-	}
 
 	var wg sync.WaitGroup
 	errList := make([]error, len(partitions))

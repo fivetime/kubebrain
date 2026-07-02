@@ -32,6 +32,12 @@ type Scanner interface {
 	// Count run scan in partitions concurrently and returns the count of user key
 	Count(ctx context.Context, start []byte, end []byte, revision uint64) (int, error)
 
-	// Compact will gc the kvs which are too old
-	Compact(ctx context.Context, start []byte, end []byte, revision uint64)
+	// Compact will gc the kvs which are too old across all the given [start,end)
+	// border pairs. Borders are passed together (rather than one Compact call per
+	// pair) so the events-TTL timeout revision, which is derived by draining the
+	// shared compact-history queue, is computed once per cycle and applied to
+	// every border. Computing it per-pair would let the first pair consume the old
+	// history records, leaving later pairs with timeoutRevision=0 and silently
+	// disabling event expiry.
+	Compact(ctx context.Context, borders [][]byte, revision uint64)
 }
