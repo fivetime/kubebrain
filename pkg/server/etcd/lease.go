@@ -280,7 +280,13 @@ func (s *RPCServer) refreshLease(id int64) (int64, error) {
 	s.scheduleLeaseLocked(st)
 	ttl := st.ttl
 	s.leaseMu.Unlock()
-	return ttl, s.persistLeaseState(context.Background(), st)
+	// Mirror etcd lessor.Renew -> l.refresh(0): a keepalive only bumps the
+	// in-memory deadline and reschedules the expiry timer. It must NOT persist,
+	// otherwise every keepalive tick mints a fresh MVCC version, a watch event,
+	// and a TSO revision. Durable lease state (grant identity and attached keys)
+	// is still persisted on grant/bind/unbind; on restart or leader-change the
+	// deadline is reconstructed as now+grantedTTL in applyLeaseRecords.
+	return ttl, nil
 }
 
 func (s *RPCServer) revokeLease(ctx context.Context, id int64) error {
@@ -456,9 +462,16 @@ func (s *RPCServer) applyLeaseRecords(records []leaseRecord) {
 	s.keyLeaseIndex = make(map[string]int64)
 	for _, record := range records {
 		st := &leaseState{
-			id:       record.ID,
-			ttl:      record.TTL,
-			deadline: time.Unix(0, record.DeadlineUnixNano),
+			id:  record.ID,
+			ttl: record.TTL,
+			// Mirror etcd initAndRecover + Promote->refresh: recover the deadline
+			// as now+grantedTTL rather than the stale persisted absolute deadline.
+			// Because keepalive no longer persists the deadline, the persisted
+			// DeadlineUnixNano is only ever the grant-time value; trusting it would
+			// immediately expire a lease that was kept alive well past grant time
+			// (regressing #14/#18). A fresh full-TTL window is the safe, etcd-matching
+			// recovery.
+			deadline: now.Add(time.Duration(record.TTL) * time.Second),
 			keys:     make(map[string]struct{}, len(record.Keys)),
 		}
 		for _, key := range record.Keys {
