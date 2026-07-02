@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"time"
 
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
 	"k8s.io/klog/v2"
@@ -39,6 +40,10 @@ const (
 	historyCapacity      = 200000
 	watchersChanCapacity = 100000
 	eventBatchSize       = 300
+	// idleWaitTimeout bounds how long the event collector blocks waiting for a
+	// write signal before re-checking the ring buffer. It is only a safety net
+	// against a missed wake-up; the common case is an immediate writeSignal.
+	idleWaitTimeout = 10 * time.Millisecond
 )
 
 type Backend interface {
@@ -126,6 +131,11 @@ type backend struct {
 
 	// channel to pass etcd watch event to watchers
 	watchChan chan []*proto.Event
+	// writeSignal wakes collectStorageWriteEvents when a new event is appended
+	// to the ring buffer, so the collector can block while idle instead of
+	// busy-spinning a full core. Buffered(1); senders use a non-blocking send so
+	// signals coalesce and the write path never blocks.
+	writeSignal chan struct{}
 	// hold watchers
 	watcherHub *WatcherHub
 
@@ -167,6 +177,7 @@ func NewBackend(kv storage.KvStorage, config Config, metricCli metrics.Metrics) 
 		watchEventsRingBuffer: newWatchEventSlots(watchersChanCapacity),
 		watchCache:            NewRing(config.WatchCacheSize),
 		watchChan:             make(chan []*proto.Event, watchersChanCapacity),
+		writeSignal:           make(chan struct{}, 1),
 		watcherHub: &WatcherHub{
 			subs:      make(map[chan []*proto.Event]struct{}),
 			metricCli: metricCli,
@@ -266,7 +277,15 @@ func (b *backend) collectStorageWriteEvents() {
 			watchEvents := b.watchEventsRingBuffer[idx].take(nextRevision)
 			if len(watchEvents) == 0 {
 				if len(events) == 0 {
-					// no event in inside loop, continue inside loop
+					// Nothing to collect yet: block until a writer signals a new
+					// event (or a short timeout as a safety net against a missed
+					// wake-up) instead of busy-spinning a full core. This is the
+					// common idle state — on a leader between writes, and always
+					// on followers where revisions advance via SetCurrentRevision.
+					select {
+					case <-b.writeSignal:
+					case <-time.After(idleWaitTimeout):
+					}
 					continue
 				}
 				// break inside loop for sending existing  events, then read events in a new loop
@@ -309,6 +328,15 @@ func (b *backend) collectStorageWriteEvents() {
 		if len(events) > 0 {
 			b.watchChan <- events
 		}
+	}
+}
+
+// signalWrite wakes the event collector without ever blocking the caller. The
+// buffered(1) channel coalesces bursts of writes into a single pending wake-up.
+func (b *backend) signalWrite() {
+	select {
+	case b.writeSignal <- struct{}{}:
+	default:
 	}
 }
 

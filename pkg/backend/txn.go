@@ -480,6 +480,7 @@ func (b *backend) notify(ctx context.Context,
 	}
 	b.watchEventsRingBuffer[int64(revision)%watchersChanCapacity].append(watchEvent)
 	b.metricCli.EmitGauge("watch.revision.lag", watchEvent.Revision-b.GetCurrentRevision())
+	b.signalWrite()
 }
 
 func (b *backend) notifyBatch(events []*common.WatchEvent) {
@@ -497,6 +498,7 @@ func (b *backend) notifyBatch(events []*common.WatchEvent) {
 	}
 	b.watchEventsRingBuffer[int64(revision)%watchersChanCapacity].appendAll(events)
 	b.metricCli.EmitGauge("watch.revision.lag", revision-b.GetCurrentRevision())
+	b.signalWrite()
 }
 
 func (b *backend) handleWatchEventOverflow(revision uint64) {
@@ -509,4 +511,5 @@ func (b *backend) handleWatchEventOverflow(revision uint64) {
 	b.watchCache.Reset()
 	b.SetCurrentRevision(revision)
 	b.watcherHub.CloseAll()
+	b.signalWrite()
 }
