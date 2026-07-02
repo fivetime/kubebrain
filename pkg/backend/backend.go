@@ -123,6 +123,11 @@ type backend struct {
 	config Config
 
 	watchEventsRingBuffer []*watchEventSlot
+	// notifyMu serializes watch-overflow resets against event appends: appends
+	// (notify/notifyBatch) hold it for read, the overflow reset holds it for
+	// write so the wipe + revision jump + watcher close is atomic w.r.t.
+	// concurrent appends.
+	notifyMu sync.RWMutex
 
 	// maximum size of history watch event window.
 	capacity int

@@ -472,14 +472,27 @@ func (b *backend) notify(ctx context.Context,
 		Value:        val,
 		Err:          err,
 	}
-	// buffer full
-	// TODO dynamic size
-	if revision-b.GetCurrentRevision() >= watchersChanCapacity {
+	b.notifyMu.RLock()
+	cur := b.GetCurrentRevision()
+	switch {
+	case revision <= cur:
+		// Stale: the pipeline already advanced past this revision (e.g. after an
+		// overflow reset jumped the current revision forward). Drop it — appending
+		// would leave a poison slot the collector can never consume in order, and
+		// computing the gap below would underflow (uint64) and wrongly re-trigger
+		// overflow.
+		b.notifyMu.RUnlock()
+		b.metricCli.EmitCounter("watch.event.buffer.stale_drop", 1)
+		return
+	case revision-cur >= watchersChanCapacity:
+		// buffer full: the collector is too far behind for the ring to bridge.
+		b.notifyMu.RUnlock()
 		b.handleWatchEventOverflow(revision)
 		return
 	}
 	b.watchEventsRingBuffer[int64(revision)%watchersChanCapacity].append(watchEvent)
-	b.metricCli.EmitGauge("watch.revision.lag", watchEvent.Revision-b.GetCurrentRevision())
+	b.metricCli.EmitGauge("watch.revision.lag", revision-cur)
+	b.notifyMu.RUnlock()
 	b.signalWrite()
 }
 
@@ -492,24 +505,53 @@ func (b *backend) notifyBatch(events []*common.WatchEvent) {
 		b.metricCli.EmitCounter("watch.event.buffer.invalid", 1)
 		return
 	}
-	if revision-b.GetCurrentRevision() >= watchersChanCapacity {
+	b.notifyMu.RLock()
+	cur := b.GetCurrentRevision()
+	switch {
+	case revision <= cur:
+		b.notifyMu.RUnlock()
+		b.metricCli.EmitCounter("watch.event.buffer.stale_drop", 1)
+		return
+	case revision-cur >= watchersChanCapacity:
+		b.notifyMu.RUnlock()
 		b.handleWatchEventOverflow(revision)
 		return
 	}
 	b.watchEventsRingBuffer[int64(revision)%watchersChanCapacity].appendAll(events)
-	b.metricCli.EmitGauge("watch.revision.lag", revision-b.GetCurrentRevision())
+	b.metricCli.EmitGauge("watch.revision.lag", revision-cur)
+	b.notifyMu.RUnlock()
 	b.signalWrite()
 }
 
 func (b *backend) handleWatchEventOverflow(revision uint64) {
+	// Exclusive against appends so the wipe + revision jump + watcher close is
+	// atomic: no writer can append into a slot mid-reset (which would either be
+	// wiped and strand the collector, or survive as a poison slot).
+	b.notifyMu.Lock()
+	defer b.notifyMu.Unlock()
+
 	currentRevision := b.GetCurrentRevision()
+	// Recheck under the lock — a concurrent overflow may have already reset.
+	if revision <= currentRevision || revision-currentRevision < watchersChanCapacity {
+		return
+	}
 	b.metricCli.EmitCounter("watch.event.buffer.full", 1)
-	klog.ErrorS(nil, "watch event buffer full, resetting watch state", "currentRevision", currentRevision, "revision", revision, "capacity", watchersChanCapacity)
+
+	// Jump to the highest dealt revision, not the triggering revision: every
+	// in-flight event carries a revision <= Dealt(), so after wiping all slots
+	// nothing appended-but-needed is lost, and the collector recovers
+	// contiguously from the next write (Dealt()+1). Appends are blocked here, so
+	// no revision above the target can be sitting in a slot.
+	target := b.tso.Dealt()
+	if target < revision {
+		target = revision
+	}
+	klog.ErrorS(nil, "watch event buffer full, resetting watch state", "currentRevision", currentRevision, "revision", revision, "target", target, "capacity", watchersChanCapacity)
 	for i := range b.watchEventsRingBuffer {
 		b.watchEventsRingBuffer[i].reset()
 	}
 	b.watchCache.Reset()
-	b.SetCurrentRevision(revision)
+	b.SetCurrentRevision(target)
 	b.watcherHub.CloseAll()
 	b.signalWrite()
 }
