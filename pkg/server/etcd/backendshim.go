@@ -25,6 +25,7 @@ import (
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"golang.org/x/sync/singleflight"
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
 	"k8s.io/klog/v2"
 
@@ -98,12 +99,21 @@ type backendShim struct {
 	backend backend.Backend
 	// emit metrics
 	metricCli metrics.Metrics
+
+	// (key,revision)-keyed caches coalescing the immutable metadata / previous-kv
+	// lookups that watch fanout would otherwise repeat once per watcher stream.
+	metaCache  *revKeyCache
+	metaFlight singleflight.Group
+	prevCache  *revKeyCache
+	prevFlight singleflight.Group
 }
 
 func NewBackendShim(backend backend.Backend, metricCli metrics.Metrics) BackendShim {
 	return &backendShim{
 		backend:   backend,
 		metricCli: metricCli,
+		metaCache: newRevKeyCache(revKeyCacheCap),
+		prevCache: newRevKeyCache(revKeyCacheCap),
 	}
 }
 
@@ -816,7 +826,7 @@ func (b *backendShim) watchEventToEtcdEvent(ctx context.Context, e *proto.Event)
 	case proto.Event_PUT:
 		kv := b.kvToEtcdKv(ctx, e.Kv)
 		kv.ModRevision = int64(revision)
-		prevKv := b.previousEtcdKv(ctx, e.Kv.Key, revision)
+		prevKv := b.cachedPreviousEtcdKv(e.Kv.Key, revision)
 		if prevKv == nil {
 			kv.CreateRevision = kv.ModRevision
 			return &mvccpb.Event{
@@ -924,7 +934,7 @@ func (b *backendShim) kvToEtcdKv(ctx context.Context, kv *proto.KeyValue) *mvccp
 	if kv == nil {
 		return nil
 	}
-	meta, err := b.backend.GetEtcdMetadata(ctx, kv.Key, kv.Revision)
+	meta, err := b.cachedMetadata(ctx, kv.Key, kv.Revision)
 	if err != nil {
 		klog.V(4).InfoS("failed to read etcd metadata", "key", kv.Key, "revision", kv.Revision, "err", err)
 		meta.CreateRevision = kv.Revision
