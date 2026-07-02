@@ -48,14 +48,14 @@ jobs:
 
       - name: Install kind
         run: |
-          curl -fsSL -o /usr/local/bin/kind https://kind.sigs.k8s.io/dl/v0.32.0/kind-linux-amd64
-          chmod +x /usr/local/bin/kind
+          curl -fsSL -o "$RUNNER_TEMP/kind" https://kind.sigs.k8s.io/dl/v0.32.0/kind-linux-amd64
+          sudo install -m 0755 "$RUNNER_TEMP/kind" /usr/local/bin/kind
           kind version
 
       - name: Install kubectl
         run: |
-          curl -fsSL -o /usr/local/bin/kubectl "https://dl.k8s.io/release/v1.36.1/bin/linux/amd64/kubectl"
-          chmod +x /usr/local/bin/kubectl
+          curl -fsSL -o "$RUNNER_TEMP/kubectl" "https://dl.k8s.io/release/v1.36.1/bin/linux/amd64/kubectl"
+          sudo install -m 0755 "$RUNNER_TEMP/kubectl" /usr/local/bin/kubectl
           kubectl version --client=true
 
       - name: Install helm
