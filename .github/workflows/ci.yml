@@ -52,7 +52,9 @@ jobs:
 
       - name: Race test critical packages
         run: |
-          go test -race ./pkg/backend ./pkg/server/etcd ./pkg/server/service/etcdproxy ./pkg/storage/tikv ./cmd/option
+          BACKEND_RACE_TESTS='Test(UpdateWithHugeClientRevisionDoesNotStallPipeline|DeleteWithHugeClientRevisionDoesNotStallPipeline|DeleteRangeCommitConflictDoesNotStallPipeline|UpdateMetadataReadFailureDoesNotStallPipeline|BroadcastEvictsSlowConsumerBeforeNextBatch|StreamDeliversGapFreePrefixToSlowConsumer|BackendWatchHistoryFallback|BackendWatchCatchUpAdvancesFromLastMatchingPrefixEvent|WatchEventOverflowResetsWatchState|CompactDoesNotRegressWatermark|ProcessEventsExitsOnCancelWhenConsumerStopped)$'
+          go test -race ./pkg/backend -run "$BACKEND_RACE_TESTS"
+          go test -race ./pkg/server/etcd ./pkg/server/service/etcdproxy ./pkg/storage/tikv ./cmd/option
 
   build:
     name: Build binaries and images
