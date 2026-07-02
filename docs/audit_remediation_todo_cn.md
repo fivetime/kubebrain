@@ -95,8 +95,8 @@
 
 ### P3 — etcd 语义正确性
 
-- [ ] **#4** [high] Generic txn path (executeGenericTxn) is not atomic: compares are plain reads and ops are independent writes  
-  `pkg/server/etcd/kv.go:696`
+- [~] **#4** [high] Generic txn path (executeGenericTxn) is not atomic: compares are plain reads and ops are independent writes  
+  `pkg/server/etcd/kv.go:709` — **设计完成**，见 `docs/txn_atomicity_4_cn.md`。快路径（apiserver 用）本就原子；通用路径缺陷：compare 非隔离、每 op 各自 revision、部分应用。修法 = 新增 `backend.TxnApply` 单 revision 原子应用（仿 DeleteRange），对不支持形状回退旧顺序路径（不回归）。**实现暂缓待确认档位**：Tier 1（写 op 单 revision 原子，推荐）/ Tier 2（加 compare OCC 隔离）。缓因：正确实现需在一个 batch 内复刻 revision-key 字节编码 + create/update/delete/tombstone-recreate 的 CAS 语义（live=8B、deleted=9B+flag），失败模式是 **MVCC 数据损坏**；且 apiserver 不走此路径。属关键写路径高风险改动，宜在有确认下逐步做 + 穷举并发/事件顺序/compat 测试，不宜无监督一次性上线。
 - [ ] **#52** [low] Watch PUT events fall back to CreateRevision=ModRevision when prev-version lookup fails — updates misreported as creates and PrevKv dropped  
   `pkg/server/etcd/backendshim.go:750`
 - [ ] **#53** [low] Range at Revision==1888 (GetPartitionMagic) is hijacked to return partition metadata instead of data  
