@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -90,12 +91,38 @@ func TestReadAmpBaseline(t *testing.T) {
 		_, _ = cli.Delete(c, pfx, clientv3.WithPrefix())
 	})
 
-	// Populate N objects.
+	// Populate N objects concurrently (sequential is too slow at large N).
 	t.Logf("populating %d objects (~1KB) under %s ...", n, pfx)
 	popStart := time.Now()
-	for i := 0; i < n; i++ {
-		if _, err := cli.Put(ctx, fmt.Sprintf("%s/obj-%06d", pfx, i), value); err != nil {
-			t.Fatalf("put %d: %v", i, err)
+	{
+		const workers = 24
+		var wg sync.WaitGroup
+		errCh := make(chan error, workers)
+		for w := 0; w < workers; w++ {
+			wg.Add(1)
+			go func(w int) {
+				defer wg.Done()
+				pc, perr := clientv3.New(clientv3.Config{Endpoints: []string{compatEndpoint()}, DialTimeout: 5 * time.Second})
+				if perr != nil {
+					errCh <- perr
+					return
+				}
+				defer pc.Close()
+				for i := w; i < n; i += workers {
+					c, cc := context.WithTimeout(context.Background(), 15*time.Second)
+					_, err := pc.Put(c, fmt.Sprintf("%s/obj-%06d", pfx, i), value)
+					cc()
+					if err != nil {
+						errCh <- err
+						return
+					}
+				}
+			}(w)
+		}
+		wg.Wait()
+		close(errCh)
+		for err := range errCh {
+			t.Fatalf("populate: %v", err)
 		}
 	}
 	t.Logf("populated in %v", time.Since(popStart))

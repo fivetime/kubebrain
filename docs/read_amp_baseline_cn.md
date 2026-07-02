@@ -61,3 +61,25 @@ harness：`hack/etcd-client-compat/read_amp_bench_test.go`（`TestReadAmpBaselin
 
 已解决 **#10 / #28**，并补齐 **#7 的 watch 半**（#7 完整解决）。剩余 0.25 是"每事件一次"的共享成本。
 **仍未解决**：#5/#27（精确 Count 全量扫描 O(N²)，此 N 未显现，需更大 N 复测）；#29（CountOnly 全量拉值）；#30（watch 历史回放惊群）；#69（扇出无前缀路由）；以及 A（写时内联元数据+迁移，可一并干掉 #6/#15 并把上面各项的常数成本进一步压到 0）。
+
+## #5/#27 复现（N=20k）与结论
+
+放大到 N=20000（page=500，40 页）复现分页 Count 的 O(N²)：
+
+| 操作 | N=2000 | N=20000 | 增长（10× N）|
+|---|---|---|---|
+| 全量分页 LIST | 293ms | **10.5s** | ~36× |
+| 历史 LIST @rev | 306ms | **10.7s** | ~35× |
+| 单页 LIST（含1次 count 扫描） | 116ms | 433ms | ~3.7× |
+| CountOnly | 66ms | 350ms | ~5× |
+
+超线性坐实：`exactRangeCount` 对每页都全量扫 `[pageStart, end]` 算 Count（40 页 × O(N)），且流式读全部值。
+
+**结论（重要）**：apiserver 用 `Count` 判 `hasMore = len(Kvs) < Count`（分页终止）且要求**精确剩余计数**（末页 `len==Count`）。`TestRangeLimitCountReportsTotalMatches` 有意固定了"带 limit 返回精确总数/剩余数"的 etcd 语义。因此：
+- **无法**用 `More` 派生近似 Count 而不破坏该被测语义（试过，测试红）。
+- keys-only 计数**不可行**：删除用 tombstone 值标记，计数需读值判活/墓碑（除非把活性编码进 key）。
+- 所以**无索引时精确计数本质是 O(N)/页 = 分页 O(N²)**，无法外科手术式修复。
+
+**正确修法 = approach A 级重设计**：维护"活键计数索引"（写时增减 per-range 计数）或把活性/create_rev/version 内联进 key/value 使 keys-only 计数可行。建议与 A（元数据内联 + 迁移，同时干掉 #6/#15）**打包**做。或由用户决策：接受近似 RemainingItemCount（alpha/装饰性）换取分页 O(N)（需改 TestRangeLimitCountReportsTotalMatches）。#29（CountOnly 流式读值）同源。
+
+**本轮不改代码**（避免破坏被测的精确 count 兼容语义）；仅复现 + 记录。
