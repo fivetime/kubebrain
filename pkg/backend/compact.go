@@ -80,9 +80,18 @@ func (b *backend) safeCurrentRevision(ctx context.Context) (uint64, error) {
 }
 
 func (b *backend) compact(ctx context.Context, revision uint64) error {
-	err := b.setCompactRecord(ctx, revision)
+	advanced, err := b.setCompactRecord(ctx, revision)
 	if err != nil {
 		return err
+	}
+	if !advanced {
+		// revision <= the already-stored compact revision: this range has already
+		// been compacted at an equal-or-higher watermark. Skip the physical scan;
+		// proceeding would re-scan and (via the scanner's compact-key write)
+		// regress the monotonic compact watermark to a smaller revision, letting
+		// later range requests at already-compacted revisions read incomplete data.
+		klog.InfoS("compact skipped, revision already compacted", "revision", revision)
+		return nil
 	}
 
 	borders := b.getCompactBorders()
@@ -94,21 +103,25 @@ func (b *backend) compact(ctx context.Context, revision uint64) error {
 	return nil
 }
 
-func (b *backend) setCompactRecord(ctx context.Context, revision uint64) error {
+// setCompactRecord raises the persisted compact revision to revision. It
+// returns advanced=false (without error) when revision is not greater than the
+// already-stored compact revision, so the caller can skip a redundant compaction
+// that would otherwise regress the watermark.
+func (b *backend) setCompactRecord(ctx context.Context, revision uint64) (advanced bool, err error) {
 	// get stored compact revision
 	val, err := b.kv.Get(ctx, getCompactKey(b.config.Prefix))
 	if err != nil && err != storage.ErrKeyNotFound {
 		klog.ErrorS(err, "get compact revision failed")
-		return err
+		return false, err
 	}
 	// stored compact revision is not nil
 	if len(val) > 0 {
 		// compare stored compact revision with current compact revision
 		compactRevision := binary.BigEndian.Uint64(val)
-		if compactRevision > revision {
-			klog.InfoS("compact revision too large", "compactRev", compactRevision, "currentRev", revision)
-			// revision has already been compacted
-			return nil
+		if compactRevision >= revision {
+			klog.InfoS("compact revision not greater than stored, skip", "compactRev", compactRevision, "currentRev", revision)
+			// revision has already been compacted; must not lower the watermark
+			return false, nil
 		}
 	}
 	revisionBytes := make([]byte, 8)
@@ -126,9 +139,9 @@ func (b *backend) setCompactRecord(ctx context.Context, revision uint64) error {
 	if err != nil {
 		klog.ErrorS(err, "set compact key failed", "revision", revision)
 		b.metricCli.EmitCounter("backend.set_compact_revision.err", 1)
-		return err
+		return false, err
 	}
-	return nil
+	return true, nil
 }
 
 func (b *backend) getCompactBorders() [][]byte {

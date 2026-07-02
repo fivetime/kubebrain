@@ -598,13 +598,34 @@ func (w *worker) compactIfExpired(iter storage.Iter, rawKey []byte, revision uin
 func (r *scanner) checkCompactRace(ctx context.Context, revision uint64, compact bool) error {
 
 	if compact {
-		// compact operation, just try to set the compact revision
-		// if it's error, try next time
+		// compact operation: raise the compact revision, but NEVER lower it. The
+		// compact key marks the revision below which data has been physically
+		// removed and must be monotonic; an unconditional Put here could regress
+		// it (e.g. a stale/retried compact at a smaller revision), after which
+		// range requests at already-compacted revisions would wrongly pass the
+		// guard below and return incomplete data.
+		val, err := r.store.Get(ctx, r.config.CompactKey)
+		if err != nil && err != storage.ErrKeyNotFound {
+			return err
+		}
+		if len(val) >= 8 && binary.BigEndian.Uint64(val) >= revision {
+			// already compacted at an equal-or-higher revision
+			return nil
+		}
 		bs := make([]byte, 8)
 		binary.BigEndian.PutUint64(bs, revision)
 		batch := r.store.BeginBatchWrite()
-		batch.Put(r.config.CompactKey, bs, 0)
-		return batch.Commit(ctx)
+		if len(val) > 0 {
+			batch.CAS(r.config.CompactKey, bs, val, 0)
+		} else {
+			batch.PutIfNotExist(r.config.CompactKey, bs, 0)
+		}
+		err = batch.Commit(ctx)
+		if errors.Is(err, storage.ErrCASFailed) {
+			// a concurrent compactor advanced it; the watermark did not regress
+			return nil
+		}
+		return err
 	}
 
 	// if scan is triggered by range and range stream, check compact race
