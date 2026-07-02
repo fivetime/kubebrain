@@ -3,7 +3,7 @@
 > 来源：Fable 5 多智能体审核（73 条已确认问题）。本文件是**持久化进度清单**，做一个勾一个（`[x]`），抗会话压缩遗忘。
 > 编号 `#N` = 审核确认清单索引；`file:line` 为大致位置。测试遵循 `docs/test_strategy_cn.md`：**真实消费端黑盒为主，内部单测只锁黑盒够不着的精确 bug**。
 
-进度：**已修 24 / 73** — Critical 3/3 ✓，High 17/32，Medium 2/17，Low 2/21。
+进度：**已修 27 / 73** — Critical 3/3 ✓，High 20/32，Medium 2/17，Low 2/21。（+ #5/#27/#29 A-index e885b8d）
 
 ## 已完成（PR #1: fivetime/kubebrain#1 + 81d36be）
 
@@ -61,11 +61,11 @@
   `pkg/server/etcd/backendshim.go:490` — c056438
 - [x] **#7** [high] Per-KV etcd-metadata and prev-KV storage lookups cause serial read amplification on every list page and watch event  
   `pkg/server/etcd/backendshim.go:854` — list-page half c056438; watch half 3ba2cc1
-- [ ] **#5** [high] Paginated LIST with more=true re-lists the entire range (full values) just to compute Count when Revision != 0  
+- [x] **#5** [high] Paginated LIST with more=true re-lists the entire range (full values) just to compute Count when Revision != 0  
   `pkg/server/etcd/backendshim.go:505`
-- [ ] **#27** [high] Paginated list recomputes exact Count with a full unlimited range scan on every page  
+- [x] **#27** [high] Paginated list recomputes exact Count with a full unlimited range scan on every page  
   `pkg/server/etcd/backendshim.go:483`
-- [ ] **#29** [high] Count executes a full parallel scan streaming all values just to count keys  
+- [x] **#29** [high] Count executes a full parallel scan streaming all values just to count keys  
   `pkg/backend/scanner/scanner.go:122`
 - [x] **#10** [high] Watch event translation performs synchronous storage reads per event per watcher (metadata + prev-kv with 200ms retry budget)  
   `pkg/server/etcd/backendshim.go:808` — 3ba2cc1 (coalescing cache; 3.15 -> 0.25 iters/(write*watcher))

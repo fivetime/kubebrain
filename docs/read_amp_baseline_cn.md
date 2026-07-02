@@ -96,3 +96,16 @@ create_revision/version 内联进 value 信封（写时），读时 `kvToEtcdKv`
 | Watch 扇出(20×100) | 6300 / 3.15 | 500 / 0.25 | **400 / 0.20** |
 
 LIST 元数据查询彻底归零（仅剩范围扫描自身）；新写不再产生 etcdmeta（#6/#15 增长停止）。兼容套件（value/metadata 往返）+ 混存回退全绿。**#3/#7 完整根治。** 剩余：#5/#27/#29（count，需 A-index）、live-PUT watch 事件的每事件一次共享读（可由 A-core-2 让 collector 给 PUT 事件也包信封而归零）、legacy etcdmeta compaction 回收、A-index。
+
+## 改动后（A-index：内存态计数索引，commit e885b8d，--enable-count-index）
+
+leader 内存维护带版本 key 索引（collector 有序维护 + 选主重建，本次 dev 重建 35803 keys/1.34s），Count/分页 count 走索引 O(range)、不扫存储：
+
+| 操作 | 基线 | A-index (N=20k) | 提升 |
+|---|---|---|---|
+| 全量分页 LIST(20k) | 10.5s / 176 iters | **1.44s / 40** | ~7.3× |
+| 历史 LIST(20k) | 10.7s | **1.33s** | ~8× |
+| CountOnly(20k) | 350ms / 1 | **6.6ms / 0 iters** | ~53× |
+| 单页 LIST(500) | 433ms | **50ms / 1** | ~8.6× |
+
+**#5/#27/#29 根治**：精确 count 走内存索引（`[baseRev,readyRev]` 内 O(range)，零存储读），分页不再 O(N²)。正确性：索引 count == 扫描 count（单测跨增删改+固定历史 rev）+ 兼容套件（精确 count 断言）全绿。fallback 兜底：rev 超出 [baseRev,readyRev] 或索引溢出 → 回退扫描。剩余：A-core-2（watch live-PUT 信封）、legacy etcdmeta compaction 回收、#30/#69、增广 rank(O(log N)) 优化。
