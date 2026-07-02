@@ -3,7 +3,7 @@
 > 来源：Fable 5 多智能体审核（73 条已确认问题）。本文件是**持久化进度清单**，做一个勾一个（`[x]`），抗会话压缩遗忘。
 > 编号 `#N` = 审核确认清单索引；`file:line` 为大致位置。测试遵循 `docs/test_strategy_cn.md`：**真实消费端黑盒为主，内部单测只锁黑盒够不着的精确 bug**。
 
-进度：**已修 18 / 73** — Critical 3/3 ✓，High 11/32，Medium 2/17，Low 2/21。
+进度：**已修 20 / 73** — Critical 3/3 ✓，High 13/32，Medium 2/17，Low 2/21。
 
 ## 已完成（PR #1: fivetime/kubebrain#1 + 81d36be）
 
@@ -50,10 +50,10 @@
 
 ### P0 — Watch/写 正确性遗漏（最先做，属之前跳过的正确性缺陷）
 
-- [ ] **#9** [high] handleWatchEventOverflow reset races with concurrent notify appends, leaving poisoned slots that wedge event collection  
-  `pkg/backend/txn.go:469`
-- [ ] **#21** [high] Watch-overflow reset races with in-flight notify: unsigned wraparound re-triggers overflow and moves the committed revision backwards  
-  `pkg/backend/txn.go:444`
+- [x] **#9** [high] handleWatchEventOverflow reset races with concurrent notify appends, leaving poisoned slots that wedge event collection  
+  `pkg/backend/txn.go:469` — 693c264
+- [x] **#21** [high] Watch-overflow reset races with in-flight notify: unsigned wraparound re-triggers overflow and moves the committed revision backwards  
+  `pkg/backend/txn.go:444` — 693c264
 
 ### P1 — 读放大（项目核心「规模超越 etcd」；大重构，建议独立 PR + load/soak 压测）
 
