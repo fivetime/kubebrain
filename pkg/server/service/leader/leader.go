@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"k8s.io/client-go/tools/leaderelection"
@@ -63,8 +64,10 @@ type leaderElection struct {
 	onStartedLeading func(context.Context)
 	// onStoppedLeading is called when a LeaderElector client stops leading
 	onStoppedLeading func()
-	// indicates whether this instance is leader
-	leader bool
+	// leader indicates whether this instance is leader (1 = leader). It is written
+	// by the leader-election callbacks and read by IsLeader() from every RPC
+	// goroutine, so it is accessed atomically (#60/#68).
+	leader int32
 }
 
 // NewLeaderElection returns a LeaderElection based on resourcelock of backend.Backend
@@ -103,13 +106,13 @@ func (l *leaderElection) Campaign(ctx context.Context) {
 				l.metricCli.EmitGauge("leader.election.initial.version", version, metrics.Tag("addr", leaderAddr))
 				// TODO push this logic to on start leading call back
 				l.backend.SetCurrentRevision(version)
-				l.leader = true
+				atomic.StoreInt32(&l.leader, 1)
 				l.onStartedLeading(ctx)
 			},
 			OnStoppedLeading: func() {
 				// we can do cleanup here, or after the RunOrDie method
 				// returns
-				l.leader = false
+				atomic.StoreInt32(&l.leader, 0)
 				l.onStoppedLeading()
 				leaderAddr := l.GetLeaderInfo()
 				l.metricCli.EmitCounter("leader.election.lost", 1, metrics.Tag("addr", leaderAddr))
@@ -127,7 +130,7 @@ func (l *leaderElection) Campaign(ctx context.Context) {
 
 // IsLeader implements LeaderElection interface
 func (l *leaderElection) IsLeader() bool {
-	return l.leader
+	return atomic.LoadInt32(&l.leader) == 1
 }
 
 // GetLeaderInfo implements LeaderElection interface
