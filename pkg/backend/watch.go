@@ -199,9 +199,15 @@ func (b *backend) historyWatchEvents(ctx context.Context, prefix string, fromRev
 				event.Kv.Revision = rev
 			}
 		} else {
-			meta, err := b.GetEtcdMetadata(ctx, key, rev)
-			if err != nil {
-				return nil, err
+			// Prefer the metadata inlined in the value we already read (approach
+			// A); fall back to a lookup for legacy un-enveloped values.
+			meta, _, ok := decodeValueWithMeta(val)
+			if !ok {
+				var err error
+				meta, err = b.GetEtcdMetadata(ctx, key, rev)
+				if err != nil {
+					return nil, err
+				}
 			}
 			if meta.CreateRevision == rev && meta.Version == 1 {
 				event.Type = proto.Event_CREATE

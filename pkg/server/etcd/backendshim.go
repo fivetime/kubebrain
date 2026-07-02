@@ -508,49 +508,13 @@ func (b *backendShim) List(ctx context.Context, r *etcdserverpb.RangeRequest) (*
 		resp.Count = count
 	}
 
-	// Fetch create_revision/version for the whole page in one range scan instead
-	// of a storage round-trip per key (the dominant read-amplification cost).
-	keys := make([][]byte, 0, len(response.Kvs))
+	// create_revision/version is inlined in each stored value (approach A), so
+	// per-kv conversion needs no extra storage read; legacy values fall back to
+	// the etcdmeta lookup inside kvToEtcdKv.
 	for _, kv := range response.Kvs {
-		if kv != nil {
-			keys = append(keys, kv.Key)
-		}
-	}
-	metaByKey, metaErr := b.backend.GetEtcdMetadataBatch(ctx, keys, response.Header.Revision)
-	if metaErr != nil {
-		// fall back to per-key lookups so a batch failure never drops results
-		klog.V(4).InfoS("batch metadata failed, falling back to per-key", "err", metaErr)
-		for _, kv := range response.Kvs {
-			resp.Kvs = append(resp.Kvs, b.kvToEtcdKv(ctx, kv))
-		}
-		return applyRangeOptions(resp, r), nil
-	}
-	for _, kv := range response.Kvs {
-		meta, ok := metaByKey[string(kv.GetKey())]
-		resp.Kvs = append(resp.Kvs, kvWithEtcdMeta(kv, meta, ok))
+		resp.Kvs = append(resp.Kvs, b.kvToEtcdKv(ctx, kv))
 	}
 	return applyRangeOptions(resp, r), nil
-}
-
-// kvWithEtcdMeta builds an mvccpb KV from a backend KV plus already-fetched
-// metadata (ok=false means none was found — fall back like kvToEtcdKv does).
-func kvWithEtcdMeta(kv *proto.KeyValue, meta backend.EtcdMetadata, ok bool) *mvccpb.KeyValue {
-	if kv == nil {
-		return nil
-	}
-	if !ok || meta.CreateRevision == 0 {
-		meta.CreateRevision = kv.Revision
-	}
-	if meta.Version == 0 {
-		meta.Version = 1
-	}
-	return &mvccpb.KeyValue{
-		Key:            kv.Key,
-		Value:          kv.Value,
-		Version:        int64(meta.Version),
-		CreateRevision: int64(meta.CreateRevision),
-		ModRevision:    int64(kv.Revision),
-	}
 }
 
 func (b *backendShim) exactRangeCount(ctx context.Context, r *etcdserverpb.RangeRequest) (int64, error) {
@@ -934,11 +898,18 @@ func (b *backendShim) kvToEtcdKv(ctx context.Context, kv *proto.KeyValue) *mvccp
 	if kv == nil {
 		return nil
 	}
-	meta, err := b.cachedMetadata(ctx, kv.Key, kv.Revision)
-	if err != nil {
-		klog.V(4).InfoS("failed to read etcd metadata", "key", kv.Key, "revision", kv.Revision, "err", err)
-		meta.CreateRevision = kv.Revision
-		meta.Version = 1
+	// Approach A: prefer create_revision/version inlined in the stored value —
+	// no metadata lookup, and the envelope is stripped so the client gets the
+	// raw value. Legacy (un-enveloped) values fall back to the etcdmeta lookup.
+	meta, rawValue, inlined := backend.DecodeInlineValue(kv.Value)
+	if !inlined {
+		rawValue = kv.Value
+		var err error
+		meta, err = b.cachedMetadata(ctx, kv.Key, kv.Revision)
+		if err != nil {
+			klog.V(4).InfoS("failed to read etcd metadata", "key", kv.Key, "revision", kv.Revision, "err", err)
+			meta = backend.EtcdMetadata{CreateRevision: kv.Revision, Version: 1}
+		}
 	}
 	if meta.CreateRevision == 0 {
 		meta.CreateRevision = kv.Revision
@@ -948,7 +919,7 @@ func (b *backendShim) kvToEtcdKv(ctx context.Context, kv *proto.KeyValue) *mvccp
 	}
 	return &mvccpb.KeyValue{
 		Key:            kv.Key,
-		Value:          kv.Value,
+		Value:          rawValue,
 		Version:        int64(meta.Version),
 		CreateRevision: int64(meta.CreateRevision),
 		ModRevision:    int64(kv.Revision),

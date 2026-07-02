@@ -119,8 +119,15 @@ func (b *backend) createBatchWithMetadata(ctx context.Context, revisionKey, obje
 	} else {
 		batch.CAS(revisionKey, newRevisionBytes, oldRevisionBytes, ttl)
 	}
-	batch.Put(objectKey, value, ttl)
-	b.putEtcdMetadata(batch, key, revision, EtcdMetadata{CreateRevision: revision, Version: 1})
+	meta := EtcdMetadata{CreateRevision: revision, Version: 1}
+	if b.config.EnableEtcdCompatibility {
+		// Inline create_revision/version into the value so reads need no separate
+		// metadata lookup and the etcdmeta keyspace stops growing (approach A).
+		batch.Put(objectKey, encodeValueWithMeta(value, meta), ttl)
+	} else {
+		batch.Put(objectKey, value, ttl)
+		b.putEtcdMetadata(batch, key, revision, meta)
+	}
 	return batch.Commit(ctx)
 }
 
@@ -449,8 +456,12 @@ func (b *backend) update(ctx context.Context, oldRevision uint64, key []byte, va
 
 	batch := b.kv.BeginBatchWrite()
 	batch.CAS(revisionKey, newRevisionBytes, oldRevisionBytes, 0)
-	batch.Put(objectKey, value, 0)
-	b.putEtcdMetadata(batch, key, newRevision, meta)
+	if b.config.EnableEtcdCompatibility {
+		batch.Put(objectKey, encodeValueWithMeta(value, meta), 0)
+	} else {
+		batch.Put(objectKey, value, 0)
+		b.putEtcdMetadata(batch, key, newRevision, meta)
+	}
 	return newRevision, batch.Commit(ctx)
 }
 

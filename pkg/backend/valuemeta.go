@@ -54,6 +54,21 @@ func hasValueMeta(stored []byte) bool {
 		stored[3] == valueMetaMagic[3]
 }
 
+// DecodeInlineValue is the exported form of decodeValueWithMeta for other
+// packages (etcd shim, brain server) that must strip the envelope before
+// returning a value to clients.
+func DecodeInlineValue(stored []byte) (meta EtcdMetadata, rawValue []byte, inlined bool) {
+	return decodeValueWithMeta(stored)
+}
+
+// StripInlineValue returns the raw value with any inline-metadata envelope
+// removed (passthrough for legacy values). For consumers that need only the
+// value, not the metadata.
+func StripInlineValue(stored []byte) []byte {
+	_, raw, _ := decodeValueWithMeta(stored)
+	return raw
+}
+
 // decodeValueWithMeta splits an enveloped value into its metadata and raw value.
 // The returned rawValue aliases stored (no copy); callers that retain it beyond
 // the buffer's lifetime must copy. ok is false for legacy (un-enveloped) values,
