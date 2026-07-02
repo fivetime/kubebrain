@@ -387,3 +387,62 @@ func TestLeaseFollowerDoesNotExpireKeys(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, rangeResp.Kvs, 1)
 }
+
+// TestReloadLeasesAdoptsLeasesGrantedAfterSnapshot pins the failover fix: a node
+// that restored its lease snapshot as a follower must, on becoming leader, pick
+// up leases the real leader granted afterwards (otherwise they are orphaned —
+// never kept alive or expired). It also confirms a kept-alive lease is not
+// wrongly treated as expired after reload.
+func TestReloadLeasesAdoptsLeasesGrantedAfterSnapshot(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	metrics := mock.NewMinimalMetrics(ctrl)
+	kv := memkv.NewKvStorage()
+	b := backend.NewBackend(kv, backend.Config{
+		Identity:                "reload-test-peer",
+		EnableEtcdCompatibility: true,
+	}, metrics)
+	ctx := context.Background()
+
+	// "old leader" grants L1 and binds a key.
+	oldLeader := New(b, metrics, testPeerService{isLeader: true})
+	l1, err := oldLeader.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 300, ID: 7001})
+	require.NoError(t, err)
+	_, err = oldLeader.Put(ctx, &etcdserverpb.PutRequest{
+		Key: []byte("/registry/leases/reload-k1"), Value: []byte("v"), Lease: l1.ID,
+	})
+	require.NoError(t, err)
+
+	// "new leader" constructs its snapshot now (knows only L1), then the old
+	// leader grants L2 afterwards — a lease the new leader never saw.
+	newLeader := New(b, metrics, testPeerService{isLeader: true})
+	defer func() {
+		newLeader.stopLeases()
+		oldLeader.stopLeases()
+		require.NoError(t, kv.Close())
+		ctrl.Finish()
+	}()
+
+	l2, err := oldLeader.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 300, ID: 7002})
+	require.NoError(t, err)
+
+	// Before reload the new leader does not know L2 (etcd reports TTL=-1 for an
+	// unknown lease, without error).
+	pre, err := newLeader.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: l2.ID})
+	require.NoError(t, err)
+	require.Equal(t, int64(-1), pre.TTL, "new leader should not know L2 before reload")
+
+	// Simulate leadership acquisition.
+	require.NoError(t, newLeader.ReloadLeases(ctx))
+
+	// After reload both leases are known with healthy TTLs.
+	ttl1, err := newLeader.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: l1.ID})
+	require.NoError(t, err)
+	require.Greater(t, ttl1.TTL, int64(0), "kept-alive lease L1 must not be expired after reload")
+	ttl2, err := newLeader.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: l2.ID})
+	require.NoError(t, err)
+	require.Greater(t, ttl2.TTL, int64(0), "lease L2 granted after snapshot must be adopted on reload")
+
+	leases, err := newLeader.LeaseLeases(ctx, &etcdserverpb.LeaseLeasesRequest{})
+	require.NoError(t, err)
+	require.Len(t, leases.Leases, 2)
+}

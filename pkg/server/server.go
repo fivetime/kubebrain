@@ -71,16 +71,28 @@ type server struct {
 func NewServer(ctx context.Context, backend backend.Backend, metricCli metrics.Metrics, config Config) Server {
 	// health server to tell client whether this instance is leader
 	healthServer := health.NewServer()
+	// etcdServer is assigned below; captured by reference so the leadership
+	// callback can reach it (election must be built before the server it feeds).
+	var etcdServer *etcd.RPCServer
 	// leader election call back
-	election := leader.NewLeaderElection(backend, metricCli, func(context.Context) {
+	election := leader.NewLeaderElection(backend, metricCli, func(ctx context.Context) {
 		healthServer.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
+		// On acquiring leadership, refresh lease state from storage before the
+		// stale follower snapshot's expiry timers can wrongly delete kept-alive
+		// leases or before newly-granted leases are orphaned.
+		if etcdServer != nil {
+			if err := etcdServer.ReloadLeases(ctx); err != nil {
+				metricCli.EmitCounter("lease.reload.err", 1)
+				klog.ErrorS(err, "reload leases on leadership acquisition failed")
+			}
+		}
 	}, func() {
 		healthServer.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
 	})
 	// revisionSyncer sync revision from leader to follower
 	peerService := service.NewPeerService(election, metricCli, backend, config.getPeerServiceConfig())
 	// construct etcd & brian grpc server
-	etcdServer := etcd.New(backend, metricCli, peerService)
+	etcdServer = etcd.New(backend, metricCli, peerService)
 	brainServer := brain.New(ctx, backend, metricCli, peerService)
 	return &server{
 		etcdServer:     etcdServer,
