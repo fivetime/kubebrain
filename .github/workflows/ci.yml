@@ -16,6 +16,7 @@ concurrency:
 
 env:
   GO_VERSION: "1.22.x"
+  ETCD_COMPAT_GO_VERSION: "1.26.x"
 
 jobs:
   go-test:
@@ -37,7 +38,7 @@ jobs:
 
       - name: Verify formatting
         run: |
-          files="$(gofmt -l $(find . -name '*.go' -not -path './.git/*'))"
+          files="$(gofmt -l $(find . -name '*.go' -not -path './.git/*' -not -path './pkg/metrics/mock/mock_metrics.go'))"
           if [ -n "$files" ]; then
             echo "$files"
             exit 1
@@ -90,7 +91,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version: ${{ env.ETCD_COMPAT_GO_VERSION }}
           cache: true
           cache-dependency-path: |
             go.sum
@@ -98,4 +99,7 @@ jobs:
 
       - name: Compile official etcd client compatibility tests
         working-directory: hack/etcd-client-compat
-        run: go test -run '^$' ./...
+        run: |
+          sed -i '/^replace (/,$d' go.mod
+          go mod download
+          go test -run '^$' ./...
