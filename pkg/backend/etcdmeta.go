@@ -10,6 +10,15 @@ import (
 	"github.com/kubewharf/kubebrain/pkg/storage"
 )
 
+// internalKeyspacePrefix is the reserved namespace for KubeBrain's own
+// bookkeeping keys, kept collision-free from user (kube-apiserver) keys by the
+// leading NUL byte — real k8s keys start with '/'. Every internal keyspace lives
+// under it (etcd metadata here; lease records in the etcd server layer). These
+// are all latest-only state: only the newest version of each internal key is
+// ever read, so the whole namespace is folded into compaction (see
+// getCompactBorders) to retire superseded versions and tombstones (#6/#15/#38).
+var internalKeyspacePrefix = []byte("\x00kubebrain/")
+
 var etcdMetadataPrefix = []byte("\x00kubebrain/etcdmeta/")
 
 type EtcdMetadata struct {

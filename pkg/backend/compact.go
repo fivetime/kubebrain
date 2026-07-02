@@ -161,16 +161,17 @@ func (b *backend) getCompactBorders() [][]byte {
 		compactBorders = append(compactBorders, b.coder.EncodeObjectKey([]byte(key), 0))
 		compactBorders = append(compactBorders, b.coder.EncodeObjectKey(PrefixEnd([]byte(key)), 0))
 	}
-	// The etcd-metadata keyspace sorts before the user prefix (leading \x00) and
-	// was therefore never GC'd, growing without bound (#6/#15). Approach A stops
-	// new writes to it, but legacy per-revision entries remain; include it here
-	// so compaction retires superseded metadata versions. It has no revision
-	// keys or tombstones, so the scanner just keeps the latest version <=
-	// compactRev per key and deletes older ones (matching the object it belongs
-	// to, which is likewise compacted or kept).
+	// KubeBrain's internal keyspaces (etcd metadata, lease records) live under the
+	// reserved \x00kubebrain/ namespace, which sorts before the user prefix
+	// (leading \x00) and was therefore never GC'd — lease records in particular
+	// are rewritten on every keepalive, so their versions grew without bound
+	// (#6/#15/#38). They are all latest-only state, so fold the whole namespace
+	// into compaction: the scanner keeps the latest version <= compactRev per key
+	// and retires older versions and tombstones (revoked/expired leases), exactly
+	// as for user keys.
 	compactBorders = append(compactBorders,
-		b.coder.EncodeObjectKey(etcdMetadataPrefix, 0),
-		b.coder.EncodeObjectKey(PrefixEnd(etcdMetadataPrefix), 0))
+		b.coder.EncodeObjectKey(internalKeyspacePrefix, 0),
+		b.coder.EncodeObjectKey(PrefixEnd(internalKeyspacePrefix), 0))
 	// sort to make sure compact in right range
 	sort.Slice(compactBorders, func(i, j int) bool {
 		return bytes.Compare(compactBorders[i], compactBorders[j]) < 0

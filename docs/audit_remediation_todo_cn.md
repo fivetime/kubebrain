@@ -3,7 +3,7 @@
 > 来源：Fable 5 多智能体审核（73 条已确认问题）。本文件是**持久化进度清单**，做一个勾一个（`[x]`），抗会话压缩遗忘。
 > 编号 `#N` = 审核确认清单索引；`file:line` 为大致位置。测试遵循 `docs/test_strategy_cn.md`：**真实消费端黑盒为主，内部单测只锁黑盒够不着的精确 bug**。
 
-进度：**已修 31 / 73** — Critical 3/3 ✓，High 22/32，Medium 3/17，Low 3/21。（+ #5/#27/#29 A-index e885b8d；#6/#38 etcdmeta 纳入 compaction；#15 etcdmeta 半完成；#30 watch history 去点读+限流；#69 前缀路由）
+进度：**已修 32 / 73** — Critical 3/3 ✓，High 23/32，Medium 3/17，Low 3/21。（+ #5/#27/#29 A-index e885b8d；#6/#38 etcdmeta 纳入 compaction；#15 两半完成：\x00kubebrain/ 命名空间整体纳入 compaction；#30 watch history 去点读+限流；#69 前缀路由）
 > 附带修复（不在 73 条内）：events-TTL 过期回收在多 border（etcdmeta / 多 SkippedPrefixes）下失效——`getTimeoutRevision` 会 drain 共享 compact-history 队列，原先每 border 各调一次，首个 border 耗尽旧记录后其余 border 拿到 timeoutRevision=0，静默关闭 `/events/` 过期。已改为每次 compaction 周期只计算一次并应用到所有 border（`scanner.Compact` 现接收全部 borders）。`TestCompactExpiredEvents` 覆盖。
 
 ## 已完成（PR #1: fivetime/kubebrain#1 + 81d36be）
@@ -83,8 +83,10 @@
 
 - [x] **#6** [high] Etcd metadata keyspace (\x00kubebrain/etcdmeta/) is written per revision but lies outside all compaction borders — unbounded storage growth  
   `pkg/backend/etcdmeta.go:13` — 两步根治：(1) 新写入不再落 etcdmeta，改内联到对象值信封（ee55f24, A-core）；(2) `getCompactBorders()` 现把 etcdmeta keyspace 纳入 compaction 边界，旧的 per-revision 元数据被 GC。`TestCompactRetiresLegacyEtcdMetadata` 证明 5 版本→compact→1 版本且元数据读仍正确。
-- [~] **#15** [high] Internal MVCC keys (\x00kubebrain/leases/, \x00kubebrain/etcdmeta/) lie outside compaction borders and grow without bound  
-  `pkg/server/etcd/lease.go:464` — etcdmeta 半已根治（停写 + 纳入 compaction，见 #6）；lease-record 半（每次 keepalive 重写、在 etcd 层前缀 `\x00kubebrain/leases/`、backend 不感知该前缀）仍开放，需单独把 lease 前缀纳入 compaction 边界或改 lease 存储模型。
+- [x] **#15** [high] Internal MVCC keys (\x00kubebrain/leases/, \x00kubebrain/etcdmeta/) lie outside compaction borders and grow without bound  
+  `pkg/server/etcd/lease.go:30` — 两半均根治。把 `getCompactBorders()` 的 etcdmeta 专用边界**扩成整个保留命名空间 `\x00kubebrain/`**（`internalKeyspacePrefix`），一条边界覆盖 etcdmeta + leases + 未来内部 keyspace。lease record 每次 keepalive 重写产生的旧版本、revoke/expire 的 tombstone 现随 compaction 回收；latest（`loadLeaseRecords` 在 max revision 读）始终保留。`TestCompactRetiresLeaseKeyspaceVersions` 钉死 5→1；黑盒 `TestLeaseSurvivesCompaction` 验证 compaction 周期后 lease 仍存活、绑定键与 lease→key 绑定不丢、keepalive 仍可用。用户键均以 `/` 开头，`\x00kubebrain/` 前导空字节天然不冲突（compact/election 键是 `{prefix}/...` 原始键、无 magicBytes、不在对象键压缩范围内，安全）。
+  > 附带发现（预存在，不在 73 内，未修）：**读路径不回填 `kv.Lease`**。`backendShim.kvToEtcdKv` 构造 mvccpb.KeyValue 时不设 Lease 字段（etcd 的 Get/Range 会返回附着的 lease ID）。server 层有 `keyLeaseIndex`（key→leaseID），但下层 backendShim 拿不到，需要向上打通。apiserver 核心流程未必依赖，属 compat 完整度缺口。已记录。
+  > 附带候选（预存在，未修）：**keepalive 写放大**——每次 keepalive 一次 `backend.Put`（新 MVCC 版本 + 事件 + compaction 负担）；etcd 不在每次 keepalive 落盘（重启/换主按 granted TTL 重置 deadline）。改此需谨慎处理换主时的 deadline 语义，与 #15「无界增长」正交，单列。
 - [x] **#38** [medium] Etcd metadata versions are never compacted or deleted — unbounded storage growth  
   `pkg/backend/etcdmeta.go:47` — 同 #6：etcdmeta keyspace 现随 compaction 回收旧版本（scanner 无 revision key/tombstone，只走 version-compaction 分支，保留 ≤compactRev 的最新版、删更旧版）。
   > 部署观察：把 etcdmeta 纳入边界后，**首次** compaction 需一次性回收 46h 积压的旧 etcdmeta + 追平先前被静默关闭的 `/events/` 过期，扫描耗时较大；dev 集群上共享 120s 预算的 smoke 在 compact 步超时（非 hang、非数据错误，watermark 在下一次更高 revision 的 compaction 自愈）。稳态 compaction 是增量的、快。**候选新问题（预存在）**：`backend.Compact` 在 RPC 内**同步**跑物理扫描，超大数据集上单次 compact 可能超过 apiserver compact 上下文超时→每轮都被取消→永不追平。宜改为异步（etcd 语义：Compact 打水位即返回，物理 GC 后台进行）。已在 P1/P2 之外单列观察，未修。
