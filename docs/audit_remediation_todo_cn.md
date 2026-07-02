@@ -3,7 +3,7 @@
 > 来源：Fable 5 多智能体审核（73 条已确认问题）。本文件是**持久化进度清单**，做一个勾一个（`[x]`），抗会话压缩遗忘。
 > 编号 `#N` = 审核确认清单索引；`file:line` 为大致位置。测试遵循 `docs/test_strategy_cn.md`：**真实消费端黑盒为主，内部单测只锁黑盒够不着的精确 bug**。
 
-进度：**已修 48 / 73** — Critical 3/3 ✓，High 24/32，Medium 4/17，Low 17/21。（+ #71 compaction 错误可见性；#48 compact TTL 缓存；P7 #65/#66/#67）（+ #5/#27/#29 A-index e885b8d；#6/#38 etcdmeta 纳入 compaction；#15 两半完成：\x00kubebrain/ 命名空间整体纳入 compaction；#30 watch history 去点读+限流；#69 前缀路由；kv.Lease 读回填=Get/Range/watch 回填附着 lease + 无锁快路径 86e692d）
+进度：**已修 49 / 73** — Critical 3/3 ✓，High 25/32，Medium 4/17，Low 17/21。（+ #16 event TTL 去硬编码启发式=删子串 GC 依赖 lease 9c60cf3；#71 compaction 错误可见性；#48 compact TTL 缓存；P7 #65/#66/#67）（+ #5/#27/#29 A-index e885b8d；#6/#38 etcdmeta 纳入 compaction；#15 两半完成：\x00kubebrain/ 命名空间整体纳入 compaction；#30 watch history 去点读+限流；#69 前缀路由；kv.Lease 读回填=Get/Range/watch 回填附着 lease + 无锁快路径 86e692d）
 > 附带修复（不在 73 条内）：events-TTL 过期回收在多 border（etcdmeta / 多 SkippedPrefixes）下失效——`getTimeoutRevision` 会 drain 共享 compact-history 队列，原先每 border 各调一次，首个 border 耗尽旧记录后其余 border 拿到 timeoutRevision=0，静默关闭 `/events/` 过期。已改为每次 compaction 周期只计算一次并应用到所有 border（`scanner.Compact` 现接收全部 borders）。`TestCompactExpiredEvents` 覆盖。
 
 ## 已完成（PR #1: fivetime/kubebrain#1 + 81d36be）
@@ -114,8 +114,8 @@
 
 ### P4 — Lease 正确性 / 性能剩余
 
-- [ ] **#16** [high] Event TTL is a hardcoded 3600s substring heuristic that ignores the granted lease TTL and matches unrelated keys  
-  `pkg/backend/txn.go:72`
+- [x] **#16** [high] Event TTL is a hardcoded 3600s substring heuristic that ignores the granted lease TTL and matches unrelated keys  
+  `pkg/backend/txn.go:72` — 9c60cf3。原 `create` 用 `bytes.Contains(key, "/events/")` 给任意含该子串的键盖 3600s 硬编码 TTL,scanner 再按全局 compaction-history 超时 revision 物理删——三重错误:忽略实际 granted TTL、忽略 keepalive renewal、**误伤**任何路径含 `/events/` 的无关键(静默丢数据)。**根因**:etcd v3 无非-lease TTL;k8s apiserver 对每个 TTL 对象(event,TTL=event-ttl)`leaseManager.GetLease` 挂 lease(参考 `staging/.../etcd3/store.go:297`),而 KubeBrain server 层 lease 机制已按**实际 granted TTL** per-key 过期(`expireLease→backend.Delete`)。子串 TTL 是冗余+错误的重复。**修法(方向 A,用户确认)**:彻底删除依赖 lease——`create` 不再设存储 TTL(去掉 `events`/`eventsTTL` + `createWithMetadata`/`createBatchWithMetadata` 的 ttl 参数);scanner 删掉 `compactIfExpired` 的 `/events/` GC、`getTimeoutRevision`、`logCompactHistory`、`compactHistories` 队列(`compact.go` 删档)、`timeoutRevision` 贯穿、`Config.TTL`;compaction 只回收旧版本/tombstone(含过期键的 tombstone)。净 -232 行。`expire_test.go`(断言旧 GC)替换为 `events_no_ttl_test.go`(含 `/events/` 的键 compaction 后存活);实际 TTL 过期由现有 lease-expiry 测试覆盖。backend/scanner/etcd 套件绿。**黑盒(TiKV)**:5s lease 的 event 键按实际 5s 过期(非 3600s)、无 lease 的 `/events/` 路径键存活。(注:events-TTL 是 3600s 尺度机制,短窗黑盒不能廉价区分新旧;根治靠结构性移除+单测+ [[keepalive 写放大]]/#14/#18 已固化的 lease 机制。)
 - [ ] **#17** [high] Every Put with a lease rewrites the whole lease key-list to storage under a global mutex  
   `pkg/server/etcd/lease.go:204`
 - [ ] **#36** [medium] Expiry deletes the lease record before the attached keys and swallows delete errors, permanently orphaning TTL keys  
