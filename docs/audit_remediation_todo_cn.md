@@ -3,7 +3,7 @@
 > 来源：Fable 5 多智能体审核（73 条已确认问题）。本文件是**持久化进度清单**，做一个勾一个（`[x]`），抗会话压缩遗忘。
 > 编号 `#N` = 审核确认清单索引；`file:line` 为大致位置。测试遵循 `docs/test_strategy_cn.md`：**真实消费端黑盒为主，内部单测只锁黑盒够不着的精确 bug**。
 
-进度：**已修 47 / 73** — Critical 3/3 ✓，High 24/32，Medium 4/17，Low 16/21。（+ #48 compact revision TTL 缓存；P7 存储 #65/#66/#67）（+ #5/#27/#29 A-index e885b8d；#6/#38 etcdmeta 纳入 compaction；#15 两半完成：\x00kubebrain/ 命名空间整体纳入 compaction；#30 watch history 去点读+限流；#69 前缀路由）
+进度：**已修 48 / 73** — Critical 3/3 ✓，High 24/32，Medium 4/17，Low 17/21。（+ #71 compaction 错误可见性；#48 compact TTL 缓存；P7 #65/#66/#67）（+ #5/#27/#29 A-index e885b8d；#6/#38 etcdmeta 纳入 compaction；#15 两半完成：\x00kubebrain/ 命名空间整体纳入 compaction；#30 watch history 去点读+限流；#69 前缀路由）
 > 附带修复（不在 73 条内）：events-TTL 过期回收在多 border（etcdmeta / 多 SkippedPrefixes）下失效——`getTimeoutRevision` 会 drain 共享 compact-history 队列，原先每 border 各调一次，首个 border 耗尽旧记录后其余 border 拿到 timeoutRevision=0，静默关闭 `/events/` 过期。已改为每次 compaction 周期只计算一次并应用到所有 border（`scanner.Compact` 现接收全部 borders）。`TestCompactExpiredEvents` 覆盖。
 
 ## 已完成（PR #1: fivetime/kubebrain#1 + 81d36be）
@@ -190,8 +190,8 @@
   `pkg/storage/badger/badger.go` — 新增后台 `runValueLogGC`（每 5min `RunValueLogGC(0.5)` 循环至 ErrNoRewrite），`Close` 关 stop chan 干净退出。`TestBadgerBatchAndLifecycle` 验证 open→用→close 生命周期不 hang。
 - [x] **#67** [low] Metrics iterator wrapper counts EOF/cancel instead of fetched rows  
   `pkg/storage/metrics/store.go` — `iterWrapper.Next` 原在 `else if err != nil`（即 EOF/cancel）分支 `counter++`，成功取行（`err==nil`）时不计 → `storage.iter.fetch.success` 计的是 EOF 而非取到的行数。改为 `err==nil` 时计数。影响全部引擎（含 TiKV）。`TestIterWrapperCountsFetchedRows`（取 5 行 → fetch.success=5）。
-- [ ] **#71** [low] Compaction errors are fully swallowed after the compact revision is persisted, reporting success while garbage accumulates  
-  `pkg/backend/scanner/scanner.go:197`
+- [x] **#71** [low] Compaction errors are fully swallowed after the compact revision is persisted, reporting success while garbage accumulates  
+  `pkg/backend/scanner/scanner.go` — `Compact` 原 `_, _ = r.scan(...)` 丢弃每个 border 的扫描错误（scan 已内部 backoff 重试，故丢的是持久错）。改为返回首个错误 + 逐 border 记 log；`physicalCompact` 捕获后**记 log + emit `backend.compact.scan.err` metric**，但**不**上抛（logical 水位已持久化=逻辑压缩成功，物理 GC 失败留下的垃圾会被后续更高 revision 的压缩回收）。使持久失败的物理 GC 可观测而非静默累积垃圾。`TestCompactSurfacesScanError`（注入 GetPartitions 失败→Compact 仍成功、metric 已 emit）。backend+scanner+etcd 全套绿；黑盒 smoke 因 dev 集群 TiKV region 写超时（今日反复重启致 TiKV/PD 卡死，与本改动无关）暂未跑——本改动在健康集群行为中性（压缩成功即不 emit），已由单测+全套覆盖。
 - [ ] **#59** [low] HashKV ignores the request context, using context.Background() for revision/compaction lookups  
   `pkg/server/etcd/maintenance.go:82`
 

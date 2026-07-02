@@ -38,6 +38,8 @@ type Scanner interface {
 	// shared compact-history queue, is computed once per cycle and applied to
 	// every border. Computing it per-pair would let the first pair consume the old
 	// history records, leaving later pairs with timeoutRevision=0 and silently
-	// disabling event expiry.
-	Compact(ctx context.Context, borders [][]byte, revision uint64)
+	// disabling event expiry. It returns the first border scan error (after the
+	// per-worker retries) so the caller can surface a failed physical GC instead
+	// of silently reporting success while garbage accumulates.
+	Compact(ctx context.Context, borders [][]byte, revision uint64) error
 }

@@ -185,7 +185,15 @@ func (b *backend) physicalCompact(ctx context.Context, revision uint64) {
 	// Pass all borders together so the scanner computes the events-TTL timeout
 	// revision once per cycle; see Scanner.Compact for why per-border draining of
 	// the shared compact-history queue would silently disable event expiry.
-	b.scanner.Compact(ctx, borders, revision)
+	if err := b.scanner.Compact(ctx, borders, revision); err != nil {
+		// The logical compact watermark was already persisted, so the compaction
+		// is (correctly) reported as succeeded; but the physical GC scan failed,
+		// leaving garbage that a later higher-revision compaction will reclaim.
+		// Surface it (log + metric) rather than swallowing it, so a persistently
+		// failing GC is observable instead of silently accumulating garbage (#71).
+		b.metricCli.EmitCounter("backend.compact.scan.err", 1)
+		klog.ErrorS(err, "physical compaction scan failed; garbage will be reclaimed on a later compaction", "revision", revision)
+	}
 	if b.countIndex != nil {
 		b.countIndex.Compact(revision)
 	}

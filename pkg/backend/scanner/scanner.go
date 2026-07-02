@@ -192,7 +192,7 @@ func getListStreamEnd(revision uint64, err error) *proto.StreamRangeResponse {
 }
 
 // Compact implements Scanner interface
-func (r *scanner) Compact(ctx context.Context, borders [][]byte, revision uint64) {
+func (r *scanner) Compact(ctx context.Context, borders [][]byte, revision uint64) error {
 	r.logCompactHistory(revision)
 	// Compute the events-TTL timeout revision once for the whole cycle. It drains
 	// the shared compact-history queue, so computing it per-border would let the
@@ -200,9 +200,18 @@ func (r *scanner) Compact(ctx context.Context, borders [][]byte, revision uint64
 	// prefix where /events/ keys live) with timeoutRevision=0, disabling event GC.
 	// getTimeoutRevision returns 0 when the storage engine supports native TTL.
 	timeoutRevision := r.getTimeoutRevision()
+	var firstErr error
 	for i := 0; i+1 < len(borders); i += 2 {
-		_, _ = r.scan(ctx, borders[i], borders[i+1], revision, true, timeoutRevision, &emptyResultReceiver{})
+		// Scan every border best-effort even if one fails: each border's GC is
+		// independent, and returning the first error still surfaces the failure.
+		if _, err := r.scan(ctx, borders[i], borders[i+1], revision, true, timeoutRevision, &emptyResultReceiver{}); err != nil {
+			klog.ErrorS(err, "compact scan failed for border", "revision", revision, "start", borders[i], "end", borders[i+1])
+			if firstErr == nil {
+				firstErr = err
+			}
+		}
 	}
+	return firstErr
 }
 
 // adjustPartitionsBorders adjust the borders of partitions to avoid object keys generated from an internal key
