@@ -45,7 +45,7 @@ func (b *backend) Create(ctx context.Context, put *proto.CreateRequest) (resp *p
 	}()
 
 	revision, err := b.create(ctx, put.Key, put.Value)
-	b.notify(ctx, put.Key, put.Value, revision, 0, err == nil, proto.Event_CREATE, err)
+	b.notify(ctx, put.Key, b.eventValue(put.Value, EtcdMetadata{CreateRevision: revision, Version: 1}, err), revision, 0, err == nil, proto.Event_CREATE, err)
 	if errors.Is(err, storage.ErrCASFailed) {
 		return &proto.CreateResponse{
 			Header:    responseHeader(revision),
@@ -390,10 +390,11 @@ func (b *backend) Update(ctx context.Context, r *proto.UpdateRequest) (resp *pro
 	var curRev uint64
 	if prevRev == 0 {
 		curRev, err = b.create(ctx, key, value)
-		b.notify(ctx, key, value, curRev, prevRev, err == nil, proto.Event_CREATE, err)
+		b.notify(ctx, key, b.eventValue(value, EtcdMetadata{CreateRevision: curRev, Version: 1}, err), curRev, prevRev, err == nil, proto.Event_CREATE, err)
 	} else {
-		curRev, err = b.update(ctx, prevRev, key, value, lease)
-		b.notify(ctx, key, value, curRev, prevRev, err == nil, proto.Event_PUT, err)
+		var meta EtcdMetadata
+		curRev, meta, err = b.update(ctx, prevRev, key, value, lease)
+		b.notify(ctx, key, b.eventValue(value, meta, err), curRev, prevRev, err == nil, proto.Event_PUT, err)
 	}
 
 	resp = &proto.UpdateResponse{
@@ -424,7 +425,7 @@ func (b *backend) Update(ctx context.Context, r *proto.UpdateRequest) (resp *pro
 	return resp, nil
 }
 
-func (b *backend) update(ctx context.Context, oldRevision uint64, key []byte, value []byte, lease int64) (revision uint64, err error) {
+func (b *backend) update(ctx context.Context, oldRevision uint64, key []byte, value []byte, lease int64) (revision uint64, newMeta EtcdMetadata, err error) {
 	var newRevision uint64
 	newRevision, err = b.deal(oldRevision)
 	if err != nil {
@@ -433,13 +434,13 @@ func (b *backend) update(ctx context.Context, oldRevision uint64, key []byte, va
 		// filling its ring slot; returning 0 here would leave the event
 		// collector waiting on this revision forever, freezing the committed
 		// revision and thus every list/watch on the cluster.
-		return newRevision, err
+		return newRevision, EtcdMetadata{}, err
 	}
 	meta, err := b.GetEtcdMetadata(ctx, key, oldRevision)
 	if err != nil {
 		// Same as above: the dealt revision must reach the ring buffer even
 		// though the write never started.
-		return newRevision, err
+		return newRevision, EtcdMetadata{}, err
 	}
 	if meta.CreateRevision == 0 {
 		meta.CreateRevision = oldRevision
@@ -462,7 +463,17 @@ func (b *backend) update(ctx context.Context, oldRevision uint64, key []byte, va
 		batch.Put(objectKey, value, 0)
 		b.putEtcdMetadata(batch, key, newRevision, meta)
 	}
-	return newRevision, batch.Commit(ctx)
+	return newRevision, meta, batch.Commit(ctx)
+}
+
+// eventValue wraps a successful PUT/CREATE watch event's value with its inline
+// metadata (approach A-core-2) so watchers get create_revision/version with no
+// storage lookup. Returns the raw value on failure or in non-compat mode.
+func (b *backend) eventValue(value []byte, meta EtcdMetadata, err error) []byte {
+	if err != nil || !b.config.EnableEtcdCompatibility {
+		return value
+	}
+	return encodeValueWithMeta(value, meta)
 }
 
 func (b *backend) notify(ctx context.Context,
