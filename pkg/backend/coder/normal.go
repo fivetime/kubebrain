@@ -35,6 +35,17 @@ func NewNormalCoder() Coder {
 	return &normalEncoderDecoder{}
 }
 
+func ObjectKeyspaceEnd() []byte {
+	end := append([]byte(nil), magicBytes...)
+	for i := len(end) - 1; i >= 0; i-- {
+		if end[i] != 0xff {
+			end[i]++
+			return end[:i+1]
+		}
+	}
+	return []byte{0xff}
+}
+
 // normalEncoderDecoder encode user key with larger revision to larger internal key
 type normalEncoderDecoder struct{}
 

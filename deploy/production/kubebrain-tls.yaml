@@ -1,0 +1,166 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kubebrain-system
+  labels:
+    app.kubernetes.io/name: kubebrain
+    app.kubernetes.io/component: client
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kubebrain
+  namespace: kubebrain-system
+  labels:
+    app.kubernetes.io/name: kubebrain
+    app.kubernetes.io/component: peer
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: kubebrain
+  namespace: kubebrain-system
+  labels:
+    app.kubernetes.io/name: kubebrain
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kubebrain
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kubebrain
+  namespace: kubebrain-system
+  labels:
+    app.kubernetes.io/name: kubebrain
+spec:
+  replicas: 3
+  revisionHistoryLimit: 5
+  progressDeadlineSeconds: 300
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kubebrain
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kubebrain
+    spec:
+      serviceAccountName: kubebrain
+      terminationGracePeriodSeconds: 30
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: kubebrain
+                topologyKey: kubernetes.io/hostname
+      containers:
+        - name: kubebrain
+          image: kubebrain:dev
+          imagePullPolicy: IfNotPresent
+          args:
+            - --port=3379
+            - --peer-port=3380
+            - --info-port=8080
+            - --pd-addrs=kb-pd.tidb-cluster.svc:2379
+            - --compatible-with-etcd=true
+            - --cert-file=/etc/kubebrain/client-tls/tls.crt
+            - --key-file=/etc/kubebrain/client-tls/tls.key
+            - --trusted-ca-file=/etc/kubebrain/client-tls/ca.crt
+            - --client-cert-auth=true
+            - --peer-cert-file=/etc/kubebrain/peer-tls/tls.crt
+            - --peer-key-file=/etc/kubebrain/peer-tls/tls.key
+            - --peer-trusted-ca-file=/etc/kubebrain/peer-tls/ca.crt
+            - --peer-tls-server-name=kubebrain-peer.kubebrain-system.svc
+            - --peer-client-cert-auth=true
+            - --v=2
+          ports:
+            - name: client
+              containerPort: 3379
+            - name: peer
+              containerPort: 3380
+            - name: info
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              scheme: HTTP
+              path: /ready
+              port: info
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              scheme: HTTP
+              path: /health
+              port: info
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          startupProbe:
+            httpGet:
+              scheme: HTTP
+              path: /health
+              port: info
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 24
+          volumeMounts:
+            - name: client-tls
+              mountPath: /etc/kubebrain/client-tls
+              readOnly: true
+            - name: peer-tls
+              mountPath: /etc/kubebrain/peer-tls
+              readOnly: true
+      volumes:
+        - name: client-tls
+          secret:
+            secretName: kubebrain-client-tls
+        - name: peer-tls
+          secret:
+            secretName: kubebrain-peer-tls
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kubebrain-client
+  namespace: kubebrain-system
+  labels:
+    app.kubernetes.io/name: kubebrain
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: kubebrain
+  ports:
+    - name: client
+      port: 3379
+      targetPort: client
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kubebrain-peer
+  namespace: kubebrain-system
+  labels:
+    app.kubernetes.io/name: kubebrain
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: kubebrain
+  ports:
+    - name: peer
+      port: 3380
+      targetPort: peer
+    - name: info
+      port: 8080
+      targetPort: info

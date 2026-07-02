@@ -17,7 +17,7 @@ package backend
 import (
 	"context"
 	"errors"
-	"sync/atomic"
+	"sync"
 
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
 	"k8s.io/klog/v2"
@@ -52,8 +52,17 @@ type Backend interface {
 	// Delete removes key from storage
 	Delete(ctx context.Context, request *proto.DeleteRequest) (*proto.DeleteResponse, error)
 
+	// DeleteRange removes keys from storage in one storage batch.
+	DeleteRange(ctx context.Context, kvs []*proto.KeyValue) (*DeleteRangeResponse, error)
+
+	// GetEtcdMetadata returns etcd-compatible create revision and version for a key at modRevision.
+	GetEtcdMetadata(ctx context.Context, key []byte, modRevision uint64) (EtcdMetadata, error)
+
 	// Compact clears the kvs that are too old
 	Compact(ctx context.Context, revision uint64) (*proto.CompactResponse, error)
+
+	// GetCompactRevision returns the latest completed logical compaction revision.
+	GetCompactRevision(ctx context.Context) (uint64, error)
 
 	// Get read a kv from storage
 	Get(ctx context.Context, r *proto.GetRequest) (*proto.GetResponse, error)
@@ -108,7 +117,7 @@ type backend struct {
 
 	config Config
 
-	watchEventsRingBuffer []atomic.Value
+	watchEventsRingBuffer []*watchEventSlot
 
 	// maximum size of history watch event window.
 	capacity int
@@ -155,7 +164,7 @@ func NewBackend(kv storage.KvStorage, config Config, metricCli metrics.Metrics) 
 		scanner:               scanner.NewScanner(kv, normalCoder, config.getScannerConfig(), metricCli),
 		config:                config,
 		capacity:              config.WatchCacheSize,
-		watchEventsRingBuffer: make([]atomic.Value, watchersChanCapacity, watchersChanCapacity),
+		watchEventsRingBuffer: newWatchEventSlots(watchersChanCapacity),
 		watchCache:            NewRing(config.WatchCacheSize),
 		watchChan:             make(chan []*proto.Event, watchersChanCapacity),
 		watcherHub: &WatcherHub{
@@ -185,6 +194,48 @@ func NewBackend(kv storage.KvStorage, config Config, metricCli metrics.Metrics) 
 	return b
 }
 
+type watchEventSlot struct {
+	sync.Mutex
+	events []*common.WatchEvent
+}
+
+func newWatchEventSlots(capacity int) []*watchEventSlot {
+	slots := make([]*watchEventSlot, capacity)
+	for i := range slots {
+		slots[i] = &watchEventSlot{}
+	}
+	return slots
+}
+
+func (s *watchEventSlot) append(event *common.WatchEvent) {
+	s.Lock()
+	defer s.Unlock()
+	s.events = append(s.events, event)
+}
+
+func (s *watchEventSlot) appendAll(events []*common.WatchEvent) {
+	s.Lock()
+	defer s.Unlock()
+	s.events = append(s.events, events...)
+}
+
+func (s *watchEventSlot) take(revision uint64) []*common.WatchEvent {
+	s.Lock()
+	defer s.Unlock()
+	if len(s.events) == 0 || s.events[0].Revision != revision {
+		return nil
+	}
+	events := s.events
+	s.events = nil
+	return events
+}
+
+func (s *watchEventSlot) reset() {
+	s.Lock()
+	defer s.Unlock()
+	s.events = nil
+}
+
 var ErrRevisionDriftBack = errors.New("revision drift back")
 
 func (b *backend) deal(prevRevision uint64) (uint64, error) {
@@ -206,65 +257,57 @@ func (b *backend) deal(prevRevision uint64) (uint64, error) {
 }
 
 func (b *backend) collectStorageWriteEvents() {
-	// TODO(xiangchao.01):  config from config file or options
-	events := make([]*proto.Event, eventBatchSize)
 	// infinite loop
 	for {
-		cnt := 0
-		for cnt < eventBatchSize {
-			idx := (b.GetCurrentRevision() + 1) % watchersChanCapacity
-			watchEvent, ok := b.watchEventsRingBuffer[idx].Load().(*common.WatchEvent)
-			if !ok || watchEvent == nil {
-				if cnt == 0 {
+		events := make([]*proto.Event, 0, eventBatchSize)
+		for len(events) < eventBatchSize {
+			nextRevision := b.GetCurrentRevision() + 1
+			idx := nextRevision % watchersChanCapacity
+			watchEvents := b.watchEventsRingBuffer[idx].take(nextRevision)
+			if len(watchEvents) == 0 {
+				if len(events) == 0 {
 					// no event in inside loop, continue inside loop
 					continue
 				}
 				// break inside loop for sending existing  events, then read events in a new loop
 				break
 			}
-			b.metricCli.EmitGauge("watch.set.current.revision", watchEvent.Revision)
-			b.watchEventsRingBuffer[watchEvent.Revision%watchersChanCapacity].Store((*common.WatchEvent)(nil))
-
-			// invalid watch event, i.e. cas failed
-			if !watchEvent.Valid {
-				if errors.Is(watchEvent.Err, storage.ErrUncertainResult) {
-					// must enqueue before update revision, otherwise it may be compact
-					b.asyncFifoRetry.Append(watchEvent)
+			b.metricCli.EmitGauge("watch.set.current.revision", nextRevision)
+			for _, watchEvent := range watchEvents {
+				// invalid watch event, i.e. cas failed
+				if !watchEvent.Valid {
+					if errors.Is(watchEvent.Err, storage.ErrUncertainResult) {
+						// must enqueue before update revision, otherwise it may be compact
+						b.asyncFifoRetry.Append(watchEvent)
+					}
+					continue
 				}
-				b.SetCurrentRevision(watchEvent.Revision)
-				continue
-			}
 
-			b.SetCurrentRevision(watchEvent.Revision)
-
-			e := &proto.Event{
-				Type:     watchEvent.ResourceVerb,
-				Revision: watchEvent.Revision,
-			}
-			if watchEvent.ResourceVerb == proto.Event_DELETE {
-				e.Kv = &proto.KeyValue{
-					Key:      watchEvent.Key,
-					Value:    watchEvent.Value,
-					Revision: watchEvent.PrevRevision,
-				}
-			} else {
-				e.Kv = &proto.KeyValue{
-					Key:      watchEvent.Key,
-					Value:    watchEvent.Value,
+				e := &proto.Event{
+					Type:     watchEvent.ResourceVerb,
 					Revision: watchEvent.Revision,
 				}
+				if watchEvent.ResourceVerb == proto.Event_DELETE {
+					e.Kv = &proto.KeyValue{
+						Key:      watchEvent.Key,
+						Value:    watchEvent.Value,
+						Revision: watchEvent.PrevRevision,
+					}
+				} else {
+					e.Kv = &proto.KeyValue{
+						Key:      watchEvent.Key,
+						Value:    watchEvent.Value,
+						Revision: watchEvent.Revision,
+					}
+				}
+				events = append(events, e)
+				b.watchCache.Add(e)
 			}
-			// push to watchers
-			events[cnt] = e
-			cnt++
-			// set watch cache
-			b.watchCache.Add(e)
+			b.SetCurrentRevision(nextRevision)
 		}
 
-		if cnt > 0 {
-			evs := make([]*proto.Event, cnt)
-			copy(evs, events[:cnt])
-			b.watchChan <- evs
+		if len(events) > 0 {
+			b.watchChan <- events
 		}
 	}
 }

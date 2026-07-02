@@ -18,6 +18,8 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
+	"sort"
 
 	"k8s.io/klog/v2"
 
@@ -58,12 +60,27 @@ func (b *backend) Watch(ctx context.Context, prefix string, revision uint64) (<-
 	ret := b.watchCache.FindEvents(revision)
 
 	if ret.empty {
-		if revision > b.tso.GetRevision() {
+		currentRevision, currentErr := b.safeCurrentRevision(ctx)
+		if currentErr != nil {
+			cancel()
+			return nil, currentErr
+		}
+		if revision > currentRevision {
 			// watch revision is latest, no need to fetch history
 			go b.processEvents(cancel, result, readChan, prefix, revision)
 			return result, nil
 		}
-		currentRevision := b.tso.GetRevision()
+		events, historyErr := b.historyWatchEvents(ctx, prefix, revision, currentRevision)
+		if historyErr == nil {
+			klog.InfoS("watch history fallback", "prefix", prefix, "revision", revision, "events", len(events))
+			if len(events) > 0 {
+				b.catchUpEvents(result, events)
+				revision = events[len(events)-1].Revision + 1
+			}
+			go b.processEvents(cancel, result, readChan, prefix, revision)
+			return result, nil
+		}
+		klog.ErrorS(historyErr, "watch history fallback failed", "prefix", prefix, "revision", revision)
 		// event cache is empty
 		cancel()
 		klog.Errorf("empty cache event, close chan %v", readChan)
@@ -76,21 +93,34 @@ func (b *backend) Watch(ctx context.Context, prefix string, revision uint64) (<-
 	}
 
 	if ret.low {
-		// need read oldest event
-		oldestRevision := ret.oldest.Revision
+		currentRevision, currentErr := b.safeCurrentRevision(ctx)
+		if currentErr != nil {
+			cancel()
+			return nil, currentErr
+		}
+		events, historyErr := b.historyWatchEvents(ctx, prefix, revision, currentRevision)
+		if historyErr == nil {
+			klog.InfoS("watch history fallback from low cache", "prefix", prefix, "revision", revision, "oldestRev", ret.oldest.Revision, "events", len(events))
+			lastRevision := revision
+			if len(events) > 0 {
+				b.catchUpEvents(result, events)
+				lastRevision = events[len(events)-1].Revision + 1
+			}
+			go b.processEvents(cancel, result, readChan, prefix, lastRevision)
+			return result, nil
+		}
 		cancel()
-		klog.Errorf("ret low, close chan, %v", readChan)
-		return nil, fmt.Errorf("cache event oldest revision is %d newer than requested revision %d", oldestRevision, revision+1)
+		klog.ErrorS(historyErr, "ret low history fallback failed", "prefix", prefix, "revision", revision, "oldestRev", ret.oldest.Revision)
+		return nil, fmt.Errorf("cache event oldest revision is %d newer than requested revision %d: %w", ret.oldest.Revision, revision+1, historyErr)
 	}
 
-	rev := ret.newest.Revision
 	events := filterByPrefix(ret.events, []byte(prefix))
 
-	klog.InfoS("watch list", "prefix", prefix, "revision", revision, "latestRev", rev, "cachedEvents", len(events))
+	klog.InfoS("watch list", "prefix", prefix, "revision", revision, "latestRev", ret.newest.Revision, "cachedEvents", len(events))
 
 	lastRevision := revision
 	if len(events) > 0 {
-		lastRevision = rev + 1
+		lastRevision = events[len(events)-1].Revision + 1
 		b.catchUpEvents(result, events)
 	}
 	go b.processEvents(cancel, result, readChan, prefix, lastRevision)
@@ -114,6 +144,79 @@ func (b *backend) catchUpEvents(out chan<- []*proto.Event, events []*proto.Event
 			break
 		}
 	}
+}
+
+func (b *backend) historyWatchEvents(ctx context.Context, prefix string, fromRevision, currentRevision uint64) ([]*proto.Event, error) {
+	compactRevision, err := b.GetCompactRevision(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if compactRevision > 0 && fromRevision < compactRevision {
+		return nil, fmt.Errorf("cache event oldest revision is compacted at %d newer than requested revision %d", compactRevision, fromRevision)
+	}
+
+	start := b.coder.EncodeObjectKey([]byte(prefix), 0)
+	end := b.coder.EncodeObjectKey(PrefixEnd([]byte(prefix)), 0)
+	iter, err := b.kv.Iter(ctx, start, end, 0, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer iter.Close()
+
+	events := make([]*proto.Event, 0)
+	for {
+		if err := iter.Next(ctx); err != nil {
+			if err == io.EOF {
+				break
+			}
+			return nil, err
+		}
+		key, rev, err := b.coder.Decode(iter.Key())
+		if err != nil {
+			return nil, err
+		}
+		if rev == 0 || rev < fromRevision || rev > currentRevision || bytes.HasPrefix(key, etcdMetadataPrefix) {
+			continue
+		}
+		val := append([]byte(nil), iter.Val()...)
+		event := &proto.Event{
+			Type:     proto.Event_PUT,
+			Revision: rev,
+			Kv: &proto.KeyValue{
+				Key:      append([]byte(nil), key...),
+				Value:    val,
+				Revision: rev,
+			},
+		}
+		if bytes.Equal(val, tombStoneBytes) {
+			event.Type = proto.Event_DELETE
+			prev, err := b.Get(ctx, &proto.GetRequest{Key: key, Revision: rev - 1})
+			if err == nil && prev.Kv != nil {
+				event.Kv.Value = append([]byte(nil), prev.Kv.Value...)
+				event.Kv.Revision = prev.Kv.Revision
+			} else {
+				event.Kv.Value = nil
+				event.Kv.Revision = rev
+			}
+		} else {
+			meta, err := b.GetEtcdMetadata(ctx, key, rev)
+			if err != nil {
+				return nil, err
+			}
+			if meta.CreateRevision == rev && meta.Version == 1 {
+				event.Type = proto.Event_CREATE
+			}
+		}
+		events = append(events, event)
+	}
+
+	sort.SliceStable(events, func(i, j int) bool {
+		if events[i].Revision == events[j].Revision {
+			return bytes.Compare(events[i].Kv.Key, events[j].Kv.Key) < 0
+		}
+		return events[i].Revision < events[j].Revision
+	})
+	return events, nil
 }
 
 func (b *backend) processEvents(cancel context.CancelFunc, out chan<- []*proto.Event, in <-chan []*proto.Event,

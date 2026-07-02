@@ -62,6 +62,7 @@ func TestConfig(t *testing.T) {
 			CertFile:      getAuthPath("server.crt"),
 			KeyFile:       getAuthPath("server.key"),
 			CA:            getAuthPath("ca.crt"),
+			ServerName:    "kubebrain-peer.kubebrain-system.svc",
 			ClientAuth:    true,
 			AllowInsecure: true,
 		},
@@ -71,4 +72,7 @@ func TestConfig(t *testing.T) {
 	ast.NotNil(conf.ClientSecurityConfig.getServerTLSConfig())
 	ast.NotNil(conf.PeerSecurityConfig.getServerTLSConfig())
 	ast.NotNil(conf.PeerSecurityConfig.getClientTLSConfig())
+	ast.Equal("kubebrain-peer.kubebrain-system.svc", conf.PeerSecurityConfig.getClientTLSConfig().ServerName)
+	ast.ElementsMatch([]string{"h2", "http/1.1"}, conf.ClientSecurityConfig.getServerTLSConfig().NextProtos)
+	ast.ElementsMatch([]string{"h2", "http/1.1"}, conf.PeerSecurityConfig.getServerTLSConfig().NextProtos)
 }

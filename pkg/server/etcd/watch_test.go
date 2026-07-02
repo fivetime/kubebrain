@@ -1,0 +1,620 @@
+// Copyright 2022 ByteDance and/or its affiliates
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package etcd
+
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/require"
+	"go.etcd.io/etcd/api/v3/etcdserverpb"
+	"go.etcd.io/etcd/api/v3/mvccpb"
+	clientv3 "go.etcd.io/etcd/client/v3"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
+
+	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
+	"github.com/kubewharf/kubebrain/pkg/server/service/etcdproxy"
+)
+
+type fakeWatchServer struct {
+	etcdserverpb.Watch_WatchServer
+	ctx  context.Context
+	sent []*etcdserverpb.WatchResponse
+}
+
+func (s *fakeWatchServer) Send(resp *etcdserverpb.WatchResponse) error {
+	s.sent = append(s.sent, resp)
+	return nil
+}
+
+func (s *fakeWatchServer) Recv() (*etcdserverpb.WatchRequest, error) {
+	return nil, context.Canceled
+}
+
+func (s *fakeWatchServer) SetHeader(metadata.MD) error {
+	return nil
+}
+
+func (s *fakeWatchServer) SendHeader(metadata.MD) error {
+	return nil
+}
+
+func (s *fakeWatchServer) SetTrailer(metadata.MD) {
+}
+
+func (s *fakeWatchServer) Context() context.Context {
+	if s.ctx != nil {
+		return s.ctx
+	}
+	return context.Background()
+}
+
+func (s *fakeWatchServer) SendMsg(interface{}) error {
+	return nil
+}
+
+func (s *fakeWatchServer) RecvMsg(interface{}) error {
+	return context.Canceled
+}
+
+func TestIsExpectedWatchCloseError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "nil", err: nil, want: false},
+		{name: "context canceled", err: context.Canceled, want: true},
+		{name: "wrapped context canceled", err: errors.Join(errors.New("recv failed"), context.Canceled), want: true},
+		{name: "grpc canceled", err: status.Error(codes.Canceled, "context canceled"), want: true},
+		{name: "transport closing", err: status.Error(codes.Unavailable, "transport is closing"), want: true},
+		{name: "internal", err: status.Error(codes.Internal, "backend watch failed"), want: false},
+		{name: "plain error", err: errors.New("backend watch failed"), want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isExpectedWatchCloseError(tt.err); got != tt.want {
+				t.Fatalf("isExpectedWatchCloseError(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFilterWatchEventsMatchesEtcdFilters(t *testing.T) {
+	events := []*mvccpb.Event{
+		{Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{Key: []byte("put")}},
+		{Type: mvccpb.DELETE, Kv: &mvccpb.KeyValue{Key: []byte("delete")}},
+	}
+
+	tests := []struct {
+		name    string
+		filters []etcdserverpb.WatchCreateRequest_FilterType
+		want    []mvccpb.Event_EventType
+	}{
+		{
+			name: "none",
+			want: []mvccpb.Event_EventType{mvccpb.PUT, mvccpb.DELETE},
+		},
+		{
+			name:    "no put",
+			filters: []etcdserverpb.WatchCreateRequest_FilterType{etcdserverpb.WatchCreateRequest_NOPUT},
+			want:    []mvccpb.Event_EventType{mvccpb.DELETE},
+		},
+		{
+			name:    "no delete",
+			filters: []etcdserverpb.WatchCreateRequest_FilterType{etcdserverpb.WatchCreateRequest_NODELETE},
+			want:    []mvccpb.Event_EventType{mvccpb.PUT},
+		},
+		{
+			name: "no put and no delete",
+			filters: []etcdserverpb.WatchCreateRequest_FilterType{
+				etcdserverpb.WatchCreateRequest_NOPUT,
+				etcdserverpb.WatchCreateRequest_NODELETE,
+			},
+			want: nil,
+		},
+		{
+			name:    "unknown ignored",
+			filters: []etcdserverpb.WatchCreateRequest_FilterType{etcdserverpb.WatchCreateRequest_FilterType(99)},
+			want:    []mvccpb.Event_EventType{mvccpb.PUT, mvccpb.DELETE},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := filterWatchEvents(append([]*mvccpb.Event(nil), events...), tt.filters)
+			if len(got) != len(tt.want) {
+				t.Fatalf("filtered events length = %d, want %d", len(got), len(tt.want))
+			}
+			for i, event := range got {
+				if event.Type != tt.want[i] {
+					t.Fatalf("filtered event %d type = %v, want %v", i, event.Type, tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestFilterWatchEventsByRange(t *testing.T) {
+	events := []*mvccpb.Event{
+		{Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{Key: []byte("/registry/pods/a")}},
+		{Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{Key: []byte("/registry/pods/a/child")}},
+		{Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{Key: []byte("/registry/pods/b")}},
+		{Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{Key: []byte("/registry/services/a")}},
+		nil,
+	}
+
+	exact := filterWatchEventsByRange(append([]*mvccpb.Event(nil), events...), []byte("/registry/pods/a"), nil)
+	require.Len(t, exact, 1)
+	require.Equal(t, []byte("/registry/pods/a"), exact[0].Kv.Key)
+
+	prefix := filterWatchEventsByRange(append([]*mvccpb.Event(nil), events...), []byte("/registry/pods/"), []byte("/registry/pods0"))
+	require.Len(t, prefix, 3)
+	require.Equal(t, []byte("/registry/pods/a"), prefix[0].Kv.Key)
+	require.Equal(t, []byte("/registry/pods/a/child"), prefix[1].Kv.Key)
+	require.Equal(t, []byte("/registry/pods/b"), prefix[2].Kv.Key)
+
+	openEnded := filterWatchEventsByRange(append([]*mvccpb.Event(nil), events...), []byte("/registry/pods/b"), []byte{})
+	require.Len(t, openEnded, 2)
+	require.Equal(t, []byte("/registry/pods/b"), openEnded[0].Kv.Key)
+	require.Equal(t, []byte("/registry/services/a"), openEnded[1].Kv.Key)
+}
+
+func TestWatchBackendPrefix(t *testing.T) {
+	require.Equal(t, "/registry/pods/a", watchBackendPrefix([]byte("/registry/pods/a"), nil))
+	require.Equal(t, "/registry/pods/", watchBackendPrefix([]byte("/registry/pods/"), []byte("/registry/pods0")))
+	require.Equal(t, "", watchBackendPrefix([]byte("/registry/pods/a"), []byte("/registry/pods/c")))
+	require.Equal(t, "", watchBackendPrefix([]byte("/registry/pods/a"), []byte{}))
+}
+
+func TestWithoutWatchPrevKvsDoesNotMutateSharedEvents(t *testing.T) {
+	events := []*mvccpb.Event{
+		{Type: mvccpb.PUT, PrevKv: &mvccpb.KeyValue{Key: []byte("a")}},
+		nil,
+		{Type: mvccpb.DELETE, PrevKv: &mvccpb.KeyValue{Key: []byte("b")}},
+	}
+	withoutPrev := withoutWatchPrevKvs(events)
+	if withoutPrev[0].PrevKv != nil || withoutPrev[2].PrevKv != nil {
+		t.Fatalf("expected prev kvs to be cleared")
+	}
+	if events[0].PrevKv == nil || events[2].PrevKv == nil {
+		t.Fatalf("expected source events to keep prev kvs")
+	}
+}
+
+func TestNormalizeWatchCreateRequestMatchesEtcd(t *testing.T) {
+	t.Run("empty key becomes minimum key", func(t *testing.T) {
+		req := normalizeWatchCreateRequest(&etcdserverpb.WatchCreateRequest{})
+		if string(req.Key) != "\x00" {
+			t.Fatalf("key = %q, want minimum key", req.Key)
+		}
+		if req.RangeEnd != nil {
+			t.Fatalf("range end = %v, want nil", req.RangeEnd)
+		}
+	})
+
+	t.Run("nil range end remains nil", func(t *testing.T) {
+		req := normalizeWatchCreateRequest(&etcdserverpb.WatchCreateRequest{Key: []byte("/registry")})
+		if req.RangeEnd != nil {
+			t.Fatalf("range end = %v, want nil", req.RangeEnd)
+		}
+	})
+
+	t.Run("from key range end becomes open ended", func(t *testing.T) {
+		req := normalizeWatchCreateRequest(&etcdserverpb.WatchCreateRequest{
+			Key:      []byte("/registry"),
+			RangeEnd: []byte{0},
+		})
+		if req.RangeEnd == nil {
+			t.Fatalf("range end = nil, want non-nil open-ended marker")
+		}
+		if len(req.RangeEnd) != 0 {
+			t.Fatalf("range end length = %d, want 0", len(req.RangeEnd))
+		}
+	})
+}
+
+func TestCancelCompactedWatchResponseUsesBackendCompactRevisionAndErrorReason(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	ctx := context.Background()
+	putResp, err := server.Put(ctx, &etcdserverpb.PutRequest{
+		Key:   []byte("/registry/watch/compact"),
+		Value: []byte("v1"),
+	})
+	if err != nil {
+		t.Fatalf("put: %v", err)
+	}
+	require.Eventually(t, func() bool {
+		return server.backend.GetCurrentRevision() >= uint64(putResp.Header.Revision)
+	}, time.Second, time.Millisecond)
+	if _, err := server.Compact(ctx, &etcdserverpb.CompactionRequest{Revision: putResp.Header.Revision}); err != nil {
+		t.Fatalf("compact: %v", err)
+	}
+
+	stream := &fakeWatchServer{ctx: ctx}
+	cancelCalled := false
+	w := &watcher{
+		backend:     server.backend,
+		watchServer: stream,
+		watches: map[int64]*watch{
+			7: {cancel: func() { cancelCalled = true }, start: "/registry/watch/compact"},
+		},
+		metricCli: server.metricCli,
+	}
+	w.Cancel(7, compactedRevisionError(), true)
+
+	if !cancelCalled {
+		t.Fatalf("expected watcher context cancel to be called")
+	}
+	if len(stream.sent) != 1 {
+		t.Fatalf("sent responses = %d, want 1", len(stream.sent))
+	}
+	resp := stream.sent[0]
+	if !resp.Canceled {
+		t.Fatalf("canceled = false, want true")
+	}
+	if resp.CompactRevision != putResp.Header.Revision {
+		t.Fatalf("compact revision = %d, want %d", resp.CompactRevision, putResp.Header.Revision)
+	}
+	if resp.CancelReason != compactedRevisionError().Error() {
+		t.Fatalf("cancel reason = %q, want %q", resp.CancelReason, compactedRevisionError().Error())
+	}
+}
+
+func TestFollowerProxyWatchCloseIsNonCompactedCancel(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	proxyCh := make(chan etcdproxy.WatchResult)
+	close(proxyCh)
+	server.peers = testPeerService{
+		isLeader:     false,
+		proxyEnabled: true,
+		watchFn: func(_ context.Context, key, rangeEnd []byte, revision uint64) (<-chan etcdproxy.WatchResult, error) {
+			require.Equal(t, []byte("/registry/watch/proxy/"), key)
+			require.Equal(t, []byte("/registry/watch/proxy0"), rangeEnd)
+			require.Equal(t, uint64(10), revision)
+			return proxyCh, nil
+		},
+	}
+
+	stream := &fakeWatchServer{ctx: context.Background()}
+	w := &watcher{
+		backend:     server.backend,
+		watchServer: stream,
+		grpcServer:  server,
+		watches: map[int64]*watch{
+			7: {start: "/registry/watch/proxy/", end: "/registry/watch/proxy0"},
+		},
+		metricCli: server.metricCli,
+	}
+	w.wg.Add(1)
+	w.Watch(context.Background(), 7, &etcdserverpb.WatchCreateRequest{
+		Key:           []byte("/registry/watch/proxy/"),
+		RangeEnd:      []byte("/registry/watch/proxy0"),
+		StartRevision: 10,
+	})
+
+	require.Len(t, stream.sent, 1)
+	resp := stream.sent[0]
+	require.True(t, resp.Canceled)
+	require.Equal(t, int64(7), resp.WatchId)
+	require.Equal(t, int64(0), resp.CompactRevision)
+	require.Equal(t, "watch closed", resp.CancelReason)
+}
+
+func TestFollowerProxyWatchCreateUnavailableIsNonCompactedCancel(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	watchErr := status.Error(codes.Unavailable, "leader is not ready")
+	server.peers = testPeerService{
+		isLeader:     false,
+		proxyEnabled: true,
+		watchFn: func(context.Context, []byte, []byte, uint64) (<-chan etcdproxy.WatchResult, error) {
+			return nil, watchErr
+		},
+	}
+
+	stream := &fakeWatchServer{ctx: context.Background()}
+	w := &watcher{
+		backend:     server.backend,
+		watchServer: stream,
+		grpcServer:  server,
+		watches: map[int64]*watch{
+			7: {start: "/registry/watch/proxy-unavailable"},
+		},
+		metricCli: server.metricCli,
+	}
+	w.wg.Add(1)
+	w.Watch(context.Background(), 7, &etcdserverpb.WatchCreateRequest{
+		Key:           []byte("/registry/watch/proxy-unavailable"),
+		StartRevision: 10,
+	})
+
+	require.Len(t, stream.sent, 1)
+	resp := stream.sent[0]
+	require.True(t, resp.Canceled)
+	require.Equal(t, int64(7), resp.WatchId)
+	require.Equal(t, int64(0), resp.CompactRevision)
+	require.Equal(t, watchErr.Error(), resp.CancelReason)
+}
+
+func TestFollowerProxyWatchCompactedErrorIsForwarded(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	ctx := context.Background()
+	putResp, err := server.Put(ctx, &etcdserverpb.PutRequest{
+		Key:   []byte("/registry/watch/proxy-compact"),
+		Value: []byte("v1"),
+	})
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		return server.backend.GetCurrentRevision() >= uint64(putResp.Header.Revision)
+	}, time.Second, time.Millisecond)
+	_, err = server.Compact(ctx, &etcdserverpb.CompactionRequest{Revision: putResp.Header.Revision})
+	require.NoError(t, err)
+
+	proxyCh := make(chan etcdproxy.WatchResult, 1)
+	proxyCh <- etcdproxy.WatchResult{Err: compactedRevisionError()}
+	close(proxyCh)
+	server.peers = testPeerService{
+		isLeader:     false,
+		proxyEnabled: true,
+		watchFn: func(context.Context, []byte, []byte, uint64) (<-chan etcdproxy.WatchResult, error) {
+			return proxyCh, nil
+		},
+	}
+
+	stream := &fakeWatchServer{ctx: ctx}
+	w := &watcher{
+		backend:     server.backend,
+		watchServer: stream,
+		grpcServer:  server,
+		watches: map[int64]*watch{
+			7: {start: "/registry/watch/proxy-compact"},
+		},
+		metricCli: server.metricCli,
+	}
+	w.wg.Add(1)
+	w.Watch(ctx, 7, &etcdserverpb.WatchCreateRequest{
+		Key:           []byte("/registry/watch/proxy-compact"),
+		StartRevision: putResp.Header.Revision,
+	})
+
+	require.Len(t, stream.sent, 1)
+	resp := stream.sent[0]
+	require.True(t, resp.Canceled)
+	require.Equal(t, int64(7), resp.WatchId)
+	require.Equal(t, putResp.Header.Revision, resp.CompactRevision)
+	require.Equal(t, compactedRevisionError().Error(), resp.CancelReason)
+}
+
+func TestWatchResultsFromNilEventsCloses(t *testing.T) {
+	ch := watchResultsFromEvents(nil)
+	_, ok := <-ch
+	require.False(t, ok)
+}
+
+func TestIsWatchCompactedError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "nil", want: false},
+		{name: "grpc out of range", err: status.Error(codes.OutOfRange, "etcdserver: mvcc: required revision has been compacted"), want: true},
+		{name: "backend compacted string", err: errors.New("cache event oldest revision is compacted at 10 newer than requested revision 9"), want: true},
+		{name: "backend cache too old string", err: errors.New("cache event oldest revision is 10 newer than requested revision 9"), want: true},
+		{name: "grpc unavailable", err: status.Error(codes.Unavailable, "leader is not ready"), want: false},
+		{name: "grpc internal", err: status.Error(codes.Internal, "backend watch failed"), want: false},
+		{name: "plain non compacted", err: errors.New("watch closed"), want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, isWatchCompactedError(tt.err))
+		})
+	}
+}
+
+func TestWatchEventToEtcdEventDistinguishesCreateAndUpdate(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	ctx := context.Background()
+	key := []byte("/registry/watch/update-kind")
+	createResp, err := server.Put(ctx, &etcdserverpb.PutRequest{
+		Key:   key,
+		Value: []byte("v1"),
+	})
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		return server.backend.GetCurrentRevision() >= uint64(createResp.Header.Revision)
+	}, time.Second, time.Millisecond)
+
+	updateResp, err := server.Put(ctx, &etcdserverpb.PutRequest{
+		Key:   key,
+		Value: []byte("v2"),
+	})
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		return server.backend.GetCurrentRevision() >= uint64(updateResp.Header.Revision)
+	}, time.Second, time.Millisecond)
+
+	shim := server.backend.(*backendShim)
+	createEvent, err := shim.watchEventToEtcdEvent(ctx, &proto.Event{
+		Type:     proto.Event_CREATE,
+		Revision: uint64(createResp.Header.Revision),
+		Kv: &proto.KeyValue{
+			Key:      key,
+			Value:    []byte("v1"),
+			Revision: uint64(createResp.Header.Revision),
+		},
+	})
+	require.NoError(t, err)
+	require.True(t, (&clientv3.Event{Type: clientv3.EventTypePut, Kv: createEvent.Kv}).IsCreate())
+	require.Nil(t, createEvent.PrevKv)
+
+	updateEvent, err := shim.watchEventToEtcdEvent(ctx, &proto.Event{
+		Type: proto.Event_PUT,
+		Kv: &proto.KeyValue{
+			Key:      key,
+			Value:    []byte("v2"),
+			Revision: uint64(updateResp.Header.Revision),
+		},
+	})
+	require.NoError(t, err)
+	require.False(t, (&clientv3.Event{Type: clientv3.EventTypePut, Kv: updateEvent.Kv, PrevKv: updateEvent.PrevKv}).IsCreate())
+	require.NotNil(t, updateEvent.PrevKv)
+	require.Equal(t, []byte("v1"), updateEvent.PrevKv.Value)
+	require.Equal(t, createResp.Header.Revision, updateEvent.PrevKv.ModRevision)
+	require.Equal(t, updateResp.Header.Revision, updateEvent.Kv.ModRevision)
+}
+
+func TestWatchEventToEtcdEventFallsBackToCreateWhenPrevKvUnavailable(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	key := []byte("/registry/watch/missing-prev")
+	shim := server.backend.(*backendShim)
+	event, err := shim.watchEventToEtcdEvent(context.Background(), &proto.Event{
+		Type:     proto.Event_PUT,
+		Revision: 123,
+		Kv: &proto.KeyValue{
+			Key:      key,
+			Value:    []byte("v1"),
+			Revision: 123,
+		},
+	})
+	require.NoError(t, err)
+	require.Nil(t, event.PrevKv)
+	require.True(t, (&clientv3.Event{Type: clientv3.EventTypePut, Kv: event.Kv}).IsCreate())
+	require.Equal(t, event.Kv.ModRevision, event.Kv.CreateRevision)
+}
+
+// scriptedWatchServer replays a fixed sequence of WatchRequests, then reports
+// context.Canceled so RPCServer.Watch's receive loop exits deterministically.
+type scriptedWatchServer struct {
+	*fakeWatchServer
+	reqs []*etcdserverpb.WatchRequest
+	idx  int
+}
+
+func (s *scriptedWatchServer) Recv() (*etcdserverpb.WatchRequest, error) {
+	if s.idx < len(s.reqs) {
+		r := s.reqs[s.idx]
+		s.idx++
+		return r, nil
+	}
+	return nil, context.Canceled
+}
+
+func TestStoreMaxUint64OnlyAdvances(t *testing.T) {
+	var v uint64
+	storeMaxUint64(&v, 5)
+	require.Equal(t, uint64(5), v)
+	storeMaxUint64(&v, 3) // stale, must not move backwards
+	require.Equal(t, uint64(5), v)
+	storeMaxUint64(&v, 9)
+	require.Equal(t, uint64(9), v)
+}
+
+func TestMinSyncedRevisionReportsSlowestWatch(t *testing.T) {
+	// No active watch: nothing can be behind, caller falls back to backend rev.
+	empty := &watcher{watches: map[int64]*watch{}}
+	if _, ok := empty.minSyncedRevision(); ok {
+		t.Fatalf("expected ok=false with no active watches")
+	}
+
+	w := &watcher{watches: map[int64]*watch{
+		1: {syncedRev: 7},
+		2: {syncedRev: 3}, // slowest
+		3: {syncedRev: 5},
+	}}
+	rev, ok := w.minSyncedRevision()
+	require.True(t, ok)
+	require.Equal(t, uint64(3), rev, "must report the slowest watch, never a faster one")
+}
+
+// TestWatchProgressRequestReportsSyncedNotGlobalRevision reproduces the progress
+// notification data-loss bug: because the backend advances the global current
+// revision before the corresponding events reach a watch, a progress
+// notification that echoes the global revision tells the client it is synced
+// through revisions whose events it has not received. A watch on an idle key
+// must report only the revision it has actually delivered.
+func TestWatchProgressRequestReportsSyncedNotGlobalRevision(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	ctx := context.Background()
+	// Advance the global revision with writes to an unrelated key.
+	var lastRev int64
+	for i := 0; i < 3; i++ {
+		putResp, err := server.Put(ctx, &etcdserverpb.PutRequest{
+			Key:   []byte("/registry/other/x"),
+			Value: []byte("v"),
+		})
+		require.NoError(t, err)
+		lastRev = putResp.Header.Revision
+	}
+	require.Eventually(t, func() bool {
+		return server.backend.GetCurrentRevision() >= uint64(lastRev)
+	}, time.Second, time.Millisecond)
+	global := server.backend.GetCurrentRevision()
+	require.Greater(t, global, uint64(1))
+
+	// Watch an idle key from the current revision; no events will ever be
+	// delivered to it, so it is synced only through startRevision-1.
+	startRev := int64(global)
+	stream := &scriptedWatchServer{
+		fakeWatchServer: &fakeWatchServer{ctx: ctx},
+		reqs: []*etcdserverpb.WatchRequest{
+			{RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{
+				CreateRequest: &etcdserverpb.WatchCreateRequest{
+					Key:           []byte("/registry/watch/idle/x"),
+					StartRevision: startRev,
+				},
+			}},
+			{RequestUnion: &etcdserverpb.WatchRequest_ProgressRequest{
+				ProgressRequest: &etcdserverpb.WatchProgressRequest{},
+			}},
+		},
+	}
+
+	if err := server.Watch(stream); err != nil && !errors.Is(err, context.Canceled) {
+		t.Fatalf("watch returned unexpected error: %v", err)
+	}
+
+	var progress *etcdserverpb.WatchResponse
+	for _, resp := range stream.fakeWatchServer.sent {
+		if resp.WatchId == -1 { // stream-level progress notification
+			progress = resp
+		}
+	}
+	require.NotNil(t, progress, "expected a progress notification response")
+	require.Equal(t, startRev-1, progress.Header.Revision,
+		"progress must report the delivered/synced revision, not the global current revision")
+	require.Less(t, progress.Header.Revision, int64(global),
+		"progress must not advertise the global revision that runs ahead of undelivered events")
+}

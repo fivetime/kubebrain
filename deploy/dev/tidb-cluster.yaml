@@ -1,0 +1,29 @@
+apiVersion: pingcap.com/v1alpha1
+kind: TidbCluster
+metadata:
+  name: kb
+  namespace: tidb-cluster
+spec:
+  version: v8.5.3
+  timezone: UTC
+  pvReclaimPolicy: Delete
+  enableDynamicConfiguration: true
+  configUpdateStrategy: RollingUpdate
+  pd:
+    baseImage: pingcap/pd
+    replicas: 1
+    requests:
+      storage: 2Gi
+    config: {}
+  tikv:
+    baseImage: pingcap/tikv
+    replicas: 1
+    requests:
+      storage: 5Gi
+    config: {}
+  tidb:
+    baseImage: pingcap/tidb
+    replicas: 1
+    service:
+      type: ClusterIP
+    config: {}

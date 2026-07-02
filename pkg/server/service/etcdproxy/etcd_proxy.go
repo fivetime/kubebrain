@@ -56,6 +56,8 @@ var defaultCallOption = []grpc.CallOption{
 	grpc.MaxCallRecvMsgSize(math.MaxInt32),
 }
 
+const proxyReadyWaitTimeout = 2 * time.Second
+
 // NewEtcdProxy return an ETCD proxy for forward request to leader
 func NewEtcdProxy(leaderElection leader.LeaderElection, tlsConfig *tls.Config) EtcdProxy {
 	proxy := &etcdProxy{election: leaderElection, tlsConfig: tlsConfig}
@@ -95,14 +97,17 @@ func (e *etcdProxy) resetClient() (reset bool) {
 
 func (e *etcdProxy) updateClient() {
 
-	if err := e.checkConn(); err != nil {
-		e.curLeader = ""
-		e.lock.Lock()
-		defer e.lock.Unlock()
-		if e.resetClient() {
-			klog.ErrorS(e.err, "reset client caused by checking conn")
+	if e.hasClient() {
+		if err := e.checkConn(); err != nil {
+			e.lock.Lock()
+			defer e.lock.Unlock()
+			e.curLeader = ""
+			e.err = err
+			if e.resetClient() {
+				klog.InfoS("reset client caused by checking conn", "err", e.err)
+			}
+			return
 		}
-		return
 	}
 
 	if e.election.IsLeader() {
@@ -115,18 +120,20 @@ func (e *etcdProxy) updateClient() {
 	}
 
 	curLeader := e.election.GetLeaderInfo()
-	if curLeader == e.curLeader || curLeader == "empty" || curLeader == "" {
+	e.lock.RLock()
+	sameLeader := curLeader == e.curLeader
+	e.lock.RUnlock()
+	if sameLeader || curLeader == "empty" || curLeader == "" {
 		return
 	}
-	oldLeader := e.curLeader
-	e.curLeader = curLeader
 
 	e.lock.Lock()
-	defer e.lock.Unlock()
+	oldLeader := e.curLeader
 	// close prev client
 	if e.resetClient() {
 		klog.InfoS("reset client caused by changing leader")
 	}
+	e.lock.Unlock()
 
 	klog.InfoS("try to conn to new leader", "newLeader", curLeader)
 	tlsConfigs := []*tls.Config{e.tlsConfig}
@@ -135,50 +142,119 @@ func (e *etcdProxy) updateClient() {
 	}
 
 	for _, tlsConfig := range tlsConfigs {
-		e.client, e.err = clientv3.New(clientv3.Config{
-			Endpoints: []string{e.curLeader},
+		client, err := clientv3.New(clientv3.Config{
+			Endpoints: []string{curLeader},
 			TLS:       tlsConfig,
 		})
-		if e.err != nil {
-			klog.ErrorS(e.err, "failed to create new client")
-			e.err = status.Error(codes.Internal, e.err.Error())
+		if err != nil {
+			klog.ErrorS(err, "failed to create new client")
+			e.lock.Lock()
+			e.err = status.Error(codes.Internal, err.Error())
+			e.lock.Unlock()
 			return
 		}
 
-		klog.InfoS("check conn to new leader", "newLeader", curLeader, "secure", tlsConfig == nil)
+		klog.InfoS("check conn to new leader", "newLeader", curLeader, "secure", tlsConfig != nil)
 
-		e.err = e.checkConn()
-		if e.err != nil {
-			klog.ErrorS(e.err, "failed to conn to new leader", "newLeader", e.curLeader, "secure", tlsConfig != nil)
-			if errors.Is(e.err, context.DeadlineExceeded) {
+		err = checkClientConn(client, nil)
+		if err != nil {
+			_ = client.Close()
+			klog.InfoS("leader connection not ready", "err", err, "newLeader", curLeader, "secure", tlsConfig != nil)
+			e.lock.Lock()
+			e.err = err
+			e.lock.Unlock()
+			if errors.Is(err, context.DeadlineExceeded) {
 				// maybe tls config error, just change config and retry
-				e.err = nil
 				continue
 			}
 			break
 		}
 
-		klog.InfoS("conn to new leader", "oldLeader", oldLeader, "curLeader", e.curLeader)
+		e.lock.Lock()
+		e.client = client
+		e.err = nil
+		e.curLeader = curLeader
+		e.lock.Unlock()
+		klog.InfoS("conn to new leader", "oldLeader", oldLeader, "curLeader", curLeader)
 		return
 	}
 
-	klog.ErrorS(e.err, "failed to conn to new leader", "newLeader", e.curLeader)
+	e.lock.Lock()
+	defer e.lock.Unlock()
+	klog.InfoS("leader connection not ready", "err", e.err, "newLeader", curLeader)
 	e.curLeader = ""
-	e.client = nil
+	if e.client != nil {
+		_ = e.client.Close()
+		e.client = nil
+	}
+}
+
+func (e *etcdProxy) hasClient() bool {
+	e.lock.RLock()
+	defer e.lock.RUnlock()
+	return e.client != nil
 }
 
 func (e *etcdProxy) checkConn() error {
+	e.lock.RLock()
+	client := e.client
+	err := e.err
+	e.lock.RUnlock()
+	return checkClientConn(client, err)
+}
+
+func checkClientConn(client *clientv3.Client, clientErr error) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
-	if e.client == nil {
-		return e.err
+	if client == nil {
+		return clientErr
 	}
 
-	_, err := e.client.MemberList(ctx)
+	_, err := client.MemberList(ctx)
 	if err != nil {
 		return err
 	}
 	return nil
+}
+
+func (e *etcdProxy) readyClient(ctx context.Context) (*clientv3.Client, string, <-chan struct{}, error) {
+	if err := e.waitReady(ctx); err != nil {
+		return nil, "", nil, err
+	}
+	e.lock.RLock()
+	defer e.lock.RUnlock()
+	if err := e.readyLocked(); err != nil {
+		return nil, "", nil, err
+	}
+	return e.client, e.curLeader, e.closed, nil
+}
+
+func (e *etcdProxy) markForwardError(client *clientv3.Client, err error) {
+	if err == nil || !isForwardConnectionError(err) {
+		return
+	}
+	e.lock.Lock()
+	defer e.lock.Unlock()
+	if e.client != client {
+		return
+	}
+	e.err = err
+	e.curLeader = ""
+	if e.resetClient() {
+		klog.InfoS("reset client caused by forward error", "err", err)
+	}
+}
+
+func isForwardConnectionError(err error) bool {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	switch status.Code(err) {
+	case codes.Canceled, codes.DeadlineExceeded, codes.Unavailable:
+		return true
+	default:
+		return false
+	}
 }
 
 func getKeyFromTxn(txn *etcdserverpb.TxnRequest) (string, int64) {
@@ -189,20 +265,18 @@ func getKeyFromTxn(txn *etcdserverpb.TxnRequest) (string, int64) {
 }
 
 func (e *etcdProxy) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etcdserverpb.TxnResponse, error) {
-	e.lock.RLock()
-	defer e.lock.RUnlock()
-
-	err := e.Ready()
+	client, leader, _, err := e.readyClient(ctx)
 	if err != nil {
 		return nil, err
 	}
 
 	key, rev := getKeyFromTxn(txn)
 	klog.InfoS("forward txn",
-		"leader", e.curLeader,
+		"leader", leader,
 		"key", key,
 		"rev", rev)
-	resp, err := etcdserverpb.NewKVClient(e.client.ActiveConnection()).Txn(ctx, txn, defaultCallOption...)
+	resp, err := etcdserverpb.NewKVClient(client.ActiveConnection()).Txn(ctx, txn, defaultCallOption...)
+	e.markForwardError(client, err)
 	if err != nil {
 		klog.InfoS("forward txn failed", "key", key, "err", err.Error())
 		return nil, err
@@ -229,54 +303,262 @@ func (e *etcdProxy) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etc
 	return resp, err
 }
 
+func (e *etcdProxy) Range(ctx context.Context, req *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
+	client, leader, _, err := e.readyClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+	klog.InfoS("forward range", "leader", leader, "key", string(req.Key), "rangeEnd", string(req.RangeEnd), "revision", req.Revision)
+	resp, err := etcdserverpb.NewKVClient(client.ActiveConnection()).Range(ctx, req, defaultCallOption...)
+	e.markForwardError(client, err)
+	return resp, err
+}
+
+func (e *etcdProxy) Put(ctx context.Context, req *etcdserverpb.PutRequest) (*etcdserverpb.PutResponse, error) {
+	client, leader, _, err := e.readyClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+	klog.InfoS("forward put", "leader", leader, "key", string(req.Key), "lease", req.Lease)
+	resp, err := etcdserverpb.NewKVClient(client.ActiveConnection()).Put(ctx, req, defaultCallOption...)
+	e.markForwardError(client, err)
+	return resp, err
+}
+
+func (e *etcdProxy) DeleteRange(ctx context.Context, req *etcdserverpb.DeleteRangeRequest) (*etcdserverpb.DeleteRangeResponse, error) {
+	client, leader, _, err := e.readyClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+	klog.InfoS("forward delete range", "leader", leader, "key", string(req.Key), "rangeEnd", string(req.RangeEnd))
+	resp, err := etcdserverpb.NewKVClient(client.ActiveConnection()).DeleteRange(ctx, req, defaultCallOption...)
+	e.markForwardError(client, err)
+	return resp, err
+}
+
+func (e *etcdProxy) Compact(ctx context.Context, req *etcdserverpb.CompactionRequest) (*etcdserverpb.CompactionResponse, error) {
+	client, leader, _, err := e.readyClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+	klog.InfoS("forward compact", "leader", leader, "revision", req.Revision, "physical", req.Physical)
+	resp, err := etcdserverpb.NewKVClient(client.ActiveConnection()).Compact(ctx, req, defaultCallOption...)
+	e.markForwardError(client, err)
+	return resp, err
+}
+
+func (e *etcdProxy) LeaseGrant(ctx context.Context, req *etcdserverpb.LeaseGrantRequest) (*etcdserverpb.LeaseGrantResponse, error) {
+	client, leader, _, err := e.readyClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+	klog.InfoS("forward lease grant", "leader", leader, "id", req.ID, "ttl", req.TTL)
+	resp, err := etcdserverpb.NewLeaseClient(client.ActiveConnection()).LeaseGrant(ctx, req, defaultCallOption...)
+	e.markForwardError(client, err)
+	return resp, err
+}
+
+func (e *etcdProxy) LeaseRevoke(ctx context.Context, req *etcdserverpb.LeaseRevokeRequest) (*etcdserverpb.LeaseRevokeResponse, error) {
+	client, leader, _, err := e.readyClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+	klog.InfoS("forward lease revoke", "leader", leader, "id", req.ID)
+	resp, err := etcdserverpb.NewLeaseClient(client.ActiveConnection()).LeaseRevoke(ctx, req, defaultCallOption...)
+	e.markForwardError(client, err)
+	return resp, err
+}
+
+func (e *etcdProxy) LeaseKeepAlive(ctx context.Context, req *etcdserverpb.LeaseKeepAliveRequest) (*etcdserverpb.LeaseKeepAliveResponse, error) {
+	client, leader, _, err := e.readyClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+	klog.InfoS("forward lease keepalive", "leader", leader, "id", req.ID)
+	stream, err := etcdserverpb.NewLeaseClient(client.ActiveConnection()).LeaseKeepAlive(ctx, defaultCallOption...)
+	if err != nil {
+		e.markForwardError(client, err)
+		return nil, err
+	}
+	if err := stream.Send(req); err != nil {
+		_ = stream.CloseSend()
+		e.markForwardError(client, err)
+		return nil, err
+	}
+	resp, err := stream.Recv()
+	if closeErr := stream.CloseSend(); err == nil && closeErr != nil {
+		err = closeErr
+	}
+	e.markForwardError(client, err)
+	return resp, err
+}
+
+func (e *etcdProxy) LeaseTimeToLive(ctx context.Context, req *etcdserverpb.LeaseTimeToLiveRequest) (*etcdserverpb.LeaseTimeToLiveResponse, error) {
+	client, leader, _, err := e.readyClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+	klog.InfoS("forward lease ttl", "leader", leader, "id", req.ID, "keys", req.Keys)
+	resp, err := etcdserverpb.NewLeaseClient(client.ActiveConnection()).LeaseTimeToLive(ctx, req, defaultCallOption...)
+	e.markForwardError(client, err)
+	return resp, err
+}
+
+func (e *etcdProxy) LeaseLeases(ctx context.Context, req *etcdserverpb.LeaseLeasesRequest) (*etcdserverpb.LeaseLeasesResponse, error) {
+	client, leader, _, err := e.readyClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+	klog.InfoS("forward lease leases", "leader", leader)
+	resp, err := etcdserverpb.NewLeaseClient(client.ActiveConnection()).LeaseLeases(ctx, req, defaultCallOption...)
+	e.markForwardError(client, err)
+	return resp, err
+}
+
 func (e *etcdProxy) Ready() error {
+	e.lock.RLock()
+	defer e.lock.RUnlock()
+	return e.readyLocked()
+}
+
+func (e *etcdProxy) readyLocked() error {
 	if e.client == nil {
 		return status.Errorf(codes.Unavailable, "no ready right now")
+	}
+	currentLeader := e.election.GetLeaderInfo()
+	if currentLeader == "" || currentLeader == "empty" {
+		return status.Errorf(codes.Unavailable, "leader is not elected")
+	}
+	if e.curLeader != currentLeader {
+		return status.Errorf(codes.Unavailable, "proxy leader %q is stale, current leader %q", e.curLeader, currentLeader)
 	}
 	return nil
 }
 
-func (e *etcdProxy) Watch(ctx context.Context, key string, revision uint64) (<-chan []*mvccpb.Event, error) {
-	e.lock.RLock()
-	defer e.lock.RUnlock()
+func (e *etcdProxy) waitReady(ctx context.Context) error {
+	if err := e.Ready(); err == nil {
+		return nil
+	}
 
-	err := e.Ready()
-	if err != nil {
+	waitCtx, cancel := context.WithTimeout(ctx, proxyReadyWaitTimeout)
+	defer cancel()
+
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	var lastErr error
+	for {
+		select {
+		case <-waitCtx.Done():
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if lastErr != nil {
+				return status.Errorf(codes.Unavailable, "proxy is not ready after %s: %v", proxyReadyWaitTimeout, lastErr)
+			}
+			return status.Errorf(codes.Unavailable, "proxy is not ready after %s", proxyReadyWaitTimeout)
+		default:
+		}
+
+		e.updateClient()
+		if err := e.Ready(); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+
+		select {
+		case <-waitCtx.Done():
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if lastErr != nil {
+				return status.Errorf(codes.Unavailable, "proxy is not ready after %s: %v", proxyReadyWaitTimeout, lastErr)
+			}
+			return status.Errorf(codes.Unavailable, "proxy is not ready after %s", proxyReadyWaitTimeout)
+		case <-ticker.C:
+		}
+	}
+}
+
+func (e *etcdProxy) Watch(ctx context.Context, key, rangeEnd []byte, revision uint64) (<-chan WatchResult, error) {
+	if _, _, _, err := e.readyClient(ctx); err != nil {
 		return nil, err
 	}
 
-	outputCh := make(chan []*mvccpb.Event, 100)
-	closed := e.closed
+	outputCh := make(chan WatchResult, 100)
 	go func() {
 		defer util.Recover()
 		defer close(outputCh)
 		ctx, cancel := context.WithCancel(ctx)
 		defer cancel()
-		klog.InfoS("etcd proxy start watching")
-		inputCh := e.client.Watch(ctx, key, clientv3.WithRev(int64(revision)), clientv3.WithPrefix())
+		watchRevision := revision
 		for {
-			select {
-			case <-closed:
-				klog.InfoS("leader change")
+			client, leader, closed, err := e.readyClient(ctx)
+			if err != nil {
+				klog.InfoS("etcd proxy watch ready failed", "key", string(key), "rangeEnd", string(rangeEnd), "rev", watchRevision, "error", err)
 				return
+			}
+
+			klog.InfoS("etcd proxy start watching", "leader", leader, "key", string(key), "rangeEnd", string(rangeEnd), "rev", watchRevision)
+			// Always request PrevKV from the leader. The outer etcd watch server
+			// still strips PrevKv when the original client did not request it.
+			inputCh := client.Watch(ctx, string(key), watchOptionsForRange(rangeEnd, watchRevision)...)
+			reconnect := false
+			for !reconnect {
+				select {
+				case <-closed:
+					klog.InfoS("etcd proxy watch leader changed", "key", string(key), "rangeEnd", string(rangeEnd), "rev", watchRevision)
+					reconnect = true
+				case <-ctx.Done():
+					klog.InfoS("etcd proxy watch ctx done")
+					return
+				case wresp, ok := <-inputCh:
+					if !ok {
+						klog.InfoS("etcd proxy watch closed", "key", string(key), "rangeEnd", string(rangeEnd), "rev", watchRevision, "channel", outputCh)
+						reconnect = true
+						break
+					}
+					err := wresp.Err()
+					if err != nil {
+						klog.InfoS("etcd proxy watch error", "key", string(key), "rangeEnd", string(rangeEnd), "rev", watchRevision, "channel", outputCh, "error", err)
+						e.markForwardError(client, err)
+						if isForwardConnectionError(err) {
+							reconnect = true
+							break
+						}
+						outputCh <- WatchResult{Err: err}
+						return
+					}
+					events := convertEvents(wresp.Events)
+					for _, event := range events {
+						if event.Kv != nil && event.Kv.ModRevision >= int64(watchRevision) {
+							watchRevision = uint64(event.Kv.ModRevision) + 1
+						}
+					}
+					outputCh <- WatchResult{Events: events}
+				}
+			}
+
+			select {
 			case <-ctx.Done():
 				klog.InfoS("etcd proxy watch ctx done")
 				return
-			case wresp, ok := <-inputCh:
-				if !ok {
-					klog.InfoS("etcd proxy watch closed", "key", key, "rev", revision, "channel", outputCh)
-					return
-				}
-				err := wresp.Err()
-				if err != nil {
-					klog.InfoS("etcd proxy watch error", "key", key, "rev", revision, "channel", outputCh, "error", err)
-					return
-				}
-				outputCh <- convertEvents(wresp.Events)
+			case <-time.After(100 * time.Millisecond):
 			}
 		}
 	}()
 	return outputCh, nil
+}
+
+func watchOptionsForRange(rangeEnd []byte, revision uint64) []clientv3.OpOption {
+	opts := []clientv3.OpOption{clientv3.WithRev(int64(revision)), clientv3.WithPrevKV()}
+	if rangeEnd == nil {
+		return opts
+	}
+	if len(rangeEnd) == 0 {
+		return append(opts, clientv3.WithFromKey())
+	}
+	return append(opts, clientv3.WithRange(string(rangeEnd)))
 }
 
 func convertEvents(events []*clientv3.Event) []*mvccpb.Event {

@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
+CLUSTER_NAME="${CLUSTER_NAME:-kubebrain-dev}"
+IMAGE_NAME="${IMAGE_NAME:-kubebrain:dev}"
+KIND_NODE_IMAGE="${KIND_NODE_IMAGE:-}"
+TIDB_OPERATOR_VERSION="${TIDB_OPERATOR_VERSION:-v1.6.5}"
+KUBEBRAIN_REPLICAS="${KUBEBRAIN_REPLICAS:-1}"
+
+need() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    echo "missing required command: $1" >&2
+    exit 1
+  fi
+}
+
+need docker
+need kind
+need kubectl
+need helm
+
+wait_pods_ready() {
+  local namespace="$1"
+  local selector="$2"
+  local timeout="${3:-300s}"
+
+  echo "Waiting for pods matching ${selector} in namespace ${namespace}"
+  local deadline=$((SECONDS + ${timeout%s}))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    if kubectl get pods --namespace "$namespace" -l "$selector" --no-headers 2>/dev/null | grep -q .; then
+      kubectl wait --namespace "$namespace" \
+        --for=condition=ready pod \
+        -l "$selector" \
+        --timeout="$timeout"
+      return
+    fi
+    sleep 2
+  done
+
+  echo "timed out waiting for pods matching ${selector} in namespace ${namespace}" >&2
+  kubectl get pods --namespace "$namespace" --show-labels >&2 || true
+  exit 1
+}
+
+cd "$ROOT_DIR"
+
+kind_config="deploy/dev/kind-config.yaml"
+tmp_kind_config=""
+cleanup() {
+  if [ -n "$tmp_kind_config" ] && [ -f "$tmp_kind_config" ]; then
+    rm -f "$tmp_kind_config"
+  fi
+}
+trap cleanup EXIT
+
+if [ -n "$KIND_NODE_IMAGE" ]; then
+  tmp_kind_config="$(mktemp)"
+  awk '
+    { print }
+    $0 ~ /^[[:space:]]*-[[:space:]]*role:[[:space:]]*control-plane[[:space:]]*$/ {
+      print "    image: " ENVIRON["KIND_NODE_IMAGE"]
+    }
+  ' deploy/dev/kind-config.yaml >"$tmp_kind_config"
+  kind_config="$tmp_kind_config"
+fi
+
+if ! kind get clusters | grep -qx "$CLUSTER_NAME"; then
+  kind create cluster --name "$CLUSTER_NAME" --config "$kind_config"
+elif [ -n "$KIND_NODE_IMAGE" ]; then
+  echo "cluster ${CLUSTER_NAME} already exists; KIND_NODE_IMAGE only applies when creating a new kind cluster" >&2
+fi
+
+docker build --build-arg STORAGE=tikv -t "$IMAGE_NAME" .
+kind load docker-image "$IMAGE_NAME" --name "$CLUSTER_NAME"
+
+helm repo add pingcap https://charts.pingcap.com/ >/dev/null
+helm repo update >/dev/null
+
+kubectl create namespace tidb-admin --dry-run=client -o yaml | kubectl apply -f -
+kubectl apply --server-side=true --force-conflicts \
+  -f "https://raw.githubusercontent.com/pingcap/tidb-operator/${TIDB_OPERATOR_VERSION}/manifests/crd.yaml"
+helm upgrade --install tidb-operator pingcap/tidb-operator \
+  --namespace tidb-admin \
+  --version "$TIDB_OPERATOR_VERSION"
+
+kubectl wait --namespace tidb-admin \
+  --for=condition=available deployment/tidb-controller-manager \
+  --timeout=180s
+
+kubectl create namespace tidb-cluster --dry-run=client -o yaml | kubectl apply -f -
+kubectl apply -f deploy/dev/tidb-cluster.yaml
+
+wait_pods_ready tidb-cluster 'app.kubernetes.io/component=pd,app.kubernetes.io/instance=kb' 600s
+wait_pods_ready tidb-cluster 'app.kubernetes.io/component=tikv,app.kubernetes.io/instance=kb' 600s
+
+kubectl apply -f deploy/dev/kubebrain-tikv.yaml
+kubectl scale deployment/kubebrain --namespace kubebrain-dev --replicas="$KUBEBRAIN_REPLICAS"
+kubectl rollout restart deployment/kubebrain --namespace kubebrain-dev
+kubectl rollout status deployment/kubebrain --namespace kubebrain-dev --timeout=180s
+
+cat <<EOF
+KubeBrain dev stack is ready.
+
+Host endpoint:
+  127.0.0.1:3379
+
+Useful commands:
+  kubectl -n kubebrain-dev logs deploy/kubebrain -f
+  kubectl -n tidb-cluster get pods
+  hack/dev/smoke-etcd-client.sh
+EOF

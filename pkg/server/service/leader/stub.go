@@ -14,13 +14,15 @@
 
 package leader
 
+import "context"
+
 // Stub is an implement of LeaderElection for test
 type Stub struct {
 	ElectionInfo
 }
 
 // Campaign implements LeaderElection interface
-func (s *Stub) Campaign() {
+func (s *Stub) Campaign(context.Context) {
 }
 
 // GetLeaderInfo implements LeaderElection interface

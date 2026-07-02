@@ -15,7 +15,9 @@
 package etcd
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -30,6 +32,7 @@ import (
 	"k8s.io/klog/v2"
 
 	"github.com/kubewharf/kubebrain/pkg/metrics"
+	"github.com/kubewharf/kubebrain/pkg/server/service/etcdproxy"
 )
 
 var (
@@ -40,6 +43,7 @@ var (
 // watcher correspond to one stream, one watcher has many watches
 type watcher struct {
 	sync.Mutex
+	sendMu sync.Mutex
 
 	wg      sync.WaitGroup
 	backend BackendShim
@@ -64,6 +68,45 @@ var (
 type watch struct {
 	cancel     func()
 	start, end string
+	// syncedRev is the highest revision this watch has actually delivered to the
+	// client (or the caught-up revision captured at creation). Progress
+	// notifications must never advertise a revision beyond syncedRev: the global
+	// current revision is advanced (SetCurrentRevision) before the corresponding
+	// events are published to the watch pipeline, so reporting it here would tell
+	// a client (e.g. the kube-apiserver watch cache) that it is synced through a
+	// revision whose events it has not yet received, causing it to skip them.
+	// Access atomically.
+	syncedRev uint64
+}
+
+// storeMaxUint64 atomically advances *addr to val, never moving it backwards.
+func storeMaxUint64(addr *uint64, val uint64) {
+	for {
+		old := atomic.LoadUint64(addr)
+		if val <= old {
+			return
+		}
+		if atomic.CompareAndSwapUint64(addr, old, val) {
+			return
+		}
+	}
+}
+
+// minSyncedRevision returns the minimum revision delivered across all active
+// watches on the stream, and whether any watch is active.
+func (w *watcher) minSyncedRevision() (uint64, bool) {
+	w.Lock()
+	defer w.Unlock()
+	var minRev uint64
+	found := false
+	for _, wt := range w.watches {
+		rev := atomic.LoadUint64(&wt.syncedRev)
+		if !found || rev < minRev {
+			minRev = rev
+			found = true
+		}
+	}
+	return minRev, found
 }
 
 func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) error {
@@ -91,11 +134,16 @@ func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) error {
 			}
 			w.Unlock()
 			s.metricCli.EmitCounter("watcher.receive.cancel", 1)
-			klog.ErrorS(err, "watcher receive err", "id", w.id, "info", strings.Join(watchInfo, "\n"))
+			if isExpectedWatchCloseError(err) {
+				klog.V(4).InfoS("watcher receive closed", "id", w.id, "err", err, "info", strings.Join(watchInfo, "\n"))
+			} else {
+				klog.ErrorS(err, "watcher receive err", "id", w.id, "info", strings.Join(watchInfo, "\n"))
+			}
 			return err
 		}
 
 		if r := msg.GetCreateRequest(); r != nil {
+			r = normalizeWatchCreateRequest(r)
 			// normal watch request can only be handled by leader
 			// magic logic: when StartRevision < 0, the request is a RangeStream Request.
 			if r.StartRevision >= 0 && isPureWatchRequest(r) && !s.peers.IsLeader() && !s.peers.EtcdProxyEnabled() {
@@ -110,6 +158,27 @@ func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) error {
 			s.metricCli.EmitCounter("watch.client.cancel", 1)
 			klog.InfoS("receive watch cancel request", "id", w.id, "watchID", cancelRequest.GetWatchId())
 			w.Cancel(msg.GetCancelRequest().WatchId, nil, false)
+		} else if msg.GetProgressRequest() != nil {
+			s.metricCli.EmitCounter("watch.progress.request", 1)
+			// A stream-wide progress notification must not exceed the slowest
+			// watch: report the minimum revision delivered across all active
+			// watches. With no active watch, nothing can be behind, so fall back
+			// to the backend current revision.
+			revision, ok := w.minSyncedRevision()
+			if !ok {
+				backendRev, err := safeBackendRevision(ws.Context(), s.backend)
+				if err != nil {
+					return err
+				}
+				revision = backendRev
+			}
+			if err := w.Send(&etcdserverpb.WatchResponse{
+				Header:  txnHeader(int64(revision)),
+				WatchId: -1,
+			}); err != nil {
+				klog.ErrorS(err, "watch send progress response err", "watcher", w.id)
+				return err
+			}
 		} else {
 			s.metricCli.EmitCounter("watch.request.unsupported", 1)
 			klog.Info("watch receive message unsupported type")
@@ -122,10 +191,22 @@ func (w *watcher) Start(c context.Context, r *etcdserverpb.WatchCreateRequest) {
 	ctx, cancel := context.WithCancel(c)
 	id := atomic.AddInt64(&watchID, 1)
 
+	// Seed syncedRev with the revision the watch is guaranteed to be caught up
+	// through before any event is delivered: StartRevision-1 for a historical
+	// watch (it will deliver events >= StartRevision), or the current revision for
+	// a watch that starts from "now" (StartRevision == 0). Range-stream requests
+	// (StartRevision < 0) never emit progress notifications, so leave it at 0.
+	var initSyncedRev uint64
+	if r.StartRevision > 0 {
+		initSyncedRev = uint64(r.StartRevision) - 1
+	} else if r.StartRevision == 0 {
+		initSyncedRev = w.backend.GetCurrentRevision()
+	}
 	w.watches[id] = &watch{
-		cancel: cancel,
-		start:  string(r.Key),
-		end:    string(r.RangeEnd),
+		cancel:    cancel,
+		start:     string(r.Key),
+		end:       string(r.RangeEnd),
+		syncedRev: initSyncedRev,
 	}
 	if len(w.watches) > 1 {
 		klog.InfoS("watcher reuse", "id", w.id, "size", len(w.watches))
@@ -133,7 +214,7 @@ func (w *watcher) Start(c context.Context, r *etcdserverpb.WatchCreateRequest) {
 	w.Unlock()
 	w.metricCli.EmitGauge("watch.watch_id", id)
 
-	if err := w.watchServer.Send(&etcdserverpb.WatchResponse{
+	if err := w.Send(&etcdserverpb.WatchResponse{
 		Header:  &etcdserverpb.ResponseHeader{},
 		Created: true,
 		WatchId: id,
@@ -176,17 +257,34 @@ func (w *watcher) Cancel(id int64, err error, compact bool) {
 	var compactRevision int64
 	if compact {
 		compactRevision = 1
+		if rev, revErr := w.backend.GetCompactRevision(context.Background()); revErr == nil && rev > 0 {
+			compactRevision = int64(rev)
+		}
 	}
-	serr := w.watchServer.Send(&etcdserverpb.WatchResponse{
+	cancelReason := "watch closed"
+	if err != nil {
+		cancelReason = err.Error()
+	}
+	serr := w.Send(&etcdserverpb.WatchResponse{
 		Header:          &etcdserverpb.ResponseHeader{},
 		Canceled:        true,
-		CancelReason:    "watch closed",
+		CancelReason:    cancelReason,
 		WatchId:         id,
 		CompactRevision: compactRevision,
 	})
 	if serr != nil {
-		klog.ErrorS(serr, "failed to send cancel response", "watcher", w.id, "watch", id)
+		if isExpectedWatchCloseError(serr) {
+			klog.V(4).InfoS("cancel response skipped because watch stream is closed", "watcher", w.id, "watch", id, "err", serr)
+		} else {
+			klog.ErrorS(serr, "failed to send cancel response", "watcher", w.id, "watch", id)
+		}
 	}
+}
+
+func (w *watcher) Send(resp *etcdserverpb.WatchResponse) error {
+	w.sendMu.Lock()
+	defer w.sendMu.Unlock()
+	return w.watchServer.Send(resp)
 }
 
 func (w *watcher) Close() {
@@ -203,7 +301,7 @@ func (w *watcher) Close() {
 
 func (w *watcher) List(ctx context.Context, id int64, r *etcdserverpb.WatchCreateRequest) {
 	defer w.wg.Done()
-	if err := w.grpcServer.peers.SyncReadRevision(); err != nil {
+	if err := w.grpcServer.peers.SyncReadRevision(ctx); err != nil {
 		w.Cancel(id, err, true)
 		return
 	}
@@ -248,7 +346,7 @@ func (w *watcher) List(ctx context.Context, id int64, r *etcdserverpb.WatchCreat
 		}
 		w.metricCli.EmitCounter("watch.list_stream.push", len(response.Events))
 		w.metricCli.EmitHistogram("watch.list_stream.push.size", response.Size())
-		if err := w.watchServer.Send(response); err != nil {
+		if err := w.Send(response); err != nil {
 			klog.ErrorS(err, "[range stream] send response with header failed",
 				"watcher", w.id, "watch", id, "key", r.Key, "end", r.RangeEnd, "rev", r.StartRevision*-1, "respRev", revision)
 			w.metricCli.EmitCounter("watch.list_stream.push.err", 1)
@@ -286,62 +384,286 @@ func (w *watcher) Watch(ctx context.Context, id int64, r *etcdserverpb.WatchCrea
 		w.metricCli.EmitCounter("invalid.watch.key", 1)
 		return
 	}
+	if compacted, err := w.isCompactedWatchRevision(ctx, r.StartRevision); err != nil {
+		w.Cancel(id, err, isWatchCompactedError(err))
+		return
+	} else if compacted {
+		w.Cancel(id, compactedRevisionError(), true)
+		return
+	}
 
-	var ch <-chan []*mvccpb.Event
+	var ch <-chan etcdproxy.WatchResult
 	var err error
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
+	backendPrefix := watchBackendPrefix(r.Key, r.RangeEnd)
 	if w.grpcServer.peers.IsLeader() {
-		ch, err = w.backend.Watch(ctx, string(r.Key), uint64(r.StartRevision))
+		var eventCh <-chan []*mvccpb.Event
+		eventCh, err = w.backend.Watch(ctx, backendPrefix, uint64(r.StartRevision))
+		if err == nil {
+			ch = watchResultsFromEvents(eventCh)
+		}
 	} else {
-		ch, err = w.grpcServer.peers.Watch(ctx, string(r.Key), uint64(r.StartRevision))
+		ch, err = w.grpcServer.peers.Watch(ctx, r.Key, r.RangeEnd, uint64(r.StartRevision))
 	}
-	klog.InfoS("[watch stream] watch", "watcher", w.id, "watch", id, "key", r.Key, "end", r.RangeEnd, "rev", r.StartRevision)
+	klog.InfoS("[watch stream] watch", "watcher", w.id, "watch", id, "key", r.Key, "end", r.RangeEnd, "backendPrefix", backendPrefix, "rev", r.StartRevision)
 	if err != nil {
 		w.metricCli.EmitCounter("watch.backend.err", 1)
 		klog.ErrorS(err, "[watch stream] cancel due to backend watch err", "watcher", w.id, "watch", id, "key", r.Key, "end", r.RangeEnd, "rev", r.StartRevision)
-		w.Cancel(id, err, true)
+		w.Cancel(id, err, isWatchCompactedError(err))
 		return
 	}
 
-	var sendErr error
-	for events := range ch {
-		if sendErr != nil {
-			// drain the channel to ensure producer could exit
-			continue
-		}
+	// Hold the *watch so this goroutine can advance syncedRev as events are sent
+	// and the progress ticker can read it (the stream Recv goroutine reads it too,
+	// hence atomic access on the field).
+	w.Lock()
+	wt := w.watches[id]
+	w.Unlock()
 
-		if len(events) == 0 {
-			continue
-		}
-		watchResponse := &etcdserverpb.WatchResponse{
-			Header: &etcdserverpb.ResponseHeader{
-				Revision: events[len(events)-1].Kv.ModRevision,
-			},
-			WatchId: id,
-			Events:  events,
-		}
-		w.metricCli.EmitGauge("watch.watch_stream.push", watchResponse.Header.Revision)
-		w.metricCli.EmitHistogram("watch.watch_stream.push.size", watchResponse.Size())
-		if sendErr = w.watchServer.Send(watchResponse); sendErr != nil {
-			w.metricCli.EmitCounter("watch.watch_stream.push.err", 1)
-			klog.ErrorS(sendErr, "[watch stream] watch send err, cancel", "watcher", w.id, "watch", id)
-			w.Cancel(id, sendErr, false)
-			cancel()
-			continue
+	var sendErr error
+	var progressTicker *time.Ticker
+	var progressC <-chan time.Time
+	if r.ProgressNotify {
+		progressTicker = time.NewTicker(time.Second)
+		defer progressTicker.Stop()
+		progressC = progressTicker.C
+	}
+	for {
+		select {
+		case result, ok := <-ch:
+			if !ok {
+				klog.InfoS("[watch stream] watch channel closed", "watcher", w.id, "watch", id, "key", string(r.Key))
+				w.Cancel(id, nil, false)
+				klog.InfoS("[watch stream] watch canceled", "watcher", w.id, "watch", id, "key", string(r.Key))
+				return
+			}
+			if result.Err != nil {
+				klog.InfoS("[watch stream] watch channel error", "watcher", w.id, "watch", id, "key", string(r.Key), "err", result.Err)
+				w.Cancel(id, result.Err, isWatchCompactedError(result.Err))
+				return
+			}
+			if sendErr != nil {
+				// drain the channel to ensure producer could exit
+				continue
+			}
+			events := filterWatchEventsByRange(result.Events, r.Key, r.RangeEnd)
+			events = filterWatchEvents(events, r.Filters)
+			if !r.PrevKv {
+				events = withoutWatchPrevKvs(events)
+			}
+			if len(events) == 0 {
+				continue
+			}
+			watchResponse := &etcdserverpb.WatchResponse{
+				Header: &etcdserverpb.ResponseHeader{
+					Revision: events[len(events)-1].Kv.ModRevision,
+				},
+				WatchId: id,
+				Events:  events,
+			}
+			w.metricCli.EmitGauge("watch.watch_stream.push", watchResponse.Header.Revision)
+			w.metricCli.EmitHistogram("watch.watch_stream.push.size", watchResponse.Size())
+			if sendErr = w.Send(watchResponse); sendErr != nil {
+				w.metricCli.EmitCounter("watch.watch_stream.push.err", 1)
+				klog.ErrorS(sendErr, "[watch stream] watch send err, cancel", "watcher", w.id, "watch", id)
+				w.Cancel(id, sendErr, false)
+				cancel()
+			} else if wt != nil {
+				// These events are now delivered; the watch is synced through the
+				// highest revision in this batch.
+				storeMaxUint64(&wt.syncedRev, uint64(watchResponse.Header.Revision))
+			}
+		case <-progressC:
+			if sendErr != nil {
+				continue
+			}
+			// Report the revision actually delivered to this watch, never the
+			// global current revision (which runs ahead of undelivered events).
+			var revision uint64
+			if wt != nil {
+				revision = atomic.LoadUint64(&wt.syncedRev)
+			}
+			progressResp := &etcdserverpb.WatchResponse{
+				Header:  txnHeader(int64(revision)),
+				WatchId: id,
+			}
+			w.metricCli.EmitGauge("watch.watch_stream.progress", progressResp.Header.Revision)
+			if sendErr = w.Send(progressResp); sendErr != nil {
+				w.metricCli.EmitCounter("watch.watch_stream.progress.err", 1)
+				klog.ErrorS(sendErr, "[watch stream] progress send err, cancel", "watcher", w.id, "watch", id)
+				w.Cancel(id, sendErr, false)
+				cancel()
+			}
 		}
 	}
-	klog.ErrorS(err, "[watch stream] watch to be canceled", "watcher", w.id, "watch", id, "key", string(r.Key))
-	w.Cancel(id, nil, false)
-	klog.InfoS("[watch stream] watch canceled", "watcher", w.id, "watch", id, "key", string(r.Key))
+}
+
+func watchResultsFromEvents(events <-chan []*mvccpb.Event) <-chan etcdproxy.WatchResult {
+	results := make(chan etcdproxy.WatchResult, 100)
+	if events == nil {
+		close(results)
+		return results
+	}
+	go func() {
+		defer close(results)
+		for eventBatch := range events {
+			results <- etcdproxy.WatchResult{Events: eventBatch}
+		}
+	}()
+	return results
+}
+
+func isWatchCompactedError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if status.Code(err) == codes.OutOfRange {
+		return true
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "required revision has been compacted") ||
+		strings.Contains(msg, "cache event oldest revision")
 }
 
 func isPureWatchRequest(r *etcdserverpb.WatchCreateRequest) bool {
+	if string(r.Key) == compactRevKey {
+		return true
+	}
 	// if starts with /, it is a normal watch request, not a range stream request
 	if strings.HasPrefix(string(r.Key), "/") {
 		return true
 	}
 	return false
+}
+
+func normalizeWatchCreateRequest(r *etcdserverpb.WatchCreateRequest) *etcdserverpb.WatchCreateRequest {
+	normalized := *r
+	if len(normalized.Key) == 0 {
+		normalized.Key = []byte{0}
+	}
+	if len(normalized.RangeEnd) == 0 {
+		normalized.RangeEnd = nil
+	}
+	if len(normalized.RangeEnd) == 1 && normalized.RangeEnd[0] == 0 {
+		normalized.RangeEnd = []byte{}
+	}
+	return &normalized
+}
+
+func (w *watcher) isCompactedWatchRevision(ctx context.Context, revision int64) (bool, error) {
+	if revision <= 0 {
+		return false, nil
+	}
+	compactRevision, err := w.backend.GetCompactRevision(ctx)
+	if err != nil {
+		return false, err
+	}
+	return revision < int64(compactRevision), nil
+}
+
+func filterWatchEventsByRange(events []*mvccpb.Event, start, end []byte) []*mvccpb.Event {
+	if len(events) == 0 {
+		return events
+	}
+	filtered := events[:0]
+	for _, event := range events {
+		if watchEventInRange(event, start, end) {
+			filtered = append(filtered, event)
+		}
+	}
+	return filtered
+}
+
+func watchEventInRange(event *mvccpb.Event, start, end []byte) bool {
+	if event == nil || event.Kv == nil {
+		return false
+	}
+	key := event.Kv.Key
+	if end == nil {
+		return bytes.Equal(key, start)
+	}
+	if bytes.Compare(key, start) < 0 {
+		return false
+	}
+	return len(end) == 0 || bytes.Compare(key, end) < 0
+}
+
+func watchBackendPrefix(start, end []byte) string {
+	if end == nil || bytes.Equal(end, prefixEnd(start)) {
+		return string(start)
+	}
+	return ""
+}
+
+func filterWatchEvents(events []*mvccpb.Event, filters []etcdserverpb.WatchCreateRequest_FilterType) []*mvccpb.Event {
+	if len(events) == 0 || len(filters) == 0 {
+		return events
+	}
+	dropPut := false
+	dropDelete := false
+	for _, filter := range filters {
+		switch filter {
+		case etcdserverpb.WatchCreateRequest_NOPUT:
+			dropPut = true
+		case etcdserverpb.WatchCreateRequest_NODELETE:
+			dropDelete = true
+		default:
+		}
+	}
+	if !dropPut && !dropDelete {
+		return events
+	}
+	filtered := events[:0]
+	for _, event := range events {
+		if event == nil {
+			filtered = append(filtered, event)
+			continue
+		}
+		if dropPut && event.Type == mvccpb.PUT {
+			continue
+		}
+		if dropDelete && event.Type == mvccpb.DELETE {
+			continue
+		}
+		filtered = append(filtered, event)
+	}
+	return filtered
+}
+
+func withoutWatchPrevKvs(events []*mvccpb.Event) []*mvccpb.Event {
+	if len(events) == 0 {
+		return events
+	}
+	withoutPrev := make([]*mvccpb.Event, 0, len(events))
+	for _, event := range events {
+		if event == nil {
+			withoutPrev = append(withoutPrev, nil)
+			continue
+		}
+		clone := *event
+		clone.PrevKv = nil
+		withoutPrev = append(withoutPrev, &clone)
+	}
+	return withoutPrev
+}
+
+func isExpectedWatchCloseError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) {
+		return true
+	}
+	code := status.Code(err)
+	if code == codes.Canceled {
+		return true
+	}
+	if code == codes.Unavailable && strings.Contains(err.Error(), "transport is closing") {
+		return true
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "context canceled") || strings.Contains(msg, "transport is closing")
 }

@@ -15,11 +15,16 @@
 package etcd
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"sort"
+	"time"
 
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/mvccpb"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
 	"k8s.io/klog/v2"
 
@@ -36,16 +41,28 @@ var (
 // BackendShim wrapper Backend interface to adapt with Etcd grpc protobuf
 type BackendShim interface {
 	// Create inserts new key into storage
-	Create(ctx context.Context, put *etcdserverpb.PutRequest) (*etcdserverpb.TxnResponse, error)
+	Create(ctx context.Context, put *etcdserverpb.PutRequest, includeFailureRange bool) (*etcdserverpb.TxnResponse, error)
 
 	// Delete removes key from storage
-	Delete(ctx context.Context, key []byte, revision int64) (*etcdserverpb.TxnResponse, error)
+	Delete(ctx context.Context, key []byte, revision int64, includeFailureRange bool) (*etcdserverpb.TxnResponse, error)
+
+	// CompareDelete removes key from storage and returns standard etcd DeleteRange txn response on success.
+	CompareDelete(ctx context.Context, r *etcdserverpb.DeleteRangeRequest, revision int64, includeFailureRange bool) (*etcdserverpb.TxnResponse, error)
 
 	// Update set key into storage
-	Update(ctx context.Context, rev int64, key []byte, value []byte, lease int64) (*etcdserverpb.TxnResponse, error)
+	Update(ctx context.Context, rev int64, put *etcdserverpb.PutRequest, includeFailureRange bool) (*etcdserverpb.TxnResponse, error)
+
+	// Put creates or overwrites a key.
+	Put(ctx context.Context, put *etcdserverpb.PutRequest) (*etcdserverpb.PutResponse, error)
 
 	// Compact clears the kvs that are too old
 	Compact(ctx context.Context, revision uint64) (*etcdserverpb.TxnResponse, error)
+
+	// GetCompactRevision returns the latest completed logical compaction revision.
+	GetCompactRevision(ctx context.Context) (uint64, error)
+
+	// DeleteRange removes one key or all keys in a range.
+	DeleteRange(ctx context.Context, r *etcdserverpb.DeleteRangeRequest) (*etcdserverpb.DeleteRangeResponse, error)
 
 	// Get read a kv from storage
 	Get(ctx context.Context, r *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error)
@@ -90,13 +107,11 @@ func NewBackendShim(backend backend.Backend, metricCli metrics.Metrics) BackendS
 	}
 }
 
-func (b *backendShim) Create(ctx context.Context, r *etcdserverpb.PutRequest) (*etcdserverpb.TxnResponse, error) {
+func (b *backendShim) Create(ctx context.Context, r *etcdserverpb.PutRequest, includeFailureRange bool) (*etcdserverpb.TxnResponse, error) {
 	if r.IgnoreLease {
 		return nil, unsupported("ignoreLease")
 	} else if r.IgnoreValue {
 		return nil, unsupported("ignoreValue")
-	} else if r.PrevKv {
-		return nil, unsupported("prevKv")
 	}
 
 	request := &proto.CreateRequest{
@@ -108,25 +123,35 @@ func (b *backendShim) Create(ctx context.Context, r *etcdserverpb.PutRequest) (*
 	if err != nil {
 		return nil, err
 	}
-	// transform response from etcd protobuf to kube-brain protobuf
 	createResponse := &etcdserverpb.TxnResponse{
-		Header: txnHeader(int64(response.Header.Revision)),
-		Responses: []*etcdserverpb.ResponseOp{
-			{
-				Response: &etcdserverpb.ResponseOp_ResponsePut{
-					ResponsePut: &etcdserverpb.PutResponse{
-						Header: txnHeader(int64(response.Header.Revision)),
-					},
+		Header:    txnHeader(int64(response.Header.Revision)),
+		Succeeded: response.Succeeded,
+	}
+	if response.Succeeded {
+		createResponse.Responses = []*etcdserverpb.ResponseOp{{
+			Response: &etcdserverpb.ResponseOp_ResponsePut{
+				ResponsePut: &etcdserverpb.PutResponse{
+					Header: txnHeader(int64(response.Header.Revision)),
 				},
 			},
-		},
-		Succeeded: response.Succeeded,
+		}}
+	} else if includeFailureRange {
+		rangeResp, err := b.Get(ctx, &etcdserverpb.RangeRequest{Key: r.Key})
+		if err != nil {
+			return nil, err
+		}
+		createResponse.Header = rangeResp.Header
+		createResponse.Responses = []*etcdserverpb.ResponseOp{{
+			Response: &etcdserverpb.ResponseOp_ResponseRange{
+				ResponseRange: rangeResp,
+			},
+		}}
 	}
 
 	return createResponse, nil
 }
 
-func (b *backendShim) Delete(ctx context.Context, key []byte, revision int64) (*etcdserverpb.TxnResponse, error) {
+func (b *backendShim) Delete(ctx context.Context, key []byte, revision int64, includeFailureRange bool) (*etcdserverpb.TxnResponse, error) {
 	request := &proto.DeleteRequest{
 		Key:      key,
 		Revision: uint64(revision),
@@ -135,15 +160,16 @@ func (b *backendShim) Delete(ctx context.Context, key []byte, revision int64) (*
 	if err != nil {
 		return nil, err
 	}
-	var kvs []*mvccpb.KeyValue
-
-	if response.Kv != nil {
-		kvs = append(kvs, kvToEtcdKv(response.Kv))
-	}
 	deleteResponse := &etcdserverpb.TxnResponse{
 		Header:    txnHeader(int64(response.Header.Revision)),
 		Succeeded: response.Succeeded,
-		Responses: []*etcdserverpb.ResponseOp{
+	}
+	if response.Succeeded || includeFailureRange {
+		var kvs []*mvccpb.KeyValue
+		if response.Kv != nil {
+			kvs = append(kvs, b.kvToEtcdKv(ctx, response.Kv))
+		}
+		deleteResponse.Responses = []*etcdserverpb.ResponseOp{
 			{
 				Response: &etcdserverpb.ResponseOp_ResponseRange{
 					ResponseRange: &etcdserverpb.RangeResponse{
@@ -152,19 +178,82 @@ func (b *backendShim) Delete(ctx context.Context, key []byte, revision int64) (*
 					},
 				},
 			},
-		},
+		}
 	}
 	return deleteResponse, nil
 }
 
-func (b *backendShim) Update(ctx context.Context, rev int64, key []byte, value []byte, lease int64) (*etcdserverpb.TxnResponse, error) {
+func (b *backendShim) CompareDelete(ctx context.Context, r *etcdserverpb.DeleteRangeRequest, revision int64, includeFailureRange bool) (*etcdserverpb.TxnResponse, error) {
+	if len(r.RangeEnd) != 0 {
+		return nil, unsupported("compare delete range_end")
+	}
+	response, err := b.backend.Delete(ctx, &proto.DeleteRequest{
+		Key:      r.Key,
+		Revision: uint64(revision),
+	})
+	if err != nil {
+		return nil, err
+	}
+	resp := &etcdserverpb.TxnResponse{
+		Header:    txnHeader(int64(response.Header.Revision)),
+		Succeeded: response.Succeeded,
+	}
+	if response.Succeeded {
+		deleteResp := &etcdserverpb.DeleteRangeResponse{
+			Header:  txnHeader(int64(response.Header.Revision)),
+			Deleted: 1,
+		}
+		if r.PrevKv && response.Kv != nil {
+			deleteResp.PrevKvs = append(deleteResp.PrevKvs, b.kvToEtcdKv(ctx, response.Kv))
+		}
+		resp.Responses = []*etcdserverpb.ResponseOp{{
+			Response: &etcdserverpb.ResponseOp_ResponseDeleteRange{
+				ResponseDeleteRange: deleteResp,
+			},
+		}}
+	} else if includeFailureRange {
+		var kvs []*mvccpb.KeyValue
+		if response.Kv != nil {
+			kvs = append(kvs, b.kvToEtcdKv(ctx, response.Kv))
+		}
+		resp.Responses = []*etcdserverpb.ResponseOp{{
+			Response: &etcdserverpb.ResponseOp_ResponseRange{
+				ResponseRange: &etcdserverpb.RangeResponse{
+					Header: txnHeader(int64(response.Header.Revision)),
+					Kvs:    kvs,
+					Count:  int64(len(kvs)),
+				},
+			},
+		}}
+	}
+	return resp, nil
+}
+
+func (b *backendShim) Update(ctx context.Context, rev int64, r *etcdserverpb.PutRequest, includeFailureRange bool) (*etcdserverpb.TxnResponse, error) {
+	if r.IgnoreLease {
+		return nil, unsupported("ignoreLease")
+	} else if r.IgnoreValue {
+		return nil, unsupported("ignoreValue")
+	}
+
+	var prevKv *mvccpb.KeyValue
+	if r.PrevKv {
+		getResp, err := b.Get(ctx, &etcdserverpb.RangeRequest{Key: r.Key})
+		if err != nil {
+			return nil, err
+		}
+		if len(getResp.Kvs) > 0 {
+			prevKv = getResp.Kvs[0]
+		}
+	}
+
 	request := &proto.UpdateRequest{
 		Kv: &proto.KeyValue{
-			Key:      key,
-			Value:    value,
+			Key:      r.Key,
+			Value:    r.Value,
 			Revision: uint64(rev),
 		},
-		Lease: lease,
+		Lease: r.Lease,
 	}
 	// paas through update method
 	response, err := b.backend.Update(ctx, request)
@@ -177,19 +266,23 @@ func (b *backendShim) Update(ctx context.Context, rev int64, key []byte, value [
 		Succeeded: response.Succeeded,
 	}
 	if response.Succeeded {
+		putResp := &etcdserverpb.PutResponse{
+			Header: txnHeader(headerRevision),
+		}
+		if r.PrevKv {
+			putResp.PrevKv = prevKv
+		}
 		resp.Responses = []*etcdserverpb.ResponseOp{
 			{
 				Response: &etcdserverpb.ResponseOp_ResponsePut{
-					ResponsePut: &etcdserverpb.PutResponse{
-						Header: txnHeader(headerRevision),
-					},
+					ResponsePut: putResp,
 				},
 			},
 		}
-	} else {
+	} else if includeFailureRange {
 		var kvs []*mvccpb.KeyValue
 		if response.Kv != nil {
-			kvs = append(kvs, kvToEtcdKv(response.Kv))
+			kvs = append(kvs, b.kvToEtcdKv(ctx, response.Kv))
 		}
 		resp.Responses = []*etcdserverpb.ResponseOp{
 			{
@@ -206,21 +299,81 @@ func (b *backendShim) Update(ctx context.Context, rev int64, key []byte, value [
 	return resp, nil
 }
 
+func (b *backendShim) Put(ctx context.Context, r *etcdserverpb.PutRequest) (*etcdserverpb.PutResponse, error) {
+	if r.IgnoreLease {
+		return nil, unsupported("ignoreLease")
+	} else if r.IgnoreValue {
+		return nil, unsupported("ignoreValue")
+	}
+
+	var prevKv *mvccpb.KeyValue
+	for i := 0; i < 3; i++ {
+		getResp, err := b.backend.Get(ctx, &proto.GetRequest{Key: r.Key})
+		if err != nil {
+			return nil, err
+		}
+		if getResp.Kv == nil {
+			createResp, err := b.backend.Create(ctx, &proto.CreateRequest{
+				Key:   r.Key,
+				Value: r.Value,
+				Lease: r.Lease,
+			})
+			if err != nil {
+				return nil, err
+			}
+			if createResp.Succeeded {
+				return &etcdserverpb.PutResponse{
+					Header: txnHeader(int64(createResp.Header.Revision)),
+				}, nil
+			}
+			continue
+		}
+
+		prevKv = b.kvToEtcdKv(ctx, getResp.Kv)
+		updateResp, err := b.backend.Update(ctx, &proto.UpdateRequest{
+			Kv: &proto.KeyValue{
+				Key:      r.Key,
+				Value:    r.Value,
+				Revision: getResp.Kv.Revision,
+			},
+			Lease: r.Lease,
+		})
+		if err != nil {
+			return nil, err
+		}
+		if updateResp.Succeeded {
+			resp := &etcdserverpb.PutResponse{
+				Header: txnHeader(int64(updateResp.Header.Revision)),
+			}
+			if r.PrevKv {
+				resp.PrevKv = prevKv
+			}
+			return resp, nil
+		}
+	}
+
+	return nil, fmt.Errorf("put failed after retries: %s", r.Key)
+}
+
 // TODO: compact is unnecessary for kube-brain ?
 func (b *backendShim) Compact(ctx context.Context, revision uint64) (*etcdserverpb.TxnResponse, error) {
-	_, err := b.backend.Compact(ctx, revision)
+	resp, err := b.backend.Compact(ctx, revision)
 	if err != nil {
 		return nil, err
 	}
+	header := &etcdserverpb.ResponseHeader{}
+	if resp != nil && resp.Header != nil {
+		header.Revision = int64(resp.Header.Revision)
+	}
 
 	return &etcdserverpb.TxnResponse{
-		Header:    &etcdserverpb.ResponseHeader{},
+		Header:    header,
 		Succeeded: false,
 		Responses: []*etcdserverpb.ResponseOp{
 			{
 				Response: &etcdserverpb.ResponseOp_ResponseRange{
 					ResponseRange: &etcdserverpb.RangeResponse{
-						Header: &etcdserverpb.ResponseHeader{},
+						Header: header,
 						Kvs: []*mvccpb.KeyValue{
 							{},
 						},
@@ -230,6 +383,56 @@ func (b *backendShim) Compact(ctx context.Context, revision uint64) (*etcdserver
 			},
 		},
 	}, nil
+}
+
+func (b *backendShim) GetCompactRevision(ctx context.Context) (uint64, error) {
+	return b.backend.GetCompactRevision(ctx)
+}
+
+func (b *backendShim) DeleteRange(ctx context.Context, r *etcdserverpb.DeleteRangeRequest) (*etcdserverpb.DeleteRangeResponse, error) {
+	if len(r.RangeEnd) == 0 {
+		resp, err := b.backend.Delete(ctx, &proto.DeleteRequest{Key: r.Key})
+		if err != nil {
+			return nil, err
+		}
+		deleteResp := &etcdserverpb.DeleteRangeResponse{
+			Header:  txnHeader(int64(resp.Header.Revision)),
+			Deleted: 0,
+		}
+		if resp.Succeeded {
+			deleteResp.Deleted = 1
+			if r.PrevKv && resp.Kv != nil {
+				deleteResp.PrevKvs = append(deleteResp.PrevKvs, b.kvToEtcdKv(ctx, resp.Kv))
+			}
+		}
+		return deleteResp, nil
+	}
+
+	listResp, err := b.backend.List(ctx, &proto.RangeRequest{
+		Key: r.Key,
+		End: r.RangeEnd,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	deleteResp := &etcdserverpb.DeleteRangeResponse{
+		Header: txnHeader(int64(listResp.Header.Revision)),
+	}
+	resp, err := b.backend.DeleteRange(ctx, listResp.Kvs)
+	if err != nil {
+		return nil, err
+	}
+	deleteResp.Header = txnHeader(int64(resp.Header.Revision))
+	if resp.Succeeded {
+		deleteResp.Deleted = int64(len(resp.Kvs))
+		if r.PrevKv {
+			for _, kv := range resp.Kvs {
+				deleteResp.PrevKvs = append(deleteResp.PrevKvs, b.kvToEtcdKv(ctx, kv))
+			}
+		}
+	}
+	return deleteResp, nil
 }
 
 func (b *backendShim) Get(ctx context.Context, r *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
@@ -247,17 +450,21 @@ func (b *backendShim) Get(ctx context.Context, r *etcdserverpb.RangeRequest) (*e
 		Header: txnHeader(int64(response.Header.Revision)),
 	}
 	if response.Kv != nil {
-		resp.Kvs = append(resp.Kvs, kvToEtcdKv(response.Kv))
+		resp.Kvs = append(resp.Kvs, b.kvToEtcdKv(ctx, response.Kv))
 		resp.Count = 1
 	}
-	return resp, nil
+	return applyRangeOptions(resp, r), nil
 }
 
 func (b *backendShim) List(ctx context.Context, r *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
+	limit := r.Limit
+	if needsPostRangeLimit(r) {
+		limit = 0
+	}
 	request := &proto.RangeRequest{
 		Key:      r.Key,
 		End:      r.RangeEnd,
-		Limit:    r.Limit,
+		Limit:    limit,
 		Revision: uint64(r.Revision),
 	}
 	// pass through list method
@@ -273,13 +480,134 @@ func (b *backendShim) List(ctx context.Context, r *etcdserverpb.RangeRequest) (*
 		Kvs:    make([]*mvccpb.KeyValue, 0, len(response.Kvs)),
 	}
 	if resp.More {
-		resp.Count = resp.Count + 1
+		count, err := b.exactRangeCount(ctx, r)
+		if err != nil {
+			return nil, err
+		}
+		resp.Count = count
 	}
 
 	for _, kv := range response.Kvs {
-		resp.Kvs = append(resp.Kvs, kvToEtcdKv(kv))
+		resp.Kvs = append(resp.Kvs, b.kvToEtcdKv(ctx, kv))
 	}
-	return resp, nil
+	return applyRangeOptions(resp, r), nil
+}
+
+func (b *backendShim) exactRangeCount(ctx context.Context, r *etcdserverpb.RangeRequest) (int64, error) {
+	if r.Revision == 0 && !hasRangeRevisionFilters(r) {
+		resp, err := b.Count(ctx, r)
+		if err != nil {
+			return 0, err
+		}
+		return resp.Count, nil
+	}
+
+	resp, err := b.backend.List(ctx, &proto.RangeRequest{
+		Key:      r.Key,
+		End:      r.RangeEnd,
+		Revision: uint64(r.Revision),
+	})
+	if err != nil {
+		return 0, err
+	}
+	return int64(len(resp.Kvs)), nil
+}
+
+func applyRangeOptions(resp *etcdserverpb.RangeResponse, r *etcdserverpb.RangeRequest) *etcdserverpb.RangeResponse {
+	if resp == nil {
+		return resp
+	}
+	filterRangeKvs(resp, r)
+	sortRangeKvs(resp.Kvs, r)
+	applyRangeLimit(resp, r)
+	if r.CountOnly {
+		resp.Kvs = nil
+		return resp
+	}
+	if !r.KeysOnly {
+		return resp
+	}
+	for _, kv := range resp.Kvs {
+		kv.Value = nil
+	}
+	return resp
+}
+
+func filterRangeKvs(resp *etcdserverpb.RangeResponse, r *etcdserverpb.RangeRequest) {
+	if r.MinModRevision == 0 && r.MaxModRevision == 0 && r.MinCreateRevision == 0 && r.MaxCreateRevision == 0 {
+		return
+	}
+	kvs := resp.Kvs[:0]
+	for _, kv := range resp.Kvs {
+		if r.MaxModRevision != 0 && kv.ModRevision > r.MaxModRevision {
+			continue
+		}
+		if r.MinModRevision != 0 && kv.ModRevision < r.MinModRevision {
+			continue
+		}
+		if r.MaxCreateRevision != 0 && kv.CreateRevision > r.MaxCreateRevision {
+			continue
+		}
+		if r.MinCreateRevision != 0 && kv.CreateRevision < r.MinCreateRevision {
+			continue
+		}
+		kvs = append(kvs, kv)
+	}
+	resp.Kvs = kvs
+	resp.Count = int64(len(kvs))
+	resp.More = false
+}
+
+func sortRangeKvs(kvs []*mvccpb.KeyValue, r *etcdserverpb.RangeRequest) {
+	sortOrder := r.SortOrder
+	if r.SortTarget != etcdserverpb.RangeRequest_KEY && sortOrder == etcdserverpb.RangeRequest_NONE {
+		sortOrder = etcdserverpb.RangeRequest_ASCEND
+	}
+	if sortOrder == etcdserverpb.RangeRequest_NONE ||
+		(r.SortTarget == etcdserverpb.RangeRequest_KEY && sortOrder == etcdserverpb.RangeRequest_ASCEND) {
+		return
+	}
+
+	less := func(i, j int) bool {
+		switch r.SortTarget {
+		case etcdserverpb.RangeRequest_KEY:
+			return bytes.Compare(kvs[i].Key, kvs[j].Key) < 0
+		case etcdserverpb.RangeRequest_VERSION:
+			return kvs[i].Version < kvs[j].Version
+		case etcdserverpb.RangeRequest_CREATE:
+			return kvs[i].CreateRevision < kvs[j].CreateRevision
+		case etcdserverpb.RangeRequest_MOD:
+			return kvs[i].ModRevision < kvs[j].ModRevision
+		case etcdserverpb.RangeRequest_VALUE:
+			return bytes.Compare(kvs[i].Value, kvs[j].Value) < 0
+		default:
+			return bytes.Compare(kvs[i].Key, kvs[j].Key) < 0
+		}
+	}
+	if sortOrder == etcdserverpb.RangeRequest_DESCEND {
+		sort.SliceStable(kvs, func(i, j int) bool { return less(j, i) })
+		return
+	}
+	sort.SliceStable(kvs, less)
+}
+
+func applyRangeLimit(resp *etcdserverpb.RangeResponse, r *etcdserverpb.RangeRequest) {
+	if r.CountOnly || !needsPostRangeLimit(r) || r.Limit <= 0 || int64(len(resp.Kvs)) <= r.Limit {
+		return
+	}
+	resp.More = true
+	resp.Kvs = resp.Kvs[:int(r.Limit)]
+}
+
+func hasRangeRevisionFilters(r *etcdserverpb.RangeRequest) bool {
+	return r.MinModRevision != 0 || r.MaxModRevision != 0 ||
+		r.MinCreateRevision != 0 || r.MaxCreateRevision != 0
+}
+
+func needsPostRangeLimit(r *etcdserverpb.RangeRequest) bool {
+	return hasRangeRevisionFilters(r) ||
+		!(r.SortOrder == etcdserverpb.RangeRequest_NONE ||
+			(r.SortTarget == etcdserverpb.RangeRequest_KEY && r.SortOrder == etcdserverpb.RangeRequest_ASCEND))
 }
 
 func (b *backendShim) Count(ctx context.Context, r *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
@@ -356,7 +684,7 @@ func (b *backendShim) ListByStream(ctx context.Context, startKey, endKey []byte,
 				} else {
 					for _, kv := range response.RangeResponse.Kvs {
 						etcdWatchResponse.Events = append(etcdWatchResponse.Events, &mvccpb.Event{
-							Kv: kvToEtcdKv(kv),
+							Kv: b.kvToEtcdKv(ctx, kv),
 						})
 					}
 				}
@@ -388,18 +716,10 @@ func (b *backendShim) Watch(ctx context.Context, key string, revision uint64) (<
 				}
 				etcdEvents := make([]*mvccpb.Event, 0, len(events))
 				for _, e := range events {
-					etcdEvent := &mvccpb.Event{}
-					if e.Type == proto.Event_CREATE || e.Type == proto.Event_PUT {
-						etcdEvent.Type = mvccpb.PUT
-						etcdEvent.Kv = kvToEtcdKv(e.Kv)
-						etcdEvent.Kv.CreateRevision = etcdEvent.Kv.ModRevision
-					} else {
-						etcdEvent.Type = mvccpb.DELETE
-						etcdEvent.PrevKv = kvToEtcdKv(e.Kv)
-						etcdEvent.Kv = &mvccpb.KeyValue{
-							ModRevision: int64(e.Revision),
-							Key:         e.Kv.Key,
-						}
+					etcdEvent, err := b.watchEventToEtcdEvent(ctx, e)
+					if err != nil {
+						klog.ErrorS(err, "failed to transform watch event", "key", e.GetKv().GetKey(), "revision", watchEventRevision(e), "type", e.GetType())
+						continue
 					}
 					etcdEvents = append(etcdEvents, etcdEvent)
 				}
@@ -409,6 +729,113 @@ func (b *backendShim) Watch(ctx context.Context, key string, revision uint64) (<
 	}
 	go transformResponseFunc(ctx, ch, watchResponseCh)
 	return watchResponseCh, nil
+}
+
+func (b *backendShim) watchEventToEtcdEvent(ctx context.Context, e *proto.Event) (*mvccpb.Event, error) {
+	if e == nil || e.Kv == nil {
+		return nil, fmt.Errorf("invalid nil watch event")
+	}
+	revision := watchEventRevision(e)
+	switch e.Type {
+	case proto.Event_CREATE:
+		kv := b.kvToEtcdKv(ctx, e.Kv)
+		kv.ModRevision = int64(revision)
+		return &mvccpb.Event{
+			Type: mvccpb.PUT,
+			Kv:   kv,
+		}, nil
+	case proto.Event_PUT:
+		kv := b.kvToEtcdKv(ctx, e.Kv)
+		kv.ModRevision = int64(revision)
+		prevKv := b.previousEtcdKv(ctx, e.Kv.Key, revision)
+		if prevKv == nil {
+			kv.CreateRevision = kv.ModRevision
+			return &mvccpb.Event{
+				Type: mvccpb.PUT,
+				Kv:   kv,
+			}, nil
+		}
+		kv.CreateRevision = prevKv.CreateRevision
+		if kv.CreateRevision == 0 {
+			kv.CreateRevision = prevKv.ModRevision
+		}
+		if kv.CreateRevision == 0 || kv.CreateRevision == kv.ModRevision {
+			// KubeBrain's native event format does not persist create_revision.
+			// For updates, make CreateRevision differ from ModRevision so
+			// clientv3.Event.IsCreate reports false.
+			kv.CreateRevision = kv.ModRevision - 1
+		}
+		return &mvccpb.Event{
+			Type:   mvccpb.PUT,
+			Kv:     kv,
+			PrevKv: prevKv,
+		}, nil
+	case proto.Event_DELETE:
+		prevKv := b.kvToEtcdKv(ctx, e.Kv)
+		kv := &mvccpb.KeyValue{
+			ModRevision: int64(revision),
+			Key:         e.Kv.Key,
+		}
+		if prevKv != nil {
+			kv.CreateRevision = prevKv.CreateRevision
+			if kv.CreateRevision == 0 {
+				kv.CreateRevision = prevKv.ModRevision
+			}
+		}
+		return &mvccpb.Event{
+			Type:   mvccpb.DELETE,
+			Kv:     kv,
+			PrevKv: prevKv,
+		}, nil
+	default:
+		return nil, fmt.Errorf("unsupported watch event type %s", e.Type)
+	}
+}
+
+func watchEventRevision(e *proto.Event) uint64 {
+	if e == nil {
+		return 0
+	}
+	if e.Revision != 0 {
+		return e.Revision
+	}
+	if e.Kv != nil {
+		return e.Kv.Revision
+	}
+	return 0
+}
+
+func (b *backendShim) previousEtcdKv(ctx context.Context, key []byte, revision uint64) *mvccpb.KeyValue {
+	if revision == 0 {
+		return nil
+	}
+	readCtx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	var lastErr error
+	for attempt := 0; attempt < 5; attempt++ {
+		if attempt > 0 {
+			timer := time.NewTimer(10 * time.Millisecond)
+			select {
+			case <-readCtx.Done():
+				timer.Stop()
+				klog.V(4).InfoS("previous watch kv unavailable", "key", key, "revision", revision, "err", readCtx.Err())
+				return nil
+			case <-timer.C:
+			}
+		}
+		resp, err := b.Get(readCtx, &etcdserverpb.RangeRequest{
+			Key:      key,
+			Revision: int64(revision - 1),
+		})
+		if err == nil && len(resp.Kvs) > 0 {
+			return resp.Kvs[0]
+		}
+		lastErr = err
+	}
+	if lastErr != nil {
+		klog.V(4).InfoS("previous watch kv unavailable", "key", key, "revision", revision, "err", lastErr)
+	}
+	return nil
 }
 
 // leader election and revision related method, just pass through
@@ -424,17 +851,31 @@ func (b *backendShim) SetCurrentRevision(revision uint64) {
 	b.backend.SetCurrentRevision(revision)
 }
 
-func kvToEtcdKv(kv *proto.KeyValue) *mvccpb.KeyValue {
+func (b *backendShim) kvToEtcdKv(ctx context.Context, kv *proto.KeyValue) *mvccpb.KeyValue {
 	if kv == nil {
 		return nil
 	}
+	meta, err := b.backend.GetEtcdMetadata(ctx, kv.Key, kv.Revision)
+	if err != nil {
+		klog.V(4).InfoS("failed to read etcd metadata", "key", kv.Key, "revision", kv.Revision, "err", err)
+		meta.CreateRevision = kv.Revision
+		meta.Version = 1
+	}
+	if meta.CreateRevision == 0 {
+		meta.CreateRevision = kv.Revision
+	}
+	if meta.Version == 0 {
+		meta.Version = 1
+	}
 	return &mvccpb.KeyValue{
-		Key:         kv.Key,
-		Value:       kv.Value,
-		ModRevision: int64(kv.Revision),
+		Key:            kv.Key,
+		Value:          kv.Value,
+		Version:        int64(meta.Version),
+		CreateRevision: int64(meta.CreateRevision),
+		ModRevision:    int64(kv.Revision),
 	}
 }
 
 func unsupported(field string) error {
-	return fmt.Errorf("%s is unsupported", field)
+	return status.Errorf(codes.Unimplemented, "%s is unsupported", field)
 }

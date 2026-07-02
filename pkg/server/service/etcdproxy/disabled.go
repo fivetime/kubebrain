@@ -19,7 +19,6 @@ import (
 
 	"github.com/pkg/errors"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
-	"go.etcd.io/etcd/api/v3/mvccpb"
 )
 
 type disabledEtcdProxy struct{}
@@ -34,10 +33,50 @@ func (d disabledEtcdProxy) EtcdProxyEnabled() bool {
 	return false
 }
 
+func (d disabledEtcdProxy) Ready() error {
+	return errDisabled
+}
+
 func (d disabledEtcdProxy) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etcdserverpb.TxnResponse, error) {
 	return nil, errDisabled
 }
 
-func (d disabledEtcdProxy) Watch(ctx context.Context, key string, revision uint64) (<-chan []*mvccpb.Event, error) {
+func (d disabledEtcdProxy) Range(ctx context.Context, req *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
+	return nil, errDisabled
+}
+
+func (d disabledEtcdProxy) Put(ctx context.Context, req *etcdserverpb.PutRequest) (*etcdserverpb.PutResponse, error) {
+	return nil, errDisabled
+}
+
+func (d disabledEtcdProxy) DeleteRange(ctx context.Context, req *etcdserverpb.DeleteRangeRequest) (*etcdserverpb.DeleteRangeResponse, error) {
+	return nil, errDisabled
+}
+
+func (d disabledEtcdProxy) Compact(ctx context.Context, req *etcdserverpb.CompactionRequest) (*etcdserverpb.CompactionResponse, error) {
+	return nil, errDisabled
+}
+
+func (d disabledEtcdProxy) Watch(ctx context.Context, key, rangeEnd []byte, revision uint64) (<-chan WatchResult, error) {
+	return nil, errDisabled
+}
+
+func (d disabledEtcdProxy) LeaseGrant(ctx context.Context, req *etcdserverpb.LeaseGrantRequest) (*etcdserverpb.LeaseGrantResponse, error) {
+	return nil, errDisabled
+}
+
+func (d disabledEtcdProxy) LeaseRevoke(ctx context.Context, req *etcdserverpb.LeaseRevokeRequest) (*etcdserverpb.LeaseRevokeResponse, error) {
+	return nil, errDisabled
+}
+
+func (d disabledEtcdProxy) LeaseKeepAlive(ctx context.Context, req *etcdserverpb.LeaseKeepAliveRequest) (*etcdserverpb.LeaseKeepAliveResponse, error) {
+	return nil, errDisabled
+}
+
+func (d disabledEtcdProxy) LeaseTimeToLive(ctx context.Context, req *etcdserverpb.LeaseTimeToLiveRequest) (*etcdserverpb.LeaseTimeToLiveResponse, error) {
+	return nil, errDisabled
+}
+
+func (d disabledEtcdProxy) LeaseLeases(ctx context.Context, req *etcdserverpb.LeaseLeasesRequest) (*etcdserverpb.LeaseLeasesResponse, error) {
 	return nil, errDisabled
 }

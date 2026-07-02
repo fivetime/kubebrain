@@ -15,10 +15,14 @@
 package etcd
 
 import (
+	"context"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"google.golang.org/grpc"
+	"k8s.io/klog/v2"
 
 	b "github.com/kubewharf/kubebrain/pkg/backend"
 	"github.com/kubewharf/kubebrain/pkg/metrics"
@@ -26,12 +30,16 @@ import (
 )
 
 var (
-	_ etcdserverpb.KVServer    = (*RPCServer)(nil)
-	_ etcdserverpb.WatchServer = (*RPCServer)(nil)
+	_ etcdserverpb.KVServer          = (*RPCServer)(nil)
+	_ etcdserverpb.WatchServer       = (*RPCServer)(nil)
+	_ etcdserverpb.MaintenanceServer = (*RPCServer)(nil)
+	_ etcdserverpb.AuthServer        = (*RPCServer)(nil)
 )
 
 // RPCServer only support limited method of etcd grpc server
 type RPCServer struct {
+	etcdserverpb.UnimplementedAuthServer
+
 	backend BackendShim
 
 	// watcher map mutes
@@ -39,16 +47,39 @@ type RPCServer struct {
 
 	metricCli metrics.Metrics
 	peers     service.PeerService
+
+	leaseMu       sync.Mutex
+	leaseID       int64
+	leases        map[int64]*leaseState
+	keyLeaseIndex map[string]int64
+}
+
+type leaseState struct {
+	id       int64
+	ttl      int64
+	deadline time.Time
+	keys     map[string]struct{}
+	timer    *time.Timer
 }
 
 // New returns the etcd rpc server
 func New(backend b.Backend, metricCli metrics.Metrics, peers service.PeerService) *RPCServer {
 	server := &RPCServer{
-		backend:   NewBackendShim(backend, metricCli),
-		metricCli: metricCli,
-		peers:     peers,
+		backend:       NewBackendShim(backend, metricCli),
+		metricCli:     metricCli,
+		peers:         peers,
+		leaseID:       time.Now().UnixNano(),
+		leases:        make(map[int64]*leaseState),
+		keyLeaseIndex: make(map[string]int64),
+	}
+	if err := server.restoreLeases(context.Background()); err != nil {
+		klog.ErrorS(err, "restore leases failed")
 	}
 	return server
+}
+
+func (s *RPCServer) nextLeaseID() int64 {
+	return atomic.AddInt64(&s.leaseID, 1)
 }
 
 // Register register etcd grpc service
@@ -57,4 +88,6 @@ func (s *RPCServer) Register(server *grpc.Server) {
 	etcdserverpb.RegisterWatchServer(server, s)
 	etcdserverpb.RegisterKVServer(server, s)
 	etcdserverpb.RegisterClusterServer(server, s)
+	etcdserverpb.RegisterMaintenanceServer(server, s)
+	etcdserverpb.RegisterAuthServer(server, s)
 }

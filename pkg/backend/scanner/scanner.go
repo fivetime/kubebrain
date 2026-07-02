@@ -434,7 +434,11 @@ func (w *worker) run(ctx context.Context, receiver resultReceiver) (int, error) 
 		key := it.Key()
 		curUserKey, curRevision, err = w.Decode(key)
 		if err != nil {
-			klog.Errorf("unmarshal object key %s failed %v", key, err)
+			if w.compact {
+				klog.V(4).InfoS("skip non-object key during compact scan", "key", key, "err", err)
+			} else {
+				klog.Errorf("unmarshal object key %s failed %v", key, err)
+			}
 			continue
 		}
 
@@ -496,7 +500,7 @@ func (w *worker) run(ctx context.Context, receiver resultReceiver) (int, error) 
 	}
 
 	endTime := time.Now()
-	if err != io.EOF {
+	if err != nil && err != io.EOF {
 		klog.ErrorS(err, "worker error", "worker", w.info(), "count", count, "latency", endTime.Sub(startTime))
 		return 0, err
 	}

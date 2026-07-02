@@ -29,7 +29,7 @@ func (s *Server) Get(ctx context.Context, r *proto.GetRequest) (*proto.GetRespon
 		return nil, fmt.Errorf("invailid empty key in get request")
 	}
 	start := time.Now()
-	if err := s.peers.SyncReadRevision(); err != nil {
+	if err := s.peers.SyncReadRevision(ctx); err != nil {
 		return &proto.GetResponse{}, err
 	}
 	response, err := s.backend.Get(ctx, r)
@@ -49,7 +49,7 @@ func (s *Server) Range(ctx context.Context, r *proto.RangeRequest) (*proto.Range
 		return nil, fmt.Errorf("empty key or end in range request")
 	}
 	start := time.Now()
-	if err := s.peers.SyncReadRevision(); err != nil {
+	if err := s.peers.SyncReadRevision(ctx); err != nil {
 		return &proto.RangeResponse{}, err
 	}
 	response, err := s.backend.List(ctx, r)
@@ -69,7 +69,7 @@ func (s *Server) Count(ctx context.Context, r *proto.CountRequest) (*proto.Count
 		return nil, fmt.Errorf("empty key or end in count request")
 	}
 	start := time.Now()
-	if err := s.peers.SyncReadRevision(); err != nil {
+	if err := s.peers.SyncReadRevision(ctx); err != nil {
 		return &proto.CountResponse{}, err
 	}
 	response, err := s.backend.Count(ctx, r)
@@ -89,7 +89,7 @@ func (s *Server) ListPartition(ctx context.Context, r *proto.ListPartitionReques
 		return nil, fmt.Errorf("empty key or end in list partition request")
 	}
 	start := time.Now()
-	if err := s.peers.SyncReadRevision(); err != nil {
+	if err := s.peers.SyncReadRevision(ctx); err != nil {
 		return &proto.ListPartitionResponse{}, err
 	}
 	response, err := s.backend.GetPartitions(ctx, r)
@@ -108,7 +108,7 @@ func (s *Server) RangeStream(r *proto.RangeRequest, server proto.Read_RangeStrea
 		return fmt.Errorf("empty key or end in range stream request")
 	}
 	start := time.Now()
-	if err := s.peers.SyncReadRevision(); err != nil {
+	if err := s.peers.SyncReadRevision(server.Context()); err != nil {
 		return err
 	}
 	ch, err := s.backend.ListByStream(server.Context(), r.Key, r.End, r.Revision)

@@ -35,6 +35,15 @@ type WatcherHub struct {
 	sync.RWMutex
 	subs      map[chan []*proto.Event]struct{}
 	metricCli metrics.Metrics
+	// bufSize is the per-subscriber channel buffer; 0 means watchBuffer.
+	bufSize int
+}
+
+func (w *WatcherHub) subBufferSize() int {
+	if w.bufSize > 0 {
+		return w.bufSize
+	}
+	return watchBuffer
 }
 
 // AddWatcher add watcher, filter by prefix and revision is processed in upper server layer
@@ -44,7 +53,7 @@ func (w *WatcherHub) AddWatcher(ctx context.Context) (<-chan []*proto.Event, err
 	defer w.Unlock()
 
 	// set watch buffer
-	sub := make(chan []*proto.Event, watchBuffer)
+	sub := make(chan []*proto.Event, w.subBufferSize())
 	if w.subs == nil {
 		w.subs = map[chan []*proto.Event]struct{}{}
 	}
@@ -74,21 +83,20 @@ func (w *WatcherHub) DeleteWatcher(sub chan []*proto.Event, lock bool) {
 	}
 }
 
+// CloseAll closes all watchers and forces clients to re-list before watching again.
+func (w *WatcherHub) CloseAll() {
+	w.metricCli.EmitCounter("watcher_hub.close_all", 1)
+	w.Lock()
+	defer w.Unlock()
+	for sub := range w.subs {
+		w.DeleteWatcher(sub, false)
+	}
+}
+
 // Stream push events to watchers.
 func (w *WatcherHub) Stream(input chan []*proto.Event) {
 	for item := range input {
-		w.RLock()
-		for sub := range w.subs {
-			select {
-			case sub <- item:
-			default:
-				// drop slow consumer
-				klog.InfoS("drop slow consumer", "chan", sub, "bufSize", watchBuffer)
-				w.metricCli.EmitCounter("drop.slow.watcher", 1)
-				go w.DeleteWatcher(sub, true)
-			}
-		}
-		w.RUnlock()
+		w.broadcast(item)
 	}
 
 	w.Lock()
@@ -97,4 +105,32 @@ func (w *WatcherHub) Stream(input chan []*proto.Event) {
 		w.DeleteWatcher(sub, false)
 	}
 	w.Unlock()
+}
+
+// broadcast delivers one event batch to every subscriber, then synchronously
+// evicts any subscriber whose buffer was full.
+//
+// Eviction must happen here, before the next batch: sending a slow subscriber a
+// later batch after it missed one would deliver a gap (…N-1, N+1 with N
+// dropped) that a kube-apiserver reflector never recovers from. It also must
+// happen outside the RLock — DeleteWatcher takes the write lock, so evicting
+// inline would deadlock. Since Stream is the sole sender, a sub removed here
+// receives no further batch: the client sees a contiguous prefix then a clean
+// cancel and re-watches/re-lists cleanly.
+func (w *WatcherHub) broadcast(item []*proto.Event) {
+	var slow []chan []*proto.Event
+	w.RLock()
+	for sub := range w.subs {
+		select {
+		case sub <- item:
+		default:
+			slow = append(slow, sub)
+		}
+	}
+	w.RUnlock()
+	for _, sub := range slow {
+		klog.InfoS("drop slow consumer", "chan", sub, "bufSize", w.subBufferSize())
+		w.metricCli.EmitCounter("drop.slow.watcher", 1)
+		w.DeleteWatcher(sub, true)
+	}
 }

@@ -40,7 +40,7 @@ import (
 type RevisionSyncer interface {
 	// SyncReadRevision  fetch the latest revision from leader and set it in backend
 	// if this instance is follower. otherwise, do nothing.
-	SyncReadRevision() error
+	SyncReadRevision(ctx context.Context) error
 
 	// Close closes syncer
 	Close() error
@@ -52,7 +52,9 @@ type Backend interface {
 }
 
 var (
-	syncRevTimeout = time.Second
+	syncRevTimeout         = time.Second
+	syncRevRetryBackoff    = 250 * time.Millisecond
+	syncRevMaxRetryElapsed = 8 * time.Second
 )
 
 type revisionSyncer struct {
@@ -111,17 +113,20 @@ func NewRevisionSyncer(backend Backend, metricCli metrics.Metrics, l leader.Lead
 }
 
 // SyncReadRevision implements RevisionSyncer
-func (r *revisionSyncer) SyncReadRevision() error {
+func (r *revisionSyncer) SyncReadRevision(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if r.leaderElection.IsLeader() {
 		return nil
 	}
 	// only sync when not leader
 	r.metricCli.EmitCounter("read.follower", 1)
-	currentRevision, err := r.singleFlightGetRevisionFromLeader()
+	currentRevision, err := r.singleFlightGetRevisionFromLeader(ctx)
 	if err != nil {
 		r.metricCli.EmitCounter("read.follower.revision_err", 1)
 		klog.Errorf("sync read revision failed %v", err)
-		return fmt.Errorf("get revision from leader failed %v", err)
+		return fmt.Errorf("get revision from leader failed: %w", err)
 	}
 	r.backend.SetCurrentRevision(currentRevision)
 	return nil
@@ -139,31 +144,90 @@ type LeaderRevision struct {
 	Revision uint64
 }
 
-func (r *revisionSyncer) singleFlightGetRevisionFromLeader() (uint64, error) {
+func (r *revisionSyncer) singleFlightGetRevisionFromLeader(ctx context.Context) (uint64, error) {
 	v, err, _ := r.flight.Do("get_revision", func() (interface{}, error) {
-		// there is no guarantee about the schema of leader, so we just try one by one
-		for _, schema := range r.getRetrySchemas() {
-			r.schema = schema
-			rev, err := r.getRevisionFromLeader()
-			if err != nil {
-				if possibleSchemaMismatch(err) {
-					// switch schema and retry in next loop if possible
-					continue
-				}
-
-				// for others error, just return (maybe timeout)
-				return uint64(0), err
-			}
-
-			return rev, nil
+		rev, err := r.getRevisionFromLeaderWithRetry(ctx)
+		if err != nil {
+			return uint64(0), err
 		}
-
-		// maybe leader can be access by https only but current node is running without cert
-		err := status.Errorf(codes.Unavailable, "no suitable schema to leader")
-		klog.ErrorS(err, "can not get revision from leader", "leader", r.leaderElection.GetLeaderInfo())
-		return uint64(0), err
+		return rev, nil
 	})
 	return v.(uint64), err
+}
+
+func (r *revisionSyncer) getRevisionFromLeaderWithRetry(ctx context.Context) (uint64, error) {
+	start := time.Now()
+	for {
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
+		rev, err := r.getRevisionFromLeaderWithSchemas(ctx)
+		if err == nil {
+			return rev, nil
+		}
+		if !retryableLeaderRevisionErr(err) {
+			return 0, err
+		}
+		if time.Since(start) >= syncRevMaxRetryElapsed {
+			return 0, err
+		}
+		select {
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		case <-time.After(syncRevRetryBackoff):
+		}
+	}
+}
+
+func (r *revisionSyncer) getRevisionFromLeaderWithSchemas(ctx context.Context) (uint64, error) {
+	// there is no guarantee about the schema of leader, so we just try one by one
+	for _, schema := range r.getRetrySchemas() {
+		r.schema = schema
+		rev, err := r.getRevisionFromLeader(ctx)
+		if err != nil {
+			if possibleSchemaMismatch(err) {
+				// switch schema and retry in next loop if possible
+				continue
+			}
+
+			// for other errors, let the caller decide whether leader-change retry applies
+			return uint64(0), err
+		}
+
+		return rev, nil
+	}
+
+	// maybe leader can be access by https only but current node is running without cert
+	err := status.Errorf(codes.Unavailable, "no suitable schema to leader")
+	klog.ErrorS(err, "can not get revision from leader", "leader", r.leaderElection.GetLeaderInfo())
+	return uint64(0), err
+}
+
+func retryableLeaderRevisionErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	if errors.Is(err, syscall.ECONNREFUSED) ||
+		errors.Is(err, syscall.ECONNRESET) ||
+		errors.Is(err, syscall.EHOSTUNREACH) ||
+		errors.Is(err, syscall.ENETUNREACH) {
+		return true
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "connection refused") ||
+		strings.Contains(msg, "no route to host") ||
+		strings.Contains(msg, "status code from leader") ||
+		strings.Contains(msg, "leader is not elected")
 }
 
 func possibleSchemaMismatch(err error) bool {
@@ -216,15 +280,22 @@ func isSendHttpsReqToHttpServerErr(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "http: server gave HTTP response to HTTPS client")
 }
 
-func (r *revisionSyncer) getRevisionFromLeader() (uint64, error) {
+func (r *revisionSyncer) getRevisionFromLeader(ctx context.Context) (uint64, error) {
 	leaderAddress := r.leaderElection.GetLeaderInfo()
+	if leaderAddress == "" || leaderAddress == "empty" {
+		return 0, status.Errorf(codes.Unavailable, "leader is not elected")
+	}
 	r.metricCli.EmitGauge("follower.getleader", 1, metrics.Tag("leader", leaderAddress))
 	startTime := time.Now()
 
 	// todo: implement it based on grpc API
 	url := fmt.Sprintf("%s://%s/status", r.schema, leaderAddress)
 	klog.V(10).InfoS("get revision", "from", url)
-	response, err := r.httpClient.Get(url)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return 0, err
+	}
+	response, err := r.httpClient.Do(request)
 	r.metricCli.EmitHistogram("member.round_trip",
 		time.Since(startTime).Milliseconds(),
 		metrics.Tag("leader", leaderAddress))

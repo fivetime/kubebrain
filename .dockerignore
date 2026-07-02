@@ -1,0 +1,5 @@
+.git
+bin
+data
+coverage.out
+.DS_Store

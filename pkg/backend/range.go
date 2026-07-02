@@ -27,8 +27,11 @@ import (
 
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
 
+	"github.com/kubewharf/kubebrain/pkg/backend/coder"
 	"github.com/kubewharf/kubebrain/pkg/storage"
 )
+
+var fromKeyEnd = coder.ObjectKeyspaceEnd()
 
 // Get implements Backend interface
 func (b *backend) Get(ctx context.Context, r *proto.GetRequest) (resp *proto.GetResponse, err error) {
@@ -42,7 +45,10 @@ func (b *backend) Get(ctx context.Context, r *proto.GetRequest) (resp *proto.Get
 			"latency", time.Since(ts))
 	}()
 
-	curRev := b.tso.GetRevision()
+	curRev, err := b.safeCurrentRevision(ctx)
+	if err != nil {
+		return nil, err
+	}
 	requireRev := r.GetRevision()
 
 	val, modRev, err := b.get(ctx, r.Key, requireRev)
@@ -79,7 +85,8 @@ func (b *backend) getLatestInternalVal(ctx context.Context, key []byte) (val []b
 
 // get returns the user-visible value and the revision it's modified with.
 // NOTICE: return storage.ErrKeyNotFound if the value is not exist or is a tombstone.
-//         modRevision maybe non-zero even if there is a storage.ErrKeyNotFound.
+//
+//	modRevision maybe non-zero even if there is a storage.ErrKeyNotFound.
 func (b *backend) get(ctx context.Context, key []byte, revision uint64) (val []byte, modRevision uint64, err error) {
 	val, modRevision, err = b.getInternalVal(ctx, key, revision)
 	if bytes.Compare(val, tombStoneBytes) == 0 {
@@ -139,16 +146,20 @@ func (b *backend) List(ctx context.Context, r *proto.RangeRequest) (resp *proto.
 	}
 
 	reqRevision := r.Revision
-	curRevision := b.tso.GetRevision()
+	curRevision, err := b.safeCurrentRevision(ctx)
+	if err != nil {
+		return nil, err
+	}
 	if reqRevision == 0 {
 		reqRevision = curRevision
 	}
 
-	if bytes.Compare(r.Key, r.End) >= 0 {
+	if !isFromKeyEnd(r.End) && bytes.Compare(r.Key, r.End) >= 0 {
 		return nil, errors.New("invalid range end")
 	}
 
-	key, rangeEnd := b.coder.EncodeObjectKey(r.Key, 0), b.coder.EncodeObjectKey(r.End, 0)
+	key := b.rangeStartKey(r.Key)
+	rangeEnd := b.rangeEndKey(r.End)
 
 	// add limit to check if there is more value
 	limit := r.Limit
@@ -173,6 +184,29 @@ func (b *backend) List(ctx context.Context, r *proto.RangeRequest) (resp *proto.
 	return resp, nil
 }
 
+func (b *backend) rangeStartKey(userKey []byte) []byte {
+	if len(userKey) == 0 || userKey[len(userKey)-1] != 0 {
+		return b.coder.EncodeObjectKey(userKey, 0)
+	}
+	// Kubernetes etcd3 pagination uses "last returned user key + \x00" as
+	// the next range start. KubeBrain stores multiple internal versions as
+	// "user key + '$' + revision", so encoding the trailing NUL literally
+	// would seek before the previous key's versions and duplicate it.
+	start := b.coder.EncodeObjectKey(userKey[:len(userKey)-1], math.MaxUint64)
+	return append(start, 0)
+}
+
+func (b *backend) rangeEndKey(userKey []byte) []byte {
+	if isFromKeyEnd(userKey) {
+		return fromKeyEnd
+	}
+	return b.coder.EncodeObjectKey(userKey, 0)
+}
+
+func isFromKeyEnd(userKey []byte) bool {
+	return len(userKey) == 1 && userKey[0] == 0
+}
+
 // Count implements Backend interface
 func (b *backend) Count(ctx context.Context, r *proto.CountRequest) (resp *proto.CountResponse, err error) {
 	ts := time.Now()
@@ -184,7 +218,10 @@ func (b *backend) Count(ctx context.Context, r *proto.CountRequest) (resp *proto
 			"latency", time.Since(ts))
 	}()
 
-	rev := b.tso.GetRevision()
+	rev, err := b.safeCurrentRevision(ctx)
+	if err != nil {
+		return nil, err
+	}
 	if !b.config.EnableEtcdCompatibility {
 		return &proto.CountResponse{
 			Header: responseHeader(rev),
@@ -192,7 +229,7 @@ func (b *backend) Count(ctx context.Context, r *proto.CountRequest) (resp *proto
 		}, nil
 	}
 
-	key, rangeEnd := b.coder.EncodeObjectKey(r.Key, 0), b.coder.EncodeObjectKey(r.End, 0)
+	key, rangeEnd := b.rangeStartKey(r.Key), b.rangeEndKey(r.End)
 	count, err := b.scanner.Count(ctx, key, rangeEnd, rev)
 	if err != nil {
 		klog.Errorf("backend count %v return err %v", r, err)
@@ -215,8 +252,11 @@ func (b *backend) GetPartitions(ctx context.Context, r *proto.ListPartitionReque
 			"latency", time.Since(ts))
 	}()
 
-	rev := b.tso.GetRevision()
-	start, end := b.coder.EncodeObjectKey(r.Key, 0), b.coder.EncodeObjectKey(r.End, 0)
+	rev, err := b.safeCurrentRevision(ctx)
+	if err != nil {
+		return nil, err
+	}
+	start, end := b.coder.EncodeObjectKey(r.Key, 0), b.rangeEndKey(r.End)
 
 	partitions, err := b.kv.GetPartitions(ctx, start, end)
 
@@ -246,7 +286,10 @@ func (b *backend) GetPartitions(ctx context.Context, r *proto.ListPartitionReque
 // ListByStream implements Backend interface
 func (b *backend) ListByStream(ctx context.Context, startKey, endKey []byte, rev uint64) (<-chan *proto.StreamRangeResponse, error) {
 
-	curRev := b.tso.GetRevision()
+	curRev, err := b.safeCurrentRevision(ctx)
+	if err != nil {
+		return nil, err
+	}
 	if rev == 0 {
 		rev = curRev
 	}

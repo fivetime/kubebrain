@@ -15,8 +15,10 @@
 package etcd
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"strconv"
 	"time"
 
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
@@ -31,14 +33,38 @@ import (
 const (
 	// GetPartitionMagic is the Magic Number for get partition through range request
 	GetPartitionMagic int64 = 1888
-	unaryRpcTimeout         = time.Second
+	unaryRpcTimeout         = 10 * time.Second
+
+	compactRevKey         = "compact_rev_key"
+	compactVersionKey     = "\x00kubebrain/compact_version"
+	defaultCompactVersion = int64(0)
+	defaultMaxTxnOps      = 128
 )
 
 func (s *RPCServer) Range(ctx context.Context, r *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
 	startTime := time.Now()
 	klog.InfoS("RANGE", "key", r.Key, "rangeEnd", r.RangeEnd, "countOnly", r.CountOnly)
-	if err := s.peers.SyncReadRevision(); err != nil {
+	if err := validateRangeRequest(r); err != nil {
+		return nil, err
+	}
+	if r.Revision > 0 && !s.peers.IsLeader() && s.peers.EtcdProxyEnabled() {
+		s.metricCli.EmitCounter("read.follower.historical_proxy", 1)
+		return s.peers.Range(ctx, r)
+	}
+	if err := s.peers.SyncReadRevision(ctx); err != nil {
 		return &etcdserverpb.RangeResponse{}, err
+	}
+	if err := s.checkRequestedRevision(ctx, r.Revision); err != nil {
+		return nil, err
+	}
+	if isEmptyNonFromKeyRange(r.Key, r.RangeEnd) {
+		revision, err := safeBackendRevision(ctx, s.backend)
+		if err != nil {
+			return nil, err
+		}
+		return &etcdserverpb.RangeResponse{
+			Header: txnHeader(int64(revision)),
+		}, nil
 	}
 	var (
 		response              *etcdserverpb.RangeResponse
@@ -55,7 +81,7 @@ func (s *RPCServer) Range(ctx context.Context, r *etcdserverpb.RangeRequest) (*e
 		if r.Revision == GetPartitionMagic {
 			methodTag = metrics.Tag("method", "list-partition")
 			response, err = s.backend.GetPartitions(ctx, r)
-		} else if r.CountOnly {
+		} else if r.CountOnly && !hasRangeRevisionFilters(r) {
 			// count only
 			methodTag = metrics.Tag("method", "count")
 			// range method
@@ -75,8 +101,33 @@ func (s *RPCServer) Range(ctx context.Context, r *etcdserverpb.RangeRequest) (*e
 	return response, err
 }
 
+func validateRangeRequest(r *etcdserverpb.RangeRequest) error {
+	if len(r.Key) == 0 {
+		return status.Error(codes.InvalidArgument, "etcdserver: key is not provided")
+	}
+	if _, ok := etcdserverpb.RangeRequest_SortOrder_name[int32(r.SortOrder)]; !ok {
+		return status.Error(codes.InvalidArgument, "etcdserver: invalid sort option")
+	}
+	if _, ok := etcdserverpb.RangeRequest_SortTarget_name[int32(r.SortTarget)]; !ok {
+		return status.Error(codes.InvalidArgument, "etcdserver: invalid sort option")
+	}
+	return nil
+}
+
+func isEmptyNonFromKeyRange(key, rangeEnd []byte) bool {
+	return len(rangeEnd) != 0 && !isFromKeyRangeEnd(rangeEnd) && bytes.Compare(key, rangeEnd) >= 0
+}
+
+func isFromKeyRangeEnd(rangeEnd []byte) bool {
+	return len(rangeEnd) == 1 && rangeEnd[0] == 0
+}
+
 func (s *RPCServer) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etcdserverpb.TxnResponse, error) {
 	startTime := time.Now()
+
+	if err := validateTxnRequest(txn); err != nil {
+		return nil, err
+	}
 
 	deadline, ok := ctx.Deadline()
 	if ok && startTime.Sub(deadline) >= 0 {
@@ -100,27 +151,61 @@ func (s *RPCServer) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etc
 		methodTag, successTag metrics.T
 		failedKey             string
 	)
-	if put := isCreate(txn); put != nil {
-		response, err = s.backend.Create(ctx, put)
+	if put, includeFailureRange := isCreate(txn); put != nil {
+		put, err = s.putWithEffectiveOptions(ctx, put)
+		if err != nil {
+			return nil, err
+		}
+		if err = s.ensureLeaseExists(put.Lease); err != nil {
+			return nil, err
+		}
+		response, err = s.backend.Create(ctx, put, includeFailureRange)
 		methodTag = metrics.Tag("method", "create")
 		if err != nil || !response.Succeeded {
 			failedKey = string(put.Key)
+		} else {
+			s.bindKeyToLease(put.Lease, string(put.Key))
 		}
-	} else if rev, key, ok := isDelete(txn); ok {
-		response, err = s.backend.Delete(ctx, key, rev)
+	} else if rev, key, deleteReq, includeFailureRange, ok := isCompareDelete(txn); ok {
+		response, err = s.backend.CompareDelete(ctx, deleteReq, rev, includeFailureRange)
 		methodTag = metrics.Tag("method", "delete")
 		if err != nil || !response.Succeeded {
 			failedKey = string(key)
+		} else {
+			s.unbindKeyFromLease(string(key))
 		}
-	} else if rev, key, value, lease, ok := isUpdate(txn); ok {
-		response, err = s.backend.Update(ctx, rev, key, value, lease)
+	} else if rev, key, includeFailureRange, ok := isDelete(txn); ok {
+		response, err = s.backend.Delete(ctx, key, rev, includeFailureRange)
+		methodTag = metrics.Tag("method", "delete")
+		if err != nil || !response.Succeeded {
+			failedKey = string(key)
+		} else {
+			s.unbindKeyFromLease(string(key))
+		}
+	} else if rev, key, put, includeFailureRange, ok := isUpdate(txn); ok {
+		put, err = s.putWithEffectiveOptions(ctx, put)
+		if err != nil {
+			return nil, err
+		}
+		if err = s.ensureLeaseExists(put.Lease); err != nil {
+			return nil, err
+		}
+		response, err = s.backend.Update(ctx, rev, put, includeFailureRange)
 		methodTag = metrics.Tag("method", "update")
 		if err != nil || !response.Succeeded {
 			failedKey = string(key)
+		} else {
+			s.bindKeyToLease(put.Lease, string(key))
 		}
 	} else if ok := isCompact(txn); ok {
-		response, err = s.compact()
+		response, err = s.compact(ctx, txn)
 		methodTag = metrics.Tag("method", "compact")
+	} else if isSimpleSuccessTxn(txn) {
+		response, err = s.executeGenericTxn(ctx, txn)
+		methodTag = metrics.Tag("method", "txn-simple")
+	} else if isComparableTxn(txn) {
+		response, err = s.executeGenericTxn(ctx, txn)
+		methodTag = metrics.Tag("method", "txn-compare")
 	} else {
 		response, err = nil, fmt.Errorf("unsupported transaction: %v", txn)
 		methodTag = metrics.Tag("method", "invalid")
@@ -136,76 +221,802 @@ func (s *RPCServer) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etc
 		}
 	}
 	if len(failedKey) > 0 {
-		klog.ErrorS(err, "txn failed", "op", methodTag.Value, "key", failedKey)
+		if err != nil {
+			klog.ErrorS(err, "txn failed", "op", methodTag.Value, "key", failedKey)
+		} else {
+			klog.V(4).InfoS("txn compare failed", "op", methodTag.Value, "key", failedKey)
+		}
 	}
 	return response, err
 }
 
-func (s *RPCServer) Compact(ctx context.Context, r *etcdserverpb.CompactionRequest) (*etcdserverpb.CompactionResponse, error) {
-	return &etcdserverpb.CompactionResponse{
-		Header: &etcdserverpb.ResponseHeader{
-			Revision: r.Revision,
-		},
-	}, nil
+func validateTxnRequest(txn *etcdserverpb.TxnRequest) error {
+	return validateTxnRequestWithMaxOps(txn, defaultMaxTxnOps)
 }
 
-func (s *RPCServer) Put(ctx context.Context, r *etcdserverpb.PutRequest) (*etcdserverpb.PutResponse, error) {
-	return nil, fmt.Errorf("put is not supported")
-}
+func validateTxnRequestWithMaxOps(txn *etcdserverpb.TxnRequest, maxTxnOps int) error {
+	opc := len(txn.Compare)
+	if opc < len(txn.Success) {
+		opc = len(txn.Success)
+	}
+	if opc < len(txn.Failure) {
+		opc = len(txn.Failure)
+	}
+	if opc > maxTxnOps {
+		return tooManyTxnOpsError()
+	}
 
-func (s *RPCServer) DeleteRange(ctx context.Context, r *etcdserverpb.DeleteRangeRequest) (*etcdserverpb.DeleteRangeResponse, error) {
-	return nil, fmt.Errorf("delete is not supported")
-}
-
-func isCreate(txn *etcdserverpb.TxnRequest) *etcdserverpb.PutRequest {
-	if len(txn.Compare) == 1 &&
-		txn.Compare[0].Target == etcdserverpb.Compare_MOD &&
-		txn.Compare[0].Result == etcdserverpb.Compare_EQUAL &&
-		txn.Compare[0].GetModRevision() == 0 &&
-		len(txn.Failure) == 0 &&
-		len(txn.Success) == 1 &&
-		txn.Success[0].GetRequestPut() != nil {
-		return txn.Success[0].GetRequestPut()
+	for _, cmp := range txn.Compare {
+		if len(cmp.Key) == 0 {
+			return status.Error(codes.InvalidArgument, "etcdserver: key is not provided")
+		}
+		if _, ok := etcdserverpb.Compare_CompareResult_name[int32(cmp.Result)]; !ok {
+			return status.Error(codes.InvalidArgument, "etcdserver: invalid compare result")
+		}
+		if _, ok := etcdserverpb.Compare_CompareTarget_name[int32(cmp.Target)]; !ok {
+			return status.Error(codes.InvalidArgument, "etcdserver: invalid compare target")
+		}
+	}
+	for _, op := range txn.Success {
+		if err := validateTxnRequestOp(op, maxTxnOps-opc); err != nil {
+			return err
+		}
+	}
+	if err := validateTxnIntervals(txn.Success); err != nil {
+		return err
+	}
+	for _, op := range txn.Failure {
+		if err := validateTxnRequestOp(op, maxTxnOps-opc); err != nil {
+			return err
+		}
+	}
+	if err := validateTxnIntervals(txn.Failure); err != nil {
+		return err
 	}
 	return nil
 }
 
-func isDelete(txn *etcdserverpb.TxnRequest) (int64, []byte, bool) {
+func validateTxnRequestOp(op *etcdserverpb.RequestOp, maxTxnOps int) error {
+	if op == nil {
+		return txnKeyNotFoundError()
+	}
+	switch {
+	case op.GetRequestPut() != nil:
+		return validatePutRequest(op.GetRequestPut())
+	case op.GetRequestRange() != nil:
+		return validateRangeRequest(op.GetRequestRange())
+	case op.GetRequestDeleteRange() != nil:
+		return validateDeleteRangeRequest(op.GetRequestDeleteRange())
+	case op.GetRequestTxn() != nil:
+		return validateTxnRequestWithMaxOps(op.GetRequestTxn(), maxTxnOps)
+	default:
+		return txnKeyNotFoundError()
+	}
+}
+
+type txnDeleteInterval struct {
+	start     []byte
+	end       []byte
+	point     bool
+	openEnded bool
+}
+
+func validateTxnIntervals(ops []*etcdserverpb.RequestOp) error {
+	_, _, err := collectTxnIntervals(ops)
+	return err
+}
+
+func collectTxnIntervals(ops []*etcdserverpb.RequestOp) (map[string]struct{}, []txnDeleteInterval, error) {
+	deleteIntervals := make([]txnDeleteInterval, 0)
+	for _, op := range ops {
+		if r := op.GetRequestDeleteRange(); r != nil {
+			deleteIntervals = append(deleteIntervals, newTxnDeleteInterval(r))
+		}
+	}
+
+	putKeys := make(map[string]struct{})
+	for _, op := range ops {
+		if nested := op.GetRequestTxn(); nested != nil {
+			thenPuts, thenDeletes, err := collectTxnIntervals(nested.Success)
+			if err != nil {
+				return nil, deleteIntervals, err
+			}
+			elsePuts, elseDeletes, err := collectTxnIntervals(nested.Failure)
+			if err != nil {
+				return nil, deleteIntervals, err
+			}
+			for key := range thenPuts {
+				if _, ok := putKeys[key]; ok {
+					return nil, deleteIntervals, duplicateTxnKeyError()
+				}
+				if txnIntervalsContain(deleteIntervals, []byte(key)) {
+					return nil, deleteIntervals, duplicateTxnKeyError()
+				}
+				putKeys[key] = struct{}{}
+			}
+			for key := range elsePuts {
+				if _, ok := putKeys[key]; ok {
+					if _, safe := thenPuts[key]; !safe {
+						return nil, deleteIntervals, duplicateTxnKeyError()
+					}
+				}
+				if txnIntervalsContain(deleteIntervals, []byte(key)) {
+					return nil, deleteIntervals, duplicateTxnKeyError()
+				}
+				putKeys[key] = struct{}{}
+			}
+			deleteIntervals = append(deleteIntervals, thenDeletes...)
+			deleteIntervals = append(deleteIntervals, elseDeletes...)
+			continue
+		}
+
+		r := op.GetRequestPut()
+		if r == nil {
+			continue
+		}
+		key := string(r.Key)
+		if _, ok := putKeys[key]; ok {
+			return nil, deleteIntervals, duplicateTxnKeyError()
+		}
+		if txnIntervalsContain(deleteIntervals, r.Key) {
+			return nil, deleteIntervals, duplicateTxnKeyError()
+		}
+		putKeys[key] = struct{}{}
+	}
+	return putKeys, deleteIntervals, nil
+}
+
+func txnIntervalsContain(intervals []txnDeleteInterval, key []byte) bool {
+	for _, interval := range intervals {
+		if interval.contains(key) {
+			return true
+		}
+	}
+	return false
+}
+
+func newTxnDeleteInterval(r *etcdserverpb.DeleteRangeRequest) txnDeleteInterval {
+	if len(r.RangeEnd) == 0 {
+		return txnDeleteInterval{start: r.Key, point: true}
+	}
+	return txnDeleteInterval{
+		start:     r.Key,
+		end:       r.RangeEnd,
+		openEnded: len(r.RangeEnd) == 1 && r.RangeEnd[0] == 0,
+	}
+}
+
+func (i txnDeleteInterval) contains(key []byte) bool {
+	if i.point {
+		return bytes.Equal(key, i.start)
+	}
+	if bytes.Compare(key, i.start) < 0 {
+		return false
+	}
+	return i.openEnded || bytes.Compare(key, i.end) < 0
+}
+
+func duplicateTxnKeyError() error {
+	return status.Error(codes.InvalidArgument, "etcdserver: duplicate key given in txn request")
+}
+
+func tooManyTxnOpsError() error {
+	return status.Error(codes.InvalidArgument, "etcdserver: too many operations in txn request")
+}
+
+func txnKeyNotFoundError() error {
+	return status.Error(codes.InvalidArgument, "etcdserver: key not found")
+}
+
+func futureRevisionError() error {
+	return status.Error(codes.OutOfRange, "etcdserver: mvcc: required revision is a future revision")
+}
+
+func compactedRevisionError() error {
+	return status.Error(codes.OutOfRange, "etcdserver: mvcc: required revision has been compacted")
+}
+
+func (s *RPCServer) checkRequestedRevision(ctx context.Context, revision int64) error {
+	if revision <= 0 {
+		return nil
+	}
+	compactRevision, err := s.backend.GetCompactRevision(ctx)
+	if err != nil {
+		return err
+	}
+	if revision < int64(compactRevision) {
+		return compactedRevisionError()
+	}
+	if revision > int64(s.backend.GetCurrentRevision()) {
+		return futureRevisionError()
+	}
+	return nil
+}
+
+func validatePutRequest(r *etcdserverpb.PutRequest) error {
+	if len(r.Key) == 0 {
+		return status.Error(codes.InvalidArgument, "etcdserver: key is not provided")
+	}
+	if r.IgnoreValue && len(r.Value) != 0 {
+		return status.Error(codes.InvalidArgument, "etcdserver: value is provided")
+	}
+	if r.IgnoreLease && r.Lease != 0 {
+		return status.Error(codes.InvalidArgument, "etcdserver: lease is provided")
+	}
+	return nil
+}
+
+func validateDeleteRangeRequest(r *etcdserverpb.DeleteRangeRequest) error {
+	if len(r.Key) == 0 {
+		return status.Error(codes.InvalidArgument, "etcdserver: key is not provided")
+	}
+	return nil
+}
+
+func (s *RPCServer) Compact(ctx context.Context, r *etcdserverpb.CompactionRequest) (*etcdserverpb.CompactionResponse, error) {
+	if !s.peers.IsLeader() {
+		s.metricCli.EmitCounter("write.follower", 1)
+		if s.peers.EtcdProxyEnabled() {
+			return s.peers.Compact(ctx, r)
+		}
+		return nil, status.Errorf(codes.Unavailable, "compact error addr is %s leader %s", s.backend.GetResourceLock().Identity(), s.backend.GetResourceLock().Describe())
+	}
+	if err := s.peers.SyncReadRevision(ctx); err != nil {
+		return nil, err
+	}
+	if r.Revision > int64(s.backend.GetCurrentRevision()) {
+		return nil, futureRevisionError()
+	}
+	compactRevision, err := s.backend.GetCompactRevision(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if compactRevision > 0 && r.Revision <= int64(compactRevision) {
+		return nil, compactedRevisionError()
+	}
+	compactResp, err := s.backend.Compact(ctx, uint64(r.Revision))
+	if err != nil {
+		return nil, err
+	}
+	if r.Revision > 0 && compactResp != nil && compactResp.Header != nil && compactResp.Header.Revision < r.Revision {
+		return nil, status.Errorf(codes.Unavailable, "etcdserver: mvcc: compact revision %d is pending behind requested revision %d", compactResp.Header.Revision, r.Revision)
+	}
+	if r.Revision > 0 {
+		if err := s.waitCompactRevisionVisible(ctx, r.Revision); err != nil {
+			return nil, err
+		}
+	}
+	return &etcdserverpb.CompactionResponse{
+		Header: &etcdserverpb.ResponseHeader{
+			Revision: int64(s.backend.GetCurrentRevision()),
+		},
+	}, nil
+}
+
+func (s *RPCServer) waitCompactRevisionVisible(ctx context.Context, revision int64) error {
+	deadline := time.Now().Add(unaryRpcTimeout)
+	for {
+		compactRevision, err := s.backend.GetCompactRevision(ctx)
+		if err != nil {
+			return err
+		}
+		if int64(compactRevision) >= revision {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return status.Errorf(codes.Unavailable, "etcdserver: mvcc: compact revision %d is not visible at requested revision %d", compactRevision, revision)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+}
+
+func (s *RPCServer) Put(ctx context.Context, r *etcdserverpb.PutRequest) (*etcdserverpb.PutResponse, error) {
+	startTime := time.Now()
+	if err := validatePutRequest(r); err != nil {
+		return nil, err
+	}
+	if !s.peers.IsLeader() {
+		s.metricCli.EmitCounter("write.follower", 1)
+		if s.peers.EtcdProxyEnabled() {
+			return s.peers.Put(ctx, r)
+		}
+		return nil, status.Errorf(codes.Unavailable, "put error addr is %s leader %s", s.backend.GetResourceLock().Identity(), s.backend.GetResourceLock().Describe())
+	}
+	put, err := s.putWithEffectiveOptions(ctx, r)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.ensureLeaseExists(put.Lease); err != nil {
+		return nil, err
+	}
+	response, err := s.backend.Put(ctx, put)
+	if err == nil {
+		s.bindKeyToLease(put.Lease, string(put.Key))
+	}
+	successTag := getSuccessMetricTagByErr(err)
+	s.metricCli.EmitCounter("write", 1, metrics.Tag("method", "put"), successTag)
+	s.metricCli.EmitHistogram("write.latency", time.Since(startTime).Seconds(), metrics.Tag("method", "put"), successTag)
+	if response != nil {
+		s.metricCli.EmitHistogram("write.responsesize", response.Size(), metrics.Tag("method", "put"), successTag)
+	}
+	return response, err
+}
+
+func (s *RPCServer) DeleteRange(ctx context.Context, r *etcdserverpb.DeleteRangeRequest) (*etcdserverpb.DeleteRangeResponse, error) {
+	startTime := time.Now()
+	if err := validateDeleteRangeRequest(r); err != nil {
+		return nil, err
+	}
+	if !s.peers.IsLeader() {
+		s.metricCli.EmitCounter("write.follower", 1)
+		if s.peers.EtcdProxyEnabled() {
+			return s.peers.DeleteRange(ctx, r)
+		}
+		return nil, status.Errorf(codes.Unavailable, "delete range error addr is %s leader %s", s.backend.GetResourceLock().Identity(), s.backend.GetResourceLock().Describe())
+	}
+	if len(r.RangeEnd) != 0 {
+		if err := s.peers.SyncReadRevision(ctx); err != nil {
+			return nil, err
+		}
+	}
+	if isEmptyNonFromKeyRange(r.Key, r.RangeEnd) {
+		return s.emptyDeleteRangeResponse(), nil
+	}
+	deletedKeys, keyErr := s.keysInDeleteRange(ctx, r)
+	if keyErr != nil {
+		return nil, keyErr
+	}
+	response, err := s.backend.DeleteRange(ctx, r)
+	if err == nil {
+		for _, key := range deletedKeys {
+			s.unbindKeyFromLease(key)
+		}
+	}
+	successTag := getSuccessMetricTagByErr(err)
+	s.metricCli.EmitCounter("write", 1, metrics.Tag("method", "delete-range"), successTag)
+	s.metricCli.EmitHistogram("write.latency", time.Since(startTime).Seconds(), metrics.Tag("method", "delete-range"), successTag)
+	if response != nil {
+		s.metricCli.EmitHistogram("write.responsesize", response.Size(), metrics.Tag("method", "delete-range"), successTag)
+	}
+	return response, err
+}
+
+func (s *RPCServer) putWithEffectiveOptions(ctx context.Context, r *etcdserverpb.PutRequest) (*etcdserverpb.PutRequest, error) {
+	if !r.IgnoreLease && !r.IgnoreValue {
+		return r, nil
+	}
+	clone := *r
+	if r.IgnoreLease {
+		clone.IgnoreLease = false
+		clone.Lease = s.leaseIDForKey(string(r.Key))
+	}
+	if r.IgnoreValue {
+		rangeResp, err := s.backend.Get(ctx, &etcdserverpb.RangeRequest{Key: r.Key})
+		if err != nil {
+			return nil, err
+		}
+		if len(rangeResp.Kvs) == 0 {
+			return nil, status.Errorf(codes.NotFound, "ignore value requires existing key %q", string(r.Key))
+		}
+		clone.IgnoreValue = false
+		clone.Value = rangeResp.Kvs[0].Value
+	}
+	return &clone, nil
+}
+
+func isCreate(txn *etcdserverpb.TxnRequest) (*etcdserverpb.PutRequest, bool) {
+	if len(txn.Compare) == 1 &&
+		txn.Compare[0].Target == etcdserverpb.Compare_MOD &&
+		txn.Compare[0].Result == etcdserverpb.Compare_EQUAL &&
+		txn.Compare[0].GetModRevision() == 0 &&
+		(len(txn.Failure) == 0 || (len(txn.Failure) == 1 && txn.Failure[0].GetRequestRange() != nil)) &&
+		len(txn.Success) == 1 &&
+		txn.Success[0].GetRequestPut() != nil {
+		return txn.Success[0].GetRequestPut(), len(txn.Failure) == 1
+	}
+	return nil, false
+}
+
+func isDelete(txn *etcdserverpb.TxnRequest) (int64, []byte, bool, bool) {
 	if len(txn.Compare) == 0 &&
 		len(txn.Failure) == 0 &&
 		len(txn.Success) == 2 &&
 		txn.Success[0].GetRequestRange() != nil &&
 		txn.Success[1].GetRequestDeleteRange() != nil {
 		rng := txn.Success[1].GetRequestDeleteRange()
-		return 0, rng.Key, true
+		if len(rng.RangeEnd) == 0 {
+			return 0, rng.Key, true, true
+		}
 	}
+	return 0, nil, false, false
+}
+
+func isCompareDelete(txn *etcdserverpb.TxnRequest) (int64, []byte, *etcdserverpb.DeleteRangeRequest, bool, bool) {
 	if len(txn.Compare) == 1 &&
 		txn.Compare[0].Target == etcdserverpb.Compare_MOD &&
 		txn.Compare[0].Result == etcdserverpb.Compare_EQUAL &&
-		len(txn.Failure) == 1 &&
-		txn.Failure[0].GetRequestRange() != nil &&
+		(len(txn.Failure) == 0 || (len(txn.Failure) == 1 && txn.Failure[0].GetRequestRange() != nil)) &&
 		len(txn.Success) == 1 &&
 		txn.Success[0].GetRequestDeleteRange() != nil {
-		return txn.Compare[0].GetModRevision(), txn.Success[0].GetRequestDeleteRange().Key, true
+		deleteReq := txn.Success[0].GetRequestDeleteRange()
+		if len(deleteReq.RangeEnd) != 0 {
+			return 0, nil, nil, false, false
+		}
+		return txn.Compare[0].GetModRevision(),
+			deleteReq.Key,
+			deleteReq,
+			len(txn.Failure) == 1,
+			true
 	}
-	return 0, nil, false
+	return 0, nil, nil, false, false
 }
 
-func isUpdate(txn *etcdserverpb.TxnRequest) (int64, []byte, []byte, int64, bool) {
+func isUpdate(txn *etcdserverpb.TxnRequest) (int64, []byte, *etcdserverpb.PutRequest, bool, bool) {
 	if len(txn.Compare) == 1 &&
 		txn.Compare[0].Target == etcdserverpb.Compare_MOD &&
 		txn.Compare[0].Result == etcdserverpb.Compare_EQUAL &&
 		len(txn.Success) == 1 &&
 		txn.Success[0].GetRequestPut() != nil &&
-		len(txn.Failure) == 1 &&
-		txn.Failure[0].GetRequestRange() != nil {
+		(len(txn.Failure) == 0 || (len(txn.Failure) == 1 && txn.Failure[0].GetRequestRange() != nil)) {
 		return txn.Compare[0].GetModRevision(),
 			txn.Compare[0].Key,
-			txn.Success[0].GetRequestPut().Value,
-			txn.Success[0].GetRequestPut().Lease,
+			txn.Success[0].GetRequestPut(),
+			len(txn.Failure) == 1,
 			true
 	}
-	return 0, nil, nil, 0, false
+	return 0, nil, nil, false, false
+}
+
+func isSimpleSuccessTxn(txn *etcdserverpb.TxnRequest) bool {
+	if len(txn.Compare) != 0 || len(txn.Failure) != 0 {
+		return false
+	}
+	return txnOpsSupported(txn.Success)
+}
+
+func isComparableTxn(txn *etcdserverpb.TxnRequest) bool {
+	return len(txn.Compare) > 0 && txnOpsSupported(txn.Success) && txnOpsSupported(txn.Failure)
+}
+
+func txnOpsSupported(ops []*etcdserverpb.RequestOp) bool {
+	for _, op := range ops {
+		if op.GetRequestPut() == nil &&
+			op.GetRequestRange() == nil &&
+			op.GetRequestDeleteRange() == nil &&
+			op.GetRequestTxn() == nil {
+			return false
+		}
+		if txn := op.GetRequestTxn(); txn != nil && (!txnOpsSupported(txn.Success) || !txnOpsSupported(txn.Failure)) {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *RPCServer) executeGenericTxn(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etcdserverpb.TxnResponse, error) {
+	paths, err := s.txnComparePaths(ctx, txn)
+	if err != nil {
+		return nil, err
+	}
+	compactRevision, err := s.backend.GetCompactRevision(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateTxnRangeRevisions(txn, paths, int64(compactRevision), int64(s.backend.GetCurrentRevision())); err != nil {
+		return nil, err
+	}
+	pathIndex := 0
+	return s.executeTxnWithPaths(ctx, txn, paths, &pathIndex)
+}
+
+func (s *RPCServer) txnComparePaths(ctx context.Context, txn *etcdserverpb.TxnRequest) ([]bool, error) {
+	succeeded := true
+	for _, cmp := range txn.Compare {
+		ok, err := s.evalCompare(ctx, cmp)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			succeeded = false
+			break
+		}
+	}
+	paths := []bool{succeeded}
+	ops := txn.Success
+	if !succeeded {
+		ops = txn.Failure
+	}
+	for _, op := range ops {
+		nested := op.GetRequestTxn()
+		if nested == nil {
+			continue
+		}
+		nestedPaths, err := s.txnComparePaths(ctx, nested)
+		if err != nil {
+			return nil, err
+		}
+		paths = append(paths, nestedPaths...)
+	}
+	return paths, nil
+}
+
+func validateTxnRangeRevisions(txn *etcdserverpb.TxnRequest, paths []bool, compactRevision, currentRevision int64) error {
+	pathIndex := 0
+	return validateTxnRangeRevisionsWithPaths(txn, paths, &pathIndex, compactRevision, currentRevision)
+}
+
+func validateTxnRangeRevisionsWithPaths(txn *etcdserverpb.TxnRequest, paths []bool, pathIndex *int, compactRevision, currentRevision int64) error {
+	if *pathIndex >= len(paths) {
+		return fmt.Errorf("missing txn compare path")
+	}
+	succeeded := paths[*pathIndex]
+	(*pathIndex)++
+	ops := txn.Success
+	if !succeeded {
+		ops = txn.Failure
+	}
+	for _, op := range ops {
+		if r := op.GetRequestRange(); r != nil {
+			if r.Revision > 0 && r.Revision < compactRevision {
+				return compactedRevisionError()
+			}
+			if r.Revision > currentRevision {
+				return futureRevisionError()
+			}
+		}
+		if nested := op.GetRequestTxn(); nested != nil {
+			if err := validateTxnRangeRevisionsWithPaths(nested, paths, pathIndex, compactRevision, currentRevision); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (s *RPCServer) executeTxnWithPaths(ctx context.Context, txn *etcdserverpb.TxnRequest, paths []bool, pathIndex *int) (*etcdserverpb.TxnResponse, error) {
+	if *pathIndex >= len(paths) {
+		return nil, fmt.Errorf("missing txn compare path")
+	}
+	succeeded := paths[*pathIndex]
+	(*pathIndex)++
+	ops := txn.Success
+	if !succeeded {
+		ops = txn.Failure
+	}
+
+	resp := &etcdserverpb.TxnResponse{
+		Succeeded: succeeded,
+		Responses: make([]*etcdserverpb.ResponseOp, 0, len(ops)),
+	}
+	for _, op := range ops {
+		switch {
+		case op.GetRequestPut() != nil:
+			put, err := s.putWithEffectiveOptions(ctx, op.GetRequestPut())
+			if err != nil {
+				return nil, err
+			}
+			if err := s.ensureLeaseExists(put.Lease); err != nil {
+				return nil, err
+			}
+			putResp, err := s.backend.Put(ctx, put)
+			if err != nil {
+				return nil, err
+			}
+			s.bindKeyToLease(put.Lease, string(put.Key))
+			resp.Header = putResp.Header
+			resp.Responses = append(resp.Responses, &etcdserverpb.ResponseOp{
+				Response: &etcdserverpb.ResponseOp_ResponsePut{
+					ResponsePut: putResp,
+				},
+			})
+		case op.GetRequestRange() != nil:
+			rangeResp, err := s.Range(ctx, op.GetRequestRange())
+			if err != nil {
+				return nil, err
+			}
+			resp.Header = rangeResp.Header
+			resp.Responses = append(resp.Responses, &etcdserverpb.ResponseOp{
+				Response: &etcdserverpb.ResponseOp_ResponseRange{
+					ResponseRange: rangeResp,
+				},
+			})
+		case op.GetRequestDeleteRange() != nil:
+			del := op.GetRequestDeleteRange()
+			if len(del.RangeEnd) != 0 {
+				if err := s.peers.SyncReadRevision(ctx); err != nil {
+					return nil, err
+				}
+			}
+			deleteResp := s.emptyDeleteRangeResponse()
+			if !isEmptyNonFromKeyRange(del.Key, del.RangeEnd) {
+				deletedKeys, err := s.keysInDeleteRange(ctx, del)
+				if err != nil {
+					return nil, err
+				}
+				deleteResp, err = s.backend.DeleteRange(ctx, del)
+				if err != nil {
+					return nil, err
+				}
+				for _, key := range deletedKeys {
+					s.unbindKeyFromLease(key)
+				}
+			}
+			resp.Header = deleteResp.Header
+			resp.Responses = append(resp.Responses, &etcdserverpb.ResponseOp{
+				Response: &etcdserverpb.ResponseOp_ResponseDeleteRange{
+					ResponseDeleteRange: deleteResp,
+				},
+			})
+		case op.GetRequestTxn() != nil:
+			txnResp, err := s.executeTxnWithPaths(ctx, op.GetRequestTxn(), paths, pathIndex)
+			if err != nil {
+				return nil, err
+			}
+			resp.Header = txnResp.Header
+			resp.Responses = append(resp.Responses, &etcdserverpb.ResponseOp{
+				Response: &etcdserverpb.ResponseOp_ResponseTxn{
+					ResponseTxn: txnResp,
+				},
+			})
+		default:
+			return nil, fmt.Errorf("unsupported transaction operation: %v", op)
+		}
+	}
+	if resp.Header == nil {
+		resp.Header = txnHeader(int64(s.backend.GetCurrentRevision()))
+	}
+	return resp, nil
+}
+
+func (s *RPCServer) emptyDeleteRangeResponse() *etcdserverpb.DeleteRangeResponse {
+	return &etcdserverpb.DeleteRangeResponse{
+		Header: txnHeader(int64(s.backend.GetCurrentRevision())),
+	}
+}
+
+func (s *RPCServer) evalCompare(ctx context.Context, cmp *etcdserverpb.Compare) (bool, error) {
+	if len(cmp.RangeEnd) > 0 {
+		return s.evalRangeCompare(ctx, cmp)
+	}
+	rangeResp, err := s.backend.Get(ctx, &etcdserverpb.RangeRequest{Key: cmp.Key})
+	if err != nil {
+		return false, err
+	}
+	var kv *mvccpb.KeyValue
+	if len(rangeResp.Kvs) > 0 {
+		kv = rangeResp.Kvs[0]
+	}
+
+	switch cmp.Target {
+	case etcdserverpb.Compare_MOD:
+		var actual int64
+		if kv != nil {
+			actual = kv.ModRevision
+		}
+		return compareInt64(actual, cmp.GetModRevision(), cmp.Result), nil
+	case etcdserverpb.Compare_VALUE:
+		var actual []byte
+		if kv != nil {
+			actual = kv.Value
+		}
+		return compareBytes(actual, cmp.GetValue(), cmp.Result), nil
+	case etcdserverpb.Compare_VERSION:
+		actual := int64(0)
+		if kv != nil {
+			actual = kv.Version
+		}
+		return compareInt64(actual, cmp.GetVersion(), cmp.Result), nil
+	case etcdserverpb.Compare_CREATE:
+		actual := int64(0)
+		if kv != nil {
+			actual = kv.CreateRevision
+		}
+		return compareInt64(actual, cmp.GetCreateRevision(), cmp.Result), nil
+	case etcdserverpb.Compare_LEASE:
+		return compareInt64(s.leaseIDForKey(string(cmp.Key)), cmp.GetLease(), cmp.Result), nil
+	default:
+		return false, unsupported(fmt.Sprintf("compare target %s", cmp.Target))
+	}
+}
+
+func (s *RPCServer) evalRangeCompare(ctx context.Context, cmp *etcdserverpb.Compare) (bool, error) {
+	switch cmp.Target {
+	case etcdserverpb.Compare_MOD, etcdserverpb.Compare_VALUE, etcdserverpb.Compare_VERSION, etcdserverpb.Compare_CREATE, etcdserverpb.Compare_LEASE:
+	default:
+		return false, unsupported(fmt.Sprintf("compare target %s", cmp.Target))
+	}
+	rangeResp, err := s.backend.List(ctx, &etcdserverpb.RangeRequest{
+		Key:      cmp.Key,
+		RangeEnd: cmp.RangeEnd,
+	})
+	if err != nil {
+		return false, err
+	}
+	if len(rangeResp.Kvs) == 0 {
+		if cmp.Target == etcdserverpb.Compare_VALUE {
+			return false, nil
+		}
+		return s.compareKeyValue(cmp, nil), nil
+	}
+	for _, kv := range rangeResp.Kvs {
+		if !s.compareKeyValue(cmp, kv) {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+func (s *RPCServer) compareKeyValue(cmp *etcdserverpb.Compare, kv *mvccpb.KeyValue) bool {
+	switch cmp.Target {
+	case etcdserverpb.Compare_MOD:
+		var actual int64
+		if kv != nil {
+			actual = kv.ModRevision
+		}
+		return compareInt64(actual, cmp.GetModRevision(), cmp.Result)
+	case etcdserverpb.Compare_VALUE:
+		if kv == nil {
+			return false
+		}
+		return compareBytes(kv.Value, cmp.GetValue(), cmp.Result)
+	case etcdserverpb.Compare_VERSION:
+		var actual int64
+		if kv != nil {
+			actual = kv.Version
+		}
+		return compareInt64(actual, cmp.GetVersion(), cmp.Result)
+	case etcdserverpb.Compare_CREATE:
+		var actual int64
+		if kv != nil {
+			actual = kv.CreateRevision
+		}
+		return compareInt64(actual, cmp.GetCreateRevision(), cmp.Result)
+	case etcdserverpb.Compare_LEASE:
+		var key string
+		if kv != nil {
+			key = string(kv.Key)
+		} else {
+			key = string(cmp.Key)
+		}
+		return compareInt64(s.leaseIDForKey(key), cmp.GetLease(), cmp.Result)
+	default:
+		return false
+	}
+}
+
+func compareInt64(actual, expected int64, result etcdserverpb.Compare_CompareResult) bool {
+	switch result {
+	case etcdserverpb.Compare_EQUAL:
+		return actual == expected
+	case etcdserverpb.Compare_GREATER:
+		return actual > expected
+	case etcdserverpb.Compare_LESS:
+		return actual < expected
+	case etcdserverpb.Compare_NOT_EQUAL:
+		return actual != expected
+	default:
+		return false
+	}
+}
+
+func compareBytes(actual, expected []byte, result etcdserverpb.Compare_CompareResult) bool {
+	cmp := bytes.Compare(actual, expected)
+	switch result {
+	case etcdserverpb.Compare_EQUAL:
+		return cmp == 0
+	case etcdserverpb.Compare_GREATER:
+		return cmp > 0
+	case etcdserverpb.Compare_LESS:
+		return cmp < 0
+	case etcdserverpb.Compare_NOT_EQUAL:
+		return cmp != 0
+	default:
+		return false
+	}
 }
 
 func isCompact(txn *etcdserverpb.TxnRequest) bool {
@@ -217,29 +1028,89 @@ func isCompact(txn *etcdserverpb.TxnRequest) bool {
 		txn.Success[0].GetRequestPut() != nil &&
 		len(txn.Failure) == 1 &&
 		txn.Failure[0].GetRequestRange() != nil &&
-		string(txn.Compare[0].Key) == "compact_rev_key"
+		string(txn.Compare[0].Key) == compactRevKey
 }
 
-// just return false, so that apiserver will not call compact method
-// compact logic is maintained in kubebrain
-func (s *RPCServer) compact() (*etcdserverpb.TxnResponse, error) {
-	return &etcdserverpb.TxnResponse{
-		Header:    &etcdserverpb.ResponseHeader{},
-		Succeeded: false,
-		Responses: []*etcdserverpb.ResponseOp{
-			{
+func (s *RPCServer) compact(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etcdserverpb.TxnResponse, error) {
+	expectVersion := txn.Compare[0].GetVersion()
+	put := txn.Success[0].GetRequestPut()
+	currentVersion, err := s.getCompactVersion(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	getResp, err := s.backend.Get(ctx, &etcdserverpb.RangeRequest{Key: []byte(compactRevKey)})
+	if err != nil {
+		return nil, err
+	}
+
+	if currentVersion != expectVersion {
+		rangeResp := &etcdserverpb.RangeResponse{
+			Header: getResp.Header,
+		}
+		if len(getResp.Kvs) > 0 {
+			kv := getResp.Kvs[0]
+			kv.Version = currentVersion
+			rangeResp.Kvs = []*mvccpb.KeyValue{kv}
+			rangeResp.Count = 1
+		}
+		return &etcdserverpb.TxnResponse{
+			Header:    getResp.Header,
+			Succeeded: false,
+			Responses: []*etcdserverpb.ResponseOp{{
 				Response: &etcdserverpb.ResponseOp_ResponseRange{
-					ResponseRange: &etcdserverpb.RangeResponse{
-						Header: &etcdserverpb.ResponseHeader{},
-						Kvs: []*mvccpb.KeyValue{
-							{},
-						},
-						Count: 1,
-					},
+					ResponseRange: rangeResp,
+				},
+			}},
+		}, nil
+	}
+
+	putResp, err := s.backend.Put(ctx, &etcdserverpb.PutRequest{
+		Key:   []byte(compactRevKey),
+		Value: put.Value,
+	})
+	if err != nil {
+		return nil, err
+	}
+	nextVersion := expectVersion + 1
+	versionResp, err := s.backend.Put(ctx, &etcdserverpb.PutRequest{
+		Key:   []byte(compactVersionKey),
+		Value: []byte(strconv.FormatInt(nextVersion, 10)),
+	})
+	if err != nil {
+		return nil, err
+	}
+	header := putResp.Header
+	if versionResp != nil && versionResp.Header != nil {
+		header = versionResp.Header
+	}
+
+	return &etcdserverpb.TxnResponse{
+		Header:    header,
+		Succeeded: true,
+		Responses: []*etcdserverpb.ResponseOp{{
+			Response: &etcdserverpb.ResponseOp_ResponsePut{
+				ResponsePut: &etcdserverpb.PutResponse{
+					Header: header,
 				},
 			},
-		},
+		}},
 	}, nil
+}
+
+func (s *RPCServer) getCompactVersion(ctx context.Context) (int64, error) {
+	resp, err := s.backend.Get(ctx, &etcdserverpb.RangeRequest{Key: []byte(compactVersionKey)})
+	if err != nil {
+		return 0, err
+	}
+	if len(resp.Kvs) == 0 {
+		return defaultCompactVersion, nil
+	}
+	version, err := strconv.ParseInt(string(resp.Kvs[0].Value), 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid compact version %q: %w", resp.Kvs[0].Value, err)
+	}
+	return version, nil
 }
 
 func getSuccessMetricTagByErr(err error) metrics.T {
@@ -254,4 +1125,17 @@ func txnHeader(rev int64) *etcdserverpb.ResponseHeader {
 	return &etcdserverpb.ResponseHeader{
 		Revision: rev,
 	}
+}
+
+func safeBackendRevision(ctx context.Context, backend BackendShim) (uint64, error) {
+	currentRevision := backend.GetCurrentRevision()
+	compactRevision, err := backend.GetCompactRevision(ctx)
+	if err != nil {
+		return 0, err
+	}
+	if compactRevision >= currentRevision {
+		currentRevision = compactRevision + 1
+		backend.SetCurrentRevision(currentRevision)
+	}
+	return currentRevision, nil
 }

@@ -82,9 +82,11 @@ func (o *KubeBrainOption) AddFlags(fs *pflag.FlagSet) {
 	fs.StringVar(&o.epsConf.ClientSecurityConfig.CertFile, "cert-file",
 		o.epsConf.ClientSecurityConfig.CertFile, "Path to the client server ClientTLS cert file.")
 	fs.StringVar(&o.epsConf.ClientSecurityConfig.KeyFile, "key-file",
-		o.epsConf.ClientSecurityConfig.CertFile, "Path to the client server ClientTLS key file.")
+		o.epsConf.ClientSecurityConfig.KeyFile, "Path to the client server ClientTLS key file.")
 	fs.StringVar(&o.epsConf.ClientSecurityConfig.CA, "trusted-ca-file",
 		o.epsConf.ClientSecurityConfig.CA, "Path to the client server ClientTLS trusted CA cert file.")
+	fs.StringVar(&o.epsConf.ClientSecurityConfig.ServerName, "tls-server-name",
+		o.epsConf.ClientSecurityConfig.ServerName, "Server name used by client TLS verification.")
 	fs.BoolVar(&o.epsConf.ClientSecurityConfig.ClientAuth, "client-cert-auth",
 		o.epsConf.ClientSecurityConfig.ClientAuth, "Enable client cert authentication.")
 	fs.BoolVar(&o.epsConf.ClientSecurityConfig.AllowInsecure, "allow-insecure",
@@ -92,13 +94,15 @@ func (o *KubeBrainOption) AddFlags(fs *pflag.FlagSet) {
 	fs.StringVar(&o.epsConf.PeerSecurityConfig.CertFile, "peer-cert-file",
 		o.epsConf.PeerSecurityConfig.CertFile, "Path to the peer server ClientTLS cert file.")
 	fs.StringVar(&o.epsConf.PeerSecurityConfig.KeyFile, "peer-key-file",
-		o.epsConf.PeerSecurityConfig.CertFile, "Path to the peer server ClientTLS key file.")
+		o.epsConf.PeerSecurityConfig.KeyFile, "Path to the peer server ClientTLS key file.")
 	fs.StringVar(&o.epsConf.PeerSecurityConfig.CA, "peer-trusted-ca-file",
 		o.epsConf.PeerSecurityConfig.CA, "Path to the peer server ClientTLS trusted CA cert file.")
+	fs.StringVar(&o.epsConf.PeerSecurityConfig.ServerName, "peer-tls-server-name",
+		o.epsConf.PeerSecurityConfig.ServerName, "Server name used by peer client TLS verification.")
 	fs.BoolVar(&o.epsConf.PeerSecurityConfig.ClientAuth, "peer-client-cert-auth",
 		o.epsConf.PeerSecurityConfig.ClientAuth, "Enable client cert authentication.")
 	fs.BoolVar(&o.epsConf.PeerSecurityConfig.AllowInsecure, "peer-allow-insecure",
-		o.epsConf.ClientSecurityConfig.AllowInsecure, "Allow insecure access even if peer TLS config is set.")
+		o.epsConf.PeerSecurityConfig.AllowInsecure, "Allow insecure access even if peer TLS config is set.")
 	fs.BoolVar(&o.epsConf.EnableEtcdCompatibility, "compatible-with-etcd",
 		o.epsConf.EnableEtcdCompatibility, "Enable full compatibility with usage of etcd3 in kube-apiserver")
 

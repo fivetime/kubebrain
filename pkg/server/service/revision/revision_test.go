@@ -88,8 +88,7 @@ func (tc *testcase) run(t *testing.T) {
 	leaderElectionStub := &leader.Stub{
 		ElectionInfo: leader.ElectionInfo{
 			IsLeader:      false,
-			LeaderAddress: "127.0.0.1:3380",
-			//LeaderAddress: "10.248.146.34:3380",
+			LeaderAddress: ts.addr,
 		},
 	}
 
@@ -99,8 +98,14 @@ func (tc *testcase) run(t *testing.T) {
 
 	times := 0
 	var err error
+	ctx := context.Background()
+	cancel := func() {}
+	if tc.expectError != nil {
+		ctx, cancel = context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	}
+	defer cancel()
 	for times < tc.retryTimes {
-		err = rs.SyncReadRevision()
+		err = rs.SyncReadRevision(ctx)
 		if err != nil {
 
 			// since the server is run in a goroutine, there may be error if the server is not ready
@@ -222,10 +227,11 @@ func TestNewRevisionSyncer(t *testing.T) {
 
 	mockMetrics := mock.NewMinimalMetrics(ctrl)
 	t.Run("conn refused", func(t *testing.T) {
+		addr := unusedLocalTCPAddr(t)
 		leaderElectionStub := &leader.Stub{
 			ElectionInfo: leader.ElectionInfo{
 				IsLeader:      false,
-				LeaderAddress: "127.0.0.1:3380",
+				LeaderAddress: addr,
 			},
 		}
 
@@ -237,9 +243,75 @@ func TestNewRevisionSyncer(t *testing.T) {
 		rs := NewRevisionSyncer(testBackend, mockMetrics, leaderElectionStub, nil)
 		defer rs.Close()
 
-		err := rs.SyncReadRevision()
-		ast.True(strings.Contains(err.Error(), "connection refused"))
+		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+		defer cancel()
+		err := rs.SyncReadRevision(ctx)
+		ast.True(strings.Contains(err.Error(), "connection refused") || errors.Is(err, context.DeadlineExceeded))
 	})
+}
+
+func TestRevisionSyncerRetriesLeaderChange(t *testing.T) {
+	ast := assert.New(t)
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	mockMetrics := mock.NewMinimalMetrics(ctrl)
+
+	wg := sync.WaitGroup{}
+	ts := &testRevisionServer{
+		t:   t,
+		ast: ast,
+		wg:  &wg,
+	}
+	stopServer := ts.run()
+	defer func() {
+		stopServer()
+		wg.Wait()
+	}()
+
+	leaderElection := &mutableLeaderElection{leaderAddress: unusedLocalTCPAddr(t)}
+	bs := &backendStub{}
+	rs := NewRevisionSyncer(bs, mockMetrics, leaderElection, nil)
+	defer rs.Close()
+
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		leaderElection.setLeaderAddress(ts.addr)
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	err := rs.SyncReadRevision(ctx)
+	ast.NoError(err)
+	ast.Equal(uint64(1000), bs.currentRev)
+}
+
+type mutableLeaderElection struct {
+	mu            sync.RWMutex
+	leaderAddress string
+}
+
+func (m *mutableLeaderElection) Campaign(context.Context) {}
+
+func (m *mutableLeaderElection) GetLeaderInfo() string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.leaderAddress
+}
+
+func (m *mutableLeaderElection) IsLeader() bool {
+	return false
+}
+
+func (m *mutableLeaderElection) GetElectionInfo() (leader.ElectionInfo, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return leader.ElectionInfo{LeaderAddress: m.leaderAddress}, nil
+}
+
+func (m *mutableLeaderElection) setLeaderAddress(address string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.leaderAddress = address
 }
 
 type testRevisionServer struct {
@@ -249,6 +321,7 @@ type testRevisionServer struct {
 	enableCmux   bool
 	respWaitTime time.Duration
 	tlsConfig    *tls.Config
+	addr         string
 }
 
 func (t *testRevisionServer) run() (cancel func()) {
@@ -266,12 +339,13 @@ func (t *testRevisionServer) run() (cancel func()) {
 	}
 
 	mux.Handle("/status", statusHandler)
-	server := http.Server{Addr: "127.0.0.1:3380", Handler: mux, TLSConfig: t.tlsConfig}
-	rawListener, err := net.Listen("tcp", "127.0.0.1:3380")
+	rawListener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.t.Fatalf("failed to listen err: %v", err)
 		return
 	}
+	t.addr = rawListener.Addr().String()
+	server := http.Server{Addr: t.addr, Handler: mux, TLSConfig: t.tlsConfig}
 
 	listener := rawListener
 	if t.enableCmux {
@@ -322,4 +396,18 @@ func (t *testRevisionServer) run() (cancel func()) {
 	}()
 
 	return cancel
+}
+
+func unusedLocalTCPAddr(t *testing.T) string {
+	t.Helper()
+
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to allocate local tcp addr: %v", err)
+	}
+	addr := l.Addr().String()
+	if err := l.Close(); err != nil {
+		t.Fatalf("failed to close local tcp listener: %v", err)
+	}
+	return addr
 }

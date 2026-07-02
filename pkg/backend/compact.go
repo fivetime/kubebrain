@@ -52,6 +52,33 @@ func (b *backend) Compact(ctx context.Context, revision uint64) (*proto.CompactR
 	return compactResponse, err
 }
 
+func (b *backend) GetCompactRevision(ctx context.Context) (uint64, error) {
+	val, err := b.kv.Get(ctx, getCompactKey(b.config.Prefix))
+	if err == storage.ErrKeyNotFound {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	if len(val) == 0 {
+		return 0, nil
+	}
+	return binary.BigEndian.Uint64(val), nil
+}
+
+func (b *backend) safeCurrentRevision(ctx context.Context) (uint64, error) {
+	currentRevision := b.tso.GetRevision()
+	compactRevision, err := b.GetCompactRevision(ctx)
+	if err != nil {
+		return 0, err
+	}
+	if compactRevision >= currentRevision {
+		currentRevision = compactRevision + 1
+		b.SetCurrentRevision(currentRevision)
+	}
+	return currentRevision, nil
+}
+
 func (b *backend) compact(ctx context.Context, revision uint64) error {
 	err := b.setCompactRecord(ctx, revision)
 	if err != nil {

@@ -60,6 +60,7 @@ type server struct {
 	healthServer *health.Server
 
 	leaderElection leader.LeaderElection
+	peers          service.PeerService
 	metricCli      metrics.Metrics
 	backend        backend.Backend
 
@@ -67,7 +68,7 @@ type server struct {
 }
 
 // NewServer returns the server
-func NewServer(backend backend.Backend, metricCli metrics.Metrics, config Config) Server {
+func NewServer(ctx context.Context, backend backend.Backend, metricCli metrics.Metrics, config Config) Server {
 	// health server to tell client whether this instance is leader
 	healthServer := health.NewServer()
 	// leader election call back
@@ -80,12 +81,13 @@ func NewServer(backend backend.Backend, metricCli metrics.Metrics, config Config
 	peerService := service.NewPeerService(election, metricCli, backend, config.getPeerServiceConfig())
 	// construct etcd & brian grpc server
 	etcdServer := etcd.New(backend, metricCli, peerService)
-	brainServer := brain.New(backend, metricCli, peerService)
+	brainServer := brain.New(ctx, backend, metricCli, peerService)
 	return &server{
 		etcdServer:     etcdServer,
 		brainServer:    brainServer,
 		healthServer:   healthServer,
 		leaderElection: election,
+		peers:          peerService,
 		metricCli:      metricCli,
 		backend:        backend,
 		config:         config,
@@ -115,6 +117,7 @@ func (s *server) register(server *grpc.Server) {
 func (s *server) GetClientHttpHandlers() map[string]http.Handler {
 	return map[string]http.Handler{
 		"/health": http.HandlerFunc(s.httpHealthHandler),
+		"/ready":  http.HandlerFunc(s.httpReadyHandler),
 	}
 }
 
@@ -129,6 +132,7 @@ func (s *server) GetPeerHttpHandlers() map[string]http.Handler {
 func (s *server) GetInfoHttpHandlers() map[string]http.Handler {
 	return map[string]http.Handler{
 		"/health":   http.HandlerFunc(s.httpHealthHandler),
+		"/ready":    http.HandlerFunc(s.httpReadyHandler),
 		"/status":   http.HandlerFunc(s.revisionHandler),
 		"/election": http.HandlerFunc(s.electionHandler),
 	}
@@ -177,4 +181,26 @@ func (s *server) httpHealthHandler(w http.ResponseWriter, req *http.Request) {
 	}
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(HealthResponse))
+}
+
+func (s *server) httpReadyHandler(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		klog.Warningf("/ready error (status code %d)", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.leaderElection.IsLeader() {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(HealthResponse))
+		return
+	}
+	if s.config.EnableEtcdProxy && s.peers.EtcdProxyEnabled() {
+		if err := s.peers.Ready(); err == nil {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(HealthResponse))
+			return
+		}
+	}
+	http.Error(w, "not ready", http.StatusServiceUnavailable)
 }

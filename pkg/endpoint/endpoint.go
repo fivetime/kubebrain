@@ -63,7 +63,7 @@ func NewEndpoint(b backend.Backend, m metrics.Metrics, config *Config) *Endpoint
 //	InfoPort  ───  Insecure   ─── HTTP
 func (e *Endpoint) Run(ctx context.Context) (err error) {
 
-	e.server = server.NewServer(e.backend, e.metrics, e.config.getServerConfig())
+	e.server = server.NewServer(ctx, e.backend, e.metrics, e.config.getServerConfig())
 
 	// start exposed server
 	ctx, cancel := context.WithCancel(ctx)

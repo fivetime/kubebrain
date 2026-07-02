@@ -49,6 +49,8 @@ var secureModeStrings = []string{
 	"BOTH_INSECURE_AND_SECURE",
 }
 
+var tlsNextProtos = []string{"http/1.1", "h2"}
+
 type Config struct {
 	// Port is the listened port for client server
 	Port int
@@ -87,6 +89,9 @@ type SecurityConfig struct {
 
 	// CA is the file path of ca's cert
 	CA string
+
+	// ServerName is used by TLS clients to verify the server certificate.
+	ServerName string
 
 	// ClientAuth indicate if client certs should be verified
 	ClientAuth bool
@@ -144,6 +149,7 @@ func (sc *SecurityConfig) ToKvs() []interface{} {
 		"cert", sc.CertFile,
 		"key", sc.KeyFile,
 		"ca", sc.CA,
+		"serverName", sc.ServerName,
 		"clientAuth", strconv.FormatBool(sc.ClientAuth),
 	}
 }
@@ -191,10 +197,12 @@ func (sc *SecurityConfig) init() (err error) {
 
 		sc.serverTlsConfig = &tls.Config{
 			Certificates: []tls.Certificate{cert},
+			NextProtos:   tlsNextProtos,
 		}
 
 		sc.clientTlsConfig = &tls.Config{
 			Certificates: []tls.Certificate{cert},
+			ServerName:   sc.ServerName,
 		}
 
 		// load ca file

@@ -138,6 +138,10 @@ func (r *resourceLock) Create(ler resourcelock.LeaderElectionRecord) error {
 	}
 	r.lastVal = lerBytes
 	r.tso, err = r.store.GetTimestampOracle(context.Background())
+	if err != nil {
+		return err
+	}
+	r.record = ler
 	return err
 }
 
@@ -163,6 +167,11 @@ func (r *resourceLock) Update(ler resourcelock.LeaderElectionRecord) error {
 	}
 
 	r.tso, err = r.store.GetTimestampOracle(context.Background())
+	if err != nil {
+		return err
+	}
+	r.lastVal = recordBytes
+	r.record = ler
 	return err
 }
 

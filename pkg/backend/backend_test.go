@@ -900,6 +900,86 @@ func testBackendRange(t *testing.T, targetStorage storageType) {
 	})
 }
 
+func testBackendRangeKubernetesPagination(t *testing.T, targetStorage storageType) {
+	s, closer := newTestSuites(t, targetStorage)
+	defer closer()
+
+	ast := s.ast
+	backend := s.backend
+	baseKey := path.Join(prefix, "pagination")
+	const objectCount = 20
+	const pageSize = int64(5)
+
+	for i := 0; i < objectCount; i++ {
+		key := path.Join(baseKey, fmt.Sprintf("object-%02d", i))
+		_, err := backend.Create(context.Background(), newCreateRequest(key, fmt.Sprintf("value-%02d", i)))
+		if !ast.NoError(err) {
+			ast.FailNow("can not preset paginated kv pair")
+		}
+	}
+	waitUntilRevisionEqualOrTimeout(backend, backend.GetCurrentRevision())
+	readRevision := backend.GetCurrentRevision()
+
+	continueKey := baseKey
+	seen := make(map[string]struct{}, objectCount)
+	var ordered []string
+	for {
+		resp, err := backend.List(context.Background(), newRangeRequest(readRevision, continueKey, prefixEnd(baseKey), pageSize))
+		if !ast.NoError(err) {
+			ast.FailNow("paginated range failed")
+		}
+		if len(resp.Kvs) == 0 {
+			ast.False(resp.More, "empty page must not advertise more results")
+			break
+		}
+		for _, kv := range resp.Kvs {
+			key := string(kv.Key)
+			if _, ok := seen[key]; ok {
+				ast.FailNowf("duplicate key in paginated range", "duplicate key %q after keys %v", key, ordered)
+			}
+			seen[key] = struct{}{}
+			ordered = append(ordered, key)
+		}
+		if !resp.More {
+			break
+		}
+		continueKey = string(resp.Kvs[len(resp.Kvs)-1].Key) + "\x00"
+	}
+
+	ast.Len(ordered, objectCount)
+	for i := 0; i < objectCount; i++ {
+		ast.Equal(path.Join(baseKey, fmt.Sprintf("object-%02d", i)), ordered[i])
+	}
+}
+
+func TestBackendListFromKeyEnd(t *testing.T) {
+	s, closer := newTestSuites(t, memKvStorage)
+	defer closer()
+
+	ast := s.ast
+	backend := s.backend
+	baseKey := path.Join(prefix, "from-key")
+	for _, suffix := range []string{"a", "b", "c"} {
+		_, err := backend.Create(context.Background(), newCreateRequest(path.Join(baseKey, suffix), suffix))
+		if !ast.NoError(err) {
+			ast.FailNow("can not preset from-key kv pair")
+		}
+	}
+	waitUntilRevisionEqualOrTimeout(backend, backend.GetCurrentRevision())
+
+	resp, err := backend.List(context.Background(), &proto.RangeRequest{
+		Key: []byte(path.Join(baseKey, "b")),
+		End: []byte{0},
+	})
+	if !ast.NoError(err) {
+		ast.FailNow("from-key list failed")
+	}
+	if ast.GreaterOrEqual(len(resp.Kvs), 2) {
+		ast.Equal([]byte(path.Join(baseKey, "b")), resp.Kvs[0].Key)
+		ast.Equal([]byte(path.Join(baseKey, "c")), resp.Kvs[1].Key)
+	}
+}
+
 func testBackendCompact(t *testing.T, targetStorage storageType) {
 	// todo(xueyingcai): add test
 	suite, closer := newTestSuites(t, targetStorage)
@@ -944,7 +1024,7 @@ func testBackendCompact(t *testing.T, targetStorage storageType) {
 		// check
 		resp, err = suite.backend.Get(suite.ctx, newGetRequest(rev1, testKey))
 		ast.NoError(err)
-		ast.Equal(newGetResponse(rev2, nil), resp)
+		ast.Equal(newGetResponse(rev2+1, nil), resp)
 
 		// delete
 		dresp, err := suite.backend.Delete(suite.ctx, newDelRequest(0, testKey))
@@ -960,8 +1040,49 @@ func testBackendCompact(t *testing.T, targetStorage storageType) {
 
 		resp, err = suite.backend.Get(suite.ctx, newGetRequest(0, testKey))
 		ast.NoError(err)
-		ast.Equal(newGetResponse(dresp.Header.Revision, nil), resp)
+		ast.Equal(newGetResponse(dresp.Header.Revision+1, nil), resp)
 	}
+}
+
+func testBackendReadHeadersStayAboveCompactRevision(t *testing.T, targetStorage storageType) {
+	suite, closer := newTestSuites(t, targetStorage)
+	defer closer()
+	ast := suite.ast
+	testKey := path.Join(prefix, t.Name(), testKey)
+
+	createResp, err := suite.backend.Create(suite.ctx, &proto.CreateRequest{
+		Key:   []byte(testKey),
+		Value: []byte(testVal),
+		Lease: 0,
+	})
+	ast.NoError(err)
+	waitUntilRevisionEqualOrTimeout(suite.backend, createResp.GetHeader().GetRevision())
+
+	compactRev := createResp.GetHeader().GetRevision()
+	_, err = suite.backend.Compact(suite.ctx, compactRev)
+	ast.NoError(err)
+
+	// Simulate a restarted or lagging node that has read the durable compact
+	// record but has not yet rebuilt its local current revision cache.
+	suite.backend.SetCurrentRevision(compactRev - 1)
+	expectedHeaderRev := compactRev + 1
+
+	getResp, err := suite.backend.Get(suite.ctx, newGetRequest(0, testKey))
+	ast.NoError(err)
+	ast.Equal(expectedHeaderRev, getResp.GetHeader().GetRevision())
+	ast.Equal(expectedHeaderRev, suite.backend.GetCurrentRevision())
+
+	suite.backend.SetCurrentRevision(compactRev - 1)
+	listResp, err := suite.backend.List(suite.ctx, newRangeRequest(0, testKey, string(PrefixEnd([]byte(testKey))), 0))
+	ast.NoError(err)
+	ast.Equal(expectedHeaderRev, listResp.GetHeader().GetRevision())
+	ast.Equal(expectedHeaderRev, suite.backend.GetCurrentRevision())
+
+	suite.backend.SetCurrentRevision(compactRev - 1)
+	countResp, err := suite.backend.Count(suite.ctx, &proto.CountRequest{Key: []byte(testKey), End: PrefixEnd([]byte(testKey))})
+	ast.NoError(err)
+	ast.Equal(expectedHeaderRev, countResp.GetHeader().GetRevision())
+	ast.Equal(expectedHeaderRev, suite.backend.GetCurrentRevision())
 }
 
 func testBackEnd(t *testing.T, st storageType) {
@@ -981,12 +1102,23 @@ func testBackEnd(t *testing.T, st storageType) {
 		testBackendRange(t, st)
 	})
 
+	t.Run("range_kubernetes_pagination", func(t *testing.T) {
+		testBackendRangeKubernetesPagination(t, st)
+	})
+
 	t.Run("compact", func(t *testing.T) {
 		testBackendCompact(t, st)
 	})
 
+	t.Run("read_headers_stay_above_compact_revision", func(t *testing.T) {
+		testBackendReadHeadersStayAboveCompactRevision(t, st)
+	})
+
 	t.Run("resource_lock", func(t *testing.T) {
 		testBackendResourceLock(t, st)
+	})
+	t.Run("resource_lock_release_after_renew", func(t *testing.T) {
+		testBackendResourceLockReleaseAfterRenew(t, st)
 	})
 
 	t.Run("delete_and_create", func(t *testing.T) {
@@ -1131,6 +1263,33 @@ func testBackendResourceLock(t *testing.T, targetStorage storageType) {
 
 }
 
+func testBackendResourceLockReleaseAfterRenew(t *testing.T, targetStorage storageType) {
+	suite, closer := newTestSuites(t, targetStorage)
+	defer closer()
+
+	lock := suite.backend.GetResourceLock()
+	first := resourcelock.LeaderElectionRecord{
+		HolderIdentity:       lock.Identity(),
+		LeaseDurationSeconds: 8,
+		LeaderTransitions:    1,
+	}
+	suite.ast.NoError(lock.Create(first))
+
+	second := first
+	second.RenewTime = first.RenewTime
+	suite.ast.NoError(lock.Update(second))
+
+	release := resourcelock.LeaderElectionRecord{
+		LeaderTransitions: second.LeaderTransitions,
+	}
+	suite.ast.NoError(lock.Update(release))
+
+	record, err := lock.Get()
+	suite.ast.NoError(err)
+	suite.ast.Empty(record.HolderIdentity)
+	suite.ast.Contains(lock.Describe(), "empty,")
+}
+
 func testBackendDeleteAndCreate(t *testing.T, targetStorage storageType) {
 	suite, closer := newTestSuites(t, targetStorage)
 	defer closer()
@@ -1207,8 +1366,9 @@ func testBackendWriteAndWatch(t *testing.T, targetStorage storageType) {
 
 	waitUntilRevisionEqualOrTimeout(suite.backend, dresp.GetHeader().GetRevision())
 	ctx, cancel := context.WithCancel(suite.ctx)
-	_, err = suite.backend.Watch(ctx, prefix, initRevision)
-	ast.Error(err)
+	ch, err := suite.backend.Watch(ctx, prefix, initRevision)
+	ast.NoError(err)
+	ast.NotNil(ch)
 	cancel()
 
 	t.Run("check all events", func(t *testing.T) {
@@ -1248,6 +1408,245 @@ func testBackendWriteAndWatch(t *testing.T, targetStorage storageType) {
 			ast.Equal([]byte(testVal), event.Kv.Value)
 		}
 	})
+}
+
+func TestBackendDeleteRangeWatchEventsShareRevision(t *testing.T) {
+	suite, closer := newTestSuites(t, memKvStorage)
+	defer closer()
+
+	baseKey := path.Join(prefix, "delete-range-watch")
+	keys := []string{
+		path.Join(baseKey, "a"),
+		path.Join(baseKey, "b"),
+		path.Join(baseKey, "c"),
+	}
+	for _, key := range keys {
+		resp, err := suite.backend.Create(suite.ctx, newCreateRequest(key, testVal))
+		suite.ast.NoError(err)
+		suite.ast.True(resp.Succeeded)
+	}
+	kvs := make([]*proto.KeyValue, 0, len(keys))
+	for _, key := range keys {
+		getResp, err := suite.backend.Get(suite.ctx, newGetRequest(0, key))
+		suite.ast.NoError(err)
+		if getResp.Kv != nil {
+			kvs = append(kvs, getResp.Kv)
+		}
+	}
+	suite.ast.Len(kvs, len(keys))
+
+	deleteResp, err := suite.backend.DeleteRange(suite.ctx, kvs)
+	suite.ast.NoError(err)
+	suite.ast.True(deleteResp.Succeeded)
+	suite.ast.Len(deleteResp.Kvs, len(keys))
+
+	waitUntilRevisionEqualOrTimeout(suite.backend, deleteResp.Header.Revision)
+	events := getEventsFromRev(suite.ctx, suite.backend, deleteResp.Header.Revision, len(keys))
+	suite.ast.Len(events, len(keys))
+	seen := make(map[string]struct{}, len(keys))
+	for _, event := range events {
+		suite.ast.Equal(proto.Event_DELETE, event.Type)
+		suite.ast.Equal(deleteResp.Header.Revision, event.Revision)
+		seen[string(event.Kv.Key)] = struct{}{}
+	}
+	for _, key := range keys {
+		_, ok := seen[key]
+		suite.ast.True(ok, "missing delete event for %s", key)
+	}
+}
+
+func TestBackendWatchHistoryFallbackAfterRestart(t *testing.T) {
+	suite, closer := newTestSuites(t, memKvStorage)
+	defer closer()
+
+	baseKey := path.Join(prefix, "watch-history-fallback")
+	keyA := path.Join(baseKey, "a")
+	keyB := path.Join(baseKey, "b")
+	fromRevision := suite.backend.GetCurrentRevision()
+
+	createA, err := suite.backend.Create(suite.ctx, newCreateRequest(keyA, "a-1"))
+	suite.ast.NoError(err)
+	createB, err := suite.backend.Create(suite.ctx, newCreateRequest(keyB, "b-1"))
+	suite.ast.NoError(err)
+	updateA, err := suite.backend.Update(suite.ctx, &proto.UpdateRequest{
+		Kv: &proto.KeyValue{
+			Key:      []byte(keyA),
+			Value:    []byte("a-2"),
+			Revision: createA.Header.Revision,
+		},
+	})
+	suite.ast.NoError(err)
+	deleteB, err := suite.backend.Delete(suite.ctx, &proto.DeleteRequest{
+		Key:      []byte(keyB),
+		Revision: createB.Header.Revision,
+	})
+	suite.ast.NoError(err)
+	waitUntilRevisionEqualOrTimeout(suite.backend, deleteB.Header.Revision)
+
+	restarted := NewBackend(suite.kv, Config{Prefix: prefix, Identity: getStorageIdentity()}, suite.metrics)
+	restarted.SetCurrentRevision(suite.backend.GetCurrentRevision())
+
+	events := getEventsFromRev(suite.ctx, restarted, fromRevision, 4)
+	suite.ast.Len(events, 4)
+	suite.ast.Equal(createA.Header.Revision, events[0].Revision)
+	suite.ast.Equal(createB.Header.Revision, events[1].Revision)
+	suite.ast.Equal(updateA.Header.Revision, events[2].Revision)
+	suite.ast.Equal(deleteB.Header.Revision, events[3].Revision)
+	suite.ast.Equal(proto.Event_DELETE, events[3].Type)
+	suite.ast.Equal([]byte(keyB), events[3].Kv.Key)
+	suite.ast.Equal([]byte("b-1"), events[3].Kv.Value)
+}
+
+func TestBackendWatchHistoryFallbackIncludesStartRevision(t *testing.T) {
+	suite, closer := newTestSuites(t, memKvStorage)
+	defer closer()
+
+	baseKey := path.Join(prefix, "watch-history-start-revision")
+	keyA := path.Join(baseKey, "a")
+	keyB := path.Join(baseKey, "b")
+
+	createA, err := suite.backend.Create(suite.ctx, newCreateRequest(keyA, "a-1"))
+	suite.ast.NoError(err)
+	createB, err := suite.backend.Create(suite.ctx, newCreateRequest(keyB, "b-1"))
+	suite.ast.NoError(err)
+	updateA, err := suite.backend.Update(suite.ctx, &proto.UpdateRequest{
+		Kv: &proto.KeyValue{
+			Key:      []byte(keyA),
+			Value:    []byte("a-2"),
+			Revision: createA.Header.Revision,
+		},
+	})
+	suite.ast.NoError(err)
+	waitUntilRevisionEqualOrTimeout(suite.backend, updateA.Header.Revision)
+
+	restarted := NewBackend(suite.kv, Config{Prefix: prefix, Identity: getStorageIdentity()}, suite.metrics)
+	restarted.SetCurrentRevision(suite.backend.GetCurrentRevision())
+
+	ctx, cancel := context.WithCancel(suite.ctx)
+	defer cancel()
+	ch, err := restarted.Watch(ctx, baseKey, createA.Header.Revision)
+	suite.ast.NoError(err)
+
+	select {
+	case events := <-ch:
+		if suite.ast.Len(events, 3) {
+			suite.ast.Equal(createA.Header.Revision, events[0].Revision)
+			suite.ast.Equal(proto.Event_CREATE, events[0].Type)
+			suite.ast.Equal([]byte(keyA), events[0].Kv.Key)
+			suite.ast.Equal(createB.Header.Revision, events[1].Revision)
+			suite.ast.Equal(updateA.Header.Revision, events[2].Revision)
+		}
+	case <-time.After(timeout):
+		t.Fatal("timed out waiting for history watch events")
+	}
+}
+
+func TestBackendWatchHistoryFallbackWhenCacheOldestIsTooNew(t *testing.T) {
+	suite, closer := newTestSuites(t, memKvStorage)
+	defer closer()
+
+	baseKey := path.Join(prefix, "watch-history-cache-low")
+	keyA := path.Join(baseKey, "a")
+	keyB := path.Join(baseKey, "b")
+
+	createA, err := suite.backend.Create(suite.ctx, newCreateRequest(keyA, "a-1"))
+	suite.ast.NoError(err)
+	createB, err := suite.backend.Create(suite.ctx, newCreateRequest(keyB, "b-1"))
+	suite.ast.NoError(err)
+	updateA, err := suite.backend.Update(suite.ctx, &proto.UpdateRequest{
+		Kv: &proto.KeyValue{
+			Key:      []byte(keyA),
+			Value:    []byte("a-2"),
+			Revision: createA.Header.Revision,
+		},
+	})
+	suite.ast.NoError(err)
+	waitUntilRevisionEqualOrTimeout(suite.backend, updateA.Header.Revision)
+
+	b := suite.backend.(*backend)
+	b.watchCache.Reset()
+	b.watchCache.Add(newEvent(proto.Event_PUT, updateA.Header.Revision, newKeyValue(keyA, "a-2", updateA.Header.Revision)))
+
+	ctx, cancel := context.WithCancel(suite.ctx)
+	defer cancel()
+	ch, err := b.Watch(ctx, baseKey, createA.Header.Revision)
+	suite.ast.NoError(err)
+
+	select {
+	case events := <-ch:
+		if suite.ast.Len(events, 3) {
+			suite.ast.Equal(createA.Header.Revision, events[0].Revision)
+			suite.ast.Equal(createB.Header.Revision, events[1].Revision)
+			suite.ast.Equal(updateA.Header.Revision, events[2].Revision)
+		}
+	case <-time.After(timeout):
+		t.Fatal("timed out waiting for low-cache history watch events")
+	}
+}
+
+func TestBackendWatchCatchUpAdvancesFromLastMatchingPrefixEvent(t *testing.T) {
+	suite, closer := newTestSuites(t, memKvStorage)
+	defer closer()
+
+	b := suite.backend.(*backend)
+	targetPrefix := path.Join(prefix, "watch-prefix-catch-up")
+	otherPrefix := path.Join(prefix, "watch-prefix-other")
+
+	b.watchCache.Reset()
+	b.SetCurrentRevision(12)
+	b.watchCache.Add(newEvent(proto.Event_PUT, 10, newKeyValue(path.Join(targetPrefix, "a"), "target-10", 10)))
+	b.watchCache.Add(newEvent(proto.Event_PUT, 11, newKeyValue(path.Join(otherPrefix, "b"), "other-11", 11)))
+	b.watchCache.Add(newEvent(proto.Event_PUT, 12, newKeyValue(path.Join(otherPrefix, "c"), "other-12", 12)))
+
+	ctx, cancel := context.WithCancel(suite.ctx)
+	defer cancel()
+	ch, err := b.Watch(ctx, targetPrefix, 10)
+	suite.ast.NoError(err)
+
+	select {
+	case events := <-ch:
+		if suite.ast.Len(events, 1) {
+			suite.ast.Equal(uint64(10), events[0].Revision)
+			suite.ast.Equal([]byte(path.Join(targetPrefix, "a")), events[0].Kv.Key)
+		}
+	case <-time.After(timeout):
+		t.Fatal("timed out waiting for cached prefix event")
+	}
+
+	b.watchChan <- []*proto.Event{
+		newEvent(proto.Event_PUT, 11, newKeyValue(path.Join(targetPrefix, "live"), "target-11", 11)),
+	}
+
+	select {
+	case events := <-ch:
+		if suite.ast.Len(events, 1) {
+			suite.ast.Equal(uint64(11), events[0].Revision)
+			suite.ast.Equal([]byte(path.Join(targetPrefix, "live")), events[0].Kv.Key)
+		}
+	case <-time.After(timeout):
+		t.Fatal("timed out waiting for live prefix event after mixed-prefix catch-up")
+	}
+}
+
+func TestBackendWatchHistoryFallbackRespectsCompaction(t *testing.T) {
+	suite, closer := newTestSuites(t, memKvStorage)
+	defer closer()
+
+	key := path.Join(prefix, "watch-history-compact", "a")
+	fromRevision := suite.backend.GetCurrentRevision()
+	createResp, err := suite.backend.Create(suite.ctx, newCreateRequest(key, "v1"))
+	suite.ast.NoError(err)
+	waitUntilRevisionEqualOrTimeout(suite.backend, createResp.Header.Revision)
+
+	_, err = suite.backend.Compact(suite.ctx, createResp.Header.Revision)
+	suite.ast.NoError(err)
+
+	restarted := NewBackend(suite.kv, Config{Prefix: prefix, Identity: getStorageIdentity()}, suite.metrics)
+	restarted.SetCurrentRevision(suite.backend.GetCurrentRevision())
+
+	ch, err := restarted.Watch(suite.ctx, prefix, fromRevision)
+	suite.ast.Error(err)
+	suite.ast.Nil(ch)
 }
 
 func getEventsFromRev(ctx context.Context, b Backend, fromRev uint64, size int) []*proto.Event {
@@ -1400,6 +1799,31 @@ func waitUntilRetryQueueDrainOrTimeout(ctx context.Context, b *backend, expected
 				return
 			}
 		}
+	}
+}
+
+func TestWatchEventOverflowResetsWatchState(t *testing.T) {
+	s, closer := newTestSuites(t, memKvStorage)
+	defer closer()
+
+	b := s.backend.(*backend)
+	watchCtx, cancel := context.WithCancel(s.ctx)
+	defer cancel()
+	watcher, err := b.watcherHub.AddWatcher(watchCtx)
+	s.ast.NoError(err)
+
+	revision := b.GetCurrentRevision() + watchersChanCapacity
+	s.ast.NotPanics(func() {
+		b.notify(s.ctx, []byte(prefix+"/overflow"), []byte("value"), revision, 0, true, proto.Event_PUT, nil)
+	})
+	s.ast.Equal(revision, b.GetCurrentRevision())
+	s.ast.True(b.watchCache.FindEvents(revision).empty)
+
+	select {
+	case _, ok := <-watcher:
+		s.ast.False(ok)
+	case <-time.After(time.Second):
+		t.Fatal("watcher was not closed after watch event overflow")
 	}
 }
 

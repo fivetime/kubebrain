@@ -20,7 +20,6 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
-	"k8s.io/klog/v2"
 
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
 
@@ -42,14 +41,13 @@ type Server struct {
 	peers     service.PeerService
 }
 
-func New(backend b.Backend, metricCli metrics.Metrics, peerServer service.PeerService) *Server {
+func New(ctx context.Context, backend b.Backend, metricCli metrics.Metrics, peerServer service.PeerService) *Server {
 	server := &Server{
 		backend:   backend,
 		metricCli: metricCli,
 		peers:     peerServer,
 	}
-	go server.peers.Campaign()
-	go server.compactLoop()
+	go server.peers.Campaign(ctx)
 	return server
 }
 
@@ -58,24 +56,6 @@ func (s *Server) Register(server *grpc.Server) {
 	proto.RegisterReadServer(server, s)
 	proto.RegisterWriteServer(server, s)
 	proto.RegisterWatchServer(server, s)
-}
-
-// compactLoop compacts background
-func (s *Server) compactLoop() {
-	ticker := time.NewTicker(time.Second * 60)
-	defer ticker.Stop()
-	for {
-		<-ticker.C
-		klog.Info("begin to check compact")
-		if s.peers.IsLeader() {
-			klog.Info("leader start to compact")
-			compactRevision := s.backend.GetCurrentRevision() - 1000
-			startTime := time.Now()
-			s.backend.Compact(context.Background(), compactRevision)
-			s.metricCli.EmitGauge("leader.compact", compactRevision)
-			s.metricCli.EmitHistogram("leader.compact.latency", time.Since(startTime).Seconds())
-		}
-	}
 }
 
 // emit metric and latency

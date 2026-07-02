@@ -15,6 +15,7 @@
 package coder
 
 import (
+	"bytes"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -29,4 +30,14 @@ func TestCompatible(t *testing.T) {
 	ast.Equal("/registry/test", string(uk))
 	ast.Equal(0, int(rev))
 	ast.NoError(err)
+}
+
+func TestObjectKeyspaceEnd(t *testing.T) {
+	ast := assert.New(t)
+	c := NewNormalCoder()
+	end := ObjectKeyspaceEnd()
+
+	ast.True(bytes.Compare(c.EncodeObjectKey([]byte("/"), 0), end) < 0)
+	ast.True(bytes.Compare(c.EncodeObjectKey([]byte{0xff}, ^uint64(0)), end) < 0)
+	ast.True(bytes.Compare([]byte{0xff}, end) > 0)
 }

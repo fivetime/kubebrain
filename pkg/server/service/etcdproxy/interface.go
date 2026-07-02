@@ -26,9 +26,44 @@ type EtcdProxy interface {
 	// EtcdProxyEnabled returns if the etcd proxy is enabled
 	EtcdProxyEnabled() bool
 
+	// Ready returns nil when the proxy can forward requests to the current leader.
+	Ready() error
+
 	// Txn forward txn unary request to leader
 	Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etcdserverpb.TxnResponse, error)
 
-	// Watch forward watch stream request to leader
-	Watch(ctx context.Context, key string, revision uint64) (<-chan []*mvccpb.Event, error)
+	// Range forwards historical range unary request to leader.
+	Range(ctx context.Context, req *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error)
+
+	// Put forwards put unary request to leader.
+	Put(ctx context.Context, req *etcdserverpb.PutRequest) (*etcdserverpb.PutResponse, error)
+
+	// DeleteRange forwards delete range unary request to leader.
+	DeleteRange(ctx context.Context, req *etcdserverpb.DeleteRangeRequest) (*etcdserverpb.DeleteRangeResponse, error)
+
+	// Compact forwards compaction request to leader.
+	Compact(ctx context.Context, req *etcdserverpb.CompactionRequest) (*etcdserverpb.CompactionResponse, error)
+
+	// Watch forward watch stream request to leader.
+	Watch(ctx context.Context, key, rangeEnd []byte, revision uint64) (<-chan WatchResult, error)
+
+	// LeaseGrant forwards lease grant request to leader.
+	LeaseGrant(ctx context.Context, req *etcdserverpb.LeaseGrantRequest) (*etcdserverpb.LeaseGrantResponse, error)
+
+	// LeaseRevoke forwards lease revoke request to leader.
+	LeaseRevoke(ctx context.Context, req *etcdserverpb.LeaseRevokeRequest) (*etcdserverpb.LeaseRevokeResponse, error)
+
+	// LeaseKeepAlive forwards one lease keepalive message to leader.
+	LeaseKeepAlive(ctx context.Context, req *etcdserverpb.LeaseKeepAliveRequest) (*etcdserverpb.LeaseKeepAliveResponse, error)
+
+	// LeaseTimeToLive forwards lease ttl request to leader.
+	LeaseTimeToLive(ctx context.Context, req *etcdserverpb.LeaseTimeToLiveRequest) (*etcdserverpb.LeaseTimeToLiveResponse, error)
+
+	// LeaseLeases forwards lease list request to leader.
+	LeaseLeases(ctx context.Context, req *etcdserverpb.LeaseLeasesRequest) (*etcdserverpb.LeaseLeasesResponse, error)
+}
+
+type WatchResult struct {
+	Events []*mvccpb.Event
+	Err    error
 }

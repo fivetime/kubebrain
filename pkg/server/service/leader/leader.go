@@ -33,7 +33,7 @@ import (
 // and handle state when leader status changed
 type LeaderElection interface {
 	// Campaign run leader election loop
-	Campaign()
+	Campaign(ctx context.Context)
 
 	// GetLeaderInfo get leader info, return peer address
 	GetLeaderInfo() string
@@ -79,8 +79,8 @@ func NewLeaderElection(backend b.Backend, metricCli metrics.Metrics, onStartedLe
 }
 
 // Campaign implements LeaderElection interface
-func (l *leaderElection) Campaign() {
-	leaderelection.RunOrDie(context.Background(), leaderelection.LeaderElectionConfig{
+func (l *leaderElection) Campaign(ctx context.Context) {
+	leaderelection.RunOrDie(ctx, leaderelection.LeaderElectionConfig{
 		Lock:            l.resourceLock,
 		ReleaseOnCancel: true,
 		// lease timout deadline
@@ -113,6 +113,10 @@ func (l *leaderElection) Campaign() {
 				l.onStoppedLeading()
 				leaderAddr := l.GetLeaderInfo()
 				l.metricCli.EmitCounter("leader.election.lost", 1, metrics.Tag("addr", leaderAddr))
+				if ctx.Err() != nil {
+					klog.Info("leader election stopped by context cancellation")
+					return
+				}
 				klog.Fatal("leader lost")
 				// panic to avoid watchCache field in backend dirty, simple and rude
 				panic("leader lost")

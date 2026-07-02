@@ -16,37 +16,74 @@ package etcd
 
 import (
 	"context"
-	"fmt"
+	"strings"
 
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // MemberList lists the current cluster membership.
 func (s *RPCServer) MemberList(context.Context, *etcdserverpb.MemberListRequest) (*etcdserverpb.MemberListResponse, error) {
 	s.metricCli.EmitCounter("member.list", 1)
+	addresses := []string{s.backend.GetResourceLock().Identity(), s.peers.GetLeaderInfo()}
+	members := make([]*etcdserverpb.Member, 0, len(addresses))
+	seen := make(map[uint64]struct{}, len(addresses))
+	for _, address := range addresses {
+		if address == "" || address == "empty" {
+			continue
+		}
+		id := s.memberIDFromAddress(address)
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		memberURL := memberURLFromAddress(address)
+		members = append(members, &etcdserverpb.Member{
+			ID:         id,
+			Name:       address,
+			PeerURLs:   []string{memberURL},
+			ClientURLs: []string{memberURL},
+			IsLearner:  false,
+		})
+	}
 	return &etcdserverpb.MemberListResponse{
 		Header: &etcdserverpb.ResponseHeader{
-			ClusterId: 0,
+			ClusterId: s.memberIDFromAddress(s.peers.GetLeaderInfo()),
+			MemberId:  s.memberIDFromAddress(s.backend.GetResourceLock().Identity()),
+			Revision:  int64(s.backend.GetCurrentRevision()),
 		},
+		Members: members,
 	}, nil
 }
 
 // MemberAdd adds a member into the cluster.
 func (s *RPCServer) MemberAdd(context.Context, *etcdserverpb.MemberAddRequest) (*etcdserverpb.MemberAddResponse, error) {
-	return nil, fmt.Errorf("member Add is not supported")
+	s.metricCli.EmitCounter("member.add", 1)
+	return nil, status.Error(codes.Unimplemented, "member add is not supported")
 }
 
 // MemberRemove removes an existing member from the cluster.
 func (s *RPCServer) MemberRemove(context.Context, *etcdserverpb.MemberRemoveRequest) (*etcdserverpb.MemberRemoveResponse, error) {
-	return nil, fmt.Errorf("member remove is not supported")
+	s.metricCli.EmitCounter("member.remove", 1)
+	return nil, status.Error(codes.Unimplemented, "member remove is not supported")
 }
 
 // MemberUpdate updates the peer addresses of the member.
 func (s *RPCServer) MemberUpdate(context.Context, *etcdserverpb.MemberUpdateRequest) (*etcdserverpb.MemberUpdateResponse, error) {
-	return nil, fmt.Errorf("member update is not supported")
+	s.metricCli.EmitCounter("member.update", 1)
+	return nil, status.Error(codes.Unimplemented, "member update is not supported")
 }
 
 // MemberPromote promotes a member from raft learner (non-voting) to raft voting member.
 func (s *RPCServer) MemberPromote(context.Context, *etcdserverpb.MemberPromoteRequest) (*etcdserverpb.MemberPromoteResponse, error) {
-	return nil, fmt.Errorf("member promote is not supported")
+	s.metricCli.EmitCounter("member.promote", 1)
+	return nil, status.Error(codes.Unimplemented, "member promote is not supported")
+}
+
+func memberURLFromAddress(address string) string {
+	if strings.Contains(address, "://") {
+		return address
+	}
+	return "http://" + address
 }

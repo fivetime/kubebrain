@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"time"
 
+	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
 	"k8s.io/klog/v2"
 
 	"github.com/kubewharf/kubebrain/pkg/backend/scanner"
@@ -65,6 +66,12 @@ type KeyVal struct {
 	Key      []byte
 	Val      []byte
 	Revision uint64
+}
+
+type DeleteRangeResponse struct {
+	Header    *proto.ResponseHeader
+	Succeeded bool
+	Kvs       []*proto.KeyValue
 }
 
 func PrefixEnd(prefix []byte) []byte {

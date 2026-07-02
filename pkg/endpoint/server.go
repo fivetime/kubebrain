@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"time"
 
 	"github.com/soheilhy/cmux"
 	"golang.org/x/sync/errgroup"
@@ -95,7 +96,17 @@ func (g *grpcServer) serve(listener net.Listener) error {
 }
 
 func (g *grpcServer) close() error {
-	g.Stop()
+	stopped := make(chan struct{})
+	go func() {
+		g.GracefulStop()
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+	case <-time.After(2 * time.Second):
+		g.Stop()
+		<-stopped
+	}
 	return nil
 }
 

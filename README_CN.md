@@ -28,6 +28,8 @@
 # 详细文档
 
 - [快速开始](./docs/quick_start_cn.md)
+- [Kubernetes + TiKV 开发环境](./docs/dev_k8s_tikv_cn.md)
+- [KubeBrain + TiKV 生产化检查清单](./docs/production_readiness_cn.md)
 - [架构设计](./docs/design_in_detail_cn.md)
 - [存储引擎](./docs/storage_engine_cn.md)
 - [性能测试](./docs/benchmark_cn.md)
