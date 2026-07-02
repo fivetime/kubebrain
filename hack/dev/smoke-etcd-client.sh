@@ -659,7 +659,7 @@ func main() {
 	if !compareVersionResp.Succeeded ||
 		len(compareVersionResp.Responses) != 2 ||
 		string(compareVersionResp.Responses[1].GetResponseRange().Kvs[0].Value) != "version-matched" ||
-		compareVersionResp.Responses[1].GetResponseRange().Kvs[0].Version != 1 {
+		compareVersionResp.Responses[1].GetResponseRange().Kvs[0].Version != 2 {
 		panic("unexpected compare version txn response")
 	}
 	fmt.Println("compare version txn ok")
