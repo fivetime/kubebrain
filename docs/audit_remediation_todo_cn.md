@@ -3,7 +3,7 @@
 > 来源：Fable 5 多智能体审核（73 条已确认问题）。本文件是**持久化进度清单**，做一个勾一个（`[x]`），抗会话压缩遗忘。
 > 编号 `#N` = 审核确认清单索引；`file:line` 为大致位置。测试遵循 `docs/test_strategy_cn.md`：**真实消费端黑盒为主，内部单测只锁黑盒够不着的精确 bug**。
 
-进度：**已修 37 / 73** — Critical 3/3 ✓，High 23/32，Medium 3/17，Low 8/21。（+ #5/#27/#29 A-index e885b8d；#6/#38 etcdmeta 纳入 compaction；#15 两半完成：\x00kubebrain/ 命名空间整体纳入 compaction；#30 watch history 去点读+限流；#69 前缀路由）
+进度：**已修 37 / 73**（+ #4 Tier 1 部分完成）— Critical 3/3 ✓，High 23/32，Medium 3/17，Low 8/21。（+ #5/#27/#29 A-index e885b8d；#6/#38 etcdmeta 纳入 compaction；#15 两半完成：\x00kubebrain/ 命名空间整体纳入 compaction；#30 watch history 去点读+限流；#69 前缀路由）
 > 附带修复（不在 73 条内）：events-TTL 过期回收在多 border（etcdmeta / 多 SkippedPrefixes）下失效——`getTimeoutRevision` 会 drain 共享 compact-history 队列，原先每 border 各调一次，首个 border 耗尽旧记录后其余 border 拿到 timeoutRevision=0，静默关闭 `/events/` 过期。已改为每次 compaction 周期只计算一次并应用到所有 border（`scanner.Compact` 现接收全部 borders）。`TestCompactExpiredEvents` 覆盖。
 
 ## 已完成（PR #1: fivetime/kubebrain#1 + 81d36be）
@@ -96,7 +96,7 @@
 ### P3 — etcd 语义正确性
 
 - [~] **#4** [high] Generic txn path (executeGenericTxn) is not atomic: compares are plain reads and ops are independent writes  
-  `pkg/server/etcd/kv.go:709` — **设计完成**，见 `docs/txn_atomicity_4_cn.md`。快路径（apiserver 用）本就原子；通用路径缺陷：compare 非隔离、每 op 各自 revision、部分应用。修法 = 新增 `backend.TxnApply` 单 revision 原子应用（仿 DeleteRange），对不支持形状回退旧顺序路径（不回归）。**实现暂缓待确认档位**：Tier 1（写 op 单 revision 原子，推荐）/ Tier 2（加 compare OCC 隔离）。缓因：正确实现需在一个 batch 内复刻 revision-key 字节编码 + create/update/delete/tombstone-recreate 的 CAS 语义（live=8B、deleted=9B+flag），失败模式是 **MVCC 数据损坏**；且 apiserver 不走此路径。属关键写路径高风险改动，宜在有确认下逐步做 + 穷举并发/事件顺序/compat 测试，不宜无监督一次性上线。
+  `pkg/server/etcd/kv.go:709` — 设计见 `docs/txn_atomicity_4_cn.md`。**Tier 1 已完成**：新增 `backend.TxnApply`（`txn_apply.go`）—— 把选中分支的**多写 op（≥2、distinct key 的 put/单键 delete）单 revision 原子应用**（仿 DeleteRange：一次 deal + 一个 batch 每 key `CAS(against 读到的原始字节)` + object 写 + 原子 commit + `notifyBatch`）；CAS 冲突有界重试模拟 etcd 无条件覆盖，非-CAS 提交错误发 invalid 事件让 collector 不 stall。不支持形状（nested、range 读、单 op、IgnoreLease/Value、多键 range delete）**回退旧顺序路径，不回归**。修好缺陷「每 op 各自 revision」「部分应用」。**Tier 2（compare 跨 key OCC 隔离，修 TOCTOU）留后续**。测试：`TestTxnApply*`（单 rev 原子 / tombstone 重建 / no-op 不耗 rev / 64 并发 distinct / 24 并发同 key CAS 重试无丢更新）、黑盒 `TestTxnMultiWriteSingleRevision`+`TestTxnCompareMultiWriteSingleRevision`（多写落单 rev，旧路径会是不同 rev）。backend+etcd 全套 + `-race` 干净；部署后全 smoke（simple multi-op/nested/compare 各形状）+ compat 绿。
 - [ ] **#52** [low] Watch PUT events fall back to CreateRevision=ModRevision when prev-version lookup fails — updates misreported as creates and PrevKv dropped  
   `pkg/server/etcd/backendshim.go:750`
 - [ ] **#53** [low] Range at Revision==1888 (GetPartitionMagic) is hijacked to return partition metadata instead of data  

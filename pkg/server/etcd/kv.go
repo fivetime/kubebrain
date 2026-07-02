@@ -27,6 +27,7 @@ import (
 	"google.golang.org/grpc/status"
 	"k8s.io/klog/v2"
 
+	"github.com/kubewharf/kubebrain/pkg/backend"
 	"github.com/kubewharf/kubebrain/pkg/metrics"
 )
 
@@ -718,8 +719,91 @@ func (s *RPCServer) executeGenericTxn(ctx context.Context, txn *etcdserverpb.Txn
 	if err := validateTxnRangeRevisions(txn, paths, int64(compactRevision), int64(s.backend.GetCurrentRevision())); err != nil {
 		return nil, err
 	}
+	// Prefer the atomic single-revision path when the chosen branch is a set of
+	// distinct-key writes (#4 Tier 1); otherwise fall back to the sequential path,
+	// which is unchanged so no shape regresses.
+	if resp, handled, err := s.tryAtomicGenericTxn(ctx, txn, paths[0]); handled {
+		return resp, err
+	}
 	pathIndex := 0
 	return s.executeTxnWithPaths(ctx, txn, paths, &pathIndex)
+}
+
+// tryAtomicGenericTxn applies the chosen path atomically when it consists solely
+// of distinct-key Put and single-key DeleteRange ops (>= 2 of them, since a
+// single op is already atomic on the sequential path). handled=false means the
+// txn shape is ineligible and the caller must use the sequential fallback.
+func (s *RPCServer) tryAtomicGenericTxn(ctx context.Context, txn *etcdserverpb.TxnRequest, succeeded bool) (*etcdserverpb.TxnResponse, bool, error) {
+	ops := txn.Success
+	if !succeeded {
+		ops = txn.Failure
+	}
+	writeOps := make([]backend.TxnWriteOp, 0, len(ops))
+	prevKv := make([]bool, 0, len(ops))
+	seen := make(map[string]struct{}, len(ops))
+	for _, op := range ops {
+		switch {
+		case op.GetRequestPut() != nil:
+			put := op.GetRequestPut()
+			// IgnoreLease/IgnoreValue need a read-modify step the atomic batch
+			// does not model; leave those to the sequential path.
+			if put.IgnoreLease || put.IgnoreValue {
+				return nil, false, nil
+			}
+			if _, dup := seen[string(put.Key)]; dup {
+				return nil, false, nil
+			}
+			seen[string(put.Key)] = struct{}{}
+			writeOps = append(writeOps, backend.TxnWriteOp{Key: put.Key, Value: put.Value})
+			prevKv = append(prevKv, false)
+		case op.GetRequestDeleteRange() != nil:
+			del := op.GetRequestDeleteRange()
+			if len(del.RangeEnd) != 0 { // multi-key range delete
+				return nil, false, nil
+			}
+			if _, dup := seen[string(del.Key)]; dup {
+				return nil, false, nil
+			}
+			seen[string(del.Key)] = struct{}{}
+			writeOps = append(writeOps, backend.TxnWriteOp{Delete: true, Key: del.Key})
+			prevKv = append(prevKv, del.PrevKv)
+		default: // range read, nested txn, or unsupported op
+			return nil, false, nil
+		}
+	}
+	if len(writeOps) < 2 {
+		return nil, false, nil
+	}
+	// Validate all put leases up front: an atomic txn must reject as a whole if a
+	// referenced lease is missing, never apply a prefix of its writes.
+	for i, op := range ops {
+		if put := op.GetRequestPut(); put != nil {
+			if err := s.ensureLeaseExists(put.Lease); err != nil {
+				return nil, true, err
+			}
+			_ = i
+		}
+	}
+
+	responses, rev, results, err := s.backend.TxnApply(ctx, writeOps, prevKv)
+	if err != nil {
+		return nil, true, err
+	}
+	// Bind/unbind leases now that the writes committed.
+	for i, op := range ops {
+		if put := op.GetRequestPut(); put != nil {
+			s.bindKeyToLease(put.Lease, string(put.Key))
+		} else if del := op.GetRequestDeleteRange(); del != nil {
+			if results[i].Deleted {
+				s.unbindKeyFromLease(string(del.Key))
+			}
+		}
+	}
+	return &etcdserverpb.TxnResponse{
+		Succeeded: succeeded,
+		Header:    txnHeader(int64(rev)),
+		Responses: responses,
+	}, true, nil
 }
 
 func (s *RPCServer) txnComparePaths(ctx context.Context, txn *etcdserverpb.TxnRequest) ([]bool, error) {

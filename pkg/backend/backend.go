@@ -61,6 +61,10 @@ type Backend interface {
 	// DeleteRange removes keys from storage in one storage batch.
 	DeleteRange(ctx context.Context, kvs []*proto.KeyValue) (*DeleteRangeResponse, error)
 
+	// TxnApply applies a set of put/delete ops (distinct keys) atomically at a
+	// single revision. See the implementation for semantics.
+	TxnApply(ctx context.Context, ops []TxnWriteOp) ([]TxnWriteResult, uint64, error)
+
 	// GetEtcdMetadata returns etcd-compatible create revision and version for a key at modRevision.
 	GetEtcdMetadata(ctx context.Context, key []byte, modRevision uint64) (EtcdMetadata, error)
 

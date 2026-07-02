@@ -69,6 +69,12 @@ type BackendShim interface {
 	// DeleteRange removes one key or all keys in a range.
 	DeleteRange(ctx context.Context, r *etcdserverpb.DeleteRangeRequest) (*etcdserverpb.DeleteRangeResponse, error)
 
+	// TxnApply applies a set of put/delete ops (distinct keys) atomically at a
+	// single revision, returning one etcd ResponseOp per op (in order) plus the
+	// raw results (for lease binding). prevKv[i] requests the deleted key's
+	// previous kv on delete ops.
+	TxnApply(ctx context.Context, ops []backend.TxnWriteOp, prevKv []bool) ([]*etcdserverpb.ResponseOp, uint64, []backend.TxnWriteResult, error)
+
 	// Get read a kv from storage
 	Get(ctx context.Context, r *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error)
 
@@ -426,6 +432,37 @@ func compactTxnResponse(compactedRev uint64) *etcdserverpb.TxnResponse {
 
 func (b *backendShim) GetCompactRevision(ctx context.Context) (uint64, error) {
 	return b.backend.GetCompactRevision(ctx)
+}
+
+func (b *backendShim) TxnApply(ctx context.Context, ops []backend.TxnWriteOp, prevKv []bool) ([]*etcdserverpb.ResponseOp, uint64, []backend.TxnWriteResult, error) {
+	results, rev, err := b.backend.TxnApply(ctx, ops)
+	if err != nil {
+		return nil, 0, nil, err
+	}
+	responses := make([]*etcdserverpb.ResponseOp, len(ops))
+	for i := range ops {
+		r := results[i]
+		if ops[i].Delete {
+			dr := &etcdserverpb.DeleteRangeResponse{Header: txnHeader(int64(rev))}
+			if r.Deleted {
+				dr.Deleted = 1
+				if prevKv[i] {
+					dr.PrevKvs = append(dr.PrevKvs, b.kvToEtcdKv(ctx, &proto.KeyValue{
+						Key:      r.Key,
+						Value:    r.PrevValue,
+						Revision: r.PrevRevision,
+					}))
+				}
+			}
+			responses[i] = &etcdserverpb.ResponseOp{Response: &etcdserverpb.ResponseOp_ResponseDeleteRange{ResponseDeleteRange: dr}}
+		} else {
+			// The existing sequential txn put path returns no PrevKv; match it.
+			responses[i] = &etcdserverpb.ResponseOp{Response: &etcdserverpb.ResponseOp_ResponsePut{
+				ResponsePut: &etcdserverpb.PutResponse{Header: txnHeader(int64(rev))},
+			}}
+		}
+	}
+	return responses, rev, results, nil
 }
 
 func (b *backendShim) DeleteRange(ctx context.Context, r *etcdserverpb.DeleteRangeRequest) (*etcdserverpb.DeleteRangeResponse, error) {
