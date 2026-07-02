@@ -1647,6 +1647,10 @@ func TestBackendWatchHistoryFallbackRespectsCompaction(t *testing.T) {
 	ch, err := restarted.Watch(suite.ctx, prefix, fromRevision)
 	suite.ast.Error(err)
 	suite.ast.Nil(ch)
+	// The revision is genuinely below the compact watermark, so the error must
+	// signal compaction (so the client re-lists) rather than being flattened into
+	// a generic "empty cache" message that the client would retry forever (#55).
+	suite.ast.Contains(err.Error(), "compacted")
 }
 
 func getEventsFromRev(ctx context.Context, b Backend, fromRev uint64, size int) []*proto.Event {

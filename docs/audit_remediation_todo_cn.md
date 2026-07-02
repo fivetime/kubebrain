@@ -3,7 +3,7 @@
 > 来源：Fable 5 多智能体审核（73 条已确认问题）。本文件是**持久化进度清单**，做一个勾一个（`[x]`），抗会话压缩遗忘。
 > 编号 `#N` = 审核确认清单索引；`file:line` 为大致位置。测试遵循 `docs/test_strategy_cn.md`：**真实消费端黑盒为主，内部单测只锁黑盒够不着的精确 bug**。
 
-进度：**已修 41 / 73** — Critical 3/3 ✓，High 24/32，Medium 3/17，Low 11/21。（#4 Tier 1+2；#54/#72 compact CAS 原子化；#52 watch update 不误报 create）（+ #5/#27/#29 A-index e885b8d；#6/#38 etcdmeta 纳入 compaction；#15 两半完成：\x00kubebrain/ 命名空间整体纳入 compaction；#30 watch history 去点读+限流；#69 前缀路由）
+进度：**已修 42 / 73** — Critical 3/3 ✓，High 24/32，Medium 3/17，Low 12/21。（#4 Tier 1+2；#54/#72 compact CAS 原子化；#52 watch update 不误报 create；#55 watch cache-miss 错误分类）（+ #5/#27/#29 A-index e885b8d；#6/#38 etcdmeta 纳入 compaction；#15 两半完成：\x00kubebrain/ 命名空间整体纳入 compaction；#30 watch history 去点读+限流；#69 前缀路由）
 > 附带修复（不在 73 条内）：events-TTL 过期回收在多 border（etcdmeta / 多 SkippedPrefixes）下失效——`getTimeoutRevision` 会 drain 共享 compact-history 队列，原先每 border 各调一次，首个 border 耗尽旧记录后其余 border 拿到 timeoutRevision=0，静默关闭 `/events/` 过期。已改为每次 compaction 周期只计算一次并应用到所有 border（`scanner.Compact` 现接收全部 borders）。`TestCompactExpiredEvents` 覆盖。
 
 ## 已完成（PR #1: fivetime/kubebrain#1 + 81d36be）
@@ -109,8 +109,8 @@
   `pkg/server/etcd/kv.go` `compact()` — 重写为**用 compact_rev_key 自身的 MVCC version + 单次原子 Create/Update CAS**（version 0/缺失→Create，否则按当前 modRev Update）；compare 选 Then/Else，CAS 解并发竞态→**恰一个 compactor 胜**，败者 CAS 失败得到 Else 形状（当前 kv+version）。删除独立 `compactVersionKey` 计数器与 `getCompactVersion`。`TestTxnCompactRevisionConcurrentSingleWinner`（16 并发→恰 1 胜、最终 version 恰 2）+ 既有 `TestTxnCompactRevisionCAS`。
 - [x] **#72** [low] compact_rev_key transaction emulated non-atomically with two separate Puts and a read-then-write version check  
   `pkg/server/etcd/kv.go` — 同 #54：原「两次独立 Put（compact_rev_key + compactVersionKey）+ 读-查-写」→ **单次原子 CAS**（一个 batch/一次 Create|Update）。升级过渡：apiserver 上次学到的 version 若与 compact_rev_key MVCC version 不一致（旧双胜 bug 曾致偏移），下一轮 compact 失败→apiserver 学到正确 version→一轮内自愈（apiserver 无 compaction 报错）。
-- [ ] **#55** [low] Ring-cache miss (ret.low) cancels the watch as 'compacted' with a fabricated compact revision instead of falling back to storage history  
-  `pkg/backend/watch.go:91`
+- [x] **#55** [low] Ring-cache miss (ret.low) cancels the watch as 'compacted' with a fabricated compact revision instead of falling back to storage history  
+  `pkg/backend/watch.go` — ret.low/ret.empty 已回退 `historyWatchEvents`（#30 及更早）；本次修**错误路径**：ret.low 原在 history 失败时无条件包成 `"cache event oldest revision ... newer than requested"`（含该子串→被 `isWatchCompactedError` 判为 compaction）→ **瞬时存储错误被误报为 compaction**、强制客户端伪 revision 重 list；ret.empty 则反过来把**真 compaction** 压成通用 "empty cache event"→客户端永久重试不重 list。两路径改为**直接透传 `historyErr`**：`historyWatchEvents` 在 rev<compactRev 时本就返回带 "compacted" 的真 compaction 错（客户端重 list），其余返回原始错（客户端重试）。测试：`TestBackendWatchHistoryFallbackRespectsCompaction` 加断言错误含 "compacted"；新增 `TestBackendWatchLowCacheTransientFailureNotCompaction`（ret.low + flaky Iter 瞬时失败 → 错误**不含** compaction 字样）。
 
 ### P4 — Lease 正确性 / 性能剩余
 

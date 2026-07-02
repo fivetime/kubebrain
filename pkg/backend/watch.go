@@ -87,10 +87,14 @@ func (b *backend) Watch(ctx context.Context, prefix string, revision uint64) (<-
 			return result, nil
 		}
 		klog.ErrorS(historyErr, "watch history fallback failed", "prefix", prefix, "revision", revision)
-		// event cache is empty
 		cancel()
-		klog.Errorf("empty cache event, close chan %v", readChan)
-		return nil, fmt.Errorf(" empty cache event, current revision is %d", currentRevision)
+		// Propagate the real fallback error. historyWatchEvents returns a proper
+		// "compacted" error when the requested revision is below the compact
+		// watermark (so the client re-lists) and a plain error otherwise (so the
+		// client retries the watch). Do not flatten it into a generic message that
+		// hides genuine compaction — that left a truly-compacted watch retrying
+		// forever instead of re-listing (#55).
+		return nil, historyErr
 	}
 
 	if ret.high {
@@ -117,7 +121,13 @@ func (b *backend) Watch(ctx context.Context, prefix string, revision uint64) (<-
 		}
 		cancel()
 		klog.ErrorS(historyErr, "ret low history fallback failed", "prefix", prefix, "revision", revision, "oldestRev", ret.oldest.Revision)
-		return nil, fmt.Errorf("cache event oldest revision is %d newer than requested revision %d: %w", ret.oldest.Revision, revision+1, historyErr)
+		// Propagate the real fallback error rather than fabricating a
+		// "cache event oldest revision ..." message: that string is treated as a
+		// compaction cancel, so a transient history-scan failure (e.g. a storage
+		// error) was misreported as a compaction and forced a spurious re-list at
+		// a bogus revision. historyWatchEvents already returns a proper compacted
+		// error when the revision is actually below the compact watermark (#55).
+		return nil, historyErr
 	}
 
 	events := filterByPrefix(ret.events, []byte(prefix))
