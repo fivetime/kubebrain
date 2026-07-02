@@ -3,7 +3,7 @@
 > 来源：Fable 5 多智能体审核（73 条已确认问题）。本文件是**持久化进度清单**，做一个勾一个（`[x]`），抗会话压缩遗忘。
 > 编号 `#N` = 审核确认清单索引；`file:line` 为大致位置。测试遵循 `docs/test_strategy_cn.md`：**真实消费端黑盒为主，内部单测只锁黑盒够不着的精确 bug**。
 
-进度：**已修 38 / 73** — Critical 3/3 ✓，High 24/32，Medium 3/17，Low 8/21。（#4 Tier 1+2 全完成）（+ #5/#27/#29 A-index e885b8d；#6/#38 etcdmeta 纳入 compaction；#15 两半完成：\x00kubebrain/ 命名空间整体纳入 compaction；#30 watch history 去点读+限流；#69 前缀路由）
+进度：**已修 40 / 73** — Critical 3/3 ✓，High 24/32，Medium 3/17，Low 10/21。（#4 Tier 1+2 全完成；#54/#72 compact CAS 原子化）（+ #5/#27/#29 A-index e885b8d；#6/#38 etcdmeta 纳入 compaction；#15 两半完成：\x00kubebrain/ 命名空间整体纳入 compaction；#30 watch history 去点读+限流；#69 前缀路由）
 > 附带修复（不在 73 条内）：events-TTL 过期回收在多 border（etcdmeta / 多 SkippedPrefixes）下失效——`getTimeoutRevision` 会 drain 共享 compact-history 队列，原先每 border 各调一次，首个 border 耗尽旧记录后其余 border 拿到 timeoutRevision=0，静默关闭 `/events/` 过期。已改为每次 compaction 周期只计算一次并应用到所有 border（`scanner.Compact` 现接收全部 borders）。`TestCompactExpiredEvents` 覆盖。
 
 ## 已完成（PR #1: fivetime/kubebrain#1 + 81d36be）
@@ -105,10 +105,10 @@
   `pkg/server/etcd/backendshim.go:750`
 - [ ] **#53** [low] Range at Revision==1888 (GetPartitionMagic) is hijacked to return partition metadata instead of data  
   `pkg/server/etcd/kv.go:77`
-- [ ] **#54** [low] Apiserver compact txn emulation is non-atomic: read-check-then-two-Puts allows concurrent compactors to both 'win' and can desync the version key  
-  `pkg/server/etcd/kv.go:1064`
-- [ ] **#72** [low] compact_rev_key transaction emulated non-atomically with two separate Puts and a read-then-write version check  
-  `pkg/server/etcd/kv.go:1030`
+- [x] **#54** [low] Apiserver compact txn emulation is non-atomic: read-check-then-two-Puts allows concurrent compactors to both 'win' and can desync the version key  
+  `pkg/server/etcd/kv.go` `compact()` — 重写为**用 compact_rev_key 自身的 MVCC version + 单次原子 Create/Update CAS**（version 0/缺失→Create，否则按当前 modRev Update）；compare 选 Then/Else，CAS 解并发竞态→**恰一个 compactor 胜**，败者 CAS 失败得到 Else 形状（当前 kv+version）。删除独立 `compactVersionKey` 计数器与 `getCompactVersion`。`TestTxnCompactRevisionConcurrentSingleWinner`（16 并发→恰 1 胜、最终 version 恰 2）+ 既有 `TestTxnCompactRevisionCAS`。
+- [x] **#72** [low] compact_rev_key transaction emulated non-atomically with two separate Puts and a read-then-write version check  
+  `pkg/server/etcd/kv.go` — 同 #54：原「两次独立 Put（compact_rev_key + compactVersionKey）+ 读-查-写」→ **单次原子 CAS**（一个 batch/一次 Create|Update）。升级过渡：apiserver 上次学到的 version 若与 compact_rev_key MVCC version 不一致（旧双胜 bug 曾致偏移），下一轮 compact 失败→apiserver 学到正确 version→一轮内自愈（apiserver 无 compaction 报错）。
 - [ ] **#55** [low] Ring-cache miss (ret.low) cancels the watch as 'compacted' with a fabricated compact revision instead of falling back to storage history  
   `pkg/backend/watch.go:91`
 

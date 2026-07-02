@@ -17,6 +17,7 @@ package etcd
 import (
 	"bytes"
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -2763,6 +2764,50 @@ func TestTxnCompactRevisionCAS(t *testing.T) {
 
 func TestCompactRevisionKeyCanBeWatched(t *testing.T) {
 	require.True(t, isPureWatchRequest(&etcdserverpb.WatchCreateRequest{Key: []byte(compactRevKey)}))
+}
+
+// TestTxnCompactRevisionConcurrentSingleWinner pins the #54/#72 fix: when
+// several HA-apiserver compactors race the same version, the emulation must let
+// exactly one win (an atomic version CAS), not several.
+func TestTxnCompactRevisionConcurrentSingleWinner(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+
+	first, err := server.Txn(ctx, compactTxn(0, "0"))
+	require.NoError(t, err)
+	require.True(t, first.Succeeded) // create -> version 1
+
+	const n = 16
+	var wg sync.WaitGroup
+	succeeded := make([]bool, n)
+	errs := make([]error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			r, e := server.Txn(ctx, compactTxn(1, "10"))
+			errs[i] = e
+			if e == nil {
+				succeeded[i] = r.Succeeded
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	winners := 0
+	for i := 0; i < n; i++ {
+		require.NoError(t, errs[i])
+		if succeeded[i] {
+			winners++
+		}
+	}
+	require.Equal(t, 1, winners, "exactly one concurrent compactor may win the version CAS")
+
+	rr, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: []byte(compactRevKey)})
+	require.NoError(t, err)
+	require.Len(t, rr.Kvs, 1)
+	require.Equal(t, int64(2), rr.Kvs[0].Version, "only one write must have applied over the seed")
 }
 
 func compactTxn(expectVersion int64, rev string) *etcdserverpb.TxnRequest {

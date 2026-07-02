@@ -19,7 +19,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strconv"
 	"time"
 
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
@@ -37,10 +36,8 @@ const (
 	GetPartitionMagic int64 = 1888
 	unaryRpcTimeout         = 10 * time.Second
 
-	compactRevKey         = "compact_rev_key"
-	compactVersionKey     = "\x00kubebrain/compact_version"
-	defaultCompactVersion = int64(0)
-	defaultMaxTxnOps      = 128
+	compactRevKey    = "compact_rev_key"
+	defaultMaxTxnOps = 128
 )
 
 func (s *RPCServer) Range(ctx context.Context, r *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
@@ -1183,86 +1180,60 @@ func isCompact(txn *etcdserverpb.TxnRequest) bool {
 		string(txn.Compare[0].Key) == compactRevKey
 }
 
+// compact emulates the apiserver's compaction CAS
+// (If(Version(compact_rev_key)==t) Then(Put) Else(Get)) atomically.
+//
+// The old emulation compared a SEPARATE version counter and then issued two
+// independent Puts, so concurrent HA-apiserver compactors could both pass the
+// check and both "win", and the two Puts could desync (#54/#72). It now uses the
+// key's own MVCC version and a single atomic Create/Update CAS: the compare
+// selects the Then/Else branch, and the CAS resolves any concurrent race so
+// exactly one compactor wins — the loser's CAS fails and yields the same
+// Else-shaped response (the current key + version) the apiserver reads.
 func (s *RPCServer) compact(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etcdserverpb.TxnResponse, error) {
 	expectVersion := txn.Compare[0].GetVersion()
 	put := txn.Success[0].GetRequestPut()
-	currentVersion, err := s.getCompactVersion(ctx)
+	key := []byte(compactRevKey)
+
+	getResp, err := s.backend.Get(ctx, &etcdserverpb.RangeRequest{Key: key})
 	if err != nil {
 		return nil, err
 	}
-
-	getResp, err := s.backend.Get(ctx, &etcdserverpb.RangeRequest{Key: []byte(compactRevKey)})
-	if err != nil {
-		return nil, err
+	var curKv *mvccpb.KeyValue
+	curVersion := int64(0)
+	if len(getResp.Kvs) > 0 {
+		curKv = getResp.Kvs[0]
+		curVersion = curKv.Version
 	}
 
-	if currentVersion != expectVersion {
-		rangeResp := &etcdserverpb.RangeResponse{
-			Header: getResp.Header,
-		}
-		if len(getResp.Kvs) > 0 {
-			kv := getResp.Kvs[0]
-			kv.Version = currentVersion
-			rangeResp.Kvs = []*mvccpb.KeyValue{kv}
+	// Compare mismatch -> Else branch: return the current key so the loser learns
+	// the new version. (compact_rev_key's version is monotonically increasing, so
+	// a mismatch here is never a transient the CAS below could recover.)
+	if curVersion != expectVersion {
+		rangeResp := &etcdserverpb.RangeResponse{Header: getResp.Header}
+		if curKv != nil {
+			rangeResp.Kvs = []*mvccpb.KeyValue{curKv}
 			rangeResp.Count = 1
 		}
 		return &etcdserverpb.TxnResponse{
 			Header:    getResp.Header,
 			Succeeded: false,
 			Responses: []*etcdserverpb.ResponseOp{{
-				Response: &etcdserverpb.ResponseOp_ResponseRange{
-					ResponseRange: rangeResp,
-				},
+				Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: rangeResp},
 			}},
 		}, nil
 	}
 
-	putResp, err := s.backend.Put(ctx, &etcdserverpb.PutRequest{
-		Key:   []byte(compactRevKey),
-		Value: put.Value,
-	})
-	if err != nil {
-		return nil, err
+	// Then branch: one atomic CAS. Create when the key is absent (version 0),
+	// otherwise update at its exact current mod revision. On success the backend
+	// returns a Put response (Succeeded=true) with the version bumped; on a lost
+	// race the CAS fails and the backend returns the current key as a Range
+	// response (Succeeded=false) — exactly the Else shape.
+	putReq := &etcdserverpb.PutRequest{Key: key, Value: put.Value}
+	if curKv == nil {
+		return s.backend.Create(ctx, putReq, true)
 	}
-	nextVersion := expectVersion + 1
-	versionResp, err := s.backend.Put(ctx, &etcdserverpb.PutRequest{
-		Key:   []byte(compactVersionKey),
-		Value: []byte(strconv.FormatInt(nextVersion, 10)),
-	})
-	if err != nil {
-		return nil, err
-	}
-	header := putResp.Header
-	if versionResp != nil && versionResp.Header != nil {
-		header = versionResp.Header
-	}
-
-	return &etcdserverpb.TxnResponse{
-		Header:    header,
-		Succeeded: true,
-		Responses: []*etcdserverpb.ResponseOp{{
-			Response: &etcdserverpb.ResponseOp_ResponsePut{
-				ResponsePut: &etcdserverpb.PutResponse{
-					Header: header,
-				},
-			},
-		}},
-	}, nil
-}
-
-func (s *RPCServer) getCompactVersion(ctx context.Context) (int64, error) {
-	resp, err := s.backend.Get(ctx, &etcdserverpb.RangeRequest{Key: []byte(compactVersionKey)})
-	if err != nil {
-		return 0, err
-	}
-	if len(resp.Kvs) == 0 {
-		return defaultCompactVersion, nil
-	}
-	version, err := strconv.ParseInt(string(resp.Kvs[0].Value), 10, 64)
-	if err != nil {
-		return 0, fmt.Errorf("invalid compact version %q: %w", resp.Kvs[0].Value, err)
-	}
-	return version, nil
+	return s.backend.Update(ctx, curKv.ModRevision, putReq, true)
 }
 
 func getSuccessMetricTagByErr(err error) metrics.T {
