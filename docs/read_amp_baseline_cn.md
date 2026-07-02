@@ -109,3 +109,13 @@ leader 内存维护带版本 key 索引（collector 有序维护 + 选主重建�
 | 单页 LIST(500) | 433ms | **50ms / 1** | ~8.6× |
 
 **#5/#27/#29 根治**：精确 count 走内存索引（`[baseRev,readyRev]` 内 O(range)，零存储读），分页不再 O(N²)。正确性：索引 count == 扫描 count（单测跨增删改+固定历史 rev）+ 兼容套件（精确 count 断言）全绿。fallback 兜底：rev 超出 [baseRev,readyRev] 或索引溢出 → 回退扫描。剩余：A-core-2（watch live-PUT 信封）、legacy etcdmeta compaction 回收、#30/#69、增广 rank(O(log N)) 优化。
+
+## 改动后（A-core-2：PUT/CREATE 事件值内联，commit 20a54c4）
+
+collector 给成功的 PUT/CREATE watch 事件值直接包信封（写时已知 create_rev/version），transform 从信封解、不再每事件读元数据：
+
+| watch 扇出(20×100) | baseline | 缓存(#10/#28) | A-core | A-core-2 |
+|---|---|---|---|---|
+| iters/(写×watcher) | 3.15 | 0.25 | 0.20 | **0.15** |
+
+元数据读消除（~21× 总降）。**残余 0.15 = prevKv 读**：apiserver watch 用 WithPrevKV（watcher.go:464），prev 是上一版本值、当前写不携带，此读固有；仍由 prevCache 跨 watcher 合并（故缓存不能完全退掉，退掉会回涨）。metaCache 现仅作旧数据回退。
