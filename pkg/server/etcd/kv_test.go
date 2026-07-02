@@ -2766,6 +2766,33 @@ func TestCompactRevisionKeyCanBeWatched(t *testing.T) {
 	require.True(t, isPureWatchRequest(&etcdserverpb.WatchCreateRequest{Key: []byte(compactRevKey)}))
 }
 
+// TestRangeAtMagicRevisionIsNotHijacked pins #53: a Range at revision 1888 (the
+// former partition-magic value) must get normal etcd semantics, not be hijacked
+// into returning partition metadata. Partition discovery uses the brain-protocol
+// ListPartition RPC instead.
+func TestRangeAtMagicRevisionIsNotHijacked(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+
+	// Put the current revision well above the magic value so the requested
+	// revision 1888 is a valid (past) revision rather than a future one.
+	server.backend.SetCurrentRevision(1_000_000)
+	_, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: []byte("/registry/a"), Value: []byte("v")})
+	require.NoError(t, err)
+
+	resp, err := server.Range(ctx, &etcdserverpb.RangeRequest{
+		Key:      []byte("/registry/"),
+		RangeEnd: []byte("/registry0"),
+		Revision: GetPartitionMagic,
+	})
+	require.NoError(t, err)
+	// Nothing existed as of revision 1888, so this is a normal empty range — not
+	// partition boundary keys (which the old hijack would have returned).
+	require.Empty(t, resp.Kvs)
+	require.EqualValues(t, 0, resp.Count)
+}
+
 // TestTxnCompactRevisionConcurrentSingleWinner pins the #54/#72 fix: when
 // several HA-apiserver compactors race the same version, the emulation must let
 // exactly one win (an atomic version CAS), not several.

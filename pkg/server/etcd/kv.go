@@ -32,7 +32,11 @@ import (
 )
 
 const (
-	// GetPartitionMagic is the Magic Number for get partition through range request
+	// GetPartitionMagic is a sentinel ModRevision the range-stream (List) path sets
+	// on its EOF event. It is NOT overloaded onto the Range API any more: a Range
+	// at revision 1888 now gets normal etcd semantics instead of being hijacked to
+	// return partition metadata (#53). Partition discovery uses the brain-protocol
+	// ListPartition RPC.
 	GetPartitionMagic int64 = 1888
 	unaryRpcTimeout         = 10 * time.Second
 
@@ -74,22 +78,13 @@ func (s *RPCServer) Range(ctx context.Context, r *etcdserverpb.RangeRequest) (*e
 		// get method
 		response, err = s.backend.Get(ctx, r)
 		methodTag = metrics.Tag("method", "get")
+	} else if r.CountOnly && !hasRangeRevisionFilters(r) {
+		// count only
+		methodTag = metrics.Tag("method", "count")
+		response, err = s.backend.Count(ctx, r)
 	} else {
-		// tricky code
-		// when range end is not nil and revision is GetPartitionMagic, we tell it is a request for partition infos
-		if r.Revision == GetPartitionMagic {
-			methodTag = metrics.Tag("method", "list-partition")
-			response, err = s.backend.GetPartitions(ctx, r)
-		} else if r.CountOnly && !hasRangeRevisionFilters(r) {
-			// count only
-			methodTag = metrics.Tag("method", "count")
-			// range method
-			response, err = s.backend.Count(ctx, r)
-		} else {
-			methodTag = metrics.Tag("method", "range")
-			// range method
-			response, err = s.backend.List(ctx, r)
-		}
+		methodTag = metrics.Tag("method", "range")
+		response, err = s.backend.List(ctx, r)
 	}
 	successTag = getSuccessMetricTagByErr(err)
 	s.metricCli.EmitCounter("read", 1, methodTag, successTag)

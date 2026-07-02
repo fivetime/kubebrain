@@ -85,9 +85,6 @@ type BackendShim interface {
 	// Count counts the number of kvs in range
 	Count(ctx context.Context, r *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error)
 
-	// GetPartitions query the partition state of storage for ListByStream
-	GetPartitions(ctx context.Context, r *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error)
-
 	// ListByStream reads kvs in range by stream
 	ListByStream(ctx context.Context, startKey, endKey []byte, revision uint64) (<-chan *etcdserverpb.WatchResponse, error)
 
@@ -715,31 +712,6 @@ func (b *backendShim) Count(ctx context.Context, r *etcdserverpb.RangeRequest) (
 		Header: txnHeader(int64(response.Header.Revision)),
 		Count:  int64(response.Count),
 	}, nil
-}
-
-func (b *backendShim) GetPartitions(ctx context.Context, r *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
-	// transform list partition request from etcd protobuf to kube-brain protobuf
-	request := &proto.ListPartitionRequest{
-		Key: r.Key,
-		End: r.RangeEnd,
-	}
-	// pass through get partition method
-	response, err := b.backend.GetPartitions(ctx, request)
-	if err != nil {
-		return nil, err
-	}
-	resp := &etcdserverpb.RangeResponse{
-		Header: txnHeader(int64(response.Header.Revision)),
-		Count:  response.PartitionNum + 1,
-		Kvs:    make([]*mvccpb.KeyValue, 0, response.PartitionNum+1),
-	}
-	for _, kv := range response.PartitionKeys {
-		resp.Kvs = append(resp.Kvs, &mvccpb.KeyValue{
-			Key: kv,
-		})
-
-	}
-	return resp, nil
 }
 
 // todo deprecate range stream in etcd

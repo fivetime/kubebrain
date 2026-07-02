@@ -3,7 +3,7 @@
 > 来源：Fable 5 多智能体审核（73 条已确认问题）。本文件是**持久化进度清单**，做一个勾一个（`[x]`），抗会话压缩遗忘。
 > 编号 `#N` = 审核确认清单索引；`file:line` 为大致位置。测试遵循 `docs/test_strategy_cn.md`：**真实消费端黑盒为主，内部单测只锁黑盒够不着的精确 bug**。
 
-进度：**已修 42 / 73** — Critical 3/3 ✓，High 24/32，Medium 3/17，Low 12/21。（#4 Tier 1+2；#54/#72 compact CAS 原子化；#52 watch update 不误报 create；#55 watch cache-miss 错误分类）（+ #5/#27/#29 A-index e885b8d；#6/#38 etcdmeta 纳入 compaction；#15 两半完成：\x00kubebrain/ 命名空间整体纳入 compaction；#30 watch history 去点读+限流；#69 前缀路由）
+进度：**已修 43 / 73** — Critical 3/3 ✓，High 24/32，Medium 3/17，Low 13/21。（#4 Tier 1+2；#54/#72 compact CAS 原子化；#52 watch update 不误报 create；#55 watch cache-miss 错误分类；#53 移除 Range rev=1888 劫持）（+ #5/#27/#29 A-index e885b8d；#6/#38 etcdmeta 纳入 compaction；#15 两半完成：\x00kubebrain/ 命名空间整体纳入 compaction；#30 watch history 去点读+限流；#69 前缀路由）
 > 附带修复（不在 73 条内）：events-TTL 过期回收在多 border（etcdmeta / 多 SkippedPrefixes）下失效——`getTimeoutRevision` 会 drain 共享 compact-history 队列，原先每 border 各调一次，首个 border 耗尽旧记录后其余 border 拿到 timeoutRevision=0，静默关闭 `/events/` 过期。已改为每次 compaction 周期只计算一次并应用到所有 border（`scanner.Compact` 现接收全部 borders）。`TestCompactExpiredEvents` 覆盖。
 
 ## 已完成（PR #1: fivetime/kubebrain#1 + 81d36be）
@@ -103,8 +103,8 @@
   - 测试：`TestTxnApply*`（单 rev 原子 / tombstone 重建 / no-op 不耗 rev / **guard 冲突不写** / 64 并发 distinct / 24 并发同 key CAS 重试无丢更新）；黑盒 `TestTxnMultiWriteSingleRevision`+`TestTxnCompareMultiWriteSingleRevision`（多写落单 rev + guarded 路径端到端）。backend+etcd 全套 + `-race` 干净；部署后全 smoke（各 txn/compare 形状）+ compat 绿。
 - [x] **#52** [low] Watch PUT events fall back to CreateRevision=ModRevision when prev-version lookup fails — updates misreported as creates and PrevKv dropped  
   `pkg/server/etcd/backendshim.go` `watchEventToEtcdEvent` PUT 分支 — prevKv 查询失败时原**无条件**把 `CreateRevision=ModRevision`（IsCreate 误报 true）。改为：PUT 是 update 永不是 create，**优先用值内联的 create_revision**（approach A，kvToEtcdKv 已填），仅当未知（legacy 无内联/解码失败）才用 prevKv 推导，最后兜底 `ModRevision-1` 保证 `IsCreate()=false`；PrevKv 一律附带（查询失败则 nil，但不再污染事件类型）。单测 `TestWatchPutEventKeepsInlineCreateRevisionWhenPrevKvMissing`（内联 createRev 在 prevKv=nil 时保留）+ 更正 `TestWatchEventToEtcdEventRemainsUpdateWhenPrevKvUnavailable`（原测试固化了 bug）；黑盒 `TestWatchUpdateReportsUpdateNotCreate`（update 事件 IsCreate=false、createRev 正确、PrevKv 存在）。
-- [ ] **#53** [low] Range at Revision==1888 (GetPartitionMagic) is hijacked to return partition metadata instead of data  
-  `pkg/server/etcd/kv.go:77`
+- [x] **#53** [low] Range at Revision==1888 (GetPartitionMagic) is hijacked to return partition metadata instead of data  
+  `pkg/server/etcd/kv.go` — 删除 etcd 层 `if r.Revision == GetPartitionMagic → GetPartitions` 劫持（**死代码**：经查 kubebrain-client v0.2.1 的 `concurrentRangeStream` 用 **brain 协议 `ListPartition` RPC** 取分区，从不发 etcd Range Revision=1888）。现 Range at 1888 走正常 etcd 语义（`checkRequestedRevision`→ compacted / future，或 List→空）。顺带删掉随之变死的 `backendShim.GetPartitions`（接口+实现）；保留 `GetPartitionMagic` 常量（range-stream List 的 EOF 事件 ModRevision 哨兵仍用）与 `backend.Backend.GetPartitions`（brain 协议用）。测试 `TestRangeAtMagicRevisionIsNotHijacked`（rev 1888 返回正常空 range 而非分区键）。
 - [x] **#54** [low] Apiserver compact txn emulation is non-atomic: read-check-then-two-Puts allows concurrent compactors to both 'win' and can desync the version key  
   `pkg/server/etcd/kv.go` `compact()` — 重写为**用 compact_rev_key 自身的 MVCC version + 单次原子 Create/Update CAS**（version 0/缺失→Create，否则按当前 modRev Update）；compare 选 Then/Else，CAS 解并发竞态→**恰一个 compactor 胜**，败者 CAS 失败得到 Else 形状（当前 kv+version）。删除独立 `compactVersionKey` 计数器与 `getCompactVersion`。`TestTxnCompactRevisionConcurrentSingleWinner`（16 并发→恰 1 胜、最终 version 恰 2）+ 既有 `TestTxnCompactRevisionCAS`。
 - [x] **#72** [low] compact_rev_key transaction emulated non-atomically with two separate Puts and a read-then-write version check  
