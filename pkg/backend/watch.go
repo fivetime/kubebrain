@@ -53,7 +53,7 @@ func (b *backend) Watch(ctx context.Context, prefix string, revision uint64) (<-
 
 	// include the current revision in list
 	if revision == 0 {
-		go b.processEvents(cancel, result, readChan, prefix, revision)
+		go b.processEvents(ctx, cancel, result, readChan, prefix, revision)
 		return result, nil
 	}
 
@@ -67,7 +67,7 @@ func (b *backend) Watch(ctx context.Context, prefix string, revision uint64) (<-
 		}
 		if revision > currentRevision {
 			// watch revision is latest, no need to fetch history
-			go b.processEvents(cancel, result, readChan, prefix, revision)
+			go b.processEvents(ctx, cancel, result, readChan, prefix, revision)
 			return result, nil
 		}
 		events, historyErr := b.historyWatchEvents(ctx, prefix, revision, currentRevision)
@@ -77,7 +77,7 @@ func (b *backend) Watch(ctx context.Context, prefix string, revision uint64) (<-
 				b.catchUpEvents(result, events)
 				revision = events[len(events)-1].Revision + 1
 			}
-			go b.processEvents(cancel, result, readChan, prefix, revision)
+			go b.processEvents(ctx, cancel, result, readChan, prefix, revision)
 			return result, nil
 		}
 		klog.ErrorS(historyErr, "watch history fallback failed", "prefix", prefix, "revision", revision)
@@ -88,7 +88,7 @@ func (b *backend) Watch(ctx context.Context, prefix string, revision uint64) (<-
 	}
 
 	if ret.high {
-		go b.processEvents(cancel, result, readChan, prefix, revision)
+		go b.processEvents(ctx, cancel, result, readChan, prefix, revision)
 		return result, nil
 	}
 
@@ -106,7 +106,7 @@ func (b *backend) Watch(ctx context.Context, prefix string, revision uint64) (<-
 				b.catchUpEvents(result, events)
 				lastRevision = events[len(events)-1].Revision + 1
 			}
-			go b.processEvents(cancel, result, readChan, prefix, lastRevision)
+			go b.processEvents(ctx, cancel, result, readChan, prefix, lastRevision)
 			return result, nil
 		}
 		cancel()
@@ -123,7 +123,7 @@ func (b *backend) Watch(ctx context.Context, prefix string, revision uint64) (<-
 		lastRevision = events[len(events)-1].Revision + 1
 		b.catchUpEvents(result, events)
 	}
-	go b.processEvents(cancel, result, readChan, prefix, lastRevision)
+	go b.processEvents(ctx, cancel, result, readChan, prefix, lastRevision)
 
 	return result, nil
 }
@@ -219,25 +219,43 @@ func (b *backend) historyWatchEvents(ctx context.Context, prefix string, fromRev
 	return events, nil
 }
 
-func (b *backend) processEvents(cancel context.CancelFunc, out chan<- []*proto.Event, in <-chan []*proto.Event,
+func (b *backend) processEvents(ctx context.Context, cancel context.CancelFunc, out chan<- []*proto.Event, in <-chan []*proto.Event,
 	prefix string, revision uint64) {
 	prefixBytes := []byte(prefix)
 	klog.InfoS("start process events chan", "prefix", prefix, "revision", revision)
 
-	// always ensure we fully read the channel
-	for events := range in {
-		evs := filterByPrefix(filterByRevision(events, revision), prefixBytes)
-		if len(evs) > 0 {
-			out <- evs
+	defer func() {
+		klog.InfoS("events chan closed", "chan", in, "prefix", prefix)
+		b.metricCli.EmitCounter("watcherhub.events_chan.closed", 1, metrics.Tag("prefix", prefix))
+		close(out)
+		klog.InfoS("watch channel closed", "prefix", prefix)
+		cancel()
+	}()
+
+	for {
+		select {
+		case events, ok := <-in:
+			if !ok {
+				// channel closed by watcher hub due to slow process or ctx done
+				return
+			}
+			evs := filterByPrefix(filterByRevision(events, revision), prefixBytes)
+			if len(evs) == 0 {
+				continue
+			}
+			// The consumer (backendShim transform goroutine) stops reading `out`
+			// when its context is cancelled (client disconnect / relist) without
+			// draining it. A bare `out <- evs` would then block forever once the
+			// buffer fills, leaking this goroutine. Bail out on ctx.Done instead.
+			select {
+			case out <- evs:
+			case <-ctx.Done():
+				return
+			}
+		case <-ctx.Done():
+			return
 		}
 	}
-	// channel closed by watcher hub due to slow process or ctx done
-	klog.InfoS("events chan closed", "chan", in, "prefix", prefix)
-	b.metricCli.EmitCounter("watcherhub.events_chan.closed", 1, metrics.Tag("prefix", prefix))
-
-	close(out)
-	klog.InfoS("watch channel closed", "prefix", prefix)
-	cancel()
 }
 
 func filterByPrefix(events []*proto.Event, prefix []byte) []*proto.Event {

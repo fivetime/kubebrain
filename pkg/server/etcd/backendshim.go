@@ -655,13 +655,28 @@ func (b *backendShim) GetPartitions(ctx context.Context, r *etcdserverpb.RangeRe
 
 // todo deprecate range stream in etcd
 func (b *backendShim) ListByStream(ctx context.Context, startKey, endKey []byte, revision uint64) (<-chan *etcdserverpb.WatchResponse, error) {
-	ch, err := b.backend.ListByStream(context.Background(), startKey, endKey, revision)
+	// Derive a cancelable context from the caller (the client's stream) so the
+	// backend scan is torn down on client disconnect. Passing context.Background()
+	// here leaked the scanner's worker goroutines, iterators and snapshots: on
+	// disconnect the transform goroutine below exits, nobody drains the scan
+	// channel, and the workers block forever on their buffered sends.
+	scanCtx, cancel := context.WithCancel(ctx)
+	ch, err := b.backend.ListByStream(scanCtx, startKey, endKey, revision)
 	if err != nil {
+		cancel()
 		return nil, err
 	}
 	responseCh := make(chan *etcdserverpb.WatchResponse)
 	transformResponseFunc := func(ctx context.Context, in <-chan *proto.StreamRangeResponse, out chan *etcdserverpb.WatchResponse) {
 		defer close(out)
+		defer func() {
+			// Cancel the scan and drain its channel so any worker blocked on a
+			// buffered send (the receiver's stream send has no ctx escape)
+			// unblocks and the scan goroutine can reach close(stream) and exit.
+			cancel()
+			for range in {
+			}
+		}()
 		for {
 			select {
 			case <-ctx.Done():
@@ -688,12 +703,16 @@ func (b *backendShim) ListByStream(ctx context.Context, startKey, endKey []byte,
 						})
 					}
 				}
-				// send to server layer
-				out <- etcdWatchResponse
+				// send to server layer, bailing out if the client is gone
+				select {
+				case out <- etcdWatchResponse:
+				case <-ctx.Done():
+					return
+				}
 			}
 		}
 	}
-	go transformResponseFunc(ctx, ch, responseCh)
+	go transformResponseFunc(scanCtx, ch, responseCh)
 	return responseCh, nil
 }
 
