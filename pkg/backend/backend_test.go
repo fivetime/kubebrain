@@ -910,15 +910,17 @@ func testBackendRangeKubernetesPagination(t *testing.T, targetStorage storageTyp
 	const objectCount = 20
 	const pageSize = int64(5)
 
+	var lastRevision uint64
 	for i := 0; i < objectCount; i++ {
 		key := path.Join(baseKey, fmt.Sprintf("object-%02d", i))
-		_, err := backend.Create(context.Background(), newCreateRequest(key, fmt.Sprintf("value-%02d", i)))
+		resp, err := backend.Create(context.Background(), newCreateRequest(key, fmt.Sprintf("value-%02d", i)))
 		if !ast.NoError(err) {
 			ast.FailNow("can not preset paginated kv pair")
 		}
+		lastRevision = resp.Header.Revision
 	}
-	waitUntilRevisionEqualOrTimeout(backend, backend.GetCurrentRevision())
-	readRevision := backend.GetCurrentRevision()
+	waitUntilRevisionEqualOrTimeout(backend, lastRevision)
+	readRevision := lastRevision
 
 	continueKey := baseKey
 	seen := make(map[string]struct{}, objectCount)
@@ -946,7 +948,9 @@ func testBackendRangeKubernetesPagination(t *testing.T, targetStorage storageTyp
 		continueKey = string(resp.Kvs[len(resp.Kvs)-1].Key) + "\x00"
 	}
 
-	ast.Len(ordered, objectCount)
+	if !ast.Len(ordered, objectCount) {
+		ast.FailNow("paginated range returned an unexpected number of keys")
+	}
 	for i := 0; i < objectCount; i++ {
 		ast.Equal(path.Join(baseKey, fmt.Sprintf("object-%02d", i)), ordered[i])
 	}
