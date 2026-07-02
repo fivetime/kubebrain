@@ -47,9 +47,13 @@ cd "$ROOT_DIR"
 
 kind_config="deploy/dev/kind-config.yaml"
 tmp_kind_config=""
+tmp_kubebrain_manifest=""
 cleanup() {
   if [ -n "$tmp_kind_config" ] && [ -f "$tmp_kind_config" ]; then
     rm -f "$tmp_kind_config"
+  fi
+  if [ -n "$tmp_kubebrain_manifest" ] && [ -f "$tmp_kubebrain_manifest" ]; then
+    rm -f "$tmp_kubebrain_manifest"
   fi
 }
 trap cleanup EXIT
@@ -94,7 +98,9 @@ kubectl apply -f deploy/dev/tidb-cluster.yaml
 wait_pods_ready tidb-cluster 'app.kubernetes.io/component=pd,app.kubernetes.io/instance=kb' 600s
 wait_pods_ready tidb-cluster 'app.kubernetes.io/component=tikv,app.kubernetes.io/instance=kb' 600s
 
-kubectl apply -f deploy/dev/kubebrain-tikv.yaml
+tmp_kubebrain_manifest="$(mktemp)"
+sed "s#image: kubebrain:dev#image: ${IMAGE_NAME}#g" deploy/dev/kubebrain-tikv.yaml >"$tmp_kubebrain_manifest"
+kubectl apply -f "$tmp_kubebrain_manifest"
 kubectl scale deployment/kubebrain --namespace kubebrain-dev --replicas="$KUBEBRAIN_REPLICAS"
 kubectl rollout restart deployment/kubebrain --namespace kubebrain-dev
 kubectl rollout status deployment/kubebrain --namespace kubebrain-dev --timeout=180s
