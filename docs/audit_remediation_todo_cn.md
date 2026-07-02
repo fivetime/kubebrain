@@ -3,7 +3,7 @@
 > 来源：Fable 5 多智能体审核（73 条已确认问题）。本文件是**持久化进度清单**，做一个勾一个（`[x]`），抗会话压缩遗忘。
 > 编号 `#N` = 审核确认清单索引；`file:line` 为大致位置。测试遵循 `docs/test_strategy_cn.md`：**真实消费端黑盒为主，内部单测只锁黑盒够不着的精确 bug**。
 
-进度：**已修 43 / 73** — Critical 3/3 ✓，High 24/32，Medium 3/17，Low 13/21。（#4 Tier 1+2；#54/#72 compact CAS 原子化；#52 watch update 不误报 create；#55 watch cache-miss 错误分类；#53 移除 Range rev=1888 劫持）（+ #5/#27/#29 A-index e885b8d；#6/#38 etcdmeta 纳入 compaction；#15 两半完成：\x00kubebrain/ 命名空间整体纳入 compaction；#30 watch history 去点读+限流；#69 前缀路由）
+进度：**已修 46 / 73** — Critical 3/3 ✓，High 24/32，Medium 3/17，Low 16/21。（+ P7 存储：#65 badger 静默成功、#66 badger value-log GC、#67 metrics 迭代计数；#64 分析后暂缓）（+ #5/#27/#29 A-index e885b8d；#6/#38 etcdmeta 纳入 compaction；#15 两半完成：\x00kubebrain/ 命名空间整体纳入 compaction；#30 watch history 去点读+限流；#69 前缀路由）
 > 附带修复（不在 73 条内）：events-TTL 过期回收在多 border（etcdmeta / 多 SkippedPrefixes）下失效——`getTimeoutRevision` 会 drain 共享 compact-history 队列，原先每 border 各调一次，首个 border 耗尽旧记录后其余 border 拿到 timeoutRevision=0，静默关闭 `/events/` 过期。已改为每次 compaction 周期只计算一次并应用到所有 border（`scanner.Compact` 现接收全部 borders）。`TestCompactExpiredEvents` 覆盖。
 
 ## 已完成（PR #1: fivetime/kubebrain#1 + 81d36be）
@@ -182,14 +182,14 @@
   `pkg/storage/memkv/skiplist.go:63`
 - [ ] **#48** [medium] GetCompactRevision is an uncached storage read executed on every revisioned request  
   `pkg/server/etcd/kv.go:415`
-- [ ] **#64** [low] Badger and memkv iterators ignore the snapshot timestamp parameter  
-  `pkg/storage/badger/iter.go:43`
-- [ ] **#65** [low] Badger PutIfNotExist wraps nil error on ValueCopy failure, turning a failed op into silent success  
-  `pkg/storage/badger/batch.go:42`
-- [ ] **#66** [low] Badger value-log GC is never run  
-  `pkg/storage/badger/badger.go:34`
-- [ ] **#67** [low] Metrics iterator wrapper counts EOF/cancel instead of fetched rows  
-  `pkg/storage/metrics/store.go:154`
+- [~] **#64** [low] Badger and memkv iterators ignore the snapshot timestamp parameter  
+  `pkg/storage/badger/iter.go` — **分析后暂缓（benign）**：badger/memkv 的 `GetPartitions` 只返回**单分区**，故一次 scan 只用一个迭代器 = 一个一致快照（badger read-txn 自带快照隔离），`ts` 的作用（多分区间一致快照）在单分区引擎上无意义。真正按外部 `ts` 读需 badger managed-mode + 把 KubeBrain revision 映射到 badger version（大改，非默认引擎，收益低）。已记录不修。
+- [x] **#65** [low] Badger PutIfNotExist wraps nil error on ValueCopy failure, turning a failed op into silent success  
+  `pkg/storage/badger/batch.go` — `ValueCopy` 失败时原 `errors.Wrapf(err, ...)` 的 `err` 在该分支为 **nil**（key 存在），`Wrapf(nil,...)` 返回 nil → 坏文件读被当成功。改为 `Wrapf(copyErr, ...)`。`TestBadgerBatchAndLifecycle` 覆盖 PutIfNotExist create/conflict 路径。
+- [x] **#66** [low] Badger value-log GC is never run  
+  `pkg/storage/badger/badger.go` — 新增后台 `runValueLogGC`（每 5min `RunValueLogGC(0.5)` 循环至 ErrNoRewrite），`Close` 关 stop chan 干净退出。`TestBadgerBatchAndLifecycle` 验证 open→用→close 生命周期不 hang。
+- [x] **#67** [low] Metrics iterator wrapper counts EOF/cancel instead of fetched rows  
+  `pkg/storage/metrics/store.go` — `iterWrapper.Next` 原在 `else if err != nil`（即 EOF/cancel）分支 `counter++`，成功取行（`err==nil`）时不计 → `storage.iter.fetch.success` 计的是 EOF 而非取到的行数。改为 `err==nil` 时计数。影响全部引擎（含 TiKV）。`TestIterWrapperCountsFetchedRows`（取 5 行 → fetch.success=5）。
 - [ ] **#71** [low] Compaction errors are fully swallowed after the compact revision is persisted, reporting success while garbage accumulates  
   `pkg/backend/scanner/scanner.go:197`
 - [ ] **#59** [low] HashKV ignores the request context, using context.Background() for revision/compaction lookups  

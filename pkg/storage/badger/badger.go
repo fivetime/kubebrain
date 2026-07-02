@@ -16,14 +16,26 @@ package badger
 
 import (
 	"context"
+	"time"
 
 	"github.com/dgraph-io/badger"
 
 	"github.com/kubewharf/kubebrain/pkg/storage"
 )
 
+const (
+	// valueLogGCInterval is how often value-log GC runs. Without it badger's value
+	// log accumulates the garbage left by overwritten/deleted values and never
+	// reclaims disk (#66).
+	valueLogGCInterval = 5 * time.Minute
+	// valueLogGCDiscardRatio: rewrite a value-log file when at least this fraction
+	// of it is discardable (badger's recommended default).
+	valueLogGCDiscardRatio = 0.5
+)
+
 type store struct {
-	db *badger.DB
+	db   *badger.DB
+	stop chan struct{}
 }
 
 type Config struct {
@@ -35,7 +47,27 @@ func NewKvStorage(config Config) (storage.KvStorage, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &store{db: db}, nil
+	s := &store{db: db, stop: make(chan struct{})}
+	go s.runValueLogGC()
+	return s, nil
+}
+
+// runValueLogGC periodically reclaims badger value-log garbage until Close.
+func (b *store) runValueLogGC() {
+	ticker := time.NewTicker(valueLogGCInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-b.stop:
+			return
+		case <-ticker.C:
+			// RunValueLogGC rewrites at most one file per call and returns nil when
+			// it did, so loop until there is nothing left to reclaim this round
+			// (it returns badger.ErrNoRewrite / another error to stop).
+			for b.db.RunValueLogGC(valueLogGCDiscardRatio) == nil {
+			}
+		}
+	}
 }
 
 func (b *store) GetTimestampOracle(ctx context.Context) (timestamp uint64, err error) {
@@ -92,5 +124,6 @@ func (b *store) DelCurrent(ctx context.Context, it storage.Iter) (err error) {
 }
 
 func (b *store) Close() error {
+	close(b.stop)
 	return b.db.Close()
 }

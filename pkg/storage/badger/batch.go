@@ -38,8 +38,10 @@ func (b *batch) PutIfNotExist(key []byte, val []byte, ttl int64) {
 			// value exist
 			oldVal, copyErr := oldItem.ValueCopy(nil)
 			if copyErr != nil {
-				// maybe file is broken
-				return errors.Wrapf(err, "fail to copy value for key %s", key)
+				// maybe file is broken. Wrap copyErr, not err: err is nil in this
+				// branch (the key exists), so errors.Wrapf(err, ...) returned nil,
+				// turning a failed read into a silent success (#65).
+				return errors.Wrapf(copyErr, "fail to copy value for key %s", key)
 			}
 			return storage.NewErrConflict(idx, key, oldVal)
 		} else if errors.Is(err, badger.ErrKeyNotFound) {
