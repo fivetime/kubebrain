@@ -83,3 +83,16 @@ harness：`hack/etcd-client-compat/read_amp_bench_test.go`（`TestReadAmpBaselin
 **正确修法 = approach A 级重设计**：维护"活键计数索引"（写时增减 per-range 计数）或把活性/create_rev/version 内联进 key/value 使 keys-only 计数可行。建议与 A（元数据内联 + 迁移，同时干掉 #6/#15）**打包**做。或由用户决策：接受近似 RemainingItemCount（alpha/装饰性）换取分页 O(N)（需改 TestRangeLimitCountReportsTotalMatches）。#29（CountOnly 流式读值）同源。
 
 **本轮不改代码**（避免破坏被测的精确 count 兼容语义）；仅复现 + 记录。
+
+## 改动后（A-core：元数据内联，commit ee55f24）
+
+create_revision/version 内联进 value 信封（写时），读时 `kvToEtcdKv` 从信封解出（脱值+取 meta，零查询），旧数据回退 etcdmeta。混存 live 集群实测：
+
+| 操作 | 基线 | 批量(#3) | **A-core 内联** |
+|---|---|---|---|
+| 单页 LIST(500) | 9.99s / 502 iters | 116ms / 3 | **96ms / 2 iters** |
+| 全量分页 LIST(2000) | 40.5s / 2007 | 293ms / 11 | **283ms / 7** |
+| 历史 LIST(2000) | 39.9s / 2007 | 306ms / 11 | **277ms / 7** |
+| Watch 扇出(20×100) | 6300 / 3.15 | 500 / 0.25 | **400 / 0.20** |
+
+LIST 元数据查询彻底归零（仅剩范围扫描自身）；新写不再产生 etcdmeta（#6/#15 增长停止）。兼容套件（value/metadata 往返）+ 混存回退全绿。**#3/#7 完整根治。** 剩余：#5/#27/#29（count，需 A-index）、live-PUT watch 事件的每事件一次共享读（可由 A-core-2 让 collector 给 PUT 事件也包信封而归零）、legacy etcdmeta compaction 回收、A-index。

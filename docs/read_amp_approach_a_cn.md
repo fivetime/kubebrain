@@ -51,4 +51,9 @@
 - 真实 apiserver：consistent-list / watch 端到端。
 
 ## 现状
+**A-core 已接线并验证**（commit 3fe2e28 codec + ee55f24 wiring）：写时内联、读时脱信封（etcd shim kvToEtcdKv + brain server + historyWatchEvents），免迁移（旧数据回退 etcdmeta）。实测 LIST 元数据查询归零、新写停写 etcdmeta。**剩余**：legacy etcdmeta 纳入 compaction 回收；A-count（用户已定=A-index，待实现）；A-core-2（collector 给 live-PUT 事件包信封，消除 watch 每事件一次的共享读）。
+
+（历史设计说明保留于下。）
+
+### 原始状态
 **未实现。** 等用户评审 A-core 的信封 + 迁移方案、并确定 A-count 方向后开始编码。

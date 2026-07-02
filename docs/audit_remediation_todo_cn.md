@@ -78,10 +78,10 @@
 
 ### P2 — 内部 keyspace 无界增长（etcdmeta/leases 在 compaction 边界外）
 
-- [ ] **#6** [high] Etcd metadata keyspace (\x00kubebrain/etcdmeta/) is written per revision but lies outside all compaction borders — unbounded storage growth  
-  `pkg/backend/etcdmeta.go:13`
-- [ ] **#15** [high] Internal MVCC keys (\x00kubebrain/leases/, \x00kubebrain/etcdmeta/) lie outside compaction borders and grow without bound  
-  `pkg/server/etcd/lease.go:464`
+- [~] **#6** [high] Etcd metadata keyspace (\x00kubebrain/etcdmeta/) is written per revision but lies outside all compaction borders — unbounded storage growth  
+  `pkg/backend/etcdmeta.go:13` — GROWTH STOPPED for new writes via inline metadata (ee55f24, A-core); legacy etcdmeta retirement (compaction) still pending
+- [~] **#15** [high] Internal MVCC keys (\x00kubebrain/leases/, \x00kubebrain/etcdmeta/) lie outside compaction borders and grow without bound  
+  `pkg/server/etcd/lease.go:464` — etcdmeta half stopped (ee55f24); lease-record half (rewritten per keepalive, outside compaction) still open
 - [ ] **#38** [medium] Etcd metadata versions are never compacted or deleted — unbounded storage growth  
   `pkg/backend/etcdmeta.go:47`
 
