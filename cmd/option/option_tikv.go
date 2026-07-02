@@ -26,25 +26,32 @@ import (
 	storagetikv "github.com/kubewharf/kubebrain/pkg/storage/tikv"
 )
 
+const defaultTiKVClientNum = 16
+
 type storageConfig struct {
-	pdAddrs []string
+	pdAddrs   []string
+	clientNum int
 }
 
 func newStorageConfig() *storageConfig {
-	return &storageConfig{}
+	return &storageConfig{clientNum: defaultTiKVClientNum}
 }
 
 func (s *storageConfig) addFlag(fs *pflag.FlagSet) {
 	fs.StringSliceVar(&s.pdAddrs, "pd-addrs", s.pdAddrs, "addresses of TiKV PD servers")
+	fs.IntVar(&s.clientNum, "tikv-client-num", s.clientNum, "number of round-robined TiKV txn clients; each has its own PD connections, region cache and TSO stream, so keep it modest")
 }
 
 func (s *storageConfig) validate() error {
 	if len(s.pdAddrs) == 0 {
 		return fmt.Errorf("invalid param --pd-addrs")
 	}
+	if s.clientNum <= 0 {
+		return fmt.Errorf("invalid param --tikv-client-num: must be > 0")
+	}
 	return nil
 }
 
 func (s *storageConfig) buildStorage() (storage.KvStorage, error) {
-	return storagetikv.NewKvStorage(s.pdAddrs)
+	return storagetikv.NewKvStorage(s.pdAddrs, s.clientNum)
 }

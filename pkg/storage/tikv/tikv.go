@@ -33,9 +33,16 @@ type clientBalancer struct {
 	idx     uint64
 }
 
-const clientNum = 200
+// defaultClientNum is the fallback number of round-robined txnkv clients when
+// the caller passes a non-positive count. Each client carries its own PD
+// connections, region cache and TSO dispatcher, so an excessive count
+// multiplies PD load and fragments TSO batching rather than adding throughput.
+const defaultClientNum = 16
 
-func NewKvStorage(pdAddrs []string) (storage.KvStorage, error) {
+func NewKvStorage(pdAddrs []string, clientNum int) (storage.KvStorage, error) {
+	if clientNum <= 0 {
+		clientNum = defaultClientNum
+	}
 	clients := make([]*txnkv.Client, 0, clientNum)
 	for i := 0; i < clientNum; i++ {
 		txnClient, err := txnkv.NewClient(pdAddrs)
