@@ -375,20 +375,23 @@ func (e *etcdProxy) LeaseKeepAlive(ctx context.Context, req *etcdserverpb.LeaseK
 		return nil, err
 	}
 	klog.InfoS("forward lease keepalive", "leader", leader, "id", req.ID)
-	stream, err := etcdserverpb.NewLeaseClient(client.ActiveConnection()).LeaseKeepAlive(ctx, defaultCallOption...)
+	// The follower forwards one keepalive message and returns one response, but
+	// LeaseKeepAlive is a bidi stream. Derive a per-call cancelable context and
+	// cancel it on return so the leader-side stream is fully torn down instead of
+	// left half-open (CloseSend only closes the send direction, leaking the
+	// receive side until the long-lived caller context ends) (#62).
+	callCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	stream, err := etcdserverpb.NewLeaseClient(client.ActiveConnection()).LeaseKeepAlive(callCtx, defaultCallOption...)
 	if err != nil {
 		e.markForwardError(client, err)
 		return nil, err
 	}
 	if err := stream.Send(req); err != nil {
-		_ = stream.CloseSend()
 		e.markForwardError(client, err)
 		return nil, err
 	}
 	resp, err := stream.Recv()
-	if closeErr := stream.CloseSend(); err == nil && closeErr != nil {
-		err = closeErr
-	}
 	e.markForwardError(client, err)
 	return resp, err
 }
@@ -529,12 +532,18 @@ func (e *etcdProxy) Watch(ctx context.Context, key, rangeEnd []byte, revision ui
 						outputCh <- WatchResult{Err: err}
 						return
 					}
+					// Advance the resume revision to the store revision this
+					// response covers, so a reconnect after a leader change resumes
+					// from a concrete point instead of restarting at the new
+					// leader's "current" and silently dropping the gap (#63). The
+					// header revision is >= every event's ModRevision (subsuming
+					// per-event advancement) and, thanks to WithProgressNotify,
+					// also advances on idle progress notifications that carry no
+					// events — the case where the old code left watchRevision at
+					// its initial value (0 for a from-now watch). The Created
+					// response carries revision 0, which nextWatchRevision ignores.
+					watchRevision = nextWatchRevision(watchRevision, wresp.Header.Revision)
 					events := convertEvents(wresp.Events)
-					for _, event := range events {
-						if event.Kv != nil && event.Kv.ModRevision >= int64(watchRevision) {
-							watchRevision = uint64(event.Kv.ModRevision) + 1
-						}
-					}
 					outputCh <- WatchResult{Events: events}
 				}
 			}
@@ -551,7 +560,10 @@ func (e *etcdProxy) Watch(ctx context.Context, key, rangeEnd []byte, revision ui
 }
 
 func watchOptionsForRange(rangeEnd []byte, revision uint64) []clientv3.OpOption {
-	opts := []clientv3.OpOption{clientv3.WithRev(int64(revision)), clientv3.WithPrevKV()}
+	// WithProgressNotify makes the leader advertise its current revision even
+	// when the watched range is idle, so the proxy can advance its resume point
+	// and not lose the gap on a leader-change reconnect (#63).
+	opts := []clientv3.OpOption{clientv3.WithRev(int64(revision)), clientv3.WithPrevKV(), clientv3.WithProgressNotify()}
 	if rangeEnd == nil {
 		return opts
 	}
@@ -559,6 +571,20 @@ func watchOptionsForRange(rangeEnd []byte, revision uint64) []clientv3.OpOption 
 		return append(opts, clientv3.WithFromKey())
 	}
 	return append(opts, clientv3.WithRange(string(rangeEnd)))
+}
+
+// nextWatchRevision returns the resume revision after a watch response whose
+// header covers store revision headerRev. It never moves backwards, and ignores
+// a zero header revision (e.g. the Created response) so the proxy does not rewind
+// a from-now watch to the beginning of history.
+func nextWatchRevision(current uint64, headerRev int64) uint64 {
+	if headerRev <= 0 {
+		return current
+	}
+	if next := uint64(headerRev) + 1; next > current {
+		return next
+	}
+	return current
 }
 
 func convertEvents(events []*clientv3.Event) []*mvccpb.Event {

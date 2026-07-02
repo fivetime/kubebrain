@@ -81,3 +81,36 @@ func (t *testLeaderElection) IsLeader() bool {
 func (t *testLeaderElection) GetElectionInfo() (leader.ElectionInfo, error) {
 	return leader.ElectionInfo{LeaderAddress: t.leaderAddress, IsLeader: t.isLeader}, nil
 }
+
+// TestNextWatchRevision pins the #63 resume-revision logic: advance to
+// headerRev+1, never move backwards, and ignore a zero header (Created response)
+// so a from-now watch is not rewound to the start of history on reconnect.
+func TestNextWatchRevision(t *testing.T) {
+	tests := []struct {
+		name      string
+		current   uint64
+		headerRev int64
+		want      uint64
+	}{
+		{name: "created response (rev 0) leaves from-now watch untouched", current: 0, headerRev: 0, want: 0},
+		{name: "first concrete revision resolves from-now watch", current: 0, headerRev: 100, want: 101},
+		{name: "advances on newer revision", current: 101, headerRev: 150, want: 151},
+		{name: "does not move backwards for stale header", current: 200, headerRev: 150, want: 200},
+		{name: "same revision does not advance", current: 151, headerRev: 150, want: 151},
+		{name: "negative header ignored", current: 50, headerRev: -1, want: 50},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, nextWatchRevision(tt.current, tt.headerRev))
+		})
+	}
+}
+
+// TestWatchOptionsForRangeRequestsProgressNotify guards that the proxy watch
+// requests progress notifications (needed for #63) across the range variants.
+func TestWatchOptionsForRangeRequestsProgressNotify(t *testing.T) {
+	// base opts: WithRev + WithPrevKV + WithProgressNotify = 3
+	require.Len(t, watchOptionsForRange(nil, 5), 3, "single-key watch: rev+prevkv+progress")
+	require.Len(t, watchOptionsForRange([]byte{}, 5), 4, "from-key watch adds WithFromKey")
+	require.Len(t, watchOptionsForRange([]byte("z"), 5), 4, "range watch adds WithRange")
+}
