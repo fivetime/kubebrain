@@ -28,14 +28,12 @@ import (
 var (
 	tombStoneBytes = []byte("tombstone")
 	noPrefixEnd    = []byte{0}
-	events         = []byte("/events/")
 )
 
 // retry config
 var (
-	retryInterval       = 5 * time.Second
-	checkInterval       = time.Second
-	eventsTTL     int64 = 3600
+	retryInterval = 5 * time.Second
+	checkInterval = time.Second
 )
 
 const (
@@ -44,11 +42,9 @@ const (
 )
 
 func (c *Config) getScannerConfig() scanner.Config {
-	// todo: expose TTL as args
 	return scanner.Config{
 		CompactKey: getCompactKey(c.Prefix),
 		Tombstone:  tombStoneBytes,
-		TTL:        time.Second * time.Duration(eventsTTL),
 	}
 }
 

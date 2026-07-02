@@ -15,7 +15,6 @@
 package backend
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"time"
@@ -68,20 +67,24 @@ func (b *backend) create(ctx context.Context, key []byte, value []byte) (revisio
 		return 0, err
 	}
 
-	ttl := int64(0)
-	if bytes.Contains(key, events) {
-		ttl = eventsTTL
-	}
-	err = b.createWithMetadata(ctx, key, value, revision, ttl)
+	// Key expiry is driven entirely by the lease attached to the key at the etcd
+	// layer (etcd v3 has no non-lease TTL): the lease's granted TTL is honored
+	// per-key by the server-layer lease manager, which deletes the bound keys when
+	// the lease expires. The backend therefore writes no storage-level TTL.
+	// Previously an unanchored bytes.Contains(key, "/events/") heuristic stamped a
+	// hardcoded 3600s TTL, which ignored the real granted TTL, ignored keepalive
+	// renewal, and mis-expired unrelated keys whose path merely contained
+	// "/events/" (data loss) — see #16.
+	err = b.createWithMetadata(ctx, key, value, revision)
 	return revision, err
 }
 
-func (b *backend) createWithMetadata(ctx context.Context, key []byte, value []byte, revision uint64, ttl int64) error {
+func (b *backend) createWithMetadata(ctx context.Context, key []byte, value []byte, revision uint64) error {
 	revisionKey := b.coder.EncodeRevisionKey(key)
 	objectKey := b.coder.EncodeObjectKey(key, revision)
 	revisionBytes := uint64ToBytes(revision)
 
-	err := b.createBatchWithMetadata(ctx, revisionKey, objectKey, key, value, revisionBytes, nil, revision, ttl, true)
+	err := b.createBatchWithMetadata(ctx, revisionKey, objectKey, key, value, revisionBytes, nil, revision, true)
 	if err == nil {
 		return nil
 	}
@@ -96,7 +99,7 @@ func (b *backend) createWithMetadata(ctx context.Context, key []byte, value []by
 		oldRev, err = b.kv.Get(ctx, revisionKey)
 		if err != nil {
 			if errors.Is(err, storage.ErrKeyNotFound) {
-				return b.createBatchWithMetadata(ctx, revisionKey, objectKey, key, value, revisionBytes, nil, revision, ttl, true)
+				return b.createBatchWithMetadata(ctx, revisionKey, objectKey, key, value, revisionBytes, nil, revision, true)
 			}
 			return storage.ErrUnavailable
 		}
@@ -107,25 +110,28 @@ func (b *backend) createWithMetadata(ctx context.Context, key []byte, value []by
 		return parseErr
 	}
 	if isTombstone && prevRevision < revision {
-		return b.createBatchWithMetadata(ctx, revisionKey, objectKey, key, value, revisionBytes, oldRev, revision, ttl, false)
+		return b.createBatchWithMetadata(ctx, revisionKey, objectKey, key, value, revisionBytes, oldRev, revision, false)
 	}
 	return storage.ErrCASFailed
 }
 
-func (b *backend) createBatchWithMetadata(ctx context.Context, revisionKey, objectKey, key, value, newRevisionBytes, oldRevisionBytes []byte, revision uint64, ttl int64, requireNotExist bool) error {
+// createBatchWithMetadata writes the revision-key and object-key with no
+// storage-level TTL (ttl=0): key expiry is the lease manager's responsibility,
+// not the backend's — see create.
+func (b *backend) createBatchWithMetadata(ctx context.Context, revisionKey, objectKey, key, value, newRevisionBytes, oldRevisionBytes []byte, revision uint64, requireNotExist bool) error {
 	batch := b.kv.BeginBatchWrite()
 	if requireNotExist {
-		batch.PutIfNotExist(revisionKey, newRevisionBytes, ttl)
+		batch.PutIfNotExist(revisionKey, newRevisionBytes, 0)
 	} else {
-		batch.CAS(revisionKey, newRevisionBytes, oldRevisionBytes, ttl)
+		batch.CAS(revisionKey, newRevisionBytes, oldRevisionBytes, 0)
 	}
 	meta := EtcdMetadata{CreateRevision: revision, Version: 1}
 	if b.config.EnableEtcdCompatibility {
 		// Inline create_revision/version into the value so reads need no separate
 		// metadata lookup and the etcdmeta keyspace stops growing (approach A).
-		batch.Put(objectKey, encodeValueWithMeta(value, meta), ttl)
+		batch.Put(objectKey, encodeValueWithMeta(value, meta), 0)
 	} else {
-		batch.Put(objectKey, value, ttl)
+		batch.Put(objectKey, value, 0)
 		b.putEtcdMetadata(batch, key, revision, meta)
 	}
 	return batch.Commit(ctx)

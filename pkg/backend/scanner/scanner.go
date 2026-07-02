@@ -49,11 +49,10 @@ const (
 // NewScanner create a Scanner
 func NewScanner(store storage.KvStorage, coder coder.Coder, config Config, metricCli metrics.Metrics) Scanner {
 	return &scanner{
-		store:            store,
-		coder:            coder,
-		config:           config,
-		metricCli:        metricCli,
-		compactHistories: newCompactRecordQueue(),
+		store:     store,
+		coder:     coder,
+		config:    config,
+		metricCli: metricCli,
 	}
 }
 
@@ -62,9 +61,6 @@ type scanner struct {
 	coder     coder.Coder
 	metricCli metrics.Metrics
 	config    Config
-
-	// component state
-	compactHistories *compactRecordQueue
 }
 
 // Config is the configuration of scanner
@@ -74,9 +70,6 @@ type Config struct {
 
 	// Tombstone is the value bytes used to mark delete
 	Tombstone []byte
-
-	// TTL is the time that key written with ttl will live
-	TTL time.Duration
 }
 
 // Range implements Scanner interface
@@ -86,7 +79,7 @@ func (r *scanner) Range(ctx context.Context, start []byte, end []byte, revision 
 	}
 
 	receiver := &commonResultReceiver{}
-	_, err := r.scan(ctx, start, end, revision, false, 0, receiver)
+	_, err := r.scan(ctx, start, end, revision, false, receiver)
 	if err != nil {
 		return nil, err
 	}
@@ -122,7 +115,7 @@ func (r *scanner) rangeWithLimit(ctx context.Context, start []byte, end []byte, 
 func (r *scanner) Count(ctx context.Context, start []byte, end []byte, revision uint64) (int, error) {
 	// ban the calling of Count right now
 	receiver := &emptyResultReceiver{}
-	return r.scan(ctx, start, end, revision, false, 0, receiver)
+	return r.scan(ctx, start, end, revision, false, receiver)
 }
 
 // RangeStream implements Scanner interface
@@ -133,7 +126,7 @@ func (r *scanner) RangeStream(ctx context.Context, start []byte, end []byte, rev
 
 	go func() {
 		defer close(stream)
-		_, err := r.scan(ctx, start, end, revision, false, 0, receiver)
+		_, err := r.scan(ctx, start, end, revision, false, receiver)
 		stream <- getListStreamEnd(revision, err)
 		if err != nil {
 			klog.Errorf("backend list stream with revision %d failed %v, start key is %s, end key is %s", revision, err, start, end)
@@ -142,38 +135,6 @@ func (r *scanner) RangeStream(ctx context.Context, start []byte, end []byte, rev
 	}()
 
 	return stream
-}
-
-func (r *scanner) logCompactHistory(revision uint64) {
-	klog.InfoS("log compact history", "rev", revision)
-	cr := &compactRecord{
-		revision: revision,
-		time:     time.Now(),
-	}
-	r.compactHistories.push(cr)
-}
-
-func (r *scanner) getTimeoutRevision() uint64 {
-	if r.store.SupportTTL() {
-		return 0
-	}
-
-	// todo: if it's need to lock here to make it called concurrent-safely?
-	prev := &compactRecord{}
-	head := r.compactHistories.head()
-	for head != nil {
-		interval := time.Since(head.time)
-		klog.InfoS("check compact history", "interval", interval.String(), "rev", head.revision)
-		if interval < r.config.TTL {
-			break
-		}
-		r.compactHistories.pop()
-		prev = head
-		head = r.compactHistories.head()
-	}
-
-	klog.InfoS("get timeout revision", "rev", prev.revision)
-	return prev.revision
 }
 
 func getListStreamEnd(revision uint64, err error) *proto.StreamRangeResponse {
@@ -193,18 +154,11 @@ func getListStreamEnd(revision uint64, err error) *proto.StreamRangeResponse {
 
 // Compact implements Scanner interface
 func (r *scanner) Compact(ctx context.Context, borders [][]byte, revision uint64) error {
-	r.logCompactHistory(revision)
-	// Compute the events-TTL timeout revision once for the whole cycle. It drains
-	// the shared compact-history queue, so computing it per-border would let the
-	// first border consume the old records and leave later borders (e.g. the user
-	// prefix where /events/ keys live) with timeoutRevision=0, disabling event GC.
-	// getTimeoutRevision returns 0 when the storage engine supports native TTL.
-	timeoutRevision := r.getTimeoutRevision()
 	var firstErr error
 	for i := 0; i+1 < len(borders); i += 2 {
 		// Scan every border best-effort even if one fails: each border's GC is
 		// independent, and returning the first error still surfaces the failure.
-		if _, err := r.scan(ctx, borders[i], borders[i+1], revision, true, timeoutRevision, &emptyResultReceiver{}); err != nil {
+		if _, err := r.scan(ctx, borders[i], borders[i+1], revision, true, &emptyResultReceiver{}); err != nil {
 			klog.ErrorS(err, "compact scan failed for border", "revision", revision, "start", borders[i], "end", borders[i+1])
 			if firstErr == nil {
 				firstErr = err
@@ -241,7 +195,7 @@ func (r *scanner) adjustPartitionsBorders(ps []storage.Partition) (ret []storage
 	return ps
 }
 
-func (r *scanner) scan(ctx context.Context, start []byte, end []byte, revision uint64, compact bool, timeoutRevision uint64, receiver resultReceiver) (int, error) {
+func (r *scanner) scan(ctx context.Context, start []byte, end []byte, revision uint64, compact bool, receiver resultReceiver) (int, error) {
 	store := r.store
 	if exclusiveKvStorage, ok := r.store.(storage.ExclusiveKvStorage); ok && compact {
 		klog.InfoS("compact with exclusive kv storage", "start", string(start), "end", string(end), "rev", revision)
@@ -280,13 +234,12 @@ func (r *scanner) scan(ctx context.Context, start []byte, end []byte, revision u
 			// create a worker
 			receiverList[idx] = receiver.fork()
 			w := newWorker(workerConfig{
-				idx:             idx,
-				partition:       partitions[idx],
-				tso:             tso,
-				revision:        revision,
-				compact:         compact,
-				tombstone:       r.config.Tombstone,
-				timeoutRevision: timeoutRevision,
+				idx:       idx,
+				partition: partitions[idx],
+				tso:       tso,
+				revision:  revision,
+				compact:   compact,
+				tombstone: r.config.Tombstone,
 			}, store, r.coder, r.metricCli)
 
 			// run worker
@@ -346,9 +299,6 @@ type workerConfig struct {
 
 	// compact is the switch of compaction
 	compact bool
-
-	// timeoutRevision indicate the revision that kvs with ttl were updated at is timeout
-	timeoutRevision uint64
 }
 
 func newWorker(conf workerConfig, store storage.KvStorage, coder coder.Coder, metricCli metrics.Metrics) *worker {
@@ -456,12 +406,6 @@ func (w *worker) run(ctx context.Context, receiver resultReceiver) (int, error) 
 
 		value := it.Val()
 		valSize += int64(len(value))
-
-		// check kvs with ttl and compact it if it's timeout
-		if expired, _ := w.compactIfExpired(it, curUserKey, curRevision, value); expired {
-			// if key is expired, just ignore other procession
-			continue
-		}
 
 		// revision greater than leader mvcc commit index or compact index, ignore
 		if curRevision > w.revision {
@@ -577,33 +521,6 @@ func (w *worker) compactKey(key []byte, rawKey []byte, rev uint64) error {
 		w.updateSkippedRawKey(rawKey, rev, err)
 	}
 	return err
-}
-
-func (w *worker) compactIfExpired(iter storage.Iter, rawKey []byte, revision uint64, value []byte) (isExpired bool, err error) {
-	// run compaction for object with ttl except
-	// 1. storage engine support ttl
-	// 2. start time is too late
-	if w.store.SupportTTL() ||
-		w.timeoutRevision == 0 {
-		return false, nil
-	}
-	if bytes.Contains(rawKey, []byte("/events/")) {
-		//? consider two type of compact now:
-		//? 1. delete directly from storage engine (use this one right now)
-		//? 2. set tombstone and delete util next compaction loop
-		if revision == 0 { // revision key time out
-			rev := binary.BigEndian.Uint64(value[:8])
-			if rev <= w.timeoutRevision {
-				klog.InfoS("compact expired revision key", "raw key", string(rawKey), "rev", rev)
-				return true, w.compactCurrent(iter, rawKey, rev)
-			}
-		} else if revision <= w.timeoutRevision { // object key timeout
-			klog.InfoS("compact expired object key", "raw key", string(rawKey), "rev", revision)
-			return true, w.compactKey(iter.Key(), rawKey, revision)
-		}
-	}
-
-	return false, nil
 }
 
 // checkCompactRace will guarantee range request and compact request don't conflict
