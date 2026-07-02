@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
+CLUSTER_NAME="${CLUSTER_NAME:-kubebrain-dev}"
 NAMESPACE="${NAMESPACE:-kubebrain-dev}"
 DEPLOYMENT="${DEPLOYMENT:-kubebrain}"
 VERIFY_NAMESPACE="${VERIFY_NAMESPACE:-tidb-cluster}"
@@ -24,7 +25,7 @@ ENTRYPOINT ["/usr/local/bin/tikv-persistence-smoke"]
 EOF
 
 docker build -t "$IMAGE_NAME" "$WORK_DIR" >/dev/null
-kind load docker-image "$IMAGE_NAME" --name kubebrain-dev >/dev/null
+kind load docker-image "$IMAGE_NAME" --name "$CLUSTER_NAME" >/dev/null
 
 run_verify() {
   local mode="$1"
