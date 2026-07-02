@@ -528,7 +528,7 @@ func TestReloadResetsDeadlineToGrantedTTL(t *testing.T) {
 		TTL:              300,
 		DeadlineUnixNano: time.Now().Add(-time.Hour).UnixNano(),
 		Keys:             []string{"/registry/leases/reset-deadline"},
-	}})
+	}}, nil)
 
 	ttlResp, err := server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: grantResp.ID})
 	require.NoError(t, err)
