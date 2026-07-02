@@ -60,6 +60,11 @@ func (s *store) GetTimestampOracle(ctx context.Context) (timestamp uint64, err e
 
 // Get implements storage.KvStorage interface
 func (s *store) Get(ctx context.Context, key []byte) (val []byte, err error) {
+	// Lock against concurrent mutations of the skiplist (writes, and the sentry
+	// insert/remove an iterator performs in init). Without this, a Get racing a
+	// scan/iterator corrupts the skiplist read under -race.
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	elem := s.skl.Get(key)
 	if elem == nil {
 		return nil, storage.ErrKeyNotFound

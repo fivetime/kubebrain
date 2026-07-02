@@ -89,7 +89,9 @@
   > 附带候选（预存在，未修）：**keepalive 写放大**——每次 keepalive 一次 `backend.Put`（新 MVCC 版本 + 事件 + compaction 负担）；etcd 不在每次 keepalive 落盘（重启/换主按 granted TTL 重置 deadline）。改此需谨慎处理换主时的 deadline 语义，与 #15「无界增长」正交，单列。
 - [x] **#38** [medium] Etcd metadata versions are never compacted or deleted — unbounded storage growth  
   `pkg/backend/etcdmeta.go:47` — 同 #6：etcdmeta keyspace 现随 compaction 回收旧版本（scanner 无 revision key/tombstone，只走 version-compaction 分支，保留 ≤compactRev 的最新版、删更旧版）。
-  > 部署观察：把 etcdmeta 纳入边界后，**首次** compaction 需一次性回收 46h 积压的旧 etcdmeta + 追平先前被静默关闭的 `/events/` 过期，扫描耗时较大；dev 集群上共享 120s 预算的 smoke 在 compact 步超时（非 hang、非数据错误，watermark 在下一次更高 revision 的 compaction 自愈）。稳态 compaction 是增量的、快。**候选新问题（预存在）**：`backend.Compact` 在 RPC 内**同步**跑物理扫描，超大数据集上单次 compact 可能超过 apiserver compact 上下文超时→每轮都被取消→永不追平。宜改为异步（etcd 语义：Compact 打水位即返回，物理 GC 后台进行）。已在 P1/P2 之外单列观察，未修。
+  > 部署观察：把 etcdmeta 纳入边界后，**首次** compaction 需一次性回收 46h 积压的旧 etcdmeta + 追平先前被静默关闭的 `/events/` 过期，扫描耗时较大；dev 集群上共享 120s 预算的 smoke 在 compact 步超时（非 hang、非数据错误，watermark 在下一次更高 revision 的 compaction 自愈）。稳态 compaction 是增量的、快。
+- [x] **[async-compact]** [附带根治] `backend.Compact` 在 RPC 内同步跑物理扫描，超大数据集单次可能超过 apiserver compact 上下文超时→每轮被取消→永不追平物理 GC。
+  `pkg/backend/compact.go` — 新增 `CompactAsync`：**同步推进 logical 水位**（`setCompactRecord`，使 `≤rev` 读立即返回 compacted）+ 把物理版本 GC 扫描交给单个后台 compactor（`runCompactor`，`compactTriggerRev`/`compactSignal` 合并并发请求、`compactScanMu` 与同步路径串行不重叠）。etcd 层 `Compact` RPC 按 `Physical` 分流：`Physical=false`（apiserver 用）→ CompactAsync 快速返回；`Physical=true`（etcdctl）→ 同步 `Compact` 阻塞至扫完。`backend.Compact`（同步）保持不变，故 backend/brain/测试路径行为不变。`TestCompactAsyncAdvancesWatermarkSyncThenGCsInBackground` 钉死「水位同步、GC 后台」；`TestCompactAsyncCoalescesConcurrentRequests` 验证 20 并发无死锁、水位单调。**顺带修 memkv 预存在线程不安全**：`store.Get` 不加锁、与迭代器 `init` 的 skiplist sentry 写竞争（异步 GC 与前台读并发才暴露）→ 给 `Get` 加锁（-race 干净）。生产 TiKV client 本就并发安全。
 
 ### P3 — etcd 语义正确性
 

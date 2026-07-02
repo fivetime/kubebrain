@@ -946,7 +946,9 @@ func TestCompactReturnsRetryableErrorWhenBackendCompactsBelowRequestedRevision(t
 		actualCompact:   9,
 	}
 
-	_, err := server.Compact(context.Background(), &etcdserverpb.CompactionRequest{Revision: 10})
+	// Physical=true routes to the synchronous Compact that compactLagShim
+	// overrides to report a below-requested compacted revision.
+	_, err := server.Compact(context.Background(), &etcdserverpb.CompactionRequest{Revision: 10, Physical: true})
 	require.Error(t, err)
 	require.Equal(t, codes.Unavailable, status.Code(err))
 	require.Contains(t, err.Error(), "pending behind requested revision")

@@ -23,9 +23,9 @@ import (
 
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/mvccpb"
+	"golang.org/x/sync/singleflight"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"golang.org/x/sync/singleflight"
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
 	"k8s.io/klog/v2"
 
@@ -56,8 +56,12 @@ type BackendShim interface {
 	// Put creates or overwrites a key.
 	Put(ctx context.Context, put *etcdserverpb.PutRequest) (*etcdserverpb.PutResponse, error)
 
-	// Compact clears the kvs that are too old
+	// Compact clears the kvs that are too old, scanning synchronously.
 	Compact(ctx context.Context, revision uint64) (*etcdserverpb.TxnResponse, error)
+
+	// CompactAsync advances the compact watermark synchronously and runs the
+	// physical GC in the background, returning the actual compacted revision.
+	CompactAsync(ctx context.Context, revision uint64) (*etcdserverpb.TxnResponse, error)
 
 	// GetCompactRevision returns the latest completed logical compaction revision.
 	GetCompactRevision(ctx context.Context) (uint64, error)
@@ -382,11 +386,25 @@ func (b *backendShim) Compact(ctx context.Context, revision uint64) (*etcdserver
 	if err != nil {
 		return nil, err
 	}
-	header := &etcdserverpb.ResponseHeader{}
+	compactedRev := uint64(0)
 	if resp != nil && resp.Header != nil {
-		header.Revision = int64(resp.Header.Revision)
+		compactedRev = resp.Header.Revision
 	}
+	return compactTxnResponse(compactedRev), nil
+}
 
+func (b *backendShim) CompactAsync(ctx context.Context, revision uint64) (*etcdserverpb.TxnResponse, error) {
+	compactedRev, err := b.backend.CompactAsync(ctx, revision)
+	if err != nil {
+		return nil, err
+	}
+	return compactTxnResponse(compactedRev), nil
+}
+
+// compactTxnResponse builds the etcd-shaped compaction response carrying the
+// actual compacted revision.
+func compactTxnResponse(compactedRev uint64) *etcdserverpb.TxnResponse {
+	header := &etcdserverpb.ResponseHeader{Revision: int64(compactedRev)}
 	return &etcdserverpb.TxnResponse{
 		Header:    header,
 		Succeeded: false,
@@ -403,7 +421,7 @@ func (b *backendShim) Compact(ctx context.Context, revision uint64) (*etcdserver
 				},
 			},
 		},
-	}, nil
+	}
 }
 
 func (b *backendShim) GetCompactRevision(ctx context.Context) (uint64, error) {

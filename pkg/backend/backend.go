@@ -64,8 +64,16 @@ type Backend interface {
 	// GetEtcdMetadata returns etcd-compatible create revision and version for a key at modRevision.
 	GetEtcdMetadata(ctx context.Context, key []byte, modRevision uint64) (EtcdMetadata, error)
 
-	// Compact clears the kvs that are too old
+	// Compact clears the kvs that are too old, running the physical scan
+	// synchronously before returning.
 	Compact(ctx context.Context, revision uint64) (*proto.CompactResponse, error)
+
+	// CompactAsync advances the logical compact watermark synchronously (so reads
+	// immediately observe the compaction) and performs the physical version GC in
+	// the background. It returns the actual (possibly clamped) compacted revision.
+	// Use it on the hot Compact RPC path so a large physical backlog cannot exceed
+	// the caller's timeout.
+	CompactAsync(ctx context.Context, revision uint64) (uint64, error)
 
 	// GetCompactRevision returns the latest completed logical compaction revision.
 	GetCompactRevision(ctx context.Context) (uint64, error)
@@ -165,6 +173,18 @@ type backend struct {
 	// on. Buffered to historyScanConcurrency.
 	historyScanSem chan struct{}
 
+	// Background physical compaction. CompactAsync advances the logical compact
+	// watermark synchronously (so reads immediately see the compaction) and hands
+	// the slow physical version-GC scan to runCompactor, so the etcd Compact RPC
+	// returns promptly instead of blocking a caller's timeout on a large backlog.
+	// compactTriggerRev (atomic) is the highest revision requested for background
+	// GC; compactSignal wakes the worker; compactScanMu serializes every physical
+	// scan (background and the synchronous Compact path) so they never overlap.
+	compactTriggerRev uint64
+	compactDoneRev    uint64 // atomic: highest revision whose background GC scan finished
+	compactSignal     chan struct{}
+	compactScanMu     sync.Mutex
+
 	metricCli metrics.Metrics
 }
 
@@ -217,6 +237,7 @@ func NewBackend(kv storage.KvStorage, config Config, metricCli metrics.Metrics) 
 			metricCli: metricCli,
 		},
 		historyScanSem: make(chan struct{}, historyScanConcurrency),
+		compactSignal:  make(chan struct{}, 1),
 		metricCli:      metricCli,
 	}
 
@@ -240,6 +261,9 @@ func NewBackend(kv storage.KvStorage, config Config, metricCli metrics.Metrics) 
 	go b.watcherHub.Stream(b.watchChan)
 
 	go b.asyncFifoRetry.Run(context.Background())
+
+	// drain background physical-compaction requests scheduled by CompactAsync
+	go b.runCompactor()
 
 	return b
 }

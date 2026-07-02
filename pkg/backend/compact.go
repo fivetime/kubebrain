@@ -20,6 +20,7 @@ import (
 	"encoding/binary"
 	"sort"
 	"strings"
+	"sync/atomic"
 
 	"k8s.io/klog/v2"
 
@@ -29,18 +30,7 @@ import (
 )
 
 func (b *backend) Compact(ctx context.Context, revision uint64) (*proto.CompactResponse, error) {
-	curRevision := b.tso.GetRevision()
-	if revision == 0 || revision > curRevision {
-		revision = curRevision
-	}
-
-	uncertainRev := b.asyncFifoRetry.MinRevision()
-	if uncertainRev != 0 {
-		// head of retry queue is the uncertain event with the least revision.
-		// set compact revision less than the least uncertain revision if there is uncertain event
-		// so that uncertain op will not be compacted.
-		revision = minUint64(uncertainRev-1, revision)
-	}
+	revision = b.clampCompactRevision(revision)
 
 	err := b.compact(ctx, revision)
 	if err != nil {
@@ -50,6 +40,42 @@ func (b *backend) Compact(ctx context.Context, revision uint64) (*proto.CompactR
 		Header: responseHeader(revision),
 	}
 	return compactResponse, err
+}
+
+// CompactAsync advances the compact watermark synchronously and schedules the
+// physical version GC in the background. See the Backend interface for why the
+// hot Compact RPC path uses this instead of the fully synchronous Compact.
+func (b *backend) CompactAsync(ctx context.Context, revision uint64) (uint64, error) {
+	revision = b.clampCompactRevision(revision)
+
+	advanced, err := b.setCompactRecord(ctx, revision)
+	if err != nil {
+		klog.Errorf("backend compact-async with revision %d failed %v", revision, err)
+		return 0, err
+	}
+	if advanced {
+		// watermark moved forward; hand the physical scan to the background worker
+		b.schedulePhysicalCompact(revision)
+	}
+	return revision, nil
+}
+
+// clampCompactRevision bounds a requested compact revision to what is safe to
+// compact now: never past the current revision, and never at or above the oldest
+// in-flight (uncertain) retry so a not-yet-committed op is not compacted away.
+func (b *backend) clampCompactRevision(revision uint64) uint64 {
+	curRevision := b.tso.GetRevision()
+	if revision == 0 || revision > curRevision {
+		revision = curRevision
+	}
+	uncertainRev := b.asyncFifoRetry.MinRevision()
+	if uncertainRev != 0 {
+		// head of retry queue is the uncertain event with the least revision.
+		// set compact revision less than the least uncertain revision if there is uncertain event
+		// so that uncertain op will not be compacted.
+		revision = minUint64(uncertainRev-1, revision)
+	}
+	return revision
 }
 
 func (b *backend) GetCompactRevision(ctx context.Context) (uint64, error) {
@@ -94,6 +120,18 @@ func (b *backend) compact(ctx context.Context, revision uint64) error {
 		return nil
 	}
 
+	b.physicalCompact(ctx, revision)
+	return nil
+}
+
+// physicalCompact runs the storage version-GC scan for revision. It is shared by
+// the synchronous Compact path and the background worker, and holds compactScanMu
+// so the two never scan concurrently (which would double-scan and contend on the
+// storage engine).
+func (b *backend) physicalCompact(ctx context.Context, revision uint64) {
+	b.compactScanMu.Lock()
+	defer b.compactScanMu.Unlock()
+
 	borders := b.getCompactBorders()
 	// Pass all borders together so the scanner computes the events-TTL timeout
 	// revision once per cycle; see Scanner.Compact for why per-border draining of
@@ -102,7 +140,43 @@ func (b *backend) compact(ctx context.Context, revision uint64) error {
 	if b.countIndex != nil {
 		b.countIndex.Compact(revision)
 	}
-	return nil
+}
+
+// schedulePhysicalCompact raises the background compaction target to revision and
+// wakes the worker. Concurrent callers coalesce onto the highest revision.
+func (b *backend) schedulePhysicalCompact(revision uint64) {
+	for {
+		cur := atomic.LoadUint64(&b.compactTriggerRev)
+		if revision <= cur {
+			break
+		}
+		if atomic.CompareAndSwapUint64(&b.compactTriggerRev, cur, revision) {
+			break
+		}
+	}
+	select {
+	case b.compactSignal <- struct{}{}:
+	default: // a wake-up is already pending; the worker will read the latest target
+	}
+}
+
+// runCompactor drains background physical-compaction requests, one scan at a
+// time, always compacting up to the latest requested revision (coalescing any
+// requests that arrived while a scan was running).
+func (b *backend) runCompactor() {
+	ctx := context.Background()
+	var lastScanned uint64
+	for range b.compactSignal {
+		for {
+			target := atomic.LoadUint64(&b.compactTriggerRev)
+			if target <= lastScanned {
+				break
+			}
+			b.physicalCompact(ctx, target)
+			lastScanned = target
+			atomic.StoreUint64(&b.compactDoneRev, target)
+		}
+	}
 }
 
 // setCompactRecord raises the persisted compact revision to revision. It

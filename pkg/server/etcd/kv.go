@@ -474,7 +474,16 @@ func (s *RPCServer) Compact(ctx context.Context, r *etcdserverpb.CompactionReque
 	if compactRevision > 0 && r.Revision <= int64(compactRevision) {
 		return nil, compactedRevisionError()
 	}
-	compactResp, err := s.backend.Compact(ctx, uint64(r.Revision))
+	// The apiserver's compaction loop sends Physical=false and only needs the
+	// logical watermark advanced; run the physical GC in the background so a large
+	// backlog cannot exceed the caller's RPC timeout. Physical=true callers
+	// (e.g. etcdctl compact --physical) still block until the scan completes.
+	var compactResp *etcdserverpb.TxnResponse
+	if r.Physical {
+		compactResp, err = s.backend.Compact(ctx, uint64(r.Revision))
+	} else {
+		compactResp, err = s.backend.CompactAsync(ctx, uint64(r.Revision))
+	}
 	if err != nil {
 		return nil, err
 	}
