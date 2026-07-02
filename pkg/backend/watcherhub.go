@@ -15,6 +15,7 @@
 package backend
 
 import (
+	"bytes"
 	"context"
 	"sync"
 
@@ -33,7 +34,13 @@ const (
 // WatcherHub maintain registry of Watcher
 type WatcherHub struct {
 	sync.RWMutex
-	subs      map[chan []*proto.Event]struct{}
+	// subs maps each subscriber channel to the key prefix it watches, so the hub
+	// can skip fanning a batch to subscribers none of whose keys it contains
+	// (#69). An empty prefix matches everything (watch-all). The authoritative
+	// per-event filtering (prefix + start revision) still happens downstream in
+	// processEvents; this routing only avoids waking subscribers that would
+	// filter the whole batch away.
+	subs      map[chan []*proto.Event][]byte
 	metricCli metrics.Metrics
 	// bufSize is the per-subscriber channel buffer; 0 means watchBuffer.
 	bufSize int
@@ -46,8 +53,10 @@ func (w *WatcherHub) subBufferSize() int {
 	return watchBuffer
 }
 
-// AddWatcher add watcher, filter by prefix and revision is processed in upper server layer
-func (w *WatcherHub) AddWatcher(ctx context.Context) (<-chan []*proto.Event, error) {
+// AddWatcher registers a subscriber watching the given key prefix. The prefix is
+// used only for coarse fan-out routing (see WatcherHub.subs); the authoritative
+// prefix + revision filtering still runs in the upper/processEvents layer.
+func (w *WatcherHub) AddWatcher(ctx context.Context, prefix []byte) (<-chan []*proto.Event, error) {
 	w.metricCli.EmitCounter("watcher_hub.add_watcher", 1)
 	w.Lock()
 	defer w.Unlock()
@@ -55,9 +64,10 @@ func (w *WatcherHub) AddWatcher(ctx context.Context) (<-chan []*proto.Event, err
 	// set watch buffer
 	sub := make(chan []*proto.Event, w.subBufferSize())
 	if w.subs == nil {
-		w.subs = map[chan []*proto.Event]struct{}{}
+		w.subs = map[chan []*proto.Event][]byte{}
 	}
-	w.subs[sub] = struct{}{}
+	// copy the prefix; the caller's backing array may be reused/mutated.
+	w.subs[sub] = append([]byte(nil), prefix...)
 	go func() {
 		<-ctx.Done()
 		klog.InfoS("ctx done, delete watcher %v", "chan", sub)
@@ -119,8 +129,17 @@ func (w *WatcherHub) Stream(input chan []*proto.Event) {
 // cancel and re-watches/re-lists cleanly.
 func (w *WatcherHub) broadcast(item []*proto.Event) {
 	var slow []chan []*proto.Event
+	skipped := 0
 	w.RLock()
-	for sub := range w.subs {
+	for sub, prefix := range w.subs {
+		// Coarse routing: if the batch contains no key under this subscriber's
+		// prefix, skip it entirely — no send, no downstream goroutine wakeup, no
+		// filter allocation. A skipped subscriber misses nothing it watches, so
+		// its stream stays contiguous (#69).
+		if !batchMatchesPrefix(item, prefix) {
+			skipped++
+			continue
+		}
 		select {
 		case sub <- item:
 		default:
@@ -128,9 +147,28 @@ func (w *WatcherHub) broadcast(item []*proto.Event) {
 		}
 	}
 	w.RUnlock()
+	if skipped > 0 {
+		w.metricCli.EmitCounter("watcher_hub.route_skipped", skipped)
+	}
 	for _, sub := range slow {
 		klog.InfoS("drop slow consumer", "chan", sub, "bufSize", w.subBufferSize())
 		w.metricCli.EmitCounter("drop.slow.watcher", 1)
 		w.DeleteWatcher(sub, true)
 	}
+}
+
+// batchMatchesPrefix reports whether any event in the batch has the given prefix.
+// An empty prefix (watch-all) matches every batch. It early-exits on the first
+// match, so a subscriber whose resource is present in the batch costs O(1) in the
+// common single-resource batch.
+func batchMatchesPrefix(events []*proto.Event, prefix []byte) bool {
+	if len(prefix) == 0 {
+		return true
+	}
+	for _, e := range events {
+		if e.Kv != nil && bytes.HasPrefix(e.Kv.Key, prefix) {
+			return true
+		}
+	}
+	return false
 }

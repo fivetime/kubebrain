@@ -156,6 +156,15 @@ type backend struct {
 	// without scanning storage (approach A-index). nil when disabled.
 	countIndex *countindex.TreeIndex
 
+	// historyScanSem bounds the number of concurrent watch-history fallback
+	// scans. After a cache reset (e.g. leader change) every reconnecting watcher
+	// whose start revision predates the warm cache falls back to a full
+	// prefix scan; without a cap, N watchers issue N concurrent scans and stampede
+	// the storage engine (#30). The gate serializes the excess into a bounded
+	// number of in-flight scans; waiters block (honoring ctx) rather than piling
+	// on. Buffered to historyScanConcurrency.
+	historyScanSem chan struct{}
+
 	metricCli metrics.Metrics
 }
 
@@ -204,10 +213,11 @@ func NewBackend(kv storage.KvStorage, config Config, metricCli metrics.Metrics) 
 		watchChan:             make(chan []*proto.Event, watchersChanCapacity),
 		writeSignal:           make(chan struct{}, 1),
 		watcherHub: &WatcherHub{
-			subs:      make(map[chan []*proto.Event]struct{}),
+			subs:      make(map[chan []*proto.Event][]byte),
 			metricCli: metricCli,
 		},
-		metricCli: metricCli,
+		historyScanSem: make(chan struct{}, historyScanConcurrency),
+		metricCli:      metricCli,
 	}
 
 	if config.EnableCountIndex && config.EnableEtcdCompatibility {

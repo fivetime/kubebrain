@@ -31,7 +31,7 @@ func newTestWatcherHub(t *testing.T, bufSize int) *WatcherHub {
 	ctrl := gomock.NewController(t)
 	t.Cleanup(ctrl.Finish)
 	return &WatcherHub{
-		subs:      make(map[chan []*proto.Event]struct{}),
+		subs:      make(map[chan []*proto.Event][]byte),
 		metricCli: mock.NewMinimalMetrics(ctrl),
 		bufSize:   bufSize,
 	}
@@ -39,6 +39,45 @@ func newTestWatcherHub(t *testing.T, bufSize int) *WatcherHub {
 
 func batch(rev uint64) []*proto.Event {
 	return []*proto.Event{{Revision: rev, Kv: &proto.KeyValue{Revision: rev}}}
+}
+
+// keyBatch builds a one-event batch whose key is set, for routing tests.
+func keyBatch(rev uint64, key string) []*proto.Event {
+	return []*proto.Event{{Revision: rev, Kv: &proto.KeyValue{Revision: rev, Key: []byte(key)}}}
+}
+
+// TestBroadcastRoutesByPrefix pins the #69 fan-out routing: a batch is delivered
+// only to subscribers whose watched prefix a key in the batch falls under; a
+// subscriber watching an unrelated prefix is skipped entirely (no send), so it
+// never has to filter the batch away downstream.
+func TestBroadcastRoutesByPrefix(t *testing.T) {
+	hub := newTestWatcherHub(t, 8)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	subA, err := hub.AddWatcher(ctx, []byte("/registry/a/"))
+	require.NoError(t, err)
+	subB, err := hub.AddWatcher(ctx, []byte("/registry/b/"))
+	require.NoError(t, err)
+
+	// A batch touching only /registry/a/ must reach A and skip B.
+	hub.broadcast(keyBatch(10, "/registry/a/pod-1"))
+	// A batch touching only /registry/b/ must reach B and skip A.
+	hub.broadcast(keyBatch(11, "/registry/b/pod-2"))
+
+	drain := func(sub <-chan []*proto.Event) []uint64 {
+		var revs []uint64
+		for {
+			select {
+			case evs := <-sub:
+				revs = append(revs, evs[0].Revision)
+			default:
+				return revs
+			}
+		}
+	}
+	require.Equal(t, []uint64{10}, drain(subA), "A must get only its own-prefix batch")
+	require.Equal(t, []uint64{11}, drain(subB), "B must get only its own-prefix batch")
 }
 
 func (w *WatcherHub) subCount() int {
@@ -58,7 +97,7 @@ func TestBroadcastEvictsSlowConsumerBeforeNextBatch(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	sub, err := hub.AddWatcher(ctx)
+	sub, err := hub.AddWatcher(ctx, nil)
 	require.NoError(t, err)
 	require.Equal(t, 1, hub.subCount())
 
@@ -97,7 +136,7 @@ func TestStreamDeliversGapFreePrefixToSlowConsumer(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	sub, err := hub.AddWatcher(ctx)
+	sub, err := hub.AddWatcher(ctx, nil)
 	require.NoError(t, err)
 
 	// Consumer that drains one batch every few ms — slow enough to eventually be

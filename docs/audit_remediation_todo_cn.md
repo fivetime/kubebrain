@@ -3,7 +3,7 @@
 > 来源：Fable 5 多智能体审核（73 条已确认问题）。本文件是**持久化进度清单**，做一个勾一个（`[x]`），抗会话压缩遗忘。
 > 编号 `#N` = 审核确认清单索引；`file:line` 为大致位置。测试遵循 `docs/test_strategy_cn.md`：**真实消费端黑盒为主，内部单测只锁黑盒够不着的精确 bug**。
 
-进度：**已修 29 / 73** — Critical 3/3 ✓，High 21/32，Medium 3/17，Low 2/21。（+ #5/#27/#29 A-index e885b8d；#6/#38 etcdmeta 纳入 compaction；#15 etcdmeta 半完成）
+进度：**已修 31 / 73** — Critical 3/3 ✓，High 22/32，Medium 3/17，Low 3/21。（+ #5/#27/#29 A-index e885b8d；#6/#38 etcdmeta 纳入 compaction；#15 etcdmeta 半完成；#30 watch history 去点读+限流；#69 前缀路由）
 > 附带修复（不在 73 条内）：events-TTL 过期回收在多 border（etcdmeta / 多 SkippedPrefixes）下失效——`getTimeoutRevision` 会 drain 共享 compact-history 队列，原先每 border 各调一次，首个 border 耗尽旧记录后其余 border 拿到 timeoutRevision=0，静默关闭 `/events/` 过期。已改为每次 compaction 周期只计算一次并应用到所有 border（`scanner.Compact` 现接收全部 borders）。`TestCompactExpiredEvents` 覆盖。
 
 ## 已完成（PR #1: fivetime/kubebrain#1 + 81d36be）
@@ -72,10 +72,10 @@
   `pkg/server/etcd/backendshim.go:808` — 3ba2cc1 (coalescing cache; 3.15 -> 0.25 iters/(write*watcher))
 - [x] **#28** [high] Watch fanout performs 1-2 storage reads per event per watcher, with up to 5x10ms retry stalls  
   `pkg/server/etcd/backendshim.go:734` — 3ba2cc1
-- [ ] **#30** [high] Watch history fallback scans every version under the prefix and does per-key point reads; thundering herd after cache reset  
-  `pkg/backend/watch.go:132`
-- [ ] **#69** [low] Watcher hub fans every event batch to every subscriber with per-watcher filtering, allocations, and 10k-slot channels  
-  `pkg/backend/watcherhub.go:88`
+- [x] **#30** [high] Watch history fallback scans every version under the prefix and does per-key point reads; thundering herd after cache reset  
+  `pkg/backend/watch.go` — 两处根治：(1) **消除每-tombstone 点读**：`historyWatchEvents` 现按有序扫描（同一 userKey 版本升序）就地记录上一个存活版本，DELETE 的 prev-kv 直接取自扫描，不再 `b.Get(rev-1)`（后者本身是一次 limit-1 Iter）。单次 fallback 从 `1+D` 次扫描降到 `1` 次（D=窗口内删除数）。`TestHistoryWatchEventsNoPerTombstoneReads` 钉死：4→1 iter 且 CREATE/PUT/DELETE + prev-kv 正确。(2) **限流缓解惊群**：`historyScanSem`（并发上限 8）串行化 cache reset 后的重连扫描风暴，等待者尊重 ctx。黑盒 `TestWatchHistoryFallbackCorrectness` 验证从旧 revision 观察的重放流正确。
+- [x] **#69** [low] Watcher hub fans every event batch to every subscriber with per-watcher filtering, allocations, and 10k-slot channels  
+  `pkg/backend/watcherhub.go` — **前缀路由**：`AddWatcher(ctx, prefix)` 记录每个 sub 的前缀，`broadcast` 用 `batchMatchesPrefix`（首个匹配即命中，单资源批 O(1)）跳过批次中无该前缀键的 sub——不发送、不唤醒下游 goroutine、不分配（写集中在少数前缀时省下大量无谓扇出）。权威过滤仍在 `processEvents`（保持并行）。另将其双次 `filterByPrefix(filterByRevision(...))` 合并为单趟惰性分配的 `filterEvents`（无匹配则零分配）。`TestBroadcastRoutesByPrefix` 覆盖路由；空前缀=watch-all 保持全扇出。`route_skipped` metric 可观测。10k 缓冲保留（drop-slow-watcher 语义相关，且已可配）。
 - [ ] **[opt] count-index O(log N) 增广 rank**（低优先级）  
   `pkg/backend/countindex/countindex.go` — 现 MVP 的 `Count` 是区间遍历 O(区间键数)；分页 LIST 每页 count 范围逐页缩小，累计 O(N²/页大小)，**但仅在内存、无存储**。k8s 单资源约 15 万键时整次 LIST 的索引遍历 ~50–100ms、被对象检索（O(N) 存储）淹没，故现实够用。仅当单资源达**百万级 + 高频分页**才值得（此时遍历达秒级 CPU，且持 RLock 会短暂阻塞写）。优化 = btree 节点缓存子树活键数使 Count 变 O(log N)，不改语义/存储。**风险**：增广计数需在 Apply/Compact/Reset 时正确维护每节点子树计数（含删除后 liveAt 变化），维护 bug 会让 count 错→apiserver 分页出错/漏数据；须扩充 brute-force 交叉校验 + shadow。收益/风险比在现规模下不划算，故推后。
 

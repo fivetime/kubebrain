@@ -1809,7 +1809,7 @@ func TestWatchEventOverflowResetsWatchState(t *testing.T) {
 	b := s.backend.(*backend)
 	watchCtx, cancel := context.WithCancel(s.ctx)
 	defer cancel()
-	watcher, err := b.watcherHub.AddWatcher(watchCtx)
+	watcher, err := b.watcherHub.AddWatcher(watchCtx, nil)
 	s.ast.NoError(err)
 
 	revision := b.GetCurrentRevision() + watchersChanCapacity
