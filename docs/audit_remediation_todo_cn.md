@@ -3,7 +3,7 @@
 > 来源：Fable 5 多智能体审核（73 条已确认问题）。本文件是**持久化进度清单**，做一个勾一个（`[x]`），抗会话压缩遗忘。
 > 编号 `#N` = 审核确认清单索引；`file:line` 为大致位置。测试遵循 `docs/test_strategy_cn.md`：**真实消费端黑盒为主，内部单测只锁黑盒够不着的精确 bug**。
 
-进度：**已修 20 / 73** — Critical 3/3 ✓，High 13/32，Medium 2/17，Low 2/21。
+进度：**已修 21 / 73** — Critical 3/3 ✓，High 14/32，Medium 2/17，Low 2/21。
 
 ## 已完成（PR #1: fivetime/kubebrain#1 + 81d36be）
 
@@ -57,10 +57,10 @@
 
 ### P1 — 读放大（项目核心「规模超越 etcd」；大重构，建议独立 PR + load/soak 压测）
 
-- [ ] **#3** [high] Every List result KV triggers a separate storage round-trip for etcd metadata  
-  `pkg/server/etcd/backendshim.go:490`
+- [x] **#3** [high] Every List result KV triggers a separate storage round-trip for etcd metadata  
+   — c056438`pkg/server/etcd/backendshim.go:490`
 - [ ] **#7** [high] Per-KV etcd-metadata and prev-KV storage lookups cause serial read amplification on every list page and watch event  
-  `pkg/server/etcd/backendshim.go:854`
+   — list-page half done (c056438); watch/prev-kv half pending (#10/#28)`pkg/server/etcd/backendshim.go:854`
 - [ ] **#5** [high] Paginated LIST with more=true re-lists the entire range (full values) just to compute Count when Revision != 0  
   `pkg/server/etcd/backendshim.go:505`
 - [ ] **#27** [high] Paginated list recomputes exact Count with a full unlimited range scan on every page  

@@ -36,3 +36,18 @@ harness：`hack/etcd-client-compat/read_amp_bench_test.go`（`TestReadAmpBaselin
 - LIST 的 `iter/返回KV` 从 ~1.0 降到 ~0（元数据内联或一次批量解析，消除 per-KV 往返）。
 - 单页 LIST 墙钟从 ~10s 降到亚秒级。
 - watch 扇出 `iter/(写×watcher)` 从 ~3 降到 ~0（事件产生时解析一次，而非每 watcher 重复读）。
+
+## 改动后（B：LIST 批量元数据，commit c056438）
+
+同一 harness、同参数复测：
+
+| 操作 | 基线 | 改后 | 提升 |
+|---|---|---|---|
+| 单页 LIST (500) | 9.99s / 502 iters | **116ms / 3 iters** | ~85× |
+| 全量分页 LIST (2000) | 40.5s / 2007 | **293ms / 11** | ~138× |
+| 历史 LIST (2000) | 39.9s / 2007 | **306ms / 11** | ~130× |
+| CountOnly | 61ms / 1 | 66ms / 1 | 不变 |
+| Watch 扇出 (20×100) | 6300 / 3.15 | 6300 / 3.15 | **未变（另条路径）** |
+
+`iter/返回KV` 从 ~1.0 → ~0.01。已解决 **#3** 与 **#7 的 list-page 半**。
+**仍未解决**：#10/#28（watch 扇出每事件每 watcher 元数据+prev-kv 读，需在事件产生时解析一次）；#5/#27（精确 Count 全量扫描 O(N²)，此 N 未显现，需更大 N 复测）；#29/#30/#69。
