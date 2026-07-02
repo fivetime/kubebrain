@@ -498,10 +498,49 @@ func (b *backendShim) List(ctx context.Context, r *etcdserverpb.RangeRequest) (*
 		resp.Count = count
 	}
 
+	// Fetch create_revision/version for the whole page in one range scan instead
+	// of a storage round-trip per key (the dominant read-amplification cost).
+	keys := make([][]byte, 0, len(response.Kvs))
 	for _, kv := range response.Kvs {
-		resp.Kvs = append(resp.Kvs, b.kvToEtcdKv(ctx, kv))
+		if kv != nil {
+			keys = append(keys, kv.Key)
+		}
+	}
+	metaByKey, metaErr := b.backend.GetEtcdMetadataBatch(ctx, keys, response.Header.Revision)
+	if metaErr != nil {
+		// fall back to per-key lookups so a batch failure never drops results
+		klog.V(4).InfoS("batch metadata failed, falling back to per-key", "err", metaErr)
+		for _, kv := range response.Kvs {
+			resp.Kvs = append(resp.Kvs, b.kvToEtcdKv(ctx, kv))
+		}
+		return applyRangeOptions(resp, r), nil
+	}
+	for _, kv := range response.Kvs {
+		meta, ok := metaByKey[string(kv.GetKey())]
+		resp.Kvs = append(resp.Kvs, kvWithEtcdMeta(kv, meta, ok))
 	}
 	return applyRangeOptions(resp, r), nil
+}
+
+// kvWithEtcdMeta builds an mvccpb KV from a backend KV plus already-fetched
+// metadata (ok=false means none was found — fall back like kvToEtcdKv does).
+func kvWithEtcdMeta(kv *proto.KeyValue, meta backend.EtcdMetadata, ok bool) *mvccpb.KeyValue {
+	if kv == nil {
+		return nil
+	}
+	if !ok || meta.CreateRevision == 0 {
+		meta.CreateRevision = kv.Revision
+	}
+	if meta.Version == 0 {
+		meta.Version = 1
+	}
+	return &mvccpb.KeyValue{
+		Key:            kv.Key,
+		Value:          kv.Value,
+		Version:        int64(meta.Version),
+		CreateRevision: int64(meta.CreateRevision),
+		ModRevision:    int64(kv.Revision),
+	}
 }
 
 func (b *backendShim) exactRangeCount(ctx context.Context, r *etcdserverpb.RangeRequest) (int64, error) {

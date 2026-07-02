@@ -63,6 +63,10 @@ type Backend interface {
 	// GetEtcdMetadata returns etcd-compatible create revision and version for a key at modRevision.
 	GetEtcdMetadata(ctx context.Context, key []byte, modRevision uint64) (EtcdMetadata, error)
 
+	// GetEtcdMetadataBatch returns etcd-compatible metadata for a page of keys in
+	// one range scan (map keyed by user key; missing keys absent).
+	GetEtcdMetadataBatch(ctx context.Context, keys [][]byte, readRevision uint64) (map[string]EtcdMetadata, error)
+
 	// Compact clears the kvs that are too old
 	Compact(ctx context.Context, revision uint64) (*proto.CompactResponse, error)
 
