@@ -3,7 +3,7 @@
 > 来源：Fable 5 多智能体审核（73 条已确认问题）。本文件是**持久化进度清单**，做一个勾一个（`[x]`），抗会话压缩遗忘。
 > 编号 `#N` = 审核确认清单索引；`file:line` 为大致位置。测试遵循 `docs/test_strategy_cn.md`：**真实消费端黑盒为主，内部单测只锁黑盒够不着的精确 bug**。
 
-进度：**已修 34 / 73** — Critical 3/3 ✓，High 23/32，Medium 3/17，Low 5/21。（+ #5/#27/#29 A-index e885b8d；#6/#38 etcdmeta 纳入 compaction；#15 两半完成：\x00kubebrain/ 命名空间整体纳入 compaction；#30 watch history 去点读+限流；#69 前缀路由）
+进度：**已修 35 / 73** — Critical 3/3 ✓，High 23/32，Medium 3/17，Low 6/21。（+ #5/#27/#29 A-index e885b8d；#6/#38 etcdmeta 纳入 compaction；#15 两半完成：\x00kubebrain/ 命名空间整体纳入 compaction；#30 watch history 去点读+限流；#69 前缀路由）
 > 附带修复（不在 73 条内）：events-TTL 过期回收在多 border（etcdmeta / 多 SkippedPrefixes）下失效——`getTimeoutRevision` 会 drain 共享 compact-history 队列，原先每 border 各调一次，首个 border 耗尽旧记录后其余 border 拿到 timeoutRevision=0，静默关闭 `/events/` 过期。已改为每次 compaction 周期只计算一次并应用到所有 border（`scanner.Compact` 现接收全部 borders）。`TestCompactExpiredEvents` 覆盖。
 
 ## 已完成（PR #1: fivetime/kubebrain#1 + 81d36be）
@@ -158,8 +158,8 @@
   `pkg/server/service/leader/leader.go` — `leader` 改为 `int32`，回调 `atomic.StoreInt32`、`IsLeader()` `atomic.LoadInt32`。
 - [x] **#68** [low] leaderElection.leader is a plain bool written by callbacks and read by IsLeader() from all RPC goroutines  
   `pkg/server/service/leader/leader.go` — 同 #60。**顺带（`-race` 实锤）**：`resourceLock`（`pkg/backend/election/election.go`）的 `record`/`lastVal`/`tso` 被选主 goroutine（`Get`/`Create`/`Update`）写、RPC goroutine（`Describe`）并发读，同样无同步 → 加 `sync.Mutex`（I/O 在锁外，仅护字段访问；`Get` 返回快照拷贝，调用方不再触碰被护字段）。全量 backend `-race` 从 **9 → 3**，消掉全部 KubeBrain 自有选主竞争。残留 3 个全在 vendored **client-go v11.0.1 的 `leaderelection` 内部**（`observedRecord`/`reportedLeader`，老版库自身非线程安全），仅由「双 elector」测试触发；生产只跑单 elector 且不调 client-go 的 IsLeader（用自有已同步状态），无竞争。彻底消除需升级 client-go，属独立大改，未做。
-- [ ] **#61** [low] onStoppedLeading health callback sets SERVING instead of NOT_SERVING  
-  `pkg/server/server.go:78`
+- [x] **#61** [low] onStoppedLeading health callback sets SERVING instead of NOT_SERVING  
+  `pkg/server/server.go` — 丢失 leader 时 `onStoppedLeading` 现设 `NOT_SERVING`（原误设 SERVING，会让健康检查客户端/LB 继续把非 leader 当 leader 路由）。顺带把两个内联回调抽成 `server` 的方法（`onStartedLeading`/`onStoppedLeading`）便于测试；`NewServer` 先建 `server` 再用方法值建 election。`TestLeadershipHealthTransitions` 钉死 NOT_SERVING→（获得 leader）SERVING→（丢失 leader）NOT_SERVING。
 - [ ] **#62** [low] Proxy LeaseKeepAlive opens a new gRPC stream per keepalive message and never drains it  
   `pkg/server/service/etcdproxy/etcd_proxy.go:378`
 - [ ] **#63** [low] Proxy watch started at revision 0 silently loses events across a leader change  

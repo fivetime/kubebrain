@@ -69,47 +69,51 @@ type server struct {
 
 // NewServer returns the server
 func NewServer(ctx context.Context, backend backend.Backend, metricCli metrics.Metrics, config Config) Server {
-	// health server to tell client whether this instance is leader
-	healthServer := health.NewServer()
-	// etcdServer is assigned below; captured by reference so the leadership
-	// callback can reach it (election must be built before the server it feeds).
-	var etcdServer *etcd.RPCServer
-	// leader election call back
-	election := leader.NewLeaderElection(backend, metricCli, func(ctx context.Context) {
-		healthServer.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
-		// On acquiring leadership, refresh lease state from storage before the
-		// stale follower snapshot's expiry timers can wrongly delete kept-alive
-		// leases or before newly-granted leases are orphaned.
-		if etcdServer != nil {
-			if err := etcdServer.ReloadLeases(ctx); err != nil {
-				metricCli.EmitCounter("lease.reload.err", 1)
-				klog.ErrorS(err, "reload leases on leadership acquisition failed")
-			}
-		}
-		// Rebuild the count index (approach A-index) from a fresh snapshot; a
-		// follower's collector did not maintain it while it was not leading.
-		if err := backend.RebuildCountIndex(ctx); err != nil {
-			metricCli.EmitCounter("count_index.rebuild.err", 1)
-			klog.ErrorS(err, "rebuild count index on leadership acquisition failed")
-		}
-	}, func() {
-		healthServer.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
-	})
+	s := &server{
+		// health server to tell client whether this instance is leader
+		healthServer: health.NewServer(),
+		metricCli:    metricCli,
+		backend:      backend,
+		config:       config,
+	}
+	// leader election callbacks are methods on s; s.etcdServer is assigned below
+	// (before Campaign runs) and read by onStartedLeading.
+	election := leader.NewLeaderElection(backend, metricCli, s.onStartedLeading, s.onStoppedLeading)
 	// revisionSyncer sync revision from leader to follower
 	peerService := service.NewPeerService(election, metricCli, backend, config.getPeerServiceConfig())
 	// construct etcd & brian grpc server
-	etcdServer = etcd.New(backend, metricCli, peerService)
-	brainServer := brain.New(ctx, backend, metricCli, peerService)
-	return &server{
-		etcdServer:     etcdServer,
-		brainServer:    brainServer,
-		healthServer:   healthServer,
-		leaderElection: election,
-		peers:          peerService,
-		metricCli:      metricCli,
-		backend:        backend,
-		config:         config,
+	s.etcdServer = etcd.New(backend, metricCli, peerService)
+	s.brainServer = brain.New(ctx, backend, metricCli, peerService)
+	s.leaderElection = election
+	s.peers = peerService
+	return s
+}
+
+// onStartedLeading is invoked when this instance acquires leadership.
+func (s *server) onStartedLeading(ctx context.Context) {
+	s.healthServer.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
+	// On acquiring leadership, refresh lease state from storage before the
+	// stale follower snapshot's expiry timers can wrongly delete kept-alive
+	// leases or before newly-granted leases are orphaned.
+	if s.etcdServer != nil {
+		if err := s.etcdServer.ReloadLeases(ctx); err != nil {
+			s.metricCli.EmitCounter("lease.reload.err", 1)
+			klog.ErrorS(err, "reload leases on leadership acquisition failed")
+		}
 	}
+	// Rebuild the count index (approach A-index) from a fresh snapshot; a
+	// follower's collector did not maintain it while it was not leading.
+	if err := s.backend.RebuildCountIndex(ctx); err != nil {
+		s.metricCli.EmitCounter("count_index.rebuild.err", 1)
+		klog.ErrorS(err, "rebuild count index on leadership acquisition failed")
+	}
+}
+
+// onStoppedLeading is invoked when this instance loses leadership. It must report
+// NOT_SERVING so health-checking clients/load balancers stop routing to this node
+// as leader — previously it wrongly set SERVING (#61).
+func (s *server) onStoppedLeading() {
+	s.healthServer.SetServingStatus("", healthpb.HealthCheckResponse_NOT_SERVING)
 }
 
 // RegisterClient implements Server interface
