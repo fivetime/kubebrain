@@ -58,9 +58,9 @@
 ### P1 — 读放大（项目核心「规模超越 etcd」；大重构，建议独立 PR + load/soak 压测）
 
 - [x] **#3** [high] Every List result KV triggers a separate storage round-trip for etcd metadata  
-   — c056438`pkg/server/etcd/backendshim.go:490`
+  `pkg/server/etcd/backendshim.go:490` — c056438
 - [ ] **#7** [high] Per-KV etcd-metadata and prev-KV storage lookups cause serial read amplification on every list page and watch event  
-   — list-page half done (c056438); watch/prev-kv half pending (#10/#28)`pkg/server/etcd/backendshim.go:854`
+  `pkg/server/etcd/backendshim.go:854` — list-page half done (c056438); watch/prev-kv half pending (#10/#28)
 - [ ] **#5** [high] Paginated LIST with more=true re-lists the entire range (full values) just to compute Count when Revision != 0  
   `pkg/server/etcd/backendshim.go:505`
 - [ ] **#27** [high] Paginated list recomputes exact Count with a full unlimited range scan on every page  
