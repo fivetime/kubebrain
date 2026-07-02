@@ -20,7 +20,9 @@ import (
 	"encoding/binary"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
+	"time"
 
 	"k8s.io/klog/v2"
 
@@ -78,7 +80,43 @@ func (b *backend) clampCompactRevision(revision uint64) uint64 {
 	return revision
 }
 
+// compactRevCacheTTL bounds how stale a cached compact revision may be. The
+// compact revision only advances (~once per compaction cycle) and is refreshed
+// eagerly when this node advances it, so a short TTL that turns a per-request
+// storage read into ~one read per second (#48) is safe.
+const compactRevCacheTTL = time.Second
+
+type compactRevCache struct {
+	mu     sync.Mutex
+	rev    uint64
+	loaded time.Time
+}
+
 func (b *backend) GetCompactRevision(ctx context.Context) (uint64, error) {
+	b.compactRevCache.mu.Lock()
+	if !b.compactRevCache.loaded.IsZero() && time.Since(b.compactRevCache.loaded) < compactRevCacheTTL {
+		rev := b.compactRevCache.rev
+		b.compactRevCache.mu.Unlock()
+		return rev, nil
+	}
+	b.compactRevCache.mu.Unlock()
+
+	// Refresh outside the lock so a slow compact-key read can't stall every other
+	// revisioned request; at TTL expiry a burst issues at most the same reads the
+	// uncached path did per request, but only once per window.
+	rev, err := b.loadCompactRevision(ctx)
+	if err != nil {
+		return 0, err
+	}
+	b.updateCompactRevCache(rev)
+	b.compactRevCache.mu.Lock()
+	rev = b.compactRevCache.rev
+	b.compactRevCache.mu.Unlock()
+	return rev, nil
+}
+
+// loadCompactRevision reads the persisted compact revision from storage.
+func (b *backend) loadCompactRevision(ctx context.Context) (uint64, error) {
 	val, err := b.kv.Get(ctx, getCompactKey(b.config.Prefix))
 	if err == storage.ErrKeyNotFound {
 		return 0, nil
@@ -90,6 +128,17 @@ func (b *backend) GetCompactRevision(ctx context.Context) (uint64, error) {
 		return 0, nil
 	}
 	return binary.BigEndian.Uint64(val), nil
+}
+
+// updateCompactRevCache advances the cached compact revision (never backwards)
+// and refreshes its freshness window.
+func (b *backend) updateCompactRevCache(revision uint64) {
+	b.compactRevCache.mu.Lock()
+	if revision > b.compactRevCache.rev {
+		b.compactRevCache.rev = revision
+	}
+	b.compactRevCache.loaded = time.Now()
+	b.compactRevCache.mu.Unlock()
 }
 
 func (b *backend) safeCurrentRevision(ctx context.Context) (uint64, error) {
@@ -217,6 +266,9 @@ func (b *backend) setCompactRecord(ctx context.Context, revision uint64) (advanc
 		b.metricCli.EmitCounter("backend.set_compact_revision.err", 1)
 		return false, err
 	}
+	// This node just advanced the watermark; make the cache reflect it eagerly so
+	// reads reject the newly-compacted range immediately instead of after the TTL.
+	b.updateCompactRevCache(revision)
 	return true, nil
 }
 

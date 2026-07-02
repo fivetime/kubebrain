@@ -190,6 +190,12 @@ type backend struct {
 	compactSignal     chan struct{}
 	compactScanMu     sync.Mutex
 
+	// compactRevCache memoizes the persisted compact revision so revisioned reads
+	// (compaction checks, txn/watch validation) don't each do a storage Get for a
+	// value that only advances ~once per compaction cycle (#48). Monotonic, so a
+	// short TTL is safe; setCompactRecord refreshes it eagerly when it advances.
+	compactRevCache compactRevCache
+
 	metricCli metrics.Metrics
 }
 

@@ -3,7 +3,7 @@
 > 来源：Fable 5 多智能体审核（73 条已确认问题）。本文件是**持久化进度清单**，做一个勾一个（`[x]`），抗会话压缩遗忘。
 > 编号 `#N` = 审核确认清单索引；`file:line` 为大致位置。测试遵循 `docs/test_strategy_cn.md`：**真实消费端黑盒为主，内部单测只锁黑盒够不着的精确 bug**。
 
-进度：**已修 46 / 73** — Critical 3/3 ✓，High 24/32，Medium 3/17，Low 16/21。（+ P7 存储：#65 badger 静默成功、#66 badger value-log GC、#67 metrics 迭代计数；#64 分析后暂缓）（+ #5/#27/#29 A-index e885b8d；#6/#38 etcdmeta 纳入 compaction；#15 两半完成：\x00kubebrain/ 命名空间整体纳入 compaction；#30 watch history 去点读+限流；#69 前缀路由）
+进度：**已修 47 / 73** — Critical 3/3 ✓，High 24/32，Medium 4/17，Low 16/21。（+ #48 compact revision TTL 缓存；P7 存储 #65/#66/#67）（+ #5/#27/#29 A-index e885b8d；#6/#38 etcdmeta 纳入 compaction；#15 两半完成：\x00kubebrain/ 命名空间整体纳入 compaction；#30 watch history 去点读+限流；#69 前缀路由）
 > 附带修复（不在 73 条内）：events-TTL 过期回收在多 border（etcdmeta / 多 SkippedPrefixes）下失效——`getTimeoutRevision` 会 drain 共享 compact-history 队列，原先每 border 各调一次，首个 border 耗尽旧记录后其余 border 拿到 timeoutRevision=0，静默关闭 `/events/` 过期。已改为每次 compaction 周期只计算一次并应用到所有 border（`scanner.Compact` 现接收全部 borders）。`TestCompactExpiredEvents` 覆盖。
 
 ## 已完成（PR #1: fivetime/kubebrain#1 + 81d36be）
@@ -180,8 +180,8 @@
   `pkg/storage/tikv/batch.go:56`
 - [ ] **#46** [medium] memkv reads are unsynchronized and can observe the iterator's sentry placeholder  
   `pkg/storage/memkv/skiplist.go:63`
-- [ ] **#48** [medium] GetCompactRevision is an uncached storage read executed on every revisioned request  
-  `pkg/server/etcd/kv.go:415`
+- [x] **#48** [medium] GetCompactRevision is an uncached storage read executed on every revisioned request  
+  `pkg/backend/compact.go` — 加 backend 级 TTL 缓存（`compactRevCache`，1s）。compact revision 单调、仅经 `setCompactRecord` 前进，故短 TTL 安全：本节点推进水位时 `updateCompactRevCache` **即时刷新**（读立即拒绝新压缩区间）；否则 TTL 到期刷新一次（存储读从「每次带 revision 的请求一次」降到「~每秒一次」）。刷新在锁外做，慢的 compact-key 读不会 stall 所有带 revision 请求；`never lower` 保证单调。覆盖全部 caller（backend watch/etcd 层/brain/maintenance）。`TestGetCompactRevisionCachesAndUpdatesEagerly`（compact 后 10 次读 0 存储 Get、TTL 到期刷新 1 次）；部署后 smoke 的 compacted range/watch 仍正确拒绝（缓存即时反映压缩）。
 - [~] **#64** [low] Badger and memkv iterators ignore the snapshot timestamp parameter  
   `pkg/storage/badger/iter.go` — **分析后暂缓（benign）**：badger/memkv 的 `GetPartitions` 只返回**单分区**，故一次 scan 只用一个迭代器 = 一个一致快照（badger read-txn 自带快照隔离），`ts` 的作用（多分区间一致快照）在单分区引擎上无意义。真正按外部 `ts` 读需 badger managed-mode + 把 KubeBrain revision 映射到 badger version（大改，非默认引擎，收益低）。已记录不修。
 - [x] **#65** [low] Badger PutIfNotExist wraps nil error on ValueCopy failure, turning a failed op into silent success  
