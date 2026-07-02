@@ -1,6 +1,7 @@
 FROM golang:1.22-bookworm AS build
 
 WORKDIR /src
+ENV CGO_ENABLED=0
 
 COPY go.mod go.sum ./
 RUN go mod download
@@ -14,9 +15,11 @@ RUN case "$STORAGE" in \
       *) echo "unsupported STORAGE=$STORAGE" >&2; exit 1 ;; \
     esac
 
-FROM debian:bookworm-slim
+FROM alpine:3.23
 
-RUN useradd --system --uid 65532 --home-dir /nonexistent --shell /usr/sbin/nologin kubebrain
+RUN apk add --no-cache ca-certificates \
+    && addgroup -S -g 65532 kubebrain \
+    && adduser -S -D -H -h /nonexistent -s /sbin/nologin -u 65532 -G kubebrain kubebrain
 
 COPY --from=build /src/bin/kube-brain /usr/local/bin/kube-brain
 
