@@ -101,5 +101,5 @@ jobs:
         working-directory: hack/etcd-client-compat
         run: |
           sed -i '/^replace (/,$d' go.mod
-          go mod download
+          go mod tidy
           go test -run '^$' ./...

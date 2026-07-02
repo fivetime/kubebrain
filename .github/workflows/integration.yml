@@ -72,6 +72,7 @@ jobs:
       - name: Real consumer verification
         run: |
           sed -i '/^replace (/,$d' hack/etcd-client-compat/go.mod
+          (cd hack/etcd-client-compat && go mod tidy)
           RUN_GO_TEST=false \
           RUN_BASIC_SMOKE=true \
           RUN_ETCD_CLIENT_COMPAT=true \
