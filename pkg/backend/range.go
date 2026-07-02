@@ -229,6 +229,12 @@ func (b *backend) Count(ctx context.Context, r *proto.CountRequest) (resp *proto
 		}, nil
 	}
 
+	// Serve from the in-memory count index when available (approach A-index);
+	// otherwise fall back to a full scan.
+	if c, served := b.CountAtRevision(ctx, r.Key, r.End, rev); served {
+		return &proto.CountResponse{Header: responseHeader(rev), Count: uint64(c)}, nil
+	}
+
 	key, rangeEnd := b.rangeStartKey(r.Key), b.rangeEndKey(r.End)
 	count, err := b.scanner.Count(ctx, key, rangeEnd, rev)
 	if err != nil {

@@ -50,6 +50,9 @@ type KubeBrainOption struct {
 	EnableStorageMetrics bool
 
 	watchCacheSize int
+
+	enableCountIndex  bool
+	countIndexMaxKeys int
 }
 
 func NewOptions() *KubeBrainOption {
@@ -63,8 +66,9 @@ func NewOptions() *KubeBrainOption {
 		},
 		Prefix:         "",
 		ClusterName:    "default",
-		storageConfig:  newStorageConfig(),
-		watchCacheSize: 200 * 1000,
+		storageConfig:     newStorageConfig(),
+		watchCacheSize:    200 * 1000,
+		countIndexMaxKeys: 5 * 1000 * 1000,
 	}
 }
 
@@ -109,6 +113,8 @@ func (o *KubeBrainOption) AddFlags(fs *pflag.FlagSet) {
 	fs.BoolVar(&o.EnableStorageMetrics, "enable-storage-metrics", o.EnableStorageMetrics, "enable storage metrics.")
 	o.storageConfig.addFlag(fs)
 	fs.IntVar(&o.watchCacheSize, "watch-cache-size", o.watchCacheSize, "size of global watch cache")
+	fs.BoolVar(&o.enableCountIndex, "enable-count-index", o.enableCountIndex, "maintain an in-memory versioned key index on the leader for exact O(range) counts (approach A-index; requires --compatible-with-etcd)")
+	fs.IntVar(&o.countIndexMaxKeys, "count-index-max-keys", o.countIndexMaxKeys, "cap on keys tracked by the count index; above it the index disables and counts fall back to a scan (0 = unlimited)")
 }
 
 // Validate checks the option before running
@@ -157,6 +163,8 @@ func (o *KubeBrainOption) Run(ctx context.Context) error {
 		SkippedPrefixes:         o.SkippedPrefixes,
 		EnableEtcdCompatibility: o.epsConf.EnableEtcdCompatibility,
 		WatchCacheSize:          o.watchCacheSize,
+		EnableCountIndex:        o.enableCountIndex,
+		CountIndexMaxKeys:       o.countIndexMaxKeys,
 	}
 
 	if o.EnableStorageMetrics {

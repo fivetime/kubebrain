@@ -518,6 +518,15 @@ func (b *backendShim) List(ctx context.Context, r *etcdserverpb.RangeRequest) (*
 }
 
 func (b *backendShim) exactRangeCount(ctx context.Context, r *etcdserverpb.RangeRequest) (int64, error) {
+	// Serve from the in-memory count index when possible (approach A-index); it
+	// roots the per-page O(range) count scan that made paginated LIST O(N^2).
+	// Revision filters change the counted set, which the index does not model.
+	if !hasRangeRevisionFilters(r) {
+		if c, served := b.backend.CountAtRevision(ctx, r.Key, r.RangeEnd, uint64(r.Revision)); served {
+			return c, nil
+		}
+	}
+
 	if r.Revision == 0 && !hasRangeRevisionFilters(r) {
 		resp, err := b.Count(ctx, r)
 		if err != nil {

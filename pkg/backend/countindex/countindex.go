@@ -83,13 +83,30 @@ func pruneRevs(revs []revEntry, compactRev uint64) []revEntry {
 
 // TreeIndex is the concurrency-safe count index.
 type TreeIndex struct {
-	mu       sync.RWMutex
-	tree     *btree.BTree
+	mu   sync.RWMutex
+	tree *btree.BTree
+	// baseRev is the revision of the complete snapshot the index was rebuilt
+	// from; the index has no key history below it, so counts at rev < baseRev
+	// must fall back to a scan. readyRev is the highest revision applied.
+	baseRev  uint64
 	readyRev uint64
+	// maxKeys caps the number of tracked keys (0 = unlimited); once exceeded the
+	// index disables itself (overflowed) so callers fall back to a scan instead
+	// of risking OOM.
+	maxKeys    int
+	overflowed bool
 }
 
-func New() *TreeIndex {
-	return &TreeIndex{tree: btree.New(32)}
+// New builds an empty index. maxKeys caps tracked keys (0 = unlimited).
+func New(maxKeys int) *TreeIndex {
+	return &TreeIndex{tree: btree.New(32), maxKeys: maxKeys}
+}
+
+func (t *TreeIndex) checkOverflowLocked() {
+	if t.maxKeys > 0 && t.tree.Len() > t.maxKeys {
+		t.overflowed = true
+		t.tree = btree.New(32) // free memory; counts fall back to a scan
+	}
 }
 
 // Apply records that key changed at rev (tombstone=true for a delete). It must
@@ -97,7 +114,11 @@ func New() *TreeIndex {
 func (t *TreeIndex) Apply(key []byte, rev uint64, tombstone bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if t.overflowed {
+		return
+	}
 	t.applyLocked(key, rev, tombstone)
+	t.checkOverflowLocked()
 	if rev > t.readyRev {
 		t.readyRev = rev
 	}
@@ -119,16 +140,36 @@ func (t *TreeIndex) applyLocked(key []byte, rev uint64, tombstone bool) {
 	})
 }
 
-// Reset clears the index and bulk-loads current state (key -> latest revision,
-// tombstone) as of readyRev, used when rebuilding on leadership acquisition.
-func (t *TreeIndex) Reset(readyRev uint64, load func(emit func(key []byte, rev uint64, tombstone bool))) {
+// Reset clears the index and bulk-loads the complete live state as of baseRev,
+// used when rebuilding on leadership acquisition. After Reset the index can
+// answer counts for revisions in [baseRev, readyRev].
+func (t *TreeIndex) Reset(baseRev uint64, load func(emit func(key []byte, rev uint64, tombstone bool))) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.tree = btree.New(32)
+	t.overflowed = false
 	load(func(key []byte, rev uint64, tombstone bool) {
-		t.applyLocked(key, rev, tombstone)
+		if !t.overflowed {
+			t.applyLocked(key, rev, tombstone)
+			t.checkOverflowLocked()
+		}
 	})
-	t.readyRev = readyRev
+	t.baseRev = baseRev
+	t.readyRev = baseRev
+}
+
+// Ready reports whether the index can answer a count at revision rev, i.e. it
+// has been rebuilt (baseRev>0), rev is within [baseRev, readyRev].
+func (t *TreeIndex) Ready(rev uint64) bool {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return !t.overflowed && t.baseRev > 0 && rev >= t.baseRev && rev <= t.readyRev
+}
+
+func (t *TreeIndex) BaseRev() uint64 {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.baseRev
 }
 
 // SetReadyRev advances the revision through which the index is accurate.

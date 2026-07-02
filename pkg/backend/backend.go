@@ -27,6 +27,7 @@ import (
 
 	"github.com/kubewharf/kubebrain/pkg/backend/coder"
 	"github.com/kubewharf/kubebrain/pkg/backend/common"
+	"github.com/kubewharf/kubebrain/pkg/backend/countindex"
 	"github.com/kubewharf/kubebrain/pkg/backend/creator"
 	"github.com/kubewharf/kubebrain/pkg/backend/election"
 	"github.com/kubewharf/kubebrain/pkg/backend/retry"
@@ -77,6 +78,13 @@ type Backend interface {
 
 	// Count counts the number of kvs in range
 	Count(ctx context.Context, r *proto.CountRequest) (*proto.CountResponse, error)
+
+	// CountAtRevision returns the exact live-key count of [key,end) at rev from
+	// the in-memory count index; served is false when it must fall back to a scan.
+	CountAtRevision(ctx context.Context, key, end []byte, rev uint64) (count int64, served bool)
+
+	// RebuildCountIndex rebuilds the count index; call on leadership acquisition.
+	RebuildCountIndex(ctx context.Context) error
 
 	// GetPartitions query the partition state of storage for ListByStream
 	GetPartitions(ctx context.Context, r *proto.ListPartitionRequest) (*proto.ListPartitionResponse, error)
@@ -144,6 +152,10 @@ type backend struct {
 	// hold watchers
 	watcherHub *WatcherHub
 
+	// countIndex, when enabled, gives exact live-key counts at a revision
+	// without scanning storage (approach A-index). nil when disabled.
+	countIndex *countindex.TreeIndex
+
 	metricCli metrics.Metrics
 }
 
@@ -163,6 +175,14 @@ type Config struct {
 
 	// WatchCacheSize is the cache size of events
 	WatchCacheSize int
+
+	// EnableCountIndex maintains an in-memory versioned key index on the leader
+	// for exact O(range) counts (approach A-index). Requires EnableEtcdCompatibility.
+	EnableCountIndex bool
+
+	// CountIndexMaxKeys caps the index size; above it the index is disabled and
+	// counts fall back to a scan (avoids OOM). 0 means no cap.
+	CountIndexMaxKeys int
 }
 
 // NewBackend builds a new backend
@@ -188,6 +208,10 @@ func NewBackend(kv storage.KvStorage, config Config, metricCli metrics.Metrics) 
 			metricCli: metricCli,
 		},
 		metricCli: metricCli,
+	}
+
+	if config.EnableCountIndex && config.EnableEtcdCompatibility {
+		b.countIndex = countindex.New(config.CountIndexMaxKeys)
 	}
 
 	asyncRetryConfig := retry.Config{
@@ -305,6 +329,12 @@ func (b *backend) collectStorageWriteEvents() {
 						b.asyncFifoRetry.Append(watchEvent)
 					}
 					continue
+				}
+
+				// Maintain the count index in commit order (leader only, since
+				// only the leader's collector processes local writes).
+				if b.countIndex != nil {
+					b.countIndex.Apply(watchEvent.Key, watchEvent.Revision, watchEvent.ResourceVerb == proto.Event_DELETE)
 				}
 
 				e := &proto.Event{

@@ -100,6 +100,9 @@ func (b *backend) compact(ctx context.Context, revision uint64) error {
 		end := borders[i+1]
 		b.scanner.Compact(ctx, start, end, revision)
 	}
+	if b.countIndex != nil {
+		b.countIndex.Compact(revision)
+	}
 	return nil
 }
 

@@ -86,6 +86,12 @@ func NewServer(ctx context.Context, backend backend.Backend, metricCli metrics.M
 				klog.ErrorS(err, "reload leases on leadership acquisition failed")
 			}
 		}
+		// Rebuild the count index (approach A-index) from a fresh snapshot; a
+		// follower's collector did not maintain it while it was not leading.
+		if err := backend.RebuildCountIndex(ctx); err != nil {
+			metricCli.EmitCounter("count_index.rebuild.err", 1)
+			klog.ErrorS(err, "rebuild count index on leadership acquisition failed")
+		}
 	}, func() {
 		healthServer.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
 	})

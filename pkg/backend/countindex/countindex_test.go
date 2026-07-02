@@ -24,7 +24,7 @@ import (
 func k(s string) []byte { return []byte(s) }
 
 func TestCountLiveKeysAtRevision(t *testing.T) {
-	idx := New()
+	idx := New(0)
 	// /a created@1, /b created@2, /c created@3
 	idx.Apply(k("/a"), 1, false)
 	idx.Apply(k("/b"), 2, false)
@@ -39,7 +39,7 @@ func TestCountLiveKeysAtRevision(t *testing.T) {
 }
 
 func TestDeleteAndRecreateAcrossRevisions(t *testing.T) {
-	idx := New()
+	idx := New(0)
 	idx.Apply(k("/x"), 1, false) // put
 	idx.Apply(k("/x"), 5, true)  // delete
 	idx.Apply(k("/x"), 9, false) // recreate
@@ -52,7 +52,7 @@ func TestDeleteAndRecreateAcrossRevisions(t *testing.T) {
 }
 
 func TestCompactPrunesAndKeepsCounts(t *testing.T) {
-	idx := New()
+	idx := New(0)
 	idx.Apply(k("/live"), 1, false)
 	idx.Apply(k("/live"), 4, false) // updated
 	idx.Apply(k("/gone"), 2, false)
@@ -66,7 +66,7 @@ func TestCompactPrunesAndKeepsCounts(t *testing.T) {
 }
 
 func TestResetBulkLoad(t *testing.T) {
-	idx := New()
+	idx := New(0)
 	idx.Apply(k("/stale"), 1, false) // will be discarded by reset
 	idx.Reset(100, func(emit func(key []byte, rev uint64, tombstone bool)) {
 		emit(k("/a"), 90, false)
@@ -84,7 +84,7 @@ func TestResetBulkLoad(t *testing.T) {
 // TestCountMatchesBruteForce cross-checks the index against a naive recompute
 // over a randomized-ish workload.
 func TestCountMatchesBruteForce(t *testing.T) {
-	idx := New()
+	idx := New(0)
 	type ev struct {
 		key  string
 		rev  uint64
@@ -117,4 +117,13 @@ func TestCountMatchesBruteForce(t *testing.T) {
 	for _, at := range []uint64{1, 50, 100, 150, 200} {
 		require.Equal(t, brute(at), idx.Count(k("/"), k("0"), at), "rev=%d", at)
 	}
+}
+
+func TestOverflowDisablesIndex(t *testing.T) {
+	idx := New(3)
+	idx.Reset(0, func(emit func(key []byte, rev uint64, tombstone bool)) {})
+	for i := 0; i < 5; i++ {
+		idx.Apply([]byte(fmt.Sprintf("/k%d", i)), uint64(i+1), false)
+	}
+	require.False(t, idx.Ready(5), "index must disable itself past maxKeys")
 }
