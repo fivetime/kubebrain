@@ -8,6 +8,21 @@
 - 判断能否替代 etcd，最终必须把真实 Kubernetes/k3s apiserver 的 `--etcd-servers` 指向 KubeBrain，在真实 TiKV/PD 后端上跑对象生命周期、list/watch、lease、compact、apiserver 重启和 KubeBrain leader 切换验证。
 - `deploy/dev` 和 `deploy/production` 下的 YAML 只作为本地/测试脚手架，不表达推荐生产运维策略。
 
+## 真-k3s 消费端驱动验证进展（2026-07-03）
+
+用真实 kube-apiserver（k3s v1.36，`--datastore-endpoint` 指向 KubeBrain-on-TiKV）端到端驱动，已完成（脚本 `hack/dev/k3s-load-smoke.sh` 一键复跑）：
+
+- **单节点带 agent 真调度**：Deployment→ReplicaSet reconcile、pod 真跑、EndpointSlices、events（lease TTL）、node 心跳。
+- **多节点（3 节点 k3s，KubeBrain 当 datastore）**：跨节点调度（90 副本 30/30/30）、flannel 跨节点网络、service 路由（curl 10/10 200）、coredns DNS、3 node lease。（搭建关键：`fs.inotify.max_user_instances` 默认 128 会被 kind+KubeBrain+k3s 耗尽导致 agent containerd CRI 失败，须 `sysctl -w …=8192`；须 `--disable-cloud-controller`。）
+- **failover-under-load**：负载中杀 KubeBrain leader → ~15s 新 leader、node lease 全存活、churn 不断、仅换主窗口几秒瞬态错误。
+- **后端混沌（3 副本 TiKV+PD）**：杀 TiKV store 0.24%、杀 PD leader 0.28% 瞬态错误、全恢复（见故障注入段）。
+- **大 DeleteRange**：195,928 键单前缀删成功（分块修复）。
+- **满载 soak（单节点 30min + 多节点 25min）**：goroutine/内存平稳、零泄漏、apiserver watchcache stall=0（progress-notify 修复持续生效）。
+
+**真-k3s 驱动挖出并已修复的缺陷（已合入 main）**：watch progress-notify 冻结（拖垮 apiserver watchcache）、MVCC 孤儿键自愈、scanner 跨-partition List 复活删除键、大 DeleteRange 单事务失败。
+
+**仍属"未验证 / 需生产规模化"（非功能缺失）**：① 真正大规模（几百上千节点、10万+ 对象、持续高吞吐）；② 真分布式跨机/跨 AZ（当前全在单宿主，磁盘 IO 上限、网络分区未测）；③ 过载对 lease 敏感客户端的边界（p99 尖峰 1–2s 会触发续租超时 + KubeBrain leader 主动重启）；④ 数天/数周长时 soak（compaction 长周期、内存长期走势）；⑤ 更广 k8s 版本兼容矩阵（已系统测 v1.35/v1.36）。
+
 ## Kubernetes apiserver 接入前验证
 
 KubeBrain 的兼容矩阵应按 Kubernetes server/kube-apiserver minor 版本记录，而不是按 kind 版本记录。kind 只是本地验证载体；只要它支持目标 Kubernetes node image，就可以用于快速回归。每次验证前先记录版本：
@@ -102,7 +117,7 @@ hack/dev/verify.sh
 
 该路径会通过 k3s apiserver 创建一批带 label 的 ConfigMap，执行 `delete configmap -l ...`，确认 list 结果清空，并直连 TiKV 校验首尾对象的 revision index 已变为 tombstone。当前本地已通过 8 个对象和 24 个对象多轮验证；最近一次在最新 KubeBrain 镜像上验证 24 个 ConfigMap 删除成功，首尾对象 tombstone 可从 TiKV 直读，随后完成 KubeBrain rolling restart、k3s restart 和保留对象读回。
 
-范围删除已从逐 key 独立 TiKV 事务改为单个 backend batch 提交，降低 delete collection 和 namespace 清理时的 TiKV 事务数量。watch ring 已从“一 revision 一事件槽位”改为同一 revision 可承载多个事件，批量删除现在按 etcd 行为为同一个 DeleteRange 内的多个删除事件分配同一删除 revision，并能通过 watch cache 一次返回多个同 revision DELETE 事件。
+范围删除已从逐 key 独立 TiKV 事务改为 backend batch 提交，降低 delete collection 和 namespace 清理时的 TiKV 事务数量。**大范围 DeleteRange 会自动分块**（`deleteRangeChunkSize=128`，每块一次原子提交），避免整个范围塞进单个超大 TiKV 事务被拒（真-TiKV 黑盒已验证 195,928 键单前缀 DeleteRange 成功，此前单 batch 会 `cas failed`；小范围仍单块单 revision，与 etcd 一致）。watch ring 已从“一 revision 一事件槽位”改为同一 revision 可承载多个事件，批量删除现在按 etcd 行为为同一个 DeleteRange 内的多个删除事件分配同一删除 revision，并能通过 watch cache 一次返回多个同 revision DELETE 事件。
 
 需要覆盖真实 namespace 删除和 namespace controller 清理路径时启用：
 
@@ -150,7 +165,9 @@ RUN_INCLUSTER_APISERVER_ROLLOUT_SMOKE=true hack/dev/verify.sh
 RUN_FAULT_SMOKE=true hack/dev/verify.sh
 ```
 
-当前 dev 故障注入会删除 KubeBrain、PD、TiKV Pod 并等待恢复后重新运行基础 smoke。由于 dev TiKV/PD 是单副本，PD 或 TiKV 重启期间出现短暂超时或 EOF 属于预期；生产预演必须在多副本 TiKV/PD 上重新执行并记录恢复时间。
+当前 dev 故障注入会删除 KubeBrain、PD、TiKV Pod 并等待恢复后重新运行基础 smoke。
+
+**已在 3 副本 TiKV + 3 副本 PD 上做过负载中混沌（2026-07-03）**：C=100 写负载下杀 1 个 TiKV store → 0.24% 瞬态错误（TiKV region-leader 重选窗口，超时型）、store ~90s 重建、3 store 全 Up；杀 PD leader → 0.28% 瞬态错误、新 PD leader ~65s 重选；两者均无级联失败、无数据丢失、恢复后读写正常。注意：后端故障还会让当前 KubeBrain leader 以 `klog.Fatal("leader lost")` 退出重启（丢主即干净重启的设计，非缺陷）。生产预演仍应在**跨机多副本**上重跑并记录恢复时间与错误率（当前仍是单机同宿主）。
 
 可选 lease 过期 smoke：
 
@@ -308,12 +325,12 @@ hack/dev/verify.sh
 
 ## 仍需补齐或确认
 
-- `Maintenance.Snapshot` 仍未实现，生产必须依赖 TiKV/PD 侧备份恢复并完成演练。
-- 仓库提供 `hack/backup/logical-export.sh` 和 `hack/backup/logical-restore.sh` 作为 Kubernetes 对象级逻辑备份/恢复演练入口；它不是 etcd 原生 snapshot，也不会保留 etcd revision/lease 语义。当前本地已通过 `/registry` 4091 条记录的导出、隔离前缀恢复、计数校验和清理。
+- **`Maintenance.Snapshot` 刻意不实现（设计决定，非缺口）。** etcd 的 snapshot API 存在是因为 etcd 是自包含单机 bbolt 库、数据只在自己肚子里；KubeBrain 的数据在 TiKV，备份/DR 由 **TiKV 原生 BR + PITR（日志备份）** 承担，能力全面强于 etcd snapshot（全量+增量、秒级时间点恢复、S3、各 region 并行、TB 级）。把整个 TiKV 数据集通过 etcd 流式 snapshot API 拉成单文件反而是倒退。**备份恢复走 TiKV/PD 侧，不走 etcd snapshot；DR 待办 = 做一次 TiKV BR 全量+PITR 恢复演练，确认恢复后 KubeBrain MVCC 修订号连贯（PD TSO 单调，会推进过任何已恢复修订值）。**
+- 仓库另提供 `hack/backup/logical-export.sh` / `logical-restore.sh` 作为 Kubernetes 对象级**逻辑**备份/恢复演练入口（用于迁移/隔离前缀校验，不保留 etcd revision/lease 语义，非主备份路径）。当前本地已通过 `/registry` 4091 条记录的导出、隔离前缀恢复、计数校验和清理。
 - `MemberAdd`、`MemberRemove`、`MemberUpdate`、`MemberPromote` 不支持，因为 KubeBrain 不是 etcd raft 成员管理模型。
 - etcd Auth user/role/permission 管理不支持；生产访问控制应依赖 client mTLS、网络策略、Kubernetes apiserver 认证授权和运维侧凭据管理。
 - 通用 etcd v3 `Txn` 语义未完整实现，当前目标仍是 Kubernetes apiserver storage path；已补基础 CAS put、CAS delete、create conflict fallback、无 Compare 顺序执行、基础 Compare 分支执行、基础 range compare、version/create revision compare，但还没有提供完整 etcd 原子事务隔离。
-- 多副本下 `Compact` 后旧 revision 立即读的可见性已通过 leader 转发、不足额 compact 可重试错误、`Compact` 返回前可见性等待，以及历史 revision `Range` 转发 leader 做初步加固；本地 smoke、默认 compact soak 与默认 compact fault smoke 已通过，但仍需长时间并发 compact/list/watch 压测确认。
+- 多副本下 `Compact` 后旧 revision 立即读的可见性已通过 leader 转发、不足额 compact 可重试错误、`Compact` 返回前可见性等待，以及历史 revision `Range` 转发 leader 做初步加固；本地 smoke、默认 compact soak、默认 compact fault smoke，以及 **3 副本 TiKV+PD 上的负载中混沌 + 单节点/多节点满载 soak** 已通过；仍需**数天级**长时间并发 compact/list/watch 压测确认长周期行为。
 - 对已有历史数据，若写入发生在 metadata 机制引入前，`CreateRevision/Version` 会回退为 `CreateRevision=ModRevision, Version=1`；生产迁移前需要用真实数据集验证是否存在旧数据兼容影响。
 - TLS、认证、授权、证书轮换需要按生产环境补齐。
 - 需要为 TiKV/PD 与 KubeBrain 建立监控告警，包括请求错误率、延迟、leader 切换、watch 关闭、lease 数量、TiKV/PD 健康和磁盘容量。
