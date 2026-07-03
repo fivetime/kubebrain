@@ -43,6 +43,15 @@ type etcdProxy struct {
 	err       error
 	curLeader string
 	lock      sync.RWMutex
+	// updateMu serializes updateClient so at most one goroutine builds/swaps the
+	// forwarding client at a time. Without it the 1s checkLeaderLoop and the RPC
+	// goroutines that call updateClient via waitReady run concurrently: each
+	// releases `lock` during the slow clientv3.New/checkClientConn and then does
+	// e.client = client, so a later winner overwrites an earlier client without
+	// closing it (leaked connection, #47) and every caller stampedes the new
+	// leader with its own dial (#41). Held for the whole function; acquired before
+	// `lock` so the lock order is always updateMu -> lock.
+	updateMu sync.Mutex
 }
 
 func (e *etcdProxy) EtcdProxyEnabled() bool {
@@ -96,6 +105,12 @@ func (e *etcdProxy) resetClient() (reset bool) {
 }
 
 func (e *etcdProxy) updateClient() {
+	// Serialize the whole build/swap: concurrent callers otherwise leak clients
+	// and stampede the leader (#41/#47). Once the winner has a healthy client, the
+	// queued callers fall through the hasClient()+checkConn() fast path and return
+	// without redialing.
+	e.updateMu.Lock()
+	defer e.updateMu.Unlock()
 
 	if e.hasClient() {
 		if err := e.checkConn(); err != nil {

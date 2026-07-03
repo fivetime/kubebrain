@@ -16,6 +16,7 @@ package etcdproxy
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -113,4 +114,39 @@ func TestWatchOptionsForRangeRequestsProgressNotify(t *testing.T) {
 	require.Len(t, watchOptionsForRange(nil, 5), 3, "single-key watch: rev+prevkv+progress")
 	require.Len(t, watchOptionsForRange([]byte{}, 5), 4, "from-key watch adds WithFromKey")
 	require.Len(t, watchOptionsForRange([]byte("z"), 5), 4, "range watch adds WithRange")
+}
+
+// TestUpdateClientConcurrentNoDeadlock pins the #41/#47 serialization: updateClient
+// now takes updateMu (held across the build/swap) in addition to the field lock.
+// Run it concurrently with itself and with the readers that also take `lock`
+// (hasClient/readyClient) to catch any lock-ordering deadlock and, under -race,
+// any residual data race. The leader is unreachable, so every updateClient fails
+// and closes its own dialed client; the proxy stays consistently not-ready.
+func TestUpdateClientConcurrentNoDeadlock(t *testing.T) {
+	proxy := &etcdProxy{election: &testLeaderElection{leaderAddress: "127.0.0.1:1"}}
+
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		wg.Add(3)
+		go func() { defer wg.Done(); proxy.updateClient() }()
+		go func() { defer wg.Done(); _ = proxy.hasClient() }()
+		go func() {
+			defer wg.Done()
+			ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+			defer cancel()
+			_, _, _, _ = proxy.readyClient(ctx)
+		}()
+	}
+	go func() { wg.Wait(); close(done) }()
+
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("updateClient/readers deadlocked (updateMu <-> lock ordering)")
+	}
+
+	// Unreachable leader -> never ready, and no client is leaked into place.
+	require.Error(t, proxy.Ready())
+	require.False(t, proxy.hasClient())
 }
