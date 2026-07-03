@@ -3,7 +3,7 @@
 > 来源：Fable 5 多智能体审核（73 条已确认问题）。本文件是**持久化进度清单**，做一个勾一个（`[x]`），抗会话压缩遗忘。
 > 编号 `#N` = 审核确认清单索引；`file:line` 为大致位置。测试遵循 `docs/test_strategy_cn.md`：**真实消费端黑盒为主，内部单测只锁黑盒够不着的精确 bug**。
 
-进度：**已修 51 / 73** — Critical 3/3 ✓，High 26/32，Medium 5/17，Low 17/21。（+ #36 lease expiry 先删键后删 record 防孤儿 b616a9f；#17 lease per-key attachment 去 O(N²) key-list 重写 503c397；#16 event TTL 去硬编码启发式=删子串 GC 依赖 lease 9c60cf3；#71 compaction 错误可见性；#48 compact TTL 缓存；P7 #65/#66/#67）（+ #5/#27/#29 A-index e885b8d；#6/#38 etcdmeta 纳入 compaction；#15 两半完成：\x00kubebrain/ 命名空间整体纳入 compaction；#30 watch history 去点读+限流；#69 前缀路由；kv.Lease 读回填=Get/Range/watch 回填附着 lease + 无锁快路径 86e692d）
+进度：**已修 53 / 73** — Critical 3/3 ✓，High 26/32，Medium 5/17，Low 19/21。（+ #56/#57 follower lease 读不返陈旧态 + 降级 StopLeases d924106；#36 lease expiry 先删键后删 record 防孤儿 b616a9f；#17 lease per-key attachment 去 O(N²) key-list 重写 503c397；#16 event TTL 去硬编码启发式=删子串 GC 依赖 lease 9c60cf3；#71 compaction 错误可见性；#48 compact TTL 缓存；P7 #65/#66/#67）（+ #5/#27/#29 A-index e885b8d；#6/#38 etcdmeta 纳入 compaction；#15 两半完成：\x00kubebrain/ 命名空间整体纳入 compaction；#30 watch history 去点读+限流；#69 前缀路由；kv.Lease 读回填=Get/Range/watch 回填附着 lease + 无锁快路径 86e692d）
 > 附带修复（不在 73 条内）：events-TTL 过期回收在多 border（etcdmeta / 多 SkippedPrefixes）下失效——`getTimeoutRevision` 会 drain 共享 compact-history 队列，原先每 border 各调一次，首个 border 耗尽旧记录后其余 border 拿到 timeoutRevision=0，静默关闭 `/events/` 过期。已改为每次 compaction 周期只计算一次并应用到所有 border（`scanner.Compact` 现接收全部 borders）。`TestCompactExpiredEvents` 覆盖。
 
 ## 已完成（PR #1: fivetime/kubebrain#1 + 81d36be）
@@ -122,10 +122,10 @@
   `pkg/server/etcd/lease.go:296` — b616a9f。原 `expireLease`/`revokeLease` 先 `removeLease`(删 meta+attachment+内存态)再删绑定键,且 expiry 用 `_, _ = backend.Delete` **吞错**:键删除失败/两步间崩溃 → 键无 lease 可指、永不再过期、永久孤儿。**修法(对齐 etcd revoke 顺序)**:先 `leaseKeysSnapshot`(不删 lease)拿键 → **先删所有绑定对象键** → 全成功才 `removeLease` 删 record+attachment。真实删除失败则**保留 lease + 重排 expiry timer**(`retryLeaseExpiry`)而非吞错;缺失键返回无错(backend.Delete 对 ErrKeyNotFound 返回 Succeeded=false, err=nil),故部分删除后重试幂等安全。`revokeLease` 把删除错误上抛给调用方并保留 lease。失败发 `lease.expire.delete.err` metric。单测 `TestExpiryKeepsLeaseAndRecordWhenKeyDeleteFails`(注入某键 Delete 失败→lease record 与两个绑定均存活;放开失败重跑→过期完成、键与 lease 全清);现有 expiry/revoke guard 仍绿。**黑盒(TiKV)**:40 键挂 6s lease → 过期后全删(40→0)、lease 消失(TTL=-1)、系统健康。
 - [ ] **#37** [medium] Physical expiry of event keys is out-of-band: no DELETE watch event, no tombstone, no revision  
   `pkg/backend/scanner/scanner.go:570`
-- [ ] **#56** [low] Followers serve LeaseTimeToLive/LeaseLeases from stale local state when etcd proxy is disabled  
-  `pkg/server/etcd/lease.go:147`
-- [ ] **#57** [low] Keepalive can revive a concurrently revoked lease's record in storage, and stopLeases is never called  
-  `pkg/server/etcd/lease.go:268`
+- [x] **#56** [low] Followers serve LeaseTimeToLive/LeaseLeases from stale local state when etcd proxy is disabled  
+  `pkg/server/etcd/lease.go:147` — d924106。原 `LeaseTimeToLive`/`LeaseLeases` 仅 `!IsLeader && proxy` 才代理,否则(含 **not-leader + proxy 关**)落到读**本地陈旧快照**(leader 通过 keepalive 推进 deadline、grant/revoke 的 lease follower 从未见)→ 返回错误 TTL/列表。改成与写类 lease RPC 同款:作为 leader 本地服务,否则代理,否则 `requireLeaseLeader` 返回 Unavailable。单测 `TestFollowerLeaseReadsDoNotServeStaleState`(follower+proxy 关→Unavailable,不返回注入的陈旧 lease)/`TestFollowerLeaseReadsProxyWhenEnabled`(proxy 开→转发)。
+- [x] **#57** [low] Keepalive can revive a concurrently revoked lease's record in storage, and stopLeases is never called  
+  `pkg/server/etcd/lease.go:268` — d924106。**(a)** keepalive 复活已 revoke 记录:已随 keepalive 写放大修复消失——`refreshLease` 不再落盘([[keepalive 写放大]] 8ab5631),keepalive 不写存储故无从复活。**(b)** `stopLeases` 定义但**从不调用** → 被降级的 leader 继续跑 expiry timer(churn)且持陈旧快照。接线 `onStoppedLeading → StopLeases`:丢领导权时停所有 expiry timer 并清空内存 lease/keyLeaseIndex/leasedKeyCount;重获领导权由 `ReloadLeases` 从存储重建。单测 `TestStopLeasesClearsSnapshot`(grant+bind 后 StopLeases 清空三者)。**黑盒(TiKV,proxy 开)**:删 leader pod 跨换主,`LeaseTimeToLive`(TTL+3 绑定键)与 `LeaseLeases` 仍正确——旧 leader 降级清态、新 leader reload lease 服务。
 
 ### P5 — 安全 / 部署加固
 
