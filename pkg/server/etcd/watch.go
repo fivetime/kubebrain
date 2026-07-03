@@ -437,7 +437,11 @@ func (w *watcher) Watch(ctx context.Context, id int64, r *etcdserverpb.WatchCrea
 	var progressTicker *time.Ticker
 	var progressC <-chan time.Time
 	if r.ProgressNotify {
-		progressTicker = time.NewTicker(time.Second)
+		interval := w.backend.WatchProgressNotifyInterval()
+		if interval <= 0 {
+			interval = time.Second
+		}
+		progressTicker = time.NewTicker(interval)
 		defer progressTicker.Stop()
 		progressC = progressTicker.C
 	}
@@ -507,6 +511,14 @@ func (w *watcher) Watch(ctx context.Context, id int64, r *etcdserverpb.WatchCrea
 			var revision uint64
 			if wt != nil {
 				revision = atomic.LoadUint64(&wt.syncedRev)
+			}
+			if revision == 0 {
+				// Nothing delivered yet (e.g. a from-now follower watch before its
+				// first proxied progress marker seeds syncedRev). A WatchResponse
+				// with Header.Revision==0 is not a valid progress notification
+				// (clientv3 IsProgressNotify requires a non-zero revision), so skip
+				// it; the next tick reports the real revision once it advances.
+				continue
 			}
 			progressResp := &etcdserverpb.WatchResponse{
 				Header:  txnHeader(int64(revision)),

@@ -52,6 +52,9 @@ func (c *Config) complete() {
 	if c.WatchCacheSize <= 0 {
 		c.WatchCacheSize = historyCapacity
 	}
+	if c.WatchProgressNotifyInterval <= 0 {
+		c.WatchProgressNotifyInterval = defaultWatchProgressNotifyInterval
+	}
 }
 
 func getCompactKey(prefix string) []byte {

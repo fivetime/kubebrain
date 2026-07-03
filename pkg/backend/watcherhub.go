@@ -46,6 +46,9 @@ type WatcherHub struct {
 	metricCli metrics.Metrics
 	// bufSize is the per-subscriber channel buffer; 0 means watchBuffer.
 	bufSize int
+	// progressInterval is the in-band progress-marker fan-out cadence; <=0 uses
+	// defaultWatchProgressNotifyInterval.
+	progressInterval time.Duration
 	// publishedRev is the highest batch-max revision that broadcast has fully
 	// fanned out to every matching subscriber (atomic). It is the safe watermark
 	// for a quiet watch's progress notification: because it is stamped only after
@@ -161,7 +164,11 @@ func (w *WatcherHub) Stream(input chan []*proto.Event) {
 	// cluster's published revision instead of freezing at its start revision. The
 	// marker rides the same FIFO subscriber channel as events, so it can never
 	// overtake an unsent matching event (see publishedRev).
-	ticker := time.NewTicker(time.Second)
+	interval := w.progressInterval
+	if interval <= 0 {
+		interval = defaultWatchProgressNotifyInterval
+	}
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
 		select {

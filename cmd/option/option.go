@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/spf13/pflag"
 	"k8s.io/klog/v2"
@@ -53,6 +54,8 @@ type KubeBrainOption struct {
 
 	enableCountIndex  bool
 	countIndexMaxKeys int
+
+	watchProgressNotifyInterval time.Duration
 }
 
 func NewOptions() *KubeBrainOption {
@@ -70,6 +73,8 @@ func NewOptions() *KubeBrainOption {
 		storageConfig:     newStorageConfig(),
 		watchCacheSize:    200 * 1000,
 		countIndexMaxKeys: 5 * 1000 * 1000,
+
+		watchProgressNotifyInterval: time.Second,
 	}
 }
 
@@ -129,6 +134,7 @@ func (o *KubeBrainOption) AddFlags(fs *pflag.FlagSet) {
 	fs.IntVar(&o.watchCacheSize, "watch-cache-size", o.watchCacheSize, "size of global watch cache")
 	fs.BoolVar(&o.enableCountIndex, "enable-count-index", o.enableCountIndex, "maintain an in-memory versioned key index on the leader for exact O(range) counts (approach A-index; requires --compatible-with-etcd)")
 	fs.IntVar(&o.countIndexMaxKeys, "count-index-max-keys", o.countIndexMaxKeys, "cap on keys tracked by the count index; above it the index disables and counts fall back to a scan (0 = unlimited)")
+	fs.DurationVar(&o.watchProgressNotifyInterval, "watch-progress-notify-interval", o.watchProgressNotifyInterval, "how often watch progress notifications advance/emit (drives kube-apiserver ConsistentListFromCache convergence; smaller = fresher at more marker traffic)")
 }
 
 // Validate checks the option before running
@@ -172,13 +178,14 @@ func (o *KubeBrainOption) Run(ctx context.Context) error {
 	}
 
 	config := backend.Config{
-		Prefix:                  o.Prefix,
-		Identity:                identity,
-		SkippedPrefixes:         o.SkippedPrefixes,
-		EnableEtcdCompatibility: o.epsConf.EnableEtcdCompatibility,
-		WatchCacheSize:          o.watchCacheSize,
-		EnableCountIndex:        o.enableCountIndex,
-		CountIndexMaxKeys:       o.countIndexMaxKeys,
+		Prefix:                      o.Prefix,
+		Identity:                    identity,
+		SkippedPrefixes:             o.SkippedPrefixes,
+		EnableEtcdCompatibility:     o.epsConf.EnableEtcdCompatibility,
+		WatchCacheSize:              o.watchCacheSize,
+		EnableCountIndex:            o.enableCountIndex,
+		CountIndexMaxKeys:           o.countIndexMaxKeys,
+		WatchProgressNotifyInterval: o.watchProgressNotifyInterval,
 	}
 
 	if o.EnableStorageMetrics {

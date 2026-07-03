@@ -121,6 +121,11 @@ type Backend interface {
 	// revision strictly greater, so it cannot be skipped.
 	GetPublishedRevision() uint64
 
+	// WatchProgressNotifyInterval is the configured progress-notify cadence, used
+	// by the server watch loop so its emission ticker matches the backend's
+	// in-band marker cadence. Always > 0.
+	WatchProgressNotifyInterval() time.Duration
+
 	// SetCurrentRevision is used for init tso for leader
 	SetCurrentRevision(uint64)
 
@@ -242,7 +247,19 @@ type Config struct {
 	// CountIndexMaxKeys caps the index size; above it the index is disabled and
 	// counts fall back to a scan (avoids OOM). 0 means no cap.
 	CountIndexMaxKeys int
+
+	// WatchProgressNotifyInterval is how often a watch progress notification is
+	// advanced/emitted (the in-band published-watermark marker cadence and the
+	// per-watch progress-notify emission). Smaller = faster kube-apiserver
+	// ConsistentListFromCache convergence at more marker traffic. <=0 uses
+	// defaultWatchProgressNotifyInterval.
+	WatchProgressNotifyInterval time.Duration
 }
+
+// defaultWatchProgressNotifyInterval is the fallback progress-notify cadence when
+// Config.WatchProgressNotifyInterval is unset (<=0). It matches the value the
+// watch progress ticker used before it became configurable.
+const defaultWatchProgressNotifyInterval = time.Second
 
 // NewBackend builds a new backend
 func NewBackend(kv storage.KvStorage, config Config, metricCli metrics.Metrics) Backend {
@@ -263,8 +280,9 @@ func NewBackend(kv storage.KvStorage, config Config, metricCli metrics.Metrics) 
 		watchChan:             make(chan []*proto.Event, watchersChanCapacity),
 		writeSignal:           make(chan struct{}, 1),
 		watcherHub: &WatcherHub{
-			subs:      make(map[chan []*proto.Event][]byte),
-			metricCli: metricCli,
+			subs:             make(map[chan []*proto.Event][]byte),
+			metricCli:        metricCli,
+			progressInterval: config.WatchProgressNotifyInterval,
 		},
 		historyScanSem: make(chan struct{}, historyScanConcurrency),
 		compactSignal:  make(chan struct{}, 1),
@@ -452,6 +470,12 @@ func (b *backend) GetCurrentRevision() uint64 {
 // GetPublishedRevision implements Backend interface
 func (b *backend) GetPublishedRevision() uint64 {
 	return b.watcherHub.PublishedRevision()
+}
+
+// WatchProgressNotifyInterval implements Backend interface. config.complete()
+// guarantees it is > 0.
+func (b *backend) WatchProgressNotifyInterval() time.Duration {
+	return b.config.WatchProgressNotifyInterval
 }
 
 // SetCurrentRevision implements Backend interface

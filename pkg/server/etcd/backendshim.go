@@ -105,6 +105,10 @@ type BackendShim interface {
 	// watchers; the safe floor for seeding a from-now watch's progress.
 	GetPublishedRevision() uint64
 
+	// WatchProgressNotifyInterval is the configured progress-notify cadence, so
+	// the server watch loop's emission ticker matches the backend marker cadence.
+	WatchProgressNotifyInterval() time.Duration
+
 	// SetCurrentRevision is used for init tso for leader
 	SetCurrentRevision(uint64)
 
@@ -968,6 +972,10 @@ func (b *backendShim) GetResourceLock() resourcelock.Interface {
 
 func (b *backendShim) GetCurrentRevision() uint64 {
 	return b.backend.GetCurrentRevision()
+}
+
+func (b *backendShim) WatchProgressNotifyInterval() time.Duration {
+	return b.backend.WatchProgressNotifyInterval()
 }
 
 func (b *backendShim) GetPublishedRevision() uint64 {
