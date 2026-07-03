@@ -1994,3 +1994,44 @@ func TestOrphanIndexSelfHeal(t *testing.T) {
 		s.ast.Equal("v2", string(val))
 	})
 }
+
+// TestBackendDeleteRangeChunksLargeRange deletes a range larger than
+// deleteRangeChunkSize to exercise the multi-chunk path: every key must be
+// deleted and reported, even though the chunks commit at their own revisions
+// (a large range cannot be one atomic TiKV txn).
+func TestBackendDeleteRangeChunksLargeRange(t *testing.T) {
+	suite, closer := newTestSuites(t, memKvStorage)
+	defer closer()
+
+	const n = 300 // > deleteRangeChunkSize (128): spans 3 chunks
+	baseKey := path.Join(prefix, "delete-range-chunk")
+	keys := make([]string, 0, n)
+	for i := 0; i < n; i++ {
+		key := path.Join(baseKey, fmt.Sprintf("k%04d", i))
+		keys = append(keys, key)
+		resp, err := suite.backend.Create(suite.ctx, newCreateRequest(key, testVal))
+		suite.ast.NoError(err)
+		suite.ast.True(resp.Succeeded)
+	}
+
+	kvs := make([]*proto.KeyValue, 0, n)
+	for _, key := range keys {
+		getResp, err := suite.backend.Get(suite.ctx, newGetRequest(0, key))
+		suite.ast.NoError(err)
+		suite.ast.NotNil(getResp.Kv)
+		kvs = append(kvs, getResp.Kv)
+	}
+	suite.ast.Len(kvs, n)
+
+	deleteResp, err := suite.backend.DeleteRange(suite.ctx, kvs)
+	suite.ast.NoError(err)
+	suite.ast.True(deleteResp.Succeeded)
+	suite.ast.Len(deleteResp.Kvs, n, "every key in the range must be reported deleted")
+
+	// All keys are gone.
+	for _, key := range keys {
+		getResp, err := suite.backend.Get(suite.ctx, newGetRequest(0, key))
+		suite.ast.NoError(err)
+		suite.ast.Nil(getResp.Kv, "key %s should be deleted", key)
+	}
+}
