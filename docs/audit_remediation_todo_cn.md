@@ -235,6 +235,22 @@
 
 ---
 
+## 第三轮代码审查（review round 3，2026-07-03）
+
+5 条意见，核实后：**接受并修** #R10/#R11；**已在二轮闭环** #R12(=#R2/#R9)、#R13(=#R4)；**记文档、不改代码** #R14。
+
+- [x] **#R10** [low] 历史 CountOnly 忽略请求 revision，按当前 revision 计数  
+  `pkg/server/etcd/kv.go` — `969aa75`。快 Count 路径的守卫 `hasRangeRevisionFilters` 只看 `Min/MaxMod/CreateRevision`、**不看 `r.Revision`**；且 `CountRequest` proto（外部 `kubebrain-client` 模块）无 revision 字段。改：快路径再加 `r.Revision == 0` 门控，带 revision 的 CountOnly 落到 `List`（按 `r.Revision` 读快照、`applyRangeOptions` 在 CountOnly 时剥 Kvs 只留 Count）。**k8s 安全**：apiserver 的分页 count 走 List 响应的 `Count` 字段，不发带 revision 的 CountOnly；纯正确性修复。`TestCountOnlyHonorsRequestRevision`（rev3 后删 1 键 → 按 rev3 count 仍 3、按当前 count 2）。
+- [x] **#R11** [low] from-now watch 的 created 响应 header revision 为 0  
+  `pkg/server/etcd/watch.go` — `969aa75`。created `WatchResponse` 原发空 header；clientv3 用 created header revision 作为 from-now watch 的**恢复点**，created 后首事件前断线可能从 0 恢复而跳事件。改为回填当前已发布 revision（`GetPublishedRevision()`，即 seed progress-notify 用的那个安全下界，不会跳事件）。`TestWatchCreatedHeaderReportsCurrentRevision`（created header == published revision，非 0）。
+- [x] **#R12** [med] lease attach/detach 未与用户 KV 写在同一原子事务、且 lease id 未内联进 value meta  
+  **已在二轮闭环** = #R2 + #R9（`eedb5d7`）。lease id 已按版本内联进 value envelope；leased 单 Put 的 value+attachment 已同一 `TxnApply` 批原子提交、不再吞错误。审查建议的"废掉外置 `leasekeys/` 双写"**有意未做**：`leasekeys/` 是 failover 时 O(leased-keys) 重建索引的来源，废掉会逼 reload 全量扫描；现已是**单条原子写**而非双写，核心顾虑已消除。
+- [~] **#R13** [low] generic txn fallback 仍非 etcd 单事务 → **k8s 安全，未改** = #R4。见上。
+- [~] **#R14** [low] Hash/HashKV 是 revision hash、非 MVCC 内容 hash → **架构上基本 N/A，未改**  
+  `pkg/server/etcd/maintenance.go` — `Hash`/`HashKV` 返回 `revisionHash(revision)`。etcd 的 HashKV 用于检测**多成员间 MVCC 内容分叉**；KubeBrain 是 TiKV 上的**单一逻辑副本**（复制/一致性由 TiKV raft 负责），无 etcd 式成员会分叉，该用途基本不适用；apiserver 也不调 HashKV。真做按内容 hash = 全量扫描 keyspace（代价大、收益低，仅对迁移校验/ops 工具有点用）。记为已知差异，暂缓，除非有 ops 校验需求再按需实现。
+
+---
+
 ## 流程约定
 - 每修一条：改代码 → 黑盒消费端测试（etcd client / 真实 apiserver）→（必要时）内部单测证明修前失败 → `go test ./... -race` → 构建镜像 + kind load + rollout → 对 live endpoint 验证 → commit（`Co-Authored-By`）→ 回本文件把 `[ ]` 改 `[x]` 并标 commit。
 - 大重构（P1 读放大）先搭 load/soak 压测再改，另起 PR。
