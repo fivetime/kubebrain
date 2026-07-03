@@ -21,6 +21,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"path"
 	"path/filepath"
 	"strings"
@@ -410,4 +411,59 @@ func unusedLocalTCPAddr(t *testing.T) string {
 		t.Fatalf("failed to close local tcp listener: %v", err)
 	}
 	return addr
+}
+
+// TestFollowerRejectsMalformedOrZeroRevision pins #42: a follower must NOT set
+// its read revision to 0 when the leader's /status body is unparseable or carries
+// no/zero revision. Previously json.Unmarshal's error was ignored and the syncer
+// returned (0, nil), rewinding the read index to 0.
+func TestFollowerRejectsMalformedOrZeroRevision(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	mockMetrics := mock.NewMinimalMetrics(ctrl)
+
+	bad := []struct{ name, body string }{
+		{"malformed_non_json", "<html>502 Bad Gateway</html>"},
+		{"empty_json_object", "{}"},
+		{"explicit_zero_revision", `{"Revision":0}`},
+	}
+	for _, c := range bad {
+		t.Run(c.name, func(t *testing.T) {
+			ast := assert.New(t)
+			body := c.body
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(body))
+			}))
+			defer srv.Close()
+			addr := strings.TrimPrefix(srv.URL, "http://")
+
+			bs := &backendStub{currentRev: 42} // pre-existing read revision that must survive
+			le := &leader.Stub{ElectionInfo: leader.ElectionInfo{IsLeader: false, LeaderAddress: addr}}
+			rs := NewRevisionSyncer(bs, mockMetrics, le, nil)
+			defer rs.Close()
+
+			ctx, cancel := context.WithTimeout(context.Background(), 800*time.Millisecond)
+			defer cancel()
+			err := rs.SyncReadRevision(ctx)
+			ast.Error(err, "malformed/zero status must be an error, not a silent revision 0")
+			ast.Equal(uint64(42), bs.currentRev, "follower read revision must not be rewound to 0")
+		})
+	}
+
+	t.Run("valid_revision_still_syncs", func(t *testing.T) {
+		ast := assert.New(t)
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_ = json.NewEncoder(w).Encode(LeaderRevision{Revision: 777})
+		}))
+		defer srv.Close()
+		addr := strings.TrimPrefix(srv.URL, "http://")
+		bs := &backendStub{currentRev: 42}
+		le := &leader.Stub{ElectionInfo: leader.ElectionInfo{IsLeader: false, LeaderAddress: addr}}
+		rs := NewRevisionSyncer(bs, mockMetrics, le, nil)
+		defer rs.Close()
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		ast.NoError(rs.SyncReadRevision(ctx))
+		ast.Equal(uint64(777), bs.currentRev)
+	})
 }

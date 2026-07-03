@@ -227,7 +227,13 @@ func retryableLeaderRevisionErr(err error) bool {
 	return strings.Contains(msg, "connection refused") ||
 		strings.Contains(msg, "no route to host") ||
 		strings.Contains(msg, "status code from leader") ||
-		strings.Contains(msg, "leader is not elected")
+		strings.Contains(msg, "leader is not elected") ||
+		// A malformed status body or a transient zero revision is the same class of
+		// transient leader issue as a non-200 (leader restarting / not yet
+		// initialized); retry within the elapsed budget rather than failing the
+		// read immediately (#42).
+		strings.Contains(msg, "unmarshal status from leader") ||
+		strings.Contains(msg, "returned zero revision")
 }
 
 func possibleSchemaMismatch(err error) bool {
@@ -318,7 +324,21 @@ func (r *revisionSyncer) getRevisionFromLeader(ctx context.Context) (uint64, err
 	}
 
 	revision := &LeaderRevision{}
-	json.Unmarshal(responseBody, revision)
+	if err := json.Unmarshal(responseBody, revision); err != nil {
+		// A malformed body (LB/proxy error page, truncated response, wrong
+		// content) must NOT be swallowed: the old code ignored this error and
+		// returned (0, nil), so the follower set its read revision to 0 and served
+		// reads against an empty/rewound index (#42).
+		r.metricCli.EmitCounter("follower.get.revision.unmarshal_err", 1, metrics.Tag("leader", leaderAddress))
+		return 0, fmt.Errorf("unmarshal status from leader %s failed (body=%q): %w", leaderAddress, string(responseBody), err)
+	}
+	if revision.Revision == 0 {
+		// Valid JSON but no/zero revision (e.g. "{}" or an error object). A healthy
+		// leader's revision is TSO-derived and never 0, so treat this as a bad
+		// response rather than rewinding the follower's read index to 0 (#42).
+		r.metricCli.EmitCounter("follower.get.revision.zero", 1, metrics.Tag("leader", leaderAddress))
+		return 0, fmt.Errorf("leader %s returned zero revision (body=%q)", leaderAddress, string(responseBody))
+	}
 	r.metricCli.EmitGauge("follower.get.revision", revision.Revision, metrics.Tag("leader", leaderAddress))
 	return revision.Revision, nil
 }
