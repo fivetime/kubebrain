@@ -223,6 +223,16 @@ func (sc *SecurityConfig) init() (err error) {
 			sc.clientTlsConfig.RootCAs = certPool
 		}
 
+		if sc.ClientAuth && sc.CA == "" {
+			// RequireAndVerifyClientCert with a nil ClientCAs makes Go verify client
+			// certs against the SYSTEM root pool, accepting any cert signed by a
+			// publicly-trusted CA -- defeating the purpose of client cert auth.
+			// Client cert auth is meaningless without an explicit trusted CA, so
+			// refuse to start (matching etcd's --client-cert-auth requirement) (#50).
+			sc.err = fmt.Errorf("client cert auth is enabled but no trusted CA file is set; " +
+				"refusing to verify client certs against the system root pool")
+			return
+		}
 		if sc.CA != "" || sc.ClientAuth {
 			sc.serverTlsConfig.ClientAuth = tls.RequireAndVerifyClientCert
 		}
