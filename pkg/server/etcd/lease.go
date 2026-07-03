@@ -156,8 +156,15 @@ func (s *RPCServer) LeaseKeepAlive(stream etcdserverpb.Lease_LeaseKeepAliveServe
 
 func (s *RPCServer) LeaseTimeToLive(ctx context.Context, req *etcdserverpb.LeaseTimeToLiveRequest) (*etcdserverpb.LeaseTimeToLiveResponse, error) {
 	s.metricCli.EmitCounter("lease.ttl", 1)
-	if !s.peers.IsLeader() && s.peers.EtcdProxyEnabled() {
-		return s.peers.LeaseTimeToLive(ctx, req)
+	// A follower's lease state is a stale snapshot: the leader advances deadlines
+	// via keepalive and grants/revokes leases the follower never observes. Answer
+	// only as the leader; otherwise proxy, or fail like the write lease RPCs so the
+	// client retries against the leader instead of reading stale local state (#56).
+	if err := s.requireLeaseLeader("lease time-to-live"); err != nil {
+		if s.peers.EtcdProxyEnabled() {
+			return s.peers.LeaseTimeToLive(ctx, req)
+		}
+		return nil, err
 	}
 
 	s.leaseMu.Lock()
@@ -185,8 +192,13 @@ func (s *RPCServer) LeaseTimeToLive(ctx context.Context, req *etcdserverpb.Lease
 
 func (s *RPCServer) LeaseLeases(ctx context.Context, req *etcdserverpb.LeaseLeasesRequest) (*etcdserverpb.LeaseLeasesResponse, error) {
 	s.metricCli.EmitCounter("lease.leases", 1)
-	if !s.peers.IsLeader() && s.peers.EtcdProxyEnabled() {
-		return s.peers.LeaseLeases(ctx, req)
+	// See LeaseTimeToLive: a follower must not enumerate leases from its stale
+	// local snapshot; proxy to the leader or fail (#56).
+	if err := s.requireLeaseLeader("lease leases"); err != nil {
+		if s.peers.EtcdProxyEnabled() {
+			return s.peers.LeaseLeases(ctx, req)
+		}
+		return nil, err
 	}
 
 	s.leaseMu.Lock()
@@ -630,6 +642,15 @@ func (s *RPCServer) applyLeaseRecords(records []leaseRecord, attachments map[str
 	return legacy
 }
 
+// StopLeases stops every expiry timer and drops the in-memory lease snapshot. It
+// MUST be called when this node loses leadership: otherwise a demoted leader
+// keeps firing expiry timers (churn, and it would act on a stale snapshot) and
+// answers lease reads from state the new leader has since advanced. Leadership
+// re-acquisition rebuilds the state from storage via ReloadLeases (#57).
+func (s *RPCServer) StopLeases() {
+	s.stopLeases()
+}
+
 func (s *RPCServer) stopLeases() {
 	s.leaseMu.Lock()
 	defer s.leaseMu.Unlock()
@@ -638,6 +659,9 @@ func (s *RPCServer) stopLeases() {
 			st.timer.Stop()
 		}
 	}
+	s.leases = make(map[int64]*leaseState)
+	s.keyLeaseIndex = make(map[string]int64)
+	atomic.StoreInt64(&s.leasedKeyCount, 0)
 }
 
 func (s *RPCServer) scheduleLeaseLocked(st *leaseState) {

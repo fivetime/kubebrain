@@ -114,6 +114,12 @@ func (s *server) onStartedLeading(ctx context.Context) {
 // as leader — previously it wrongly set SERVING (#61).
 func (s *server) onStoppedLeading() {
 	s.healthServer.SetServingStatus("", healthpb.HealthCheckResponse_NOT_SERVING)
+	// On losing leadership, stop the lease expiry timers and drop the now
+	// non-authoritative lease snapshot; the leader owns lease expiry and the new
+	// leader has advanced this state. Re-acquiring leadership reloads it (#57).
+	if s.etcdServer != nil {
+		s.etcdServer.StopLeases()
+	}
 }
 
 // RegisterClient implements Server interface
