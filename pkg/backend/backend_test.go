@@ -1918,3 +1918,71 @@ func waitUntilRevisionEqualOrTimeout(b Backend, expectedRev uint64) {
 		}
 	}
 }
+
+// TestOrphanIndexSelfHeal reproduces the "poison key" shape diagnosed on the TiKV
+// dev cluster (object versions present, revision-index rev=0 slot missing) and
+// asserts the write path now self-heals it. Such an orphan was left by a pre-#31
+// compaction/retry race; it is read-visible (reads scan object keys, ignoring the
+// index) but was permanently un-writable (Update/Delete CAS the missing index and
+// fail forever). healOrphanIndex restores the index so the next write recovers.
+func TestOrphanIndexSelfHeal(t *testing.T) {
+	s, closeFn := newTestSuites(t, memKvStorage)
+	defer closeFn()
+	b := s.backend.(*backend)
+
+	// orphan removes the revision-index (rev=0) slot, leaving the object keys, then
+	// checks the key is still read-visible but the index is gone.
+	orphan := func(key string) {
+		s.ast.NoError(s.kv.Del(s.ctx, encodeRevisionKey([]byte(key))))
+		_, gerr := s.kv.Get(s.ctx, encodeRevisionKey([]byte(key)))
+		s.ast.ErrorIs(gerr, storage.ErrKeyNotFound)
+		_, _, rerr := b.get(s.ctx, []byte(key), 0)
+		s.ast.NoError(rerr) // object still present -> read-visible
+	}
+
+	t.Run("delete self-heals orphan", func(t *testing.T) {
+		key := path.Join(prefix, "orphan-del")
+		_, err := s.backend.Create(s.ctx, newCreateRequest(key, "v1"))
+		s.ast.NoError(err)
+		orphan(key)
+
+		// Without the heal, delete is a poisoned no-op: CAS on the missing index fails.
+		noHeal, err := b.deleteOnce(s.ctx, newDelRequest(0, key), false)
+		s.ast.NoError(err)
+		s.ast.False(noHeal.Succeeded)
+		_, _, rerr := b.get(s.ctx, []byte(key), 0)
+		s.ast.NoError(rerr) // still there
+
+		// With the heal (default path), delete succeeds and the key is gone.
+		res, err := s.backend.Delete(s.ctx, newDelRequest(0, key))
+		s.ast.NoError(err)
+		s.ast.True(res.Succeeded)
+		_, _, rerr = b.get(s.ctx, []byte(key), 0)
+		s.ast.ErrorIs(rerr, storage.ErrKeyNotFound)
+	})
+
+	t.Run("update self-heals orphan", func(t *testing.T) {
+		key := path.Join(prefix, "orphan-upd")
+		cresp, err := s.backend.Create(s.ctx, newCreateRequest(key, "v1"))
+		s.ast.NoError(err)
+		modRev := cresp.Header.Revision
+		orphan(key)
+
+		// Without the heal, update is a poisoned no-op.
+		noHeal, err := b.updateOnce(s.ctx, &proto.UpdateRequest{
+			Kv: &proto.KeyValue{Key: []byte(key), Value: []byte("v2"), Revision: modRev},
+		}, false)
+		s.ast.NoError(err)
+		s.ast.False(noHeal.Succeeded)
+
+		// With the heal, update succeeds and the new value is readable.
+		res, err := s.backend.Update(s.ctx, &proto.UpdateRequest{
+			Kv: &proto.KeyValue{Key: []byte(key), Value: []byte("v2"), Revision: modRev},
+		})
+		s.ast.NoError(err)
+		s.ast.True(res.Succeeded)
+		val, _, rerr := b.get(s.ctx, []byte(key), 0)
+		s.ast.NoError(rerr)
+		s.ast.Equal("v2", string(val))
+	})
+}

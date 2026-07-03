@@ -144,7 +144,11 @@ func (b *backend) createBatchWithMetadata(ctx context.Context, revisionKey, obje
 }
 
 // Delete implements Backend interface
-func (b *backend) Delete(ctx context.Context, r *proto.DeleteRequest) (resp *proto.DeleteResponse, err error) {
+func (b *backend) Delete(ctx context.Context, r *proto.DeleteRequest) (*proto.DeleteResponse, error) {
+	return b.deleteOnce(ctx, r, true)
+}
+
+func (b *backend) deleteOnce(ctx context.Context, r *proto.DeleteRequest, allowHeal bool) (resp *proto.DeleteResponse, err error) {
 	ts := time.Now()
 	defer func() {
 		txnLog("delete",
@@ -171,6 +175,14 @@ func (b *backend) Delete(ctx context.Context, r *proto.DeleteRequest) (resp *pro
 		// key is not exist
 		return resp, nil
 	} else if errors.Is(err, storage.ErrCASFailed) {
+		// An orphaned key (object present, revision-index missing) CASes the
+		// missing index and can never be deleted. Heal the index once and retry so
+		// the delete self-recovers instead of the key being undeletable forever.
+		if allowHeal {
+			if healed, healErr := b.healOrphanIndex(ctx, r.Key); healErr == nil && healed {
+				return b.deleteOnce(ctx, r, false)
+			}
+		}
 		// possible case:
 		// 1. expect revision is too old
 		// 2. concurrent modification
@@ -263,6 +275,45 @@ func (b *backend) delete(ctx context.Context, oldRevision uint64, key []byte) (n
 
 	// todo: need an internal retry if there is any conflict error?
 	return newRevision, old, err
+}
+
+// healOrphanIndex repairs a key whose object versions exist but whose
+// revision-index (rev=0) slot is missing. Such an orphan (left by a pre-#31
+// compaction/retry race that GC'd a deletion-flagged index while a retried DELETE
+// left the base object) is read-visible — b.get scans object keys and ignores the
+// index — but permanently un-writable: every Update/Delete CASes the missing index
+// key, which the storage reports as a conflict, so the write retries forever
+// ("still contended"). This restores the index to point at the latest object
+// revision so the next write proceeds normally. It is a pure repair: it allocates
+// NO new revision and publishes NO event — it only re-materializes the index
+// pointer for an already-committed object revision. Returns true if it healed an
+// orphan (including when a concurrent writer recreated the index first).
+func (b *backend) healOrphanIndex(ctx context.Context, key []byte) (bool, error) {
+	// Only a live object (non-tombstone) needs a usable index; a deleted+compacted
+	// key with no index reads as not-found, which is already correct.
+	_, modRev, err := b.get(ctx, key, 0)
+	if err != nil {
+		return false, nil
+	}
+	revisionKey := b.coder.EncodeRevisionKey(key)
+	if _, gerr := b.kv.Get(ctx, revisionKey); gerr == nil {
+		// Index present: this was an ordinary stale/concurrent CAS, not an orphan.
+		return false, nil
+	} else if !errors.Is(gerr, storage.ErrKeyNotFound) {
+		return false, gerr
+	}
+	batch := b.kv.BeginBatchWrite()
+	batch.PutIfNotExist(revisionKey, uint64ToBytes(modRev), 0)
+	if cerr := batch.Commit(ctx); cerr != nil {
+		if errors.Is(cerr, storage.ErrCASFailed) {
+			// A concurrent write recreated the index; the orphan is resolved.
+			return true, nil
+		}
+		return false, cerr
+	}
+	klog.InfoS("healed orphan revision index", "key", string(key), "revision", modRev)
+	b.metricCli.EmitCounter("backend.orphan_index.heal", 1)
+	return true, nil
 }
 
 // DeleteRange removes a set of live keys in one storage batch. Like etcd, all
@@ -392,7 +443,11 @@ func (b *backend) DeleteRange(ctx context.Context, kvs []*proto.KeyValue) (resp 
 }
 
 // Update implements Backend interface
-func (b *backend) Update(ctx context.Context, r *proto.UpdateRequest) (resp *proto.UpdateResponse, err error) {
+func (b *backend) Update(ctx context.Context, r *proto.UpdateRequest) (*proto.UpdateResponse, error) {
+	return b.updateOnce(ctx, r, true)
+}
+
+func (b *backend) updateOnce(ctx context.Context, r *proto.UpdateRequest, allowHeal bool) (resp *proto.UpdateResponse, err error) {
 	ts := time.Now()
 	defer func() {
 		txnLog("update",
@@ -426,6 +481,14 @@ func (b *backend) Update(ctx context.Context, r *proto.UpdateRequest) (resp *pro
 		Succeeded: err == nil,
 	}
 	if errors.Is(err, storage.ErrCASFailed) {
+		// An orphaned key (object present, revision-index missing) CASes the
+		// missing index and fails forever. Heal the index once and retry so the
+		// write self-recovers instead of poisoning the key permanently.
+		if allowHeal {
+			if healed, healErr := b.healOrphanIndex(ctx, key); healErr == nil && healed {
+				return b.updateOnce(ctx, r, false)
+			}
+		}
 		// cas failed, just return the latest value
 		val, modRevision, err := b.get(ctx, key, 0)
 		if err != nil {
