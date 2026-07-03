@@ -13,11 +13,12 @@ import (
 
 func main() {
 	var conc, dur int
-	var ep string
+	var ep, prefix string
 	var rangeEvery int
 	flag.IntVar(&conc, "c", 200, "concurrency")
 	flag.IntVar(&dur, "d", 30, "seconds")
 	flag.StringVar(&ep, "ep", "127.0.0.1:3379", "endpoint")
+	flag.StringVar(&prefix, "prefix", "/loadtest", "key prefix")
 	flag.IntVar(&rangeEvery, "rangeEvery", 20, "1 Range per N Puts")
 	flag.Parse()
 	var ops, errs int64
@@ -41,11 +42,11 @@ func main() {
 				var e error
 				if rangeEvery > 0 && n%rangeEvery == 0 {
 					ctx, c := context.WithTimeout(context.Background(), 5*time.Second)
-					_, e = cli.Get(ctx, fmt.Sprintf("/loadtest/w%d/", id), clientv3.WithPrefix(), clientv3.WithLimit(100))
+					_, e = cli.Get(ctx, fmt.Sprintf(prefix+"/w%d/", id), clientv3.WithPrefix(), clientv3.WithLimit(100))
 					c()
 				} else {
 					ctx, c := context.WithTimeout(context.Background(), 5*time.Second)
-					_, e = cli.Put(ctx, fmt.Sprintf("/loadtest/w%d/k%d", id, n), "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv")
+					_, e = cli.Put(ctx, fmt.Sprintf(prefix+"/w%d/k%d", id, n), "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv")
 					c()
 				}
 				lat[id] = append(lat[id], time.Since(t0))
