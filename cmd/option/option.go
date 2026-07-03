@@ -62,10 +62,11 @@ func NewOptions() *KubeBrainOption {
 			PeerPort:                2380,
 			ClientSecurityConfig:    &endpoint.SecurityConfig{},
 			PeerSecurityConfig:      &endpoint.SecurityConfig{},
+			InfoSecurityConfig:      &endpoint.SecurityConfig{},
 			EnableEtcdCompatibility: false,
 		},
-		Prefix:         "",
-		ClusterName:    "default",
+		Prefix:            "",
+		ClusterName:       "default",
 		storageConfig:     newStorageConfig(),
 		watchCacheSize:    200 * 1000,
 		countIndexMaxKeys: 5 * 1000 * 1000,
@@ -109,6 +110,19 @@ func (o *KubeBrainOption) AddFlags(fs *pflag.FlagSet) {
 		o.epsConf.PeerSecurityConfig.AllowInsecure, "Allow insecure access even if peer TLS config is set.")
 	fs.BoolVar(&o.epsConf.EnableEtcdCompatibility, "compatible-with-etcd",
 		o.epsConf.EnableEtcdCompatibility, "Enable full compatibility with usage of etcd3 in kube-apiserver")
+
+	// info/metrics port TLS (#32): metrics and pprof are served on the info port,
+	// not the client data port; these let the info port serve TLS instead of plaintext.
+	fs.StringVar(&o.epsConf.InfoSecurityConfig.CertFile, "info-cert-file",
+		o.epsConf.InfoSecurityConfig.CertFile, "Path to the info/metrics server TLS cert file (empty = plaintext).")
+	fs.StringVar(&o.epsConf.InfoSecurityConfig.KeyFile, "info-key-file",
+		o.epsConf.InfoSecurityConfig.KeyFile, "Path to the info/metrics server TLS key file.")
+	fs.StringVar(&o.epsConf.InfoSecurityConfig.CA, "info-trusted-ca-file",
+		o.epsConf.InfoSecurityConfig.CA, "Path to the info/metrics server trusted CA cert file.")
+	fs.BoolVar(&o.epsConf.InfoSecurityConfig.ClientAuth, "info-client-cert-auth",
+		o.epsConf.InfoSecurityConfig.ClientAuth, "Require client cert authentication on the info/metrics port.")
+	fs.BoolVar(&o.epsConf.EnablePprof, "enable-pprof",
+		o.epsConf.EnablePprof, "Expose net/http/pprof debug handlers on the info port (off by default; never on the client port).")
 
 	fs.BoolVar(&o.EnableStorageMetrics, "enable-storage-metrics", o.EnableStorageMetrics, "enable storage metrics.")
 	o.storageConfig.addFlag(fs)

@@ -67,6 +67,16 @@ type Config struct {
 	// PeerSecurityConfig is the security config for peer server
 	PeerSecurityConfig *SecurityConfig
 
+	// InfoSecurityConfig is the security config for the info/metrics server. Empty
+	// (the default) keeps the info port plaintext; setting cert/key enables TLS so
+	// metrics/pprof are not served in cleartext (#32).
+	InfoSecurityConfig *SecurityConfig
+
+	// EnablePprof exposes the net/http/pprof debug handlers on the info port. It is
+	// off by default because pprof is an unauthenticated CPU/heap DoS and
+	// info-disclosure surface; it is never exposed on the client data port (#32).
+	EnablePprof bool
+
 	// EnableEtcdCompatibility is the flag if KubeWharf should try to be compatible with etcd3
 	EnableEtcdCompatibility bool
 }
@@ -135,6 +145,14 @@ func (c *Config) Validate() error {
 	if err != nil {
 		klog.ErrorS(err, "invalid peer security config")
 		return err
+	}
+
+	if c.InfoSecurityConfig != nil {
+		klog.InfoS("validate info security config", c.InfoSecurityConfig.ToKvs()...)
+		if err = c.InfoSecurityConfig.validate(); err != nil {
+			klog.ErrorS(err, "invalid info security config")
+			return err
+		}
 	}
 	return nil
 }
