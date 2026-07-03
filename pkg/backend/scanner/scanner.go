@@ -185,10 +185,14 @@ func (r *scanner) adjustPartitionsBorders(ps []storage.Partition) (ret []storage
 		}
 
 		if i != len(ps)-1 {
-			userKey, revision, err := r.coder.Decode(ps[i].End)
-			if err == nil && revision != 0 {
-				// end border may be moved forward except the last partition
-				ps[i].End = r.coder.EncodeRevisionKey(userKey)
+			// Snap the boundary down to the start (rev=0) of whatever user key it
+			// falls within, so one key's versions never straddle two partitions.
+			// This must handle borders that are NOT decodable full object keys
+			// (e.g. a TiKV region split point {objectKey}\x00): the old
+			// Decode-only path left those unadjusted, so a deleted key whose
+			// tombstone landed in the next partition resurfaced as live in List.
+			if b, ok := coder.RevisionBoundaryForBorder(ps[i].End); ok {
+				ps[i].End = b
 			}
 		}
 	}
