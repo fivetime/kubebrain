@@ -114,6 +114,13 @@ type Backend interface {
 	// GetCurrentRevision returns the read revision
 	GetCurrentRevision() uint64
 
+	// GetPublishedRevision returns the highest revision whose events have been
+	// fully fanned out to watch subscribers. It is <= GetCurrentRevision (which
+	// advances pre-publish), and is the safe floor for seeding a from-now watch's
+	// progress: any event a freshly-registered subscriber still receives has a
+	// revision strictly greater, so it cannot be skipped.
+	GetPublishedRevision() uint64
+
 	// SetCurrentRevision is used for init tso for leader
 	SetCurrentRevision(uint64)
 
@@ -440,6 +447,11 @@ func (b *backend) GetResourceLock() resourcelock.Interface {
 // GetCurrentRevision implements Backend interface
 func (b *backend) GetCurrentRevision() uint64 {
 	return b.tso.GetRevision()
+}
+
+// GetPublishedRevision implements Backend interface
+func (b *backend) GetPublishedRevision() uint64 {
+	return b.watcherHub.PublishedRevision()
 }
 
 // SetCurrentRevision implements Backend interface

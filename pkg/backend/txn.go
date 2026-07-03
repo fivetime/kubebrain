@@ -603,6 +603,17 @@ func (b *backend) handleWatchEventOverflow(revision uint64) {
 	}
 	b.watchCache.Reset()
 	b.SetCurrentRevision(target)
+	// Order matters: close the existing subscribers FIRST, then jump the published
+	// watermark. target = Dealt() covers revisions whose events were just wiped and
+	// never fanned out, so publishedRev==target is ABOVE the true delivered frontier
+	// of any existing sub. If we raised it before CloseAll, a concurrent
+	// broadcastProgress (holds only the hub RLock, not notifyMu) could enqueue a
+	// marker@target into a still-open healthy sub, folding its syncedRev to target
+	// and advertising a revision whose wiped events it never received -> silent
+	// watch gap on re-watch. After CloseAll removed those subs, a later
+	// broadcastProgress finds none; any new post-reset sub only wants events > target
+	// (the collector resumes at target+1), so marker@target is a safe under-report.
 	b.watcherHub.CloseAll()
+	b.watcherHub.AdvancePublishedRevision(target)
 	b.signalWrite()
 }

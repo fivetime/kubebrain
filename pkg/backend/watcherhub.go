@@ -18,6 +18,8 @@ import (
 	"bytes"
 	"context"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"k8s.io/klog/v2"
 
@@ -44,6 +46,54 @@ type WatcherHub struct {
 	metricCli metrics.Metrics
 	// bufSize is the per-subscriber channel buffer; 0 means watchBuffer.
 	bufSize int
+	// publishedRev is the highest batch-max revision that broadcast has fully
+	// fanned out to every matching subscriber (atomic). It is the safe watermark
+	// for a quiet watch's progress notification: because it is stamped only after
+	// fan-out, every event with revision <= publishedRev has already been enqueued
+	// (FIFO) into its subscriber ahead of any progress marker carrying that value,
+	// so advertising it can never claim an undelivered event. handleWatchEventOverflow
+	// also advances it to the reset target so a post-reset marker never advertises
+	// a stale-low revision.
+	publishedRev uint64
+}
+
+// storeMaxUint64 atomically advances *addr to val, never moving it backwards.
+// Duplicated from server/etcd (the two packages share no util); kept in sync.
+func storeMaxUint64(addr *uint64, val uint64) {
+	for {
+		old := atomic.LoadUint64(addr)
+		if val <= old {
+			return
+		}
+		if atomic.CompareAndSwapUint64(addr, old, val) {
+			return
+		}
+	}
+}
+
+// newProgressMarker builds an in-band progress marker: a one-element batch whose
+// single event carries only a revision and a nil Kv. Real events always set Kv,
+// so a nil Kv unambiguously distinguishes a marker from an event batch.
+func newProgressMarker(rev uint64) []*proto.Event {
+	return []*proto.Event{{Revision: rev}}
+}
+
+// isProgressMarker reports whether events is an in-band progress marker (see
+// newProgressMarker) rather than a real event batch.
+func isProgressMarker(events []*proto.Event) bool {
+	return len(events) == 1 && events[0] != nil && events[0].Kv == nil
+}
+
+// PublishedRevision returns the highest revision fully fanned out to subscribers.
+func (w *WatcherHub) PublishedRevision() uint64 {
+	return atomic.LoadUint64(&w.publishedRev)
+}
+
+// AdvancePublishedRevision advances the published watermark to target (never
+// backwards). Called after a watch-overflow reset jumps the current revision so a
+// subsequent progress marker does not advertise a stale-low revision.
+func (w *WatcherHub) AdvancePublishedRevision(target uint64) {
+	storeMaxUint64(&w.publishedRev, target)
 }
 
 func (w *WatcherHub) subBufferSize() int {
@@ -105,16 +155,31 @@ func (w *WatcherHub) CloseAll() {
 
 // Stream push events to watchers.
 func (w *WatcherHub) Stream(input chan []*proto.Event) {
-	for item := range input {
-		w.broadcast(item)
+	// A once-per-second progress tick fans an in-band marker carrying the current
+	// published watermark to every subscriber (including quiet ones the event
+	// broadcast skips), so a quiet watch's progress notification advances with the
+	// cluster's published revision instead of freezing at its start revision. The
+	// marker rides the same FIFO subscriber channel as events, so it can never
+	// overtake an unsent matching event (see publishedRev).
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case item, ok := <-input:
+			if !ok {
+				w.Lock()
+				klog.Info("[watcher hub] input channel from heap closed, delete all watchers")
+				for sub := range w.subs {
+					w.DeleteWatcher(sub, false)
+				}
+				w.Unlock()
+				return
+			}
+			w.broadcast(item)
+		case <-ticker.C:
+			w.broadcastProgress(atomic.LoadUint64(&w.publishedRev))
+		}
 	}
-
-	w.Lock()
-	klog.Info("[watcher hub] input channel from heap closed, delete all watchers")
-	for sub := range w.subs {
-		w.DeleteWatcher(sub, false)
-	}
-	w.Unlock()
 }
 
 // broadcast delivers one event batch to every subscriber, then synchronously
@@ -147,6 +212,14 @@ func (w *WatcherHub) broadcast(item []*proto.Event) {
 		}
 	}
 	w.RUnlock()
+	// Stamp the published watermark after fan-out. Batches arrive strictly
+	// ascending in revision (the collector emits in order and Stream is FIFO), so
+	// the last element is the batch max. Because this happens after every matching
+	// sub has been enqueued the batch, a later progress marker carrying this
+	// revision provably sits behind every event <= it.
+	if len(item) > 0 {
+		storeMaxUint64(&w.publishedRev, item[len(item)-1].Revision)
+	}
 	if skipped > 0 {
 		w.metricCli.EmitCounter("watcher_hub.route_skipped", skipped)
 	}
@@ -155,6 +228,29 @@ func (w *WatcherHub) broadcast(item []*proto.Event) {
 		w.metricCli.EmitCounter("drop.slow.watcher", 1)
 		w.DeleteWatcher(sub, true)
 	}
+}
+
+// broadcastProgress fans an in-band progress marker carrying rev to every
+// subscriber, bypassing the prefix routing that broadcast uses — quiet
+// subscribers (whose prefix matches no event) are exactly the ones that need it.
+// A full subscriber is skipped, never evicted: a dropped marker only delays that
+// watch's progress by one tick, whereas a dropped event would tear a gap in the
+// stream. Runs on the same goroutine as broadcast, so it never overlaps a
+// concurrent event fan-out on the same subscriber.
+func (w *WatcherHub) broadcastProgress(rev uint64) {
+	if rev == 0 {
+		return
+	}
+	marker := newProgressMarker(rev)
+	w.RLock()
+	for sub := range w.subs {
+		select {
+		case sub <- marker:
+		default:
+			// full sub: skip, never evict — the next tick retries.
+		}
+	}
+	w.RUnlock()
 }
 
 // batchMatchesPrefix reports whether any event in the batch has the given prefix.

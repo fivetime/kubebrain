@@ -20,6 +20,8 @@ import (
 	"testing"
 	"time"
 
+	"go.etcd.io/etcd/api/v3/etcdserverpb"
+	"go.etcd.io/etcd/api/v3/mvccpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -27,6 +29,35 @@ import (
 	"github.com/kubewharf/kubebrain/pkg/server/service/leader"
 	"github.com/stretchr/testify/require"
 )
+
+// TestWatchResultFromResponseMapsProgressNotify pins that an idle progress
+// notification from the leader (no events, carrying only the store revision)
+// becomes a ProgressRevision result, while a normal event response yields Events
+// and no ProgressRevision. This is what advances a quiet watch's progress across
+// the follower/proxy path.
+func TestWatchResultFromResponseMapsProgressNotify(t *testing.T) {
+	// Progress notify: no events, header revision set -> IsProgressNotify() true.
+	progress := clientv3.WatchResponse{
+		Header: etcdserverpb.ResponseHeader{Revision: 42},
+	}
+	require.True(t, progress.IsProgressNotify())
+	got := watchResultFromResponse(progress)
+	require.Equal(t, uint64(42), got.ProgressRevision)
+	require.Empty(t, got.Events)
+
+	// Event response: events present -> not a progress notify.
+	event := clientv3.WatchResponse{
+		Header: etcdserverpb.ResponseHeader{Revision: 43},
+		Events: []*clientv3.Event{
+			{Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{Key: []byte("k"), ModRevision: 43}},
+		},
+	}
+	require.False(t, event.IsProgressNotify())
+	got = watchResultFromResponse(event)
+	require.Equal(t, uint64(0), got.ProgressRevision)
+	require.Len(t, got.Events, 1)
+	require.Equal(t, []byte("k"), got.Events[0].Kv.Key)
+}
 
 func TestIsForwardConnectionError(t *testing.T) {
 	tests := []struct {

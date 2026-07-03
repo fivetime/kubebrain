@@ -63,7 +63,11 @@ type EtcdProxy interface {
 	LeaseLeases(ctx context.Context, req *etcdserverpb.LeaseLeasesRequest) (*etcdserverpb.LeaseLeasesResponse, error)
 }
 
+// WatchResult is exactly one of: an event batch (Events set), an error (Err set),
+// or a progress notification (ProgressRevision > 0) — never a mix. A progress
+// result advances a quiet watch's progress notification without carrying events.
 type WatchResult struct {
-	Events []*mvccpb.Event
-	Err    error
+	Events           []*mvccpb.Event
+	Err              error
+	ProgressRevision uint64
 }

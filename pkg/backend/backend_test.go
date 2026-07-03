@@ -367,18 +367,17 @@ func (ct *createTestcase) run(t *testing.T, s suite, output <-chan []*proto.Even
 		// sleep for a while and then check watcher
 		waitUntilRevisionEqualOrTimeout(backend, resp.GetHeader().GetRevision())
 		if ct.expectedEvent != nil {
-			waitUntilEventChanFilledOrTimeout(output)
-			if !ast.Equal(1, len(output), expectAEvent) {
+			actual := nextRealEventBatch(output)
+			if !ast.Equal(1, len(actual), expectAEvent) {
 				ast.FailNow(noExpectedEvent)
 			}
-			actual := <-output
 			if !ast.Equal(1, len(actual), expectAMvccPBEvent) {
 				return
 			}
 			ast.Equal(ct.expectedEvent, actual[0])
 			return
 		}
-		ast.Equal(0, len(output), expectNoEvent)
+		ast.True(noPendingRealEvent(output), expectNoEvent)
 		return
 	})
 
@@ -410,18 +409,17 @@ func (dt *deleteTestcase) run(t *testing.T, s suite, output <-chan []*proto.Even
 		// sleep for a while and then check watcher
 		waitUntilRevisionEqualOrTimeout(backend, resp.GetHeader().GetRevision())
 		if dt.expectedEvent != nil {
-			waitUntilEventChanFilledOrTimeout(output)
-			if !ast.Equal(1, len(output), expectAEvent) {
+			actual := nextRealEventBatch(output)
+			if !ast.Equal(1, len(actual), expectAEvent) {
 				ast.FailNow(noExpectedEvent)
 			}
-			actual := <-output
 			if !ast.Equal(1, len(actual), expectAMvccPBEvent) {
 				return
 			}
 			ast.Equal(dt.expectedEvent, actual[0])
 			return
 		}
-		ast.Equal(0, len(output), expectNoEvent)
+		ast.True(noPendingRealEvent(output), expectNoEvent)
 	})
 }
 
@@ -445,7 +443,7 @@ func (gt *getTestcase) run(t *testing.T, s suite, output <-chan []*proto.Event) 
 		ast.Equal(gt.expectedResp, resp)
 
 		time.Sleep(interval)
-		ast.Equal(0, len(output), expectNoEvent)
+		ast.True(noPendingRealEvent(output), expectNoEvent)
 	})
 }
 
@@ -470,7 +468,7 @@ func (rt *rangeTestcase) run(t *testing.T, s suite, output <-chan []*proto.Event
 		ast.Equal(rt.expectedResp, resp)
 
 		time.Sleep(interval)
-		ast.Equal(0, len(output), expectNoEvent)
+		ast.True(noPendingRealEvent(output), expectNoEvent)
 	})
 }
 
@@ -495,7 +493,7 @@ func (rt *countTestcase) run(t *testing.T, s suite, output <-chan []*proto.Event
 		ast.Equal(rt.expectedResp, resp)
 
 		time.Sleep(interval)
-		ast.Equal(0, len(output), expectNoEvent)
+		ast.True(noPendingRealEvent(output), expectNoEvent)
 	})
 }
 
@@ -579,18 +577,17 @@ func (ut *updateTestcase) run(t *testing.T, s suite, output <-chan []*proto.Even
 		// sleep for a while and then check watcher
 		waitUntilRevisionEqualOrTimeout(backend, resp.GetHeader().GetRevision())
 		if ut.expectedEvent != nil {
-			waitUntilEventChanFilledOrTimeout(output)
-			if !ast.Equal(1, len(output), expectAEvent) {
+			actual := nextRealEventBatch(output)
+			if !ast.Equal(1, len(actual), expectAEvent) {
 				ast.FailNow(noExpectedEvent)
 			}
-			actual := <-output
 			if !ast.Equal(1, len(actual), expectAMvccPBEvent) {
 				return
 			}
 			ast.Equal(ut.expectedEvent, actual[0])
 			return
 		}
-		ast.Equal(0, len(output), expectNoEvent)
+		ast.True(noPendingRealEvent(output), expectNoEvent)
 	})
 }
 
@@ -1841,6 +1838,47 @@ func TestBackend(t *testing.T) {
 
 func prefixEnd(p string) string {
 	return string(PrefixEnd([]byte(p)))
+}
+
+// nextRealEventBatch returns the next real (non-progress-marker) event batch from
+// output, waiting up to timeout. The watcher hub now fans an in-band progress
+// marker (a nil-Kv sentinel batch) to every subscriber each second so a quiet
+// watch's progress can advance; these low-level event tests must skip them.
+// Returns nil on timeout.
+func nextRealEventBatch(output <-chan []*proto.Event) []*proto.Event {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	for {
+		select {
+		case evs := <-output:
+			if isProgressMarker(evs) {
+				continue
+			}
+			return evs
+		case <-ctx.Done():
+			return nil
+		}
+	}
+}
+
+// noPendingRealEvent reports that no real (non-marker) event batch is buffered on
+// output within a short settle window, ignoring progress markers.
+func noPendingRealEvent(output <-chan []*proto.Event) bool {
+	deadline := time.Now().Add(interval)
+	for {
+		select {
+		case evs := <-output:
+			if isProgressMarker(evs) {
+				continue
+			}
+			return false
+		default:
+			if time.Now().After(deadline) {
+				return true
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
 }
 
 func waitUntilEventChanFilledOrTimeout(eventChan <-chan []*proto.Event) {

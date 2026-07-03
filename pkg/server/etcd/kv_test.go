@@ -1142,7 +1142,7 @@ func TestDeleteRangeDeletesRange(t *testing.T) {
 	defer watchCancel()
 	watchCh, err := server.backend.Watch(watchCtx, "/registry/configmaps/", uint64(deleteResp.Header.Revision))
 	require.NoError(t, err)
-	deleteEvents := <-watchCh
+	deleteEvents := (<-watchCh).Events
 	require.Len(t, deleteEvents, 2)
 	for _, event := range deleteEvents {
 		require.Equal(t, mvccpb.DELETE, event.Type)

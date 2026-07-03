@@ -33,6 +33,7 @@ import (
 
 	"github.com/kubewharf/kubebrain/pkg/backend"
 	"github.com/kubewharf/kubebrain/pkg/metrics"
+	"github.com/kubewharf/kubebrain/pkg/server/service/etcdproxy"
 )
 
 var (
@@ -88,14 +89,21 @@ type BackendShim interface {
 	// ListByStream reads kvs in range by stream
 	ListByStream(ctx context.Context, startKey, endKey []byte, revision uint64) (<-chan *etcdserverpb.WatchResponse, error)
 
-	// Watch subscribe the changes from revision on kvs with given prefix
-	Watch(ctx context.Context, key string, revision uint64) (<-chan []*mvccpb.Event, error)
+	// Watch subscribe the changes from revision on kvs with given prefix. Event
+	// batches arrive as WatchResult{Events}; in-band progress markers arrive as
+	// WatchResult{ProgressRevision} so a quiet watch's progress can advance. This
+	// mirrors the follower/proxy path (etcdProxy.Watch) so both are type-identical.
+	Watch(ctx context.Context, key string, revision uint64) (<-chan etcdproxy.WatchResult, error)
 
 	// GetResourceLock returns the resource lock for leader election
 	GetResourceLock() resourcelock.Interface
 
 	// GetCurrentRevision returns the read revision
 	GetCurrentRevision() uint64
+
+	// GetPublishedRevision returns the highest revision fully fanned out to
+	// watchers; the safe floor for seeding a from-now watch's progress.
+	GetPublishedRevision() uint64
 
 	// SetCurrentRevision is used for init tso for leader
 	SetCurrentRevision(uint64)
@@ -786,13 +794,13 @@ func (b *backendShim) ListByStream(ctx context.Context, startKey, endKey []byte,
 	return responseCh, nil
 }
 
-func (b *backendShim) Watch(ctx context.Context, key string, revision uint64) (<-chan []*mvccpb.Event, error) {
+func (b *backendShim) Watch(ctx context.Context, key string, revision uint64) (<-chan etcdproxy.WatchResult, error) {
 	ch, err := b.backend.Watch(ctx, key, revision)
 	if err != nil {
 		return nil, err
 	}
-	watchResponseCh := make(chan []*mvccpb.Event)
-	transformResponseFunc := func(ctx context.Context, in <-chan []*proto.Event, out chan []*mvccpb.Event) {
+	watchResponseCh := make(chan etcdproxy.WatchResult)
+	transformResponseFunc := func(ctx context.Context, in <-chan []*proto.Event, out chan etcdproxy.WatchResult) {
 		defer close(out)
 		for {
 			select {
@@ -803,6 +811,17 @@ func (b *backendShim) Watch(ctx context.Context, key string, revision uint64) (<
 				if !ok {
 					return
 				}
+				// An in-band progress marker (nil Kv) becomes a ProgressRevision
+				// result — the single representation change at this shim boundary,
+				// making the leader branch type-identical to the follower/proxy one.
+				if isBackendProgressMarker(events) {
+					select {
+					case out <- etcdproxy.WatchResult{ProgressRevision: events[0].Revision}:
+					case <-ctx.Done():
+						return
+					}
+					continue
+				}
 				etcdEvents := make([]*mvccpb.Event, 0, len(events))
 				for _, e := range events {
 					etcdEvent, err := b.watchEventToEtcdEvent(ctx, e)
@@ -812,12 +831,24 @@ func (b *backendShim) Watch(ctx context.Context, key string, revision uint64) (<
 					}
 					etcdEvents = append(etcdEvents, etcdEvent)
 				}
-				out <- etcdEvents
+				select {
+				case out <- etcdproxy.WatchResult{Events: etcdEvents}:
+				case <-ctx.Done():
+					return
+				}
 			}
 		}
 	}
 	go transformResponseFunc(ctx, ch, watchResponseCh)
 	return watchResponseCh, nil
+}
+
+// isBackendProgressMarker reports whether a backend event batch is an in-band
+// progress marker (a one-element batch whose event carries only a revision, with
+// a nil Kv). Real events always set Kv. Mirrors backend.isProgressMarker, which
+// is unexported in its package.
+func isBackendProgressMarker(events []*proto.Event) bool {
+	return len(events) == 1 && events[0] != nil && events[0].Kv == nil
 }
 
 func (b *backendShim) watchEventToEtcdEvent(ctx context.Context, e *proto.Event) (*mvccpb.Event, error) {
@@ -937,6 +968,10 @@ func (b *backendShim) GetResourceLock() resourcelock.Interface {
 
 func (b *backendShim) GetCurrentRevision() uint64 {
 	return b.backend.GetCurrentRevision()
+}
+
+func (b *backendShim) GetPublishedRevision() uint64 {
+	return b.backend.GetPublishedRevision()
 }
 
 func (b *backendShim) SetCurrentRevision(revision uint64) {

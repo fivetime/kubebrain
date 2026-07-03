@@ -567,8 +567,7 @@ func (e *etcdProxy) Watch(ctx context.Context, key, rangeEnd []byte, revision ui
 					// its initial value (0 for a from-now watch). The Created
 					// response carries revision 0, which nextWatchRevision ignores.
 					watchRevision = nextWatchRevision(watchRevision, wresp.Header.Revision)
-					events := convertEvents(wresp.Events)
-					outputCh <- WatchResult{Events: events}
+					outputCh <- watchResultFromResponse(wresp)
 				}
 			}
 
@@ -609,6 +608,20 @@ func nextWatchRevision(current uint64, headerRev int64) uint64 {
 		return next
 	}
 	return current
+}
+
+// watchResultFromResponse maps one leader watch response to a WatchResult. An
+// idle progress notification (no events, carrying only the leader's current
+// revision) becomes a ProgressRevision result so the follower's watch can advance
+// a quiet watch's progress; the leader now makes that header revision a safe
+// "all events <= R delivered on this stream" value, and clientv3 preserves FIFO,
+// so the proxy's FIFO copy preserves the guarantee. Any other response carries
+// converted events.
+func watchResultFromResponse(wresp clientv3.WatchResponse) WatchResult {
+	if wresp.IsProgressNotify() {
+		return WatchResult{ProgressRevision: uint64(wresp.Header.Revision)}
+	}
+	return WatchResult{Events: convertEvents(wresp.Events)}
 }
 
 func convertEvents(events []*clientv3.Event) []*mvccpb.Event {
