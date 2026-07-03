@@ -3,7 +3,7 @@
 > 来源：Fable 5 多智能体审核（73 条已确认问题）。本文件是**持久化进度清单**，做一个勾一个（`[x]`），抗会话压缩遗忘。
 > 编号 `#N` = 审核确认清单索引；`file:line` 为大致位置。测试遵循 `docs/test_strategy_cn.md`：**真实消费端黑盒为主，内部单测只锁黑盒够不着的精确 bug**。
 
-进度：**已修 63 / 73** — Critical 3/3 ✓，High 27/32，Medium 14/17，Low 19/21。（+ P7 引擎一致性 #25/#44/#45/#46 c12d982;#43 read-index 双缓冲 fetch 013fd93;#42 follower 拒绝畸形/零 revision d697c62;#41/#47 etcdproxy updateClient 序列化 aab4b1a;#40 resourceLock 字段竞争=随 #60/#68 解决;#37 event 过期改走 lease in-band DELETE=随 #16 解决;#56/#57 follower lease 读不返陈旧态 + 降级 StopLeases d924106；#36 lease expiry 先删键后删 record 防孤儿 b616a9f；#17 lease per-key attachment 去 O(N²) key-list 重写 503c397；#16 event TTL 去硬编码启发式=删子串 GC 依赖 lease 9c60cf3；#71 compaction 错误可见性；#48 compact TTL 缓存；P7 #65/#66/#67）（+ #5/#27/#29 A-index e885b8d；#6/#38 etcdmeta 纳入 compaction；#15 两半完成：\x00kubebrain/ 命名空间整体纳入 compaction；#30 watch history 去点读+限流；#69 前缀路由；kv.Lease 读回填=Get/Range/watch 回填附着 lease + 无锁快路径 86e692d）
+进度：**已修 65 / 73** — Critical 3/3 ✓，High 28/32，Medium 15/17，Low 19/21。（+ #34 监控修复 c499c1a;#49 PDB 分隔;P7 引擎一致性 #25/#44/#45/#46 c12d982;#43 read-index 双缓冲 fetch 013fd93;#42 follower 拒绝畸形/零 revision d697c62;#41/#47 etcdproxy updateClient 序列化 aab4b1a;#40 resourceLock 字段竞争=随 #60/#68 解决;#37 event 过期改走 lease in-band DELETE=随 #16 解决;#56/#57 follower lease 读不返陈旧态 + 降级 StopLeases d924106；#36 lease expiry 先删键后删 record 防孤儿 b616a9f；#17 lease per-key attachment 去 O(N²) key-list 重写 503c397；#16 event TTL 去硬编码启发式=删子串 GC 依赖 lease 9c60cf3；#71 compaction 错误可见性；#48 compact TTL 缓存；P7 #65/#66/#67）（+ #5/#27/#29 A-index e885b8d；#6/#38 etcdmeta 纳入 compaction；#15 两半完成：\x00kubebrain/ 命名空间整体纳入 compaction；#30 watch history 去点读+限流；#69 前缀路由；kv.Lease 读回填=Get/Range/watch 回填附着 lease + 无锁快路径 86e692d）
 > 附带修复（不在 73 条内）：events-TTL 过期回收在多 border（etcdmeta / 多 SkippedPrefixes）下失效——`getTimeoutRevision` 会 drain 共享 compact-history 队列，原先每 border 各调一次，首个 border 耗尽旧记录后其余 border 拿到 timeoutRevision=0，静默关闭 `/events/` 过期。已改为每次 compaction 周期只计算一次并应用到所有 border（`scanner.Compact` 现接收全部 borders）。`TestCompactExpiredEvents` 覆盖。
 
 ## 已完成（PR #1: fivetime/kubebrain#1 + 81d36be）
@@ -135,10 +135,10 @@
   `pkg/endpoint/endpoint.go:138`
 - [ ] **#31** [high] Revision syncer falls back from https to plain http for leader /status sync  
   `pkg/server/service/revision/revision.go:340`
-- [ ] **#34** [high] Production monitoring is entirely non-functional: ServiceMonitor matches no Service and alerts reference nonexistent metric names  
-  `deploy/production/monitoring.yaml:12`
-- [ ] **#49** [medium] PodDisruptionBudget silently dropped in both production manifests (missing --- separator)  
-  `deploy/production/kubebrain.yaml:30`
+- [x] **#34** [high] Production monitoring is entirely non-functional: ServiceMonitor matches no Service and alerts reference nonexistent metric names  
+  `deploy/production/monitoring.yaml:12` — c499c1a。**(1)** ServiceMonitor selector 要 `name=kubebrain` **且** `component=peer`,但 `kubebrain-peer` Service 只有 name 标签 → 匹配不到任何 Service、什么都没抓。给 peer(及 client)Service 加 `component` 标签。**(2)** 告警引用了 KubeBrain 从不暴露的 metric 名:wrapper 把 `.`→`_` 且**不加 `_total`**(仅 grpc-prometheus 的带 `_total`)。修正:`write_total`→`write`(success=false)、`watch_event_buffer_full_total`→`watch_event_buffer_full`、`watch_backend_err_total`→`watch_event_buffer_stale_drop`(真实丢事件信号)、`leader_election_lost_total`→`leader_election_lost`;`grpc_server_handled_total`/`grpc_server_handling_seconds_bucket`/`watch_revision_lag` 本就正确。校验:ServiceMonitor 现匹配 peer Service 并抓 info 端口、所有告警 metric 名都能在代码 `EmitCounter/EmitGauge` 找到、三份 manifest 均解析通过。
+- [x] **#49** [medium] PodDisruptionBudget silently dropped in both production manifests (missing --- separator)  
+  `deploy/production/kubebrain.yaml:30` — (随 #34 批,提交于 PDB 分隔 commit)。`kubebrain.yaml`/`kubebrain-tls.yaml` 里 PDB 紧跟 Deployment 之间**缺 `---`** → kubectl 当成一个文档解析、PDB 被静默丢弃(生产无中断预算)。补 `---`;两份文件现各含独立的 PDB 与 Deployment(`yaml.safe_load_all` + `kubectl --dry-run=client` 均确认 PDB 与 Deployment 都被创建)。
 - [ ] **#50** [medium] --client-cert-auth=true without --trusted-ca-file passes validation but verifies client certs against the system root pool  
   `pkg/endpoint/config.go:226`
 
