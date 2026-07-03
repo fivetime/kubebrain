@@ -80,9 +80,11 @@ harness：`hack/etcd-client-compat/read_amp_bench_test.go`（`TestReadAmpBaselin
 - keys-only 计数**不可行**：删除用 tombstone 值标记，计数需读值判活/墓碑（除非把活性编码进 key）。
 - 所以**无索引时精确计数本质是 O(N)/页 = 分页 O(N²)**，无法外科手术式修复。
 
-**正确修法 = approach A 级重设计**：维护"活键计数索引"（写时增减 per-range 计数）或把活性/create_rev/version 内联进 key/value 使 keys-only 计数可行。建议与 A（元数据内联 + 迁移，同时干掉 #6/#15）**打包**做。或由用户决策：接受近似 RemainingItemCount（alpha/装饰性）换取分页 O(N)（需改 TestRangeLimitCountReportsTotalMatches）。#29（CountOnly 流式读值）同源。
+**正确修法 = approach A 级重设计**：维护"活键计数索引"（写时增减 per-range 计数）或把活性/create_rev/version 内联进 key/value 使 keys-only 计数可行。#29（CountOnly 流式读值）同源。
 
-**本轮不改代码**（避免破坏被测的精确 count 兼容语义）；仅复现 + 记录。
+> **已解决（2026-07-03）**：用户选定 **A-index**（内存版本化 key 索引，`--enable-count-index`），已实现上线（commit `e885b8d` 等），精确计数从分页 O(N²) 降为 O(log N)/索引命中，实测 N=20k 分页 LIST 10.5s→1.44s、CountOnly 350ms→6.6ms。详见 `docs/read_amp_a_index_cn.md` 与 `docs/read_amp_approach_a_cn.md` 顶部状态。此处保留原基线记录。
+
+**基线阶段不改代码**（避免破坏被测的精确 count 兼容语义）；仅复现 + 记录。
 
 ## 改动后（A-core：元数据内联，commit ee55f24）
 

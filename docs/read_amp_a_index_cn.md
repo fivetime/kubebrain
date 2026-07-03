@@ -1,7 +1,7 @@
 # A-index 设计 — 内存态 key 索引（根治精确计数 #5/#27/#29）
 
 > 目标：给 leader 一个内存态、按 key 排序、带版本的索引，使 `[start,end)` 在**任意修订号**下的**精确活键计数**为 O(log N + 命中区间)，根治分页 count 的 O(N²) 全量扫描。
-> 状态：**设计待评审，未实现。** 关联 `docs/read_amp_approach_a_cn.md`、`docs/read_amp_baseline_cn.md`。
+> 状态：**已实现并上线（MVP）。** commit `1fe5833`（`pkg/backend/countindex` 包）+ `e885b8d`（接线）+ `27e4bfc`（文档）。behind `--enable-count-index`（+ `--count-index-max-keys`，默认 5M，超限自动禁用回退扫描）。实测 N=20k：分页 LIST 10.5s→1.44s、CountOnly 350ms→6.6ms/0 iters、历史 LIST 10.7s→1.33s。ROOT #5/#27/#29。关联 `docs/read_amp_approach_a_cn.md`、`docs/read_amp_baseline_cn.md`。
 
 ## 为什么必须"带版本"（诚实的架构结论）
 apiserver 分页 LIST 在第 2 页起**固定 revision**（continue token 里编码），并用 `hasMore = len(Kvs) < Count` 判是否还有下一页、用 `Count` 算 RemainingItemCount。因此 `Count` 必须是**固定 rev 下 `[continueKey, end)` 的精确活键数**：
@@ -72,4 +72,4 @@ KubeBrain 的 `collectStorageWriteEvents` 已**按修订号严格有序**处理�
 - 历史世代深度（compaction 裁剪 + 对已 compact 的 pinned rev 返回 ErrCompacted，与 etcd 一致）。
 
 ## 状态
-**未实现。等评审通过后按 MVP 分期实现。**
+**已实现并上线（MVP，2026-07-02）。** 见文档顶部状态行的 commit 与实测数据；后续可选优化 = O(log N) 增广-btree rank（`[opt]`，已显式推迟,非缺陷）。

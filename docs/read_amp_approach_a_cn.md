@@ -1,7 +1,9 @@
-# Approach A — 读放大根治设计（待评审，未实现）
+# Approach A — 读放大根治设计（**已实现并上线**）
 
+> **状态更新（2026-07-03）：本设计已全部落地并部署验证。** A-core（元数据内联 envelope）= commit `3fe2e28`+`ee55f24`；A-index（内存版本化 key 索引，用户选定方案，`--enable-count-index`）= `1fe5833`+`e885b8d`；A-core-2（collector 内联 PUT 事件值）= `20a54c4`。根治 #3/#7，ROOT #5/#27/#29，止住 #6/#15 增长。实测见下文与 `docs/read_amp_a_index_cn.md`。以下为原始设计文档,保留作记录。
+>
 > 目标：根治读放大的**结构性根因**，让 KubeBrain 在规模上真正超越 etcd。
-> 本文档只做设计，**不改任何存储代码**；涉及持久化 value 格式变更 + 迁移，需评审通过后再实现。
+> 本文档只做设计（涉及持久化 value 格式变更 + 迁移）。
 > 关联：`docs/read_amp_baseline_cn.md`（基线/复现）、`docs/audit_remediation_todo_cn.md`（#3/#5/#6/#7/#10/#15/#27/#28/#29）。
 
 ## 背景（两条底层事实）
