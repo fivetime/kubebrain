@@ -20,10 +20,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kubewharf/kubebrain/pkg/server/service/leader"
-	"github.com/stretchr/testify/require"
+	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+
+	"github.com/kubewharf/kubebrain/pkg/server/service/leader"
+	"github.com/stretchr/testify/require"
 )
 
 func TestIsForwardConnectionError(t *testing.T) {
@@ -149,4 +151,32 @@ func TestUpdateClientConcurrentNoDeadlock(t *testing.T) {
 	// Unreachable leader -> never ready, and no client is leaked into place.
 	require.Error(t, proxy.Ready())
 	require.False(t, proxy.hasClient())
+}
+
+// TestForwardErrorClientCancelDoesNotResetSharedClient pins #23: a forward failing
+// because the CALLER's context was cancelled/expired must not tear down the shared
+// forwarding client (which every other in-flight follower request depends on).
+// Only a genuine connection error with a live caller context resets it.
+func TestForwardErrorClientCancelDoesNotResetSharedClient(t *testing.T) {
+	cli, err := clientv3.New(clientv3.Config{Endpoints: []string{"127.0.0.1:1"}})
+	require.NoError(t, err)
+	proxy := &etcdProxy{
+		election:  &testLeaderElection{leaderAddress: "127.0.0.1:1"},
+		client:    cli,
+		curLeader: "127.0.0.1:1",
+	}
+
+	// Caller cancelled its context -> client-caused, must NOT reset.
+	cctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	proxy.markForwardError(cctx, cli, context.Canceled)
+	require.Same(t, cli, proxy.client, "client-cancelled forward must not reset the shared client")
+
+	// gRPC Canceled with a cancelled caller ctx -> still client-caused, no reset.
+	proxy.markForwardError(cctx, cli, status.Error(codes.Canceled, "context canceled"))
+	require.Same(t, cli, proxy.client, "gRPC-canceled with dead caller ctx must not reset")
+
+	// Genuine leader-down (Unavailable) with a live caller ctx -> resets.
+	proxy.markForwardError(context.Background(), cli, status.Error(codes.Unavailable, "leader down"))
+	require.Nil(t, proxy.client, "a genuine connection error must reset the shared client")
 }

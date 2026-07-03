@@ -244,8 +244,17 @@ func (e *etcdProxy) readyClient(ctx context.Context) (*clientv3.Client, string, 
 	return e.client, e.curLeader, e.closed, nil
 }
 
-func (e *etcdProxy) markForwardError(client *clientv3.Client, err error) {
+func (e *etcdProxy) markForwardError(ctx context.Context, client *clientv3.Client, err error) {
 	if err == nil || !isForwardConnectionError(err) {
+		return
+	}
+	// A cancelled or expired CLIENT context is not a leader-connection failure --
+	// the caller went away. Resetting the shared forwarding client here would tear
+	// down the connection every other in-flight follower request depends on (#23).
+	// Only a genuine connection error with a still-live caller context (e.g. the
+	// leader is unreachable) should reset it; a truly dead leader is also caught by
+	// the periodic checkLeaderLoop.
+	if ctx.Err() != nil {
 		return
 	}
 	e.lock.Lock()
@@ -291,7 +300,7 @@ func (e *etcdProxy) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etc
 		"key", key,
 		"rev", rev)
 	resp, err := etcdserverpb.NewKVClient(client.ActiveConnection()).Txn(ctx, txn, defaultCallOption...)
-	e.markForwardError(client, err)
+	e.markForwardError(ctx, client, err)
 	if err != nil {
 		klog.InfoS("forward txn failed", "key", key, "err", err.Error())
 		return nil, err
@@ -325,7 +334,7 @@ func (e *etcdProxy) Range(ctx context.Context, req *etcdserverpb.RangeRequest) (
 	}
 	klog.InfoS("forward range", "leader", leader, "key", string(req.Key), "rangeEnd", string(req.RangeEnd), "revision", req.Revision)
 	resp, err := etcdserverpb.NewKVClient(client.ActiveConnection()).Range(ctx, req, defaultCallOption...)
-	e.markForwardError(client, err)
+	e.markForwardError(ctx, client, err)
 	return resp, err
 }
 
@@ -336,7 +345,7 @@ func (e *etcdProxy) Put(ctx context.Context, req *etcdserverpb.PutRequest) (*etc
 	}
 	klog.InfoS("forward put", "leader", leader, "key", string(req.Key), "lease", req.Lease)
 	resp, err := etcdserverpb.NewKVClient(client.ActiveConnection()).Put(ctx, req, defaultCallOption...)
-	e.markForwardError(client, err)
+	e.markForwardError(ctx, client, err)
 	return resp, err
 }
 
@@ -347,7 +356,7 @@ func (e *etcdProxy) DeleteRange(ctx context.Context, req *etcdserverpb.DeleteRan
 	}
 	klog.InfoS("forward delete range", "leader", leader, "key", string(req.Key), "rangeEnd", string(req.RangeEnd))
 	resp, err := etcdserverpb.NewKVClient(client.ActiveConnection()).DeleteRange(ctx, req, defaultCallOption...)
-	e.markForwardError(client, err)
+	e.markForwardError(ctx, client, err)
 	return resp, err
 }
 
@@ -358,7 +367,7 @@ func (e *etcdProxy) Compact(ctx context.Context, req *etcdserverpb.CompactionReq
 	}
 	klog.InfoS("forward compact", "leader", leader, "revision", req.Revision, "physical", req.Physical)
 	resp, err := etcdserverpb.NewKVClient(client.ActiveConnection()).Compact(ctx, req, defaultCallOption...)
-	e.markForwardError(client, err)
+	e.markForwardError(ctx, client, err)
 	return resp, err
 }
 
@@ -369,7 +378,7 @@ func (e *etcdProxy) LeaseGrant(ctx context.Context, req *etcdserverpb.LeaseGrant
 	}
 	klog.InfoS("forward lease grant", "leader", leader, "id", req.ID, "ttl", req.TTL)
 	resp, err := etcdserverpb.NewLeaseClient(client.ActiveConnection()).LeaseGrant(ctx, req, defaultCallOption...)
-	e.markForwardError(client, err)
+	e.markForwardError(ctx, client, err)
 	return resp, err
 }
 
@@ -380,7 +389,7 @@ func (e *etcdProxy) LeaseRevoke(ctx context.Context, req *etcdserverpb.LeaseRevo
 	}
 	klog.InfoS("forward lease revoke", "leader", leader, "id", req.ID)
 	resp, err := etcdserverpb.NewLeaseClient(client.ActiveConnection()).LeaseRevoke(ctx, req, defaultCallOption...)
-	e.markForwardError(client, err)
+	e.markForwardError(ctx, client, err)
 	return resp, err
 }
 
@@ -399,15 +408,15 @@ func (e *etcdProxy) LeaseKeepAlive(ctx context.Context, req *etcdserverpb.LeaseK
 	defer cancel()
 	stream, err := etcdserverpb.NewLeaseClient(client.ActiveConnection()).LeaseKeepAlive(callCtx, defaultCallOption...)
 	if err != nil {
-		e.markForwardError(client, err)
+		e.markForwardError(ctx, client, err)
 		return nil, err
 	}
 	if err := stream.Send(req); err != nil {
-		e.markForwardError(client, err)
+		e.markForwardError(ctx, client, err)
 		return nil, err
 	}
 	resp, err := stream.Recv()
-	e.markForwardError(client, err)
+	e.markForwardError(ctx, client, err)
 	return resp, err
 }
 
@@ -418,7 +427,7 @@ func (e *etcdProxy) LeaseTimeToLive(ctx context.Context, req *etcdserverpb.Lease
 	}
 	klog.InfoS("forward lease ttl", "leader", leader, "id", req.ID, "keys", req.Keys)
 	resp, err := etcdserverpb.NewLeaseClient(client.ActiveConnection()).LeaseTimeToLive(ctx, req, defaultCallOption...)
-	e.markForwardError(client, err)
+	e.markForwardError(ctx, client, err)
 	return resp, err
 }
 
@@ -429,7 +438,7 @@ func (e *etcdProxy) LeaseLeases(ctx context.Context, req *etcdserverpb.LeaseLeas
 	}
 	klog.InfoS("forward lease leases", "leader", leader)
 	resp, err := etcdserverpb.NewLeaseClient(client.ActiveConnection()).LeaseLeases(ctx, req, defaultCallOption...)
-	e.markForwardError(client, err)
+	e.markForwardError(ctx, client, err)
 	return resp, err
 }
 
@@ -539,7 +548,7 @@ func (e *etcdProxy) Watch(ctx context.Context, key, rangeEnd []byte, revision ui
 					err := wresp.Err()
 					if err != nil {
 						klog.InfoS("etcd proxy watch error", "key", string(key), "rangeEnd", string(rangeEnd), "rev", watchRevision, "channel", outputCh, "error", err)
-						e.markForwardError(client, err)
+						e.markForwardError(ctx, client, err)
 						if isForwardConnectionError(err) {
 							reconnect = true
 							break
