@@ -32,6 +32,11 @@ type Scanner interface {
 	// Count run scan in partitions concurrently and returns the count of user key
 	Count(ctx context.Context, start []byte, end []byte, revision uint64) (int, error)
 
-	// Compact will gc the kvs which are too old
-	Compact(ctx context.Context, start []byte, end []byte, revision uint64)
+	// Compact reclaims superseded versions and tombstones across all the given
+	// [start,end) border pairs. It returns the first border scan error (after the
+	// per-worker retries) so the caller can surface a failed physical GC instead
+	// of silently reporting success while garbage accumulates. Key expiry (TTL) is
+	// not handled here — it is driven by the lease manager, which deletes expired
+	// keys whose tombstones are then reclaimed by this compaction like any other.
+	Compact(ctx context.Context, borders [][]byte, revision uint64) error
 }

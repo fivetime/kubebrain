@@ -17,6 +17,7 @@ package etcd
 import (
 	"bytes"
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -63,6 +64,10 @@ func (testPeerService) GetLeaderInfo() string {
 
 func (s testPeerService) IsLeader() bool {
 	return s.isLeader
+}
+
+func (s testPeerService) EpochAndLeadingFresh() (uint64, bool) {
+	return 0, s.isLeader
 }
 
 func (s testPeerService) GetElectionInfo() (leader.ElectionInfo, error) {
@@ -946,7 +951,9 @@ func TestCompactReturnsRetryableErrorWhenBackendCompactsBelowRequestedRevision(t
 		actualCompact:   9,
 	}
 
-	_, err := server.Compact(context.Background(), &etcdserverpb.CompactionRequest{Revision: 10})
+	// Physical=true routes to the synchronous Compact that compactLagShim
+	// overrides to report a below-requested compacted revision.
+	_, err := server.Compact(context.Background(), &etcdserverpb.CompactionRequest{Revision: 10, Physical: true})
 	require.Error(t, err)
 	require.Equal(t, codes.Unavailable, status.Code(err))
 	require.Contains(t, err.Error(), "pending behind requested revision")
@@ -1135,7 +1142,7 @@ func TestDeleteRangeDeletesRange(t *testing.T) {
 	defer watchCancel()
 	watchCh, err := server.backend.Watch(watchCtx, "/registry/configmaps/", uint64(deleteResp.Header.Revision))
 	require.NoError(t, err)
-	deleteEvents := <-watchCh
+	deleteEvents := (<-watchCh).Events
 	require.Len(t, deleteEvents, 2)
 	for _, event := range deleteEvents {
 		require.Equal(t, mvccpb.DELETE, event.Type)
@@ -2761,6 +2768,77 @@ func TestTxnCompactRevisionCAS(t *testing.T) {
 
 func TestCompactRevisionKeyCanBeWatched(t *testing.T) {
 	require.True(t, isPureWatchRequest(&etcdserverpb.WatchCreateRequest{Key: []byte(compactRevKey)}))
+}
+
+// TestRangeAtMagicRevisionIsNotHijacked pins #53: a Range at revision 1888 (the
+// former partition-magic value) must get normal etcd semantics, not be hijacked
+// into returning partition metadata. Partition discovery uses the brain-protocol
+// ListPartition RPC instead.
+func TestRangeAtMagicRevisionIsNotHijacked(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+
+	// Put the current revision well above the magic value so the requested
+	// revision 1888 is a valid (past) revision rather than a future one.
+	server.backend.SetCurrentRevision(1_000_000)
+	_, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: []byte("/registry/a"), Value: []byte("v")})
+	require.NoError(t, err)
+
+	resp, err := server.Range(ctx, &etcdserverpb.RangeRequest{
+		Key:      []byte("/registry/"),
+		RangeEnd: []byte("/registry0"),
+		Revision: GetPartitionMagic,
+	})
+	require.NoError(t, err)
+	// Nothing existed as of revision 1888, so this is a normal empty range — not
+	// partition boundary keys (which the old hijack would have returned).
+	require.Empty(t, resp.Kvs)
+	require.EqualValues(t, 0, resp.Count)
+}
+
+// TestTxnCompactRevisionConcurrentSingleWinner pins the #54/#72 fix: when
+// several HA-apiserver compactors race the same version, the emulation must let
+// exactly one win (an atomic version CAS), not several.
+func TestTxnCompactRevisionConcurrentSingleWinner(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+
+	first, err := server.Txn(ctx, compactTxn(0, "0"))
+	require.NoError(t, err)
+	require.True(t, first.Succeeded) // create -> version 1
+
+	const n = 16
+	var wg sync.WaitGroup
+	succeeded := make([]bool, n)
+	errs := make([]error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			r, e := server.Txn(ctx, compactTxn(1, "10"))
+			errs[i] = e
+			if e == nil {
+				succeeded[i] = r.Succeeded
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	winners := 0
+	for i := 0; i < n; i++ {
+		require.NoError(t, errs[i])
+		if succeeded[i] {
+			winners++
+		}
+	}
+	require.Equal(t, 1, winners, "exactly one concurrent compactor may win the version CAS")
+
+	rr, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: []byte(compactRevKey)})
+	require.NoError(t, err)
+	require.Len(t, rr.Kvs, 1)
+	require.Equal(t, int64(2), rr.Kvs[0].Version, "only one write must have applied over the seed")
 }
 
 func compactTxn(expectVersion int64, rev string) *etcdserverpb.TxnRequest {

@@ -67,6 +67,16 @@ type Config struct {
 	// PeerSecurityConfig is the security config for peer server
 	PeerSecurityConfig *SecurityConfig
 
+	// InfoSecurityConfig is the security config for the info/metrics server. Empty
+	// (the default) keeps the info port plaintext; setting cert/key enables TLS so
+	// metrics/pprof are not served in cleartext (#32).
+	InfoSecurityConfig *SecurityConfig
+
+	// EnablePprof exposes the net/http/pprof debug handlers on the info port. It is
+	// off by default because pprof is an unauthenticated CPU/heap DoS and
+	// info-disclosure surface; it is never exposed on the client data port (#32).
+	EnablePprof bool
+
 	// EnableEtcdCompatibility is the flag if KubeWharf should try to be compatible with etcd3
 	EnableEtcdCompatibility bool
 }
@@ -135,6 +145,14 @@ func (c *Config) Validate() error {
 	if err != nil {
 		klog.ErrorS(err, "invalid peer security config")
 		return err
+	}
+
+	if c.InfoSecurityConfig != nil {
+		klog.InfoS("validate info security config", c.InfoSecurityConfig.ToKvs()...)
+		if err = c.InfoSecurityConfig.validate(); err != nil {
+			klog.ErrorS(err, "invalid info security config")
+			return err
+		}
 	}
 	return nil
 }
@@ -223,6 +241,16 @@ func (sc *SecurityConfig) init() (err error) {
 			sc.clientTlsConfig.RootCAs = certPool
 		}
 
+		if sc.ClientAuth && sc.CA == "" {
+			// RequireAndVerifyClientCert with a nil ClientCAs makes Go verify client
+			// certs against the SYSTEM root pool, accepting any cert signed by a
+			// publicly-trusted CA -- defeating the purpose of client cert auth.
+			// Client cert auth is meaningless without an explicit trusted CA, so
+			// refuse to start (matching etcd's --client-cert-auth requirement) (#50).
+			sc.err = fmt.Errorf("client cert auth is enabled but no trusted CA file is set; " +
+				"refusing to verify client certs against the system root pool")
+			return
+		}
 		if sc.CA != "" || sc.ClientAuth {
 			sc.serverTlsConfig.ClientAuth = tls.RequireAndVerifyClientCert
 		}

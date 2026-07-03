@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"time"
 
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
 	"k8s.io/klog/v2"
@@ -26,6 +27,7 @@ import (
 
 	"github.com/kubewharf/kubebrain/pkg/backend/coder"
 	"github.com/kubewharf/kubebrain/pkg/backend/common"
+	"github.com/kubewharf/kubebrain/pkg/backend/countindex"
 	"github.com/kubewharf/kubebrain/pkg/backend/creator"
 	"github.com/kubewharf/kubebrain/pkg/backend/election"
 	"github.com/kubewharf/kubebrain/pkg/backend/retry"
@@ -39,6 +41,10 @@ const (
 	historyCapacity      = 200000
 	watchersChanCapacity = 100000
 	eventBatchSize       = 300
+	// idleWaitTimeout bounds how long the event collector blocks waiting for a
+	// write signal before re-checking the ring buffer. It is only a safety net
+	// against a missed wake-up; the common case is an immediate writeSignal.
+	idleWaitTimeout = 10 * time.Millisecond
 )
 
 type Backend interface {
@@ -55,11 +61,24 @@ type Backend interface {
 	// DeleteRange removes keys from storage in one storage batch.
 	DeleteRange(ctx context.Context, kvs []*proto.KeyValue) (*DeleteRangeResponse, error)
 
+	// TxnApply applies a set of put/delete ops (distinct keys) atomically at a
+	// single revision, asserting the given compare guards. See the implementation
+	// for semantics; returns ErrTxnGuardConflict when a guard's key changed.
+	TxnApply(ctx context.Context, ops []TxnWriteOp, guards []TxnGuard) ([]TxnWriteResult, uint64, error)
+
 	// GetEtcdMetadata returns etcd-compatible create revision and version for a key at modRevision.
 	GetEtcdMetadata(ctx context.Context, key []byte, modRevision uint64) (EtcdMetadata, error)
 
-	// Compact clears the kvs that are too old
+	// Compact clears the kvs that are too old, running the physical scan
+	// synchronously before returning.
 	Compact(ctx context.Context, revision uint64) (*proto.CompactResponse, error)
+
+	// CompactAsync advances the logical compact watermark synchronously (so reads
+	// immediately observe the compaction) and performs the physical version GC in
+	// the background. It returns the actual (possibly clamped) compacted revision.
+	// Use it on the hot Compact RPC path so a large physical backlog cannot exceed
+	// the caller's timeout.
+	CompactAsync(ctx context.Context, revision uint64) (uint64, error)
 
 	// GetCompactRevision returns the latest completed logical compaction revision.
 	GetCompactRevision(ctx context.Context) (uint64, error)
@@ -72,6 +91,13 @@ type Backend interface {
 
 	// Count counts the number of kvs in range
 	Count(ctx context.Context, r *proto.CountRequest) (*proto.CountResponse, error)
+
+	// CountAtRevision returns the exact live-key count of [key,end) at rev from
+	// the in-memory count index; served is false when it must fall back to a scan.
+	CountAtRevision(ctx context.Context, key, end []byte, rev uint64) (count int64, served bool)
+
+	// RebuildCountIndex rebuilds the count index; call on leadership acquisition.
+	RebuildCountIndex(ctx context.Context) error
 
 	// GetPartitions query the partition state of storage for ListByStream
 	GetPartitions(ctx context.Context, r *proto.ListPartitionRequest) (*proto.ListPartitionResponse, error)
@@ -88,8 +114,26 @@ type Backend interface {
 	// GetCurrentRevision returns the read revision
 	GetCurrentRevision() uint64
 
+	// GetPublishedRevision returns the highest revision whose events have been
+	// fully fanned out to watch subscribers. It is <= GetCurrentRevision (which
+	// advances pre-publish), and is the safe floor for seeding a from-now watch's
+	// progress: any event a freshly-registered subscriber still receives has a
+	// revision strictly greater, so it cannot be skipped.
+	GetPublishedRevision() uint64
+
+	// WatchProgressNotifyInterval is the configured progress-notify cadence, used
+	// by the server watch loop so its emission ticker matches the backend's
+	// in-band marker cadence. Always > 0.
+	WatchProgressNotifyInterval() time.Duration
+
 	// SetCurrentRevision is used for init tso for leader
 	SetCurrentRevision(uint64)
+
+	// SetLeadershipFence registers the leadership-epoch source that the write
+	// fence re-checks immediately before every data-batch commit, so a deposed
+	// leader's in-flight write cannot be committed-yet-unwatched (FINDING #39).
+	// fn returns (current epoch, still-safely-leading). Unset = fence disabled.
+	SetLeadershipFence(fn func() (uint64, bool))
 }
 
 var _ Backend = (*backend)(nil)
@@ -118,6 +162,11 @@ type backend struct {
 	config Config
 
 	watchEventsRingBuffer []*watchEventSlot
+	// notifyMu serializes watch-overflow resets against event appends: appends
+	// (notify/notifyBatch) hold it for read, the overflow reset holds it for
+	// write so the wipe + revision jump + watcher close is atomic w.r.t.
+	// concurrent appends.
+	notifyMu sync.RWMutex
 
 	// maximum size of history watch event window.
 	capacity int
@@ -126,8 +175,50 @@ type backend struct {
 
 	// channel to pass etcd watch event to watchers
 	watchChan chan []*proto.Event
+	// writeSignal wakes collectStorageWriteEvents when a new event is appended
+	// to the ring buffer, so the collector can block while idle instead of
+	// busy-spinning a full core. Buffered(1); senders use a non-blocking send so
+	// signals coalesce and the write path never blocks.
+	writeSignal chan struct{}
 	// hold watchers
 	watcherHub *WatcherHub
+
+	// countIndex, when enabled, gives exact live-key counts at a revision
+	// without scanning storage (approach A-index). nil when disabled.
+	countIndex *countindex.TreeIndex
+
+	// historyScanSem bounds the number of concurrent watch-history fallback
+	// scans. After a cache reset (e.g. leader change) every reconnecting watcher
+	// whose start revision predates the warm cache falls back to a full
+	// prefix scan; without a cap, N watchers issue N concurrent scans and stampede
+	// the storage engine (#30). The gate serializes the excess into a bounded
+	// number of in-flight scans; waiters block (honoring ctx) rather than piling
+	// on. Buffered to historyScanConcurrency.
+	historyScanSem chan struct{}
+
+	// Background physical compaction. CompactAsync advances the logical compact
+	// watermark synchronously (so reads immediately see the compaction) and hands
+	// the slow physical version-GC scan to runCompactor, so the etcd Compact RPC
+	// returns promptly instead of blocking a caller's timeout on a large backlog.
+	// compactTriggerRev (atomic) is the highest revision requested for background
+	// GC; compactSignal wakes the worker; compactScanMu serializes every physical
+	// scan (background and the synchronous Compact path) so they never overlap.
+	compactTriggerRev uint64
+	compactDoneRev    uint64 // atomic: highest revision whose background GC scan finished
+	compactSignal     chan struct{}
+	compactScanMu     sync.Mutex
+
+	// compactRevCache memoizes the persisted compact revision so revisioned reads
+	// (compaction checks, txn/watch validation) don't each do a storage Get for a
+	// value that only advances ~once per compaction cycle (#48). Monotonic, so a
+	// short TTL is safe; setCompactRecord refreshes it eagerly when it advances.
+	compactRevCache compactRevCache
+
+	// fenceFn, when set, returns this node's current leadership epoch and whether
+	// it is still safely leading. fenceAdmit consults it just before every data
+	// commit to fence a deposed leader's in-flight writes (FINDING #39). nil on
+	// single-node / direct-constructed test backends (fence disabled, fail-open).
+	fenceFn func() (uint64, bool)
 
 	metricCli metrics.Metrics
 }
@@ -148,7 +239,27 @@ type Config struct {
 
 	// WatchCacheSize is the cache size of events
 	WatchCacheSize int
+
+	// EnableCountIndex maintains an in-memory versioned key index on the leader
+	// for exact O(range) counts (approach A-index). Requires EnableEtcdCompatibility.
+	EnableCountIndex bool
+
+	// CountIndexMaxKeys caps the index size; above it the index is disabled and
+	// counts fall back to a scan (avoids OOM). 0 means no cap.
+	CountIndexMaxKeys int
+
+	// WatchProgressNotifyInterval is how often a watch progress notification is
+	// advanced/emitted (the in-band published-watermark marker cadence and the
+	// per-watch progress-notify emission). Smaller = faster kube-apiserver
+	// ConsistentListFromCache convergence at more marker traffic. <=0 uses
+	// defaultWatchProgressNotifyInterval.
+	WatchProgressNotifyInterval time.Duration
 }
+
+// defaultWatchProgressNotifyInterval is the fallback progress-notify cadence when
+// Config.WatchProgressNotifyInterval is unset (<=0). It matches the value the
+// watch progress ticker used before it became configurable.
+const defaultWatchProgressNotifyInterval = time.Second
 
 // NewBackend builds a new backend
 func NewBackend(kv storage.KvStorage, config Config, metricCli metrics.Metrics) Backend {
@@ -167,11 +278,19 @@ func NewBackend(kv storage.KvStorage, config Config, metricCli metrics.Metrics) 
 		watchEventsRingBuffer: newWatchEventSlots(watchersChanCapacity),
 		watchCache:            NewRing(config.WatchCacheSize),
 		watchChan:             make(chan []*proto.Event, watchersChanCapacity),
+		writeSignal:           make(chan struct{}, 1),
 		watcherHub: &WatcherHub{
-			subs:      make(map[chan []*proto.Event]struct{}),
-			metricCli: metricCli,
+			subs:             make(map[chan []*proto.Event][]byte),
+			metricCli:        metricCli,
+			progressInterval: config.WatchProgressNotifyInterval,
 		},
-		metricCli: metricCli,
+		historyScanSem: make(chan struct{}, historyScanConcurrency),
+		compactSignal:  make(chan struct{}, 1),
+		metricCli:      metricCli,
+	}
+
+	if config.EnableCountIndex && config.EnableEtcdCompatibility {
+		b.countIndex = countindex.New(config.CountIndexMaxKeys)
 	}
 
 	asyncRetryConfig := retry.Config{
@@ -190,6 +309,9 @@ func NewBackend(kv storage.KvStorage, config Config, metricCli metrics.Metrics) 
 	go b.watcherHub.Stream(b.watchChan)
 
 	go b.asyncFifoRetry.Run(context.Background())
+
+	// drain background physical-compaction requests scheduled by CompactAsync
+	go b.runCompactor()
 
 	return b
 }
@@ -266,7 +388,15 @@ func (b *backend) collectStorageWriteEvents() {
 			watchEvents := b.watchEventsRingBuffer[idx].take(nextRevision)
 			if len(watchEvents) == 0 {
 				if len(events) == 0 {
-					// no event in inside loop, continue inside loop
+					// Nothing to collect yet: block until a writer signals a new
+					// event (or a short timeout as a safety net against a missed
+					// wake-up) instead of busy-spinning a full core. This is the
+					// common idle state — on a leader between writes, and always
+					// on followers where revisions advance via SetCurrentRevision.
+					select {
+					case <-b.writeSignal:
+					case <-time.After(idleWaitTimeout):
+					}
 					continue
 				}
 				// break inside loop for sending existing  events, then read events in a new loop
@@ -281,6 +411,12 @@ func (b *backend) collectStorageWriteEvents() {
 						b.asyncFifoRetry.Append(watchEvent)
 					}
 					continue
+				}
+
+				// Maintain the count index in commit order (leader only, since
+				// only the leader's collector processes local writes).
+				if b.countIndex != nil {
+					b.countIndex.Apply(watchEvent.Key, watchEvent.Revision, watchEvent.ResourceVerb == proto.Event_DELETE)
 				}
 
 				e := &proto.Event{
@@ -312,6 +448,15 @@ func (b *backend) collectStorageWriteEvents() {
 	}
 }
 
+// signalWrite wakes the event collector without ever blocking the caller. The
+// buffered(1) channel coalesces bursts of writes into a single pending wake-up.
+func (b *backend) signalWrite() {
+	select {
+	case b.writeSignal <- struct{}{}:
+	default:
+	}
+}
+
 // GetResourceLock implements Backend interface
 func (b *backend) GetResourceLock() resourcelock.Interface {
 	return b.election.GetResourceLock()
@@ -320,6 +465,17 @@ func (b *backend) GetResourceLock() resourcelock.Interface {
 // GetCurrentRevision implements Backend interface
 func (b *backend) GetCurrentRevision() uint64 {
 	return b.tso.GetRevision()
+}
+
+// GetPublishedRevision implements Backend interface
+func (b *backend) GetPublishedRevision() uint64 {
+	return b.watcherHub.PublishedRevision()
+}
+
+// WatchProgressNotifyInterval implements Backend interface. config.complete()
+// guarantees it is > 0.
+func (b *backend) WatchProgressNotifyInterval() time.Duration {
+	return b.config.WatchProgressNotifyInterval
 }
 
 // SetCurrentRevision implements Backend interface

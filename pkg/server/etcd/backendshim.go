@@ -23,6 +23,7 @@ import (
 
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/mvccpb"
+	"golang.org/x/sync/singleflight"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
@@ -32,6 +33,7 @@ import (
 
 	"github.com/kubewharf/kubebrain/pkg/backend"
 	"github.com/kubewharf/kubebrain/pkg/metrics"
+	"github.com/kubewharf/kubebrain/pkg/server/service/etcdproxy"
 )
 
 var (
@@ -55,14 +57,25 @@ type BackendShim interface {
 	// Put creates or overwrites a key.
 	Put(ctx context.Context, put *etcdserverpb.PutRequest) (*etcdserverpb.PutResponse, error)
 
-	// Compact clears the kvs that are too old
+	// Compact clears the kvs that are too old, scanning synchronously.
 	Compact(ctx context.Context, revision uint64) (*etcdserverpb.TxnResponse, error)
+
+	// CompactAsync advances the compact watermark synchronously and runs the
+	// physical GC in the background, returning the actual compacted revision.
+	CompactAsync(ctx context.Context, revision uint64) (*etcdserverpb.TxnResponse, error)
 
 	// GetCompactRevision returns the latest completed logical compaction revision.
 	GetCompactRevision(ctx context.Context) (uint64, error)
 
 	// DeleteRange removes one key or all keys in a range.
 	DeleteRange(ctx context.Context, r *etcdserverpb.DeleteRangeRequest) (*etcdserverpb.DeleteRangeResponse, error)
+
+	// TxnApply applies a set of put/delete ops (distinct keys) atomically at a
+	// single revision, asserting the compare guards, and returns one etcd
+	// ResponseOp per op (in order) plus the raw results (for lease binding).
+	// prevKv[i] requests the deleted key's previous kv on delete ops. Returns
+	// backend.ErrTxnGuardConflict when a guard's key changed.
+	TxnApply(ctx context.Context, ops []backend.TxnWriteOp, guards []backend.TxnGuard, prevKv []bool) ([]*etcdserverpb.ResponseOp, uint64, []backend.TxnWriteResult, error)
 
 	// Get read a kv from storage
 	Get(ctx context.Context, r *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error)
@@ -73,14 +86,14 @@ type BackendShim interface {
 	// Count counts the number of kvs in range
 	Count(ctx context.Context, r *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error)
 
-	// GetPartitions query the partition state of storage for ListByStream
-	GetPartitions(ctx context.Context, r *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error)
-
 	// ListByStream reads kvs in range by stream
 	ListByStream(ctx context.Context, startKey, endKey []byte, revision uint64) (<-chan *etcdserverpb.WatchResponse, error)
 
-	// Watch subscribe the changes from revision on kvs with given prefix
-	Watch(ctx context.Context, key string, revision uint64) (<-chan []*mvccpb.Event, error)
+	// Watch subscribe the changes from revision on kvs with given prefix. Event
+	// batches arrive as WatchResult{Events}; in-band progress markers arrive as
+	// WatchResult{ProgressRevision} so a quiet watch's progress can advance. This
+	// mirrors the follower/proxy path (etcdProxy.Watch) so both are type-identical.
+	Watch(ctx context.Context, key string, revision uint64) (<-chan etcdproxy.WatchResult, error)
 
 	// GetResourceLock returns the resource lock for leader election
 	GetResourceLock() resourcelock.Interface
@@ -88,8 +101,20 @@ type BackendShim interface {
 	// GetCurrentRevision returns the read revision
 	GetCurrentRevision() uint64
 
+	// GetPublishedRevision returns the highest revision fully fanned out to
+	// watchers; the safe floor for seeding a from-now watch's progress.
+	GetPublishedRevision() uint64
+
+	// WatchProgressNotifyInterval is the configured progress-notify cadence, so
+	// the server watch loop's emission ticker matches the backend marker cadence.
+	WatchProgressNotifyInterval() time.Duration
+
 	// SetCurrentRevision is used for init tso for leader
 	SetCurrentRevision(uint64)
+
+	// SetLeaseLookup wires the key->leaseID resolver (the server's keyLeaseIndex)
+	// so read/watch KeyValues carry their attached lease like etcd does.
+	SetLeaseLookup(func(key string) int64)
 }
 
 // implement backendShim interface
@@ -98,12 +123,26 @@ type backendShim struct {
 	backend backend.Backend
 	// emit metrics
 	metricCli metrics.Metrics
+
+	// (key,revision)-keyed caches coalescing the immutable metadata / previous-kv
+	// lookups that watch fanout would otherwise repeat once per watcher stream.
+	metaCache  *revKeyCache
+	metaFlight singleflight.Group
+	prevCache  *revKeyCache
+	prevFlight singleflight.Group
+
+	// leaseLookup resolves a user key to its currently-attached lease ID (0 if
+	// none), wired to the server's keyLeaseIndex via SetLeaseLookup. nil until
+	// wired (e.g. in unit tests that construct the shim directly).
+	leaseLookup func(key string) int64
 }
 
 func NewBackendShim(backend backend.Backend, metricCli metrics.Metrics) BackendShim {
 	return &backendShim{
 		backend:   backend,
 		metricCli: metricCli,
+		metaCache: newRevKeyCache(revKeyCacheCap),
+		prevCache: newRevKeyCache(revKeyCacheCap),
 	}
 }
 
@@ -307,7 +346,20 @@ func (b *backendShim) Put(ctx context.Context, r *etcdserverpb.PutRequest) (*etc
 	}
 
 	var prevKv *mvccpb.KeyValue
-	for i := 0; i < 3; i++ {
+	// etcd Put is unconditional and never fails on concurrent modification. We
+	// emulate it with a Get-then-Create/Update CAS loop, so retry until it wins
+	// rather than giving up after a fixed count (which returned a spurious,
+	// non-retriable error under contention on a hot key). Bound by the caller's
+	// context plus an internal deadline so a pathological case degrades to a
+	// retriable Unavailable instead of looping forever.
+	deadline := time.Now().Add(unaryRpcTimeout)
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if time.Now().After(deadline) {
+			return nil, status.Errorf(codes.Unavailable, "put %s: still contended after %s", r.Key, unaryRpcTimeout)
+		}
 		getResp, err := b.backend.Get(ctx, &proto.GetRequest{Key: r.Key})
 		if err != nil {
 			return nil, err
@@ -351,8 +403,6 @@ func (b *backendShim) Put(ctx context.Context, r *etcdserverpb.PutRequest) (*etc
 			return resp, nil
 		}
 	}
-
-	return nil, fmt.Errorf("put failed after retries: %s", r.Key)
 }
 
 // TODO: compact is unnecessary for kube-brain ?
@@ -361,11 +411,25 @@ func (b *backendShim) Compact(ctx context.Context, revision uint64) (*etcdserver
 	if err != nil {
 		return nil, err
 	}
-	header := &etcdserverpb.ResponseHeader{}
+	compactedRev := uint64(0)
 	if resp != nil && resp.Header != nil {
-		header.Revision = int64(resp.Header.Revision)
+		compactedRev = resp.Header.Revision
 	}
+	return compactTxnResponse(compactedRev), nil
+}
 
+func (b *backendShim) CompactAsync(ctx context.Context, revision uint64) (*etcdserverpb.TxnResponse, error) {
+	compactedRev, err := b.backend.CompactAsync(ctx, revision)
+	if err != nil {
+		return nil, err
+	}
+	return compactTxnResponse(compactedRev), nil
+}
+
+// compactTxnResponse builds the etcd-shaped compaction response carrying the
+// actual compacted revision.
+func compactTxnResponse(compactedRev uint64) *etcdserverpb.TxnResponse {
+	header := &etcdserverpb.ResponseHeader{Revision: int64(compactedRev)}
 	return &etcdserverpb.TxnResponse{
 		Header:    header,
 		Succeeded: false,
@@ -382,11 +446,42 @@ func (b *backendShim) Compact(ctx context.Context, revision uint64) (*etcdserver
 				},
 			},
 		},
-	}, nil
+	}
 }
 
 func (b *backendShim) GetCompactRevision(ctx context.Context) (uint64, error) {
 	return b.backend.GetCompactRevision(ctx)
+}
+
+func (b *backendShim) TxnApply(ctx context.Context, ops []backend.TxnWriteOp, guards []backend.TxnGuard, prevKv []bool) ([]*etcdserverpb.ResponseOp, uint64, []backend.TxnWriteResult, error) {
+	results, rev, err := b.backend.TxnApply(ctx, ops, guards)
+	if err != nil {
+		return nil, 0, nil, err
+	}
+	responses := make([]*etcdserverpb.ResponseOp, len(ops))
+	for i := range ops {
+		r := results[i]
+		if ops[i].Delete {
+			dr := &etcdserverpb.DeleteRangeResponse{Header: txnHeader(int64(rev))}
+			if r.Deleted {
+				dr.Deleted = 1
+				if prevKv[i] {
+					dr.PrevKvs = append(dr.PrevKvs, b.kvToEtcdKv(ctx, &proto.KeyValue{
+						Key:      r.Key,
+						Value:    r.PrevValue,
+						Revision: r.PrevRevision,
+					}))
+				}
+			}
+			responses[i] = &etcdserverpb.ResponseOp{Response: &etcdserverpb.ResponseOp_ResponseDeleteRange{ResponseDeleteRange: dr}}
+		} else {
+			// The existing sequential txn put path returns no PrevKv; match it.
+			responses[i] = &etcdserverpb.ResponseOp{Response: &etcdserverpb.ResponseOp_ResponsePut{
+				ResponsePut: &etcdserverpb.PutResponse{Header: txnHeader(int64(rev))},
+			}}
+		}
+	}
+	return responses, rev, results, nil
 }
 
 func (b *backendShim) DeleteRange(ctx context.Context, r *etcdserverpb.DeleteRangeRequest) (*etcdserverpb.DeleteRangeResponse, error) {
@@ -487,6 +582,9 @@ func (b *backendShim) List(ctx context.Context, r *etcdserverpb.RangeRequest) (*
 		resp.Count = count
 	}
 
+	// create_revision/version is inlined in each stored value (approach A), so
+	// per-kv conversion needs no extra storage read; legacy values fall back to
+	// the etcdmeta lookup inside kvToEtcdKv.
 	for _, kv := range response.Kvs {
 		resp.Kvs = append(resp.Kvs, b.kvToEtcdKv(ctx, kv))
 	}
@@ -494,6 +592,15 @@ func (b *backendShim) List(ctx context.Context, r *etcdserverpb.RangeRequest) (*
 }
 
 func (b *backendShim) exactRangeCount(ctx context.Context, r *etcdserverpb.RangeRequest) (int64, error) {
+	// Serve from the in-memory count index when possible (approach A-index); it
+	// roots the per-page O(range) count scan that made paginated LIST O(N^2).
+	// Revision filters change the counted set, which the index does not model.
+	if !hasRangeRevisionFilters(r) {
+		if c, served := b.backend.CountAtRevision(ctx, r.Key, r.RangeEnd, uint64(r.Revision)); served {
+			return c, nil
+		}
+	}
+
 	if r.Revision == 0 && !hasRangeRevisionFilters(r) {
 		resp, err := b.Count(ctx, r)
 		if err != nil {
@@ -628,40 +735,30 @@ func (b *backendShim) Count(ctx context.Context, r *etcdserverpb.RangeRequest) (
 	}, nil
 }
 
-func (b *backendShim) GetPartitions(ctx context.Context, r *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
-	// transform list partition request from etcd protobuf to kube-brain protobuf
-	request := &proto.ListPartitionRequest{
-		Key: r.Key,
-		End: r.RangeEnd,
-	}
-	// pass through get partition method
-	response, err := b.backend.GetPartitions(ctx, request)
-	if err != nil {
-		return nil, err
-	}
-	resp := &etcdserverpb.RangeResponse{
-		Header: txnHeader(int64(response.Header.Revision)),
-		Count:  response.PartitionNum + 1,
-		Kvs:    make([]*mvccpb.KeyValue, 0, response.PartitionNum+1),
-	}
-	for _, kv := range response.PartitionKeys {
-		resp.Kvs = append(resp.Kvs, &mvccpb.KeyValue{
-			Key: kv,
-		})
-
-	}
-	return resp, nil
-}
-
 // todo deprecate range stream in etcd
 func (b *backendShim) ListByStream(ctx context.Context, startKey, endKey []byte, revision uint64) (<-chan *etcdserverpb.WatchResponse, error) {
-	ch, err := b.backend.ListByStream(context.Background(), startKey, endKey, revision)
+	// Derive a cancelable context from the caller (the client's stream) so the
+	// backend scan is torn down on client disconnect. Passing context.Background()
+	// here leaked the scanner's worker goroutines, iterators and snapshots: on
+	// disconnect the transform goroutine below exits, nobody drains the scan
+	// channel, and the workers block forever on their buffered sends.
+	scanCtx, cancel := context.WithCancel(ctx)
+	ch, err := b.backend.ListByStream(scanCtx, startKey, endKey, revision)
 	if err != nil {
+		cancel()
 		return nil, err
 	}
 	responseCh := make(chan *etcdserverpb.WatchResponse)
 	transformResponseFunc := func(ctx context.Context, in <-chan *proto.StreamRangeResponse, out chan *etcdserverpb.WatchResponse) {
 		defer close(out)
+		defer func() {
+			// Cancel the scan and drain its channel so any worker blocked on a
+			// buffered send (the receiver's stream send has no ctx escape)
+			// unblocks and the scan goroutine can reach close(stream) and exit.
+			cancel()
+			for range in {
+			}
+		}()
 		for {
 			select {
 			case <-ctx.Done():
@@ -688,22 +785,26 @@ func (b *backendShim) ListByStream(ctx context.Context, startKey, endKey []byte,
 						})
 					}
 				}
-				// send to server layer
-				out <- etcdWatchResponse
+				// send to server layer, bailing out if the client is gone
+				select {
+				case out <- etcdWatchResponse:
+				case <-ctx.Done():
+					return
+				}
 			}
 		}
 	}
-	go transformResponseFunc(ctx, ch, responseCh)
+	go transformResponseFunc(scanCtx, ch, responseCh)
 	return responseCh, nil
 }
 
-func (b *backendShim) Watch(ctx context.Context, key string, revision uint64) (<-chan []*mvccpb.Event, error) {
+func (b *backendShim) Watch(ctx context.Context, key string, revision uint64) (<-chan etcdproxy.WatchResult, error) {
 	ch, err := b.backend.Watch(ctx, key, revision)
 	if err != nil {
 		return nil, err
 	}
-	watchResponseCh := make(chan []*mvccpb.Event)
-	transformResponseFunc := func(ctx context.Context, in <-chan []*proto.Event, out chan []*mvccpb.Event) {
+	watchResponseCh := make(chan etcdproxy.WatchResult)
+	transformResponseFunc := func(ctx context.Context, in <-chan []*proto.Event, out chan etcdproxy.WatchResult) {
 		defer close(out)
 		for {
 			select {
@@ -714,6 +815,17 @@ func (b *backendShim) Watch(ctx context.Context, key string, revision uint64) (<
 				if !ok {
 					return
 				}
+				// An in-band progress marker (nil Kv) becomes a ProgressRevision
+				// result — the single representation change at this shim boundary,
+				// making the leader branch type-identical to the follower/proxy one.
+				if isBackendProgressMarker(events) {
+					select {
+					case out <- etcdproxy.WatchResult{ProgressRevision: events[0].Revision}:
+					case <-ctx.Done():
+						return
+					}
+					continue
+				}
 				etcdEvents := make([]*mvccpb.Event, 0, len(events))
 				for _, e := range events {
 					etcdEvent, err := b.watchEventToEtcdEvent(ctx, e)
@@ -723,12 +835,24 @@ func (b *backendShim) Watch(ctx context.Context, key string, revision uint64) (<
 					}
 					etcdEvents = append(etcdEvents, etcdEvent)
 				}
-				out <- etcdEvents
+				select {
+				case out <- etcdproxy.WatchResult{Events: etcdEvents}:
+				case <-ctx.Done():
+					return
+				}
 			}
 		}
 	}
 	go transformResponseFunc(ctx, ch, watchResponseCh)
 	return watchResponseCh, nil
+}
+
+// isBackendProgressMarker reports whether a backend event batch is an in-band
+// progress marker (a one-element batch whose event carries only a revision, with
+// a nil Kv). Real events always set Kv. Mirrors backend.isProgressMarker, which
+// is unexported in its package.
+func isBackendProgressMarker(events []*proto.Event) bool {
+	return len(events) == 1 && events[0] != nil && events[0].Kv == nil
 }
 
 func (b *backendShim) watchEventToEtcdEvent(ctx context.Context, e *proto.Event) (*mvccpb.Event, error) {
@@ -747,23 +871,26 @@ func (b *backendShim) watchEventToEtcdEvent(ctx context.Context, e *proto.Event)
 	case proto.Event_PUT:
 		kv := b.kvToEtcdKv(ctx, e.Kv)
 		kv.ModRevision = int64(revision)
-		prevKv := b.previousEtcdKv(ctx, e.Kv.Key, revision)
-		if prevKv == nil {
-			kv.CreateRevision = kv.ModRevision
-			return &mvccpb.Event{
-				Type: mvccpb.PUT,
-				Kv:   kv,
-			}, nil
-		}
-		kv.CreateRevision = prevKv.CreateRevision
-		if kv.CreateRevision == 0 {
-			kv.CreateRevision = prevKv.ModRevision
-		}
+		prevKv := b.cachedPreviousEtcdKv(e.Kv.Key, revision)
+		// A PUT event is an update, never a create, so its CreateRevision must
+		// differ from ModRevision (clientv3.Event.IsCreate reports create iff they
+		// are equal). Prefer the create_revision the value carries inline (approach
+		// A) — it is already set by kvToEtcdKv. Only when it is unknown (legacy
+		// events without inline metadata) derive it from the previous version, and
+		// as a last resort synthesize a value just below ModRevision. Previously a
+		// failed prev-version lookup unconditionally overwrote a correct inline
+		// create_revision with ModRevision, misreporting the update as a create and
+		// dropping PrevKv (#52).
 		if kv.CreateRevision == 0 || kv.CreateRevision == kv.ModRevision {
-			// KubeBrain's native event format does not persist create_revision.
-			// For updates, make CreateRevision differ from ModRevision so
-			// clientv3.Event.IsCreate reports false.
-			kv.CreateRevision = kv.ModRevision - 1
+			if prevKv != nil {
+				kv.CreateRevision = prevKv.CreateRevision
+				if kv.CreateRevision == 0 {
+					kv.CreateRevision = prevKv.ModRevision
+				}
+			}
+			if kv.CreateRevision == 0 || kv.CreateRevision == kv.ModRevision {
+				kv.CreateRevision = kv.ModRevision - 1
+			}
 		}
 		return &mvccpb.Event{
 			Type:   mvccpb.PUT,
@@ -847,6 +974,14 @@ func (b *backendShim) GetCurrentRevision() uint64 {
 	return b.backend.GetCurrentRevision()
 }
 
+func (b *backendShim) WatchProgressNotifyInterval() time.Duration {
+	return b.backend.WatchProgressNotifyInterval()
+}
+
+func (b *backendShim) GetPublishedRevision() uint64 {
+	return b.backend.GetPublishedRevision()
+}
+
 func (b *backendShim) SetCurrentRevision(revision uint64) {
 	b.backend.SetCurrentRevision(revision)
 }
@@ -855,11 +990,18 @@ func (b *backendShim) kvToEtcdKv(ctx context.Context, kv *proto.KeyValue) *mvccp
 	if kv == nil {
 		return nil
 	}
-	meta, err := b.backend.GetEtcdMetadata(ctx, kv.Key, kv.Revision)
-	if err != nil {
-		klog.V(4).InfoS("failed to read etcd metadata", "key", kv.Key, "revision", kv.Revision, "err", err)
-		meta.CreateRevision = kv.Revision
-		meta.Version = 1
+	// Approach A: prefer create_revision/version inlined in the stored value —
+	// no metadata lookup, and the envelope is stripped so the client gets the
+	// raw value. Legacy (un-enveloped) values fall back to the etcdmeta lookup.
+	meta, rawValue, inlined := backend.DecodeInlineValue(kv.Value)
+	if !inlined {
+		rawValue = kv.Value
+		var err error
+		meta, err = b.cachedMetadata(ctx, kv.Key, kv.Revision)
+		if err != nil {
+			klog.V(4).InfoS("failed to read etcd metadata", "key", kv.Key, "revision", kv.Revision, "err", err)
+			meta = backend.EtcdMetadata{CreateRevision: kv.Revision, Version: 1}
+		}
 	}
 	if meta.CreateRevision == 0 {
 		meta.CreateRevision = kv.Revision
@@ -867,13 +1009,27 @@ func (b *backendShim) kvToEtcdKv(ctx context.Context, kv *proto.KeyValue) *mvccp
 	if meta.Version == 0 {
 		meta.Version = 1
 	}
-	return &mvccpb.KeyValue{
+	out := &mvccpb.KeyValue{
 		Key:            kv.Key,
-		Value:          kv.Value,
+		Value:          rawValue,
 		Version:        int64(meta.Version),
 		CreateRevision: int64(meta.CreateRevision),
 		ModRevision:    int64(kv.Revision),
 	}
+	if b.leaseLookup != nil {
+		// etcd returns the lease attached to the key on Get/Range and in watch
+		// events; keyLeaseIndex tracks the current binding, so this is exact for
+		// latest reads and reports the current lease for historical reads (the
+		// per-version lease is not stored). Only the leader has the index
+		// populated — followers proxy reads to it. The fast path inside the
+		// resolver skips the lease mutex entirely when no key holds a lease.
+		out.Lease = b.leaseLookup(string(kv.Key))
+	}
+	return out
+}
+
+func (b *backendShim) SetLeaseLookup(fn func(key string) int64) {
+	b.leaseLookup = fn
 }
 
 func unsupported(field string) error {

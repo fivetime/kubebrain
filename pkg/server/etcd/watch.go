@@ -193,14 +193,25 @@ func (w *watcher) Start(c context.Context, r *etcdserverpb.WatchCreateRequest) {
 
 	// Seed syncedRev with the revision the watch is guaranteed to be caught up
 	// through before any event is delivered: StartRevision-1 for a historical
-	// watch (it will deliver events >= StartRevision), or the current revision for
-	// a watch that starts from "now" (StartRevision == 0). Range-stream requests
-	// (StartRevision < 0) never emit progress notifications, so leave it at 0.
+	// watch (it will deliver events >= StartRevision), or the published revision
+	// for a watch that starts from "now" (StartRevision == 0). Range-stream
+	// requests (StartRevision < 0) never emit progress notifications, so leave it
+	// at 0.
+	//
+	// For the from-now case seed from the published revision, not the current one:
+	// GetCurrentRevision is advanced (SetCurrentRevision) before the corresponding
+	// events are published to the watch pipeline, so a freshly-registered
+	// subscriber can still receive an event whose revision <= the current
+	// revision — seeding at current would over-report it. GetPublishedRevision is
+	// by construction below every such still-in-flight event, so any event the new
+	// sub receives has revision > seed and cannot be skipped. On a follower it is
+	// 0, so a from-now watch reports a low floor until the first proxy
+	// progress-notify lifts it (safe under-report, self-correcting within a tick).
 	var initSyncedRev uint64
 	if r.StartRevision > 0 {
 		initSyncedRev = uint64(r.StartRevision) - 1
 	} else if r.StartRevision == 0 {
-		initSyncedRev = w.backend.GetCurrentRevision()
+		initSyncedRev = w.backend.GetPublishedRevision()
 	}
 	w.watches[id] = &watch{
 		cancel:    cancel,
@@ -400,11 +411,10 @@ func (w *watcher) Watch(ctx context.Context, id int64, r *etcdserverpb.WatchCrea
 
 	backendPrefix := watchBackendPrefix(r.Key, r.RangeEnd)
 	if w.grpcServer.peers.IsLeader() {
-		var eventCh <-chan []*mvccpb.Event
-		eventCh, err = w.backend.Watch(ctx, backendPrefix, uint64(r.StartRevision))
-		if err == nil {
-			ch = watchResultsFromEvents(eventCh)
-		}
+		// Leader: read directly from the local backend, which now returns the same
+		// WatchResult type as the follower/proxy branch (events plus in-band
+		// progress markers), so the two branches are symmetric downstream.
+		ch, err = w.backend.Watch(ctx, backendPrefix, uint64(r.StartRevision))
 	} else {
 		ch, err = w.grpcServer.peers.Watch(ctx, r.Key, r.RangeEnd, uint64(r.StartRevision))
 	}
@@ -427,7 +437,11 @@ func (w *watcher) Watch(ctx context.Context, id int64, r *etcdserverpb.WatchCrea
 	var progressTicker *time.Ticker
 	var progressC <-chan time.Time
 	if r.ProgressNotify {
-		progressTicker = time.NewTicker(time.Second)
+		interval := w.backend.WatchProgressNotifyInterval()
+		if interval <= 0 {
+			interval = time.Second
+		}
+		progressTicker = time.NewTicker(interval)
 		defer progressTicker.Stop()
 		progressC = progressTicker.C
 	}
@@ -444,6 +458,18 @@ func (w *watcher) Watch(ctx context.Context, id int64, r *etcdserverpb.WatchCrea
 				klog.InfoS("[watch stream] watch channel error", "watcher", w.id, "watch", id, "key", string(r.Key), "err", result.Err)
 				w.Cancel(id, result.Err, isWatchCompactedError(result.Err))
 				return
+			}
+			if result.ProgressRevision > 0 {
+				// In-band progress marker: it FIFO-guarantees it sits behind every
+				// matching event <= its revision (all such events were read and Sent
+				// above, on this same goroutine, before this marker), so folding it
+				// into syncedRev can never claim an undelivered event. This is the
+				// sole liveness source for a quiet watch, whose prefix matches no
+				// event batch. Reporting (progressC / on-demand) is unchanged.
+				if wt != nil {
+					storeMaxUint64(&wt.syncedRev, result.ProgressRevision)
+				}
+				continue
 			}
 			if sendErr != nil {
 				// drain the channel to ensure producer could exit
@@ -486,6 +512,14 @@ func (w *watcher) Watch(ctx context.Context, id int64, r *etcdserverpb.WatchCrea
 			if wt != nil {
 				revision = atomic.LoadUint64(&wt.syncedRev)
 			}
+			if revision == 0 {
+				// Nothing delivered yet (e.g. a from-now follower watch before its
+				// first proxied progress marker seeds syncedRev). A WatchResponse
+				// with Header.Revision==0 is not a valid progress notification
+				// (clientv3 IsProgressNotify requires a non-zero revision), so skip
+				// it; the next tick reports the real revision once it advances.
+				continue
+			}
 			progressResp := &etcdserverpb.WatchResponse{
 				Header:  txnHeader(int64(revision)),
 				WatchId: id,
@@ -499,21 +533,6 @@ func (w *watcher) Watch(ctx context.Context, id int64, r *etcdserverpb.WatchCrea
 			}
 		}
 	}
-}
-
-func watchResultsFromEvents(events <-chan []*mvccpb.Event) <-chan etcdproxy.WatchResult {
-	results := make(chan etcdproxy.WatchResult, 100)
-	if events == nil {
-		close(results)
-		return results
-	}
-	go func() {
-		defer close(results)
-		for eventBatch := range events {
-			results <- etcdproxy.WatchResult{Events: eventBatch}
-		}
-	}()
-	return results
 }
 
 func isWatchCompactedError(err error) bool {

@@ -20,6 +20,7 @@ import (
 	"sync/atomic"
 
 	"github.com/pkg/errors"
+	tikvcfg "github.com/tikv/client-go/v2/config"
 	tikverr "github.com/tikv/client-go/v2/error"
 	"github.com/tikv/client-go/v2/oracle"
 	"github.com/tikv/client-go/v2/tikv"
@@ -28,14 +29,44 @@ import (
 	"github.com/kubewharf/kubebrain/pkg/storage"
 )
 
+// Security holds the mTLS material for the KubeBrain->TiKV/PD data plane. When any
+// path is set it is applied to the tikv client-go global config so BOTH the PD
+// (safepoint etcd) and TiKV RPC connections run over TLS; empty = plaintext,
+// preserving existing behavior (#33).
+type Security struct {
+	CAPath   string
+	CertPath string
+	KeyPath  string
+	VerifyCN []string
+}
+
+func (s Security) enabled() bool {
+	return s.CAPath != "" || s.CertPath != "" || s.KeyPath != ""
+}
+
 type clientBalancer struct {
 	clients []*txnkv.Client
 	idx     uint64
 }
 
-const clientNum = 200
+// defaultClientNum is the fallback number of round-robined txnkv clients when
+// the caller passes a non-positive count. Each client carries its own PD
+// connections, region cache and TSO dispatcher, so an excessive count
+// multiplies PD load and fragments TSO batching rather than adding throughput.
+const defaultClientNum = 16
 
-func NewKvStorage(pdAddrs []string) (storage.KvStorage, error) {
+func NewKvStorage(pdAddrs []string, clientNum int, sec Security) (storage.KvStorage, error) {
+	if clientNum <= 0 {
+		clientNum = defaultClientNum
+	}
+	// txnkv.NewClient reads config.GetGlobalConfig().Security for both the PD
+	// safepoint-etcd client and the TiKV RPC client, so applying it here secures
+	// the whole KubeBrain->TiKV/PD data plane before any client is created (#33).
+	if sec.enabled() {
+		tikvcfg.UpdateGlobal(func(c *tikvcfg.Config) {
+			c.Security = tikvcfg.NewSecurity(sec.CAPath, sec.CertPath, sec.KeyPath, sec.VerifyCN)
+		})
+	}
 	clients := make([]*txnkv.Client, 0, clientNum)
 	for i := 0; i < clientNum; i++ {
 		txnClient, err := txnkv.NewClient(pdAddrs)

@@ -138,8 +138,13 @@ func (b *batch) get(key []byte) []byte {
 	if ok {
 		return v.val
 	}
-	val, _ := b.store.Get(context.Background(), key)
-	return val
+	// The batch already holds store.mu (from BeginBatchWrite until Commit), so
+	// read the skiplist directly; calling store.Get would re-lock and deadlock.
+	elem := b.store.skl.Get(key)
+	if elem == nil {
+		return nil
+	}
+	return elem.Value.([]byte)
 }
 
 // Commit implements storage.BatchWrite interface

@@ -16,6 +16,7 @@ package etcd
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"testing"
 	"time"
@@ -386,4 +387,228 @@ func TestLeaseFollowerDoesNotExpireKeys(t *testing.T) {
 	rangeResp, err := followerServer.Range(ctx, &etcdserverpb.RangeRequest{Key: []byte("/registry/leases/follower-expire")})
 	require.NoError(t, err)
 	require.Len(t, rangeResp.Kvs, 1)
+}
+
+// TestReloadLeasesAdoptsLeasesGrantedAfterSnapshot pins the failover fix: a node
+// that restored its lease snapshot as a follower must, on becoming leader, pick
+// up leases the real leader granted afterwards (otherwise they are orphaned —
+// never kept alive or expired). It also confirms a kept-alive lease is not
+// wrongly treated as expired after reload.
+func TestReloadLeasesAdoptsLeasesGrantedAfterSnapshot(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	metrics := mock.NewMinimalMetrics(ctrl)
+	kv := memkv.NewKvStorage()
+	b := backend.NewBackend(kv, backend.Config{
+		Identity:                "reload-test-peer",
+		EnableEtcdCompatibility: true,
+	}, metrics)
+	ctx := context.Background()
+
+	// "old leader" grants L1 and binds a key.
+	oldLeader := New(b, metrics, testPeerService{isLeader: true})
+	l1, err := oldLeader.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 300, ID: 7001})
+	require.NoError(t, err)
+	_, err = oldLeader.Put(ctx, &etcdserverpb.PutRequest{
+		Key: []byte("/registry/leases/reload-k1"), Value: []byte("v"), Lease: l1.ID,
+	})
+	require.NoError(t, err)
+
+	// "new leader" constructs its snapshot now (knows only L1), then the old
+	// leader grants L2 afterwards — a lease the new leader never saw.
+	newLeader := New(b, metrics, testPeerService{isLeader: true})
+	defer func() {
+		newLeader.stopLeases()
+		oldLeader.stopLeases()
+		require.NoError(t, kv.Close())
+		ctrl.Finish()
+	}()
+
+	l2, err := oldLeader.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 300, ID: 7002})
+	require.NoError(t, err)
+
+	// Before reload the new leader does not know L2 (etcd reports TTL=-1 for an
+	// unknown lease, without error).
+	pre, err := newLeader.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: l2.ID})
+	require.NoError(t, err)
+	require.Equal(t, int64(-1), pre.TTL, "new leader should not know L2 before reload")
+
+	// Simulate leadership acquisition.
+	require.NoError(t, newLeader.ReloadLeases(ctx))
+
+	// After reload both leases are known with healthy TTLs.
+	ttl1, err := newLeader.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: l1.ID})
+	require.NoError(t, err)
+	require.Greater(t, ttl1.TTL, int64(0), "kept-alive lease L1 must not be expired after reload")
+	ttl2, err := newLeader.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: l2.ID})
+	require.NoError(t, err)
+	require.Greater(t, ttl2.TTL, int64(0), "lease L2 granted after snapshot must be adopted on reload")
+
+	leases, err := newLeader.LeaseLeases(ctx, &etcdserverpb.LeaseLeasesRequest{})
+	require.NoError(t, err)
+	require.Len(t, leases.Leases, 2)
+}
+
+// TestKeepAliveDoesNotWriteStorage pins the write-amplification fix: a
+// LeaseKeepAlive must only bump the in-memory expiry/timer and must NOT persist
+// the lease record (which would mint a fresh MVCC version + watch event per
+// tick). We capture the persisted record's ModRevision, drive several
+// keepalives, and assert the record is untouched while the client still gets
+// the TTL echoed back.
+func TestKeepAliveDoesNotWriteStorage(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	ctx := context.Background()
+	grantResp, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 30, ID: 8101})
+	require.NoError(t, err)
+
+	_, err = server.Put(ctx, &etcdserverpb.PutRequest{
+		Key:   []byte("/registry/leases/keepalive-noop"),
+		Value: []byte("value"),
+		Lease: grantResp.ID,
+	})
+	require.NoError(t, err)
+
+	// Capture the persisted lease record revision once binding has landed.
+	var beforeRev int64
+	require.Eventually(t, func() bool {
+		resp, err := server.backend.Get(ctx, &etcdserverpb.RangeRequest{Key: leaseStorageKey(grantResp.ID)})
+		if err != nil || len(resp.Kvs) != 1 {
+			return false
+		}
+		beforeRev = resp.Kvs[0].ModRevision
+		return true
+	}, time.Second, 10*time.Millisecond)
+
+	const n = 5
+	reqs := make([]*etcdserverpb.LeaseKeepAliveRequest, 0, n)
+	for i := 0; i < n; i++ {
+		reqs = append(reqs, &etcdserverpb.LeaseKeepAliveRequest{ID: grantResp.ID})
+	}
+	stream := &fakeLeaseKeepAliveServer{requests: reqs}
+	require.NoError(t, server.LeaseKeepAlive(stream))
+	require.Len(t, stream.sent, n)
+	for i := 0; i < n; i++ {
+		require.Equal(t, grantResp.ID, stream.sent[i].ID)
+		require.Equal(t, int64(30), stream.sent[i].TTL)
+	}
+
+	// The lease record must be byte-for-byte the same version: no keepalive
+	// minted a new MVCC version or a duplicate record.
+	afterResp, err := server.backend.Get(ctx, &etcdserverpb.RangeRequest{Key: leaseStorageKey(grantResp.ID)})
+	require.NoError(t, err)
+	require.Len(t, afterResp.Kvs, 1)
+	require.Equal(t, beforeRev, afterResp.Kvs[0].ModRevision, "keepalive must not mint a new lease record version")
+}
+
+// TestReloadResetsDeadlineToGrantedTTL locks the companion recovery fix: on
+// restore/reload the deadline is reconstructed as now+grantedTTL, never the
+// stale persisted absolute deadline. A record whose persisted deadline is far
+// in the past (a lease that had been kept alive well past grant time) must be
+// reloaded with a fresh full-TTL window and its bound key must NOT be expired.
+func TestReloadResetsDeadlineToGrantedTTL(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	ctx := context.Background()
+	grantResp, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 300, ID: 8201})
+	require.NoError(t, err)
+	_, err = server.Put(ctx, &etcdserverpb.PutRequest{
+		Key:   []byte("/registry/leases/reset-deadline"),
+		Value: []byte("value"),
+		Lease: grantResp.ID,
+	})
+	require.NoError(t, err)
+
+	// Replay a record whose persisted deadline is in the past but whose granted
+	// TTL is still 300s. The old code would Reset(0) the timer and delete the
+	// bound key; the fix recovers deadline = now+300s.
+	server.applyLeaseRecords([]leaseRecord{{
+		ID:               grantResp.ID,
+		TTL:              300,
+		DeadlineUnixNano: time.Now().Add(-time.Hour).UnixNano(),
+		Keys:             []string{"/registry/leases/reset-deadline"},
+	}}, nil)
+
+	ttlResp, err := server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: grantResp.ID})
+	require.NoError(t, err)
+	require.Greater(t, ttlResp.TTL, int64(250), "reloaded lease must get a fresh full-TTL window, not the stale past deadline")
+
+	// Give any (buggy) immediate-expiry timer a chance to fire; the bound key
+	// must still be present.
+	time.Sleep(100 * time.Millisecond)
+	rangeResp, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: []byte("/registry/leases/reset-deadline")})
+	require.NoError(t, err)
+	require.Len(t, rangeResp.Kvs, 1, "reloaded live lease must not expire its bound key")
+}
+
+// TestKeptAliveLeaseSurvivesLeaderChangeWithFreshDeadline exercises the full
+// failover path: a short-TTL lease is kept alive, then a new leader reloads
+// state whose persisted deadline may be at/before grant time. Even if the
+// persisted deadline is already in the past, the reloaded lease must survive
+// with a positive TTL and its bound key must remain.
+func TestKeptAliveLeaseSurvivesLeaderChangeWithFreshDeadline(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	metrics := mock.NewMinimalMetrics(ctrl)
+	kv := memkv.NewKvStorage()
+	b := backend.NewBackend(kv, backend.Config{
+		Identity:                "keepalive-failover-test-peer",
+		EnableEtcdCompatibility: true,
+	}, metrics)
+
+	ctx := context.Background()
+	oldLeader := New(b, metrics, testPeerService{isLeader: true})
+	grantResp, err := oldLeader.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 2, ID: 9101})
+	require.NoError(t, err)
+	_, err = oldLeader.Put(ctx, &etcdserverpb.PutRequest{
+		Key:   []byte("/registry/leases/failover-survive"),
+		Value: []byte("value"),
+		Lease: grantResp.ID,
+	})
+	require.NoError(t, err)
+
+	// Client keeps the lease alive across the failover instant.
+	stream := &fakeLeaseKeepAliveServer{
+		requests: []*etcdserverpb.LeaseKeepAliveRequest{{ID: grantResp.ID}},
+	}
+	require.NoError(t, oldLeader.LeaseKeepAlive(stream))
+
+	// Simulate a persisted record whose deadline is already in the past at the
+	// moment of leader change (keepalive no longer refreshes it durably).
+	data, err := json.Marshal(leaseRecord{
+		ID:               grantResp.ID,
+		TTL:              2,
+		DeadlineUnixNano: time.Now().Add(-time.Hour).UnixNano(),
+		Keys:             []string{"/registry/leases/failover-survive"},
+	})
+	require.NoError(t, err)
+	_, err = oldLeader.backend.Put(ctx, &etcdserverpb.PutRequest{
+		Key:   leaseStorageKey(grantResp.ID),
+		Value: data,
+	})
+	require.NoError(t, err)
+	oldLeader.stopLeases()
+
+	newLeader := New(b, metrics, testPeerService{isLeader: true})
+	defer func() {
+		newLeader.stopLeases()
+		require.NoError(t, kv.Close())
+		ctrl.Finish()
+	}()
+
+	// Explicit leadership-acquisition reload.
+	require.NoError(t, newLeader.ReloadLeases(ctx))
+
+	ttlResp, err := newLeader.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: grantResp.ID})
+	require.NoError(t, err)
+	require.Greater(t, ttlResp.TTL, int64(0), "kept-alive lease must not be expired on leader change")
+
+	leases, err := newLeader.LeaseLeases(ctx, &etcdserverpb.LeaseLeasesRequest{})
+	require.NoError(t, err)
+	require.Len(t, leases.Leases, 1)
+
+	time.Sleep(100 * time.Millisecond)
+	rangeResp, err := newLeader.Range(ctx, &etcdserverpb.RangeRequest{Key: []byte("/registry/leases/failover-survive")})
+	require.NoError(t, err)
+	require.Len(t, rangeResp.Kvs, 1, "bound key of a kept-alive lease must survive leader change")
 }

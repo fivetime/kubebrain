@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"k8s.io/client-go/tools/leaderelection"
@@ -40,6 +41,14 @@ type LeaderElection interface {
 
 	// IsLeader return true when this instance is leader
 	IsLeader() bool
+
+	// EpochAndLeadingFresh returns this node's current leadership epoch together
+	// with whether it is still safely leading: leader==1 AND the lease was
+	// renewed within a bound strictly tighter than LeaseDuration. Write RPCs
+	// capture the epoch at admission and re-test it immediately before commit so
+	// a deposed (or partitioned-but-unaware) leader cannot commit a write under a
+	// term it has already left — see FINDING #39 write fencing.
+	EpochAndLeadingFresh() (uint64, bool)
 
 	// GetElectionInfo get info of election
 	GetElectionInfo() (ElectionInfo, error)
@@ -63,8 +72,55 @@ type leaderElection struct {
 	onStartedLeading func(context.Context)
 	// onStoppedLeading is called when a LeaderElector client stops leading
 	onStoppedLeading func()
-	// indicates whether this instance is leader
-	leader bool
+	// leader indicates whether this instance is leader (1 = leader). It is written
+	// by the leader-election callbacks and read by IsLeader() from every RPC
+	// goroutine, so it is accessed atomically (#60/#68).
+	leader int32
+	// epoch is a monotone per-node leadership term counter, bumped in
+	// OnStartedLeading BEFORE leader is published so the epoch is always live
+	// before any write can be admitted under it. A write is admitted under the
+	// epoch read at its RPC gate and re-checked for equality just before commit,
+	// fencing a deposed leader's in-flight writes (FINDING #39). Accessed
+	// atomically.
+	epoch uint64
+	// lastRenewNanos is the UnixNano of the most recent successful lease
+	// Create/Update (leadership renew), stamped by renewStampingLock. It bounds
+	// leadership freshness: a partitioned leader whose renews are failing stops
+	// admitting/committing writes once this ages past leadershipValidityBound,
+	// which is strictly tighter than LeaseDuration, so it self-fences before a
+	// successor can acquire. Accessed atomically.
+	lastRenewNanos int64
+}
+
+// leadershipValidityBound is how long after the last successful lease renew this
+// node still considers itself safely leading for the purpose of admitting and
+// committing writes. It equals RenewDeadline and is strictly less than
+// LeaseDuration, so a partitioned-but-unaware leader self-fences before any
+// successor can acquire the lease.
+const leadershipValidityBound = 5 * time.Second
+
+// renewStampingLock wraps the resource lock so leader.go observes each successful
+// leadership renew (Create/Update) without racing the election goroutine's
+// internal state. It records the renew time used to bound leadership freshness.
+type renewStampingLock struct {
+	resourcelock.Interface
+	onRenew func()
+}
+
+func (r *renewStampingLock) Create(ler resourcelock.LeaderElectionRecord) error {
+	err := r.Interface.Create(ler)
+	if err == nil {
+		r.onRenew()
+	}
+	return err
+}
+
+func (r *renewStampingLock) Update(ler resourcelock.LeaderElectionRecord) error {
+	err := r.Interface.Update(ler)
+	if err == nil {
+		r.onRenew()
+	}
+	return err
 }
 
 // NewLeaderElection returns a LeaderElection based on resourcelock of backend.Backend
@@ -81,7 +137,7 @@ func NewLeaderElection(backend b.Backend, metricCli metrics.Metrics, onStartedLe
 // Campaign implements LeaderElection interface
 func (l *leaderElection) Campaign(ctx context.Context) {
 	leaderelection.RunOrDie(ctx, leaderelection.LeaderElectionConfig{
-		Lock:            l.resourceLock,
+		Lock:            &renewStampingLock{Interface: l.resourceLock, onRenew: l.stampRenew},
 		ReleaseOnCancel: true,
 		// lease timout deadline
 		LeaseDuration: 8 * time.Second,
@@ -103,13 +159,19 @@ func (l *leaderElection) Campaign(ctx context.Context) {
 				l.metricCli.EmitGauge("leader.election.initial.version", version, metrics.Tag("addr", leaderAddr))
 				// TODO push this logic to on start leading call back
 				l.backend.SetCurrentRevision(version)
-				l.leader = true
+				// Bump the leadership epoch and stamp freshness BEFORE publishing
+				// leader=1, so no write can be admitted under this term before its
+				// epoch is live (FINDING #39). The successor of a previous leader
+				// thus always admits writes under a strictly higher epoch.
+				atomic.AddUint64(&l.epoch, 1)
+				l.stampRenew()
+				atomic.StoreInt32(&l.leader, 1)
 				l.onStartedLeading(ctx)
 			},
 			OnStoppedLeading: func() {
 				// we can do cleanup here, or after the RunOrDie method
 				// returns
-				l.leader = false
+				atomic.StoreInt32(&l.leader, 0)
 				l.onStoppedLeading()
 				leaderAddr := l.GetLeaderInfo()
 				l.metricCli.EmitCounter("leader.election.lost", 1, metrics.Tag("addr", leaderAddr))
@@ -127,7 +189,25 @@ func (l *leaderElection) Campaign(ctx context.Context) {
 
 // IsLeader implements LeaderElection interface
 func (l *leaderElection) IsLeader() bool {
-	return l.leader
+	return atomic.LoadInt32(&l.leader) == 1
+}
+
+// stampRenew records the current time as the most recent successful leadership
+// renew. Called on every successful lease Create/Update and once in
+// OnStartedLeading before leader is published.
+func (l *leaderElection) stampRenew() {
+	atomic.StoreInt64(&l.lastRenewNanos, time.Now().UnixNano())
+}
+
+// EpochAndLeadingFresh implements LeaderElection interface.
+func (l *leaderElection) EpochAndLeadingFresh() (uint64, bool) {
+	leading := atomic.LoadInt32(&l.leader) == 1
+	last := atomic.LoadInt64(&l.lastRenewNanos)
+	// Load the epoch last so, when we report fresh leadership, the epoch reflects
+	// a term at least as new as the one that published leader==1.
+	epoch := atomic.LoadUint64(&l.epoch)
+	fresh := leading && last != 0 && time.Since(time.Unix(0, last)) < leadershipValidityBound
+	return epoch, fresh
 }
 
 // GetLeaderInfo implements LeaderElection interface

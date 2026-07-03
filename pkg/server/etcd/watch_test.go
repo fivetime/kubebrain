@@ -17,6 +17,8 @@ package etcd
 import (
 	"context"
 	"errors"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -410,12 +412,6 @@ func TestFollowerProxyWatchCompactedErrorIsForwarded(t *testing.T) {
 	require.Equal(t, compactedRevisionError().Error(), resp.CancelReason)
 }
 
-func TestWatchResultsFromNilEventsCloses(t *testing.T) {
-	ch := watchResultsFromEvents(nil)
-	_, ok := <-ch
-	require.False(t, ok)
-}
-
 func TestIsWatchCompactedError(t *testing.T) {
 	tests := []struct {
 		name string
@@ -492,7 +488,7 @@ func TestWatchEventToEtcdEventDistinguishesCreateAndUpdate(t *testing.T) {
 	require.Equal(t, updateResp.Header.Revision, updateEvent.Kv.ModRevision)
 }
 
-func TestWatchEventToEtcdEventFallsBackToCreateWhenPrevKvUnavailable(t *testing.T) {
+func TestWatchEventToEtcdEventRemainsUpdateWhenPrevKvUnavailable(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
 
@@ -509,8 +505,12 @@ func TestWatchEventToEtcdEventFallsBackToCreateWhenPrevKvUnavailable(t *testing.
 	})
 	require.NoError(t, err)
 	require.Nil(t, event.PrevKv)
-	require.True(t, (&clientv3.Event{Type: clientv3.EventTypePut, Kv: event.Kv}).IsCreate())
-	require.Equal(t, event.Kv.ModRevision, event.Kv.CreateRevision)
+	// A PUT event is an update; even without prev-kv or inline metadata it must
+	// not be misreported as a create (#52). CreateRevision is synthesized below
+	// ModRevision so clientv3.Event.IsCreate reports false.
+	require.False(t, (&clientv3.Event{Type: clientv3.EventTypePut, Kv: event.Kv}).IsCreate())
+	require.NotEqual(t, event.Kv.ModRevision, event.Kv.CreateRevision)
+	require.Equal(t, event.Kv.ModRevision-1, event.Kv.CreateRevision)
 }
 
 // scriptedWatchServer replays a fixed sequence of WatchRequests, then reports
@@ -617,4 +617,239 @@ func TestWatchProgressRequestReportsSyncedNotGlobalRevision(t *testing.T) {
 		"progress must report the delivered/synced revision, not the global current revision")
 	require.Less(t, progress.Header.Revision, int64(global),
 		"progress must not advertise the global revision that runs ahead of undelivered events")
+}
+
+// TestWatchProgressNeverOvertakesBufferedEvent pins the buffered-in-ch safety
+// case and monotonicity together (deterministic). The watch loop is driven over
+// an injected WatchResult channel (follower/proxy path). We feed an event at
+// rev 7 followed by an in-band progress marker at rev 9: the event must be Sent
+// before syncedRev claims 7, the marker must advance syncedRev to 9 without
+// itself emitting a Send, and a later stale marker at rev 6 must never lower it.
+func TestWatchProgressNeverOvertakesBufferedEvent(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	fed := make(chan etcdproxy.WatchResult)
+	server.peers = testPeerService{
+		isLeader:     false,
+		proxyEnabled: true,
+		watchFn: func(context.Context, []byte, []byte, uint64) (<-chan etcdproxy.WatchResult, error) {
+			return fed, nil
+		},
+	}
+
+	stream := &fakeWatchServer{ctx: context.Background()}
+	wt := &watch{start: "/registry/watch/buffered"}
+	w := &watcher{
+		backend:     server.backend,
+		watchServer: stream,
+		grpcServer:  server,
+		watches:     map[int64]*watch{7: wt},
+		metricCli:   server.metricCli,
+	}
+	w.wg.Add(1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		w.Watch(context.Background(), 7, &etcdserverpb.WatchCreateRequest{
+			Key:           []byte("/registry/watch/buffered"),
+			StartRevision: 5,
+		})
+	}()
+
+	// Deliver a real event at rev 7.
+	fed <- etcdproxy.WatchResult{Events: []*mvccpb.Event{
+		{Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{Key: []byte("/registry/watch/buffered"), ModRevision: 7}},
+	}}
+	// Once syncedRev reaches 7, the event was already Sent (storeMax runs after
+	// Send on the same goroutine), so the event Send is recorded first.
+	require.Eventually(t, func() bool {
+		return atomic.LoadUint64(&wt.syncedRev) == 7
+	}, time.Second, time.Millisecond)
+	require.Len(t, stream.sent, 1, "only the event has been Sent so far")
+	require.Equal(t, int64(7), stream.sent[0].Header.Revision)
+	require.Len(t, stream.sent[0].Events, 1)
+
+	// Deliver an in-band progress marker at rev 9: it folds into syncedRev but
+	// emits no Send of its own.
+	fed <- etcdproxy.WatchResult{ProgressRevision: 9}
+	require.Eventually(t, func() bool {
+		return atomic.LoadUint64(&wt.syncedRev) == 9
+	}, time.Second, time.Millisecond)
+	require.Len(t, stream.sent, 1, "a progress marker must not emit an event Send")
+
+	// A stale marker at rev 6 must never lower the synced revision.
+	fed <- etcdproxy.WatchResult{ProgressRevision: 6}
+	require.Never(t, func() bool {
+		return atomic.LoadUint64(&wt.syncedRev) != 9
+	}, 100*time.Millisecond, 10*time.Millisecond)
+
+	close(fed)
+	<-done
+}
+
+// TestFromNowWatchSeedsFromPublishedNotCurrentRevision pins the seed hardening: a
+// StartRevision==0 watch seeds its progress floor from GetPublishedRevision (the
+// safe frontier), never GetCurrentRevision (advanced pre-publish), so the first
+// progress report cannot over-report a still-in-flight event.
+func TestFromNowWatchSeedsFromPublishedNotCurrentRevision(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	// Force a pre-publish gap: bump the current revision far ahead without ever
+	// publishing any event, so published stays low.
+	server.backend.SetCurrentRevision(1000)
+	current := server.backend.GetCurrentRevision()
+	published := server.backend.GetPublishedRevision()
+	require.Greater(t, current, published, "test needs current ahead of published")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stream := &fakeWatchServer{ctx: ctx}
+	w := &watcher{
+		backend:     server.backend,
+		watchServer: stream,
+		grpcServer:  server,
+		watches:     make(map[int64]*watch),
+		metricCli:   server.metricCli,
+	}
+	w.Start(ctx, &etcdserverpb.WatchCreateRequest{
+		Key:            []byte("/registry/watch/from-now"),
+		StartRevision:  0,
+		ProgressNotify: true,
+	})
+
+	// The freshly-created watch's seed must equal the published revision, not the
+	// (higher) current revision.
+	var seed uint64
+	w.Lock()
+	require.Len(t, w.watches, 1)
+	for _, wt := range w.watches {
+		seed = atomic.LoadUint64(&wt.syncedRev)
+	}
+	w.Unlock()
+	require.Equal(t, published, seed, "from-now watch must seed from published revision")
+	require.Less(t, seed, current, "from-now watch must not seed from the pre-publish current revision")
+}
+
+// controllableWatchServer is a thread-safe Watch stream whose Recv blocks on a
+// request channel (kept open so the stream stays alive) until its context is
+// cancelled, and whose Send records responses under a mutex.
+type controllableWatchServer struct {
+	etcdserverpb.Watch_WatchServer
+	ctx  context.Context
+	recv chan *etcdserverpb.WatchRequest
+	mu   sync.Mutex
+	sent []*etcdserverpb.WatchResponse
+}
+
+func (s *controllableWatchServer) Send(resp *etcdserverpb.WatchResponse) error {
+	s.mu.Lock()
+	s.sent = append(s.sent, resp)
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *controllableWatchServer) Recv() (*etcdserverpb.WatchRequest, error) {
+	select {
+	case r, ok := <-s.recv:
+		if !ok {
+			return nil, context.Canceled
+		}
+		return r, nil
+	case <-s.ctx.Done():
+		return nil, context.Canceled
+	}
+}
+
+func (s *controllableWatchServer) Context() context.Context { return s.ctx }
+
+func (s *controllableWatchServer) snapshot() []*etcdserverpb.WatchResponse {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]*etcdserverpb.WatchResponse, len(s.sent))
+	copy(out, s.sent)
+	return out
+}
+
+// TestQuietWatchProgressAdvancesWhileOtherKeysWritten is the headline repro of
+// the confirmed frozen-progress bug, driven end-to-end through the real
+// RPCServer.Watch pipeline under -race. A ProgressNotify watch on a quiet key
+// must have its progress-notify header advance as OTHER keys are written, instead
+// of freezing at the watch's start revision.
+func TestQuietWatchProgressAdvancesWhileOtherKeysWritten(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Baseline: advance the store a little, then snapshot the published frontier
+	// the quiet watch will seed from.
+	_, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: []byte("/registry/other/seed"), Value: []byte("v")})
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		return server.backend.GetPublishedRevision() > 0
+	}, 2*time.Second, time.Millisecond)
+	seedRev := server.backend.GetPublishedRevision()
+
+	stream := &controllableWatchServer{
+		ctx:  ctx,
+		recv: make(chan *etcdserverpb.WatchRequest, 1),
+	}
+	// Quiet key, from now, with progress notifications requested.
+	stream.recv <- &etcdserverpb.WatchRequest{RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{
+		CreateRequest: &etcdserverpb.WatchCreateRequest{
+			Key:            []byte("/registry/quiet/x"),
+			ProgressNotify: true,
+		},
+	}}
+
+	watchDone := make(chan struct{})
+	go func() {
+		defer close(watchDone)
+		_ = server.Watch(stream)
+	}()
+
+	// Write a burst of OTHER keys, advancing the global/published revision well
+	// past the watch's seed. The quiet watch's prefix matches none of them.
+	const K = 20
+	var lastRev int64
+	for i := 0; i < K; i++ {
+		putResp, err := server.Put(ctx, &etcdserverpb.PutRequest{
+			Key:   []byte("/registry/other/" + string(rune('a'+i))),
+			Value: []byte("v"),
+		})
+		require.NoError(t, err)
+		lastRev = putResp.Header.Revision
+	}
+	require.Eventually(t, func() bool {
+		return server.backend.GetPublishedRevision() >= uint64(lastRev)
+	}, 3*time.Second, time.Millisecond)
+	target := server.backend.GetPublishedRevision()
+
+	// The progress ticker fires ~1s; allow up to ~4s for a progress notify that
+	// has advanced past the seed to the cluster's published revision.
+	maxProgress := func() int64 {
+		var maxRev int64
+		for _, resp := range stream.snapshot() {
+			// progress notify: this watch's id, not created/canceled, no events.
+			if resp.WatchId >= 0 && !resp.Created && !resp.Canceled && len(resp.Events) == 0 {
+				if resp.Header != nil && resp.Header.Revision > maxRev {
+					maxRev = resp.Header.Revision
+				}
+			}
+		}
+		return maxRev
+	}
+	require.Eventually(t, func() bool {
+		return maxProgress() >= int64(target)
+	}, 5*time.Second, 20*time.Millisecond,
+		"quiet watch progress must advance to the cluster's published revision, not freeze at the start revision")
+
+	require.Greater(t, maxProgress(), int64(seedRev),
+		"progress must advance past the watch's start/seed revision")
+
+	cancel()
+	<-watchDone
 }

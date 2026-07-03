@@ -30,6 +30,11 @@ type TSO interface {
 	// Deal will generate a new revision for txn
 	Deal() (revision uint64, err error)
 
+	// Dealt returns the highest revision handed out by Deal so far. Every
+	// in-flight write holds a revision <= Dealt(); used by watch-overflow
+	// recovery to pick a reset watermark that covers all in-flight events.
+	Dealt() (revision uint64)
+
 	// Commit is used for notifying that txn with revision has been done
 	Commit(revision uint64)
 }
@@ -53,19 +58,35 @@ func (n *naiveTSO) Deal() (revision uint64, err error) {
 	return atomic.AddUint64(&n.dealRevision, 1), err
 }
 
+// Dealt implement TSO interface
+func (n *naiveTSO) Dealt() (revision uint64) {
+	return atomic.LoadUint64(&n.dealRevision)
+}
+
 // Commit implement TSO interface
 func (n *naiveTSO) Commit(revision uint64) {
-	// todo: CAS to ensure revision increase continuously
-	//swapped := atomic.CompareAndSwapUint64(&n.committedRevision, revision-1, revision)
-	//if !swapped {
-	//	panic("committed revision must increase continuously")
-	//}
-
-	atomic.StoreUint64(&n.committedRevision, revision)
+	// The committed revision is monotonic — it must never move backwards.
+	// A plain store let a stale advance (e.g. the event collector racing a
+	// watch-overflow reset, or an unsigned-underflow re-trigger) pull the
+	// cluster read revision back, corrupting reads and watches.
+	for {
+		cur := atomic.LoadUint64(&n.committedRevision)
+		if revision <= cur {
+			break
+		}
+		if atomic.CompareAndSwapUint64(&n.committedRevision, cur, revision) {
+			break
+		}
+	}
 	// in case leader transfer, need to update tso and pre tso
-	preTSO := atomic.LoadUint64(&n.dealRevision)
-	if preTSO < revision {
-		atomic.CompareAndSwapUint64(&n.dealRevision, preTSO, revision)
+	for {
+		preTSO := atomic.LoadUint64(&n.dealRevision)
+		if preTSO >= revision {
+			break
+		}
+		if atomic.CompareAndSwapUint64(&n.dealRevision, preTSO, revision) {
+			break
+		}
 	}
 }
 

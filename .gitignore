@@ -6,3 +6,5 @@ output
 bin
 /kube*
 coverage.out
+/tikv-persistence-smoke
+/loadgen

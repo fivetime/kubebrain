@@ -24,11 +24,11 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/pkg/errors"
-	"golang.org/x/sync/singleflight"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"k8s.io/klog/v2"
@@ -65,9 +65,23 @@ type revisionSyncer struct {
 	enableTLS      bool
 
 	// internal
-	flight     singleflight.Group
 	schema     string
 	httpClient *http.Client
+
+	// fetchMu guards the double-buffered read-index fetch state. current is the
+	// in-flight leader-revision fetch; next is the batch for readers that arrived
+	// while current was running and therefore must be served by a fetch started
+	// after they arrived (read-index freshness, #43).
+	fetchMu sync.Mutex
+	current *revFetch
+	next    *revFetch
+}
+
+// revFetch is one shared leader-revision fetch; done is closed when rev/err are set.
+type revFetch struct {
+	done chan struct{}
+	rev  uint64
+	err  error
 }
 
 func defaultTransportDialContext(dialer *net.Dialer) func(context.Context, string, string) (net.Conn, error) {
@@ -77,7 +91,6 @@ func defaultTransportDialContext(dialer *net.Dialer) func(context.Context, strin
 func NewRevisionSyncer(backend Backend, metricCli metrics.Metrics, l leader.LeaderElection, tlsConfig *tls.Config) RevisionSyncer {
 	r := &revisionSyncer{
 		leaderElection: l,
-		flight:         singleflight.Group{},
 		metricCli:      metricCli,
 		backend:        backend,
 		schema:         "http",
@@ -122,7 +135,7 @@ func (r *revisionSyncer) SyncReadRevision(ctx context.Context) error {
 	}
 	// only sync when not leader
 	r.metricCli.EmitCounter("read.follower", 1)
-	currentRevision, err := r.singleFlightGetRevisionFromLeader(ctx)
+	currentRevision, err := r.getFreshRevisionFromLeader(ctx)
 	if err != nil {
 		r.metricCli.EmitCounter("read.follower.revision_err", 1)
 		klog.Errorf("sync read revision failed %v", err)
@@ -144,15 +157,64 @@ type LeaderRevision struct {
 	Revision uint64
 }
 
-func (r *revisionSyncer) singleFlightGetRevisionFromLeader(ctx context.Context) (uint64, error) {
-	v, err, _ := r.flight.Do("get_revision", func() (interface{}, error) {
-		rev, err := r.getRevisionFromLeaderWithRetry(ctx)
-		if err != nil {
-			return uint64(0), err
+// getFreshRevisionFromLeader returns the leader's revision from a fetch that
+// started at or after this call arrived, so it is safe to use as a read index.
+//
+// A plain singleflight would let a reader that arrives mid-flight join the
+// in-flight fetch and receive a revision read BEFORE the reader arrived, missing
+// writes committed in between and breaking the read-index staleness bound (#43).
+// Instead this double-buffers: a reader with no fetch in flight starts one (which
+// reads the leader after it arrived); a reader arriving while a fetch is running
+// joins the `next` batch, which is only started once the current fetch completes
+// — i.e. after the reader arrived. All readers arriving during one fetch coalesce
+// into a single next fetch, so the leader is not stampeded.
+func (r *revisionSyncer) getFreshRevisionFromLeader(ctx context.Context) (uint64, error) {
+	r.fetchMu.Lock()
+	var f *revFetch
+	if r.current == nil {
+		f = &revFetch{done: make(chan struct{})}
+		r.current = f
+		go r.runFetch(f)
+	} else {
+		if r.next == nil {
+			r.next = &revFetch{done: make(chan struct{})}
 		}
-		return rev, nil
-	})
-	return v.(uint64), err
+		f = r.next
+	}
+	r.fetchMu.Unlock()
+
+	select {
+	case <-f.done:
+		return f.rev, f.err
+	case <-ctx.Done():
+		// This reader gives up; the shared fetch keeps running for the others.
+		return 0, ctx.Err()
+	}
+}
+
+// runFetch performs one shared fetch, then promotes any batch that accumulated
+// while it ran to be the next in-flight fetch. Fetches therefore run strictly
+// serially (at most one at a time), and each starts after every reader it serves
+// arrived.
+func (r *revisionSyncer) runFetch(f *revFetch) {
+	// Independent timeout so a single reader's cancelled ctx does not abort the
+	// fetch the other readers are waiting on; bounded by the retry budget.
+	ctx, cancel := context.WithTimeout(context.Background(), syncRevMaxRetryElapsed)
+	f.rev, f.err = r.getRevisionFromLeaderWithRetry(ctx)
+	cancel()
+	close(f.done)
+
+	r.fetchMu.Lock()
+	r.current = nil
+	nxt := r.next
+	r.next = nil
+	if nxt != nil {
+		r.current = nxt
+	}
+	r.fetchMu.Unlock()
+	if nxt != nil {
+		go r.runFetch(nxt)
+	}
 }
 
 func (r *revisionSyncer) getRevisionFromLeaderWithRetry(ctx context.Context) (uint64, error) {
@@ -227,7 +289,13 @@ func retryableLeaderRevisionErr(err error) bool {
 	return strings.Contains(msg, "connection refused") ||
 		strings.Contains(msg, "no route to host") ||
 		strings.Contains(msg, "status code from leader") ||
-		strings.Contains(msg, "leader is not elected")
+		strings.Contains(msg, "leader is not elected") ||
+		// A malformed status body or a transient zero revision is the same class of
+		// transient leader issue as a non-200 (leader restarting / not yet
+		// initialized); retry within the elapsed budget rather than failing the
+		// read immediately (#42).
+		strings.Contains(msg, "unmarshal status from leader") ||
+		strings.Contains(msg, "returned zero revision")
 }
 
 func possibleSchemaMismatch(err error) bool {
@@ -318,24 +386,38 @@ func (r *revisionSyncer) getRevisionFromLeader(ctx context.Context) (uint64, err
 	}
 
 	revision := &LeaderRevision{}
-	json.Unmarshal(responseBody, revision)
+	if err := json.Unmarshal(responseBody, revision); err != nil {
+		// A malformed body (LB/proxy error page, truncated response, wrong
+		// content) must NOT be swallowed: the old code ignored this error and
+		// returned (0, nil), so the follower set its read revision to 0 and served
+		// reads against an empty/rewound index (#42).
+		r.metricCli.EmitCounter("follower.get.revision.unmarshal_err", 1, metrics.Tag("leader", leaderAddress))
+		return 0, fmt.Errorf("unmarshal status from leader %s failed (body=%q): %w", leaderAddress, string(responseBody), err)
+	}
+	if revision.Revision == 0 {
+		// Valid JSON but no/zero revision (e.g. "{}" or an error object). A healthy
+		// leader's revision is TSO-derived and never 0, so treat this as a bad
+		// response rather than rewinding the follower's read index to 0 (#42).
+		r.metricCli.EmitCounter("follower.get.revision.zero", 1, metrics.Tag("leader", leaderAddress))
+		return 0, fmt.Errorf("leader %s returned zero revision (body=%q)", leaderAddress, string(responseBody))
+	}
 	r.metricCli.EmitGauge("follower.get.revision", revision.Revision, metrics.Tag("leader", leaderAddress))
 	return revision.Revision, nil
 }
 
 var (
 	schemasHttpOnly  = []string{"http"}
-	schemasHttpHttps = []string{"http", "https"}
-	schemasHttpsHttp = []string{"https", "http"}
+	schemasHttpsOnly = []string{"https"}
 )
 
 func (r *revisionSyncer) getRetrySchemas() []string {
 	if !r.enableTLS {
 		return schemasHttpOnly
 	}
-	// prefer prev connectable schema
-	if r.schema == "http" {
-		return schemasHttpHttps
-	}
-	return schemasHttpsHttp
+	// TLS is enabled: only ever use https. Falling back to plain http would let a
+	// network attacker downgrade the leader /status sync and feed this follower a
+	// forged read revision, which drives what it serves reads at (#31). A leader
+	// still on http during a rollout must be reached over https once upgraded,
+	// not silently over cleartext.
+	return schemasHttpsOnly
 }

@@ -53,7 +53,13 @@ func (b *batch) CAS(key []byte, newVal []byte, oldVal []byte, ttl int64) {
 		val, err := b.txn.Get(ctx, key)
 		if err != nil {
 			if tikverr.IsErrNotFound(err) {
-				return storage.ErrKeyNotFound
+				// A missing key means the CAS precondition (current == oldVal)
+				// cannot hold, i.e. the compare failed. Per the storage interface
+				// (and to match Badger/memkv) return a Conflict (which Is
+				// ErrCASFailed) with a nil current value, NOT ErrKeyNotFound —
+				// otherwise the backend treats the same situation as a hard error on
+				// TiKV but as a retryable CAS failure on the other engines (#45).
+				return storage.NewErrConflict(idx, key, nil)
 			}
 			return errors.Wrapf(err, "fail to get key %s", string(key))
 		}
@@ -109,7 +115,11 @@ func (b *batch) DelCurrent(it storage.Iter) {
 
 func (b *batch) Commit(ctx context.Context) (err error) {
 	defer func() {
-		if err != nil {
+		// b.txn is nil when BeginBatchWrite's Begin() failed (e.g. PD/TSO
+		// briefly unavailable); the stashed error surfaces as list[0]. Guard the
+		// rollback so a failed Begin returns the error instead of panicking the
+		// whole process.
+		if err != nil && b.txn != nil {
 			b.txn.Rollback()
 		}
 	}()
@@ -143,4 +153,10 @@ var uncertainErrList = []error{
 	tikverr.ErrBodyMissing,
 	tikverr.ErrTiKVServerTimeout,
 	tikverr.ErrUnknown,
+	// ErrResultUndetermined is returned when the 2PC primary-key commit RPC
+	// times out and the outcome is genuinely unknown; the storage contract
+	// requires this be surfaced as an uncertain result so the backend's async
+	// retry queue re-resolves it, rather than treating it as a definite failure
+	// (which risks reporting Succeeded=false for data that was actually written).
+	tikverr.ErrResultUndetermined,
 }

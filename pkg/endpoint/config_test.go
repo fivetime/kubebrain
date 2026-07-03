@@ -15,6 +15,7 @@
 package endpoint
 
 import (
+	"crypto/tls"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -75,4 +76,33 @@ func TestConfig(t *testing.T) {
 	ast.Equal("kubebrain-peer.kubebrain-system.svc", conf.PeerSecurityConfig.getClientTLSConfig().ServerName)
 	ast.ElementsMatch([]string{"h2", "http/1.1"}, conf.ClientSecurityConfig.getServerTLSConfig().NextProtos)
 	ast.ElementsMatch([]string{"h2", "http/1.1"}, conf.PeerSecurityConfig.getServerTLSConfig().NextProtos)
+}
+
+// TestClientCertAuthRequiresTrustedCA pins #50: enabling client cert auth without
+// a trusted CA must be rejected, not silently accepted (which would verify client
+// certs against the system root pool, trusting any publicly-signed cert).
+func TestClientCertAuthRequiresTrustedCA(t *testing.T) {
+	ast := assert.New(t)
+
+	// valid key pair, ClientAuth on, but NO trusted CA -> rejected.
+	noCA := &SecurityConfig{
+		CertFile:   getAuthPath("server.crt"),
+		KeyFile:    getAuthPath("server.key"),
+		ClientAuth: true,
+	}
+	err := noCA.validate()
+	ast.Error(err, "client-cert-auth without a trusted CA must be rejected")
+	ast.Contains(err.Error(), "trusted CA")
+
+	// with a trusted CA it validates and verifies against that CA pool (not system roots).
+	withCA := &SecurityConfig{
+		CertFile:   getAuthPath("server.crt"),
+		KeyFile:    getAuthPath("server.key"),
+		CA:         getAuthPath("ca.crt"),
+		ClientAuth: true,
+	}
+	ast.NoError(withCA.validate())
+	cfg := withCA.getServerTLSConfig()
+	ast.Equal(tls.RequireAndVerifyClientCert, cfg.ClientAuth)
+	ast.NotNil(cfg.ClientCAs, "must verify client certs against the configured CA pool, not system roots")
 }

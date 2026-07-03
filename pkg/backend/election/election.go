@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/pkg/errors"
@@ -69,12 +70,17 @@ func (r *resourceLockManager) GetResourceLock() resourcelock.Interface {
 }
 
 type resourceLock struct {
-	store       storage.KvStorage
-	lockConfig  resourcelock.ResourceLockConfig
+	store      storage.KvStorage
+	lockConfig resourcelock.ResourceLockConfig
+	// mu guards the mutable election state (record/lastVal/tso). It is written by
+	// the single leader-election goroutine (Get/Create/Update) and read
+	// concurrently by RPC goroutines via Describe (#60/#68). Storage I/O is done
+	// outside the lock; only the field access is guarded.
+	mu          sync.Mutex
 	record      resourcelock.LeaderElectionRecord
 	lastVal     []byte
-	electionKey []byte
 	tso         uint64
+	electionKey []byte
 	timeout     time.Duration
 }
 
@@ -92,34 +98,47 @@ func (r *resourceLock) Get() (*resourcelock.LeaderElectionRecord, error) {
 		return nil, err
 	}
 
-	return &r.record, nil
+	// Return a snapshot copy so the caller never reads the guarded field while
+	// a later Get/Update rewrites it. LeaderElectionRecord has only value fields,
+	// so this shallow copy is independent.
+	r.mu.Lock()
+	recordCopy := r.record
+	r.mu.Unlock()
+	return &recordCopy, nil
 }
 
 func (r *resourceLock) getRecord() (err error) {
 	ctx, cancel := r.genContext(context.Background())
 	defer cancel()
-	var val []byte
-	val, err = r.store.Get(ctx, r.electionKey)
+	val, err := r.store.Get(ctx, r.electionKey)
 	if err != nil {
 		if err == storage.ErrKeyNotFound {
 			return apierrors.NewNotFound(schema.GroupResource{}, string(r.electionKey))
 		}
 		return err
 	}
-	r.lastVal = val
 	var record resourcelock.LeaderElectionRecord
 	if err := json.Unmarshal(val, &record); err != nil {
 		return err
 	}
+	r.mu.Lock()
+	r.lastVal = val
 	r.record = record
+	r.mu.Unlock()
 	return nil
 }
 
 func (r *resourceLock) getTso() (err error) {
 	ctx, cancel := r.genContext(context.Background())
 	defer cancel()
-	r.tso, err = r.store.GetTimestampOracle(ctx)
-	return err
+	tso, err := r.store.GetTimestampOracle(ctx)
+	if err != nil {
+		return err
+	}
+	r.mu.Lock()
+	r.tso = tso
+	r.mu.Unlock()
+	return nil
 }
 
 // Create implements resourcelock.Interface
@@ -136,19 +155,26 @@ func (r *resourceLock) Create(ler resourcelock.LeaderElectionRecord) error {
 	if err != nil {
 		return err
 	}
-	r.lastVal = lerBytes
-	r.tso, err = r.store.GetTimestampOracle(context.Background())
+	tso, err := r.store.GetTimestampOracle(context.Background())
 	if err != nil {
 		return err
 	}
+	r.mu.Lock()
+	r.lastVal = lerBytes
+	r.tso = tso
 	r.record = ler
-	return err
+	r.mu.Unlock()
+	return nil
 }
 
 // Update implements resourcelock.Interface
 func (r *resourceLock) Update(ler resourcelock.LeaderElectionRecord) error {
 	klog.V(8).Info("[resource lock] update lock")
-	if r.tso == 0 {
+	r.mu.Lock()
+	tso := r.tso
+	lastVal := r.lastVal
+	r.mu.Unlock()
+	if tso == 0 {
 		return errors.New("endpoint not initialized, call get or create first")
 	}
 
@@ -158,7 +184,7 @@ func (r *resourceLock) Update(ler resourcelock.LeaderElectionRecord) error {
 	}
 
 	batch := r.store.BeginBatchWrite()
-	batch.CAS(r.electionKey, recordBytes, r.lastVal, 0)
+	batch.CAS(r.electionKey, recordBytes, lastVal, 0)
 	ctx, cancel := r.genContext(context.Background())
 	defer cancel()
 	err = batch.Commit(ctx)
@@ -166,13 +192,16 @@ func (r *resourceLock) Update(ler resourcelock.LeaderElectionRecord) error {
 		return err
 	}
 
-	r.tso, err = r.store.GetTimestampOracle(context.Background())
+	newTso, err := r.store.GetTimestampOracle(context.Background())
 	if err != nil {
 		return err
 	}
+	r.mu.Lock()
+	r.tso = newTso
 	r.lastVal = recordBytes
 	r.record = ler
-	return err
+	r.mu.Unlock()
+	return nil
 }
 
 // RecordEvent implements resourcelock.Interface
@@ -186,6 +215,8 @@ func (r *resourceLock) Identity() string {
 }
 
 func (r *resourceLock) Describe() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if len(r.record.HolderIdentity) > 0 {
 		return fmt.Sprintf("%s,%d", r.record.HolderIdentity, r.tso)
 	}

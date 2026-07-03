@@ -43,6 +43,15 @@ type etcdProxy struct {
 	err       error
 	curLeader string
 	lock      sync.RWMutex
+	// updateMu serializes updateClient so at most one goroutine builds/swaps the
+	// forwarding client at a time. Without it the 1s checkLeaderLoop and the RPC
+	// goroutines that call updateClient via waitReady run concurrently: each
+	// releases `lock` during the slow clientv3.New/checkClientConn and then does
+	// e.client = client, so a later winner overwrites an earlier client without
+	// closing it (leaked connection, #47) and every caller stampedes the new
+	// leader with its own dial (#41). Held for the whole function; acquired before
+	// `lock` so the lock order is always updateMu -> lock.
+	updateMu sync.Mutex
 }
 
 func (e *etcdProxy) EtcdProxyEnabled() bool {
@@ -96,6 +105,12 @@ func (e *etcdProxy) resetClient() (reset bool) {
 }
 
 func (e *etcdProxy) updateClient() {
+	// Serialize the whole build/swap: concurrent callers otherwise leak clients
+	// and stampede the leader (#41/#47). Once the winner has a healthy client, the
+	// queued callers fall through the hasClient()+checkConn() fast path and return
+	// without redialing.
+	e.updateMu.Lock()
+	defer e.updateMu.Unlock()
 
 	if e.hasClient() {
 		if err := e.checkConn(); err != nil {
@@ -229,8 +244,17 @@ func (e *etcdProxy) readyClient(ctx context.Context) (*clientv3.Client, string, 
 	return e.client, e.curLeader, e.closed, nil
 }
 
-func (e *etcdProxy) markForwardError(client *clientv3.Client, err error) {
+func (e *etcdProxy) markForwardError(ctx context.Context, client *clientv3.Client, err error) {
 	if err == nil || !isForwardConnectionError(err) {
+		return
+	}
+	// A cancelled or expired CLIENT context is not a leader-connection failure --
+	// the caller went away. Resetting the shared forwarding client here would tear
+	// down the connection every other in-flight follower request depends on (#23).
+	// Only a genuine connection error with a still-live caller context (e.g. the
+	// leader is unreachable) should reset it; a truly dead leader is also caught by
+	// the periodic checkLeaderLoop.
+	if ctx.Err() != nil {
 		return
 	}
 	e.lock.Lock()
@@ -276,7 +300,7 @@ func (e *etcdProxy) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etc
 		"key", key,
 		"rev", rev)
 	resp, err := etcdserverpb.NewKVClient(client.ActiveConnection()).Txn(ctx, txn, defaultCallOption...)
-	e.markForwardError(client, err)
+	e.markForwardError(ctx, client, err)
 	if err != nil {
 		klog.InfoS("forward txn failed", "key", key, "err", err.Error())
 		return nil, err
@@ -310,7 +334,7 @@ func (e *etcdProxy) Range(ctx context.Context, req *etcdserverpb.RangeRequest) (
 	}
 	klog.InfoS("forward range", "leader", leader, "key", string(req.Key), "rangeEnd", string(req.RangeEnd), "revision", req.Revision)
 	resp, err := etcdserverpb.NewKVClient(client.ActiveConnection()).Range(ctx, req, defaultCallOption...)
-	e.markForwardError(client, err)
+	e.markForwardError(ctx, client, err)
 	return resp, err
 }
 
@@ -321,7 +345,7 @@ func (e *etcdProxy) Put(ctx context.Context, req *etcdserverpb.PutRequest) (*etc
 	}
 	klog.InfoS("forward put", "leader", leader, "key", string(req.Key), "lease", req.Lease)
 	resp, err := etcdserverpb.NewKVClient(client.ActiveConnection()).Put(ctx, req, defaultCallOption...)
-	e.markForwardError(client, err)
+	e.markForwardError(ctx, client, err)
 	return resp, err
 }
 
@@ -332,7 +356,7 @@ func (e *etcdProxy) DeleteRange(ctx context.Context, req *etcdserverpb.DeleteRan
 	}
 	klog.InfoS("forward delete range", "leader", leader, "key", string(req.Key), "rangeEnd", string(req.RangeEnd))
 	resp, err := etcdserverpb.NewKVClient(client.ActiveConnection()).DeleteRange(ctx, req, defaultCallOption...)
-	e.markForwardError(client, err)
+	e.markForwardError(ctx, client, err)
 	return resp, err
 }
 
@@ -343,7 +367,7 @@ func (e *etcdProxy) Compact(ctx context.Context, req *etcdserverpb.CompactionReq
 	}
 	klog.InfoS("forward compact", "leader", leader, "revision", req.Revision, "physical", req.Physical)
 	resp, err := etcdserverpb.NewKVClient(client.ActiveConnection()).Compact(ctx, req, defaultCallOption...)
-	e.markForwardError(client, err)
+	e.markForwardError(ctx, client, err)
 	return resp, err
 }
 
@@ -354,7 +378,7 @@ func (e *etcdProxy) LeaseGrant(ctx context.Context, req *etcdserverpb.LeaseGrant
 	}
 	klog.InfoS("forward lease grant", "leader", leader, "id", req.ID, "ttl", req.TTL)
 	resp, err := etcdserverpb.NewLeaseClient(client.ActiveConnection()).LeaseGrant(ctx, req, defaultCallOption...)
-	e.markForwardError(client, err)
+	e.markForwardError(ctx, client, err)
 	return resp, err
 }
 
@@ -365,7 +389,7 @@ func (e *etcdProxy) LeaseRevoke(ctx context.Context, req *etcdserverpb.LeaseRevo
 	}
 	klog.InfoS("forward lease revoke", "leader", leader, "id", req.ID)
 	resp, err := etcdserverpb.NewLeaseClient(client.ActiveConnection()).LeaseRevoke(ctx, req, defaultCallOption...)
-	e.markForwardError(client, err)
+	e.markForwardError(ctx, client, err)
 	return resp, err
 }
 
@@ -375,21 +399,24 @@ func (e *etcdProxy) LeaseKeepAlive(ctx context.Context, req *etcdserverpb.LeaseK
 		return nil, err
 	}
 	klog.InfoS("forward lease keepalive", "leader", leader, "id", req.ID)
-	stream, err := etcdserverpb.NewLeaseClient(client.ActiveConnection()).LeaseKeepAlive(ctx, defaultCallOption...)
+	// The follower forwards one keepalive message and returns one response, but
+	// LeaseKeepAlive is a bidi stream. Derive a per-call cancelable context and
+	// cancel it on return so the leader-side stream is fully torn down instead of
+	// left half-open (CloseSend only closes the send direction, leaking the
+	// receive side until the long-lived caller context ends) (#62).
+	callCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	stream, err := etcdserverpb.NewLeaseClient(client.ActiveConnection()).LeaseKeepAlive(callCtx, defaultCallOption...)
 	if err != nil {
-		e.markForwardError(client, err)
+		e.markForwardError(ctx, client, err)
 		return nil, err
 	}
 	if err := stream.Send(req); err != nil {
-		_ = stream.CloseSend()
-		e.markForwardError(client, err)
+		e.markForwardError(ctx, client, err)
 		return nil, err
 	}
 	resp, err := stream.Recv()
-	if closeErr := stream.CloseSend(); err == nil && closeErr != nil {
-		err = closeErr
-	}
-	e.markForwardError(client, err)
+	e.markForwardError(ctx, client, err)
 	return resp, err
 }
 
@@ -400,7 +427,7 @@ func (e *etcdProxy) LeaseTimeToLive(ctx context.Context, req *etcdserverpb.Lease
 	}
 	klog.InfoS("forward lease ttl", "leader", leader, "id", req.ID, "keys", req.Keys)
 	resp, err := etcdserverpb.NewLeaseClient(client.ActiveConnection()).LeaseTimeToLive(ctx, req, defaultCallOption...)
-	e.markForwardError(client, err)
+	e.markForwardError(ctx, client, err)
 	return resp, err
 }
 
@@ -411,7 +438,7 @@ func (e *etcdProxy) LeaseLeases(ctx context.Context, req *etcdserverpb.LeaseLeas
 	}
 	klog.InfoS("forward lease leases", "leader", leader)
 	resp, err := etcdserverpb.NewLeaseClient(client.ActiveConnection()).LeaseLeases(ctx, req, defaultCallOption...)
-	e.markForwardError(client, err)
+	e.markForwardError(ctx, client, err)
 	return resp, err
 }
 
@@ -521,7 +548,7 @@ func (e *etcdProxy) Watch(ctx context.Context, key, rangeEnd []byte, revision ui
 					err := wresp.Err()
 					if err != nil {
 						klog.InfoS("etcd proxy watch error", "key", string(key), "rangeEnd", string(rangeEnd), "rev", watchRevision, "channel", outputCh, "error", err)
-						e.markForwardError(client, err)
+						e.markForwardError(ctx, client, err)
 						if isForwardConnectionError(err) {
 							reconnect = true
 							break
@@ -529,13 +556,18 @@ func (e *etcdProxy) Watch(ctx context.Context, key, rangeEnd []byte, revision ui
 						outputCh <- WatchResult{Err: err}
 						return
 					}
-					events := convertEvents(wresp.Events)
-					for _, event := range events {
-						if event.Kv != nil && event.Kv.ModRevision >= int64(watchRevision) {
-							watchRevision = uint64(event.Kv.ModRevision) + 1
-						}
-					}
-					outputCh <- WatchResult{Events: events}
+					// Advance the resume revision to the store revision this
+					// response covers, so a reconnect after a leader change resumes
+					// from a concrete point instead of restarting at the new
+					// leader's "current" and silently dropping the gap (#63). The
+					// header revision is >= every event's ModRevision (subsuming
+					// per-event advancement) and, thanks to WithProgressNotify,
+					// also advances on idle progress notifications that carry no
+					// events — the case where the old code left watchRevision at
+					// its initial value (0 for a from-now watch). The Created
+					// response carries revision 0, which nextWatchRevision ignores.
+					watchRevision = nextWatchRevision(watchRevision, wresp.Header.Revision)
+					outputCh <- watchResultFromResponse(wresp)
 				}
 			}
 
@@ -551,7 +583,10 @@ func (e *etcdProxy) Watch(ctx context.Context, key, rangeEnd []byte, revision ui
 }
 
 func watchOptionsForRange(rangeEnd []byte, revision uint64) []clientv3.OpOption {
-	opts := []clientv3.OpOption{clientv3.WithRev(int64(revision)), clientv3.WithPrevKV()}
+	// WithProgressNotify makes the leader advertise its current revision even
+	// when the watched range is idle, so the proxy can advance its resume point
+	// and not lose the gap on a leader-change reconnect (#63).
+	opts := []clientv3.OpOption{clientv3.WithRev(int64(revision)), clientv3.WithPrevKV(), clientv3.WithProgressNotify()}
 	if rangeEnd == nil {
 		return opts
 	}
@@ -559,6 +594,34 @@ func watchOptionsForRange(rangeEnd []byte, revision uint64) []clientv3.OpOption 
 		return append(opts, clientv3.WithFromKey())
 	}
 	return append(opts, clientv3.WithRange(string(rangeEnd)))
+}
+
+// nextWatchRevision returns the resume revision after a watch response whose
+// header covers store revision headerRev. It never moves backwards, and ignores
+// a zero header revision (e.g. the Created response) so the proxy does not rewind
+// a from-now watch to the beginning of history.
+func nextWatchRevision(current uint64, headerRev int64) uint64 {
+	if headerRev <= 0 {
+		return current
+	}
+	if next := uint64(headerRev) + 1; next > current {
+		return next
+	}
+	return current
+}
+
+// watchResultFromResponse maps one leader watch response to a WatchResult. An
+// idle progress notification (no events, carrying only the leader's current
+// revision) becomes a ProgressRevision result so the follower's watch can advance
+// a quiet watch's progress; the leader now makes that header revision a safe
+// "all events <= R delivered on this stream" value, and clientv3 preserves FIFO,
+// so the proxy's FIFO copy preserves the guarantee. Any other response carries
+// converted events.
+func watchResultFromResponse(wresp clientv3.WatchResponse) WatchResult {
+	if wresp.IsProgressNotify() {
+		return WatchResult{ProgressRevision: uint64(wresp.Header.Revision)}
+	}
+	return WatchResult{Events: convertEvents(wresp.Events)}
 }
 
 func convertEvents(events []*clientv3.Event) []*mvccpb.Event {

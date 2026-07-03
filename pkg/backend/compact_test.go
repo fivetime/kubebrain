@@ -48,6 +48,9 @@ func TestConstructCompactBordersWithSkippedPrefixOption(t *testing.T) {
 				},
 			},
 			[][]byte{
+				// internal \x00kubebrain/ namespace (etcdmeta + leases) sorts first and is GC'd too (#6/#15/#38)
+				encodeRevisionKey(internalKeyspacePrefix),
+				encodeRevisionKey(PrefixEnd(internalKeyspacePrefix)),
 				encodeRevisionKey([]byte("/registry/test/")),
 				encodeRevisionKey([]byte("/registry/test/events/")),
 				encodeRevisionKey([]byte("/registry/test/events0")),
@@ -61,6 +64,8 @@ func TestConstructCompactBordersWithSkippedPrefixOption(t *testing.T) {
 				Prefix: "/registry/test",
 			},
 			[][]byte{
+				encodeRevisionKey(internalKeyspacePrefix),
+				encodeRevisionKey(PrefixEnd(internalKeyspacePrefix)),
 				encodeRevisionKey([]byte("/registry/test/")),
 				encodeRevisionKey([]byte("/registry/test0")),
 			},

@@ -35,6 +35,12 @@ func (s *Stub) IsLeader() bool {
 	return s.ElectionInfo.IsLeader
 }
 
+// EpochAndLeadingFresh implements LeaderElection interface. The stub has no real
+// lease, so it reports a fixed epoch and treats leadership as always fresh.
+func (s *Stub) EpochAndLeadingFresh() (uint64, bool) {
+	return 0, s.ElectionInfo.IsLeader
+}
+
 // GetElectionInfo implements LeaderElection interface
 func (s *Stub) GetElectionInfo() (ElectionInfo, error) {
 	return s.ElectionInfo, nil

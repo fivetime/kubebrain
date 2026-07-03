@@ -52,6 +52,12 @@ type RPCServer struct {
 	leaseID       int64
 	leases        map[int64]*leaseState
 	keyLeaseIndex map[string]int64
+	// leasedKeyCount mirrors len(keyLeaseIndex) for a lock-free fast path in
+	// leaseIDForKey: the read path resolves an attached lease for every returned
+	// KeyValue, and the overwhelmingly common case (a range over keys that hold
+	// no lease) must not take leaseMu per key. Updated under leaseMu, read with
+	// atomics.
+	leasedKeyCount int64
 }
 
 type leaseState struct {
@@ -72,6 +78,9 @@ func New(backend b.Backend, metricCli metrics.Metrics, peers service.PeerService
 		leases:        make(map[int64]*leaseState),
 		keyLeaseIndex: make(map[string]int64),
 	}
+	// Wire read/watch KeyValues to carry the lease attached to each key (etcd
+	// parity). Safe to set before serving: New runs single-threaded.
+	server.backend.SetLeaseLookup(server.leaseIDForKey)
 	if err := server.restoreLeases(context.Background()); err != nil {
 		klog.ErrorS(err, "restore leases failed")
 	}

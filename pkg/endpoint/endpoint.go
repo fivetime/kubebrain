@@ -128,14 +128,21 @@ func (e *Endpoint) runPeerServer(ctx context.Context) error {
 
 func (e *Endpoint) runMetricsServer(ctx context.Context) error {
 	metricsHttp := e.buildMetricsHttpServer()
-	peerServiceGroup := newRootServer(e.config.InfoPort, metricsHttp)
-	return peerServiceGroup.run(ctx)
+	// The info port (metrics + opt-in pprof) was always plaintext. Wrap it with a
+	// security config like the client/peer ports so it can serve TLS; an empty
+	// InfoSecurityConfig stays plaintext, preserving existing behavior (#32).
+	exposedServers := e.buildExposedServers(e.config.InfoSecurityConfig, metricsHttp)
+	infoServiceGroup := newRootServer(e.config.InfoPort, exposedServers...)
+	return infoServiceGroup.run(ctx)
 }
 
 func (e *Endpoint) buildClientHttpServer() exposedServer {
+	// The client port is the production data plane reachable by every etcd client.
+	// It must NOT expose /metrics or /debug/pprof there: those are unauthenticated
+	// info-disclosure and (pprof) CPU/heap DoS vectors. Metrics and (opt-in) pprof
+	// live only on the diagnostic info port (#32). The client port serves just the
+	// client HTTP handlers (health/ready) alongside the etcd gRPC service.
 	handlersMaps := []map[string]http.Handler{
-		e.metrics.GetHttpHandlers(),
-		getPProfHandlers(),
 		e.server.GetClientHttpHandlers(),
 	}
 
@@ -165,8 +172,12 @@ func (e *Endpoint) buildPeerGrpcServer() exposedServer {
 func (e *Endpoint) buildMetricsHttpServer() exposedServer {
 	handlersMaps := []map[string]http.Handler{
 		e.metrics.GetHttpHandlers(),
-		getPProfHandlers(),
 		e.server.GetInfoHttpHandlers(),
+	}
+	// pprof is a debug-only, DoS-capable surface; register it only when explicitly
+	// enabled, and only here on the info port -- never on the client data port (#32).
+	if e.config.EnablePprof {
+		handlersMaps = append(handlersMaps, getPProfHandlers())
 	}
 	return newHttpServerWithHandlers(handlersMaps...)
 }

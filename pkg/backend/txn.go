@@ -15,7 +15,6 @@
 package backend
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"time"
@@ -45,7 +44,7 @@ func (b *backend) Create(ctx context.Context, put *proto.CreateRequest) (resp *p
 	}()
 
 	revision, err := b.create(ctx, put.Key, put.Value)
-	b.notify(ctx, put.Key, put.Value, revision, 0, err == nil, proto.Event_CREATE, err)
+	b.notify(ctx, put.Key, b.eventValue(put.Value, EtcdMetadata{CreateRevision: revision, Version: 1}, err), revision, 0, err == nil, proto.Event_CREATE, err)
 	if errors.Is(err, storage.ErrCASFailed) {
 		return &proto.CreateResponse{
 			Header:    responseHeader(revision),
@@ -68,20 +67,24 @@ func (b *backend) create(ctx context.Context, key []byte, value []byte) (revisio
 		return 0, err
 	}
 
-	ttl := int64(0)
-	if bytes.Contains(key, events) {
-		ttl = eventsTTL
-	}
-	err = b.createWithMetadata(ctx, key, value, revision, ttl)
+	// Key expiry is driven entirely by the lease attached to the key at the etcd
+	// layer (etcd v3 has no non-lease TTL): the lease's granted TTL is honored
+	// per-key by the server-layer lease manager, which deletes the bound keys when
+	// the lease expires. The backend therefore writes no storage-level TTL.
+	// Previously an unanchored bytes.Contains(key, "/events/") heuristic stamped a
+	// hardcoded 3600s TTL, which ignored the real granted TTL, ignored keepalive
+	// renewal, and mis-expired unrelated keys whose path merely contained
+	// "/events/" (data loss) — see #16.
+	err = b.createWithMetadata(ctx, key, value, revision)
 	return revision, err
 }
 
-func (b *backend) createWithMetadata(ctx context.Context, key []byte, value []byte, revision uint64, ttl int64) error {
+func (b *backend) createWithMetadata(ctx context.Context, key []byte, value []byte, revision uint64) error {
 	revisionKey := b.coder.EncodeRevisionKey(key)
 	objectKey := b.coder.EncodeObjectKey(key, revision)
 	revisionBytes := uint64ToBytes(revision)
 
-	err := b.createBatchWithMetadata(ctx, revisionKey, objectKey, key, value, revisionBytes, nil, revision, ttl, true)
+	err := b.createBatchWithMetadata(ctx, revisionKey, objectKey, key, value, revisionBytes, nil, revision, true)
 	if err == nil {
 		return nil
 	}
@@ -96,7 +99,7 @@ func (b *backend) createWithMetadata(ctx context.Context, key []byte, value []by
 		oldRev, err = b.kv.Get(ctx, revisionKey)
 		if err != nil {
 			if errors.Is(err, storage.ErrKeyNotFound) {
-				return b.createBatchWithMetadata(ctx, revisionKey, objectKey, key, value, revisionBytes, nil, revision, ttl, true)
+				return b.createBatchWithMetadata(ctx, revisionKey, objectKey, key, value, revisionBytes, nil, revision, true)
 			}
 			return storage.ErrUnavailable
 		}
@@ -107,25 +110,45 @@ func (b *backend) createWithMetadata(ctx context.Context, key []byte, value []by
 		return parseErr
 	}
 	if isTombstone && prevRevision < revision {
-		return b.createBatchWithMetadata(ctx, revisionKey, objectKey, key, value, revisionBytes, oldRev, revision, ttl, false)
+		return b.createBatchWithMetadata(ctx, revisionKey, objectKey, key, value, revisionBytes, oldRev, revision, false)
 	}
 	return storage.ErrCASFailed
 }
 
-func (b *backend) createBatchWithMetadata(ctx context.Context, revisionKey, objectKey, key, value, newRevisionBytes, oldRevisionBytes []byte, revision uint64, ttl int64, requireNotExist bool) error {
+// createBatchWithMetadata writes the revision-key and object-key with no
+// storage-level TTL (ttl=0): key expiry is the lease manager's responsibility,
+// not the backend's — see create.
+func (b *backend) createBatchWithMetadata(ctx context.Context, revisionKey, objectKey, key, value, newRevisionBytes, oldRevisionBytes []byte, revision uint64, requireNotExist bool) error {
+	// Fence the write just before opening the batch: reject if leadership changed
+	// since admission so a deposed leader cannot commit at a revision the new
+	// leader's collector has already advanced past (FINDING #39).
+	if err := b.fenceAdmit(ctx); err != nil {
+		return err
+	}
 	batch := b.kv.BeginBatchWrite()
 	if requireNotExist {
-		batch.PutIfNotExist(revisionKey, newRevisionBytes, ttl)
+		batch.PutIfNotExist(revisionKey, newRevisionBytes, 0)
 	} else {
-		batch.CAS(revisionKey, newRevisionBytes, oldRevisionBytes, ttl)
+		batch.CAS(revisionKey, newRevisionBytes, oldRevisionBytes, 0)
 	}
-	batch.Put(objectKey, value, ttl)
-	b.putEtcdMetadata(batch, key, revision, EtcdMetadata{CreateRevision: revision, Version: 1})
+	meta := EtcdMetadata{CreateRevision: revision, Version: 1}
+	if b.config.EnableEtcdCompatibility {
+		// Inline create_revision/version into the value so reads need no separate
+		// metadata lookup and the etcdmeta keyspace stops growing (approach A).
+		batch.Put(objectKey, encodeValueWithMeta(value, meta), 0)
+	} else {
+		batch.Put(objectKey, value, 0)
+		b.putEtcdMetadata(batch, key, revision, meta)
+	}
 	return batch.Commit(ctx)
 }
 
 // Delete implements Backend interface
-func (b *backend) Delete(ctx context.Context, r *proto.DeleteRequest) (resp *proto.DeleteResponse, err error) {
+func (b *backend) Delete(ctx context.Context, r *proto.DeleteRequest) (*proto.DeleteResponse, error) {
+	return b.deleteOnce(ctx, r, true)
+}
+
+func (b *backend) deleteOnce(ctx context.Context, r *proto.DeleteRequest, allowHeal bool) (resp *proto.DeleteResponse, err error) {
 	ts := time.Now()
 	defer func() {
 		txnLog("delete",
@@ -152,6 +175,14 @@ func (b *backend) Delete(ctx context.Context, r *proto.DeleteRequest) (resp *pro
 		// key is not exist
 		return resp, nil
 	} else if errors.Is(err, storage.ErrCASFailed) {
+		// An orphaned key (object present, revision-index missing) CASes the
+		// missing index and can never be deleted. Heal the index once and retry so
+		// the delete self-recovers instead of the key being undeletable forever.
+		if allowHeal {
+			if healed, healErr := b.healOrphanIndex(ctx, r.Key); healErr == nil && healed {
+				return b.deleteOnce(ctx, r, false)
+			}
+		}
 		// possible case:
 		// 1. expect revision is too old
 		// 2. concurrent modification
@@ -232,6 +263,11 @@ func (b *backend) delete(ctx context.Context, oldRevision uint64, key []byte) (n
 	newRevisionBytes := append(uint64ToBytes(newRevision), 0) // delete revision
 	// delete revision, key is {raw_key}:{0}, value is {revision}{deletion_flag}
 
+	// Fence just before the batch: the caller's notify publishes an invalid event
+	// for newRevision so the collector advances past the consumed revision.
+	if err = b.fenceAdmit(ctx); err != nil {
+		return newRevision, old, err
+	}
 	batch := b.kv.BeginBatchWrite()
 	batch.CAS(revisionKey, newRevisionBytes, expectedRevisionBytes, 0)
 	batch.Put(objectKey, tombStoneBytes, 0)
@@ -239,6 +275,45 @@ func (b *backend) delete(ctx context.Context, oldRevision uint64, key []byte) (n
 
 	// todo: need an internal retry if there is any conflict error?
 	return newRevision, old, err
+}
+
+// healOrphanIndex repairs a key whose object versions exist but whose
+// revision-index (rev=0) slot is missing. Such an orphan (left by a pre-#31
+// compaction/retry race that GC'd a deletion-flagged index while a retried DELETE
+// left the base object) is read-visible — b.get scans object keys and ignores the
+// index — but permanently un-writable: every Update/Delete CASes the missing index
+// key, which the storage reports as a conflict, so the write retries forever
+// ("still contended"). This restores the index to point at the latest object
+// revision so the next write proceeds normally. It is a pure repair: it allocates
+// NO new revision and publishes NO event — it only re-materializes the index
+// pointer for an already-committed object revision. Returns true if it healed an
+// orphan (including when a concurrent writer recreated the index first).
+func (b *backend) healOrphanIndex(ctx context.Context, key []byte) (bool, error) {
+	// Only a live object (non-tombstone) needs a usable index; a deleted+compacted
+	// key with no index reads as not-found, which is already correct.
+	_, modRev, err := b.get(ctx, key, 0)
+	if err != nil {
+		return false, nil
+	}
+	revisionKey := b.coder.EncodeRevisionKey(key)
+	if _, gerr := b.kv.Get(ctx, revisionKey); gerr == nil {
+		// Index present: this was an ordinary stale/concurrent CAS, not an orphan.
+		return false, nil
+	} else if !errors.Is(gerr, storage.ErrKeyNotFound) {
+		return false, gerr
+	}
+	batch := b.kv.BeginBatchWrite()
+	batch.PutIfNotExist(revisionKey, uint64ToBytes(modRev), 0)
+	if cerr := batch.Commit(ctx); cerr != nil {
+		if errors.Is(cerr, storage.ErrCASFailed) {
+			// A concurrent write recreated the index; the orphan is resolved.
+			return true, nil
+		}
+		return false, cerr
+	}
+	klog.InfoS("healed orphan revision index", "key", string(key), "revision", modRev)
+	b.metricCli.EmitCounter("backend.orphan_index.heal", 1)
+	return true, nil
 }
 
 // DeleteRange removes a set of live keys in one storage batch. Like etcd, all
@@ -271,29 +346,71 @@ func (b *backend) DeleteRange(ctx context.Context, kvs []*proto.KeyValue) (resp 
 		return resp, nil
 	}
 
-	type pendingDelete struct {
-		key         []byte
-		value       []byte
-		oldRevision uint64
-	}
 	pending := make([]pendingDelete, 0, len(kvs))
-	var maxOldRevision uint64
 	for _, kv := range kvs {
 		if kv == nil || len(kv.Key) == 0 || kv.Revision == 0 {
 			continue
 		}
-		key := append([]byte(nil), kv.Key...)
-		value := append([]byte(nil), kv.Value...)
-		oldRevision := kv.Revision
 		pending = append(pending, pendingDelete{
-			key:         key,
-			value:       value,
-			oldRevision: oldRevision,
+			key:         append([]byte(nil), kv.Key...),
+			value:       append([]byte(nil), kv.Value...),
+			oldRevision: kv.Revision,
 		})
-		maxOldRevision = maxUint64(maxOldRevision, oldRevision)
 	}
 	if len(pending) == 0 {
 		return resp, nil
+	}
+	// One giant storage batch fails once the range is large (a single oversized
+	// TiKV transaction is rejected). Split into bounded chunks, each committed as
+	// its own atomic sub-delete at its own revision. This trades etcd's
+	// all-at-one-revision atomicity (impossible on TiKV's bounded txns for a huge
+	// range) for large ranges succeeding; each chunk is still atomic and its watch
+	// events are delivered normally, and a mid-range failure leaves the earlier
+	// chunks durably deleted (reported in resp.Kvs) instead of the whole range
+	// failing. k8s does not issue large multi-key DeleteRanges (DeleteCollection /
+	// namespace teardown delete objects individually), so this affects raw-client /
+	// operational bulk deletes.
+	for start := 0; start < len(pending); start += deleteRangeChunkSize {
+		end := minInt(start+deleteRangeChunkSize, len(pending))
+		chunkKvs, chunkRev, cerr := b.deleteRangeChunk(ctx, pending[start:end])
+		resp.Kvs = append(resp.Kvs, chunkKvs...)
+		if chunkRev != 0 {
+			resp.Header = responseHeader(chunkRev)
+		}
+		if cerr != nil {
+			resp.Succeeded = false
+			return resp, cerr
+		}
+	}
+	return resp, nil
+}
+
+// deleteRangeChunkSize bounds how many keys one DeleteRange storage transaction
+// deletes, so a large range does not build a single oversized TiKV txn (which the
+// backend rejects). Each chunk is one atomic commit at one revision.
+const deleteRangeChunkSize = 128
+
+// pendingDelete is one validated live key queued for deletion by DeleteRange.
+type pendingDelete struct {
+	key         []byte
+	value       []byte
+	oldRevision uint64
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// deleteRangeChunk atomically deletes one bounded group of already-validated live
+// keys at a single freshly-dealt revision, returning the deleted KVs and that
+// revision. It mirrors the original single-batch DeleteRange body.
+func (b *backend) deleteRangeChunk(ctx context.Context, pending []pendingDelete) ([]*proto.KeyValue, uint64, error) {
+	var maxOldRevision uint64
+	for _, item := range pending {
+		maxOldRevision = maxUint64(maxOldRevision, item.oldRevision)
 	}
 	baseRevision := maxUint64(maxOldRevision, b.GetCurrentRevision())
 	newRevision, dealErr := b.deal(baseRevision)
@@ -302,23 +419,29 @@ func (b *backend) DeleteRange(ctx context.Context, kvs []*proto.KeyValue) (resp 
 		// event so the event collector can skip past it instead of stalling
 		// on it forever (freezing all lists/watches).
 		b.notify(ctx, pending[0].key, nil, newRevision, 0, false, proto.Event_DELETE, dealErr)
-		return nil, dealErr
+		return nil, newRevision, dealErr
 	}
 	if newRevision <= baseRevision {
 		err := fmt.Errorf("cas failed, new revision is %d existing revision is %d", newRevision, baseRevision)
 		b.notify(ctx, pending[0].key, nil, newRevision, 0, false, proto.Event_DELETE, err)
-		return nil, err
+		return nil, newRevision, err
 	}
-	batch := b.kv.BeginBatchWrite()
 	newRevisionBytes := append(uint64ToBytes(newRevision), 0)
-	for _, item := range pending {
-		revisionKey := b.coder.EncodeRevisionKey(item.key)
-		objectKey := b.coder.EncodeObjectKey(item.key, newRevision)
-		batch.CAS(revisionKey, newRevisionBytes, uint64ToBytes(item.oldRevision), 0)
-		batch.Put(objectKey, tombStoneBytes, 0)
+	// Fence just before opening the batch (FINDING #39). A rejection is handled by
+	// the same invalid-event path as a commit failure below, so the collector
+	// advances past newRevision instead of stalling.
+	err := b.fenceAdmit(ctx)
+	if err == nil {
+		batch := b.kv.BeginBatchWrite()
+		for _, item := range pending {
+			revisionKey := b.coder.EncodeRevisionKey(item.key)
+			objectKey := b.coder.EncodeObjectKey(item.key, newRevision)
+			batch.CAS(revisionKey, newRevisionBytes, uint64ToBytes(item.oldRevision), 0)
+			batch.Put(objectKey, tombStoneBytes, 0)
+		}
+		err = batch.Commit(ctx)
 	}
-	if err := batch.Commit(ctx); err != nil {
-		resp.Succeeded = false
+	if err != nil {
 		// Fill the dealt revision's ring slot with invalid per-key events so
 		// (a) the collector advances past it and (b) an uncertain commit is
 		// re-resolved per key by the async retry queue, exactly like the
@@ -336,13 +459,13 @@ func (b *backend) DeleteRange(ctx context.Context, kvs []*proto.KeyValue) (resp 
 			})
 		}
 		b.notifyBatch(invalidEvents)
-		return nil, err
+		return nil, newRevision, err
 	}
 
-	resp.Header = responseHeader(newRevision)
+	kvs := make([]*proto.KeyValue, 0, len(pending))
 	watchEvents := make([]*common.WatchEvent, 0, len(pending))
 	for _, item := range pending {
-		resp.Kvs = append(resp.Kvs, &proto.KeyValue{
+		kvs = append(kvs, &proto.KeyValue{
 			Key:      item.key,
 			Value:    item.value,
 			Revision: item.oldRevision,
@@ -357,11 +480,15 @@ func (b *backend) DeleteRange(ctx context.Context, kvs []*proto.KeyValue) (resp 
 		})
 	}
 	b.notifyBatch(watchEvents)
-	return resp, nil
+	return kvs, newRevision, nil
 }
 
 // Update implements Backend interface
-func (b *backend) Update(ctx context.Context, r *proto.UpdateRequest) (resp *proto.UpdateResponse, err error) {
+func (b *backend) Update(ctx context.Context, r *proto.UpdateRequest) (*proto.UpdateResponse, error) {
+	return b.updateOnce(ctx, r, true)
+}
+
+func (b *backend) updateOnce(ctx context.Context, r *proto.UpdateRequest, allowHeal bool) (resp *proto.UpdateResponse, err error) {
 	ts := time.Now()
 	defer func() {
 		txnLog("update",
@@ -383,10 +510,11 @@ func (b *backend) Update(ctx context.Context, r *proto.UpdateRequest) (resp *pro
 	var curRev uint64
 	if prevRev == 0 {
 		curRev, err = b.create(ctx, key, value)
-		b.notify(ctx, key, value, curRev, prevRev, err == nil, proto.Event_CREATE, err)
+		b.notify(ctx, key, b.eventValue(value, EtcdMetadata{CreateRevision: curRev, Version: 1}, err), curRev, prevRev, err == nil, proto.Event_CREATE, err)
 	} else {
-		curRev, err = b.update(ctx, prevRev, key, value, lease)
-		b.notify(ctx, key, value, curRev, prevRev, err == nil, proto.Event_PUT, err)
+		var meta EtcdMetadata
+		curRev, meta, err = b.update(ctx, prevRev, key, value, lease)
+		b.notify(ctx, key, b.eventValue(value, meta, err), curRev, prevRev, err == nil, proto.Event_PUT, err)
 	}
 
 	resp = &proto.UpdateResponse{
@@ -394,6 +522,14 @@ func (b *backend) Update(ctx context.Context, r *proto.UpdateRequest) (resp *pro
 		Succeeded: err == nil,
 	}
 	if errors.Is(err, storage.ErrCASFailed) {
+		// An orphaned key (object present, revision-index missing) CASes the
+		// missing index and fails forever. Heal the index once and retry so the
+		// write self-recovers instead of poisoning the key permanently.
+		if allowHeal {
+			if healed, healErr := b.healOrphanIndex(ctx, key); healErr == nil && healed {
+				return b.updateOnce(ctx, r, false)
+			}
+		}
 		// cas failed, just return the latest value
 		val, modRevision, err := b.get(ctx, key, 0)
 		if err != nil {
@@ -417,7 +553,7 @@ func (b *backend) Update(ctx context.Context, r *proto.UpdateRequest) (resp *pro
 	return resp, nil
 }
 
-func (b *backend) update(ctx context.Context, oldRevision uint64, key []byte, value []byte, lease int64) (revision uint64, err error) {
+func (b *backend) update(ctx context.Context, oldRevision uint64, key []byte, value []byte, lease int64) (revision uint64, newMeta EtcdMetadata, err error) {
 	var newRevision uint64
 	newRevision, err = b.deal(oldRevision)
 	if err != nil {
@@ -426,13 +562,13 @@ func (b *backend) update(ctx context.Context, oldRevision uint64, key []byte, va
 		// filling its ring slot; returning 0 here would leave the event
 		// collector waiting on this revision forever, freezing the committed
 		// revision and thus every list/watch on the cluster.
-		return newRevision, err
+		return newRevision, EtcdMetadata{}, err
 	}
 	meta, err := b.GetEtcdMetadata(ctx, key, oldRevision)
 	if err != nil {
 		// Same as above: the dealt revision must reach the ring buffer even
 		// though the write never started.
-		return newRevision, err
+		return newRevision, EtcdMetadata{}, err
 	}
 	if meta.CreateRevision == 0 {
 		meta.CreateRevision = oldRevision
@@ -447,11 +583,30 @@ func (b *backend) update(ctx context.Context, oldRevision uint64, key []byte, va
 	oldRevisionBytes := uint64ToBytes(oldRevision)
 	newRevisionBytes := uint64ToBytes(newRevision)
 
+	// Fence just before the batch (FINDING #39); the caller's notify publishes an
+	// invalid event for newRevision so the collector advances past it.
+	if err = b.fenceAdmit(ctx); err != nil {
+		return newRevision, meta, err
+	}
 	batch := b.kv.BeginBatchWrite()
 	batch.CAS(revisionKey, newRevisionBytes, oldRevisionBytes, 0)
-	batch.Put(objectKey, value, 0)
-	b.putEtcdMetadata(batch, key, newRevision, meta)
-	return newRevision, batch.Commit(ctx)
+	if b.config.EnableEtcdCompatibility {
+		batch.Put(objectKey, encodeValueWithMeta(value, meta), 0)
+	} else {
+		batch.Put(objectKey, value, 0)
+		b.putEtcdMetadata(batch, key, newRevision, meta)
+	}
+	return newRevision, meta, batch.Commit(ctx)
+}
+
+// eventValue wraps a successful PUT/CREATE watch event's value with its inline
+// metadata (approach A-core-2) so watchers get create_revision/version with no
+// storage lookup. Returns the raw value on failure or in non-compat mode.
+func (b *backend) eventValue(value []byte, meta EtcdMetadata, err error) []byte {
+	if err != nil || !b.config.EnableEtcdCompatibility {
+		return value
+	}
+	return encodeValueWithMeta(value, meta)
 }
 
 func (b *backend) notify(ctx context.Context,
@@ -472,14 +627,28 @@ func (b *backend) notify(ctx context.Context,
 		Value:        val,
 		Err:          err,
 	}
-	// buffer full
-	// TODO dynamic size
-	if revision-b.GetCurrentRevision() >= watchersChanCapacity {
+	b.notifyMu.RLock()
+	cur := b.GetCurrentRevision()
+	switch {
+	case revision <= cur:
+		// Stale: the pipeline already advanced past this revision (e.g. after an
+		// overflow reset jumped the current revision forward). Drop it — appending
+		// would leave a poison slot the collector can never consume in order, and
+		// computing the gap below would underflow (uint64) and wrongly re-trigger
+		// overflow.
+		b.notifyMu.RUnlock()
+		b.metricCli.EmitCounter("watch.event.buffer.stale_drop", 1)
+		return
+	case revision-cur >= watchersChanCapacity:
+		// buffer full: the collector is too far behind for the ring to bridge.
+		b.notifyMu.RUnlock()
 		b.handleWatchEventOverflow(revision)
 		return
 	}
 	b.watchEventsRingBuffer[int64(revision)%watchersChanCapacity].append(watchEvent)
-	b.metricCli.EmitGauge("watch.revision.lag", watchEvent.Revision-b.GetCurrentRevision())
+	b.metricCli.EmitGauge("watch.revision.lag", revision-cur)
+	b.notifyMu.RUnlock()
+	b.signalWrite()
 }
 
 func (b *backend) notifyBatch(events []*common.WatchEvent) {
@@ -491,22 +660,64 @@ func (b *backend) notifyBatch(events []*common.WatchEvent) {
 		b.metricCli.EmitCounter("watch.event.buffer.invalid", 1)
 		return
 	}
-	if revision-b.GetCurrentRevision() >= watchersChanCapacity {
+	b.notifyMu.RLock()
+	cur := b.GetCurrentRevision()
+	switch {
+	case revision <= cur:
+		b.notifyMu.RUnlock()
+		b.metricCli.EmitCounter("watch.event.buffer.stale_drop", 1)
+		return
+	case revision-cur >= watchersChanCapacity:
+		b.notifyMu.RUnlock()
 		b.handleWatchEventOverflow(revision)
 		return
 	}
 	b.watchEventsRingBuffer[int64(revision)%watchersChanCapacity].appendAll(events)
-	b.metricCli.EmitGauge("watch.revision.lag", revision-b.GetCurrentRevision())
+	b.metricCli.EmitGauge("watch.revision.lag", revision-cur)
+	b.notifyMu.RUnlock()
+	b.signalWrite()
 }
 
 func (b *backend) handleWatchEventOverflow(revision uint64) {
+	// Exclusive against appends so the wipe + revision jump + watcher close is
+	// atomic: no writer can append into a slot mid-reset (which would either be
+	// wiped and strand the collector, or survive as a poison slot).
+	b.notifyMu.Lock()
+	defer b.notifyMu.Unlock()
+
 	currentRevision := b.GetCurrentRevision()
+	// Recheck under the lock — a concurrent overflow may have already reset.
+	if revision <= currentRevision || revision-currentRevision < watchersChanCapacity {
+		return
+	}
 	b.metricCli.EmitCounter("watch.event.buffer.full", 1)
-	klog.ErrorS(nil, "watch event buffer full, resetting watch state", "currentRevision", currentRevision, "revision", revision, "capacity", watchersChanCapacity)
+
+	// Jump to the highest dealt revision, not the triggering revision: every
+	// in-flight event carries a revision <= Dealt(), so after wiping all slots
+	// nothing appended-but-needed is lost, and the collector recovers
+	// contiguously from the next write (Dealt()+1). Appends are blocked here, so
+	// no revision above the target can be sitting in a slot.
+	target := b.tso.Dealt()
+	if target < revision {
+		target = revision
+	}
+	klog.ErrorS(nil, "watch event buffer full, resetting watch state", "currentRevision", currentRevision, "revision", revision, "target", target, "capacity", watchersChanCapacity)
 	for i := range b.watchEventsRingBuffer {
 		b.watchEventsRingBuffer[i].reset()
 	}
 	b.watchCache.Reset()
-	b.SetCurrentRevision(revision)
+	b.SetCurrentRevision(target)
+	// Order matters: close the existing subscribers FIRST, then jump the published
+	// watermark. target = Dealt() covers revisions whose events were just wiped and
+	// never fanned out, so publishedRev==target is ABOVE the true delivered frontier
+	// of any existing sub. If we raised it before CloseAll, a concurrent
+	// broadcastProgress (holds only the hub RLock, not notifyMu) could enqueue a
+	// marker@target into a still-open healthy sub, folding its syncedRev to target
+	// and advertising a revision whose wiped events it never received -> silent
+	// watch gap on re-watch. After CloseAll removed those subs, a later
+	// broadcastProgress finds none; any new post-reset sub only wants events > target
+	// (the collector resumes at target+1), so marker@target is a safe under-report.
 	b.watcherHub.CloseAll()
+	b.watcherHub.AdvancePublishedRevision(target)
+	b.signalWrite()
 }

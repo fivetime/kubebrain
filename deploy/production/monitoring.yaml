@@ -65,23 +65,23 @@ spec:
             summary: KubeBrain is returning non-OK gRPC responses
             description: "KubeBrain non-OK gRPC response rate is {{ $value }} requests per second."
         - alert: KubeBrainWriteFailures
-          expr: sum(rate(write_total{namespace="kubebrain-system",success="false"}[5m])) > 0
+          expr: sum(rate(write{namespace="kubebrain-system",success="false"}[5m])) > 0
           for: 5m
           labels:
             severity: critical
           annotations:
             summary: KubeBrain write failures detected
             description: "KubeBrain write failure rate is {{ $value }} writes per second."
-        - alert: KubeBrainWatchBackendErrors
-          expr: sum(rate(watch_backend_err_total{namespace="kubebrain-system"}[5m])) > 0
+        - alert: KubeBrainWatchEventDrops
+          expr: sum(rate(watch_event_buffer_stale_drop{namespace="kubebrain-system"}[5m])) > 0
           for: 5m
           labels:
             severity: critical
           annotations:
-            summary: KubeBrain watch backend errors detected
-            description: "KubeBrain watch backend error rate is {{ $value }} errors per second."
+            summary: KubeBrain is dropping watch events
+            description: "KubeBrain watch-event drop rate is {{ $value }} events per second (slow/stale watchers lose events)."
         - alert: KubeBrainWatchBufferFull
-          expr: sum(rate(watch_event_buffer_full_total{namespace="kubebrain-system"}[5m])) > 0
+          expr: sum(rate(watch_event_buffer_full{namespace="kubebrain-system"}[5m])) > 0
           for: 2m
           labels:
             severity: critical
@@ -89,7 +89,7 @@ spec:
             summary: KubeBrain watch event buffer overflow
             description: "KubeBrain watch event buffer overflow rate is {{ $value }} events per second."
         - alert: KubeBrainLeaderElectionFlapping
-          expr: sum(increase(leader_election_lost_total{namespace="kubebrain-system"}[10m])) > 3
+          expr: sum(increase(leader_election_lost{namespace="kubebrain-system"}[10m])) > 3
           for: 0m
           labels:
             severity: warning

@@ -30,6 +30,12 @@ import (
 
 const (
 	resultChanLength = 100
+
+	// historyScanConcurrency caps concurrent watch-history fallback scans so a
+	// reconnect storm after a cache reset cannot stampede the storage engine
+	// (#30). Chosen generously so steady-state watch establishment is never
+	// throttled; only an actual herd of simultaneous cache-miss scans queues.
+	historyScanConcurrency = 8
 )
 
 // Watch return a channel, every event‘s ModRevision >= revision
@@ -42,7 +48,7 @@ func (b *backend) Watch(ctx context.Context, prefix string, revision uint64) (<-
 
 	// starting watching right away so we don't miss anything
 	ctx, cancel := context.WithCancel(ctx)
-	readChan, err := b.watcherHub.AddWatcher(ctx)
+	readChan, err := b.watcherHub.AddWatcher(ctx, []byte(prefix))
 	if err != nil {
 		cancel()
 		klog.ErrorS(err, "add watcher failed", "chan", readChan)
@@ -53,7 +59,7 @@ func (b *backend) Watch(ctx context.Context, prefix string, revision uint64) (<-
 
 	// include the current revision in list
 	if revision == 0 {
-		go b.processEvents(cancel, result, readChan, prefix, revision)
+		go b.processEvents(ctx, cancel, result, readChan, prefix, revision)
 		return result, nil
 	}
 
@@ -67,7 +73,7 @@ func (b *backend) Watch(ctx context.Context, prefix string, revision uint64) (<-
 		}
 		if revision > currentRevision {
 			// watch revision is latest, no need to fetch history
-			go b.processEvents(cancel, result, readChan, prefix, revision)
+			go b.processEvents(ctx, cancel, result, readChan, prefix, revision)
 			return result, nil
 		}
 		events, historyErr := b.historyWatchEvents(ctx, prefix, revision, currentRevision)
@@ -77,18 +83,22 @@ func (b *backend) Watch(ctx context.Context, prefix string, revision uint64) (<-
 				b.catchUpEvents(result, events)
 				revision = events[len(events)-1].Revision + 1
 			}
-			go b.processEvents(cancel, result, readChan, prefix, revision)
+			go b.processEvents(ctx, cancel, result, readChan, prefix, revision)
 			return result, nil
 		}
 		klog.ErrorS(historyErr, "watch history fallback failed", "prefix", prefix, "revision", revision)
-		// event cache is empty
 		cancel()
-		klog.Errorf("empty cache event, close chan %v", readChan)
-		return nil, fmt.Errorf(" empty cache event, current revision is %d", currentRevision)
+		// Propagate the real fallback error. historyWatchEvents returns a proper
+		// "compacted" error when the requested revision is below the compact
+		// watermark (so the client re-lists) and a plain error otherwise (so the
+		// client retries the watch). Do not flatten it into a generic message that
+		// hides genuine compaction — that left a truly-compacted watch retrying
+		// forever instead of re-listing (#55).
+		return nil, historyErr
 	}
 
 	if ret.high {
-		go b.processEvents(cancel, result, readChan, prefix, revision)
+		go b.processEvents(ctx, cancel, result, readChan, prefix, revision)
 		return result, nil
 	}
 
@@ -106,12 +116,18 @@ func (b *backend) Watch(ctx context.Context, prefix string, revision uint64) (<-
 				b.catchUpEvents(result, events)
 				lastRevision = events[len(events)-1].Revision + 1
 			}
-			go b.processEvents(cancel, result, readChan, prefix, lastRevision)
+			go b.processEvents(ctx, cancel, result, readChan, prefix, lastRevision)
 			return result, nil
 		}
 		cancel()
 		klog.ErrorS(historyErr, "ret low history fallback failed", "prefix", prefix, "revision", revision, "oldestRev", ret.oldest.Revision)
-		return nil, fmt.Errorf("cache event oldest revision is %d newer than requested revision %d: %w", ret.oldest.Revision, revision+1, historyErr)
+		// Propagate the real fallback error rather than fabricating a
+		// "cache event oldest revision ..." message: that string is treated as a
+		// compaction cancel, so a transient history-scan failure (e.g. a storage
+		// error) was misreported as a compaction and forced a spurious re-list at
+		// a bogus revision. historyWatchEvents already returns a proper compacted
+		// error when the revision is actually below the compact watermark (#55).
+		return nil, historyErr
 	}
 
 	events := filterByPrefix(ret.events, []byte(prefix))
@@ -123,7 +139,7 @@ func (b *backend) Watch(ctx context.Context, prefix string, revision uint64) (<-
 		lastRevision = events[len(events)-1].Revision + 1
 		b.catchUpEvents(result, events)
 	}
-	go b.processEvents(cancel, result, readChan, prefix, lastRevision)
+	go b.processEvents(ctx, cancel, result, readChan, prefix, lastRevision)
 
 	return result, nil
 }
@@ -147,6 +163,15 @@ func (b *backend) catchUpEvents(out chan<- []*proto.Event, events []*proto.Event
 }
 
 func (b *backend) historyWatchEvents(ctx context.Context, prefix string, fromRevision, currentRevision uint64) ([]*proto.Event, error) {
+	// Bound concurrent fallback scans so a reconnect storm doesn't stampede
+	// storage (#30). Block until a slot frees or the caller gives up.
+	select {
+	case b.historyScanSem <- struct{}{}:
+		defer func() { <-b.historyScanSem }()
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+
 	compactRevision, err := b.GetCompactRevision(ctx)
 	if err != nil {
 		return nil, err
@@ -164,6 +189,20 @@ func (b *backend) historyWatchEvents(ctx context.Context, prefix string, fromRev
 	defer iter.Close()
 
 	events := make([]*proto.Event, 0)
+	// The scan returns every version of every key under the prefix in ascending
+	// (key, revision) order, so a DELETE's prev-kv — the newest live version
+	// before the tombstone — has already been read earlier in this same scan.
+	// Track it here instead of issuing a separate point read per DELETE (which
+	// was itself a limit-1 Iter): that turned each history fallback into 1+D
+	// scans and, with N watchers reconnecting after a cache reset, a storage
+	// thundering herd (#30). prevVal/prevRev are updated for every non-tombstone
+	// version — including versions below fromRevision — so an in-window DELETE
+	// whose prior version predates the window still recovers its prev-kv.
+	var (
+		curKey  []byte // user key of the version group currently being scanned
+		prevVal []byte // newest non-tombstone value seen for curKey (enveloped)
+		prevRev uint64 // its revision
+	)
 	for {
 		if err := iter.Next(ctx); err != nil {
 			if err == io.EOF {
@@ -175,10 +214,29 @@ func (b *backend) historyWatchEvents(ctx context.Context, prefix string, fromRev
 		if err != nil {
 			return nil, err
 		}
-		if rev == 0 || rev < fromRevision || rev > currentRevision || bytes.HasPrefix(key, etcdMetadataPrefix) {
+		if rev == 0 || bytes.HasPrefix(key, etcdMetadataPrefix) {
+			// revision key or internal metadata: not an event
 			continue
 		}
+		if !bytes.Equal(key, curKey) {
+			// entering a new key's version group; reset the tracked previous value
+			curKey = append(curKey[:0], key...)
+			prevVal = nil
+			prevRev = 0
+		}
 		val := append([]byte(nil), iter.Val()...)
+		isTomb := bytes.Equal(val, tombStoneBytes)
+
+		if rev < fromRevision || rev > currentRevision {
+			// out of the requested window: don't emit, but keep tracking the
+			// previous live version so an in-window tombstone can still find it.
+			if !isTomb {
+				prevVal = val
+				prevRev = rev
+			}
+			continue
+		}
+
 		event := &proto.Event{
 			Type:     proto.Event_PUT,
 			Revision: rev,
@@ -188,24 +246,31 @@ func (b *backend) historyWatchEvents(ctx context.Context, prefix string, fromRev
 				Revision: rev,
 			},
 		}
-		if bytes.Equal(val, tombStoneBytes) {
+		if isTomb {
 			event.Type = proto.Event_DELETE
-			prev, err := b.Get(ctx, &proto.GetRequest{Key: key, Revision: rev - 1})
-			if err == nil && prev.Kv != nil {
-				event.Kv.Value = append([]byte(nil), prev.Kv.Value...)
-				event.Kv.Revision = prev.Kv.Revision
+			if prevVal != nil {
+				event.Kv.Value = prevVal
+				event.Kv.Revision = prevRev
 			} else {
 				event.Kv.Value = nil
 				event.Kv.Revision = rev
 			}
 		} else {
-			meta, err := b.GetEtcdMetadata(ctx, key, rev)
-			if err != nil {
-				return nil, err
+			// Prefer the metadata inlined in the value we already read (approach
+			// A); fall back to a lookup for legacy un-enveloped values.
+			meta, _, ok := decodeValueWithMeta(val)
+			if !ok {
+				var err error
+				meta, err = b.GetEtcdMetadata(ctx, key, rev)
+				if err != nil {
+					return nil, err
+				}
 			}
 			if meta.CreateRevision == rev && meta.Version == 1 {
 				event.Type = proto.Event_CREATE
 			}
+			prevVal = val
+			prevRev = rev
 		}
 		events = append(events, event)
 	}
@@ -219,25 +284,55 @@ func (b *backend) historyWatchEvents(ctx context.Context, prefix string, fromRev
 	return events, nil
 }
 
-func (b *backend) processEvents(cancel context.CancelFunc, out chan<- []*proto.Event, in <-chan []*proto.Event,
+func (b *backend) processEvents(ctx context.Context, cancel context.CancelFunc, out chan<- []*proto.Event, in <-chan []*proto.Event,
 	prefix string, revision uint64) {
 	prefixBytes := []byte(prefix)
 	klog.InfoS("start process events chan", "prefix", prefix, "revision", revision)
 
-	// always ensure we fully read the channel
-	for events := range in {
-		evs := filterByPrefix(filterByRevision(events, revision), prefixBytes)
-		if len(evs) > 0 {
-			out <- evs
+	defer func() {
+		klog.InfoS("events chan closed", "chan", in, "prefix", prefix)
+		b.metricCli.EmitCounter("watcherhub.events_chan.closed", 1, metrics.Tag("prefix", prefix))
+		close(out)
+		klog.InfoS("watch channel closed", "prefix", prefix)
+		cancel()
+	}()
+
+	for {
+		select {
+		case events, ok := <-in:
+			if !ok {
+				// channel closed by watcher hub due to slow process or ctx done
+				return
+			}
+			if isProgressMarker(events) {
+				// In-band progress marker (nil Kv): forward verbatim so it is
+				// neither prefix/revision-filtered nor allocation-touched
+				// (filterEvents would deref event.Kv.Key). It advances a quiet
+				// watch's progress downstream without carrying any event.
+				select {
+				case out <- events:
+				case <-ctx.Done():
+					return
+				}
+				continue
+			}
+			evs := filterEvents(events, revision, prefixBytes)
+			if len(evs) == 0 {
+				continue
+			}
+			// The consumer (backendShim transform goroutine) stops reading `out`
+			// when its context is cancelled (client disconnect / relist) without
+			// draining it. A bare `out <- evs` would then block forever once the
+			// buffer fills, leaking this goroutine. Bail out on ctx.Done instead.
+			select {
+			case out <- evs:
+			case <-ctx.Done():
+				return
+			}
+		case <-ctx.Done():
+			return
 		}
 	}
-	// channel closed by watcher hub due to slow process or ctx done
-	klog.InfoS("events chan closed", "chan", in, "prefix", prefix)
-	b.metricCli.EmitCounter("watcherhub.events_chan.closed", 1, metrics.Tag("prefix", prefix))
-
-	close(out)
-	klog.InfoS("watch channel closed", "prefix", prefix)
-	cancel()
 }
 
 func filterByPrefix(events []*proto.Event, prefix []byte) []*proto.Event {
@@ -252,11 +347,24 @@ func filterByPrefix(events []*proto.Event, prefix []byte) []*proto.Event {
 	return filteredEventList
 }
 
-// filter event's ModRevision start from(inclusive) rev
-func filterByRevision(events []*proto.Event, rev uint64) []*proto.Event {
-	for len(events) > 0 && events[0].Revision < rev {
-		events = events[1:]
+// filterEvents returns the events at or after rev whose key has prefix, in a
+// single pass. It allocates the result slice lazily — only once at least one
+// event matches — so a batch that a watcher filters away entirely (common with
+// the hub's coarse fan-out) costs no allocation. Replaces the former
+// filterByPrefix(filterByRevision(...)) two-pass, two-allocation path (#69).
+func filterEvents(events []*proto.Event, rev uint64, prefix []byte) []*proto.Event {
+	var out []*proto.Event
+	for i, event := range events {
+		if event.Revision < rev {
+			continue
+		}
+		if !bytes.HasPrefix(event.Kv.Key, prefix) {
+			continue
+		}
+		if out == nil {
+			out = make([]*proto.Event, 0, len(events)-i)
+		}
+		out = append(out, event)
 	}
-
-	return events
+	return out
 }

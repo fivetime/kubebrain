@@ -21,10 +21,12 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"path"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -32,6 +34,7 @@ import (
 	"github.com/golang/mock/gomock"
 	"github.com/soheilhy/cmux"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/kubewharf/kubebrain/pkg/backend"
 	"github.com/kubewharf/kubebrain/pkg/metrics/mock"
@@ -157,8 +160,11 @@ func TestHttpRevisionSyncer(t *testing.T) {
 			serverTlsConfig: serverTlsConfig,
 		},
 		{
-			name:            "https->std http(expect success through retrying)",
+			// #31: a TLS-configured follower must NOT downgrade to plain http; it
+			// fails rather than syncing the leader revision over cleartext.
+			name:            "https->std http(no downgrade: expect failure)",
 			retryTimes:      10,
+			expectError:     errors.New("no suitable schema to leader"),
 			clientTlsConfig: clientTlsConfig,
 			serverTlsConfig: nil,
 		},
@@ -177,8 +183,10 @@ func TestHttpRevisionSyncer(t *testing.T) {
 			enableCmux:      true,
 		},
 		{
-			name:            "https->cmux http(expect success through retrying)",
+			// #31: no downgrade to plain http even against a cmux listener.
+			name:            "https->cmux http(no downgrade: expect failure)",
 			retryTimes:      10,
+			expectError:     errors.New("no suitable schema to leader"),
 			clientTlsConfig: clientTlsConfig,
 			serverTlsConfig: nil,
 			enableCmux:      true,
@@ -302,6 +310,10 @@ func (m *mutableLeaderElection) IsLeader() bool {
 	return false
 }
 
+func (m *mutableLeaderElection) EpochAndLeadingFresh() (uint64, bool) {
+	return 0, false
+}
+
 func (m *mutableLeaderElection) GetElectionInfo() (leader.ElectionInfo, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -410,4 +422,123 @@ func unusedLocalTCPAddr(t *testing.T) string {
 		t.Fatalf("failed to close local tcp listener: %v", err)
 	}
 	return addr
+}
+
+// TestFollowerRejectsMalformedOrZeroRevision pins #42: a follower must NOT set
+// its read revision to 0 when the leader's /status body is unparseable or carries
+// no/zero revision. Previously json.Unmarshal's error was ignored and the syncer
+// returned (0, nil), rewinding the read index to 0.
+func TestFollowerRejectsMalformedOrZeroRevision(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	mockMetrics := mock.NewMinimalMetrics(ctrl)
+
+	bad := []struct{ name, body string }{
+		{"malformed_non_json", "<html>502 Bad Gateway</html>"},
+		{"empty_json_object", "{}"},
+		{"explicit_zero_revision", `{"Revision":0}`},
+	}
+	for _, c := range bad {
+		t.Run(c.name, func(t *testing.T) {
+			ast := assert.New(t)
+			body := c.body
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(body))
+			}))
+			defer srv.Close()
+			addr := strings.TrimPrefix(srv.URL, "http://")
+
+			bs := &backendStub{currentRev: 42} // pre-existing read revision that must survive
+			le := &leader.Stub{ElectionInfo: leader.ElectionInfo{IsLeader: false, LeaderAddress: addr}}
+			rs := NewRevisionSyncer(bs, mockMetrics, le, nil)
+			defer rs.Close()
+
+			ctx, cancel := context.WithTimeout(context.Background(), 800*time.Millisecond)
+			defer cancel()
+			err := rs.SyncReadRevision(ctx)
+			ast.Error(err, "malformed/zero status must be an error, not a silent revision 0")
+			ast.Equal(uint64(42), bs.currentRev, "follower read revision must not be rewound to 0")
+		})
+	}
+
+	t.Run("valid_revision_still_syncs", func(t *testing.T) {
+		ast := assert.New(t)
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_ = json.NewEncoder(w).Encode(LeaderRevision{Revision: 777})
+		}))
+		defer srv.Close()
+		addr := strings.TrimPrefix(srv.URL, "http://")
+		bs := &backendStub{currentRev: 42}
+		le := &leader.Stub{ElectionInfo: leader.ElectionInfo{IsLeader: false, LeaderAddress: addr}}
+		rs := NewRevisionSyncer(bs, mockMetrics, le, nil)
+		defer rs.Close()
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		ast.NoError(rs.SyncReadRevision(ctx))
+		ast.Equal(uint64(777), bs.currentRev)
+	})
+}
+
+// TestReadIndexMidFlightReaderGetsFreshFetch pins #43: a reader that arrives while
+// a leader-revision fetch is already in flight must be served by a NEW fetch that
+// starts after it arrived (fresh read index), not by the in-flight one. The
+// /status handler returns an increasing revision per call and blocks the first
+// call until the second reader has queued; the mid-flight reader must observe the
+// second (higher) revision.
+func TestReadIndexMidFlightReaderGetsFreshFetch(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	mockMetrics := mock.NewMinimalMetrics(ctrl)
+
+	var callCount int32
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		n := atomic.AddInt32(&callCount, 1)
+		if n == 1 {
+			<-release // hold the first fetch in flight
+		}
+		_ = json.NewEncoder(w).Encode(LeaderRevision{Revision: uint64(n) * 100})
+	}))
+	defer srv.Close()
+	addr := strings.TrimPrefix(srv.URL, "http://")
+
+	bs := &backendStub{}
+	le := &leader.Stub{ElectionInfo: leader.ElectionInfo{IsLeader: false, LeaderAddress: addr}}
+	rs := NewRevisionSyncer(bs, mockMetrics, le, nil).(*revisionSyncer)
+	defer rs.Close()
+
+	ctx := context.Background()
+	waitFor := func(cond func() bool) {
+		for i := 0; i < 200; i++ {
+			if cond() {
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		t.Fatal("condition not met in time")
+	}
+
+	// Reader A triggers the first (blocked) fetch F1.
+	var aRev uint64
+	var aErr error
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() { defer wg.Done(); aRev, aErr = rs.getFreshRevisionFromLeader(ctx) }()
+	waitFor(func() bool { return atomic.LoadInt32(&callCount) == 1 }) // F1 in flight
+
+	// Reader B arrives mid-flight; it must queue into the NEXT batch, not join F1.
+	var bRev uint64
+	var bErr error
+	wg.Add(1)
+	go func() { defer wg.Done(); bRev, bErr = rs.getFreshRevisionFromLeader(ctx) }()
+	waitFor(func() bool { rs.fetchMu.Lock(); defer rs.fetchMu.Unlock(); return rs.next != nil })
+
+	close(release) // let F1 finish; F2 then runs for B
+	wg.Wait()
+
+	require.NoError(t, aErr)
+	require.NoError(t, bErr)
+	require.Equal(t, uint64(100), aRev, "reader A gets the first fetch's revision")
+	require.Equal(t, uint64(200), bRev, "mid-flight reader B must get a fresh (second) fetch, not the in-flight one")
+	require.Equal(t, int32(2), atomic.LoadInt32(&callCount), "readers arriving during one fetch coalesce into exactly one next fetch")
 }

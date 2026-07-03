@@ -148,12 +148,16 @@ func newIterWrapper(it storage.Iter, m metrics.Metrics, limit uint64) *iterWrapp
 // Next implements storage.Iter
 func (i *iterWrapper) Next(ctx context.Context) (err error) {
 	err = i.Iter.Next(ctx)
-	if err != nil && err != io.EOF && err != context.Canceled {
-		// if there is an unexpected error, emit metric immediately
-		_ = i.m.EmitCounter("storage.iter.fetch.error", 1, i.tags...)
-	} else if err != nil {
-		// do not emit metrics here to reduce cost
+	if err == nil {
+		// A row was fetched. Count it (the aggregate is emitted at Close to reduce
+		// cost). Previously the increment sat in the err!=nil branch, so it counted
+		// the terminal EOF/cancel instead of fetched rows (#67).
 		i.counter++
+		return
+	}
+	if err != io.EOF && err != context.Canceled {
+		// unexpected error, emit metric immediately
+		_ = i.m.EmitCounter("storage.iter.fetch.error", 1, i.tags...)
 	}
 	return
 }

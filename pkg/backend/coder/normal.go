@@ -65,6 +65,32 @@ func (n *normalEncoderDecoder) EncodeRevisionKey(key []byte) []byte {
 	return n.EncodeObjectKey(key, 0)
 }
 
+// RevisionBoundaryForBorder returns the rev=0 object key (the start of a user
+// key's version run) for the user key that `border` falls within, and true, for
+// ANY border inside the object keyspace ({magic}{userKey}{split}{...}) — even when
+// border is not a full/decodable object key (e.g. a TiKV region split point like
+// {objectKey}\x00 or a truncated key). The scanner snaps a partition boundary to
+// this so a single user key's MVCC versions never straddle two scan partitions,
+// which would otherwise let a partition holding an older live version emit a key
+// whose latest version (a tombstone in the adjacent partition) marks it deleted.
+//
+// It relies on the coder invariant that splitByte is smaller than every byte a
+// user key can contain, so the FIRST splitByte after the magic prefix is always
+// the userKey/revision delimiter. Returns (nil,false) when border is not in the
+// object keyspace or has no split byte yet (already at/before a user-key start).
+func RevisionBoundaryForBorder(border []byte) ([]byte, bool) {
+	if len(border) < len(magicBytes) || !bytes.Equal(border[:len(magicBytes)], magicBytes) {
+		return nil, false
+	}
+	rest := border[len(magicBytes):]
+	i := bytes.IndexByte(rest, splitByte)
+	if i < 0 {
+		return nil, false
+	}
+	userKey := rest[:i]
+	return (&normalEncoderDecoder{}).EncodeObjectKey(userKey, 0), true
+}
+
 // Decode implements Coder interface
 func (n *normalEncoderDecoder) Decode(internalKey []byte) (userKey []byte, revision uint64, err error) {
 	if !bytes.Equal(internalKey[:len(magicBytes)], magicBytes) {

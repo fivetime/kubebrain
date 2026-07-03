@@ -22,7 +22,19 @@ import (
 	"k8s.io/klog/v2"
 
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
+
+	b "github.com/kubewharf/kubebrain/pkg/backend"
 )
+
+// stripKvs removes the inline-metadata envelope (approach A) from each value so
+// KubeBrain-native clients get the raw value. Passthrough for legacy values.
+func stripKvs(kvs []*proto.KeyValue) {
+	for _, kv := range kvs {
+		if kv != nil {
+			kv.Value = b.StripInlineValue(kv.Value)
+		}
+	}
+}
 
 func (s *Server) Get(ctx context.Context, r *proto.GetRequest) (*proto.GetResponse, error) {
 	if len(r.Key) == 0 {
@@ -35,6 +47,9 @@ func (s *Server) Get(ctx context.Context, r *proto.GetRequest) (*proto.GetRespon
 	response, err := s.backend.Get(ctx, r)
 	if err != nil {
 		klog.ErrorS(err, "brain server get failed", "key", string(r.Key), "revision", r.Revision)
+	}
+	if response != nil && response.Kv != nil {
+		response.Kv.Value = b.StripInlineValue(response.Kv.Value)
 	}
 	// emit metrics
 	s.emitMethodMetric(readMetric, "get", err, time.Since(start))
@@ -55,6 +70,9 @@ func (s *Server) Range(ctx context.Context, r *proto.RangeRequest) (*proto.Range
 	response, err := s.backend.List(ctx, r)
 	if err != nil {
 		klog.ErrorS(err, "brain server range failed", "key", string(r.Key), "end", string(r.End), "limit", r.Limit, "revision", r.Revision)
+	}
+	if response != nil {
+		stripKvs(response.Kvs)
 	}
 	// emit metrics
 	s.emitMethodMetric(readMetric, "range", err, time.Since(start))
@@ -119,6 +137,9 @@ func (s *Server) RangeStream(r *proto.RangeRequest, server proto.Read_RangeStrea
 	}
 	responseSize := 0
 	for response := range ch {
+		if response.RangeResponse != nil {
+			stripKvs(response.RangeResponse.Kvs)
+		}
 		responseSize += response.Size()
 		err = server.Send(response)
 		if err != nil {

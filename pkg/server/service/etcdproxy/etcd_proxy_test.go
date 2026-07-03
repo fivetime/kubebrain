@@ -16,14 +16,48 @@ package etcdproxy
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
-	"github.com/kubewharf/kubebrain/pkg/server/service/leader"
-	"github.com/stretchr/testify/require"
+	"go.etcd.io/etcd/api/v3/etcdserverpb"
+	"go.etcd.io/etcd/api/v3/mvccpb"
+	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+
+	"github.com/kubewharf/kubebrain/pkg/server/service/leader"
+	"github.com/stretchr/testify/require"
 )
+
+// TestWatchResultFromResponseMapsProgressNotify pins that an idle progress
+// notification from the leader (no events, carrying only the store revision)
+// becomes a ProgressRevision result, while a normal event response yields Events
+// and no ProgressRevision. This is what advances a quiet watch's progress across
+// the follower/proxy path.
+func TestWatchResultFromResponseMapsProgressNotify(t *testing.T) {
+	// Progress notify: no events, header revision set -> IsProgressNotify() true.
+	progress := clientv3.WatchResponse{
+		Header: etcdserverpb.ResponseHeader{Revision: 42},
+	}
+	require.True(t, progress.IsProgressNotify())
+	got := watchResultFromResponse(progress)
+	require.Equal(t, uint64(42), got.ProgressRevision)
+	require.Empty(t, got.Events)
+
+	// Event response: events present -> not a progress notify.
+	event := clientv3.WatchResponse{
+		Header: etcdserverpb.ResponseHeader{Revision: 43},
+		Events: []*clientv3.Event{
+			{Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{Key: []byte("k"), ModRevision: 43}},
+		},
+	}
+	require.False(t, event.IsProgressNotify())
+	got = watchResultFromResponse(event)
+	require.Equal(t, uint64(0), got.ProgressRevision)
+	require.Len(t, got.Events, 1)
+	require.Equal(t, []byte("k"), got.Events[0].Kv.Key)
+}
 
 func TestIsForwardConnectionError(t *testing.T) {
 	tests := []struct {
@@ -78,6 +112,106 @@ func (t *testLeaderElection) IsLeader() bool {
 	return t.isLeader
 }
 
+func (t *testLeaderElection) EpochAndLeadingFresh() (uint64, bool) {
+	return 0, t.isLeader
+}
+
 func (t *testLeaderElection) GetElectionInfo() (leader.ElectionInfo, error) {
 	return leader.ElectionInfo{LeaderAddress: t.leaderAddress, IsLeader: t.isLeader}, nil
+}
+
+// TestNextWatchRevision pins the #63 resume-revision logic: advance to
+// headerRev+1, never move backwards, and ignore a zero header (Created response)
+// so a from-now watch is not rewound to the start of history on reconnect.
+func TestNextWatchRevision(t *testing.T) {
+	tests := []struct {
+		name      string
+		current   uint64
+		headerRev int64
+		want      uint64
+	}{
+		{name: "created response (rev 0) leaves from-now watch untouched", current: 0, headerRev: 0, want: 0},
+		{name: "first concrete revision resolves from-now watch", current: 0, headerRev: 100, want: 101},
+		{name: "advances on newer revision", current: 101, headerRev: 150, want: 151},
+		{name: "does not move backwards for stale header", current: 200, headerRev: 150, want: 200},
+		{name: "same revision does not advance", current: 151, headerRev: 150, want: 151},
+		{name: "negative header ignored", current: 50, headerRev: -1, want: 50},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, nextWatchRevision(tt.current, tt.headerRev))
+		})
+	}
+}
+
+// TestWatchOptionsForRangeRequestsProgressNotify guards that the proxy watch
+// requests progress notifications (needed for #63) across the range variants.
+func TestWatchOptionsForRangeRequestsProgressNotify(t *testing.T) {
+	// base opts: WithRev + WithPrevKV + WithProgressNotify = 3
+	require.Len(t, watchOptionsForRange(nil, 5), 3, "single-key watch: rev+prevkv+progress")
+	require.Len(t, watchOptionsForRange([]byte{}, 5), 4, "from-key watch adds WithFromKey")
+	require.Len(t, watchOptionsForRange([]byte("z"), 5), 4, "range watch adds WithRange")
+}
+
+// TestUpdateClientConcurrentNoDeadlock pins the #41/#47 serialization: updateClient
+// now takes updateMu (held across the build/swap) in addition to the field lock.
+// Run it concurrently with itself and with the readers that also take `lock`
+// (hasClient/readyClient) to catch any lock-ordering deadlock and, under -race,
+// any residual data race. The leader is unreachable, so every updateClient fails
+// and closes its own dialed client; the proxy stays consistently not-ready.
+func TestUpdateClientConcurrentNoDeadlock(t *testing.T) {
+	proxy := &etcdProxy{election: &testLeaderElection{leaderAddress: "127.0.0.1:1"}}
+
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		wg.Add(3)
+		go func() { defer wg.Done(); proxy.updateClient() }()
+		go func() { defer wg.Done(); _ = proxy.hasClient() }()
+		go func() {
+			defer wg.Done()
+			ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+			defer cancel()
+			_, _, _, _ = proxy.readyClient(ctx)
+		}()
+	}
+	go func() { wg.Wait(); close(done) }()
+
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("updateClient/readers deadlocked (updateMu <-> lock ordering)")
+	}
+
+	// Unreachable leader -> never ready, and no client is leaked into place.
+	require.Error(t, proxy.Ready())
+	require.False(t, proxy.hasClient())
+}
+
+// TestForwardErrorClientCancelDoesNotResetSharedClient pins #23: a forward failing
+// because the CALLER's context was cancelled/expired must not tear down the shared
+// forwarding client (which every other in-flight follower request depends on).
+// Only a genuine connection error with a live caller context resets it.
+func TestForwardErrorClientCancelDoesNotResetSharedClient(t *testing.T) {
+	cli, err := clientv3.New(clientv3.Config{Endpoints: []string{"127.0.0.1:1"}})
+	require.NoError(t, err)
+	proxy := &etcdProxy{
+		election:  &testLeaderElection{leaderAddress: "127.0.0.1:1"},
+		client:    cli,
+		curLeader: "127.0.0.1:1",
+	}
+
+	// Caller cancelled its context -> client-caused, must NOT reset.
+	cctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	proxy.markForwardError(cctx, cli, context.Canceled)
+	require.Same(t, cli, proxy.client, "client-cancelled forward must not reset the shared client")
+
+	// gRPC Canceled with a cancelled caller ctx -> still client-caused, no reset.
+	proxy.markForwardError(cctx, cli, status.Error(codes.Canceled, "context canceled"))
+	require.Same(t, cli, proxy.client, "gRPC-canceled with dead caller ctx must not reset")
+
+	// Genuine leader-down (Unavailable) with a live caller ctx -> resets.
+	proxy.markForwardError(context.Background(), cli, status.Error(codes.Unavailable, "leader down"))
+	require.Nil(t, proxy.client, "a genuine connection error must reset the shared client")
 }

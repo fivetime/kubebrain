@@ -27,6 +27,7 @@ spec:
   selector:
     matchLabels:
       app.kubernetes.io/name: kubebrain
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -137,6 +138,7 @@ metadata:
   namespace: kubebrain-system
   labels:
     app.kubernetes.io/name: kubebrain
+    app.kubernetes.io/component: client
 spec:
   type: ClusterIP
   selector:
@@ -153,6 +155,7 @@ metadata:
   namespace: kubebrain-system
   labels:
     app.kubernetes.io/name: kubebrain
+    app.kubernetes.io/component: peer
 spec:
   type: ClusterIP
   selector:

@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/spf13/pflag"
 	"k8s.io/klog/v2"
@@ -50,6 +51,11 @@ type KubeBrainOption struct {
 	EnableStorageMetrics bool
 
 	watchCacheSize int
+
+	enableCountIndex  bool
+	countIndexMaxKeys int
+
+	watchProgressNotifyInterval time.Duration
 }
 
 func NewOptions() *KubeBrainOption {
@@ -59,12 +65,16 @@ func NewOptions() *KubeBrainOption {
 			PeerPort:                2380,
 			ClientSecurityConfig:    &endpoint.SecurityConfig{},
 			PeerSecurityConfig:      &endpoint.SecurityConfig{},
+			InfoSecurityConfig:      &endpoint.SecurityConfig{},
 			EnableEtcdCompatibility: false,
 		},
-		Prefix:         "",
-		ClusterName:    "default",
-		storageConfig:  newStorageConfig(),
-		watchCacheSize: 200 * 1000,
+		Prefix:            "",
+		ClusterName:       "default",
+		storageConfig:     newStorageConfig(),
+		watchCacheSize:    200 * 1000,
+		countIndexMaxKeys: 5 * 1000 * 1000,
+
+		watchProgressNotifyInterval: time.Second,
 	}
 }
 
@@ -106,9 +116,25 @@ func (o *KubeBrainOption) AddFlags(fs *pflag.FlagSet) {
 	fs.BoolVar(&o.epsConf.EnableEtcdCompatibility, "compatible-with-etcd",
 		o.epsConf.EnableEtcdCompatibility, "Enable full compatibility with usage of etcd3 in kube-apiserver")
 
+	// info/metrics port TLS (#32): metrics and pprof are served on the info port,
+	// not the client data port; these let the info port serve TLS instead of plaintext.
+	fs.StringVar(&o.epsConf.InfoSecurityConfig.CertFile, "info-cert-file",
+		o.epsConf.InfoSecurityConfig.CertFile, "Path to the info/metrics server TLS cert file (empty = plaintext).")
+	fs.StringVar(&o.epsConf.InfoSecurityConfig.KeyFile, "info-key-file",
+		o.epsConf.InfoSecurityConfig.KeyFile, "Path to the info/metrics server TLS key file.")
+	fs.StringVar(&o.epsConf.InfoSecurityConfig.CA, "info-trusted-ca-file",
+		o.epsConf.InfoSecurityConfig.CA, "Path to the info/metrics server trusted CA cert file.")
+	fs.BoolVar(&o.epsConf.InfoSecurityConfig.ClientAuth, "info-client-cert-auth",
+		o.epsConf.InfoSecurityConfig.ClientAuth, "Require client cert authentication on the info/metrics port.")
+	fs.BoolVar(&o.epsConf.EnablePprof, "enable-pprof",
+		o.epsConf.EnablePprof, "Expose net/http/pprof debug handlers on the info port (off by default; never on the client port).")
+
 	fs.BoolVar(&o.EnableStorageMetrics, "enable-storage-metrics", o.EnableStorageMetrics, "enable storage metrics.")
 	o.storageConfig.addFlag(fs)
 	fs.IntVar(&o.watchCacheSize, "watch-cache-size", o.watchCacheSize, "size of global watch cache")
+	fs.BoolVar(&o.enableCountIndex, "enable-count-index", o.enableCountIndex, "maintain an in-memory versioned key index on the leader for exact O(range) counts (approach A-index; requires --compatible-with-etcd)")
+	fs.IntVar(&o.countIndexMaxKeys, "count-index-max-keys", o.countIndexMaxKeys, "cap on keys tracked by the count index; above it the index disables and counts fall back to a scan (0 = unlimited)")
+	fs.DurationVar(&o.watchProgressNotifyInterval, "watch-progress-notify-interval", o.watchProgressNotifyInterval, "how often watch progress notifications advance/emit (drives kube-apiserver ConsistentListFromCache convergence; smaller = fresher at more marker traffic)")
 }
 
 // Validate checks the option before running
@@ -152,11 +178,14 @@ func (o *KubeBrainOption) Run(ctx context.Context) error {
 	}
 
 	config := backend.Config{
-		Prefix:                  o.Prefix,
-		Identity:                identity,
-		SkippedPrefixes:         o.SkippedPrefixes,
-		EnableEtcdCompatibility: o.epsConf.EnableEtcdCompatibility,
-		WatchCacheSize:          o.watchCacheSize,
+		Prefix:                      o.Prefix,
+		Identity:                    identity,
+		SkippedPrefixes:             o.SkippedPrefixes,
+		EnableEtcdCompatibility:     o.epsConf.EnableEtcdCompatibility,
+		WatchCacheSize:              o.watchCacheSize,
+		EnableCountIndex:            o.enableCountIndex,
+		CountIndexMaxKeys:           o.countIndexMaxKeys,
+		WatchProgressNotifyInterval: o.watchProgressNotifyInterval,
 	}
 
 	if o.EnableStorageMetrics {

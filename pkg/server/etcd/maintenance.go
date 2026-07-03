@@ -24,7 +24,15 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-const maintenanceVersion = "kubebrain"
+// maintenanceVersion is reported by Maintenance.Status.Version. The
+// kube-apiserver parses it with version.ParseSemantic and gates
+// RequestWatchProgress (which backs consistent-list-from-cache / WatchList) on
+// the etcd version being >= 3.5.13 (or in [3.4.31, 3.5.0)); a non-semver string
+// like "kubebrain" fails to parse and permanently disables those features. We
+// advertise 3.5.13 now that KubeBrain's watch pipeline delivers events without
+// silent gaps and progress notifications never run ahead of delivered events.
+// See k8s.io/apiserver/pkg/storage/feature/feature_support_checker.go.
+const maintenanceVersion = "3.5.13"
 
 func (s *RPCServer) Alarm(context.Context, *etcdserverpb.AlarmRequest) (*etcdserverpb.AlarmResponse, error) {
 	s.metricCli.EmitCounter("maintenance.alarm", 1)
@@ -79,12 +87,15 @@ func (s *RPCServer) HashKV(ctx context.Context, req *etcdserverpb.HashKVRequest)
 	}
 	revision := s.backend.GetCurrentRevision()
 	if req.GetRevision() > 0 {
-		if err := s.checkRequestedRevision(context.Background(), req.GetRevision()); err != nil {
+		// Use the request context so a cancelled/expired HashKV call aborts the
+		// revision and compaction lookups instead of running under a detached
+		// context.Background() (#59).
+		if err := s.checkRequestedRevision(ctx, req.GetRevision()); err != nil {
 			return nil, err
 		}
 		revision = uint64(req.GetRevision())
 	}
-	compactRevision, err := s.backend.GetCompactRevision(context.Background())
+	compactRevision, err := s.backend.GetCompactRevision(ctx)
 	if err != nil {
 		return nil, err
 	}

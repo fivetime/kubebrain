@@ -49,11 +49,10 @@ const (
 // NewScanner create a Scanner
 func NewScanner(store storage.KvStorage, coder coder.Coder, config Config, metricCli metrics.Metrics) Scanner {
 	return &scanner{
-		store:            store,
-		coder:            coder,
-		config:           config,
-		metricCli:        metricCli,
-		compactHistories: newCompactRecordQueue(),
+		store:     store,
+		coder:     coder,
+		config:    config,
+		metricCli: metricCli,
 	}
 }
 
@@ -62,9 +61,6 @@ type scanner struct {
 	coder     coder.Coder
 	metricCli metrics.Metrics
 	config    Config
-
-	// component state
-	compactHistories *compactRecordQueue
 }
 
 // Config is the configuration of scanner
@@ -74,9 +70,6 @@ type Config struct {
 
 	// Tombstone is the value bytes used to mark delete
 	Tombstone []byte
-
-	// TTL is the time that key written with ttl will live
-	TTL time.Duration
 }
 
 // Range implements Scanner interface
@@ -144,38 +137,6 @@ func (r *scanner) RangeStream(ctx context.Context, start []byte, end []byte, rev
 	return stream
 }
 
-func (r *scanner) logCompactHistory(revision uint64) {
-	klog.InfoS("log compact history", "rev", revision)
-	cr := &compactRecord{
-		revision: revision,
-		time:     time.Now(),
-	}
-	r.compactHistories.push(cr)
-}
-
-func (r *scanner) getTimeoutRevision() uint64 {
-	if r.store.SupportTTL() {
-		return 0
-	}
-
-	// todo: if it's need to lock here to make it called concurrent-safely?
-	prev := &compactRecord{}
-	head := r.compactHistories.head()
-	for head != nil {
-		interval := time.Since(head.time)
-		klog.InfoS("check compact history", "interval", interval.String(), "rev", head.revision)
-		if interval < r.config.TTL {
-			break
-		}
-		r.compactHistories.pop()
-		prev = head
-		head = r.compactHistories.head()
-	}
-
-	klog.InfoS("get timeout revision", "rev", prev.revision)
-	return prev.revision
-}
-
 func getListStreamEnd(revision uint64, err error) *proto.StreamRangeResponse {
 	response := &proto.StreamRangeResponse{
 		// canceled means eof
@@ -192,9 +153,19 @@ func getListStreamEnd(revision uint64, err error) *proto.StreamRangeResponse {
 }
 
 // Compact implements Scanner interface
-func (r *scanner) Compact(ctx context.Context, start []byte, end []byte, revision uint64) {
-	r.logCompactHistory(revision)
-	_, _ = r.scan(ctx, start, end, revision, true, &emptyResultReceiver{})
+func (r *scanner) Compact(ctx context.Context, borders [][]byte, revision uint64) error {
+	var firstErr error
+	for i := 0; i+1 < len(borders); i += 2 {
+		// Scan every border best-effort even if one fails: each border's GC is
+		// independent, and returning the first error still surfaces the failure.
+		if _, err := r.scan(ctx, borders[i], borders[i+1], revision, true, &emptyResultReceiver{}); err != nil {
+			klog.ErrorS(err, "compact scan failed for border", "revision", revision, "start", borders[i], "end", borders[i+1])
+			if firstErr == nil {
+				firstErr = err
+			}
+		}
+	}
+	return firstErr
 }
 
 // adjustPartitionsBorders adjust the borders of partitions to avoid object keys generated from an internal key
@@ -214,10 +185,14 @@ func (r *scanner) adjustPartitionsBorders(ps []storage.Partition) (ret []storage
 		}
 
 		if i != len(ps)-1 {
-			userKey, revision, err := r.coder.Decode(ps[i].End)
-			if err == nil && revision != 0 {
-				// end border may be moved forward except the last partition
-				ps[i].End = r.coder.EncodeRevisionKey(userKey)
+			// Snap the boundary down to the start (rev=0) of whatever user key it
+			// falls within, so one key's versions never straddle two partitions.
+			// This must handle borders that are NOT decodable full object keys
+			// (e.g. a TiKV region split point {objectKey}\x00): the old
+			// Decode-only path left those unadjusted, so a deleted key whose
+			// tombstone landed in the next partition resurfaced as live in List.
+			if b, ok := coder.RevisionBoundaryForBorder(ps[i].End); ok {
+				ps[i].End = b
 			}
 		}
 	}
@@ -249,11 +224,6 @@ func (r *scanner) scan(ctx context.Context, start []byte, end []byte, revision u
 
 	partitions = r.adjustPartitionsBorders(partitions)
 
-	timeoutRevision := uint64(0)
-	if compact {
-		timeoutRevision = r.getTimeoutRevision()
-	}
-
 	var wg sync.WaitGroup
 	errList := make([]error, len(partitions))
 	receiverList := make([]resultReceiver, len(partitions))
@@ -268,13 +238,12 @@ func (r *scanner) scan(ctx context.Context, start []byte, end []byte, revision u
 			// create a worker
 			receiverList[idx] = receiver.fork()
 			w := newWorker(workerConfig{
-				idx:             idx,
-				partition:       partitions[idx],
-				tso:             tso,
-				revision:        revision,
-				compact:         compact,
-				tombstone:       r.config.Tombstone,
-				timeoutRevision: timeoutRevision,
+				idx:       idx,
+				partition: partitions[idx],
+				tso:       tso,
+				revision:  revision,
+				compact:   compact,
+				tombstone: r.config.Tombstone,
 			}, store, r.coder, r.metricCli)
 
 			// run worker
@@ -334,9 +303,6 @@ type workerConfig struct {
 
 	// compact is the switch of compaction
 	compact bool
-
-	// timeoutRevision indicate the revision that kvs with ttl were updated at is timeout
-	timeoutRevision uint64
 }
 
 func newWorker(conf workerConfig, store storage.KvStorage, coder coder.Coder, metricCli metrics.Metrics) *worker {
@@ -444,12 +410,6 @@ func (w *worker) run(ctx context.Context, receiver resultReceiver) (int, error) 
 
 		value := it.Val()
 		valSize += int64(len(value))
-
-		// check kvs with ttl and compact it if it's timeout
-		if expired, _ := w.compactIfExpired(it, curUserKey, curRevision, value); expired {
-			// if key is expired, just ignore other procession
-			continue
-		}
 
 		// revision greater than leader mvcc commit index or compact index, ignore
 		if curRevision > w.revision {
@@ -567,44 +527,38 @@ func (w *worker) compactKey(key []byte, rawKey []byte, rev uint64) error {
 	return err
 }
 
-func (w *worker) compactIfExpired(iter storage.Iter, rawKey []byte, revision uint64, value []byte) (isExpired bool, err error) {
-	// run compaction for object with ttl except
-	// 1. storage engine support ttl
-	// 2. start time is too late
-	if w.store.SupportTTL() ||
-		w.timeoutRevision == 0 {
-		return false, nil
-	}
-	if bytes.Contains(rawKey, []byte("/events/")) {
-		//? consider two type of compact now:
-		//? 1. delete directly from storage engine (use this one right now)
-		//? 2. set tombstone and delete util next compaction loop
-		if revision == 0 { // revision key time out
-			rev := binary.BigEndian.Uint64(value[:8])
-			if rev <= w.timeoutRevision {
-				klog.InfoS("compact expired revision key", "raw key", string(rawKey), "rev", rev)
-				return true, w.compactCurrent(iter, rawKey, rev)
-			}
-		} else if revision <= w.timeoutRevision { // object key timeout
-			klog.InfoS("compact expired object key", "raw key", string(rawKey), "rev", revision)
-			return true, w.compactKey(iter.Key(), rawKey, revision)
-		}
-	}
-
-	return false, nil
-}
-
 // checkCompactRace will guarantee range request and compact request don't conflict
 func (r *scanner) checkCompactRace(ctx context.Context, revision uint64, compact bool) error {
 
 	if compact {
-		// compact operation, just try to set the compact revision
-		// if it's error, try next time
+		// compact operation: raise the compact revision, but NEVER lower it. The
+		// compact key marks the revision below which data has been physically
+		// removed and must be monotonic; an unconditional Put here could regress
+		// it (e.g. a stale/retried compact at a smaller revision), after which
+		// range requests at already-compacted revisions would wrongly pass the
+		// guard below and return incomplete data.
+		val, err := r.store.Get(ctx, r.config.CompactKey)
+		if err != nil && err != storage.ErrKeyNotFound {
+			return err
+		}
+		if len(val) >= 8 && binary.BigEndian.Uint64(val) >= revision {
+			// already compacted at an equal-or-higher revision
+			return nil
+		}
 		bs := make([]byte, 8)
 		binary.BigEndian.PutUint64(bs, revision)
 		batch := r.store.BeginBatchWrite()
-		batch.Put(r.config.CompactKey, bs, 0)
-		return batch.Commit(ctx)
+		if len(val) > 0 {
+			batch.CAS(r.config.CompactKey, bs, val, 0)
+		} else {
+			batch.PutIfNotExist(r.config.CompactKey, bs, 0)
+		}
+		err = batch.Commit(ctx)
+		if errors.Is(err, storage.ErrCASFailed) {
+			// a concurrent compactor advanced it; the watermark did not regress
+			return nil
+		}
+		return err
 	}
 
 	// if scan is triggered by range and range stream, check compact race

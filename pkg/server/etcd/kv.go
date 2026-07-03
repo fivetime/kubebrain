@@ -17,8 +17,8 @@ package etcd
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
-	"strconv"
 	"time"
 
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
@@ -27,18 +27,21 @@ import (
 	"google.golang.org/grpc/status"
 	"k8s.io/klog/v2"
 
+	"github.com/kubewharf/kubebrain/pkg/backend"
 	"github.com/kubewharf/kubebrain/pkg/metrics"
 )
 
 const (
-	// GetPartitionMagic is the Magic Number for get partition through range request
+	// GetPartitionMagic is a sentinel ModRevision the range-stream (List) path sets
+	// on its EOF event. It is NOT overloaded onto the Range API any more: a Range
+	// at revision 1888 now gets normal etcd semantics instead of being hijacked to
+	// return partition metadata (#53). Partition discovery uses the brain-protocol
+	// ListPartition RPC.
 	GetPartitionMagic int64 = 1888
 	unaryRpcTimeout         = 10 * time.Second
 
-	compactRevKey         = "compact_rev_key"
-	compactVersionKey     = "\x00kubebrain/compact_version"
-	defaultCompactVersion = int64(0)
-	defaultMaxTxnOps      = 128
+	compactRevKey    = "compact_rev_key"
+	defaultMaxTxnOps = 128
 )
 
 func (s *RPCServer) Range(ctx context.Context, r *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
@@ -75,22 +78,13 @@ func (s *RPCServer) Range(ctx context.Context, r *etcdserverpb.RangeRequest) (*e
 		// get method
 		response, err = s.backend.Get(ctx, r)
 		methodTag = metrics.Tag("method", "get")
+	} else if r.CountOnly && !hasRangeRevisionFilters(r) {
+		// count only
+		methodTag = metrics.Tag("method", "count")
+		response, err = s.backend.Count(ctx, r)
 	} else {
-		// tricky code
-		// when range end is not nil and revision is GetPartitionMagic, we tell it is a request for partition infos
-		if r.Revision == GetPartitionMagic {
-			methodTag = metrics.Tag("method", "list-partition")
-			response, err = s.backend.GetPartitions(ctx, r)
-		} else if r.CountOnly && !hasRangeRevisionFilters(r) {
-			// count only
-			methodTag = metrics.Tag("method", "count")
-			// range method
-			response, err = s.backend.Count(ctx, r)
-		} else {
-			methodTag = metrics.Tag("method", "range")
-			// range method
-			response, err = s.backend.List(ctx, r)
-		}
+		methodTag = metrics.Tag("method", "range")
+		response, err = s.backend.List(ctx, r)
 	}
 	successTag = getSuccessMetricTagByErr(err)
 	s.metricCli.EmitCounter("read", 1, methodTag, successTag)
@@ -138,13 +132,18 @@ func (s *RPCServer) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etc
 
 	// only leader can accept and handle write request
 	// return error includes current leader, help etcd client send request to right instance
-	if !s.peers.IsLeader() {
+	// Capture the leadership epoch at admission and thread it through the context;
+	// the backend re-checks it just before commit so a leadership change mid-write
+	// fences the commit instead of losing it silently (FINDING #39).
+	epoch, leadingFresh := s.peers.EpochAndLeadingFresh()
+	if !leadingFresh {
 		s.metricCli.EmitCounter("write.follower", 1)
 		if s.peers.EtcdProxyEnabled() {
 			return s.peers.Txn(ctx, txn)
 		}
 		return nil, status.Errorf(codes.Unavailable, "txn error addr is %s leader %s", s.backend.GetResourceLock().Identity(), s.backend.GetResourceLock().Describe())
 	}
+	ctx = backend.WithLeadershipEpoch(ctx, epoch)
 	var (
 		err                   error
 		response              *etcdserverpb.TxnResponse
@@ -227,7 +226,7 @@ func (s *RPCServer) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etc
 			klog.V(4).InfoS("txn compare failed", "op", methodTag.Value, "key", failedKey)
 		}
 	}
-	return response, err
+	return response, mapFenceErr(err)
 }
 
 func validateTxnRequest(txn *etcdserverpb.TxnRequest) error {
@@ -474,7 +473,16 @@ func (s *RPCServer) Compact(ctx context.Context, r *etcdserverpb.CompactionReque
 	if compactRevision > 0 && r.Revision <= int64(compactRevision) {
 		return nil, compactedRevisionError()
 	}
-	compactResp, err := s.backend.Compact(ctx, uint64(r.Revision))
+	// The apiserver's compaction loop sends Physical=false and only needs the
+	// logical watermark advanced; run the physical GC in the background so a large
+	// backlog cannot exceed the caller's RPC timeout. Physical=true callers
+	// (e.g. etcdctl compact --physical) still block until the scan completes.
+	var compactResp *etcdserverpb.TxnResponse
+	if r.Physical {
+		compactResp, err = s.backend.Compact(ctx, uint64(r.Revision))
+	} else {
+		compactResp, err = s.backend.CompactAsync(ctx, uint64(r.Revision))
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -519,13 +527,15 @@ func (s *RPCServer) Put(ctx context.Context, r *etcdserverpb.PutRequest) (*etcds
 	if err := validatePutRequest(r); err != nil {
 		return nil, err
 	}
-	if !s.peers.IsLeader() {
+	epoch, leadingFresh := s.peers.EpochAndLeadingFresh()
+	if !leadingFresh {
 		s.metricCli.EmitCounter("write.follower", 1)
 		if s.peers.EtcdProxyEnabled() {
 			return s.peers.Put(ctx, r)
 		}
 		return nil, status.Errorf(codes.Unavailable, "put error addr is %s leader %s", s.backend.GetResourceLock().Identity(), s.backend.GetResourceLock().Describe())
 	}
+	ctx = backend.WithLeadershipEpoch(ctx, epoch)
 	put, err := s.putWithEffectiveOptions(ctx, r)
 	if err != nil {
 		return nil, err
@@ -543,7 +553,7 @@ func (s *RPCServer) Put(ctx context.Context, r *etcdserverpb.PutRequest) (*etcds
 	if response != nil {
 		s.metricCli.EmitHistogram("write.responsesize", response.Size(), metrics.Tag("method", "put"), successTag)
 	}
-	return response, err
+	return response, mapFenceErr(err)
 }
 
 func (s *RPCServer) DeleteRange(ctx context.Context, r *etcdserverpb.DeleteRangeRequest) (*etcdserverpb.DeleteRangeResponse, error) {
@@ -551,13 +561,15 @@ func (s *RPCServer) DeleteRange(ctx context.Context, r *etcdserverpb.DeleteRange
 	if err := validateDeleteRangeRequest(r); err != nil {
 		return nil, err
 	}
-	if !s.peers.IsLeader() {
+	epoch, leadingFresh := s.peers.EpochAndLeadingFresh()
+	if !leadingFresh {
 		s.metricCli.EmitCounter("write.follower", 1)
 		if s.peers.EtcdProxyEnabled() {
 			return s.peers.DeleteRange(ctx, r)
 		}
 		return nil, status.Errorf(codes.Unavailable, "delete range error addr is %s leader %s", s.backend.GetResourceLock().Identity(), s.backend.GetResourceLock().Describe())
 	}
+	ctx = backend.WithLeadershipEpoch(ctx, epoch)
 	if len(r.RangeEnd) != 0 {
 		if err := s.peers.SyncReadRevision(ctx); err != nil {
 			return nil, err
@@ -582,7 +594,7 @@ func (s *RPCServer) DeleteRange(ctx context.Context, r *etcdserverpb.DeleteRange
 	if response != nil {
 		s.metricCli.EmitHistogram("write.responsesize", response.Size(), metrics.Tag("method", "delete-range"), successTag)
 	}
-	return response, err
+	return response, mapFenceErr(err)
 }
 
 func (s *RPCServer) putWithEffectiveOptions(ctx context.Context, r *etcdserverpb.PutRequest) (*etcdserverpb.PutRequest, error) {
@@ -698,27 +710,147 @@ func txnOpsSupported(ops []*etcdserverpb.RequestOp) bool {
 }
 
 func (s *RPCServer) executeGenericTxn(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etcdserverpb.TxnResponse, error) {
-	paths, err := s.txnComparePaths(ctx, txn)
+	deadline := time.Now().Add(unaryRpcTimeout)
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if time.Now().After(deadline) {
+			return nil, status.Errorf(codes.Unavailable, "txn still contended after %s", unaryRpcTimeout)
+		}
+		paths, guards, err := s.txnComparePathsGuarded(ctx, txn)
+		if err != nil {
+			return nil, err
+		}
+		compactRevision, err := s.backend.GetCompactRevision(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if err := validateTxnRangeRevisions(txn, paths, int64(compactRevision), int64(s.backend.GetCurrentRevision())); err != nil {
+			return nil, err
+		}
+		// Prefer the atomic single-revision path when the chosen branch is a set of
+		// distinct-key writes (#4). The compare guards make it serializable: a guard
+		// conflict means a compared key changed, so re-evaluate the compares and
+		// retry. Ineligible shapes fall back to the (unchanged) sequential path.
+		resp, handled, err := s.tryAtomicGenericTxn(ctx, txn, paths[0], guards)
+		if errors.Is(err, backend.ErrTxnGuardConflict) {
+			continue
+		}
+		if handled {
+			return resp, err
+		}
+		pathIndex := 0
+		return s.executeTxnWithPaths(ctx, txn, paths, &pathIndex)
+	}
+}
+
+// tryAtomicGenericTxn applies the chosen path atomically when it consists solely
+// of distinct-key Put and single-key DeleteRange ops (>= 2 of them, since a
+// single op is already atomic on the sequential path). handled=false means the
+// txn shape is ineligible and the caller must use the sequential fallback.
+func (s *RPCServer) tryAtomicGenericTxn(ctx context.Context, txn *etcdserverpb.TxnRequest, succeeded bool, guards []backend.TxnGuard) (*etcdserverpb.TxnResponse, bool, error) {
+	ops := txn.Success
+	if !succeeded {
+		ops = txn.Failure
+	}
+	writeOps := make([]backend.TxnWriteOp, 0, len(ops))
+	prevKv := make([]bool, 0, len(ops))
+	seen := make(map[string]struct{}, len(ops))
+	for _, op := range ops {
+		switch {
+		case op.GetRequestPut() != nil:
+			put := op.GetRequestPut()
+			// IgnoreLease/IgnoreValue need a read-modify step the atomic batch
+			// does not model; leave those to the sequential path.
+			if put.IgnoreLease || put.IgnoreValue {
+				return nil, false, nil
+			}
+			if _, dup := seen[string(put.Key)]; dup {
+				return nil, false, nil
+			}
+			seen[string(put.Key)] = struct{}{}
+			writeOps = append(writeOps, backend.TxnWriteOp{Key: put.Key, Value: put.Value})
+			prevKv = append(prevKv, false)
+		case op.GetRequestDeleteRange() != nil:
+			del := op.GetRequestDeleteRange()
+			if len(del.RangeEnd) != 0 { // multi-key range delete
+				return nil, false, nil
+			}
+			if _, dup := seen[string(del.Key)]; dup {
+				return nil, false, nil
+			}
+			seen[string(del.Key)] = struct{}{}
+			writeOps = append(writeOps, backend.TxnWriteOp{Delete: true, Key: del.Key})
+			prevKv = append(prevKv, del.PrevKv)
+		default: // range read, nested txn, or unsupported op
+			return nil, false, nil
+		}
+	}
+	if len(writeOps) < 2 {
+		return nil, false, nil
+	}
+	// A compared key that is also written is guarded by its own write CAS, but its
+	// guard revision (from the compare read) and its write's expected revision
+	// (from TxnApply's pre-read) could diverge; rather than reconcile that, drop
+	// to the sequential path when compare and write keys overlap.
+	applyGuards := guards[:0:0]
+	for _, g := range guards {
+		if _, written := seen[string(g.Key)]; written {
+			return nil, false, nil
+		}
+		applyGuards = append(applyGuards, g)
+	}
+	// Validate all put leases up front: an atomic txn must reject as a whole if a
+	// referenced lease is missing, never apply a prefix of its writes.
+	for _, op := range ops {
+		if put := op.GetRequestPut(); put != nil {
+			if err := s.ensureLeaseExists(put.Lease); err != nil {
+				return nil, true, err
+			}
+		}
+	}
+
+	responses, rev, results, err := s.backend.TxnApply(ctx, writeOps, applyGuards, prevKv)
 	if err != nil {
-		return nil, err
+		return nil, true, err
 	}
-	compactRevision, err := s.backend.GetCompactRevision(ctx)
-	if err != nil {
-		return nil, err
+	// Bind/unbind leases now that the writes committed.
+	for i, op := range ops {
+		if put := op.GetRequestPut(); put != nil {
+			s.bindKeyToLease(put.Lease, string(put.Key))
+		} else if del := op.GetRequestDeleteRange(); del != nil {
+			if results[i].Deleted {
+				s.unbindKeyFromLease(string(del.Key))
+			}
+		}
 	}
-	if err := validateTxnRangeRevisions(txn, paths, int64(compactRevision), int64(s.backend.GetCurrentRevision())); err != nil {
-		return nil, err
-	}
-	pathIndex := 0
-	return s.executeTxnWithPaths(ctx, txn, paths, &pathIndex)
+	return &etcdserverpb.TxnResponse{
+		Succeeded: succeeded,
+		Header:    txnHeader(int64(rev)),
+		Responses: responses,
+	}, true, nil
 }
 
 func (s *RPCServer) txnComparePaths(ctx context.Context, txn *etcdserverpb.TxnRequest) ([]bool, error) {
+	paths, _, err := s.txnComparePathsGuarded(ctx, txn)
+	return paths, err
+}
+
+// txnComparePathsGuarded is txnComparePaths that additionally returns OCC guards
+// for the top-level compares it evaluated (those that decided this txn's branch).
+// The guards are used only by the atomic path; nested compares are not guarded
+// (a nested txn is never atomic-eligible and falls back to the sequential path).
+func (s *RPCServer) txnComparePathsGuarded(ctx context.Context, txn *etcdserverpb.TxnRequest) ([]bool, []backend.TxnGuard, error) {
 	succeeded := true
+	var guards []backend.TxnGuard
 	for _, cmp := range txn.Compare {
-		ok, err := s.evalCompare(ctx, cmp)
+		ok, guard, err := s.evalCompareGuarded(ctx, cmp)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
+		}
+		if guard != nil {
+			guards = append(guards, *guard)
 		}
 		if !ok {
 			succeeded = false
@@ -737,11 +869,11 @@ func (s *RPCServer) txnComparePaths(ctx context.Context, txn *etcdserverpb.TxnRe
 		}
 		nestedPaths, err := s.txnComparePaths(ctx, nested)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		paths = append(paths, nestedPaths...)
 	}
-	return paths, nil
+	return paths, guards, nil
 }
 
 func validateTxnRangeRevisions(txn *etcdserverpb.TxnRequest, paths []bool, compactRevision, currentRevision int64) error {
@@ -879,18 +1011,39 @@ func (s *RPCServer) emptyDeleteRangeResponse() *etcdserverpb.DeleteRangeResponse
 }
 
 func (s *RPCServer) evalCompare(ctx context.Context, cmp *etcdserverpb.Compare) (bool, error) {
+	ok, _, err := s.evalCompareGuarded(ctx, cmp)
+	return ok, err
+}
+
+// evalCompareGuarded evaluates a single compare and, for a single-key compare on
+// an existing key, also returns an optimistic-concurrency guard (the key's
+// current revision) that the atomic txn path can assert at commit time (#4 Tier
+// 2). No guard is returned for range compares or absent keys.
+func (s *RPCServer) evalCompareGuarded(ctx context.Context, cmp *etcdserverpb.Compare) (bool, *backend.TxnGuard, error) {
 	if len(cmp.RangeEnd) > 0 {
-		return s.evalRangeCompare(ctx, cmp)
+		ok, err := s.evalRangeCompare(ctx, cmp)
+		return ok, nil, err
 	}
 	rangeResp, err := s.backend.Get(ctx, &etcdserverpb.RangeRequest{Key: cmp.Key})
 	if err != nil {
-		return false, err
+		return false, nil, err
 	}
 	var kv *mvccpb.KeyValue
 	if len(rangeResp.Kvs) > 0 {
 		kv = rangeResp.Kvs[0]
 	}
+	ok, err := s.compareSingleKey(cmp, kv)
+	if err != nil {
+		return false, nil, err
+	}
+	var guard *backend.TxnGuard
+	if kv != nil {
+		guard = &backend.TxnGuard{Key: cmp.Key, Revision: uint64(kv.ModRevision)}
+	}
+	return ok, guard, nil
+}
 
+func (s *RPCServer) compareSingleKey(cmp *etcdserverpb.Compare, kv *mvccpb.KeyValue) (bool, error) {
 	switch cmp.Target {
 	case etcdserverpb.Compare_MOD:
 		var actual int64
@@ -1031,86 +1184,71 @@ func isCompact(txn *etcdserverpb.TxnRequest) bool {
 		string(txn.Compare[0].Key) == compactRevKey
 }
 
+// compact emulates the apiserver's compaction CAS
+// (If(Version(compact_rev_key)==t) Then(Put) Else(Get)) atomically.
+//
+// The old emulation compared a SEPARATE version counter and then issued two
+// independent Puts, so concurrent HA-apiserver compactors could both pass the
+// check and both "win", and the two Puts could desync (#54/#72). It now uses the
+// key's own MVCC version and a single atomic Create/Update CAS: the compare
+// selects the Then/Else branch, and the CAS resolves any concurrent race so
+// exactly one compactor wins — the loser's CAS fails and yields the same
+// Else-shaped response (the current key + version) the apiserver reads.
 func (s *RPCServer) compact(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etcdserverpb.TxnResponse, error) {
 	expectVersion := txn.Compare[0].GetVersion()
 	put := txn.Success[0].GetRequestPut()
-	currentVersion, err := s.getCompactVersion(ctx)
+	key := []byte(compactRevKey)
+
+	getResp, err := s.backend.Get(ctx, &etcdserverpb.RangeRequest{Key: key})
 	if err != nil {
 		return nil, err
 	}
-
-	getResp, err := s.backend.Get(ctx, &etcdserverpb.RangeRequest{Key: []byte(compactRevKey)})
-	if err != nil {
-		return nil, err
+	var curKv *mvccpb.KeyValue
+	curVersion := int64(0)
+	if len(getResp.Kvs) > 0 {
+		curKv = getResp.Kvs[0]
+		curVersion = curKv.Version
 	}
 
-	if currentVersion != expectVersion {
-		rangeResp := &etcdserverpb.RangeResponse{
-			Header: getResp.Header,
-		}
-		if len(getResp.Kvs) > 0 {
-			kv := getResp.Kvs[0]
-			kv.Version = currentVersion
-			rangeResp.Kvs = []*mvccpb.KeyValue{kv}
+	// Compare mismatch -> Else branch: return the current key so the loser learns
+	// the new version. (compact_rev_key's version is monotonically increasing, so
+	// a mismatch here is never a transient the CAS below could recover.)
+	if curVersion != expectVersion {
+		rangeResp := &etcdserverpb.RangeResponse{Header: getResp.Header}
+		if curKv != nil {
+			rangeResp.Kvs = []*mvccpb.KeyValue{curKv}
 			rangeResp.Count = 1
 		}
 		return &etcdserverpb.TxnResponse{
 			Header:    getResp.Header,
 			Succeeded: false,
 			Responses: []*etcdserverpb.ResponseOp{{
-				Response: &etcdserverpb.ResponseOp_ResponseRange{
-					ResponseRange: rangeResp,
-				},
+				Response: &etcdserverpb.ResponseOp_ResponseRange{ResponseRange: rangeResp},
 			}},
 		}, nil
 	}
 
-	putResp, err := s.backend.Put(ctx, &etcdserverpb.PutRequest{
-		Key:   []byte(compactRevKey),
-		Value: put.Value,
-	})
-	if err != nil {
-		return nil, err
+	// Then branch: one atomic CAS. Create when the key is absent (version 0),
+	// otherwise update at its exact current mod revision. On success the backend
+	// returns a Put response (Succeeded=true) with the version bumped; on a lost
+	// race the CAS fails and the backend returns the current key as a Range
+	// response (Succeeded=false) — exactly the Else shape.
+	putReq := &etcdserverpb.PutRequest{Key: key, Value: put.Value}
+	if curKv == nil {
+		return s.backend.Create(ctx, putReq, true)
 	}
-	nextVersion := expectVersion + 1
-	versionResp, err := s.backend.Put(ctx, &etcdserverpb.PutRequest{
-		Key:   []byte(compactVersionKey),
-		Value: []byte(strconv.FormatInt(nextVersion, 10)),
-	})
-	if err != nil {
-		return nil, err
-	}
-	header := putResp.Header
-	if versionResp != nil && versionResp.Header != nil {
-		header = versionResp.Header
-	}
-
-	return &etcdserverpb.TxnResponse{
-		Header:    header,
-		Succeeded: true,
-		Responses: []*etcdserverpb.ResponseOp{{
-			Response: &etcdserverpb.ResponseOp_ResponsePut{
-				ResponsePut: &etcdserverpb.PutResponse{
-					Header: header,
-				},
-			},
-		}},
-	}, nil
+	return s.backend.Update(ctx, curKv.ModRevision, putReq, true)
 }
 
-func (s *RPCServer) getCompactVersion(ctx context.Context) (int64, error) {
-	resp, err := s.backend.Get(ctx, &etcdserverpb.RangeRequest{Key: []byte(compactVersionKey)})
-	if err != nil {
-		return 0, err
+// mapFenceErr converts a write-fence abort (backend.ErrLeadershipFenced) into a
+// codes.Unavailable status so the etcd client retries the write against the
+// current leader, exactly like the not-leader gate above (FINDING #39). Other
+// errors pass through unchanged.
+func mapFenceErr(err error) error {
+	if errors.Is(err, backend.ErrLeadershipFenced) {
+		return status.Errorf(codes.Unavailable, "write rejected: leadership changed during commit, retry on current leader")
 	}
-	if len(resp.Kvs) == 0 {
-		return defaultCompactVersion, nil
-	}
-	version, err := strconv.ParseInt(string(resp.Kvs[0].Value), 10, 64)
-	if err != nil {
-		return 0, fmt.Errorf("invalid compact version %q: %w", resp.Kvs[0].Value, err)
-	}
-	return version, nil
+	return err
 }
 
 func getSuccessMetricTagByErr(err error) metrics.T {

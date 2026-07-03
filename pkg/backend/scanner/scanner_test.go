@@ -16,7 +16,14 @@ package scanner
 
 import (
 	"bytes"
+	"context"
+	"encoding/binary"
 	"testing"
+
+	"github.com/golang/mock/gomock"
+	mock "github.com/kubewharf/kubebrain/pkg/metrics/mock"
+	imemkv "github.com/kubewharf/kubebrain/pkg/storage/memkv"
+	"github.com/stretchr/testify/require"
 
 	"github.com/stretchr/testify/assert"
 
@@ -73,5 +80,82 @@ func TestAdjustPartitionBorders(t *testing.T) {
 		t.Log(idx, string(p.Start))
 		t.Log(idx, string(p.End))
 		ast.True(!bytes.Equal(p.Start, p.End))
+	}
+}
+
+// splitStore wraps a real KvStorage but forces GetPartitions to split the scanned
+// range at chosen boundaries, so a single user key's object versions can be placed
+// in different scan partitions deterministically.
+type splitStore struct {
+	storage.KvStorage
+	splits [][]byte
+}
+
+func (s *splitStore) GetPartitions(ctx context.Context, start, end []byte) ([]storage.Partition, error) {
+	bounds := [][]byte{start}
+	for _, b := range s.splits {
+		if bytes.Compare(start, b) < 0 && bytes.Compare(b, end) < 0 {
+			bounds = append(bounds, b)
+		}
+	}
+	bounds = append(bounds, end)
+	var ps []storage.Partition
+	for i := 1; i < len(bounds); i++ {
+		ps = append(ps, storage.Partition{Start: bounds[i-1], End: bounds[i]})
+	}
+	return ps, nil
+}
+
+func beU64(v uint64) []byte {
+	b := make([]byte, 8)
+	binary.BigEndian.PutUint64(b, v)
+	return b
+}
+
+// TestScannerCrossPartitionTombstone: a user key whose latest version is a
+// tombstone must NOT resurface as live in a List when its versions straddle a scan
+// partition boundary. A boundary that decodes cleanly is snapped by
+// adjustPartitionsBorders; a boundary that does NOT decode must still be safe.
+func TestScannerCrossPartitionTombstone(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	m := mock.NewMinimalMetrics(ctrl)
+	c := coder.NewNormalCoder()
+	tomb := []byte("tombstone")
+
+	key := []byte("/registry/pods/default/p1")
+	const r1 uint64 = 100
+	const r2 uint64 = 200
+
+	cases := []struct {
+		name  string
+		split []byte
+	}{
+		{"decodable-boundary-at-tombstone", c.EncodeObjectKey(key, r2)},
+		{"nondecodable-boundary-between-versions", append(append([]byte{}, c.EncodeObjectKey(key, r1)...), 0x00)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			kv := imemkv.NewKvStorage()
+			defer kv.Close()
+			b := kv.BeginBatchWrite()
+			b.Put(c.EncodeObjectKey(key, 0), append(beU64(r2), 0), 0)  // deleted index {r2}{del}
+			b.Put(c.EncodeObjectKey(key, r1), []byte("live-value"), 0) // older live object
+			b.Put(c.EncodeObjectKey(key, r2), tomb, 0)                 // latest = tombstone
+			require.NoError(t, b.Commit(context.Background()))
+
+			st := &splitStore{KvStorage: kv, splits: [][]byte{tc.split}}
+			sc := NewScanner(st, c, Config{CompactKey: []byte("/compact"), Tombstone: tomb}, m)
+
+			start := c.EncodeObjectKey(key, 0)
+			end := c.EncodeObjectKey(append(append([]byte{}, key...), 0xff), 0)
+			kvs, err := sc.Range(context.Background(), start, end, 1000, 0)
+			require.NoError(t, err)
+			for _, got := range kvs {
+				if bytes.Equal(got.Key, key) {
+					t.Fatalf("DELETED key resurfaced in List at rev=%d (partition split=%v)", got.Revision, tc.split)
+				}
+			}
+		})
 	}
 }
