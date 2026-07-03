@@ -324,6 +324,49 @@ func (s *RPCServer) refreshLease(id int64) (int64, error) {
 	return ttl, nil
 }
 
+// deleteLeasedKey deletes one key bound to lease id WITHOUT clobbering a value a
+// concurrent writer changed out from under us (#1). It compare-deletes at the key's
+// current revision, so a Put that reassigned the key to another lease or updated it
+// (both mint a new revision) is not wrongly deleted. If the compare fails but the
+// key is still bound to THIS same lease (a keepalive re-Put), it retries at the new
+// revision; if the key was reassigned to another lease or unbound, it is left
+// untouched. A genuine storage error is returned so the caller keeps the lease and
+// retries rather than orphaning the surviving keys.
+func (s *RPCServer) deleteLeasedKey(ctx context.Context, id int64, key string) error {
+	for attempt := 0; attempt < 4; attempt++ {
+		// Is the key STILL bound to this lease? A concurrent Put that reassigned it
+		// to another lease (or made it leaseless) between the revoke/expire snapshot
+		// and now means it is no longer ours to delete. keyLeaseIndex is the
+		// authoritative current binding.
+		s.leaseMu.Lock()
+		boundTo, bound := s.keyLeaseIndex[key]
+		s.leaseMu.Unlock()
+		if !bound || boundTo != id {
+			return nil // reassigned or unbound -> not ours to delete
+		}
+		resp, err := s.backend.Get(ctx, &etcdserverpb.RangeRequest{Key: []byte(key)})
+		if err != nil {
+			return err
+		}
+		if len(resp.Kvs) == 0 {
+			return nil // already gone
+		}
+		// Compare-delete at the observed revision so a Put that changes the key
+		// between this read and the delete (a keepalive re-Put, or a reassignment
+		// whose value write landed but whose index update has not yet) does not get
+		// its new value clobbered; a failed compare loops to re-check the binding.
+		dresp, err := s.backend.Delete(ctx, []byte(key), resp.Kvs[0].ModRevision, false)
+		if err != nil {
+			return err
+		}
+		if dresp.GetSucceeded() {
+			return nil // deleted exactly the version bound to this lease
+		}
+		// changed under us -> loop: re-check binding (retry keepalive, skip reassign)
+	}
+	return nil // extremely rare: a keepalive kept racing; leave it for the next cycle
+}
+
 func (s *RPCServer) revokeLease(ctx context.Context, id int64) error {
 	// Delete the attached keys BEFORE removing the lease state/record (#36): if a
 	// key delete fails we must keep the lease so the keys are not orphaned (no
@@ -334,7 +377,7 @@ func (s *RPCServer) revokeLease(ctx context.Context, id int64) error {
 		return leaseNotFound(id)
 	}
 	for _, key := range keys {
-		if _, err := s.backend.Delete(ctx, []byte(key), 0, false); err != nil {
+		if err := s.deleteLeasedKey(ctx, id, key); err != nil {
 			return err
 		}
 	}
@@ -357,7 +400,7 @@ func (s *RPCServer) expireLease(id int64) {
 	// partial deletion is safe. On a real storage failure keep the lease and retry
 	// rather than swallowing the error and orphaning the surviving keys (#36).
 	for _, key := range keys {
-		if _, err := s.backend.Delete(ctx, []byte(key), 0, false); err != nil {
+		if err := s.deleteLeasedKey(ctx, id, key); err != nil {
 			s.metricCli.EmitCounter("lease.expire.delete.err", 1)
 			klog.ErrorS(err, "lease expiry: delete of bound key failed; keeping lease for retry", "lease", id, "key", key)
 			s.retryLeaseExpiry(id)

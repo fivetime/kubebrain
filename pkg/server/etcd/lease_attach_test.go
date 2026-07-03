@@ -278,3 +278,43 @@ func TestExpiryKeepsLeaseAndRecordWhenKeyDeleteFails(t *testing.T) {
 		require.Len(t, r.Kvs, 0, "bound key must be deleted after successful expiry")
 	}
 }
+
+// TestDeleteLeasedKeyCompareDeleteGuardsReassignment pins review finding #1: a
+// lease revoke/expire must delete keys STILL bound to that lease, never a value a
+// concurrent Put reassigned to another lease (which would delete the new value).
+func TestDeleteLeasedKeyCompareDeleteGuardsReassignment(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+
+	const leaseA int64 = 111
+	const leaseB int64 = 222
+	_, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 300, ID: leaseA})
+	require.NoError(t, err)
+	_, err = server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 300, ID: leaseB})
+	require.NoError(t, err)
+
+	key := []byte("/registry/leased/reassigned")
+	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("v1"), Lease: leaseA})
+	require.NoError(t, err)
+	// reassign the key to lease B with a new value (as a Put mid-revoke would)
+	put2, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("v2"), Lease: leaseB})
+	require.NoError(t, err)
+	require.Eventually(t, func() bool { return server.backend.GetCurrentRevision() >= uint64(put2.Header.Revision) }, 5*time.Second, 2*time.Millisecond)
+
+	// Simulate lease A's revoke/expire processing this key, which is now bound to B.
+	require.NoError(t, server.deleteLeasedKey(ctx, leaseA, string(key)))
+
+	// The key must survive with B's value: A's revoke must not clobber B's binding.
+	resp, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: key})
+	require.NoError(t, err)
+	require.Len(t, resp.Kvs, 1, "reassigned key must not be deleted by the other lease's revoke")
+	require.Equal(t, "v2", string(resp.Kvs[0].Value))
+	require.Equal(t, leaseB, resp.Kvs[0].Lease)
+
+	// Positive control: deleteLeasedKey DOES delete a key still bound to the lease.
+	require.NoError(t, server.deleteLeasedKey(ctx, leaseB, string(key)))
+	after, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: key})
+	require.NoError(t, err)
+	require.Len(t, after.Kvs, 0, "a key still bound to the lease must be deleted")
+}
