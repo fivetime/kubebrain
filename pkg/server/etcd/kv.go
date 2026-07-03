@@ -543,9 +543,15 @@ func (s *RPCServer) Put(ctx context.Context, r *etcdserverpb.PutRequest) (*etcds
 	if err := s.ensureLeaseExists(put.Lease); err != nil {
 		return nil, err
 	}
-	response, err := s.backend.Put(ctx, put)
-	if err == nil {
-		s.bindKeyToLease(put.Lease, string(put.Key))
+	// When a lease is involved (the new put binds one, or the key currently holds
+	// one), write the value and its lease attachment record atomically so the
+	// binding can never be lost independently of the value (review #2). The common
+	// leaseless put keeps the cheap single-write path.
+	var response *etcdserverpb.PutResponse
+	if prevLease := s.leaseIDForKey(string(put.Key)); put.Lease != 0 || prevLease != 0 {
+		response, err = s.putLeasedAtomic(ctx, put, prevLease)
+	} else {
+		response, err = s.backend.Put(ctx, put)
 	}
 	successTag := getSuccessMetricTagByErr(err)
 	s.metricCli.EmitCounter("write", 1, metrics.Tag("method", "put"), successTag)
@@ -770,7 +776,11 @@ func (s *RPCServer) tryAtomicGenericTxn(ctx context.Context, txn *etcdserverpb.T
 				return nil, false, nil
 			}
 			seen[string(put.Key)] = struct{}{}
-			writeOps = append(writeOps, backend.TxnWriteOp{Key: put.Key, Value: put.Value})
+			// Inline the lease per-version (review #9). The attachment record on this
+			// path stays best-effort via bindKeyToLease below — leased keys in a
+			// multi-op generic txn (as opposed to a plain Put) are rare; the
+			// expiry-time guard in deleteLeasedKey neutralizes a lost attachment.
+			writeOps = append(writeOps, backend.TxnWriteOp{Key: put.Key, Value: put.Value, Lease: put.Lease})
 			prevKv = append(prevKv, false)
 		case op.GetRequestDeleteRange() != nil:
 			del := op.GetRequestDeleteRange()

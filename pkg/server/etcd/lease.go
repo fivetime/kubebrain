@@ -26,6 +26,8 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"k8s.io/klog/v2"
+
+	"github.com/kubewharf/kubebrain/pkg/backend"
 )
 
 // leaseStoragePrefix holds one small meta record per lease: leases/<id> -> {id,ttl}.
@@ -225,6 +227,52 @@ func (s *RPCServer) ensureLeaseExists(id int64) error {
 	return nil
 }
 
+// putLeasedAtomic writes a put together with its per-key lease attachment record
+// in ONE atomic backend batch, so a leased key is never durably present without
+// its attachment record. This closes the write+attach race (review #2): the old
+// path did backend.Put and THEN attachKeyToStorage as a second, error-ignored
+// write, so if the attach failed the key survived with no durable binding and
+// was never expired when its lease lapsed (an orphan/leak). The value op also
+// carries the lease inline in its v2 envelope (review #9). prevLease is the key's
+// current in-memory binding: when the put clears the lease (put.Lease == 0) on a
+// previously-leased key, the now-stale attachment is deleted in the same batch.
+//
+// Only the common single-Put path (leased Events, masterlease endpoints) routes
+// here; the rarer generic-txn paths keep best-effort binding (documented at their
+// call sites), and the expiry-time guard in deleteLeasedKey neutralizes any stale
+// record either way.
+func (s *RPCServer) putLeasedAtomic(ctx context.Context, put *etcdserverpb.PutRequest, prevLease int64) (*etcdserverpb.PutResponse, error) {
+	userKey := string(put.Key)
+	ops := []backend.TxnWriteOp{{Key: put.Key, Value: put.Value, Lease: put.Lease}}
+	if put.Lease != 0 {
+		ops = append(ops, backend.TxnWriteOp{
+			Key:   leaseAttachKey(userKey),
+			Value: []byte(strconv.FormatInt(put.Lease, 10)),
+		})
+	} else {
+		// Rebind to leaseless: drop the stale attachment in the same batch. A
+		// delete of an absent attachment record is a no-op.
+		ops = append(ops, backend.TxnWriteOp{Delete: true, Key: leaseAttachKey(userKey)})
+	}
+	_, rev, _, err := s.backend.TxnApply(ctx, ops, nil, make([]bool, len(ops)))
+	if err != nil {
+		return nil, err
+	}
+	// The durable attachment committed atomically with the value above; update
+	// only the in-memory index here (no separate durable write that could fail).
+	s.bindKeyIndexOnly(put.Lease, userKey)
+	return &etcdserverpb.PutResponse{Header: txnHeader(int64(rev))}, nil
+}
+
+// bindKeyIndexOnly updates the in-memory key->lease index (and per-lease key set)
+// without writing the durable attachment record — used after putLeasedAtomic,
+// which already persisted the attachment atomically with the value.
+func (s *RPCServer) bindKeyIndexOnly(id int64, key string) {
+	s.leaseMu.Lock()
+	s.bindKeyToLeaseLocked(id, key)
+	s.leaseMu.Unlock()
+}
+
 func (s *RPCServer) bindKeyToLease(id int64, key string) {
 	s.leaseMu.Lock()
 	_, hadPrevious := s.keyLeaseIndex[key]
@@ -350,6 +398,16 @@ func (s *RPCServer) deleteLeasedKey(ctx context.Context, id int64, key string) e
 		}
 		if len(resp.Kvs) == 0 {
 			return nil // already gone
+		}
+		// Guard against a stale attachment record (e.g. a best-effort detach that
+		// failed, then a leader change reloaded the record) causing us to delete a
+		// key that is no longer ours: the current version's inline lease (review #9)
+		// is authoritative. If it names a different lease, or none, the key was
+		// rebound/recreated — leave it. For legacy v1 values with no inline lease
+		// the read falls back to the (rechecked-above) live index, so id matches and
+		// this is a no-op — preserving pre-existing behavior for un-upgraded data.
+		if resp.Kvs[0].Lease != id {
+			return nil
 		}
 		// Compare-delete at the observed revision so a Put that changes the key
 		// between this read and the delete (a keepalive re-Put, or a reassignment

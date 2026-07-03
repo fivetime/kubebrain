@@ -24,6 +24,12 @@ var etcdMetadataPrefix = []byte("\x00kubebrain/etcdmeta/")
 type EtcdMetadata struct {
 	CreateRevision uint64
 	Version        uint64
+	// Lease is the lease ID bound to this specific MVCC version (0 if none). It
+	// is inlined per-version so historical reads, prevKv, and delete events
+	// report the lease the key held at that revision, not just its current
+	// binding (review #9). Only v2 value envelopes carry it; legacy/v1 versions
+	// decode as 0 and fall back to the live key->lease index.
+	Lease int64
 }
 
 func (b *backend) GetEtcdMetadata(ctx context.Context, key []byte, modRevision uint64) (EtcdMetadata, error) {

@@ -1016,13 +1016,17 @@ func (b *backendShim) kvToEtcdKv(ctx context.Context, kv *proto.KeyValue) *mvccp
 		CreateRevision: int64(meta.CreateRevision),
 		ModRevision:    int64(kv.Revision),
 	}
-	if b.leaseLookup != nil {
-		// etcd returns the lease attached to the key on Get/Range and in watch
-		// events; keyLeaseIndex tracks the current binding, so this is exact for
-		// latest reads and reports the current lease for historical reads (the
-		// per-version lease is not stored). Only the leader has the index
-		// populated — followers proxy reads to it. The fast path inside the
-		// resolver skips the lease mutex entirely when no key holds a lease.
+	// etcd returns the lease attached to the key on Get/Range and in watch
+	// events. A v2 value envelope records the lease of THIS specific version
+	// (review #9), so historical reads, prevKv, and delete events report the
+	// lease the key held at that revision — use it directly. Legacy/v1 values
+	// carry no per-version lease (meta.Lease == 0 and inlined via v1), so fall
+	// back to the live keyLeaseIndex (current binding) as before. Only the leader
+	// has that index populated; followers proxy reads to it. The fast path inside
+	// the resolver skips the lease mutex entirely when no key holds a lease.
+	if meta.Lease != 0 {
+		out.Lease = meta.Lease
+	} else if b.leaseLookup != nil {
 		out.Lease = b.leaseLookup(string(kv.Key))
 	}
 	return out

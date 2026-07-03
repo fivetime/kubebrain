@@ -33,6 +33,36 @@ func TestValueMetaRoundTrip(t *testing.T) {
 	require.True(t, bytes.Equal(raw, rawOut))
 }
 
+// TestValueMetaV2Lease pins review #9: a leased version round-trips through the v2
+// envelope carrying its lease, while an unleased version stays v1 (no size
+// regression) and decodes with lease 0. A v1 envelope written before the lease
+// field is still decoded correctly (lease 0), so no migration is needed.
+func TestValueMetaV2Lease(t *testing.T) {
+	raw := []byte("k8s\x00leased-object")
+
+	// Leased -> v2, lease preserved (including a large/negative-bit lease ID).
+	for _, lease := range []int64{1, 0x0123456789abcdef, -1} {
+		meta := EtcdMetadata{CreateRevision: 42, Version: 3, Lease: lease}
+		enc := encodeValueWithMeta(raw, meta)
+		require.True(t, hasValueMetaV2(enc))
+		require.False(t, hasValueMeta(enc), "v2 magic must not match the v1 check")
+		require.Equal(t, valueMetaHeaderLenV2+len(raw), len(enc))
+		got, rawOut, ok := decodeValueWithMeta(enc)
+		require.True(t, ok)
+		require.Equal(t, meta, got)
+		require.True(t, bytes.Equal(raw, rawOut))
+	}
+
+	// Unleased -> v1, no lease field, no size regression.
+	unleased := encodeValueWithMeta(raw, EtcdMetadata{CreateRevision: 42, Version: 3})
+	require.True(t, hasValueMeta(unleased))
+	require.False(t, hasValueMetaV2(unleased))
+	require.Equal(t, valueMetaHeaderLen+len(raw), len(unleased))
+	got, _, ok := decodeValueWithMeta(unleased)
+	require.True(t, ok)
+	require.Equal(t, int64(0), got.Lease)
+}
+
 func TestValueMetaEmptyValue(t *testing.T) {
 	enc := encodeValueWithMeta(nil, EtcdMetadata{CreateRevision: 1, Version: 1})
 	meta, rawOut, ok := decodeValueWithMeta(enc)

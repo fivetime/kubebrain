@@ -1714,7 +1714,7 @@ func TestUncertainRewrite(t *testing.T) {
 	{
 		// 3
 		t.Log("write the key and expected no error")
-		rev, err := b.create(s.ctx, []byte(testKey), []byte(testVal))
+		rev, err := b.create(s.ctx, []byte(testKey), []byte(testVal), 0)
 		s.ast.Equal(initRev+3, rev)
 		s.ast.NoError(err)
 
