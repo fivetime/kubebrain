@@ -87,12 +87,15 @@ func (s *RPCServer) HashKV(ctx context.Context, req *etcdserverpb.HashKVRequest)
 	}
 	revision := s.backend.GetCurrentRevision()
 	if req.GetRevision() > 0 {
-		if err := s.checkRequestedRevision(context.Background(), req.GetRevision()); err != nil {
+		// Use the request context so a cancelled/expired HashKV call aborts the
+		// revision and compaction lookups instead of running under a detached
+		// context.Background() (#59).
+		if err := s.checkRequestedRevision(ctx, req.GetRevision()); err != nil {
 			return nil, err
 		}
 		revision = uint64(req.GetRevision())
 	}
-	compactRevision, err := s.backend.GetCompactRevision(context.Background())
+	compactRevision, err := s.backend.GetCompactRevision(ctx)
 	if err != nil {
 		return nil, err
 	}
