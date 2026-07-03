@@ -112,6 +112,7 @@ metadata:
   namespace: kubebrain-system
   labels:
     app.kubernetes.io/name: kubebrain
+    app.kubernetes.io/component: client
 spec:
   type: ClusterIP
   selector:
@@ -128,6 +129,7 @@ metadata:
   namespace: kubebrain-system
   labels:
     app.kubernetes.io/name: kubebrain
+    app.kubernetes.io/component: peer
 spec:
   type: ClusterIP
   selector:
