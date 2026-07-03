@@ -87,7 +87,7 @@ func main() {
 	}
 
 	pdAddrs := splitCSV(pdAddrsRaw)
-	kv, err := storagetikv.NewKvStorage(pdAddrs, 0)
+	kv, err := storagetikv.NewKvStorage(pdAddrs, 0, storagetikv.Security{})
 	if err != nil {
 		fatalf("create tikv client: %v", err)
 	}
@@ -132,7 +132,7 @@ func main() {
 
 func verifyDeletedTiKV(ctx context.Context, pdAddrsRaw, key string) {
 	pdAddrs := splitCSV(pdAddrsRaw)
-	kv, err := storagetikv.NewKvStorage(pdAddrs, 0)
+	kv, err := storagetikv.NewKvStorage(pdAddrs, 0, storagetikv.Security{})
 	if err != nil {
 		fatalf("create tikv client: %v", err)
 	}
