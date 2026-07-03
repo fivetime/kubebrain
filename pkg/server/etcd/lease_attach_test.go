@@ -17,6 +17,7 @@ package etcd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"testing"
@@ -30,6 +31,8 @@ import (
 	"github.com/kubewharf/kubebrain/pkg/metrics/mock"
 	"github.com/kubewharf/kubebrain/pkg/storage/memkv"
 )
+
+var errFakeDelete = errors.New("injected delete failure")
 
 // TestLeaseAttachPersistsPerKeyNotWholeList pins #17: attaching a key to a lease
 // writes one small per-key attachment record (leasekeys/<key> -> <id>) instead of
@@ -203,4 +206,75 @@ func jsonUnmarshalLeaseRecord(data []byte) (leaseRecord, error) {
 	var r leaseRecord
 	err := json.Unmarshal(data, &r)
 	return r, err
+}
+
+// failDeleteShim wraps a BackendShim and fails Delete for one specific key.
+type failDeleteShim struct {
+	BackendShim
+	failKey string
+	fail    bool
+}
+
+func (f *failDeleteShim) Delete(ctx context.Context, key []byte, revision int64, includeFailureRange bool) (*etcdserverpb.TxnResponse, error) {
+	if f.fail && string(key) == f.failKey {
+		return nil, errFakeDelete
+	}
+	return f.BackendShim.Delete(ctx, key, revision, includeFailureRange)
+}
+
+// TestExpiryKeepsLeaseAndRecordWhenKeyDeleteFails pins #36: expiry deletes the
+// attached keys before the lease record, and a failed key delete must keep the
+// lease (and its record) so the surviving keys are never orphaned.
+func TestExpiryKeepsLeaseAndRecordWhenKeyDeleteFails(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	metrics := mock.NewMinimalMetrics(ctrl)
+	kv := memkv.NewKvStorage()
+	b := backend.NewBackend(kv, backend.Config{
+		Identity:                "expire-order-peer",
+		EnableEtcdCompatibility: true,
+	}, metrics)
+	server := New(b, metrics, testPeerService{isLeader: true})
+	defer func() {
+		server.stopLeases()
+		require.NoError(t, kv.Close())
+		ctrl.Finish()
+	}()
+	ctx := context.Background()
+
+	const leaseID int64 = 77036
+	_, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 300, ID: leaseID})
+	require.NoError(t, err)
+	survivor := "/registry/events/keep-me"
+	victim := "/registry/events/delete-me"
+	for _, k := range []string{survivor, victim} {
+		_, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: []byte(k), Value: []byte("v"), Lease: leaseID})
+		require.NoError(t, err)
+	}
+
+	// Make deletes of `survivor` fail, then run expiry.
+	shim := &failDeleteShim{BackendShim: server.backend, failKey: survivor, fail: true}
+	server.backend = shim
+	server.expireLease(leaseID)
+
+	// The lease must NOT have been removed: its record still exists and it is still
+	// tracked, so recovery keeps expiring the keys instead of orphaning them.
+	metaResp, err := shim.Get(ctx, &etcdserverpb.RangeRequest{Key: leaseStorageKey(leaseID)})
+	require.NoError(t, err)
+	require.Len(t, metaResp.Kvs, 1, "lease meta record must survive a failed key delete")
+	ttlResp, err := server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: leaseID, Keys: true})
+	require.NoError(t, err)
+	require.Greater(t, ttlResp.TTL, int64(0), "lease must still be alive after a failed expiry")
+	require.Len(t, ttlResp.Keys, 2, "no key may be unbound when expiry did not complete")
+
+	// Now let deletes succeed; a re-run finishes expiry cleanly.
+	shim.fail = false
+	server.expireLease(leaseID)
+	after, err := server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: leaseID})
+	require.NoError(t, err)
+	require.Equal(t, int64(-1), after.TTL, "lease must be gone once all bound keys are deleted")
+	for _, k := range []string{survivor, victim} {
+		r, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: []byte(k)})
+		require.NoError(t, err)
+		require.Len(t, r.Kvs, 0, "bound key must be deleted after successful expiry")
+	}
 }

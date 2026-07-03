@@ -25,6 +25,7 @@ import (
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"k8s.io/klog/v2"
 )
 
 // leaseStoragePrefix holds one small meta record per lease: leases/<id> -> {id,ttl}.
@@ -312,16 +313,21 @@ func (s *RPCServer) refreshLease(id int64) (int64, error) {
 }
 
 func (s *RPCServer) revokeLease(ctx context.Context, id int64) error {
-	keys, err := s.removeLease(id)
-	if err != nil {
-		return err
+	// Delete the attached keys BEFORE removing the lease state/record (#36): if a
+	// key delete fails we must keep the lease so the keys are not orphaned (no
+	// lease left to ever expire them). Only once every bound key is gone is it
+	// safe to drop the lease record and its attachment records.
+	keys, ok := s.leaseKeysSnapshot(id)
+	if !ok {
+		return leaseNotFound(id)
 	}
 	for _, key := range keys {
 		if _, err := s.backend.Delete(ctx, []byte(key), 0, false); err != nil {
 			return err
 		}
 	}
-	return nil
+	_, err := s.removeLease(id)
+	return err
 }
 
 func (s *RPCServer) expireLease(id int64) {
@@ -330,14 +336,41 @@ func (s *RPCServer) expireLease(id int64) {
 		return
 	}
 
-	keys, err := s.removeLease(id)
-	if err != nil {
-		return
-	}
 	ctx := context.Background()
-	for _, key := range keys {
-		_, _ = s.backend.Delete(ctx, []byte(key), 0, false)
+	keys, ok := s.leaseKeysSnapshot(id)
+	if !ok {
+		return // already removed
 	}
+	// Delete bound keys first; a missing key returns no error, so a retry after a
+	// partial deletion is safe. On a real storage failure keep the lease and retry
+	// rather than swallowing the error and orphaning the surviving keys (#36).
+	for _, key := range keys {
+		if _, err := s.backend.Delete(ctx, []byte(key), 0, false); err != nil {
+			s.metricCli.EmitCounter("lease.expire.delete.err", 1)
+			klog.ErrorS(err, "lease expiry: delete of bound key failed; keeping lease for retry", "lease", id, "key", key)
+			s.retryLeaseExpiry(id)
+			return
+		}
+	}
+	// Every bound key is gone; now drop the lease record and attachment records.
+	_, _ = s.removeLease(id)
+}
+
+// leaseKeysSnapshot returns a copy of the keys currently attached to lease id
+// without removing the lease, so callers can delete the keys first and only then
+// tear the lease down (#36).
+func (s *RPCServer) leaseKeysSnapshot(id int64) ([]string, bool) {
+	s.leaseMu.Lock()
+	defer s.leaseMu.Unlock()
+	st, ok := s.leases[id]
+	if !ok {
+		return nil, false
+	}
+	keys := make([]string, 0, len(st.keys))
+	for key := range st.keys {
+		keys = append(keys, key)
+	}
+	return keys, true
 }
 
 func (s *RPCServer) retryLeaseExpiry(id int64) {
