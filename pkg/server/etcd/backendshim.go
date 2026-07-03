@@ -718,13 +718,30 @@ func needsPostRangeLimit(r *etcdserverpb.RangeRequest) bool {
 }
 
 func (b *backendShim) Count(ctx context.Context, r *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
-	// transform count request from etcd protobuf to kube-brain protobuf
+	if r.Revision != 0 {
+		// A point-in-time count. The proto CountRequest carries no revision (so the
+		// pass-through path below always counts at the current revision), but the
+		// in-memory count index answers historical revisions too (down to
+		// compaction). Serve from it without materializing the range; only when the
+		// index cannot (cold/compacted) fall back to a range read that honors the
+		// revision (List strips Kvs for CountOnly via applyRangeOptions). This avoids
+		// building every KeyValue in the range just to count them (review-borrowed
+		// read-amplification cut, on top of review #1's correctness fix).
+		if c, served := b.backend.CountAtRevision(ctx, r.Key, r.RangeEnd, uint64(r.Revision)); served {
+			return &etcdserverpb.RangeResponse{
+				Header: txnHeader(int64(b.backend.GetCurrentRevision())),
+				Count:  c,
+			}, nil
+		}
+		return b.List(ctx, r)
+	}
+
+	// Current-revision count: the pass-through path (which itself serves from the
+	// index at the current revision, else a bounded scan).
 	request := &proto.CountRequest{
 		Key: r.Key,
 		End: r.RangeEnd,
 	}
-
-	// pass through count method
 	response, err := b.backend.Count(ctx, request)
 	if err != nil {
 		return nil, err

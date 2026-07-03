@@ -78,13 +78,13 @@ func (s *RPCServer) Range(ctx context.Context, r *etcdserverpb.RangeRequest) (*e
 		// get method
 		response, err = s.backend.Get(ctx, r)
 		methodTag = metrics.Tag("method", "get")
-	} else if r.CountOnly && !hasRangeRevisionFilters(r) && r.Revision == 0 {
-		// count only (at the current revision). The fast Count path counts at the
-		// current revision and cannot honor a point-in-time r.Revision (the
-		// CountRequest proto carries no revision), so a revisioned CountOnly must
-		// fall through to List, which reads the snapshot at r.Revision and reports
-		// its size — otherwise WithRev(old).WithCountOnly() would return the current
-		// count instead of the count as of that revision (review #1).
+	} else if r.CountOnly && !hasRangeRevisionFilters(r) {
+		// Count only. Count honors r.Revision: for the current revision (or a
+		// historical one the count index can serve) it returns a count with no range
+		// materialization; a historical count the index cannot serve falls back
+		// inside Count to a revision-honoring range read, so WithRev(old).
+		// WithCountOnly() reports the count as of that revision, not the current one
+		// (review #1 correctness + review-borrowed index fast path).
 		methodTag = metrics.Tag("method", "count")
 		response, err = s.backend.Count(ctx, r)
 	} else {
