@@ -46,7 +46,12 @@ func (i *iter) Next(ctx context.Context) (err error) {
 
 	if !i.moved {
 		i.moved = true
-		return nil
+		// The first position must be range-checked too. A reverse iterator is
+		// created with IterReverse(start), which is NOT bounded by `end` (the lower
+		// bound) at the TiKV level, so its first key can already be at/below `end`
+		// (out of range, e.g. an empty range). Returning it unchecked leaked a key
+		// outside [end,start); the border check is what enforces the lower bound (#25).
+		return i.checkBorder()
 	}
 
 	i.count++

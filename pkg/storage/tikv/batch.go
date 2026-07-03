@@ -53,7 +53,13 @@ func (b *batch) CAS(key []byte, newVal []byte, oldVal []byte, ttl int64) {
 		val, err := b.txn.Get(ctx, key)
 		if err != nil {
 			if tikverr.IsErrNotFound(err) {
-				return storage.ErrKeyNotFound
+				// A missing key means the CAS precondition (current == oldVal)
+				// cannot hold, i.e. the compare failed. Per the storage interface
+				// (and to match Badger/memkv) return a Conflict (which Is
+				// ErrCASFailed) with a nil current value, NOT ErrKeyNotFound —
+				// otherwise the backend treats the same situation as a hard error on
+				// TiKV but as a retryable CAS failure on the other engines (#45).
+				return storage.NewErrConflict(idx, key, nil)
 			}
 			return errors.Wrapf(err, "fail to get key %s", string(key))
 		}

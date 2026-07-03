@@ -137,5 +137,23 @@ func (b *batch) Commit(ctx context.Context) error {
 		}
 	}
 
-	return b.txn.Commit()
+	err := b.txn.Commit()
+	if err == nil {
+		return nil
+	}
+	// Map badger's transaction errors to storage errors so callers handle them
+	// consistently across engines instead of leaking raw badger errors (#44).
+	if errors.Is(err, badger.ErrConflict) {
+		// Optimistic-transaction conflict: a concurrent commit touched a key this
+		// txn read/wrote. Surface as ErrCASFailed so the backend retries, matching
+		// TiKV's write-conflict mapping.
+		return storage.ErrCASFailed
+	}
+	if errors.Is(err, badger.ErrTxnTooBig) {
+		// The batch exceeded badger's transaction size limit — a definite,
+		// non-retryable failure. Wrap a storage sentinel so it is recognizable
+		// rather than a bare badger error.
+		return errors.Wrapf(storage.ErrUnexpectedRet, "badger txn too big: %v", err)
+	}
+	return err
 }
