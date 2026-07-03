@@ -26,6 +26,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -33,6 +34,7 @@ import (
 	"github.com/golang/mock/gomock"
 	"github.com/soheilhy/cmux"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/kubewharf/kubebrain/pkg/backend"
 	"github.com/kubewharf/kubebrain/pkg/metrics/mock"
@@ -466,4 +468,68 @@ func TestFollowerRejectsMalformedOrZeroRevision(t *testing.T) {
 		ast.NoError(rs.SyncReadRevision(ctx))
 		ast.Equal(uint64(777), bs.currentRev)
 	})
+}
+
+// TestReadIndexMidFlightReaderGetsFreshFetch pins #43: a reader that arrives while
+// a leader-revision fetch is already in flight must be served by a NEW fetch that
+// starts after it arrived (fresh read index), not by the in-flight one. The
+// /status handler returns an increasing revision per call and blocks the first
+// call until the second reader has queued; the mid-flight reader must observe the
+// second (higher) revision.
+func TestReadIndexMidFlightReaderGetsFreshFetch(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	mockMetrics := mock.NewMinimalMetrics(ctrl)
+
+	var callCount int32
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		n := atomic.AddInt32(&callCount, 1)
+		if n == 1 {
+			<-release // hold the first fetch in flight
+		}
+		_ = json.NewEncoder(w).Encode(LeaderRevision{Revision: uint64(n) * 100})
+	}))
+	defer srv.Close()
+	addr := strings.TrimPrefix(srv.URL, "http://")
+
+	bs := &backendStub{}
+	le := &leader.Stub{ElectionInfo: leader.ElectionInfo{IsLeader: false, LeaderAddress: addr}}
+	rs := NewRevisionSyncer(bs, mockMetrics, le, nil).(*revisionSyncer)
+	defer rs.Close()
+
+	ctx := context.Background()
+	waitFor := func(cond func() bool) {
+		for i := 0; i < 200; i++ {
+			if cond() {
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		t.Fatal("condition not met in time")
+	}
+
+	// Reader A triggers the first (blocked) fetch F1.
+	var aRev uint64
+	var aErr error
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() { defer wg.Done(); aRev, aErr = rs.getFreshRevisionFromLeader(ctx) }()
+	waitFor(func() bool { return atomic.LoadInt32(&callCount) == 1 }) // F1 in flight
+
+	// Reader B arrives mid-flight; it must queue into the NEXT batch, not join F1.
+	var bRev uint64
+	var bErr error
+	wg.Add(1)
+	go func() { defer wg.Done(); bRev, bErr = rs.getFreshRevisionFromLeader(ctx) }()
+	waitFor(func() bool { rs.fetchMu.Lock(); defer rs.fetchMu.Unlock(); return rs.next != nil })
+
+	close(release) // let F1 finish; F2 then runs for B
+	wg.Wait()
+
+	require.NoError(t, aErr)
+	require.NoError(t, bErr)
+	require.Equal(t, uint64(100), aRev, "reader A gets the first fetch's revision")
+	require.Equal(t, uint64(200), bRev, "mid-flight reader B must get a fresh (second) fetch, not the in-flight one")
+	require.Equal(t, int32(2), atomic.LoadInt32(&callCount), "readers arriving during one fetch coalesce into exactly one next fetch")
 }
