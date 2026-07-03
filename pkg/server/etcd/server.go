@@ -52,6 +52,10 @@ type RPCServer struct {
 	leaseID       int64
 	leases        map[int64]*leaseState
 	keyLeaseIndex map[string]int64
+	// orphanSweepStop is non-nil while the leader-side orphaned-leased-key sweeper
+	// goroutine is running; closed (and niled) when leadership is lost. Guarded by
+	// leaseMu.
+	orphanSweepStop chan struct{}
 	// leasedKeyCount mirrors len(keyLeaseIndex) for a lock-free fast path in
 	// leaseIDForKey: the read path resolves an attached lease for every returned
 	// KeyValue, and the overwhelmingly common case (a range over keys that hold

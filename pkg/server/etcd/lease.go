@@ -606,6 +606,9 @@ func (s *RPCServer) ReloadLeases(ctx context.Context) error {
 	// per-key attachment format so subsequent detaches are durable and the
 	// monolithic key-list is not carried forward. One-time, idempotent.
 	s.migrateLegacyLeases(ctx, legacy)
+	// Start the safety-net sweeper that reclaims leased keys whose expiry timer was
+	// never (re)armed because their attachment outlived its lease meta record.
+	s.startOrphanSweeper()
 	return nil
 }
 
@@ -753,6 +756,9 @@ func (s *RPCServer) StopLeases() {
 }
 
 func (s *RPCServer) stopLeases() {
+	// Stop the sweeper first (it acquires leaseMu itself, so must run outside the
+	// lock below).
+	s.stopOrphanSweeper()
 	s.leaseMu.Lock()
 	defer s.leaseMu.Unlock()
 	for _, st := range s.leases {
@@ -763,6 +769,128 @@ func (s *RPCServer) stopLeases() {
 	s.leases = make(map[int64]*leaseState)
 	s.keyLeaseIndex = make(map[string]int64)
 	atomic.StoreInt64(&s.leasedKeyCount, 0)
+}
+
+// orphanLeaseSweepInterval is how often the leader reconciles durable lease
+// attachment records against live leases. It is a slow safety net (expiry itself
+// is timer-driven), so a coarse interval is fine.
+const orphanLeaseSweepInterval = 10 * time.Minute
+
+// startOrphanSweeper launches the leader-side orphaned-leased-key sweeper if it is
+// not already running. Called on leadership acquisition (after ReloadLeases has
+// rebuilt lease state).
+func (s *RPCServer) startOrphanSweeper() {
+	s.leaseMu.Lock()
+	if s.orphanSweepStop != nil {
+		s.leaseMu.Unlock()
+		return
+	}
+	stop := make(chan struct{})
+	s.orphanSweepStop = stop
+	s.leaseMu.Unlock()
+	go s.runOrphanSweeper(stop)
+}
+
+// stopOrphanSweeper signals the sweeper goroutine to exit (idempotent).
+func (s *RPCServer) stopOrphanSweeper() {
+	s.leaseMu.Lock()
+	if s.orphanSweepStop != nil {
+		close(s.orphanSweepStop)
+		s.orphanSweepStop = nil
+	}
+	s.leaseMu.Unlock()
+}
+
+func (s *RPCServer) runOrphanSweeper(stop chan struct{}) {
+	ticker := time.NewTicker(orphanLeaseSweepInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+			if !s.peers.IsLeader() {
+				continue
+			}
+			s.sweepOrphanLeasedKeys(context.Background())
+		}
+	}
+}
+
+// sweepOrphanLeasedKeys is the safety-net reconciliation borrowed from kine's TTL
+// poller: it guarantees a leased key is eventually collected even if its in-memory
+// expiry timer was never (re)armed. That happens when a durable attachment record
+// (leasekeys/<key> -> <id>) outlives its lease's meta record — e.g. a best-effort
+// detach failed on revoke, then a leader change reloaded the attachment, which
+// applyLeaseRecords drops as an orphan (no timer). The key would otherwise carry
+// an inline lease in its value forever with nothing to expire it.
+//
+// For each durable attachment whose lease id is no longer live and whose key is
+// not in the live index, it deletes the key (its lease is gone — etcd deletes a
+// key when its lease lapses), or, when the key was rebound/removed, just reclaims
+// the stale attachment record.
+func (s *RPCServer) sweepOrphanLeasedKeys(ctx context.Context) {
+	_, attachments, err := s.loadLeaseRecords(ctx)
+	if err != nil {
+		s.metricCli.EmitCounter("lease.orphan_sweep.err", 1)
+		klog.ErrorS(err, "orphan lease sweep: load attachment records failed")
+		return
+	}
+	for key, id := range attachments {
+		s.leaseMu.Lock()
+		_, leaseLive := s.leases[id]
+		_, indexed := s.keyLeaseIndex[key]
+		s.leaseMu.Unlock()
+		if leaseLive || indexed {
+			continue // healthy binding, or already tracked for expiry
+		}
+		if !s.peers.IsLeader() {
+			return // lost leadership mid-sweep
+		}
+		s.reconcileOrphanAttachment(ctx, key, id)
+	}
+}
+
+// reconcileOrphanAttachment handles one attachment record whose lease is no longer
+// live. It deletes the key only when the key's authoritative per-version lease
+// (inline in the value, review #9) still names the defunct lease; otherwise it
+// merely reclaims the stale attachment record, never touching a key that was
+// rebound or recreated leaseless.
+func (s *RPCServer) reconcileOrphanAttachment(ctx context.Context, key string, id int64) {
+	resp, err := s.backend.Get(ctx, &etcdserverpb.RangeRequest{Key: []byte(key)})
+	if err != nil {
+		return
+	}
+	if len(resp.Kvs) == 0 || resp.Kvs[0].Lease != id {
+		// Key already gone, or rebound/recreated to a different (or no) lease: the
+		// attachment record is stale. Reclaim it; leave any live key alone. (A
+		// legacy v1 value carries no inline lease and reads back Lease==0 here, so
+		// its key is conservatively left in place — only its stale record is
+		// cleaned.)
+		if err := s.detachKeyFromStorage(ctx, key); err == nil {
+			s.metricCli.EmitCounter("lease.orphan_sweep.record_reclaimed", 1)
+		}
+		return
+	}
+	// The key is live and still bound (per its inline lease) to a lease that no
+	// longer exists. Re-check under the lock that the lease was not just
+	// (re)granted, then compare-delete at the observed revision so a concurrent
+	// re-Put is not clobbered.
+	s.leaseMu.Lock()
+	_, leaseLive := s.leases[id]
+	s.leaseMu.Unlock()
+	if leaseLive {
+		return
+	}
+	dresp, err := s.backend.Delete(ctx, []byte(key), resp.Kvs[0].ModRevision, false)
+	if err != nil {
+		return
+	}
+	if dresp.GetSucceeded() {
+		_ = s.detachKeyFromStorage(ctx, key)
+		s.metricCli.EmitCounter("lease.orphan_sweep.key_deleted", 1)
+		klog.InfoS("orphan lease sweep: deleted key bound to a defunct lease", "key", key, "lease", id)
+	}
 }
 
 func (s *RPCServer) scheduleLeaseLocked(st *leaseState) {
