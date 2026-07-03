@@ -95,17 +95,31 @@ wait_ready() {
 }
 
 kb_leader() {
-  local p
-  for p in $(kb get pods -o name 2>/dev/null | grep "${KUBEBRAIN_DEPLOYMENT}-"); do
-    if kb logs "$p" 2>/dev/null | grep -q "start leading"; then echo "${p##*/}"; fi
-  done | tail -1
+  # The leader identity is exposed as a metric label (leader="<podIP>:peerPort")
+  # on every pod; map that IP to a pod name. This is reliable, unlike grepping
+  # logs for "start leading" which scrolls out of the visible log window. A
+  # freshly-promoted leader can still report a STALE label (its previous leader),
+  # so take the leader IP reported by the MAJORITY that maps to a live pod.
+  local ipmap counts ip name
+  ipmap="$(kb get pods -o jsonpath='{range .items[*]}{.status.podIP}{" "}{.metadata.name}{"\n"}{end}' 2>/dev/null)"
+  counts="$(for p in $(kb get pods -o name 2>/dev/null | grep "${KUBEBRAIN_DEPLOYMENT}-"); do
+    kb exec "${p##*/}" -- sh -c 'wget -qO- localhost:8080/metrics 2>/dev/null | grep -oE "leader=\"[0-9.]+:"' 2>/dev/null | grep -oE '[0-9.]+' | head -1
+  done | sort | uniq -c | sort -rn)"
+  while read -r _cnt ip; do
+    [ -n "$ip" ] || continue
+    name="$(printf '%s\n' "$ipmap" | awk -v ip="$ip" '$1==ip{print $2; exit}')"
+    if [ -n "$name" ]; then echo "$name"; return 0; fi
+  done <<< "$counts"
 }
 
 stall_errors() {
-  grep -c 'Too large resource version' "$LOG_FILE" 2>/dev/null || echo 0
+  # grep -c prints the count (0 on no match) AND exits 1 when 0; `|| true`
+  # swallows the exit code WITHOUT appending a second "0" (which `|| echo 0` did,
+  # yielding "0\n0" and a false failure).
+  grep -c 'Too large resource version' "$LOG_FILE" 2>/dev/null || true
 }
 sync_errors() {
-  grep -c 'Unable to sync caches' "$LOG_FILE" 2>/dev/null || echo 0
+  grep -c 'Unable to sync caches' "$LOG_FILE" 2>/dev/null || true
 }
 
 main() {
@@ -147,13 +161,22 @@ main() {
   done
 
   # ---- post checks ----
+  # The authoritative failover proof is that a WRITE succeeds after the leader was
+  # killed (a write only commits once a leader is re-elected). Retry the write for
+  # a bit to ride out the election gap. Identifying the new leader BY NAME is
+  # best-effort (the leader= metric label lags right after a kill), so it is
+  # logged when available but never fails the test.
   if [ "$DO_FAILOVER" = "true" ]; then
-    local newleader="" deadline=$((SECONDS + 60))
+    local newleader="" deadline=$((SECONDS + 30))
     while [ "$SECONDS" -lt "$deadline" ]; do newleader="$(kb_leader)"; [ -n "$newleader" ] && break; sleep 3; done
-    [ -n "$newleader" ] || fail "no KubeBrain leader re-elected after kill"
-    log "new KubeBrain leader: $newleader"
+    if [ -n "$newleader" ]; then log "new KubeBrain leader: $newleader"; else log "new leader not named yet (metric label lag); relying on write-after-failover"; fi
   fi
-  k -n "$SMOKE_NS" create configmap post-load --from-literal=ok=yes >/dev/null || fail "write after load/failover failed"
+  local wrote="" wdeadline=$((SECONDS + 60))
+  while [ "$SECONDS" -lt "$wdeadline" ]; do
+    if k -n "$SMOKE_NS" create configmap post-load --from-literal=ok=yes >/dev/null 2>&1; then wrote=yes; break; fi
+    sleep 3
+  done
+  [ -n "$wrote" ] || fail "write after load/failover never succeeded (no leader re-elected)"
   [ "$(k -n "$SMOKE_NS" get configmap post-load -o jsonpath='{.data.ok}')" = "yes" ] || fail "read-after-write failed"
   k get nodes --no-headers | grep -q " Ready " || fail "node not Ready after failover"
   local tlrv sync
