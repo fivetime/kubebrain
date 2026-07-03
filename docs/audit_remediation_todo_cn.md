@@ -3,7 +3,7 @@
 > 来源：Fable 5 多智能体审核（73 条已确认问题）。本文件是**持久化进度清单**，做一个勾一个（`[x]`），抗会话压缩遗忘。
 > 编号 `#N` = 审核确认清单索引；`file:line` 为大致位置。测试遵循 `docs/test_strategy_cn.md`：**真实消费端黑盒为主，内部单测只锁黑盒够不着的精确 bug**。
 
-进度：**已修 54 / 73** — Critical 3/3 ✓，High 26/32，Medium 6/17，Low 19/21。（+ #37 event 过期改走 lease in-band DELETE=随 #16 解决;#56/#57 follower lease 读不返陈旧态 + 降级 StopLeases d924106；#36 lease expiry 先删键后删 record 防孤儿 b616a9f；#17 lease per-key attachment 去 O(N²) key-list 重写 503c397；#16 event TTL 去硬编码启发式=删子串 GC 依赖 lease 9c60cf3；#71 compaction 错误可见性；#48 compact TTL 缓存；P7 #65/#66/#67）（+ #5/#27/#29 A-index e885b8d；#6/#38 etcdmeta 纳入 compaction；#15 两半完成：\x00kubebrain/ 命名空间整体纳入 compaction；#30 watch history 去点读+限流；#69 前缀路由；kv.Lease 读回填=Get/Range/watch 回填附着 lease + 无锁快路径 86e692d）
+进度：**已修 55 / 73** — Critical 3/3 ✓，High 26/32，Medium 7/17，Low 19/21。（+ #40 resourceLock 字段竞争=随 #60/#68 解决;#37 event 过期改走 lease in-band DELETE=随 #16 解决;#56/#57 follower lease 读不返陈旧态 + 降级 StopLeases d924106；#36 lease expiry 先删键后删 record 防孤儿 b616a9f；#17 lease per-key attachment 去 O(N²) key-list 重写 503c397；#16 event TTL 去硬编码启发式=删子串 GC 依赖 lease 9c60cf3；#71 compaction 错误可见性；#48 compact TTL 缓存；P7 #65/#66/#67）（+ #5/#27/#29 A-index e885b8d；#6/#38 etcdmeta 纳入 compaction；#15 两半完成：\x00kubebrain/ 命名空间整体纳入 compaction；#30 watch history 去点读+限流；#69 前缀路由；kv.Lease 读回填=Get/Range/watch 回填附着 lease + 无锁快路径 86e692d）
 > 附带修复（不在 73 条内）：events-TTL 过期回收在多 border（etcdmeta / 多 SkippedPrefixes）下失效——`getTimeoutRevision` 会 drain 共享 compact-history 队列，原先每 border 各调一次，首个 border 耗尽旧记录后其余 border 拿到 timeoutRevision=0，静默关闭 `/events/` 过期。已改为每次 compaction 周期只计算一次并应用到所有 border（`scanner.Compact` 现接收全部 borders）。`TestCompactExpiredEvents` 覆盖。
 
 ## 已完成（PR #1: fivetime/kubebrain#1 + 81d36be）
@@ -156,8 +156,8 @@
   `pkg/server/service/revision/revision.go:148`
 - [ ] **#39** [medium] No write fencing on leader loss: deposed leader keeps committing writes with stale lower revisions that the new leader's watch stream never emits  
   `pkg/backend/election/election.go:149`
-- [ ] **#40** [medium] Data race on resourceLock.record/tso/lastVal: Describe() read from gRPC handlers vs election-loop writes  
-  `pkg/backend/election/election.go:188`
+- [x] **#40** [medium] Data race on resourceLock.record/tso/lastVal: Describe() read from gRPC handlers vs election-loop writes  
+  `pkg/backend/election/election.go:188` — **与 #60/#68 同批解决**(见 #68 条目)。`resourceLock` 加了 `sync.Mutex`,`record`/`lastVal`/`tso` 的全部 13 处访问(`Get`/`getRecord`/`getTso`/`Create`/`Update`/`Describe`)均在 `r.mu` 内(存储 I/O 在锁外、仅护字段;`Get` 返回快照拷贝)。backend `-race` 从 9→3,消掉全部 KubeBrain 自有选主竞争;残留 3 全在 vendored client-go v11.0.1 `leaderelection` 内部(`observedRecord`/`reportedLeader`,非本 finding,需升级 client-go,见 [[known-flaky-tests]])。本条与 #40 是同一处修复,之前漏勾。
 - [x] **#60** [low] leaderElection.leader bool is read/written without synchronization  
   `pkg/server/service/leader/leader.go` — `leader` 改为 `int32`，回调 `atomic.StoreInt32`、`IsLeader()` `atomic.LoadInt32`。
 - [x] **#68** [low] leaderElection.leader is a plain bool written by callbacks and read by IsLeader() from all RPC goroutines  
