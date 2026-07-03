@@ -46,12 +46,12 @@ func TestValueMetaEmptyValue(t *testing.T) {
 // mistaken for an inline-metadata envelope.
 func TestValueMetaLegacyValuesNotMistaken(t *testing.T) {
 	legacy := [][]byte{
-		[]byte("k8s\x00\x1a\x0bexample"),  // protobuf-prefixed object
-		[]byte(`{"kind":"Pod"}`),          // JSON object
-		tombStoneBytes,                    // "tombstone"
-		{},                                // empty
-		{0x00},                            // shorter than header, leading 0x00
-		{0x00, 0x6b, 0x62},                // 3-byte prefix, still shorter than header
+		[]byte("k8s\x00\x1a\x0bexample"), // protobuf-prefixed object
+		[]byte(`{"kind":"Pod"}`),         // JSON object
+		tombStoneBytes,                   // "tombstone"
+		{},                               // empty
+		{0x00},                           // shorter than header, leading 0x00
+		{0x00, 0x6b, 0x62},               // 3-byte prefix, still shorter than header
 		[]byte("arbitrary value bytes"),
 	}
 	for _, v := range legacy {
