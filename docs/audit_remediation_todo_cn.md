@@ -3,7 +3,7 @@
 > 来源：Fable 5 多智能体审核（73 条已确认问题）。本文件是**持久化进度清单**，做一个勾一个（`[x]`），抗会话压缩遗忘。
 > 编号 `#N` = 审核确认清单索引；`file:line` 为大致位置。测试遵循 `docs/test_strategy_cn.md`：**真实消费端黑盒为主，内部单测只锁黑盒够不着的精确 bug**。
 
-进度：**已修 59 / 73** — Critical 3/3 ✓，High 26/32，Medium 11/17，Low 19/21。（+ #43 read-index 双缓冲 fetch 013fd93;#42 follower 拒绝畸形/零 revision d697c62;#41/#47 etcdproxy updateClient 序列化 aab4b1a;#40 resourceLock 字段竞争=随 #60/#68 解决;#37 event 过期改走 lease in-band DELETE=随 #16 解决;#56/#57 follower lease 读不返陈旧态 + 降级 StopLeases d924106；#36 lease expiry 先删键后删 record 防孤儿 b616a9f；#17 lease per-key attachment 去 O(N²) key-list 重写 503c397；#16 event TTL 去硬编码启发式=删子串 GC 依赖 lease 9c60cf3；#71 compaction 错误可见性；#48 compact TTL 缓存；P7 #65/#66/#67）（+ #5/#27/#29 A-index e885b8d；#6/#38 etcdmeta 纳入 compaction；#15 两半完成：\x00kubebrain/ 命名空间整体纳入 compaction；#30 watch history 去点读+限流；#69 前缀路由；kv.Lease 读回填=Get/Range/watch 回填附着 lease + 无锁快路径 86e692d）
+进度：**已修 63 / 73** — Critical 3/3 ✓，High 27/32，Medium 14/17，Low 19/21。（+ P7 引擎一致性 #25/#44/#45/#46 c12d982;#43 read-index 双缓冲 fetch 013fd93;#42 follower 拒绝畸形/零 revision d697c62;#41/#47 etcdproxy updateClient 序列化 aab4b1a;#40 resourceLock 字段竞争=随 #60/#68 解决;#37 event 过期改走 lease in-band DELETE=随 #16 解决;#56/#57 follower lease 读不返陈旧态 + 降级 StopLeases d924106；#36 lease expiry 先删键后删 record 防孤儿 b616a9f；#17 lease per-key attachment 去 O(N²) key-list 重写 503c397；#16 event TTL 去硬编码启发式=删子串 GC 依赖 lease 9c60cf3；#71 compaction 错误可见性；#48 compact TTL 缓存；P7 #65/#66/#67）（+ #5/#27/#29 A-index e885b8d；#6/#38 etcdmeta 纳入 compaction；#15 两半完成：\x00kubebrain/ 命名空间整体纳入 compaction；#30 watch history 去点读+限流；#69 前缀路由；kv.Lease 读回填=Get/Range/watch 回填附着 lease + 无锁快路径 86e692d）
 > 附带修复（不在 73 条内）：events-TTL 过期回收在多 border（etcdmeta / 多 SkippedPrefixes）下失效——`getTimeoutRevision` 会 drain 共享 compact-history 队列，原先每 border 各调一次，首个 border 耗尽旧记录后其余 border 拿到 timeoutRevision=0，静默关闭 `/events/` 过期。已改为每次 compaction 周期只计算一次并应用到所有 border（`scanner.Compact` 现接收全部 borders）。`TestCompactExpiredEvents` 覆盖。
 
 ## 已完成（PR #1: fivetime/kubebrain#1 + 81d36be）
@@ -172,14 +172,14 @@
 
 ### P7 — 存储引擎健壮性 / 杂项
 
-- [ ] **#25** [high] TiKV reverse iterator returns first key without range-border check  
-  `pkg/storage/tikv/iter.go:47`
-- [ ] **#44** [medium] Badger Commit does not map badger.ErrConflict/ErrTxnTooBig to storage errors  
-  `pkg/storage/badger/batch.go:138`
-- [ ] **#45** [medium] CAS on missing key: TiKV returns ErrKeyNotFound while Badger/memkv return Conflict  
-  `pkg/storage/tikv/batch.go:56`
-- [ ] **#46** [medium] memkv reads are unsynchronized and can observe the iterator's sentry placeholder  
-  `pkg/storage/memkv/skiplist.go:63`
+- [x] **#25** [high] TiKV reverse iterator returns first key without range-border check  
+  `pkg/storage/tikv/iter.go:47` — c12d982。反向迭代器用 `IterReverse(start+\x00)` 创建,**不受 `end`(下界)约束**;`Next` 的首次(`!moved`)分支直接返回 seek 落点、**跳过 `checkBorder`** → 空范围/首键已 ≤end 时会泄漏越界键。改为首键也走 `checkBorder`。单测 `TestReverseIterFirstKeyIsBorderChecked`(mock `tiKvIterator`:首键越界→EOF、在界内→返回、空迭代器→EOF)。
+- [x] **#44** [medium] Badger Commit does not map badger.ErrConflict/ErrTxnTooBig to storage errors  
+  `pkg/storage/badger/batch.go:138` — c12d982。`txn.Commit()` 原样返回裸 badger 错误。映射:`ErrConflict`(乐观事务冲突)→ `storage.ErrCASFailed`(可重试,对齐 TiKV write-conflict 映射);`ErrTxnTooBig` → 包裹的 `storage.ErrUnexpectedRet`(明确硬错、不泄漏 badger 抽象)。单测 `TestBadgerCommitConflictMapsToCASFailed`(确定性:b1 快照→b2 改同键提交→b1 CAS 提交冲突→ErrCASFailed)。
+- [x] **#45** [medium] CAS on missing key: TiKV returns ErrKeyNotFound while Badger/memkv return Conflict  
+  `pkg/storage/tikv/batch.go:56` — c12d982。CAS 缺失键=compare 前提(current==oldVal)不成立=compare 失败,按 storage interface 应返回 `ErrCASFailed`/`Conflict`(Conflict `Is` ErrCASFailed),而非 `ErrKeyNotFound`。否则同一情形在 TiKV 上是硬错、在 badger/memkv 上是可重试 CAS 失败。改 TiKV 返回 `NewErrConflict(idx,key,nil)`,与 badger/memkv 一致。单测 `TestBadgerCASMissingKeyIsCASFailed` 钉死期望行为(TiKV 改后代码同构;`*txnkv.KVTxn` 具体类型不可 in-process mock,故 TiKV 侧靠代码对齐 + 跨引擎期望)。
+- [x] **#46** [medium] memkv reads are unsynchronized and can observe the iterator's sentry placeholder  
+  `pkg/storage/memkv/skiplist.go:63` — **已在树中修复**(随早前 -race 工作);`Get` 与 `iter.init` 均持 `store.mu`,sentry 的插入+删除与结果物化全在锁内完成,并发 Get 永不见 sentry;`Next/Key/Val` 读不可变 buf 无需锁。补并发 Get/Iter/write 的 `-race` 测试 `TestConcurrentGetIterWriteNoRace` 钉死。所有 storage 包 `-race` 绿。
 - [x] **#48** [medium] GetCompactRevision is an uncached storage read executed on every revisioned request  
   `pkg/backend/compact.go` — 加 backend 级 TTL 缓存（`compactRevCache`，1s）。compact revision 单调、仅经 `setCompactRecord` 前进，故短 TTL 安全：本节点推进水位时 `updateCompactRevCache` **即时刷新**（读立即拒绝新压缩区间）；否则 TTL 到期刷新一次（存储读从「每次带 revision 的请求一次」降到「~每秒一次」）。刷新在锁外做，慢的 compact-key 读不会 stall 所有带 revision 请求；`never lower` 保证单调。覆盖全部 caller（backend watch/etcd 层/brain/maintenance）。`TestGetCompactRevisionCachesAndUpdatesEagerly`（compact 后 10 次读 0 存储 Get、TTL 到期刷新 1 次）；部署后 smoke 的 compacted range/watch 仍正确拒绝（缓存即时反映压缩）。
 - [~] **#64** [low] Badger and memkv iterators ignore the snapshot timestamp parameter  
