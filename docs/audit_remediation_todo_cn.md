@@ -3,7 +3,7 @@
 > 来源：Fable 5 多智能体审核（73 条已确认问题）。本文件是**持久化进度清单**，做一个勾一个（`[x]`），抗会话压缩遗忘。
 > 编号 `#N` = 审核确认清单索引；`file:line` 为大致位置。测试遵循 `docs/test_strategy_cn.md`：**真实消费端黑盒为主，内部单测只锁黑盒够不着的精确 bug**。
 
-进度：**已修 67 / 73** — Critical 3/3 ✓，High 29/32，Medium 16/17，Low 19/21。（+ #31 revision syncer 禁 https→http 降级 b25454d;#50 client-cert-auth 必须配 CA 6ca7712;#34 监控修复 c499c1a;#49 PDB 分隔;P7 引擎一致性 #25/#44/#45/#46 c12d982;#43 read-index 双缓冲 fetch 013fd93;#42 follower 拒绝畸形/零 revision d697c62;#41/#47 etcdproxy updateClient 序列化 aab4b1a;#40 resourceLock 字段竞争=随 #60/#68 解决;#37 event 过期改走 lease in-band DELETE=随 #16 解决;#56/#57 follower lease 读不返陈旧态 + 降级 StopLeases d924106；#36 lease expiry 先删键后删 record 防孤儿 b616a9f；#17 lease per-key attachment 去 O(N²) key-list 重写 503c397；#16 event TTL 去硬编码启发式=删子串 GC 依赖 lease 9c60cf3；#71 compaction 错误可见性；#48 compact TTL 缓存；P7 #65/#66/#67）（+ #5/#27/#29 A-index e885b8d；#6/#38 etcdmeta 纳入 compaction；#15 两半完成：\x00kubebrain/ 命名空间整体纳入 compaction；#30 watch history 去点读+限流；#69 前缀路由；kv.Lease 读回填=Get/Range/watch 回填附着 lease + 无锁快路径 86e692d）
+进度：**已修 68 / 73** — Critical 3/3 ✓，High 30/32，Medium 16/17，Low 19/21。（+ #23 proxy client-cancel 不拆共享 client b855f79;#31 revision syncer 禁 https→http 降级 b25454d;#50 client-cert-auth 必须配 CA 6ca7712;#34 监控修复 c499c1a;#49 PDB 分隔;P7 引擎一致性 #25/#44/#45/#46 c12d982;#43 read-index 双缓冲 fetch 013fd93;#42 follower 拒绝畸形/零 revision d697c62;#41/#47 etcdproxy updateClient 序列化 aab4b1a;#40 resourceLock 字段竞争=随 #60/#68 解决;#37 event 过期改走 lease in-band DELETE=随 #16 解决;#56/#57 follower lease 读不返陈旧态 + 降级 StopLeases d924106；#36 lease expiry 先删键后删 record 防孤儿 b616a9f；#17 lease per-key attachment 去 O(N²) key-list 重写 503c397；#16 event TTL 去硬编码启发式=删子串 GC 依赖 lease 9c60cf3；#71 compaction 错误可见性；#48 compact TTL 缓存；P7 #65/#66/#67）（+ #5/#27/#29 A-index e885b8d；#6/#38 etcdmeta 纳入 compaction；#15 两半完成：\x00kubebrain/ 命名空间整体纳入 compaction；#30 watch history 去点读+限流；#69 前缀路由；kv.Lease 读回填=Get/Range/watch 回填附着 lease + 无锁快路径 86e692d）
 > 附带修复（不在 73 条内）：events-TTL 过期回收在多 border（etcdmeta / 多 SkippedPrefixes）下失效——`getTimeoutRevision` 会 drain 共享 compact-history 队列，原先每 border 各调一次，首个 border 耗尽旧记录后其余 border 拿到 timeoutRevision=0，静默关闭 `/events/` 过期。已改为每次 compaction 周期只计算一次并应用到所有 border（`scanner.Compact` 现接收全部 borders）。`TestCompactExpiredEvents` 覆盖。
 
 ## 已完成（PR #1: fivetime/kubebrain#1 + 81d36be）
@@ -144,8 +144,8 @@
 
 ### P6 — Proxy / Leader / Revision 健壮性
 
-- [ ] **#23** [high] Client-caused context cancellation tears down the shared proxy client for the whole follower  
-  `pkg/server/service/etcdproxy/etcd_proxy.go:249`
+- [x] **#23** [high] Client-caused context cancellation tears down the shared proxy client for the whole follower  
+  `pkg/server/service/etcdproxy/etcd_proxy.go:249` — b855f79。`isForwardConnectionError` 把 `context.Canceled/DeadlineExceeded`(及 gRPC 同类)当连接错误 → 任何调用方取消/超时自己的请求都会让 `markForwardError` 重置**共享**转发 client、拖垮该 follower 上所有在途转发。修法:把调用方 ctx 传给 `markForwardError`,`ctx.Err()!=nil`(调用方走了、非 leader 问题)时跳过重置;真正死掉的 leader 仍以 live-ctx 的 Unavailable 触发重置,且周期性 checkLeaderLoop 也会兜底。单测 `TestForwardErrorClientCancelDoesNotResetSharedClient`(client-cancel/gRPC-canceled + dead ctx 不重置;live ctx 的 Unavailable 重置);etcdproxy 套件 -race 绿。
 - [x] **#41** [medium] updateClient is not serialized: concurrent callers leak clientv3 clients and stampede the new leader  
   `pkg/server/service/etcdproxy/etcd_proxy.go:144` — aab4b1a(与 #47 同一处)。`updateClient` 被 1s `checkLeaderLoop` 与每个 RPC goroutine(经 `waitReady`)并发调用,且在慢的 `clientv3.New`+`checkClientConn` 期间释放字段锁。加 `updateMu` 整函数持有 → 同一时刻只有一个 goroutine 建/换转发 client;胜者建好后排队者走 `hasClient()+checkConn()` 快路径直接返回不再重拨,消除对新 leader 的 stampede。锁序恒为 `updateMu→lock`(仅 updateClient 取 updateMu 且在 lock 前)无死锁。
 - [x] **#47** [medium] Concurrent etcdProxy.updateClient calls overwrite e.client without closing it, leaking etcd client connections  
