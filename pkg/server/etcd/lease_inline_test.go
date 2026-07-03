@@ -17,6 +17,7 @@ package etcd
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/require"
@@ -74,6 +75,9 @@ func TestLeaseInlinedPerVersion(t *testing.T) {
 	require.NoError(t, err)
 	revB := putB.Header.Revision
 	require.Greater(t, revB, revA)
+	// Wait for the committed revision to catch up so a latest read observes v2
+	// (the event collector publishes revisions asynchronously).
+	require.Eventually(t, func() bool { return server.backend.GetCurrentRevision() >= uint64(revB) }, 5*time.Second, 2*time.Millisecond)
 
 	// Latest read reports the current lease (leaseB).
 	latest, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: key})
@@ -118,8 +122,9 @@ func TestLeasedPutWritesAttachmentAtomically(t *testing.T) {
 	key := []byte("/registry/masterleases/1.2.3.4")
 
 	// Leased Put: both the value and the attachment record must exist.
-	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("v"), Lease: leaseID})
+	putLeased, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("v"), Lease: leaseID})
 	require.NoError(t, err)
+	require.Eventually(t, func() bool { return server.backend.GetCurrentRevision() >= uint64(putLeased.Header.Revision) }, 5*time.Second, 2*time.Millisecond)
 
 	valResp, err := server.backend.Get(ctx, &etcdserverpb.RangeRequest{Key: key})
 	require.NoError(t, err)
@@ -136,8 +141,9 @@ func TestLeasedPutWritesAttachmentAtomically(t *testing.T) {
 	require.Equal(t, leaseID, reloaded.leaseIDForKey(string(key)))
 
 	// Clearing the lease removes the attachment record in the same atomic batch.
-	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("v2")})
+	putClear, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("v2")})
 	require.NoError(t, err)
+	require.Eventually(t, func() bool { return server.backend.GetCurrentRevision() >= uint64(putClear.Header.Revision) }, 5*time.Second, 2*time.Millisecond)
 	attachResp2, err := server.backend.Get(ctx, &etcdserverpb.RangeRequest{Key: leaseAttachKey(string(key))})
 	require.NoError(t, err)
 	require.Len(t, attachResp2.Kvs, 0, "clearing the lease must remove the attachment record")
