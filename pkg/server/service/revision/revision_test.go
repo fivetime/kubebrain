@@ -160,8 +160,11 @@ func TestHttpRevisionSyncer(t *testing.T) {
 			serverTlsConfig: serverTlsConfig,
 		},
 		{
-			name:            "https->std http(expect success through retrying)",
+			// #31: a TLS-configured follower must NOT downgrade to plain http; it
+			// fails rather than syncing the leader revision over cleartext.
+			name:            "https->std http(no downgrade: expect failure)",
 			retryTimes:      10,
+			expectError:     errors.New("no suitable schema to leader"),
 			clientTlsConfig: clientTlsConfig,
 			serverTlsConfig: nil,
 		},
@@ -180,8 +183,10 @@ func TestHttpRevisionSyncer(t *testing.T) {
 			enableCmux:      true,
 		},
 		{
-			name:            "https->cmux http(expect success through retrying)",
+			// #31: no downgrade to plain http even against a cmux listener.
+			name:            "https->cmux http(no downgrade: expect failure)",
 			retryTimes:      10,
+			expectError:     errors.New("no suitable schema to leader"),
 			clientTlsConfig: clientTlsConfig,
 			serverTlsConfig: nil,
 			enableCmux:      true,

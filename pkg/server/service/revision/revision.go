@@ -407,17 +407,17 @@ func (r *revisionSyncer) getRevisionFromLeader(ctx context.Context) (uint64, err
 
 var (
 	schemasHttpOnly  = []string{"http"}
-	schemasHttpHttps = []string{"http", "https"}
-	schemasHttpsHttp = []string{"https", "http"}
+	schemasHttpsOnly = []string{"https"}
 )
 
 func (r *revisionSyncer) getRetrySchemas() []string {
 	if !r.enableTLS {
 		return schemasHttpOnly
 	}
-	// prefer prev connectable schema
-	if r.schema == "http" {
-		return schemasHttpHttps
-	}
-	return schemasHttpsHttp
+	// TLS is enabled: only ever use https. Falling back to plain http would let a
+	// network attacker downgrade the leader /status sync and feed this follower a
+	// forged read revision, which drives what it serves reads at (#31). A leader
+	// still on http during a rollout must be reached over https once upgraded,
+	// not silently over cleartext.
+	return schemasHttpsOnly
 }
