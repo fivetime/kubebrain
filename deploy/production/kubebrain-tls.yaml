@@ -27,6 +27,7 @@ spec:
   selector:
     matchLabels:
       app.kubernetes.io/name: kubebrain
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
