@@ -2,10 +2,11 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
+CLUSTER_NAME="${CLUSTER_NAME:-kubebrain-dev}"
 NAMESPACE="${NAMESPACE:-kubebrain-dev}"
 DEPLOYMENT="${DEPLOYMENT:-kubebrain}"
 VERIFY_NAMESPACE="${VERIFY_NAMESPACE:-tidb-cluster}"
-IMAGE_NAME="${IMAGE_NAME:-kubebrain-tikv-persistence-smoke:dev}"
+VERIFY_IMAGE_NAME="${VERIFY_IMAGE_NAME:-kubebrain-tikv-persistence-smoke:dev}"
 ENDPOINT="${ENDPOINT:-kubebrain.kubebrain-dev.svc:3379}"
 PD_ADDRS="${PD_ADDRS:-kb-pd.tidb-cluster.svc:2379}"
 KEY="${KEY:-/registry/tikv-persistence-smoke/$(date +%s%N)}"
@@ -23,15 +24,15 @@ COPY tikv-persistence-smoke /usr/local/bin/tikv-persistence-smoke
 ENTRYPOINT ["/usr/local/bin/tikv-persistence-smoke"]
 EOF
 
-docker build -t "$IMAGE_NAME" "$WORK_DIR" >/dev/null
-kind load docker-image "$IMAGE_NAME" --name kubebrain-dev >/dev/null
+docker build -t "$VERIFY_IMAGE_NAME" "$WORK_DIR" >/dev/null
+kind load docker-image "$VERIFY_IMAGE_NAME" --name "$CLUSTER_NAME" >/dev/null
 
 run_verify() {
   local mode="$1"
   local name="tikv-persistence-${mode}-$(date +%s%N)"
   local phase
   kubectl -n "$VERIFY_NAMESPACE" run "$name" \
-    --image="$IMAGE_NAME" \
+    --image="$VERIFY_IMAGE_NAME" \
     --restart=Never \
     --image-pull-policy=IfNotPresent \
     --quiet \

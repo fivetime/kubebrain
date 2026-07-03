@@ -22,7 +22,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  GO_VERSION: "1.22.x"
+  GO_VERSION: "1.26.x"
   CLUSTER_NAME: kubebrain-ci
   IMAGE_NAME: kubebrain:ci
   KIND_NODE_IMAGE: ${{ github.event.inputs.k8s_node_image || 'kindest/node:v1.36.1' }}
@@ -48,14 +48,14 @@ jobs:
 
       - name: Install kind
         run: |
-          curl -fsSL -o /usr/local/bin/kind https://kind.sigs.k8s.io/dl/v0.32.0/kind-linux-amd64
-          chmod +x /usr/local/bin/kind
+          curl -fsSL -o "$RUNNER_TEMP/kind" https://kind.sigs.k8s.io/dl/v0.32.0/kind-linux-amd64
+          sudo install -m 0755 "$RUNNER_TEMP/kind" /usr/local/bin/kind
           kind version
 
       - name: Install kubectl
         run: |
-          curl -fsSL -o /usr/local/bin/kubectl "https://dl.k8s.io/release/v1.36.1/bin/linux/amd64/kubectl"
-          chmod +x /usr/local/bin/kubectl
+          curl -fsSL -o "$RUNNER_TEMP/kubectl" "https://dl.k8s.io/release/v1.36.1/bin/linux/amd64/kubectl"
+          sudo install -m 0755 "$RUNNER_TEMP/kubectl" /usr/local/bin/kubectl
           kubectl version --client=true
 
       - name: Install helm
@@ -71,6 +71,8 @@ jobs:
 
       - name: Real consumer verification
         run: |
+          sed -i '/^replace (/,$d' hack/etcd-client-compat/go.mod
+          (cd hack/etcd-client-compat && go mod tidy)
           RUN_GO_TEST=false \
           RUN_BASIC_SMOKE=true \
           RUN_ETCD_CLIENT_COMPAT=true \
