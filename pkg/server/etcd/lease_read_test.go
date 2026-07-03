@@ -18,6 +18,7 @@ import (
 	"context"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
@@ -37,10 +38,22 @@ func TestReadPopulatesAttachedLease(t *testing.T) {
 
 	leased := []byte("/registry/pods/leased")
 	plain := []byte("/registry/pods/plain")
-	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: leased, Value: []byte("v"), Lease: leaseID})
+	putLeased, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: leased, Value: []byte("v"), Lease: leaseID})
 	require.NoError(t, err)
-	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: plain, Value: []byte("v")})
+	putPlain, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: plain, Value: []byte("v")})
 	require.NoError(t, err)
+
+	// The memKv backend advances the readable revision asynchronously after a Put;
+	// wait for it to catch up so the range read below cannot observe a revision
+	// before the writes (otherwise it flakily misses the just-written key). This
+	// mirrors the wait other tests use (e.g. watch_test.go).
+	wantRev := putPlain.Header.Revision
+	if putLeased.Header.Revision > wantRev {
+		wantRev = putLeased.Header.Revision
+	}
+	require.Eventually(t, func() bool {
+		return server.backend.GetCurrentRevision() >= uint64(wantRev)
+	}, 5*time.Second, 2*time.Millisecond)
 
 	// Get on the leased key carries the lease; the plain key carries 0.
 	getLeased, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: leased})
@@ -68,8 +81,11 @@ func TestReadPopulatesAttachedLease(t *testing.T) {
 
 	// After the lease is revoked the (now-deleted) key is gone; recreate the key
 	// without a lease and confirm the read reports 0 (binding cleared).
-	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: leased, Value: []byte("v2")})
+	putUnbind, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: leased, Value: []byte("v2")})
 	require.NoError(t, err) // Put without lease unbinds
+	require.Eventually(t, func() bool {
+		return server.backend.GetCurrentRevision() >= uint64(putUnbind.Header.Revision)
+	}, 5*time.Second, 2*time.Millisecond)
 	after, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: leased})
 	require.NoError(t, err)
 	require.Len(t, after.Kvs, 1)
