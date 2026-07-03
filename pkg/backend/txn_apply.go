@@ -194,6 +194,14 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 		return nil, newRevision, false, e
 	}
 
+	// Fence just before opening the batch: reject if leadership changed since the
+	// txn was admitted, filling an invalid ring slot for every dealt revision so
+	// the collector never stalls (FINDING #39).
+	if cerr := b.fenceAdmit(ctx); cerr != nil {
+		b.notifyInvalidTxn(preps, newRevision, cerr)
+		return nil, newRevision, false, cerr
+	}
+
 	// Phase 3: build one batch. Compare guards go first (lowest batch index) so a
 	// guard conflict is reported ahead of any write conflict — a changed compared
 	// key means the txn's branch may have flipped and must be re-evaluated, which

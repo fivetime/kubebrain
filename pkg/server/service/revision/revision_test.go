@@ -310,6 +310,10 @@ func (m *mutableLeaderElection) IsLeader() bool {
 	return false
 }
 
+func (m *mutableLeaderElection) EpochAndLeadingFresh() (uint64, bool) {
+	return 0, false
+}
+
 func (m *mutableLeaderElection) GetElectionInfo() (leader.ElectionInfo, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

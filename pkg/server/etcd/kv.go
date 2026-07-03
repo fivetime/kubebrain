@@ -132,13 +132,18 @@ func (s *RPCServer) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etc
 
 	// only leader can accept and handle write request
 	// return error includes current leader, help etcd client send request to right instance
-	if !s.peers.IsLeader() {
+	// Capture the leadership epoch at admission and thread it through the context;
+	// the backend re-checks it just before commit so a leadership change mid-write
+	// fences the commit instead of losing it silently (FINDING #39).
+	epoch, leadingFresh := s.peers.EpochAndLeadingFresh()
+	if !leadingFresh {
 		s.metricCli.EmitCounter("write.follower", 1)
 		if s.peers.EtcdProxyEnabled() {
 			return s.peers.Txn(ctx, txn)
 		}
 		return nil, status.Errorf(codes.Unavailable, "txn error addr is %s leader %s", s.backend.GetResourceLock().Identity(), s.backend.GetResourceLock().Describe())
 	}
+	ctx = backend.WithLeadershipEpoch(ctx, epoch)
 	var (
 		err                   error
 		response              *etcdserverpb.TxnResponse
@@ -221,7 +226,7 @@ func (s *RPCServer) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etc
 			klog.V(4).InfoS("txn compare failed", "op", methodTag.Value, "key", failedKey)
 		}
 	}
-	return response, err
+	return response, mapFenceErr(err)
 }
 
 func validateTxnRequest(txn *etcdserverpb.TxnRequest) error {
@@ -522,13 +527,15 @@ func (s *RPCServer) Put(ctx context.Context, r *etcdserverpb.PutRequest) (*etcds
 	if err := validatePutRequest(r); err != nil {
 		return nil, err
 	}
-	if !s.peers.IsLeader() {
+	epoch, leadingFresh := s.peers.EpochAndLeadingFresh()
+	if !leadingFresh {
 		s.metricCli.EmitCounter("write.follower", 1)
 		if s.peers.EtcdProxyEnabled() {
 			return s.peers.Put(ctx, r)
 		}
 		return nil, status.Errorf(codes.Unavailable, "put error addr is %s leader %s", s.backend.GetResourceLock().Identity(), s.backend.GetResourceLock().Describe())
 	}
+	ctx = backend.WithLeadershipEpoch(ctx, epoch)
 	put, err := s.putWithEffectiveOptions(ctx, r)
 	if err != nil {
 		return nil, err
@@ -546,7 +553,7 @@ func (s *RPCServer) Put(ctx context.Context, r *etcdserverpb.PutRequest) (*etcds
 	if response != nil {
 		s.metricCli.EmitHistogram("write.responsesize", response.Size(), metrics.Tag("method", "put"), successTag)
 	}
-	return response, err
+	return response, mapFenceErr(err)
 }
 
 func (s *RPCServer) DeleteRange(ctx context.Context, r *etcdserverpb.DeleteRangeRequest) (*etcdserverpb.DeleteRangeResponse, error) {
@@ -554,13 +561,15 @@ func (s *RPCServer) DeleteRange(ctx context.Context, r *etcdserverpb.DeleteRange
 	if err := validateDeleteRangeRequest(r); err != nil {
 		return nil, err
 	}
-	if !s.peers.IsLeader() {
+	epoch, leadingFresh := s.peers.EpochAndLeadingFresh()
+	if !leadingFresh {
 		s.metricCli.EmitCounter("write.follower", 1)
 		if s.peers.EtcdProxyEnabled() {
 			return s.peers.DeleteRange(ctx, r)
 		}
 		return nil, status.Errorf(codes.Unavailable, "delete range error addr is %s leader %s", s.backend.GetResourceLock().Identity(), s.backend.GetResourceLock().Describe())
 	}
+	ctx = backend.WithLeadershipEpoch(ctx, epoch)
 	if len(r.RangeEnd) != 0 {
 		if err := s.peers.SyncReadRevision(ctx); err != nil {
 			return nil, err
@@ -585,7 +594,7 @@ func (s *RPCServer) DeleteRange(ctx context.Context, r *etcdserverpb.DeleteRange
 	if response != nil {
 		s.metricCli.EmitHistogram("write.responsesize", response.Size(), metrics.Tag("method", "delete-range"), successTag)
 	}
-	return response, err
+	return response, mapFenceErr(err)
 }
 
 func (s *RPCServer) putWithEffectiveOptions(ctx context.Context, r *etcdserverpb.PutRequest) (*etcdserverpb.PutRequest, error) {
@@ -1229,6 +1238,17 @@ func (s *RPCServer) compact(ctx context.Context, txn *etcdserverpb.TxnRequest) (
 		return s.backend.Create(ctx, putReq, true)
 	}
 	return s.backend.Update(ctx, curKv.ModRevision, putReq, true)
+}
+
+// mapFenceErr converts a write-fence abort (backend.ErrLeadershipFenced) into a
+// codes.Unavailable status so the etcd client retries the write against the
+// current leader, exactly like the not-leader gate above (FINDING #39). Other
+// errors pass through unchanged.
+func mapFenceErr(err error) error {
+	if errors.Is(err, backend.ErrLeadershipFenced) {
+		return status.Errorf(codes.Unavailable, "write rejected: leadership changed during commit, retry on current leader")
+	}
+	return err
 }
 
 func getSuccessMetricTagByErr(err error) metrics.T {

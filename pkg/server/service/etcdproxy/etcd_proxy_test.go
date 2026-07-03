@@ -81,6 +81,10 @@ func (t *testLeaderElection) IsLeader() bool {
 	return t.isLeader
 }
 
+func (t *testLeaderElection) EpochAndLeadingFresh() (uint64, bool) {
+	return 0, t.isLeader
+}
+
 func (t *testLeaderElection) GetElectionInfo() (leader.ElectionInfo, error) {
 	return leader.ElectionInfo{LeaderAddress: t.leaderAddress, IsLeader: t.isLeader}, nil
 }

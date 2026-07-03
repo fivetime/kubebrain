@@ -116,6 +116,12 @@ type Backend interface {
 
 	// SetCurrentRevision is used for init tso for leader
 	SetCurrentRevision(uint64)
+
+	// SetLeadershipFence registers the leadership-epoch source that the write
+	// fence re-checks immediately before every data-batch commit, so a deposed
+	// leader's in-flight write cannot be committed-yet-unwatched (FINDING #39).
+	// fn returns (current epoch, still-safely-leading). Unset = fence disabled.
+	SetLeadershipFence(fn func() (uint64, bool))
 }
 
 var _ Backend = (*backend)(nil)
@@ -195,6 +201,12 @@ type backend struct {
 	// value that only advances ~once per compaction cycle (#48). Monotonic, so a
 	// short TTL is safe; setCompactRecord refreshes it eagerly when it advances.
 	compactRevCache compactRevCache
+
+	// fenceFn, when set, returns this node's current leadership epoch and whether
+	// it is still safely leading. fenceAdmit consults it just before every data
+	// commit to fence a deposed leader's in-flight writes (FINDING #39). nil on
+	// single-node / direct-constructed test backends (fence disabled, fail-open).
+	fenceFn func() (uint64, bool)
 
 	metricCli metrics.Metrics
 }

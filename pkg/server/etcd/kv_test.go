@@ -66,6 +66,10 @@ func (s testPeerService) IsLeader() bool {
 	return s.isLeader
 }
 
+func (s testPeerService) EpochAndLeadingFresh() (uint64, bool) {
+	return 0, s.isLeader
+}
+
 func (s testPeerService) GetElectionInfo() (leader.ElectionInfo, error) {
 	return leader.ElectionInfo{LeaderAddress: "test-peer", IsLeader: s.isLeader}, nil
 }

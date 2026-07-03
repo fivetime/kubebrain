@@ -119,6 +119,12 @@ func (b *backend) createWithMetadata(ctx context.Context, key []byte, value []by
 // storage-level TTL (ttl=0): key expiry is the lease manager's responsibility,
 // not the backend's — see create.
 func (b *backend) createBatchWithMetadata(ctx context.Context, revisionKey, objectKey, key, value, newRevisionBytes, oldRevisionBytes []byte, revision uint64, requireNotExist bool) error {
+	// Fence the write just before opening the batch: reject if leadership changed
+	// since admission so a deposed leader cannot commit at a revision the new
+	// leader's collector has already advanced past (FINDING #39).
+	if err := b.fenceAdmit(ctx); err != nil {
+		return err
+	}
 	batch := b.kv.BeginBatchWrite()
 	if requireNotExist {
 		batch.PutIfNotExist(revisionKey, newRevisionBytes, 0)
@@ -245,6 +251,11 @@ func (b *backend) delete(ctx context.Context, oldRevision uint64, key []byte) (n
 	newRevisionBytes := append(uint64ToBytes(newRevision), 0) // delete revision
 	// delete revision, key is {raw_key}:{0}, value is {revision}{deletion_flag}
 
+	// Fence just before the batch: the caller's notify publishes an invalid event
+	// for newRevision so the collector advances past the consumed revision.
+	if err = b.fenceAdmit(ctx); err != nil {
+		return newRevision, old, err
+	}
 	batch := b.kv.BeginBatchWrite()
 	batch.CAS(revisionKey, newRevisionBytes, expectedRevisionBytes, 0)
 	batch.Put(objectKey, tombStoneBytes, 0)
@@ -322,15 +333,22 @@ func (b *backend) DeleteRange(ctx context.Context, kvs []*proto.KeyValue) (resp 
 		b.notify(ctx, pending[0].key, nil, newRevision, 0, false, proto.Event_DELETE, err)
 		return nil, err
 	}
-	batch := b.kv.BeginBatchWrite()
 	newRevisionBytes := append(uint64ToBytes(newRevision), 0)
-	for _, item := range pending {
-		revisionKey := b.coder.EncodeRevisionKey(item.key)
-		objectKey := b.coder.EncodeObjectKey(item.key, newRevision)
-		batch.CAS(revisionKey, newRevisionBytes, uint64ToBytes(item.oldRevision), 0)
-		batch.Put(objectKey, tombStoneBytes, 0)
+	// Fence just before opening the batch (FINDING #39). A rejection is handled by
+	// the same invalid-event path as a commit failure below, so the collector
+	// advances past newRevision instead of stalling.
+	err = b.fenceAdmit(ctx)
+	if err == nil {
+		batch := b.kv.BeginBatchWrite()
+		for _, item := range pending {
+			revisionKey := b.coder.EncodeRevisionKey(item.key)
+			objectKey := b.coder.EncodeObjectKey(item.key, newRevision)
+			batch.CAS(revisionKey, newRevisionBytes, uint64ToBytes(item.oldRevision), 0)
+			batch.Put(objectKey, tombStoneBytes, 0)
+		}
+		err = batch.Commit(ctx)
 	}
-	if err := batch.Commit(ctx); err != nil {
+	if err != nil {
 		resp.Succeeded = false
 		// Fill the dealt revision's ring slot with invalid per-key events so
 		// (a) the collector advances past it and (b) an uncertain commit is
@@ -461,6 +479,11 @@ func (b *backend) update(ctx context.Context, oldRevision uint64, key []byte, va
 	oldRevisionBytes := uint64ToBytes(oldRevision)
 	newRevisionBytes := uint64ToBytes(newRevision)
 
+	// Fence just before the batch (FINDING #39); the caller's notify publishes an
+	// invalid event for newRevision so the collector advances past it.
+	if err = b.fenceAdmit(ctx); err != nil {
+		return newRevision, meta, err
+	}
 	batch := b.kv.BeginBatchWrite()
 	batch.CAS(revisionKey, newRevisionBytes, oldRevisionBytes, 0)
 	if b.config.EnableEtcdCompatibility {
