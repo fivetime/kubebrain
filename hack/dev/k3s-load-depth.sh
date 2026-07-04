@@ -29,6 +29,12 @@
 # the cluster recovers fully from KubeBrain's persisted data. Set FAILOVER_AT=0 to
 # soak without tripping it, or keep it to characterize the ceiling.
 #
+# To RAISE the ceiling, see docs/failover_tuning_cn.md: (lever 1) KubeBrain's
+# --leader-lease-duration shortens the leaderless window; (lever 2, zero-risk)
+# raise the k8s controller-manager/scheduler --leader-elect-lease-duration so
+# consumers tolerate the gap (k3s-load-smoke.sh does this via
+# CONSUMER_LEASE_TOLERANCE).
+#
 # Env:
 #   K3S_KUBECONFIG   kubeconfig for the cluster UNDER LOAD   (default /root/mk.yaml)
 #   KBNS             namespace KubeBrain runs in             (default kubebrain-dev)
