@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"math/rand"
 	"sort"
 	"strings"
 	"sync"
@@ -234,6 +235,77 @@ func (b *backend) runCompactor() {
 			atomic.StoreUint64(&b.compactDoneRev, target)
 		}
 	}
+}
+
+const (
+	// autoCompactBaseInterval is how often the safety-net auto-compactor evaluates
+	// whether history has grown past the configured retention; autoCompactJitter is
+	// added randomly so multiple nodes / a fleet don't all compact in lock-step.
+	autoCompactBaseInterval = 5 * time.Minute
+	autoCompactJitter       = 1 * time.Minute
+)
+
+// runAutoCompactor is an OPT-IN (config.AutoCompactionRetention > 0) safety net:
+// KubeBrain never compacts on its own — the apiserver drives compaction via the
+// compact_rev_key CAS. If that loop breaks/misconfigures, MVCC versions grow
+// unbounded (read amplification, ever-slower scans) — a scale killer. This
+// leader-only loop caps history depth to the last N revisions by driving the SAME
+// path the apiserver uses (CompactAsync), whose watermark is a monotonic CAS, so
+// it is idempotent and cannot fight a healthy apiserver: whichever target is
+// higher wins. With a generous retention it only ever bites when the primary
+// compactor has fallen far behind. Reuses the existing physical GC (no new scan).
+func (b *backend) runAutoCompactor() {
+	retention := b.config.AutoCompactionRetention
+	if retention == 0 {
+		return
+	}
+	ctx := context.Background()
+	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
+	for {
+		wait := autoCompactBaseInterval + time.Duration(rng.Int63n(int64(autoCompactJitter)+1))
+		timer := time.NewTimer(wait)
+		<-timer.C
+
+		// Only the leader drives compaction. leadingFresh is true on single-node /
+		// unfenced test backends, so those auto-compact too when enabled.
+		if !b.leadingFresh() {
+			continue
+		}
+		cur := b.tso.GetRevision()
+		compacted, cerr := b.GetCompactRevision(ctx)
+		if cerr != nil {
+			continue
+		}
+		target, act := autoCompactTarget(cur, retention, compacted, true /*already leadingFresh above*/)
+		if !act {
+			continue // not enough history yet, or the watermark already covers it
+		}
+		got, err := b.CompactAsync(ctx, target)
+		if err != nil {
+			b.metricCli.EmitCounter("backend.auto_compact.err", 1)
+			klog.ErrorS(err, "auto-compaction safety net failed", "target", target)
+			continue
+		}
+		b.metricCli.EmitCounter("backend.auto_compact", 1)
+		b.metricCli.EmitGauge("backend.auto_compact.revision", got)
+		klog.InfoS("auto-compaction safety net advanced the compact watermark",
+			"target", target, "compacted", got, "retention", retention, "current", cur)
+	}
+}
+
+// autoCompactTarget decides the safety-net compaction target: cap history to the
+// last `retention` revisions. It returns act=false when not leading, retention is
+// off, there is not yet more than `retention` revisions of history, or the
+// watermark already covers the target (the primary compactor is keeping up).
+func autoCompactTarget(currentRev, retention, compactRev uint64, leading bool) (target uint64, act bool) {
+	if !leading || retention == 0 || currentRev <= retention {
+		return 0, false
+	}
+	target = currentRev - retention
+	if target <= compactRev {
+		return 0, false
+	}
+	return target, true
 }
 
 // setCompactRecord raises the persisted compact revision to revision. It
