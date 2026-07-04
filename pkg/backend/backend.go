@@ -205,6 +205,13 @@ type backend struct {
 	// on. Buffered to historyScanConcurrency.
 	historyScanSem chan struct{}
 
+	// historyScanGroup collapses a reconnect herd's concurrent history scans of
+	// the SAME prefix into one shared scan (singleflight), so the herd's storage
+	// cost is O(1) per prefix rather than O(N) (#30). Complements historyScanSem:
+	// the semaphore bounds distinct concurrent scans, the group dedups identical
+	// ones.
+	historyScanGroup *scanGroup
+
 	// Background physical compaction. CompactAsync advances the logical compact
 	// watermark synchronously (so reads immediately see the compaction) and hands
 	// the slow physical version-GC scan to runCompactor, so the etcd Compact RPC
@@ -303,9 +310,10 @@ func NewBackend(kv storage.KvStorage, config Config, metricCli metrics.Metrics) 
 			metricCli:        metricCli,
 			progressInterval: config.WatchProgressNotifyInterval,
 		},
-		historyScanSem: make(chan struct{}, historyScanConcurrency),
-		compactSignal:  make(chan struct{}, 1),
-		metricCli:      metricCli,
+		historyScanSem:   make(chan struct{}, historyScanConcurrency),
+		historyScanGroup: newScanGroup(),
+		compactSignal:    make(chan struct{}, 1),
+		metricCli:        metricCli,
 	}
 
 	if config.EnableCountIndex && config.EnableEtcdCompatibility {

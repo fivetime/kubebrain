@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strconv"
 
 	"k8s.io/klog/v2"
 
@@ -163,15 +164,6 @@ func (b *backend) catchUpEvents(out chan<- []*proto.Event, events []*proto.Event
 }
 
 func (b *backend) historyWatchEvents(ctx context.Context, prefix string, fromRevision, currentRevision uint64) ([]*proto.Event, error) {
-	// Bound concurrent fallback scans so a reconnect storm doesn't stampede
-	// storage (#30). Block until a slot frees or the caller gives up.
-	select {
-	case b.historyScanSem <- struct{}{}:
-		defer func() { <-b.historyScanSem }()
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
-
 	compactRevision, err := b.GetCompactRevision(ctx)
 	if err != nil {
 		return nil, err
@@ -180,6 +172,44 @@ func (b *backend) historyWatchEvents(ctx context.Context, prefix string, fromRev
 		return nil, fmt.Errorf("cache event oldest revision is compacted at %d newer than requested revision %d", compactRevision, fromRevision)
 	}
 
+	// Collapse a reconnect herd into one shared storage scan (#30): watchers
+	// reconnecting at the SAME (prefix, fromRevision) — an apiserver restart
+	// re-establishing a resource's watch across replicas — share a single scan
+	// whose result each reuses read-only, instead of each issuing its own.
+	//
+	// The scan emits exactly the caller's window [fromRevision, currentRevision]
+	// — it is NOT widened down to the compact watermark. Widening would let more
+	// callers share, but without an active compactor the watermark is 0, so it
+	// would emit every version since revision 1 — an unbounded O(all-history)
+	// event list that never returns (and violates the massive-scale invariant).
+	// Keeping the window at fromRevision bounds emission to what the watcher
+	// actually asked for; the full-prefix read is identical either way.
+	key := prefix + "\x00" + strconv.FormatUint(fromRevision, 10)
+	events, scanErr, _ := b.historyScanGroup.Do(ctx, key, func(sctx context.Context) ([]*proto.Event, error) {
+		// Only the executor of the shared scan consumes a concurrency slot, so a
+		// herd on one (prefix,rev) costs a single slot, not one per watcher. Bound
+		// it so an unrelated multi-prefix storm still can't stampede storage.
+		select {
+		case b.historyScanSem <- struct{}{}:
+			defer func() { <-b.historyScanSem }()
+		case <-sctx.Done():
+			return nil, sctx.Err()
+		}
+		return b.scanHistoryEvents(sctx, prefix, fromRevision, currentRevision)
+	})
+	if scanErr != nil {
+		return nil, scanErr
+	}
+	// The shared result already covers exactly this caller's window (read-only;
+	// the shared slice must not be mutated).
+	return events, nil
+}
+
+// scanHistoryEvents does the actual full-prefix storage scan behind
+// historyWatchEvents, returning every event under prefix with revision in
+// [fromRevision, currentRevision]. It is invoked through historyScanGroup so a
+// reconnect herd shares one execution rather than each issuing its own scan.
+func (b *backend) scanHistoryEvents(ctx context.Context, prefix string, fromRevision, currentRevision uint64) ([]*proto.Event, error) {
 	start := b.coder.EncodeObjectKey([]byte(prefix), 0)
 	end := b.coder.EncodeObjectKey(PrefixEnd([]byte(prefix)), 0)
 	iter, err := b.kv.Iter(ctx, start, end, 0, 0)
