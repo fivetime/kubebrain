@@ -119,6 +119,70 @@ func TestHistoryScanHerdSharesOneScan(t *testing.T) {
 	}
 }
 
+// TestHistoryScanBucketSharesNearbyRevisions pins the revision bucketing (#30):
+// two watchers reconnecting to the same prefix at DIFFERENT revisions that fall
+// in the same HistoryScanRevBucket — HA-apiserver replicas relisting at slightly
+// different revisions — must still share ONE storage scan, and each must receive
+// only the events at or after its own revision.
+func TestHistoryScanBucketSharesNearbyRevisions(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	m := mock.NewMinimalMetrics(ctrl)
+	gkv := &gatedIterKV{KvStorage: imemkv.NewKvStorage(), release: make(chan struct{})}
+	b := NewBackend(gkv, Config{Prefix: prefix, Identity: getStorageIdentity()}, m).(*backend)
+	defer func() { require.NoError(t, gkv.Close()) }()
+
+	const bucket = 4096
+	b.config.HistoryScanRevBucket = bucket
+	// Anchor at a bucket-aligned base so the two writes land in one bucket.
+	base := uint64(bucket) * 1000000
+	b.SetCurrentRevision(base)
+	ctx := context.Background()
+
+	baseKey := prefix + "/bucket"
+	keyA := baseKey + "/a"
+	createA, err := b.Create(ctx, newCreateRequest(keyA, "a1"))
+	require.NoError(t, err)
+	updateA, err := b.Update(ctx, &proto.UpdateRequest{Kv: &proto.KeyValue{Key: []byte(keyA), Value: []byte("a2"), Revision: createA.Header.Revision}})
+	require.NoError(t, err)
+	require.True(t, updateA.Succeeded)
+	waitUntilRevisionEqualOrTimeout(b, updateA.Header.Revision)
+	cur := b.GetCurrentRevision()
+	r1, r2 := createA.Header.Revision, updateA.Header.Revision
+	require.NotEqual(t, r1, r2)
+	require.Equal(t, r1/bucket, r2/bucket, "test setup: both revisions must share a bucket")
+
+	gkv.gateSubstr = b.coder.EncodeObjectKey([]byte(baseKey), 0)
+
+	// Two callers at DIFFERENT revisions (r1, r2) within the same bucket.
+	type res struct {
+		evs []*proto.Event
+		err error
+	}
+	out := make([]res, 2)
+	froms := []uint64{r1, r2}
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			e, err := b.historyWatchEvents(ctx, baseKey, froms[idx], cur)
+			out[idx] = res{e, err}
+		}(i)
+	}
+	time.Sleep(200 * time.Millisecond)
+	close(gkv.release)
+	wg.Wait()
+
+	require.EqualValues(t, 1, atomic.LoadInt32(&gkv.iterCount),
+		"nearby-revision reconnects in one bucket must share ONE storage scan")
+	require.NoError(t, out[0].err)
+	require.NoError(t, out[1].err)
+	require.Len(t, out[0].evs, 2, "caller@r1 recovers createA + updateA")
+	require.Len(t, out[1].evs, 1, "caller@r2 recovers only updateA (its own revision filters out createA)")
+	require.EqualValues(t, r2, out[1].evs[0].Revision)
+}
+
 // TestHistoryScanWaiterHonorsOwnCtx pins that a waiter blocked on someone else's
 // in-flight scan returns promptly when ITS OWN ctx is cancelled, rather than
 // hanging until the shared scan finishes.

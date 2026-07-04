@@ -56,6 +56,7 @@ type KubeBrainOption struct {
 	enableCountIndex        bool
 	countIndexMaxKeys       int
 	autoCompactionRetention uint64
+	historyScanRevBucket    uint64
 
 	watchProgressNotifyInterval time.Duration
 }
@@ -74,11 +75,12 @@ func NewOptions() *KubeBrainOption {
 			RenewDeadline: 5 * time.Second,
 			RetryPeriod:   1 * time.Second,
 		},
-		Prefix:            "",
-		ClusterName:       "default",
-		storageConfig:     newStorageConfig(),
-		watchCacheSize:    200 * 1000,
-		countIndexMaxKeys: 5 * 1000 * 1000,
+		Prefix:               "",
+		ClusterName:          "default",
+		storageConfig:        newStorageConfig(),
+		watchCacheSize:       200 * 1000,
+		countIndexMaxKeys:    5 * 1000 * 1000,
+		historyScanRevBucket: 4096,
 
 		watchProgressNotifyInterval: time.Second,
 	}
@@ -141,6 +143,7 @@ func (o *KubeBrainOption) AddFlags(fs *pflag.FlagSet) {
 	fs.BoolVar(&o.enableCountIndex, "enable-count-index", o.enableCountIndex, "maintain an in-memory versioned key index on the leader for exact O(range) counts (approach A-index; requires --compatible-with-etcd)")
 	fs.IntVar(&o.countIndexMaxKeys, "count-index-max-keys", o.countIndexMaxKeys, "cap on keys tracked by the count index; above it the index disables and counts fall back to a scan (0 = unlimited)")
 	fs.Uint64Var(&o.autoCompactionRetention, "auto-compaction-retention-revisions", o.autoCompactionRetention, "SAFETY NET: if >0, the leader caps MVCC history to the last N revisions should the apiserver's own compaction stop (KubeBrain never auto-compacts otherwise). 0 = off. Set generously large so it only bites when the primary compactor is far behind.")
+	fs.Uint64Var(&o.historyScanRevBucket, "watch-history-scan-rev-bucket", o.historyScanRevBucket, "reconnect herd (#30): watchers reconnecting to the same prefix within this many revisions share one watch-history storage scan (singleflight). Larger = more sharing across HA-apiserver replicas whose reconnect revisions are spread apart, at the cost of a shared scan window up to one bucket wider than requested. 1 = share only exact-revision reconnects. 0 = default.")
 	fs.DurationVar(&o.watchProgressNotifyInterval, "watch-progress-notify-interval", o.watchProgressNotifyInterval, "how often watch progress notifications advance/emit (drives kube-apiserver ConsistentListFromCache convergence; smaller = fresher at more marker traffic)")
 	fs.DurationVar(&o.epsConf.LeaseDuration, "leader-lease-duration", o.epsConf.LeaseDuration, "leader-election lease duration: how long a dead leader's lease is held before a successor can acquire it (dominates the failover leaderless window). Smaller = faster failover but more spurious failovers under load. Must satisfy retry < renew < lease.")
 	fs.DurationVar(&o.epsConf.RenewDeadline, "leader-renew-deadline", o.epsConf.RenewDeadline, "leader-election renew deadline; also the write-fence self-fencing bound (#39). Must be < leader-lease-duration.")
@@ -204,6 +207,7 @@ func (o *KubeBrainOption) Run(ctx context.Context) error {
 		EnableCountIndex:            o.enableCountIndex,
 		CountIndexMaxKeys:           o.countIndexMaxKeys,
 		AutoCompactionRetention:     o.autoCompactionRetention,
+		HistoryScanRevBucket:        o.historyScanRevBucket,
 		WatchProgressNotifyInterval: o.watchProgressNotifyInterval,
 	}
 

@@ -20,10 +20,11 @@
 
 ## 采用的修复:B —— 共享扫描 singleflight
 
-`pkg/backend/history_scan.go` 的 `scanGroup`(手写 singleflight,`x/sync/singleflight` 未 vendor)把**同一 `(prefix, fromRevision)`** 的并发历史扫描折叠成**一次**共享扫描,结果只读复用。要点:
+`pkg/backend/history_scan.go` 的 `scanGroup`(手写 singleflight,`x/sync/singleflight` 未 vendor)把**同一前缀、临近 revision** 的并发历史扫描折叠成**一次**共享扫描,结果只读复用。要点:
 
-- singleflight 的 key 是 `prefix + "\x00" + fromRevision`。共享扫描发的正是调用者要的窗口 `[fromRevision, currentRevision]` —— **不**放宽到压缩水位。放宽本可让更多调用者共享,但没有活跃 compactor 时水位是 0,会退化成"从 revision 1 发所有版本"的**无界** O(全历史)事件列表(既永不返回、又违反超大规模不变量)。保持窗口在 fromRevision 把发送量限定在调用者真正要的范围;全前缀 `Iter` 的读取量两种写法一样。
-- 只有 singleflight 的**执行者**占用一个 `historyScanSem` 槽 —— 一个 `(prefix,rev)` 上的惊群只花 1 个槽,不是 N 个。
+- **revision 分桶的 key**:`prefix + "\x00" + scanFrom`,其中 `scanFrom = fromRevision - fromRevision % bucket`(桶底)。真实 HA-apiserver 多副本 relist 的 revision **是分散的**(不会正好相等),所以按精确 revision 做 key 几乎命不中;分桶让"落在同一 `bucket` 宽窗口"的重连共享一次扫描。桶宽由 `--watch-history-scan-rev-bucket`(默认 4096,`Config.HistoryScanRevBucket`)控制:**越大 → 越能覆盖副本间更大的 RV 分散、共享越多**,代价是共享扫描窗口最多比单个调用者要的宽一个桶;`1` = 只有 revision 完全相等才共享。
+- 共享扫描从桶底扫到 `currentRevision`,每个调用者再按**自己的** fromRevision 过滤。`scanFrom` 锚在 fromRevision 附近 —— **不**下探到压缩水位:没有活跃 compactor 时水位是 0,那会退化成"从 revision 1 发所有版本"的**无界** O(全历史)列表(既永不返回、又违反超大规模不变量)。全前缀 `Iter` 的读取量与分桶无关,分桶只放宽"谁能共享",不放大读取。
+- 只有 singleflight 的**执行者**占用一个 `historyScanSem` 槽 —— 一个桶上的惊群只花 1 个槽,不是 N 个。
 - 取消安全:等待者只等自己的 ctx;执行者若因自身 ctx 失败,其它等待者用自己的 ctx 重跑,一个断连不会连累别人。
 
 **效果**:同 `(prefix, fromRevision)` 惊群的存储代价 **O(N) → O(1)**。单测 `history_scan_test.go`:50-watcher 惊群 → 可证**仅 1 次** Iter;等待者遵守自身 ctx。`./pkg/backend` 全套 + `-race` 绿。

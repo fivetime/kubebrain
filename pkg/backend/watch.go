@@ -173,36 +173,65 @@ func (b *backend) historyWatchEvents(ctx context.Context, prefix string, fromRev
 	}
 
 	// Collapse a reconnect herd into one shared storage scan (#30): watchers
-	// reconnecting at the SAME (prefix, fromRevision) — an apiserver restart
-	// re-establishing a resource's watch across replicas — share a single scan
-	// whose result each reuses read-only, instead of each issuing its own.
+	// reconnecting to the same prefix at nearby revisions — HA-apiserver replicas
+	// re-establishing a resource's watch after a cold-cache failover — share a
+	// single scan whose result each reuses read-only, instead of each issuing its
+	// own. Exact-revision keying would rarely match (replicas relist at slightly
+	// different revisions), so the key is BUCKETED: reconnects whose revisions
+	// share a HistoryScanRevBucket-wide window collapse onto one scan.
 	//
-	// The scan emits exactly the caller's window [fromRevision, currentRevision]
-	// — it is NOT widened down to the compact watermark. Widening would let more
-	// callers share, but without an active compactor the watermark is 0, so it
-	// would emit every version since revision 1 — an unbounded O(all-history)
-	// event list that never returns (and violates the massive-scale invariant).
-	// Keeping the window at fromRevision bounds emission to what the watcher
-	// actually asked for; the full-prefix read is identical either way.
-	key := prefix + "\x00" + strconv.FormatUint(fromRevision, 10)
+	// The shared scan runs from the bucket floor (so it serves every caller in
+	// the bucket) up to currentRevision; each caller then keeps only the events
+	// at or after ITS own revision. scanFrom is anchored near fromRevision — it
+	// is NOT dropped to the compact watermark: without an active compactor the
+	// watermark is 0, and emitting every version since revision 1 would be an
+	// unbounded O(all-history) list that never returns (and breaks the
+	// massive-scale invariant). Bucketing widens the shared window by at most one
+	// bucket beyond what the caller asked for; the full-prefix read is identical.
+	bucket := b.config.HistoryScanRevBucket
+	if bucket == 0 {
+		bucket = defaultHistoryScanRevBucket
+	}
+	scanFrom := fromRevision - (fromRevision % bucket)
+	if scanFrom < 1 {
+		scanFrom = 1
+	}
+	// Never scan below the compact watermark: those versions may be GC'd, and it
+	// keeps scanFrom (hence the shared key and window) consistent for everyone in
+	// the bucket. Callers whose own revision is below it already errored above.
+	if compactRevision > 0 && scanFrom < compactRevision+1 {
+		scanFrom = compactRevision + 1
+	}
+	key := prefix + "\x00" + strconv.FormatUint(scanFrom, 10)
 	events, scanErr, _ := b.historyScanGroup.Do(ctx, key, func(sctx context.Context) ([]*proto.Event, error) {
 		// Only the executor of the shared scan consumes a concurrency slot, so a
-		// herd on one (prefix,rev) costs a single slot, not one per watcher. Bound
-		// it so an unrelated multi-prefix storm still can't stampede storage.
+		// herd on one bucket costs a single slot, not one per watcher. Bound it so
+		// an unrelated multi-prefix storm still can't stampede storage.
 		select {
 		case b.historyScanSem <- struct{}{}:
 			defer func() { <-b.historyScanSem }()
 		case <-sctx.Done():
 			return nil, sctx.Err()
 		}
-		return b.scanHistoryEvents(sctx, prefix, fromRevision, currentRevision)
+		return b.scanHistoryEvents(sctx, prefix, scanFrom, currentRevision)
 	})
 	if scanErr != nil {
 		return nil, scanErr
 	}
-	// The shared result already covers exactly this caller's window (read-only;
-	// the shared slice must not be mutated).
-	return events, nil
+	if fromRevision <= scanFrom {
+		// Bucket-aligned (or clamped to the watermark): the shared result is
+		// already exactly this caller's window — reuse it read-only, do not mutate.
+		return events, nil
+	}
+	// Keep only the events at or after this caller's revision; the shared slice
+	// above (and its event pointers) must not be mutated, so allocate a new one.
+	out := make([]*proto.Event, 0, len(events))
+	for _, e := range events {
+		if e.Revision >= fromRevision {
+			out = append(out, e)
+		}
+	}
+	return out, nil
 }
 
 // scanHistoryEvents does the actual full-prefix storage scan behind

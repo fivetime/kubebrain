@@ -54,6 +54,15 @@ const (
 	// mistaken for a dead one.
 	collectorStallWarnAfter = 3 * time.Second
 	collectorStallSkipAfter = 30 * time.Second
+
+	// defaultHistoryScanRevBucket is the default width (in revisions) of the
+	// watch-history singleflight bucket (#30): reconnecting watchers of the same
+	// prefix whose revisions fall in the same bucket share one storage scan.
+	// Chosen to absorb the revision spread between HA-apiserver replicas that
+	// relist at slightly different instants, while keeping the shared scan window
+	// only modestly wider than any single caller asked for. Tunable via
+	// Config.HistoryScanRevBucket / --watch-history-scan-rev-bucket.
+	defaultHistoryScanRevBucket = 4096
 )
 
 type Backend interface {
@@ -259,6 +268,15 @@ type Config struct {
 
 	// WatchCacheSize is the cache size of events
 	WatchCacheSize int
+
+	// HistoryScanRevBucket buckets the watch-history singleflight key (#30):
+	// watchers reconnecting to the same prefix whose requested revisions fall in
+	// the same bucket share ONE storage scan. Larger buckets collapse a wider
+	// spread of near-revision reconnects (e.g. HA-apiserver replicas relisting at
+	// slightly different revisions) at the cost of a shared scan window up to one
+	// bucket wider than any single caller requested. 0 => default
+	// (defaultHistoryScanRevBucket); 1 => only exact-revision reconnects share.
+	HistoryScanRevBucket uint64
 
 	// EnableCountIndex maintains an in-memory versioned key index on the leader
 	// for exact O(range) counts (approach A-index). Requires EnableEtcdCompatibility.
