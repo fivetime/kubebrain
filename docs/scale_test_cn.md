@@ -31,10 +31,21 @@ RSS: 795MB(591k) → 2.4GB(~5M) --[越过 5M 上限]--> 787MB(基线)
 - 全 keyspace 的 `CountOnly`(over `/`)在 ~2M+ key 时从 762ms 恶化到 **>30s 超时**。
 - 机制:(a) 持续重写下 count 索引跟不上最新 revision → `CountAtRevision(current)` not-ready → 回退扫描;(b) 越过 5M 上限后索引直接禁用 → 一律扫描。大范围扫描 + 并发重写 → 慢。
 - **但要客观**:全 `/` 聚合计数是**不现实**的 op —— apiserver 是按资源前缀(`/registry/pods/`)计数、读 watchcache 的稍旧 revision,不是 bleeding-edge 全库。小范围 / 稍旧 revision 的读应仍快。
-- **诚实的缺口**:本轮定向的"小范围前缀读延迟"探针没跑出干净数据,**realistic per-prefix 读在 5M+ 下是否仍快,尚未定量确认** —— 列为后续。
+### ③ Realistic per-prefix 读在 5M+ 下仍快(缺口已补)
+
+在 **5M+ 总 key、且 count 索引已溢出禁用(worst case,一律回退扫描)** 下实测:
+
+| 读类型(每资源前缀 ~8.5k key) | 延迟 |
+|---|---|
+| **点 Get** | **4–7ms** |
+| 每资源前缀 CountOnly(~8.5k key) | **~130–150ms** |
+| 每资源前缀 List 页(limit 500) | **~143ms** |
+| 全库聚合(数百万 key 一个 range) | 超时 |
+
+**关键洞察:读延迟随 range(前缀)大小走,不随总 keyspace 走。** 一个"每资源前缀"读(几千 key)即便索引禁用、总量 5M+,仍 ~130–150ms —— 因为扫描被限定在该前缀内。只有"全库/数百万 key 一个 range"的聚合才慢(且不现实)。**注**:这是索引禁用的 worst case;索引启用(在 cap 内)时同样的前缀读会更快(索引直接答,~ms)。
 
 ## 净结论
 
-> **写扩展性 + 内存有界性在千万级下都 hold(0 重启、溢出优雅降级、RSS 被 cap 兜回基线)。** 观测到的退化集中在**"全库聚合读 + 最新 revision + 持续重写"**这种非典型 op 上,是读-写张力,不是崩溃。下一步该量化的是**realistic per-resource-prefix 读在 5M+ 下的延迟**,确认典型 apiserver 读路径在千万级仍快。
+> **写扩展性 + 内存有界性在千万级下都 hold(0 重启、溢出优雅降级、RSS 被 cap 兜回基线);且 realistic apiserver 读(点 Get 4–7ms、每资源前缀 List/Count ~130–150ms)在 5M+ 下仍快 —— 因为读延迟随前缀大小走、不随总量走。** 唯一慢的是"全库聚合读"这种非典型 op(apiserver 不这么读)。第一堵墙对典型读路径无影响。
 
-（测试用的 ~5.4M key 已在测后清理。）
+（测试用的 ~5M key 已在测后清理。）
