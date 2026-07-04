@@ -257,6 +257,12 @@ type Config struct {
 	// for exact O(range) counts (approach A-index). Requires EnableEtcdCompatibility.
 	EnableCountIndex bool
 
+	// AutoCompactionRetention, when > 0, enables the leader-side safety-net
+	// auto-compactor: it caps MVCC history to the last N revisions if the
+	// apiserver's own compaction loop stops (KubeBrain never auto-compacts
+	// otherwise). 0 (default) leaves auto-compaction off. See runAutoCompactor.
+	AutoCompactionRetention uint64
+
 	// CountIndexMaxKeys caps the index size; above it the index is disabled and
 	// counts fall back to a scan (avoids OOM). 0 means no cap.
 	CountIndexMaxKeys int
@@ -325,6 +331,8 @@ func NewBackend(kv storage.KvStorage, config Config, metricCli metrics.Metrics) 
 
 	// drain background physical-compaction requests scheduled by CompactAsync
 	go b.runCompactor()
+	// Opt-in safety net (config.AutoCompactionRetention > 0); a no-op otherwise.
+	go b.runAutoCompactor()
 
 	return b
 }
