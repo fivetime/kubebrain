@@ -225,8 +225,15 @@ func (w *watcher) Start(c context.Context, r *etcdserverpb.WatchCreateRequest) {
 	w.Unlock()
 	w.metricCli.EmitGauge("watch.watch_id", id)
 
+	// Report the store's current published revision in the created response header
+	// (previously 0). etcd clientv3 records the created header revision as the
+	// resume point for a from-now (StartRevision == 0) watch, so a disconnect
+	// after "created" but before the first event would otherwise resume from 0 and
+	// could skip events. The published revision is at/below every still-in-flight
+	// event (see initSyncedRev above), so it is a safe, non-skipping resume floor.
+	createdRev := w.backend.GetPublishedRevision()
 	if err := w.Send(&etcdserverpb.WatchResponse{
-		Header:  &etcdserverpb.ResponseHeader{},
+		Header:  txnHeader(int64(createdRev)),
 		Created: true,
 		WatchId: id,
 	}); err != nil {

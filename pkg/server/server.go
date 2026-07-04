@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/health"
@@ -78,7 +79,7 @@ func NewServer(ctx context.Context, backend backend.Backend, metricCli metrics.M
 	}
 	// leader election callbacks are methods on s; s.etcdServer is assigned below
 	// (before Campaign runs) and read by onStartedLeading.
-	election := leader.NewLeaderElection(backend, metricCli, s.onStartedLeading, s.onStoppedLeading)
+	election := leader.NewLeaderElection(backend, metricCli, s.onStartedLeading, s.onStoppedLeading, config.getLeaderConfig())
 	// Wire the write fence: the backend re-checks this leadership epoch/freshness
 	// immediately before every data commit, so a deposed leader's in-flight write
 	// is rejected instead of committed-yet-unwatched (FINDING #39).
@@ -94,19 +95,36 @@ func NewServer(ctx context.Context, backend backend.Backend, metricCli metrics.M
 }
 
 // onStartedLeading is invoked when this instance acquires leadership.
+// leaderReloadRetryInterval is how long onStartedLeading waits before retrying a
+// failed lease reload; until it succeeds the node does not advertise readiness.
+const leaderReloadRetryInterval = time.Second
+
 func (s *server) onStartedLeading(ctx context.Context) {
-	s.healthServer.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
-	// On acquiring leadership, refresh lease state from storage before the
-	// stale follower snapshot's expiry timers can wrongly delete kept-alive
-	// leases or before newly-granted leases are orphaned.
+	// Reconstruct lease state from storage BEFORE advertising readiness (review
+	// #6). A stale follower snapshot's expiry timers would otherwise wrongly delete
+	// kept-alive leases or orphan newly-granted ones. Retry on failure rather than
+	// serving with unreconstructed lease state (the old code logged the error and
+	// proceeded). ctx cancellation (lost leadership / shutdown) ends the wait.
 	if s.etcdServer != nil {
-		if err := s.etcdServer.ReloadLeases(ctx); err != nil {
+		for {
+			err := s.etcdServer.ReloadLeases(ctx)
+			if err == nil {
+				break
+			}
 			s.metricCli.EmitCounter("lease.reload.err", 1)
-			klog.ErrorS(err, "reload leases on leadership acquisition failed")
+			klog.ErrorS(err, "reload leases on leadership acquisition failed; retrying before serving")
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(leaderReloadRetryInterval):
+			}
 		}
 	}
-	// Rebuild the count index (approach A-index) from a fresh snapshot; a
-	// follower's collector did not maintain it while it was not leading.
+	s.healthServer.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
+	// The count index can trail readiness: until it is Ready() at a revision,
+	// counts fall back to a full scan (never a wrong count), so a rebuild failure
+	// must not gate serving. Rebuild from a fresh snapshot; a follower's collector
+	// did not maintain it while it was not leading.
 	if err := s.backend.RebuildCountIndex(ctx); err != nil {
 		s.metricCli.EmitCounter("count_index.rebuild.err", 1)
 		klog.ErrorS(err, "rebuild count index on leadership acquisition failed")

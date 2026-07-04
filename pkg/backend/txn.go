@@ -43,8 +43,8 @@ func (b *backend) Create(ctx context.Context, put *proto.CreateRequest) (resp *p
 			err)
 	}()
 
-	revision, err := b.create(ctx, put.Key, put.Value)
-	b.notify(ctx, put.Key, b.eventValue(put.Value, EtcdMetadata{CreateRevision: revision, Version: 1}, err), revision, 0, err == nil, proto.Event_CREATE, err)
+	revision, err := b.create(ctx, put.Key, put.Value, put.Lease)
+	b.notify(ctx, put.Key, b.eventValue(put.Value, EtcdMetadata{CreateRevision: revision, Version: 1, Lease: put.Lease}, err), revision, 0, err == nil, proto.Event_CREATE, err)
 	if errors.Is(err, storage.ErrCASFailed) {
 		return &proto.CreateResponse{
 			Header:    responseHeader(revision),
@@ -61,7 +61,7 @@ func (b *backend) Create(ctx context.Context, put *proto.CreateRequest) (resp *p
 	}, nil
 }
 
-func (b *backend) create(ctx context.Context, key []byte, value []byte) (revision uint64, error error) {
+func (b *backend) create(ctx context.Context, key []byte, value []byte, lease int64) (revision uint64, error error) {
 	revision, err := b.deal(0)
 	if err != nil {
 		return 0, err
@@ -75,16 +75,16 @@ func (b *backend) create(ctx context.Context, key []byte, value []byte) (revisio
 	// hardcoded 3600s TTL, which ignored the real granted TTL, ignored keepalive
 	// renewal, and mis-expired unrelated keys whose path merely contained
 	// "/events/" (data loss) — see #16.
-	err = b.createWithMetadata(ctx, key, value, revision)
+	err = b.createWithMetadata(ctx, key, value, revision, lease)
 	return revision, err
 }
 
-func (b *backend) createWithMetadata(ctx context.Context, key []byte, value []byte, revision uint64) error {
+func (b *backend) createWithMetadata(ctx context.Context, key []byte, value []byte, revision uint64, lease int64) error {
 	revisionKey := b.coder.EncodeRevisionKey(key)
 	objectKey := b.coder.EncodeObjectKey(key, revision)
 	revisionBytes := uint64ToBytes(revision)
 
-	err := b.createBatchWithMetadata(ctx, revisionKey, objectKey, key, value, revisionBytes, nil, revision, true)
+	err := b.createBatchWithMetadata(ctx, revisionKey, objectKey, key, value, revisionBytes, nil, revision, true, lease)
 	if err == nil {
 		return nil
 	}
@@ -99,7 +99,7 @@ func (b *backend) createWithMetadata(ctx context.Context, key []byte, value []by
 		oldRev, err = b.kv.Get(ctx, revisionKey)
 		if err != nil {
 			if errors.Is(err, storage.ErrKeyNotFound) {
-				return b.createBatchWithMetadata(ctx, revisionKey, objectKey, key, value, revisionBytes, nil, revision, true)
+				return b.createBatchWithMetadata(ctx, revisionKey, objectKey, key, value, revisionBytes, nil, revision, true, lease)
 			}
 			return storage.ErrUnavailable
 		}
@@ -110,7 +110,7 @@ func (b *backend) createWithMetadata(ctx context.Context, key []byte, value []by
 		return parseErr
 	}
 	if isTombstone && prevRevision < revision {
-		return b.createBatchWithMetadata(ctx, revisionKey, objectKey, key, value, revisionBytes, oldRev, revision, false)
+		return b.createBatchWithMetadata(ctx, revisionKey, objectKey, key, value, revisionBytes, oldRev, revision, false, lease)
 	}
 	return storage.ErrCASFailed
 }
@@ -118,7 +118,7 @@ func (b *backend) createWithMetadata(ctx context.Context, key []byte, value []by
 // createBatchWithMetadata writes the revision-key and object-key with no
 // storage-level TTL (ttl=0): key expiry is the lease manager's responsibility,
 // not the backend's — see create.
-func (b *backend) createBatchWithMetadata(ctx context.Context, revisionKey, objectKey, key, value, newRevisionBytes, oldRevisionBytes []byte, revision uint64, requireNotExist bool) error {
+func (b *backend) createBatchWithMetadata(ctx context.Context, revisionKey, objectKey, key, value, newRevisionBytes, oldRevisionBytes []byte, revision uint64, requireNotExist bool, lease int64) error {
 	// Fence the write just before opening the batch: reject if leadership changed
 	// since admission so a deposed leader cannot commit at a revision the new
 	// leader's collector has already advanced past (FINDING #39).
@@ -131,10 +131,11 @@ func (b *backend) createBatchWithMetadata(ctx context.Context, revisionKey, obje
 	} else {
 		batch.CAS(revisionKey, newRevisionBytes, oldRevisionBytes, 0)
 	}
-	meta := EtcdMetadata{CreateRevision: revision, Version: 1}
+	meta := EtcdMetadata{CreateRevision: revision, Version: 1, Lease: lease}
 	if b.config.EnableEtcdCompatibility {
-		// Inline create_revision/version into the value so reads need no separate
-		// metadata lookup and the etcdmeta keyspace stops growing (approach A).
+		// Inline create_revision/version (and lease, review #9) into the value so
+		// reads need no separate metadata lookup and the etcdmeta keyspace stops
+		// growing (approach A).
 		batch.Put(objectKey, encodeValueWithMeta(value, meta), 0)
 	} else {
 		batch.Put(objectKey, value, 0)
@@ -509,8 +510,8 @@ func (b *backend) updateOnce(ctx context.Context, r *proto.UpdateRequest, allowH
 	)
 	var curRev uint64
 	if prevRev == 0 {
-		curRev, err = b.create(ctx, key, value)
-		b.notify(ctx, key, b.eventValue(value, EtcdMetadata{CreateRevision: curRev, Version: 1}, err), curRev, prevRev, err == nil, proto.Event_CREATE, err)
+		curRev, err = b.create(ctx, key, value, lease)
+		b.notify(ctx, key, b.eventValue(value, EtcdMetadata{CreateRevision: curRev, Version: 1, Lease: lease}, err), curRev, prevRev, err == nil, proto.Event_CREATE, err)
 	} else {
 		var meta EtcdMetadata
 		curRev, meta, err = b.update(ctx, prevRev, key, value, lease)
@@ -577,6 +578,9 @@ func (b *backend) update(ctx context.Context, oldRevision uint64, key []byte, va
 		meta.Version = 1
 	}
 	meta.Version++
+	// The lease is a property of this new version, not inherited from the prior
+	// one: an update can rebind to a different lease or clear it (review #9).
+	meta.Lease = lease
 
 	objectKey := b.coder.EncodeObjectKey(key, newRevision)
 	revisionKey := b.coder.EncodeRevisionKey(key)

@@ -67,6 +67,22 @@ clean_datastore() {
 start_k3s() {
   rm -f "$KUBECONFIG_FILE" "$LOG_FILE"
   log "starting k3s WITH agent (datastore=http://${ENDPOINT}, data-dir=${DATA_DIR})"
+  # Consumer-side failover-tolerance (docs/failover_tuning_cn.md, lever 2): raise
+  # the controller-manager/scheduler leader-election lease so k8s controllers ride
+  # through a KubeBrain leader failover (~15-30s leaderless) without dropping their
+  # own locks. Zero KubeBrain risk. Set CONSUMER_LEASE_TOLERANCE=0 to disable.
+  local lease_args=()
+  if [ "${CONSUMER_LEASE_TOLERANCE:-1}" != "0" ]; then
+    local ld="${CONSUMER_LEASE_DURATION:-30s}" rd="${CONSUMER_RENEW_DEADLINE:-20s}" rp="${CONSUMER_RETRY_PERIOD:-4s}"
+    lease_args=(
+      "--kube-controller-manager-arg=leader-elect-lease-duration=$ld"
+      "--kube-controller-manager-arg=leader-elect-renew-deadline=$rd"
+      "--kube-controller-manager-arg=leader-elect-retry-period=$rp"
+      "--kube-scheduler-arg=leader-elect-lease-duration=$ld"
+      "--kube-scheduler-arg=leader-elect-renew-deadline=$rd"
+      "--kube-scheduler-arg=leader-elect-retry-period=$rp"
+    )
+  fi
   "$K3S_BIN" server \
     --datastore-endpoint="http://${ENDPOINT}" \
     --data-dir="$DATA_DIR" \
@@ -78,6 +94,7 @@ start_k3s() {
     --disable=metrics-server \
     --disable-cloud-controller \
     --disable-network-policy \
+    "${lease_args[@]}" \
     >"$LOG_FILE" 2>&1 &
   K3S_PID="$!"
 }

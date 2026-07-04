@@ -44,14 +44,36 @@ func leadershipEpochFromContext(ctx context.Context) (uint64, bool) {
 	return epoch, ok
 }
 
+// fenceHolder wraps the leadership-epoch source for storage in an atomic.Value
+// (which needs a single concrete type and cannot hold a bare func or nil). A zero
+// holder (fn == nil) means the fence is disabled.
+type fenceHolder struct {
+	fn func() (uint64, bool)
+}
+
 // SetLeadershipFence registers the leadership-epoch source used by fenceAdmit.
 // fn returns the node's current leadership epoch and whether it is still safely
 // leading (leader AND lease-fresh). It is wired to
 // LeaderElection.EpochAndLeadingFresh by the server layer. When unset (single
 // node, direct-constructed test backends) the fence is disabled and writes commit
-// unconditionally (fail-open).
+// unconditionally (fail-open). Stored atomically because the event collector's
+// stall watchdog reads it concurrently with a leadership-change re-register.
 func (b *backend) SetLeadershipFence(fn func() (uint64, bool)) {
-	b.fenceFn = fn
+	b.fenceFn.Store(fenceHolder{fn: fn})
+}
+
+// leadingFresh reports whether this node is safely leading, or true when no fence
+// is registered (single-node / direct-constructed test backends). It gates
+// leader-only maintenance such as the event-collector stall watchdog, which must
+// not fire on a follower whose collector idles while peer-sync advances the
+// revision.
+func (b *backend) leadingFresh() bool {
+	h, _ := b.fenceFn.Load().(fenceHolder)
+	if h.fn == nil {
+		return true
+	}
+	_, fresh := h.fn()
+	return fresh
 }
 
 // fenceAdmit is the write fence's re-check, called immediately before a data
@@ -72,14 +94,15 @@ func (b *backend) SetLeadershipFence(fn func() (uint64, bool)) {
 // It fails open when no fence is registered or the context carries no epoch
 // (e.g. internal/background writes), so single-node and test paths are unchanged.
 func (b *backend) fenceAdmit(ctx context.Context) error {
-	if b.fenceFn == nil {
+	h, _ := b.fenceFn.Load().(fenceHolder)
+	if h.fn == nil {
 		return nil
 	}
 	admitEpoch, ok := leadershipEpochFromContext(ctx)
 	if !ok {
 		return nil
 	}
-	curEpoch, leadingFresh := b.fenceFn()
+	curEpoch, leadingFresh := h.fn()
 	if !leadingFresh || curEpoch != admitEpoch {
 		b.metricCli.EmitCounter("write.fence.reject", 1)
 		return ErrLeadershipFenced

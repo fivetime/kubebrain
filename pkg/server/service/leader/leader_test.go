@@ -25,7 +25,7 @@ import (
 // TestEpochAndLeadingFreshNotLeader verifies a non-leader is never reported fresh.
 func TestEpochAndLeadingFreshNotLeader(t *testing.T) {
 	ast := assert.New(t)
-	l := &leaderElection{}
+	l := &leaderElection{renewDeadline: defaultRenewDeadline}
 	atomic.StoreUint64(&l.epoch, 3)
 	// leader==0, even with a recent renew
 	l.stampRenew()
@@ -38,7 +38,7 @@ func TestEpochAndLeadingFreshNotLeader(t *testing.T) {
 // the validity bound is reported fresh, carrying its current epoch.
 func TestEpochAndLeadingFreshLeaderRecentRenew(t *testing.T) {
 	ast := assert.New(t)
-	l := &leaderElection{}
+	l := &leaderElection{renewDeadline: defaultRenewDeadline}
 	atomic.StoreUint64(&l.epoch, 5)
 	atomic.StoreInt32(&l.leader, 1)
 	l.stampRenew()
@@ -53,11 +53,11 @@ func TestEpochAndLeadingFreshLeaderRecentRenew(t *testing.T) {
 // is the FINDING #39 timing-margin guarantee.
 func TestEpochAndLeadingFreshStaleRenew(t *testing.T) {
 	ast := assert.New(t)
-	l := &leaderElection{}
+	l := &leaderElection{renewDeadline: defaultRenewDeadline}
 	atomic.StoreUint64(&l.epoch, 9)
 	atomic.StoreInt32(&l.leader, 1)
 	// last successful renew is older than the validity bound
-	stale := time.Now().Add(-leadershipValidityBound - time.Second).UnixNano()
+	stale := time.Now().Add(-defaultRenewDeadline - time.Second).UnixNano()
 	atomic.StoreInt64(&l.lastRenewNanos, stale)
 
 	epoch, fresh := l.EpochAndLeadingFresh()
@@ -69,7 +69,7 @@ func TestEpochAndLeadingFreshStaleRenew(t *testing.T) {
 // recorded renew (lastRenewNanos == 0) is not reported fresh.
 func TestEpochAndLeadingFreshNeverRenewed(t *testing.T) {
 	ast := assert.New(t)
-	l := &leaderElection{}
+	l := &leaderElection{renewDeadline: defaultRenewDeadline}
 	atomic.StoreInt32(&l.leader, 1)
 	// lastRenewNanos left at zero value
 	_, fresh := l.EpochAndLeadingFresh()
@@ -82,11 +82,11 @@ func TestEpochAndLeadingFreshNeverRenewed(t *testing.T) {
 func TestStampRenewRestoresFreshness(t *testing.T) {
 	ast := assert.New(t)
 	// the timing invariant the non-storage fence layers depend on
-	ast.Less(leadershipValidityBound, 8*time.Second, "validity bound must be < LeaseDuration")
+	ast.Less(defaultRenewDeadline, defaultLeaseDuration, "validity bound must be < LeaseDuration")
 
-	l := &leaderElection{}
+	l := &leaderElection{renewDeadline: defaultRenewDeadline}
 	atomic.StoreInt32(&l.leader, 1)
-	atomic.StoreInt64(&l.lastRenewNanos, time.Now().Add(-leadershipValidityBound-time.Second).UnixNano())
+	atomic.StoreInt64(&l.lastRenewNanos, time.Now().Add(-defaultRenewDeadline-time.Second).UnixNano())
 	_, fresh := l.EpochAndLeadingFresh()
 	ast.False(fresh)
 

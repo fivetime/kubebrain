@@ -40,6 +40,10 @@ type TxnWriteOp struct {
 	Delete bool
 	Key    []byte
 	Value  []byte
+	// Lease is the lease ID bound to this put's new version (0 if none). It is
+	// inlined into the version's value envelope so the lease is recorded
+	// per-version (review #9). Ignored for deletes.
+	Lease int64
 }
 
 // TxnGuard asserts that a compared key is still live at exactly Revision when the
@@ -230,7 +234,7 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 			batch.CAS(revisionKey, newRevDeleted, p.rvBytes, 0)
 			batch.Put(objectKey, tombStoneBytes, 0)
 		case p.create:
-			p.meta = EtcdMetadata{CreateRevision: newRevision, Version: 1}
+			p.meta = EtcdMetadata{CreateRevision: newRevision, Version: 1, Lease: p.op.Lease}
 			if p.rvBytes == nil {
 				batch.PutIfNotExist(revisionKey, newRevLive, 0)
 			} else {
@@ -246,6 +250,9 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 				p.meta.Version = 1
 			}
 			p.meta.Version++
+			// Rebind to this op's lease (review #9); do not inherit the prior
+			// version's lease.
+			p.meta.Lease = p.op.Lease
 			batch.CAS(revisionKey, newRevLive, p.rvBytes, 0)
 			b.putTxnObject(batch, objectKey, p.op.Key, p.op.Value, p.meta, newRevision)
 		}

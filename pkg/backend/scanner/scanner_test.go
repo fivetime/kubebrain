@@ -83,6 +83,70 @@ func TestAdjustPartitionBorders(t *testing.T) {
 	}
 }
 
+// TestScannerCrossPartitionTombstoneLargeGap reproduces the exact shape of the
+// live "poison key" anomaly: a user key whose live base object and its later
+// tombstone are separated by a HUGE inter-version revision gap (the real values
+// observed: 467364010600169522 and 467421706742398990), scanned across a
+// partition boundary placed at many realistic TiKV region-split positions
+// (decodable object key, object key + \x00, a split cutting the 8-byte revision
+// suffix in half, the bare "{userKey}$" delimiter, and a boundary with no split
+// byte at all). In every case the deleted key must NOT resurface as live in List.
+// This locks the 03676a5 cross-partition fix against the large-gap case.
+func TestScannerCrossPartitionTombstoneLargeGap(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	m := mock.NewMinimalMetrics(ctrl)
+	c := coder.NewNormalCoder()
+	tomb := []byte("tombstone")
+
+	key := []byte("/registry-kubebrain-apiserver-smoke-1782852222/apiextensions.k8s.io/customresourcedefinitions/v1.apiextensions.k8s.io")
+	const rLive uint64 = 467364010600169522 // un-compacted live base object
+	const rTomb uint64 = 467421706742398990 // latest = tombstone (huge gap above)
+
+	objTomb := c.EncodeObjectKey(key, rTomb)
+	objLive := c.EncodeObjectKey(key, rLive)
+	withNul := func(b []byte) []byte { return append(append([]byte{}, b...), 0x00) }
+	prefixTrim := func(b []byte, n int) []byte { return append([]byte{}, b[:len(b)-n]...) }
+	magic := objTomb[:len(objTomb)-len(key)-9] // bytes before userKey
+	bareDelim := append(append(append([]byte{}, magic...), key...), 0x24)
+
+	cases := []struct {
+		name  string
+		split []byte
+	}{
+		{"decodable-at-tombstone", objTomb},
+		{"decodable-at-live", objLive},
+		{"nondecodable-after-live-nul", withNul(objLive)},
+		{"nondecodable-mid-revision-suffix", prefixTrim(objTomb, 4)}, // cut the 8B rev in half
+		{"bare-userkey-delimiter", bareDelim},                        // {userKey}$ , no revision
+		{"boundary-no-split-byte", append(append([]byte{}, magic...), key...)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			kv := imemkv.NewKvStorage()
+			defer kv.Close()
+			b := kv.BeginBatchWrite()
+			b.Put(c.EncodeObjectKey(key, 0), append(beU64(rTomb), 0), 0) // deleted index -> {rTomb}{del}
+			b.Put(objLive, []byte("live-value"), 0)                      // older live object
+			b.Put(objTomb, tomb, 0)                                      // latest = tombstone
+			require.NoError(t, b.Commit(context.Background()))
+
+			st := &splitStore{KvStorage: kv, splits: [][]byte{tc.split}}
+			sc := NewScanner(st, c, Config{CompactKey: []byte("/compact"), Tombstone: tomb}, m)
+
+			start := c.EncodeObjectKey(key, 0)
+			end := c.EncodeObjectKey(append(append([]byte{}, key...), 0xff), 0)
+			kvs, err := sc.Range(context.Background(), start, end, 1000, 0)
+			require.NoError(t, err)
+			for _, got := range kvs {
+				if bytes.Equal(got.Key, key) {
+					t.Fatalf("DELETED key resurfaced as live (rev=%d) with partition split=%x", got.Revision, tc.split)
+				}
+			}
+		})
+	}
+}
+
 // splitStore wraps a real KvStorage but forces GetPartitions to split the scanned
 // range at chosen boundaries, so a single user key's object versions can be placed
 // in different scan partitions deterministically.

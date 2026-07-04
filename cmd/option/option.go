@@ -27,6 +27,7 @@ import (
 	"github.com/kubewharf/kubebrain/pkg/endpoint"
 	imetrics "github.com/kubewharf/kubebrain/pkg/metrics"
 	metrics "github.com/kubewharf/kubebrain/pkg/metrics/prometheus"
+	"github.com/kubewharf/kubebrain/pkg/server/service/leader"
 	storagemetrics "github.com/kubewharf/kubebrain/pkg/storage/metrics"
 	"github.com/kubewharf/kubebrain/pkg/util"
 )
@@ -67,6 +68,10 @@ func NewOptions() *KubeBrainOption {
 			PeerSecurityConfig:      &endpoint.SecurityConfig{},
 			InfoSecurityConfig:      &endpoint.SecurityConfig{},
 			EnableEtcdCompatibility: false,
+			// Leader-election defaults (client-go). Overridable via flags below.
+			LeaseDuration: 8 * time.Second,
+			RenewDeadline: 5 * time.Second,
+			RetryPeriod:   1 * time.Second,
 		},
 		Prefix:            "",
 		ClusterName:       "default",
@@ -135,12 +140,23 @@ func (o *KubeBrainOption) AddFlags(fs *pflag.FlagSet) {
 	fs.BoolVar(&o.enableCountIndex, "enable-count-index", o.enableCountIndex, "maintain an in-memory versioned key index on the leader for exact O(range) counts (approach A-index; requires --compatible-with-etcd)")
 	fs.IntVar(&o.countIndexMaxKeys, "count-index-max-keys", o.countIndexMaxKeys, "cap on keys tracked by the count index; above it the index disables and counts fall back to a scan (0 = unlimited)")
 	fs.DurationVar(&o.watchProgressNotifyInterval, "watch-progress-notify-interval", o.watchProgressNotifyInterval, "how often watch progress notifications advance/emit (drives kube-apiserver ConsistentListFromCache convergence; smaller = fresher at more marker traffic)")
+	fs.DurationVar(&o.epsConf.LeaseDuration, "leader-lease-duration", o.epsConf.LeaseDuration, "leader-election lease duration: how long a dead leader's lease is held before a successor can acquire it (dominates the failover leaderless window). Smaller = faster failover but more spurious failovers under load. Must satisfy retry < renew < lease.")
+	fs.DurationVar(&o.epsConf.RenewDeadline, "leader-renew-deadline", o.epsConf.RenewDeadline, "leader-election renew deadline; also the write-fence self-fencing bound (#39). Must be < leader-lease-duration.")
+	fs.DurationVar(&o.epsConf.RetryPeriod, "leader-retry-period", o.epsConf.RetryPeriod, "leader-election retry period; how often leadership is renewed/acquired. Must be < leader-renew-deadline.")
 }
 
 // Validate checks the option before running
 func (o *KubeBrainOption) Validate() error {
 	err := o.epsConf.Validate()
 	if err != nil {
+		return err
+	}
+
+	if err := (leader.Config{
+		LeaseDuration: o.epsConf.LeaseDuration,
+		RenewDeadline: o.epsConf.RenewDeadline,
+		RetryPeriod:   o.epsConf.RetryPeriod,
+	}).Validate(); err != nil {
 		return err
 	}
 

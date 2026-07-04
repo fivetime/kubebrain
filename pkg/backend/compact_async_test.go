@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -128,6 +129,53 @@ func TestCompactAsyncCoalescesConcurrentRequests(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		_, err := b.CompactAsync(ctx, last)
 		require.NoError(t, err)
+	}
+	wm, err := b.GetCompactRevision(ctx)
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, wm, last)
+}
+
+// TestSetCompactRecordConcurrentCASNoError fires many CompactAsync to the same
+// already-current target simultaneously. The losers of the watermark CAS must not
+// surface a user-visible error: compaction is idempotent (etcd), so a concurrent
+// compactor that already reached >= target means the desired end state holds.
+func TestSetCompactRecordConcurrentCASNoError(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	m := mock.NewMinimalMetrics(ctrl)
+	kv := imemkv.NewKvStorage()
+	defer func() { require.NoError(t, kv.Close()) }()
+	b := NewBackend(kv, Config{Prefix: prefix, Identity: getStorageIdentity(), EnableEtcdCompatibility: true}, m).(*backend)
+	b.SetCurrentRevision(uint64(time.Now().UnixNano()))
+	ctx := context.Background()
+
+	key := []byte(prefix + "/reg/concas")
+	cr, err := b.Create(ctx, &proto.CreateRequest{Key: key, Value: []byte("v1")})
+	require.NoError(t, err)
+	last := cr.Header.Revision
+	for i := 2; i <= 8; i++ {
+		u, err := b.Update(ctx, &proto.UpdateRequest{Kv: &proto.KeyValue{Key: key, Value: []byte(fmt.Sprintf("v%d", i)), Revision: last}})
+		require.NoError(t, err)
+		last = u.Header.Revision
+	}
+	require.Eventually(t, func() bool { return b.GetCurrentRevision() >= last }, 5*time.Second, 2*time.Millisecond)
+
+	const N = 64
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	errs := make([]error, N)
+	for i := 0; i < N; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			_, errs[i] = b.CompactAsync(ctx, last)
+		}(i)
+	}
+	close(start) // fire all at once → early readers pass, then race the CAS
+	wg.Wait()
+	for i, e := range errs {
+		require.NoErrorf(t, e, "concurrent CompactAsync[%d] to an already-target revision must not surface a CAS conflict", i)
 	}
 	wm, err := b.GetCompactRevision(ctx)
 	require.NoError(t, err)

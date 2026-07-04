@@ -17,12 +17,21 @@ package backend
 import "encoding/binary"
 
 // Approach A-core: inline a key version's etcd metadata (create_revision,
-// version) into the stored object value, so LIST/Get/watch need no separate
-// metadata lookup and the \x00kubebrain/etcdmeta/ keyspace stops growing.
+// version, and — for leased keys — the lease ID) into the stored object value,
+// so LIST/Get/watch need no separate metadata lookup and the
+// \x00kubebrain/etcdmeta/ keyspace stops growing.
 //
-// A new value is wrapped in an envelope:
+// A value is wrapped in one of two envelopes, distinguished by the low magic
+// byte (the version tag):
 //
-//	[ valueMetaMagic (4B) ][ createRevision (8B) ][ version (8B) ][ raw value... ]
+//	v1 (\x00kb\x01): [ magic (4B) ][ createRevision (8B) ][ version (8B) ][ raw... ]
+//	v2 (\x00kb\x02): [ magic (4B) ][ createRevision (8B) ][ version (8B) ][ lease (8B) ][ raw... ]
+//
+// v2 is written only when a version carries a non-zero lease (review #9: the
+// lease must be recorded per MVCC version so historical reads, prevKv, and
+// delete events report the lease that key held at that revision — not merely the
+// key's current binding). Unleased versions stay v1, so the common Kubernetes
+// object (no lease) keeps the 20-byte header with no size regression.
 //
 // The magic starts with 0x00. Kubernetes-stored values always begin with the
 // protobuf prefix "k8s\x00" (0x6b) or JSON '{' (0x7b), and KubeBrain's tombstone
@@ -31,12 +40,28 @@ import "encoding/binary"
 // written in EnableEtcdCompatibility mode; the reserved value prefix is
 // documented as such. Legacy (un-enveloped) values are still read correctly via
 // a fallback to the etcdmeta keyspace, so no data migration is required.
-var valueMetaMagic = []byte{0x00, 0x6b, 0x62, 0x01} // "\x00kb\x01"
+var (
+	valueMetaMagic   = []byte{0x00, 0x6b, 0x62, 0x01} // v1 "\x00kb\x01"
+	valueMetaMagicV2 = []byte{0x00, 0x6b, 0x62, 0x02} // v2 "\x00kb\x02" (adds lease)
+)
 
-const valueMetaHeaderLen = 4 + 8 + 8 // magic + createRevision + version
+const (
+	valueMetaHeaderLen   = 4 + 8 + 8     // v1: magic + createRevision + version
+	valueMetaHeaderLenV2 = 4 + 8 + 8 + 8 // v2: + lease
+)
 
-// encodeValueWithMeta wraps a raw value with its inline metadata envelope.
+// encodeValueWithMeta wraps a raw value with its inline metadata envelope,
+// choosing v2 (with an inline lease) only when the version is leased.
 func encodeValueWithMeta(value []byte, meta EtcdMetadata) []byte {
+	if meta.Lease != 0 {
+		buf := make([]byte, valueMetaHeaderLenV2+len(value))
+		copy(buf, valueMetaMagicV2)
+		binary.BigEndian.PutUint64(buf[4:], meta.CreateRevision)
+		binary.BigEndian.PutUint64(buf[12:], meta.Version)
+		binary.BigEndian.PutUint64(buf[20:], uint64(meta.Lease))
+		copy(buf[valueMetaHeaderLenV2:], value)
+		return buf
+	}
 	buf := make([]byte, valueMetaHeaderLen+len(value))
 	copy(buf, valueMetaMagic)
 	binary.BigEndian.PutUint64(buf[4:], meta.CreateRevision)
@@ -45,13 +70,22 @@ func encodeValueWithMeta(value []byte, meta EtcdMetadata) []byte {
 	return buf
 }
 
-// hasValueMeta reports whether stored is an inline-metadata envelope.
+// hasValueMeta reports whether stored is a v1 inline-metadata envelope.
 func hasValueMeta(stored []byte) bool {
 	return len(stored) >= valueMetaHeaderLen &&
 		stored[0] == valueMetaMagic[0] &&
 		stored[1] == valueMetaMagic[1] &&
 		stored[2] == valueMetaMagic[2] &&
 		stored[3] == valueMetaMagic[3]
+}
+
+// hasValueMetaV2 reports whether stored is a v2 (lease-carrying) envelope.
+func hasValueMetaV2(stored []byte) bool {
+	return len(stored) >= valueMetaHeaderLenV2 &&
+		stored[0] == valueMetaMagicV2[0] &&
+		stored[1] == valueMetaMagicV2[1] &&
+		stored[2] == valueMetaMagicV2[2] &&
+		stored[3] == valueMetaMagicV2[3]
 }
 
 // DecodeInlineValue is the exported form of decodeValueWithMeta for other
@@ -74,6 +108,12 @@ func StripInlineValue(stored []byte) []byte {
 // the buffer's lifetime must copy. ok is false for legacy (un-enveloped) values,
 // in which case rawValue == stored and meta is zero.
 func decodeValueWithMeta(stored []byte) (meta EtcdMetadata, rawValue []byte, ok bool) {
+	if hasValueMetaV2(stored) {
+		meta.CreateRevision = binary.BigEndian.Uint64(stored[4:12])
+		meta.Version = binary.BigEndian.Uint64(stored[12:20])
+		meta.Lease = int64(binary.BigEndian.Uint64(stored[20:valueMetaHeaderLenV2]))
+		return meta, stored[valueMetaHeaderLenV2:], true
+	}
 	if !hasValueMeta(stored) {
 		return EtcdMetadata{}, stored, false
 	}

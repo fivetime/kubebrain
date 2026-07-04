@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
@@ -45,6 +46,14 @@ const (
 	// write signal before re-checking the ring buffer. It is only a safety net
 	// against a missed wake-up; the common case is an immediate writeSignal.
 	idleWaitTimeout = 10 * time.Millisecond
+
+	// collectorStallWarnAfter / collectorStallSkipAfter bound how long the event
+	// collector tolerates an empty ring slot for an already-dealt revision before
+	// warning, then skipping it. collectorStallSkipAfter is far above the write
+	// RPC timeout (unaryRpcTimeout, 1s) so a still-in-flight writer can never be
+	// mistaken for a dead one.
+	collectorStallWarnAfter = 3 * time.Second
+	collectorStallSkipAfter = 30 * time.Second
 )
 
 type Backend interface {
@@ -216,9 +225,13 @@ type backend struct {
 
 	// fenceFn, when set, returns this node's current leadership epoch and whether
 	// it is still safely leading. fenceAdmit consults it just before every data
-	// commit to fence a deposed leader's in-flight writes (FINDING #39). nil on
+	// commit to fence a deposed leader's in-flight writes (FINDING #39); the event
+	// collector's stall watchdog also consults it (leadingFresh). nil-holder on
 	// single-node / direct-constructed test backends (fence disabled, fail-open).
-	fenceFn func() (uint64, bool)
+	// Held in an atomic.Value (a fenceHolder) because the collector reads it
+	// continuously while SetLeadershipFence may re-register it on a leadership
+	// change.
+	fenceFn atomic.Value
 
 	metricCli metrics.Metrics
 }
@@ -378,7 +391,56 @@ func (b *backend) deal(prevRevision uint64) (uint64, error) {
 	return rev, nil
 }
 
+// collectorStallState tracks how long the event collector has been waiting on a
+// single empty ring slot, so it can warn and then self-heal past an abandoned
+// (dead-writer) revision. See collectStorageWriteEvents.
+type collectorStallState struct {
+	rev    uint64
+	since  time.Time
+	warned bool
+}
+
+// note evaluates one empty-slot observation for nextRevision. It returns whether
+// to emit a one-shot stall warning and whether to skip (advance past) the hole.
+// A skip is only ever returned when the revision is below dealt (so it was
+// allocated) AND this node is leading AND the slot has been empty for skipAfter —
+// which is far above the write RPC timeout, so a still-in-flight writer can never
+// be mistaken for a dead one. now is injected for testing.
+func (s *collectorStallState) note(nextRevision, dealt uint64, leading bool, now time.Time, warnAfter, skipAfter time.Duration) (warn, skip bool) {
+	if nextRevision > dealt || !leading {
+		s.rev = 0
+		return false, false
+	}
+	if s.rev != nextRevision {
+		s.rev, s.since, s.warned = nextRevision, now, false
+		return false, false
+	}
+	elapsed := now.Sub(s.since)
+	if elapsed >= skipAfter {
+		s.rev = 0
+		return false, true
+	}
+	if elapsed >= warnAfter && !s.warned {
+		s.warned = true
+		return true, false
+	}
+	return false, false
+}
+
+// reset clears stall tracking after the collector makes progress.
+func (s *collectorStallState) reset() { s.rev = 0 }
+
 func (b *backend) collectStorageWriteEvents() {
+	// Stall watchdog state. Every dealt revision is paired with a notify (valid or
+	// invalid) on every normal path, so a ring slot fills within the write RPC
+	// timeout (unaryRpcTimeout). A slot that stays empty far longer while its
+	// revision is below Dealt() means the writer goroutine died between deal and
+	// notify (panic / killed) — the revision will never arrive, and the collector
+	// would otherwise wait on it forever, freezing the committed revision and thus
+	// every list/watch on this node (a silent cluster-wide freeze). We surface it
+	// (warn+metric) and, once the writer is provably dead (>> the write timeout),
+	// advance past the hole so the stream self-heals instead of freezing.
+	var stall collectorStallState
 	// infinite loop
 	for {
 		events := make([]*proto.Event, 0, eventBatchSize)
@@ -388,6 +450,25 @@ func (b *backend) collectStorageWriteEvents() {
 			watchEvents := b.watchEventsRingBuffer[idx].take(nextRevision)
 			if len(watchEvents) == 0 {
 				if len(events) == 0 {
+					// A hole is only possible on the leader (whose collector drives
+					// the ring); on a follower the collector idles while peer-sync
+					// advances the revision, so never treat a follower's empty slot
+					// as a stall.
+					warn, skip := stall.note(nextRevision, b.tso.Dealt(), b.leadingFresh(), time.Now(), collectorStallWarnAfter, collectorStallSkipAfter)
+					if skip {
+						// > the bounded write RPC timeout: the revision's writer is
+						// provably dead (a live one would have notified, valid or
+						// invalid, long ago). Advance past the hole; it carried no
+						// event, so no watcher loses one.
+						klog.Errorf("event collector skipping abandoned revision %d (dealt=%d) after stall; a writer died between deal and notify", nextRevision, b.tso.Dealt())
+						b.metricCli.EmitCounter("watch.collector.skipped_revision", 1)
+						b.SetCurrentRevision(nextRevision)
+						continue
+					}
+					if warn {
+						klog.Warningf("event collector stalled on revision %d (dealt=%d); a writer may have died between deal and notify", nextRevision, b.tso.Dealt())
+						b.metricCli.EmitCounter("watch.collector.stalled", 1)
+					}
 					// Nothing to collect yet: block until a writer signals a new
 					// event (or a short timeout as a safety net against a missed
 					// wake-up) instead of busy-spinning a full core. This is the
@@ -402,6 +483,7 @@ func (b *backend) collectStorageWriteEvents() {
 				// break inside loop for sending existing  events, then read events in a new loop
 				break
 			}
+			stall.reset()
 			b.metricCli.EmitGauge("watch.set.current.revision", nextRevision)
 			for _, watchEvent := range watchEvents {
 				// invalid watch event, i.e. cas failed

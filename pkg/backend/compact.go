@@ -270,6 +270,19 @@ func (b *backend) setCompactRecord(ctx context.Context, revision uint64) (advanc
 	err = batch.Commit(ctx)
 	b.metricCli.EmitCounter("backend.set_compact_revision", 1)
 	if err != nil {
+		// A concurrent compactor may have advanced the watermark between our read
+		// and our CAS commit, which fails the CAS. Re-read: if the stored revision
+		// already reached our target, the desired end state holds — treat it as
+		// success (compaction is idempotent in etcd; compacting to an
+		// already-compacted revision is not an error), and let that other compactor
+		// own the physical GC (advanced=false). Only a still-behind watermark or a
+		// genuine storage error surfaces.
+		if cur, gerr := b.kv.Get(ctx, getCompactKey(b.config.Prefix)); gerr == nil && len(cur) >= 8 {
+			if storedRev := binary.BigEndian.Uint64(cur); storedRev >= revision {
+				b.updateCompactRevCache(storedRev)
+				return false, nil
+			}
+		}
 		klog.ErrorS(err, "set compact key failed", "revision", revision)
 		b.metricCli.EmitCounter("backend.set_compact_revision.err", 1)
 		return false, err

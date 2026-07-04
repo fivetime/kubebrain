@@ -210,6 +210,47 @@
 
 ---
 
+## 第二轮代码审查（review round 2，2026-07-03）
+
+9 条独立审查意见，逐条核实属实性后分类处理。**接受并修**：#R1/#R2/#R6/#R8/#R9；**记文档、不改代码**（k8s 消费路径下安全、仅通用 etcd 语义未完整）：#R3/#R4/#R5。
+
+- [x] **#R1** [med] Lease revoke/expire 用无条件 `Delete(rev=0)` 删键，可能删掉被并发 Put 重绑到另一 lease 的新值  
+  `pkg/server/etcd/lease.go` — `06b46ba`。新增 `deleteLeasedKey`：删前 (1) 在 `leaseMu` 下复核 `keyLeaseIndex[key]==id`（已重绑/解绑→跳过）；(2) 读当前 modRev 做 **compare-delete**（keepalive re-Put 会失败→循环复核，重绑到别的 lease→不动）。`revoke`/`expire` 两处都改用它。`TestDeleteLeasedKeyCompareDeleteGuardsReassignment`（A→B 重绑后 A 的 revoke 不得删该键；正控：仍绑 A 的键必删）。
+- [x] **#R2** [med] Put 与 attach 非原子、attach 错误被吞 → leased key 可能成永不过期的孤儿  
+  `eedb5d7` — 见 #R9（同一根因，一并修）。leased 单 Put 现走单条原子 `TxnApply` 批（value + attachment 同批提交）；清 lease 时同批删 attachment。`TestLeasedPutWritesAttachmentAtomically`。
+- [~] **#R3** [low] 通用 txn compare guard（范围比较 / 不存在键 guard）未完整支持 → **k8s 安全，未改**  
+  k8s apiserver 的事务只用**单键 mod-revision 比较**（guaranteed_update 的乐观并发）；范围比较、`CreateRevision==0`「键不存在」等通用 etcd guard 形态 apiserver 不产生。当前 `TxnApply` 的单键 CAS guard（#4 Tier 2）已覆盖 apiserver 全部形态并保证可串行化。通用 etcd 完整 guard 属独立特性，收益低，未做。
+- [~] **#R4** [low] txn 顺序回退路径对不支持的 txn 形态不保证完整原子性 → **k8s 安全，未改**  
+  apiserver 的 txn 形态（单键 put/delete + 单键比较）走 `tryAtomicGenericTxn` 的原子批；仅**非 apiserver** 的多形态混合 txn 落到顺序回退（逐 op 提交、非单一 revision）。create 原子性由 `PutIfNotExist` 保证。对通用 etcd 客户端的完整多 op 原子性属独立改动，未做。
+- [~] **#R5** [low] 大范围 DeleteRange 分块、非单一原子 txn → **by-design，未改**  
+  `883006b`（分块）已落。TiKV 事务有大小上界（单 txn 不能无界大），故超大范围 DeleteRange **无法**作为一个原子 txn 提交；分块是存储层的固有约束而非缺陷。k8s 的 delete-collection 语义不要求整批跨键原子。详见生产就绪文档。
+- [x] **#R6** [med] leader 就绪门控：`onStartedLeading` 先置 SERVING 再 reload lease，reload 失败仅记日志继续  
+  `pkg/server/server.go` — `0ad81cf`。`ReloadLeases` 移到 `SetServing` **之前**并**失败重试**（ctx 可取消）到成功，节点绝不在 lease 状态未重建时对外就绪（否则 stale follower 快照的过期计时器会误删 keepalive 的 lease 或漏挂新授的）。`RebuildCountIndex` 仍留在 SetServing 之后（未就绪时 count 回退全扫、绝不给错值，故其失败不该门控就绪）。残留微窗见 commit（`leader=1` 在回调前置位）。
+- [x] **#R8** [low] compact 水位 CAS 并发冲突被当错误返回（非幂等）  
+  `pkg/backend/compact.go` — `44eebff`。`setCompactRecord` CAS 提交冲突时**回读**：若已存水位 ≥ 目标，按幂等成功返回（对齐 etcd 并发 compact 语义），仅真实落后才返回错误。`TestSetCompactRecordConcurrentCASNoError`（N=64 齐发并发 CompactAsync，修前 FAIL、修后 PASS）。
+- [x] **#R9** [low] `KeyValue.Lease` 取自内存索引（当前绑定），非按 MVCC 版本 → 历史读/prevKv/delete 事件的 lease 不准  
+  `eedb5d7` — lease 现按版本内联进 value envelope（新 v2 `\x00kb\x02`，未 leased 版本仍 v1 无体积回退）；读按版本回填、仅 legacy v1 回退到内存索引，无需迁移。串 create/update/TxnApply 与 watch 事件 meta。`TestLeaseInlinedPerVersion`（历史读报该版本的 lease 而非当前绑定）、`TestValueMetaV2Lease`（v1/v2 round-trip + 向后兼容）。同时根治 #R2：value 里已有权威 per-version lease，`deleteLeasedKey` 删前据此复核，杜绝 stale attachment 误删。
+
+> 编号用 #R* 前缀以别于上文一轮审计的 #NN。#R2 与 #R9 同 commit（`eedb5d7`）；原子性覆盖 leased 单 Put（leased key 的主导路径：Events、masterlease endpoints），罕见的 generic-txn 路径仍按版本内联 lease（#R9）但 attachment 走 best-effort，由 `deleteLeasedKey` 的 per-version 复核兜底；range-delete 的 detach 保持 best-effort（残留 attachment 指向 tombstone，过期时为 no-op）。
+
+---
+
+## 第三轮代码审查（review round 3，2026-07-03）
+
+5 条意见，核实后：**接受并修** #R10/#R11；**已在二轮闭环** #R12(=#R2/#R9)、#R13(=#R4)；**记文档、不改代码** #R14。
+
+- [x] **#R10** [low] 历史 CountOnly 忽略请求 revision，按当前 revision 计数  
+  `pkg/server/etcd/kv.go` — `969aa75`。快 Count 路径的守卫 `hasRangeRevisionFilters` 只看 `Min/MaxMod/CreateRevision`、**不看 `r.Revision`**；且 `CountRequest` proto（外部 `kubebrain-client` 模块）无 revision 字段。改：快路径再加 `r.Revision == 0` 门控，带 revision 的 CountOnly 落到 `List`（按 `r.Revision` 读快照、`applyRangeOptions` 在 CountOnly 时剥 Kvs 只留 Count）。**k8s 安全**：apiserver 的分页 count 走 List 响应的 `Count` 字段，不发带 revision 的 CountOnly；纯正确性修复。`TestCountOnlyHonorsRequestRevision`（rev3 后删 1 键 → 按 rev3 count 仍 3、按当前 count 2）。
+- [x] **#R11** [low] from-now watch 的 created 响应 header revision 为 0  
+  `pkg/server/etcd/watch.go` — `969aa75`。created `WatchResponse` 原发空 header；clientv3 用 created header revision 作为 from-now watch 的**恢复点**，created 后首事件前断线可能从 0 恢复而跳事件。改为回填当前已发布 revision（`GetPublishedRevision()`，即 seed progress-notify 用的那个安全下界，不会跳事件）。`TestWatchCreatedHeaderReportsCurrentRevision`（created header == published revision，非 0）。
+- [x] **#R12** [med] lease attach/detach 未与用户 KV 写在同一原子事务、且 lease id 未内联进 value meta  
+  **已在二轮闭环** = #R2 + #R9（`eedb5d7`）。lease id 已按版本内联进 value envelope；leased 单 Put 的 value+attachment 已同一 `TxnApply` 批原子提交、不再吞错误。审查建议的"废掉外置 `leasekeys/` 双写"**有意未做**：`leasekeys/` 是 failover 时 O(leased-keys) 重建索引的来源，废掉会逼 reload 全量扫描；现已是**单条原子写**而非双写，核心顾虑已消除。
+- [~] **#R13** [low] generic txn fallback 仍非 etcd 单事务 → **k8s 安全，未改** = #R4。见上。
+- [~] **#R14** [low] Hash/HashKV 是 revision hash、非 MVCC 内容 hash → **架构上基本 N/A，未改**  
+  `pkg/server/etcd/maintenance.go` — `Hash`/`HashKV` 返回 `revisionHash(revision)`。etcd 的 HashKV 用于检测**多成员间 MVCC 内容分叉**；KubeBrain 是 TiKV 上的**单一逻辑副本**（复制/一致性由 TiKV raft 负责），无 etcd 式成员会分叉，该用途基本不适用；apiserver 也不调 HashKV。真做按内容 hash = 全量扫描 keyspace（代价大、收益低，仅对迁移校验/ops 工具有点用）。记为已知差异，暂缓，除非有 ops 校验需求再按需实现。
+
+---
+
 ## 流程约定
 - 每修一条：改代码 → 黑盒消费端测试（etcd client / 真实 apiserver）→（必要时）内部单测证明修前失败 → `go test ./... -race` → 构建镜像 + kind load + rollout → 对 live endpoint 验证 → commit（`Co-Authored-By`）→ 回本文件把 `[ ]` 改 `[x]` 并标 commit。
 - 大重构（P1 读放大）先搭 load/soak 压测再改，另起 PR。
