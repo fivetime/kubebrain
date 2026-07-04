@@ -79,7 +79,7 @@ func NewServer(ctx context.Context, backend backend.Backend, metricCli metrics.M
 	}
 	// leader election callbacks are methods on s; s.etcdServer is assigned below
 	// (before Campaign runs) and read by onStartedLeading.
-	election := leader.NewLeaderElection(backend, metricCli, s.onStartedLeading, s.onStoppedLeading)
+	election := leader.NewLeaderElection(backend, metricCli, s.onStartedLeading, s.onStoppedLeading, config.getLeaderConfig())
 	// Wire the write fence: the backend re-checks this leadership epoch/freshness
 	// immediately before every data commit, so a deposed leader's in-flight write
 	// is rejected instead of committed-yet-unwatched (FINDING #39).

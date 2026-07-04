@@ -16,8 +16,10 @@ package server
 
 import (
 	"crypto/tls"
+	"time"
 
 	"github.com/kubewharf/kubebrain/pkg/server/service"
+	"github.com/kubewharf/kubebrain/pkg/server/service/leader"
 )
 
 // Config is the configuration of server
@@ -28,11 +30,25 @@ type Config struct {
 
 	// EnableEtcdProxy is the flag if etcd proxy should start
 	EnableEtcdProxy bool
+
+	// Leader-election durations (0 = default). Smaller LeaseDuration shortens the
+	// failover leaderless window at the cost of more spurious failovers under load.
+	LeaseDuration time.Duration
+	RenewDeadline time.Duration
+	RetryPeriod   time.Duration
 }
 
 func (c Config) getPeerServiceConfig() service.Config {
 	return service.Config{
 		TLS:             c.ClientTLS,
 		EnableEtcdProxy: c.EnableEtcdProxy,
+	}
+}
+
+func (c Config) getLeaderConfig() leader.Config {
+	return leader.Config{
+		LeaseDuration: c.LeaseDuration,
+		RenewDeadline: c.RenewDeadline,
+		RetryPeriod:   c.RetryPeriod,
 	}
 }

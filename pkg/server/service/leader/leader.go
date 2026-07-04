@@ -86,18 +86,64 @@ type leaderElection struct {
 	// lastRenewNanos is the UnixNano of the most recent successful lease
 	// Create/Update (leadership renew), stamped by renewStampingLock. It bounds
 	// leadership freshness: a partitioned leader whose renews are failing stops
-	// admitting/committing writes once this ages past leadershipValidityBound,
-	// which is strictly tighter than LeaseDuration, so it self-fences before a
-	// successor can acquire. Accessed atomically.
+	// admitting/committing writes once this ages past renewDeadline, which is
+	// strictly tighter than leaseDuration, so it self-fences before a successor
+	// can acquire. Accessed atomically.
 	lastRenewNanos int64
+
+	// leader-election durations (Config.withDefaults applied at construction).
+	// renewDeadline doubles as the leadership-validity bound in
+	// EpochAndLeadingFresh (FINDING #39).
+	leaseDuration time.Duration
+	renewDeadline time.Duration
+	retryPeriod   time.Duration
 }
 
-// leadershipValidityBound is how long after the last successful lease renew this
-// node still considers itself safely leading for the purpose of admitting and
-// committing writes. It equals RenewDeadline and is strictly less than
-// LeaseDuration, so a partitioned-but-unaware leader self-fences before any
-// successor can acquire the lease.
-const leadershipValidityBound = 5 * time.Second
+// Default leader-election durations (client-go leaderelection). Overridable via
+// Config so operators can trade failover speed against spurious-failover
+// resistance; the defaults preserve the historical 8/5/1s behavior. The
+// leadership-validity bound (how long after the last successful renew this node
+// still admits/commits writes, FINDING #39) EQUALS RenewDeadline and is strictly
+// less than LeaseDuration, so a partitioned-but-unaware leader self-fences before
+// any successor can acquire the lease.
+const (
+	defaultLeaseDuration = 8 * time.Second
+	defaultRenewDeadline = 5 * time.Second
+	defaultRetryPeriod   = 1 * time.Second
+)
+
+// Config carries the tunable leader-election durations. A zero field takes its
+// default. Invalid combinations are rejected by Validate.
+type Config struct {
+	LeaseDuration time.Duration
+	RenewDeadline time.Duration
+	RetryPeriod   time.Duration
+}
+
+func (c Config) withDefaults() Config {
+	if c.LeaseDuration <= 0 {
+		c.LeaseDuration = defaultLeaseDuration
+	}
+	if c.RenewDeadline <= 0 {
+		c.RenewDeadline = defaultRenewDeadline
+	}
+	if c.RetryPeriod <= 0 {
+		c.RetryPeriod = defaultRetryPeriod
+	}
+	return c
+}
+
+// Validate enforces the ordering client-go requires and that the #39 write-fence
+// self-fencing stays safe: RetryPeriod < RenewDeadline < LeaseDuration. Called on
+// the operator-supplied values (defaults already applied).
+func (c Config) Validate() error {
+	c = c.withDefaults()
+	if !(c.RetryPeriod < c.RenewDeadline && c.RenewDeadline < c.LeaseDuration) {
+		return fmt.Errorf("leader election durations must satisfy RetryPeriod(%s) < RenewDeadline(%s) < LeaseDuration(%s)",
+			c.RetryPeriod, c.RenewDeadline, c.LeaseDuration)
+	}
+	return nil
+}
 
 // renewStampingLock wraps the resource lock so leader.go observes each successful
 // leadership renew (Create/Update) without racing the election goroutine's
@@ -123,14 +169,20 @@ func (r *renewStampingLock) Update(ler resourcelock.LeaderElectionRecord) error 
 	return err
 }
 
-// NewLeaderElection returns a LeaderElection based on resourcelock of backend.Backend
-func NewLeaderElection(backend b.Backend, metricCli metrics.Metrics, onStartedLeading func(context.Context), onStoppedLeading func()) LeaderElection {
+// NewLeaderElection returns a LeaderElection based on resourcelock of
+// backend.Backend. cfg's zero fields take their defaults (8/5/1s); callers that
+// expose the durations should Validate cfg before this.
+func NewLeaderElection(backend b.Backend, metricCli metrics.Metrics, onStartedLeading func(context.Context), onStoppedLeading func(), cfg Config) LeaderElection {
+	cfg = cfg.withDefaults()
 	return &leaderElection{
 		backend:          backend,
 		resourceLock:     backend.GetResourceLock(),
 		metricCli:        metricCli,
 		onStartedLeading: onStartedLeading,
 		onStoppedLeading: onStoppedLeading,
+		leaseDuration:    cfg.LeaseDuration,
+		renewDeadline:    cfg.RenewDeadline,
+		retryPeriod:      cfg.RetryPeriod,
 	}
 }
 
@@ -139,12 +191,12 @@ func (l *leaderElection) Campaign(ctx context.Context) {
 	leaderelection.RunOrDie(ctx, leaderelection.LeaderElectionConfig{
 		Lock:            &renewStampingLock{Interface: l.resourceLock, onRenew: l.stampRenew},
 		ReleaseOnCancel: true,
-		// lease timout deadline
-		LeaseDuration: 8 * time.Second,
+		// lease timeout deadline
+		LeaseDuration: l.leaseDuration,
 		// renew deadline
-		RenewDeadline: 5 * time.Second,
+		RenewDeadline: l.renewDeadline,
 		// renew lease period
-		RetryPeriod: 1 * time.Second,
+		RetryPeriod: l.retryPeriod,
 		Callbacks: leaderelection.LeaderCallbacks{
 			OnStartedLeading: func(ctx context.Context) {
 				// we're notified when we start - this is where you would
@@ -206,7 +258,7 @@ func (l *leaderElection) EpochAndLeadingFresh() (uint64, bool) {
 	// Load the epoch last so, when we report fresh leadership, the epoch reflects
 	// a term at least as new as the one that published leader==1.
 	epoch := atomic.LoadUint64(&l.epoch)
-	fresh := leading && last != 0 && time.Since(time.Unix(0, last)) < leadershipValidityBound
+	fresh := leading && last != 0 && time.Since(time.Unix(0, last)) < l.renewDeadline
 	return epoch, fresh
 }
 

@@ -21,6 +21,7 @@ import (
 	"io/ioutil"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/pkg/errors"
 	"k8s.io/klog/v2"
@@ -79,12 +80,21 @@ type Config struct {
 
 	// EnableEtcdCompatibility is the flag if KubeWharf should try to be compatible with etcd3
 	EnableEtcdCompatibility bool
+
+	// Leader-election durations (0 = default 8/5/1s). Tunable failover speed vs
+	// spurious-failover resistance; see server.Config / leader.Config.
+	LeaseDuration time.Duration
+	RenewDeadline time.Duration
+	RetryPeriod   time.Duration
 }
 
 func (c *Config) getServerConfig() server.Config {
 	return server.Config{
 		EnableEtcdProxy: c.EnableEtcdCompatibility,
 		ClientTLS:       c.PeerSecurityConfig.getClientTLSConfig(),
+		LeaseDuration:   c.LeaseDuration,
+		RenewDeadline:   c.RenewDeadline,
+		RetryPeriod:     c.RetryPeriod,
 	}
 }
 
