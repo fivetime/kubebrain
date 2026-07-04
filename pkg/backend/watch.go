@@ -58,6 +58,13 @@ func (b *backend) Watch(ctx context.Context, prefix string, revision uint64) (<-
 
 	result := make(chan []*proto.Event, resultChanLength)
 
+	// Captured right after AddWatcher: the published-revision floor for this
+	// subscription. Every event with revision > neededRevision is guaranteed to
+	// arrive on readChan, so a history fallback only needs to reach this far. It
+	// gates whether a SHARED history scan (snapshotted possibly before we
+	// subscribed) covers enough for us; see historyWatchEvents.
+	neededRevision := b.GetPublishedRevision()
+
 	// include the current revision in list
 	if revision == 0 {
 		go b.processEvents(ctx, cancel, result, readChan, prefix, revision)
@@ -77,7 +84,7 @@ func (b *backend) Watch(ctx context.Context, prefix string, revision uint64) (<-
 			go b.processEvents(ctx, cancel, result, readChan, prefix, revision)
 			return result, nil
 		}
-		events, historyErr := b.historyWatchEvents(ctx, prefix, revision, currentRevision)
+		events, historyErr := b.historyWatchEvents(ctx, prefix, revision, currentRevision, neededRevision)
 		if historyErr == nil {
 			klog.InfoS("watch history fallback", "prefix", prefix, "revision", revision, "events", len(events))
 			if len(events) > 0 {
@@ -109,7 +116,7 @@ func (b *backend) Watch(ctx context.Context, prefix string, revision uint64) (<-
 			cancel()
 			return nil, currentErr
 		}
-		events, historyErr := b.historyWatchEvents(ctx, prefix, revision, currentRevision)
+		events, historyErr := b.historyWatchEvents(ctx, prefix, revision, currentRevision, neededRevision)
 		if historyErr == nil {
 			klog.InfoS("watch history fallback from low cache", "prefix", prefix, "revision", revision, "oldestRev", ret.oldest.Revision, "events", len(events))
 			lastRevision := revision
@@ -163,7 +170,7 @@ func (b *backend) catchUpEvents(out chan<- []*proto.Event, events []*proto.Event
 	}
 }
 
-func (b *backend) historyWatchEvents(ctx context.Context, prefix string, fromRevision, currentRevision uint64) ([]*proto.Event, error) {
+func (b *backend) historyWatchEvents(ctx context.Context, prefix string, fromRevision, currentRevision, neededRevision uint64) ([]*proto.Event, error) {
 	compactRevision, err := b.GetCompactRevision(ctx)
 	if err != nil {
 		return nil, err
@@ -203,28 +210,56 @@ func (b *backend) historyWatchEvents(ctx context.Context, prefix string, fromRev
 		scanFrom = compactRevision + 1
 	}
 	key := prefix + "\x00" + strconv.FormatUint(scanFrom, 10)
-	events, scanErr, _ := b.historyScanGroup.Do(ctx, key, func(sctx context.Context) ([]*proto.Event, error) {
-		// Only the executor of the shared scan consumes a concurrency slot, so a
-		// herd on one bucket costs a single slot, not one per watcher. Bound it so
-		// an unrelated multi-prefix storm still can't stampede storage.
-		select {
-		case b.historyScanSem <- struct{}{}:
-			defer func() { <-b.historyScanSem }()
-		case <-sctx.Done():
-			return nil, sctx.Err()
+	// The executor of the shared scan reports the revision it is complete up to
+	// (coveredRev) so a waiter can check the shared result reaches far enough for
+	// its own from-now subscription (see the guard below).
+	events, coveredRev, scanErr, _ := b.historyScanGroup.Do(ctx, key, func(sctx context.Context) ([]*proto.Event, uint64, error) {
+		evs, err := b.boundedHistoryScan(sctx, prefix, scanFrom, currentRevision)
+		if err != nil {
+			return nil, 0, err
 		}
-		return b.scanHistoryEvents(sctx, prefix, scanFrom, currentRevision)
+		// Extend coverage from the storage snapshot (currentRevision) up to the
+		// ring's newest revision, so watchers that subscribed WHILE this
+		// seconds-long scan ran still find their events covered and share this
+		// result instead of each re-scanning (the completeness guard below). The
+		// gap (currentRevision, newest] is recent, so it sits in the warm ring;
+		// append it. If the ring cannot serve currentRevision+1 (still cold, or
+		// already evicted), coverage stays at currentRevision and stragglers
+		// re-scan — correct, just not shared.
+		covered := currentRevision
+		if ringEvs, ringCovered := b.ringEventsFrom([]byte(prefix), currentRevision+1); ringCovered >= currentRevision+1 {
+			evs = append(evs, ringEvs...)
+			covered = ringCovered
+		}
+		return evs, covered, nil
 	})
 	if scanErr != nil {
 		return nil, scanErr
 	}
+	// Completeness guard for shared scans. A scan snapshotted at coveredRev BEFORE
+	// this caller subscribed leaves a hole (coveredRev, neededRevision] that the
+	// caller's from-now subscription (its readChan) will never redeliver —
+	// silently dropping those events. neededRevision is the caller's
+	// published-revision floor at subscribe time: every event above it is
+	// guaranteed to arrive on the readChan, so history need only reach it. If the
+	// shared scan stopped short, redo our own scan up to our currentRevision
+	// (>= neededRevision) so the recovered history covers the hole. The executor
+	// passes trivially (coveredRev == its currentRevision >= its own floor); only
+	// a straggler that joined after the scan's snapshot re-scans.
+	if coveredRev < neededRevision {
+		own, ownErr := b.boundedHistoryScan(ctx, prefix, scanFrom, currentRevision)
+		if ownErr != nil {
+			return nil, ownErr
+		}
+		events = own
+	}
 	if fromRevision <= scanFrom {
-		// Bucket-aligned (or clamped to the watermark): the shared result is
-		// already exactly this caller's window — reuse it read-only, do not mutate.
+		// Bucket-aligned (or clamped to the watermark): the result is already
+		// exactly this caller's window — reuse it read-only, do not mutate.
 		return events, nil
 	}
-	// Keep only the events at or after this caller's revision; the shared slice
-	// above (and its event pointers) must not be mutated, so allocate a new one.
+	// Keep only the events at or after this caller's revision; a shared slice (and
+	// its event pointers) must not be mutated, so allocate a new one.
 	out := make([]*proto.Event, 0, len(events))
 	for _, e := range events {
 		if e.Revision >= fromRevision {
@@ -232,6 +267,34 @@ func (b *backend) historyWatchEvents(ctx context.Context, prefix string, fromRev
 		}
 	}
 	return out, nil
+}
+
+// ringEventsFrom returns the watch-cache-ring events with revision >=
+// fromRevision that match prefix, and the highest revision covered contiguously
+// from fromRevision. It reports coveredRev == fromRevision-1 (i.e. "covers
+// nothing from here") when the ring is empty, has not caught up to fromRevision
+// yet, or has already evicted it — in all those cases the caller must not treat
+// the ring as extending coverage. Otherwise the ring holds [oldest, newest]
+// contiguously, so returning its events from fromRevision covers up to newest.
+func (b *backend) ringEventsFrom(prefix []byte, fromRevision uint64) (events []*proto.Event, coveredRev uint64) {
+	ret := b.watchCache.FindEvents(fromRevision)
+	if ret.empty || ret.low || ret.high {
+		return nil, fromRevision - 1
+	}
+	return filterByPrefix(ret.events, prefix), ret.newest.Revision
+}
+
+// boundedHistoryScan runs scanHistoryEvents under the historyScanSem concurrency
+// gate (#30), blocking for a slot or the caller's ctx. Used both by the shared
+// singleflight executor and by the completeness-guard re-scan.
+func (b *backend) boundedHistoryScan(ctx context.Context, prefix string, fromRevision, currentRevision uint64) ([]*proto.Event, error) {
+	select {
+	case b.historyScanSem <- struct{}{}:
+		defer func() { <-b.historyScanSem }()
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	return b.scanHistoryEvents(ctx, prefix, fromRevision, currentRevision)
 }
 
 // scanHistoryEvents does the actual full-prefix storage scan behind

@@ -42,24 +42,29 @@ type scanGroup struct {
 }
 
 type scanCall struct {
-	done   chan struct{}
-	events []*proto.Event
-	err    error
+	done       chan struct{}
+	events     []*proto.Event
+	coveredRev uint64
+	err        error
 }
 
 func newScanGroup() *scanGroup { return &scanGroup{m: make(map[string]*scanCall)} }
 
 // Do runs fn for key unless an identical scan is already in flight, in which
-// case it waits for and returns that scan's result. The returned bool reports
-// whether this caller shared an in-flight scan (true) instead of executing it
-// (false) — used by tests to assert the herd collapsed.
+// case it waits for and returns that scan's result. fn returns (events,
+// coveredRev): coveredRev is the revision the scan is complete up to, so a
+// waiter can tell whether the shared result covers far enough for its own
+// from-now subscription (a scan snapshotted before the waiter subscribed may
+// stop short and must not be reused blindly — see historyWatchEvents). The
+// returned bool reports whether this caller shared an in-flight scan (true)
+// instead of executing it (false).
 //
 // Cancellation safety: a waiter whose own ctx is cancelled returns immediately
 // rather than blocking on a stranger's scan. And if the executing scan fails for
 // a ctx reason (its caller disconnected mid-scan), waiters whose ctx is still
 // alive re-execute under their own ctx — so one caller's cancellation never
 // propagates a spurious failure to the others.
-func (g *scanGroup) Do(ctx context.Context, key string, fn func(context.Context) ([]*proto.Event, error)) ([]*proto.Event, error, bool) {
+func (g *scanGroup) Do(ctx context.Context, key string, fn func(context.Context) ([]*proto.Event, uint64, error)) ([]*proto.Event, uint64, error, bool) {
 	for {
 		g.mu.Lock()
 		if c, ok := g.m[key]; ok {
@@ -71,22 +76,22 @@ func (g *scanGroup) Do(ctx context.Context, key string, fn func(context.Context)
 					// failure; our ctx is still good, so retry as a fresh caller.
 					continue
 				}
-				return c.events, c.err, true
+				return c.events, c.coveredRev, c.err, true
 			case <-ctx.Done():
-				return nil, ctx.Err(), true
+				return nil, 0, ctx.Err(), true
 			}
 		}
 		c := &scanCall{done: make(chan struct{})}
 		g.m[key] = c
 		g.mu.Unlock()
 
-		c.events, c.err = fn(ctx)
+		c.events, c.coveredRev, c.err = fn(ctx)
 		close(c.done)
 
 		g.mu.Lock()
 		delete(g.m, key)
 		g.mu.Unlock()
-		return c.events, c.err, false
+		return c.events, c.coveredRev, c.err, false
 	}
 }
 

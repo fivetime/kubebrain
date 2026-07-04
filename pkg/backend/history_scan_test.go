@@ -97,7 +97,7 @@ func TestHistoryScanHerdSharesOneScan(t *testing.T) {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			evs, e := b.historyWatchEvents(ctx, baseKey, createA.Header.Revision, cur)
+			evs, e := b.historyWatchEvents(ctx, baseKey, createA.Header.Revision, cur, 0)
 			results[idx], errs[idx] = evs, e
 		}(i)
 	}
@@ -166,7 +166,7 @@ func TestHistoryScanBucketSharesNearbyRevisions(t *testing.T) {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			e, err := b.historyWatchEvents(ctx, baseKey, froms[idx], cur)
+			e, err := b.historyWatchEvents(ctx, baseKey, froms[idx], cur, 0)
 			out[idx] = res{e, err}
 		}(i)
 	}
@@ -181,6 +181,133 @@ func TestHistoryScanBucketSharesNearbyRevisions(t *testing.T) {
 	require.Len(t, out[0].evs, 2, "caller@r1 recovers createA + updateA")
 	require.Len(t, out[1].evs, 1, "caller@r2 recovers only updateA (its own revision filters out createA)")
 	require.EqualValues(t, r2, out[1].evs[0].Revision)
+}
+
+// setupMidScanWrite builds the shared-scan-under-writes scenario: keyA exists at
+// r1; the executor's history scan is gated open at snapshot c1; while it is gated
+// a second event keyB is committed at r2 (> c1); a late waiter that needs
+// coverage up to r2 joins the same bucket. It returns after both keyA and keyB
+// are committed, with the executor still gated and the waiter not yet launched.
+func setupMidScanWrite(t *testing.T, b *backend, gkv *gatedIterKV) (baseKey string, r1, c1, r2, c2 uint64, launchExecutor func() (*[]*proto.Event, *error, *sync.WaitGroup)) {
+	ctx := context.Background()
+	baseKey = prefix + "/guard"
+	keyA := baseKey + "/a"
+	createA, err := b.Create(ctx, newCreateRequest(keyA, "a1"))
+	require.NoError(t, err)
+	waitUntilRevisionEqualOrTimeout(b, createA.Header.Revision)
+	r1 = createA.Header.Revision
+	c1 = b.GetCurrentRevision()
+	gkv.gateSubstr = b.coder.EncodeObjectKey([]byte(baseKey), 0)
+
+	launchExecutor = func() (*[]*proto.Event, *error, *sync.WaitGroup) {
+		var evs []*proto.Event
+		var e error
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() { defer wg.Done(); evs, e = b.historyWatchEvents(ctx, baseKey, r1, c1, 0) }()
+		return &evs, &e, &wg
+	}
+	return
+}
+
+// TestHistoryScanRingExtendCoversMidScanWrites pins the ring extension (#30): a
+// shared scan snapshotted at c1 while writes continue must still cover a later
+// event r2 for a waiter that joins mid-scan — WITHOUT that waiter re-scanning —
+// because the executor extends coverage from the warm ring (where the collector
+// has already placed r2). One Iter total; both callers see keyB; no event loss.
+func TestHistoryScanRingExtendCoversMidScanWrites(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	m := mock.NewMinimalMetrics(ctrl)
+	gkv := &gatedIterKV{KvStorage: imemkv.NewKvStorage(), release: make(chan struct{})}
+	b := NewBackend(gkv, Config{Prefix: prefix, Identity: getStorageIdentity()}, m).(*backend)
+	defer func() { require.NoError(t, gkv.Close()) }()
+	b.SetCurrentRevision(uint64(time.Now().UnixNano()))
+	ctx := context.Background()
+
+	baseKey, r1, c1, _, _, launchExec := setupMidScanWrite(t, b, gkv)
+	execEvs, execErr, execDone := launchExec()
+	time.Sleep(150 * time.Millisecond) // executor registers + gates
+
+	// keyB commits after c1 while the scan is gated; the collector adds it to the
+	// ring, so the executor's ring extension will recover it.
+	createB, err := b.Create(ctx, newCreateRequest(baseKey+"/b", "b1"))
+	require.NoError(t, err)
+	waitUntilRevisionEqualOrTimeout(b, createB.Header.Revision)
+	r2 := createB.Header.Revision
+	require.Greater(t, r2, c1)
+	c2 := b.GetCurrentRevision()
+
+	var waitEvs []*proto.Event
+	var waitErr error
+	var waitDone sync.WaitGroup
+	waitDone.Add(1)
+	go func() { defer waitDone.Done(); waitEvs, waitErr = b.historyWatchEvents(ctx, baseKey, r1, c2, r2) }()
+	time.Sleep(150 * time.Millisecond) // waiter joins the group
+
+	close(gkv.release)
+	execDone.Wait()
+	waitDone.Wait()
+
+	require.NoError(t, *execErr)
+	require.NoError(t, waitErr)
+	require.EqualValues(t, 1, atomic.LoadInt32(&gkv.iterCount),
+		"ring extension must cover the mid-scan write so the waiter shares, not re-scans")
+	require.Len(t, *execEvs, 2, "executor recovers keyB from the ring extension")
+	require.Len(t, waitEvs, 2, "waiter shares the extended result — no lost event")
+	require.EqualValues(t, r2, waitEvs[1].Revision)
+}
+
+// TestHistoryScanGuardReScansWhenRingCold pins the completeness guard's re-scan
+// fallback: when the ring CANNOT cover the gap (cold/evicted), a waiter needing
+// coverage past the shared snapshot must re-scan storage rather than silently
+// drop the events. Same scenario, but the ring is reset before release so the
+// extension finds nothing.
+func TestHistoryScanGuardReScansWhenRingCold(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	m := mock.NewMinimalMetrics(ctrl)
+	gkv := &gatedIterKV{KvStorage: imemkv.NewKvStorage(), release: make(chan struct{})}
+	b := NewBackend(gkv, Config{Prefix: prefix, Identity: getStorageIdentity()}, m).(*backend)
+	defer func() { require.NoError(t, gkv.Close()) }()
+	b.SetCurrentRevision(uint64(time.Now().UnixNano()))
+	ctx := context.Background()
+
+	baseKey, r1, c1, _, _, launchExec := setupMidScanWrite(t, b, gkv)
+	execEvs, execErr, execDone := launchExec()
+	time.Sleep(150 * time.Millisecond)
+
+	createB, err := b.Create(ctx, newCreateRequest(baseKey+"/b", "b1"))
+	require.NoError(t, err)
+	waitUntilRevisionEqualOrTimeout(b, createB.Header.Revision)
+	r2 := createB.Header.Revision
+	require.Greater(t, r2, c1)
+	c2 := b.GetCurrentRevision()
+	// Force the ring cold so the extension can't cover (r2 falls out): the guard
+	// must fall back to a storage re-scan.
+	b.watchCache.Reset()
+
+	var waitEvs []*proto.Event
+	var waitErr error
+	var waitDone sync.WaitGroup
+	waitDone.Add(1)
+	go func() { defer waitDone.Done(); waitEvs, waitErr = b.historyWatchEvents(ctx, baseKey, r1, c2, r2) }()
+	time.Sleep(150 * time.Millisecond)
+
+	close(gkv.release)
+	execDone.Wait()
+	waitDone.Wait()
+
+	require.NoError(t, *execErr)
+	require.NoError(t, waitErr)
+	// Executor's snapshot excluded keyB and the ring was cold, so it saw only keyA.
+	require.Len(t, *execEvs, 1, "executor's cold-ring result excludes the later event")
+	require.EqualValues(t, r1, (*execEvs)[0].Revision)
+	// The guard made the waiter re-scan and recover keyB — no lost event.
+	require.Len(t, waitEvs, 2, "guard re-scan must recover the event the cold ring could not")
+	require.EqualValues(t, r2, waitEvs[1].Revision)
+	require.EqualValues(t, 2, atomic.LoadInt32(&gkv.iterCount),
+		"waiter must re-scan when the ring cannot extend coverage")
 }
 
 // TestHistoryScanWaiterHonorsOwnCtx pins that a waiter blocked on someone else's
@@ -209,7 +336,7 @@ func TestHistoryScanWaiterHonorsOwnCtx(t *testing.T) {
 	execDone.Add(1)
 	go func() {
 		defer execDone.Done()
-		_, _ = b.historyWatchEvents(ctx, baseKey, createA.Header.Revision, cur)
+		_, _ = b.historyWatchEvents(ctx, baseKey, createA.Header.Revision, cur, 0)
 	}()
 	time.Sleep(150 * time.Millisecond) // let the executor take the slot
 
@@ -217,7 +344,7 @@ func TestHistoryScanWaiterHonorsOwnCtx(t *testing.T) {
 	wctx, wcancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer wcancel()
 	start := time.Now()
-	_, err = b.historyWatchEvents(wctx, baseKey, createA.Header.Revision, cur)
+	_, err = b.historyWatchEvents(wctx, baseKey, createA.Header.Revision, cur, 0)
 	elapsed := time.Since(start)
 	require.Error(t, err)
 	require.Less(t, elapsed, 2*time.Second, "waiter must return on its own ctx, not wait for the shared scan")
