@@ -92,7 +92,7 @@ func (s *RPCServer) Range(ctx context.Context, r *etcdserverpb.RangeRequest) (*e
 		response, err = s.backend.List(ctx, r)
 	}
 	successTag = getSuccessMetricTagByErr(err)
-	s.metricCli.EmitCounter("read", 1, methodTag, successTag)
+	s.metricCli.EmitCounter("read", 1, methodTag, successTag, errClassTag(err))
 	s.metricCli.EmitHistogram("read.latency", time.Since(startTime).Seconds(), methodTag, successTag)
 	if response != nil {
 		s.metricCli.EmitHistogram("read.responsesize", response.Size(), methodTag, successTag)
@@ -216,7 +216,7 @@ func (s *RPCServer) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etc
 	}
 	// emit metric
 	successTag = getSuccessMetricTagByErr(err)
-	s.metricCli.EmitCounter("write", 1, methodTag, successTag)
+	s.metricCli.EmitCounter("write", 1, methodTag, successTag, errClassTag(err))
 	s.metricCli.EmitHistogram("write.latency", time.Since(startTime).Seconds(), methodTag, successTag)
 	if response != nil {
 		s.metricCli.EmitHistogram("write.responsesize", response.Size(), methodTag, successTag)
@@ -559,7 +559,7 @@ func (s *RPCServer) Put(ctx context.Context, r *etcdserverpb.PutRequest) (*etcds
 		response, err = s.backend.Put(ctx, put)
 	}
 	successTag := getSuccessMetricTagByErr(err)
-	s.metricCli.EmitCounter("write", 1, metrics.Tag("method", "put"), successTag)
+	s.metricCli.EmitCounter("write", 1, metrics.Tag("method", "put"), successTag, errClassTag(err))
 	s.metricCli.EmitHistogram("write.latency", time.Since(startTime).Seconds(), metrics.Tag("method", "put"), successTag)
 	if response != nil {
 		s.metricCli.EmitHistogram("write.responsesize", response.Size(), metrics.Tag("method", "put"), successTag)
@@ -600,7 +600,7 @@ func (s *RPCServer) DeleteRange(ctx context.Context, r *etcdserverpb.DeleteRange
 		}
 	}
 	successTag := getSuccessMetricTagByErr(err)
-	s.metricCli.EmitCounter("write", 1, metrics.Tag("method", "delete-range"), successTag)
+	s.metricCli.EmitCounter("write", 1, metrics.Tag("method", "delete-range"), successTag, errClassTag(err))
 	s.metricCli.EmitHistogram("write.latency", time.Since(startTime).Seconds(), metrics.Tag("method", "delete-range"), successTag)
 	if response != nil {
 		s.metricCli.EmitHistogram("write.responsesize", response.Size(), metrics.Tag("method", "delete-range"), successTag)
@@ -1272,6 +1272,45 @@ func getSuccessMetricTagByErr(err error) metrics.T {
 	}
 
 	return metrics.Tag("success", "true")
+}
+
+// errClassTag buckets a read/write error into a bounded, low-cardinality label so
+// dashboards can separate benign, client-retriable failures — a compacted/future
+// revision (client relists), a leader failover / fence (client retries) — from
+// real backend trouble (timeouts/overload, unexpected errors). "none" on success.
+// This is the missing signal over plain success=true/false: it distinguishes
+// "the client will recover on its own" from "something is actually wrong".
+func errClassTag(err error) metrics.T {
+	return metrics.Tag("errclass", errClass(err))
+}
+
+func errClass(err error) string {
+	switch {
+	case err == nil:
+		return "none"
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "deadline"
+	case errors.Is(err, backend.ErrLeadershipFenced):
+		return "fenced" // leadership changed during commit; client retries the new leader
+	}
+	switch status.Code(err) {
+	case codes.OK:
+		return "none"
+	case codes.OutOfRange:
+		return "revision" // compacted or future revision — benign, client relists/retries
+	case codes.Unavailable:
+		return "unavailable" // no fresh leader / contended — benign, client retries
+	case codes.DeadlineExceeded:
+		return "deadline" // timeout — possible overload
+	case codes.NotFound:
+		return "not_found"
+	case codes.InvalidArgument:
+		return "invalid"
+	default:
+		return "other" // unexpected — the one to alert on
+	}
 }
 
 func txnHeader(rev int64) *etcdserverpb.ResponseHeader {
