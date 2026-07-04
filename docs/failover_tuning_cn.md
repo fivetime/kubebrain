@@ -53,6 +53,14 @@ k3s server \
 2. **止住控制面崩**：优先用**杠杆 2**——调大 k3s/k8s 控制器 `--leader-elect-lease-duration`（如 30s）到明显大于 KubeBrain 的最坏无主窗口。零风险。
 3. **确需更快切换**（后端延迟稳定）：再谨慎用**杠杆 1**小幅降 KubeBrain `LeaseDuration`，并压测确认满载下不诱发误切换。
 
+## 实测结果（2026-07-04，104 核 / 3 PD+3 TiKV / 3 节点 k3s）
+
+两个杠杆都做了真集群实测（`hack/etcd-client-compat/failoverwrite_test.go` 写探针 + kill 真 leader）：
+
+- **杠杆 2 有效**：给 k3s controller-manager/scheduler 加 `--leader-elect-lease-duration=30s` 后，满载中杀 KubeBrain leader → **k3s-server 全程不退出**(`Up`、uptime 持续增长)、controller-manager `leaderelection lost`=0、`failed to renew`=0、3 节点持续 Ready。对照基线(无容忍)：controller-manager 丢锁、k3s-server ~15s 内退出。
+- **杠杆 1 有效**：写服务无主间隙 —— **8s 租约 ≈ 6.6s(恢复 +9.1s)**;**4s 租约(`--leader-lease-duration=4s --leader-renew-deadline=2s --leader-retry-period=500ms`)≈ 2.5s**。缩短租约明显缩短窗口。
+- **杠杆 1 的误切换代价，本环境未触发**：4s/2s 配置下,即便满载把**批量写延迟压到 ~2s**(贴着 2s 续期截止),再加码到 24 路 churn,KubeBrain leader **零误切换、零重启**(合计 >3.5min 满载)。原因:leader 租约续期是对锁键的小写,不排在 configmap 热点 keyspace 后面,续期路径始终 <2s。**结论:该 tradeoff 真实存在于原理上,但因"续期延迟 ≠ 批量写延迟",实测比预期更稳**。仍建议:降默认前压测确认你的后端锁键续期延迟留足 `RenewDeadline` 余量。
+
 ## 参考
 
 - 无主窗口天花板的实测复刻与恢复：`hack/dev/k3s-load-depth.sh`（头注释）。
