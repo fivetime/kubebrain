@@ -95,7 +95,7 @@ func TestHistoryWatchEventsNoPerTombstoneReads(t *testing.T) {
 	waitCommitted(t, b, curRev)
 
 	atomic.StoreInt64(&ckv.iters, 0)
-	events, err := b.historyWatchEvents(ctx, prefix+"/reg/h/", fromRev, b.GetCurrentRevision())
+	events, err := b.historyWatchEvents(ctx, prefix+"/reg/h/", fromRev, b.GetCurrentRevision(), 0)
 	require.NoError(t, err)
 
 	iters := atomic.LoadInt64(&ckv.iters)

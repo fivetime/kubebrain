@@ -54,6 +54,15 @@ const (
 	// mistaken for a dead one.
 	collectorStallWarnAfter = 3 * time.Second
 	collectorStallSkipAfter = 30 * time.Second
+
+	// defaultHistoryScanRevBucket is the default width (in revisions) of the
+	// watch-history singleflight bucket (#30): reconnecting watchers of the same
+	// prefix whose revisions fall in the same bucket share one storage scan.
+	// Chosen to absorb the revision spread between HA-apiserver replicas that
+	// relist at slightly different instants, while keeping the shared scan window
+	// only modestly wider than any single caller asked for. Tunable via
+	// Config.HistoryScanRevBucket / --watch-history-scan-rev-bucket.
+	defaultHistoryScanRevBucket = 4096
 )
 
 type Backend interface {
@@ -205,6 +214,13 @@ type backend struct {
 	// on. Buffered to historyScanConcurrency.
 	historyScanSem chan struct{}
 
+	// historyScanGroup collapses a reconnect herd's concurrent history scans of
+	// the SAME prefix into one shared scan (singleflight), so the herd's storage
+	// cost is O(1) per prefix rather than O(N) (#30). Complements historyScanSem:
+	// the semaphore bounds distinct concurrent scans, the group dedups identical
+	// ones.
+	historyScanGroup *scanGroup
+
 	// Background physical compaction. CompactAsync advances the logical compact
 	// watermark synchronously (so reads immediately see the compaction) and hands
 	// the slow physical version-GC scan to runCompactor, so the etcd Compact RPC
@@ -252,6 +268,15 @@ type Config struct {
 
 	// WatchCacheSize is the cache size of events
 	WatchCacheSize int
+
+	// HistoryScanRevBucket buckets the watch-history singleflight key (#30):
+	// watchers reconnecting to the same prefix whose requested revisions fall in
+	// the same bucket share ONE storage scan. Larger buckets collapse a wider
+	// spread of near-revision reconnects (e.g. HA-apiserver replicas relisting at
+	// slightly different revisions) at the cost of a shared scan window up to one
+	// bucket wider than any single caller requested. 0 => default
+	// (defaultHistoryScanRevBucket); 1 => only exact-revision reconnects share.
+	HistoryScanRevBucket uint64
 
 	// EnableCountIndex maintains an in-memory versioned key index on the leader
 	// for exact O(range) counts (approach A-index). Requires EnableEtcdCompatibility.
@@ -303,9 +328,10 @@ func NewBackend(kv storage.KvStorage, config Config, metricCli metrics.Metrics) 
 			metricCli:        metricCli,
 			progressInterval: config.WatchProgressNotifyInterval,
 		},
-		historyScanSem: make(chan struct{}, historyScanConcurrency),
-		compactSignal:  make(chan struct{}, 1),
-		metricCli:      metricCli,
+		historyScanSem:   make(chan struct{}, historyScanConcurrency),
+		historyScanGroup: newScanGroup(),
+		compactSignal:    make(chan struct{}, 1),
+		metricCli:        metricCli,
 	}
 
 	if config.EnableCountIndex && config.EnableEtcdCompatibility {
