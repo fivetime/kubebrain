@@ -316,6 +316,20 @@ hack/dev/fault-smoke.sh
 
 `fault-smoke.sh` 会先跑一次基础 smoke，然后依次删除一个 KubeBrain Pod、一个 PD Pod、一个 TiKV Pod，每次等待组件恢复后重新运行基础 smoke。当前 dev TiKV/PD 是单副本，PD 或 TiKV 重启期间会有短暂不可用，脚本会重试直到恢复或超时。
 
+## Count-Index 容灾回归（边写边杀 leader）
+
+```shell
+hack/dev/countindex-failover-smoke.sh
+```
+
+`countindex-failover-smoke.sh` 专门验证 **leader 维护的 count 索引在持续故障转移下的正确性**：在 48 个 writer 持续写入期间，按 `count_index_keys` gauge 识别当前 leader 并连续强杀 `KILLS`（默认 6）次，每次触发新 leader 重建索引。判定 oracle 是**索引服务值与全量 scan 必须一致**——`rev=0` CountOnly 由 leader 内存索引服务（~ms）时返回的计数，必须等于由 follower/未就绪 leader 走的全量 scan（慢），并且:
+
+- 重建期间任何一次快路径（索引）读都不能返回严重偏低（近 0 / 残缺）的计数（守护 Reset 安装缺口 / 半加载被服务 / Ready-Count TOCTOU 三类 bug）；
+- 写入静默后所有读（无论索引还是 scan）必须返回同一个计数；
+- 存活副本零重启。
+
+读用**每次新建连接**经 NodePort 分散到各副本（持久 gRPC 连接会固定到单个 Pod，压不到 leader 索引）。需要 `--enable-count-index=true`。可调 `KILLS`、`WRITE_SECONDS`、`QUIESCE_SECONDS`、`WORKERS`、`ENDPOINT`。已在 6 次连杀、~10 万 key 规模下验证索引与 scan 逐一对齐、零错误计数。
+
 ## Lease Expiry Smoke
 
 ```shell
