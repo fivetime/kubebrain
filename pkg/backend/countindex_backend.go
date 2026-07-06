@@ -40,15 +40,18 @@ func (b *backend) CountAtRevision(ctx context.Context, key, end []byte, rev uint
 		}
 		rev = cur
 	}
-	if !b.countIndex.Ready(rev) {
-		b.metricCli.EmitCounter("count_index.miss", 1)
-		return 0, false
-	}
 	if isFromKeyEnd(end) {
 		end = nil // "from key" range: count to the end of the keyspace
 	}
+	// Ready-check and count under one lock: a separate Ready() then Count() lets a
+	// concurrent rebuild install a half-loaded tree in between and serve a spurious ~0.
+	n, ok := b.countIndex.CountIfReady(key, end, rev)
+	if !ok {
+		b.metricCli.EmitCounter("count_index.miss", 1)
+		return 0, false
+	}
 	b.metricCli.EmitCounter("count_index.hit", 1)
-	return int64(b.countIndex.Count(key, end, rev)), true
+	return int64(n), true
 }
 
 // RebuildCountIndex rebuilds the count index from a snapshot of the live keys at
@@ -62,14 +65,31 @@ func (b *backend) RebuildCountIndex(ctx context.Context) error {
 	}
 	ts := time.Now()
 	start := []byte(b.config.Prefix)
-	// baseRev is captured inside Reset under its install lock (the committed
-	// revision at that instant); the load then scans storage at exactly baseRev.
-	// Reset loads without holding the index lock for the whole scan, so the
-	// collector keeps advancing the committed revision throughout — no freeze, no
-	// watch-buffer overflow during a minutes-long rebuild at scale.
+	// Floor the snapshot revision at the compact watermark+1: a just-promoted
+	// leader whose committed revision has not yet caught up could otherwise capture
+	// a baseRev at/below the watermark and List at a partially-GC'd revision,
+	// yielding an incomplete "live keys" snapshot. safeCurrentRevision used to
+	// enforce this; Reset gets a currentRev func that reproduces the floor without
+	// its committed-revision write side-effect (which we must not do under the lock).
+	compactRev, cerr := b.GetCompactRevision(ctx)
+	if cerr != nil {
+		klog.ErrorS(cerr, "rebuild count index: read compact revision failed")
+		return cerr
+	}
+	// baseRev is captured inside Reset under its install lock; the load then scans
+	// storage at exactly baseRev. Reset loads without holding the index lock for
+	// the whole scan, so the collector keeps advancing the committed revision
+	// throughout — no freeze, no watch-buffer overflow during a minutes-long
+	// rebuild at scale.
 	b.countIndex.Reset(
-		func() uint64 { return b.tso.GetRevision() },
-		func(rev uint64, emit func(key []byte, revision uint64, tombstone bool)) {
+		func() uint64 {
+			r := b.tso.GetRevision()
+			if compactRev+1 > r {
+				r = compactRev + 1
+			}
+			return r
+		},
+		func(rev uint64, emit func(key []byte, revision uint64, tombstone bool)) error {
 			cur := append([]byte(nil), start...)
 			for {
 				resp, lerr := b.List(ctx, &proto.RangeRequest{
@@ -79,8 +99,10 @@ func (b *backend) RebuildCountIndex(ctx context.Context) error {
 					Limit:    countRebuildPageSize,
 				})
 				if lerr != nil {
+					// Returning the error disables the index (Reset sets baseRev=0) so a
+					// half-loaded tree is never served — counts fall back to a scan.
 					klog.ErrorS(lerr, "rebuild count index: list failed", "from", Key(cur))
-					return
+					return lerr
 				}
 				for _, kv := range resp.Kvs {
 					// List returns only live keys (tombstones filtered), so every
@@ -92,6 +114,7 @@ func (b *backend) RebuildCountIndex(ctx context.Context) error {
 				}
 				cur = append(append([]byte(nil), resp.Kvs[len(resp.Kvs)-1].Key...), 0)
 			}
+			return nil
 		})
 	rev := b.countIndex.BaseRev()
 	klog.InfoS("count index rebuilt", "rev", rev, "keys", b.countIndex.Len(),

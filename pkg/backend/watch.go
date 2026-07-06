@@ -203,11 +203,15 @@ func (b *backend) historyWatchEvents(ctx context.Context, prefix string, fromRev
 	if scanFrom < 1 {
 		scanFrom = 1
 	}
-	// Never scan below the compact watermark: those versions may be GC'd, and it
+	// Never scan BELOW the compact watermark: those versions may be GC'd, and it
 	// keeps scanFrom (hence the shared key and window) consistent for everyone in
-	// the bucket. Callers whose own revision is below it already errored above.
-	if compactRevision > 0 && scanFrom < compactRevision+1 {
-		scanFrom = compactRevision + 1
+	// the bucket. Clamp to compactRevision itself, not compactRevision+1: the
+	// version at exactly compactRevision is retained by compaction, and a watcher
+	// reconnecting at fromRevision == compactRevision (accepted by the strict
+	// fromRevision < compactRevision guard above) must still receive the event at
+	// its own start revision — clamping to +1 would silently drop it.
+	if compactRevision > 0 && scanFrom < compactRevision {
+		scanFrom = compactRevision
 	}
 	key := prefix + "\x00" + strconv.FormatUint(scanFrom, 10)
 	// The executor of the shared scan reports the revision it is complete up to

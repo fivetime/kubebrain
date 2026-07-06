@@ -619,9 +619,10 @@ func (b *backend) SetCurrentRevision(revision uint64) {
 // index is exact as of it. Previously readyRev only advanced inside Apply, so it
 // lagged the committed revision and every rev=0 count missed Ready() and scanned
 // (the index served only when the exact past revision was requested). Safe
-// against a concurrent rebuild: TreeIndex.Reset holds the index lock for its
-// whole load, so this call (like Apply) blocks until the snapshot's baseRev is
-// installed and then resumes advancing in commit order.
+// against a concurrent non-blocking rebuild: Reset floors its snapshot baseRev at
+// the highest applied revision (max(committed, readyRev)), so the fresh tree
+// captures every event this watermark covers, and readyRev only ever advances
+// (monotonic) while Ready() stays false for the tree's loading window.
 func (b *backend) advanceCountIndexReadyRev(revision uint64) {
 	if b.countIndex != nil {
 		b.countIndex.SetReadyRev(revision)
