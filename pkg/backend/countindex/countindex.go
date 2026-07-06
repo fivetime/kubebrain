@@ -235,6 +235,14 @@ func (t *TreeIndex) Len() int {
 	return t.tree.Len()
 }
 
+// Overflowed reports whether the index disabled itself after exceeding maxKeys
+// (counts then fall back to a scan). Exposed for live observability.
+func (t *TreeIndex) Overflowed() bool {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.overflowed
+}
+
 // Count returns the number of live keys in [start, end) at revision rev. A nil
 // end means "to the end of the keyspace".
 func (t *TreeIndex) Count(start, end []byte, rev uint64) int {

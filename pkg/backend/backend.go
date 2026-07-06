@@ -63,6 +63,12 @@ const (
 	// only modestly wider than any single caller asked for. Tunable via
 	// Config.HistoryScanRevBucket / --watch-history-scan-rev-bucket.
 	defaultHistoryScanRevBucket = 4096
+
+	// countIndexMetricInterval is how often the live count-index gauges
+	// (tracked-key count, overflowed flag) are refreshed. The count_index.keys
+	// gauge is otherwise only updated on a rebuild and goes stale as live writes
+	// change the key set.
+	countIndexMetricInterval = 15 * time.Second
 )
 
 type Backend interface {
@@ -359,6 +365,8 @@ func NewBackend(kv storage.KvStorage, config Config, metricCli metrics.Metrics) 
 	go b.runCompactor()
 	// Opt-in safety net (config.AutoCompactionRetention > 0); a no-op otherwise.
 	go b.runAutoCompactor()
+	// Live count-index gauges (no-op when the index is disabled).
+	go b.emitCountIndexMetrics()
 
 	return b
 }
@@ -617,6 +625,27 @@ func (b *backend) SetCurrentRevision(revision uint64) {
 func (b *backend) advanceCountIndexReadyRev(revision uint64) {
 	if b.countIndex != nil {
 		b.countIndex.SetReadyRev(revision)
+	}
+}
+
+// emitCountIndexMetrics periodically publishes live count-index gauges so
+// operators can watch the tracked-key count against --count-index-max-keys and
+// see when the index has overflowed (disabled, counts fall back to a scan). The
+// count_index.keys gauge is otherwise refreshed only on a rebuild and goes stale
+// as live writes add and delete keys.
+func (b *backend) emitCountIndexMetrics() {
+	if b.countIndex == nil {
+		return
+	}
+	ticker := time.NewTicker(countIndexMetricInterval)
+	defer ticker.Stop()
+	for range ticker.C {
+		b.metricCli.EmitGauge("count_index.keys", b.countIndex.Len())
+		overflowed := 0
+		if b.countIndex.Overflowed() {
+			overflowed = 1
+		}
+		b.metricCli.EmitGauge("count_index.overflowed", overflowed)
 	}
 }
 
