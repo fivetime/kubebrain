@@ -497,6 +497,7 @@ func (b *backend) collectStorageWriteEvents() {
 						klog.Errorf("event collector skipping abandoned revision %d (dealt=%d) after stall; a writer died between deal and notify", nextRevision, b.tso.Dealt())
 						b.metricCli.EmitCounter("watch.collector.skipped_revision", 1)
 						b.SetCurrentRevision(nextRevision)
+						b.advanceCountIndexReadyRev(nextRevision)
 						continue
 					}
 					if warn {
@@ -556,6 +557,7 @@ func (b *backend) collectStorageWriteEvents() {
 				b.watchCache.Add(e)
 			}
 			b.SetCurrentRevision(nextRevision)
+			b.advanceCountIndexReadyRev(nextRevision)
 		}
 
 		if len(events) > 0 {
@@ -597,6 +599,25 @@ func (b *backend) WatchProgressNotifyInterval() time.Duration {
 // SetCurrentRevision implements Backend interface
 func (b *backend) SetCurrentRevision(revision uint64) {
 	b.tso.Commit(revision)
+}
+
+// advanceCountIndexReadyRev advances the count index's ready watermark to a
+// just-committed revision, so a "count at current" (rev=0) request is served
+// from the index instead of falling back to a full scan. The collector calls it
+// right after SetCurrentRevision: by then every live-key event for the revision
+// has been Apply'd, and a revision that carries no count-index Apply — a
+// CAS-failed write, an abandoned/holed revision, or simply the read revision
+// advancing ahead of the last live-key event — changed no live keys, so the
+// index is exact as of it. Previously readyRev only advanced inside Apply, so it
+// lagged the committed revision and every rev=0 count missed Ready() and scanned
+// (the index served only when the exact past revision was requested). Safe
+// against a concurrent rebuild: TreeIndex.Reset holds the index lock for its
+// whole load, so this call (like Apply) blocks until the snapshot's baseRev is
+// installed and then resumes advancing in commit order.
+func (b *backend) advanceCountIndexReadyRev(revision uint64) {
+	if b.countIndex != nil {
+		b.countIndex.SetReadyRev(revision)
+	}
 }
 
 func responseHeader(rev uint64) *proto.ResponseHeader {

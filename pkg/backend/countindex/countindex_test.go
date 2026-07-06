@@ -127,3 +127,24 @@ func TestOverflowDisablesIndex(t *testing.T) {
 	}
 	require.False(t, idx.Ready(5), "index must disable itself past maxKeys")
 }
+
+// TestSetReadyRevAdvancesReadyWatermark pins that the ready watermark can be
+// advanced past the last applied live-key revision (for committed revisions that
+// carry no Apply — CAS-failed/abandoned/bookkeeping writes), so a count at the
+// current revision is answerable instead of failing Ready() and forcing a scan.
+func TestSetReadyRevAdvancesReadyWatermark(t *testing.T) {
+	idx := New(0)
+	idx.Reset(100, func(emit func(key []byte, rev uint64, tombstone bool)) {
+		emit([]byte("a"), 100, false)
+	})
+	require.True(t, idx.Ready(100))
+	require.False(t, idx.Ready(105), "must not be ready beyond baseRev before advancing")
+
+	idx.SetReadyRev(105) // committed advanced to 105 with no live-key change
+	require.True(t, idx.Ready(105), "ready watermark must advance to the committed revision")
+	require.False(t, idx.Ready(106))
+	require.EqualValues(t, 1, idx.Count([]byte("a"), []byte("z"), 105))
+
+	idx.SetReadyRev(103) // never moves backwards
+	require.True(t, idx.Ready(105))
+}
