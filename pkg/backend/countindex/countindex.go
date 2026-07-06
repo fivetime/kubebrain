@@ -143,6 +143,13 @@ func (t *TreeIndex) applyLocked(key []byte, rev uint64, tombstone bool) {
 		// after a newer delete, and then reading back with the old "skip if <= last"
 		// guard, would have dropped the older state and mis-counted historical
 		// revisions. A duplicate revision (idempotent re-apply) is a no-op.
+		// Fast path: the ordered collector appends the newest revision, so keep an
+		// O(1) tail-compare and only fall back to the O(log n) search for the rare
+		// out-of-order (rebuild snapshot vs concurrent apply) case.
+		if n := len(ki.revs); n > 0 && rev > ki.revs[n-1].revision {
+			ki.revs = append(ki.revs, revEntry{revision: rev, tombstone: tombstone})
+			return
+		}
 		i := sort.Search(len(ki.revs), func(j int) bool { return ki.revs[j].revision >= rev })
 		if i < len(ki.revs) && ki.revs[i].revision == rev {
 			return
@@ -167,16 +174,28 @@ func (t *TreeIndex) applyLocked(key []byte, rev uint64, tombstone bool) {
 // applying live events between keys. While loading, Ready() is false, so no
 // query sees the half-populated tree.
 //
-// baseRev is captured under the install lock via currentRev(): it is the
-// committed revision at that instant, so the collector's subsequent applies
-// (baseRev+1, ...) land on the fresh tree while the snapshot fills in the state
-// as of baseRev. The two merge via applyLocked's out-of-order guard, leaving the
-// tree complete and current; readyRev is whatever the collector has advanced it
-// to (>= baseRev), not regressed. load receives baseRev so it can scan storage
-// at exactly that revision.
-func (t *TreeIndex) Reset(currentRev func() uint64, load func(baseRev uint64, emit func(key []byte, rev uint64, tombstone bool))) {
+// baseRev is captured under the install lock as max(currentRev(), readyRev): the
+// committed revision, floored at the highest revision already applied to the
+// (about-to-be-discarded) tree. The floor matters because the collector Apply()s
+// a live event BEFORE it advances the committed revision, so an event at
+// readyRev can already be in the old tree while currentRev() still reads
+// readyRev-1; snapshotting at the lower value would drop that event from the new
+// tree yet leave readyRev claiming coverage for it. Taking the max snapshots
+// storage at a revision that includes every applied event, so the collector's
+// subsequent applies (baseRev+1, ...) land on the fresh tree while the snapshot
+// fills in the state as of baseRev; the two merge via applyLocked's out-of-order
+// guard, leaving the tree complete and current.
+//
+// load returns an error if the snapshot scan did not complete (a transient
+// storage error mid-load). On error the index is disabled (baseRev=0 → Ready
+// false) so counts fall back to a scan rather than serving a silent undercount
+// from a half-loaded tree.
+func (t *TreeIndex) Reset(currentRev func() uint64, load func(baseRev uint64, emit func(key []byte, rev uint64, tombstone bool)) error) {
 	t.mu.Lock()
 	baseRev := currentRev()
+	if t.readyRev > baseRev {
+		baseRev = t.readyRev
+	}
 	t.tree = btree.New(32)
 	t.overflowed = false
 	t.loading = true
@@ -186,7 +205,7 @@ func (t *TreeIndex) Reset(currentRev func() uint64, load func(baseRev uint64, em
 	}
 	t.mu.Unlock()
 
-	load(baseRev, func(key []byte, rev uint64, tombstone bool) {
+	err := load(baseRev, func(key []byte, rev uint64, tombstone bool) {
 		t.mu.Lock()
 		if !t.overflowed {
 			t.applyLocked(key, rev, tombstone)
@@ -197,6 +216,12 @@ func (t *TreeIndex) Reset(currentRev func() uint64, load func(baseRev uint64, em
 
 	t.mu.Lock()
 	t.loading = false
+	if err != nil {
+		// Incomplete snapshot: the tree is missing every key past the failed page.
+		// Disable the index so Ready() is false and counts fall back to a scan until
+		// the next rebuild, instead of serving a silent undercount.
+		t.baseRev = 0
+	}
 	t.mu.Unlock()
 }
 
@@ -248,6 +273,24 @@ func (t *TreeIndex) Overflowed() bool {
 func (t *TreeIndex) Count(start, end []byte, rev uint64) int {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
+	return t.countLocked(start, end, rev)
+}
+
+// CountIfReady atomically checks readiness AND counts under a single lock, so a
+// concurrent Reset cannot swap in a fresh, half-loaded tree between a separate
+// Ready() check and Count() (which would serve a spurious ~0 as an authoritative
+// hit). It returns (count, true) only if the index can answer at rev; otherwise
+// (0, false) and the caller must fall back to a scan.
+func (t *TreeIndex) CountIfReady(start, end []byte, rev uint64) (int, bool) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	if t.overflowed || t.loading || t.baseRev == 0 || rev < t.baseRev || rev > t.readyRev {
+		return 0, false
+	}
+	return t.countLocked(start, end, rev), true
+}
+
+func (t *TreeIndex) countLocked(start, end []byte, rev uint64) int {
 	n := 0
 	iter := func(it btree.Item) bool {
 		if it.(*keyItem).liveAt(rev) {

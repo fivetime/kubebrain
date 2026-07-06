@@ -15,6 +15,7 @@
 package countindex
 
 import (
+	"errors"
 	"fmt"
 	"testing"
 
@@ -68,9 +69,10 @@ func TestCompactPrunesAndKeepsCounts(t *testing.T) {
 func TestResetBulkLoad(t *testing.T) {
 	idx := New(0)
 	idx.Apply(k("/stale"), 1, false) // will be discarded by reset
-	idx.Reset(func() uint64 { return 100 }, func(baseRev uint64, emit func(key []byte, rev uint64, tombstone bool)) {
+	idx.Reset(func() uint64 { return 100 }, func(baseRev uint64, emit func(key []byte, rev uint64, tombstone bool)) error {
 		emit(k("/a"), 90, false)
 		emit(k("/b"), 95, false)
+		return nil
 	})
 	require.Equal(t, uint64(100), idx.ReadyRev())
 	require.Equal(t, 2, idx.Count(k("/"), k("0"), 100))
@@ -121,7 +123,7 @@ func TestCountMatchesBruteForce(t *testing.T) {
 
 func TestOverflowDisablesIndex(t *testing.T) {
 	idx := New(3)
-	idx.Reset(func() uint64 { return 0 }, func(baseRev uint64, emit func(key []byte, rev uint64, tombstone bool)) {})
+	idx.Reset(func() uint64 { return 0 }, func(baseRev uint64, emit func(key []byte, rev uint64, tombstone bool)) error { return nil })
 	for i := 0; i < 5; i++ {
 		idx.Apply([]byte(fmt.Sprintf("/k%d", i)), uint64(i+1), false)
 	}
@@ -134,8 +136,9 @@ func TestOverflowDisablesIndex(t *testing.T) {
 // current revision is answerable instead of failing Ready() and forcing a scan.
 func TestSetReadyRevAdvancesReadyWatermark(t *testing.T) {
 	idx := New(0)
-	idx.Reset(func() uint64 { return 100 }, func(baseRev uint64, emit func(key []byte, rev uint64, tombstone bool)) {
+	idx.Reset(func() uint64 { return 100 }, func(baseRev uint64, emit func(key []byte, rev uint64, tombstone bool)) error {
 		emit([]byte("a"), 100, false)
+		return nil
 	})
 	require.True(t, idx.Ready(100))
 	require.False(t, idx.Ready(105), "must not be ready beyond baseRev before advancing")
@@ -160,7 +163,7 @@ func TestResetNonBlockingConcurrentApply(t *testing.T) {
 	loadStarted := make(chan struct{})
 	done := make(chan struct{})
 	go func() {
-		idx.Reset(func() uint64 { return 100 }, func(baseRev uint64, emit func(key []byte, rev uint64, tombstone bool)) {
+		idx.Reset(func() uint64 { return 100 }, func(baseRev uint64, emit func(key []byte, rev uint64, tombstone bool)) error {
 			if baseRev != 100 {
 				t.Errorf("baseRev = %d, want 100", baseRev)
 			}
@@ -169,6 +172,7 @@ func TestResetNonBlockingConcurrentApply(t *testing.T) {
 			<-release // block mid-load; the lock must NOT be held here
 			emit([]byte("b"), 100, false)
 			emit([]byte("c"), 100, false)
+			return nil
 		})
 		close(done)
 	}()
@@ -192,4 +196,45 @@ func TestResetNonBlockingConcurrentApply(t *testing.T) {
 	require.EqualValues(t, 3, idx.Count([]byte("a"), []byte("z"), 100))
 	// At 105: b deleted -> a,c = 2.
 	require.EqualValues(t, 2, idx.Count([]byte("a"), []byte("z"), 105))
+}
+
+// TestResetPartialLoadDisablesIndex pins that a snapshot load that fails partway
+// (a transient storage error) leaves the index NOT ready, so counts fall back to
+// a scan instead of serving a silent undercount from a half-populated tree.
+func TestResetPartialLoadDisablesIndex(t *testing.T) {
+	idx := New(0)
+	idx.SetReadyRev(50) // pretend the collector had advanced coverage before rebuild
+	loadErr := errors.New("list failed mid-scan")
+	idx.Reset(func() uint64 { return 100 }, func(baseRev uint64, emit func(key []byte, rev uint64, tombstone bool)) error {
+		emit([]byte("a"), 90, false) // only a prefix of the keyspace loaded
+		return loadErr
+	})
+	require.False(t, idx.Ready(100), "a partial (errored) load must not be served")
+	require.EqualValues(t, 0, idx.BaseRev(), "errored load disables the index (baseRev=0)")
+	if _, ok := idx.CountIfReady([]byte("a"), []byte("z"), 100); ok {
+		t.Fatal("CountIfReady must report not-served after a partial load")
+	}
+}
+
+// TestResetFloorsBaseRevAtReadyRev pins the install-gap fix: the collector
+// Apply()s an event (advancing readyRev) BEFORE the committed revision catches
+// up, so Reset must floor baseRev at readyRev — otherwise it would snapshot below
+// the already-applied event, drop it from the fresh tree, yet keep readyRev
+// claiming coverage for it (a permanently wrong count until the next rebuild).
+func TestResetFloorsBaseRevAtReadyRev(t *testing.T) {
+	idx := New(0)
+	idx.Apply([]byte("a"), 100, false) // applied to the (soon-discarded) tree; readyRev=100
+	require.EqualValues(t, 100, idx.ReadyRev())
+
+	// currentRev() lags at 99 (committed not yet advanced past the applied event).
+	// The load snapshots at baseRev and must therefore see revision 100.
+	var loadedAt uint64
+	idx.Reset(func() uint64 { return 99 }, func(baseRev uint64, emit func(key []byte, rev uint64, tombstone bool)) error {
+		loadedAt = baseRev
+		emit([]byte("a"), 100, false) // snapshot at baseRev(=100) includes a@100
+		return nil
+	})
+	require.EqualValues(t, 100, loadedAt, "baseRev must be floored at readyRev, not the lagging committed rev")
+	require.True(t, idx.Ready(100))
+	require.EqualValues(t, 1, idx.Count([]byte("a"), []byte("z"), 100), "the applied event must not be lost")
 }

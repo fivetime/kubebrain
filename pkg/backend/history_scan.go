@@ -31,11 +31,13 @@ import (
 //
 // scanGroup collapses all in-flight scans of one prefix into a single shared
 // scan whose result every waiter reuses read-only, turning the herd's storage
-// cost into O(1). It is the classic singleflight pattern, hand-rolled to avoid
-// vendoring golang.org/x/sync/singleflight (only a subset of x/sync is
-// vendored). Waiters share the result slice and the *proto.Event pointers, which
-// the watch fan-out path only ever reads (filterEvents/catchUpEvents allocate
-// fresh slices), so sharing is safe.
+// cost into O(1). It is the classic singleflight pattern, hand-rolled rather
+// than reusing golang.org/x/sync/singleflight because it needs per-caller ctx
+// semantics that singleflight does not offer: a waiter returns immediately on
+// its OWN ctx cancellation, and a scan that fails for the executor's ctx reason
+// is retried by still-live waiters (see Do). Waiters share the result slice and
+// the *proto.Event pointers, which the watch fan-out path only ever reads
+// (filterEvents/catchUpEvents allocate fresh slices), so sharing is safe.
 type scanGroup struct {
 	mu sync.Mutex
 	m  map[string]*scanCall
@@ -47,6 +49,11 @@ type scanCall struct {
 	coveredRev uint64
 	err        error
 }
+
+// errHistoryScanAborted is the pessimistic pre-set result for an in-flight scan;
+// it survives only if fn panics before setting a real result, so waiters see a
+// failure instead of a silent empty scan.
+var errHistoryScanAborted = errors.New("history scan aborted")
 
 func newScanGroup() *scanGroup { return &scanGroup{m: make(map[string]*scanCall)} }
 
@@ -81,16 +88,25 @@ func (g *scanGroup) Do(ctx context.Context, key string, fn func(context.Context)
 				return nil, 0, ctx.Err(), true
 			}
 		}
-		c := &scanCall{done: make(chan struct{})}
+		// err starts non-nil so that if fn panics, waiters woken by the deferred
+		// close(done) see a failure (and propagate it) rather than a silent
+		// (nil, nil) "empty result" — fn's normal return overwrites it.
+		c := &scanCall{done: make(chan struct{}), err: errHistoryScanAborted}
 		g.m[key] = c
 		g.mu.Unlock()
 
-		c.events, c.coveredRev, c.err = fn(ctx)
-		close(c.done)
-
-		g.mu.Lock()
-		delete(g.m, key)
-		g.mu.Unlock()
+		// Run fn in a closure with deferred cleanup so a panic in fn (storage
+		// decode, iterator) still unblocks waiters and removes the map entry —
+		// otherwise the orphaned entry would strand every future identical scan.
+		func() {
+			defer func() {
+				g.mu.Lock()
+				delete(g.m, key)
+				g.mu.Unlock()
+				close(c.done)
+			}()
+			c.events, c.coveredRev, c.err = fn(ctx)
+		}()
 		return c.events, c.coveredRev, c.err, false
 	}
 }
