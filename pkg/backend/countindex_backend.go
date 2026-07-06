@@ -60,36 +60,40 @@ func (b *backend) RebuildCountIndex(ctx context.Context) error {
 	if b.countIndex == nil {
 		return nil
 	}
-	rev, err := b.safeCurrentRevision(ctx)
-	if err != nil {
-		return err
-	}
 	ts := time.Now()
 	start := []byte(b.config.Prefix)
-	b.countIndex.Reset(rev, func(emit func(key []byte, revision uint64, tombstone bool)) {
-		cur := append([]byte(nil), start...)
-		for {
-			resp, lerr := b.List(ctx, &proto.RangeRequest{
-				Key:      cur,
-				End:      noPrefixEnd, // scan to the end of the keyspace
-				Revision: rev,
-				Limit:    countRebuildPageSize,
-			})
-			if lerr != nil {
-				klog.ErrorS(lerr, "rebuild count index: list failed", "from", Key(cur))
-				return
+	// baseRev is captured inside Reset under its install lock (the committed
+	// revision at that instant); the load then scans storage at exactly baseRev.
+	// Reset loads without holding the index lock for the whole scan, so the
+	// collector keeps advancing the committed revision throughout — no freeze, no
+	// watch-buffer overflow during a minutes-long rebuild at scale.
+	b.countIndex.Reset(
+		func() uint64 { return b.tso.GetRevision() },
+		func(rev uint64, emit func(key []byte, revision uint64, tombstone bool)) {
+			cur := append([]byte(nil), start...)
+			for {
+				resp, lerr := b.List(ctx, &proto.RangeRequest{
+					Key:      cur,
+					End:      noPrefixEnd, // scan to the end of the keyspace
+					Revision: rev,
+					Limit:    countRebuildPageSize,
+				})
+				if lerr != nil {
+					klog.ErrorS(lerr, "rebuild count index: list failed", "from", Key(cur))
+					return
+				}
+				for _, kv := range resp.Kvs {
+					// List returns only live keys (tombstones filtered), so every
+					// emitted key is live at rev.
+					emit(kv.Key, kv.Revision, false)
+				}
+				if !resp.More || len(resp.Kvs) == 0 {
+					break
+				}
+				cur = append(append([]byte(nil), resp.Kvs[len(resp.Kvs)-1].Key...), 0)
 			}
-			for _, kv := range resp.Kvs {
-				// List returns only live keys (tombstones filtered), so every
-				// emitted key is live at rev.
-				emit(kv.Key, kv.Revision, false)
-			}
-			if !resp.More || len(resp.Kvs) == 0 {
-				break
-			}
-			cur = append(append([]byte(nil), resp.Kvs[len(resp.Kvs)-1].Key...), 0)
-		}
-	})
+		})
+	rev := b.countIndex.BaseRev()
 	klog.InfoS("count index rebuilt", "rev", rev, "keys", b.countIndex.Len(),
 		"ready", b.countIndex.Ready(rev), "latency", time.Since(ts))
 	b.metricCli.EmitGauge("count_index.keys", b.countIndex.Len())
