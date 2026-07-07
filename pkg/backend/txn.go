@@ -45,6 +45,9 @@ func (b *backend) Create(ctx context.Context, put *proto.CreateRequest) (resp *p
 
 	revision, err := b.create(ctx, put.Key, put.Value, put.Lease)
 	b.notify(ctx, put.Key, b.eventValue(put.Value, EtcdMetadata{CreateRevision: revision, Version: 1, Lease: put.Lease}, err), revision, 0, err == nil, proto.Event_CREATE, err)
+	// ACK only after the committed watermark reaches this write, so the client
+	// can immediately read its own write at rev=0 (etcd apply-then-ack, #35).
+	b.waitCommittedRevision(ctx, revision)
 	if errors.Is(err, storage.ErrCASFailed) {
 		return &proto.CreateResponse{
 			Header:    responseHeader(revision),
@@ -166,6 +169,7 @@ func (b *backend) deleteOnce(ctx context.Context, r *proto.DeleteRequest, allowH
 	rev, old, err := b.delete(ctx, r.Revision, r.Key)
 
 	b.notify(ctx, r.Key, old.Val, rev, old.Revision, err == nil, proto.Event_DELETE, err)
+	b.waitCommittedRevision(ctx, rev) // apply-then-ack (#35)
 
 	resp = &proto.DeleteResponse{
 		Header:    responseHeader(rev),
@@ -481,6 +485,7 @@ func (b *backend) deleteRangeChunk(ctx context.Context, pending []pendingDelete)
 		})
 	}
 	b.notifyBatch(watchEvents)
+	b.waitCommittedRevision(ctx, newRevision) // apply-then-ack (#35)
 	return kvs, newRevision, nil
 }
 
@@ -517,6 +522,8 @@ func (b *backend) updateOnce(ctx context.Context, r *proto.UpdateRequest, allowH
 		curRev, meta, err = b.update(ctx, prevRev, key, value, lease)
 		b.notify(ctx, key, b.eventValue(value, meta, err), curRev, prevRev, err == nil, proto.Event_PUT, err)
 	}
+
+	b.waitCommittedRevision(ctx, curRev) // apply-then-ack (#35)
 
 	resp = &proto.UpdateResponse{
 		Header:    responseHeader(curRev),
