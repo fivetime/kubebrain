@@ -20,11 +20,13 @@ import (
 	"net/http"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 
 	"github.com/kubewharf/kubebrain/pkg/metrics"
+	"github.com/kubewharf/kubebrain/pkg/storage"
 	imemkv "github.com/kubewharf/kubebrain/pkg/storage/memkv"
 )
 
@@ -88,4 +90,34 @@ func TestIterWrapperCountsFetchedRows(t *testing.T) {
 	require.Equal(t, n, rows, "sanity: iterated all rows")
 	require.Equal(t, float64(n), rec.get("storage.iter.fetch.success"),
 		"fetch.success must equal the number of rows fetched, not the EOF")
+}
+
+// gcKV is a KvStorage that also implements storage.GarbageCollector.
+type gcKV struct {
+	storage.KvStorage
+	called int
+}
+
+func (g *gcKV) GC(ctx context.Context, lifetime time.Duration) (uint64, error) {
+	g.called++
+	return 42, nil
+}
+
+// TestMetricsWrapperPassesThroughGC pins the #37 pass-through: wrapping a
+// GC-capable store must keep storage.GarbageCollector visible (interface
+// embedding does not promote optional interfaces), and wrapping a plain store
+// must not fabricate one.
+func TestMetricsWrapperPassesThroughGC(t *testing.T) {
+	inner := &gcKV{KvStorage: imemkv.NewKvStorage()}
+	wrapped := NewKvStorage(inner, &recordMetrics{counters: map[string]float64{}})
+	gc, ok := wrapped.(storage.GarbageCollector)
+	require.True(t, ok, "wrapper over a GC-capable store must expose GarbageCollector")
+	sp, err := gc.GC(context.Background(), time.Minute)
+	require.NoError(t, err)
+	require.EqualValues(t, 42, sp)
+	require.Equal(t, 1, inner.called)
+
+	plain := NewKvStorage(imemkv.NewKvStorage(), &recordMetrics{counters: map[string]float64{}})
+	_, ok = plain.(storage.GarbageCollector)
+	require.False(t, ok, "wrapper over a plain store must not fabricate GC support")
 }

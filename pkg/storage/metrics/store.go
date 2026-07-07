@@ -26,12 +26,29 @@ import (
 	"github.com/kubewharf/kubebrain/pkg/storage"
 )
 
-// NewKvStorage wraps the storage to emit some metrics while calling
+// NewKvStorage wraps the storage to emit some metrics while calling.
+// storage.GarbageCollector is optional and NOT part of KvStorage, so interface
+// embedding does not promote it — when the wrapped store supports GC, return a
+// wrapper variant that passes it through, or the backend's GC driver would
+// silently see an engine without GC (#37).
 func NewKvStorage(store storage.KvStorage, m metrics.Metrics) storage.KvStorage {
-	return &storeWrapper{
+	w := &storeWrapper{
 		KvStorage:  store,
 		metricsCli: m,
 	}
+	if _, ok := store.(storage.GarbageCollector); ok {
+		return &gcStoreWrapper{storeWrapper: w}
+	}
+	return w
+}
+
+// gcStoreWrapper adds the optional GC pass-through for engines that support it.
+type gcStoreWrapper struct {
+	*storeWrapper
+}
+
+func (s *gcStoreWrapper) GC(ctx context.Context, lifetime time.Duration) (uint64, error) {
+	return s.KvStorage.(storage.GarbageCollector).GC(ctx, lifetime)
 }
 
 type storeWrapper struct {
