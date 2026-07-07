@@ -320,6 +320,7 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 		results[i] = res
 	}
 	b.notifyBatch(events)
+	b.waitCommittedRevision(ctx, newRevision) // apply-then-ack (#35)
 	return results, newRevision, false, nil
 }
 

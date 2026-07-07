@@ -232,6 +232,10 @@ type backend struct {
 	// ones.
 	historyScanGroup *scanGroup
 
+	// commitNotify wakes writes blocked in waitCommittedRevision each time the
+	// committed revision advances (see commit_wait.go).
+	commitNotify *commitNotify
+
 	// Background physical compaction. CompactAsync advances the logical compact
 	// watermark synchronously (so reads immediately see the compaction) and hands
 	// the slow physical version-GC scan to runCompactor, so the etcd Compact RPC
@@ -348,6 +352,7 @@ func NewBackend(kv storage.KvStorage, config Config, metricCli metrics.Metrics) 
 		},
 		historyScanSem:   make(chan struct{}, historyScanConcurrency),
 		historyScanGroup: newScanGroup(),
+		commitNotify:     newCommitNotify(),
 		compactSignal:    make(chan struct{}, 1),
 		metricCli:        metricCli,
 	}
@@ -624,6 +629,10 @@ func (b *backend) WatchProgressNotifyInterval() time.Duration {
 // SetCurrentRevision implements Backend interface
 func (b *backend) SetCurrentRevision(revision uint64) {
 	b.tso.Commit(revision)
+	// Wake commit waiters AFTER the revision is visible (waiters re-check after
+	// each wake, so visibility-then-wake cannot lose an update). Every committed
+	// bump funnels through here, so this is the single wake point.
+	b.commitNotify.advance()
 }
 
 // advanceCountIndexReadyRev advances the count index's ready watermark to a
