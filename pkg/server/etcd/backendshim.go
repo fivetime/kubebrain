@@ -67,6 +67,10 @@ type BackendShim interface {
 	// GetCompactRevision returns the latest completed logical compaction revision.
 	GetCompactRevision(ctx context.Context) (uint64, error)
 
+	// GetCompactRevisionFresh bypasses the compact-revision TTL cache; used
+	// where the value is returned to clients as authoritative (#33).
+	GetCompactRevisionFresh(ctx context.Context) (uint64, error)
+
 	// DeleteRange removes one key or all keys in a range.
 	DeleteRange(ctx context.Context, r *etcdserverpb.DeleteRangeRequest) (*etcdserverpb.DeleteRangeResponse, error)
 
@@ -451,6 +455,10 @@ func compactTxnResponse(compactedRev uint64) *etcdserverpb.TxnResponse {
 
 func (b *backendShim) GetCompactRevision(ctx context.Context) (uint64, error) {
 	return b.backend.GetCompactRevision(ctx)
+}
+
+func (b *backendShim) GetCompactRevisionFresh(ctx context.Context) (uint64, error) {
+	return b.backend.GetCompactRevisionFresh(ctx)
 }
 
 func (b *backendShim) TxnApply(ctx context.Context, ops []backend.TxnWriteOp, guards []backend.TxnGuard, prevKv []bool) ([]*etcdserverpb.ResponseOp, uint64, []backend.TxnWriteResult, error) {

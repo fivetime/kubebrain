@@ -275,7 +275,11 @@ func (w *watcher) Cancel(id int64, err error, compact bool) {
 	var compactRevision int64
 	if compact {
 		compactRevision = 1
-		if rev, revErr := w.backend.GetCompactRevision(context.Background()); revErr == nil && rev > 0 {
+		// Fresh read (bypasses the TTL cache): this value tells the client where
+		// to re-list from. On a follower the cache can lag a just-proxied Compact
+		// by up to the TTL, and a stale-low CompactRevision sends the client into
+		// another compacted round-trip (#33). Cancels are rare — not a hot path.
+		if rev, revErr := w.backend.GetCompactRevisionFresh(context.Background()); revErr == nil && rev > 0 {
 			compactRevision = int64(rev)
 		}
 	}
