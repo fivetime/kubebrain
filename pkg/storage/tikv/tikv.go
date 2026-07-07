@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"sync/atomic"
+	"time"
 
 	"github.com/pkg/errors"
 	tikvcfg "github.com/tikv/client-go/v2/config"
@@ -127,6 +128,25 @@ func (s *store) DelCurrent(ctx context.Context, iter storage.Iter) (err error) {
 	b := s.BeginBatchWrite()
 	b.DelCurrent(iter)
 	return b.Commit(ctx)
+}
+
+// GC implements storage.GarbageCollector: advances the TiKV cluster GC
+// safepoint to (PD-now - lifetime) via client-go's KVStore.GC, which resolves
+// stale percolator locks below the safepoint before publishing it (the
+// correctness step TiDB's gc_worker normally performs). Compaction filters
+// then reclaim MVCC versions below the safepoint as RocksDB compacts.
+// The physical time comes from PD's TSO, not the local clock.
+func (s *store) GC(ctx context.Context, lifetime time.Duration) (uint64, error) {
+	ts, err := s.GetTimestampOracle(ctx)
+	if err != nil {
+		return 0, errors.Wrap(err, "gc: fetch tso")
+	}
+	physical := oracle.ExtractPhysical(ts) - lifetime.Milliseconds()
+	if physical <= 0 {
+		return 0, nil
+	}
+	safepoint := oracle.ComposeTS(physical, 0)
+	return s.getClient().GC(ctx, safepoint)
 }
 
 func (s *store) GetTimestampOracle(ctx context.Context) (timestamp uint64, err error) {

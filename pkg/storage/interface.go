@@ -17,6 +17,7 @@ package storage
 import (
 	"context"
 	"fmt"
+	"time"
 )
 
 // ExclusiveKvStorage defines the context individual KvStorage for the background job.
@@ -31,6 +32,28 @@ type ExclusiveKvStorage interface {
 }
 
 // KvStorage defines the storage engine on kv database
+// GarbageCollector is an optional interface a KvStorage may implement to
+// advance the underlying engine's MVCC garbage-collection safepoint. Engines
+// whose old versions are reclaimed by an external component (or that keep no
+// version history) simply do not implement it.
+//
+// KubeBrain encodes its own MVCC into keys and reads every snapshot at the
+// CURRENT timestamp (all Iter calls pass ts=0), so it never needs engine-level
+// history. But on TiKV every CAS overwrite of a revision key leaves an MVCC
+// version that is only reclaimed once the cluster GC safepoint advances past
+// it — and on a bare PD+TiKV deployment NOTHING advances that safepoint (it is
+// TiDB's gc_worker that normally does), so versions pile up forever and every
+// read degrades as it skips them (observed live: single-key GETs at 100ms+
+// with gc_safe_point=0). Implementations advance the safepoint to
+// now-lifetime, resolving stale transaction locks first as correctness
+// requires.
+type GarbageCollector interface {
+	// GC advances the engine's GC safepoint to (now - lifetime) and returns
+	// the new cluster safepoint. lifetime bounds the longest in-flight
+	// snapshot/transaction the caller may still have outstanding.
+	GC(ctx context.Context, lifetime time.Duration) (safepoint uint64, err error)
+}
+
 type KvStorage interface {
 
 	// GetTimestampOracle returns the logical timestamp if it could support

@@ -289,6 +289,12 @@ type Config struct {
 	// catch-up rather than dropped (#34).
 	WatchFanoutBuffer int
 
+	// StorageGCLifetime is the MVCC history retention the storage GC driver
+	// keeps when advancing the engine's GC safepoint (0 disables the driver).
+	// Only takes effect when the storage implements storage.GarbageCollector
+	// (TiKV). See runStorageGC (#37).
+	StorageGCLifetime time.Duration
+
 	// HistoryScanRevBucket buckets the watch-history singleflight key (#30):
 	// watchers reconnecting to the same prefix whose requested revisions fall in
 	// the same bucket share ONE storage scan. Larger buckets collapse a wider
@@ -360,6 +366,11 @@ func NewBackend(kv storage.KvStorage, config Config, metricCli metrics.Metrics) 
 	if config.EnableCountIndex && config.EnableEtcdCompatibility {
 		b.countIndex = countindex.New(config.CountIndexMaxKeys)
 	}
+
+	// Drive the storage engine's MVCC GC safepoint (leader-only; no-op unless
+	// the engine implements storage.GarbageCollector) — the gc_worker role on a
+	// bare PD+TiKV deployment (#37).
+	go b.runStorageGC(config.StorageGCLifetime)
 
 	// Wire the fan-out hub's ring catch-up to the watch cache: a slow
 	// subscriber replays its missed tail from the ring instead of being
