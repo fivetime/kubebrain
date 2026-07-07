@@ -388,13 +388,17 @@ func (w *worker) run(ctx context.Context, receiver resultReceiver) (int, error) 
 		default:
 		}
 
-		// todo: set a shorter timeout?
-		nextCtx, cancel := context.WithTimeout(ctx, iterTimeout)
-		if err = it.Next(nextCtx); err != nil {
-			cancel()
+		// Hot loop: do NOT allocate a per-key context here. A previous version
+		// wrapped every Next in context.WithTimeout — at 500 keys/page that was
+		// one ctx+timer allocation per row, ~17% of total CPU in WithTimeout
+		// itself plus a 31% GC share from the garbage, ~1.8ms/key end-to-end
+		// (60x the raw TiKV scan cost) — and the timeout ctx was never even
+		// honored: the TiKV iterator's Next does not take a context; per-RPC
+		// deadlines live inside client-go, and scanCtx (iterTimeout) already
+		// bounds the whole scan (#40).
+		if err = it.Next(scanCtx); err != nil {
 			break
 		}
-		cancel()
 
 		// get key and value from iter
 		key := it.Key()

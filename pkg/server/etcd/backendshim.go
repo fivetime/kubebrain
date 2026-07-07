@@ -19,6 +19,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strconv"
 	"time"
 
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
@@ -134,6 +135,15 @@ type backendShim struct {
 	metaFlight singleflight.Group
 	prevCache  *revKeyCache
 	prevFlight singleflight.Group
+	// rangeCountCache memoizes exact range counts keyed by (start,end,revision).
+	// A count at a FIXED revision is immutable, and the apiserver's paginated
+	// LIST asks for the same (range, revision) count on every continue page —
+	// without this cache each of the N/limit pages re-walked the whole count
+	// index (O(range) btree iteration per page: 82% of List CPU at 3M
+	// namespaces, ~200ms/page). First pages (rev=0) resolve live and are not
+	// cached; continue pages (rev>0) hit this cache (#40).
+	rangeCountCache  *revKeyCache
+	rangeCountFlight singleflight.Group
 
 	// leaseLookup resolves a user key to its currently-attached lease ID (0 if
 	// none), wired to the server's keyLeaseIndex via SetLeaseLookup. nil until
@@ -143,10 +153,11 @@ type backendShim struct {
 
 func NewBackendShim(backend backend.Backend, metricCli metrics.Metrics) BackendShim {
 	return &backendShim{
-		backend:   backend,
-		metricCli: metricCli,
-		metaCache: newRevKeyCache(revKeyCacheCap),
-		prevCache: newRevKeyCache(revKeyCacheCap),
+		backend:         backend,
+		metricCli:       metricCli,
+		metaCache:       newRevKeyCache(revKeyCacheCap),
+		prevCache:       newRevKeyCache(revKeyCacheCap),
+		rangeCountCache: newRevKeyCache(revKeyCacheCap),
 	}
 }
 
@@ -599,7 +610,62 @@ func (b *backendShim) List(ctx context.Context, r *etcdserverpb.RangeRequest) (*
 	return applyRangeOptions(resp, r), nil
 }
 
+// rangeCountEntry tracks a pagination sequence's rolling count: the exact
+// count of [lastStart, end) at the sequence's fixed revision.
+type rangeCountEntry struct {
+	lastStart []byte
+	count     int64
+}
+
 func (b *backendShim) exactRangeCount(ctx context.Context, r *etcdserverpb.RangeRequest) (int64, error) {
+	// A paginated LIST asks, on every continue page, for the count of the
+	// REMAINDER [pageStart, end) at a fixed revision. Computing that from the
+	// count index walks every live node from pageStart to end — O(range) btree
+	// iteration per page, which at 3M same-prefix objects was 82% of List CPU
+	// (~200ms/page, O(N^2/pageSize) per full listing). But the remainder count
+	// is monotonically decreasing along the sequence:
+	//   count(page N) = count(page N-1) - |[start(N-1), start(N))|
+	// so after one full count, each further page only counts the small
+	// [prevStart, curStart) span it just consumed (~pageSize nodes). The rolling
+	// state is keyed by (end, revision) — fixed for the whole sequence — and a
+	// fixed-revision count is immutable, making the cache safe (#40).
+	cacheable := r.Revision > 0 && !hasRangeRevisionFilters(r)
+	if !cacheable {
+		return b.exactRangeCountUncached(ctx, r)
+	}
+	ck := string(r.RangeEnd) + "@" + strconv.FormatInt(r.Revision, 10)
+	if v, ok := b.rangeCountCache.get(ck); ok {
+		e := v.(rangeCountEntry)
+		// Same page replayed (retry): the remainder is unchanged.
+		if bytes.Equal(r.Key, e.lastStart) {
+			return e.count, nil
+		}
+		// Sequence advanced: subtract the span just consumed.
+		if bytes.Compare(r.Key, e.lastStart) > 0 {
+			delta, served := b.backend.CountAtRevision(ctx, e.lastStart, r.Key, uint64(r.Revision))
+			if served {
+				c := e.count - delta
+				b.rangeCountCache.put(ck, rangeCountEntry{lastStart: append([]byte(nil), r.Key...), count: c})
+				return c, nil
+			}
+		}
+		// Out-of-order page or index miss: fall through to a full count.
+	}
+	v, err, _ := b.rangeCountFlight.Do(ck+"\x00"+string(r.Key), func() (interface{}, error) {
+		c, e := b.exactRangeCountUncached(ctx, r)
+		if e != nil {
+			return nil, e
+		}
+		b.rangeCountCache.put(ck, rangeCountEntry{lastStart: append([]byte(nil), r.Key...), count: c})
+		return c, nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return v.(int64), nil
+}
+
+func (b *backendShim) exactRangeCountUncached(ctx context.Context, r *etcdserverpb.RangeRequest) (int64, error) {
 	// Serve from the in-memory count index when possible (approach A-index); it
 	// roots the per-page O(range) count scan that made paginated LIST O(N^2).
 	// Revision filters change the counted set, which the index does not model.
