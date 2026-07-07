@@ -957,37 +957,65 @@ func watchEventRevision(e *proto.Event) uint64 {
 	return 0
 }
 
-func (b *backendShim) previousEtcdKv(ctx context.Context, key []byte, revision uint64) *mvccpb.KeyValue {
+// previousEtcdKv resolves the previous version of key for a watch event's
+// PrevKv, mirroring etcd's v3rpc lazy Range at ModRevision-1. It returns
+// (prevKv, certain): certain reports whether the answer is authoritative —
+// a value, a clean "no previous version", or a compacted revision (etcd also
+// hands the client a nil PrevKv there; the apiserver re-lists and self-heals,
+// see k8s etcd3/event.go parseEvent). certain=false means the lookup kept
+// failing TRANSIENTLY (TiKV timeouts under load); the nil is a last-resort
+// answer and must NOT be cached.
+//
+// Unlike etcd — whose Range here is a local in-memory/boltdb read that only
+// comes back empty on real compaction — this lookup crosses the network to
+// TiKV, so it can fail transiently. Treating those failures as "no previous
+// value" is what turned one bad event into a storm (#36): PrevKv=nil made the
+// apiserver terminate ALL watchers of the resource and re-list; the re-list
+// read amplification pushed reads past the old 200ms budget, so the NEXT
+// event's lookup also timed out — a self-sustaining loop observed live at
+// 400k objects (nodes/leases cachers cycling at 4 watches/s for ~1.7h).
+// Hence: retry transient failures with backoff up to a generous budget; only
+// answer nil-uncertain when the budget is exhausted (storage is by then
+// degraded far beyond this one lookup).
+func (b *backendShim) previousEtcdKv(ctx context.Context, key []byte, revision uint64) (*mvccpb.KeyValue, bool) {
 	if revision == 0 {
-		return nil
+		return nil, true
 	}
-	readCtx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	readCtx, cancel := context.WithTimeout(context.Background(), prevKvRetryBudget)
 	defer cancel()
-	var lastErr error
-	for attempt := 0; attempt < 5; attempt++ {
-		if attempt > 0 {
-			timer := time.NewTimer(10 * time.Millisecond)
-			select {
-			case <-readCtx.Done():
-				timer.Stop()
-				klog.V(4).InfoS("previous watch kv unavailable", "key", key, "revision", revision, "err", readCtx.Err())
-				return nil
-			case <-timer.C:
-			}
-		}
+	backoff := 10 * time.Millisecond
+	for {
 		resp, err := b.Get(readCtx, &etcdserverpb.RangeRequest{
 			Key:      key,
 			Revision: int64(revision - 1),
 		})
-		if err == nil && len(resp.Kvs) > 0 {
-			return resp.Kvs[0]
+		if err == nil {
+			if len(resp.Kvs) > 0 {
+				return resp.Kvs[0], true
+			}
+			// Clean answer: no previous version at revision-1.
+			return nil, true
 		}
-		lastErr = err
+		if isWatchCompactedError(err) {
+			// revision-1 is below the compact watermark: the previous value is
+			// legitimately gone. Same nil etcd produces; the client re-lists.
+			return nil, true
+		}
+		b.metricCli.EmitCounter("watch.prev_kv.retry", 1)
+		timer := time.NewTimer(backoff)
+		select {
+		case <-readCtx.Done():
+			timer.Stop()
+			b.metricCli.EmitCounter("watch.prev_kv.budget_exhausted", 1)
+			klog.ErrorS(err, "previous watch kv unavailable after full retry budget; emitting uncertain nil",
+				"key", key, "revision", revision)
+			return nil, false
+		case <-timer.C:
+		}
+		if backoff < 500*time.Millisecond {
+			backoff *= 2
+		}
 	}
-	if lastErr != nil {
-		klog.V(4).InfoS("previous watch kv unavailable", "key", key, "revision", revision, "err", lastErr)
-	}
-	return nil
 }
 
 // leader election and revision related method, just pass through
