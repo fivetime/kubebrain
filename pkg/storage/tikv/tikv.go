@@ -17,6 +17,7 @@ package tikv
 import (
 	"bytes"
 	"context"
+	"math"
 	"sync/atomic"
 	"time"
 
@@ -130,12 +131,34 @@ func (s *store) DelCurrent(ctx context.Context, iter storage.Iter) (err error) {
 	return b.Commit(ctx)
 }
 
+const (
+	// gcServiceID is the reserved PD service name of THE GC owner. KubeBrain
+	// assumes the gc_worker role on clusters where no TiDB drives GC, so it
+	// updates that same record rather than registering a side service: PD
+	// special-cases "gc_worker" (its record cannot be deleted and its TTL must
+	// be infinite), and a departed TiDB's stale gc_worker record would
+	// otherwise pin the service-minimum forever with no way to clear it.
+	// Sharing the name is also the correct handoff semantics: whichever GC
+	// owner updated last defines the target, and the min across OTHER services
+	// (CDC, BR) still clamps both.
+	gcServiceID = "gc_worker"
+)
+
 // GC implements storage.GarbageCollector: advances the TiKV cluster GC
 // safepoint to (PD-now - lifetime) via client-go's KVStore.GC, which resolves
 // stale percolator locks below the safepoint before publishing it (the
 // correctness step TiDB's gc_worker normally performs). Compaction filters
 // then reclaim MVCC versions below the safepoint as RocksDB compacts.
 // The physical time comes from PD's TSO, not the local clock.
+//
+// Shared-cluster safety: before publishing, KubeBrain registers its target as
+// its own service safepoint and receives the minimum across ALL services
+// (TiDB CDC changefeeds, BR backups, another GC owner...) — the same protocol
+// TiDB's gc_worker follows. The published safepoint is clamped to that
+// minimum, so co-tenants needing longer MVCC retention are never GC'd out
+// from under them. On a KubeBrain-exclusive cluster (the recommended
+// deployment) the minimum is simply KubeBrain's own target and the clamp is a
+// no-op.
 func (s *store) GC(ctx context.Context, lifetime time.Duration) (uint64, error) {
 	ts, err := s.GetTimestampOracle(ctx)
 	if err != nil {
@@ -145,8 +168,24 @@ func (s *store) GC(ctx context.Context, lifetime time.Duration) (uint64, error) 
 	if physical <= 0 {
 		return 0, nil
 	}
-	safepoint := oracle.ComposeTS(physical, 0)
-	return s.getClient().GC(ctx, safepoint)
+	target := oracle.ComposeTS(physical, 0)
+	minServiceSP, err := s.getClient().GetPDClient().UpdateServiceGCSafePoint(
+		ctx, gcServiceID, math.MaxInt64, target)
+	if err != nil {
+		return 0, errors.Wrap(err, "gc: update service safepoint")
+	}
+	return s.getClient().GC(ctx, clampGCTarget(target, minServiceSP))
+}
+
+// clampGCTarget lowers the GC target to the minimum service safepoint when
+// another service still needs older MVCC history. A zero minimum (no valid
+// service records — should not happen since we just registered ours) is
+// ignored rather than treated as "keep everything forever".
+func clampGCTarget(target, minServiceSafePoint uint64) uint64 {
+	if minServiceSafePoint > 0 && minServiceSafePoint < target {
+		return minServiceSafePoint
+	}
+	return target
 }
 
 func (s *store) GetTimestampOracle(ctx context.Context) (timestamp uint64, err error) {
