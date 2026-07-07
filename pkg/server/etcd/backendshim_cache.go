@@ -18,11 +18,19 @@ import (
 	"context"
 	"strconv"
 	"sync"
+	"time"
 
 	"go.etcd.io/etcd/api/v3/mvccpb"
 
 	"github.com/kubewharf/kubebrain/pkg/backend"
 )
+
+// prevKvRetryBudget bounds how long one previous-value lookup keeps retrying
+// transient storage failures before giving up with an uncertain nil (#36).
+// Generous on purpose: an uncertain nil on an update event makes the apiserver
+// terminate every watcher of that resource and re-list, which at scale costs
+// far more than blocking this one event stream a few seconds.
+var prevKvRetryBudget = 5 * time.Second // var for tests
 
 // revKeyCacheCap bounds each generation of the (key,revision) caches. A watch
 // fanout has W watcher streams converting the SAME event within a short window,
@@ -106,9 +114,15 @@ func (b *backendShim) cachedPreviousEtcdKv(key []byte, revision uint64) *mvccpb.
 		return v.(*mvccpb.KeyValue)
 	}
 	v, _, _ := b.prevFlight.Do(ck, func() (interface{}, error) {
-		// previousEtcdKv uses its own bounded (Background) context.
-		pk := b.previousEtcdKv(context.Background(), key, revision)
-		b.prevCache.put(ck, pk)
+		// previousEtcdKv uses its own bounded (Background) context. Only a
+		// CERTAIN answer (value / clean miss / compacted) may be cached: caching
+		// a transient-failure nil would hand the poisoned nil to every watcher
+		// stream converting the same event and amplify one storage hiccup into
+		// a cacher re-list storm (#36).
+		pk, certain := b.previousEtcdKv(context.Background(), key, revision)
+		if certain {
+			b.prevCache.put(ck, pk)
+		}
 		return pk, nil
 	})
 	return v.(*mvccpb.KeyValue)
