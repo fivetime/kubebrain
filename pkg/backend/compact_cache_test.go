@@ -87,3 +87,43 @@ func TestGetCompactRevisionCachesAndUpdatesEagerly(t *testing.T) {
 	require.Equal(t, compactedRev, got)
 	require.Equal(t, before+1, atomic.LoadInt64(&kv.gets), "one refresh after TTL expiry")
 }
+
+// TestGetCompactRevisionFreshBypassesCache pins #33: on a follower, the cached
+// compact revision can lag a compaction that a peer (the leader) just persisted.
+// GetCompactRevisionFresh must read through to storage — returning the peer's
+// value while the TTL cache still holds the stale one — and refresh the cache.
+func TestGetCompactRevisionFreshBypassesCache(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	m := mock.NewMinimalMetrics(ctrl)
+	kv := &countingGetKV{KvStorage: imemkv.NewKvStorage()}
+	defer func() { require.NoError(t, kv.Close()) }()
+	b := NewBackend(kv, Config{Prefix: prefix, Identity: getStorageIdentity(), EnableEtcdCompatibility: true}, m).(*backend)
+	b.SetCurrentRevision(uint64(time.Now().UnixNano()))
+	ctx := context.Background()
+
+	// Warm the cache at the current (zero) compact revision.
+	got, err := b.GetCompactRevision(ctx)
+	require.NoError(t, err)
+	require.Zero(t, got)
+
+	// A "peer" (the leader, via proxy) persists a newer compact revision directly
+	// in storage; our TTL cache still holds 0.
+	peerRev := uint64(time.Now().UnixNano())
+	bw := kv.BeginBatchWrite()
+	bw.Put(getCompactKey(prefix), uint64ToBytes(peerRev), 0)
+	require.NoError(t, bw.Commit(ctx))
+	got, err = b.GetCompactRevision(ctx)
+	require.NoError(t, err)
+	require.Zero(t, got, "cached read must still serve the stale value within the TTL (the #33 setup)")
+
+	// The fresh read must bypass the cache and return the peer's value...
+	fresh, err := b.GetCompactRevisionFresh(ctx)
+	require.NoError(t, err)
+	require.Equal(t, peerRev, fresh, "fresh read must see the peer-persisted compaction immediately")
+
+	// ...and refresh the cache as a side effect.
+	got, err = b.GetCompactRevision(ctx)
+	require.NoError(t, err)
+	require.Equal(t, peerRev, got, "fresh read must refresh the TTL cache")
+}

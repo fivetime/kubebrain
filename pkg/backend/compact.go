@@ -116,6 +116,22 @@ func (b *backend) GetCompactRevision(ctx context.Context) (uint64, error) {
 	return rev, nil
 }
 
+// GetCompactRevisionFresh reads the compact revision from storage, bypassing
+// the TTL cache (and refreshing it as a side effect). Reserve it for cold
+// paths that are about to hand the value to a client as authoritative — e.g.
+// a compacted-watch cancel, whose CompactRevision guides where the client
+// re-lists: on a follower the cached value can lag a just-proxied Compact by
+// up to the TTL, and a stale-low value sends the client into another
+// compacted round-trip (#33). Never call it per-request on hot paths.
+func (b *backend) GetCompactRevisionFresh(ctx context.Context) (uint64, error) {
+	rev, err := b.loadCompactRevision(ctx)
+	if err != nil {
+		return 0, err
+	}
+	b.updateCompactRevCache(rev)
+	return rev, nil
+}
+
 // loadCompactRevision reads the persisted compact revision from storage.
 func (b *backend) loadCompactRevision(ctx context.Context) (uint64, error) {
 	val, err := b.kv.Get(ctx, getCompactKey(b.config.Prefix))
