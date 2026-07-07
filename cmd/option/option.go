@@ -51,7 +51,8 @@ type KubeBrainOption struct {
 
 	EnableStorageMetrics bool
 
-	watchCacheSize int
+	watchCacheSize    int
+	watchFanoutBuffer int
 
 	enableCountIndex        bool
 	countIndexMaxKeys       int
@@ -79,6 +80,7 @@ func NewOptions() *KubeBrainOption {
 		ClusterName:          "default",
 		storageConfig:        newStorageConfig(),
 		watchCacheSize:       200 * 1000,
+		watchFanoutBuffer:    10 * 1000,
 		countIndexMaxKeys:    5 * 1000 * 1000,
 		historyScanRevBucket: 4096,
 
@@ -140,6 +142,7 @@ func (o *KubeBrainOption) AddFlags(fs *pflag.FlagSet) {
 	fs.BoolVar(&o.EnableStorageMetrics, "enable-storage-metrics", o.EnableStorageMetrics, "enable storage metrics.")
 	o.storageConfig.addFlag(fs)
 	fs.IntVar(&o.watchCacheSize, "watch-cache-size", o.watchCacheSize, "size of global watch cache")
+	fs.IntVar(&o.watchFanoutBuffer, "watch-fanout-buffer", o.watchFanoutBuffer, "per-watcher fan-out channel buffer in event batches; a watcher overrunning it is replayed from the watch cache ring instead of dropped")
 	fs.BoolVar(&o.enableCountIndex, "enable-count-index", o.enableCountIndex, "maintain an in-memory versioned key index on the leader for exact O(range) counts (approach A-index; requires --compatible-with-etcd)")
 	fs.IntVar(&o.countIndexMaxKeys, "count-index-max-keys", o.countIndexMaxKeys, "cap on keys tracked by the count index; above it the index disables and counts fall back to a scan (0 = unlimited)")
 	fs.Uint64Var(&o.autoCompactionRetention, "auto-compaction-retention-revisions", o.autoCompactionRetention, "SAFETY NET: if >0, the leader caps MVCC history to the last N revisions should the apiserver's own compaction stop (KubeBrain never auto-compacts otherwise). 0 = off. Set generously large so it only bites when the primary compactor is far behind.")
@@ -204,6 +207,7 @@ func (o *KubeBrainOption) Run(ctx context.Context) error {
 		SkippedPrefixes:             o.SkippedPrefixes,
 		EnableEtcdCompatibility:     o.epsConf.EnableEtcdCompatibility,
 		WatchCacheSize:              o.watchCacheSize,
+		WatchFanoutBuffer:           o.watchFanoutBuffer,
 		EnableCountIndex:            o.enableCountIndex,
 		CountIndexMaxKeys:           o.countIndexMaxKeys,
 		AutoCompactionRetention:     o.autoCompactionRetention,

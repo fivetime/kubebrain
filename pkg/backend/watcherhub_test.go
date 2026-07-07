@@ -210,6 +210,153 @@ func TestBroadcastEvictsSlowConsumerBeforeNextBatch(t *testing.T) {
 		"evicted sub must have received a contiguous prefix with no gap")
 }
 
+// newCatchUpHub builds a hub wired to a real watch-cache ring, as the backend
+// does. Events must be Add()ed to the ring before broadcast, mirroring the
+// collector's order — the catch-up re-attach proof depends on it.
+func newCatchUpHub(t *testing.T, bufSize, ringSize int) (*WatcherHub, *Ring) {
+	hub := newTestWatcherHub(t, bufSize)
+	hub.catchingUp = make(map[chan []*proto.Event]*catchUpState)
+	ring := NewRing(ringSize)
+	hub.ringLookup = ring.FindEvents
+	return hub, ring
+}
+
+// feed adds the batch to the ring then broadcasts it (collector order).
+func feed(hub *WatcherHub, ring *Ring, b []*proto.Event) {
+	for _, e := range b {
+		ring.Add(e)
+	}
+	hub.broadcast(b)
+}
+
+func (w *WatcherHub) catchingUpCount() int {
+	w.RLock()
+	defer w.RUnlock()
+	return len(w.catchingUp)
+}
+
+// TestSlowWatcherCatchUpNoGapAndReattach pins the #34 fix: a subscriber that
+// overruns its buffer is NOT dropped — its missed tail is replayed from the
+// ring and it is re-attached to live fan-out, and the full delivered stream
+// (buffered + replayed + post-reattach) is contiguous with no gap and no
+// duplicate.
+func TestSlowWatcherCatchUpNoGapAndReattach(t *testing.T) {
+	hub, ring := newCatchUpHub(t, 2, 1024)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sub, err := hub.AddWatcher(ctx, nil)
+	require.NoError(t, err)
+
+	// Overrun the 2-slot buffer: revs 1,2 fit; 3..10 are missed -> catch-up.
+	for rev := uint64(1); rev <= 10; rev++ {
+		feed(hub, ring, batch(rev))
+	}
+	require.Equal(t, 0, hub.subCount(), "slow sub must be detached from live fan-out")
+	require.Equal(t, 1, hub.catchingUpCount(), "slow sub must be in catch-up, not dropped")
+
+	// Consume everything; the catch-up goroutine replays 3..10 and re-attaches.
+	var got []uint64
+	require.Eventually(t, func() bool {
+		for {
+			select {
+			case evs, ok := <-sub:
+				if !ok {
+					t.Fatal("sub must not be closed during a recoverable catch-up")
+				}
+				for _, e := range evs {
+					got = append(got, e.Revision)
+				}
+			default:
+				return hub.subCount() == 1 && hub.catchingUpCount() == 0
+			}
+		}
+	}, 5*time.Second, 5*time.Millisecond, "catch-up must re-attach the consumer")
+
+	// Post-reattach broadcasts flow directly again.
+	feed(hub, ring, batch(11))
+	select {
+	case evs := <-sub:
+		for _, e := range evs {
+			got = append(got, e.Revision)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("re-attached sub must receive subsequent broadcasts")
+	}
+
+	require.Equal(t, uint64(1), got[0])
+	for i := 1; i < len(got); i++ {
+		require.Equal(t, got[i-1]+1, got[i],
+			"stream must be contiguous, gap/dup between %d and %d", got[i-1], got[i])
+	}
+	require.Equal(t, uint64(11), got[len(got)-1], "stream must reach the post-reattach event")
+}
+
+// TestSlowWatcherBeyondRingDropped pins the bounded fallback: when the missed
+// tail has already been evicted from the ring, the subscriber is dropped (chan
+// closed) exactly as before #34 — catch-up never scans storage.
+func TestSlowWatcherBeyondRingDropped(t *testing.T) {
+	hub, ring := newCatchUpHub(t, 1, 4) // tiny ring: 4 events
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sub, err := hub.AddWatcher(ctx, nil)
+	require.NoError(t, err)
+
+	// rev 1 fills the buffer; revs 2..9 are missed. The ring only retains 6..9,
+	// so the backlog starting at 2 is unrecoverable -> drop.
+	for rev := uint64(1); rev <= 9; rev++ {
+		feed(hub, ring, batch(rev))
+	}
+
+	require.Eventually(t, func() bool {
+		select {
+		case _, ok := <-sub:
+			return !ok // closed after the buffered prefix drains
+		default:
+			return false
+		}
+	}, 5*time.Second, 5*time.Millisecond, "beyond-ring backlog must close the sub (legacy drop)")
+	require.Equal(t, 0, hub.subCount())
+	require.Equal(t, 0, hub.catchingUpCount())
+}
+
+// TestDeleteWatcherDuringCatchUpClosesChan pins the shutdown handoff: a watcher
+// whose ctx dies mid-catch-up (the real deletion path) must terminate the
+// catch-up goroutine and close the channel exactly once (the goroutine owns
+// it), with no hub entry left behind.
+func TestDeleteWatcherDuringCatchUpClosesChan(t *testing.T) {
+	hub, ring := newCatchUpHub(t, 1, 1024)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	sub, err := hub.AddWatcher(ctx, nil)
+	require.NoError(t, err)
+
+	// Overrun: rev 1 buffered, 2..50 missed -> catch-up starts, and with the
+	// consumer never draining, the replay blocks on the full buffer.
+	for rev := uint64(1); rev <= 50; rev++ {
+		feed(hub, ring, batch(rev))
+	}
+	require.Equal(t, 1, hub.catchingUpCount())
+
+	cancel() // watcher gone: the AddWatcher goroutine runs DeleteWatcher
+
+	require.Eventually(t, func() bool {
+		// Drain until close; the channel must close without delivering a gap.
+		for {
+			select {
+			case _, ok := <-sub:
+				if !ok {
+					return true
+				}
+			default:
+				return false
+			}
+		}
+	}, 5*time.Second, 5*time.Millisecond, "DeleteWatcher must close a catching-up sub")
+	require.Equal(t, 0, hub.catchingUpCount())
+}
+
 // TestStreamDeliversGapFreePrefixToSlowConsumer drives the real Stream loop with
 // a consumer that drains slowly, and asserts the delivered revisions are a
 // strictly increasing contiguous prefix (no skipped batch) up to the point of

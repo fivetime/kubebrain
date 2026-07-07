@@ -107,6 +107,11 @@ type Backend interface {
 	// GetCompactRevision returns the latest completed logical compaction revision.
 	GetCompactRevision(ctx context.Context) (uint64, error)
 
+	// GetCompactRevisionFresh reads the compact revision from storage bypassing
+	// the TTL cache; for cold paths that hand the value to clients as
+	// authoritative (compacted-watch cancel, #33).
+	GetCompactRevisionFresh(ctx context.Context) (uint64, error)
+
 	// Get read a kv from storage
 	Get(ctx context.Context, r *proto.GetRequest) (*proto.GetResponse, error)
 
@@ -275,6 +280,11 @@ type Config struct {
 	// WatchCacheSize is the cache size of events
 	WatchCacheSize int
 
+	// WatchFanoutBuffer is the per-subscriber fan-out channel buffer in batches
+	// (0 = default). A subscriber that overruns it is detached into ring
+	// catch-up rather than dropped (#34).
+	WatchFanoutBuffer int
+
 	// HistoryScanRevBucket buckets the watch-history singleflight key (#30):
 	// watchers reconnecting to the same prefix whose requested revisions fall in
 	// the same bucket share ONE storage scan. Larger buckets collapse a wider
@@ -331,8 +341,10 @@ func NewBackend(kv storage.KvStorage, config Config, metricCli metrics.Metrics) 
 		writeSignal:           make(chan struct{}, 1),
 		watcherHub: &WatcherHub{
 			subs:             make(map[chan []*proto.Event][]byte),
+			catchingUp:       make(map[chan []*proto.Event]*catchUpState),
 			metricCli:        metricCli,
 			progressInterval: config.WatchProgressNotifyInterval,
+			bufSize:          config.WatchFanoutBuffer,
 		},
 		historyScanSem:   make(chan struct{}, historyScanConcurrency),
 		historyScanGroup: newScanGroup(),
@@ -343,6 +355,11 @@ func NewBackend(kv storage.KvStorage, config Config, metricCli metrics.Metrics) 
 	if config.EnableCountIndex && config.EnableEtcdCompatibility {
 		b.countIndex = countindex.New(config.CountIndexMaxKeys)
 	}
+
+	// Wire the fan-out hub's ring catch-up to the watch cache: a slow
+	// subscriber replays its missed tail from the ring instead of being
+	// dropped into an O(all-keys) re-list (#34).
+	b.watcherHub.ringLookup = b.watchCache.FindEvents
 
 	asyncRetryConfig := retry.Config{
 		UnaryTimeout:  unaryRpcTimeout,
