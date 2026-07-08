@@ -467,13 +467,13 @@ func (w *worker) run(ctx context.Context, receiver resultReceiver) (int, error) 
 			// raw key has multi versions, delete old versions which satisfies compact revision constraint
 			if w.compact && prevRevision > 0 {
 				prevKey := w.EncodeObjectKey(prevUserKey, prevRevision)
-				klog.InfoS("compact expired object key", "key", prevUserKey, "rev", prevRevision)
+				klog.V(4).InfoS("compact expired object key", "key", prevUserKey, "rev", prevRevision)
 				w.compactKey(prevKey, prevUserKey, prevRevision)
 			}
 		}
 		// delete tombstone data
 		if w.compact && bytes.Equal(value, w.tombstone) {
-			klog.InfoS("compact object key with tombstone", "key", curUserKey, "rev", curRevision)
+			klog.V(4).InfoS("compact object key with tombstone", "key", curUserKey, "rev", curRevision)
 			w.compactKey(key, curUserKey, curRevision)
 		}
 		// delete revision with deletion flag
@@ -483,12 +483,12 @@ func (w *worker) run(ctx context.Context, receiver resultReceiver) (int, error) 
 			// to avoid conflict with retrying for uncertain DELETE operation
 			objRev := binary.BigEndian.Uint64(value[0:8])
 			if objRev > w.revision {
-				klog.InfoS("skip gc revision key", "key", string(curUserKey), "revision", objRev,
+				klog.V(4).InfoS("skip gc revision key", "key", string(curUserKey), "revision", objRev,
 					"gcRev", w.revision)
 				continue
 			}
 
-			klog.InfoS("compact index key", "key", curUserKey, "rev", curRevision, "val", binary.BigEndian.Uint64(value[0:8]), "len", len(value))
+			klog.V(4).InfoS("compact index key", "key", curUserKey, "rev", curRevision, "val", binary.BigEndian.Uint64(value[0:8]), "len", len(value))
 			// cas with value to prevent conflict
 			w.compactCurrent(it, curUserKey, curRevision)
 		}
@@ -524,7 +524,7 @@ func (w *worker) info() string {
 
 func (w *worker) isSkippedRawKey(rawKey []byte, rev uint64) bool {
 	if len(w.lastCompactFailedRawKey) > 0 && bytes.Compare(w.lastCompactFailedRawKey, rawKey) == 0 {
-		klog.InfoS("compact skip", "rawKey", string(rawKey), "rev", rev)
+		klog.V(4).InfoS("compact skip", "rawKey", string(rawKey), "rev", rev)
 		w.metricCli.EmitCounter("compact.skip", 1)
 		return true
 	}

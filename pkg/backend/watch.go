@@ -45,7 +45,7 @@ const (
 // if revision == 0, start reading events from read channel
 func (b *backend) Watch(ctx context.Context, prefix string, revision uint64) (<-chan []*proto.Event, error) {
 
-	klog.InfoS("WATCH", "prefix", prefix, "revision", revision)
+	klog.V(2).InfoS("WATCH", "prefix", prefix, "revision", revision)
 
 	// starting watching right away so we don't miss anything
 	ctx, cancel := context.WithCancel(ctx)
