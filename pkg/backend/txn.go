@@ -67,7 +67,11 @@ func (b *backend) Create(ctx context.Context, put *proto.CreateRequest) (resp *p
 func (b *backend) create(ctx context.Context, key []byte, value []byte, lease int64) (revision uint64, error error) {
 	revision, err := b.deal(0)
 	if err != nil {
-		return 0, err
+		// Even on failure the revision may already be consumed from the TSO
+		// (drift-back returns the dealt value); hand it back so the caller's
+		// notify fills the ring slot instead of leaving a hole the collector
+		// can only pass via the multi-second stall watchdog.
+		return revision, err
 	}
 
 	// Key expiry is driven entirely by the lease attached to the key at the etcd
@@ -78,44 +82,76 @@ func (b *backend) create(ctx context.Context, key []byte, value []byte, lease in
 	// hardcoded 3600s TTL, which ignored the real granted TTL, ignored keepalive
 	// renewal, and mis-expired unrelated keys whose path merely contained
 	// "/events/" (data loss) — see #16.
-	err = b.createWithMetadata(ctx, key, value, revision, lease)
+	retryOldRev, retriable, err := b.createWithMetadata(ctx, key, value, revision, lease)
+	if err == nil || !retriable {
+		return revision, err
+	}
+
+	// The key's revision index holds a stale tombstone (or vanished between the
+	// CAS and the diagnostic read): retry as a CAS over that index — but at a
+	// FRESH revision, releasing the first one as an invalid event right away.
+	// The collector's committed watermark cannot pass a dealt revision until its
+	// notify, and every network round-trip in between (the diagnostic Get plus a
+	// second batch) stalls every concurrent writer's commit-wait behind this one
+	// key's conflict resolution (#44: 35% CAS-failure load degraded bare PUT
+	// p50 to 451ms while the batches themselves took 30ms).
+	b.notify(ctx, key, nil, revision, 0, false, proto.Event_CREATE, err)
+	b.metricCli.EmitCounter("create.conflict_retry.rebase", 1)
+	revision, err = b.deal(0)
+	if err != nil {
+		return revision, err
+	}
+	revisionKey := b.coder.EncodeRevisionKey(key)
+	objectKey := b.coder.EncodeObjectKey(key, revision)
+	// retryOldRev nil means the index key was missing at the diagnostic read:
+	// re-attempt the optimistic create; otherwise CAS over the stale tombstone.
+	err = b.createBatchWithMetadata(ctx, revisionKey, objectKey, key, value, uint64ToBytes(revision), retryOldRev, revision, retryOldRev == nil, lease)
 	return revision, err
 }
 
-func (b *backend) createWithMetadata(ctx context.Context, key []byte, value []byte, revision uint64, lease int64) error {
+// createWithMetadata makes ONE optimistic create attempt. On a CAS conflict it
+// diagnoses the index key and reports whether a retry can succeed (stale
+// tombstone below our revision, or a concurrently-vanished index). It never
+// issues the second batch itself: the retry must run at a fresh revision (see
+// create) so the collector's watermark is not held behind the extra
+// round-trips.
+func (b *backend) createWithMetadata(ctx context.Context, key []byte, value []byte, revision uint64, lease int64) (retryOldRev []byte, retriable bool, err error) {
 	revisionKey := b.coder.EncodeRevisionKey(key)
 	objectKey := b.coder.EncodeObjectKey(key, revision)
 	revisionBytes := uint64ToBytes(revision)
 
-	err := b.createBatchWithMetadata(ctx, revisionKey, objectKey, key, value, revisionBytes, nil, revision, true, lease)
+	err = b.createBatchWithMetadata(ctx, revisionKey, objectKey, key, value, revisionBytes, nil, revision, true, lease)
 	if err == nil {
-		return nil
+		return nil, false, nil
 	}
 	if !errors.Is(err, storage.ErrCASFailed) {
-		return err
+		return nil, false, err
 	}
 
 	var oldRev []byte
 	if conflict, ok := err.(*storage.Conflict); ok && conflict.Idx == 0 {
 		oldRev = conflict.Val
 	} else {
-		oldRev, err = b.kv.Get(ctx, revisionKey)
-		if err != nil {
-			if errors.Is(err, storage.ErrKeyNotFound) {
-				return b.createBatchWithMetadata(ctx, revisionKey, objectKey, key, value, revisionBytes, nil, revision, true, lease)
+		var gerr error
+		oldRev, gerr = b.kv.Get(ctx, revisionKey)
+		if gerr != nil {
+			if errors.Is(gerr, storage.ErrKeyNotFound) {
+				// Index vanished between the CAS and this read (concurrent
+				// delete+compact); the optimistic create can be retried.
+				return nil, true, err
 			}
-			return storage.ErrUnavailable
+			return nil, false, storage.ErrUnavailable
 		}
 	}
 
 	prevRevision, isTombstone, parseErr := coder.ParseRevision(oldRev)
 	if parseErr != nil {
-		return parseErr
+		return nil, false, parseErr
 	}
 	if isTombstone && prevRevision < revision {
-		return b.createBatchWithMetadata(ctx, revisionKey, objectKey, key, value, revisionBytes, oldRev, revision, false, lease)
+		return oldRev, true, err
 	}
-	return storage.ErrCASFailed
+	return nil, false, storage.ErrCASFailed
 }
 
 // createBatchWithMetadata writes the revision-key and object-key with no
@@ -562,6 +598,17 @@ func (b *backend) updateOnce(ctx context.Context, r *proto.UpdateRequest, allowH
 }
 
 func (b *backend) update(ctx context.Context, oldRevision uint64, key []byte, value []byte, lease int64) (revision uint64, newMeta EtcdMetadata, err error) {
+	// Read the prior version's metadata BEFORE dealing the revision: the lookup
+	// depends only on (key, oldRevision). Every network round-trip between deal
+	// and the batch commit sits inside the collector's head-of-line window — the
+	// committed watermark cannot pass the dealt revision until its notify — so
+	// keeping this Get inside the window stalled every concurrent writer's
+	// commit-wait by an extra round-trip per update (#44). Failing here consumes
+	// no revision, so the caller's notify (revision 0) is dropped harmlessly.
+	meta, err := b.GetEtcdMetadata(ctx, key, oldRevision)
+	if err != nil {
+		return 0, EtcdMetadata{}, err
+	}
 	var newRevision uint64
 	newRevision, err = b.deal(oldRevision)
 	if err != nil {
@@ -570,12 +617,6 @@ func (b *backend) update(ctx context.Context, oldRevision uint64, key []byte, va
 		// filling its ring slot; returning 0 here would leave the event
 		// collector waiting on this revision forever, freezing the committed
 		// revision and thus every list/watch on the cluster.
-		return newRevision, EtcdMetadata{}, err
-	}
-	meta, err := b.GetEtcdMetadata(ctx, key, oldRevision)
-	if err != nil {
-		// Same as above: the dealt revision must reach the ring buffer even
-		// though the write never started.
 		return newRevision, EtcdMetadata{}, err
 	}
 	if meta.CreateRevision == 0 {

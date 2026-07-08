@@ -1325,15 +1325,19 @@ func testBackendDeleteAndCreate(t *testing.T, targetStorage storageType) {
 			expectedEvent: newEvent(proto.Event_DELETE, initRevision+2, newKeyValue(testKey, val1, initRevision+1)),
 		},
 		&createTestcase{
+			// A create over a tombstoned index retries at a FRESH revision and
+			// releases the first one as an invalid event (#44): the recreate
+			// consumes initRevision+3 (invalid, no watch event) and lands at
+			// initRevision+4.
 			description:   "twice create",
 			putReq:        newCreateRequest(testKey, val2),
-			expectedResp:  newCreateResponse(initRevision+3, true),
-			expectedEvent: newEvent(proto.Event_CREATE, initRevision+3, newKeyValue(testKey, val2, initRevision+3)),
+			expectedResp:  newCreateResponse(initRevision+4, true),
+			expectedEvent: newEvent(proto.Event_CREATE, initRevision+4, newKeyValue(testKey, val2, initRevision+4)),
 		},
 		&getTestcase{
 			description:  "check",
 			getReq:       newGetRequest(0, testKey),
-			expectedResp: newGetResponse(initRevision+3, newKeyValue(testKey, val2, initRevision+3)),
+			expectedResp: newGetResponse(initRevision+4, newKeyValue(testKey, val2, initRevision+4)),
 		},
 	}
 
