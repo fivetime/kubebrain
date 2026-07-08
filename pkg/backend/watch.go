@@ -218,9 +218,21 @@ func (b *backend) historyWatchEvents(ctx context.Context, prefix string, fromRev
 	// (coveredRev) so a waiter can check the shared result reaches far enough for
 	// its own from-now subscription (see the guard below).
 	events, coveredRev, scanErr, _ := b.historyScanGroup.Do(ctx, key, func(sctx context.Context) ([]*proto.Event, uint64, error) {
-		evs, err := b.boundedHistoryScan(sctx, prefix, scanFrom, currentRevision)
+		// Prefer the event log (#45): one bounded range read over
+		// [scanFrom, currentRevision] plus point reads for the values —
+		// O(events in the window) — instead of the full-prefix object scan,
+		// which at 10M+ keys takes minutes and cannot outrun the write rate.
+		// served=false (window predates the log, or a referenced version is
+		// missing) falls back to the scan, which remains fully correct.
+		evs, served, err := b.eventLogWatchEvents(sctx, prefix, scanFrom, currentRevision)
 		if err != nil {
 			return nil, 0, err
+		}
+		if !served {
+			evs, err = b.boundedHistoryScan(sctx, prefix, scanFrom, currentRevision)
+			if err != nil {
+				return nil, 0, err
+			}
 		}
 		// Extend coverage from the storage snapshot (currentRevision) up to the
 		// ring's newest revision, so watchers that subscribed WHILE this

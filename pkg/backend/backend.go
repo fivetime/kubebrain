@@ -128,6 +128,10 @@ type Backend interface {
 	// RebuildCountIndex rebuilds the count index; call on leadership acquisition.
 	RebuildCountIndex(ctx context.Context) error
 
+	// EnsureEventLogStart initializes the event-log completeness watermark;
+	// call on leadership acquisition (#45).
+	EnsureEventLogStart(ctx context.Context) error
+
 	// GetPartitions query the partition state of storage for ListByStream
 	GetPartitions(ctx context.Context, r *proto.ListPartitionRequest) (*proto.ListPartitionResponse, error)
 
@@ -201,6 +205,8 @@ type backend struct {
 	capacity int
 	// history watch event cache for watch request catch up
 	watchCache *Ring
+	// elogStart caches the event log's completeness watermark (#45).
+	elogStart eventLogStart
 
 	// channel to pass etcd watch event to watchers
 	watchChan chan []*proto.Event

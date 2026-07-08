@@ -214,6 +214,11 @@ func (b *backend) physicalCompact(ctx context.Context, revision uint64) {
 	if b.countIndex != nil {
 		b.countIndex.Compact(revision)
 	}
+	// The event log only needs to cover what compaction has not reclaimed:
+	// watches below the compact watermark are cancelled as compacted anyway, so
+	// entries at/below it are dead weight — drop them and advance the log's
+	// completeness watermark (#45).
+	b.cleanupEventLog(ctx, revision)
 }
 
 // schedulePhysicalCompact raises the background compaction target to revision and

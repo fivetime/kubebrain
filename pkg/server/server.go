@@ -121,6 +121,13 @@ func (s *server) onStartedLeading(ctx context.Context) {
 		}
 	}
 	s.healthServer.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
+	// Initialize the event log's completeness watermark before serving history
+	// replays (#45): absent (fresh cluster or first run of a log-aware binary)
+	// it is set to the current revision, so replays below it fall back to the
+	// object scan. Failure is non-fatal — the log just stays unavailable.
+	if err := s.backend.EnsureEventLogStart(ctx); err != nil {
+		klog.ErrorS(err, "event log start initialization failed; history replays fall back to scans")
+	}
 	// The count index can trail readiness: until it is Ready() at a revision,
 	// counts fall back to a full scan (never a wrong count), so a rebuild failure
 	// must not gate serving. Rebuild from a fresh snapshot; a follower's collector

@@ -180,6 +180,7 @@ func (b *backend) createBatchWithMetadata(ctx context.Context, revisionKey, obje
 		batch.Put(objectKey, value, 0)
 		b.putEtcdMetadata(batch, key, revision, meta)
 	}
+	appendEventLog(batch, revision, key, proto.Event_CREATE, 0)
 	return batch.Commit(ctx)
 }
 
@@ -312,6 +313,7 @@ func (b *backend) delete(ctx context.Context, oldRevision uint64, key []byte) (n
 	batch := b.kv.BeginBatchWrite()
 	batch.CAS(revisionKey, newRevisionBytes, expectedRevisionBytes, 0)
 	batch.Put(objectKey, tombStoneBytes, 0)
+	appendEventLog(batch, newRevision, key, proto.Event_DELETE, expectedRevision)
 	err = batch.Commit(ctx)
 
 	// todo: need an internal retry if there is any conflict error?
@@ -479,6 +481,7 @@ func (b *backend) deleteRangeChunk(ctx context.Context, pending []pendingDelete)
 			objectKey := b.coder.EncodeObjectKey(item.key, newRevision)
 			batch.CAS(revisionKey, newRevisionBytes, uint64ToBytes(item.oldRevision), 0)
 			batch.Put(objectKey, tombStoneBytes, 0)
+			appendEventLog(batch, newRevision, item.key, proto.Event_DELETE, item.oldRevision)
 		}
 		err = batch.Commit(ctx)
 	}
@@ -648,6 +651,7 @@ func (b *backend) update(ctx context.Context, oldRevision uint64, key []byte, va
 		batch.Put(objectKey, value, 0)
 		b.putEtcdMetadata(batch, key, newRevision, meta)
 	}
+	appendEventLog(batch, newRevision, key, proto.Event_PUT, oldRevision)
 	return newRevision, meta, batch.Commit(ctx)
 }
 

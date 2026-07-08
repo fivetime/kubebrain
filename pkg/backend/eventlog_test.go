@@ -1,0 +1,153 @@
+// Copyright 2026 ByteDance and/or its affiliates
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package backend
+
+import (
+	"context"
+	"fmt"
+	"path"
+	"testing"
+	"time"
+
+	"github.com/golang/mock/gomock"
+	"github.com/stretchr/testify/require"
+
+	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
+	"github.com/kubewharf/kubebrain/pkg/metrics/mock"
+	imemkv "github.com/kubewharf/kubebrain/pkg/storage/memkv"
+)
+
+// TestEventLogReplayMatchesWrites pins #45: after create/update/delete, the
+// event-log replay reconstructs exactly the events a watcher saw — same types,
+// revisions, keys and (enveloped) values — without a full-prefix scan, and CAS
+// misses/holes never surface.
+func TestEventLogReplayMatchesWrites(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	m := mock.NewMinimalMetrics(ctrl)
+	kv := imemkv.NewKvStorage()
+	defer func() { require.NoError(t, kv.Close()) }()
+
+	pfx := fmt.Sprintf("/kubebrain/elog_test/%d", time.Now().UnixNano())
+	b := NewBackend(kv, Config{
+		Prefix: pfx, Identity: getStorageIdentity(), EnableEtcdCompatibility: true,
+	}, m).(*backend)
+	b.SetCurrentRevision(uint64(time.Now().UnixNano()))
+	ctx := context.Background()
+	require.NoError(t, b.EnsureEventLogStart(ctx))
+	startRev := b.GetCurrentRevision()
+
+	key := path.Join(pfx, "obj")
+	cresp, err := b.Create(ctx, &proto.CreateRequest{Key: []byte(key), Value: []byte("v1")})
+	require.NoError(t, err)
+	require.True(t, cresp.Succeeded)
+	createRev := cresp.Header.Revision
+
+	uresp, err := b.Update(ctx, &proto.UpdateRequest{
+		Kv: &proto.KeyValue{Key: []byte(key), Value: []byte("v2"), Revision: createRev}})
+	require.NoError(t, err)
+	require.True(t, uresp.Succeeded)
+	updateRev := uresp.Header.Revision
+
+	dresp, err := b.Delete(ctx, &proto.DeleteRequest{Key: []byte(key), Revision: updateRev})
+	require.NoError(t, err)
+	require.True(t, dresp.Succeeded)
+	deleteRev := dresp.Header.Revision
+
+	waitUntilRevisionEqualOrTimeout(b, deleteRev)
+
+	events, served, err := b.eventLogWatchEvents(ctx, pfx, startRev+1, deleteRev)
+	require.NoError(t, err)
+	require.True(t, served, "window above the watermark must be served from the log")
+	require.Len(t, events, 3)
+
+	require.Equal(t, proto.Event_CREATE, events[0].Type)
+	require.Equal(t, createRev, events[0].Revision)
+	require.Equal(t, createRev, events[0].Kv.Revision)
+
+	require.Equal(t, proto.Event_PUT, events[1].Type)
+	require.Equal(t, updateRev, events[1].Revision)
+
+	require.Equal(t, proto.Event_DELETE, events[2].Type)
+	require.Equal(t, deleteRev, events[2].Revision)
+	// DELETE carries the deleted (previous) version, like the scan path.
+	require.Equal(t, updateRev, events[2].Kv.Revision)
+	require.NotEmpty(t, events[2].Kv.Value, "DELETE must carry the deleted value")
+
+	// The replay must agree with the full-prefix scan fallback event-for-event
+	// on (type, revision, value-revision).
+	scanEvents, err := b.scanHistoryEvents(ctx, pfx, startRev+1, deleteRev)
+	require.NoError(t, err)
+	require.Len(t, scanEvents, 3)
+	for i := range scanEvents {
+		require.Equal(t, scanEvents[i].Revision, events[i].Revision, "event %d revision", i)
+		require.Equal(t, scanEvents[i].Kv.Revision, events[i].Kv.Revision, "event %d value revision", i)
+		require.Equal(t, scanEvents[i].Kv.Value, events[i].Kv.Value, "event %d value", i)
+	}
+
+	// Prefix filtering: an unrelated prefix replays to zero events.
+	other, served, err := b.eventLogWatchEvents(ctx, pfx+"/nothing-here", startRev+1, deleteRev)
+	require.NoError(t, err)
+	require.True(t, served)
+	require.Empty(t, other)
+}
+
+// TestEventLogWatermarkGates pins the completeness watermark: replays at or
+// below it (pre-log history, cleanup, leadership change) must refuse and fall
+// back rather than serve a window with holes.
+func TestEventLogWatermarkGates(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	m := mock.NewMinimalMetrics(ctrl)
+	kv := imemkv.NewKvStorage()
+	defer func() { require.NoError(t, kv.Close()) }()
+
+	pfx := fmt.Sprintf("/kubebrain/elog_gate/%d", time.Now().UnixNano())
+	b := NewBackend(kv, Config{
+		Prefix: pfx, Identity: getStorageIdentity(), EnableEtcdCompatibility: true,
+	}, m).(*backend)
+	b.SetCurrentRevision(uint64(time.Now().UnixNano()))
+	ctx := context.Background()
+	require.NoError(t, b.EnsureEventLogStart(ctx))
+	startRev := b.GetCurrentRevision()
+
+	key := path.Join(pfx, "k")
+	cresp, err := b.Create(ctx, &proto.CreateRequest{Key: []byte(key), Value: []byte("v")})
+	require.NoError(t, err)
+	rev := cresp.Header.Revision
+	waitUntilRevisionEqualOrTimeout(b, rev)
+
+	// A window starting at or below the watermark is refused.
+	_, served, err := b.eventLogWatchEvents(ctx, pfx, startRev, rev)
+	require.NoError(t, err)
+	require.False(t, served, "window touching the watermark must fall back")
+
+	// Cleanup advances the watermark and removes entries; the old window is
+	// refused afterwards.
+	b.cleanupEventLog(ctx, rev)
+	_, served, err = b.eventLogWatchEvents(ctx, pfx, rev, rev)
+	require.NoError(t, err)
+	require.False(t, served, "cleaned window must fall back")
+
+	// A fresh leadership acquisition advances the watermark unconditionally:
+	// pre-acquisition windows are no longer vouched for.
+	c2, err := b.Create(ctx, &proto.CreateRequest{Key: []byte(key + "2"), Value: []byte("v")})
+	require.NoError(t, err)
+	waitUntilRevisionEqualOrTimeout(b, c2.Header.Revision)
+	require.NoError(t, b.EnsureEventLogStart(ctx))
+	_, served, err = b.eventLogWatchEvents(ctx, pfx, c2.Header.Revision, c2.Header.Revision)
+	require.NoError(t, err)
+	require.False(t, served, "windows before a leadership change must fall back")
+}

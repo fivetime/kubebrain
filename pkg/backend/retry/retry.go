@@ -181,7 +181,7 @@ func (a *asyncFifoRetryImpl) retry(ctx context.Context) (breakLoop bool) {
 		"op", node.event.ResourceVerb.String())
 
 	retryCtx, cancel := context.WithTimeout(ctx, 2*a.config.UnaryTimeout)
-	rev, err := a.overwrite(retryCtx, node.event.Key, node.event.Revision)
+	rev, err := a.overwrite(retryCtx, node.event.Key, node.event.Revision, node.event.PrevRevision)
 	cancel()
 	if rev == 0 {
 		// if rev is zero, it means that there is no new write batch
@@ -219,7 +219,7 @@ func (a *asyncFifoRetryImpl) retry(ctx context.Context) (breakLoop bool) {
 	return false
 }
 
-func (a *asyncFifoRetryImpl) overwrite(ctx context.Context, key []byte, prevOpRev uint64) (rev uint64, err error) {
+func (a *asyncFifoRetryImpl) overwrite(ctx context.Context, key []byte, prevOpRev uint64, eventPrevRev uint64) (rev uint64, err error) {
 	val, modRev, err := a.getter(ctx, key)
 	if err != nil {
 		if err == storage.ErrKeyNotFound {
@@ -258,6 +258,17 @@ func (a *asyncFifoRetryImpl) overwrite(ctx context.Context, key []byte, prevOpRe
 
 	batch.CAS(revKey, revBytes, prevRevBytes, 0)
 	batch.Put(objKey, val, 0) // rewrite it event if it's tombstone
+	// The rewrite is a real committed write and is published as an event, so it
+	// must appear in the event log like any other write (#45). A tombstone
+	// rewrite is a DELETE, anything else a PUT; the entry's prevRevision must
+	// match what the dispatcher publishes (the ORIGINAL op's prev version, not
+	// the op's own revision) so a replayed DELETE resolves the deleted value,
+	// not the tombstone itself.
+	verb := byte(proto.Event_PUT)
+	if bytes.Compare(val, a.config.Tombstone) == 0 {
+		verb = byte(proto.Event_DELETE)
+	}
+	batch.Put(coder.EncodeEventLogKey(rev, key), coder.EncodeEventLogValue(verb, eventPrevRev), 0)
 	err = batch.Commit(ctx)
 
 	return rev, err
