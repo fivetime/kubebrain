@@ -44,7 +44,22 @@ const (
 	rangeStreamBatch  = 300
 
 	revisionValueLengthWithDeletionFlag = 9
+
+	// globalScanWorkers caps the number of partition-scan workers running
+	// concurrently across ALL unlimited scans (#40). A kube-apiserver cold
+	// start fires dozens of cachers' full-keyspace Lists at once; uncapped,
+	// each List spawns one worker per TiKV region (dozens), so hundreds of
+	// concurrent scans saturate TiKV's unified read pool and head-of-line
+	// block every small read — observed live: a 2-key services List took
+	// 12.6s during the start-up flood (vs <100ms steady), which starved the
+	// apiserver's Fatal ip-repair PostStartHook and crash-looped the control
+	// plane. Small ranges take one slot and pass through quickly; the cap
+	// only queues the big scans against each other.
+	globalScanWorkers = 24
 )
+
+// globalScanSem is the process-wide scan-worker semaphore (see globalScanWorkers).
+var globalScanSem = make(chan struct{}, globalScanWorkers)
 
 // NewScanner create a Scanner
 func NewScanner(store storage.KvStorage, coder coder.Coder, config Config, metricCli metrics.Metrics) Scanner {
@@ -231,9 +246,29 @@ func (r *scanner) scan(ctx context.Context, start []byte, end []byte, revision u
 	wg.Add(len(partitions))
 
 	// run worker concurrently
+	// Single-partition scans (small ranges: a service list, one prefix) bypass
+	// the semaphore entirely: one worker is negligible read-pool load, and
+	// queueing it behind the big multi-region scans is exactly the
+	// head-of-line blocking the cap exists to prevent — during an apiserver
+	// cold start the 2-key services List MUST come back within the ip-repair
+	// hook's retry budget while the multi-million-key cacher Lists grind on.
+	useSem := len(partitions) > 1
 	for idx := range partitions {
 		go func(idx int) {
 			defer wg.Done()
+
+			// Global scan-worker cap: acquire before touching storage so a burst
+			// of concurrent full-keyspace scans queues here instead of saturating
+			// the TiKV read pool (see globalScanWorkers).
+			if useSem {
+				select {
+				case globalScanSem <- struct{}{}:
+					defer func() { <-globalScanSem }()
+				case <-ctx.Done():
+					errList[idx] = ctx.Err()
+					return
+				}
+			}
 
 			// create a worker
 			receiverList[idx] = receiver.fork()
