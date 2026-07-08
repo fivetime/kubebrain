@@ -606,13 +606,20 @@ func TestWatchProgressRequestReportsSyncedNotGlobalRevision(t *testing.T) {
 		t.Fatalf("watch returned unexpected error: %v", err)
 	}
 
+	// Per-watch progress (#39): the response carries the WATCH's own id and its
+	// truthful delivered watermark. A stream-level -1 (which clientv3 would
+	// broadcast) must NOT appear while a lagging watch is active — that was the
+	// original data-loss vector this test pins.
 	var progress *etcdserverpb.WatchResponse
 	for _, resp := range stream.fakeWatchServer.sent {
-		if resp.WatchId == -1 { // stream-level progress notification
+		if resp.WatchId == -1 && len(resp.Events) == 0 && !resp.Created && !resp.Canceled {
+			t.Fatalf("stream-level -1 progress broadcast while a watch is lagging: rev=%d", resp.Header.Revision)
+		}
+		if resp.WatchId >= 0 && len(resp.Events) == 0 && !resp.Created && !resp.Canceled && resp.Header != nil {
 			progress = resp
 		}
 	}
-	require.NotNil(t, progress, "expected a progress notification response")
+	require.NotNil(t, progress, "expected a per-watch progress notification response")
 	require.Equal(t, startRev-1, progress.Header.Revision,
 		"progress must report the delivered/synced revision, not the global current revision")
 	require.Less(t, progress.Header.Revision, int64(global),

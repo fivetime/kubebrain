@@ -92,6 +92,18 @@ func storeMaxUint64(addr *uint64, val uint64) {
 	}
 }
 
+// syncedRevSnapshot returns a copy of every active watch's delivered
+// watermark, for per-watch progress responses (#39).
+func (w *watcher) syncedRevSnapshot() map[int64]uint64 {
+	w.Lock()
+	defer w.Unlock()
+	m := make(map[int64]uint64, len(w.watches))
+	for id, wt := range w.watches {
+		m[id] = atomic.LoadUint64(&wt.syncedRev)
+	}
+	return m
+}
+
 // minSyncedRevision returns the minimum revision delivered across all active
 // watches on the stream, and whether any watch is active.
 func (w *watcher) minSyncedRevision() (uint64, bool) {
@@ -160,24 +172,54 @@ func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) error {
 			w.Cancel(msg.GetCancelRequest().WatchId, nil, false)
 		} else if msg.GetProgressRequest() != nil {
 			s.metricCli.EmitCounter("watch.progress.request", 1)
-			// A stream-wide progress notification must not exceed the slowest
-			// watch: report the minimum revision delivered across all active
-			// watches. With no active watch, nothing can be behind, so fall back
-			// to the backend current revision.
-			revision, ok := w.minSyncedRevision()
-			if !ok {
+			// Per-watch progress (#39): answer RequestProgress with one
+			// header-only response PER WATCH, each carrying that watch's own
+			// delivered watermark (syncedRev). clientv3 routes responses by
+			// WatchId, so every consumer gets its own truthful progress.
+			//
+			// A single stream-wide (WatchId=-1) response capped at the slowest
+			// watch — the previous behavior — deadlocks large keyspaces: the
+			// kube-apiserver multiplexes EVERY resource cacher's watch onto a
+			// few shared etcd streams, and 1.36's ConsistentListFromCache +
+			// WatchList gate cacher readiness on progress. One cacher doing a
+			// multi-minute initial sync (3M namespaces) then pins the stream
+			// minimum, so NO cacher ever observes progress past its start
+			// revision, storage-readiness never turns, the service-ip-repair
+			// PostStartHook hits its hard-coded 1-minute deadline, and the
+			// apiserver crash-loops forever. Per-watch progress is also what
+			// the periodic notify path already emits, and syncedRev never
+			// over-reports (it advances only via delivered events/markers).
+			for id, rev := range w.syncedRevSnapshot() {
+				if rev == 0 {
+					// Range-stream pseudo-watches never emit progress.
+					continue
+				}
+				if err := w.Send(&etcdserverpb.WatchResponse{
+					Header:  txnHeader(int64(rev)),
+					WatchId: id,
+				}); err != nil {
+					klog.ErrorS(err, "watch send progress response err", "watcher", w.id, "watch", id)
+					return err
+				}
+			}
+			// A stream-level (WatchId=-1) response is BROADCAST to every watch
+			// by clientv3, so per etcd semantics (mvcc progressIfSync) it may
+			// only carry a revision every watch has truly delivered. The
+			// per-watch responses above already give each consumer its own
+			// truthful progress, so -1 is only used as a fallback when the
+			// stream has no active watches (nothing can be behind).
+			if len(w.syncedRevSnapshot()) == 0 {
 				backendRev, err := safeBackendRevision(ws.Context(), s.backend)
 				if err != nil {
 					return err
 				}
-				revision = backendRev
-			}
-			if err := w.Send(&etcdserverpb.WatchResponse{
-				Header:  txnHeader(int64(revision)),
-				WatchId: -1,
-			}); err != nil {
-				klog.ErrorS(err, "watch send progress response err", "watcher", w.id)
-				return err
+				if err := w.Send(&etcdserverpb.WatchResponse{
+					Header:  txnHeader(int64(backendRev)),
+					WatchId: -1,
+				}); err != nil {
+					klog.ErrorS(err, "watch send progress response err", "watcher", w.id)
+					return err
+				}
 			}
 		} else {
 			s.metricCli.EmitCounter("watch.request.unsupported", 1)
