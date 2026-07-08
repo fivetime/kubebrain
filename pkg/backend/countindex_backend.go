@@ -16,14 +16,11 @@ package backend
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"k8s.io/klog/v2"
-
-	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
 )
-
-const countRebuildPageSize = 2000
 
 // CountAtRevision returns the exact live-key count of [key,end) at revision rev
 // from the in-memory index, and whether the index served it. rev==0 means the
@@ -59,10 +56,35 @@ func (b *backend) CountAtRevision(ctx context.Context, key, end []byte, rev uint
 // maintained forward from the ordered event collector, but only the leader's
 // collector processes local writes, so a follower-turned-leader must reload the
 // pre-existing keys.
+//
+// The load is one partition-parallel streaming scan (RangeStream), NOT a paged
+// List loop. Paging at 10M+ keys takes upwards of an hour (thousands of pages,
+// each queueing on the scan-worker semaphore behind count-fallback full scans
+// that exist precisely because this index is not ready yet), and every page
+// re-checks the compact watermark — so the apiserver's 5-minute compaction
+// cadence inevitably overtakes the snapshot revision and kills the rebuild
+// (#42, observed at 18.6M keys: died at 8m/2M keys, index disabled until the
+// next leadership change). One streaming scan checks the watermark once at
+// start and finishes in minutes.
 func (b *backend) RebuildCountIndex(ctx context.Context) error {
 	if b.countIndex == nil {
 		return nil
 	}
+	// Retry with a freshly captured baseRev: a compaction can still slip between
+	// Reset's snapshot-revision capture and the scan's watermark check.
+	var lastErr error
+	for attempt := 1; ; attempt++ {
+		if lastErr = b.rebuildCountIndexOnce(ctx); lastErr == nil {
+			return nil
+		}
+		if attempt >= 3 || ctx.Err() != nil {
+			return lastErr
+		}
+		klog.ErrorS(lastErr, "rebuild count index failed, retrying with a fresh snapshot revision", "attempt", attempt)
+	}
+}
+
+func (b *backend) rebuildCountIndexOnce(ctx context.Context) error {
 	ts := time.Now()
 	start := []byte(b.config.Prefix)
 	// Floor the snapshot revision at the compact watermark+1: a just-promoted
@@ -81,6 +103,7 @@ func (b *backend) RebuildCountIndex(ctx context.Context) error {
 	// the whole scan, so the collector keeps advancing the committed revision
 	// throughout — no freeze, no watch-buffer overflow during a minutes-long
 	// rebuild at scale.
+	var loadErr error // Reset swallows the load error (it just disables the index); capture it for the retry loop
 	b.countIndex.Reset(
 		func() uint64 {
 			r := b.tso.GetRevision()
@@ -90,32 +113,33 @@ func (b *backend) RebuildCountIndex(ctx context.Context) error {
 			return r
 		},
 		func(rev uint64, emit func(key []byte, revision uint64, tombstone bool)) error {
-			cur := append([]byte(nil), start...)
-			for {
-				resp, lerr := b.List(ctx, &proto.RangeRequest{
-					Key:      cur,
-					End:      noPrefixEnd, // scan to the end of the keyspace
-					Revision: rev,
-					Limit:    countRebuildPageSize,
-				})
-				if lerr != nil {
-					// Returning the error disables the index (Reset sets baseRev=0) so a
-					// half-loaded tree is never served — counts fall back to a scan.
-					klog.ErrorS(lerr, "rebuild count index: list failed", "from", Key(cur))
-					return lerr
+			// One partition-parallel streaming scan of the whole keyspace at rev.
+			// Workers emit batches concurrently, so keys arrive out of key order;
+			// applyLocked handles out-of-order inserts (same guard that merges the
+			// snapshot with concurrent collector applies). The stream ends with a
+			// marker response carrying any scan error; a mid-stream error can only
+			// appear there, after the producer closed the channel, so returning on
+			// it never strands the scan workers. Returning the error disables the
+			// index (Reset sets baseRev=0) so a half-loaded tree is never served.
+			// RangeStream takes encoded object keys (List does this internally).
+			stream := b.scanner.RangeStream(ctx, b.rangeStartKey(start), b.rangeEndKey(noPrefixEnd), rev)
+			for resp := range stream {
+				if resp.Err != "" {
+					loadErr = errors.New(resp.Err)
+					klog.ErrorS(loadErr, "rebuild count index: scan failed")
+					return loadErr
 				}
-				for _, kv := range resp.Kvs {
-					// List returns only live keys (tombstones filtered), so every
-					// emitted key is live at rev.
+				for _, kv := range resp.RangeResponse.Kvs {
+					// The scan emits only live keys at rev (tombstones and shadowed
+					// versions filtered by the worker).
 					emit(kv.Key, kv.Revision, false)
 				}
-				if !resp.More || len(resp.Kvs) == 0 {
-					break
-				}
-				cur = append(append([]byte(nil), resp.Kvs[len(resp.Kvs)-1].Key...), 0)
 			}
 			return nil
 		})
+	if loadErr != nil {
+		return loadErr
+	}
 	rev := b.countIndex.BaseRev()
 	klog.InfoS("count index rebuilt", "rev", rev, "keys", b.countIndex.Len(),
 		"ready", b.countIndex.Ready(rev), "latency", time.Since(ts))
