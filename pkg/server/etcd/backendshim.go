@@ -135,6 +135,10 @@ type backendShim struct {
 	metaFlight singleflight.Group
 	prevCache  *revKeyCache
 	prevFlight singleflight.Group
+	// prevHints answers watch PrevKv lookups from the event stream itself (the
+	// key's last converted event IS the previous version), removing the per-PUT
+	// revisioned TiKV Get that serialized watch conversion at ~60 events/s.
+	prevHints *prevHintCache
 	// rangeCountCache memoizes exact range counts keyed by (start,end,revision).
 	// A count at a FIXED revision is immutable, and the apiserver's paginated
 	// LIST asks for the same (range, revision) count on every continue page —
@@ -158,6 +162,7 @@ func NewBackendShim(backend backend.Backend, metricCli metrics.Metrics) BackendS
 		metaCache:       newRevKeyCache(revKeyCacheCap),
 		prevCache:       newRevKeyCache(revKeyCacheCap),
 		rangeCountCache: newRevKeyCache(revKeyCacheCap),
+		prevHints:       newPrevHintCache(prevHintCacheCap),
 	}
 }
 
@@ -917,6 +922,12 @@ func (b *backendShim) Watch(ctx context.Context, key string, revision uint64) (<
 					}
 					continue
 				}
+				// Resolve cold-key PrevKv lookups for the whole batch in parallel
+				// before the sequential conversion: a hint miss costs a revisioned
+				// network Get (~10-20ms), and issuing those one-by-one caps the
+				// stream at ~60 events/s — slower than the write rate, so cachers
+				// could never catch up (#45).
+				b.prefetchPrevKvs(events)
 				etcdEvents := make([]*mvccpb.Event, 0, len(events))
 				for _, e := range events {
 					etcdEvent, err := b.watchEventToEtcdEvent(ctx, e)
@@ -955,6 +966,7 @@ func (b *backendShim) watchEventToEtcdEvent(ctx context.Context, e *proto.Event)
 	case proto.Event_CREATE:
 		kv := b.kvToEtcdKv(ctx, e.Kv)
 		kv.ModRevision = int64(revision)
+		b.noteEvent(e.Kv.Key, revision, kv, false)
 		return &mvccpb.Event{
 			Type: mvccpb.PUT,
 			Kv:   kv,
@@ -983,6 +995,7 @@ func (b *backendShim) watchEventToEtcdEvent(ctx context.Context, e *proto.Event)
 				kv.CreateRevision = kv.ModRevision - 1
 			}
 		}
+		b.noteEvent(e.Kv.Key, revision, kv, false)
 		return &mvccpb.Event{
 			Type:   mvccpb.PUT,
 			Kv:     kv,
@@ -1000,6 +1013,7 @@ func (b *backendShim) watchEventToEtcdEvent(ctx context.Context, e *proto.Event)
 				kv.CreateRevision = prevKv.ModRevision
 			}
 		}
+		b.noteEvent(e.Kv.Key, revision, nil, true)
 		return &mvccpb.Event{
 			Type:   mvccpb.DELETE,
 			Kv:     kv,
