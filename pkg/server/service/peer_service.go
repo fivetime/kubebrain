@@ -39,6 +39,10 @@ type Config struct {
 
 	// EnableEtcdProxy is the flag if etcd proxy should start
 	EnableEtcdProxy bool
+
+	// ClientPort is the homogeneous client-facing etcd port used to dial the
+	// leader (see server.Config.ClientPort; #41).
+	ClientPort int
 }
 
 // NewPeerService return a PeerService for server
@@ -52,7 +56,7 @@ func NewPeerService(le leader.LeaderElection, m metrics.Metrics, b backend.Backe
 		config:         config,
 	}
 	if config.EnableEtcdProxy {
-		ps.EtcdProxy = etcdproxy.NewEtcdProxy(le, config.TLS)
+		ps.EtcdProxy = etcdproxy.NewEtcdProxy(le, config.TLS, config.ClientPort)
 	}
 	return ps
 }

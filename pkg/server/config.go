@@ -28,6 +28,13 @@ type Config struct {
 	// ClientTLS is tls config for peer communication
 	ClientTLS *tls.Config
 
+	// ClientPort is the port every node's client-facing etcd endpoint listens
+	// on (deployments are homogeneous). The etcd proxy dials the LEADER's
+	// client endpoint with it — the peer port carried by the election identity
+	// multiplexes gRPC through cmux and does not reliably serve the KV service
+	// (#41: proxied counts to leader:peerPort hung to the deadline).
+	ClientPort int
+
 	// EnableEtcdProxy is the flag if etcd proxy should start
 	EnableEtcdProxy bool
 
@@ -42,6 +49,7 @@ func (c Config) getPeerServiceConfig() service.Config {
 	return service.Config{
 		TLS:             c.ClientTLS,
 		EnableEtcdProxy: c.EnableEtcdProxy,
+		ClientPort:      c.ClientPort,
 	}
 }
 

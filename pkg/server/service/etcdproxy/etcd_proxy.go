@@ -18,6 +18,8 @@ import (
 	"context"
 	"crypto/tls"
 	"math"
+	"net"
+	"strconv"
 	"sync"
 	"time"
 
@@ -35,6 +37,10 @@ import (
 )
 
 type etcdProxy struct {
+	// clientPort dials the leader's client endpoint instead of its peer
+	// address when >0 (#41); see NewEtcdProxy.
+	clientPort int
+
 	election  leader.LeaderElection
 	tlsConfig *tls.Config
 
@@ -67,9 +73,15 @@ var defaultCallOption = []grpc.CallOption{
 
 const proxyReadyWaitTimeout = 2 * time.Second
 
-// NewEtcdProxy return an ETCD proxy for forward request to leader
-func NewEtcdProxy(leaderElection leader.LeaderElection, tlsConfig *tls.Config) EtcdProxy {
-	proxy := &etcdProxy{election: leaderElection, tlsConfig: tlsConfig}
+// NewEtcdProxy return an ETCD proxy for forward request to leader.
+// clientPort, when >0, is the homogeneous client-facing etcd port: the proxy
+// dials the leader's CLIENT endpoint instead of the peer address carried by
+// the election identity — the peer port multiplexes gRPC through cmux and
+// does not reliably serve the KV service (#41: forwarded counts to
+// leader:peerPort hung to the request deadline while leader:clientPort
+// answered in <1s).
+func NewEtcdProxy(leaderElection leader.LeaderElection, tlsConfig *tls.Config, clientPort int) EtcdProxy {
+	proxy := &etcdProxy{election: leaderElection, tlsConfig: tlsConfig, clientPort: clientPort}
 	proxy.updateClient()
 	go func() {
 		defer util.Recover()
@@ -156,9 +168,16 @@ func (e *etcdProxy) updateClient() {
 		tlsConfigs = []*tls.Config{e.tlsConfig, nil}
 	}
 
+	// Dial the leader's client endpoint: the identity carries the peer port.
+	dialEndpoint := curLeader
+	if e.clientPort > 0 {
+		if host, _, splitErr := net.SplitHostPort(curLeader); splitErr == nil {
+			dialEndpoint = net.JoinHostPort(host, strconv.Itoa(e.clientPort))
+		}
+	}
 	for _, tlsConfig := range tlsConfigs {
 		client, err := clientv3.New(clientv3.Config{
-			Endpoints: []string{curLeader},
+			Endpoints: []string{dialEndpoint},
 			TLS:       tlsConfig,
 		})
 		if err != nil {

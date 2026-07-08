@@ -91,6 +91,7 @@ type Config struct {
 func (c *Config) getServerConfig() server.Config {
 	return server.Config{
 		EnableEtcdProxy: c.EnableEtcdCompatibility,
+		ClientPort:      c.Port,
 		ClientTLS:       c.PeerSecurityConfig.getClientTLSConfig(),
 		LeaseDuration:   c.LeaseDuration,
 		RenewDeadline:   c.RenewDeadline,
