@@ -120,6 +120,12 @@ type BackendShim interface {
 	// SetLeaseLookup wires the key->leaseID resolver (the server's keyLeaseIndex)
 	// so read/watch KeyValues carry their attached lease like etcd does.
 	SetLeaseLookup(func(key string) int64)
+
+	// SetCountProxy wires a remote count resolver, consulted when the local
+	// count index cannot serve (follower — the index is leader-only; #41). It
+	// returns (count, true) when the leader answered, (0, false) to fall back
+	// to the local scan.
+	SetCountProxy(func(ctx context.Context, r *etcdserverpb.RangeRequest) (int64, bool))
 }
 
 // implement backendShim interface
@@ -153,6 +159,12 @@ type backendShim struct {
 	// none), wired to the server's keyLeaseIndex via SetLeaseLookup. nil until
 	// wired (e.g. in unit tests that construct the shim directly).
 	leaseLookup func(key string) int64
+
+	// countProxy resolves a count via the leader when the local index cannot
+	// serve it (#41: the count index is leader-only, so a follower's count
+	// fallback was a full range scan — a 60s+ timeout at 10M keys, starving
+	// any apiserver pointed at a follower). nil until wired.
+	countProxy func(ctx context.Context, r *etcdserverpb.RangeRequest) (int64, bool)
 }
 
 func NewBackendShim(backend backend.Backend, metricCli metrics.Metrics) BackendShim {
@@ -648,6 +660,13 @@ func (b *backendShim) exactRangeCount(ctx context.Context, r *etcdserverpb.Range
 		// Sequence advanced: subtract the span just consumed.
 		if bytes.Compare(r.Key, e.lastStart) > 0 {
 			delta, served := b.backend.CountAtRevision(ctx, e.lastStart, r.Key, uint64(r.Revision))
+			if !served {
+				// Follower: the small consumed-span count comes from the leader's
+				// index instead (#41), keeping the rolling scheme O(pageSize) per
+				// page rather than proxying a full-range count every page.
+				delta, served = b.proxiedCount(ctx, &etcdserverpb.RangeRequest{
+					Key: e.lastStart, RangeEnd: r.Key, Revision: r.Revision})
+			}
 			if served {
 				c := e.count - delta
 				b.rangeCountCache.put(ck, rangeCountEntry{lastStart: append([]byte(nil), r.Key...), count: c})
@@ -678,6 +697,14 @@ func (b *backendShim) exactRangeCountUncached(ctx context.Context, r *etcdserver
 		if c, served := b.backend.CountAtRevision(ctx, r.Key, r.RangeEnd, uint64(r.Revision)); served {
 			return c, nil
 		}
+		// Local index miss: on a follower the index simply does not exist
+		// (leader-only), so ask the leader's before resorting to a range
+		// materialization that at 10M keys outlives the request deadline (#41).
+		// The request keeps its revision, so a paginated sequence's counts stay
+		// exact and consistent with the locally-served kvs.
+		if c, ok := b.proxiedCount(ctx, r); ok {
+			return c, nil
+		}
 	}
 
 	if r.Revision == 0 && !hasRangeRevisionFilters(r) {
@@ -697,6 +724,26 @@ func (b *backendShim) exactRangeCountUncached(ctx context.Context, r *etcdserver
 		return 0, err
 	}
 	return int64(len(resp.Kvs)), nil
+}
+
+// proxiedCount consults the wired count proxy (the leader's count index over
+// the wire) for a count the local index cannot serve. false means unavailable
+// (not wired, this node IS the leader, or the forward failed) and the caller
+// must fall back to its local path.
+func (b *backendShim) proxiedCount(ctx context.Context, r *etcdserverpb.RangeRequest) (int64, bool) {
+	if b.countProxy == nil {
+		return 0, false
+	}
+	c, ok := b.countProxy(ctx, r)
+	if ok {
+		b.metricCli.EmitCounter("count.proxy.hit", 1)
+	}
+	return c, ok
+}
+
+// SetCountProxy implements BackendShim.
+func (b *backendShim) SetCountProxy(f func(ctx context.Context, r *etcdserverpb.RangeRequest) (int64, bool)) {
+	b.countProxy = f
 }
 
 func applyRangeOptions(resp *etcdserverpb.RangeResponse, r *etcdserverpb.RangeRequest) *etcdserverpb.RangeResponse {
@@ -812,11 +859,31 @@ func (b *backendShim) Count(ctx context.Context, r *etcdserverpb.RangeRequest) (
 				Count:  c,
 			}, nil
 		}
+		// Follower (or mid-rebuild) index miss: prefer the leader's index over a
+		// full range materialization (#41).
+		if c, ok := b.proxiedCount(ctx, r); ok {
+			return &etcdserverpb.RangeResponse{
+				Header: txnHeader(int64(b.backend.GetCurrentRevision())),
+				Count:  c,
+			}, nil
+		}
 		return b.List(ctx, r)
 	}
 
-	// Current-revision count: the pass-through path (which itself serves from the
-	// index at the current revision, else a bounded scan).
+	// Current-revision count. Prefer the local index, then the leader's index
+	// over the wire (#41), then the pass-through path (a bounded scan).
+	if c, served := b.backend.CountAtRevision(ctx, r.Key, r.RangeEnd, 0); served {
+		return &etcdserverpb.RangeResponse{
+			Header: txnHeader(int64(b.backend.GetCurrentRevision())),
+			Count:  c,
+		}, nil
+	}
+	if c, ok := b.proxiedCount(ctx, r); ok {
+		return &etcdserverpb.RangeResponse{
+			Header: txnHeader(int64(b.backend.GetCurrentRevision())),
+			Count:  c,
+		}, nil
+	}
 	request := &proto.CountRequest{
 		Key: r.Key,
 		End: r.RangeEnd,

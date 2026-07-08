@@ -85,6 +85,28 @@ func New(backend b.Backend, metricCli metrics.Metrics, peers service.PeerService
 	// Wire read/watch KeyValues to carry the lease attached to each key (etcd
 	// parity). Safe to set before serving: New runs single-threaded.
 	server.backend.SetLeaseLookup(server.leaseIDForKey)
+	// Wire follower counts to the leader's count index (#41): the index is
+	// leader-only, so a follower's count fallback was a full range scan — a
+	// guaranteed request-deadline timeout at 10M keys. Forward a CountOnly
+	// Range preserving the caller's revision, so a paginated sequence's counts
+	// stay exact; the leader answers from its index (or its own bounded
+	// fallback). Any failure falls back to the local path. No recursion: the
+	// leader never proxies (IsLeader guard).
+	server.backend.SetCountProxy(func(ctx context.Context, r *etcdserverpb.RangeRequest) (int64, bool) {
+		if peers.IsLeader() || !peers.EtcdProxyEnabled() {
+			return 0, false
+		}
+		req := *r
+		req.CountOnly = true
+		req.Limit = 0
+		req.KeysOnly = false
+		resp, err := peers.Range(ctx, &req)
+		if err != nil || resp == nil {
+			server.metricCli.EmitCounter("count.proxy.err", 1)
+			return 0, false
+		}
+		return resp.Count, true
+	})
 	if err := server.restoreLeases(context.Background()); err != nil {
 		klog.ErrorS(err, "restore leases failed")
 	}
