@@ -15,12 +15,14 @@
 package endpoint
 
 import (
+	"time"
 	"context"
 	"net/http"
 	_ "net/http/pprof"
 
 	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/keepalive"
 	"k8s.io/klog/v2"
 
 	"github.com/kubewharf/kubebrain/pkg/backend"
@@ -157,14 +159,31 @@ func (e *Endpoint) buildPeerHttpServer() exposedServer {
 	return newHttpServerWithHandlers(handlersMaps...)
 }
 
+// grpcKeepaliveOptions matches etcd's server-side keepalive posture. etcd
+// clients (the apiserver's included) send keepalive pings every ~10s on
+// long-lived watch connections; gRPC's DEFAULT enforcement demands >=5min
+// between pings and answers faster ones with a GoAway
+// (ENHANCE_YOUR_CALM "too_many_pings"), tearing down every idle watch — the
+// apiserver's informers never stabilized on a quiet cluster (#46: only
+// surfaced at zero write rate, since busy connections ping rarely). etcd
+// itself runs MinTime=5s + PermitWithoutStream=true; mirror it.
+func grpcKeepaliveOptions() []grpc.ServerOption {
+	return []grpc.ServerOption{
+		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
+			MinTime:             5 * time.Second,
+			PermitWithoutStream: true,
+		}),
+	}
+}
+
 func (e *Endpoint) buildClientGrpcServer() exposedServer {
-	grpcServer := grpc.NewServer(e.metrics.GetGrpcServerOption()...)
+	grpcServer := grpc.NewServer(append(grpcKeepaliveOptions(), e.metrics.GetGrpcServerOption()...)...)
 	e.server.RegisterClient(grpcServer)
 	return newGrpcServer(grpcServer)
 }
 
 func (e *Endpoint) buildPeerGrpcServer() exposedServer {
-	grpcServer := grpc.NewServer(e.metrics.GetGrpcServerOption()...)
+	grpcServer := grpc.NewServer(append(grpcKeepaliveOptions(), e.metrics.GetGrpcServerOption()...)...)
 	e.server.RegisterPeer(grpcServer)
 	return newGrpcServer(grpcServer)
 }
