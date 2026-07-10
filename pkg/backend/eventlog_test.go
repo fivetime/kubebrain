@@ -104,6 +104,66 @@ func TestEventLogReplayMatchesWrites(t *testing.T) {
 	require.Empty(t, other)
 }
 
+// TestEventLogReplayCoversTxnApply pins review #51's critical finding: the
+// TxnApply commit path (leased puts, generic etcd txns) must stage event-log
+// entries like every other write path — the replay treats a missing entry at
+// a committed revision as a failed-CAS hole and silently skips it, so a
+// leaked write here is a silently lost watch event.
+func TestEventLogReplayCoversTxnApply(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	m := mock.NewMinimalMetrics(ctrl)
+	kv := imemkv.NewKvStorage()
+	defer func() { require.NoError(t, kv.Close()) }()
+
+	pfx := fmt.Sprintf("/kubebrain/elog_txn_test/%d", time.Now().UnixNano())
+	b := NewBackend(kv, Config{
+		Prefix: pfx, Identity: getStorageIdentity(), EnableEtcdCompatibility: true,
+	}, m).(*backend)
+	b.SetCurrentRevision(uint64(time.Now().UnixNano()))
+	ctx := context.Background()
+	require.NoError(t, b.EnsureEventLogStart(ctx))
+	startRev := b.GetCurrentRevision()
+
+	keyA := path.Join(pfx, "a")
+	keyB := path.Join(pfx, "b")
+
+	// txn create (two keys, one revision)
+	_, createRev, err := b.TxnApply(ctx, []TxnWriteOp{
+		{Key: []byte(keyA), Value: []byte("a1")},
+		{Key: []byte(keyB), Value: []byte("b1")},
+	}, nil)
+	require.NoError(t, err)
+	// txn update of A + delete of B, again at one revision
+	_, mixedRev, err := b.TxnApply(ctx, []TxnWriteOp{
+		{Key: []byte(keyA), Value: []byte("a2")},
+		{Delete: true, Key: []byte(keyB)},
+	}, nil)
+	require.NoError(t, err)
+
+	waitUntilRevisionEqualOrTimeout(b, mixedRev)
+
+	events, served, err := b.eventLogWatchEvents(ctx, pfx, startRev+1, mixedRev)
+	require.NoError(t, err)
+	require.True(t, served)
+	require.Len(t, events, 4, "every TxnApply write must replay from the log")
+
+	// The replay must agree with the full-prefix scan event-for-event.
+	scanEvents, err := b.scanHistoryEvents(ctx, pfx, startRev+1, mixedRev)
+	require.NoError(t, err)
+	require.Len(t, scanEvents, 4)
+	for i := range scanEvents {
+		require.Equal(t, scanEvents[i].Type, events[i].Type, "event %d type", i)
+		require.Equal(t, scanEvents[i].Revision, events[i].Revision, "event %d revision", i)
+		require.Equal(t, scanEvents[i].Kv.Revision, events[i].Kv.Revision, "event %d value revision", i)
+		require.Equal(t, scanEvents[i].Kv.Value, events[i].Kv.Value, "event %d value", i)
+	}
+	for _, e := range events[:2] {
+		require.Equal(t, createRev, e.Revision, "txn writes share one revision")
+		require.Equal(t, proto.Event_CREATE, e.Type)
+	}
+}
+
 // TestEventLogWatermarkGates pins the completeness watermark: replays at or
 // below it (pre-log history, cleanup, leadership change) must refuse and fall
 // back rather than serve a window with holes.
