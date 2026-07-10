@@ -40,25 +40,40 @@ func TestPrevHintMonotonicUnderLaggingStream(t *testing.T) {
 	assert.Same(t, kv20, e.kv)
 }
 
-// TestPrevHintHitAndMissBoundaries pins the hit condition hint.rev < revision:
-// a hint at or above the queried revision means events >= revision exist and
-// the previous version cannot be inferred; tombstones are never a PUT's prev.
+// TestPrevHintHitAndMissBoundaries pins the hit condition: hint.rev < revision
+// AND the inline-metadata direct-predecessor proof (same CreateRevision,
+// Version exactly one less). A hint that merely sits below the queried
+// revision is NOT enough — conversion coverage has holes (relist windows,
+// leadership flips), so an unproven hint may be several versions stale.
 func TestPrevHintHitAndMissBoundaries(t *testing.T) {
 	b := &backendShim{prevHints: newPrevHintCache(16), metricCli: prommetrics.NewMetrics()}
-	kv := &mvccpb.KeyValue{Key: []byte("k"), ModRevision: 10}
+	kv := &mvccpb.KeyValue{Key: []byte("k"), ModRevision: 10, CreateRevision: 4, Version: 2}
 	b.noteEvent([]byte("k"), 10, kv, false)
 
-	got, ok := b.hintedPreviousEtcdKv([]byte("k"), 20)
-	require.True(t, ok, "hint below the queried revision is the previous version")
+	got, ok := b.hintedPreviousEtcdKv([]byte("k"), 20, 3, 4)
+	require.True(t, ok, "hint below the queried revision with consecutive version is the previous version")
 	assert.Same(t, kv, got)
 
-	_, ok = b.hintedPreviousEtcdKv([]byte("k"), 10)
+	_, ok = b.hintedPreviousEtcdKv([]byte("k"), 10, 3, 4)
 	assert.False(t, ok, "hint at the queried revision must miss")
-	_, ok = b.hintedPreviousEtcdKv([]byte("k"), 5)
+	_, ok = b.hintedPreviousEtcdKv([]byte("k"), 5, 3, 4)
 	assert.False(t, ok, "hint above the queried revision must miss")
 
+	// Coverage-hole staleness: the querying event is versions ahead of the
+	// hint (writes flowed while no watcher converted events for this key).
+	_, ok = b.hintedPreviousEtcdKv([]byte("k"), 20, 5, 4)
+	assert.False(t, ok, "non-consecutive version means the hint is not the direct predecessor")
+	// Different lifetime (delete+recreate elsewhere): CreateRevision differs.
+	_, ok = b.hintedPreviousEtcdKv([]byte("k"), 20, 3, 15)
+	assert.False(t, ok, "a different CreateRevision means a different key lifetime")
+	// No trustworthy inline metadata on the querying event.
+	_, ok = b.hintedPreviousEtcdKv([]byte("k"), 20, 0, 0)
+	assert.False(t, ok, "events without inline metadata must take the slow path")
+	_, ok = b.hintedPreviousEtcdKv([]byte("k"), 20, 1, 4)
+	assert.False(t, ok, "a version-1 event is a create and has no previous version to hint")
+
 	b.noteEvent([]byte("k"), 30, nil, true) // DELETE
-	_, ok = b.hintedPreviousEtcdKv([]byte("k"), 40)
+	_, ok = b.hintedPreviousEtcdKv([]byte("k"), 40, 3, 4)
 	assert.False(t, ok, "tombstone hint is never a valid previous version for a PUT")
 }
 

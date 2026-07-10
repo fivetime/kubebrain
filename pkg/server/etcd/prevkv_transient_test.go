@@ -115,13 +115,13 @@ func TestPrevKvUncertainNilNotCached(t *testing.T) {
 
 	// Exhaust the budget: uncertain nil.
 	kv.failing.Store(true)
-	prev := shim.cachedPreviousEtcdKv(key, updateRev)
+	prev := shim.cachedPreviousEtcdKv(key, updateRev, 0, 0)
 	require.Nil(t, prev, "budget exhausted under persistent failure returns nil")
 
 	// Storage recovers: the SAME (key,revision) must now resolve — the
 	// uncertain nil must not have been cached.
 	kv.failing.Store(false)
-	prev = shim.cachedPreviousEtcdKv(key, updateRev)
+	prev = shim.cachedPreviousEtcdKv(key, updateRev, 0, 0)
 	require.NotNil(t, prev, "uncertain nil must not be cached; recovered lookup must return the previous version")
 	require.Equal(t, updateRev, uint64(prev.ModRevision)+uint64(updateRev-uint64(prev.ModRevision)), "sanity")
 }

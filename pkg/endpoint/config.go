@@ -92,10 +92,16 @@ func (c *Config) getServerConfig() server.Config {
 	return server.Config{
 		EnableEtcdProxy: c.EnableEtcdCompatibility,
 		ClientPort:      c.Port,
-		ClientTLS:       c.PeerSecurityConfig.getClientTLSConfig(),
-		LeaseDuration:   c.LeaseDuration,
-		RenewDeadline:   c.RenewDeadline,
-		RetryPeriod:     c.RetryPeriod,
+		// The proxy dials the leader's CLIENT endpoint (0492c84), so the dial-side
+		// TLS must mirror the client server's security config — the peer config
+		// would fail the handshake whenever the two listeners differ (e.g. TLS
+		// client port + plaintext peer port), leaving the proxy permanently
+		// not-ready: every follower historical read Unavailable, every count a
+		// full-scan fallback (review #51).
+		ClientTLS:     c.ClientSecurityConfig.getClientTLSConfig(),
+		LeaseDuration: c.LeaseDuration,
+		RenewDeadline: c.RenewDeadline,
+		RetryPeriod:   c.RetryPeriod,
 	}
 }
 

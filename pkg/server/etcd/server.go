@@ -36,6 +36,17 @@ var (
 	_ etcdserverpb.AuthServer        = (*RPCServer)(nil)
 )
 
+const (
+	// countProxyTimeout bounds one proxied count round-trip to the leader's
+	// index (hot answers are ~1s at 10M keys); the remaining request deadline
+	// stays available for the local fallback.
+	countProxyTimeout = 5 * time.Second
+	// countProxyFailureQuiet skips the proxy after a failure so follow-up
+	// lookups (same or subsequent requests) fail over locally at once instead
+	// of re-burning the timeout during an election gap or leader outage.
+	countProxyFailureQuiet = 3 * time.Second
+)
+
 // RPCServer only support limited method of etcd grpc server
 type RPCServer struct {
 	etcdserverpb.UnimplementedAuthServer
@@ -92,16 +103,29 @@ func New(backend b.Backend, metricCli metrics.Metrics, peers service.PeerService
 	// stay exact; the leader answers from its index (or its own bounded
 	// fallback). Any failure falls back to the local path. No recursion: the
 	// leader never proxies (IsLeader guard).
+	// The proxy gets its own bounded budget, NOT the caller's deadline: a wedged
+	// leader connection (TCP black hole, overload) would otherwise burn the whole
+	// request deadline before the local fallback even starts — reproducing the
+	// #41 timeout with extra steps. On failure, a short quiet window skips the
+	// proxy entirely (a request may consult it twice — first-page rolling count,
+	// then the rev=0 count path — and election gaps affect every request at once).
+	var proxyQuietUntil atomic.Int64
 	server.backend.SetCountProxy(func(ctx context.Context, r *etcdserverpb.RangeRequest) (int64, bool) {
 		if peers.IsLeader() || !peers.EtcdProxyEnabled() {
+			return 0, false
+		}
+		if time.Now().UnixNano() < proxyQuietUntil.Load() {
 			return 0, false
 		}
 		req := *r
 		req.CountOnly = true
 		req.Limit = 0
 		req.KeysOnly = false
-		resp, err := peers.Range(ctx, &req)
+		pctx, cancel := context.WithTimeout(ctx, countProxyTimeout)
+		defer cancel()
+		resp, err := peers.Range(pctx, &req)
 		if err != nil || resp == nil {
+			proxyQuietUntil.Store(time.Now().Add(countProxyFailureQuiet).UnixNano())
 			server.metricCli.EmitCounter("count.proxy.err", 1)
 			return 0, false
 		}

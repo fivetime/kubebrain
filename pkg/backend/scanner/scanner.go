@@ -303,7 +303,11 @@ func (r *scanner) scan(ctx context.Context, start []byte, end []byte, revision u
 		forkedReceiver.close()
 	}
 
-	klog.InfoS("scan", "start", start, "end", end, "count", globalCount, "latency", time.Since(startTime))
+	// Per-request rate on the count-fallback path: keep it off the journald hot
+	// path (2f34e9b) — a relist storm re-creates the compact-log backpressure.
+	if klog.V(4).Enabled() {
+		klog.V(4).InfoS("scan", "start", start, "end", end, "count", globalCount, "latency", time.Since(startTime))
+	}
 	return int(globalCount), nil
 }
 
@@ -350,7 +354,9 @@ func newWorker(conf workerConfig, store storage.KvStorage, coder coder.Coder, me
 }
 
 func (w *worker) runWithBackoffRetry(ctx context.Context, receiver resultReceiver) (int, error) {
-	klog.InfoS("worker start processing", "worker", w.info())
+	if klog.V(4).Enabled() {
+		klog.V(4).InfoS("worker start processing", "worker", w.info())
+	}
 	var scanErr error
 	var count int
 
@@ -511,7 +517,10 @@ func (w *worker) run(ctx context.Context, receiver resultReceiver) (int, error) 
 
 	receiver.flush()
 	scanLatency := endTime.Sub(startTime)
-	klog.InfoS("worker done", "worker", w.info(), "latency", scanLatency, "count", count, "valSize", valSize)
+	if klog.V(4).Enabled() {
+		// w.info() is a fmt.Sprintf; guard so per-page LISTs pay nothing.
+		klog.V(4).InfoS("worker done", "worker", w.info(), "latency", scanLatency, "count", count, "valSize", valSize)
+	}
 	w.metricCli.EmitHistogram("storage.scan_worker.latency", scanLatency.Seconds())
 	w.metricCli.EmitHistogram("storage.scan_worker.size", valSize)
 	w.metricCli.EmitHistogram("storage.scan_worker.count", count)

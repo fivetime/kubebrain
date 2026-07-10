@@ -96,6 +96,13 @@ type TreeIndex struct {
 	// of risking OOM.
 	maxKeys    int
 	overflowed bool
+	// gen counts Reset installs. A rebuild that lost leadership can still be
+	// draining its scan when a re-election starts the next rebuild; its stale
+	// emit closure and completion would otherwise pollute the fresh tree
+	// (stale snapshot rows resurrecting deleted keys) or flip loading/baseRev
+	// under the newer rebuild (review #51). Every Reset captures its own gen;
+	// emits and completion from an older gen are dropped.
+	gen uint64
 	// loading is true while Reset is bulk-loading a snapshot. Reset does NOT hold
 	// the lock for the whole (minutes-long at scale) load — it loads with per-key
 	// locking so the ordered collector can keep applying live events between keys
@@ -192,6 +199,8 @@ func (t *TreeIndex) applyLocked(key []byte, rev uint64, tombstone bool) {
 // from a half-loaded tree.
 func (t *TreeIndex) Reset(currentRev func() uint64, load func(baseRev uint64, emit func(key []byte, rev uint64, tombstone bool)) error) {
 	t.mu.Lock()
+	t.gen++
+	myGen := t.gen
 	baseRev := currentRev()
 	if t.readyRev > baseRev {
 		baseRev = t.readyRev
@@ -207,7 +216,7 @@ func (t *TreeIndex) Reset(currentRev func() uint64, load func(baseRev uint64, em
 
 	err := load(baseRev, func(key []byte, rev uint64, tombstone bool) {
 		t.mu.Lock()
-		if !t.overflowed {
+		if t.gen == myGen && !t.overflowed {
 			t.applyLocked(key, rev, tombstone)
 			t.checkOverflowLocked()
 		}
@@ -215,12 +224,14 @@ func (t *TreeIndex) Reset(currentRev func() uint64, load func(baseRev uint64, em
 	})
 
 	t.mu.Lock()
-	t.loading = false
-	if err != nil {
-		// Incomplete snapshot: the tree is missing every key past the failed page.
-		// Disable the index so Ready() is false and counts fall back to a scan until
-		// the next rebuild, instead of serving a silent undercount.
-		t.baseRev = 0
+	if t.gen == myGen {
+		t.loading = false
+		if err != nil {
+			// Incomplete snapshot: the tree is missing every key past the failed page.
+			// Disable the index so Ready() is false and counts fall back to a scan until
+			// the next rebuild, instead of serving a silent undercount.
+			t.baseRev = 0
+		}
 	}
 	t.mu.Unlock()
 }

@@ -67,10 +67,11 @@ func (b *backend) Create(ctx context.Context, put *proto.CreateRequest) (resp *p
 func (b *backend) create(ctx context.Context, key []byte, value []byte, lease int64) (revision uint64, error error) {
 	revision, err := b.deal(0)
 	if err != nil {
-		// Even on failure the revision may already be consumed from the TSO
-		// (drift-back returns the dealt value); hand it back so the caller's
-		// notify fills the ring slot instead of leaving a hole the collector
-		// can only pass via the multi-second stall watchdog.
+		// Best-effort only: with prev=0, deal's error paths return revision 0 and
+		// the in-process TSO never fails a Deal, so today this branch cannot hand
+		// back a consumed revision — a TSO implementation that consumes and THEN
+		// errors would still leave a ring hole for the stall watchdog (review
+		// #51). Kept for the day deal(0) can report the dealt value on error.
 		return revision, err
 	}
 
@@ -668,8 +669,11 @@ func (b *backend) eventValue(value []byte, meta EtcdMetadata, err error) []byte 
 func (b *backend) notify(ctx context.Context,
 	key []byte, val []byte, revision, preRevision uint64, valid bool, eventType proto.Event_EventType, err error) {
 	if revision == 0 {
-		b.metricCli.EmitCounter("watch.event.buffer.invalid", 1)
-		// todo: panic or not ?
+		// No revision was consumed (e.g. update's pre-deal metadata Get failed,
+		// #44): nothing to fill in the ring, drop. Distinct metric from the
+		// "invalid event" counter — a zero-revision notify is an expected
+		// zero-consumption failure, not an anomalous ring fill (review #51).
+		b.metricCli.EmitCounter("watch.event.zero_revision.dropped", 1)
 		return
 	}
 

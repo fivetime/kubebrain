@@ -174,6 +174,13 @@ func (e *etcdProxy) updateClient() {
 		if host, _, splitErr := net.SplitHostPort(curLeader); splitErr == nil {
 			dialEndpoint = net.JoinHostPort(host, strconv.Itoa(e.clientPort))
 		}
+	} else {
+		// A zero client port means an embedder built the config without the
+		// ClientPort field: the dial falls back to the identity's PEER port,
+		// where cmux never serves KV — requests hang to their deadline. Loud
+		// warning instead of silent legacy behavior (review #51).
+		klog.InfoS("WARNING: etcd proxy has no client port configured; dialing the leader's peer port, which serves no KV",
+			"leader", curLeader)
 	}
 	for _, tlsConfig := range tlsConfigs {
 		client, err := clientv3.New(clientv3.Config{

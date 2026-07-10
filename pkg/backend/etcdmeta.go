@@ -37,10 +37,18 @@ func (b *backend) GetEtcdMetadata(ctx context.Context, key []byte, modRevision u
 		return EtcdMetadata{}, nil
 	}
 	// Prefer inline metadata carried in the object value (approach A).
-	if stored, _, err := b.getInternalVal(ctx, key, modRevision); err == nil {
+	stored, _, err := b.getInternalVal(ctx, key, modRevision)
+	if err == nil {
 		if meta, _, ok := decodeValueWithMeta(stored); ok {
 			return meta, nil
 		}
+	} else if !errors.Is(err, storage.ErrKeyNotFound) {
+		// A transient storage failure is NOT "no inline metadata": sliding into
+		// the legacy fallback here can fabricate {CreateRevision: modRevision,
+		// Version: 1} for a key that has perfectly good inline metadata, silently
+		// resetting create_revision/version on the next update (review #51).
+		// Surface the error; the caller retries or fails the operation.
+		return EtcdMetadata{}, err
 	}
 	// Legacy fallback: the separate etcdmeta keyspace (data written before A).
 	meta, err := b.getEtcdMetadata(ctx, key, modRevision)

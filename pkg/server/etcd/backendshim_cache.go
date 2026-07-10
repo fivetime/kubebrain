@@ -93,15 +93,19 @@ type prevHintEntry struct {
 }
 
 // prevHintCache maps user key -> its latest converted watch event, with
-// REVISION-MONOTONIC writes. The watch event stream contains every write in
-// revision order, so for a PUT at revision r the previous version is exactly
-// the key's latest event below r. Monotonicity is what makes the hint safe
-// under concurrent watcher streams at different progress points: a slower
-// stream can never overwrite a newer hint with an older one, and a hit is
-// taken only when hint.rev < r — at that point the querying stream has itself
-// converted (and hence hint-published, monotonic) every event of that key
-// below r, so hint.rev IS the previous version. If any event >= r has been
-// published, hint.rev >= r and the lookup falls back to the slow path.
+// REVISION-MONOTONIC writes (a slower stream can never overwrite a newer hint
+// with an older one).
+//
+// hint.rev < r alone does NOT prove the hint is the DIRECT predecessor of the
+// event at r: this process's conversion coverage of a key routinely has holes
+// (a cacher re-list window with no watcher attached, a follower term between
+// two leaderships), and writes flow regardless — the hint may be several
+// versions stale. A hit therefore additionally requires proof from the value
+// envelope's inline metadata: the querying event and the hint share a
+// CreateRevision (same key lifetime — CreateRevision is a unique TSO, so
+// lifetimes cannot collide) and the hint's Version is exactly one less than
+// the querying event's (versions advance by one per write within a lifetime).
+// Events without trustworthy inline metadata (legacy values) never hit.
 //
 // This removes the per-PUT revisioned TiKV Get from the watch conversion hot
 // path. etcd resolves PrevKv with a local in-memory read, so laziness is free
@@ -159,16 +163,36 @@ func (b *backendShim) noteEvent(key []byte, rev uint64, kv *mvccpb.KeyValue, tom
 }
 
 // hintedPreviousEtcdKv answers a PrevKv lookup from the hint cache when the
-// key's latest published event sits below revision (see prevHintCache).
-// tombstone hints are never a valid previous version for a PUT (a CREATE must
-// sit in between, which would have republished the hint), so they miss.
-func (b *backendShim) hintedPreviousEtcdKv(key []byte, revision uint64) (*mvccpb.KeyValue, bool) {
-	e, ok := b.prevHints.get(string(key))
-	if !ok || e.tombstone || e.rev >= revision {
+// hint is provably the DIRECT predecessor of the querying event: same key
+// lifetime (equal CreateRevision) and consecutive Version (see prevHintCache —
+// hint.rev < revision alone is not proof, conversion coverage has holes).
+// version/createRev describe the QUERYING event, from its inline metadata;
+// pass zeros when unknown, which always misses. tombstone hints are never a
+// valid previous version for a PUT (a CREATE must sit in between, which would
+// have republished the hint), so they miss.
+func (b *backendShim) hintedPreviousEtcdKv(key []byte, revision uint64, version, createRev int64) (*mvccpb.KeyValue, bool) {
+	if version < 2 || createRev <= 0 {
 		return nil, false
 	}
-	b.metricCli.EmitCounter("watch.prev_kv.hint_hit", 1)
+	e, ok := b.prevHints.get(string(key))
+	if !ok || e.tombstone || e.kv == nil || e.rev >= revision {
+		return nil, false
+	}
+	if e.kv.Version != version-1 || e.kv.CreateRevision != createRev {
+		return nil, false
+	}
 	return e.kv, true
+}
+
+// inlineVersionMeta decodes the Version/CreateRevision a raw stored value
+// carries in its inline envelope, for the hint cache's direct-predecessor
+// proof. Legacy (un-enveloped) values yield zeros, which never hit.
+func inlineVersionMeta(value []byte) (version, createRev int64) {
+	meta, _, inlined := backend.DecodeInlineValue(value)
+	if !inlined {
+		return 0, 0
+	}
+	return int64(meta.Version), int64(meta.CreateRevision)
 }
 
 // prefetchPrevKvsConcurrency bounds the parallel cold-key PrevKv resolutions
@@ -189,7 +213,8 @@ func (b *backendShim) prefetchPrevKvs(events []*proto.Event) {
 		if rev == 0 {
 			continue
 		}
-		if _, ok := b.hintedPreviousEtcdKv(e.Kv.Key, rev); ok {
+		ver, crev := inlineVersionMeta(e.Kv.Value)
+		if _, ok := b.hintedPreviousEtcdKv(e.Kv.Key, rev, ver, crev); ok {
 			continue
 		}
 		if _, ok := b.prevCache.get(revCacheKey(e.Kv.Key, rev)); ok {
@@ -208,7 +233,9 @@ func (b *backendShim) prefetchPrevKvs(events []*proto.Event) {
 		go func(ev *proto.Event) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			b.cachedPreviousEtcdKv(ev.Kv.Key, watchEventRevision(ev))
+			// Zeros for the hint proof: these events already missed the hint in
+			// the filter above, so go straight to the shared slow path.
+			b.cachedPreviousEtcdKv(ev.Kv.Key, watchEventRevision(ev), 0, 0)
 		}(e)
 	}
 	wg.Wait()
@@ -240,11 +267,12 @@ func (b *backendShim) cachedMetadata(ctx context.Context, key []byte, revision u
 // shares it across watcher streams. The returned *mvccpb.KeyValue is treated as
 // read-only by callers (it may be shared), matching the immutability of a past
 // key version.
-func (b *backendShim) cachedPreviousEtcdKv(key []byte, revision uint64) *mvccpb.KeyValue {
+func (b *backendShim) cachedPreviousEtcdKv(key []byte, revision uint64, version, createRev int64) *mvccpb.KeyValue {
 	if revision == 0 {
 		return nil
 	}
-	if kv, ok := b.hintedPreviousEtcdKv(key, revision); ok {
+	if kv, ok := b.hintedPreviousEtcdKv(key, revision, version, createRev); ok {
+		b.metricCli.EmitCounter("watch.prev_kv.hint_hit", 1)
 		return kv
 	}
 	ck := revCacheKey(key, revision)

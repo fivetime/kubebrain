@@ -661,9 +661,12 @@ func (b *backendShim) exactRangeCount(ctx context.Context, r *etcdserverpb.Range
 		if bytes.Compare(r.Key, e.lastStart) > 0 {
 			delta, served := b.backend.CountAtRevision(ctx, e.lastStart, r.Key, uint64(r.Revision))
 			if !served {
-				// Follower: the small consumed-span count comes from the leader's
-				// index instead (#41), keeping the rolling scheme O(pageSize) per
-				// page rather than proxying a full-range count every page.
+				// The small consumed-span count comes from the leader's index (#41),
+				// keeping the rolling scheme O(pageSize) per page. NOTE: on a steady
+				// follower this branch is normally unreachable — kv.go forwards every
+				// Revision>0 Range to the leader wholesale, so continue pages are
+				// answered there (leader-local index). It matters in the transition
+				// window where IsLeader has just flipped mid-request (review #51).
 				delta, served = b.proxiedCount(ctx, &etcdserverpb.RangeRequest{
 					Key: e.lastStart, RangeEnd: r.Key, Revision: r.Revision})
 			}
@@ -860,7 +863,10 @@ func (b *backendShim) Count(ctx context.Context, r *etcdserverpb.RangeRequest) (
 			}, nil
 		}
 		// Follower (or mid-rebuild) index miss: prefer the leader's index over a
-		// full range materialization (#41).
+		// full range materialization (#41). Normally only reachable mid-rebuild on
+		// the leader-to-be or in the leadership-transition window — a steady
+		// follower's Revision>0 Range was already forwarded wholesale by kv.go
+		// (review #51).
 		if c, ok := b.proxiedCount(ctx, r); ok {
 			return &etcdserverpb.RangeResponse{
 				Header: txnHeader(int64(b.backend.GetCurrentRevision())),
@@ -872,6 +878,12 @@ func (b *backendShim) Count(ctx context.Context, r *etcdserverpb.RangeRequest) (
 
 	// Current-revision count. Prefer the local index, then the leader's index
 	// over the wire (#41), then the pass-through path (a bounded scan).
+	// A proxied rev=0 count is taken at the LEADER's current revision, which can
+	// sit slightly ahead of the follower-stamped header revision; k8s consumes
+	// this count only as the remainingItemCount estimate, where a small skew is
+	// tolerated by contract. Forcing the follower's revision instead would trade
+	// this for a List materialization on the leader whenever its index cannot
+	// serve that historical revision — a far worse failure mode (review #51).
 	if c, served := b.backend.CountAtRevision(ctx, r.Key, r.RangeEnd, 0); served {
 		return &etcdserverpb.RangeResponse{
 			Header: txnHeader(int64(b.backend.GetCurrentRevision())),
@@ -1041,7 +1053,7 @@ func (b *backendShim) watchEventToEtcdEvent(ctx context.Context, e *proto.Event)
 	case proto.Event_PUT:
 		kv := b.kvToEtcdKv(ctx, e.Kv)
 		kv.ModRevision = int64(revision)
-		prevKv := b.cachedPreviousEtcdKv(e.Kv.Key, revision)
+		prevKv := b.cachedPreviousEtcdKv(e.Kv.Key, revision, kv.Version, kv.CreateRevision)
 		// A PUT event is an update, never a create, so its CreateRevision must
 		// differ from ModRevision (clientv3.Event.IsCreate reports create iff they
 		// are equal). Prefer the create_revision the value carries inline (approach

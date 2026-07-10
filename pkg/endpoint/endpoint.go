@@ -166,12 +166,15 @@ func (e *Endpoint) buildPeerHttpServer() exposedServer {
 // (ENHANCE_YOUR_CALM "too_many_pings"), tearing down every idle watch — the
 // apiserver's informers never stabilized on a quiet cluster (#46: only
 // surfaced at zero write rate, since busy connections ping rarely). etcd
-// itself runs MinTime=5s + PermitWithoutStream=true; mirror it.
+// runs MinTime=5s with PermitWithoutStream=false (embed/etcd.go): a watch
+// connection always has an active stream, so MinTime alone fixes the bug,
+// and permitting stream-less pings would let dead-idle connections pin
+// themselves open — mirror etcd exactly (review #51).
 func grpcKeepaliveOptions() []grpc.ServerOption {
 	return []grpc.ServerOption{
 		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
 			MinTime:             5 * time.Second,
-			PermitWithoutStream: true,
+			PermitWithoutStream: false,
 		}),
 	}
 }
