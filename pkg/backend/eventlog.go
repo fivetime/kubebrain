@@ -17,6 +17,7 @@ package backend
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"io"
 	"sync"
 	"time"
@@ -67,14 +68,51 @@ func (b *backend) EnsureEventLogStart(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	batch := b.kv.BeginBatchWrite()
-	batch.Put(coder.ElogMetaStartKey, uint64ToBytes(cur), 0)
-	if err := batch.Commit(ctx); err != nil {
+	if err := b.advanceEventLogStartStorage(ctx, cur); err != nil {
 		return err
 	}
-	b.advanceEventLogStartCache(cur)
 	klog.InfoS("event log start advanced on leadership acquisition", "rev", cur)
 	return nil
+}
+
+// advanceEventLogStartStorage moves the stored watermark forward to rev with
+// CAS-max semantics: the watermark must never regress. A deposed leader's
+// compactor finishing its sweep after a successor already pushed the watermark
+// higher would otherwise blind-Put an older value back (review #51), re-opening
+// a window the successor explicitly declared unvouchable.
+func (b *backend) advanceEventLogStartStorage(ctx context.Context, rev uint64) error {
+	newBytes := uint64ToBytes(rev)
+	for {
+		val, err := b.kv.Get(ctx, coder.ElogMetaStartKey)
+		switch {
+		case err == nil && len(val) >= 8 && binary.BigEndian.Uint64(val) >= rev:
+			// Already at or beyond rev: keep the more conservative watermark.
+			b.advanceEventLogStartCache(binary.BigEndian.Uint64(val))
+			return nil
+		case err == nil:
+			batch := b.kv.BeginBatchWrite()
+			batch.CAS(coder.ElogMetaStartKey, newBytes, val, 0)
+			if cerr := batch.Commit(ctx); cerr != nil {
+				if errors.Is(cerr, storage.ErrCASFailed) {
+					continue // concurrent advance: re-read and re-compare
+				}
+				return cerr
+			}
+		case errors.Is(err, storage.ErrKeyNotFound):
+			batch := b.kv.BeginBatchWrite()
+			batch.PutIfNotExist(coder.ElogMetaStartKey, newBytes, 0)
+			if cerr := batch.Commit(ctx); cerr != nil {
+				if errors.Is(cerr, storage.ErrCASFailed) {
+					continue
+				}
+				return cerr
+			}
+		default:
+			return err
+		}
+		b.advanceEventLogStartCache(rev)
+		return nil
+	}
 }
 
 // getEventLogStart returns the completeness watermark, caching it after the
@@ -87,16 +125,23 @@ func (b *backend) getEventLogStart(ctx context.Context) (uint64, bool) {
 		return rev, true
 	}
 	b.elogStart.mu.Unlock()
+	return b.refreshEventLogStart(ctx)
+}
 
+// refreshEventLogStart reads the stored watermark, bypassing the cache (which
+// it advances). Replays re-check through this after reading the log: the gate
+// check at entry races cleanupEventLog (watermark push, then deletes) — an iter
+// snapshot established after some delete batches would silently miss entries,
+// so served=true is only trustworthy if the watermark still clears the window
+// AFTER the read (review #51).
+func (b *backend) refreshEventLogStart(ctx context.Context) (uint64, bool) {
 	val, err := b.kv.Get(ctx, coder.ElogMetaStartKey)
 	if err != nil || len(val) < 8 {
 		return 0, false
 	}
 	rev := binary.BigEndian.Uint64(val)
+	b.advanceEventLogStartCache(rev)
 	b.elogStart.mu.Lock()
-	if !b.elogStart.ok || rev > b.elogStart.rev {
-		b.elogStart.rev, b.elogStart.ok = rev, true
-	}
 	rev = b.elogStart.rev
 	b.elogStart.mu.Unlock()
 	return rev, true
@@ -145,14 +190,22 @@ func (b *backend) eventLogWatchEvents(ctx context.Context, prefix string, fromRe
 		}
 		rev, userKey, derr := coder.DecodeEventLogKey(iter.Key())
 		if derr != nil {
-			continue
+			// Only this module writes inside the entry range, so a non-decodable
+			// entry means corruption: a skipped entry is a silently lost event, so
+			// distrust the whole window and fall back (same posture as a missing
+			// referenced object version below).
+			b.metricCli.EmitCounter("watch.event_log.malformed", 1)
+			klog.ErrorS(derr, "event log entry key not decodable; falling back to scan", "from", fromRevision, "to", toRevision)
+			return nil, false, nil
 		}
 		if !hasPrefixBytes(userKey, prefixBytes) {
 			continue
 		}
 		verbByte, prevRev, vok := coder.DecodeEventLogValue(iter.Val())
 		if !vok {
-			continue
+			b.metricCli.EmitCounter("watch.event_log.malformed", 1)
+			klog.ErrorS(nil, "event log entry value not decodable; falling back to scan", "rev", rev, "from", fromRevision, "to", toRevision)
+			return nil, false, nil
 		}
 		entries = append(entries, pending{verb: proto.Event_EventType(verbByte), rev: rev, prevRev: prevRev,
 			userKey: append([]byte(nil), userKey...)})
@@ -205,6 +258,14 @@ func (b *backend) eventLogWatchEvents(ctx context.Context, prefix string, fromRe
 		b.metricCli.EmitCounter("watch.event_log.incomplete", 1)
 		return nil, false, nil
 	}
+	// Post-read gate: the entry gate raced cleanupEventLog (watermark push, then
+	// deletes) — if the watermark has meanwhile crossed the window, this iter may
+	// have read a half-deleted log. Re-check against STORAGE, not the cache: the
+	// deleting compactor may be another process (a deposed leader's last sweep).
+	if start, ok := b.refreshEventLogStart(ctx); !ok || fromRevision <= start {
+		b.metricCli.EmitCounter("watch.event_log.incomplete", 1)
+		return nil, false, nil
+	}
 	b.metricCli.EmitCounter("watch.event_log.replay", 1)
 	b.metricCli.EmitHistogram("watch.event_log.replay.events", len(events))
 	klog.V(2).InfoS("watch history served from event log", "prefix", prefix,
@@ -222,13 +283,11 @@ func (b *backend) cleanupEventLog(ctx context.Context, revision uint64) {
 	}
 	// Advance the watermark FIRST: a replay racing this cleanup must already
 	// consider the window incomplete rather than read a half-deleted log.
-	batch := b.kv.BeginBatchWrite()
-	batch.Put(coder.ElogMetaStartKey, uint64ToBytes(revision), 0)
-	if err := batch.Commit(ctx); err != nil {
+	// CAS-max so a deposed leader's late sweep can never move it backwards.
+	if err := b.advanceEventLogStartStorage(ctx, revision); err != nil {
 		klog.ErrorS(err, "event log watermark advance failed", "revision", revision)
 		return
 	}
-	b.advanceEventLogStartCache(revision)
 
 	deleted := 0
 	for {
@@ -242,13 +301,24 @@ func (b *backend) cleanupEventLog(ctx context.Context, revision uint64) {
 			return
 		}
 		var keys [][]byte
+		var scanErr error
 		for {
 			if err := iter.Next(ctx); err != nil {
+				if err != io.EOF {
+					scanErr = err
+				}
 				break
 			}
 			keys = append(keys, append([]byte(nil), iter.Key()...))
 		}
 		_ = iter.Close()
+		if scanErr != nil {
+			// Watermark already advanced, so leftovers are shadowed and the next
+			// compaction sweep reaps them; just don't misreport a truncated scan
+			// as completion.
+			klog.ErrorS(scanErr, "event log cleanup scan failed; leftovers deferred to the next sweep", "revision", revision)
+			return
+		}
 		if len(keys) == 0 {
 			break
 		}

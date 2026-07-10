@@ -229,10 +229,15 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 		}
 		revisionKey := b.coder.EncodeRevisionKey(p.op.Key)
 		objectKey := b.coder.EncodeObjectKey(p.op.Key, newRevision)
+		// Each write stages its event-log entry on the same batch (#45), with the
+		// verb/prevRev Phase 5 publishes for it — the replay path treats a missing
+		// entry at a committed revision as a failed-CAS hole and silently skips it,
+		// so a leaked write here is a silently lost watch event (review #51).
 		switch {
 		case p.op.Delete:
 			batch.CAS(revisionKey, newRevDeleted, p.rvBytes, 0)
 			batch.Put(objectKey, tombStoneBytes, 0)
+			appendEventLog(batch, newRevision, p.op.Key, proto.Event_DELETE, p.curRev)
 		case p.create:
 			p.meta = EtcdMetadata{CreateRevision: newRevision, Version: 1, Lease: p.op.Lease}
 			if p.rvBytes == nil {
@@ -242,6 +247,7 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 				batch.CAS(revisionKey, newRevLive, p.rvBytes, 0)
 			}
 			b.putTxnObject(batch, objectKey, p.op.Key, p.op.Value, p.meta, newRevision)
+			appendEventLog(batch, newRevision, p.op.Key, proto.Event_CREATE, 0)
 		default: // update
 			if p.meta.CreateRevision == 0 {
 				p.meta.CreateRevision = p.curRev
@@ -255,6 +261,7 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 			p.meta.Lease = p.op.Lease
 			batch.CAS(revisionKey, newRevLive, p.rvBytes, 0)
 			b.putTxnObject(batch, objectKey, p.op.Key, p.op.Value, p.meta, newRevision)
+			appendEventLog(batch, newRevision, p.op.Key, proto.Event_PUT, p.curRev)
 		}
 	}
 

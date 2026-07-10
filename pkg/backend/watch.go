@@ -213,6 +213,17 @@ func (b *backend) historyWatchEvents(ctx context.Context, prefix string, fromRev
 	if compactRevision > 0 && scanFrom < compactRevision {
 		scanFrom = compactRevision
 	}
+	// Lift the bucket floor just above the event-log watermark when the caller
+	// itself starts above it (review #51): right after a leadership change
+	// pushes the watermark, a reconnect's own fromRevision often clears it while
+	// its bucket floor lands below — disqualifying the log for the WHOLE herd
+	// and degrading every reconnect to the full-prefix scan this path exists to
+	// avoid. The lift stays <= fromRevision, so the shared window still covers
+	// this caller; members whose fromRevision sits at/below the watermark
+	// compute their own lower floor (and key) and simply don't share this scan.
+	if elogStart, ok := b.getEventLogStart(ctx); ok && scanFrom <= elogStart && elogStart < fromRevision {
+		scanFrom = elogStart + 1
+	}
 	key := prefix + "\x00" + strconv.FormatUint(scanFrom, 10)
 	// The executor of the shared scan reports the revision it is complete up to
 	// (coveredRev) so a waiter can check the shared result reaches far enough for

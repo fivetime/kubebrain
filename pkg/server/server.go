@@ -120,14 +120,28 @@ func (s *server) onStartedLeading(ctx context.Context) {
 			}
 		}
 	}
-	s.healthServer.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
-	// Initialize the event log's completeness watermark before serving history
-	// replays (#45): absent (fresh cluster or first run of a log-aware binary)
-	// it is set to the current revision, so replays below it fall back to the
-	// object scan. Failure is non-fatal — the log just stays unavailable.
-	if err := s.backend.EnsureEventLogStart(ctx); err != nil {
-		klog.ErrorS(err, "event log start initialization failed; history replays fall back to scans")
+	// Push the event log's completeness watermark to this term's start BEFORE
+	// advertising readiness (#45, review #51): the failover reconnect herd
+	// arrives the moment SERVING flips, and until the watermark is advanced the
+	// stored value still vouches for the previous term — whose writer may have
+	// been an older binary that wrote no log entries at all — so a replay would
+	// serve that window with silent holes. Failure must retry, not proceed: a
+	// failed advance leaves the OLD watermark in place (the log keeps serving,
+	// wrongly), not "unavailable" as the previous code assumed.
+	for {
+		err := s.backend.EnsureEventLogStart(ctx)
+		if err == nil {
+			break
+		}
+		s.metricCli.EmitCounter("event_log.ensure.err", 1)
+		klog.ErrorS(err, "event log start initialization failed; retrying before serving")
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(leaderReloadRetryInterval):
+		}
 	}
+	s.healthServer.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
 	// The count index can trail readiness: until it is Ready() at a revision,
 	// counts fall back to a full scan (never a wrong count), so a rebuild failure
 	// must not gate serving. Rebuild from a fresh snapshot; a follower's collector
