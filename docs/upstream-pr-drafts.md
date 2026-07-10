@@ -1,8 +1,8 @@
 # Kubernetes 上游 PR 草稿(fivetime/kubernetes)
 
 两个分支已推送到 fork,基于 upstream/master(1a92e1c4533)。
-开 PR:https://github.com/kubernetes/kubernetes/compare/master...fivetime:kubernetes:<branch>
-需先签 CNCF CLA(https://git.k8s.io/community/CLA.md)。commit author 已设为 `fivetime <jp.zdm2008@gmail.com>`,如需真实姓名可 `git commit --amend --author` 后 force-push。
+**已提交上游(2026-07-10)**:PR 1 = [kubernetes/kubernetes#140414](https://github.com/kubernetes/kubernetes/pull/140414),PR 2 = [kubernetes/kubernetes#140415](https://github.com/kubernetes/kubernetes/pull/140415)。
+commit author = `Simon <jp.zdm2008@gmail.com>`。待办:CNCF CLA(https://git.k8s.io/community/CLA.md,fivetime 账号,签后评论 `/check-cla`)。
 
 ---
 
