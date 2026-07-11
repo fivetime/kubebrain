@@ -32,6 +32,7 @@ import (
 
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
 	"github.com/kubewharf/kubebrain/pkg/server/service/etcdproxy"
+	"github.com/kubewharf/kubebrain/pkg/util"
 )
 
 type fakeWatchServer struct {
@@ -532,11 +533,11 @@ func (s *scriptedWatchServer) Recv() (*etcdserverpb.WatchRequest, error) {
 
 func TestStoreMaxUint64OnlyAdvances(t *testing.T) {
 	var v uint64
-	storeMaxUint64(&v, 5)
+	util.StoreMaxUint64(&v, 5)
 	require.Equal(t, uint64(5), v)
-	storeMaxUint64(&v, 3) // stale, must not move backwards
+	util.StoreMaxUint64(&v, 3) // stale, must not move backwards
 	require.Equal(t, uint64(5), v)
-	storeMaxUint64(&v, 9)
+	util.StoreMaxUint64(&v, 9)
 	require.Equal(t, uint64(9), v)
 }
 

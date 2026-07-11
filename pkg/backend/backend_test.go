@@ -1867,7 +1867,7 @@ func nextRealEventBatch(output <-chan []*proto.Event) []*proto.Event {
 	for {
 		select {
 		case evs := <-output:
-			if isProgressMarker(evs) {
+			if IsProgressMarker(evs) {
 				continue
 			}
 			return evs
@@ -1884,7 +1884,7 @@ func noPendingRealEvent(output <-chan []*proto.Event) bool {
 	for {
 		select {
 		case evs := <-output:
-			if isProgressMarker(evs) {
+			if IsProgressMarker(evs) {
 				continue
 			}
 			return false

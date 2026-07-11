@@ -119,7 +119,7 @@ func TestBroadcastProgressReachesQuietSubBehindEvents(t *testing.T) {
 		}
 	}
 	require.Len(t, quietBatches, 1, "quiet sub must receive exactly the progress marker")
-	require.True(t, isProgressMarker(quietBatches[0]), "quiet sub batch must be a progress marker")
+	require.True(t, IsProgressMarker(quietBatches[0]), "quiet sub batch must be a progress marker")
 	require.Equal(t, uint64(11), quietBatches[0][0].Revision)
 
 	// The active sub received event@10, event@11, then the marker@11 — in order.
@@ -130,7 +130,7 @@ func TestBroadcastProgressReachesQuietSubBehindEvents(t *testing.T) {
 		select {
 		case evs := <-active:
 			revs = append(revs, evs[0].Revision)
-			if isProgressMarker(evs) {
+			if IsProgressMarker(evs) {
 				kinds = append(kinds, "progress")
 			} else {
 				kinds = append(kinds, "event")

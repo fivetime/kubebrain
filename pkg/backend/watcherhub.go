@@ -26,6 +26,7 @@ import (
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
 
 	"github.com/kubewharf/kubebrain/pkg/metrics"
+	"github.com/kubewharf/kubebrain/pkg/util"
 )
 
 const (
@@ -88,30 +89,16 @@ type catchUpState struct {
 
 func (st *catchUpState) stop() { st.stopOnce.Do(func() { close(st.done) }) }
 
-// storeMaxUint64 atomically advances *addr to val, never moving it backwards.
-// Duplicated from server/etcd (the two packages share no util); kept in sync.
-func storeMaxUint64(addr *uint64, val uint64) {
-	for {
-		old := atomic.LoadUint64(addr)
-		if val <= old {
-			return
-		}
-		if atomic.CompareAndSwapUint64(addr, old, val) {
-			return
-		}
-	}
-}
-
-// newProgressMarker builds an in-band progress marker: a one-element batch whose
+// NewProgressMarker builds an in-band progress marker: a one-element batch whose
 // single event carries only a revision and a nil Kv. Real events always set Kv,
 // so a nil Kv unambiguously distinguishes a marker from an event batch.
-func newProgressMarker(rev uint64) []*proto.Event {
+func NewProgressMarker(rev uint64) []*proto.Event {
 	return []*proto.Event{{Revision: rev}}
 }
 
-// isProgressMarker reports whether events is an in-band progress marker (see
-// newProgressMarker) rather than a real event batch.
-func isProgressMarker(events []*proto.Event) bool {
+// IsProgressMarker reports whether events is an in-band progress marker (see
+// NewProgressMarker) rather than a real event batch.
+func IsProgressMarker(events []*proto.Event) bool {
 	return len(events) == 1 && events[0] != nil && events[0].Kv == nil
 }
 
@@ -124,7 +111,7 @@ func (w *WatcherHub) PublishedRevision() uint64 {
 // backwards). Called after a watch-overflow reset jumps the current revision so a
 // subsequent progress marker does not advertise a stale-low revision.
 func (w *WatcherHub) AdvancePublishedRevision(target uint64) {
-	storeMaxUint64(&w.publishedRev, target)
+	util.StoreMaxUint64(&w.publishedRev, target)
 }
 
 func (w *WatcherHub) subBufferSize() int {
@@ -264,7 +251,7 @@ func (w *WatcherHub) broadcast(item []*proto.Event) {
 	// sub has been enqueued the batch, a later progress marker carrying this
 	// revision provably sits behind every event <= it.
 	if len(item) > 0 {
-		storeMaxUint64(&w.publishedRev, item[len(item)-1].Revision)
+		util.StoreMaxUint64(&w.publishedRev, item[len(item)-1].Revision)
 	}
 	if skipped > 0 {
 		w.metricCli.EmitCounter("watcher_hub.route_skipped", skipped)
@@ -402,7 +389,7 @@ func (w *WatcherHub) broadcastProgress(rev uint64) {
 	if rev == 0 {
 		return
 	}
-	marker := newProgressMarker(rev)
+	marker := NewProgressMarker(rev)
 	w.RLock()
 	for sub := range w.subs {
 		select {

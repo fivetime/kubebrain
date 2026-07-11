@@ -2,7 +2,8 @@
 
 > **清理进度**(2026-07-11 起,逐波执行,每波 `-race`+全量测试为闸门):
 > - ✅ **Wave 1 死代码+陈旧注释(D)**:删 creator 死包(D1)、pprof 盲导入(D2)、evalCompare+内嵌 mutex(D3)、修误导注释群(D4:compact/count/scanner/watcherhub/memkv/interface)。**D5 #NN 标签有意保留**(团队 memory 系统靠其可追溯,批量剥离高 churn 低价值)。
-> - ⏳ Wave 2 小重复(B7-B10,C3)/ Wave 3 中等重复(B1-B6)/ Wave 4 惯用法(E)/ Wave 5 层泄漏(C1-C2)/ Wave 6 神对象(A1-A5)
+> - ✅ **Wave 2 小重复(B8-B10,C3)**:B9 storeMaxUint64→util.StoreMaxUint64(两包共用);B8 scanner 删本地遮蔽常量、改用 coder.ParseRevision(tombstone 格式单一权威,保持 list 热路径短路);B10 waitReady 抽 notReadyErr;C3 progress marker 导出 backend.New/IsProgressMarker、删 server/etcd 镜像。**B7 metrics vec 泛型有意跳过**(go.mod 声明 go1.14、全仓零泛型,为 small 收益 bump 模块 Go 版本=影响下游兼容,非泛型 dedup 更丑;待模块因他因升 Go 再做)。
+> - ⏳ Wave 3 中等重复(B1-B6)/ Wave 4 惯用法(E)/ Wave 5 层泄漏(C1-C2)/ Wave 6 神对象(A1-A5)
 
 
 ## 一、执行判断(诚实结论)

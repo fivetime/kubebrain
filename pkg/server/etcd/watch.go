@@ -33,6 +33,7 @@ import (
 
 	"github.com/kubewharf/kubebrain/pkg/metrics"
 	"github.com/kubewharf/kubebrain/pkg/server/service/etcdproxy"
+	"github.com/kubewharf/kubebrain/pkg/util"
 )
 
 var (
@@ -77,19 +78,6 @@ type watch struct {
 	// revision whose events it has not yet received, causing it to skip them.
 	// Access atomically.
 	syncedRev uint64
-}
-
-// storeMaxUint64 atomically advances *addr to val, never moving it backwards.
-func storeMaxUint64(addr *uint64, val uint64) {
-	for {
-		old := atomic.LoadUint64(addr)
-		if val <= old {
-			return
-		}
-		if atomic.CompareAndSwapUint64(addr, old, val) {
-			return
-		}
-	}
 }
 
 // syncedRevSnapshot returns a copy of every active watch's delivered
@@ -520,7 +508,7 @@ func (w *watcher) Watch(ctx context.Context, id int64, r *etcdserverpb.WatchCrea
 				// sole liveness source for a quiet watch, whose prefix matches no
 				// event batch. Reporting (progressC / on-demand) is unchanged.
 				if wt != nil {
-					storeMaxUint64(&wt.syncedRev, result.ProgressRevision)
+					util.StoreMaxUint64(&wt.syncedRev, result.ProgressRevision)
 				}
 				continue
 			}
@@ -553,7 +541,7 @@ func (w *watcher) Watch(ctx context.Context, id int64, r *etcdserverpb.WatchCrea
 			} else if wt != nil {
 				// These events are now delivered; the watch is synced through the
 				// highest revision in this batch.
-				storeMaxUint64(&wt.syncedRev, uint64(watchResponse.Header.Revision))
+				util.StoreMaxUint64(&wt.syncedRev, uint64(watchResponse.Header.Revision))
 			}
 		case <-progressC:
 			if sendErr != nil {

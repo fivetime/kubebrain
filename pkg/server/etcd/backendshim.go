@@ -995,7 +995,7 @@ func (b *backendShim) Watch(ctx context.Context, key string, revision uint64) (<
 				// An in-band progress marker (nil Kv) becomes a ProgressRevision
 				// result — the single representation change at this shim boundary,
 				// making the leader branch type-identical to the follower/proxy one.
-				if isBackendProgressMarker(events) {
+				if backend.IsProgressMarker(events) {
 					select {
 					case out <- etcdproxy.WatchResult{ProgressRevision: events[0].Revision}:
 					case <-ctx.Done():
@@ -1028,14 +1028,6 @@ func (b *backendShim) Watch(ctx context.Context, key string, revision uint64) (<
 	}
 	go transformResponseFunc(ctx, ch, watchResponseCh)
 	return watchResponseCh, nil
-}
-
-// isBackendProgressMarker reports whether a backend event batch is an in-band
-// progress marker (a one-element batch whose event carries only a revision, with
-// a nil Kv). Real events always set Kv. Mirrors backend.isProgressMarker, which
-// is unexported in its package.
-func isBackendProgressMarker(events []*proto.Event) bool {
-	return len(events) == 1 && events[0] != nil && events[0].Kv == nil
 }
 
 func (b *backendShim) watchEventToEtcdEvent(ctx context.Context, e *proto.Event) (*mvccpb.Event, error) {

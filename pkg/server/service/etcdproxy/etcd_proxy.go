@@ -488,6 +488,18 @@ func (e *etcdProxy) readyLocked() error {
 	return nil
 }
 
+// notReadyErr renders the terminal error when the wait deadline fires: the
+// caller's own cancellation takes precedence over a generic "not ready".
+func notReadyErr(ctx context.Context, lastErr error) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if lastErr != nil {
+		return status.Errorf(codes.Unavailable, "proxy is not ready after %s: %v", proxyReadyWaitTimeout, lastErr)
+	}
+	return status.Errorf(codes.Unavailable, "proxy is not ready after %s", proxyReadyWaitTimeout)
+}
+
 func (e *etcdProxy) waitReady(ctx context.Context) error {
 	if err := e.Ready(); err == nil {
 		return nil
@@ -502,13 +514,7 @@ func (e *etcdProxy) waitReady(ctx context.Context) error {
 	for {
 		select {
 		case <-waitCtx.Done():
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-			if lastErr != nil {
-				return status.Errorf(codes.Unavailable, "proxy is not ready after %s: %v", proxyReadyWaitTimeout, lastErr)
-			}
-			return status.Errorf(codes.Unavailable, "proxy is not ready after %s", proxyReadyWaitTimeout)
+			return notReadyErr(ctx, lastErr)
 		default:
 		}
 
@@ -521,13 +527,7 @@ func (e *etcdProxy) waitReady(ctx context.Context) error {
 
 		select {
 		case <-waitCtx.Done():
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-			if lastErr != nil {
-				return status.Errorf(codes.Unavailable, "proxy is not ready after %s: %v", proxyReadyWaitTimeout, lastErr)
-			}
-			return status.Errorf(codes.Unavailable, "proxy is not ready after %s", proxyReadyWaitTimeout)
+			return notReadyErr(ctx, lastErr)
 		case <-ticker.C:
 		}
 	}

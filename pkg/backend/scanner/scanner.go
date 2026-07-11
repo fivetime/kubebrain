@@ -43,8 +43,6 @@ const (
 	iterTimeout       = 1000 * time.Second
 	rangeStreamBatch  = 300
 
-	revisionValueLengthWithDeletionFlag = 9
-
 	// globalScanWorkers caps the number of partition-scan workers running
 	// concurrently across ALL unlimited scans (#40). A kube-apiserver cold
 	// start fires dozens of cachers' full-keyspace Lists at once; uncapped,
@@ -483,21 +481,23 @@ func (w *worker) run(ctx context.Context, receiver resultReceiver) (int, error) 
 			klog.V(4).InfoS("compact object key with tombstone", "key", curUserKey, "rev", curRevision)
 			w.compactKey(key, curUserKey, curRevision)
 		}
-		// delete revision with deletion flag
-		if w.compact && curRevision == 0 && len(value) == revisionValueLengthWithDeletionFlag {
-
-			// for revision key, skip gc if revision parsed from value is larger than given revision
-			// to avoid conflict with retrying for uncertain DELETE operation
-			objRev := binary.BigEndian.Uint64(value[0:8])
-			if objRev > w.revision {
-				klog.V(4).InfoS("skip gc revision key", "key", string(curUserKey), "revision", objRev,
-					"gcRev", w.revision)
-				continue
+		// Guard on w.compact FIRST so the list hot path never parses the value.
+		if w.compact && curRevision == 0 {
+			// A revision-key tombstone value (see coder.ParseRevision) is a
+			// compaction GC candidate; parsing through coder keeps the tombstone
+			// wire format single-sourced instead of re-decoding len==9 by hand.
+			if objRev, isTomb, perr := coder.ParseRevision(value); perr == nil && isTomb {
+				// Skip GC if the revision parsed from the value is larger than the
+				// requested one, to avoid conflict with a retried uncertain DELETE.
+				if objRev > w.revision {
+					klog.V(4).InfoS("skip gc revision key", "key", string(curUserKey), "revision", objRev,
+						"gcRev", w.revision)
+					continue
+				}
+				klog.V(4).InfoS("compact index key", "key", curUserKey, "rev", curRevision, "val", objRev, "len", len(value))
+				// cas with value to prevent conflict
+				w.compactCurrent(it, curUserKey, curRevision)
 			}
-
-			klog.V(4).InfoS("compact index key", "key", curUserKey, "rev", curRevision, "val", binary.BigEndian.Uint64(value[0:8]), "len", len(value))
-			// cas with value to prevent conflict
-			w.compactCurrent(it, curUserKey, curRevision)
 		}
 
 		prevRevision = curRevision

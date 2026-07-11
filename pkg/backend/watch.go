@@ -453,7 +453,7 @@ func (b *backend) processEvents(ctx context.Context, cancel context.CancelFunc, 
 				// channel closed by watcher hub due to slow process or ctx done
 				return
 			}
-			if isProgressMarker(events) {
+			if IsProgressMarker(events) {
 				// In-band progress marker (nil Kv): forward verbatim so it is
 				// neither prefix/revision-filtered nor allocation-touched
 				// (filterEvents would deref event.Kv.Key). It advances a quiet
