@@ -171,16 +171,11 @@ func (b *backend) createBatchWithMetadata(ctx context.Context, revisionKey, obje
 	} else {
 		batch.CAS(revisionKey, newRevisionBytes, oldRevisionBytes, 0)
 	}
+	// Inline create_revision/version (and lease, review #9) into the value so
+	// reads need no separate metadata lookup and the etcdmeta keyspace stops
+	// growing (approach A); putTxnObject is the single writer of that convention.
 	meta := EtcdMetadata{CreateRevision: revision, Version: 1, Lease: lease}
-	if b.config.EnableEtcdCompatibility {
-		// Inline create_revision/version (and lease, review #9) into the value so
-		// reads need no separate metadata lookup and the etcdmeta keyspace stops
-		// growing (approach A).
-		batch.Put(objectKey, encodeValueWithMeta(value, meta), 0)
-	} else {
-		batch.Put(objectKey, value, 0)
-		b.putEtcdMetadata(batch, key, revision, meta)
-	}
+	b.putTxnObject(batch, objectKey, key, value, meta, revision)
 	appendEventLog(batch, revision, key, proto.Event_CREATE, 0)
 	return batch.Commit(ctx)
 }
@@ -646,12 +641,7 @@ func (b *backend) update(ctx context.Context, oldRevision uint64, key []byte, va
 	}
 	batch := b.kv.BeginBatchWrite()
 	batch.CAS(revisionKey, newRevisionBytes, oldRevisionBytes, 0)
-	if b.config.EnableEtcdCompatibility {
-		batch.Put(objectKey, encodeValueWithMeta(value, meta), 0)
-	} else {
-		batch.Put(objectKey, value, 0)
-		b.putEtcdMetadata(batch, key, newRevision, meta)
-	}
+	b.putTxnObject(batch, objectKey, key, value, meta, newRevision)
 	appendEventLog(batch, newRevision, key, proto.Event_PUT, oldRevision)
 	return newRevision, meta, batch.Commit(ctx)
 }
@@ -666,19 +656,13 @@ func (b *backend) eventValue(value []byte, meta EtcdMetadata, err error) []byte 
 	return encodeValueWithMeta(value, meta)
 }
 
+// notify publishes a single watch event into the ring. ctx is retained for
+// caller symmetry (unused). It is a one-element notifyBatch: both share the
+// same stale-drop / overflow / append machinery so the ring's ordering
+// invariants have a single implementation.
 func (b *backend) notify(ctx context.Context,
 	key []byte, val []byte, revision, preRevision uint64, valid bool, eventType proto.Event_EventType, err error) {
-	if revision == 0 {
-		// No revision was consumed (e.g. update's pre-deal metadata Get failed,
-		// #44): nothing to fill in the ring, drop. Distinct metric from the
-		// "invalid event" counter — a zero-revision notify is an expected
-		// zero-consumption failure, not an anomalous ring fill (review #51).
-		b.metricCli.EmitCounter("watch.event.zero_revision.dropped", 1)
-		return
-	}
-
-	// todo: abstract as an individual component
-	watchEvent := &common.WatchEvent{
+	b.notifyBatch([]*common.WatchEvent{{
 		Revision:     revision,
 		PrevRevision: preRevision,
 		Valid:        valid,
@@ -686,6 +670,20 @@ func (b *backend) notify(ctx context.Context,
 		Key:          key,
 		Value:        val,
 		Err:          err,
+	}})
+}
+
+func (b *backend) notifyBatch(events []*common.WatchEvent) {
+	if len(events) == 0 {
+		return
+	}
+	revision := events[0].Revision
+	if revision == 0 {
+		// No revision was consumed (e.g. update's pre-deal metadata Get failed,
+		// #44): nothing to fill in the ring, drop. Not an anomalous ring fill but
+		// an expected zero-consumption failure (review #51).
+		b.metricCli.EmitCounter("watch.event.zero_revision.dropped", 1)
+		return
 	}
 	b.notifyMu.RLock()
 	cur := b.GetCurrentRevision()
@@ -701,33 +699,6 @@ func (b *backend) notify(ctx context.Context,
 		return
 	case revision-cur >= watchersChanCapacity:
 		// buffer full: the collector is too far behind for the ring to bridge.
-		b.notifyMu.RUnlock()
-		b.handleWatchEventOverflow(revision)
-		return
-	}
-	b.watchEventsRingBuffer[int64(revision)%watchersChanCapacity].append(watchEvent)
-	b.metricCli.EmitGauge("watch.revision.lag", revision-cur)
-	b.notifyMu.RUnlock()
-	b.signalWrite()
-}
-
-func (b *backend) notifyBatch(events []*common.WatchEvent) {
-	if len(events) == 0 {
-		return
-	}
-	revision := events[0].Revision
-	if revision == 0 {
-		b.metricCli.EmitCounter("watch.event.buffer.invalid", 1)
-		return
-	}
-	b.notifyMu.RLock()
-	cur := b.GetCurrentRevision()
-	switch {
-	case revision <= cur:
-		b.notifyMu.RUnlock()
-		b.metricCli.EmitCounter("watch.event.buffer.stale_drop", 1)
-		return
-	case revision-cur >= watchersChanCapacity:
 		b.notifyMu.RUnlock()
 		b.handleWatchEventOverflow(revision)
 		return

@@ -659,19 +659,12 @@ func (b *backendShim) exactRangeCount(ctx context.Context, r *etcdserverpb.Range
 		if bytes.Equal(r.Key, e.lastStart) {
 			return e.count, nil
 		}
-		// Sequence advanced: subtract the span just consumed.
+		// Sequence advanced: subtract the span just consumed. The small
+		// consumed-span count comes from the local index, or the leader's on a
+		// follower/transition miss (#41), keeping the rolling scheme O(pageSize)
+		// per page — see resolveCountFromIndex.
 		if bytes.Compare(r.Key, e.lastStart) > 0 {
-			delta, served := b.backend.CountAtRevision(ctx, e.lastStart, r.Key, uint64(r.Revision))
-			if !served {
-				// The small consumed-span count comes from the leader's index (#41),
-				// keeping the rolling scheme O(pageSize) per page. NOTE: on a steady
-				// follower this branch is normally unreachable — kv.go forwards every
-				// Revision>0 Range to the leader wholesale, so continue pages are
-				// answered there (leader-local index). It matters in the transition
-				// window where IsLeader has just flipped mid-request (review #51).
-				delta, served = b.proxiedCount(ctx, &etcdserverpb.RangeRequest{
-					Key: e.lastStart, RangeEnd: r.Key, Revision: r.Revision})
-			}
+			delta, served := b.resolveCountFromIndex(ctx, e.lastStart, r.Key, r.Revision)
 			if served {
 				c := e.count - delta
 				b.rangeCountCache.put(ck, rangeCountEntry{lastStart: append([]byte(nil), r.Key...), count: c})
@@ -694,20 +687,27 @@ func (b *backendShim) exactRangeCount(ctx context.Context, r *etcdserverpb.Range
 	return v.(int64), nil
 }
 
+// resolveCountFromIndex runs the shared count-resolution ladder for a
+// revision-filter-free count over [key,end): the local count index first, then
+// (on a follower, where the index is leader-only) the leader's index over the
+// wire (#41). It does NOT fall back to a scan/List — that tail differs per
+// caller (current-revision pass-through vs revision-honoring List) and stays at
+// the call site. Single-sourcing the ladder keeps the three count paths from
+// drifting (review #51). proxiedCount only reads Key/RangeEnd/Revision, so the
+// minimal request here is equivalent to forwarding the caller's.
+func (b *backendShim) resolveCountFromIndex(ctx context.Context, key, end []byte, rev int64) (int64, bool) {
+	if c, served := b.backend.CountAtRevision(ctx, key, end, uint64(rev)); served {
+		return c, true
+	}
+	return b.proxiedCount(ctx, &etcdserverpb.RangeRequest{Key: key, RangeEnd: end, Revision: rev, CountOnly: true})
+}
+
 func (b *backendShim) exactRangeCountUncached(ctx context.Context, r *etcdserverpb.RangeRequest) (int64, error) {
 	// Serve from the in-memory count index when possible (approach A-index); it
 	// roots the per-page O(range) count scan that made paginated LIST O(N^2).
 	// Revision filters change the counted set, which the index does not model.
 	if !hasRangeRevisionFilters(r) {
-		if c, served := b.backend.CountAtRevision(ctx, r.Key, r.RangeEnd, uint64(r.Revision)); served {
-			return c, nil
-		}
-		// Local index miss: on a follower the index simply does not exist
-		// (leader-only), so ask the leader's before resorting to a range
-		// materialization that at 10M keys outlives the request deadline (#41).
-		// The request keeps its revision, so a paginated sequence's counts stay
-		// exact and consistent with the locally-served kvs.
-		if c, ok := b.proxiedCount(ctx, r); ok {
+		if c, ok := b.resolveCountFromIndex(ctx, r.Key, r.RangeEnd, r.Revision); ok {
 			return c, nil
 		}
 	}
@@ -858,18 +858,11 @@ func (b *backendShim) Count(ctx context.Context, r *etcdserverpb.RangeRequest) (
 		// revision (List strips Kvs for CountOnly via applyRangeOptions). This avoids
 		// building every KeyValue in the range just to count them (review-borrowed
 		// read-amplification cut, on top of review #1's correctness fix).
-		if c, served := b.backend.CountAtRevision(ctx, r.Key, r.RangeEnd, uint64(r.Revision)); served {
-			return &etcdserverpb.RangeResponse{
-				Header: txnHeader(int64(b.backend.GetCurrentRevision())),
-				Count:  c,
-			}, nil
-		}
-		// Follower (or mid-rebuild) index miss: prefer the leader's index over a
-		// full range materialization (#41). Normally only reachable mid-rebuild on
-		// the leader-to-be or in the leadership-transition window — a steady
-		// follower's Revision>0 Range was already forwarded wholesale by kv.go
-		// (review #51).
-		if c, ok := b.proxiedCount(ctx, r); ok {
+		// Local index first, then the leader's over the wire on a follower/mid-
+		// rebuild miss (#41; a steady follower's Revision>0 Range was already
+		// forwarded wholesale by kv.go). Last resort: a revision-honoring List
+		// (strips Kvs for CountOnly). See resolveCountFromIndex.
+		if c, ok := b.resolveCountFromIndex(ctx, r.Key, r.RangeEnd, r.Revision); ok {
 			return &etcdserverpb.RangeResponse{
 				Header: txnHeader(int64(b.backend.GetCurrentRevision())),
 				Count:  c,
@@ -879,20 +872,14 @@ func (b *backendShim) Count(ctx context.Context, r *etcdserverpb.RangeRequest) (
 	}
 
 	// Current-revision count. Prefer the local index, then the leader's index
-	// over the wire (#41), then the pass-through path (a bounded scan).
+	// over the wire (#41), then the pass-through count scan.
 	// A proxied rev=0 count is taken at the LEADER's current revision, which can
 	// sit slightly ahead of the follower-stamped header revision; k8s consumes
 	// this count only as the remainingItemCount estimate, where a small skew is
 	// tolerated by contract. Forcing the follower's revision instead would trade
 	// this for a List materialization on the leader whenever its index cannot
 	// serve that historical revision — a far worse failure mode (review #51).
-	if c, served := b.backend.CountAtRevision(ctx, r.Key, r.RangeEnd, 0); served {
-		return &etcdserverpb.RangeResponse{
-			Header: txnHeader(int64(b.backend.GetCurrentRevision())),
-			Count:  c,
-		}, nil
-	}
-	if c, ok := b.proxiedCount(ctx, r); ok {
+	if c, ok := b.resolveCountFromIndex(ctx, r.Key, r.RangeEnd, 0); ok {
 		return &etcdserverpb.RangeResponse{
 			Header: txnHeader(int64(b.backend.GetCurrentRevision())),
 			Count:  c,

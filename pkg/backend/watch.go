@@ -84,25 +84,7 @@ func (b *backend) Watch(ctx context.Context, prefix string, revision uint64) (<-
 			go b.processEvents(ctx, cancel, result, readChan, prefix, revision)
 			return result, nil
 		}
-		events, historyErr := b.historyWatchEvents(ctx, prefix, revision, currentRevision, neededRevision)
-		if historyErr == nil {
-			klog.InfoS("watch history fallback", "prefix", prefix, "revision", revision, "events", len(events))
-			if len(events) > 0 {
-				b.catchUpEvents(result, events)
-				revision = events[len(events)-1].Revision + 1
-			}
-			go b.processEvents(ctx, cancel, result, readChan, prefix, revision)
-			return result, nil
-		}
-		klog.ErrorS(historyErr, "watch history fallback failed", "prefix", prefix, "revision", revision)
-		cancel()
-		// Propagate the real fallback error. historyWatchEvents returns a proper
-		// "compacted" error when the requested revision is below the compact
-		// watermark (so the client re-lists) and a plain error otherwise (so the
-		// client retries the watch). Do not flatten it into a generic message that
-		// hides genuine compaction — that left a truly-compacted watch retrying
-		// forever instead of re-listing (#55).
-		return nil, historyErr
+		return b.startFromHistory(ctx, cancel, result, readChan, prefix, revision, currentRevision, neededRevision, "watch history fallback")
 	}
 
 	if ret.high {
@@ -116,26 +98,7 @@ func (b *backend) Watch(ctx context.Context, prefix string, revision uint64) (<-
 			cancel()
 			return nil, currentErr
 		}
-		events, historyErr := b.historyWatchEvents(ctx, prefix, revision, currentRevision, neededRevision)
-		if historyErr == nil {
-			klog.InfoS("watch history fallback from low cache", "prefix", prefix, "revision", revision, "oldestRev", ret.oldest.Revision, "events", len(events))
-			lastRevision := revision
-			if len(events) > 0 {
-				b.catchUpEvents(result, events)
-				lastRevision = events[len(events)-1].Revision + 1
-			}
-			go b.processEvents(ctx, cancel, result, readChan, prefix, lastRevision)
-			return result, nil
-		}
-		cancel()
-		klog.ErrorS(historyErr, "ret low history fallback failed", "prefix", prefix, "revision", revision, "oldestRev", ret.oldest.Revision)
-		// Propagate the real fallback error rather than fabricating a
-		// "cache event oldest revision ..." message: that string is treated as a
-		// compaction cancel, so a transient history-scan failure (e.g. a storage
-		// error) was misreported as a compaction and forced a spurious re-list at
-		// a bogus revision. historyWatchEvents already returns a proper compacted
-		// error when the revision is actually below the compact watermark (#55).
-		return nil, historyErr
+		return b.startFromHistory(ctx, cancel, result, readChan, prefix, revision, currentRevision, neededRevision, "watch history fallback from low cache")
 	}
 
 	events := filterByPrefix(ret.events, []byte(prefix))
@@ -149,6 +112,32 @@ func (b *backend) Watch(ctx context.Context, prefix string, revision uint64) (<-
 	}
 	go b.processEvents(ctx, cancel, result, readChan, prefix, lastRevision)
 
+	return result, nil
+}
+
+// startFromHistory replays [revision, currentRevision] from storage into result,
+// then hands the live tail to processEvents starting just past the replayed
+// events. On a history-fallback failure it cancels and returns the real error:
+// historyWatchEvents distinguishes a genuine "compacted" (client re-lists) from
+// a transient error (client retries), and flattening them left a truly-compacted
+// watch retrying forever instead of re-listing (#55). Shared by Watch's
+// empty-cache and low-cache branches, which differ only in their log label.
+func (b *backend) startFromHistory(ctx context.Context, cancel context.CancelFunc,
+	result chan []*proto.Event, readChan <-chan []*proto.Event,
+	prefix string, revision, currentRevision, neededRevision uint64, label string) (<-chan []*proto.Event, error) {
+	events, historyErr := b.historyWatchEvents(ctx, prefix, revision, currentRevision, neededRevision)
+	if historyErr != nil {
+		cancel()
+		klog.ErrorS(historyErr, label+" failed", "prefix", prefix, "revision", revision)
+		return nil, historyErr
+	}
+	klog.InfoS(label, "prefix", prefix, "revision", revision, "events", len(events))
+	lastRevision := revision
+	if len(events) > 0 {
+		b.catchUpEvents(result, events)
+		lastRevision = events[len(events)-1].Revision + 1
+	}
+	go b.processEvents(ctx, cancel, result, readChan, prefix, lastRevision)
 	return result, nil
 }
 
