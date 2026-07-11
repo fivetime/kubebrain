@@ -18,7 +18,10 @@ import (
 	"time"
 	"context"
 	"net/http"
-	_ "net/http/pprof"
+	// Deliberately NOT importing net/http/pprof: its init() registers handlers on
+	// http.DefaultServeMux, which would re-expose unauthenticated pprof the moment
+	// anything serves DefaultServeMux. pprof is wired explicitly and gated behind
+	// EnablePprof in pprof.go (#32).
 
 	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc"

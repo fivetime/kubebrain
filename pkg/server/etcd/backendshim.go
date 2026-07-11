@@ -437,7 +437,9 @@ func (b *backendShim) Put(ctx context.Context, r *etcdserverpb.PutRequest) (*etc
 	}
 }
 
-// TODO: compact is unnecessary for kube-brain ?
+// Compact is driven by the apiserver's periodic compaction (etcd-compaction-interval);
+// it bounds MVCC version growth and the event-log/history window, so it is required,
+// not optional.
 func (b *backendShim) Compact(ctx context.Context, revision uint64) (*etcdserverpb.TxnResponse, error) {
 	resp, err := b.backend.Compact(ctx, revision)
 	if err != nil {

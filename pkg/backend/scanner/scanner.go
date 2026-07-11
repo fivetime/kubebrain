@@ -128,7 +128,8 @@ func (r *scanner) rangeWithLimit(ctx context.Context, start []byte, end []byte, 
 
 // Count implements Scanner interface
 func (r *scanner) Count(ctx context.Context, start []byte, end []byte, revision uint64) (int, error) {
-	// ban the calling of Count right now
+	// A full partition-parallel scan that discards values and only counts live
+	// keys — the count-index fallback path. O(keys in range).
 	receiver := &emptyResultReceiver{}
 	return r.scan(ctx, start, end, revision, false, receiver)
 }

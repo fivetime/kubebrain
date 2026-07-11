@@ -151,7 +151,7 @@ func (w *WatcherHub) AddWatcher(ctx context.Context, prefix []byte) (<-chan []*p
 	w.subs[sub] = append([]byte(nil), prefix...)
 	go func() {
 		<-ctx.Done()
-		klog.InfoS("ctx done, delete watcher %v", "chan", sub)
+		klog.V(4).InfoS("ctx done, deleting watcher", "chan", sub)
 		w.DeleteWatcher(sub, true)
 	}()
 

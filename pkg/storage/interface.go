@@ -31,7 +31,6 @@ type ExclusiveKvStorage interface {
 	GetExclusiveKvStorage() KvStorage
 }
 
-// KvStorage defines the storage engine on kv database
 // GarbageCollector is an optional interface a KvStorage may implement to
 // advance the underlying engine's MVCC garbage-collection safepoint. Engines
 // whose old versions are reclaimed by an external component (or that keep no
@@ -54,6 +53,7 @@ type GarbageCollector interface {
 	GC(ctx context.Context, lifetime time.Duration) (safepoint uint64, err error)
 }
 
+// KvStorage defines the storage engine on kv database.
 type KvStorage interface {
 
 	// GetTimestampOracle returns the logical timestamp if it could support

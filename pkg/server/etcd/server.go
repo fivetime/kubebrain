@@ -53,9 +53,6 @@ type RPCServer struct {
 
 	backend BackendShim
 
-	// watcher map mutes
-	sync.Mutex
-
 	metricCli metrics.Metrics
 	peers     service.PeerService
 

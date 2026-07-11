@@ -29,7 +29,6 @@ import (
 	"github.com/kubewharf/kubebrain/pkg/backend/coder"
 	"github.com/kubewharf/kubebrain/pkg/backend/common"
 	"github.com/kubewharf/kubebrain/pkg/backend/countindex"
-	"github.com/kubewharf/kubebrain/pkg/backend/creator"
 	"github.com/kubewharf/kubebrain/pkg/backend/election"
 	"github.com/kubewharf/kubebrain/pkg/backend/retry"
 	"github.com/kubewharf/kubebrain/pkg/backend/scanner"
@@ -186,7 +185,6 @@ type backend struct {
 
 	coder coder.Coder
 
-	creator creator.Creator
 
 	scanner scanner.Scanner
 
@@ -346,7 +344,6 @@ func NewBackend(kv storage.KvStorage, config Config, metricCli metrics.Metrics) 
 		kv:                    kv,
 		tso:                   tso.NewTSO(),
 		coder:                 normalCoder,
-		creator:               creator.NewNaiveCreator(kv, normalCoder),
 		election:              election.NewResourceLockManager(electionConfig, kv),
 		scanner:               scanner.NewScanner(kv, normalCoder, config.getScannerConfig(), metricCli),
 		config:                config,

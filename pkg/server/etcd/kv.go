@@ -82,9 +82,8 @@ func (s *RPCServer) Range(ctx context.Context, r *etcdserverpb.RangeRequest) (*e
 		// Count only. Count honors r.Revision: for the current revision (or a
 		// historical one the count index can serve) it returns a count with no range
 		// materialization; a historical count the index cannot serve falls back
-		// inside Count to a revision-honoring range read, so WithRev(old).
-		// WithCountOnly() reports the count as of that revision, not the current one
-		// (review #1 correctness + review-borrowed index fast path).
+		// inside Count to a revision-honoring range read, so the count reflects that
+		// revision, not the current one.
 		methodTag = metrics.Tag("method", "count")
 		response, err = s.backend.Count(ctx, r)
 	} else {
@@ -1023,11 +1022,6 @@ func (s *RPCServer) emptyDeleteRangeResponse() *etcdserverpb.DeleteRangeResponse
 	return &etcdserverpb.DeleteRangeResponse{
 		Header: txnHeader(int64(s.backend.GetCurrentRevision())),
 	}
-}
-
-func (s *RPCServer) evalCompare(ctx context.Context, cmp *etcdserverpb.Compare) (bool, error) {
-	ok, _, err := s.evalCompareGuarded(ctx, cmp)
-	return ok, err
 }
 
 // evalCompareGuarded evaluates a single compare and, for a single-key compare on
