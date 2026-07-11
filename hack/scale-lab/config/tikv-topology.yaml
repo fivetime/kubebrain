@@ -1,0 +1,35 @@
+# 千万级 keyspace:PD+TiKV 独占 kb-store-1(80C/300G),监控在 kb-ctl
+global:
+  user: "root"
+  ssh_port: 22
+  deploy_dir: "/data/tidb-deploy"
+  data_dir: "/data/tidb-data"
+  arch: "amd64"
+
+monitored:
+  node_exporter_port: 9100
+  blackbox_exporter_port: 9115
+
+server_configs:
+  pd:
+    replication.max-replicas: 1
+  tikv:
+    # 80C/300G 独占:放开并发 + 大 block cache 支撑 5000 万 keys 热读
+    server.grpc-concurrency: 16
+    rocksdb.max-background-jobs: 16
+    raftstore.apply-pool-size: 8
+    raftstore.store-pool-size: 8
+    storage.block-cache.capacity: "128GB"
+    storage.scheduler-worker-pool-size: 8
+
+pd_servers:
+  - host: 10.224.0.13
+
+tikv_servers:
+  - host: 10.224.0.13
+
+monitoring_servers:
+  - host: 10.224.0.12
+
+grafana_servers:
+  - host: 10.224.0.12

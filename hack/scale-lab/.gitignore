@@ -1,0 +1,3 @@
+# Built artifacts and local config
+bin/
+lab.env

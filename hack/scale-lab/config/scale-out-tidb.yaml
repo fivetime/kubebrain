@@ -1,0 +1,4 @@
+tidb_servers:
+  - host: 10.224.0.13
+    port: 4000
+    status_port: 10080
