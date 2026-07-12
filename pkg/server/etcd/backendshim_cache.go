@@ -21,10 +21,40 @@ import (
 	"time"
 
 	"go.etcd.io/etcd/api/v3/mvccpb"
+	"golang.org/x/sync/singleflight"
 
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
 	"github.com/kubewharf/kubebrain/pkg/backend"
 )
+
+// prevKvResolver owns the watch-fanout read-amplification caches and the logic
+// that resolves an event's previous value / inline metadata: the hint cache
+// (answers PrevKv straight from the event stream), the prev-value and metadata
+// (key,revision) caches, and their singleflight groups. Extracted from the
+// backendShim God object (audit A2); backendShim embeds a *prevKvResolver so its
+// methods stay promoted. Storage access (Get, backend, metrics) is borrowed from
+// the owning shim via srv rather than copied, so there is one source of truth.
+type prevKvResolver struct {
+	shim *backendShim
+
+	metaCache  *revKeyCache
+	metaFlight singleflight.Group
+	prevCache  *revKeyCache
+	prevFlight singleflight.Group
+	// prevHints answers watch PrevKv lookups from the event stream itself (the
+	// key's last converted event IS the previous version), removing the per-PUT
+	// revisioned TiKV Get that serialized watch conversion at ~60 events/s.
+	prevHints *prevHintCache
+}
+
+func newPrevKvResolver(shim *backendShim) *prevKvResolver {
+	return &prevKvResolver{
+		shim:      shim,
+		metaCache: newRevKeyCache(revKeyCacheCap),
+		prevCache: newRevKeyCache(revKeyCacheCap),
+		prevHints: newPrevHintCache(prevHintCacheCap),
+	}
+}
 
 // prevKvRetryBudget bounds how long one previous-value lookup keeps retrying
 // transient storage failures before giving up with an uncertain nil (#36).
@@ -158,8 +188,8 @@ func (c *prevHintCache) note(key string, rev uint64, kv *mvccpb.KeyValue, tombst
 }
 
 // noteEvent publishes a converted watch event into the hint cache.
-func (b *backendShim) noteEvent(key []byte, rev uint64, kv *mvccpb.KeyValue, tombstone bool) {
-	b.prevHints.note(string(key), rev, kv, tombstone)
+func (r *prevKvResolver) noteEvent(key []byte, rev uint64, kv *mvccpb.KeyValue, tombstone bool) {
+	r.prevHints.note(string(key), rev, kv, tombstone)
 }
 
 // hintedPreviousEtcdKv answers a PrevKv lookup from the hint cache when the
@@ -170,11 +200,11 @@ func (b *backendShim) noteEvent(key []byte, rev uint64, kv *mvccpb.KeyValue, tom
 // pass zeros when unknown, which always misses. tombstone hints are never a
 // valid previous version for a PUT (a CREATE must sit in between, which would
 // have republished the hint), so they miss.
-func (b *backendShim) hintedPreviousEtcdKv(key []byte, revision uint64, version, createRev int64) (*mvccpb.KeyValue, bool) {
+func (r *prevKvResolver) hintedPreviousEtcdKv(key []byte, revision uint64, version, createRev int64) (*mvccpb.KeyValue, bool) {
 	if version < 2 || createRev <= 0 {
 		return nil, false
 	}
-	e, ok := b.prevHints.get(string(key))
+	e, ok := r.prevHints.get(string(key))
 	if !ok || e.tombstone || e.kv == nil || e.rev >= revision {
 		return nil, false
 	}
@@ -203,7 +233,7 @@ const prefetchPrevKvsConcurrency = 16
 // whose previous version is neither hinted nor cached, issuing the revisioned
 // gets in parallel. cachedPreviousEtcdKv is singleflighted and idempotent, so
 // the sequential conversion that follows hits the warmed cache.
-func (b *backendShim) prefetchPrevKvs(events []*proto.Event) {
+func (r *prevKvResolver) prefetchPrevKvs(events []*proto.Event) {
 	var cold []*proto.Event
 	for _, e := range events {
 		if e == nil || e.Kv == nil || e.Type != proto.Event_PUT {
@@ -214,10 +244,10 @@ func (b *backendShim) prefetchPrevKvs(events []*proto.Event) {
 			continue
 		}
 		ver, crev := inlineVersionMeta(e.Kv.Value)
-		if _, ok := b.hintedPreviousEtcdKv(e.Kv.Key, rev, ver, crev); ok {
+		if _, ok := r.hintedPreviousEtcdKv(e.Kv.Key, rev, ver, crev); ok {
 			continue
 		}
-		if _, ok := b.prevCache.get(revCacheKey(e.Kv.Key, rev)); ok {
+		if _, ok := r.prevCache.get(revCacheKey(e.Kv.Key, rev)); ok {
 			continue
 		}
 		cold = append(cold, e)
@@ -235,7 +265,7 @@ func (b *backendShim) prefetchPrevKvs(events []*proto.Event) {
 			defer func() { <-sem }()
 			// Zeros for the hint proof: these events already missed the hint in
 			// the filter above, so go straight to the shared slow path.
-			b.cachedPreviousEtcdKv(ev.Kv.Key, watchEventRevision(ev), 0, 0)
+			r.cachedPreviousEtcdKv(ev.Kv.Key, watchEventRevision(ev), 0, 0)
 		}(e)
 	}
 	wg.Wait()
@@ -244,17 +274,17 @@ func (b *backendShim) prefetchPrevKvs(events []*proto.Event) {
 // cachedMetadata resolves create_revision/version for (key,revision), coalescing
 // the identical lookups that every watcher stream would otherwise issue for the
 // same event (the #10/#28 watch-fanout read amplification).
-func (b *backendShim) cachedMetadata(ctx context.Context, key []byte, revision uint64) (backend.EtcdMetadata, error) {
+func (r *prevKvResolver) cachedMetadata(ctx context.Context, key []byte, revision uint64) (backend.EtcdMetadata, error) {
 	ck := revCacheKey(key, revision)
-	if v, ok := b.metaCache.get(ck); ok {
+	if v, ok := r.metaCache.get(ck); ok {
 		return v.(backend.EtcdMetadata), nil
 	}
-	v, err, _ := b.metaFlight.Do(ck, func() (interface{}, error) {
-		m, e := b.backend.GetEtcdMetadata(ctx, key, revision)
+	v, err, _ := r.metaFlight.Do(ck, func() (interface{}, error) {
+		m, e := r.shim.backend.GetEtcdMetadata(ctx, key, revision)
 		if e != nil {
 			return backend.EtcdMetadata{}, e
 		}
-		b.metaCache.put(ck, m)
+		r.metaCache.put(ck, m)
 		return m, nil
 	})
 	if err != nil {
@@ -267,27 +297,27 @@ func (b *backendShim) cachedMetadata(ctx context.Context, key []byte, revision u
 // shares it across watcher streams. The returned *mvccpb.KeyValue is treated as
 // read-only by callers (it may be shared), matching the immutability of a past
 // key version.
-func (b *backendShim) cachedPreviousEtcdKv(key []byte, revision uint64, version, createRev int64) *mvccpb.KeyValue {
+func (r *prevKvResolver) cachedPreviousEtcdKv(key []byte, revision uint64, version, createRev int64) *mvccpb.KeyValue {
 	if revision == 0 {
 		return nil
 	}
-	if kv, ok := b.hintedPreviousEtcdKv(key, revision, version, createRev); ok {
-		b.metricCli.EmitCounter("watch.prev_kv.hint_hit", 1)
+	if kv, ok := r.hintedPreviousEtcdKv(key, revision, version, createRev); ok {
+		r.shim.metricCli.EmitCounter("watch.prev_kv.hint_hit", 1)
 		return kv
 	}
 	ck := revCacheKey(key, revision)
-	if v, ok := b.prevCache.get(ck); ok {
+	if v, ok := r.prevCache.get(ck); ok {
 		return v.(*mvccpb.KeyValue)
 	}
-	v, _, _ := b.prevFlight.Do(ck, func() (interface{}, error) {
+	v, _, _ := r.prevFlight.Do(ck, func() (interface{}, error) {
 		// previousEtcdKv uses its own bounded (Background) context. Only a
 		// CERTAIN answer (value / clean miss / compacted) may be cached: caching
 		// a transient-failure nil would hand the poisoned nil to every watcher
 		// stream converting the same event and amplify one storage hiccup into
 		// a cacher re-list storm (#36).
-		pk, certain := b.previousEtcdKv(context.Background(), key, revision)
+		pk, certain := r.previousEtcdKv(context.Background(), key, revision)
 		if certain {
-			b.prevCache.put(ck, pk)
+			r.prevCache.put(ck, pk)
 		}
 		return pk, nil
 	})

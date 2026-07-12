@@ -135,16 +135,11 @@ type backendShim struct {
 	// emit metrics
 	metricCli metrics.Metrics
 
-	// (key,revision)-keyed caches coalescing the immutable metadata / previous-kv
-	// lookups that watch fanout would otherwise repeat once per watcher stream.
-	metaCache  *revKeyCache
-	metaFlight singleflight.Group
-	prevCache  *revKeyCache
-	prevFlight singleflight.Group
-	// prevHints answers watch PrevKv lookups from the event stream itself (the
-	// key's last converted event IS the previous version), removing the per-PUT
-	// revisioned TiKV Get that serialized watch conversion at ~60 events/s.
-	prevHints *prevHintCache
+	// The prev-kv / metadata resolution caches and logic (watch-fanout read
+	// amplification). Embedded so its methods (noteEvent, cachedPreviousEtcdKv,
+	// cachedMetadata, ...) stay promoted onto backendShim (audit A2).
+	*prevKvResolver
+
 	// rangeCountCache memoizes exact range counts keyed by (start,end,revision).
 	// A count at a FIXED revision is immutable, and the apiserver's paginated
 	// LIST asks for the same (range, revision) count on every continue page —
@@ -168,14 +163,13 @@ type backendShim struct {
 }
 
 func NewBackendShim(backend backend.Backend, metricCli metrics.Metrics) BackendShim {
-	return &backendShim{
+	shim := &backendShim{
 		backend:         backend,
 		metricCli:       metricCli,
-		metaCache:       newRevKeyCache(revKeyCacheCap),
-		prevCache:       newRevKeyCache(revKeyCacheCap),
 		rangeCountCache: newRevKeyCache(revKeyCacheCap),
-		prevHints:       newPrevHintCache(prevHintCacheCap),
 	}
+	shim.prevKvResolver = newPrevKvResolver(shim)
+	return shim
 }
 
 func (b *backendShim) Create(ctx context.Context, r *etcdserverpb.PutRequest, includeFailureRange bool) (*etcdserverpb.TxnResponse, error) {
@@ -1117,7 +1111,7 @@ func watchEventRevision(e *proto.Event) uint64 {
 // Hence: retry transient failures with backoff up to a generous budget; only
 // answer nil-uncertain when the budget is exhausted (storage is by then
 // degraded far beyond this one lookup).
-func (b *backendShim) previousEtcdKv(ctx context.Context, key []byte, revision uint64) (*mvccpb.KeyValue, bool) {
+func (r *prevKvResolver) previousEtcdKv(ctx context.Context, key []byte, revision uint64) (*mvccpb.KeyValue, bool) {
 	if revision == 0 {
 		return nil, true
 	}
@@ -1125,7 +1119,7 @@ func (b *backendShim) previousEtcdKv(ctx context.Context, key []byte, revision u
 	defer cancel()
 	backoff := 10 * time.Millisecond
 	for {
-		resp, err := b.Get(readCtx, &etcdserverpb.RangeRequest{
+		resp, err := r.shim.Get(readCtx, &etcdserverpb.RangeRequest{
 			Key:      key,
 			Revision: int64(revision - 1),
 		})
@@ -1141,12 +1135,12 @@ func (b *backendShim) previousEtcdKv(ctx context.Context, key []byte, revision u
 			// legitimately gone. Same nil etcd produces; the client re-lists.
 			return nil, true
 		}
-		b.metricCli.EmitCounter("watch.prev_kv.retry", 1)
+		r.shim.metricCli.EmitCounter("watch.prev_kv.retry", 1)
 		timer := time.NewTimer(backoff)
 		select {
 		case <-readCtx.Done():
 			timer.Stop()
-			b.metricCli.EmitCounter("watch.prev_kv.budget_exhausted", 1)
+			r.shim.metricCli.EmitCounter("watch.prev_kv.budget_exhausted", 1)
 			klog.ErrorS(err, "previous watch kv unavailable after full retry budget; emitting uncertain nil",
 				"key", key, "revision", revision)
 			return nil, false

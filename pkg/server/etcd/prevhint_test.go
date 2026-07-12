@@ -46,7 +46,8 @@ func TestPrevHintMonotonicUnderLaggingStream(t *testing.T) {
 // revision is NOT enough — conversion coverage has holes (relist windows,
 // leadership flips), so an unproven hint may be several versions stale.
 func TestPrevHintHitAndMissBoundaries(t *testing.T) {
-	b := &backendShim{prevHints: newPrevHintCache(16), metricCli: prommetrics.NewMetrics()}
+	b := &backendShim{metricCli: prommetrics.NewMetrics()}
+	b.prevKvResolver = &prevKvResolver{shim: b, prevHints: newPrevHintCache(16)}
 	kv := &mvccpb.KeyValue{Key: []byte("k"), ModRevision: 10, CreateRevision: 4, Version: 2}
 	b.noteEvent([]byte("k"), 10, kv, false)
 
