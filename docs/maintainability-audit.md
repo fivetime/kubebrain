@@ -6,7 +6,7 @@
 > - ✅ **Wave 3 中等重复(B1-B3,B5)**:B1 抽 resolveCountFromIndex 单点化 count 三段式梯子(index→proxy),消除三处漂移;B2 notify→notifyBatch 委托,ring 机器单点化 + 统一零-revision 指标;B3 create/update 复用 putTxnObject;B5 抽 startFromHistory 合并 watch empty/low 两分支。**B4 有意跳过**(updateOnce/deleteOnce 共享面仅 4 行 heal 守卫,响应构造差异大);**B6 有意跳过**(forward 泛型受 go1.14 阻,非泛型版要类型断言不更清晰)。
 > - ✅ **Wave 4 惯用法(E6,E7)**:E6 leader identity 加 election.NoLeader 常量 + IsLeaderKnown(),消除 5 处 `""||"empty"` 手写哨兵;E7 memkv CAS/DelCurrent 设错即返回,与 PutIfNotExist 一致。**E1/E5/E8/E9 归入 Wave 6**(fencing 谓词/txn shape/compare 真值表都在 kv.go/lease.go 神对象内,与拆分一起做更安全);**E2 推迟**(BackendShim 接口 revision 类型统一=签名 churn 波及全部调用点);**E3/E4 推迟**(错误包装横跨 40 文件、metric 名约 140 处=大面积机械扫荡,churn≫收益,更适合各自独立小改);**E10 推迟**(零散小项,择机)。
 > - ✅ **Wave 5 层泄漏(C1-C2)**:C1 新增 pkg/storage/storagetest 后端无关 BatchWrite 契约套件(8 例:PutIfNotExist/CAS/DelCurrent/原子性),memkv+badger 进 CI、tikv env-guarded(KUBEBRAIN_TIKV_PD)——下次后端 CAS/错误语义漂移在 CI 就挂;C2 metrics wrapper 补 ExclusiveKvStorage 直通(+GC 组合变体)+ 守卫测试"包装后仍满足可选接口"(ExclusiveKvStorage 当前零实现,纯防未来陷阱)。
-> - ⏳ Wave 6 神对象(A1-A5,含 E1/E8/E9)——**大型高风险结构手术,建议独立立项**(见文末)
+> - 🔨 **Wave 6 神对象(A1-A5)进行中**:✅ **A3**(txn.go 名不副实→改名 write.go 纯单键 CRUD;事件环数据结构+生产者 notify/notifyBatch/overflow 抽到新 eventring.go,消费者 collectStorageWriteEvents 留 backend.go;`f3706a3`,单测+race+全资源功能回归 40/40 绿);⏳ A1(leaseManager)/A2(backendShim)/A4(kv.go Txn+去 paths 游标)/A5(scanner visitor)+ E1/E8/E9 仍待——大型高风险,逐个独立推进
 
 
 ## 一、执行判断(诚实结论)
