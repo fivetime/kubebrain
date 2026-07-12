@@ -24,10 +24,10 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	k8stypes "k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/api/resource"
 	metav1m "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
+	k8stypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 )
@@ -152,12 +152,12 @@ func main() {
 				ObjectMeta: metav1m.ObjectMeta{
 					Name: name,
 					Labels: map[string]string{
-						"type":                           "kwok",
-						"kubernetes.io/hostname":         name,
-						"node-role.kubernetes.io/kwok":   "true",
-						"topology.kubernetes.io/zone":    zones[idx%len(zones)],
-						"lab/rack":                       fmt.Sprintf("rack-%03d", idx%60),
-						"lab/shard":                      fmt.Sprintf("%d", idx%*shards),
+						"type":                         "kwok",
+						"kubernetes.io/hostname":       name,
+						"node-role.kubernetes.io/kwok": "true",
+						"topology.kubernetes.io/zone":  zones[idx%len(zones)],
+						"lab/rack":                     fmt.Sprintf("rack-%03d", idx%60),
+						"lab/shard":                    fmt.Sprintf("%d", idx%*shards),
 					},
 					Annotations: map[string]string{"kwok.x-k8s.io/node": "fake"},
 				},
@@ -193,18 +193,18 @@ func main() {
 		}
 		if false {
 			run(*nsN, func(i int) error {
-			ns := fmt.Sprintf("ns-%07d", *nsStart+i)
-			_, err := cli.CoreV1().Namespaces().Create(ctx,
-				&corev1.Namespace{ObjectMeta: metav1m.ObjectMeta{
-					Name: ns, Labels: map[string]string{"workload-type": "fake"}}},
-				metav1m.CreateOptions{})
-			return err
-		})
+				ns := fmt.Sprintf("ns-%07d", *nsStart+i)
+				_, err := cli.CoreV1().Namespaces().Create(ctx,
+					&corev1.Namespace{ObjectMeta: metav1m.ObjectMeta{
+						Name: ns, Labels: map[string]string{"workload-type": "fake"}}},
+					metav1m.CreateOptions{})
+				return err
+			})
 		}
 		total := *nsN * *deployN
 		rep := int32(*replicas)
 		run(total, func(i int) error {
-			ns := fmt.Sprintf("ns-%07d", *nsStart+i / *deployN)
+			ns := fmt.Sprintf("ns-%07d", *nsStart + i / *deployN)
 			name := fmt.Sprintf("app-%03d", i%*deployN)
 			d := &appsv1.Deployment{
 				ObjectMeta: metav1m.ObjectMeta{
@@ -369,7 +369,10 @@ func main() {
 	case "runpods":
 		// 存量 Pending pod 直接补 Running status(KWOK 的存量收编太慢,它只留作
 		// 增量状态机)。List 走 pods-shard cache;PATCH status 子资源无冲突。
-		type pp struct{ ns, name string; idx int }
+		type pp struct {
+			ns, name string
+			idx      int
+		}
 		var pend []pp
 		{
 			opts := metav1m.ListOptions{Limit: 10000}
@@ -414,7 +417,7 @@ func main() {
 		// 滚动更新(kcm 造新 RS+新 pod、缩旧 RS、删旧 pod ≈ 每 deploy 4+ 写)。
 		total := *nsN * *deployN
 		run(total, func(i int) error {
-			ns := fmt.Sprintf("ns-%07d", *nsStart+i / *deployN)
+			ns := fmt.Sprintf("ns-%07d", *nsStart + i / *deployN)
 			name := fmt.Sprintf("app-%03d", i%*deployN)
 			patch := []byte(`{"spec":{"template":{"metadata":{"annotations":{"storm":"v1"}}}}}`)
 			_, err := cli.AppsV1().Deployments(ns).Patch(ctx, name, k8stypes.StrategicMergePatchType, patch, metav1m.PatchOptions{})
@@ -426,7 +429,7 @@ func main() {
 
 	case "services":
 		run(*count, func(i int) error {
-			ns := fmt.Sprintf("ns-%07d", *nsStart+i / *perNs)
+			ns := fmt.Sprintf("ns-%07d", *nsStart + i / *perNs)
 			name := fmt.Sprintf("svc-%03d", i%*perNs)
 			svc := &corev1.Service{
 				ObjectMeta: metav1m.ObjectMeta{Name: name, Namespace: ns,
@@ -446,7 +449,7 @@ func main() {
 
 	case "secrets":
 		run(*count, func(i int) error {
-			ns := fmt.Sprintf("ns-%07d", *nsStart+i / *perNs)
+			ns := fmt.Sprintf("ns-%07d", *nsStart + i / *perNs)
 			name := fmt.Sprintf("sec-%03d", i%*perNs)
 			sec := &corev1.Secret{
 				ObjectMeta: metav1m.ObjectMeta{Name: name, Namespace: ns,

@@ -349,4 +349,3 @@ func hasPrefixBytes(s, prefix []byte) bool {
 	}
 	return true
 }
-

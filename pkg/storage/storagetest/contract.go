@@ -123,7 +123,7 @@ func RunBatchWriteContract(t *testing.T, newKV func(t *testing.T) storage.KvStor
 		kv := newKV(t)
 		seed(t, ctx, kv, "guard", "g1")
 		b := kv.BeginBatchWrite()
-		b.Put([]byte("sibling"), []byte("s"), 0)          // would-be write
+		b.Put([]byte("sibling"), []byte("s"), 0)                 // would-be write
 		b.CAS([]byte("guard"), []byte("g2"), []byte("WRONG"), 0) // conflicts
 		err := b.Commit(ctx)
 		require.True(t, errors.Is(err, storage.ErrCASFailed), "conflicting batch must fail, got %v", err)
