@@ -750,8 +750,7 @@ func (s *RPCServer) executeGenericTxn(ctx context.Context, txn *etcdserverpb.Txn
 		if handled {
 			return resp, err
 		}
-		pathIndex := 0
-		return s.executeTxnWithPaths(ctx, txn, paths, &pathIndex)
+		return s.executeTxnWithCursor(ctx, txn, &txnPathCursor{paths: paths})
 	}
 }
 
@@ -890,17 +889,35 @@ func (s *RPCServer) txnComparePathsGuarded(ctx context.Context, txn *etcdserverp
 	return paths, guards, nil
 }
 
-func validateTxnRangeRevisions(txn *etcdserverpb.TxnRequest, paths []bool, compactRevision, currentRevision int64) error {
-	pathIndex := 0
-	return validateTxnRangeRevisionsWithPaths(txn, paths, &pathIndex, compactRevision, currentRevision)
+// txnPathCursor walks the flat pre-order list of per-(sub)txn "succeeded" flags
+// that txnComparePaths produced, handing them out one per tree node as the
+// validate and execute passes re-walk the SAME tree in the SAME order. Wrapping
+// paths+position in a cursor makes the shared position explicit and impossible
+// to advance by accident — the old code threaded a raw *int through every call
+// (audit A4).
+type txnPathCursor struct {
+	paths []bool
+	pos   int
 }
 
-func validateTxnRangeRevisionsWithPaths(txn *etcdserverpb.TxnRequest, paths []bool, pathIndex *int, compactRevision, currentRevision int64) error {
-	if *pathIndex >= len(paths) {
-		return fmt.Errorf("missing txn compare path")
+func (c *txnPathCursor) next() (bool, error) {
+	if c.pos >= len(c.paths) {
+		return false, fmt.Errorf("missing txn compare path")
 	}
-	succeeded := paths[*pathIndex]
-	(*pathIndex)++
+	v := c.paths[c.pos]
+	c.pos++
+	return v, nil
+}
+
+func validateTxnRangeRevisions(txn *etcdserverpb.TxnRequest, paths []bool, compactRevision, currentRevision int64) error {
+	return validateTxnRangeRevisionsCursor(txn, &txnPathCursor{paths: paths}, compactRevision, currentRevision)
+}
+
+func validateTxnRangeRevisionsCursor(txn *etcdserverpb.TxnRequest, cur *txnPathCursor, compactRevision, currentRevision int64) error {
+	succeeded, err := cur.next()
+	if err != nil {
+		return err
+	}
 	ops := txn.Success
 	if !succeeded {
 		ops = txn.Failure
@@ -915,7 +932,7 @@ func validateTxnRangeRevisionsWithPaths(txn *etcdserverpb.TxnRequest, paths []bo
 			}
 		}
 		if nested := op.GetRequestTxn(); nested != nil {
-			if err := validateTxnRangeRevisionsWithPaths(nested, paths, pathIndex, compactRevision, currentRevision); err != nil {
+			if err := validateTxnRangeRevisionsCursor(nested, cur, compactRevision, currentRevision); err != nil {
 				return err
 			}
 		}
@@ -923,12 +940,11 @@ func validateTxnRangeRevisionsWithPaths(txn *etcdserverpb.TxnRequest, paths []bo
 	return nil
 }
 
-func (s *RPCServer) executeTxnWithPaths(ctx context.Context, txn *etcdserverpb.TxnRequest, paths []bool, pathIndex *int) (*etcdserverpb.TxnResponse, error) {
-	if *pathIndex >= len(paths) {
-		return nil, fmt.Errorf("missing txn compare path")
+func (s *RPCServer) executeTxnWithCursor(ctx context.Context, txn *etcdserverpb.TxnRequest, cur *txnPathCursor) (*etcdserverpb.TxnResponse, error) {
+	succeeded, err := cur.next()
+	if err != nil {
+		return nil, err
 	}
-	succeeded := paths[*pathIndex]
-	(*pathIndex)++
 	ops := txn.Success
 	if !succeeded {
 		ops = txn.Failure
@@ -998,7 +1014,7 @@ func (s *RPCServer) executeTxnWithPaths(ctx context.Context, txn *etcdserverpb.T
 				},
 			})
 		case op.GetRequestTxn() != nil:
-			txnResp, err := s.executeTxnWithPaths(ctx, op.GetRequestTxn(), paths, pathIndex)
+			txnResp, err := s.executeTxnWithCursor(ctx, op.GetRequestTxn(), cur)
 			if err != nil {
 				return nil, err
 			}
@@ -1021,163 +1037,6 @@ func (s *RPCServer) executeTxnWithPaths(ctx context.Context, txn *etcdserverpb.T
 func (s *RPCServer) emptyDeleteRangeResponse() *etcdserverpb.DeleteRangeResponse {
 	return &etcdserverpb.DeleteRangeResponse{
 		Header: txnHeader(int64(s.backend.GetCurrentRevision())),
-	}
-}
-
-// evalCompareGuarded evaluates a single compare and, for a single-key compare on
-// an existing key, also returns an optimistic-concurrency guard (the key's
-// current revision) that the atomic txn path can assert at commit time (#4 Tier
-// 2). No guard is returned for range compares or absent keys.
-func (s *RPCServer) evalCompareGuarded(ctx context.Context, cmp *etcdserverpb.Compare) (bool, *backend.TxnGuard, error) {
-	if len(cmp.RangeEnd) > 0 {
-		ok, err := s.evalRangeCompare(ctx, cmp)
-		return ok, nil, err
-	}
-	rangeResp, err := s.backend.Get(ctx, &etcdserverpb.RangeRequest{Key: cmp.Key})
-	if err != nil {
-		return false, nil, err
-	}
-	var kv *mvccpb.KeyValue
-	if len(rangeResp.Kvs) > 0 {
-		kv = rangeResp.Kvs[0]
-	}
-	ok, err := s.compareSingleKey(cmp, kv)
-	if err != nil {
-		return false, nil, err
-	}
-	var guard *backend.TxnGuard
-	if kv != nil {
-		guard = &backend.TxnGuard{Key: cmp.Key, Revision: uint64(kv.ModRevision)}
-	}
-	return ok, guard, nil
-}
-
-func (s *RPCServer) compareSingleKey(cmp *etcdserverpb.Compare, kv *mvccpb.KeyValue) (bool, error) {
-	switch cmp.Target {
-	case etcdserverpb.Compare_MOD:
-		var actual int64
-		if kv != nil {
-			actual = kv.ModRevision
-		}
-		return compareInt64(actual, cmp.GetModRevision(), cmp.Result), nil
-	case etcdserverpb.Compare_VALUE:
-		var actual []byte
-		if kv != nil {
-			actual = kv.Value
-		}
-		return compareBytes(actual, cmp.GetValue(), cmp.Result), nil
-	case etcdserverpb.Compare_VERSION:
-		actual := int64(0)
-		if kv != nil {
-			actual = kv.Version
-		}
-		return compareInt64(actual, cmp.GetVersion(), cmp.Result), nil
-	case etcdserverpb.Compare_CREATE:
-		actual := int64(0)
-		if kv != nil {
-			actual = kv.CreateRevision
-		}
-		return compareInt64(actual, cmp.GetCreateRevision(), cmp.Result), nil
-	case etcdserverpb.Compare_LEASE:
-		return compareInt64(s.leaseIDForKey(string(cmp.Key)), cmp.GetLease(), cmp.Result), nil
-	default:
-		return false, unsupported(fmt.Sprintf("compare target %s", cmp.Target))
-	}
-}
-
-func (s *RPCServer) evalRangeCompare(ctx context.Context, cmp *etcdserverpb.Compare) (bool, error) {
-	switch cmp.Target {
-	case etcdserverpb.Compare_MOD, etcdserverpb.Compare_VALUE, etcdserverpb.Compare_VERSION, etcdserverpb.Compare_CREATE, etcdserverpb.Compare_LEASE:
-	default:
-		return false, unsupported(fmt.Sprintf("compare target %s", cmp.Target))
-	}
-	rangeResp, err := s.backend.List(ctx, &etcdserverpb.RangeRequest{
-		Key:      cmp.Key,
-		RangeEnd: cmp.RangeEnd,
-	})
-	if err != nil {
-		return false, err
-	}
-	if len(rangeResp.Kvs) == 0 {
-		if cmp.Target == etcdserverpb.Compare_VALUE {
-			return false, nil
-		}
-		return s.compareKeyValue(cmp, nil), nil
-	}
-	for _, kv := range rangeResp.Kvs {
-		if !s.compareKeyValue(cmp, kv) {
-			return false, nil
-		}
-	}
-	return true, nil
-}
-
-func (s *RPCServer) compareKeyValue(cmp *etcdserverpb.Compare, kv *mvccpb.KeyValue) bool {
-	switch cmp.Target {
-	case etcdserverpb.Compare_MOD:
-		var actual int64
-		if kv != nil {
-			actual = kv.ModRevision
-		}
-		return compareInt64(actual, cmp.GetModRevision(), cmp.Result)
-	case etcdserverpb.Compare_VALUE:
-		if kv == nil {
-			return false
-		}
-		return compareBytes(kv.Value, cmp.GetValue(), cmp.Result)
-	case etcdserverpb.Compare_VERSION:
-		var actual int64
-		if kv != nil {
-			actual = kv.Version
-		}
-		return compareInt64(actual, cmp.GetVersion(), cmp.Result)
-	case etcdserverpb.Compare_CREATE:
-		var actual int64
-		if kv != nil {
-			actual = kv.CreateRevision
-		}
-		return compareInt64(actual, cmp.GetCreateRevision(), cmp.Result)
-	case etcdserverpb.Compare_LEASE:
-		var key string
-		if kv != nil {
-			key = string(kv.Key)
-		} else {
-			key = string(cmp.Key)
-		}
-		return compareInt64(s.leaseIDForKey(key), cmp.GetLease(), cmp.Result)
-	default:
-		return false
-	}
-}
-
-func compareInt64(actual, expected int64, result etcdserverpb.Compare_CompareResult) bool {
-	switch result {
-	case etcdserverpb.Compare_EQUAL:
-		return actual == expected
-	case etcdserverpb.Compare_GREATER:
-		return actual > expected
-	case etcdserverpb.Compare_LESS:
-		return actual < expected
-	case etcdserverpb.Compare_NOT_EQUAL:
-		return actual != expected
-	default:
-		return false
-	}
-}
-
-func compareBytes(actual, expected []byte, result etcdserverpb.Compare_CompareResult) bool {
-	cmp := bytes.Compare(actual, expected)
-	switch result {
-	case etcdserverpb.Compare_EQUAL:
-		return cmp == 0
-	case etcdserverpb.Compare_GREATER:
-		return cmp > 0
-	case etcdserverpb.Compare_LESS:
-		return cmp < 0
-	case etcdserverpb.Compare_NOT_EQUAL:
-		return cmp != 0
-	default:
-		return false
 	}
 }
 
