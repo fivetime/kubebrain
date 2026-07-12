@@ -17,7 +17,6 @@ package etcd
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"sort"
 	"time"
 
@@ -142,6 +141,10 @@ type backendShim struct {
 	// Embedded so Count / SetCountProxy stay promoted onto backendShim (audit A2).
 	*countResolver
 
+	// Converts backend proto events/KeyValues into etcd mvccpb wire types.
+	// Embedded so watchEventToEtcdEvent / kvToEtcdKv stay promoted (audit A2).
+	*watchTranslator
+
 	// leaseLookup resolves a user key to its currently-attached lease ID (0 if
 	// none), wired to the server's keyLeaseIndex via SetLeaseLookup. nil until
 	// wired (e.g. in unit tests that construct the shim directly).
@@ -155,6 +158,7 @@ func NewBackendShim(backend backend.Backend, metricCli metrics.Metrics) BackendS
 	}
 	shim.prevKvResolver = newPrevKvResolver(shim)
 	shim.countResolver = newCountResolver(shim)
+	shim.watchTranslator = newWatchTranslator(shim)
 	return shim
 }
 
@@ -831,73 +835,6 @@ func (b *backendShim) Watch(ctx context.Context, key string, revision uint64) (<
 	return watchResponseCh, nil
 }
 
-func (b *backendShim) watchEventToEtcdEvent(ctx context.Context, e *proto.Event) (*mvccpb.Event, error) {
-	if e == nil || e.Kv == nil {
-		return nil, fmt.Errorf("invalid nil watch event")
-	}
-	revision := watchEventRevision(e)
-	switch e.Type {
-	case proto.Event_CREATE:
-		kv := b.kvToEtcdKv(ctx, e.Kv)
-		kv.ModRevision = int64(revision)
-		b.noteEvent(e.Kv.Key, revision, kv, false)
-		return &mvccpb.Event{
-			Type: mvccpb.PUT,
-			Kv:   kv,
-		}, nil
-	case proto.Event_PUT:
-		kv := b.kvToEtcdKv(ctx, e.Kv)
-		kv.ModRevision = int64(revision)
-		prevKv := b.cachedPreviousEtcdKv(e.Kv.Key, revision, kv.Version, kv.CreateRevision)
-		// A PUT event is an update, never a create, so its CreateRevision must
-		// differ from ModRevision (clientv3.Event.IsCreate reports create iff they
-		// are equal). Prefer the create_revision the value carries inline (approach
-		// A) — it is already set by kvToEtcdKv. Only when it is unknown (legacy
-		// events without inline metadata) derive it from the previous version, and
-		// as a last resort synthesize a value just below ModRevision. Previously a
-		// failed prev-version lookup unconditionally overwrote a correct inline
-		// create_revision with ModRevision, misreporting the update as a create and
-		// dropping PrevKv (#52).
-		if kv.CreateRevision == 0 || kv.CreateRevision == kv.ModRevision {
-			if prevKv != nil {
-				kv.CreateRevision = prevKv.CreateRevision
-				if kv.CreateRevision == 0 {
-					kv.CreateRevision = prevKv.ModRevision
-				}
-			}
-			if kv.CreateRevision == 0 || kv.CreateRevision == kv.ModRevision {
-				kv.CreateRevision = kv.ModRevision - 1
-			}
-		}
-		b.noteEvent(e.Kv.Key, revision, kv, false)
-		return &mvccpb.Event{
-			Type:   mvccpb.PUT,
-			Kv:     kv,
-			PrevKv: prevKv,
-		}, nil
-	case proto.Event_DELETE:
-		prevKv := b.kvToEtcdKv(ctx, e.Kv)
-		kv := &mvccpb.KeyValue{
-			ModRevision: int64(revision),
-			Key:         e.Kv.Key,
-		}
-		if prevKv != nil {
-			kv.CreateRevision = prevKv.CreateRevision
-			if kv.CreateRevision == 0 {
-				kv.CreateRevision = prevKv.ModRevision
-			}
-		}
-		b.noteEvent(e.Kv.Key, revision, nil, true)
-		return &mvccpb.Event{
-			Type:   mvccpb.DELETE,
-			Kv:     kv,
-			PrevKv: prevKv,
-		}, nil
-	default:
-		return nil, fmt.Errorf("unsupported watch event type %s", e.Type)
-	}
-}
-
 func watchEventRevision(e *proto.Event) uint64 {
 	if e == nil {
 		return 0
@@ -991,52 +928,6 @@ func (b *backendShim) GetPublishedRevision() uint64 {
 
 func (b *backendShim) SetCurrentRevision(revision uint64) {
 	b.backend.SetCurrentRevision(revision)
-}
-
-func (b *backendShim) kvToEtcdKv(ctx context.Context, kv *proto.KeyValue) *mvccpb.KeyValue {
-	if kv == nil {
-		return nil
-	}
-	// Approach A: prefer create_revision/version inlined in the stored value —
-	// no metadata lookup, and the envelope is stripped so the client gets the
-	// raw value. Legacy (un-enveloped) values fall back to the etcdmeta lookup.
-	meta, rawValue, inlined := backend.DecodeInlineValue(kv.Value)
-	if !inlined {
-		rawValue = kv.Value
-		var err error
-		meta, err = b.cachedMetadata(ctx, kv.Key, kv.Revision)
-		if err != nil {
-			klog.V(4).InfoS("failed to read etcd metadata", "key", kv.Key, "revision", kv.Revision, "err", err)
-			meta = backend.EtcdMetadata{CreateRevision: kv.Revision, Version: 1}
-		}
-	}
-	if meta.CreateRevision == 0 {
-		meta.CreateRevision = kv.Revision
-	}
-	if meta.Version == 0 {
-		meta.Version = 1
-	}
-	out := &mvccpb.KeyValue{
-		Key:            kv.Key,
-		Value:          rawValue,
-		Version:        int64(meta.Version),
-		CreateRevision: int64(meta.CreateRevision),
-		ModRevision:    int64(kv.Revision),
-	}
-	// etcd returns the lease attached to the key on Get/Range and in watch
-	// events. A v2 value envelope records the lease of THIS specific version
-	// (review #9), so historical reads, prevKv, and delete events report the
-	// lease the key held at that revision — use it directly. Legacy/v1 values
-	// carry no per-version lease (meta.Lease == 0 and inlined via v1), so fall
-	// back to the live keyLeaseIndex (current binding) as before. Only the leader
-	// has that index populated; followers proxy reads to it. The fast path inside
-	// the resolver skips the lease mutex entirely when no key holds a lease.
-	if meta.Lease != 0 {
-		out.Lease = meta.Lease
-	} else if b.leaseLookup != nil {
-		out.Lease = b.leaseLookup(string(kv.Key))
-	}
-	return out
 }
 
 func (b *backendShim) SetLeaseLookup(fn func(key string) int64) {
