@@ -19,12 +19,10 @@ import (
 	"context"
 	"fmt"
 	"sort"
-	"strconv"
 	"time"
 
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/mvccpb"
-	"golang.org/x/sync/singleflight"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
@@ -140,35 +138,23 @@ type backendShim struct {
 	// cachedMetadata, ...) stay promoted onto backendShim (audit A2).
 	*prevKvResolver
 
-	// rangeCountCache memoizes exact range counts keyed by (start,end,revision).
-	// A count at a FIXED revision is immutable, and the apiserver's paginated
-	// LIST asks for the same (range, revision) count on every continue page —
-	// without this cache each of the N/limit pages re-walked the whole count
-	// index (O(range) btree iteration per page: 82% of List CPU at 3M
-	// namespaces, ~200ms/page). First pages (rev=0) resolve live and are not
-	// cached; continue pages (rev>0) hit this cache (#40).
-	rangeCountCache  *revKeyCache
-	rangeCountFlight singleflight.Group
+	// The exact-range count cache + resolution ladder for paginated LIST.
+	// Embedded so Count / SetCountProxy stay promoted onto backendShim (audit A2).
+	*countResolver
 
 	// leaseLookup resolves a user key to its currently-attached lease ID (0 if
 	// none), wired to the server's keyLeaseIndex via SetLeaseLookup. nil until
 	// wired (e.g. in unit tests that construct the shim directly).
 	leaseLookup func(key string) int64
-
-	// countProxy resolves a count via the leader when the local index cannot
-	// serve it (#41: the count index is leader-only, so a follower's count
-	// fallback was a full range scan — a 60s+ timeout at 10M keys, starving
-	// any apiserver pointed at a follower). nil until wired.
-	countProxy func(ctx context.Context, r *etcdserverpb.RangeRequest) (int64, bool)
 }
 
 func NewBackendShim(backend backend.Backend, metricCli metrics.Metrics) BackendShim {
 	shim := &backendShim{
-		backend:         backend,
-		metricCli:       metricCli,
-		rangeCountCache: newRevKeyCache(revKeyCacheCap),
+		backend:   backend,
+		metricCli: metricCli,
 	}
 	shim.prevKvResolver = newPrevKvResolver(shim)
+	shim.countResolver = newCountResolver(shim)
 	return shim
 }
 
@@ -630,121 +616,6 @@ type rangeCountEntry struct {
 	count     int64
 }
 
-func (b *backendShim) exactRangeCount(ctx context.Context, r *etcdserverpb.RangeRequest) (int64, error) {
-	// A paginated LIST asks, on every continue page, for the count of the
-	// REMAINDER [pageStart, end) at a fixed revision. Computing that from the
-	// count index walks every live node from pageStart to end — O(range) btree
-	// iteration per page, which at 3M same-prefix objects was 82% of List CPU
-	// (~200ms/page, O(N^2/pageSize) per full listing). But the remainder count
-	// is monotonically decreasing along the sequence:
-	//   count(page N) = count(page N-1) - |[start(N-1), start(N))|
-	// so after one full count, each further page only counts the small
-	// [prevStart, curStart) span it just consumed (~pageSize nodes). The rolling
-	// state is keyed by (end, revision) — fixed for the whole sequence — and a
-	// fixed-revision count is immutable, making the cache safe (#40).
-	cacheable := r.Revision > 0 && !hasRangeRevisionFilters(r)
-	if !cacheable {
-		return b.exactRangeCountUncached(ctx, r)
-	}
-	ck := string(r.RangeEnd) + "@" + strconv.FormatInt(r.Revision, 10)
-	if v, ok := b.rangeCountCache.get(ck); ok {
-		e := v.(rangeCountEntry)
-		// Same page replayed (retry): the remainder is unchanged.
-		if bytes.Equal(r.Key, e.lastStart) {
-			return e.count, nil
-		}
-		// Sequence advanced: subtract the span just consumed. The small
-		// consumed-span count comes from the local index, or the leader's on a
-		// follower/transition miss (#41), keeping the rolling scheme O(pageSize)
-		// per page — see resolveCountFromIndex.
-		if bytes.Compare(r.Key, e.lastStart) > 0 {
-			delta, served := b.resolveCountFromIndex(ctx, e.lastStart, r.Key, r.Revision)
-			if served {
-				c := e.count - delta
-				b.rangeCountCache.put(ck, rangeCountEntry{lastStart: append([]byte(nil), r.Key...), count: c})
-				return c, nil
-			}
-		}
-		// Out-of-order page or index miss: fall through to a full count.
-	}
-	v, err, _ := b.rangeCountFlight.Do(ck+"\x00"+string(r.Key), func() (interface{}, error) {
-		c, e := b.exactRangeCountUncached(ctx, r)
-		if e != nil {
-			return nil, e
-		}
-		b.rangeCountCache.put(ck, rangeCountEntry{lastStart: append([]byte(nil), r.Key...), count: c})
-		return c, nil
-	})
-	if err != nil {
-		return 0, err
-	}
-	return v.(int64), nil
-}
-
-// resolveCountFromIndex runs the shared count-resolution ladder for a
-// revision-filter-free count over [key,end): the local count index first, then
-// (on a follower, where the index is leader-only) the leader's index over the
-// wire (#41). It does NOT fall back to a scan/List — that tail differs per
-// caller (current-revision pass-through vs revision-honoring List) and stays at
-// the call site. Single-sourcing the ladder keeps the three count paths from
-// drifting (review #51). proxiedCount only reads Key/RangeEnd/Revision, so the
-// minimal request here is equivalent to forwarding the caller's.
-func (b *backendShim) resolveCountFromIndex(ctx context.Context, key, end []byte, rev int64) (int64, bool) {
-	if c, served := b.backend.CountAtRevision(ctx, key, end, uint64(rev)); served {
-		return c, true
-	}
-	return b.proxiedCount(ctx, &etcdserverpb.RangeRequest{Key: key, RangeEnd: end, Revision: rev, CountOnly: true})
-}
-
-func (b *backendShim) exactRangeCountUncached(ctx context.Context, r *etcdserverpb.RangeRequest) (int64, error) {
-	// Serve from the in-memory count index when possible (approach A-index); it
-	// roots the per-page O(range) count scan that made paginated LIST O(N^2).
-	// Revision filters change the counted set, which the index does not model.
-	if !hasRangeRevisionFilters(r) {
-		if c, ok := b.resolveCountFromIndex(ctx, r.Key, r.RangeEnd, r.Revision); ok {
-			return c, nil
-		}
-	}
-
-	if r.Revision == 0 && !hasRangeRevisionFilters(r) {
-		resp, err := b.Count(ctx, r)
-		if err != nil {
-			return 0, err
-		}
-		return resp.Count, nil
-	}
-
-	resp, err := b.backend.List(ctx, &proto.RangeRequest{
-		Key:      r.Key,
-		End:      r.RangeEnd,
-		Revision: uint64(r.Revision),
-	})
-	if err != nil {
-		return 0, err
-	}
-	return int64(len(resp.Kvs)), nil
-}
-
-// proxiedCount consults the wired count proxy (the leader's count index over
-// the wire) for a count the local index cannot serve. false means unavailable
-// (not wired, this node IS the leader, or the forward failed) and the caller
-// must fall back to its local path.
-func (b *backendShim) proxiedCount(ctx context.Context, r *etcdserverpb.RangeRequest) (int64, bool) {
-	if b.countProxy == nil {
-		return 0, false
-	}
-	c, ok := b.countProxy(ctx, r)
-	if ok {
-		b.metricCli.EmitCounter("count.proxy.hit", 1)
-	}
-	return c, ok
-}
-
-// SetCountProxy implements BackendShim.
-func (b *backendShim) SetCountProxy(f func(ctx context.Context, r *etcdserverpb.RangeRequest) (int64, bool)) {
-	b.countProxy = f
-}
-
 func applyRangeOptions(resp *etcdserverpb.RangeResponse, r *etcdserverpb.RangeRequest) *etcdserverpb.RangeResponse {
 	if resp == nil {
 		return resp
@@ -840,57 +711,6 @@ func needsPostRangeLimit(r *etcdserverpb.RangeRequest) bool {
 	return hasRangeRevisionFilters(r) ||
 		!(r.SortOrder == etcdserverpb.RangeRequest_NONE ||
 			(r.SortTarget == etcdserverpb.RangeRequest_KEY && r.SortOrder == etcdserverpb.RangeRequest_ASCEND))
-}
-
-func (b *backendShim) Count(ctx context.Context, r *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
-	if r.Revision != 0 {
-		// A point-in-time count. The proto CountRequest carries no revision (so the
-		// pass-through path below always counts at the current revision), but the
-		// in-memory count index answers historical revisions too (down to
-		// compaction). Serve from it without materializing the range; only when the
-		// index cannot (cold/compacted) fall back to a range read that honors the
-		// revision (List strips Kvs for CountOnly via applyRangeOptions). This avoids
-		// building every KeyValue in the range just to count them (review-borrowed
-		// read-amplification cut, on top of review #1's correctness fix).
-		// Local index first, then the leader's over the wire on a follower/mid-
-		// rebuild miss (#41; a steady follower's Revision>0 Range was already
-		// forwarded wholesale by kv.go). Last resort: a revision-honoring List
-		// (strips Kvs for CountOnly). See resolveCountFromIndex.
-		if c, ok := b.resolveCountFromIndex(ctx, r.Key, r.RangeEnd, r.Revision); ok {
-			return &etcdserverpb.RangeResponse{
-				Header: txnHeader(int64(b.backend.GetCurrentRevision())),
-				Count:  c,
-			}, nil
-		}
-		return b.List(ctx, r)
-	}
-
-	// Current-revision count. Prefer the local index, then the leader's index
-	// over the wire (#41), then the pass-through count scan.
-	// A proxied rev=0 count is taken at the LEADER's current revision, which can
-	// sit slightly ahead of the follower-stamped header revision; k8s consumes
-	// this count only as the remainingItemCount estimate, where a small skew is
-	// tolerated by contract. Forcing the follower's revision instead would trade
-	// this for a List materialization on the leader whenever its index cannot
-	// serve that historical revision — a far worse failure mode (review #51).
-	if c, ok := b.resolveCountFromIndex(ctx, r.Key, r.RangeEnd, 0); ok {
-		return &etcdserverpb.RangeResponse{
-			Header: txnHeader(int64(b.backend.GetCurrentRevision())),
-			Count:  c,
-		}, nil
-	}
-	request := &proto.CountRequest{
-		Key: r.Key,
-		End: r.RangeEnd,
-	}
-	response, err := b.backend.Count(ctx, request)
-	if err != nil {
-		return nil, err
-	}
-	return &etcdserverpb.RangeResponse{
-		Header: txnHeader(int64(response.Header.Revision)),
-		Count:  int64(response.Count),
-	}, nil
 }
 
 // todo deprecate range stream in etcd
