@@ -21,6 +21,8 @@ import (
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+
+	"github.com/kubewharf/kubebrain/pkg/backend/election"
 )
 
 // MemberList lists the current cluster membership.
@@ -30,7 +32,7 @@ func (s *RPCServer) MemberList(context.Context, *etcdserverpb.MemberListRequest)
 	members := make([]*etcdserverpb.Member, 0, len(addresses))
 	seen := make(map[uint64]struct{}, len(addresses))
 	for _, address := range addresses {
-		if address == "" || address == "empty" {
+		if !election.IsLeaderKnown(address) {
 			continue
 		}
 		id := s.memberIDFromAddress(address)

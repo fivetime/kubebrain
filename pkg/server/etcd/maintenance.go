@@ -22,6 +22,8 @@ import (
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+
+	"github.com/kubewharf/kubebrain/pkg/backend/election"
 )
 
 // maintenanceVersion is reported by Maintenance.Status.Version. The
@@ -136,7 +138,7 @@ func (s *RPCServer) maintenanceHeader() *etcdserverpb.ResponseHeader {
 }
 
 func (s *RPCServer) memberIDFromAddress(address string) uint64 {
-	if address == "" || address == "empty" {
+	if !election.IsLeaderKnown(address) {
 		address = s.backend.GetResourceLock().Identity()
 	}
 	return uint64(crc32.ChecksumIEEE([]byte(address)))

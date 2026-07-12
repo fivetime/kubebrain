@@ -81,7 +81,11 @@ func (b *batch) CAS(key []byte, newVal []byte, oldVal []byte, ttl int64) {
 	}
 
 	if bytes.Compare(val, oldVal) != 0 {
+		// Latch and return, like PutIfNotExist: a failed compare must not also
+		// stage the write (Commit aborts on b.err anyway, but leaving the write
+		// and the opCount bump made the conflict Idx semantics ambiguous).
 		b.err = storage.NewErrConflict(b.opCount, key, oldVal)
+		return
 	}
 
 	b.cache[string(key)] = cacheVal{
@@ -124,6 +128,7 @@ func (b *batch) DelCurrent(it storage.Iter) {
 
 	if bytes.Compare(b.get(it.Key()), it.Val()) != 0 {
 		b.err = storage.ErrCASFailed
+		return
 	}
 
 	b.cache[string(it.Key())] = cacheVal{

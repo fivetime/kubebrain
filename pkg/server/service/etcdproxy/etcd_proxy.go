@@ -32,6 +32,7 @@ import (
 	"google.golang.org/grpc/status"
 	"k8s.io/klog/v2"
 
+	"github.com/kubewharf/kubebrain/pkg/backend/election"
 	"github.com/kubewharf/kubebrain/pkg/server/service/leader"
 	"github.com/kubewharf/kubebrain/pkg/util"
 )
@@ -150,7 +151,7 @@ func (e *etcdProxy) updateClient() {
 	e.lock.RLock()
 	sameLeader := curLeader == e.curLeader
 	e.lock.RUnlock()
-	if sameLeader || curLeader == "empty" || curLeader == "" {
+	if sameLeader || !election.IsLeaderKnown(curLeader) {
 		return
 	}
 
@@ -479,7 +480,7 @@ func (e *etcdProxy) readyLocked() error {
 		return status.Errorf(codes.Unavailable, "no ready right now")
 	}
 	currentLeader := e.election.GetLeaderInfo()
-	if currentLeader == "" || currentLeader == "empty" {
+	if !election.IsLeaderKnown(currentLeader) {
 		return status.Errorf(codes.Unavailable, "leader is not elected")
 	}
 	if e.curLeader != currentLeader {

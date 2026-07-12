@@ -214,13 +214,24 @@ func (r *resourceLock) Identity() string {
 	return r.lockConfig.Identity
 }
 
+// NoLeader is the holder identity Describe() reports when the lock has no
+// holder. Callers deciding "is a leader currently known" should use
+// IsLeaderKnown rather than string-matching this sentinel (and "") by hand.
+const NoLeader = "empty"
+
+// IsLeaderKnown reports whether addr names a real current leader (not the
+// no-holder sentinel and not an empty string).
+func IsLeaderKnown(addr string) bool {
+	return addr != "" && addr != NoLeader
+}
+
 func (r *resourceLock) Describe() string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if len(r.record.HolderIdentity) > 0 {
 		return fmt.Sprintf("%s,%d", r.record.HolderIdentity, r.tso)
 	}
-	return fmt.Sprintf("empty,%d", r.tso)
+	return fmt.Sprintf("%s,%d", NoLeader, r.tso)
 }
 
 func (r *resourceLock) genContext(ctx context.Context) (newCtx context.Context, cancel func()) {

@@ -33,6 +33,7 @@ import (
 	"google.golang.org/grpc/status"
 	"k8s.io/klog/v2"
 
+	"github.com/kubewharf/kubebrain/pkg/backend/election"
 	"github.com/kubewharf/kubebrain/pkg/metrics"
 	"github.com/kubewharf/kubebrain/pkg/server/service/leader"
 )
@@ -350,7 +351,7 @@ func isSendHttpsReqToHttpServerErr(err error) bool {
 
 func (r *revisionSyncer) getRevisionFromLeader(ctx context.Context) (uint64, error) {
 	leaderAddress := r.leaderElection.GetLeaderInfo()
-	if leaderAddress == "" || leaderAddress == "empty" {
+	if !election.IsLeaderKnown(leaderAddress) {
 		return 0, status.Errorf(codes.Unavailable, "leader is not elected")
 	}
 	r.metricCli.EmitGauge("follower.getleader", 1, metrics.Tag("leader", leaderAddress))
