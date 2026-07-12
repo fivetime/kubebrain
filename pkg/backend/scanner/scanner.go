@@ -460,44 +460,21 @@ func (w *worker) run(ctx context.Context, receiver resultReceiver) (int, error) 
 			continue
 		}
 
-		// todo: abstract compaction as a resultReceiver?
-		// meet new raw key, should process old raw key
+		// On a new user key, emit the previous key's newest live version to the
+		// receiver (in compaction scans the receiver is a no-op, but count still
+		// tracks). Compaction GC of superseded versions, tombstones, and
+		// revision-key tombstones is delegated to compactRow, so the read hot
+		// path carries no w.compact branching (the in-code TODO). compactRow
+		// returns true when this row must NOT be tracked as the previous key
+		// (a revision-key tombstone above the compact revision, left in place).
 		if !bytes.Equal(curUserKey, prevUserKey) {
-			// old raw key is not deleted with revision constraint
 			if prevRevision > 0 && !bytes.Equal(prevValue, w.tombstone) {
 				receiver.append(prevUserKey, prevValue, prevRevision)
 				count++
 			}
-		} else {
-			// raw key has multi versions, delete old versions which satisfies compact revision constraint
-			if w.compact && prevRevision > 0 {
-				prevKey := w.EncodeObjectKey(prevUserKey, prevRevision)
-				klog.V(4).InfoS("compact expired object key", "key", prevUserKey, "rev", prevRevision)
-				w.compactKey(prevKey, prevUserKey, prevRevision)
-			}
 		}
-		// delete tombstone data
-		if w.compact && bytes.Equal(value, w.tombstone) {
-			klog.V(4).InfoS("compact object key with tombstone", "key", curUserKey, "rev", curRevision)
-			w.compactKey(key, curUserKey, curRevision)
-		}
-		// Guard on w.compact FIRST so the list hot path never parses the value.
-		if w.compact && curRevision == 0 {
-			// A revision-key tombstone value (see coder.ParseRevision) is a
-			// compaction GC candidate; parsing through coder keeps the tombstone
-			// wire format single-sourced instead of re-decoding len==9 by hand.
-			if objRev, isTomb, perr := coder.ParseRevision(value); perr == nil && isTomb {
-				// Skip GC if the revision parsed from the value is larger than the
-				// requested one, to avoid conflict with a retried uncertain DELETE.
-				if objRev > w.revision {
-					klog.V(4).InfoS("skip gc revision key", "key", string(curUserKey), "revision", objRev,
-						"gcRev", w.revision)
-					continue
-				}
-				klog.V(4).InfoS("compact index key", "key", curUserKey, "rev", curRevision, "val", objRev, "len", len(value))
-				// cas with value to prevent conflict
-				w.compactCurrent(it, curUserKey, curRevision)
-			}
+		if w.compact && w.compactRow(it, key, value, curUserKey, curRevision, prevUserKey, prevRevision) {
+			continue
 		}
 
 		prevRevision = curRevision
@@ -546,6 +523,47 @@ func (w *worker) updateSkippedRawKey(rawKey []byte, rev uint64, err error) {
 	if !errors.Is(err, storage.ErrCASFailed) {
 		w.lastCompactFailedRawKey = rawKey
 	}
+}
+
+// compactRow applies the compaction GC side effects for one scanned row and
+// reports whether run() should skip tracking this row as the previous key.
+// Only called on a compaction scan (w.compact). Extracted from run()'s loop so
+// the read path is a pure key-group iterator with no compaction branching
+// (the in-code TODO). Behaviour is identical to the inline branches it replaces:
+//   - a same-key older version is superseded by this newer one -> GC it;
+//   - a delete tombstone object -> GC it;
+//   - a revision-key tombstone (curRevision==0) at/below the compact revision
+//     -> GC it; above it (a retried uncertain DELETE) -> leave it AND signal the
+//     caller to skip prev-tracking (the original `continue`).
+func (w *worker) compactRow(it storage.Iter, objectKey, value, curUserKey []byte, curRevision uint64, prevUserKey []byte, prevRevision uint64) (skipPrev bool) {
+	// Same user key: this newer version supersedes the previous one; GC the old.
+	if bytes.Equal(curUserKey, prevUserKey) && prevRevision > 0 {
+		prevKey := w.EncodeObjectKey(prevUserKey, prevRevision)
+		klog.V(4).InfoS("compact expired object key", "key", prevUserKey, "rev", prevRevision)
+		w.compactKey(prevKey, prevUserKey, prevRevision)
+	}
+	// A delete tombstone object.
+	if bytes.Equal(value, w.tombstone) {
+		klog.V(4).InfoS("compact object key with tombstone", "key", curUserKey, "rev", curRevision)
+		w.compactKey(objectKey, curUserKey, curRevision)
+	}
+	// A revision-key tombstone value (curRevision==0). Parsing through coder
+	// keeps the tombstone wire format single-sourced instead of re-decoding by hand.
+	if curRevision == 0 {
+		if objRev, isTomb, perr := coder.ParseRevision(value); perr == nil && isTomb {
+			// Skip GC if the parsed revision is larger than the requested one, to
+			// avoid conflict with a retried uncertain DELETE — and do not track it
+			// as the previous key.
+			if objRev > w.revision {
+				klog.V(4).InfoS("skip gc revision key", "key", string(curUserKey), "revision", objRev,
+					"gcRev", w.revision)
+				return true
+			}
+			klog.V(4).InfoS("compact index key", "key", curUserKey, "rev", curRevision, "val", objRev, "len", len(value))
+			w.compactCurrent(it, curUserKey, curRevision)
+		}
+	}
+	return false
 }
 
 func (w *worker) compactCurrent(iter storage.Iter, rawKey []byte, rev uint64) error {
