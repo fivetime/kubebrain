@@ -21,6 +21,7 @@ hack/scale-lab/
     bulk/               bulk key writer for raw keyspace fill
     foload/             failover-under-load: continuous puts, per-3s gap detection (#46)
   docs/methodology.md   the full design guide (architecture, walls, staging)
+  restest/              single-node functional test: full k8s resource-type coverage (badger backend, no TiKV)
 ```
 
 ## Quick start
