@@ -27,7 +27,6 @@ import (
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
 
 	"github.com/kubewharf/kubebrain/pkg/backend/coder"
-	"github.com/kubewharf/kubebrain/pkg/backend/common"
 	"github.com/kubewharf/kubebrain/pkg/backend/countindex"
 	"github.com/kubewharf/kubebrain/pkg/backend/election"
 	"github.com/kubewharf/kubebrain/pkg/backend/retry"
@@ -184,7 +183,6 @@ type backend struct {
 	kv storage.KvStorage
 
 	coder coder.Coder
-
 
 	scanner scanner.Scanner
 
@@ -405,48 +403,6 @@ func NewBackend(kv storage.KvStorage, config Config, metricCli metrics.Metrics) 
 	go b.emitCountIndexMetrics()
 
 	return b
-}
-
-type watchEventSlot struct {
-	sync.Mutex
-	events []*common.WatchEvent
-}
-
-func newWatchEventSlots(capacity int) []*watchEventSlot {
-	slots := make([]*watchEventSlot, capacity)
-	for i := range slots {
-		slots[i] = &watchEventSlot{}
-	}
-	return slots
-}
-
-func (s *watchEventSlot) append(event *common.WatchEvent) {
-	s.Lock()
-	defer s.Unlock()
-	s.events = append(s.events, event)
-}
-
-func (s *watchEventSlot) appendAll(events []*common.WatchEvent) {
-	s.Lock()
-	defer s.Unlock()
-	s.events = append(s.events, events...)
-}
-
-func (s *watchEventSlot) take(revision uint64) []*common.WatchEvent {
-	s.Lock()
-	defer s.Unlock()
-	if len(s.events) == 0 || s.events[0].Revision != revision {
-		return nil
-	}
-	events := s.events
-	s.events = nil
-	return events
-}
-
-func (s *watchEventSlot) reset() {
-	s.Lock()
-	defer s.Unlock()
-	s.events = nil
 }
 
 var ErrRevisionDriftBack = errors.New("revision drift back")
