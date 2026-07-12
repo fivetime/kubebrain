@@ -16,7 +16,6 @@ package etcd
 
 import (
 	"context"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -56,20 +55,10 @@ type RPCServer struct {
 	metricCli metrics.Metrics
 	peers     service.PeerService
 
-	leaseMu       sync.Mutex
-	leaseID       int64
-	leases        map[int64]*leaseState
-	keyLeaseIndex map[string]int64
-	// orphanSweepStop is non-nil while the leader-side orphaned-leased-key sweeper
-	// goroutine is running; closed (and niled) when leadership is lost. Guarded by
-	// leaseMu.
-	orphanSweepStop chan struct{}
-	// leasedKeyCount mirrors len(keyLeaseIndex) for a lock-free fast path in
-	// leaseIDForKey: the read path resolves an attached lease for every returned
-	// KeyValue, and the overwhelmingly common case (a range over keys that hold
-	// no lease) must not take leaseMu per key. Updated under leaseMu, read with
-	// atomics.
-	leasedKeyCount int64
+	// The lease subsystem: its state and logic live in leaseManager (lease.go /
+	// lease_manager.go). Embedded so the lease gRPC handlers and the write-path
+	// bind/unbind/IDForKey helpers are promoted onto RPCServer.
+	*leaseManager
 }
 
 type leaseState struct {
@@ -83,13 +72,13 @@ type leaseState struct {
 // New returns the etcd rpc server
 func New(backend b.Backend, metricCli metrics.Metrics, peers service.PeerService) *RPCServer {
 	server := &RPCServer{
-		backend:       NewBackendShim(backend, metricCli),
-		metricCli:     metricCli,
-		peers:         peers,
-		leaseID:       time.Now().UnixNano(),
-		leases:        make(map[int64]*leaseState),
-		keyLeaseIndex: make(map[string]int64),
+		backend:   NewBackendShim(backend, metricCli),
+		metricCli: metricCli,
+		peers:     peers,
 	}
+	// The lease subsystem borrows its deps from server (backend/peers/metrics),
+	// so it is wired after server exists and reads them live through server.
+	server.leaseManager = newLeaseManager(server, time.Now().UnixNano())
 	// Wire read/watch KeyValues to carry the lease attached to each key (etcd
 	// parity). Safe to set before serving: New runs single-threaded.
 	server.backend.SetLeaseLookup(server.leaseIDForKey)
@@ -132,10 +121,6 @@ func New(backend b.Backend, metricCli metrics.Metrics, peers service.PeerService
 		klog.ErrorS(err, "restore leases failed")
 	}
 	return server
-}
-
-func (s *RPCServer) nextLeaseID() int64 {
-	return atomic.AddInt64(&s.leaseID, 1)
 }
 
 // Register register etcd grpc service

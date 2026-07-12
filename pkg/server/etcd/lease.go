@@ -54,11 +54,11 @@ type leaseRecord struct {
 	Keys             []string `json:"keys,omitempty"`
 }
 
-func (s *RPCServer) LeaseGrant(ctx context.Context, req *etcdserverpb.LeaseGrantRequest) (*etcdserverpb.LeaseGrantResponse, error) {
-	s.metricCli.EmitCounter("lease.grant", 1)
-	if err := s.requireLeaseLeader("lease grant"); err != nil {
-		if s.peers.EtcdProxyEnabled() {
-			return s.peers.LeaseGrant(ctx, req)
+func (m *leaseManager) LeaseGrant(ctx context.Context, req *etcdserverpb.LeaseGrantRequest) (*etcdserverpb.LeaseGrantResponse, error) {
+	m.srv.metricCli.EmitCounter("lease.grant", 1)
+	if err := m.requireLeaseLeader("lease grant"); err != nil {
+		if m.srv.peers.EtcdProxyEnabled() {
+			return m.srv.peers.LeaseGrant(ctx, req)
 		}
 		return nil, err
 	}
@@ -71,12 +71,12 @@ func (s *RPCServer) LeaseGrant(ctx context.Context, req *etcdserverpb.LeaseGrant
 
 	id := req.ID
 	if id == 0 {
-		id = s.nextLeaseID()
+		id = m.nextLeaseID()
 	}
 
-	s.leaseMu.Lock()
-	if _, ok := s.leases[id]; ok {
-		s.leaseMu.Unlock()
+	m.leaseMu.Lock()
+	if _, ok := m.leases[id]; ok {
+		m.leaseMu.Unlock()
 		return nil, status.Error(codes.FailedPrecondition, "etcdserver: lease already exists")
 	}
 
@@ -86,12 +86,12 @@ func (s *RPCServer) LeaseGrant(ctx context.Context, req *etcdserverpb.LeaseGrant
 		deadline: time.Now().Add(time.Duration(req.TTL) * time.Second),
 		keys:     make(map[string]struct{}),
 	}
-	s.scheduleLeaseLocked(st)
-	s.leases[id] = st
-	s.leaseMu.Unlock()
+	m.scheduleLeaseLocked(st)
+	m.leases[id] = st
+	m.leaseMu.Unlock()
 
-	if err := s.persistLeaseMeta(ctx, st.id, st.ttl); err != nil {
-		_ = s.revokeLease(context.Background(), id)
+	if err := m.persistLeaseMeta(ctx, st.id, st.ttl); err != nil {
+		_ = m.revokeLease(context.Background(), id)
 		return nil, err
 	}
 
@@ -102,15 +102,15 @@ func (s *RPCServer) LeaseGrant(ctx context.Context, req *etcdserverpb.LeaseGrant
 	}, nil
 }
 
-func (s *RPCServer) LeaseRevoke(ctx context.Context, req *etcdserverpb.LeaseRevokeRequest) (*etcdserverpb.LeaseRevokeResponse, error) {
-	s.metricCli.EmitCounter("lease.revoke", 1)
-	if err := s.requireLeaseLeader("lease revoke"); err != nil {
-		if s.peers.EtcdProxyEnabled() {
-			return s.peers.LeaseRevoke(ctx, req)
+func (m *leaseManager) LeaseRevoke(ctx context.Context, req *etcdserverpb.LeaseRevokeRequest) (*etcdserverpb.LeaseRevokeResponse, error) {
+	m.srv.metricCli.EmitCounter("lease.revoke", 1)
+	if err := m.requireLeaseLeader("lease revoke"); err != nil {
+		if m.srv.peers.EtcdProxyEnabled() {
+			return m.srv.peers.LeaseRevoke(ctx, req)
 		}
 		return nil, err
 	}
-	if err := s.revokeLease(ctx, req.ID); err != nil {
+	if err := m.revokeLease(ctx, req.ID); err != nil {
 		return nil, err
 	}
 	return &etcdserverpb.LeaseRevokeResponse{
@@ -118,8 +118,8 @@ func (s *RPCServer) LeaseRevoke(ctx context.Context, req *etcdserverpb.LeaseRevo
 	}, nil
 }
 
-func (s *RPCServer) LeaseKeepAlive(stream etcdserverpb.Lease_LeaseKeepAliveServer) error {
-	s.metricCli.EmitCounter("lease.keepalive", 1)
+func (m *leaseManager) LeaseKeepAlive(stream etcdserverpb.Lease_LeaseKeepAliveServer) error {
+	m.srv.metricCli.EmitCounter("lease.keepalive", 1)
 	for {
 		req, err := stream.Recv()
 		if err == io.EOF {
@@ -128,11 +128,11 @@ func (s *RPCServer) LeaseKeepAlive(stream etcdserverpb.Lease_LeaseKeepAliveServe
 		if err != nil {
 			return err
 		}
-		if err := s.requireLeaseLeader("lease keepalive"); err != nil {
-			if !s.peers.EtcdProxyEnabled() {
+		if err := m.requireLeaseLeader("lease keepalive"); err != nil {
+			if !m.srv.peers.EtcdProxyEnabled() {
 				return err
 			}
-			resp, err := s.peers.LeaseKeepAlive(stream.Context(), req)
+			resp, err := m.srv.peers.LeaseKeepAlive(stream.Context(), req)
 			if err != nil {
 				return err
 			}
@@ -142,7 +142,7 @@ func (s *RPCServer) LeaseKeepAlive(stream etcdserverpb.Lease_LeaseKeepAliveServe
 			continue
 		}
 
-		ttl, err := s.refreshLease(req.ID)
+		ttl, err := m.refreshLease(req.ID)
 		if err != nil {
 			ttl = 0
 		}
@@ -156,22 +156,22 @@ func (s *RPCServer) LeaseKeepAlive(stream etcdserverpb.Lease_LeaseKeepAliveServe
 	}
 }
 
-func (s *RPCServer) LeaseTimeToLive(ctx context.Context, req *etcdserverpb.LeaseTimeToLiveRequest) (*etcdserverpb.LeaseTimeToLiveResponse, error) {
-	s.metricCli.EmitCounter("lease.ttl", 1)
+func (m *leaseManager) LeaseTimeToLive(ctx context.Context, req *etcdserverpb.LeaseTimeToLiveRequest) (*etcdserverpb.LeaseTimeToLiveResponse, error) {
+	m.srv.metricCli.EmitCounter("lease.ttl", 1)
 	// A follower's lease state is a stale snapshot: the leader advances deadlines
 	// via keepalive and grants/revokes leases the follower never observes. Answer
 	// only as the leader; otherwise proxy, or fail like the write lease RPCs so the
 	// client retries against the leader instead of reading stale local state (#56).
-	if err := s.requireLeaseLeader("lease time-to-live"); err != nil {
-		if s.peers.EtcdProxyEnabled() {
-			return s.peers.LeaseTimeToLive(ctx, req)
+	if err := m.requireLeaseLeader("lease time-to-live"); err != nil {
+		if m.srv.peers.EtcdProxyEnabled() {
+			return m.srv.peers.LeaseTimeToLive(ctx, req)
 		}
 		return nil, err
 	}
 
-	s.leaseMu.Lock()
-	defer s.leaseMu.Unlock()
-	st, ok := s.leases[req.ID]
+	m.leaseMu.Lock()
+	defer m.leaseMu.Unlock()
+	st, ok := m.leases[req.ID]
 	if !ok {
 		return &etcdserverpb.LeaseTimeToLiveResponse{
 			Header: &etcdserverpb.ResponseHeader{},
@@ -192,36 +192,36 @@ func (s *RPCServer) LeaseTimeToLive(ctx context.Context, req *etcdserverpb.Lease
 	return resp, nil
 }
 
-func (s *RPCServer) LeaseLeases(ctx context.Context, req *etcdserverpb.LeaseLeasesRequest) (*etcdserverpb.LeaseLeasesResponse, error) {
-	s.metricCli.EmitCounter("lease.leases", 1)
+func (m *leaseManager) LeaseLeases(ctx context.Context, req *etcdserverpb.LeaseLeasesRequest) (*etcdserverpb.LeaseLeasesResponse, error) {
+	m.srv.metricCli.EmitCounter("lease.leases", 1)
 	// See LeaseTimeToLive: a follower must not enumerate leases from its stale
 	// local snapshot; proxy to the leader or fail (#56).
-	if err := s.requireLeaseLeader("lease leases"); err != nil {
-		if s.peers.EtcdProxyEnabled() {
-			return s.peers.LeaseLeases(ctx, req)
+	if err := m.requireLeaseLeader("lease leases"); err != nil {
+		if m.srv.peers.EtcdProxyEnabled() {
+			return m.srv.peers.LeaseLeases(ctx, req)
 		}
 		return nil, err
 	}
 
-	s.leaseMu.Lock()
-	defer s.leaseMu.Unlock()
+	m.leaseMu.Lock()
+	defer m.leaseMu.Unlock()
 	resp := &etcdserverpb.LeaseLeasesResponse{
 		Header: &etcdserverpb.ResponseHeader{},
-		Leases: make([]*etcdserverpb.LeaseStatus, 0, len(s.leases)),
+		Leases: make([]*etcdserverpb.LeaseStatus, 0, len(m.leases)),
 	}
-	for id := range s.leases {
+	for id := range m.leases {
 		resp.Leases = append(resp.Leases, &etcdserverpb.LeaseStatus{ID: id})
 	}
 	return resp, nil
 }
 
-func (s *RPCServer) ensureLeaseExists(id int64) error {
+func (m *leaseManager) ensureLeaseExists(id int64) error {
 	if id == 0 {
 		return nil
 	}
-	s.leaseMu.Lock()
-	defer s.leaseMu.Unlock()
-	if _, ok := s.leases[id]; !ok {
+	m.leaseMu.Lock()
+	defer m.leaseMu.Unlock()
+	if _, ok := m.leases[id]; !ok {
 		return leaseNotFound(id)
 	}
 	return nil
@@ -241,7 +241,7 @@ func (s *RPCServer) ensureLeaseExists(id int64) error {
 // here; the rarer generic-txn paths keep best-effort binding (documented at their
 // call sites), and the expiry-time guard in deleteLeasedKey neutralizes any stale
 // record either way.
-func (s *RPCServer) putLeasedAtomic(ctx context.Context, put *etcdserverpb.PutRequest, prevLease int64) (*etcdserverpb.PutResponse, error) {
+func (m *leaseManager) putLeasedAtomic(ctx context.Context, put *etcdserverpb.PutRequest, prevLease int64) (*etcdserverpb.PutResponse, error) {
 	userKey := string(put.Key)
 	ops := []backend.TxnWriteOp{{Key: put.Key, Value: put.Value, Lease: put.Lease}}
 	if put.Lease != 0 {
@@ -254,115 +254,115 @@ func (s *RPCServer) putLeasedAtomic(ctx context.Context, put *etcdserverpb.PutRe
 		// delete of an absent attachment record is a no-op.
 		ops = append(ops, backend.TxnWriteOp{Delete: true, Key: leaseAttachKey(userKey)})
 	}
-	_, rev, _, err := s.backend.TxnApply(ctx, ops, nil, make([]bool, len(ops)))
+	_, rev, _, err := m.srv.backend.TxnApply(ctx, ops, nil, make([]bool, len(ops)))
 	if err != nil {
 		return nil, err
 	}
 	// The durable attachment committed atomically with the value above; update
 	// only the in-memory index here (no separate durable write that could fail).
-	s.bindKeyIndexOnly(put.Lease, userKey)
+	m.bindKeyIndexOnly(put.Lease, userKey)
 	return &etcdserverpb.PutResponse{Header: txnHeader(int64(rev))}, nil
 }
 
 // bindKeyIndexOnly updates the in-memory key->lease index (and per-lease key set)
 // without writing the durable attachment record — used after putLeasedAtomic,
 // which already persisted the attachment atomically with the value.
-func (s *RPCServer) bindKeyIndexOnly(id int64, key string) {
-	s.leaseMu.Lock()
-	s.bindKeyToLeaseLocked(id, key)
-	s.leaseMu.Unlock()
+func (m *leaseManager) bindKeyIndexOnly(id int64, key string) {
+	m.leaseMu.Lock()
+	m.bindKeyToLeaseLocked(id, key)
+	m.leaseMu.Unlock()
 }
 
-func (s *RPCServer) bindKeyToLease(id int64, key string) {
-	s.leaseMu.Lock()
-	_, hadPrevious := s.keyLeaseIndex[key]
-	s.bindKeyToLeaseLocked(id, key)
+func (m *leaseManager) bindKeyToLease(id int64, key string) {
+	m.leaseMu.Lock()
+	_, hadPrevious := m.keyLeaseIndex[key]
+	m.bindKeyToLeaseLocked(id, key)
 	// Read back the resulting binding under the lock to decide the durable action.
-	boundTo, bound := s.keyLeaseIndex[key]
-	s.leaseMu.Unlock()
+	boundTo, bound := m.keyLeaseIndex[key]
+	m.leaseMu.Unlock()
 	// Persist only THIS key's attachment (O(1)), never the whole key-list (#17).
 	// A rebind (previous lease -> id) needs no write to the previous lease: the
 	// attachment record is keyed by the user key, so the new id overwrites it.
 	switch {
 	case bound && boundTo == id:
-		_ = s.attachKeyToStorage(context.Background(), id, key)
+		_ = m.attachKeyToStorage(context.Background(), id, key)
 	case hadPrevious:
 		// key had an attachment but is now unbound (id==0 or the lease was absent):
 		// clear the stale attachment record.
-		_ = s.detachKeyFromStorage(context.Background(), key)
+		_ = m.detachKeyFromStorage(context.Background(), key)
 	}
 	// else: a plain Put of a never-leased key — no lease bookkeeping, no write.
 }
 
-func (s *RPCServer) bindKeyToLeaseLocked(id int64, key string) []*leaseState {
+func (m *leaseManager) bindKeyToLeaseLocked(id int64, key string) []*leaseState {
 	// caller holds leaseMu; keep the lock-free lease count in sync (multiple
 	// return paths, so update on exit). Closure so len() is read at return, not
 	// captured at defer registration.
-	defer func() { atomic.StoreInt64(&s.leasedKeyCount, int64(len(s.keyLeaseIndex))) }()
+	defer func() { atomic.StoreInt64(&m.leasedKeyCount, int64(len(m.keyLeaseIndex))) }()
 	var changed []*leaseState
-	if previousID, ok := s.keyLeaseIndex[key]; ok {
-		if previous, exists := s.leases[previousID]; exists {
+	if previousID, ok := m.keyLeaseIndex[key]; ok {
+		if previous, exists := m.leases[previousID]; exists {
 			delete(previous.keys, key)
 			changed = append(changed, previous)
 		}
-		delete(s.keyLeaseIndex, key)
+		delete(m.keyLeaseIndex, key)
 	}
 	if id == 0 {
 		return changed
 	}
-	st, ok := s.leases[id]
+	st, ok := m.leases[id]
 	if !ok {
 		return changed
 	}
 	st.keys[key] = struct{}{}
-	s.keyLeaseIndex[key] = id
+	m.keyLeaseIndex[key] = id
 	changed = append(changed, st)
 	return changed
 }
 
-func (s *RPCServer) unbindKeyFromLease(key string) {
-	s.leaseMu.Lock()
-	_, wasBound := s.keyLeaseIndex[key]
-	if id, ok := s.keyLeaseIndex[key]; ok {
-		if st, exists := s.leases[id]; exists {
+func (m *leaseManager) unbindKeyFromLease(key string) {
+	m.leaseMu.Lock()
+	_, wasBound := m.keyLeaseIndex[key]
+	if id, ok := m.keyLeaseIndex[key]; ok {
+		if st, exists := m.leases[id]; exists {
 			delete(st.keys, key)
 		}
-		delete(s.keyLeaseIndex, key)
+		delete(m.keyLeaseIndex, key)
 	}
-	atomic.StoreInt64(&s.leasedKeyCount, int64(len(s.keyLeaseIndex)))
-	s.leaseMu.Unlock()
+	atomic.StoreInt64(&m.leasedKeyCount, int64(len(m.keyLeaseIndex)))
+	m.leaseMu.Unlock()
 	if wasBound {
 		// Drop just this key's attachment record (O(1)), not the whole list (#17).
-		_ = s.detachKeyFromStorage(context.Background(), key)
+		_ = m.detachKeyFromStorage(context.Background(), key)
 	}
 }
 
-func (s *RPCServer) leaseIDForKey(key string) int64 {
+func (m *leaseManager) leaseIDForKey(key string) int64 {
 	// Fast path: when no key holds a lease, skip the mutex entirely. This is the
 	// common case for reads (most ranges cover leaseless keys) and keeps the read
 	// hot path from serializing on leaseMu once per returned KeyValue. A key that
 	// truly has a committed lease is always counted here, so this never misses one;
 	// it only races a concurrent bind, for which returning 0 is acceptable (that
 	// write is not ordered before this read).
-	if atomic.LoadInt64(&s.leasedKeyCount) == 0 {
+	if atomic.LoadInt64(&m.leasedKeyCount) == 0 {
 		return 0
 	}
-	s.leaseMu.Lock()
-	defer s.leaseMu.Unlock()
-	return s.keyLeaseIndex[key]
+	m.leaseMu.Lock()
+	defer m.leaseMu.Unlock()
+	return m.keyLeaseIndex[key]
 }
 
-func (s *RPCServer) refreshLease(id int64) (int64, error) {
-	s.leaseMu.Lock()
-	st, ok := s.leases[id]
+func (m *leaseManager) refreshLease(id int64) (int64, error) {
+	m.leaseMu.Lock()
+	st, ok := m.leases[id]
 	if !ok {
-		s.leaseMu.Unlock()
+		m.leaseMu.Unlock()
 		return 0, leaseNotFound(id)
 	}
 	st.deadline = time.Now().Add(time.Duration(st.ttl) * time.Second)
-	s.scheduleLeaseLocked(st)
+	m.scheduleLeaseLocked(st)
 	ttl := st.ttl
-	s.leaseMu.Unlock()
+	m.leaseMu.Unlock()
 	// Mirror etcd lessor.Renew -> l.refresh(0): a keepalive only bumps the
 	// in-memory deadline and reschedules the expiry timer. It must NOT persist,
 	// otherwise every keepalive tick mints a fresh MVCC version, a watch event,
@@ -380,19 +380,19 @@ func (s *RPCServer) refreshLease(id int64) (int64, error) {
 // revision; if the key was reassigned to another lease or unbound, it is left
 // untouched. A genuine storage error is returned so the caller keeps the lease and
 // retries rather than orphaning the surviving keys.
-func (s *RPCServer) deleteLeasedKey(ctx context.Context, id int64, key string) error {
+func (m *leaseManager) deleteLeasedKey(ctx context.Context, id int64, key string) error {
 	for attempt := 0; attempt < 4; attempt++ {
 		// Is the key STILL bound to this lease? A concurrent Put that reassigned it
 		// to another lease (or made it leaseless) between the revoke/expire snapshot
 		// and now means it is no longer ours to delete. keyLeaseIndex is the
 		// authoritative current binding.
-		s.leaseMu.Lock()
-		boundTo, bound := s.keyLeaseIndex[key]
-		s.leaseMu.Unlock()
+		m.leaseMu.Lock()
+		boundTo, bound := m.keyLeaseIndex[key]
+		m.leaseMu.Unlock()
 		if !bound || boundTo != id {
 			return nil // reassigned or unbound -> not ours to delete
 		}
-		resp, err := s.backend.Get(ctx, &etcdserverpb.RangeRequest{Key: []byte(key)})
+		resp, err := m.srv.backend.Get(ctx, &etcdserverpb.RangeRequest{Key: []byte(key)})
 		if err != nil {
 			return err
 		}
@@ -413,7 +413,7 @@ func (s *RPCServer) deleteLeasedKey(ctx context.Context, id int64, key string) e
 		// between this read and the delete (a keepalive re-Put, or a reassignment
 		// whose value write landed but whose index update has not yet) does not get
 		// its new value clobbered; a failed compare loops to re-check the binding.
-		dresp, err := s.backend.Delete(ctx, []byte(key), resp.Kvs[0].ModRevision, false)
+		dresp, err := m.srv.backend.Delete(ctx, []byte(key), resp.Kvs[0].ModRevision, false)
 		if err != nil {
 			return err
 		}
@@ -425,32 +425,32 @@ func (s *RPCServer) deleteLeasedKey(ctx context.Context, id int64, key string) e
 	return nil // extremely rare: a keepalive kept racing; leave it for the next cycle
 }
 
-func (s *RPCServer) revokeLease(ctx context.Context, id int64) error {
+func (m *leaseManager) revokeLease(ctx context.Context, id int64) error {
 	// Delete the attached keys BEFORE removing the lease state/record (#36): if a
 	// key delete fails we must keep the lease so the keys are not orphaned (no
 	// lease left to ever expire them). Only once every bound key is gone is it
 	// safe to drop the lease record and its attachment records.
-	keys, ok := s.leaseKeysSnapshot(id)
+	keys, ok := m.leaseKeysSnapshot(id)
 	if !ok {
 		return leaseNotFound(id)
 	}
 	for _, key := range keys {
-		if err := s.deleteLeasedKey(ctx, id, key); err != nil {
+		if err := m.deleteLeasedKey(ctx, id, key); err != nil {
 			return err
 		}
 	}
-	_, err := s.removeLease(id)
+	_, err := m.removeLease(id)
 	return err
 }
 
-func (s *RPCServer) expireLease(id int64) {
-	if !s.peers.IsLeader() {
-		s.retryLeaseExpiry(id)
+func (m *leaseManager) expireLease(id int64) {
+	if !m.srv.peers.IsLeader() {
+		m.retryLeaseExpiry(id)
 		return
 	}
 
 	ctx := context.Background()
-	keys, ok := s.leaseKeysSnapshot(id)
+	keys, ok := m.leaseKeysSnapshot(id)
 	if !ok {
 		return // already removed
 	}
@@ -458,24 +458,24 @@ func (s *RPCServer) expireLease(id int64) {
 	// partial deletion is safe. On a real storage failure keep the lease and retry
 	// rather than swallowing the error and orphaning the surviving keys (#36).
 	for _, key := range keys {
-		if err := s.deleteLeasedKey(ctx, id, key); err != nil {
-			s.metricCli.EmitCounter("lease.expire.delete.err", 1)
+		if err := m.deleteLeasedKey(ctx, id, key); err != nil {
+			m.srv.metricCli.EmitCounter("lease.expire.delete.err", 1)
 			klog.ErrorS(err, "lease expiry: delete of bound key failed; keeping lease for retry", "lease", id, "key", key)
-			s.retryLeaseExpiry(id)
+			m.retryLeaseExpiry(id)
 			return
 		}
 	}
 	// Every bound key is gone; now drop the lease record and attachment records.
-	_, _ = s.removeLease(id)
+	_, _ = m.removeLease(id)
 }
 
 // leaseKeysSnapshot returns a copy of the keys currently attached to lease id
 // without removing the lease, so callers can delete the keys first and only then
 // tear the lease down (#36).
-func (s *RPCServer) leaseKeysSnapshot(id int64) ([]string, bool) {
-	s.leaseMu.Lock()
-	defer s.leaseMu.Unlock()
-	st, ok := s.leases[id]
+func (m *leaseManager) leaseKeysSnapshot(id int64) ([]string, bool) {
+	m.leaseMu.Lock()
+	defer m.leaseMu.Unlock()
+	st, ok := m.leases[id]
 	if !ok {
 		return nil, false
 	}
@@ -486,21 +486,21 @@ func (s *RPCServer) leaseKeysSnapshot(id int64) ([]string, bool) {
 	return keys, true
 }
 
-func (s *RPCServer) retryLeaseExpiry(id int64) {
-	s.leaseMu.Lock()
-	defer s.leaseMu.Unlock()
-	st, ok := s.leases[id]
+func (m *leaseManager) retryLeaseExpiry(id int64) {
+	m.leaseMu.Lock()
+	defer m.leaseMu.Unlock()
+	st, ok := m.leases[id]
 	if !ok || st.timer == nil {
 		return
 	}
 	st.timer.Reset(leaseExpiryRetryInterval)
 }
 
-func (s *RPCServer) removeLease(id int64) ([]string, error) {
-	s.leaseMu.Lock()
-	st, ok := s.leases[id]
+func (m *leaseManager) removeLease(id int64) ([]string, error) {
+	m.leaseMu.Lock()
+	st, ok := m.leases[id]
 	if !ok {
-		s.leaseMu.Unlock()
+		m.leaseMu.Unlock()
 		return nil, leaseNotFound(id)
 	}
 	if st.timer != nil {
@@ -509,32 +509,32 @@ func (s *RPCServer) removeLease(id int64) ([]string, error) {
 	keys := make([]string, 0, len(st.keys))
 	for key := range st.keys {
 		keys = append(keys, key)
-		delete(s.keyLeaseIndex, key)
+		delete(m.keyLeaseIndex, key)
 	}
-	delete(s.leases, id)
-	atomic.StoreInt64(&s.leasedKeyCount, int64(len(s.keyLeaseIndex)))
-	s.leaseMu.Unlock()
+	delete(m.leases, id)
+	atomic.StoreInt64(&m.leasedKeyCount, int64(len(m.keyLeaseIndex)))
+	m.leaseMu.Unlock()
 
 	ctx := context.Background()
-	err := s.deleteLeaseState(ctx, id)
+	err := m.deleteLeaseState(ctx, id)
 	// Remove each key's attachment record so the leasekeys/ keyspace does not leak
 	// live records pointing at a now-deleted lease (recovery skips orphans, but they
 	// would never be reclaimed otherwise). Same O(keys) order as the object deletes
 	// the caller performs on expiry.
 	for _, key := range keys {
-		_ = s.detachKeyFromStorage(ctx, key)
+		_ = m.detachKeyFromStorage(ctx, key)
 	}
 	return keys, err
 }
 
-func (s *RPCServer) keysInDeleteRange(ctx context.Context, r *etcdserverpb.DeleteRangeRequest) ([]string, error) {
+func (m *leaseManager) keysInDeleteRange(ctx context.Context, r *etcdserverpb.DeleteRangeRequest) ([]string, error) {
 	if len(r.RangeEnd) == 0 {
 		return []string{string(r.Key)}, nil
 	}
 	if isEmptyNonFromKeyRange(r.Key, r.RangeEnd) {
 		return nil, nil
 	}
-	resp, err := s.backend.List(ctx, &etcdserverpb.RangeRequest{
+	resp, err := m.srv.backend.List(ctx, &etcdserverpb.RangeRequest{
 		Key:      r.Key,
 		RangeEnd: r.RangeEnd,
 	})
@@ -571,22 +571,22 @@ func leaseNotFound(id int64) error {
 	return status.Error(codes.NotFound, "etcdserver: requested lease not found")
 }
 
-func (s *RPCServer) requireLeaseLeader(op string) error {
-	if s.peers.IsLeader() {
+func (m *leaseManager) requireLeaseLeader(op string) error {
+	if m.srv.peers.IsLeader() {
 		return nil
 	}
-	s.metricCli.EmitCounter("lease.follower", 1)
-	return status.Errorf(codes.Unavailable, "%s error addr is %s leader %s", op, s.backend.GetResourceLock().Identity(), s.peers.GetLeaderInfo())
+	m.srv.metricCli.EmitCounter("lease.follower", 1)
+	return status.Errorf(codes.Unavailable, "%s error addr is %s leader %s", op, m.srv.backend.GetResourceLock().Identity(), m.srv.peers.GetLeaderInfo())
 }
 
-func (s *RPCServer) restoreLeases(ctx context.Context) error {
-	records, attachments, err := s.loadLeaseRecords(ctx)
+func (m *leaseManager) restoreLeases(ctx context.Context) error {
+	records, attachments, err := m.loadLeaseRecords(ctx)
 	if err != nil {
 		return err
 	}
 	// Load into memory only; migration writes happen on leadership (ReloadLeases),
 	// since restore runs in New() before this node has necessarily won election.
-	s.applyLeaseRecords(records, attachments)
+	m.applyLeaseRecords(records, attachments)
 	return nil
 }
 
@@ -596,26 +596,26 @@ func (s *RPCServer) restoreLeases(ctx context.Context) error {
 // this node never saw). Without a reload the new leader would expire
 // still-alive leases — deleting their bound keys (e.g. masterleases) — and
 // orphan leases granted after this node started.
-func (s *RPCServer) ReloadLeases(ctx context.Context) error {
-	records, attachments, err := s.loadLeaseRecords(ctx)
+func (m *leaseManager) ReloadLeases(ctx context.Context) error {
+	records, attachments, err := m.loadLeaseRecords(ctx)
 	if err != nil {
 		return err
 	}
-	legacy := s.applyLeaseRecords(records, attachments)
+	legacy := m.applyLeaseRecords(records, attachments)
 	// This node is now the leader; convert any pre-#17 monolithic records to the
 	// per-key attachment format so subsequent detaches are durable and the
 	// monolithic key-list is not carried forward. One-time, idempotent.
-	s.migrateLegacyLeases(ctx, legacy)
+	m.migrateLegacyLeases(ctx, legacy)
 	// Start the safety-net sweeper that reclaims leased keys whose expiry timer was
 	// never (re)armed because their attachment outlived its lease meta record.
-	s.startOrphanSweeper()
+	m.startOrphanSweeper()
 	return nil
 }
 
 // loadLeaseRecords reads the per-lease meta records and the per-key attachment
 // records from storage at the latest revision.
-func (s *RPCServer) loadLeaseRecords(ctx context.Context) ([]leaseRecord, map[string]int64, error) {
-	resp, err := s.backend.List(ctx, &etcdserverpb.RangeRequest{
+func (m *leaseManager) loadLeaseRecords(ctx context.Context) ([]leaseRecord, map[string]int64, error) {
+	resp, err := m.srv.backend.List(ctx, &etcdserverpb.RangeRequest{
 		Key:      leaseStoragePrefix,
 		RangeEnd: prefixEnd(leaseStoragePrefix),
 		Revision: latestRestoreRevision,
@@ -632,7 +632,7 @@ func (s *RPCServer) loadLeaseRecords(ctx context.Context) ([]leaseRecord, map[st
 		records = append(records, record)
 	}
 
-	aresp, err := s.backend.List(ctx, &etcdserverpb.RangeRequest{
+	aresp, err := m.srv.backend.List(ctx, &etcdserverpb.RangeRequest{
 		Key:      leaseAttachPrefix,
 		RangeEnd: prefixEnd(leaseAttachPrefix),
 		Revision: latestRestoreRevision,
@@ -655,10 +655,10 @@ func (s *RPCServer) loadLeaseRecords(ctx context.Context) ([]leaseRecord, map[st
 // migrateLegacyLeases rewrites pre-#17 leases (meta records that still carried an
 // inline key list) into the new format: one attachment record per currently-bound
 // key plus a keyless meta record. Idempotent; only runs on the leader.
-func (s *RPCServer) migrateLegacyLeases(ctx context.Context, ids []int64) {
+func (m *leaseManager) migrateLegacyLeases(ctx context.Context, ids []int64) {
 	for _, id := range ids {
-		s.leaseMu.Lock()
-		st, ok := s.leases[id]
+		m.leaseMu.Lock()
+		st, ok := m.leases[id]
 		var keys []string
 		var ttl int64
 		if ok {
@@ -668,15 +668,15 @@ func (s *RPCServer) migrateLegacyLeases(ctx context.Context, ids []int64) {
 				keys = append(keys, k)
 			}
 		}
-		s.leaseMu.Unlock()
+		m.leaseMu.Unlock()
 		if !ok {
 			continue
 		}
 		for _, k := range keys {
-			_ = s.attachKeyToStorage(ctx, id, k)
+			_ = m.attachKeyToStorage(ctx, id, k)
 		}
 		// Rewrite the meta without the inline key list.
-		_ = s.persistLeaseMeta(ctx, id, ttl)
+		_ = m.persistLeaseMeta(ctx, id, ttl)
 	}
 }
 
@@ -687,17 +687,17 @@ func (s *RPCServer) migrateLegacyLeases(ctx context.Context, ids []int64) {
 // inline key list (a pre-#17 record) is included in the returned slice so the
 // leader can migrate it to the new per-key format. Safe on both first restore
 // (empty maps) and leadership reload.
-func (s *RPCServer) applyLeaseRecords(records []leaseRecord, attachments map[string]int64) (legacy []int64) {
+func (m *leaseManager) applyLeaseRecords(records []leaseRecord, attachments map[string]int64) (legacy []int64) {
 	now := time.Now()
-	s.leaseMu.Lock()
-	defer s.leaseMu.Unlock()
-	for _, st := range s.leases {
+	m.leaseMu.Lock()
+	defer m.leaseMu.Unlock()
+	for _, st := range m.leases {
 		if st.timer != nil {
 			st.timer.Stop()
 		}
 	}
-	s.leases = make(map[int64]*leaseState, len(records))
-	s.keyLeaseIndex = make(map[string]int64)
+	m.leases = make(map[int64]*leaseState, len(records))
+	m.keyLeaseIndex = make(map[string]int64)
 	for _, record := range records {
 		st := &leaseState{
 			id:  record.ID,
@@ -715,34 +715,34 @@ func (s *RPCServer) applyLeaseRecords(records []leaseRecord, attachments map[str
 		// Legacy (pre-#17) monolithic key list, if present. New records carry none.
 		for _, key := range record.Keys {
 			st.keys[key] = struct{}{}
-			s.keyLeaseIndex[key] = st.id
+			m.keyLeaseIndex[key] = st.id
 		}
 		if len(record.Keys) > 0 {
 			legacy = append(legacy, record.ID)
 		}
-		if st.id > s.leaseID {
-			s.leaseID = st.id
+		if st.id > m.leaseID {
+			m.leaseID = st.id
 		}
-		s.leases[st.id] = st
+		m.leases[st.id] = st
 	}
 	// Per-key attachment records (#17). Attachments for a lease that no longer has
 	// a meta record (revoked, tombstone not yet compacted) are skipped as orphans.
 	for key, id := range attachments {
-		st, ok := s.leases[id]
+		st, ok := m.leases[id]
 		if !ok {
 			continue
 		}
 		st.keys[key] = struct{}{}
-		s.keyLeaseIndex[key] = id
+		m.keyLeaseIndex[key] = id
 	}
 	// Schedule timers once all keys are attached.
-	for _, st := range s.leases {
-		s.scheduleLeaseLocked(st)
+	for _, st := range m.leases {
+		m.scheduleLeaseLocked(st)
 		if !st.deadline.After(now) {
 			st.timer.Reset(0)
 		}
 	}
-	atomic.StoreInt64(&s.leasedKeyCount, int64(len(s.keyLeaseIndex)))
+	atomic.StoreInt64(&m.leasedKeyCount, int64(len(m.keyLeaseIndex)))
 	return legacy
 }
 
@@ -751,24 +751,24 @@ func (s *RPCServer) applyLeaseRecords(records []leaseRecord, attachments map[str
 // keeps firing expiry timers (churn, and it would act on a stale snapshot) and
 // answers lease reads from state the new leader has since advanced. Leadership
 // re-acquisition rebuilds the state from storage via ReloadLeases (#57).
-func (s *RPCServer) StopLeases() {
-	s.stopLeases()
+func (m *leaseManager) StopLeases() {
+	m.stopLeases()
 }
 
-func (s *RPCServer) stopLeases() {
+func (m *leaseManager) stopLeases() {
 	// Stop the sweeper first (it acquires leaseMu itself, so must run outside the
 	// lock below).
-	s.stopOrphanSweeper()
-	s.leaseMu.Lock()
-	defer s.leaseMu.Unlock()
-	for _, st := range s.leases {
+	m.stopOrphanSweeper()
+	m.leaseMu.Lock()
+	defer m.leaseMu.Unlock()
+	for _, st := range m.leases {
 		if st.timer != nil {
 			st.timer.Stop()
 		}
 	}
-	s.leases = make(map[int64]*leaseState)
-	s.keyLeaseIndex = make(map[string]int64)
-	atomic.StoreInt64(&s.leasedKeyCount, 0)
+	m.leases = make(map[int64]*leaseState)
+	m.keyLeaseIndex = make(map[string]int64)
+	atomic.StoreInt64(&m.leasedKeyCount, 0)
 }
 
 // orphanLeaseSweepInterval is how often the leader reconciles durable lease
@@ -779,29 +779,29 @@ const orphanLeaseSweepInterval = 10 * time.Minute
 // startOrphanSweeper launches the leader-side orphaned-leased-key sweeper if it is
 // not already running. Called on leadership acquisition (after ReloadLeases has
 // rebuilt lease state).
-func (s *RPCServer) startOrphanSweeper() {
-	s.leaseMu.Lock()
-	if s.orphanSweepStop != nil {
-		s.leaseMu.Unlock()
+func (m *leaseManager) startOrphanSweeper() {
+	m.leaseMu.Lock()
+	if m.orphanSweepStop != nil {
+		m.leaseMu.Unlock()
 		return
 	}
 	stop := make(chan struct{})
-	s.orphanSweepStop = stop
-	s.leaseMu.Unlock()
-	go s.runOrphanSweeper(stop)
+	m.orphanSweepStop = stop
+	m.leaseMu.Unlock()
+	go m.runOrphanSweeper(stop)
 }
 
 // stopOrphanSweeper signals the sweeper goroutine to exit (idempotent).
-func (s *RPCServer) stopOrphanSweeper() {
-	s.leaseMu.Lock()
-	if s.orphanSweepStop != nil {
-		close(s.orphanSweepStop)
-		s.orphanSweepStop = nil
+func (m *leaseManager) stopOrphanSweeper() {
+	m.leaseMu.Lock()
+	if m.orphanSweepStop != nil {
+		close(m.orphanSweepStop)
+		m.orphanSweepStop = nil
 	}
-	s.leaseMu.Unlock()
+	m.leaseMu.Unlock()
 }
 
-func (s *RPCServer) runOrphanSweeper(stop chan struct{}) {
+func (m *leaseManager) runOrphanSweeper(stop chan struct{}) {
 	ticker := time.NewTicker(orphanLeaseSweepInterval)
 	defer ticker.Stop()
 	for {
@@ -809,10 +809,10 @@ func (s *RPCServer) runOrphanSweeper(stop chan struct{}) {
 		case <-stop:
 			return
 		case <-ticker.C:
-			if !s.peers.IsLeader() {
+			if !m.srv.peers.IsLeader() {
 				continue
 			}
-			s.sweepOrphanLeasedKeys(context.Background())
+			m.sweepOrphanLeasedKeys(context.Background())
 		}
 	}
 }
@@ -829,25 +829,25 @@ func (s *RPCServer) runOrphanSweeper(stop chan struct{}) {
 // not in the live index, it deletes the key (its lease is gone — etcd deletes a
 // key when its lease lapses), or, when the key was rebound/removed, just reclaims
 // the stale attachment record.
-func (s *RPCServer) sweepOrphanLeasedKeys(ctx context.Context) {
-	_, attachments, err := s.loadLeaseRecords(ctx)
+func (m *leaseManager) sweepOrphanLeasedKeys(ctx context.Context) {
+	_, attachments, err := m.loadLeaseRecords(ctx)
 	if err != nil {
-		s.metricCli.EmitCounter("lease.orphan_sweep.err", 1)
+		m.srv.metricCli.EmitCounter("lease.orphan_sweep.err", 1)
 		klog.ErrorS(err, "orphan lease sweep: load attachment records failed")
 		return
 	}
 	for key, id := range attachments {
-		s.leaseMu.Lock()
-		_, leaseLive := s.leases[id]
-		_, indexed := s.keyLeaseIndex[key]
-		s.leaseMu.Unlock()
+		m.leaseMu.Lock()
+		_, leaseLive := m.leases[id]
+		_, indexed := m.keyLeaseIndex[key]
+		m.leaseMu.Unlock()
 		if leaseLive || indexed {
 			continue // healthy binding, or already tracked for expiry
 		}
-		if !s.peers.IsLeader() {
+		if !m.srv.peers.IsLeader() {
 			return // lost leadership mid-sweep
 		}
-		s.reconcileOrphanAttachment(ctx, key, id)
+		m.reconcileOrphanAttachment(ctx, key, id)
 	}
 }
 
@@ -856,8 +856,8 @@ func (s *RPCServer) sweepOrphanLeasedKeys(ctx context.Context) {
 // (inline in the value, review #9) still names the defunct lease; otherwise it
 // merely reclaims the stale attachment record, never touching a key that was
 // rebound or recreated leaseless.
-func (s *RPCServer) reconcileOrphanAttachment(ctx context.Context, key string, id int64) {
-	resp, err := s.backend.Get(ctx, &etcdserverpb.RangeRequest{Key: []byte(key)})
+func (m *leaseManager) reconcileOrphanAttachment(ctx context.Context, key string, id int64) {
+	resp, err := m.srv.backend.Get(ctx, &etcdserverpb.RangeRequest{Key: []byte(key)})
 	if err != nil {
 		return
 	}
@@ -867,8 +867,8 @@ func (s *RPCServer) reconcileOrphanAttachment(ctx context.Context, key string, i
 		// legacy v1 value carries no inline lease and reads back Lease==0 here, so
 		// its key is conservatively left in place — only its stale record is
 		// cleaned.)
-		if err := s.detachKeyFromStorage(ctx, key); err == nil {
-			s.metricCli.EmitCounter("lease.orphan_sweep.record_reclaimed", 1)
+		if err := m.detachKeyFromStorage(ctx, key); err == nil {
+			m.srv.metricCli.EmitCounter("lease.orphan_sweep.record_reclaimed", 1)
 		}
 		return
 	}
@@ -876,31 +876,31 @@ func (s *RPCServer) reconcileOrphanAttachment(ctx context.Context, key string, i
 	// longer exists. Re-check under the lock that the lease was not just
 	// (re)granted, then compare-delete at the observed revision so a concurrent
 	// re-Put is not clobbered.
-	s.leaseMu.Lock()
-	_, leaseLive := s.leases[id]
-	s.leaseMu.Unlock()
+	m.leaseMu.Lock()
+	_, leaseLive := m.leases[id]
+	m.leaseMu.Unlock()
 	if leaseLive {
 		return
 	}
-	dresp, err := s.backend.Delete(ctx, []byte(key), resp.Kvs[0].ModRevision, false)
+	dresp, err := m.srv.backend.Delete(ctx, []byte(key), resp.Kvs[0].ModRevision, false)
 	if err != nil {
 		return
 	}
 	if dresp.GetSucceeded() {
-		_ = s.detachKeyFromStorage(ctx, key)
-		s.metricCli.EmitCounter("lease.orphan_sweep.key_deleted", 1)
+		_ = m.detachKeyFromStorage(ctx, key)
+		m.srv.metricCli.EmitCounter("lease.orphan_sweep.key_deleted", 1)
 		klog.InfoS("orphan lease sweep: deleted key bound to a defunct lease", "key", key, "lease", id)
 	}
 }
 
-func (s *RPCServer) scheduleLeaseLocked(st *leaseState) {
+func (m *leaseManager) scheduleLeaseLocked(st *leaseState) {
 	duration := time.Until(st.deadline)
 	if duration < 0 {
 		duration = 0
 	}
 	if st.timer == nil {
 		st.timer = time.AfterFunc(duration, func() {
-			s.expireLease(st.id)
+			m.expireLease(st.id)
 		})
 		return
 	}
@@ -911,12 +911,12 @@ func (s *RPCServer) scheduleLeaseLocked(st *leaseState) {
 // no key list (attachments are separate records, #17) and no deadline (recovery
 // resets the deadline to now+TTL, see applyLeaseRecords). Written on grant and on
 // legacy-record migration.
-func (s *RPCServer) persistLeaseMeta(ctx context.Context, id, ttl int64) error {
+func (m *leaseManager) persistLeaseMeta(ctx context.Context, id, ttl int64) error {
 	data, err := json.Marshal(leaseRecord{ID: id, TTL: ttl})
 	if err != nil {
 		return err
 	}
-	_, err = s.backend.Put(ctx, &etcdserverpb.PutRequest{
+	_, err = m.srv.backend.Put(ctx, &etcdserverpb.PutRequest{
 		Key:   leaseStorageKey(id),
 		Value: data,
 	})
@@ -927,23 +927,23 @@ func (s *RPCServer) persistLeaseMeta(ctx context.Context, id, ttl int64) error {
 // small record (leasekeys/<userKey> -> <id>). O(1) per attach, replacing the old
 // full-key-list rewrite (#17). The record is keyed by the user key, which has at
 // most one lease, so a rebind simply overwrites it.
-func (s *RPCServer) attachKeyToStorage(ctx context.Context, id int64, userKey string) error {
-	_, err := s.backend.Put(ctx, &etcdserverpb.PutRequest{
+func (m *leaseManager) attachKeyToStorage(ctx context.Context, id int64, userKey string) error {
+	_, err := m.srv.backend.Put(ctx, &etcdserverpb.PutRequest{
 		Key:   leaseAttachKey(userKey),
 		Value: []byte(strconv.FormatInt(id, 10)),
 	})
 	return err
 }
 
-func (s *RPCServer) detachKeyFromStorage(ctx context.Context, userKey string) error {
-	_, err := s.backend.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{
+func (m *leaseManager) detachKeyFromStorage(ctx context.Context, userKey string) error {
+	_, err := m.srv.backend.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{
 		Key: leaseAttachKey(userKey),
 	})
 	return err
 }
 
-func (s *RPCServer) deleteLeaseState(ctx context.Context, id int64) error {
-	_, err := s.backend.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{
+func (m *leaseManager) deleteLeaseState(ctx context.Context, id int64) error {
+	_, err := m.srv.backend.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{
 		Key: leaseStorageKey(id),
 	})
 	return err
