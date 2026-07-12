@@ -114,6 +114,13 @@ func (s *Server) Compact(ctx context.Context, compactRequest *proto.CompactReque
 		return nil, fmt.Errorf("invalid revision in compact request")
 	}
 	start := time.Now()
+	// Fail fast if the caller's deadline already passed, like the other write
+	// RPCs. Unlike them, Compact does NOT wrap ctx in WithTimeout(unaryRpcTimeout):
+	// a physical compaction scans the keyspace and legitimately runs for minutes,
+	// so the 1s unary bound would truncate it (audit E10 — explicit, not an oversight).
+	if deadline, ok := ctx.Deadline(); ok && start.Sub(deadline) >= 0 {
+		return nil, context.DeadlineExceeded
+	}
 	if err := s.checkLeaderWrite(); err != nil {
 		s.metricCli.EmitCounter("brain.write.follower", 1)
 		return nil, err

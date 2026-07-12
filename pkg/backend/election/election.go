@@ -155,7 +155,10 @@ func (r *resourceLock) Create(ler resourcelock.LeaderElectionRecord) error {
 	if err != nil {
 		return err
 	}
-	tso, err := r.store.GetTimestampOracle(context.Background())
+	// Bound the TSO read with the same election-timeout ctx as the commit rather
+	// than an unbounded Background, so a wedged storage call cannot stall the
+	// leader-election loop (audit E10).
+	tso, err := r.store.GetTimestampOracle(ctx)
 	if err != nil {
 		return err
 	}
@@ -192,7 +195,8 @@ func (r *resourceLock) Update(ler resourcelock.LeaderElectionRecord) error {
 		return err
 	}
 
-	newTso, err := r.store.GetTimestampOracle(context.Background())
+	// Bound with the election-timeout ctx, not Background (audit E10).
+	newTso, err := r.store.GetTimestampOracle(ctx)
 	if err != nil {
 		return err
 	}

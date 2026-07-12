@@ -47,7 +47,10 @@ func newIter(db *badger.DB, start, end []byte, ts uint64, limit uint64) storage.
 	return i
 }
 
-func (i *iter) inRange() bool {
+// consumeInRange reports whether the current item is within [.., end) and the
+// limit is not yet reached, CONSUMING one slot of the limit budget as a side
+// effect. Named to flag that it is not a pure predicate (audit E10).
+func (i *iter) consumeInRange() bool {
 	if i.limit != 0 && i.counter >= i.limit {
 		return false
 	}
@@ -74,7 +77,7 @@ func (i *iter) Next(ctx context.Context) (err error) {
 		i.seeked = true
 	}
 
-	if !i.iIter.Valid() || !i.inRange() {
+	if !i.iIter.Valid() || !i.consumeInRange() {
 		i.err = io.EOF
 		return i.err
 	}

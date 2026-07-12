@@ -145,7 +145,7 @@ func (s *RPCServer) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etc
 		if s.peers.EtcdProxyEnabled() {
 			return s.peers.Txn(ctx, txn)
 		}
-		return nil, status.Errorf(codes.Unavailable, "txn error addr is %s leader %s", s.backend.GetResourceLock().Identity(), s.backend.GetResourceLock().Describe())
+		return nil, s.notLeaderErr("txn")
 	}
 	ctx = backend.WithLeadershipEpoch(ctx, epoch)
 	var (
@@ -154,51 +154,53 @@ func (s *RPCServer) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etc
 		methodTag, successTag metrics.T
 		failedKey             string
 	)
-	if put, includeFailureRange := isCreate(txn); put != nil {
-		put, err = s.putWithEffectiveOptions(ctx, put)
+	if sh, ok := isCreate(txn); ok {
+		var put *etcdserverpb.PutRequest
+		put, err = s.putWithEffectiveOptions(ctx, sh.put)
 		if err != nil {
 			return nil, err
 		}
 		if err = s.ensureLeaseExists(put.Lease); err != nil {
 			return nil, err
 		}
-		response, err = s.backend.Create(ctx, put, includeFailureRange)
+		response, err = s.backend.Create(ctx, put, sh.includeFailure)
 		methodTag = metrics.Tag("method", "create")
 		if err != nil || !response.Succeeded {
 			failedKey = string(put.Key)
 		} else {
 			s.bindKeyToLease(put.Lease, string(put.Key))
 		}
-	} else if rev, key, deleteReq, includeFailureRange, ok := isCompareDelete(txn); ok {
-		response, err = s.backend.CompareDelete(ctx, deleteReq, rev, includeFailureRange)
+	} else if sh, ok := isCompareDelete(txn); ok {
+		response, err = s.backend.CompareDelete(ctx, sh.deleteReq, sh.rev, sh.includeFailure)
 		methodTag = metrics.Tag("method", "delete")
 		if err != nil || !response.Succeeded {
-			failedKey = string(key)
+			failedKey = string(sh.key)
 		} else {
-			s.unbindKeyFromLease(string(key))
+			s.unbindKeyFromLease(string(sh.key))
 		}
-	} else if rev, key, includeFailureRange, ok := isDelete(txn); ok {
-		response, err = s.backend.Delete(ctx, key, rev, includeFailureRange)
+	} else if sh, ok := isDelete(txn); ok {
+		response, err = s.backend.Delete(ctx, sh.key, sh.rev, sh.includeFailure)
 		methodTag = metrics.Tag("method", "delete")
 		if err != nil || !response.Succeeded {
-			failedKey = string(key)
+			failedKey = string(sh.key)
 		} else {
-			s.unbindKeyFromLease(string(key))
+			s.unbindKeyFromLease(string(sh.key))
 		}
-	} else if rev, key, put, includeFailureRange, ok := isUpdate(txn); ok {
-		put, err = s.putWithEffectiveOptions(ctx, put)
+	} else if sh, ok := isUpdate(txn); ok {
+		var put *etcdserverpb.PutRequest
+		put, err = s.putWithEffectiveOptions(ctx, sh.put)
 		if err != nil {
 			return nil, err
 		}
 		if err = s.ensureLeaseExists(put.Lease); err != nil {
 			return nil, err
 		}
-		response, err = s.backend.Update(ctx, rev, put, includeFailureRange)
+		response, err = s.backend.Update(ctx, sh.rev, put, sh.includeFailure)
 		methodTag = metrics.Tag("method", "update")
 		if err != nil || !response.Succeeded {
-			failedKey = string(key)
+			failedKey = string(sh.key)
 		} else {
-			s.bindKeyToLease(put.Lease, string(key))
+			s.bindKeyToLease(put.Lease, string(sh.key))
 		}
 	} else if ok := isCompact(txn); ok {
 		response, err = s.compact(ctx, txn)
@@ -419,6 +421,16 @@ func compactedRevisionError() error {
 	return status.Error(codes.OutOfRange, "etcdserver: mvcc: required revision has been compacted")
 }
 
+// notLeaderErr is the Unavailable error a write RPC returns when this node is
+// not the fresh leader and cannot forward to one; the message carries this
+// node's identity and the current leader so the etcd client can redirect. op
+// names the rejected write (e.g. "txn", "put") — single-sourced so all four
+// write paths report it identically (audit E1).
+func (s *RPCServer) notLeaderErr(op string) error {
+	lock := s.backend.GetResourceLock()
+	return status.Errorf(codes.Unavailable, "%s error addr is %s leader %s", op, lock.Identity(), lock.Describe())
+}
+
 func (s *RPCServer) checkRequestedRevision(ctx context.Context, revision int64) error {
 	if revision <= 0 {
 		return nil
@@ -462,7 +474,7 @@ func (s *RPCServer) Compact(ctx context.Context, r *etcdserverpb.CompactionReque
 		if s.peers.EtcdProxyEnabled() {
 			return s.peers.Compact(ctx, r)
 		}
-		return nil, status.Errorf(codes.Unavailable, "compact error addr is %s leader %s", s.backend.GetResourceLock().Identity(), s.backend.GetResourceLock().Describe())
+		return nil, s.notLeaderErr("compact")
 	}
 	if err := s.peers.SyncReadRevision(ctx); err != nil {
 		return nil, err
@@ -537,7 +549,7 @@ func (s *RPCServer) Put(ctx context.Context, r *etcdserverpb.PutRequest) (*etcds
 		if s.peers.EtcdProxyEnabled() {
 			return s.peers.Put(ctx, r)
 		}
-		return nil, status.Errorf(codes.Unavailable, "put error addr is %s leader %s", s.backend.GetResourceLock().Identity(), s.backend.GetResourceLock().Describe())
+		return nil, s.notLeaderErr("put")
 	}
 	ctx = backend.WithLeadershipEpoch(ctx, epoch)
 	put, err := s.putWithEffectiveOptions(ctx, r)
@@ -577,7 +589,7 @@ func (s *RPCServer) DeleteRange(ctx context.Context, r *etcdserverpb.DeleteRange
 		if s.peers.EtcdProxyEnabled() {
 			return s.peers.DeleteRange(ctx, r)
 		}
-		return nil, status.Errorf(codes.Unavailable, "delete range error addr is %s leader %s", s.backend.GetResourceLock().Identity(), s.backend.GetResourceLock().Describe())
+		return nil, s.notLeaderErr("delete range")
 	}
 	ctx = backend.WithLeadershipEpoch(ctx, epoch)
 	if len(r.RangeEnd) != 0 {
@@ -630,7 +642,20 @@ func (s *RPCServer) putWithEffectiveOptions(ctx context.Context, r *etcdserverpb
 	return &clone, nil
 }
 
-func isCreate(txn *etcdserverpb.TxnRequest) (*etcdserverpb.PutRequest, bool) {
+// writeShape is a decoded fast-path write. Which fields are set depends on which
+// detector matched; includeFailure records whether the txn carried a failure
+// range op. Returning a named-field struct (with an ok bool) instead of a
+// positional (int64, []byte, ..., bool, bool) tuple removes the transposition
+// hazard of the trailing bools (audit E8).
+type writeShape struct {
+	rev            int64
+	key            []byte
+	put            *etcdserverpb.PutRequest
+	deleteReq      *etcdserverpb.DeleteRangeRequest
+	includeFailure bool
+}
+
+func isCreate(txn *etcdserverpb.TxnRequest) (writeShape, bool) {
 	if len(txn.Compare) == 1 &&
 		txn.Compare[0].Target == etcdserverpb.Compare_MOD &&
 		txn.Compare[0].Result == etcdserverpb.Compare_EQUAL &&
@@ -638,12 +663,12 @@ func isCreate(txn *etcdserverpb.TxnRequest) (*etcdserverpb.PutRequest, bool) {
 		(len(txn.Failure) == 0 || (len(txn.Failure) == 1 && txn.Failure[0].GetRequestRange() != nil)) &&
 		len(txn.Success) == 1 &&
 		txn.Success[0].GetRequestPut() != nil {
-		return txn.Success[0].GetRequestPut(), len(txn.Failure) == 1
+		return writeShape{put: txn.Success[0].GetRequestPut(), includeFailure: len(txn.Failure) == 1}, true
 	}
-	return nil, false
+	return writeShape{}, false
 }
 
-func isDelete(txn *etcdserverpb.TxnRequest) (int64, []byte, bool, bool) {
+func isDelete(txn *etcdserverpb.TxnRequest) (writeShape, bool) {
 	if len(txn.Compare) == 0 &&
 		len(txn.Failure) == 0 &&
 		len(txn.Success) == 2 &&
@@ -651,13 +676,13 @@ func isDelete(txn *etcdserverpb.TxnRequest) (int64, []byte, bool, bool) {
 		txn.Success[1].GetRequestDeleteRange() != nil {
 		rng := txn.Success[1].GetRequestDeleteRange()
 		if len(rng.RangeEnd) == 0 {
-			return 0, rng.Key, true, true
+			return writeShape{key: rng.Key, includeFailure: true}, true
 		}
 	}
-	return 0, nil, false, false
+	return writeShape{}, false
 }
 
-func isCompareDelete(txn *etcdserverpb.TxnRequest) (int64, []byte, *etcdserverpb.DeleteRangeRequest, bool, bool) {
+func isCompareDelete(txn *etcdserverpb.TxnRequest) (writeShape, bool) {
 	if len(txn.Compare) == 1 &&
 		txn.Compare[0].Target == etcdserverpb.Compare_MOD &&
 		txn.Compare[0].Result == etcdserverpb.Compare_EQUAL &&
@@ -666,31 +691,33 @@ func isCompareDelete(txn *etcdserverpb.TxnRequest) (int64, []byte, *etcdserverpb
 		txn.Success[0].GetRequestDeleteRange() != nil {
 		deleteReq := txn.Success[0].GetRequestDeleteRange()
 		if len(deleteReq.RangeEnd) != 0 {
-			return 0, nil, nil, false, false
+			return writeShape{}, false
 		}
-		return txn.Compare[0].GetModRevision(),
-			deleteReq.Key,
-			deleteReq,
-			len(txn.Failure) == 1,
-			true
+		return writeShape{
+			rev:            txn.Compare[0].GetModRevision(),
+			key:            deleteReq.Key,
+			deleteReq:      deleteReq,
+			includeFailure: len(txn.Failure) == 1,
+		}, true
 	}
-	return 0, nil, nil, false, false
+	return writeShape{}, false
 }
 
-func isUpdate(txn *etcdserverpb.TxnRequest) (int64, []byte, *etcdserverpb.PutRequest, bool, bool) {
+func isUpdate(txn *etcdserverpb.TxnRequest) (writeShape, bool) {
 	if len(txn.Compare) == 1 &&
 		txn.Compare[0].Target == etcdserverpb.Compare_MOD &&
 		txn.Compare[0].Result == etcdserverpb.Compare_EQUAL &&
 		len(txn.Success) == 1 &&
 		txn.Success[0].GetRequestPut() != nil &&
 		(len(txn.Failure) == 0 || (len(txn.Failure) == 1 && txn.Failure[0].GetRequestRange() != nil)) {
-		return txn.Compare[0].GetModRevision(),
-			txn.Compare[0].Key,
-			txn.Success[0].GetRequestPut(),
-			len(txn.Failure) == 1,
-			true
+		return writeShape{
+			rev:            txn.Compare[0].GetModRevision(),
+			key:            txn.Compare[0].Key,
+			put:            txn.Success[0].GetRequestPut(),
+			includeFailure: len(txn.Failure) == 1,
+		}, true
 	}
-	return 0, nil, nil, false, false
+	return writeShape{}, false
 }
 
 func isSimpleSuccessTxn(txn *etcdserverpb.TxnRequest) bool {
