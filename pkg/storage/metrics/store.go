@@ -27,28 +27,61 @@ import (
 )
 
 // NewKvStorage wraps the storage to emit some metrics while calling.
-// storage.GarbageCollector is optional and NOT part of KvStorage, so interface
-// embedding does not promote it — when the wrapped store supports GC, return a
-// wrapper variant that passes it through, or the backend's GC driver would
-// silently see an engine without GC (#37).
+// GarbageCollector and ExclusiveKvStorage are OPTIONAL interfaces NOT part of
+// KvStorage, so embedding the KvStorage interface does not promote them — a
+// plain wrapper silently drops whichever the underlying store implements
+// (#37/review #51). Return the wrapper variant that re-exposes exactly the
+// optional capabilities the underlying has, so a GetExclusiveKvStorage type
+// assertion (scanner) or the GC driver keeps seeing them through the wrapper.
+// A "wrapped store still satisfies the optional interface" test guards this.
 func NewKvStorage(store storage.KvStorage, m metrics.Metrics) storage.KvStorage {
 	w := &storeWrapper{
 		KvStorage:  store,
 		metricsCli: m,
 	}
-	if _, ok := store.(storage.GarbageCollector); ok {
+	_, hasGC := store.(storage.GarbageCollector)
+	_, hasExclusive := store.(storage.ExclusiveKvStorage)
+	switch {
+	case hasGC && hasExclusive:
+		return &gcExclusiveStoreWrapper{storeWrapper: w}
+	case hasGC:
 		return &gcStoreWrapper{storeWrapper: w}
+	case hasExclusive:
+		return &exclusiveStoreWrapper{storeWrapper: w}
+	default:
+		return w
 	}
-	return w
 }
 
-// gcStoreWrapper adds the optional GC pass-through for engines that support it.
+// gcStoreWrapper re-exposes the optional GC capability through the metrics wrapper.
 type gcStoreWrapper struct {
 	*storeWrapper
 }
 
 func (s *gcStoreWrapper) GC(ctx context.Context, lifetime time.Duration) (uint64, error) {
 	return s.KvStorage.(storage.GarbageCollector).GC(ctx, lifetime)
+}
+
+// exclusiveStoreWrapper re-exposes the optional exclusive-storage capability.
+type exclusiveStoreWrapper struct {
+	*storeWrapper
+}
+
+func (s *exclusiveStoreWrapper) GetExclusiveKvStorage() storage.KvStorage {
+	return s.KvStorage.(storage.ExclusiveKvStorage).GetExclusiveKvStorage()
+}
+
+// gcExclusiveStoreWrapper re-exposes both optional capabilities.
+type gcExclusiveStoreWrapper struct {
+	*storeWrapper
+}
+
+func (s *gcExclusiveStoreWrapper) GC(ctx context.Context, lifetime time.Duration) (uint64, error) {
+	return s.KvStorage.(storage.GarbageCollector).GC(ctx, lifetime)
+}
+
+func (s *gcExclusiveStoreWrapper) GetExclusiveKvStorage() storage.KvStorage {
+	return s.KvStorage.(storage.ExclusiveKvStorage).GetExclusiveKvStorage()
 }
 
 type storeWrapper struct {
