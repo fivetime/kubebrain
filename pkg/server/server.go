@@ -187,8 +187,9 @@ func (s *server) register(server *grpc.Server) {
 // GetClientHttpHandlers implements Server interface
 func (s *server) GetClientHttpHandlers() map[string]http.Handler {
 	return map[string]http.Handler{
-		"/health": http.HandlerFunc(s.httpHealthHandler),
-		"/ready":  http.HandlerFunc(s.httpReadyHandler),
+		"/health":  http.HandlerFunc(s.httpHealthHandler),
+		"/ready":   http.HandlerFunc(s.httpReadyHandler),
+		"/version": http.HandlerFunc(s.versionHandler),
 	}
 }
 
@@ -242,6 +243,27 @@ func (s *server) revisionHandler(w http.ResponseWriter, req *http.Request) {
 const (
 	HealthResponse = `{"health":"true"}`
 )
+
+// versionHandler serves the etcd-compatible GET /version endpoint. kubeadm's
+// ExternalEtcdVersion preflight (and other etcd tooling) GETs this and parses
+// {"etcdserver":...,"etcdcluster":...}; without it the 404 body "404 page not
+// found" is mis-parsed as the JSON number 404. The version string is the same
+// single source of truth reported by the Maintenance.Status gRPC (etcd.Version).
+func (s *server) versionHandler(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		klog.Warningf("/version error (status code %d)", http.StatusMethodNotAllowed)
+		return
+	}
+	respBytes, _ := json.Marshal(struct {
+		EtcdServer  string `json:"etcdserver"`
+		EtcdCluster string `json:"etcdcluster"`
+	}{EtcdServer: etcd.Version, EtcdCluster: etcd.Version})
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(respBytes)
+}
 
 func (s *server) httpHealthHandler(w http.ResponseWriter, req *http.Request) {
 	if req.Method != http.MethodGet {

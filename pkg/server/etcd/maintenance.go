@@ -26,15 +26,30 @@ import (
 	"github.com/kubewharf/kubebrain/pkg/backend/election"
 )
 
-// maintenanceVersion is reported by Maintenance.Status.Version. The
-// kube-apiserver parses it with version.ParseSemantic and gates
-// RequestWatchProgress (which backs consistent-list-from-cache / WatchList) on
-// the etcd version being >= 3.5.13 (or in [3.4.31, 3.5.0)); a non-semver string
-// like "kubebrain" fails to parse and permanently disables those features. We
-// advertise 3.5.13 now that KubeBrain's watch pipeline delivers events without
-// silent gaps and progress notifications never run ahead of delivered events.
-// See k8s.io/apiserver/pkg/storage/feature/feature_support_checker.go.
-const maintenanceVersion = "3.5.13"
+// Version is the single source of truth for the etcd version KubeBrain claims,
+// reported both by the Maintenance.Status gRPC (Status.Version, read by the
+// kube-apiserver) and by the HTTP /version endpoint (read by kubeadm's
+// ExternalEtcdVersion preflight and other etcd tooling).
+//
+// It must be semver-parseable (a non-semver string like "kubebrain" fails
+// version.ParseSemantic and permanently disables the version-gated features)
+// and satisfy the apiserver's RequestWatchProgress gate — >= 3.5.13 (or in
+// [3.4.31, 3.5.0)) — which backs consistent-list-from-cache / WatchList.
+//
+// We advertise 3.7.0. Two things make a version *above* the 3.5.13 floor safe:
+//   - RequestWatchProgress only has a lower bound, so 3.7.0 keeps it enabled;
+//     KubeBrain's watch pipeline delivers events without silent gaps and
+//     progress notifications never run ahead of delivered events.
+//   - RangeStream (the streaming-list RPC introduced in etcd 3.7) is NOT gated
+//     on this version string: the apiserver optimistically tries it behind its
+//     own EtcdRangeStream feature gate and, on a gRPC Unimplemented reply,
+//     MarkUnsupported()s it and falls back to a paginated list. KubeBrain does
+//     not register that RPC, so gRPC answers Unimplemented and the apiserver
+//     degrades gracefully — independent of whether we report 3.5.13 or 3.7.0.
+//
+// See k8s.io/apiserver/pkg/storage/feature/feature_support_checker.go and
+// k8s.io/apiserver/pkg/storage/etcd3/watcher.go (sync()).
+const Version = "3.7.0"
 
 func (s *RPCServer) Alarm(context.Context, *etcdserverpb.AlarmRequest) (*etcdserverpb.AlarmResponse, error) {
 	s.metricCli.EmitCounter("maintenance.alarm", 1)
@@ -52,7 +67,7 @@ func (s *RPCServer) Status(ctx context.Context, _ *etcdserverpb.StatusRequest) (
 	revision := s.backend.GetCurrentRevision()
 	return &etcdserverpb.StatusResponse{
 		Header:           s.maintenanceHeader(),
-		Version:          maintenanceVersion,
+		Version:          Version,
 		Leader:           s.memberIDFromAddress(s.peers.GetLeaderInfo()),
 		RaftIndex:        revision,
 		RaftAppliedIndex: revision,
