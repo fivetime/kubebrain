@@ -17,6 +17,7 @@ package option
 import (
 	"context"
 	"fmt"
+	"net"
 	"strings"
 	"time"
 
@@ -46,6 +47,14 @@ type KubeBrainOption struct {
 	SkippedPrefixes []string
 
 	ClusterName string
+
+	// advertiseHost, when non-empty, is the host advertised to peers as this
+	// replica's identity (the leader-election holderIdentity and the address a
+	// follower dials to reach the leader). Empty = auto-detect via util.GetHost,
+	// which picks the lexicographically smallest private IPv4 and therefore
+	// guesses wrong on multi-homed hosts — set this explicitly there. Listeners
+	// still bind all interfaces (:port); this only affects the advertised address.
+	advertiseHost string
 
 	storageConfig *storageConfig
 
@@ -99,6 +108,7 @@ func (o *KubeBrainOption) AddFlags(fs *pflag.FlagSet) {
 	fs.StringVar(&o.Prefix, "key-prefix", o.Prefix, "key prefix.")
 	fs.StringSliceVar(&o.SkippedPrefixes, "skip-key-prefix", o.SkippedPrefixes, "skipped key prefix.")
 	fs.StringVar(&o.ClusterName, "cluster-name", o.ClusterName, "cluster name.")
+	fs.StringVar(&o.advertiseHost, "advertise-host", o.advertiseHost, "IP/host advertised to peers as this replica's identity: the leader-election holderIdentity and the address followers dial to reach the leader. Empty = auto-detect (smallest private IPv4), which guesses wrong on multi-homed hosts — REQUIRED there. Listeners still bind all interfaces; this only sets the advertised address. IPv6 must be bracketed, e.g. [2001:db8::1].")
 
 	// security
 	fs.StringVar(&o.epsConf.ClientSecurityConfig.CertFile, "cert-file",
@@ -171,6 +181,15 @@ func (o *KubeBrainOption) Validate() error {
 		return err
 	}
 
+	if o.advertiseHost != "" {
+		// It is combined with the peer port into a host:port identity downstream
+		// (SplitHostPort'd by the etcd proxy); a bare IPv6 without brackets would
+		// parse wrong. Fail loudly here instead of dialing a mangled address.
+		if _, _, err := net.SplitHostPort(fmt.Sprintf("%s:%d", o.advertiseHost, o.epsConf.PeerPort)); err != nil {
+			return fmt.Errorf("--advertise-host %q is invalid (IPv6 must be bracketed, e.g. [2001:db8::1]): %w", o.advertiseHost, err)
+		}
+	}
+
 	if strings.HasSuffix(o.Prefix, "/") {
 		return fmt.Errorf("prefix %s is invalid, make sure it has no / suffix", o.Prefix)
 	}
@@ -187,16 +206,30 @@ func (o *KubeBrainOption) Validate() error {
 	return o.storageConfig.validate()
 }
 
+// buildIdentity computes this replica's advertised identity (host:peerPort).
+// It prefers the explicit --advertise-host; otherwise it auto-detects via
+// util.GetHost (the legacy behavior). The host half is what a follower dials to
+// reach the leader, so on a multi-homed host --advertise-host must be set.
+func (o *KubeBrainOption) buildIdentity() (string, error) {
+	host := o.advertiseHost
+	if host == "" {
+		host = util.GetHost()
+	}
+	if len(host) == 0 {
+		return "", fmt.Errorf("local ip is empty")
+	}
+	return fmt.Sprintf("%s:%d", host, o.epsConf.PeerPort), nil
+}
+
 // Run runs the storage engine
 func (o *KubeBrainOption) Run(ctx context.Context) error {
 	// add cluster metric tag
 	metricsCli := metrics.NewMetrics(imetrics.Tag("cluster", o.ClusterName))
 
-	localIP := util.GetHost()
-	if len(localIP) == 0 {
-		return fmt.Errorf("local ip is empty")
+	identity, err := o.buildIdentity()
+	if err != nil {
+		return err
 	}
-	identity := fmt.Sprintf("%s:%d", localIP, o.epsConf.PeerPort)
 	klog.InfoS("build identity", "identity", identity)
 
 	kv, err := o.storageConfig.buildStorage()
