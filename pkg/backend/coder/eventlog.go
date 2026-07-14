@@ -55,8 +55,29 @@ func EncodeEventLogKey(revision uint64, userKey []byte) []byte {
 func EventLogRangeStart(rev uint64) []byte { return EncodeEventLogKey(rev, nil) }
 
 // EventLogRangeEnd returns the exclusive upper bound covering every entry with
-// revision <= rev (i.e. the start of rev+1).
-func EventLogRangeEnd(rev uint64) []byte { return EncodeEventLogKey(rev+1, nil) }
+// revision <= rev. It is the byte-level prefix end of rev's key space, NOT
+// EncodeEventLogKey(rev+1): at rev == MaxUint64, rev+1 wraps to 0, producing an
+// end that sorts BELOW the start so the range read scans nothing (revision is a
+// TSO, so this is ~584 years out — theoretical, but a silent-wrong-answer, not a
+// loud failure). The prefix end instead carries into elogMagic and stays above
+// every entry at rev. For rev < MaxUint64 it is a tighter byte encoding of the
+// exact same exclusive boundary as EncodeEventLogKey(rev+1, nil).
+func EventLogRangeEnd(rev uint64) []byte { return keyPrefixEnd(EncodeEventLogKey(rev, nil)) }
+
+// keyPrefixEnd returns the smallest key strictly greater than every key that has
+// p as a prefix: p with its last non-0xFF byte incremented and trailing 0xFF
+// bytes dropped. It returns nil ("no upper bound") only when p is entirely 0xFF,
+// which cannot happen for an elogMagic-prefixed key (elogMagic ends in '\x00').
+func keyPrefixEnd(p []byte) []byte {
+	end := append([]byte(nil), p...)
+	for i := len(end) - 1; i >= 0; i-- {
+		if end[i] != 0xff {
+			end[i]++
+			return end[:i+1]
+		}
+	}
+	return nil
+}
 
 // DecodeEventLogKey splits an event-log key into (revision, userKey).
 func DecodeEventLogKey(key []byte) (revision uint64, userKey []byte, err error) {
