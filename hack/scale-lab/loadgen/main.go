@@ -8,6 +8,7 @@
 //	cleanup  --ns N                                  删除 workload namespaces
 //	services --count N --per-ns M [--ns-start i]     创建无 selector 的极小 Service
 //	secrets  --count N --per-ns M [--ns-start i]     创建极小 Secret
+//	createpods --count N --per-ns M [--ns-start i]   直接建独立 pod 对象并标 Running(绑 fake node,绕开 kcm)
 //	status                                           对象计数
 package main
 
@@ -411,6 +412,41 @@ func main() {
 			patch := fmt.Sprintf(`{"status":{"phase":"Running","podIP":"%s","podIPs":[{"ip":"%s"}],"startTime":%q,"conditions":[{"type":"Initialized","status":"True","lastTransitionTime":%q},{"type":"Ready","status":"True","lastTransitionTime":%q},{"type":"ContainersReady","status":"True","lastTransitionTime":%q},{"type":"PodScheduled","status":"True","lastTransitionTime":%q}],"containerStatuses":[{"name":"fake","state":{"running":{"startedAt":%q}},"ready":true,"restartCount":0,"image":"nginx:latest","imageID":"fake"}]}}`,
 				ip, ip, now.Format("2006-01-02T15:04:05Z"), now.Format("2006-01-02T15:04:05Z"), now.Format("2006-01-02T15:04:05Z"), now.Format("2006-01-02T15:04:05Z"), now.Format("2006-01-02T15:04:05Z"), now.Format("2006-01-02T15:04:05Z"))
 			_, err := cli.CoreV1().Pods(p.ns).Patch(ctx, p.name, k8stypes.StrategicMergePatchType, []byte(patch), metav1m.PatchOptions{}, "status")
+			return err
+		})
+
+	case "createpods":
+		// 直接向存储写独立 pod 对象并标 Running,绕开 deployment→RS→pod 的
+		// controller 链(kcm 在 apiserver watch-cache 全关下 reconcile 跟不上,
+		// 是控制面吞吐瓶颈,不是存储瓶颈)。每 pod:Create(绑 nodeName、容忍 kwok
+		// taint,直接 bound 不经 scheduler)后立即 Patch status Running。pod 轮询
+		// 绑 10 万 fake node。用于纯粹压 KubeBrain 承载 pod 对象的能力。
+		nowS := metav1m.Now().Format("2006-01-02T15:04:05Z")
+		noAutomount := false
+		run(*count, func(i int) error {
+			ns := fmt.Sprintf("ns-%07d", *nsStart+i/(*perNs))
+			name := fmt.Sprintf("pod-%03d", i%*perNs)
+			nodeName := fmt.Sprintf("kwok-node-%06d", i%100000)
+			pod := &corev1.Pod{
+				ObjectMeta: metav1m.ObjectMeta{Name: name, Namespace: ns,
+					Labels: map[string]string{"workload-type": "fake"}},
+				Spec: corev1.PodSpec{
+					NodeName: nodeName,
+					// 用已建的 sa-000(每 ns 都有)+ 关 token 挂载,避开 default SA
+					// 尚未被 SA controller 创建导致的 "serviceaccount not found"。
+					ServiceAccountName:           "sa-000",
+					AutomountServiceAccountToken: &noAutomount,
+					Containers:                   []corev1.Container{{Name: "fake", Image: "nginx:latest"}},
+					Tolerations:                  []corev1.Toleration{{Operator: corev1.TolerationOpExists}},
+				},
+			}
+			if _, err := cli.CoreV1().Pods(ns).Create(ctx, pod, metav1m.CreateOptions{}); err != nil {
+				return err
+			}
+			ip := fmt.Sprintf("10.%d.%d.%d", 66+(i>>16)&0x3F, (i>>8)&0xFF, i&0xFF)
+			patch := fmt.Sprintf(`{"status":{"phase":"Running","podIP":"%s","podIPs":[{"ip":"%s"}],"startTime":%q,"conditions":[{"type":"Initialized","status":"True","lastTransitionTime":%q},{"type":"Ready","status":"True","lastTransitionTime":%q},{"type":"ContainersReady","status":"True","lastTransitionTime":%q},{"type":"PodScheduled","status":"True","lastTransitionTime":%q}],"containerStatuses":[{"name":"fake","state":{"running":{"startedAt":%q}},"ready":true,"restartCount":0,"image":"nginx:latest","imageID":"fake"}]}}`,
+				ip, ip, nowS, nowS, nowS, nowS, nowS, nowS)
+			_, err := cli.CoreV1().Pods(ns).Patch(ctx, name, k8stypes.StrategicMergePatchType, []byte(patch), metav1m.PatchOptions{}, "status")
 			return err
 		})
 
