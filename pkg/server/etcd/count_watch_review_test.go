@@ -91,7 +91,11 @@ func TestWatchCreatedHeaderReportsCurrentRevision(t *testing.T) {
 
 	put, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: []byte("/registry/watchrev/w1"), Value: []byte("v")})
 	require.NoError(t, err)
-	require.Eventually(t, func() bool { return server.backend.GetCurrentRevision() >= uint64(put.Header.Revision) }, 5*time.Second, 2*time.Millisecond)
+	// Wait for the PUBLISHED watermark (not just current): the created header
+	// below reads GetPublishedRevision, which lags GetCurrentRevision until the
+	// event has fanned out. Waiting on current alone is a race — under a slow/
+	// loaded CI runner published can still be 0 when we read it.
+	require.Eventually(t, func() bool { return server.backend.GetPublishedRevision() >= uint64(put.Header.Revision) }, 5*time.Second, 2*time.Millisecond)
 
 	wantRev := server.backend.GetPublishedRevision()
 	require.Greater(t, wantRev, uint64(0))
