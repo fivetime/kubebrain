@@ -122,7 +122,7 @@ func (b *backend) rebuildCountIndexOnce(ctx context.Context) error {
 			// it never strands the scan workers. Returning the error disables the
 			// index (Reset sets baseRev=0) so a half-loaded tree is never served.
 			// RangeStream takes encoded object keys (List does this internally).
-			stream := b.scanner.RangeStream(ctx, b.rangeStartKey(start), b.rangeEndKey(noPrefixEnd), rev)
+			stream := b.scanner.RangeStream(ctx, b.rangeStartKey(start), b.rangeEndKey(noPrefixEnd), rev, true)
 			for resp := range stream {
 				if resp.Err != "" {
 					loadErr = errors.New(resp.Err)

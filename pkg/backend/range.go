@@ -300,7 +300,7 @@ func (b *backend) ListByStream(ctx context.Context, startKey, endKey []byte, rev
 		rev = curRev
 	}
 	klog.V(klogLevel).InfoS("list by stream", "start", Key(startKey), "end", Key(endKey), "rev", rev)
-	stream := b.scanner.RangeStream(ctx, startKey, endKey, rev)
+	stream := b.scanner.RangeStream(ctx, startKey, endKey, rev, false)
 	return stream, nil
 }
 
@@ -320,5 +320,5 @@ func (b *backend) RangeStream(ctx context.Context, userStart, userEnd []byte, re
 	key := b.rangeStartKey(userStart)
 	rangeEnd := b.rangeEndKey(userEnd)
 	klog.V(klogLevel).InfoS("range stream", "start", Key(userStart), "end", Key(userEnd), "rev", rev)
-	return b.scanner.RangeStream(ctx, key, rangeEnd, rev), nil
+	return b.scanner.RangeStream(ctx, key, rangeEnd, rev, false), nil
 }

@@ -102,7 +102,7 @@ func (r *scanner) Range(ctx context.Context, start []byte, end []byte, revision 
 	}
 
 	receiver := &commonResultReceiver{}
-	_, err := r.scan(ctx, start, end, revision, false, receiver)
+	_, err := r.scan(ctx, start, end, revision, false, false, receiver)
 	if err != nil {
 		return nil, err
 	}
@@ -139,18 +139,21 @@ func (r *scanner) Count(ctx context.Context, start []byte, end []byte, revision 
 	// A full partition-parallel scan that discards values and only counts live
 	// keys — the count-index fallback path. O(keys in range).
 	receiver := &emptyResultReceiver{}
-	return r.scan(ctx, start, end, revision, false, receiver)
+	return r.scan(ctx, start, end, revision, false, false, receiver)
 }
 
-// RangeStream implements Scanner interface
-func (r *scanner) RangeStream(ctx context.Context, start []byte, end []byte, revision uint64) chan *proto.StreamRangeResponse {
+// RangeStream implements Scanner interface. keysOnly emits nil values (the
+// count-index rebuild path) so the buffered channel does not hold ~300k object
+// values at once (a failover-time memory spike); range reads that need the value
+// pass false.
+func (r *scanner) RangeStream(ctx context.Context, start []byte, end []byte, revision uint64, keysOnly bool) chan *proto.StreamRangeResponse {
 	// todo: set buffer size
 	stream := make(chan *proto.StreamRangeResponse, 1000)
 	receiver := newStreamReceiver(revision, stream)
 
 	go func() {
 		defer close(stream)
-		_, err := r.scan(ctx, start, end, revision, false, receiver)
+		_, err := r.scan(ctx, start, end, revision, false, keysOnly, receiver)
 		stream <- getListStreamEnd(revision, err)
 		if err != nil {
 			klog.Errorf("backend list stream with revision %d failed %v, start key is %s, end key is %s", revision, err, start, end)
@@ -182,7 +185,7 @@ func (r *scanner) Compact(ctx context.Context, borders [][]byte, revision uint64
 	for i := 0; i+1 < len(borders); i += 2 {
 		// Scan every border best-effort even if one fails: each border's GC is
 		// independent, and returning the first error still surfaces the failure.
-		if _, err := r.scan(ctx, borders[i], borders[i+1], revision, true, &emptyResultReceiver{}); err != nil {
+		if _, err := r.scan(ctx, borders[i], borders[i+1], revision, true, false, &emptyResultReceiver{}); err != nil {
 			klog.ErrorS(err, "compact scan failed for border", "revision", revision, "start", borders[i], "end", borders[i+1])
 			if firstErr == nil {
 				firstErr = err
@@ -223,7 +226,7 @@ func (r *scanner) adjustPartitionsBorders(ps []storage.Partition) (ret []storage
 	return ps
 }
 
-func (r *scanner) scan(ctx context.Context, start []byte, end []byte, revision uint64, compact bool, receiver resultReceiver) (int, error) {
+func (r *scanner) scan(ctx context.Context, start []byte, end []byte, revision uint64, compact bool, keysOnly bool, receiver resultReceiver) (int, error) {
 	store := r.store
 	if exclusiveKvStorage, ok := r.store.(storage.ExclusiveKvStorage); ok && compact {
 		klog.InfoS("compact with exclusive kv storage", "start", string(start), "end", string(end), "rev", revision)
@@ -287,6 +290,7 @@ func (r *scanner) scan(ctx context.Context, start []byte, end []byte, revision u
 				tso:       tso,
 				revision:  revision,
 				compact:   compact,
+				keysOnly:  keysOnly,
 				tombstone: r.config.Tombstone,
 			}, store, r.coder, r.metricCli)
 
@@ -367,6 +371,14 @@ type workerConfig struct {
 
 	// compact is the switch of compaction
 	compact bool
+
+	// keysOnly, when set, makes the worker emit KeyValues with a nil Value. The
+	// count-index rebuild consumes only key+revision, but a value-carrying scan
+	// buffers up to (channel cap * batch) KeyValues WITH their values — ~300k
+	// large objects, a GB-scale memory spike right when a fresh leader rebuilds
+	// on failover. Dropping the value at the source removes that spike; real
+	// range reads (which need the value) leave it false.
+	keysOnly bool
 }
 
 func newWorker(conf workerConfig, store storage.KvStorage, coder coder.Coder, metricCli metrics.Metrics) *worker {
@@ -496,7 +508,7 @@ func (w *worker) run(ctx context.Context, receiver resultReceiver) (int, error) 
 		// (a revision-key tombstone above the compact revision, left in place).
 		if !bytes.Equal(curUserKey, prevUserKey) {
 			if prevRevision > 0 && !bytes.Equal(prevValue, w.tombstone) {
-				receiver.append(prevUserKey, prevValue, prevRevision)
+				receiver.append(prevUserKey, w.emitValue(prevValue), prevRevision)
 				count++
 			}
 		}
@@ -528,7 +540,7 @@ func (w *worker) run(ctx context.Context, receiver resultReceiver) (int, error) 
 	}
 	// add last result
 	if prevRevision > 0 && !bytes.Equal(prevValue, w.tombstone) && receiver.needMore() {
-		receiver.append(prevUserKey, prevValue, prevRevision)
+		receiver.append(prevUserKey, w.emitValue(prevValue), prevRevision)
 		count++
 	}
 
@@ -542,6 +554,17 @@ func (w *worker) run(ctx context.Context, receiver resultReceiver) (int, error) 
 	w.metricCli.EmitHistogram("storage.scan_worker.size", valSize)
 	w.metricCli.EmitHistogram("storage.scan_worker.count", count)
 	return count, nil
+}
+
+// emitValue returns the value to hand the receiver: nil in keysOnly mode (the
+// caller consumes only key+revision, so carrying the value just bloats the
+// stream buffer), the value itself otherwise. Tombstone detection still uses the
+// real value — only what reaches the receiver is dropped.
+func (w *worker) emitValue(v []byte) []byte {
+	if w.keysOnly {
+		return nil
+	}
+	return v
 }
 
 func (w *worker) info() string {

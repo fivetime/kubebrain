@@ -275,3 +275,56 @@ func TestScannerCompactBatchesLargeTombstoneBacklog(t *testing.T) {
 	}
 	require.Zero(t, remaining, "raw store must hold no object versions after batched compaction")
 }
+
+// TestRangeStreamKeysOnlyDropsValues pins the review-51 failover-spike fix: the
+// count-index rebuild consumes only key+revision, so RangeStream(keysOnly=true)
+// must emit every key with its revision but a nil value — the value-carrying
+// stream buffered ~300k large objects at once on a fresh leader's rebuild.
+func TestRangeStreamKeysOnlyDropsValues(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	m := mock.NewMinimalMetrics(ctrl)
+	c := coder.NewNormalCoder()
+
+	kv := imemkv.NewKvStorage()
+	defer kv.Close()
+
+	const n = 6
+	const rev uint64 = 100
+	want := map[string]string{}
+	b := kv.BeginBatchWrite()
+	for i := 0; i < n; i++ {
+		key := fmt.Sprintf("/registry/configmaps/c%02d", i)
+		val := fmt.Sprintf("value-%02d-payload", i)
+		b.Put(c.EncodeObjectKey([]byte(key), rev), []byte(val), 0)
+		want[key] = val
+	}
+	require.NoError(t, b.Commit(context.Background()))
+
+	sc := NewScanner(kv, c, Config{CompactKey: []byte("/compact"), Tombstone: []byte("tomb")}, m)
+	start, end := coder.ObjectKeyspaceStart(), coder.ObjectKeyspaceEnd()
+
+	collect := func(keysOnly bool) map[string]string {
+		got := map[string]string{}
+		for resp := range sc.RangeStream(context.Background(), start, end, 1000, keysOnly) {
+			require.Empty(t, resp.Err)
+			for _, kv := range resp.RangeResponse.Kvs {
+				got[string(kv.Key)] = string(kv.Value)
+			}
+		}
+		return got
+	}
+
+	// keysOnly=false: full values present (the range-read path).
+	withVals := collect(false)
+	require.Equal(t, want, withVals, "values must be present when keysOnly=false")
+
+	// keysOnly=true: same key set (so the rebuild count is exact), values dropped.
+	keysOnlyGot := collect(true)
+	require.Len(t, keysOnlyGot, n, "all keys must still be emitted for an exact count")
+	for k := range want {
+		v, ok := keysOnlyGot[k]
+		require.Truef(t, ok, "key %s must be emitted in keysOnly mode", k)
+		require.Emptyf(t, v, "value must be dropped when keysOnly=true (key %s)", k)
+	}
+}

@@ -27,7 +27,7 @@ type Scanner interface {
 	Range(ctx context.Context, start []byte, end []byte, revision uint64, limit int64) ([]*proto.KeyValue, error)
 
 	// RangeStream run scan in partitions concurrently and returns value by stream
-	RangeStream(ctx context.Context, start []byte, end []byte, revision uint64) chan *proto.StreamRangeResponse
+	RangeStream(ctx context.Context, start []byte, end []byte, revision uint64, keysOnly bool) chan *proto.StreamRangeResponse
 
 	// Count run scan in partitions concurrently and returns the count of user key
 	Count(ctx context.Context, start []byte, end []byte, revision uint64) (int, error)
