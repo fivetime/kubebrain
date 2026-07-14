@@ -308,6 +308,29 @@ func (s *store) Get(ctx context.Context, key []byte) (val []byte, err error) {
 	return val, nil
 }
 
+// BatchGet implements storage.BatchGetter: fetch all keys in one snapshot read.
+// Unlike Get (a full begin/commit transaction per key), this takes a single TSO
+// and issues one snapshot BatchGet, which the client fans out per-region and runs
+// concurrently — replacing N sequential per-key transactions on the event-log
+// replay path. The returned map is keyed by string(key) and omits absent keys
+// (BatchGet treats a missing key as "not present", not an error), matching the
+// storage.BatchGetter contract; callers decide what an absent key means.
+func (s *store) BatchGet(ctx context.Context, keys [][]byte) (map[string][]byte, error) {
+	if len(keys) == 0 {
+		return map[string][]byte{}, nil
+	}
+	ts, err := s.GetTimestampOracle(ctx)
+	if err != nil {
+		return nil, err
+	}
+	snapshot := s.getClient().GetSnapshot(ts)
+	m, err := snapshot.BatchGet(ctx, keys)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to batch get from tikv snapshot")
+	}
+	return m, nil
+}
+
 // Close implements storage.KvStorage interface
 func (s *store) Close() error {
 	close(s.closed)

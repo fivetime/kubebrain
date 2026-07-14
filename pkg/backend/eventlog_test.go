@@ -26,8 +26,84 @@ import (
 
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
 	"github.com/kubewharf/kubebrain/pkg/metrics/mock"
+	"github.com/kubewharf/kubebrain/pkg/storage"
 	imemkv "github.com/kubewharf/kubebrain/pkg/storage/memkv"
 )
+
+// noBatchGet wraps a KvStorage as the plain KvStorage interface, so the concrete
+// backend's BatchGet method is NOT promoted — a type assertion to
+// storage.BatchGetter fails and the replay path takes its per-key-Get fallback.
+type noBatchGet struct{ storage.KvStorage }
+
+// TestEventLogReplayFallbackMatchesBatchGet verifies the per-key-Get fallback
+// (for backends WITHOUT storage.BatchGetter) replays events identical to the
+// authoritative full-prefix scan: same CREATE/PUT/DELETE, with the DELETE
+// reusing the PUT's version via the deduplicated object key. It wraps memkv in
+// noBatchGet so the type assertion in loadEventValues fails and the fallback
+// path runs, then asserts the replayed stream agrees with scanHistoryEvents
+// event-for-event. (TestEventLogReplayMatchesWrites covers the batched path,
+// since raw memkv implements BatchGetter.)
+func TestEventLogReplayFallbackMatchesBatchGet(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	m := mock.NewMinimalMetrics(ctrl)
+
+	rawKv := imemkv.NewKvStorage()
+	defer func() { require.NoError(t, rawKv.Close()) }()
+	_, isBG := interface{}(rawKv).(storage.BatchGetter)
+	require.True(t, isBG, "memkv must implement BatchGetter")
+	kv := noBatchGet{rawKv}
+	_, wrapIsBG := interface{}(kv).(storage.BatchGetter)
+	require.False(t, wrapIsBG, "noBatchGet must hide BatchGet to force the fallback path")
+
+	pfx := fmt.Sprintf("/kubebrain/elog_fb/%d", time.Now().UnixNano())
+	b := NewBackend(kv, Config{
+		Prefix: pfx, Identity: getStorageIdentity(), EnableEtcdCompatibility: true,
+	}, m).(*backend)
+	b.SetCurrentRevision(uint64(time.Now().UnixNano()))
+	ctx := context.Background()
+	require.NoError(t, b.EnsureEventLogStart(ctx))
+	startRev := b.GetCurrentRevision()
+
+	key := path.Join(pfx, "obj")
+	cresp, err := b.Create(ctx, &proto.CreateRequest{Key: []byte(key), Value: []byte("v1")})
+	require.NoError(t, err)
+	require.True(t, cresp.Succeeded)
+	uresp, err := b.Update(ctx, &proto.UpdateRequest{
+		Kv: &proto.KeyValue{Key: []byte(key), Value: []byte("v2"), Revision: cresp.Header.Revision}})
+	require.NoError(t, err)
+	require.True(t, uresp.Succeeded)
+	dresp, err := b.Delete(ctx, &proto.DeleteRequest{Key: []byte(key), Revision: uresp.Header.Revision})
+	require.NoError(t, err)
+	require.True(t, dresp.Succeeded)
+	deleteRev := dresp.Header.Revision
+	waitUntilRevisionEqualOrTimeout(b, deleteRev)
+
+	events, served, err := b.eventLogWatchEvents(ctx, pfx, startRev+1, deleteRev)
+	require.NoError(t, err)
+	require.True(t, served)
+	require.Len(t, events, 3)
+
+	require.Equal(t, proto.Event_CREATE, events[0].Type)
+	require.Equal(t, proto.Event_PUT, events[1].Type)
+	require.Equal(t, proto.Event_DELETE, events[2].Type)
+	// DELETE reuses the deleted (previous) version and must still carry its value
+	// — this is exactly the object-key dedup the fallback loop has to resolve.
+	require.Equal(t, uresp.Header.Revision, events[2].Kv.Revision)
+	require.NotEmpty(t, events[2].Kv.Value, "DELETE must carry the deleted value")
+
+	// The fallback replay must agree with the authoritative full-prefix scan
+	// event-for-event on (type, revision, value-revision, value).
+	scanEvents, err := b.scanHistoryEvents(ctx, pfx, startRev+1, deleteRev)
+	require.NoError(t, err)
+	require.Len(t, scanEvents, 3)
+	for i := range scanEvents {
+		require.Equal(t, scanEvents[i].Type, events[i].Type, "event %d type", i)
+		require.Equal(t, scanEvents[i].Revision, events[i].Revision, "event %d revision", i)
+		require.Equal(t, scanEvents[i].Kv.Revision, events[i].Kv.Revision, "event %d value revision", i)
+		require.Equal(t, scanEvents[i].Kv.Value, events[i].Kv.Value, "event %d value", i)
+	}
+}
 
 // TestEventLogReplayMatchesWrites pins #45: after create/update/delete, the
 // event-log replay reconstructs exactly the events a watcher saw — same types,

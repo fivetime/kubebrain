@@ -83,6 +83,21 @@ type KvStorage interface {
 	Close() error
 }
 
+// BatchGetter is an OPTIONAL KvStorage capability: fetch many keys in a single
+// round trip. Backends that implement it (TiKV, via a snapshot BatchGet that the
+// client batches by region and issues concurrently) let callers replace N
+// sequential point reads with one batched read. Event-log watch-history replay
+// uses this to avoid a per-event Get — each of which, on TiKV, is a full
+// begin/commit transaction (a TSO plus two round trips), so a large catch-up
+// window otherwise serializes into thousands of tiny transactions at bounded
+// concurrency (the #43 replay-throughput bottleneck). Callers MUST type-assert
+// and fall back to per-key Get when a backend does not implement it. The returned
+// map is keyed by string(key) and omits keys that do not exist (a missing key is
+// not an error; the caller decides what an absent key means).
+type BatchGetter interface {
+	BatchGet(ctx context.Context, keys [][]byte) (map[string][]byte, error)
+}
+
 // FeatureSupport indicates whether storage engine support some non-core feature
 type FeatureSupport interface {
 	SupportTTL() bool

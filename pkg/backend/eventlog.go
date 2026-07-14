@@ -211,52 +211,49 @@ func (b *backend) eventLogWatchEvents(ctx context.Context, prefix string, fromRe
 			userKey: append([]byte(nil), userKey...)})
 	}
 
-	events = make([]*proto.Event, len(entries))
-	sem := make(chan struct{}, eventLogReplayConcurrency)
-	var wg sync.WaitGroup
-	var loadErrMu sync.Mutex
-	var loadErr error
-	var incomplete bool
-	for i := range entries {
-		wg.Add(1)
-		sem <- struct{}{}
-		go func(i int) {
-			defer wg.Done()
-			defer func() { <-sem }()
-			e := entries[i]
-			// The value revision the event carries: PUT/CREATE carry their own
-			// version; DELETE carries the deleted (previous) version, which
-			// compaction retains as the key's newest version at/below the
-			// watermark, so it is always readable for a post-watermark window.
-			valueRev := e.rev
-			if e.verb == proto.Event_DELETE {
-				valueRev = e.prevRev
-			}
-			val, gerr := b.kv.Get(ctx, b.coder.EncodeObjectKey(e.userKey, valueRev))
-			if gerr != nil {
-				loadErrMu.Lock()
-				if gerr == storage.ErrKeyNotFound {
-					incomplete = true // unexpectedly GC'd: replay cannot be trusted
-				} else if loadErr == nil {
-					loadErr = gerr
-				}
-				loadErrMu.Unlock()
-				return
-			}
-			events[i] = &proto.Event{
-				Type:     e.verb,
-				Revision: e.rev,
-				Kv:       &proto.KeyValue{Key: e.userKey, Value: val, Revision: valueRev},
-			}
-		}(i)
+	// The value revision an event carries: PUT/CREATE carry their own version;
+	// DELETE carries the deleted (previous) version, which compaction retains as
+	// the key's newest version at/below the watermark, so it is always readable
+	// for a post-watermark window.
+	valueRevOf := func(e pending) uint64 {
+		if e.verb == proto.Event_DELETE {
+			return e.prevRev
+		}
+		return e.rev
 	}
-	wg.Wait()
+	// Fetch every event's object value in ONE batched round trip (BatchGet) when
+	// the backend supports it, instead of a bounded-concurrency per-event Get —
+	// each of which, on TiKV, is a full begin/commit transaction, serializing a
+	// large catch-up window into thousands of tiny transactions (#43 replay-
+	// throughput bottleneck). Deduplicate keys first: a DELETE reuses the same
+	// object version as its preceding PUT, so both events map to one object key.
+	objKeys := make([][]byte, 0, len(entries))
+	seen := make(map[string]struct{}, len(entries))
+	for i := range entries {
+		ok := b.coder.EncodeObjectKey(entries[i].userKey, valueRevOf(entries[i]))
+		if _, dup := seen[string(ok)]; dup {
+			continue
+		}
+		seen[string(ok)] = struct{}{}
+		objKeys = append(objKeys, ok)
+	}
+	vals, incomplete, loadErr := b.loadEventValues(ctx, objKeys)
 	if loadErr != nil {
 		return nil, false, loadErr
 	}
 	if incomplete {
 		b.metricCli.EmitCounter("watch.event_log.incomplete", 1)
 		return nil, false, nil
+	}
+	events = make([]*proto.Event, len(entries))
+	for i := range entries {
+		e := entries[i]
+		valueRev := valueRevOf(e)
+		events[i] = &proto.Event{
+			Type:     e.verb,
+			Revision: e.rev,
+			Kv:       &proto.KeyValue{Key: e.userKey, Value: vals[string(b.coder.EncodeObjectKey(e.userKey, valueRev))], Revision: valueRev},
+		}
 	}
 	// Post-read gate: the entry gate raced cleanupEventLog (watermark push, then
 	// deletes) — if the watermark has meanwhile crossed the window, this iter may
@@ -271,6 +268,70 @@ func (b *backend) eventLogWatchEvents(ctx context.Context, prefix string, fromRe
 	klog.V(2).InfoS("watch history served from event log", "prefix", prefix,
 		"from", fromRevision, "to", toRevision, "events", len(events), "latency", time.Since(ts))
 	return events, true, nil
+}
+
+// loadEventValues fetches the object value for each (already-deduplicated) key.
+// It uses the storage's batched BatchGet when the backend implements it (one TSO
+// + one region-fanned-out read, replacing N per-key transactions) and falls back
+// to bounded-concurrency per-key Gets otherwise, preserving the same semantics.
+// Returns the value map (keyed by string(key)), an `incomplete` flag (a
+// referenced version was unexpectedly absent — GC'd — so the replay window cannot
+// be trusted and the caller must fall back to a scan), and a hard error (a real
+// storage failure). incomplete and a non-nil error are mutually exclusive.
+func (b *backend) loadEventValues(ctx context.Context, keys [][]byte) (vals map[string][]byte, incomplete bool, err error) {
+	if len(keys) == 0 {
+		return map[string][]byte{}, false, nil
+	}
+	if bg, ok := b.kv.(storage.BatchGetter); ok {
+		m, gerr := bg.BatchGet(ctx, keys)
+		if gerr != nil {
+			return nil, false, gerr
+		}
+		// Keys are deduplicated, so every requested key present == complete. A key
+		// missing from the map was unexpectedly GC'd: the window references a
+		// version that no longer exists and cannot be trusted.
+		if len(m) != len(keys) {
+			for _, k := range keys {
+				if _, found := m[string(k)]; !found {
+					return nil, true, nil
+				}
+			}
+		}
+		return m, false, nil
+	}
+	// Fallback for backends without BatchGet (e.g. badger): bounded-concurrency
+	// per-key Get — the original replay path.
+	vals = make(map[string][]byte, len(keys))
+	var mu sync.Mutex
+	sem := make(chan struct{}, eventLogReplayConcurrency)
+	var wg sync.WaitGroup
+	var loadErr error
+	var inc bool
+	for i := range keys {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(k []byte) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			v, gerr := b.kv.Get(ctx, k)
+			mu.Lock()
+			defer mu.Unlock()
+			if gerr != nil {
+				if gerr == storage.ErrKeyNotFound {
+					inc = true // unexpectedly GC'd: replay cannot be trusted
+				} else if loadErr == nil {
+					loadErr = gerr
+				}
+				return
+			}
+			vals[string(k)] = v
+		}(keys[i])
+	}
+	wg.Wait()
+	if loadErr != nil {
+		return nil, false, loadErr
+	}
+	return vals, inc, nil
 }
 
 // cleanupEventLog removes log entries at or below revision and advances the

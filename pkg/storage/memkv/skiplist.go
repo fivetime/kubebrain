@@ -72,6 +72,21 @@ func (s *store) Get(ctx context.Context, key []byte) (val []byte, err error) {
 	return elem.Value.([]byte), nil
 }
 
+// BatchGet implements storage.BatchGetter: look up every key under a single lock.
+// Absent keys are omitted from the map (per the BatchGetter contract), matching
+// TiKV's snapshot BatchGet.
+func (s *store) BatchGet(ctx context.Context, keys [][]byte) (map[string][]byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	m := make(map[string][]byte, len(keys))
+	for _, k := range keys {
+		if elem := s.skl.Get(k); elem != nil {
+			m[string(k)] = elem.Value.([]byte)
+		}
+	}
+	return m, nil
+}
+
 // GetPartitions implements storage.KvStorage interface
 func (s *store) GetPartitions(ctx context.Context, start, end []byte) (partitions []storage.Partition, err error) {
 	return []storage.Partition{{Start: start, End: end}}, err
