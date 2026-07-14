@@ -574,6 +574,28 @@ func main() {
 			return err
 		})
 
+	case "secrets-cleanup":
+		run(*count, func(i int) error {
+			ns := fmt.Sprintf("ns-%07d", *nsStart+i/(*perNs))
+			name := fmt.Sprintf("sec-%03d", i%*perNs)
+			err := cli.CoreV1().Secrets(ns).Delete(ctx, name, metav1m.DeleteOptions{})
+			if errors.IsNotFound(err) {
+				return nil
+			}
+			return err
+		})
+
+	case "configmaps-cleanup":
+		run(*count, func(i int) error {
+			ns := fmt.Sprintf("ns-%07d", *nsStart+i/(*perNs))
+			name := fmt.Sprintf("cm-%03d", i%*perNs)
+			err := cli.CoreV1().ConfigMaps(ns).Delete(ctx, name, metav1m.DeleteOptions{})
+			if errors.IsNotFound(err) {
+				return nil
+			}
+			return err
+		})
+
 	case "nodes-cleanup":
 		run(*count, func(i int) error {
 			name := fmt.Sprintf("kwok-node-%06d", *start+i)
