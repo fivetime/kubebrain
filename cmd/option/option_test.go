@@ -16,6 +16,7 @@ package option
 
 import (
 	"testing"
+	"time"
 
 	"github.com/spf13/pflag"
 	"github.com/stretchr/testify/require"
@@ -49,4 +50,36 @@ func TestTLSFlagsBindToExpectedSecurityConfigFields(t *testing.T) {
 	require.Equal(t, "/peer/ca.crt", o.epsConf.PeerSecurityConfig.CA)
 	require.Equal(t, "kubebrain-peer.kubebrain-system.svc", o.epsConf.PeerSecurityConfig.ServerName)
 	require.True(t, o.epsConf.PeerSecurityConfig.AllowInsecure)
+}
+
+// TestWatchProgressNotifyIntervalValidation locks the k8s-1.37-review guard:
+// kube-apiserver blocks consistent reads on watch progress for only 3s before
+// falling back to a full storage LIST, so an interval at/above that cliff must
+// be rejected at startup instead of silently degrading every consistent read.
+func TestWatchProgressNotifyIntervalValidation(t *testing.T) {
+	newValid := func() *KubeBrainOption {
+		o := NewOptions()
+		fs := pflag.NewFlagSet("test", pflag.ContinueOnError)
+		o.AddFlags(fs)
+		require.NoError(t, fs.Parse([]string{"--pd-addrs=127.0.0.1:2379"}))
+		return o
+	}
+
+	o := newValid()
+	require.NoError(t, o.Validate(), "default 1s must validate")
+
+	o = newValid()
+	o.watchProgressNotifyInterval = 2 * time.Second
+	require.NoError(t, o.Validate(), "2s is under the 2.5s cap")
+
+	o = newValid()
+	o.watchProgressNotifyInterval = 3 * time.Second
+	err := o.Validate()
+	require.Error(t, err, ">=2.5s must be rejected")
+	require.Contains(t, err.Error(), "watch-progress-notify-interval")
+
+	// <=0 keeps the "use built-in default" semantic and must stay accepted.
+	o = newValid()
+	o.watchProgressNotifyInterval = 0
+	require.NoError(t, o.Validate())
 }

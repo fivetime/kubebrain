@@ -75,12 +75,19 @@ type KubeBrainOption struct {
 func NewOptions() *KubeBrainOption {
 	return &KubeBrainOption{
 		epsConf: &endpoint.Config{
-			Port:                    2379,
-			PeerPort:                2380,
-			ClientSecurityConfig:    &endpoint.SecurityConfig{},
-			PeerSecurityConfig:      &endpoint.SecurityConfig{},
-			InfoSecurityConfig:      &endpoint.SecurityConfig{},
-			EnableEtcdCompatibility: false,
+			Port:                 2379,
+			PeerPort:             2380,
+			ClientSecurityConfig: &endpoint.SecurityConfig{},
+			PeerSecurityConfig:   &endpoint.SecurityConfig{},
+			InfoSecurityConfig:   &endpoint.SecurityConfig{},
+			// Default true: this is what every kube-apiserver deployment needs
+			// (etcd value/lease semantics, follower→leader write proxy, count
+			// index eligibility). With it false, a multi-replica deployment whose
+			// apiserver lists all endpoints has followers REJECT writes — and
+			// clientv3 does not retry mutable RPCs on Unavailable, so ~2/3 of
+			// writes fail while reads (retried) succeed. Opt out only for
+			// non-etcd (native brain-client) consumers.
+			EnableEtcdCompatibility: true,
 			// Leader-election defaults (client-go). Overridable via flags below.
 			LeaseDuration: 8 * time.Second,
 			RenewDeadline: 5 * time.Second,
@@ -136,7 +143,7 @@ func (o *KubeBrainOption) AddFlags(fs *pflag.FlagSet) {
 	fs.BoolVar(&o.epsConf.PeerSecurityConfig.AllowInsecure, "peer-allow-insecure",
 		o.epsConf.PeerSecurityConfig.AllowInsecure, "Allow insecure access even if peer TLS config is set.")
 	fs.BoolVar(&o.epsConf.EnableEtcdCompatibility, "compatible-with-etcd",
-		o.epsConf.EnableEtcdCompatibility, "Enable full compatibility with usage of etcd3 in kube-apiserver")
+		o.epsConf.EnableEtcdCompatibility, "Enable full compatibility with usage of etcd3 in kube-apiserver (etcd value/lease semantics + follower write proxy). Default true; set false only for non-etcd brain-client consumers — with it false, followers reject etcd writes and multi-endpoint apiservers lose ~2/3 of writes")
 
 	// info/metrics port TLS (#32): metrics and pprof are served on the info port,
 	// not the client data port; these let the info port serve TLS instead of plaintext.
@@ -160,7 +167,7 @@ func (o *KubeBrainOption) AddFlags(fs *pflag.FlagSet) {
 	fs.IntVar(&o.countIndexMaxKeys, "count-index-max-keys", o.countIndexMaxKeys, "cap on keys tracked by the count index; above it the index disables and counts fall back to a scan (0 = unlimited)")
 	fs.Uint64Var(&o.autoCompactionRetention, "auto-compaction-retention-revisions", o.autoCompactionRetention, "SAFETY NET: if >0, the leader caps MVCC history to the last N revisions should the apiserver's own compaction stop (KubeBrain never auto-compacts otherwise). 0 = off. Set generously large so it only bites when the primary compactor is far behind.")
 	fs.Uint64Var(&o.historyScanRevBucket, "watch-history-scan-rev-bucket", o.historyScanRevBucket, "reconnect herd (#30): watchers reconnecting to the same prefix within this many revisions share one watch-history storage scan (singleflight). Larger = more sharing across HA-apiserver replicas whose reconnect revisions are spread apart, at the cost of a shared scan window up to one bucket wider than requested. 1 = share only exact-revision reconnects. 0 = default.")
-	fs.DurationVar(&o.watchProgressNotifyInterval, "watch-progress-notify-interval", o.watchProgressNotifyInterval, "how often watch progress notifications advance/emit (drives kube-apiserver ConsistentListFromCache convergence; smaller = fresher at more marker traffic)")
+	fs.DurationVar(&o.watchProgressNotifyInterval, "watch-progress-notify-interval", o.watchProgressNotifyInterval, "how often watch progress notifications advance/emit (drives kube-apiserver ConsistentListFromCache convergence; smaller = fresher at more marker traffic). Must be < 2.5s: the apiserver blocks consistent reads on progress for only 3s before falling back to a full LIST against storage")
 	fs.DurationVar(&o.epsConf.LeaseDuration, "leader-lease-duration", o.epsConf.LeaseDuration, "leader-election lease duration: how long a dead leader's lease is held before a successor can acquire it (dominates the failover leaderless window). Smaller = faster failover but more spurious failovers under load. Must satisfy retry < renew < lease.")
 	fs.DurationVar(&o.epsConf.RenewDeadline, "leader-renew-deadline", o.epsConf.RenewDeadline, "leader-election renew deadline; also the write-fence self-fencing bound (#39). Must be < leader-lease-duration.")
 	fs.DurationVar(&o.epsConf.RetryPeriod, "leader-retry-period", o.epsConf.RetryPeriod, "leader-election retry period; how often leadership is renewed/acquired. Must be < leader-renew-deadline.")
@@ -188,6 +195,18 @@ func (o *KubeBrainOption) Validate() error {
 		if _, _, err := net.SplitHostPort(fmt.Sprintf("%s:%d", o.advertiseHost, o.epsConf.PeerPort)); err != nil {
 			return fmt.Errorf("--advertise-host %q is invalid (IPv6 must be bracketed, e.g. [2001:db8::1]): %w", o.advertiseHost, err)
 		}
+	}
+
+	// kube-apiserver's ConsistentListFromCache (GA in 1.37) blocks a consistent
+	// read on watch progress for a hard-coded 3s before falling back to a full
+	// LIST against storage — at 10M+ keys that fallback is an O(all-keys) scan
+	// per consistent read. A progress cadence at or above the block timeout would
+	// make EVERY consistent read on a quiet resource take that cliff, so fail
+	// loudly instead. (<=0 keeps the "use default 1s" semantic.)
+	const watchProgressNotifyIntervalMax = 2500 * time.Millisecond
+	if o.watchProgressNotifyInterval > watchProgressNotifyIntervalMax {
+		return fmt.Errorf("--watch-progress-notify-interval %v is too large: must be < %v (kube-apiserver blocks consistent reads on progress for only 3s before falling back to a full storage LIST)",
+			o.watchProgressNotifyInterval, watchProgressNotifyIntervalMax)
 	}
 
 	if strings.HasSuffix(o.Prefix, "/") {

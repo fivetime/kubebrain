@@ -30,7 +30,7 @@ make tikv
 ```
 多个KubeBrain共用一个tikv集群时，注意配置
 - `key-prefix`参数和apiserver对应的apiserver的`etcd-prefix`参数保持一致
-- `compatible-with-etcd`需要置为true，以开启从节点的支持txn和watch，对etcd功能的完全兼容
+- `compatible-with-etcd`开启从节点的txn/watch支持与对etcd功能的完全兼容;现已默认为true(仅原生brain-client消费者需显式置false)
 
 ## APIServer
 ### 使用社区版的APIServer

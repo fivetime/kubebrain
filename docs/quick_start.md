@@ -29,7 +29,7 @@ make tikv
 ```
 When multiple KubeBrain share a tikv cluster
 - `key-prefix` is consistent with the etcd-prefixparameter of the apiserver corresponding to the apiserver.
-- `compatible-with-etcd` should set true to make all nodes provide all etcd APIs used in apiserver 
+- `compatible-with-etcd` makes all nodes provide all etcd APIs used in apiserver; it defaults to true (set `=false` only for native brain-client consumers)
 
 ## APIServer
 
