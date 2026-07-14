@@ -166,6 +166,14 @@ func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) error {
 			w.Cancel(msg.GetCancelRequest().WatchId, nil, false)
 		} else if msg.GetProgressRequest() != nil {
 			s.metricCli.EmitCounter("watch.progress.request", 1)
+			// Kick one immediate marker fan-out so the watermark converges NOW
+			// rather than on the next ticker beat. The snapshot answered below is
+			// still the current (possibly one-interval-stale) value — markers ride
+			// the FIFO subscriber channels — but the kicked marker advances
+			// syncedRev for the follow-up RequestProgress ~100ms later, keeping
+			// k8s 1.37 ConsistentListFromCache convergence at poll granularity
+			// instead of ticker granularity (and off its 3s LIST-fallback cliff).
+			s.backend.KickWatchProgress()
 			// Per-watch progress (#39): answer RequestProgress with one
 			// header-only response PER WATCH, each carrying that watch's own
 			// delivered watermark (syncedRev). clientv3 routes responses by

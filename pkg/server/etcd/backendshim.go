@@ -115,6 +115,11 @@ type BackendShim interface {
 	// the server watch loop's emission ticker matches the backend marker cadence.
 	WatchProgressNotifyInterval() time.Duration
 
+	// KickWatchProgress requests one immediate progress fan-out (non-blocking,
+	// coalescing) so an in-flight RequestProgress converges without waiting out
+	// the ticker interval.
+	KickWatchProgress()
+
 	// SetCurrentRevision is used for init tso for leader
 	SetCurrentRevision(uint64)
 
@@ -944,6 +949,10 @@ func (b *backendShim) GetCurrentRevision() uint64 {
 
 func (b *backendShim) WatchProgressNotifyInterval() time.Duration {
 	return b.backend.WatchProgressNotifyInterval()
+}
+
+func (b *backendShim) KickWatchProgress() {
+	b.backend.KickWatchProgress()
 }
 
 func (b *backendShim) GetPublishedRevision() uint64 {

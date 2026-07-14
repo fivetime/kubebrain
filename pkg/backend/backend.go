@@ -165,6 +165,13 @@ type Backend interface {
 	// in-band marker cadence. Always > 0.
 	WatchProgressNotifyInterval() time.Duration
 
+	// KickWatchProgress requests one immediate in-band progress fan-out ahead of
+	// the periodic ticker, so an in-flight watch RequestProgress converges in
+	// ~one poll round-trip instead of waiting out the ticker interval (k8s 1.37
+	// ConsistentListFromCache polls every 100ms under a 3s block timeout).
+	// Non-blocking; concurrent kicks coalesce.
+	KickWatchProgress()
+
 	// SetCurrentRevision is used for init tso for leader
 	SetCurrentRevision(uint64)
 
@@ -364,6 +371,7 @@ func NewBackend(kv storage.KvStorage, config Config, metricCli metrics.Metrics) 
 			metricCli:        metricCli,
 			progressInterval: config.WatchProgressNotifyInterval,
 			bufSize:          config.WatchFanoutBuffer,
+			progressKick:     make(chan struct{}, 1),
 		},
 		historyScanSem:   make(chan struct{}, historyScanConcurrency),
 		historyScanGroup: newScanGroup(),
@@ -602,6 +610,11 @@ func (b *backend) GetPublishedRevision() uint64 {
 // guarantees it is > 0.
 func (b *backend) WatchProgressNotifyInterval() time.Duration {
 	return b.config.WatchProgressNotifyInterval
+}
+
+// KickWatchProgress implements Backend interface.
+func (b *backend) KickWatchProgress() {
+	b.watcherHub.KickProgress()
 }
 
 // SetCurrentRevision implements Backend interface

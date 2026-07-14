@@ -76,6 +76,27 @@ type WatcherHub struct {
 	// also advances it to the reset target so a post-reset marker never advertises
 	// a stale-low revision.
 	publishedRev uint64
+	// progressKick asks the Stream loop for one immediate progress fan-out ahead
+	// of the periodic ticker. It is fed by KickProgress on the watch
+	// ProgressRequest path: kube-apiserver's ConsistentListFromCache polls
+	// RequestProgress every 100ms with a 3s block timeout, and a watermark that
+	// only advances on the ticker cadence makes every consistent read pay up to
+	// one full interval — or, with a misconfigured interval > 3s, time out and
+	// fall back to an O(all-keys) LIST against storage. Buffered(1) so kicks
+	// coalesce; fan-out stays confined to the Stream goroutine (no new races).
+	progressKick chan struct{}
+}
+
+// KickProgress requests one immediate progress fan-out (see progressKick).
+// Non-blocking: concurrent kicks coalesce into the one already pending.
+func (w *WatcherHub) KickProgress() {
+	if w.progressKick == nil {
+		return
+	}
+	select {
+	case w.progressKick <- struct{}{}:
+	default:
+	}
 }
 
 // catchUpState is the hub-side handle of a subscriber in ring catch-up.
@@ -205,6 +226,11 @@ func (w *WatcherHub) Stream(input chan []*proto.Event) {
 			}
 			w.broadcast(item)
 		case <-ticker.C:
+			w.broadcastProgress(atomic.LoadUint64(&w.publishedRev))
+		case <-w.progressKick:
+			// On-demand fan-out for an in-flight RequestProgress (see progressKick).
+			// Same FIFO marker as the ticker path, so it can never overtake an
+			// unsent matching event.
 			w.broadcastProgress(atomic.LoadUint64(&w.publishedRev))
 		}
 	}
