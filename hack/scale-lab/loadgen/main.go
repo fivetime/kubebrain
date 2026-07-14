@@ -465,7 +465,7 @@ func main() {
 
 	case "configmaps":
 		run(*count, func(i int) error {
-			ns := fmt.Sprintf("ns-%07d", *nsStart+i / *perNs)
+			ns := fmt.Sprintf("ns-%07d", *nsStart + i / *perNs)
 			name := fmt.Sprintf("cm-%03d", i%*perNs)
 			_, err := cli.CoreV1().ConfigMaps(ns).Create(ctx,
 				&corev1.ConfigMap{ObjectMeta: metav1m.ObjectMeta{Name: name, Namespace: ns,
@@ -477,7 +477,7 @@ func main() {
 
 	case "serviceaccounts":
 		run(*count, func(i int) error {
-			ns := fmt.Sprintf("ns-%07d", *nsStart+i / *perNs)
+			ns := fmt.Sprintf("ns-%07d", *nsStart + i / *perNs)
 			name := fmt.Sprintf("sa-%03d", i%*perNs)
 			_, err := cli.CoreV1().ServiceAccounts(ns).Create(ctx,
 				&corev1.ServiceAccount{ObjectMeta: metav1m.ObjectMeta{Name: name, Namespace: ns,
@@ -488,7 +488,7 @@ func main() {
 
 	case "roles":
 		run(*count, func(i int) error {
-			ns := fmt.Sprintf("ns-%07d", *nsStart+i / *perNs)
+			ns := fmt.Sprintf("ns-%07d", *nsStart + i / *perNs)
 			name := fmt.Sprintf("role-%03d", i%*perNs)
 			_, err := cli.RbacV1().Roles(ns).Create(ctx,
 				&rbacv1.Role{ObjectMeta: metav1m.ObjectMeta{Name: name, Namespace: ns,
@@ -502,7 +502,7 @@ func main() {
 
 	case "endpointslices":
 		run(*count, func(i int) error {
-			ns := fmt.Sprintf("ns-%07d", *nsStart+i / *perNs)
+			ns := fmt.Sprintf("ns-%07d", *nsStart + i / *perNs)
 			name := fmt.Sprintf("eps-%03d", i%*perNs)
 			pn := "p"
 			pp := int32(80)
