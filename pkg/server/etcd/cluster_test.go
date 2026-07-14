@@ -39,6 +39,25 @@ func TestMemberListReturnsCurrentMember(t *testing.T) {
 	require.Equal(t, []string{"http://test-peer"}, resp.Members[0].ClientURLs)
 }
 
+func TestMemberListClientURLUsesAdvertisedClientPortAndScheme(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	// Fallback (unset advertise info): legacy identity-derived URL. Identity in
+	// the test harness is not host:port shaped, so shaping must also fall back.
+	require.Equal(t, "http://test-peer", server.clientURLFromAddress("test-peer"))
+
+	server.SetAdvertiseClientInfo(3379, false)
+	require.Equal(t, "http://10.0.0.1:3379", server.clientURLFromAddress("10.0.0.1:2380"))
+
+	server.SetAdvertiseClientInfo(3379, true)
+	require.Equal(t, "https://10.0.0.1:3379", server.clientURLFromAddress("10.0.0.1:2380"))
+	// IPv6 identity keeps brackets.
+	require.Equal(t, "https://[2001:db8::1]:3379", server.clientURLFromAddress("[2001:db8::1]:2380"))
+	// Unparseable identity falls back rather than emitting a mangled URL.
+	require.Equal(t, "http://test-peer", server.clientURLFromAddress("test-peer"))
+}
+
 func TestMemberMutationIsUnsupported(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

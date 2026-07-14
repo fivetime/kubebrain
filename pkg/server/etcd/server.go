@@ -72,6 +72,12 @@ type RPCServer struct {
 	metricCli metrics.Metrics
 	peers     service.PeerService
 
+	// Advertised client endpoint shape for MemberList (see SetAdvertiseClientInfo):
+	// the election identity is host:PEER-port and says nothing about the client
+	// port or TLS, so ClientURLs built from it alone are wrong on both counts.
+	advertiseClientPort  int
+	advertiseClientHTTPS bool
+
 	// The lease subsystem: its state and logic live in leaseManager (lease.go /
 	// lease_manager.go). Embedded so the lease gRPC handlers and the write-path
 	// bind/unbind/IDForKey helpers are promoted onto RPCServer.
@@ -142,6 +148,17 @@ func New(backend b.Backend, metricCli metrics.Metrics, peers service.PeerService
 		klog.ErrorS(err, "restore leases failed")
 	}
 	return server
+}
+
+// SetAdvertiseClientInfo tells MemberList how to shape ClientURLs: deployments
+// are homogeneous, so every member serves clients on clientPort, with https iff
+// the client port serves TLS. Unset (0) falls back to the legacy identity-based
+// URL (host:peerPort, http) — wrong for TLS/NAT setups but preserved for tests
+// and embedded uses that never call this. Called once during wiring, before
+// serving; not safe for concurrent use with requests.
+func (s *RPCServer) SetAdvertiseClientInfo(clientPort int, https bool) {
+	s.advertiseClientPort = clientPort
+	s.advertiseClientHTTPS = https
 }
 
 // Register register etcd grpc service

@@ -16,6 +16,9 @@ package etcd
 
 import (
 	"context"
+	"fmt"
+	"net"
+	"strconv"
 	"strings"
 
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
@@ -40,12 +43,15 @@ func (s *RPCServer) MemberList(context.Context, *etcdserverpb.MemberListRequest)
 			continue
 		}
 		seen[id] = struct{}{}
-		memberURL := memberURLFromAddress(address)
 		members = append(members, &etcdserverpb.Member{
-			ID:         id,
-			Name:       address,
-			PeerURLs:   []string{memberURL},
-			ClientURLs: []string{memberURL},
+			ID:       id,
+			Name:     address,
+			PeerURLs: []string{memberURLFromAddress(address)},
+			// ClientURLs must be dialable BY CLIENTS: clientv3's Sync/AutoSync
+			// replaces the caller's endpoint list with them wholesale, so the
+			// legacy identity-derived URL (http://host:PEER-port) sent TLS
+			// clients to a plaintext port that does not serve KV.
+			ClientURLs: []string{s.clientURLFromAddress(address)},
 			IsLearner:  false,
 		})
 	}
@@ -88,4 +94,23 @@ func memberURLFromAddress(address string) string {
 		return address
 	}
 	return "http://" + address
+}
+
+// clientURLFromAddress rewrites a peer identity (host:peerPort) into the
+// member's client endpoint using the advertised client port and TLS scheme
+// (SetAdvertiseClientInfo). Falls back to the legacy peer-derived URL when the
+// advertise info is unset or the identity does not parse.
+func (s *RPCServer) clientURLFromAddress(address string) string {
+	if s.advertiseClientPort == 0 || strings.Contains(address, "://") {
+		return memberURLFromAddress(address)
+	}
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return memberURLFromAddress(address)
+	}
+	scheme := "http"
+	if s.advertiseClientHTTPS {
+		scheme = "https"
+	}
+	return fmt.Sprintf("%s://%s", scheme, net.JoinHostPort(host, strconv.Itoa(s.advertiseClientPort)))
 }

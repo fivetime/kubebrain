@@ -88,6 +88,10 @@ func NewServer(ctx context.Context, backend backend.Backend, metricCli metrics.M
 	peerService := service.NewPeerService(election, metricCli, backend, config.getPeerServiceConfig())
 	// construct etcd & brian grpc server
 	s.etcdServer = etcd.New(backend, metricCli, peerService)
+	// MemberList ClientURLs: advertise the homogeneous client port with the
+	// scheme clients actually dial (https iff the client port serves TLS),
+	// instead of the peer identity's http://host:peerPort.
+	s.etcdServer.SetAdvertiseClientInfo(config.ClientPort, config.ClientTLS != nil)
 	s.brainServer = brain.New(ctx, backend, metricCli, peerService)
 	s.leaderElection = election
 	s.peers = peerService
@@ -207,6 +211,11 @@ func (s *server) GetInfoHttpHandlers() map[string]http.Handler {
 		"/ready":    http.HandlerFunc(s.httpReadyHandler),
 		"/status":   http.HandlerFunc(s.revisionHandler),
 		"/election": http.HandlerFunc(s.electionHandler),
+		// kubeadm 1.37's ExternalEtcd.HTTPEndpoints lets users point etcd HTTP
+		// probes at a separate port from gRPC; its preflight GETs /version there
+		// and treats a 404 as a fatal parse error. Serve it on the info port too
+		// so either port satisfies the check.
+		"/version": http.HandlerFunc(s.versionHandler),
 	}
 }
 
