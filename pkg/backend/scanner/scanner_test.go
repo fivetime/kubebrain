@@ -22,6 +22,7 @@ import (
 	"testing"
 
 	"github.com/golang/mock/gomock"
+	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
 	mock "github.com/kubewharf/kubebrain/pkg/metrics/mock"
 	imemkv "github.com/kubewharf/kubebrain/pkg/storage/memkv"
 	"github.com/stretchr/testify/require"
@@ -327,4 +328,32 @@ func TestRangeStreamKeysOnlyDropsValues(t *testing.T) {
 		require.Truef(t, ok, "key %s must be emitted in keysOnly mode", k)
 		require.Emptyf(t, v, "value must be dropped when keysOnly=true (key %s)", k)
 	}
+}
+
+// TestStreamReceiverNotRetriableAfterEmit locks the k8s-1.37-review fix: a
+// per-partition streaming fork that has pushed a chunk into the channel must
+// refuse retry — re-scanning the partition would re-send those keys and break
+// RangeStream's disjoint-chunks contract.
+func TestStreamReceiverNotRetriableAfterEmit(t *testing.T) {
+	stream := make(chan *proto.StreamRangeResponse, 16)
+	root := newStreamReceiver(7, stream)
+	require.True(t, root.retriable())
+
+	// Batch-full emit path.
+	f1 := root.fork().(*streamResultReceiver)
+	require.True(t, f1.retriable())
+	for i := 0; i < rangeStreamBatch; i++ {
+		f1.append([]byte("k"), []byte("v"), 1)
+	}
+	require.False(t, f1.retriable(), "fork must be non-retriable once a chunk is emitted")
+	require.True(t, root.retriable(), "sibling/parent receivers are unaffected")
+	f1.reset()
+	require.False(t, f1.retriable(), "reset clears the pending batch, not the emitted mark")
+
+	// Flush emit path.
+	f2 := root.fork().(*streamResultReceiver)
+	f2.append([]byte("k"), []byte("v"), 1)
+	require.True(t, f2.retriable(), "buffered-only data is recallable via reset — still retriable")
+	f2.flush()
+	require.False(t, f2.retriable())
 }

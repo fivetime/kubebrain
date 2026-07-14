@@ -127,6 +127,14 @@ func (s *RPCServer) RangeStream(r *etcdserverpb.RangeRequest, rs etcdserverpb.KV
 	if r.SortOrder != etcdserverpb.RangeRequest_NONE {
 		return status.Error(codes.Unimplemented, "etcdserver: sorting is not supported by RangeStream")
 	}
+	if r.Limit > 0 {
+		// etcd 3.7 honors Limit on RangeStream (totalLimit + More/Count on the
+		// final chunk); the partition-parallel scanner has no cross-partition
+		// ordering to truncate against, so honoring it is not possible here.
+		// Silently ignoring it would return the FULL range to a client that
+		// asked for N keys — a wrong answer plus an unexpected O(all-keys) scan.
+		return status.Error(codes.Unimplemented, "etcdserver: limit is not supported by RangeStream")
+	}
 	if err := s.peers.SyncReadRevision(ctx); err != nil {
 		return err
 	}

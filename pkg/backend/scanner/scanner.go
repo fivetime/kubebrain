@@ -147,8 +147,22 @@ func (r *scanner) Count(ctx context.Context, start []byte, end []byte, revision 
 // values at once (a failover-time memory spike); range reads that need the value
 // pass false.
 func (r *scanner) RangeStream(ctx context.Context, start []byte, end []byte, revision uint64, keysOnly bool) chan *proto.StreamRangeResponse {
-	// todo: set buffer size
-	stream := make(chan *proto.StreamRangeResponse, 1000)
+	// Buffer sizing is the memory bound of the whole stream (k8s 1.37 review):
+	// partition workers fill this channel in parallel at scan speed while the
+	// consumer drains at gRPC send speed, so with values attached a deep buffer
+	// holds buffer×rangeStreamBatch full objects — 1000×300 ≈ 300k values, a
+	// GB-scale spike per stream, multiplied by however many cachers the
+	// apiserver cold-starts concurrently now that EtcdRangeStream defaults on.
+	// A shallow buffer instead blocks the workers on send, so HTTP/2 flow
+	// control propagates all the way into the scan (the shim cancels+drains on
+	// disconnect, so blocked workers never leak). keysOnly streams (count-index
+	// rebuild) carry no values — tiny entries where the deep buffer is cheap
+	// and keeps the rebuild scan unthrottled.
+	buffer := 8
+	if keysOnly {
+		buffer = 1000
+	}
+	stream := make(chan *proto.StreamRangeResponse, buffer)
 	receiver := newStreamReceiver(revision, stream)
 
 	go func() {
@@ -416,6 +430,13 @@ func (w *worker) runWithBackoffRetry(ctx context.Context, receiver resultReceive
 
 		if count, scanErr = w.run(ctx, receiver); scanErr == nil {
 			return true, nil
+		}
+		if !receiver.retriable() {
+			// A streaming receiver has already emitted chunks it cannot recall;
+			// re-scanning this partition from its start would re-send those keys
+			// and silently violate RangeStream's disjoint-chunks contract. Abort
+			// so the stream terminates with an error and the client relists.
+			return false, fmt.Errorf("partition %d not retriable after partial stream: %w", w.idx, scanErr)
 		}
 		return false, nil
 	})

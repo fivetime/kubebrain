@@ -25,6 +25,16 @@ type resultReceiver interface {
 	reset()
 	needMore() bool
 
+	// retriable reports whether a failed partition scan may be retried from the
+	// partition start with this receiver. Buffering receivers are always
+	// retriable (reset discards everything). A streaming receiver is NOT once it
+	// has emitted a chunk: chunks already in the channel cannot be recalled, so
+	// re-scanning the partition would re-send keys and break RangeStream's
+	// disjoint-chunks contract (clients like clientv3's GetStreamToGetResponse
+	// proto.Merge the chunks — duplicates corrupt Kvs/Count). Failing the scan
+	// instead surfaces Unavailable and the client cleanly relists.
+	retriable() bool
+
 	// MapReduce
 	fork() resultReceiver
 	merge(receiver resultReceiver)
@@ -54,6 +64,10 @@ func (e *emptyResultReceiver) reset() {
 
 func (e *emptyResultReceiver) fork() resultReceiver {
 	return &emptyResultReceiver{}
+}
+
+func (e *emptyResultReceiver) retriable() bool {
+	return true
 }
 func (e *emptyResultReceiver) merge(receiver resultReceiver) {
 	// do nothing
@@ -107,6 +121,10 @@ type streamResultReceiver struct {
 	readRev uint64
 	stream  chan *proto.StreamRangeResponse
 	batch   []*proto.KeyValue
+	// emitted is set once a chunk has been pushed into stream; from then on this
+	// receiver (a per-partition fork) is no longer retriable — see
+	// resultReceiver.retriable.
+	emitted bool
 }
 
 func newStreamReceiver(readRev uint64, stream chan *proto.StreamRangeResponse) *streamResultReceiver {
@@ -134,6 +152,7 @@ func (e *streamResultReceiver) append(key, value []byte, revision uint64) {
 			},
 		}
 		e.stream <- resp
+		e.emitted = true
 	}
 }
 
@@ -147,6 +166,7 @@ func (e *streamResultReceiver) flush() {
 			},
 		}
 		e.stream <- resp
+		e.emitted = true
 		e.reset()
 	}
 }
@@ -169,4 +189,8 @@ func (e *streamResultReceiver) fork() resultReceiver {
 		readRev: e.readRev,
 		stream:  e.stream,
 	}
+}
+
+func (e *streamResultReceiver) retriable() bool {
+	return !e.emitted
 }
