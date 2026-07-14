@@ -24,6 +24,8 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/api/resource"
 	metav1m "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -458,6 +460,59 @@ func main() {
 				Data: map[string][]byte{"k": []byte("v0123456789")},
 			}
 			_, err := cli.CoreV1().Secrets(ns).Create(ctx, sec, metav1m.CreateOptions{})
+			return err
+		})
+
+	case "configmaps":
+		run(*count, func(i int) error {
+			ns := fmt.Sprintf("ns-%07d", *nsStart+i / *perNs)
+			name := fmt.Sprintf("cm-%03d", i%*perNs)
+			_, err := cli.CoreV1().ConfigMaps(ns).Create(ctx,
+				&corev1.ConfigMap{ObjectMeta: metav1m.ObjectMeta{Name: name, Namespace: ns,
+					Labels: map[string]string{"workload-type": "fake"}},
+					Data: map[string]string{"k": "v0123456789"}},
+				metav1m.CreateOptions{})
+			return err
+		})
+
+	case "serviceaccounts":
+		run(*count, func(i int) error {
+			ns := fmt.Sprintf("ns-%07d", *nsStart+i / *perNs)
+			name := fmt.Sprintf("sa-%03d", i%*perNs)
+			_, err := cli.CoreV1().ServiceAccounts(ns).Create(ctx,
+				&corev1.ServiceAccount{ObjectMeta: metav1m.ObjectMeta{Name: name, Namespace: ns,
+					Labels: map[string]string{"workload-type": "fake"}}},
+				metav1m.CreateOptions{})
+			return err
+		})
+
+	case "roles":
+		run(*count, func(i int) error {
+			ns := fmt.Sprintf("ns-%07d", *nsStart+i / *perNs)
+			name := fmt.Sprintf("role-%03d", i%*perNs)
+			_, err := cli.RbacV1().Roles(ns).Create(ctx,
+				&rbacv1.Role{ObjectMeta: metav1m.ObjectMeta{Name: name, Namespace: ns,
+					Labels: map[string]string{"workload-type": "fake"}},
+					Rules: []rbacv1.PolicyRule{{
+						APIGroups: []string{""}, Resources: []string{"pods"},
+						Verbs: []string{"get", "list", "watch"}}}},
+				metav1m.CreateOptions{})
+			return err
+		})
+
+	case "endpointslices":
+		run(*count, func(i int) error {
+			ns := fmt.Sprintf("ns-%07d", *nsStart+i / *perNs)
+			name := fmt.Sprintf("eps-%03d", i%*perNs)
+			pn := "p"
+			pp := int32(80)
+			_, err := cli.DiscoveryV1().EndpointSlices(ns).Create(ctx,
+				&discoveryv1.EndpointSlice{ObjectMeta: metav1m.ObjectMeta{Name: name, Namespace: ns,
+					Labels: map[string]string{"workload-type": "fake", "kubernetes.io/service-name": "svc-fake"}},
+					AddressType: discoveryv1.AddressTypeIPv4,
+					Endpoints:   []discoveryv1.Endpoint{{Addresses: []string{"10.0.0.1"}}},
+					Ports:       []discoveryv1.EndpointPort{{Name: &pn, Port: &pp}}},
+				metav1m.CreateOptions{})
 			return err
 		})
 
