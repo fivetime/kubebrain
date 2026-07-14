@@ -1,0 +1,50 @@
+# KubeBrain × Kubernetes 1.37 就绪度报告与运维指引
+
+日期:2026-07-14 · 对照基线:k8s 1.37 master(vendor etcd api/client v3.7.0)vs KubeBrain main
+审计方式:多 agent 双侧源码契约对照(k8s 1.37 实际发什么/期待什么 ⇄ KubeBrain 实际实现),每条发现经对抗验证。
+
+## 总判断
+
+**有条件 READY**:未发现任何默认路径破坏(零 GAP);审计发现的 3 项 P1 + 5 项 P2 风险已全部修复(见下文)。
+
+## 1.37 与存储层相关的关键变化
+
+| 变化 | 对 KubeBrain 的影响 |
+|---|---|
+| **EtcdRangeStream(Beta,默认开)**:watch-cache 初始化改走一次 `KV.RangeStream` 流式 RPC 替代分页 Range | KubeBrain 原生实现已就绪(#65);apiserver 只发 prefix range(无 Limit/Rev/Sort/Filter),完全在支持子集内;形状不支持时 Unimplemented → apiserver 自动回退分页并 10min 重探 |
+| **ConsistentListFromCache 锁死 GA**:一致读阻塞在 watch progress 上,100ms 轮询、3s 超时后回退全量 LIST | KubeBrain 支持 in-band per-watch ProgressRequest;本轮加固:RequestProgress 触发即时 marker 扇出 + `--watch-progress-notify-interval` 校验(必须 < 2.5s) |
+| **kubeadm 外部 etcd 版本下限抬至 3.5.24-0** | KubeBrain 自报 etcd 3.7.0(gRPC Status + HTTP /version),通过 |
+| **kubeadm 新增 `ExternalEtcd.HTTPEndpoints`** | `/version` 现同时注册在 client 口与 info 口,任一口都可承接预检 |
+| **StorageVersionMigration GA** | 见下方 runbook |
+| 新资源前缀(PodGroup/resource.k8s.io/v1 等)、CBOR 存储编码、WatchListCompression | 对 KubeBrain 透明(key/value 均为不透明字节;value envelope magic 0x00 与 CBOR 前缀无碰撞) |
+
+## 本轮修复清单(审计 P1/P2)
+
+- **P1** RequestProgress 即时扇出(`WatcherHub.KickProgress`,FIFO marker 不越序)+ `--watch-progress-notify-interval` 上限校验(< 2.5s,fail loudly)——封死一致读的 3s 全量 LIST 回退悬崖。
+- **P1** `--compatible-with-etcd` 默认改 **true**——原默认 false 时多副本部署漏配该 flag 会让 follower 拒写,clientv3 对 mutable RPC 不重试 → ~2/3 写持续失败而读自愈。非 etcd(brain-client)消费者显式关闭。
+- **P1** RangeStream 内部通道缓冲 1000→8(带 value 路径)——gate 默认开后这是 apiserver 冷启动默认路径,深缓冲=每流 30 万个带 value KV 的内存尖峰;浅缓冲让 gRPC 流控背压穿透到扫描。keysOnly(count-index rebuild)保留深缓冲。
+- **P2** 分区 worker 已流出块后禁止重试(`retriable()`)——重扫会重发 key 违反 disjoint-chunks 契约;现改为流以错误终止,客户端干净 relist。
+- **P2** RangeStream 收到 `Limit>0` 返回 Unimplemented——分区并行扫描无法全局截断,静默忽略会给"无错误的错答案"。
+- **P2** info 口注册 `GET /version`。
+- **P2** MemberList 的 ClientURLs 按 client 口 + 实际 TLS scheme 构造(原 `http://host:peerPort` 会把 AutoSync 客户端引向不服务 KV 的明文端口)。
+
+## 运维 runbook
+
+### StorageVersionMigration(1.37 GA)在超大规模下
+
+SVM 仅在**显式创建 SVM CR** 时触发,但 KCM 给它的 client 特批 QPS×20/Burst×100(默认 400 QPS/3000 burst)。对 1000 万对象的资源做迁移 ≈ 连续 7 小时写洪水、revision +10M、临时 10M 陈旧版本。迁移前:
+
+1. **确认 TiKV GC safepoint 推进在位**:`storage_gc_safepoint` 指标持续推进(KubeBrain `--storage-gc-lifetime` 默认 10m;裸 PD+TiKV 无 TiDB 时必须依赖它)。
+2. **监控 compaction 追平**:`compact_physical_done_rev` 与 `leader_revision` 的差值不应持续拉大;`compact` 计数应随迁移持续增长。
+3. 预期迁移窗口内 LIST/count 延迟有可观测退化(MVCC 版本堆积),迁移完成 + 一轮 compaction 后恢复。
+4. 避免同时迁移多个大资源;retriable 错误会导致该资源整体重跑。
+
+### clientv3 AutoSync
+
+不要对 KubeBrain 端点开启 clientv3 的 `AutoSyncInterval`(kube-apiserver 默认不开,无需动作):MemberList 最多返回自身与 leader 两个合成 member,Sync 会用它整体覆盖端点列表,缩小客户端的可用端点集合。
+
+### 其他
+
+- `etcd_db_total_size_in_bytes`(DbSize)恒为 0(有意:TiKV 容量语义不同)。容量观测走 TiKV/PD 指标带外抓取;依赖 DbSize 的告警会静默,需改造。
+- 北极星规模(千万级)建议开启 apiserver 的 `ConsistentListFromCacheSkipTimeoutFallback` gate(1.37 Alpha):progress 超时改返 429 而非穿透存储全量 LIST,对存储纯减压。
+- `etcdctl snapshot save` 不支持(Unimplemented);备份走 TiKV 生态(BR)。
