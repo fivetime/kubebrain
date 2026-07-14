@@ -153,16 +153,16 @@ type renewStampingLock struct {
 	onRenew func()
 }
 
-func (r *renewStampingLock) Create(ler resourcelock.LeaderElectionRecord) error {
-	err := r.Interface.Create(ler)
+func (r *renewStampingLock) Create(ctx context.Context, ler resourcelock.LeaderElectionRecord) error {
+	err := r.Interface.Create(ctx, ler)
 	if err == nil {
 		r.onRenew()
 	}
 	return err
 }
 
-func (r *renewStampingLock) Update(ler resourcelock.LeaderElectionRecord) error {
-	err := r.Interface.Update(ler)
+func (r *renewStampingLock) Update(ctx context.Context, ler resourcelock.LeaderElectionRecord) error {
+	err := r.Interface.Update(ctx, ler)
 	if err == nil {
 		r.onRenew()
 	}

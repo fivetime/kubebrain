@@ -5,8 +5,8 @@
 package mock
 
 import (
-	metrics "github.com/kubewharf/kubebrain/pkg/metrics"
 	gomock "github.com/golang/mock/gomock"
+	metrics "github.com/kubewharf/kubebrain/pkg/metrics"
 	grpc "google.golang.org/grpc"
 	http "net/http"
 	reflect "reflect"

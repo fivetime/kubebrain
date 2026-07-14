@@ -1147,23 +1147,23 @@ func newResourceLockTestWrapper(itf resourcelock.Interface) *resourceLockTestWra
 	return rtw
 }
 
-func (rtw *resourceLockTestWrapper) Create(ler resourcelock.LeaderElectionRecord) error {
-	err := rtw.Interface.Create(ler)
+func (rtw *resourceLockTestWrapper) Create(ctx context.Context, ler resourcelock.LeaderElectionRecord) error {
+	err := rtw.Interface.Create(ctx, ler)
 	rtw.Signal()
 	return err
 }
 
-func (rtw *resourceLockTestWrapper) Update(ler resourcelock.LeaderElectionRecord) error {
-	err := rtw.Interface.Update(ler)
+func (rtw *resourceLockTestWrapper) Update(ctx context.Context, ler resourcelock.LeaderElectionRecord) error {
+	err := rtw.Interface.Update(ctx, ler)
 	rtw.Signal()
 	return err
 }
 
-func (rtw *resourceLockTestWrapper) Get() (*resourcelock.LeaderElectionRecord, error) {
-	ler, err := rtw.Interface.Get()
+func (rtw *resourceLockTestWrapper) Get(ctx context.Context) (*resourcelock.LeaderElectionRecord, []byte, error) {
+	ler, raw, err := rtw.Interface.Get(ctx)
 	fmt.Println(ler, err)
 	rtw.Signal()
-	return ler, err
+	return ler, raw, err
 }
 
 func (rtw *resourceLockTestWrapper) WaitForUsed(atLeaseTimes int) {
@@ -1276,24 +1276,25 @@ func testBackendResourceLockReleaseAfterRenew(t *testing.T, targetStorage storag
 	suite, closer := newTestSuites(t, targetStorage)
 	defer closer()
 
+	ctx := context.Background()
 	lock := suite.backend.GetResourceLock()
 	first := resourcelock.LeaderElectionRecord{
 		HolderIdentity:       lock.Identity(),
 		LeaseDurationSeconds: 8,
 		LeaderTransitions:    1,
 	}
-	suite.ast.NoError(lock.Create(first))
+	suite.ast.NoError(lock.Create(ctx, first))
 
 	second := first
 	second.RenewTime = first.RenewTime
-	suite.ast.NoError(lock.Update(second))
+	suite.ast.NoError(lock.Update(ctx, second))
 
 	release := resourcelock.LeaderElectionRecord{
 		LeaderTransitions: second.LeaderTransitions,
 	}
-	suite.ast.NoError(lock.Update(release))
+	suite.ast.NoError(lock.Update(ctx, release))
 
-	record, err := lock.Get()
+	record, _, err := lock.Get(ctx)
 	suite.ast.NoError(err)
 	suite.ast.Empty(record.HolderIdentity)
 	suite.ast.Contains(lock.Describe(), "empty,")

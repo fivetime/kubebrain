@@ -84,18 +84,18 @@ type resourceLock struct {
 	timeout     time.Duration
 }
 
-// Get implements resourcelock.Interface
-func (r *resourceLock) Get() (*resourcelock.LeaderElectionRecord, error) {
+// Get implements resourcelock.Interface. The returned []byte is the raw stored
+// record the leaderelection loop feeds back as the CAS old-value on the next
+// Update (client-go v0.20+ interface).
+func (r *resourceLock) Get(ctx context.Context) (*resourcelock.LeaderElectionRecord, []byte, error) {
 	klog.V(8).Info("[resource lock] get lock")
 
-	err := r.getRecord()
-	if err != nil {
-		return nil, err
+	if err := r.getRecord(ctx); err != nil {
+		return nil, nil, err
 	}
 
-	err = r.getTso()
-	if err != nil {
-		return nil, err
+	if err := r.getTso(ctx); err != nil {
+		return nil, nil, err
 	}
 
 	// Return a snapshot copy so the caller never reads the guarded field while
@@ -103,12 +103,13 @@ func (r *resourceLock) Get() (*resourcelock.LeaderElectionRecord, error) {
 	// so this shallow copy is independent.
 	r.mu.Lock()
 	recordCopy := r.record
+	rawCopy := append([]byte(nil), r.lastVal...)
 	r.mu.Unlock()
-	return &recordCopy, nil
+	return &recordCopy, rawCopy, nil
 }
 
-func (r *resourceLock) getRecord() (err error) {
-	ctx, cancel := r.genContext(context.Background())
+func (r *resourceLock) getRecord(parent context.Context) (err error) {
+	ctx, cancel := r.genContext(parent)
 	defer cancel()
 	val, err := r.store.Get(ctx, r.electionKey)
 	if err != nil {
@@ -128,8 +129,8 @@ func (r *resourceLock) getRecord() (err error) {
 	return nil
 }
 
-func (r *resourceLock) getTso() (err error) {
-	ctx, cancel := r.genContext(context.Background())
+func (r *resourceLock) getTso(parent context.Context) (err error) {
+	ctx, cancel := r.genContext(parent)
 	defer cancel()
 	tso, err := r.store.GetTimestampOracle(ctx)
 	if err != nil {
@@ -142,14 +143,14 @@ func (r *resourceLock) getTso() (err error) {
 }
 
 // Create implements resourcelock.Interface
-func (r *resourceLock) Create(ler resourcelock.LeaderElectionRecord) error {
+func (r *resourceLock) Create(parent context.Context, ler resourcelock.LeaderElectionRecord) error {
 	lerBytes, err := json.Marshal(ler)
 	if err != nil {
 		return err
 	}
 	batch := r.store.BeginBatchWrite()
 	batch.PutIfNotExist(r.electionKey, lerBytes, 0)
-	ctx, cancel := r.genContext(context.Background())
+	ctx, cancel := r.genContext(parent)
 	defer cancel()
 	err = batch.Commit(ctx)
 	if err != nil {
@@ -171,7 +172,7 @@ func (r *resourceLock) Create(ler resourcelock.LeaderElectionRecord) error {
 }
 
 // Update implements resourcelock.Interface
-func (r *resourceLock) Update(ler resourcelock.LeaderElectionRecord) error {
+func (r *resourceLock) Update(parent context.Context, ler resourcelock.LeaderElectionRecord) error {
 	klog.V(8).Info("[resource lock] update lock")
 	r.mu.Lock()
 	tso := r.tso
@@ -188,7 +189,7 @@ func (r *resourceLock) Update(ler resourcelock.LeaderElectionRecord) error {
 
 	batch := r.store.BeginBatchWrite()
 	batch.CAS(r.electionKey, recordBytes, lastVal, 0)
-	ctx, cancel := r.genContext(context.Background())
+	ctx, cancel := r.genContext(parent)
 	defer cancel()
 	err = batch.Commit(ctx)
 	if err != nil {

@@ -38,7 +38,7 @@ import (
 func TestWatchResultFromResponseMapsProgressNotify(t *testing.T) {
 	// Progress notify: no events, header revision set -> IsProgressNotify() true.
 	progress := clientv3.WatchResponse{
-		Header: etcdserverpb.ResponseHeader{Revision: 42},
+		Header: &etcdserverpb.ResponseHeader{Revision: 42},
 	}
 	require.True(t, progress.IsProgressNotify())
 	got := watchResultFromResponse(progress)
@@ -47,7 +47,7 @@ func TestWatchResultFromResponseMapsProgressNotify(t *testing.T) {
 
 	// Event response: events present -> not a progress notify.
 	event := clientv3.WatchResponse{
-		Header: etcdserverpb.ResponseHeader{Revision: 43},
+		Header: &etcdserverpb.ResponseHeader{Revision: 43},
 		Events: []*clientv3.Event{
 			{Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{Key: []byte("k"), ModRevision: 43}},
 		},

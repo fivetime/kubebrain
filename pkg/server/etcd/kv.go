@@ -25,6 +25,7 @@ import (
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 	"k8s.io/klog/v2"
 
 	"github.com/kubewharf/kubebrain/pkg/backend"
@@ -94,9 +95,86 @@ func (s *RPCServer) Range(ctx context.Context, r *etcdserverpb.RangeRequest) (*e
 	s.metricCli.EmitCounter("read", 1, methodTag, successTag, errClassTag(err))
 	s.metricCli.EmitHistogram("read.latency", time.Since(startTime).Seconds(), methodTag, successTag)
 	if response != nil {
-		s.metricCli.EmitHistogram("read.responsesize", response.Size(), methodTag, successTag)
+		s.metricCli.EmitHistogram("read.responsesize", proto.Size(response), methodTag, successTag)
 	}
 	return response, err
+}
+
+// RangeStream implements the etcd 3.7 KV.RangeStream server-streaming RPC: it
+// streams a recursive List as disjoint chunks at a single pinned revision rather
+// than materializing the whole result in one unary RangeResponse. The
+// kube-apiserver's watch-cache initialization (EtcdRangeStream feature gate, k8s
+// 1.37) uses it to bound memory on large initial LISTs. This overrides the
+// RangeStream default promoted from the embedded UnimplementedKVServer.
+//
+// Wire contract (etcd semantics): every chunk carries Header.Revision — the
+// apiserver reads it as the sync's initial revision; Kvs across chunks are
+// disjoint and concatenate to the full result; a final header-only chunk marks
+// the pinned revision; the stream then ends with a normal return (io.EOF). A
+// backend error aborts the stream with a gRPC status so the apiserver relists
+// rather than treating a partial stream as complete.
+func (s *RPCServer) RangeStream(r *etcdserverpb.RangeRequest, rs etcdserverpb.KV_RangeStreamServer) error {
+	ctx := rs.Context()
+	startTime := time.Now()
+	klog.V(4).InfoS("RANGE STREAM", "key", r.Key, "rangeEnd", r.RangeEnd, "rev", r.Revision)
+	if err := validateRangeRequest(r); err != nil {
+		return err
+	}
+	// Reject shapes the streaming scan cannot honor (parity with etcd's
+	// checkRangeStreamRequest). The apiserver's syncStreamRecursive uses none of
+	// these, so a client that does gets a clean Unimplemented instead of a wrong
+	// answer.
+	if r.CountOnly {
+		return status.Error(codes.Unimplemented, "etcdserver: countOnly is not supported by RangeStream")
+	}
+	if hasRangeRevisionFilters(r) {
+		return status.Error(codes.Unimplemented, "etcdserver: mod/create-revision filters are not supported by RangeStream")
+	}
+	if r.SortOrder != etcdserverpb.RangeRequest_NONE {
+		return status.Error(codes.Unimplemented, "etcdserver: sorting is not supported by RangeStream")
+	}
+	if err := s.peers.SyncReadRevision(ctx); err != nil {
+		return err
+	}
+	if err := s.checkRequestedRevision(ctx, r.Revision); err != nil {
+		return err
+	}
+	ch, err := s.backend.RangeStreamChan(ctx, r.Key, r.RangeEnd, uint64(r.Revision))
+	if err != nil {
+		s.metricCli.EmitCounter("read.range_stream.err", 1)
+		return err
+	}
+	var (
+		sentAny   bool
+		headerRev int64
+		chunks    int
+	)
+	for chunk := range ch {
+		if chunk.err != nil {
+			s.metricCli.EmitCounter("read.range_stream.err", 1)
+			// Surface as Unavailable so the apiserver relists instead of trusting a
+			// truncated stream.
+			return status.Error(codes.Unavailable, chunk.err.Error())
+		}
+		headerRev = chunk.resp.Header.Revision
+		if err := rs.Send(&etcdserverpb.RangeStreamResponse{RangeResponse: chunk.resp}); err != nil {
+			s.metricCli.EmitCounter("read.range_stream.send_err", 1)
+			return err
+		}
+		sentAny = true
+		chunks++
+	}
+	if !sentAny {
+		// The channel closed without any chunk — the client's context was canceled
+		// before even the terminal header chunk (disconnect). Nothing to complete.
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+	}
+	s.metricCli.EmitCounter("read.range_stream", 1)
+	s.metricCli.EmitHistogram("read.range_stream.latency", time.Since(startTime).Seconds())
+	klog.V(4).InfoS("RANGE STREAM done", "key", r.Key, "chunks", chunks, "rev", headerRev)
+	return nil
 }
 
 func validateRangeRequest(r *etcdserverpb.RangeRequest) error {
@@ -220,7 +298,7 @@ func (s *RPCServer) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etc
 	s.metricCli.EmitCounter("write", 1, methodTag, successTag, errClassTag(err))
 	s.metricCli.EmitHistogram("write.latency", time.Since(startTime).Seconds(), methodTag, successTag)
 	if response != nil {
-		s.metricCli.EmitHistogram("write.responsesize", response.Size(), methodTag, successTag)
+		s.metricCli.EmitHistogram("write.responsesize", proto.Size(response), methodTag, successTag)
 		if !response.Succeeded {
 			s.metricCli.EmitCounter("write.fail", 1, methodTag)
 		}
@@ -573,7 +651,7 @@ func (s *RPCServer) Put(ctx context.Context, r *etcdserverpb.PutRequest) (*etcds
 	s.metricCli.EmitCounter("write", 1, metrics.Tag("method", "put"), successTag, errClassTag(err))
 	s.metricCli.EmitHistogram("write.latency", time.Since(startTime).Seconds(), metrics.Tag("method", "put"), successTag)
 	if response != nil {
-		s.metricCli.EmitHistogram("write.responsesize", response.Size(), metrics.Tag("method", "put"), successTag)
+		s.metricCli.EmitHistogram("write.responsesize", proto.Size(response), metrics.Tag("method", "put"), successTag)
 	}
 	return response, mapFenceErr(err)
 }
@@ -614,7 +692,7 @@ func (s *RPCServer) DeleteRange(ctx context.Context, r *etcdserverpb.DeleteRange
 	s.metricCli.EmitCounter("write", 1, metrics.Tag("method", "delete-range"), successTag, errClassTag(err))
 	s.metricCli.EmitHistogram("write.latency", time.Since(startTime).Seconds(), metrics.Tag("method", "delete-range"), successTag)
 	if response != nil {
-		s.metricCli.EmitHistogram("write.responsesize", response.Size(), metrics.Tag("method", "delete-range"), successTag)
+		s.metricCli.EmitHistogram("write.responsesize", proto.Size(response), metrics.Tag("method", "delete-range"), successTag)
 	}
 	return response, mapFenceErr(err)
 }
@@ -623,7 +701,7 @@ func (s *RPCServer) putWithEffectiveOptions(ctx context.Context, r *etcdserverpb
 	if !r.IgnoreLease && !r.IgnoreValue {
 		return r, nil
 	}
-	clone := *r
+	clone := proto.Clone(r).(*etcdserverpb.PutRequest)
 	if r.IgnoreLease {
 		clone.IgnoreLease = false
 		clone.Lease = s.leaseIDForKey(string(r.Key))
@@ -639,7 +717,7 @@ func (s *RPCServer) putWithEffectiveOptions(ctx context.Context, r *etcdserverpb
 		clone.IgnoreValue = false
 		clone.Value = rangeResp.Kvs[0].Value
 	}
-	return &clone, nil
+	return clone, nil
 }
 
 // writeShape is a decoded fast-path write. Which fields are set depends on which

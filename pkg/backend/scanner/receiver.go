@@ -160,7 +160,13 @@ func (e *streamResultReceiver) reset() {
 }
 
 func (e *streamResultReceiver) fork() resultReceiver {
+	// readRev MUST be carried into the forked per-partition receiver: it is the
+	// pinned read revision every emitted chunk stamps into its ResponseHeader.
+	// Dropping it made every streamed chunk report revision 0 — latent until the
+	// user-key RangeStream path first streamed real data (partition workers all
+	// run on forked receivers).
 	return &streamResultReceiver{
-		stream: e.stream,
+		readRev: e.readRev,
+		stream:  e.stream,
 	}
 }

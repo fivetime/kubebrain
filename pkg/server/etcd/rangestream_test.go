@@ -1,0 +1,198 @@
+// Copyright 2022 ByteDance and/or its affiliates
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package etcd
+
+import (
+	"context"
+	"fmt"
+	"testing"
+
+	"github.com/golang/mock/gomock"
+	"github.com/stretchr/testify/require"
+	"go.etcd.io/etcd/api/v3/etcdserverpb"
+	"go.etcd.io/etcd/api/v3/mvccpb"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
+	"github.com/kubewharf/kubebrain/pkg/backend"
+	"github.com/kubewharf/kubebrain/pkg/metrics/mock"
+	"github.com/kubewharf/kubebrain/pkg/storage/memkv"
+)
+
+// fakeRangeStreamServer captures the chunks a RangeStream handler sends. It
+// embeds the generated server-stream interface so the unexercised grpc.ServerStream
+// methods are present; the handler only calls Send and Context.
+type fakeRangeStreamServer struct {
+	etcdserverpb.KV_RangeStreamServer
+	ctx  context.Context
+	sent []*etcdserverpb.RangeStreamResponse
+}
+
+func (s *fakeRangeStreamServer) Send(resp *etcdserverpb.RangeStreamResponse) error {
+	s.sent = append(s.sent, resp)
+	return nil
+}
+
+func (s *fakeRangeStreamServer) Context() context.Context {
+	if s.ctx != nil {
+		return s.ctx
+	}
+	return context.Background()
+}
+
+// newRangeStreamTestServer builds a leader RPCServer over memkv.
+func newRangeStreamTestServer(t *testing.T) (*RPCServer, func()) {
+	t.Helper()
+	ctrl := gomock.NewController(t)
+	m := mock.NewMinimalMetrics(ctrl)
+	kv := memkv.NewKvStorage()
+	backendStore := backend.NewBackend(kv, backend.Config{
+		Identity:                "test-peer",
+		EnableEtcdCompatibility: true,
+	}, m)
+	server := New(backendStore, m, testPeerService{isLeader: true})
+	cleanup := func() {
+		server.stopLeases()
+		require.NoError(t, kv.Close())
+		ctrl.Finish()
+	}
+	return server, cleanup
+}
+
+func TestRangeStreamStreamsAllKeys(t *testing.T) {
+	server, cleanup := newRangeStreamTestServer(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	const n = 25
+	want := map[string]string{}
+	for i := 0; i < n; i++ {
+		key := fmt.Sprintf("/registry/pods/%03d", i)
+		val := fmt.Sprintf("v-%03d", i)
+		_, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: []byte(key), Value: []byte(val)})
+		require.NoError(t, err)
+		want[key] = val
+	}
+
+	rs := &fakeRangeStreamServer{ctx: ctx}
+	err := server.RangeStream(&etcdserverpb.RangeRequest{
+		Key:      []byte("/registry/pods/"),
+		RangeEnd: []byte("/registry/pods0"), // prefix end of "/registry/pods/"
+	}, rs)
+	require.NoError(t, err)
+	require.NotEmpty(t, rs.sent, "must send at least the terminal header chunk")
+
+	// Every chunk carries the same pinned revision; Kvs concatenate to the full
+	// disjoint set; the final chunk is header-only.
+	got := map[string]string{}
+	var pinnedRev int64
+	for i, chunk := range rs.sent {
+		require.NotNil(t, chunk.RangeResponse)
+		require.NotNil(t, chunk.RangeResponse.Header)
+		require.Greater(t, chunk.RangeResponse.Header.Revision, int64(0), "chunk %d revision", i)
+		if pinnedRev == 0 {
+			pinnedRev = chunk.RangeResponse.Header.Revision
+		}
+		require.Equal(t, pinnedRev, chunk.RangeResponse.Header.Revision, "all chunks share the pinned revision")
+		for _, kv := range chunk.RangeResponse.Kvs {
+			_, dup := got[string(kv.Key)]
+			require.False(t, dup, "key %s appeared in more than one chunk (chunks must be disjoint)", kv.Key)
+			got[string(kv.Key)] = string(kv.Value)
+		}
+	}
+	last := rs.sent[len(rs.sent)-1]
+	require.Empty(t, last.RangeResponse.Kvs, "final chunk must be header-only")
+	require.Equal(t, want, got, "concatenated chunks must equal the full key set")
+}
+
+func TestRangeStreamEmptyRangeStillSendsHeaderRevision(t *testing.T) {
+	server, cleanup := newRangeStreamTestServer(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	// One unrelated key so the store has a non-zero revision, then stream an
+	// empty range.
+	_, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: []byte("/registry/other/x"), Value: []byte("v")})
+	require.NoError(t, err)
+
+	rs := &fakeRangeStreamServer{ctx: ctx}
+	err = server.RangeStream(&etcdserverpb.RangeRequest{
+		Key:      []byte("/registry/pods/"),
+		RangeEnd: []byte("/registry/pods0"),
+	}, rs)
+	require.NoError(t, err)
+	require.NotEmpty(t, rs.sent, "empty range must still emit a header-only chunk")
+	last := rs.sent[len(rs.sent)-1]
+	require.Empty(t, last.RangeResponse.Kvs)
+	require.Greater(t, last.RangeResponse.Header.Revision, int64(0),
+		"apiserver reads Header.Revision as the sync's initial revision")
+}
+
+func TestRangeStreamRejectsUnsupportedShapes(t *testing.T) {
+	server, cleanup := newRangeStreamTestServer(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	cases := []struct {
+		name string
+		req  *etcdserverpb.RangeRequest
+	}{
+		{"countOnly", &etcdserverpb.RangeRequest{Key: []byte("/a"), RangeEnd: []byte("/b"), CountOnly: true}},
+		{"modRevisionFilter", &etcdserverpb.RangeRequest{Key: []byte("/a"), RangeEnd: []byte("/b"), MinModRevision: 5}},
+		{"sortOrder", &etcdserverpb.RangeRequest{Key: []byte("/a"), RangeEnd: []byte("/b"), SortOrder: etcdserverpb.RangeRequest_DESCEND}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			rs := &fakeRangeStreamServer{ctx: ctx}
+			err := server.RangeStream(c.req, rs)
+			require.Error(t, err)
+			require.Equal(t, codes.Unimplemented, status.Code(err))
+			require.Empty(t, rs.sent, "no chunks on a rejected request")
+		})
+	}
+}
+
+// TestRangeStreamMatchesUnaryRange asserts the streamed result is byte-identical
+// to a unary Range over the same window.
+func TestRangeStreamMatchesUnaryRange(t *testing.T) {
+	server, cleanup := newRangeStreamTestServer(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	for i := 0; i < 10; i++ {
+		_, err := server.Put(ctx, &etcdserverpb.PutRequest{
+			Key: []byte(fmt.Sprintf("/registry/svc/%02d", i)), Value: []byte(fmt.Sprintf("s%02d", i))})
+		require.NoError(t, err)
+	}
+
+	unary, err := server.Range(ctx, &etcdserverpb.RangeRequest{
+		Key: []byte("/registry/svc/"), RangeEnd: []byte("/registry/svc0")})
+	require.NoError(t, err)
+
+	rs := &fakeRangeStreamServer{ctx: ctx}
+	require.NoError(t, server.RangeStream(&etcdserverpb.RangeRequest{
+		Key: []byte("/registry/svc/"), RangeEnd: []byte("/registry/svc0")}, rs))
+
+	streamed := make([]*mvccpb.KeyValue, 0, len(unary.Kvs))
+	for _, chunk := range rs.sent {
+		streamed = append(streamed, chunk.RangeResponse.Kvs...)
+	}
+	require.Len(t, streamed, len(unary.Kvs))
+	for i := range unary.Kvs {
+		require.Equal(t, unary.Kvs[i].Key, streamed[i].Key, "kv %d key", i)
+		require.Equal(t, unary.Kvs[i].Value, streamed[i].Value, "kv %d value", i)
+		require.Equal(t, unary.Kvs[i].ModRevision, streamed[i].ModRevision, "kv %d modRevision", i)
+	}
+}

@@ -40,12 +40,12 @@ import (
 //   - RequestWatchProgress only has a lower bound, so 3.7.0 keeps it enabled;
 //     KubeBrain's watch pipeline delivers events without silent gaps and
 //     progress notifications never run ahead of delivered events.
-//   - RangeStream (the streaming-list RPC introduced in etcd 3.7) is NOT gated
-//     on this version string: the apiserver optimistically tries it behind its
-//     own EtcdRangeStream feature gate and, on a gRPC Unimplemented reply,
-//     MarkUnsupported()s it and falls back to a paginated list. KubeBrain does
-//     not register that RPC, so gRPC answers Unimplemented and the apiserver
-//     degrades gracefully — independent of whether we report 3.5.13 or 3.7.0.
+//   - RangeStream (the streaming-list RPC introduced in etcd 3.7) is now
+//     implemented (kv.go RangeStream, backed by the partition-parallel scanner):
+//     the apiserver's EtcdRangeStream feature gate (k8s 1.37) streams large
+//     initial LISTs through it, bounding watch-cache init memory. Advertising
+//     3.7.0 matches the RPC we serve. Callers on older apiservers that never call
+//     RangeStream are unaffected.
 //
 // See k8s.io/apiserver/pkg/storage/feature/feature_support_checker.go and
 // k8s.io/apiserver/pkg/storage/etcd3/watcher.go (sync()).

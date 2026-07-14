@@ -21,6 +21,7 @@ import (
 
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"google.golang.org/grpc"
+	"google.golang.org/protobuf/proto"
 	"k8s.io/klog/v2"
 
 	b "github.com/kubewharf/kubebrain/pkg/backend"
@@ -46,9 +47,24 @@ const (
 	countProxyFailureQuiet = 3 * time.Second
 )
 
-// RPCServer only support limited method of etcd grpc server
+// RPCServer only support limited method of etcd grpc server.
+//
+// etcd 3.7's generated code (standard google.golang.org/protobuf, grpc
+// require-unimplemented mode) forces every service handler to embed its
+// UnimplementedXxxServer for forward compatibility — the mustEmbedUnimplementedXxxServer
+// methods are unexported, so embedding is the only way to satisfy the interfaces.
+// KubeBrain still explicitly implements every method it actually serves; the
+// embedded defaults are overridden and never called. The one exception is a
+// default we deliberately keep: RangeStream is overridden by a real streaming
+// implementation (kv.go) — the embed provides only its mustEmbed shim.
 type RPCServer struct {
+	etcdserverpb.UnimplementedKVServer
+	etcdserverpb.UnimplementedWatchServer
+	etcdserverpb.UnimplementedMaintenanceServer
+	etcdserverpb.UnimplementedClusterServer
 	etcdserverpb.UnimplementedAuthServer
+	// UnimplementedLeaseServer is embedded on leaseManager, not here, to avoid an
+	// ambiguous selector with the promoted *leaseManager lease handlers.
 
 	backend BackendShim
 
@@ -103,13 +119,13 @@ func New(backend b.Backend, metricCli metrics.Metrics, peers service.PeerService
 		if time.Now().UnixNano() < proxyQuietUntil.Load() {
 			return 0, false
 		}
-		req := *r
+		req := proto.Clone(r).(*etcdserverpb.RangeRequest)
 		req.CountOnly = true
 		req.Limit = 0
 		req.KeysOnly = false
 		pctx, cancel := context.WithTimeout(ctx, countProxyTimeout)
 		defer cancel()
-		resp, err := peers.Range(pctx, &req)
+		resp, err := peers.Range(pctx, req)
 		if err != nil || resp == nil {
 			proxyQuietUntil.Store(time.Now().Add(countProxyFailureQuiet).UnixNano())
 			server.metricCli.EmitCounter("count.proxy.err", 1)

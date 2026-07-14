@@ -303,3 +303,22 @@ func (b *backend) ListByStream(ctx context.Context, startKey, endKey []byte, rev
 	stream := b.scanner.RangeStream(ctx, startKey, endKey, rev)
 	return stream, nil
 }
+
+// RangeStream implements Backend interface: user-key range streaming for the
+// etcd 3.7 KV.RangeStream RPC. It encodes the user range into the object
+// keyspace (symmetric with List) — the scanner works on encoded object keys, so
+// a raw user key never matches the magic-prefixed stored keys — pins the read
+// revision, and streams the result in disjoint chunks.
+func (b *backend) RangeStream(ctx context.Context, userStart, userEnd []byte, rev uint64) (<-chan *proto.StreamRangeResponse, error) {
+	curRev, err := b.safeCurrentRevision(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if rev == 0 {
+		rev = curRev
+	}
+	key := b.rangeStartKey(userStart)
+	rangeEnd := b.rangeEndKey(userEnd)
+	klog.V(klogLevel).InfoS("range stream", "start", Key(userStart), "end", Key(userEnd), "rev", rev)
+	return b.scanner.RangeStream(ctx, key, rangeEnd, rev), nil
+}

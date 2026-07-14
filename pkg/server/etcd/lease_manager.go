@@ -17,6 +17,8 @@ package etcd
 import (
 	"sync"
 	"sync/atomic"
+
+	"go.etcd.io/etcd/api/v3/etcdserverpb"
 )
 
 // leaseManager owns the lease subsystem: all lease STATE and the lease logic
@@ -31,6 +33,14 @@ import (
 // test that swaps server.backend for failure injection is seen by lease methods
 // too, and the two can never diverge.
 type leaseManager struct {
+	// Embed the forward-compat shim HERE (not on RPCServer): leaseManager
+	// implements all five Lease RPCs, and RPCServer promotes them through its
+	// embedded *leaseManager. Putting UnimplementedLeaseServer on RPCServer too
+	// would make LeaseGrant et al. ambiguous (two embeds at the same depth). Its
+	// explicit methods override these defaults; only mustEmbedUnimplementedLeaseServer
+	// is actually used.
+	etcdserverpb.UnimplementedLeaseServer
+
 	srv *RPCServer
 
 	leaseMu       sync.Mutex

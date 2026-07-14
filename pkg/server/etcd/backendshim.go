@@ -17,6 +17,8 @@ package etcd
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"sort"
 	"time"
 
@@ -90,6 +92,12 @@ type BackendShim interface {
 
 	// ListByStream reads kvs in range by stream
 	ListByStream(ctx context.Context, startKey, endKey []byte, revision uint64) (<-chan *etcdserverpb.WatchResponse, error)
+
+	// RangeStreamChan streams a range read as disjoint RangeResponse chunks at a
+	// single pinned revision, for the native KV.RangeStream RPC (etcd 3.7). Unlike
+	// ListByStream — which packs range results into WatchResponse for the legacy
+	// StartRevision<0 Watch overload — it yields RangeResponse directly.
+	RangeStreamChan(ctx context.Context, startKey, endKey []byte, revision uint64) (<-chan rangeStreamChunk, error)
 
 	// Watch subscribe the changes from revision on kvs with given prefix. Event
 	// batches arrive as WatchResult{Events}; in-band progress markers arrive as
@@ -778,6 +786,89 @@ func (b *backendShim) ListByStream(ctx context.Context, startKey, endKey []byte,
 	}
 	go transformResponseFunc(scanCtx, ch, responseCh)
 	return responseCh, nil
+}
+
+// rangeStreamChunk is one chunk of a streamed range read: either a partial
+// RangeResponse (a disjoint slice of Kvs at the pinned revision, its Header
+// carrying that revision) or a terminal error. The channel closing signals a
+// normal end of stream (io.EOF); an err chunk is terminal and the caller aborts.
+type rangeStreamChunk struct {
+	resp *etcdserverpb.RangeResponse
+	err  error
+}
+
+// RangeStreamChan implements BackendShim: the clean native range-stream path.
+// It reuses the partition-parallel scanner (backend.ListByStream) but yields
+// etcd RangeResponse chunks directly instead of the WatchResponse envelope the
+// legacy StartRevision<0 overload forces. The final chunk is header-only (empty
+// Kvs) carrying the pinned revision, so callers always get Header.Revision — the
+// etcd "header on the last chunk" contract — even for an empty range.
+func (b *backendShim) RangeStreamChan(ctx context.Context, startKey, endKey []byte, revision uint64) (<-chan rangeStreamChunk, error) {
+	// Derive a cancelable context so the scanner's workers, iterators and
+	// snapshots are torn down on client disconnect (same leak fix as ListByStream).
+	scanCtx, cancel := context.WithCancel(ctx)
+	ch, err := b.backend.RangeStream(scanCtx, startKey, endKey, revision)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	out := make(chan rangeStreamChunk)
+	go func() {
+		defer close(out)
+		defer func() {
+			// Cancel and drain so any scanner worker blocked on a buffered send
+			// unblocks and the scan goroutine can close its stream and exit.
+			cancel()
+			for range ch {
+			}
+		}()
+		send := func(c rangeStreamChunk) bool {
+			select {
+			case out <- c:
+				return true
+			case <-ctx.Done():
+				return false
+			}
+		}
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case in, ok := <-ch:
+				if !ok {
+					return
+				}
+				if in == nil || in.RangeResponse == nil || in.RangeResponse.Header == nil {
+					send(rangeStreamChunk{err: fmt.Errorf("invalid range-stream response for [%s,%s)", startKey, endKey)})
+					return
+				}
+				rr := in.RangeResponse
+				if !rr.More {
+					// Terminal marker (getListStreamEnd): no data, only an optional
+					// error (carried on the StreamRangeResponse envelope, not the
+					// inner RangeResponse). On success, forward the pinned revision as
+					// a header-only final chunk.
+					if in.Err != "" {
+						send(rangeStreamChunk{err: errors.New(in.Err)})
+						return
+					}
+					send(rangeStreamChunk{resp: &etcdserverpb.RangeResponse{Header: txnHeader(int64(rr.Header.Revision))}})
+					return
+				}
+				etcdResp := &etcdserverpb.RangeResponse{
+					Header: txnHeader(int64(rr.Header.Revision)),
+					Kvs:    make([]*mvccpb.KeyValue, 0, len(rr.Kvs)),
+				}
+				for _, kv := range rr.Kvs {
+					etcdResp.Kvs = append(etcdResp.Kvs, b.kvToEtcdKv(ctx, kv))
+				}
+				if !send(rangeStreamChunk{resp: etcdResp}) {
+					return
+				}
+			}
+		}
+	}()
+	return out, nil
 }
 
 func (b *backendShim) Watch(ctx context.Context, key string, revision uint64) (<-chan etcdproxy.WatchResult, error) {

@@ -29,6 +29,7 @@ import (
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 	"k8s.io/klog/v2"
 
 	"github.com/kubewharf/kubebrain/pkg/metrics"
@@ -397,7 +398,7 @@ func (w *watcher) List(ctx context.Context, id int64, r *etcdserverpb.WatchCreat
 			Events:  watchResponse.Events,
 		}
 		w.metricCli.EmitCounter("watch.list_stream.push", len(response.Events))
-		w.metricCli.EmitHistogram("watch.list_stream.push.size", response.Size())
+		w.metricCli.EmitHistogram("watch.list_stream.push.size", proto.Size(response))
 		if err := w.Send(response); err != nil {
 			klog.ErrorS(err, "[range stream] send response with header failed",
 				"watcher", w.id, "watch", id, "key", r.Key, "end", r.RangeEnd, "rev", r.StartRevision*-1, "respRev", revision)
@@ -532,7 +533,7 @@ func (w *watcher) Watch(ctx context.Context, id int64, r *etcdserverpb.WatchCrea
 				Events:  events,
 			}
 			w.metricCli.EmitGauge("watch.watch_stream.push", watchResponse.Header.Revision)
-			w.metricCli.EmitHistogram("watch.watch_stream.push.size", watchResponse.Size())
+			w.metricCli.EmitHistogram("watch.watch_stream.push.size", proto.Size(watchResponse))
 			if sendErr = w.Send(watchResponse); sendErr != nil {
 				w.metricCli.EmitCounter("watch.watch_stream.push.err", 1)
 				klog.ErrorS(sendErr, "[watch stream] watch send err, cancel", "watcher", w.id, "watch", id)
@@ -600,7 +601,7 @@ func isPureWatchRequest(r *etcdserverpb.WatchCreateRequest) bool {
 }
 
 func normalizeWatchCreateRequest(r *etcdserverpb.WatchCreateRequest) *etcdserverpb.WatchCreateRequest {
-	normalized := *r
+	normalized := proto.Clone(r).(*etcdserverpb.WatchCreateRequest)
 	if len(normalized.Key) == 0 {
 		normalized.Key = []byte{0}
 	}
@@ -610,7 +611,7 @@ func normalizeWatchCreateRequest(r *etcdserverpb.WatchCreateRequest) *etcdserver
 	if len(normalized.RangeEnd) == 1 && normalized.RangeEnd[0] == 0 {
 		normalized.RangeEnd = []byte{}
 	}
-	return &normalized
+	return normalized
 }
 
 func (w *watcher) isCompactedWatchRevision(ctx context.Context, revision int64) (bool, error) {
@@ -703,9 +704,10 @@ func withoutWatchPrevKvs(events []*mvccpb.Event) []*mvccpb.Event {
 			withoutPrev = append(withoutPrev, nil)
 			continue
 		}
-		clone := *event
-		clone.PrevKv = nil
-		withoutPrev = append(withoutPrev, &clone)
+		// Field-level shallow copy (not proto.Clone/value-copy): standard
+		// protobuf messages embed a non-copyable MessageState, and this runs per
+		// event on the watch hot path. Keep Type/Kv, drop PrevKv.
+		withoutPrev = append(withoutPrev, &mvccpb.Event{Type: event.Type, Kv: event.Kv})
 	}
 	return withoutPrev
 }

@@ -133,8 +133,16 @@ type Backend interface {
 	// GetPartitions query the partition state of storage for ListByStream
 	GetPartitions(ctx context.Context, r *proto.ListPartitionRequest) (*proto.ListPartitionResponse, error)
 
-	// ListByStream reads kvs in range by stream
+	// ListByStream reads kvs in range by stream. startKey/endKey are ENCODED
+	// object-key partition borders (as returned by GetPartitions); it does not
+	// re-encode them. Use RangeStream for a user-key range.
 	ListByStream(ctx context.Context, startKey, endKey []byte, revision uint64) (<-chan *proto.StreamRangeResponse, error)
+
+	// RangeStream streams a range read over USER keys as disjoint chunks at one
+	// pinned revision — the engine for the etcd 3.7 KV.RangeStream RPC. Unlike
+	// ListByStream it encodes the user range into the object keyspace itself
+	// (symmetric with List), so callers pass raw user keys.
+	RangeStream(ctx context.Context, userStart, userEnd []byte, revision uint64) (<-chan *proto.StreamRangeResponse, error)
 
 	// Watch subscribe the changes from revision on kvs with given prefix
 	Watch(ctx context.Context, key string, revision uint64) (<-chan []*proto.Event, error)
