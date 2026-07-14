@@ -90,13 +90,9 @@ type BackendShim interface {
 	// Count counts the number of kvs in range
 	Count(ctx context.Context, r *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error)
 
-	// ListByStream reads kvs in range by stream
-	ListByStream(ctx context.Context, startKey, endKey []byte, revision uint64) (<-chan *etcdserverpb.WatchResponse, error)
-
-	// RangeStreamChan streams a range read as disjoint RangeResponse chunks at a
-	// single pinned revision, for the native KV.RangeStream RPC (etcd 3.7). Unlike
-	// ListByStream — which packs range results into WatchResponse for the legacy
-	// StartRevision<0 Watch overload — it yields RangeResponse directly.
+	// RangeStreamChan streams a user-key range read as disjoint RangeResponse
+	// chunks at a single pinned revision, for the native KV.RangeStream RPC
+	// (etcd 3.7).
 	RangeStreamChan(ctx context.Context, startKey, endKey []byte, revision uint64) (<-chan rangeStreamChunk, error)
 
 	// Watch subscribe the changes from revision on kvs with given prefix. Event
@@ -723,69 +719,6 @@ func needsPostRangeLimit(r *etcdserverpb.RangeRequest) bool {
 	return hasRangeRevisionFilters(r) ||
 		!(r.SortOrder == etcdserverpb.RangeRequest_NONE ||
 			(r.SortTarget == etcdserverpb.RangeRequest_KEY && r.SortOrder == etcdserverpb.RangeRequest_ASCEND))
-}
-
-// todo deprecate range stream in etcd
-func (b *backendShim) ListByStream(ctx context.Context, startKey, endKey []byte, revision uint64) (<-chan *etcdserverpb.WatchResponse, error) {
-	// Derive a cancelable context from the caller (the client's stream) so the
-	// backend scan is torn down on client disconnect. Passing context.Background()
-	// here leaked the scanner's worker goroutines, iterators and snapshots: on
-	// disconnect the transform goroutine below exits, nobody drains the scan
-	// channel, and the workers block forever on their buffered sends.
-	scanCtx, cancel := context.WithCancel(ctx)
-	ch, err := b.backend.ListByStream(scanCtx, startKey, endKey, revision)
-	if err != nil {
-		cancel()
-		return nil, err
-	}
-	responseCh := make(chan *etcdserverpb.WatchResponse)
-	transformResponseFunc := func(ctx context.Context, in <-chan *proto.StreamRangeResponse, out chan *etcdserverpb.WatchResponse) {
-		defer close(out)
-		defer func() {
-			// Cancel the scan and drain its channel so any worker blocked on a
-			// buffered send (the receiver's stream send has no ctx escape)
-			// unblocks and the scan goroutine can reach close(stream) and exit.
-			cancel()
-			for range in {
-			}
-		}()
-		for {
-			select {
-			case <-ctx.Done():
-				klog.Info("[backend-shim] range stream ctx done")
-				return
-			case response, ok := <-in:
-				if !ok {
-					return
-				}
-				if response == nil || response.RangeResponse == nil || response.RangeResponse.Header == nil {
-					klog.Fatalf("invalid response start %s end %s from backend list stream, range response or range response header is nil", startKey, endKey)
-				}
-				etcdWatchResponse := &etcdserverpb.WatchResponse{
-					Header: txnHeader(int64(response.RangeResponse.Header.Revision)),
-					Events: make([]*mvccpb.Event, 0, len(response.RangeResponse.Kvs)),
-				}
-				if response.RangeResponse.More == false {
-					etcdWatchResponse.Canceled = true
-					etcdWatchResponse.CancelReason = response.Err
-				} else {
-					for _, kv := range response.RangeResponse.Kvs {
-						etcdWatchResponse.Events = append(etcdWatchResponse.Events, &mvccpb.Event{
-							Kv: b.kvToEtcdKv(ctx, kv),
-						})
-					}
-				}
-				// send to server layer, bailing out if the client is gone
-				select {
-				case out <- etcdWatchResponse:
-				case <-ctx.Done():
-					return
-				}
-			}
-		}
-	}
-	go transformResponseFunc(scanCtx, ch, responseCh)
-	return responseCh, nil
 }
 
 // rangeStreamChunk is one chunk of a streamed range read: either a partial

@@ -2788,7 +2788,7 @@ func TestRangeAtMagicRevisionIsNotHijacked(t *testing.T) {
 	resp, err := server.Range(ctx, &etcdserverpb.RangeRequest{
 		Key:      []byte("/registry/"),
 		RangeEnd: []byte("/registry0"),
-		Revision: GetPartitionMagic,
+		Revision: 1888, // the former partition-magic value, now a plain revision
 	})
 	require.NoError(t, err)
 	// Nothing existed as of revision 1888, so this is a normal empty range — not

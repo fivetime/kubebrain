@@ -129,7 +129,10 @@ func (s *Server) RangeStream(r *proto.RangeRequest, server proto.Read_RangeStrea
 	if err := s.peers.SyncReadRevision(server.Context()); err != nil {
 		return err
 	}
-	ch, err := s.backend.ListByStream(server.Context(), r.Key, r.End, r.Revision)
+	// RangeStream (user-key entrypoint) encodes the range into the object
+	// keyspace; ListByStream takes already-encoded partition borders and would
+	// silently stream nothing for a raw user key (the bug this replaces).
+	ch, err := s.backend.RangeStream(server.Context(), r.Key, r.End, r.Revision)
 	if err != nil {
 		s.emitMethodMetric(readMetric, "range-stream", err, time.Since(start))
 		klog.ErrorS(err, "backend list by stream failed", "key", r.Key, "end", r.End, "revision", r.Revision)

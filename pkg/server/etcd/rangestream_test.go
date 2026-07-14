@@ -196,3 +196,28 @@ func TestRangeStreamMatchesUnaryRange(t *testing.T) {
 		require.Equal(t, unary.Kvs[i].ModRevision, streamed[i].ModRevision, "kv %d modRevision", i)
 	}
 }
+
+// TestWatchNegativeStartRevisionRejected pins the black-magic retirement: a
+// negative StartRevision used to overload Watch into a range stream (watcher.List).
+// That is now the native KV.RangeStream RPC, so a negative StartRevision must be
+// rejected with InvalidArgument rather than silently reinterpreted.
+func TestWatchNegativeStartRevisionRejected(t *testing.T) {
+	server, cleanup := newRangeStreamTestServer(t)
+	defer cleanup()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	ws := &controllableWatchServer{ctx: ctx, recv: make(chan *etcdserverpb.WatchRequest, 1)}
+	ws.recv <- &etcdserverpb.WatchRequest{
+		RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{
+			CreateRequest: &etcdserverpb.WatchCreateRequest{
+				Key:           []byte("/registry/pods/"),
+				RangeEnd:      []byte("/registry/pods0"),
+				StartRevision: -1,
+			},
+		},
+	}
+	err := server.Watch(ws)
+	require.Error(t, err)
+	require.Equal(t, codes.InvalidArgument, status.Code(err))
+}

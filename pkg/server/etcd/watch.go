@@ -145,9 +145,14 @@ func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) error {
 
 		if r := msg.GetCreateRequest(); r != nil {
 			r = normalizeWatchCreateRequest(r)
+			if r.StartRevision < 0 {
+				// A negative start revision was the legacy signal that overloaded
+				// Watch into a range stream. That is now the native KV.RangeStream
+				// RPC (kv.go), so reject the overload rather than silently mis-serving.
+				return status.Errorf(codes.InvalidArgument, "watch: invalid negative start revision %d", r.StartRevision)
+			}
 			// normal watch request can only be handled by leader
-			// magic logic: when StartRevision < 0, the request is a RangeStream Request.
-			if r.StartRevision >= 0 && isPureWatchRequest(r) && !s.peers.IsLeader() && !s.peers.EtcdProxyEnabled() {
+			if isPureWatchRequest(r) && !s.peers.IsLeader() && !s.peers.EtcdProxyEnabled() {
 				s.metricCli.EmitCounter("watch.follower", 1)
 				leaderInfo := s.peers.GetLeaderInfo()
 				klog.InfoS("watch follower", "revision", r.StartRevision, "addr", s.backend.GetResourceLock().Identity(), "leader", leaderInfo)
@@ -225,9 +230,8 @@ func (w *watcher) Start(c context.Context, r *etcdserverpb.WatchCreateRequest) {
 	// Seed syncedRev with the revision the watch is guaranteed to be caught up
 	// through before any event is delivered: StartRevision-1 for a historical
 	// watch (it will deliver events >= StartRevision), or the published revision
-	// for a watch that starts from "now" (StartRevision == 0). Range-stream
-	// requests (StartRevision < 0) never emit progress notifications, so leave it
-	// at 0.
+	// for a watch that starts from "now" (StartRevision == 0). Negative start
+	// revisions are rejected upstream, so they never reach here.
 	//
 	// For the from-now case seed from the published revision, not the current one:
 	// GetCurrentRevision is advanced (SetCurrentRevision) before the corresponding
@@ -275,16 +279,9 @@ func (w *watcher) Start(c context.Context, r *etcdserverpb.WatchCreateRequest) {
 
 	w.wg.Add(1)
 	key := string(r.Key)
-
-	// use watch to simulate list
-	if r.StartRevision < 0 {
-		w.metricCli.EmitCounter("watch.range", 1)
-		go w.List(ctx, id, r)
-	} else {
-		w.metricCli.EmitCounter("watch.watch", 1)
-		go w.Watch(ctx, id, r)
-		klog.InfoS("watch start", "id", id, "count", len(w.watches), "key", key, "revision", r.StartRevision)
-	}
+	w.metricCli.EmitCounter("watch.watch", 1)
+	go w.Watch(ctx, id, r)
+	klog.InfoS("watch start", "id", id, "count", len(w.watches), "key", key, "revision", r.StartRevision)
 }
 
 func (w *watcher) Cancel(id int64, err error, compact bool) {
@@ -350,77 +347,6 @@ func (w *watcher) Close() {
 	}
 	w.Unlock()
 	w.wg.Wait()
-}
-
-func (w *watcher) List(ctx context.Context, id int64, r *etcdserverpb.WatchCreateRequest) {
-	defer w.wg.Done()
-	if err := w.grpcServer.peers.SyncReadRevision(ctx); err != nil {
-		w.Cancel(id, err, true)
-		return
-	}
-	startTime := time.Now()
-	klog.InfoS("RANGE STREAM", "watcher", w.id, "watch", id, "key", r.Key, "end", r.RangeEnd, "rev", r.StartRevision)
-	ch, err := w.backend.ListByStream(ctx, r.Key, r.RangeEnd, uint64(r.StartRevision*-1))
-	if err != nil {
-		klog.ErrorS(err, "list by stream failed", "watcher", w.id, "watch", id, "key", r.Key, "end", r.RangeEnd, "rev", r.StartRevision*-1)
-		w.metricCli.EmitCounter("watch.backend.list_stream.err", 1)
-		w.Cancel(id, err, true)
-		return
-	}
-
-	for watchResponse := range ch {
-		revision := r.StartRevision * -1
-		// range stream eof, tell client range ends
-		// if has err, CancelReason is not nil
-		if watchResponse.Canceled == true {
-			klog.InfoS("receive cancel message", "watcher", w.id, "watch", id, "key", r.Key, "end", r.RangeEnd, r.StartRevision*-1)
-			// indicates eof
-			revision = -1
-			// set err info in events
-			watchResponse.Events = []*mvccpb.Event{
-				{
-					Kv: &mvccpb.KeyValue{
-						Key:         []byte("eof"),
-						Value:       []byte(watchResponse.CancelReason),
-						ModRevision: GetPartitionMagic,
-					},
-				},
-			}
-			w.metricCli.EmitCounter("watch.list_stream.eof", 1)
-			w.metricCli.EmitHistogram("watch.list_stream.latency", time.Since(startTime).Seconds())
-		}
-
-		response := &etcdserverpb.WatchResponse{
-			Header: &etcdserverpb.ResponseHeader{
-				Revision: revision,
-			},
-			WatchId: id,
-			Events:  watchResponse.Events,
-		}
-		w.metricCli.EmitCounter("watch.list_stream.push", len(response.Events))
-		w.metricCli.EmitHistogram("watch.list_stream.push.size", proto.Size(response))
-		if err := w.Send(response); err != nil {
-			klog.ErrorS(err, "[range stream] send response with header failed",
-				"watcher", w.id, "watch", id, "key", r.Key, "end", r.RangeEnd, "rev", r.StartRevision*-1, "respRev", revision)
-			w.metricCli.EmitCounter("watch.list_stream.push.err", 1)
-			// send failed, should break
-			// TODO retry refer to etcd victims
-			w.Cancel(id, err, true)
-			continue
-		}
-	}
-	// for range stream, don't send cancel in watchServer, but wait client to cancel. to prevent message receive order confusion
-	// delete watch info in watches map to avoid resource leak
-	w.Lock()
-	if c, ok := w.watches[id]; ok {
-		klog.InfoS("[range stream] begin to cancel context", "watcher", w.id, "watch", id)
-		if c.cancel != nil {
-			c.cancel()
-		}
-		delete(w.watches, id)
-	}
-	w.Unlock()
-	klog.InfoS("[range stream] range closed", "watcher", w.id, "watch", id, "key", r.Key, "end", r.RangeEnd)
 }
 
 func (w *watcher) Watch(ctx context.Context, id int64, r *etcdserverpb.WatchCreateRequest) {

@@ -33,13 +33,7 @@ import (
 )
 
 const (
-	// GetPartitionMagic is a sentinel ModRevision the range-stream (List) path sets
-	// on its EOF event. It is NOT overloaded onto the Range API any more: a Range
-	// at revision 1888 now gets normal etcd semantics instead of being hijacked to
-	// return partition metadata (#53). Partition discovery uses the brain-protocol
-	// ListPartition RPC.
-	GetPartitionMagic int64 = 1888
-	unaryRpcTimeout         = 10 * time.Second
+	unaryRpcTimeout = 10 * time.Second
 
 	compactRevKey    = "compact_rev_key"
 	defaultMaxTxnOps = 128
