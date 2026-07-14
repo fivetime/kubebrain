@@ -21,6 +21,7 @@ import (
 
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/protobuf/proto"
 	"k8s.io/klog/v2"
 
@@ -125,6 +126,10 @@ func New(backend b.Backend, metricCli metrics.Metrics, peers service.PeerService
 		req.KeysOnly = false
 		pctx, cancel := context.WithTimeout(ctx, countProxyTimeout)
 		defer cancel()
+		// Mark the forward so the leader can fast-reject it (rather than full-scan)
+		// while its count index is rebuilding; on that reject the failure branch
+		// below opens the quiet window and this node falls back to a local scan.
+		pctx = metadata.AppendToOutgoingContext(pctx, countProxyMarkerKey, "1")
 		resp, err := peers.Range(pctx, req)
 		if err != nil || resp == nil {
 			proxyQuietUntil.Store(time.Now().Add(countProxyFailureQuiet).UnixNano())

@@ -24,6 +24,9 @@ import (
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
 	"github.com/kubewharf/kubebrain/pkg/backend"
@@ -88,4 +91,52 @@ func TestCountProxyServesFollowerCounts(t *testing.T) {
 	resp, err = shim.Count(ctx, req)
 	require.NoError(t, err)
 	require.Equal(t, int64(3), resp.Count)
+}
+
+// TestCountProxyFastRejectsWhenIndexNotReady pins the review-51 leftover: during
+// a leader's count-index rebuild, a follower-proxied count the index cannot serve
+// must be fast-rejected (Unavailable) so the follower falls back locally, instead
+// of the leader running a full-scan for every proxied count and taking the whole
+// cluster's count load. A directly-connected client (no proxy marker) still gets
+// the leader's best-effort scan.
+func TestCountProxyFastRejectsWhenIndexNotReady(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	m := mock.NewMinimalMetrics(ctrl)
+	kv := imemkv.NewKvStorage()
+	defer func() { require.NoError(t, kv.Close()) }()
+
+	pfx := fmt.Sprintf("/kubebrain/cproxy_reject/%d", time.Now().UnixNano())
+	// Count index off => CountAtRevision never serves: the leader mid-rebuild.
+	be := backend.NewBackend(kv, backend.Config{
+		Prefix: pfx, Identity: fmt.Sprintf("cproxy-reject-%d", time.Now().UnixNano()),
+		EnableEtcdCompatibility: true,
+	}, m)
+	be.SetCurrentRevision(uint64(time.Now().UnixNano()))
+	ctx := context.Background()
+	for i := 0; i < 3; i++ {
+		_, err := be.Create(ctx, &proto.CreateRequest{Key: []byte(path.Join(pfx, fmt.Sprintf("k%d", i))), Value: []byte("v")})
+		require.NoError(t, err)
+	}
+
+	shim := NewBackendShim(be, m).(*backendShim)
+	shim.SetCountProxy(nil) // this node is the leader (nothing to proxy to)
+	req := &etcdserverpb.RangeRequest{Key: []byte(pfx + "/"), RangeEnd: []byte(pfx + "0"), CountOnly: true}
+
+	// Direct client (no marker): best-effort scan returns the real count.
+	resp, err := shim.Count(ctx, req)
+	require.NoError(t, err)
+	require.Equal(t, int64(3), resp.Count, "a direct client must get the leader's fallback scan")
+
+	// Follower-proxied count (marker present) the index cannot serve: fast-reject.
+	proxyCtx := metadata.NewIncomingContext(ctx, metadata.Pairs(countProxyMarkerKey, "1"))
+	_, err = shim.Count(proxyCtx, req)
+	require.Error(t, err)
+	require.Equal(t, codes.Unavailable, status.Code(err), "a proxied count the index cannot serve must fast-reject")
+
+	// Same for a revision-pinned proxied count.
+	reqRev := &etcdserverpb.RangeRequest{Key: []byte(pfx + "/"), RangeEnd: []byte(pfx + "0"), CountOnly: true, Revision: int64(be.GetCurrentRevision())}
+	_, err = shim.Count(proxyCtx, reqRev)
+	require.Error(t, err)
+	require.Equal(t, codes.Unavailable, status.Code(err))
 }

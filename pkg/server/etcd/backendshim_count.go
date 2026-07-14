@@ -19,10 +19,36 @@ import (
 	"context"
 	"strconv"
 
-	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"golang.org/x/sync/singleflight"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
+
+	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
 )
+
+// countProxyMarkerKey marks a CountOnly Range that a follower forwarded to the
+// leader (SetCountProxy). The leader uses it to FAST-REJECT a proxied count its
+// own index cannot serve (mid count-index rebuild) instead of running a
+// full-scan fallback for every follower's proxied count — which would pile the
+// whole cluster's count load onto the one leader for the ~rebuild window. On the
+// reject the follower falls back to its own local scan (via its proxy
+// quiet-window), spreading the load. A directly-connected client (no marker)
+// still gets the leader's best-effort scan.
+const countProxyMarkerKey = "kubebrain-count-proxy"
+
+// errCountIndexNotReady is the fast-reject returned to a proxied count the
+// leader cannot serve from its index. Unavailable makes the follower's proxy
+// treat it as a decline and fall back locally.
+var errCountIndexNotReady = status.Error(codes.Unavailable, "count index not ready (rebuilding); fall back locally")
+
+// isCountProxyRequest reports whether this count arrived via the leader count
+// proxy (carries countProxyMarkerKey in its gRPC metadata).
+func isCountProxyRequest(ctx context.Context) bool {
+	md, ok := metadata.FromIncomingContext(ctx)
+	return ok && len(md.Get(countProxyMarkerKey)) > 0
+}
 
 // countResolver owns exact-range counting for paginated LIST: the per-page
 // rolling count cache (a fixed-revision count is immutable, so a continue-page
@@ -180,6 +206,12 @@ func (cr *countResolver) Count(ctx context.Context, r *etcdserverpb.RangeRequest
 				Count:  c,
 			}, nil
 		}
+		// On the leader mid-rebuild the index cannot serve and there is no proxy
+		// (this IS the leader). Fast-reject a follower-proxied count so it falls
+		// back locally instead of loading a full-scan List onto the leader.
+		if isCountProxyRequest(ctx) {
+			return nil, errCountIndexNotReady
+		}
 		return cr.shim.List(ctx, r)
 	}
 
@@ -196,6 +228,11 @@ func (cr *countResolver) Count(ctx context.Context, r *etcdserverpb.RangeRequest
 			Header: txnHeader(int64(cr.shim.backend.GetCurrentRevision())),
 			Count:  c,
 		}, nil
+	}
+	// Fast-reject a proxied current-revision count the leader's index cannot
+	// serve mid-rebuild (see the Revision>0 branch above).
+	if isCountProxyRequest(ctx) {
+		return nil, errCountIndexNotReady
 	}
 	request := &proto.CountRequest{
 		Key: r.Key,
