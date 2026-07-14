@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"fmt"
 	"testing"
 
 	"github.com/golang/mock/gomock"
@@ -222,4 +223,55 @@ func TestScannerCrossPartitionTombstone(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestScannerCompactBatchesLargeTombstoneBacklog covers the #66 batched GC path:
+// a backlog whose delete count spans several compactDeleteBatchSize flushes (plus
+// a final partial one) must reclaim EVERY superseded version, tombstone object,
+// and revision-key tombstone — nothing stranded at a batch boundary.
+func TestScannerCompactBatchesLargeTombstoneBacklog(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	m := mock.NewMinimalMetrics(ctrl)
+	c := coder.NewNormalCoder()
+	tomb := []byte("tombstone")
+
+	kv := imemkv.NewKvStorage()
+	defer kv.Close()
+
+	// n well above compactDeleteBatchSize so deletes span multiple batched flushes;
+	// each deleted key contributes 3 GC'able entries (deleted index + older live +
+	// tombstone), so total deletes are ~3n.
+	const n = 300
+	const r1 uint64 = 100
+	const r2 uint64 = 200
+	require.Greater(t, n, compactDeleteBatchSize, "n must exceed one batch to exercise flush boundaries")
+
+	b := kv.BeginBatchWrite()
+	for i := 0; i < n; i++ {
+		key := []byte(fmt.Sprintf("/registry/pods/default/p%05d", i))
+		b.Put(c.EncodeObjectKey(key, 0), append(beU64(r2), 0), 0) // deleted index {r2}{del}
+		b.Put(c.EncodeObjectKey(key, r1), []byte("live"), 0)      // older live object
+		b.Put(c.EncodeObjectKey(key, r2), tomb, 0)                // latest = tombstone
+	}
+	require.NoError(t, b.Commit(context.Background()))
+
+	sc := NewScanner(kv, c, Config{CompactKey: []byte("/compact"), Tombstone: tomb}, m)
+	borders := [][]byte{coder.ObjectKeyspaceStart(), coder.ObjectKeyspaceEnd()}
+	require.NoError(t, sc.Compact(context.Background(), borders, 1000))
+
+	// A List over the whole keyspace returns nothing...
+	kvs, err := sc.Range(context.Background(), coder.ObjectKeyspaceStart(), coder.ObjectKeyspaceEnd(), 100000, 0)
+	require.NoError(t, err)
+	require.Empty(t, kvs, "all deleted keys must be GC'd across batch boundaries")
+
+	// ...and the raw store holds no object versions.
+	it, err := kv.Iter(context.Background(), coder.ObjectKeyspaceStart(), coder.ObjectKeyspaceEnd(), 0, 0)
+	require.NoError(t, err)
+	defer it.Close()
+	remaining := 0
+	for it.Next(context.Background()) == nil {
+		remaining++
+	}
+	require.Zero(t, remaining, "raw store must hold no object versions after batched compaction")
 }

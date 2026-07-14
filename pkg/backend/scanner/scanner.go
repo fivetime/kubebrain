@@ -43,6 +43,16 @@ const (
 	iterTimeout       = 1000 * time.Second
 	rangeStreamBatch  = 300
 
+	// compactDeleteBatchSize is how many version-GC deletes a compaction worker
+	// accumulates before committing them in ONE storage transaction. Compaction
+	// used to delete every superseded version / tombstone with its own
+	// begin/commit transaction (a TSO plus two round trips on TiKV), so a large
+	// tombstone backlog serialized into millions of tiny transactions — the #66
+	// throughput bottleneck. Batching collapses N deletes into N/batch commits.
+	// Kept well under TiKV's per-txn key limit and sized so one flush stays a
+	// modest write.
+	compactDeleteBatchSize = 128
+
 	// globalScanWorkers caps the number of partition-scan workers running
 	// concurrently across ALL unlimited scans (#40). A kube-apiserver cold
 	// start fires dozens of cachers' full-keyspace Lists at once; uncapped,
@@ -321,6 +331,22 @@ type worker struct {
 	metricCli metrics.Metrics
 
 	lastCompactFailedRawKey []byte
+
+	// pendingDeletes buffers version-GC deletes for the current compaction scan so
+	// they commit in batches (compactDeleteBatchSize) instead of one transaction
+	// per key (#66). Reset at the start of every run() and flushed at batch
+	// thresholds and at scan end.
+	pendingDeletes []pendingDelete
+}
+
+// pendingDelete is one buffered compaction delete: the encoded object key to
+// remove, plus the user key it belongs to for skip-on-error bookkeeping (a key
+// whose delete persistently fails is remembered by user key and skipped next
+// scan, so it cannot strand the batch forever).
+type pendingDelete struct {
+	objKey  []byte
+	userKey []byte
+	rev     uint64
 }
 
 type workerConfig struct {
@@ -408,6 +434,7 @@ func (w *worker) run(ctx context.Context, receiver resultReceiver) (int, error) 
 	}
 	defer it.Close()
 	receiver.reset()
+	w.pendingDeletes = w.pendingDeletes[:0]
 	count := 0
 	valSize := int64(0)
 	// iter cur
@@ -480,9 +507,21 @@ func (w *worker) run(ctx context.Context, receiver resultReceiver) (int, error) 
 		prevRevision = curRevision
 		prevUserKey = curUserKey
 		prevValue = it.Val()
+
+		if w.compact && len(w.pendingDeletes) >= compactDeleteBatchSize {
+			w.flushDeletes(ctx)
+		}
 	}
 
 	endTime := time.Now()
+	// Flush buffered GC deletes even on a timeout/error: a partial compaction scan
+	// still makes progress — the deleted tombstones are gone on the next retry,
+	// which advances past them instead of re-walking them (#66 completeness). ctx
+	// (not the iterTimeout-bounded scanCtx) bounds the flush so a scan that hit
+	// iterTimeout can still commit what it already found.
+	if w.compact {
+		w.flushDeletes(ctx)
+	}
 	if err != nil && err != io.EOF {
 		klog.ErrorS(err, "worker error", "worker", w.info(), "count", count, "latency", endTime.Sub(startTime))
 		return 0, err
@@ -566,32 +605,69 @@ func (w *worker) compactRow(it storage.Iter, objectKey, value, curUserKey []byte
 	return false
 }
 
-func (w *worker) compactCurrent(iter storage.Iter, rawKey []byte, rev uint64) error {
+// compactCurrent buffers a revision-key tombstone for deletion. It used to issue
+// a DelCurrent (delete-if-value-equal) per key; the CAS was a safeguard against a
+// concurrent write, but compaction only removes versions at/below the compact
+// watermark, which are immutable, so an unconditional batched Del of the same key
+// is equivalent and far cheaper (#66). iter.Key() aliases the iterator buffer, so
+// enqueueDelete copies it.
+func (w *worker) compactCurrent(iter storage.Iter, rawKey []byte, rev uint64) {
 	if w.isSkippedRawKey(rawKey, rev) {
-		return nil
+		return
 	}
-
-	w.metricCli.EmitCounter("compact", 1)
-	err := w.store.DelCurrent(context.Background(), iter)
-	if err != nil {
-		w.metricCli.EmitCounter("compact.err", 1)
-		w.updateSkippedRawKey(rawKey, rev, err)
-	}
-	return err
+	w.enqueueDelete(iter.Key(), rawKey, rev)
 }
 
-func (w *worker) compactKey(key []byte, rawKey []byte, rev uint64) error {
+// compactKey buffers a superseded version / tombstone object for deletion.
+func (w *worker) compactKey(key []byte, rawKey []byte, rev uint64) {
 	if w.isSkippedRawKey(rawKey, rev) {
-		return nil
+		return
 	}
+	w.enqueueDelete(key, rawKey, rev)
+}
 
-	w.metricCli.EmitCounter("compact", 1)
-	err := w.store.Del(context.Background(), key)
-	if err != nil {
-		w.metricCli.EmitCounter("compact.err", 1)
-		w.updateSkippedRawKey(rawKey, rev, err)
+// enqueueDelete buffers one object key for batched compaction GC. Both keys are
+// copied: objKey may alias the iterator's buffer (invalidated on the next
+// iter.Next), and userKey is retained for skip-on-error bookkeeping beyond this
+// iteration.
+func (w *worker) enqueueDelete(objKey, userKey []byte, rev uint64) {
+	w.pendingDeletes = append(w.pendingDeletes, pendingDelete{
+		objKey:  append([]byte(nil), objKey...),
+		userKey: append([]byte(nil), userKey...),
+		rev:     rev,
+	})
+}
+
+// flushDeletes commits the buffered compaction deletes in one storage
+// transaction. On a batch-commit failure it falls back to per-key deletes so a
+// single poison key cannot strand the whole batch — the existing skip-on-error
+// path then isolates it. Delete failures are benign (a later compaction reclaims
+// the leftover), so this never returns an error that would force a partition
+// re-scan.
+func (w *worker) flushDeletes(ctx context.Context) {
+	if len(w.pendingDeletes) == 0 {
+		return
 	}
-	return err
+	batch := w.store.BeginBatchWrite()
+	for i := range w.pendingDeletes {
+		batch.Del(w.pendingDeletes[i].objKey)
+	}
+	if err := batch.Commit(ctx); err == nil {
+		w.metricCli.EmitCounter("compact", int64(len(w.pendingDeletes)))
+		w.pendingDeletes = w.pendingDeletes[:0]
+		return
+	}
+	w.metricCli.EmitCounter("compact.batch.err", 1)
+	for i := range w.pendingDeletes {
+		pd := w.pendingDeletes[i]
+		if err := w.store.Del(ctx, pd.objKey); err != nil {
+			w.metricCli.EmitCounter("compact.err", 1)
+			w.updateSkippedRawKey(pd.userKey, pd.rev, err)
+		} else {
+			w.metricCli.EmitCounter("compact", 1)
+		}
+	}
+	w.pendingDeletes = w.pendingDeletes[:0]
 }
 
 // checkCompactRace will guarantee range request and compact request don't conflict
