@@ -29,6 +29,7 @@ import (
 
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
 
+	"github.com/kubewharf/kubebrain/pkg/backend/coder"
 	"github.com/kubewharf/kubebrain/pkg/storage"
 )
 
@@ -254,6 +255,11 @@ func (b *backend) runCompactor() {
 			b.physicalCompact(ctx, target)
 			lastScanned = target
 			atomic.StoreUint64(&b.compactDoneRev, target)
+			// Export the physical-GC watermark so operators can see whether GC is
+			// keeping up with the logical compact watermark. A gap that only grows
+			// (physical rev frozen while the logical one advances) is the signature
+			// of the #62 keyspace-mismatch bug and of a stuck/backlogged GC scan.
+			b.metricCli.EmitGauge("compact.physical.done_rev", target)
 		}
 	}
 }
@@ -387,31 +393,40 @@ func (b *backend) setCompactRecord(ctx context.Context, revision uint64) (advanc
 }
 
 func (b *backend) getCompactBorders() [][]byte {
-	// exclude skipped key prefix
-	var keyPrefixes []string
-	keyPrefixes = append(keyPrefixes, b.config.Prefix)
-	keyPrefixes = append(keyPrefixes, b.config.SkippedPrefixes...)
-
-	// construct compact borders
-	var compactBorders [][]byte
-	for _, key := range keyPrefixes {
+	// Physical GC scans the ENTIRE object keyspace, NOT a range derived from
+	// config.Prefix. config.Prefix (--key-prefix) is never prepended to stored
+	// keys — it only namespaces the leader-election lock — so bounding compaction
+	// by it silently skipped ALL user data whenever it did not match the client's
+	// real key prefix. E.g. --key-prefix=/kubebrain while the apiserver writes
+	// /registry/*: the derived border [{magic}/kubebrain/, {magic}/kubebrain0)
+	// contains zero rows, so physical GC scanned nothing and every tombstone /
+	// superseded version accumulated forever (the "compact" counter froze while
+	// LISTs degraded). The whole-keyspace border below covers every user prefix
+	// AND KubeBrain's internal \x00kubebrain/ namespace (etcd metadata + lease
+	// records — all latest-only, rewritten every keepalive, #6/#15/#38) in one
+	// range, so GC is correct no matter how --key-prefix is set. Safe because the
+	// scanner never touches versions above the compact revision (scanner.go: "if
+	// curRevision > w.revision { continue }"), so co-tenants at higher revisions
+	// on a shared TiKV are untouched.
+	compactBorders := [][]byte{
+		coder.ObjectKeyspaceStart(),
+		coder.ObjectKeyspaceEnd(),
+	}
+	// SkippedPrefixes (--skip-key-prefix) carve holes OUT of the scanned keyspace:
+	// their start/end points sort into the border list and, once scanner.Compact
+	// pairs consecutive borders as [start,end) include-ranges, the skipped ranges
+	// fall between pairs and are never scanned. Used when several KubeBrain
+	// clusters share one TiKV cluster and each must not GC the others' object
+	// types.
+	for _, prefix := range b.config.SkippedPrefixes {
+		key := prefix
 		if !strings.HasSuffix(key, "/") {
 			key = key + "/"
 		}
-		compactBorders = append(compactBorders, b.coder.EncodeObjectKey([]byte(key), 0))
-		compactBorders = append(compactBorders, b.coder.EncodeObjectKey(PrefixEnd([]byte(key)), 0))
+		compactBorders = append(compactBorders,
+			b.coder.EncodeObjectKey([]byte(key), 0),
+			b.coder.EncodeObjectKey(PrefixEnd([]byte(key)), 0))
 	}
-	// KubeBrain's internal keyspaces (etcd metadata, lease records) live under the
-	// reserved \x00kubebrain/ namespace, which sorts before the user prefix
-	// (leading \x00) and was therefore never GC'd — lease records in particular
-	// are rewritten on every keepalive, so their versions grew without bound
-	// (#6/#15/#38). They are all latest-only state, so fold the whole namespace
-	// into compaction: the scanner keeps the latest version <= compactRev per key
-	// and retires older versions and tombstones (revoked/expired leases), exactly
-	// as for user keys.
-	compactBorders = append(compactBorders,
-		b.coder.EncodeObjectKey(internalKeyspacePrefix, 0),
-		b.coder.EncodeObjectKey(PrefixEnd(internalKeyspacePrefix), 0))
 	// sort to make sure compact in right range
 	sort.Slice(compactBorders, func(i, j int) bool {
 		return bytes.Compare(compactBorders[i], compactBorders[j]) < 0

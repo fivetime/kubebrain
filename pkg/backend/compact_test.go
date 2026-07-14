@@ -40,6 +40,11 @@ func TestConstructCompactBordersWithSkippedPrefixOption(t *testing.T) {
 		expected [][]byte // expected result
 	}{
 		{
+			// Compaction covers the WHOLE object keyspace (Prefix no longer bounds
+			// it — #62). SkippedPrefixes carve interior holes: after sort+pairing,
+			// [start, events/] [events0, pods/] [pods0, end] are scanned; the two
+			// skipped ranges fall between pairs. The internal \x00kubebrain/
+			// namespace is inside [ObjectKeyspaceStart, events/) so it is still GC'd.
 			Config{
 				Prefix: "/registry/test",
 				SkippedPrefixes: []string{
@@ -48,26 +53,32 @@ func TestConstructCompactBordersWithSkippedPrefixOption(t *testing.T) {
 				},
 			},
 			[][]byte{
-				// internal \x00kubebrain/ namespace (etcdmeta + leases) sorts first and is GC'd too (#6/#15/#38)
-				encodeRevisionKey(internalKeyspacePrefix),
-				encodeRevisionKey(PrefixEnd(internalKeyspacePrefix)),
-				encodeRevisionKey([]byte("/registry/test/")),
+				coder.ObjectKeyspaceStart(),
 				encodeRevisionKey([]byte("/registry/test/events/")),
 				encodeRevisionKey([]byte("/registry/test/events0")),
 				encodeRevisionKey([]byte("/registry/test/pods/")),
 				encodeRevisionKey([]byte("/registry/test/pods0")),
-				encodeRevisionKey([]byte("/registry/test0")),
+				coder.ObjectKeyspaceEnd(),
 			},
 		},
 		{
+			// No skipped prefixes: one pair spanning the entire object keyspace,
+			// so GC works regardless of --key-prefix (the /kubebrain-vs-/registry bug).
 			Config{
 				Prefix: "/registry/test",
 			},
 			[][]byte{
-				encodeRevisionKey(internalKeyspacePrefix),
-				encodeRevisionKey(PrefixEnd(internalKeyspacePrefix)),
-				encodeRevisionKey([]byte("/registry/test/")),
-				encodeRevisionKey([]byte("/registry/test0")),
+				coder.ObjectKeyspaceStart(),
+				coder.ObjectKeyspaceEnd(),
+			},
+		},
+		{
+			// The exact regression: --key-prefix set to a value disjoint from the
+			// data must NOT shrink the scanned range — still whole keyspace.
+			Config{Prefix: "/kubebrain"},
+			[][]byte{
+				coder.ObjectKeyspaceStart(),
+				coder.ObjectKeyspaceEnd(),
 			},
 		},
 	}

@@ -35,6 +35,16 @@ func NewNormalCoder() Coder {
 	return &normalEncoderDecoder{}
 }
 
+// ObjectKeyspaceStart returns the smallest possible encoded object key: every
+// object key is {magic}{userKey}{split}{revision}, so the bare magic prefix sorts
+// at or before all of them (and after every non-object key, which lacks the magic
+// prefix). Paired with ObjectKeyspaceEnd it bounds the ENTIRE object keyspace
+// regardless of user prefix — used by compaction so physical GC never depends on
+// a configured key-prefix matching the client's real keys.
+func ObjectKeyspaceStart() []byte {
+	return append([]byte(nil), magicBytes...)
+}
+
 func ObjectKeyspaceEnd() []byte {
 	end := append([]byte(nil), magicBytes...)
 	for i := len(end) - 1; i >= 0; i-- {
