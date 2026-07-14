@@ -58,7 +58,7 @@
 
 ---
 
-## 四、三大发现
+## 四、关键发现
 
 ### 发现 1:存储层从不是瓶颈
 
@@ -80,6 +80,12 @@ k3s(apiserver + kcm + scheduler)缓存约 410 万个"可管理对象"(node/ns/SA
 4. **反常识的结果**:正因为 kcm 处理不过来,k3s 的 informer 没有大量缓存新 RS/pod,内存反而被**挡在 216 GB**,撞不到 362 GB 的物理墙。
 
 **结论:单集群控制面的真正瓶颈不止是 informer 内存,还有 kcm 在 watch-cache 全关下的 reconcile 吞吐——后者会先饱和,把内存墙"推后"。** 但代价是集群不健康(pod 生成不出来)。
+
+### 发现 4:连 pod 对象本身,瓶颈也在 apiserver 而非存储
+
+尝试直接建 pod 对象(绕开 kcm 慢链)补齐 pod 500万时,发现 apiserver 处理 pod create 只有 **~45/s**——pod 是 Kubernetes 里 admission 最重的对象,每个都要走 ServiceAccount 注入、NodeRestriction 校验 nodeName、pod security、defaulting mutation,再加一次 patch status(共 2 次请求)。对比 secret create 的 3973/s,**慢约 88 倍**;客户端并发从 64 提到 128 也无济于事(瓶颈在 apiserver 服务端 admission)。
+
+而 KubeBrain 存 pod 对象和存 secret 完全一样快(500 万 secret 已实测 3973/s)——**再次坐实:即便是 pod 这种最重的对象,规模瓶颈也在 apiserver 的处理成本,不在存储层。** 附带发现:SA controller 在此规模下同样落后(100 万 namespace 的 `default` SA 未及时创建,pod create 因此报 `serviceaccount "default" not found`),需给 pod 显式指定一个已存在的 SA 来绕过。
 
 ---
 
