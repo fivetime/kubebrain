@@ -42,7 +42,7 @@ type countResolver struct {
 }
 
 func newCountResolver(shim *backendShim) *countResolver {
-	return &countResolver{shim: shim, rangeCountCache: newRevKeyCache(revKeyCacheCap)}
+	return &countResolver{shim: shim, rangeCountCache: newRevKeyCache(revKeyCacheCap, revKeyCacheMaxBytes)}
 }
 
 func (cr *countResolver) exactRangeCount(ctx context.Context, r *etcdserverpb.RangeRequest) (int64, error) {
@@ -76,7 +76,7 @@ func (cr *countResolver) exactRangeCount(ctx context.Context, r *etcdserverpb.Ra
 			delta, served := cr.resolveCountFromIndex(ctx, e.lastStart, r.Key, r.Revision)
 			if served {
 				c := e.count - delta
-				cr.rangeCountCache.put(ck, rangeCountEntry{lastStart: append([]byte(nil), r.Key...), count: c})
+				cr.rangeCountCache.put(ck, rangeCountEntry{lastStart: append([]byte(nil), r.Key...), count: c}, int64(len(r.Key)))
 				return c, nil
 			}
 		}
@@ -87,7 +87,7 @@ func (cr *countResolver) exactRangeCount(ctx context.Context, r *etcdserverpb.Ra
 		if e != nil {
 			return nil, e
 		}
-		cr.rangeCountCache.put(ck, rangeCountEntry{lastStart: append([]byte(nil), r.Key...), count: c})
+		cr.rangeCountCache.put(ck, rangeCountEntry{lastStart: append([]byte(nil), r.Key...), count: c}, int64(len(r.Key)))
 		return c, nil
 	})
 	if err != nil {

@@ -15,6 +15,7 @@
 package etcd
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -29,7 +30,7 @@ import (
 // must never shadow the newer hint, or a faster stream would serve a stale
 // PrevKv.
 func TestPrevHintMonotonicUnderLaggingStream(t *testing.T) {
-	c := newPrevHintCache(16)
+	c := newPrevHintCache(16, 1<<40)
 	kv20 := &mvccpb.KeyValue{Key: []byte("k"), ModRevision: 20}
 	c.note("k", 20, kv20, false)
 	// Lagging stream replays the key's older event.
@@ -47,7 +48,7 @@ func TestPrevHintMonotonicUnderLaggingStream(t *testing.T) {
 // leadership flips), so an unproven hint may be several versions stale.
 func TestPrevHintHitAndMissBoundaries(t *testing.T) {
 	b := &backendShim{metricCli: prommetrics.NewMetrics()}
-	b.prevKvResolver = &prevKvResolver{shim: b, prevHints: newPrevHintCache(16)}
+	b.prevKvResolver = &prevKvResolver{shim: b, prevHints: newPrevHintCache(16, 1<<40)}
 	kv := &mvccpb.KeyValue{Key: []byte("k"), ModRevision: 10, CreateRevision: 4, Version: 2}
 	b.noteEvent([]byte("k"), 10, kv, false)
 
@@ -82,7 +83,7 @@ func TestPrevHintHitAndMissBoundaries(t *testing.T) {
 // key written before rotation is still answerable (promoted), and rotation
 // keeps memory bounded rather than dropping correctness.
 func TestPrevHintSurvivesGenerationRotation(t *testing.T) {
-	c := newPrevHintCache(2)
+	c := newPrevHintCache(2, 1<<40)
 	c.note("hot", 10, &mvccpb.KeyValue{ModRevision: 10}, false)
 	c.note("a", 11, nil, false)
 	c.note("b", 12, nil, false) // rotation point (cap=2)
@@ -92,11 +93,59 @@ func TestPrevHintSurvivesGenerationRotation(t *testing.T) {
 	assert.Equal(t, uint64(10), e.rev)
 
 	// A newer entry in the old generation must win over a stale note.
-	c2 := newPrevHintCache(1)
+	c2 := newPrevHintCache(1, 1<<40)
 	c2.note("k", 20, &mvccpb.KeyValue{ModRevision: 20}, false)
 	c2.note("x", 1, nil, false) // rotates "k" into prev
 	c2.note("k", 10, &mvccpb.KeyValue{ModRevision: 10}, false)
 	e, ok = c2.get("k")
 	require.True(t, ok)
 	assert.Equal(t, uint64(20), e.rev, "stale note must promote the newer prev-generation entry, not shadow it")
+}
+
+// TestPrevHintCacheByteBoundRotates pins the review-51 leftover: the hint cache
+// had an entry-count cap but no byte cap, so a working set of large values could
+// reach gigabytes. With a large count cap and a small byte bound, rotation must
+// be driven by BYTES — the live generation never exceeds the byte bound by more
+// than one entry, entry count stays far below the count cap, and old entries are
+// evicted while recent ones survive.
+func TestPrevHintCacheByteBoundRotates(t *testing.T) {
+	const maxBytes = 4096
+	const bigVal = 1024
+	c := newPrevHintCache(1_000_000, maxBytes) // count cap huge: only bytes can rotate
+	kv := func() *mvccpb.KeyValue { return &mvccpb.KeyValue{Key: []byte("x"), Value: make([]byte, bigVal)} }
+
+	for i := 0; i < 200; i++ {
+		c.note(fmt.Sprintf("key-%05d", i), uint64(i+1), kv(), false)
+		c.mu.Lock()
+		require.LessOrEqualf(t, c.curBytes, int64(maxBytes)+bigVal+cacheEntryOverhead+64,
+			"generation byte bound must hold (i=%d, curBytes=%d)", i, c.curBytes)
+		require.Lessf(t, len(c.cur), 1000, "bytes, not count, must drive rotation (i=%d, len=%d)", i, len(c.cur))
+		c.mu.Unlock()
+	}
+
+	_, okOld := c.get("key-00000")
+	require.False(t, okOld, "oldest entry must be evicted by byte-bound rotation")
+	_, okNew := c.get("key-00199")
+	require.True(t, okNew, "most recent entry must be retained")
+}
+
+// TestRevKeyCacheByteBoundRotates is the same guarantee for the (key,revision)
+// prev-value cache, which holds *mvccpb.KeyValue behind an interface{}.
+func TestRevKeyCacheByteBoundRotates(t *testing.T) {
+	const maxBytes = 4096
+	const bigVal = 1024
+	c := newRevKeyCache(1_000_000, maxBytes)
+
+	for i := 0; i < 200; i++ {
+		c.put(fmt.Sprintf("k-%05d", i), &mvccpb.KeyValue{Value: make([]byte, bigVal)}, bigVal)
+		c.mu.Lock()
+		require.LessOrEqualf(t, c.curBytes, int64(maxBytes)+bigVal+cacheEntryOverhead+64,
+			"generation byte bound must hold (i=%d, curBytes=%d)", i, c.curBytes)
+		require.Lessf(t, len(c.cur), 1000, "bytes, not count, must drive rotation (i=%d)", i)
+		c.mu.Unlock()
+	}
+	_, okOld := c.get("k-00000")
+	require.False(t, okOld, "oldest entry must be evicted by byte-bound rotation")
+	_, okNew := c.get("k-00199")
+	require.True(t, okNew, "most recent entry must be retained")
 }

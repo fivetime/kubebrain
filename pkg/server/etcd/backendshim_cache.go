@@ -50,9 +50,9 @@ type prevKvResolver struct {
 func newPrevKvResolver(shim *backendShim) *prevKvResolver {
 	return &prevKvResolver{
 		shim:      shim,
-		metaCache: newRevKeyCache(revKeyCacheCap),
-		prevCache: newRevKeyCache(revKeyCacheCap),
-		prevHints: newPrevHintCache(prevHintCacheCap),
+		metaCache: newRevKeyCache(revKeyCacheCap, revKeyCacheMaxBytes),
+		prevCache: newRevKeyCache(revKeyCacheCap, revKeyCacheMaxBytes),
+		prevHints: newPrevHintCache(prevHintCacheCap, prevHintCacheMaxBytes),
 	}
 }
 
@@ -63,47 +63,90 @@ func newPrevKvResolver(shim *backendShim) *prevKvResolver {
 // far more than blocking this one event stream a few seconds.
 var prevKvRetryBudget = 5 * time.Second // var for tests
 
-// revKeyCacheCap bounds each generation of the (key,revision) caches. A watch
-// fanout has W watcher streams converting the SAME event within a short window,
-// so a modest cache coalesces their lookups; two generations bound memory.
+// revKeyCacheCap bounds each generation of the (key,revision) caches by ENTRY
+// COUNT. A watch fanout has W watcher streams converting the SAME event within a
+// short window, so a modest cache coalesces their lookups; two generations bound
+// memory.
 const revKeyCacheCap = 8192
+
+// revKeyCacheMaxBytes bounds each generation of the (key,revision) caches by
+// accumulated VALUE BYTES. The prev-value cache holds *mvccpb.KeyValue, so a
+// working set of large objects (secrets/configmaps up to ~1.5MB) could reach
+// gigabytes on the entry-count bound alone. Whichever bound is hit first rotates
+// the generation (#66-adjacent review-51 leftover: hint/value caches had a count
+// cap but no byte cap).
+const revKeyCacheMaxBytes = 64 << 20 // 64 MiB per generation
+
+// cacheEntryOverhead approximates the fixed per-entry cost the value-byte
+// accounting cannot see (map bucket + string header + interface header). Small
+// and constant; it only needs to keep the byte bound from wildly under-counting
+// many tiny entries.
+const cacheEntryOverhead = 48
 
 // revKeyCache is a tiny bounded cache keyed by (key,revision). The metadata and
 // previous value of a specific key version are IMMUTABLE, so entries never go
 // stale — the only concern is bounding memory, handled by rotating two
-// generations when the live one fills.
+// generations when the live one hits EITHER its entry-count or byte bound.
 type revKeyCache struct {
-	mu   sync.Mutex
-	cap  int
-	cur  map[string]interface{}
-	prev map[string]interface{}
+	mu       sync.Mutex
+	cap      int
+	maxBytes int64
+	curBytes int64
+	cur      map[string]revCacheEntry
+	prev     map[string]revCacheEntry
 }
 
-func newRevKeyCache(capacity int) *revKeyCache {
-	return &revKeyCache{cap: capacity, cur: make(map[string]interface{}, capacity), prev: map[string]interface{}{}}
+// revCacheEntry pairs a cached value with the caller-supplied byte size used for
+// the generation's memory bound.
+type revCacheEntry struct {
+	v    interface{}
+	size int64
+}
+
+func newRevKeyCache(capacity int, maxBytes int64) *revKeyCache {
+	return &revKeyCache{cap: capacity, maxBytes: maxBytes, cur: make(map[string]revCacheEntry, capacity), prev: map[string]revCacheEntry{}}
 }
 
 func (c *revKeyCache) get(k string) (interface{}, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if v, ok := c.cur[k]; ok {
-		return v, true
+	if e, ok := c.cur[k]; ok {
+		return e.v, true
 	}
-	if v, ok := c.prev[k]; ok {
-		c.cur[k] = v // promote so it survives the next rotation
-		return v, true
+	if e, ok := c.prev[k]; ok {
+		c.setCurLocked(k, e) // promote so it survives the next rotation
+		return e.v, true
 	}
 	return nil, false
 }
 
-func (c *revKeyCache) put(k string, v interface{}) {
+// put caches v under k. size is the caller's estimate of v's byte footprint,
+// used for the byte bound; pass 0 for constant-size values.
+func (c *revKeyCache) put(k string, v interface{}, size int64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if len(c.cur) >= c.cap {
-		c.prev = c.cur
-		c.cur = make(map[string]interface{}, c.cap)
+	entryBytes := int64(len(k)) + size + cacheEntryOverhead
+	// Rotate when either bound is hit. The len>0 guard lets a single oversized
+	// entry still be stored (in an otherwise-empty generation) instead of
+	// rotating forever.
+	if len(c.cur) >= c.cap || (c.curBytes+entryBytes > c.maxBytes && len(c.cur) > 0) {
+		c.rotateLocked()
 	}
-	c.cur[k] = v
+	c.setCurLocked(k, revCacheEntry{v: v, size: size})
+}
+
+func (c *revKeyCache) setCurLocked(k string, e revCacheEntry) {
+	if old, ok := c.cur[k]; ok {
+		c.curBytes -= int64(len(k)) + old.size + cacheEntryOverhead
+	}
+	c.cur[k] = e
+	c.curBytes += int64(len(k)) + e.size + cacheEntryOverhead
+}
+
+func (c *revKeyCache) rotateLocked() {
+	c.prev = c.cur
+	c.cur = make(map[string]revCacheEntry, c.cap)
+	c.curBytes = 0
 }
 
 func revCacheKey(key []byte, revision uint64) string {
@@ -111,9 +154,26 @@ func revCacheKey(key []byte, revision uint64) string {
 }
 
 // prevHintCacheCap bounds each generation of the per-key previous-version hint
-// cache. Sized for the hot-key working set (node heartbeats, controller status
-// loops); entries hold pointers to already-materialized KeyValues.
+// cache by ENTRY COUNT. Sized for the hot-key working set (node heartbeats,
+// controller status loops); entries hold pointers to already-materialized
+// KeyValues.
 const prevHintCacheCap = 65536
+
+// prevHintCacheMaxBytes bounds each generation of the hint cache by accumulated
+// VALUE BYTES. A hint holds a *mvccpb.KeyValue, so 65536 large objects would be
+// tens of GB on the count bound alone; whichever bound is hit first rotates.
+const prevHintCacheMaxBytes = 256 << 20 // 256 MiB per generation
+
+// kvBytes estimates a KeyValue's heap footprint for the cache byte bounds: key +
+// value payload plus a fixed overhead for its scalar fields and slice headers.
+func kvBytes(kv *mvccpb.KeyValue) int64 {
+	if kv == nil {
+		return 0
+	}
+	return int64(len(kv.Key)+len(kv.Value)) + kvFixedOverhead
+}
+
+const kvFixedOverhead = 64
 
 // prevHintEntry records the LAST converted watch event seen for a user key.
 type prevHintEntry struct {
@@ -144,14 +204,20 @@ type prevHintEntry struct {
 // (#45). Misses (cold keys, cache eviction) still take the slow path, which
 // remains correct on its own.
 type prevHintCache struct {
-	mu   sync.Mutex
-	cap  int
-	cur  map[string]prevHintEntry
-	prev map[string]prevHintEntry
+	mu       sync.Mutex
+	cap      int
+	maxBytes int64
+	curBytes int64
+	cur      map[string]prevHintEntry
+	prev     map[string]prevHintEntry
 }
 
-func newPrevHintCache(capacity int) *prevHintCache {
-	return &prevHintCache{cap: capacity, cur: make(map[string]prevHintEntry, capacity), prev: map[string]prevHintEntry{}}
+func newPrevHintCache(capacity int, maxBytes int64) *prevHintCache {
+	return &prevHintCache{cap: capacity, maxBytes: maxBytes, cur: make(map[string]prevHintEntry, capacity), prev: map[string]prevHintEntry{}}
+}
+
+func hintEntryBytes(key string, e prevHintEntry) int64 {
+	return int64(len(key)) + kvBytes(e.kv) + cacheEntryOverhead
 }
 
 func (c *prevHintCache) get(key string) (prevHintEntry, bool) {
@@ -161,10 +227,24 @@ func (c *prevHintCache) get(key string) (prevHintEntry, bool) {
 		return e, true
 	}
 	if e, ok := c.prev[key]; ok {
-		c.cur[key] = e // promote so it survives the next rotation
+		c.setCurLocked(key, e) // promote so it survives the next rotation
 		return e, true
 	}
 	return prevHintEntry{}, false
+}
+
+func (c *prevHintCache) setCurLocked(key string, e prevHintEntry) {
+	if old, ok := c.cur[key]; ok {
+		c.curBytes -= hintEntryBytes(key, old)
+	}
+	c.cur[key] = e
+	c.curBytes += hintEntryBytes(key, e)
+}
+
+func (c *prevHintCache) rotateLocked() {
+	c.prev = c.cur
+	c.cur = make(map[string]prevHintEntry, c.cap)
+	c.curBytes = 0
 }
 
 // note records a converted event, keeping only the highest revision per key.
@@ -177,14 +257,16 @@ func (c *prevHintCache) note(key string, rev uint64, kv *mvccpb.KeyValue, tombst
 	if e, ok := c.prev[key]; ok && e.rev >= rev {
 		// A newer entry exists in the old generation; promote it instead of
 		// letting a stale write shadow it in cur.
-		c.cur[key] = e
+		c.setCurLocked(key, e)
 		return
 	}
-	if len(c.cur) >= c.cap {
-		c.prev = c.cur
-		c.cur = make(map[string]prevHintEntry, c.cap)
+	e := prevHintEntry{rev: rev, kv: kv, tombstone: tombstone}
+	// Rotate when either bound is hit (entry count or accumulated bytes); the
+	// len>0 guard lets a single oversized hint still be stored.
+	if len(c.cur) >= c.cap || (c.curBytes+hintEntryBytes(key, e) > c.maxBytes && len(c.cur) > 0) {
+		c.rotateLocked()
 	}
-	c.cur[key] = prevHintEntry{rev: rev, kv: kv, tombstone: tombstone}
+	c.setCurLocked(key, e)
 }
 
 // noteEvent publishes a converted watch event into the hint cache.
@@ -284,7 +366,7 @@ func (r *prevKvResolver) cachedMetadata(ctx context.Context, key []byte, revisio
 		if e != nil {
 			return backend.EtcdMetadata{}, e
 		}
-		r.metaCache.put(ck, m)
+		r.metaCache.put(ck, m, 0) // EtcdMetadata is fixed-size scalars; overhead covers it
 		return m, nil
 	})
 	if err != nil {
@@ -317,7 +399,7 @@ func (r *prevKvResolver) cachedPreviousEtcdKv(key []byte, revision uint64, versi
 		// a cacher re-list storm (#36).
 		pk, certain := r.previousEtcdKv(context.Background(), key, revision)
 		if certain {
-			r.prevCache.put(ck, pk)
+			r.prevCache.put(ck, pk, kvBytes(pk))
 		}
 		return pk, nil
 	})
