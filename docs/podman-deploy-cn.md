@@ -390,6 +390,49 @@ curl -s http://10.32.32.101:8081/metrics | grep count_index_keys   # 随 identit
 
 > 隔离自证:在 **主** KubeBrain(3379)上 `etcdctl get cilium/ --prefix --count-only` 应恒为 0,在 Cilium 租户(4379)上 `get /registry/ --prefix --count-only` 亦为 0——两租户在同一 TiKV 上互不可见。
 
+### 5.5.1 ClusterMesh(跨集群)以 KubeBrain 为存储后端
+
+多集群 clustermesh 也能完全跑在 KubeBrain 上(每个集群一套 Cilium 租户,identity/service 跨集群同步),实测通过(cluster1 curl 全局服务负载均衡到 cluster2 的 pod)。**但必须用 `kvstoremesh.kvstoreMode: external`,且踩过几个非常隐蔽的坑,逐条记录**:
+
+**① helm value 路径**(最易错):是 `clustermesh.apiserver.kvstoremesh.kvstoreMode`,**别漏掉中间的 `kvstoremesh` 一层**(写成 `apiserver.kvstoreMode` 会被静默忽略,退回 internal 模式):
+
+```yaml
+clustermesh:
+  useAPIServer: true
+  apiserver:
+    kvstoremesh:
+      kvstoreMode: external   # ✅ 正确层级
+```
+
+**② 为什么必须 external**:internal 模式(默认)下 clustermesh-apiserver 靠 watch k8s 的 `CiliumIdentity` CRD 来发布本集群数据;但 **kvstore identity 模式下没有 CiliumIdentity CRD**(identity 全在 KubeBrain),于是发布 0 个 identity,跨集群同步永远起不来。external 模式改为直接从 kvstore 读,才对得上。
+
+**③ external 模式拓扑**:clustermesh-apiserver **只剩 `kvstoremesh` 容器,没有内置 etcd、没有 NodePort service**——远端集群**直连本集群的 KubeBrain**(Cilium 租户口),没有中间 etcd。这也是让 KubeBrain 真正承接跨集群读写的路径。
+
+**④ `cilium clustermesh connect` 后必须手动修 kvstoremesh 端点**:CLI 生成的 `cilium-kvstoremesh` secret 仍指向已不存在的 NodePort etcd(`https://<cluster>.mesh.cilium.io:32379`)+ TLS 证书。要 patch 成**对方集群 KubeBrain 的实际端点**(明文口用 `http://`,无证书):
+
+```bash
+# 在集群A,把远端集群B(clusterName=cluster-b)的 kvstoremesh 端点改成 B 的 KubeBrain
+CFG=$(printf 'endpoints:\n- http://<B-kb1>:6379\n- http://<B-kb2>:6379\n- http://<B-kb3>:6379\n' | base64 -w0)
+kubectl -n kube-system patch secret cilium-kvstoremesh --type=json \
+  -p="[{\"op\":\"replace\",\"path\":\"/data/cluster-b\",\"value\":\"$CFG\"}]"
+kubectl -n kube-system rollout restart deploy/clustermesh-apiserver
+```
+
+> ⚠️ **TLS**:上例用明文(KubeBrain 明文口)。若 KubeBrain 开了 TLS(生产建议),端点写 `https://`,并在 etcd config 里补 `trusted-ca-file/cert-file/key-file` 指向挂载的证书(与 §5 apiserver 接入 TLS 同理)。
+
+**⑤ 验证跨集群同步 + 全局服务**:
+
+```bash
+# 双向都应 ready、且能看到对方的 nodes/identities
+cilium clustermesh status --context <A> --wait
+kubectl --context <A> -n kube-system exec ds/cilium -c cilium-agent -- \
+  cilium-dbg status --all-clusters | grep -A1 "<clusterB>:"   # 期望: ready, N nodes
+
+# 全局服务负载均衡:两集群各建同名 service 打 service.cilium.io/global=true,curl 会命中两集群的 pod
+```
+
+> ⚠️ 共置端口坑同样适用(见 §5.5 开头的 `ip_local_reserved_ports` / `ip_local_port_range` 提示)——多租户 = KubeBrain 出站连接更多 = 更易抢占 Cilium 固定端口。
+
 ------
 
 ## 6. 日常运维
