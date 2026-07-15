@@ -330,7 +330,14 @@ etcd:
 
 ## 5.5 接入 Cilium 作为 kvstore（多租户实战）
 
-Cilium 可以用外部 etcd 作 kvstore（identity/ipcache 直写,offload apiserver）。KubeBrain 兼容 Cilium 的 kvstore 操作形态(concurrency.Session/Mutex、Version==0 与 CreateRevision txn 比较、per-endpoint Status、双 lease 会话),生产实测通过。
+Cilium 可以用外部 etcd 作 kvstore（identity/ipcache 直写,offload apiserver）。KubeBrain 兼容 Cilium 的 kvstore 操作形态(concurrency.Session/Mutex、Version==0 与 CreateRevision txn 比较、per-endpoint Status、双 lease 会话、每响应头 ClusterId 一致性),生产实测通过。
+
+> ⚠️ **共置端口坑(必读):KubeBrain 与 Cilium 同机时,必须保留 Cilium 的固定端口。** Cilium 的 hostNetwork 组件监听固定端口(agent `:9962`、operator `:9963`、envoy `:9964` 等 Prometheus/health 端口)。而 KubeBrain 会向 PD/TiKV 发大量出站连接,若节点的 `net.ipv4.ip_local_port_range` 很宽(常见默认 `1024-65535`)且没保留这些端口,内核会**随机把 9962 之类分配为某个 KubeBrain 出站连接的源端口**,与 Cilium agent 抢占 → agent 反复 `bind: :9962 address already in use` crashloop,且 `ss` 查监听时端口是空的(占用者是出站连接,极难排查)。租户越多(出站连接越多)撞得越频。**修复(每个共置节点)**:
+> ```bash
+> sysctl -w net.ipv4.ip_local_reserved_ports="9962-9966,30000-32767"   # 保留 cilium 端口 + 原 NodePort 段
+> echo 'net.ipv4.ip_local_reserved_ports = 9962-9966,30000-32767' > /etc/sysctl.d/99-cilium-ports.conf
+> ```
+> 已被占用的现存连接用 `ss -K "( sport = :9962 )"` 踢掉即可。
 
 **强烈建议给 Cilium 单独起一套 KubeBrain 实例**(`--keyspace=cilium`,共享同一套 PD+TiKV),而不是和 k8s 共用 `/registry` 那套:两个业务各自的 revision 流、GC 边界、count-index、指标都隔离,以后清退 Cilium 只需删该租户,零波及 k8s。
 
