@@ -300,6 +300,12 @@ func clear(ast *assert.Assertions, st storage.KvStorage, prefix string) {
 	// remove key with given prefix in storage
 	iter, err := st.Iter(context.Background(), encodeRevisionKey([]byte(prefix)), encodeRevisionKey(PrefixEnd([]byte(prefix))), 0, 0)
 	ast.NoError(err)
+	if err != nil {
+		// ast.NoError records the failure but does NOT stop execution; walking on
+		// with a nil iterator SIGSEGVs the whole test binary and buries the real
+		// storage error (seen in CI when its TiKV threw "region unavailable").
+		return
+	}
 	ctx := context.Background()
 	for {
 		err = iter.Next(ctx)
