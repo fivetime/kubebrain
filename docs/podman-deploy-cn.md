@@ -231,7 +231,7 @@ EOF
 | `--advertise-host`                       | **副本对外通告的身份 IP。多网卡机器必填**（见 §1.5、§3.3）。留空则自动探测第一张非环回网卡，结果不可控。仅影响通告身份，**监听仍是全网卡** |
 | `--port` / `--peer-port` / `--info-port` | 三个平面的端口，见 §1.7                                      |
 | `--compatible-with-etcd=true`            | **必开。** 原生 apiserver 依赖它；同时它是 follower → leader 写转发的开关 |
-| `--key-prefix`                           | **设成与 apiserver 的 `--etcd-prefix` 一致（默认 `/registry`）。** 新版镜像（2026-07-14 起）该参数仅命名选主锁,错位无害;但旧版镜像的物理 GC 扫描边界派生自它,错位（如 `/kubebrain` vs `/registry`）会导致 **GC 永远扫不到用户数据、MVCC 垃圾无限堆积**（P0 级,症状=compact 计数冻结、读延迟单调恶化）。统一写 `/registry` 一劳永逸 |
+| `--key-prefix`                           | **设成与 apiserver 的 `--etcd-prefix` 一致（默认 `/registry`）。** 新版镜像（2026-07-14 起）该参数仅命名选主锁,错位无害;但旧版镜像的物理 GC 扫描边界派生自它,错位（如 `/kubebrain` vs `/registry`）会导致 **GC 永远扫不到用户数据、MVCC 垃圾无限堆积**（P0 级,症状=compact 计数冻结、读延迟单调恶化）。统一写 `/registry` 一劳永逸。**2026-07-15 起该参数改名 `--system-namespace`**(`--key-prefix` 保留为兼容别名,会打 deprecated 警告),新语义=仅命名选主锁与 compact 水位键,任意稳定值均可 |
 | `--cluster-name`                         | **仅用作监控指标的 `cluster` 标签**（默认 `default`）。⚠️ 它**不**隔离键空间——键编码的 magic 是全局常量，同一套 TiKV 上的多个 KubeBrain 集群共享同一个键空间且 GC 互相可见，**不要**用第二个 KubeBrain 集群做多租户隔离 |
 | `--enable-count-index`                   | 在 leader 上维护内存版本索引，让 List 的 count 免于全表扫描。**依赖 `--compatible-with-etcd`** |
 | `--count-index-max-keys`                 | 索引跟踪的 key 数上限，超过则索引自动关闭、回退全扫。默认 `5000000`，**设 `0` = 不限制**（推荐，免去猜总量） |
