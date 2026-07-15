@@ -39,6 +39,12 @@ type Server interface {
 	// RegisterClient registers grpc service for clients
 	RegisterClient(server *grpc.Server)
 
+	// ClientServerOptions returns grpc.ServerOptions that must be applied when
+	// building the CLIENT grpc server (before service registration) — currently
+	// the etcd response-header stamping interceptors (ClusterId/MemberId), which
+	// Cilium clustermesh's per-response cluster-id validation depends on (#79).
+	ClientServerOptions() []grpc.ServerOption
+
 	// RegisterPeer registers grpc service for peer
 	RegisterPeer(server *grpc.Server)
 
@@ -172,6 +178,11 @@ func (s *server) onStoppedLeading() {
 // RegisterClient implements Server interface
 func (s *server) RegisterClient(server *grpc.Server) {
 	s.register(server)
+}
+
+// ClientServerOptions implements Server interface
+func (s *server) ClientServerOptions() []grpc.ServerOption {
+	return s.etcdServer.HeaderStampServerOptions()
 }
 
 // RegisterPeer implement Server interface

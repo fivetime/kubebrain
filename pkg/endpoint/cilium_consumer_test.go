@@ -242,4 +242,30 @@ func TestCiliumConsumerCompatibility(t *testing.T) {
 	ttl, err := cli.TimeToLive(ctx, lockLease.ID)
 	ast.NoError(err)
 	ast.Greater(ttl.TTL, int64(0), "held lock lease must report remaining TTL")
+
+	// --- clustermesh cluster-id consistency (#79): clustermesh wraps each
+	// remote-etcd connection with an interceptor that pins the FIRST ClusterId
+	// it sees and disconnects on any later mismatch. So EVERY response type's
+	// header must carry the SAME nonzero ClusterId — a Range header of 0 mixed
+	// with a Status header of the real id would trip that guard. Collect the
+	// cluster id across Put/Get/Delete/Txn/Status and require them all equal
+	// and nonzero.
+	putR, err := cli.Put(ctx, "cilium/.heartbeat", "t")
+	ast.NoError(err)
+	getR, err := cli.Get(ctx, "cilium/.heartbeat")
+	ast.NoError(err)
+	delR, err := cli.Delete(ctx, "cilium/hdrprobe/none")
+	ast.NoError(err)
+	txnR, err := cli.Txn(ctx).Then(clientv3.OpGet("cilium/.heartbeat")).Commit()
+	ast.NoError(err)
+	statR, err := cli.Status(ctx, endpointURL)
+	ast.NoError(err)
+	cid := statR.Header.ClusterId
+	ast.NotZero(cid, "ClusterId must be nonzero")
+	ast.Equal(cid, putR.Header.ClusterId, "Put header ClusterId must match Status")
+	ast.Equal(cid, getR.Header.ClusterId, "Get header ClusterId must match Status")
+	ast.Equal(cid, delR.Header.ClusterId, "Delete header ClusterId must match Status")
+	ast.Equal(cid, txnR.Header.ClusterId, "Txn header ClusterId must match Status")
+	ast.NotZero(statR.Header.MemberId, "MemberId must be nonzero on every header")
+	ast.Equal(statR.Header.MemberId, putR.Header.MemberId, "Put header MemberId must match")
 }

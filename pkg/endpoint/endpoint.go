@@ -183,7 +183,9 @@ func grpcKeepaliveOptions() []grpc.ServerOption {
 }
 
 func (e *Endpoint) buildClientGrpcServer() exposedServer {
-	grpcServer := grpc.NewServer(append(grpcKeepaliveOptions(), e.metrics.GetGrpcServerOption()...)...)
+	opts := append(grpcKeepaliveOptions(), e.metrics.GetGrpcServerOption()...)
+	opts = append(opts, e.server.ClientServerOptions()...)
+	grpcServer := grpc.NewServer(opts...)
 	e.server.RegisterClient(grpcServer)
 	return newGrpcServer(grpcServer)
 }
