@@ -28,6 +28,29 @@
 - **P2** info 口注册 `GET /version`。
 - **P2** MemberList 的 ClientURLs 按 client 口 + 实际 TLS scheme 构造(原 `http://host:peerPort` 会把 AutoSync 客户端引向不服务 KV 的明文端口)。
 
+## 1.37.0-alpha.3 现场实测(冷启动 A/B)
+
+kube-apiserver v1.37.0-alpha.3 裸二进制打 3 副本 KubeBrain(~1650 万对象),A=修复前镜像(RangeStream 缓冲 1000,progress interval=5s),B=修复后(缓冲 8 + RequestProgress 即时扇出,interval=1s):
+
+| 指标 | A(修复前) | B(修复后) |
+|---|---|---|
+| RangeStream 流(基线 0,1.36 不调用) | ~62 条,零回退 | 58 OK + 1 正确的 Unavailable |
+| 平均流时长 | 10.45s | **4.56s(2.3×)** |
+| apiserver init 到 RSS 平台 | ~34 min | **~12 min(2.8×)** |
+| 慢分页 LIST(>500ms trace) | 10250 | **531(19×降)** |
+| apiserver "Too large resource version"(watch-cache 追不上) | 5723 | **3** |
+| KubeBrain leader RSS | 全程 ~7G 平 | 全程 ~7G 平 |
+
+结论:RangeStream 收网现场坐实;progress 即时扇出 + interval 护栏是最大现实收益。注意 **alpha.3 的 `EtcdRangeStream` default=false**(master 才翻 true),alpha 实测须显式开 gate。
+
+**大对象缓冲实验**(20 万×10KB=2GB,同 20ms/块慢消费直连流):缓冲 1000 的服务端 RSS 尖峰 **+1.30GB**,缓冲 8 仅 **+0.37GB**(gRPC 窗口+GC 滞后)——3.5× 差,消费者更慢/数据更大时旧行为线性恶化、新行为恒定。
+
+实测另抓出两个修复:RangeStream 预流失败裸 error 以 Unknown 面世(现按 etcd `togRPCError` 结构整形:ctx 错误透传、status 透传、其余瞬时类包 Unavailable);client 主动取消曾计入 `backend.list.by.stream.failed`(现独立 `canceled` 计数)。
+
+## 增量物理 GC
+
+物理版本-GC 原先每轮 compaction 全 keyspace 扫描(千万级下每 5 分钟蹚一遍全库)。现在每轮先尝试**增量**:从 event log 取 (上轮基线, 本轮 watermark] 被写过的 key,仅对这些 key 的版本区间跑同一套 GC 规则。回退到全扫的条件:进程内尚无完成基线 / 上次全扫失败 / event log 窗口不足 / 触碰 key 超 10 万(如 SVM 重写风暴——全扫本来更便宜)/ 增量出错 / 每 48 轮强制全扫兜底(约 4 小时)。稳态下每轮从 O(全库行数) 变为 O(近期写入 key 数)。观测:`backend.compact.incremental`(轮数)、`backend.compact.incremental.keys`(每轮工作集)、`backend.compact.incremental.fallback/err`(回退)。
+
 ## 运维 runbook
 
 ### StorageVersionMigration(1.37 GA)在超大规模下
