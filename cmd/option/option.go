@@ -93,7 +93,14 @@ func NewOptions() *KubeBrainOption {
 			RenewDeadline: 5 * time.Second,
 			RetryPeriod:   1 * time.Second,
 		},
-		Prefix:               "",
+		// The namespace for KubeBrain-internal coordination keys (leader-election
+		// lock, compact watermark) is a fixed constant, NOT configuration: it is
+		// unrelated to client key prefixes (reads/writes, physical GC and the
+		// count index always cover the whole keyspace), and its configurable
+		// ancestor --key-prefix invited a P0 misconfiguration (pre-2026-07 builds
+		// derived the physical-GC borders from it; a mismatch with the
+		// apiserver's --etcd-prefix silently disabled GC).
+		Prefix:               "/kubebrain-internal",
 		ClusterName:          "default",
 		storageConfig:        newStorageConfig(),
 		watchCacheSize:       200 * 1000,
@@ -112,9 +119,6 @@ func (o *KubeBrainOption) AddFlags(fs *pflag.FlagSet) {
 	fs.IntVar(&o.epsConf.Port, "port", o.epsConf.Port, "the port kubebrain listen on for client")
 	fs.IntVar(&o.epsConf.PeerPort, "peer-port", o.epsConf.PeerPort, "the port kubebrain listen on for peer communication")
 	fs.IntVar(&o.epsConf.InfoPort, "info-port", o.epsConf.InfoPort, "the port kubebrain listen on for node info")
-	fs.StringVar(&o.Prefix, "system-namespace", o.Prefix, "namespace for KubeBrain-internal coordination keys (leader-election lock, compact watermark). Unrelated to client key prefixes: reads/writes, physical GC and the count index always cover the whole keyspace. Any stable value works; changing it on a live cluster resets the compact watermark (one extra full GC round, no data loss)")
-	fs.StringVar(&o.Prefix, "key-prefix", o.Prefix, "DEPRECATED: renamed --system-namespace. This flag never scoped client data; pre-2026-07 builds wrongly derived the physical-GC borders from it (mismatch with the apiserver's --etcd-prefix disabled GC entirely)")
-	_ = fs.MarkDeprecated("key-prefix", "use --system-namespace; this flag never scoped client data")
 	fs.StringSliceVar(&o.SkippedPrefixes, "skip-key-prefix", o.SkippedPrefixes, "skipped key prefix.")
 	fs.StringVar(&o.ClusterName, "cluster-name", o.ClusterName, "cluster name.")
 	fs.StringVar(&o.advertiseHost, "advertise-host", o.advertiseHost, "IP/host advertised to peers as this replica's identity: the leader-election holderIdentity and the address followers dial to reach the leader. Empty = auto-detect (smallest private IPv4), which guesses wrong on multi-homed hosts — REQUIRED there. Listeners still bind all interfaces; this only sets the advertised address. IPv6 must be bracketed, e.g. [2001:db8::1].")
@@ -209,10 +213,6 @@ func (o *KubeBrainOption) Validate() error {
 	if o.watchProgressNotifyInterval > watchProgressNotifyIntervalMax {
 		return fmt.Errorf("--watch-progress-notify-interval %v is too large: must be < %v (kube-apiserver blocks consistent reads on progress for only 3s before falling back to a full storage LIST)",
 			o.watchProgressNotifyInterval, watchProgressNotifyIntervalMax)
-	}
-
-	if strings.HasSuffix(o.Prefix, "/") {
-		return fmt.Errorf("prefix %s is invalid, make sure it has no / suffix", o.Prefix)
 	}
 
 	for _, skippedPrefix := range o.SkippedPrefixes {

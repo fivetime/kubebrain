@@ -71,7 +71,6 @@ kube-brain
   --pd-addrs=<pd1>:2379,<pd2>:2379,<pd3>:2379
   --advertise-host=${NODE_IP}          # 多网卡必设,否则 identity 瞎选网卡
   --port=3379 --peer-port=3380 --info-port=8080
-  --key-prefix=/registry
   --enable-count-index=true
   --count-index-max-keys=30000000      # ≥ 预期对象总数,否则 index 自动停用
   --storage-gc-lifetime=10m            # 裸 PD+TiKV 必须:唯一推 GC safepoint 的组件

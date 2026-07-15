@@ -166,7 +166,6 @@ KubeBrain 副本**没有编号概念**——三台跑完全相同的配置，身
 
 ```bash
 export KB_CLUSTER_NAME="prod"
-export KB_KEY_PREFIX="/registry"    # 必须与 apiserver --etcd-prefix 一致(默认 /registry),勿自创前缀
 export KB_IMAGE="ghcr.io/fivetime/kubebrain:latest"
 
 # PD 端点（注意：--pd-addrs 不带 scheme）
@@ -199,7 +198,6 @@ Exec=--pd-addrs=${PD_ADDRS} \
      --peer-port=3380 \
      --info-port=8080 \
      --compatible-with-etcd=true \
-     --key-prefix=${KB_KEY_PREFIX} \
      --cluster-name=${KB_CLUSTER_NAME} \
      --enable-count-index=true \
      --count-index-max-keys=0 \
@@ -231,12 +229,13 @@ EOF
 | `--advertise-host`                       | **副本对外通告的身份 IP。多网卡机器必填**（见 §1.5、§3.3）。留空则自动探测第一张非环回网卡，结果不可控。仅影响通告身份，**监听仍是全网卡** |
 | `--port` / `--peer-port` / `--info-port` | 三个平面的端口，见 §1.7                                      |
 | `--compatible-with-etcd=true`            | **必开。** 原生 apiserver 依赖它；同时它是 follower → leader 写转发的开关 |
-| `--key-prefix`                           | **设成与 apiserver 的 `--etcd-prefix` 一致（默认 `/registry`）。** 新版镜像（2026-07-14 起）该参数仅命名选主锁,错位无害;但旧版镜像的物理 GC 扫描边界派生自它,错位（如 `/kubebrain` vs `/registry`）会导致 **GC 永远扫不到用户数据、MVCC 垃圾无限堆积**（P0 级,症状=compact 计数冻结、读延迟单调恶化）。统一写 `/registry` 一劳永逸。**2026-07-15 起该参数改名 `--system-namespace`**(`--key-prefix` 保留为兼容别名,会打 deprecated 警告),新语义=仅命名选主锁与 compact 水位键,任意稳定值均可 |
 | `--cluster-name`                         | **仅用作监控指标的 `cluster` 标签**（默认 `default`）。⚠️ 它**不**隔离键空间——键编码的 magic 是全局常量，同一套 TiKV 上的多个 KubeBrain 集群共享同一个键空间且 GC 互相可见，**不要**用第二个 KubeBrain 集群做多租户隔离 |
 | `--enable-count-index`                   | 在 leader 上维护内存版本索引，让 List 的 count 免于全表扫描。**依赖 `--compatible-with-etcd`** |
 | `--count-index-max-keys`                 | 索引跟踪的 key 数上限，超过则索引自动关闭、回退全扫。默认 `5000000`，**设 `0` = 不限制**（推荐，免去猜总量） |
 | `--enable-storage-metrics`               | 开启存储层指标，供 Prometheus 采集                           |
 | `--enable-pprof`                         | **仅排障时临时加**。会在 info 端口暴露 pprof，扩大攻击面（永远不会出现在 client 口） |
+
+> ⚠️ **`--key-prefix` 已删除(2026-07-15 起的镜像)**:内部协调键(选主锁、compact 水位)固定使用 `/kubebrain-internal`,与客户端键前缀无关。升级到新镜像时**必须从 `Exec=` 里删掉 `--key-prefix` 行**,否则进程以 `unknown flag` 拒绝启动(故意 fail-loud)。旧镜像(≤2026-07-14)仍需要该参数且必须设 `/registry`(错位=物理 GC 全废,P0)。
 
 ### 4.3 部署（三台并行，自动选主）
 
@@ -313,7 +312,7 @@ apiserver 把 KubeBrain 当作一个普通的 etcd 集群：
 
 - **三个端点全列。** apiserver 的 gRPC 客户端会自动切到存活副本；连任意一台都可以，读走本地、写自动转发到 leader。
 - **⚠️ `--etcd-compaction-interval` 必须配置。** KubeBrain **从不自动 compact**，完全依赖 apiserver 定期驱动。不配置的话历史 revision 会无限增长。
-- **KubeBrain 的 `--key-prefix` 必须与 apiserver 的 `--etcd-prefix`（默认 `/registry`）保持一致**（见 §4.2 的版本差异说明——旧版镜像错位会废掉物理 GC）。
+- apiserver 的 `--etcd-prefix` 保持默认 `/registry` 即可,KubeBrain 侧无需(也无法)配置对应项——见 §4.2 后的版本说明。
 
 用 kubeadm 部署时，在 `ClusterConfiguration` 里配 `etcd.external`：
 
@@ -495,7 +494,7 @@ sudo podman logs systemd-kubebrain 2>&1 | tail -50
 **渲染结果自检：**
 
 ```bash
-grep -E 'pd-addrs|port=|key-prefix' /etc/containers/systemd/kubebrain.container
+grep -E 'pd-addrs|port=' /etc/containers/systemd/kubebrain.container
 ss -lntp | grep -E '3379|3380|8080'
 ```
 
@@ -582,7 +581,6 @@ Volume=/etc/kubebrain/certs:/etc/kubebrain/certs:ro
 | 端口    | `--peer-port`                           | 2380    | peer 平面（转发 + 选主身份）。本文改为 3380     |
 | 端口    | `--info-port`                           | —       | `/metrics`、`/election`。本文用 8080            |
 | 兼容    | `--compatible-with-etcd`                | false   | **必开**。原生 apiserver 依赖；同时是写转发开关 |
-| 命名    | `--key-prefix`                          | —       | **设成与 apiserver `--etcd-prefix` 一致(`/registry`)**;旧版镜像错位=GC 全废(P0) |
 | GC      | `--storage-gc-lifetime`                 | 10m     | leader 推进 TiKV GC safepoint 的保留窗口。**0=关闭;裸 PD+TiKV 必须开**(无 TiDB 时它是唯一推进者) |
 | 命名    | `--cluster-name`                        | —       | 同一 TiKV 上多集群隔离                          |
 | 选主    | `--leader-lease-duration`               | 8s      | 租约时长                                        |
