@@ -262,6 +262,15 @@ type backend struct {
 	// scan (background and the synchronous Compact path) so they never overlap.
 	compactTriggerRev uint64
 	compactDoneRev    uint64 // atomic: highest revision whose background GC scan finished
+	// physicalBaseRev (atomic) is the incremental physical-GC baseline: the
+	// revision up to which a scan (full or incremental) has COMPLETED, making
+	// (base, target] + the event log sufficient to find all new garbage. 0 =
+	// no completed pass this process lifetime (or the last full scan failed) —
+	// the next pass must be a full scan. incrementalStreak (under
+	// compactScanMu) counts consecutive incremental passes so a periodic full
+	// scan still runs as a belt-and-braces safety net.
+	physicalBaseRev   uint64
+	incrementalStreak int
 	compactSignal     chan struct{}
 	compactScanMu     sync.Mutex
 

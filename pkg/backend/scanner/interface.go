@@ -39,4 +39,14 @@ type Scanner interface {
 	// not handled here — it is driven by the lease manager, which deletes expired
 	// keys whose tombstones are then reclaimed by this compaction like any other.
 	Compact(ctx context.Context, borders [][]byte, revision uint64) error
+
+	// CompactKeys runs the same version-GC as Compact but only over the version
+	// ranges of the given user keys (the incremental physical GC path: the keys
+	// touched since the last completed pass, derived from the event log). GC
+	// semantics per row are identical to Compact — each key's range is scanned by
+	// the same worker machinery — so correctness does not depend on the caller's
+	// key set being minimal, only on it covering every key written since the
+	// baseline. Any error means the round must not advance the incremental
+	// baseline (the caller falls back to a full scan).
+	CompactKeys(ctx context.Context, userKeys [][]byte, revision uint64) error
 }

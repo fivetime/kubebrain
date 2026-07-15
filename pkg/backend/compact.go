@@ -199,18 +199,27 @@ func (b *backend) physicalCompact(ctx context.Context, revision uint64) {
 	b.compactScanMu.Lock()
 	defer b.compactScanMu.Unlock()
 
-	borders := b.getCompactBorders()
-	// Pass all borders together so the scanner computes the events-TTL timeout
-	// revision once per cycle; see Scanner.Compact for why per-border draining of
-	// the shared compact-history queue would silently disable event expiry.
-	if err := b.scanner.Compact(ctx, borders, revision); err != nil {
-		// The logical compact watermark was already persisted, so the compaction
-		// is (correctly) reported as succeeded; but the physical GC scan failed,
-		// leaving garbage that a later higher-revision compaction will reclaim.
-		// Surface it (log + metric) rather than swallowing it, so a persistently
-		// failing GC is observable instead of silently accumulating garbage (#71).
-		b.metricCli.EmitCounter("backend.compact.scan.err", 1)
-		klog.ErrorS(err, "physical compaction scan failed; garbage will be reclaimed on a later compaction", "revision", revision)
+	if !b.tryIncrementalCompact(ctx, revision) {
+		borders := b.getCompactBorders()
+		// Pass all borders together so the scanner computes the events-TTL timeout
+		// revision once per cycle; see Scanner.Compact for why per-border draining of
+		// the shared compact-history queue would silently disable event expiry.
+		if err := b.scanner.Compact(ctx, borders, revision); err != nil {
+			// The logical compact watermark was already persisted, so the compaction
+			// is (correctly) reported as succeeded; but the physical GC scan failed,
+			// leaving garbage that a later higher-revision compaction will reclaim.
+			// Surface it (log + metric) rather than swallowing it, so a persistently
+			// failing GC is observable instead of silently accumulating garbage (#71).
+			// Also invalidate the incremental baseline: a partial full scan may have
+			// left old garbage on keys untouched since the previous baseline, which
+			// no incremental pass would ever revisit.
+			atomic.StoreUint64(&b.physicalBaseRev, 0)
+			b.metricCli.EmitCounter("backend.compact.scan.err", 1)
+			klog.ErrorS(err, "physical compaction scan failed; garbage will be reclaimed on a later compaction", "revision", revision)
+		} else {
+			atomic.StoreUint64(&b.physicalBaseRev, revision)
+			b.incrementalStreak = 0
+		}
 	}
 	if b.countIndex != nil {
 		b.countIndex.Compact(revision)
@@ -220,6 +229,93 @@ func (b *backend) physicalCompact(ctx context.Context, revision uint64) {
 	// entries at/below it are dead weight — drop them and advance the log's
 	// completeness watermark (#45).
 	b.cleanupEventLog(ctx, revision)
+}
+
+const (
+	// incrementalCompactMaxKeys caps the touched-key working set of an
+	// incremental GC pass. Beyond it a full keyspace scan is both cheaper
+	// (sequential partition-parallel scan vs. one iterator open per key) and
+	// safer, so e.g. a StorageVersionMigration rewrite storm naturally falls
+	// back to today's behavior.
+	incrementalCompactMaxKeys = 100_000
+	// incrementalCompactMaxStreak forces a periodic full-keyspace scan after
+	// this many consecutive incremental passes — a belt-and-braces bound on any
+	// garbage an incremental pass could conceivably miss. At the apiserver's
+	// 5-minute compaction cadence this is a full scan every ~4 hours.
+	incrementalCompactMaxStreak = 48
+)
+
+// tryIncrementalCompact attempts the incremental physical-GC pass: instead of
+// scanning the whole object keyspace (O(all keys) every 5 minutes at 10M+ keys),
+// scan only the keys the event log records as written in (baseline, revision] —
+// the only keys that can have gained garbage since the last completed pass.
+// Returns true when the pass ran and the baseline advanced; false means the
+// caller must run the full scan (no baseline yet, event-log window insufficient,
+// working set too large, periodic safety-net full scan due, or the pass failed).
+func (b *backend) tryIncrementalCompact(ctx context.Context, revision uint64) bool {
+	base := atomic.LoadUint64(&b.physicalBaseRev)
+	if base == 0 || revision <= base {
+		return false
+	}
+	if b.incrementalStreak >= incrementalCompactMaxStreak {
+		return false
+	}
+	// The event log must cover (base, revision] completely: entries at or below
+	// its start watermark have been cleaned up, so a window starting past base+1
+	// could hide writes (and their garbage) from the working set.
+	elogStart, ok := b.getEventLogStart(ctx)
+	if !ok || elogStart > base+1 {
+		b.metricCli.EmitCounter("backend.compact.incremental.fallback", 1)
+		return false
+	}
+	keys, ok := b.eventLogTouchedKeys(ctx, base, revision, incrementalCompactMaxKeys)
+	if !ok {
+		b.metricCli.EmitCounter("backend.compact.incremental.fallback", 1)
+		return false
+	}
+	// Respect the --skip-key-prefix carve-outs the full scan's borders encode:
+	// co-tenant object types on a shared storage cluster must not be GC'd here
+	// either. (Writes to skipped prefixes should not appear in OUR event log,
+	// but filtering is cheap insurance against shared-keyspace bleed.)
+	keys = b.filterSkippedUserKeys(keys)
+	if len(keys) > 0 {
+		if err := b.scanner.CompactKeys(ctx, keys, revision); err != nil {
+			b.metricCli.EmitCounter("backend.compact.incremental.err", 1)
+			klog.ErrorS(err, "incremental compaction failed; falling back to full scan", "revision", revision, "keys", len(keys))
+			return false
+		}
+	}
+	atomic.StoreUint64(&b.physicalBaseRev, revision)
+	b.incrementalStreak++
+	b.metricCli.EmitCounter("backend.compact.incremental", 1)
+	b.metricCli.EmitGauge("backend.compact.incremental.keys", float64(len(keys)))
+	klog.V(2).InfoS("incremental compaction done", "revision", revision, "keys", len(keys), "streak", b.incrementalStreak)
+	return true
+}
+
+// filterSkippedUserKeys drops keys under any configured --skip-key-prefix.
+func (b *backend) filterSkippedUserKeys(keys [][]byte) [][]byte {
+	if len(b.config.SkippedPrefixes) == 0 {
+		return keys
+	}
+	out := keys[:0]
+	for _, k := range keys {
+		skipped := false
+		for _, p := range b.config.SkippedPrefixes {
+			prefix := p
+			if !strings.HasSuffix(prefix, "/") {
+				prefix += "/"
+			}
+			if bytes.HasPrefix(k, []byte(prefix)) {
+				skipped = true
+				break
+			}
+		}
+		if !skipped {
+			out = append(out, k)
+		}
+	}
+	return out
 }
 
 // schedulePhysicalCompact raises the background compaction target to revision and

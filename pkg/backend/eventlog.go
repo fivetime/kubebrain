@@ -334,6 +334,43 @@ func (b *backend) loadEventValues(ctx context.Context, keys [][]byte) (vals map[
 	return vals, inc, nil
 }
 
+// eventLogTouchedKeys returns the deduplicated user keys with a write recorded
+// in (fromRev, toRev] — the incremental physical-GC working set: only touched
+// keys can have gained a superseded version or tombstone since the last pass.
+// ok=false means the set must not be trusted and the caller falls back to a
+// full scan: an iteration error, a malformed entry (mirroring the replay path's
+// whole-window distrust), or more than maxKeys touched (at which point a full
+// scan is the cheaper and safer tool anyway).
+func (b *backend) eventLogTouchedKeys(ctx context.Context, fromRev, toRev uint64, maxKeys int) (keys [][]byte, ok bool) {
+	iter, err := b.kv.Iter(ctx, coder.EventLogRangeStart(fromRev+1), coder.EventLogRangeEnd(toRev), 0, 0)
+	if err != nil {
+		return nil, false
+	}
+	defer iter.Close()
+	seen := make(map[string]struct{}, 256)
+	for {
+		if err := iter.Next(ctx); err != nil {
+			if err == io.EOF {
+				break
+			}
+			return nil, false
+		}
+		_, userKey, derr := coder.DecodeEventLogKey(iter.Key())
+		if derr != nil {
+			return nil, false
+		}
+		if _, dup := seen[string(userKey)]; dup {
+			continue
+		}
+		if len(keys) >= maxKeys {
+			return nil, false
+		}
+		seen[string(userKey)] = struct{}{}
+		keys = append(keys, append([]byte(nil), userKey...))
+	}
+	return keys, true
+}
+
 // cleanupEventLog removes log entries at or below revision and advances the
 // completeness watermark, keeping the log bounded by the compaction horizon.
 // Runs on the compactor goroutine after the physical scan.
