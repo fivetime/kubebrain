@@ -102,3 +102,39 @@ func TestCountIndexMatchesScanAcrossRevisions(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, len(sub.Kvs), int(c))
 }
+
+// TestCountIndexRebuildIgnoresSystemNamespace pins the rebuild scan to the
+// whole object keyspace: with a system namespace (--system-namespace, né
+// --key-prefix) that sorts AFTER the client's key prefix, the old
+// prefix-bounded rebuild silently skipped every user key and the half-loaded
+// index then served wrong counts as authoritative (#62 family, #75).
+func TestCountIndexRebuildIgnoresSystemNamespace(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	m := mock.NewMinimalMetrics(ctrl)
+	kv := imemkv.NewKvStorage()
+	defer func() { require.NoError(t, kv.Close()) }()
+	b := NewBackend(kv, Config{
+		Prefix:                  "/zzz-system", // sorts after every /registry/* user key
+		Identity:                getStorageIdentity(),
+		EnableEtcdCompatibility: true,
+		EnableCountIndex:        true,
+	}, m).(*backend)
+	b.SetCurrentRevision(uint64(time.Now().UnixNano()))
+	ctx := context.Background()
+
+	p := "/registry/pods/"
+	end := PrefixEnd([]byte(p))
+	var last uint64
+	for i := 0; i < 7; i++ {
+		r, err := b.Update(ctx, &proto.UpdateRequest{Kv: &proto.KeyValue{Key: []byte(fmt.Sprintf("%sns/p%02d", p, i)), Value: []byte("v")}})
+		require.NoError(t, err)
+		last = r.Header.Revision
+	}
+	require.Eventually(t, func() bool { return b.GetCurrentRevision() >= last }, 5*time.Second, 2*time.Millisecond)
+
+	require.NoError(t, b.RebuildCountIndex(ctx))
+	c, served := b.CountAtRevision(ctx, []byte(p), end, b.GetCurrentRevision())
+	require.True(t, served, "index should serve after rebuild")
+	require.Equal(t, 7, int(c), "rebuild bounded by the system namespace would miss all user keys")
+}

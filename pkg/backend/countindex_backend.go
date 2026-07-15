@@ -20,6 +20,8 @@ import (
 	"time"
 
 	"k8s.io/klog/v2"
+
+	"github.com/kubewharf/kubebrain/pkg/backend/coder"
 )
 
 // CountAtRevision returns the exact live-key count of [key,end) at revision rev
@@ -86,7 +88,6 @@ func (b *backend) RebuildCountIndex(ctx context.Context) error {
 
 func (b *backend) rebuildCountIndexOnce(ctx context.Context) error {
 	ts := time.Now()
-	start := []byte(b.config.Prefix)
 	// Floor the snapshot revision at the compact watermark+1: a just-promoted
 	// leader whose committed revision has not yet caught up could otherwise capture
 	// a baseRev at/below the watermark and List at a partially-GC'd revision,
@@ -122,7 +123,13 @@ func (b *backend) rebuildCountIndexOnce(ctx context.Context) error {
 			// it never strands the scan workers. Returning the error disables the
 			// index (Reset sets baseRev=0) so a half-loaded tree is never served.
 			// RangeStream takes encoded object keys (List does this internally).
-			stream := b.scanner.RangeStream(ctx, b.rangeStartKey(start), b.rangeEndKey(noPrefixEnd), rev, true)
+			// Scan the ENTIRE object keyspace, mirroring physical GC's borders
+			// (#62 rationale): bounding the rebuild by config.Prefix silently
+			// skipped every user key that sorted before the configured prefix,
+			// and the half-loaded index then served wrong counts as
+			// authoritative. Whole-keyspace also matches what the live apply
+			// stream feeds the collector, so rebuild and steady-state agree.
+			stream := b.scanner.RangeStream(ctx, coder.ObjectKeyspaceStart(), coder.ObjectKeyspaceEnd(), rev, true)
 			for resp := range stream {
 				if resp.Err != "" {
 					loadErr = errors.New(resp.Err)
