@@ -136,15 +136,15 @@ func (s *RPCServer) RangeStream(r *etcdserverpb.RangeRequest, rs etcdserverpb.KV
 		return status.Error(codes.Unimplemented, "etcdserver: limit is not supported by RangeStream")
 	}
 	if err := s.peers.SyncReadRevision(ctx); err != nil {
-		return err
+		return rangeStreamStatusErr(err)
 	}
 	if err := s.checkRequestedRevision(ctx, r.Revision); err != nil {
-		return err
+		return rangeStreamStatusErr(err)
 	}
 	ch, err := s.backend.RangeStreamChan(ctx, r.Key, r.RangeEnd, uint64(r.Revision))
 	if err != nil {
 		s.metricCli.EmitCounter("read.range_stream.err", 1)
-		return err
+		return rangeStreamStatusErr(err)
 	}
 	var (
 		sentAny   bool
@@ -177,6 +177,19 @@ func (s *RPCServer) RangeStream(r *etcdserverpb.RangeRequest, rs etcdserverpb.KV
 	s.metricCli.EmitHistogram("read.range_stream.latency", time.Since(startTime).Seconds())
 	klog.V(4).InfoS("RANGE STREAM done", "key", r.Key, "chunks", chunks, "rev", headerRev)
 	return nil
+}
+
+// rangeStreamStatusErr shapes a pre-stream failure into the RangeStream error
+// contract. Proper gRPC status errors (rpctypes compacted/future, our own
+// Unimplemented rejections) pass through untouched; anything raw — a revision
+// sync timeout, a backend construction error — would otherwise surface as code
+// Unknown (seen once in the 1.37-alpha cold-start test), so wrap it as
+// Unavailable: transient, relist — the same contract as a mid-stream error.
+func rangeStreamStatusErr(err error) error {
+	if _, ok := status.FromError(err); ok {
+		return err
+	}
+	return status.Error(codes.Unavailable, err.Error())
 }
 
 func validateRangeRequest(r *etcdserverpb.RangeRequest) error {
