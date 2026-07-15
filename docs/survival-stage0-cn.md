@@ -89,6 +89,16 @@ kube-brain
 3. **LIST 蹚墓碑**:KubeBrain #62 修复(物理 GC 全 keyspace)+ 增量 GC 已结构性消除墓碑堆积;监控见下。
 4. **compaction 死锁**:#44(写队头)/#66(批量删)/增量 GC 已解决;`--auto-compaction-retention-revisions` 是最后防线。
 
+## 4.5 大规模清退(百万级对象删除)的三堵墙(#74 实测)
+
+| 墙 | 实测数字 | 对策 |
+|---|---|---|
+| **kcm 默认 `--kube-api-qps=20`** | 100 万 ns 级联 0.9 ns/s ≈ 12 天 | `--kube-api-qps=1000 --kube-api-burst=1500`(提速后 KubeBrain 稳定承接 835 req/s) |
+| **ns 级联的固有成本 ~243 个 API 调用/ns**(发现+逐 GVR List/DeleteCollection+复核+条件更新) | QPS 拉满也是 3.4 ns/s ≈ 80h/百万 ns | 百万 ns 规模别走 namespace 级联;按资源类型批量删(或直连存储清理),ns 对象最后删 |
+| **k3s 专属:node 挂 `wrangler.cattle.io/node` finalizer** | 10 万 node 的 DELETE 全部秒回成功,但对象按 ~70/s 逐个消失(24min) | 预期内的滞后,勿重复删除;真 k8s 无此墙 |
+
+另:孤儿 RS(owner 已删)在被 GC 收走前仍会补建 pod(GC ~20/s 赶不上 replicaset 控制器),先删 Deployment/RS 再删 pod,顺序不能反。
+
 ## 5. 上线前检查清单
 
 ```
