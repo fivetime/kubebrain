@@ -116,11 +116,24 @@ func (c *commonResultReceiver) reset() {
 	c.result = make([]*proto.KeyValue, 0, len(c.result))
 }
 
+// rangeStreamBatchBytes caps a chunk by accumulated key+value bytes, mirroring
+// etcd's byte-adaptive RangeStream chunking (it sizes chunks against
+// MaxRequestBytes ≈ 1.5MiB). Without it the fixed 300-key chunk grows linearly
+// with value size — 10KB objects already make 3MB chunks, and 100KB+ objects
+// would build chunks beyond gRPC message comfort — and the stream channel's
+// memory bound stops being a constant. Whichever threshold trips first flushes;
+// a single value larger than the cap still travels as its own one-key chunk
+// (a KV cannot be split).
+const rangeStreamBatchBytes = 1536 * 1024
+
 type streamResultReceiver struct {
 	emptyResultReceiver
 	readRev uint64
 	stream  chan *proto.StreamRangeResponse
 	batch   []*proto.KeyValue
+	// batchBytes is the accumulated key+value payload of batch, driving the
+	// byte half of the dual flush threshold.
+	batchBytes int
 	// emitted is set once a chunk has been pushed into stream; from then on this
 	// receiver (a per-partition fork) is no longer retriable — see
 	// resultReceiver.retriable.
@@ -140,35 +153,31 @@ func (e *streamResultReceiver) append(key, value []byte, revision uint64) {
 		Value:    value,
 		Revision: revision,
 	})
-	if len(e.batch) >= rangeStreamBatch {
-		// todo: use object pool
-		batch := e.batch
-		e.batch = make([]*proto.KeyValue, 0, rangeStreamBatch)
-		resp := &proto.StreamRangeResponse{
-			RangeResponse: &proto.RangeResponse{
-				Header: &proto.ResponseHeader{Revision: e.readRev},
-				Kvs:    batch,
-				More:   true,
-			},
-		}
-		e.stream <- resp
-		e.emitted = true
+	e.batchBytes += len(key) + len(value)
+	if len(e.batch) >= rangeStreamBatch || e.batchBytes >= rangeStreamBatchBytes {
+		e.emit()
 	}
 }
 
 func (e *streamResultReceiver) flush() {
 	if len(e.batch) != 0 {
-		resp := &proto.StreamRangeResponse{
-			RangeResponse: &proto.RangeResponse{
-				Header: &proto.ResponseHeader{Revision: e.readRev},
-				Kvs:    e.batch,
-				More:   true,
-			},
-		}
-		e.stream <- resp
-		e.emitted = true
-		e.reset()
+		e.emit()
 	}
+}
+
+// emit pushes the pending batch as one chunk and resets the batch state.
+func (e *streamResultReceiver) emit() {
+	// todo: use object pool
+	batch := e.batch
+	e.reset()
+	e.stream <- &proto.StreamRangeResponse{
+		RangeResponse: &proto.RangeResponse{
+			Header: &proto.ResponseHeader{Revision: e.readRev},
+			Kvs:    batch,
+			More:   true,
+		},
+	}
+	e.emitted = true
 }
 
 func (e *streamResultReceiver) close() {
@@ -177,6 +186,7 @@ func (e *streamResultReceiver) close() {
 
 func (e *streamResultReceiver) reset() {
 	e.batch = make([]*proto.KeyValue, 0, rangeStreamBatch)
+	e.batchBytes = 0
 }
 
 func (e *streamResultReceiver) fork() resultReceiver {

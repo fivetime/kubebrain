@@ -357,3 +357,45 @@ func TestStreamReceiverNotRetriableAfterEmit(t *testing.T) {
 	f2.flush()
 	require.False(t, f2.retriable())
 }
+
+// TestStreamReceiverByteAdaptiveChunking locks the dual flush threshold: big
+// values must cut chunks by accumulated bytes (etcd sizes RangeStream chunks
+// against MaxRequestBytes) so per-chunk memory is a constant, not
+// 300×valueSize; small values still batch up to the key-count threshold.
+func TestStreamReceiverByteAdaptiveChunking(t *testing.T) {
+	stream := make(chan *proto.StreamRangeResponse, 1024)
+	r := newStreamReceiver(7, stream)
+
+	// 200KB values: the byte cap (1.5MiB) must trip every 8 appends, far below
+	// the 300-key count threshold.
+	big := make([]byte, 200*1024)
+	const n = 40
+	for i := 0; i < n; i++ {
+		r.append([]byte("k"), big, 1)
+	}
+	r.flush()
+	close(stream)
+
+	keys, chunks := 0, 0
+	for resp := range stream {
+		chunks++
+		keys += len(resp.RangeResponse.Kvs)
+		require.LessOrEqual(t, len(resp.RangeResponse.Kvs), rangeStreamBatch)
+		bytes := 0
+		for _, kv := range resp.RangeResponse.Kvs {
+			bytes += len(kv.Key) + len(kv.Value)
+		}
+		// A chunk may exceed the cap by at most the one value that tripped it.
+		require.Less(t, bytes, rangeStreamBatchBytes+len(big)+1)
+	}
+	require.Equal(t, n, keys, "no key lost across chunk boundaries")
+	require.Equal(t, 5, chunks, "40 x 200KB at a 1.5MiB cap = ceil(40/8) chunks")
+
+	// Small values are untouched by the byte cap: exactly the count threshold.
+	stream2 := make(chan *proto.StreamRangeResponse, 16)
+	r2 := newStreamReceiver(7, stream2)
+	for i := 0; i < rangeStreamBatch; i++ {
+		r2.append([]byte("k"), []byte("v"), 1)
+	}
+	require.Len(t, stream2, 1, "count threshold still cuts at rangeStreamBatch")
+}

@@ -150,14 +150,15 @@ func (r *scanner) RangeStream(ctx context.Context, start []byte, end []byte, rev
 	// Buffer sizing is the memory bound of the whole stream (k8s 1.37 review):
 	// partition workers fill this channel in parallel at scan speed while the
 	// consumer drains at gRPC send speed, so with values attached a deep buffer
-	// holds buffer×rangeStreamBatch full objects — 1000×300 ≈ 300k values, a
-	// GB-scale spike per stream, multiplied by however many cachers the
-	// apiserver cold-starts concurrently now that EtcdRangeStream defaults on.
-	// A shallow buffer instead blocks the workers on send, so HTTP/2 flow
-	// control propagates all the way into the scan (the shim cancels+drains on
-	// disconnect, so blocked workers never leak). keysOnly streams (count-index
-	// rebuild) carry no values — tiny entries where the deep buffer is cheap
-	// and keeps the rebuild scan unthrottled.
+	// once held GB-scale spikes per stream (measured: +1.3GB on a throttled 2GB
+	// stream), multiplied by however many cachers the apiserver cold-starts
+	// concurrently now that EtcdRangeStream defaults on. A shallow buffer
+	// instead blocks the workers on send, so HTTP/2 flow control propagates all
+	// the way into the scan (the shim cancels+drains on disconnect, so blocked
+	// workers never leak). With chunks also byte-capped (rangeStreamBatchBytes)
+	// the bound is a CONSTANT ≈ buffer×1.5MiB ≈ 12MB regardless of value size.
+	// keysOnly streams (count-index rebuild) carry no values — tiny entries
+	// where the deep buffer is cheap and keeps the rebuild scan unthrottled.
 	buffer := 8
 	if keysOnly {
 		buffer = 1000
