@@ -56,6 +56,14 @@ controllerManager:
 
 1.37+ 追加:`EtcdRangeStream` 正式版默认开(alpha 需显式 `=true`),watch-cache 初始化走流式,实测 init 快 2.8×;北极星规模建议再开 `ConsistentListFromCacheSkipTimeoutFallback=true`(429 替代超时后的全量 LIST 穿透,对存储纯减压)。
 
+### ⚠️ 2GiB 硬墙:单资源类型总量决定 1.36 能否冷启动(实测坐实)
+
+**≤1.36 的 apiserver 对"单个资源类型全量 LIST 响应 >2GiB"的数据集永远无法冷启动**——watch-cache 初始化对 etcd 发的是不分页全量 Range,响应超过 gRPC/protobuf 的 int32 上限(2147483647 字节)时服务端拒发,apiserver 每 ~40s 重试一次,**无限循环,永不就绪**。实测:490 万 deployment(约 600B/个)= 2 949 012 631 字节,k3s v1.36.2 节点 NotReady 挂死 18h+。
+
+- 这是协议级的墙,与存储后端无关:真 etcd 同样中招(`server/etcdserver/api/v3rpc/grpc.go` 将 `MaxSendMsgSize` 设为 `math.MaxInt32`),KubeBrain 行为与 etcd 一致。
+- 容量公式:**每种资源 `对象数 × 平均编码大小 < 2GiB`**,超线即必须 1.37+`EtcdRangeStream`(流式分块,无单消息上限)。这是"千万级对象必须 1.37"的最硬理由——不是性能问题,是可用性问题。
+- 注意坏状态可以潜伏:apiserver 在线时增量写入不触发全量 LIST,数据涨过线后**下一次重启**才爆雷。上线前用 `etcdctl get <prefix> --prefix --count-only` × 抽样对象大小自查每个大类型。
+
 ## 3. KubeBrain 部署参数(podman/quadlet 样例)
 
 ```

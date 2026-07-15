@@ -11,7 +11,7 @@
 
 | 变化 | 对 KubeBrain 的影响 |
 |---|---|
-| **EtcdRangeStream(Beta,默认开)**:watch-cache 初始化改走一次 `KV.RangeStream` 流式 RPC 替代分页 Range | KubeBrain 原生实现已就绪(#65);apiserver 只发 prefix range(无 Limit/Rev/Sort/Filter),完全在支持子集内;形状不支持时 Unimplemented → apiserver 自动回退分页并 10min 重探 |
+| **EtcdRangeStream(Beta,默认开)**:watch-cache 初始化改走一次 `KV.RangeStream` 流式 RPC 替代分页 Range | KubeBrain 原生实现已就绪(#65);apiserver 只发 prefix range(无 Limit/Rev/Sort/Filter),完全在支持子集内;形状不支持时 Unimplemented → apiserver 自动回退分页并 10min 重探。⭐**这不只是性能项而是可用性项**:≤1.36 的 watch-cache 初始化是不分页全量 Range,单资源类型响应 >2GiB(gRPC int32 上限)时冷启动永久失败——现场坐实:490 万 deployment=2.9GB,k3s 1.36 每 40s 重试死循环 18h+;真 etcd 同样中招(`v3rpc/grpc.go` MaxSendMsgSize=MaxInt32)。千万级对象必须 1.37+RangeStream,详见 survival-stage0-cn.md 的"2GiB 硬墙" |
 | **ConsistentListFromCache 锁死 GA**:一致读阻塞在 watch progress 上,100ms 轮询、3s 超时后回退全量 LIST | KubeBrain 支持 in-band per-watch ProgressRequest;本轮加固:RequestProgress 触发即时 marker 扇出 + `--watch-progress-notify-interval` 校验(必须 < 2.5s) |
 | **kubeadm 外部 etcd 版本下限抬至 3.5.24-0** | KubeBrain 自报 etcd 3.7.0(gRPC Status + HTTP /version),通过 |
 | **kubeadm 新增 `ExternalEtcd.HTTPEndpoints`** | `/version` 现同时注册在 client 口与 info 口,任一口都可承接预检 |
