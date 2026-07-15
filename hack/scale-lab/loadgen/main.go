@@ -596,6 +596,17 @@ func main() {
 			return err
 		})
 
+	case "deployments-cleanup":
+		run(*count, func(i int) error {
+			ns := fmt.Sprintf("ns-%07d", *nsStart+i/(*perNs))
+			name := fmt.Sprintf("app-%03d", i%*perNs)
+			err := cli.AppsV1().Deployments(ns).Delete(ctx, name, metav1m.DeleteOptions{})
+			if errors.IsNotFound(err) {
+				return nil
+			}
+			return err
+		})
+
 	case "nodes-cleanup":
 		run(*count, func(i int) error {
 			name := fmt.Sprintf("kwok-node-%06d", *start+i)
