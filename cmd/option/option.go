@@ -25,6 +25,7 @@ import (
 	"k8s.io/klog/v2"
 
 	"github.com/kubewharf/kubebrain/pkg/backend"
+	"github.com/kubewharf/kubebrain/pkg/backend/coder"
 	"github.com/kubewharf/kubebrain/pkg/endpoint"
 	imetrics "github.com/kubewharf/kubebrain/pkg/metrics"
 	metrics "github.com/kubewharf/kubebrain/pkg/metrics/prometheus"
@@ -47,6 +48,9 @@ type KubeBrainOption struct {
 	SkippedPrefixes []string
 
 	ClusterName string
+
+	// keyspace names this cluster's tenant on a shared storage cluster (#76).
+	Keyspace string
 
 	// advertiseHost, when non-empty, is the host advertised to peers as this
 	// replica's identity (the leader-election holderIdentity and the address a
@@ -120,7 +124,8 @@ func (o *KubeBrainOption) AddFlags(fs *pflag.FlagSet) {
 	fs.IntVar(&o.epsConf.PeerPort, "peer-port", o.epsConf.PeerPort, "the port kubebrain listen on for peer communication")
 	fs.IntVar(&o.epsConf.InfoPort, "info-port", o.epsConf.InfoPort, "the port kubebrain listen on for node info")
 	fs.StringSliceVar(&o.SkippedPrefixes, "skip-key-prefix", o.SkippedPrefixes, "skipped key prefix.")
-	fs.StringVar(&o.ClusterName, "cluster-name", o.ClusterName, "cluster name.")
+	fs.StringVar(&o.ClusterName, "cluster-name", o.ClusterName, "cluster name; used ONLY as the metrics 'cluster' tag. For data isolation on a shared storage cluster use --keyspace")
+	fs.StringVar(&o.Keyspace, "keyspace", o.Keyspace, "tenant keyspace on the shared storage cluster ([a-z0-9-], max 64). Every key family (objects, event log, internal metadata, coordination keys) is derived from it, so clusters with different keyspaces on one TiKV cannot see or garbage-collect each other's data. Empty (default) = the original single-tenant keyspace; existing deployments keep their data. All replicas of one cluster MUST agree")
 	fs.StringVar(&o.advertiseHost, "advertise-host", o.advertiseHost, "IP/host advertised to peers as this replica's identity: the leader-election holderIdentity and the address followers dial to reach the leader. Empty = auto-detect (smallest private IPv4), which guesses wrong on multi-homed hosts — REQUIRED there. Listeners still bind all interfaces; this only sets the advertised address. IPv6 must be bracketed, e.g. [2001:db8::1].")
 
 	// security
@@ -209,6 +214,10 @@ func (o *KubeBrainOption) Validate() error {
 	// per consistent read. A progress cadence at or above the block timeout would
 	// make EVERY consistent read on a quiet resource take that cliff, so fail
 	// loudly instead. (<=0 keeps the "use default 1s" semantic.)
+	if _, err := coder.NewKeyspace(o.Keyspace); err != nil {
+		return err
+	}
+
 	const watchProgressNotifyIntervalMax = 2500 * time.Millisecond
 	if o.watchProgressNotifyInterval > watchProgressNotifyIntervalMax {
 		return fmt.Errorf("--watch-progress-notify-interval %v is too large: must be < %v (kube-apiserver blocks consistent reads on progress for only 3s before falling back to a full storage LIST)",
@@ -258,8 +267,16 @@ func (o *KubeBrainOption) Run(ctx context.Context) error {
 		return err
 	}
 
+	// Coordination keys (election lock, compact watermark) live at raw keys
+	// under Prefix; namespace them per keyspace so tenants on one storage
+	// cluster elect independent leaders and keep independent watermarks.
+	prefix := o.Prefix
+	if o.Keyspace != "" {
+		prefix = prefix + "/ks-" + o.Keyspace
+	}
 	config := backend.Config{
-		Prefix:                      o.Prefix,
+		Prefix:                      prefix,
+		Keyspace:                    o.Keyspace,
 		Identity:                    identity,
 		SkippedPrefixes:             o.SkippedPrefixes,
 		EnableEtcdCompatibility:     o.epsConf.EnableEtcdCompatibility,

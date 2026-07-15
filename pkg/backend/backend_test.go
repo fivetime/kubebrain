@@ -291,7 +291,7 @@ func newDelRequest(revision uint64, key string) *proto.DeleteRequest {
 }
 
 func encodeRevisionKey(userKey []byte) (internalKey []byte) {
-	cdr := coder.NewNormalCoder()
+	cdr := coder.DefaultKeyspace().NewCoder()
 	return cdr.EncodeObjectKey(userKey, 0)
 }
 

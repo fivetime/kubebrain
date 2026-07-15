@@ -20,8 +20,6 @@ import (
 	"time"
 
 	"k8s.io/klog/v2"
-
-	"github.com/kubewharf/kubebrain/pkg/backend/coder"
 )
 
 // CountAtRevision returns the exact live-key count of [key,end) at revision rev
@@ -129,7 +127,7 @@ func (b *backend) rebuildCountIndexOnce(ctx context.Context) error {
 			// and the half-loaded index then served wrong counts as
 			// authoritative. Whole-keyspace also matches what the live apply
 			// stream feeds the collector, so rebuild and steady-state agree.
-			stream := b.scanner.RangeStream(ctx, coder.ObjectKeyspaceStart(), coder.ObjectKeyspaceEnd(), rev, true)
+			stream := b.scanner.RangeStream(ctx, b.ks.ObjectKeyspaceStart(), b.ks.ObjectKeyspaceEnd(), rev, true)
 			for resp := range stream {
 				if resp.Err != "" {
 					loadErr = errors.New(resp.Err)

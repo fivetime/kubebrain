@@ -24,7 +24,7 @@ import (
 func TestCompatible(t *testing.T) {
 	ast := assert.New(t)
 	bs := []byte{87, 251, 128, 139, 47, 114, 101, 103, 105, 115, 116, 114, 121, 47, 116, 101, 115, 116, 36, 0, 0, 0, 0, 0, 0, 0, 0}
-	c := NewNormalCoder()
+	c := DefaultKeyspace().NewCoder()
 
 	uk, rev, err := c.Decode(bs)
 	ast.Equal("/registry/test", string(uk))
@@ -34,8 +34,8 @@ func TestCompatible(t *testing.T) {
 
 func TestObjectKeyspaceEnd(t *testing.T) {
 	ast := assert.New(t)
-	c := NewNormalCoder()
-	end := ObjectKeyspaceEnd()
+	c := DefaultKeyspace().NewCoder()
+	end := DefaultKeyspace().ObjectKeyspaceEnd()
 
 	ast.True(bytes.Compare(c.EncodeObjectKey([]byte("/"), 0), end) < 0)
 	ast.True(bytes.Compare(c.EncodeObjectKey([]byte{0xff}, ^uint64(0)), end) < 0)

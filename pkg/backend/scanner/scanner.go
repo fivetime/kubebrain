@@ -321,7 +321,7 @@ func (r *scanner) adjustPartitionsBorders(ps []storage.Partition) (ret []storage
 			// (e.g. a TiKV region split point {objectKey}\x00): the old
 			// Decode-only path left those unadjusted, so a deleted key whose
 			// tombstone landed in the next partition resurfaced as live in List.
-			if b, ok := coder.RevisionBoundaryForBorder(ps[i].End); ok {
+			if b, ok := r.coder.RevisionBoundaryForBorder(ps[i].End); ok {
 				ps[i].End = b
 			}
 		}

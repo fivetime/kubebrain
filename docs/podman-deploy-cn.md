@@ -229,7 +229,8 @@ EOF
 | `--advertise-host`                       | **副本对外通告的身份 IP。多网卡机器必填**（见 §1.5、§3.3）。留空则自动探测第一张非环回网卡，结果不可控。仅影响通告身份，**监听仍是全网卡** |
 | `--port` / `--peer-port` / `--info-port` | 三个平面的端口，见 §1.7                                      |
 | `--compatible-with-etcd=true`            | **必开。** 原生 apiserver 依赖它；同时它是 follower → leader 写转发的开关 |
-| `--cluster-name`                         | **仅用作监控指标的 `cluster` 标签**（默认 `default`）。⚠️ 它**不**隔离键空间——键编码的 magic 是全局常量，同一套 TiKV 上的多个 KubeBrain 集群共享同一个键空间且 GC 互相可见，**不要**用第二个 KubeBrain 集群做多租户隔离 |
+| `--cluster-name`                         | **仅用作监控指标的 `cluster` 标签**（默认 `default`），不参与数据隔离 |
+| `--keyspace`                             | **共享存储集群上的租户隔离**(2026-07-15 起,#76):非空时([a-z0-9-],≤64)所有键族(对象/事件日志/内部元数据/协调键)都从它派生独立 magic,不同 keyspace 的集群在同一套 TiKV 上**互相不可见、GC 互不误伤**(如给 Cilium kvstore 单独跑一套 KubeBrain)。空(默认)=原单租户键空间,存量部署零迁移。**同一集群的所有副本必须一致**;对已有数据的集群改 keyspace = 数据"消失"(还在,但在旧租户空间里) |
 | `--enable-count-index`                   | 在 leader 上维护内存版本索引，让 List 的 count 免于全表扫描。**依赖 `--compatible-with-etcd`** |
 | `--count-index-max-keys`                 | 索引跟踪的 key 数上限，超过则索引自动关闭、回退全扫。默认 `5000000`，**设 `0` = 不限制**（推荐，免去猜总量） |
 | `--enable-storage-metrics`               | 开启存储层指标，供 Prometheus 采集                           |

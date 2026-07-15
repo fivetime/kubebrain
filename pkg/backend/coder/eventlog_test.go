@@ -27,12 +27,12 @@ import (
 // producing an end that sorted BELOW the start so the range read silently
 // scanned nothing.
 func TestEventLogRangeEndNoWrapAtMaxRevision(t *testing.T) {
-	start := EventLogRangeStart(math.MaxUint64)
-	end := EventLogRangeEnd(math.MaxUint64)
+	start := DefaultKeyspace().EventLogRangeStart(math.MaxUint64)
+	end := DefaultKeyspace().EventLogRangeEnd(math.MaxUint64)
 	require.Positive(t, bytes.Compare(end, start), "range end must sort above start even at MaxUint64")
 
 	// Every entry at MaxUint64 (any userKey) must fall inside [start, end).
-	entry := EncodeEventLogKey(math.MaxUint64, []byte("/registry/pods/p1"))
+	entry := DefaultKeyspace().EncodeEventLogKey(math.MaxUint64, []byte("/registry/pods/p1"))
 	require.LessOrEqual(t, bytes.Compare(start, entry), 0, "entry at MaxUint64 must be at/above the start")
 	require.Positive(t, bytes.Compare(end, entry), "entry at MaxUint64 must be below the exclusive end")
 }
@@ -42,12 +42,12 @@ func TestEventLogRangeEndNoWrapAtMaxRevision(t *testing.T) {
 // entry AT rev is below it, and it does not reach into rev+1.
 func TestEventLogRangeEndExclusiveBoundary(t *testing.T) {
 	for _, rev := range []uint64{0, 1, 255, 256, 1<<16 - 1, 1 << 16, 1<<32 - 1, 1 << 32, math.MaxUint64 - 1} {
-		end := EventLogRangeEnd(rev)
+		end := DefaultKeyspace().EventLogRangeEnd(rev)
 		// An entry at rev, even with the largest plausible userKey, is inside.
-		inside := EncodeEventLogKey(rev, bytes.Repeat([]byte{0xff}, 64))
+		inside := DefaultKeyspace().EncodeEventLogKey(rev, bytes.Repeat([]byte{0xff}, 64))
 		require.Positivef(t, bytes.Compare(end, inside), "rev %d: entry must sort below the exclusive end", rev)
 		// The end must not reach the first entry of rev+1 (it excludes rev+1).
-		next := EncodeEventLogKey(rev+1, nil)
+		next := DefaultKeyspace().EncodeEventLogKey(rev+1, nil)
 		require.LessOrEqualf(t, bytes.Compare(end, next), 0, "rev %d: end must not exceed rev+1's start", rev)
 	}
 }

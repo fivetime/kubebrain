@@ -23,6 +23,9 @@ import (
 )
 
 var (
+	// magic is the legacy (default keyspace) object-key prefix. Named keyspaces
+	// derive their own magic — see keyspace.go. Nothing outside this package
+	// constructs magic-prefixed keys directly; go through a Keyspace.
 	magic      = "\x57\xfb\x80\x8b"
 	magicBytes = []byte(magic)
 
@@ -31,42 +34,20 @@ var (
 	splitByte = byte('$')
 )
 
-func NewNormalCoder() Coder {
-	return &normalEncoderDecoder{}
+// normalEncoderDecoder encodes a user key with larger revision to a larger
+// internal key, within one keyspace's magic prefix.
+type normalEncoderDecoder struct {
+	magic []byte
 }
-
-// ObjectKeyspaceStart returns the smallest possible encoded object key: every
-// object key is {magic}{userKey}{split}{revision}, so the bare magic prefix sorts
-// at or before all of them (and after every non-object key, which lacks the magic
-// prefix). Paired with ObjectKeyspaceEnd it bounds the ENTIRE object keyspace
-// regardless of user prefix — used by compaction so physical GC never depends on
-// a configured key-prefix matching the client's real keys.
-func ObjectKeyspaceStart() []byte {
-	return append([]byte(nil), magicBytes...)
-}
-
-func ObjectKeyspaceEnd() []byte {
-	end := append([]byte(nil), magicBytes...)
-	for i := len(end) - 1; i >= 0; i-- {
-		if end[i] != 0xff {
-			end[i]++
-			return end[:i+1]
-		}
-	}
-	return []byte{0xff}
-}
-
-// normalEncoderDecoder encode user key with larger revision to larger internal key
-type normalEncoderDecoder struct{}
 
 // EncodeObjectKey implements Coder interface
 func (n *normalEncoderDecoder) EncodeObjectKey(userKey []byte, revision uint64) []byte {
-	key := make([]byte, len(magicBytes)+len(userKey)+1+8)
+	key := make([]byte, len(n.magic)+len(userKey)+1+8)
 	// {magic}:{raw_key}:{split_key}:{revision}
-	copy(key, magicBytes)
-	copy(key[len(magicBytes):], userKey)
-	copy(key[len(magicBytes)+len(userKey):], splitKey)
-	binary.BigEndian.PutUint64(key[len(magicBytes)+len(userKey)+1:], revision)
+	copy(key, n.magic)
+	copy(key[len(n.magic):], userKey)
+	copy(key[len(n.magic)+len(userKey):], splitKey)
+	binary.BigEndian.PutUint64(key[len(n.magic)+len(userKey)+1:], revision)
 	return key
 }
 
@@ -88,22 +69,22 @@ func (n *normalEncoderDecoder) EncodeRevisionKey(key []byte) []byte {
 // user key can contain, so the FIRST splitByte after the magic prefix is always
 // the userKey/revision delimiter. Returns (nil,false) when border is not in the
 // object keyspace or has no split byte yet (already at/before a user-key start).
-func RevisionBoundaryForBorder(border []byte) ([]byte, bool) {
-	if len(border) < len(magicBytes) || !bytes.Equal(border[:len(magicBytes)], magicBytes) {
+func (n *normalEncoderDecoder) RevisionBoundaryForBorder(border []byte) ([]byte, bool) {
+	if len(border) < len(n.magic) || !bytes.Equal(border[:len(n.magic)], n.magic) {
 		return nil, false
 	}
-	rest := border[len(magicBytes):]
+	rest := border[len(n.magic):]
 	i := bytes.IndexByte(rest, splitByte)
 	if i < 0 {
 		return nil, false
 	}
 	userKey := rest[:i]
-	return (&normalEncoderDecoder{}).EncodeObjectKey(userKey, 0), true
+	return n.EncodeObjectKey(userKey, 0), true
 }
 
 // Decode implements Coder interface
 func (n *normalEncoderDecoder) Decode(internalKey []byte) (userKey []byte, revision uint64, err error) {
-	if !bytes.Equal(internalKey[:len(magicBytes)], magicBytes) {
+	if len(internalKey) < len(n.magic)+9 || !bytes.Equal(internalKey[:len(n.magic)], n.magic) {
 		return nil, 0, errors.Errorf("magic number not right for object key %v", hex.EncodeToString(internalKey))
 	}
 
@@ -112,6 +93,6 @@ func (n *normalEncoderDecoder) Decode(internalKey []byte) (userKey []byte, revis
 	}
 
 	revision = binary.BigEndian.Uint64(internalKey[len(internalKey)-8:])
-	userKey = internalKey[len(magic) : len(internalKey)-9]
+	userKey = internalKey[len(n.magic) : len(internalKey)-9]
 	return
 }

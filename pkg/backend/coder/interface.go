@@ -25,4 +25,10 @@ type Coder interface {
 
 	// Decode decodes internal key to user key and revision
 	Decode(internalKey []byte) (userKey []byte, revision uint64, err error)
+
+	// RevisionBoundaryForBorder snaps an arbitrary border inside this coder's
+	// object keyspace to the rev=0 key of the user key it falls within, so one
+	// user key's version run never straddles two scan partitions. Returns
+	// (nil, false) for borders outside the keyspace (see normal.go).
+	RevisionBoundaryForBorder(border []byte) ([]byte, bool)
 }

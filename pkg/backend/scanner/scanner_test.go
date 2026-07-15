@@ -35,7 +35,7 @@ import (
 
 func TestAdjustPartitionBorders(t *testing.T) {
 	ast := assert.New(t)
-	c := coder.NewNormalCoder()
+	c := coder.DefaultKeyspace().NewCoder()
 	s := scanner{coder: c}
 
 	keys := [][]byte{
@@ -98,7 +98,7 @@ func TestScannerCrossPartitionTombstoneLargeGap(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 	m := mock.NewMinimalMetrics(ctrl)
-	c := coder.NewNormalCoder()
+	c := coder.DefaultKeyspace().NewCoder()
 	tomb := []byte("tombstone")
 
 	key := []byte("/registry-kubebrain-apiserver-smoke-1782852222/apiextensions.k8s.io/customresourcedefinitions/v1.apiextensions.k8s.io")
@@ -186,7 +186,7 @@ func TestScannerCrossPartitionTombstone(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 	m := mock.NewMinimalMetrics(ctrl)
-	c := coder.NewNormalCoder()
+	c := coder.DefaultKeyspace().NewCoder()
 	tomb := []byte("tombstone")
 
 	key := []byte("/registry/pods/default/p1")
@@ -234,7 +234,7 @@ func TestScannerCompactBatchesLargeTombstoneBacklog(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 	m := mock.NewMinimalMetrics(ctrl)
-	c := coder.NewNormalCoder()
+	c := coder.DefaultKeyspace().NewCoder()
 	tomb := []byte("tombstone")
 
 	kv := imemkv.NewKvStorage()
@@ -258,16 +258,16 @@ func TestScannerCompactBatchesLargeTombstoneBacklog(t *testing.T) {
 	require.NoError(t, b.Commit(context.Background()))
 
 	sc := NewScanner(kv, c, Config{CompactKey: []byte("/compact"), Tombstone: tomb}, m)
-	borders := [][]byte{coder.ObjectKeyspaceStart(), coder.ObjectKeyspaceEnd()}
+	borders := [][]byte{coder.DefaultKeyspace().ObjectKeyspaceStart(), coder.DefaultKeyspace().ObjectKeyspaceEnd()}
 	require.NoError(t, sc.Compact(context.Background(), borders, 1000))
 
 	// A List over the whole keyspace returns nothing...
-	kvs, err := sc.Range(context.Background(), coder.ObjectKeyspaceStart(), coder.ObjectKeyspaceEnd(), 100000, 0)
+	kvs, err := sc.Range(context.Background(), coder.DefaultKeyspace().ObjectKeyspaceStart(), coder.DefaultKeyspace().ObjectKeyspaceEnd(), 100000, 0)
 	require.NoError(t, err)
 	require.Empty(t, kvs, "all deleted keys must be GC'd across batch boundaries")
 
 	// ...and the raw store holds no object versions.
-	it, err := kv.Iter(context.Background(), coder.ObjectKeyspaceStart(), coder.ObjectKeyspaceEnd(), 0, 0)
+	it, err := kv.Iter(context.Background(), coder.DefaultKeyspace().ObjectKeyspaceStart(), coder.DefaultKeyspace().ObjectKeyspaceEnd(), 0, 0)
 	require.NoError(t, err)
 	defer it.Close()
 	remaining := 0
@@ -285,7 +285,7 @@ func TestRangeStreamKeysOnlyDropsValues(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 	m := mock.NewMinimalMetrics(ctrl)
-	c := coder.NewNormalCoder()
+	c := coder.DefaultKeyspace().NewCoder()
 
 	kv := imemkv.NewKvStorage()
 	defer kv.Close()
@@ -303,7 +303,7 @@ func TestRangeStreamKeysOnlyDropsValues(t *testing.T) {
 	require.NoError(t, b.Commit(context.Background()))
 
 	sc := NewScanner(kv, c, Config{CompactKey: []byte("/compact"), Tombstone: []byte("tomb")}, m)
-	start, end := coder.ObjectKeyspaceStart(), coder.ObjectKeyspaceEnd()
+	start, end := coder.DefaultKeyspace().ObjectKeyspaceStart(), coder.DefaultKeyspace().ObjectKeyspaceEnd()
 
 	collect := func(keysOnly bool) map[string]string {
 		got := map[string]string{}

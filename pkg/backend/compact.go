@@ -29,7 +29,6 @@ import (
 
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
 
-	"github.com/kubewharf/kubebrain/pkg/backend/coder"
 	"github.com/kubewharf/kubebrain/pkg/storage"
 )
 
@@ -535,8 +534,8 @@ func (b *backend) getCompactBorders() [][]byte {
 	// curRevision > w.revision { continue }"), so co-tenants at higher revisions
 	// on a shared TiKV are untouched.
 	compactBorders := [][]byte{
-		coder.ObjectKeyspaceStart(),
-		coder.ObjectKeyspaceEnd(),
+		b.ks.ObjectKeyspaceStart(),
+		b.ks.ObjectKeyspaceEnd(),
 	}
 	// SkippedPrefixes (--skip-key-prefix) carve holes OUT of the scanned keyspace:
 	// their start/end points sort into the border list and, once scanner.Compact

@@ -198,6 +198,7 @@ type backend struct {
 	kv storage.KvStorage
 
 	coder coder.Coder
+	ks    *coder.Keyspace
 
 	scanner scanner.Scanner
 
@@ -301,6 +302,14 @@ type Config struct {
 	// Prefix is the range that backend is in charge of
 	Prefix string
 
+	// Keyspace names this cluster's tenant on the shared storage (#76): it
+	// derives the magic prefix under which ALL of this cluster's keys (objects,
+	// event log, internal metadata) live, so multiple KubeBrain clusters can
+	// share one storage cluster without seeing or garbage-collecting each
+	// other's data. "" is the default tenant (the original magic) — existing
+	// deployments keep reading their data unchanged.
+	Keyspace string
+
 	// Identity is the identity for a unique backend
 	Identity string
 
@@ -360,12 +369,19 @@ const defaultWatchProgressNotifyInterval = time.Second
 // NewBackend builds a new backend
 func NewBackend(kv storage.KvStorage, config Config, metricCli metrics.Metrics) Backend {
 	config.complete()
-	normalCoder := coder.NewNormalCoder()
+	ks, ksErr := coder.NewKeyspace(config.Keyspace)
+	if ksErr != nil {
+		// Validated at flag parsing; reaching here is a programming error, and
+		// silently falling back to the default tenant would cross keyspaces.
+		klog.Fatalf("invalid keyspace %q: %v", config.Keyspace, ksErr)
+	}
+	normalCoder := ks.NewCoder()
 	electionConfig := election.Config{Prefix: config.Prefix, Identity: config.Identity, Timeout: unaryRpcTimeout}
 	b := &backend{
 		kv:                    kv,
 		tso:                   tso.NewTSO(),
 		coder:                 normalCoder,
+		ks:                    ks,
 		election:              election.NewResourceLockManager(electionConfig, kv),
 		scanner:               scanner.NewScanner(kv, normalCoder, config.getScannerConfig(), metricCli),
 		config:                config,
@@ -409,7 +425,7 @@ func NewBackend(kv storage.KvStorage, config Config, metricCli metrics.Metrics) 
 		RetryInterval: retryInterval,
 		Tombstone:     tombStoneBytes,
 	}
-	b.asyncFifoRetry = retry.NewAsyncFifoRetry(b.coder, b.kv, b.metricCli, b.tso, b.getLatestInternalVal, b.notify, asyncRetryConfig)
+	b.asyncFifoRetry = retry.NewAsyncFifoRetry(b.ks, b.coder, b.kv, b.metricCli, b.tso, b.getLatestInternalVal, b.notify, asyncRetryConfig)
 
 	// TODO stop chan
 	// write into watch chan, trigger by create/ update/ delete method in storage interface

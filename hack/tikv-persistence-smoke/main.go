@@ -123,7 +123,7 @@ func main() {
 	}
 	defer kv.Close()
 
-	c := coder.NewNormalCoder()
+	c := coder.DefaultKeyspace().NewCoder()
 	rawKey := []byte(key)
 	revisionIndexKey := c.EncodeRevisionKey(rawKey)
 	revisionIndexValue, err := kv.Get(ctx, revisionIndexKey)
@@ -168,7 +168,7 @@ func healOrphan(ctx context.Context, pdAddrsRaw, key string) {
 	}
 	defer kv.Close()
 
-	c := coder.NewNormalCoder()
+	c := coder.DefaultKeyspace().NewCoder()
 	rawKey := []byte(key)
 	revKey := c.EncodeRevisionKey(rawKey)
 
@@ -209,7 +209,7 @@ func dumpTiKV(ctx context.Context, pdAddrsRaw, key string) {
 	}
 	defer kv.Close()
 
-	c := coder.NewNormalCoder()
+	c := coder.DefaultKeyspace().NewCoder()
 	rawKey := []byte(key)
 
 	// 1) The revision-index (rev=0) slot: what the write-path CAS reads.
@@ -288,7 +288,7 @@ func verifyDeletedTiKV(ctx context.Context, pdAddrsRaw, key string) {
 	}
 	defer kv.Close()
 
-	c := coder.NewNormalCoder()
+	c := coder.DefaultKeyspace().NewCoder()
 	rawKey := []byte(key)
 	revisionIndexValue, err := kv.Get(ctx, c.EncodeRevisionKey(rawKey))
 	if err != nil {

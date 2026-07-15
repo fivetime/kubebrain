@@ -237,7 +237,7 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 		case p.op.Delete:
 			batch.CAS(revisionKey, newRevDeleted, p.rvBytes, 0)
 			batch.Put(objectKey, tombStoneBytes, 0)
-			appendEventLog(batch, newRevision, p.op.Key, proto.Event_DELETE, p.curRev)
+			appendEventLog(b.ks, batch, newRevision, p.op.Key, proto.Event_DELETE, p.curRev)
 		case p.create:
 			p.meta = EtcdMetadata{CreateRevision: newRevision, Version: 1, Lease: p.op.Lease}
 			if p.rvBytes == nil {
@@ -247,7 +247,7 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 				batch.CAS(revisionKey, newRevLive, p.rvBytes, 0)
 			}
 			b.putTxnObject(batch, objectKey, p.op.Key, p.op.Value, p.meta, newRevision)
-			appendEventLog(batch, newRevision, p.op.Key, proto.Event_CREATE, 0)
+			appendEventLog(b.ks, batch, newRevision, p.op.Key, proto.Event_CREATE, 0)
 		default: // update
 			if p.meta.CreateRevision == 0 {
 				p.meta.CreateRevision = p.curRev
@@ -261,7 +261,7 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 			p.meta.Lease = p.op.Lease
 			batch.CAS(revisionKey, newRevLive, p.rvBytes, 0)
 			b.putTxnObject(batch, objectKey, p.op.Key, p.op.Value, p.meta, newRevision)
-			appendEventLog(batch, newRevision, p.op.Key, proto.Event_PUT, p.curRev)
+			appendEventLog(b.ks, batch, newRevision, p.op.Key, proto.Event_PUT, p.curRev)
 		}
 	}
 

@@ -44,8 +44,8 @@ const (
 )
 
 // appendEventLog stages this write's event-log entry onto its own batch.
-func appendEventLog(batch storage.BatchWrite, revision uint64, userKey []byte, verb proto.Event_EventType, prevRev uint64) {
-	batch.Put(coder.EncodeEventLogKey(revision, userKey), coder.EncodeEventLogValue(byte(verb), prevRev), 0)
+func appendEventLog(ks *coder.Keyspace, batch storage.BatchWrite, revision uint64, userKey []byte, verb proto.Event_EventType, prevRev uint64) {
+	batch.Put(ks.EncodeEventLogKey(revision, userKey), coder.EncodeEventLogValue(byte(verb), prevRev), 0)
 }
 
 // eventLogStart caches the log's completeness watermark: entries are complete
@@ -83,7 +83,7 @@ func (b *backend) EnsureEventLogStart(ctx context.Context) error {
 func (b *backend) advanceEventLogStartStorage(ctx context.Context, rev uint64) error {
 	newBytes := uint64ToBytes(rev)
 	for {
-		val, err := b.kv.Get(ctx, coder.ElogMetaStartKey)
+		val, err := b.kv.Get(ctx, b.ks.ElogMetaStartKey())
 		switch {
 		case err == nil && len(val) >= 8 && binary.BigEndian.Uint64(val) >= rev:
 			// Already at or beyond rev: keep the more conservative watermark.
@@ -91,7 +91,7 @@ func (b *backend) advanceEventLogStartStorage(ctx context.Context, rev uint64) e
 			return nil
 		case err == nil:
 			batch := b.kv.BeginBatchWrite()
-			batch.CAS(coder.ElogMetaStartKey, newBytes, val, 0)
+			batch.CAS(b.ks.ElogMetaStartKey(), newBytes, val, 0)
 			if cerr := batch.Commit(ctx); cerr != nil {
 				if errors.Is(cerr, storage.ErrCASFailed) {
 					continue // concurrent advance: re-read and re-compare
@@ -100,7 +100,7 @@ func (b *backend) advanceEventLogStartStorage(ctx context.Context, rev uint64) e
 			}
 		case errors.Is(err, storage.ErrKeyNotFound):
 			batch := b.kv.BeginBatchWrite()
-			batch.PutIfNotExist(coder.ElogMetaStartKey, newBytes, 0)
+			batch.PutIfNotExist(b.ks.ElogMetaStartKey(), newBytes, 0)
 			if cerr := batch.Commit(ctx); cerr != nil {
 				if errors.Is(cerr, storage.ErrCASFailed) {
 					continue
@@ -135,7 +135,7 @@ func (b *backend) getEventLogStart(ctx context.Context) (uint64, bool) {
 // so served=true is only trustworthy if the watermark still clears the window
 // AFTER the read (review #51).
 func (b *backend) refreshEventLogStart(ctx context.Context) (uint64, bool) {
-	val, err := b.kv.Get(ctx, coder.ElogMetaStartKey)
+	val, err := b.kv.Get(ctx, b.ks.ElogMetaStartKey())
 	if err != nil || len(val) < 8 {
 		return 0, false
 	}
@@ -167,7 +167,7 @@ func (b *backend) eventLogWatchEvents(ctx context.Context, prefix string, fromRe
 		return nil, false, nil
 	}
 	ts := time.Now()
-	iter, err := b.kv.Iter(ctx, coder.EventLogRangeStart(fromRevision), coder.EventLogRangeEnd(toRevision), 0, 0)
+	iter, err := b.kv.Iter(ctx, b.ks.EventLogRangeStart(fromRevision), b.ks.EventLogRangeEnd(toRevision), 0, 0)
 	if err != nil {
 		return nil, false, err
 	}
@@ -188,7 +188,7 @@ func (b *backend) eventLogWatchEvents(ctx context.Context, prefix string, fromRe
 			}
 			return nil, false, err
 		}
-		rev, userKey, derr := coder.DecodeEventLogKey(iter.Key())
+		rev, userKey, derr := b.ks.DecodeEventLogKey(iter.Key())
 		if derr != nil {
 			// Only this module writes inside the entry range, so a non-decodable
 			// entry means corruption: a skipped entry is a silently lost event, so
@@ -342,7 +342,7 @@ func (b *backend) loadEventValues(ctx context.Context, keys [][]byte) (vals map[
 // whole-window distrust), or more than maxKeys touched (at which point a full
 // scan is the cheaper and safer tool anyway).
 func (b *backend) eventLogTouchedKeys(ctx context.Context, fromRev, toRev uint64, maxKeys int) (keys [][]byte, ok bool) {
-	iter, err := b.kv.Iter(ctx, coder.EventLogRangeStart(fromRev+1), coder.EventLogRangeEnd(toRev), 0, 0)
+	iter, err := b.kv.Iter(ctx, b.ks.EventLogRangeStart(fromRev+1), b.ks.EventLogRangeEnd(toRev), 0, 0)
 	if err != nil {
 		return nil, false
 	}
@@ -355,7 +355,7 @@ func (b *backend) eventLogTouchedKeys(ctx context.Context, fromRev, toRev uint64
 			}
 			return nil, false
 		}
-		_, userKey, derr := coder.DecodeEventLogKey(iter.Key())
+		_, userKey, derr := b.ks.DecodeEventLogKey(iter.Key())
 		if derr != nil {
 			return nil, false
 		}
@@ -394,7 +394,7 @@ func (b *backend) cleanupEventLog(ctx context.Context, revision uint64) {
 		// storage's BatchWrite may hold engine resources (memkv holds its global
 		// lock) from Begin to Commit, so it must never be opened while an iter
 		// is still in progress nor abandoned without a Commit.
-		iter, err := b.kv.Iter(ctx, coder.EventLogRangeStart(0), coder.EventLogRangeEnd(revision), 0, uint64(eventLogCleanupBatch))
+		iter, err := b.kv.Iter(ctx, b.ks.EventLogRangeStart(0), b.ks.EventLogRangeEnd(revision), 0, uint64(eventLogCleanupBatch))
 		if err != nil {
 			klog.ErrorS(err, "event log cleanup iter failed", "revision", revision)
 			return

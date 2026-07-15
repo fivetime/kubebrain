@@ -27,11 +27,8 @@ import (
 
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
 
-	"github.com/kubewharf/kubebrain/pkg/backend/coder"
 	"github.com/kubewharf/kubebrain/pkg/storage"
 )
-
-var fromKeyEnd = coder.ObjectKeyspaceEnd()
 
 // Get implements Backend interface
 func (b *backend) Get(ctx context.Context, r *proto.GetRequest) (resp *proto.GetResponse, err error) {
@@ -198,7 +195,7 @@ func (b *backend) rangeStartKey(userKey []byte) []byte {
 
 func (b *backend) rangeEndKey(userKey []byte) []byte {
 	if isFromKeyEnd(userKey) {
-		return fromKeyEnd
+		return b.ks.ObjectKeyspaceEnd()
 	}
 	return b.coder.EncodeObjectKey(userKey, 0)
 }

@@ -62,7 +62,8 @@ func getRetryMethod(verb proto.Event_EventType) metrics.T {
 }
 
 // NewAsyncFifoRetry build a fifo queue to automatically retry uncertain operations
-func NewAsyncFifoRetry(coder coder.Coder,
+func NewAsyncFifoRetry(ks *coder.Keyspace,
+	c coder.Coder,
 	store storage.KvStorage,
 	metrics metrics.Metrics,
 	tso tso.TSO,
@@ -72,7 +73,8 @@ func NewAsyncFifoRetry(coder coder.Coder,
 
 	a := &asyncFifoRetryImpl{
 		queue:      &eventQueue{},
-		coder:      coder,
+		ks:         ks,
+		coder:      c,
 		store:      store,
 		metrics:    metrics,
 		tso:        tso,
@@ -106,6 +108,7 @@ type asyncFifoRetryImpl struct {
 	queue *eventQueue
 
 	// external components
+	ks      *coder.Keyspace
 	coder   coder.Coder
 	store   storage.KvStorage
 	metrics metrics.Metrics
@@ -268,7 +271,7 @@ func (a *asyncFifoRetryImpl) overwrite(ctx context.Context, key []byte, prevOpRe
 	if bytes.Compare(val, a.config.Tombstone) == 0 {
 		verb = byte(proto.Event_DELETE)
 	}
-	batch.Put(coder.EncodeEventLogKey(rev, key), coder.EncodeEventLogValue(verb, eventPrevRev), 0)
+	batch.Put(a.ks.EncodeEventLogKey(rev, key), coder.EncodeEventLogValue(verb, eventPrevRev), 0)
 	err = batch.Commit(ctx)
 
 	return rev, err

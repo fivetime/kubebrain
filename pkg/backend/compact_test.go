@@ -53,12 +53,12 @@ func TestConstructCompactBordersWithSkippedPrefixOption(t *testing.T) {
 				},
 			},
 			[][]byte{
-				coder.ObjectKeyspaceStart(),
+				coder.DefaultKeyspace().ObjectKeyspaceStart(),
 				encodeRevisionKey([]byte("/registry/test/events/")),
 				encodeRevisionKey([]byte("/registry/test/events0")),
 				encodeRevisionKey([]byte("/registry/test/pods/")),
 				encodeRevisionKey([]byte("/registry/test/pods0")),
-				coder.ObjectKeyspaceEnd(),
+				coder.DefaultKeyspace().ObjectKeyspaceEnd(),
 			},
 		},
 		{
@@ -68,8 +68,8 @@ func TestConstructCompactBordersWithSkippedPrefixOption(t *testing.T) {
 				Prefix: "/registry/test",
 			},
 			[][]byte{
-				coder.ObjectKeyspaceStart(),
-				coder.ObjectKeyspaceEnd(),
+				coder.DefaultKeyspace().ObjectKeyspaceStart(),
+				coder.DefaultKeyspace().ObjectKeyspaceEnd(),
 			},
 		},
 		{
@@ -77,13 +77,13 @@ func TestConstructCompactBordersWithSkippedPrefixOption(t *testing.T) {
 			// data must NOT shrink the scanned range — still whole keyspace.
 			Config{Prefix: "/kubebrain"},
 			[][]byte{
-				coder.ObjectKeyspaceStart(),
-				coder.ObjectKeyspaceEnd(),
+				coder.DefaultKeyspace().ObjectKeyspaceStart(),
+				coder.DefaultKeyspace().ObjectKeyspaceEnd(),
 			},
 		},
 	}
 	for _, suit := range tests {
-		b := &backend{config: suit.in, coder: coder.NewNormalCoder()}
+		b := &backend{config: suit.in, coder: coder.DefaultKeyspace().NewCoder(), ks: coder.DefaultKeyspace()}
 		actual := b.getCompactBorders()
 		if len(actual) != len(suit.expected) {
 			t.Errorf("byte kv get compact borders return length %d is not equal to %d", len(actual), len(suit.expected))
@@ -106,7 +106,7 @@ type storageWrapper struct {
 func (b *storageWrapper) Del(ctx context.Context, key []byte) (err error) {
 	err = b.checkDelete()
 	if err != nil {
-		userKey, rev, _ := coder.NewNormalCoder().Decode(key)
+		userKey, rev, _ := coder.DefaultKeyspace().NewCoder().Decode(key)
 		klog.InfoS("mock delete failed", "key", string(userKey), "rev", rev)
 		return err
 	}
@@ -117,7 +117,7 @@ func (b *storageWrapper) Del(ctx context.Context, key []byte) (err error) {
 func (b *storageWrapper) DelCurrent(ctx context.Context, iter storage.Iter) (err error) {
 	err = b.checkDelete()
 	if err != nil {
-		userKey, rev, _ := coder.NewNormalCoder().Decode(iter.Key())
+		userKey, rev, _ := coder.DefaultKeyspace().NewCoder().Decode(iter.Key())
 		klog.InfoS("mock delete failed", "key", string(userKey), "rev", rev)
 		return err
 	}
