@@ -115,6 +115,10 @@ type BackendShim interface {
 	// the server watch loop's emission ticker matches the backend marker cadence.
 	WatchProgressNotifyInterval() time.Duration
 
+	// ClusterID returns the stable identity of the underlying storage cluster,
+	// stamped on response headers for etcd cluster-identity checks (#78).
+	ClusterID() uint64
+
 	// KickWatchProgress requests one immediate progress fan-out (non-blocking,
 	// coalescing) so an in-flight RequestProgress converges without waiting out
 	// the ticker interval.
@@ -949,6 +953,10 @@ func (b *backendShim) GetCurrentRevision() uint64 {
 
 func (b *backendShim) WatchProgressNotifyInterval() time.Duration {
 	return b.backend.WatchProgressNotifyInterval()
+}
+
+func (b *backendShim) ClusterID() uint64 {
+	return b.backend.ClusterID()
 }
 
 func (b *backendShim) KickWatchProgress() {

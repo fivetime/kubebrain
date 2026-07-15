@@ -17,6 +17,7 @@ package backend
 import (
 	"context"
 	"errors"
+	"hash/fnv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -172,6 +173,12 @@ type Backend interface {
 	// Non-blocking; concurrent kicks coalesce.
 	KickWatchProgress()
 
+	// ClusterID returns the stable identity of the underlying storage cluster
+	// (the PD cluster ID on TiKV; a keyspace-derived constant elsewhere). It is
+	// stamped on etcd response headers so cluster-identity checks in etcd
+	// tooling (Cilium clustermesh, cilium-dbg) can tell clusters apart (#78).
+	ClusterID() uint64
+
 	// SetCurrentRevision is used for init tso for leader
 	SetCurrentRevision(uint64)
 
@@ -197,8 +204,9 @@ type backend struct {
 
 	kv storage.KvStorage
 
-	coder coder.Coder
-	ks    *coder.Keyspace
+	coder     coder.Coder
+	ks        *coder.Keyspace
+	clusterID uint64
 
 	scanner scanner.Scanner
 
@@ -376,12 +384,14 @@ func NewBackend(kv storage.KvStorage, config Config, metricCli metrics.Metrics) 
 		klog.Fatalf("invalid keyspace %q: %v", config.Keyspace, ksErr)
 	}
 	normalCoder := ks.NewCoder()
+	clusterID := deriveClusterID(kv, config.Keyspace)
 	electionConfig := election.Config{Prefix: config.Prefix, Identity: config.Identity, Timeout: unaryRpcTimeout}
 	b := &backend{
 		kv:                    kv,
 		tso:                   tso.NewTSO(),
 		coder:                 normalCoder,
 		ks:                    ks,
+		clusterID:             clusterID,
 		election:              election.NewResourceLockManager(electionConfig, kv),
 		scanner:               scanner.NewScanner(kv, normalCoder, config.getScannerConfig(), metricCli),
 		config:                config,
@@ -635,6 +645,26 @@ func (b *backend) GetPublishedRevision() uint64 {
 // guarantees it is > 0.
 func (b *backend) WatchProgressNotifyInterval() time.Duration {
 	return b.config.WatchProgressNotifyInterval
+}
+
+// ClusterID implements Backend interface.
+func (b *backend) ClusterID() uint64 {
+	return b.clusterID
+}
+
+// deriveClusterID resolves the cluster identity once at construction: the real
+// PD cluster ID when the storage exposes one, else a stable nonzero constant
+// derived from the keyspace so replicas of one cluster still agree (memkv,
+// badger — single-node engines with no cluster identity of their own).
+func deriveClusterID(kv storage.KvStorage, keyspace string) uint64 {
+	if ci, ok := kv.(storage.ClusterIdentifier); ok {
+		if id := ci.ClusterID(); id != 0 {
+			return id
+		}
+	}
+	h := fnv.New64a()
+	_, _ = h.Write([]byte("kubebrain/" + keyspace))
+	return h.Sum64() | 1 // nonzero: 0 reads as "unknown cluster" to etcd tooling
 }
 
 // KickWatchProgress implements Backend interface.

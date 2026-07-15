@@ -2766,9 +2766,10 @@ func TestTxnCompactRevisionCAS(t *testing.T) {
 	require.Equal(t, []byte("10"), currentRange.Kvs[0].Value)
 }
 
-func TestCompactRevisionKeyCanBeWatched(t *testing.T) {
-	require.True(t, isPureWatchRequest(&etcdserverpb.WatchCreateRequest{Key: []byte(compactRevKey)}))
-}
+// The leading-'/' watch-key gate (isPureWatchRequest) was removed in #78: etcd
+// keys are arbitrary byte strings, and the gate silently rejected every watch
+// from slash-less consumers (Cilium). Watchability of arbitrary keys is pinned
+// end-to-end by TestCiliumConsumerCompatibility (pkg/endpoint).
 
 // TestRangeAtMagicRevisionIsNotHijacked pins #53: a Range at revision 1888 (the
 // former partition-magic value) must get normal etcd semantics, not be hijacked

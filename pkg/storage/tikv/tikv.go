@@ -210,6 +210,11 @@ func minBytes(a []byte, b []byte) []byte {
 	return a
 }
 
+// ClusterID implements storage.ClusterIdentifier with the PD cluster ID.
+func (s *store) ClusterID() uint64 {
+	return s.getClient().GetPDClient().GetClusterID(context.Background())
+}
+
 func (s *store) GetPartitions(ctx context.Context, start, end []byte) (partitions []storage.Partition, err error) {
 	pdClient := s.getClient().GetPDClient()
 	// scan regions without limit

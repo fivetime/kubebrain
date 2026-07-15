@@ -152,7 +152,7 @@ func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) error {
 				return status.Errorf(codes.InvalidArgument, "watch: invalid negative start revision %d", r.StartRevision)
 			}
 			// normal watch request can only be handled by leader
-			if isPureWatchRequest(r) && !s.peers.IsLeader() && !s.peers.EtcdProxyEnabled() {
+			if !s.peers.IsLeader() && !s.peers.EtcdProxyEnabled() {
 				s.metricCli.EmitCounter("watch.follower", 1)
 				leaderInfo := s.peers.GetLeaderInfo()
 				klog.InfoS("watch follower", "revision", r.StartRevision, "addr", s.backend.GetResourceLock().Identity(), "leader", leaderInfo)
@@ -359,18 +359,13 @@ func (w *watcher) Close() {
 
 func (w *watcher) Watch(ctx context.Context, id int64, r *etcdserverpb.WatchCreateRequest) {
 	defer w.wg.Done()
-	// when connection error, in etcd client v3 newWatchClient function,
-	// range stream retry with newest revision may fall into this logic, which results
-	// range stream hang
-
-	// watchServer send message(including normal message and eof) has err transport closing, so the client can't receive cancel message
-	// it will get connection err and trigger newWatchClient, newWatchClient will retry all not completed substreams with latest event revision.
-	// once come into watch, it either hangs or come up with resource version too old err
-	if !isPureWatchRequest(r) {
-		w.Cancel(id, fmt.Errorf("invliad watch %s revision %d", r.Key, r.StartRevision), true)
-		w.metricCli.EmitCounter("invalid.watch.key", 1)
-		return
-	}
+	// etcd keys are arbitrary byte strings — do NOT police their shape here. A
+	// leading-'/' heuristic used to gate this path (a relic of the retired
+	// StartRevision<0 range-stream overload, #67), which silently rejected every
+	// watch from consumers with slash-less key layouts (Cilium's kvstore uses
+	// "cilium/..."; found by the cilium-as-consumer suite, #78). The one shape
+	// that IS invalid — a negative start revision — is rejected at request
+	// decode in the stream loop above.
 	if compacted, err := w.isCompactedWatchRevision(ctx, r.StartRevision); err != nil {
 		w.Cancel(id, err, isWatchCompactedError(err))
 		return
@@ -521,17 +516,6 @@ func isWatchCompactedError(err error) bool {
 	msg := err.Error()
 	return strings.Contains(msg, "required revision has been compacted") ||
 		strings.Contains(msg, "cache event oldest revision")
-}
-
-func isPureWatchRequest(r *etcdserverpb.WatchCreateRequest) bool {
-	if string(r.Key) == compactRevKey {
-		return true
-	}
-	// if starts with /, it is a normal watch request, not a range stream request
-	if strings.HasPrefix(string(r.Key), "/") {
-		return true
-	}
-	return false
 }
 
 func normalizeWatchCreateRequest(r *etcdserverpb.WatchCreateRequest) *etcdserverpb.WatchCreateRequest {

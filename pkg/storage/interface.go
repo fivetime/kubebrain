@@ -53,6 +53,16 @@ type GarbageCollector interface {
 	GC(ctx context.Context, lifetime time.Duration) (safepoint uint64, err error)
 }
 
+// ClusterIdentifier is optionally implemented by storages backed by a real
+// cluster with a stable identity (TiKV: the PD cluster ID). etcd stamps a
+// ClusterId on every response header, and etcd tooling (e.g. Cilium's
+// clustermesh interceptors, cilium-dbg) uses it to detect talking to the wrong
+// cluster; surfacing the real PD identity gives that check teeth (#78).
+type ClusterIdentifier interface {
+	// ClusterID returns the underlying cluster's stable identity.
+	ClusterID() uint64
+}
+
 // KvStorage defines the storage engine on kv database.
 type KvStorage interface {
 

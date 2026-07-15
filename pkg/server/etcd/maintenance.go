@@ -147,8 +147,16 @@ func (s *RPCServer) Downgrade(context.Context, *etcdserverpb.DowngradeRequest) (
 }
 
 func (s *RPCServer) maintenanceHeader() *etcdserverpb.ResponseHeader {
+	// etcd stamps ClusterId/MemberId on every response header; maintenance
+	// callers actually read them (Cilium's status checker uses
+	// Status.Header.MemberId, its clustermesh tooling checks ClusterId), so at
+	// minimum the maintenance surface must carry real values (#78). MemberId
+	// uses the same derivation as StatusResponse.Leader so "am I the leader"
+	// comparisons (Leader == MemberId) behave like etcd's.
 	return &etcdserverpb.ResponseHeader{
-		Revision: int64(s.backend.GetCurrentRevision()),
+		Revision:  int64(s.backend.GetCurrentRevision()),
+		ClusterId: s.backend.ClusterID(),
+		MemberId:  uint64(crc32.ChecksumIEEE([]byte(s.backend.GetResourceLock().Identity()))),
 	}
 }
 

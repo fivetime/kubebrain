@@ -1082,6 +1082,16 @@ func (s *RPCServer) executeTxnWithCursor(ctx context.Context, txn *etcdserverpb.
 		Succeeded: succeeded,
 		Responses: make([]*etcdserverpb.ResponseOp, 0, len(ops)),
 	}
+	// etcd commits every op of a txn at ONE revision and stamps that revision on
+	// the txn header. KubeBrain applies ops sequentially, so the closest correct
+	// header is the revision of the LAST WRITE — not whatever the final op's
+	// header happens to say. Letting a trailing read overwrite the header broke
+	// etcd's concurrency.Mutex (#78): its acquire txn is Then(OpPut(lockKey),
+	// OpGet(owner-prefix)); the read's current-revision header made
+	// myRev > lockKey.CreateRevision whenever ANY write interleaved (lease
+	// keepalives suffice), so the mutex mistook its own key for a predecessor
+	// and waited on it forever.
+	var lastWriteRev int64
 	for _, op := range ops {
 		switch {
 		case op.GetRequestPut() != nil:
@@ -1098,6 +1108,9 @@ func (s *RPCServer) executeTxnWithCursor(ctx context.Context, txn *etcdserverpb.
 			}
 			s.bindKeyToLease(put.Lease, string(put.Key))
 			resp.Header = putResp.Header
+			if putResp.Header != nil && putResp.Header.Revision > lastWriteRev {
+				lastWriteRev = putResp.Header.Revision
+			}
 			resp.Responses = append(resp.Responses, &etcdserverpb.ResponseOp{
 				Response: &etcdserverpb.ResponseOp_ResponsePut{
 					ResponsePut: putResp,
@@ -1136,6 +1149,9 @@ func (s *RPCServer) executeTxnWithCursor(ctx context.Context, txn *etcdserverpb.
 				}
 			}
 			resp.Header = deleteResp.Header
+			if deleteResp.Header != nil && deleteResp.Header.Revision > lastWriteRev {
+				lastWriteRev = deleteResp.Header.Revision
+			}
 			resp.Responses = append(resp.Responses, &etcdserverpb.ResponseOp{
 				Response: &etcdserverpb.ResponseOp_ResponseDeleteRange{
 					ResponseDeleteRange: deleteResp,
@@ -1155,6 +1171,9 @@ func (s *RPCServer) executeTxnWithCursor(ctx context.Context, txn *etcdserverpb.
 		default:
 			return nil, fmt.Errorf("unsupported transaction operation: %v", op)
 		}
+	}
+	if lastWriteRev > 0 {
+		resp.Header = txnHeader(lastWriteRev)
 	}
 	if resp.Header == nil {
 		resp.Header = txnHeader(int64(s.backend.GetCurrentRevision()))
