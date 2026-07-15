@@ -388,6 +388,7 @@ func (b *backend) cleanupEventLog(ctx context.Context, revision uint64) {
 	}
 
 	deleted := 0
+	lastProgress := time.Now()
 	for {
 		// Collect the batch's keys FIRST and only then open the write batch: a
 		// storage's BatchWrite may hold engine resources (memkv holds its global
@@ -429,9 +430,16 @@ func (b *backend) cleanupEventLog(ctx context.Context, revision uint64) {
 			return
 		}
 		deleted += len(keys)
+		// Per-batch accounting: after a mass deletion the backlog can reach
+		// tens of millions of entries (~68k batches); end-only counting made
+		// this phase a silent hour on every dashboard (#77).
+		b.metricCli.EmitCounter("watch.event_log.cleaned", len(keys))
+		if time.Since(lastProgress) >= 30*time.Second {
+			klog.InfoS("event log cleanup in progress", "upTo", revision, "entries", deleted)
+			lastProgress = time.Now()
+		}
 	}
 	if deleted > 0 {
-		b.metricCli.EmitCounter("watch.event_log.cleaned", deleted)
 		klog.V(2).InfoS("event log cleaned", "upTo", revision, "entries", deleted)
 	}
 }

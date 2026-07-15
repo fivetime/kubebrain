@@ -199,6 +199,36 @@ func (b *backend) physicalCompact(ctx context.Context, revision uint64) {
 	b.compactScanMu.Lock()
 	defer b.compactScanMu.Unlock()
 
+	// A round over a large tombstone backlog can run for an hour+ (17M keys ≈
+	// 75min field-measured); its counters (scanner batches, elog cleanup) are
+	// spread across phases, so without an explicit in-flight signal a long
+	// round is indistinguishable from a stuck worker (#77 — a healthy round
+	// was nearly mistaken for a deadlock and the leader restarted). Emit an
+	// in-flight gauge plus a once-a-minute heartbeat for the whole round.
+	started := time.Now()
+	b.metricCli.EmitGauge("compact.scan.inflight", 1)
+	klog.V(2).InfoS("physical compaction started", "revision", revision)
+	heartbeatDone := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-heartbeatDone:
+				return
+			case <-ticker.C:
+				klog.InfoS("physical compaction in progress", "revision", revision,
+					"elapsed", time.Since(started).Round(time.Second))
+			}
+		}
+	}()
+	defer func() {
+		close(heartbeatDone)
+		b.metricCli.EmitGauge("compact.scan.inflight", 0)
+		klog.InfoS("physical compaction finished", "revision", revision,
+			"elapsed", time.Since(started).Round(time.Second))
+	}()
+
 	if !b.tryIncrementalCompact(ctx, revision) {
 		borders := b.getCompactBorders()
 		// Pass all borders together so the scanner computes the events-TTL timeout
