@@ -180,12 +180,20 @@ func (s *RPCServer) RangeStream(r *etcdserverpb.RangeRequest, rs etcdserverpb.KV
 }
 
 // rangeStreamStatusErr shapes a pre-stream failure into the RangeStream error
-// contract. Proper gRPC status errors (rpctypes compacted/future, our own
-// Unimplemented rejections) pass through untouched; anything raw — a revision
-// sync timeout, a backend construction error — would otherwise surface as code
-// Unknown (seen once in the 1.37-alpha cold-start test), so wrap it as
-// Unavailable: transient, relist — the same contract as a mid-stream error.
+// contract, mirroring the structure of etcd's togRPCError (v3rpc/util.go):
+// context errors pass through so gRPC reports Canceled/DeadlineExceeded, and
+// proper status errors (rpctypes compacted/future, our own Unimplemented
+// rejections) pass through untouched. Where we deliberately diverge is the
+// remainder: etcd maps its KNOWN transient errors (request timed out, leader
+// changed) to Unavailable and only truly foreign errors to Unknown — our raw
+// errors here (a revision sync timeout, a backend construction error) ARE that
+// transient class, so wrap them as Unavailable: transient, relist — the same
+// contract as a mid-stream error. Left raw they surface as code Unknown (seen
+// once in the 1.37-alpha cold-start test).
 func rangeStreamStatusErr(err error) error {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
 	if _, ok := status.FromError(err); ok {
 		return err
 	}
