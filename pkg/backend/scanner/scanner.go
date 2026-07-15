@@ -170,6 +170,19 @@ func (r *scanner) RangeStream(ctx context.Context, start []byte, end []byte, rev
 		_, err := r.scan(ctx, start, end, revision, false, keysOnly, receiver)
 		stream <- getListStreamEnd(revision, err)
 		if err != nil {
+			if ctx.Err() != nil {
+				// The caller tore the stream down (client disconnect, a canceled
+				// watch-cache sync) and that cancellation aborted the scan. This is
+				// normal operation — worker errors here are just "context canceled"
+				// wearing different wrappers — so keep it out of the failure counter
+				// that alerts watch, and out of the error log (seen mislabeling a
+				// benign apiserver reconnect as a stream failure in the 1.37-alpha
+				// cold-start test).
+				klog.V(2).InfoS("range stream canceled by caller",
+					"revision", revision, "start", string(start), "end", string(end), "err", err)
+				r.metricCli.EmitCounter("backend.list.by.stream.canceled", 1)
+				return
+			}
 			klog.Errorf("backend list stream with revision %d failed %v, start key is %s, end key is %s", revision, err, start, end)
 			r.metricCli.EmitCounter("backend.list.by.stream.failed", 1)
 		}
@@ -207,6 +220,81 @@ func (r *scanner) Compact(ctx context.Context, borders [][]byte, revision uint64
 		}
 	}
 	return firstErr
+}
+
+// compactKeysWorkers bounds the concurrent per-key micro-scans of an
+// incremental compaction round. Each key costs one iterator open (one storage
+// round trip) plus a handful of rows, so modest parallelism hides the RPC
+// latency without leaning on the unified read pool the way full-keyspace
+// partition workers do (which is why this does not share globalScanSem).
+const compactKeysWorkers = 8
+
+// CompactKeys implements Scanner interface: the incremental physical-GC path.
+// Each user key is scanned over its full version range with the SAME worker
+// machinery (compactRow rules) as a full Compact, so the GC semantics stay
+// single-sourced. The per-key range [Encode(key,0), Encode(key,MaxUint64)+0x00)
+// spans the key's revision-key row and every object version in ascending
+// revision order — exactly the row order the worker's prev-tracking expects. If
+// an unrelated key's rows happen to fall inside a range (sub-prefix keys
+// sorting between a key's versions), they are compacted correctly too: the
+// worker groups rows by decoded user key, and GC at the same watermark is
+// idempotent.
+func (r *scanner) CompactKeys(ctx context.Context, userKeys [][]byte, revision uint64) error {
+	if len(userKeys) == 0 {
+		return nil
+	}
+	store := r.store
+	if exclusiveKvStorage, ok := r.store.(storage.ExclusiveKvStorage); ok {
+		store = exclusiveKvStorage.GetExclusiveKvStorage()
+	}
+	tso, err := store.GetTimestampOracle(ctx)
+	if err != nil {
+		return err
+	}
+	if err := r.checkCompactRace(ctx, revision, true); err != nil {
+		return err
+	}
+
+	shards := compactKeysWorkers
+	if len(userKeys) < shards {
+		shards = len(userKeys)
+	}
+	var wg sync.WaitGroup
+	errList := make([]error, shards)
+	wg.Add(shards)
+	for s := 0; s < shards; s++ {
+		go func(s int) {
+			defer wg.Done()
+			// One worker per shard: its delete buffer batches across the shard's
+			// keys (flushed at compactDeleteBatchSize and at each run's end), and
+			// per-key state (prev-tracking, skip bookkeeping) resets in run().
+			w := newWorker(workerConfig{
+				idx:       s,
+				tso:       tso,
+				revision:  revision,
+				compact:   true,
+				tombstone: r.config.Tombstone,
+			}, store, r.coder, r.metricCli)
+			for i := s; i < len(userKeys); i += shards {
+				key := userKeys[i]
+				w.partition = storage.Partition{
+					Start: r.coder.EncodeObjectKey(key, 0),
+					End:   append(r.coder.EncodeObjectKey(key, ^uint64(0)), 0),
+				}
+				if _, err := w.run(ctx, &emptyResultReceiver{}); err != nil {
+					errList[s] = err
+					return
+				}
+			}
+		}(s)
+	}
+	wg.Wait()
+	for _, e := range errList {
+		if e != nil {
+			return e
+		}
+	}
+	return nil
 }
 
 // adjustPartitionsBorders adjust the borders of partitions to avoid object keys generated from an internal key
