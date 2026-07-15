@@ -328,6 +328,63 @@ etcd:
 
 ------
 
+## 5.5 接入 Cilium 作为 kvstore（多租户实战）
+
+Cilium 可以用外部 etcd 作 kvstore（identity/ipcache 直写,offload apiserver）。KubeBrain 兼容 Cilium 的 kvstore 操作形态(concurrency.Session/Mutex、Version==0 与 CreateRevision txn 比较、per-endpoint Status、双 lease 会话),生产实测通过。
+
+**强烈建议给 Cilium 单独起一套 KubeBrain 实例**(`--keyspace=cilium`,共享同一套 PD+TiKV),而不是和 k8s 共用 `/registry` 那套:两个业务各自的 revision 流、GC 边界、count-index、指标都隔离,以后清退 Cilium 只需删该租户,零波及 k8s。
+
+**① Cilium 租户 KubeBrain 的 Quadlet**(三台,与主 kubebrain 并存,端口错开):
+
+```ini
+# /etc/containers/systemd/kubebrain-cilium.container
+[Container]
+Image=ghcr.io/fivetime/kubebrain:latest
+Network=host
+Exec=--pd-addrs=10.32.32.101:2379,10.32.32.102:2379,10.32.32.103:2379 \
+     --advertise-host=${NODE_IPV4} \
+     --port=4379 --peer-port=4380 --info-port=8081 \
+     --keyspace=cilium \
+     --auto-compaction-retention-revisions=1000000 \
+     --enable-count-index=true --count-index-max-keys=0 \
+     --storage-gc-lifetime=10m --enable-storage-metrics=true
+Volume=/var/log/kubebrain-cilium:/var/log/kubebrain:Z
+# [Unit]/[Service]/[Install] 段同 §4.1
+```
+
+> ⚠️ **`--auto-compaction-retention-revisions` 对 Cilium 租户是必配的**:k8s 租户有 apiserver 每 5min 驱动 compaction,而 **Cilium 从不调 Compact**——不配安全网则 MVCC 历史无限堆积、读延迟单调恶化(#37 同款)。这和 Cilium 官方给独立 etcd 配 `--auto-compaction-retention=1` 是同一件事(etcd 默认也不清理)。
+
+**② 切 Cilium 到 kvstore 模式**(helm values 追加):
+
+```yaml
+identityAllocationMode: kvstore    # 由默认 crd 切换
+etcd:
+  enabled: true
+  ssl: false
+  endpoints:
+    - http://10.32.32.101:4379     # 指向 Cilium 租户的 4379
+    - http://10.32.32.102:4379
+    - http://10.32.32.103:4379
+```
+
+`helm upgrade` 会滚动重启全部 cilium agent(生产 CNI 切换,有网络抖动窗口)。
+
+**③ 验证**:
+
+```bash
+# agent 侧:kvstore 段应 3/3 connected、has-quorum=true
+kubectl -n kube-system exec ds/cilium -c cilium-agent -- cilium-dbg status | grep KVStore
+# 预期: KVStore: Ok  etcd: 3/3 connected, leases=1, lock leases=1, has-quorum=true
+
+# KubeBrain 租户侧:Cilium 数据在写入(cilium/state/identities|nodes|ip/...)
+ETCDCTL_API=3 etcdctl --endpoints=http://10.32.32.101:4379 get cilium/ --prefix --keys-only | head
+curl -s http://10.32.32.101:8081/metrics | grep count_index_keys   # 随 identity 分配增长
+```
+
+> 隔离自证:在 **主** KubeBrain(3379)上 `etcdctl get cilium/ --prefix --count-only` 应恒为 0,在 Cilium 租户(4379)上 `get /registry/ --prefix --count-only` 亦为 0——两租户在同一 TiKV 上互不可见。
+
+------
+
 ## 6. 日常运维
 
 ### 6.1 升级镜像
