@@ -184,6 +184,10 @@ func TestClientV3MultiKeyTxnHistoryIsLinearizable(t *testing.T) {
 				output, err := invokePairOperation(ctx, cli, leftKey, rightKey, input)
 				returned := clock.Add(1)
 				if err != nil {
+					if !isAmbiguousRPCError(err) {
+						setupErrCh <- fmt.Errorf("client %d operation %d: %w", clientID, i, err)
+						return
+					}
 					output.failed = true
 					failedOperations.Add(1)
 				}
@@ -219,7 +223,7 @@ func invokePairOperation(ctx context.Context, cli *clientv3.Client, leftKey, rig
 	case registerRead:
 		resp, err := cli.Txn(ctx).Then(clientv3.OpGet(leftKey), clientv3.OpGet(rightKey)).Commit()
 		if err != nil {
-			return pairOutput{}, err
+			return pairOutput{}, markAmbiguousRPCError(err)
 		}
 		if len(resp.Responses) != 2 {
 			return pairOutput{}, fmt.Errorf("multi-key read returned an invalid response shape")
@@ -239,7 +243,7 @@ func invokePairOperation(ctx context.Context, cli *clientv3.Client, leftKey, rig
 			clientv3.OpPut(leftKey, strconv.Itoa(input.value.left)),
 			clientv3.OpPut(rightKey, strconv.Itoa(input.value.right)),
 		).Commit()
-		return pairOutput{}, err
+		return pairOutput{}, markAmbiguousRPCError(err)
 	case registerCAS:
 		resp, err := cli.Txn(ctx).If(
 			clientv3.Compare(clientv3.Value(leftKey), "=", strconv.Itoa(input.expect.left)),
@@ -249,7 +253,7 @@ func invokePairOperation(ctx context.Context, cli *clientv3.Client, leftKey, rig
 			clientv3.OpPut(rightKey, strconv.Itoa(input.desired.right)),
 		).Commit()
 		if err != nil {
-			return pairOutput{}, err
+			return pairOutput{}, markAmbiguousRPCError(err)
 		}
 		return pairOutput{swapped: resp.Succeeded}, nil
 	default:

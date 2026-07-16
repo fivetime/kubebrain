@@ -222,6 +222,69 @@ type demoteBeforeTxnApplyShim struct {
 	demote func()
 }
 
+type blockLeasedPutShim struct {
+	BackendShim
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (s *blockLeasedPutShim) TxnApply(ctx context.Context, ops []backend.TxnWriteOp, guards []backend.TxnGuard, prevKV []bool) ([]*etcdserverpb.ResponseOp, uint64, []backend.TxnWriteResult, error) {
+	for _, op := range ops {
+		if !op.Internal && !op.Delete && op.Lease != 0 {
+			close(s.entered)
+			select {
+			case <-s.release:
+			case <-ctx.Done():
+				return nil, 0, nil, ctx.Err()
+			}
+			break
+		}
+	}
+	return s.BackendShim.TxnApply(ctx, ops, guards, prevKV)
+}
+
+func TestLeaseRevokeWaitsForAdmittedLeasedPut(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+
+	const leaseID int64 = 9040
+	key := []byte("/registry/lease-fence/concurrent-put")
+	_, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 300, ID: leaseID})
+	require.NoError(t, err)
+
+	shim := &blockLeasedPutShim{
+		BackendShim: server.backend,
+		entered:     make(chan struct{}),
+		release:     make(chan struct{}),
+	}
+	server.backend = shim
+	putDone := make(chan error, 1)
+	go func() {
+		_, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("value"), Lease: leaseID})
+		putDone <- err
+	}()
+	<-shim.entered
+
+	revokeDone := make(chan error, 1)
+	go func() {
+		_, err := server.LeaseRevoke(ctx, &etcdserverpb.LeaseRevokeRequest{ID: leaseID})
+		revokeDone <- err
+	}()
+	select {
+	case err := <-revokeDone:
+		require.Failf(t, "revoke overtook leased put", "revoke returned before admitted put committed: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(shim.release)
+	require.NoError(t, <-putDone)
+	require.NoError(t, <-revokeDone)
+	resp, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: key})
+	require.NoError(t, err)
+	require.Empty(t, resp.Kvs, "revoke must delete a leased put admitted before it")
+}
+
 func (s *demoteBeforeTxnApplyShim) TxnApply(ctx context.Context, ops []backend.TxnWriteOp, guards []backend.TxnGuard, prevKV []bool) ([]*etcdserverpb.ResponseOp, uint64, []backend.TxnWriteResult, error) {
 	s.demote()
 	return s.BackendShim.TxnApply(ctx, ops, guards, prevKV)

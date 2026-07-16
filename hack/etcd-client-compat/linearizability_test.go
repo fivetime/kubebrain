@@ -2,6 +2,7 @@ package compat
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -210,6 +211,10 @@ func TestClientV3RegisterHistoryIsLinearizable(t *testing.T) {
 				output, err := invokeRegisterOperation(ctx, cli, key, input)
 				returned := clock.Add(1)
 				if err != nil {
+					if !isAmbiguousRPCError(err) {
+						setupErrCh <- fmt.Errorf("client %d operation %d: %w", clientID, i, err)
+						return
+					}
 					output.failed = true
 					failedOperations.Add(1)
 				}
@@ -238,6 +243,23 @@ func TestClientV3RegisterHistoryIsLinearizable(t *testing.T) {
 	}
 	result := porcupine.CheckOperationsTimeout(registerModel, history, 10*time.Second)
 	require.Equalf(t, porcupine.Ok, result, "register history result: %s", result)
+}
+
+type ambiguousRPCError struct{ err error }
+
+func (e ambiguousRPCError) Error() string { return e.err.Error() }
+func (e ambiguousRPCError) Unwrap() error { return e.err }
+
+func markAmbiguousRPCError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return ambiguousRPCError{err: err}
+}
+
+func isAmbiguousRPCError(err error) bool {
+	var target ambiguousRPCError
+	return errors.As(err, &target)
 }
 
 func linearizabilityDeletePod() string {
@@ -278,7 +300,7 @@ func invokeRegisterOperation(ctx context.Context, cli *clientv3.Client, key stri
 	case registerRead:
 		resp, err := cli.Get(ctx, key)
 		if err != nil {
-			return registerOutput{}, err
+			return registerOutput{}, markAmbiguousRPCError(err)
 		}
 		if len(resp.Kvs) != 1 {
 			return registerOutput{}, fmt.Errorf("get returned %d values", len(resp.Kvs))
@@ -287,14 +309,14 @@ func invokeRegisterOperation(ctx context.Context, cli *clientv3.Client, key stri
 		return registerOutput{value: value}, err
 	case registerWrite:
 		_, err := cli.Put(ctx, key, strconv.Itoa(input.value))
-		return registerOutput{}, err
+		return registerOutput{}, markAmbiguousRPCError(err)
 	case registerCAS:
 		resp, err := cli.Txn(ctx).
 			If(clientv3.Compare(clientv3.Value(key), "=", strconv.Itoa(input.expect))).
 			Then(clientv3.OpPut(key, strconv.Itoa(input.desired))).
 			Commit()
 		if err != nil {
-			return registerOutput{}, err
+			return registerOutput{}, markAmbiguousRPCError(err)
 		}
 		return registerOutput{swapped: resp.Succeeded}, nil
 	default:

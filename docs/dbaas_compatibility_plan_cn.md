@@ -398,6 +398,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Ready，后续成功读对可能落库的失败 Txn 状态完成剪枝，未观测到部分提交。
   下一步扩展 lease 生命周期模型，并在多 store/多 PD 预生产拓扑上执行
   分区、leader 转移和多点故障。
+- **一致性 A40 Lease 生命周期历史与 revoke 竞态修复（2026-07-16）**：新增
+  `TestClientV3LeaseLifecycleHistoryIsLinearizable` 和 Porcupine
+  nondeterministic model，以 5 个独立 client 并发执行 lease-bound Put、Get、
+  KeepAliveOnce 和 Revoke；失败 Put/Revoke 按可能落库分叉，确定性的
+  lease-not-found 则只允许出现在 lease 已死亡状态。参考 etcd 连续 5 轮通过；
+  首次 KubeBrain 基线稳定复现“Revoke 已返回且 KeepAlive 报 not-found 后，
+  并发 Put 才提交并复活旧 lease key”的 `Illegal` history。根因是 lease 存在性
+  校验与 value+attachment 原子 batch 之间没有和 revoke 排序。新增独立
+  `leaseWriteMu`：Put/Txn 从校验到提交及索引更新持读锁，显式 Revoke/TTL expiry
+  从 key 删除到 lease 移除持写锁；确定性阻塞 backend 的单测确认已准入 Put
+  必须先提交，随后 Revoke 删除该 key。修复镜像在三副本 KubeBrain+独立 TiKV/PD
+  上无故障连续 10 轮返回 `Ok`；删除当前 KubeBrain Leader 捕获 1 个不确定 RPC，
+  删除单 TiKV 时短暂故障被 client 重试完全屏蔽，删除单 PD 时捕获 3 个不确定
+  RPC，三类完整 history 均返回 `Ok`。故障模式 TTL 提高到 300s，避免 90s
+  故障窗口中的合法自然过期超出本模型范围。
 - **Auth A1 持久化基础（2026-07-16）**：新增原子 `Backend.InternalCAS`，先读并
   校验全部 internal key 的精确旧值，再打开一个 storage batch 统一 CAS/创建/删除；
   冲突返回 `ErrCASFailed` 且整批不落地，不消耗用户 revision。etcd shim 已贯通该

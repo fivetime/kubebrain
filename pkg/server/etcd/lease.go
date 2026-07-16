@@ -625,6 +625,9 @@ func (m *leaseManager) deleteLeasedKeysAtomic(ctx context.Context, id int64, key
 }
 
 func (m *leaseManager) revokeLease(ctx context.Context, id int64) (uint64, error) {
+	m.leaseWriteMu.Lock()
+	defer m.leaseWriteMu.Unlock()
+
 	// Delete the attached keys BEFORE removing the lease state/record (#36): if a
 	// key delete fails we must keep the lease so the keys are not orphaned (no
 	// lease left to ever expire them). Only once every bound key is gone is it
@@ -642,6 +645,9 @@ func (m *leaseManager) revokeLease(ctx context.Context, id int64) (uint64, error
 }
 
 func (m *leaseManager) expireLease(id int64) {
+	m.leaseWriteMu.Lock()
+	defer m.leaseWriteMu.Unlock()
+
 	epoch, leadingFresh := m.srv.peers.EpochAndLeadingFresh()
 	if !leadingFresh {
 		m.retryLeaseExpiry(id)

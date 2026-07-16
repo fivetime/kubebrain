@@ -315,6 +315,8 @@ func (s *RPCServer) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etc
 		return nil, s.notLeaderErr("txn")
 	}
 	ctx = backend.WithLeadershipEpoch(ctx, epoch)
+	s.leaseWriteMu.RLock()
+	defer s.leaseWriteMu.RUnlock()
 	var (
 		err                   error
 		response              *etcdserverpb.TxnResponse
@@ -744,6 +746,8 @@ func (s *RPCServer) Put(ctx context.Context, r *etcdserverpb.PutRequest) (*etcds
 		return nil, s.notLeaderErr("put")
 	}
 	ctx = backend.WithLeadershipEpoch(ctx, epoch)
+	s.leaseWriteMu.RLock()
+	defer s.leaseWriteMu.RUnlock()
 	put, err := s.putWithEffectiveOptions(ctx, r)
 	if err != nil {
 		return nil, err

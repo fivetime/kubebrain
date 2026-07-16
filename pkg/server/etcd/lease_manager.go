@@ -43,6 +43,13 @@ type leaseManager struct {
 
 	srv *RPCServer
 
+	// leaseWriteMu orders writes that can create or change a lease binding against
+	// revoke/expiry. Writers hold RLock from lease validation through the durable
+	// commit and index update; teardown holds Lock through key deletion and lease
+	// removal. It is separate from leaseMu so backend I/O never blocks lease-state
+	// readers while still preventing a key from committing behind a completed
+	// revoke.
+	leaseWriteMu  sync.RWMutex
 	leaseMu       sync.Mutex
 	leaseID       int64
 	leases        map[int64]*leaseState
