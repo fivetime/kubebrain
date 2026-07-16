@@ -365,14 +365,18 @@ func (m *leaseManager) putLeasedAtomic(ctx context.Context, put *etcdserverpb.Pu
 		// delete of an absent attachment record is a no-op.
 		ops = append(ops, backend.TxnWriteOp{Delete: true, Internal: true, Key: leaseAttachKey(userKey)})
 	}
-	_, rev, _, err := m.srv.backend.TxnApply(ctx, ops, nil, make([]bool, len(ops)))
+	prevKVs := make([]bool, len(ops))
+	prevKVs[0] = put.PrevKv
+	responses, rev, _, err := m.srv.backend.TxnApply(ctx, ops, nil, prevKVs)
 	if err != nil {
 		return nil, err
 	}
 	// The durable attachment committed atomically with the value above; update
 	// only the in-memory index here (no separate durable write that could fail).
 	m.bindKeyIndexOnly(put.Lease, userKey)
-	return &etcdserverpb.PutResponse{Header: txnHeader(int64(rev))}, nil
+	response := responses[0].GetResponsePut()
+	response.Header = txnHeader(int64(rev))
+	return response, nil
 }
 
 // bindKeyIndexOnly updates the in-memory key->lease index (and per-lease key set)

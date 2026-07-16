@@ -37,6 +37,26 @@ import (
 
 var errFakeDelete = errors.New("injected delete failure")
 
+func TestLeasedPutReturnsPrevKV(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	const leaseID int64 = 90016
+	_, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 300, ID: leaseID})
+	require.NoError(t, err)
+	key := []byte("/leased-prev-kv")
+	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("before"), Lease: leaseID})
+	require.NoError(t, err)
+
+	response, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("after"), PrevKv: true})
+	require.NoError(t, err)
+	require.NotNil(t, response.PrevKv)
+	require.Equal(t, key, response.PrevKv.Key)
+	require.Equal(t, []byte("before"), response.PrevKv.Value)
+	require.Equal(t, leaseID, response.PrevKv.Lease)
+	require.Less(t, response.PrevKv.ModRevision, response.Header.Revision)
+}
+
 // TestLeaseAttachPersistsPerKeyNotWholeList pins #17: attaching a key to a lease
 // writes one small per-key attachment record (leasekeys/<key> -> <id>) instead of
 // rewriting the whole lease key-list. The meta record is therefore untouched by

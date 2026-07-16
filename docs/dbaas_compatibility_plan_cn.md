@@ -31,7 +31,7 @@ Raft、bbolt 和成员管理内部实现，而是对通用 etcd v3 客户端提�
 
 | 服务 | 能力 | 当前状态 | DBaaS 处理 |
 | --- | --- | --- | --- |
-| KV | Range/Put/DeleteRange | 部分兼容 | P0：事务内排序、过滤、历史读和大范围删除原子性已补齐；继续做独立 RPC 边界差分与大范围资源限制 |
+| KV | Range/Put/DeleteRange | 部分兼容 | P0：事务内排序、过滤、历史读、大范围删除原子性及独立 Put/Range/DeleteRange 差分已补齐；继续做大范围资源限制与故障验证 |
 | KV | Txn | 部分兼容 | P0：缺失键 guard、范围 phantom guard、嵌套分支和 staged 单 revision 提交已完成；继续做官方客户端差分及 TiKV 故障验证 |
 | KV | Compact | 兼容核心语义 | P0：继续对齐 logical/physical 行为、错误与异步 GC |
 | KV | RangeStream | 兼容核心语义 | etcd 3.7 支持的 CountOnly/Limit/KeysOnly/默认排序已对齐；自定义排序与 revision filter 同 etcd 明确 Unimplemented |
@@ -731,6 +731,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   HS256 配置对 reference etcd 与 KubeBrain 连跑 10 次差分通过。真实 kind 三副本还固定了
   单副本签发 token 可在全部副本验证，并在删除当前 Leader 后继续读写。生产多副本必须将
   同一签名 key 以 Secret/KMS 管理的只读文件挂载到所有副本。
+- **KV A36 standalone Put 差分与 leased PrevKV（2026-07-16）**：对照
+  `/root/etcd/server/etcdserver/api/v3rpc/key.go:checkPutRequest` 与
+  `server/etcdserver/txn/put.go`，新增官方 client/v3 双端 `TestPutDifferentialAgainstReferenceEtcd`。
+  覆盖 create/update revision、`PrevKv`、lease 绑定/换绑、`IgnoreValue`、`IgnoreLease`、
+  missing lease/key 以及空 key/冲突 option 的 code/message。差分发现原子 leased Put 虽将
+  value 与 attachment 一批提交，却丢弃 `PrevKv`；现直接复用同一 `TxnApply` 的 pre-read
+  结果构造响应，不增加第二次非原子读取。内存后端回归固定完整旧 value/lease/revision，
+  kind 三副本独立 TiKV/PD 与 reference etcd 提交 `d947b2086` 连续 10 轮结构化差分通过。
 
 ### P1：通用服务能力
 
