@@ -16,6 +16,7 @@ package endpoint
 
 import (
 	"crypto/tls"
+	"math"
 	"testing"
 	"time"
 
@@ -53,8 +54,7 @@ func TestConfig(t *testing.T) {
 	}
 
 	conf := Config{
-		Port:     2379,
-		PeerPort: 2380,
+		Port: 2379, PeerPort: 2380, MaxTxnOps: 64, MaxRequestBytes: 1048576,
 		ClientSecurityConfig: &SecurityConfig{
 			CertFile:      getAuthPath("server.crt"),
 			KeyFile:       getAuthPath("server.key"),
@@ -81,6 +81,8 @@ func TestConfig(t *testing.T) {
 	ast.ElementsMatch([]string{"h2", "http/1.1"}, conf.PeerSecurityConfig.getServerTLSConfig().NextProtos)
 	ast.True(conf.getServerConfig().ClientCertAuth)
 	ast.True(conf.getServerConfig().ClientAllowInsecure)
+	ast.Equal(uint(64), conf.getServerConfig().MaxTxnOps)
+	ast.Equal(uint(1048576), conf.getServerConfig().MaxRequestBytes)
 }
 
 // TestClientCertAuthRequiresTrustedCA pins #50: enabling client cert auth without
@@ -135,6 +137,24 @@ func TestGRPCMaxConnectionAgeValidation(t *testing.T) {
 
 	config.GRPCMaxConnectionAgeGrace = 5 * time.Minute
 	require.NoError(t, config.Validate())
+}
+
+func TestRequestLimitOverflowValidation(t *testing.T) {
+	base := func() *Config {
+		return &Config{
+			Port: 2379, PeerPort: 2380,
+			ClientSecurityConfig: &SecurityConfig{}, PeerSecurityConfig: &SecurityConfig{},
+		}
+	}
+	config := base()
+	config.MaxRequestBytes = uint(math.MaxInt - 511)
+	require.ErrorContains(t, config.Validate(), "max request bytes")
+
+	config = base()
+	config.MaxTxnOps = ^uint(0)
+	if uint64(config.MaxTxnOps) > uint64(math.MaxInt) {
+		require.ErrorContains(t, config.Validate(), "max txn ops")
+	}
 }
 
 func TestTLSPolicyValidation(t *testing.T) {

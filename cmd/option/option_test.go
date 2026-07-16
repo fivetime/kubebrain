@@ -52,6 +52,8 @@ func TestTLSFlagsBindToExpectedSecurityConfigFields(t *testing.T) {
 		"--cipher-suites=TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
 		"--grpc-max-connection-age=1h",
 		"--grpc-max-connection-age-grace=5m",
+		"--max-txn-ops=64",
+		"--max-request-bytes=1048576",
 	}))
 
 	require.Equal(t, "/client/tls.crt", o.epsConf.ClientSecurityConfig.CertFile)
@@ -78,6 +80,8 @@ func TestTLSFlagsBindToExpectedSecurityConfigFields(t *testing.T) {
 	require.Equal(t, []string{"TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256"}, o.epsConf.CipherSuites)
 	require.Equal(t, time.Hour, o.epsConf.GRPCMaxConnectionAge)
 	require.Equal(t, 5*time.Minute, o.epsConf.GRPCMaxConnectionAgeGrace)
+	require.Equal(t, uint(64), o.epsConf.MaxTxnOps)
+	require.Equal(t, uint(1048576), o.epsConf.MaxRequestBytes)
 }
 
 // TestWatchProgressNotifyIntervalValidation locks the k8s-1.37-review guard:

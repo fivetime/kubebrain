@@ -25,6 +25,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/mvccpb"
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -2541,6 +2542,34 @@ func TestTxnRejectsTooManyOpsLikeEtcd(t *testing.T) {
 	require.Error(t, err)
 	require.Equal(t, codes.InvalidArgument, status.Code(err))
 	require.Contains(t, err.Error(), "etcdserver: too many operations in txn request")
+}
+
+func TestTxnHonorsConfiguredMaxOperations(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	server.SetRequestLimits(2, defaultMaxRequestBytes)
+	op := func(key string) *etcdserverpb.RequestOp {
+		return &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestRange{
+			RequestRange: &etcdserverpb.RangeRequest{Key: []byte(key)},
+		}}
+	}
+
+	_, err := server.Txn(context.Background(), &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+		op("/registry/limit/one"), op("/registry/limit/two"),
+	}})
+	require.NoError(t, err)
+	_, err = server.Txn(context.Background(), &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+		op("/registry/limit/one"), op("/registry/limit/two"), op("/registry/limit/three"),
+	}})
+	require.ErrorIs(t, err, rpctypes.ErrGRPCTooManyOps)
+
+	nested := &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestTxn{
+		RequestTxn: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{op("/registry/limit/nested")}},
+	}}
+	_, err = server.Txn(context.Background(), &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+		op("/registry/limit/outer"), nested,
+	}})
+	require.ErrorIs(t, err, rpctypes.ErrGRPCTooManyOps)
 }
 
 func TestTxnRejectsTooManyNestedOpsLikeEtcd(t *testing.T) {

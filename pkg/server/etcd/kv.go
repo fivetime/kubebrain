@@ -37,8 +37,9 @@ import (
 const (
 	unaryRpcTimeout = 10 * time.Second
 
-	compactRevKey    = "compact_rev_key"
-	defaultMaxTxnOps = 128
+	compactRevKey          = "compact_rev_key"
+	defaultMaxTxnOps       = 128
+	defaultMaxRequestBytes = 1572864
 )
 
 func (s *RPCServer) Range(ctx context.Context, r *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
@@ -277,7 +278,7 @@ func isFromKeyRangeEnd(rangeEnd []byte) bool {
 func (s *RPCServer) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etcdserverpb.TxnResponse, error) {
 	startTime := time.Now()
 
-	if err := validateTxnRequest(txn); err != nil {
+	if err := validateTxnRequestWithMaxOps(txn, s.maxTxnOps); err != nil {
 		return nil, err
 	}
 	caller, authErr := s.authCallerFromContext(ctx)

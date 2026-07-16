@@ -204,6 +204,9 @@ func (e *Endpoint) buildClientGrpcServer() exposedServer {
 func (e *Endpoint) buildPeerGrpcServer() exposedServer {
 	opts := append(grpcKeepaliveOptions(e.config.GRPCMaxConnectionAge, e.config.GRPCMaxConnectionAgeGrace), e.metrics.GetGrpcServerOption()...)
 	opts = append(opts, grpc.StatsHandler(e.tlsIdentities))
+	// The peer listener currently registers the same RPC surface as the client
+	// listener, so it must not bypass request admission or response stamping.
+	opts = append(opts, e.server.ClientServerOptions()...)
 	grpcServer := grpc.NewServer(opts...)
 	e.server.RegisterPeer(grpcServer)
 	return newGrpcServer(grpcServer)

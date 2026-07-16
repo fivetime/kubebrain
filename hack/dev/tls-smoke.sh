@@ -438,11 +438,14 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"time"
 
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
@@ -488,6 +491,15 @@ func main() {
 	}
 	if len(resp.Kvs) != 1 || string(resp.Kvs[0].Value) != "value" {
 		log.Fatalf("unexpected get response: %+v", resp.Kvs)
+	}
+	if os.Getenv("CHECK_REQUEST_LIMIT") == "true" {
+		// The value equals the configured payload limit; protobuf key/tag overhead
+		// makes the request oversized while keeping it inside the +512 transport allowance.
+		_, err := cli.Put(ctx, key+"-oversized", strings.Repeat("x", 1572864))
+		if !errors.Is(err, rpctypes.ErrRequestTooLarge) {
+			log.Fatalf("oversized request error = %v, want %v", err, rpctypes.ErrRequestTooLarge)
+		}
+		fmt.Println("Request byte limit smoke completed")
 	}
 	fmt.Println("TLS smoke completed")
 }
@@ -667,7 +679,7 @@ func main() {
 EOF
 
 echo "Running TLS smoke against ${REPLICAS} replica(s)"
-run_client_smoke
+CHECK_REQUEST_LIMIT=true run_client_smoke
 
 if [ "$RUN_APISERVER_SMOKE" = "true" ]; then
   echo "Running standalone kube-apiserver smoke through TLS endpoint"

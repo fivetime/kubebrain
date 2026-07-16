@@ -81,6 +81,8 @@ type RPCServer struct {
 	advertiseClientHTTPS bool
 	staticMembers        []*etcdserverpb.Member
 	clientCertAuth       bool
+	maxTxnOps            int
+	maxRequestBytes      uint
 
 	// The lease subsystem: its state and logic live in leaseManager (lease.go /
 	// lease_manager.go). Embedded so the lease gRPC handlers and the write-path
@@ -105,9 +107,11 @@ type leaseState struct {
 // New returns the etcd rpc server
 func New(backend b.Backend, metricCli metrics.Metrics, peers service.PeerService) *RPCServer {
 	server := &RPCServer{
-		backend:   NewBackendShim(backend, metricCli),
-		metricCli: metricCli,
-		peers:     peers,
+		backend:         NewBackendShim(backend, metricCli),
+		metricCli:       metricCli,
+		peers:           peers,
+		maxTxnOps:       defaultMaxTxnOps,
+		maxRequestBytes: defaultMaxRequestBytes,
 	}
 	server.auth = newAuthManager(server.backend)
 	server.tokens = newAuthTokenManager(server.backend)
@@ -160,6 +164,17 @@ func New(backend b.Backend, metricCli metrics.Metrics, peers service.PeerService
 		klog.ErrorS(err, "restore leases failed")
 	}
 	return server
+}
+
+// SetRequestLimits configures etcd-compatible admission limits. Zero keeps the
+// defaults for programmatic embedders that predate these fields.
+func (s *RPCServer) SetRequestLimits(maxTxnOps, maxRequestBytes uint) {
+	if maxTxnOps > 0 {
+		s.maxTxnOps = int(maxTxnOps)
+	}
+	if maxRequestBytes > 0 {
+		s.maxRequestBytes = maxRequestBytes
+	}
 }
 
 // SetAdvertiseClientInfo tells MemberList how to shape ClientURLs: deployments

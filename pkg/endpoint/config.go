@@ -18,6 +18,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
+	"math"
 	"os"
 	"strconv"
 	"sync"
@@ -95,6 +96,11 @@ type Config struct {
 	GRPCMaxConnectionAge      time.Duration
 	GRPCMaxConnectionAgeGrace time.Duration
 
+	// MaxTxnOps and MaxRequestBytes mirror etcd's client admission limits.
+	// MaxRequestBytes excludes the 512-byte gRPC framing allowance.
+	MaxTxnOps       uint
+	MaxRequestBytes uint
+
 	// TLS policy is shared by client, peer, and info endpoints, matching etcd's
 	// global --tls-min-version/--tls-max-version/--cipher-suites flags.
 	TLSMinVersion string
@@ -130,6 +136,8 @@ func (c *Config) getServerConfig() server.Config {
 		LeaseDuration:       c.LeaseDuration,
 		RenewDeadline:       c.RenewDeadline,
 		RetryPeriod:         c.RetryPeriod,
+		MaxTxnOps:           c.MaxTxnOps,
+		MaxRequestBytes:     c.MaxRequestBytes,
 		ClusterMembers:      c.ClusterMembers,
 	}
 }
@@ -202,6 +210,12 @@ func (c *Config) Validate() error {
 	}
 	if c.GRPCMaxConnectionAge > 0 && c.GRPCMaxConnectionAgeGrace <= 0 {
 		return fmt.Errorf("grpc max connection age grace must be positive when connection aging is enabled: %s", c.GRPCMaxConnectionAgeGrace)
+	}
+	if c.MaxTxnOps > uint(math.MaxInt) {
+		return fmt.Errorf("max txn ops %d exceeds platform limit %d", c.MaxTxnOps, math.MaxInt)
+	}
+	if c.MaxRequestBytes > uint(math.MaxInt-512) {
+		return fmt.Errorf("max request bytes %d exceeds platform limit %d", c.MaxRequestBytes, math.MaxInt-512)
 	}
 	minVersion, err := parseTLSVersion(c.TLSMinVersion)
 	if err != nil {

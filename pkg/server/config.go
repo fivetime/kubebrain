@@ -54,6 +54,9 @@ type Config struct {
 	RenewDeadline time.Duration
 	RetryPeriod   time.Duration
 
+	MaxTxnOps       uint
+	MaxRequestBytes uint
+
 	ClusterMembers []*etcdserverpb.Member
 }
 
@@ -63,6 +66,7 @@ func (c Config) getPeerServiceConfig() service.Config {
 		AllowInsecure:   c.ClientAllowInsecure,
 		EnableEtcdProxy: c.EnableEtcdProxy,
 		ClientPort:      c.ClientPort,
+		MaxRequestBytes: c.MaxRequestBytes,
 	}
 }
 

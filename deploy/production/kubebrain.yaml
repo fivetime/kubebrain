@@ -73,6 +73,8 @@ spec:
             - --info-port=8080
             - --pd-addrs=kb-pd.tidb-cluster.svc:2379
             - --compatible-with-etcd=true
+            - --max-txn-ops=128
+            - --max-request-bytes=1572864
             - --v=2
           ports:
             - name: client

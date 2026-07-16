@@ -49,6 +49,7 @@ type etcdProxy struct {
 	// dialTimeout is injectable for deterministic tests; zero uses the
 	// production proxyConnectTimeout.
 	dialTimeout time.Duration
+	callOptions []grpc.CallOption
 
 	election  leader.LeaderElection
 	tlsConfig *tls.Config
@@ -73,11 +74,15 @@ func (e *etcdProxy) EtcdProxyEnabled() bool {
 	return true
 }
 
-// defaultCallOption is a copy of etcd client default call option
-var defaultCallOption = []grpc.CallOption{
-	grpc.FailFast(false),
-	grpc.MaxCallSendMsgSize(2 * 1024 * 1024),
-	grpc.MaxCallRecvMsgSize(math.MaxInt32),
+func proxyCallOptions(maxRequestBytes uint) []grpc.CallOption {
+	if maxRequestBytes == 0 {
+		maxRequestBytes = 1572864
+	}
+	return []grpc.CallOption{
+		grpc.FailFast(false),
+		grpc.MaxCallSendMsgSize(int(maxRequestBytes + 512)),
+		grpc.MaxCallRecvMsgSize(math.MaxInt32),
+	}
 }
 
 const proxyReadyWaitTimeout = 2 * time.Second
@@ -89,10 +94,10 @@ const proxyReadyWaitTimeout = 2 * time.Second
 // does not reliably serve the KV service (#41: forwarded counts to
 // leader:peerPort hung to the request deadline while leader:clientPort
 // answered in <1s).
-func NewEtcdProxy(leaderElection leader.LeaderElection, tlsConfig *tls.Config, clientPort int, allowInsecure bool) EtcdProxy {
+func NewEtcdProxy(leaderElection leader.LeaderElection, tlsConfig *tls.Config, clientPort int, allowInsecure bool, maxRequestBytes uint) EtcdProxy {
 	proxy := &etcdProxy{
 		election: leaderElection, tlsConfig: tlsConfig, clientPort: clientPort,
-		allowInsecure: allowInsecure,
+		allowInsecure: allowInsecure, callOptions: proxyCallOptions(maxRequestBytes),
 	}
 	proxy.updateClient()
 	go func() {
@@ -371,7 +376,7 @@ func (e *etcdProxy) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etc
 		"leader", leader,
 		"key", key,
 		"rev", rev)
-	resp, err := etcdserverpb.NewKVClient(client.ActiveConnection()).Txn(ctx, txn, defaultCallOption...)
+	resp, err := etcdserverpb.NewKVClient(client.ActiveConnection()).Txn(ctx, txn, e.callOptions...)
 	e.markForwardError(ctx, client, err)
 	if err != nil {
 		klog.InfoS("forward txn failed", "key", key, "err", err.Error())
@@ -405,7 +410,7 @@ func (e *etcdProxy) Range(ctx context.Context, req *etcdserverpb.RangeRequest) (
 		return nil, err
 	}
 	klog.InfoS("forward range", "leader", leader, "key", string(req.Key), "rangeEnd", string(req.RangeEnd), "revision", req.Revision)
-	resp, err := etcdserverpb.NewKVClient(client.ActiveConnection()).Range(ctx, req, defaultCallOption...)
+	resp, err := etcdserverpb.NewKVClient(client.ActiveConnection()).Range(ctx, req, e.callOptions...)
 	e.markForwardError(ctx, client, err)
 	return resp, err
 }
@@ -416,7 +421,7 @@ func (e *etcdProxy) Put(ctx context.Context, req *etcdserverpb.PutRequest) (*etc
 		return nil, err
 	}
 	klog.InfoS("forward put", "leader", leader, "key", string(req.Key), "lease", req.Lease)
-	resp, err := etcdserverpb.NewKVClient(client.ActiveConnection()).Put(ctx, req, defaultCallOption...)
+	resp, err := etcdserverpb.NewKVClient(client.ActiveConnection()).Put(ctx, req, e.callOptions...)
 	e.markForwardError(ctx, client, err)
 	return resp, err
 }
@@ -427,7 +432,7 @@ func (e *etcdProxy) DeleteRange(ctx context.Context, req *etcdserverpb.DeleteRan
 		return nil, err
 	}
 	klog.InfoS("forward delete range", "leader", leader, "key", string(req.Key), "rangeEnd", string(req.RangeEnd))
-	resp, err := etcdserverpb.NewKVClient(client.ActiveConnection()).DeleteRange(ctx, req, defaultCallOption...)
+	resp, err := etcdserverpb.NewKVClient(client.ActiveConnection()).DeleteRange(ctx, req, e.callOptions...)
 	e.markForwardError(ctx, client, err)
 	return resp, err
 }
@@ -438,7 +443,7 @@ func (e *etcdProxy) Compact(ctx context.Context, req *etcdserverpb.CompactionReq
 		return nil, err
 	}
 	klog.InfoS("forward compact", "leader", leader, "revision", req.Revision, "physical", req.Physical)
-	resp, err := etcdserverpb.NewKVClient(client.ActiveConnection()).Compact(ctx, req, defaultCallOption...)
+	resp, err := etcdserverpb.NewKVClient(client.ActiveConnection()).Compact(ctx, req, e.callOptions...)
 	e.markForwardError(ctx, client, err)
 	return resp, err
 }
@@ -449,7 +454,7 @@ func (e *etcdProxy) LeaseGrant(ctx context.Context, req *etcdserverpb.LeaseGrant
 		return nil, err
 	}
 	klog.InfoS("forward lease grant", "leader", leader, "id", req.ID, "ttl", req.TTL)
-	resp, err := etcdserverpb.NewLeaseClient(client.ActiveConnection()).LeaseGrant(ctx, req, defaultCallOption...)
+	resp, err := etcdserverpb.NewLeaseClient(client.ActiveConnection()).LeaseGrant(ctx, req, e.callOptions...)
 	e.markForwardError(ctx, client, err)
 	return resp, err
 }
@@ -460,7 +465,7 @@ func (e *etcdProxy) LeaseRevoke(ctx context.Context, req *etcdserverpb.LeaseRevo
 		return nil, err
 	}
 	klog.InfoS("forward lease revoke", "leader", leader, "id", req.ID)
-	resp, err := etcdserverpb.NewLeaseClient(client.ActiveConnection()).LeaseRevoke(ctx, req, defaultCallOption...)
+	resp, err := etcdserverpb.NewLeaseClient(client.ActiveConnection()).LeaseRevoke(ctx, req, e.callOptions...)
 	e.markForwardError(ctx, client, err)
 	return resp, err
 }
@@ -478,7 +483,7 @@ func (e *etcdProxy) LeaseKeepAlive(ctx context.Context, req *etcdserverpb.LeaseK
 	// receive side until the long-lived caller context ends) (#62).
 	callCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	stream, err := etcdserverpb.NewLeaseClient(client.ActiveConnection()).LeaseKeepAlive(callCtx, defaultCallOption...)
+	stream, err := etcdserverpb.NewLeaseClient(client.ActiveConnection()).LeaseKeepAlive(callCtx, e.callOptions...)
 	if err != nil {
 		e.markForwardError(ctx, client, err)
 		return nil, err
@@ -498,7 +503,7 @@ func (e *etcdProxy) LeaseTimeToLive(ctx context.Context, req *etcdserverpb.Lease
 		return nil, err
 	}
 	klog.InfoS("forward lease ttl", "leader", leader, "id", req.ID, "keys", req.Keys)
-	resp, err := etcdserverpb.NewLeaseClient(client.ActiveConnection()).LeaseTimeToLive(ctx, req, defaultCallOption...)
+	resp, err := etcdserverpb.NewLeaseClient(client.ActiveConnection()).LeaseTimeToLive(ctx, req, e.callOptions...)
 	e.markForwardError(ctx, client, err)
 	return resp, err
 }
@@ -509,7 +514,7 @@ func (e *etcdProxy) LeaseLeases(ctx context.Context, req *etcdserverpb.LeaseLeas
 		return nil, err
 	}
 	klog.InfoS("forward lease leases", "leader", leader)
-	resp, err := etcdserverpb.NewLeaseClient(client.ActiveConnection()).LeaseLeases(ctx, req, defaultCallOption...)
+	resp, err := etcdserverpb.NewLeaseClient(client.ActiveConnection()).LeaseLeases(ctx, req, e.callOptions...)
 	e.markForwardError(ctx, client, err)
 	return resp, err
 }

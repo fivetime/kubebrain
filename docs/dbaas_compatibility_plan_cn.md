@@ -600,6 +600,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   单测覆盖 split identity、动态替换、CN/SAN 接受与拒绝、同身份但非可信 CA 拒绝。真实三
   副本 smoke 使用 `kubebrain-outbound` 独立证书完成 follower 转发，并在旧+新 CA overlap、
   serving/outbound leaf 更新、撤旧和 Pod 替换全过程由 peer CN 白名单持续约束。
+- **限额 A32 请求字节与 txn 操作数（2026-07-16）**：新增 etcd 同名
+  `--max-request-bytes`（默认 `1572864`）与 `--max-txn-ops`（默认 `128`）。client 与
+  peer listener 都设置 payload+512 字节的 gRPC 接收边界，unary 在进入 auth/storage 前按
+  protobuf payload 精确判断，超限返回 etcd 原文 `InvalidArgument: etcdserver: request is too
+  large`；follower 转发使用同一发送上限，避免自定义大限额只在 leader 可用。txn 的 compare/
+  success/failure 与嵌套预算使用实例配置，不再硬编码 128。单测覆盖 limit 边界、handler 未
+  调用、真实 gRPC wire error、嵌套 txn、flag 绑定与整数溢出拒绝。该限制保护单请求内存和
+  TiKV transaction 放大，不等同于容量/QPS/watch 配额。真实 kind 三副本用官方
+  client/v3 发送“value 等于上限、加 protobuf overhead 后超限”的 Put，得到精确
+  `ErrRequestTooLarge`；随后 CA/serving+outbound leaf 轮换、六轮 Pod 替换、200 次 lease+
+  watch 持续写、auth 与动态 CRL 全部通过，证明限制不会破坏 follower/HA 路径。
 
 ### P1：通用服务能力
 
@@ -612,8 +623,8 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
 2. 对已通过的 `client/v3/concurrency` mutex/election/session/failover recipe
    增加 lease 自然过期和长时间 soak。
 3. 建立 DBaaS 控制面契约：创建、扩缩、升级、备份、恢复、证书轮换、销毁。
-4. 建立实例级限额和计量：CPU、内存、PV、备份容量、网络、QPS、watch 数、
-   value/txn 大小；限额错误必须稳定且可观测。
+4. 建立实例级限额和计量：请求字节与 txn 操作数已对齐 etcd；继续补 CPU、内存、PV、
+   备份容量、网络、QPS、watch 数及容量计量，限额错误必须稳定且可观测。
 
 ### P2：运维兼容和长期验证
 

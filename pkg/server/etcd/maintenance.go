@@ -207,7 +207,7 @@ func (s *RPCServer) requireAuthenticated(ctx context.Context, root bool) error {
 
 func (s *RPCServer) maintenanceHeader() *etcdserverpb.ResponseHeader {
 	// ClusterId/MemberId are stamped on EVERY response header by the
-	// HeaderStampServerOptions interceptor (#79), so they need not be set here;
+	// ClientServerOptions interceptor (#79), so they need not be set here;
 	// Revision is method-specific. (MemberId there uses the same local-identity
 	// derivation as StatusResponse.Leader, so "am I the leader" comparisons —
 	// Leader == MemberId — behave like etcd's.)

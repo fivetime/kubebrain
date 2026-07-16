@@ -1,0 +1,71 @@
+// Copyright 2026 ByteDance and/or its affiliates
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package etcd
+
+import (
+	"context"
+	"net"
+	"testing"
+
+	"github.com/stretchr/testify/require"
+	"go.etcd.io/etcd/api/v3/etcdserverpb"
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
+	"google.golang.org/grpc/test/bufconn"
+	"google.golang.org/protobuf/proto"
+)
+
+func TestUnaryRequestLimitUsesEtcdPayloadBoundaryAndError(t *testing.T) {
+	request := &etcdserverpb.PutRequest{Key: []byte("key"), Value: []byte("value")}
+	size := uint(proto.Size(request))
+	server := &RPCServer{maxRequestBytes: size - 1}
+	called := false
+	handler := func(context.Context, any) (any, error) {
+		called = true
+		return nil, rpctypes.ErrGRPCKeyNotFound
+	}
+
+	_, err := server.stampUnary(context.Background(), request, &grpc.UnaryServerInfo{}, handler)
+	require.False(t, called, "an oversized request must not reach storage handlers")
+	require.Equal(t, status.Code(rpctypes.ErrGRPCRequestTooLarge), status.Code(err))
+	require.Equal(t, status.Convert(rpctypes.ErrGRPCRequestTooLarge).Message(), status.Convert(err).Message())
+
+	server.maxRequestBytes = size
+	_, err = server.stampUnary(context.Background(), request, &grpc.UnaryServerInfo{}, handler)
+	require.True(t, called, "a request exactly at the limit must be admitted")
+	require.Error(t, err)
+}
+
+func TestRequestLimitReturnsEtcdErrorOverGRPC(t *testing.T) {
+	server := &RPCServer{maxTxnOps: defaultMaxTxnOps, maxRequestBytes: 32}
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///bufnet",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return listener.Dial() }))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+
+	request := &etcdserverpb.PutRequest{Key: []byte("key"), Value: make([]byte, 64)}
+	_, err = etcdserverpb.NewKVClient(conn).Put(context.Background(), request)
+	require.Equal(t, status.Code(rpctypes.ErrGRPCRequestTooLarge), status.Code(err))
+	require.Equal(t, status.Convert(rpctypes.ErrGRPCRequestTooLarge).Message(), status.Convert(err).Message())
+}

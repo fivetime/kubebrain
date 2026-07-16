@@ -46,6 +46,10 @@ type Config struct {
 	// ClientPort is the homogeneous client-facing etcd port used to dial the
 	// leader (see server.Config.ClientPort; #41).
 	ClientPort int
+
+	// MaxRequestBytes keeps follower forwarding at the same admission ceiling
+	// as the exposed client server.
+	MaxRequestBytes uint
 }
 
 // NewPeerService return a PeerService for server
@@ -59,7 +63,7 @@ func NewPeerService(le leader.LeaderElection, m metrics.Metrics, b backend.Backe
 		config:         config,
 	}
 	if config.EnableEtcdProxy {
-		ps.EtcdProxy = etcdproxy.NewEtcdProxy(le, config.TLS, config.ClientPort, config.AllowInsecure)
+		ps.EtcdProxy = etcdproxy.NewEtcdProxy(le, config.TLS, config.ClientPort, config.AllowInsecure, config.MaxRequestBytes)
 	}
 	return ps
 }

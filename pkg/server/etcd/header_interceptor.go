@@ -22,9 +22,11 @@ import (
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	"google.golang.org/grpc"
+	"google.golang.org/protobuf/proto"
 )
 
-// HeaderStampServerOptions returns gRPC interceptors that stamp ClusterId and
+// ClientServerOptions returns client-facing gRPC admission and response options.
+// The interceptors stamp ClusterId and
 // MemberId onto EVERY outgoing etcd response header (unary and stream). etcd
 // puts these on every response, and Cilium's clustermesh wraps each remote-etcd
 // connection with an interceptor that pins the FIRST ClusterId it sees and
@@ -35,10 +37,11 @@ import (
 // construction sites — also makes it impossible for a new call site to
 // regress (#79). The serving member is always THIS node, so MemberId is the
 // local identity's id and ClusterId the storage cluster's id.
-func (s *RPCServer) HeaderStampServerOptions() []grpc.ServerOption {
+func (s *RPCServer) ClientServerOptions() []grpc.ServerOption {
 	return []grpc.ServerOption{
 		grpc.ChainUnaryInterceptor(s.stampUnary),
 		grpc.ChainStreamInterceptor(s.stampStream),
+		grpc.MaxRecvMsgSize(int(s.maxRequestBytes + 512)),
 	}
 }
 
@@ -63,6 +66,9 @@ func stampHeader(reply any, clusterID, memberID uint64) {
 }
 
 func (s *RPCServer) stampUnary(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+	if message, ok := req.(proto.Message); ok && uint(proto.Size(message)) > s.maxRequestBytes {
+		return nil, rpctypes.ErrGRPCRequestTooLarge
+	}
 	resp, err := handler(ctx, req)
 	if err == nil {
 		stampHeader(resp, s.backend.ClusterID(), s.localMemberID())
