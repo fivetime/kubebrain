@@ -19,6 +19,17 @@ type authMutationReadShim struct {
 	hook     func()
 }
 
+type authMutationWriteShim struct {
+	BackendShim
+	once sync.Once
+	hook func()
+}
+
+func (b *authMutationWriteShim) Put(ctx context.Context, request *etcdserverpb.PutRequest) (*etcdserverpb.PutResponse, error) {
+	b.once.Do(b.hook)
+	return b.BackendShim.Put(ctx, request)
+}
+
 func (b *authMutationReadShim) Get(ctx context.Context, request *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
 	response, err := b.BackendShim.Get(ctx, request)
 	if err == nil {
@@ -125,6 +136,26 @@ func TestAuthorizedRangeStreamRejectsAuthMutationDuringRead(t *testing.T) {
 	require.ErrorIs(t, err, rpctypes.ErrAuthOldRevision)
 	require.NoError(t, mutationErr)
 	require.NotEmpty(t, stream.sent, "the mutation must occur after streaming has begun")
+}
+
+func TestAuthorizedPutAtomicallyRejectsAuthMutationBeforeCommit(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	aliceCtx := setupAuthKVUser(t, server)
+
+	shim := &authMutationWriteShim{BackendShim: server.backend}
+	var mutationErr error
+	shim.hook = func() {
+		mutationErr = server.auth.roleRevokePermission(context.Background(), "allowed", []byte("/allowed/"), []byte("/allowed0"))
+	}
+	server.backend = shim
+	_, err := server.Put(aliceCtx, &etcdserverpb.PutRequest{Key: []byte("/allowed/raced"), Value: []byte("must-not-commit")})
+	require.ErrorIs(t, err, rpctypes.ErrAuthOldRevision)
+	require.NoError(t, mutationErr)
+
+	stored, err := server.backend.Get(context.Background(), &etcdserverpb.RangeRequest{Key: []byte("/allowed/raced")})
+	require.NoError(t, err)
+	require.Empty(t, stored.Kvs)
 }
 
 func TestAuthPermissionOpenEndedAndGap(t *testing.T) {

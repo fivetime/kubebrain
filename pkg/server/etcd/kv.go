@@ -24,6 +24,7 @@ import (
 	"go.etcd.io/etcd/api/v3/authpb"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/mvccpb"
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
@@ -282,6 +283,7 @@ func (s *RPCServer) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etc
 	if authErr = s.authorizeTxn(caller, txn); authErr != nil {
 		return nil, authErr
 	}
+	ctx = withAuthWriteGuard(ctx, caller)
 
 	deadline, ok := ctx.Deadline()
 	if ok && startTime.Sub(deadline) >= 0 {
@@ -711,6 +713,7 @@ func (s *RPCServer) Put(ctx context.Context, r *etcdserverpb.PutRequest) (*etcds
 	if authErr = s.authorizePut(caller, r); authErr != nil {
 		return nil, authErr
 	}
+	ctx = withAuthWriteGuard(ctx, caller)
 	epoch, leadingFresh := s.peers.EpochAndLeadingFresh()
 	if !leadingFresh {
 		s.metricCli.EmitCounter("write.follower", 1)
@@ -763,6 +766,7 @@ func (s *RPCServer) DeleteRange(ctx context.Context, r *etcdserverpb.DeleteRange
 			return nil, authErr
 		}
 	}
+	ctx = withAuthWriteGuard(ctx, caller)
 	epoch, leadingFresh := s.peers.EpochAndLeadingFresh()
 	if !leadingFresh {
 		s.metricCli.EmitCounter("write.follower", 1)
@@ -1437,6 +1441,9 @@ func (s *RPCServer) compact(ctx context.Context, txn *etcdserverpb.TxnRequest) (
 func mapFenceErr(err error) error {
 	if errors.Is(err, backend.ErrLeadershipFenced) {
 		return status.Errorf(codes.Unavailable, "write rejected: leadership changed during commit, retry on current leader")
+	}
+	if errors.Is(err, backend.ErrInternalWriteGuardConflict) {
+		return rpctypes.ErrAuthOldRevision
 	}
 	return err
 }

@@ -512,6 +512,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   不放松公开 `MemberList` 鉴权。transport 单测、race/vet 通过；同一 TiKV/PD
   keyspace 上重建三副本、停止当前 leader 后，预故障 token 在两个存活端点均恢复
   Put/Get，且直接 `etcdctl` 经 follower 写入可由新 leader 读取。
+- **Auth A23 写侧 revision 原子隔离（2026-07-16）**：对齐 etcd 将请求携带的
+  `AuthRevision` 纳入 apply 的语义。认证后的 Put/Delete/Txn 和 LeaseRevoke 现在把
+  当前 auth config 作为 no-op CAS guard，和 Create/Update/Delete/DeleteRange/
+  `TxnApply` 的业务键写入放在同一个存储事务中；授权后若角色或权限变化，整个批次
+  原子失败并返回 `ErrAuthOldRevision`，不会出现已撤权请求在另一副本继续提交的
+  TOCTOU 窗口。后端测试覆盖全部写形状、成功 guard 不改写配置以及冲突无部分写；
+  RPC 测试在鉴权后、提交前确定性撤权；真实 TiKV BatchWrite 合约验证 guard 冲突时
+  sibling 写不落盘。测试键已按运行和子测试隔离，避免持久 TiKV 上残留数据造成
+  “缺失键 CAS”假通过或假失败。
 
 ### P1：通用服务能力
 

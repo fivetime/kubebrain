@@ -142,6 +142,7 @@ func (m *leaseManager) LeaseRevoke(ctx context.Context, req *etcdserverpb.LeaseR
 			return nil, err
 		}
 	}
+	ctx = withAuthWriteGuard(ctx, caller)
 	epoch, leadingFresh := m.srv.peers.EpochAndLeadingFresh()
 	if !leadingFresh {
 		err := m.requireLeaseLeader("lease revoke")

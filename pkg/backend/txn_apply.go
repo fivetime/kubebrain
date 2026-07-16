@@ -366,7 +366,7 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 	}
 
 	// Phase 4: atomic commit.
-	if cerr := batch.Commit(ctx); cerr != nil {
+	if cerr := b.commitUserBatch(ctx, batch); cerr != nil {
 		b.notifyInvalidTxn(preps, newRevision, cerr)
 		if errors.Is(cerr, storage.ErrCASFailed) {
 			// Distinguish a compare-guard conflict (the caller must re-evaluate the

@@ -9,6 +9,8 @@ import (
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	"google.golang.org/grpc/metadata"
+
+	"github.com/kubewharf/kubebrain/pkg/backend"
 )
 
 type authCaller struct {
@@ -57,6 +59,13 @@ func (s *RPCServer) ensureAuthRevision(ctx context.Context, caller *authCaller) 
 		return rpctypes.ErrAuthOldRevision
 	}
 	return nil
+}
+
+func withAuthWriteGuard(ctx context.Context, caller *authCaller) context.Context {
+	if caller == nil {
+		return ctx
+	}
+	return backend.WithInternalWriteGuard(ctx, authConfigKey, encodeAuthConfig(caller.snapshot.Config))
 }
 
 func forwardAuthToken(ctx context.Context) context.Context {
