@@ -19,10 +19,14 @@ import (
 	"crypto/tls"
 	"fmt"
 	"net"
+	"sync"
+	"time"
 
 	"github.com/soheilhy/cmux"
 	"golang.org/x/sync/errgroup"
 	"k8s.io/klog/v2"
+
+	"github.com/kubewharf/kubebrain/pkg/transportidentity"
 )
 
 type secureExposedServer struct {
@@ -44,11 +48,13 @@ func newSecureExposedServers(ss []exposedServer) []exposedServer {
 type secureServer struct {
 	internalServers []exposedServer
 	conf            *SecurityConfig
+	identities      *transportidentity.Registry
 }
 
-func newSecureServer(conf *SecurityConfig, ss ...exposedServer) exposedServer {
+func newSecureServer(conf *SecurityConfig, identities *transportidentity.Registry, ss ...exposedServer) exposedServer {
 	return &secureServer{
 		conf:            conf,
+		identities:      identities,
 		internalServers: ss,
 	}
 }
@@ -64,7 +70,7 @@ func (t *secureServer) matcher() cmux.Matcher {
 func (t *secureServer) serve(listener net.Listener) (err error) {
 
 	tlsConf := t.conf.getServerTLSConfig()
-	tlsListener := tls.NewListener(listener, tlsConf)
+	tlsListener := &identityTLSListener{Listener: listener, config: tlsConf, identities: t.identities}
 	mux := cmux.New(tlsListener)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer func() {
@@ -84,6 +90,47 @@ func (t *secureServer) serve(listener net.Listener) (err error) {
 	})
 
 	return group.Wait()
+}
+
+type identityTLSListener struct {
+	net.Listener
+	config     *tls.Config
+	identities *transportidentity.Registry
+}
+
+const tlsIdentityHandshakeTimeout = 10 * time.Second
+
+func (l *identityTLSListener) Accept() (net.Conn, error) {
+	raw, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	conn := tls.Server(raw, l.config)
+	if err = raw.SetDeadline(time.Now().Add(tlsIdentityHandshakeTimeout)); err != nil {
+		_ = raw.Close()
+		return nil, err
+	}
+	if err = conn.Handshake(); err != nil {
+		_ = raw.Close()
+		return nil, err
+	}
+	if err = raw.SetDeadline(time.Time{}); err != nil {
+		_ = raw.Close()
+		return nil, err
+	}
+	unregister := l.identities.Register(conn.LocalAddr(), conn.RemoteAddr(), conn.ConnectionState())
+	return &identityTLSConn{Conn: conn, unregister: unregister}, nil
+}
+
+type identityTLSConn struct {
+	net.Conn
+	once       sync.Once
+	unregister func()
+}
+
+func (c *identityTLSConn) Close() error {
+	c.once.Do(c.unregister)
+	return c.Conn.Close()
 }
 
 func (t *secureServer) close() error {

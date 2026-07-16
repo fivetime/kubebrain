@@ -78,6 +78,7 @@ func TestConfig(t *testing.T) {
 	ast.ElementsMatch([]string{"h2", "http/1.1"}, conf.ClientSecurityConfig.getServerTLSConfig().NextProtos)
 	ast.ElementsMatch([]string{"h2", "http/1.1"}, conf.PeerSecurityConfig.getServerTLSConfig().NextProtos)
 	ast.True(conf.getServerConfig().ClientCertAuth)
+	ast.True(conf.getServerConfig().ClientAllowInsecure)
 }
 
 // TestClientCertAuthRequiresTrustedCA pins #50: enabling client cert auth without

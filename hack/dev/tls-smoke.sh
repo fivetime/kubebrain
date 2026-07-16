@@ -9,6 +9,7 @@ LOCAL_PORT="${LOCAL_PORT:-12379}"
 REPLICAS="${REPLICAS:-3}"
 RUN_APISERVER_SMOKE="${RUN_APISERVER_SMOKE:-true}"
 RUN_BACKUP_DRILL="${RUN_BACKUP_DRILL:-true}"
+RUN_AUTH_CERT_SMOKE="${RUN_AUTH_CERT_SMOKE:-true}"
 BACKUP_PREFIX="${BACKUP_PREFIX:-/registry/tls-smoke}"
 BACKUP_BATCH_SIZE="${BACKUP_BATCH_SIZE:-100}"
 APISERVER_SECURE_PORT="${APISERVER_SECURE_PORT:-16444}"
@@ -76,6 +77,24 @@ openssl req -newkey rsa:2048 -nodes \
 openssl x509 -req -in tls.csr -CA ca.crt -CAkey ca.key -CAcreateserial -days 1 \
   -out tls.crt -extensions v3_req -extfile server.conf >/dev/null 2>&1
 
+cat > auth-client.conf <<'EOF'
+[req]
+distinguished_name = dn
+req_extensions = v3_req
+prompt = no
+[dn]
+CN = cert-root
+[v3_req]
+basicConstraints = CA:FALSE
+keyUsage = critical,digitalSignature
+extendedKeyUsage = clientAuth
+EOF
+
+openssl req -newkey rsa:2048 -nodes \
+  -keyout auth-client.key -out auth-client.csr -config auth-client.conf >/dev/null 2>&1
+openssl x509 -req -in auth-client.csr -CA ca.crt -CAkey ca.key -CAcreateserial -days 1 \
+  -out auth-client.crt -extensions v3_req -extfile auth-client.conf >/dev/null 2>&1
+
 kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 kubectl -n "$NAMESPACE" create secret generic kubebrain-client-tls \
   --from-file=tls.crt=tls.crt \
@@ -93,13 +112,14 @@ sed \
   -e "s#image: kubebrain:dev#image: ${IMAGE_NAME}#" \
   -e "s#--pd-addrs=kb-pd.tidb-cluster.svc:2379#--pd-addrs=${PD_ADDRS}#" \
   -e "s#--peer-tls-server-name=kubebrain-peer.kubebrain-system.svc#--peer-tls-server-name=kubebrain-peer.${NAMESPACE}.svc#" \
+  -e "s#--tls-server-name=kubebrain-client.kubebrain-system.svc#--tls-server-name=kubebrain-client.${NAMESPACE}.svc#" \
   "$ROOT_DIR/deploy/production/kubebrain-tls.yaml" > manifest.yaml
 
-python3 - <<'PY'
+python3 - <<PY
 from pathlib import Path
 p = Path("manifest.yaml")
 s = p.read_text()
-s = s.replace("            - --compatible-with-etcd=true\n", "            - --compatible-with-etcd=true\n            - --key-prefix=/tls-smoke\n")
+s = s.replace("            - --compatible-with-etcd=true\n", "            - --compatible-with-etcd=true\n            - --keyspace=${NAMESPACE}\n")
 p.write_text(s)
 PY
 
@@ -124,6 +144,11 @@ start_port_forward() {
 run_client_smoke() {
   start_port_forward
   LOCAL_PORT="$LOCAL_PORT" go run main.go
+}
+
+run_auth_cert_smoke() {
+  local bootstrap="${1:-false}"
+  LOCAL_PORT="$LOCAL_PORT" BOOTSTRAP_AUTH="$bootstrap" go run auth-main.go
 }
 
 run_apiserver_smoke() {
@@ -212,6 +237,77 @@ func main() {
 }
 EOF
 
+cat > auth-main.go <<'EOF'
+package main
+
+import (
+	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"fmt"
+	"log"
+	"os"
+	"time"
+
+	clientv3 "go.etcd.io/etcd/client/v3"
+)
+
+func main() {
+	ca, err := os.ReadFile("ca.crt")
+	if err != nil {
+		log.Fatal(err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(ca) {
+		log.Fatal("failed to load ca")
+	}
+	cert, err := tls.LoadX509KeyPair("auth-client.crt", "auth-client.key")
+	if err != nil {
+		log.Fatal(err)
+	}
+	cli, err := clientv3.New(clientv3.Config{
+		Endpoints: []string{"https://127.0.0.1:" + os.Getenv("LOCAL_PORT")},
+		DialTimeout: 10 * time.Second,
+		TLS: &tls.Config{RootCAs: pool, Certificates: []tls.Certificate{cert}, ServerName: "127.0.0.1"},
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer cli.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if os.Getenv("BOOTSTRAP_AUTH") == "true" {
+		if _, err = cli.UserAdd(ctx, "root", "unused"); err != nil {
+			log.Fatalf("add root user: %v", err)
+		}
+		if _, err = cli.UserGrantRole(ctx, "root", "root"); err != nil {
+			log.Fatalf("grant root role to root: %v", err)
+		}
+		if _, err = cli.UserAdd(ctx, "cert-root", "unused"); err != nil {
+			log.Fatalf("add cert-root user: %v", err)
+		}
+		if _, err = cli.UserGrantRole(ctx, "cert-root", "root"); err != nil {
+			log.Fatalf("grant root role to cert-root: %v", err)
+		}
+		if _, err = cli.AuthEnable(ctx); err != nil {
+			log.Fatalf("enable auth: %v", err)
+		}
+	}
+	key := "/registry/tls-smoke/auth-cert/" + os.Getenv("POD_NAME")
+	if _, err = cli.Put(ctx, key, "certificate-identity"); err != nil {
+		log.Fatalf("certificate-auth put: %v", err)
+	}
+	resp, err := cli.Get(ctx, key)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if len(resp.Kvs) != 1 || string(resp.Kvs[0].Value) != "certificate-identity" {
+		log.Fatalf("unexpected certificate-auth get response: %+v", resp.Kvs)
+	}
+	fmt.Println("certificate auth smoke completed")
+}
+EOF
+
 echo "Running TLS smoke against ${REPLICAS} replica(s)"
 run_client_smoke
 
@@ -235,6 +331,28 @@ if [ "$REPLICAS" -ge 3 ]; then
     kubectl -n "$NAMESPACE" delete pod "$pod" --wait=false >/dev/null
     wait_ready
     run_client_smoke
+  done
+fi
+
+if [ "$RUN_AUTH_CERT_SMOKE" = "true" ]; then
+  echo "Enabling auth with a dedicated cert-root client identity"
+  start_port_forward
+  POD_NAME=bootstrap run_auth_cert_smoke true
+
+  mapfile -t auth_pods < <(kubectl -n "$NAMESPACE" get pods \
+    -l app.kubernetes.io/name=kubebrain \
+    -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}')
+  for pod in "${auth_pods[@]}"; do
+    echo "Running certificate auth smoke directly against ${pod}"
+    if [ -n "${pf_pid:-}" ]; then
+      kill "$pf_pid" >/dev/null 2>&1 || true
+      wait "$pf_pid" >/dev/null 2>&1 || true
+    fi
+    kubectl -n "$NAMESPACE" port-forward "pod/${pod}" "${LOCAL_PORT}:3379" \
+      >/tmp/kubebrain-auth-cert-smoke-port-forward.log 2>&1 &
+    pf_pid=$!
+    sleep 2
+    POD_NAME="$pod" run_auth_cert_smoke false
   done
 fi
 

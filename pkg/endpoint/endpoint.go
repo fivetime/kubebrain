@@ -31,23 +31,26 @@ import (
 	"github.com/kubewharf/kubebrain/pkg/backend"
 	"github.com/kubewharf/kubebrain/pkg/metrics"
 	"github.com/kubewharf/kubebrain/pkg/server"
+	"github.com/kubewharf/kubebrain/pkg/transportidentity"
 )
 
 // Endpoint is the endpoint for serving
 type Endpoint struct {
-	metrics metrics.Metrics
-	backend backend.Backend
-	server  server.Server
-	config  *Config
+	metrics       metrics.Metrics
+	backend       backend.Backend
+	server        server.Server
+	config        *Config
+	tlsIdentities *transportidentity.Registry
 }
 
 // NewEndpoint returns an Endpoint for serving
 func NewEndpoint(b backend.Backend, m metrics.Metrics, config *Config) *Endpoint {
 	klog.InfoS("new endpoints", "config", config)
 	return &Endpoint{
-		metrics: m,
-		backend: b,
-		config:  config,
+		metrics:       m,
+		backend:       b,
+		config:        config,
+		tlsIdentities: &transportidentity.Registry{},
 	}
 }
 
@@ -108,9 +111,9 @@ func (e *Endpoint) buildExposedServers(sc *SecurityConfig, servers ...exposedSer
 	case modeOnlyInsecure:
 		return servers
 	case modeOnlySecure:
-		return []exposedServer{newSecureServer(sc, servers...)}
+		return []exposedServer{newSecureServer(sc, e.tlsIdentities, servers...)}
 	case modeBothInsecureAndSecure:
-		return append([]exposedServer{newSecureServer(sc, servers...)}, servers...)
+		return append([]exposedServer{newSecureServer(sc, e.tlsIdentities, servers...)}, servers...)
 	}
 	return nil
 }
@@ -184,6 +187,7 @@ func grpcKeepaliveOptions() []grpc.ServerOption {
 
 func (e *Endpoint) buildClientGrpcServer() exposedServer {
 	opts := append(grpcKeepaliveOptions(), e.metrics.GetGrpcServerOption()...)
+	opts = append(opts, grpc.StatsHandler(e.tlsIdentities))
 	opts = append(opts, e.server.ClientServerOptions()...)
 	grpcServer := grpc.NewServer(opts...)
 	e.server.RegisterClient(grpcServer)
@@ -191,7 +195,9 @@ func (e *Endpoint) buildClientGrpcServer() exposedServer {
 }
 
 func (e *Endpoint) buildPeerGrpcServer() exposedServer {
-	grpcServer := grpc.NewServer(append(grpcKeepaliveOptions(), e.metrics.GetGrpcServerOption()...)...)
+	opts := append(grpcKeepaliveOptions(), e.metrics.GetGrpcServerOption()...)
+	opts = append(opts, grpc.StatsHandler(e.tlsIdentities))
+	grpcServer := grpc.NewServer(opts...)
 	e.server.RegisterPeer(grpcServer)
 	return newGrpcServer(grpcServer)
 }

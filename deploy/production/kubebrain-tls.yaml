@@ -76,6 +76,7 @@ spec:
             - --cert-file=/etc/kubebrain/client-tls/tls.crt
             - --key-file=/etc/kubebrain/client-tls/tls.key
             - --trusted-ca-file=/etc/kubebrain/client-tls/ca.crt
+            - --tls-server-name=kubebrain-client.kubebrain-system.svc
             - --client-cert-auth=true
             - --peer-cert-file=/etc/kubebrain/peer-tls/tls.crt
             - --peer-key-file=/etc/kubebrain/peer-tls/tls.key

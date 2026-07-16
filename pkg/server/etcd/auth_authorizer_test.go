@@ -15,6 +15,8 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/peer"
+
+	"github.com/kubewharf/kubebrain/pkg/transportidentity"
 )
 
 func verifiedTLSContext(ctx context.Context, commonName string) context.Context {
@@ -191,6 +193,21 @@ func TestAuthCallerUsesVerifiedClientCertificateCommonName(t *testing.T) {
 	claims, err := server.tokens.verify(context.Background(), tokens[0])
 	require.NoError(t, err)
 	require.Equal(t, "alice", claims.Username)
+}
+
+func TestAuthCallerUsesOuterTLSListenerIdentity(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	setupAuthKVUser(t, server)
+	server.SetClientCertAuth(true)
+
+	cert := &x509.Certificate{Subject: pkix.Name{CommonName: "alice"}}
+	ctx := transportidentity.WithTLSState(context.Background(), tls.ConnectionState{
+		VerifiedChains: [][]*x509.Certificate{{cert}},
+	})
+	caller, err := server.authCallerFromContext(ctx)
+	require.NoError(t, err)
+	require.Equal(t, "alice", caller.username)
 }
 
 func TestAuthCallerDoesNotFallbackFromInvalidTokenToClientCertificate(t *testing.T) {

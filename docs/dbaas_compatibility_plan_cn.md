@@ -529,13 +529,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   本地验证证书后，用 TiKV 持久化、全副本共享的 HMAC key 签发 5 分钟证书身份 token
   转发给 leader；leader 验签后按当前 RBAC 重新授权，未知 CN 仍是有效传输身份但没有
   键权限。测试覆盖配置贯穿、token/CN 优先级、gateway 防护、未知 CN 以及 follower
-  代理后 username 不变，防止 leader 错把 follower 自身证书 CN 当成客户身份。
+  代理后 username 不变，防止 leader 错把 follower 自身证书 CN 当成客户身份。由于
+  外层 TLS listener 在请求进入内层明文 gRPC server 前已终止 TLS，现通过只接受已验证
+  `tls.ConnectionState` 的连接生命周期 registry/stats handler 把证书身份绑定到 RPC
+  context；连接关闭时按注册 generation 清理，避免地址复用导致旧连接误删新身份。
+- **TLS A25 三副本安全转发与证书鉴权故障恢复（2026-07-16）**：TLS-only 部署不再
+  隐式降级到明文，只有显式 mixed mode 才允许 fallback；follower 按 leader client
+  port 建连，并用 gRPC authority 保留稳定 service DNS 的证书校验名。针对新版
+  `grpc.NewClient` 的 lazy dial，连接探测改为带 5 秒边界的轻量 Maintenance Status：
+  transport 错误判失败，auth 等应用层拒绝证明 mTLS/HTTP2 已就绪。真实 kind + 独立
+  TiKV/PD 三副本验证全部 Ready，逐个删除三只原 Pod 后每轮 TLS Put/Get 均恢复；启用
+  auth 后，用独立 CN `cert-root` 证书经 service 及逐 Pod 直连 Put/Get 全部通过，覆盖
+  leader 和 follower 转发路径。TLS handshake 也设置 10 秒上限，避免半开连接长期阻塞
+  外层 listener。
 
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
-   RBAC、token 生命周期、Watch/Lease 持续鉴权与客户端证书 CN 身份已完成，下一步
-   做真实三副本 auth+mTLS failover 以及 CA/证书轮换。
+   RBAC、token 生命周期、Watch/Lease 持续鉴权、客户端证书 CN 身份以及真实三副本
+   auth+mTLS failover 已完成，下一步做 CA/服务端证书/客户端证书轮换。
 2. 对已通过的 `client/v3/concurrency` mutex/election/session/failover recipe
    增加 lease 自然过期和长时间 soak。
 3. 建立 DBaaS 控制面契约：创建、扩缩、升级、备份、恢复、证书轮换、销毁。

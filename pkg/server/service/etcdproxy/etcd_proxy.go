@@ -29,7 +29,6 @@ import (
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/status"
 	"k8s.io/klog/v2"
 
@@ -38,10 +37,18 @@ import (
 	"github.com/kubewharf/kubebrain/pkg/util"
 )
 
+const proxyConnectTimeout = 5 * time.Second
+
 type etcdProxy struct {
 	// clientPort dials the leader's client endpoint instead of its peer
 	// address when >0 (#41); see NewEtcdProxy.
 	clientPort int
+	// allowInsecure permits TLS-to-plaintext fallback only for an endpoint
+	// explicitly configured to serve both modes.
+	allowInsecure bool
+	// dialTimeout is injectable for deterministic tests; zero uses the
+	// production proxyConnectTimeout.
+	dialTimeout time.Duration
 
 	election  leader.LeaderElection
 	tlsConfig *tls.Config
@@ -82,8 +89,11 @@ const proxyReadyWaitTimeout = 2 * time.Second
 // does not reliably serve the KV service (#41: forwarded counts to
 // leader:peerPort hung to the request deadline while leader:clientPort
 // answered in <1s).
-func NewEtcdProxy(leaderElection leader.LeaderElection, tlsConfig *tls.Config, clientPort int) EtcdProxy {
-	proxy := &etcdProxy{election: leaderElection, tlsConfig: tlsConfig, clientPort: clientPort}
+func NewEtcdProxy(leaderElection leader.LeaderElection, tlsConfig *tls.Config, clientPort int, allowInsecure bool) EtcdProxy {
+	proxy := &etcdProxy{
+		election: leaderElection, tlsConfig: tlsConfig, clientPort: clientPort,
+		allowInsecure: allowInsecure,
+	}
 	proxy.updateClient()
 	go func() {
 		defer util.Recover()
@@ -164,11 +174,8 @@ func (e *etcdProxy) updateClient() {
 	}
 	e.lock.Unlock()
 
-	klog.InfoS("try to conn to new leader", "newLeader", curLeader)
-	tlsConfigs := []*tls.Config{e.tlsConfig}
-	if e.tlsConfig != nil {
-		tlsConfigs = []*tls.Config{e.tlsConfig, nil}
-	}
+	klog.InfoS("try to conn to new leader", "leaderIdentity", curLeader)
+	tlsConfigs := e.dialTLSConfigs()
 
 	// Dial the leader's client endpoint: the identity carries the peer port.
 	dialEndpoint := curLeader
@@ -185,9 +192,19 @@ func (e *etcdProxy) updateClient() {
 			"leader", curLeader)
 	}
 	for _, tlsConfig := range tlsConfigs {
+		dialTimeout := e.connectionTimeout()
+		var dialOptions []grpc.DialOption
+		if tlsConfig != nil && tlsConfig.ServerName != "" {
+			// grpc-go derives TLS ServerName from the resolver authority and
+			// overwrites tls.Config.ServerName. The proxy connects to a leader Pod
+			// IP, so preserve the configured stable service DNS identity explicitly.
+			dialOptions = append(dialOptions, grpc.WithAuthority(tlsConfig.ServerName))
+		}
 		client, err := clientv3.New(clientv3.Config{
-			Endpoints: []string{dialEndpoint},
-			TLS:       tlsConfig,
+			Endpoints:   []string{dialEndpoint},
+			TLS:         tlsConfig,
+			DialTimeout: dialTimeout,
+			DialOptions: dialOptions,
 		})
 		if err != nil {
 			klog.ErrorS(err, "failed to create new client")
@@ -197,12 +214,12 @@ func (e *etcdProxy) updateClient() {
 			return
 		}
 
-		klog.InfoS("check conn to new leader", "newLeader", curLeader, "secure", tlsConfig != nil)
+		klog.InfoS("check conn to new leader", "leaderIdentity", curLeader, "dialEndpoint", dialEndpoint, "secure", tlsConfig != nil)
 
-		err = checkClientConn(client, nil)
+		err = checkClientConn(client, nil, dialTimeout)
 		if err != nil {
 			_ = client.Close()
-			klog.InfoS("leader connection not ready", "err", err, "newLeader", curLeader, "secure", tlsConfig != nil)
+			klog.InfoS("leader connection not ready", "err", err, "leaderIdentity", curLeader, "dialEndpoint", dialEndpoint, "secure", tlsConfig != nil)
 			e.lock.Lock()
 			e.err = err
 			e.lock.Unlock()
@@ -224,12 +241,27 @@ func (e *etcdProxy) updateClient() {
 
 	e.lock.Lock()
 	defer e.lock.Unlock()
-	klog.InfoS("leader connection not ready", "err", e.err, "newLeader", curLeader)
+	klog.InfoS("leader connection not ready", "err", e.err, "leaderIdentity", curLeader, "dialEndpoint", dialEndpoint)
 	e.curLeader = ""
 	if e.client != nil {
 		_ = e.client.Close()
 		e.client = nil
 	}
+}
+
+func (e *etcdProxy) connectionTimeout() time.Duration {
+	if e.dialTimeout > 0 {
+		return e.dialTimeout
+	}
+	return proxyConnectTimeout
+}
+
+func (e *etcdProxy) dialTLSConfigs() []*tls.Config {
+	configs := []*tls.Config{e.tlsConfig}
+	if e.tlsConfig != nil && e.allowInsecure {
+		configs = append(configs, nil)
+	}
+	return configs
 }
 
 func (e *etcdProxy) hasClient() bool {
@@ -243,33 +275,32 @@ func (e *etcdProxy) checkConn() error {
 	client := e.client
 	err := e.err
 	e.lock.RUnlock()
-	return checkClientConn(client, err)
+	return checkClientConn(client, err, e.connectionTimeout())
 }
 
-func checkClientConn(client *clientv3.Client, clientErr error) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+func checkClientConn(client *clientv3.Client, clientErr error, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	if client == nil {
 		return clientErr
 	}
 
-	// MemberList and Status require an authenticated identity when auth is
-	// enabled, but this internal forwarding connection intentionally has no
-	// end-user credentials. Probe the HTTP/2 transport instead; forwarded RPCs
-	// still carry the caller's metadata and report service-level failures.
-	conn := client.ActiveConnection()
-	conn.Connect()
-	for {
-		switch conn.GetState() {
-		case connectivity.Ready:
-			return nil
-		case connectivity.Shutdown:
-			return status.Error(codes.Unavailable, "leader connection is shut down")
-		}
-		state := conn.GetState()
-		if !conn.WaitForStateChange(ctx, state) {
-			return ctx.Err()
-		}
+	// grpc.NewClient is lazy and ignores WithBlock. Exercise one cheap RPC to
+	// prove TCP, mTLS, HTTP/2 and service routing. Once auth is enabled the
+	// proxy's own certificate may not map to an auth user; any application-level
+	// rejection still proves the transport is ready because forwarded calls carry
+	// the end user's token separately.
+	_, err := etcdserverpb.NewMaintenanceClient(client.ActiveConnection()).Status(
+		ctx, &etcdserverpb.StatusRequest{},
+	)
+	if err == nil {
+		return nil
+	}
+	switch status.Code(err) {
+	case codes.Unavailable, codes.DeadlineExceeded, codes.Canceled:
+		return err
+	default:
+		return nil
 	}
 }
 

@@ -3,6 +3,7 @@ package etcd
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"sort"
 
 	"go.etcd.io/etcd/api/v3/authpb"
@@ -13,6 +14,7 @@ import (
 	"google.golang.org/grpc/peer"
 
 	"github.com/kubewharf/kubebrain/pkg/backend"
+	"github.com/kubewharf/kubebrain/pkg/transportidentity"
 )
 
 type authCaller struct {
@@ -61,18 +63,23 @@ func (s *RPCServer) authCallerFromTLS(ctx context.Context, snapshot *authSnapsho
 	if !s.clientCertAuth {
 		return nil, rpctypes.ErrUserEmpty
 	}
-	p, ok := peer.FromContext(ctx)
-	if !ok || p == nil || p.AuthInfo == nil {
-		return nil, rpctypes.ErrUserEmpty
+	var state tls.ConnectionState
+	var verified bool
+	if p, ok := peer.FromContext(ctx); ok && p != nil && p.AuthInfo != nil {
+		if tlsInfo, ok := p.AuthInfo.(credentials.TLSInfo); ok {
+			state, verified = tlsInfo.State, true
+		}
 	}
-	tlsInfo, ok := p.AuthInfo.(credentials.TLSInfo)
-	if !ok {
+	if !verified {
+		state, verified = transportidentity.TLSStateFromContext(ctx)
+	}
+	if !verified {
 		return nil, rpctypes.ErrUserEmpty
 	}
 	if values := metadata.ValueFromIncomingContext(ctx, "grpcgateway-accept"); len(values) > 0 {
 		return nil, rpctypes.ErrUserEmpty
 	}
-	for _, chain := range tlsInfo.State.VerifiedChains {
+	for _, chain := range state.VerifiedChains {
 		if len(chain) == 0 {
 			continue
 		}

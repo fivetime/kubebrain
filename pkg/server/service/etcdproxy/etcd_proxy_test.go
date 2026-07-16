@@ -16,6 +16,7 @@ package etcdproxy
 
 import (
 	"context"
+	"crypto/tls"
 	"net"
 	"sync"
 	"testing"
@@ -31,6 +32,20 @@ import (
 	"github.com/kubewharf/kubebrain/pkg/server/service/leader"
 	"github.com/stretchr/testify/require"
 )
+
+func TestProxyTLSFallbackRequiresExplicitMixedMode(t *testing.T) {
+	tlsOnly := (&etcdProxy{tlsConfig: &tls.Config{}}).dialTLSConfigs()
+	require.Len(t, tlsOnly, 1)
+	require.NotNil(t, tlsOnly[0], "TLS-only proxy must never attempt plaintext")
+
+	mixed := (&etcdProxy{tlsConfig: &tls.Config{}, allowInsecure: true}).dialTLSConfigs()
+	require.Len(t, mixed, 2)
+	require.NotNil(t, mixed[0])
+	require.Nil(t, mixed[1], "plaintext fallback is allowed only in explicit mixed mode")
+
+	plaintext := (&etcdProxy{}).dialTLSConfigs()
+	require.Equal(t, []*tls.Config{nil}, plaintext)
+}
 
 // TestWatchResultFromResponseMapsProgressNotify pins that an idle progress
 // notification from the leader (no events, carrying only the store revision)
@@ -112,7 +127,7 @@ func TestCheckClientConnUsesTransportReadiness(t *testing.T) {
 	cli, err := clientv3.New(clientv3.Config{Endpoints: []string{lis.Addr().String()}})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = cli.Close() })
-	require.NoError(t, checkClientConn(cli, nil))
+	require.NoError(t, checkClientConn(cli, nil, time.Second))
 }
 
 type testLeaderElection struct {
@@ -178,7 +193,10 @@ func TestWatchOptionsForRangeRequestsProgressNotify(t *testing.T) {
 // any residual data race. The leader is unreachable, so every updateClient fails
 // and closes its own dialed client; the proxy stays consistently not-ready.
 func TestUpdateClientConcurrentNoDeadlock(t *testing.T) {
-	proxy := &etcdProxy{election: &testLeaderElection{leaderAddress: "127.0.0.1:1"}}
+	proxy := &etcdProxy{
+		election:    &testLeaderElection{leaderAddress: "127.0.0.1:1"},
+		dialTimeout: 50 * time.Millisecond,
+	}
 
 	done := make(chan struct{})
 	var wg sync.WaitGroup
