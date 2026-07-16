@@ -163,6 +163,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   不再额外推进 revision。恢复同时读取 legacy attachment，并在迁移完整成功后
   退休旧记录。剩余工作是把 generic txn 的 lease binding 和多键
   revoke/expiry attachment 清理也收拢到各自用户写的同一原子 batch。
+- **Lease txn/revoke 原子性（第三阶段）**：LeaseRevoke 与 expiry 不再逐 key
+  CompareDelete，而是预读 inline lease、为每个 mod_revision 建 guard，并用一次
+  `TxnApply` 原子删除全部仍绑定的 key 和 internal attachments；所有删除共享一个
+  revision，任一并发 rebind 会使整批回滚重试，失败时 lease/meta 保留。通用 txn
+  的 atomic 与 staged 执行器也会在提交前追加 internal attachment op，提交后仅
+  更新内存索引；涉及 lease 的单写 Txn 不再回退到非原子顺序路径。普通无 lease
+  单写仍保留原快路径。
 
 ### P1：通用服务能力
 

@@ -17,6 +17,7 @@ package etcd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"strconv"
 	"sync/atomic"
@@ -92,7 +93,7 @@ func (m *leaseManager) LeaseGrant(ctx context.Context, req *etcdserverpb.LeaseGr
 	m.leaseMu.Unlock()
 
 	if err := m.persistLeaseMeta(ctx, st.id, st.ttl); err != nil {
-		_ = m.revokeLease(context.Background(), id)
+		_, _ = m.revokeLease(context.Background(), id)
 		return nil, err
 	}
 
@@ -111,11 +112,12 @@ func (m *leaseManager) LeaseRevoke(ctx context.Context, req *etcdserverpb.LeaseR
 		}
 		return nil, err
 	}
-	if err := m.revokeLease(ctx, req.ID); err != nil {
+	rev, err := m.revokeLease(ctx, req.ID)
+	if err != nil {
 		return nil, err
 	}
 	return &etcdserverpb.LeaseRevokeResponse{
-		Header: &etcdserverpb.ResponseHeader{},
+		Header: txnHeader(int64(rev)),
 	}, nil
 }
 
@@ -275,6 +277,51 @@ func (m *leaseManager) bindKeyIndexOnly(id int64, key string) {
 	m.leaseMu.Unlock()
 }
 
+func (m *leaseManager) unbindKeyIndexOnly(key string) {
+	m.leaseMu.Lock()
+	if id, ok := m.keyLeaseIndex[key]; ok {
+		if st := m.leases[id]; st != nil {
+			delete(st.keys, key)
+		}
+		delete(m.keyLeaseIndex, key)
+	}
+	atomic.StoreInt64(&m.leasedKeyCount, int64(len(m.keyLeaseIndex)))
+	m.leaseMu.Unlock()
+}
+
+// withLeaseAttachmentOps appends internal attachment mutations after the user
+// writes. The returned userCount lets response/result handling ignore those
+// implementation-only ops.
+func (m *leaseManager) withLeaseAttachmentOps(writes []backend.TxnWriteOp) ([]backend.TxnWriteOp, int) {
+	userCount := len(writes)
+	out := append([]backend.TxnWriteOp(nil), writes...)
+	for _, op := range writes {
+		key := string(op.Key)
+		previous := m.leaseIDForKey(key)
+		switch {
+		case op.Delete && previous != 0:
+			out = append(out, backend.TxnWriteOp{Delete: true, Internal: true, Key: leaseAttachKey(key)})
+		case !op.Delete && op.Lease != 0:
+			out = append(out, backend.TxnWriteOp{Internal: true, Key: leaseAttachKey(key), Value: []byte(strconv.FormatInt(op.Lease, 10))})
+		case !op.Delete && previous != 0:
+			out = append(out, backend.TxnWriteOp{Delete: true, Internal: true, Key: leaseAttachKey(key)})
+		}
+	}
+	return out, userCount
+}
+
+func (m *leaseManager) applyLeaseIndexes(writes []backend.TxnWriteOp, results []backend.TxnWriteResult, userCount int) {
+	for i := 0; i < userCount; i++ {
+		if writes[i].Delete {
+			if results[i].Deleted {
+				m.unbindKeyIndexOnly(string(writes[i].Key))
+			}
+			continue
+		}
+		m.bindKeyIndexOnly(writes[i].Lease, string(writes[i].Key))
+	}
+}
+
 func (m *leaseManager) bindKeyToLease(ctx context.Context, id int64, key string) {
 	m.leaseMu.Lock()
 	_, hadPrevious := m.keyLeaseIndex[key]
@@ -427,22 +474,64 @@ func (m *leaseManager) deleteLeasedKey(ctx context.Context, id int64, key string
 	return nil // extremely rare: a keepalive kept racing; leave it for the next cycle
 }
 
-func (m *leaseManager) revokeLease(ctx context.Context, id int64) error {
+// deleteLeasedKeysAtomic removes every still-live key bound to id in one user
+// MVCC revision. Exact mod-revision guards make the whole batch retry if any
+// concurrent Put/rebind races the snapshot; attachment records are internal ops
+// in the same TiKV transaction and therefore add no revision of their own.
+func (m *leaseManager) deleteLeasedKeysAtomic(ctx context.Context, id int64, keys []string) (uint64, error) {
+	for attempt := 0; attempt < 4; attempt++ {
+		ops := make([]backend.TxnWriteOp, 0, len(keys)*2)
+		guards := make([]backend.TxnGuard, 0, len(keys))
+		for _, key := range keys {
+			m.leaseMu.Lock()
+			boundTo, bound := m.keyLeaseIndex[key]
+			m.leaseMu.Unlock()
+			if !bound || boundTo != id {
+				continue
+			}
+			resp, err := m.srv.backend.Get(ctx, &etcdserverpb.RangeRequest{Key: []byte(key)})
+			if err != nil {
+				return 0, err
+			}
+			if len(resp.Kvs) == 0 || resp.Kvs[0].Lease != id {
+				continue
+			}
+			ops = append(ops,
+				backend.TxnWriteOp{Delete: true, Key: []byte(key)},
+				backend.TxnWriteOp{Delete: true, Internal: true, Key: leaseAttachKey(key)},
+			)
+			guards = append(guards, backend.TxnGuard{Key: []byte(key), Revision: uint64(resp.Kvs[0].ModRevision)})
+		}
+		if len(ops) == 0 {
+			return m.srv.backend.GetCurrentRevision(), nil
+		}
+		prevKV := make([]bool, len(ops))
+		_, rev, _, err := m.srv.backend.TxnApply(ctx, ops, guards, prevKV)
+		if errors.Is(err, backend.ErrTxnGuardConflict) {
+			continue
+		}
+		return rev, err
+	}
+	// A persistently racing key remains attached; leave the lease intact so the
+	// next expiry/revoke attempt can retry instead of orphaning it.
+	return 0, status.Error(codes.Unavailable, "etcdserver: lease keys changed during revoke")
+}
+
+func (m *leaseManager) revokeLease(ctx context.Context, id int64) (uint64, error) {
 	// Delete the attached keys BEFORE removing the lease state/record (#36): if a
 	// key delete fails we must keep the lease so the keys are not orphaned (no
 	// lease left to ever expire them). Only once every bound key is gone is it
 	// safe to drop the lease record and its attachment records.
 	keys, ok := m.leaseKeysSnapshot(id)
 	if !ok {
-		return leaseNotFound(id)
+		return 0, leaseNotFound(id)
 	}
-	for _, key := range keys {
-		if err := m.deleteLeasedKey(ctx, id, key); err != nil {
-			return err
-		}
+	rev, err := m.deleteLeasedKeysAtomic(ctx, id, keys)
+	if err != nil {
+		return 0, err
 	}
-	_, err := m.removeLease(id)
-	return err
+	_, err = m.removeLease(id)
+	return rev, err
 }
 
 func (m *leaseManager) expireLease(id int64) {
@@ -459,13 +548,11 @@ func (m *leaseManager) expireLease(id int64) {
 	// Delete bound keys first; a missing key returns no error, so a retry after a
 	// partial deletion is safe. On a real storage failure keep the lease and retry
 	// rather than swallowing the error and orphaning the surviving keys (#36).
-	for _, key := range keys {
-		if err := m.deleteLeasedKey(ctx, id, key); err != nil {
-			m.srv.metricCli.EmitCounter("lease.expire.delete.err", 1)
-			klog.ErrorS(err, "lease expiry: delete of bound key failed; keeping lease for retry", "lease", id, "key", key)
-			m.retryLeaseExpiry(id)
-			return
-		}
+	if _, err := m.deleteLeasedKeysAtomic(ctx, id, keys); err != nil {
+		m.srv.metricCli.EmitCounter("lease.expire.delete.err", 1)
+		klog.ErrorS(err, "lease expiry: atomic delete of bound keys failed; keeping lease for retry", "lease", id, "keys", len(keys))
+		m.retryLeaseExpiry(id)
+		return
 	}
 	// Every bound key is gone; now drop the lease record and attachment records.
 	_, _ = m.removeLease(id)

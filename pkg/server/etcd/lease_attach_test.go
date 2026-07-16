@@ -221,6 +221,17 @@ func (f *failDeleteShim) Delete(ctx context.Context, key []byte, revision int64,
 	return f.BackendShim.Delete(ctx, key, revision, includeFailureRange)
 }
 
+func (f *failDeleteShim) TxnApply(ctx context.Context, ops []backend.TxnWriteOp, guards []backend.TxnGuard, prevKV []bool) ([]*etcdserverpb.ResponseOp, uint64, []backend.TxnWriteResult, error) {
+	if f.fail {
+		for _, op := range ops {
+			if op.Delete && !op.Internal && string(op.Key) == f.failKey {
+				return nil, 0, nil, errFakeDelete
+			}
+		}
+	}
+	return f.BackendShim.TxnApply(ctx, ops, guards, prevKV)
+}
+
 // TestExpiryKeepsLeaseAndRecordWhenKeyDeleteFails pins #36: expiry deletes the
 // attached keys before the lease record, and a failed key delete must keep the
 // lease (and its record) so the surviving keys are never orphaned.

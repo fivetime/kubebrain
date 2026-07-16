@@ -2027,6 +2027,9 @@ func TestTxnSimpleSuccessPutWithLeaseIsRevoked(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.True(t, resp.Succeeded)
+	attachment, err := server.backend.InternalGet(ctx, leaseAttachKey(string(key)))
+	require.NoError(t, err)
+	require.Equal(t, []byte("12345"), attachment)
 
 	ttlResp, err := server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: leaseResp.ID, Keys: true})
 	require.NoError(t, err)

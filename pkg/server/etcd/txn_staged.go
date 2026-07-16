@@ -67,22 +67,14 @@ func (s *RPCServer) executeStagedGenericTxn(ctx context.Context, txn *etcdserver
 	for _, key := range e.order {
 		writes = append(writes, e.mutations[key].op)
 	}
+	writes, userCount := s.withLeaseAttachmentOps(writes)
 	_, revision, results, err := s.backend.TxnApply(ctx, writes, guards, make([]bool, len(writes)))
 	if err != nil {
 		return nil, err
 	}
 	rewriteTxnRevision(resp, e.pendingRev, int64(revision))
 	stampTxnResponseHeaders(resp, int64(revision))
-	for i, key := range e.order {
-		mutation := e.mutations[key]
-		if mutation.op.Delete {
-			if results[i].Deleted {
-				s.unbindKeyFromLease(ctx, key)
-			}
-			continue
-		}
-		s.bindKeyToLease(ctx, mutation.op.Lease, key)
-	}
+	s.applyLeaseIndexes(writes, results, userCount)
 	return resp, nil
 }
 

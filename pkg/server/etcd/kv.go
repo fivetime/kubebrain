@@ -970,8 +970,14 @@ func (s *RPCServer) tryAtomicGenericTxn(ctx context.Context, txn *etcdserverpb.T
 	if err != nil {
 		return nil, true, err
 	}
-	if !eligible || len(plan.writes) == 0 || (len(plan.writes) < 2 && len(guards) == 0 && len(paths) == 1) {
+	if !eligible || len(plan.writes) == 0 {
 		return nil, false, nil
+	}
+	if len(plan.writes) < 2 && len(guards) == 0 && len(paths) == 1 {
+		write := plan.writes[0]
+		if write.Lease == 0 && s.leaseIDForKey(string(write.Key)) == 0 {
+			return nil, false, nil
+		}
 	}
 	plan.root = root
 	// Validate all put leases up front: an atomic txn must reject as a whole if a
@@ -984,24 +990,18 @@ func (s *RPCServer) tryAtomicGenericTxn(ctx context.Context, txn *etcdserverpb.T
 		}
 	}
 
-	responses, rev, results, err := s.backend.TxnApply(ctx, plan.writes, guards, plan.prevKvs)
+	writes, userCount := s.withLeaseAttachmentOps(plan.writes)
+	prevKVs := append([]bool(nil), plan.prevKvs...)
+	prevKVs = append(prevKVs, make([]bool, len(writes)-userCount)...)
+	responses, rev, results, err := s.backend.TxnApply(ctx, writes, guards, prevKVs)
 	if err != nil {
 		return nil, true, err
 	}
-	for i := range responses {
+	for i := 0; i < userCount; i++ {
 		plan.responses[i].Response = responses[i].Response
 	}
 	stampTxnResponseHeaders(plan.root, int64(rev))
-	// Bind/unbind leases now that the writes committed.
-	for i, op := range plan.requests {
-		if put := op.GetRequestPut(); put != nil {
-			s.bindKeyToLease(ctx, put.Lease, string(put.Key))
-		} else if del := op.GetRequestDeleteRange(); del != nil {
-			if results[i].Deleted {
-				s.unbindKeyFromLease(ctx, string(del.Key))
-			}
-		}
-	}
+	s.applyLeaseIndexes(writes, results, userCount)
 	return plan.root, true, nil
 }
 

@@ -120,6 +120,40 @@ func TestLeaseGrantBindKeepAliveAndRevoke(t *testing.T) {
 	require.Empty(t, rangeResp.Kvs)
 }
 
+func TestLeaseRevokeDeletesAllKeysAtOneRevision(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	const leaseID int64 = 1011
+	_, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 300, ID: leaseID})
+	require.NoError(t, err)
+
+	keys := [][]byte{
+		[]byte("/registry/leases/revoke-a"),
+		[]byte("/registry/leases/revoke-b"),
+		[]byte("/registry/leases/revoke-c"),
+	}
+	var lastPutRevision int64
+	for _, key := range keys {
+		resp, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("v"), Lease: leaseID})
+		require.NoError(t, err)
+		lastPutRevision = resp.Header.Revision
+	}
+
+	revoked, err := server.LeaseRevoke(ctx, &etcdserverpb.LeaseRevokeRequest{ID: leaseID})
+	require.NoError(t, err)
+	require.Equal(t, lastPutRevision+1, revoked.Header.Revision)
+	for _, key := range keys {
+		historical, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: key, Revision: revoked.Header.Revision - 1})
+		require.NoError(t, err)
+		require.Len(t, historical.Kvs, 1)
+		current, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: key})
+		require.NoError(t, err)
+		require.Empty(t, current.Kvs)
+	}
+	require.Equal(t, uint64(revoked.Header.Revision), server.backend.GetCurrentRevision())
+}
+
 func TestLeaseRejectsUnknownLease(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
