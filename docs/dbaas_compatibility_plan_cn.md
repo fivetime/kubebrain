@@ -34,13 +34,13 @@ Raft、bbolt 和成员管理内部实现，而是对通用 etcd v3 客户端提�
 | KV | Range/Put/DeleteRange | 部分兼容 | P0：事务内排序、过滤、历史读和大范围删除原子性已补齐；继续做独立 RPC 边界差分与大范围资源限制 |
 | KV | Txn | 部分兼容 | P0：缺失键 guard、范围 phantom guard、嵌套分支和 staged 单 revision 提交已完成；继续做官方客户端差分及 TiKV 故障验证 |
 | KV | Compact | 兼容核心语义 | P0：继续对齐 logical/physical 行为、错误与异步 GC |
-| KV | RangeStream | Kubernetes 请求形状兼容 | P1：对齐 etcd 3.7 支持的通用请求形状，或明确返回 Unimplemented |
+| KV | RangeStream | 兼容核心语义 | etcd 3.7 支持的 CountOnly/Limit/KeysOnly/默认排序已对齐；自定义排序与 revision filter 同 etcd 明确 Unimplemented |
 | Watch | create/cancel/progress/history/prevKV | 兼容核心语义 | P0：用官方客户端做事件完整性、压缩、断线恢复和慢消费者测试 |
-| Lease | grant/revoke/keepalive/ttl/list | 部分兼容 | P0：隔离 lease meta/attachment 的用户 MVCC revision；补并发、故障转移、事务附着及错误矩阵 |
-| Auth | 用户、角色、权限、token | 缺失 | P1：实现 etcd Auth API；DBaaS mTLS/IAM 不能替代客户端期望的 key-range RBAC |
+| Lease | grant/revoke/keepalive/ttl/list | 兼容核心语义 | meta/attachment 已与用户 revision 隔离并原子提交；继续扩大故障、并发和错误差分矩阵 |
+| Auth | 用户、角色、权限、token | 兼容核心语义 | 管理 API、key-range RBAC、token 生命周期、Watch/Lease 持续鉴权及多副本故障转移已验证 |
 | Cluster | MemberList | 兼容（需配置） | DBaaS 通过 `--initial-cluster` 注入完整 KubeBrain 服务副本；未配置时仅返回本机与 leader 的降级视图，不应启用 AutoSync |
 | Cluster | add/remove/update/promote | 平台替代 | 由 DBaaS 控制面扩缩 KubeBrain、PD、TiKV；RPC 保持明确 Unimplemented |
-| Maintenance | Status | 部分兼容 | P1：返回真实服务身份、版本、leader/revision；容量转到实例指标 |
+| Maintenance | Status | 兼容核心语义 | 返回真实服务身份、版本、leader/revision；bbolt 容量字段使用兼容 sentinel，真实容量转到实例指标 |
 | Maintenance | Snapshot | 平台替代 | 使用 TiKV BR/PITR；控制面提供备份、恢复和导出任务，不伪造 etcd snapshot |
 | Maintenance | Defragment | 平台替代 | TiKV GC/compaction 管理，不执行 bbolt 碎片整理 |
 | Maintenance | Alarm/DbSize | 平台替代 | 用 PD/TiKV 容量、磁盘、region 和配额告警；etcd 专属字段保持可解释值 |
@@ -139,7 +139,7 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   确认 `ErrKeyNotFound` 后直接返回当前 revision，不分配 TSO、不发 watch 事件。
   单元测试重复 20 轮和 race 通过，真实 TiKV 上 DeleteRange/Range/Txn 三组双端
   差分共同连续 10 轮通过。
-- **新确认的 Lease revision 缺口（未解决）**：同一差分最初加入 leased key
+- **Lease revision 缺口的初始发现（后续三阶段已解决）**：同一差分最初加入 leased key
   后确认 LeaseGrant 的 `leases/<id>` 持久化，以及删除后的
   `leasekeys/<key>` detach，会各自推进 KubeBrain 用户可见 revision；官方 etcd
   的 lease 元数据变更不推进 KV revision。不能简单停止持久化，否则会破坏
@@ -203,6 +203,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   一致。`fragment=true` 现按 etcd 默认 `1.5 MiB + 512 KiB overhead` 切分多事件
   response，中间片 `Fragment=true`、末片 false；事件顺序和 header/revision 保持。
   完整 Watch 测试、race、server 回归与 vet 通过。
+- **RangeStream 通用语义（2026-07-16）**：对照
+  `/root/etcd/server/etcdserver/v3_server.go:rangeStream`、
+  `api/v3rpc/key.go:checkRangeStreamRequest` 及 `tests/integration/v3_grpc_test.go`
+  补齐 etcd 3.7 的 `CountOnly`、`Limit`、`KeysOnly` 与显式 `ASCEND+KEY`。
+  CountOnly/Limit 复用已对齐的 unary Range 并封装为单条流消息；无限扫描继续使用
+  固定 revision、按键/字节双阈值分块的低内存路径。修复 scanner 内部 chunk
+  `More=true` 泄漏为公开“Limit 截断”语义，以及 terminal `Count=0` 两个 wire
+  差异。进一步确认 TiKV 多 Region partition worker 原先竞争共享 channel，会使
+  流结果跨 Region 乱序；现各 partition 仍并行预取到容量 1 的有界 channel，协调器
+  按排序后的 partition 顺序排空，兼顾升序语义、并行 IO 和背压。确定性测试延迟
+  首 partition、让后 partition 先产出 700-key 结果，仍验证全流严格升序；server、
+  scanner race/vet 通过。额外以 26 个 partition（超过 24 个全局 worker 配额）、
+  每 partition 超过一个满 chunk 覆盖调度死锁边界；worker 按 partition 顺序获取
+  配额，避免后区间占满配额后等待协调器、首区间又等待配额的环形等待。官方 3.7
+  `client/v3.GetStream` 对独立 TiKV keyspace 与
+  `/root/etcd/bin/etcd` 的双端差分连续 10 轮通过，逐字段比较合并后的 KV、
+  revision、Count 和 More。
 - **Maintenance Hash/HashKV（2026-07-16）**：删除原先仅对 revision 做 CRC 的
   伪校验，改为在逻辑写屏障内扫描指定 revision 之前仍保留的租户对象 MVCC
   版本，并用 CRC32C 生成确定性摘要。event-log、完整性 watermark 和 internal
@@ -455,12 +472,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
 
 ### P1：通用服务能力
 
-1. 实现 etcd Auth 用户、角色、key-range 权限和 token 生命周期，并与每实例
-   mTLS 配合。详细设计见 `docs/dbaas_auth_design_cn.md`；在管理面、token、
-   unary 数据面和 Watch 持续鉴权全部完成前，AuthEnable 继续明确返回
-   Unimplemented，避免产生“已启用但数据面未保护”的安全假象。
-2. 验证 `client/v3/concurrency` 的 mutex、election、session 失效和 leader
-   切换语义。
+1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
+   RBAC、token 生命周期与 Watch/Lease 持续鉴权已完成，下一阶段接每实例 mTLS。
+2. 对已通过的 `client/v3/concurrency` mutex/election/session/failover recipe
+   增加 lease 自然过期和长时间 soak。
 3. 建立 DBaaS 控制面契约：创建、扩缩、升级、备份、恢复、证书轮换、销毁。
 4. 建立实例级限额和计量：CPU、内存、PV、备份容量、网络、QPS、watch 数、
    value/txn 大小；限额错误必须稳定且可观测。

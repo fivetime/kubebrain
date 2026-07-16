@@ -147,16 +147,13 @@ func (r *scanner) Count(ctx context.Context, start []byte, end []byte, revision 
 // values at once (a failover-time memory spike); range reads that need the value
 // pass false.
 func (r *scanner) RangeStream(ctx context.Context, start []byte, end []byte, revision uint64, keysOnly bool) chan *proto.StreamRangeResponse {
-	// Buffer sizing is the memory bound of the whole stream (k8s 1.37 review):
-	// partition workers fill this channel in parallel at scan speed while the
-	// consumer drains at gRPC send speed, so with values attached a deep buffer
-	// once held GB-scale spikes per stream (measured: +1.3GB on a throttled 2GB
-	// stream), multiplied by however many cachers the apiserver cold-starts
-	// concurrently now that EtcdRangeStream defaults on. A shallow buffer
-	// instead blocks the workers on send, so HTTP/2 flow control propagates all
-	// the way into the scan (the shim cancels+drains on disconnect, so blocked
-	// workers never leak). With chunks also byte-capped (rangeStreamBatchBytes)
-	// the bound is a CONSTANT ≈ buffer×1.5MiB ≈ 12MB regardless of value size.
+	// Buffer sizing is part of the stream memory bound (k8s 1.37 review). A deep
+	// shared buffer once held GB-scale spikes per stream (measured: +1.3GB on a
+	// throttled 2GB stream). The ordered implementation now adds one chunk slot
+	// per active partition worker; globalScanWorkers bounds those active slots,
+	// while this shallow output buffer propagates HTTP/2 backpressure through the
+	// coordinator. Together with rangeStreamBatchBytes, memory is bounded by
+	// (global workers + output buffer) * ~1.5MiB rather than key count.
 	// keysOnly streams (count-index rebuild) carry no values — tiny entries
 	// where the deep buffer is cheap and keeps the rebuild scan unthrottled.
 	buffer := 8
@@ -164,12 +161,14 @@ func (r *scanner) RangeStream(ctx context.Context, start []byte, end []byte, rev
 		buffer = 1000
 	}
 	stream := make(chan *proto.StreamRangeResponse, buffer)
-	receiver := newStreamReceiver(revision, stream)
 
 	go func() {
 		defer close(stream)
-		_, err := r.scan(ctx, start, end, revision, false, keysOnly, receiver)
-		stream <- getListStreamEnd(revision, err)
+		err := r.rangeStreamOrdered(ctx, start, end, revision, keysOnly, stream)
+		select {
+		case stream <- getListStreamEnd(revision, err):
+		case <-ctx.Done():
+		}
 		if err != nil {
 			if ctx.Err() != nil {
 				// The caller tore the stream down (client disconnect, a canceled
@@ -190,6 +189,107 @@ func (r *scanner) RangeStream(ctx context.Context, start []byte, end []byte, rev
 	}()
 
 	return stream
+}
+
+// rangeStreamOrdered scans physical partitions concurrently but drains their
+// bounded result channels in partition order. A shared output channel lets the
+// fastest worker win the race and therefore violates etcd's natural ascending
+// key order whenever a range crosses TiKV regions. One buffered chunk per
+// partition preserves parallel prefetch without materializing a partition (or
+// the full range) in memory.
+func (r *scanner) rangeStreamOrdered(ctx context.Context, start, end []byte, revision uint64, keysOnly bool, output chan<- *proto.StreamRangeResponse) error {
+	workerCtx, cancelWorkers := context.WithCancel(ctx)
+	defer cancelWorkers()
+	tso, err := r.store.GetTimestampOracle(workerCtx)
+	if err != nil {
+		return err
+	}
+	if err := r.checkCompactRace(workerCtx, revision, false); err != nil {
+		return err
+	}
+	partitions, err := r.store.GetPartitions(workerCtx, start, end)
+	if err != nil {
+		return err
+	}
+	partitions = r.adjustPartitionsBorders(partitions)
+
+	type partitionResult struct {
+		chunks chan *proto.StreamRangeResponse
+		err    chan error
+	}
+	results := make([]partitionResult, len(partitions))
+	// Serialize only semaphore acquisition (not scanning) in partition order.
+	// Without this baton, later partitions can win all globalScanWorkers slots,
+	// fill their one-chunk buffers, and block while the coordinator waits for
+	// partition 0, which is itself waiting for a slot: a circular wait.
+	acquireTurn := make([]chan struct{}, len(partitions)+1)
+	for idx := range acquireTurn {
+		acquireTurn[idx] = make(chan struct{})
+	}
+	close(acquireTurn[0])
+	for idx, partition := range partitions {
+		results[idx] = partitionResult{
+			chunks: make(chan *proto.StreamRangeResponse, 1),
+			err:    make(chan error, 1),
+		}
+		go func(idx int, partition storage.Partition, result partitionResult) {
+			defer close(result.chunks)
+			useSem := len(partitions) > 1
+			if useSem {
+				select {
+				case <-acquireTurn[idx]:
+				case <-workerCtx.Done():
+					close(acquireTurn[idx+1])
+					result.err <- workerCtx.Err()
+					return
+				}
+				select {
+				case globalScanSem <- struct{}{}:
+					defer func() { <-globalScanSem }()
+				case <-workerCtx.Done():
+					close(acquireTurn[idx+1])
+					result.err <- workerCtx.Err()
+					return
+				}
+				close(acquireTurn[idx+1])
+			}
+
+			receiver := newStreamReceiver(revision, result.chunks)
+			worker := newWorker(workerConfig{
+				idx:       idx,
+				partition: partition,
+				tso:       tso,
+				revision:  revision,
+				keysOnly:  keysOnly,
+				tombstone: r.config.Tombstone,
+			}, r.store, r.coder, r.metricCli)
+			_, scanErr := worker.runWithBackoffRetry(workerCtx, receiver)
+			if scanErr == nil {
+				receiver.close()
+			}
+			result.err <- scanErr
+		}(idx, partition, results[idx])
+	}
+
+	var firstErr error
+	for _, result := range results {
+		for chunk := range result.chunks {
+			if firstErr != nil {
+				continue // Drain workers after an earlier failure.
+			}
+			select {
+			case output <- chunk:
+			case <-ctx.Done():
+				firstErr = ctx.Err()
+				cancelWorkers()
+			}
+		}
+		if partitionErr := <-result.err; firstErr == nil && partitionErr != nil {
+			firstErr = partitionErr
+			cancelWorkers()
+		}
+	}
+	return firstErr
 }
 
 func getListStreamEnd(revision uint64, err error) *proto.StreamRangeResponse {

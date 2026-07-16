@@ -26,6 +26,7 @@ import (
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/kubewharf/kubebrain/pkg/backend"
 	"github.com/kubewharf/kubebrain/pkg/metrics/mock"
@@ -115,6 +116,10 @@ func TestRangeStreamStreamsAllKeys(t *testing.T) {
 	}
 	last := rs.sent[len(rs.sent)-1]
 	require.Empty(t, last.RangeResponse.Kvs, "final chunk must be header-only")
+	require.EqualValues(t, n, last.RangeResponse.Count)
+	for _, chunk := range rs.sent {
+		require.False(t, chunk.RangeResponse.More, "unlimited RangeStream must not expose scanner chunking as Range.More")
+	}
 	require.Equal(t, want, got, "concatenated chunks must equal the full key set")
 }
 
@@ -150,9 +155,8 @@ func TestRangeStreamRejectsUnsupportedShapes(t *testing.T) {
 		name string
 		req  *etcdserverpb.RangeRequest
 	}{
-		{"countOnly", &etcdserverpb.RangeRequest{Key: []byte("/a"), RangeEnd: []byte("/b"), CountOnly: true}},
 		{"modRevisionFilter", &etcdserverpb.RangeRequest{Key: []byte("/a"), RangeEnd: []byte("/b"), MinModRevision: 5}},
-		{"sortOrder", &etcdserverpb.RangeRequest{Key: []byte("/a"), RangeEnd: []byte("/b"), SortOrder: etcdserverpb.RangeRequest_DESCEND}},
+		{"sortOrder", &etcdserverpb.RangeRequest{Key: []byte("/a"), RangeEnd: []byte("/b"), SortOrder: etcdserverpb.RangeRequest_DESCEND, SortTarget: etcdserverpb.RangeRequest_KEY}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -161,6 +165,42 @@ func TestRangeStreamRejectsUnsupportedShapes(t *testing.T) {
 			require.Error(t, err)
 			require.Equal(t, codes.Unimplemented, status.Code(err))
 			require.Empty(t, rs.sent, "no chunks on a rejected request")
+		})
+	}
+}
+
+func TestRangeStreamSupportedOptionsMatchUnaryRange(t *testing.T) {
+	server, cleanup := newRangeStreamTestServer(t)
+	defer cleanup()
+	ctx := context.Background()
+	for i := 0; i < 8; i++ {
+		_, err := server.Put(ctx, &etcdserverpb.PutRequest{
+			Key: []byte(fmt.Sprintf("/options/%02d", i)), Value: []byte(fmt.Sprintf("value-%02d", i)),
+		})
+		require.NoError(t, err)
+	}
+
+	tests := []struct {
+		name string
+		req  *etcdserverpb.RangeRequest
+	}{
+		{name: "count only ignores limit", req: &etcdserverpb.RangeRequest{Key: []byte("/options/"), RangeEnd: []byte("/options0"), CountOnly: true, Limit: 1}},
+		{name: "limit", req: &etcdserverpb.RangeRequest{Key: []byte("/options/"), RangeEnd: []byte("/options0"), Limit: 3}},
+		{name: "explicit ascending key", req: &etcdserverpb.RangeRequest{Key: []byte("/options/"), RangeEnd: []byte("/options0"), Limit: 3, SortOrder: etcdserverpb.RangeRequest_ASCEND, SortTarget: etcdserverpb.RangeRequest_KEY}},
+		{name: "keys only", req: &etcdserverpb.RangeRequest{Key: []byte("/options/"), RangeEnd: []byte("/options0"), KeysOnly: true}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			unary, err := server.Range(ctx, proto.Clone(tt.req).(*etcdserverpb.RangeRequest))
+			require.NoError(t, err)
+			rs := &fakeRangeStreamServer{ctx: ctx}
+			require.NoError(t, server.RangeStream(proto.Clone(tt.req).(*etcdserverpb.RangeRequest), rs))
+
+			merged := &etcdserverpb.RangeResponse{}
+			for _, chunk := range rs.sent {
+				proto.Merge(merged, chunk.RangeResponse)
+			}
+			require.True(t, proto.Equal(unary, merged), "stream=%s unary=%s", merged, unary)
 		})
 	}
 }

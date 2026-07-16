@@ -19,7 +19,9 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/golang/mock/gomock"
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
@@ -328,6 +330,128 @@ func TestRangeStreamKeysOnlyDropsValues(t *testing.T) {
 		require.Truef(t, ok, "key %s must be emitted in keysOnly mode", k)
 		require.Emptyf(t, v, "value must be dropped when keysOnly=true (key %s)", k)
 	}
+}
+
+type partitionedTestStorage struct {
+	storage.KvStorage
+	partitions []storage.Partition
+	delayStart []byte
+}
+
+func (s *partitionedTestStorage) GetPartitions(context.Context, []byte, []byte) ([]storage.Partition, error) {
+	return append([]storage.Partition(nil), s.partitions...), nil
+}
+
+func (s *partitionedTestStorage) Iter(ctx context.Context, start, end []byte, timestamp, limit uint64) (storage.Iter, error) {
+	it, err := s.KvStorage.Iter(ctx, start, end, timestamp, limit)
+	if err != nil || !bytes.Equal(start, s.delayStart) {
+		return it, err
+	}
+	return &delayedFirstIter{Iter: it, delay: 100 * time.Millisecond}, nil
+}
+
+type delayedFirstIter struct {
+	storage.Iter
+	once  sync.Once
+	delay time.Duration
+}
+
+func (i *delayedFirstIter) Next(ctx context.Context) error {
+	i.once.Do(func() {
+		select {
+		case <-time.After(i.delay):
+		case <-ctx.Done():
+		}
+	})
+	return i.Iter.Next(ctx)
+}
+
+func TestRangeStreamPreservesKeyOrderAcrossPartitions(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	m := mock.NewMinimalMetrics(ctrl)
+	c := coder.DefaultKeyspace().NewCoder()
+	kv := imemkv.NewKvStorage()
+	defer kv.Close()
+
+	const n = 700
+	b := kv.BeginBatchWrite()
+	for idx := 0; idx < n; idx++ {
+		key := []byte(fmt.Sprintf("/ordered/%04d", idx))
+		b.Put(c.EncodeObjectKey(key, 100), []byte("v"), 0)
+	}
+	require.NoError(t, b.Commit(context.Background()))
+	start := coder.DefaultKeyspace().ObjectKeyspaceStart()
+	end := coder.DefaultKeyspace().ObjectKeyspaceEnd()
+	split := c.EncodeObjectKey([]byte("/ordered/0350"), 0)
+	store := &partitionedTestStorage{
+		KvStorage: kv,
+		partitions: []storage.Partition{
+			{Start: start, End: split},
+			{Start: split, End: end},
+		},
+		delayStart: start,
+	}
+	sc := NewScanner(store, c, Config{CompactKey: []byte("/compact"), Tombstone: []byte("tomb")}, m)
+
+	var got [][]byte
+	for resp := range sc.RangeStream(context.Background(), start, end, 1000, false) {
+		require.Empty(t, resp.Err)
+		for _, kv := range resp.RangeResponse.Kvs {
+			got = append(got, append([]byte(nil), kv.Key...))
+		}
+	}
+	require.Len(t, got, n)
+	for idx := 1; idx < len(got); idx++ {
+		require.Less(t, bytes.Compare(got[idx-1], got[idx]), 0,
+			"stream keys must be strictly ascending at index %d: %q then %q", idx, got[idx-1], got[idx])
+	}
+}
+
+func TestRangeStreamMorePartitionsThanGlobalWorkerLimitDoesNotDeadlock(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	m := mock.NewMinimalMetrics(ctrl)
+	c := coder.DefaultKeyspace().NewCoder()
+	kv := imemkv.NewKvStorage()
+	defer kv.Close()
+
+	const (
+		partitionCount = globalScanWorkers + 2
+		keysPerPart    = rangeStreamBatch + 1 // Fill buffer, then block on flush.
+	)
+	b := kv.BeginBatchWrite()
+	for part := 0; part < partitionCount; part++ {
+		for idx := 0; idx < keysPerPart; idx++ {
+			key := []byte(fmt.Sprintf("/many/%02d/%04d", part, idx))
+			b.Put(c.EncodeObjectKey(key, 100), []byte("v"), 0)
+		}
+	}
+	require.NoError(t, b.Commit(context.Background()))
+
+	start := coder.DefaultKeyspace().ObjectKeyspaceStart()
+	end := coder.DefaultKeyspace().ObjectKeyspaceEnd()
+	partitions := make([]storage.Partition, partitionCount)
+	borders := make([][]byte, partitionCount+1)
+	borders[0], borders[partitionCount] = start, end
+	for part := 1; part < partitionCount; part++ {
+		borders[part] = c.EncodeObjectKey([]byte(fmt.Sprintf("/many/%02d/", part)), 0)
+	}
+	for part := range partitions {
+		partitions[part] = storage.Partition{Start: borders[part], End: borders[part+1]}
+	}
+	store := &partitionedTestStorage{KvStorage: kv, partitions: partitions, delayStart: start}
+	sc := NewScanner(store, c, Config{CompactKey: []byte("/compact"), Tombstone: []byte("tomb")}, m)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	count := 0
+	for resp := range sc.RangeStream(ctx, start, end, 1000, false) {
+		require.Empty(t, resp.Err)
+		count += len(resp.RangeResponse.Kvs)
+	}
+	require.NoError(t, ctx.Err(), "ordered stream deadlocked while later partitions held every worker slot")
+	require.Equal(t, partitionCount*keysPerPart, count)
 }
 
 // TestStreamReceiverNotRetriableAfterEmit locks the k8s-1.37-review fix: a

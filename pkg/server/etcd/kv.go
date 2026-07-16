@@ -122,26 +122,30 @@ func (s *RPCServer) RangeStream(r *etcdserverpb.RangeRequest, rs etcdserverpb.KV
 	if err := validateRangeRequest(r); err != nil {
 		return err
 	}
-	// Reject shapes the streaming scan cannot honor (parity with etcd's
-	// checkRangeStreamRequest). The apiserver's syncStreamRecursive uses none of
-	// these, so a client that does gets a clean Unimplemented instead of a wrong
-	// answer.
-	if r.CountOnly {
-		return status.Error(codes.Unimplemented, "etcdserver: countOnly is not supported by RangeStream")
-	}
+	// Match etcd's checkRangeStreamRequest: NONE means the natural ascending-key
+	// order regardless of SortTarget, and explicit ASCEND+KEY is equivalent.
+	// Other sort orders and revision filters cannot be streamed incrementally.
 	if hasRangeRevisionFilters(r) {
-		return status.Error(codes.Unimplemented, "etcdserver: mod/create-revision filters are not supported by RangeStream")
+		return status.Error(codes.Unimplemented, "RangeStream does not support revision filters")
 	}
-	if r.SortOrder != etcdserverpb.RangeRequest_NONE {
-		return status.Error(codes.Unimplemented, "etcdserver: sorting is not supported by RangeStream")
+	if !isDefaultRangeStreamOrdering(r) {
+		return status.Error(codes.Unimplemented, "RangeStream does not support custom sort orders")
 	}
-	if r.Limit > 0 {
-		// etcd 3.7 honors Limit on RangeStream (totalLimit + More/Count on the
-		// final chunk); the partition-parallel scanner has no cross-partition
-		// ordering to truncate against, so honoring it is not possible here.
-		// Silently ignoring it would return the FULL range to a client that
-		// asked for N keys — a wrong answer plus an unexpected O(all-keys) scan.
-		return status.Error(codes.Unimplemented, "etcdserver: limit is not supported by RangeStream")
+	// CountOnly and limited requests need Count/More semantics over the complete
+	// ordered range. Reuse the already-compatible unary implementation and wrap
+	// its bounded result as one stream message. Unlimited scans retain the
+	// partitioned, byte-bounded streaming path used by kube-apiserver.
+	if r.CountOnly || r.Limit > 0 {
+		resp, err := s.Range(ctx, proto.Clone(r).(*etcdserverpb.RangeRequest))
+		if err != nil {
+			return rangeStreamStatusErr(err)
+		}
+		if err := rs.Send(&etcdserverpb.RangeStreamResponse{RangeResponse: resp}); err != nil {
+			return err
+		}
+		s.metricCli.EmitCounter("read.range_stream", 1)
+		s.metricCli.EmitHistogram("read.range_stream.latency", time.Since(startTime).Seconds())
+		return nil
 	}
 	caller, err := s.authCallerFromContext(ctx)
 	if err != nil {
@@ -165,6 +169,7 @@ func (s *RPCServer) RangeStream(r *etcdserverpb.RangeRequest, rs etcdserverpb.KV
 		sentAny   bool
 		headerRev int64
 		chunks    int
+		count     int64
 	)
 	for chunk := range ch {
 		if chunk.err != nil {
@@ -174,6 +179,20 @@ func (s *RPCServer) RangeStream(r *etcdserverpb.RangeRequest, rs etcdserverpb.KV
 			return status.Error(codes.Unavailable, chunk.err.Error())
 		}
 		headerRev = chunk.resp.Header.Revision
+		count += int64(len(chunk.resp.Kvs))
+		// Scanner.More is an internal "another scanner chunk follows" marker.
+		// etcd's wire More means the client Limit truncated the requested range;
+		// an unlimited stream therefore reports false on every chunk. The terminal
+		// header-only response carries the merged response's total Count.
+		chunk.resp.More = false
+		if len(chunk.resp.Kvs) == 0 {
+			chunk.resp.Count = count
+		}
+		if r.KeysOnly {
+			for _, kv := range chunk.resp.Kvs {
+				kv.Value = nil
+			}
+		}
 		if err := rs.Send(&etcdserverpb.RangeStreamResponse{RangeResponse: chunk.resp}); err != nil {
 			s.metricCli.EmitCounter("read.range_stream.send_err", 1)
 			return err
@@ -192,6 +211,11 @@ func (s *RPCServer) RangeStream(r *etcdserverpb.RangeRequest, rs etcdserverpb.KV
 	s.metricCli.EmitHistogram("read.range_stream.latency", time.Since(startTime).Seconds())
 	klog.V(4).InfoS("RANGE STREAM done", "key", r.Key, "chunks", chunks, "rev", headerRev)
 	return nil
+}
+
+func isDefaultRangeStreamOrdering(r *etcdserverpb.RangeRequest) bool {
+	return r.SortOrder == etcdserverpb.RangeRequest_NONE ||
+		(r.SortOrder == etcdserverpb.RangeRequest_ASCEND && r.SortTarget == etcdserverpb.RangeRequest_KEY)
 }
 
 // rangeStreamStatusErr shapes a pre-stream failure into the RangeStream error
