@@ -85,6 +85,7 @@ type BackendShim interface {
 	InternalRange(ctx context.Context, prefix []byte) (map[string][]byte, error)
 	InternalPut(ctx context.Context, key, value []byte) error
 	InternalDelete(ctx context.Context, key []byte) error
+	InternalCAS(ctx context.Context, ops []backend.InternalCASOp) error
 
 	// BeginRangeTxn excludes logical writes while a range compare and its chosen
 	// branch execute, preventing phantoms under TiKV snapshot isolation.
@@ -198,6 +199,10 @@ func (b *backendShim) InternalPut(ctx context.Context, key, value []byte) error 
 
 func (b *backendShim) InternalDelete(ctx context.Context, key []byte) error {
 	return b.backend.InternalDelete(ctx, key)
+}
+
+func (b *backendShim) InternalCAS(ctx context.Context, ops []backend.InternalCASOp) error {
+	return b.backend.InternalCAS(ctx, ops)
 }
 
 func (b *backendShim) Create(ctx context.Context, r *etcdserverpb.PutRequest, includeFailureRange bool) (*etcdserverpb.TxnResponse, error) {

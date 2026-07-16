@@ -209,6 +209,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Mutex ownership 和 Election leader 值均保持，随后正常 Resign/Unlock。由此确认
   官方 concurrency 中使用 `header.revision+1` 表示 watch 下界，不要求每个中间
   revision 都实际存在；KubeBrain 的失败预分配跳号未破坏这些 recipe。
+- **Auth A1 持久化基础（2026-07-16）**：新增原子 `Backend.InternalCAS`，先读并
+  校验全部 internal key 的精确旧值，再打开一个 storage batch 统一 CAS/创建/删除；
+  冲突返回 `ErrCASFailed` 且整批不落地，不消耗用户 revision。etcd shim 已贯通该
+  原语。新增 auth repository，以 `auth/config` 的独立 revision 串行化
+  `auth/users/*` 与 `auth/roles/*` protobuf 记录，支持全量恢复和确定性编码；旧
+  revision mutation 不会部分覆盖对象。bootstrap manager 已实现但**尚未挂公开
+  RPC**：UserAdd、RoleAdd、UserGrantRole、AuthEnable 前置条件与幂等行为，密码
+  使用 bcrypt；缺 root user/root role 返回 etcd 对应错误。定向普通/race 与
+  backend/server 全量测试通过。下一步补齐 CRUD/permission，再做 token 和数据面；
+  在此之前公开 Auth 仍保持 Unimplemented。
 
 ### P1：通用服务能力
 
