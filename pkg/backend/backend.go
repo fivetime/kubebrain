@@ -179,6 +179,11 @@ type Backend interface {
 	// GetCurrentRevision returns the read revision
 	GetCurrentRevision() uint64
 
+	// GetDurableRevision returns the highest user revision that this keyspace has
+	// durably published as safe for follower-local snapshots. It may lag
+	// GetCurrentRevision, but must never lead committed user state.
+	GetDurableRevision(ctx context.Context) (uint64, error)
+
 	// GetPublishedRevision returns the highest revision whose events have been
 	// fully fanned out to watch subscribers. It is <= GetCurrentRevision (which
 	// advances pre-publish), and is the safe floor for seeding a from-now watch's
@@ -286,6 +291,12 @@ type backend struct {
 	// commitNotify wakes writes blocked in waitCommittedRevision each time the
 	// committed revision advances (see commit_wait.go).
 	commitNotify *commitNotify
+
+	// durableRevisionTarget and durableRevisionSignal coalesce collector progress
+	// into monotonic background persistence, so a slow metadata write cannot
+	// delay watch fan-out or user-write acknowledgement.
+	durableRevisionTarget uint64
+	durableRevisionSignal chan struct{}
 
 	// logicalWriteMu is a leader-local predicate-lock substitute. Ordinary
 	// logical writes take RLock and therefore remain fully concurrent. A generic
@@ -439,11 +450,12 @@ func NewBackend(kv storage.KvStorage, config Config, metricCli metrics.Metrics) 
 			bufSize:          config.WatchFanoutBuffer,
 			progressKick:     make(chan struct{}, 1),
 		},
-		historyScanSem:   make(chan struct{}, historyScanConcurrency),
-		historyScanGroup: newScanGroup(),
-		commitNotify:     newCommitNotify(),
-		compactSignal:    make(chan struct{}, 1),
-		metricCli:        metricCli,
+		historyScanSem:        make(chan struct{}, historyScanConcurrency),
+		historyScanGroup:      newScanGroup(),
+		commitNotify:          newCommitNotify(),
+		durableRevisionSignal: make(chan struct{}, 1),
+		compactSignal:         make(chan struct{}, 1),
+		metricCli:             metricCli,
 	}
 
 	if config.EnableCountIndex && config.EnableEtcdCompatibility {
@@ -472,6 +484,7 @@ func NewBackend(kv storage.KvStorage, config Config, metricCli metrics.Metrics) 
 	// TODO stop chan
 	// write into watch chan, trigger by create/ update/ delete method in storage interface
 	go b.collectStorageWriteEvents()
+	go b.runDurableRevisionPersister()
 
 	// broadcast fan-out to all subscribed watchers
 	go b.watcherHub.Stream(b.watchChan)
@@ -580,6 +593,7 @@ func (b *backend) collectStorageWriteEvents() {
 						klog.Errorf("event collector skipping abandoned revision %d (dealt=%d) after stall; a writer died between deal and notify", nextRevision, b.tso.Dealt())
 						b.metricCli.EmitCounter("watch.collector.skipped_revision", 1)
 						b.SetCurrentRevision(nextRevision)
+						b.queueDurableRevision(nextRevision)
 						b.advanceCountIndexReadyRev(nextRevision)
 						continue
 					}
@@ -640,6 +654,7 @@ func (b *backend) collectStorageWriteEvents() {
 				b.watchCache.Add(e)
 			}
 			b.SetCurrentRevision(nextRevision)
+			b.queueDurableRevision(nextRevision)
 			b.advanceCountIndexReadyRev(nextRevision)
 		}
 

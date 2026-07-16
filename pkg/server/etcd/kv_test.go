@@ -49,6 +49,7 @@ type testPeerService struct {
 	watchFn          func(context.Context, []byte, []byte, uint64) (<-chan etcdproxy.WatchResult, error)
 	leaseGrantFn     func(context.Context, *etcdserverpb.LeaseGrantRequest) (*etcdserverpb.LeaseGrantResponse, error)
 	leaseKeepAliveFn func(context.Context, *etcdserverpb.LeaseKeepAliveRequest) (*etcdserverpb.LeaseKeepAliveResponse, error)
+	txnFn            func(context.Context, *etcdserverpb.TxnRequest) (*etcdserverpb.TxnResponse, error)
 }
 
 func (s testPeerService) SyncReadRevision(ctx context.Context) error {
@@ -92,8 +93,105 @@ func (s testPeerService) Ready() error {
 	return nil
 }
 
-func (testPeerService) Txn(context.Context, *etcdserverpb.TxnRequest) (*etcdserverpb.TxnResponse, error) {
+func (s testPeerService) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etcdserverpb.TxnResponse, error) {
+	if s.txnFn != nil {
+		return s.txnFn(ctx, txn)
+	}
 	return nil, nil
+}
+
+type staleCurrentRevisionShim struct {
+	BackendShim
+	current uint64
+}
+
+func (s staleCurrentRevisionShim) GetCurrentRevision() uint64 { return s.current }
+
+func TestSerializableReadonlyTxnUsesOneDurableFollowerSnapshot(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+
+	compareKey := []byte("/registry/serializable-txn/compare")
+	branchKey := []byte("/registry/serializable-txn/branch")
+	first, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: compareKey, Value: []byte("old")})
+	require.NoError(t, err)
+	second, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: compareKey, Value: []byte("new")})
+	require.NoError(t, err)
+	branch, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: branchKey, Value: []byte("visible")})
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		rev, getErr := server.backend.GetDurableRevision(ctx)
+		return getErr == nil && rev >= uint64(branch.Header.Revision)
+	}, time.Second, time.Millisecond)
+
+	server.backend = staleCurrentRevisionShim{BackendShim: server.backend, current: uint64(first.Header.Revision)}
+	server.peers = testPeerService{
+		isLeader: false,
+		syncReadFn: func(context.Context) error {
+			t.Fatal("serializable read-only txn must not perform leader revision sync")
+			return nil
+		},
+	}
+	resp, err := server.Txn(ctx, &etcdserverpb.TxnRequest{
+		Compare: []*etcdserverpb.Compare{{
+			Key: compareKey, Target: etcdserverpb.Compare_VALUE, Result: etcdserverpb.Compare_EQUAL,
+			TargetUnion: &etcdserverpb.Compare_Value{Value: []byte("new")},
+		}},
+		Success: []*etcdserverpb.RequestOp{{Request: &etcdserverpb.RequestOp_RequestRange{
+			RequestRange: &etcdserverpb.RangeRequest{Key: branchKey, Serializable: true},
+		}}},
+		Failure: []*etcdserverpb.RequestOp{{Request: &etcdserverpb.RequestOp_RequestRange{
+			RequestRange: &etcdserverpb.RangeRequest{Key: compareKey, Serializable: true},
+		}}},
+	})
+	require.NoError(t, err)
+	require.True(t, resp.Succeeded)
+	require.Equal(t, branch.Header.Revision, resp.Header.Revision)
+	require.Less(t, second.Header.Revision, resp.Responses[0].GetResponseRange().Kvs[0].ModRevision)
+	require.Equal(t, []byte("visible"), resp.Responses[0].GetResponseRange().Kvs[0].Value)
+}
+
+func TestReadonlyTxnWithNonSerializableRangeStillRoutesToLeader(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	proxied := false
+	server.peers = testPeerService{isLeader: false, proxyEnabled: true, txnFn: func(_ context.Context, _ *etcdserverpb.TxnRequest) (*etcdserverpb.TxnResponse, error) {
+		proxied = true
+		return &etcdserverpb.TxnResponse{Header: txnHeader(42), Succeeded: true}, nil
+	}}
+	resp, err := server.Txn(context.Background(), &etcdserverpb.TxnRequest{
+		Success: []*etcdserverpb.RequestOp{{Request: &etcdserverpb.RequestOp_RequestRange{
+			RequestRange: &etcdserverpb.RangeRequest{Key: []byte("key")},
+		}}},
+	})
+	require.NoError(t, err)
+	require.True(t, proxied)
+	require.Equal(t, int64(42), resp.Header.Revision)
+}
+
+func TestHistoricalRangeUsesDurableFollowerWatermark(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	key := []byte("/registry/durable-history/key")
+	first, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("v1")})
+	require.NoError(t, err)
+	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("v2")})
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		rev, getErr := server.backend.GetDurableRevision(ctx)
+		return getErr == nil && rev > uint64(first.Header.Revision)
+	}, time.Second, time.Millisecond)
+
+	server.peers = testPeerService{isLeader: false, syncReadFn: func(context.Context) error {
+		t.Fatal("bounded historical read must not require leader revision sync")
+		return nil
+	}}
+	resp, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: key, Revision: first.Header.Revision})
+	require.NoError(t, err)
+	require.Len(t, resp.Kvs, 1)
+	require.Equal(t, []byte("v1"), resp.Kvs[0].Value)
 }
 
 func (s testPeerService) Range(ctx context.Context, req *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {

@@ -55,7 +55,8 @@ func (s *RPCServer) Range(ctx context.Context, r *etcdserverpb.RangeRequest) (*e
 	if authErr = caller.require(r.Key, r.RangeEnd, authpb.READ); authErr != nil {
 		return nil, authErr
 	}
-	if r.Revision > 0 && !s.peers.IsLeader() && s.peers.EtcdProxyEnabled() {
+	durableHistorical := r.Revision > 0 && s.followerHasDurableRevision(ctx, uint64(r.Revision))
+	if r.Revision > 0 && !s.peers.IsLeader() && !durableHistorical && s.peers.EtcdProxyEnabled() {
 		s.metricCli.EmitCounter("read.follower.historical_proxy", 1)
 		proxyCtx, err := s.forwardAuthToken(ctx, caller)
 		if err != nil {
@@ -63,7 +64,7 @@ func (s *RPCServer) Range(ctx context.Context, r *etcdserverpb.RangeRequest) (*e
 		}
 		return s.peers.Range(proxyCtx, r)
 	}
-	if !r.Serializable || r.Revision > 0 {
+	if (!r.Serializable || r.Revision > 0) && !durableHistorical {
 		if err := s.peers.SyncReadRevision(ctx); err != nil {
 			return &etcdserverpb.RangeResponse{}, err
 		}
@@ -168,7 +169,8 @@ func (s *RPCServer) RangeStream(r *etcdserverpb.RangeRequest, rs etcdserverpb.KV
 	if err = caller.require(r.Key, r.RangeEnd, authpb.READ); err != nil {
 		return err
 	}
-	if !r.Serializable || r.Revision > 0 {
+	durableHistorical := r.Revision > 0 && s.followerHasDurableRevision(ctx, uint64(r.Revision))
+	if (!r.Serializable || r.Revision > 0) && !durableHistorical {
 		if err := s.peers.SyncReadRevision(ctx); err != nil {
 			return rangeStreamStatusErr(err)
 		}
@@ -237,6 +239,21 @@ func isDefaultRangeStreamOrdering(r *etcdserverpb.RangeRequest) bool {
 		(r.SortOrder == etcdserverpb.RangeRequest_ASCEND && r.SortTarget == etcdserverpb.RangeRequest_KEY)
 }
 
+func (s *RPCServer) followerHasDurableRevision(ctx context.Context, requested uint64) bool {
+	if requested == 0 || s.peers.IsLeader() {
+		return false
+	}
+	durable, err := s.backend.GetDurableRevision(ctx)
+	if err != nil || requested > durable {
+		return false
+	}
+	// The persisted marker is a safe lower bound for this follower's in-memory
+	// revision too; advancing it prevents the generic future-revision check from
+	// rejecting the historical snapshot we just proved is committed.
+	s.backend.SetCurrentRevision(durable)
+	return true
+}
+
 // rangeStreamStatusErr shapes a pre-stream failure into the RangeStream error
 // contract, mirroring the structure of etcd's togRPCError (v3rpc/util.go):
 // context errors pass through so gRPC reports Canceled/DeadlineExceeded, and
@@ -300,6 +317,24 @@ func (s *RPCServer) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etc
 	}
 	ctx, cancel := context.WithTimeout(ctx, unaryRpcTimeout)
 	defer cancel()
+	if txnIsReadonly(txn) && txnIsSerializable(txn) {
+		revision, err := s.serializableTxnRevision(ctx)
+		if err != nil {
+			if !s.peers.IsLeader() && s.peers.EtcdProxyEnabled() {
+				proxyCtx, proxyErr := s.forwardAuthToken(ctx, caller)
+				if proxyErr != nil {
+					return nil, proxyErr
+				}
+				return s.peers.Txn(proxyCtx, txn)
+			}
+			return nil, err
+		}
+		response, err := s.executeSerializableReadonlyTxn(ctx, txn, int64(revision))
+		if err == nil {
+			err = s.ensureAuthRevision(ctx, caller)
+		}
+		return response, err
+	}
 
 	// only leader can accept and handle write request
 	// return error includes current leader, help etcd client send request to right instance
@@ -406,6 +441,54 @@ func (s *RPCServer) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etc
 		}
 	}
 	return response, mapFenceErr(err)
+}
+
+// Match upstream txn.IsTxnReadonly/IsTxnSerializable: nested transactions and
+// writes make the request ineligible; every operation in both top-level branches
+// must be a serializable Range.
+func txnIsReadonly(txn *etcdserverpb.TxnRequest) bool {
+	for _, ops := range [][]*etcdserverpb.RequestOp{txn.Success, txn.Failure} {
+		for _, op := range ops {
+			if op.GetRequestRange() == nil {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func txnIsSerializable(txn *etcdserverpb.TxnRequest) bool {
+	for _, ops := range [][]*etcdserverpb.RequestOp{txn.Success, txn.Failure} {
+		for _, op := range ops {
+			r := op.GetRequestRange()
+			if r == nil || !r.Serializable {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func (s *RPCServer) serializableTxnRevision(ctx context.Context) (uint64, error) {
+	if s.peers.IsLeader() {
+		return safeBackendRevision(ctx, s.backend)
+	}
+	return s.backend.GetDurableRevision(ctx)
+}
+
+func (s *RPCServer) executeSerializableReadonlyTxn(ctx context.Context, txn *etcdserverpb.TxnRequest, revision int64) (*etcdserverpb.TxnResponse, error) {
+	compactRevision, err := s.backend.GetCompactRevision(ctx)
+	if err != nil {
+		return nil, err
+	}
+	paths, _, err := s.txnComparePathsGuardedAtRevision(ctx, txn, revision)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateTxnRangeRevisions(txn, paths, int64(compactRevision), revision); err != nil {
+		return nil, err
+	}
+	return s.executeStagedGenericTxnAtRevision(ctx, txn, paths, nil, revision)
 }
 
 func validateTxnRequest(txn *etcdserverpb.TxnRequest) error {
@@ -1194,10 +1277,14 @@ func (s *RPCServer) txnComparePaths(ctx context.Context, txn *etcdserverpb.TxnRe
 // selected the top-level and recursively selected nested branches. The atomic
 // path submits all of them with the flattened writes in one storage batch.
 func (s *RPCServer) txnComparePathsGuarded(ctx context.Context, txn *etcdserverpb.TxnRequest) ([]bool, []backend.TxnGuard, error) {
+	return s.txnComparePathsGuardedAtRevision(ctx, txn, 0)
+}
+
+func (s *RPCServer) txnComparePathsGuardedAtRevision(ctx context.Context, txn *etcdserverpb.TxnRequest, revision int64) ([]bool, []backend.TxnGuard, error) {
 	succeeded := true
 	var guards []backend.TxnGuard
 	for _, cmp := range txn.Compare {
-		ok, guard, err := s.evalCompareGuarded(ctx, cmp)
+		ok, guard, err := s.evalCompareGuardedAtRevision(ctx, cmp, revision)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -1219,7 +1306,7 @@ func (s *RPCServer) txnComparePathsGuarded(ctx context.Context, txn *etcdserverp
 		if nested == nil {
 			continue
 		}
-		nestedPaths, nestedGuards, err := s.txnComparePathsGuarded(ctx, nested)
+		nestedPaths, nestedGuards, err := s.txnComparePathsGuardedAtRevision(ctx, nested, revision)
 		if err != nil {
 			return nil, nil, err
 		}

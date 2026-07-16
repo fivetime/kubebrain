@@ -168,6 +168,40 @@ func TestSerializableRangeStreamBypassesLeaderRevisionSync(t *testing.T) {
 	require.Equal(t, codes.Unavailable, status.Code(err))
 }
 
+func TestHistoricalRangeStreamUsesDurableFollowerWatermark(t *testing.T) {
+	server, cleanup := newRangeStreamTestServer(t)
+	defer cleanup()
+	ctx := context.Background()
+	key := []byte("/stream-history/key")
+	first, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("v1")})
+	require.NoError(t, err)
+	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("v2")})
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		rev, getErr := server.backend.GetDurableRevision(ctx)
+		return getErr == nil && rev > uint64(first.Header.Revision)
+	}, time.Second, time.Millisecond)
+	server.peers = testPeerService{isLeader: false, syncReadFn: func(context.Context) error {
+		t.Fatal("bounded historical RangeStream must not sync with the leader")
+		return nil
+	}}
+
+	rs := &fakeRangeStreamServer{ctx: ctx}
+	err = server.RangeStream(&etcdserverpb.RangeRequest{
+		Key: []byte("/stream-history/"), RangeEnd: []byte("/stream-history0"),
+		Revision: first.Header.Revision, Serializable: true,
+	}, rs)
+	require.NoError(t, err)
+	require.NotEmpty(t, rs.sent)
+	var values [][]byte
+	for _, chunk := range rs.sent {
+		for _, kv := range chunk.RangeResponse.Kvs {
+			values = append(values, kv.Value)
+		}
+	}
+	require.Equal(t, [][]byte{[]byte("v1")}, values)
+}
+
 func TestRangeStreamRejectsUnsupportedShapes(t *testing.T) {
 	server, cleanup := newRangeStreamTestServer(t)
 	defer cleanup()

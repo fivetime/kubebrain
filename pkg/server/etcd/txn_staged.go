@@ -45,6 +45,10 @@ type stagedTxnExecutor struct {
 
 func (s *RPCServer) executeStagedGenericTxn(ctx context.Context, txn *etcdserverpb.TxnRequest, paths []bool, guards []backend.TxnGuard) (*etcdserverpb.TxnResponse, error) {
 	base := int64(s.backend.GetCurrentRevision())
+	return s.executeStagedGenericTxnAtRevision(ctx, txn, paths, guards, base)
+}
+
+func (s *RPCServer) executeStagedGenericTxnAtRevision(ctx context.Context, txn *etcdserverpb.TxnRequest, paths []bool, guards []backend.TxnGuard, base int64) (*etcdserverpb.TxnResponse, error) {
 	e := &stagedTxnExecutor{
 		srv:        s,
 		ctx:        ctx,

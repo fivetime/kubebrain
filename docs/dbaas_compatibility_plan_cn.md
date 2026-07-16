@@ -421,13 +421,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   client/v3 差分覆盖 current/historical serializable Range 及 compare+read Txn，
   参考 etcd 与 TiKV-backed KubeBrain 连续 10 轮一致。真实三副本测试直连 follower、
   删除当前 Leader 后连续执行 30 次 500ms-bound serializable Get，1.98s 内零错误。
-  **保留边界**：显式 historical revision 仍需 proxy/sync；KubeBrain follower 不像
+  **A41 当时的保留边界**：显式 historical revision 仍需 proxy/sync；KubeBrain follower 不像
   Raft member 持续 apply user revision，仅共享 TiKV 数据，不能把任意 client revision
   当作已应用水位。实验同时发现 read-only Txn 若直接使用 follower-local
   `GetCurrentRevision`，compare 可见新值而 staged branch snapshot 仍读旧 revision，
   产生撕裂响应；该路径未合入，Txn 继续 leader-fenced。完整对齐需先增加集群级、
   单调且仅代表连续已提交 user revision 的 durable watermark，再让 compare 与 branch
   固定到同一 snapshot；不能用 fresh PD TSO 伪装 header，否则会越过后续用户 revision。
+  该边界已由下述 A42 的 durable user revision 水位解除。
+- **读取 A42 durable user revision 水位（2026-07-16）**：实现 tenant-scoped
+  `revision/committed` 持久化水位。leader event collector 仅在从队头到目标 revision
+  的所有 deal slot 均已解析后推进水位；成功写此时已落 TiKV，失败/放弃 slot 不含
+  user state。水位通过精确旧值 CAS 单调推进，marker 写失败只导致安全滞后，后续
+  revision 会重试，不会向 follower 暴露尚未提交的快照。read-only Txn 严格复用
+  upstream `IsTxnReadonly`/`IsTxnSerializable` 判定：仅当 success/failure 顶层操作
+  全部为 `Serializable=true` Range 时绕过 leader；compare 与选中 branch 固定到同一
+  durable revision，LEASE compare 也读取该 MVCC 版本内联 lease。显式 historical
+  unary Range/RangeStream 仅在 `requestedRevision <= durableRevision` 时本地服务，
+  否则保留 proxy/sync fail-closed。marker 缺失（升级后尚无新 user revision）同样
+  回退 leader，不把 fresh PD TSO 当成用户 header。定向单测覆盖 stale follower
+  current revision 下 compare/branch 不撕裂、水位不回退、historical stream 不触发
+  revision sync；clientv3 failover 场景扩展为删除 leader 后循环验证 current Range、
+  historical Range 与 serializable compare+read Txn。
 - **Auth A1 持久化基础（2026-07-16）**：新增原子 `Backend.InternalCAS`，先读并
   校验全部 internal key 的精确旧值，再打开一个 storage batch 统一 CAS/创建/删除；
   冲突返回 `ErrCASFailed` 且整批不落地，不消耗用户 revision。etcd shim 已贯通该

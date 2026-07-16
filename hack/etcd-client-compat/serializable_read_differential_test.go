@@ -37,7 +37,9 @@ func TestSerializableRangeSurvivesKubeBrainLeaderDeletion(t *testing.T) {
 	key := fmt.Sprintf("/dbaas-serializable/failover/%d", time.Now().UnixNano())
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	_, err = cli.Put(ctx, key, "value")
+	first, err := cli.Put(ctx, key, "v1")
+	require.NoError(t, err)
+	_, err = cli.Put(ctx, key, "v2")
 	require.NoError(t, err)
 	defer func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -46,17 +48,44 @@ func TestSerializableRangeSurvivesKubeBrainLeaderDeletion(t *testing.T) {
 	}()
 	require.Eventually(t, func() bool {
 		resp, err := cli.Get(ctx, key, clientv3.WithSerializable())
-		return err == nil && len(resp.Kvs) == 1 && string(resp.Kvs[0].Value) == "value"
+		if err != nil || len(resp.Kvs) != 1 || string(resp.Kvs[0].Value) != "v2" {
+			return false
+		}
+		historical, err := cli.Get(ctx, key, clientv3.WithRev(first.Header.Revision), clientv3.WithSerializable())
+		if err != nil || len(historical.Kvs) != 1 || string(historical.Kvs[0].Value) != "v1" {
+			return false
+		}
+		txn, err := cli.Txn(ctx).
+			If(clientv3.Compare(clientv3.Value(key), "=", "v2")).
+			Then(clientv3.OpGet(key, clientv3.WithSerializable())).
+			Else(clientv3.OpGet(key, clientv3.WithSerializable())).
+			Commit()
+		return err == nil && txn.Succeeded && len(txn.Responses) == 1 &&
+			len(txn.Responses[0].GetResponseRange().Kvs) == 1
 	}, 5*time.Second, 20*time.Millisecond)
 
 	output, err := exec.CommandContext(ctx, "kubectl", "-n", namespace, "delete", "pod", leaderPod, "--wait=false").CombinedOutput()
 	require.NoErrorf(t, err, "delete leader: %s", output)
 	for i := 0; i < 30; i++ {
-		opCtx, opCancel := context.WithTimeout(ctx, 500*time.Millisecond)
+		opCtx, opCancel := context.WithTimeout(ctx, 750*time.Millisecond)
 		get, getErr := cli.Get(opCtx, key, clientv3.WithSerializable())
+		historical, historicalErr := cli.Get(opCtx, key, clientv3.WithRev(first.Header.Revision), clientv3.WithSerializable())
+		txn, txnErr := cli.Txn(opCtx).
+			If(clientv3.Compare(clientv3.Value(key), "=", "v2")).
+			Then(clientv3.OpGet(key, clientv3.WithSerializable())).
+			Else(clientv3.OpGet(key, clientv3.WithSerializable())).
+			Commit()
 		opCancel()
 		require.NoError(t, getErr, "serializable Range iteration %d", i)
 		require.Len(t, get.Kvs, 1)
+		require.Equal(t, "v2", string(get.Kvs[0].Value))
+		require.NoError(t, historicalErr, "historical Range iteration %d", i)
+		require.Len(t, historical.Kvs, 1)
+		require.Equal(t, "v1", string(historical.Kvs[0].Value))
+		require.NoError(t, txnErr, "serializable Txn iteration %d", i)
+		require.True(t, txn.Succeeded)
+		require.Len(t, txn.Responses[0].GetResponseRange().Kvs, 1)
+		require.Equal(t, "v2", string(txn.Responses[0].GetResponseRange().Kvs[0].Value))
 		time.Sleep(50 * time.Millisecond)
 	}
 }

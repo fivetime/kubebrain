@@ -120,6 +120,9 @@ type BackendShim interface {
 	// GetCurrentRevision returns the read revision
 	GetCurrentRevision() uint64
 
+	// GetDurableRevision returns the safe cluster-visible follower snapshot.
+	GetDurableRevision(ctx context.Context) (uint64, error)
+
 	// GetPublishedRevision returns the highest revision fully fanned out to
 	// watchers; the safe floor for seeding a from-now watch's progress.
 	GetPublishedRevision() uint64
@@ -190,6 +193,10 @@ func NewBackendShim(backend backend.Backend, metricCli metrics.Metrics) BackendS
 
 func (b *backendShim) InternalGet(ctx context.Context, key []byte) ([]byte, error) {
 	return b.backend.InternalGet(ctx, key)
+}
+
+func (b *backendShim) GetDurableRevision(ctx context.Context) (uint64, error) {
+	return b.backend.GetDurableRevision(ctx)
 }
 
 func (b *backendShim) HashKV(ctx context.Context, revision uint64) (uint32, uint64, error) {

@@ -34,11 +34,15 @@ import (
 // current revision) that the atomic txn path can assert at commit time (#4 Tier
 // 2). No guard is returned for range compares or absent keys.
 func (s *RPCServer) evalCompareGuarded(ctx context.Context, cmp *etcdserverpb.Compare) (bool, *backend.TxnGuard, error) {
+	return s.evalCompareGuardedAtRevision(ctx, cmp, 0)
+}
+
+func (s *RPCServer) evalCompareGuardedAtRevision(ctx context.Context, cmp *etcdserverpb.Compare, revision int64) (bool, *backend.TxnGuard, error) {
 	if len(cmp.RangeEnd) > 0 {
-		ok, err := s.evalRangeCompare(ctx, cmp)
+		ok, err := s.evalRangeCompareAtRevision(ctx, cmp, revision)
 		return ok, nil, err
 	}
-	rangeResp, err := s.backend.Get(ctx, &etcdserverpb.RangeRequest{Key: cmp.Key})
+	rangeResp, err := s.backend.Get(ctx, &etcdserverpb.RangeRequest{Key: cmp.Key, Revision: revision})
 	if err != nil {
 		return false, nil, err
 	}
@@ -84,13 +88,21 @@ func (s *RPCServer) compareSingleKey(cmp *etcdserverpb.Compare, kv *mvccpb.KeyVa
 		}
 		return compareInt64(actual, cmp.GetCreateRevision(), cmp.Result), nil
 	case etcdserverpb.Compare_LEASE:
-		return compareInt64(s.leaseIDForKey(string(cmp.Key)), cmp.GetLease(), cmp.Result), nil
+		var actual int64
+		if kv != nil {
+			actual = kv.Lease
+		}
+		return compareInt64(actual, cmp.GetLease(), cmp.Result), nil
 	default:
 		return false, unsupported(fmt.Sprintf("compare target %s", cmp.Target))
 	}
 }
 
 func (s *RPCServer) evalRangeCompare(ctx context.Context, cmp *etcdserverpb.Compare) (bool, error) {
+	return s.evalRangeCompareAtRevision(ctx, cmp, 0)
+}
+
+func (s *RPCServer) evalRangeCompareAtRevision(ctx context.Context, cmp *etcdserverpb.Compare, revision int64) (bool, error) {
 	switch cmp.Target {
 	case etcdserverpb.Compare_MOD, etcdserverpb.Compare_VALUE, etcdserverpb.Compare_VERSION, etcdserverpb.Compare_CREATE, etcdserverpb.Compare_LEASE:
 	default:
@@ -99,6 +111,7 @@ func (s *RPCServer) evalRangeCompare(ctx context.Context, cmp *etcdserverpb.Comp
 	rangeResp, err := s.backend.List(ctx, &etcdserverpb.RangeRequest{
 		Key:      cmp.Key,
 		RangeEnd: cmp.RangeEnd,
+		Revision: revision,
 	})
 	if err != nil {
 		return false, err
@@ -143,13 +156,11 @@ func (s *RPCServer) compareKeyValue(cmp *etcdserverpb.Compare, kv *mvccpb.KeyVal
 		}
 		return compareInt64(actual, cmp.GetCreateRevision(), cmp.Result)
 	case etcdserverpb.Compare_LEASE:
-		var key string
+		var actual int64
 		if kv != nil {
-			key = string(kv.Key)
-		} else {
-			key = string(cmp.Key)
+			actual = kv.Lease
 		}
-		return compareInt64(s.leaseIDForKey(key), cmp.GetLease(), cmp.Result)
+		return compareInt64(actual, cmp.GetLease(), cmp.Result)
 	default:
 		return false
 	}
