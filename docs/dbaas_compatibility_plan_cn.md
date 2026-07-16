@@ -246,6 +246,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   实例切入“已启用但 KV/Watch 未保护”的危险状态。单测覆盖 disabled bootstrap、
   status、root 权限、模拟已启用后的 token 签发和管理面失败关闭。下一步实现统一
   caller 提取与 unary KV/Lease/Auth 管理鉴权，通过后才开放 AuthEnable/Disable。
+- **Auth A5 独立鉴权器（2026-07-16）**：新增从 gRPC incoming metadata 的官方
+  token 字段恢复 caller；Auth disabled 时透明放行，Enabled 时缺 token、无效签名、
+  过期或旧 auth revision 全部失败关闭。key-range 权限按 etcd 半开区间语义实现，
+  支持单 key、`{0}` 开放尾区间、READ/WRITE/READWRITE、root 快路径，并会归并同一
+  用户跨多个角色的相邻权限，因此既不会误拒合法组合区间，也不会跨权限间隙放行。
+  该鉴权器尚未挂 KV handler；下一步逐项接 Range/Put/DeleteRange/Txn，并针对嵌套
+  Txn 的 compare、success/failure 两分支做全树预检，保证写入前拒绝而非部分执行。
 
 ### P1：通用服务能力
 

@@ -1,0 +1,133 @@
+package etcd
+
+import (
+	"bytes"
+	"context"
+	"sort"
+
+	"go.etcd.io/etcd/api/v3/authpb"
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
+	"google.golang.org/grpc/metadata"
+)
+
+type authCaller struct {
+	username string
+	revision uint64
+	snapshot *authSnapshot
+}
+
+func (s *RPCServer) authCallerFromContext(ctx context.Context) (*authCaller, error) {
+	snapshot, err := s.tokens.snapshots.current(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if !snapshot.Config.Enabled {
+		return nil, nil
+	}
+	values := metadata.ValueFromIncomingContext(ctx, rpctypes.TokenFieldNameGRPC)
+	if len(values) != 1 || values[0] == "" {
+		return nil, rpctypes.ErrUserEmpty
+	}
+	claims, err := s.tokens.verify(ctx, values[0])
+	if err != nil {
+		return nil, err
+	}
+	// verify refreshed the shared cache if needed.
+	snapshot, err = s.tokens.snapshots.current(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &authCaller{username: claims.Username, revision: claims.Revision, snapshot: snapshot}, nil
+}
+
+func (c *authCaller) isRoot() bool {
+	if c == nil {
+		return true
+	}
+	user := c.snapshot.Users[c.username]
+	if user == nil {
+		return false
+	}
+	for _, role := range user.Roles {
+		if role == "root" {
+			return true
+		}
+	}
+	return false
+}
+
+type authInterval struct {
+	start []byte
+	end   []byte
+	open  bool
+}
+
+func permissionAllows(permission, required authpb.Permission_Type) bool {
+	return permission == authpb.READWRITE || permission == required
+}
+
+func (c *authCaller) permits(key, rangeEnd []byte, required authpb.Permission_Type) bool {
+	if c == nil || c.isRoot() {
+		return true
+	}
+	user := c.snapshot.Users[c.username]
+	if user == nil {
+		return false
+	}
+	intervals := make([]authInterval, 0)
+	for _, roleName := range user.Roles {
+		role := c.snapshot.Roles[roleName]
+		if role == nil {
+			continue
+		}
+		for _, permission := range role.KeyPermission {
+			if !permissionAllows(permission.PermType, required) {
+				continue
+			}
+			if len(permission.RangeEnd) == 0 {
+				if len(rangeEnd) == 0 && bytes.Equal(permission.Key, key) {
+					return true
+				}
+				continue
+			}
+			intervals = append(intervals, authInterval{
+				start: permission.Key, end: permission.RangeEnd,
+				open: len(permission.RangeEnd) == 1 && permission.RangeEnd[0] == 0,
+			})
+		}
+	}
+	if len(rangeEnd) == 0 {
+		for _, interval := range intervals {
+			if bytes.Compare(interval.start, key) <= 0 && (interval.open || bytes.Compare(key, interval.end) < 0) {
+				return true
+			}
+		}
+		return false
+	}
+	requestOpen := len(rangeEnd) == 1 && rangeEnd[0] == 0
+	sort.Slice(intervals, func(i, j int) bool { return bytes.Compare(intervals[i].start, intervals[j].start) < 0 })
+	covered := append([]byte(nil), key...)
+	for _, interval := range intervals {
+		if bytes.Compare(interval.start, covered) > 0 {
+			return false
+		}
+		if !interval.open && bytes.Compare(interval.end, covered) <= 0 {
+			continue
+		}
+		if interval.open {
+			return true
+		}
+		covered = interval.end
+		if !requestOpen && bytes.Compare(covered, rangeEnd) >= 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *authCaller) require(key, rangeEnd []byte, required authpb.Permission_Type) error {
+	if c.permits(key, rangeEnd, required) {
+		return nil
+	}
+	return rpctypes.ErrPermissionDenied
+}
