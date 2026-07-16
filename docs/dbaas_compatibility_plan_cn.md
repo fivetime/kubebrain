@@ -219,6 +219,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   为另一集群。当前 peer service 只掌握本机与 leader，尚不能枚举全部 follower；
   因此 MemberList 仍是部分兼容，DBaaS 需要把实例副本注册表注入数据面后再宣称
   支持 clientv3 AutoSync。
+- **Maintenance 授权矩阵（2026-07-16）**：对齐
+  `/root/etcd/server/etcdserver/api/v3rpc/maintenance.go` 的
+  `authMaintenanceServer`：auth 开启后，`Status` 与 `Alarm(GET)` 要求任意有效
+  身份；`Hash/HashKV`、`Defragment`、`Snapshot`、`MoveLeader`、`Downgrade`
+  以及 Alarm 状态变更要求 root。鉴权发生在 SyncRead、全 keyspace hash 和平台
+  `Unimplemented` 返回之前，普通用户不能触发昂贵维护读，也不能借错误差异探测
+  管理操作。匿名、普通用户、root 三类回归及 race 已覆盖。
 - **Compact 双端差分**：新增 `TestCompactDifferentialAgainstReferenceEtcd`，
   覆盖 logical compaction 成功 header、`revision == compactRev` 边界快照仍可读、
   `revision < compactRev` 返回 ErrCompacted、重复/更旧 compact 返回同一错误、未来

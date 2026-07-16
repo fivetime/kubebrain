@@ -19,6 +19,7 @@ import (
 	"hash/crc32"
 
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -50,8 +51,15 @@ import (
 // k8s.io/apiserver/pkg/storage/etcd3/watcher.go (sync()).
 const Version = "3.7.0"
 
-func (s *RPCServer) Alarm(context.Context, *etcdserverpb.AlarmRequest) (*etcdserverpb.AlarmResponse, error) {
+func (s *RPCServer) Alarm(ctx context.Context, req *etcdserverpb.AlarmRequest) (*etcdserverpb.AlarmResponse, error) {
 	s.metricCli.EmitCounter("maintenance.alarm", 1)
+	if req.GetAction() == etcdserverpb.AlarmRequest_GET {
+		if err := s.requireMaintenanceAuth(ctx, false); err != nil {
+			return nil, err
+		}
+	} else if err := s.requireMaintenanceAuth(ctx, true); err != nil {
+		return nil, err
+	}
 	return &etcdserverpb.AlarmResponse{
 		Header: s.maintenanceHeader(),
 		Alarms: nil,
@@ -60,6 +68,9 @@ func (s *RPCServer) Alarm(context.Context, *etcdserverpb.AlarmRequest) (*etcdser
 
 func (s *RPCServer) Status(ctx context.Context, _ *etcdserverpb.StatusRequest) (*etcdserverpb.StatusResponse, error) {
 	s.metricCli.EmitCounter("maintenance.status", 1)
+	if err := s.requireMaintenanceAuth(ctx, false); err != nil {
+		return nil, err
+	}
 	if err := s.peers.SyncReadRevision(ctx); err != nil {
 		return nil, err
 	}
@@ -85,8 +96,11 @@ func (s *RPCServer) Status(ctx context.Context, _ *etcdserverpb.StatusRequest) (
 	}, nil
 }
 
-func (s *RPCServer) Defragment(context.Context, *etcdserverpb.DefragmentRequest) (*etcdserverpb.DefragmentResponse, error) {
+func (s *RPCServer) Defragment(ctx context.Context, _ *etcdserverpb.DefragmentRequest) (*etcdserverpb.DefragmentResponse, error) {
 	s.metricCli.EmitCounter("maintenance.defragment", 1)
+	if err := s.requireMaintenanceAuth(ctx, true); err != nil {
+		return nil, err
+	}
 	return &etcdserverpb.DefragmentResponse{
 		Header: s.maintenanceHeader(),
 	}, nil
@@ -94,6 +108,9 @@ func (s *RPCServer) Defragment(context.Context, *etcdserverpb.DefragmentRequest)
 
 func (s *RPCServer) Hash(ctx context.Context, _ *etcdserverpb.HashRequest) (*etcdserverpb.HashResponse, error) {
 	s.metricCli.EmitCounter("maintenance.hash", 1)
+	if err := s.requireMaintenanceAuth(ctx, true); err != nil {
+		return nil, err
+	}
 	if err := s.peers.SyncReadRevision(ctx); err != nil {
 		return nil, err
 	}
@@ -109,6 +126,9 @@ func (s *RPCServer) Hash(ctx context.Context, _ *etcdserverpb.HashRequest) (*etc
 
 func (s *RPCServer) HashKV(ctx context.Context, req *etcdserverpb.HashKVRequest) (*etcdserverpb.HashKVResponse, error) {
 	s.metricCli.EmitCounter("maintenance.hashkv", 1)
+	if err := s.requireMaintenanceAuth(ctx, true); err != nil {
+		return nil, err
+	}
 	if err := s.peers.SyncReadRevision(ctx); err != nil {
 		return nil, err
 	}
@@ -137,19 +157,39 @@ func (s *RPCServer) HashKV(ctx context.Context, req *etcdserverpb.HashKVRequest)
 	}, nil
 }
 
-func (s *RPCServer) Snapshot(*etcdserverpb.SnapshotRequest, etcdserverpb.Maintenance_SnapshotServer) error {
+func (s *RPCServer) Snapshot(_ *etcdserverpb.SnapshotRequest, stream etcdserverpb.Maintenance_SnapshotServer) error {
 	s.metricCli.EmitCounter("maintenance.snapshot", 1)
+	if err := s.requireMaintenanceAuth(stream.Context(), true); err != nil {
+		return err
+	}
 	return status.Errorf(codes.Unimplemented, "snapshot is not supported")
 }
 
-func (s *RPCServer) MoveLeader(context.Context, *etcdserverpb.MoveLeaderRequest) (*etcdserverpb.MoveLeaderResponse, error) {
+func (s *RPCServer) MoveLeader(ctx context.Context, _ *etcdserverpb.MoveLeaderRequest) (*etcdserverpb.MoveLeaderResponse, error) {
 	s.metricCli.EmitCounter("maintenance.moveleader", 1)
+	if err := s.requireMaintenanceAuth(ctx, true); err != nil {
+		return nil, err
+	}
 	return nil, status.Errorf(codes.Unimplemented, "move leader is not supported")
 }
 
-func (s *RPCServer) Downgrade(context.Context, *etcdserverpb.DowngradeRequest) (*etcdserverpb.DowngradeResponse, error) {
+func (s *RPCServer) Downgrade(ctx context.Context, _ *etcdserverpb.DowngradeRequest) (*etcdserverpb.DowngradeResponse, error) {
 	s.metricCli.EmitCounter("maintenance.downgrade", 1)
+	if err := s.requireMaintenanceAuth(ctx, true); err != nil {
+		return nil, err
+	}
 	return nil, status.Errorf(codes.Unimplemented, "downgrade is not supported")
+}
+
+func (s *RPCServer) requireMaintenanceAuth(ctx context.Context, root bool) error {
+	caller, err := s.authCallerFromContext(ctx)
+	if err != nil {
+		return err
+	}
+	if root && !caller.isRoot() {
+		return rpctypes.ErrPermissionDenied
+	}
+	return nil
 }
 
 func (s *RPCServer) maintenanceHeader() *etcdserverpb.ResponseHeader {
