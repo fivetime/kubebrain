@@ -46,7 +46,7 @@ Raft、bbolt 和成员管理内部实现，而是对通用 etcd v3 客户端提�
 | Maintenance | Alarm/DbSize | 平台替代 | 用 PD/TiKV 容量、磁盘、region 和配额告警；etcd 专属字段保持可解释值 |
 | Maintenance | Hash/HashKV | 部分兼容 | P2：确定客户端用途；需要逻辑校验时实现可分页、固定 revision 的内容摘要 |
 | Maintenance | MoveLeader/Downgrade | 平台替代 | 分别由服务选主和 DBaaS 升级编排处理 |
-| Concurrency | Lock/Election recipes | 待验证 | P1：使用官方 `client/v3/concurrency` 黑盒测试，通常无需新增 RPC |
+| Concurrency | Lock/Election recipes | 兼容核心语义 | 官方 `client/v3/concurrency` Mutex/Election/session 及真实 Leader 故障转移已通过；继续补 lease 自然过期和长时间 soak |
 
 `Status.Version = 3.7.0` 只表示协议能力门槛，不能作为完整兼容声明。发布说明必须
 引用本矩阵和自动化兼容测试结果。
@@ -184,10 +184,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   覆盖 logical compaction 成功 header、`revision == compactRev` 边界快照仍可读、
   `revision < compactRev` 返回 ErrCompacted、重复/更旧 compact 返回同一错误、未来
   revision 返回 ErrFutureRev，以及当前值不受影响。真实 TiKV 与 etcd 3.7 连续
-  10 轮结果一致。差分不再要求 revision 连续 `+1`：etcd 的 revision 是提交序号，
-  KubeBrain 的 revision 来自 PD/TSO，保证全局唯一、严格递增但允许时间间隔形成
-  跳号；这是通用 DBaaS 的已知可观察差异，后续需用真实客户端兼容矩阵判断是否
-  必须引入独立连续提交序号，不能在语义测试里误报或掩盖。
+  10 轮结果一致。差分不再要求 revision 连续 `+1`：etcd 只为成功提交的写事务
+  分配提交序号；KubeBrain 的 leader-local TSO 虽按 `+1` 分配，但并发写会在存储
+  提交前预留 revision，失败、CAS 冲突和 uncertain retry 可留下无事件的跳号。
+  revision 仍全局唯一且严格递增。这是通用 DBaaS 的已知可观察差异，后续需用
+  真实客户端兼容矩阵判断是否必须重构为提交时连续编号，不能在语义测试里误报
+  或掩盖。
 - **Physical compaction 故障恢复（2026-07-16）**：真实 TiKV 灌入 500 key ×
   20 versions 后验证 Physical=true 在扫描完成后才返回；100ms 客户端取消时逻辑
   水位已经单调推进、旧 revision 返回 ErrCompacted、当前值可读。修复了取消/进程
@@ -197,6 +199,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   0/1，恢复后自动完成扫描。新增 `TestPhysicalCompactionUnderTraffic`，用官方
   client/v3 在 Physical compact 同时执行 100 次 Put/Get、前缀 Range 和 Watch；
   KubeBrain+TiKV 与参考 etcd 均通过，100/100 watch 事件完整，历史边界一致。
+- **官方 concurrency recipes（2026-07-16）**：新增 endpoint 驱动的
+  `TestConcurrencyMutexAndSessionRelease` 与
+  `TestConcurrencyElectionObserveProclaimAndHandoff`，覆盖 Mutex Lock/TryLock、
+  owner session Close 后 lease 自动释放、Election Observe/Proclaim、竞争者阻塞、
+  Resign 后接棒。KubeBrain+TiKV 和 `/root/etcd` 参考 server 各连续 3 轮通过。
+  opt-in `TestConcurrencySessionSurvivesKubeBrainFailover` 在 KubeBrain 3 副本上
+  持有 Mutex+Election 后删除当前 Leader，约 6.25 秒恢复；原 session 未关闭、
+  Mutex ownership 和 Election leader 值均保持，随后正常 Resign/Unlock。由此确认
+  官方 concurrency 中使用 `header.revision+1` 表示 watch 下界，不要求每个中间
+  revision 都实际存在；KubeBrain 的失败预分配跳号未破坏这些 recipe。
 
 ### P1：通用服务能力
 
