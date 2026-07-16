@@ -253,6 +253,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   用户跨多个角色的相邻权限，因此既不会误拒合法组合区间，也不会跨权限间隙放行。
   该鉴权器尚未挂 KV handler；下一步逐项接 Range/Put/DeleteRange/Txn，并针对嵌套
   Txn 的 compare、success/failure 两分支做全树预检，保证写入前拒绝而非部分执行。
+- **Auth A6 KV 数据面（2026-07-16）**：鉴权已接入 Range、RangeStream、Put、
+  DeleteRange 和 Txn，并位于 leader/proxy/backend 操作之前。Put/Delete 的 PrevKV
+  额外要求 READ；Put 绑定已有 lease 时要求对该 lease 全部绑定键具备 WRITE，防止
+  借共享 lease 间接删除越权键。Txn 按 etcd `CheckTxnAuth` 语义递归预检全部 compare、
+  success 和 failure 分支，包括嵌套 Txn；任何拒绝都发生在执行前，不产生部分写。
+  follower 代理只把官方 token metadata 转发给 leader，leader 会重新验证签名和
+  auth revision，不信任 follower 判定。handler 测试确认允许范围可读写、越权 Put
+  不落库、PrevKV 权限失败不删除、未选/嵌套分支越权会整笔拒绝。下一步接 Lease
+  RPC 和 Auth 管理面 admin/self 规则，然后才能安全开放 AuthEnable。
 
 ### P1：通用服务能力
 

@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"time"
 
+	"go.etcd.io/etcd/api/v3/authpb"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	"google.golang.org/grpc/codes"
@@ -45,9 +46,16 @@ func (s *RPCServer) Range(ctx context.Context, r *etcdserverpb.RangeRequest) (*e
 	if err := validateRangeRequest(r); err != nil {
 		return nil, err
 	}
+	caller, authErr := s.authCallerFromContext(ctx)
+	if authErr != nil {
+		return nil, authErr
+	}
+	if authErr = caller.require(r.Key, r.RangeEnd, authpb.READ); authErr != nil {
+		return nil, authErr
+	}
 	if r.Revision > 0 && !s.peers.IsLeader() && s.peers.EtcdProxyEnabled() {
 		s.metricCli.EmitCounter("read.follower.historical_proxy", 1)
-		return s.peers.Range(ctx, r)
+		return s.peers.Range(forwardAuthToken(ctx), r)
 	}
 	if err := s.peers.SyncReadRevision(ctx); err != nil {
 		return &etcdserverpb.RangeResponse{}, err
@@ -134,6 +142,13 @@ func (s *RPCServer) RangeStream(r *etcdserverpb.RangeRequest, rs etcdserverpb.KV
 		// Silently ignoring it would return the FULL range to a client that
 		// asked for N keys — a wrong answer plus an unexpected O(all-keys) scan.
 		return status.Error(codes.Unimplemented, "etcdserver: limit is not supported by RangeStream")
+	}
+	caller, err := s.authCallerFromContext(ctx)
+	if err != nil {
+		return err
+	}
+	if err = caller.require(r.Key, r.RangeEnd, authpb.READ); err != nil {
+		return err
 	}
 	if err := s.peers.SyncReadRevision(ctx); err != nil {
 		return rangeStreamStatusErr(err)
@@ -227,6 +242,13 @@ func (s *RPCServer) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etc
 	if err := validateTxnRequest(txn); err != nil {
 		return nil, err
 	}
+	caller, authErr := s.authCallerFromContext(ctx)
+	if authErr != nil {
+		return nil, authErr
+	}
+	if authErr = s.authorizeTxn(caller, txn); authErr != nil {
+		return nil, authErr
+	}
 
 	deadline, ok := ctx.Deadline()
 	if ok && startTime.Sub(deadline) >= 0 {
@@ -244,7 +266,7 @@ func (s *RPCServer) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etc
 	if !leadingFresh {
 		s.metricCli.EmitCounter("write.follower", 1)
 		if s.peers.EtcdProxyEnabled() {
-			return s.peers.Txn(ctx, txn)
+			return s.peers.Txn(forwardAuthToken(ctx), txn)
 		}
 		return nil, s.notLeaderErr("txn")
 	}
@@ -644,11 +666,18 @@ func (s *RPCServer) Put(ctx context.Context, r *etcdserverpb.PutRequest) (*etcds
 	if err := validatePutRequest(r); err != nil {
 		return nil, err
 	}
+	caller, authErr := s.authCallerFromContext(ctx)
+	if authErr != nil {
+		return nil, authErr
+	}
+	if authErr = s.authorizePut(caller, r); authErr != nil {
+		return nil, authErr
+	}
 	epoch, leadingFresh := s.peers.EpochAndLeadingFresh()
 	if !leadingFresh {
 		s.metricCli.EmitCounter("write.follower", 1)
 		if s.peers.EtcdProxyEnabled() {
-			return s.peers.Put(ctx, r)
+			return s.peers.Put(forwardAuthToken(ctx), r)
 		}
 		return nil, s.notLeaderErr("put")
 	}
@@ -684,11 +713,23 @@ func (s *RPCServer) DeleteRange(ctx context.Context, r *etcdserverpb.DeleteRange
 	if err := validateDeleteRangeRequest(r); err != nil {
 		return nil, err
 	}
+	caller, authErr := s.authCallerFromContext(ctx)
+	if authErr != nil {
+		return nil, authErr
+	}
+	if authErr = caller.require(r.Key, r.RangeEnd, authpb.WRITE); authErr != nil {
+		return nil, authErr
+	}
+	if r.PrevKv {
+		if authErr = caller.require(r.Key, r.RangeEnd, authpb.READ); authErr != nil {
+			return nil, authErr
+		}
+	}
 	epoch, leadingFresh := s.peers.EpochAndLeadingFresh()
 	if !leadingFresh {
 		s.metricCli.EmitCounter("write.follower", 1)
 		if s.peers.EtcdProxyEnabled() {
-			return s.peers.DeleteRange(ctx, r)
+			return s.peers.DeleteRange(forwardAuthToken(ctx), r)
 		}
 		return nil, s.notLeaderErr("delete range")
 	}

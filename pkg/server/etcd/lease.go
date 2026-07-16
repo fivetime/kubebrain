@@ -41,6 +41,23 @@ import (
 var leaseStoragePrefix = []byte("\x00kubebrain/leases/")
 var leaseAttachPrefix = []byte("\x00kubebrain/leasekeys/")
 
+func (m *leaseManager) keysForLease(id int64) []string {
+	if id == 0 {
+		return nil
+	}
+	m.leaseMu.Lock()
+	defer m.leaseMu.Unlock()
+	lease := m.leases[id]
+	if lease == nil {
+		return nil
+	}
+	keys := make([]string, 0, len(lease.keys))
+	for key := range lease.keys {
+		keys = append(keys, key)
+	}
+	return keys
+}
+
 const leaseExpiryRetryInterval = time.Second
 const latestRestoreRevision = int64(^uint64(0) >> 1)
 const maxLeaseTTL = int64(9000000000)
