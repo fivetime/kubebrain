@@ -323,6 +323,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   对象。对照 `/root/etcd/server/auth/store.go` 与真实 etcd 后，KubeBrain 现仅对
   特殊角色名 `root` 绕过角色存在检查，启用时只要求 root 用户持有该角色；普通
   角色仍必须先创建。官方 `client/v3` 生命周期已改为标准三步流程。
+- **Auth A15 密码字段优先级（2026-07-16）**：对照 etcd `v3_server.go` 的
+  `UserAdd`/`UserChangePassword` 预处理，若请求同时携带非空 `password` 与
+  `hashed_password`，必须以明文重新 bcrypt 并覆盖 hash；仅明文为空时才接受
+  base64 hash。KubeBrain 原先顺序相反，现已对齐并用非法 hash + 有效明文回归。
 
 ### P1：通用服务能力
 

@@ -124,6 +124,24 @@ func TestAuthManagerBootstrapErrors(t *testing.T) {
 	require.NoError(t, manager.userGrantRole(ctx, "alice", "reader"), "grant role must be idempotent")
 }
 
+func TestAuthManagerPlaintextPasswordOverridesHash(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	manager := newAuthManager(server.backend)
+	ctx := context.Background()
+	require.NoError(t, manager.userAdd(ctx, &etcdserverpb.AuthUserAddRequest{
+		Name: "alice", Password: "plaintext", HashedPassword: "%%%",
+	}))
+	snapshot, err := manager.repo.load(ctx)
+	require.NoError(t, err)
+	require.NoError(t, bcrypt.CompareHashAndPassword(snapshot.Users["alice"].Password, []byte("plaintext")))
+
+	require.NoError(t, manager.userChangePassword(ctx, "alice", "changed", "%%%"))
+	snapshot, err = manager.repo.load(ctx)
+	require.NoError(t, err)
+	require.NoError(t, bcrypt.CompareHashAndPassword(snapshot.Users["alice"].Password, []byte("changed")))
+}
+
 func TestAuthManagerRootRoleIsImplicit(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

@@ -43,6 +43,9 @@ func authPassword(request *etcdserverpb.AuthUserAddRequest) ([]byte, error) {
 	if request.Options != nil && request.Options.NoPassword {
 		return nil, nil
 	}
+	if request.Password != "" {
+		return bcrypt.GenerateFromPassword([]byte(request.Password), bcrypt.DefaultCost)
+	}
 	if request.HashedPassword != "" {
 		password, err := base64.StdEncoding.DecodeString(request.HashedPassword)
 		if err != nil {
@@ -50,7 +53,7 @@ func authPassword(request *etcdserverpb.AuthUserAddRequest) ([]byte, error) {
 		}
 		return password, nil
 	}
-	return bcrypt.GenerateFromPassword([]byte(request.Password), bcrypt.DefaultCost)
+	return bcrypt.GenerateFromPassword(nil, bcrypt.DefaultCost)
 }
 
 func (m *authManager) userAdd(ctx context.Context, request *etcdserverpb.AuthUserAddRequest) error {
@@ -165,6 +168,9 @@ func (m *authManager) userDelete(ctx context.Context, name string) error {
 }
 
 func authChangedPassword(password, hashed string) ([]byte, error) {
+	if password != "" {
+		return bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	}
 	if hashed != "" {
 		encoded, err := base64.StdEncoding.DecodeString(hashed)
 		if err != nil {
@@ -172,7 +178,7 @@ func authChangedPassword(password, hashed string) ([]byte, error) {
 		}
 		return encoded, nil
 	}
-	return bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	return bcrypt.GenerateFromPassword(nil, bcrypt.DefaultCost)
 }
 
 func (m *authManager) userChangePassword(ctx context.Context, name, password, hashed string) error {
