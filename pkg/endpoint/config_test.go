@@ -84,6 +84,7 @@ func TestConfig(t *testing.T) {
 	ast.True(conf.getServerConfig().ClientAllowInsecure)
 	ast.Equal(uint(64), conf.getServerConfig().MaxTxnOps)
 	ast.Equal(uint(1048576), conf.getServerConfig().MaxRequestBytes)
+	ast.Equal("simple", conf.getServerConfig().AuthToken)
 	ast.Equal(uint(7), conf.getServerConfig().BcryptCost)
 	ast.Equal(uint(45), conf.getServerConfig().AuthTokenTTL)
 }
@@ -93,7 +94,9 @@ func TestAuthTokenProviderValidation(t *testing.T) {
 		Port: 2379, PeerPort: 2380, AuthToken: "jwt,pub-key=public.pem",
 		ClientSecurityConfig: &SecurityConfig{}, PeerSecurityConfig: &SecurityConfig{},
 	}
-	require.ErrorContains(t, config.Validate(), "only simple is available")
+	require.ErrorContains(t, config.Validate(), "invalid auth signature method")
+	config.AuthToken = "jwt,sign-method=HS256,priv-key=" + getAuthPath("server.key")
+	require.NoError(t, config.Validate())
 	config.AuthToken = "simple"
 	require.NoError(t, config.Validate())
 }

@@ -56,6 +56,7 @@ type Config struct {
 
 	MaxTxnOps       uint
 	MaxRequestBytes uint
+	AuthToken       string
 	BcryptCost      uint
 	AuthTokenTTL    uint
 

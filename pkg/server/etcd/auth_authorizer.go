@@ -53,8 +53,15 @@ func (s *RPCServer) authCallerFromContext(ctx context.Context) (*authCaller, err
 	// when a request starts. A token may survive unrelated auth mutations, but a
 	// serialized read must fail with ErrAuthOldRevision if the store changes while
 	// that request is executing.
+	revision := snapshot.Config.Revision
+	if s.tokens.jwt != nil {
+		revision = claims.Revision
+		if revision < snapshot.Config.Revision {
+			return nil, rpctypes.ErrAuthOldRevision
+		}
+	}
 	return &authCaller{
-		username: claims.Username, revision: snapshot.Config.Revision,
+		username: claims.Username, revision: revision,
 		snapshot: snapshot, forwardToken: values[0],
 	}, nil
 }

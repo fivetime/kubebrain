@@ -114,7 +114,7 @@ func TestAuthTokenSigningKeySurvivesManagerRecreationAndExpires(t *testing.T) {
 func TestAuthTokenUsesConfiguredTTL(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
-	server.SetAuthConfiguration(uint(bcrypt.DefaultCost), 2)
+	server.SetAuthConfiguration("simple", uint(bcrypt.DefaultCost), 2)
 	ctx := context.Background()
 	require.NoError(t, server.auth.userAdd(ctx, &etcdserverpb.AuthUserAddRequest{Name: "root", Password: "secret"}))
 	require.NoError(t, server.auth.roleAdd(ctx, "root"))

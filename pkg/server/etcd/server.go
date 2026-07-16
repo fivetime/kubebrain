@@ -178,9 +178,10 @@ func (s *RPCServer) SetRequestLimits(maxTxnOps, maxRequestBytes uint) {
 	}
 }
 
-// SetAuthConfiguration applies etcd's simple-token TTL and bcrypt policy.
-// Unsupported token providers are rejected by endpoint.Config.Validate.
-func (s *RPCServer) SetAuthConfiguration(bcryptCost, tokenTTLSeconds uint) {
+// SetAuthConfiguration applies etcd's token-provider, TTL, and bcrypt policy.
+// endpoint.Config.Validate has already parsed provider keys; a failure here is a
+// startup invariant violation and must remain fail-loud.
+func (s *RPCServer) SetAuthConfiguration(authToken string, bcryptCost, tokenTTLSeconds uint) {
 	cost := int(bcryptCost)
 	if bcryptCost < uint(bcrypt.MinCost) || bcryptCost > uint(bcrypt.MaxCost) {
 		cost = bcrypt.DefaultCost
@@ -194,6 +195,9 @@ func (s *RPCServer) SetAuthConfiguration(bcryptCost, tokenTTLSeconds uint) {
 		ttl = authTokenTTL
 	}
 	s.tokens.ttl = ttl
+	if err := s.tokens.configureProvider(authToken); err != nil {
+		panic(err)
+	}
 }
 
 // SetAdvertiseClientInfo tells MemberList how to shape ClientURLs: deployments

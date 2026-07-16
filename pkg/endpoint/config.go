@@ -30,6 +30,7 @@ import (
 	"k8s.io/klog/v2"
 
 	"github.com/kubewharf/kubebrain/pkg/server"
+	etcdserver "github.com/kubewharf/kubebrain/pkg/server/etcd"
 )
 
 type secureMode int
@@ -147,6 +148,7 @@ func (c *Config) getServerConfig() server.Config {
 		RetryPeriod:         c.RetryPeriod,
 		MaxTxnOps:           c.MaxTxnOps,
 		MaxRequestBytes:     c.MaxRequestBytes,
+		AuthToken:           c.AuthToken,
 		BcryptCost:          c.BcryptCost,
 		AuthTokenTTL:        c.AuthTokenTTL,
 		ClusterMembers:      c.ClusterMembers,
@@ -228,8 +230,8 @@ func (c *Config) Validate() error {
 	if c.MaxRequestBytes > uint(math.MaxInt-512) {
 		return fmt.Errorf("max request bytes %d exceeds platform limit %d", c.MaxRequestBytes, math.MaxInt-512)
 	}
-	if c.AuthToken != "" && c.AuthToken != "simple" {
-		return fmt.Errorf("auth token provider %q is unsupported; only simple is available", c.AuthToken)
+	if err := etcdserver.ValidateAuthTokenProvider(c.AuthToken); err != nil {
+		return err
 	}
 	minVersion, err := parseTLSVersion(c.TLSMinVersion)
 	if err != nil {

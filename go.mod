@@ -4,6 +4,7 @@ go 1.26.0
 
 require (
 	github.com/dgraph-io/badger v1.6.2
+	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/golang/mock v1.6.0
 	github.com/google/btree v1.1.3
 	github.com/grpc-ecosystem/go-grpc-prometheus v1.2.0

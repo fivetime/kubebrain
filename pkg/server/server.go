@@ -95,7 +95,7 @@ func NewServer(ctx context.Context, backend backend.Backend, metricCli metrics.M
 	// construct etcd & brian grpc server
 	s.etcdServer = etcd.New(backend, metricCli, peerService)
 	s.etcdServer.SetRequestLimits(config.MaxTxnOps, config.MaxRequestBytes)
-	s.etcdServer.SetAuthConfiguration(config.BcryptCost, config.AuthTokenTTL)
+	s.etcdServer.SetAuthConfiguration(config.AuthToken, config.BcryptCost, config.AuthTokenTTL)
 	s.etcdServer.SetClientCertAuth(config.ClientCertAuth)
 	// MemberList ClientURLs: advertise the homogeneous client port with the
 	// scheme clients actually dial (https iff the client port serves TLS),

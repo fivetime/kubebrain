@@ -42,6 +42,16 @@ type authTokenManager struct {
 	snapshots *authSnapshotCache
 	now       func() time.Time
 	ttl       time.Duration
+	jwt       *jwtTokenProvider
+}
+
+func (m *authTokenManager) configureProvider(spec string) error {
+	provider, err := parseAuthTokenProvider(spec)
+	if err != nil {
+		return err
+	}
+	m.jwt = provider
+	return nil
 }
 
 func (m *authTokenManager) ensureUserGeneration(ctx context.Context, username string) (*authpb.User, error) {
@@ -134,6 +144,9 @@ func (m *authTokenManager) issue(ctx context.Context, snapshot *authSnapshot, us
 	if !snapshot.Config.Enabled || snapshot.Users[username] == nil {
 		return "", rpctypes.ErrAuthFailed
 	}
+	if m.jwt != nil {
+		return m.jwt.issue(username, snapshot.Config.Revision, m.now())
+	}
 	generation := snapshot.TokenGenerations[username]
 	var err error
 	if generation == nil {
@@ -154,6 +167,9 @@ func (m *authTokenManager) issue(ctx context.Context, snapshot *authSnapshot, us
 func (m *authTokenManager) issueCertificate(ctx context.Context, snapshot *authSnapshot, username string) (string, error) {
 	if !snapshot.Config.Enabled || username == "" {
 		return "", rpctypes.ErrUserEmpty
+	}
+	if m.jwt != nil {
+		return m.jwt.issue(username, snapshot.Config.Revision, m.now())
 	}
 	return m.issueClaims(ctx, authTokenClaims{
 		Username: username, Revision: snapshot.Config.Revision, Certificate: true,
@@ -188,6 +204,20 @@ func signAuthToken(key, payload []byte) []byte {
 }
 
 func (m *authTokenManager) verify(ctx context.Context, token string) (authTokenClaims, error) {
+	if m.jwt != nil {
+		claims, err := m.jwt.verify(token, m.now())
+		if err != nil {
+			return authTokenClaims{}, err
+		}
+		snapshot, err := m.snapshots.current(ctx)
+		if err != nil {
+			return authTokenClaims{}, err
+		}
+		if !snapshot.Config.Enabled || snapshot.Users[claims.Username] == nil {
+			return authTokenClaims{}, rpctypes.ErrInvalidAuthToken
+		}
+		return claims, nil
+	}
 	parts := strings.Split(token, ".")
 	if len(parts) != 2 {
 		return authTokenClaims{}, rpctypes.ErrInvalidAuthToken

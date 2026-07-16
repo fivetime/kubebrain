@@ -720,9 +720,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   bcrypt，`hashed_password` 保持调用方提供的 hash；cost 超出 bcrypt `[4,31]` 时与 etcd
   一样回退 10。KubeBrain 的 `simple` 是为无共享内存的多副本数据面实现的签名 bearer
   token，保证 API 生命周期语义但不承诺 token 字节格式等同单进程 etcd opaque token。
-  `jwt,...` 尚未实现，启动时明确拒绝，绝不静默当作 simple。单测覆盖 hash cost、无效 cost
-  fallback、TTL 边界、flag/default/配置传递与 JWT fail-loud；真实三副本 auth smoke 将 TTL
-  加速到 2s，固定“新 token 成功→过期返回 InvalidAuthToken→重新认证成功”。
+  单测覆盖 hash cost、无效 cost fallback、TTL 边界与 flag/default/配置传递；真实三副本
+  auth smoke 将 TTL 加速到 2s，固定“新 token 成功→过期返回 InvalidAuthToken→重新认证成功”。
+- **Auth A35 JWT token provider（2026-07-16）**：`--auth-token=jwt,...` 兼容 etcd 的
+  `sign-method`、`pub-key`、`priv-key` 与 `ttl` 配置，支持 HMAC、RSA、RSA-PSS、ECDSA 和
+  Ed25519；非对称算法允许仅公钥的 verify-only 副本，并在启动时校验算法、key material
+  及公私钥匹配。JWT 携带 username、expiry 与 auth revision，任何 RBAC mutation 后旧 token
+  与 upstream 一样返回 `etcdserver: revision of auth store is old`；证书 CN 转发也按所选 provider
+  签发。算法/expiry/key mismatch、配置 fail-loud 和 auth revision 均有单测与 race 覆盖；同一
+  HS256 配置对 reference etcd 与 KubeBrain 连跑 10 次差分通过。真实 kind 三副本还固定了
+  单副本签发 token 可在全部副本验证，并在删除当前 Leader 后继续读写。生产多副本必须将
+  同一签名 key 以 Secret/KMS 管理的只读文件挂载到所有副本。
 
 ### P1：通用服务能力
 

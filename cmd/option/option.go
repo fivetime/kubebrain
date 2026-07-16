@@ -149,7 +149,7 @@ func (o *KubeBrainOption) AddFlags(fs *pflag.FlagSet) {
 	fs.DurationVar(&o.epsConf.GRPCKeepAliveTimeout, "grpc-keepalive-timeout", o.epsConf.GRPCKeepAliveTimeout, "Time to wait for a keepalive response; 0 disables server pings.")
 	fs.UintVar(&o.epsConf.MaxTxnOps, "max-txn-ops", o.epsConf.MaxTxnOps, "Maximum number of operations permitted in a transaction.")
 	fs.UintVar(&o.epsConf.MaxRequestBytes, "max-request-bytes", o.epsConf.MaxRequestBytes, "Maximum client request payload size in bytes, excluding 512 bytes of gRPC framing overhead.")
-	fs.StringVar(&o.epsConf.AuthToken, "auth-token", o.epsConf.AuthToken, "Authentication token provider. KubeBrain currently supports simple.")
+	fs.StringVar(&o.epsConf.AuthToken, "auth-token", o.epsConf.AuthToken, "Authentication token provider: simple or jwt with etcd-compatible options.")
 	fs.UintVar(&o.epsConf.BcryptCost, "bcrypt-cost", o.epsConf.BcryptCost, "Bcrypt cost factor for hashing authentication passwords; out-of-range values use the bcrypt default.")
 	fs.UintVar(&o.epsConf.AuthTokenTTL, "auth-token-ttl", o.epsConf.AuthTokenTTL, "Authentication token lifetime in seconds; 0 uses the 300-second default.")
 	fs.StringVar(&o.epsConf.TLSMinVersion, "tls-min-version", o.epsConf.TLSMinVersion, "Minimum TLS version for client, peer, and info endpoints: TLS1.2 or TLS1.3.")
