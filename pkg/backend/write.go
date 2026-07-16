@@ -31,6 +31,8 @@ import (
 
 // Create implements Backend interface
 func (b *backend) Create(ctx context.Context, put *proto.CreateRequest) (resp *proto.CreateResponse, err error) {
+	unlock := b.lockLogicalWrite(ctx)
+	defer unlock()
 	ts := time.Now()
 	defer func() {
 		txnLog("create",
@@ -182,6 +184,8 @@ func (b *backend) createBatchWithMetadata(ctx context.Context, revisionKey, obje
 
 // Delete implements Backend interface
 func (b *backend) Delete(ctx context.Context, r *proto.DeleteRequest) (*proto.DeleteResponse, error) {
+	unlock := b.lockLogicalWrite(ctx)
+	defer unlock()
 	return b.deleteOnce(ctx, r, true)
 }
 
@@ -358,6 +362,8 @@ func (b *backend) healOrphanIndex(ctx context.Context, key []byte) (bool, error)
 // DeleteRange removes a set of live keys in one storage batch. Like etcd, all
 // keys deleted by one range request share the same modification revision.
 func (b *backend) DeleteRange(ctx context.Context, kvs []*proto.KeyValue) (resp *DeleteRangeResponse, err error) {
+	unlock := b.lockLogicalWrite(ctx)
+	defer unlock()
 	ts := time.Now()
 	defer func() {
 		var respRev uint64
@@ -526,6 +532,8 @@ func (b *backend) deleteRangeChunk(ctx context.Context, pending []pendingDelete)
 
 // Update implements Backend interface
 func (b *backend) Update(ctx context.Context, r *proto.UpdateRequest) (*proto.UpdateResponse, error) {
+	unlock := b.lockLogicalWrite(ctx)
+	defer unlock()
 	return b.updateOnce(ctx, r, true)
 }
 

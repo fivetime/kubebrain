@@ -81,6 +81,8 @@ type TxnWriteResult struct {
 // Ops MUST target distinct keys; the caller is responsible for that (multi-write
 // to the same key needs intra-txn ordering that this batch does not model).
 func (b *backend) TxnApply(ctx context.Context, ops []TxnWriteOp, guards []TxnGuard) (results []TxnWriteResult, revision uint64, err error) {
+	unlock := b.lockLogicalWrite(ctx)
+	defer unlock()
 	deadline := time.Now().Add(unaryRpcTimeout)
 	for {
 		if cerr := ctx.Err(); cerr != nil {

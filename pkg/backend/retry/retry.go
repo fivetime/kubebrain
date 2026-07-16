@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"sync"
 	"time"
 
 	"github.com/pkg/errors"
@@ -98,6 +99,10 @@ type Config struct {
 
 	// Tombstone is the tombstone
 	Tombstone []byte
+
+	// WriteLocker participates in the backend's logical-write barrier. It keeps
+	// an uncertain-result repair from racing a range-compare transaction.
+	WriteLocker sync.Locker
 }
 
 type getter func(ctx context.Context, key []byte) (val []byte, modRevision uint64, err error)
@@ -184,6 +189,10 @@ func (a *asyncFifoRetryImpl) retry(ctx context.Context) (breakLoop bool) {
 		"op", node.event.ResourceVerb.String())
 
 	retryCtx, cancel := context.WithTimeout(ctx, 2*a.config.UnaryTimeout)
+	if a.config.WriteLocker != nil {
+		a.config.WriteLocker.Lock()
+		defer a.config.WriteLocker.Unlock()
+	}
 	rev, err := a.overwrite(retryCtx, node.event.Key, node.event.Revision, node.event.PrevRevision)
 	cancel()
 	if rev == 0 {

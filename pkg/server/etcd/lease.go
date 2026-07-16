@@ -273,7 +273,7 @@ func (m *leaseManager) bindKeyIndexOnly(id int64, key string) {
 	m.leaseMu.Unlock()
 }
 
-func (m *leaseManager) bindKeyToLease(id int64, key string) {
+func (m *leaseManager) bindKeyToLease(ctx context.Context, id int64, key string) {
 	m.leaseMu.Lock()
 	_, hadPrevious := m.keyLeaseIndex[key]
 	m.bindKeyToLeaseLocked(id, key)
@@ -285,11 +285,11 @@ func (m *leaseManager) bindKeyToLease(id int64, key string) {
 	// attachment record is keyed by the user key, so the new id overwrites it.
 	switch {
 	case bound && boundTo == id:
-		_ = m.attachKeyToStorage(context.Background(), id, key)
+		_ = m.attachKeyToStorage(ctx, id, key)
 	case hadPrevious:
 		// key had an attachment but is now unbound (id==0 or the lease was absent):
 		// clear the stale attachment record.
-		_ = m.detachKeyFromStorage(context.Background(), key)
+		_ = m.detachKeyFromStorage(ctx, key)
 	}
 	// else: a plain Put of a never-leased key — no lease bookkeeping, no write.
 }
@@ -320,7 +320,7 @@ func (m *leaseManager) bindKeyToLeaseLocked(id int64, key string) []*leaseState 
 	return changed
 }
 
-func (m *leaseManager) unbindKeyFromLease(key string) {
+func (m *leaseManager) unbindKeyFromLease(ctx context.Context, key string) {
 	m.leaseMu.Lock()
 	_, wasBound := m.keyLeaseIndex[key]
 	if id, ok := m.keyLeaseIndex[key]; ok {
@@ -333,7 +333,7 @@ func (m *leaseManager) unbindKeyFromLease(key string) {
 	m.leaseMu.Unlock()
 	if wasBound {
 		// Drop just this key's attachment record (O(1)), not the whole list (#17).
-		_ = m.detachKeyFromStorage(context.Background(), key)
+		_ = m.detachKeyFromStorage(ctx, key)
 	}
 }
 

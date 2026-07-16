@@ -269,7 +269,7 @@ func (s *RPCServer) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etc
 		if err != nil || !response.Succeeded {
 			failedKey = string(put.Key)
 		} else {
-			s.bindKeyToLease(put.Lease, string(put.Key))
+			s.bindKeyToLease(ctx, put.Lease, string(put.Key))
 		}
 	} else if sh, ok := isCompareDelete(txn); ok {
 		response, err = s.backend.CompareDelete(ctx, sh.deleteReq, sh.rev, sh.includeFailure)
@@ -277,7 +277,7 @@ func (s *RPCServer) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etc
 		if err != nil || !response.Succeeded {
 			failedKey = string(sh.key)
 		} else {
-			s.unbindKeyFromLease(string(sh.key))
+			s.unbindKeyFromLease(ctx, string(sh.key))
 		}
 	} else if sh, ok := isDelete(txn); ok {
 		response, err = s.backend.Delete(ctx, sh.key, sh.rev, sh.includeFailure)
@@ -285,7 +285,7 @@ func (s *RPCServer) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etc
 		if err != nil || !response.Succeeded {
 			failedKey = string(sh.key)
 		} else {
-			s.unbindKeyFromLease(string(sh.key))
+			s.unbindKeyFromLease(ctx, string(sh.key))
 		}
 	} else if sh, ok := isUpdate(txn); ok {
 		var put *etcdserverpb.PutRequest
@@ -301,7 +301,7 @@ func (s *RPCServer) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etc
 		if err != nil || !response.Succeeded {
 			failedKey = string(sh.key)
 		} else {
-			s.bindKeyToLease(put.Lease, string(sh.key))
+			s.bindKeyToLease(ctx, put.Lease, string(sh.key))
 		}
 	} else if ok := isCompact(txn); ok {
 		response, err = s.compact(ctx, txn)
@@ -708,7 +708,7 @@ func (s *RPCServer) DeleteRange(ctx context.Context, r *etcdserverpb.DeleteRange
 	response, err := s.backend.DeleteRange(ctx, r)
 	if err == nil {
 		for _, key := range deletedKeys {
-			s.unbindKeyFromLease(key)
+			s.unbindKeyFromLease(ctx, key)
 		}
 	}
 	successTag := getSuccessMetricTagByErr(err)
@@ -848,6 +848,11 @@ func txnOpsSupported(ops []*etcdserverpb.RequestOp) bool {
 }
 
 func (s *RPCServer) executeGenericTxn(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etcdserverpb.TxnResponse, error) {
+	if txnHasRangeCompare(txn) {
+		var unlock func()
+		ctx, unlock = s.backend.BeginRangeTxn(ctx)
+		defer unlock()
+	}
 	deadline := time.Now().Add(unaryRpcTimeout)
 	for {
 		if err := ctx.Err(); err != nil {
@@ -880,6 +885,22 @@ func (s *RPCServer) executeGenericTxn(ctx context.Context, txn *etcdserverpb.Txn
 		}
 		return s.executeTxnWithCursor(ctx, txn, &txnPathCursor{paths: paths})
 	}
+}
+
+func txnHasRangeCompare(txn *etcdserverpb.TxnRequest) bool {
+	for _, cmp := range txn.Compare {
+		if len(cmp.RangeEnd) != 0 {
+			return true
+		}
+	}
+	for _, branches := range [][]*etcdserverpb.RequestOp{txn.Success, txn.Failure} {
+		for _, op := range branches {
+			if nested := op.GetRequestTxn(); nested != nil && txnHasRangeCompare(nested) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // tryAtomicGenericTxn applies the chosen path atomically when it consists solely
@@ -948,10 +969,10 @@ func (s *RPCServer) tryAtomicGenericTxn(ctx context.Context, txn *etcdserverpb.T
 	// Bind/unbind leases now that the writes committed.
 	for i, op := range ops {
 		if put := op.GetRequestPut(); put != nil {
-			s.bindKeyToLease(put.Lease, string(put.Key))
+			s.bindKeyToLease(ctx, put.Lease, string(put.Key))
 		} else if del := op.GetRequestDeleteRange(); del != nil {
 			if results[i].Deleted {
-				s.unbindKeyFromLease(string(del.Key))
+				s.unbindKeyFromLease(ctx, string(del.Key))
 			}
 		}
 	}
@@ -1095,7 +1116,7 @@ func (s *RPCServer) executeTxnWithCursor(ctx context.Context, txn *etcdserverpb.
 			if err != nil {
 				return nil, err
 			}
-			s.bindKeyToLease(put.Lease, string(put.Key))
+			s.bindKeyToLease(ctx, put.Lease, string(put.Key))
 			resp.Header = putResp.Header
 			if putResp.Header != nil && putResp.Header.Revision > lastWriteRev {
 				lastWriteRev = putResp.Header.Revision
@@ -1134,7 +1155,7 @@ func (s *RPCServer) executeTxnWithCursor(ctx context.Context, txn *etcdserverpb.
 					return nil, err
 				}
 				for _, key := range deletedKeys {
-					s.unbindKeyFromLease(key)
+					s.unbindKeyFromLease(ctx, key)
 				}
 			}
 			resp.Header = deleteResp.Header

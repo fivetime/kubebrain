@@ -81,6 +81,10 @@ type BackendShim interface {
 	// backend.ErrTxnGuardConflict when a guard's key changed.
 	TxnApply(ctx context.Context, ops []backend.TxnWriteOp, guards []backend.TxnGuard, prevKv []bool) ([]*etcdserverpb.ResponseOp, uint64, []backend.TxnWriteResult, error)
 
+	// BeginRangeTxn excludes logical writes while a range compare and its chosen
+	// branch execute, preventing phantoms under TiKV snapshot isolation.
+	BeginRangeTxn(ctx context.Context) (context.Context, func())
+
 	// Get read a kv from storage
 	Get(ctx context.Context, r *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error)
 
@@ -517,6 +521,10 @@ func (b *backendShim) TxnApply(ctx context.Context, ops []backend.TxnWriteOp, gu
 		}
 	}
 	return responses, rev, results, nil
+}
+
+func (b *backendShim) BeginRangeTxn(ctx context.Context) (context.Context, func()) {
+	return b.backend.BeginRangeTxn(ctx)
 }
 
 func (b *backendShim) DeleteRange(ctx context.Context, r *etcdserverpb.DeleteRangeRequest) (*etcdserverpb.DeleteRangeResponse, error) {

@@ -89,6 +89,11 @@ type Backend interface {
 	// for semantics; returns ErrTxnGuardConflict when a guard's key changed.
 	TxnApply(ctx context.Context, ops []TxnWriteOp, guards []TxnGuard) ([]TxnWriteResult, uint64, error)
 
+	// BeginRangeTxn excludes every logical user-key write until unlock. It is
+	// used only for generic etcd transactions with range compares, because TiKV
+	// snapshot isolation has no predicate locks to prevent phantom inserts.
+	BeginRangeTxn(ctx context.Context) (context.Context, func())
+
 	// GetEtcdMetadata returns etcd-compatible create revision and version for a key at modRevision.
 	GetEtcdMetadata(ctx context.Context, key []byte, modRevision uint64) (EtcdMetadata, error)
 
@@ -262,6 +267,12 @@ type backend struct {
 	// committed revision advances (see commit_wait.go).
 	commitNotify *commitNotify
 
+	// logicalWriteMu is a leader-local predicate-lock substitute. Ordinary
+	// logical writes take RLock and therefore remain fully concurrent. A generic
+	// etcd transaction with a range compare takes Lock across compare+commit,
+	// preventing inserts in the compared range from becoming invisible phantoms.
+	logicalWriteMu sync.RWMutex
+
 	// Background physical compaction. CompactAsync advances the logical compact
 	// watermark synchronously (so reads immediately see the compaction) and hands
 	// the slow physical version-GC scan to runCompactor, so the etcd Compact RPC
@@ -434,6 +445,7 @@ func NewBackend(kv storage.KvStorage, config Config, metricCli metrics.Metrics) 
 		CheckInterval: checkInterval,
 		RetryInterval: retryInterval,
 		Tombstone:     tombStoneBytes,
+		WriteLocker:   b.logicalWriteMu.RLocker(),
 	}
 	b.asyncFifoRetry = retry.NewAsyncFifoRetry(b.ks, b.coder, b.kv, b.metricCli, b.tso, b.getLatestInternalVal, b.notify, asyncRetryConfig)
 

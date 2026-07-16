@@ -2518,6 +2518,143 @@ func TestTxnRangeCompareValueFailsForEmptyRange(t *testing.T) {
 	require.Empty(t, resp.Responses[0].GetResponseRange().Kvs)
 }
 
+func TestTxnHasRangeCompareRecursesIntoNestedBranches(t *testing.T) {
+	point := &etcdserverpb.TxnRequest{Compare: []*etcdserverpb.Compare{{Key: []byte("point")}}}
+	require.False(t, txnHasRangeCompare(point))
+
+	nested := &etcdserverpb.TxnRequest{
+		Failure: []*etcdserverpb.RequestOp{{
+			Request: &etcdserverpb.RequestOp_RequestTxn{RequestTxn: &etcdserverpb.TxnRequest{
+				Success: []*etcdserverpb.RequestOp{{
+					Request: &etcdserverpb.RequestOp_RequestTxn{RequestTxn: &etcdserverpb.TxnRequest{
+						Compare: []*etcdserverpb.Compare{{
+							Key:      []byte("prefix/"),
+							RangeEnd: []byte("prefix0"),
+						}},
+					}},
+				}},
+			}},
+		}},
+	}
+	require.True(t, txnHasRangeCompare(nested))
+}
+
+type blockingRangeCompareShim struct {
+	BackendShim
+	scanned chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (b *blockingRangeCompareShim) List(ctx context.Context, r *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
+	resp, err := b.BackendShim.List(ctx, r)
+	if err == nil && len(r.RangeEnd) != 0 {
+		b.once.Do(func() {
+			close(b.scanned)
+			select {
+			case <-b.release:
+			case <-ctx.Done():
+			}
+		})
+	}
+	return resp, err
+}
+
+func TestTxnRangeCompareExcludesPhantomInsert(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	shim := &blockingRangeCompareShim{
+		BackendShim: server.backend,
+		scanned:     make(chan struct{}),
+		release:     make(chan struct{}),
+	}
+	server.backend = shim
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	prefix := "/registry/generic-txn/phantom/"
+	txnDone := make(chan *etcdserverpb.TxnResponse, 1)
+	txnErr := make(chan error, 1)
+	go func() {
+		resp, err := server.Txn(ctx, &etcdserverpb.TxnRequest{
+			Compare: []*etcdserverpb.Compare{{
+				Key:         []byte(prefix),
+				RangeEnd:    []byte("/registry/generic-txn/phantom0"),
+				Target:      etcdserverpb.Compare_VERSION,
+				Result:      etcdserverpb.Compare_EQUAL,
+				TargetUnion: &etcdserverpb.Compare_Version{Version: 0},
+			}},
+			Success: []*etcdserverpb.RequestOp{{
+				Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{
+					Key: []byte("/registry/generic-txn/phantom-result"), Value: []byte("success"),
+				}},
+			}},
+		})
+		txnDone <- resp
+		txnErr <- err
+	}()
+
+	select {
+	case <-shim.scanned:
+	case <-ctx.Done():
+		require.FailNow(t, "range compare did not reach scan barrier")
+	}
+
+	putDone := make(chan error, 1)
+	go func() {
+		_, err := server.Put(ctx, &etcdserverpb.PutRequest{
+			Key: []byte(prefix + "inserted"), Value: []byte("phantom"),
+		})
+		putDone <- err
+	}()
+	select {
+	case err := <-putDone:
+		require.FailNow(t, "phantom insert completed before range transaction", "err=%v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(shim.release)
+	resp := <-txnDone
+	require.NoError(t, <-txnErr)
+	require.NotNil(t, resp)
+	require.True(t, resp.Succeeded)
+	require.NoError(t, <-putDone)
+}
+
+func TestTxnRangeCompareLeasedPutDoesNotDeadlock(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	lease, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 30})
+	require.NoError(t, err)
+
+	prefix := []byte("/registry/generic-txn/range-lease/")
+	key := append(append([]byte(nil), prefix...), []byte("key")...)
+	resp, err := server.Txn(ctx, &etcdserverpb.TxnRequest{
+		Compare: []*etcdserverpb.Compare{{
+			Key:         prefix,
+			RangeEnd:    []byte("/registry/generic-txn/range-lease0"),
+			Target:      etcdserverpb.Compare_VERSION,
+			Result:      etcdserverpb.Compare_EQUAL,
+			TargetUnion: &etcdserverpb.Compare_Version{Version: 0},
+		}},
+		Success: []*etcdserverpb.RequestOp{{
+			Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{
+				Key: key, Value: []byte("leased"), Lease: lease.ID,
+			}},
+		}},
+	})
+	require.NoError(t, err)
+	require.True(t, resp.Succeeded)
+
+	ttl, err := server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: lease.ID, Keys: true})
+	require.NoError(t, err)
+	require.Equal(t, [][]byte{key}, ttl.Keys)
+}
+
 func TestTxnCompareCreateRevisionZeroChecksExistence(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

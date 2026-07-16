@@ -32,7 +32,7 @@ Raft、bbolt 和成员管理内部实现，而是对通用 etcd v3 客户端提�
 | 服务 | 能力 | 当前状态 | DBaaS 处理 |
 | --- | --- | --- | --- |
 | KV | Range/Put/DeleteRange | 部分兼容 | P0：逐项对齐排序、过滤、历史读、错误和大范围删除原子性 |
-| KV | Txn | 部分兼容 | P0：点键缺失 guard 已完成；继续补齐范围 phantom guard、嵌套 txn 和所有合法分支的单 revision 原子性 |
+| KV | Txn | 部分兼容 | P0：点键缺失 guard、范围 phantom guard 已完成；继续补齐嵌套 txn 和所有合法分支的单 revision 原子性 |
 | KV | Compact | 兼容核心语义 | P0：继续对齐 logical/physical 行为、错误与异步 GC |
 | KV | RangeStream | Kubernetes 请求形状兼容 | P1：对齐 etcd 3.7 支持的通用请求形状，或明确返回 Unimplemented |
 | Watch | create/cancel/progress/history/prevKV | 兼容核心语义 | P0：用官方客户端做事件完整性、压缩、断线恢复和慢消费者测试 |
@@ -77,10 +77,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `TestTxnApplyAbsentGuardOverlappingPut`、
   `TestTxnApplyAbsentGuardDisjointFromWrite`、
   `TestTxnApplyAbsentGuardAcceptsTombstone`。
-- **尚未解决**：范围 compare 的 phantom insert。当前范围内容在 RPC 层读取，
-  但 batch 只 guard 已观察到的点键；compare 后在区间内插入一个新键仍可能
-  使原分支错误提交。该项必须由 TiKV 事务范围读冲突或可持久化的区间 epoch
-  guard 解决，不能仅给已有键补 CAS。
+- **范围 compare phantom guard**：TiKV 当前采用 Snapshot Isolation，范围
+  `Iter` 不提供 predicate lock；给每次写维护一个持久化全局 epoch 又会制造
+  单 key 热点并串行化所有 TiKV 写。KubeBrain 因此使用 leader-local 逻辑写
+  屏障：普通 Create/Update/Delete/DeleteRange/TxnApply 和 uncertain retry 持
+  共享锁，仍可完全并发；仅含范围 compare（包括嵌套分支）的 generic txn 从
+  compare 到 commit 持独占锁。领导权 epoch fence 继续阻止旧 leader 跨任期
+  提交。`TestTxnRangeCompareExcludesPhantomInsert` 在 compare 扫描后并发插入
+  区间键，证明插入必须等事务提交后才能完成；backend 层
+  `TestRangeTxnBarrierBlocksExternalWrites` 和两者的 race 测试覆盖锁边界。代价
+  是范围 compare 执行期间同一实例的逻辑写会短暂排队，因此 DBaaS 必须保留
+  txn op/range 和 RPC deadline 限制。
+- **尚未解决**：包含 range read、nested txn、multi-key DeleteRange 或
+  IgnoreValue/IgnoreLease 的 generic txn 仍可能走顺序执行回退；屏障可排除
+  外部并发，但这些分支内部的多次写尚未共享一个 revision，也未实现一次
+  storage batch 的全有或全无提交。
 
 ### P1：通用服务能力
 
