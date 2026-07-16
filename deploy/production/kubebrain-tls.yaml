@@ -73,6 +73,8 @@ spec:
             - --info-port=8080
             - --pd-addrs=kb-pd.tidb-cluster.svc:2379
             - --compatible-with-etcd=true
+            - --grpc-max-connection-age=1h
+            - --grpc-max-connection-age-grace=5m
             - --cert-file=/etc/kubebrain/client-tls/tls.crt
             - --key-file=/etc/kubebrain/client-tls/tls.key
             - --trusted-ca-file=/etc/kubebrain/client-tls/ca.crt

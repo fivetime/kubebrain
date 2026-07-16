@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"net"
 	"sync"
+	"sync/atomic"
 
 	"google.golang.org/grpc/stats"
 )
@@ -28,7 +29,8 @@ func TLSStateFromContext(ctx context.Context) (tls.ConnectionState, bool) {
 
 // Registry bridges an outer TLS listener and an inner plaintext gRPC server.
 type Registry struct {
-	states sync.Map
+	states      sync.Map
+	connections atomic.Uint64
 }
 
 type registryEntry struct {
@@ -57,6 +59,7 @@ func (r *Registry) TagRPC(ctx context.Context, _ *stats.RPCTagInfo) context.Cont
 func (r *Registry) HandleRPC(context.Context, stats.RPCStats)                       {}
 
 func (r *Registry) TagConn(ctx context.Context, info *stats.ConnTagInfo) context.Context {
+	r.connections.Add(1)
 	if info == nil {
 		return ctx
 	}
@@ -65,6 +68,12 @@ func (r *Registry) TagConn(ctx context.Context, info *stats.ConnTagInfo) context
 		return ctx
 	}
 	return WithTLSState(ctx, state.(*registryEntry).state)
+}
+
+// TotalConnections returns the number of gRPC transports tagged since this
+// registry was created. It is monotonic and includes plaintext connections.
+func (r *Registry) TotalConnections() uint64 {
+	return r.connections.Load()
 }
 
 func (r *Registry) HandleConn(context.Context, stats.ConnStats) {}

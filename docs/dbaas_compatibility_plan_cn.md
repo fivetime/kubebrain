@@ -568,13 +568,26 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   identity TLS listener 曾把单连接 handshake 错误返回给 cmux、导致整个 secure endpoint
   退出；现 handshake/deadline 错误只关闭该连接并继续 Accept，单测固定“先拒绝 malformed
   client、再接受正常 client”，避免不可信客户端造成监听器级 DoS。
+- **TLS A29 长连接退场边界与轮换 soak（2026-07-16）**：etcd 的 keepalive interval/
+  timeout 只检测死连接，健康 watch/lease HTTP2 transport 可无限保留旧 TLS trust。新增
+  opt-in `--grpc-max-connection-age` / `--grpc-max-connection-age-grace`，默认 age=0 保持兼容；
+  启用时 grace 必须为正，client/peer server 到龄先 GOAWAY、grace 后关闭旧 streams。
+  production TLS manifest 使用 `1h/5m`，把 CA 撤旧生效上界限制为 65 分钟。in-process
+  官方 client/v3 测试用连接 stats 证明 transport generation 增加，并验证原 watch 和
+  lease keepalive 在强制退场后继续。真实三副本把该值加速为 `5s/2s`，一个 client/v3
+  3.5.2 长连接跨叶证书和 CA rollover、旧证书拒绝、三 Pod 逐个替换持续写入 229 次且
+  lease 未丢、watch 从最后 revision 恢复，随后新 CA cert auth 全端点通过。需注意旧版
+  grpc 在 max-age 强关时可能把 GOAWAY+EOF 暴露为 `Unknown`，consumer 必须按最后 revision
+  重建 watch、按同一 lease ID 重建 keepalive；新版 client 可透明恢复。控制面应根据最长
+  请求/stream 选择 grace，并监控重连/全量 relist 峰值，不能把生产 age 调到 smoke 量级。
 
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
    RBAC、token 生命周期、Watch/Lease 持续鉴权、客户端证书 CN 身份以及真实三副本
    auth+mTLS failover、服务端/内部客户端叶证书热轮换、CA trust pool 双信任窗口与撤旧
-   及真实三副本在线轮换已完成，下一步做长连接 drain/reconnect 策略与持续轮换 soak。
+   及真实三副本在线轮换、长连接 drain/reconnect soak 已完成，下一步扩展 CRL/证书吊销
+   和 cipher/TLS version 策略兼容。
 2. 对已通过的 `client/v3/concurrency` mutex/election/session/failover recipe
    增加 lease 自然过期和长时间 soak。
 3. 建立 DBaaS 控制面契约：创建、扩缩、升级、备份、恢复、证书轮换、销毁。

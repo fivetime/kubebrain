@@ -22,6 +22,7 @@ func TestRegistryCarriesTLSStateForConnectionLifetime(t *testing.T) {
 	actual, ok := TLSStateFromContext(ctx)
 	require.True(t, ok)
 	require.Len(t, actual.VerifiedChains, 1)
+	require.Equal(t, uint64(1), registry.TotalConnections())
 
 	unregister()
 	ctx = registry.TagConn(context.Background(), &stats.ConnTagInfo{LocalAddr: local, RemoteAddr: remote})

@@ -89,6 +89,12 @@ type Config struct {
 	RenewDeadline time.Duration
 	RetryPeriod   time.Duration
 
+	// GRPCMaxConnectionAge bounds how long one HTTP/2 transport can retain a
+	// pre-rotation TLS identity. Zero disables aging. Grace is the drain window
+	// after GOAWAY before active streams are forcibly closed.
+	GRPCMaxConnectionAge      time.Duration
+	GRPCMaxConnectionAgeGrace time.Duration
+
 	// ClusterMembers is the control-plane supplied KubeBrain service
 	// membership returned by etcd MemberList.
 	ClusterMembers []*etcdserverpb.Member
@@ -165,6 +171,15 @@ func (c *Config) Validate() error {
 
 	if c.InfoPort != 0 && (c.InfoPort == c.Port || c.InfoPort == c.PeerPort) {
 		return fmt.Errorf("invalid info port %d", c.InfoPort)
+	}
+	if c.GRPCMaxConnectionAge < 0 {
+		return fmt.Errorf("grpc max connection age must not be negative: %s", c.GRPCMaxConnectionAge)
+	}
+	if c.GRPCMaxConnectionAgeGrace < 0 {
+		return fmt.Errorf("grpc max connection age grace must not be negative: %s", c.GRPCMaxConnectionAgeGrace)
+	}
+	if c.GRPCMaxConnectionAge > 0 && c.GRPCMaxConnectionAgeGrace <= 0 {
+		return fmt.Errorf("grpc max connection age grace must be positive when connection aging is enabled: %s", c.GRPCMaxConnectionAgeGrace)
 	}
 
 	klog.InfoS("validate client security config", c.ClientSecurityConfig.ToKvs()...)

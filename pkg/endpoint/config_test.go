@@ -17,8 +17,10 @@ package endpoint
 import (
 	"crypto/tls"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestConfig(t *testing.T) {
@@ -108,4 +110,29 @@ func TestClientCertAuthRequiresTrustedCA(t *testing.T) {
 	cfg := withCA.getServerTLSConfig()
 	ast.Equal(tls.RequireAndVerifyClientCert, cfg.ClientAuth)
 	ast.NotNil(cfg.ClientCAs, "must verify client certs against the configured CA pool, not system roots")
+}
+
+func TestGRPCMaxConnectionAgeValidation(t *testing.T) {
+	base := func() *Config {
+		return &Config{
+			Port: 2379, PeerPort: 2380,
+			ClientSecurityConfig: &SecurityConfig{},
+			PeerSecurityConfig:   &SecurityConfig{},
+		}
+	}
+
+	config := base()
+	require.NoError(t, config.Validate())
+	config.GRPCMaxConnectionAge = -time.Second
+	require.ErrorContains(t, config.Validate(), "must not be negative")
+	config = base()
+	config.GRPCMaxConnectionAgeGrace = -time.Second
+	require.ErrorContains(t, config.Validate(), "grace must not be negative")
+
+	config = base()
+	config.GRPCMaxConnectionAge = time.Hour
+	require.ErrorContains(t, config.Validate(), "grace must be positive")
+
+	config.GRPCMaxConnectionAgeGrace = 5 * time.Minute
+	require.NoError(t, config.Validate())
 }

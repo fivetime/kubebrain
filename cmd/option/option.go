@@ -99,6 +99,9 @@ func NewOptions() *KubeBrainOption {
 			LeaseDuration: 8 * time.Second,
 			RenewDeadline: 5 * time.Second,
 			RetryPeriod:   1 * time.Second,
+			// Disabled by default for backward compatibility. Production DBaaS
+			// manifests enable aging so TLS trust retirement has a finite bound.
+			GRPCMaxConnectionAgeGrace: 5 * time.Minute,
 		},
 		// The namespace for KubeBrain-internal coordination keys (leader-election
 		// lock, compact watermark) is a fixed constant, NOT configuration: it is
@@ -126,6 +129,8 @@ func (o *KubeBrainOption) AddFlags(fs *pflag.FlagSet) {
 	fs.IntVar(&o.epsConf.Port, "port", o.epsConf.Port, "the port kubebrain listen on for client")
 	fs.IntVar(&o.epsConf.PeerPort, "peer-port", o.epsConf.PeerPort, "the port kubebrain listen on for peer communication")
 	fs.IntVar(&o.epsConf.InfoPort, "info-port", o.epsConf.InfoPort, "the port kubebrain listen on for node info")
+	fs.DurationVar(&o.epsConf.GRPCMaxConnectionAge, "grpc-max-connection-age", o.epsConf.GRPCMaxConnectionAge, "Maximum age of a client or peer gRPC connection before GOAWAY; 0 disables. Bounds how long pre-rotation TLS trust remains active.")
+	fs.DurationVar(&o.epsConf.GRPCMaxConnectionAgeGrace, "grpc-max-connection-age-grace", o.epsConf.GRPCMaxConnectionAgeGrace, "Drain window after max connection age before active streams are closed. Must be positive when connection aging is enabled.")
 	fs.StringSliceVar(&o.SkippedPrefixes, "skip-key-prefix", o.SkippedPrefixes, "skipped key prefix.")
 	fs.StringVar(&o.ClusterName, "cluster-name", o.ClusterName, "cluster name; used ONLY as the metrics 'cluster' tag. For data isolation on a shared storage cluster use --keyspace")
 	fs.StringVar(&o.Keyspace, "keyspace", o.Keyspace, "tenant keyspace on the shared storage cluster ([a-z0-9-], max 64). Every key family (objects, event log, internal metadata, coordination keys) is derived from it, so clusters with different keyspaces on one TiKV cannot see or garbage-collect each other's data. Empty (default) = the original single-tenant keyspace; existing deployments keep their data. All replicas of one cluster MUST agree")

@@ -6,11 +6,14 @@ NAMESPACE="${NAMESPACE:-kubebrain-tls-smoke}"
 IMAGE_NAME="${IMAGE_NAME:-kubebrain:dev}"
 PD_ADDRS="${PD_ADDRS:-kb-pd.tidb-cluster.svc:2379}"
 LOCAL_PORT="${LOCAL_PORT:-12379}"
+SOAK_LOCAL_PORT="${SOAK_LOCAL_PORT:-22379}"
 REPLICAS="${REPLICAS:-3}"
 RUN_APISERVER_SMOKE="${RUN_APISERVER_SMOKE:-true}"
 RUN_BACKUP_DRILL="${RUN_BACKUP_DRILL:-true}"
 RUN_AUTH_CERT_SMOKE="${RUN_AUTH_CERT_SMOKE:-true}"
 RUN_CERT_ROTATION_SMOKE="${RUN_CERT_ROTATION_SMOKE:-true}"
+GRPC_MAX_CONNECTION_AGE="${GRPC_MAX_CONNECTION_AGE:-5s}"
+GRPC_MAX_CONNECTION_AGE_GRACE="${GRPC_MAX_CONNECTION_AGE_GRACE:-2s}"
 BACKUP_PREFIX="${BACKUP_PREFIX:-/registry/tls-smoke}"
 BACKUP_BATCH_SIZE="${BACKUP_BATCH_SIZE:-100}"
 APISERVER_SECURE_PORT="${APISERVER_SECURE_PORT:-16444}"
@@ -30,6 +33,12 @@ workdir="$(mktemp -d)"
 cleanup() {
   if [ -n "${pf_pid:-}" ]; then
     kill "$pf_pid" >/dev/null 2>&1 || true
+  fi
+  if [ -n "${soak_pf_pid:-}" ]; then
+    kill "$soak_pf_pid" >/dev/null 2>&1 || true
+  fi
+  if [ -n "${soak_pid:-}" ]; then
+    kill "$soak_pid" >/dev/null 2>&1 || true
   fi
   kubectl delete namespace "$NAMESPACE" --wait=false >/dev/null 2>&1 || true
   rm -rf "$workdir"
@@ -131,6 +140,8 @@ sed \
   -e "s#--pd-addrs=kb-pd.tidb-cluster.svc:2379#--pd-addrs=${PD_ADDRS}#" \
   -e "s#--peer-tls-server-name=kubebrain-peer.kubebrain-system.svc#--peer-tls-server-name=kubebrain-peer.${NAMESPACE}.svc#" \
   -e "s#--tls-server-name=kubebrain-client.kubebrain-system.svc#--tls-server-name=kubebrain-client.${NAMESPACE}.svc#" \
+  -e "s#--grpc-max-connection-age=1h#--grpc-max-connection-age=${GRPC_MAX_CONNECTION_AGE}#" \
+  -e "s#--grpc-max-connection-age-grace=5m#--grpc-max-connection-age-grace=${GRPC_MAX_CONNECTION_AGE_GRACE}#" \
   "$ROOT_DIR/deploy/production/kubebrain-tls.yaml" > manifest.yaml
 
 python3 - <<PY
@@ -178,7 +189,30 @@ run_client_smoke() {
 }
 
 assert_client_rejected() {
-  start_port_forward
+  local pod
+  pod="$(kubectl -n "$NAMESPACE" get pods -l app.kubernetes.io/name=kubebrain \
+    -o jsonpath='{.items[0].metadata.name}')"
+  if [ -n "${pf_pid:-}" ]; then
+    kill "$pf_pid" >/dev/null 2>&1 || true
+    wait "$pf_pid" >/dev/null 2>&1 || true
+  fi
+  : > /tmp/kubebrain-tls-smoke-port-forward.log
+  kubectl -n "$NAMESPACE" port-forward "pod/${pod}" "${LOCAL_PORT}:3379" \
+    >/tmp/kubebrain-tls-smoke-port-forward.log 2>&1 &
+  pf_pid=$!
+  for _ in $(seq 1 50); do
+    if grep -q "Forwarding from 127.0.0.1:${LOCAL_PORT}" /tmp/kubebrain-tls-smoke-port-forward.log; then
+      break
+    fi
+    sleep 0.2
+  done
+  if ! grep -q "Forwarding from 127.0.0.1:${LOCAL_PORT}" /tmp/kubebrain-tls-smoke-port-forward.log; then
+    cat /tmp/kubebrain-tls-smoke-port-forward.log >&2
+    echo "timed out waiting for retired-client port-forward" >&2
+    exit 1
+  fi
+  local since_time
+  since_time="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   local output
   local status
   set +e
@@ -190,8 +224,7 @@ assert_client_rejected() {
     exit 1
   fi
   local server_logs
-  server_logs="$(kubectl -n "$NAMESPACE" logs \
-    -l app.kubernetes.io/name=kubebrain --since=2m --prefix=true 2>/dev/null || true)"
+  server_logs="$(kubectl -n "$NAMESPACE" logs "$pod" --since-time="$since_time" 2>/dev/null || true)"
   if ! grep -Ei 'rejected TLS connection' <<<"$server_logs" | \
       grep -Eqi "unknown authority|bad certificate|client didn't provide a certificate"; then
     echo "retired client failed without a certificate rejection in server logs:" >&2
@@ -257,6 +290,53 @@ run_direct_client_smoke() {
   pf_pid=$!
   sleep 2
   LOCAL_PORT="$LOCAL_PORT" go run main.go
+}
+
+start_soak_port_forward() {
+  if [ -n "${soak_pf_pid:-}" ]; then
+    kill "$soak_pf_pid" >/dev/null 2>&1 || true
+    wait "$soak_pf_pid" >/dev/null 2>&1 || true
+  fi
+  : > /tmp/kubebrain-tls-soak-port-forward.log
+  kubectl -n "$NAMESPACE" port-forward service/kubebrain-client "${SOAK_LOCAL_PORT}:3379" \
+    >/tmp/kubebrain-tls-soak-port-forward.log 2>&1 &
+  soak_pf_pid=$!
+  for _ in $(seq 1 50); do
+    if ! kill -0 "$soak_pf_pid" >/dev/null 2>&1; then
+      cat /tmp/kubebrain-tls-soak-port-forward.log >&2
+      echo "soak port-forward exited before becoming ready" >&2
+      exit 1
+    fi
+    if grep -q "Forwarding from 127.0.0.1:${SOAK_LOCAL_PORT}" /tmp/kubebrain-tls-soak-port-forward.log; then
+      return
+    fi
+    sleep 0.2
+  done
+  echo "timed out waiting for soak port-forward" >&2
+  exit 1
+}
+
+soak_progress() {
+  grep -c '^SOAK_HEALTH ' /tmp/kubebrain-tls-connection-soak.log 2>/dev/null || true
+}
+
+wait_for_soak_progress() {
+  local previous="$1"
+  local deadline=$((SECONDS + 30))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    if ! kill -0 "$soak_pid" >/dev/null 2>&1; then
+      cat /tmp/kubebrain-tls-connection-soak.log >&2
+      echo "long-lived TLS client exited" >&2
+      exit 1
+    fi
+    if [ "$(soak_progress)" -gt "$previous" ]; then
+      return
+    fi
+    sleep 1
+  done
+  cat /tmp/kubebrain-tls-connection-soak.log >&2
+  echo "long-lived TLS client made no progress after reconnect" >&2
+  exit 1
 }
 
 run_auth_cert_smoke() {
@@ -351,6 +431,108 @@ func main() {
 		log.Fatalf("unexpected get response: %+v", resp.Kvs)
 	}
 	fmt.Println("TLS smoke completed")
+}
+EOF
+
+cat > soak-main.go <<'EOF'
+package main
+
+import (
+	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"fmt"
+	"log"
+	"os"
+	"time"
+
+	clientv3 "go.etcd.io/etcd/client/v3"
+)
+
+func main() {
+	ca, err := os.ReadFile(os.Getenv("CA_FILE"))
+	if err != nil {
+		log.Fatal(err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(ca) {
+		log.Fatal("failed to load CA")
+	}
+	cert, err := tls.LoadX509KeyPair(os.Getenv("CERT_FILE"), os.Getenv("KEY_FILE"))
+	if err != nil {
+		log.Fatal(err)
+	}
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"https://127.0.0.1:" + os.Getenv("LOCAL_PORT")},
+		DialTimeout: 10 * time.Second,
+		TLS: &tls.Config{
+			RootCAs: pool, Certificates: []tls.Certificate{cert}, ServerName: "127.0.0.1",
+		},
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer client.Close()
+	ctx := context.Background()
+	lease, err := client.Grant(ctx, 15)
+	if err != nil {
+		log.Fatal(err)
+	}
+	keepAlive, err := client.KeepAlive(ctx, lease.ID)
+	if err != nil {
+		log.Fatal(err)
+	}
+	const key = "/registry/tls-smoke/connection-soak"
+	watch := client.Watch(ctx, key)
+	var nextRevision int64
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	var writes, events, keepAlives int
+	for {
+		select {
+		case response, ok := <-watch:
+			if !ok || response.Err() != nil {
+				log.Printf("watch stream reconnect: open=%v err=%v revision=%d", ok, response.Err(), nextRevision)
+				watch = client.Watch(ctx, key, clientv3.WithRev(nextRevision))
+				continue
+			}
+			events += len(response.Events)
+			for _, event := range response.Events {
+				if event.Kv.ModRevision >= nextRevision {
+					nextRevision = event.Kv.ModRevision + 1
+				}
+			}
+		case response, ok := <-keepAlive:
+			if !ok || response == nil {
+				log.Printf("lease keepalive stream reconnect")
+				keepAlive, err = client.KeepAlive(ctx, lease.ID)
+				if err != nil {
+					log.Printf("lease keepalive reconnect failed: %v", err)
+					keepAlive = nil
+					time.Sleep(time.Second)
+				}
+				continue
+			}
+			keepAlives++
+		case <-ticker.C:
+			if keepAlive == nil {
+				keepAlive, err = client.KeepAlive(ctx, lease.ID)
+				if err != nil {
+					log.Printf("lease keepalive reconnect retry failed: %v", err)
+					continue
+				}
+			}
+			requestCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
+			_, err = client.Put(requestCtx, key, fmt.Sprintf("%d", writes+1), clientv3.WithLease(lease.ID))
+			cancel()
+			if err != nil {
+				log.Printf("transient put failure: %v", err)
+				continue
+			}
+			writes++
+			fmt.Printf("SOAK_HEALTH writes=%d events=%d keepalives=%d\n", writes, events, keepAlives)
+		}
+	}
 }
 EOF
 
@@ -458,11 +640,25 @@ if [ "$RUN_CERT_ROTATION_SMOKE" = "true" ]; then
   wait_for_projected_file ca-overlap.crt /etc/kubebrain/peer-tls/ca.crt
   CA_FILE=ca-overlap.crt CERT_FILE=tls-next.crt KEY_FILE=tls-next.key run_client_smoke
 
+  go build -o soak-client soak-main.go
+  start_soak_port_forward
+  : > /tmp/kubebrain-tls-connection-soak.log
+  CA_FILE=ca-overlap.crt CERT_FILE=tls-next.crt KEY_FILE=tls-next.key \
+    LOCAL_PORT="$SOAK_LOCAL_PORT" ./soak-client >/tmp/kubebrain-tls-connection-soak.log 2>&1 &
+  soak_pid=$!
+  wait_for_soak_progress 0
+  echo "Holding watch and lease across repeated gRPC max-age reconnects"
+  sleep 12
+  soak_before="$(soak_progress)"
+  wait_for_soak_progress "$soak_before"
+
   echo "Rotating client and peer leaf certificates without a rollout"
+  soak_before="$(soak_progress)"
   apply_tls_secrets tls-next.crt tls-next.key ca-overlap.crt
   wait_for_projected_file tls-next.crt /etc/kubebrain/client-tls/tls.crt
   wait_for_projected_file tls-next.crt /etc/kubebrain/peer-tls/tls.crt
   CA_FILE=ca-overlap.crt CERT_FILE=tls-next.crt KEY_FILE=tls-next.key run_client_smoke
+  wait_for_soak_progress "$soak_before"
 
   mapfile -t rotation_pods < <(kubectl -n "$NAMESPACE" get pods \
     -l app.kubernetes.io/name=kubebrain \
@@ -473,21 +669,34 @@ if [ "$RUN_CERT_ROTATION_SMOKE" = "true" ]; then
   done
 
   echo "Removing the old CA from client and peer trust bundles"
+  soak_before="$(soak_progress)"
   apply_tls_secrets tls-next.crt tls-next.key ca-next.crt
   wait_for_projected_file ca-next.crt /etc/kubebrain/client-tls/ca.crt
   wait_for_projected_file ca-next.crt /etc/kubebrain/peer-tls/ca.crt
   CA_FILE=ca-next.crt CERT_FILE=tls-next.crt KEY_FILE=tls-next.key run_client_smoke
+  wait_for_soak_progress "$soak_before"
   CA_FILE=ca-next.crt CERT_FILE=old-tls.crt KEY_FILE=old-tls.key assert_client_rejected
   CA_FILE=ca-next.crt CERT_FILE=tls-next.crt KEY_FILE=tls-next.key run_client_smoke
 
   if [ "$REPLICAS" -ge 3 ]; then
     for pod in "${rotation_pods[@]}"; do
       echo "Replacing ${pod} after CA cutover and verifying follower reconnect"
+      soak_before="$(soak_progress)"
       kubectl -n "$NAMESPACE" delete pod "$pod" --wait=false >/dev/null
       wait_ready
+      start_soak_port_forward
       CA_FILE=ca-next.crt CERT_FILE=tls-next.crt KEY_FILE=tls-next.key run_client_smoke
+      wait_for_soak_progress "$soak_before"
     done
   fi
+
+  echo "Long-lived watch/lease reconnect soak completed with $(soak_progress) successful writes"
+  kill "$soak_pid" >/dev/null 2>&1 || true
+  wait "$soak_pid" >/dev/null 2>&1 || true
+  unset soak_pid
+  kill "$soak_pf_pid" >/dev/null 2>&1 || true
+  wait "$soak_pf_pid" >/dev/null 2>&1 || true
+  unset soak_pf_pid
 
   cp ca-next.crt ca.crt
   cp tls-next.crt tls.crt

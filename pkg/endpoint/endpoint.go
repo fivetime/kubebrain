@@ -176,17 +176,24 @@ func (e *Endpoint) buildPeerHttpServer() exposedServer {
 // connection always has an active stream, so MinTime alone fixes the bug,
 // and permitting stream-less pings would let dead-idle connections pin
 // themselves open — mirror etcd exactly (review #51).
-func grpcKeepaliveOptions() []grpc.ServerOption {
-	return []grpc.ServerOption{
+func grpcKeepaliveOptions(maxConnectionAge, maxConnectionAgeGrace time.Duration) []grpc.ServerOption {
+	opts := []grpc.ServerOption{
 		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
 			MinTime:             5 * time.Second,
 			PermitWithoutStream: false,
 		}),
 	}
+	if maxConnectionAge > 0 {
+		opts = append(opts, grpc.KeepaliveParams(keepalive.ServerParameters{
+			MaxConnectionAge:      maxConnectionAge,
+			MaxConnectionAgeGrace: maxConnectionAgeGrace,
+		}))
+	}
+	return opts
 }
 
 func (e *Endpoint) buildClientGrpcServer() exposedServer {
-	opts := append(grpcKeepaliveOptions(), e.metrics.GetGrpcServerOption()...)
+	opts := append(grpcKeepaliveOptions(e.config.GRPCMaxConnectionAge, e.config.GRPCMaxConnectionAgeGrace), e.metrics.GetGrpcServerOption()...)
 	opts = append(opts, grpc.StatsHandler(e.tlsIdentities))
 	opts = append(opts, e.server.ClientServerOptions()...)
 	grpcServer := grpc.NewServer(opts...)
@@ -195,7 +202,7 @@ func (e *Endpoint) buildClientGrpcServer() exposedServer {
 }
 
 func (e *Endpoint) buildPeerGrpcServer() exposedServer {
-	opts := append(grpcKeepaliveOptions(), e.metrics.GetGrpcServerOption()...)
+	opts := append(grpcKeepaliveOptions(e.config.GRPCMaxConnectionAge, e.config.GRPCMaxConnectionAgeGrace), e.metrics.GetGrpcServerOption()...)
 	opts = append(opts, grpc.StatsHandler(e.tlsIdentities))
 	grpcServer := grpc.NewServer(opts...)
 	e.server.RegisterPeer(grpcServer)

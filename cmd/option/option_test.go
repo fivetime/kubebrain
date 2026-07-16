@@ -38,6 +38,8 @@ func TestTLSFlagsBindToExpectedSecurityConfigFields(t *testing.T) {
 		"--peer-trusted-ca-file=/peer/ca.crt",
 		"--peer-tls-server-name=kubebrain-peer.kubebrain-system.svc",
 		"--peer-allow-insecure=true",
+		"--grpc-max-connection-age=1h",
+		"--grpc-max-connection-age-grace=5m",
 	}))
 
 	require.Equal(t, "/client/tls.crt", o.epsConf.ClientSecurityConfig.CertFile)
@@ -50,6 +52,8 @@ func TestTLSFlagsBindToExpectedSecurityConfigFields(t *testing.T) {
 	require.Equal(t, "/peer/ca.crt", o.epsConf.PeerSecurityConfig.CA)
 	require.Equal(t, "kubebrain-peer.kubebrain-system.svc", o.epsConf.PeerSecurityConfig.ServerName)
 	require.True(t, o.epsConf.PeerSecurityConfig.AllowInsecure)
+	require.Equal(t, time.Hour, o.epsConf.GRPCMaxConnectionAge)
+	require.Equal(t, 5*time.Minute, o.epsConf.GRPCMaxConnectionAgeGrace)
 }
 
 // TestWatchProgressNotifyIntervalValidation locks the k8s-1.37-review guard:
