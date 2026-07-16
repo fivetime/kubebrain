@@ -158,7 +158,7 @@ func TestClientV3RegisterHistoryIsLinearizable(t *testing.T) {
 	if endpoint == "" {
 		t.Skip("set KUBEBRAIN_ETCD_ENDPOINT to run the client/v3 linearizability history")
 	}
-	failoverPod := os.Getenv("KUBEBRAIN_LINEARIZABILITY_DELETE_POD")
+	failoverPod := linearizabilityDeletePod()
 	operationsPerClient := defaultOperationsPerClient
 	if failoverPod != "" {
 		operationsPerClient = 30
@@ -240,6 +240,13 @@ func TestClientV3RegisterHistoryIsLinearizable(t *testing.T) {
 	require.Equalf(t, porcupine.Ok, result, "register history result: %s", result)
 }
 
+func linearizabilityDeletePod() string {
+	if pod := os.Getenv("LINEARIZABILITY_DELETE_POD"); pod != "" {
+		return pod
+	}
+	return os.Getenv("KUBEBRAIN_LINEARIZABILITY_DELETE_POD")
+}
+
 func startLinearizabilityPodDeletion(ctx context.Context, clock *atomic.Int64, pod string, errCh chan<- error, workers *sync.WaitGroup) {
 	workers.Add(1)
 	go func() {
@@ -252,7 +259,10 @@ func startLinearizabilityPodDeletion(ctx context.Context, clock *atomic.Int64, p
 			case <-time.After(5 * time.Millisecond):
 			}
 		}
-		namespace := os.Getenv("KUBEBRAIN_FAILOVER_NAMESPACE")
+		namespace := os.Getenv("LINEARIZABILITY_DELETE_NAMESPACE")
+		if namespace == "" {
+			namespace = os.Getenv("KUBEBRAIN_FAILOVER_NAMESPACE")
+		}
 		if namespace == "" {
 			namespace = "kubebrain-dev"
 		}

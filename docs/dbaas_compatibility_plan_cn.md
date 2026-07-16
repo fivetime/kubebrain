@@ -387,6 +387,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   KubeBrain 当前 Leader 删除期间的 5 client/150 操作 history 捕获 3 个
   `Unavailable` 不确定 Txn，完整 history 仍为 `Ok`。下一步扩展 lease
   生命周期模型并注入 TiKV/PD 层故障。
+- **一致性 A39 TiKV/PD 故障历史（2026-07-16）**：将同一多键 Txn
+  checker 的故障注入扩展到可配置的 `LINEARIZABILITY_DELETE_NAMESPACE`/
+  `LINEARIZABILITY_DELETE_POD`，不再只能删除 KubeBrain 副本。在三副本
+  KubeBrain 连接独立单 store TiKV/单 PD 的当前 dev 集群上，分别在
+  5 client/150 两键 Txn 操作期间删除 `tidb-cluster/kb-tikv-0` 和
+  `tidb-cluster/kb-pd-0`。TiKV 轮捕获 1 个不确定 Txn，10.60s 恢复并返回
+  `Ok`；PD 轮覆盖 TSO `server not started`、EOF 和 proxy not-ready，捕获
+  11 个不确定 Txn，11.54s 恢复并返回 `Ok`。两轮后 Pod 均重建
+  Ready，后续成功读对可能落库的失败 Txn 状态完成剪枝，未观测到部分提交。
+  下一步扩展 lease 生命周期模型，并在多 store/多 PD 预生产拓扑上执行
+  分区、leader 转移和多点故障。
 - **Auth A1 持久化基础（2026-07-16）**：新增原子 `Backend.InternalCAS`，先读并
   校验全部 internal key 的精确旧值，再打开一个 storage batch 统一 CAS/创建/删除；
   冲突返回 `ErrCASFailed` 且整批不落地，不消耗用户 revision。etcd shim 已贯通该
@@ -687,7 +698,8 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
 1. 明确 `etcdctl` 命令兼容表，为平台替代命令返回可操作提示。
 2. 增加 BR/PITR 恢复演练、滚动升级、跨可用区故障、磁盘满和长时间 soak。
 3. Porcupine 已覆盖无故障 Get/Put/CAS、多键 Txn 原子性和可表达不确定
-   写结果的 KubeBrain Leader 故障历史；继续扩展 lease 模型和 TiKV/PD 故障注入。
+   写结果的 KubeBrain Leader/TiKV/PD 故障历史；继续扩展 lease 模型，并在
+   多 store/多 PD 预生产拓扑上做分区和多点故障注入。
    大规模性能测试不能替代正确性证明。
 
 ## 提交规则

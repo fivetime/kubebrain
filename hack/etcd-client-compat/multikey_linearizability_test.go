@@ -132,7 +132,7 @@ func TestClientV3MultiKeyTxnHistoryIsLinearizable(t *testing.T) {
 	if endpoint == "" {
 		t.Skip("set KUBEBRAIN_ETCD_ENDPOINT to run the multi-key Txn linearizability history")
 	}
-	failoverPod := os.Getenv("KUBEBRAIN_LINEARIZABILITY_DELETE_POD")
+	failoverPod := linearizabilityDeletePod()
 	operationsPerClient := defaultOperationsPerClient
 	if failoverPod != "" {
 		operationsPerClient = 30
