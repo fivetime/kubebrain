@@ -180,6 +180,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   默认 `minLeaseTTL` 时不是报错，而是提升为 2 秒。KubeBrain 现对负数、0、1
   和 2 都返回实际 granted TTL=2，并以该值持久化、调度 expiry；差分矩阵加入
   TTL=0 Grant/Revoke，真实 TiKV 上连续 10 轮通过。
+- **Lease 枚举授权对齐（2026-07-16）**：对照
+  `/root/etcd/server/etcdserver/v3_server.go` 的 `checkLeaseTimeToLive` 与
+  `checkLeaseLeases`，补齐 auth 开启时的 key 级 READ 检查。`TTL(Keys=false)`
+  仍只返回租约元数据；`TTL(Keys=true)` 必须能读该 lease 的全部附着 key；
+  `Leases` 必须能读所有待枚举 lease 的全部附着 key，否则整次请求返回
+  `PermissionDenied`，不泄露受保护 key 名或 lease ownership。完整 server、race
+  和 vet 通过。
+- **Lease 换主写 fence（2026-07-16）**：Grant/Revoke 与后台 expiry 现在在入场
+  时捕获 `(leadership epoch, lease freshness)`，并把 epoch 贯穿 leased-key 的
+  `TxnApply`、lease meta 删除和 attachment 清理。确定性回归在 Revoke 通过 leader
+  gate 后、TiKV batch 前切换 epoch，验证旧 leader 返回 `Unavailable`，且 leased
+  key 与 durable lease meta 均保留；修复前该后台路径因 context 无 epoch 而 fail-open。
+  当前源码重建后，真实 TiKV/PD 上 Lease/Txn/Range/DeleteRange/Compact 官方
+  client/v3 双端差分共同通过。
 - **Compact 双端差分**：新增 `TestCompactDifferentialAgainstReferenceEtcd`，
   覆盖 logical compaction 成功 header、`revision == compactRev` 边界快照仍可读、
   `revision < compactRev` 返回 ErrCompacted、重复/更旧 compact 返回同一错误、未来
