@@ -116,7 +116,7 @@ func TestIncrementalCompactScopesToTouchedKeys(t *testing.T) {
 	// Invalidate the baseline to force the full-scan path: it reclaims the
 	// pre-baseline garbage the incremental pass correctly skipped.
 	atomic.StoreUint64(&b.physicalBaseRev, 0)
-	b.physicalCompact(ctx, target)
+	require.NoError(t, b.physicalCompact(ctx, target))
 	require.Equal(t, 1, countVersions(k0), "full scan must reclaim pre-baseline garbage")
 	require.Equal(t, 0, b.incrementalStreak, "full scan resets the incremental streak")
 	require.Equal(t, target, atomic.LoadUint64(&b.physicalBaseRev), "full scan re-establishes the baseline")

@@ -181,3 +181,47 @@ func TestSetCompactRecordConcurrentCASNoError(t *testing.T) {
 	require.NoError(t, err)
 	require.GreaterOrEqual(t, wm, last)
 }
+
+func TestCompactAsyncFailureDoesNotAdvanceDoneAndRetries(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	m := mock.NewMinimalMetrics(ctrl)
+	kv := &armedFailPartitionsKV{KvStorage: imemkv.NewKvStorage()}
+	defer func() { require.NoError(t, kv.Close()) }()
+	b := NewBackend(kv, Config{Prefix: prefix, Identity: getStorageIdentity(), EnableEtcdCompatibility: true}, m).(*backend)
+	target := uint64(time.Now().UnixNano())
+	b.SetCurrentRevision(target)
+	atomic.StoreInt32(&kv.armed, 1)
+
+	_, err := b.CompactAsync(context.Background(), target)
+	require.NoError(t, err)
+	time.Sleep(100 * time.Millisecond)
+	require.Zero(t, atomic.LoadUint64(&b.compactDoneRev), "failed scan must not be reported complete")
+
+	atomic.StoreInt32(&kv.armed, 0)
+	require.Eventually(t, func() bool {
+		return atomic.LoadUint64(&b.compactDoneRev) >= target
+	}, 3*time.Second, 10*time.Millisecond, "background compactor must retry without a newer compact request")
+}
+
+func TestResumePhysicalCompactionFromPersistedWatermark(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	m := mock.NewMinimalMetrics(ctrl)
+	kv := imemkv.NewKvStorage()
+	defer func() { require.NoError(t, kv.Close()) }()
+	target := uint64(time.Now().UnixNano())
+
+	old := NewBackend(kv, Config{Prefix: prefix, Identity: "old", EnableEtcdCompatibility: true}, m).(*backend)
+	old.SetCurrentRevision(target)
+	advanced, err := old.setCompactRecord(context.Background(), target)
+	require.NoError(t, err)
+	require.True(t, advanced)
+
+	fresh := NewBackend(kv, Config{Prefix: prefix, Identity: "fresh", EnableEtcdCompatibility: true}, m).(*backend)
+	fresh.SetCurrentRevision(target)
+	require.NoError(t, fresh.ResumePhysicalCompaction(context.Background()))
+	require.Eventually(t, func() bool {
+		return atomic.LoadUint64(&fresh.compactDoneRev) >= target
+	}, 3*time.Second, 10*time.Millisecond, "new leader must resume GC from durable logical watermark")
+}

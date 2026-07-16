@@ -186,15 +186,14 @@ func (b *backend) compact(ctx context.Context, revision uint64) error {
 		return nil
 	}
 
-	b.physicalCompact(ctx, revision)
-	return nil
+	return b.physicalCompact(ctx, revision)
 }
 
 // physicalCompact runs the storage version-GC scan for revision. It is shared by
 // the synchronous Compact path and the background worker, and holds compactScanMu
 // so the two never scan concurrently (which would double-scan and contend on the
 // storage engine).
-func (b *backend) physicalCompact(ctx context.Context, revision uint64) {
+func (b *backend) physicalCompact(ctx context.Context, revision uint64) error {
 	b.compactScanMu.Lock()
 	defer b.compactScanMu.Unlock()
 
@@ -221,11 +220,17 @@ func (b *backend) physicalCompact(ctx context.Context, revision uint64) {
 			}
 		}
 	}()
+	var compactErr error
 	defer func() {
 		close(heartbeatDone)
 		b.metricCli.EmitGauge("compact.scan.inflight", 0)
-		klog.InfoS("physical compaction finished", "revision", revision,
-			"elapsed", time.Since(started).Round(time.Second))
+		if compactErr != nil {
+			klog.ErrorS(compactErr, "physical compaction failed", "revision", revision,
+				"elapsed", time.Since(started).Round(time.Second))
+		} else {
+			klog.InfoS("physical compaction finished", "revision", revision,
+				"elapsed", time.Since(started).Round(time.Second))
+		}
 	}()
 
 	if !b.tryIncrementalCompact(ctx, revision) {
@@ -245,6 +250,7 @@ func (b *backend) physicalCompact(ctx context.Context, revision uint64) {
 			atomic.StoreUint64(&b.physicalBaseRev, 0)
 			b.metricCli.EmitCounter("backend.compact.scan.err", 1)
 			klog.ErrorS(err, "physical compaction scan failed; garbage will be reclaimed on a later compaction", "revision", revision)
+			compactErr = err
 		} else {
 			atomic.StoreUint64(&b.physicalBaseRev, revision)
 			b.incrementalStreak = 0
@@ -258,6 +264,7 @@ func (b *backend) physicalCompact(ctx context.Context, revision uint64) {
 	// entries at/below it are dead weight — drop them and advance the log's
 	// completeness watermark (#45).
 	b.cleanupEventLog(ctx, revision)
+	return compactErr
 }
 
 const (
@@ -365,6 +372,19 @@ func (b *backend) schedulePhysicalCompact(revision uint64) {
 	}
 }
 
+func (b *backend) ResumePhysicalCompaction(ctx context.Context) error {
+	revision, err := b.GetCompactRevisionFresh(ctx)
+	if err != nil {
+		return err
+	}
+	if revision != 0 {
+		b.schedulePhysicalCompact(revision)
+	}
+	return nil
+}
+
+const physicalCompactRetryInterval = time.Second
+
 // runCompactor drains background physical-compaction requests, one scan at a
 // time, always compacting up to the latest requested revision (coalescing any
 // requests that arrived while a scan was running).
@@ -377,7 +397,15 @@ func (b *backend) runCompactor() {
 			if target <= lastScanned {
 				break
 			}
-			b.physicalCompact(ctx, target)
+			if err := b.physicalCompact(ctx, target); err != nil {
+				// Do not claim completion. Retry independently of a newer logical
+				// compact request so transient storage failures cannot leave physical
+				// history stranded forever.
+				time.AfterFunc(physicalCompactRetryInterval, func() {
+					b.schedulePhysicalCompact(target)
+				})
+				break
+			}
 			lastScanned = target
 			atomic.StoreUint64(&b.compactDoneRev, target)
 			// Export the physical-GC watermark so operators can see whether GC is

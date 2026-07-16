@@ -115,6 +115,11 @@ type Backend interface {
 	// the caller's timeout.
 	CompactAsync(ctx context.Context, revision uint64) (uint64, error)
 
+	// ResumePhysicalCompaction schedules physical GC up to the persisted logical
+	// watermark. Call it whenever this node acquires leadership so a scan
+	// cancelled by a client timeout or process exit is retried after failover.
+	ResumePhysicalCompaction(ctx context.Context) error
+
 	// GetCompactRevision returns the latest completed logical compaction revision.
 	GetCompactRevision(ctx context.Context) (uint64, error)
 

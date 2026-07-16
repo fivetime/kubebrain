@@ -184,8 +184,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   覆盖 logical compaction 成功 header、`revision == compactRev` 边界快照仍可读、
   `revision < compactRev` 返回 ErrCompacted、重复/更旧 compact 返回同一错误、未来
   revision 返回 ErrFutureRev，以及当前值不受影响。真实 TiKV 与 etcd 3.7 连续
-  10 轮结果一致。Physical=true 的完成时延与故障恢复仍保留为独立 P0 验证项，
-  不混入轻量语义差分。
+  10 轮结果一致。差分不再要求 revision 连续 `+1`：etcd 的 revision 是提交序号，
+  KubeBrain 的 revision 来自 PD/TSO，保证全局唯一、严格递增但允许时间间隔形成
+  跳号；这是通用 DBaaS 的已知可观察差异，后续需用真实客户端兼容矩阵判断是否
+  必须引入独立连续提交序号，不能在语义测试里误报或掩盖。
+- **Physical compaction 故障恢复（2026-07-16）**：真实 TiKV 灌入 500 key ×
+  20 versions 后验证 Physical=true 在扫描完成后才返回；100ms 客户端取消时逻辑
+  水位已经单调推进、旧 revision 返回 ErrCompacted、当前值可读。修复了取消/进程
+  退出后无自动追赶，以及后台扫描失败仍错误推进 `compactDoneRev` 的问题：物理
+  扫描现返回错误，失败不记完成并每秒有界重试；新 Leader 在 SERVING 前读取持久
+  化逻辑水位并调度恢复。实测重启后自动扫描目标水位；TiKV 停止期间新 Pod 保持
+  0/1，恢复后自动完成扫描。新增 `TestPhysicalCompactionUnderTraffic`，用官方
+  client/v3 在 Physical compact 同时执行 100 次 Put/Get、前缀 Range 和 Watch；
+  KubeBrain+TiKV 与参考 etcd 均通过，100/100 watch 事件完整，历史边界一致。
 
 ### P1：通用服务能力
 

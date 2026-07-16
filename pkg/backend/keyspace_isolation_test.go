@@ -107,7 +107,7 @@ func TestKeyspaceIsolationOnSharedStorage(t *testing.T) {
 	_, err := a.Delete(ctx, &proto.DeleteRequest{Key: key})
 	require.NoError(t, err)
 	require.Eventually(t, func() bool { _, ok := get(a); return !ok }, 5*time.Second, 2*time.Millisecond)
-	a.physicalCompact(ctx, a.GetCurrentRevision())
+	require.NoError(t, a.physicalCompact(ctx, a.GetCurrentRevision()))
 
 	vb, ok = get(b)
 	require.True(t, ok, "tenant A's compaction must not delete tenant B's live key")
@@ -119,7 +119,7 @@ func TestKeyspaceIsolationOnSharedStorage(t *testing.T) {
 
 	// And symmetrically: B compacting at its head must not resurrect or touch
 	// A's tombstoned key.
-	b.physicalCompact(ctx, b.GetCurrentRevision())
+	require.NoError(t, b.physicalCompact(ctx, b.GetCurrentRevision()))
 	_, ok = get(a)
 	require.False(t, ok)
 }

@@ -13,7 +13,6 @@ import (
 )
 
 type compactDifferentialResult struct {
-	CompactRevision int64
 	BoundaryValue   string
 	HistoricalCode  string
 	HistoricalError string
@@ -23,7 +22,6 @@ type compactDifferentialResult struct {
 	OlderError      string
 	FutureCode      string
 	FutureError     string
-	CurrentRevision int64
 	CurrentValue    string
 }
 
@@ -51,9 +49,6 @@ func runCompactDifferentialScenario(t *testing.T, endpoint, instance string) com
 	t.Cleanup(cancel)
 	key := fmt.Sprintf("/dbaas-compact-differential/%s/%d", instance, time.Now().UnixNano())
 
-	base, err := cli.Get(ctx, key)
-	require.NoError(t, err)
-	baseRev := base.Header.Revision
 	first, err := cli.Put(ctx, key, "v1")
 	require.NoError(t, err)
 	second, err := cli.Put(ctx, key, "v2")
@@ -62,6 +57,8 @@ func runCompactDifferentialScenario(t *testing.T, endpoint, instance string) com
 	require.NoError(t, err)
 	compact, err := cli.Compact(ctx, second.Header.Revision)
 	require.NoError(t, err)
+	require.GreaterOrEqual(t, compact.Header.Revision, second.Header.Revision)
+	require.LessOrEqual(t, compact.Header.Revision, third.Header.Revision)
 
 	boundary, err := cli.Get(ctx, key, clientv3.WithRev(second.Header.Revision))
 	require.NoError(t, err)
@@ -84,7 +81,6 @@ func runCompactDifferentialScenario(t *testing.T, endpoint, instance string) com
 	olderCode, olderMessage := normalizeError(olderErr)
 	futureCode, futureMessage := normalizeError(futureErr)
 	return compactDifferentialResult{
-		CompactRevision: compact.Header.Revision - baseRev,
 		BoundaryValue:   string(boundary.Kvs[0].Value),
 		HistoricalCode:  historicalCode,
 		HistoricalError: historicalMessage,
@@ -94,7 +90,6 @@ func runCompactDifferentialScenario(t *testing.T, endpoint, instance string) com
 		OlderError:      olderMessage,
 		FutureCode:      futureCode,
 		FutureError:     futureMessage,
-		CurrentRevision: current.Header.Revision - baseRev,
 		CurrentValue:    string(current.Kvs[0].Value),
 	}
 }

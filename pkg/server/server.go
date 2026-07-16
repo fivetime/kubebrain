@@ -151,6 +151,22 @@ func (s *server) onStartedLeading(ctx context.Context) {
 		case <-time.After(leaderReloadRetryInterval):
 		}
 	}
+	// Logical compaction is persisted before physical GC starts. A caller
+	// timeout, process exit, or leader failover can interrupt that scan; resume
+	// from the durable watermark before publishing this leader as ready.
+	for {
+		err := s.backend.ResumePhysicalCompaction(ctx)
+		if err == nil {
+			break
+		}
+		s.metricCli.EmitCounter("compact.resume.err", 1)
+		klog.ErrorS(err, "resume physical compaction on leadership acquisition failed; retrying before serving")
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(leaderReloadRetryInterval):
+		}
+	}
 	s.healthServer.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
 	// The count index can trail readiness: until it is Ready() at a revision,
 	// counts fall back to a full scan (never a wrong count), so a rebuild failure

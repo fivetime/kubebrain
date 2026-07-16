@@ -78,9 +78,9 @@ func (a *armedFailPartitionsKV) GetPartitions(ctx context.Context, start, end []
 	return a.KvStorage.GetPartitions(ctx, start, end)
 }
 
-// TestCompactSurfacesScanError pins #71: when the physical GC scan fails, the
-// compaction still reports success (the logical watermark was persisted), but the
-// failure is surfaced via a metric rather than silently swallowed.
+// TestCompactSurfacesScanError pins #71: Physical=true promises that the scan
+// completed before return, so a scan failure must be returned even though the
+// already-persisted logical watermark remains advanced.
 func TestCompactSurfacesScanError(t *testing.T) {
 	rec := newRecordCounters()
 	fkv := &armedFailPartitionsKV{KvStorage: imemkv.NewKvStorage()}
@@ -96,8 +96,12 @@ func TestCompactSurfacesScanError(t *testing.T) {
 	// Arm the scan failure, then compact synchronously.
 	atomic.StoreInt32(&fkv.armed, 1)
 	resp, err := b.Compact(ctx, cr.Header.Revision)
-	require.NoError(t, err, "logical compaction succeeds even if the physical scan fails")
+	require.ErrorContains(t, err, "injected partitions failure")
 	require.NotZero(t, resp.Header.Revision)
+	watermark, loadErr := b.GetCompactRevisionFresh(ctx)
+	require.NoError(t, loadErr)
+	require.GreaterOrEqual(t, watermark, uint64(cr.Header.Revision),
+		"logical watermark remains monotonic when physical GC fails")
 
 	require.GreaterOrEqual(t, rec.get("backend.compact.scan.err"), 1.0,
 		"a failed physical GC scan must be surfaced via a metric, not swallowed")
