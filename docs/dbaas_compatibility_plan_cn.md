@@ -297,6 +297,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   为 InvalidArgument、越权为 PermissionDenied、旧 token 为 Unauthenticated。该问题
   直接 handler 单测无法发现，证明官方消费端黑盒必须保留。下一步补多副本 token
   跨 Pod 验证、leader failover 和 Enabled 状态重启恢复，再扩大 auth 差分矩阵。
+- **Auth A11 三副本 HA（2026-07-16）**：新增 opt-in
+  `TestAuthTokenSharedAcrossEndpoints`、`TestAuthTokenSurvivesLeaderFailover` 和
+  `TestAuthTokenSurvivesEnabledRollout`。真实 3 副本 KubeBrain + 独立 `auth-ha-1`
+  keyspace 上：仅向 Pod A Authenticate 一次所得 token 可直接访问 A/B/C；删除当前
+  leader 后不重新认证，原 token 在约 10.4s 选主窗口后于两个存活副本恢复写读；
+  Enabled 状态滚动替换全部 3 Pod 后，重启前 token 仍可读数据且 AuthStatus=true，
+  稳定 NodePort 下完整恢复 23.46s。由此验证 HMAC key、auth config/users/roles 与
+  数据均由 TiKV 持久化，多副本不依赖进程本地认证状态。测试显式要求 disposable
+  namespace、endpoint 和 leader pod 环境变量，默认跳过 destructive failover。
+  下一步对照参考 etcd 扩展 auth 错误/幂等/密码和 permission 边界差分，并测试
+  多副本并发 Auth mutation 的 CAS 串行化。
 
 ### P1：通用服务能力
 
