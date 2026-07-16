@@ -23,7 +23,9 @@ package storagetest
 
 import (
 	"context"
+	"fmt"
 	"testing"
+	"time"
 
 	"github.com/pkg/errors"
 	"github.com/stretchr/testify/require"
@@ -32,12 +34,21 @@ import (
 )
 
 // RunBatchWriteContract exercises the shared BatchWrite semantics against a
-// storage produced by newKV. Each subtest gets a fresh storage so cases do not
-// bleed. newKV must return a ready, empty KvStorage.
+// storage produced by newKV. Keys are scoped by run and subtest so the contract
+// is safe against persistent/shared backends where a new client is not empty.
 func RunBatchWriteContract(t *testing.T, newKV func(t *testing.T) storage.KvStorage) {
 	ctx := context.Background()
+	runPrefix := fmt.Sprintf("\x00storagetest/%d/", time.Now().UnixNano())
+	key := func(t *testing.T, name string) []byte {
+		return []byte(runPrefix + t.Name() + "/" + name)
+	}
 	get := func(t *testing.T, kv storage.KvStorage, key string) ([]byte, error) {
-		return kv.Get(ctx, []byte(key))
+		return kv.Get(ctx, []byte(runPrefix+t.Name()+"/"+key))
+	}
+	seed := func(t *testing.T, kv storage.KvStorage, name, val string) {
+		b := kv.BeginBatchWrite()
+		b.Put(key(t, name), []byte(val), 0)
+		require.NoError(t, b.Commit(ctx))
 	}
 	// mustAbsent asserts a key is not present (a clean miss, not an error).
 	mustAbsent := func(t *testing.T, kv storage.KvStorage, key string) {
@@ -52,7 +63,7 @@ func RunBatchWriteContract(t *testing.T, newKV func(t *testing.T) storage.KvStor
 	t.Run("PutIfNotExist_on_missing_commits", func(t *testing.T) {
 		kv := newKV(t)
 		b := kv.BeginBatchWrite()
-		b.PutIfNotExist([]byte("k"), []byte("v"), 0)
+		b.PutIfNotExist(key(t, "k"), []byte("v"), 0)
 		require.NoError(t, b.Commit(ctx))
 		v, err := get(t, kv, "k")
 		require.NoError(t, err)
@@ -61,9 +72,9 @@ func RunBatchWriteContract(t *testing.T, newKV func(t *testing.T) storage.KvStor
 
 	t.Run("PutIfNotExist_on_existing_fails_CAS", func(t *testing.T) {
 		kv := newKV(t)
-		seed(t, ctx, kv, "k", "v1")
+		seed(t, kv, "k", "v1")
 		b := kv.BeginBatchWrite()
-		b.PutIfNotExist([]byte("k"), []byte("v2"), 0)
+		b.PutIfNotExist(key(t, "k"), []byte("v2"), 0)
 		err := b.Commit(ctx)
 		require.True(t, errors.Is(err, storage.ErrCASFailed), "PutIfNotExist over an existing key must fail CAS, got %v", err)
 		v, _ := get(t, kv, "k")
@@ -72,9 +83,9 @@ func RunBatchWriteContract(t *testing.T, newKV func(t *testing.T) storage.KvStor
 
 	t.Run("CAS_matching_old_commits", func(t *testing.T) {
 		kv := newKV(t)
-		seed(t, ctx, kv, "k", "v1")
+		seed(t, kv, "k", "v1")
 		b := kv.BeginBatchWrite()
-		b.CAS([]byte("k"), []byte("v2"), []byte("v1"), 0)
+		b.CAS(key(t, "k"), []byte("v2"), []byte("v1"), 0)
 		require.NoError(t, b.Commit(ctx))
 		v, _ := get(t, kv, "k")
 		require.Equal(t, []byte("v2"), v)
@@ -82,9 +93,9 @@ func RunBatchWriteContract(t *testing.T, newKV func(t *testing.T) storage.KvStor
 
 	t.Run("CAS_mismatched_old_fails_CAS", func(t *testing.T) {
 		kv := newKV(t)
-		seed(t, ctx, kv, "k", "v1")
+		seed(t, kv, "k", "v1")
 		b := kv.BeginBatchWrite()
-		b.CAS([]byte("k"), []byte("v2"), []byte("WRONG"), 0)
+		b.CAS(key(t, "k"), []byte("v2"), []byte("WRONG"), 0)
 		err := b.Commit(ctx)
 		require.True(t, errors.Is(err, storage.ErrCASFailed), "CAS with a wrong old value must fail CAS, got %v", err)
 		v, _ := get(t, kv, "k")
@@ -94,7 +105,7 @@ func RunBatchWriteContract(t *testing.T, newKV func(t *testing.T) storage.KvStor
 	t.Run("CAS_on_missing_fails_CAS", func(t *testing.T) {
 		kv := newKV(t)
 		b := kv.BeginBatchWrite()
-		b.CAS([]byte("k"), []byte("v2"), []byte("v1"), 0)
+		b.CAS(key(t, "k"), []byte("v2"), []byte("v1"), 0)
 		err := b.Commit(ctx)
 		require.True(t, errors.Is(err, storage.ErrCASFailed), "CAS on a missing key must fail CAS, got %v", err)
 		mustAbsent(t, kv, "k")
@@ -102,9 +113,9 @@ func RunBatchWriteContract(t *testing.T, newKV func(t *testing.T) storage.KvStor
 
 	t.Run("Put_overwrites_unconditionally", func(t *testing.T) {
 		kv := newKV(t)
-		seed(t, ctx, kv, "k", "v1")
+		seed(t, kv, "k", "v1")
 		b := kv.BeginBatchWrite()
-		b.Put([]byte("k"), []byte("v2"), 0)
+		b.Put(key(t, "k"), []byte("v2"), 0)
 		require.NoError(t, b.Commit(ctx))
 		v, _ := get(t, kv, "k")
 		require.Equal(t, []byte("v2"), v)
@@ -112,29 +123,23 @@ func RunBatchWriteContract(t *testing.T, newKV func(t *testing.T) storage.KvStor
 
 	t.Run("Del_removes", func(t *testing.T) {
 		kv := newKV(t)
-		seed(t, ctx, kv, "k", "v1")
+		seed(t, kv, "k", "v1")
 		b := kv.BeginBatchWrite()
-		b.Del([]byte("k"))
+		b.Del(key(t, "k"))
 		require.NoError(t, b.Commit(ctx))
 		mustAbsent(t, kv, "k")
 	})
 
 	t.Run("batch_is_atomic_on_conflict", func(t *testing.T) {
 		kv := newKV(t)
-		seed(t, ctx, kv, "guard", "g1")
+		seed(t, kv, "guard", "g1")
 		b := kv.BeginBatchWrite()
-		b.Put([]byte("sibling"), []byte("s"), 0)                 // would-be write
-		b.CAS([]byte("guard"), []byte("g2"), []byte("WRONG"), 0) // conflicts
+		b.Put(key(t, "sibling"), []byte("s"), 0)                 // would-be write
+		b.CAS(key(t, "guard"), []byte("g2"), []byte("WRONG"), 0) // conflicts
 		err := b.Commit(ctx)
 		require.True(t, errors.Is(err, storage.ErrCASFailed), "conflicting batch must fail, got %v", err)
 		mustAbsent(t, kv, "sibling") // the sibling write must NOT have applied
 		v, _ := get(t, kv, "guard")
 		require.Equal(t, []byte("g1"), v)
 	})
-}
-
-func seed(t *testing.T, ctx context.Context, kv storage.KvStorage, key, val string) {
-	b := kv.BeginBatchWrite()
-	b.Put([]byte(key), []byte(val), 0)
-	require.NoError(t, b.Commit(ctx))
 }
