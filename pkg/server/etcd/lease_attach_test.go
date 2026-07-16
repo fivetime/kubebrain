@@ -20,12 +20,15 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/kubewharf/kubebrain/pkg/backend"
 	"github.com/kubewharf/kubebrain/pkg/metrics/mock"
@@ -212,6 +215,60 @@ type failDeleteShim struct {
 	BackendShim
 	failKey string
 	fail    bool
+}
+
+type demoteBeforeTxnApplyShim struct {
+	BackendShim
+	demote func()
+}
+
+func (s *demoteBeforeTxnApplyShim) TxnApply(ctx context.Context, ops []backend.TxnWriteOp, guards []backend.TxnGuard, prevKV []bool) ([]*etcdserverpb.ResponseOp, uint64, []backend.TxnWriteResult, error) {
+	s.demote()
+	return s.BackendShim.TxnApply(ctx, ops, guards, prevKV)
+}
+
+func TestLeaseRevokeIsFencedAcrossLeadershipChange(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	metrics := mock.NewMinimalMetrics(ctrl)
+	kv := memkv.NewKvStorage()
+	b := backend.NewBackend(kv, backend.Config{
+		Identity:                "lease-fence-peer",
+		EnableEtcdCompatibility: true,
+	}, metrics)
+	var epoch atomic.Uint64
+	var leading atomic.Bool
+	leading.Store(true)
+	b.SetLeadershipFence(func() (uint64, bool) { return epoch.Load(), leading.Load() })
+	server := New(b, metrics, testPeerService{isLeader: true})
+	defer func() {
+		server.stopLeases()
+		require.NoError(t, kv.Close())
+		ctrl.Finish()
+	}()
+	ctx := context.Background()
+
+	const leaseID int64 = 9039
+	key := []byte("/registry/lease-fence/key")
+	_, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 300, ID: leaseID})
+	require.NoError(t, err)
+	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("value"), Lease: leaseID})
+	require.NoError(t, err)
+
+	server.backend = &demoteBeforeTxnApplyShim{
+		BackendShim: server.backend,
+		demote: func() {
+			epoch.Store(1)
+			leading.Store(false)
+		},
+	}
+	_, err = server.LeaseRevoke(ctx, &etcdserverpb.LeaseRevokeRequest{ID: leaseID})
+	require.Equal(t, codes.Unavailable, status.Code(err))
+
+	stored, err := server.backend.Get(ctx, &etcdserverpb.RangeRequest{Key: key})
+	require.NoError(t, err)
+	require.Len(t, stored.Kvs, 1, "a deposed leader must not delete the leased key")
+	_, err = server.backend.InternalGet(ctx, leaseStorageKey(leaseID))
+	require.NoError(t, err, "a fenced revoke must retain durable lease state for the successor")
 }
 
 func (f *failDeleteShim) Delete(ctx context.Context, key []byte, revision int64, includeFailureRange bool) (*etcdserverpb.TxnResponse, error) {

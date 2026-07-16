@@ -80,12 +80,15 @@ func (m *leaseManager) LeaseGrant(ctx context.Context, req *etcdserverpb.LeaseGr
 	if _, err := m.srv.authCallerFromContext(ctx); err != nil {
 		return nil, err
 	}
-	if err := m.requireLeaseLeader("lease grant"); err != nil {
+	epoch, leadingFresh := m.srv.peers.EpochAndLeadingFresh()
+	if !leadingFresh {
+		err := m.requireLeaseLeader("lease grant")
 		if m.srv.peers.EtcdProxyEnabled() {
 			return m.srv.peers.LeaseGrant(forwardAuthToken(ctx), req)
 		}
 		return nil, err
 	}
+	ctx = backend.WithLeadershipEpoch(ctx, epoch)
 	if req.TTL > maxLeaseTTL {
 		return nil, status.Error(codes.OutOfRange, "etcdserver: too large lease TTL")
 	}
@@ -116,8 +119,8 @@ func (m *leaseManager) LeaseGrant(ctx context.Context, req *etcdserverpb.LeaseGr
 	m.leaseMu.Unlock()
 
 	if err := m.persistLeaseMeta(ctx, st.id, st.ttl); err != nil {
-		_, _ = m.revokeLease(context.Background(), id)
-		return nil, err
+		_, _ = m.revokeLease(ctx, id)
+		return nil, mapFenceErr(err)
 	}
 
 	return &etcdserverpb.LeaseGrantResponse{
@@ -138,15 +141,18 @@ func (m *leaseManager) LeaseRevoke(ctx context.Context, req *etcdserverpb.LeaseR
 			return nil, err
 		}
 	}
-	if err := m.requireLeaseLeader("lease revoke"); err != nil {
+	epoch, leadingFresh := m.srv.peers.EpochAndLeadingFresh()
+	if !leadingFresh {
+		err := m.requireLeaseLeader("lease revoke")
 		if m.srv.peers.EtcdProxyEnabled() {
 			return m.srv.peers.LeaseRevoke(forwardAuthToken(ctx), req)
 		}
 		return nil, err
 	}
+	ctx = backend.WithLeadershipEpoch(ctx, epoch)
 	rev, err := m.revokeLease(ctx, req.ID)
 	if err != nil {
-		return nil, err
+		return nil, mapFenceErr(err)
 	}
 	return &etcdserverpb.LeaseRevokeResponse{
 		Header: txnHeader(int64(rev)),
@@ -597,17 +603,18 @@ func (m *leaseManager) revokeLease(ctx context.Context, id int64) (uint64, error
 	if err != nil {
 		return 0, err
 	}
-	_, err = m.removeLease(id)
+	_, err = m.removeLease(ctx, id)
 	return rev, err
 }
 
 func (m *leaseManager) expireLease(id int64) {
-	if !m.srv.peers.IsLeader() {
+	epoch, leadingFresh := m.srv.peers.EpochAndLeadingFresh()
+	if !leadingFresh {
 		m.retryLeaseExpiry(id)
 		return
 	}
 
-	ctx := context.Background()
+	ctx := backend.WithLeadershipEpoch(context.Background(), epoch)
 	keys, ok := m.leaseKeysSnapshot(id)
 	if !ok {
 		return // already removed
@@ -622,7 +629,7 @@ func (m *leaseManager) expireLease(id int64) {
 		return
 	}
 	// Every bound key is gone; now drop the lease record and attachment records.
-	_, _ = m.removeLease(id)
+	_, _ = m.removeLease(ctx, id)
 }
 
 // leaseKeysSnapshot returns a copy of the keys currently attached to lease id
@@ -652,7 +659,7 @@ func (m *leaseManager) retryLeaseExpiry(id int64) {
 	st.timer.Reset(leaseExpiryRetryInterval)
 }
 
-func (m *leaseManager) removeLease(id int64) ([]string, error) {
+func (m *leaseManager) removeLease(ctx context.Context, id int64) ([]string, error) {
 	m.leaseMu.Lock()
 	st, ok := m.leases[id]
 	if !ok {
@@ -671,7 +678,6 @@ func (m *leaseManager) removeLease(id int64) ([]string, error) {
 	atomic.StoreInt64(&m.leasedKeyCount, int64(len(m.keyLeaseIndex)))
 	m.leaseMu.Unlock()
 
-	ctx := context.Background()
 	err := m.deleteLeaseState(ctx, id)
 	// Remove each key's attachment record so the leasekeys/ keyspace does not leak
 	// live records pointing at a now-deleted lease (recovery skips orphans, but they
