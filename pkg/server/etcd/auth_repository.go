@@ -61,15 +61,40 @@ func newAuthRepository(backend BackendShim) *authRepository {
 	return &authRepository{backend: backend}
 }
 
-func (r *authRepository) load(ctx context.Context) (*authSnapshot, error) {
+func (r *authRepository) loadConfig(ctx context.Context) (authConfig, error) {
 	config := authConfig{}
 	configValue, err := r.backend.InternalGet(ctx, authConfigKey)
 	if err == nil {
 		config, err = decodeAuthConfig(configValue)
 	}
 	if err != nil && !errors.Is(err, storage.ErrKeyNotFound) {
-		return nil, err
+		return authConfig{}, err
 	}
+	return config, nil
+}
+
+func (r *authRepository) load(ctx context.Context) (*authSnapshot, error) {
+	for i := 0; i < authMutationRetries; i++ {
+		config, err := r.loadConfig(ctx)
+		if err != nil {
+			return nil, err
+		}
+		snapshot, err := r.loadRecords(ctx, config)
+		if err != nil {
+			return nil, err
+		}
+		current, err := r.loadConfig(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if current == config {
+			return snapshot, nil
+		}
+	}
+	return nil, storage.ErrUnavailable
+}
+
+func (r *authRepository) loadRecords(ctx context.Context, config authConfig) (*authSnapshot, error) {
 	usersRaw, err := r.backend.InternalRange(ctx, authUsersKey)
 	if err != nil {
 		return nil, err

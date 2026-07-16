@@ -233,9 +233,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   默认 TTL 5 分钟。密码认证使用持久化 bcrypt hash；任何 auth mutation 推进
   auth revision，旧令牌立即失效。校验覆盖签名、过期/未来时间、revision、用户
   存在性和 AuthEnable 状态；密钥缺失或损坏时失败关闭，验证路径不会隐式生成或
-  轮换密钥。该层仍为 private，尚未开放 AuthAuthenticate 或保护 KV/Watch；下一步
-  增加可失效的内存快照，避免每次请求全量扫描 auth keyspace，并保证多副本看到
-  auth revision 更新后再接入公开 RPC。
+  轮换密钥。认证快照以持久化 config revision 作跨副本失效信号：稳态请求只点读
+  config，revision 变化时单飞重载 users/roles；重载前后双读 revision，mutation
+  穿越扫描窗口时整轮重试，不发布撕裂权限快照。该层仍为 private，尚未开放
+  AuthAuthenticate 或保护 KV/Watch；下一步接入公开管理 RPC、认证 RPC 和 unary
+  数据面权限检查，最后单独处理长连接 Watch 的持续鉴权。
 
 ### P1：通用服务能力
 

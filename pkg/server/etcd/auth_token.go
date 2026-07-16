@@ -35,12 +35,15 @@ type authTokenClaims struct {
 }
 
 type authTokenManager struct {
-	repo *authRepository
-	now  func() time.Time
+	repo      *authRepository
+	snapshots *authSnapshotCache
+	now       func() time.Time
 }
 
 func newAuthTokenManager(backend BackendShim) *authTokenManager {
-	return &authTokenManager{repo: newAuthRepository(backend), now: time.Now}
+	return &authTokenManager{
+		repo: newAuthRepository(backend), snapshots: newAuthSnapshotCache(backend), now: time.Now,
+	}
 }
 
 func (m *authTokenManager) loadSigningKey(ctx context.Context) ([]byte, error) {
@@ -74,7 +77,7 @@ func (m *authTokenManager) ensureSigningKey(ctx context.Context) ([]byte, error)
 }
 
 func (m *authTokenManager) authenticate(ctx context.Context, username, password string) (string, error) {
-	snapshot, err := m.repo.load(ctx)
+	snapshot, err := m.snapshots.current(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -139,7 +142,7 @@ func (m *authTokenManager) verify(ctx context.Context, token string) (authTokenC
 		claims.IssuedAt > now.Add(authTokenClockSkew).Unix() || claims.Expires <= now.Unix() || claims.Expires <= claims.IssuedAt {
 		return authTokenClaims{}, rpctypes.ErrInvalidAuthToken
 	}
-	snapshot, err := m.repo.load(ctx)
+	snapshot, err := m.snapshots.current(ctx)
 	if err != nil {
 		return authTokenClaims{}, err
 	}
