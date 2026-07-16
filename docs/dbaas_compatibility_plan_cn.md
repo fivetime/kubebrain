@@ -227,6 +227,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Auth 开启后禁止删除 root user/role 或撤销 root 绑定，关闭后允许清理。完整
   lifecycle、错误、root 保护、普通/race 和全量回归均通过。该 manager 仍未挂到
   gRPC；下一步先做多副本快照同步和 token，再一次性开放管理 RPC 与数据面保护。
+- **Auth A3 令牌基础（2026-07-16）**：新增 private token manager。首次认证通过
+  `InternalCAS` 生成并持久化 256-bit HMAC-SHA256 签名密钥，多副本和进程重启
+  后可验证同一令牌；令牌包含用户名、auth revision、签发/过期时间和随机 nonce，
+  默认 TTL 5 分钟。密码认证使用持久化 bcrypt hash；任何 auth mutation 推进
+  auth revision，旧令牌立即失效。校验覆盖签名、过期/未来时间、revision、用户
+  存在性和 AuthEnable 状态；密钥缺失或损坏时失败关闭，验证路径不会隐式生成或
+  轮换密钥。该层仍为 private，尚未开放 AuthAuthenticate 或保护 KV/Watch；下一步
+  增加可失效的内存快照，避免每次请求全量扫描 auth keyspace，并保证多副本看到
+  auth revision 更新后再接入公开 RPC。
 
 ### P1：通用服务能力
 
