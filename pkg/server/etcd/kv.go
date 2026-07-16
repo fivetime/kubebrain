@@ -68,6 +68,9 @@ func (s *RPCServer) Range(ctx context.Context, r *etcdserverpb.RangeRequest) (*e
 		if err != nil {
 			return nil, err
 		}
+		if err = s.ensureAuthRevision(ctx, caller); err != nil {
+			return nil, err
+		}
 		return &etcdserverpb.RangeResponse{
 			Header: txnHeader(int64(revision)),
 		}, nil
@@ -98,6 +101,9 @@ func (s *RPCServer) Range(ctx context.Context, r *etcdserverpb.RangeRequest) (*e
 	s.metricCli.EmitHistogram("read.latency", time.Since(startTime).Seconds(), methodTag, successTag)
 	if response != nil {
 		s.metricCli.EmitHistogram("read.responsesize", proto.Size(response), methodTag, successTag)
+	}
+	if authErr = s.ensureAuthRevision(ctx, caller); authErr != nil {
+		return nil, authErr
 	}
 	return response, err
 }
@@ -206,6 +212,9 @@ func (s *RPCServer) RangeStream(r *etcdserverpb.RangeRequest, rs etcdserverpb.KV
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+	}
+	if err := s.ensureAuthRevision(ctx, caller); err != nil {
+		return err
 	}
 	s.metricCli.EmitCounter("read.range_stream", 1)
 	s.metricCli.EmitHistogram("read.range_stream.latency", time.Since(startTime).Seconds())

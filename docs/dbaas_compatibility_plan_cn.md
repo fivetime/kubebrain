@@ -322,6 +322,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   renew 后撤销权限、第二个 renew 立即拒绝；官方 `client/v3 KeepAliveOnce` 在独立
   etcd 与真实 TiKV-backed KubeBrain 上均表现为普通用户 `PermissionDenied`、root
   成功。
+- **Range auth revision 序列化（2026-07-16）**：对照 etcd
+  `EtcdServer.doSerialize`，认证 caller 的 revision 改为请求开始时加载的持久化 auth
+  revision；unary Range 和原生 RangeStream 在读取结束时重新点读 revision。若角色或
+  权限在读取期间变化，响应以 `ErrAuthOldRevision` 失败，避免客户端把旧权限下的
+  Range 结果或部分 stream 当作完整成功；请求开始前已经发生的无关 auth mutation
+  不会废掉仍有效的 simple token。确定性 backend hook 覆盖点读完成后撤权，以及
+  RangeStream 首 chunk 发出后撤权；下一次请求按新权限返回 PermissionDenied。
+  只读通用 Txn 不额外套此检查：其 staged executor 已持有逻辑事务屏障，auth 的
+  InternalCAS 在事务结束前无法提交；源码锁序和确定性注入时的阻塞栈确认不存在
+  同一窗口。
 - **Physical compaction 故障恢复（2026-07-16）**：真实 TiKV 灌入 500 key ×
   20 versions 后验证 Physical=true 在扫描完成后才返回；100ms 客户端取消时逻辑
   水位已经单调推进、旧 revision 返回 ErrCompacted、当前值可读。修复了取消/进程

@@ -2,6 +2,7 @@ package etcd
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -10,6 +11,41 @@ import (
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	"google.golang.org/grpc/metadata"
 )
+
+type authMutationReadShim struct {
+	BackendShim
+	onGet    sync.Once
+	onStream sync.Once
+	hook     func()
+}
+
+func (b *authMutationReadShim) Get(ctx context.Context, request *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
+	response, err := b.BackendShim.Get(ctx, request)
+	if err == nil {
+		b.onGet.Do(b.hook)
+	}
+	return response, err
+}
+
+func (b *authMutationReadShim) RangeStreamChan(ctx context.Context, start, end []byte, revision uint64) (<-chan rangeStreamChunk, error) {
+	input, err := b.BackendShim.RangeStreamChan(ctx, start, end, revision)
+	if err != nil {
+		return nil, err
+	}
+	output := make(chan rangeStreamChunk)
+	go func() {
+		defer close(output)
+		for chunk := range input {
+			select {
+			case output <- chunk:
+				b.onStream.Do(b.hook)
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return output, nil
+}
 
 func TestAuthCallerAndPermissionRangeUnion(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
@@ -48,6 +84,47 @@ func TestAuthCallerFailsClosedAndDisabledBypasses(t *testing.T) {
 	_, _ = bootstrapAuthForToken(t, server)
 	_, err = server.authCallerFromContext(ctx)
 	require.ErrorIs(t, err, rpctypes.ErrUserEmpty)
+}
+
+func TestAuthorizedRangeRejectsAuthMutationDuringRead(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	aliceCtx := setupAuthKVUser(t, server)
+	_, err := server.Put(aliceCtx, &etcdserverpb.PutRequest{Key: []byte("/allowed/a"), Value: []byte("value")})
+	require.NoError(t, err)
+
+	shim := &authMutationReadShim{BackendShim: server.backend}
+	var mutationErr error
+	shim.hook = func() {
+		mutationErr = server.auth.roleRevokePermission(context.Background(), "allowed", []byte("/allowed/"), []byte("/allowed0"))
+	}
+	server.backend = shim
+
+	_, err = server.Range(aliceCtx, &etcdserverpb.RangeRequest{Key: []byte("/allowed/a")})
+	require.ErrorIs(t, err, rpctypes.ErrAuthOldRevision)
+	require.NoError(t, mutationErr)
+	_, err = server.Range(aliceCtx, &etcdserverpb.RangeRequest{Key: []byte("/allowed/a")})
+	require.ErrorIs(t, err, rpctypes.ErrPermissionDenied)
+}
+
+func TestAuthorizedRangeStreamRejectsAuthMutationDuringRead(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	aliceCtx := setupAuthKVUser(t, server)
+	_, err := server.Put(aliceCtx, &etcdserverpb.PutRequest{Key: []byte("/allowed/a"), Value: []byte("value")})
+	require.NoError(t, err)
+
+	shim := &authMutationReadShim{BackendShim: server.backend}
+	var mutationErr error
+	shim.hook = func() {
+		mutationErr = server.auth.roleRevokePermission(context.Background(), "allowed", []byte("/allowed/"), []byte("/allowed0"))
+	}
+	server.backend = shim
+	stream := &fakeRangeStreamServer{ctx: aliceCtx}
+	err = server.RangeStream(&etcdserverpb.RangeRequest{Key: []byte("/allowed/"), RangeEnd: []byte("/allowed0")}, stream)
+	require.ErrorIs(t, err, rpctypes.ErrAuthOldRevision)
+	require.NoError(t, mutationErr)
+	require.NotEmpty(t, stream.sent, "the mutation must occur after streaming has begun")
 }
 
 func TestAuthPermissionOpenEndedAndGap(t *testing.T) {

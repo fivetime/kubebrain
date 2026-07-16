@@ -38,7 +38,25 @@ func (s *RPCServer) authCallerFromContext(ctx context.Context) (*authCaller, err
 	if err != nil {
 		return nil, err
 	}
-	return &authCaller{username: claims.Username, revision: claims.Revision, snapshot: snapshot}, nil
+	// etcd's simple-token provider resolves AuthInfo.Revision from the auth store
+	// when a request starts. A token may survive unrelated auth mutations, but a
+	// serialized read must fail with ErrAuthOldRevision if the store changes while
+	// that request is executing.
+	return &authCaller{username: claims.Username, revision: snapshot.Config.Revision, snapshot: snapshot}, nil
+}
+
+func (s *RPCServer) ensureAuthRevision(ctx context.Context, caller *authCaller) error {
+	if caller == nil {
+		return nil
+	}
+	snapshot, err := s.tokens.snapshots.current(ctx)
+	if err != nil {
+		return err
+	}
+	if caller.revision != snapshot.Config.Revision {
+		return rpctypes.ErrAuthOldRevision
+	}
+	return nil
 }
 
 func forwardAuthToken(ctx context.Context) context.Context {
