@@ -31,8 +31,8 @@ Raft、bbolt 和成员管理内部实现，而是对通用 etcd v3 客户端提�
 
 | 服务 | 能力 | 当前状态 | DBaaS 处理 |
 | --- | --- | --- | --- |
-| KV | Range/Put/DeleteRange | 部分兼容 | P0：逐项对齐排序、过滤、历史读、错误和大范围删除原子性 |
-| KV | Txn | 部分兼容 | P0：点键缺失 guard、范围 phantom guard 已完成；继续补齐嵌套 txn 和所有合法分支的单 revision 原子性 |
+| KV | Range/Put/DeleteRange | 部分兼容 | P0：事务内排序、过滤、历史读和大范围删除原子性已补齐；继续做独立 RPC 边界差分与大范围资源限制 |
+| KV | Txn | 部分兼容 | P0：缺失键 guard、范围 phantom guard、嵌套分支和 staged 单 revision 提交已完成；继续做官方客户端差分及 TiKV 故障验证 |
 | KV | Compact | 兼容核心语义 | P0：继续对齐 logical/physical 行为、错误与异步 GC |
 | KV | RangeStream | Kubernetes 请求形状兼容 | P1：对齐 etcd 3.7 支持的通用请求形状，或明确返回 Unimplemented |
 | Watch | create/cancel/progress/history/prevKV | 兼容核心语义 | P0：用官方客户端做事件完整性、压缩、断线恢复和慢消费者测试 |
@@ -88,16 +88,31 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `TestRangeTxnBarrierBlocksExternalWrites` 和两者的 race 测试覆盖锁边界。代价
   是范围 compare 执行期间同一实例的逻辑写会短暂排队，因此 DBaaS 必须保留
   txn op/range 和 RPC deadline 限制。
-- **尚未解决**：包含 range read、multi-key DeleteRange 或
-  IgnoreValue/IgnoreLease 的 generic txn 仍可能走顺序执行回退；屏障可排除
-  外部并发，但这些分支内部的多次写尚未共享一个 revision，也未实现一次
-  storage batch 的全有或全无提交。
 - **nested point-write 原子路径**：选中分支可递归扁平化任意层 nested txn；
   当路径只含 distinct-key Put 和单键 DeleteRange 时，所有层级 compare guard
   与写操作一次提交、共享一个 revision，再按原树形重建 TxnResponse。事务内
   Put 的 `PrevKv` 同时补齐。`TestTxnNestedWriteOnlyUsesSingleRevision` 和
-  `TestTxnAtomicPutReturnsPrevKV` 覆盖。注意这不代表 nested txn 已完整：嵌套
-  路径含 Range 或 multi-key DeleteRange 时仍属于上一条未解决项。
+  `TestTxnAtomicPutReturnsPrevKV` 覆盖。
+- **generic txn staged view**：当选中路径包含 Range、multi-key 或重叠
+  DeleteRange、多个 DeleteRange、IgnoreValue/IgnoreLease 时，先在固定
+  `baseRev` 上构建事务内视图，按请求顺序让后续读看到先前写，再把最终每键
+  状态去重为一个 `TxnApply` batch。有效写共享一个 revision，任一校验失败不
+  提交；空 DeleteRange 不消耗 revision。显式历史 Range 读取请求 revision 的
+  数据，但响应 header 使用事务当前可见 revision，与
+  `/root/etcd/server/storage/mvcc/kvstore_txn.go` 一致。排序、revision 过滤、
+  limit/More、CountOnly、KeysOnly 均在 staged view 上执行。覆盖测试：
+  `TestTxnRangeSeesPriorWritesButNotLaterWrites`、
+  `TestTxnOverlappingDeleteRangesUseStagedViewAndOneRevision`、
+  `TestTxnIgnoreOptionsUseStagedAtomicValidation`、
+  `TestTxnHistoricalRangeAfterPutReadsOldValueWithTxnHeader`、
+  `TestTxnNoOpDeleteRangesDoNotConsumeRevision`、
+  `TestTxnRangeOptionsApplyToStagedView`。官方 client/v3 黑盒新增
+  `TestTxnRangeUsesOrderedStagedView` 和
+  `TestTxnOverlappingDeleteRangesShareOneRevision`，在 kind Kubernetes
+  v1.36.1 + PD/TiKV v8.5.3 上连续 10 轮通过；完整 client 兼容套件和基础
+  smoke 通过。TiKV persistence smoke 已直接读取 revision index 和 object
+  value，并在 KubeBrain 重启后复读成功。commit-undetermined 和 PD/TiKV
+  故障注入仍是 P0 未完成项。
 
 ### P1：通用服务能力
 

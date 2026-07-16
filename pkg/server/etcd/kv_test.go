@@ -1786,6 +1786,208 @@ func TestTxnSimpleSuccessPutRangeDeleteResponsesInOrder(t *testing.T) {
 	require.Empty(t, deletedResp.Kvs)
 }
 
+func TestTxnRangeSeesPriorWritesButNotLaterWrites(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	ctx := context.Background()
+	prefix := []byte("/registry/generic-txn/ordered-view/")
+	keyA := append(append([]byte(nil), prefix...), 'a')
+	keyB := append(append([]byte(nil), prefix...), 'b')
+	resp, err := server.Txn(ctx, &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+		{Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{Key: keyA, Value: []byte("a")}}},
+		{Request: &etcdserverpb.RequestOp_RequestRange{RequestRange: &etcdserverpb.RangeRequest{
+			Key: prefix, RangeEnd: []byte("/registry/generic-txn/ordered-view0"),
+		}}},
+		{Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{Key: keyB, Value: []byte("b")}}},
+	}})
+	require.NoError(t, err)
+	rangeResp := resp.Responses[1].GetResponseRange()
+	require.Len(t, rangeResp.Kvs, 1)
+	require.Equal(t, keyA, rangeResp.Kvs[0].Key)
+	require.Equal(t, resp.Header.Revision, rangeResp.Header.Revision)
+	require.Equal(t, resp.Header.Revision, rangeResp.Kvs[0].ModRevision)
+
+	final, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: prefix, RangeEnd: []byte("/registry/generic-txn/ordered-view0")})
+	require.NoError(t, err)
+	require.Len(t, final.Kvs, 2)
+	require.Equal(t, resp.Header.Revision, final.Kvs[0].ModRevision)
+	require.Equal(t, resp.Header.Revision, final.Kvs[1].ModRevision)
+}
+
+func TestTxnOverlappingDeleteRangesUseStagedViewAndOneRevision(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	ctx := context.Background()
+	prefix := "/registry/generic-txn/overlap-delete/"
+	for _, suffix := range []string{"a", "b", "c"} {
+		_, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: []byte(prefix + suffix), Value: []byte(suffix)})
+		require.NoError(t, err)
+	}
+	before := int64(server.backend.GetCurrentRevision())
+	resp, err := server.Txn(ctx, &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+		{Request: &etcdserverpb.RequestOp_RequestDeleteRange{RequestDeleteRange: &etcdserverpb.DeleteRangeRequest{
+			Key: []byte(prefix + "a"), RangeEnd: []byte(prefix + "c"), PrevKv: true,
+		}}},
+		{Request: &etcdserverpb.RequestOp_RequestDeleteRange{RequestDeleteRange: &etcdserverpb.DeleteRangeRequest{
+			Key: []byte(prefix + "b"), RangeEnd: []byte(prefix + "d"), PrevKv: true,
+		}}},
+	}})
+	require.NoError(t, err)
+	require.Equal(t, before+1, resp.Header.Revision)
+	first := resp.Responses[0].GetResponseDeleteRange()
+	second := resp.Responses[1].GetResponseDeleteRange()
+	require.Equal(t, int64(2), first.Deleted)
+	require.Equal(t, [][]byte{[]byte("a"), []byte("b")}, [][]byte{first.PrevKvs[0].Value, first.PrevKvs[1].Value})
+	require.Equal(t, int64(1), second.Deleted)
+	require.Equal(t, []byte("c"), second.PrevKvs[0].Value)
+
+	remaining, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: []byte(prefix), RangeEnd: []byte(prefix + "z")})
+	require.NoError(t, err)
+	require.Empty(t, remaining.Kvs)
+}
+
+func TestTxnIgnoreOptionsUseStagedAtomicValidation(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	ctx := context.Background()
+	lease, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 30})
+	require.NoError(t, err)
+	key := []byte("/registry/generic-txn/ignore/existing")
+	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("old"), Lease: lease.ID})
+	require.NoError(t, err)
+
+	resp, err := server.Txn(ctx, &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+		{Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{Key: key, IgnoreLease: true, Value: []byte("new")}}},
+		{Request: &etcdserverpb.RequestOp_RequestRange{RequestRange: &etcdserverpb.RangeRequest{Key: key}}},
+	}})
+	require.NoError(t, err)
+	staged := resp.Responses[1].GetResponseRange().Kvs[0]
+	require.Equal(t, []byte("new"), staged.Value)
+	require.Equal(t, lease.ID, staged.Lease)
+
+	missing := []byte("/registry/generic-txn/ignore/missing")
+	mustNotLand := []byte("/registry/generic-txn/ignore/must-not-land")
+	resp, err = server.Txn(ctx, &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+		{Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{Key: mustNotLand, Value: []byte("x")}}},
+		{Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{Key: missing, IgnoreValue: true}}},
+	}})
+	require.Nil(t, resp)
+	require.Equal(t, codes.NotFound, status.Code(err))
+	get, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: mustNotLand})
+	require.NoError(t, err)
+	require.Empty(t, get.Kvs)
+}
+
+func TestTxnHistoricalRangeAfterPutReadsOldValueWithTxnHeader(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	ctx := context.Background()
+	key := []byte("/registry/generic-txn/historical-overlay")
+	seed, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("old")})
+	require.NoError(t, err)
+
+	resp, err := server.Txn(ctx, &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+		{Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{Key: key, Value: []byte("new")}}},
+		{Request: &etcdserverpb.RequestOp_RequestRange{RequestRange: &etcdserverpb.RangeRequest{Key: key, Revision: seed.Header.Revision}}},
+	}})
+	require.NoError(t, err)
+	historical := resp.Responses[1].GetResponseRange()
+	require.Equal(t, []byte("old"), historical.Kvs[0].Value)
+	require.Equal(t, seed.Header.Revision, historical.Kvs[0].ModRevision)
+	require.Equal(t, resp.Header.Revision, historical.Header.Revision)
+
+	current, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: key})
+	require.NoError(t, err)
+	require.Equal(t, []byte("new"), current.Kvs[0].Value)
+}
+
+func TestTxnNoOpDeleteRangesDoNotConsumeRevision(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	ctx := context.Background()
+	before := int64(server.backend.GetCurrentRevision())
+	resp, err := server.Txn(ctx, &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+		{Request: &etcdserverpb.RequestOp_RequestDeleteRange{RequestDeleteRange: &etcdserverpb.DeleteRangeRequest{
+			Key: []byte("/registry/generic-txn/noop/a"), RangeEnd: []byte("/registry/generic-txn/noop/m"),
+		}}},
+		{Request: &etcdserverpb.RequestOp_RequestDeleteRange{RequestDeleteRange: &etcdserverpb.DeleteRangeRequest{
+			Key: []byte("/registry/generic-txn/noop/m"), RangeEnd: []byte("/registry/generic-txn/noop/z"),
+		}}},
+	}})
+	require.NoError(t, err)
+	require.Equal(t, before, resp.Header.Revision)
+	require.Equal(t, int64(0), resp.Responses[0].GetResponseDeleteRange().Deleted)
+	require.Equal(t, int64(0), resp.Responses[1].GetResponseDeleteRange().Deleted)
+	require.Equal(t, uint64(before), server.backend.GetCurrentRevision())
+}
+
+func TestTxnRangeOptionsApplyToStagedView(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	ctx := context.Background()
+	prefix := "/registry/generic-txn/range-options/"
+	_, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: []byte(prefix + "a"), Value: []byte("old")})
+	require.NoError(t, err)
+	before := int64(server.backend.GetCurrentRevision())
+
+	resp, err := server.Txn(ctx, &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+		{Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{
+			Key: []byte(prefix + "b"), Value: []byte("new-b"),
+		}}},
+		{Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{
+			Key: []byte(prefix + "c"), Value: []byte("new-c"),
+		}}},
+		{Request: &etcdserverpb.RequestOp_RequestRange{RequestRange: &etcdserverpb.RangeRequest{
+			Key:            []byte(prefix),
+			RangeEnd:       []byte(prefix + "z"),
+			MinModRevision: before + 1,
+			CountOnly:      true,
+		}}},
+		{Request: &etcdserverpb.RequestOp_RequestRange{RequestRange: &etcdserverpb.RangeRequest{
+			Key:        []byte(prefix),
+			RangeEnd:   []byte(prefix + "z"),
+			SortOrder:  etcdserverpb.RangeRequest_DESCEND,
+			SortTarget: etcdserverpb.RangeRequest_KEY,
+			Limit:      2,
+			KeysOnly:   true,
+		}}},
+	}})
+	require.NoError(t, err)
+	require.Equal(t, before+1, resp.Header.Revision)
+
+	counted := resp.Responses[2].GetResponseRange()
+	require.Equal(t, int64(2), counted.Count)
+	require.Empty(t, counted.Kvs)
+
+	limited := resp.Responses[3].GetResponseRange()
+	require.Equal(t, int64(3), limited.Count)
+	require.True(t, limited.More)
+	require.Equal(t, [][]byte{[]byte(prefix + "c"), []byte(prefix + "b")}, [][]byte{limited.Kvs[0].Key, limited.Kvs[1].Key})
+	require.Nil(t, limited.Kvs[0].Value)
+	require.Nil(t, limited.Kvs[1].Value)
+}
+
+func TestPutIgnoreLeaseRequiresExistingKey(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	key := []byte("/registry/put-ignore-lease-missing")
+	resp, err := server.Put(context.Background(), &etcdserverpb.PutRequest{
+		Key: key, Value: []byte("must-not-create"), IgnoreLease: true,
+	})
+	require.Nil(t, resp)
+	require.Equal(t, codes.NotFound, status.Code(err))
+	get, err := server.Range(context.Background(), &etcdserverpb.RangeRequest{Key: key})
+	require.NoError(t, err)
+	require.Empty(t, get.Kvs)
+}
+
 func TestTxnSimpleSuccessPutWithLeaseIsRevoked(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

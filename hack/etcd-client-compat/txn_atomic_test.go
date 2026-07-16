@@ -87,3 +87,67 @@ func TestTxnCompareMultiWriteSingleRevision(t *testing.T) {
 	require.Equal(t, ga.Kvs[0].ModRevision, gb.Kvs[0].ModRevision,
 		"compare-then-multi-write must be a single revision (#4)")
 }
+
+// TestTxnRangeUsesOrderedStagedView verifies etcd's storeTxnWrite behavior:
+// reads observe earlier writes in the same transaction, but not later writes.
+func TestTxnRangeUsesOrderedStagedView(t *testing.T) {
+	cli, err := clientv3.New(clientv3.Config{Endpoints: []string{compatEndpoint()}, DialTimeout: 3 * time.Second})
+	require.NoError(t, err)
+	defer cli.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	pfx := testPrefix(t) + "/"
+	cleanupPrefix(t, newKubernetesClient(t), pfx)
+	a, b := pfx+"a", pfx+"b"
+
+	resp, err := cli.Txn(ctx).Then(
+		clientv3.OpPut(a, "va"),
+		clientv3.OpGet(pfx, clientv3.WithPrefix()),
+		clientv3.OpPut(b, "vb"),
+	).Commit()
+	require.NoError(t, err)
+	require.Len(t, resp.Responses, 3)
+	stagedRange := resp.Responses[1].GetResponseRange()
+	require.Len(t, stagedRange.Kvs, 1)
+	require.Equal(t, a, string(stagedRange.Kvs[0].Key))
+	require.Equal(t, resp.Header.Revision, stagedRange.Kvs[0].ModRevision)
+
+	final, err := cli.Get(ctx, pfx, clientv3.WithPrefix())
+	require.NoError(t, err)
+	require.Len(t, final.Kvs, 2)
+	require.Equal(t, resp.Header.Revision, final.Kvs[0].ModRevision)
+	require.Equal(t, resp.Header.Revision, final.Kvs[1].ModRevision)
+}
+
+// TestTxnOverlappingDeleteRangesShareOneRevision verifies that each delete sees
+// prior transaction deletes while the final storage update remains atomic.
+func TestTxnOverlappingDeleteRangesShareOneRevision(t *testing.T) {
+	cli, err := clientv3.New(clientv3.Config{Endpoints: []string{compatEndpoint()}, DialTimeout: 3 * time.Second})
+	require.NoError(t, err)
+	defer cli.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	pfx := testPrefix(t) + "/"
+	cleanupPrefix(t, newKubernetesClient(t), pfx)
+	for _, suffix := range []string{"a", "b", "c"} {
+		_, err = cli.Put(ctx, pfx+suffix, suffix)
+		require.NoError(t, err)
+	}
+
+	resp, err := cli.Txn(ctx).Then(
+		clientv3.OpDelete(pfx+"a", clientv3.WithRange(pfx+"c"), clientv3.WithPrevKV()),
+		clientv3.OpDelete(pfx+"b", clientv3.WithRange(pfx+"d"), clientv3.WithPrevKV()),
+	).Commit()
+	require.NoError(t, err)
+	first := resp.Responses[0].GetResponseDeleteRange()
+	second := resp.Responses[1].GetResponseDeleteRange()
+	require.Equal(t, int64(2), first.Deleted)
+	require.Equal(t, int64(1), second.Deleted)
+	require.Equal(t, "c", string(second.PrevKvs[0].Value))
+
+	remaining, err := cli.Get(ctx, pfx, clientv3.WithPrefix())
+	require.NoError(t, err)
+	require.Empty(t, remaining.Kvs)
+}

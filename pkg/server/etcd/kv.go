@@ -725,20 +725,21 @@ func (s *RPCServer) putWithEffectiveOptions(ctx context.Context, r *etcdserverpb
 		return r, nil
 	}
 	clone := proto.Clone(r).(*etcdserverpb.PutRequest)
+	rangeResp, err := s.backend.Get(ctx, &etcdserverpb.RangeRequest{Key: r.Key})
+	if err != nil {
+		return nil, err
+	}
+	if len(rangeResp.Kvs) == 0 {
+		return nil, status.Errorf(codes.NotFound, "ignore options require existing key %q", string(r.Key))
+	}
+	current := rangeResp.Kvs[0]
 	if r.IgnoreLease {
 		clone.IgnoreLease = false
-		clone.Lease = s.leaseIDForKey(string(r.Key))
+		clone.Lease = current.Lease
 	}
 	if r.IgnoreValue {
-		rangeResp, err := s.backend.Get(ctx, &etcdserverpb.RangeRequest{Key: r.Key})
-		if err != nil {
-			return nil, err
-		}
-		if len(rangeResp.Kvs) == 0 {
-			return nil, status.Errorf(codes.NotFound, "ignore value requires existing key %q", string(r.Key))
-		}
 		clone.IgnoreValue = false
-		clone.Value = rangeResp.Kvs[0].Value
+		clone.Value = current.Value
 	}
 	return clone, nil
 }
@@ -848,7 +849,8 @@ func txnOpsSupported(ops []*etcdserverpb.RequestOp) bool {
 }
 
 func (s *RPCServer) executeGenericTxn(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etcdserverpb.TxnResponse, error) {
-	if txnHasRangeCompare(txn) {
+	needsStaged := txnNeedsStagedExecution(txn)
+	if needsStaged {
 		var unlock func()
 		ctx, unlock = s.backend.BeginRangeTxn(ctx)
 		defer unlock()
@@ -883,8 +885,51 @@ func (s *RPCServer) executeGenericTxn(ctx context.Context, txn *etcdserverpb.Txn
 		if handled {
 			return resp, err
 		}
+		if needsStaged {
+			resp, err = s.executeStagedGenericTxn(ctx, txn, paths, guards)
+			if errors.Is(err, backend.ErrTxnGuardConflict) {
+				continue
+			}
+			return resp, err
+		}
 		return s.executeTxnWithCursor(ctx, txn, &txnPathCursor{paths: paths})
 	}
+}
+
+func txnNeedsStagedExecution(txn *etcdserverpb.TxnRequest) bool {
+	deleteOps := 0
+	var walk func(*etcdserverpb.TxnRequest) bool
+	walk = func(cur *etcdserverpb.TxnRequest) bool {
+		for _, cmp := range cur.Compare {
+			if len(cmp.RangeEnd) != 0 {
+				return true
+			}
+		}
+		for _, branches := range [][]*etcdserverpb.RequestOp{cur.Success, cur.Failure} {
+			for _, op := range branches {
+				switch {
+				case op.GetRequestRange() != nil:
+					return true
+				case op.GetRequestPut() != nil:
+					put := op.GetRequestPut()
+					if put.IgnoreLease || put.IgnoreValue {
+						return true
+					}
+				case op.GetRequestDeleteRange() != nil:
+					deleteOps++
+					if len(op.GetRequestDeleteRange().RangeEnd) != 0 || deleteOps > 1 {
+						return true
+					}
+				case op.GetRequestTxn() != nil:
+					if walk(op.GetRequestTxn()) {
+						return true
+					}
+				}
+			}
+		}
+		return false
+	}
+	return walk(txn)
 }
 
 func txnHasRangeCompare(txn *etcdserverpb.TxnRequest) bool {

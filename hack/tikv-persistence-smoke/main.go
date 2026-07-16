@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kubewharf/kubebrain/pkg/backend"
 	"github.com/kubewharf/kubebrain/pkg/backend/coder"
 	storagetikv "github.com/kubewharf/kubebrain/pkg/storage/tikv"
 	clientv3 "go.etcd.io/etcd/client/v3"
@@ -146,15 +147,16 @@ func main() {
 	if err != nil {
 		fatalf("tikv get object key: %v", err)
 	}
-	if value != "" && !bytes.Equal(objectValue, []byte(value)) {
-		fatalf("unexpected tikv object value %q, want %q", string(objectValue), value)
+	rawObjectValue := backend.StripInlineValue(objectValue)
+	if value != "" && !bytes.Equal(rawObjectValue, []byte(value)) {
+		fatalf("unexpected tikv object value %q, want %q", string(rawObjectValue), value)
 	}
-	if requireNonEmpty && len(objectValue) == 0 {
+	if requireNonEmpty && len(rawObjectValue) == 0 {
 		fatalf("expected non-empty tikv object value")
 	}
 
 	if value == "" {
-		fmt.Printf("verified mode=%s key=%s revision=%d value-bytes=%d\n", mode, key, revision, len(objectValue))
+		fmt.Printf("verified mode=%s key=%s revision=%d value-bytes=%d\n", mode, key, revision, len(rawObjectValue))
 	} else {
 		fmt.Printf("verified mode=%s key=%s revision=%d value=%s\n", mode, key, revision, value)
 	}
