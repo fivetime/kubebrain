@@ -104,8 +104,8 @@ func TestAuthLifecycle(t *testing.T) {
 	root := authClient(t, endpoint, "root", "root-secret")
 	_, err = root.RoleAdd(ctx, "operator")
 	require.NoError(t, err)
-	// The mutation invalidates the old token. Official client/v3 must
-	// transparently re-authenticate for the next management request.
+	// etcd simple-token semantics keep credentials valid across unrelated
+	// role mutations while authorization reads the latest persisted snapshot.
 	roles, err := root.RoleList(ctx)
 	require.NoError(t, err)
 	require.Contains(t, roles.Roles, "operator")

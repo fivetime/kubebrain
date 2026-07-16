@@ -354,6 +354,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   endpoint，避免 port-forward 随 Pod 退出造成假失败。真实 3 副本 + TiKV/PD
   实测删除当前 leader 后 32/32 mutation 全部落库，revision 从 3 精确到 35，角色
   列表无遗漏，新 leader 与替换 Pod 均正常且所有副本 0 重启。
+- **Auth A21 生命周期边界差分（2026-07-16）**：双端点矩阵扩展同 range permission
+  替换、撤销不存在 permission、非法 range、角色删除与用户解绑、enabled 状态下
+  root 用户/角色保护、auth mutation 后旧 token 失效，以及改密码后旧密码失败与
+  新密码成功。首次实测发现 KubeBrain 错误地在任意 auth mutation 后全局失效
+  token，而 etcd simple token 仅在对应用户删除/改密码时失效。现以持久化的每用户
+  随机 generation 实现同语义：用户新增/改密码原子创建或轮换，删除时原子移除，
+  角色/权限变化保持不变；旧用户首次登录以 CAS 懒迁移且不推进 auth revision，旧版
+  revision token 在滚动升级期间仍可验证。修复后完整双端点矩阵通过。
 
 ### P1：通用服务能力
 

@@ -18,6 +18,12 @@ func newAuthSnapshotCache(backend BackendShim) *authSnapshotCache {
 	return &authSnapshotCache{repo: newAuthRepository(backend)}
 }
 
+func (c *authSnapshotCache) invalidate() {
+	c.mu.Lock()
+	c.snapshot = nil
+	c.mu.Unlock()
+}
+
 func (c *authSnapshotCache) current(ctx context.Context) (*authSnapshot, error) {
 	config, err := c.repo.loadConfig(ctx)
 	if err != nil {

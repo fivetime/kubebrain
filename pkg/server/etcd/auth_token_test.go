@@ -10,6 +10,7 @@ import (
 	"go.etcd.io/etcd/api/v3/authpb"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
+	"golang.org/x/crypto/bcrypt"
 
 	"github.com/kubewharf/kubebrain/pkg/backend"
 	"github.com/kubewharf/kubebrain/pkg/storage"
@@ -26,7 +27,7 @@ func bootstrapAuthForToken(t *testing.T, server *RPCServer) (*authManager, *auth
 	return manager, newAuthTokenManager(server.backend)
 }
 
-func TestAuthTokenAuthenticateVerifyAndRevisionInvalidation(t *testing.T) {
+func TestAuthTokenUsesPerUserInvalidation(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
 	manager, tokens := bootstrapAuthForToken(t, server)
@@ -45,11 +46,17 @@ func TestAuthTokenAuthenticateVerifyAndRevisionInvalidation(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "root", claims.Username)
 
-	// Any auth mutation advances auth revision and invalidates old credentials.
+	// etcd simple tokens survive unrelated auth mutations.
 	require.NoError(t, manager.roleAdd(ctx, "reader"))
+	_, err = tokens.verify(ctx, token)
+	require.NoError(t, err)
+	// Password changes invalidate only this user's existing tokens.
+	require.NoError(t, manager.userChangePassword(ctx, "root", "changed", ""))
 	_, err = tokens.verify(ctx, token)
 	require.ErrorIs(t, err, rpctypes.ErrInvalidAuthToken)
 	newToken, err := tokens.authenticate(ctx, "root", "secret")
+	require.ErrorIs(t, err, rpctypes.ErrAuthFailed)
+	newToken, err = tokens.authenticate(ctx, "root", "changed")
 	require.NoError(t, err)
 	require.NotEqual(t, token, newToken)
 	_, err = tokens.verify(ctx, newToken)
@@ -110,4 +117,34 @@ func TestAuthTokenRejectsWhileDisabled(t *testing.T) {
 	tokens := newAuthTokenManager(server.backend)
 	_, err := tokens.authenticate(context.Background(), "root", "secret")
 	require.ErrorIs(t, err, rpctypes.ErrAuthNotEnabled)
+}
+
+func TestAuthTokenLazilyMigratesLegacyUserGeneration(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	manager := newAuthManager(server.backend)
+	password, err := bcrypt.GenerateFromPassword([]byte("secret"), bcrypt.DefaultCost)
+	require.NoError(t, err)
+	initial, err := manager.repo.load(ctx)
+	require.NoError(t, err)
+	_, err = manager.repo.mutate(ctx, initial.Config, authMutation{
+		Key:   authRecordKey(authUsersKey, "root"),
+		Value: &authpb.User{Name: []byte("root"), Password: password, Roles: []string{"root"}},
+	})
+	require.NoError(t, err)
+	require.NoError(t, manager.enable(ctx))
+	before, err := manager.repo.load(ctx)
+	require.NoError(t, err)
+	require.Nil(t, before.TokenGenerations["root"])
+
+	tokens := newAuthTokenManager(server.backend)
+	token, err := tokens.authenticate(ctx, "root", "secret")
+	require.NoError(t, err)
+	after, err := manager.repo.load(ctx)
+	require.NoError(t, err)
+	require.Equal(t, before.Config.Revision, after.Config.Revision)
+	require.Len(t, after.TokenGenerations["root"].Password, authUserTokenGenerationBytes)
+	_, err = tokens.verify(ctx, token)
+	require.NoError(t, err)
 }

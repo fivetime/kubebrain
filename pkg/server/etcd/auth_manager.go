@@ -3,6 +3,7 @@ package etcd
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/base64"
 	"errors"
 	"sort"
@@ -17,6 +18,16 @@ import (
 )
 
 var errNoPasswordUser = errors.New("auth: authentication failed, password was given for no password user")
+
+const authUserTokenGenerationBytes = 16
+
+func newUserTokenGeneration(name string) (*authpb.User, error) {
+	generation := make([]byte, authUserTokenGenerationBytes)
+	if _, err := rand.Read(generation); err != nil {
+		return nil, err
+	}
+	return &authpb.User{Name: []byte(name), Password: generation}, nil
+}
 
 type authManager struct{ repo *authRepository }
 
@@ -64,6 +75,10 @@ func (m *authManager) userAdd(ctx context.Context, request *etcdserverpb.AuthUse
 	if err != nil {
 		return err
 	}
+	generation, err := newUserTokenGeneration(request.Name)
+	if err != nil {
+		return err
+	}
 	return retryAuthMutation(ctx, func(snapshot *authSnapshot) error {
 		if snapshot.Users[request.Name] != nil {
 			return rpctypes.ErrUserAlreadyExist
@@ -73,7 +88,10 @@ func (m *authManager) userAdd(ctx context.Context, request *etcdserverpb.AuthUse
 			options = proto.Clone(request.Options).(*authpb.UserAddOptions)
 		}
 		user := &authpb.User{Name: []byte(request.Name), Password: password, Options: options}
-		_, err := m.repo.mutate(ctx, snapshot.Config, authMutation{Key: authRecordKey(authUsersKey, request.Name), Value: user})
+		_, err := m.repo.mutate(ctx, snapshot.Config,
+			authMutation{Key: authRecordKey(authUsersKey, request.Name), Value: user},
+			authMutation{Key: authRecordKey(authTokenGenerationsKey, request.Name), Value: generation},
+		)
 		return err
 	}, m.repo.load)
 }
@@ -160,9 +178,16 @@ func (m *authManager) userDelete(ctx context.Context, name string) error {
 		if user == nil {
 			return rpctypes.ErrUserNotFound
 		}
-		_, err := m.repo.mutate(ctx, snapshot.Config, authMutation{
-			Key: authRecordKey(authUsersKey, name), Delete: true, Expected: user, ExpectedExists: true,
-		})
+		generation := snapshot.TokenGenerations[name]
+		generationMutation := authMutation{Key: authRecordKey(authTokenGenerationsKey, name), Delete: true}
+		if generation != nil {
+			generationMutation.Expected = generation
+			generationMutation.ExpectedExists = true
+		}
+		_, err := m.repo.mutate(ctx, snapshot.Config,
+			authMutation{Key: authRecordKey(authUsersKey, name), Delete: true, Expected: user, ExpectedExists: true},
+			generationMutation,
+		)
 		return err
 	}, m.repo.load)
 }
@@ -182,6 +207,10 @@ func authChangedPassword(password, hashed string) ([]byte, error) {
 }
 
 func (m *authManager) userChangePassword(ctx context.Context, name, password, hashed string) error {
+	generation, err := newUserTokenGeneration(name)
+	if err != nil {
+		return err
+	}
 	return retryAuthMutation(ctx, func(snapshot *authSnapshot) error {
 		user := snapshot.Users[name]
 		if user == nil {
@@ -195,9 +224,16 @@ func (m *authManager) userChangePassword(ctx context.Context, name, password, ha
 			}
 			updated.Password = encoded
 		}
-		_, err := m.repo.mutate(ctx, snapshot.Config, authMutation{
-			Key: authRecordKey(authUsersKey, name), Value: updated, Expected: user, ExpectedExists: true,
-		})
+		oldGeneration := snapshot.TokenGenerations[name]
+		generationMutation := authMutation{Key: authRecordKey(authTokenGenerationsKey, name), Value: generation}
+		if oldGeneration != nil {
+			generationMutation.Expected = oldGeneration
+			generationMutation.ExpectedExists = true
+		}
+		_, err := m.repo.mutate(ctx, snapshot.Config,
+			authMutation{Key: authRecordKey(authUsersKey, name), Value: updated, Expected: user, ExpectedExists: true},
+			generationMutation,
+		)
 		return err
 	}, m.repo.load)
 }

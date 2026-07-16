@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"go.etcd.io/etcd/api/v3/authpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	"golang.org/x/crypto/bcrypt"
 
@@ -27,17 +28,45 @@ const (
 )
 
 type authTokenClaims struct {
-	Username string `json:"u"`
-	Revision uint64 `json:"r"`
-	IssuedAt int64  `json:"i"`
-	Expires  int64  `json:"e"`
-	Nonce    string `json:"n"`
+	Username   string `json:"u"`
+	Revision   uint64 `json:"r"`
+	Generation string `json:"g,omitempty"`
+	IssuedAt   int64  `json:"i"`
+	Expires    int64  `json:"e"`
+	Nonce      string `json:"n"`
 }
 
 type authTokenManager struct {
 	repo      *authRepository
 	snapshots *authSnapshotCache
 	now       func() time.Time
+}
+
+func (m *authTokenManager) ensureUserGeneration(ctx context.Context, username string) (*authpb.User, error) {
+	generation, err := newUserTokenGeneration(username)
+	if err != nil {
+		return nil, err
+	}
+	value, err := marshalAuthRecord(generation)
+	if err != nil {
+		return nil, err
+	}
+	err = m.repo.backend.InternalCAS(ctx, []backend.InternalCASOp{{
+		Key: authRecordKey(authTokenGenerationsKey, username), Value: value,
+	}})
+	if err != nil && !errors.Is(err, storage.ErrCASFailed) {
+		return nil, err
+	}
+	m.snapshots.invalidate()
+	snapshot, err := m.snapshots.current(ctx)
+	if err != nil {
+		return nil, err
+	}
+	generation = snapshot.TokenGenerations[username]
+	if generation == nil || len(generation.Password) != authUserTokenGenerationBytes {
+		return nil, errors.New("missing auth user token generation")
+	}
+	return generation, nil
 }
 
 func newAuthTokenManager(backend BackendShim) *authTokenManager {
@@ -94,6 +123,16 @@ func (m *authTokenManager) authenticate(ctx context.Context, username, password 
 	if bcrypt.CompareHashAndPassword(user.Password, []byte(password)) != nil {
 		return "", rpctypes.ErrAuthFailed
 	}
+	generation := snapshot.TokenGenerations[username]
+	if generation == nil {
+		generation, err = m.ensureUserGeneration(ctx, username)
+		if err != nil {
+			return "", err
+		}
+	}
+	if len(generation.Password) != authUserTokenGenerationBytes {
+		return "", errors.New("invalid auth user token generation")
+	}
 	key, err := m.ensureSigningKey(ctx)
 	if err != nil {
 		return "", err
@@ -105,7 +144,8 @@ func (m *authTokenManager) authenticate(ctx context.Context, username, password 
 	}
 	claims := authTokenClaims{
 		Username: username, Revision: snapshot.Config.Revision,
-		IssuedAt: now.Unix(), Expires: now.Add(authTokenTTL).Unix(),
+		Generation: base64.RawURLEncoding.EncodeToString(generation.Password),
+		IssuedAt:   now.Unix(), Expires: now.Add(authTokenTTL).Unix(),
 		Nonce: base64.RawURLEncoding.EncodeToString(nonce),
 	}
 	payload, err := json.Marshal(claims)
@@ -152,7 +192,20 @@ func (m *authTokenManager) verify(ctx context.Context, token string) (authTokenC
 	if err != nil {
 		return authTokenClaims{}, err
 	}
-	if !snapshot.Config.Enabled || claims.Revision != snapshot.Config.Revision || snapshot.Users[claims.Username] == nil {
+	if !snapshot.Config.Enabled || snapshot.Users[claims.Username] == nil {
+		return authTokenClaims{}, rpctypes.ErrInvalidAuthToken
+	}
+	if claims.Generation == "" {
+		// Tokens issued before per-user generations were introduced remain valid
+		// during a rolling upgrade, but retain their legacy global-revision rule.
+		if claims.Revision != snapshot.Config.Revision {
+			return authTokenClaims{}, rpctypes.ErrInvalidAuthToken
+		}
+		return claims, nil
+	}
+	generation, err := base64.RawURLEncoding.DecodeString(claims.Generation)
+	currentGeneration := snapshot.TokenGenerations[claims.Username]
+	if err != nil || currentGeneration == nil || !hmac.Equal(generation, currentGeneration.Password) {
 		return authTokenClaims{}, rpctypes.ErrInvalidAuthToken
 	}
 	return claims, nil

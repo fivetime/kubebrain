@@ -33,6 +33,17 @@ type authDifferentialOutcome struct {
 	ConcurrentDuplicateOK     int
 	ConcurrentDuplicateExists int
 	ConcurrentDuplicateDelta  uint64
+	PermissionCount           int
+	PermissionType            int32
+	MissingPermissionRevoke   authErrorOutcome
+	InvalidPermissionRange    authErrorOutcome
+	AliceRolesAfterRoleDelete int
+	RootUserDelete            authErrorOutcome
+	RootRoleRevoke            authErrorOutcome
+	RootRoleDelete            authErrorOutcome
+	OldTokenAfterMutation     authErrorOutcome
+	OldPassword               authErrorOutcome
+	NewPasswordOK             bool
 }
 
 func runConcurrentClientOperations(count int, operation func(int) error) []error {
@@ -133,6 +144,48 @@ func collectAuthDifferentialOutcome(t *testing.T, endpoint string) authDifferent
 	afterDuplicate, err := root.AuthStatus(ctx)
 	require.NoError(t, err)
 
+	_, err = root.RoleAdd(ctx, "lifecycle")
+	require.NoError(t, err)
+	_, err = root.RoleGrantPermission(ctx, "lifecycle", "/lifecycle/", clientv3.GetPrefixRangeEnd("/lifecycle/"), clientv3.PermissionType(clientv3.PermRead))
+	require.NoError(t, err)
+	_, err = root.RoleGrantPermission(ctx, "lifecycle", "/lifecycle/", clientv3.GetPrefixRangeEnd("/lifecycle/"), clientv3.PermissionType(clientv3.PermWrite))
+	require.NoError(t, err)
+	permissionRole, err := root.RoleGet(ctx, "lifecycle")
+	require.NoError(t, err)
+	permissionCount := len(permissionRole.Perm)
+	permissionType := int32(-1)
+	if permissionCount == 1 {
+		permissionType = int32(permissionRole.Perm[0].PermType)
+	}
+	_, missingPermissionRevokeErr := root.RoleRevokePermission(ctx, "lifecycle", "/missing/", clientv3.GetPrefixRangeEnd("/missing/"))
+	_, invalidPermissionRangeErr := root.RoleGrantPermission(ctx, "lifecycle", "z", "a", clientv3.PermissionType(clientv3.PermRead))
+	_, err = root.UserGrantRole(ctx, "alice", "lifecycle")
+	require.NoError(t, err)
+	_, err = root.RoleDelete(ctx, "lifecycle")
+	require.NoError(t, err)
+	aliceAfterRoleDelete, err := root.UserGet(ctx, "alice")
+	require.NoError(t, err)
+
+	_, rootUserDeleteErr := root.UserDelete(ctx, "root")
+	_, rootRoleRevokeErr := root.UserRevokeRole(ctx, "root", "root")
+	_, rootRoleDeleteErr := root.RoleDelete(ctx, "root")
+
+	oldAuth, err := root.Authenticate(ctx, "root", "root-secret")
+	require.NoError(t, err)
+	oldTokenClient, err := clientv3.New(clientv3.Config{
+		Endpoints: []string{endpoint}, DialTimeout: 5 * time.Second, Token: oldAuth.Token,
+	})
+	require.NoError(t, err)
+	defer oldTokenClient.Close()
+	_, err = root.RoleAdd(ctx, "token-invalidator")
+	require.NoError(t, err)
+	_, oldTokenErr := oldTokenClient.RoleList(ctx)
+
+	_, err = root.UserChangePassword(ctx, "alice", "alice-changed")
+	require.NoError(t, err)
+	_, oldPasswordErr := bootstrap.Authenticate(ctx, "alice", "alice-secret")
+	_, newPasswordErr := bootstrap.Authenticate(ctx, "alice", "alice-changed")
+
 	return authDifferentialOutcome{
 		EnabledRevision:           statusAfterEnable.AuthRevision,
 		DuplicateGrantRevision:    statusAfterDuplicateGrant.AuthRevision,
@@ -147,6 +200,17 @@ func collectAuthDifferentialOutcome(t *testing.T, endpoint string) authDifferent
 		ConcurrentDuplicateOK:     duplicateOK,
 		ConcurrentDuplicateExists: duplicateExists,
 		ConcurrentDuplicateDelta:  afterDuplicate.AuthRevision - afterDistinct.AuthRevision,
+		PermissionCount:           permissionCount,
+		PermissionType:            permissionType,
+		MissingPermissionRevoke:   authError(missingPermissionRevokeErr),
+		InvalidPermissionRange:    authError(invalidPermissionRangeErr),
+		AliceRolesAfterRoleDelete: len(aliceAfterRoleDelete.Roles),
+		RootUserDelete:            authError(rootUserDeleteErr),
+		RootRoleRevoke:            authError(rootRoleRevokeErr),
+		RootRoleDelete:            authError(rootRoleDeleteErr),
+		OldTokenAfterMutation:     authError(oldTokenErr),
+		OldPassword:               authError(oldPasswordErr),
+		NewPasswordOK:             newPasswordErr == nil,
 	}
 }
 

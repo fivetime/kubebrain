@@ -17,9 +17,10 @@ import (
 )
 
 var (
-	authConfigKey = []byte("auth/config")
-	authUsersKey  = []byte("auth/users/")
-	authRolesKey  = []byte("auth/roles/")
+	authConfigKey           = []byte("auth/config")
+	authUsersKey            = []byte("auth/users/")
+	authRolesKey            = []byte("auth/roles/")
+	authTokenGenerationsKey = []byte("auth/token-generations/")
 )
 
 const initialAuthRevision = 1
@@ -72,9 +73,10 @@ func authRecordKey(prefix []byte, name string) []byte {
 }
 
 type authSnapshot struct {
-	Config authConfig
-	Users  map[string]*authpb.User
-	Roles  map[string]*authpb.Role
+	Config           authConfig
+	Users            map[string]*authpb.User
+	Roles            map[string]*authpb.Role
+	TokenGenerations map[string]*authpb.User
 }
 
 type authRepository struct{ backend BackendShim }
@@ -127,7 +129,14 @@ func (r *authRepository) loadRecords(ctx context.Context, config authConfig) (*a
 	if err != nil {
 		return nil, err
 	}
-	snapshot := &authSnapshot{Config: config, Users: make(map[string]*authpb.User), Roles: make(map[string]*authpb.Role)}
+	generationsRaw, err := r.backend.InternalRange(ctx, authTokenGenerationsKey)
+	if err != nil {
+		return nil, err
+	}
+	snapshot := &authSnapshot{
+		Config: config, Users: make(map[string]*authpb.User), Roles: make(map[string]*authpb.Role),
+		TokenGenerations: make(map[string]*authpb.User),
+	}
 	for key, value := range usersRaw {
 		var user authpb.User
 		if err := proto.Unmarshal(value, &user); err != nil {
@@ -141,6 +150,13 @@ func (r *authRepository) loadRecords(ctx context.Context, config authConfig) (*a
 			return nil, fmt.Errorf("decode auth role %q: %w", key, err)
 		}
 		snapshot.Roles[string(role.Name)] = &role
+	}
+	for key, value := range generationsRaw {
+		var generation authpb.User
+		if err := proto.Unmarshal(value, &generation); err != nil {
+			return nil, fmt.Errorf("decode auth token generation %q: %w", key, err)
+		}
+		snapshot.TokenGenerations[string(generation.Name)] = &generation
 	}
 	return snapshot, nil
 }
