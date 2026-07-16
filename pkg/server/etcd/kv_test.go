@@ -1095,6 +1095,25 @@ func TestDeleteRangeDeletesSingleKey(t *testing.T) {
 	require.Empty(t, rangeResp.Kvs)
 }
 
+func TestDeleteRangeMissingPointDoesNotConsumeRevision(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	ctx := context.Background()
+	before := int64(server.backend.GetCurrentRevision())
+	for i := 0; i < 3; i++ {
+		resp, err := server.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{
+			Key:    []byte("/registry/delete-missing-point"),
+			PrevKv: true,
+		})
+		require.NoError(t, err)
+		require.Equal(t, int64(0), resp.Deleted)
+		require.Empty(t, resp.PrevKvs)
+		require.Equal(t, before, resp.Header.Revision)
+		require.Equal(t, uint64(before), server.backend.GetCurrentRevision())
+	}
+}
+
 func TestDeleteRangeRejectsEmptyKey(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

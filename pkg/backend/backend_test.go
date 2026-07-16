@@ -667,14 +667,14 @@ func testBackendDelete(t *testing.T, targetStorage storageType) {
 		{
 			description: "key not found",
 			key:         path.Join(prefix, "/test/key/not/found"),
-			// todo(xueyingcai): delete key which doesn't exist in storage doesn't return error, so expect a non-nil expectedResp
-			expectedResp: newDelResponse(initRevision+1, false, nil),
+			// etcd treats deletion of a missing key as a successful no-op.
+			expectedResp: newDelResponse(initRevision, false, nil),
 		},
 		{
 			description:   "delete success",
 			key:           testKey,
-			expectedResp:  newDelResponse(initRevision+2, true, newKeyValue(testKey, testVal, initRevision)),
-			expectedEvent: newEvent(proto.Event_DELETE, initRevision+2, newKeyValue(testKey, testVal, initRevision)),
+			expectedResp:  newDelResponse(initRevision+1, true, newKeyValue(testKey, testVal, initRevision)),
+			expectedEvent: newEvent(proto.Event_DELETE, initRevision+1, newKeyValue(testKey, testVal, initRevision)),
 		},
 		// todo(xueyingcai): add testcase about revision
 	}

@@ -205,8 +205,13 @@ func (b *backend) deleteOnce(ctx context.Context, r *proto.DeleteRequest, allowH
 
 	rev, old, err := b.delete(ctx, r.Revision, r.Key)
 
-	b.notify(ctx, r.Key, old.Val, rev, old.Revision, err == nil, proto.Event_DELETE, err)
-	b.waitCommittedRevision(ctx, rev) // apply-then-ack (#35)
+	// A missing key is an etcd no-op: it allocates no revision and emits no
+	// event. Other failures may already have consumed a TSO revision and must
+	// still publish an invalid event so the collector can advance past it.
+	if !errors.Is(err, storage.ErrKeyNotFound) {
+		b.notify(ctx, r.Key, old.Val, rev, old.Revision, err == nil, proto.Event_DELETE, err)
+		b.waitCommittedRevision(ctx, rev) // apply-then-ack (#35)
+	}
 
 	resp = &proto.DeleteResponse{
 		Header:    responseHeader(rev),
@@ -270,6 +275,9 @@ func (b *backend) delete(ctx context.Context, oldRevision uint64, key []byte) (n
 	// get the latest value
 	oldVal, modRevision, err := b.get(ctx, key, 0)
 	if err != nil {
+		if errors.Is(err, storage.ErrKeyNotFound) {
+			return b.GetCurrentRevision(), KeyVal{}, err
+		}
 		getRev := b.mustDeal(oldRevision)
 		return getRev, KeyVal{}, err
 	}

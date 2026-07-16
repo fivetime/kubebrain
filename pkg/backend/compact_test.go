@@ -258,7 +258,7 @@ func testCompactConsistence(t *testing.T, deleteErrorIndexes []int64) {
 		&deleteTestcase{
 			description:   "delete2-2",
 			key:           s(2),
-			expectedResp:  newDelResponse(initRevision+8, false, nil),
+			expectedResp:  newDelResponse(initRevision+7, false, nil),
 			expectedEvent: nil,
 		},
 	}

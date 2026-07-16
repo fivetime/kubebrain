@@ -36,7 +36,7 @@ Raft、bbolt 和成员管理内部实现，而是对通用 etcd v3 客户端提�
 | KV | Compact | 兼容核心语义 | P0：继续对齐 logical/physical 行为、错误与异步 GC |
 | KV | RangeStream | Kubernetes 请求形状兼容 | P1：对齐 etcd 3.7 支持的通用请求形状，或明确返回 Unimplemented |
 | Watch | create/cancel/progress/history/prevKV | 兼容核心语义 | P0：用官方客户端做事件完整性、压缩、断线恢复和慢消费者测试 |
-| Lease | grant/revoke/keepalive/ttl/list | 兼容核心语义 | P0：补并发、故障转移、事务附着及错误矩阵 |
+| Lease | grant/revoke/keepalive/ttl/list | 部分兼容 | P0：隔离 lease meta/attachment 的用户 MVCC revision；补并发、故障转移、事务附着及错误矩阵 |
 | Auth | 用户、角色、权限、token | 缺失 | P1：实现 etcd Auth API；DBaaS mTLS/IAM 不能替代客户端期望的 key-range RBAC |
 | Cluster | MemberList | 兼容表面 | 返回 KubeBrain 服务成员信息 |
 | Cluster | add/remove/update/promote | 平台替代 | 由 DBaaS 控制面扩缩 KubeBrain、PD、TiKV；RPC 保持明确 Unimplemented |
@@ -131,6 +131,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   range 预先计算的 Count，且没有新增扫描。修复后 Range 与 Txn 双端差分共同
   连续 10 轮通过。DeleteRange 的大范围/PrevKV 边界、Watch、Lease 和 Compact
   仍需逐组扩展差分矩阵。
+- **DeleteRange 双端差分**：新增
+  `TestDeleteRangeDifferentialAgainstReferenceEtcd`，覆盖有效范围删除的单
+  revision、PrevKVs 顺序和 create/mod/version、删除前历史快照、删除后当前
+  快照、`[x,x)` 与缺失点键 no-op。差分发现 standalone 点删缺失键时 backend
+  仍调用 TSO 并发布 invalid event，导致每次 no-op 都推进 revision；现已在
+  确认 `ErrKeyNotFound` 后直接返回当前 revision，不分配 TSO、不发 watch 事件。
+  单元测试重复 20 轮和 race 通过，真实 TiKV 上 DeleteRange/Range/Txn 三组双端
+  差分共同连续 10 轮通过。
+- **新确认的 Lease revision 缺口（未解决）**：同一差分最初加入 leased key
+  后确认 LeaseGrant 的 `leases/<id>` 持久化，以及删除后的
+  `leasekeys/<key>` detach，会各自推进 KubeBrain 用户可见 revision；官方 etcd
+  的 lease 元数据变更不推进 KV revision。不能简单停止持久化，否则会破坏
+  failover 和过期正确性；需设计独立内部元数据存储布局，并让 attachment 与
+  对应用户 Put/Delete 在一个存储事务中提交、但只产生用户 KV mutation 的
+  revision/watch 事件。该项列为后续 Lease P0，不在本次 DeleteRange 结果中
+  隐藏或归一化掉。
 
 ### P1：通用服务能力
 
