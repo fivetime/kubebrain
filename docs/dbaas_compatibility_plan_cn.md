@@ -262,6 +262,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   auth revision，不信任 follower 判定。handler 测试确认允许范围可读写、越权 Put
   不落库、PrevKV 权限失败不删除、未选/嵌套分支越权会整笔拒绝。下一步接 Lease
   RPC 和 Auth 管理面 admin/self 规则，然后才能安全开放 AuthEnable。
+- **Auth A7 Lease 数据面（2026-07-16）**：LeaseGrant、LeaseTimeToLive、
+  LeaseLeases 和 KeepAlive 均在 Enabled 状态要求有效 caller；LeaseRevoke 进一步要求
+  caller 对该 lease 全部绑定键具备 WRITE，与 etcd `checkLeasePuts` 对齐，因此不能
+  通过撤销共享 lease 间接删除越权键。KeepAlive 在流建立时鉴权；所有 follower
+  lease 代理携带 token 到 leader 重新验证。测试确认缺 token Grant 被拒绝、越权
+  Revoke 不删除绑定键、合法 caller 的 Grant/TTL/List 正常。下一步完成 Auth 管理
+  RPC 的 root admin 与 UserGet/RoleGet self 例外，再开放 Enable/Disable。
 
 ### P1：通用服务能力
 
