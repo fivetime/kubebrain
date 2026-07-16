@@ -24,16 +24,40 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-func TestAuthServiceIsExplicitlyUnsupported(t *testing.T) {
+func TestAuthEnableRemainsUnsupportedUntilDataPlaneIsProtected(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
 
 	_, err := server.AuthEnable(context.Background(), &etcdserverpb.AuthEnableRequest{})
 	require.Equal(t, codes.Unimplemented, status.Code(err))
 
-	_, err = server.Authenticate(context.Background(), &etcdserverpb.AuthenticateRequest{
-		Name:     "root",
-		Password: "secret",
-	})
-	require.Equal(t, codes.Unimplemented, status.Code(err))
+}
+
+func TestAuthRPCBootstrapAndEnabledSafetyBoundary(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+
+	statusResp, err := server.AuthStatus(ctx, &etcdserverpb.AuthStatusRequest{})
+	require.NoError(t, err)
+	require.False(t, statusResp.Enabled)
+	_, err = server.UserAdd(ctx, &etcdserverpb.AuthUserAddRequest{Name: "root", Password: "secret"})
+	require.NoError(t, err)
+	_, err = server.RoleAdd(ctx, &etcdserverpb.AuthRoleAddRequest{Name: "root"})
+	require.NoError(t, err)
+	_, err = server.UserGrantRole(ctx, &etcdserverpb.AuthUserGrantRoleRequest{User: "root", Role: "root"})
+	require.NoError(t, err)
+	users, err := server.UserList(ctx, &etcdserverpb.AuthUserListRequest{})
+	require.NoError(t, err)
+	require.Equal(t, []string{"root"}, users.Users)
+	root, err := server.RoleGet(ctx, &etcdserverpb.AuthRoleGetRequest{Role: "root"})
+	require.NoError(t, err)
+	require.Len(t, root.Perm, 1)
+
+	require.NoError(t, server.auth.enable(ctx))
+	authenticated, err := server.Authenticate(ctx, &etcdserverpb.AuthenticateRequest{Name: "root", Password: "secret"})
+	require.NoError(t, err)
+	require.NotEmpty(t, authenticated.Token)
+	_, err = server.UserList(ctx, &etcdserverpb.AuthUserListRequest{})
+	require.Equal(t, codes.Unimplemented, status.Code(err), "enabled auth management must not be exposed before request authentication")
 }

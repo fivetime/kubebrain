@@ -238,6 +238,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   穿越扫描窗口时整轮重试，不发布撕裂权限快照。该层仍为 private，尚未开放
   AuthAuthenticate 或保护 KV/Watch；下一步接入公开管理 RPC、认证 RPC 和 unary
   数据面权限检查，最后单独处理长连接 Watch 的持续鉴权。
+- **Auth A4 安全公开面（2026-07-16）**：RPCServer 已显式接入 AuthStatus、
+  Authenticate 以及 User/Role bootstrap CRUD，响应使用官方 etcd protobuf，root
+  RoleGet 返回隐式全 keyspace READWRITE 权限。为避免半成品造成认证绕过，bootstrap
+  CRUD 仅在 Auth disabled 时开放；检测到持久化 Enabled 状态后，未鉴权管理请求
+  统一拒绝。AuthEnable/AuthDisable 仍保持 Unimplemented，因此生产入口暂时无法把
+  实例切入“已启用但 KV/Watch 未保护”的危险状态。单测覆盖 disabled bootstrap、
+  status、root 权限、模拟已启用后的 token 签发和管理面失败关闭。下一步实现统一
+  caller 提取与 unary KV/Lease/Auth 管理鉴权，通过后才开放 AuthEnable/Disable。
 
 ### P1：通用服务能力
 

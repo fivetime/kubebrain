@@ -68,6 +68,8 @@ type RPCServer struct {
 	// ambiguous selector with the promoted *leaseManager lease handlers.
 
 	backend BackendShim
+	auth    *authManager
+	tokens  *authTokenManager
 
 	metricCli metrics.Metrics
 	peers     service.PeerService
@@ -99,6 +101,8 @@ func New(backend b.Backend, metricCli metrics.Metrics, peers service.PeerService
 		metricCli: metricCli,
 		peers:     peers,
 	}
+	server.auth = newAuthManager(server.backend)
+	server.tokens = newAuthTokenManager(server.backend)
 	// The lease subsystem borrows its deps from server (backend/peers/metrics),
 	// so it is wired after server exists and reads them live through server.
 	server.leaseManager = newLeaseManager(server, time.Now().UnixNano())
