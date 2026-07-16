@@ -91,12 +91,10 @@ func (wt *watchTranslator) watchEventToEtcdEvent(ctx context.Context, e *proto.E
 			ModRevision: int64(revision),
 			Key:         e.Kv.Key,
 		}
-		if prevKv != nil {
-			kv.CreateRevision = prevKv.CreateRevision
-			if kv.CreateRevision == 0 {
-				kv.CreateRevision = prevKv.ModRevision
-			}
-		}
+		// etcd's DELETE event Kv contains only key + delete revision. The deleted
+		// generation's create/version/value/lease belong exclusively to PrevKv.
+		// Copying create_revision here is observably incompatible and makes a
+		// tombstone look like a surviving generation to generic watch consumers.
 		wt.shim.noteEvent(e.Kv.Key, revision, nil, true)
 		return &mvccpb.Event{
 			Type:   mvccpb.DELETE,

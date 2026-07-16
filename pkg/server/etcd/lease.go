@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"sort"
 	"strconv"
 	"sync/atomic"
 	"time"
@@ -646,6 +647,9 @@ func (m *leaseManager) leaseKeysSnapshot(id int64) ([]string, bool) {
 	for key := range st.keys {
 		keys = append(keys, key)
 	}
+	// Match etcd lessor.Revoke: every member deletes attached keys in lexical
+	// order, producing a deterministic watch-event sequence and stable hashes.
+	sort.Strings(keys)
 	return keys, true
 }
 
@@ -674,6 +678,7 @@ func (m *leaseManager) removeLease(ctx context.Context, id int64) ([]string, err
 		keys = append(keys, key)
 		delete(m.keyLeaseIndex, key)
 	}
+	sort.Strings(keys)
 	delete(m.leases, id)
 	atomic.StoreInt64(&m.leasedKeyCount, int64(len(m.keyLeaseIndex)))
 	m.leaseMu.Unlock()

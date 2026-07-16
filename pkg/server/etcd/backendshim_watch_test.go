@@ -78,3 +78,42 @@ func TestWatchPutEventKeepsInlineCreateRevisionWhenPrevKvMissing(t *testing.T) {
 		"an update must not look like a create (IsCreate must be false)")
 	require.Nil(t, ev.PrevKv, "prev-kv lookup failed here, so PrevKv is nil (but create_revision stays correct)")
 }
+
+func TestWatchDeleteEventKeepsGenerationMetadataOnlyInPrevKV(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	m := mock.NewMinimalMetrics(ctrl)
+	kv := memkv.NewKvStorage()
+	defer func() { require.NoError(t, kv.Close()) }()
+	b := backend.NewBackend(kv, backend.Config{Identity: "test", EnableEtcdCompatibility: true}, m)
+	shim := NewBackendShim(b, m).(*backendShim)
+
+	key := []byte("/lease/expired")
+	create, err := b.Create(context.Background(), &proto.CreateRequest{Key: key, Value: []byte("old"), Lease: 123})
+	require.NoError(t, err)
+	stored, err := b.Get(context.Background(), &proto.GetRequest{Key: key})
+	require.NoError(t, err)
+	deleteRevision := create.Header.Revision + 1
+	event, err := shim.watchEventToEtcdEvent(context.Background(), &proto.Event{
+		Type:     proto.Event_DELETE,
+		Revision: deleteRevision,
+		Kv: &proto.KeyValue{
+			Key:      key,
+			Value:    stored.Kv.Value,
+			Revision: create.Header.Revision,
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(t, mvccpb.DELETE, event.Type)
+	require.Equal(t, int64(deleteRevision), event.Kv.ModRevision)
+	require.Zero(t, event.Kv.CreateRevision)
+	require.Zero(t, event.Kv.Version)
+	require.Zero(t, event.Kv.Lease)
+	require.Empty(t, event.Kv.Value)
+	require.NotNil(t, event.PrevKv)
+	require.Equal(t, int64(create.Header.Revision), event.PrevKv.CreateRevision)
+	require.Equal(t, int64(create.Header.Revision), event.PrevKv.ModRevision)
+	require.Equal(t, int64(1), event.PrevKv.Version)
+	require.Equal(t, int64(123), event.PrevKv.Lease)
+	require.Equal(t, []byte("old"), event.PrevKv.Value)
+}

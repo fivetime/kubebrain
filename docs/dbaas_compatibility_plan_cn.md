@@ -194,6 +194,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   key 与 durable lease meta 均保留；修复前该后台路径因 context 无 epoch 而 fail-open。
   当前源码重建后，真实 TiKV/PD 上 Lease/Txn/Range/DeleteRange/Compact 官方
   client/v3 双端差分共同通过。
+- **Lease 自然过期与 DELETE wire 语义（2026-07-16）**：新增官方
+  `client/v3` 双端差分，以 TTL=2 的同一 lease 反序绑定 `b`、`a` 两键，从
+  `lastPutRevision+1` 订阅 `WithPrevKV`，等待真实 timer 驱动后台 expiry。首次运行
+  确认两项差异：KubeBrain 从 map 生成删除 op，watch 顺序随机；DELETE `Kv` 错误
+  复制旧对象 create_revision，而 etcd 只在 DELETE `Kv` 保留 key/mod_revision，
+  完整旧 value/create/mod/version/lease 仅放 `PrevKv`。现与
+  `/root/etcd/server/lease/lessor.go:Revoke` 一致排序 lease keys，显式 Revoke 与
+  自然 expiry 均在一个 revision 按 key 升序发布删除；translator 也已对齐 tombstone
+  字段。真实 TiKV keyspace 与参考 etcd 连续 10 轮（每轮真实等待两边 expiry）逐字段
+  一致：Grant TTL、Put/DELETE 相对 revision、watch header/event 顺序、PrevKv、
+  过期后空 Range、TTL=-1 及 Leases 清理全部通过。
 - **Watch 控制流与 fragmentation（2026-07-16）**：对照
   `/root/etcd/server/etcdserver/api/v3rpc/watch.go` 与 `storage/mvcc/watcher.go`，
   补齐 stream-scoped 客户端指定 `watch_id`、重复 ID 拒绝、未知 ID cancel 静默
