@@ -46,7 +46,7 @@ Raft、bbolt 和成员管理内部实现，而是对通用 etcd v3 客户端提�
 | Maintenance | Alarm/DbSize | 平台替代 | 用 PD/TiKV 容量、磁盘、region 和配额告警；etcd 专属字段保持可解释值 |
 | Maintenance | Hash/HashKV | 兼容核心语义 | 对指定 revision 的租户 MVCC 实际内容做稳定摘要；用于 KubeBrain 副本一致性校验，数值不与 bbolt 内部编码比较 |
 | Maintenance | MoveLeader/Downgrade | 平台替代 | 分别由服务选主和 DBaaS 升级编排处理 |
-| Concurrency | Lock/Election recipes | 兼容核心语义 | 官方 `client/v3/concurrency` Mutex/Election/session 及真实 Leader 故障转移已通过；继续补 lease 自然过期和长时间 soak |
+| Concurrency | Lock/Election recipes | 兼容核心语义 | 官方 `client/v3/concurrency` Mutex/Election/session、orphan session lease 自然过期接棒及真实 Leader 故障转移已通过；继续长时间 soak |
 
 `Status.Version = 3.7.0` 只表示协议能力门槛，不能作为完整兼容声明。发布说明必须
 引用本矩阵和自动化兼容测试结果。
@@ -351,6 +351,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Mutex ownership 和 Election leader 值均保持，随后正常 Resign/Unlock。由此确认
   官方 concurrency 中使用 `header.revision+1` 表示 watch 下界，不要求每个中间
   revision 都实际存在；KubeBrain 的失败预分配跳号未破坏这些 recipe。
+- **Concurrency A35 orphan session 自然过期（2026-07-16）**：新增
+  `TestConcurrencyOrphanedSessionExpiresAndHandsOff`，同一 TTL=2s owner session 同时
+  持有 Mutex 与 Election，`Session.Orphan` 只停 keepalive、不主动 Revoke；确认
+  竞争者在 orphan 后仍阻塞，lease 自然到期后两者都接棒，旧 lease TTL=-1
+  且新 Election leader 值正确。参考 etcd 用时 2.30s，当前三副本
+  KubeBrain+TiKV 用时 2.22s，行为与时序一致。
 - **Auth A1 持久化基础（2026-07-16）**：新增原子 `Backend.InternalCAS`，先读并
   校验全部 internal key 的精确旧值，再打开一个 storage batch 统一 CAS/创建/删除；
   冲突返回 `ErrCASFailed` 且整批不落地，不消耗用户 revision。etcd shim 已贯通该
@@ -640,8 +646,8 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
    及真实三副本在线轮换、长连接 drain/reconnect soak、CRL/cipher/TLS version 策略、
    独立 outbound client cert/key 与 peer CN/SAN allowlist 已完成；下一步扩大配额与故障
    注入覆盖。
-2. 对已通过的 `client/v3/concurrency` mutex/election/session/failover recipe
-   增加 lease 自然过期和长时间 soak。
+2. `client/v3/concurrency` mutex/election/session、lease 自然过期和 failover
+   recipe 已通过；继续增加长时间 soak。
 3. 建立 DBaaS 控制面契约：创建、扩缩、升级、备份、恢复、证书轮换、销毁。
 4. 建立实例级限额和计量：请求字节与 txn 操作数已对齐 etcd；继续补 CPU、内存、PV、
    备份容量、网络、QPS、watch 数及容量计量，限额错误必须稳定且可观测。

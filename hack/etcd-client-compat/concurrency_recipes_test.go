@@ -102,6 +102,65 @@ func TestConcurrencyElectionObserveProclaimAndHandoff(t *testing.T) {
 	cancel()
 }
 
+func TestConcurrencyOrphanedSessionExpiresAndHandsOff(t *testing.T) {
+	ownerClient := newConcurrencyClient(t)
+	contenderClient := newConcurrencyClient(t)
+	owner, err := concurrency.NewSession(ownerClient, concurrency.WithTTL(2))
+	require.NoError(t, err)
+	contender := newConcurrencySession(t, contenderClient)
+	prefix := fmt.Sprintf("/dbaas-concurrency/natural-expiry/%d/", time.Now().UnixNano())
+	ownerMutex := concurrency.NewMutex(owner, prefix+"mutex/")
+	contenderMutex := concurrency.NewMutex(contender, prefix+"mutex/")
+	ownerElection := concurrency.NewElection(owner, prefix+"election/")
+	contenderElection := concurrency.NewElection(contender, prefix+"election/")
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	require.NoError(t, ownerMutex.Lock(ctx))
+	require.NoError(t, ownerElection.Campaign(ctx, "owner"))
+	mutexWon := make(chan error, 1)
+	electionWon := make(chan error, 1)
+	go func() { mutexWon <- contenderMutex.Lock(ctx) }()
+	go func() { electionWon <- contenderElection.Campaign(ctx, "contender") }()
+	assertBlocked := func(name string, result <-chan error) {
+		t.Helper()
+		select {
+		case err := <-result:
+			t.Fatalf("%s completed before lease expiry: %v", name, err)
+		case <-time.After(300 * time.Millisecond):
+		}
+	}
+	assertBlocked("mutex", mutexWon)
+	assertBlocked("election", electionWon)
+
+	leaseID := owner.Lease()
+	owner.Orphan() // stop keepalive without LeaseRevoke, simulating a crashed process
+	assertBlocked("mutex after orphan", mutexWon)
+	assertBlocked("election after orphan", electionWon)
+	select {
+	case err := <-mutexWon:
+		require.NoError(t, err)
+	case <-ctx.Done():
+		t.Fatal("mutex was not handed off after natural lease expiry")
+	}
+	select {
+	case err := <-electionWon:
+		require.NoError(t, err)
+	case <-ctx.Done():
+		t.Fatal("election was not handed off after natural lease expiry")
+	}
+
+	ttl, err := ownerClient.TimeToLive(ctx, leaseID)
+	require.NoError(t, err)
+	require.Equal(t, int64(-1), ttl.TTL)
+	leader, err := contenderElection.Leader(ctx)
+	require.NoError(t, err)
+	require.Len(t, leader.Kvs, 1)
+	require.Equal(t, "contender", string(leader.Kvs[0].Value))
+	require.NoError(t, contenderElection.Resign(ctx))
+	require.NoError(t, contenderMutex.Unlock(ctx))
+}
+
 // TestConcurrencySessionSurvivesKubeBrainFailover is an opt-in live-cluster
 // test. The caller names the current leader pod; ordinary unit/CI runs never
 // mutate Kubernetes. It verifies the official concurrency recipes across a
