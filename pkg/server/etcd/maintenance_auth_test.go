@@ -38,6 +38,8 @@ func TestMaintenanceAuthorizationMatchesEtcd(t *testing.T) {
 	require.NoError(t, err)
 	_, err = server.Alarm(aliceCtx, &etcdserverpb.AlarmRequest{Action: etcdserverpb.AlarmRequest_ACTIVATE})
 	require.ErrorIs(t, err, rpctypes.ErrPermissionDenied)
+	_, err = server.Alarm(rootCtx, &etcdserverpb.AlarmRequest{Action: etcdserverpb.AlarmRequest_ACTIVATE})
+	require.Equal(t, codes.Unimplemented, status.Code(err))
 
 	_, err = server.HashKV(aliceCtx, &etcdserverpb.HashKVRequest{})
 	require.ErrorIs(t, err, rpctypes.ErrPermissionDenied)

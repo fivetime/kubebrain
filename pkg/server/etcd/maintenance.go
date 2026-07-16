@@ -57,8 +57,11 @@ func (s *RPCServer) Alarm(ctx context.Context, req *etcdserverpb.AlarmRequest) (
 		if err := s.requireMaintenanceAuth(ctx, false); err != nil {
 			return nil, err
 		}
-	} else if err := s.requireMaintenanceAuth(ctx, true); err != nil {
-		return nil, err
+	} else {
+		if err := s.requireMaintenanceAuth(ctx, true); err != nil {
+			return nil, err
+		}
+		return nil, status.Error(codes.Unimplemented, "alarm mutation is managed by the TiKV/PD DBaaS control plane")
 	}
 	return &etcdserverpb.AlarmResponse{
 		Header: s.maintenanceHeader(),

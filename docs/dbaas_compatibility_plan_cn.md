@@ -250,6 +250,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `Leader=0` 并在 Errors 中加入 `etcdserver: no leader`。同时显式返回
   `StorageVersion=3.7.0`（表示 KubeBrain 当前对外持久化语义版本，不表示 bbolt
   格式）和 `DowngradeInfo{Enabled:false}`，避免官方诊断输出留空或依赖 nil 默认。
+- **Alarm 平台边界（2026-07-16）**：`Alarm(GET)` 继续返回空集合，因为 TiKV
+  没有 KubeBrain 单逻辑库的 bbolt NOSPACE/CORRUPT alarm；`ACTIVATE/DEACTIVATE`
+  不再“成功但不保存、不执行写保护”，而是在 root 鉴权后明确返回
+  `Unimplemented`。容量、磁盘与数据完整性告警及处置由独立 TiKV/PD 集群和 DBaaS
+  控制面负责，避免 etcd 客户端误以为 alarm 已生效。
 - **Compact 双端差分**：新增 `TestCompactDifferentialAgainstReferenceEtcd`，
   覆盖 logical compaction 成功 header、`revision == compactRev` 边界快照仍可读、
   `revision < compactRev` 返回 ErrCompacted、重复/更旧 compact 返回同一错误、未来
