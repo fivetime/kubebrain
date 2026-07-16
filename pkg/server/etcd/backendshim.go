@@ -514,10 +514,11 @@ func (b *backendShim) TxnApply(ctx context.Context, ops []backend.TxnWriteOp, gu
 			}
 			responses[i] = &etcdserverpb.ResponseOp{Response: &etcdserverpb.ResponseOp_ResponseDeleteRange{ResponseDeleteRange: dr}}
 		} else {
-			// The existing sequential txn put path returns no PrevKv; match it.
-			responses[i] = &etcdserverpb.ResponseOp{Response: &etcdserverpb.ResponseOp_ResponsePut{
-				ResponsePut: &etcdserverpb.PutResponse{Header: txnHeader(int64(rev))},
-			}}
+			pr := &etcdserverpb.PutResponse{Header: txnHeader(int64(rev))}
+			if prevKv[i] && !r.Created && r.PrevRevision != 0 {
+				pr.PrevKv = b.kvToEtcdKv(ctx, &proto.KeyValue{Key: r.Key, Value: r.PrevValue, Revision: r.PrevRevision})
+			}
+			responses[i] = &etcdserverpb.ResponseOp{Response: &etcdserverpb.ResponseOp_ResponsePut{ResponsePut: pr}}
 		}
 	}
 	return responses, rev, results, nil

@@ -876,7 +876,7 @@ func (s *RPCServer) executeGenericTxn(ctx context.Context, txn *etcdserverpb.Txn
 		// distinct-key writes (#4). The compare guards make it serializable: a guard
 		// conflict means a compared key changed, so re-evaluate the compares and
 		// retry. Ineligible shapes fall back to the (unchanged) sequential path.
-		resp, handled, err := s.tryAtomicGenericTxn(ctx, txn, paths[0], guards)
+		resp, handled, err := s.tryAtomicGenericTxn(ctx, txn, paths, guards)
 		if errors.Is(err, backend.ErrTxnGuardConflict) {
 			continue
 		}
@@ -903,58 +903,35 @@ func txnHasRangeCompare(txn *etcdserverpb.TxnRequest) bool {
 	return false
 }
 
-// tryAtomicGenericTxn applies the chosen path atomically when it consists solely
-// of distinct-key Put and single-key DeleteRange ops. A single write uses this
-// path when compare guards are present, because compare+write must share the
-// same atomic commit. handled=false means the txn shape is ineligible.
-func (s *RPCServer) tryAtomicGenericTxn(ctx context.Context, txn *etcdserverpb.TxnRequest, succeeded bool, guards []backend.TxnGuard) (*etcdserverpb.TxnResponse, bool, error) {
-	ops := txn.Success
-	if !succeeded {
-		ops = txn.Failure
+// tryAtomicGenericTxn recursively flattens the chosen nested path when it
+// consists solely of distinct-key Put and single-key DeleteRange ops. Every
+// write then shares one backend batch/revision and the flat results are rebuilt
+// into the original nested response tree. handled=false means the path needs
+// staged range/Ignore* semantics and must use the fallback for now.
+
+type atomicTxnPlan struct {
+	writes    []backend.TxnWriteOp
+	prevKvs   []bool
+	requests  []*etcdserverpb.RequestOp
+	responses []*etcdserverpb.ResponseOp
+	root      *etcdserverpb.TxnResponse
+	seen      map[string]struct{}
+}
+
+func (s *RPCServer) tryAtomicGenericTxn(ctx context.Context, txn *etcdserverpb.TxnRequest, paths []bool, guards []backend.TxnGuard) (*etcdserverpb.TxnResponse, bool, error) {
+	cur := &txnPathCursor{paths: paths}
+	plan := &atomicTxnPlan{seen: make(map[string]struct{})}
+	root, eligible, err := buildAtomicTxnPlan(txn, cur, plan)
+	if err != nil {
+		return nil, true, err
 	}
-	writeOps := make([]backend.TxnWriteOp, 0, len(ops))
-	prevKv := make([]bool, 0, len(ops))
-	seen := make(map[string]struct{}, len(ops))
-	for _, op := range ops {
-		switch {
-		case op.GetRequestPut() != nil:
-			put := op.GetRequestPut()
-			// IgnoreLease/IgnoreValue need a read-modify step the atomic batch
-			// does not model; leave those to the sequential path.
-			if put.IgnoreLease || put.IgnoreValue {
-				return nil, false, nil
-			}
-			if _, dup := seen[string(put.Key)]; dup {
-				return nil, false, nil
-			}
-			seen[string(put.Key)] = struct{}{}
-			// Inline the lease per-version (review #9). The attachment record on this
-			// path stays best-effort via bindKeyToLease below — leased keys in a
-			// multi-op generic txn (as opposed to a plain Put) are rare; the
-			// expiry-time guard in deleteLeasedKey neutralizes a lost attachment.
-			writeOps = append(writeOps, backend.TxnWriteOp{Key: put.Key, Value: put.Value, Lease: put.Lease})
-			prevKv = append(prevKv, false)
-		case op.GetRequestDeleteRange() != nil:
-			del := op.GetRequestDeleteRange()
-			if len(del.RangeEnd) != 0 { // multi-key range delete
-				return nil, false, nil
-			}
-			if _, dup := seen[string(del.Key)]; dup {
-				return nil, false, nil
-			}
-			seen[string(del.Key)] = struct{}{}
-			writeOps = append(writeOps, backend.TxnWriteOp{Delete: true, Key: del.Key})
-			prevKv = append(prevKv, del.PrevKv)
-		default: // range read, nested txn, or unsupported op
-			return nil, false, nil
-		}
-	}
-	if len(writeOps) < 2 && len(guards) == 0 {
+	if !eligible || len(plan.writes) == 0 || (len(plan.writes) < 2 && len(guards) == 0 && len(paths) == 1) {
 		return nil, false, nil
 	}
+	plan.root = root
 	// Validate all put leases up front: an atomic txn must reject as a whole if a
 	// referenced lease is missing, never apply a prefix of its writes.
-	for _, op := range ops {
+	for _, op := range plan.requests {
 		if put := op.GetRequestPut(); put != nil {
 			if err := s.ensureLeaseExists(put.Lease); err != nil {
 				return nil, true, err
@@ -962,12 +939,16 @@ func (s *RPCServer) tryAtomicGenericTxn(ctx context.Context, txn *etcdserverpb.T
 		}
 	}
 
-	responses, rev, results, err := s.backend.TxnApply(ctx, writeOps, guards, prevKv)
+	responses, rev, results, err := s.backend.TxnApply(ctx, plan.writes, guards, plan.prevKvs)
 	if err != nil {
 		return nil, true, err
 	}
+	for i := range responses {
+		plan.responses[i].Response = responses[i].Response
+	}
+	stampTxnResponseHeaders(plan.root, int64(rev))
 	// Bind/unbind leases now that the writes committed.
-	for i, op := range ops {
+	for i, op := range plan.requests {
 		if put := op.GetRequestPut(); put != nil {
 			s.bindKeyToLease(ctx, put.Lease, string(put.Key))
 		} else if del := op.GetRequestDeleteRange(); del != nil {
@@ -976,11 +957,71 @@ func (s *RPCServer) tryAtomicGenericTxn(ctx context.Context, txn *etcdserverpb.T
 			}
 		}
 	}
-	return &etcdserverpb.TxnResponse{
-		Succeeded: succeeded,
-		Header:    txnHeader(int64(rev)),
-		Responses: responses,
-	}, true, nil
+	return plan.root, true, nil
+}
+
+func buildAtomicTxnPlan(txn *etcdserverpb.TxnRequest, cur *txnPathCursor, plan *atomicTxnPlan) (*etcdserverpb.TxnResponse, bool, error) {
+	succeeded, err := cur.next()
+	if err != nil {
+		return nil, false, err
+	}
+	ops := txn.Success
+	if !succeeded {
+		ops = txn.Failure
+	}
+	resp := &etcdserverpb.TxnResponse{Succeeded: succeeded, Responses: make([]*etcdserverpb.ResponseOp, 0, len(ops))}
+	for _, op := range ops {
+		switch {
+		case op.GetRequestPut() != nil:
+			put := op.GetRequestPut()
+			if put.IgnoreLease || put.IgnoreValue {
+				return nil, false, nil
+			}
+			if _, duplicate := plan.seen[string(put.Key)]; duplicate {
+				return nil, false, nil
+			}
+			plan.seen[string(put.Key)] = struct{}{}
+			writeResp := &etcdserverpb.ResponseOp{}
+			resp.Responses = append(resp.Responses, writeResp)
+			plan.responses = append(plan.responses, writeResp)
+			plan.requests = append(plan.requests, op)
+			plan.writes = append(plan.writes, backend.TxnWriteOp{Key: put.Key, Value: put.Value, Lease: put.Lease})
+			plan.prevKvs = append(plan.prevKvs, put.PrevKv)
+		case op.GetRequestDeleteRange() != nil:
+			del := op.GetRequestDeleteRange()
+			if len(del.RangeEnd) != 0 {
+				return nil, false, nil
+			}
+			if _, duplicate := plan.seen[string(del.Key)]; duplicate {
+				return nil, false, nil
+			}
+			plan.seen[string(del.Key)] = struct{}{}
+			writeResp := &etcdserverpb.ResponseOp{}
+			resp.Responses = append(resp.Responses, writeResp)
+			plan.responses = append(plan.responses, writeResp)
+			plan.requests = append(plan.requests, op)
+			plan.writes = append(plan.writes, backend.TxnWriteOp{Delete: true, Key: del.Key})
+			plan.prevKvs = append(plan.prevKvs, del.PrevKv)
+		case op.GetRequestTxn() != nil:
+			nested, ok, err := buildAtomicTxnPlan(op.GetRequestTxn(), cur, plan)
+			if err != nil || !ok {
+				return nil, ok, err
+			}
+			resp.Responses = append(resp.Responses, &etcdserverpb.ResponseOp{Response: &etcdserverpb.ResponseOp_ResponseTxn{ResponseTxn: nested}})
+		default:
+			return nil, false, nil
+		}
+	}
+	return resp, true, nil
+}
+
+func stampTxnResponseHeaders(resp *etcdserverpb.TxnResponse, revision int64) {
+	resp.Header = txnHeader(revision)
+	for _, op := range resp.Responses {
+		if nested := op.GetResponseTxn(); nested != nil {
+			stampTxnResponseHeaders(nested, revision)
+		}
+	}
 }
 
 func (s *RPCServer) txnComparePaths(ctx context.Context, txn *etcdserverpb.TxnRequest) ([]bool, error) {
@@ -988,10 +1029,9 @@ func (s *RPCServer) txnComparePaths(ctx context.Context, txn *etcdserverpb.TxnRe
 	return paths, err
 }
 
-// txnComparePathsGuarded is txnComparePaths that additionally returns OCC guards
-// for the top-level compares it evaluated (those that decided this txn's branch).
-// The guards are used only by the atomic path; nested compares are not guarded
-// (a nested txn is never atomic-eligible and falls back to the sequential path).
+// txnComparePathsGuarded additionally returns OCC guards for every compare that
+// selected the top-level and recursively selected nested branches. The atomic
+// path submits all of them with the flattened writes in one storage batch.
 func (s *RPCServer) txnComparePathsGuarded(ctx context.Context, txn *etcdserverpb.TxnRequest) ([]bool, []backend.TxnGuard, error) {
 	succeeded := true
 	var guards []backend.TxnGuard
@@ -1018,11 +1058,12 @@ func (s *RPCServer) txnComparePathsGuarded(ctx context.Context, txn *etcdserverp
 		if nested == nil {
 			continue
 		}
-		nestedPaths, err := s.txnComparePaths(ctx, nested)
+		nestedPaths, nestedGuards, err := s.txnComparePathsGuarded(ctx, nested)
 		if err != nil {
 			return nil, nil, err
 		}
 		paths = append(paths, nestedPaths...)
+		guards = append(guards, nestedGuards...)
 	}
 	return paths, guards, nil
 }

@@ -88,10 +88,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `TestRangeTxnBarrierBlocksExternalWrites` 和两者的 race 测试覆盖锁边界。代价
   是范围 compare 执行期间同一实例的逻辑写会短暂排队，因此 DBaaS 必须保留
   txn op/range 和 RPC deadline 限制。
-- **尚未解决**：包含 range read、nested txn、multi-key DeleteRange 或
+- **尚未解决**：包含 range read、multi-key DeleteRange 或
   IgnoreValue/IgnoreLease 的 generic txn 仍可能走顺序执行回退；屏障可排除
   外部并发，但这些分支内部的多次写尚未共享一个 revision，也未实现一次
   storage batch 的全有或全无提交。
+- **nested point-write 原子路径**：选中分支可递归扁平化任意层 nested txn；
+  当路径只含 distinct-key Put 和单键 DeleteRange 时，所有层级 compare guard
+  与写操作一次提交、共享一个 revision，再按原树形重建 TxnResponse。事务内
+  Put 的 `PrevKv` 同时补齐。`TestTxnNestedWriteOnlyUsesSingleRevision` 和
+  `TestTxnAtomicPutReturnsPrevKV` 覆盖。注意这不代表 nested txn 已完整：嵌套
+  路径含 Range 或 multi-key DeleteRange 时仍属于上一条未解决项。
 
 ### P1：通用服务能力
 

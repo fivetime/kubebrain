@@ -1864,6 +1864,61 @@ func TestTxnNestedSuccessResponseMatchesEtcd(t *testing.T) {
 	require.Equal(t, []byte("nested"), rangeResp.Kvs[0].Value)
 }
 
+func TestTxnNestedWriteOnlyUsesSingleRevision(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	ctx := context.Background()
+	keyA := []byte("/registry/generic-txn/nested-atomic/a")
+	keyB := []byte("/registry/generic-txn/nested-atomic/b")
+	resp, err := server.Txn(ctx, &etcdserverpb.TxnRequest{
+		Success: []*etcdserverpb.RequestOp{
+			{Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{Key: keyA, Value: []byte("a")}}},
+			{Request: &etcdserverpb.RequestOp_RequestTxn{RequestTxn: &etcdserverpb.TxnRequest{
+				Success: []*etcdserverpb.RequestOp{{Request: &etcdserverpb.RequestOp_RequestPut{
+					RequestPut: &etcdserverpb.PutRequest{Key: keyB, Value: []byte("b")},
+				}}},
+			}}},
+		},
+	})
+	require.NoError(t, err)
+	require.True(t, resp.Succeeded)
+	require.Len(t, resp.Responses, 2)
+	nested := resp.Responses[1].GetResponseTxn()
+	require.NotNil(t, nested)
+	require.Equal(t, resp.Header.Revision, nested.Header.Revision)
+
+	gotA, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: keyA})
+	require.NoError(t, err)
+	gotB, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: keyB})
+	require.NoError(t, err)
+	require.Equal(t, resp.Header.Revision, gotA.Kvs[0].ModRevision)
+	require.Equal(t, resp.Header.Revision, gotB.Kvs[0].ModRevision)
+}
+
+func TestTxnAtomicPutReturnsPrevKV(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	ctx := context.Background()
+	key := []byte("/registry/generic-txn/atomic-prev/a")
+	other := []byte("/registry/generic-txn/atomic-prev/b")
+	_, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("old")})
+	require.NoError(t, err)
+
+	resp, err := server.Txn(ctx, &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+		{Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{Key: key, Value: []byte("new"), PrevKv: true}}},
+		{Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{Key: other, Value: []byte("other")}}},
+	}})
+	require.NoError(t, err)
+	putResp := resp.Responses[0].GetResponsePut()
+	require.NotNil(t, putResp)
+	require.NotNil(t, putResp.PrevKv)
+	require.Equal(t, key, putResp.PrevKv.Key)
+	require.Equal(t, []byte("old"), putResp.PrevKv.Value)
+	require.Less(t, putResp.PrevKv.ModRevision, resp.Header.Revision)
+}
+
 func TestTxnNestedCompareFailureResponseMatchesEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
