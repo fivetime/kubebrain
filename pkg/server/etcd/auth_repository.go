@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"time"
 
 	"go.etcd.io/etcd/api/v3/authpb"
 	"google.golang.org/protobuf/proto"
@@ -22,6 +23,25 @@ var (
 )
 
 const initialAuthRevision = 1
+
+func waitAuthRetry(ctx context.Context, attempt int) error {
+	shift := attempt
+	if shift > 7 {
+		shift = 7
+	}
+	delay := 50 * time.Microsecond * time.Duration(1<<shift)
+	if delay > 5*time.Millisecond {
+		delay = 5 * time.Millisecond
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
 
 type authConfig struct {
 	Enabled  bool
@@ -76,7 +96,7 @@ func (r *authRepository) loadConfig(ctx context.Context) (authConfig, error) {
 }
 
 func (r *authRepository) load(ctx context.Context) (*authSnapshot, error) {
-	for i := 0; i < authMutationRetries; i++ {
+	for attempt := 0; ; attempt++ {
 		config, err := r.loadConfig(ctx)
 		if err != nil {
 			return nil, err
@@ -92,8 +112,10 @@ func (r *authRepository) load(ctx context.Context) (*authSnapshot, error) {
 		if current == config {
 			return snapshot, nil
 		}
+		if err = waitAuthRetry(ctx, attempt); err != nil {
+			return nil, err
+		}
 	}
-	return nil, storage.ErrUnavailable
 }
 
 func (r *authRepository) loadRecords(ctx context.Context, config authConfig) (*authSnapshot, error) {

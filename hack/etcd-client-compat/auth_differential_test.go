@@ -2,7 +2,9 @@ package compat
 
 import (
 	"context"
+	"fmt"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -18,14 +20,40 @@ type authErrorOutcome struct {
 }
 
 type authDifferentialOutcome struct {
-	EnabledRevision        uint64
-	DuplicateGrantRevision uint64
-	DuplicateRoleRevision  uint64
-	ImplicitRootRole       authErrorOutcome
-	WrongCredentials       authErrorOutcome
-	NoPassword             authErrorOutcome
-	DuplicateRole          authErrorOutcome
-	MissingRevoke          authErrorOutcome
+	EnabledRevision           uint64
+	DuplicateGrantRevision    uint64
+	DuplicateRoleRevision     uint64
+	ImplicitRootRole          authErrorOutcome
+	WrongCredentials          authErrorOutcome
+	NoPassword                authErrorOutcome
+	DuplicateRole             authErrorOutcome
+	MissingRevoke             authErrorOutcome
+	ConcurrentDistinctOK      int
+	ConcurrentDistinctDelta   uint64
+	ConcurrentDuplicateOK     int
+	ConcurrentDuplicateExists int
+	ConcurrentDuplicateDelta  uint64
+}
+
+func runConcurrentClientOperations(count int, operation func(int) error) []error {
+	errs := make([]error, count)
+	start := make(chan struct{})
+	var ready sync.WaitGroup
+	var done sync.WaitGroup
+	ready.Add(count)
+	done.Add(count)
+	for i := 0; i < count; i++ {
+		go func(index int) {
+			defer done.Done()
+			ready.Done()
+			<-start
+			errs[index] = operation(index)
+		}(i)
+	}
+	ready.Wait()
+	close(start)
+	done.Wait()
+	return errs
 }
 
 func authError(err error) authErrorOutcome {
@@ -71,16 +99,54 @@ func collectAuthDifferentialOutcome(t *testing.T, endpoint string) authDifferent
 	statusAfterDuplicateRole, err := root.AuthStatus(ctx)
 	require.NoError(t, err)
 	_, missingRevokeErr := root.UserRevokeRole(ctx, "alice", "reader")
+	beforeConcurrent, err := root.AuthStatus(ctx)
+	require.NoError(t, err)
+	const concurrentCount = 16
+	distinctErrors := runConcurrentClientOperations(concurrentCount, func(index int) error {
+		_, operationErr := root.RoleAdd(ctx, fmt.Sprintf("concurrent-%02d", index))
+		return operationErr
+	})
+	distinctOK := 0
+	for _, operationErr := range distinctErrors {
+		if operationErr == nil {
+			distinctOK++
+		}
+	}
+	afterDistinct, err := root.AuthStatus(ctx)
+	require.NoError(t, err)
+	duplicateErrors := runConcurrentClientOperations(concurrentCount, func(int) error {
+		_, operationErr := root.RoleAdd(ctx, "concurrent-shared")
+		return operationErr
+	})
+	duplicateOK := 0
+	duplicateExists := 0
+	for _, operationErr := range duplicateErrors {
+		switch status.Code(operationErr) {
+		case codes.OK:
+			duplicateOK++
+		case codes.FailedPrecondition:
+			if status.Convert(operationErr).Message() == "etcdserver: role name already exists" {
+				duplicateExists++
+			}
+		}
+	}
+	afterDuplicate, err := root.AuthStatus(ctx)
+	require.NoError(t, err)
 
 	return authDifferentialOutcome{
-		EnabledRevision:        statusAfterEnable.AuthRevision,
-		DuplicateGrantRevision: statusAfterDuplicateGrant.AuthRevision,
-		DuplicateRoleRevision:  statusAfterDuplicateRole.AuthRevision,
-		ImplicitRootRole:       authError(implicitRootRoleErr),
-		WrongCredentials:       authError(wrongCredentialsErr),
-		NoPassword:             authError(noPasswordErr),
-		DuplicateRole:          authError(duplicateRoleErr),
-		MissingRevoke:          authError(missingRevokeErr),
+		EnabledRevision:           statusAfterEnable.AuthRevision,
+		DuplicateGrantRevision:    statusAfterDuplicateGrant.AuthRevision,
+		DuplicateRoleRevision:     statusAfterDuplicateRole.AuthRevision,
+		ImplicitRootRole:          authError(implicitRootRoleErr),
+		WrongCredentials:          authError(wrongCredentialsErr),
+		NoPassword:                authError(noPasswordErr),
+		DuplicateRole:             authError(duplicateRoleErr),
+		MissingRevoke:             authError(missingRevokeErr),
+		ConcurrentDistinctOK:      distinctOK,
+		ConcurrentDistinctDelta:   afterDistinct.AuthRevision - beforeConcurrent.AuthRevision,
+		ConcurrentDuplicateOK:     duplicateOK,
+		ConcurrentDuplicateExists: duplicateExists,
+		ConcurrentDuplicateDelta:  afterDuplicate.AuthRevision - afterDistinct.AuthRevision,
 	}
 }
 

@@ -16,8 +16,6 @@ import (
 	"github.com/kubewharf/kubebrain/pkg/storage"
 )
 
-const authMutationRetries = 16
-
 var errNoPasswordUser = errors.New("auth: authentication failed, password was given for no password user")
 
 type authManager struct{ repo *authRepository }
@@ -27,7 +25,7 @@ func newAuthManager(backend BackendShim) *authManager {
 }
 
 func retryAuthMutation(ctx context.Context, operation func(*authSnapshot) error, load func(context.Context) (*authSnapshot, error)) error {
-	for i := 0; i < authMutationRetries; i++ {
+	for attempt := 0; ; attempt++ {
 		snapshot, err := load(ctx)
 		if err != nil {
 			return err
@@ -35,8 +33,10 @@ func retryAuthMutation(ctx context.Context, operation func(*authSnapshot) error,
 		if err = operation(snapshot); !errors.Is(err, storage.ErrCASFailed) {
 			return err
 		}
+		if err = waitAuthRetry(ctx, attempt); err != nil {
+			return err
+		}
 	}
-	return storage.ErrUnavailable
 }
 
 func authPassword(request *etcdserverpb.AuthUserAddRequest) ([]byte, error) {

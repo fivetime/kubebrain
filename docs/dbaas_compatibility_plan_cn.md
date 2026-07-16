@@ -341,6 +341,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `NewAuthStore` 会在空 backend 上先提交初始 revision=1；KubeBrain 原逻辑值为 0。
   现将缺失配置记录解释为 revision 1，第一次 mutation 仍以 CAS-not-exists 原子创建，
   后续 revision 与 etcd 完全同序。
+- **Auth A19 并发 CAS 饥饿（2026-07-16）**：64 个不同 auth mutation 同时执行的
+  `-race -count=10` 压力测试稳定复现固定 16 次重试耗尽并返回 `Unavailable`。现将
+  mutation 与一致快照加载都改为退避重试、由 RPC context/deadline 控制退出；修复
+  后全部 mutation 成功且 revision 连续，同名并发创建仍恰好一次提交。真实
+  etcd/KubeBrain 双端点并发矩阵进一步验证：16 个不同 RoleAdd 全成功并推进 16，
+  16 个同名 RoleAdd 均为 1 成功 + 15 AlreadyExists，且仅推进 1 个 revision。
 
 ### P1：通用服务能力
 

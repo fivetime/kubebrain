@@ -2,14 +2,40 @@ package etcd
 
 import (
 	"context"
+	"fmt"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/authpb"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	"golang.org/x/crypto/bcrypt"
+
+	"github.com/kubewharf/kubebrain/pkg/storage"
 )
+
+func runConcurrentAuthOperations(count int, operation func(int) error) []error {
+	errs := make([]error, count)
+	start := make(chan struct{})
+	var ready sync.WaitGroup
+	var done sync.WaitGroup
+	ready.Add(count)
+	done.Add(count)
+	for i := 0; i < count; i++ {
+		go func(index int) {
+			defer done.Done()
+			ready.Done()
+			<-start
+			errs[index] = operation(index)
+		}(i)
+	}
+	ready.Wait()
+	close(start)
+	done.Wait()
+	return errs
+}
 
 func TestAuthManagerBootstrapPersistsWithIndependentRevision(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
@@ -140,6 +166,61 @@ func TestAuthManagerPlaintextPasswordOverridesHash(t *testing.T) {
 	snapshot, err = manager.repo.load(ctx)
 	require.NoError(t, err)
 	require.NoError(t, bcrypt.CompareHashAndPassword(snapshot.Users["alice"].Password, []byte("changed")))
+}
+
+func TestAuthManagerConcurrentDistinctMutationsHaveNoLostRevision(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	manager := newAuthManager(server.backend)
+	ctx := context.Background()
+	const count = 64
+
+	errs := runConcurrentAuthOperations(count, func(index int) error {
+		return manager.roleAdd(ctx, fmt.Sprintf("role-%02d", index))
+	})
+	for _, err := range errs {
+		require.NoError(t, err)
+	}
+	snapshot, err := manager.repo.load(ctx)
+	require.NoError(t, err)
+	require.Len(t, snapshot.Roles, count)
+	require.Equal(t, uint64(initialAuthRevision+count), snapshot.Config.Revision)
+}
+
+func TestAuthManagerConcurrentDuplicateMutationCommitsOnce(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	manager := newAuthManager(server.backend)
+	ctx := context.Background()
+	const count = 32
+
+	errs := runConcurrentAuthOperations(count, func(int) error {
+		return manager.roleAdd(ctx, "shared")
+	})
+	succeeded := 0
+	for _, err := range errs {
+		if err == nil {
+			succeeded++
+			continue
+		}
+		require.ErrorIs(t, err, rpctypes.ErrRoleAlreadyExist)
+	}
+	require.Equal(t, 1, succeeded)
+	snapshot, err := manager.repo.load(ctx)
+	require.NoError(t, err)
+	require.Len(t, snapshot.Roles, 1)
+	require.Equal(t, uint64(initialAuthRevision+1), snapshot.Config.Revision)
+}
+
+func TestRetryAuthMutationStopsAtContextDeadline(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	err := retryAuthMutation(ctx, func(*authSnapshot) error {
+		return storage.ErrCASFailed
+	}, func(context.Context) (*authSnapshot, error) {
+		return &authSnapshot{}, nil
+	})
+	require.ErrorIs(t, err, context.DeadlineExceeded)
 }
 
 func TestAuthManagerRootRoleIsImplicit(t *testing.T) {
