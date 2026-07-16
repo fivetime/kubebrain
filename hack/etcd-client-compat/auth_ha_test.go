@@ -2,13 +2,17 @@ package compat
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
@@ -122,4 +126,72 @@ func TestAuthTokenSurvivesEnabledRollout(t *testing.T) {
 	statusResponse, err := client.AuthStatus(ctx)
 	require.NoError(t, err)
 	require.True(t, statusResponse.Enabled)
+}
+
+func TestConcurrentAuthMutationsSurviveLeaderFailover(t *testing.T) {
+	endpoint := os.Getenv("KUBEBRAIN_AUTH_HA_ROLLOUT_ENDPOINT")
+	leaderPod := os.Getenv("KUBEBRAIN_AUTH_HA_LEADER_POD")
+	namespace := os.Getenv("KUBEBRAIN_AUTH_HA_NAMESPACE")
+	if endpoint == "" || leaderPod == "" || namespace == "" {
+		t.Skip("set KUBEBRAIN_AUTH_HA_ROLLOUT_ENDPOINT, KUBEBRAIN_AUTH_HA_LEADER_POD, and KUBEBRAIN_AUTH_HA_NAMESPACE")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	root := authClient(t, endpoint, "root", "root-secret")
+	before, err := root.AuthStatus(ctx)
+	require.NoError(t, err)
+
+	const count = 32
+	errs := make([]error, count)
+	start := make(chan struct{})
+	var ready sync.WaitGroup
+	var done sync.WaitGroup
+	ready.Add(count)
+	done.Add(count)
+	for i := 0; i < count; i++ {
+		go func(index int) {
+			defer done.Done()
+			ready.Done()
+			<-start
+			// Spread attempts across the election window instead of letting every
+			// request commit before kubectl has terminated the old leader.
+			time.Sleep(time.Duration(index%8) * 25 * time.Millisecond)
+			name := fmt.Sprintf("failover-%02d", index)
+			for {
+				_, operationErr := root.RoleAdd(ctx, name)
+				if operationErr == nil || errors.Is(operationErr, rpctypes.ErrRoleAlreadyExist) {
+					errs[index] = nil
+					return
+				}
+				if ctx.Err() != nil {
+					errs[index] = operationErr
+					return
+				}
+				time.Sleep(200 * time.Millisecond)
+			}
+		}(i)
+	}
+	ready.Wait()
+	close(start)
+	command := exec.CommandContext(ctx, "kubectl", "-n", namespace, "delete", "pod", leaderPod, "--wait=false")
+	output, err := command.CombinedOutput()
+	require.NoError(t, err, string(output))
+	done.Wait()
+	for _, operationErr := range errs {
+		require.NoError(t, operationErr)
+	}
+
+	roles, err := root.RoleList(ctx)
+	require.NoError(t, err)
+	roleSet := make(map[string]struct{}, len(roles.Roles))
+	for _, role := range roles.Roles {
+		roleSet[role] = struct{}{}
+	}
+	for i := 0; i < count; i++ {
+		_, found := roleSet[fmt.Sprintf("failover-%02d", i)]
+		require.True(t, found)
+	}
+	after, err := root.AuthStatus(ctx)
+	require.NoError(t, err)
+	require.Equal(t, before.AuthRevision+count, after.AuthRevision)
 }

@@ -347,6 +347,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   后全部 mutation 成功且 revision 连续，同名并发创建仍恰好一次提交。真实
   etcd/KubeBrain 双端点并发矩阵进一步验证：16 个不同 RoleAdd 全成功并推进 16，
   16 个同名 RoleAdd 均为 1 成功 + 15 AlreadyExists，且仅推进 1 个 revision。
+- **Auth A20 failover 并发矩阵（2026-07-16）**：新增 opt-in
+  `TestConcurrentAuthMutationsSurviveLeaderFailover`，在删除当前 leader 的同时提交
+  32 个唯一 RoleAdd；未知提交结果按幂等语义重试，恢复后要求 32 个角色全部存在且
+  auth revision 恰好 +32。测试只接受显式 disposable namespace 和稳定 Service
+  endpoint，避免 port-forward 随 Pod 退出造成假失败。真实 3 副本 + TiKV/PD
+  实测删除当前 leader 后 32/32 mutation 全部落库，revision 从 3 精确到 35，角色
+  列表无遗漏，新 leader 与替换 Pod 均正常且所有副本 0 重启。
 
 ### P1：通用服务能力
 
