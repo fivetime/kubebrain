@@ -75,10 +75,12 @@ func (s *RPCServer) Status(ctx context.Context, _ *etcdserverpb.StatusRequest) (
 		return nil, err
 	}
 	revision := s.backend.GetCurrentRevision()
-	return &etcdserverpb.StatusResponse{
+	leader := s.memberIDFromAddress(s.peers.GetLeaderInfo())
+	resp := &etcdserverpb.StatusResponse{
 		Header:           s.maintenanceHeader(),
 		Version:          Version,
-		Leader:           s.memberIDFromAddress(s.peers.GetLeaderInfo()),
+		StorageVersion:   Version,
+		Leader:           leader,
 		RaftIndex:        revision,
 		RaftAppliedIndex: revision,
 		// DbSize uses a 1-byte compatibility sentinel: it exists in etcd to warn before the hard
@@ -92,11 +94,16 @@ func (s *RPCServer) Status(ctx context.Context, _ *etcdserverpb.StatusRequest) (
 		// TiKV/PD's own metrics (store disk, region count) for bytes, and
 		// KubeBrain's count_index.keys gauge for object count. See
 		// docs/observability_cn.md.
-		DbSize:      1,
-		DbSizeInUse: 1,
-		Errors:      nil,
-		IsLearner:   false,
-	}, nil
+		DbSize:        1,
+		DbSizeInUse:   1,
+		Errors:        nil,
+		IsLearner:     false,
+		DowngradeInfo: &etcdserverpb.DowngradeInfo{Enabled: false},
+	}
+	if leader == 0 {
+		resp.Errors = append(resp.Errors, rpctypes.ErrNoLeader.Error())
+	}
+	return resp, nil
 }
 
 func (s *RPCServer) Defragment(ctx context.Context, _ *etcdserverpb.DefragmentRequest) (*etcdserverpb.DefragmentResponse, error) {
@@ -208,7 +215,7 @@ func (s *RPCServer) maintenanceHeader() *etcdserverpb.ResponseHeader {
 
 func (s *RPCServer) memberIDFromAddress(address string) uint64 {
 	if !election.IsLeaderKnown(address) {
-		address = s.backend.GetResourceLock().Identity()
+		return 0
 	}
 	return uint64(crc32.ChecksumIEEE([]byte(address)))
 }

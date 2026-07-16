@@ -63,7 +63,10 @@ func TestMaintenanceBasicDiagnostics(t *testing.T) {
 	statusResp, err := server.Status(ctx, &etcdserverpb.StatusRequest{})
 	require.NoError(t, err)
 	require.Equal(t, Version, statusResp.Version)
+	require.Equal(t, Version, statusResp.StorageVersion)
 	require.NotNil(t, statusResp.Header)
+	require.NotNil(t, statusResp.DowngradeInfo)
+	require.False(t, statusResp.DowngradeInfo.Enabled)
 	require.EqualValues(t, 1, statusResp.DbSize)
 	require.EqualValues(t, 1, statusResp.DbSizeInUse)
 
@@ -92,4 +95,15 @@ func TestMaintenanceBasicDiagnostics(t *testing.T) {
 
 	_, err = server.Defragment(ctx, &etcdserverpb.DefragmentRequest{})
 	require.NoError(t, err)
+}
+
+func TestStatusReportsNoLeaderInsteadOfClaimingSelf(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	server.peers = testPeerService{noLeader: true}
+
+	resp, err := server.Status(context.Background(), &etcdserverpb.StatusRequest{})
+	require.NoError(t, err)
+	require.Zero(t, resp.Leader)
+	require.Contains(t, resp.Errors, "etcdserver: no leader")
 }

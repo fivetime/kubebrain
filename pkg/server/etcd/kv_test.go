@@ -37,6 +37,7 @@ import (
 
 type testPeerService struct {
 	isLeader         bool
+	noLeader         bool
 	proxyEnabled     bool
 	rangeFn          func(context.Context, *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error)
 	putFn            func(context.Context, *etcdserverpb.PutRequest) (*etcdserverpb.PutResponse, error)
@@ -58,7 +59,10 @@ func (testPeerService) Close() error {
 func (testPeerService) Campaign(context.Context) {
 }
 
-func (testPeerService) GetLeaderInfo() string {
+func (s testPeerService) GetLeaderInfo() string {
+	if s.noLeader {
+		return ""
+	}
 	return "test-peer"
 }
 

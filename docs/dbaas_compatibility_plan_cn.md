@@ -245,6 +245,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   磁盘、region 和 quota 继续由 TiKV/PD/DBaaS 指标提供。
   修复镜像在上述三个 endpoint 上执行官方
   `etcdctl endpoint status -w table` 已正常显示 `1 B / 1 B / 0%`，不再 panic。
+- **Status leader/版本诊断（2026-07-16）**：修复无 leader 时把未知地址回退为
+  本机 ID、导致每个副本都声称自己是 leader 的错误；现在与 etcd 一致返回
+  `Leader=0` 并在 Errors 中加入 `etcdserver: no leader`。同时显式返回
+  `StorageVersion=3.7.0`（表示 KubeBrain 当前对外持久化语义版本，不表示 bbolt
+  格式）和 `DowngradeInfo{Enabled:false}`，避免官方诊断输出留空或依赖 nil 默认。
 - **Compact 双端差分**：新增 `TestCompactDifferentialAgainstReferenceEtcd`，
   覆盖 logical compaction 成功 header、`revision == compactRev` 边界快照仍可读、
   `revision < compactRev` 返回 ErrCompacted、重复/更旧 compact 返回同一错误、未来
