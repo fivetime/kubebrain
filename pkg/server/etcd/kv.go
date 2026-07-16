@@ -730,7 +730,7 @@ func (s *RPCServer) putWithEffectiveOptions(ctx context.Context, r *etcdserverpb
 		return nil, err
 	}
 	if len(rangeResp.Kvs) == 0 {
-		return nil, status.Errorf(codes.NotFound, "ignore options require existing key %q", string(r.Key))
+		return nil, txnKeyNotFoundError()
 	}
 	current := rangeResp.Kvs[0]
 	if r.IgnoreLease {

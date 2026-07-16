@@ -21,8 +21,6 @@ import (
 
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/mvccpb"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/kubewharf/kubebrain/pkg/backend"
@@ -184,7 +182,7 @@ func (e *stagedTxnExecutor) put(r *etcdserverpb.PutRequest) (*etcdserverpb.PutRe
 		return nil, err
 	}
 	if (r.IgnoreValue || r.IgnoreLease) && current == nil {
-		return nil, status.Errorf(codes.NotFound, "ignore options require existing key %q", string(r.Key))
+		return nil, txnKeyNotFoundError()
 	}
 	value := r.Value
 	lease := r.Lease

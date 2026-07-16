@@ -1875,7 +1875,8 @@ func TestTxnIgnoreOptionsUseStagedAtomicValidation(t *testing.T) {
 		{Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{Key: missing, IgnoreValue: true}}},
 	}})
 	require.Nil(t, resp)
-	require.Equal(t, codes.NotFound, status.Code(err))
+	require.Equal(t, codes.InvalidArgument, status.Code(err))
+	require.Equal(t, "etcdserver: key not found", status.Convert(err).Message())
 	get, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: mustNotLand})
 	require.NoError(t, err)
 	require.Empty(t, get.Kvs)
@@ -1982,7 +1983,8 @@ func TestPutIgnoreLeaseRequiresExistingKey(t *testing.T) {
 		Key: key, Value: []byte("must-not-create"), IgnoreLease: true,
 	})
 	require.Nil(t, resp)
-	require.Equal(t, codes.NotFound, status.Code(err))
+	require.Equal(t, codes.InvalidArgument, status.Code(err))
+	require.Equal(t, "etcdserver: key not found", status.Convert(err).Message())
 	get, err := server.Range(context.Background(), &etcdserverpb.RangeRequest{Key: key})
 	require.NoError(t, err)
 	require.Empty(t, get.Kvs)

@@ -113,6 +113,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   smoke 通过。TiKV persistence smoke 已直接读取 revision index 和 object
   value，并在 KubeBrain 重启后复读成功。commit-undetermined 和 PD/TiKV
   故障注入仍是 P0 未完成项。
+- **官方 etcd 双端差分**：新增
+  `TestTxnDifferentialAgainstReferenceEtcd`，同一场景分别访问 TiKV-backed
+  KubeBrain 和从 `/root/etcd` 提交 `d947b2086` 构建的参考 server。测试不比较
+  cluster/member ID 或绝对 revision，而是结构化比较相对 revision、响应树、
+  Range header、KV create/mod/version、PrevKV、CountOnly 以及 gRPC
+  code/message，避免把两个独立数据库的预期差异误报为兼容问题。首轮差分发现
+  IgnoreValue/IgnoreLease 目标不存在时 KubeBrain 错误返回 `NotFound` 和自定义
+  文本；已对齐官方
+  `/root/etcd/api/v3rpc/rpctypes/error.go` 的
+  `InvalidArgument: etcdserver: key not found`。修复后的双端差分连续 10 轮通过。
+  该结果只覆盖当前 Txn 场景；Range/DeleteRange 的完整边界、Watch、Lease 和
+  Compact 仍需逐组扩展差分矩阵。
 
 ### P1：通用服务能力
 
