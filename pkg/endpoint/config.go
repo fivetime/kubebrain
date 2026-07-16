@@ -95,6 +95,12 @@ type Config struct {
 	GRPCMaxConnectionAge      time.Duration
 	GRPCMaxConnectionAgeGrace time.Duration
 
+	// TLS policy is shared by client, peer, and info endpoints, matching etcd's
+	// global --tls-min-version/--tls-max-version/--cipher-suites flags.
+	TLSMinVersion string
+	TLSMaxVersion string
+	CipherSuites  []string
+
 	// ClusterMembers is the control-plane supplied KubeBrain service
 	// membership returned by etcd MemberList.
 	ClusterMembers []*etcdserverpb.Member
@@ -140,6 +146,9 @@ type SecurityConfig struct {
 	// CA is the file path of ca's cert
 	CA string
 
+	// CRL is a DER certificate revocation list reloaded for every handshake.
+	CRL string
+
 	// ServerName is used by TLS clients to verify the server certificate.
 	ServerName string
 
@@ -153,6 +162,9 @@ type SecurityConfig struct {
 	clientTlsConfig *tls.Config
 	once            sync.Once
 	err             error
+	minVersion      uint16
+	maxVersion      uint16
+	cipherSuites    []uint16
 }
 
 // Validate checks if config is valid
@@ -181,9 +193,34 @@ func (c *Config) Validate() error {
 	if c.GRPCMaxConnectionAge > 0 && c.GRPCMaxConnectionAgeGrace <= 0 {
 		return fmt.Errorf("grpc max connection age grace must be positive when connection aging is enabled: %s", c.GRPCMaxConnectionAgeGrace)
 	}
+	minVersion, err := parseTLSVersion(c.TLSMinVersion)
+	if err != nil {
+		return err
+	}
+	maxVersion, err := parseTLSVersion(c.TLSMaxVersion)
+	if err != nil {
+		return err
+	}
+	if maxVersion != 0 && minVersion > maxVersion {
+		return fmt.Errorf("min version (%s) is greater than max version (%s)", c.TLSMinVersion, c.TLSMaxVersion)
+	}
+	cipherSuites, err := parseCipherSuites(c.CipherSuites)
+	if err != nil {
+		return err
+	}
+	if minVersion == tls.VersionTLS13 && len(cipherSuites) > 0 {
+		return fmt.Errorf("cipher suites cannot be configured when only TLS1.3 is enabled")
+	}
+	for _, security := range []*SecurityConfig{c.ClientSecurityConfig, c.PeerSecurityConfig, c.InfoSecurityConfig} {
+		if security != nil {
+			security.minVersion = minVersion
+			security.maxVersion = maxVersion
+			security.cipherSuites = append([]uint16(nil), cipherSuites...)
+		}
+	}
 
 	klog.InfoS("validate client security config", c.ClientSecurityConfig.ToKvs()...)
-	err := c.ClientSecurityConfig.validate()
+	err = c.ClientSecurityConfig.validate()
 	if err != nil {
 		klog.ErrorS(err, "invalid client security config")
 		return err
@@ -206,6 +243,84 @@ func (c *Config) Validate() error {
 	return nil
 }
 
+func parseTLSVersion(version string) (uint16, error) {
+	switch version {
+	case "":
+		return 0, nil
+	case "TLS1.2":
+		return tls.VersionTLS12, nil
+	case "TLS1.3":
+		return tls.VersionTLS13, nil
+	default:
+		return 0, fmt.Errorf("unexpected TLS version %q (must be one of: TLS1.2, TLS1.3)", version)
+	}
+}
+
+func parseCipherSuites(names []string) ([]uint16, error) {
+	known := make(map[string]uint16)
+	suites := append([]*tls.CipherSuite(nil), tls.CipherSuites()...)
+	suites = append(suites, tls.InsecureCipherSuites()...)
+	for _, suite := range suites {
+		known[suite.Name] = suite.ID
+	}
+	known["TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305"] = tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256
+	known["TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305"] = tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256
+	result := make([]uint16, len(names))
+	for i, name := range names {
+		id, ok := known[name]
+		if !ok {
+			return nil, fmt.Errorf("unexpected TLS cipher suite %q", name)
+		}
+		result[i] = id
+	}
+	return result, nil
+}
+
+func loadRevocationList(path string) (*x509.RevocationList, error) {
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		return nil, errors.Wrap(err, "can not reload certificate revocation list")
+	}
+	list, err := x509.ParseRevocationList(contents)
+	if err != nil {
+		return nil, errors.Wrap(err, "can not parse certificate revocation list")
+	}
+	return list, nil
+}
+
+func checkRevocationList(path string, certificates []*x509.Certificate) error {
+	list, err := loadRevocationList(path)
+	if err != nil {
+		return err
+	}
+	revoked := make(map[string]struct{}, len(list.RevokedCertificateEntries))
+	for _, entry := range list.RevokedCertificateEntries {
+		revoked[string(entry.SerialNumber.Bytes())] = struct{}{}
+	}
+	for _, certificate := range certificates {
+		serial := certificate.SerialNumber.Bytes()
+		if _, ok := revoked[string(serial)]; ok {
+			return fmt.Errorf("transport: certificate serial %x revoked", serial)
+		}
+	}
+	return nil
+}
+
+func appendCRLVerification(config *tls.Config, path string) {
+	previous := config.VerifyConnection
+	config.VerifyConnection = func(state tls.ConnectionState) error {
+		if previous != nil {
+			if err := previous(state); err != nil {
+				return err
+			}
+		}
+		if len(state.PeerCertificates) == 0 {
+			return nil
+		}
+		return checkRevocationList(path, state.PeerCertificates)
+	}
+}
+
 // ToKvs make config to kvs for klog
 func (sc *SecurityConfig) ToKvs() []interface{} {
 	if sc == nil {
@@ -216,6 +331,7 @@ func (sc *SecurityConfig) ToKvs() []interface{} {
 		"cert", sc.CertFile,
 		"key", sc.KeyFile,
 		"ca", sc.CA,
+		"crl", sc.CRL,
 		"serverName", sc.ServerName,
 		"clientAuth", strconv.FormatBool(sc.ClientAuth),
 	}
@@ -246,6 +362,7 @@ func (sc *SecurityConfig) isInsecure() bool {
 	return sc.CertFile == "" &&
 		sc.KeyFile == "" &&
 		sc.CA == "" &&
+		sc.CRL == "" &&
 		sc.ClientAuth == false
 }
 
@@ -284,13 +401,17 @@ func (sc *SecurityConfig) init() (err error) {
 			return certPool, nil
 		}
 
-		sc.serverTlsConfig = &tls.Config{NextProtos: tlsNextProtos}
+		sc.serverTlsConfig = &tls.Config{
+			NextProtos: tlsNextProtos, MinVersion: sc.minVersion, MaxVersion: sc.maxVersion,
+			CipherSuites: append([]uint16(nil), sc.cipherSuites...),
+		}
 		sc.serverTlsConfig.GetCertificate = func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
 			return loadCertificate()
 		}
 
 		sc.clientTlsConfig = &tls.Config{
-			ServerName: sc.ServerName,
+			ServerName: sc.ServerName, MinVersion: sc.minVersion, MaxVersion: sc.maxVersion,
+			CipherSuites: append([]uint16(nil), sc.cipherSuites...),
 			GetClientCertificate: func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
 				return loadCertificate()
 			},
@@ -344,6 +465,15 @@ func (sc *SecurityConfig) init() (err error) {
 				})
 				return err
 			}
+		}
+		if sc.CRL != "" {
+			if _, err := loadRevocationList(sc.CRL); err != nil {
+				klog.ErrorS(err, "can not load certificate revocation list", "crl", sc.CRL)
+				sc.err = err
+				return
+			}
+			appendCRLVerification(sc.serverTlsConfig, sc.CRL)
+			appendCRLVerification(sc.clientTlsConfig, sc.CRL)
 		}
 
 		if sc.ClientAuth && sc.CA == "" {

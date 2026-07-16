@@ -36,7 +36,7 @@ func newRotationCA(t *testing.T) rotationCA {
 		NotAfter:              time.Now().Add(time.Hour),
 		IsCA:                  true,
 		BasicConstraintsValid: true,
-		KeyUsage:              x509.KeyUsageCertSign,
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
 	}
 	der, err := x509.CreateCertificate(rand.Reader, template, template, key.Public(), key)
 	require.NoError(t, err)
@@ -102,6 +102,31 @@ func writeRotationCA(t *testing.T, path string, cas ...rotationCA) {
 		bundle = append(bundle, ca.pem...)
 	}
 	require.NoError(t, os.WriteFile(path, bundle, 0o600))
+}
+
+func writeRotationCRL(t *testing.T, path string, ca rotationCA, serials ...*big.Int) {
+	t.Helper()
+	entries := make([]x509.RevocationListEntry, 0, len(serials))
+	for _, serial := range serials {
+		entries = append(entries, x509.RevocationListEntry{
+			SerialNumber: new(big.Int).Set(serial), RevocationTime: time.Now(),
+		})
+	}
+	contents, err := x509.CreateRevocationList(rand.Reader, &x509.RevocationList{
+		Number: big.NewInt(time.Now().UnixNano()), ThisUpdate: time.Now().Add(-time.Minute),
+		NextUpdate: time.Now().Add(time.Hour), RevokedCertificateEntries: entries,
+	}, ca.cert, ca.key)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(path, contents, 0o600))
+}
+
+func leafCertificate(t *testing.T, certPath, keyPath string) (tls.Certificate, *x509.Certificate) {
+	t.Helper()
+	certificate, err := tls.LoadX509KeyPair(certPath, keyPath)
+	require.NoError(t, err)
+	leaf, err := x509.ParseCertificate(certificate.Certificate[0])
+	require.NoError(t, err)
+	return certificate, leaf
 }
 
 func TestServerCertificateReloadedForEveryHandshake(t *testing.T) {
@@ -278,4 +303,83 @@ func TestIdentityTLSListenerContinuesAfterRejectedHandshake(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("listener did not accept a valid connection after rejecting a malformed handshake")
 	}
+}
+
+func TestTLSPolicyControlsNegotiatedVersionAndCipher(t *testing.T) {
+	ca := newRotationCA(t)
+	dir := t.TempDir()
+	certPath, keyPath := writeRotationCertificate(t, dir, "server", ca, 701, "rotation.test")
+	security := &SecurityConfig{CertFile: certPath, KeyFile: keyPath}
+	config := &Config{
+		Port: 2379, PeerPort: 2380, TLSMinVersion: "TLS1.3", TLSMaxVersion: "TLS1.3",
+		ClientSecurityConfig: security, PeerSecurityConfig: &SecurityConfig{CertFile: certPath, KeyFile: keyPath},
+	}
+	require.NoError(t, config.Validate())
+	_, _, serverErr, clientErr := tryHandshakeTLS(t, security.getServerTLSConfig(), &tls.Config{
+		InsecureSkipVerify: true, MaxVersion: tls.VersionTLS12,
+	})
+	require.Error(t, serverErr)
+	require.Error(t, clientErr)
+	_, clientState := handshakeTLS(t, security.getServerTLSConfig(), &tls.Config{
+		InsecureSkipVerify: true, MinVersion: tls.VersionTLS13,
+	})
+	require.Equal(t, uint16(tls.VersionTLS13), clientState.Version)
+
+	security = &SecurityConfig{CertFile: certPath, KeyFile: keyPath}
+	config = &Config{
+		Port: 2379, PeerPort: 2380, TLSMinVersion: "TLS1.2", TLSMaxVersion: "TLS1.2",
+		CipherSuites:         []string{"TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256"},
+		ClientSecurityConfig: security, PeerSecurityConfig: &SecurityConfig{CertFile: certPath, KeyFile: keyPath},
+	}
+	require.NoError(t, config.Validate())
+	_, clientState = handshakeTLS(t, security.getServerTLSConfig(), &tls.Config{
+		InsecureSkipVerify: true, MaxVersion: tls.VersionTLS12,
+		CipherSuites: []uint16{tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256},
+	})
+	require.Equal(t, uint16(tls.VersionTLS12), clientState.Version)
+	require.Equal(t, uint16(tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256), clientState.CipherSuite)
+	_, _, serverErr, clientErr = tryHandshakeTLS(t, security.getServerTLSConfig(), &tls.Config{
+		InsecureSkipVerify: true, MaxVersion: tls.VersionTLS12,
+		CipherSuites: []uint16{tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384},
+	})
+	require.Error(t, serverErr)
+	require.Error(t, clientErr)
+}
+
+func TestCertificateRevocationListReloadedForEveryHandshake(t *testing.T) {
+	ca := newRotationCA(t)
+	serverDir := t.TempDir()
+	serverCertPath, serverKeyPath := writeRotationCertificate(t, serverDir, "server", ca, 801, "rotation.test")
+	caPath, crlPath := filepath.Join(serverDir, "ca.crt"), filepath.Join(serverDir, "revoked.crl")
+	writeRotationCA(t, caPath, ca)
+	writeRotationCRL(t, crlPath, ca)
+	security := &SecurityConfig{
+		CertFile: serverCertPath, KeyFile: serverKeyPath, CA: caPath, CRL: crlPath,
+		ServerName: "rotation.test", ClientAuth: true,
+	}
+	require.NoError(t, security.validate())
+
+	clientDir := t.TempDir()
+	clientCertPath, clientKeyPath := writeRotationCertificate(t, clientDir, "client", ca, 802, "rotation.test")
+	clientCertificate, clientLeaf := leafCertificate(t, clientCertPath, clientKeyPath)
+	inboundClient := &tls.Config{
+		Certificates: []tls.Certificate{clientCertificate}, InsecureSkipVerify: true,
+	}
+	handshakeTLS(t, security.getServerTLSConfig(), inboundClient)
+	writeRotationCRL(t, crlPath, ca, clientLeaf.SerialNumber)
+	_, _, serverErr, _ := tryHandshakeTLS(t, security.getServerTLSConfig(), inboundClient)
+	require.ErrorContains(t, serverErr, "revoked")
+
+	serverCertificate, serverLeaf := leafCertificate(t, serverCertPath, serverKeyPath)
+	writeRotationCRL(t, crlPath, ca)
+	handshakeTLS(t, &tls.Config{Certificates: []tls.Certificate{serverCertificate}}, security.getClientTLSConfig())
+	writeRotationCRL(t, crlPath, ca, serverLeaf.SerialNumber)
+	_, _, _, clientErr := tryHandshakeTLS(t,
+		&tls.Config{Certificates: []tls.Certificate{serverCertificate}}, security.getClientTLSConfig())
+	require.ErrorContains(t, clientErr, "revoked")
+
+	require.NoError(t, os.WriteFile(crlPath, []byte("invalid"), 0o600))
+	_, _, _, clientErr = tryHandshakeTLS(t,
+		&tls.Config{Certificates: []tls.Certificate{serverCertificate}}, security.getClientTLSConfig())
+	require.ErrorContains(t, clientErr, "can not parse certificate revocation list")
 }

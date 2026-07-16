@@ -102,6 +102,7 @@ func NewOptions() *KubeBrainOption {
 			// Disabled by default for backward compatibility. Production DBaaS
 			// manifests enable aging so TLS trust retirement has a finite bound.
 			GRPCMaxConnectionAgeGrace: 5 * time.Minute,
+			TLSMinVersion:             "TLS1.2",
 		},
 		// The namespace for KubeBrain-internal coordination keys (leader-election
 		// lock, compact watermark) is a fixed constant, NOT configuration: it is
@@ -131,6 +132,9 @@ func (o *KubeBrainOption) AddFlags(fs *pflag.FlagSet) {
 	fs.IntVar(&o.epsConf.InfoPort, "info-port", o.epsConf.InfoPort, "the port kubebrain listen on for node info")
 	fs.DurationVar(&o.epsConf.GRPCMaxConnectionAge, "grpc-max-connection-age", o.epsConf.GRPCMaxConnectionAge, "Maximum age of a client or peer gRPC connection before GOAWAY; 0 disables. Bounds how long pre-rotation TLS trust remains active.")
 	fs.DurationVar(&o.epsConf.GRPCMaxConnectionAgeGrace, "grpc-max-connection-age-grace", o.epsConf.GRPCMaxConnectionAgeGrace, "Drain window after max connection age before active streams are closed. Must be positive when connection aging is enabled.")
+	fs.StringVar(&o.epsConf.TLSMinVersion, "tls-min-version", o.epsConf.TLSMinVersion, "Minimum TLS version for client, peer, and info endpoints: TLS1.2 or TLS1.3.")
+	fs.StringVar(&o.epsConf.TLSMaxVersion, "tls-max-version", o.epsConf.TLSMaxVersion, "Maximum TLS version for client, peer, and info endpoints: TLS1.2, TLS1.3, or empty for the Go default.")
+	fs.StringSliceVar(&o.epsConf.CipherSuites, "cipher-suites", o.epsConf.CipherSuites, "Comma-separated TLS cipher suite names for client, peer, and info endpoints. TLS 1.3 suites are selected by Go and cannot be configured.")
 	fs.StringSliceVar(&o.SkippedPrefixes, "skip-key-prefix", o.SkippedPrefixes, "skipped key prefix.")
 	fs.StringVar(&o.ClusterName, "cluster-name", o.ClusterName, "cluster name; used ONLY as the metrics 'cluster' tag. For data isolation on a shared storage cluster use --keyspace")
 	fs.StringVar(&o.Keyspace, "keyspace", o.Keyspace, "tenant keyspace on the shared storage cluster ([a-z0-9-], max 64). Every key family (objects, event log, internal metadata, coordination keys) is derived from it, so clusters with different keyspaces on one TiKV cannot see or garbage-collect each other's data. Empty (default) = the original single-tenant keyspace; existing deployments keep their data. All replicas of one cluster MUST agree")
@@ -144,6 +148,8 @@ func (o *KubeBrainOption) AddFlags(fs *pflag.FlagSet) {
 		o.epsConf.ClientSecurityConfig.KeyFile, "Path to the client server ClientTLS key file.")
 	fs.StringVar(&o.epsConf.ClientSecurityConfig.CA, "trusted-ca-file",
 		o.epsConf.ClientSecurityConfig.CA, "Path to the client server ClientTLS trusted CA cert file.")
+	fs.StringVar(&o.epsConf.ClientSecurityConfig.CRL, "client-crl-file",
+		o.epsConf.ClientSecurityConfig.CRL, "Path to a DER client certificate revocation list, reloaded for every handshake.")
 	fs.StringVar(&o.epsConf.ClientSecurityConfig.ServerName, "tls-server-name",
 		o.epsConf.ClientSecurityConfig.ServerName, "Server name used by client TLS verification.")
 	fs.BoolVar(&o.epsConf.ClientSecurityConfig.ClientAuth, "client-cert-auth",
@@ -156,6 +162,8 @@ func (o *KubeBrainOption) AddFlags(fs *pflag.FlagSet) {
 		o.epsConf.PeerSecurityConfig.KeyFile, "Path to the peer server ClientTLS key file.")
 	fs.StringVar(&o.epsConf.PeerSecurityConfig.CA, "peer-trusted-ca-file",
 		o.epsConf.PeerSecurityConfig.CA, "Path to the peer server ClientTLS trusted CA cert file.")
+	fs.StringVar(&o.epsConf.PeerSecurityConfig.CRL, "peer-crl-file",
+		o.epsConf.PeerSecurityConfig.CRL, "Path to a DER peer certificate revocation list, reloaded for every handshake.")
 	fs.StringVar(&o.epsConf.PeerSecurityConfig.ServerName, "peer-tls-server-name",
 		o.epsConf.PeerSecurityConfig.ServerName, "Server name used by peer client TLS verification.")
 	fs.BoolVar(&o.epsConf.PeerSecurityConfig.ClientAuth, "peer-client-cert-auth",
@@ -173,6 +181,8 @@ func (o *KubeBrainOption) AddFlags(fs *pflag.FlagSet) {
 		o.epsConf.InfoSecurityConfig.KeyFile, "Path to the info/metrics server TLS key file.")
 	fs.StringVar(&o.epsConf.InfoSecurityConfig.CA, "info-trusted-ca-file",
 		o.epsConf.InfoSecurityConfig.CA, "Path to the info/metrics server trusted CA cert file.")
+	fs.StringVar(&o.epsConf.InfoSecurityConfig.CRL, "info-crl-file",
+		o.epsConf.InfoSecurityConfig.CRL, "Path to a DER info endpoint client certificate revocation list, reloaded for every handshake.")
 	fs.BoolVar(&o.epsConf.InfoSecurityConfig.ClientAuth, "info-client-cert-auth",
 		o.epsConf.InfoSecurityConfig.ClientAuth, "Require client cert authentication on the info/metrics port.")
 	fs.BoolVar(&o.epsConf.EnablePprof, "enable-pprof",

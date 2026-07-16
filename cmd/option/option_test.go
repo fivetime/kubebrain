@@ -38,6 +38,12 @@ func TestTLSFlagsBindToExpectedSecurityConfigFields(t *testing.T) {
 		"--peer-trusted-ca-file=/peer/ca.crt",
 		"--peer-tls-server-name=kubebrain-peer.kubebrain-system.svc",
 		"--peer-allow-insecure=true",
+		"--client-crl-file=/client/revoked.crl",
+		"--peer-crl-file=/peer/revoked.crl",
+		"--info-crl-file=/info/revoked.crl",
+		"--tls-min-version=TLS1.2",
+		"--tls-max-version=TLS1.2",
+		"--cipher-suites=TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
 		"--grpc-max-connection-age=1h",
 		"--grpc-max-connection-age-grace=5m",
 	}))
@@ -52,6 +58,12 @@ func TestTLSFlagsBindToExpectedSecurityConfigFields(t *testing.T) {
 	require.Equal(t, "/peer/ca.crt", o.epsConf.PeerSecurityConfig.CA)
 	require.Equal(t, "kubebrain-peer.kubebrain-system.svc", o.epsConf.PeerSecurityConfig.ServerName)
 	require.True(t, o.epsConf.PeerSecurityConfig.AllowInsecure)
+	require.Equal(t, "/client/revoked.crl", o.epsConf.ClientSecurityConfig.CRL)
+	require.Equal(t, "/peer/revoked.crl", o.epsConf.PeerSecurityConfig.CRL)
+	require.Equal(t, "/info/revoked.crl", o.epsConf.InfoSecurityConfig.CRL)
+	require.Equal(t, "TLS1.2", o.epsConf.TLSMinVersion)
+	require.Equal(t, "TLS1.2", o.epsConf.TLSMaxVersion)
+	require.Equal(t, []string{"TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256"}, o.epsConf.CipherSuites)
 	require.Equal(t, time.Hour, o.epsConf.GRPCMaxConnectionAge)
 	require.Equal(t, 5*time.Minute, o.epsConf.GRPCMaxConnectionAgeGrace)
 }

@@ -580,14 +580,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   grpc 在 max-age 强关时可能把 GOAWAY+EOF 暴露为 `Unknown`，consumer 必须按最后 revision
   重建 watch、按同一 lease ID 重建 keepalive；新版 client 可透明恢复。控制面应根据最长
   请求/stream 选择 grace，并监控重连/全量 relist 峰值，不能把生产 age 调到 smoke 量级。
+- **TLS A30 TLS policy 与动态 CRL 吊销（2026-07-16）**：对齐 etcd 全局
+  `--tls-min-version`（默认 TLS1.2）、`--tls-max-version`、`--cipher-suites`，统一应用于
+  client/peer/info 的 server 和内部 client；仅接受 TLS1.2/TLS1.3，拒绝 min>max、未知
+  cipher，以及 TLS1.3-only 下配置 Go 不允许定制的 cipher suites。新增 etcd 同名
+  `--client-crl-file`、`--peer-crl-file` 及 info 扩展 `--info-crl-file`：启动预检 DER CRL，
+  每次 handshake 重读，且在正常 chain/hostname 验证后检查所有 presented certificates
+  的 serial；损坏文件 fail closed。单测覆盖 TLS1.2/TLS1.3 negotiation、cipher 匹配/不
+  匹配、入站 client 与出站 server 吊销、CRL 动态替换和 malformed CRL。真实 kind 三副本
+  在 CA/leaf rollover、5s max-age、三 Pod 替换及 201 次 lease+watch 持续写后开启 auth，
+  动态投影新 CRL 吊销一个 `cert-root` 证书：该 serial 被拒绝，而同 CN/同 RBAC 的另一
+  张未吊销证书立即 Put/Get 成功，证明结果来自证书级吊销而非用户权限变化。
 
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
    RBAC、token 生命周期、Watch/Lease 持续鉴权、客户端证书 CN 身份以及真实三副本
    auth+mTLS failover、服务端/内部客户端叶证书热轮换、CA trust pool 双信任窗口与撤旧
-   及真实三副本在线轮换、长连接 drain/reconnect soak 已完成，下一步扩展 CRL/证书吊销
-   和 cipher/TLS version 策略兼容。
+   及真实三副本在线轮换、长连接 drain/reconnect soak、CRL/cipher/TLS version 策略已
+   完成，下一步补独立 outbound client cert/key 与 peer CN/SAN allowlist。
 2. 对已通过的 `client/v3/concurrency` mutex/election/session/failover recipe
    增加 lease 自然过期和长时间 soak。
 3. 建立 DBaaS 控制面契约：创建、扩缩、升级、备份、恢复、证书轮换、销毁。

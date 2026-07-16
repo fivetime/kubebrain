@@ -120,17 +120,53 @@ openssl req -newkey rsa:2048 -nodes \
   -keyout auth-client-next.key -out auth-client-next.csr -config auth-client.conf >/dev/null 2>&1
 openssl x509 -req -in auth-client-next.csr -CA ca-next.crt -CAkey ca-next.key -CAcreateserial -days 1 \
   -out auth-client-next.crt -extensions v3_req -extfile auth-client.conf >/dev/null 2>&1
+openssl req -newkey rsa:2048 -nodes \
+  -keyout auth-client-good.key -out auth-client-good.csr -config auth-client.conf >/dev/null 2>&1
+openssl x509 -req -in auth-client-good.csr -CA ca-next.crt -CAkey ca-next.key -CAcreateserial -days 1 \
+  -out auth-client-good.crt -extensions v3_req -extfile auth-client.conf >/dev/null 2>&1
 cat old-ca.crt ca-next.crt > ca-overlap.crt
+
+make_crl_config() {
+  local name="$1"
+  local ca_cert="$2"
+  local ca_key="$3"
+  : > "index-${name}.txt"
+  echo 1000 > "crlnumber-${name}"
+  echo 1000 > "serial-${name}"
+  mkdir -p "newcerts-${name}"
+  cat > "crl-${name}.conf" <<EOF
+[ca]
+default_ca = CA_default
+[CA_default]
+database = ${workdir}/index-${name}.txt
+new_certs_dir = ${workdir}/newcerts-${name}
+serial = ${workdir}/serial-${name}
+private_key = ${workdir}/${ca_key}
+certificate = ${workdir}/${ca_cert}
+default_md = sha256
+default_crl_days = 1
+crlnumber = ${workdir}/crlnumber-${name}
+EOF
+}
+
+make_crl_config old ca.crt ca.key
+make_crl_config next ca-next.crt ca-next.key
+openssl ca -gencrl -config crl-old.conf -out revoked.pem -batch >/dev/null 2>&1
+openssl crl -in revoked.pem -outform DER -out revoked.crl
+openssl ca -gencrl -config crl-next.conf -out revoked-next.pem -batch >/dev/null 2>&1
+openssl crl -in revoked-next.pem -outform DER -out revoked-next.crl
 
 kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 kubectl -n "$NAMESPACE" create secret generic kubebrain-client-tls \
   --from-file=tls.crt=tls.crt \
   --from-file=tls.key=tls.key \
-  --from-file=ca.crt=ca.crt >/dev/null
+  --from-file=ca.crt=ca.crt \
+  --from-file=revoked.crl=revoked.crl >/dev/null
 kubectl -n "$NAMESPACE" create secret generic kubebrain-peer-tls \
   --from-file=tls.crt=tls.crt \
   --from-file=tls.key=tls.key \
-  --from-file=ca.crt=ca.crt >/dev/null
+  --from-file=ca.crt=ca.crt \
+  --from-file=revoked.crl=revoked.crl >/dev/null
 
 sed \
   -e "s/namespace: kubebrain-system/namespace: ${NAMESPACE}/g" \
@@ -149,6 +185,8 @@ from pathlib import Path
 p = Path("manifest.yaml")
 s = p.read_text()
 s = s.replace("            - --compatible-with-etcd=true\n", "            - --compatible-with-etcd=true\n            - --keyspace=${NAMESPACE}\n")
+s = s.replace("            - --trusted-ca-file=/etc/kubebrain/client-tls/ca.crt\n", "            - --trusted-ca-file=/etc/kubebrain/client-tls/ca.crt\n            - --client-crl-file=/etc/kubebrain/client-tls/revoked.crl\n")
+s = s.replace("            - --peer-trusted-ca-file=/etc/kubebrain/peer-tls/ca.crt\n", "            - --peer-trusted-ca-file=/etc/kubebrain/peer-tls/ca.crt\n            - --peer-crl-file=/etc/kubebrain/peer-tls/revoked.crl\n")
 p.write_text(s)
 PY
 
@@ -220,31 +258,33 @@ assert_client_rejected() {
   status=$?
   set -e
   if [ "$status" -eq 0 ]; then
-    echo "retired client unexpectedly remained trusted after CA cutover" >&2
+    echo "client unexpectedly remained trusted after trust-policy update" >&2
     exit 1
   fi
   local server_logs
   server_logs="$(kubectl -n "$NAMESPACE" logs "$pod" --since-time="$since_time" 2>/dev/null || true)"
   if ! grep -Ei 'rejected TLS connection' <<<"$server_logs" | \
-      grep -Eqi "unknown authority|bad certificate|client didn't provide a certificate"; then
-    echo "retired client failed without a certificate rejection in server logs:" >&2
+      grep -Eqi "unknown authority|bad certificate|client didn't provide a certificate|certificate serial .* revoked"; then
+    echo "client failed without a certificate rejection in server logs:" >&2
     echo "$output" >&2
     cat /tmp/kubebrain-tls-smoke-port-forward.log >&2
     echo "$server_logs" >&2
     exit 1
   fi
-  echo "Retired client certificate rejected after CA cutover"
+  echo "Client certificate rejected by the active trust policy"
 }
 
 apply_tls_secrets() {
   local cert_file="$1"
   local key_file="$2"
   local ca_file="$3"
+  local crl_file="${4:-revoked.crl}"
   for secret in kubebrain-client-tls kubebrain-peer-tls; do
     kubectl -n "$NAMESPACE" create secret generic "$secret" \
       --from-file="tls.crt=${cert_file}" \
       --from-file="tls.key=${key_file}" \
       --from-file="ca.crt=${ca_file}" \
+      --from-file="revoked.crl=${crl_file}" \
       --dry-run=client -o yaml | kubectl apply -f - >/dev/null
   done
 }
@@ -670,7 +710,7 @@ if [ "$RUN_CERT_ROTATION_SMOKE" = "true" ]; then
 
   echo "Removing the old CA from client and peer trust bundles"
   soak_before="$(soak_progress)"
-  apply_tls_secrets tls-next.crt tls-next.key ca-next.crt
+  apply_tls_secrets tls-next.crt tls-next.key ca-next.crt revoked-next.crl
   wait_for_projected_file ca-next.crt /etc/kubebrain/client-tls/ca.crt
   wait_for_projected_file ca-next.crt /etc/kubebrain/peer-tls/ca.crt
   CA_FILE=ca-next.crt CERT_FILE=tls-next.crt KEY_FILE=tls-next.key run_client_smoke
@@ -725,6 +765,17 @@ if [ "$RUN_AUTH_CERT_SMOKE" = "true" ]; then
     sleep 2
     POD_NAME="$pod" run_auth_cert_smoke false
   done
+
+  echo "Revoking the active cert-root certificate without restarting Pods"
+  openssl ca -config crl-next.conf -revoke auth-client-next.crt -batch >/dev/null 2>&1
+  openssl ca -gencrl -config crl-next.conf -out revoked-next.pem -batch >/dev/null 2>&1
+  openssl crl -in revoked-next.pem -outform DER -out revoked-next.crl
+  apply_tls_secrets tls-next.crt tls-next.key ca-next.crt revoked-next.crl
+  wait_for_projected_file revoked-next.crl /etc/kubebrain/client-tls/revoked.crl
+  wait_for_projected_file revoked-next.crl /etc/kubebrain/peer-tls/revoked.crl
+  CA_FILE=ca-next.crt CERT_FILE=auth-client-next.crt KEY_FILE=auth-client-next.key assert_client_rejected
+  CA_FILE=ca-next.crt CERT_FILE=auth-client-good.crt KEY_FILE=auth-client-good.key run_client_smoke
+  echo "CRL revocation smoke completed"
 fi
 
 echo "TLS HA smoke completed"

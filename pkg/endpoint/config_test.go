@@ -136,3 +136,36 @@ func TestGRPCMaxConnectionAgeValidation(t *testing.T) {
 	config.GRPCMaxConnectionAgeGrace = 5 * time.Minute
 	require.NoError(t, config.Validate())
 }
+
+func TestTLSPolicyValidation(t *testing.T) {
+	base := func() *Config {
+		return &Config{
+			Port: 2379, PeerPort: 2380, TLSMinVersion: "TLS1.2",
+			ClientSecurityConfig: &SecurityConfig{}, PeerSecurityConfig: &SecurityConfig{},
+		}
+	}
+
+	config := base()
+	config.TLSMinVersion = "TLS1.1"
+	require.ErrorContains(t, config.Validate(), "unexpected TLS version")
+	config = base()
+	config.TLSMaxVersion = "TLS1.1"
+	require.ErrorContains(t, config.Validate(), "unexpected TLS version")
+	config = base()
+	config.TLSMinVersion, config.TLSMaxVersion = "TLS1.3", "TLS1.2"
+	require.ErrorContains(t, config.Validate(), "greater than max")
+	config = base()
+	config.CipherSuites = []string{"not-a-cipher"}
+	require.ErrorContains(t, config.Validate(), "unexpected TLS cipher suite")
+	config = base()
+	config.TLSMinVersion = "TLS1.3"
+	config.CipherSuites = []string{"TLS_AES_128_GCM_SHA256"}
+	require.ErrorContains(t, config.Validate(), "cannot be configured")
+	config = base()
+	config.TLSMaxVersion = "TLS1.2"
+	config.CipherSuites = []string{"TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256"}
+	require.NoError(t, config.Validate())
+	require.Equal(t, uint16(tls.VersionTLS12), config.ClientSecurityConfig.minVersion)
+	require.Equal(t, uint16(tls.VersionTLS12), config.ClientSecurityConfig.maxVersion)
+	require.Equal(t, []uint16{tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256}, config.PeerSecurityConfig.cipherSuites)
+}
