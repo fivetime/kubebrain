@@ -444,6 +444,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   随机 generation 实现同语义：用户新增/改密码原子创建或轮换，删除时原子移除，
   角色/权限变化保持不变；旧用户首次登录以 CAS 懒迁移且不推进 auth revision，旧版
   revision token 在滚动升级期间仍可验证。修复后完整双端点矩阵通过。
+- **Auth A22 follower 转发故障恢复（2026-07-16）**：真实 Docker 三副本开启
+  auth 后停止 leader，发现新 leader 可写，但另一个 follower 持续拒绝转发。根因是
+  follower 用无凭据 `MemberList` 探测内部 leader 连接，而上游 etcd 与 KubeBrain
+  在 auth enabled 时都要求该 RPC 携带身份；健康连接因此被误判为不可用。现改为
+  检查底层 gRPC/HTTP2 transport Ready，用户请求的 token metadata 仍原样转发，
+  不放松公开 `MemberList` 鉴权。transport 单测、race/vet 通过；同一 TiKV/PD
+  keyspace 上重建三副本、停止当前 leader 后，预故障 token 在两个存活端点均恢复
+  Put/Get，且直接 `etcdctl` 经 follower 写入可由新 leader 读取。
 
 ### P1：通用服务能力
 

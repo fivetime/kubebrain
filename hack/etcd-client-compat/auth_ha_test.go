@@ -50,8 +50,9 @@ func TestAuthTokenSurvivesLeaderFailover(t *testing.T) {
 	raw := os.Getenv("KUBEBRAIN_AUTH_HA_ENDPOINTS")
 	leaderPod := os.Getenv("KUBEBRAIN_AUTH_HA_LEADER_POD")
 	namespace := os.Getenv("KUBEBRAIN_AUTH_HA_NAMESPACE")
-	if raw == "" || leaderPod == "" || namespace == "" {
-		t.Skip("set KUBEBRAIN_AUTH_HA_ENDPOINTS, KUBEBRAIN_AUTH_HA_LEADER_POD, and KUBEBRAIN_AUTH_HA_NAMESPACE")
+	failoverCommand := os.Getenv("KUBEBRAIN_AUTH_HA_FAILOVER_COMMAND")
+	if raw == "" || (failoverCommand == "" && (leaderPod == "" || namespace == "")) {
+		t.Skip("set KUBEBRAIN_AUTH_HA_ENDPOINTS and either KUBEBRAIN_AUTH_HA_FAILOVER_COMMAND or the leader pod/namespace variables")
 	}
 	endpoints := strings.Split(raw, ",")
 	require.GreaterOrEqual(t, len(endpoints), 2)
@@ -61,7 +62,7 @@ func TestAuthTokenSurvivesLeaderFailover(t *testing.T) {
 	authenticated, err := issuer.Authenticate(ctx, "root", "root-secret")
 	require.NoError(t, err)
 
-	command := exec.CommandContext(ctx, "kubectl", "-n", namespace, "delete", "pod", leaderPod, "--wait=false")
+	command := authHAFailoverCommand(ctx, failoverCommand, namespace, leaderPod)
 	output, err := command.CombinedOutput()
 	require.NoError(t, err, string(output))
 
@@ -85,6 +86,13 @@ func TestAuthTokenSurvivesLeaderFailover(t *testing.T) {
 		require.Equal(t, "after-failover", string(get.Kvs[0].Value))
 		require.NoError(t, client.Close())
 	}
+}
+
+func authHAFailoverCommand(ctx context.Context, command, namespace, leaderPod string) *exec.Cmd {
+	if command != "" {
+		return exec.CommandContext(ctx, "sh", "-c", command)
+	}
+	return exec.CommandContext(ctx, "kubectl", "-n", namespace, "delete", "pod", leaderPod, "--wait=false")
 }
 
 func TestAuthTokenSurvivesEnabledRollout(t *testing.T) {
@@ -132,8 +140,9 @@ func TestConcurrentAuthMutationsSurviveLeaderFailover(t *testing.T) {
 	endpoint := os.Getenv("KUBEBRAIN_AUTH_HA_ROLLOUT_ENDPOINT")
 	leaderPod := os.Getenv("KUBEBRAIN_AUTH_HA_LEADER_POD")
 	namespace := os.Getenv("KUBEBRAIN_AUTH_HA_NAMESPACE")
-	if endpoint == "" || leaderPod == "" || namespace == "" {
-		t.Skip("set KUBEBRAIN_AUTH_HA_ROLLOUT_ENDPOINT, KUBEBRAIN_AUTH_HA_LEADER_POD, and KUBEBRAIN_AUTH_HA_NAMESPACE")
+	failoverCommand := os.Getenv("KUBEBRAIN_AUTH_HA_FAILOVER_COMMAND")
+	if endpoint == "" || (failoverCommand == "" && (leaderPod == "" || namespace == "")) {
+		t.Skip("set KUBEBRAIN_AUTH_HA_ROLLOUT_ENDPOINT and either KUBEBRAIN_AUTH_HA_FAILOVER_COMMAND or the leader pod/namespace variables")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
@@ -173,7 +182,7 @@ func TestConcurrentAuthMutationsSurviveLeaderFailover(t *testing.T) {
 	}
 	ready.Wait()
 	close(start)
-	command := exec.CommandContext(ctx, "kubectl", "-n", namespace, "delete", "pod", leaderPod, "--wait=false")
+	command := authHAFailoverCommand(ctx, failoverCommand, namespace, leaderPod)
 	output, err := command.CombinedOutput()
 	require.NoError(t, err, string(output))
 	done.Wait()

@@ -16,6 +16,7 @@ package etcdproxy
 
 import (
 	"context"
+	"net"
 	"sync"
 	"testing"
 	"time"
@@ -23,6 +24,7 @@ import (
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -95,6 +97,22 @@ func TestWaitReadyReturnsUnavailableWhenLeaderConnectionIsNotReady(t *testing.T)
 	require.Error(t, err)
 	require.Equal(t, codes.Unavailable, status.Code(err))
 	require.Less(t, time.Since(start), 4*time.Second)
+}
+
+func TestCheckClientConnUsesTransportReadiness(t *testing.T) {
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	server := grpc.NewServer() // Deliberately exposes no etcd RPC service.
+	go func() { _ = server.Serve(lis) }()
+	t.Cleanup(func() {
+		server.Stop()
+		_ = lis.Close()
+	})
+
+	cli, err := clientv3.New(clientv3.Config{Endpoints: []string{lis.Addr().String()}})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = cli.Close() })
+	require.NoError(t, checkClientConn(cli, nil))
 }
 
 type testLeaderElection struct {

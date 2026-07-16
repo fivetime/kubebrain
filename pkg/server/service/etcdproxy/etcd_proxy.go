@@ -29,6 +29,7 @@ import (
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/status"
 	"k8s.io/klog/v2"
 
@@ -252,11 +253,24 @@ func checkClientConn(client *clientv3.Client, clientErr error) error {
 		return clientErr
 	}
 
-	_, err := client.MemberList(ctx)
-	if err != nil {
-		return err
+	// MemberList and Status require an authenticated identity when auth is
+	// enabled, but this internal forwarding connection intentionally has no
+	// end-user credentials. Probe the HTTP/2 transport instead; forwarded RPCs
+	// still carry the caller's metadata and report service-level failures.
+	conn := client.ActiveConnection()
+	conn.Connect()
+	for {
+		switch conn.GetState() {
+		case connectivity.Ready:
+			return nil
+		case connectivity.Shutdown:
+			return status.Error(codes.Unavailable, "leader connection is shut down")
+		}
+		state := conn.GetState()
+		if !conn.WaitForStateChange(ctx, state) {
+			return ctx.Err()
+		}
 	}
-	return nil
 }
 
 func (e *etcdProxy) readyClient(ctx context.Context) (*clientv3.Client, string, <-chan struct{}, error) {
