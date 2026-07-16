@@ -95,6 +95,10 @@ type Backend interface {
 	InternalRange(ctx context.Context, prefix []byte) (map[string][]byte, error)
 	InternalPut(ctx context.Context, key, value []byte) error
 	InternalDelete(ctx context.Context, key []byte) error
+	// InternalCAS atomically applies service-metadata mutations guarded by their
+	// exact previous values. It does not consume user MVCC revisions or emit
+	// watch events. A guard conflict returns storage.ErrCASFailed.
+	InternalCAS(ctx context.Context, ops []InternalCASOp) error
 
 	// BeginRangeTxn excludes every logical user-key write until unlock. It is
 	// used only for generic etcd transactions with range compares, because TiKV

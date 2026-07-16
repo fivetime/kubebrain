@@ -213,7 +213,9 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
 ### P1：通用服务能力
 
 1. 实现 etcd Auth 用户、角色、key-range 权限和 token 生命周期，并与每实例
-   mTLS 配合。
+   mTLS 配合。详细设计见 `docs/dbaas_auth_design_cn.md`；在管理面、token、
+   unary 数据面和 Watch 持续鉴权全部完成前，AuthEnable 继续明确返回
+   Unimplemented，避免产生“已启用但数据面未保护”的安全假象。
 2. 验证 `client/v3/concurrency` 的 mutex、election、session 失效和 leader
    切换语义。
 3. 建立 DBaaS 控制面契约：创建、扩缩、升级、备份、恢复、证书轮换、销毁。

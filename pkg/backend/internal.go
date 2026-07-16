@@ -9,11 +9,24 @@
 package backend
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"io"
 
 	"github.com/kubewharf/kubebrain/pkg/storage"
 )
+
+// InternalCASOp is one exact-value guarded internal metadata mutation.
+// ExpectedExists=false asserts that Key is absent. Delete=true removes an
+// existing key; deleting an expected-absent key is a guarded no-op.
+type InternalCASOp struct {
+	Key            []byte
+	Value          []byte
+	Expected       []byte
+	ExpectedExists bool
+	Delete         bool
+}
 
 func rawPrefixEnd(prefix []byte) []byte {
 	end := append([]byte(nil), prefix...)
@@ -76,4 +89,63 @@ func (b *backend) InternalDelete(ctx context.Context, key []byte) error {
 		return nil
 	}
 	return err
+}
+
+func (b *backend) InternalCAS(ctx context.Context, ops []InternalCASOp) error {
+	if len(ops) == 0 {
+		return nil
+	}
+	unlock := b.lockLogicalWrite(ctx)
+	defer unlock()
+	if err := b.fenceAdmit(ctx); err != nil {
+		return err
+	}
+
+	type prepared struct {
+		op      InternalCASOp
+		encoded []byte
+		current []byte
+		missing bool
+	}
+	preps := make([]prepared, 0, len(ops))
+	seen := make(map[string]struct{}, len(ops))
+	for _, op := range ops {
+		encoded := b.ks.EncodeInternalKey(op.Key)
+		if _, duplicate := seen[string(encoded)]; duplicate {
+			return errors.New("duplicate internal CAS key")
+		}
+		seen[string(encoded)] = struct{}{}
+
+		current, err := b.kv.Get(ctx, encoded)
+		switch {
+		case errors.Is(err, storage.ErrKeyNotFound):
+			if op.ExpectedExists {
+				return storage.ErrCASFailed
+			}
+			preps = append(preps, prepared{op: op, encoded: encoded, missing: true})
+		case err != nil:
+			return err
+		default:
+			if !op.ExpectedExists || !bytes.Equal(current, op.Expected) {
+				return storage.ErrCASFailed
+			}
+			preps = append(preps, prepared{op: op, encoded: encoded, current: current})
+		}
+	}
+
+	batch := b.kv.BeginBatchWrite()
+	for _, prep := range preps {
+		switch {
+		case prep.missing && prep.op.Delete:
+			// The asserted-absent delete is already satisfied.
+		case prep.missing:
+			batch.PutIfNotExist(prep.encoded, prep.op.Value, 0)
+		case prep.op.Delete:
+			batch.CAS(prep.encoded, []byte{0}, prep.current, 0)
+			batch.Del(prep.encoded)
+		default:
+			batch.CAS(prep.encoded, prep.op.Value, prep.current, 0)
+		}
+	}
+	return batch.Commit(ctx)
 }
