@@ -116,23 +116,26 @@ func TestLeasedPutWritesAttachmentAtomically(t *testing.T) {
 	ctx := context.Background()
 
 	const leaseID int64 = 333003
+	baseRevision := int64(server.backend.GetCurrentRevision())
 	_, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 300, ID: leaseID})
 	require.NoError(t, err)
+	require.Equal(t, baseRevision, int64(server.backend.GetCurrentRevision()))
 
 	key := []byte("/registry/masterleases/1.2.3.4")
 
 	// Leased Put: both the value and the attachment record must exist.
 	putLeased, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("v"), Lease: leaseID})
 	require.NoError(t, err)
+	require.Equal(t, baseRevision+1, putLeased.Header.Revision)
 	require.Eventually(t, func() bool { return server.backend.GetCurrentRevision() >= uint64(putLeased.Header.Revision) }, 5*time.Second, 2*time.Millisecond)
 
 	valResp, err := server.backend.Get(ctx, &etcdserverpb.RangeRequest{Key: key})
 	require.NoError(t, err)
 	require.Len(t, valResp.Kvs, 1)
 
-	attachResp, err := server.backend.Get(ctx, &etcdserverpb.RangeRequest{Key: leaseAttachKey(string(key))})
+	attachValue, err := server.backend.InternalGet(ctx, leaseAttachKey(string(key)))
 	require.NoError(t, err)
-	require.Len(t, attachResp.Kvs, 1, "leased Put must have committed the attachment record atomically with the value")
+	require.Equal(t, []byte("333003"), attachValue, "leased Put must have committed the attachment record atomically with the value")
 
 	// A fresh leader reloads the binding from the durable attachment record.
 	reloaded := New(b, server.metricCli, testPeerService{isLeader: true})
@@ -143,10 +146,10 @@ func TestLeasedPutWritesAttachmentAtomically(t *testing.T) {
 	// Clearing the lease removes the attachment record in the same atomic batch.
 	putClear, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("v2")})
 	require.NoError(t, err)
+	require.Equal(t, putLeased.Header.Revision+1, putClear.Header.Revision)
 	require.Eventually(t, func() bool { return server.backend.GetCurrentRevision() >= uint64(putClear.Header.Revision) }, 5*time.Second, 2*time.Millisecond)
-	attachResp2, err := server.backend.Get(ctx, &etcdserverpb.RangeRequest{Key: leaseAttachKey(string(key))})
-	require.NoError(t, err)
-	require.Len(t, attachResp2.Kvs, 0, "clearing the lease must remove the attachment record")
+	_, err = server.backend.InternalGet(ctx, leaseAttachKey(string(key)))
+	require.Error(t, err, "clearing the lease must remove the attachment record")
 
 	latest, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: key})
 	require.NoError(t, err)

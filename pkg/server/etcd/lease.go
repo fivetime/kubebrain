@@ -247,13 +247,14 @@ func (m *leaseManager) putLeasedAtomic(ctx context.Context, put *etcdserverpb.Pu
 	ops := []backend.TxnWriteOp{{Key: put.Key, Value: put.Value, Lease: put.Lease}}
 	if put.Lease != 0 {
 		ops = append(ops, backend.TxnWriteOp{
-			Key:   leaseAttachKey(userKey),
-			Value: []byte(strconv.FormatInt(put.Lease, 10)),
+			Internal: true,
+			Key:      leaseAttachKey(userKey),
+			Value:    []byte(strconv.FormatInt(put.Lease, 10)),
 		})
 	} else {
 		// Rebind to leaseless: drop the stale attachment in the same batch. A
 		// delete of an absent attachment record is a no-op.
-		ops = append(ops, backend.TxnWriteOp{Delete: true, Key: leaseAttachKey(userKey)})
+		ops = append(ops, backend.TxnWriteOp{Delete: true, Internal: true, Key: leaseAttachKey(userKey)})
 	}
 	_, rev, _, err := m.srv.backend.TxnApply(ctx, ops, nil, make([]bool, len(ops)))
 	if err != nil {
@@ -668,6 +669,17 @@ func (m *leaseManager) loadLeaseRecords(ctx context.Context) ([]leaseRecord, map
 		}
 		attachments[userKey] = id
 	}
+	internalAttachments, err := m.srv.backend.InternalRange(ctx, leaseAttachPrefix)
+	if err != nil {
+		return nil, nil, err
+	}
+	for key, value := range internalAttachments {
+		userKey := key[len(leaseAttachPrefix):]
+		id, perr := strconv.ParseInt(string(value), 10, 64)
+		if perr == nil {
+			attachments[userKey] = id
+		}
+	}
 	return records, attachments, nil
 }
 
@@ -705,6 +717,9 @@ func (m *leaseManager) migrateLegacyLeases(ctx context.Context, ids []int64) {
 		// and every attachment are durable. This prevents a revoked lease from
 		// being resurrected by the compatibility reader on the next leadership.
 		_, _ = m.srv.backend.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{Key: leaseStorageKey(id)})
+		for _, k := range keys {
+			_, _ = m.srv.backend.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{Key: leaseAttachKey(k)})
+		}
 	}
 }
 
@@ -952,18 +967,11 @@ func (m *leaseManager) persistLeaseMeta(ctx context.Context, id, ttl int64) erro
 // full-key-list rewrite (#17). The record is keyed by the user key, which has at
 // most one lease, so a rebind simply overwrites it.
 func (m *leaseManager) attachKeyToStorage(ctx context.Context, id int64, userKey string) error {
-	_, err := m.srv.backend.Put(ctx, &etcdserverpb.PutRequest{
-		Key:   leaseAttachKey(userKey),
-		Value: []byte(strconv.FormatInt(id, 10)),
-	})
-	return err
+	return m.srv.backend.InternalPut(ctx, leaseAttachKey(userKey), []byte(strconv.FormatInt(id, 10)))
 }
 
 func (m *leaseManager) detachKeyFromStorage(ctx context.Context, userKey string) error {
-	_, err := m.srv.backend.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{
-		Key: leaseAttachKey(userKey),
-	})
-	return err
+	return m.srv.backend.InternalDelete(ctx, leaseAttachKey(userKey))
 }
 
 func (m *leaseManager) deleteLeaseState(ctx context.Context, id int64) error {

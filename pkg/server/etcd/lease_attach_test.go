@@ -90,16 +90,16 @@ func TestLeaseAttachPersistsPerKeyNotWholeList(t *testing.T) {
 
 	// Each attach wrote exactly one small per-key attachment record.
 	for _, k := range keys {
-		var r *etcdserverpb.RangeResponse
+		var value []byte
 		require.Eventually(t, func() bool {
-			rr, err := server.backend.Get(ctx, &etcdserverpb.RangeRequest{Key: leaseAttachKey(k)})
-			if err != nil || len(rr.Kvs) != 1 {
+			v, err := server.backend.InternalGet(ctx, leaseAttachKey(k))
+			if err != nil {
 				return false
 			}
-			r = rr
+			value = v
 			return true
 		}, time.Second, 5*time.Millisecond)
-		require.Equal(t, strconv.FormatInt(leaseID, 10), string(r.Kvs[0].Value),
+		require.Equal(t, strconv.FormatInt(leaseID, 10), string(value),
 			"attachment record must point at the lease id")
 	}
 
@@ -119,8 +119,8 @@ func TestLeaseAttachPersistsPerKeyNotWholeList(t *testing.T) {
 	_, err = restored.Put(ctx, &etcdserverpb.PutRequest{Key: []byte(keys[0]), Value: []byte("v2")})
 	require.NoError(t, err)
 	require.Eventually(t, func() bool {
-		r, err := restored.backend.Get(ctx, &etcdserverpb.RangeRequest{Key: leaseAttachKey(keys[0])})
-		return err == nil && len(r.Kvs) == 0
+		_, err := restored.backend.InternalGet(ctx, leaseAttachKey(keys[0]))
+		return err != nil
 	}, time.Second, 5*time.Millisecond)
 
 	restored.stopLeases()
@@ -169,16 +169,16 @@ func TestLegacyLeaseRecordMigratesToAttachments(t *testing.T) {
 
 	// Each legacy key now has its own attachment record.
 	for _, k := range legacyKeys {
-		var r *etcdserverpb.RangeResponse
+		var value []byte
 		require.Eventually(t, func() bool {
-			rr, err := server.backend.Get(ctx, &etcdserverpb.RangeRequest{Key: leaseAttachKey(k)})
-			if err != nil || len(rr.Kvs) != 1 {
+			v, err := server.backend.InternalGet(ctx, leaseAttachKey(k))
+			if err != nil {
 				return false
 			}
-			r = rr
+			value = v
 			return true
 		}, time.Second, 5*time.Millisecond)
-		require.Equal(t, strconv.FormatInt(leaseID, 10), string(r.Kvs[0].Value))
+		require.Equal(t, strconv.FormatInt(leaseID, 10), string(value))
 	}
 
 	// The meta record was rewritten without the inline key list.

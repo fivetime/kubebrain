@@ -38,8 +38,11 @@ var ErrTxnGuardConflict = errors.New("txn compare guard conflict")
 // single-key Delete. Value is the raw (un-enveloped) put value.
 type TxnWriteOp struct {
 	Delete bool
-	Key    []byte
-	Value  []byte
+	// Internal persists service metadata in the tenant-scoped raw keyspace. It
+	// participates in the same storage commit but not user MVCC or watch output.
+	Internal bool
+	Key      []byte
+	Value    []byte
 	// Lease is the lease ID bound to this put's new version (0 if none). It is
 	// inlined into the version's value envelope so the lease is recorded
 	// per-version (review #9). Ignored for deletes.
@@ -126,6 +129,22 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 	// update/delete, its previous value + metadata).
 	for _, op := range ops {
 		p := txnPrep{op: op}
+		if op.Internal {
+			rawKey := b.ks.EncodeInternalKey(op.Key)
+			rv, gerr := b.kv.Get(ctx, rawKey)
+			switch {
+			case errors.Is(gerr, storage.ErrKeyNotFound):
+				p.effective = !op.Delete
+			case gerr != nil:
+				return nil, 0, false, gerr
+			default:
+				p.rvBytes = rv
+				p.effective = true
+				p.prevValue = rv
+			}
+			preps = append(preps, p)
+			continue
+		}
 		revisionKey := b.coder.EncodeRevisionKey(op.Key)
 		rv, gerr := b.kv.Get(ctx, revisionKey)
 		absent, tombstone := false, false
@@ -177,6 +196,9 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 		preps = append(preps, p)
 	}
 	for i := range preps {
+		if preps[i].op.Internal {
+			continue
+		}
 		prepByKey[string(preps[i].op.Key)] = &preps[i]
 	}
 
@@ -225,7 +247,7 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 	// without consuming a revision.
 	hasWrite := false
 	for i := range preps {
-		if preps[i].effective {
+		if preps[i].effective && !preps[i].op.Internal {
 			hasWrite = true
 			break
 		}
@@ -292,6 +314,19 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 		if !p.effective {
 			continue
 		}
+		if p.op.Internal {
+			key := b.ks.EncodeInternalKey(p.op.Key)
+			switch {
+			case p.op.Delete:
+				batch.CAS(key, []byte{0}, p.rvBytes, 0)
+				batch.Del(key)
+			case p.rvBytes == nil:
+				batch.PutIfNotExist(key, p.op.Value, 0)
+			default:
+				batch.CAS(key, p.op.Value, p.rvBytes, 0)
+			}
+			continue
+		}
 		revisionKey := b.coder.EncodeRevisionKey(p.op.Key)
 		objectKey := b.coder.EncodeObjectKey(p.op.Key, newRevision)
 		// Each write stages its event-log entry on the same batch (#45), with the
@@ -353,6 +388,10 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 	for i := range preps {
 		p := &preps[i]
 		res := TxnWriteResult{Key: p.op.Key, Revision: newRevision}
+		if p.op.Internal {
+			results[i] = res
+			continue
+		}
 		if !p.effective {
 			res.Revision = newRevision
 			results[i] = res
@@ -433,7 +472,7 @@ func (b *backend) notifyInvalidTxn(preps []txnPrep, newRevision uint64, cause er
 	invalid := make([]*common.WatchEvent, 0, len(preps))
 	for i := range preps {
 		p := &preps[i]
-		if !p.effective {
+		if !p.effective || p.op.Internal {
 			continue
 		}
 		verb := proto.Event_PUT

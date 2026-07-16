@@ -144,6 +144,27 @@ func TestTxnApplyNoOpDeleteConsumesNoRevision(t *testing.T) {
 	require.Equal(t, before, b.GetCurrentRevision())
 }
 
+func TestTxnApplyCommitsInternalMetadataAtOnlyUserRevision(t *testing.T) {
+	b, ctx := newTxnApplyBackend(t)
+	before := b.GetCurrentRevision()
+	userKey := []byte(prefix + "/reg/leased")
+	internalKey := []byte("leasekeys/" + string(userKey))
+
+	results, rev, err := b.TxnApply(ctx, []TxnWriteOp{
+		{Key: userKey, Value: []byte("value"), Lease: 42},
+		{Internal: true, Key: internalKey, Value: []byte("42")},
+	}, nil)
+	require.NoError(t, err)
+	require.Equal(t, before+1, rev)
+	require.Len(t, results, 2)
+	require.True(t, results[0].Created)
+	require.False(t, results[1].Created)
+	value, err := b.InternalGet(ctx, internalKey)
+	require.NoError(t, err)
+	require.Equal(t, []byte("42"), value)
+	require.Equal(t, rev, b.GetCurrentRevision(), "internal op must not allocate a second revision")
+}
+
 // TestTxnApplyContendedSameKeyRetries drives concurrent TxnApply updates to the
 // SAME key: each must eventually win via the CAS-retry loop (no lost update, no
 // error), and the final version equals the number of writers + 1 (the seed).

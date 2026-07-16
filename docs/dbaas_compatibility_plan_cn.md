@@ -155,6 +155,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   compatibility reader 复活。attachment 尚未切换，leased Put/Delete 仍会多推进
   revision，下一阶段需扩展 TxnApply，使用户 mutation 与 internal attachment 在
   同一 TiKV batch 原子提交、但只为用户 mutation 生成 revision/watch event。
+- **Lease attachment revision 隔离（第二阶段）**：`TxnApply` 支持混合 user
+  MVCC op 与 internal op；internal op 使用同一 TiKV batch 的 CAS/Put/Delete，
+  但不参与 revision、event log、watch 事件和 etcd response。常见 leased Put、
+  rebind 和 clear-lease 路径已切换，Grant `+0`、leased Put `+1`、clear lease
+  Put `+1` 由回归测试固定。standalone attach/detach 也改走 internal KV，因而
+  不再额外推进 revision。恢复同时读取 legacy attachment，并在迁移完整成功后
+  退休旧记录。剩余工作是把 generic txn 的 lease binding 和多键
+  revoke/expiry attachment 清理也收拢到各自用户写的同一原子 batch。
 
 ### P1：通用服务能力
 

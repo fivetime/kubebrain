@@ -63,9 +63,8 @@ func TestOrphanLeaseSweepReconciles(t *testing.T) {
 	server.leaseMu.Unlock()
 
 	// Sanity: the durable attachment record for the orphan still exists.
-	rec, err := server.backend.Get(ctx, &etcdserverpb.RangeRequest{Key: leaseAttachKey(string(orphanKey))})
+	_, err = server.backend.InternalGet(ctx, leaseAttachKey(string(orphanKey)))
 	require.NoError(t, err)
-	require.Len(t, rec.Kvs, 1)
 
 	server.sweepOrphanLeasedKeys(ctx)
 
@@ -73,9 +72,8 @@ func TestOrphanLeaseSweepReconciles(t *testing.T) {
 	gone, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: orphanKey})
 	require.NoError(t, err)
 	require.Len(t, gone.Kvs, 0, "orphaned leased key must be collected by the sweep")
-	recGone, err := server.backend.Get(ctx, &etcdserverpb.RangeRequest{Key: leaseAttachKey(string(orphanKey))})
-	require.NoError(t, err)
-	require.Len(t, recGone.Kvs, 0, "stale attachment record must be reclaimed")
+	_, err = server.backend.InternalGet(ctx, leaseAttachKey(string(orphanKey)))
+	require.Error(t, err, "stale attachment record must be reclaimed")
 
 	// The key bound to a still-live lease is untouched.
 	kept, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: liveKey})
@@ -123,7 +121,6 @@ func TestOrphanLeaseSweepReclaimsStaleRecordButKeepsRebound(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, kept.Kvs, 1, "a rebound/leaseless key must not be deleted by the sweep")
 	require.Equal(t, int64(0), kept.Kvs[0].Lease)
-	rec, err := server.backend.Get(ctx, &etcdserverpb.RangeRequest{Key: leaseAttachKey(string(key))})
-	require.NoError(t, err)
-	require.Len(t, rec.Kvs, 0, "stale attachment record must be reclaimed")
+	_, err = server.backend.InternalGet(ctx, leaseAttachKey(string(key)))
+	require.Error(t, err, "stale attachment record must be reclaimed")
 }
