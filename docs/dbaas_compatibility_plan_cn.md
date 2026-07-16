@@ -287,6 +287,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   root token。测试覆盖缺 root、缺 token Disable、root Disable 和关闭后匿名状态。
   下一步在独立 TiKV keyspace/实例上运行官方 client/v3 auth 生命周期黑盒，不能在
   当前 Kubernetes 共用后端直接 Enable 以免切断 apiserver。
+- **Auth A10 官方客户端真实 TiKV 黑盒（2026-07-16）**：新增 opt-in
+  `TestAuthLifecycle`，只接受显式 `KUBEBRAIN_AUTH_TEST_ENDPOINT`，防止误在 apiserver
+  后端启用认证。使用独立 `auth-e2e-3` keyspace、真实 PD/TiKV 和官方 client/v3
+  完整通过：root/alice bootstrap、Enable、匿名拒绝、允许/拒绝 Put+Get、授权/越权
+  Watch、Lease Grant/绑定/Revoke、root mutation 后 client 自动重新 Authenticate、
+  Disable 后匿名写恢复。黑盒发现并修复内部 rpctypes error 直接穿透时被 gRPC 编码
+  为 Unknown：现由统一 unary/stream interceptor 映射到 etcd `ErrGRPC*`，实测匿名
+  为 InvalidArgument、越权为 PermissionDenied、旧 token 为 Unauthenticated。该问题
+  直接 handler 单测无法发现，证明官方消费端黑盒必须保留。下一步补多副本 token
+  跨 Pod 验证、leader failover 和 Enabled 状态重启恢复，再扩大 auth 差分矩阵。
 
 ### P1：通用服务能力
 

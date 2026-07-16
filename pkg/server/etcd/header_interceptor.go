@@ -16,9 +16,11 @@ package etcd
 
 import (
 	"context"
+	"errors"
 	"hash/crc32"
 
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	"google.golang.org/grpc"
 )
 
@@ -65,11 +67,52 @@ func (s *RPCServer) stampUnary(ctx context.Context, req any, info *grpc.UnarySer
 	if err == nil {
 		stampHeader(resp, s.backend.ClusterID(), s.localMemberID())
 	}
-	return resp, err
+	return resp, authGRPCError(err)
 }
 
 func (s *RPCServer) stampStream(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
-	return handler(srv, &stampedServerStream{ServerStream: ss, s: s})
+	return authGRPCError(handler(srv, &stampedServerStream{ServerStream: ss, s: s}))
+}
+
+func authGRPCError(err error) error {
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, rpctypes.ErrRootUserNotExist):
+		return rpctypes.ErrGRPCRootUserNotExist
+	case errors.Is(err, rpctypes.ErrRootRoleNotExist):
+		return rpctypes.ErrGRPCRootRoleNotExist
+	case errors.Is(err, rpctypes.ErrUserAlreadyExist):
+		return rpctypes.ErrGRPCUserAlreadyExist
+	case errors.Is(err, rpctypes.ErrUserEmpty):
+		return rpctypes.ErrGRPCUserEmpty
+	case errors.Is(err, rpctypes.ErrUserNotFound):
+		return rpctypes.ErrGRPCUserNotFound
+	case errors.Is(err, rpctypes.ErrRoleAlreadyExist):
+		return rpctypes.ErrGRPCRoleAlreadyExist
+	case errors.Is(err, rpctypes.ErrRoleNotFound):
+		return rpctypes.ErrGRPCRoleNotFound
+	case errors.Is(err, rpctypes.ErrRoleEmpty):
+		return rpctypes.ErrGRPCRoleEmpty
+	case errors.Is(err, rpctypes.ErrAuthFailed):
+		return rpctypes.ErrGRPCAuthFailed
+	case errors.Is(err, rpctypes.ErrPermissionDenied):
+		return rpctypes.ErrGRPCPermissionDenied
+	case errors.Is(err, rpctypes.ErrRoleNotGranted):
+		return rpctypes.ErrGRPCRoleNotGranted
+	case errors.Is(err, rpctypes.ErrPermissionNotGranted):
+		return rpctypes.ErrGRPCPermissionNotGranted
+	case errors.Is(err, rpctypes.ErrAuthNotEnabled):
+		return rpctypes.ErrGRPCAuthNotEnabled
+	case errors.Is(err, rpctypes.ErrInvalidAuthToken):
+		return rpctypes.ErrGRPCInvalidAuthToken
+	case errors.Is(err, rpctypes.ErrInvalidAuthMgmt):
+		return rpctypes.ErrGRPCInvalidAuthMgmt
+	case errors.Is(err, rpctypes.ErrAuthOldRevision):
+		return rpctypes.ErrGRPCAuthOldRevision
+	default:
+		return err
+	}
 }
 
 type stampedServerStream struct {
