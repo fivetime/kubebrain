@@ -18,6 +18,8 @@ import (
 	"crypto/tls"
 	"time"
 
+	"go.etcd.io/etcd/api/v3/etcdserverpb"
+
 	"github.com/kubewharf/kubebrain/pkg/server/service"
 	"github.com/kubewharf/kubebrain/pkg/server/service/leader"
 )
@@ -43,6 +45,8 @@ type Config struct {
 	LeaseDuration time.Duration
 	RenewDeadline time.Duration
 	RetryPeriod   time.Duration
+
+	ClusterMembers []*etcdserverpb.Member
 }
 
 func (c Config) getPeerServiceConfig() service.Config {

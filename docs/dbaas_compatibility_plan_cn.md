@@ -38,7 +38,7 @@ Raft、bbolt 和成员管理内部实现，而是对通用 etcd v3 客户端提�
 | Watch | create/cancel/progress/history/prevKV | 兼容核心语义 | P0：用官方客户端做事件完整性、压缩、断线恢复和慢消费者测试 |
 | Lease | grant/revoke/keepalive/ttl/list | 部分兼容 | P0：隔离 lease meta/attachment 的用户 MVCC revision；补并发、故障转移、事务附着及错误矩阵 |
 | Auth | 用户、角色、权限、token | 缺失 | P1：实现 etcd Auth API；DBaaS mTLS/IAM 不能替代客户端期望的 key-range RBAC |
-| Cluster | MemberList | 部分兼容 | 当前仅返回本机与已知 leader；需接 DBaaS 副本注册表后才能安全支持 clientv3 AutoSync 的完整 endpoint 集合 |
+| Cluster | MemberList | 兼容（需配置） | DBaaS 通过 `--initial-cluster` 注入完整 KubeBrain 服务副本；未配置时仅返回本机与 leader 的降级视图，不应启用 AutoSync |
 | Cluster | add/remove/update/promote | 平台替代 | 由 DBaaS 控制面扩缩 KubeBrain、PD、TiKV；RPC 保持明确 Unimplemented |
 | Maintenance | Status | 部分兼容 | P1：返回真实服务身份、版本、leader/revision；容量转到实例指标 |
 | Maintenance | Snapshot | 平台替代 | 使用 TiKV BR/PITR；控制面提供备份、恢复和导出任务，不伪造 etcd snapshot |
@@ -226,6 +226,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   以及 Alarm 状态变更要求 root。鉴权发生在 SyncRead、全 keyspace hash 和平台
   `Unimplemented` 返回之前，普通用户不能触发昂贵维护读，也不能借错误差异探测
   管理操作。匿名、普通用户、root 三类回归及 race 已覆盖。
+- **MemberList/AutoSync（2026-07-16）**：新增与 etcd 同形的
+  `--initial-cluster=name=http[s]://host:peerPort,...`，由 DBaaS 控制面向每个
+  KubeBrain 副本注入相同服务成员配置。启动时严格校验 URL、名称、peer identity
+  唯一性，并要求包含本机 `--advertise-host:peer-port`；MemberList 返回完整集合，
+  ClientURLs 按统一 client port/TLS 模式派生，ClusterId 仍来自 PD/TiKV storage
+  identity，MemberId 对应实际应答副本。未配置时保留本机+leader 降级视图。官方
+  clientv3 `Sync` 回归验证其 endpoint 集合与 MemberList 完全一致。
+  真实验证使用隔离容器网络启动 3 个同端口副本（`172.31.250.11-13:2379`）并
+  共享现有 TiKV/PD：三个 endpoint 均返回同一 3-member 集合和 ClusterID，各自
+  MemberID 对应实际应答副本。停止初始 leader `.11` 后，`.12` 在租约窗口后接任；
+  clientv3 从 `.12` Sync 后仍保留包含离线 `.11` 的静态三端点集合，随后 Put/Get
+  成功，证明 resolver 会选择 ready 副本而不会因配置成员暂时离线失效。
+- **Status DbSize 官方工具兼容（2026-07-16）**：真实三 endpoint 验证发现
+  `/root/etcd` 3.7 的 `etcdctl endpoint status -w table` 会直接计算
+  `DbSizeInUse*100/DbSize`，原有 0/0 使官方工具除零 panic。现返回相等的 1 字节
+  sentinel，表达“无 etcd bbolt fragmentation 可报告”，不伪装 TiKV 容量；真实
+  磁盘、region 和 quota 继续由 TiKV/PD/DBaaS 指标提供。
+  修复镜像在上述三个 endpoint 上执行官方
+  `etcdctl endpoint status -w table` 已正常显示 `1 B / 1 B / 0%`，不再 panic。
 - **Compact 双端差分**：新增 `TestCompactDifferentialAgainstReferenceEtcd`，
   覆盖 logical compaction 成功 header、`revision == compactRev` 边界快照仍可读、
   `revision < compactRev` 返回 ErrCompacted、重复/更旧 compact 返回同一错误、未来

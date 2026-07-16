@@ -79,6 +79,7 @@ type RPCServer struct {
 	// port or TLS, so ClientURLs built from it alone are wrong on both counts.
 	advertiseClientPort  int
 	advertiseClientHTTPS bool
+	staticMembers        []*etcdserverpb.Member
 
 	// The lease subsystem: its state and logic live in leaseManager (lease.go /
 	// lease_manager.go). Embedded so the lease gRPC handlers and the write-path
@@ -163,6 +164,15 @@ func New(backend b.Backend, metricCli metrics.Metrics, peers service.PeerService
 func (s *RPCServer) SetAdvertiseClientInfo(clientPort int, https bool) {
 	s.advertiseClientPort = clientPort
 	s.advertiseClientHTTPS = https
+}
+
+// SetStaticMembers installs the DBaaS control-plane supplied KubeBrain service
+// membership used by MemberList. TiKV/PD membership is deliberately unrelated.
+func (s *RPCServer) SetStaticMembers(members []*etcdserverpb.Member) {
+	s.staticMembers = make([]*etcdserverpb.Member, len(members))
+	for i := range members {
+		s.staticMembers[i] = proto.Clone(members[i]).(*etcdserverpb.Member)
+	}
 }
 
 // Register register etcd grpc service

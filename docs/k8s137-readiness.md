@@ -64,10 +64,10 @@ SVM 仅在**显式创建 SVM CR** 时触发,但 KCM 给它的 client 特批 QPS�
 
 ### clientv3 AutoSync
 
-不要对 KubeBrain 端点开启 clientv3 的 `AutoSyncInterval`(kube-apiserver 默认不开,无需动作):MemberList 最多返回自身与 leader 两个合成 member,Sync 会用它整体覆盖端点列表,缩小客户端的可用端点集合。
+仅在所有副本都配置相同的 `--initial-cluster=name=peerURL,...` 后开启 clientv3 `AutoSyncInterval`;此时 MemberList 返回 DBaaS 控制面注入的完整 KubeBrain 服务副本集合。未配置时仍只回退返回自身与 leader,Sync 会缩小客户端端点集合。
 
 ### 其他
 
-- `etcd_db_total_size_in_bytes`(DbSize)恒为 0(有意:TiKV 容量语义不同)。容量观测走 TiKV/PD 指标带外抓取;依赖 DbSize 的告警会静默,需改造。
+- `etcd_db_total_size_in_bytes`(DbSize)为 1 字节兼容哨兵(TiKV 容量语义不同)。容量观测走 TiKV/PD 指标带外抓取;依赖 DbSize 的告警需改造。
 - 北极星规模(千万级)建议开启 apiserver 的 `ConsistentListFromCacheSkipTimeoutFallback` gate(1.37 Alpha):progress 超时改返 429 而非穿透存储全量 LIST,对存储纯减压。
 - `etcdctl snapshot save` 不支持(Unimplemented);备份走 TiKV 生态(BR)。

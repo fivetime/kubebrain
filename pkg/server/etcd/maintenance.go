@@ -81,16 +81,19 @@ func (s *RPCServer) Status(ctx context.Context, _ *etcdserverpb.StatusRequest) (
 		Leader:           s.memberIDFromAddress(s.peers.GetLeaderInfo()),
 		RaftIndex:        revision,
 		RaftAppliedIndex: revision,
-		// DbSize is intentionally 0: it exists in etcd to warn before the hard
+		// DbSize uses a 1-byte compatibility sentinel: it exists in etcd to warn before the hard
 		// --quota-backend-bytes NOSPACE cliff (and to drive defrag). The TiKV
 		// backend has no per-logical-DB quota (it scales horizontally), so that
 		// semantics does not apply and a synthesized number would only invite
-		// etcd-style false quota alarms. Real capacity is observed out of band:
+		// etcd-style false quota alarms. Zero is not usable either: etcdctl 3.7's
+		// endpoint-status table divides DbSizeInUse by DbSize and panics on zero.
+		// Equal 1-byte sentinels report 0% fragmentation without pretending to
+		// measure TiKV capacity. Real capacity is observed out of band:
 		// TiKV/PD's own metrics (store disk, region count) for bytes, and
 		// KubeBrain's count_index.keys gauge for object count. See
 		// docs/observability_cn.md.
-		DbSize:      0,
-		DbSizeInUse: 0,
+		DbSize:      1,
+		DbSizeInUse: 1,
 		Errors:      nil,
 		IsLearner:   false,
 	}, nil

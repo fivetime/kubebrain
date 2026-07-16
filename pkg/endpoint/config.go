@@ -23,6 +23,8 @@ import (
 	"sync"
 	"time"
 
+	"go.etcd.io/etcd/api/v3/etcdserverpb"
+
 	"github.com/pkg/errors"
 	"k8s.io/klog/v2"
 
@@ -86,6 +88,10 @@ type Config struct {
 	LeaseDuration time.Duration
 	RenewDeadline time.Duration
 	RetryPeriod   time.Duration
+
+	// ClusterMembers is the control-plane supplied KubeBrain service
+	// membership returned by etcd MemberList.
+	ClusterMembers []*etcdserverpb.Member
 }
 
 func (c *Config) getServerConfig() server.Config {
@@ -98,10 +104,11 @@ func (c *Config) getServerConfig() server.Config {
 		// client port + plaintext peer port), leaving the proxy permanently
 		// not-ready: every follower historical read Unavailable, every count a
 		// full-scan fallback (review #51).
-		ClientTLS:     c.ClientSecurityConfig.getClientTLSConfig(),
-		LeaseDuration: c.LeaseDuration,
-		RenewDeadline: c.RenewDeadline,
-		RetryPeriod:   c.RetryPeriod,
+		ClientTLS:      c.ClientSecurityConfig.getClientTLSConfig(),
+		LeaseDuration:  c.LeaseDuration,
+		RenewDeadline:  c.RenewDeadline,
+		RetryPeriod:    c.RetryPeriod,
+		ClusterMembers: c.ClusterMembers,
 	}
 }
 

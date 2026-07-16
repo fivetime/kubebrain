@@ -33,9 +33,9 @@ KubeBrain 已内置**标准 Prometheus** 指标(真 registry + `promhttp.Handler
 - **watch-cache 冻结**:apiserver 侧 `Too large resource version` / `Unable to sync caches`(进度通知已修,应为 0);KubeBrain 侧 `watch.collector.stalled` > 0。
 - **版本膨胀**:`count_index.keys` 长期单调上涨且无压缩回落 → 检查 apiserver 压缩循环是否正常(KubeBrain 自身不自动压缩)。
 
-## DbSize 为什么是 0(而不是 bug)
+## DbSize 为什么是 1 字节哨兵(而不是真实容量)
 
-`Maintenance.Status.DbSize`/`DbSizeInUse` **有意为 0**。etcd 的 DbSize 之所以重要,是因为 etcd 有硬配额(`--quota-backend-bytes`,超了变只读 NOSPACE)→ 需在撞墙前告警 + defrag。**TiKV 没有单库配额**(横向扩展),这套语义不适用;合成一个数只会招致 etcd 式的假配额告警(比 0 更糟)。
+`Maintenance.Status.DbSize`/`DbSizeInUse` **有意返回相等的 1 字节哨兵**。etcd 的 DbSize 之所以重要,是因为 etcd 有硬配额(`--quota-backend-bytes`,超了变只读 NOSPACE)→ 需在撞墙前告警 + defrag。**TiKV 没有单逻辑库 bbolt 配额**,这套语义不适用;合成容量会制造假配额告警。不能返回 0,因为官方 etcdctl 3.7 的 `endpoint status -w table` 会计算 `DbSizeInUse/DbSize` 并除零 panic。1/1 只表达“无 etcd fragmentation 可报告”,不表示实际占用。
 
 - **要字节/磁盘水位** → 抓 **TiKV/PD 自己的 Prometheus 指标**(store size、region count)。
 - **要对象数** → KubeBrain 的 `count_index.keys`(便宜、现成)。

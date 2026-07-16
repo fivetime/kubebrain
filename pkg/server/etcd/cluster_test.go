@@ -16,6 +16,7 @@ package etcd
 
 import (
 	"context"
+	"sort"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -56,6 +57,56 @@ func TestMemberListClientURLUsesAdvertisedClientPortAndScheme(t *testing.T) {
 	require.Equal(t, "https://[2001:db8::1]:3379", server.clientURLFromAddress("[2001:db8::1]:2380"))
 	// Unparseable identity falls back rather than emitting a mangled URL.
 	require.Equal(t, "http://test-peer", server.clientURLFromAddress("test-peer"))
+}
+
+func TestParseInitialClusterAndMemberList(t *testing.T) {
+	members, err := ParseInitialCluster(
+		"kb-2=http://10.0.0.2:2380,kb-1=http://10.0.0.1:2380,kb-3=http://[2001:db8::3]:2380",
+		2379, true,
+	)
+	require.NoError(t, err)
+	require.Len(t, members, 3)
+
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	server.SetStaticMembers(members)
+	resp, err := server.MemberList(context.Background(), &etcdserverpb.MemberListRequest{})
+	require.NoError(t, err)
+	require.Len(t, resp.Members, 3)
+
+	names := make([]string, 0, 3)
+	clientURLs := make([]string, 0, 3)
+	for _, member := range resp.Members {
+		names = append(names, member.Name)
+		clientURLs = append(clientURLs, member.ClientURLs...)
+	}
+	sort.Strings(names)
+	sort.Strings(clientURLs)
+	require.Equal(t, []string{"kb-1", "kb-2", "kb-3"}, names)
+	require.Equal(t, []string{
+		"https://10.0.0.1:2379", "https://10.0.0.2:2379", "https://[2001:db8::3]:2379",
+	}, clientURLs)
+
+	resp.Members[0].Name = "mutated"
+	again, err := server.MemberList(context.Background(), &etcdserverpb.MemberListRequest{})
+	require.NoError(t, err)
+	for _, member := range again.Members {
+		require.NotEqual(t, "mutated", member.Name)
+	}
+}
+
+func TestParseInitialClusterRejectsInvalidConfiguration(t *testing.T) {
+	for _, spec := range []string{
+		"missing-url",
+		"a=10.0.0.1:2380",
+		"a=http://10.0.0.1",
+		"a=http://10.0.0.1:2380/path",
+		"a=http://10.0.0.1:2380,a=http://10.0.0.2:2380",
+		"a=http://10.0.0.1:2380,b=http://10.0.0.1:2380",
+	} {
+		_, err := ParseInitialCluster(spec, 2379, false)
+		require.Error(t, err, "spec %q", spec)
+	}
 }
 
 func TestMemberMutationIsUnsupported(t *testing.T) {

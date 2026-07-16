@@ -17,6 +17,7 @@ package option
 import (
 	"context"
 	"fmt"
+	"hash/crc32"
 	"net"
 	"strings"
 	"time"
@@ -29,6 +30,7 @@ import (
 	"github.com/kubewharf/kubebrain/pkg/endpoint"
 	imetrics "github.com/kubewharf/kubebrain/pkg/metrics"
 	metrics "github.com/kubewharf/kubebrain/pkg/metrics/prometheus"
+	etcdserver "github.com/kubewharf/kubebrain/pkg/server/etcd"
 	"github.com/kubewharf/kubebrain/pkg/server/service/leader"
 	storagemetrics "github.com/kubewharf/kubebrain/pkg/storage/metrics"
 	"github.com/kubewharf/kubebrain/pkg/util"
@@ -58,7 +60,8 @@ type KubeBrainOption struct {
 	// which picks the lexicographically smallest private IPv4 and therefore
 	// guesses wrong on multi-homed hosts — set this explicitly there. Listeners
 	// still bind all interfaces (:port); this only affects the advertised address.
-	advertiseHost string
+	advertiseHost  string
+	initialCluster string
 
 	storageConfig *storageConfig
 
@@ -127,6 +130,7 @@ func (o *KubeBrainOption) AddFlags(fs *pflag.FlagSet) {
 	fs.StringVar(&o.ClusterName, "cluster-name", o.ClusterName, "cluster name; used ONLY as the metrics 'cluster' tag. For data isolation on a shared storage cluster use --keyspace")
 	fs.StringVar(&o.Keyspace, "keyspace", o.Keyspace, "tenant keyspace on the shared storage cluster ([a-z0-9-], max 64). Every key family (objects, event log, internal metadata, coordination keys) is derived from it, so clusters with different keyspaces on one TiKV cannot see or garbage-collect each other's data. Empty (default) = the original single-tenant keyspace; existing deployments keep their data. All replicas of one cluster MUST agree")
 	fs.StringVar(&o.advertiseHost, "advertise-host", o.advertiseHost, "IP/host advertised to peers as this replica's identity: the leader-election holderIdentity and the address followers dial to reach the leader. Empty = auto-detect (smallest private IPv4), which guesses wrong on multi-homed hosts — REQUIRED there. Listeners still bind all interfaces; this only sets the advertised address. IPv6 must be bracketed, e.g. [2001:db8::1].")
+	fs.StringVar(&o.initialCluster, "initial-cluster", o.initialCluster, "Static KubeBrain service membership exposed by etcd MemberList, in etcd's name=http[s]://host:peerPort comma-separated form. DBaaS deployments should set every replica identically so clientv3 AutoSync retains all endpoints.")
 
 	// security
 	fs.StringVar(&o.epsConf.ClientSecurityConfig.CertFile, "cert-file",
@@ -207,6 +211,27 @@ func (o *KubeBrainOption) Validate() error {
 			return fmt.Errorf("--advertise-host %q is invalid (IPv6 must be bracketed, e.g. [2001:db8::1]): %w", o.advertiseHost, err)
 		}
 	}
+	if o.initialCluster != "" {
+		members, err := etcdserver.ParseInitialCluster(o.initialCluster, o.epsConf.Port, o.epsConf.ClientSecurityConfig.CertFile != "")
+		if err != nil {
+			return fmt.Errorf("--initial-cluster: %w", err)
+		}
+		identity, err := o.buildIdentity()
+		if err != nil {
+			return err
+		}
+		localID := uint64(crc32.ChecksumIEEE([]byte(identity)))
+		found := false
+		for _, member := range members {
+			if member.ID == localID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("--initial-cluster does not contain this replica identity %q", identity)
+		}
+	}
 
 	// kube-apiserver's ConsistentListFromCache (GA in 1.37) blocks a consistent
 	// read on watch progress for a hard-coded 3s before falling back to a full
@@ -261,6 +286,11 @@ func (o *KubeBrainOption) Run(ctx context.Context) error {
 		return err
 	}
 	klog.InfoS("build identity", "identity", identity)
+	members, err := etcdserver.ParseInitialCluster(o.initialCluster, o.epsConf.Port, o.epsConf.ClientSecurityConfig.CertFile != "")
+	if err != nil {
+		return err
+	}
+	o.epsConf.ClusterMembers = members
 
 	kv, err := o.storageConfig.buildStorage()
 	if err != nil {

@@ -64,6 +64,8 @@ func TestMaintenanceBasicDiagnostics(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, Version, statusResp.Version)
 	require.NotNil(t, statusResp.Header)
+	require.EqualValues(t, 1, statusResp.DbSize)
+	require.EqualValues(t, 1, statusResp.DbSizeInUse)
 
 	hashResp, err := server.HashKV(ctx, &etcdserverpb.HashKVRequest{})
 	require.NoError(t, err)

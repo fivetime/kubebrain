@@ -98,6 +98,7 @@ func NewServer(ctx context.Context, backend backend.Backend, metricCli metrics.M
 	// scheme clients actually dial (https iff the client port serves TLS),
 	// instead of the peer identity's http://host:peerPort.
 	s.etcdServer.SetAdvertiseClientInfo(config.ClientPort, config.ClientTLS != nil)
+	s.etcdServer.SetStaticMembers(config.ClusterMembers)
 	s.brainServer = brain.New(ctx, backend, metricCli, peerService)
 	s.leaderElection = election
 	s.peers = peerService
