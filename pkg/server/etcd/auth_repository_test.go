@@ -19,7 +19,7 @@ func TestAuthRepositoryPersistsAndRecoversAtomicSnapshot(t *testing.T) {
 
 	empty, err := repo.load(ctx)
 	require.NoError(t, err)
-	require.Equal(t, authConfig{}, empty.Config)
+	require.Equal(t, authConfig{Revision: initialAuthRevision}, empty.Config)
 
 	user := &authpb.User{Name: []byte("root"), Password: []byte("bcrypt-hash"), Roles: []string{"root"}}
 	role := &authpb.Role{Name: []byte("root"), KeyPermission: []*authpb.Permission{{PermType: authpb.READWRITE, Key: []byte{}, RangeEnd: []byte{0}}}}
@@ -28,7 +28,7 @@ func TestAuthRepositoryPersistsAndRecoversAtomicSnapshot(t *testing.T) {
 		authMutation{Key: authRecordKey(authRolesKey, "root"), Value: role},
 	)
 	require.NoError(t, err)
-	require.EqualValues(t, 1, next.Revision)
+	require.EqualValues(t, 2, next.Revision)
 
 	recovered, err := repo.load(ctx)
 	require.NoError(t, err)

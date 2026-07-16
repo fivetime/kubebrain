@@ -331,6 +331,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `AuthDisable` 实现，启用只持久化 enabled 标记、不推进 auth revision；禁用则通过
   `commitRevision` 推进一次。KubeBrain 原先启用也加一，导致 AuthStatus 与 token
   revision 偏移，现已拆分持久化路径，并回归验证 enable 保持、disable +1。
+- **Auth A17 双端点自动差分（2026-07-16）**：新增 opt-in
+  `TestAuthDifferentialAgainstEtcd`，要求显式提供两个空的 disposable endpoint，
+  使用同一套官方 `client/v3` 请求分别驱动参考 etcd 与 KubeBrain。首批矩阵覆盖
+  内建 root bootstrap、启用 revision、重复授权/角色创建、隐式 root RoleGet、错误
+  凭据、NoPassword 和撤销未授予角色，并逐项比较 gRPC code、文本和 revision。
+- **Auth A18 初始 revision 对齐（2026-07-16）**：首次真实双端点差分发现所有
+  error code/text 一致，但 KubeBrain revision 恒比 etcd 小 1。根因是 etcd
+  `NewAuthStore` 会在空 backend 上先提交初始 revision=1；KubeBrain 原逻辑值为 0。
+  现将缺失配置记录解释为 revision 1，第一次 mutation 仍以 CAS-not-exists 原子创建，
+  后续 revision 与 etcd 完全同序。
 
 ### P1：通用服务能力
 

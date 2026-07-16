@@ -30,7 +30,7 @@ func TestAuthManagerBootstrapPersistsWithIndependentRevision(t *testing.T) {
 	snapshot, err := manager.repo.load(ctx)
 	require.NoError(t, err)
 	require.True(t, snapshot.Config.Enabled)
-	require.EqualValues(t, 3, snapshot.Config.Revision)
+	require.EqualValues(t, 4, snapshot.Config.Revision)
 	require.Equal(t, []string{"root"}, snapshot.Users["root"].Roles)
 	require.NoError(t, bcrypt.CompareHashAndPassword(snapshot.Users["root"].Password, []byte("secret")))
 }

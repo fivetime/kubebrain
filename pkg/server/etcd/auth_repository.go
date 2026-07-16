@@ -21,6 +21,8 @@ var (
 	authRolesKey  = []byte("auth/roles/")
 )
 
+const initialAuthRevision = 1
+
 type authConfig struct {
 	Enabled  bool
 	Revision uint64
@@ -62,7 +64,7 @@ func newAuthRepository(backend BackendShim) *authRepository {
 }
 
 func (r *authRepository) loadConfig(ctx context.Context) (authConfig, error) {
-	config := authConfig{}
+	config := authConfig{Revision: initialAuthRevision}
 	configValue, err := r.backend.InternalGet(ctx, authConfigKey)
 	if err == nil {
 		config, err = decodeAuthConfig(configValue)
@@ -161,7 +163,9 @@ func (r *authRepository) mutateConfig(ctx context.Context, expected authConfig, 
 	next := authConfig{Enabled: enabled, Revision: expected.Revision + 1}
 	ops := make([]backend.InternalCASOp, 0, len(mutations)+1)
 	configOp := backend.InternalCASOp{Key: authConfigKey, Value: encodeAuthConfig(next)}
-	if expected.Revision != 0 || expected.Enabled {
+	// An absent config record represents etcd's initialized revision 1. Every
+	// successful mutation writes revision >= 2, so later snapshots require it.
+	if expected.Revision != initialAuthRevision || expected.Enabled {
 		configOp.ExpectedExists = true
 		configOp.Expected = encodeAuthConfig(expected)
 	}

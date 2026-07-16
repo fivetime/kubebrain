@@ -33,7 +33,7 @@ func TestAuthSnapshotCacheInvalidatesOnPersistedRevision(t *testing.T) {
 
 	initial, err := cache.current(ctx)
 	require.NoError(t, err)
-	require.Zero(t, initial.Config.Revision)
+	require.Equal(t, uint64(initialAuthRevision), initial.Config.Revision)
 
 	require.NoError(t, manager.userAdd(ctx, &etcdserverpb.AuthUserAddRequest{Name: "alice", Password: "secret"}))
 	updated, err := cache.current(ctx)
@@ -55,7 +55,7 @@ func TestAuthRepositoryLoadReturnsSelfConsistentSnapshot(t *testing.T) {
 
 	snapshot, err := newAuthRepository(server.backend).load(ctx)
 	require.NoError(t, err)
-	require.Equal(t, uint64(1), snapshot.Config.Revision)
+	require.Equal(t, uint64(2), snapshot.Config.Revision)
 	require.NotNil(t, snapshot.Users["alice"])
 }
 
@@ -70,7 +70,7 @@ func TestAuthRepositoryRetriesMutationDuringSnapshotLoad(t *testing.T) {
 	hooked.hook = func() { require.NoError(t, manager.roleAdd(ctx, "reader")) }
 	snapshot, err := newAuthRepository(hooked).load(ctx)
 	require.NoError(t, err)
-	require.Equal(t, uint64(2), snapshot.Config.Revision)
+	require.Equal(t, uint64(3), snapshot.Config.Revision)
 	require.NotNil(t, snapshot.Users["alice"])
 	require.NotNil(t, snapshot.Roles["reader"], "load must retry instead of publishing records from mixed auth revisions")
 }
