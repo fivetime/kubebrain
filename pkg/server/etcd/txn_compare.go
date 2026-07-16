@@ -50,9 +50,9 @@ func (s *RPCServer) evalCompareGuarded(ctx context.Context, cmp *etcdserverpb.Co
 	if err != nil {
 		return false, nil, err
 	}
-	var guard *backend.TxnGuard
+	guard := &backend.TxnGuard{Key: cmp.Key, Absent: kv == nil}
 	if kv != nil {
-		guard = &backend.TxnGuard{Key: cmp.Key, Revision: uint64(kv.ModRevision)}
+		guard.Revision = uint64(kv.ModRevision)
 	}
 	return ok, guard, nil
 }

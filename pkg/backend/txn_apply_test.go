@@ -219,6 +219,66 @@ func TestTxnApplyGuard(t *testing.T) {
 	require.Equal(t, "vb", vb, "b must not be overwritten when the guard conflicts")
 }
 
+func TestTxnApplyAbsentGuardOverlappingPut(t *testing.T) {
+	b, ctx := newTxnApplyBackend(t)
+	key := []byte(prefix + "/reg/absent-overlap")
+
+	results, _, err := b.TxnApply(ctx,
+		[]TxnWriteOp{{Key: key, Value: []byte("created")}},
+		[]TxnGuard{{Key: key, Absent: true}})
+	require.NoError(t, err)
+	require.True(t, results[0].Created)
+
+	_, _, err = b.TxnApply(ctx,
+		[]TxnWriteOp{{Key: key, Value: []byte("must-not-overwrite")}},
+		[]TxnGuard{{Key: key, Absent: true}})
+	require.ErrorIs(t, err, ErrTxnGuardConflict)
+	value, _ := liveValue(t, b, ctx, key)
+	require.Equal(t, "created", value)
+}
+
+func TestTxnApplyAbsentGuardDisjointFromWrite(t *testing.T) {
+	b, ctx := newTxnApplyBackend(t)
+	guardKey := []byte(prefix + "/reg/absent-guard")
+	writeKey := []byte(prefix + "/reg/absent-result")
+
+	_, _, err := b.TxnApply(ctx,
+		[]TxnWriteOp{{Key: writeKey, Value: []byte("allowed")}},
+		[]TxnGuard{{Key: guardKey, Absent: true}})
+	require.NoError(t, err)
+
+	created, err := b.Create(ctx, &proto.CreateRequest{Key: guardKey, Value: []byte("now-present")})
+	require.NoError(t, err)
+	require.True(t, created.Succeeded)
+
+	_, _, err = b.TxnApply(ctx,
+		[]TxnWriteOp{{Key: writeKey, Value: []byte("must-not-write")}},
+		[]TxnGuard{{Key: guardKey, Absent: true}})
+	require.ErrorIs(t, err, ErrTxnGuardConflict)
+	value, _ := liveValue(t, b, ctx, writeKey)
+	require.Equal(t, "allowed", value)
+}
+
+func TestTxnApplyAbsentGuardAcceptsTombstone(t *testing.T) {
+	b, ctx := newTxnApplyBackend(t)
+	guardKey := []byte(prefix + "/reg/tombstoned-guard")
+	writeKey := []byte(prefix + "/reg/tombstoned-result")
+
+	created, err := b.Create(ctx, &proto.CreateRequest{Key: guardKey, Value: []byte("old")})
+	require.NoError(t, err)
+	require.True(t, created.Succeeded)
+	deleted, err := b.Delete(ctx, &proto.DeleteRequest{Key: guardKey})
+	require.NoError(t, err)
+	require.True(t, deleted.Succeeded)
+
+	_, _, err = b.TxnApply(ctx,
+		[]TxnWriteOp{{Key: writeKey, Value: []byte("allowed")}},
+		[]TxnGuard{{Key: guardKey, Absent: true}})
+	require.NoError(t, err)
+	value, _ := liveValue(t, b, ctx, writeKey)
+	require.Equal(t, "allowed", value)
+}
+
 // TestTxnApplyConcurrentDistinctKeys stress-tests many concurrent single-key
 // TxnApply calls: every write must land, at a unique revision, with no lost
 // update or stall.

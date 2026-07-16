@@ -883,9 +883,9 @@ func (s *RPCServer) executeGenericTxn(ctx context.Context, txn *etcdserverpb.Txn
 }
 
 // tryAtomicGenericTxn applies the chosen path atomically when it consists solely
-// of distinct-key Put and single-key DeleteRange ops (>= 2 of them, since a
-// single op is already atomic on the sequential path). handled=false means the
-// txn shape is ineligible and the caller must use the sequential fallback.
+// of distinct-key Put and single-key DeleteRange ops. A single write uses this
+// path when compare guards are present, because compare+write must share the
+// same atomic commit. handled=false means the txn shape is ineligible.
 func (s *RPCServer) tryAtomicGenericTxn(ctx context.Context, txn *etcdserverpb.TxnRequest, succeeded bool, guards []backend.TxnGuard) (*etcdserverpb.TxnResponse, bool, error) {
 	ops := txn.Success
 	if !succeeded {
@@ -928,19 +928,8 @@ func (s *RPCServer) tryAtomicGenericTxn(ctx context.Context, txn *etcdserverpb.T
 			return nil, false, nil
 		}
 	}
-	if len(writeOps) < 2 {
+	if len(writeOps) < 2 && len(guards) == 0 {
 		return nil, false, nil
-	}
-	// A compared key that is also written is guarded by its own write CAS, but its
-	// guard revision (from the compare read) and its write's expected revision
-	// (from TxnApply's pre-read) could diverge; rather than reconcile that, drop
-	// to the sequential path when compare and write keys overlap.
-	applyGuards := guards[:0:0]
-	for _, g := range guards {
-		if _, written := seen[string(g.Key)]; written {
-			return nil, false, nil
-		}
-		applyGuards = append(applyGuards, g)
 	}
 	// Validate all put leases up front: an atomic txn must reject as a whole if a
 	// referenced lease is missing, never apply a prefix of its writes.
@@ -952,7 +941,7 @@ func (s *RPCServer) tryAtomicGenericTxn(ctx context.Context, txn *etcdserverpb.T
 		}
 	}
 
-	responses, rev, results, err := s.backend.TxnApply(ctx, writeOps, applyGuards, prevKv)
+	responses, rev, results, err := s.backend.TxnApply(ctx, writeOps, guards, prevKv)
 	if err != nil {
 		return nil, true, err
 	}

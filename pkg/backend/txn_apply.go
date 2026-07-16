@@ -46,13 +46,14 @@ type TxnWriteOp struct {
 	Lease int64
 }
 
-// TxnGuard asserts that a compared key is still live at exactly Revision when the
-// txn commits — an optimistic-concurrency guard that makes the compare and the
-// writes serializable (#4 Tier 2). Guard keys MUST be disjoint from the write
-// keys (a compared-and-written key is guarded by its own write CAS).
+// TxnGuard asserts that a compared key is either still live at exactly Revision,
+// or still absent when Absent is true. Absence includes a missing revision key
+// and a tombstoned revision key. This closes the create-between-compare-and-
+// commit window for Version/CreateRevision(key)==0 transactions.
 type TxnGuard struct {
 	Key      []byte
 	Revision uint64
+	Absent   bool
 }
 
 // TxnWriteResult is the outcome of one TxnWriteOp, all sharing the txn Revision.
@@ -107,8 +108,16 @@ type txnPrep struct {
 	meta      EtcdMetadata
 }
 
+type txnGuardPrep struct {
+	guard   TxnGuard
+	key     []byte
+	rvBytes []byte
+	missing bool
+}
+
 func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []TxnGuard) (results []TxnWriteResult, newRevision uint64, retry bool, err error) {
 	preps := make([]txnPrep, 0, len(ops))
+	prepByKey := make(map[string]*txnPrep, len(ops))
 	baseRevision := b.GetCurrentRevision()
 
 	// Phase 1: read each key's current revision-key state (and, for
@@ -165,6 +174,50 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 		}
 		preps = append(preps, p)
 	}
+	for i := range preps {
+		prepByKey[string(preps[i].op.Key)] = &preps[i]
+	}
+
+	// Validate guards that overlap write keys against the write pre-read. The
+	// write's own CAS then protects that exact state through commit, avoiding a
+	// second operation on the same revision key in the batch.
+	for _, g := range guards {
+		if p := prepByKey[string(g.Key)]; p != nil {
+			if g.Absent {
+				if !p.create {
+					return nil, 0, false, ErrTxnGuardConflict
+				}
+			} else if p.create || p.curRev != g.Revision {
+				return nil, 0, false, ErrTxnGuardConflict
+			}
+		}
+	}
+	guardPreps := make([]txnGuardPrep, 0, len(guards))
+	for _, g := range guards {
+		if prepByKey[string(g.Key)] != nil {
+			continue
+		}
+		gp := txnGuardPrep{guard: g, key: b.coder.EncodeRevisionKey(g.Key)}
+		rv, gerr := b.kv.Get(ctx, gp.key)
+		if errors.Is(gerr, storage.ErrKeyNotFound) {
+			gp.missing = true
+			if !g.Absent {
+				return nil, 0, false, ErrTxnGuardConflict
+			}
+		} else if gerr != nil {
+			return nil, 0, false, gerr
+		} else {
+			curRev, tombstone, perr := coder.ParseRevision(rv)
+			if perr != nil {
+				return nil, 0, false, perr
+			}
+			if (g.Absent && !tombstone) || (!g.Absent && (tombstone || curRev != g.Revision)) {
+				return nil, 0, false, ErrTxnGuardConflict
+			}
+			gp.rvBytes = rv
+		}
+		guardPreps = append(guardPreps, gp)
+	}
 
 	// No effective write (e.g. all deletes on absent keys): return no-op results
 	// without consuming a revision.
@@ -212,13 +265,23 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 	// takes precedence over merely re-applying a write.
 	batch := b.kv.BeginBatchWrite()
 	guardKeys := make(map[string]struct{}, len(guards))
+	for _, gp := range guardPreps {
+		guardKeys[string(gp.key)] = struct{}{}
+		if gp.missing {
+			// Assert absence without leaving a marker. PutIfNotExist establishes a
+			// transactional read/write conflict; the following delete removes the
+			// temporary value in the same atomic batch.
+			batch.PutIfNotExist(gp.key, []byte{0}, 0)
+			batch.Del(gp.key)
+			continue
+		}
+		// A no-op CAS protects either the exact tombstone or the live revision.
+		batch.CAS(gp.key, gp.rvBytes, gp.rvBytes, 0)
+	}
 	for _, g := range guards {
-		gk := b.coder.EncodeRevisionKey(g.Key)
-		guardKeys[string(gk)] = struct{}{}
-		// no-op CAS: assert the key is still live at exactly g.Revision (an 8-byte
-		// live revision value); any update/delete/compaction changes the bytes.
-		revBytes := uint64ToBytes(g.Revision)
-		batch.CAS(gk, revBytes, revBytes, 0)
+		if prepByKey[string(g.Key)] != nil {
+			guardKeys[string(b.coder.EncodeRevisionKey(g.Key))] = struct{}{}
+		}
 	}
 	newRevLive := uint64ToBytes(newRevision)
 	newRevDeleted := append(uint64ToBytes(newRevision), 0)
