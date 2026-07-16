@@ -196,7 +196,8 @@ func (m *leaseManager) LeaseKeepAlive(stream etcdserverpb.Lease_LeaseKeepAliveSe
 
 func (m *leaseManager) LeaseTimeToLive(ctx context.Context, req *etcdserverpb.LeaseTimeToLiveRequest) (*etcdserverpb.LeaseTimeToLiveResponse, error) {
 	m.srv.metricCli.EmitCounter("lease.ttl", 1)
-	if _, err := m.srv.authCallerFromContext(ctx); err != nil {
+	caller, err := m.srv.authCallerFromContext(ctx)
+	if err != nil {
 		return nil, err
 	}
 	// A follower's lease state is a stale snapshot: the leader advances deadlines
@@ -208,6 +209,16 @@ func (m *leaseManager) LeaseTimeToLive(ctx context.Context, req *etcdserverpb.Le
 			return m.srv.peers.LeaseTimeToLive(forwardAuthToken(ctx), req)
 		}
 		return nil, err
+	}
+	// Match etcd's checkLeaseTimeToLive: lease metadata is visible to an
+	// authenticated caller, but asking for attached keys requires READ permission
+	// on every key. Otherwise TTL(Keys=true) leaks protected key names.
+	if req.Keys {
+		for _, key := range m.keysForLease(req.ID) {
+			if err := caller.require([]byte(key), nil, authpb.READ); err != nil {
+				return nil, err
+			}
+		}
 	}
 
 	m.leaseMu.Lock()
@@ -235,7 +246,8 @@ func (m *leaseManager) LeaseTimeToLive(ctx context.Context, req *etcdserverpb.Le
 
 func (m *leaseManager) LeaseLeases(ctx context.Context, req *etcdserverpb.LeaseLeasesRequest) (*etcdserverpb.LeaseLeasesResponse, error) {
 	m.srv.metricCli.EmitCounter("lease.leases", 1)
-	if _, err := m.srv.authCallerFromContext(ctx); err != nil {
+	caller, err := m.srv.authCallerFromContext(ctx)
+	if err != nil {
 		return nil, err
 	}
 	// See LeaseTimeToLive: a follower must not enumerate leases from its stale
@@ -245,6 +257,20 @@ func (m *leaseManager) LeaseLeases(ctx context.Context, req *etcdserverpb.LeaseL
 			return m.srv.peers.LeaseLeases(forwardAuthToken(ctx), req)
 		}
 		return nil, err
+	}
+	// etcd authorizes LeaseLeases against every key attached to every returned
+	// lease. Do the full preflight before constructing the response so callers
+	// cannot infer inaccessible lease IDs or key ownership.
+	m.leaseMu.Lock()
+	keys := make([]string, 0, len(m.keyLeaseIndex))
+	for key := range m.keyLeaseIndex {
+		keys = append(keys, key)
+	}
+	m.leaseMu.Unlock()
+	for _, key := range keys {
+		if err := caller.require([]byte(key), nil, authpb.READ); err != nil {
+			return nil, err
+		}
 	}
 
 	m.leaseMu.Lock()

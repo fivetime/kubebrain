@@ -22,6 +22,12 @@ func TestAuthLeaseRequiresCallerAndProtectsBoundKeys(t *testing.T) {
 
 	_, err = server.LeaseRevoke(ctx, &etcdserverpb.LeaseRevokeRequest{ID: lease.ID})
 	require.ErrorIs(t, err, rpctypes.ErrPermissionDenied)
+	_, err = server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: lease.ID})
+	require.NoError(t, err, "TTL without attached keys does not reveal protected key names")
+	_, err = server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: lease.ID, Keys: true})
+	require.ErrorIs(t, err, rpctypes.ErrPermissionDenied)
+	_, err = server.LeaseLeases(ctx, &etcdserverpb.LeaseLeasesRequest{})
+	require.ErrorIs(t, err, rpctypes.ErrPermissionDenied)
 	stored, err := server.backend.Get(plain, &etcdserverpb.RangeRequest{Key: []byte("/denied/leased")})
 	require.NoError(t, err)
 	require.Len(t, stored.Kvs, 1, "denied lease revoke must not delete protected keys")
@@ -33,5 +39,5 @@ func TestAuthLeaseRequiresCallerAndProtectsBoundKeys(t *testing.T) {
 	_, err = server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: allowed.ID})
 	require.NoError(t, err)
 	_, err = server.LeaseLeases(ctx, &etcdserverpb.LeaseLeasesRequest{})
-	require.NoError(t, err)
+	require.ErrorIs(t, err, rpctypes.ErrPermissionDenied, "one inaccessible attached key denies the all-leases listing like etcd")
 }
