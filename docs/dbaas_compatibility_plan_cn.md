@@ -194,6 +194,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   key 与 durable lease meta 均保留；修复前该后台路径因 context 无 epoch 而 fail-open。
   当前源码重建后，真实 TiKV/PD 上 Lease/Txn/Range/DeleteRange/Compact 官方
   client/v3 双端差分共同通过。
+- **Watch 控制流与 fragmentation（2026-07-16）**：对照
+  `/root/etcd/server/etcdserver/api/v3rpc/watch.go` 与 `storage/mvcc/watcher.go`，
+  补齐 stream-scoped 客户端指定 `watch_id`、重复 ID 拒绝、未知 ID cancel 静默
+  忽略、显式 cancel 空 `CancelReason`，以及负 `start_revision` 以流内
+  `Created+Canceled/WatchId=-1` 响应而不关闭复用 stream。新增 raw gRPC 双向流
+  差分，同一控制序列访问真实 TiKV-backed KubeBrain 和参考 etcd，响应逐字段
+  一致。`fragment=true` 现按 etcd 默认 `1.5 MiB + 512 KiB overhead` 切分多事件
+  response，中间片 `Fragment=true`、末片 false；事件顺序和 header/revision 保持。
+  完整 Watch 测试、race、server 回归与 vet 通过。
 - **Compact 双端差分**：新增 `TestCompactDifferentialAgainstReferenceEtcd`，
   覆盖 logical compaction 成功 header、`revision == compactRev` 边界快照仍可读、
   `revision < compactRev` 返回 ErrCompacted、重复/更旧 compact 返回同一错误、未来

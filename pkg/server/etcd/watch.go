@@ -44,6 +44,8 @@ var (
 	watcherID int64
 )
 
+const defaultWatchFragmentBytes = 2 * 1024 * 1024
+
 // watcher correspond to one stream, one watcher has many watches
 type watcher struct {
 	sync.Mutex
@@ -62,11 +64,6 @@ type watcher struct {
 
 	metricCli metrics.Metrics
 }
-
-var (
-	// one watch is one watch request
-	watchID int64
-)
 
 // watch correspond to one watch request
 type watch struct {
@@ -148,10 +145,15 @@ func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) error {
 		if r := msg.GetCreateRequest(); r != nil {
 			r = normalizeWatchCreateRequest(r)
 			if r.StartRevision < 0 {
-				// A negative start revision was the legacy signal that overloaded
-				// Watch into a range stream. That is now the native KV.RangeStream
-				// RPC (kv.go), so reject the overload rather than silently mis-serving.
-				return status.Errorf(codes.InvalidArgument, "watch: invalid negative start revision %d", r.StartRevision)
+				// etcd treats a negative start revision as an immediately canceled
+				// create, while keeping the multiplexed stream usable for later watches.
+				if err := w.Send(&etcdserverpb.WatchResponse{
+					Header: txnHeader(int64(s.backend.GetPublishedRevision())), WatchId: -1,
+					Created: true, Canceled: true, CancelReason: rpctypes.ErrCompacted.Error(),
+				}); err != nil {
+					return err
+				}
+				continue
 			}
 			caller, authErr := s.authCallerFromContext(ws.Context())
 			if authErr == nil {
@@ -178,7 +180,7 @@ func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) error {
 		} else if cancelRequest := msg.GetCancelRequest(); cancelRequest != nil {
 			s.metricCli.EmitCounter("watch.client.cancel", 1)
 			klog.InfoS("receive watch cancel request", "id", w.id, "watchID", cancelRequest.GetWatchId())
-			w.Cancel(msg.GetCancelRequest().WatchId, nil, false)
+			w.CancelRequest(msg.GetCancelRequest().WatchId)
 		} else if msg.GetProgressRequest() != nil {
 			s.metricCli.EmitCounter("watch.progress.request", 1)
 			// Kick one immediate marker fan-out so the watermark converges NOW
@@ -261,7 +263,33 @@ func watchAuthCancelReason(err error) string {
 func (w *watcher) Start(c context.Context, r *etcdserverpb.WatchCreateRequest) {
 	w.Lock()
 	ctx, cancel := context.WithCancel(c)
-	id := atomic.AddInt64(&watchID, 1)
+	id := r.WatchId
+	if id == 0 {
+		// Watch IDs are scoped to one stream. Match etcd's zero-indexed allocator
+		// and skip IDs explicitly reserved by earlier create requests.
+		for id = 0; ; id++ {
+			if _, exists := w.watches[id]; !exists {
+				break
+			}
+		}
+	} else if _, exists := w.watches[id]; exists {
+		w.Unlock()
+		cancel()
+		_ = w.Send(&etcdserverpb.WatchResponse{
+			Header: txnHeader(int64(w.backend.GetPublishedRevision())), WatchId: -1,
+			Created: true, Canceled: true, CancelReason: "mvcc: duplicate watch ID provided on the WatchStream",
+		})
+		return
+	}
+	if len(r.RangeEnd) != 0 && bytes.Compare(r.Key, r.RangeEnd) >= 0 {
+		w.Unlock()
+		cancel()
+		_ = w.Send(&etcdserverpb.WatchResponse{
+			Header: txnHeader(int64(w.backend.GetPublishedRevision())), WatchId: -1,
+			Created: true, Canceled: true, CancelReason: "mvcc: watcher range is empty",
+		})
+		return
+	}
 
 	// Seed syncedRev with the revision the watch is guaranteed to be caught up
 	// through before any event is delivered: StartRevision-1 for a historical
@@ -321,12 +349,22 @@ func (w *watcher) Start(c context.Context, r *etcdserverpb.WatchCreateRequest) {
 }
 
 func (w *watcher) Cancel(id int64, err error, compact bool) {
+	w.cancel(id, err, compact, false)
+}
+
+func (w *watcher) CancelRequest(id int64) {
+	w.cancel(id, nil, false, true)
+}
+
+func (w *watcher) cancel(id int64, err error, compact, clientRequest bool) {
 	klog.InfoS("watch cancel", "watcher", w.id, "watch", id, "err", err, "compact", compact)
 	var tags []metrics.T
 	tags = append(tags, metrics.Tag("compact", strconv.FormatBool(compact)))
 	w.metricCli.EmitCounter("watch.cancel", 1, tags...)
 	w.Lock()
+	found := false
 	if c, ok := w.watches[id]; ok {
+		found = true
 		klog.InfoS("cancel context", "watcher", w.id, "watch", id, "start", c.start, "end", c.end)
 		if c.cancel != nil {
 			c.cancel()
@@ -334,6 +372,12 @@ func (w *watcher) Cancel(id int64, err error, compact bool) {
 		delete(w.watches, id)
 	}
 	w.Unlock()
+	// etcd silently ignores a client cancellation for an unknown watch ID. An
+	// internal cancellation always names a live watch (or carries an error), so
+	// retaining its response behavior is safe.
+	if !found && clientRequest {
+		return
+	}
 	// if compact is true, apiserver reflector watch will return with err, which will trigger re-list & re-watch (detail in etcd/clientv3/watch.go watchGrpcStream.run)
 	// else, apiserver reflector watch will return nil, which will trigger re-watch
 	var compactRevision int64
@@ -348,6 +392,9 @@ func (w *watcher) Cancel(id int64, err error, compact bool) {
 		}
 	}
 	cancelReason := "watch closed"
+	if clientRequest {
+		cancelReason = ""
+	}
 	if err != nil {
 		cancelReason = err.Error()
 	}
@@ -491,7 +538,12 @@ func (w *watcher) Watch(ctx context.Context, id int64, r *etcdserverpb.WatchCrea
 			}
 			w.metricCli.EmitGauge("watch.watch_stream.push", watchResponse.Header.Revision)
 			w.metricCli.EmitHistogram("watch.watch_stream.push.size", proto.Size(watchResponse))
-			if sendErr = w.Send(watchResponse); sendErr != nil {
+			if r.Fragment {
+				sendErr = sendWatchFragments(watchResponse, defaultWatchFragmentBytes, w.Send)
+			} else {
+				sendErr = w.Send(watchResponse)
+			}
+			if sendErr != nil {
 				w.metricCli.EmitCounter("watch.watch_stream.push.err", 1)
 				klog.ErrorS(sendErr, "[watch stream] watch send err, cancel", "watcher", w.id, "watch", id)
 				w.Cancel(id, sendErr, false)
@@ -532,6 +584,34 @@ func (w *watcher) Watch(ctx context.Context, id int64, r *etcdserverpb.WatchCrea
 			}
 		}
 	}
+}
+
+func sendWatchFragments(response *etcdserverpb.WatchResponse, maxBytes int, send func(*etcdserverpb.WatchResponse) error) error {
+	if proto.Size(response) < maxBytes || len(response.Events) < 2 {
+		return send(response)
+	}
+	for offset := 0; offset < len(response.Events); {
+		fragment := &etcdserverpb.WatchResponse{
+			Header: response.Header, WatchId: response.WatchId, Created: response.Created,
+			Canceled: response.Canceled, CompactRevision: response.CompactRevision,
+			CancelReason: response.CancelReason, Fragment: true,
+		}
+		for offset < len(response.Events) {
+			fragment.Events = append(fragment.Events, response.Events[offset])
+			if len(fragment.Events) > 1 && proto.Size(fragment) >= maxBytes {
+				fragment.Events = fragment.Events[:len(fragment.Events)-1]
+				break
+			}
+			offset++
+		}
+		if offset == len(response.Events) {
+			fragment.Fragment = false
+		}
+		if err := send(fragment); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func isWatchCompactedError(err error) bool {

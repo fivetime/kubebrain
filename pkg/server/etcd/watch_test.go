@@ -25,10 +25,12 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/mvccpb"
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+	gproto "google.golang.org/protobuf/proto"
 
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
 	"github.com/kubewharf/kubebrain/pkg/server/service/etcdproxy"
@@ -232,6 +234,82 @@ func TestNormalizeWatchCreateRequestMatchesEtcd(t *testing.T) {
 			t.Fatalf("range end length = %d, want 0", len(req.RangeEnd))
 		}
 	})
+}
+
+func TestWatchRequestedIDDuplicateAndUnknownCancelMatchEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	stream := &fakeWatchServer{ctx: context.Background()}
+	w := &watcher{
+		backend: server.backend, watchServer: stream, grpcServer: server,
+		watches: make(map[int64]*watch), metricCli: server.metricCli,
+	}
+
+	w.Start(context.Background(), &etcdserverpb.WatchCreateRequest{Key: []byte("/watch/id"), WatchId: 42})
+	require.NotEmpty(t, stream.sent)
+	require.True(t, stream.sent[0].Created)
+	require.Equal(t, int64(42), stream.sent[0].WatchId)
+
+	w.Start(context.Background(), &etcdserverpb.WatchCreateRequest{Key: []byte("/watch/duplicate"), WatchId: 42})
+	require.Len(t, stream.sent, 2)
+	require.True(t, stream.sent[1].Created)
+	require.True(t, stream.sent[1].Canceled)
+	require.Equal(t, int64(-1), stream.sent[1].WatchId)
+	require.Equal(t, "mvcc: duplicate watch ID provided on the WatchStream", stream.sent[1].CancelReason)
+
+	w.CancelRequest(999)
+	require.Len(t, stream.sent, 2, "etcd silently ignores cancellation of an unknown watch ID")
+	w.CancelRequest(42)
+	w.wg.Wait()
+}
+
+func TestNegativeWatchRevisionCancelsCreateWithoutClosingStream(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	stream := &scriptedWatchServer{
+		fakeWatchServer: &fakeWatchServer{ctx: context.Background()},
+		reqs: []*etcdserverpb.WatchRequest{
+			{RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{CreateRequest: &etcdserverpb.WatchCreateRequest{Key: []byte("/watch/negative"), StartRevision: -1}}},
+			{RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{CreateRequest: &etcdserverpb.WatchCreateRequest{Key: []byte("/watch/next"), WatchId: 71}}},
+		},
+	}
+	require.ErrorIs(t, server.Watch(stream), context.Canceled)
+	require.GreaterOrEqual(t, len(stream.sent), 2)
+	require.True(t, stream.sent[0].Created)
+	require.True(t, stream.sent[0].Canceled)
+	require.Equal(t, int64(-1), stream.sent[0].WatchId)
+	require.Equal(t, rpctypes.ErrCompacted.Error(), stream.sent[0].CancelReason)
+	require.True(t, stream.sent[1].Created)
+	require.False(t, stream.sent[1].Canceled)
+	require.Equal(t, int64(71), stream.sent[1].WatchId)
+}
+
+func TestSendWatchFragmentsMatchesEtcdFlags(t *testing.T) {
+	response := &etcdserverpb.WatchResponse{
+		Header:  &etcdserverpb.ResponseHeader{Revision: 12},
+		WatchId: 7,
+		Events: []*mvccpb.Event{
+			{Kv: &mvccpb.KeyValue{Key: []byte("a"), Value: make([]byte, 80)}},
+			{Kv: &mvccpb.KeyValue{Key: []byte("b"), Value: make([]byte, 80)}},
+			{Kv: &mvccpb.KeyValue{Key: []byte("c"), Value: make([]byte, 80)}},
+		},
+	}
+	var fragments []*etcdserverpb.WatchResponse
+	require.NoError(t, sendWatchFragments(response, 140, func(resp *etcdserverpb.WatchResponse) error {
+		fragments = append(fragments, gproto.Clone(resp).(*etcdserverpb.WatchResponse))
+		return nil
+	}))
+	require.Greater(t, len(fragments), 1)
+	var keys [][]byte
+	for i, fragment := range fragments {
+		require.Equal(t, int64(7), fragment.WatchId)
+		require.Equal(t, int64(12), fragment.Header.Revision)
+		require.Equal(t, i < len(fragments)-1, fragment.Fragment)
+		for _, event := range fragment.Events {
+			keys = append(keys, event.Kv.Key)
+		}
+	}
+	require.Equal(t, [][]byte{[]byte("a"), []byte("b"), []byte("c")}, keys)
 }
 
 func TestCancelCompactedWatchResponseUsesBackendCompactRevisionAndErrorReason(t *testing.T) {
