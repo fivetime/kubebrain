@@ -44,6 +44,7 @@ var leaseAttachPrefix = []byte("\x00kubebrain/leasekeys/")
 const leaseExpiryRetryInterval = time.Second
 const latestRestoreRevision = int64(^uint64(0) >> 1)
 const maxLeaseTTL = int64(9000000000)
+const minLeaseTTL = int64(2)
 
 // leaseRecord is the per-lease meta record. Keys is written only by pre-#17
 // (legacy monolithic) records and is still read on restore for a one-time
@@ -64,11 +65,12 @@ func (m *leaseManager) LeaseGrant(ctx context.Context, req *etcdserverpb.LeaseGr
 		}
 		return nil, err
 	}
-	if req.TTL <= 0 {
-		return nil, leaseNotFound(req.ID)
-	}
 	if req.TTL > maxLeaseTTL {
 		return nil, status.Error(codes.OutOfRange, "etcdserver: too large lease TTL")
+	}
+	ttl := req.TTL
+	if ttl < minLeaseTTL {
+		ttl = minLeaseTTL
 	}
 
 	id := req.ID
@@ -84,8 +86,8 @@ func (m *leaseManager) LeaseGrant(ctx context.Context, req *etcdserverpb.LeaseGr
 
 	st := &leaseState{
 		id:       id,
-		ttl:      req.TTL,
-		deadline: time.Now().Add(time.Duration(req.TTL) * time.Second),
+		ttl:      ttl,
+		deadline: time.Now().Add(time.Duration(ttl) * time.Second),
 		keys:     make(map[string]struct{}),
 	}
 	m.scheduleLeaseLocked(st)
@@ -100,7 +102,7 @@ func (m *leaseManager) LeaseGrant(ctx context.Context, req *etcdserverpb.LeaseGr
 	return &etcdserverpb.LeaseGrantResponse{
 		Header: txnHeader(int64(m.srv.backend.GetCurrentRevision())),
 		ID:     id,
-		TTL:    req.TTL,
+		TTL:    ttl,
 	}, nil
 }
 

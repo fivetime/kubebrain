@@ -220,6 +220,20 @@ func TestLeaseGrantDuplicateAndTooLargeTTLMatchEtcdErrors(t *testing.T) {
 	require.Contains(t, err.Error(), "etcdserver: too large lease TTL")
 }
 
+func TestLeaseGrantClampsSmallTTLLikeEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	for i, ttl := range []int64{-1, 0, 1, 2} {
+		resp, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: ttl, ID: int64(5100 + i)})
+		require.NoError(t, err)
+		require.Equal(t, minLeaseTTL, resp.TTL)
+		ttlResp, err := server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: resp.ID})
+		require.NoError(t, err)
+		require.Equal(t, minLeaseTTL, ttlResp.GrantedTTL)
+	}
+}
+
 func TestLeaseMetaDoesNotAdvanceKVRevisionAndRestores(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

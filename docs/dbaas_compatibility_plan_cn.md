@@ -176,6 +176,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   revoke 后 key 消失及未知 lease `TTL=-1`。同时修复 Grant/TTL/KeepAlive/Leases
   的空 Header.Revision；真实 TiKV 部署上 Lease/Range/DeleteRange/Txn 四组差分
   共同连续 10 轮通过。
+- **Lease 最小 TTL**：对照 etcd lessor 与真实 3.7 server 确认，TTL 小于
+  默认 `minLeaseTTL` 时不是报错，而是提升为 2 秒。KubeBrain 现对负数、0、1
+  和 2 都返回实际 granted TTL=2，并以该值持久化、调度 expiry；差分矩阵加入
+  TTL=0 Grant/Revoke，真实 TiKV 上连续 10 轮通过。
 
 ### P1：通用服务能力
 

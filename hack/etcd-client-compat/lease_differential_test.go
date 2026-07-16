@@ -25,6 +25,7 @@ type leaseDifferentialResult struct {
 	KeyAfterRevoke    int
 	UnknownRevision   int64
 	UnknownTTL        int64
+	MinimumGrantedTTL int64
 }
 
 func TestLeaseDifferentialAgainstReferenceEtcd(t *testing.T) {
@@ -74,6 +75,10 @@ func runLeaseDifferentialScenario(t *testing.T, endpoint, instance string) lease
 	require.NoError(t, err)
 	unknown, err := cli.TimeToLive(ctx, grant.ID)
 	require.NoError(t, err)
+	minimum, err := cli.Grant(ctx, 0)
+	require.NoError(t, err)
+	_, err = cli.Revoke(ctx, minimum.ID)
+	require.NoError(t, err)
 
 	return leaseDifferentialResult{
 		GrantRevision:     grant.ResponseHeader.Revision - baseRev,
@@ -89,5 +94,6 @@ func runLeaseDifferentialScenario(t *testing.T, endpoint, instance string) lease
 		KeyAfterRevoke:    len(after.Kvs),
 		UnknownRevision:   unknown.ResponseHeader.Revision - baseRev,
 		UnknownTTL:        unknown.TTL,
+		MinimumGrantedTTL: minimum.TTL,
 	}
 }
