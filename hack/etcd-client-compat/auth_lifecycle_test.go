@@ -50,6 +50,9 @@ func TestAuthLifecycle(t *testing.T) {
 	require.NoError(t, err)
 	_, err = bootstrap.AuthEnable(ctx)
 	require.NoError(t, err)
+	status, err := bootstrap.AuthStatus(ctx)
+	require.NoError(t, err)
+	require.True(t, status.Enabled)
 
 	_, err = bootstrap.Put(ctx, "/allowed/anonymous", "denied")
 	require.ErrorIs(t, err, rpctypes.ErrUserEmpty)

@@ -56,9 +56,6 @@ func (s *RPCServer) authAdminSnapshot(ctx context.Context) (*authSnapshot, error
 }
 
 func (s *RPCServer) AuthStatus(ctx context.Context, _ *etcdserverpb.AuthStatusRequest) (*etcdserverpb.AuthStatusResponse, error) {
-	if _, err := s.authCallerFromContext(ctx); err != nil {
-		return nil, err
-	}
 	snapshot, err := s.tokens.snapshots.current(ctx)
 	if err != nil {
 		return nil, err

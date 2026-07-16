@@ -89,9 +89,10 @@ func TestAuthRPCEnabledAdminAndSelfRules(t *testing.T) {
 	require.NoError(t, err)
 	rootCtx := metadata.NewIncomingContext(plain, metadata.Pairs(rpctypes.TokenFieldNameGRPC, rootAuth.Token))
 
-	_, err = server.AuthStatus(plain, &etcdserverpb.AuthStatusRequest{})
-	require.ErrorIs(t, err, rpctypes.ErrUserEmpty)
-	statusResp, err := server.AuthStatus(aliceCtx, &etcdserverpb.AuthStatusRequest{})
+	statusResp, err := server.AuthStatus(plain, &etcdserverpb.AuthStatusRequest{})
+	require.NoError(t, err)
+	require.True(t, statusResp.Enabled)
+	statusResp, err = server.AuthStatus(aliceCtx, &etcdserverpb.AuthStatusRequest{})
 	require.NoError(t, err)
 	require.True(t, statusResp.Enabled)
 	self, err := server.UserGet(aliceCtx, &etcdserverpb.AuthUserGetRequest{Name: "alice"})

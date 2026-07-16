@@ -308,6 +308,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   namespace、endpoint 和 leader pod 环境变量，默认跳过 destructive failover。
   下一步对照参考 etcd 扩展 auth 错误/幂等/密码和 permission 边界差分，并测试
   多副本并发 Auth mutation 的 CAS 串行化。
+- **Auth A12 匿名状态查询对齐（2026-07-16）**：使用 `/root/etcd/bin/etcd`
+  与官方 `etcdctl` 实测确认，认证启用后 `AuthStatus` 仍是公开 RPC，可匿名读取
+  `Enabled` 和 `AuthRevision`；KubeBrain 原实现错误地要求 token。现已移除该鉴权，
+  handler 回归测试与官方 `client/v3` 生命周期黑盒均覆盖启用后的匿名查询。
 
 ### P1：通用服务能力
 
