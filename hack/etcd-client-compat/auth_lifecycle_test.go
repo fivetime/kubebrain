@@ -38,8 +38,6 @@ func TestAuthLifecycle(t *testing.T) {
 
 	_, err := bootstrap.UserAdd(ctx, "root", "root-secret")
 	require.NoError(t, err)
-	_, err = bootstrap.RoleAdd(ctx, "root")
-	require.NoError(t, err)
 	_, err = bootstrap.UserGrantRole(ctx, "root", "root")
 	require.NoError(t, err)
 	_, err = bootstrap.UserAdd(ctx, "alice", "alice-secret")

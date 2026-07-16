@@ -318,6 +318,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `InvalidArgument/AuthFailed`。KubeBrain 现已拆分两条路径；非法 base64
   `hashed_password` 也与 etcd store 一样归入前者。内部、gRPC 和官方客户端三层
   测试固定该兼容行为。
+- **Auth A14 内建 root 角色对齐（2026-07-16）**：etcd 的标准 bootstrap 是
+  `UserAdd(root)`、`UserGrantRole(root, root)`、`AuthEnable`，无需先创建 root 角色
+  对象。对照 `/root/etcd/server/auth/store.go` 与真实 etcd 后，KubeBrain 现仅对
+  特殊角色名 `root` 绕过角色存在检查，启用时只要求 root 用户持有该角色；普通
+  角色仍必须先创建。官方 `client/v3` 生命周期已改为标准三步流程。
 
 ### P1：通用服务能力
 

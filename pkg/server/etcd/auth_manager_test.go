@@ -123,3 +123,13 @@ func TestAuthManagerBootstrapErrors(t *testing.T) {
 	require.NoError(t, manager.userGrantRole(ctx, "alice", "reader"))
 	require.NoError(t, manager.userGrantRole(ctx, "alice", "reader"), "grant role must be idempotent")
 }
+
+func TestAuthManagerRootRoleIsImplicit(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	manager := newAuthManager(server.backend)
+	ctx := context.Background()
+	require.NoError(t, manager.userAdd(ctx, &etcdserverpb.AuthUserAddRequest{Name: "root", Password: "secret"}))
+	require.NoError(t, manager.userGrantRole(ctx, "root", "root"))
+	require.NoError(t, manager.enable(ctx))
+}

@@ -47,6 +47,21 @@ func TestAuthEnableValidatesBootstrapAndDisableRequiresRoot(t *testing.T) {
 	require.False(t, statusResp.Enabled)
 }
 
+func TestAuthEnableUsesImplicitEtcdRootRole(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	require.NoError(t, server.auth.userAdd(ctx, &etcdserverpb.AuthUserAddRequest{Name: "root", Password: "secret"}))
+	require.NoError(t, server.auth.userGrantRole(ctx, "root", "root"))
+	_, err := server.AuthEnable(ctx, &etcdserverpb.AuthEnableRequest{})
+	require.NoError(t, err)
+	authenticated, err := server.Authenticate(ctx, &etcdserverpb.AuthenticateRequest{Name: "root", Password: "secret"})
+	require.NoError(t, err)
+	rootCtx := metadata.NewIncomingContext(ctx, metadata.Pairs(rpctypes.TokenFieldNameGRPC, authenticated.Token))
+	_, err = server.UserAdd(rootCtx, &etcdserverpb.AuthUserAddRequest{Name: "alice", Password: "secret"})
+	require.NoError(t, err)
+}
+
 func TestAuthRPCBootstrapAndEnabledSafetyBoundary(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

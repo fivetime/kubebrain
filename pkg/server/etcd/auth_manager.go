@@ -95,7 +95,7 @@ func (m *authManager) userGrantRole(ctx context.Context, username, roleName stri
 		if user == nil {
 			return rpctypes.ErrUserNotFound
 		}
-		if snapshot.Roles[roleName] == nil {
+		if roleName != "root" && snapshot.Roles[roleName] == nil {
 			return rpctypes.ErrRoleNotFound
 		}
 		for _, existing := range user.Roles {
@@ -130,7 +130,7 @@ func (m *authManager) enable(ctx context.Context) error {
 				break
 			}
 		}
-		if !hasRoot || snapshot.Roles["root"] == nil {
+		if !hasRoot {
 			return rpctypes.ErrRootRoleNotExist
 		}
 		_, err := m.repo.mutateConfig(ctx, snapshot.Config, true)
