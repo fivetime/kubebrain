@@ -549,15 +549,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   handshake 重读客户端 key pair。这样 Kubernetes Secret/projected volume 更新后无需
   重启 Pod；即使客户端不发送 SNI（例如只按 IP 校验证书）也会触发 reload。测试以同一
   CA 连续替换不同 serial/CN 的证书，证明入站和出站连接均看到新叶证书；损坏的替换
-  文件在下一次 handshake 明确失败，不会静默继续使用旧身份。CA trust pool 仍在启动时
-  固定，CA 双信任窗口和撤旧 CA 语义留待下一增量。
+  文件在下一次 handshake 明确失败，不会静默继续使用旧身份。
+- **TLS A27 CA trust pool 双信任窗口与撤旧（2026-07-16）**：为 DBaaS Secret
+  轮换补齐无需重启的 CA rollover。入站 listener 在每个 ClientHello 重读 `ClientCAs`
+  并克隆不可变基础配置；出站 follower/peer 因 Go TLS 没有 RootCAs callback，改在每个
+  handshake 的 `VerifyConnection` 重读 roots，并显式执行完整 x509 chain、intermediate
+  和 DNS name 校验。测试覆盖 `旧 CA -> 旧+新 bundle -> 新 CA`：overlap 阶段新旧
+  client/server chain 均可连接，撤旧后旧 chain 被拒绝、新 chain 保持可用；错误 hostname
+  和损坏 CA 文件也必须拒绝，不能回退缓存 trust。已建立的 TLS/HTTP2 长连接不会被主动
+  中断，撤旧在下一次 reconnect 生效，控制面需先发布 overlap bundle、轮换 leaf，再撤旧。
 
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
    RBAC、token 生命周期、Watch/Lease 持续鉴权、客户端证书 CN 身份以及真实三副本
-   auth+mTLS failover、服务端/内部客户端叶证书热轮换已完成，下一步做 CA trust pool
-   双信任窗口与客户端身份 CA 轮换。
+   auth+mTLS failover、服务端/内部客户端叶证书热轮换、CA trust pool 双信任窗口与撤旧
+   已完成，下一步做真实三副本在线轮换和长连接 drain/reconnect 验证。
 2. 对已通过的 `client/v3/concurrency` mutex/election/session/failover recipe
    增加 lease 自然过期和长时间 soak。
 3. 建立 DBaaS 控制面契约：创建、扩缩、升级、备份、恢复、证书轮换、销毁。

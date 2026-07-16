@@ -18,7 +18,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
-	"io/ioutil"
+	"os"
 	"strconv"
 	"sync"
 	"time"
@@ -257,6 +257,17 @@ func (sc *SecurityConfig) init() (err error) {
 			}
 			return &cert, nil
 		}
+		loadCertPool := func() (*x509.CertPool, error) {
+			caFileBytes, err := os.ReadFile(sc.CA)
+			if err != nil {
+				return nil, errors.Wrap(err, "can not reload CA cert")
+			}
+			certPool := x509.NewCertPool()
+			if !certPool.AppendCertsFromPEM(caFileBytes) {
+				return nil, fmt.Errorf("can not reload CA cert: no certificates found in %s", sc.CA)
+			}
+			return certPool, nil
+		}
 
 		sc.serverTlsConfig = &tls.Config{NextProtos: tlsNextProtos}
 		sc.serverTlsConfig.GetCertificate = func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
@@ -272,20 +283,52 @@ func (sc *SecurityConfig) init() (err error) {
 
 		// load ca file
 		if sc.CA != "" {
-			certPool := x509.NewCertPool()
-			caFileBytes, err := ioutil.ReadFile(sc.CA)
+			certPool, err := loadCertPool()
 			if err != nil {
 				klog.ErrorS(err, "can not load ca cert", "ca", sc.CA)
 				sc.err = errors.Wrapf(err, "can not load ca cert")
 				return
 			}
-			certPool.AppendCertsFromPEM(caFileBytes)
 
 			sc.serverTlsConfig.ClientAuth = tls.NoClientCert
 			sc.serverTlsConfig.ClientCAs = certPool
-			sc.serverTlsConfig.RootCAs = certPool
+			sc.serverTlsConfig.GetConfigForClient = func(*tls.ClientHelloInfo) (*tls.Config, error) {
+				pool, err := loadCertPool()
+				if err != nil {
+					klog.ErrorS(err, "can not reload client CA cert", "ca", sc.CA)
+					return nil, err
+				}
+				config := sc.serverTlsConfig.Clone()
+				config.GetConfigForClient = nil
+				config.ClientCAs = pool
+				return config, nil
+			}
 
-			sc.clientTlsConfig.RootCAs = certPool
+			// crypto/tls has no dynamic RootCAs callback. Skip its static verifier
+			// and reproduce the same chain and hostname checks with roots loaded for
+			// this handshake. VerifyConnection still runs after normal certificate
+			// parsing and before the connection is made available to gRPC.
+			sc.clientTlsConfig.InsecureSkipVerify = true
+			sc.clientTlsConfig.VerifyConnection = func(state tls.ConnectionState) error {
+				pool, err := loadCertPool()
+				if err != nil {
+					klog.ErrorS(err, "can not reload server CA cert", "ca", sc.CA)
+					return err
+				}
+				if len(state.PeerCertificates) == 0 {
+					return fmt.Errorf("server did not provide a certificate")
+				}
+				intermediates := x509.NewCertPool()
+				for _, cert := range state.PeerCertificates[1:] {
+					intermediates.AddCert(cert)
+				}
+				_, err = state.PeerCertificates[0].Verify(x509.VerifyOptions{
+					Roots:         pool,
+					Intermediates: intermediates,
+					DNSName:       state.ServerName,
+				})
+				return err
+			}
 		}
 
 		if sc.ClientAuth && sc.CA == "" {

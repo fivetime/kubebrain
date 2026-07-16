@@ -69,17 +69,37 @@ func writeRotationCertificate(t *testing.T, dir, name string, ca rotationCA, ser
 
 func handshakeTLS(t *testing.T, serverConfig, clientConfig *tls.Config) (tls.ConnectionState, tls.ConnectionState) {
 	t.Helper()
+	serverState, clientState, serverErr, clientErr := tryHandshakeTLS(t, serverConfig, clientConfig)
+	require.NoError(t, serverErr)
+	require.NoError(t, clientErr)
+	return serverState, clientState
+}
+
+func tryHandshakeTLS(t *testing.T, serverConfig, clientConfig *tls.Config) (tls.ConnectionState, tls.ConnectionState, error, error) {
+	t.Helper()
 	serverRaw, clientRaw := net.Pipe()
+	require.NoError(t, serverRaw.SetDeadline(time.Now().Add(2*time.Second)))
+	require.NoError(t, clientRaw.SetDeadline(time.Now().Add(2*time.Second)))
 	server := tls.Server(serverRaw, serverConfig)
 	client := tls.Client(clientRaw, clientConfig)
 	serverErr := make(chan error, 1)
+	clientErr := make(chan error, 1)
 	go func() { serverErr <- server.Handshake() }()
-	require.NoError(t, client.Handshake())
-	require.NoError(t, <-serverErr)
+	go func() { clientErr <- client.Handshake() }()
+	serverHandshakeErr, clientHandshakeErr := <-serverErr, <-clientErr
 	serverState, clientState := server.ConnectionState(), client.ConnectionState()
 	require.NoError(t, clientRaw.Close())
 	require.NoError(t, serverRaw.Close())
-	return serverState, clientState
+	return serverState, clientState, serverHandshakeErr, clientHandshakeErr
+}
+
+func writeRotationCA(t *testing.T, path string, cas ...rotationCA) {
+	t.Helper()
+	var bundle []byte
+	for _, ca := range cas {
+		bundle = append(bundle, ca.pem...)
+	}
+	require.NoError(t, os.WriteFile(path, bundle, 0o600))
 }
 
 func TestServerCertificateReloadedForEveryHandshake(t *testing.T) {
@@ -132,4 +152,82 @@ func TestClientCertificateReloadedForEveryHandshake(t *testing.T) {
 	writeRotationCertificate(t, clientDir, "client-two", ca, 302, "rotation.test")
 	second, _ := handshakeTLS(t, serverConfig, config.getClientTLSConfig())
 	require.Equal(t, int64(302), second.PeerCertificates[0].SerialNumber.Int64())
+}
+
+func TestInboundClientCATrustPoolRotation(t *testing.T) {
+	oldCA, newCA := newRotationCA(t), newRotationCA(t)
+	serverDir := t.TempDir()
+	serverCertPath, serverKeyPath := writeRotationCertificate(t, serverDir, "server", oldCA, 401, "rotation.test")
+	caPath := filepath.Join(serverDir, "ca.crt")
+	writeRotationCA(t, caPath, oldCA)
+	config := &SecurityConfig{CertFile: serverCertPath, KeyFile: serverKeyPath, CA: caPath, ClientAuth: true}
+	require.NoError(t, config.validate())
+
+	clientConfig := func(ca rotationCA, serial int64) *tls.Config {
+		dir := t.TempDir()
+		certPath, keyPath := writeRotationCertificate(t, dir, "client", ca, serial, "rotation.test")
+		cert, err := tls.LoadX509KeyPair(certPath, keyPath)
+		require.NoError(t, err)
+		return &tls.Config{Certificates: []tls.Certificate{cert}, InsecureSkipVerify: true} //nolint:gosec -- server trust test
+	}
+	oldClient, newClient := clientConfig(oldCA, 402), clientConfig(newCA, 403)
+	handshakeTLS(t, config.getServerTLSConfig(), oldClient)
+
+	writeRotationCA(t, caPath, oldCA, newCA)
+	handshakeTLS(t, config.getServerTLSConfig(), oldClient)
+	handshakeTLS(t, config.getServerTLSConfig(), newClient)
+
+	writeRotationCA(t, caPath, newCA)
+	handshakeTLS(t, config.getServerTLSConfig(), newClient)
+	_, _, serverErr, clientErr := tryHandshakeTLS(t, config.getServerTLSConfig(), oldClient)
+	require.Error(t, serverErr)
+	_ = clientErr // TLS 1.3 may receive the server alert after its local handshake returns.
+
+	require.NoError(t, os.WriteFile(caPath, []byte("invalid"), 0o600))
+	_, err := config.getServerTLSConfig().GetConfigForClient(nil)
+	require.ErrorContains(t, err, "no certificates found")
+}
+
+func TestOutboundServerCATrustPoolRotation(t *testing.T) {
+	oldCA, newCA := newRotationCA(t), newRotationCA(t)
+	clientDir := t.TempDir()
+	clientCertPath, clientKeyPath := writeRotationCertificate(t, clientDir, "client", oldCA, 501, "rotation.test")
+	caPath := filepath.Join(clientDir, "ca.crt")
+	writeRotationCA(t, caPath, oldCA)
+	config := &SecurityConfig{
+		CertFile: clientCertPath, KeyFile: clientKeyPath, CA: caPath, ServerName: "rotation.test",
+	}
+	require.NoError(t, config.validate())
+
+	serverConfig := func(ca rotationCA, serial int64) *tls.Config {
+		dir := t.TempDir()
+		certPath, keyPath := writeRotationCertificate(t, dir, "server", ca, serial, "rotation.test")
+		cert, err := tls.LoadX509KeyPair(certPath, keyPath)
+		require.NoError(t, err)
+		return &tls.Config{Certificates: []tls.Certificate{cert}}
+	}
+	oldServer, newServer := serverConfig(oldCA, 502), serverConfig(newCA, 503)
+	handshakeTLS(t, oldServer, config.getClientTLSConfig())
+
+	writeRotationCA(t, caPath, oldCA, newCA)
+	handshakeTLS(t, oldServer, config.getClientTLSConfig())
+	handshakeTLS(t, newServer, config.getClientTLSConfig())
+
+	writeRotationCA(t, caPath, newCA)
+	handshakeTLS(t, newServer, config.getClientTLSConfig())
+	_, _, serverErr, clientErr := tryHandshakeTLS(t, oldServer, config.getClientTLSConfig())
+	_ = serverErr // TLS 1.3 may receive the client alert after its local handshake returns.
+	require.Error(t, clientErr)
+
+	wrongNameDir := t.TempDir()
+	wrongCertPath, wrongKeyPath := writeRotationCertificate(t, wrongNameDir, "server", newCA, 504, "wrong.test")
+	wrongCert, err := tls.LoadX509KeyPair(wrongCertPath, wrongKeyPath)
+	require.NoError(t, err)
+	_, _, _, clientErr = tryHandshakeTLS(t,
+		&tls.Config{Certificates: []tls.Certificate{wrongCert}}, config.getClientTLSConfig())
+	require.ErrorContains(t, clientErr, "rotation.test")
+
+	require.NoError(t, os.WriteFile(caPath, []byte("invalid"), 0o600))
+	_, _, _, clientErr = tryHandshakeTLS(t, newServer, config.getClientTLSConfig())
+	require.ErrorContains(t, clientErr, "no certificates found")
 }
