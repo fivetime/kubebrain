@@ -38,6 +38,7 @@ import (
 type testPeerService struct {
 	isLeader         bool
 	noLeader         bool
+	syncReadFn       func(context.Context) error
 	proxyEnabled     bool
 	rangeFn          func(context.Context, *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error)
 	putFn            func(context.Context, *etcdserverpb.PutRequest) (*etcdserverpb.PutResponse, error)
@@ -48,7 +49,10 @@ type testPeerService struct {
 	leaseKeepAliveFn func(context.Context, *etcdserverpb.LeaseKeepAliveRequest) (*etcdserverpb.LeaseKeepAliveResponse, error)
 }
 
-func (testPeerService) SyncReadRevision(context.Context) error {
+func (s testPeerService) SyncReadRevision(ctx context.Context) error {
+	if s.syncReadFn != nil {
+		return s.syncReadFn(ctx)
+	}
 	return nil
 }
 

@@ -241,6 +241,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   MemberID 对应实际应答副本。停止初始 leader `.11` 后，`.12` 在租约窗口后接任；
   clientv3 从 `.12` Sync 后仍保留包含离线 `.11` 的静态三端点集合，随后 Put/Get
   成功，证明 resolver 会选择 ready 副本而不会因配置成员暂时离线失效。
+  继续对齐 `/root/etcd/server/etcdserver/server.go:MemberList`：auth 开启后任意
+  MemberList 都要求有效身份；`Linearizable=true` 会先执行 revision read barrier，
+  barrier 失败不返回可能陈旧的成员视图。MemberAdd/Remove/Update/Promote 虽由
+  DBaaS 控制面替代并返回 Unimplemented，仍先要求 root，避免管理面 auth 绕过。
 - **Status DbSize 官方工具兼容（2026-07-16）**：真实三 endpoint 验证发现
   `/root/etcd` 3.7 的 `etcdctl endpoint status -w table` 会直接计算
   `DbSizeInUse*100/DbSize`，原有 0/0 使官方工具除零 panic。现返回相等的 1 字节

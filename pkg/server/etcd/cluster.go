@@ -33,8 +33,16 @@ import (
 )
 
 // MemberList lists the current cluster membership.
-func (s *RPCServer) MemberList(context.Context, *etcdserverpb.MemberListRequest) (*etcdserverpb.MemberListResponse, error) {
+func (s *RPCServer) MemberList(ctx context.Context, req *etcdserverpb.MemberListRequest) (*etcdserverpb.MemberListResponse, error) {
 	s.metricCli.EmitCounter("member.list", 1)
+	if req.GetLinearizable() {
+		if err := s.peers.SyncReadRevision(ctx); err != nil {
+			return nil, err
+		}
+	}
+	if err := s.requireAuthenticated(ctx, false); err != nil {
+		return nil, err
+	}
 	if len(s.staticMembers) > 0 {
 		members := make([]*etcdserverpb.Member, len(s.staticMembers))
 		for i := range s.staticMembers {
@@ -135,26 +143,38 @@ func ParseInitialCluster(spec string, clientPort int, clientHTTPS bool) ([]*etcd
 }
 
 // MemberAdd adds a member into the cluster.
-func (s *RPCServer) MemberAdd(context.Context, *etcdserverpb.MemberAddRequest) (*etcdserverpb.MemberAddResponse, error) {
+func (s *RPCServer) MemberAdd(ctx context.Context, _ *etcdserverpb.MemberAddRequest) (*etcdserverpb.MemberAddResponse, error) {
 	s.metricCli.EmitCounter("member.add", 1)
+	if err := s.requireAuthenticated(ctx, true); err != nil {
+		return nil, err
+	}
 	return nil, status.Error(codes.Unimplemented, "member add is not supported")
 }
 
 // MemberRemove removes an existing member from the cluster.
-func (s *RPCServer) MemberRemove(context.Context, *etcdserverpb.MemberRemoveRequest) (*etcdserverpb.MemberRemoveResponse, error) {
+func (s *RPCServer) MemberRemove(ctx context.Context, _ *etcdserverpb.MemberRemoveRequest) (*etcdserverpb.MemberRemoveResponse, error) {
 	s.metricCli.EmitCounter("member.remove", 1)
+	if err := s.requireAuthenticated(ctx, true); err != nil {
+		return nil, err
+	}
 	return nil, status.Error(codes.Unimplemented, "member remove is not supported")
 }
 
 // MemberUpdate updates the peer addresses of the member.
-func (s *RPCServer) MemberUpdate(context.Context, *etcdserverpb.MemberUpdateRequest) (*etcdserverpb.MemberUpdateResponse, error) {
+func (s *RPCServer) MemberUpdate(ctx context.Context, _ *etcdserverpb.MemberUpdateRequest) (*etcdserverpb.MemberUpdateResponse, error) {
 	s.metricCli.EmitCounter("member.update", 1)
+	if err := s.requireAuthenticated(ctx, true); err != nil {
+		return nil, err
+	}
 	return nil, status.Error(codes.Unimplemented, "member update is not supported")
 }
 
 // MemberPromote promotes a member from raft learner (non-voting) to raft voting member.
-func (s *RPCServer) MemberPromote(context.Context, *etcdserverpb.MemberPromoteRequest) (*etcdserverpb.MemberPromoteResponse, error) {
+func (s *RPCServer) MemberPromote(ctx context.Context, _ *etcdserverpb.MemberPromoteRequest) (*etcdserverpb.MemberPromoteResponse, error) {
 	s.metricCli.EmitCounter("member.promote", 1)
+	if err := s.requireAuthenticated(ctx, true); err != nil {
+		return nil, err
+	}
 	return nil, status.Error(codes.Unimplemented, "member promote is not supported")
 }
 

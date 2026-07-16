@@ -16,12 +16,16 @@ package etcd
 
 import (
 	"context"
+	"errors"
 	"sort"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 )
 
@@ -121,5 +125,43 @@ func TestMemberMutationIsUnsupported(t *testing.T) {
 	_, err = server.MemberUpdate(ctx, &etcdserverpb.MemberUpdateRequest{})
 	require.Equal(t, codes.Unimplemented, status.Code(err))
 	_, err = server.MemberPromote(ctx, &etcdserverpb.MemberPromoteRequest{})
+	require.Equal(t, codes.Unimplemented, status.Code(err))
+}
+
+func TestMemberListLinearizableUsesReadBarrier(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	var calls atomic.Int32
+	wantErr := errors.New("read barrier failed")
+	server.peers = testPeerService{syncReadFn: func(context.Context) error {
+		calls.Add(1)
+		return wantErr
+	}}
+
+	_, err := server.MemberList(context.Background(), &etcdserverpb.MemberListRequest{})
+	require.NoError(t, err)
+	require.Zero(t, calls.Load())
+	_, err = server.MemberList(context.Background(), &etcdserverpb.MemberListRequest{Linearizable: true})
+	require.ErrorIs(t, err, wantErr)
+	require.EqualValues(t, 1, calls.Load())
+}
+
+func TestMemberAuthorizationMatchesEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	aliceCtx := setupAuthKVUser(t, server)
+	plain := context.Background()
+
+	_, err := server.MemberList(plain, &etcdserverpb.MemberListRequest{})
+	require.ErrorIs(t, err, rpctypes.ErrUserEmpty)
+	_, err = server.MemberList(aliceCtx, &etcdserverpb.MemberListRequest{})
+	require.NoError(t, err)
+	_, err = server.MemberAdd(aliceCtx, &etcdserverpb.MemberAddRequest{})
+	require.ErrorIs(t, err, rpctypes.ErrPermissionDenied)
+
+	rootToken, err := server.tokens.authenticate(plain, "root", "root-secret")
+	require.NoError(t, err)
+	rootCtx := metadata.NewIncomingContext(plain, metadata.Pairs(rpctypes.TokenFieldNameGRPC, rootToken))
+	_, err = server.MemberAdd(rootCtx, &etcdserverpb.MemberAddRequest{})
 	require.Equal(t, codes.Unimplemented, status.Code(err))
 }
