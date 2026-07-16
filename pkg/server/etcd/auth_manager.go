@@ -1,6 +1,7 @@
 package etcd
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"errors"
@@ -127,6 +128,182 @@ func (m *authManager) enable(ctx context.Context) error {
 			return rpctypes.ErrRootRoleNotExist
 		}
 		_, err := m.repo.mutateConfig(ctx, snapshot.Config, true)
+		return err
+	}, m.repo.load)
+}
+
+func (m *authManager) disable(ctx context.Context) error {
+	return retryAuthMutation(ctx, func(snapshot *authSnapshot) error {
+		if !snapshot.Config.Enabled {
+			return nil
+		}
+		_, err := m.repo.mutateConfig(ctx, snapshot.Config, false)
+		return err
+	}, m.repo.load)
+}
+
+func (m *authManager) userDelete(ctx context.Context, name string) error {
+	return retryAuthMutation(ctx, func(snapshot *authSnapshot) error {
+		if snapshot.Config.Enabled && name == "root" {
+			return rpctypes.ErrInvalidAuthMgmt
+		}
+		user := snapshot.Users[name]
+		if user == nil {
+			return rpctypes.ErrUserNotFound
+		}
+		_, err := m.repo.mutate(ctx, snapshot.Config, authMutation{
+			Key: authRecordKey(authUsersKey, name), Delete: true, Expected: user, ExpectedExists: true,
+		})
+		return err
+	}, m.repo.load)
+}
+
+func authChangedPassword(password, hashed string) ([]byte, error) {
+	if hashed != "" {
+		return base64.StdEncoding.DecodeString(hashed)
+	}
+	return bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+}
+
+func (m *authManager) userChangePassword(ctx context.Context, name, password, hashed string) error {
+	return retryAuthMutation(ctx, func(snapshot *authSnapshot) error {
+		user := snapshot.Users[name]
+		if user == nil {
+			return rpctypes.ErrUserNotFound
+		}
+		updated := proto.Clone(user).(*authpb.User)
+		if user.Options == nil || !user.Options.NoPassword {
+			encoded, err := authChangedPassword(password, hashed)
+			if err != nil {
+				return err
+			}
+			updated.Password = encoded
+		}
+		_, err := m.repo.mutate(ctx, snapshot.Config, authMutation{
+			Key: authRecordKey(authUsersKey, name), Value: updated, Expected: user, ExpectedExists: true,
+		})
+		return err
+	}, m.repo.load)
+}
+
+func (m *authManager) userRevokeRole(ctx context.Context, name, roleName string) error {
+	return retryAuthMutation(ctx, func(snapshot *authSnapshot) error {
+		if snapshot.Config.Enabled && name == "root" && roleName == "root" {
+			return rpctypes.ErrInvalidAuthMgmt
+		}
+		user := snapshot.Users[name]
+		if user == nil {
+			return rpctypes.ErrUserNotFound
+		}
+		updated := proto.Clone(user).(*authpb.User)
+		updated.Roles = updated.Roles[:0]
+		for _, role := range user.Roles {
+			if role != roleName {
+				updated.Roles = append(updated.Roles, role)
+			}
+		}
+		if len(updated.Roles) == len(user.Roles) {
+			return rpctypes.ErrRoleNotGranted
+		}
+		_, err := m.repo.mutate(ctx, snapshot.Config, authMutation{
+			Key: authRecordKey(authUsersKey, name), Value: updated, Expected: user, ExpectedExists: true,
+		})
+		return err
+	}, m.repo.load)
+}
+
+func (m *authManager) roleDelete(ctx context.Context, name string) error {
+	return retryAuthMutation(ctx, func(snapshot *authSnapshot) error {
+		if snapshot.Config.Enabled && name == "root" {
+			return rpctypes.ErrInvalidAuthMgmt
+		}
+		role := snapshot.Roles[name]
+		if role == nil {
+			return rpctypes.ErrRoleNotFound
+		}
+		mutations := []authMutation{{
+			Key: authRecordKey(authRolesKey, name), Delete: true, Expected: role, ExpectedExists: true,
+		}}
+		for username, user := range snapshot.Users {
+			updated := proto.Clone(user).(*authpb.User)
+			updated.Roles = updated.Roles[:0]
+			for _, assigned := range user.Roles {
+				if assigned != name {
+					updated.Roles = append(updated.Roles, assigned)
+				}
+			}
+			if len(updated.Roles) != len(user.Roles) {
+				mutations = append(mutations, authMutation{
+					Key: authRecordKey(authUsersKey, username), Value: updated, Expected: user, ExpectedExists: true,
+				})
+			}
+		}
+		_, err := m.repo.mutate(ctx, snapshot.Config, mutations...)
+		return err
+	}, m.repo.load)
+}
+
+func validPermissionRange(key, end []byte) bool {
+	if len(key) == 0 {
+		return false
+	}
+	return len(end) == 0 || bytes.Compare(key, end) < 0 || (len(end) == 1 && end[0] == 0)
+}
+
+func (m *authManager) roleGrantPermission(ctx context.Context, name string, permission *authpb.Permission) error {
+	if permission == nil {
+		return rpctypes.ErrGRPCPermissionNotGiven
+	}
+	if !validPermissionRange(permission.Key, permission.RangeEnd) {
+		return rpctypes.ErrInvalidAuthMgmt
+	}
+	return retryAuthMutation(ctx, func(snapshot *authSnapshot) error {
+		role := snapshot.Roles[name]
+		if role == nil {
+			return rpctypes.ErrRoleNotFound
+		}
+		updated := proto.Clone(role).(*authpb.Role)
+		newPermission := proto.Clone(permission).(*authpb.Permission)
+		replaced := false
+		for i, existing := range updated.KeyPermission {
+			if bytes.Equal(existing.Key, permission.Key) && bytes.Equal(existing.RangeEnd, permission.RangeEnd) {
+				updated.KeyPermission[i] = newPermission
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			updated.KeyPermission = append(updated.KeyPermission, newPermission)
+		}
+		sort.Slice(updated.KeyPermission, func(i, j int) bool {
+			return bytes.Compare(updated.KeyPermission[i].Key, updated.KeyPermission[j].Key) < 0
+		})
+		_, err := m.repo.mutate(ctx, snapshot.Config, authMutation{
+			Key: authRecordKey(authRolesKey, name), Value: updated, Expected: role, ExpectedExists: true,
+		})
+		return err
+	}, m.repo.load)
+}
+
+func (m *authManager) roleRevokePermission(ctx context.Context, name string, key, end []byte) error {
+	return retryAuthMutation(ctx, func(snapshot *authSnapshot) error {
+		role := snapshot.Roles[name]
+		if role == nil {
+			return rpctypes.ErrRoleNotFound
+		}
+		updated := proto.Clone(role).(*authpb.Role)
+		updated.KeyPermission = updated.KeyPermission[:0]
+		for _, permission := range role.KeyPermission {
+			if !bytes.Equal(permission.Key, key) || !bytes.Equal(permission.RangeEnd, end) {
+				updated.KeyPermission = append(updated.KeyPermission, permission)
+			}
+		}
+		if len(updated.KeyPermission) == len(role.KeyPermission) {
+			return rpctypes.ErrPermissionNotGranted
+		}
+		_, err := m.repo.mutate(ctx, snapshot.Config, authMutation{
+			Key: authRecordKey(authRolesKey, name), Value: updated, Expected: role, ExpectedExists: true,
+		})
 		return err
 	}, m.repo.load)
 }

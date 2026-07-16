@@ -219,6 +219,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   使用 bcrypt；缺 root user/root role 返回 etcd 对应错误。定向普通/race 与
   backend/server 全量测试通过。下一步补齐 CRUD/permission，再做 token 和数据面；
   在此之前公开 Auth 仍保持 Unimplemented。
+- **Auth A2 管理模型（2026-07-16）**：private auth manager 已补 UserDelete、
+  UserChangePassword、UserRevokeRole、RoleDelete、RoleGrantPermission、
+  RoleRevokePermission 和 AuthDisable。角色删除与所有受影响用户解绑通过同一个
+  internal CAS batch 和同一个 auth revision 提交；权限按 `(key, range_end)` 精确
+  更新/撤销并保持 key 排序，开放尾区间 `{0}` 与非法反向区间规则对齐 etcd。
+  Auth 开启后禁止删除 root user/role 或撤销 root 绑定，关闭后允许清理。完整
+  lifecycle、错误、root 保护、普通/race 和全量回归均通过。该 manager 仍未挂到
+  gRPC；下一步先做多副本快照同步和 token，再一次性开放管理 RPC 与数据面保护。
 
 ### P1：通用服务能力
 
