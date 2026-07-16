@@ -357,6 +357,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   竞争者在 orphan 后仍阻塞，lease 自然到期后两者都接棒，旧 lease TTL=-1
   且新 Election leader 值正确。参考 etcd 用时 2.30s，当前三副本
   KubeBrain+TiKV 用时 2.22s，行为与时序一致。
+- **一致性 A36 Porcupine 操作历史（2026-07-16）**：兼容子模块引入与
+  etcd robustness 测试相同的 `github.com/anishathalye/porcupine`，新增单键 register
+  模型和 `TestClientV3RegisterHistoryIsLinearizable`。每轮 5 个独立 client 并发执行
+  60 个线性 Get、Put 和 compare-and-swap Txn，以 RPC 调用/返回时序构建
+  history 并要求 checker 返回 `Ok`；反向单测传入“Put 完成后 Get 仍读旧值”
+  的不可能历史，确认 checker 返回 `Illegal`而非形同虚设。参考 etcd
+  连续 5 轮、当前三副本 KubeBrain+TiKV 连续 10 轮通过。本轮只对成功
+  RPC 的无故障历史作确定性判定；故障期间超时/`Unavailable` 写可能已落库，
+  不能不加证明地丢弃，下一步需对齐 etcd nondeterministic model 后再做 Leader/
+  TiKV 故障历史校验。
 - **Auth A1 持久化基础（2026-07-16）**：新增原子 `Backend.InternalCAS`，先读并
   校验全部 internal key 的精确旧值，再打开一个 storage batch 统一 CAS/创建/删除；
   冲突返回 `ErrCASFailed` 且整批不落地，不消耗用户 revision。etcd shim 已贯通该
@@ -656,7 +666,9 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
 
 1. 明确 `etcdctl` 命令兼容表，为平台替代命令返回可操作提示。
 2. 增加 BR/PITR 恢复演练、滚动升级、跨可用区故障、磁盘满和长时间 soak。
-3. 引入基于操作历史的线性一致性验证；大规模性能测试不能替代正确性证明。
+3. 已引入 Porcupine 对无故障 Get/Put/CAS 操作历史做线性一致性验证；
+   继续补充能表达不确定写结果的模型和 Leader/TiKV 故障注入。大规模性能
+   测试不能替代正确性证明。
 
 ## 提交规则
 
