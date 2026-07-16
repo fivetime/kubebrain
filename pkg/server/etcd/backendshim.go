@@ -81,6 +81,11 @@ type BackendShim interface {
 	// backend.ErrTxnGuardConflict when a guard's key changed.
 	TxnApply(ctx context.Context, ops []backend.TxnWriteOp, guards []backend.TxnGuard, prevKv []bool) ([]*etcdserverpb.ResponseOp, uint64, []backend.TxnWriteResult, error)
 
+	InternalGet(ctx context.Context, key []byte) ([]byte, error)
+	InternalRange(ctx context.Context, prefix []byte) (map[string][]byte, error)
+	InternalPut(ctx context.Context, key, value []byte) error
+	InternalDelete(ctx context.Context, key []byte) error
+
 	// BeginRangeTxn excludes logical writes while a range compare and its chosen
 	// branch execute, preventing phantoms under TiKV snapshot isolation.
 	BeginRangeTxn(ctx context.Context) (context.Context, func())
@@ -177,6 +182,22 @@ func NewBackendShim(backend backend.Backend, metricCli metrics.Metrics) BackendS
 	shim.countResolver = newCountResolver(shim)
 	shim.watchTranslator = newWatchTranslator(shim)
 	return shim
+}
+
+func (b *backendShim) InternalGet(ctx context.Context, key []byte) ([]byte, error) {
+	return b.backend.InternalGet(ctx, key)
+}
+
+func (b *backendShim) InternalRange(ctx context.Context, prefix []byte) (map[string][]byte, error) {
+	return b.backend.InternalRange(ctx, prefix)
+}
+
+func (b *backendShim) InternalPut(ctx context.Context, key, value []byte) error {
+	return b.backend.InternalPut(ctx, key, value)
+}
+
+func (b *backendShim) InternalDelete(ctx context.Context, key []byte) error {
+	return b.backend.InternalDelete(ctx, key)
 }
 
 func (b *backendShim) Create(ctx context.Context, r *etcdserverpb.PutRequest, includeFailureRange bool) (*etcdserverpb.TxnResponse, error) {

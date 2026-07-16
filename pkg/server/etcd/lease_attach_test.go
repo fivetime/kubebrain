@@ -59,20 +59,19 @@ func TestLeaseAttachPersistsPerKeyNotWholeList(t *testing.T) {
 	_, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 300, ID: leaseID})
 	require.NoError(t, err)
 
-	getMeta := func() *etcdserverpb.RangeResponse {
-		var resp *etcdserverpb.RangeResponse
+	getMeta := func() []byte {
+		var value []byte
 		require.Eventually(t, func() bool {
-			r, err := server.backend.Get(ctx, &etcdserverpb.RangeRequest{Key: leaseStorageKey(leaseID)})
-			if err != nil || len(r.Kvs) != 1 {
+			v, err := server.backend.InternalGet(ctx, leaseStorageKey(leaseID))
+			if err != nil {
 				return false
 			}
-			resp = r
+			value = v
 			return true
 		}, time.Second, 5*time.Millisecond)
-		return resp
+		return value
 	}
-	// Meta record revision right after grant.
-	metaRevAfterGrant := getMeta().Kvs[0].ModRevision
+	metaAfterGrant := getMeta()
 
 	const n = 25
 	keys := make([]string, n)
@@ -86,7 +85,7 @@ func TestLeaseAttachPersistsPerKeyNotWholeList(t *testing.T) {
 	// #17 core: the meta record is NOT rewritten on attach — its revision is
 	// unchanged since grant. The old code rewrote the full (growing) key list on
 	// every Put, so the meta revision would have advanced n times.
-	require.Equal(t, metaRevAfterGrant, getMeta().Kvs[0].ModRevision,
+	require.Equal(t, metaAfterGrant, getMeta(),
 		"attach must not rewrite the lease meta record (no O(N) key-list rewrite)")
 
 	// Each attach wrote exactly one small per-key attachment record.
@@ -183,16 +182,16 @@ func TestLegacyLeaseRecordMigratesToAttachments(t *testing.T) {
 	}
 
 	// The meta record was rewritten without the inline key list.
-	var meta *etcdserverpb.RangeResponse
+	var meta []byte
 	require.Eventually(t, func() bool {
-		r, err := server.backend.Get(ctx, &etcdserverpb.RangeRequest{Key: leaseStorageKey(leaseID)})
-		if err != nil || len(r.Kvs) != 1 {
+		value, err := server.backend.InternalGet(ctx, leaseStorageKey(leaseID))
+		if err != nil {
 			return false
 		}
-		meta = r
+		meta = value
 		return true
 	}, time.Second, 5*time.Millisecond)
-	rec, err := jsonUnmarshalLeaseRecord(meta.Kvs[0].Value)
+	rec, err := jsonUnmarshalLeaseRecord(meta)
 	require.NoError(t, err)
 	require.Empty(t, rec.Keys, "migrated meta record must no longer carry the inline key list")
 	require.Equal(t, int64(200), rec.TTL)
@@ -258,9 +257,8 @@ func TestExpiryKeepsLeaseAndRecordWhenKeyDeleteFails(t *testing.T) {
 
 	// The lease must NOT have been removed: its record still exists and it is still
 	// tracked, so recovery keeps expiring the keys instead of orphaning them.
-	metaResp, err := shim.Get(ctx, &etcdserverpb.RangeRequest{Key: leaseStorageKey(leaseID)})
+	_, err = shim.InternalGet(ctx, leaseStorageKey(leaseID))
 	require.NoError(t, err)
-	require.Len(t, metaResp.Kvs, 1, "lease meta record must survive a failed key delete")
 	ttlResp, err := server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: leaseID, Keys: true})
 	require.NoError(t, err)
 	require.Greater(t, ttlResp.TTL, int64(0), "lease must still be alive after a failed expiry")

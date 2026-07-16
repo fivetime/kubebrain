@@ -181,6 +181,30 @@ func TestLeaseGrantDuplicateAndTooLargeTTLMatchEtcdErrors(t *testing.T) {
 	require.Contains(t, err.Error(), "etcdserver: too large lease TTL")
 }
 
+func TestLeaseMetaDoesNotAdvanceKVRevisionAndRestores(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	before := server.backend.GetCurrentRevision()
+
+	_, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 300, ID: 5050})
+	require.NoError(t, err)
+	require.Equal(t, before, server.backend.GetCurrentRevision())
+
+	restored := New(server.backend.(*backendShim).backend, server.metricCli, server.peers)
+	defer restored.stopLeases()
+	records, attachments, err := restored.loadLeaseRecords(ctx)
+	require.NoError(t, err)
+	require.Empty(t, attachments)
+	require.Len(t, records, 1)
+	require.Equal(t, int64(5050), records[0].ID)
+	require.Equal(t, int64(300), records[0].TTL)
+
+	_, err = server.LeaseRevoke(ctx, &etcdserverpb.LeaseRevokeRequest{ID: 5050})
+	require.NoError(t, err)
+	require.Equal(t, before, server.backend.GetCurrentRevision())
+}
+
 func TestLeaseExpiryDeletesBoundKeys(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
@@ -246,8 +270,8 @@ func TestLeaseRestoreFromBackend(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Eventually(t, func() bool {
-		resp, err := server.backend.Get(ctx, &etcdserverpb.RangeRequest{Key: leaseStorageKey(grantResp.ID)})
-		return err == nil && len(resp.Kvs) == 1
+		_, err := server.backend.InternalGet(ctx, leaseStorageKey(grantResp.ID))
+		return err == nil
 	}, time.Second, 10*time.Millisecond)
 
 	server.stopLeases()
@@ -470,13 +494,13 @@ func TestKeepAliveDoesNotWriteStorage(t *testing.T) {
 	require.NoError(t, err)
 
 	// Capture the persisted lease record revision once binding has landed.
-	var beforeRev int64
+	var beforeMeta []byte
 	require.Eventually(t, func() bool {
-		resp, err := server.backend.Get(ctx, &etcdserverpb.RangeRequest{Key: leaseStorageKey(grantResp.ID)})
-		if err != nil || len(resp.Kvs) != 1 {
+		value, err := server.backend.InternalGet(ctx, leaseStorageKey(grantResp.ID))
+		if err != nil {
 			return false
 		}
-		beforeRev = resp.Kvs[0].ModRevision
+		beforeMeta = value
 		return true
 	}, time.Second, 10*time.Millisecond)
 
@@ -495,10 +519,9 @@ func TestKeepAliveDoesNotWriteStorage(t *testing.T) {
 
 	// The lease record must be byte-for-byte the same version: no keepalive
 	// minted a new MVCC version or a duplicate record.
-	afterResp, err := server.backend.Get(ctx, &etcdserverpb.RangeRequest{Key: leaseStorageKey(grantResp.ID)})
+	afterMeta, err := server.backend.InternalGet(ctx, leaseStorageKey(grantResp.ID))
 	require.NoError(t, err)
-	require.Len(t, afterResp.Kvs, 1)
-	require.Equal(t, beforeRev, afterResp.Kvs[0].ModRevision, "keepalive must not mint a new lease record version")
+	require.Equal(t, beforeMeta, afterMeta, "keepalive must not rewrite lease metadata")
 }
 
 // TestReloadResetsDeadlineToGrantedTTL locks the companion recovery fix: on

@@ -43,6 +43,18 @@ type Keyspace struct {
 	elogMetaKey []byte
 }
 
+var internalKVInfix = []byte("\x00internal\x00")
+
+// EncodeInternalKey maps service metadata into a tenant-scoped raw storage
+// keyspace. Internal values are durable but deliberately bypass user MVCC,
+// revisions, event logs, watches, and the count index.
+func (k *Keyspace) EncodeInternalKey(key []byte) []byte {
+	out := make([]byte, 0, len(k.magic)+len(internalKVInfix)+len(key))
+	out = append(out, k.magic...)
+	out = append(out, internalKVInfix...)
+	return append(out, key...)
+}
+
 // keyspaceNameRE bounds names to something that also embeds cleanly into the
 // raw coordination-key namespace (election lock, compact watermark).
 var keyspaceNameRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$`)

@@ -52,6 +52,7 @@ type leaseRecord struct {
 	TTL              int64    `json:"ttl"`
 	DeadlineUnixNano int64    `json:"deadlineUnixNano,omitempty"`
 	Keys             []string `json:"keys,omitempty"`
+	LegacyStorage    bool     `json:"-"`
 }
 
 func (m *leaseManager) LeaseGrant(ctx context.Context, req *etcdserverpb.LeaseGrantRequest) (*etcdserverpb.LeaseGrantResponse, error) {
@@ -615,6 +616,10 @@ func (m *leaseManager) ReloadLeases(ctx context.Context) error {
 // loadLeaseRecords reads the per-lease meta records and the per-key attachment
 // records from storage at the latest revision.
 func (m *leaseManager) loadLeaseRecords(ctx context.Context) ([]leaseRecord, map[string]int64, error) {
+	internalRecords, err := m.srv.backend.InternalRange(ctx, leaseStoragePrefix)
+	if err != nil {
+		return nil, nil, err
+	}
 	resp, err := m.srv.backend.List(ctx, &etcdserverpb.RangeRequest{
 		Key:      leaseStoragePrefix,
 		RangeEnd: prefixEnd(leaseStoragePrefix),
@@ -623,12 +628,26 @@ func (m *leaseManager) loadLeaseRecords(ctx context.Context) ([]leaseRecord, map
 	if err != nil {
 		return nil, nil, err
 	}
-	records := make([]leaseRecord, 0, len(resp.Kvs))
+	// Read the legacy user-MVCC keyspace during rolling upgrades. A new internal
+	// record wins when both layouts contain the same lease ID.
+	recordByID := make(map[int64]leaseRecord, len(resp.Kvs)+len(internalRecords))
 	for _, kv := range resp.Kvs {
 		var record leaseRecord
 		if err := json.Unmarshal(kv.Value, &record); err != nil {
 			return nil, nil, err
 		}
+		record.LegacyStorage = true
+		recordByID[record.ID] = record
+	}
+	for _, value := range internalRecords {
+		var record leaseRecord
+		if err := json.Unmarshal(value, &record); err != nil {
+			return nil, nil, err
+		}
+		recordByID[record.ID] = record
+	}
+	records := make([]leaseRecord, 0, len(recordByID))
+	for _, record := range recordByID {
 		records = append(records, record)
 	}
 
@@ -672,11 +691,20 @@ func (m *leaseManager) migrateLegacyLeases(ctx context.Context, ids []int64) {
 		if !ok {
 			continue
 		}
+		complete := true
 		for _, k := range keys {
-			_ = m.attachKeyToStorage(ctx, id, k)
+			if err := m.attachKeyToStorage(ctx, id, k); err != nil {
+				complete = false
+				break
+			}
 		}
-		// Rewrite the meta without the inline key list.
-		_ = m.persistLeaseMeta(ctx, id, ttl)
+		if !complete || m.persistLeaseMeta(ctx, id, ttl) != nil {
+			continue
+		}
+		// Retire the legacy user-MVCC record only after the internal replacement
+		// and every attachment are durable. This prevents a revoked lease from
+		// being resurrected by the compatibility reader on the next leadership.
+		_, _ = m.srv.backend.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{Key: leaseStorageKey(id)})
 	}
 }
 
@@ -717,7 +745,7 @@ func (m *leaseManager) applyLeaseRecords(records []leaseRecord, attachments map[
 			st.keys[key] = struct{}{}
 			m.keyLeaseIndex[key] = st.id
 		}
-		if len(record.Keys) > 0 {
+		if record.LegacyStorage || len(record.Keys) > 0 {
 			legacy = append(legacy, record.ID)
 		}
 		if st.id > m.leaseID {
@@ -916,11 +944,7 @@ func (m *leaseManager) persistLeaseMeta(ctx context.Context, id, ttl int64) erro
 	if err != nil {
 		return err
 	}
-	_, err = m.srv.backend.Put(ctx, &etcdserverpb.PutRequest{
-		Key:   leaseStorageKey(id),
-		Value: data,
-	})
-	return err
+	return m.srv.backend.InternalPut(ctx, leaseStorageKey(id), data)
 }
 
 // attachKeyToStorage records that userKey is attached to lease id as a single
@@ -943,10 +967,7 @@ func (m *leaseManager) detachKeyFromStorage(ctx context.Context, userKey string)
 }
 
 func (m *leaseManager) deleteLeaseState(ctx context.Context, id int64) error {
-	_, err := m.srv.backend.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{
-		Key: leaseStorageKey(id),
-	})
-	return err
+	return m.srv.backend.InternalDelete(ctx, leaseStorageKey(id))
 }
 
 func leaseAttachKey(userKey string) []byte {

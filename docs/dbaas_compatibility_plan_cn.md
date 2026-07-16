@@ -147,6 +147,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   对应用户 Put/Delete 在一个存储事务中提交、但只产生用户 KV mutation 的
   revision/watch 事件。该项列为后续 Lease P0，不在本次 DeleteRange 结果中
   隐藏或归一化掉。
+- **Lease meta revision 隔离（第一阶段）**：backend 新增按 keyspace 派生的
+  raw internal KV 通道，写入持久化到 TiKV，但不分配用户 MVCC revision、不写
+  event log、不进入 watch/count index。LeaseGrant 和 lease meta 删除已切换到该
+  通道，因此新租约的 Grant/Revoke 不再改变 KV revision。恢复过程同时读取新
+  internal 布局和旧用户-MVCC 布局；旧记录迁移成功后才删除，避免 Revoke 后被
+  compatibility reader 复活。attachment 尚未切换，leased Put/Delete 仍会多推进
+  revision，下一阶段需扩展 TxnApply，使用户 mutation 与 internal attachment 在
+  同一 TiKV batch 原子提交、但只为用户 mutation 生成 revision/watch event。
 
 ### P1：通用服务能力
 

@@ -89,6 +89,13 @@ type Backend interface {
 	// for semantics; returns ErrTxnGuardConflict when a guard's key changed.
 	TxnApply(ctx context.Context, ops []TxnWriteOp, guards []TxnGuard) ([]TxnWriteResult, uint64, error)
 
+	// InternalGet/Put/Delete persist tenant-scoped service metadata without
+	// consuming user-visible MVCC revisions or emitting watch events.
+	InternalGet(ctx context.Context, key []byte) ([]byte, error)
+	InternalRange(ctx context.Context, prefix []byte) (map[string][]byte, error)
+	InternalPut(ctx context.Context, key, value []byte) error
+	InternalDelete(ctx context.Context, key []byte) error
+
 	// BeginRangeTxn excludes every logical user-key write until unlock. It is
 	// used only for generic etcd transactions with range compares, because TiKV
 	// snapshot isolation has no predicate locks to prevent phantom inserts.
