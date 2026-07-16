@@ -213,6 +213,9 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   保持不变。摘要用于比较同一 KubeBrain keyspace 的多个服务端；由于 etcd 对
   bbolt KV bucket 的内部编码求 hash，而 KubeBrain 使用 TiKV 对象编码，两者的
   数值本身不具有跨引擎可比性。
+  三副本真实 TiKV/PD 验证进一步由 MemberList 枚举每个 ClientURL，在一次 Put 的
+  固定 revision 上逐 endpoint 调用官方 clientv3 `HashKV`：三个 hash 与 ClusterID
+  完全相同，三个响应 MemberID 各不相同且对应实际服务副本。
 - **ClusterId 稳定性（2026-07-16）**：`MemberList` 不再把当前 leader 地址的
   CRC 当作 ClusterId，改为与所有其他 RPC 一致地使用 backend 从 PD/TiKV
   cluster identity 和 keyspace 派生的稳定 ID，避免换主时客户端把同一实例误判

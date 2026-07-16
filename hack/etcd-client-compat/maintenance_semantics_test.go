@@ -2,6 +2,7 @@ package compat
 
 import (
 	"context"
+	"sort"
 	"testing"
 	"time"
 
@@ -50,4 +51,49 @@ func TestMaintenanceHashKVSemantics(t *testing.T) {
 	historical, err := cli.HashKV(ctx, endpoint, rev1)
 	require.NoError(t, err)
 	require.Equal(t, hash1.Hash, historical.Hash)
+}
+
+func TestMaintenanceHashKVMatchesAcrossMembers(t *testing.T) {
+	endpoint := compatEndpoint()
+	cli, err := clientv3.New(clientv3.Config{Endpoints: []string{endpoint}, DialTimeout: 3 * time.Second})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, cli.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	members, err := cli.MemberList(ctx)
+	require.NoError(t, err)
+	endpoints := make([]string, 0, len(members.Members))
+	for _, member := range members.Members {
+		endpoints = append(endpoints, member.ClientURLs...)
+	}
+	sort.Strings(endpoints)
+	require.NotEmpty(t, endpoints)
+
+	key := testPrefix(t) + "/member-hash"
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cleanupCancel()
+		_, _ = cli.Delete(cleanupCtx, key)
+	})
+	put, err := cli.Put(ctx, key, "member-consistent")
+	require.NoError(t, err)
+
+	var wantHash, wantCluster uint64
+	memberIDs := map[uint64]struct{}{}
+	for i, ep := range endpoints {
+		statusResp, err := cli.Status(ctx, ep)
+		require.NoError(t, err, "status %s", ep)
+		hashResp, err := cli.HashKV(ctx, ep, put.Header.Revision)
+		require.NoError(t, err, "hashkv %s", ep)
+		if i == 0 {
+			wantHash = uint64(hashResp.Hash)
+			wantCluster = statusResp.Header.ClusterId
+		} else {
+			require.Equal(t, wantHash, uint64(hashResp.Hash), "hash mismatch at %s", ep)
+			require.Equal(t, wantCluster, statusResp.Header.ClusterId, "cluster ID mismatch at %s", ep)
+		}
+		memberIDs[statusResp.Header.MemberId] = struct{}{}
+	}
+	require.Len(t, memberIDs, len(endpoints), "each configured endpoint must identify its serving member")
 }
