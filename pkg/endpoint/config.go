@@ -239,22 +239,35 @@ func (sc *SecurityConfig) init() (err error) {
 		return nil
 	}
 	sc.once.Do(func() {
-		// load cert
-		cert, err := tls.LoadX509KeyPair(sc.CertFile, sc.KeyFile)
+		// Validate the initial key pair before accepting traffic. Runtime TLS
+		// configs deliberately keep Certificates empty so every handshake invokes
+		// the reload callbacks, matching etcd's mounted-secret rotation behavior.
+		_, err := tls.LoadX509KeyPair(sc.CertFile, sc.KeyFile)
 		if err != nil {
 			klog.ErrorS(err, "can not load key pair", "cert", sc.CertFile, "key", sc.KeyFile)
 			sc.err = errors.Wrapf(err, "can not load key pair")
 			return
 		}
 
-		sc.serverTlsConfig = &tls.Config{
-			Certificates: []tls.Certificate{cert},
-			NextProtos:   tlsNextProtos,
+		loadCertificate := func() (*tls.Certificate, error) {
+			cert, err := tls.LoadX509KeyPair(sc.CertFile, sc.KeyFile)
+			if err != nil {
+				klog.ErrorS(err, "can not reload key pair", "cert", sc.CertFile, "key", sc.KeyFile)
+				return nil, errors.Wrap(err, "can not reload key pair")
+			}
+			return &cert, nil
+		}
+
+		sc.serverTlsConfig = &tls.Config{NextProtos: tlsNextProtos}
+		sc.serverTlsConfig.GetCertificate = func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+			return loadCertificate()
 		}
 
 		sc.clientTlsConfig = &tls.Config{
-			Certificates: []tls.Certificate{cert},
-			ServerName:   sc.ServerName,
+			ServerName: sc.ServerName,
+			GetClientCertificate: func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
+				return loadCertificate()
+			},
 		}
 
 		// load ca file

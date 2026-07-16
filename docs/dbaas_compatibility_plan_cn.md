@@ -542,12 +542,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   auth 后，用独立 CN `cert-root` 证书经 service 及逐 Pod 直连 Put/Get 全部通过，覆盖
   leader 和 follower 转发路径。TLS handshake 也设置 10 秒上限，避免半开连接长期阻塞
   外层 listener。
+- **TLS A26 服务端与内部客户端叶证书热轮换（2026-07-16）**：对齐 etcd transport
+  的 per-handshake reload：启动时仍预检证书/私钥并 fail fast，但 runtime
+  `tls.Config.Certificates` 保持为空，通过 `GetCertificate` 在每个新入站 handshake
+  重读服务端 key pair，通过 `GetClientCertificate` 在 follower/peer 每个新出站 mTLS
+  handshake 重读客户端 key pair。这样 Kubernetes Secret/projected volume 更新后无需
+  重启 Pod；即使客户端不发送 SNI（例如只按 IP 校验证书）也会触发 reload。测试以同一
+  CA 连续替换不同 serial/CN 的证书，证明入站和出站连接均看到新叶证书；损坏的替换
+  文件在下一次 handshake 明确失败，不会静默继续使用旧身份。CA trust pool 仍在启动时
+  固定，CA 双信任窗口和撤旧 CA 语义留待下一增量。
 
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
    RBAC、token 生命周期、Watch/Lease 持续鉴权、客户端证书 CN 身份以及真实三副本
-   auth+mTLS failover 已完成，下一步做 CA/服务端证书/客户端证书轮换。
+   auth+mTLS failover、服务端/内部客户端叶证书热轮换已完成，下一步做 CA trust pool
+   双信任窗口与客户端身份 CA 轮换。
 2. 对已通过的 `client/v3/concurrency` mutex/election/session/failover recipe
    增加 lease 自然过期和长时间 soak。
 3. 建立 DBaaS 控制面契约：创建、扩缩、升级、备份、恢复、证书轮换、销毁。
