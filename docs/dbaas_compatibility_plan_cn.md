@@ -180,6 +180,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   默认 `minLeaseTTL` 时不是报错，而是提升为 2 秒。KubeBrain 现对负数、0、1
   和 2 都返回实际 granted TTL=2，并以该值持久化、调度 expiry；差分矩阵加入
   TTL=0 Grant/Revoke，真实 TiKV 上连续 10 轮通过。
+- **Compact 双端差分**：新增 `TestCompactDifferentialAgainstReferenceEtcd`，
+  覆盖 logical compaction 成功 header、`revision == compactRev` 边界快照仍可读、
+  `revision < compactRev` 返回 ErrCompacted、重复/更旧 compact 返回同一错误、未来
+  revision 返回 ErrFutureRev，以及当前值不受影响。真实 TiKV 与 etcd 3.7 连续
+  10 轮结果一致。Physical=true 的完成时延与故障恢复仍保留为独立 P0 验证项，
+  不混入轻量语义差分。
 
 ### P1：通用服务能力
 
