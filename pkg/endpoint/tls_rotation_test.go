@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/kubewharf/kubebrain/pkg/transportidentity"
 )
 
 type rotationCA struct {
@@ -230,4 +232,50 @@ func TestOutboundServerCATrustPoolRotation(t *testing.T) {
 	require.NoError(t, os.WriteFile(caPath, []byte("invalid"), 0o600))
 	_, _, _, clientErr = tryHandshakeTLS(t, newServer, config.getClientTLSConfig())
 	require.ErrorContains(t, clientErr, "no certificates found")
+}
+
+func TestIdentityTLSListenerContinuesAfterRejectedHandshake(t *testing.T) {
+	ca := newRotationCA(t)
+	dir := t.TempDir()
+	certPath, keyPath := writeRotationCertificate(t, dir, "server", ca, 601, "rotation.test")
+	cert, err := tls.LoadX509KeyPair(certPath, keyPath)
+	require.NoError(t, err)
+	rawListener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer rawListener.Close()
+	listener := &identityTLSListener{
+		Listener: rawListener,
+		config: &tls.Config{
+			Certificates: []tls.Certificate{cert},
+		},
+		identities: &transportidentity.Registry{},
+	}
+	accepted := make(chan net.Conn, 1)
+	acceptErr := make(chan error, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			acceptErr <- err
+			return
+		}
+		accepted <- conn
+	}()
+
+	rejected, err := net.Dial("tcp", rawListener.Addr().String())
+	require.NoError(t, err)
+	_, err = rejected.Write([]byte("not a TLS handshake"))
+	require.NoError(t, err)
+	require.NoError(t, rejected.Close())
+
+	valid, err := tls.Dial("tcp", rawListener.Addr().String(), &tls.Config{InsecureSkipVerify: true}) //nolint:gosec -- listener resilience test
+	require.NoError(t, err)
+	defer valid.Close()
+	select {
+	case conn := <-accepted:
+		require.NoError(t, conn.Close())
+	case err := <-acceptErr:
+		require.NoError(t, err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("listener did not accept a valid connection after rejecting a malformed handshake")
+	}
 }

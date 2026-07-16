@@ -101,25 +101,29 @@ type identityTLSListener struct {
 const tlsIdentityHandshakeTimeout = 10 * time.Second
 
 func (l *identityTLSListener) Accept() (net.Conn, error) {
-	raw, err := l.Listener.Accept()
-	if err != nil {
-		return nil, err
+	for {
+		raw, err := l.Listener.Accept()
+		if err != nil {
+			return nil, err
+		}
+		conn := tls.Server(raw, l.config)
+		if err = raw.SetDeadline(time.Now().Add(tlsIdentityHandshakeTimeout)); err == nil {
+			err = conn.Handshake()
+		}
+		if err == nil {
+			err = raw.SetDeadline(time.Time{})
+		}
+		if err != nil {
+			// TLS authentication and malformed handshakes are connection-local.
+			// Returning them as listener errors makes cmux stop the entire secure
+			// endpoint, allowing one untrusted client to cause an outage.
+			_ = raw.Close()
+			klog.V(2).InfoS("rejected TLS connection", "err", err, "remoteAddr", raw.RemoteAddr())
+			continue
+		}
+		unregister := l.identities.Register(conn.LocalAddr(), conn.RemoteAddr(), conn.ConnectionState())
+		return &identityTLSConn{Conn: conn, unregister: unregister}, nil
 	}
-	conn := tls.Server(raw, l.config)
-	if err = raw.SetDeadline(time.Now().Add(tlsIdentityHandshakeTimeout)); err != nil {
-		_ = raw.Close()
-		return nil, err
-	}
-	if err = conn.Handshake(); err != nil {
-		_ = raw.Close()
-		return nil, err
-	}
-	if err = raw.SetDeadline(time.Time{}); err != nil {
-		_ = raw.Close()
-		return nil, err
-	}
-	unregister := l.identities.Register(conn.LocalAddr(), conn.RemoteAddr(), conn.ConnectionState())
-	return &identityTLSConn{Conn: conn, unregister: unregister}, nil
 }
 
 type identityTLSConn struct {

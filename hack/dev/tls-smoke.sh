@@ -10,6 +10,7 @@ REPLICAS="${REPLICAS:-3}"
 RUN_APISERVER_SMOKE="${RUN_APISERVER_SMOKE:-true}"
 RUN_BACKUP_DRILL="${RUN_BACKUP_DRILL:-true}"
 RUN_AUTH_CERT_SMOKE="${RUN_AUTH_CERT_SMOKE:-true}"
+RUN_CERT_ROTATION_SMOKE="${RUN_CERT_ROTATION_SMOKE:-true}"
 BACKUP_PREFIX="${BACKUP_PREFIX:-/registry/tls-smoke}"
 BACKUP_BATCH_SIZE="${BACKUP_BATCH_SIZE:-100}"
 APISERVER_SECURE_PORT="${APISERVER_SECURE_PORT:-16444}"
@@ -95,6 +96,23 @@ openssl req -newkey rsa:2048 -nodes \
 openssl x509 -req -in auth-client.csr -CA ca.crt -CAkey ca.key -CAcreateserial -days 1 \
   -out auth-client.crt -extensions v3_req -extfile auth-client.conf >/dev/null 2>&1
 
+cp ca.crt old-ca.crt
+cp tls.crt old-tls.crt
+cp tls.key old-tls.key
+
+sed 's/kubebrain-smoke-ca/kubebrain-smoke-ca-next/' ca.conf > ca-next.conf
+openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
+  -keyout ca-next.key -out ca-next.crt -config ca-next.conf >/dev/null 2>&1
+openssl req -newkey rsa:2048 -nodes \
+  -keyout tls-next.key -out tls-next.csr -config server.conf >/dev/null 2>&1
+openssl x509 -req -in tls-next.csr -CA ca-next.crt -CAkey ca-next.key -CAcreateserial -days 1 \
+  -out tls-next.crt -extensions v3_req -extfile server.conf >/dev/null 2>&1
+openssl req -newkey rsa:2048 -nodes \
+  -keyout auth-client-next.key -out auth-client-next.csr -config auth-client.conf >/dev/null 2>&1
+openssl x509 -req -in auth-client-next.csr -CA ca-next.crt -CAkey ca-next.key -CAcreateserial -days 1 \
+  -out auth-client-next.crt -extensions v3_req -extfile auth-client.conf >/dev/null 2>&1
+cat old-ca.crt ca-next.crt > ca-overlap.crt
+
 kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 kubectl -n "$NAMESPACE" create secret generic kubebrain-client-tls \
   --from-file=tls.crt=tls.crt \
@@ -138,11 +156,106 @@ start_port_forward() {
   fi
   kubectl -n "$NAMESPACE" port-forward service/kubebrain-client "${LOCAL_PORT}:3379" >/tmp/kubebrain-tls-smoke-port-forward.log 2>&1 &
   pf_pid=$!
-  sleep 2
+  for _ in $(seq 1 50); do
+    if ! kill -0 "$pf_pid" >/dev/null 2>&1; then
+      cat /tmp/kubebrain-tls-smoke-port-forward.log >&2
+      echo "service port-forward exited before becoming ready" >&2
+      exit 1
+    fi
+    if grep -q "Forwarding from 127.0.0.1:${LOCAL_PORT}" /tmp/kubebrain-tls-smoke-port-forward.log; then
+      return
+    fi
+    sleep 0.2
+  done
+  cat /tmp/kubebrain-tls-smoke-port-forward.log >&2
+  echo "timed out waiting for service port-forward" >&2
+  exit 1
 }
 
 run_client_smoke() {
   start_port_forward
+  LOCAL_PORT="$LOCAL_PORT" go run main.go
+}
+
+assert_client_rejected() {
+  start_port_forward
+  local output
+  local status
+  set +e
+  output="$(LOCAL_PORT="$LOCAL_PORT" go run main.go 2>&1)"
+  status=$?
+  set -e
+  if [ "$status" -eq 0 ]; then
+    echo "retired client unexpectedly remained trusted after CA cutover" >&2
+    exit 1
+  fi
+  local server_logs
+  server_logs="$(kubectl -n "$NAMESPACE" logs \
+    -l app.kubernetes.io/name=kubebrain --since=2m --prefix=true 2>/dev/null || true)"
+  if ! grep -Ei 'rejected TLS connection' <<<"$server_logs" | \
+      grep -Eqi "unknown authority|bad certificate|client didn't provide a certificate"; then
+    echo "retired client failed without a certificate rejection in server logs:" >&2
+    echo "$output" >&2
+    cat /tmp/kubebrain-tls-smoke-port-forward.log >&2
+    echo "$server_logs" >&2
+    exit 1
+  fi
+  echo "Retired client certificate rejected after CA cutover"
+}
+
+apply_tls_secrets() {
+  local cert_file="$1"
+  local key_file="$2"
+  local ca_file="$3"
+  for secret in kubebrain-client-tls kubebrain-peer-tls; do
+    kubectl -n "$NAMESPACE" create secret generic "$secret" \
+      --from-file="tls.crt=${cert_file}" \
+      --from-file="tls.key=${key_file}" \
+      --from-file="ca.crt=${ca_file}" \
+      --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+  done
+}
+
+wait_for_projected_file() {
+  local source_file="$1"
+  local mounted_file="$2"
+  local expected_hash
+  expected_hash="$(sha256sum "$source_file" | awk '{print $1}')"
+  local deadline=$((SECONDS + 150))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    local all_current=true
+    mapfile -t projected_pods < <(kubectl -n "$NAMESPACE" get pods \
+      -l app.kubernetes.io/name=kubebrain \
+      -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}')
+    if [ "${#projected_pods[@]}" -ne "$REPLICAS" ]; then
+      all_current=false
+    fi
+    for pod in "${projected_pods[@]}"; do
+      actual_hash="$(kubectl -n "$NAMESPACE" exec "$pod" -- sha256sum "$mounted_file" 2>/dev/null | awk '{print $1}' || true)"
+      if [ "$actual_hash" != "$expected_hash" ]; then
+        all_current=false
+        break
+      fi
+    done
+    if [ "$all_current" = "true" ]; then
+      return
+    fi
+    sleep 2
+  done
+  echo "timed out waiting for ${mounted_file} projection" >&2
+  exit 1
+}
+
+run_direct_client_smoke() {
+  local pod="$1"
+  if [ -n "${pf_pid:-}" ]; then
+    kill "$pf_pid" >/dev/null 2>&1 || true
+    wait "$pf_pid" >/dev/null 2>&1 || true
+  fi
+  kubectl -n "$NAMESPACE" port-forward "pod/${pod}" "${LOCAL_PORT}:3379" \
+    >/tmp/kubebrain-tls-rotation-port-forward.log 2>&1 &
+  pf_pid=$!
+  sleep 2
   LOCAL_PORT="$LOCAL_PORT" go run main.go
 }
 
@@ -195,7 +308,11 @@ import (
 )
 
 func main() {
-	ca, err := os.ReadFile("ca.crt")
+	caFile, certFile, keyFile := os.Getenv("CA_FILE"), os.Getenv("CERT_FILE"), os.Getenv("KEY_FILE")
+	if caFile == "" { caFile = "ca.crt" }
+	if certFile == "" { certFile = "tls.crt" }
+	if keyFile == "" { keyFile = "tls.key" }
+	ca, err := os.ReadFile(caFile)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -203,7 +320,7 @@ func main() {
 	if !pool.AppendCertsFromPEM(ca) {
 		log.Fatal("failed to load ca")
 	}
-	cert, err := tls.LoadX509KeyPair("tls.crt", "tls.key")
+	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -332,6 +449,51 @@ if [ "$REPLICAS" -ge 3 ]; then
     wait_ready
     run_client_smoke
   done
+fi
+
+if [ "$RUN_CERT_ROTATION_SMOKE" = "true" ]; then
+  echo "Publishing old+new CA overlap bundle"
+  apply_tls_secrets old-tls.crt old-tls.key ca-overlap.crt
+  wait_for_projected_file ca-overlap.crt /etc/kubebrain/client-tls/ca.crt
+  wait_for_projected_file ca-overlap.crt /etc/kubebrain/peer-tls/ca.crt
+  CA_FILE=ca-overlap.crt CERT_FILE=tls-next.crt KEY_FILE=tls-next.key run_client_smoke
+
+  echo "Rotating client and peer leaf certificates without a rollout"
+  apply_tls_secrets tls-next.crt tls-next.key ca-overlap.crt
+  wait_for_projected_file tls-next.crt /etc/kubebrain/client-tls/tls.crt
+  wait_for_projected_file tls-next.crt /etc/kubebrain/peer-tls/tls.crt
+  CA_FILE=ca-overlap.crt CERT_FILE=tls-next.crt KEY_FILE=tls-next.key run_client_smoke
+
+  mapfile -t rotation_pods < <(kubectl -n "$NAMESPACE" get pods \
+    -l app.kubernetes.io/name=kubebrain \
+    -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}')
+  for pod in "${rotation_pods[@]}"; do
+    echo "Running rotated certificate smoke directly against ${pod}"
+    CA_FILE=ca-overlap.crt CERT_FILE=tls-next.crt KEY_FILE=tls-next.key run_direct_client_smoke "$pod"
+  done
+
+  echo "Removing the old CA from client and peer trust bundles"
+  apply_tls_secrets tls-next.crt tls-next.key ca-next.crt
+  wait_for_projected_file ca-next.crt /etc/kubebrain/client-tls/ca.crt
+  wait_for_projected_file ca-next.crt /etc/kubebrain/peer-tls/ca.crt
+  CA_FILE=ca-next.crt CERT_FILE=tls-next.crt KEY_FILE=tls-next.key run_client_smoke
+  CA_FILE=ca-next.crt CERT_FILE=old-tls.crt KEY_FILE=old-tls.key assert_client_rejected
+  CA_FILE=ca-next.crt CERT_FILE=tls-next.crt KEY_FILE=tls-next.key run_client_smoke
+
+  if [ "$REPLICAS" -ge 3 ]; then
+    for pod in "${rotation_pods[@]}"; do
+      echo "Replacing ${pod} after CA cutover and verifying follower reconnect"
+      kubectl -n "$NAMESPACE" delete pod "$pod" --wait=false >/dev/null
+      wait_ready
+      CA_FILE=ca-next.crt CERT_FILE=tls-next.crt KEY_FILE=tls-next.key run_client_smoke
+    done
+  fi
+
+  cp ca-next.crt ca.crt
+  cp tls-next.crt tls.crt
+  cp tls-next.key tls.key
+  cp auth-client-next.crt auth-client.crt
+  cp auth-client-next.key auth-client.key
 fi
 
 if [ "$RUN_AUTH_CERT_SMOKE" = "true" ]; then

@@ -558,13 +558,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   client/server chain 均可连接，撤旧后旧 chain 被拒绝、新 chain 保持可用；错误 hostname
   和损坏 CA 文件也必须拒绝，不能回退缓存 trust。已建立的 TLS/HTTP2 长连接不会被主动
   中断，撤旧在下一次 reconnect 生效，控制面需先发布 overlap bundle、轮换 leaf，再撤旧。
+- **TLS A28 真实三副本在线轮换与拒绝隔离（2026-07-16）**：kind + 独立 TiKV/PD
+  黑盒把 client/peer Secret 从旧 CA 依次推进到 `旧+新 CA`、新 leaf、仅新 CA，并逐 Pod
+  校验 projected 文件 hash 后发起新连接。overlap 阶段新 CA client 可访问仍使用旧 leaf
+  的三副本；leaf 更新不触发 rollout，service 和三个 Pod 直连均 Put/Get 成功；撤旧后新
+  chain 可用、旧 client 在服务端留下明确证书拒绝，随后同一进程立即接受新 chain。测试
+  还逐个替换轮换前的三只 Pod，每轮 rollout 后 follower/leader 转发均恢复，最后开启 auth
+  并用新 CA 签发的 `cert-root` 经 service 和三个 Pod 直连成功。该负向测试同时发现外层
+  identity TLS listener 曾把单连接 handshake 错误返回给 cmux、导致整个 secure endpoint
+  退出；现 handshake/deadline 错误只关闭该连接并继续 Accept，单测固定“先拒绝 malformed
+  client、再接受正常 client”，避免不可信客户端造成监听器级 DoS。
 
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
    RBAC、token 生命周期、Watch/Lease 持续鉴权、客户端证书 CN 身份以及真实三副本
    auth+mTLS failover、服务端/内部客户端叶证书热轮换、CA trust pool 双信任窗口与撤旧
-   已完成，下一步做真实三副本在线轮换和长连接 drain/reconnect 验证。
+   及真实三副本在线轮换已完成，下一步做长连接 drain/reconnect 策略与持续轮换 soak。
 2. 对已通过的 `client/v3/concurrency` mutex/election/session/failover recipe
    增加 lease 自然过期和长时间 soak。
 3. 建立 DBaaS 控制面契约：创建、扩缩、升级、备份、恢复、证书轮换、销毁。
