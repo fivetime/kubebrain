@@ -24,3 +24,9 @@ func TestAuthGRPCErrorMapsPublicStatusCodes(t *testing.T) {
 		require.Equal(t, test.code, status.Code(authGRPCError(test.err)))
 	}
 }
+
+func TestAuthGRPCErrorPreservesEtcdNoPasswordBehavior(t *testing.T) {
+	err := authGRPCError(errNoPasswordUser)
+	require.Equal(t, codes.Unknown, status.Code(err))
+	require.Equal(t, errNoPasswordUser.Error(), status.Convert(err).Message())
+}

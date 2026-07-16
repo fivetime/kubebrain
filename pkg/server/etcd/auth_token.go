@@ -85,7 +85,13 @@ func (m *authTokenManager) authenticate(ctx context.Context, username, password 
 		return "", rpctypes.ErrAuthNotEnabled
 	}
 	user := snapshot.Users[username]
-	if user == nil || (user.Options != nil && user.Options.NoPassword) || bcrypt.CompareHashAndPassword(user.Password, []byte(password)) != nil {
+	if user == nil {
+		return "", rpctypes.ErrAuthFailed
+	}
+	if user.Options != nil && user.Options.NoPassword {
+		return "", errNoPasswordUser
+	}
+	if bcrypt.CompareHashAndPassword(user.Password, []byte(password)) != nil {
 		return "", rpctypes.ErrAuthFailed
 	}
 	key, err := m.ensureSigningKey(ctx)

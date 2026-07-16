@@ -18,6 +18,8 @@ import (
 
 const authMutationRetries = 16
 
+var errNoPasswordUser = errors.New("auth: authentication failed, password was given for no password user")
+
 type authManager struct{ repo *authRepository }
 
 func newAuthManager(backend BackendShim) *authManager {
@@ -42,7 +44,11 @@ func authPassword(request *etcdserverpb.AuthUserAddRequest) ([]byte, error) {
 		return nil, nil
 	}
 	if request.HashedPassword != "" {
-		return base64.StdEncoding.DecodeString(request.HashedPassword)
+		password, err := base64.StdEncoding.DecodeString(request.HashedPassword)
+		if err != nil {
+			return nil, errNoPasswordUser
+		}
+		return password, nil
 	}
 	return bcrypt.GenerateFromPassword([]byte(request.Password), bcrypt.DefaultCost)
 }
@@ -160,7 +166,11 @@ func (m *authManager) userDelete(ctx context.Context, name string) error {
 
 func authChangedPassword(password, hashed string) ([]byte, error) {
 	if hashed != "" {
-		return base64.StdEncoding.DecodeString(hashed)
+		encoded, err := base64.StdEncoding.DecodeString(hashed)
+		if err != nil {
+			return nil, errNoPasswordUser
+		}
+		return encoded, nil
 	}
 	return bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 }

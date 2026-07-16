@@ -312,6 +312,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   与官方 `etcdctl` 实测确认，认证启用后 `AuthStatus` 仍是公开 RPC，可匿名读取
   `Enabled` 和 `AuthRevision`；KubeBrain 原实现错误地要求 token。现已移除该鉴权，
   handler 回归测试与官方 `client/v3` 生命周期黑盒均覆盖启用后的匿名查询。
+- **Auth A13 无密码用户错误对齐（2026-07-16）**：真实 etcd 3.7 实测确认，
+  `NoPassword` 用户尝试认证返回 gRPC `Unknown`，文本为 `auth: authentication
+  failed, password was given for no password user`，而普通错误凭据返回
+  `InvalidArgument/AuthFailed`。KubeBrain 现已拆分两条路径；非法 base64
+  `hashed_password` 也与 etcd store 一样归入前者。内部、gRPC 和官方客户端三层
+  测试固定该兼容行为。
 
 ### P1：通用服务能力
 

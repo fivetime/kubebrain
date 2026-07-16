@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"go.etcd.io/etcd/api/v3/authpb"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 
@@ -33,6 +34,11 @@ func TestAuthTokenAuthenticateVerifyAndRevisionInvalidation(t *testing.T) {
 
 	_, err := tokens.authenticate(ctx, "root", "wrong")
 	require.ErrorIs(t, err, rpctypes.ErrAuthFailed)
+	require.NoError(t, manager.userAdd(ctx, &etcdserverpb.AuthUserAddRequest{
+		Name: "nopass", Options: &authpb.UserAddOptions{NoPassword: true},
+	}))
+	_, err = tokens.authenticate(ctx, "nopass", "password")
+	require.ErrorIs(t, err, errNoPasswordUser)
 	token, err := tokens.authenticate(ctx, "root", "secret")
 	require.NoError(t, err)
 	claims, err := tokens.verify(ctx, token)

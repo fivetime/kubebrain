@@ -9,6 +9,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	clientv3 "go.etcd.io/etcd/client/v3"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 func authClient(t *testing.T, endpoint, username, password string) *clientv3.Client {
@@ -42,6 +44,8 @@ func TestAuthLifecycle(t *testing.T) {
 	require.NoError(t, err)
 	_, err = bootstrap.UserAdd(ctx, "alice", "alice-secret")
 	require.NoError(t, err)
+	_, err = bootstrap.UserAddWithOptions(ctx, "nopass", "", &clientv3.UserAddOptions{NoPassword: true})
+	require.NoError(t, err)
 	_, err = bootstrap.RoleAdd(ctx, "allowed")
 	require.NoError(t, err)
 	_, err = bootstrap.RoleGrantPermission(ctx, "allowed", "/allowed/", clientv3.GetPrefixRangeEnd("/allowed/"), clientv3.PermissionType(clientv3.PermReadWrite))
@@ -50,9 +54,15 @@ func TestAuthLifecycle(t *testing.T) {
 	require.NoError(t, err)
 	_, err = bootstrap.AuthEnable(ctx)
 	require.NoError(t, err)
-	status, err := bootstrap.AuthStatus(ctx)
+	authStatus, err := bootstrap.AuthStatus(ctx)
 	require.NoError(t, err)
-	require.True(t, status.Enabled)
+	require.True(t, authStatus.Enabled)
+	_, err = clientv3.New(clientv3.Config{
+		Endpoints: []string{endpoint}, DialTimeout: 5 * time.Second,
+		Username: "nopass", Password: "password",
+	})
+	require.Equal(t, codes.Unknown, status.Code(err))
+	require.Contains(t, err.Error(), "password was given for no password user")
 
 	_, err = bootstrap.Put(ctx, "/allowed/anonymous", "denied")
 	require.ErrorIs(t, err, rpctypes.ErrUserEmpty)
