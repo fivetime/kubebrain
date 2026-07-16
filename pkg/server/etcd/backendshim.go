@@ -683,7 +683,6 @@ func filterRangeKvs(resp *etcdserverpb.RangeResponse, r *etcdserverpb.RangeReque
 		kvs = append(kvs, kv)
 	}
 	resp.Kvs = kvs
-	resp.Count = int64(len(kvs))
 	resp.More = false
 }
 

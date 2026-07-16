@@ -519,7 +519,7 @@ func TestRangeFiltersByModRevision(t *testing.T) {
 		})
 		return err == nil && len(rangeResp.Kvs) == 1
 	}, time.Second, 10*time.Millisecond)
-	require.Equal(t, int64(1), rangeResp.Count)
+	require.Equal(t, int64(2), rangeResp.Count)
 	require.Equal(t, []byte(prefix+"b"), rangeResp.Kvs[0].Key)
 
 	countResp, err := server.Range(ctx, &etcdserverpb.RangeRequest{
@@ -529,7 +529,7 @@ func TestRangeFiltersByModRevision(t *testing.T) {
 		CountOnly:      true,
 	})
 	require.NoError(t, err)
-	require.Equal(t, int64(1), countResp.Count)
+	require.Equal(t, int64(2), countResp.Count)
 	require.Empty(t, countResp.Kvs)
 }
 
@@ -564,7 +564,7 @@ func TestRangeAppliesLimitAfterModRevisionFilter(t *testing.T) {
 			MinModRevision: putA.Header.Revision + 1,
 			Limit:          1,
 		})
-		return err == nil && rangeResp.Count == 2 && len(rangeResp.Kvs) == 1
+		return err == nil && rangeResp.Count == 3 && len(rangeResp.Kvs) == 1
 	}, time.Second, 10*time.Millisecond)
 	require.True(t, rangeResp.More)
 	require.Equal(t, []byte(prefix+"b"), rangeResp.Kvs[0].Key)
@@ -682,7 +682,7 @@ func TestRangeCreateRevisionFilter(t *testing.T) {
 			MinCreateRevision: second.Header.Revision,
 			Limit:             1,
 		})
-		return err == nil && rangeResp.Count == 2 && len(rangeResp.Kvs) == 1
+		return err == nil && rangeResp.Count == 3 && len(rangeResp.Kvs) == 1
 	}, time.Second, 10*time.Millisecond)
 	require.True(t, rangeResp.More)
 	require.Equal(t, []byte(prefix+"b"), rangeResp.Kvs[0].Key)
@@ -694,7 +694,7 @@ func TestRangeCreateRevisionFilter(t *testing.T) {
 		MaxCreateRevision: second.Header.Revision,
 	})
 	require.NoError(t, err)
-	require.Equal(t, int64(2), rangeResp.Count)
+	require.Equal(t, int64(3), rangeResp.Count)
 	require.Len(t, rangeResp.Kvs, 2)
 }
 
@@ -1963,7 +1963,7 @@ func TestTxnRangeOptionsApplyToStagedView(t *testing.T) {
 	require.Equal(t, before+1, resp.Header.Revision)
 
 	counted := resp.Responses[2].GetResponseRange()
-	require.Equal(t, int64(2), counted.Count)
+	require.Equal(t, int64(3), counted.Count)
 	require.Empty(t, counted.Kvs)
 
 	limited := resp.Responses[3].GetResponseRange()

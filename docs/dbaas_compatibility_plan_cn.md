@@ -123,8 +123,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   文本；已对齐官方
   `/root/etcd/api/v3rpc/rpctypes/error.go` 的
   `InvalidArgument: etcdserver: key not found`。修复后的双端差分连续 10 轮通过。
-  该结果只覆盖当前 Txn 场景；Range/DeleteRange 的完整边界、Watch、Lease 和
-  Compact 仍需逐组扩展差分矩阵。
+  第二组 `TestRangeDifferentialAgainstReferenceEtcd` 覆盖顺序写 revision、
+  历史快照、排序、revision 过滤、limit/More、KeysOnly、未来 revision 错误和
+  空 DeleteRange。它发现带 revision filter 时 etcd 的 `Count` 是过滤前范围
+  总键数，而 KubeBrain 曾错误返回过滤后 KV 数；已对齐
+  `/root/etcd/server/etcdserver/txn/range.go`：过滤只裁剪 `KVs`，保留 MVCC
+  range 预先计算的 Count，且没有新增扫描。修复后 Range 与 Txn 双端差分共同
+  连续 10 轮通过。DeleteRange 的大范围/PrevKV 边界、Watch、Lease 和 Compact
+  仍需逐组扩展差分矩阵。
 
 ### P1：通用服务能力
 
