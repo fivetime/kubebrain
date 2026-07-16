@@ -48,6 +48,14 @@ func TestMaintenanceAuthorizationMatchesEtcd(t *testing.T) {
 	_, err = server.Hash(aliceCtx, &etcdserverpb.HashRequest{})
 	require.ErrorIs(t, err, rpctypes.ErrPermissionDenied)
 
+	currentRevision := int64(server.backend.GetCurrentRevision())
+	_, err = server.Compact(plain, &etcdserverpb.CompactionRequest{Revision: currentRevision})
+	require.ErrorIs(t, err, rpctypes.ErrUserEmpty)
+	_, err = server.Compact(aliceCtx, &etcdserverpb.CompactionRequest{Revision: currentRevision})
+	require.ErrorIs(t, err, rpctypes.ErrPermissionDenied)
+	_, err = server.Compact(rootCtx, &etcdserverpb.CompactionRequest{Revision: currentRevision})
+	require.NoError(t, err)
+
 	_, err = server.Defragment(aliceCtx, &etcdserverpb.DefragmentRequest{})
 	require.ErrorIs(t, err, rpctypes.ErrPermissionDenied)
 	_, err = server.Defragment(rootCtx, &etcdserverpb.DefragmentRequest{})

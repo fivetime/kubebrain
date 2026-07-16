@@ -616,10 +616,15 @@ func validateDeleteRangeRequest(r *etcdserverpb.DeleteRangeRequest) error {
 }
 
 func (s *RPCServer) Compact(ctx context.Context, r *etcdserverpb.CompactionRequest) (*etcdserverpb.CompactionResponse, error) {
+	// Compact is a cluster-wide destructive history operation, not a key-range
+	// write. Upstream etcd protects it with AuthAdmin.isPermitted (root only).
+	if err := s.requireAuthenticated(ctx, true); err != nil {
+		return nil, err
+	}
 	if !s.peers.IsLeader() {
 		s.metricCli.EmitCounter("write.follower", 1)
 		if s.peers.EtcdProxyEnabled() {
-			return s.peers.Compact(ctx, r)
+			return s.peers.Compact(forwardAuthToken(ctx), r)
 		}
 		return nil, s.notLeaderErr("compact")
 	}

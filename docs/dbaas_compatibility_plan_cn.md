@@ -300,6 +300,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   revision 仍全局唯一且严格递增。这是通用 DBaaS 的已知可观察差异，后续需用
   真实客户端兼容矩阵判断是否必须重构为提交时连续编号，不能在语义测试里误报
   或掩盖。
+- **Compact 管理权限（2026-07-16）**：对照
+  `/root/etcd/server/etcdserver/api/v3rpc/key.go` 的 `AuthAdmin.isPermitted`，
+  Compact 在 Auth enabled 时改为仅 root 可执行。匿名请求返回 `ErrUserEmpty`，
+  已认证普通用户返回 `ErrPermissionDenied`；follower 代理会转发认证 token，并由
+  leader 再次校验，避免通过任一副本绕过权限。官方 `client/v3` 对独立 etcd 3.7
+  和真实 TiKV-backed KubeBrain 执行匿名、普通用户及 root 三组请求，状态码、错误
+  文本和成功结果一致。
 - **Physical compaction 故障恢复（2026-07-16）**：真实 TiKV 灌入 500 key ×
   20 versions 后验证 Physical=true 在扫描完成后才返回；100ms 客户端取消时逻辑
   水位已经单调推进、旧 revision 返回 ErrCompacted、当前值可读。修复了取消/进程

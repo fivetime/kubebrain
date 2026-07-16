@@ -44,6 +44,9 @@ type authDifferentialOutcome struct {
 	OldTokenAfterMutation     authErrorOutcome
 	OldPassword               authErrorOutcome
 	NewPasswordOK             bool
+	AnonymousCompact          authErrorOutcome
+	UserCompact               authErrorOutcome
+	RootCompactOK             bool
 }
 
 func runConcurrentClientOperations(count int, operation func(int) error) []error {
@@ -76,6 +79,12 @@ func collectAuthDifferentialOutcome(t *testing.T, endpoint string) authDifferent
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	bootstrap := authClient(t, endpoint, "", "")
+	compactRevisions := make([]int64, 0, 3)
+	for i := 0; i < 3; i++ {
+		put, putErr := bootstrap.Put(ctx, fmt.Sprintf("/auth-compact/%d", i), "value")
+		require.NoError(t, putErr)
+		compactRevisions = append(compactRevisions, put.Header.Revision)
+	}
 
 	_, err := bootstrap.UserAdd(ctx, "root", "root-secret")
 	require.NoError(t, err)
@@ -94,11 +103,15 @@ func collectAuthDifferentialOutcome(t *testing.T, endpoint string) authDifferent
 	_, wrongCredentialsErr := bootstrap.Authenticate(ctx, "missing", "wrong")
 	_, noPasswordErr := bootstrap.Authenticate(ctx, "nopass", "password")
 	root := authClient(t, endpoint, "root", "root-secret")
+	alice := authClient(t, endpoint, "alice", "alice-secret")
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cleanupCancel()
 		_, _ = root.AuthDisable(cleanupCtx)
 	})
+	_, anonymousCompactErr := bootstrap.Compact(ctx, compactRevisions[0])
+	_, userCompactErr := alice.Compact(ctx, compactRevisions[1])
+	_, rootCompactErr := root.Compact(ctx, compactRevisions[2])
 
 	_, err = root.UserGrantRole(ctx, "root", "root")
 	require.NoError(t, err)
@@ -211,6 +224,9 @@ func collectAuthDifferentialOutcome(t *testing.T, endpoint string) authDifferent
 		OldTokenAfterMutation:     authError(oldTokenErr),
 		OldPassword:               authError(oldPasswordErr),
 		NewPasswordOK:             newPasswordErr == nil,
+		AnonymousCompact:          authError(anonymousCompactErr),
+		UserCompact:               authError(userCompactErr),
+		RootCompactOK:             rootCompactErr == nil,
 	}
 }
 
