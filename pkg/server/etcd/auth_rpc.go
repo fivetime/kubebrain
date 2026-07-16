@@ -6,25 +6,33 @@ import (
 	"go.etcd.io/etcd/api/v3/authpb"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 )
 
 func authRPCHeader() *etcdserverpb.ResponseHeader { return &etcdserverpb.ResponseHeader{} }
 
-func (s *RPCServer) requireAuthDisabled(ctx context.Context) (*authSnapshot, error) {
+func (s *RPCServer) authAdminSnapshot(ctx context.Context) (*authSnapshot, error) {
 	snapshot, err := s.tokens.snapshots.current(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if snapshot.Config.Enabled {
-		return nil, status.Error(codes.Unimplemented, "authenticated auth management is not enabled yet")
+	if !snapshot.Config.Enabled {
+		return snapshot, nil
 	}
-	return snapshot, nil
+	caller, err := s.authCallerFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if !caller.isRoot() {
+		return nil, rpctypes.ErrPermissionDenied
+	}
+	return caller.snapshot, nil
 }
 
 func (s *RPCServer) AuthStatus(ctx context.Context, _ *etcdserverpb.AuthStatusRequest) (*etcdserverpb.AuthStatusResponse, error) {
+	if _, err := s.authCallerFromContext(ctx); err != nil {
+		return nil, err
+	}
 	snapshot, err := s.tokens.snapshots.current(ctx)
 	if err != nil {
 		return nil, err
@@ -41,7 +49,7 @@ func (s *RPCServer) Authenticate(ctx context.Context, request *etcdserverpb.Auth
 }
 
 func (s *RPCServer) UserAdd(ctx context.Context, request *etcdserverpb.AuthUserAddRequest) (*etcdserverpb.AuthUserAddResponse, error) {
-	if _, err := s.requireAuthDisabled(ctx); err != nil {
+	if _, err := s.authAdminSnapshot(ctx); err != nil {
 		return nil, err
 	}
 	if err := s.auth.userAdd(ctx, request); err != nil {
@@ -51,9 +59,19 @@ func (s *RPCServer) UserAdd(ctx context.Context, request *etcdserverpb.AuthUserA
 }
 
 func (s *RPCServer) UserGet(ctx context.Context, request *etcdserverpb.AuthUserGetRequest) (*etcdserverpb.AuthUserGetResponse, error) {
-	snapshot, err := s.requireAuthDisabled(ctx)
+	snapshot, err := s.tokens.snapshots.current(ctx)
 	if err != nil {
 		return nil, err
+	}
+	if snapshot.Config.Enabled {
+		caller, callerErr := s.authCallerFromContext(ctx)
+		if callerErr != nil {
+			return nil, callerErr
+		}
+		if !caller.isRoot() && caller.username != request.Name {
+			return nil, rpctypes.ErrPermissionDenied
+		}
+		snapshot = caller.snapshot
 	}
 	user := snapshot.Users[request.Name]
 	if user == nil {
@@ -63,7 +81,7 @@ func (s *RPCServer) UserGet(ctx context.Context, request *etcdserverpb.AuthUserG
 }
 
 func (s *RPCServer) UserList(ctx context.Context, _ *etcdserverpb.AuthUserListRequest) (*etcdserverpb.AuthUserListResponse, error) {
-	snapshot, err := s.requireAuthDisabled(ctx)
+	snapshot, err := s.authAdminSnapshot(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -71,7 +89,7 @@ func (s *RPCServer) UserList(ctx context.Context, _ *etcdserverpb.AuthUserListRe
 }
 
 func (s *RPCServer) UserDelete(ctx context.Context, request *etcdserverpb.AuthUserDeleteRequest) (*etcdserverpb.AuthUserDeleteResponse, error) {
-	if _, err := s.requireAuthDisabled(ctx); err != nil {
+	if _, err := s.authAdminSnapshot(ctx); err != nil {
 		return nil, err
 	}
 	if err := s.auth.userDelete(ctx, request.Name); err != nil {
@@ -81,7 +99,7 @@ func (s *RPCServer) UserDelete(ctx context.Context, request *etcdserverpb.AuthUs
 }
 
 func (s *RPCServer) UserChangePassword(ctx context.Context, request *etcdserverpb.AuthUserChangePasswordRequest) (*etcdserverpb.AuthUserChangePasswordResponse, error) {
-	if _, err := s.requireAuthDisabled(ctx); err != nil {
+	if _, err := s.authAdminSnapshot(ctx); err != nil {
 		return nil, err
 	}
 	if err := s.auth.userChangePassword(ctx, request.Name, request.Password, request.HashedPassword); err != nil {
@@ -91,7 +109,7 @@ func (s *RPCServer) UserChangePassword(ctx context.Context, request *etcdserverp
 }
 
 func (s *RPCServer) UserGrantRole(ctx context.Context, request *etcdserverpb.AuthUserGrantRoleRequest) (*etcdserverpb.AuthUserGrantRoleResponse, error) {
-	if _, err := s.requireAuthDisabled(ctx); err != nil {
+	if _, err := s.authAdminSnapshot(ctx); err != nil {
 		return nil, err
 	}
 	if err := s.auth.userGrantRole(ctx, request.User, request.Role); err != nil {
@@ -101,7 +119,7 @@ func (s *RPCServer) UserGrantRole(ctx context.Context, request *etcdserverpb.Aut
 }
 
 func (s *RPCServer) UserRevokeRole(ctx context.Context, request *etcdserverpb.AuthUserRevokeRoleRequest) (*etcdserverpb.AuthUserRevokeRoleResponse, error) {
-	if _, err := s.requireAuthDisabled(ctx); err != nil {
+	if _, err := s.authAdminSnapshot(ctx); err != nil {
 		return nil, err
 	}
 	if err := s.auth.userRevokeRole(ctx, request.Name, request.Role); err != nil {
@@ -111,7 +129,7 @@ func (s *RPCServer) UserRevokeRole(ctx context.Context, request *etcdserverpb.Au
 }
 
 func (s *RPCServer) RoleAdd(ctx context.Context, request *etcdserverpb.AuthRoleAddRequest) (*etcdserverpb.AuthRoleAddResponse, error) {
-	if _, err := s.requireAuthDisabled(ctx); err != nil {
+	if _, err := s.authAdminSnapshot(ctx); err != nil {
 		return nil, err
 	}
 	if err := s.auth.roleAdd(ctx, request.Name); err != nil {
@@ -121,9 +139,25 @@ func (s *RPCServer) RoleAdd(ctx context.Context, request *etcdserverpb.AuthRoleA
 }
 
 func (s *RPCServer) RoleGet(ctx context.Context, request *etcdserverpb.AuthRoleGetRequest) (*etcdserverpb.AuthRoleGetResponse, error) {
-	snapshot, err := s.requireAuthDisabled(ctx)
+	snapshot, err := s.tokens.snapshots.current(ctx)
 	if err != nil {
 		return nil, err
+	}
+	if snapshot.Config.Enabled {
+		caller, callerErr := s.authCallerFromContext(ctx)
+		if callerErr != nil {
+			return nil, callerErr
+		}
+		allowed := caller.isRoot()
+		if user := caller.snapshot.Users[caller.username]; user != nil {
+			for _, role := range user.Roles {
+				allowed = allowed || role == request.Role
+			}
+		}
+		if !allowed {
+			return nil, rpctypes.ErrPermissionDenied
+		}
+		snapshot = caller.snapshot
 	}
 	role := snapshot.Roles[request.Role]
 	if role == nil {
@@ -141,7 +175,7 @@ func (s *RPCServer) RoleGet(ctx context.Context, request *etcdserverpb.AuthRoleG
 }
 
 func (s *RPCServer) RoleList(ctx context.Context, _ *etcdserverpb.AuthRoleListRequest) (*etcdserverpb.AuthRoleListResponse, error) {
-	snapshot, err := s.requireAuthDisabled(ctx)
+	snapshot, err := s.authAdminSnapshot(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -149,7 +183,7 @@ func (s *RPCServer) RoleList(ctx context.Context, _ *etcdserverpb.AuthRoleListRe
 }
 
 func (s *RPCServer) RoleDelete(ctx context.Context, request *etcdserverpb.AuthRoleDeleteRequest) (*etcdserverpb.AuthRoleDeleteResponse, error) {
-	if _, err := s.requireAuthDisabled(ctx); err != nil {
+	if _, err := s.authAdminSnapshot(ctx); err != nil {
 		return nil, err
 	}
 	if err := s.auth.roleDelete(ctx, request.Role); err != nil {
@@ -159,7 +193,7 @@ func (s *RPCServer) RoleDelete(ctx context.Context, request *etcdserverpb.AuthRo
 }
 
 func (s *RPCServer) RoleGrantPermission(ctx context.Context, request *etcdserverpb.AuthRoleGrantPermissionRequest) (*etcdserverpb.AuthRoleGrantPermissionResponse, error) {
-	if _, err := s.requireAuthDisabled(ctx); err != nil {
+	if _, err := s.authAdminSnapshot(ctx); err != nil {
 		return nil, err
 	}
 	if err := s.auth.roleGrantPermission(ctx, request.Name, request.Perm); err != nil {
@@ -169,7 +203,7 @@ func (s *RPCServer) RoleGrantPermission(ctx context.Context, request *etcdserver
 }
 
 func (s *RPCServer) RoleRevokePermission(ctx context.Context, request *etcdserverpb.AuthRoleRevokePermissionRequest) (*etcdserverpb.AuthRoleRevokePermissionResponse, error) {
-	if _, err := s.requireAuthDisabled(ctx); err != nil {
+	if _, err := s.authAdminSnapshot(ctx); err != nil {
 		return nil, err
 	}
 	if err := s.auth.roleRevokePermission(ctx, request.Role, request.Key, request.RangeEnd); err != nil {

@@ -269,6 +269,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   lease 代理携带 token 到 leader 重新验证。测试确认缺 token Grant 被拒绝、越权
   Revoke 不删除绑定键、合法 caller 的 Grant/TTL/List 正常。下一步完成 Auth 管理
   RPC 的 root admin 与 UserGet/RoleGet self 例外，再开放 Enable/Disable。
+- **Auth A8 管理面鉴权（2026-07-16）**：Enabled 状态下 User/Role mutation、
+  UserList 和 RoleList 仅允许 root；UserGet 允许 root 或用户本人，RoleGet 允许 root
+  或已绑定该角色的用户，与 etcd auth applier 例外规则一致。AuthStatus 在 Enabled
+  状态要求有效 token，但不要求 root。Disabled 状态仍允许无 token bootstrap。
+  所有 mutation 推进 auth revision，包含执行 mutation 的 root 在内的旧 token 都
+  立即失效；测试显式重新 Authenticate 后继续管理。普通用户越权查询、列表和角色
+  创建均被拒绝。下一步完成 Watch 建流与运行期 revision 变化处理，然后开放
+  AuthEnable/AuthDisable 并跑官方 client/v3 黑盒生命周期。
 
 ### P1：通用服务能力
 

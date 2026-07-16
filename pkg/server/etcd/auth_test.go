@@ -20,7 +20,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 )
 
@@ -59,5 +61,47 @@ func TestAuthRPCBootstrapAndEnabledSafetyBoundary(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, authenticated.Token)
 	_, err = server.UserList(ctx, &etcdserverpb.AuthUserListRequest{})
-	require.Equal(t, codes.Unimplemented, status.Code(err), "enabled auth management must not be exposed before request authentication")
+	require.ErrorIs(t, err, rpctypes.ErrUserEmpty)
+	rootCtx := metadata.NewIncomingContext(ctx, metadata.Pairs(rpctypes.TokenFieldNameGRPC, authenticated.Token))
+	users, err = server.UserList(rootCtx, &etcdserverpb.AuthUserListRequest{})
+	require.NoError(t, err)
+	require.Equal(t, []string{"root"}, users.Users)
+}
+
+func TestAuthRPCEnabledAdminAndSelfRules(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	aliceCtx := setupAuthKVUser(t, server)
+	plain := context.Background()
+	rootAuth, err := server.Authenticate(plain, &etcdserverpb.AuthenticateRequest{Name: "root", Password: "root-secret"})
+	require.NoError(t, err)
+	rootCtx := metadata.NewIncomingContext(plain, metadata.Pairs(rpctypes.TokenFieldNameGRPC, rootAuth.Token))
+
+	_, err = server.AuthStatus(plain, &etcdserverpb.AuthStatusRequest{})
+	require.ErrorIs(t, err, rpctypes.ErrUserEmpty)
+	statusResp, err := server.AuthStatus(aliceCtx, &etcdserverpb.AuthStatusRequest{})
+	require.NoError(t, err)
+	require.True(t, statusResp.Enabled)
+	self, err := server.UserGet(aliceCtx, &etcdserverpb.AuthUserGetRequest{Name: "alice"})
+	require.NoError(t, err)
+	require.Contains(t, self.Roles, "allowed")
+	_, err = server.UserGet(aliceCtx, &etcdserverpb.AuthUserGetRequest{Name: "root"})
+	require.ErrorIs(t, err, rpctypes.ErrPermissionDenied)
+	_, err = server.RoleGet(aliceCtx, &etcdserverpb.AuthRoleGetRequest{Role: "allowed"})
+	require.NoError(t, err)
+	_, err = server.RoleGet(aliceCtx, &etcdserverpb.AuthRoleGetRequest{Role: "root"})
+	require.ErrorIs(t, err, rpctypes.ErrPermissionDenied)
+	_, err = server.UserList(aliceCtx, &etcdserverpb.AuthUserListRequest{})
+	require.ErrorIs(t, err, rpctypes.ErrPermissionDenied)
+	_, err = server.RoleAdd(aliceCtx, &etcdserverpb.AuthRoleAddRequest{Name: "forbidden"})
+	require.ErrorIs(t, err, rpctypes.ErrPermissionDenied)
+
+	_, err = server.RoleAdd(rootCtx, &etcdserverpb.AuthRoleAddRequest{Name: "operator"})
+	require.NoError(t, err)
+	rootAuth, err = server.Authenticate(plain, &etcdserverpb.AuthenticateRequest{Name: "root", Password: "root-secret"})
+	require.NoError(t, err)
+	rootCtx = metadata.NewIncomingContext(plain, metadata.Pairs(rpctypes.TokenFieldNameGRPC, rootAuth.Token))
+	roles, err := server.RoleList(rootCtx, &etcdserverpb.AuthRoleListRequest{})
+	require.NoError(t, err)
+	require.Contains(t, roles.Roles, "operator")
 }
