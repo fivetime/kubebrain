@@ -16,6 +16,7 @@ package etcd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -144,6 +145,27 @@ func TestRangeStreamEmptyRangeStillSendsHeaderRevision(t *testing.T) {
 	require.Empty(t, last.RangeResponse.Kvs)
 	require.Greater(t, last.RangeResponse.Header.Revision, int64(0),
 		"apiserver reads Header.Revision as the sync's initial revision")
+}
+
+func TestSerializableRangeStreamBypassesLeaderRevisionSync(t *testing.T) {
+	server, cleanup := newRangeStreamTestServer(t)
+	defer cleanup()
+	ctx := context.Background()
+	_, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: []byte("/stream/key"), Value: []byte("value")})
+	require.NoError(t, err)
+
+	syncErr := errors.New("leader revision unavailable")
+	server.peers = testPeerService{syncReadFn: func(context.Context) error { return syncErr }}
+	stream := &fakeRangeStreamServer{ctx: ctx}
+	require.NoError(t, server.RangeStream(&etcdserverpb.RangeRequest{
+		Key: []byte("/stream/"), RangeEnd: []byte("/stream0"), Serializable: true,
+	}, stream))
+	require.NotEmpty(t, stream.sent)
+
+	linearizable := &fakeRangeStreamServer{ctx: ctx}
+	err = server.RangeStream(&etcdserverpb.RangeRequest{Key: []byte("/stream/"), RangeEnd: []byte("/stream0")}, linearizable)
+	require.Error(t, err)
+	require.Equal(t, codes.Unavailable, status.Code(err))
 }
 
 func TestRangeStreamRejectsUnsupportedShapes(t *testing.T) {

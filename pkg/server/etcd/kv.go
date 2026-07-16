@@ -63,8 +63,10 @@ func (s *RPCServer) Range(ctx context.Context, r *etcdserverpb.RangeRequest) (*e
 		}
 		return s.peers.Range(proxyCtx, r)
 	}
-	if err := s.peers.SyncReadRevision(ctx); err != nil {
-		return &etcdserverpb.RangeResponse{}, err
+	if !r.Serializable || r.Revision > 0 {
+		if err := s.peers.SyncReadRevision(ctx); err != nil {
+			return &etcdserverpb.RangeResponse{}, err
+		}
 	}
 	if err := s.checkRequestedRevision(ctx, r.Revision); err != nil {
 		return nil, err
@@ -166,8 +168,10 @@ func (s *RPCServer) RangeStream(r *etcdserverpb.RangeRequest, rs etcdserverpb.KV
 	if err = caller.require(r.Key, r.RangeEnd, authpb.READ); err != nil {
 		return err
 	}
-	if err := s.peers.SyncReadRevision(ctx); err != nil {
-		return rangeStreamStatusErr(err)
+	if !r.Serializable || r.Revision > 0 {
+		if err := s.peers.SyncReadRevision(ctx); err != nil {
+			return rangeStreamStatusErr(err)
+		}
 	}
 	if err := s.checkRequestedRevision(ctx, r.Revision); err != nil {
 		return rangeStreamStatusErr(err)

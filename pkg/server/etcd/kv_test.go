@@ -17,6 +17,7 @@ package etcd
 import (
 	"bytes"
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -204,6 +205,25 @@ func TestPutCreatesAndOverwritesKey(t *testing.T) {
 	require.Len(t, rangeResp.Kvs, 1)
 	require.Equal(t, []byte("v2"), rangeResp.Kvs[0].Value)
 	require.Greater(t, rangeResp.Kvs[0].ModRevision, firstRevision)
+}
+
+func TestSerializableRangeBypassesLeaderRevisionSync(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	key := []byte("/serializable/range")
+	_, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("value")})
+	require.NoError(t, err)
+
+	syncErr := errors.New("leader revision unavailable")
+	server.peers = testPeerService{syncReadFn: func(context.Context) error { return syncErr }}
+	resp, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: key, Serializable: true})
+	require.NoError(t, err)
+	require.Len(t, resp.Kvs, 1)
+	require.Equal(t, "value", string(resp.Kvs[0].Value))
+
+	_, err = server.Range(ctx, &etcdserverpb.RangeRequest{Key: key})
+	require.ErrorIs(t, err, syncErr, "linearizable Range must retain the leader read barrier")
 }
 
 func TestPutIgnoreLeasePreservesExistingLease(t *testing.T) {
