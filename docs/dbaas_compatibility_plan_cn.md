@@ -521,11 +521,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   RPC 测试在鉴权后、提交前确定性撤权；真实 TiKV BatchWrite 合约验证 guard 冲突时
   sibling 写不落盘。测试键已按运行和子测试隔离，避免持久 TiKV 上残留数据造成
   “缺失键 CAS”假通过或假失败。
+- **Auth A24 客户端证书 CN 身份（2026-07-16）**：对齐 etcd
+  `AuthInfoFromTLS`：仅在 client endpoint 启用 `--client-cert-auth` 且 TLS verified
+  chain 存在时，把叶证书 CommonName 作为用户名；显式 token 优先，无效 token 不得
+  回退证书；带 `grpcgateway-accept` 的代理请求禁止借服务端证书 CN 冒充终端用户。
+  KubeBrain follower 不能像 etcd Raft apply 一样天然保留入口 TLS context，因此会在
+  本地验证证书后，用 TiKV 持久化、全副本共享的 HMAC key 签发 5 分钟证书身份 token
+  转发给 leader；leader 验签后按当前 RBAC 重新授权，未知 CN 仍是有效传输身份但没有
+  键权限。测试覆盖配置贯穿、token/CN 优先级、gateway 防护、未知 CN 以及 follower
+  代理后 username 不变，防止 leader 错把 follower 自身证书 CN 当成客户身份。
 
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
-   RBAC、token 生命周期与 Watch/Lease 持续鉴权已完成，下一阶段接每实例 mTLS。
+   RBAC、token 生命周期、Watch/Lease 持续鉴权与客户端证书 CN 身份已完成，下一步
+   做真实三副本 auth+mTLS failover 以及 CA/证书轮换。
 2. 对已通过的 `client/v3/concurrency` mutex/election/session/failover recipe
    增加 lease 自然过期和长时间 soak。
 3. 建立 DBaaS 控制面契约：创建、扩缩、升级、备份、恢复、证书轮换、销毁。

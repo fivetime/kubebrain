@@ -78,14 +78,19 @@ type leaseRecord struct {
 
 func (m *leaseManager) LeaseGrant(ctx context.Context, req *etcdserverpb.LeaseGrantRequest) (*etcdserverpb.LeaseGrantResponse, error) {
 	m.srv.metricCli.EmitCounter("lease.grant", 1)
-	if _, err := m.srv.authCallerFromContext(ctx); err != nil {
+	caller, err := m.srv.authCallerFromContext(ctx)
+	if err != nil {
 		return nil, err
 	}
 	epoch, leadingFresh := m.srv.peers.EpochAndLeadingFresh()
 	if !leadingFresh {
 		err := m.requireLeaseLeader("lease grant")
 		if m.srv.peers.EtcdProxyEnabled() {
-			return m.srv.peers.LeaseGrant(forwardAuthToken(ctx), req)
+			proxyCtx, err := m.srv.forwardAuthToken(ctx, caller)
+			if err != nil {
+				return nil, err
+			}
+			return m.srv.peers.LeaseGrant(proxyCtx, req)
 		}
 		return nil, err
 	}
@@ -147,7 +152,11 @@ func (m *leaseManager) LeaseRevoke(ctx context.Context, req *etcdserverpb.LeaseR
 	if !leadingFresh {
 		err := m.requireLeaseLeader("lease revoke")
 		if m.srv.peers.EtcdProxyEnabled() {
-			return m.srv.peers.LeaseRevoke(forwardAuthToken(ctx), req)
+			proxyCtx, err := m.srv.forwardAuthToken(ctx, caller)
+			if err != nil {
+				return nil, err
+			}
+			return m.srv.peers.LeaseRevoke(proxyCtx, req)
 		}
 		return nil, err
 	}
@@ -189,7 +198,11 @@ func (m *leaseManager) LeaseKeepAlive(stream etcdserverpb.Lease_LeaseKeepAliveSe
 			if !m.srv.peers.EtcdProxyEnabled() {
 				return err
 			}
-			resp, err := m.srv.peers.LeaseKeepAlive(forwardAuthToken(stream.Context()), req)
+			proxyCtx, err := m.srv.forwardAuthToken(stream.Context(), caller)
+			if err != nil {
+				return err
+			}
+			resp, err := m.srv.peers.LeaseKeepAlive(proxyCtx, req)
 			if err != nil {
 				return err
 			}
@@ -225,7 +238,11 @@ func (m *leaseManager) LeaseTimeToLive(ctx context.Context, req *etcdserverpb.Le
 	// client retries against the leader instead of reading stale local state (#56).
 	if err := m.requireLeaseLeader("lease time-to-live"); err != nil {
 		if m.srv.peers.EtcdProxyEnabled() {
-			return m.srv.peers.LeaseTimeToLive(forwardAuthToken(ctx), req)
+			proxyCtx, err := m.srv.forwardAuthToken(ctx, caller)
+			if err != nil {
+				return nil, err
+			}
+			return m.srv.peers.LeaseTimeToLive(proxyCtx, req)
 		}
 		return nil, err
 	}
@@ -273,7 +290,11 @@ func (m *leaseManager) LeaseLeases(ctx context.Context, req *etcdserverpb.LeaseL
 	// local snapshot; proxy to the leader or fail (#56).
 	if err := m.requireLeaseLeader("lease leases"); err != nil {
 		if m.srv.peers.EtcdProxyEnabled() {
-			return m.srv.peers.LeaseLeases(forwardAuthToken(ctx), req)
+			proxyCtx, err := m.srv.forwardAuthToken(ctx, caller)
+			if err != nil {
+				return nil, err
+			}
+			return m.srv.peers.LeaseLeases(proxyCtx, req)
 		}
 		return nil, err
 	}

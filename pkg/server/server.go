@@ -94,6 +94,7 @@ func NewServer(ctx context.Context, backend backend.Backend, metricCli metrics.M
 	peerService := service.NewPeerService(election, metricCli, backend, config.getPeerServiceConfig())
 	// construct etcd & brian grpc server
 	s.etcdServer = etcd.New(backend, metricCli, peerService)
+	s.etcdServer.SetClientCertAuth(config.ClientCertAuth)
 	// MemberList ClientURLs: advertise the homogeneous client port with the
 	// scheme clients actually dial (https iff the client port serves TLS),
 	// instead of the peer identity's http://host:peerPort.

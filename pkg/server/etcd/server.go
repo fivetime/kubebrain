@@ -80,11 +80,18 @@ type RPCServer struct {
 	advertiseClientPort  int
 	advertiseClientHTTPS bool
 	staticMembers        []*etcdserverpb.Member
+	clientCertAuth       bool
 
 	// The lease subsystem: its state and logic live in leaseManager (lease.go /
 	// lease_manager.go). Embedded so the lease gRPC handlers and the write-path
 	// bind/unbind/IDForKey helpers are promoted onto RPCServer.
 	*leaseManager
+}
+
+// SetClientCertAuth enables etcd-compatible authentication by the CommonName
+// of a client certificate already verified by the gRPC TLS transport.
+func (s *RPCServer) SetClientCertAuth(enabled bool) {
+	s.clientCertAuth = enabled
 }
 
 type leaseState struct {

@@ -30,6 +30,10 @@ type Config struct {
 	// ClientTLS is tls config for peer communication
 	ClientTLS *tls.Config
 
+	// ClientCertAuth enables etcd-compatible TLS CommonName authentication on
+	// the client endpoint after the TLS layer has verified the certificate.
+	ClientCertAuth bool
+
 	// ClientPort is the port every node's client-facing etcd endpoint listens
 	// on (deployments are homogeneous). The etcd proxy dials the LEADER's
 	// client endpoint with it — the peer port carried by the election identity

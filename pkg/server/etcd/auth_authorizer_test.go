@@ -2,6 +2,9 @@ package etcd
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"sync"
 	"testing"
 
@@ -9,8 +12,17 @@ import (
 	"go.etcd.io/etcd/api/v3/authpb"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/peer"
 )
+
+func verifiedTLSContext(ctx context.Context, commonName string) context.Context {
+	cert := &x509.Certificate{Subject: pkix.Name{CommonName: commonName}}
+	return peer.NewContext(ctx, &peer.Peer{AuthInfo: credentials.TLSInfo{
+		State: tls.ConnectionState{VerifiedChains: [][]*x509.Certificate{{cert}}},
+	}})
+}
 
 type authMutationReadShim struct {
 	BackendShim
@@ -156,6 +168,130 @@ func TestAuthorizedPutAtomicallyRejectsAuthMutationBeforeCommit(t *testing.T) {
 	stored, err := server.backend.Get(context.Background(), &etcdserverpb.RangeRequest{Key: []byte("/allowed/raced")})
 	require.NoError(t, err)
 	require.Empty(t, stored.Kvs)
+}
+
+func TestAuthCallerUsesVerifiedClientCertificateCommonName(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	setupAuthKVUser(t, server)
+	server.SetClientCertAuth(true)
+
+	caller, err := server.authCallerFromContext(verifiedTLSContext(context.Background(), "alice"))
+	require.NoError(t, err)
+	require.Equal(t, "alice", caller.username)
+	require.Equal(t, caller.snapshot.Config.Revision, caller.revision)
+	require.Empty(t, caller.forwardToken, "leader-local certificate auth must not mint a proxy token")
+
+	forwarded, err := server.forwardAuthToken(context.Background(), caller)
+	require.NoError(t, err)
+	md, ok := metadata.FromOutgoingContext(forwarded)
+	require.True(t, ok)
+	tokens := md.Get(rpctypes.TokenFieldNameGRPC)
+	require.Len(t, tokens, 1)
+	claims, err := server.tokens.verify(context.Background(), tokens[0])
+	require.NoError(t, err)
+	require.Equal(t, "alice", claims.Username)
+}
+
+func TestAuthCallerDoesNotFallbackFromInvalidTokenToClientCertificate(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	setupAuthKVUser(t, server)
+	server.SetClientCertAuth(true)
+
+	ctx := verifiedTLSContext(context.Background(), "alice")
+	ctx = metadata.NewIncomingContext(ctx, metadata.Pairs(rpctypes.TokenFieldNameGRPC, "invalid"))
+	_, err := server.authCallerFromContext(ctx)
+	require.ErrorIs(t, err, rpctypes.ErrInvalidAuthToken)
+}
+
+func TestAuthCallerPreservesUnknownCertificateIdentityForAuthorization(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	setupAuthKVUser(t, server)
+	server.SetClientCertAuth(true)
+
+	caller, err := server.authCallerFromContext(verifiedTLSContext(context.Background(), "external-cn"))
+	require.NoError(t, err)
+	require.Equal(t, "external-cn", caller.username)
+	require.ErrorIs(t, caller.require([]byte("/allowed/key"), nil, authpb.READ), rpctypes.ErrPermissionDenied)
+	forwarded, err := server.forwardAuthToken(context.Background(), caller)
+	require.NoError(t, err)
+	md, ok := metadata.FromOutgoingContext(forwarded)
+	require.True(t, ok)
+	tokens := md.Get(rpctypes.TokenFieldNameGRPC)
+	require.Len(t, tokens, 1)
+	claims, err := server.tokens.verify(context.Background(), tokens[0])
+	require.NoError(t, err)
+	require.True(t, claims.Certificate)
+	require.Equal(t, "external-cn", claims.Username)
+}
+
+func TestAuthCallerRejectsClientCertificateOnGRPCGatewayRequest(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	setupAuthKVUser(t, server)
+	server.SetClientCertAuth(true)
+
+	ctx := verifiedTLSContext(context.Background(), "alice")
+	ctx = metadata.NewIncomingContext(ctx, metadata.Pairs("grpcgateway-accept", "application/json"))
+	_, err := server.authCallerFromContext(ctx)
+	require.ErrorIs(t, err, rpctypes.ErrUserEmpty)
+}
+
+func TestClientCertificateIdentitySurvivesFollowerProxy(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	setupAuthKVUser(t, server)
+	server.SetClientCertAuth(true)
+
+	var forwardedUsername string
+	server.peers = testPeerService{
+		isLeader: false, proxyEnabled: true,
+		putFn: func(ctx context.Context, _ *etcdserverpb.PutRequest) (*etcdserverpb.PutResponse, error) {
+			md, ok := metadata.FromOutgoingContext(ctx)
+			require.True(t, ok)
+			tokens := md.Get(rpctypes.TokenFieldNameGRPC)
+			require.Len(t, tokens, 1)
+			claims, err := server.tokens.verify(context.Background(), tokens[0])
+			require.NoError(t, err)
+			forwardedUsername = claims.Username
+			return &etcdserverpb.PutResponse{}, nil
+		},
+	}
+
+	ctx := verifiedTLSContext(context.Background(), "alice")
+	_, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: []byte("/allowed/proxied"), Value: []byte("value")})
+	require.NoError(t, err)
+	require.Equal(t, "alice", forwardedUsername)
+}
+
+func TestForwardedCertificateIdentityUsesCurrentPermissions(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	setupAuthKVUser(t, server)
+	server.SetClientCertAuth(true)
+
+	caller, err := server.authCallerFromContext(verifiedTLSContext(context.Background(), "alice"))
+	require.NoError(t, err)
+	require.NoError(t, caller.require([]byte("/allowed/key"), nil, authpb.WRITE))
+	forwarded, err := server.forwardAuthToken(context.Background(), caller)
+	require.NoError(t, err)
+	md, ok := metadata.FromOutgoingContext(forwarded)
+	require.True(t, ok)
+	tokens := md.Get(rpctypes.TokenFieldNameGRPC)
+	require.Len(t, tokens, 1)
+	require.NoError(t, server.auth.roleRevokePermission(
+		context.Background(), "allowed", []byte("/allowed/"), []byte("/allowed0"),
+	))
+
+	forwardedCtx := metadata.NewIncomingContext(context.Background(), metadata.Pairs(
+		rpctypes.TokenFieldNameGRPC, tokens[0],
+	))
+	leaderCaller, err := server.authCallerFromContext(forwardedCtx)
+	require.NoError(t, err, "certificate identity must survive unrelated auth revision changes")
+	require.Equal(t, "alice", leaderCaller.username)
+	require.ErrorIs(t, leaderCaller.require([]byte("/allowed/key"), nil, authpb.WRITE), rpctypes.ErrPermissionDenied)
 }
 
 func TestAuthPermissionOpenEndedAndGap(t *testing.T) {

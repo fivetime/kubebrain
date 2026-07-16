@@ -95,6 +95,12 @@ type Config struct {
 }
 
 func (c *Config) getServerConfig() server.Config {
+	var clientTLS *tls.Config
+	clientCertAuth := false
+	if c.ClientSecurityConfig != nil {
+		clientTLS = c.ClientSecurityConfig.getClientTLSConfig()
+		clientCertAuth = c.ClientSecurityConfig.ClientAuth
+	}
 	return server.Config{
 		EnableEtcdProxy: c.EnableEtcdCompatibility,
 		ClientPort:      c.Port,
@@ -104,7 +110,8 @@ func (c *Config) getServerConfig() server.Config {
 		// client port + plaintext peer port), leaving the proxy permanently
 		// not-ready: every follower historical read Unavailable, every count a
 		// full-scan fallback (review #51).
-		ClientTLS:      c.ClientSecurityConfig.getClientTLSConfig(),
+		ClientTLS:      clientTLS,
+		ClientCertAuth: clientCertAuth,
 		LeaseDuration:  c.LeaseDuration,
 		RenewDeadline:  c.RenewDeadline,
 		RetryPeriod:    c.RetryPeriod,

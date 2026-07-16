@@ -28,12 +28,13 @@ const (
 )
 
 type authTokenClaims struct {
-	Username   string `json:"u"`
-	Revision   uint64 `json:"r"`
-	Generation string `json:"g,omitempty"`
-	IssuedAt   int64  `json:"i"`
-	Expires    int64  `json:"e"`
-	Nonce      string `json:"n"`
+	Username    string `json:"u"`
+	Revision    uint64 `json:"r"`
+	Generation  string `json:"g,omitempty"`
+	Certificate bool   `json:"c,omitempty"`
+	IssuedAt    int64  `json:"i"`
+	Expires     int64  `json:"e"`
+	Nonce       string `json:"n"`
 }
 
 type authTokenManager struct {
@@ -123,7 +124,17 @@ func (m *authTokenManager) authenticate(ctx context.Context, username, password 
 	if bcrypt.CompareHashAndPassword(user.Password, []byte(password)) != nil {
 		return "", rpctypes.ErrAuthFailed
 	}
+	return m.issue(ctx, snapshot, username)
+}
+
+// issue creates a normal signed user token after authenticate has checked the
+// password.
+func (m *authTokenManager) issue(ctx context.Context, snapshot *authSnapshot, username string) (string, error) {
+	if !snapshot.Config.Enabled || snapshot.Users[username] == nil {
+		return "", rpctypes.ErrAuthFailed
+	}
 	generation := snapshot.TokenGenerations[username]
+	var err error
 	if generation == nil {
 		generation, err = m.ensureUserGeneration(ctx, username)
 		if err != nil {
@@ -133,6 +144,22 @@ func (m *authTokenManager) authenticate(ctx context.Context, username, password 
 	if len(generation.Password) != authUserTokenGenerationBytes {
 		return "", errors.New("invalid auth user token generation")
 	}
+	return m.issueClaims(ctx, authTokenClaims{
+		Username: username, Revision: snapshot.Config.Revision,
+		Generation: base64.RawURLEncoding.EncodeToString(generation.Password),
+	})
+}
+
+func (m *authTokenManager) issueCertificate(ctx context.Context, snapshot *authSnapshot, username string) (string, error) {
+	if !snapshot.Config.Enabled || username == "" {
+		return "", rpctypes.ErrUserEmpty
+	}
+	return m.issueClaims(ctx, authTokenClaims{
+		Username: username, Revision: snapshot.Config.Revision, Certificate: true,
+	})
+}
+
+func (m *authTokenManager) issueClaims(ctx context.Context, claims authTokenClaims) (string, error) {
 	key, err := m.ensureSigningKey(ctx)
 	if err != nil {
 		return "", err
@@ -142,12 +169,9 @@ func (m *authTokenManager) authenticate(ctx context.Context, username, password 
 	if _, err = rand.Read(nonce); err != nil {
 		return "", err
 	}
-	claims := authTokenClaims{
-		Username: username, Revision: snapshot.Config.Revision,
-		Generation: base64.RawURLEncoding.EncodeToString(generation.Password),
-		IssuedAt:   now.Unix(), Expires: now.Add(authTokenTTL).Unix(),
-		Nonce: base64.RawURLEncoding.EncodeToString(nonce),
-	}
+	claims.IssuedAt = now.Unix()
+	claims.Expires = now.Add(authTokenTTL).Unix()
+	claims.Nonce = base64.RawURLEncoding.EncodeToString(nonce)
 	payload, err := json.Marshal(claims)
 	if err != nil {
 		return "", err
@@ -192,7 +216,16 @@ func (m *authTokenManager) verify(ctx context.Context, token string) (authTokenC
 	if err != nil {
 		return authTokenClaims{}, err
 	}
-	if !snapshot.Config.Enabled || snapshot.Users[claims.Username] == nil {
+	if !snapshot.Config.Enabled {
+		return authTokenClaims{}, rpctypes.ErrInvalidAuthToken
+	}
+	if claims.Certificate {
+		if claims.Generation != "" {
+			return authTokenClaims{}, rpctypes.ErrInvalidAuthToken
+		}
+		return claims, nil
+	}
+	if snapshot.Users[claims.Username] == nil {
 		return authTokenClaims{}, rpctypes.ErrInvalidAuthToken
 	}
 	if claims.Generation == "" {

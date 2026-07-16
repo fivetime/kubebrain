@@ -8,15 +8,19 @@ import (
 	"go.etcd.io/etcd/api/v3/authpb"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/peer"
 
 	"github.com/kubewharf/kubebrain/pkg/backend"
 )
 
 type authCaller struct {
-	username string
-	revision uint64
-	snapshot *authSnapshot
+	username     string
+	revision     uint64
+	snapshot     *authSnapshot
+	forwardToken string
+	certificate  bool
 }
 
 func (s *RPCServer) authCallerFromContext(ctx context.Context) (*authCaller, error) {
@@ -28,8 +32,11 @@ func (s *RPCServer) authCallerFromContext(ctx context.Context) (*authCaller, err
 		return nil, nil
 	}
 	values := metadata.ValueFromIncomingContext(ctx, rpctypes.TokenFieldNameGRPC)
+	if len(values) == 0 {
+		return s.authCallerFromTLS(ctx, snapshot)
+	}
 	if len(values) != 1 || values[0] == "" {
-		return nil, rpctypes.ErrUserEmpty
+		return nil, rpctypes.ErrInvalidAuthToken
 	}
 	claims, err := s.tokens.verify(ctx, values[0])
 	if err != nil {
@@ -44,7 +51,39 @@ func (s *RPCServer) authCallerFromContext(ctx context.Context) (*authCaller, err
 	// when a request starts. A token may survive unrelated auth mutations, but a
 	// serialized read must fail with ErrAuthOldRevision if the store changes while
 	// that request is executing.
-	return &authCaller{username: claims.Username, revision: snapshot.Config.Revision, snapshot: snapshot}, nil
+	return &authCaller{
+		username: claims.Username, revision: snapshot.Config.Revision,
+		snapshot: snapshot, forwardToken: values[0],
+	}, nil
+}
+
+func (s *RPCServer) authCallerFromTLS(ctx context.Context, snapshot *authSnapshot) (*authCaller, error) {
+	if !s.clientCertAuth {
+		return nil, rpctypes.ErrUserEmpty
+	}
+	p, ok := peer.FromContext(ctx)
+	if !ok || p == nil || p.AuthInfo == nil {
+		return nil, rpctypes.ErrUserEmpty
+	}
+	tlsInfo, ok := p.AuthInfo.(credentials.TLSInfo)
+	if !ok {
+		return nil, rpctypes.ErrUserEmpty
+	}
+	if values := metadata.ValueFromIncomingContext(ctx, "grpcgateway-accept"); len(values) > 0 {
+		return nil, rpctypes.ErrUserEmpty
+	}
+	for _, chain := range tlsInfo.State.VerifiedChains {
+		if len(chain) == 0 {
+			continue
+		}
+		username := chain[0].Subject.CommonName
+		return &authCaller{
+			username: username,
+			revision: snapshot.Config.Revision,
+			snapshot: snapshot, certificate: true,
+		}, nil
+	}
+	return nil, rpctypes.ErrUserEmpty
 }
 
 func (s *RPCServer) ensureAuthRevision(ctx context.Context, caller *authCaller) error {
@@ -68,12 +107,22 @@ func withAuthWriteGuard(ctx context.Context, caller *authCaller) context.Context
 	return backend.WithInternalWriteGuard(ctx, authConfigKey, encodeAuthConfig(caller.snapshot.Config))
 }
 
-func forwardAuthToken(ctx context.Context) context.Context {
-	values := metadata.ValueFromIncomingContext(ctx, rpctypes.TokenFieldNameGRPC)
-	if len(values) == 1 && values[0] != "" {
-		return metadata.AppendToOutgoingContext(ctx, rpctypes.TokenFieldNameGRPC, values[0])
+func (s *RPCServer) forwardAuthToken(ctx context.Context, caller *authCaller) (context.Context, error) {
+	if caller == nil {
+		return ctx, nil
 	}
-	return ctx
+	token := caller.forwardToken
+	if token == "" && caller.certificate {
+		var err error
+		token, err = s.tokens.issueCertificate(ctx, caller.snapshot, caller.username)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if token != "" {
+		return metadata.AppendToOutgoingContext(ctx, rpctypes.TokenFieldNameGRPC, token), nil
+	}
+	return ctx, nil
 }
 
 func (c *authCaller) isRoot() bool {

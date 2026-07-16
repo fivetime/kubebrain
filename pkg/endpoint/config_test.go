@@ -23,6 +23,7 @@ import (
 
 func TestConfig(t *testing.T) {
 	ast := assert.New(t)
+	ast.False((&Config{}).getServerConfig().ClientCertAuth)
 
 	configs := []Config{
 		{},
@@ -76,6 +77,7 @@ func TestConfig(t *testing.T) {
 	ast.Equal("kubebrain-peer.kubebrain-system.svc", conf.PeerSecurityConfig.getClientTLSConfig().ServerName)
 	ast.ElementsMatch([]string{"h2", "http/1.1"}, conf.ClientSecurityConfig.getServerTLSConfig().NextProtos)
 	ast.ElementsMatch([]string{"h2", "http/1.1"}, conf.PeerSecurityConfig.getServerTLSConfig().NextProtos)
+	ast.True(conf.getServerConfig().ClientCertAuth)
 }
 
 // TestClientCertAuthRequiresTrustedCA pins #50: enabling client cert auth without

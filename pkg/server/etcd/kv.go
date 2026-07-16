@@ -56,7 +56,11 @@ func (s *RPCServer) Range(ctx context.Context, r *etcdserverpb.RangeRequest) (*e
 	}
 	if r.Revision > 0 && !s.peers.IsLeader() && s.peers.EtcdProxyEnabled() {
 		s.metricCli.EmitCounter("read.follower.historical_proxy", 1)
-		return s.peers.Range(forwardAuthToken(ctx), r)
+		proxyCtx, err := s.forwardAuthToken(ctx, caller)
+		if err != nil {
+			return nil, err
+		}
+		return s.peers.Range(proxyCtx, r)
 	}
 	if err := s.peers.SyncReadRevision(ctx); err != nil {
 		return &etcdserverpb.RangeResponse{}, err
@@ -301,7 +305,11 @@ func (s *RPCServer) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etc
 	if !leadingFresh {
 		s.metricCli.EmitCounter("write.follower", 1)
 		if s.peers.EtcdProxyEnabled() {
-			return s.peers.Txn(forwardAuthToken(ctx), txn)
+			proxyCtx, err := s.forwardAuthToken(ctx, caller)
+			if err != nil {
+				return nil, err
+			}
+			return s.peers.Txn(proxyCtx, txn)
 		}
 		return nil, s.notLeaderErr("txn")
 	}
@@ -629,13 +637,21 @@ func validateDeleteRangeRequest(r *etcdserverpb.DeleteRangeRequest) error {
 func (s *RPCServer) Compact(ctx context.Context, r *etcdserverpb.CompactionRequest) (*etcdserverpb.CompactionResponse, error) {
 	// Compact is a cluster-wide destructive history operation, not a key-range
 	// write. Upstream etcd protects it with AuthAdmin.isPermitted (root only).
-	if err := s.requireAuthenticated(ctx, true); err != nil {
+	caller, err := s.authCallerFromContext(ctx)
+	if err != nil {
 		return nil, err
+	}
+	if !caller.isRoot() {
+		return nil, rpctypes.ErrPermissionDenied
 	}
 	if !s.peers.IsLeader() {
 		s.metricCli.EmitCounter("write.follower", 1)
 		if s.peers.EtcdProxyEnabled() {
-			return s.peers.Compact(forwardAuthToken(ctx), r)
+			proxyCtx, err := s.forwardAuthToken(ctx, caller)
+			if err != nil {
+				return nil, err
+			}
+			return s.peers.Compact(proxyCtx, r)
 		}
 		return nil, s.notLeaderErr("compact")
 	}
@@ -718,7 +734,11 @@ func (s *RPCServer) Put(ctx context.Context, r *etcdserverpb.PutRequest) (*etcds
 	if !leadingFresh {
 		s.metricCli.EmitCounter("write.follower", 1)
 		if s.peers.EtcdProxyEnabled() {
-			return s.peers.Put(forwardAuthToken(ctx), r)
+			proxyCtx, err := s.forwardAuthToken(ctx, caller)
+			if err != nil {
+				return nil, err
+			}
+			return s.peers.Put(proxyCtx, r)
 		}
 		return nil, s.notLeaderErr("put")
 	}
@@ -771,7 +791,11 @@ func (s *RPCServer) DeleteRange(ctx context.Context, r *etcdserverpb.DeleteRange
 	if !leadingFresh {
 		s.metricCli.EmitCounter("write.follower", 1)
 		if s.peers.EtcdProxyEnabled() {
-			return s.peers.DeleteRange(forwardAuthToken(ctx), r)
+			proxyCtx, err := s.forwardAuthToken(ctx, caller)
+			if err != nil {
+				return nil, err
+			}
+			return s.peers.DeleteRange(proxyCtx, r)
 		}
 		return nil, s.notLeaderErr("delete range")
 	}
