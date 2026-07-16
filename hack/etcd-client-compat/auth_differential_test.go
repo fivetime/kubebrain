@@ -47,6 +47,13 @@ type authDifferentialOutcome struct {
 	AnonymousCompact          authErrorOutcome
 	UserCompact               authErrorOutcome
 	RootCompactOK             bool
+	AnonymousRangeStream      authErrorOutcome
+	UserRangeStream           authErrorOutcome
+	RootRangeStreamCount      int
+	AnonymousStatus           authErrorOutcome
+	UserStatusOK              bool
+	UserHash                  authErrorOutcome
+	RootHashOK                bool
 }
 
 func runConcurrentClientOperations(count int, operation func(int) error) []error {
@@ -72,6 +79,16 @@ func runConcurrentClientOperations(count int, operation func(int) error) []error
 
 func authError(err error) authErrorOutcome {
 	return authErrorOutcome{Code: status.Code(err), Message: status.Convert(err).Message()}
+}
+
+func authRangeStream(t *testing.T, ctx context.Context, cli *clientv3.Client) (*clientv3.GetResponse, error) {
+	t.Helper()
+	stream, err := cli.GetStream(ctx, "/auth-compact/", clientv3.WithPrefix())
+	if err != nil {
+		return nil, err
+	}
+	response, err := clientv3.GetStreamToGetResponse(stream)
+	return (*clientv3.GetResponse)(response), err
 }
 
 func collectAuthDifferentialOutcome(t *testing.T, endpoint string) authDifferentialOutcome {
@@ -112,6 +129,14 @@ func collectAuthDifferentialOutcome(t *testing.T, endpoint string) authDifferent
 	_, anonymousCompactErr := bootstrap.Compact(ctx, compactRevisions[0])
 	_, userCompactErr := alice.Compact(ctx, compactRevisions[1])
 	_, rootCompactErr := root.Compact(ctx, compactRevisions[2])
+	_, anonymousRangeStreamErr := authRangeStream(t, ctx, bootstrap)
+	_, userRangeStreamErr := authRangeStream(t, ctx, alice)
+	rootRangeStream, rootRangeStreamErr := authRangeStream(t, ctx, root)
+	require.NoError(t, rootRangeStreamErr)
+	_, anonymousStatusErr := bootstrap.Status(ctx, bootstrap.Endpoints()[0])
+	_, userStatusErr := alice.Status(ctx, alice.Endpoints()[0])
+	_, userHashErr := alice.HashKV(ctx, alice.Endpoints()[0], 0)
+	_, rootHashErr := root.HashKV(ctx, root.Endpoints()[0], 0)
 
 	_, err = root.UserGrantRole(ctx, "root", "root")
 	require.NoError(t, err)
@@ -227,6 +252,13 @@ func collectAuthDifferentialOutcome(t *testing.T, endpoint string) authDifferent
 		AnonymousCompact:          authError(anonymousCompactErr),
 		UserCompact:               authError(userCompactErr),
 		RootCompactOK:             rootCompactErr == nil,
+		AnonymousRangeStream:      authError(anonymousRangeStreamErr),
+		UserRangeStream:           authError(userRangeStreamErr),
+		RootRangeStreamCount:      len(rootRangeStream.Kvs),
+		AnonymousStatus:           authError(anonymousStatusErr),
+		UserStatusOK:              userStatusErr == nil,
+		UserHash:                  authError(userHashErr),
+		RootHashOK:                rootHashErr == nil,
 	}
 }
 

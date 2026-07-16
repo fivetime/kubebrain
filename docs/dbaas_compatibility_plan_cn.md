@@ -307,6 +307,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   leader 再次校验，避免通过任一副本绕过权限。官方 `client/v3` 对独立 etcd 3.7
   和真实 TiKV-backed KubeBrain 执行匿名、普通用户及 root 三组请求，状态码、错误
   文本和成功结果一致。
+- **流式与 Maintenance 鉴权差分（2026-07-16）**：官方 `client/v3` 双端
+  Auth 生命周期新增 RangeStream、Status 和 HashKV。RangeStream 对匿名及无范围
+  READ 权限用户分别拒绝，root 可完整读取 3 个对象；Status 允许任意已认证用户但
+  拒绝匿名请求；HashKV 仅允许 root。server-streaming 的错误从异步接收通道取得后，
+  gRPC code/message 仍与参考 etcd 一致。静态复核同时确认 MemberList 要求已认证、
+  MemberAdd/Remove/Update/Promote 先要求 root 再返回平台替代的 Unimplemented。
 - **Physical compaction 故障恢复（2026-07-16）**：真实 TiKV 灌入 500 key ×
   20 versions 后验证 Physical=true 在扫描完成后才返回；100ms 客户端取消时逻辑
   水位已经单调推进、旧 revision 返回 ErrCompacted、当前值可读。修复了取消/进程
