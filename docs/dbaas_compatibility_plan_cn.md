@@ -739,6 +739,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   value 与 attachment 一批提交，却丢弃 `PrevKv`；现直接复用同一 `TxnApply` 的 pre-read
   结果构造响应，不增加第二次非原子读取。内存后端回归固定完整旧 value/lease/revision，
   kind 三副本独立 TiKV/PD 与 reference etcd 提交 `d947b2086` 连续 10 轮结构化差分通过。
+- **KV A37 linearizable historical Range header（2026-07-16）**：全量双端差分发现，
+  revision=4 的历史 KV 在当前 revision=5 时，etcd 返回 `Header.Revision=5`，而请求被 LB
+  分配到落后 follower 时 KubeBrain 曾返回其 durable watermark 4。根因是 bounded
+  historical follower 快路径未限制 `Serializable`，误把“历史内容已持久化”当成“线性读
+  header 已追平”。现仅 `Serializable=true` 可直接读 follower durable snapshot；默认
+  linearizable historical Range 在可代理部署中转发 Leader，否则先完成 read-index sync。
+  单测分别固定 follower 快路径与 Leader proxy header；真实三副本 DeleteRange+历史 Range
+  双端差分连续 20 轮通过，随后 Compact/Delete/Lease/Put/Range/RangeStream/serializable
+  Range/Txn/Watch control 全矩阵同轮通过。
 
 ### P1：通用服务能力
 

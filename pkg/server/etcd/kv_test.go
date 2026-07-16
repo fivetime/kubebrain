@@ -188,10 +188,33 @@ func TestHistoricalRangeUsesDurableFollowerWatermark(t *testing.T) {
 		t.Fatal("bounded historical read must not require leader revision sync")
 		return nil
 	}}
-	resp, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: key, Revision: first.Header.Revision})
+	resp, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: key, Revision: first.Header.Revision, Serializable: true})
 	require.NoError(t, err)
 	require.Len(t, resp.Kvs, 1)
 	require.Equal(t, []byte("v1"), resp.Kvs[0].Value)
+}
+
+func TestLinearizableHistoricalRangeRoutesToLeader(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	proxied := false
+	server.peers = testPeerService{
+		isLeader:     false,
+		proxyEnabled: true,
+		rangeFn: func(_ context.Context, request *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
+			proxied = true
+			require.False(t, request.Serializable)
+			require.Equal(t, int64(7), request.Revision)
+			return &etcdserverpb.RangeResponse{Header: txnHeader(42)}, nil
+		},
+	}
+
+	response, err := server.Range(context.Background(), &etcdserverpb.RangeRequest{
+		Key: []byte("/historical-linearizable"), Revision: 7,
+	})
+	require.NoError(t, err)
+	require.True(t, proxied)
+	require.Equal(t, int64(42), response.Header.Revision)
 }
 
 func (s testPeerService) Range(ctx context.Context, req *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
