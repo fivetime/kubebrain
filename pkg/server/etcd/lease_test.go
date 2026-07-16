@@ -88,6 +88,7 @@ func TestLeaseGrantBindKeepAliveAndRevoke(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, int64(1001), grantResp.ID)
 	require.Equal(t, int64(30), grantResp.TTL)
+	require.Equal(t, int64(server.backend.GetCurrentRevision()), grantResp.Header.Revision)
 
 	_, err = server.Put(ctx, &etcdserverpb.PutRequest{
 		Key:   []byte("/registry/leases/a"),
@@ -103,6 +104,7 @@ func TestLeaseGrantBindKeepAliveAndRevoke(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, int64(30), ttlResp.GrantedTTL)
 	require.ElementsMatch(t, [][]byte{[]byte("/registry/leases/a")}, ttlResp.Keys)
+	require.Equal(t, int64(server.backend.GetCurrentRevision()), ttlResp.Header.Revision)
 
 	stream := &fakeLeaseKeepAliveServer{
 		requests: []*etcdserverpb.LeaseKeepAliveRequest{{ID: grantResp.ID}},
@@ -111,6 +113,7 @@ func TestLeaseGrantBindKeepAliveAndRevoke(t *testing.T) {
 	require.Len(t, stream.sent, 1)
 	require.Equal(t, grantResp.ID, stream.sent[0].ID)
 	require.Equal(t, int64(30), stream.sent[0].TTL)
+	require.Equal(t, int64(server.backend.GetCurrentRevision()), stream.sent[0].Header.Revision)
 
 	_, err = server.LeaseRevoke(ctx, &etcdserverpb.LeaseRevokeRequest{ID: grantResp.ID})
 	require.NoError(t, err)
@@ -181,6 +184,7 @@ func TestLeaseTimeToLiveUnknownLeaseMatchesEtcd(t *testing.T) {
 	require.Equal(t, int64(-1), resp.TTL)
 	require.Zero(t, resp.GrantedTTL)
 	require.Empty(t, resp.Keys)
+	require.Equal(t, int64(server.backend.GetCurrentRevision()), resp.Header.Revision)
 }
 
 func TestLeaseKeepAliveUnknownLeaseMatchesEtcd(t *testing.T) {
@@ -194,6 +198,7 @@ func TestLeaseKeepAliveUnknownLeaseMatchesEtcd(t *testing.T) {
 	require.Len(t, stream.sent, 1)
 	require.Equal(t, int64(9999), stream.sent[0].ID)
 	require.Zero(t, stream.sent[0].TTL)
+	require.Equal(t, int64(server.backend.GetCurrentRevision()), stream.sent[0].Header.Revision)
 }
 
 func TestLeaseGrantDuplicateAndTooLargeTTLMatchEtcdErrors(t *testing.T) {
@@ -276,6 +281,7 @@ func TestLeaseLeasesListsGrantedLeases(t *testing.T) {
 		{ID: 2001},
 		{ID: 2002},
 	}, resp.Leases)
+	require.Equal(t, int64(server.backend.GetCurrentRevision()), resp.Header.Revision)
 }
 
 func TestLeaseRestoreFromBackend(t *testing.T) {

@@ -170,6 +170,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   的 atomic 与 staged 执行器也会在提交前追加 internal attachment op，提交后仅
   更新内存索引；涉及 lease 的单写 Txn 不再回退到非原子顺序路径。普通无 lease
   单写仍保留原快路径。
+- **Lease 官方客户端差分**：新增 `TestLeaseDifferentialAgainstReferenceEtcd`，
+  对照 `/root/etcd` 的真实 server，覆盖 Grant 不推进 revision、leased Put 单
+  revision、TTL/attached keys、KeepAliveOnce、Leases、Revoke 删除 revision、
+  revoke 后 key 消失及未知 lease `TTL=-1`。同时修复 Grant/TTL/KeepAlive/Leases
+  的空 Header.Revision；真实 TiKV 部署上 Lease/Range/DeleteRange/Txn 四组差分
+  共同连续 10 轮通过。
 
 ### P1：通用服务能力
 

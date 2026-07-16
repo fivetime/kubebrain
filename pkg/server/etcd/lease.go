@@ -98,7 +98,7 @@ func (m *leaseManager) LeaseGrant(ctx context.Context, req *etcdserverpb.LeaseGr
 	}
 
 	return &etcdserverpb.LeaseGrantResponse{
-		Header: &etcdserverpb.ResponseHeader{},
+		Header: txnHeader(int64(m.srv.backend.GetCurrentRevision())),
 		ID:     id,
 		TTL:    req.TTL,
 	}, nil
@@ -150,7 +150,7 @@ func (m *leaseManager) LeaseKeepAlive(stream etcdserverpb.Lease_LeaseKeepAliveSe
 			ttl = 0
 		}
 		if err := stream.Send(&etcdserverpb.LeaseKeepAliveResponse{
-			Header: &etcdserverpb.ResponseHeader{},
+			Header: txnHeader(int64(m.srv.backend.GetCurrentRevision())),
 			ID:     req.ID,
 			TTL:    ttl,
 		}); err != nil {
@@ -177,14 +177,14 @@ func (m *leaseManager) LeaseTimeToLive(ctx context.Context, req *etcdserverpb.Le
 	st, ok := m.leases[req.ID]
 	if !ok {
 		return &etcdserverpb.LeaseTimeToLiveResponse{
-			Header: &etcdserverpb.ResponseHeader{},
+			Header: txnHeader(int64(m.srv.backend.GetCurrentRevision())),
 			ID:     req.ID,
 			TTL:    -1,
 		}, nil
 	}
 
 	resp := &etcdserverpb.LeaseTimeToLiveResponse{
-		Header:     &etcdserverpb.ResponseHeader{},
+		Header:     txnHeader(int64(m.srv.backend.GetCurrentRevision())),
 		ID:         req.ID,
 		TTL:        remainingTTL(st),
 		GrantedTTL: st.ttl,
@@ -209,7 +209,7 @@ func (m *leaseManager) LeaseLeases(ctx context.Context, req *etcdserverpb.LeaseL
 	m.leaseMu.Lock()
 	defer m.leaseMu.Unlock()
 	resp := &etcdserverpb.LeaseLeasesResponse{
-		Header: &etcdserverpb.ResponseHeader{},
+		Header: txnHeader(int64(m.srv.backend.GetCurrentRevision())),
 		Leases: make([]*etcdserverpb.LeaseStatus, 0, len(m.leases)),
 	}
 	for id := range m.leases {
