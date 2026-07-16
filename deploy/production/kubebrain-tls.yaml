@@ -75,6 +75,10 @@ spec:
             - --compatible-with-etcd=true
             - --max-txn-ops=128
             - --max-request-bytes=1572864
+            - --max-concurrent-streams=4294967295
+            - --grpc-keepalive-min-time=5s
+            - --grpc-keepalive-interval=2h
+            - --grpc-keepalive-timeout=20s
             - --grpc-max-connection-age=1h
             - --grpc-max-connection-age-grace=5m
             - --tls-min-version=TLS1.2

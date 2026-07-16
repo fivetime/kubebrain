@@ -17,7 +17,6 @@ package endpoint
 import (
 	"context"
 	"net/http"
-	"time"
 	// Deliberately NOT importing net/http/pprof: its init() registers handlers on
 	// http.DefaultServeMux, which would re-expose unauthenticated pprof the moment
 	// anything serves DefaultServeMux. pprof is wired explicitly and gated behind
@@ -165,7 +164,7 @@ func (e *Endpoint) buildPeerHttpServer() exposedServer {
 	return newHttpServerWithHandlers(handlersMaps...)
 }
 
-// grpcKeepaliveOptions matches etcd's server-side keepalive posture. etcd
+// grpcTransportOptions matches etcd's HTTP/2 stream and keepalive posture. etcd
 // clients (the apiserver's included) send keepalive pings every ~10s on
 // long-lived watch connections; gRPC's DEFAULT enforcement demands >=5min
 // between pings and answers faster ones with a GoAway
@@ -176,24 +175,34 @@ func (e *Endpoint) buildPeerHttpServer() exposedServer {
 // connection always has an active stream, so MinTime alone fixes the bug,
 // and permitting stream-less pings would let dead-idle connections pin
 // themselves open — mirror etcd exactly (review #51).
-func grpcKeepaliveOptions(maxConnectionAge, maxConnectionAgeGrace time.Duration) []grpc.ServerOption {
-	opts := []grpc.ServerOption{
-		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
-			MinTime:             5 * time.Second,
+func grpcTransportOptions(config *Config) []grpc.ServerOption {
+	opts := []grpc.ServerOption{grpc.MaxConcurrentStreams(config.MaxConcurrentStreams)}
+	if config.GRPCKeepAliveMinTime > 0 {
+		opts = append(opts, grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
+			MinTime:             config.GRPCKeepAliveMinTime,
 			PermitWithoutStream: false,
-		}),
-	}
-	if maxConnectionAge > 0 {
-		opts = append(opts, grpc.KeepaliveParams(keepalive.ServerParameters{
-			MaxConnectionAge:      maxConnectionAge,
-			MaxConnectionAgeGrace: maxConnectionAgeGrace,
 		}))
+	}
+	parameters := keepalive.ServerParameters{}
+	configured := false
+	if config.GRPCKeepAliveInterval > 0 && config.GRPCKeepAliveTimeout > 0 {
+		parameters.Time = config.GRPCKeepAliveInterval
+		parameters.Timeout = config.GRPCKeepAliveTimeout
+		configured = true
+	}
+	if config.GRPCMaxConnectionAge > 0 {
+		parameters.MaxConnectionAge = config.GRPCMaxConnectionAge
+		parameters.MaxConnectionAgeGrace = config.GRPCMaxConnectionAgeGrace
+		configured = true
+	}
+	if configured {
+		opts = append(opts, grpc.KeepaliveParams(parameters))
 	}
 	return opts
 }
 
 func (e *Endpoint) buildClientGrpcServer() exposedServer {
-	opts := append(grpcKeepaliveOptions(e.config.GRPCMaxConnectionAge, e.config.GRPCMaxConnectionAgeGrace), e.metrics.GetGrpcServerOption()...)
+	opts := append(grpcTransportOptions(e.config), e.metrics.GetGrpcServerOption()...)
 	opts = append(opts, grpc.StatsHandler(e.tlsIdentities))
 	opts = append(opts, e.server.ClientServerOptions()...)
 	grpcServer := grpc.NewServer(opts...)
@@ -202,7 +211,7 @@ func (e *Endpoint) buildClientGrpcServer() exposedServer {
 }
 
 func (e *Endpoint) buildPeerGrpcServer() exposedServer {
-	opts := append(grpcKeepaliveOptions(e.config.GRPCMaxConnectionAge, e.config.GRPCMaxConnectionAgeGrace), e.metrics.GetGrpcServerOption()...)
+	opts := append(grpcTransportOptions(e.config), e.metrics.GetGrpcServerOption()...)
 	opts = append(opts, grpc.StatsHandler(e.tlsIdentities))
 	// The peer listener currently registers the same RPC surface as the client
 	// listener, so it must not bypass request admission or response stamping.

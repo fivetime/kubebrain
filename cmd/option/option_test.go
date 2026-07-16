@@ -52,6 +52,10 @@ func TestTLSFlagsBindToExpectedSecurityConfigFields(t *testing.T) {
 		"--cipher-suites=TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
 		"--grpc-max-connection-age=1h",
 		"--grpc-max-connection-age-grace=5m",
+		"--max-concurrent-streams=32",
+		"--grpc-keepalive-min-time=7s",
+		"--grpc-keepalive-interval=3m",
+		"--grpc-keepalive-timeout=11s",
 		"--max-txn-ops=64",
 		"--max-request-bytes=1048576",
 	}))
@@ -80,8 +84,20 @@ func TestTLSFlagsBindToExpectedSecurityConfigFields(t *testing.T) {
 	require.Equal(t, []string{"TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256"}, o.epsConf.CipherSuites)
 	require.Equal(t, time.Hour, o.epsConf.GRPCMaxConnectionAge)
 	require.Equal(t, 5*time.Minute, o.epsConf.GRPCMaxConnectionAgeGrace)
+	require.Equal(t, uint32(32), o.epsConf.MaxConcurrentStreams)
+	require.Equal(t, 7*time.Second, o.epsConf.GRPCKeepAliveMinTime)
+	require.Equal(t, 3*time.Minute, o.epsConf.GRPCKeepAliveInterval)
+	require.Equal(t, 11*time.Second, o.epsConf.GRPCKeepAliveTimeout)
 	require.Equal(t, uint(64), o.epsConf.MaxTxnOps)
 	require.Equal(t, uint(1048576), o.epsConf.MaxRequestBytes)
+}
+
+func TestTransportPolicyDefaultsMatchEtcd(t *testing.T) {
+	o := NewOptions()
+	require.Equal(t, ^uint32(0), o.epsConf.MaxConcurrentStreams)
+	require.Equal(t, 5*time.Second, o.epsConf.GRPCKeepAliveMinTime)
+	require.Equal(t, 2*time.Hour, o.epsConf.GRPCKeepAliveInterval)
+	require.Equal(t, 20*time.Second, o.epsConf.GRPCKeepAliveTimeout)
 }
 
 // TestWatchProgressNotifyIntervalValidation locks the k8s-1.37-review guard:

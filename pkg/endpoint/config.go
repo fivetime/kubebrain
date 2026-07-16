@@ -95,6 +95,10 @@ type Config struct {
 	// after GOAWAY before active streams are forcibly closed.
 	GRPCMaxConnectionAge      time.Duration
 	GRPCMaxConnectionAgeGrace time.Duration
+	MaxConcurrentStreams      uint32
+	GRPCKeepAliveMinTime      time.Duration
+	GRPCKeepAliveInterval     time.Duration
+	GRPCKeepAliveTimeout      time.Duration
 
 	// MaxTxnOps and MaxRequestBytes mirror etcd's client admission limits.
 	// MaxRequestBytes excludes the 512-byte gRPC framing allowance.

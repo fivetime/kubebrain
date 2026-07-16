@@ -611,6 +611,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   client/v3 发送“value 等于上限、加 protobuf overhead 后超限”的 Put，得到精确
   `ErrRequestTooLarge`；随后 CA/serving+outbound leaf 轮换、六轮 Pod 替换、200 次 lease+
   watch 持续写、auth 与动态 CRL 全部通过，证明限制不会破坏 follower/HA 路径。
+- **传输 A33 HTTP/2 stream 与 keepalive 策略（2026-07-16）**：新增 etcd 同名
+  `--max-concurrent-streams`（默认 `math.MaxUint32`）、`--grpc-keepalive-min-time`（`5s`）、
+  `--grpc-keepalive-interval`（`2h`）、`--grpc-keepalive-timeout`（`20s`），统一应用于 client/
+  peer listener。min-time 仅正数时启用；interval 与 timeout 必须都为正才发 server ping，任一
+  为 0 即关闭，保持 upstream 条件语义；已有 max-connection-age 与 ping 参数合并到同一
+  `keepalive.ServerParameters`，避免后注册 option 覆盖前者。真实 bufconn HTTP/2 测试以
+  max=1 持有 health watch，证明同连接 unary 被阻塞至 deadline，取消 watch 释放 slot 后
+  立即成功；flag/default 测试固定 upstream 数值。真实 kind 三副本以 production manifest
+  的显式 keepalive/stream flags 运行，跨 CA/leaf 轮换、六轮 Pod 替换与 max-age GOAWAY 完成
+  193 次 lease+watch 持续写，随后 auth/CRL 流程通过。
 
 ### P1：通用服务能力
 

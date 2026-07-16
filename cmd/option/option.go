@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"hash/crc32"
+	"math"
 	"net"
 	"strings"
 	"time"
@@ -102,6 +103,10 @@ func NewOptions() *KubeBrainOption {
 			// Disabled by default for backward compatibility. Production DBaaS
 			// manifests enable aging so TLS trust retirement has a finite bound.
 			GRPCMaxConnectionAgeGrace: 5 * time.Minute,
+			MaxConcurrentStreams:      math.MaxUint32,
+			GRPCKeepAliveMinTime:      5 * time.Second,
+			GRPCKeepAliveInterval:     2 * time.Hour,
+			GRPCKeepAliveTimeout:      20 * time.Second,
 			MaxTxnOps:                 128,
 			MaxRequestBytes:           1572864,
 			TLSMinVersion:             "TLS1.2",
@@ -134,6 +139,10 @@ func (o *KubeBrainOption) AddFlags(fs *pflag.FlagSet) {
 	fs.IntVar(&o.epsConf.InfoPort, "info-port", o.epsConf.InfoPort, "the port kubebrain listen on for node info")
 	fs.DurationVar(&o.epsConf.GRPCMaxConnectionAge, "grpc-max-connection-age", o.epsConf.GRPCMaxConnectionAge, "Maximum age of a client or peer gRPC connection before GOAWAY; 0 disables. Bounds how long pre-rotation TLS trust remains active.")
 	fs.DurationVar(&o.epsConf.GRPCMaxConnectionAgeGrace, "grpc-max-connection-age-grace", o.epsConf.GRPCMaxConnectionAgeGrace, "Drain window after max connection age before active streams are closed. Must be positive when connection aging is enabled.")
+	fs.Uint32Var(&o.epsConf.MaxConcurrentStreams, "max-concurrent-streams", o.epsConf.MaxConcurrentStreams, "Maximum concurrent streams that each client connection can open at a time.")
+	fs.DurationVar(&o.epsConf.GRPCKeepAliveMinTime, "grpc-keepalive-min-time", o.epsConf.GRPCKeepAliveMinTime, "Minimum interval that a client should wait before sending keepalive pings; 0 disables enforcement.")
+	fs.DurationVar(&o.epsConf.GRPCKeepAliveInterval, "grpc-keepalive-interval", o.epsConf.GRPCKeepAliveInterval, "Frequency of server-to-client keepalive pings; 0 disables server pings.")
+	fs.DurationVar(&o.epsConf.GRPCKeepAliveTimeout, "grpc-keepalive-timeout", o.epsConf.GRPCKeepAliveTimeout, "Time to wait for a keepalive response; 0 disables server pings.")
 	fs.UintVar(&o.epsConf.MaxTxnOps, "max-txn-ops", o.epsConf.MaxTxnOps, "Maximum number of operations permitted in a transaction.")
 	fs.UintVar(&o.epsConf.MaxRequestBytes, "max-request-bytes", o.epsConf.MaxRequestBytes, "Maximum client request payload size in bytes, excluding 512 bytes of gRPC framing overhead.")
 	fs.StringVar(&o.epsConf.TLSMinVersion, "tls-min-version", o.epsConf.TLSMinVersion, "Minimum TLS version for client, peer, and info endpoints: TLS1.2 or TLS1.3.")
