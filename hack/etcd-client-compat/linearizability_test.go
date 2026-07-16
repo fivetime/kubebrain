@@ -185,26 +185,7 @@ func TestClientV3RegisterHistoryIsLinearizable(t *testing.T) {
 	var failedOperations atomic.Int64
 	var workers sync.WaitGroup
 	if failoverPod != "" {
-		workers.Add(1)
-		go func() {
-			defer workers.Done()
-			for clock.Load() < 20 {
-				select {
-				case <-ctx.Done():
-					setupErrCh <- ctx.Err()
-					return
-				case <-time.After(5 * time.Millisecond):
-				}
-			}
-			namespace := os.Getenv("KUBEBRAIN_FAILOVER_NAMESPACE")
-			if namespace == "" {
-				namespace = "kubebrain-dev"
-			}
-			output, err := exec.CommandContext(ctx, "kubectl", "-n", namespace, "delete", "pod", failoverPod, "--wait=false").CombinedOutput()
-			if err != nil {
-				setupErrCh <- fmt.Errorf("delete failover pod: %w: %s", err, output)
-			}
-		}()
+		startLinearizabilityPodDeletion(ctx, &clock, failoverPod, setupErrCh, &workers)
 	}
 	for clientID := 0; clientID < clients; clientID++ {
 		workers.Add(1)
@@ -257,6 +238,29 @@ func TestClientV3RegisterHistoryIsLinearizable(t *testing.T) {
 	}
 	result := porcupine.CheckOperationsTimeout(registerModel, history, 10*time.Second)
 	require.Equalf(t, porcupine.Ok, result, "register history result: %s", result)
+}
+
+func startLinearizabilityPodDeletion(ctx context.Context, clock *atomic.Int64, pod string, errCh chan<- error, workers *sync.WaitGroup) {
+	workers.Add(1)
+	go func() {
+		defer workers.Done()
+		for clock.Load() < 20 {
+			select {
+			case <-ctx.Done():
+				errCh <- ctx.Err()
+				return
+			case <-time.After(5 * time.Millisecond):
+			}
+		}
+		namespace := os.Getenv("KUBEBRAIN_FAILOVER_NAMESPACE")
+		if namespace == "" {
+			namespace = "kubebrain-dev"
+		}
+		output, err := exec.CommandContext(ctx, "kubectl", "-n", namespace, "delete", "pod", pod, "--wait=false").CombinedOutput()
+		if err != nil {
+			errCh <- fmt.Errorf("delete failover pod: %w: %s", err, output)
+		}
+	}()
 }
 
 func invokeRegisterOperation(ctx context.Context, cli *clientv3.Client, key string, input registerInput) (registerOutput, error) {
