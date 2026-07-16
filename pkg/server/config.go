@@ -56,6 +56,8 @@ type Config struct {
 
 	MaxTxnOps       uint
 	MaxRequestBytes uint
+	BcryptCost      uint
+	AuthTokenTTL    uint
 
 	ClusterMembers []*etcdserverpb.Member
 }

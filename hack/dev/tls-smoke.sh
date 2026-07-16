@@ -11,9 +11,11 @@ REPLICAS="${REPLICAS:-3}"
 RUN_APISERVER_SMOKE="${RUN_APISERVER_SMOKE:-true}"
 RUN_BACKUP_DRILL="${RUN_BACKUP_DRILL:-true}"
 RUN_AUTH_CERT_SMOKE="${RUN_AUTH_CERT_SMOKE:-true}"
+RUN_AUTH_TTL_ONLY="${RUN_AUTH_TTL_ONLY:-false}"
 RUN_CERT_ROTATION_SMOKE="${RUN_CERT_ROTATION_SMOKE:-true}"
 GRPC_MAX_CONNECTION_AGE="${GRPC_MAX_CONNECTION_AGE:-5s}"
 GRPC_MAX_CONNECTION_AGE_GRACE="${GRPC_MAX_CONNECTION_AGE_GRACE:-2s}"
+AUTH_TOKEN_TTL="${AUTH_TOKEN_TTL:-300}"
 BACKUP_PREFIX="${BACKUP_PREFIX:-/registry/tls-smoke}"
 BACKUP_BATCH_SIZE="${BACKUP_BATCH_SIZE:-100}"
 APISERVER_SECURE_PORT="${APISERVER_SECURE_PORT:-16444}"
@@ -192,6 +194,7 @@ sed \
   -e "s#--tls-server-name=kubebrain-client.kubebrain-system.svc#--tls-server-name=kubebrain-client.${NAMESPACE}.svc#" \
   -e "s#--grpc-max-connection-age=1h#--grpc-max-connection-age=${GRPC_MAX_CONNECTION_AGE}#" \
   -e "s#--grpc-max-connection-age-grace=5m#--grpc-max-connection-age-grace=${GRPC_MAX_CONNECTION_AGE_GRACE}#" \
+  -e "s#--auth-token-ttl=300#--auth-token-ttl=${AUTH_TOKEN_TTL}#" \
   "$ROOT_DIR/deploy/production/kubebrain-tls.yaml" > manifest.yaml
 
 python3 - <<PY
@@ -619,7 +622,13 @@ import (
 	"os"
 	"time"
 
+	"go.etcd.io/etcd/api/v3/etcdserverpb"
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	clientv3 "go.etcd.io/etcd/client/v3"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 )
 
 func main() {
@@ -635,10 +644,11 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	tlsConfig := &tls.Config{RootCAs: pool, Certificates: []tls.Certificate{cert}, ServerName: "127.0.0.1"}
 	cli, err := clientv3.New(clientv3.Config{
 		Endpoints: []string{"https://127.0.0.1:" + os.Getenv("LOCAL_PORT")},
 		DialTimeout: 10 * time.Second,
-		TLS: &tls.Config{RootCAs: pool, Certificates: []tls.Certificate{cert}, ServerName: "127.0.0.1"},
+		TLS: tlsConfig,
 	})
 	if err != nil {
 		log.Fatal(err)
@@ -661,6 +671,29 @@ func main() {
 		}
 		if _, err = cli.AuthEnable(ctx); err != nil {
 			log.Fatalf("enable auth: %v", err)
+		}
+		if os.Getenv("CHECK_AUTH_TTL") == "true" {
+			auth, err := cli.Auth.Authenticate(ctx, "root", "unused")
+			if err != nil { log.Fatalf("authenticate root: %v", err) }
+			rawConn, err := grpc.DialContext(ctx, "127.0.0.1:"+os.Getenv("LOCAL_PORT"),
+				grpc.WithTransportCredentials(credentials.NewTLS(tlsConfig.Clone())))
+			if err != nil { log.Fatalf("dial raw auth connection: %v", err) }
+			defer rawConn.Close()
+			raw := etcdserverpb.NewKVClient(rawConn)
+			tokenCtx := metadata.AppendToOutgoingContext(ctx, rpctypes.TokenFieldNameGRPC, auth.Token)
+			if _, err = raw.Range(tokenCtx, &etcdserverpb.RangeRequest{Key: []byte("/registry/tls-smoke/key")}); err != nil {
+				log.Fatalf("fresh token range: %v", err)
+			}
+			time.Sleep(3 * time.Second)
+			if _, err = raw.Range(tokenCtx, &etcdserverpb.RangeRequest{Key: []byte("/registry/tls-smoke/key")});
+				status.Code(err) != status.Code(rpctypes.ErrGRPCInvalidAuthToken) ||
+				status.Convert(err).Message() != status.Convert(rpctypes.ErrGRPCInvalidAuthToken).Message() {
+				log.Fatalf("expired token error = %v, want %v", err, rpctypes.ErrGRPCInvalidAuthToken)
+			}
+			if _, err = cli.Auth.Authenticate(ctx, "root", "unused"); err != nil {
+				log.Fatalf("reauthenticate after expiry: %v", err)
+			}
+			fmt.Println("auth token TTL smoke completed")
 		}
 	}
 	key := "/registry/tls-smoke/auth-cert/" + os.Getenv("POD_NAME")
@@ -779,7 +812,11 @@ fi
 if [ "$RUN_AUTH_CERT_SMOKE" = "true" ]; then
   echo "Enabling auth with a dedicated cert-root client identity"
   start_port_forward
-  POD_NAME=bootstrap run_auth_cert_smoke true
+  CHECK_AUTH_TTL=true POD_NAME=bootstrap run_auth_cert_smoke true
+  if [ "$RUN_AUTH_TTL_ONLY" = "true" ]; then
+    echo "Focused auth token TTL smoke completed"
+    exit 0
+  fi
 
   mapfile -t auth_pods < <(kubectl -n "$NAMESPACE" get pods \
     -l app.kubernetes.io/name=kubebrain \

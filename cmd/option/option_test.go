@@ -58,6 +58,9 @@ func TestTLSFlagsBindToExpectedSecurityConfigFields(t *testing.T) {
 		"--grpc-keepalive-timeout=11s",
 		"--max-txn-ops=64",
 		"--max-request-bytes=1048576",
+		"--auth-token=simple",
+		"--bcrypt-cost=7",
+		"--auth-token-ttl=45",
 	}))
 
 	require.Equal(t, "/client/tls.crt", o.epsConf.ClientSecurityConfig.CertFile)
@@ -90,6 +93,9 @@ func TestTLSFlagsBindToExpectedSecurityConfigFields(t *testing.T) {
 	require.Equal(t, 11*time.Second, o.epsConf.GRPCKeepAliveTimeout)
 	require.Equal(t, uint(64), o.epsConf.MaxTxnOps)
 	require.Equal(t, uint(1048576), o.epsConf.MaxRequestBytes)
+	require.Equal(t, "simple", o.epsConf.AuthToken)
+	require.Equal(t, uint(7), o.epsConf.BcryptCost)
+	require.Equal(t, uint(45), o.epsConf.AuthTokenTTL)
 }
 
 func TestTransportPolicyDefaultsMatchEtcd(t *testing.T) {
@@ -98,6 +104,9 @@ func TestTransportPolicyDefaultsMatchEtcd(t *testing.T) {
 	require.Equal(t, 5*time.Second, o.epsConf.GRPCKeepAliveMinTime)
 	require.Equal(t, 2*time.Hour, o.epsConf.GRPCKeepAliveInterval)
 	require.Equal(t, 20*time.Second, o.epsConf.GRPCKeepAliveTimeout)
+	require.Equal(t, "simple", o.epsConf.AuthToken)
+	require.Equal(t, uint(10), o.epsConf.BcryptCost)
+	require.Equal(t, uint(300), o.epsConf.AuthTokenTTL)
 }
 
 // TestWatchProgressNotifyIntervalValidation locks the k8s-1.37-review guard:

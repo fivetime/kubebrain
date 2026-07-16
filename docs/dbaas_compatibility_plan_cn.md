@@ -621,6 +621,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   立即成功；flag/default 测试固定 upstream 数值。真实 kind 三副本以 production manifest
   的显式 keepalive/stream flags 运行，跨 CA/leaf 轮换、六轮 Pod 替换与 max-age GOAWAY 完成
   193 次 lease+watch 持续写，随后 auth/CRL 流程通过。
+- **Auth A34 token TTL 与密码 hash 策略（2026-07-16）**：新增 etcd 同名
+  `--auth-token`（默认/当前仅 `simple`）、`--auth-token-ttl`（默认 `300s`）与
+  `--bcrypt-cost`（默认 `10`）。TTL 进入持久化共享签名 token 的 `exp`，所有副本用同一
+  TiKV signing key 验证；0 或 duration 非正溢出回退 300s。新增/修改明文密码按配置 cost
+  bcrypt，`hashed_password` 保持调用方提供的 hash；cost 超出 bcrypt `[4,31]` 时与 etcd
+  一样回退 10。KubeBrain 的 `simple` 是为无共享内存的多副本数据面实现的签名 bearer
+  token，保证 API 生命周期语义但不承诺 token 字节格式等同单进程 etcd opaque token。
+  `jwt,...` 尚未实现，启动时明确拒绝，绝不静默当作 simple。单测覆盖 hash cost、无效 cost
+  fallback、TTL 边界、flag/default/配置传递与 JWT fail-loud；真实三副本 auth smoke 将 TTL
+  加速到 2s，固定“新 token 成功→过期返回 InvalidAuthToken→重新认证成功”。
 
 ### P1：通用服务能力
 

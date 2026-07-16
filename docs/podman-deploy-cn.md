@@ -232,6 +232,8 @@ EOF
 | `--max-txn-ops` / `--max-request-bytes`  | 每个 txn 的最大操作数与单请求 protobuf payload 上限；默认与 etcd 一致为 `128` / `1572864`，所有副本必须一致 |
 | `--max-concurrent-streams`               | 每条 client HTTP/2 连接可同时打开的 stream 数；默认 `4294967295` 与 etcd 一致，DBaaS 下调前必须计入 watch、lease keepalive 与普通 RPC |
 | `--grpc-keepalive-*`                     | client ping 最小间隔默认 `5s`；server ping interval/timeout 默认 `2h/20s`，对应项设 `0` 可禁用 |
+| `--auth-token` / `--auth-token-ttl`      | 当前仅支持 `simple`（默认），token TTL 默认 `300s`；`jwt,...` 会启动失败而非静默降级 |
+| `--bcrypt-cost`                          | 明文密码 bcrypt cost，默认 `10`；超出 bcrypt 允许范围时与 etcd 一样回退默认值 |
 | `--cluster-name`                         | **仅用作监控指标的 `cluster` 标签**（默认 `default`），不参与数据隔离 |
 | `--keyspace`                             | **共享存储集群上的租户隔离**(2026-07-15 起,#76):非空时([a-z0-9-],≤64)所有键族(对象/事件日志/内部元数据/协调键)都从它派生独立 magic,不同 keyspace 的集群在同一套 TiKV 上**互相不可见、GC 互不误伤**(如给 Cilium kvstore 单独跑一套 KubeBrain)。空(默认)=原单租户键空间,存量部署零迁移。**同一集群的所有副本必须一致**;对已有数据的集群改 keyspace = 数据"消失"(还在,但在旧租户空间里) |
 | `--enable-count-index`                   | 在 leader 上维护内存版本索引，让 List 的 count 免于全表扫描。**依赖 `--compatible-with-etcd`** |
@@ -704,6 +706,9 @@ Volume=/etc/kubebrain/certs:/etc/kubebrain/certs:ro
 | gRPC    | `--grpc-keepalive-min-time`             | 5s      | client ping 最小间隔；0 关闭 enforcement        |
 | gRPC    | `--grpc-keepalive-interval`             | 2h      | server ping 周期；0 关闭 server ping            |
 | gRPC    | `--grpc-keepalive-timeout`              | 20s     | server 等待 ping ACK 时间；0 关闭 server ping   |
+| Auth    | `--auth-token`                          | simple  | token provider；JWT 尚不支持且会 fail loudly    |
+| Auth    | `--auth-token-ttl`                      | 300     | token 有效期（秒）；0 回退 300                   |
+| Auth    | `--bcrypt-cost`                         | 10      | 新增/修改明文密码时的 bcrypt cost                |
 | GC      | `--storage-gc-lifetime`                 | 10m     | leader 推进 TiKV GC safepoint 的保留窗口。**0=关闭;裸 PD+TiKV 必须开**(无 TiDB 时它是唯一推进者) |
 | 命名    | `--cluster-name`                        | default | 仅作为 metrics 标签，不提供数据隔离             |
 | 选主    | `--leader-lease-duration`               | 8s      | 租约时长                                        |

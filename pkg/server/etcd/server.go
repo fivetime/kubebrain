@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
+	"golang.org/x/crypto/bcrypt"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/protobuf/proto"
@@ -175,6 +176,24 @@ func (s *RPCServer) SetRequestLimits(maxTxnOps, maxRequestBytes uint) {
 	if maxRequestBytes > 0 {
 		s.maxRequestBytes = maxRequestBytes
 	}
+}
+
+// SetAuthConfiguration applies etcd's simple-token TTL and bcrypt policy.
+// Unsupported token providers are rejected by endpoint.Config.Validate.
+func (s *RPCServer) SetAuthConfiguration(bcryptCost, tokenTTLSeconds uint) {
+	cost := int(bcryptCost)
+	if bcryptCost < uint(bcrypt.MinCost) || bcryptCost > uint(bcrypt.MaxCost) {
+		cost = bcrypt.DefaultCost
+	}
+	s.auth.bcryptCost = cost
+	if tokenTTLSeconds == 0 {
+		tokenTTLSeconds = uint(authTokenTTL / time.Second)
+	}
+	ttl := time.Duration(tokenTTLSeconds) * time.Second
+	if ttl <= 0 {
+		ttl = authTokenTTL
+	}
+	s.tokens.ttl = ttl
 }
 
 // SetAdvertiseClientInfo tells MemberList how to shape ClientURLs: deployments

@@ -111,6 +111,28 @@ func TestAuthTokenSigningKeySurvivesManagerRecreationAndExpires(t *testing.T) {
 	require.ErrorIs(t, err, rpctypes.ErrInvalidAuthToken)
 }
 
+func TestAuthTokenUsesConfiguredTTL(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	server.SetAuthConfiguration(uint(bcrypt.DefaultCost), 2)
+	ctx := context.Background()
+	require.NoError(t, server.auth.userAdd(ctx, &etcdserverpb.AuthUserAddRequest{Name: "root", Password: "secret"}))
+	require.NoError(t, server.auth.roleAdd(ctx, "root"))
+	require.NoError(t, server.auth.userGrantRole(ctx, "root", "root"))
+	require.NoError(t, server.auth.enable(ctx))
+	now := time.Unix(2_000_000_000, 0)
+	server.tokens.now = func() time.Time { return now }
+	token, err := server.tokens.authenticate(ctx, "root", "secret")
+	require.NoError(t, err)
+
+	server.tokens.now = func() time.Time { return now.Add(time.Second) }
+	_, err = server.tokens.verify(ctx, token)
+	require.NoError(t, err)
+	server.tokens.now = func() time.Time { return now.Add(2 * time.Second) }
+	_, err = server.tokens.verify(ctx, token)
+	require.ErrorIs(t, err, rpctypes.ErrInvalidAuthToken)
+}
+
 func TestAuthTokenRejectsWhileDisabled(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

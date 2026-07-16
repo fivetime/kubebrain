@@ -79,6 +79,9 @@ spec:
             - --grpc-keepalive-min-time=5s
             - --grpc-keepalive-interval=2h
             - --grpc-keepalive-timeout=20s
+            - --auth-token=simple
+            - --bcrypt-cost=10
+            - --auth-token-ttl=300
             - --v=2
           ports:
             - name: client

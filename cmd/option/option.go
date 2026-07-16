@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/spf13/pflag"
+	"golang.org/x/crypto/bcrypt"
 	"k8s.io/klog/v2"
 
 	"github.com/kubewharf/kubebrain/pkg/backend"
@@ -109,6 +110,9 @@ func NewOptions() *KubeBrainOption {
 			GRPCKeepAliveTimeout:      20 * time.Second,
 			MaxTxnOps:                 128,
 			MaxRequestBytes:           1572864,
+			AuthToken:                 "simple",
+			BcryptCost:                uint(bcrypt.DefaultCost),
+			AuthTokenTTL:              300,
 			TLSMinVersion:             "TLS1.2",
 		},
 		// The namespace for KubeBrain-internal coordination keys (leader-election
@@ -145,6 +149,9 @@ func (o *KubeBrainOption) AddFlags(fs *pflag.FlagSet) {
 	fs.DurationVar(&o.epsConf.GRPCKeepAliveTimeout, "grpc-keepalive-timeout", o.epsConf.GRPCKeepAliveTimeout, "Time to wait for a keepalive response; 0 disables server pings.")
 	fs.UintVar(&o.epsConf.MaxTxnOps, "max-txn-ops", o.epsConf.MaxTxnOps, "Maximum number of operations permitted in a transaction.")
 	fs.UintVar(&o.epsConf.MaxRequestBytes, "max-request-bytes", o.epsConf.MaxRequestBytes, "Maximum client request payload size in bytes, excluding 512 bytes of gRPC framing overhead.")
+	fs.StringVar(&o.epsConf.AuthToken, "auth-token", o.epsConf.AuthToken, "Authentication token provider. KubeBrain currently supports simple.")
+	fs.UintVar(&o.epsConf.BcryptCost, "bcrypt-cost", o.epsConf.BcryptCost, "Bcrypt cost factor for hashing authentication passwords; out-of-range values use the bcrypt default.")
+	fs.UintVar(&o.epsConf.AuthTokenTTL, "auth-token-ttl", o.epsConf.AuthTokenTTL, "Authentication token lifetime in seconds; 0 uses the 300-second default.")
 	fs.StringVar(&o.epsConf.TLSMinVersion, "tls-min-version", o.epsConf.TLSMinVersion, "Minimum TLS version for client, peer, and info endpoints: TLS1.2 or TLS1.3.")
 	fs.StringVar(&o.epsConf.TLSMaxVersion, "tls-max-version", o.epsConf.TLSMaxVersion, "Maximum TLS version for client, peer, and info endpoints: TLS1.2, TLS1.3, or empty for the Go default.")
 	fs.StringSliceVar(&o.epsConf.CipherSuites, "cipher-suites", o.epsConf.CipherSuites, "Comma-separated TLS cipher suite names for client, peer, and info endpoints. TLS 1.3 suites are selected by Go and cannot be configured.")

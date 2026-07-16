@@ -55,6 +55,7 @@ func TestConfig(t *testing.T) {
 
 	conf := Config{
 		Port: 2379, PeerPort: 2380, MaxTxnOps: 64, MaxRequestBytes: 1048576,
+		AuthToken: "simple", BcryptCost: 7, AuthTokenTTL: 45,
 		ClientSecurityConfig: &SecurityConfig{
 			CertFile:      getAuthPath("server.crt"),
 			KeyFile:       getAuthPath("server.key"),
@@ -83,6 +84,18 @@ func TestConfig(t *testing.T) {
 	ast.True(conf.getServerConfig().ClientAllowInsecure)
 	ast.Equal(uint(64), conf.getServerConfig().MaxTxnOps)
 	ast.Equal(uint(1048576), conf.getServerConfig().MaxRequestBytes)
+	ast.Equal(uint(7), conf.getServerConfig().BcryptCost)
+	ast.Equal(uint(45), conf.getServerConfig().AuthTokenTTL)
+}
+
+func TestAuthTokenProviderValidation(t *testing.T) {
+	config := &Config{
+		Port: 2379, PeerPort: 2380, AuthToken: "jwt,pub-key=public.pem",
+		ClientSecurityConfig: &SecurityConfig{}, PeerSecurityConfig: &SecurityConfig{},
+	}
+	require.ErrorContains(t, config.Validate(), "only simple is available")
+	config.AuthToken = "simple"
+	require.NoError(t, config.Validate())
 }
 
 // TestClientCertAuthRequiresTrustedCA pins #50: enabling client cert auth without

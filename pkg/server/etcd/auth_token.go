@@ -41,6 +41,7 @@ type authTokenManager struct {
 	repo      *authRepository
 	snapshots *authSnapshotCache
 	now       func() time.Time
+	ttl       time.Duration
 }
 
 func (m *authTokenManager) ensureUserGeneration(ctx context.Context, username string) (*authpb.User, error) {
@@ -72,7 +73,7 @@ func (m *authTokenManager) ensureUserGeneration(ctx context.Context, username st
 
 func newAuthTokenManager(backend BackendShim) *authTokenManager {
 	return &authTokenManager{
-		repo: newAuthRepository(backend), snapshots: newAuthSnapshotCache(backend), now: time.Now,
+		repo: newAuthRepository(backend), snapshots: newAuthSnapshotCache(backend), now: time.Now, ttl: authTokenTTL,
 	}
 }
 
@@ -170,7 +171,7 @@ func (m *authTokenManager) issueClaims(ctx context.Context, claims authTokenClai
 		return "", err
 	}
 	claims.IssuedAt = now.Unix()
-	claims.Expires = now.Add(authTokenTTL).Unix()
+	claims.Expires = now.Add(m.ttl).Unix()
 	claims.Nonce = base64.RawURLEncoding.EncodeToString(nonce)
 	payload, err := json.Marshal(claims)
 	if err != nil {

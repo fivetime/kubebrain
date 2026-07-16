@@ -29,10 +29,13 @@ func newUserTokenGeneration(name string) (*authpb.User, error) {
 	return &authpb.User{Name: []byte(name), Password: generation}, nil
 }
 
-type authManager struct{ repo *authRepository }
+type authManager struct {
+	repo       *authRepository
+	bcryptCost int
+}
 
 func newAuthManager(backend BackendShim) *authManager {
-	return &authManager{repo: newAuthRepository(backend)}
+	return &authManager{repo: newAuthRepository(backend), bcryptCost: bcrypt.DefaultCost}
 }
 
 func retryAuthMutation(ctx context.Context, operation func(*authSnapshot) error, load func(context.Context) (*authSnapshot, error)) error {
@@ -50,12 +53,12 @@ func retryAuthMutation(ctx context.Context, operation func(*authSnapshot) error,
 	}
 }
 
-func authPassword(request *etcdserverpb.AuthUserAddRequest) ([]byte, error) {
+func authPassword(request *etcdserverpb.AuthUserAddRequest, cost int) ([]byte, error) {
 	if request.Options != nil && request.Options.NoPassword {
 		return nil, nil
 	}
 	if request.Password != "" {
-		return bcrypt.GenerateFromPassword([]byte(request.Password), bcrypt.DefaultCost)
+		return bcrypt.GenerateFromPassword([]byte(request.Password), cost)
 	}
 	if request.HashedPassword != "" {
 		password, err := base64.StdEncoding.DecodeString(request.HashedPassword)
@@ -64,14 +67,14 @@ func authPassword(request *etcdserverpb.AuthUserAddRequest) ([]byte, error) {
 		}
 		return password, nil
 	}
-	return bcrypt.GenerateFromPassword(nil, bcrypt.DefaultCost)
+	return bcrypt.GenerateFromPassword(nil, cost)
 }
 
 func (m *authManager) userAdd(ctx context.Context, request *etcdserverpb.AuthUserAddRequest) error {
 	if request.Name == "" {
 		return rpctypes.ErrUserEmpty
 	}
-	password, err := authPassword(request)
+	password, err := authPassword(request, m.bcryptCost)
 	if err != nil {
 		return err
 	}
@@ -192,9 +195,9 @@ func (m *authManager) userDelete(ctx context.Context, name string) error {
 	}, m.repo.load)
 }
 
-func authChangedPassword(password, hashed string) ([]byte, error) {
+func authChangedPassword(password, hashed string, cost int) ([]byte, error) {
 	if password != "" {
-		return bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+		return bcrypt.GenerateFromPassword([]byte(password), cost)
 	}
 	if hashed != "" {
 		encoded, err := base64.StdEncoding.DecodeString(hashed)
@@ -203,7 +206,7 @@ func authChangedPassword(password, hashed string) ([]byte, error) {
 		}
 		return encoded, nil
 	}
-	return bcrypt.GenerateFromPassword(nil, bcrypt.DefaultCost)
+	return bcrypt.GenerateFromPassword(nil, cost)
 }
 
 func (m *authManager) userChangePassword(ctx context.Context, name, password, hashed string) error {
@@ -218,7 +221,7 @@ func (m *authManager) userChangePassword(ctx context.Context, name, password, ha
 		}
 		updated := proto.Clone(user).(*authpb.User)
 		if user.Options == nil || !user.Options.NoPassword {
-			encoded, err := authChangedPassword(password, hashed)
+			encoded, err := authChangedPassword(password, hashed, m.bcryptCost)
 			if err != nil {
 				return err
 			}

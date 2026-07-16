@@ -61,6 +61,23 @@ func TestAuthManagerBootstrapPersistsWithIndependentRevision(t *testing.T) {
 	require.NoError(t, bcrypt.CompareHashAndPassword(snapshot.Users["root"].Password, []byte("secret")))
 }
 
+func TestAuthManagerUsesConfiguredBcryptCost(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	server.SetAuthConfiguration(uint(bcrypt.MinCost), 300)
+	require.NoError(t, server.auth.userAdd(context.Background(), &etcdserverpb.AuthUserAddRequest{
+		Name: "configured", Password: "secret",
+	}))
+	snapshot, err := server.auth.repo.load(context.Background())
+	require.NoError(t, err)
+	cost, err := bcrypt.Cost(snapshot.Users["configured"].Password)
+	require.NoError(t, err)
+	require.Equal(t, bcrypt.MinCost, cost)
+
+	server.SetAuthConfiguration(uint(bcrypt.MaxCost+1), 300)
+	require.Equal(t, bcrypt.DefaultCost, server.auth.bcryptCost, "invalid cost must use etcd's default")
+}
+
 func TestAuthManagerUserRolePermissionLifecycle(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
