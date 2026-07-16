@@ -327,6 +327,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `UserAdd`/`UserChangePassword` 预处理，若请求同时携带非空 `password` 与
   `hashed_password`，必须以明文重新 bcrypt 并覆盖 hash；仅明文为空时才接受
   base64 hash。KubeBrain 原先顺序相反，现已对齐并用非法 hash + 有效明文回归。
+- **Auth A16 启停 revision 语义（2026-07-16）**：对照 etcd `AuthEnable` 与
+  `AuthDisable` 实现，启用只持久化 enabled 标记、不推进 auth revision；禁用则通过
+  `commitRevision` 推进一次。KubeBrain 原先启用也加一，导致 AuthStatus 与 token
+  revision 偏移，现已拆分持久化路径，并回归验证 enable 保持、disable +1。
 
 ### P1：通用服务能力
 

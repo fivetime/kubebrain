@@ -136,7 +136,7 @@ func (m *authManager) enable(ctx context.Context) error {
 		if !hasRoot {
 			return rpctypes.ErrRootRoleNotExist
 		}
-		_, err := m.repo.mutateConfig(ctx, snapshot.Config, true)
+		_, err := m.repo.enable(ctx, snapshot.Config)
 		return err
 	}, m.repo.load)
 }

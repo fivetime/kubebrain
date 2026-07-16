@@ -143,6 +143,20 @@ func (r *authRepository) mutate(ctx context.Context, expected authConfig, mutati
 	return r.mutateConfig(ctx, expected, expected.Enabled, mutations...)
 }
 
+// enable changes only the persisted feature flag. etcd does not advance the
+// auth revision when authentication is enabled; disabling does advance it.
+func (r *authRepository) enable(ctx context.Context, expected authConfig) (authConfig, error) {
+	next := authConfig{Enabled: true, Revision: expected.Revision}
+	op := backend.InternalCASOp{
+		Key: authConfigKey, Value: encodeAuthConfig(next),
+		Expected: encodeAuthConfig(expected), ExpectedExists: true,
+	}
+	if err := r.backend.InternalCAS(ctx, []backend.InternalCASOp{op}); err != nil {
+		return authConfig{}, err
+	}
+	return next, nil
+}
+
 func (r *authRepository) mutateConfig(ctx context.Context, expected authConfig, enabled bool, mutations ...authMutation) (authConfig, error) {
 	next := authConfig{Enabled: enabled, Revision: expected.Revision + 1}
 	ops := make([]backend.InternalCASOp, 0, len(mutations)+1)
