@@ -25,8 +25,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	"go.etcd.io/etcd/api/v3/authpb"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/mvccpb"
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
@@ -151,6 +153,19 @@ func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) error {
 				// RPC (kv.go), so reject the overload rather than silently mis-serving.
 				return status.Errorf(codes.InvalidArgument, "watch: invalid negative start revision %d", r.StartRevision)
 			}
+			caller, authErr := s.authCallerFromContext(ws.Context())
+			if authErr == nil {
+				authErr = caller.require(r.Key, r.RangeEnd, authpb.READ)
+			}
+			if authErr != nil {
+				if err := w.Send(&etcdserverpb.WatchResponse{
+					Header: txnHeader(int64(s.backend.GetPublishedRevision())), WatchId: -1,
+					Created: true, Canceled: true, CancelReason: watchAuthCancelReason(authErr),
+				}); err != nil {
+					return err
+				}
+				continue
+			}
 			// normal watch request can only be handled by leader
 			if !s.peers.IsLeader() && !s.peers.EtcdProxyEnabled() {
 				s.metricCli.EmitCounter("watch.follower", 1)
@@ -227,6 +242,19 @@ func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) error {
 			s.metricCli.EmitCounter("watch.request.unsupported", 1)
 			klog.Info("watch receive message unsupported type")
 		}
+	}
+}
+
+func watchAuthCancelReason(err error) string {
+	switch {
+	case errors.Is(err, rpctypes.ErrInvalidAuthToken):
+		return rpctypes.ErrGRPCInvalidAuthToken.Error()
+	case errors.Is(err, rpctypes.ErrAuthOldRevision):
+		return rpctypes.ErrGRPCAuthOldRevision.Error()
+	case errors.Is(err, rpctypes.ErrUserEmpty):
+		return rpctypes.ErrGRPCUserEmpty.Error()
+	default:
+		return rpctypes.ErrGRPCPermissionDenied.Error()
 	}
 }
 

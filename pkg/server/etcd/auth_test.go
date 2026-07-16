@@ -21,18 +21,30 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
-	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
-	"google.golang.org/grpc/status"
 )
 
-func TestAuthEnableRemainsUnsupportedUntilDataPlaneIsProtected(t *testing.T) {
+func TestAuthEnableValidatesBootstrapAndDisableRequiresRoot(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
-
-	_, err := server.AuthEnable(context.Background(), &etcdserverpb.AuthEnableRequest{})
-	require.Equal(t, codes.Unimplemented, status.Code(err))
-
+	ctx := context.Background()
+	_, err := server.AuthEnable(ctx, &etcdserverpb.AuthEnableRequest{})
+	require.ErrorIs(t, err, rpctypes.ErrRootUserNotExist)
+	require.NoError(t, server.auth.userAdd(ctx, &etcdserverpb.AuthUserAddRequest{Name: "root", Password: "secret"}))
+	require.NoError(t, server.auth.roleAdd(ctx, "root"))
+	require.NoError(t, server.auth.userGrantRole(ctx, "root", "root"))
+	_, err = server.AuthEnable(ctx, &etcdserverpb.AuthEnableRequest{})
+	require.NoError(t, err)
+	_, err = server.AuthDisable(ctx, &etcdserverpb.AuthDisableRequest{})
+	require.ErrorIs(t, err, rpctypes.ErrUserEmpty)
+	authenticated, err := server.Authenticate(ctx, &etcdserverpb.AuthenticateRequest{Name: "root", Password: "secret"})
+	require.NoError(t, err)
+	rootCtx := metadata.NewIncomingContext(ctx, metadata.Pairs(rpctypes.TokenFieldNameGRPC, authenticated.Token))
+	_, err = server.AuthDisable(rootCtx, &etcdserverpb.AuthDisableRequest{})
+	require.NoError(t, err)
+	statusResp, err := server.AuthStatus(ctx, &etcdserverpb.AuthStatusRequest{})
+	require.NoError(t, err)
+	require.False(t, statusResp.Enabled)
 }
 
 func TestAuthRPCBootstrapAndEnabledSafetyBoundary(t *testing.T) {

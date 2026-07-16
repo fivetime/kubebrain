@@ -11,6 +11,32 @@ import (
 
 func authRPCHeader() *etcdserverpb.ResponseHeader { return &etcdserverpb.ResponseHeader{} }
 
+func (s *RPCServer) AuthEnable(ctx context.Context, _ *etcdserverpb.AuthEnableRequest) (*etcdserverpb.AuthEnableResponse, error) {
+	snapshot, err := s.tokens.snapshots.current(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if snapshot.Config.Enabled {
+		if _, err = s.authAdminSnapshot(ctx); err != nil {
+			return nil, err
+		}
+	}
+	if err = s.auth.enable(ctx); err != nil {
+		return nil, err
+	}
+	return &etcdserverpb.AuthEnableResponse{Header: authRPCHeader()}, nil
+}
+
+func (s *RPCServer) AuthDisable(ctx context.Context, _ *etcdserverpb.AuthDisableRequest) (*etcdserverpb.AuthDisableResponse, error) {
+	if _, err := s.authAdminSnapshot(ctx); err != nil {
+		return nil, err
+	}
+	if err := s.auth.disable(ctx); err != nil {
+		return nil, err
+	}
+	return &etcdserverpb.AuthDisableResponse{Header: authRPCHeader()}, nil
+}
+
 func (s *RPCServer) authAdminSnapshot(ctx context.Context) (*authSnapshot, error) {
 	snapshot, err := s.tokens.snapshots.current(ctx)
 	if err != nil {

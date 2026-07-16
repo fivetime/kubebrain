@@ -277,6 +277,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   立即失效；测试显式重新 Authenticate 后继续管理。普通用户越权查询、列表和角色
   创建均被拒绝。下一步完成 Watch 建流与运行期 revision 变化处理，然后开放
   AuthEnable/AuthDisable 并跑官方 client/v3 黑盒生命周期。
+- **Auth A9 Watch 与启停闭环（2026-07-16）**：每个 WatchCreateRequest 都从
+  gRPC stream metadata 验证 token 和 READ range；失败时按 etcd 返回
+  `Created=true,Canceled=true,WatchId=-1` 及标准 cancel reason，但不关闭复用流，
+  后续合法 create 仍可成功。严格对齐 etcd：已建立 watch 不因后续 auth revision
+  mutation 被服务端主动取消，新 create 会因旧 token 失败。至此 KV、RangeStream、
+  Watch、Lease 和 Auth 管理面均受保护，AuthEnable/AuthDisable 已公开：首次 Enable
+  依赖 disabled bootstrap 的 root user+role；Enabled 后重复 Enable/Disable 均要求
+  root token。测试覆盖缺 root、缺 token Disable、root Disable 和关闭后匿名状态。
+  下一步在独立 TiKV keyspace/实例上运行官方 client/v3 auth 生命周期黑盒，不能在
+  当前 Kubernetes 共用后端直接 Enable 以免切断 apiserver。
 
 ### P1：通用服务能力
 
