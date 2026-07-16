@@ -313,6 +313,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   拒绝匿名请求；HashKV 仅允许 root。server-streaming 的错误从异步接收通道取得后，
   gRPC code/message 仍与参考 etcd 一致。静态复核同时确认 MemberList 要求已认证、
   MemberAdd/Remove/Update/Promote 先要求 root 再返回平台替代的 Unimplemented。
+- **LeaseKeepAlive 绑定键鉴权（2026-07-16）**：对照
+  `/root/etcd/server/etcdserver/v3_server.go:checkLeaseRenew`，KeepAlive 不再只在
+  双向流建立时确认 token，而是对每个请求重新恢复 caller，并要求其对该 lease
+  当前附着的全部 key 拥有 WRITE 权限。修复前，知道其他用户 lease ID 的已认证
+  调用者可以持续续租无权写入的键，阻止其按 TTL 过期；follower 转发也会把请求
+  送到 leader 重新按真实 attachment 集合校验。确定性测试覆盖同一长连接首个
+  renew 后撤销权限、第二个 renew 立即拒绝；官方 `client/v3 KeepAliveOnce` 在独立
+  etcd 与真实 TiKV-backed KubeBrain 上均表现为普通用户 `PermissionDenied`、root
+  成功。
 - **Physical compaction 故障恢复（2026-07-16）**：真实 TiKV 灌入 500 key ×
   20 versions 后验证 Physical=true 在扫描完成后才返回；100ms 客户端取消时逻辑
   水位已经单调推进、旧 revision 返回 ErrCompacted、当前值可读。修复了取消/进程

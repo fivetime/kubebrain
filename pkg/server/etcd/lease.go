@@ -162,9 +162,6 @@ func (m *leaseManager) LeaseRevoke(ctx context.Context, req *etcdserverpb.LeaseR
 
 func (m *leaseManager) LeaseKeepAlive(stream etcdserverpb.Lease_LeaseKeepAliveServer) error {
 	m.srv.metricCli.EmitCounter("lease.keepalive", 1)
-	if _, err := m.srv.authCallerFromContext(stream.Context()); err != nil {
-		return err
-	}
 	for {
 		req, err := stream.Recv()
 		if err == io.EOF {
@@ -172,6 +169,20 @@ func (m *leaseManager) LeaseKeepAlive(stream etcdserverpb.Lease_LeaseKeepAliveSe
 		}
 		if err != nil {
 			return err
+		}
+		// Match etcd's checkLeaseRenew on every message, not only when the
+		// long-lived stream is opened. Renewing a lease is a write to every key
+		// attached to it; otherwise a caller that only knows the lease ID can keep
+		// another tenant's protected keys alive indefinitely. Rechecking per request
+		// also observes role/permission changes made while the stream is open.
+		caller, authErr := m.srv.authCallerFromContext(stream.Context())
+		if authErr != nil {
+			return authErr
+		}
+		for _, key := range m.keysForLease(req.ID) {
+			if authErr = caller.require([]byte(key), nil, authpb.WRITE); authErr != nil {
+				return authErr
+			}
 		}
 		if err := m.requireLeaseLeader("lease keepalive"); err != nil {
 			if !m.srv.peers.EtcdProxyEnabled() {

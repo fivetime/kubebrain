@@ -37,6 +37,7 @@ type fakeLeaseKeepAliveServer struct {
 	ctx      context.Context
 	requests []*etcdserverpb.LeaseKeepAliveRequest
 	sent     []*etcdserverpb.LeaseKeepAliveResponse
+	onSend   func()
 }
 
 func (f *fakeLeaseKeepAliveServer) Recv() (*etcdserverpb.LeaseKeepAliveRequest, error) {
@@ -50,6 +51,9 @@ func (f *fakeLeaseKeepAliveServer) Recv() (*etcdserverpb.LeaseKeepAliveRequest, 
 
 func (f *fakeLeaseKeepAliveServer) Send(resp *etcdserverpb.LeaseKeepAliveResponse) error {
 	f.sent = append(f.sent, resp)
+	if f.onSend != nil {
+		f.onSend()
+	}
 	return nil
 }
 

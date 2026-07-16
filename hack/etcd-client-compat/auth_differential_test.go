@@ -54,6 +54,8 @@ type authDifferentialOutcome struct {
 	UserStatusOK              bool
 	UserHash                  authErrorOutcome
 	RootHashOK                bool
+	UserKeepAlive             authErrorOutcome
+	RootKeepAliveOK           bool
 }
 
 func runConcurrentClientOperations(count int, operation func(int) error) []error {
@@ -102,8 +104,12 @@ func collectAuthDifferentialOutcome(t *testing.T, endpoint string) authDifferent
 		require.NoError(t, putErr)
 		compactRevisions = append(compactRevisions, put.Header.Revision)
 	}
+	protectedLease, err := bootstrap.Grant(ctx, 60)
+	require.NoError(t, err)
+	_, err = bootstrap.Put(ctx, "/auth-protected/leased", "secret", clientv3.WithLease(protectedLease.ID))
+	require.NoError(t, err)
 
-	_, err := bootstrap.UserAdd(ctx, "root", "root-secret")
+	_, err = bootstrap.UserAdd(ctx, "root", "root-secret")
 	require.NoError(t, err)
 	_, err = bootstrap.UserGrantRole(ctx, "root", "root")
 	require.NoError(t, err)
@@ -124,6 +130,7 @@ func collectAuthDifferentialOutcome(t *testing.T, endpoint string) authDifferent
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cleanupCancel()
+		_, _ = root.Revoke(cleanupCtx, protectedLease.ID)
 		_, _ = root.AuthDisable(cleanupCtx)
 	})
 	_, anonymousCompactErr := bootstrap.Compact(ctx, compactRevisions[0])
@@ -137,6 +144,8 @@ func collectAuthDifferentialOutcome(t *testing.T, endpoint string) authDifferent
 	_, userStatusErr := alice.Status(ctx, alice.Endpoints()[0])
 	_, userHashErr := alice.HashKV(ctx, alice.Endpoints()[0], 0)
 	_, rootHashErr := root.HashKV(ctx, root.Endpoints()[0], 0)
+	_, userKeepAliveErr := alice.KeepAliveOnce(ctx, protectedLease.ID)
+	_, rootKeepAliveErr := root.KeepAliveOnce(ctx, protectedLease.ID)
 
 	_, err = root.UserGrantRole(ctx, "root", "root")
 	require.NoError(t, err)
@@ -259,6 +268,8 @@ func collectAuthDifferentialOutcome(t *testing.T, endpoint string) authDifferent
 		UserStatusOK:              userStatusErr == nil,
 		UserHash:                  authError(userHashErr),
 		RootHashOK:                rootHashErr == nil,
+		UserKeepAlive:             authError(userKeepAliveErr),
+		RootKeepAliveOK:           rootKeepAliveErr == nil,
 	}
 }
 
