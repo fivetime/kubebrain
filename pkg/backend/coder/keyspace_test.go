@@ -106,3 +106,13 @@ func TestKeyspaceCoderRejectsForeignKeys(t *testing.T) {
 	_, _, err = a.DecodeEventLogKey(b.EncodeEventLogKey(42, []byte("k")))
 	require.Error(t, err)
 }
+
+func TestIsInternalStorageKey(t *testing.T) {
+	ks, err := NewKeyspace("hash-test")
+	require.NoError(t, err)
+
+	require.True(t, ks.IsInternalStorageKey(ks.EncodeEventLogKey(42, []byte("/key"))))
+	require.True(t, ks.IsInternalStorageKey(ks.ElogMetaStartKey()))
+	require.True(t, ks.IsInternalStorageKey(ks.EncodeInternalKey([]byte("lease/meta"))))
+	require.False(t, ks.IsInternalStorageKey(ks.NewCoder().EncodeObjectKey([]byte("/key"), 42)))
+}

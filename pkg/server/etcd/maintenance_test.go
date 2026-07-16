@@ -54,7 +54,7 @@ func TestMaintenanceBasicDiagnostics(t *testing.T) {
 	defer closeFn()
 
 	ctx := context.Background()
-	_, err := server.Put(ctx, &etcdserverpb.PutRequest{
+	put1, err := server.Put(ctx, &etcdserverpb.PutRequest{
 		Key:   []byte("/registry/maintenance/key"),
 		Value: []byte("v1"),
 	})
@@ -68,6 +68,21 @@ func TestMaintenanceBasicDiagnostics(t *testing.T) {
 	hashResp, err := server.HashKV(ctx, &etcdserverpb.HashKVRequest{})
 	require.NoError(t, err)
 	require.NotZero(t, hashResp.Hash)
+
+	_, err = server.Put(ctx, &etcdserverpb.PutRequest{
+		Key:   []byte("/registry/maintenance/key"),
+		Value: []byte("v2"),
+	})
+	require.NoError(t, err)
+	hashAfterUpdate, err := server.HashKV(ctx, &etcdserverpb.HashKVRequest{})
+	require.NoError(t, err)
+	require.NotEqual(t, hashResp.Hash, hashAfterUpdate.Hash)
+
+	historical, err := server.HashKV(ctx, &etcdserverpb.HashKVRequest{
+		Revision: put1.Header.Revision,
+	})
+	require.NoError(t, err)
+	require.Equal(t, hashResp.Hash, historical.Hash)
 
 	alarmResp, err := server.Alarm(ctx, &etcdserverpb.AlarmRequest{})
 	require.NoError(t, err)

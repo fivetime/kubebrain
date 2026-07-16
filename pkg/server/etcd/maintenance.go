@@ -16,7 +16,6 @@ package etcd
 
 import (
 	"context"
-	"encoding/binary"
 	"hash/crc32"
 
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
@@ -98,10 +97,13 @@ func (s *RPCServer) Hash(ctx context.Context, _ *etcdserverpb.HashRequest) (*etc
 	if err := s.peers.SyncReadRevision(ctx); err != nil {
 		return nil, err
 	}
-	revision := s.backend.GetCurrentRevision()
+	hash, _, err := s.backend.HashKV(ctx, 0)
+	if err != nil {
+		return nil, err
+	}
 	return &etcdserverpb.HashResponse{
 		Header: s.maintenanceHeader(),
-		Hash:   revisionHash(revision),
+		Hash:   hash,
 	}, nil
 }
 
@@ -120,13 +122,17 @@ func (s *RPCServer) HashKV(ctx context.Context, req *etcdserverpb.HashKVRequest)
 		}
 		revision = uint64(req.GetRevision())
 	}
+	hash, _, err := s.backend.HashKV(ctx, revision)
+	if err != nil {
+		return nil, err
+	}
 	compactRevision, err := s.backend.GetCompactRevision(ctx)
 	if err != nil {
 		return nil, err
 	}
 	return &etcdserverpb.HashKVResponse{
 		Header:          s.maintenanceHeader(),
-		Hash:            revisionHash(revision),
+		Hash:            hash,
 		CompactRevision: int64(compactRevision),
 	}, nil
 }
@@ -162,10 +168,4 @@ func (s *RPCServer) memberIDFromAddress(address string) uint64 {
 		address = s.backend.GetResourceLock().Identity()
 	}
 	return uint64(crc32.ChecksumIEEE([]byte(address)))
-}
-
-func revisionHash(revision uint64) uint32 {
-	var buf [8]byte
-	binary.BigEndian.PutUint64(buf[:], revision)
-	return crc32.ChecksumIEEE(buf[:])
 }

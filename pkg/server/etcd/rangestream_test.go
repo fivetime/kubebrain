@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/require"
@@ -197,11 +198,11 @@ func TestRangeStreamMatchesUnaryRange(t *testing.T) {
 	}
 }
 
-// TestWatchNegativeStartRevisionRejected pins the black-magic retirement: a
+// TestWatchNegativeStartRevisionCanceledInStream pins the black-magic retirement: a
 // negative StartRevision used to overload Watch into a range stream (watcher.List).
-// That is now the native KV.RangeStream RPC, so a negative StartRevision must be
-// rejected with InvalidArgument rather than silently reinterpreted.
-func TestWatchNegativeStartRevisionRejected(t *testing.T) {
+// That is now the native KV.RangeStream RPC. etcd rejects the create in-band
+// while leaving the multiplexed stream available for later watch requests.
+func TestWatchNegativeStartRevisionCanceledInStream(t *testing.T) {
 	server, cleanup := newRangeStreamTestServer(t)
 	defer cleanup()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -217,7 +218,15 @@ func TestWatchNegativeStartRevisionRejected(t *testing.T) {
 			},
 		},
 	}
-	err := server.Watch(ws)
-	require.Error(t, err)
-	require.Equal(t, codes.InvalidArgument, status.Code(err))
+	done := make(chan error, 1)
+	go func() { done <- server.Watch(ws) }()
+	require.Eventually(t, func() bool { return len(ws.snapshot()) == 1 }, time.Second, 10*time.Millisecond)
+	resp := ws.snapshot()[0]
+	require.Equal(t, int64(-1), resp.WatchId)
+	require.True(t, resp.Created)
+	require.True(t, resp.Canceled)
+	require.NotEmpty(t, resp.CancelReason)
+
+	cancel()
+	require.Error(t, <-done)
 }

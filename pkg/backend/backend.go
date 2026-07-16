@@ -141,6 +141,10 @@ type Backend interface {
 	// Count counts the number of kvs in range
 	Count(ctx context.Context, r *proto.CountRequest) (*proto.CountResponse, error)
 
+	// HashKV returns a deterministic checksum of the retained object MVCC
+	// versions at or below revision. A zero revision selects the current one.
+	HashKV(ctx context.Context, revision uint64) (hash uint32, hashedRevision uint64, err error)
+
 	// CountAtRevision returns the exact live-key count of [key,end) at rev from
 	// the in-memory count index; served is false when it must fall back to a scan.
 	CountAtRevision(ctx context.Context, key, end []byte, rev uint64) (count int64, served bool)

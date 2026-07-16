@@ -44,7 +44,7 @@ Raft、bbolt 和成员管理内部实现，而是对通用 etcd v3 客户端提�
 | Maintenance | Snapshot | 平台替代 | 使用 TiKV BR/PITR；控制面提供备份、恢复和导出任务，不伪造 etcd snapshot |
 | Maintenance | Defragment | 平台替代 | TiKV GC/compaction 管理，不执行 bbolt 碎片整理 |
 | Maintenance | Alarm/DbSize | 平台替代 | 用 PD/TiKV 容量、磁盘、region 和配额告警；etcd 专属字段保持可解释值 |
-| Maintenance | Hash/HashKV | 部分兼容 | P2：确定客户端用途；需要逻辑校验时实现可分页、固定 revision 的内容摘要 |
+| Maintenance | Hash/HashKV | 兼容核心语义 | 对指定 revision 的租户 MVCC 实际内容做稳定摘要；用于 KubeBrain 副本一致性校验，数值不与 bbolt 内部编码比较 |
 | Maintenance | MoveLeader/Downgrade | 平台替代 | 分别由服务选主和 DBaaS 升级编排处理 |
 | Concurrency | Lock/Election recipes | 兼容核心语义 | 官方 `client/v3/concurrency` Mutex/Election/session 及真实 Leader 故障转移已通过；继续补 lease 自然过期和长时间 soak |
 
@@ -203,6 +203,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   一致。`fragment=true` 现按 etcd 默认 `1.5 MiB + 512 KiB overhead` 切分多事件
   response，中间片 `Fragment=true`、末片 false；事件顺序和 header/revision 保持。
   完整 Watch 测试、race、server 回归与 vet 通过。
+- **Maintenance Hash/HashKV（2026-07-16）**：删除原先仅对 revision 做 CRC 的
+  伪校验，改为在逻辑写屏障内扫描指定 revision 之前仍保留的租户对象 MVCC
+  版本，并用 CRC32C 生成确定性摘要。event-log、完整性 watermark 和 internal
+  service metadata 虽与对象共享物理 tenant 范围，但均被明确排除；首次真实
+  TiKV 测试发现并固定了该布局边界。`revision=0` 选择当前 revision，历史摘要
+  不受后续写入影响，取消的请求会停止扫描。官方 client/v3 Maintenance 客户端
+  已在真实 TiKV/PD 上验证同 revision 稳定、数据变化改变当前摘要、历史摘要
+  保持不变。摘要用于比较同一 KubeBrain keyspace 的多个服务端；由于 etcd 对
+  bbolt KV bucket 的内部编码求 hash，而 KubeBrain 使用 TiKV 对象编码，两者的
+  数值本身不具有跨引擎可比性。
 - **Compact 双端差分**：新增 `TestCompactDifferentialAgainstReferenceEtcd`，
   覆盖 logical compaction 成功 header、`revision == compactRev` 边界快照仍可读、
   `revision < compactRev` 返回 ErrCompacted、重复/更旧 compact 返回同一错误、未来

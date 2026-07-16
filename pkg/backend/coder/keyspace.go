@@ -149,6 +149,15 @@ func (k *Keyspace) ElogMetaStartKey() []byte {
 	return append([]byte(nil), k.elogMetaKey...)
 }
 
+// IsInternalStorageKey reports whether key belongs to a raw, non-object family
+// that shares this tenant's broad physical keyspace bounds.
+func (k *Keyspace) IsInternalStorageKey(key []byte) bool {
+	internalPrefix := append(append([]byte(nil), k.magic...), internalKVInfix...)
+	return bytes.HasPrefix(key, k.elogMagic) ||
+		bytes.HasPrefix(key, k.elogMetaKey) ||
+		bytes.HasPrefix(key, internalPrefix)
+}
+
 // DecodeEventLogKey splits one of this keyspace's event-log keys back into
 // (revision, userKey).
 func (k *Keyspace) DecodeEventLogKey(key []byte) (revision uint64, userKey []byte, err error) {
