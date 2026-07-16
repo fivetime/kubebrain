@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -33,35 +34,57 @@ type registerInput struct {
 type registerOutput struct {
 	value   int
 	swapped bool
+	failed  bool
 }
 
-var registerModel = porcupine.Model{
-	Init: func() interface{} { return 0 },
-	Step: func(state, input, output interface{}) (bool, interface{}) {
+var registerModel = (&porcupine.NondeterministicModel{
+	Init: func() []interface{} { return []interface{}{0} },
+	Step: func(state, input, output interface{}) []interface{} {
 		current := state.(int)
 		in := input.(registerInput)
 		out := output.(registerOutput)
+		if out.failed {
+			switch in.kind {
+			case registerRead:
+				return []interface{}{current}
+			case registerWrite:
+				return []interface{}{current, in.value}
+			case registerCAS:
+				if current == in.expect {
+					return []interface{}{current, in.desired}
+				}
+				return []interface{}{current}
+			default:
+				panic("unknown register operation")
+			}
+		}
 		switch in.kind {
 		case registerRead:
-			return out.value == current, current
+			if out.value == current {
+				return []interface{}{current}
+			}
 		case registerWrite:
-			return true, in.value
+			return []interface{}{in.value}
 		case registerCAS:
 			shouldSwap := current == in.expect
 			if out.swapped != shouldSwap {
-				return false, current
+				return nil
 			}
 			if shouldSwap {
-				return true, in.desired
+				return []interface{}{in.desired}
 			}
-			return true, current
+			return []interface{}{current}
 		default:
 			panic("unknown register operation")
 		}
+		return nil
 	},
 	DescribeOperation: func(input, output interface{}) string {
 		in := input.(registerInput)
 		out := output.(registerOutput)
+		if out.failed {
+			return fmt.Sprintf("%s -> unknown", describeRegisterInput(in))
+		}
 		switch in.kind {
 		case registerRead:
 			return fmt.Sprintf("get() -> %d", out.value)
@@ -73,6 +96,19 @@ var registerModel = porcupine.Model{
 			return "unknown"
 		}
 	},
+}).ToModel()
+
+func describeRegisterInput(in registerInput) string {
+	switch in.kind {
+	case registerRead:
+		return "get()"
+	case registerWrite:
+		return fmt.Sprintf("put(%d)", in.value)
+	case registerCAS:
+		return fmt.Sprintf("cas(%d, %d)", in.expect, in.desired)
+	default:
+		return "unknown"
+	}
 }
 
 func TestRegisterModelRejectsImpossibleHistory(t *testing.T) {
@@ -83,16 +119,51 @@ func TestRegisterModelRejectsImpossibleHistory(t *testing.T) {
 	require.Equal(t, porcupine.Illegal, porcupine.CheckOperationsTimeout(registerModel, history, time.Second))
 }
 
+func TestRegisterModelAllowsEitherOutcomeForFailedWrite(t *testing.T) {
+	failedPut := porcupine.Operation{
+		ClientId: 0, Input: registerInput{kind: registerWrite, value: 1}, Call: 1,
+		Output: registerOutput{failed: true}, Return: 2,
+	}
+	for _, value := range []int{0, 1} {
+		history := []porcupine.Operation{
+			failedPut,
+			{ClientId: 1, Input: registerInput{kind: registerRead}, Call: 3, Output: registerOutput{value: value}, Return: 4},
+		}
+		require.Equal(t, porcupine.Ok, porcupine.CheckOperationsTimeout(registerModel, history, time.Second))
+	}
+	failedCAS := porcupine.Operation{
+		ClientId: 0, Input: registerInput{kind: registerCAS, expect: 0, desired: 1}, Call: 1,
+		Output: registerOutput{failed: true}, Return: 2,
+	}
+	for _, value := range []int{0, 1} {
+		history := []porcupine.Operation{
+			failedCAS,
+			{ClientId: 1, Input: registerInput{kind: registerRead}, Call: 3, Output: registerOutput{value: value}, Return: 4},
+		}
+		require.Equal(t, porcupine.Ok, porcupine.CheckOperationsTimeout(registerModel, history, time.Second))
+	}
+	impossibleCAS := []porcupine.Operation{
+		{ClientId: 0, Input: registerInput{kind: registerCAS, expect: 2, desired: 1}, Call: 1, Output: registerOutput{failed: true}, Return: 2},
+		{ClientId: 1, Input: registerInput{kind: registerRead}, Call: 3, Output: registerOutput{value: 1}, Return: 4},
+	}
+	require.Equal(t, porcupine.Illegal, porcupine.CheckOperationsTimeout(registerModel, impossibleCAS, time.Second))
+}
+
 func TestClientV3RegisterHistoryIsLinearizable(t *testing.T) {
 	const (
-		clients             = 5
-		operationsPerClient = 12
+		clients                    = 5
+		defaultOperationsPerClient = 12
 	)
 	endpoint := os.Getenv("KUBEBRAIN_ETCD_ENDPOINT")
 	if endpoint == "" {
 		t.Skip("set KUBEBRAIN_ETCD_ENDPOINT to run the client/v3 linearizability history")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	failoverPod := os.Getenv("KUBEBRAIN_LINEARIZABILITY_DELETE_POD")
+	operationsPerClient := defaultOperationsPerClient
+	if failoverPod != "" {
+		operationsPerClient = 30
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	key := fmt.Sprintf("/dbaas-linearizability/register/%d", time.Now().UnixNano())
 
@@ -110,15 +181,38 @@ func TestClientV3RegisterHistoryIsLinearizable(t *testing.T) {
 	var clock atomic.Int64
 	var historyMu sync.Mutex
 	history := make([]porcupine.Operation, 0, clients*operationsPerClient)
-	errCh := make(chan error, clients)
+	setupErrCh := make(chan error, clients+1)
+	var failedOperations atomic.Int64
 	var workers sync.WaitGroup
+	if failoverPod != "" {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for clock.Load() < 20 {
+				select {
+				case <-ctx.Done():
+					setupErrCh <- ctx.Err()
+					return
+				case <-time.After(5 * time.Millisecond):
+				}
+			}
+			namespace := os.Getenv("KUBEBRAIN_FAILOVER_NAMESPACE")
+			if namespace == "" {
+				namespace = "kubebrain-dev"
+			}
+			output, err := exec.CommandContext(ctx, "kubectl", "-n", namespace, "delete", "pod", failoverPod, "--wait=false").CombinedOutput()
+			if err != nil {
+				setupErrCh <- fmt.Errorf("delete failover pod: %w: %s", err, output)
+			}
+		}()
+	}
 	for clientID := 0; clientID < clients; clientID++ {
 		workers.Add(1)
 		go func(clientID int) {
 			defer workers.Done()
 			cli, err := clientv3.New(clientv3.Config{Endpoints: []string{endpoint}, DialTimeout: 3 * time.Second})
 			if err != nil {
-				errCh <- err
+				setupErrCh <- err
 				return
 			}
 			defer cli.Close()
@@ -135,23 +229,32 @@ func TestClientV3RegisterHistoryIsLinearizable(t *testing.T) {
 				output, err := invokeRegisterOperation(ctx, cli, key, input)
 				returned := clock.Add(1)
 				if err != nil {
-					errCh <- fmt.Errorf("client %d operation %d: %w", clientID, i, err)
-					return
+					output.failed = true
+					failedOperations.Add(1)
 				}
 				historyMu.Lock()
 				history = append(history, porcupine.Operation{
 					ClientId: clientID, Input: input, Call: call, Output: output, Return: returned,
 				})
 				historyMu.Unlock()
+				if failoverPod != "" {
+					time.Sleep(10 * time.Millisecond)
+				}
 			}
 		}(clientID)
 	}
 	workers.Wait()
-	close(errCh)
-	for err := range errCh {
+	close(setupErrCh)
+	for err := range setupErrCh {
 		require.NoError(t, err)
 	}
 	require.Len(t, history, clients*operationsPerClient)
+	if failoverPod == "" {
+		require.Zero(t, failedOperations.Load(), "baseline history must not contain failed RPCs")
+	} else {
+		require.Positive(t, failedOperations.Load(), "fault history must exercise ambiguous RPC outcomes")
+		t.Logf("recorded %d ambiguous RPC failures during pod deletion", failedOperations.Load())
+	}
 	result := porcupine.CheckOperationsTimeout(registerModel, history, 10*time.Second)
 	require.Equalf(t, porcupine.Ok, result, "register history result: %s", result)
 }
