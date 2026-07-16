@@ -146,6 +146,10 @@ func (o *KubeBrainOption) AddFlags(fs *pflag.FlagSet) {
 		o.epsConf.ClientSecurityConfig.CertFile, "Path to the client server ClientTLS cert file.")
 	fs.StringVar(&o.epsConf.ClientSecurityConfig.KeyFile, "key-file",
 		o.epsConf.ClientSecurityConfig.KeyFile, "Path to the client server ClientTLS key file.")
+	fs.StringVar(&o.epsConf.ClientSecurityConfig.ClientCertFile, "client-cert-file",
+		o.epsConf.ClientSecurityConfig.ClientCertFile, "Path to the TLS certificate used when dialing another client endpoint; defaults to --cert-file.")
+	fs.StringVar(&o.epsConf.ClientSecurityConfig.ClientKeyFile, "client-key-file",
+		o.epsConf.ClientSecurityConfig.ClientKeyFile, "Path to the TLS key used when dialing another client endpoint; defaults to --key-file.")
 	fs.StringVar(&o.epsConf.ClientSecurityConfig.CA, "trusted-ca-file",
 		o.epsConf.ClientSecurityConfig.CA, "Path to the client server ClientTLS trusted CA cert file.")
 	fs.StringVar(&o.epsConf.ClientSecurityConfig.CRL, "client-crl-file",
@@ -154,12 +158,18 @@ func (o *KubeBrainOption) AddFlags(fs *pflag.FlagSet) {
 		o.epsConf.ClientSecurityConfig.ServerName, "Server name used by client TLS verification.")
 	fs.BoolVar(&o.epsConf.ClientSecurityConfig.ClientAuth, "client-cert-auth",
 		o.epsConf.ClientSecurityConfig.ClientAuth, "Enable client cert authentication.")
+	fs.StringSliceVar(&o.epsConf.ClientSecurityConfig.AllowedHostnames, "client-cert-allowed-hostname",
+		o.epsConf.ClientSecurityConfig.AllowedHostnames, "Allowed hostname in a CA-verified client certificate; may be repeated or comma-separated.")
 	fs.BoolVar(&o.epsConf.ClientSecurityConfig.AllowInsecure, "allow-insecure",
 		o.epsConf.ClientSecurityConfig.AllowInsecure, "Allow insecure access even if client TLS config is set.")
 	fs.StringVar(&o.epsConf.PeerSecurityConfig.CertFile, "peer-cert-file",
 		o.epsConf.PeerSecurityConfig.CertFile, "Path to the peer server ClientTLS cert file.")
 	fs.StringVar(&o.epsConf.PeerSecurityConfig.KeyFile, "peer-key-file",
 		o.epsConf.PeerSecurityConfig.KeyFile, "Path to the peer server ClientTLS key file.")
+	fs.StringVar(&o.epsConf.PeerSecurityConfig.ClientCertFile, "peer-client-cert-file",
+		o.epsConf.PeerSecurityConfig.ClientCertFile, "Path to the TLS certificate used when dialing a peer; defaults to --peer-cert-file.")
+	fs.StringVar(&o.epsConf.PeerSecurityConfig.ClientKeyFile, "peer-client-key-file",
+		o.epsConf.PeerSecurityConfig.ClientKeyFile, "Path to the TLS key used when dialing a peer; defaults to --peer-key-file.")
 	fs.StringVar(&o.epsConf.PeerSecurityConfig.CA, "peer-trusted-ca-file",
 		o.epsConf.PeerSecurityConfig.CA, "Path to the peer server ClientTLS trusted CA cert file.")
 	fs.StringVar(&o.epsConf.PeerSecurityConfig.CRL, "peer-crl-file",
@@ -168,6 +178,10 @@ func (o *KubeBrainOption) AddFlags(fs *pflag.FlagSet) {
 		o.epsConf.PeerSecurityConfig.ServerName, "Server name used by peer client TLS verification.")
 	fs.BoolVar(&o.epsConf.PeerSecurityConfig.ClientAuth, "peer-client-cert-auth",
 		o.epsConf.PeerSecurityConfig.ClientAuth, "Enable client cert authentication.")
+	fs.StringSliceVar(&o.epsConf.PeerSecurityConfig.AllowedCNs, "peer-cert-allowed-cn",
+		o.epsConf.PeerSecurityConfig.AllowedCNs, "Allowed common name in a CA-verified peer certificate; may be repeated or comma-separated.")
+	fs.StringSliceVar(&o.epsConf.PeerSecurityConfig.AllowedHostnames, "peer-cert-allowed-hostname",
+		o.epsConf.PeerSecurityConfig.AllowedHostnames, "Allowed hostname in a CA-verified peer certificate; may be repeated or comma-separated.")
 	fs.BoolVar(&o.epsConf.PeerSecurityConfig.AllowInsecure, "peer-allow-insecure",
 		o.epsConf.PeerSecurityConfig.AllowInsecure, "Allow insecure access even if peer TLS config is set.")
 	fs.BoolVar(&o.epsConf.EnableEtcdCompatibility, "compatible-with-etcd",

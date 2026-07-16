@@ -591,14 +591,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   在 CA/leaf rollover、5s max-age、三 Pod 替换及 201 次 lease+watch 持续写后开启 auth，
   动态投影新 CRL 吊销一个 `cert-root` 证书：该 serial 被拒绝，而同 CN/同 RBAC 的另一
   张未吊销证书立即 Put/Get 成功，证明结果来自证书级吊销而非用户权限变化。
+- **TLS A31 独立出站身份与 peer 身份白名单（2026-07-16）**：新增 etcd 同名
+  `--client-cert-file`/`--client-key-file` 与 `--peer-client-cert-file`/
+  `--peer-client-key-file`，未配置时仍回退到各 listener 的 serving pair；两套路径均在每次
+  handshake 重读，支持 Secret 原地轮换。新增 `--client-cert-allowed-hostname`、
+  `--peer-cert-allowed-cn`、`--peer-cert-allowed-hostname`，CN 与 hostname 模式互斥，且只在
+  显式 trusted CA 完成 chain 验证后匹配 leaf；无 client-auth/CA 的无效白名单启动即拒绝。
+  单测覆盖 split identity、动态替换、CN/SAN 接受与拒绝、同身份但非可信 CA 拒绝。真实三
+  副本 smoke 使用 `kubebrain-outbound` 独立证书完成 follower 转发，并在旧+新 CA overlap、
+  serving/outbound leaf 更新、撤旧和 Pod 替换全过程由 peer CN 白名单持续约束。
 
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
    RBAC、token 生命周期、Watch/Lease 持续鉴权、客户端证书 CN 身份以及真实三副本
    auth+mTLS failover、服务端/内部客户端叶证书热轮换、CA trust pool 双信任窗口与撤旧
-   及真实三副本在线轮换、长连接 drain/reconnect soak、CRL/cipher/TLS version 策略已
-   完成，下一步补独立 outbound client cert/key 与 peer CN/SAN allowlist。
+   及真实三副本在线轮换、长连接 drain/reconnect soak、CRL/cipher/TLS version 策略、
+   独立 outbound client cert/key 与 peer CN/SAN allowlist 已完成；下一步扩大配额与故障
+   注入覆盖。
 2. 对已通过的 `client/v3/concurrency` mutex/election/session/failover recipe
    增加 lease 自然过期和长时间 soak。
 3. 建立 DBaaS 控制面契约：创建、扩缩、升级、备份、恢复、证书轮换、销毁。

@@ -105,6 +105,12 @@ openssl req -newkey rsa:2048 -nodes \
 openssl x509 -req -in auth-client.csr -CA ca.crt -CAkey ca.key -CAcreateserial -days 1 \
   -out auth-client.crt -extensions v3_req -extfile auth-client.conf >/dev/null 2>&1
 
+sed 's/CN = cert-root/CN = kubebrain-outbound/' auth-client.conf > outbound-client.conf
+openssl req -newkey rsa:2048 -nodes \
+  -keyout outbound-client.key -out outbound-client.csr -config outbound-client.conf >/dev/null 2>&1
+openssl x509 -req -in outbound-client.csr -CA ca.crt -CAkey ca.key -CAcreateserial -days 1 \
+  -out outbound-client.crt -extensions v3_req -extfile outbound-client.conf >/dev/null 2>&1
+
 cp ca.crt old-ca.crt
 cp tls.crt old-tls.crt
 cp tls.key old-tls.key
@@ -120,6 +126,10 @@ openssl req -newkey rsa:2048 -nodes \
   -keyout auth-client-next.key -out auth-client-next.csr -config auth-client.conf >/dev/null 2>&1
 openssl x509 -req -in auth-client-next.csr -CA ca-next.crt -CAkey ca-next.key -CAcreateserial -days 1 \
   -out auth-client-next.crt -extensions v3_req -extfile auth-client.conf >/dev/null 2>&1
+openssl req -newkey rsa:2048 -nodes \
+  -keyout outbound-client-next.key -out outbound-client-next.csr -config outbound-client.conf >/dev/null 2>&1
+openssl x509 -req -in outbound-client-next.csr -CA ca-next.crt -CAkey ca-next.key -CAcreateserial -days 1 \
+  -out outbound-client-next.crt -extensions v3_req -extfile outbound-client.conf >/dev/null 2>&1
 openssl req -newkey rsa:2048 -nodes \
   -keyout auth-client-good.key -out auth-client-good.csr -config auth-client.conf >/dev/null 2>&1
 openssl x509 -req -in auth-client-good.csr -CA ca-next.crt -CAkey ca-next.key -CAcreateserial -days 1 \
@@ -160,11 +170,15 @@ kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -
 kubectl -n "$NAMESPACE" create secret generic kubebrain-client-tls \
   --from-file=tls.crt=tls.crt \
   --from-file=tls.key=tls.key \
+  --from-file=client.crt=outbound-client.crt \
+  --from-file=client.key=outbound-client.key \
   --from-file=ca.crt=ca.crt \
   --from-file=revoked.crl=revoked.crl >/dev/null
 kubectl -n "$NAMESPACE" create secret generic kubebrain-peer-tls \
   --from-file=tls.crt=tls.crt \
   --from-file=tls.key=tls.key \
+  --from-file=client.crt=outbound-client.crt \
+  --from-file=client.key=outbound-client.key \
   --from-file=ca.crt=ca.crt \
   --from-file=revoked.crl=revoked.crl >/dev/null
 
@@ -186,7 +200,8 @@ p = Path("manifest.yaml")
 s = p.read_text()
 s = s.replace("            - --compatible-with-etcd=true\n", "            - --compatible-with-etcd=true\n            - --keyspace=${NAMESPACE}\n")
 s = s.replace("            - --trusted-ca-file=/etc/kubebrain/client-tls/ca.crt\n", "            - --trusted-ca-file=/etc/kubebrain/client-tls/ca.crt\n            - --client-crl-file=/etc/kubebrain/client-tls/revoked.crl\n")
-s = s.replace("            - --peer-trusted-ca-file=/etc/kubebrain/peer-tls/ca.crt\n", "            - --peer-trusted-ca-file=/etc/kubebrain/peer-tls/ca.crt\n            - --peer-crl-file=/etc/kubebrain/peer-tls/revoked.crl\n")
+s = s.replace("            - --client-crl-file=/etc/kubebrain/client-tls/revoked.crl\n", "            - --client-crl-file=/etc/kubebrain/client-tls/revoked.crl\n            - --client-cert-file=/etc/kubebrain/client-tls/client.crt\n            - --client-key-file=/etc/kubebrain/client-tls/client.key\n")
+s = s.replace("            - --peer-trusted-ca-file=/etc/kubebrain/peer-tls/ca.crt\n", "            - --peer-trusted-ca-file=/etc/kubebrain/peer-tls/ca.crt\n            - --peer-crl-file=/etc/kubebrain/peer-tls/revoked.crl\n            - --peer-client-cert-file=/etc/kubebrain/peer-tls/client.crt\n            - --peer-client-key-file=/etc/kubebrain/peer-tls/client.key\n            - --peer-cert-allowed-cn=kubebrain-outbound\n")
 p.write_text(s)
 PY
 
@@ -279,10 +294,14 @@ apply_tls_secrets() {
   local key_file="$2"
   local ca_file="$3"
   local crl_file="${4:-revoked.crl}"
+  local client_cert_file="${5:-outbound-client.crt}"
+  local client_key_file="${6:-outbound-client.key}"
   for secret in kubebrain-client-tls kubebrain-peer-tls; do
     kubectl -n "$NAMESPACE" create secret generic "$secret" \
       --from-file="tls.crt=${cert_file}" \
       --from-file="tls.key=${key_file}" \
+      --from-file="client.crt=${client_cert_file}" \
+      --from-file="client.key=${client_key_file}" \
       --from-file="ca.crt=${ca_file}" \
       --from-file="revoked.crl=${crl_file}" \
       --dry-run=client -o yaml | kubectl apply -f - >/dev/null
@@ -694,7 +713,7 @@ if [ "$RUN_CERT_ROTATION_SMOKE" = "true" ]; then
 
   echo "Rotating client and peer leaf certificates without a rollout"
   soak_before="$(soak_progress)"
-  apply_tls_secrets tls-next.crt tls-next.key ca-overlap.crt
+  apply_tls_secrets tls-next.crt tls-next.key ca-overlap.crt revoked.crl outbound-client-next.crt outbound-client-next.key
   wait_for_projected_file tls-next.crt /etc/kubebrain/client-tls/tls.crt
   wait_for_projected_file tls-next.crt /etc/kubebrain/peer-tls/tls.crt
   CA_FILE=ca-overlap.crt CERT_FILE=tls-next.crt KEY_FILE=tls-next.key run_client_smoke
@@ -710,7 +729,7 @@ if [ "$RUN_CERT_ROTATION_SMOKE" = "true" ]; then
 
   echo "Removing the old CA from client and peer trust bundles"
   soak_before="$(soak_progress)"
-  apply_tls_secrets tls-next.crt tls-next.key ca-next.crt revoked-next.crl
+  apply_tls_secrets tls-next.crt tls-next.key ca-next.crt revoked-next.crl outbound-client-next.crt outbound-client-next.key
   wait_for_projected_file ca-next.crt /etc/kubebrain/client-tls/ca.crt
   wait_for_projected_file ca-next.crt /etc/kubebrain/peer-tls/ca.crt
   CA_FILE=ca-next.crt CERT_FILE=tls-next.crt KEY_FILE=tls-next.key run_client_smoke
@@ -770,7 +789,7 @@ if [ "$RUN_AUTH_CERT_SMOKE" = "true" ]; then
   openssl ca -config crl-next.conf -revoke auth-client-next.crt -batch >/dev/null 2>&1
   openssl ca -gencrl -config crl-next.conf -out revoked-next.pem -batch >/dev/null 2>&1
   openssl crl -in revoked-next.pem -outform DER -out revoked-next.crl
-  apply_tls_secrets tls-next.crt tls-next.key ca-next.crt revoked-next.crl
+  apply_tls_secrets tls-next.crt tls-next.key ca-next.crt revoked-next.crl outbound-client-next.crt outbound-client-next.key
   wait_for_projected_file revoked-next.crl /etc/kubebrain/client-tls/revoked.crl
   wait_for_projected_file revoked-next.crl /etc/kubebrain/peer-tls/revoked.crl
   CA_FILE=ca-next.crt CERT_FILE=auth-client-next.crt KEY_FILE=auth-client-next.key assert_client_rejected

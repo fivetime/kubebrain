@@ -143,6 +143,11 @@ type SecurityConfig struct {
 	// KeyFile is the file path of server's private key
 	KeyFile string
 
+	// ClientCertFile and ClientKeyFile optionally provide a distinct identity
+	// for outbound follower/peer TLS. Empty falls back to CertFile/KeyFile.
+	ClientCertFile string
+	ClientKeyFile  string
+
 	// CA is the file path of ca's cert
 	CA string
 
@@ -154,6 +159,11 @@ type SecurityConfig struct {
 
 	// ClientAuth indicate if client certs should be verified
 	ClientAuth bool
+
+	// AllowedCNs and AllowedHostnames further restrict CA-verified inbound leaf
+	// certificates. The two policies are mutually exclusive.
+	AllowedCNs       []string
+	AllowedHostnames []string
 
 	// AllowInsecure indicates if server can be access in insecure mode without tls
 	AllowInsecure bool
@@ -321,6 +331,32 @@ func appendCRLVerification(config *tls.Config, path string) {
 	}
 }
 
+func appendPeerIdentityVerification(config *tls.Config, allowedCNs, allowedHostnames []string) {
+	previous := config.VerifyConnection
+	config.VerifyConnection = func(state tls.ConnectionState) error {
+		if previous != nil {
+			if err := previous(state); err != nil {
+				return err
+			}
+		}
+		if len(state.PeerCertificates) == 0 {
+			return fmt.Errorf("client certificate authentication failed")
+		}
+		leaf := state.PeerCertificates[0]
+		for _, allowedCN := range allowedCNs {
+			if leaf.Subject.CommonName == allowedCN {
+				return nil
+			}
+		}
+		for _, allowedHostname := range allowedHostnames {
+			if leaf.VerifyHostname(allowedHostname) == nil {
+				return nil
+			}
+		}
+		return fmt.Errorf("client certificate authentication failed")
+	}
+}
+
 // ToKvs make config to kvs for klog
 func (sc *SecurityConfig) ToKvs() []interface{} {
 	if sc == nil {
@@ -330,10 +366,14 @@ func (sc *SecurityConfig) ToKvs() []interface{} {
 	return []interface{}{
 		"cert", sc.CertFile,
 		"key", sc.KeyFile,
+		"clientCert", sc.ClientCertFile,
+		"clientKey", sc.ClientKeyFile,
 		"ca", sc.CA,
 		"crl", sc.CRL,
 		"serverName", sc.ServerName,
 		"clientAuth", strconv.FormatBool(sc.ClientAuth),
+		"allowedCNs", sc.AllowedCNs,
+		"allowedHostnames", sc.AllowedHostnames,
 	}
 }
 
@@ -361,6 +401,8 @@ func (sc *SecurityConfig) isInsecure() bool {
 
 	return sc.CertFile == "" &&
 		sc.KeyFile == "" &&
+		sc.ClientCertFile == "" &&
+		sc.ClientKeyFile == "" &&
 		sc.CA == "" &&
 		sc.CRL == "" &&
 		sc.ClientAuth == false
@@ -371,6 +413,18 @@ func (sc *SecurityConfig) init() (err error) {
 		return nil
 	}
 	sc.once.Do(func() {
+		if (sc.ClientCertFile == "") != (sc.ClientKeyFile == "") {
+			sc.err = fmt.Errorf("client cert file and client key file must both be present or both absent")
+			return
+		}
+		if len(sc.AllowedCNs) > 0 && len(sc.AllowedHostnames) > 0 {
+			sc.err = fmt.Errorf("allowed CNs and allowed hostnames are mutually exclusive")
+			return
+		}
+		if (len(sc.AllowedCNs) > 0 || len(sc.AllowedHostnames) > 0) && (!sc.ClientAuth || sc.CA == "") {
+			sc.err = fmt.Errorf("certificate identity allowlists require client cert auth and a trusted CA")
+			return
+		}
 		// Validate the initial key pair before accepting traffic. Runtime TLS
 		// configs deliberately keep Certificates empty so every handshake invokes
 		// the reload callbacks, matching etcd's mounted-secret rotation behavior.
@@ -381,10 +435,18 @@ func (sc *SecurityConfig) init() (err error) {
 			return
 		}
 
-		loadCertificate := func() (*tls.Certificate, error) {
-			cert, err := tls.LoadX509KeyPair(sc.CertFile, sc.KeyFile)
+		clientCertFile, clientKeyFile := sc.ClientCertFile, sc.ClientKeyFile
+		if clientCertFile == "" {
+			clientCertFile, clientKeyFile = sc.CertFile, sc.KeyFile
+		} else if _, err := tls.LoadX509KeyPair(clientCertFile, clientKeyFile); err != nil {
+			klog.ErrorS(err, "can not load client key pair", "cert", clientCertFile, "key", clientKeyFile)
+			sc.err = errors.Wrap(err, "can not load client key pair")
+			return
+		}
+		loadCertificate := func(certFile, keyFile string) (*tls.Certificate, error) {
+			cert, err := tls.LoadX509KeyPair(certFile, keyFile)
 			if err != nil {
-				klog.ErrorS(err, "can not reload key pair", "cert", sc.CertFile, "key", sc.KeyFile)
+				klog.ErrorS(err, "can not reload key pair", "cert", certFile, "key", keyFile)
 				return nil, errors.Wrap(err, "can not reload key pair")
 			}
 			return &cert, nil
@@ -406,14 +468,14 @@ func (sc *SecurityConfig) init() (err error) {
 			CipherSuites: append([]uint16(nil), sc.cipherSuites...),
 		}
 		sc.serverTlsConfig.GetCertificate = func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
-			return loadCertificate()
+			return loadCertificate(sc.CertFile, sc.KeyFile)
 		}
 
 		sc.clientTlsConfig = &tls.Config{
 			ServerName: sc.ServerName, MinVersion: sc.minVersion, MaxVersion: sc.maxVersion,
 			CipherSuites: append([]uint16(nil), sc.cipherSuites...),
 			GetClientCertificate: func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
-				return loadCertificate()
+				return loadCertificate(clientCertFile, clientKeyFile)
 			},
 		}
 
@@ -465,6 +527,9 @@ func (sc *SecurityConfig) init() (err error) {
 				})
 				return err
 			}
+		}
+		if len(sc.AllowedCNs) > 0 || len(sc.AllowedHostnames) > 0 {
+			appendPeerIdentityVerification(sc.serverTlsConfig, sc.AllowedCNs, sc.AllowedHostnames)
 		}
 		if sc.CRL != "" {
 			if _, err := loadRevocationList(sc.CRL); err != nil {

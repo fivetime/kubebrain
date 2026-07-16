@@ -648,11 +648,17 @@ journalctl -u kubebrain.service | grep -i 'count.*index\|full scan'
      --key-file=/etc/kubebrain/certs/kb.key \
      --trusted-ca-file=/etc/kubebrain/certs/ca.crt \
      --client-cert-auth=true \
+# follower 转发可使用与 serving leaf 分离的客户端身份
+     --client-cert-file=/etc/kubebrain/certs/kb-client.crt \
+     --client-key-file=/etc/kubebrain/certs/kb-client.key \
 # peer 平面（follower ↔ leader 转发 + 选主）：独立一套
      --peer-cert-file=/etc/kubebrain/certs/kb.crt \
      --peer-key-file=/etc/kubebrain/certs/kb.key \
      --peer-trusted-ca-file=/etc/kubebrain/certs/ca.crt \
      --peer-client-cert-auth=true \
+     --peer-client-cert-file=/etc/kubebrain/certs/kb-client.crt \
+     --peer-client-key-file=/etc/kubebrain/certs/kb-client.key \
+     --peer-cert-allowed-cn=kubebrain-outbound \
 # info 平面（可选给 /metrics 加 TLS，默认明文）
 #    --info-cert-file=... --info-key-file=... --info-trusted-ca-file=...
 ```
@@ -663,7 +669,7 @@ journalctl -u kubebrain.service | grep -i 'count.*index\|full scan'
 Volume=/etc/kubebrain/certs:/etc/kubebrain/certs:ro
 ```
 
-**证书要求**：SAN 覆盖所有 KubeBrain 节点 IP + `127.0.0.1`；由于 peer 平面上副本互为客户端与服务端，`extendedKeyUsage` 必须同时包含 `serverAuth` 和 `clientAuth`。
+**证书要求**：serving leaf 的 SAN 覆盖所有 KubeBrain 节点 IP + `127.0.0.1`；独立 client leaf 需要 `clientAuth`。不配置 `*-client-cert-file/key-file` 时兼容旧行为，出站连接回退使用 serving pair（此时需同时包含 `serverAuth` 和 `clientAuth`）。CN 与 hostname 白名单互斥，且要求对应平面同时启用 client cert auth 和显式 trusted CA。
 
 ### A.2 apiserver 侧
 

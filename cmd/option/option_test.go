@@ -30,12 +30,18 @@ func TestTLSFlagsBindToExpectedSecurityConfigFields(t *testing.T) {
 	require.NoError(t, fs.Parse([]string{
 		"--cert-file=/client/tls.crt",
 		"--key-file=/client/tls.key",
+		"--client-cert-file=/client/outbound.crt",
+		"--client-key-file=/client/outbound.key",
 		"--trusted-ca-file=/client/ca.crt",
+		"--client-cert-allowed-hostname=client-one.example,client-two.example",
 		"--tls-server-name=kubebrain-client.kubebrain-system.svc",
 		"--allow-insecure=true",
 		"--peer-cert-file=/peer/tls.crt",
 		"--peer-key-file=/peer/tls.key",
+		"--peer-client-cert-file=/peer/outbound.crt",
+		"--peer-client-key-file=/peer/outbound.key",
 		"--peer-trusted-ca-file=/peer/ca.crt",
+		"--peer-cert-allowed-cn=peer-one,peer-two",
 		"--peer-tls-server-name=kubebrain-peer.kubebrain-system.svc",
 		"--peer-allow-insecure=true",
 		"--client-crl-file=/client/revoked.crl",
@@ -50,12 +56,18 @@ func TestTLSFlagsBindToExpectedSecurityConfigFields(t *testing.T) {
 
 	require.Equal(t, "/client/tls.crt", o.epsConf.ClientSecurityConfig.CertFile)
 	require.Equal(t, "/client/tls.key", o.epsConf.ClientSecurityConfig.KeyFile)
+	require.Equal(t, "/client/outbound.crt", o.epsConf.ClientSecurityConfig.ClientCertFile)
+	require.Equal(t, "/client/outbound.key", o.epsConf.ClientSecurityConfig.ClientKeyFile)
 	require.Equal(t, "/client/ca.crt", o.epsConf.ClientSecurityConfig.CA)
+	require.Equal(t, []string{"client-one.example", "client-two.example"}, o.epsConf.ClientSecurityConfig.AllowedHostnames)
 	require.Equal(t, "kubebrain-client.kubebrain-system.svc", o.epsConf.ClientSecurityConfig.ServerName)
 	require.True(t, o.epsConf.ClientSecurityConfig.AllowInsecure)
 	require.Equal(t, "/peer/tls.crt", o.epsConf.PeerSecurityConfig.CertFile)
 	require.Equal(t, "/peer/tls.key", o.epsConf.PeerSecurityConfig.KeyFile)
+	require.Equal(t, "/peer/outbound.crt", o.epsConf.PeerSecurityConfig.ClientCertFile)
+	require.Equal(t, "/peer/outbound.key", o.epsConf.PeerSecurityConfig.ClientKeyFile)
 	require.Equal(t, "/peer/ca.crt", o.epsConf.PeerSecurityConfig.CA)
+	require.Equal(t, []string{"peer-one", "peer-two"}, o.epsConf.PeerSecurityConfig.AllowedCNs)
 	require.Equal(t, "kubebrain-peer.kubebrain-system.svc", o.epsConf.PeerSecurityConfig.ServerName)
 	require.True(t, o.epsConf.PeerSecurityConfig.AllowInsecure)
 	require.Equal(t, "/client/revoked.crl", o.epsConf.ClientSecurityConfig.CRL)

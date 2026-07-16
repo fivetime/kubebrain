@@ -181,6 +181,121 @@ func TestClientCertificateReloadedForEveryHandshake(t *testing.T) {
 	require.Equal(t, int64(302), second.PeerCertificates[0].SerialNumber.Int64())
 }
 
+func TestDistinctOutboundClientCertificateReloadedForEveryHandshake(t *testing.T) {
+	ca := newRotationCA(t)
+	serverDir := t.TempDir()
+	serverCertPath, serverKeyPath := writeRotationCertificate(t, serverDir, "remote-server", ca, 321, "rotation.test")
+	serverCert, _ := leafCertificate(t, serverCertPath, serverKeyPath)
+	pool := x509.NewCertPool()
+	require.True(t, pool.AppendCertsFromPEM(ca.pem))
+	serverConfig := &tls.Config{
+		Certificates: []tls.Certificate{serverCert}, ClientAuth: tls.RequireAndVerifyClientCert, ClientCAs: pool,
+	}
+
+	localDir := t.TempDir()
+	servingCertPath, servingKeyPath := writeRotationCertificate(t, localDir, "serving", ca, 322, "rotation.test")
+	outboundDir := t.TempDir()
+	outboundCertPath, outboundKeyPath := writeRotationCertificate(t, outboundDir, "outbound-one", ca, 323, "rotation.test")
+	caPath := filepath.Join(localDir, "ca.crt")
+	writeRotationCA(t, caPath, ca)
+	config := &SecurityConfig{
+		CertFile: servingCertPath, KeyFile: servingKeyPath,
+		ClientCertFile: outboundCertPath, ClientKeyFile: outboundKeyPath,
+		CA: caPath, ServerName: "rotation.test",
+	}
+	require.NoError(t, config.validate())
+
+	first, _ := handshakeTLS(t, serverConfig, config.getClientTLSConfig())
+	require.Equal(t, "outbound-one", first.PeerCertificates[0].Subject.CommonName)
+	require.Equal(t, int64(323), first.PeerCertificates[0].SerialNumber.Int64())
+
+	writeRotationCertificate(t, outboundDir, "outbound-two", ca, 324, "rotation.test")
+	second, _ := handshakeTLS(t, serverConfig, config.getClientTLSConfig())
+	require.Equal(t, "outbound-two", second.PeerCertificates[0].Subject.CommonName)
+	require.Equal(t, int64(324), second.PeerCertificates[0].SerialNumber.Int64())
+	serving, err := config.getServerTLSConfig().GetCertificate(nil)
+	require.NoError(t, err)
+	servingLeaf, err := x509.ParseCertificate(serving.Certificate[0])
+	require.NoError(t, err)
+	require.Equal(t, int64(322), servingLeaf.SerialNumber.Int64())
+}
+
+func TestInboundCertificateIdentityAllowlists(t *testing.T) {
+	ca, untrustedCA := newRotationCA(t), newRotationCA(t)
+	serverDir := t.TempDir()
+	serverCertPath, serverKeyPath := writeRotationCertificate(t, serverDir, "server", ca, 331, "rotation.test")
+	caPath := filepath.Join(serverDir, "ca.crt")
+	writeRotationCA(t, caPath, ca)
+	client := func(issuer rotationCA, cn, hostname string, serial int64) *tls.Config {
+		dir := t.TempDir()
+		certPath, keyPath := writeRotationCertificate(t, dir, cn, issuer, serial, hostname)
+		cert, _ := leafCertificate(t, certPath, keyPath)
+		return &tls.Config{Certificates: []tls.Certificate{cert}, InsecureSkipVerify: true} //nolint:gosec -- server-side identity test
+	}
+	assertRejected := func(t *testing.T, serverConfig, clientConfig *tls.Config) {
+		t.Helper()
+		_, _, serverErr, _ := tryHandshakeTLS(t, serverConfig, clientConfig)
+		require.Error(t, serverErr)
+	}
+
+	t.Run("common name", func(t *testing.T) {
+		config := &SecurityConfig{
+			CertFile: serverCertPath, KeyFile: serverKeyPath, CA: caPath, ClientAuth: true,
+			AllowedCNs: []string{"allowed-client"},
+		}
+		require.NoError(t, config.validate())
+		handshakeTLS(t, config.getServerTLSConfig(), client(ca, "allowed-client", "irrelevant.test", 332))
+		assertRejected(t, config.getServerTLSConfig(), client(ca, "other-client", "irrelevant.test", 333))
+		assertRejected(t, config.getServerTLSConfig(), client(untrustedCA, "allowed-client", "irrelevant.test", 334))
+	})
+
+	t.Run("hostname", func(t *testing.T) {
+		config := &SecurityConfig{
+			CertFile: serverCertPath, KeyFile: serverKeyPath, CA: caPath, ClientAuth: true,
+			AllowedHostnames: []string{"workload.example"},
+		}
+		require.NoError(t, config.validate())
+		handshakeTLS(t, config.getServerTLSConfig(), client(ca, "irrelevant", "workload.example", 335))
+		assertRejected(t, config.getServerTLSConfig(), client(ca, "irrelevant", "other.example", 336))
+	})
+}
+
+func TestCertificateIdentityConfigurationValidation(t *testing.T) {
+	ca := newRotationCA(t)
+	dir := t.TempDir()
+	certPath, keyPath := writeRotationCertificate(t, dir, "server", ca, 341, "rotation.test")
+	caPath := filepath.Join(dir, "ca.crt")
+	writeRotationCA(t, caPath, ca)
+
+	tests := []struct {
+		name   string
+		mutate func(*SecurityConfig)
+		want   string
+	}{
+		{name: "client cert without key", mutate: func(c *SecurityConfig) { c.ClientCertFile = certPath }, want: "must both be present"},
+		{name: "client key without cert", mutate: func(c *SecurityConfig) { c.ClientKeyFile = keyPath }, want: "must both be present"},
+		{name: "CN and hostname", mutate: func(c *SecurityConfig) {
+			c.AllowedCNs = []string{"client"}
+			c.AllowedHostnames = []string{"client.example"}
+		}, want: "mutually exclusive"},
+		{name: "allowlist without client auth", mutate: func(c *SecurityConfig) {
+			c.AllowedCNs = []string{"client"}
+		}, want: "require client cert auth"},
+		{name: "allowlist without CA", mutate: func(c *SecurityConfig) {
+			c.CA = ""
+			c.ClientAuth = true
+			c.AllowedCNs = []string{"client"}
+		}, want: "trusted CA"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := &SecurityConfig{CertFile: certPath, KeyFile: keyPath, CA: caPath}
+			tt.mutate(config)
+			require.ErrorContains(t, config.validate(), tt.want)
+		})
+	}
+}
+
 func TestInboundClientCATrustPoolRotation(t *testing.T) {
 	oldCA, newCA := newRotationCA(t), newRotationCA(t)
 	serverDir := t.TempDir()
