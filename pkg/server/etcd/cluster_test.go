@@ -32,7 +32,7 @@ func TestMemberListReturnsCurrentMember(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, resp.Header)
 	require.NotZero(t, resp.Header.MemberId)
-	require.NotZero(t, resp.Header.ClusterId)
+	require.Equal(t, server.backend.ClusterID(), resp.Header.ClusterId)
 	require.Len(t, resp.Members, 1)
 	require.Equal(t, "test-peer", resp.Members[0].Name)
 	require.Equal(t, []string{"http://test-peer"}, resp.Members[0].PeerURLs)

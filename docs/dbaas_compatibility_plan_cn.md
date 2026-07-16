@@ -38,7 +38,7 @@ Raft、bbolt 和成员管理内部实现，而是对通用 etcd v3 客户端提�
 | Watch | create/cancel/progress/history/prevKV | 兼容核心语义 | P0：用官方客户端做事件完整性、压缩、断线恢复和慢消费者测试 |
 | Lease | grant/revoke/keepalive/ttl/list | 部分兼容 | P0：隔离 lease meta/attachment 的用户 MVCC revision；补并发、故障转移、事务附着及错误矩阵 |
 | Auth | 用户、角色、权限、token | 缺失 | P1：实现 etcd Auth API；DBaaS mTLS/IAM 不能替代客户端期望的 key-range RBAC |
-| Cluster | MemberList | 兼容表面 | 返回 KubeBrain 服务成员信息 |
+| Cluster | MemberList | 部分兼容 | 当前仅返回本机与已知 leader；需接 DBaaS 副本注册表后才能安全支持 clientv3 AutoSync 的完整 endpoint 集合 |
 | Cluster | add/remove/update/promote | 平台替代 | 由 DBaaS 控制面扩缩 KubeBrain、PD、TiKV；RPC 保持明确 Unimplemented |
 | Maintenance | Status | 部分兼容 | P1：返回真实服务身份、版本、leader/revision；容量转到实例指标 |
 | Maintenance | Snapshot | 平台替代 | 使用 TiKV BR/PITR；控制面提供备份、恢复和导出任务，不伪造 etcd snapshot |
@@ -213,6 +213,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   保持不变。摘要用于比较同一 KubeBrain keyspace 的多个服务端；由于 etcd 对
   bbolt KV bucket 的内部编码求 hash，而 KubeBrain 使用 TiKV 对象编码，两者的
   数值本身不具有跨引擎可比性。
+- **ClusterId 稳定性（2026-07-16）**：`MemberList` 不再把当前 leader 地址的
+  CRC 当作 ClusterId，改为与所有其他 RPC 一致地使用 backend 从 PD/TiKV
+  cluster identity 和 keyspace 派生的稳定 ID，避免换主时客户端把同一实例误判
+  为另一集群。当前 peer service 只掌握本机与 leader，尚不能枚举全部 follower；
+  因此 MemberList 仍是部分兼容，DBaaS 需要把实例副本注册表注入数据面后再宣称
+  支持 clientv3 AutoSync。
 - **Compact 双端差分**：新增 `TestCompactDifferentialAgainstReferenceEtcd`，
   覆盖 logical compaction 成功 header、`revision == compactRev` 边界快照仍可读、
   `revision < compactRev` 返回 ErrCompacted、重复/更旧 compact 返回同一错误、未来
