@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -47,6 +48,80 @@ func TestTxnDifferentialAgainstReferenceEtcd(t *testing.T) {
 	kubebrain := runTxnDifferentialScenario(t, compatEndpoint(), "kubebrain")
 	etcd := runTxnDifferentialScenario(t, reference, "etcd")
 	require.Equal(t, etcd, kubebrain)
+}
+
+func TestTxnConcurrentCreateDifferentialAgainstReferenceEtcd(t *testing.T) {
+	reference := os.Getenv("REFERENCE_ETCD_ENDPOINT")
+	if reference == "" {
+		t.Skip("set REFERENCE_ETCD_ENDPOINT to run differential compatibility tests")
+	}
+
+	kubebrain := runConcurrentCreateScenario(t, compatEndpoint(), "kubebrain")
+	etcd := runConcurrentCreateScenario(t, reference, "etcd")
+	require.Equal(t, etcd, kubebrain)
+}
+
+type concurrentCreateResult struct {
+	Succeeded int
+	Failed    int
+	FinalKVs  int
+}
+
+func runConcurrentCreateScenario(t *testing.T, endpoint, instance string) concurrentCreateResult {
+	t.Helper()
+	cli, err := clientv3.New(clientv3.Config{Endpoints: []string{endpoint}, DialTimeout: 3 * time.Second})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, cli.Close()) })
+
+	key := fmt.Sprintf("/dbaas-differential/%s/concurrent-create/%d", instance, time.Now().UnixNano())
+	const contenders = 32
+	start := make(chan struct{})
+	results := make(chan bool, contenders)
+	errs := make(chan error, contenders)
+	var wg sync.WaitGroup
+	for i := 0; i < contenders; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			resp, err := cli.Txn(ctx).
+				If(clientv3.Compare(clientv3.Version(key), "=", 0)).
+				Then(clientv3.OpPut(key, fmt.Sprintf("winner-%d", i))).
+				Else(clientv3.OpGet(key)).
+				Commit()
+			if err != nil {
+				errs <- err
+				return
+			}
+			results <- resp.Succeeded
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+	close(errs)
+	for err := range errs {
+		require.NoError(t, err)
+	}
+
+	result := concurrentCreateResult{}
+	for succeeded := range results {
+		if succeeded {
+			result.Succeeded++
+		} else {
+			result.Failed++
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	final, err := cli.Get(ctx, key)
+	require.NoError(t, err)
+	result.FinalKVs = len(final.Kvs)
+	require.Equal(t, concurrentCreateResult{Succeeded: 1, Failed: contenders - 1, FinalKVs: 1}, result)
+	_, _ = cli.Delete(ctx, key)
+	return result
 }
 
 func runTxnDifferentialScenario(t *testing.T, endpoint, instance string) txnDifferentialResult {

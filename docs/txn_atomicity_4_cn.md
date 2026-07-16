@@ -1,6 +1,21 @@
-# #4 通用 txn 原子性 —— 设计
+# #4 通用 txn 原子性 —— 设计与实现状态
 
-## 现状与缺陷
+## 当前状态（2026-07-16）
+
+Tier 1 和 Tier 2 均已实现，本文件后续“现状与缺陷”记录的是修复前基线，不再代表当前代码：
+
+- `backend.TxnApply` 使用一个 TiKV batch 提交全部用户写和 lease attachment，所有有效写共享一个 MVCC revision；CAS 冲突时整批失败，不会部分应用。
+- 单键 compare 生成“精确 revision / 仍不存在” OCC guard；range compare 通过 `BeginRangeTxn` 写屏障排除扫描后的 phantom insert。
+- `stagedTxnExecutor` 在固定 `baseRev` 上构造事务内有序视图，支持 Range、range delete、`IgnoreValue`、`IgnoreLease` 和 nested txn，最后将每键最终状态一次提交。
+- etcd 的重复 put、put/delete 区间重叠等非法形状在执行前拒绝；不再依赖非原子顺序执行来处理合法的多操作事务。
+
+验证证据：
+
+- backend/server 聚焦测试与 `-race` 覆盖单 revision、CAS contention、缺失键 guard、range phantom、staged read-your-write、嵌套事务、range delete 和 lease attachment。
+- `hack/etcd-client-compat/txn_atomic_test.go` 通过官方 `client/v3` 黑盒验证多写单 revision、事务内读顺序及重叠 range delete。
+- `hack/etcd-client-compat/txn_differential_test.go` 在真实 TiKV/PD-backed KubeBrain 与 `/root/etcd` 参考服务之间比较响应、revision、PrevKV、过滤/计数、错误，以及 32 客户端并发 create-if-absent；并发场景两端均严格只有一个成功分支。
+
+## 修复前基线与缺陷
 
 `Txn` RPC（`pkg/server/etcd/kv.go:125`）分流：
 - **快路径**（apiserver 实际走的）：`isCreate`/`isUpdate`/`isDelete`/`isCompareDelete` → 单个 backend CAS 原子操作（`Create`/`Update`/`Delete`/`CompareDelete`）。**原子、单 revision、正确。**
@@ -34,15 +49,15 @@ apiserver 的存储层只发快路径 txn（guaranteed-update = 单 compare+put�
 
 etcd 层 `executeGenericTxn` 改为：评估 compare 选分支 → 收集该分支的 put/delete/range/nested → range（读）在 txn revision 上执行 → 写交给 `TxnApply` 单 revision 原子应用。
 
-## 分档
+## 实施分档（均已完成）
 
-- **Tier 1（有界，~150 行 + 测试）**：写 op（put+delete）单 revision 原子应用（修 #2、#3 缺陷）；range 读在 txn revision；compare 仍读判定 + 写 op 的 CAS 提供部分保护（写 key 若并发变更则整批失败）。**不**完全修 compare 隔离（跨 key compare 的 TOCTOU 仍在）。
-- **Tier 2（完整）**：加 compare key 的 OCC guard CAS + 整 txn 重试 → 可串行化隔离，修 #1。更复杂，改动关键写路径，需大量并发/事件顺序/compat 测试。
+- **Tier 1（已完成）**：写 op（put+delete）单 revision 原子应用（修 #2、#3 缺陷），range 读使用事务内 staged view。
+- **Tier 2（已完成）**：compare key 的 OCC guard CAS + 整 txn 重试；range compare 使用写屏障，修复单键 TOCTOU 与区间 phantom。
 
 ## 风险
 
 关键写路径改动；需覆盖：并发同 key/跨 key、事件顺序与单 revision、nested txn、range-in-txn、lease 绑定、compat 套件（etcd client 真实 txn 语义）。Tier 2 的整-txn 重试还需防活锁。
 
-## 建议
+## 剩余验证边界
 
-鉴于可达性（apiserver 不走此路径）与风险，推荐 **Tier 1**：以有界、低风险的方式消除最可观测的破坏（多 op 单 revision 原子 + 无部分应用），把 compare 跨 key 隔离（Tier 2）留作后续。若要 etcd 语义完全对齐则上 Tier 2。
+事务实现不再有已知语义缺口。DBaaS 上线门槛仍应包含多副本 leader 故障发生在高并发通用 txn 中途的黑盒测试，以及 TiKV uncertain commit 注入；它们验证故障恢复和 ACK 边界，不改变本文件已实现的事务模型。
