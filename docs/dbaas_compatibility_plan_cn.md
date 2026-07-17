@@ -1542,6 +1542,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   或强制退出，并自动恢复 3/3 Ready。验证后共享集群恢复明文访问参数并保留 A94
   镜像。exact image
   `36ab71d84bd626349fcd5aa21b9ee137669574f8185699586b8227564ed6fb2f`。
+- **Runtime A95 empty TLS configuration semantics（2026-07-17）**：对照 etcd
+  `client/pkg/transport/listener.go:TLSInfo.Empty`，明文 listener 不应初始化 TLS。
+  KubeBrain 的 option 层始终创建三个空 `SecurityConfig`；`Validate` 虽正确判定为
+  insecure，`getServerConfig` 随后却只检查指针非 nil，再次调用 `init` 加载空
+  cert/key，忽略返回错误后碰巧得到 nil TLS config。协议选择最终仍为明文，但每个
+  Pod 启动固定产生两条 `open : no such file or directory` Error，污染告警并掩盖
+  真正的证书故障。现 TLS getter 与 server config 传播都显式保持 Empty→nil，不再
+  触发初始化；`isInsecure` 同时纳入 ServerName 与 CN/hostname allowlist，避免只配置
+  身份约束时被静默视为明文，改为明确拒绝缺少 client auth/CA 的无效配置。回归固定
+  client/peer server/client TLS config 均为 nil、代理 TLS 为 nil，以及两类孤立
+  allowlist fail closed；focused 普通 50 轮、race 20 轮、endpoint/option/server/
+  proxy race、full test 与 full vet 全通过。三副本 KubeBrain + 独立 TiKV/PD 重建后，
+  三个 Pod 的空 keypair Error 均由 2 降为 0，client/peer/info 都明确
+  `ONLY_INSECURE`，内部代理记录 `secure=false`；部署 3/3 Ready、zero restart，
+  health 与 CRUD 正常，且无临时 TLS volume 残留。exact image
+  `e0893bbd5215d124115212d395ea8bea8d5a28a65dbee5b4844d88cf008e8511`。
 
 ### P1：通用服务能力
 

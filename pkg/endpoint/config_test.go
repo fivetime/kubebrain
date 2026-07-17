@@ -107,6 +107,42 @@ func TestRequestRateLimitRequiresRateAndBurstTogether(t *testing.T) {
 	}
 }
 
+func TestEmptySecurityConfigDoesNotInitializeTLS(t *testing.T) {
+	config := &Config{
+		Port:                 2379,
+		PeerPort:             2380,
+		ClientSecurityConfig: &SecurityConfig{},
+		PeerSecurityConfig:   &SecurityConfig{},
+	}
+
+	require.NoError(t, config.Validate())
+	require.Nil(t, config.ClientSecurityConfig.getServerTLSConfig())
+	require.Nil(t, config.ClientSecurityConfig.getClientTLSConfig())
+	require.Nil(t, config.PeerSecurityConfig.getServerTLSConfig())
+	require.Nil(t, config.PeerSecurityConfig.getClientTLSConfig())
+
+	serverConfig := config.getServerConfig()
+	require.Nil(t, serverConfig.ClientTLS)
+	require.Nil(t, serverConfig.ProxyTLS)
+	require.False(t, serverConfig.ClientCertAuth)
+	require.False(t, serverConfig.ProxyAllowInsecure)
+}
+
+func TestCertificateAllowlistsAreNotTreatedAsEmptySecurityConfig(t *testing.T) {
+	for _, security := range []*SecurityConfig{
+		{AllowedCNs: []string{"peer"}},
+		{AllowedHostnames: []string{"peer.example"}},
+	} {
+		config := &Config{
+			Port:                 2379,
+			PeerPort:             2380,
+			ClientSecurityConfig: &SecurityConfig{},
+			PeerSecurityConfig:   security,
+		}
+		require.ErrorContains(t, config.Validate(), "require client cert auth and a trusted CA")
+	}
+}
+
 func TestAuthTokenProviderValidation(t *testing.T) {
 	config := &Config{
 		Port: 2379, PeerPort: 2380, AuthToken: "jwt,pub-key=public.pem",

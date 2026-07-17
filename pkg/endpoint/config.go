@@ -134,11 +134,11 @@ func (c *Config) getServerConfig() server.Config {
 	var proxyTLS *tls.Config
 	clientCertAuth := false
 	proxyAllowInsecure := false
-	if c.ClientSecurityConfig != nil {
+	if !c.ClientSecurityConfig.isInsecure() {
 		clientTLS = c.ClientSecurityConfig.getClientTLSConfig()
 		clientCertAuth = c.ClientSecurityConfig.ClientAuth
 	}
-	if c.PeerSecurityConfig != nil {
+	if !c.PeerSecurityConfig.isInsecure() {
 		proxyTLS = c.PeerSecurityConfig.getClientTLSConfig()
 		proxyAllowInsecure = c.PeerSecurityConfig.AllowInsecure
 	}
@@ -455,6 +455,9 @@ func (sc *SecurityConfig) isInsecure() bool {
 		sc.ClientKeyFile == "" &&
 		sc.CA == "" &&
 		sc.CRL == "" &&
+		sc.ServerName == "" &&
+		len(sc.AllowedCNs) == 0 &&
+		len(sc.AllowedHostnames) == 0 &&
 		sc.ClientAuth == false
 }
 
@@ -610,11 +613,17 @@ func (sc *SecurityConfig) init() (err error) {
 }
 
 func (sc *SecurityConfig) getServerTLSConfig() (ret *tls.Config) {
+	if sc.isInsecure() {
+		return nil
+	}
 	_ = sc.init()
 	return sc.serverTlsConfig
 }
 
 func (sc *SecurityConfig) getClientTLSConfig() (ret *tls.Config) {
+	if sc.isInsecure() {
+		return nil
+	}
 	_ = sc.init()
 	return sc.clientTlsConfig
 }
