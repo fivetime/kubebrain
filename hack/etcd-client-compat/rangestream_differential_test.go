@@ -8,7 +8,9 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
+	"google.golang.org/protobuf/proto"
 )
 
 type normalizedRangeStreamScenario struct {
@@ -17,6 +19,52 @@ type normalizedRangeStreamScenario struct {
 	CountOnly normalizedRange
 	KeysOnly  normalizedRange
 	Explicit  normalizedRange
+}
+
+func TestRangeStreamProductionChunkTarget(t *testing.T) {
+	endpoint := os.Getenv("KUBEBRAIN_ETCD_ENDPOINT")
+	if endpoint == "" {
+		t.Skip("set KUBEBRAIN_ETCD_ENDPOINT to run the live RangeStream chunk test")
+	}
+	cli, err := clientv3.New(clientv3.Config{Endpoints: []string{endpoint}, DialTimeout: 3 * time.Second})
+	require.NoError(t, err)
+	defer func() { require.NoError(t, cli.Close()) }()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	prefix := fmt.Sprintf("/dbaas-rangestream-chunks/%d/", time.Now().UnixNano())
+	for i := 0; i < 8; i++ {
+		value := make([]byte, 320*1024)
+		value[0] = byte(i)
+		_, err = cli.Put(ctx, fmt.Sprintf("%s%02d", prefix, i), string(value))
+		require.NoError(t, err)
+	}
+	defer func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_, _ = cli.Delete(cleanupCtx, prefix, clientv3.WithPrefix())
+	}()
+
+	check := func(opts ...clientv3.OpOption) {
+		stream, streamErr := cli.GetStream(ctx, prefix,
+			append([]clientv3.OpOption{clientv3.WithPrefix()}, opts...)...)
+		require.NoError(t, streamErr)
+		count := 0
+		chunks := 0
+		for chunk := range stream {
+			require.NoError(t, chunk.Err())
+			require.NotNil(t, chunk.RangeResponse)
+			wire := &etcdserverpb.RangeStreamResponse{RangeResponse: chunk.RangeResponse}
+			require.LessOrEqual(t, proto.Size(wire), 1572864)
+			count += len(chunk.Kvs)
+			chunks++
+		}
+		require.Equal(t, 8, count)
+		require.Greater(t, chunks, 1)
+	}
+
+	check()
+	check(clientv3.WithLimit(8))
 }
 
 // TestRangeStreamDifferentialAgainstReferenceEtcd drives the public 3.7

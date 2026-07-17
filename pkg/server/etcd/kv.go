@@ -27,6 +27,7 @@ import (
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 	"k8s.io/klog/v2"
 
@@ -129,10 +130,10 @@ func (s *RPCServer) Range(ctx context.Context, r *etcdserverpb.RangeRequest) (*e
 // 1.37) uses it to bound memory on large initial LISTs. This overrides the
 // RangeStream default promoted from the embedded UnimplementedKVServer.
 //
-// Wire contract (etcd semantics): every chunk carries Header.Revision — the
-// apiserver reads it as the sync's initial revision; Kvs across chunks are
-// disjoint and concatenate to the full result; a final header-only chunk marks
-// the pinned revision; the stream then ends with a normal return (io.EOF). A
+// Wire contract (etcd semantics): Kvs across chunks are disjoint and concatenate
+// to the full result; only the final chunk carries Header/More/Count, including
+// the pinned revision the apiserver uses as the sync's initial revision; the
+// stream then ends with a normal return (io.EOF). A
 // backend error aborts the stream with a gRPC status so the apiserver relists
 // rather than treating a partial stream as complete.
 func (s *RPCServer) RangeStream(r *etcdserverpb.RangeRequest, rs etcdserverpb.KV_RangeStreamServer) error {
@@ -160,8 +161,10 @@ func (s *RPCServer) RangeStream(r *etcdserverpb.RangeRequest, rs etcdserverpb.KV
 		if err != nil {
 			return rangeStreamStatusErr(err)
 		}
-		if err := rs.Send(&etcdserverpb.RangeStreamResponse{RangeResponse: resp}); err != nil {
-			return err
+		for _, response := range splitRangeStreamResponse(resp, int(s.maxRequestBytes), true) {
+			if err := rs.Send(response); err != nil {
+				return err
+			}
 		}
 		s.metricCli.EmitCounter("read.range_stream", 1)
 		s.metricCli.EmitHistogram("read.range_stream.latency", time.Since(startTime).Seconds())
@@ -216,12 +219,15 @@ func (s *RPCServer) RangeStream(r *etcdserverpb.RangeRequest, rs etcdserverpb.KV
 				kv.Value = nil
 			}
 		}
-		if err := rs.Send(&etcdserverpb.RangeStreamResponse{RangeResponse: chunk.resp}); err != nil {
-			s.metricCli.EmitCounter("read.range_stream.send_err", 1)
-			return err
+		final := len(chunk.resp.Kvs) == 0
+		for _, response := range splitRangeStreamResponse(chunk.resp, int(s.maxRequestBytes), final) {
+			if err := rs.Send(response); err != nil {
+				s.metricCli.EmitCounter("read.range_stream.send_err", 1)
+				return err
+			}
+			chunks++
 		}
 		sentAny = true
-		chunks++
 	}
 	if !sentAny {
 		// The channel closed without any chunk — the client's context was canceled
@@ -237,6 +243,68 @@ func (s *RPCServer) RangeStream(r *etcdserverpb.RangeRequest, rs etcdserverpb.KV
 	s.metricCli.EmitHistogram("read.range_stream.latency", time.Since(startTime).Seconds())
 	klog.V(4).InfoS("RANGE STREAM done", "key", r.Key, "chunks", chunks, "rev", headerRev)
 	return nil
+}
+
+// splitRangeStreamResponse keeps public stream messages near the configured
+// request-size target, matching etcd's adaptive RangeStream chunking. Scanner
+// batches intentionally use an internal throughput-oriented size independent
+// of per-instance admission settings, so a second boundary is required here.
+// A single KV is indivisible and is emitted alone even when it exceeds target.
+func splitRangeStreamResponse(resp *etcdserverpb.RangeResponse, target int, final bool) []*etcdserverpb.RangeStreamResponse {
+	wrapped := func(kvs []*mvccpb.KeyValue, metadata bool) *etcdserverpb.RangeStreamResponse {
+		rangeResp := &etcdserverpb.RangeResponse{Kvs: kvs}
+		if metadata {
+			rangeResp.Header = resp.Header
+			rangeResp.More = resp.More
+			rangeResp.Count = resp.Count
+		}
+		return &etcdserverpb.RangeStreamResponse{RangeResponse: rangeResp}
+	}
+	if target <= 0 || len(resp.Kvs) < 2 {
+		return []*etcdserverpb.RangeStreamResponse{wrapped(resp.Kvs, final)}
+	}
+
+	// RangeResponse.kvs is field 2 and RangeStreamResponse.range_response is
+	// field 1. Prefix sums make candidate sizing O(1), avoiding repeated
+	// serialization of an ever-growing slice of large values.
+	kvWirePrefix := make([]int, len(resp.Kvs)+1)
+	for i, kv := range resp.Kvs {
+		kvWirePrefix[i+1] = kvWirePrefix[i] +
+			protowire.SizeTag(2) + protowire.SizeBytes(proto.Size(kv))
+	}
+	metadataSize := proto.Size(&etcdserverpb.RangeResponse{
+		Header: resp.Header,
+		More:   resp.More,
+		Count:  resp.Count,
+	})
+	wireSize := func(start, end int, metadata bool) int {
+		innerSize := kvWirePrefix[end] - kvWirePrefix[start]
+		if metadata {
+			innerSize += metadataSize
+		}
+		return protowire.SizeTag(1) + protowire.SizeBytes(innerSize)
+	}
+
+	responses := make([]*etcdserverpb.RangeStreamResponse, 0, 1)
+	for start := 0; start < len(resp.Kvs); {
+		end := start + 1
+		for end <= len(resp.Kvs) && wireSize(start, end, final && end == len(resp.Kvs)) <= target {
+			end++
+		}
+		if end == start+1 {
+			// The first KV alone exceeds target; it cannot be split further.
+			responses = append(responses, wrapped(resp.Kvs[start:end], final && end == len(resp.Kvs)))
+			start = end
+			continue
+		}
+		if end > len(resp.Kvs) {
+			responses = append(responses, wrapped(resp.Kvs[start:], final))
+			break
+		}
+		responses = append(responses, wrapped(resp.Kvs[start:end-1], false))
+		start = end - 1
+	}
+	return responses
 }
 
 func isDefaultRangeStreamOrdering(r *etcdserverpb.RangeRequest) bool {

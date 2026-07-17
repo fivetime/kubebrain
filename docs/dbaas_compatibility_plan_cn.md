@@ -1691,6 +1691,31 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   zero restart。containerd 运行时
   exact image
   `7f8f99e8be078a443fc2f669a0355086a6680a0b88828ea0872d6ede5c70993a`。
+- **RangeStream A102 configurable chunk target and terminal metadata
+  （2026-07-17）**：对照
+  `/root/etcd/server/etcdserver/v3_server.go:rangeStream` 与 client/v3
+  `RangeStreamResponse` 契约发现两处差距。KubeBrain scanner 固定按约 1.5MiB 内部
+  吞吐批次输出，未随 `--max-request-bytes` 较小配置二次切分；`Limit>0` 更直接复用
+  unary Range 后整包发送，大 bounded list 会失去流式内存/wire 边界。其次，etcd
+  只在最后一个 chunk 设置 `Header/More/Count`，KubeBrain 却在每个 scanner chunk
+  重复 Header，已有测试还错误固化了该行为。
+
+  现保留 scanner 内部批次以免影响 count-index rebuild 和 TiKV 扫描吞吐，在公开 RPC
+  边界按实际 protobuf wire shape 贪心二次切分；unlimited 与 bounded 路径统一受配置
+  目标约束，单个不可拆 KV 超限时单独发送。切分器预计算每个 KV 的 protobuf 字段长度
+  前缀和，候选大小 O(1)、整批 O(n)，避免反复扫描大 value。中间 chunk 仅含互斥 KVs，
+  最后一块才携带 pinned revision、More 与总 Count。确定性回归固定 256-byte 目标、
+  unlimited/bounded 内容完整有序、每块真实 `proto.Size` 不越界及 terminal-only
+  metadata；focused 普通 50 轮、race 10 轮、full test、完整 server race 与 full vet
+  全通过。
+
+  三副本 KubeBrain + 独立 TiKV/PD 上写入 8 个约 320KiB value，形成约 2.5MiB 结果集；
+  unlimited 与 `Limit=8` 两条 client/v3 GetStream 路径连续 5 轮均完整返回 8 键、产生
+  多块且每块不超过 production 1.5MiB。对本机 `/root/etcd/bin/etcd` 的
+  Unlimited/Limited/CountOnly/KeysOnly/显式升序差分连续 5 轮通过。最终三个 Pod
+  Ready、zero restart，无 RangeStream failure/Panic/Fatal，endpoint health 约 60ms。
+  containerd 运行时 exact image
+  `ca22cca67771b25e78f4835119923009d8bbcdd19530a826d2526fb5c9ed7cb3`。
 
 ### P1：通用服务能力
 

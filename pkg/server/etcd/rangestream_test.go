@@ -97,18 +97,16 @@ func TestRangeStreamStreamsAllKeys(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, rs.sent, "must send at least the terminal header chunk")
 
-	// Every chunk carries the same pinned revision; Kvs concatenate to the full
-	// disjoint set; the final chunk is header-only.
+	// Kvs concatenate to the full disjoint set; only the final chunk carries the
+	// pinned revision and merged response metadata.
 	got := map[string]string{}
-	var pinnedRev int64
 	for i, chunk := range rs.sent {
 		require.NotNil(t, chunk.RangeResponse)
-		require.NotNil(t, chunk.RangeResponse.Header)
-		require.Greater(t, chunk.RangeResponse.Header.Revision, int64(0), "chunk %d revision", i)
-		if pinnedRev == 0 {
-			pinnedRev = chunk.RangeResponse.Header.Revision
+		if i != len(rs.sent)-1 {
+			require.Nil(t, chunk.RangeResponse.Header)
+			require.Zero(t, chunk.RangeResponse.Count)
+			require.False(t, chunk.RangeResponse.More)
 		}
-		require.Equal(t, pinnedRev, chunk.RangeResponse.Header.Revision, "all chunks share the pinned revision")
 		for _, kv := range chunk.RangeResponse.Kvs {
 			_, dup := got[string(kv.Key)]
 			require.False(t, dup, "key %s appeared in more than one chunk (chunks must be disjoint)", kv.Key)
@@ -117,6 +115,8 @@ func TestRangeStreamStreamsAllKeys(t *testing.T) {
 	}
 	last := rs.sent[len(rs.sent)-1]
 	require.Empty(t, last.RangeResponse.Kvs, "final chunk must be header-only")
+	require.NotNil(t, last.RangeResponse.Header)
+	require.Greater(t, last.RangeResponse.Header.Revision, int64(0))
 	require.EqualValues(t, n, last.RangeResponse.Count)
 	for _, chunk := range rs.sent {
 		require.False(t, chunk.RangeResponse.More, "unlimited RangeStream must not expose scanner chunking as Range.More")
@@ -292,6 +292,59 @@ func TestRangeStreamMatchesUnaryRange(t *testing.T) {
 		require.Equal(t, unary.Kvs[i].Value, streamed[i].Value, "kv %d value", i)
 		require.Equal(t, unary.Kvs[i].ModRevision, streamed[i].ModRevision, "kv %d modRevision", i)
 	}
+}
+
+func TestRangeStreamChunksRespectConfiguredMessageTarget(t *testing.T) {
+	server, cleanup := newRangeStreamTestServer(t)
+	defer cleanup()
+	server.SetRequestLimits(defaultMaxTxnOps, 256)
+	ctx := context.Background()
+
+	for i := 0; i < 12; i++ {
+		_, err := server.Put(ctx, &etcdserverpb.PutRequest{
+			Key:   []byte(fmt.Sprintf("/chunk-target/%02d", i)),
+			Value: []byte(fmt.Sprintf("value-%02d-%090d", i, i)),
+		})
+		require.NoError(t, err)
+	}
+
+	rs := &fakeRangeStreamServer{ctx: ctx}
+	require.NoError(t, server.RangeStream(&etcdserverpb.RangeRequest{
+		Key: []byte("/chunk-target/"), RangeEnd: []byte("/chunk-target0"),
+	}, rs))
+
+	var keys [][]byte
+	for _, chunk := range rs.sent {
+		require.LessOrEqual(t, proto.Size(chunk), 256,
+			"multi-KV RangeStream chunks must honor the configured wire-size target")
+		for _, kv := range chunk.RangeResponse.Kvs {
+			keys = append(keys, kv.Key)
+		}
+	}
+	require.Len(t, keys, 12)
+	for i, key := range keys {
+		require.Equal(t, fmt.Sprintf("/chunk-target/%02d", i), string(key))
+	}
+
+	limited := &fakeRangeStreamServer{ctx: ctx}
+	require.NoError(t, server.RangeStream(&etcdserverpb.RangeRequest{
+		Key: []byte("/chunk-target/"), RangeEnd: []byte("/chunk-target0"), Limit: 12,
+	}, limited))
+	require.Greater(t, len(limited.sent), 1,
+		"a bounded RangeStream must not collapse a large result into one message")
+	var limitedKeys int
+	for i, chunk := range limited.sent {
+		require.LessOrEqual(t, proto.Size(chunk), 256)
+		if i != len(limited.sent)-1 {
+			require.Nil(t, chunk.RangeResponse.Header)
+			require.Zero(t, chunk.RangeResponse.Count)
+			require.False(t, chunk.RangeResponse.More)
+		}
+		limitedKeys += len(chunk.RangeResponse.Kvs)
+	}
+	require.NotNil(t, limited.sent[len(limited.sent)-1].RangeResponse.Header)
+	require.EqualValues(t, 12, limited.sent[len(limited.sent)-1].RangeResponse.Count)
+	require.Equal(t, 12, limitedKeys)
 }
 
 // TestWatchNegativeStartRevisionCanceledInStream pins the black-magic retirement: a
