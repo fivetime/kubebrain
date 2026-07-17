@@ -776,6 +776,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `OutOfRange: required revision has been compacted`，负数在转换前直接拒绝。回归测试证明首次
   zero compact 不删除已有历史、marker 已持久化、重复 zero 精确报错，negative 不写 marker
   且不影响历史；Compact 双端差分增加负数 code/message 对比。
+- **Maintenance A41 HashKV signed revision/metadata（2026-07-17）**：继续 signed
+  revision 审计，对照 `/root/etcd/server/storage/mvcc/kvstore.go:hashByRev` 与真实 server
+  确认 `HashKV(-1)` 不是 current alias，而是对空 MVCC revision 前缀求 hash；响应仍以当前
+  revision 填 Header，并显式返回 `HashRevision=-1`。KubeBrain 旧接口使用 `uint64`，把所有
+  非正请求都改写为 current，且从未填 `HashRevision`；未做过 compaction 时还错误返回
+  `CompactRevision=0` 而非 etcd 的 `-1`。backend hash API 现保留 signed revision：0 选择
+  线性化当前快照，负数不纳入任何用户 version；server 返回实际 hashed revision，并用 durable
+  compact marker 区分 `-1`、0 与正 watermark。单元测试固定 empty-prefix Castagnoli CRC、
+  current/historical/negative metadata 和未压缩状态；新增官方 client/v3 双端差分，不比较不同
+  物理编码的 current hash 数值，只比较 negative hash、signed revision、header gap 与选择关系。
 
 ### P1：通用服务能力
 

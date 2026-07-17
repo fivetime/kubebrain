@@ -73,6 +73,15 @@ func TestMaintenanceBasicDiagnostics(t *testing.T) {
 	hashResp, err := server.HashKV(ctx, &etcdserverpb.HashKVRequest{})
 	require.NoError(t, err)
 	require.NotZero(t, hashResp.Hash)
+	require.Equal(t, put1.Header.Revision, hashResp.HashRevision)
+	require.Equal(t, int64(-1), hashResp.CompactRevision)
+
+	negativeHash, err := server.HashKV(ctx, &etcdserverpb.HashKVRequest{Revision: -1})
+	require.NoError(t, err)
+	require.Equal(t, int64(-1), negativeHash.HashRevision)
+	require.Equal(t, hashResp.Header.Revision, negativeHash.Header.Revision)
+	require.Equal(t, int64(-1), negativeHash.CompactRevision)
+	require.NotEqual(t, hashResp.Hash, negativeHash.Hash)
 
 	_, err = server.Put(ctx, &etcdserverpb.PutRequest{
 		Key:   []byte("/registry/maintenance/key"),
@@ -88,6 +97,7 @@ func TestMaintenanceBasicDiagnostics(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Equal(t, hashResp.Hash, historical.Hash)
+	require.Equal(t, put1.Header.Revision, historical.HashRevision)
 
 	alarmResp, err := server.Alarm(ctx, &etcdserverpb.AlarmRequest{})
 	require.NoError(t, err)

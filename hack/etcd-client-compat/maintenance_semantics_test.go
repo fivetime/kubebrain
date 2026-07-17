@@ -38,19 +38,28 @@ func TestMaintenanceHashKVSemantics(t *testing.T) {
 
 	hash1, err := cli.HashKV(ctx, endpoint, rev1)
 	require.NoError(t, err)
+	require.Equal(t, rev1, hash1.HashRevision)
 	hash1Again, err := cli.HashKV(ctx, endpoint, rev1)
 	require.NoError(t, err)
 	require.Equal(t, hash1.Hash, hash1Again.Hash)
+	require.Equal(t, rev1, hash1Again.HashRevision)
 
 	_, err = cli.Put(ctx, key, "v2")
 	require.NoError(t, err)
 	current, err := cli.HashKV(ctx, endpoint, 0)
 	require.NoError(t, err)
 	require.NotEqual(t, hash1.Hash, current.Hash)
+	require.Equal(t, current.Header.Revision, current.HashRevision)
+
+	negative, err := cli.HashKV(ctx, endpoint, -1)
+	require.NoError(t, err)
+	require.Equal(t, int64(-1), negative.HashRevision)
+	require.NotEqual(t, current.Hash, negative.Hash)
 
 	historical, err := cli.HashKV(ctx, endpoint, rev1)
 	require.NoError(t, err)
 	require.Equal(t, hash1.Hash, historical.Hash)
+	require.Equal(t, rev1, historical.HashRevision)
 }
 
 func TestMaintenanceHashKVMatchesAcrossMembers(t *testing.T) {
