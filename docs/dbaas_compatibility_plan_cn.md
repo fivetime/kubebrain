@@ -1093,6 +1093,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   focused race 连续 50 轮及 full/race/vet 通过。三副本 TiKV/PD exact image
   `ba157b8b9727` 为 3/3 ready、zero restart，burst ordering、final-subsecond renewal 与
   atomic revoke 联合场景连续 20 轮通过。
+- **Lease A68 large leased DeleteRange atomicity（2026-07-17）**：对照 etcd
+  `server/storage/mvcc/kvstore_txn.go:storeTxnWrite.deleteRange`，一个 DeleteRange 无论命中
+  多少 key 都在同一个 `TxnWrite` 中生成 tombstone，并只推进一次 MVCC revision。KubeBrain
+  为同步清理 durable lease attachments，把含 leased key 的 range 每 128 个拆成一次
+  `TxnApply`；129 key 已出现两次提交、两个 watch revision，且第二 chunk 失败时第一 chunk
+  已对客户端可见，破坏 etcd range-delete 原子性。现先对完整 key snapshot 构造 revision
+  guards，再把全部 user tombstone 与 attachment internal delete 合并到单次 TiKV transaction；
+  commit 成功后才统一更新内存 lease index，空 range 仍返回当前 revision。确定性 129-key
+  测试要求 `Deleted/PrevKvs=129` 且 backend revision 仅 `+1`；另在最后一个 key 注入失败，
+  要求全部 129 个 user key、TTL attached keys 与首尾 durable attachment 均保留。官方
+  client/v3 黑盒测试从 delete 前 revision watch 129-key prefix，要求 Delete response 仅
+  `+1`、129 个 DELETE event 共用该 ModRevision、PrevKv lease 正确，随后 range 与 TTL keys
+  均为空。A67 image 连续 3 轮稳定复现 response 比预期多推进一个 revision；focused 连续
+  20 轮及 full/race/vet 通过。三副本 TiKV/PD exact image `dd1468f93c14` 为 3/3 ready、
+  zero restart，258-op atomic transaction 黑盒场景连续 10 轮通过，并追加 expired-keepalive、
+  atomic-revoke 与 final-subsecond renewal 联合回归 10 轮。
 
 ### P1：通用服务能力
 

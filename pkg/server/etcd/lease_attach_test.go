@@ -498,6 +498,87 @@ func TestDeleteRangeAtomicallyRemovesLeaseAttachments(t *testing.T) {
 	require.Empty(t, ttl.Keys)
 }
 
+func TestLargeLeasedDeleteRangeUsesOneRevision(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	const (
+		leaseID  = int64(77037)
+		keyCount = 129
+	)
+	prefix := "/registry/events/large-atomic-delete/"
+	_, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 300, ID: leaseID})
+	require.NoError(t, err)
+	for i := 0; i < keyCount; i++ {
+		key := fmt.Sprintf("%s%03d", prefix, i)
+		_, err = server.Put(ctx, &etcdserverpb.PutRequest{
+			Key: []byte(key), Value: []byte("value"), Lease: leaseID,
+		})
+		require.NoError(t, err)
+	}
+
+	before := server.backend.GetCurrentRevision()
+	deleted, err := server.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{
+		Key: []byte(prefix), RangeEnd: prefixEnd([]byte(prefix)), PrevKv: true,
+	})
+	require.NoError(t, err)
+	require.Equal(t, int64(keyCount), deleted.Deleted)
+	require.Len(t, deleted.PrevKvs, keyCount)
+	require.Equal(t, int64(before+1), deleted.Header.Revision)
+	require.Equal(t, before+1, server.backend.GetCurrentRevision(),
+		"etcd DeleteRange advances MVCC exactly once regardless of key count")
+
+	ttl, err := server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: leaseID, Keys: true})
+	require.NoError(t, err)
+	require.Empty(t, ttl.Keys)
+}
+
+func TestLargeLeasedDeleteRangeFailureIsAtomic(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	const (
+		leaseID  = int64(77038)
+		keyCount = 129
+	)
+	prefix := "/registry/events/large-atomic-delete-failure/"
+	keys := make([]string, 0, keyCount)
+	_, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 300, ID: leaseID})
+	require.NoError(t, err)
+	for i := 0; i < keyCount; i++ {
+		key := fmt.Sprintf("%s%03d", prefix, i)
+		keys = append(keys, key)
+		_, err = server.Put(ctx, &etcdserverpb.PutRequest{
+			Key: []byte(key), Value: []byte("value"), Lease: leaseID,
+		})
+		require.NoError(t, err)
+	}
+
+	server.backend = &failDeleteShim{
+		BackendShim: server.backend,
+		failKey:     keys[len(keys)-1],
+		fail:        true,
+	}
+	_, err = server.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{
+		Key: []byte(prefix), RangeEnd: prefixEnd([]byte(prefix)),
+	})
+	require.ErrorIs(t, err, errFakeDelete)
+
+	remaining, err := server.Range(ctx, &etcdserverpb.RangeRequest{
+		Key: []byte(prefix), RangeEnd: prefixEnd([]byte(prefix)),
+	})
+	require.NoError(t, err)
+	require.Len(t, remaining.Kvs, keyCount,
+		"a failed large DeleteRange must not expose a committed first chunk")
+	ttl, err := server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: leaseID, Keys: true})
+	require.NoError(t, err)
+	require.Len(t, ttl.Keys, keyCount)
+	for _, key := range []string{keys[0], keys[len(keys)-1]} {
+		_, err = server.backend.InternalGet(ctx, leaseAttachKey(key))
+		require.NoError(t, err)
+	}
+}
+
 // TestExpiryKeepsLeaseAndRecordWhenKeyDeleteFails pins #36: expiry deletes the
 // attached keys before the lease record, and a failed key delete must keep the
 // lease (and its record) so the surviving keys are never orphaned.
