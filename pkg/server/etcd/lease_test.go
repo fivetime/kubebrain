@@ -1051,6 +1051,57 @@ func TestKeepAliveDoesNotWriteStorage(t *testing.T) {
 	require.Equal(t, beforeMeta, afterMeta, "keepalive must not rewrite lease metadata")
 }
 
+func TestLeaseCheckpointBoundsReloadAndRenewClearsIt(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	const leaseID int64 = 8202
+	grant, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 600, ID: leaseID})
+	require.NoError(t, err)
+	require.Equal(t, int64(600), grant.TTL)
+
+	server.leaseMu.Lock()
+	st := server.leases[leaseID]
+	require.NotNil(t, st)
+	st.timer.Stop()
+	st.checkpointTimer.Stop()
+	st.deadline = time.Now().Add(240 * time.Second)
+	server.leaseMu.Unlock()
+	beforeRevision := server.backend.GetCurrentRevision()
+
+	server.checkpointLease(leaseID)
+	data, err := server.backend.InternalGet(ctx, leaseStorageKey(leaseID))
+	require.NoError(t, err)
+	var checkpoint leaseRecord
+	require.NoError(t, json.Unmarshal(data, &checkpoint))
+	require.InDelta(t, 240, checkpoint.RemainingTTL, 1)
+	require.Equal(t, beforeRevision, server.backend.GetCurrentRevision(),
+		"internal lease checkpoint must not advance user MVCC")
+
+	records, attachments, err := server.loadLeaseRecords(ctx)
+	require.NoError(t, err)
+	server.applyLeaseRecords(records, attachments)
+	restored, err := server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: leaseID})
+	require.NoError(t, err)
+	require.InDelta(t, checkpoint.RemainingTTL, restored.TTL, 1,
+		"reload must use checkpointed remaining TTL instead of the full grant")
+	require.Equal(t, int64(600), restored.GrantedTTL)
+
+	stream := &fakeLeaseKeepAliveServer{
+		requests: []*etcdserverpb.LeaseKeepAliveRequest{{ID: leaseID}},
+	}
+	require.NoError(t, server.LeaseKeepAlive(stream))
+	require.Len(t, stream.sent, 1)
+	require.Equal(t, int64(600), stream.sent[0].TTL)
+	data, err = server.backend.InternalGet(ctx, leaseStorageKey(leaseID))
+	require.NoError(t, err)
+	checkpoint = leaseRecord{}
+	require.NoError(t, json.Unmarshal(data, &checkpoint))
+	require.Zero(t, checkpoint.RemainingTTL)
+	require.Equal(t, beforeRevision, server.backend.GetCurrentRevision(),
+		"checkpoint clear must remain outside user MVCC")
+}
+
 // TestReloadResetsDeadlineToGrantedTTL locks the companion recovery fix: on
 // restore/reload the deadline is reconstructed as now+grantedTTL, never the
 // stale persisted absolute deadline. A record whose persisted deadline is far

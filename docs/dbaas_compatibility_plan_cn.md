@@ -1109,6 +1109,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   20 轮及 full/race/vet 通过。三副本 TiKV/PD exact image `dd1468f93c14` 为 3/3 ready、
   zero restart，258-op atomic transaction 黑盒场景连续 10 轮通过，并追加 expired-keepalive、
   atomic-revoke 与 final-subsecond renewal 联合回归 10 轮。
+- **Lease A69 remaining-TTL checkpoint（2026-07-17）**：对照 etcd
+  `server/lease/lessor.go` 的默认 5 分钟 checkpoint interval、到期 checkpoint 调度、
+  `RemainingTTL` 持久化以及 renew 前清零语义。KubeBrain 原恢复任意 durable lease 都从
+  `now+grantedTTL` 重新计时，长 lease 在 leader failover 时即使已接近过期也会被延长完整
+  grant。现 leader 每 5 分钟将向上取整的 remaining TTL 写入 internal lease metadata，
+  不推进 user MVCC revision；恢复优先采用该 checkpoint，成功 keepalive 在恢复完整 TTL
+  deadline 前持久化清零，且 checkpoint、renew、reload/stop 通过独立顺序锁避免旧 metadata
+  覆盖新状态。确定性测试将 600s lease checkpoint 为约 240s，验证 reload 保持 granted
+  TTL=600、remaining 约 240，renew 返回 600 并清零 checkpoint，前后 user revision 不变；
+  reset/reload/checkpoint focused 与 race 各连续 20 轮通过。三副本 TiKV/PD 上 600s lease
+  经过真实定时 checkpoint 后删除当前 leader，replacement 返回 granted(600s)、
+  remaining(268s)，attached key 仍存在；部署恢复 3/3 ready、zero restart。官方 client/v3
+  failover recipe 已固化为 opt-in 长测试；最终 exact image `ea27e6f0c4fe` 通过相邻 lease
+  lifecycle 回归。
 
 ### P1：通用服务能力
 

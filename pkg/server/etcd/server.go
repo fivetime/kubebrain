@@ -98,12 +98,14 @@ func (s *RPCServer) SetClientCertAuth(enabled bool) {
 }
 
 type leaseState struct {
-	id       int64
-	ttl      int64
-	deadline time.Time
-	keys     map[string]struct{}
-	timer    *time.Timer
-	revoked  chan struct{}
+	id              int64
+	ttl             int64
+	remainingTTL    int64
+	deadline        time.Time
+	keys            map[string]struct{}
+	timer           *time.Timer
+	checkpointTimer *time.Timer
+	revoked         chan struct{}
 }
 
 // New returns the etcd rpc server

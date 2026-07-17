@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"math"
 	"sort"
 	"strconv"
 	"sync/atomic"
@@ -61,6 +62,7 @@ func (m *leaseManager) keysForLease(id int64) []string {
 }
 
 const leaseExpiryRetryInterval = time.Second
+const leaseCheckpointInterval = 5 * time.Minute
 const latestRestoreRevision = int64(^uint64(0) >> 1)
 const maxLeaseTTL = int64(9000000000)
 const minLeaseTTL = int64(2)
@@ -71,6 +73,7 @@ const minLeaseTTL = int64(2)
 type leaseRecord struct {
 	ID               int64    `json:"id"`
 	TTL              int64    `json:"ttl"`
+	RemainingTTL     int64    `json:"remainingTTL,omitempty"`
 	DeadlineUnixNano int64    `json:"deadlineUnixNano,omitempty"`
 	Keys             []string `json:"keys,omitempty"`
 	LegacyStorage    bool     `json:"-"`
@@ -161,6 +164,7 @@ func (m *leaseManager) LeaseGrant(ctx context.Context, req *etcdserverpb.LeaseGr
 	delete(m.pendingLeases, id)
 	m.leases[id] = st
 	m.scheduleLeaseLocked(st)
+	m.scheduleLeaseCheckpointLocked(st)
 	m.leaseMu.Unlock()
 
 	return &etcdserverpb.LeaseGrantResponse{
@@ -233,7 +237,9 @@ func (m *leaseManager) LeaseKeepAlive(stream etcdserverpb.Lease_LeaseKeepAliveSe
 		if authErr = m.authorizeLeaseKeys(stream.Context(), caller, m.keysForLease(req.ID), authpb.WRITE); authErr != nil {
 			return authErr
 		}
-		if err := m.requireLeaseLeader("lease keepalive"); err != nil {
+		epoch, leadingFresh := m.srv.peers.EpochAndLeadingFresh()
+		if !leadingFresh {
+			err := m.requireLeaseLeader("lease keepalive")
 			if !m.srv.peers.EtcdProxyEnabled() {
 				return err
 			}
@@ -251,7 +257,8 @@ func (m *leaseManager) LeaseKeepAlive(stream etcdserverpb.Lease_LeaseKeepAliveSe
 			continue
 		}
 
-		ttl, err := m.refreshLease(stream.Context(), req.ID)
+		renewCtx := backend.WithLeadershipEpoch(stream.Context(), epoch)
+		ttl, err := m.refreshLease(renewCtx, req.ID)
 		if status.Code(err) == codes.NotFound {
 			ttl = 0
 		} else if err != nil {
@@ -572,6 +579,7 @@ func (m *leaseManager) leaseIDForKey(key string) int64 {
 }
 
 func (m *leaseManager) refreshLease(ctx context.Context, id int64) (int64, error) {
+	m.leaseCheckpointMu.Lock()
 	// Serialize against revoke/expiry. In particular, an expiry callback that
 	// already won the exclusive lock must finish before this renewal, while a
 	// successful renewal prevents expiry from observing the old deadline.
@@ -581,6 +589,7 @@ func (m *leaseManager) refreshLease(ctx context.Context, id int64) (int64, error
 	if !ok {
 		m.leaseMu.Unlock()
 		m.leaseWriteMu.RUnlock()
+		m.leaseCheckpointMu.Unlock()
 		return 0, leaseNotFound(id)
 	}
 	now := time.Now()
@@ -592,6 +601,7 @@ func (m *leaseManager) refreshLease(ctx context.Context, id int64) (int64, error
 		revoked := st.revoked
 		m.leaseMu.Unlock()
 		m.leaseWriteMu.RUnlock()
+		m.leaseCheckpointMu.Unlock()
 		select {
 		case <-revoked:
 			return 0, leaseNotFound(id)
@@ -599,17 +609,40 @@ func (m *leaseManager) refreshLease(ctx context.Context, id int64) (int64, error
 			return 0, ctx.Err()
 		}
 	}
-	st.deadline = now.Add(time.Duration(st.ttl) * time.Second)
-	m.scheduleLeaseLocked(st)
+	checkpointed := st.remainingTTL > 0
 	ttl := st.ttl
 	m.leaseMu.Unlock()
+	if checkpointed {
+		// Match etcd lessor.Renew: clear a persisted remaining-TTL checkpoint
+		// before publishing the renewed full-TTL deadline. At most one such write
+		// occurs per checkpoint interval, not per keepalive.
+		if err := m.persistLeaseCheckpoint(ctx, id, ttl, 0); err != nil {
+			m.leaseWriteMu.RUnlock()
+			m.leaseCheckpointMu.Unlock()
+			return 0, err
+		}
+	}
+	m.leaseMu.Lock()
+	st, ok = m.leases[id]
+	if !ok {
+		m.leaseMu.Unlock()
+		m.leaseWriteMu.RUnlock()
+		m.leaseCheckpointMu.Unlock()
+		return 0, leaseNotFound(id)
+	}
+	now = time.Now()
+	st.deadline = now.Add(time.Duration(st.ttl) * time.Second)
+	st.remainingTTL = 0
+	m.scheduleLeaseLocked(st)
+	m.scheduleLeaseCheckpointLocked(st)
+	ttl = st.ttl
+	m.leaseMu.Unlock()
 	m.leaseWriteMu.RUnlock()
-	// Mirror etcd lessor.Renew -> l.refresh(0): a keepalive only bumps the
-	// in-memory deadline and reschedules the expiry timer. It must NOT persist,
-	// otherwise every keepalive tick mints a fresh MVCC version, a watch event,
-	// and a TSO revision. Durable lease state (grant identity and attached keys)
-	// is still persisted on grant/bind/unbind; on restart or leader-change the
-	// deadline is reconstructed as now+grantedTTL in applyLeaseRecords.
+	m.leaseCheckpointMu.Unlock()
+	// Mirror etcd lessor.Renew -> l.refresh(0): ordinary keepalives only bump the
+	// in-memory deadline. Persistence occurs solely when clearing a periodic
+	// remaining-TTL checkpoint, limiting it to at most one write per checkpoint
+	// interval and keeping it outside user MVCC.
 	return ttl, nil
 }
 
@@ -813,6 +846,9 @@ func (m *leaseManager) forgetLease(id int64) {
 	if st.timer != nil {
 		st.timer.Stop()
 	}
+	if st.checkpointTimer != nil {
+		st.checkpointTimer.Stop()
+	}
 	for key := range st.keys {
 		delete(m.keyLeaseIndex, key)
 	}
@@ -950,6 +986,8 @@ func (m *leaseManager) ReloadLeases(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	m.leaseCheckpointMu.Lock()
+	defer m.leaseCheckpointMu.Unlock()
 	legacy := m.applyLeaseRecords(records, attachments)
 	// This node is now the leader; convert any pre-#17 monolithic records to the
 	// per-key attachment format so subsequent detaches are durable and the
@@ -1039,8 +1077,10 @@ func (m *leaseManager) migrateLegacyLeases(ctx context.Context, ids []int64) {
 		st, ok := m.leases[id]
 		var keys []string
 		var ttl int64
+		var remainingTTL int64
 		if ok {
 			ttl = st.ttl
+			remainingTTL = st.remainingTTL
 			keys = make([]string, 0, len(st.keys))
 			for k := range st.keys {
 				keys = append(keys, k)
@@ -1057,7 +1097,7 @@ func (m *leaseManager) migrateLegacyLeases(ctx context.Context, ids []int64) {
 				break
 			}
 		}
-		if !complete || m.persistLeaseMeta(ctx, id, ttl) != nil {
+		if !complete || m.persistLeaseCheckpoint(ctx, id, ttl, remainingTTL) != nil {
 			continue
 		}
 		// Retire the legacy user-MVCC record only after the internal replacement
@@ -1086,21 +1126,26 @@ func (m *leaseManager) applyLeaseRecords(records []leaseRecord, attachments map[
 		if st.timer != nil {
 			st.timer.Stop()
 		}
+		if st.checkpointTimer != nil {
+			st.checkpointTimer.Stop()
+		}
 	}
 	m.leases = make(map[int64]*leaseState, len(records))
 	m.keyLeaseIndex = make(map[string]int64)
 	for _, record := range records {
+		recoveryTTL := record.TTL
+		if record.RemainingTTL > 0 {
+			recoveryTTL = record.RemainingTTL
+		}
 		st := &leaseState{
-			id:  record.ID,
-			ttl: record.TTL,
-			// Mirror etcd initAndRecover + Promote->refresh: recover the deadline
-			// as now+grantedTTL rather than the stale persisted absolute deadline.
-			// Because keepalive no longer persists the deadline, the persisted
-			// DeadlineUnixNano is only ever the grant-time value; trusting it would
-			// immediately expire a lease that was kept alive well past grant time
-			// (regressing #14/#18). A fresh full-TTL window is the safe, etcd-matching
-			// recovery.
-			deadline: now.Add(time.Duration(record.TTL) * time.Second),
+			id:           record.ID,
+			ttl:          record.TTL,
+			remainingTTL: record.RemainingTTL,
+			// Mirror etcd initAndRecover + Promote->refresh: a durable remaining
+			// TTL checkpoint bounds failover extension for long leases. Without a
+			// checkpoint, use the granted TTL; legacy absolute deadlines remain
+			// ignored because keepalive never maintained them.
+			deadline: now.Add(time.Duration(recoveryTTL) * time.Second),
 			keys:     make(map[string]struct{}, len(record.Keys)),
 			revoked:  make(chan struct{}),
 		}
@@ -1127,6 +1172,7 @@ func (m *leaseManager) applyLeaseRecords(records []leaseRecord, attachments map[
 	// Schedule timers once all keys are attached.
 	for _, st := range m.leases {
 		m.scheduleLeaseLocked(st)
+		m.scheduleLeaseCheckpointLocked(st)
 		if !st.deadline.After(now) {
 			st.timer.Reset(0)
 		}
@@ -1145,6 +1191,8 @@ func (m *leaseManager) StopLeases() {
 }
 
 func (m *leaseManager) stopLeases() {
+	m.leaseCheckpointMu.Lock()
+	defer m.leaseCheckpointMu.Unlock()
 	// Stop the sweeper first (it acquires leaseMu itself, so must run outside the
 	// lock below).
 	m.stopOrphanSweeper()
@@ -1154,6 +1202,9 @@ func (m *leaseManager) stopLeases() {
 	for _, st := range m.leases {
 		if st.timer != nil {
 			st.timer.Stop()
+		}
+		if st.checkpointTimer != nil {
+			st.checkpointTimer.Stop()
 		}
 	}
 	m.leases = make(map[int64]*leaseState)
@@ -1297,12 +1348,83 @@ func (m *leaseManager) scheduleLeaseLocked(st *leaseState) {
 	st.timer.Reset(duration)
 }
 
-// persistLeaseMeta writes the small per-lease meta record {id, ttl}. It carries
-// no key list (attachments are separate records, #17) and no deadline (recovery
-// resets the deadline to now+TTL, see applyLeaseRecords). Written on grant and on
-// legacy-record migration.
+func (m *leaseManager) scheduleLeaseCheckpointLocked(st *leaseState) {
+	if time.Until(st.deadline) <= leaseCheckpointInterval {
+		if st.checkpointTimer != nil {
+			st.checkpointTimer.Stop()
+		}
+		return
+	}
+	if st.checkpointTimer == nil {
+		st.checkpointTimer = time.AfterFunc(leaseCheckpointInterval, func() {
+			m.checkpointLease(st.id)
+		})
+		return
+	}
+	st.checkpointTimer.Reset(leaseCheckpointInterval)
+}
+
+func (m *leaseManager) retryLeaseCheckpoint(id int64) {
+	m.leaseMu.Lock()
+	defer m.leaseMu.Unlock()
+	st := m.leases[id]
+	if st == nil || st.checkpointTimer == nil {
+		return
+	}
+	st.checkpointTimer.Reset(leaseExpiryRetryInterval)
+}
+
+func (m *leaseManager) checkpointLease(id int64) {
+	epoch, leadingFresh := m.srv.peers.EpochAndLeadingFresh()
+	if !leadingFresh {
+		m.retryLeaseCheckpoint(id)
+		return
+	}
+	ctx := backend.WithLeadershipEpoch(context.Background(), epoch)
+
+	m.leaseCheckpointMu.Lock()
+	defer m.leaseCheckpointMu.Unlock()
+	m.leaseWriteMu.RLock()
+	defer m.leaseWriteMu.RUnlock()
+
+	m.leaseMu.Lock()
+	st := m.leases[id]
+	if st == nil || !st.deadline.After(time.Now()) {
+		m.leaseMu.Unlock()
+		return
+	}
+	remainingTTL := int64(math.Ceil(time.Until(st.deadline).Seconds()))
+	ttl := st.ttl
+	if remainingTTL >= ttl {
+		m.scheduleLeaseCheckpointLocked(st)
+		m.leaseMu.Unlock()
+		return
+	}
+	m.leaseMu.Unlock()
+
+	if err := m.persistLeaseCheckpoint(ctx, id, ttl, remainingTTL); err != nil {
+		m.srv.metricCli.EmitCounter("lease.checkpoint.err", 1)
+		klog.ErrorS(err, "lease checkpoint: failed to persist remaining TTL", "lease", id, "remainingTTL", remainingTTL)
+		m.retryLeaseCheckpoint(id)
+		return
+	}
+
+	m.leaseMu.Lock()
+	if st = m.leases[id]; st != nil {
+		st.remainingTTL = remainingTTL
+		m.scheduleLeaseCheckpointLocked(st)
+	}
+	m.leaseMu.Unlock()
+}
+
+// persistLeaseMeta writes the small per-lease meta record {id, ttl}. Attachments
+// are stored separately; remaining TTL is written only by periodic checkpoints.
 func (m *leaseManager) persistLeaseMeta(ctx context.Context, id, ttl int64) error {
-	data, err := json.Marshal(leaseRecord{ID: id, TTL: ttl})
+	return m.persistLeaseCheckpoint(ctx, id, ttl, 0)
+}
+
+func (m *leaseManager) persistLeaseCheckpoint(ctx context.Context, id, ttl, remainingTTL int64) error {
+	data, err := json.Marshal(leaseRecord{ID: id, TTL: ttl, RemainingTTL: remainingTTL})
 	if err != nil {
 		return err
 	}

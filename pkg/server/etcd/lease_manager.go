@@ -51,8 +51,12 @@ type leaseManager struct {
 	// readers while still preventing a key from committing behind a completed
 	// revoke.
 	leaseWriteMu sync.RWMutex
-	leaseMu      sync.Mutex
-	leaseID      int64
+	// leaseCheckpointMu orders periodic remaining-TTL persistence against the
+	// renewal that clears a checkpoint. Both may otherwise run under the shared
+	// leaseWriteMu and commit stale metadata out of order.
+	leaseCheckpointMu sync.Mutex
+	leaseMu           sync.Mutex
+	leaseID           int64
 	// leaseGeneration changes whenever leadership replaces or clears the active
 	// snapshot. pendingLeases records the generation in which each ID was
 	// reserved, so a delayed metadata commit cannot publish across that boundary.
