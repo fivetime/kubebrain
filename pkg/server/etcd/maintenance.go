@@ -84,7 +84,7 @@ func (s *RPCServer) Status(ctx context.Context, _ *etcdserverpb.StatusRequest) (
 	}
 	revision := s.backend.GetCurrentRevision()
 	leader := s.memberIDFromAddress(s.peers.GetLeaderInfo())
-	term, err := s.peers.LeadershipTerm(ctx)
+	term, err := s.responseRaftTerm(ctx)
 	if err != nil {
 		return nil, err
 	}

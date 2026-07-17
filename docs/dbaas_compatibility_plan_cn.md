@@ -1775,6 +1775,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   三个端点的 Status、线性化 Range、MemberList 均成功，三个独立 Watch 都收到同一
   PUT。最终三个 Pod Ready、zero restart，无 error/Panic/Fatal，运行时 exact image
   `4407c535d1103348e4a4924dbb87c225b56eeb983a047a4f6a89d84e3fbf5d26`。
+- **Maintenance A106 cached RaftTerm response path（2026-07-17）**：继续对照
+  `/root/etcd/server/etcdserver/api/v3rpc/maintenance.go:Status` 发现，reference
+  etcd 直接从内存 Raft 状态读取 term，Status 不会因额外存储查询失败；KubeBrain
+  虽已在 A44/A47 提供共享正 term，却在每次 Status 中重新读取 TiKV-backed election
+  record。更广泛地，unary interceptor 在成功 handler 后补 ResponseHeader 时，若
+  本地 term cache 尚为零且首次共享记录读取失败，会丢弃成功响应并泄漏 gRPC
+  `Unknown`。
+
+  现 Status 与所有 unary header stamping 统一复用 `responseRaftTerm`：优先读取
+  election renew/get 已维护的单调 atomic cache，仅启动期 cache 为零时查询共享记录；
+  该首次查询失败按协调状态暂不可用整形为 `Unavailable`，已有 status/context 保持
+  不变。回归测试固定 cache 命中绝不访问 TiKV lock、Status 返回缓存 term，以及首次
+  查询失败不再为 Unknown。focused 普通 30 轮、focused race 10 轮、
+  `go test ./...`、`go vet ./...` 与完整 server race（230.531s）通过。A106 镜像
+  滚动到三副本 KubeBrain + 独立 TiKV/PD 后，逐 Pod 各 20 次 endpoint status：
+  1 leader + 2 follower 共 60 次全部报告相同 leader，顶层 `RaftTerm` 与 header
+  `raft_term` 均稳定为 231。最终三个 Pod Ready、zero restart，无
+  error/Panic/Fatal，运行时 exact image
+  `b5ba98f3a3a51660043d1e5aa36ae5a4a04d75e771661986eb08b53db940d13a`。
 
 ### P1：通用服务能力
 

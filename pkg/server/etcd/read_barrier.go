@@ -27,6 +27,13 @@ import (
 // revision fence could not be established, so clients must retry rather than
 // receive gRPC Unknown. Preserve context and already-classified status errors.
 func readBarrierStatusErr(err error) error {
+	return retryableCoordinationStatusErr(err)
+}
+
+// retryableCoordinationStatusErr preserves errors that already carry a public
+// contract and classifies failures to read cluster coordination state as a
+// retryable outage.
+func retryableCoordinationStatusErr(err error) error {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return err
 	}

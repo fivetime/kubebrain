@@ -158,7 +158,11 @@ func (s *RPCServer) responseRaftTerm(ctx context.Context) (uint64, error) {
 	if term := s.peers.CurrentLeadershipTerm(); term != 0 {
 		return term, nil
 	}
-	return s.peers.LeadershipTerm(ctx)
+	term, err := s.peers.LeadershipTerm(ctx)
+	if err != nil {
+		return 0, retryableCoordinationStatusErr(err)
+	}
+	return term, nil
 }
 
 func (s *RPCServer) stampUnary(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {

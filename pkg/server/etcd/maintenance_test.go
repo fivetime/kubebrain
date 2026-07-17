@@ -120,3 +120,20 @@ func TestStatusReportsNoLeaderInsteadOfClaimingSelf(t *testing.T) {
 	require.Zero(t, resp.Leader)
 	require.Contains(t, resp.Errors, "etcdserver: no leader")
 }
+
+func TestStatusUsesCachedLeadershipTerm(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	server.peers = testPeerService{
+		isLeader:      true,
+		currentTermFn: func() uint64 { return 9 },
+		leadershipTermFn: func(context.Context) (uint64, error) {
+			t.Fatal("Status must not reread a populated leadership term")
+			return 0, nil
+		},
+	}
+
+	resp, err := server.Status(context.Background(), &etcdserverpb.StatusRequest{})
+	require.NoError(t, err)
+	require.Equal(t, uint64(9), resp.RaftTerm)
+}

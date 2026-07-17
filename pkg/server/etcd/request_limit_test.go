@@ -16,6 +16,7 @@ package etcd
 
 import (
 	"context"
+	"errors"
 	"net"
 	"testing"
 
@@ -23,6 +24,7 @@ import (
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
@@ -66,6 +68,35 @@ func TestResponseHeadersIncludeSharedRaftTerm(t *testing.T) {
 	require.Equal(t, uint64(2), watch.Header.ClusterId)
 	require.Equal(t, uint64(3), watch.Header.MemberId)
 	require.Equal(t, uint64(4), watch.Header.RaftTerm)
+}
+
+func TestResponseRaftTermUsesCacheAndClassifiesInitialReadFailure(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	server.peers = testPeerService{
+		currentTermFn: func() uint64 { return 7 },
+		leadershipTermFn: func(context.Context) (uint64, error) {
+			t.Fatal("a populated term cache must avoid the TiKV-backed election record")
+			return 0, nil
+		},
+	}
+	handler := func(context.Context, any) (any, error) {
+		return &etcdserverpb.RangeResponse{Header: &etcdserverpb.ResponseHeader{}}, nil
+	}
+	reply, err := server.stampUnary(context.Background(), &etcdserverpb.RangeRequest{}, &grpc.UnaryServerInfo{}, handler)
+	require.NoError(t, err)
+	require.Equal(t, uint64(7), reply.(*etcdserverpb.RangeResponse).Header.RaftTerm)
+
+	termErr := errors.New("election record unavailable")
+	server.peers = testPeerService{
+		currentTermFn:    func() uint64 { return 0 },
+		leadershipTermFn: func(context.Context) (uint64, error) { return 0, termErr },
+	}
+	reply, err = server.stampUnary(context.Background(), &etcdserverpb.RangeRequest{}, &grpc.UnaryServerInfo{}, handler)
+	require.Nil(t, reply)
+	require.Equal(t, codes.Unavailable, status.Code(err))
+	require.Equal(t, termErr.Error(), status.Convert(err).Message())
 }
 
 func TestRequestLimitReturnsEtcdErrorOverGRPC(t *testing.T) {

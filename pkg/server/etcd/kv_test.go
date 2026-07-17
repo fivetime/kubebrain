@@ -43,6 +43,8 @@ type testPeerService struct {
 	epochFn          func() (uint64, bool)
 	noLeader         bool
 	syncReadFn       func(context.Context) error
+	leadershipTermFn func(context.Context) (uint64, error)
+	currentTermFn    func() uint64
 	proxyEnabled     bool
 	rangeFn          func(context.Context, *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error)
 	putFn            func(context.Context, *etcdserverpb.PutRequest) (*etcdserverpb.PutResponse, error)
@@ -75,11 +77,19 @@ func (s testPeerService) GetLeaderInfo() string {
 	return "test-peer"
 }
 
-func (testPeerService) LeadershipTerm(context.Context) (uint64, error) {
+func (s testPeerService) LeadershipTerm(ctx context.Context) (uint64, error) {
+	if s.leadershipTermFn != nil {
+		return s.leadershipTermFn(ctx)
+	}
 	return 1, nil
 }
 
-func (testPeerService) CurrentLeadershipTerm() uint64 { return 1 }
+func (s testPeerService) CurrentLeadershipTerm() uint64 {
+	if s.currentTermFn != nil {
+		return s.currentTermFn()
+	}
+	return 1
+}
 
 func (s testPeerService) IsLeader() bool {
 	if s.isLeaderFn != nil {
