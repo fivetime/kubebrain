@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -35,6 +36,21 @@ import (
 	"github.com/kubewharf/kubebrain/pkg/storage"
 	"github.com/kubewharf/kubebrain/pkg/storage/memkv"
 )
+
+type blockingLegacyMigrationBackend struct {
+	BackendShim
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (b *blockingLegacyMigrationBackend) InternalPut(ctx context.Context, key, value []byte) error {
+	if len(key) >= len(leaseAttachPrefix) && string(key[:len(leaseAttachPrefix)]) == string(leaseAttachPrefix) {
+		b.once.Do(func() { close(b.entered) })
+		<-b.release
+	}
+	return b.BackendShim.InternalPut(ctx, key, value)
+}
 
 var errFakeDelete = errors.New("injected delete failure")
 
@@ -840,4 +856,66 @@ func TestDeleteLeasedKeyCompareDeleteGuardsReassignment(t *testing.T) {
 	after, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: key})
 	require.NoError(t, err)
 	require.Len(t, after.Kvs, 0, "a key still bound to the lease must be deleted")
+}
+
+func TestLegacyLeaseMigrationFencedAcrossLeadershipEpoch(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	metrics := mock.NewMinimalMetrics(ctrl)
+	kv := memkv.NewKvStorage()
+	b := backend.NewBackend(kv, backend.Config{
+		Identity:                "migration-fence-test-peer",
+		EnableEtcdCompatibility: true,
+	}, metrics)
+	var epoch atomic.Uint64
+	epoch.Store(1)
+	peers := testPeerService{
+		isLeaderFn: func() bool { return true },
+		epochFn:    func() (uint64, bool) { return epoch.Load(), true },
+	}
+	server := New(b, metrics, peers)
+	defer func() {
+		server.stopLeases()
+		require.NoError(t, kv.Close())
+		ctrl.Finish()
+	}()
+	b.SetLeadershipFence(peers.EpochAndLeadingFresh)
+	ctx := context.Background()
+
+	const leaseID int64 = 55124
+	const legacyKey = "/registry/events/migration-fenced"
+	data, err := jsonMarshalLeaseRecord(leaseID, 200, []string{legacyKey})
+	require.NoError(t, err)
+	_, err = server.backend.Put(ctx, &etcdserverpb.PutRequest{Key: leaseStorageKey(leaseID), Value: data})
+	require.NoError(t, err)
+
+	blocking := &blockingLegacyMigrationBackend{
+		BackendShim: server.backend,
+		entered:     make(chan struct{}),
+		release:     make(chan struct{}),
+	}
+	server.backend = blocking
+	done := make(chan error, 1)
+	go func() { done <- server.ReloadLeases(ctx) }()
+	<-blocking.entered
+	epoch.Store(2)
+	close(blocking.release)
+	require.NoError(t, <-done, "migration is best effort; the durable legacy record remains retryable")
+
+	_, err = b.InternalGet(ctx, leaseAttachKey(legacyKey))
+	require.Error(t, err, "the old term must not create an attachment")
+	_, err = b.InternalGet(ctx, leaseStorageKey(leaseID))
+	require.Error(t, err, "the old term must not create replacement lease metadata")
+	legacy, err := server.backend.Get(ctx, &etcdserverpb.RangeRequest{Key: leaseStorageKey(leaseID)})
+	require.NoError(t, err)
+	require.Len(t, legacy.Kvs, 1, "the retryable legacy source must remain durable")
+}
+
+func TestReloadLeasesRejectsFollower(t *testing.T) {
+	server, _, cleanup := newLeaseTestServer(t)
+	defer cleanup()
+	server.peers = testPeerService{isLeader: false}
+
+	err := server.ReloadLeases(context.Background())
+	require.Error(t, err)
+	require.Equal(t, codes.Unavailable, status.Code(err))
 }

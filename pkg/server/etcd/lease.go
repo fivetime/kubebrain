@@ -1135,6 +1135,11 @@ func (m *leaseManager) restoreLeases(ctx context.Context) error {
 // still-alive leases — deleting their bound keys (e.g. masterleases) — and
 // orphan leases granted after this node started.
 func (m *leaseManager) ReloadLeases(ctx context.Context) error {
+	epoch, leadingFresh := m.srv.peers.EpochAndLeadingFresh()
+	if !leadingFresh {
+		return status.Error(codes.Unavailable, "etcdserver: leadership lost during lease reload")
+	}
+	ctx = backend.WithLeadershipEpoch(ctx, epoch)
 	records, attachments, err := m.loadLeaseRecords(ctx)
 	if err != nil {
 		return err

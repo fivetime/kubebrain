@@ -1453,6 +1453,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   验证每轮 50 leases 的 50 PUT/50 DELETE 全量事件。部署 3/3 Ready、zero restart，
   health 正常。exact image
   `9855b01b1e5c54da8313cc7e51d2019ca25fd2e44bd1d7a6a91517044cfa80ea`。
+- **Lease A90 reload migration epoch fencing（2026-07-17）**：A89 后继续审计
+  leadership acquisition，发现 `ReloadLeases` 的 pre-A17 legacy migration 虽使用
+  leader lifecycle context，却没有写入准入 epoch。旧 leader 可从 legacy 快照生成
+  internal meta/attachment，在切主后与新 leader revoke 交错并晚提交，导致已撤销 lease
+  被下一次 reload 复活。现 reload 入口必须通过 `EpochAndLeadingFresh`，follower 或
+  stale leader 直接返回标准 `Unavailable`；捕获的 epoch 贯穿读取、legacy attachment/
+  meta 写入和旧 user-MVCC 记录退休，统一由 backend commit fence 复核。确定性测试在
+  首个 migration `InternalPut` 前阻塞并切换 epoch，确认旧任期不能生成 replacement
+  meta/attachment，legacy 源记录仍保留供新 leader 幂等重试；另验证 follower reload
+  无存储副作用地拒绝。focused 普通 50 轮、race 10 轮、full test/backend+server race/
+  full vet 全通过。三副本 KubeBrain + 独立 TiKV/PD 上创建 20 个 TTL=8 秒 lease 后删除
+  leader，新 leader reload/接管过期成功，官方 client/v3 watch 完整收到 20 PUT/20
+  DELETE。部署 3/3 Ready、zero restart，health 正常。exact image
+  `5d8f0cd29a98deaf691a9b84c43dfccff83d27406a736dece66c0d3f422a03e6`。
 
 ### P1：通用服务能力
 
