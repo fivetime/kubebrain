@@ -438,9 +438,14 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 			// each key at a separate revision and expose torn transaction state.
 			// Event-log records were staged in the same atomic batch, so resolve
 			// the whole outcome from those durable markers and publish once.
-			b.startWorker(func(ctx context.Context) {
+			b.uncertainTxnPins.pin(newRevision)
+			started := b.startWorker(func(ctx context.Context) {
+				defer b.uncertainTxnPins.unpin(newRevision)
 				b.resolveUncertainTxn(ctx, preps, newRevision)
 			})
+			if !started {
+				b.uncertainTxnPins.unpin(newRevision)
+			}
 			klog.ErrorS(cerr, "txn apply commit result uncertain; resolving as one transaction",
 				"revision", newRevision, "ops", len(ops))
 			return nil, newRevision, false, cerr

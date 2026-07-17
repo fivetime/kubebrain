@@ -16,14 +16,21 @@ package leader
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
+
+	metricmock "github.com/kubewharf/kubebrain/pkg/metrics/mock"
+	"github.com/kubewharf/kubebrain/pkg/storage"
 )
 
 type termResourceLock struct {
@@ -32,6 +39,59 @@ type termResourceLock struct {
 	empty  bool
 	err    error
 }
+
+type campaignLock struct {
+	mu          sync.Mutex
+	record      resourcelock.LeaderElectionRecord
+	raw         []byte
+	tso         uint64
+	failUpdates atomic.Bool
+}
+
+func (l *campaignLock) Get(context.Context) (*resourcelock.LeaderElectionRecord, []byte, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	record := l.record
+	return &record, append([]byte(nil), l.raw...), nil
+}
+
+func (l *campaignLock) Create(_ context.Context, record resourcelock.LeaderElectionRecord) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if len(l.raw) != 0 {
+		return errors.New("already exists")
+	}
+	l.set(record)
+	return nil
+}
+
+func (l *campaignLock) Update(_ context.Context, record resourcelock.LeaderElectionRecord) error {
+	if l.failUpdates.Load() {
+		return storage.ErrUnavailable
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.set(record)
+	return nil
+}
+
+func (l *campaignLock) set(record resourcelock.LeaderElectionRecord) {
+	l.record = record
+	l.raw, _ = json.Marshal(record)
+	l.tso++
+}
+
+func (l *campaignLock) RecordEvent(string) {}
+func (l *campaignLock) Identity() string   { return "campaign-retry" }
+func (l *campaignLock) Describe() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return fmt.Sprintf("%s,%d", l.record.HolderIdentity, l.tso)
+}
+
+type revisionRecorder struct{ revision atomic.Uint64 }
+
+func (r *revisionRecorder) SetCurrentRevision(revision uint64) { r.revision.Store(revision) }
 
 func (l termResourceLock) Get(context.Context) (*resourcelock.LeaderElectionRecord, []byte, error) {
 	if l.err != nil {
@@ -91,6 +151,66 @@ func TestLeadershipTermFailsClosedOnInvalidRecord(t *testing.T) {
 	l.resourceLock = termResourceLock{err: errors.New("storage unavailable")}
 	_, err = l.LeadershipTerm(context.Background())
 	require.ErrorContains(t, err, "storage unavailable")
+}
+
+func TestCampaignReacquiresLeadershipAfterStorageOutage(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	m := metricmock.NewMinimalMetrics(ctrl)
+	m.(*metricmock.MockMetrics).EXPECT().EmitCounter(gomock.Any(), gomock.Any()).AnyTimes()
+	lock := &campaignLock{}
+	revisions := &revisionRecorder{}
+
+	var starts atomic.Int32
+	var stops atomic.Int32
+	var restoreOnce sync.Once
+	firstStarted := make(chan struct{})
+	election := &leaderElection{
+		backend:      revisions,
+		resourceLock: lock,
+		metricCli:    m,
+		onStartedLeading: func(context.Context) {
+			if starts.Add(1) == 1 {
+				close(firstStarted)
+				lock.failUpdates.Store(true)
+				restoreOnce.Do(func() {
+					go func() {
+						time.Sleep(1200 * time.Millisecond)
+						lock.failUpdates.Store(false)
+					}()
+				})
+			}
+		},
+		onStoppedLeading: func() { stops.Add(1) },
+		leaseDuration:    time.Second,
+		renewDeadline:    600 * time.Millisecond,
+		retryPeriod:      100 * time.Millisecond,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		election.Campaign(ctx)
+		close(done)
+	}()
+
+	select {
+	case <-firstStarted:
+	case <-time.After(time.Second):
+		t.Fatal("campaign did not invoke the initial leadership callback")
+	}
+	require.True(t, lock.failUpdates.Load())
+	require.Eventually(t, func() bool {
+		return starts.Load() >= 2 && stops.Load() >= 1 && election.IsLeader()
+	}, 4*time.Second, 20*time.Millisecond,
+		"campaign must remain alive and reacquire leadership after storage recovers")
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("campaign did not stop after context cancellation")
+	}
+	require.False(t, election.IsLeader())
 }
 
 // TestEpochAndLeadingFreshNotLeader verifies a non-leader is never reported fresh.

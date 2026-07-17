@@ -112,8 +112,9 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `TestTxnOverlappingDeleteRangesShareOneRevision`，在 kind Kubernetes
   v1.36.1 + PD/TiKV v8.5.3 上连续 10 轮通过；完整 client 兼容套件和基础
   smoke 通过。TiKV persistence smoke 已直接读取 revision index 和 object
-  value，并在 KubeBrain 重启后复读成功。commit-undetermined 和 PD/TiKV
-  故障注入仍是 P0 未完成项。
+  value，并在 KubeBrain 重启后复读成功。commit-undetermined 的事务级判定、
+  compaction pin 及 PD/TiKV 故障注入已由 A74、A99 和多键 Porcupine 历史补齐；
+  继续扩大多 store/多 PD 拓扑的网络分区覆盖。
 - **官方 etcd 双端差分**：新增
   `TestTxnDifferentialAgainstReferenceEtcd`，同一场景分别访问 TiKV-backed
   KubeBrain 和从 `/root/etcd` 提交 `d947b2086` 构建的参考 server。测试不比较
@@ -1622,6 +1623,34 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   observability 文档中已过时的“丢 leader 会重启”说明，并新增换主与共享存储不可读
   的分项告警建议。containerd 运行时 exact image
   `49fedf479a7c029b2fd92509aed94d3bcafd97f31709721293de1d8afb029955`。
+- **Txn/Runtime A99 uncertain marker compaction pin and in-process
+  re-election（2026-07-17）**：复核 A74 的 multi-key commit-undetermined
+  resolver 与 `/root/etcd/server/etcdserver/txn` 的单 apply 顺序后发现，单键
+  uncertain retry 通过 `asyncFifoRetry.MinRevision()` 阻止 Compact 越过待判定
+  revision，但事务级 resolver 未进入该队列。若 marker 读取持续失败，同时 physical
+  Compact 清理该 revision 的 event-log marker，已提交事务随后会被误判为
+  not-committed，collector 跳过 revision 且 Watch 丢失整批事件。现 backend 使用
+  引用计数 revision pin 跟踪所有事务级 uncertain 判定；pin 在启动 resolver 前注册，
+  committed、not-committed、shutdown 或 worker 拒绝路径均释放；
+  `clampCompactRevision` 取单键 retry 与事务 pin 的最小 revision，因此 logical
+  watermark、physical GC 和 event-log cleanup 都不能越过未判定事务。确定性故障测试
+  让已提交 uncertain Txn 卡在 marker read，证明并发 compact 被限制在
+  `revision-1`，恢复后事务以单 revision 发布、pin 释放且 compact 可继续；相关测试
+  连续 20 轮通过。
+
+  真实单 PD 删除测试又暴露 `leaderElection.Campaign` 在 renew deadline 后仍调用
+  `RunOrDie` callback 中的 `klog.Fatal("leader lost")`，导致原 leader 以 255 退出，
+  与 DBaaS 后端短暂故障不应重启数据面进程的目标冲突。现每轮使用
+  `NewLeaderElector.Run`，丢失 leadership 时先原子撤销 leader/serving、触发 lease
+  cleanup 和写 epoch fence，再在同一进程重新 campaign；初始化 election record
+  失败也取消本轮并重试，不再 fatal。脚本 resource lock 连续 3 轮证明 renew 失败、
+  stopped callback、存储恢复、第二次 started callback 与 context 正常退出。
+  final full test、backend+leader race 和 full vet 全通过。最终镜像在三副本
+  KubeBrain + 独立单 TiKV/单 PD 上删除 `kb-pd-0`，捕获 4 个 ambiguous 多键 Txn，
+  Porcupine 完整历史为 `Ok`；原 leader 约 1 秒后同进程重新当选，三个 Pod
+  zero restart。故障后 `TestPhysicalCompactionUnderTraffic` 通过，endpoint health
+  约 32ms，证明无 pin 泄漏或 compactor 停滞。containerd 运行时 exact image
+  `9e574c54fc907bfdc7c951e2356c886d4bde636b2f2a66911f3d9e35e11d0df2`。
 
 ### P1：通用服务能力
 

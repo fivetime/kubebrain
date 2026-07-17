@@ -117,17 +117,20 @@ func (b *backend) CompactAsync(ctx context.Context, revision uint64) (uint64, er
 
 // clampCompactRevision bounds a requested compact revision to what is safe to
 // compact now: never past the current revision, and never at or above the oldest
-// in-flight (uncertain) retry so a not-yet-committed op is not compacted away.
+// single-key retry or multi-key resolution pin, so an uncertain outcome's data
+// and event-log commit markers cannot be compacted before it is resolved.
 func (b *backend) clampCompactRevision(revision uint64) uint64 {
 	curRevision := b.tso.GetRevision()
 	if revision > curRevision {
 		revision = curRevision
 	}
 	uncertainRev := b.asyncFifoRetry.MinRevision()
+	txnUncertainRev := b.uncertainTxnPins.min()
+	if uncertainRev == 0 || (txnUncertainRev != 0 && txnUncertainRev < uncertainRev) {
+		uncertainRev = txnUncertainRev
+	}
 	if uncertainRev != 0 {
-		// head of retry queue is the uncertain event with the least revision.
-		// set compact revision less than the least uncertain revision if there is uncertain event
-		// so that uncertain op will not be compacted.
+		// Keep the compact watermark below the oldest unresolved outcome.
 		revision = minUint64(uncertainRev-1, revision)
 	}
 	return revision

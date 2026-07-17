@@ -73,7 +73,9 @@ type ElectionInfo struct {
 }
 
 type leaderElection struct {
-	backend b.Backend
+	backend interface {
+		SetCurrentRevision(uint64)
+	}
 	// resource lock
 	resourceLock resourcelock.Interface
 	metricCli    metrics.Metrics
@@ -216,57 +218,69 @@ func NewLeaderElection(backend b.Backend, metricCli metrics.Metrics, onStartedLe
 
 // Campaign implements LeaderElection interface
 func (l *leaderElection) Campaign(ctx context.Context) {
-	leaderelection.RunOrDie(ctx, leaderelection.LeaderElectionConfig{
-		Lock: &renewStampingLock{
-			Interface: l.resourceLock, onRenew: l.stampRenew, onRecord: l.observeLeadershipRecord,
-		},
-		ReleaseOnCancel: true,
-		// lease timeout deadline
-		LeaseDuration: l.leaseDuration,
-		// renew deadline
-		RenewDeadline: l.renewDeadline,
-		// renew lease period
-		RetryPeriod: l.retryPeriod,
-		Callbacks: leaderelection.LeaderCallbacks{
-			OnStartedLeading: func(ctx context.Context) {
-				// we're notified when we start - this is where you would
-				// usually put your code
-				klog.Info("start leading")
-				l.metricCli.EmitCounter("leader.election.success", 1)
-				leaderAddr, version, err := l.getLeaderAndVersion()
-				if err != nil {
-					klog.Fatal("leader lost")
-					panic("invalid leader info")
-				}
-				l.metricCli.EmitGauge("leader.election.initial.version", version, metrics.Tag("addr", leaderAddr))
-				// TODO push this logic to on start leading call back
-				l.backend.SetCurrentRevision(version)
-				// Bump the leadership epoch and stamp freshness BEFORE publishing
-				// leader=1, so no write can be admitted under this term before its
-				// epoch is live (FINDING #39). The successor of a previous leader
-				// thus always admits writes under a strictly higher epoch.
-				atomic.AddUint64(&l.epoch, 1)
-				l.stampRenew()
-				atomic.StoreInt32(&l.leader, 1)
-				l.onStartedLeading(ctx)
+	for ctx.Err() == nil {
+		runCtx, cancel := context.WithCancel(ctx)
+		elector, err := leaderelection.NewLeaderElector(leaderelection.LeaderElectionConfig{
+			Lock: &renewStampingLock{
+				Interface: l.resourceLock, onRenew: l.stampRenew, onRecord: l.observeLeadershipRecord,
 			},
-			OnStoppedLeading: func() {
-				// we can do cleanup here, or after the RunOrDie method
-				// returns
-				atomic.StoreInt32(&l.leader, 0)
-				l.onStoppedLeading()
-				leaderAddr := l.GetLeaderInfo()
-				l.metricCli.EmitCounter("leader.election.lost", 1, metrics.Tag("addr", leaderAddr))
-				if ctx.Err() != nil {
-					klog.Info("leader election stopped by context cancellation")
-					return
-				}
-				klog.Fatal("leader lost")
-				// panic to avoid watchCache field in backend dirty, simple and rude
-				panic("leader lost")
+			ReleaseOnCancel: true,
+			LeaseDuration:   l.leaseDuration,
+			RenewDeadline:   l.renewDeadline,
+			RetryPeriod:     l.retryPeriod,
+			Callbacks: leaderelection.LeaderCallbacks{
+				OnStartedLeading: func(leadingCtx context.Context) {
+					klog.Info("start leading")
+					l.metricCli.EmitCounter("leader.election.success", 1)
+					leaderAddr, version, err := l.getLeaderAndVersion()
+					if err != nil {
+						l.metricCli.EmitCounter("leader.election.initialize.err", 1)
+						klog.ErrorS(err, "initialize acquired leadership failed; retrying election")
+						cancel()
+						return
+					}
+					l.metricCli.EmitGauge("leader.election.initial.version", version, metrics.Tag("addr", leaderAddr))
+					l.backend.SetCurrentRevision(version)
+					// Publish only after the new epoch and freshness stamp are live,
+					// so every admitted write is fenced to this exact term.
+					atomic.AddUint64(&l.epoch, 1)
+					l.stampRenew()
+					atomic.StoreInt32(&l.leader, 1)
+					l.onStartedLeading(leadingCtx)
+				},
+				OnStoppedLeading: func() {
+					atomic.StoreInt32(&l.leader, 0)
+					l.onStoppedLeading()
+					leaderAddr := l.GetLeaderInfo()
+					l.metricCli.EmitCounter("leader.election.lost", 1, metrics.Tag("addr", leaderAddr))
+					if ctx.Err() != nil {
+						klog.Info("leader election stopped by context cancellation")
+						return
+					}
+					klog.Warning("leadership lost; retrying election in the same process")
+				},
 			},
-		},
-	})
+		})
+		if err != nil {
+			cancel()
+			klog.ErrorS(err, "invalid leader election configuration")
+			return
+		}
+		elector.Run(runCtx)
+		cancel()
+		if ctx.Err() != nil {
+			return
+		}
+		timer := time.NewTimer(l.retryPeriod)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return
+		case <-timer.C:
+		}
+	}
 }
 
 // IsLeader implements LeaderElection interface

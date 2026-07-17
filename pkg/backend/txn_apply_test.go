@@ -37,6 +37,10 @@ type commitThenUncertainStorage struct {
 	trigger                 atomic.Bool
 	failReadsAfterUncertain int32
 	remainingReadFailures   atomic.Int32
+	blockReads              atomic.Bool
+	readBlocked             chan struct{}
+	releaseReads            chan struct{}
+	readBlockedOnce         sync.Once
 }
 
 func (s *commitThenUncertainStorage) BeginBatchWrite() storage.BatchWrite {
@@ -44,6 +48,14 @@ func (s *commitThenUncertainStorage) BeginBatchWrite() storage.BatchWrite {
 }
 
 func (s *commitThenUncertainStorage) Get(ctx context.Context, key []byte) ([]byte, error) {
+	if s.blockReads.Load() && s.releaseReads != nil {
+		s.readBlockedOnce.Do(func() { close(s.readBlocked) })
+		select {
+		case <-s.releaseReads:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
 	for {
 		remaining := s.remainingReadFailures.Load()
 		if remaining == 0 {
@@ -65,6 +77,9 @@ func (b *commitThenUncertainBatch) Commit(ctx context.Context) error {
 	err := b.BatchWrite.Commit(ctx)
 	if err == nil && uncertain {
 		b.storage.remainingReadFailures.Store(b.storage.failReadsAfterUncertain)
+		if b.storage.releaseReads != nil {
+			b.storage.blockReads.Store(true)
+		}
 		return storage.NewErrUncertainResult(context.DeadlineExceeded)
 	}
 	return err
@@ -291,6 +306,48 @@ func TestTxnApplyCommittedUncertainResultResolvesAsOneTransaction(t *testing.T) 
 	require.Len(t, events, 2)
 	require.Equal(t, revision, events[0].Kv.Revision)
 	require.Equal(t, revision, events[1].Kv.Revision)
+}
+
+func TestTxnApplyUncertainResultPinsCompactionUntilResolved(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	metrics := mock.NewMinimalMetrics(ctrl)
+	mem := imemkv.NewKvStorage()
+	defer func() { require.NoError(t, mem.Close()) }()
+	store := &commitThenUncertainStorage{
+		KvStorage:    mem,
+		readBlocked:  make(chan struct{}),
+		releaseReads: make(chan struct{}),
+	}
+	b := NewBackend(store, Config{
+		Prefix: prefix, Identity: getStorageIdentity(), EnableEtcdCompatibility: true,
+	}, metrics).(*backend)
+	b.SetCurrentRevision(uint64(time.Now().UnixNano()))
+	ctx := context.Background()
+
+	store.trigger.Store(true)
+	_, revision, err := b.TxnApply(ctx, []TxnWriteOp{
+		{Key: []byte(prefix + "/txn-uncertain-pin/left"), Value: []byte("left")},
+		{Key: []byte(prefix + "/txn-uncertain-pin/right"), Value: []byte("right")},
+	}, nil)
+	require.ErrorIs(t, err, storage.ErrUncertainResult)
+	require.NotZero(t, revision)
+
+	select {
+	case <-store.readBlocked:
+	case <-time.After(time.Second):
+		t.Fatal("uncertain transaction resolver did not reach marker read")
+	}
+	require.Equal(t, revision, b.uncertainTxnPins.min())
+	require.Equal(t, revision-1, b.clampCompactRevision(revision+100),
+		"compaction must not delete the commit markers before resolution")
+
+	close(store.releaseReads)
+	require.Eventually(t, func() bool {
+		return b.GetCurrentRevision() >= revision && b.uncertainTxnPins.min() == 0
+	}, 2*time.Second, time.Millisecond, "resolver must publish the transaction and release its compaction pin")
+	require.Equal(t, revision, b.clampCompactRevision(revision),
+		"resolved transactions must no longer constrain compaction")
 }
 
 func TestTxnApplyUncommittedUncertainResultSkipsAsOneTransaction(t *testing.T) {

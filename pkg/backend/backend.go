@@ -245,6 +245,9 @@ type backend struct {
 	scanner scanner.Scanner
 
 	asyncFifoRetry retry.AsyncFifoRetry
+	// uncertainTxnPins prevents logical/physical compaction from deleting the
+	// event-log markers used to resolve commit-undetermined multi-key txns.
+	uncertainTxnPins revisionPins
 
 	config Config
 
