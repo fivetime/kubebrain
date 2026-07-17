@@ -35,7 +35,7 @@ Raft、bbolt 和成员管理内部实现，而是对通用 etcd v3 客户端提�
 | KV | Txn | 部分兼容 | P0：缺失键 guard、范围 phantom guard、嵌套分支、staged 单 revision 提交及 caller deadline 贯穿后端冲突重试已完成；继续扩大官方客户端差分及 TiKV 故障验证 |
 | KV | Compact | 兼容核心语义 | P0：继续对齐 logical/physical 行为、错误与异步 GC |
 | KV | RangeStream | 兼容核心语义 | etcd 3.7 支持的 CountOnly/Limit/KeysOnly/默认排序已对齐；自定义排序与 revision filter 同 etcd 明确 Unimplemented |
-| Watch | create/cancel/progress/history/prevKV | 兼容核心语义 | P0：用官方客户端做事件完整性、压缩、断线恢复和慢消费者测试 |
+| Watch | create/cancel/progress/history/prevKV/slow-consumer catch-up | 兼容核心语义；后端溢出无缝追赶，控制响应不阻塞接收循环 | P1：继续数天级断线/慢消费者 soak |
 | Lease | grant/revoke/keepalive/ttl/list | 兼容核心语义 | meta/attachment 已与用户 revision 隔离并原子提交，Grant durable 后才发布，List 按到期时间稳定排序；继续扩大故障、并发和错误差分矩阵 |
 | Auth | 用户、角色、权限、token | 兼容核心语义 | 管理 API、key-range RBAC、token 生命周期、Watch/Lease 持续鉴权及多副本故障转移已验证 |
 | Cluster | MemberList | 兼容（需配置） | DBaaS 通过 `--initial-cluster` 注入完整 KubeBrain 服务副本；未配置时仅返回本机与 leader 的降级视图，不应启用 AutoSync |
@@ -1358,6 +1358,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   通过。exact image
   `e51405856ed4e7457f42912a5b43595c960c29cc4b0e22ef3df7c179243d6dc6`；
   最终部署 3/3 Ready、zero restart，稳定期日志、health 和 CRUD 正常。
+- **Watch A84 slow-consumer control-plane isolation（2026-07-17）**：对照 etcd
+  `server/etcdserver/api/v3rpc/watch.go` 的独立 `sendLoop` 与 16 深度
+  `ctrlStream`，发现 KubeBrain 虽已有每 subscriber 10k batch buffer、满载后从
+  100k event ring 无缝追赶/重新挂接、ring 淘汰后明确关闭等数据面保护，但 stream
+  Recv loop 仍直接争用 gRPC `Send` 锁。客户端停止读取、event send 阻塞时，cancel
+  与 progress 响应也会阻塞 Recv loop，导致已发送的取消请求不能及时释放逻辑 Watch
+  配额。现每 stream 增加 16 深度有界 control queue 与单独 sender：created 响应仍
+  等待真实发送成功后才启动 backend Watch，确保 created-before-events；事件发送仍
+  同步确认后才推进 `syncedRev`；cancel/progress 可在慢 event send 后排队，接收循环
+  可继续处理控制请求。确定性测试阻塞首个 event send，验证 control enqueue 不阻塞，
+  释放后仍按 event→control 串行发送；既有 hub 测试继续覆盖无缺口 catch-up、ring
+  淘汰关闭、删除期间追赶及连续前缀。full test、server/backend race 和 full vet
+  通过。三副本 KubeBrain + 独立 TiKV/PD 上官方 client/v3 的 Kubernetes
+  watch+lease、历史回放、过滤 progress、事件后 progress 抑制、from-now 创建窗口和
+  update/prevKV 六组连续 3 轮通过；完整通用 smoke 的 Watch 段通过，但其后既有
+  MinModRevision range 断言失败，未记为整套通过。exact image
+  `e01d0161779236645fe0014f84e871f13c74c9d7b7a9109ead22ae7f3ec51c9f`；
+  最终部署 3/3 Ready、zero restart，稳定期无 panic/fatal/control-send error，
+  health 正常。
 
 ### P1：通用服务能力
 

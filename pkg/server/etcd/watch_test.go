@@ -101,6 +101,75 @@ func (s *createCallbackWatchServer) snapshot() []*etcdserverpb.WatchResponse {
 	return append([]*etcdserverpb.WatchResponse(nil), s.sent...)
 }
 
+type blockingFirstSendWatchServer struct {
+	*fakeWatchServer
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+	mu      sync.Mutex
+	sent    []*etcdserverpb.WatchResponse
+}
+
+func (s *blockingFirstSendWatchServer) Send(resp *etcdserverpb.WatchResponse) error {
+	s.once.Do(func() {
+		close(s.started)
+		<-s.release
+	})
+	s.mu.Lock()
+	s.sent = append(s.sent, resp)
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *blockingFirstSendWatchServer) snapshot() []*etcdserverpb.WatchResponse {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]*etcdserverpb.WatchResponse(nil), s.sent...)
+}
+
+func TestWatchControlSendDoesNotBlockBehindSlowEventSend(t *testing.T) {
+	stream := &blockingFirstSendWatchServer{
+		fakeWatchServer: &fakeWatchServer{ctx: context.Background()},
+		started:         make(chan struct{}),
+		release:         make(chan struct{}),
+	}
+	w := &watcher{
+		watchServer: stream,
+		controlCh:   make(chan watchControlResponse, watchControlBuffer),
+	}
+	w.controlWG.Add(1)
+	go w.sendControls()
+
+	eventSent := make(chan error, 1)
+	go func() {
+		eventSent <- w.Send(&etcdserverpb.WatchResponse{WatchId: 1, Events: []*mvccpb.Event{{}}})
+	}()
+	<-stream.started
+
+	controlQueued := make(chan error, 1)
+	go func() {
+		controlQueued <- w.SendControl(&etcdserverpb.WatchResponse{WatchId: 1, Canceled: true})
+	}()
+	select {
+	case err := <-controlQueued:
+		require.NoError(t, err)
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("control response blocked behind a slow event send")
+	}
+
+	close(stream.release)
+	require.NoError(t, <-eventSent)
+	require.Eventually(t, func() bool {
+		return len(stream.snapshot()) == 2
+	}, time.Second, time.Millisecond)
+	close(w.controlCh)
+	w.controlWG.Wait()
+
+	responses := stream.snapshot()
+	require.Len(t, responses[0].Events, 1)
+	require.True(t, responses[1].Canceled)
+}
+
 func TestIsExpectedWatchCloseError(t *testing.T) {
 	tests := []struct {
 		name string

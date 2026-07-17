@@ -48,13 +48,21 @@ const onDemandProgressSyncWait = 100 * time.Millisecond
 
 const watchQuotaCancelReason = "etcdserver: too many requests"
 
+const watchControlBuffer = 16
+
+type watchControlResponse struct {
+	resp *etcdserverpb.WatchResponse
+	done chan error
+}
+
 // watcher correspond to one stream, one watcher has many watches
 type watcher struct {
 	sync.Mutex
 	sendMu sync.Mutex
 
-	wg      sync.WaitGroup
-	backend BackendShim
+	wg        sync.WaitGroup
+	controlWG sync.WaitGroup
+	backend   BackendShim
 	// stream server
 	watchServer etcdserverpb.Watch_WatchServer
 	// gRPC server
@@ -68,6 +76,8 @@ type watcher struct {
 	// Followers use it for created/client-cancel headers and as the R fence for
 	// from-now proxy watches that subscribe at R+1.
 	controlRev uint64
+
+	controlCh chan watchControlResponse
 
 	metricCli metrics.Metrics
 }
@@ -198,9 +208,12 @@ func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) error {
 		grpcServer:  s,
 		backend:     s.backend,
 		watches:     make(map[int64]*watch),
+		controlCh:   make(chan watchControlResponse, watchControlBuffer),
 		metricCli:   s.metricCli,
 	}
 	w.id = atomic.AddInt64(&watcherID, 1)
+	w.controlWG.Add(1)
+	go w.sendControls()
 	klog.InfoS("new watcher", "id", w.id)
 	defer func() {
 		w.Close()
@@ -233,7 +246,7 @@ func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) error {
 			if r.StartRevision < 0 {
 				// etcd treats a negative start revision as an immediately canceled
 				// create, while keeping the multiplexed stream usable for later watches.
-				if err := w.Send(&etcdserverpb.WatchResponse{
+				if err := w.SendControlAndWait(&etcdserverpb.WatchResponse{
 					Header: txnHeader(int64(w.responseRevision())), WatchId: -1,
 					Created: true, Canceled: true, CancelReason: rpctypes.ErrCompacted.Error(),
 				}); err != nil {
@@ -246,7 +259,7 @@ func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) error {
 				authErr = caller.require(r.Key, r.RangeEnd, authpb.READ)
 			}
 			if authErr != nil {
-				if err := w.Send(&etcdserverpb.WatchResponse{
+				if err := w.SendControlAndWait(&etcdserverpb.WatchResponse{
 					Header: txnHeader(int64(w.responseRevision())), WatchId: -1,
 					Created: true, Canceled: true, CancelReason: watchAuthCancelReason(authErr),
 				}); err != nil {
@@ -291,7 +304,7 @@ func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) error {
 					singleRev = rev
 				}
 				if singleRev > 0 {
-					if err := w.Send(&etcdserverpb.WatchResponse{
+					if err := w.SendControl(&etcdserverpb.WatchResponse{
 						Header: txnHeader(int64(singleRev)), WatchId: -1,
 					}); err != nil {
 						klog.ErrorS(err, "watch send stream progress response err", "watcher", w.id)
@@ -301,7 +314,7 @@ func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) error {
 				}
 			}
 			if rev, synced := w.waitStreamProgressRevision(ws.Context(), targetRevision, onDemandProgressSyncWait); synced {
-				if err := w.Send(&etcdserverpb.WatchResponse{
+				if err := w.SendControl(&etcdserverpb.WatchResponse{
 					Header: txnHeader(int64(rev)), WatchId: -1,
 				}); err != nil {
 					klog.ErrorS(err, "watch send stream progress response err", "watcher", w.id)
@@ -331,7 +344,7 @@ func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) error {
 					// Range-stream pseudo-watches never emit progress.
 					continue
 				}
-				if err := w.Send(&etcdserverpb.WatchResponse{
+				if err := w.SendControl(&etcdserverpb.WatchResponse{
 					Header:  txnHeader(int64(rev)),
 					WatchId: id,
 				}); err != nil {
@@ -368,7 +381,7 @@ func (w *watcher) Start(c context.Context, r *etcdserverpb.WatchCreateRequest) {
 		if _, duplicate := w.watches[r.WatchId]; duplicate {
 			w.Unlock()
 			cancel()
-			_ = w.Send(&etcdserverpb.WatchResponse{
+			_ = w.SendControl(&etcdserverpb.WatchResponse{
 				Header: txnHeader(int64(w.responseRevision())), WatchId: -1,
 				Created: true, Canceled: true, CancelReason: "mvcc: duplicate watch ID provided on the WatchStream",
 			})
@@ -378,7 +391,7 @@ func (w *watcher) Start(c context.Context, r *etcdserverpb.WatchCreateRequest) {
 	if len(r.RangeEnd) != 0 && bytes.Compare(r.Key, r.RangeEnd) >= 0 {
 		w.Unlock()
 		cancel()
-		_ = w.Send(&etcdserverpb.WatchResponse{
+		_ = w.SendControl(&etcdserverpb.WatchResponse{
 			Header: txnHeader(int64(w.responseRevision())), WatchId: -1,
 			Created: true, Canceled: true, CancelReason: "mvcc: watcher range is empty",
 		})
@@ -387,7 +400,7 @@ func (w *watcher) Start(c context.Context, r *etcdserverpb.WatchCreateRequest) {
 	if !w.grpcServer.acquireWatch() {
 		w.Unlock()
 		cancel()
-		_ = w.Send(&etcdserverpb.WatchResponse{
+		_ = w.SendControl(&etcdserverpb.WatchResponse{
 			Header: txnHeader(int64(w.responseRevision())), WatchId: -1,
 			Created: true, Canceled: true, CancelReason: watchQuotaCancelReason,
 		})
@@ -445,7 +458,7 @@ func (w *watcher) Start(c context.Context, r *etcdserverpb.WatchCreateRequest) {
 		// live subscriber before scanning history, so the handoff is lossless.
 		r.StartRevision = int64(createdRev) + 1
 	}
-	if err := w.Send(&etcdserverpb.WatchResponse{
+	if err := w.SendControlAndWait(&etcdserverpb.WatchResponse{
 		Header:  txnHeader(int64(createdRev)),
 		Created: true,
 		WatchId: id,
@@ -540,7 +553,7 @@ func (w *watcher) cancel(id int64, err error, compact, clientRequest bool) {
 	if clientRequest {
 		header = txnHeader(int64(w.responseRevision()))
 	}
-	serr := w.Send(&etcdserverpb.WatchResponse{
+	serr := w.SendControl(&etcdserverpb.WatchResponse{
 		Header:          header,
 		Canceled:        true,
 		CancelReason:    cancelReason,
@@ -587,6 +600,52 @@ func (w *watcher) Send(resp *etcdserverpb.WatchResponse) error {
 	return w.watchServer.Send(resp)
 }
 
+func (w *watcher) SendControl(resp *etcdserverpb.WatchResponse) error {
+	if w.controlCh == nil {
+		return w.Send(resp)
+	}
+	select {
+	case w.controlCh <- watchControlResponse{resp: resp}:
+		return nil
+	case <-w.watchServer.Context().Done():
+		return w.watchServer.Context().Err()
+	}
+}
+
+func (w *watcher) SendControlAndWait(resp *etcdserverpb.WatchResponse) error {
+	if w.controlCh == nil {
+		return w.Send(resp)
+	}
+	done := make(chan error, 1)
+	select {
+	case w.controlCh <- watchControlResponse{resp: resp, done: done}:
+	case <-w.watchServer.Context().Done():
+		return w.watchServer.Context().Err()
+	}
+	select {
+	case err := <-done:
+		return err
+	case <-w.watchServer.Context().Done():
+		return w.watchServer.Context().Err()
+	}
+}
+
+func (w *watcher) sendControls() {
+	defer w.controlWG.Done()
+	for control := range w.controlCh {
+		err := w.Send(control.resp)
+		if control.done != nil {
+			control.done <- err
+		}
+		if err != nil {
+			if !isExpectedWatchCloseError(err) {
+				w.metricCli.EmitCounter("watch.control.send.err", 1)
+				klog.ErrorS(err, "watch control response send failed", "watcher", w.id)
+			}
+		}
+	}
+}
+
 func (w *watcher) Close() {
 	w.metricCli.EmitCounter("watch.close", 1)
 	w.Lock()
@@ -605,6 +664,10 @@ func (w *watcher) Close() {
 		w.grpcServer.releaseWatch()
 	}
 	w.wg.Wait()
+	if w.controlCh != nil {
+		close(w.controlCh)
+		w.controlWG.Wait()
+	}
 }
 
 func (w *watcher) Watch(ctx context.Context, id int64, r *etcdserverpb.WatchCreateRequest) {
