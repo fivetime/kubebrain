@@ -57,6 +57,10 @@ func (c *Config) complete() {
 	}
 	if c.WatchProgressNotifyInterval <= 0 {
 		c.WatchProgressNotifyInterval = defaultWatchProgressNotifyInterval
+	} else if c.WatchProgressNotifyInterval < minWatchProgressNotifyInterval {
+		klog.Warningf("watch progress notify interval %s is below etcd's minimum; clamping to %s",
+			c.WatchProgressNotifyInterval, minWatchProgressNotifyInterval)
+		c.WatchProgressNotifyInterval = minWatchProgressNotifyInterval
 	}
 }
 

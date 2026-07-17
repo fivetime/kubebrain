@@ -981,6 +981,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   无 progress、随后 1500ms 内恢复通知。旧 A58 exact image 在首个 post-event tick 稳定
   复现冗余 progress；状态机单元连续 100 轮、相关 Watch pipeline race 连续 10 轮及
   full/vet 通过，三副本 TiKV/PD exact image `dacfe140d352` 官方 client 场景连续 10 轮通过。
+- **Watch A60 minimum progress interval（2026-07-17）**：对照
+  `/root/etcd/server/etcdserver/api/v3rpc/watch.go` 的 `minWatchProgressInterval=100ms`，
+  etcd 对正数但低于下限的 `--watch-progress-notify-interval` 发 warning 并 clamp；KubeBrain
+  原先会按 `1ms` 等输入直接同时驱动 backend marker 与 per-watch ticker，形成可配置的 CPU/
+  fan-out storm。现 backend config completion 保留 `<=0 -> 1s` 的 Kubernetes-oriented
+  default，但将 `(0,100ms)` 统一 warning 后 clamp 至 100ms，且 CLI help 明示该语义。新增
+  table test 覆盖 negative/zero/sub-min/exact/above；官方 client probe 在 exact image 以
+  `--watch-progress-notify-interval=1ms` 启动，要求首个 progress 不早于 75ms 且小于 1s。
+  旧 A59 以 1ms 启动时 marker storm 令 setup Put 超过 3s，降至 50ms 后首个 progress
+  实测约 62ms，稳定复现未 clamp；table focused 连续 100 轮、相关 backend/Watch race
+  连续 10 轮及 full/vet 通过。三副本 TiKV/PD exact image `e4afbbc9dd52` 在 1ms 输入下
+  官方 client probe 连续 20 轮通过，且同配置下完整 suite 通过。
 
 ### P1：通用服务能力
 

@@ -419,6 +419,7 @@ type Config struct {
 // Config.WatchProgressNotifyInterval is unset (<=0). It matches the value the
 // watch progress ticker used before it became configurable.
 const defaultWatchProgressNotifyInterval = time.Second
+const minWatchProgressNotifyInterval = 100 * time.Millisecond
 
 // NewBackend builds a new backend
 func NewBackend(kv storage.KvStorage, config Config, metricCli metrics.Metrics) Backend {
