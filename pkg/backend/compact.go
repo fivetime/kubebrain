@@ -36,6 +36,14 @@ type compactContextHolder struct {
 	ctx context.Context
 }
 
+func (b *backend) maintenanceContext() context.Context {
+	holder, _ := b.compactCtx.Load().(compactContextHolder)
+	if holder.ctx != nil {
+		return holder.ctx
+	}
+	return context.Background()
+}
+
 func (b *backend) Compact(ctx context.Context, revision uint64) (*proto.CompactResponse, error) {
 	revision = b.clampCompactRevision(revision)
 
@@ -451,10 +459,7 @@ func (b *backend) runCompactor() {
 			if target <= lastScanned {
 				break
 			}
-			ctx := context.Background()
-			if holder, ok := b.compactCtx.Load().(compactContextHolder); ok && holder.ctx != nil {
-				ctx = holder.ctx
-			}
+			ctx := b.maintenanceContext()
 			if err := b.physicalCompact(ctx, target); err != nil {
 				// Do not claim completion. Retry independently of a newer logical
 				// compact request so transient storage failures cannot leave physical

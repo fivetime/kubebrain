@@ -1420,6 +1420,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Physical=true 并发 100 次读写/watch 连续 3 轮通过；compact fault smoke 在 30 轮
   compact、4 readers/723 reads 中删除并重建一个副本后完成。exact image
   `315604ad8d076af06e9d38220a8c0993004dd1a1632f9281279e8cab1c3191d2`。
+- **Storage GC A88 leadership lifecycle fencing（2026-07-17）**：KubeBrain 在独立
+  TiKV/PD 上承担 `gc_worker`，必须由当前 leader 单独推进全局 service safepoint。
+  审计发现 driver 虽在每个 tick 前检查 `leadingFresh`，实际 TiKV GC、锁解析和 PD
+  safepoint 更新却使用 `context.Background()`；旧 leader 在检查后失去任期时仍可继续
+  执行昂贵 GC，新 leader 又会启动下一轮。现复用 A87 的 leadership lifecycle context，
+  并在 `onStartedLeading` 最前面注册该 context，使 storage GC 和 physical compaction
+  均在 lease/event 初始化期间也受任期取消约束；每轮 GC 继续保留 interval timeout。
+  确定性测试阻塞旧 leader 首轮 GC，确认任期 context 取消会中断调用、follower 不推进
+  safepoint，新 leader 注册新 context 后无需重启 driver 即可接续；focused 普通 50 轮、
+  race 10 轮及 full test/backend+server race/full vet 全通过。三副本 KubeBrain +
+  独立 TiKV/PD 临时使用 5 秒周期时，仅 leader `l9gpj` 推进 safepoint；删除该 leader
+  后由 `pgvcf` 单独接管，PD safepoint 从 `467743587573956608` 推进至
+  `467743598322122752`。验证后恢复默认 10 分钟周期，部署 3/3 Ready、zero restart，
+  health 正常。exact image
+  `7a78f3eed5773e4224b34d4217f33586cb432f1df25581fa3d6d3d7ba450b97e`。
 
 ### P1：通用服务能力
 

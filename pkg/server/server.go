@@ -122,6 +122,23 @@ func NewServer(ctx context.Context, backend backend.Backend, metricCli metrics.M
 const leaderReloadRetryInterval = time.Second
 
 func (s *server) onStartedLeading(ctx context.Context) {
+	// Register this leadership lifecycle before any other startup work. Physical
+	// compaction and the TiKV GC-safepoint driver both derive their in-flight
+	// contexts from it, so a term loss cancels shared-storage maintenance even
+	// while lease/event initialization is still retrying.
+	for {
+		err := s.backend.ResumePhysicalCompaction(ctx)
+		if err == nil {
+			break
+		}
+		s.metricCli.EmitCounter("compact.resume.err", 1)
+		klog.ErrorS(err, "resume physical compaction on leadership acquisition failed; retrying before serving")
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(leaderReloadRetryInterval):
+		}
+	}
 	// Reconstruct lease state from storage BEFORE advertising readiness (review
 	// #6). A stale follower snapshot's expiry timers would otherwise wrongly delete
 	// kept-alive leases or orphan newly-granted ones. Retry on failure rather than
@@ -157,22 +174,6 @@ func (s *server) onStartedLeading(ctx context.Context) {
 		}
 		s.metricCli.EmitCounter("event_log.ensure.err", 1)
 		klog.ErrorS(err, "event log start initialization failed; retrying before serving")
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(leaderReloadRetryInterval):
-		}
-	}
-	// Logical compaction is persisted before physical GC starts. A caller
-	// timeout, process exit, or leader failover can interrupt that scan; resume
-	// from the durable watermark before publishing this leader as ready.
-	for {
-		err := s.backend.ResumePhysicalCompaction(ctx)
-		if err == nil {
-			break
-		}
-		s.metricCli.EmitCounter("compact.resume.err", 1)
-		klog.ErrorS(err, "resume physical compaction on leadership acquisition failed; retrying before serving")
 		select {
 		case <-ctx.Done():
 			return

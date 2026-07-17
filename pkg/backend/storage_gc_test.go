@@ -42,6 +42,28 @@ func (g *gcRecordingKV) GC(ctx context.Context, lifetime time.Duration) (uint64,
 	return uint64(g.calls.Load()), nil
 }
 
+type lifecycleGCKV struct {
+	storage.KvStorage
+	calls     atomic.Int64
+	successes atomic.Int64
+	entered   chan struct{}
+	canceled  chan struct{}
+}
+
+func (g *lifecycleGCKV) GC(ctx context.Context, _ time.Duration) (uint64, error) {
+	call := g.calls.Add(1)
+	if call == 1 {
+		close(g.entered)
+		<-ctx.Done()
+		close(g.canceled)
+		return 0, ctx.Err()
+	}
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	return uint64(g.successes.Add(1)), nil
+}
+
 // TestStorageGCDriverAdvancesSafepoint pins #37: when the storage implements
 // GarbageCollector and a lifetime is configured, the leader periodically calls
 // GC with that lifetime — the gc_worker role on a bare PD+TiKV deployment,
@@ -82,4 +104,46 @@ func TestStorageGCDriverDisabledByZeroLifetime(t *testing.T) {
 	}, m)
 	time.Sleep(150 * time.Millisecond)
 	require.Zero(t, kv.calls.Load(), "GC must not run when lifetime is 0")
+}
+
+func TestStorageGCTransfersAcrossLeadershipContexts(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	m := mock.NewMinimalMetrics(ctrl)
+	kv := &lifecycleGCKV{
+		KvStorage: imemkv.NewKvStorage(),
+		entered:   make(chan struct{}),
+		canceled:  make(chan struct{}),
+	}
+	defer func() { require.NoError(t, kv.Close()) }()
+
+	const lifetime = 50 * time.Millisecond
+	b := NewBackend(kv, Config{
+		Prefix: prefix, Identity: getStorageIdentity(),
+		EnableEtcdCompatibility: true, StorageGCLifetime: lifetime,
+	}, m).(*backend)
+	var epoch atomic.Uint64
+	var leading atomic.Bool
+	epoch.Store(1)
+	leading.Store(true)
+	b.SetLeadershipFence(func() (uint64, bool) { return epoch.Load(), leading.Load() })
+
+	oldCtx, stopOldLeader := context.WithCancel(context.Background())
+	require.NoError(t, b.ResumePhysicalCompaction(oldCtx))
+	<-kv.entered
+	leading.Store(false)
+	stopOldLeader()
+	<-kv.canceled
+	time.Sleep(2 * lifetime)
+	require.Zero(t, kv.successes.Load(), "a follower must not advance the storage GC safepoint")
+
+	epoch.Store(2)
+	leading.Store(true)
+	newCtx, stopNewLeader := context.WithCancel(context.Background())
+	defer stopNewLeader()
+	require.NoError(t, b.ResumePhysicalCompaction(newCtx))
+	require.Eventually(t, func() bool {
+		return kv.successes.Load() > 0
+	}, 2*time.Second, 10*time.Millisecond,
+		"the new leader must resume safepoint advancement without restarting the driver")
 }
