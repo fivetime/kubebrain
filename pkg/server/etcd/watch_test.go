@@ -261,6 +261,34 @@ func TestWatchRequestedIDDuplicateAndUnknownCancelMatchEtcd(t *testing.T) {
 	require.Len(t, stream.sent, 2, "etcd silently ignores cancellation of an unknown watch ID")
 	w.CancelRequest(42)
 	w.wg.Wait()
+	require.Len(t, stream.sent, 3, "backend close after client cancellation must not emit a second response")
+	require.True(t, stream.sent[2].Canceled)
+	require.Empty(t, stream.sent[2].CancelReason)
+}
+
+func TestWatchAutomaticIDsAreMonotonicAndSkipExplicitIDs(t *testing.T) {
+	w := &watcher{watches: make(map[int64]*watch)}
+
+	id, duplicate := w.allocateWatchIDLocked(0)
+	require.Equal(t, int64(0), id)
+	require.False(t, duplicate)
+	w.watches[id] = &watch{}
+	w.watches[2] = &watch{}
+
+	delete(w.watches, 0)
+	id, duplicate = w.allocateWatchIDLocked(0)
+	require.Equal(t, int64(1), id, "canceled automatic IDs must not be reused")
+	require.False(t, duplicate)
+	w.watches[id] = &watch{}
+
+	delete(w.watches, 1)
+	id, duplicate = w.allocateWatchIDLocked(0)
+	require.Equal(t, int64(3), id, "automatic IDs must skip an active explicit ID")
+	require.False(t, duplicate)
+
+	id, duplicate = w.allocateWatchIDLocked(2)
+	require.Equal(t, int64(2), id)
+	require.True(t, duplicate)
 }
 
 func TestNegativeWatchRevisionCancelsCreateWithoutClosingStream(t *testing.T) {

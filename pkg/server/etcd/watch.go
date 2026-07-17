@@ -60,8 +60,9 @@ type watcher struct {
 	grpcServer *RPCServer
 
 	// hold watch request info in this stream
-	watches map[int64]*watch
-	id      int64
+	watches     map[int64]*watch
+	nextWatchID int64
+	id          int64
 	// controlRev is the latest leader revision synchronized for this stream.
 	// Followers use it for created/client-cancel headers and as the R fence for
 	// from-now proxy watches that subscribe at R+1.
@@ -343,16 +344,8 @@ func watchAuthCancelReason(err error) string {
 func (w *watcher) Start(c context.Context, r *etcdserverpb.WatchCreateRequest) {
 	w.Lock()
 	ctx, cancel := context.WithCancel(c)
-	id := r.WatchId
-	if id == 0 {
-		// Watch IDs are scoped to one stream. Match etcd's zero-indexed allocator
-		// and skip IDs explicitly reserved by earlier create requests.
-		for id = 0; ; id++ {
-			if _, exists := w.watches[id]; !exists {
-				break
-			}
-		}
-	} else if _, exists := w.watches[id]; exists {
+	id, duplicate := w.allocateWatchIDLocked(r.WatchId)
+	if duplicate {
 		w.Unlock()
 		cancel()
 		_ = w.Send(&etcdserverpb.WatchResponse{
@@ -428,6 +421,24 @@ func (w *watcher) Start(c context.Context, r *etcdserverpb.WatchCreateRequest) {
 	klog.InfoS("watch start", "id", id, "count", len(w.watches), "key", key, "revision", r.StartRevision)
 }
 
+// allocateWatchIDLocked selects an ID while w is locked.
+func (w *watcher) allocateWatchIDLocked(requested int64) (id int64, duplicate bool) {
+	if requested != 0 {
+		_, duplicate = w.watches[requested]
+		return requested, duplicate
+	}
+	// Watch IDs are scoped to one stream. Match etcd's monotonic, zero-indexed
+	// allocator and skip IDs explicitly reserved by earlier create requests
+	// without recycling canceled IDs.
+	for {
+		id = w.nextWatchID
+		w.nextWatchID++
+		if _, exists := w.watches[id]; !exists {
+			return id, false
+		}
+	}
+}
+
 func (w *watcher) Cancel(id int64, err error, compact bool) {
 	w.cancel(id, err, compact, false)
 }
@@ -452,10 +463,11 @@ func (w *watcher) cancel(id int64, err error, compact, clientRequest bool) {
 		delete(w.watches, id)
 	}
 	w.Unlock()
-	// etcd silently ignores a client cancellation for an unknown watch ID. An
-	// internal cancellation always names a live watch (or carries an error), so
-	// retaining its response behavior is safe.
-	if !found && clientRequest {
+	// etcd emits at most one cancellation response for a watch. A client cancel
+	// removes the watch before its backend goroutine observes the canceled
+	// context, so suppress that goroutine's later close response as well as
+	// requests for unknown IDs.
+	if !found {
 		return
 	}
 	// if compact is true, apiserver reflector watch will return with err, which will trigger re-list & re-watch (detail in etcd/clientv3/watch.go watchGrpcStream.run)

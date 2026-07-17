@@ -944,6 +944,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   保留；focused 连续 30 轮与覆盖 auth/revoke/regrant/leased-Put 的 race 连续 10 轮通过。
   独立 keyspace 的 exact image 上官方 client Auth lifecycle 新增同一 protected-key 场景并
   通过，root 随后可正常 revoke 清理；临时 auth 实例已销毁。
+- **Watch A57 automatic ID allocator（2026-07-17）**：对照
+  `/root/etcd/server/storage/mvcc/watcher.go` 的 `watchStream.Watch`，发现 KubeBrain
+  每次从当前 active map 中选择最小空闲 ID，cancel 后会复用旧 automatic watch ID；
+  etcd 则维护 stream-scoped `nextID`，仅跳过仍被显式 ID 占用的位置，不回收已 cancel
+  的 automatic ID。现每个 multiplexed stream 持有单调 `nextWatchID`，automatic create
+  从 0 开始递增并跳过 active explicit ID。确定性单元测试覆盖 `0 -> cancel -> 1` 及
+  explicit `2` 仍 active 时下一 ID 跳至 `3`；raw gRPC 双端差分加入 automatic create、
+  cancel、再次 create。该差分同时暴露 client cancel 删除 watch 后 backend goroutine 仍会
+  发送第二个 `watch closed` cancel；现以 map removal 作为唯一完成点，所有已移除 ID 的迟到
+  internal cancel 与未知 client cancel 均静默，确保每个 watch 最多一个 cancel response，
+  并校验 reference etcd 与 KubeBrain 的 control response 序列一致。focused 连续 50 轮、
+  control-path race 连续 10 轮及 full/vet 通过；三副本 TiKV/PD exact image
+  `d0d54fdcc7c6` 上 raw gRPC 双端差分连续 20 轮通过。
 
 ### P1：通用服务能力
 

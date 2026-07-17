@@ -128,6 +128,16 @@ func runWatchControlScenario(t *testing.T, endpoint string) []watchControlOutcom
 		RequestUnion: &etcdserverpb.WatchRequest_CancelRequest{CancelRequest: &etcdserverpb.WatchCancelRequest{WatchId: 42}},
 	}))
 	outcomes = append(outcomes, recv())
+
+	create("/dbaas-watch-control/auto-first", 0, 0)
+	outcomes = append(outcomes, recv())
+	require.NoError(t, stream.Send(&etcdserverpb.WatchRequest{
+		RequestUnion: &etcdserverpb.WatchRequest_CancelRequest{CancelRequest: &etcdserverpb.WatchCancelRequest{WatchId: 0}},
+	}))
+	outcomes = append(outcomes, recv())
+	create("/dbaas-watch-control/auto-second", 0, 0)
+	outcomes = append(outcomes, recv())
+
 	require.NoError(t, stream.CloseSend())
 	return outcomes
 }
