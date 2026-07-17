@@ -139,12 +139,11 @@ func (wt *watchTranslator) kvToEtcdKv(ctx context.Context, kv *proto.KeyValue) *
 	// etcd returns the lease attached to the key on Get/Range and in watch
 	// events. A v2 value envelope records the lease of THIS specific version
 	// (review #9), so historical reads, prevKv, and delete events report the
-	// lease the key held at that revision — use it directly. Legacy/v1 values
-	// carry no per-version lease (meta.Lease == 0 and inlined via v1), so fall
-	// back to the live keyLeaseIndex (current binding) as before. Only the leader
-	// has that index populated; followers proxy reads to it. The fast path inside
-	// the resolver skips the lease mutex entirely when no key holds a lease.
-	if meta.Lease != 0 {
+	// lease the key held at that revision. Both v1 and v2 envelopes are
+	// authoritative: v1 means the version was explicitly unleased, while v2
+	// carries its lease ID. Only legacy raw values lack per-version lease
+	// metadata and may fall back to the current in-memory binding.
+	if inlined {
 		out.Lease = meta.Lease
 	} else if wt.shim.leaseLookup != nil {
 		out.Lease = wt.shim.leaseLookup(string(kv.Key))

@@ -121,6 +121,76 @@ func runUnconditionalTxnScenario(t *testing.T, endpoint, instance string) uncond
 	return result
 }
 
+type historicalLeaseResult struct {
+	UnleasedRevision int64
+	LeasedRevision   int64
+	PlainAgainRev    int64
+	OldPlainLease    int64
+	OldLeased        bool
+	CurrentLease     int64
+	CurrentValue     string
+}
+
+func TestHistoricalLeaseDifferentialAgainstReferenceEtcd(t *testing.T) {
+	reference := os.Getenv("REFERENCE_ETCD_ENDPOINT")
+	if reference == "" {
+		t.Skip("set REFERENCE_ETCD_ENDPOINT to run differential compatibility tests")
+	}
+
+	require.Equal(t,
+		runHistoricalLeaseScenario(t, reference, "etcd"),
+		runHistoricalLeaseScenario(t, compatEndpoint(), "kubebrain"),
+	)
+}
+
+func runHistoricalLeaseScenario(t *testing.T, endpoint, instance string) historicalLeaseResult {
+	t.Helper()
+	cli, err := clientv3.New(clientv3.Config{Endpoints: []string{endpoint}, DialTimeout: 3 * time.Second})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, cli.Close()) })
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	t.Cleanup(cancel)
+	key := fmt.Sprintf("/dbaas-txn-historical-lease/%s/%d", instance, time.Now().UnixNano())
+
+	base, err := cli.Get(ctx, key)
+	require.NoError(t, err)
+	lease, err := cli.Grant(ctx, 300)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_, _ = cli.Revoke(cleanupCtx, lease.ID)
+		_, _ = cli.Delete(cleanupCtx, key)
+	})
+
+	unleased, err := cli.Put(ctx, key, "plain")
+	require.NoError(t, err)
+	leased, err := cli.Put(ctx, key, "leased", clientv3.WithLease(lease.ID))
+	require.NoError(t, err)
+	oldPlain, err := cli.Get(ctx, key, clientv3.WithRev(unleased.Header.Revision))
+	require.NoError(t, err)
+	require.Len(t, oldPlain.Kvs, 1)
+
+	plainAgain, err := cli.Put(ctx, key, "plain-again")
+	require.NoError(t, err)
+	oldLeased, err := cli.Get(ctx, key, clientv3.WithRev(leased.Header.Revision))
+	require.NoError(t, err)
+	require.Len(t, oldLeased.Kvs, 1)
+	current, err := cli.Get(ctx, key)
+	require.NoError(t, err)
+	require.Len(t, current.Kvs, 1)
+
+	return historicalLeaseResult{
+		UnleasedRevision: unleased.Header.Revision - base.Header.Revision,
+		LeasedRevision:   leased.Header.Revision - base.Header.Revision,
+		PlainAgainRev:    plainAgain.Header.Revision - base.Header.Revision,
+		OldPlainLease:    oldPlain.Kvs[0].Lease,
+		OldLeased:        oldLeased.Kvs[0].Lease == int64(lease.ID),
+		CurrentLease:     current.Kvs[0].Lease,
+		CurrentValue:     string(current.Kvs[0].Value),
+	}
+}
+
 func TestTxnConcurrentCreateDifferentialAgainstReferenceEtcd(t *testing.T) {
 	reference := os.Getenv("REFERENCE_ETCD_ENDPOINT")
 	if reference == "" {

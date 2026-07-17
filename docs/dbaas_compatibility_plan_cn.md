@@ -1827,6 +1827,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   写值及 Failure key 不存在全部一致。最终三个 Pod Ready、zero restart，外部端点
   status/health 正常，运行时 exact image
   `6335acb1c5826769d61888ac08d5ccef0d79e076c58ef8ac1495c32c897457d1`。
+- **Lease/Range A109 authoritative unleased version metadata（2026-07-17）**：
+  对照 etcd 每个 MVCC `KeyValue.Lease` 属于该版本的语义发现，KubeBrain 的 v1
+  value envelope 虽明确表示该版本无 lease，响应转换器却把 `Lease=0` 当作元数据
+  缺失，并回退到 leader-only 的当前 key-to-lease 索引。一个 key 从无租约版本更新
+  为有租约版本后，读取旧 revision 因而会错误返回当前 lease；同一请求打到 follower
+  时还可能因本地索引为空而得到不同结果。
+
+  现 v1/v2 envelope 都作为权威 per-version lease 元数据：v1 固定为无租约，v2
+  返回其持久化 lease ID；仅升级前真正没有 envelope 的 legacy raw value 继续回退
+  当前索引。回归测试固定历史无租约版本不会继承当前 lease，且当前有租约版本不变。
+  focused 普通 30 轮、`go test ./...`、根模块与 compat module `go vet ./...`、
+  完整 server race（226.896s）通过。官方 client/v3 对临时 reference etcd 与
+  TiKV-backed KubeBrain 连续 10 轮差分，依次验证无租约、有租约、再次无租约三个
+  版本的相对 revision、历史 lease 与当前值完全一致；再经三个 Pod 独立 port-forward
+  执行 serializable historical Range，三个副本均返回旧值且 lease 为零。最终三个
+  Pod Ready、zero restart，外部 endpoint health 正常，运行时 exact image
+  `26409541219fe09070769ed3b314d6961cce0892a26e7ad911a6f78b019ca092`。
 
 ### P1：通用服务能力
 

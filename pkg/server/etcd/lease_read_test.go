@@ -92,6 +92,38 @@ func TestReadPopulatesAttachedLease(t *testing.T) {
 	require.Zero(t, after.Kvs[0].Lease, "after unbinding, the read must report lease 0")
 }
 
+func TestHistoricalUnleasedVersionDoesNotInheritCurrentLease(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+
+	const leaseID int64 = 24681
+	_, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 60, ID: leaseID})
+	require.NoError(t, err)
+
+	key := []byte("/registry/pods/historical-lease")
+	unleased, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("unleased")})
+	require.NoError(t, err)
+	leased, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("leased"), Lease: leaseID})
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		return server.backend.GetCurrentRevision() >= uint64(leased.Header.Revision)
+	}, 5*time.Second, 2*time.Millisecond)
+
+	historical, err := server.Range(ctx, &etcdserverpb.RangeRequest{
+		Key: key, Revision: unleased.Header.Revision,
+	})
+	require.NoError(t, err)
+	require.Len(t, historical.Kvs, 1)
+	require.Equal(t, []byte("unleased"), historical.Kvs[0].Value)
+	require.Zero(t, historical.Kvs[0].Lease, "v1 envelope records an authoritative unleased version")
+
+	current, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: key})
+	require.NoError(t, err)
+	require.Len(t, current.Kvs, 1)
+	require.Equal(t, leaseID, current.Kvs[0].Lease)
+}
+
 // TestLeaseIDForKeyFastPath pins the lock-free fast path: leasedKeyCount mirrors
 // keyLeaseIndex so a leaseless server resolves lease lookups without taking
 // leaseMu, and the count tracks bind/unbind so a bound key still resolves.
