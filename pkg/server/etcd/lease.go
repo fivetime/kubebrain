@@ -556,16 +556,23 @@ func (m *leaseManager) reconcileLeaseIndexesAfterUncertain(err error, revision u
 	if len(keys) == 0 {
 		return
 	}
-	go m.reconcileLeaseIndexesAtRevision(revision, keys)
+	epoch, leadingFresh := m.srv.peers.EpochAndLeadingFresh()
+	if !leadingFresh {
+		return
+	}
+	m.leaseMu.Lock()
+	generation := m.leaseGeneration
+	m.leaseMu.Unlock()
+	go m.reconcileLeaseIndexesAtRevision(revision, keys, epoch, generation)
 }
 
 // reconcileLeaseIndexesAtRevision waits until the backend has resolved an
 // uncertain transaction, then rebuilds the affected in-memory bindings from the
 // durable attachment records. The exclusive lease-write lock orders this repair
 // against every later attach, detach, revoke, and expiry operation.
-func (m *leaseManager) reconcileLeaseIndexesAtRevision(revision uint64, keys []string) {
+func (m *leaseManager) reconcileLeaseIndexesAtRevision(revision uint64, keys []string, epoch, generation uint64) {
 	for m.srv.backend.GetCurrentRevision() < revision {
-		if _, leading := m.srv.peers.EpochAndLeadingFresh(); !leading {
+		if current, leading := m.srv.peers.EpochAndLeadingFresh(); !leading || current != epoch {
 			return
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -574,7 +581,7 @@ func (m *leaseManager) reconcileLeaseIndexesAtRevision(revision uint64, keys []s
 	retryDelay := 100 * time.Millisecond
 	for {
 		m.leaseWriteMu.Lock()
-		if _, leading := m.srv.peers.EpochAndLeadingFresh(); !leading {
+		if current, leading := m.srv.peers.EpochAndLeadingFresh(); !leading || current != epoch {
 			m.leaseWriteMu.Unlock()
 			return
 		}
@@ -608,9 +615,20 @@ func (m *leaseManager) reconcileLeaseIndexesAtRevision(revision uint64, keys []s
 			}
 		}
 		if !retry {
-			for key, id := range bindings {
-				m.bindKeyIndexOnly(id, key)
+			if current, leading := m.srv.peers.EpochAndLeadingFresh(); !leading || current != epoch {
+				m.leaseWriteMu.Unlock()
+				return
 			}
+			m.leaseMu.Lock()
+			if m.leaseGeneration != generation {
+				m.leaseMu.Unlock()
+				m.leaseWriteMu.Unlock()
+				return
+			}
+			for key, id := range bindings {
+				m.bindKeyToLeaseLocked(id, key)
+			}
+			m.leaseMu.Unlock()
 			m.leaseWriteMu.Unlock()
 			m.srv.metricCli.EmitCounter("lease.uncertain_reconcile.success", 1)
 			return

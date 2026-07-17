@@ -1467,6 +1467,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   leader，新 leader reload/接管过期成功，官方 client/v3 watch 完整收到 20 PUT/20
   DELETE。部署 3/3 Ready、zero restart，health 正常。exact image
   `5d8f0cd29a98deaf691a9b84c43dfccff83d27406a736dece66c0d3f422a03e6`。
+- **Lease A91 uncertain reconciliation generation fencing（2026-07-17）**：对照
+  etcd `server/lease/lessor.go` 由 `demotec` 隔离 primary 任期、`Promote` 重建 lessor
+  状态的生命周期，审计 KubeBrain committed-uncertain Txn 的异步 lease-index 修复时
+  发现：goroutine 仅在 durable attachment 读取前检查 leader，且 `StopLeases`/
+  `ReloadLeases` 不与它共用 `leaseWriteMu`；旧任期读取可在新 leader reload 后晚写回，
+  清除或覆盖新 generation 的 binding，导致 TTL/LeaseTimeToLive 内存视图与 TiKV
+  attachment 不一致。现创建修复任务时捕获 leadership epoch 与 `leaseGeneration`，
+  等待 revision、开始读取及写回前均复核 epoch；最终在 `leaseMu` 内复核 generation
+  并批量应用，使 Stop/Reload 与旧任务写回严格互斥。确定性测试让旧任务先读到
+  attachment=A 后阻塞，切换 epoch、替换 durable lease/attachment 为 B 并完成 reload，
+  放行后确认 binding 始终为 B；既有 committed-uncertain leased Put/revoke 测试继续
+  通过。focused 普通 50 轮、race 10 轮、full test/backend+server race/full vet
+  全通过。三副本 KubeBrain + 独立 TiKV/PD 上，100 个 TTL lease 切主后最终全部清理；
+  failover-aware 官方 client/v3 测试进一步创建 1200 leases、删除 leader并等待 rollout，
+  验证新 leader reload 后 expiry pileup 正确分散并完成清理。exact image
+  `3abc3179684de0031bf439f49976cf9a18f84f2aeb77432e6639ec1f22928728`。
 
 ### P1：通用服务能力
 

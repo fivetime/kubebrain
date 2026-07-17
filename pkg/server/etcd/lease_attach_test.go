@@ -44,6 +44,25 @@ type blockingLegacyMigrationBackend struct {
 	once    sync.Once
 }
 
+type staleUncertainAttachmentReadBackend struct {
+	BackendShim
+	target  []byte
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (b *staleUncertainAttachmentReadBackend) InternalGet(ctx context.Context, key []byte) ([]byte, error) {
+	value, err := b.BackendShim.InternalGet(ctx, key)
+	if string(key) == string(b.target) {
+		b.once.Do(func() {
+			close(b.entered)
+			<-b.release
+		})
+	}
+	return value, err
+}
+
 func (b *blockingLegacyMigrationBackend) InternalPut(ctx context.Context, key, value []byte) error {
 	if len(key) >= len(leaseAttachPrefix) && string(key[:len(leaseAttachPrefix)]) == string(leaseAttachPrefix) {
 		b.once.Do(func() { close(b.entered) })
@@ -918,4 +937,61 @@ func TestReloadLeasesRejectsFollower(t *testing.T) {
 	err := server.ReloadLeases(context.Background())
 	require.Error(t, err)
 	require.Equal(t, codes.Unavailable, status.Code(err))
+}
+
+func TestUncertainLeaseReconcileCannotOverwriteReloadedGeneration(t *testing.T) {
+	server, b, cleanup := newLeaseTestServer(t)
+	defer cleanup()
+	ctx := context.Background()
+	const oldLease int64 = 55130
+	const newLease int64 = 55131
+	const key = "/registry/events/uncertain-generation"
+
+	var epoch atomic.Uint64
+	epoch.Store(1)
+	peers := testPeerService{
+		isLeaderFn: func() bool { return true },
+		epochFn:    func() (uint64, bool) { return epoch.Load(), true },
+	}
+	server.peers = peers
+	b.SetLeadershipFence(peers.EpochAndLeadingFresh)
+	_, err := server.LeaseGrant(backend.WithLeadershipEpoch(ctx, 1),
+		&etcdserverpb.LeaseGrantRequest{TTL: 300, ID: oldLease})
+	require.NoError(t, err)
+	_, err = server.Put(backend.WithLeadershipEpoch(ctx, 1),
+		&etcdserverpb.PutRequest{Key: []byte(key), Value: []byte("old"), Lease: oldLease})
+	require.NoError(t, err)
+
+	server.leaseMu.Lock()
+	oldGeneration := server.leaseGeneration
+	server.leaseMu.Unlock()
+	staleRead := &staleUncertainAttachmentReadBackend{
+		BackendShim: server.backend,
+		target:      leaseAttachKey(key),
+		entered:     make(chan struct{}),
+		release:     make(chan struct{}),
+	}
+	server.backend = staleRead
+	done := make(chan struct{})
+	go func() {
+		server.reconcileLeaseIndexesAtRevision(b.GetCurrentRevision(), []string{key}, 1, oldGeneration)
+		close(done)
+	}()
+	<-staleRead.entered
+
+	epoch.Store(2)
+	server.StopLeases()
+	newCtx := backend.WithLeadershipEpoch(ctx, 2)
+	require.NoError(t, b.InternalDelete(newCtx, leaseStorageKey(oldLease)))
+	newMeta, err := jsonMarshalLeaseRecord(newLease, 300, nil)
+	require.NoError(t, err)
+	require.NoError(t, b.InternalPut(newCtx, leaseStorageKey(newLease), newMeta))
+	require.NoError(t, b.InternalPut(newCtx, leaseAttachKey(key), []byte(strconv.FormatInt(newLease, 10))))
+	require.NoError(t, server.ReloadLeases(ctx))
+	require.Equal(t, newLease, server.leaseIDForKey(key))
+
+	close(staleRead.release)
+	<-done
+	require.Equal(t, newLease, server.leaseIDForKey(key),
+		"an old-term uncertain reconciliation must not overwrite the reloaded lease snapshot")
 }
