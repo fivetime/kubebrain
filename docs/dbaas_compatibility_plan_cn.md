@@ -1372,11 +1372,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   淘汰关闭、删除期间追赶及连续前缀。full test、server/backend race 和 full vet
   通过。三副本 KubeBrain + 独立 TiKV/PD 上官方 client/v3 的 Kubernetes
   watch+lease、历史回放、过滤 progress、事件后 progress 抑制、from-now 创建窗口和
-  update/prevKV 六组连续 3 轮通过；完整通用 smoke 的 Watch 段通过，但其后既有
-  MinModRevision range 断言失败，未记为整套通过。exact image
+  update/prevKV 六组连续 3 轮通过；完整通用 smoke 也通过。exact image
   `e01d0161779236645fe0014f84e871f13c74c9d7b7a9109ead22ae7f3ec51c9f`；
   最终部署 3/3 Ready、zero restart，稳定期无 panic/fatal/control-send error，
   health 正常。
+- **Harness A85 revision-filter Count contract（2026-07-17）**：A84 真实环境首次
+  完整 smoke 在 `WithMinModRev` 断言处失败。对照 etcd
+  `server/etcdserver/txn/range.go:assembleRangeResponse` 与上游
+  `tests/common/kv_test.go` 后确认服务端无回归：etcd 的 `RangeResponse.Count`
+  是 revision filter 前 range 的总键数，filter 只裁剪 `Kvs`，因此 4 个键过滤为
+  1 个时应为 `Count=4,len(Kvs)=1`；`CountOnly+WithMaxModRev` 同样保留总数 4。
+  修正 smoke 中错误的 1/3 预期并写明契约。修正后完整官方 client/v3 smoke 在 A84
+  三副本 TiKV/PD 环境通过。
 
 ### P1：通用服务能力
 

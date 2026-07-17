@@ -427,13 +427,15 @@ func main() {
 	fmt.Printf("future revision range failed as expected: %v\n", err)
 	filterResp, err := cli.Get(ctx, rangePrefix, clientv3.WithPrefix(), clientv3.WithMinModRev(rangeFilterNew.Header.Revision))
 	must("range min mod revision filter", err)
-	if filterResp.Count != 1 || len(filterResp.Kvs) != 1 || string(filterResp.Kvs[0].Key) != rangePrefix+"filter-new" {
-		panic("expected min mod revision filter to return only newest key")
+	// Match etcd: Count is the total number of keys in the unfiltered range;
+	// revision filters prune Kvs but do not change Count.
+	if filterResp.Count != 4 || len(filterResp.Kvs) != 1 || string(filterResp.Kvs[0].Key) != rangePrefix+"filter-new" {
+		panic(fmt.Sprintf("expected min mod revision filter count=4 and only newest kv, got count=%d kvs=%d", filterResp.Count, len(filterResp.Kvs)))
 	}
 	countFilterResp, err := cli.Get(ctx, rangePrefix, clientv3.WithPrefix(), clientv3.WithMaxModRev(rangeFilterOld.Header.Revision), clientv3.WithCountOnly())
 	must("range max mod revision count filter", err)
-	if countFilterResp.Count != 3 || len(countFilterResp.Kvs) != 0 {
-		panic(fmt.Sprintf("expected max mod revision count filter count=3 kvs=0, got count=%d kvs=%d", countFilterResp.Count, len(countFilterResp.Kvs)))
+	if countFilterResp.Count != 4 || len(countFilterResp.Kvs) != 0 {
+		panic(fmt.Sprintf("expected max mod revision count filter count=4 kvs=0, got count=%d kvs=%d", countFilterResp.Count, len(countFilterResp.Kvs)))
 	}
 	fmt.Println("range mod revision filters ok")
 	keysOnlyResp, err := cli.Get(ctx, rangePrefix, clientv3.WithPrefix(), clientv3.WithKeysOnly())
