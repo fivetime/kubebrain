@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -165,8 +166,9 @@ func (c Config) Validate() error {
 // internal state. It records the renew time used to bound leadership freshness.
 type renewStampingLock struct {
 	resourcelock.Interface
-	onRenew  func()
-	onRecord func(resourcelock.LeaderElectionRecord)
+	onRenew    func()
+	onRecord   func(resourcelock.LeaderElectionRecord)
+	onMutation func()
 }
 
 func (r *renewStampingLock) Get(ctx context.Context) (*resourcelock.LeaderElectionRecord, []byte, error) {
@@ -181,6 +183,9 @@ func (r *renewStampingLock) Create(ctx context.Context, ler resourcelock.LeaderE
 	err := r.Interface.Create(ctx, ler)
 	if err == nil {
 		r.onRenew()
+		if r.onMutation != nil {
+			r.onMutation()
+		}
 		if r.onRecord != nil {
 			r.onRecord(ler)
 		}
@@ -192,6 +197,9 @@ func (r *renewStampingLock) Update(ctx context.Context, ler resourcelock.LeaderE
 	err := r.Interface.Update(ctx, ler)
 	if err == nil {
 		r.onRenew()
+		if r.onMutation != nil {
+			r.onMutation()
+		}
 		if r.onRecord != nil {
 			r.onRecord(ler)
 		}
@@ -220,9 +228,14 @@ func NewLeaderElection(backend b.Backend, metricCli metrics.Metrics, onStartedLe
 func (l *leaderElection) Campaign(ctx context.Context) {
 	for ctx.Err() == nil {
 		runCtx, cancel := context.WithCancel(ctx)
+		acquired := make(chan struct{})
+		started := make(chan struct{})
+		finished := make(chan struct{})
+		var acquireOnce sync.Once
 		elector, err := leaderelection.NewLeaderElector(leaderelection.LeaderElectionConfig{
 			Lock: &renewStampingLock{
 				Interface: l.resourceLock, onRenew: l.stampRenew, onRecord: l.observeLeadershipRecord,
+				onMutation: func() { acquireOnce.Do(func() { close(acquired) }) },
 			},
 			ReleaseOnCancel: true,
 			LeaseDuration:   l.leaseDuration,
@@ -230,6 +243,8 @@ func (l *leaderElection) Campaign(ctx context.Context) {
 			RetryPeriod:     l.retryPeriod,
 			Callbacks: leaderelection.LeaderCallbacks{
 				OnStartedLeading: func(leadingCtx context.Context) {
+					close(started)
+					defer close(finished)
 					klog.Info("start leading")
 					l.metricCli.EmitCounter("leader.election.success", 1)
 					leaderAddr, version, err := l.getLeaderAndVersion()
@@ -255,9 +270,21 @@ func (l *leaderElection) Campaign(ctx context.Context) {
 					l.metricCli.EmitCounter("leader.election.lost", 1, metrics.Tag("addr", leaderAddr))
 					if ctx.Err() != nil {
 						klog.Info("leader election stopped by context cancellation")
-						return
+					} else {
+						klog.Warning("leadership lost; retrying election in the same process")
 					}
-					klog.Warning("leadership lost; retrying election in the same process")
+					// client-go starts OnStartedLeading in a goroutine and does
+					// not join it. Drain this term before Campaign can construct
+					// the next elector, otherwise lease/event/count initialization
+					// from adjacent terms can overlap in one process.
+					select {
+					case <-acquired:
+						<-started
+						<-finished
+					default:
+						// Run also calls OnStoppedLeading when acquisition was
+						// canceled before success; no callback exists to drain.
+					}
 				},
 			},
 		})

@@ -1651,6 +1651,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   zero restart。故障后 `TestPhysicalCompactionUnderTraffic` 通过，endpoint health
   约 32ms，证明无 pin 泄漏或 compactor 停滞。containerd 运行时 exact image
   `9e574c54fc907bfdc7c951e2356c886d4bde636b2f2a66911f3d9e35e11d0df2`。
+- **Runtime A100 leadership term callback drain（2026-07-17）**：继续审计
+  A99 的同进程重新 campaign，并对照 client-go `leaderelection.LeaderElector.Run`
+  发现：`OnStartedLeading` 在独立 goroutine 中执行，`Run` 丢失 leadership 后只
+  cancel 其 context，不等待 callback 退出。A99 外层循环因此可能在旧 term 的
+  `ReloadLeases`、event-log watermark、count index 或 physical compaction 初始化
+  尚未收尾时启动新 term，形成同进程跨 term 并发。现每轮 election 通过成功的
+  resource-lock Create/Update 标记已获取 leadership；`OnStoppedLeading` 仍立即撤销
+  serving、lease 与写 epoch，随后等待该轮 started callback 完整退出，才允许构造
+  下一轮 elector。若 acquisition 在成功前被取消，则不等待不存在的 callback。
+  确定性测试让首轮 callback 收到 cancel 后继续执行 250ms 清理，并连续 10 轮验证
+  重获 leadership 且 callback 最大并发恒为 1；full test、leader race 与 full vet
+  全通过。
+
+  最终镜像在三副本 KubeBrain + 独立单 TiKV/单 PD 上删除 `kb-pd-0`，捕获 2 个
+  ambiguous 多键 Txn，Porcupine 完整历史通过；原 leader 记录 leadership lost 后
+  约 1 秒在同一进程重新当选，三个 Pod 均 Ready、zero restart。故障后
+  `TestPhysicalCompactionUnderTraffic` 与 endpoint health 通过，health proposal
+  约 29ms。containerd 运行时 exact image
+  `7a446d7d10bef67974164ede87a5573ff0ea9ff065f1bc189faa752daedc87f7`。
 
 ### P1：通用服务能力
 

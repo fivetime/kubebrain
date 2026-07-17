@@ -162,13 +162,23 @@ func TestCampaignReacquiresLeadershipAfterStorageOutage(t *testing.T) {
 
 	var starts atomic.Int32
 	var stops atomic.Int32
+	var activeCallbacks atomic.Int32
+	var maxActiveCallbacks atomic.Int32
 	var restoreOnce sync.Once
 	firstStarted := make(chan struct{})
 	election := &leaderElection{
 		backend:      revisions,
 		resourceLock: lock,
 		metricCli:    m,
-		onStartedLeading: func(context.Context) {
+		onStartedLeading: func(leadingCtx context.Context) {
+			active := activeCallbacks.Add(1)
+			defer activeCallbacks.Add(-1)
+			for {
+				maxActive := maxActiveCallbacks.Load()
+				if active <= maxActive || maxActiveCallbacks.CompareAndSwap(maxActive, active) {
+					break
+				}
+			}
 			if starts.Add(1) == 1 {
 				close(firstStarted)
 				lock.failUpdates.Store(true)
@@ -178,6 +188,10 @@ func TestCampaignReacquiresLeadershipAfterStorageOutage(t *testing.T) {
 						lock.failUpdates.Store(false)
 					}()
 				})
+				<-leadingCtx.Done()
+				// Model term cleanup that honors cancellation but still needs
+				// bounded time to unwind storage/lease state.
+				time.Sleep(250 * time.Millisecond)
 			}
 		},
 		onStoppedLeading: func() { stops.Add(1) },
@@ -204,6 +218,8 @@ func TestCampaignReacquiresLeadershipAfterStorageOutage(t *testing.T) {
 		return starts.Load() >= 2 && stops.Load() >= 1 && election.IsLeader()
 	}, 4*time.Second, 20*time.Millisecond,
 		"campaign must remain alive and reacquire leadership after storage recovers")
+	require.Equal(t, int32(1), maxActiveCallbacks.Load(),
+		"adjacent leadership callbacks must never overlap")
 	cancel()
 	select {
 	case <-done:
