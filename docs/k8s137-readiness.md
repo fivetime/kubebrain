@@ -68,6 +68,8 @@ SVM 仅在**显式创建 SVM CR** 时触发,但 KCM 给它的 client 特批 QPS�
 
 所有需要 follower revision fence 的 RPC（Range/RangeStream、Watch 控制请求、Status/Hash、MemberList，以及相关写路径）都会执行 read barrier。leader 切换或 revision 同步失败时，普通内部错误会整形为 gRPC `Unavailable`，使 clientv3 按可重试故障处理；已有 gRPC 状态以及 `Canceled`/`DeadlineExceeded` 保持不变。
 
+RangeStream 的 identity metadata 位于 `RangeStreamResponse.range_response.header`。KubeBrain 与 etcd 一样只在 terminal chunk 返回该 header，并填充非零 ClusterId、MemberId、RaftTerm 与 pinned revision；中间数据块不携带 header。
+
 ### 其他
 
 - `etcd_db_total_size_in_bytes`(DbSize)为 1 字节兼容哨兵(TiKV 容量语义不同)。容量观测走 TiKV/PD 指标带外抓取;依赖 DbSize 的告警需改造。

@@ -138,19 +138,24 @@ func (s *RPCServer) localMemberID() uint64 {
 }
 
 func stampHeader(reply any, clusterID, memberID, raftTerm uint64) {
-	r, ok := reply.(interface {
+	var header *etcdserverpb.ResponseHeader
+	switch response := reply.(type) {
+	case *etcdserverpb.RangeStreamResponse:
+		if response.GetRangeResponse() != nil {
+			header = response.GetRangeResponse().GetHeader()
+		}
+	case interface {
 		GetHeader() *etcdserverpb.ResponseHeader
-	})
-	if !ok {
-		return
+	}:
+		header = response.GetHeader()
 	}
 	// Most etcd responses construct a non-nil Header. Defragment intentionally
 	// returns an empty response with nil Header, matching the reference server;
 	// do not synthesize metadata for response types that omit it.
-	if h := r.GetHeader(); h != nil {
-		h.ClusterId = clusterID
-		h.MemberId = memberID
-		h.RaftTerm = raftTerm
+	if header != nil {
+		header.ClusterId = clusterID
+		header.MemberId = memberID
+		header.RaftTerm = raftTerm
 	}
 }
 

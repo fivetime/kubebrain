@@ -1794,6 +1794,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `raft_term` 均稳定为 231。最终三个 Pod Ready、zero restart，无
   error/Panic/Fatal，运行时 exact image
   `b5ba98f3a3a51660043d1e5aa36ae5a4a04d75e771661986eb08b53db940d13a`。
+- **RangeStream A107 nested response identity header（2026-07-17）**：对照
+  `/root/etcd/server/etcdserver/api/v3rpc/key.go:headerFillingRangeStream` 发现，
+  `RangeStreamResponse` 不在顶层暴露 `GetHeader()`，真实 header 位于
+  `range_response.header`。KubeBrain 的统一 stream interceptor 只识别直接 header，
+  因此 A102/A103 虽正确返回 pinned revision、Count 与 More，却把 ClusterId、
+  MemberId、RaftTerm 留为零；这会破坏依赖 cluster identity 的 client interceptor，
+  且与其他 etcd RPC 不一致。
+
+  `stampHeader` 现显式识别 RangeStream 嵌套响应，不为 nil payload/header 合成结构；
+  其余直接-header RPC 与 Defragment 的 nil-header 契约不变。helper 回归固定嵌套
+  三字段，bufconn 真实 gRPC 回归固定至少 data+terminal 两块、仅 terminal 一块带
+  header，且 revision/cluster/member/term 全非零。focused 普通 50 轮、focused
+  race 10 轮、`go test ./...`、`go vet ./...` 与完整 server race（235.085s）
+  通过。A107 三副本 + 独立 TiKV/PD 上使用 `/root/etcd/bin/etcdctl get --stream
+  -w json` 与临时 reference etcd 差分：两端均返回完整非零四字段、4 KVs、Count=4。
+  最终三个 Pod Ready、zero restart，无 error/Panic/Fatal，运行时 exact image
+  `517e5a8f66891a5da531ab15b6fb67ebf7e8c64f1a731d72b44ccc6034656fa8`。
 
 ### P1：通用服务能力
 

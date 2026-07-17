@@ -17,6 +17,7 @@ package etcd
 import (
 	"context"
 	"errors"
+	"io"
 	"net"
 	"testing"
 
@@ -68,6 +69,73 @@ func TestResponseHeadersIncludeSharedRaftTerm(t *testing.T) {
 	require.Equal(t, uint64(2), watch.Header.ClusterId)
 	require.Equal(t, uint64(3), watch.Header.MemberId)
 	require.Equal(t, uint64(4), watch.Header.RaftTerm)
+}
+
+func TestRangeStreamNestedResponseHeaderIsStamped(t *testing.T) {
+	response := &etcdserverpb.RangeStreamResponse{
+		RangeResponse: &etcdserverpb.RangeResponse{
+			Header: &etcdserverpb.ResponseHeader{Revision: 11},
+		},
+	}
+	stampHeader(response, 2, 3, 4)
+	require.Equal(t, int64(11), response.RangeResponse.Header.Revision)
+	require.Equal(t, uint64(2), response.RangeResponse.Header.ClusterId)
+	require.Equal(t, uint64(3), response.RangeResponse.Header.MemberId)
+	require.Equal(t, uint64(4), response.RangeResponse.Header.RaftTerm)
+
+	empty := &etcdserverpb.RangeStreamResponse{}
+	stampHeader(empty, 2, 3, 4)
+	require.Nil(t, empty.RangeResponse, "header stamping must not synthesize protocol payloads")
+}
+
+func TestRangeStreamNestedResponseHeaderIsStampedOverGRPC(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///range-stream-header",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return listener.Dial() }))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+
+	client := etcdserverpb.NewKVClient(conn)
+	_, err = client.Put(context.Background(), &etcdserverpb.PutRequest{
+		Key: []byte("/headers/key"), Value: []byte("value"),
+	})
+	require.NoError(t, err)
+	stream, err := client.RangeStream(context.Background(), &etcdserverpb.RangeRequest{
+		Key: []byte("/headers/"), RangeEnd: []byte("/headers0"),
+	})
+	require.NoError(t, err)
+
+	var terminal *etcdserverpb.RangeResponse
+	var chunks, headers int
+	for {
+		response, recvErr := stream.Recv()
+		if errors.Is(recvErr, io.EOF) {
+			break
+		}
+		require.NoError(t, recvErr)
+		chunks++
+		require.NotNil(t, response.RangeResponse)
+		if response.RangeResponse.Header != nil {
+			headers++
+			terminal = response.RangeResponse
+		}
+	}
+	require.GreaterOrEqual(t, chunks, 2, "data and terminal metadata must be separate chunks")
+	require.Equal(t, 1, headers, "only the terminal chunk may carry response metadata")
+	require.NotNil(t, terminal)
+	require.Positive(t, terminal.Header.Revision)
+	require.NotZero(t, terminal.Header.ClusterId)
+	require.NotZero(t, terminal.Header.MemberId)
+	require.NotZero(t, terminal.Header.RaftTerm)
 }
 
 func TestResponseRaftTermUsesCacheAndClassifiesInitialReadFailure(t *testing.T) {
