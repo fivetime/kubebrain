@@ -1154,6 +1154,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   list membership，并删除 metrics 确认的真实 active leader；exact image
   `8cfd0200222d` 连续 5 轮 failover、共 85.244s 未返回任何 stale-shaped success。
   相邻 lease lifecycle 回归通过，最终部署 3/3 ready、zero restart，cleanup 后 list=0。
+- **Lease A72 authorized read snapshot（2026-07-17）**：对照 etcd
+  `server/etcdserver/v3_server.go:checkLeaseTimeToLive`、`leaseTimeToLive` 与
+  `checkLeaseLeases` 的 key 级 READ 检查和 auth revision fence，审计发现 KubeBrain
+  原先先从一个 `leaseMu` snapshot 收集 key 并鉴权，释放 lock 后再从后一个 snapshot
+  构造 `TTL(Keys=true)`/`Leases` response。并发 leased Put 可在两者之间附着受保护
+  key，使成功 TTL response 返回从未鉴权的 key；List 的授权 gate 与枚举也不属于同一
+  linearization point。现最终 leadership check、完整 key 鉴权、auth revision fence 和
+  response 构造全部在同一次 `leaseMu` acquisition 内完成；新 attachment 要么参与本次
+  权限检查，要么在线性化上发生于成功 response 之后。确定性 backend shim 在 revision
+  fence 暂停 read，并让受保护 leased Put 的 TiKV transaction 先 durable commit、再等待
+  内存 index publish；pre-fix `37dee63` 的 TTL/List 两个子测试均稳定失败，修复后连续
+  100 轮通过，race 连续 20 轮通过，full/race/vet 全部通过。exact image
+  `0332f016168c` 在三副本 TiKV/PD 上执行 5 轮临时 auth-enable 黑盒 race（16 个
+  client/v3 TTL reader 持续对抗 root attach/detach）共 48.964s 无 protected-key
+  disclosure；追加 verbose 轮验证 6,052 个成功 TTL snapshot 和 70 个受保护绑定周期。
+  相邻 lease 回归连续 3 轮通过；最终 auth disabled、临时 principal 清理、lease list=0，
+  部署 3/3 ready、zero restart。
 
 ### P1：通用服务能力
 

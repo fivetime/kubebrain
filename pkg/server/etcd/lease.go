@@ -295,15 +295,6 @@ func (m *leaseManager) LeaseTimeToLive(ctx context.Context, req *etcdserverpb.Le
 		}
 		return nil, err
 	}
-	// Match etcd's checkLeaseTimeToLive: lease metadata is visible to an
-	// authenticated caller, but asking for attached keys requires READ permission
-	// on every key. Otherwise TTL(Keys=true) leaks protected key names.
-	if req.Keys {
-		if err := m.authorizeLeaseKeys(ctx, caller, m.keysForLease(req.ID), authpb.READ); err != nil {
-			return nil, err
-		}
-	}
-
 	m.leaseMu.Lock()
 	// Mirror etcd leaseTimeToLive's post-lookup Demoted check. Leadership may
 	// change after the initial routing decision while this RPC waits for the
@@ -318,6 +309,22 @@ func (m *leaseManager) LeaseTimeToLive(ctx context.Context, req *etcdserverpb.Le
 			return m.srv.peers.LeaseTimeToLive(proxyCtx, req)
 		}
 		return nil, err
+	}
+	// Authorize and build the response from the same lease snapshot. Otherwise a
+	// concurrent Put can attach a protected key after the permission check but
+	// before leaseKeys below, disclosing that key through TTL(Keys=true).
+	if req.Keys {
+		keys := make([]string, 0)
+		if st := m.leases[req.ID]; st != nil {
+			keys = make([]string, 0, len(st.keys))
+			for key := range st.keys {
+				keys = append(keys, key)
+			}
+		}
+		if err := m.authorizeLeaseKeys(ctx, caller, keys, authpb.READ); err != nil {
+			m.leaseMu.Unlock()
+			return nil, err
+		}
 	}
 	st, ok := m.leases[req.ID]
 	if !ok {
@@ -361,19 +368,6 @@ func (m *leaseManager) LeaseLeases(ctx context.Context, req *etcdserverpb.LeaseL
 		}
 		return nil, err
 	}
-	// etcd authorizes LeaseLeases against every key attached to every returned
-	// lease. Do the full preflight before constructing the response so callers
-	// cannot infer inaccessible lease IDs or key ownership.
-	m.leaseMu.Lock()
-	keys := make([]string, 0, len(m.keyLeaseIndex))
-	for key := range m.keyLeaseIndex {
-		keys = append(keys, key)
-	}
-	m.leaseMu.Unlock()
-	if err := m.authorizeLeaseKeys(ctx, caller, keys, authpb.READ); err != nil {
-		return nil, err
-	}
-
 	m.leaseMu.Lock()
 	if err := m.requireLeaseLeader("lease leases"); err != nil {
 		m.leaseMu.Unlock()
@@ -384,6 +378,17 @@ func (m *leaseManager) LeaseLeases(ctx context.Context, req *etcdserverpb.LeaseL
 			}
 			return m.srv.peers.LeaseLeases(proxyCtx, req)
 		}
+		return nil, err
+	}
+	// Keep authorization and enumeration on one snapshot. A newly attached
+	// protected key must either be included in this check or linearize after the
+	// successful list response.
+	keys := make([]string, 0, len(m.keyLeaseIndex))
+	for key := range m.keyLeaseIndex {
+		keys = append(keys, key)
+	}
+	if err := m.authorizeLeaseKeys(ctx, caller, keys, authpb.READ); err != nil {
+		m.leaseMu.Unlock()
 		return nil, err
 	}
 	leases := make([]*leaseState, 0, len(m.leases))
