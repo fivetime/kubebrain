@@ -1077,6 +1077,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   truncation 错当 expiry。focused 连续 100 轮、focused race 连续 100 轮及 full/race/vet
   通过；三副本 TiKV/PD exact image `b565fb3b9bbe` 为 3/3 ready、zero restart，renew-boundary、
   atomic revoke、signed-ID lifecycle 与 TTL boundary 联合场景连续 20 轮通过。
+- **Lease A67 expired keepalive waits for revoke（2026-07-17）**：继续对照 etcd
+  `server/lease/lessor.go:Lessor.Renew` 与 `lessor_test.go` 的 expired-renew test：deadline
+  已过后 renewal 必须等待 lease `revokec`，只有 attached key 与 lease metadata 的 revoke
+  完成后才返回 not-found。A66 虽已禁止复活，却立即返回 TTL=0；在 timer callback/存储提交
+  尚未完成的窗口内，客户端会收到 `ErrLeaseNotFound` 后仍读到 attached key。现每个
+  `leaseState` 持有 lifecycle `revoked` channel，grant/recovery 初始化，atomic revoke 成功并
+  从内存移除时关闭；expired keepalive 释放 shared operation lock 后等待该 signal 或 stream
+  cancellation。只有 NotFound 映射为 TTL=0，context/storage/leadership 等其他错误不再被误吞
+  为成功 response。确定性测试确认 response 在 revoke 前阻塞、成功 response 前 key 已删除，
+  atomic revoke 注入失败期间继续阻塞并在 retry 后完成，以及 client cancellation 可解除等待
+  且不发送 TTL=0。官方 client/v3 黑盒测试同时创建 64 个 2s lease/key，在 deadline 边界并发
+  KeepAliveOnce 后立即 Range：positive renewal 必须仍见原 lease key，NotFound 必须已经无 key。
+  A66 image 该 burst 连续 10 轮全部复现“not-found before key deletion”；focused 连续 100 轮、
+  focused race 连续 50 轮及 full/race/vet 通过。三副本 TiKV/PD exact image
+  `ba157b8b9727` 为 3/3 ready、zero restart，burst ordering、final-subsecond renewal 与
+  atomic revoke 联合场景连续 20 轮通过。
 
 ### P1：通用服务能力
 

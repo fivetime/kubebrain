@@ -146,6 +146,7 @@ func (m *leaseManager) LeaseGrant(ctx context.Context, req *etcdserverpb.LeaseGr
 		ttl:      ttl,
 		deadline: time.Now().Add(time.Duration(ttl) * time.Second),
 		keys:     make(map[string]struct{}),
+		revoked:  make(chan struct{}),
 	}
 	m.leaseMu.Lock()
 	pendingGeneration, stillPending := m.pendingLeases[id]
@@ -250,9 +251,11 @@ func (m *leaseManager) LeaseKeepAlive(stream etcdserverpb.Lease_LeaseKeepAliveSe
 			continue
 		}
 
-		ttl, err := m.refreshLease(req.ID)
-		if err != nil {
+		ttl, err := m.refreshLease(stream.Context(), req.ID)
+		if status.Code(err) == codes.NotFound {
 			ttl = 0
+		} else if err != nil {
+			return mapFenceErr(err)
 		}
 		if err := stream.Send(&etcdserverpb.LeaseKeepAliveResponse{
 			Header: txnHeader(int64(responseRevision)),
@@ -568,30 +571,39 @@ func (m *leaseManager) leaseIDForKey(key string) int64 {
 	return m.keyLeaseIndex[key]
 }
 
-func (m *leaseManager) refreshLease(id int64) (int64, error) {
+func (m *leaseManager) refreshLease(ctx context.Context, id int64) (int64, error) {
 	// Serialize against revoke/expiry. In particular, an expiry callback that
 	// already won the exclusive lock must finish before this renewal, while a
 	// successful renewal prevents expiry from observing the old deadline.
 	m.leaseWriteMu.RLock()
-	defer m.leaseWriteMu.RUnlock()
-
 	m.leaseMu.Lock()
 	st, ok := m.leases[id]
 	if !ok {
 		m.leaseMu.Unlock()
+		m.leaseWriteMu.RUnlock()
 		return 0, leaseNotFound(id)
 	}
 	now := time.Now()
 	// Match etcd lessor.Renew: a lease whose deadline has passed cannot be
 	// resurrected merely because its asynchronous revoke callback was delayed.
+	// Wait for atomic key+metadata revocation before reporting not-found, so the
+	// response cannot race attached keys that are still readable.
 	if !st.deadline.After(now) {
+		revoked := st.revoked
 		m.leaseMu.Unlock()
-		return 0, leaseNotFound(id)
+		m.leaseWriteMu.RUnlock()
+		select {
+		case <-revoked:
+			return 0, leaseNotFound(id)
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		}
 	}
 	st.deadline = now.Add(time.Duration(st.ttl) * time.Second)
 	m.scheduleLeaseLocked(st)
 	ttl := st.ttl
 	m.leaseMu.Unlock()
+	m.leaseWriteMu.RUnlock()
 	// Mirror etcd lessor.Renew -> l.refresh(0): a keepalive only bumps the
 	// in-memory deadline and reschedules the expiry timer. It must NOT persist,
 	// otherwise every keepalive tick mints a fresh MVCC version, a watch event,
@@ -805,6 +817,7 @@ func (m *leaseManager) forgetLease(id int64) {
 		delete(m.keyLeaseIndex, key)
 	}
 	delete(m.leases, id)
+	close(st.revoked)
 	atomic.StoreInt64(&m.leasedKeyCount, int64(len(m.keyLeaseIndex)))
 	m.leaseMu.Unlock()
 }
@@ -1093,6 +1106,7 @@ func (m *leaseManager) applyLeaseRecords(records []leaseRecord, attachments map[
 			// recovery.
 			deadline: now.Add(time.Duration(record.TTL) * time.Second),
 			keys:     make(map[string]struct{}, len(record.Keys)),
+			revoked:  make(chan struct{}),
 		}
 		// Legacy (pre-#17) monolithic key list, if present. New records carry none.
 		for _, key := range record.Keys {

@@ -320,6 +320,9 @@ func TestLeaseKeepAliveCannotResurrectExpiredLease(t *testing.T) {
 	const leaseID int64 = 10000
 	_, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 30, ID: leaseID})
 	require.NoError(t, err)
+	key := []byte("/registry/leases/expired-keepalive")
+	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("value"), Lease: leaseID})
+	require.NoError(t, err)
 
 	server.leaseMu.Lock()
 	st := server.leases[leaseID]
@@ -331,17 +334,95 @@ func TestLeaseKeepAliveCannotResurrectExpiredLease(t *testing.T) {
 	stream := &fakeLeaseKeepAliveServer{
 		requests: []*etcdserverpb.LeaseKeepAliveRequest{{ID: leaseID}},
 	}
-	require.NoError(t, server.LeaseKeepAlive(stream))
-	require.Len(t, stream.sent, 1)
-	require.Zero(t, stream.sent[0].TTL, "expired lease must not be renewed before delayed revoke runs")
-
-	server.leaseMu.Lock()
-	require.False(t, server.leases[leaseID].deadline.After(time.Now()))
-	server.leaseMu.Unlock()
+	done := make(chan error, 1)
+	go func() { done <- server.LeaseKeepAlive(stream) }()
+	select {
+	case err := <-done:
+		t.Fatalf("expired keepalive returned before revoke completed: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
 	server.expireLease(leaseID)
+	require.NoError(t, <-done)
+	require.Len(t, stream.sent, 1)
+	require.Zero(t, stream.sent[0].TTL)
 	ttl, err := server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: leaseID})
 	require.NoError(t, err)
 	require.Equal(t, int64(-1), ttl.TTL)
+	got, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: key})
+	require.NoError(t, err)
+	require.Empty(t, got.Kvs)
+}
+
+func TestExpiredLeaseKeepAliveWaitsAcrossFailedRevoke(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	const leaseID int64 = 10003
+	key := []byte("/registry/leases/expired-keepalive-retry")
+	_, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 30, ID: leaseID})
+	require.NoError(t, err)
+	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("value"), Lease: leaseID})
+	require.NoError(t, err)
+
+	server.leaseMu.Lock()
+	server.leases[leaseID].timer.Stop()
+	server.leases[leaseID].deadline = time.Now().Add(-time.Second)
+	server.leaseMu.Unlock()
+
+	base := server.backend
+	server.backend = &failAtomicLeaseRevokeBackend{BackendShim: base, leaseID: leaseID}
+	stream := &fakeLeaseKeepAliveServer{
+		requests: []*etcdserverpb.LeaseKeepAliveRequest{{ID: leaseID}},
+	}
+	done := make(chan error, 1)
+	go func() { done <- server.LeaseKeepAlive(stream) }()
+	server.expireLease(leaseID)
+	select {
+	case err := <-done:
+		t.Fatalf("keepalive returned while failed revoke left keys readable: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	got, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: key})
+	require.NoError(t, err)
+	require.Len(t, got.Kvs, 1)
+
+	server.backend = base
+	server.expireLease(leaseID)
+	require.NoError(t, <-done)
+	require.Len(t, stream.sent, 1)
+	require.Zero(t, stream.sent[0].TTL)
+	got, err = server.Range(ctx, &etcdserverpb.RangeRequest{Key: key})
+	require.NoError(t, err)
+	require.Empty(t, got.Kvs)
+}
+
+func TestExpiredLeaseKeepAliveWaitHonorsStreamCancellation(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	const leaseID int64 = 10004
+	_, err := server.LeaseGrant(context.Background(), &etcdserverpb.LeaseGrantRequest{TTL: 30, ID: leaseID})
+	require.NoError(t, err)
+
+	server.leaseMu.Lock()
+	server.leases[leaseID].timer.Stop()
+	server.leases[leaseID].deadline = time.Now().Add(-time.Second)
+	server.leaseMu.Unlock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	stream := &fakeLeaseKeepAliveServer{
+		ctx:      ctx,
+		requests: []*etcdserverpb.LeaseKeepAliveRequest{{ID: leaseID}},
+	}
+	done := make(chan error, 1)
+	go func() { done <- server.LeaseKeepAlive(stream) }()
+	select {
+	case err := <-done:
+		t.Fatalf("expired keepalive returned before revoke or cancellation: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	cancel()
+	require.ErrorIs(t, <-done, context.Canceled)
+	require.Empty(t, stream.sent)
 }
 
 func TestStaleExpiryCallbackDoesNotRevokeRenewedLease(t *testing.T) {

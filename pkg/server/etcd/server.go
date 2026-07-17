@@ -103,6 +103,7 @@ type leaseState struct {
 	deadline time.Time
 	keys     map[string]struct{}
 	timer    *time.Timer
+	revoked  chan struct{}
 }
 
 // New returns the etcd rpc server
