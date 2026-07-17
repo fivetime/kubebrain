@@ -2,8 +2,10 @@ package compat
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"sort"
+	"sync"
 	"testing"
 	"time"
 
@@ -144,6 +146,51 @@ func TestMaintenanceHashKVSemantics(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, hash1.Hash, historical.Hash)
 	require.Equal(t, rev1, historical.HashRevision)
+}
+
+func TestMaintenanceHashKVHeaderStaysAtHashedSnapshotUnderWrites(t *testing.T) {
+	endpoint := compatEndpoint()
+	cli, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{endpoint},
+		DialTimeout: 3 * time.Second,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, cli.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	prefix := testPrefix(t) + "/hash-snapshot/"
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cleanupCancel()
+		_, _ = cli.Delete(cleanupCtx, prefix, clientv3.WithPrefix())
+	})
+
+	var wg sync.WaitGroup
+	writerErr := make(chan error, 1)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 25; i++ {
+			if _, putErr := cli.Put(ctx, prefix+"key", fmt.Sprintf("value-%d", i)); putErr != nil {
+				writerErr <- putErr
+				return
+			}
+		}
+	}()
+
+	for i := 0; i < 25; i++ {
+		resp, hashErr := cli.HashKV(ctx, endpoint, 0)
+		require.NoError(t, hashErr)
+		require.Equal(t, resp.HashRevision, resp.Header.Revision,
+			"HashKV(0) header must identify the exact snapshot that was hashed")
+	}
+	wg.Wait()
+	select {
+	case err := <-writerErr:
+		require.NoError(t, err)
+	default:
+	}
 }
 
 func TestMaintenanceHashKVMatchesAcrossMembers(t *testing.T) {

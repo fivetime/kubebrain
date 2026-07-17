@@ -104,8 +104,9 @@ type BackendShim interface {
 	// Count counts the number of kvs in range
 	Count(ctx context.Context, r *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error)
 
-	// HashKV checksums retained user MVCC state at revision.
-	HashKV(ctx context.Context, revision int64) (uint32, int64, error)
+	// HashKV checksums retained user MVCC state and returns both the hashed
+	// revision and the current revision captured by the same fenced snapshot.
+	HashKV(ctx context.Context, revision int64) (uint32, int64, int64, error)
 
 	// RangeStreamChan streams a user-key range read as disjoint RangeResponse
 	// chunks at a single pinned revision, for the native KV.RangeStream RPC
@@ -203,7 +204,7 @@ func (b *backendShim) GetDurableRevision(ctx context.Context) (uint64, error) {
 	return b.backend.GetDurableRevision(ctx)
 }
 
-func (b *backendShim) HashKV(ctx context.Context, revision int64) (uint32, int64, error) {
+func (b *backendShim) HashKV(ctx context.Context, revision int64) (uint32, int64, int64, error) {
 	return b.backend.HashKV(ctx, revision)
 }
 

@@ -136,12 +136,12 @@ func (s *RPCServer) Hash(ctx context.Context, _ *etcdserverpb.HashRequest) (*etc
 	if err := s.peers.SyncReadRevision(ctx); err != nil {
 		return nil, readBarrierStatusErr(err)
 	}
-	hash, _, err := s.backend.HashKV(ctx, 0)
+	hash, _, currentRevision, err := s.backend.HashKV(ctx, 0)
 	if err != nil {
 		return nil, err
 	}
 	return &etcdserverpb.HashResponse{
-		Header: s.maintenanceHeader(),
+		Header: txnHeader(currentRevision),
 		Hash:   hash,
 	}, nil
 }
@@ -163,7 +163,7 @@ func (s *RPCServer) HashKV(ctx context.Context, req *etcdserverpb.HashKVRequest)
 			return nil, err
 		}
 	}
-	hash, hashRevision, err := s.backend.HashKV(ctx, revision)
+	hash, hashRevision, currentRevision, err := s.backend.HashKV(ctx, revision)
 	if err != nil {
 		return nil, err
 	}
@@ -180,7 +180,7 @@ func (s *RPCServer) HashKV(ctx context.Context, req *etcdserverpb.HashKVRequest)
 		responseCompactRevision = -1
 	}
 	return &etcdserverpb.HashKVResponse{
-		Header:          s.maintenanceHeader(),
+		Header:          txnHeader(currentRevision),
 		Hash:            hash,
 		CompactRevision: responseCompactRevision,
 		HashRevision:    hashRevision,

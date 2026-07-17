@@ -23,6 +23,26 @@ import (
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 )
 
+type writeAfterHashBackendShim struct {
+	BackendShim
+	t               *testing.T
+	currentRevision int64
+}
+
+func (b *writeAfterHashBackendShim) HashKV(ctx context.Context, revision int64) (uint32, int64, int64, error) {
+	hash, hashRevision, currentRevision, err := b.BackendShim.HashKV(ctx, revision)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	b.currentRevision = currentRevision
+	_, err = b.BackendShim.Put(ctx, &etcdserverpb.PutRequest{
+		Key:   []byte("/registry/maintenance/write-after-hash"),
+		Value: []byte(fmt.Sprintf("after-%d", hashRevision)),
+	})
+	require.NoError(b.t, err)
+	return hash, hashRevision, currentRevision, nil
+}
+
 // TestStatusVersionEnablesRequestWatchProgress guards the exact gate the
 // kube-apiserver applies: Maintenance.Status.Version must be semver-parseable
 // and satisfy >= 3.5.13 (or [3.4.31, 3.5.0)) or RequestWatchProgress —
@@ -108,6 +128,54 @@ func TestMaintenanceBasicDiagnostics(t *testing.T) {
 	defragResp, err := server.Defragment(ctx, &etcdserverpb.DefragmentRequest{})
 	require.NoError(t, err)
 	require.Nil(t, defragResp.Header)
+}
+
+func TestMaintenanceHashHeadersStayPinnedToHashedRevision(t *testing.T) {
+	tests := []struct {
+		name string
+		call func(context.Context, *RPCServer) (*etcdserverpb.ResponseHeader, error)
+	}{
+		{
+			name: "Hash",
+			call: func(ctx context.Context, server *RPCServer) (*etcdserverpb.ResponseHeader, error) {
+				resp, err := server.Hash(ctx, &etcdserverpb.HashRequest{})
+				if err != nil {
+					return nil, err
+				}
+				return resp.Header, nil
+			},
+		},
+		{
+			name: "HashKV",
+			call: func(ctx context.Context, server *RPCServer) (*etcdserverpb.ResponseHeader, error) {
+				resp, err := server.HashKV(ctx, &etcdserverpb.HashKVRequest{})
+				if err != nil {
+					return nil, err
+				}
+				require.Equal(t, resp.HashRevision, resp.Header.Revision)
+				return resp.Header, nil
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server, closeFn := newTestRPCServer(t)
+			defer closeFn()
+			ctx := context.Background()
+			_, err := server.Put(ctx, &etcdserverpb.PutRequest{
+				Key: []byte("/registry/maintenance/before-hash"), Value: []byte("before"),
+			})
+			require.NoError(t, err)
+
+			backend := &writeAfterHashBackendShim{BackendShim: server.backend, t: t}
+			server.backend = backend
+			header, err := tt.call(ctx, server)
+			require.NoError(t, err)
+			require.Equal(t, backend.currentRevision, header.Revision)
+			require.Greater(t, int64(server.backend.GetCurrentRevision()), header.Revision,
+				"the injected post-hash write must advance current revision")
+		})
+	}
 }
 
 func TestStatusReportsNoLeaderInsteadOfClaimingSelf(t *testing.T) {

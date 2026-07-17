@@ -146,8 +146,9 @@ type Backend interface {
 	Count(ctx context.Context, r *proto.CountRequest) (*proto.CountResponse, error)
 
 	// HashKV returns a deterministic checksum of the retained object MVCC
-	// versions at or below revision. A zero revision selects the current one.
-	HashKV(ctx context.Context, revision int64) (hash uint32, hashedRevision int64, err error)
+	// versions at or below revision. A zero revision selects the current one;
+	// currentRevision is captured from the same write-fenced snapshot.
+	HashKV(ctx context.Context, revision int64) (hash uint32, hashedRevision, currentRevision int64, err error)
 
 	// CountAtRevision returns the exact live-key count of [key,end) at rev from
 	// the in-memory count index; served is false when it must fall back to a scan.

@@ -20,9 +20,10 @@ func TestHashKVTracksDataAndPreservesHistoricalRevision(t *testing.T) {
 	rev1 := created.Header.Revision
 	waitCommitted(t, b, rev1)
 
-	hash1, hashedRev, err := b.HashKV(ctx, int64(rev1))
+	hash1, hashedRev, currentRev, err := b.HashKV(ctx, int64(rev1))
 	require.NoError(t, err)
 	require.Equal(t, int64(rev1), hashedRev)
+	require.Equal(t, int64(rev1), currentRev)
 
 	updated, err := b.Update(ctx, &proto.UpdateRequest{Kv: &proto.KeyValue{
 		Key: key, Value: []byte("v2"), Revision: rev1,
@@ -32,18 +33,21 @@ func TestHashKVTracksDataAndPreservesHistoricalRevision(t *testing.T) {
 	rev2 := updated.Header.Revision
 	waitCommitted(t, b, rev2)
 
-	hash2, hashedRev, err := b.HashKV(ctx, 0)
+	hash2, hashedRev, currentRev, err := b.HashKV(ctx, 0)
 	require.NoError(t, err)
 	require.Equal(t, int64(rev2), hashedRev)
+	require.Equal(t, int64(rev2), currentRev)
 	require.NotEqual(t, hash1, hash2, "a retained MVCC version must change the hash")
 
-	historical, _, err := b.HashKV(ctx, int64(rev1))
+	historical, _, currentRev, err := b.HashKV(ctx, int64(rev1))
 	require.NoError(t, err)
 	require.Equal(t, hash1, historical, "later writes must not alter an earlier revision hash")
+	require.Equal(t, int64(rev2), currentRev)
 
-	negative, hashedRev, err := b.HashKV(ctx, -1)
+	negative, hashedRev, currentRev, err := b.HashKV(ctx, -1)
 	require.NoError(t, err)
 	require.Equal(t, int64(-1), hashedRev)
+	require.Equal(t, int64(rev2), currentRev)
 	require.Equal(t, crc32.Checksum([]byte("key"), hashKVTable), negative)
 	require.NotEqual(t, hash2, negative, "negative revision must not select current data")
 }
@@ -53,6 +57,6 @@ func TestHashKVHonorsCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, _, err := b.HashKV(ctx, 0)
+	_, _, _, err := b.HashKV(ctx, 0)
 	require.ErrorIs(t, err, context.Canceled)
 }

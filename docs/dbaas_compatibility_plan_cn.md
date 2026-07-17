@@ -1860,6 +1860,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   不改变服务二进制；验证时三个 Pod Ready、zero restart、endpoint health 正常，
   运行时 exact image 仍为
   `26409541219fe09070769ed3b314d6961cce0892a26e7ad911a6f78b019ca092`。
+- **Maintenance A111 Hash snapshot header fencing（2026-07-17）**：
+  对照 `/root/etcd/server/storage/mvcc/hash.go:HashByRev` 与
+  `/root/etcd/server/etcdserver/api/v3rpc/maintenance.go:HashKV`，发现
+  KubeBrain backend 只返回 hashed revision，handler 在 hash 完成后重新读取 current
+  revision 填 Header。并发写可使 Header 指向摘要并未覆盖的更新，修复前在线三副本
+  实测 `HashRevision=467751513260556468`、`Header.Revision=467751513260556477`。
+
+  现 backend 在 `logicalWriteMu` 内同时捕获 hashed revision 与 snapshot current
+  revision，`Hash`/`HashKV` 使用后者填 Header，保留负数或历史请求的
+  `HashRevision` 语义。确定性单测在 hash 返回前注入一次写，证明 Header 固定在旧
+  snapshot；官方 client/v3 在持续写入下反复执行 `HashKV(0)`，要求
+  `Header.Revision == HashRevision`。该测试在 `/root/etcd` reference 连续 3 轮通过，
+  新 TiKV-backed KubeBrain 单轮、连续 3 轮及 race 均通过；`go test ./...`、根模块
+  与 compat module `go vet ./...` 及完整 server race（222.918s）通过。部署
+  `kubebrain:a111-hash-snapshot` 后三个 Pod Ready、zero restart、endpoint health
+  正常，运行时 exact image
+  `7a9baf3394131856e5620225c0172c3cefcb4f11e6a38460f6c597f7aa341dd1`。
 
 ### P1：通用服务能力
 
