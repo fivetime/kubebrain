@@ -16,6 +16,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -28,8 +29,28 @@ import (
 	"github.com/kubewharf/kubebrain/pkg/backend"
 	"github.com/kubewharf/kubebrain/pkg/metrics/mock"
 	"github.com/kubewharf/kubebrain/pkg/server/service/leader"
+	"github.com/kubewharf/kubebrain/pkg/storage"
 	imemkv "github.com/kubewharf/kubebrain/pkg/storage/memkv"
 )
+
+type healthStorage struct {
+	storage.KvStorage
+	fail bool
+}
+
+func (s *healthStorage) Get(ctx context.Context, key []byte) ([]byte, error) {
+	if s.fail {
+		return nil, errors.New("storage unavailable")
+	}
+	return s.KvStorage.Get(ctx, key)
+}
+
+func (s *healthStorage) Iter(ctx context.Context, start, end []byte, timestamp, limit uint64) (storage.Iter, error) {
+	if s.fail {
+		return nil, errors.New("storage unavailable")
+	}
+	return s.KvStorage.Iter(ctx, start, end, timestamp, limit)
+}
 
 func healthStatus(t *testing.T, s *server) healthpb.HealthCheckResponse_ServingStatus {
 	t.Helper()
@@ -46,8 +67,8 @@ func TestLeadershipHealthTransitions(t *testing.T) {
 	defer ctrl.Finish()
 	m := mock.NewMinimalMetrics(ctrl)
 	kv := imemkv.NewKvStorage()
-	defer func() { require.NoError(t, kv.Close()) }()
 	b := backend.NewBackend(kv, backend.Config{Prefix: "/registry", Identity: "test", EnableEtcdCompatibility: true}, m)
+	defer func() { require.NoError(t, b.(interface{ Close() error }).Close()) }()
 
 	s := &server{
 		healthServer: health.NewServer(),
@@ -71,9 +92,15 @@ func TestLeadershipHealthTransitions(t *testing.T) {
 }
 
 func TestLeaderReadinessWaitsForDurableStartup(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	m := mock.NewMinimalMetrics(ctrl)
+	kv := imemkv.NewKvStorage()
+	b := backend.NewBackend(kv, backend.Config{Prefix: "/registry", Identity: "test"}, m)
+	defer func() { require.NoError(t, b.(interface{ Close() error }).Close()) }()
 	s := &server{
 		healthServer:   health.NewServer(),
 		leaderElection: &leader.Stub{ElectionInfo: leader.ElectionInfo{IsLeader: true}},
+		backend:        b,
 	}
 	s.healthServer.SetServingStatus("", healthpb.HealthCheckResponse_NOT_SERVING)
 	require.False(t, s.leaderServing(), "election ownership alone must not publish readiness")
@@ -89,4 +116,40 @@ func TestLeaderReadinessWaitsForDurableStartup(t *testing.T) {
 
 	s.healthServer.SetServingStatus("", healthpb.HealthCheckResponse_NOT_SERVING)
 	require.False(t, s.leaderServing(), "leadership loss must withdraw readiness")
+}
+
+func TestHTTPHealthChecksLeaderAndBackend(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	m := mock.NewMinimalMetrics(ctrl)
+	kv := &healthStorage{KvStorage: imemkv.NewKvStorage()}
+	b := backend.NewBackend(kv, backend.Config{Prefix: "/registry", Identity: "test"}, m)
+	defer func() { require.NoError(t, b.(interface{ Close() error }).Close()) }()
+	s := &server{
+		healthServer:   health.NewServer(),
+		leaderElection: &leader.Stub{},
+		backend:        b,
+	}
+	s.healthServer.SetServingStatus("", healthpb.HealthCheckResponse_NOT_SERVING)
+
+	recorder := httptest.NewRecorder()
+	s.httpHealthHandler(recorder, httptest.NewRequest(http.MethodGet, "/health", nil))
+	require.Equal(t, http.StatusServiceUnavailable, recorder.Code)
+	require.JSONEq(t, `{"health":"false","reason":"RAFT NO LEADER"}`, recorder.Body.String())
+
+	recorder = httptest.NewRecorder()
+	s.httpHealthHandler(recorder, httptest.NewRequest(http.MethodGet, "/health?serializable=true", nil))
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.JSONEq(t, HealthResponse, recorder.Body.String())
+
+	kv.fail = true
+	recorder = httptest.NewRecorder()
+	s.httpHealthHandler(recorder, httptest.NewRequest(http.MethodGet, "/health?serializable=true", nil))
+	require.Equal(t, http.StatusServiceUnavailable, recorder.Code)
+	require.Contains(t, recorder.Body.String(), `"health":"false"`)
+	require.Contains(t, recorder.Body.String(), `"reason":"RANGE ERROR:`)
+
+	recorder = httptest.NewRecorder()
+	s.httpLiveHandler(recorder, httptest.NewRequest(http.MethodGet, "/livez", nil))
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.JSONEq(t, HealthResponse, recorder.Body.String())
 }

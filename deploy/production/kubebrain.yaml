@@ -130,7 +130,7 @@ spec:
             failureThreshold: 3
           livenessProbe:
             httpGet:
-              path: /health
+              path: /livez
               port: client
             initialDelaySeconds: 15
             periodSeconds: 10
@@ -138,7 +138,7 @@ spec:
             failureThreshold: 3
           startupProbe:
             httpGet:
-              path: /health
+              path: /livez
               port: client
             periodSeconds: 5
             timeoutSeconds: 2

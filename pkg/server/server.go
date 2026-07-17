@@ -25,6 +25,8 @@ import (
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"k8s.io/klog/v2"
 
+	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
+
 	"github.com/kubewharf/kubebrain/pkg/backend"
 	"github.com/kubewharf/kubebrain/pkg/metrics"
 	"github.com/kubewharf/kubebrain/pkg/server/brain"
@@ -247,6 +249,7 @@ func (s *server) register(server *grpc.Server) {
 func (s *server) GetClientHttpHandlers() map[string]http.Handler {
 	return map[string]http.Handler{
 		"/health":  http.HandlerFunc(s.httpHealthHandler),
+		"/livez":   http.HandlerFunc(s.httpLiveHandler),
 		"/ready":   http.HandlerFunc(s.httpReadyHandler),
 		"/version": http.HandlerFunc(s.versionHandler),
 	}
@@ -263,6 +266,7 @@ func (s *server) GetPeerHttpHandlers() map[string]http.Handler {
 func (s *server) GetInfoHttpHandlers() map[string]http.Handler {
 	return map[string]http.Handler{
 		"/health":   http.HandlerFunc(s.httpHealthHandler),
+		"/livez":    http.HandlerFunc(s.httpLiveHandler),
 		"/ready":    http.HandlerFunc(s.httpReadyHandler),
 		"/status":   http.HandlerFunc(s.revisionHandler),
 		"/election": http.HandlerFunc(s.electionHandler),
@@ -305,8 +309,15 @@ func (s *server) revisionHandler(w http.ResponseWriter, req *http.Request) {
 }
 
 const (
-	HealthResponse = `{"health":"true"}`
+	HealthResponse       = `{"health":"true"}`
+	healthCheckTimeout   = 5 * time.Second
+	healthNoLeaderReason = "RAFT NO LEADER"
 )
+
+type healthResponse struct {
+	Health string `json:"health"`
+	Reason string `json:"reason,omitempty"`
+}
 
 // versionHandler serves the etcd-compatible GET /version endpoint. kubeadm's
 // ExternalEtcdVersion preflight (and other etcd tooling) GETs this and parses
@@ -336,8 +347,63 @@ func (s *server) httpHealthHandler(w http.ResponseWriter, req *http.Request) {
 		klog.Warningf("/health error (status code %d)", http.StatusMethodNotAllowed)
 		return
 	}
+	serializable := req.URL.Query().Get("serializable") == "true"
+	if reason := s.healthFailureReason(req.Context(), serializable); reason != "" {
+		s.writeUnhealthy(w, reason)
+		return
+	}
+	s.writeHealthy(w)
+}
+
+func (s *server) httpLiveHandler(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	s.writeHealthy(w)
+}
+
+func (s *server) writeHealthy(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(HealthResponse))
+}
+
+func (s *server) writeUnhealthy(w http.ResponseWriter, reason string) {
+	body, _ := json.Marshal(healthResponse{Health: "false", Reason: reason})
+	http.Error(w, string(body), http.StatusServiceUnavailable)
+}
+
+func (s *server) healthFailureReason(ctx context.Context, serializable bool) string {
+	if !serializable && !s.requestPathReady() {
+		return healthNoLeaderReason
+	}
+	if s.backend == nil {
+		return "RANGE ERROR:backend is not initialized"
+	}
+	checkCtx, cancel := context.WithTimeout(ctx, healthCheckTimeout)
+	defer cancel()
+	var err error
+	if !serializable && s.brainServer != nil {
+		_, err = s.brainServer.Get(checkCtx, &proto.GetRequest{Key: []byte{0}})
+	} else {
+		_, err = s.backend.Get(checkCtx, &proto.GetRequest{Key: []byte{0}})
+	}
+	if err != nil {
+		return "RANGE ERROR:" + err.Error()
+	}
+	return ""
+}
+
+func (s *server) requestPathReady() bool {
+	if s.leaderElection != nil && s.leaderElection.IsLeader() && s.leaderServing() {
+		return true
+	}
+	if s.config.EnableEtcdProxy && s.peers != nil && s.peers.EtcdProxyEnabled() {
+		return s.peers.Ready() == nil
+	}
+	return false
 }
 
 func (s *server) httpReadyHandler(w http.ResponseWriter, req *http.Request) {
@@ -347,19 +413,11 @@ func (s *server) httpReadyHandler(w http.ResponseWriter, req *http.Request) {
 		klog.Warningf("/ready error (status code %d)", http.StatusMethodNotAllowed)
 		return
 	}
-	if s.leaderElection.IsLeader() && s.leaderServing() {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(HealthResponse))
+	if reason := s.healthFailureReason(req.Context(), false); reason != "" {
+		s.writeUnhealthy(w, reason)
 		return
 	}
-	if s.config.EnableEtcdProxy && s.peers.EtcdProxyEnabled() {
-		if err := s.peers.Ready(); err == nil {
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(HealthResponse))
-			return
-		}
-	}
-	http.Error(w, "not ready", http.StatusServiceUnavailable)
+	s.writeHealthy(w)
 }
 
 func (s *server) leaderServing() bool {

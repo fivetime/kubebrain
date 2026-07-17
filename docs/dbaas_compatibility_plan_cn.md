@@ -46,6 +46,7 @@ Raft、bbolt 和成员管理内部实现，而是对通用 etcd v3 客户端提�
 | Maintenance | Alarm/DbSize | 平台替代 | 用 PD/TiKV 容量、磁盘、region 和配额告警；etcd 专属字段保持可解释值 |
 | Maintenance | Hash/HashKV | 兼容核心语义 | 对指定 revision 的租户 MVCC 实际内容做稳定摘要；用于 KubeBrain 副本一致性校验，数值不与 bbolt 内部编码比较 |
 | Maintenance | MoveLeader/Downgrade | 平台替代 | 分别由服务选主和 DBaaS 升级编排处理 |
+| Endpoint | health/livez/readiness | 部分兼容 | `/health` leader、真实读与 serializable 语义已对齐；`/livez` 隔离进程存活，`/ready` 检查真实服务路径；etcd `/readyz` 分项检查待补 |
 | Concurrency | Lock/Election recipes | 兼容核心语义 | 官方 `client/v3/concurrency` Mutex/Election/session、orphan session lease 自然过期接棒及真实 Leader 故障转移已通过；继续长时间 soak |
 
 `Status.Version = 3.7.0` 只表示协议能力门槛，不能作为完整兼容声明。发布说明必须
@@ -1558,6 +1559,27 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `ONLY_INSECURE`，内部代理记录 `secure=false`；部署 3/3 Ready、zero restart，
   health 与 CRUD 正常，且无临时 TLS volume 残留。exact image
   `e0893bbd5215d124115212d395ea8bea8d5a28a65dbee5b4844d88cf008e8511`。
+- **Endpoint A96 etcd-compatible health semantics（2026-07-17）**：对照
+  `/root/etcd/server/etcdserver/api/etcdhttp/health.go`，etcd `/health` 会先检查
+  leader，再执行受 ReqTimeout 限制的真实 Range；`serializable=true` 只允许无
+  leader 场景，仍必须完成存储读。KubeBrain 原实现对任意 GET 固定返回
+  `{"health":"true"}`，即使没有 leader 或 TiKV 已不可读也报 200。现普通
+  `/health` 先要求本机 leader serving 或 follower proxy ready，再通过
+  `brainServer.Get` 实际执行 `SyncReadRevision + backend Get`，避免只相信陈旧代理
+  缓存；serializable 模式直接探测共享存储。失败返回 503、`health=false` 和
+  `RAFT NO LEADER`/`RANGE ERROR` reason。`/ready` 复用同一真实线性读，不再只看
+  内存状态；新增与后端无关、只表示进程 HTTP stack 存活的 `/livez`，dev、plain
+  production 与 TLS production 的 liveness/startup probe 全部迁移到 `/livez`，
+  防止 TiKV/选主故障触发无效重启，manifest 回归固定三类 probe 路径。确定性测试
+  覆盖无 leader 503、serializable 200、storage error 503、livez 200，focused
+  普通 50 轮、race 20 轮、server/endpoint/manifest race、full test 与 full vet
+  通过。三副本 KubeBrain + 独立 TiKV/PD 上逐 Pod 直连时 leader/follower 的
+  health、serializable、ready、livez 全部 200；固定直连 follower 后删除 leader，
+  250ms 内观测 `health=503/serializable=200/livez=200` 和 `RAFT NO LEADER`，
+  新 leader 完成 durable 初始化约 8.75 秒后 health 自动恢复 200。最终部署
+  3/3 Ready、zero restart，CRUD 正常。etcd `/readyz` 的命名与分项检查仍是已知
+  差距。exact image
+  `f33a90074fb0f3f5029ebd0249a3514ba09d24c635280ccea1e7e1f4432b97c9`。
 
 ### P1：通用服务能力
 

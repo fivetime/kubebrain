@@ -145,7 +145,7 @@ spec:
           livenessProbe:
             httpGet:
               scheme: HTTP
-              path: /health
+              path: /livez
               port: info
             initialDelaySeconds: 15
             periodSeconds: 10
@@ -154,7 +154,7 @@ spec:
           startupProbe:
             httpGet:
               scheme: HTTP
-              path: /health
+              path: /livez
               port: info
             periodSeconds: 5
             timeoutSeconds: 2
