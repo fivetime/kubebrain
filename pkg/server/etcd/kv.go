@@ -904,15 +904,19 @@ func (s *RPCServer) DeleteRange(ctx context.Context, r *etcdserverpb.DeleteRange
 	if isEmptyNonFromKeyRange(r.Key, r.RangeEnd) {
 		return s.emptyDeleteRangeResponse(), nil
 	}
+	s.leaseWriteMu.Lock()
+	defer s.leaseWriteMu.Unlock()
 	deletedKeys, keyErr := s.keysInDeleteRange(ctx, r)
 	if keyErr != nil {
 		return nil, keyErr
 	}
-	response, err := s.backend.DeleteRange(ctx, r)
-	if err == nil {
-		for _, key := range deletedKeys {
-			s.unbindKeyFromLease(ctx, key)
-		}
+	var response *etcdserverpb.DeleteRangeResponse
+	var err error
+	leasedDelete := s.hasLeasedKey(deletedKeys)
+	if leasedDelete {
+		response, err = s.deleteRangeWithAttachments(ctx, r, deletedKeys)
+	} else {
+		response, err = s.backend.DeleteRange(ctx, r)
 	}
 	successTag := getSuccessMetricTagByErr(err)
 	s.metricCli.EmitCounter("write", 1, metrics.Tag("method", "delete-range"), successTag, errClassTag(err))

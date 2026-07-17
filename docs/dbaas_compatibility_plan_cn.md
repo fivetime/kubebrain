@@ -748,6 +748,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   单测分别固定 follower 快路径与 Leader proxy header；真实三副本 DeleteRange+历史 Range
   双端差分连续 20 轮通过，随后 Compact/Delete/Lease/Put/Range/RangeStream/serializable
   Range/Txn/Watch control 全矩阵同轮通过。
+- **Lease A38 standalone DeleteRange attachment 原子性（2026-07-17）**：审计发现普通
+  DeleteRange 先提交用户 tombstone，再 best-effort 删除 `leasekeys/<key>`；两者之间崩溃会让
+  新副本从 TiKV 重载已删除 key 的陈旧 attachment。现 DeleteRange 在绑定快照与提交期间独占
+  lease write fence；范围含 leased key 时按 128 user keys 分块，以同一 `TxnApply` 将用户
+  tombstone 和 attachment internal delete 原子提交，精确 mod-revision guard 防止并发覆盖，
+  `PrevKv` 直接取同批 pre-read。故障注入拒绝 batch 时证明 value/attachment 同时保留，重试后
+  deletion count、旧 value/lease 和 `LeaseTimeToLive(Keys=true)` 与 etcd 一致；扩展 lease 双端
+  差分连续 10 轮、完整差分矩阵通过。真实三副本删除后全量滚动重启，存活 lease 从 TiKV
+  恢复后 keys 仍为空。generic Txn 的旧 sequential fallback 尚未纳入本保证，继续单独收敛。
 
 ### P1：通用服务能力
 

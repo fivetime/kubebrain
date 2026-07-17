@@ -26,6 +26,10 @@ type leaseDifferentialResult struct {
 	UnknownRevision   int64
 	UnknownTTL        int64
 	MinimumGrantedTTL int64
+	DeleteRevision    int64
+	DeleteCount       int64
+	DeletePrev        []normalizedKV
+	KeysAfterDelete   int
 }
 
 func TestLeaseDifferentialAgainstReferenceEtcd(t *testing.T) {
@@ -80,6 +84,20 @@ func runLeaseDifferentialScenario(t *testing.T, endpoint, instance string) lease
 	_, err = cli.Revoke(ctx, minimum.ID)
 	require.NoError(t, err)
 
+	deletePrefix := key + "/delete/"
+	deleteLease, err := cli.Grant(ctx, 300)
+	require.NoError(t, err)
+	_, err = cli.Put(ctx, deletePrefix+"leased", "leased-value", clientv3.WithLease(deleteLease.ID))
+	require.NoError(t, err)
+	_, err = cli.Put(ctx, deletePrefix+"plain", "plain-value")
+	require.NoError(t, err)
+	deleted, err := cli.Delete(ctx, deletePrefix, clientv3.WithPrefix(), clientv3.WithPrevKV())
+	require.NoError(t, err)
+	afterDeleteTTL, err := cli.TimeToLive(ctx, deleteLease.ID, clientv3.WithAttachedKeys())
+	require.NoError(t, err)
+	_, err = cli.Revoke(ctx, deleteLease.ID)
+	require.NoError(t, err)
+
 	return leaseDifferentialResult{
 		GrantRevision:     grant.ResponseHeader.Revision - baseRev,
 		PutRevision:       put.Header.Revision - baseRev,
@@ -95,5 +113,9 @@ func runLeaseDifferentialScenario(t *testing.T, endpoint, instance string) lease
 		UnknownRevision:   unknown.ResponseHeader.Revision - baseRev,
 		UnknownTTL:        unknown.TTL,
 		MinimumGrantedTTL: minimum.TTL,
+		DeleteRevision:    deleted.Header.Revision - baseRev,
+		DeleteCount:       deleted.Deleted,
+		DeletePrev:        normalizeKVs(deleted.PrevKvs, deletePrefix, baseRev),
+		KeysAfterDelete:   len(afterDeleteTTL.Keys),
 	}
 }

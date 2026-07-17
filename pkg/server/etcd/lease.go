@@ -758,6 +758,67 @@ func (m *leaseManager) keysInDeleteRange(ctx context.Context, r *etcdserverpb.De
 	return keys, nil
 }
 
+func (m *leaseManager) hasLeasedKey(keys []string) bool {
+	for _, key := range keys {
+		if m.leaseIDForKey(key) != 0 {
+			return true
+		}
+	}
+	return false
+}
+
+const leasedDeleteRangeChunkSize = 128
+
+// deleteRangeWithAttachments keeps user tombstones and durable lease attachment
+// deletions in the same TiKV transaction. The caller holds leaseWriteMu
+// exclusively, so bindings cannot change between this snapshot and commit.
+func (m *leaseManager) deleteRangeWithAttachments(ctx context.Context, request *etcdserverpb.DeleteRangeRequest, keys []string) (*etcdserverpb.DeleteRangeResponse, error) {
+	response := &etcdserverpb.DeleteRangeResponse{}
+	for start := 0; start < len(keys); start += leasedDeleteRangeChunkSize {
+		end := min(start+leasedDeleteRangeChunkSize, len(keys))
+		writes := make([]backend.TxnWriteOp, 0, end-start)
+		guards := make([]backend.TxnGuard, 0, end-start)
+		for _, key := range keys[start:end] {
+			current, err := m.srv.backend.Get(ctx, &etcdserverpb.RangeRequest{Key: []byte(key)})
+			if err != nil {
+				return nil, err
+			}
+			if len(current.Kvs) == 0 {
+				continue
+			}
+			writes = append(writes, backend.TxnWriteOp{Delete: true, Key: []byte(key)})
+			guards = append(guards, backend.TxnGuard{Key: []byte(key), Revision: uint64(current.Kvs[0].ModRevision)})
+		}
+		if len(writes) == 0 {
+			continue
+		}
+		allWrites, userCount := m.withLeaseAttachmentOps(writes)
+		prevKVs := make([]bool, len(allWrites))
+		for i := 0; i < userCount; i++ {
+			prevKVs[i] = request.PrevKv
+		}
+		responses, revision, results, err := m.srv.backend.TxnApply(ctx, allWrites, guards, prevKVs)
+		if err != nil {
+			return nil, err
+		}
+		response.Header = txnHeader(int64(revision))
+		for i := 0; i < userCount; i++ {
+			deleted := responses[i].GetResponseDeleteRange()
+			response.Deleted += deleted.Deleted
+			response.PrevKvs = append(response.PrevKvs, deleted.PrevKvs...)
+		}
+		m.applyLeaseIndexes(allWrites, results, userCount)
+	}
+	if response.Header == nil {
+		revision, err := safeBackendRevision(ctx, m.srv.backend)
+		if err != nil {
+			return nil, err
+		}
+		response.Header = txnHeader(int64(revision))
+	}
+	return response, nil
+}
+
 func remainingTTL(st *leaseState) int64 {
 	ttl := int64(time.Until(st.deadline).Seconds())
 	if ttl < 0 {

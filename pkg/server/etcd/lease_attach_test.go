@@ -372,6 +372,47 @@ func (f *failDeleteShim) TxnApply(ctx context.Context, ops []backend.TxnWriteOp,
 	return f.BackendShim.TxnApply(ctx, ops, guards, prevKV)
 }
 
+func TestDeleteRangeAtomicallyRemovesLeaseAttachments(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	const leaseID int64 = 77035
+	leasedKey := "/registry/events/atomic-delete/a"
+	leaselessKey := "/registry/events/atomic-delete/b"
+	_, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 300, ID: leaseID})
+	require.NoError(t, err)
+	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: []byte(leasedKey), Value: []byte("leased"), Lease: leaseID})
+	require.NoError(t, err)
+	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: []byte(leaselessKey), Value: []byte("plain")})
+	require.NoError(t, err)
+
+	shim := &failDeleteShim{BackendShim: server.backend, failKey: leasedKey, fail: true}
+	server.backend = shim
+	request := &etcdserverpb.DeleteRangeRequest{
+		Key: []byte("/registry/events/atomic-delete/"), RangeEnd: []byte("/registry/events/atomic-delete0"), PrevKv: true,
+	}
+	_, err = server.DeleteRange(ctx, request)
+	require.ErrorIs(t, err, errFakeDelete)
+	stillPresent, err := shim.Get(ctx, &etcdserverpb.RangeRequest{Key: []byte(leasedKey)})
+	require.NoError(t, err)
+	require.Len(t, stillPresent.Kvs, 1, "failed atomic batch must retain the user key")
+	_, err = shim.InternalGet(ctx, leaseAttachKey(leasedKey))
+	require.NoError(t, err, "failed atomic batch must retain the attachment")
+
+	shim.fail = false
+	response, err := server.DeleteRange(ctx, request)
+	require.NoError(t, err)
+	require.Equal(t, int64(2), response.Deleted)
+	require.Len(t, response.PrevKvs, 2)
+	require.Equal(t, []byte("leased"), response.PrevKvs[0].Value)
+	require.Equal(t, leaseID, response.PrevKvs[0].Lease)
+	_, err = shim.InternalGet(ctx, leaseAttachKey(leasedKey))
+	require.Error(t, err, "successful batch must remove the attachment")
+	ttl, err := server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: leaseID, Keys: true})
+	require.NoError(t, err)
+	require.Empty(t, ttl.Keys)
+}
+
 // TestExpiryKeepsLeaseAndRecordWhenKeyDeleteFails pins #36: expiry deletes the
 // attached keys before the lease record, and a failed key delete must keep the
 // lease (and its record) so the surviving keys are never orphaned.
