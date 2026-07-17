@@ -46,7 +46,7 @@ Raft、bbolt 和成员管理内部实现，而是对通用 etcd v3 客户端提�
 | Maintenance | Alarm/DbSize | 平台替代 | 用 PD/TiKV 容量、磁盘、region 和配额告警；etcd 专属字段保持可解释值 |
 | Maintenance | Hash/HashKV | 兼容核心语义 | 对指定 revision 的租户 MVCC 实际内容做稳定摘要；用于 KubeBrain 副本一致性校验，数值不与 bbolt 内部编码比较 |
 | Maintenance | MoveLeader/Downgrade | 平台替代 | 分别由服务选主和 DBaaS 升级编排处理 |
-| Endpoint | health/livez/readiness | 部分兼容 | `/health` leader、真实读与 serializable 语义已对齐；`/livez` 隔离进程存活，`/ready` 检查真实服务路径；etcd `/readyz` 分项检查待补 |
+| Endpoint | health/livez/readyz | 兼容核心语义 | `/health`、`/livez`、`/readyz` 及分项检查已对齐；`data_corruption`/`non_learner` 使用 TiKV 架构等价语义，`/ready` 与 `/ping` 为平台探针 |
 | Concurrency | Lock/Election recipes | 兼容核心语义 | 官方 `client/v3/concurrency` Mutex/Election/session、orphan session lease 自然过期接棒及真实 Leader 故障转移已通过；继续长时间 soak |
 
 `Status.Version = 3.7.0` 只表示协议能力门槛，不能作为完整兼容声明。发布说明必须
@@ -1568,8 +1568,9 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `brainServer.Get` 实际执行 `SyncReadRevision + backend Get`，避免只相信陈旧代理
   缓存；serializable 模式直接探测共享存储。失败返回 503、`health=false` 和
   `RAFT NO LEADER`/`RANGE ERROR` reason。`/ready` 复用同一真实线性读，不再只看
-  内存状态；新增与后端无关、只表示进程 HTTP stack 存活的 `/livez`，dev、plain
-  production 与 TLS production 的 liveness/startup probe 全部迁移到 `/livez`，
+  内存状态；A96 当时新增与后端无关、只表示进程 HTTP stack 存活的 `/livez`，
+  dev、plain production 与 TLS production 的 liveness/startup probe 当时迁移到
+  `/livez`，
   防止 TiKV/选主故障触发无效重启，manifest 回归固定三类 probe 路径。确定性测试
   覆盖无 leader 503、serializable 200、storage error 503、livez 200，focused
   普通 50 轮、race 20 轮、server/endpoint/manifest race、full test 与 full vet
@@ -1577,9 +1578,31 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   health、serializable、ready、livez 全部 200；固定直连 follower 后删除 leader，
   250ms 内观测 `health=503/serializable=200/livez=200` 和 `RAFT NO LEADER`，
   新 leader 完成 durable 初始化约 8.75 秒后 health 自动恢复 200。最终部署
-  3/3 Ready、zero restart，CRUD 正常。etcd `/readyz` 的命名与分项检查仍是已知
-  差距。exact image
+  3/3 Ready、zero restart，CRUD 正常。后续 A97 源码复核确认 etcd `/livez`
+  实际包含 serializable read，此命名与 `/readyz` 分项差距已在 A97 修正。exact image
   `f33a90074fb0f3f5029ebd0249a3514ba09d24c635280ccea1e7e1f4432b97c9`。
+- **Endpoint A97 etcd livez/readyz check matrix（2026-07-17）**：进一步对照
+  `/root/etcd/server/etcdserver/api/etcdhttp/health.go` 的
+  `installLivezEndpoints`、`installReadyzEndpoints`、`newHealthHandler` 及
+  `health_test.go`，确认 etcd `/livez` 并非纯进程检查，而是执行
+  `serializable_read`；`/readyz` 依次暴露 `data_corruption`、
+  `serializable_read`、`linearizable_read`、`non_learner`，根端点支持重复
+  `exclude` 与按参数存在性启用的 `verbose`，失败时始终输出分项原因并返回 503。
+  现 client/info 两个 HTTP 端口均注册根端点和全部单项端点，固定 GET-only、
+  `Allow: GET`、text/plain、nosniff、`ok\n` 与详细结果格式。KubeBrain 不持有
+  TiKV Raft learner 身份，也没有 member-local CORRUPT alarm，因此
+  `non_learner` 与 `data_corruption` 使用平台等价的通过检查；存储完整性由 TiKV
+  及 KubeBrain Hash/GC 检查负责。纯进程 HTTP 存活语义迁移到平台端点 `/ping`，
+  dev、plain production 与 TLS production 的 liveness/startup probe 同步迁移，
+  避免 TiKV 或选主抖动引发无效 Pod 重启；`/ready` 保留为兼容别名。确定性测试覆盖
+  default/verbose/exclude、全部单项路径、405、无 leader、storage error 及
+  `/ping` 隔离；full test、server/manifest race 与 full vet 全通过。三副本
+  KubeBrain + 独立 TiKV/PD 上，所有根端点和单项检查均为 200；固定直连 follower
+  后删除 leader，200ms 采样中 `/readyz` 连续 503，详细结果仅
+  `linearizable_read` 报 `RAFT NO LEADER`，同期 `/livez` 与 `/ping` 始终 200，
+  约 1.6 秒后 `/readyz` 自动恢复。最终部署 3/3 Ready、zero restart。containerd
+  运行时 exact image
+  `73bfdfb4eedb9b5a3a1b65ac1afaba14012c7f670431e1aaac39f5ee0d246836`。
 
 ### P1：通用服务能力
 

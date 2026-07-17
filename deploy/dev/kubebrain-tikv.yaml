@@ -46,7 +46,7 @@ spec:
             periodSeconds: 5
           livenessProbe:
             httpGet:
-              path: /livez
+              path: /ping
               port: client
             initialDelaySeconds: 15
             periodSeconds: 10

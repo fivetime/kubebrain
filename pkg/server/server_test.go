@@ -149,7 +149,85 @@ func TestHTTPHealthChecksLeaderAndBackend(t *testing.T) {
 	require.Contains(t, recorder.Body.String(), `"reason":"RANGE ERROR:`)
 
 	recorder = httptest.NewRecorder()
-	s.httpLiveHandler(recorder, httptest.NewRequest(http.MethodGet, "/livez", nil))
+	s.httpPingHandler(recorder, httptest.NewRequest(http.MethodGet, "/ping", nil))
 	require.Equal(t, http.StatusOK, recorder.Code)
 	require.JSONEq(t, HealthResponse, recorder.Body.String())
+}
+
+func TestEtcdLivezAndReadyzChecks(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	m := mock.NewMinimalMetrics(ctrl)
+	kv := &healthStorage{KvStorage: imemkv.NewKvStorage()}
+	b := backend.NewBackend(kv, backend.Config{Prefix: "/registry", Identity: "test"}, m)
+	defer func() { require.NoError(t, b.(interface{ Close() error }).Close()) }()
+	s := &server{
+		healthServer:   health.NewServer(),
+		leaderElection: &leader.Stub{},
+		backend:        b,
+	}
+	s.healthServer.SetServingStatus("", healthpb.HealthCheckResponse_NOT_SERVING)
+	handlers := s.GetClientHttpHandlers()
+
+	recorder := httptest.NewRecorder()
+	handlers["/livez"].ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/livez", nil))
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Equal(t, "text/plain; charset=utf-8", recorder.Header().Get("Content-Type"))
+	require.Equal(t, "nosniff", recorder.Header().Get("X-Content-Type-Options"))
+	require.Equal(t, "ok\n", recorder.Body.String())
+
+	recorder = httptest.NewRecorder()
+	handlers["/livez"].ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/livez?verbose=false", nil))
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Equal(t, "[+]serializable_read ok\nok\n", recorder.Body.String())
+
+	recorder = httptest.NewRecorder()
+	handlers["/readyz"].ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	require.Equal(t, http.StatusServiceUnavailable, recorder.Code)
+	require.Contains(t, recorder.Body.String(), "[+]data_corruption ok\n")
+	require.Contains(t, recorder.Body.String(), "[+]serializable_read ok\n")
+	require.Contains(t, recorder.Body.String(), "[-]linearizable_read failed: RAFT NO LEADER\n")
+	require.Contains(t, recorder.Body.String(), "[+]non_learner ok\n")
+
+	recorder = httptest.NewRecorder()
+	handlers["/readyz"].ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/readyz?exclude=linearizable_read&exclude=unknown", nil))
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Equal(t, "ok\n", recorder.Body.String())
+
+	recorder = httptest.NewRecorder()
+	handlers["/readyz/serializable_read"].ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/readyz/serializable_read?verbose", nil))
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Equal(t, "[+]serializable_read ok\nok\n", recorder.Body.String())
+
+	recorder = httptest.NewRecorder()
+	handlers["/livez"].ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/livez", nil))
+	require.Equal(t, http.StatusMethodNotAllowed, recorder.Code)
+	require.Equal(t, http.MethodGet, recorder.Header().Get("Allow"))
+
+	kv.fail = true
+	recorder = httptest.NewRecorder()
+	handlers["/livez"].ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/livez", nil))
+	require.Equal(t, http.StatusServiceUnavailable, recorder.Code)
+	require.Contains(t, recorder.Body.String(), "[-]serializable_read failed: storage unavailable\n")
+
+	recorder = httptest.NewRecorder()
+	handlers["/ping"].ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/ping", nil))
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.JSONEq(t, HealthResponse, recorder.Body.String())
+}
+
+func TestEtcdHealthCheckHandlersAvailableOnInfoPort(t *testing.T) {
+	s := &server{}
+	handlers := s.GetInfoHttpHandlers()
+	for _, path := range []string{
+		"/ping",
+		"/livez",
+		"/livez/serializable_read",
+		"/readyz",
+		"/readyz/data_corruption",
+		"/readyz/serializable_read",
+		"/readyz/linearizable_read",
+		"/readyz/non_learner",
+	} {
+		require.Contains(t, handlers, path)
+	}
 }

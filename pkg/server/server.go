@@ -17,6 +17,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"time"
 
@@ -247,12 +248,14 @@ func (s *server) register(server *grpc.Server) {
 
 // GetClientHttpHandlers implements Server interface
 func (s *server) GetClientHttpHandlers() map[string]http.Handler {
-	return map[string]http.Handler{
+	handlers := map[string]http.Handler{
 		"/health":  http.HandlerFunc(s.httpHealthHandler),
-		"/livez":   http.HandlerFunc(s.httpLiveHandler),
+		"/ping":    http.HandlerFunc(s.httpPingHandler),
 		"/ready":   http.HandlerFunc(s.httpReadyHandler),
 		"/version": http.HandlerFunc(s.versionHandler),
 	}
+	s.addEtcdHealthCheckHandlers(handlers)
+	return handlers
 }
 
 // GetPeerHttpHandlers implements Server interface
@@ -264,9 +267,9 @@ func (s *server) GetPeerHttpHandlers() map[string]http.Handler {
 
 // GetInfoHttpHandlers implements Server interface
 func (s *server) GetInfoHttpHandlers() map[string]http.Handler {
-	return map[string]http.Handler{
+	handlers := map[string]http.Handler{
 		"/health":   http.HandlerFunc(s.httpHealthHandler),
-		"/livez":    http.HandlerFunc(s.httpLiveHandler),
+		"/ping":     http.HandlerFunc(s.httpPingHandler),
 		"/ready":    http.HandlerFunc(s.httpReadyHandler),
 		"/status":   http.HandlerFunc(s.revisionHandler),
 		"/election": http.HandlerFunc(s.electionHandler),
@@ -276,6 +279,8 @@ func (s *server) GetInfoHttpHandlers() map[string]http.Handler {
 		// so either port satisfies the check.
 		"/version": http.HandlerFunc(s.versionHandler),
 	}
+	s.addEtcdHealthCheckHandlers(handlers)
+	return handlers
 }
 
 func (s *server) electionHandler(w http.ResponseWriter, req *http.Request) {
@@ -355,7 +360,7 @@ func (s *server) httpHealthHandler(w http.ResponseWriter, req *http.Request) {
 	s.writeHealthy(w)
 }
 
-func (s *server) httpLiveHandler(w http.ResponseWriter, req *http.Request) {
+func (s *server) httpPingHandler(w http.ResponseWriter, req *http.Request) {
 	if req.Method != http.MethodGet {
 		w.Header().Set("Allow", http.MethodGet)
 		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
@@ -379,21 +384,28 @@ func (s *server) healthFailureReason(ctx context.Context, serializable bool) str
 	if !serializable && !s.requestPathReady() {
 		return healthNoLeaderReason
 	}
-	if s.backend == nil {
-		return "RANGE ERROR:backend is not initialized"
-	}
-	checkCtx, cancel := context.WithTimeout(ctx, healthCheckTimeout)
-	defer cancel()
-	var err error
-	if !serializable && s.brainServer != nil {
-		_, err = s.brainServer.Get(checkCtx, &proto.GetRequest{Key: []byte{0}})
-	} else {
-		_, err = s.backend.Get(checkCtx, &proto.GetRequest{Key: []byte{0}})
-	}
+	err := s.readHealthCheck(ctx, serializable)
 	if err != nil {
 		return "RANGE ERROR:" + err.Error()
 	}
 	return ""
+}
+
+func (s *server) readHealthCheck(ctx context.Context, serializable bool) error {
+	if !serializable && !s.requestPathReady() {
+		return errors.New(healthNoLeaderReason)
+	}
+	if s.backend == nil {
+		return errors.New("backend is not initialized")
+	}
+	checkCtx, cancel := context.WithTimeout(ctx, healthCheckTimeout)
+	defer cancel()
+	if !serializable && s.brainServer != nil {
+		_, err := s.brainServer.Get(checkCtx, &proto.GetRequest{Key: []byte{0}})
+		return err
+	}
+	_, err := s.backend.Get(checkCtx, &proto.GetRequest{Key: []byte{0}})
+	return err
 }
 
 func (s *server) requestPathReady() bool {

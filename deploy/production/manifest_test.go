@@ -64,8 +64,8 @@ func TestProductionManifestsProvideStableCompleteMembership(t *testing.T) {
 			require.Contains(t, args, "--max-delete-range-keys=1024")
 			require.Contains(t, args, "--max-watches=10000")
 			require.Equal(t, "/ready", nestedString(t, containerObject, "readinessProbe", "httpGet", "path"))
-			require.Equal(t, "/livez", nestedString(t, containerObject, "livenessProbe", "httpGet", "path"))
-			require.Equal(t, "/livez", nestedString(t, containerObject, "startupProbe", "httpGet", "path"))
+			require.Equal(t, "/ping", nestedString(t, containerObject, "livenessProbe", "httpGet", "path"))
+			require.Equal(t, "/ping", nestedString(t, containerObject, "startupProbe", "httpGet", "path"))
 
 			env, found, err := unstructured.NestedSlice(container, "env")
 			require.NoError(t, err)
