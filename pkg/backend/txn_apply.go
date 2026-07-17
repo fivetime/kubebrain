@@ -243,16 +243,71 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 		guardPreps = append(guardPreps, gp)
 	}
 
-	// No effective write (e.g. all deletes on absent keys): return no-op results
-	// without consuming a revision.
-	hasWrite := false
+	// Internal-only metadata mutations still need a physical commit, but must
+	// not consume a user MVCC revision. This is important for operations such as
+	// revoking an empty lease, whose only write is deleting lease metadata.
+	hasUserWrite := false
+	hasInternalWrite := false
 	for i := range preps {
-		if preps[i].effective && !preps[i].op.Internal {
-			hasWrite = true
-			break
+		if !preps[i].effective {
+			continue
+		}
+		if preps[i].op.Internal {
+			hasInternalWrite = true
+		} else {
+			hasUserWrite = true
 		}
 	}
-	if !hasWrite {
+	if !hasUserWrite && hasInternalWrite {
+		if cerr := b.fenceAdmit(ctx); cerr != nil {
+			return nil, baseRevision, false, cerr
+		}
+		batch := b.kv.BeginBatchWrite()
+		guardKeys := make(map[string]struct{}, len(guards))
+		for _, gp := range guardPreps {
+			guardKeys[string(gp.key)] = struct{}{}
+			if gp.missing {
+				batch.PutIfNotExist(gp.key, []byte{0}, 0)
+				batch.Del(gp.key)
+			} else {
+				batch.CAS(gp.key, gp.rvBytes, gp.rvBytes, 0)
+			}
+		}
+		for i := range preps {
+			p := &preps[i]
+			if !p.effective {
+				continue
+			}
+			key := b.ks.EncodeInternalKey(p.op.Key)
+			switch {
+			case p.op.Delete:
+				batch.CAS(key, []byte{0}, p.rvBytes, 0)
+				batch.Del(key)
+			case p.rvBytes == nil:
+				batch.PutIfNotExist(key, p.op.Value, 0)
+			default:
+				batch.CAS(key, p.op.Value, p.rvBytes, 0)
+			}
+		}
+		if cerr := b.commitUserBatch(ctx, batch); cerr != nil {
+			if errors.Is(cerr, storage.ErrCASFailed) {
+				if b.txnConflictIsGuard(cerr, guardKeys, len(guards) > 0) {
+					return nil, baseRevision, false, ErrTxnGuardConflict
+				}
+				return nil, baseRevision, true, nil
+			}
+			return nil, baseRevision, false, cerr
+		}
+		results = make([]TxnWriteResult, len(preps))
+		for i := range preps {
+			results[i] = TxnWriteResult{Key: preps[i].op.Key, Revision: baseRevision}
+		}
+		return results, baseRevision, false, nil
+	}
+
+	// No effective write (e.g. all deletes on absent keys): return no-op results
+	// without consuming a revision.
+	if !hasUserWrite {
 		cur := b.GetCurrentRevision()
 		results = make([]TxnWriteResult, len(preps))
 		for i := range preps {

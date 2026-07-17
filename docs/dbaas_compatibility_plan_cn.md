@@ -1123,6 +1123,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   remaining(268s)，attached key 仍存在；部署恢复 3/3 ready、zero restart。官方 client/v3
   failover recipe 已固化为 opt-in 长测试；最终 exact image `ea27e6f0c4fe` 通过相邻 lease
   lifecycle 回归。
+- **Lease A70 promotion expiry spreading + empty revoke durability（2026-07-17）**：
+  对照 etcd `server/lease/lessor.go:Lessor.Promote` 与
+  `lessor_test.go:TestLessorRenewExtendPileup`，恢复至少 1,000 个 lease 时，若 reconstructed
+  deadline 重叠，etcd 以默认 revoke rate=1,000、目标每秒 75% 将到期窗口向后摊开，避免
+  leader failover 后瞬间产生无界 revoke/TiKV delete burst。KubeBrain 原 `applyLeaseRecords`
+  对全部记录使用同一个 `now` 并立即 arm timer；现先按 deadline/ID 稳定排序，应用同一
+  promotion spreading 算法后再调度 expiry/checkpoint timer。审计真实 1,200-lease failover
+  时又发现更基础的 durable gap：空 lease revoke 的 transaction 仅含 internal metadata
+  delete，而 `backend.TxnApply` 把“没有 user write”误判为整笔 no-op；leader 内存删除后，
+  metadata 仍在 TiKV，下一 leader 会复活该 lease。现 internal-only transaction 仍执行
+  fence、guard 和单次原子 batch commit，但不申请 TSO、不推进 user MVCC revision。
+  backend 与 lease 确定性测试分别锁定 internal-only delete 落盘、revision 不变，以及
+  empty grant→revoke→reload 仍 TTL=-1；promotion helper 以可注入 rate 验证低于阈值不摊开、
+  75% 首窗口及每秒上限，focused/race 各 100 轮及 full/race/vet 通过。pre-fix exact image
+  `966667196c9c` 的 empty revoke 在真实 active-leader 删除后稳定复活；fixed exact image
+  `38a8978f7126` 连续 5 次 leader failover 均保持 TTL=-1/list absent。最终 1,200 个 600s
+  explicit lease failover 中，高 ID lease TTL 至少比低 ID 多 1 秒，证明 promotion spread
+  可由官方 client/v3 观察；全部测试 lease durable cleanup 后 list=0，部署 3/3 ready、
+  zero restart。
 
 ### P1：通用服务能力
 

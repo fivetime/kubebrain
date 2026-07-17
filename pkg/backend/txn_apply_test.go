@@ -27,6 +27,7 @@ import (
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
 
 	"github.com/kubewharf/kubebrain/pkg/metrics/mock"
+	"github.com/kubewharf/kubebrain/pkg/storage"
 	imemkv "github.com/kubewharf/kubebrain/pkg/storage/memkv"
 )
 
@@ -163,6 +164,25 @@ func TestTxnApplyCommitsInternalMetadataAtOnlyUserRevision(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []byte("42"), value)
 	require.Equal(t, rev, b.GetCurrentRevision(), "internal op must not allocate a second revision")
+}
+
+func TestTxnApplyCommitsInternalOnlyMutationWithoutUserRevision(t *testing.T) {
+	b, ctx := newTxnApplyBackend(t)
+	internalKey := []byte("leases/empty")
+	require.NoError(t, b.InternalPut(ctx, internalKey, []byte("meta")))
+	before := b.GetCurrentRevision()
+
+	results, rev, err := b.TxnApply(ctx, []TxnWriteOp{
+		{Internal: true, Delete: true, Key: internalKey},
+	}, nil)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	require.Equal(t, before, rev)
+	require.Equal(t, before, b.GetCurrentRevision(),
+		"internal-only transaction must not advance user MVCC")
+	_, err = b.InternalGet(ctx, internalKey)
+	require.ErrorIs(t, err, storage.ErrKeyNotFound,
+		"internal-only delete must not be mistaken for a no-op")
 }
 
 // TestTxnApplyContendedSameKeyRetries drives concurrent TxnApply updates to the

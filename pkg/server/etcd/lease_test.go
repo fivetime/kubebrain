@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"io"
 	"math"
+	"sort"
 	"sync"
 	"testing"
 	"time"
@@ -32,6 +33,7 @@ import (
 
 	"github.com/kubewharf/kubebrain/pkg/backend"
 	"github.com/kubewharf/kubebrain/pkg/metrics/mock"
+	"github.com/kubewharf/kubebrain/pkg/storage"
 	"github.com/kubewharf/kubebrain/pkg/storage/memkv"
 )
 
@@ -230,6 +232,31 @@ func TestLeaseRevokeDeletesAllKeysAtOneRevision(t *testing.T) {
 		require.Empty(t, current.Kvs)
 	}
 	require.Equal(t, uint64(revoked.Header.Revision), server.backend.GetCurrentRevision())
+}
+
+func TestEmptyLeaseRevokeDeletesDurableMetadata(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	const leaseID int64 = 2050
+	_, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 300, ID: leaseID})
+	require.NoError(t, err)
+	before := server.backend.GetCurrentRevision()
+
+	_, err = server.LeaseRevoke(ctx, &etcdserverpb.LeaseRevokeRequest{ID: leaseID})
+	require.NoError(t, err)
+	require.Equal(t, before, server.backend.GetCurrentRevision(),
+		"empty lease revoke only mutates internal metadata")
+	_, err = server.backend.InternalGet(ctx, leaseStorageKey(leaseID))
+	require.ErrorIs(t, err, storage.ErrKeyNotFound)
+
+	records, attachments, err := server.loadLeaseRecords(ctx)
+	require.NoError(t, err)
+	server.applyLeaseRecords(records, attachments)
+	ttl, err := server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: leaseID})
+	require.NoError(t, err)
+	require.Equal(t, int64(-1), ttl.TTL,
+		"an empty revoked lease must not resurrect after leader reload")
 }
 
 func TestLeaseRevokeTransactionFailureRetainsKeysAndMetadata(t *testing.T) {
@@ -1100,6 +1127,48 @@ func TestLeaseCheckpointBoundsReloadAndRenewClearsIt(t *testing.T) {
 	require.Zero(t, checkpoint.RemainingTTL)
 	require.Equal(t, beforeRevision, server.backend.GetCurrentRevision(),
 		"checkpoint clear must remain outside user MVCC")
+}
+
+func TestSpreadLeaseExpiriesMatchesEtcdPromotionRate(t *testing.T) {
+	const revokeRate = 10
+	base := time.Now().Add(30 * time.Second)
+
+	belowThreshold := make([]*leaseState, revokeRate-1)
+	for i := range belowThreshold {
+		belowThreshold[i] = &leaseState{id: int64(i + 1), deadline: base}
+	}
+	spreadLeaseExpiries(belowThreshold, revokeRate)
+	for _, st := range belowThreshold {
+		require.Equal(t, base, st.deadline,
+			"etcd does not spread a recovered set smaller than the revoke rate")
+	}
+
+	leases := make([]*leaseState, revokeRate*10)
+	for i := range leases {
+		// Reverse IDs ensure the helper's deterministic tie-break also gets
+		// exercised instead of inheriting input order.
+		leases[i] = &leaseState{id: int64(len(leases) - i), deadline: base}
+	}
+	spreadLeaseExpiries(leases, revokeRate)
+	sort.Slice(leases, func(i, j int) bool { return leases[i].deadline.Before(leases[j].deadline) })
+
+	target := (3 * revokeRate) / 4
+	for i := 0; i < target; i++ {
+		require.Equal(t, base, leases[i].deadline)
+	}
+	require.GreaterOrEqual(t, leases[target].deadline.Sub(base), time.Second,
+		"the first lease above etcd's 75%% target must move into the next window")
+	require.GreaterOrEqual(t, leases[len(leases)-1].deadline.Sub(base), 14*time.Second,
+		"a large promotion pile-up must be distributed over multiple seconds")
+
+	buckets := make(map[int64]int)
+	for _, st := range leases {
+		bucket := int64(st.deadline.Sub(base) / time.Second)
+		buckets[bucket]++
+	}
+	for second, count := range buckets {
+		require.LessOrEqualf(t, count, revokeRate, "second %d exceeds the configured revoke rate", second)
+	}
 }
 
 // TestReloadResetsDeadlineToGrantedTTL locks the companion recovery fix: on

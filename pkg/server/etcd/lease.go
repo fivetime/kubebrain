@@ -63,6 +63,7 @@ func (m *leaseManager) keysForLease(id int64) []string {
 
 const leaseExpiryRetryInterval = time.Second
 const leaseCheckpointInterval = 5 * time.Minute
+const defaultLeaseRevokeRate = 1000
 const latestRestoreRevision = int64(^uint64(0) >> 1)
 const maxLeaseTTL = int64(9000000000)
 const minLeaseTTL = int64(2)
@@ -1169,8 +1170,18 @@ func (m *leaseManager) applyLeaseRecords(records []leaseRecord, attachments map[
 		st.keys[key] = struct{}{}
 		m.keyLeaseIndex[key] = id
 	}
-	// Schedule timers once all keys are attached.
+	// Match etcd lessor.Promote: a large recovered lease set commonly has the
+	// same reconstructed deadline. Spread that pile-up before arming timers so a
+	// leader change cannot trigger an unbounded burst of revoke transactions.
+	restored := make([]*leaseState, 0, len(m.leases))
 	for _, st := range m.leases {
+		restored = append(restored, st)
+	}
+	spreadLeaseExpiries(restored, defaultLeaseRevokeRate)
+
+	// Schedule timers once all keys are attached and promotion spreading is
+	// complete.
+	for _, st := range restored {
 		m.scheduleLeaseLocked(st)
 		m.scheduleLeaseCheckpointLocked(st)
 		if !st.deadline.After(now) {
@@ -1179,6 +1190,42 @@ func (m *leaseManager) applyLeaseRecords(records []leaseRecord, attachments map[
 	}
 	atomic.StoreInt64(&m.leasedKeyCount, int64(len(m.keyLeaseIndex)))
 	return legacy
+}
+
+func spreadLeaseExpiries(leases []*leaseState, revokeRate int) {
+	if revokeRate <= 0 || len(leases) < revokeRate {
+		return
+	}
+	sort.Slice(leases, func(i, j int) bool {
+		if leases[i].deadline.Equal(leases[j].deadline) {
+			return leases[i].id < leases[j].id
+		}
+		return leases[i].deadline.Before(leases[j].deadline)
+	})
+
+	baseWindow := leases[0].deadline
+	nextWindow := baseWindow.Add(time.Second)
+	expires := 0
+	targetExpiresPerSecond := (3 * revokeRate) / 4
+	if targetExpiresPerSecond == 0 {
+		targetExpiresPerSecond = 1
+	}
+	for _, st := range leases {
+		if st.deadline.After(nextWindow) {
+			baseWindow = st.deadline
+			nextWindow = baseWindow.Add(time.Second)
+			expires = 1
+			continue
+		}
+		expires++
+		if expires <= targetExpiresPerSecond {
+			continue
+		}
+		rateDelay := time.Duration(float64(time.Second) * (float64(expires) / float64(targetExpiresPerSecond)))
+		rateDelay -= st.deadline.Sub(baseWindow)
+		nextWindow = baseWindow.Add(rateDelay)
+		st.deadline = st.deadline.Add(rateDelay)
+	}
 }
 
 // StopLeases stops every expiry timer and drops the in-memory lease snapshot. It
