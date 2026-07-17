@@ -84,6 +84,10 @@ func (s *RPCServer) Status(ctx context.Context, _ *etcdserverpb.StatusRequest) (
 	}
 	revision := s.backend.GetCurrentRevision()
 	leader := s.memberIDFromAddress(s.peers.GetLeaderInfo())
+	term, err := s.peers.LeadershipTerm(ctx)
+	if err != nil {
+		return nil, err
+	}
 	resp := &etcdserverpb.StatusResponse{
 		Header:           s.maintenanceHeader(),
 		Version:          Version,
@@ -91,6 +95,7 @@ func (s *RPCServer) Status(ctx context.Context, _ *etcdserverpb.StatusRequest) (
 		Leader:           leader,
 		RaftIndex:        revision,
 		RaftAppliedIndex: revision,
+		RaftTerm:         term,
 		// DbSize uses a 1-byte compatibility sentinel: it exists in etcd to warn before the hard
 		// --quota-backend-bytes NOSPACE cliff (and to drive defrag). The TiKV
 		// backend has no per-logical-DB quota (it scales horizontally), so that

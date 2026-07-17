@@ -40,7 +40,7 @@ Raft、bbolt 和成员管理内部实现，而是对通用 etcd v3 客户端提�
 | Auth | 用户、角色、权限、token | 兼容核心语义 | 管理 API、key-range RBAC、token 生命周期、Watch/Lease 持续鉴权及多副本故障转移已验证 |
 | Cluster | MemberList | 兼容（需配置） | DBaaS 通过 `--initial-cluster` 注入完整 KubeBrain 服务副本；未配置时仅返回本机与 leader 的降级视图，不应启用 AutoSync |
 | Cluster | add/remove/update/promote | 平台替代 | 由 DBaaS 控制面扩缩 KubeBrain、PD、TiKV；RPC 保持明确 Unimplemented |
-| Maintenance | Status | 兼容核心语义 | 返回真实服务身份、版本、leader/revision；bbolt 容量与默认 quota 字段使用兼容 sentinel，真实容量转到实例指标 |
+| Maintenance | Status | 兼容核心语义 | 返回真实服务身份、版本、leader/revision/共享选主 term；bbolt 容量与默认 quota 字段使用兼容 sentinel，真实容量转到实例指标 |
 | Maintenance | Snapshot | 平台替代 | 使用 TiKV BR/PITR；控制面提供备份、恢复和导出任务，不伪造 etcd snapshot |
 | Maintenance | Defragment | 平台替代 | TiKV GC/compaction 管理，不执行 bbolt 碎片整理 |
 | Maintenance | Alarm/DbSize | 平台替代 | 用 PD/TiKV 容量、磁盘、region 和配额告警；etcd 专属字段保持可解释值 |
@@ -803,6 +803,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   TiKV 容量或实例售卖限额，真实 store disk/region/quota 仍由 PD/TiKV 指标和 DBaaS 控制面
   提供。server 回归固定非零默认值，官方 client/v3 双端差分在修复前稳定得到
   `reference=2147483648, KubeBrain=0`，修复后要求两端精确相等。
+- **Maintenance A44 Status leadership term（2026-07-17）**：A43 的真实 `etcdctl`
+  输出继续暴露 `RaftTerm=0`，而 reference etcd 从首次 election 起始终返回正 term。
+  KubeBrain 现读取 client-go resource lock 中由所有副本共享、每次 holder identity 变化递增的
+  `LeaderTransitions`，并以 `LeaderTransitions+1` 填 `Status.RaftTerm`；因此首次任期为 1，
+  failover 后严格递增，Leader 与 Follower 读取同一值。该 term 仅是 etcd 客户端可观察的
+  leadership generation；写 fence 继续使用每进程原子递增且带 renew freshness 的 local epoch，
+  两者不混用。确定性测试覆盖初始/多次切换、负 record 和存储失败 fail-closed；官方 client/v3
+  双端检查两端 term 均为正；真实三副本逐 Pod Status 在删除 Leader 前全部为 63，替换并完成
+  failover 后新旧三副本全部收敛到 64，同时 leader identity 与 revision 一致更新。
 
 ### P1：通用服务能力
 

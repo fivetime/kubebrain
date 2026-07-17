@@ -19,6 +19,7 @@ import "context"
 // Stub is an implement of LeaderElection for test
 type Stub struct {
 	ElectionInfo
+	Term uint64
 }
 
 // Campaign implements LeaderElection interface
@@ -28,6 +29,13 @@ func (s *Stub) Campaign(context.Context) {
 // GetLeaderInfo implements LeaderElection interface
 func (s *Stub) GetLeaderInfo() string {
 	return s.ElectionInfo.LeaderAddress
+}
+
+func (s *Stub) LeadershipTerm(context.Context) (uint64, error) {
+	if s.Term == 0 {
+		return 1, nil
+	}
+	return s.Term, nil
 }
 
 // IsLeader implements LeaderElection interface

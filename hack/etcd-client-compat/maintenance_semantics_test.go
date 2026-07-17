@@ -13,7 +13,7 @@ import (
 
 const defaultEtcdBackendQuota int64 = 2 * 1024 * 1024 * 1024
 
-func TestMaintenanceStatusDefaultQuotaMatchesReferenceEtcd(t *testing.T) {
+func TestMaintenanceStatusMetadataMatchesReferenceEtcd(t *testing.T) {
 	reference := os.Getenv("REFERENCE_ETCD_ENDPOINT")
 	if reference == "" {
 		t.Skip("set REFERENCE_ETCD_ENDPOINT to run differential compatibility tests")
@@ -23,13 +23,15 @@ func TestMaintenanceStatusDefaultQuotaMatchesReferenceEtcd(t *testing.T) {
 		t.Fatal("set KUBEBRAIN_ETCD_ENDPOINT explicitly for differential tests")
 	}
 
-	referenceQuota := maintenanceStatusQuota(t, reference)
-	kubebrainQuota := maintenanceStatusQuota(t, kubebrain)
-	require.Equal(t, referenceQuota, kubebrainQuota)
-	require.Equal(t, defaultEtcdBackendQuota, kubebrainQuota)
+	referenceStatus := maintenanceStatus(t, reference)
+	kubebrainStatus := maintenanceStatus(t, kubebrain)
+	require.Equal(t, referenceStatus.DbSizeQuota, kubebrainStatus.DbSizeQuota)
+	require.Equal(t, defaultEtcdBackendQuota, kubebrainStatus.DbSizeQuota)
+	require.Positive(t, referenceStatus.RaftTerm)
+	require.Positive(t, kubebrainStatus.RaftTerm)
 }
 
-func maintenanceStatusQuota(t *testing.T, endpoint string) int64 {
+func maintenanceStatus(t *testing.T, endpoint string) *clientv3.StatusResponse {
 	t.Helper()
 	cli, err := clientv3.New(clientv3.Config{Endpoints: []string{endpoint}, DialTimeout: 3 * time.Second})
 	require.NoError(t, err)
@@ -38,7 +40,7 @@ func maintenanceStatusQuota(t *testing.T, endpoint string) int64 {
 	defer cancel()
 	resp, err := cli.Status(ctx, endpoint)
 	require.NoError(t, err)
-	return resp.DbSizeQuota
+	return resp
 }
 
 // TestMaintenanceHashKVSemantics exercises KubeBrain through etcd's official

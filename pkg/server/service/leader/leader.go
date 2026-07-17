@@ -39,6 +39,11 @@ type LeaderElection interface {
 	// GetLeaderInfo get leader info, return peer address
 	GetLeaderInfo() string
 
+	// LeadershipTerm returns the cluster-wide election term. It is derived from
+	// the shared resource-lock transition counter, so leaders and followers
+	// report the same monotone value.
+	LeadershipTerm(ctx context.Context) (uint64, error)
+
 	// IsLeader return true when this instance is leader
 	IsLeader() bool
 
@@ -266,6 +271,24 @@ func (l *leaderElection) EpochAndLeadingFresh() (uint64, bool) {
 func (l *leaderElection) GetLeaderInfo() string {
 	leaderAddr, _, _ := l.getLeaderAndVersion()
 	return leaderAddr
+}
+
+// LeadershipTerm implements LeaderElection. client-go starts
+// LeaderTransitions at zero for the first holder and increments it whenever
+// the holder identity changes; expose +1 so the etcd RaftTerm analogue is
+// positive from the first election.
+func (l *leaderElection) LeadershipTerm(ctx context.Context) (uint64, error) {
+	record, _, err := l.resourceLock.Get(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("read leadership term: %w", err)
+	}
+	if record == nil {
+		return 0, fmt.Errorf("read leadership term: empty election record")
+	}
+	if record.LeaderTransitions < 0 {
+		return 0, fmt.Errorf("read leadership term: negative leader transitions %d", record.LeaderTransitions)
+	}
+	return uint64(record.LeaderTransitions) + 1, nil
 }
 
 func (l *leaderElection) GetElectionInfo() (ElectionInfo, error) {

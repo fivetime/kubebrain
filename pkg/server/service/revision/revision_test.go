@@ -306,6 +306,10 @@ func (m *mutableLeaderElection) GetLeaderInfo() string {
 	return m.leaderAddress
 }
 
+func (m *mutableLeaderElection) LeadershipTerm(context.Context) (uint64, error) {
+	return 1, nil
+}
+
 func (m *mutableLeaderElection) IsLeader() bool {
 	return false
 }
