@@ -175,11 +175,6 @@ func (m *leaseManager) LeaseRevoke(ctx context.Context, req *etcdserverpb.LeaseR
 	if err != nil {
 		return nil, err
 	}
-	for _, key := range m.keysForLease(req.ID) {
-		if err = caller.require([]byte(key), nil, authpb.WRITE); err != nil {
-			return nil, err
-		}
-	}
 	ctx = withAuthWriteGuard(ctx, caller)
 	epoch, leadingFresh := m.srv.peers.EpochAndLeadingFresh()
 	if !leadingFresh {
@@ -194,7 +189,14 @@ func (m *leaseManager) LeaseRevoke(ctx context.Context, req *etcdserverpb.LeaseR
 		return nil, err
 	}
 	ctx = backend.WithLeadershipEpoch(ctx, epoch)
-	rev, err := m.revokeLease(ctx, req.ID)
+	m.leaseWriteMu.Lock()
+	defer m.leaseWriteMu.Unlock()
+	for _, key := range m.keysForLease(req.ID) {
+		if err = caller.require([]byte(key), nil, authpb.WRITE); err != nil {
+			return nil, err
+		}
+	}
+	rev, err := m.revokeLeaseLocked(ctx, req.ID)
 	if err != nil {
 		return nil, mapFenceErr(err)
 	}
@@ -682,10 +684,8 @@ func (m *leaseManager) deleteLeasedKeysAtomic(ctx context.Context, id int64, key
 	return 0, status.Error(codes.Unavailable, "etcdserver: lease keys changed during revoke")
 }
 
-func (m *leaseManager) revokeLease(ctx context.Context, id int64) (uint64, error) {
-	m.leaseWriteMu.Lock()
-	defer m.leaseWriteMu.Unlock()
-
+// revokeLeaseLocked tears down a lease while the caller holds leaseWriteMu.
+func (m *leaseManager) revokeLeaseLocked(ctx context.Context, id int64) (uint64, error) {
 	// Delete the attached keys BEFORE removing the lease state/record (#36): if a
 	// key delete fails we must keep the lease so the keys are not orphaned (no
 	// lease left to ever expire them). Only once every bound key is gone is it

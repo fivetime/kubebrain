@@ -932,6 +932,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   30 轮及覆盖 grant/revoke/expiry/leased-Put 的 race 连续 10 轮通过。官方 client 双端 Lease
   差分新增显式 ID Grant -> Revoke -> 同 ID Grant(301s) -> TTL，并在三副本 TiKV/PD exact
   image 上连同完整 lifecycle/order 连续 20 轮通过。
+- **Lease A56 revoke apply-time authorization（2026-07-17）**：对照
+  `/root/etcd/server/etcdserver/apply/auth.go` 的 `authApplierV3.LeaseRevoke`：
+  `checkLeasePuts` 在同一 apply 顺序中检查 lease 当时附着的全部 key。KubeBrain 原先在取得
+  `leaseWriteMu` 前读取 keys 并鉴权；另一个已获 RLock 的 Put 可在检查后提交新的 protected
+  key，随后有限权限调用者的 revoke 会越权删除它。现 leader 路径先取得 exclusive
+  `leaseWriteMu`，等待所有 admitted binding write 完成，再对最终 key set 检查 WRITE 权限并
+  在同一锁区间调用 `revokeLeaseLocked`；auth config 的 backend guard 继续覆盖检查后的并发
+  RBAC 变更。确定性测试阻塞 root 对 `/denied/` leased key 的 TiKV commit，同时让仅有
+  `/allowed/` 权限的 Alice revoke：revoke 必须等待 Put，之后返回 `PermissionDenied` 且 key
+  保留；focused 连续 30 轮与覆盖 auth/revoke/regrant/leased-Put 的 race 连续 10 轮通过。
+  独立 keyspace 的 exact image 上官方 client Auth lifecycle 新增同一 protected-key 场景并
+  通过，root 随后可正常 revoke 清理；临时 auth 实例已销毁。
 
 ### P1：通用服务能力
 

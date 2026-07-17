@@ -3,6 +3,7 @@ package etcd
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/authpb"
@@ -125,4 +126,57 @@ func TestAuthLeaseKeyCheckRejectsConcurrentAuthRevisionChange(t *testing.T) {
 		server.authorizeLeaseKeys(rootCtx, rootCaller, []string{"/allowed/leased"}, authpb.WRITE),
 		"etcd exempts admin callers from the lease auth revision fence",
 	)
+}
+
+func TestAuthLeaseRevokeChecksKeysAfterAdmittedPut(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	aliceCtx := setupAuthKVUser(t, server)
+	rootToken, err := server.tokens.authenticate(context.Background(), "root", "root-secret")
+	require.NoError(t, err)
+	rootCtx := metadata.NewIncomingContext(
+		context.Background(), metadata.Pairs(rpctypes.TokenFieldNameGRPC, rootToken),
+	)
+	lease, err := server.LeaseGrant(aliceCtx, &etcdserverpb.LeaseGrantRequest{TTL: 60})
+	require.NoError(t, err)
+
+	shim := &blockLeasedPutShim{
+		BackendShim: server.backend,
+		entered:     make(chan struct{}),
+		release:     make(chan struct{}),
+	}
+	server.backend = shim
+	key := []byte("/denied/concurrent-leased")
+	putDone := make(chan error, 1)
+	go func() {
+		_, err := server.Put(rootCtx, &etcdserverpb.PutRequest{Key: key, Value: []byte("secret"), Lease: lease.ID})
+		putDone <- err
+	}()
+	<-shim.entered
+
+	revokeDone := make(chan error, 1)
+	go func() {
+		_, err := server.LeaseRevoke(aliceCtx, &etcdserverpb.LeaseRevokeRequest{ID: lease.ID})
+		revokeDone <- err
+	}()
+	var (
+		revokeErr      error
+		completedEarly bool
+	)
+	select {
+	case revokeErr = <-revokeDone:
+		completedEarly = true
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(shim.release)
+	require.NoError(t, <-putDone)
+	if !completedEarly {
+		revokeErr = <-revokeDone
+	}
+	require.False(t, completedEarly, "revoke bypassed admitted leased Put")
+	require.ErrorIs(t, revokeErr, rpctypes.ErrPermissionDenied)
+	stored, err := server.backend.Get(context.Background(), &etcdserverpb.RangeRequest{Key: key})
+	require.NoError(t, err)
+	require.Len(t, stored.Kvs, 1, "denied revoke must leave the newly protected key intact")
 }

@@ -111,6 +111,15 @@ func TestAuthLifecycle(t *testing.T) {
 	require.NoError(t, err)
 
 	root := authClient(t, endpoint, "root", "root-secret")
+	protectedLease, err := alice.Grant(ctx, 30)
+	require.NoError(t, err)
+	_, err = root.Put(ctx, "/denied/root-leased", "secret", clientv3.WithLease(protectedLease.ID))
+	require.NoError(t, err)
+	_, err = alice.Revoke(ctx, protectedLease.ID)
+	require.ErrorIs(t, err, rpctypes.ErrPermissionDenied)
+	_, err = root.Revoke(ctx, protectedLease.ID)
+	require.NoError(t, err)
+
 	_, err = root.RoleAdd(ctx, "operator")
 	require.NoError(t, err)
 	// etcd simple-token semantics keep credentials valid across unrelated
