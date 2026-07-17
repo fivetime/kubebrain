@@ -488,6 +488,8 @@ func NewBackend(kv storage.KvStorage, config Config, metricCli metrics.Metrics) 
 		RetryInterval: retryInterval,
 		Tombstone:     tombStoneBytes,
 		WriteLocker:   b.logicalWriteMu.RLocker(),
+		Admit:         b.withCurrentLeadershipEpoch,
+		Fence:         b.fenceAdmit,
 	}
 	b.asyncFifoRetry = retry.NewAsyncFifoRetry(b.ks, b.coder, b.kv, b.metricCli, b.tso, b.getLatestInternalVal, b.notify, asyncRetryConfig)
 

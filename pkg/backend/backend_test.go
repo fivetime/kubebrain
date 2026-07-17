@@ -1838,6 +1838,44 @@ func TestUncertainRewrite(t *testing.T) {
 	}
 }
 
+func TestUncertainRewriteWaitsForFreshLeadership(t *testing.T) {
+	defaultRetryInterval, defaultCheckInterval := retryInterval, checkInterval
+	retryInterval, checkInterval = 20*time.Millisecond, 20*time.Millisecond
+	defer func() { retryInterval, checkInterval = defaultRetryInterval, defaultCheckInterval }()
+
+	s, closer := newTestSuites(t, memKvStorage)
+	defer closer()
+	b := s.backend.(*backend)
+	key := []byte(path.Join(prefix, "uncertain-leadership"))
+
+	var epoch atomic.Uint64
+	var leading atomic.Bool
+	epoch.Store(1)
+	leading.Store(true)
+	b.SetLeadershipFence(func() (uint64, bool) { return epoch.Load(), leading.Load() })
+
+	rev, err := b.create(s.ctx, key, []byte(testVal), 0)
+	require.NoError(t, err)
+	leading.Store(false)
+	b.notify(s.ctx, key, []byte(testVal), rev, 0, false, proto.Event_PUT, storage.ErrUncertainResult)
+	require.Eventually(t, func() bool { return b.asyncFifoRetry.Size() == 1 },
+		time.Second, 5*time.Millisecond)
+
+	time.Sleep(5 * retryInterval)
+	resp, err := b.Get(s.ctx, newGetRequest(0, string(key)))
+	require.NoError(t, err)
+	require.NotNil(t, resp.Kv)
+	require.Equal(t, rev, resp.Kv.Revision, "a follower must not create a repair revision")
+	require.Equal(t, 1, b.asyncFifoRetry.Size(), "the repair must remain queued for a future leader term")
+
+	epoch.Store(2)
+	leading.Store(true)
+	require.Eventually(t, func() bool {
+		resp, getErr := b.Get(s.ctx, newGetRequest(0, string(key)))
+		return getErr == nil && resp.Kv != nil && resp.Kv.Revision > rev && b.asyncFifoRetry.Size() == 0
+	}, 2*time.Second, 5*time.Millisecond, "the new leader must resume the queued repair")
+}
+
 func waitUntilRetryQueueDrainOrTimeout(ctx context.Context, b *backend, expectedRev uint64) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()

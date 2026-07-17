@@ -103,6 +103,12 @@ type Config struct {
 	// WriteLocker participates in the backend's logical-write barrier. It keeps
 	// an uncertain-result repair from racing a range-compare transaction.
 	WriteLocker sync.Locker
+
+	// Admit captures the current leadership term before a shared-storage repair.
+	// Fence rechecks that term immediately before opening the write batch. When
+	// unset (standalone/tests), retries are unrestricted.
+	Admit func(context.Context) (context.Context, error)
+	Fence func(context.Context) error
 }
 
 type getter func(ctx context.Context, key []byte) (val []byte, modRevision uint64, err error)
@@ -189,6 +195,15 @@ func (a *asyncFifoRetryImpl) retry(ctx context.Context) (breakLoop bool) {
 		"op", node.event.ResourceVerb.String())
 
 	retryCtx, cancel := context.WithTimeout(ctx, 2*a.config.UnaryTimeout)
+	if a.config.Admit != nil {
+		var err error
+		retryCtx, err = a.config.Admit(retryCtx)
+		if err != nil {
+			cancel()
+			state = retryFailedGet
+			return true
+		}
+	}
 	if a.config.WriteLocker != nil {
 		a.config.WriteLocker.Lock()
 		defer a.config.WriteLocker.Unlock()
@@ -252,6 +267,11 @@ func (a *asyncFifoRetryImpl) overwrite(ctx context.Context, key []byte, prevOpRe
 	rev, err = a.tso.Deal()
 	if err != nil {
 		return rev, err
+	}
+	if a.config.Fence != nil {
+		if err := a.config.Fence(ctx); err != nil {
+			return rev, err
+		}
 	}
 	revKey := a.coder.EncodeRevisionKey(key)
 	objKey := a.coder.EncodeObjectKey(key, rev)

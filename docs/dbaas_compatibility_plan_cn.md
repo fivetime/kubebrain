@@ -1483,6 +1483,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   failover-aware 官方 client/v3 测试进一步创建 1200 leases、删除 leader并等待 rollout，
   验证新 leader reload 后 expiry pileup 正确分散并完成清理。exact image
   `3abc3179684de0031bf439f49976cf9a18f84f2aeb77432e6639ec1f22928728`。
+- **Write A92 uncertain retry leadership fencing（2026-07-17）**：对照 etcd
+  `server/etcdserver/v3_server.go:raftRequest`，写请求必须在当前 Raft leadership 下
+  propose，随后由各 member apply 到各自本地存储；KubeBrain 多副本却共享 TiKV，
+  follower 不能独立创建 repair revision。审计发现 single-key uncertain result 的
+  `asyncFifoRetry` 永久使用 background context：旧 leader 的队列在 demote 后仍可能
+  Deal 新 revision、CAS 重写 key 并写 event log。即使 revision CAS 防止覆盖较新的值，
+  key 未变化时仍会产生一个新 leader live collector 未收到的 committed-yet-unwatched
+  写。现每轮 retry 在读取/Deal 前通过 backend 捕获 fresh leadership epoch，follower
+  保留队列且不分配 revision；打开 batch 前由 `fenceAdmit` 复核同一 epoch，关闭
+  admit→commit TOCTOU。fence 拒绝发生在 Deal 后时沿用既有 invalid dispatcher 填充
+  revision slot 并重新排队，不留下 collector hole。确定性测试制造需要 rewrite 的
+  invalid event，确认 follower 阶段 key revision 不变、队列保留，新 epoch leader
+  自动消费并提交 repair；既有 create/update/delete uncertain rewrite 全覆盖继续通过。
+  focused 普通 30 轮、race 10 轮、full test/backend+server race/full vet 全通过。
+  三副本 KubeBrain + 独立 TiKV/PD 上 Porcupine register history 在并发 Put/Txn 期间
+  删除 leader，5 个 transport/fence 失败作为 ambiguous outcome 建模后仍判定
+  linearizable。部署 3/3 Ready、zero restart，health 正常。exact image
+  `e0016a477626e829f38ab4b7064bc9ea6b39a6549600c7286dbf39ac2d9ee7a6`。
 
 ### P1：通用服务能力
 
