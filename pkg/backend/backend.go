@@ -350,6 +350,14 @@ type backend struct {
 	fenceFn atomic.Value
 
 	metricCli metrics.Metrics
+
+	workerCtx    context.Context
+	workerCancel context.CancelFunc
+	workerMu     sync.Mutex
+	workerWG     sync.WaitGroup
+	workerClosed bool
+	closeOnce    sync.Once
+	closeErr     error
 }
 
 // Config is the configuration for backend
@@ -437,6 +445,7 @@ func NewBackend(kv storage.KvStorage, config Config, metricCli metrics.Metrics) 
 	normalCoder := ks.NewCoder()
 	clusterID := deriveClusterID(kv, config.Keyspace)
 	electionConfig := election.Config{Prefix: config.Prefix, Identity: config.Identity, Timeout: unaryRpcTimeout}
+	workerCtx, workerCancel := context.WithCancel(context.Background())
 	b := &backend{
 		kv:                    kv,
 		tso:                   tso.NewTSO(),
@@ -465,8 +474,10 @@ func NewBackend(kv storage.KvStorage, config Config, metricCli metrics.Metrics) 
 		durableRevisionSignal: make(chan struct{}, 1),
 		compactSignal:         make(chan struct{}, 1),
 		metricCli:             metricCli,
+		workerCtx:             workerCtx,
+		workerCancel:          workerCancel,
 	}
-	b.compactCtx.Store(compactContextHolder{ctx: context.Background()})
+	b.compactCtx.Store(compactContextHolder{ctx: workerCtx})
 
 	if config.EnableCountIndex && config.EnableEtcdCompatibility {
 		b.countIndex = countindex.New(config.CountIndexMaxKeys)
@@ -475,7 +486,7 @@ func NewBackend(kv storage.KvStorage, config Config, metricCli metrics.Metrics) 
 	// Drive the storage engine's MVCC GC safepoint (leader-only; no-op unless
 	// the engine implements storage.GarbageCollector) — the gc_worker role on a
 	// bare PD+TiKV deployment (#37).
-	go b.runStorageGC(config.StorageGCLifetime)
+	b.startWorker(func(ctx context.Context) { b.runStorageGC(ctx, config.StorageGCLifetime) })
 
 	// Wire the fan-out hub's ring catch-up to the watch cache: a slow
 	// subscriber replays its missed tail from the ring instead of being
@@ -493,24 +504,52 @@ func NewBackend(kv storage.KvStorage, config Config, metricCli metrics.Metrics) 
 	}
 	b.asyncFifoRetry = retry.NewAsyncFifoRetry(b.ks, b.coder, b.kv, b.metricCli, b.tso, b.getLatestInternalVal, b.notify, asyncRetryConfig)
 
-	// TODO stop chan
 	// write into watch chan, trigger by create/ update/ delete method in storage interface
-	go b.collectStorageWriteEvents()
-	go b.runDurableRevisionPersister()
+	b.startWorker(b.collectStorageWriteEvents)
+	b.startWorker(b.runDurableRevisionPersister)
 
 	// broadcast fan-out to all subscribed watchers
-	go b.watcherHub.Stream(b.watchChan)
+	b.startWorker(func(ctx context.Context) { b.watcherHub.Stream(ctx, b.watchChan) })
 
-	go b.asyncFifoRetry.Run(context.Background())
+	b.startWorker(b.asyncFifoRetry.Run)
 
 	// drain background physical-compaction requests scheduled by CompactAsync
-	go b.runCompactor()
+	b.startWorker(b.runCompactor)
 	// Opt-in safety net (config.AutoCompactionRetention > 0); a no-op otherwise.
-	go b.runAutoCompactor()
+	b.startWorker(b.runAutoCompactor)
 	// Live count-index gauges (no-op when the index is disabled).
-	go b.emitCountIndexMetrics()
+	b.startWorker(b.emitCountIndexMetrics)
 
 	return b
+}
+
+func (b *backend) startWorker(run func(context.Context)) bool {
+	b.workerMu.Lock()
+	defer b.workerMu.Unlock()
+	if b.workerClosed {
+		return false
+	}
+	b.workerWG.Add(1)
+	go func() {
+		defer b.workerWG.Done()
+		run(b.workerCtx)
+	}()
+	return true
+}
+
+// Close stops every backend-owned worker before closing the shared-storage
+// client. It is idempotent so Endpoint cleanup and construction-error cleanup
+// can safely converge on the same owner.
+func (b *backend) Close() error {
+	b.closeOnce.Do(func() {
+		b.workerMu.Lock()
+		b.workerClosed = true
+		b.workerCancel()
+		b.workerMu.Unlock()
+		b.workerWG.Wait()
+		b.closeErr = b.kv.Close()
+	})
+	return b.closeErr
 }
 
 var ErrRevisionDriftBack = errors.New("revision drift back")
@@ -572,7 +611,7 @@ func (s *collectorStallState) note(nextRevision, dealt uint64, leading bool, now
 // reset clears stall tracking after the collector makes progress.
 func (s *collectorStallState) reset() { s.rev = 0 }
 
-func (b *backend) collectStorageWriteEvents() {
+func (b *backend) collectStorageWriteEvents(ctx context.Context) {
 	// Stall watchdog state. Every dealt revision is paired with a notify (valid or
 	// invalid) on every normal path, so a ring slot fills within the write RPC
 	// timeout (unaryRpcTimeout). A slot that stays empty far longer while its
@@ -585,6 +624,9 @@ func (b *backend) collectStorageWriteEvents() {
 	var stall collectorStallState
 	// infinite loop
 	for {
+		if ctx.Err() != nil {
+			return
+		}
 		events := make([]*proto.Event, 0, eventBatchSize)
 		for len(events) < eventBatchSize {
 			nextRevision := b.GetCurrentRevision() + 1
@@ -619,6 +661,8 @@ func (b *backend) collectStorageWriteEvents() {
 					// common idle state — on a leader between writes, and always
 					// on followers where revisions advance via SetCurrentRevision.
 					select {
+					case <-ctx.Done():
+						return
 					case <-b.writeSignal:
 					case <-time.After(idleWaitTimeout):
 					}
@@ -671,7 +715,11 @@ func (b *backend) collectStorageWriteEvents() {
 		}
 
 		if len(events) > 0 {
-			b.watchChan <- events
+			select {
+			case <-ctx.Done():
+				return
+			case b.watchChan <- events:
+			}
 		}
 	}
 }
@@ -765,19 +813,24 @@ func (b *backend) advanceCountIndexReadyRev(revision uint64) {
 // see when the index has overflowed (disabled, counts fall back to a scan). The
 // count_index.keys gauge is otherwise refreshed only on a rebuild and goes stale
 // as live writes add and delete keys.
-func (b *backend) emitCountIndexMetrics() {
+func (b *backend) emitCountIndexMetrics(ctx context.Context) {
 	if b.countIndex == nil {
 		return
 	}
 	ticker := time.NewTicker(countIndexMetricInterval)
 	defer ticker.Stop()
-	for range ticker.C {
-		b.metricCli.EmitGauge("count_index.keys", b.countIndex.Len())
-		overflowed := 0
-		if b.countIndex.Overflowed() {
-			overflowed = 1
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			b.metricCli.EmitGauge("count_index.keys", b.countIndex.Len())
+			overflowed := 0
+			if b.countIndex.Overflowed() {
+				overflowed = 1
+			}
+			b.metricCli.EmitGauge("count_index.overflowed", overflowed)
 		}
-		b.metricCli.EmitGauge("count_index.overflowed", overflowed)
 	}
 }
 

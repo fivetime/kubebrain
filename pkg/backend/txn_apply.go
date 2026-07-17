@@ -438,7 +438,9 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 			// each key at a separate revision and expose torn transaction state.
 			// Event-log records were staged in the same atomic batch, so resolve
 			// the whole outcome from those durable markers and publish once.
-			go b.resolveUncertainTxn(preps, newRevision)
+			b.startWorker(func(ctx context.Context) {
+				b.resolveUncertainTxn(ctx, preps, newRevision)
+			})
 			klog.ErrorS(cerr, "txn apply commit result uncertain; resolving as one transaction",
 				"revision", newRevision, "ops", len(ops))
 			return nil, newRevision, false, cerr
@@ -520,17 +522,28 @@ func txnHasEffectiveUserWrite(preps []txnPrep) bool {
 	return false
 }
 
-func (b *backend) resolveUncertainTxn(preps []txnPrep, revision uint64) {
+func (b *backend) resolveUncertainTxn(workerCtx context.Context, preps []txnPrep, revision uint64) {
 	retryDelay := 100 * time.Millisecond
 	for {
-		ctx, cancel := context.WithTimeout(context.Background(), unaryRpcTimeout)
+		ctx, cancel := context.WithTimeout(workerCtx, unaryRpcTimeout)
 		committed, err := b.txnCommitRecorded(ctx, preps, revision)
 		cancel()
 		if err != nil {
+			if workerCtx.Err() != nil {
+				return
+			}
 			b.metricCli.EmitCounter("txn.uncertain.resolve.retry", 1)
 			klog.ErrorS(err, "failed to resolve uncertain txn; retrying whole transaction",
 				"revision", revision, "retryAfter", retryDelay)
-			time.Sleep(retryDelay)
+			timer := time.NewTimer(retryDelay)
+			select {
+			case <-workerCtx.Done():
+				if !timer.Stop() {
+					<-timer.C
+				}
+				return
+			case <-timer.C:
+			}
 			if retryDelay < time.Second {
 				retryDelay *= 2
 				if retryDelay > time.Second {

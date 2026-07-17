@@ -974,7 +974,7 @@ func TestUncertainLeaseReconcileCannotOverwriteReloadedGeneration(t *testing.T) 
 	server.backend = staleRead
 	done := make(chan struct{})
 	go func() {
-		server.reconcileLeaseIndexesAtRevision(b.GetCurrentRevision(), []string{key}, 1, oldGeneration)
+		server.reconcileLeaseIndexesAtRevision(context.Background(), b.GetCurrentRevision(), []string{key}, 1, oldGeneration)
 		close(done)
 	}()
 	<-staleRead.entered

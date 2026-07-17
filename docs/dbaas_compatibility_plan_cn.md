@@ -1501,6 +1501,27 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   删除 leader，5 个 transport/fence 失败作为 ambiguous outcome 建模后仍判定
   linearizable。部署 3/3 Ready、zero restart，health 正常。exact image
   `e0016a477626e829f38ab4b7064bc9ea6b39a6549600c7286dbf39ac2d9ee7a6`。
+- **Runtime A93 coordinated graceful shutdown（2026-07-17）**：对照
+  `/root/etcd/server/embed/etcd.go:Close` 先停止接入、再停止核心循环、最后等待
+  子 goroutine 的顺序，补齐 KubeBrain 此前缺失的统一进程生命周期。backend 的
+  collector、revision durability、count metrics、compactor、auto-compactor、
+  physical compaction 和 storage GC 七类常驻 worker，以及 uncertain txn repair
+  动态任务，现在统一注册到可取消 context 与 WaitGroup；lease orphan sweeper、
+  uncertain index reconciliation 和 expiry/checkpoint timer 任务也使用独立的
+  lease lifecycle。`Close` 先阻止新任务注册，再取消并等待在途任务，最后关闭
+  TiKV storage，避免 worker 在 client close 后继续读写；watch stream 同时响应
+  shutdown context。Endpoint 按 server/lease tasks → backend workers → TiKV/PD
+  client 的顺序幂等关闭，并把 HTTP/gRPC/listener 的正常 close 归一为成功，修复
+  `runSubServer` 和 root mux goroutine 共享命名错误变量的 data race。阻塞式 GC
+  回归确认 storage close 严格发生在 worker 退出后且只执行一次；focused 普通
+  20 轮、race 20 轮、full test、backend/server/etcd/endpoint full race 与 full
+  vet 均通过，最终日志改动后 endpoint race 20 轮和 full vet 再次通过。三副本
+  KubeBrain + 独立 TiKV/PD 上分别删除 follower 和 leader，应用关停约 33ms/35ms，
+  最终镜像复验约 36ms；listener/endpoint 均以 Info 正常退出，TiKV/PD client
+  完整关闭，无 Cobra usage、panic 或强制退出。client-go leader election 在 context
+  取消与锁读取相撞时仍会先输出一条其内部 Error，随后明确记录 cancellation stop，
+  不代表关停失败。部署自动恢复 3/3 Ready，health 与 CRUD 正常。exact image
+  `d708d8582c22a2c1b3738b388925aef31e432ba5c95a69c90429639952f4a150`。
 
 ### P1：通用服务能力
 

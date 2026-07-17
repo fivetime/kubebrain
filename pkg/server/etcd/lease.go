@@ -563,19 +563,29 @@ func (m *leaseManager) reconcileLeaseIndexesAfterUncertain(err error, revision u
 	m.leaseMu.Lock()
 	generation := m.leaseGeneration
 	m.leaseMu.Unlock()
-	go m.reconcileLeaseIndexesAtRevision(revision, keys, epoch, generation)
+	m.startWorker(func(ctx context.Context) {
+		m.reconcileLeaseIndexesAtRevision(ctx, revision, keys, epoch, generation)
+	})
 }
 
 // reconcileLeaseIndexesAtRevision waits until the backend has resolved an
 // uncertain transaction, then rebuilds the affected in-memory bindings from the
 // durable attachment records. The exclusive lease-write lock orders this repair
 // against every later attach, detach, revoke, and expiry operation.
-func (m *leaseManager) reconcileLeaseIndexesAtRevision(revision uint64, keys []string, epoch, generation uint64) {
+func (m *leaseManager) reconcileLeaseIndexesAtRevision(workerCtx context.Context, revision uint64, keys []string, epoch, generation uint64) {
 	for m.srv.backend.GetCurrentRevision() < revision {
 		if current, leading := m.srv.peers.EpochAndLeadingFresh(); !leading || current != epoch {
 			return
 		}
-		time.Sleep(100 * time.Millisecond)
+		timer := time.NewTimer(100 * time.Millisecond)
+		select {
+		case <-workerCtx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return
+		case <-timer.C:
+		}
 	}
 
 	retryDelay := 100 * time.Millisecond
@@ -588,7 +598,7 @@ func (m *leaseManager) reconcileLeaseIndexesAtRevision(revision uint64, keys []s
 		bindings := make(map[string]int64, len(keys))
 		retry := false
 		for _, key := range keys {
-			ctx, cancel := context.WithTimeout(context.Background(), unaryRpcTimeout)
+			ctx, cancel := context.WithTimeout(workerCtx, unaryRpcTimeout)
 			value, err := m.srv.backend.InternalGet(ctx, leaseAttachKey(key))
 			cancel()
 			switch {
@@ -634,7 +644,15 @@ func (m *leaseManager) reconcileLeaseIndexesAtRevision(revision uint64, keys []s
 			return
 		}
 		m.leaseWriteMu.Unlock()
-		time.Sleep(retryDelay)
+		timer := time.NewTimer(retryDelay)
+		select {
+		case <-workerCtx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return
+		case <-timer.C:
+		}
 		if retryDelay < time.Second {
 			retryDelay *= 2
 			if retryDelay > time.Second {
@@ -934,6 +952,10 @@ func (m *leaseManager) revokeLeaseLocked(ctx context.Context, id int64) (uint64,
 }
 
 func (m *leaseManager) expireLease(id int64) {
+	m.expireLeaseWithContext(context.Background(), id)
+}
+
+func (m *leaseManager) expireLeaseWithContext(workerCtx context.Context, id int64) {
 	m.leaseWriteMu.Lock()
 	defer m.leaseWriteMu.Unlock()
 
@@ -959,7 +981,7 @@ func (m *leaseManager) expireLease(id int64) {
 		return
 	}
 
-	ctx := backend.WithLeadershipEpoch(context.Background(), epoch)
+	ctx := backend.WithLeadershipEpoch(workerCtx, epoch)
 	keys, ok := m.leaseKeysSnapshot(id)
 	if !ok {
 		return // already removed
@@ -1452,7 +1474,15 @@ func (m *leaseManager) startOrphanSweeper(ctx context.Context) {
 	m.orphanSweepStop = stop
 	interval := m.orphanSweepInterval
 	m.leaseMu.Unlock()
-	go m.runOrphanSweeper(ctx, stop, interval)
+	m.startWorker(func(workerCtx context.Context) {
+		merged, cancel := context.WithCancel(ctx)
+		stopWorker := context.AfterFunc(workerCtx, cancel)
+		defer func() {
+			stopWorker()
+			cancel()
+		}()
+		m.runOrphanSweeper(merged, stop, interval)
+	})
 }
 
 // stopOrphanSweeper signals the sweeper goroutine to exit (idempotent).
@@ -1571,7 +1601,9 @@ func (m *leaseManager) scheduleLeaseLocked(st *leaseState) {
 	}
 	if st.timer == nil {
 		st.timer = time.AfterFunc(duration, func() {
-			m.expireLease(st.id)
+			m.startWorker(func(ctx context.Context) {
+				m.expireLeaseWithContext(ctx, st.id)
+			})
 		})
 		return
 	}
@@ -1587,7 +1619,9 @@ func (m *leaseManager) scheduleLeaseCheckpointLocked(st *leaseState) {
 	}
 	if st.checkpointTimer == nil {
 		st.checkpointTimer = time.AfterFunc(leaseCheckpointInterval, func() {
-			m.checkpointLease(st.id)
+			m.startWorker(func(ctx context.Context) {
+				m.checkpointLeaseWithContext(ctx, st.id)
+			})
 		})
 		return
 	}
@@ -1605,12 +1639,16 @@ func (m *leaseManager) retryLeaseCheckpoint(id int64) {
 }
 
 func (m *leaseManager) checkpointLease(id int64) {
+	m.checkpointLeaseWithContext(context.Background(), id)
+}
+
+func (m *leaseManager) checkpointLeaseWithContext(workerCtx context.Context, id int64) {
 	epoch, leadingFresh := m.srv.peers.EpochAndLeadingFresh()
 	if !leadingFresh {
 		m.retryLeaseCheckpoint(id)
 		return
 	}
-	ctx := backend.WithLeadershipEpoch(context.Background(), epoch)
+	ctx := backend.WithLeadershipEpoch(workerCtx, epoch)
 
 	m.leaseCheckpointMu.Lock()
 	defer m.leaseCheckpointMu.Unlock()

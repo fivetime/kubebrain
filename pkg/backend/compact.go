@@ -44,6 +44,21 @@ func (b *backend) maintenanceContext() context.Context {
 	return context.Background()
 }
 
+func (b *backend) maintenanceContextWithShutdown(shutdown context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	var ctx context.Context
+	var cancel context.CancelFunc
+	if timeout > 0 {
+		ctx, cancel = context.WithTimeout(b.maintenanceContext(), timeout)
+	} else {
+		ctx, cancel = context.WithCancel(b.maintenanceContext())
+	}
+	stop := context.AfterFunc(shutdown, cancel)
+	return ctx, func() {
+		stop()
+		cancel()
+	}
+}
+
 func (b *backend) Compact(ctx context.Context, revision uint64) (*proto.CompactResponse, error) {
 	revision = b.clampCompactRevision(revision)
 
@@ -451,16 +466,28 @@ const physicalCompactRetryInterval = time.Second
 // runCompactor drains background physical-compaction requests, one scan at a
 // time, always compacting up to the latest requested revision (coalescing any
 // requests that arrived while a scan was running).
-func (b *backend) runCompactor() {
+func (b *backend) runCompactor(workerCtx context.Context) {
 	var lastScanned uint64
-	for range b.compactSignal {
+	for {
+		select {
+		case <-workerCtx.Done():
+			return
+		case <-b.compactSignal:
+		}
 		for {
+			if workerCtx.Err() != nil {
+				return
+			}
 			target := atomic.LoadUint64(&b.compactTriggerRev)
 			if target <= lastScanned {
 				break
 			}
-			ctx := b.maintenanceContext()
+			ctx, cancel := b.maintenanceContextWithShutdown(workerCtx, 0)
 			if err := b.physicalCompact(ctx, target); err != nil {
+				cancel()
+				if workerCtx.Err() != nil {
+					return
+				}
 				// Do not claim completion. Retry independently of a newer logical
 				// compact request so transient storage failures cannot leave physical
 				// history stranded forever.
@@ -469,6 +496,7 @@ func (b *backend) runCompactor() {
 				})
 				break
 			}
+			cancel()
 			lastScanned = target
 			atomic.StoreUint64(&b.compactDoneRev, target)
 			// Export the physical-GC watermark so operators can see whether GC is
@@ -497,17 +525,23 @@ const (
 // it is idempotent and cannot fight a healthy apiserver: whichever target is
 // higher wins. With a generous retention it only ever bites when the primary
 // compactor has fallen far behind. Reuses the existing physical GC (no new scan).
-func (b *backend) runAutoCompactor() {
+func (b *backend) runAutoCompactor(workerCtx context.Context) {
 	retention := b.config.AutoCompactionRetention
 	if retention == 0 {
 		return
 	}
-	ctx := context.Background()
 	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
 	for {
 		wait := autoCompactBaseInterval + time.Duration(rng.Int63n(int64(autoCompactJitter)+1))
 		timer := time.NewTimer(wait)
-		<-timer.C
+		select {
+		case <-workerCtx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return
+		case <-timer.C:
+		}
 
 		// Only the leader drives compaction. leadingFresh is true on single-node /
 		// unfenced test backends, so those auto-compact too when enabled.
@@ -515,7 +549,7 @@ func (b *backend) runAutoCompactor() {
 			continue
 		}
 		cur := b.tso.GetRevision()
-		compacted, cerr := b.GetCompactRevision(ctx)
+		compacted, cerr := b.GetCompactRevision(workerCtx)
 		if cerr != nil {
 			continue
 		}
@@ -523,7 +557,7 @@ func (b *backend) runAutoCompactor() {
 		if !act {
 			continue // not enough history yet, or the watermark already covers it
 		}
-		got, err := b.CompactAsync(ctx, target)
+		got, err := b.CompactAsync(workerCtx, target)
 		if err != nil {
 			b.metricCli.EmitCounter("backend.auto_compact.err", 1)
 			klog.ErrorS(err, "auto-compaction safety net failed", "target", target)

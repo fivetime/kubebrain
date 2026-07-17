@@ -203,7 +203,7 @@ func (w *WatcherHub) CloseAll() {
 }
 
 // Stream push events to watchers.
-func (w *WatcherHub) Stream(input chan []*proto.Event) {
+func (w *WatcherHub) Stream(ctx context.Context, input chan []*proto.Event) {
 	// A once-per-second progress tick fans an in-band marker carrying the current
 	// published watermark to every subscriber (including quiet ones the event
 	// broadcast skips), so a quiet watch's progress notification advances with the
@@ -218,6 +218,9 @@ func (w *WatcherHub) Stream(input chan []*proto.Event) {
 	defer ticker.Stop()
 	for {
 		select {
+		case <-ctx.Done():
+			w.CloseAll()
+			return
 		case item, ok := <-input:
 			if !ok {
 				klog.Info("[watcher hub] input channel from heap closed, delete all watchers")

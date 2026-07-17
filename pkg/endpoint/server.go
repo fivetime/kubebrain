@@ -16,6 +16,7 @@ package endpoint
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -124,7 +125,11 @@ func newRootServer(port int, ss ...exposedServer) *rootServer {
 
 func (gs *rootServer) run(ctx context.Context) (err error) {
 	defer func() {
-		klog.ErrorS(err, "root servers shutdown", "port", gs.port)
+		if err != nil {
+			klog.ErrorS(err, "root servers shutdown", "port", gs.port)
+		} else {
+			klog.InfoS("root servers shutdown", "port", gs.port)
+		}
 	}()
 	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", gs.port))
 	if err != nil {
@@ -136,9 +141,12 @@ func (gs *rootServer) run(ctx context.Context) (err error) {
 	go func() {
 		defer util.Recover()
 		klog.InfoS("root server start to listen", "port", gs.port)
-		err = mux.Serve()
-		klog.ErrorS(err, "root server shutdown cause by temporary network error", "port", gs.port)
-		return
+		muxErr := mux.Serve()
+		if errors.Is(muxErr, net.ErrClosed) {
+			klog.InfoS("root server listener closed", "port", gs.port)
+		} else {
+			klog.ErrorS(muxErr, "root server shutdown cause by temporary network error", "port", gs.port)
+		}
 	}()
 
 	return runServers(ctx, mux, gs.services)
@@ -183,10 +191,16 @@ func runSubServer(ctx context.Context, lsn net.Listener, server exposedServer) f
 
 			// run until server is closed or has an internal error
 			klog.InfoS("run server", "name", server.name(), "addr", lsn.Addr())
-			if err = server.serve(lsn); err != nil {
-				klog.ErrorS(err, "exposed server stop", "name", server.name(), "addr", lsn.Addr())
-				closed <- err
+			serveErr := server.serve(lsn)
+			if errors.Is(serveErr, http.ErrServerClosed) ||
+				errors.Is(serveErr, grpc.ErrServerStopped) ||
+				errors.Is(serveErr, net.ErrClosed) {
+				serveErr = nil
 			}
+			if serveErr != nil {
+				klog.ErrorS(serveErr, "exposed server stop", "name", server.name(), "addr", lsn.Addr())
+			}
+			closed <- serveErr
 			close(closed)
 		}()
 

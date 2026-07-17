@@ -36,13 +36,18 @@ func (b *backend) queueDurableRevision(target uint64) {
 	}
 }
 
-func (b *backend) runDurableRevisionPersister() {
-	for range b.durableRevisionSignal {
-		for {
-			target := atomic.LoadUint64(&b.durableRevisionTarget)
-			b.persistDurableRevision(target)
-			if atomic.LoadUint64(&b.durableRevisionTarget) == target {
-				break
+func (b *backend) runDurableRevisionPersister(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-b.durableRevisionSignal:
+			for {
+				target := atomic.LoadUint64(&b.durableRevisionTarget)
+				b.persistDurableRevision(target)
+				if atomic.LoadUint64(&b.durableRevisionTarget) == target {
+					break
+				}
 			}
 		}
 	}

@@ -366,7 +366,7 @@ func TestStreamDeliversGapFreePrefixToSlowConsumer(t *testing.T) {
 
 	input := make(chan []*proto.Event)
 	done := make(chan struct{})
-	go func() { hub.Stream(input); close(done) }()
+	go func() { hub.Stream(context.Background(), input); close(done) }()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

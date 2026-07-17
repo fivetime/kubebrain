@@ -78,6 +78,16 @@ type server struct {
 	config Config
 }
 
+func (s *server) Close() error {
+	if s.etcdServer != nil {
+		s.etcdServer.Close()
+	}
+	if s.peers != nil {
+		return s.peers.Close()
+	}
+	return nil
+}
+
 // NewServer returns the server
 func NewServer(ctx context.Context, backend backend.Backend, metricCli metrics.Metrics, config Config) Server {
 	s := &server{

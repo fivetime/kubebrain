@@ -16,6 +16,7 @@ package endpoint
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	// Deliberately NOT importing net/http/pprof: its init() registers handlers on
 	// http.DefaultServeMux, which would re-expose unauthenticated pprof the moment
@@ -71,12 +72,24 @@ func NewEndpoint(b backend.Backend, m metrics.Metrics, config *Config) *Endpoint
 func (e *Endpoint) Run(ctx context.Context) (err error) {
 
 	e.server = server.NewServer(ctx, e.backend, e.metrics, e.config.getServerConfig())
+	defer func() {
+		if closer, ok := e.server.(interface{ Close() error }); ok {
+			err = errors.Join(err, closer.Close())
+		}
+		if closer, ok := e.backend.(interface{ Close() error }); ok {
+			err = errors.Join(err, closer.Close())
+		}
+	}()
 
 	// start exposed server
 	ctx, cancel := context.WithCancel(ctx)
 	defer func() {
 		cancel()
-		klog.ErrorS(err, "shutdown")
+		if err != nil {
+			klog.ErrorS(err, "shutdown")
+		} else {
+			klog.Info("shutdown complete")
+		}
 	}()
 
 	group, ctx := errgroup.WithContext(ctx)

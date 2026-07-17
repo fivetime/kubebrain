@@ -212,6 +212,12 @@ func New(backend b.Backend, metricCli metrics.Metrics, peers service.PeerService
 	return server
 }
 
+// Close stops lease timers and waits for every lease-owned background task.
+// Endpoint invokes it after listeners drain and before the backend closes TiKV.
+func (s *RPCServer) Close() {
+	s.leaseManager.close()
+}
+
 // SetRequestLimits configures etcd-compatible admission limits. Zero keeps the
 // defaults for programmatic embedders that predate these fields.
 func (s *RPCServer) SetRequestLimits(maxTxnOps, maxRequestBytes uint) {

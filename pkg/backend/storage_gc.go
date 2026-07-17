@@ -40,7 +40,7 @@ import (
 // maintenance); PD's safepoint is monotonic, so a stale deposed leader's late
 // push can never move it backwards. Coexists safely with a TiDB gc_worker
 // pushing the same cluster: both publish monotonic safepoints.
-func (b *backend) runStorageGC(lifetime time.Duration) {
+func (b *backend) runStorageGC(workerCtx context.Context, lifetime time.Duration) {
 	gc, ok := storage.FindCapability[storage.GarbageCollector](b.kv)
 	if !ok || lifetime <= 0 {
 		return
@@ -52,19 +52,27 @@ func (b *backend) runStorageGC(lifetime time.Duration) {
 	klog.InfoS("storage GC driver started", "lifetime", lifetime, "interval", interval)
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
-	for range ticker.C {
-		if !b.leadingFresh() {
-			continue
+	for {
+		select {
+		case <-workerCtx.Done():
+			return
+		case <-ticker.C:
+			if !b.leadingFresh() {
+				continue
+			}
+			ctx, cancel := b.maintenanceContextWithShutdown(workerCtx, interval)
+			safepoint, err := gc.GC(ctx, lifetime)
+			cancel()
+			if err != nil {
+				if workerCtx.Err() != nil {
+					return
+				}
+				b.metricCli.EmitCounter("storage.gc.err", 1)
+				klog.ErrorS(err, "storage GC safepoint advance failed")
+				continue
+			}
+			b.metricCli.EmitGauge("storage.gc.safepoint", safepoint)
+			klog.V(2).InfoS("storage GC safepoint advanced", "safepoint", safepoint)
 		}
-		ctx, cancel := context.WithTimeout(b.maintenanceContext(), interval)
-		safepoint, err := gc.GC(ctx, lifetime)
-		cancel()
-		if err != nil {
-			b.metricCli.EmitCounter("storage.gc.err", 1)
-			klog.ErrorS(err, "storage GC safepoint advance failed")
-			continue
-		}
-		b.metricCli.EmitGauge("storage.gc.safepoint", safepoint)
-		klog.V(2).InfoS("storage GC safepoint advanced", "safepoint", safepoint)
 	}
 }
