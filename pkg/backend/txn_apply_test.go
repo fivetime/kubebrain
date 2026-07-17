@@ -93,6 +93,34 @@ func (uncertainNoopBatch) Commit(context.Context) error {
 	return storage.NewErrUncertainResult(context.DeadlineExceeded)
 }
 
+type transientCASStorage struct {
+	storage.KvStorage
+	failUntil atomic.Int64
+}
+
+func (s *transientCASStorage) BeginBatchWrite() storage.BatchWrite {
+	if time.Now().UnixNano() < s.failUntil.Load() {
+		return transientCASBatch{}
+	}
+	return s.KvStorage.BeginBatchWrite()
+}
+
+type transientCASBatch struct{}
+
+func (transientCASBatch) PutIfNotExist([]byte, []byte, int64) {}
+func (transientCASBatch) CAS([]byte, []byte, []byte, int64)   {}
+func (transientCASBatch) Put([]byte, []byte, int64)           {}
+func (transientCASBatch) Del([]byte)                          {}
+func (transientCASBatch) DelCurrent(storage.Iter)             {}
+func (transientCASBatch) Commit(ctx context.Context) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(50 * time.Millisecond):
+		return storage.ErrCASFailed
+	}
+}
+
 func newTxnApplyBackend(t *testing.T) (*backend, context.Context) {
 	ctrl := gomock.NewController(t)
 	t.Cleanup(ctrl.Finish)
@@ -112,6 +140,54 @@ func liveValue(t *testing.T, b *backend, ctx context.Context, key []byte) (strin
 		return "", 0
 	}
 	return string(StripInlineValue(resp.Kv.Value)), resp.Kv.Revision
+}
+
+func TestTxnApplyHonorsCallerDeadlineBeyondBackendFallback(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	metrics := mock.NewMinimalMetrics(ctrl)
+	raw := imemkv.NewKvStorage()
+	defer func() { require.NoError(t, raw.Close()) }()
+	kv := &transientCASStorage{KvStorage: raw}
+	b := NewBackend(kv, Config{
+		Prefix: prefix, Identity: getStorageIdentity(), EnableEtcdCompatibility: true,
+	}, metrics).(*backend)
+	b.SetCurrentRevision(uint64(time.Now().UnixNano()))
+	kv.failUntil.Store(time.Now().Add(1100 * time.Millisecond).UnixNano())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2500*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	results, revision, err := b.TxnApply(ctx, []TxnWriteOp{{
+		Key: []byte(prefix + "/deadline/recovered"), Value: []byte("value"),
+	}}, nil)
+	require.NoError(t, err)
+	require.Greater(t, time.Since(started), time.Second)
+	require.NotZero(t, revision)
+	require.Len(t, results, 1)
+	require.True(t, results[0].Created)
+}
+
+func TestTxnApplyWithoutCallerDeadlineRetainsFallback(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	metrics := mock.NewMinimalMetrics(ctrl)
+	raw := imemkv.NewKvStorage()
+	defer func() { require.NoError(t, raw.Close()) }()
+	kv := &transientCASStorage{KvStorage: raw}
+	b := NewBackend(kv, Config{
+		Prefix: prefix, Identity: getStorageIdentity(), EnableEtcdCompatibility: true,
+	}, metrics).(*backend)
+	b.SetCurrentRevision(uint64(time.Now().UnixNano()))
+	kv.failUntil.Store(time.Now().Add(3 * time.Second).UnixNano())
+
+	started := time.Now()
+	_, _, err := b.TxnApply(context.Background(), []TxnWriteOp{{
+		Key: []byte(prefix + "/deadline/fallback"), Value: []byte("value"),
+	}}, nil)
+	require.ErrorIs(t, err, storage.ErrUnavailable)
+	require.Greater(t, time.Since(started), 900*time.Millisecond)
+	require.Less(t, time.Since(started), 3*time.Second)
 }
 
 // TestTxnApplySingleRevisionAtomic verifies a mixed put/delete txn applies all

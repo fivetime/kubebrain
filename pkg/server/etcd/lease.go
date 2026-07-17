@@ -84,6 +84,8 @@ type leaseRecord struct {
 
 func (m *leaseManager) LeaseGrant(ctx context.Context, req *etcdserverpb.LeaseGrantRequest) (*etcdserverpb.LeaseGrantResponse, error) {
 	m.srv.metricCli.EmitCounter("lease.grant", 1)
+	ctx, cancel := withUnaryRequestTimeout(ctx)
+	defer cancel()
 	caller, err := m.srv.authCallerFromContext(ctx)
 	if err != nil {
 		return nil, err
@@ -179,6 +181,8 @@ func (m *leaseManager) LeaseGrant(ctx context.Context, req *etcdserverpb.LeaseGr
 
 func (m *leaseManager) LeaseRevoke(ctx context.Context, req *etcdserverpb.LeaseRevokeRequest) (*etcdserverpb.LeaseRevokeResponse, error) {
 	m.srv.metricCli.EmitCounter("lease.revoke", 1)
+	ctx, cancel := withUnaryRequestTimeout(ctx)
+	defer cancel()
 	caller, err := m.srv.authCallerFromContext(ctx)
 	if err != nil {
 		return nil, err

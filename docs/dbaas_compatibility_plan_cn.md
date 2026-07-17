@@ -31,8 +31,8 @@ Raft、bbolt 和成员管理内部实现，而是对通用 etcd v3 客户端提�
 
 | 服务 | 能力 | 当前状态 | DBaaS 处理 |
 | --- | --- | --- | --- |
-| KV | Range/Put/DeleteRange | 部分兼容 | P0：事务内排序、过滤、历史读、大范围删除原子性及独立 Put/Range/DeleteRange 差分已补齐；继续做大范围资源限制与故障验证 |
-| KV | Txn | 部分兼容 | P0：缺失键 guard、范围 phantom guard、嵌套分支和 staged 单 revision 提交已完成；继续做官方客户端差分及 TiKV 故障验证 |
+| KV | Range/Put/DeleteRange | 部分兼容 | P0：事务内排序、过滤、历史读、大范围删除原子性、生产范围上限及独立 Put/Range/DeleteRange 差分已补齐；继续扩大 TiKV 故障验证 |
+| KV | Txn | 部分兼容 | P0：缺失键 guard、范围 phantom guard、嵌套分支、staged 单 revision 提交及 caller deadline 贯穿后端冲突重试已完成；继续扩大官方客户端差分及 TiKV 故障验证 |
 | KV | Compact | 兼容核心语义 | P0：继续对齐 logical/physical 行为、错误与异步 GC |
 | KV | RangeStream | 兼容核心语义 | etcd 3.7 支持的 CountOnly/Limit/KeysOnly/默认排序已对齐；自定义排序与 revision filter 同 etcd 明确 Unimplemented |
 | Watch | create/cancel/progress/history/prevKV | 兼容核心语义 | P0：用官方客户端做事件完整性、压缩、断线恢复和慢消费者测试 |
@@ -1339,6 +1339,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   exact image
   `4584b5ed9623b56b8af8df46ec11d1e7c09618d9236342d661ecbf593646f440`；
   最终恢复 limit=1024，部署 3/3 Ready、zero restart，实时 health 与 CRUD 通过。
+- **Txn A83 caller deadline propagation（2026-07-17）**：对照 etcd
+  `server/config/config.go:ReqTimeout` 与 `etcdserver/v3_server.go`，请求预算应覆盖
+  排队、计算、磁盘 I/O 和可能的 leader election，并由 request context 贯穿 apply。
+  KubeBrain etcd 层虽给 Txn 10 秒预算（且会被更短客户端 deadline 截断），backend
+  `TxnApply` 却固定在 1 秒停止 CAS 重试，且 standalone Put/DeleteRange 未主动补
+  server budget，导致 TiKV leader transfer、region
+  reschedule 或短暂热点冲突在有效请求预算内被提前误报 `Unavailable`。现
+  Put/DeleteRange/Txn 和 Lease Grant/Revoke unary 写入口统一注入 10 秒预算并保留
+  更短 client deadline；`TxnApply` 使用该 context deadline。仅直接/后台无 deadline
+  调用保留 1 秒兜底，避免无界循环。确定性存储故障测试让 CAS 冲突持续 1.1 秒：
+  2.5 秒 caller deadline 下恢复后成功原子提交；background context 仍约 1 秒返回
+  `ErrUnavailable`。server 记录型 shim 另验证 standalone DeleteRange 无 client
+  deadline 时收到约 10 秒预算，500ms client deadline 不会被延长。focused
+  普通 10 轮、race 3 轮及 full test/race/vet 全部通过；三副本 KubeBrain +
+  独立 TiKV/PD 上官方 client/v3 的多写 Txn、compare Txn、staged range、
+  overlapping DeleteRange 单 revision 与 Lease+physical compact 五组连续 3 轮
+  通过。exact image
+  `e51405856ed4e7457f42912a5b43595c960c29cc4b0e22ef3df7c179243d6dc6`；
+  最终部署 3/3 Ready、zero restart，稳定期日志、health 和 CRUD 正常。
 
 ### P1：通用服务能力
 

@@ -89,6 +89,14 @@ func (b *backend) TxnApply(ctx context.Context, ops []TxnWriteOp, guards []TxnGu
 	unlock := b.lockLogicalWrite(ctx)
 	defer unlock()
 	deadline := time.Now().Add(unaryRpcTimeout)
+	if callerDeadline, ok := ctx.Deadline(); ok {
+		// The etcd layer supplies its request budget (10s by default), already
+		// clamped by any shorter client deadline. Do not replace that valid
+		// budget with the backend's 1s fallback: a transient TiKV conflict or
+		// leader transfer can legitimately outlive one second. Direct/internal
+		// callers without a deadline retain the bounded fallback above.
+		deadline = callerDeadline
+	}
 	for {
 		if cerr := ctx.Err(); cerr != nil {
 			return nil, 0, cerr

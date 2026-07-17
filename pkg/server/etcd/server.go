@@ -129,6 +129,10 @@ func (s *RPCServer) SetMaxDeleteRangeKeys(limit uint32) {
 	s.maxDeleteRangeKeys = limit
 }
 
+func withUnaryRequestTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, unaryRpcTimeout)
+}
+
 // SetMaxWatches sets the process-wide logical watch limit. It is configured
 // before serving starts, so the limit itself is immutable on request paths.
 func (s *RPCServer) SetMaxWatches(limit uint32) {

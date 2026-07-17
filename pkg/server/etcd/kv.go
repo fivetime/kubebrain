@@ -320,7 +320,7 @@ func (s *RPCServer) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etc
 	if ok && startTime.Sub(deadline) >= 0 {
 		return nil, context.DeadlineExceeded
 	}
-	ctx, cancel := context.WithTimeout(ctx, unaryRpcTimeout)
+	ctx, cancel := withUnaryRequestTimeout(ctx)
 	defer cancel()
 	if txnIsReadonly(txn) && txnIsSerializable(txn) {
 		revision, err := s.serializableTxnRevision(ctx)
@@ -821,6 +821,8 @@ func (s *RPCServer) waitCompactRevisionVisible(ctx context.Context, revision int
 
 func (s *RPCServer) Put(ctx context.Context, r *etcdserverpb.PutRequest) (*etcdserverpb.PutResponse, error) {
 	startTime := time.Now()
+	ctx, cancel := withUnaryRequestTimeout(ctx)
+	defer cancel()
 	if err := validatePutRequest(r); err != nil {
 		return nil, err
 	}
@@ -875,6 +877,8 @@ func (s *RPCServer) Put(ctx context.Context, r *etcdserverpb.PutRequest) (*etcds
 
 func (s *RPCServer) DeleteRange(ctx context.Context, r *etcdserverpb.DeleteRangeRequest) (*etcdserverpb.DeleteRangeResponse, error) {
 	startTime := time.Now()
+	ctx, cancel := withUnaryRequestTimeout(ctx)
+	defer cancel()
 	if err := validateDeleteRangeRequest(r); err != nil {
 		return nil, err
 	}
