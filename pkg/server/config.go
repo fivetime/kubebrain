@@ -60,9 +60,13 @@ type Config struct {
 	// Zero preserves etcd's unlimited default. Peer RPCs are deliberately
 	// excluded so overload cannot block leader and revision coordination.
 	MaxRequestsInFlight uint32
-	AuthToken           string
-	BcryptCost          uint
-	AuthTokenTTL        uint
+	// MaxWatches limits active logical watches per process. One gRPC Watch
+	// stream can multiplex many watches, so the RPC limit cannot substitute it.
+	// Zero preserves etcd's unlimited behavior.
+	MaxWatches   uint32
+	AuthToken    string
+	BcryptCost   uint
+	AuthTokenTTL uint
 
 	ClusterMembers []*etcdserverpb.Member
 }

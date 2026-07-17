@@ -289,6 +289,134 @@ func TestWatchRequestedIDDuplicateAndUnknownCancelMatchEtcd(t *testing.T) {
 	require.Empty(t, stream.sent[2].CancelReason)
 }
 
+func TestLogicalWatchAdmissionMultiplexCancelAndDisconnect(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	server.SetMaxWatches(1)
+	stream := &fakeWatchServer{ctx: context.Background()}
+	w := &watcher{
+		backend: server.backend, watchServer: stream, grpcServer: server,
+		watches: make(map[int64]*watch), metricCli: server.metricCli,
+	}
+
+	w.Start(context.Background(), &etcdserverpb.WatchCreateRequest{Key: []byte("/watch/first"), WatchId: 41})
+	require.Len(t, stream.sent, 1)
+	require.True(t, stream.sent[0].Created)
+	require.False(t, stream.sent[0].Canceled)
+	require.Equal(t, int64(1), server.activeWatches)
+
+	// A second logical watch on the same gRPC stream must not bypass the
+	// process-wide quota or terminate the already active watch.
+	w.Start(context.Background(), &etcdserverpb.WatchCreateRequest{Key: []byte("/watch/rejected"), WatchId: 42})
+	require.Len(t, stream.sent, 2)
+	require.True(t, stream.sent[1].Created)
+	require.True(t, stream.sent[1].Canceled)
+	require.Equal(t, int64(-1), stream.sent[1].WatchId)
+	require.Equal(t, watchQuotaCancelReason, stream.sent[1].CancelReason)
+	require.Equal(t, int64(1), server.activeWatches)
+	require.Contains(t, w.watches, int64(41))
+
+	w.CancelRequest(41)
+	w.wg.Wait()
+	require.Zero(t, server.activeWatches)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	w.Start(ctx, &etcdserverpb.WatchCreateRequest{Key: []byte("/watch/reused"), WatchId: 43})
+	require.Len(t, stream.sent, 4)
+	require.True(t, stream.sent[3].Created)
+	require.False(t, stream.sent[3].Canceled)
+	require.Equal(t, int64(1), server.activeWatches)
+
+	cancel()
+	w.Close()
+	require.Zero(t, server.activeWatches, "stream disconnect must release every logical watch slot")
+}
+
+func TestWatcherCloseSynchronouslyReleasesQuota(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	server.SetMaxWatches(2)
+	server.activeWatches = 2
+
+	w := &watcher{
+		grpcServer: server,
+		watches: map[int64]*watch{
+			1: {cancel: func() {}, quotaHeld: true},
+			2: {cancel: func() {}, quotaHeld: true},
+		},
+		metricCli: server.metricCli,
+	}
+	w.Close()
+
+	require.Empty(t, w.watches)
+	require.Zero(t, server.activeWatches)
+	require.True(t, server.acquireWatch(), "a new stream must reuse quota immediately after disconnect")
+	server.releaseWatch()
+}
+
+func TestInvalidWatchCreatesDoNotConsumeQuota(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	server.SetMaxWatches(1)
+	stream := &fakeWatchServer{ctx: context.Background()}
+	w := &watcher{
+		backend: server.backend, watchServer: stream, grpcServer: server,
+		watches: make(map[int64]*watch), metricCli: server.metricCli,
+	}
+
+	w.Start(context.Background(), &etcdserverpb.WatchCreateRequest{
+		Key: []byte("z"), RangeEnd: []byte("a"),
+	})
+	require.Zero(t, server.activeWatches)
+
+	w.Start(context.Background(), &etcdserverpb.WatchCreateRequest{Key: []byte("/watch/valid"), WatchId: 7})
+	require.Equal(t, int64(1), server.activeWatches)
+	w.Start(context.Background(), &etcdserverpb.WatchCreateRequest{Key: []byte("/watch/duplicate"), WatchId: 7})
+	require.Equal(t, int64(1), server.activeWatches)
+
+	w.CancelRequest(7)
+	w.wg.Wait()
+	require.Zero(t, server.activeWatches)
+}
+
+func TestLogicalWatchAdmissionIsAtomicAcrossStreams(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	const (
+		limit      = 7
+		contenders = 64
+	)
+	server.SetMaxWatches(limit)
+
+	start := make(chan struct{})
+	results := make(chan bool, contenders)
+	var wg sync.WaitGroup
+	wg.Add(contenders)
+	for i := 0; i < contenders; i++ {
+		go func() {
+			defer wg.Done()
+			<-start
+			results <- server.acquireWatch()
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+
+	admitted := 0
+	for ok := range results {
+		if ok {
+			admitted++
+		}
+	}
+	require.Equal(t, limit, admitted)
+	require.Equal(t, int64(limit), server.activeWatches)
+	for i := 0; i < admitted; i++ {
+		server.releaseWatch()
+	}
+	require.Zero(t, server.activeWatches)
+}
+
 func TestWatchAutomaticIDsAreMonotonicAndSkipExplicitIDs(t *testing.T) {
 	w := &watcher{watches: make(map[int64]*watch)}
 

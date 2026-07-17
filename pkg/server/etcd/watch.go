@@ -46,6 +46,8 @@ var (
 
 const onDemandProgressSyncWait = 100 * time.Millisecond
 
+const watchQuotaCancelReason = "etcdserver: too many requests"
+
 // watcher correspond to one stream, one watcher has many watches
 type watcher struct {
 	sync.Mutex
@@ -94,6 +96,7 @@ func (w *watcher) syncControlRevision(ctx context.Context) error {
 type watch struct {
 	cancel     func()
 	start, end string
+	quotaHeld  bool
 	// syncedRev is the highest revision this watch has actually delivered to the
 	// client (or the caught-up revision captured at creation). Progress
 	// notifications must never advertise a revision beyond syncedRev: the global
@@ -361,15 +364,16 @@ func watchAuthCancelReason(err error) string {
 func (w *watcher) Start(c context.Context, r *etcdserverpb.WatchCreateRequest) {
 	w.Lock()
 	ctx, cancel := context.WithCancel(c)
-	id, duplicate := w.allocateWatchIDLocked(r.WatchId)
-	if duplicate {
-		w.Unlock()
-		cancel()
-		_ = w.Send(&etcdserverpb.WatchResponse{
-			Header: txnHeader(int64(w.responseRevision())), WatchId: -1,
-			Created: true, Canceled: true, CancelReason: "mvcc: duplicate watch ID provided on the WatchStream",
-		})
-		return
+	if r.WatchId != 0 {
+		if _, duplicate := w.watches[r.WatchId]; duplicate {
+			w.Unlock()
+			cancel()
+			_ = w.Send(&etcdserverpb.WatchResponse{
+				Header: txnHeader(int64(w.responseRevision())), WatchId: -1,
+				Created: true, Canceled: true, CancelReason: "mvcc: duplicate watch ID provided on the WatchStream",
+			})
+			return
+		}
 	}
 	if len(r.RangeEnd) != 0 && bytes.Compare(r.Key, r.RangeEnd) >= 0 {
 		w.Unlock()
@@ -380,6 +384,16 @@ func (w *watcher) Start(c context.Context, r *etcdserverpb.WatchCreateRequest) {
 		})
 		return
 	}
+	if !w.grpcServer.acquireWatch() {
+		w.Unlock()
+		cancel()
+		_ = w.Send(&etcdserverpb.WatchResponse{
+			Header: txnHeader(int64(w.responseRevision())), WatchId: -1,
+			Created: true, Canceled: true, CancelReason: watchQuotaCancelReason,
+		})
+		return
+	}
+	id, _ := w.allocateWatchIDLocked(r.WatchId)
 
 	// Seed syncedRev with the revision the watch is guaranteed to be caught up
 	// through before any event is delivered: StartRevision-1 for a historical
@@ -406,6 +420,7 @@ func (w *watcher) Start(c context.Context, r *etcdserverpb.WatchCreateRequest) {
 		cancel:    cancel,
 		start:     string(r.Key),
 		end:       string(r.RangeEnd),
+		quotaHeld: w.grpcServer.maxWatches != 0,
 		syncedRev: initSyncedRev,
 	}
 	if len(w.watches) > 1 {
@@ -480,8 +495,10 @@ func (w *watcher) cancel(id int64, err error, compact, clientRequest bool) {
 	w.metricCli.EmitCounter("watch.cancel", 1, tags...)
 	w.Lock()
 	found := false
+	quotaHeld := false
 	if c, ok := w.watches[id]; ok {
 		found = true
+		quotaHeld = c.quotaHeld
 		klog.InfoS("cancel context", "watcher", w.id, "watch", id, "start", c.start, "end", c.end)
 		if c.cancel != nil {
 			c.cancel()
@@ -489,6 +506,9 @@ func (w *watcher) cancel(id int64, err error, compact, clientRequest bool) {
 		delete(w.watches, id)
 	}
 	w.Unlock()
+	if quotaHeld {
+		w.grpcServer.releaseWatch()
+	}
 	// etcd emits at most one cancellation response for a watch. A client cancel
 	// removes the watch before its backend goroutine observes the canceled
 	// context, so suppress that goroutine's later close response as well as
@@ -536,6 +556,31 @@ func (w *watcher) cancel(id int64, err error, compact, clientRequest bool) {
 	}
 }
 
+func (s *RPCServer) acquireWatch() bool {
+	if s.maxWatches == 0 {
+		return true
+	}
+	s.watchQuotaMu.Lock()
+	defer s.watchQuotaMu.Unlock()
+	if s.activeWatches >= int64(s.maxWatches) {
+		s.metricCli.EmitCounter("watch.admission.rejected", 1)
+		return false
+	}
+	s.activeWatches++
+	s.metricCli.EmitGauge("watch.admission.active", s.activeWatches)
+	return true
+}
+
+func (s *RPCServer) releaseWatch() {
+	if s.maxWatches == 0 {
+		return
+	}
+	s.watchQuotaMu.Lock()
+	defer s.watchQuotaMu.Unlock()
+	s.activeWatches--
+	s.metricCli.EmitGauge("watch.admission.active", s.activeWatches)
+}
+
 func (w *watcher) Send(resp *etcdserverpb.WatchResponse) error {
 	w.sendMu.Lock()
 	defer w.sendMu.Unlock()
@@ -545,12 +590,20 @@ func (w *watcher) Send(resp *etcdserverpb.WatchResponse) error {
 func (w *watcher) Close() {
 	w.metricCli.EmitCounter("watch.close", 1)
 	w.Lock()
-	for _, v := range w.watches {
+	quotaHeld := 0
+	for id, v := range w.watches {
 		if v.cancel != nil {
 			v.cancel()
 		}
+		if v.quotaHeld {
+			quotaHeld++
+		}
+		delete(w.watches, id)
 	}
 	w.Unlock()
+	for i := 0; i < quotaHeld; i++ {
+		w.grpcServer.releaseWatch()
+	}
 	w.wg.Wait()
 }
 

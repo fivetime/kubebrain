@@ -54,7 +54,8 @@ func TestConfig(t *testing.T) {
 	}
 
 	conf := Config{
-		Port: 2379, PeerPort: 2380, MaxTxnOps: 64, MaxRequestBytes: 1048576, MaxRequestsInFlight: 17,
+		Port: 2379, PeerPort: 2380, MaxTxnOps: 64, MaxRequestBytes: 1048576,
+		MaxRequestsInFlight: 17, MaxWatches: 23,
 		AuthToken: "simple", BcryptCost: 7, AuthTokenTTL: 45,
 		ClientSecurityConfig: &SecurityConfig{
 			CertFile:      getAuthPath("server.crt"),
@@ -85,6 +86,7 @@ func TestConfig(t *testing.T) {
 	ast.Equal(uint(64), conf.getServerConfig().MaxTxnOps)
 	ast.Equal(uint(1048576), conf.getServerConfig().MaxRequestBytes)
 	ast.Equal(uint32(17), conf.getServerConfig().MaxRequestsInFlight)
+	ast.Equal(uint32(23), conf.getServerConfig().MaxWatches)
 	ast.Equal("simple", conf.getServerConfig().AuthToken)
 	ast.Equal(uint(7), conf.getServerConfig().BcryptCost)
 	ast.Equal(uint(45), conf.getServerConfig().AuthTokenTTL)

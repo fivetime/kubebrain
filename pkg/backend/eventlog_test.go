@@ -35,6 +35,29 @@ import (
 // storage.BatchGetter fails and the replay path takes its per-key-Get fallback.
 type noBatchGet struct{ storage.KvStorage }
 
+func TestEnsureEventLogStartResetsPublishedRevisionForNewLeader(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	m := mock.NewMinimalMetrics(ctrl)
+	kv := imemkv.NewKvStorage()
+	defer func() { require.NoError(t, kv.Close()) }()
+
+	b := NewBackend(kv, Config{
+		Prefix: "/kubebrain/elog_leader", Identity: getStorageIdentity(), EnableEtcdCompatibility: true,
+	}, m).(*backend)
+	const current = uint64(12345)
+	b.SetCurrentRevision(current)
+	require.Zero(t, b.GetPublishedRevision(), "a follower may not have published the prior leader's writes")
+
+	oldSub, err := b.watcherHub.AddWatcher(context.Background(), []byte("/registry/"))
+	require.NoError(t, err)
+	require.NoError(t, b.EnsureEventLogStart(context.Background()))
+
+	require.Equal(t, current, b.GetPublishedRevision())
+	_, open := <-oldSub
+	require.False(t, open, "old-term subscribers must close before the watermark advances")
+}
+
 // TestEventLogReplayFallbackMatchesBatchGet verifies the per-key-Get fallback
 // (for backends WITHOUT storage.BatchGetter) replays events identical to the
 // authoritative full-prefix scan: same CREATE/PUT/DELETE, with the DELETE

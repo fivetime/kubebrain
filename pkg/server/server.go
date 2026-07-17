@@ -100,6 +100,7 @@ func NewServer(ctx context.Context, backend backend.Backend, metricCli metrics.M
 	s.etcdServer = etcd.New(backend, metricCli, peerService)
 	s.etcdServer.SetRequestLimits(config.MaxTxnOps, config.MaxRequestBytes)
 	s.etcdServer.SetMaxRequestsInFlight(config.MaxRequestsInFlight)
+	s.etcdServer.SetMaxWatches(config.MaxWatches)
 	s.etcdServer.SetAuthConfiguration(config.AuthToken, config.BcryptCost, config.AuthTokenTTL)
 	s.etcdServer.SetClientCertAuth(config.ClientCertAuth)
 	// MemberList ClientURLs: advertise the homogeneous client port with the

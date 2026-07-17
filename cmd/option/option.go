@@ -106,6 +106,7 @@ func NewOptions() *KubeBrainOption {
 			GRPCMaxConnectionAgeGrace: 5 * time.Minute,
 			MaxConcurrentStreams:      math.MaxUint32,
 			MaxRequestsInFlight:       0,
+			MaxWatches:                0,
 			GRPCKeepAliveMinTime:      5 * time.Second,
 			GRPCKeepAliveInterval:     2 * time.Hour,
 			GRPCKeepAliveTimeout:      20 * time.Second,
@@ -146,6 +147,7 @@ func (o *KubeBrainOption) AddFlags(fs *pflag.FlagSet) {
 	fs.DurationVar(&o.epsConf.GRPCMaxConnectionAgeGrace, "grpc-max-connection-age-grace", o.epsConf.GRPCMaxConnectionAgeGrace, "Drain window after max connection age before active streams are closed. Must be positive when connection aging is enabled.")
 	fs.Uint32Var(&o.epsConf.MaxConcurrentStreams, "max-concurrent-streams", o.epsConf.MaxConcurrentStreams, "Maximum concurrent streams that each client connection can open at a time.")
 	fs.Uint32Var(&o.epsConf.MaxRequestsInFlight, "max-requests-inflight", o.epsConf.MaxRequestsInFlight, "Maximum concurrent RPCs accepted by each public client endpoint; 0 disables the instance-wide limit.")
+	fs.Uint32Var(&o.epsConf.MaxWatches, "max-watches", o.epsConf.MaxWatches, "Maximum active logical watches per process across all multiplexed Watch streams; 0 disables the limit.")
 	fs.DurationVar(&o.epsConf.GRPCKeepAliveMinTime, "grpc-keepalive-min-time", o.epsConf.GRPCKeepAliveMinTime, "Minimum interval that a client should wait before sending keepalive pings; 0 disables enforcement.")
 	fs.DurationVar(&o.epsConf.GRPCKeepAliveInterval, "grpc-keepalive-interval", o.epsConf.GRPCKeepAliveInterval, "Frequency of server-to-client keepalive pings; 0 disables server pings.")
 	fs.DurationVar(&o.epsConf.GRPCKeepAliveTimeout, "grpc-keepalive-timeout", o.epsConf.GRPCKeepAliveTimeout, "Time to wait for a keepalive response; 0 disables server pings.")

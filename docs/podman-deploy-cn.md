@@ -232,6 +232,7 @@ EOF
 | `--max-txn-ops` / `--max-request-bytes`  | 每个 txn 的最大操作数与单请求 protobuf payload 上限；默认与 etcd 一致为 `128` / `1572864`，所有副本必须一致 |
 | `--max-concurrent-streams`               | 每条 client HTTP/2 连接可同时打开的 stream 数；默认 `4294967295` 与 etcd 一致，DBaaS 下调前必须计入 watch、lease keepalive 与普通 RPC |
 | `--max-requests-inflight`                | 每个 KubeBrain 进程公开 client 平面的并发 RPC 总数；默认 `0` 不限制，生产建议按 CPU/延迟压测设置（参考清单为 `1024`）。跨连接生效，超限返回 etcd 标准 `ResourceExhausted: too many requests`；peer 平面保留独立容量 |
+| `--max-watches`                          | 每个 KubeBrain 进程的逻辑 Watch 总数（同一 gRPC stream 内的 multiplexed Watch 也逐个计数）；默认 `0` 不限制，生产建议按内存与 Watch 建立/事件延迟压测设置（参考清单为 `10000`）。超限 create 返回 created+canceled response 及 `etcdserver: too many requests`，原 stream 保持可用 |
 | `--grpc-keepalive-*`                     | client ping 最小间隔默认 `5s`；server ping interval/timeout 默认 `2h/20s`，对应项设 `0` 可禁用 |
 | `--auth-token` / `--auth-token-ttl`      | 当前仅支持 `simple`（默认），token TTL 默认 `300s`；`jwt,...` 会启动失败而非静默降级 |
 | `--bcrypt-cost`                          | 明文密码 bcrypt cost，默认 `10`；超出 bcrypt 允许范围时与 etcd 一样回退默认值 |
@@ -705,6 +706,7 @@ Volume=/etc/kubebrain/certs:/etc/kubebrain/certs:ro
 | 限额    | `--max-request-bytes`                   | 1572864 | 单请求 protobuf payload 上限                    |
 | 限额    | `--max-concurrent-streams`              | 4294967295 | 每条 HTTP/2 连接的并发 stream 上限             |
 | 限额    | `--max-requests-inflight`               | 0       | 每进程 client RPC 总并发；0 不限制              |
+| 限额    | `--max-watches`                         | 0       | 每进程逻辑 Watch 总数；0 不限制                  |
 | gRPC    | `--grpc-keepalive-min-time`             | 5s      | client ping 最小间隔；0 关闭 enforcement        |
 | gRPC    | `--grpc-keepalive-interval`             | 2h      | server ping 周期；0 关闭 server ping            |
 | gRPC    | `--grpc-keepalive-timeout`              | 20s     | server 等待 ping ACK 时间；0 关闭 server ping   |

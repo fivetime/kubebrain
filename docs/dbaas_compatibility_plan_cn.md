@@ -1283,6 +1283,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   rejected method=`/etcdserverpb.Maintenance/Status`；同时 peer listener 的 Status
   成功并返回正确 PD cluster ID。取消 watch 后 inflight 回零且 client health 成功。
   最终恢复 limit=1024，部署 3/3 Ready、zero restart。
+- **Watch A80 instance-wide logical watch quota（2026-07-17）**：一个 Watch gRPC
+  stream 可 multiplex 任意数量逻辑 Watch，因此 A79 的 stream 生命周期槽位不能约束
+  单连接内的 Watch 数。新增 `--max-watches`（默认 `0` 保持既有/etcd 无逻辑总量上限，
+  生产清单显式 `10000`），按进程原子计算所有 stream 的 active Watch；超限 create 返回
+  etcd 风格的 `Created=true,Canceled=true,WatchId=-1,CancelReason="etcdserver: too many
+  requests"`，不终止同一 multiplexed stream。显式 cancel、后端 cancel 和 stream
+  disconnect 均只释放一次；真实压力验证发现 `watcher.Close` 原先依赖后端代理协程退出
+  才清理 map，现关闭路径先同步清表并归还配额，再等待协程收尾。另在滚动切主时发现新
+  leader 的 current/event-log 起点已在高 revision、published watermark 却仍为 0，
+  from-now Watch 会从 revision 1 回放并立即 compact；leadership 初始化现先关闭旧任期
+  subscribers，再把 published 安全推进到 fresh storage revision。逻辑配额、非法/重复
+  create、跨 stream 原子接纳、同步断连释放和 leadership watermark 测试普通/race
+  高频通过，full/race/vet 全部通过；官方 protobuf Watch client 黑盒在三副本 KubeBrain
+  + 独立 TiKV/PD、临时 limit=1 下连续 50 轮完成接纳、拒绝、取消、槽位复用和最终清理，
+  指标精确为 rejected=50、active=0。exact image
+  `f03aa369bba116007f5bec340ccf5fa98aabd33390e33365e0d1e6a74b5518e3`；
+  最终恢复 limit=10000，部署 3/3 Ready、zero restart，实时
+  `endpoint health` 与 Put/Get/Delete 通过。
 
 ### P1：通用服务能力
 
@@ -1295,8 +1313,9 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
 2. `client/v3/concurrency` mutex/election/session、lease 自然过期和 failover
    recipe 已通过；继续增加长时间 soak。
 3. 建立 DBaaS 控制面契约：创建、扩缩、升级、备份、恢复、证书轮换、销毁。
-4. 建立实例级限额和计量：请求字节、txn 操作数及跨连接 client RPC 总并发已具备稳定
-   错误与指标；继续补 CPU、内存、PV、备份容量、网络、QPS、watch 数及容量计量。
+4. 建立实例级限额和计量：请求字节、txn 操作数、跨连接 client RPC 总并发及逻辑
+   Watch 总数已具备稳定错误与指标；继续补 CPU、内存、PV、备份容量、网络、QPS 及
+   容量计量。
 
 ### P2：运维兼容和长期验证
 

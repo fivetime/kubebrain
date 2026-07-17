@@ -97,6 +97,7 @@ spec:
             - --max-request-bytes=1572864
             - --max-concurrent-streams=4294967295
             - --max-requests-inflight=1024
+            - --max-watches=10000
             - --grpc-keepalive-min-time=5s
             - --grpc-keepalive-interval=2h
             - --grpc-keepalive-timeout=20s

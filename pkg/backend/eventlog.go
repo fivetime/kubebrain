@@ -71,6 +71,14 @@ func (b *backend) EnsureEventLogStart(ctx context.Context) error {
 	if err := b.advanceEventLogStartStorage(ctx, cur); err != nil {
 		return err
 	}
+	// A follower does not fan out the previous leader's writes, so its published
+	// watermark can still be zero when it acquires leadership. Retire every
+	// old-term subscriber before advancing the watermark: no old subscriber may
+	// observe a progress marker that skips events it never received. Leadership
+	// is not advertised until this method returns, so new watches safely start
+	// after the fresh storage snapshot at cur.
+	b.watcherHub.CloseAll()
+	b.watcherHub.AdvancePublishedRevision(cur)
 	klog.InfoS("event log start advanced on leadership acquisition", "rev", cur)
 	return nil
 }

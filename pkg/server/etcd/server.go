@@ -88,6 +88,9 @@ type RPCServer struct {
 	maxRequestsInFlight  uint32
 	admissionMu          sync.Mutex
 	requestsInFlight     int64
+	maxWatches           uint32
+	watchQuotaMu         sync.Mutex
+	activeWatches        int64
 
 	// The lease subsystem: its state and logic live in leaseManager (lease.go /
 	// lease_manager.go). Embedded so the lease gRPC handlers and the write-path
@@ -105,6 +108,12 @@ func (s *RPCServer) SetClientCertAuth(enabled bool) {
 // configured before serving starts, so readers need no additional lock.
 func (s *RPCServer) SetMaxRequestsInFlight(limit uint32) {
 	s.maxRequestsInFlight = limit
+}
+
+// SetMaxWatches sets the process-wide logical watch limit. It is configured
+// before serving starts, so the limit itself is immutable on request paths.
+func (s *RPCServer) SetMaxWatches(limit uint32) {
+	s.maxWatches = limit
 }
 
 type leaseState struct {
