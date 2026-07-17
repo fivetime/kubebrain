@@ -125,9 +125,7 @@ func (s *RPCServer) Defragment(ctx context.Context, _ *etcdserverpb.DefragmentRe
 	if err := s.requireAuthenticated(ctx, true); err != nil {
 		return nil, err
 	}
-	return &etcdserverpb.DefragmentResponse{
-		Header: s.maintenanceHeader(),
-	}, nil
+	return &etcdserverpb.DefragmentResponse{}, nil
 }
 
 func (s *RPCServer) Hash(ctx context.Context, _ *etcdserverpb.HashRequest) (*etcdserverpb.HashResponse, error) {

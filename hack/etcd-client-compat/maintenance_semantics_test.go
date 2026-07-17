@@ -37,6 +37,22 @@ func TestMaintenanceStatusMetadataMatchesReferenceEtcd(t *testing.T) {
 	for _, term := range responseHeaderRaftTerms(t, kubebrain) {
 		require.Positive(t, term)
 	}
+	referenceDefragHeaderNil := defragmentHeaderIsNil(t, reference)
+	kubebrainDefragHeaderNil := defragmentHeaderIsNil(t, kubebrain)
+	require.Equal(t, referenceDefragHeaderNil, kubebrainDefragHeaderNil)
+	require.True(t, kubebrainDefragHeaderNil)
+}
+
+func defragmentHeaderIsNil(t *testing.T, endpoint string) bool {
+	t.Helper()
+	cli, err := clientv3.New(clientv3.Config{Endpoints: []string{endpoint}, DialTimeout: 3 * time.Second})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, cli.Close()) })
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	resp, err := cli.Defragment(ctx, endpoint)
+	require.NoError(t, err)
+	return resp.Header == nil
 }
 
 func responseHeaderRaftTerms(t *testing.T, endpoint string) []uint64 {

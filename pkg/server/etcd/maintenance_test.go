@@ -105,8 +105,9 @@ func TestMaintenanceBasicDiagnostics(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, alarmResp.Alarms)
 
-	_, err = server.Defragment(ctx, &etcdserverpb.DefragmentRequest{})
+	defragResp, err := server.Defragment(ctx, &etcdserverpb.DefragmentRequest{})
 	require.NoError(t, err)
+	require.Nil(t, defragResp.Header)
 }
 
 func TestStatusReportsNoLeaderInsteadOfClaimingSelf(t *testing.T) {

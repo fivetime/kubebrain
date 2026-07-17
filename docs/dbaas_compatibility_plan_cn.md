@@ -855,6 +855,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   本次开发 Deployment 未配置 `--initial-cluster`，动态 fallback 在 Leader 仅列自身、Follower
   仅列自身与 Leader，不能证明三成员 AutoSync；生产 DBaaS 控制面仍必须为稳定身份的所有副本
   下发相同完整 membership，或后续实现等价的全副本服务发现，不能把该 fallback 当成完成态。
+- **Maintenance A49 Defragment empty Header（2026-07-17）**：raw/official client
+  检查发现 KubeBrain 为 Defragment 合成 current revision Header，而 reference etcd 的
+  `/root/etcd/server/etcdserver/api/v3rpc/maintenance.go:Defragment` 明确返回空
+  `DefragmentResponse{}`，Header 为 nil；`etcdctl defrag` 不显示 response body，普通 CLI
+  smoke 会漏掉该 wire-shape 差异。现 KubeBrain 同样返回空 response，中央 Header interceptor
+  明确保留 nil，不为刻意省略 Header 的 RPC 伪造 ClusterId/MemberId/RaftTerm。server 单测固定
+  nil shape，完整/race/vet 通过；官方 client/v3 双端 maintenance 差分连续 20 轮一致，
+  exact-image 三副本逐 Pod 均验证 Header=nil，其他 Status/Range/Watch Header term 检查仍通过。
 
 ### P1：通用服务能力
 

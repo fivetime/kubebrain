@@ -56,9 +56,9 @@ func stampHeader(reply any, clusterID, memberID, raftTerm uint64) {
 	if !ok {
 		return
 	}
-	// Every etcd response type constructs a non-nil Header (even the "empty"
-	// lease headers are &ResponseHeader{}); a nil Header cannot be filled here
-	// without reflecting into the reply, and none occur in practice.
+	// Most etcd responses construct a non-nil Header. Defragment intentionally
+	// returns an empty response with nil Header, matching the reference server;
+	// do not synthesize metadata for response types that omit it.
 	if h := r.GetHeader(); h != nil {
 		h.ClusterId = clusterID
 		h.MemberId = memberID
