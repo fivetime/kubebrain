@@ -31,6 +31,7 @@ import (
 
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/tikv/client-go/v2/testutils"
 	"github.com/tikv/client-go/v2/tikv"
 	"k8s.io/client-go/tools/leaderelection"
@@ -50,6 +51,15 @@ import (
 )
 
 type storageType int
+
+type clusterIDStorage struct {
+	storage.KvStorage
+	id uint64
+}
+
+func (s *clusterIDStorage) ClusterID() uint64 { return s.id }
+
+func (s *clusterIDStorage) UnwrapKvStorage() storage.KvStorage { return s.KvStorage }
 
 const (
 	memKvStorage storageType = iota
@@ -74,6 +84,25 @@ const (
 	setWatcherError   = "set watcher error"
 	backendIsNotReady = "backend is not ready"
 )
+
+func TestWrappedStorageCapabilitiesReachBackend(t *testing.T) {
+	raw := imemkv.NewKvStorage()
+	defer func() { require.NoError(t, raw.Close()) }()
+	inner := &clusterIDStorage{KvStorage: raw, id: 4242}
+	wrapped := imetrics.NewKvStorage(inner, mock.NewMinimalMetrics(gomock.NewController(t)))
+
+	require.EqualValues(t, 4242, deriveClusterID(wrapped, "tenant"),
+		"metrics wrapping must not replace the storage cluster identity")
+	batchGetter, ok := storage.FindCapability[storage.BatchGetter](wrapped)
+	require.True(t, ok, "metrics wrapping must not disable batched event-log reads")
+
+	batch := raw.BeginBatchWrite()
+	batch.Put([]byte("capability-key"), []byte("value"), 0)
+	require.NoError(t, batch.Commit(context.Background()))
+	values, err := batchGetter.BatchGet(context.Background(), [][]byte{[]byte("capability-key")})
+	require.NoError(t, err)
+	require.Equal(t, []byte("value"), values["capability-key"])
+}
 
 var (
 	skippedTests = []string{

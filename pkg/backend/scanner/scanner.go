@@ -345,7 +345,7 @@ func (r *scanner) CompactKeys(ctx context.Context, userKeys [][]byte, revision u
 		return nil
 	}
 	store := r.store
-	if exclusiveKvStorage, ok := r.store.(storage.ExclusiveKvStorage); ok {
+	if exclusiveKvStorage, ok := storage.FindCapability[storage.ExclusiveKvStorage](r.store); ok {
 		store = exclusiveKvStorage.GetExclusiveKvStorage()
 	}
 	tso, err := store.GetTimestampOracle(ctx)
@@ -431,7 +431,7 @@ func (r *scanner) adjustPartitionsBorders(ps []storage.Partition) (ret []storage
 
 func (r *scanner) scan(ctx context.Context, start []byte, end []byte, revision uint64, compact bool, keysOnly bool, receiver resultReceiver) (int, error) {
 	store := r.store
-	if exclusiveKvStorage, ok := r.store.(storage.ExclusiveKvStorage); ok && compact {
+	if exclusiveKvStorage, ok := storage.FindCapability[storage.ExclusiveKvStorage](r.store); ok && compact {
 		klog.InfoS("compact with exclusive kv storage", "start", string(start), "end", string(end), "rev", revision)
 		store = exclusiveKvStorage.GetExclusiveKvStorage()
 	}

@@ -31,6 +31,36 @@ type ExclusiveKvStorage interface {
 	GetExclusiveKvStorage() KvStorage
 }
 
+// KvStorageUnwrapper is implemented by decorators that retain an underlying
+// KvStorage. Optional capabilities cannot be promoted dynamically through a Go
+// interface wrapper without defining every combination of capability methods;
+// FindCapability follows this chain instead.
+type KvStorageUnwrapper interface {
+	UnwrapKvStorage() KvStorage
+}
+
+// FindCapability returns the first implementation of T on store or one of its
+// decorator layers. It centralizes optional-capability discovery so wrappers do
+// not silently disable GC, isolated scan clients, batch reads, or cluster IDs.
+func FindCapability[T any](store KvStorage) (T, bool) {
+	var zero T
+	for depth := 0; store != nil && depth < 32; depth++ {
+		if capability, ok := any(store).(T); ok {
+			return capability, true
+		}
+		unwrapper, ok := any(store).(KvStorageUnwrapper)
+		if !ok {
+			return zero, false
+		}
+		next := unwrapper.UnwrapKvStorage()
+		if next == nil {
+			return zero, false
+		}
+		store = next
+	}
+	return zero, false
+}
+
 // GarbageCollector is an optional interface a KvStorage may implement to
 // advance the underlying engine's MVCC garbage-collection safepoint. Engines
 // whose old versions are reclaimed by an external component (or that keep no

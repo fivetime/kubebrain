@@ -282,7 +282,7 @@ func (b *backend) loadEventValues(ctx context.Context, keys [][]byte) (vals map[
 	if len(keys) == 0 {
 		return map[string][]byte{}, false, nil
 	}
-	if bg, ok := b.kv.(storage.BatchGetter); ok {
+	if bg, ok := storage.FindCapability[storage.BatchGetter](b.kv); ok {
 		m, gerr := bg.BatchGet(ctx, keys)
 		if gerr != nil {
 			return nil, false, gerr

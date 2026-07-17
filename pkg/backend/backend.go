@@ -709,7 +709,7 @@ func (b *backend) ClusterID() uint64 {
 // derived from the keyspace so replicas of one cluster still agree (memkv,
 // badger — single-node engines with no cluster identity of their own).
 func deriveClusterID(kv storage.KvStorage, keyspace string) uint64 {
-	if ci, ok := kv.(storage.ClusterIdentifier); ok {
+	if ci, ok := storage.FindCapability[storage.ClusterIdentifier](kv); ok {
 		if id := ci.ClusterID(); id != 0 {
 			return id
 		}

@@ -41,7 +41,7 @@ import (
 // push can never move it backwards. Coexists safely with a TiDB gc_worker
 // pushing the same cluster: both publish monotonic safepoints.
 func (b *backend) runStorageGC(lifetime time.Duration) {
-	gc, ok := b.kv.(storage.GarbageCollector)
+	gc, ok := storage.FindCapability[storage.GarbageCollector](b.kv)
 	if !ok || lifetime <= 0 {
 		return
 	}

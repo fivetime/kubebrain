@@ -89,6 +89,10 @@ type storeWrapper struct {
 	metricsCli metrics.Metrics
 }
 
+func (s *storeWrapper) UnwrapKvStorage() storage.KvStorage {
+	return s.KvStorage
+}
+
 var (
 	successTag       = metrics.Tag("state", "success")
 	unexpectedErrTag = metrics.Tag("state", "error")

@@ -1250,6 +1250,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   独立参考实例，Compact、DeleteRange、HashKV、Lease、自然过期、MemberList、Put、
   Range/RangeStream、Serializable Read、三类 Txn 和 WatchControl differential 全部
   通过；JWT 需要独立 JWT 配置端点，按测试前置条件跳过，不计为通过。
+- **Storage A78 wrapped capability discovery（2026-07-17）**：重新核对维护性审计
+  C2，确认早期修复虽已让 metrics wrapper 直接保留 `GarbageCollector` 和
+  `ExclusiveKvStorage`，但后来新增的 `ClusterIdentifier`、`BatchGetter` 会被包装层
+  静默隐藏：前者令 etcd response header 退回 keyspace hash 而非 PD cluster ID，后者
+  令 event-log replay 从 TiKV BatchGet 退化为逐键 Get。现 storage 定义统一的 decorator
+  unwrap 契约和带 32 层上界的泛型 `FindCapability`；metrics wrapper 可解包，backend
+  cluster ID、event-log batch read、storage GC 和 scanner exclusive client 四类生产
+  消费点全部统一发现能力，同时保留 GC/ExclusiveKvStorage 既有直接类型断言兼容，避免
+  为能力组合维护 O(2^n) wrapper 类型。两层 metrics wrapper 与异构 decorator 测试覆盖
+  四类能力及“不凭空生成能力”，普通与 race 各连续 20 轮、full/race/vet 全部通过。
+  exact image
+  `b808cfca3b291b3dc2af353757d87dbbfc314a66c14c9e2ac0287b42c7ec6e8e`
+  在三副本 KubeBrain + 独立 TiKV/PD 上以
+  `--enable-storage-metrics=true` 滚动部署后 3/3 Ready、zero restart；etcd
+  `Status.header.cluster_id=7662961163671170154` 与 TiKV client 从 PD 取得的 cluster ID
+  完全一致，实时 Put/Get/Delete 通过。
 
 ### P1：通用服务能力
 
