@@ -1171,6 +1171,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   disclosure；追加 verbose 轮验证 6,052 个成功 TTL snapshot 和 70 个受保护绑定周期。
   相邻 lease 回归连续 3 轮通过；最终 auth disabled、临时 principal 清理、lease list=0，
   部署 3/3 ready、zero restart。
+- **Lease A73 authorized renewal fence（2026-07-17）**：对照 etcd
+  `server/etcdserver/v3_server.go:checkLeaseRenew` 的逐 key WRITE 权限检查、auth
+  revision fence 与 `server/lease/lessor.go:Renew` 的 deadline/checkpoint 更新，
+  审计发现 KubeBrain KeepAlive 原先先鉴权，再进入 `refreshLease` 的
+  `leaseWriteMu.RLock`；普通 leased Put 同样持 shared lock，因此可在鉴权和续租之间
+  提交受保护 key，令普通用户延长其无权写入的数据生命周期。现非 root 鉴权续租按
+  `leaseCheckpointMu -> leaseWriteMu.Lock` 顺序，把当前 key snapshot 鉴权、auth
+  revision fence、checkpoint 清零及 deadline 更新放在同一个 write exclusion window；
+  auth disabled 和 root 续租仍走 shared lock 快路径，不把常规 KeepAlive 全局串行化。
+  expired lease 在等待 revoke completion 前释放两把锁，避免与 expiry/revoke 互锁。
+  确定性测试暂停 KeepAlive 的 auth revision fence，并并发执行真实 root leased Put：
+  pre-fix `e0a2d2c` 稳定出现 attachment transaction 先提交，修复后 Put 必须等待续租
+  鉴权完成；联合 checkpoint、TTL=0 和 permission-revoke 场景普通测试连续 100 轮、
+  race 连续 20 轮以及 full/race/vet 全部通过。三副本 TiKV/PD exact image
+  `5e4301154c42` 上，16 个 TTL reader、8 个 KeepAlive worker 与 root attach/detach
+  混合压力连续 5 轮、共 51.148s 通过；追加 verbose 轮完成 5,716 个成功 TTL
+  snapshot、123 次成功续租、367 次预期鉴权拒绝和 70 个保护绑定周期，无泄露、死锁
+  或停滞。相邻 KeepAlive/revoke/TTL 回归连续 3 轮通过；最终 auth disabled、临时
+  principal 清理、lease list=0，部署 3/3 ready、zero restart。
 
 ### P1：通用服务能力
 

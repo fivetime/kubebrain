@@ -237,6 +237,73 @@ func TestAuthLeaseKeepAliveRequiresWritePermissionOnEveryRequest(t *testing.T) {
 	}))
 }
 
+func TestAuthLeaseKeepAliveExcludesConcurrentProtectedAttachment(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	aliceCtx := setupAuthKVUser(t, server)
+	rootToken, err := server.tokens.authenticate(context.Background(), "root", "root-secret")
+	require.NoError(t, err)
+	rootCtx := metadata.NewIncomingContext(
+		context.Background(), metadata.Pairs(rpctypes.TokenFieldNameGRPC, rootToken),
+	)
+	lease, err := server.LeaseGrant(aliceCtx, &etcdserverpb.LeaseGrantRequest{TTL: 60})
+	require.NoError(t, err)
+	_, err = server.Put(aliceCtx, &etcdserverpb.PutRequest{
+		Key: []byte("/allowed/leased"), Value: []byte("allowed"), Lease: lease.ID,
+	})
+	require.NoError(t, err)
+
+	shim := &blockingAuthConfigReadShim{
+		BackendShim: server.backend,
+		// Pause the authorization revision fence after KeepAlive has acquired
+		// the exclusive lease write lock and checked its current key snapshot.
+		blockAt:      4,
+		entered:      make(chan struct{}),
+		release:      make(chan struct{}),
+		putCommitted: make(chan struct{}),
+	}
+	server.backend = shim
+	server.tokens.snapshots.repo.backend = shim
+	releaseAuth := func() {
+		select {
+		case <-shim.release:
+		default:
+			close(shim.release)
+		}
+	}
+	defer releaseAuth()
+
+	stream := &fakeLeaseKeepAliveServer{
+		ctx: aliceCtx, requests: []*etcdserverpb.LeaseKeepAliveRequest{{ID: lease.ID}},
+	}
+	keepAliveDone := make(chan error, 1)
+	go func() { keepAliveDone <- server.LeaseKeepAlive(stream) }()
+	select {
+	case <-shim.entered:
+	case <-time.After(time.Second):
+		t.Fatalf("keepalive did not reach auth revision fence; config reads=%d", shim.reads.Load())
+	}
+
+	putDone := make(chan error, 1)
+	go func() {
+		_, putErr := server.Put(rootCtx, &etcdserverpb.PutRequest{
+			Key: []byte("/denied/concurrent-renew"), Value: []byte("secret"), Lease: lease.ID,
+		})
+		putDone <- putErr
+	}()
+	select {
+	case <-shim.putCommitted:
+		t.Fatal("protected attachment committed before keepalive authorization completed")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	releaseAuth()
+	require.NoError(t, <-keepAliveDone)
+	require.Len(t, stream.sent, 1)
+	require.Equal(t, int64(60), stream.sent[0].TTL)
+	require.NoError(t, <-putDone)
+}
+
 func TestAuthLeaseKeyCheckRejectsConcurrentAuthRevisionChange(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

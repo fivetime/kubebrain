@@ -235,11 +235,11 @@ func (m *leaseManager) LeaseKeepAlive(stream etcdserverpb.Lease_LeaseKeepAliveSe
 		if authErr != nil {
 			return authErr
 		}
-		if authErr = m.authorizeLeaseKeys(stream.Context(), caller, m.keysForLease(req.ID), authpb.WRITE); authErr != nil {
-			return authErr
-		}
 		epoch, leadingFresh := m.srv.peers.EpochAndLeadingFresh()
 		if !leadingFresh {
+			if authErr = m.authorizeLeaseKeys(stream.Context(), caller, m.keysForLease(req.ID), authpb.WRITE); authErr != nil {
+				return authErr
+			}
 			err := m.requireLeaseLeader("lease keepalive")
 			if !m.srv.peers.EtcdProxyEnabled() {
 				return err
@@ -259,7 +259,7 @@ func (m *leaseManager) LeaseKeepAlive(stream etcdserverpb.Lease_LeaseKeepAliveSe
 		}
 
 		renewCtx := backend.WithLeadershipEpoch(stream.Context(), epoch)
-		ttl, err := m.refreshLease(renewCtx, req.ID)
+		ttl, err := m.refreshLeaseAuthorized(renewCtx, caller, req.ID)
 		if status.Code(err) == codes.NotFound {
 			ttl = 0
 		} else if err != nil {
@@ -617,12 +617,42 @@ func (m *leaseManager) refreshLease(ctx context.Context, id int64) (int64, error
 	// already won the exclusive lock must finish before this renewal, while a
 	// successful renewal prevents expiry from observing the old deadline.
 	m.leaseWriteMu.RLock()
+	return m.refreshLeaseHoldingLocks(ctx, id, func() {
+		m.leaseWriteMu.RUnlock()
+		m.leaseCheckpointMu.Unlock()
+	})
+}
+
+func (m *leaseManager) refreshLeaseAuthorized(ctx context.Context, caller *authCaller, id int64) (int64, error) {
+	if caller == nil || caller.isRoot() {
+		return m.refreshLease(ctx, id)
+	}
+
+	// Put/Txn use the shared side of leaseWriteMu from lease validation through
+	// binding publication. Hold the exclusive side while checking every current
+	// key and refreshing the deadline, so a protected attachment cannot commit
+	// between authorization and renewal.
+	m.leaseCheckpointMu.Lock()
+	m.leaseWriteMu.Lock()
+	if err := m.authorizeLeaseKeys(ctx, caller, m.keysForLease(id), authpb.WRITE); err != nil {
+		m.leaseWriteMu.Unlock()
+		m.leaseCheckpointMu.Unlock()
+		return 0, err
+	}
+	return m.refreshLeaseHoldingLocks(ctx, id, func() {
+		m.leaseWriteMu.Unlock()
+		m.leaseCheckpointMu.Unlock()
+	})
+}
+
+// refreshLeaseHoldingLocks renews a lease while the caller holds
+// leaseCheckpointMu and either side of leaseWriteMu. unlock must release both.
+func (m *leaseManager) refreshLeaseHoldingLocks(ctx context.Context, id int64, unlock func()) (int64, error) {
 	m.leaseMu.Lock()
 	st, ok := m.leases[id]
 	if !ok {
 		m.leaseMu.Unlock()
-		m.leaseWriteMu.RUnlock()
-		m.leaseCheckpointMu.Unlock()
+		unlock()
 		return 0, leaseNotFound(id)
 	}
 	now := time.Now()
@@ -633,8 +663,7 @@ func (m *leaseManager) refreshLease(ctx context.Context, id int64) (int64, error
 	if !st.deadline.After(now) {
 		revoked := st.revoked
 		m.leaseMu.Unlock()
-		m.leaseWriteMu.RUnlock()
-		m.leaseCheckpointMu.Unlock()
+		unlock()
 		select {
 		case <-revoked:
 			return 0, leaseNotFound(id)
@@ -650,8 +679,7 @@ func (m *leaseManager) refreshLease(ctx context.Context, id int64) (int64, error
 		// before publishing the renewed full-TTL deadline. At most one such write
 		// occurs per checkpoint interval, not per keepalive.
 		if err := m.persistLeaseCheckpoint(ctx, id, ttl, 0); err != nil {
-			m.leaseWriteMu.RUnlock()
-			m.leaseCheckpointMu.Unlock()
+			unlock()
 			return 0, err
 		}
 	}
@@ -659,8 +687,7 @@ func (m *leaseManager) refreshLease(ctx context.Context, id int64) (int64, error
 	st, ok = m.leases[id]
 	if !ok {
 		m.leaseMu.Unlock()
-		m.leaseWriteMu.RUnlock()
-		m.leaseCheckpointMu.Unlock()
+		unlock()
 		return 0, leaseNotFound(id)
 	}
 	now = time.Now()
@@ -670,8 +697,7 @@ func (m *leaseManager) refreshLease(ctx context.Context, id int64) (int64, error
 	m.scheduleLeaseCheckpointLocked(st)
 	ttl = st.ttl
 	m.leaseMu.Unlock()
-	m.leaseWriteMu.RUnlock()
-	m.leaseCheckpointMu.Unlock()
+	unlock()
 	// Mirror etcd lessor.Renew -> l.refresh(0): ordinary keepalives only bump the
 	// in-memory deadline. Persistence occurs solely when clearing a periodic
 	// remaining-TTL checkpoint, limiting it to at most one write per checkpoint

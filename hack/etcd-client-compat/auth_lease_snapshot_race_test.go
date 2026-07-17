@@ -70,6 +70,8 @@ func TestAuthLeaseTTLDoesNotLeakConcurrentlyAttachedKey(t *testing.T) {
 	defer stop()
 	errs := make(chan error, 64)
 	var successes atomic.Int64
+	var renewSuccesses atomic.Int64
+	var renewDenied atomic.Int64
 	var deniedCycles atomic.Int64
 	var wg sync.WaitGroup
 
@@ -116,6 +118,30 @@ func TestAuthLeaseTTLDoesNotLeakConcurrentlyAttachedKey(t *testing.T) {
 			}
 		}()
 	}
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for runCtx.Err() == nil {
+				renewed, renewErr := alice.KeepAliveOnce(runCtx, lease.ID)
+				if renewErr != nil {
+					if errorsIsPermissionDenied(renewErr) {
+						renewDenied.Add(1)
+						continue
+					}
+					if runCtx.Err() == nil {
+						errs <- renewErr
+					}
+					return
+				}
+				if renewed == nil || renewed.ID != lease.ID || renewed.TTL <= 0 {
+					errs <- fmt.Errorf("invalid successful keepalive response: %#v", renewed)
+					return
+				}
+				renewSuccesses.Add(1)
+			}
+		}()
+	}
 
 	wg.Wait()
 	close(errs)
@@ -124,8 +150,10 @@ func TestAuthLeaseTTLDoesNotLeakConcurrentlyAttachedKey(t *testing.T) {
 	}
 	require.Positive(t, deniedCycles.Load())
 	require.Positive(t, successes.Load())
-	t.Logf("validated %d successful TTL snapshots across %d protected attach/detach cycles",
-		successes.Load(), deniedCycles.Load())
+	require.Positive(t, renewSuccesses.Load())
+	require.Positive(t, renewDenied.Load())
+	t.Logf("validated %d TTL snapshots, %d successful and %d denied renewals across %d protected binding cycles",
+		successes.Load(), renewSuccesses.Load(), renewDenied.Load(), deniedCycles.Load())
 
 	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cleanupCancel()

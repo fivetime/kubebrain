@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	clientv3 "go.etcd.io/etcd/client/v3"
+	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -17,7 +18,7 @@ func authClient(t *testing.T, endpoint, username, password string) *clientv3.Cli
 	t.Helper()
 	client, err := clientv3.New(clientv3.Config{
 		Endpoints: []string{endpoint}, DialTimeout: 5 * time.Second,
-		Username: username, Password: password,
+		Username: username, Password: password, Logger: zap.NewNop(),
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, client.Close()) })
