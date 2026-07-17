@@ -18,6 +18,7 @@ import (
 	"math"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 )
@@ -67,7 +68,8 @@ type leaseManager struct {
 	// orphanSweepStop is non-nil while the leader-side orphaned-leased-key sweeper
 	// goroutine is running; closed (and niled) when leadership is lost. Guarded by
 	// leaseMu.
-	orphanSweepStop chan struct{}
+	orphanSweepStop     chan struct{}
+	orphanSweepInterval time.Duration
 	// leasedKeyCount mirrors len(keyLeaseIndex) for a lock-free fast path in
 	// leaseIDForKey: the read path resolves an attached lease for every returned
 	// KeyValue, and the overwhelmingly common case (a range over keys that hold
@@ -79,11 +81,12 @@ type leaseManager struct {
 // newLeaseManager builds a leaseManager owned by srv; deps are read through srv.
 func newLeaseManager(srv *RPCServer, initialID int64) *leaseManager {
 	return &leaseManager{
-		srv:           srv,
-		leaseID:       initialID,
-		leases:        make(map[int64]*leaseState),
-		pendingLeases: make(map[int64]uint64),
-		keyLeaseIndex: make(map[string]int64),
+		srv:                 srv,
+		leaseID:             initialID,
+		leases:              make(map[int64]*leaseState),
+		pendingLeases:       make(map[int64]uint64),
+		keyLeaseIndex:       make(map[string]int64),
+		orphanSweepInterval: orphanLeaseSweepInterval,
 	}
 }
 

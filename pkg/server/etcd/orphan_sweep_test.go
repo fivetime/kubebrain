@@ -16,12 +16,44 @@ package etcd
 
 import (
 	"context"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 )
+
+type blockingOrphanSweepReadBackend struct {
+	BackendShim
+	entered    chan struct{}
+	canceled   chan struct{}
+	once       sync.Once
+	cancelOnce sync.Once
+}
+
+func (b *blockingOrphanSweepReadBackend) InternalRange(ctx context.Context, prefix []byte) (map[string][]byte, error) {
+	b.once.Do(func() { close(b.entered) })
+	<-ctx.Done()
+	b.cancelOnce.Do(func() { close(b.canceled) })
+	return nil, ctx.Err()
+}
+
+type blockingOrphanDetachBackend struct {
+	BackendShim
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (b *blockingOrphanDetachBackend) InternalDelete(ctx context.Context, key []byte) error {
+	if string(key) == string(leaseAttachKey("/registry/events/ns/stale-fenced")) {
+		b.once.Do(func() { close(b.entered) })
+		<-b.release
+	}
+	return b.BackendShim.InternalDelete(ctx, key)
+}
 
 // TestOrphanLeaseSweepReconciles pins the borrowed-from-kine safety net: a leased
 // key whose lease meta record is gone (so its expiry timer was never re-armed on
@@ -123,4 +155,64 @@ func TestOrphanLeaseSweepReclaimsStaleRecordButKeepsRebound(t *testing.T) {
 	require.Equal(t, int64(0), kept.Kvs[0].Lease)
 	_, err = server.backend.InternalGet(ctx, leaseAttachKey(string(key)))
 	require.Error(t, err, "stale attachment record must be reclaimed")
+}
+
+func TestOrphanLeaseSweeperCancelsInFlightScanWithLeadership(t *testing.T) {
+	server, _, cleanup := newLeaseTestServer(t)
+	defer cleanup()
+	blocking := &blockingOrphanSweepReadBackend{
+		BackendShim: server.backend,
+		entered:     make(chan struct{}),
+		canceled:    make(chan struct{}),
+	}
+	server.backend = blocking
+	server.leaseManager.orphanSweepInterval = time.Millisecond
+
+	leaderCtx, stopLeading := context.WithCancel(context.Background())
+	server.leaseManager.startOrphanSweeper(leaderCtx)
+	<-blocking.entered
+	stopLeading()
+	<-blocking.canceled
+	// The blocked InternalRange can return only after the leadership context is
+	// canceled. stopOrphanSweeper must therefore complete without releasing any
+	// separate test gate.
+	server.leaseManager.stopOrphanSweeper()
+}
+
+func TestOrphanLeaseSweepFencesDetachAcrossLeadershipEpoch(t *testing.T) {
+	server, original, cleanup := newLeaseTestServer(t)
+	defer cleanup()
+	ctx := context.Background()
+	const defunct int64 = 700020
+	const key = "/registry/events/ns/stale-fenced"
+
+	require.NoError(t, server.attachKeyToStorage(ctx, defunct, key))
+	var epoch atomic.Uint64
+	epoch.Store(1)
+	peers := testPeerService{
+		isLeaderFn: func() bool { return true },
+		epochFn:    func() (uint64, bool) { return epoch.Load(), true },
+	}
+	server.peers = peers
+	original.SetLeadershipFence(peers.EpochAndLeadingFresh)
+	blocking := &blockingOrphanDetachBackend{
+		BackendShim: server.backend,
+		entered:     make(chan struct{}),
+		release:     make(chan struct{}),
+	}
+	server.backend = blocking
+
+	done := make(chan struct{})
+	go func() {
+		server.sweepOrphanLeasedKeys(ctx)
+		close(done)
+	}()
+	<-blocking.entered
+	epoch.Store(2)
+	close(blocking.release)
+	<-done
+
+	value, err := original.InternalGet(ctx, leaseAttachKey(key))
+	require.NoError(t, err, "the old leadership term must not reclaim the attachment")
+	require.Equal(t, []byte("700020"), value)
 }

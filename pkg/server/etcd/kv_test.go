@@ -40,6 +40,7 @@ import (
 type testPeerService struct {
 	isLeader         bool
 	isLeaderFn       func() bool
+	epochFn          func() (uint64, bool)
 	noLeader         bool
 	syncReadFn       func(context.Context) error
 	proxyEnabled     bool
@@ -88,6 +89,9 @@ func (s testPeerService) IsLeader() bool {
 }
 
 func (s testPeerService) EpochAndLeadingFresh() (uint64, bool) {
+	if s.epochFn != nil {
+		return s.epochFn()
+	}
 	return 0, s.IsLeader()
 }
 

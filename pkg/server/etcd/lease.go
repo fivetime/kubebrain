@@ -1148,7 +1148,7 @@ func (m *leaseManager) ReloadLeases(ctx context.Context) error {
 	m.migrateLegacyLeases(ctx, legacy)
 	// Start the safety-net sweeper that reclaims leased keys whose expiry timer was
 	// never (re)armed because their attachment outlived its lease meta record.
-	m.startOrphanSweeper()
+	m.startOrphanSweeper(ctx)
 	return nil
 }
 
@@ -1419,7 +1419,7 @@ const orphanLeaseSweepInterval = 10 * time.Minute
 // startOrphanSweeper launches the leader-side orphaned-leased-key sweeper if it is
 // not already running. Called on leadership acquisition (after ReloadLeases has
 // rebuilt lease state).
-func (m *leaseManager) startOrphanSweeper() {
+func (m *leaseManager) startOrphanSweeper(ctx context.Context) {
 	m.leaseMu.Lock()
 	if m.orphanSweepStop != nil {
 		m.leaseMu.Unlock()
@@ -1427,8 +1427,9 @@ func (m *leaseManager) startOrphanSweeper() {
 	}
 	stop := make(chan struct{})
 	m.orphanSweepStop = stop
+	interval := m.orphanSweepInterval
 	m.leaseMu.Unlock()
-	go m.runOrphanSweeper(stop)
+	go m.runOrphanSweeper(ctx, stop, interval)
 }
 
 // stopOrphanSweeper signals the sweeper goroutine to exit (idempotent).
@@ -1441,18 +1442,24 @@ func (m *leaseManager) stopOrphanSweeper() {
 	m.leaseMu.Unlock()
 }
 
-func (m *leaseManager) runOrphanSweeper(stop chan struct{}) {
-	ticker := time.NewTicker(orphanLeaseSweepInterval)
+func (m *leaseManager) runOrphanSweeper(ctx context.Context, stop chan struct{}, interval time.Duration) {
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
 		select {
+		case <-ctx.Done():
+			return
 		case <-stop:
 			return
 		case <-ticker.C:
-			if !m.srv.peers.IsLeader() {
+			if ctx.Err() != nil {
+				return
+			}
+			epoch, leadingFresh := m.srv.peers.EpochAndLeadingFresh()
+			if !leadingFresh {
 				continue
 			}
-			m.sweepOrphanLeasedKeys(context.Background())
+			m.sweepOrphanLeasedKeys(backend.WithLeadershipEpoch(ctx, epoch))
 		}
 	}
 }
@@ -1484,10 +1491,11 @@ func (m *leaseManager) sweepOrphanLeasedKeys(ctx context.Context) {
 		if leaseLive || indexed {
 			continue // healthy binding, or already tracked for expiry
 		}
-		if !m.srv.peers.IsLeader() {
+		epoch, leadingFresh := m.srv.peers.EpochAndLeadingFresh()
+		if !leadingFresh {
 			return // lost leadership mid-sweep
 		}
-		m.reconcileOrphanAttachment(ctx, key, id)
+		m.reconcileOrphanAttachment(backend.WithLeadershipEpoch(ctx, epoch), key, id)
 	}
 }
 

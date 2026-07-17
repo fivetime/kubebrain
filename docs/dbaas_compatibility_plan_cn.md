@@ -1435,6 +1435,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `467743598322122752`。验证后恢复默认 10 分钟周期，部署 3/3 Ready、zero restart，
   health 正常。exact image
   `7a78f3eed5773e4224b34d4217f33586cb432f1df25581fa3d6d3d7ba450b97e`。
+- **Lease A89 orphan sweeper leadership fencing（2026-07-17）**：对照 etcd
+  `server/lease/lessor.go` 的 `demotec`（primary demote 时关闭，终止
+  `runLoop`）和 `server/etcdserver/server.go:revokeExpiredLeases`，leader-only lease
+  清理不得越过任期。KubeBrain 的 orphan attachment 安全网虽在每个 key 前检查
+  `IsLeader`，但整个共享 TiKV 扫描使用 `context.Background()`，且 attachment/key
+  删除未携带准入 epoch；旧 leader 可在检查后切主并继续扫描或提交。现
+  `ReloadLeases` 将 leader-election lifecycle context 交给 sweeper，在途读取随任期
+  取消；每轮及每个 attachment 使用 `EpochAndLeadingFresh` 捕获 epoch，所有后续
+  user-key compare-delete 和 internal attachment delete 均由 backend commit fence
+  复核。ticker 与取消同时就绪时也优先退出，避免 demote 后的无意义扫描和错误日志。
+  确定性测试分别阻塞首次 `InternalRange` 验证 context 取消，以及阻塞
+  `InternalDelete` 后切换 epoch，确认旧任期不能回收 attachment；focused 普通 50 轮、
+  race 10 轮、full test/backend+server race/full vet 全通过。三副本 KubeBrain +
+  独立 TiKV/PD 上，TTL=8 秒 leased key 创建后删除 leader，新的 leader 接管过期，
+  watch 仅收到一次 DELETE，key 与 lease 最终均不存在；另以官方 client/v3 连续 3 轮
+  验证每轮 50 leases 的 50 PUT/50 DELETE 全量事件。部署 3/3 Ready、zero restart，
+  health 正常。exact image
+  `9855b01b1e5c54da8313cc7e51d2019ca25fd2e44bd1d7a6a91517044cfa80ea`。
 
 ### P1：通用服务能力
 
