@@ -197,7 +197,17 @@ func (b *backend) compact(ctx context.Context, revision uint64) error {
 		return nil
 	}
 
-	return b.physicalCompact(ctx, revision)
+	if err := b.physicalCompact(ctx, revision); err != nil {
+		// The logical watermark is already durable. A Physical=true caller may
+		// disconnect or hit its deadline while the scan is running; abandoning
+		// the target here would leave history physically stranded until a later
+		// compaction or process restart. Continue through the same background
+		// worker used by logical compaction, whose context is independent of the
+		// client and retries transient storage failures.
+		b.schedulePhysicalCompact(revision)
+		return err
+	}
+	return nil
 }
 
 // physicalCompact runs the storage version-GC scan for revision. It is shared by

@@ -78,9 +78,24 @@ func (a *armedFailPartitionsKV) GetPartitions(ctx context.Context, start, end []
 	return a.KvStorage.GetPartitions(ctx, start, end)
 }
 
-// TestCompactSurfacesScanError pins #71: Physical=true promises that the scan
-// completed before return, so a scan failure must be returned even though the
-// already-persisted logical watermark remains advanced.
+type cancelFirstPartitionsKV struct {
+	storage.KvStorage
+	first   int32
+	entered chan struct{}
+}
+
+func (c *cancelFirstPartitionsKV) GetPartitions(ctx context.Context, start, end []byte) ([]storage.Partition, error) {
+	if atomic.CompareAndSwapInt32(&c.first, 0, 1) {
+		close(c.entered)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	return c.KvStorage.GetPartitions(ctx, start, end)
+}
+
+// TestCompactSurfacesScanError pins #71 and the recovery contract:
+// Physical=true returns a scan failure even though the logical watermark is
+// already durable, then the client-independent compactor resumes that target.
 func TestCompactSurfacesScanError(t *testing.T) {
 	rec := newRecordCounters()
 	fkv := &armedFailPartitionsKV{KvStorage: imemkv.NewKvStorage()}
@@ -105,4 +120,40 @@ func TestCompactSurfacesScanError(t *testing.T) {
 
 	require.GreaterOrEqual(t, rec.get("backend.compact.scan.err"), 1.0,
 		"a failed physical GC scan must be surfaced via a metric, not swallowed")
+
+	atomic.StoreInt32(&fkv.armed, 0)
+	require.Eventually(t, func() bool {
+		return atomic.LoadUint64(&b.compactDoneRev) >= uint64(cr.Header.Revision)
+	}, 5*time.Second, 5*time.Millisecond,
+		"a durable logical watermark must be physically resumed after the request scan fails")
+}
+
+func TestCompactCancellationResumesPhysicalScanInBackground(t *testing.T) {
+	rec := newRecordCounters()
+	fkv := &cancelFirstPartitionsKV{
+		KvStorage: imemkv.NewKvStorage(),
+		entered:   make(chan struct{}),
+	}
+	defer func() { require.NoError(t, fkv.Close()) }()
+	b := NewBackend(fkv, Config{Prefix: prefix, Identity: getStorageIdentity(), EnableEtcdCompatibility: true}, rec).(*backend)
+	b.SetCurrentRevision(uint64(time.Now().UnixNano()))
+
+	cr, err := b.Create(context.Background(), &proto.CreateRequest{Key: []byte(prefix + "/cancel"), Value: []byte("v")})
+	require.NoError(t, err)
+	waitCommitted(t, b, cr.Header.Revision)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		_, compactErr := b.Compact(ctx, cr.Header.Revision)
+		result <- compactErr
+	}()
+	<-fkv.entered
+	cancel()
+	require.ErrorIs(t, <-result, context.Canceled)
+
+	require.Eventually(t, func() bool {
+		return atomic.LoadUint64(&b.compactDoneRev) >= uint64(cr.Header.Revision)
+	}, 5*time.Second, 5*time.Millisecond,
+		"physical GC must continue independently after the requesting client disconnects")
 }

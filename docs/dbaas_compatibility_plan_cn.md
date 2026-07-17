@@ -33,7 +33,7 @@ Raft、bbolt 和成员管理内部实现，而是对通用 etcd v3 客户端提�
 | --- | --- | --- | --- |
 | KV | Range/Put/DeleteRange | 部分兼容 | P0：事务内排序、过滤、历史读、大范围删除原子性、生产范围上限及独立 Put/Range/DeleteRange 差分已补齐；继续扩大 TiKV 故障验证 |
 | KV | Txn | 部分兼容 | P0：缺失键 guard、范围 phantom guard、嵌套分支、staged 单 revision 提交及 caller deadline 贯穿后端冲突重试已完成；继续扩大官方客户端差分及 TiKV 故障验证 |
-| KV | Compact | 兼容核心语义 | P0：继续对齐 logical/physical 行为、错误与异步 GC |
+| KV | Compact | 兼容核心语义 | logical/physical、错误、异步 GC 与请求取消后的后台续扫已对齐；继续长时间故障 soak |
 | KV | RangeStream | 兼容核心语义 | etcd 3.7 支持的 CountOnly/Limit/KeysOnly/默认排序已对齐；自定义排序与 revision filter 同 etcd 明确 Unimplemented |
 | Watch | create/cancel/progress/history/prevKV/slow-consumer catch-up | 兼容核心语义；后端溢出无缝追赶，控制响应不阻塞接收循环 | P1：继续数天级断线/慢消费者 soak |
 | Lease | grant/revoke/keepalive/ttl/list | 兼容核心语义 | meta/attachment 已与用户 revision 隔离并原子提交，Grant durable 后才发布，List 按到期时间稳定排序；继续扩大故障、并发和错误差分矩阵 |
@@ -1384,6 +1384,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   1 个时应为 `Count=4,len(Kvs)=1`；`CountOnly+WithMaxModRev` 同样保留总数 4。
   修正 smoke 中错误的 1/3 预期并写明契约。修正后完整官方 client/v3 smoke 在 A84
   三副本 TiKV/PD 环境通过。
+- **Compact A86 physical cancellation recovery（2026-07-17）**：对照 etcd
+  `server/etcdserver/v3_server.go:Compact` 与
+  `server/storage/mvcc/kvstore.go:Compact`，logical compact 在 apply 时先持久化，
+  physical 请求等待该 apply 已调度的清理完成；客户端断开不会撤销已提交的清理目标。
+  KubeBrain 的同步 `Physical=true` 路径同样先持久化 logical watermark，但物理扫描
+  直接使用请求 context；deadline/cancel 或瞬态 partition discovery 失败后只向客户端
+  返回错误，没有把已持久化目标交给后台 worker，可能永久留下 logical watermark 已前进、
+  physical history 未回收的状态，直到更高 revision compact 或进程重启。现
+  `physicalCompact` 失败后立即把同 revision 调度给 client-independent compactor；
+  RPC 仍如实返回原错误，后台沿用既有失败重试与最高目标合并机制。确定性测试分别注入
+  partition failure 和阻塞到 `context.Canceled` 的首次扫描，确认 logical watermark
+  单调、请求错误不被吞掉，解除故障后 `compactDoneRev` 必须自行达到目标；普通 50 轮、
+  race 10 轮及 full test/backend+server race/full vet 均通过。Compact 与参考 etcd 的
+  boundary/repeated/older/future/negative/header 差分连续 5 轮一致。三副本
+  KubeBrain + 独立 TiKV/PD 上官方 client/v3 `Physical=true` 与并发 point/range/write/
+  watch 测试连续 3 轮通过，每轮 100/100 事件完整，compact boundary 可读且 boundary-1
+  标准拒绝。exact image
+  `875b570a9008cd25f6763a95731961bd43625db2849b64f1c5e44774b5734e11`。
 
 ### P1：通用服务能力
 
