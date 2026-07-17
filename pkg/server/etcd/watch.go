@@ -62,8 +62,32 @@ type watcher struct {
 	// hold watch request info in this stream
 	watches map[int64]*watch
 	id      int64
+	// controlRev is the latest leader revision synchronized for this stream.
+	// Followers use it for created/client-cancel headers and as the R fence for
+	// from-now proxy watches that subscribe at R+1.
+	controlRev uint64
 
 	metricCli metrics.Metrics
+}
+
+func (w *watcher) responseRevision() uint64 {
+	rev := w.backend.GetPublishedRevision()
+	if control := atomic.LoadUint64(&w.controlRev); control > rev {
+		rev = control
+	}
+	return rev
+}
+
+func (w *watcher) syncControlRevision(ctx context.Context) error {
+	revision := w.backend.GetPublishedRevision()
+	if !w.grpcServer.peers.IsLeader() {
+		if err := w.grpcServer.peers.SyncReadRevision(ctx); err != nil {
+			return err
+		}
+		revision = w.grpcServer.backend.GetCurrentRevision()
+	}
+	util.StoreMaxUint64(&w.controlRev, revision)
+	return nil
 }
 
 // watch correspond to one watch request
@@ -182,11 +206,14 @@ func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) error {
 
 		if r := msg.GetCreateRequest(); r != nil {
 			r = normalizeWatchCreateRequest(r)
+			if err := w.syncControlRevision(ws.Context()); err != nil {
+				return err
+			}
 			if r.StartRevision < 0 {
 				// etcd treats a negative start revision as an immediately canceled
 				// create, while keeping the multiplexed stream usable for later watches.
 				if err := w.Send(&etcdserverpb.WatchResponse{
-					Header: txnHeader(int64(s.backend.GetPublishedRevision())), WatchId: -1,
+					Header: txnHeader(int64(w.responseRevision())), WatchId: -1,
 					Created: true, Canceled: true, CancelReason: rpctypes.ErrCompacted.Error(),
 				}); err != nil {
 					return err
@@ -199,7 +226,7 @@ func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) error {
 			}
 			if authErr != nil {
 				if err := w.Send(&etcdserverpb.WatchResponse{
-					Header: txnHeader(int64(s.backend.GetPublishedRevision())), WatchId: -1,
+					Header: txnHeader(int64(w.responseRevision())), WatchId: -1,
 					Created: true, Canceled: true, CancelReason: watchAuthCancelReason(authErr),
 				}); err != nil {
 					return err
@@ -213,9 +240,15 @@ func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) error {
 				klog.InfoS("watch follower", "revision", r.StartRevision, "addr", s.backend.GetResourceLock().Identity(), "leader", leaderInfo)
 				return status.Errorf(codes.Unavailable, "watch error addr is %s leader %s", s.backend.GetResourceLock().Identity(), leaderInfo)
 			}
+			if !s.peers.IsLeader() && r.StartRevision == 0 {
+				r.StartRevision = int64(w.responseRevision()) + 1
+			}
 
 			w.Start(ws.Context(), r)
 		} else if cancelRequest := msg.GetCancelRequest(); cancelRequest != nil {
+			if err := w.syncControlRevision(ws.Context()); err != nil {
+				return err
+			}
 			s.metricCli.EmitCounter("watch.client.cancel", 1)
 			klog.InfoS("receive watch cancel request", "id", w.id, "watchID", cancelRequest.GetWatchId())
 			w.CancelRequest(msg.GetCancelRequest().WatchId)
@@ -323,7 +356,7 @@ func (w *watcher) Start(c context.Context, r *etcdserverpb.WatchCreateRequest) {
 		w.Unlock()
 		cancel()
 		_ = w.Send(&etcdserverpb.WatchResponse{
-			Header: txnHeader(int64(w.backend.GetPublishedRevision())), WatchId: -1,
+			Header: txnHeader(int64(w.responseRevision())), WatchId: -1,
 			Created: true, Canceled: true, CancelReason: "mvcc: duplicate watch ID provided on the WatchStream",
 		})
 		return
@@ -332,7 +365,7 @@ func (w *watcher) Start(c context.Context, r *etcdserverpb.WatchCreateRequest) {
 		w.Unlock()
 		cancel()
 		_ = w.Send(&etcdserverpb.WatchResponse{
-			Header: txnHeader(int64(w.backend.GetPublishedRevision())), WatchId: -1,
+			Header: txnHeader(int64(w.responseRevision())), WatchId: -1,
 			Created: true, Canceled: true, CancelReason: "mvcc: watcher range is empty",
 		})
 		return
@@ -350,9 +383,9 @@ func (w *watcher) Start(c context.Context, r *etcdserverpb.WatchCreateRequest) {
 	// subscriber can still receive an event whose revision <= the current
 	// revision — seeding at current would over-report it. GetPublishedRevision is
 	// by construction below every such still-in-flight event, so any event the new
-	// sub receives has revision > seed and cannot be skipped. On a follower it is
-	// 0, so a from-now watch reports a low floor until the first proxy
-	// progress-notify lifts it (safe under-report, self-correcting within a tick).
+	// sub receives has revision > seed and cannot be skipped. Follower from-now
+	// requests are rewritten to the synchronized leader fence R+1 before Start,
+	// so both leader and follower watches use a published registration floor.
 	var initSyncedRev uint64
 	if r.StartRevision > 0 {
 		initSyncedRev = uint64(r.StartRevision) - 1
@@ -377,7 +410,7 @@ func (w *watcher) Start(c context.Context, r *etcdserverpb.WatchCreateRequest) {
 	// after "created" but before the first event would otherwise resume from 0 and
 	// could skip events. The published revision is at/below every still-in-flight
 	// event (see initSyncedRev above), so it is a safe, non-skipping resume floor.
-	createdRev := w.backend.GetPublishedRevision()
+	createdRev := w.responseRevision()
 	if err := w.Send(&etcdserverpb.WatchResponse{
 		Header:  txnHeader(int64(createdRev)),
 		Created: true,
@@ -445,8 +478,12 @@ func (w *watcher) cancel(id int64, err error, compact, clientRequest bool) {
 	if err != nil {
 		cancelReason = err.Error()
 	}
+	header := &etcdserverpb.ResponseHeader{}
+	if clientRequest {
+		header = txnHeader(int64(w.responseRevision()))
+	}
 	serr := w.Send(&etcdserverpb.WatchResponse{
-		Header:          &etcdserverpb.ResponseHeader{},
+		Header:          header,
 		Canceled:        true,
 		CancelReason:    cancelReason,
 		WatchId:         id,

@@ -17,6 +17,7 @@ type watchControlOutcome struct {
 	Created      bool
 	Canceled     bool
 	CancelReason string
+	HeaderZero   bool
 }
 
 func TestWatchControlDifferentialAgainstReferenceEtcd(t *testing.T) {
@@ -71,6 +72,7 @@ func runSingleWatchProgressScenario(t *testing.T, endpoint string) watchControlO
 	return watchControlOutcome{
 		WatchID: progress.WatchId, Created: progress.Created,
 		Canceled: progress.Canceled, CancelReason: progress.CancelReason,
+		HeaderZero: progress.Header == nil || progress.Header.Revision == 0,
 	}
 }
 
@@ -81,6 +83,14 @@ func runWatchControlScenario(t *testing.T, endpoint string) []watchControlOutcom
 	conn, err := grpc.NewClient(endpoint, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	seedKey := []byte("/dbaas-watch-control/seed")
+	_, err = etcdserverpb.NewKVClient(conn).Put(ctx, &etcdserverpb.PutRequest{Key: seedKey, Value: []byte("1")})
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_, _ = etcdserverpb.NewKVClient(conn).DeleteRange(cleanupCtx, &etcdserverpb.DeleteRangeRequest{Key: seedKey})
+	})
 	stream, err := etcdserverpb.NewWatchClient(conn).Watch(ctx)
 	require.NoError(t, err)
 
@@ -97,6 +107,7 @@ func runWatchControlScenario(t *testing.T, endpoint string) []watchControlOutcom
 		return watchControlOutcome{
 			WatchID: resp.WatchId, Created: resp.Created,
 			Canceled: resp.Canceled, CancelReason: resp.CancelReason,
+			HeaderZero: resp.Header == nil || resp.Header.Revision == 0,
 		}
 	}
 

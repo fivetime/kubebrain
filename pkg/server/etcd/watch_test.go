@@ -403,6 +403,63 @@ func TestFollowerProxyWatchCloseIsNonCompactedCancel(t *testing.T) {
 	require.Equal(t, "watch closed", resp.CancelReason)
 }
 
+func TestFollowerFromNowWatchUsesSynchronizedRevisionFence(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	proxyCh := make(chan etcdproxy.WatchResult)
+	close(proxyCh)
+	var watchedRevision uint64
+	server.peers = testPeerService{
+		isLeader:     false,
+		proxyEnabled: true,
+		syncReadFn: func(context.Context) error {
+			server.backend.SetCurrentRevision(50)
+			return nil
+		},
+		watchFn: func(_ context.Context, key, rangeEnd []byte, revision uint64) (<-chan etcdproxy.WatchResult, error) {
+			watchedRevision = revision
+			return proxyCh, nil
+		},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	stream := &scriptedWatchServer{
+		fakeWatchServer: &fakeWatchServer{ctx: ctx},
+		reqs: []*etcdserverpb.WatchRequest{
+			{RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{CreateRequest: &etcdserverpb.WatchCreateRequest{
+				Key: []byte("/registry/watch/fenced"), WatchId: 77,
+			}}},
+		},
+	}
+	err := server.Watch(stream)
+	cancel()
+	require.ErrorIs(t, err, context.Canceled)
+	require.Equal(t, uint64(51), watchedRevision, "from-now follower watch must subscribe at synchronized R+1")
+	require.GreaterOrEqual(t, len(stream.sent), 1)
+	require.Equal(t, int64(50), stream.sent[0].Header.Revision)
+	require.True(t, stream.sent[0].Created)
+}
+
+func TestClientWatchCancelUsesControlRevision(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	stream := &fakeWatchServer{ctx: context.Background()}
+	w := &watcher{
+		backend:     server.backend,
+		grpcServer:  server,
+		watchServer: stream,
+		watches: map[int64]*watch{
+			77: {cancel: func() {}, start: "/registry/watch/fenced"},
+		},
+		controlRev: 50,
+		metricCli:  server.metricCli,
+	}
+	w.CancelRequest(77)
+	require.Len(t, stream.sent, 1)
+	require.True(t, stream.sent[0].Canceled)
+	require.Equal(t, int64(50), stream.sent[0].Header.Revision)
+}
+
 func TestFollowerProxyWatchCreateUnavailableIsNonCompactedCancel(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

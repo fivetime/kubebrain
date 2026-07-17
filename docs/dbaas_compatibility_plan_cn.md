@@ -824,6 +824,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   kube-apiserver cacher；任何 stream-wide revision 都不会越过最慢 watch。确定性测试覆盖
   synchronized floor、laggard timeout 与 empty stream，完整 server race 通过；exact-image
   三副本 TiKV/PD 上 raw control 双端差分连续 20 轮一致，普通 history/update watch 同轮通过。
+- **Watch A46 Follower control revision fence（2026-07-17）**：raw gRPC 双端差分覆盖
+  created、duplicate ID、negative revision、第二个 created 与显式 cancel，发现请求落到
+  Follower 时 KubeBrain 的 control response Header revision 全为 0，而 reference etcd 的
+  `/root/etcd/server/etcdserver/api/v3rpc/watch.go:newResponseHeader` 始终使用 stream 当前
+  revision。Follower 的 from-now proxy watch 同时从 0 启动，在读取 Leader revision 与完成
+  注册之间存在漏过新事件的窗口。现每次 create/cancel 先向 Leader 执行 read fence 得到 R，
+  stream control response 至少报告 R，from-now 请求改为从 R+1 注册；Leader 侧只使用已发布
+  watermark，避免 Header 超前于 watch event log。compacted/internal cancel 继续保留 etcd 的
+  zero Header，client cancel 使用最新 control fence。确定性测试固定 R+1 订阅和 cancel Header，
+  raw 双端差分同时比较 Header 是否为 zero，并在 exact-image 三副本 TiKV/PD 上验证。
 
 ### P1：通用服务能力
 
