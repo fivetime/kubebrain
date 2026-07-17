@@ -1226,6 +1226,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   ambiguous lease RPC，因此仅作为恢复回归，uncertain 分支以确定性注入为主证据。
   相邻 lease history 再连续 3 轮通过；参考 etcd differential 因本轮未启动 reference
   endpoint 明确跳过，不计为通过。
+- **Deploy A76 production pod hardening（2026-07-17）**：审计生产清单发现 TiKV/PD
+  已配置 requests/limits、required anti-affinity 和 PDB，但 KubeBrain 容器仍无资源
+  约束，副本反亲和仅为 preferred，且默认挂载 ServiceAccount token、缺少 pod/container
+  security context。明文与 TLS 两份清单现统一要求 3 个不同 hostname（生产集群至少
+  3 个可调度节点），为 KubeBrain 设置 requests `500m/1Gi`、limits `2CPU/4Gi`，
+  ServiceAccount 与 Pod 双层禁用 token automount，并固定 UID/GID 65532、
+  `runAsNonRoot`、`RuntimeDefault` seccomp、只读根文件系统、禁止 privilege escalation
+  及 drop `ALL` capabilities。结构化 manifest 测试锁定全部约束并连续 20 轮通过；
+  两份清单均通过 `kubectl apply --dry-run=client`。exact image
+  `31165d4ff79b7c361cb469b9d2a204c392962ddc47faae1215885b32175e6763`
+  在 `--read-only --user 65532:65532 --security-opt no-new-privileges --cap-drop ALL`
+  下正常启动 CLI；full test 通过。required anti-affinity 有意未部署到单节点 kind，
+  其不可调度正是对错误生产拓扑的 fail-closed 行为。
 
 ### P1：通用服务能力
 
