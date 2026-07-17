@@ -8,6 +8,7 @@ import (
 	"go.etcd.io/etcd/api/v3/authpb"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
+	"google.golang.org/grpc/metadata"
 )
 
 func TestAuthLeaseRequiresCallerAndProtectsBoundKeys(t *testing.T) {
@@ -87,4 +88,41 @@ func TestAuthLeaseKeepAliveRequiresWritePermissionOnEveryRequest(t *testing.T) {
 	require.NoError(t, server.auth.roleGrantPermission(plain, "allowed", &authpb.Permission{
 		PermType: authpb.READWRITE, Key: []byte("/allowed/"), RangeEnd: []byte("/allowed0"),
 	}))
+}
+
+func TestAuthLeaseKeyCheckRejectsConcurrentAuthRevisionChange(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := setupAuthKVUser(t, server)
+
+	caller, err := server.authCallerFromContext(ctx)
+	require.NoError(t, err)
+	require.NoError(t, caller.require([]byte("/allowed/leased"), nil, authpb.READ))
+	rootToken, err := server.tokens.authenticate(context.Background(), "root", "root-secret")
+	require.NoError(t, err)
+	rootCtx := metadata.NewIncomingContext(
+		context.Background(), metadata.Pairs(rpctypes.TokenFieldNameGRPC, rootToken),
+	)
+	rootCaller, err := server.authCallerFromContext(rootCtx)
+	require.NoError(t, err)
+
+	require.NoError(t, server.auth.roleRevokePermission(
+		context.Background(), "allowed", []byte("/allowed/"), []byte("/allowed0"),
+	))
+	// The request-local snapshot still permits the key. The revision fence must
+	// reject it rather than exposing attached keys or renewing a lease after the
+	// concurrent RBAC mutation.
+	require.NoError(t, caller.require([]byte("/allowed/leased"), nil, authpb.READ))
+	require.ErrorIs(t,
+		server.authorizeLeaseKeys(ctx, caller, []string{"/allowed/leased"}, authpb.READ),
+		rpctypes.ErrAuthOldRevision,
+	)
+	require.ErrorIs(t,
+		server.authorizeLeaseKeys(ctx, caller, []string{"/allowed/leased"}, authpb.WRITE),
+		rpctypes.ErrAuthOldRevision,
+	)
+	require.NoError(t,
+		server.authorizeLeaseKeys(rootCtx, rootCaller, []string{"/allowed/leased"}, authpb.WRITE),
+		"etcd exempts admin callers from the lease auth revision fence",
+	)
 }

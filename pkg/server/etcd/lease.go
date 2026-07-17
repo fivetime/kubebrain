@@ -194,10 +194,8 @@ func (m *leaseManager) LeaseKeepAlive(stream etcdserverpb.Lease_LeaseKeepAliveSe
 		if authErr != nil {
 			return authErr
 		}
-		for _, key := range m.keysForLease(req.ID) {
-			if authErr = caller.require([]byte(key), nil, authpb.WRITE); authErr != nil {
-				return authErr
-			}
+		if authErr = m.authorizeLeaseKeys(stream.Context(), caller, m.keysForLease(req.ID), authpb.WRITE); authErr != nil {
+			return authErr
 		}
 		if err := m.requireLeaseLeader("lease keepalive"); err != nil {
 			if !m.srv.peers.EtcdProxyEnabled() {
@@ -255,10 +253,8 @@ func (m *leaseManager) LeaseTimeToLive(ctx context.Context, req *etcdserverpb.Le
 	// authenticated caller, but asking for attached keys requires READ permission
 	// on every key. Otherwise TTL(Keys=true) leaks protected key names.
 	if req.Keys {
-		for _, key := range m.keysForLease(req.ID) {
-			if err := caller.require([]byte(key), nil, authpb.READ); err != nil {
-				return nil, err
-			}
+		if err := m.authorizeLeaseKeys(ctx, caller, m.keysForLease(req.ID), authpb.READ); err != nil {
+			return nil, err
 		}
 	}
 
@@ -312,10 +308,8 @@ func (m *leaseManager) LeaseLeases(ctx context.Context, req *etcdserverpb.LeaseL
 		keys = append(keys, key)
 	}
 	m.leaseMu.Unlock()
-	for _, key := range keys {
-		if err := caller.require([]byte(key), nil, authpb.READ); err != nil {
-			return nil, err
-		}
+	if err := m.authorizeLeaseKeys(ctx, caller, keys, authpb.READ); err != nil {
+		return nil, err
 	}
 
 	m.leaseMu.Lock()
@@ -338,6 +332,18 @@ func (m *leaseManager) LeaseLeases(ctx context.Context, req *etcdserverpb.LeaseL
 		resp.Leases = append(resp.Leases, &etcdserverpb.LeaseStatus{ID: lease.id})
 	}
 	return resp, nil
+}
+
+func (m *leaseManager) authorizeLeaseKeys(ctx context.Context, caller *authCaller, keys []string, permission authpb.Permission_Type) error {
+	if caller == nil || caller.isRoot() {
+		return nil
+	}
+	for _, key := range keys {
+		if err := caller.require([]byte(key), nil, permission); err != nil {
+			return err
+		}
+	}
+	return m.srv.ensureAuthRevision(ctx, caller)
 }
 
 func (m *leaseManager) ensureLeaseExists(id int64) error {

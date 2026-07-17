@@ -895,6 +895,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   303/301/302 秒乱序 Grant 验证相对位置：旧 exact image 连续 10 轮中失败 9 轮，修复后的
   三副本 TiKV/PD exact image 连同既有 Lease 全生命周期差分连续 20 轮全部通过；focused
   race 与完整 server/full/vet 通过。
+- **Lease A53 auth revision fence（2026-07-17）**：对照
+  `/root/etcd/server/etcdserver/v3_server.go` 的 `checkLeaseRenew`、
+  `checkLeaseTimeToLive` 和 `checkLeaseLeases`，发现 KubeBrain 虽会以 request-local auth
+  snapshot 检查每个 attached key，但 TTL(Keys=true)/List 返回及 KeepAlive renew 前未校验
+  auth store revision；并发撤权时旧 snapshot 因而还能泄露一次 key 名或延长一次 lease。
+  三条路径现共用 `authorizeLeaseKeys`：先按 etcd 分别检查 READ/WRITE，再调用
+  `ensureAuthRevision`，revision 已变化则返回 `ErrAuthOldRevision`，由客户端重试并按新权限
+  判定；与 etcd 相同，未启用 auth 及 root/admin caller 直接放行。确定性测试先取得仍允许
+  READWRITE 的普通 caller，再撤销 permission，证明 snapshot 自身仍放行但 TTL/List 与
+  renew 共用的 revision fence 拒绝 stale caller，同时 stale root caller 仍通过；focused
+  单元连续 20 轮和 race 通过。独立 keyspace 的 TiKV/PD exact image 上，官方 client Auth
+  lifecycle 新增 attached-key TTL、LeaseLeases 与 KeepAliveOnce 后完整通过，确认合法鉴权
+  流量不受影响；临时 auth 实例已销毁。
 
 ### P1：通用服务能力
 
