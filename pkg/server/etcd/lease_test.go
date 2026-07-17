@@ -53,6 +53,26 @@ type blockingLeaseMetaBackend struct {
 	once    sync.Once
 }
 
+type blockingLeaseMetaDeleteBackend struct {
+	BackendShim
+	key     []byte
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (b *blockingLeaseMetaDeleteBackend) InternalDelete(ctx context.Context, key []byte) error {
+	if string(key) == string(b.key) {
+		b.once.Do(func() { close(b.entered) })
+		select {
+		case <-b.release:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return b.BackendShim.InternalDelete(ctx, key)
+}
+
 func (b *blockingLeaseMetaBackend) InternalPut(ctx context.Context, key, value []byte) error {
 	if string(key) == string(leaseStorageKey(5201)) {
 		b.once.Do(func() { close(b.entered) })
@@ -399,6 +419,56 @@ func TestLeaseGrantDoesNotPublishAcrossLeaseStateReset(t *testing.T) {
 	server.leaseMu.Unlock()
 	require.False(t, active)
 	require.False(t, pending)
+}
+
+func TestLeaseRegrantWaitsForPriorMetadataDelete(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	const leaseID int64 = 5202
+	_, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 30, ID: leaseID})
+	require.NoError(t, err)
+
+	shim := &blockingLeaseMetaDeleteBackend{
+		BackendShim: server.backend,
+		key:         leaseStorageKey(leaseID),
+		entered:     make(chan struct{}),
+		release:     make(chan struct{}),
+	}
+	server.backend = shim
+	revokeDone := make(chan error, 1)
+	go func() {
+		_, err := server.LeaseRevoke(ctx, &etcdserverpb.LeaseRevokeRequest{ID: leaseID})
+		revokeDone <- err
+	}()
+	<-shim.entered
+
+	grantDone := make(chan error, 1)
+	go func() {
+		_, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 60, ID: leaseID})
+		grantDone <- err
+	}()
+	var (
+		grantErr       error
+		completedEarly bool
+	)
+	select {
+	case grantErr = <-grantDone:
+		completedEarly = true
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(shim.release)
+	require.NoError(t, <-revokeDone)
+	if !completedEarly {
+		grantErr = <-grantDone
+	}
+	require.False(t, completedEarly, "same-ID grant completed before prior metadata delete")
+	require.NoError(t, grantErr)
+	require.NoError(t, server.ReloadLeases(ctx))
+	ttl, err := server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: leaseID})
+	require.NoError(t, err)
+	require.Equal(t, int64(60), ttl.GrantedTTL, "replacement lease metadata must survive reload")
 }
 
 func TestLeaseMetaDoesNotAdvanceKVRevisionAndRestores(t *testing.T) {

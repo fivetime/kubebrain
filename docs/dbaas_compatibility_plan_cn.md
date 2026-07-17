@@ -921,6 +921,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   cancel 测试证明失败不泄漏 active/pending 且同 ID 可重试；state reset 测试证明迟到成功返回
   `Unavailable` 且不发布。三组 focused 连续 50 轮及 race 连续 10 轮通过，三副本 TiKV/PD
   exact image 上官方 Lease lifecycle/order 双端差分连续 20 轮通过。
+- **Lease A55 revoke/regrant ID reuse fence（2026-07-17）**：etcd 的 LeaseGrant/Revoke
+  都经同一 Raft apply 顺序执行；KubeBrain revoke 虽持 `leaseWriteMu` 删除 keys 与 meta，却会
+  在 TiKV `InternalDelete(meta)` 完成前先从 active map 移除 ID，而 Grant 原先不参与该锁。
+  同 ID regrant 因而可在旧 delete 阻塞期间写入新 meta，随后被旧 revoke 删除；内存中 replacement
+  暂时可用，leader reload 后却消失。LeaseGrant 现从 ID reservation、meta commit 到 active
+  publish 全程持 `leaseWriteMu.RLock`，与 revoke/expiry 的 write lock 排序，同时不同 lease 的
+  grant 仍可并发。确定性测试阻塞旧 meta delete，确认 same-ID grant 必须等待，随后 revoke 与
+  regrant 均成功，并以 `ReloadLeases` 证明 replacement 的 60 秒 meta 持久存在；focused 连续
+  30 轮及覆盖 grant/revoke/expiry/leased-Put 的 race 连续 10 轮通过。官方 client 双端 Lease
+  差分新增显式 ID Grant -> Revoke -> 同 ID Grant(301s) -> TTL，并在三副本 TiKV/PD exact
+  image 上连同完整 lifecycle/order 连续 20 轮通过。
 
 ### P1：通用服务能力
 

@@ -95,6 +95,8 @@ func (m *leaseManager) LeaseGrant(ctx context.Context, req *etcdserverpb.LeaseGr
 		return nil, err
 	}
 	ctx = backend.WithLeadershipEpoch(ctx, epoch)
+	m.leaseWriteMu.RLock()
+	defer m.leaseWriteMu.RUnlock()
 	if req.TTL > maxLeaseTTL {
 		return nil, status.Error(codes.OutOfRange, "etcdserver: too large lease TTL")
 	}

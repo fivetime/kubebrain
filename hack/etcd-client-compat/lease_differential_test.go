@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
@@ -30,6 +31,7 @@ type leaseDifferentialResult struct {
 	DeleteCount       int64
 	DeletePrev        []normalizedKV
 	KeysAfterDelete   int
+	ReusedGrantedTTL  int64
 }
 
 func TestLeaseDifferentialAgainstReferenceEtcd(t *testing.T) {
@@ -145,6 +147,19 @@ func runLeaseDifferentialScenario(t *testing.T, endpoint, instance string) lease
 	_, err = cli.Revoke(ctx, deleteLease.ID)
 	require.NoError(t, err)
 
+	explicitID := clientv3.LeaseID(time.Now().UnixNano() & ((1 << 62) - 1))
+	rawLease := etcdserverpb.NewLeaseClient(cli.ActiveConnection())
+	_, err = rawLease.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{ID: int64(explicitID), TTL: 300})
+	require.NoError(t, err)
+	_, err = rawLease.LeaseRevoke(ctx, &etcdserverpb.LeaseRevokeRequest{ID: int64(explicitID)})
+	require.NoError(t, err)
+	_, err = rawLease.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{ID: int64(explicitID), TTL: 301})
+	require.NoError(t, err)
+	reused, err := cli.TimeToLive(ctx, explicitID)
+	require.NoError(t, err)
+	_, err = cli.Revoke(ctx, explicitID)
+	require.NoError(t, err)
+
 	return leaseDifferentialResult{
 		GrantRevision:     grant.ResponseHeader.Revision - baseRev,
 		PutRevision:       put.Header.Revision - baseRev,
@@ -164,5 +179,6 @@ func runLeaseDifferentialScenario(t *testing.T, endpoint, instance string) lease
 		DeleteCount:       deleted.Deleted,
 		DeletePrev:        normalizeKVs(deleted.PrevKvs, deletePrefix, baseRev),
 		KeysAfterDelete:   len(afterDeleteTTL.Keys),
+		ReusedGrantedTTL:  reused.GrantedTTL,
 	}
 }
