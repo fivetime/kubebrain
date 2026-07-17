@@ -68,7 +68,7 @@ func (b *backend) CompactAsync(ctx context.Context, revision uint64) (uint64, er
 // in-flight (uncertain) retry so a not-yet-committed op is not compacted away.
 func (b *backend) clampCompactRevision(revision uint64) uint64 {
 	curRevision := b.tso.GetRevision()
-	if revision == 0 || revision > curRevision {
+	if revision > curRevision {
 		revision = curRevision
 	}
 	uncertainRev := b.asyncFifoRetry.MinRevision()
@@ -79,6 +79,17 @@ func (b *backend) clampCompactRevision(revision uint64) uint64 {
 		revision = minUint64(uncertainRev-1, revision)
 	}
 	return revision
+}
+
+func (b *backend) HasCompactRevision(ctx context.Context) (bool, error) {
+	val, err := b.kv.Get(ctx, getCompactKey(b.config.Prefix))
+	if err == storage.ErrKeyNotFound {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return len(val) >= 8, nil
 }
 
 // compactRevCacheTTL bounds how stale a cached compact revision may be. The

@@ -1048,6 +1048,55 @@ func TestCompactFutureAndRepeatedRevisionMatchEtcd(t *testing.T) {
 	require.Contains(t, err.Error(), "required revision has been compacted")
 }
 
+func TestCompactZeroPreservesHistoryAndIsDurablyRepeatable(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	ctx := context.Background()
+	key := []byte("/registry/pods/compact-zero")
+	first, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("v1")})
+	require.NoError(t, err)
+	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("v2")})
+	require.NoError(t, err)
+
+	_, err = server.Compact(ctx, &etcdserverpb.CompactionRequest{Revision: 0})
+	require.NoError(t, err)
+	hasMarker, err := server.backend.HasCompactRevision(ctx)
+	require.NoError(t, err)
+	require.True(t, hasMarker)
+
+	historical, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: key, Revision: first.Header.Revision})
+	require.NoError(t, err)
+	require.Len(t, historical.Kvs, 1)
+	require.Equal(t, []byte("v1"), historical.Kvs[0].Value)
+
+	_, err = server.Compact(ctx, &etcdserverpb.CompactionRequest{Revision: 0})
+	require.ErrorIs(t, err, rpctypes.ErrGRPCCompacted)
+}
+
+func TestCompactNegativeRevisionCannotDiscardHistory(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	ctx := context.Background()
+	key := []byte("/registry/pods/compact-negative")
+	first, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("v1")})
+	require.NoError(t, err)
+	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("v2")})
+	require.NoError(t, err)
+
+	_, err = server.Compact(ctx, &etcdserverpb.CompactionRequest{Revision: -1})
+	require.ErrorIs(t, err, rpctypes.ErrGRPCCompacted)
+	hasMarker, err := server.backend.HasCompactRevision(ctx)
+	require.NoError(t, err)
+	require.False(t, hasMarker)
+
+	historical, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: key, Revision: first.Header.Revision})
+	require.NoError(t, err)
+	require.Len(t, historical.Kvs, 1)
+	require.Equal(t, []byte("v1"), historical.Kvs[0].Value)
+}
+
 func TestCompactOlderRevisionReturnsCurrentHeader(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

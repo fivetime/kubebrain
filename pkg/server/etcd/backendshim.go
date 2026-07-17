@@ -67,6 +67,10 @@ type BackendShim interface {
 	// GetCompactRevision returns the latest completed logical compaction revision.
 	GetCompactRevision(ctx context.Context) (uint64, error)
 
+	// HasCompactRevision distinguishes a persisted revision-zero compaction from
+	// an uncompacted backend.
+	HasCompactRevision(ctx context.Context) (bool, error)
+
 	// GetCompactRevisionFresh bypasses the compact-revision TTL cache; used
 	// where the value is returned to clients as authoritative (#33).
 	GetCompactRevisionFresh(ctx context.Context) (uint64, error)
@@ -526,6 +530,10 @@ func compactTxnResponse(compactedRev uint64) *etcdserverpb.TxnResponse {
 
 func (b *backendShim) GetCompactRevision(ctx context.Context) (uint64, error) {
 	return b.backend.GetCompactRevision(ctx)
+}
+
+func (b *backendShim) HasCompactRevision(ctx context.Context) (bool, error) {
+	return b.backend.HasCompactRevision(ctx)
 }
 
 func (b *backendShim) GetCompactRevisionFresh(ctx context.Context) (uint64, error) {

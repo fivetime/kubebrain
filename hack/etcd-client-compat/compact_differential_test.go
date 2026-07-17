@@ -22,6 +22,8 @@ type compactDifferentialResult struct {
 	OlderError      string
 	FutureCode      string
 	FutureError     string
+	NegativeCode    string
+	NegativeError   string
 	CurrentValue    string
 }
 
@@ -67,6 +69,7 @@ func runCompactDifferentialScenario(t *testing.T, endpoint, instance string) com
 	_, repeatedErr := cli.Compact(ctx, second.Header.Revision)
 	_, olderErr := cli.Compact(ctx, first.Header.Revision)
 	_, futureErr := cli.Compact(ctx, third.Header.Revision+1000)
+	_, negativeErr := cli.Compact(ctx, -1)
 	current, err := cli.Get(ctx, key)
 	require.NoError(t, err)
 	require.Len(t, current.Kvs, 1)
@@ -80,6 +83,7 @@ func runCompactDifferentialScenario(t *testing.T, endpoint, instance string) com
 	repeatedCode, repeatedMessage := normalizeError(repeatedErr)
 	olderCode, olderMessage := normalizeError(olderErr)
 	futureCode, futureMessage := normalizeError(futureErr)
+	negativeCode, negativeMessage := normalizeError(negativeErr)
 	return compactDifferentialResult{
 		BoundaryValue:   string(boundary.Kvs[0].Value),
 		HistoricalCode:  historicalCode,
@@ -90,6 +94,8 @@ func runCompactDifferentialScenario(t *testing.T, endpoint, instance string) com
 		OlderError:      olderMessage,
 		FutureCode:      futureCode,
 		FutureError:     futureMessage,
+		NegativeCode:    negativeCode,
+		NegativeError:   negativeMessage,
 		CurrentValue:    string(current.Kvs[0].Value),
 	}
 }

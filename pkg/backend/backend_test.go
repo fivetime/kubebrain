@@ -1025,7 +1025,7 @@ func testBackendCompact(t *testing.T, targetStorage storageType) {
 		ast.Equal(newGetResponse(rev2, newKeyValue(testKey, testVal, rev1)), resp)
 
 		// compaction
-		_, err = suite.backend.Compact(suite.ctx, 0)
+		_, err = suite.backend.Compact(suite.ctx, suite.backend.GetCurrentRevision())
 		ast.NoError(err)
 
 		// check
@@ -1042,7 +1042,7 @@ func testBackendCompact(t *testing.T, targetStorage storageType) {
 		waitUntilRevisionEqualOrTimeout(suite.backend, dresp.GetHeader().GetRevision())
 
 		// compaction
-		_, err = suite.backend.Compact(suite.ctx, 0)
+		_, err = suite.backend.Compact(suite.ctx, suite.backend.GetCurrentRevision())
 		ast.NoError(err)
 
 		resp, err = suite.backend.Get(suite.ctx, newGetRequest(0, testKey))

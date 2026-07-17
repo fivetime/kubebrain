@@ -767,6 +767,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   故障注入分别拒绝 leased create/delete batch，证明 key 与 attachment 不会单边出现或消失；
   新增双端场景覆盖 create、compare-delete+PrevKV、TTL attached keys 与 duplicate rejection，真实
   TiKV/PD 三副本对 reference etcd 连续 10 轮一致。
+- **Compact A40 revision 0/负数边界（2026-07-17）**：对照
+  `/root/etcd/server/storage/mvcc/kvstore.go:updateCompactRev` 发现，etcd 将首次
+  `Compact(0)` 作为 revision 0 的合法逻辑压缩，后续重复请求返回 Compacted；KubeBrain
+  backend 却把 0 当作“当前 revision”哨兵，负数经 `uint64` 转换后也被 clamp 到当前值，
+  两者都可能意外删除全部历史。现 backend 将 0 作为字面 revision，并以 compact key 是否
+  存在区分“尚未压缩”和“已压缩到 0”；RPC 在任何有 marker 的 `request <= watermark` 返回
+  `OutOfRange: required revision has been compacted`，负数在转换前直接拒绝。回归测试证明首次
+  zero compact 不删除已有历史、marker 已持久化、重复 zero 精确报错，negative 不写 marker
+  且不影响历史；Compact 双端差分增加负数 code/message 对比。
 
 ### P1：通用服务能力
 

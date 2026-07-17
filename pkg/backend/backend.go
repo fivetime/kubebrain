@@ -127,6 +127,10 @@ type Backend interface {
 	// GetCompactRevision returns the latest completed logical compaction revision.
 	GetCompactRevision(ctx context.Context) (uint64, error)
 
+	// HasCompactRevision reports whether a logical compaction marker exists. It
+	// distinguishes etcd's valid compact revision 0 from an uncompacted store.
+	HasCompactRevision(ctx context.Context) (bool, error)
+
 	// GetCompactRevisionFresh reads the compact revision from storage bypassing
 	// the TTL cache; for cold paths that hand the value to clients as
 	// authoritative (compacted-watch cancel, #33).

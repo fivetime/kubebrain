@@ -752,6 +752,9 @@ func (s *RPCServer) Compact(ctx context.Context, r *etcdserverpb.CompactionReque
 	if err := s.peers.SyncReadRevision(ctx); err != nil {
 		return nil, err
 	}
+	if r.Revision < 0 {
+		return nil, compactedRevisionError()
+	}
 	if r.Revision > int64(s.backend.GetCurrentRevision()) {
 		return nil, futureRevisionError()
 	}
@@ -759,7 +762,11 @@ func (s *RPCServer) Compact(ctx context.Context, r *etcdserverpb.CompactionReque
 	if err != nil {
 		return nil, err
 	}
-	if compactRevision > 0 && r.Revision <= int64(compactRevision) {
+	hasCompactRevision, err := s.backend.HasCompactRevision(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if hasCompactRevision && r.Revision <= int64(compactRevision) {
 		return nil, compactedRevisionError()
 	}
 	// The apiserver's compaction loop sends Physical=false and only needs the
