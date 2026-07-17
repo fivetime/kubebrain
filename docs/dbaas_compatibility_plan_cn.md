@@ -1522,6 +1522,26 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   取消与锁读取相撞时仍会先输出一条其内部 Error，随后明确记录 cancellation stop，
   不代表关停失败。部署自动恢复 3/3 Ready，health 与 CRUD 正常。exact image
   `d708d8582c22a2c1b3738b388925aef31e432ba5c95a69c90429639952f4a150`。
+- **Runtime A94 graceful TLS shutdown（2026-07-17）**：A93 的真实集群验证仅覆盖
+  明文 listener；对照 etcd `server/embed/serve.go` 的 serve context 与
+  `client/pkg/transport/listener.go` 的握手时证书重载后，补测发现 TLS wrapper 的
+  内层 cmux 在正常关闭时返回 `cmux.ErrListenerClosed`/`ErrServerClosed`，会被当作
+  Endpoint 错误上抛；内部 HTTP listener 被外层关闭后再次 Close 返回的
+  `net.ErrClosed` 也被记为 Error，而真正的 internal close 错误反而被吞掉。现由统一
+  `normalizeServeError` 归一 HTTP、gRPC、net 和 cmux 的关闭 sentinel，root、普通
+  subserver 和 TLS nested mux 共用；TLS close 只忽略预期错误，并聚合返回真正错误。
+  既有 TLS+明文双模式集成测试不再忽略 `Endpoint.Run` 结果，明确断言取消返回 nil；
+  新增表驱动 sentinel/wrapped error 与 TLS internal close 回归。生产 TLS smoke
+  同时修复清单已从 Deployment 改为 StatefulSet、脚本仍等待旧 resource kind 导致
+  门禁必然失败的问题。TLS 双模式普通 20 轮、endpoint race、full test/full vet
+  通过；修正后的 TLS-only StatefulSet smoke 以 mTLS 完成 Put/Get 和 1.5 MiB
+  request-limit 校验。三副本 KubeBrain + 独立 TiKV/PD 进一步完成 TLS 双栈冷启动
+  durable state 恢复、mTLS CRUD/Status 和 leader 删除：修复前可见
+  `tls internal server close err`，最终两个 TLS nested server、三个 root listener
+  与 Endpoint 均只以 Info 退出，约 10ms 进入 TiKV/PD client 关闭，无 usage、panic
+  或强制退出，并自动恢复 3/3 Ready。验证后共享集群恢复明文访问参数并保留 A94
+  镜像。exact image
+  `36ab71d84bd626349fcd5aa21b9ee137669574f8185699586b8227564ed6fb2f`。
 
 ### P1：通用服务能力
 

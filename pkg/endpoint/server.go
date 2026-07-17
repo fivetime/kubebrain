@@ -37,6 +37,17 @@ type exposedServer interface {
 	close() error
 }
 
+func normalizeServeError(err error) error {
+	if errors.Is(err, http.ErrServerClosed) ||
+		errors.Is(err, grpc.ErrServerStopped) ||
+		errors.Is(err, net.ErrClosed) ||
+		errors.Is(err, cmux.ErrListenerClosed) ||
+		errors.Is(err, cmux.ErrServerClosed) {
+		return nil
+	}
+	return err
+}
+
 func newHttpServerWithHandlers(handlersMaps ...map[string]http.Handler) exposedServer {
 	mux := http.NewServeMux()
 	for _, handlersMap := range handlersMaps {
@@ -141,8 +152,8 @@ func (gs *rootServer) run(ctx context.Context) (err error) {
 	go func() {
 		defer util.Recover()
 		klog.InfoS("root server start to listen", "port", gs.port)
-		muxErr := mux.Serve()
-		if errors.Is(muxErr, net.ErrClosed) {
+		muxErr := normalizeServeError(mux.Serve())
+		if muxErr == nil {
 			klog.InfoS("root server listener closed", "port", gs.port)
 		} else {
 			klog.ErrorS(muxErr, "root server shutdown cause by temporary network error", "port", gs.port)
@@ -191,12 +202,7 @@ func runSubServer(ctx context.Context, lsn net.Listener, server exposedServer) f
 
 			// run until server is closed or has an internal error
 			klog.InfoS("run server", "name", server.name(), "addr", lsn.Addr())
-			serveErr := server.serve(lsn)
-			if errors.Is(serveErr, http.ErrServerClosed) ||
-				errors.Is(serveErr, grpc.ErrServerStopped) ||
-				errors.Is(serveErr, net.ErrClosed) {
-				serveErr = nil
-			}
+			serveErr := normalizeServeError(server.serve(lsn))
 			if serveErr != nil {
 				klog.ErrorS(serveErr, "exposed server stop", "name", server.name(), "addr", lsn.Addr())
 			}

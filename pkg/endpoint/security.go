@@ -17,6 +17,7 @@ package endpoint
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net"
 	"sync"
@@ -75,13 +76,17 @@ func (t *secureServer) serve(listener net.Listener) (err error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer func() {
 		cancel()
-		klog.ErrorS(err, "tls server shutdown")
+		if err != nil {
+			klog.ErrorS(err, "tls server shutdown")
+		} else {
+			klog.Info("tls server shutdown")
+		}
 	}()
 
 	group, ctx := errgroup.WithContext(ctx)
 	group.Go(func() error {
 		defer cancel()
-		return mux.Serve()
+		return normalizeServeError(mux.Serve())
 	})
 
 	group.Go(func() error {
@@ -138,11 +143,13 @@ func (c *identityTLSConn) Close() error {
 }
 
 func (t *secureServer) close() error {
+	var result error
 	for _, server := range t.internalServers {
-		err := server.close()
+		err := normalizeServeError(server.close())
 		if err != nil {
 			klog.ErrorS(err, "tls internal server close err", "server", server.name())
+			result = errors.Join(result, err)
 		}
 	}
-	return nil
+	return result
 }

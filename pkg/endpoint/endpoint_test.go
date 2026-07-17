@@ -110,5 +110,5 @@ func TestRunEndpoint(t *testing.T) {
 	}
 
 	cancel()
-	eg.Wait()
+	ast.NoError(eg.Wait())
 }

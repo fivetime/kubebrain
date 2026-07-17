@@ -211,7 +211,7 @@ PY
 kubectl apply -f manifest.yaml >/dev/null
 
 wait_ready() {
-  kubectl -n "$NAMESPACE" rollout status deployment/kubebrain --timeout=180s
+  kubectl -n "$NAMESPACE" rollout status statefulset/kubebrain --timeout=180s
   kubectl -n "$NAMESPACE" wait --for=condition=ready pod \
     -l app.kubernetes.io/name=kubebrain --timeout=180s >/dev/null
 }
