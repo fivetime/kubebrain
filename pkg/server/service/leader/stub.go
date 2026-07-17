@@ -38,6 +38,13 @@ func (s *Stub) LeadershipTerm(context.Context) (uint64, error) {
 	return s.Term, nil
 }
 
+func (s *Stub) CurrentLeadershipTerm() uint64 {
+	if s.Term == 0 {
+		return 1
+	}
+	return s.Term
+}
+
 // IsLeader implements LeaderElection interface
 func (s *Stub) IsLeader() bool {
 	return s.ElectionInfo.IsLeader

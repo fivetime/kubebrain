@@ -77,6 +77,8 @@ func (testPeerService) LeadershipTerm(context.Context) (uint64, error) {
 	return 1, nil
 }
 
+func (testPeerService) CurrentLeadershipTerm() uint64 { return 1 }
+
 func (s testPeerService) IsLeader() bool {
 	return s.isLeader
 }

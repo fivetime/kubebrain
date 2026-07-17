@@ -49,7 +49,7 @@ func (s *RPCServer) localMemberID() uint64 {
 	return uint64(crc32.ChecksumIEEE([]byte(s.backend.GetResourceLock().Identity())))
 }
 
-func stampHeader(reply any, clusterID, memberID uint64) {
+func stampHeader(reply any, clusterID, memberID, raftTerm uint64) {
 	r, ok := reply.(interface {
 		GetHeader() *etcdserverpb.ResponseHeader
 	})
@@ -62,7 +62,15 @@ func stampHeader(reply any, clusterID, memberID uint64) {
 	if h := r.GetHeader(); h != nil {
 		h.ClusterId = clusterID
 		h.MemberId = memberID
+		h.RaftTerm = raftTerm
 	}
+}
+
+func (s *RPCServer) responseRaftTerm(ctx context.Context) (uint64, error) {
+	if term := s.peers.CurrentLeadershipTerm(); term != 0 {
+		return term, nil
+	}
+	return s.peers.LeadershipTerm(ctx)
 }
 
 func (s *RPCServer) stampUnary(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
@@ -71,7 +79,11 @@ func (s *RPCServer) stampUnary(ctx context.Context, req any, info *grpc.UnarySer
 	}
 	resp, err := handler(ctx, req)
 	if err == nil {
-		stampHeader(resp, s.backend.ClusterID(), s.localMemberID())
+		term, termErr := s.responseRaftTerm(ctx)
+		if termErr != nil {
+			return nil, termErr
+		}
+		stampHeader(resp, s.backend.ClusterID(), s.localMemberID(), term)
 	}
 	return resp, authGRPCError(err)
 }
@@ -127,6 +139,10 @@ type stampedServerStream struct {
 }
 
 func (w *stampedServerStream) SendMsg(m any) error {
-	stampHeader(m, w.s.backend.ClusterID(), w.s.localMemberID())
+	term, err := w.s.responseRaftTerm(w.Context())
+	if err != nil {
+		return err
+	}
+	stampHeader(m, w.s.backend.ClusterID(), w.s.localMemberID(), term)
 	return w.ServerStream.SendMsg(m)
 }

@@ -50,6 +50,24 @@ func TestUnaryRequestLimitUsesEtcdPayloadBoundaryAndError(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestResponseHeadersIncludeSharedRaftTerm(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	handler := func(context.Context, any) (any, error) {
+		return &etcdserverpb.RangeResponse{Header: &etcdserverpb.ResponseHeader{}}, nil
+	}
+	reply, err := server.stampUnary(context.Background(), &etcdserverpb.RangeRequest{}, &grpc.UnaryServerInfo{}, handler)
+	require.NoError(t, err)
+	require.Equal(t, uint64(1), reply.(*etcdserverpb.RangeResponse).Header.RaftTerm)
+
+	watch := &etcdserverpb.WatchResponse{Header: &etcdserverpb.ResponseHeader{}}
+	stampHeader(watch, 2, 3, 4)
+	require.Equal(t, uint64(2), watch.Header.ClusterId)
+	require.Equal(t, uint64(3), watch.Header.MemberId)
+	require.Equal(t, uint64(4), watch.Header.RaftTerm)
+}
+
 func TestRequestLimitReturnsEtcdErrorOverGRPC(t *testing.T) {
 	server := &RPCServer{maxTxnOps: defaultMaxTxnOps, maxRequestBytes: 32}
 	grpcServer := grpc.NewServer(server.ClientServerOptions()...)

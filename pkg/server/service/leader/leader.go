@@ -43,6 +43,10 @@ type LeaderElection interface {
 	// the shared resource-lock transition counter, so leaders and followers
 	// report the same monotone value.
 	LeadershipTerm(ctx context.Context) (uint64, error)
+	// CurrentLeadershipTerm returns the most recently observed shared election
+	// term without reading the TiKV-backed resource lock. It is zero before the
+	// first valid resource-lock record is observed.
+	CurrentLeadershipTerm() uint64
 
 	// IsLeader return true when this instance is leader
 	IsLeader() bool
@@ -88,6 +92,10 @@ type leaderElection struct {
 	// fencing a deposed leader's in-flight writes (FINDING #39). Accessed
 	// atomically.
 	epoch uint64
+	// leadershipTerm caches LeaderTransitions+1 from the shared resource lock.
+	// It is stamped onto every client response header, so reads must not perform
+	// a storage read and TSO request per etcd RPC.
+	leadershipTerm uint64
 	// lastRenewNanos is the UnixNano of the most recent successful lease
 	// Create/Update (leadership renew), stamped by renewStampingLock. It bounds
 	// leadership freshness: a partitioned leader whose renews are failing stops
@@ -155,13 +163,25 @@ func (c Config) Validate() error {
 // internal state. It records the renew time used to bound leadership freshness.
 type renewStampingLock struct {
 	resourcelock.Interface
-	onRenew func()
+	onRenew  func()
+	onRecord func(resourcelock.LeaderElectionRecord)
+}
+
+func (r *renewStampingLock) Get(ctx context.Context) (*resourcelock.LeaderElectionRecord, []byte, error) {
+	record, raw, err := r.Interface.Get(ctx)
+	if err == nil && record != nil && r.onRecord != nil {
+		r.onRecord(*record)
+	}
+	return record, raw, err
 }
 
 func (r *renewStampingLock) Create(ctx context.Context, ler resourcelock.LeaderElectionRecord) error {
 	err := r.Interface.Create(ctx, ler)
 	if err == nil {
 		r.onRenew()
+		if r.onRecord != nil {
+			r.onRecord(ler)
+		}
 	}
 	return err
 }
@@ -170,6 +190,9 @@ func (r *renewStampingLock) Update(ctx context.Context, ler resourcelock.LeaderE
 	err := r.Interface.Update(ctx, ler)
 	if err == nil {
 		r.onRenew()
+		if r.onRecord != nil {
+			r.onRecord(ler)
+		}
 	}
 	return err
 }
@@ -194,7 +217,9 @@ func NewLeaderElection(backend b.Backend, metricCli metrics.Metrics, onStartedLe
 // Campaign implements LeaderElection interface
 func (l *leaderElection) Campaign(ctx context.Context) {
 	leaderelection.RunOrDie(ctx, leaderelection.LeaderElectionConfig{
-		Lock:            &renewStampingLock{Interface: l.resourceLock, onRenew: l.stampRenew},
+		Lock: &renewStampingLock{
+			Interface: l.resourceLock, onRenew: l.stampRenew, onRecord: l.observeLeadershipRecord,
+		},
 		ReleaseOnCancel: true,
 		// lease timeout deadline
 		LeaseDuration: l.leaseDuration,
@@ -288,7 +313,25 @@ func (l *leaderElection) LeadershipTerm(ctx context.Context) (uint64, error) {
 	if record.LeaderTransitions < 0 {
 		return 0, fmt.Errorf("read leadership term: negative leader transitions %d", record.LeaderTransitions)
 	}
+	l.observeLeadershipRecord(*record)
 	return uint64(record.LeaderTransitions) + 1, nil
+}
+
+func (l *leaderElection) observeLeadershipRecord(record resourcelock.LeaderElectionRecord) {
+	if record.LeaderTransitions < 0 {
+		return
+	}
+	term := uint64(record.LeaderTransitions) + 1
+	for {
+		current := atomic.LoadUint64(&l.leadershipTerm)
+		if term <= current || atomic.CompareAndSwapUint64(&l.leadershipTerm, current, term) {
+			return
+		}
+	}
+}
+
+func (l *leaderElection) CurrentLeadershipTerm() uint64 {
+	return atomic.LoadUint64(&l.leadershipTerm)
 }
 
 func (l *leaderElection) GetElectionInfo() (ElectionInfo, error) {

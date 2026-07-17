@@ -169,6 +169,8 @@ func (t *testLeaderElection) LeadershipTerm(context.Context) (uint64, error) {
 	return 1, nil
 }
 
+func (t *testLeaderElection) CurrentLeadershipTerm() uint64 { return 1 }
+
 func (t *testLeaderElection) IsLeader() bool {
 	return t.isLeader
 }

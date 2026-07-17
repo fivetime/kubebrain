@@ -29,6 +29,41 @@ func TestMaintenanceStatusMetadataMatchesReferenceEtcd(t *testing.T) {
 	require.Equal(t, defaultEtcdBackendQuota, kubebrainStatus.DbSizeQuota)
 	require.Positive(t, referenceStatus.RaftTerm)
 	require.Positive(t, kubebrainStatus.RaftTerm)
+	require.Equal(t, referenceStatus.RaftTerm, referenceStatus.Header.RaftTerm)
+	require.Equal(t, kubebrainStatus.RaftTerm, kubebrainStatus.Header.RaftTerm)
+	for _, term := range responseHeaderRaftTerms(t, reference) {
+		require.Positive(t, term)
+	}
+	for _, term := range responseHeaderRaftTerms(t, kubebrain) {
+		require.Positive(t, term)
+	}
+}
+
+func responseHeaderRaftTerms(t *testing.T, endpoint string) []uint64 {
+	t.Helper()
+	cli, err := clientv3.New(clientv3.Config{Endpoints: []string{endpoint}, DialTimeout: 3 * time.Second})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, cli.Close()) })
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	resp, err := cli.Get(ctx, "/dbaas-maintenance/header-term")
+	require.NoError(t, err)
+	key := "/dbaas-maintenance/header-term-watch"
+	watchCh := cli.Watch(ctx, key, clientv3.WithCreatedNotify())
+	created := <-watchCh
+	require.NoError(t, created.Err())
+	require.True(t, created.Created)
+	_, err = cli.Put(ctx, key, "1")
+	require.NoError(t, err)
+	event := <-watchCh
+	require.NoError(t, event.Err())
+	require.Len(t, event.Events, 1)
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_, _ = cli.Delete(cleanupCtx, key)
+	})
+	return []uint64{resp.Header.RaftTerm, created.Header.RaftTerm, event.Header.RaftTerm}
 }
 
 func maintenanceStatus(t *testing.T, endpoint string) *clientv3.StatusResponse {

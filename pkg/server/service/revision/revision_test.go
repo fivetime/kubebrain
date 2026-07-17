@@ -310,6 +310,8 @@ func (m *mutableLeaderElection) LeadershipTerm(context.Context) (uint64, error) 
 	return 1, nil
 }
 
+func (m *mutableLeaderElection) CurrentLeadershipTerm() uint64 { return 1 }
+
 func (m *mutableLeaderElection) IsLeader() bool {
 	return false
 }

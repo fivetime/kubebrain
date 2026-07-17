@@ -59,8 +59,24 @@ func TestLeadershipTermUsesSharedTransitionCounter(t *testing.T) {
 			term, err := l.LeadershipTerm(context.Background())
 			require.NoError(t, err)
 			require.Equal(t, tc.want, term)
+			require.Equal(t, tc.want, l.CurrentLeadershipTerm())
 		})
 	}
+}
+
+func TestRenewStampingLockCachesObservedTerm(t *testing.T) {
+	l := &leaderElection{}
+	lock := &renewStampingLock{
+		Interface: termResourceLock{record: resourcelock.LeaderElectionRecord{LeaderTransitions: 8}},
+		onRenew:   func() {},
+		onRecord:  l.observeLeadershipRecord,
+	}
+	record, _, err := lock.Get(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, 8, record.LeaderTransitions)
+	require.Equal(t, uint64(9), l.CurrentLeadershipTerm())
+	l.observeLeadershipRecord(resourcelock.LeaderElectionRecord{LeaderTransitions: 3})
+	require.Equal(t, uint64(9), l.CurrentLeadershipTerm(), "a stale lock read must not regress response terms")
 }
 
 func TestLeadershipTermFailsClosedOnInvalidRecord(t *testing.T) {

@@ -834,6 +834,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   watermark，避免 Header 超前于 watch event log。compacted/internal cancel 继续保留 etcd 的
   zero Header，client cancel 使用最新 control fence。确定性测试固定 R+1 订阅和 cancel Header，
   raw 双端差分同时比较 Header 是否为 zero，并在 exact-image 三副本 TiKV/PD 上验证。
+- **Maintenance A47 ResponseHeader leadership term（2026-07-17）**：逐字段比较
+  `etcdctl endpoint status -w json` 发现 KubeBrain 的顶层 `Status.RaftTerm` 已为正，但
+  `Status.Header.RaftTerm=0`；reference etcd 在
+  `/root/etcd/server/etcdserver/api/v3rpc/header.go:fillWithoutRevision`、
+  `watch.go:newResponseHeader` 和 `v3_server.go:newHeader` 中为所有 unary/stream Header
+  填当前 term。现 leader-election 每次观察 TiKV-backed resource-lock record 时原子缓存
+  `LeaderTransitions+1`，client gRPC unary/stream interceptor 与 ClusterId/MemberId 一并统一
+  填充，避免每个 RPC 额外执行 election storage read 和 TSO。缓存尚未初始化时同步读取并
+  fail-closed，不发送 term 0；确定性测试覆盖 lock observation、unary/watch Header 和无 race。
+  exact-image 三副本在 failover 前均报告 Header/top-level term 72，删除 Leader 后新旧副本
+  全部收敛到 73；官方 client/v3 双端差分连续 20 轮通过，并检查普通 Range/Watch Header term 为正。
 
 ### P1：通用服务能力
 
