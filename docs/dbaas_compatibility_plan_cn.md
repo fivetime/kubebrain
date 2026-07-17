@@ -1741,6 +1741,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   RangeStream failure/Panic/Fatal，endpoint health 约 47ms。containerd 运行时
   exact image
   `4db3cea1825122acf0924f597620373c6b9c45c74ffb4c9938638f5c4754d8f1`。
+- **Cluster A104 linearizable MemberList barrier error contract
+  （2026-07-17）**：对照 `/root/etcd/server/etcdserver/api/v3rpc/member.go` 的
+  `togRPCError` 边界审计发现，KubeBrain 的 `MemberList(linearizable=true)` 直接返回
+  `SyncReadRevision` 普通错误，gRPC 会把 leader/read-barrier 瞬态故障暴露为
+  `Unknown`，客户端无法按可重试的集群暂不可用处理。现仅在 Cluster RPC 边界把无
+  status 的 barrier 错误整形为 `Unavailable`；已有 gRPC status 和
+  `Canceled`/`DeadlineExceeded` 原样保留。回归测试连续 20 轮固定普通错误、
+  context 错误及已有 `ResourceExhausted` 的映射。
+
+  `go test ./...`、`go vet ./...` 和完整 `pkg/server/etcd` race（235.868s）通过。
+  A104 镜像滚动到三副本 KubeBrain + 独立 TiKV/PD 后，线性化 MemberList、
+  endpoint status 及线性化 Put/Get/Delete 均成功；三个 Pod 全部 Ready、zero
+  restart，运行时 exact image
+  `e7776e28c0284f75b1ca150a9a3fcaaaad9e40a115308cb5a62db8ea7bdbc782`。
+  当前 dev Deployment 未注入静态 `initial-cluster`，因此黑盒 MemberList 按文档
+  回退为当前副本加 leader；production StatefulSet 的固定三成员配置继续由解析与
+  MemberList 测试覆盖。
 
 ### P1：通用服务能力
 

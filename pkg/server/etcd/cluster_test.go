@@ -143,8 +143,27 @@ func TestMemberListLinearizableUsesReadBarrier(t *testing.T) {
 	require.NoError(t, err)
 	require.Zero(t, calls.Load())
 	_, err = server.MemberList(context.Background(), &etcdserverpb.MemberListRequest{Linearizable: true})
-	require.ErrorIs(t, err, wantErr)
+	require.Equal(t, codes.Unavailable, status.Code(err))
+	require.Equal(t, wantErr.Error(), status.Convert(err).Message())
 	require.EqualValues(t, 1, calls.Load())
+}
+
+func TestMemberListLinearizablePreservesBarrierStatus(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	for _, wantErr := range []error{
+		context.Canceled,
+		context.DeadlineExceeded,
+		status.Error(codes.ResourceExhausted, "barrier overloaded"),
+	} {
+		server.peers = testPeerService{syncReadFn: func(context.Context) error {
+			return wantErr
+		}}
+		_, err := server.MemberList(context.Background(), &etcdserverpb.MemberListRequest{Linearizable: true})
+		require.Equal(t, status.Code(wantErr), status.Code(err))
+		require.Equal(t, status.Convert(wantErr).Message(), status.Convert(err).Message())
+	}
 }
 
 func TestMemberAuthorizationMatchesEtcd(t *testing.T) {
