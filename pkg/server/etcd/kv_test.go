@@ -39,6 +39,7 @@ import (
 
 type testPeerService struct {
 	isLeader         bool
+	isLeaderFn       func() bool
 	noLeader         bool
 	syncReadFn       func(context.Context) error
 	proxyEnabled     bool
@@ -80,11 +81,14 @@ func (testPeerService) LeadershipTerm(context.Context) (uint64, error) {
 func (testPeerService) CurrentLeadershipTerm() uint64 { return 1 }
 
 func (s testPeerService) IsLeader() bool {
+	if s.isLeaderFn != nil {
+		return s.isLeaderFn()
+	}
 	return s.isLeader
 }
 
 func (s testPeerService) EpochAndLeadingFresh() (uint64, bool) {
-	return 0, s.isLeader
+	return 0, s.IsLeader()
 }
 
 func (s testPeerService) GetElectionInfo() (leader.ElectionInfo, error) {

@@ -68,6 +68,70 @@ func TestFollowerLeaseReadsDoNotServeStaleState(t *testing.T) {
 	require.Equal(t, codes.Unavailable, status.Code(err))
 }
 
+func TestLeaseReadsRejectDemotionAfterInitialLeaderCheck(t *testing.T) {
+	tests := []struct {
+		name string
+		call func(*RPCServer) error
+	}{
+		{
+			name: "time-to-live",
+			call: func(server *RPCServer) error {
+				_, err := server.LeaseTimeToLive(context.Background(), &etcdserverpb.LeaseTimeToLiveRequest{ID: 123})
+				return err
+			},
+		},
+		{
+			name: "list",
+			call: func(server *RPCServer) error {
+				_, err := server.LeaseLeases(context.Background(), &etcdserverpb.LeaseLeasesRequest{})
+				return err
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			metrics := mock.NewMinimalMetrics(ctrl)
+			kv := memkv.NewKvStorage()
+			var leading atomic.Bool
+			leading.Store(true)
+			var checks atomic.Int32
+			b := backend.NewBackend(kv, backend.Config{
+				Identity:                "lease-read-demotion-" + tt.name,
+				EnableEtcdCompatibility: true,
+			}, metrics)
+			server := New(b, metrics, testPeerService{
+				isLeaderFn: func() bool {
+					checks.Add(1)
+					return leading.Load()
+				},
+			})
+			defer func() {
+				server.stopLeases()
+				require.NoError(t, kv.Close())
+				ctrl.Finish()
+			}()
+
+			server.leaseMu.Lock()
+			server.leases[123] = &leaseState{
+				id:       123,
+				ttl:      100,
+				deadline: time.Now().Add(100 * time.Second),
+				keys:     make(map[string]struct{}),
+				revoked:  make(chan struct{}),
+			}
+			done := make(chan error, 1)
+			go func() { done <- tt.call(server) }()
+			require.Eventually(t, func() bool { return checks.Load() >= 1 }, time.Second, time.Millisecond)
+			leading.Store(false)
+			server.leaseMu.Unlock()
+
+			require.Equal(t, codes.Unavailable, status.Code(<-done),
+				"a lease read that loses leadership while waiting for the snapshot must retry")
+		})
+	}
+}
+
 // TestFollowerLeaseReadsProxyWhenEnabled confirms that with the proxy enabled a
 // follower forwards the lease reads to the leader instead of erroring.
 func TestFollowerLeaseReadsProxyWhenEnabled(t *testing.T) {

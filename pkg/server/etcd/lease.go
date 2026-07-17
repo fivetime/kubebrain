@@ -305,14 +305,29 @@ func (m *leaseManager) LeaseTimeToLive(ctx context.Context, req *etcdserverpb.Le
 	}
 
 	m.leaseMu.Lock()
-	defer m.leaseMu.Unlock()
+	// Mirror etcd leaseTimeToLive's post-lookup Demoted check. Leadership may
+	// change after the initial routing decision while this RPC waits for the
+	// lease snapshot lock; never return that now-stale local state.
+	if err := m.requireLeaseLeader("lease time-to-live"); err != nil {
+		m.leaseMu.Unlock()
+		if m.srv.peers.EtcdProxyEnabled() {
+			proxyCtx, forwardErr := m.srv.forwardAuthToken(ctx, caller)
+			if forwardErr != nil {
+				return nil, forwardErr
+			}
+			return m.srv.peers.LeaseTimeToLive(proxyCtx, req)
+		}
+		return nil, err
+	}
 	st, ok := m.leases[req.ID]
 	if !ok {
-		return &etcdserverpb.LeaseTimeToLiveResponse{
+		resp := &etcdserverpb.LeaseTimeToLiveResponse{
 			Header: txnHeader(int64(m.srv.backend.GetCurrentRevision())),
 			ID:     req.ID,
 			TTL:    -1,
-		}, nil
+		}
+		m.leaseMu.Unlock()
+		return resp, nil
 	}
 
 	resp := &etcdserverpb.LeaseTimeToLiveResponse{
@@ -324,6 +339,7 @@ func (m *leaseManager) LeaseTimeToLive(ctx context.Context, req *etcdserverpb.Le
 	if req.Keys {
 		resp.Keys = leaseKeys(st)
 	}
+	m.leaseMu.Unlock()
 	return resp, nil
 }
 
@@ -359,7 +375,17 @@ func (m *leaseManager) LeaseLeases(ctx context.Context, req *etcdserverpb.LeaseL
 	}
 
 	m.leaseMu.Lock()
-	defer m.leaseMu.Unlock()
+	if err := m.requireLeaseLeader("lease leases"); err != nil {
+		m.leaseMu.Unlock()
+		if m.srv.peers.EtcdProxyEnabled() {
+			proxyCtx, forwardErr := m.srv.forwardAuthToken(ctx, caller)
+			if forwardErr != nil {
+				return nil, forwardErr
+			}
+			return m.srv.peers.LeaseLeases(proxyCtx, req)
+		}
+		return nil, err
+	}
 	leases := make([]*leaseState, 0, len(m.leases))
 	for _, lease := range m.leases {
 		leases = append(leases, lease)
@@ -377,6 +403,7 @@ func (m *leaseManager) LeaseLeases(ctx context.Context, req *etcdserverpb.LeaseL
 	for _, lease := range leases {
 		resp.Leases = append(resp.Leases, &etcdserverpb.LeaseStatus{ID: lease.id})
 	}
+	m.leaseMu.Unlock()
 	return resp, nil
 }
 

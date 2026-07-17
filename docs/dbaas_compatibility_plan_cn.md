@@ -1142,6 +1142,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   explicit lease failover 中，高 ID lease TTL 至少比低 ID 多 1 秒，证明 promotion spread
   可由官方 client/v3 观察；全部测试 lease durable cleanup 后 list=0，部署 3/3 ready、
   zero restart。
+- **Lease A71 read demotion fence（2026-07-17）**：对照 etcd
+  `server/etcdserver/v3_server.go:leaseTimeToLive` 在读取 lease 后执行的 `le.Demoted()`
+  检查，KubeBrain 原先只在 RPC 进入时确认 leader；请求若随后阻塞在 `leaseMu`，并在等待
+  期间失去 leadership，仍可能在 `StopLeases` 清空 snapshot 前返回旧 TTL 或旧 lease list。
+  现 `LeaseTimeToLive` 与 `LeaseLeases` 在持有最终 snapshot lock 后再次确认 leadership；
+  已 demote 时先释放 lock，再按配置转发给新 leader 或返回 `Unavailable`，不再暴露本地
+  stale snapshot。lock-controlled 确定性测试同时覆盖 TTL/list，在首次 leader check 后
+  切换角色，连续 100 轮及 race 连续 100 轮均稳定拒绝旧读；full/race/vet 通过。官方
+  client/v3 黑盒测试以 16 个并发 worker 持续校验 TTL 的 ID、remaining/granted TTL 和
+  list membership，并删除 metrics 确认的真实 active leader；exact image
+  `8cfd0200222d` 连续 5 轮 failover、共 85.244s 未返回任何 stale-shaped success。
+  相邻 lease lifecycle 回归通过，最终部署 3/3 ready、zero restart，cleanup 后 list=0。
 
 ### P1：通用服务能力
 
