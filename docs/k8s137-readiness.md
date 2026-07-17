@@ -64,7 +64,7 @@ SVM 仅在**显式创建 SVM CR** 时触发,但 KCM 给它的 client 特批 QPS�
 
 ### clientv3 AutoSync
 
-仅在所有副本都配置相同的 `--initial-cluster=name=peerURL,...` 后开启 clientv3 `AutoSyncInterval`;此时 MemberList 返回 DBaaS 控制面注入的完整 KubeBrain 服务副本集合。未配置时仍只回退返回自身与 leader,Sync 会缩小客户端端点集合。
+仅在所有副本都配置相同的 `--initial-cluster=name=peerURL,...` 后开启 clientv3 `AutoSyncInterval`;此时 MemberList 返回 DBaaS 控制面注入的完整 KubeBrain 服务副本集合。`deploy/production/kubebrain*.yaml` 已使用 StatefulSet、headless peer Service 和稳定 Pod DNS 配置完整三成员集合。自定义 DBaaS 控制面必须生成等价配置；未配置时仍只回退返回自身与 leader,Sync 会缩小客户端端点集合。
 
 ### 其他
 

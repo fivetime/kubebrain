@@ -872,6 +872,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Header。确定性测试以 `leaseMu` 阻塞 renew，确认 revision read 已先发生，再人为推进 backend
   revision 并释放锁，最终 response 仍保持旧值；该测试连续 race 通过。完整 server/vet 通过，
   exact-image 三副本 TiKV/PD 上官方 client/v3 Lease 全生命周期双端差分连续 20 轮一致。
+- **Cluster A51 production stable membership（2026-07-17）**：A48 记录的控制面缺口在
+  `deploy/production/kubebrain*.yaml` 中真实存在：三副本仍是无稳定身份的 Deployment，且未
+  下发 `--initial-cluster`，所以生产样例无法满足自身的 MemberList/AutoSync 契约。plain/TLS
+  两套现统一改为三副本 StatefulSet，以 `kubebrain-peer` headless Service（
+  `publishNotReadyAddresses=true`）提供稳定 Pod DNS；downward API 注入 `POD_NAME`，
+  `--advertise-host` 使用 ordinal FQDN，所有副本下发完全相同的三成员 initial-cluster（TLS
+  版本使用 https peer URL）。结构化 YAML 回归解析对象并固定 workload kind、replicas、
+  identity/member args、fieldRef，以及 client 普通 ClusterIP/peer headless 的职责分离；
+  两份 manifest 的 kubectl client dry-run 均通过。隔离 keyspace 的真实 kind 部署中，逐 Pod
+  MemberList 返回相同三个 ID/URL，in-cluster clientv3 Sync+Put/Get 连续 20 轮通过；删除
+  Leader ordinal 并等待新 UID 与 EndpointSlice ready 后，重建 Pod 保持原 member ID，完整
+  membership 与 Sync 再连续 20 轮通过。仅等待旧 Pod 的 Ready condition 会误判替换完成，
+  failover 自动化必须同时核对 UID/endpoint generation。
 
 ### P1：通用服务能力
 
