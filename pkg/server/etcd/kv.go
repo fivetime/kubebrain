@@ -72,7 +72,7 @@ func (s *RPCServer) Range(ctx context.Context, r *etcdserverpb.RangeRequest) (*e
 	}
 	if (!r.Serializable || r.Revision > 0) && !durableHistorical {
 		if err := s.peers.SyncReadRevision(ctx); err != nil {
-			return &etcdserverpb.RangeResponse{}, err
+			return &etcdserverpb.RangeResponse{}, readBarrierStatusErr(err)
 		}
 	}
 	if err := s.checkRequestedRevision(ctx, r.Revision); err != nil {
@@ -180,7 +180,7 @@ func (s *RPCServer) RangeStream(r *etcdserverpb.RangeRequest, rs etcdserverpb.KV
 	durableHistorical := r.Serializable && r.Revision > 0 && s.followerHasDurableRevision(ctx, uint64(r.Revision))
 	if (!r.Serializable || r.Revision > 0) && !durableHistorical {
 		if err := s.peers.SyncReadRevision(ctx); err != nil {
-			return rangeStreamStatusErr(err)
+			return readBarrierStatusErr(err)
 		}
 	}
 	if err := s.checkRequestedRevision(ctx, r.Revision); err != nil {
@@ -839,7 +839,7 @@ func (s *RPCServer) Compact(ctx context.Context, r *etcdserverpb.CompactionReque
 	}
 	ctx = backend.WithLeadershipEpoch(ctx, epoch)
 	if err := s.peers.SyncReadRevision(ctx); err != nil {
-		return nil, err
+		return nil, readBarrierStatusErr(err)
 	}
 	if r.Revision < 0 {
 		return nil, compactedRevisionError()
@@ -998,7 +998,7 @@ func (s *RPCServer) DeleteRange(ctx context.Context, r *etcdserverpb.DeleteRange
 	ctx = backend.WithLeadershipEpoch(ctx, epoch)
 	if len(r.RangeEnd) != 0 {
 		if err := s.peers.SyncReadRevision(ctx); err != nil {
-			return nil, err
+			return nil, readBarrierStatusErr(err)
 		}
 	}
 	if isEmptyNonFromKeyRange(r.Key, r.RangeEnd) {
@@ -1537,7 +1537,7 @@ func (s *RPCServer) executeTxnWithCursor(ctx context.Context, txn *etcdserverpb.
 			del := op.GetRequestDeleteRange()
 			if len(del.RangeEnd) != 0 {
 				if err := s.peers.SyncReadRevision(ctx); err != nil {
-					return nil, err
+					return nil, readBarrierStatusErr(err)
 				}
 			}
 			deleteResp := s.emptyDeleteRangeResponse()

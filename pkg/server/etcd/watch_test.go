@@ -712,6 +712,29 @@ func TestFollowerFromNowWatchUsesSynchronizedRevisionFence(t *testing.T) {
 	require.True(t, stream.sent[0].Created)
 }
 
+func TestFollowerWatchReadBarrierFailureIsRetryable(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	barrierErr := errors.New("leader revision transport failed")
+	server.peers = testPeerService{
+		isLeader:   false,
+		syncReadFn: func(context.Context) error { return barrierErr },
+	}
+	stream := &scriptedWatchServer{
+		fakeWatchServer: &fakeWatchServer{ctx: context.Background()},
+		reqs: []*etcdserverpb.WatchRequest{{
+			RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{
+				CreateRequest: &etcdserverpb.WatchCreateRequest{Key: []byte("/watch/barrier")},
+			},
+		}},
+	}
+	err := server.Watch(stream)
+	require.Equal(t, codes.Unavailable, status.Code(err))
+	require.Equal(t, barrierErr.Error(), status.Convert(err).Message())
+	require.Empty(t, stream.sent, "a watch without a revision fence must not be created")
+}
+
 func TestLeaderFromNowWatchReplaysWriteDuringCreatedResponse(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

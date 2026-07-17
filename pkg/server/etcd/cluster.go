@@ -16,7 +16,6 @@ package etcd
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"hash/crc32"
 	"net"
@@ -38,7 +37,7 @@ func (s *RPCServer) MemberList(ctx context.Context, req *etcdserverpb.MemberList
 	s.metricCli.EmitCounter("member.list", 1)
 	if req.GetLinearizable() {
 		if err := s.peers.SyncReadRevision(ctx); err != nil {
-			return nil, memberListBarrierStatusErr(err)
+			return nil, readBarrierStatusErr(err)
 		}
 	}
 	if err := s.requireAuthenticated(ctx, false); err != nil {
@@ -76,16 +75,6 @@ func (s *RPCServer) MemberList(ctx context.Context, req *etcdserverpb.MemberList
 		})
 	}
 	return s.memberListResponse(members), nil
-}
-
-func memberListBarrierStatusErr(err error) error {
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return err
-	}
-	if _, ok := status.FromError(err); ok {
-		return err
-	}
-	return status.Error(codes.Unavailable, err.Error())
 }
 
 func (s *RPCServer) memberListResponse(members []*etcdserverpb.Member) *etcdserverpb.MemberListResponse {

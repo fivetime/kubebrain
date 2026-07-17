@@ -66,7 +66,7 @@ SVM 仅在**显式创建 SVM CR** 时触发,但 KCM 给它的 client 特批 QPS�
 
 仅在所有副本都配置相同的 `--initial-cluster=name=peerURL,...` 后开启 clientv3 `AutoSyncInterval`;此时 MemberList 返回 DBaaS 控制面注入的完整 KubeBrain 服务副本集合。`deploy/production/kubebrain*.yaml` 已使用 StatefulSet、headless peer Service 和稳定 Pod DNS 配置完整三成员集合。自定义 DBaaS 控制面必须生成等价配置；未配置时仍只回退返回自身与 leader,Sync 会缩小客户端端点集合。
 
-线性化 MemberList 会先执行 read barrier。leader 切换或 revision 同步失败时，普通内部错误会整形为 gRPC `Unavailable`，使 clientv3 按可重试故障处理；已有 gRPC 状态以及 `Canceled`/`DeadlineExceeded` 保持不变。
+所有需要 follower revision fence 的 RPC（Range/RangeStream、Watch 控制请求、Status/Hash、MemberList，以及相关写路径）都会执行 read barrier。leader 切换或 revision 同步失败时，普通内部错误会整形为 gRPC `Unavailable`，使 clientv3 按可重试故障处理；已有 gRPC 状态以及 `Canceled`/`DeadlineExceeded` 保持不变。
 
 ### 其他
 

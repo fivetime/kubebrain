@@ -1758,6 +1758,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   当前 dev Deployment 未注入静态 `initial-cluster`，因此黑盒 MemberList 按文档
   回退为当前副本加 leader；production StatefulSet 的固定三成员配置继续由解析与
   MemberList 测试覆盖。
+- **RPC A105 read-barrier failure classification（2026-07-17）**：A104 只修复
+  MemberList 后系统枚举发现，Range、RangeStream、Watch create/cancel、
+  Status、Hash/HashKV、Compact、范围 DeleteRange 及 generic txn fallback 的
+  `SyncReadRevision` 失败仍可能泄漏为 gRPC `Unknown`。KubeBrain revision syncer
+  的全部失败来源（无 leader、HTTP 拒绝/超时、非 200、畸形或零 revision）都表示
+  follower 无法建立线性化 fence，语义上属于暂不可用。现抽取共享
+  `readBarrierStatusErr` 并覆盖全部 10 个调用点：普通错误映射为 `Unavailable`，
+  已有 gRPC status 与 `Canceled`/`DeadlineExceeded` 原样保留。Watch 在 barrier
+  失败时不会发送 created 响应，避免客户端接受没有 revision fence 的 stream。
+
+  跨 RPC 表驱动回归覆盖 Range、Compact、DeleteRange、Status、Hash/HashKV，
+  独立覆盖 Watch 及 status/context 保真；focused 普通 30 轮、focused race 10 轮、
+  `go test ./...`、`go vet ./...` 和完整 server race（237.184s）通过。A105 镜像
+  滚动到三副本 KubeBrain + 独立 TiKV/PD 后，逐 Pod 判定 1 leader + 2 follower，
+  三个端点的 Status、线性化 Range、MemberList 均成功，三个独立 Watch 都收到同一
+  PUT。最终三个 Pod Ready、zero restart，无 error/Panic/Fatal，运行时 exact image
+  `4407c535d1103348e4a4924dbb87c225b56eeb983a047a4f6a89d84e3fbf5d26`。
 
 ### P1：通用服务能力
 

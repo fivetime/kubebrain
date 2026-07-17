@@ -95,7 +95,7 @@ func (w *watcher) syncControlRevision(ctx context.Context) error {
 	revision := w.backend.GetPublishedRevision()
 	if !w.grpcServer.peers.IsLeader() {
 		if err := w.grpcServer.peers.SyncReadRevision(ctx); err != nil {
-			return err
+			return readBarrierStatusErr(err)
 		}
 		revision = w.grpcServer.backend.GetCurrentRevision()
 	}

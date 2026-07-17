@@ -80,7 +80,7 @@ func (s *RPCServer) Status(ctx context.Context, _ *etcdserverpb.StatusRequest) (
 		return nil, err
 	}
 	if err := s.peers.SyncReadRevision(ctx); err != nil {
-		return nil, err
+		return nil, readBarrierStatusErr(err)
 	}
 	revision := s.backend.GetCurrentRevision()
 	leader := s.memberIDFromAddress(s.peers.GetLeaderInfo())
@@ -134,7 +134,7 @@ func (s *RPCServer) Hash(ctx context.Context, _ *etcdserverpb.HashRequest) (*etc
 		return nil, err
 	}
 	if err := s.peers.SyncReadRevision(ctx); err != nil {
-		return nil, err
+		return nil, readBarrierStatusErr(err)
 	}
 	hash, _, err := s.backend.HashKV(ctx, 0)
 	if err != nil {
@@ -152,7 +152,7 @@ func (s *RPCServer) HashKV(ctx context.Context, req *etcdserverpb.HashKVRequest)
 		return nil, err
 	}
 	if err := s.peers.SyncReadRevision(ctx); err != nil {
-		return nil, err
+		return nil, readBarrierStatusErr(err)
 	}
 	revision := req.GetRevision()
 	if req.GetRevision() > 0 {

@@ -358,7 +358,9 @@ func TestSerializableRangeBypassesLeaderRevisionSync(t *testing.T) {
 	require.Equal(t, "value", string(resp.Kvs[0].Value))
 
 	_, err = server.Range(ctx, &etcdserverpb.RangeRequest{Key: key})
-	require.ErrorIs(t, err, syncErr, "linearizable Range must retain the leader read barrier")
+	require.Equal(t, codes.Unavailable, status.Code(err),
+		"linearizable Range must expose a retryable leader read barrier failure")
+	require.Equal(t, syncErr.Error(), status.Convert(err).Message())
 }
 
 func TestPutIgnoreLeasePreservesExistingLease(t *testing.T) {
