@@ -49,11 +49,16 @@ type leaseManager struct {
 	// removal. It is separate from leaseMu so backend I/O never blocks lease-state
 	// readers while still preventing a key from committing behind a completed
 	// revoke.
-	leaseWriteMu  sync.RWMutex
-	leaseMu       sync.Mutex
-	leaseID       int64
-	leases        map[int64]*leaseState
-	keyLeaseIndex map[string]int64
+	leaseWriteMu sync.RWMutex
+	leaseMu      sync.Mutex
+	leaseID      int64
+	// leaseGeneration changes whenever leadership replaces or clears the active
+	// snapshot. pendingLeases records the generation in which each ID was
+	// reserved, so a delayed metadata commit cannot publish across that boundary.
+	leaseGeneration uint64
+	leases          map[int64]*leaseState
+	pendingLeases   map[int64]uint64
+	keyLeaseIndex   map[string]int64
 	// orphanSweepStop is non-nil while the leader-side orphaned-leased-key sweeper
 	// goroutine is running; closed (and niled) when leadership is lost. Guarded by
 	// leaseMu.
@@ -72,6 +77,7 @@ func newLeaseManager(srv *RPCServer, initialID int64) *leaseManager {
 		srv:           srv,
 		leaseID:       initialID,
 		leases:        make(map[int64]*leaseState),
+		pendingLeases: make(map[int64]uint64),
 		keyLeaseIndex: make(map[string]int64),
 	}
 }

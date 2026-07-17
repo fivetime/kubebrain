@@ -36,7 +36,7 @@ Raft、bbolt 和成员管理内部实现，而是对通用 etcd v3 客户端提�
 | KV | Compact | 兼容核心语义 | P0：继续对齐 logical/physical 行为、错误与异步 GC |
 | KV | RangeStream | 兼容核心语义 | etcd 3.7 支持的 CountOnly/Limit/KeysOnly/默认排序已对齐；自定义排序与 revision filter 同 etcd 明确 Unimplemented |
 | Watch | create/cancel/progress/history/prevKV | 兼容核心语义 | P0：用官方客户端做事件完整性、压缩、断线恢复和慢消费者测试 |
-| Lease | grant/revoke/keepalive/ttl/list | 兼容核心语义 | meta/attachment 已与用户 revision 隔离并原子提交，List 按到期时间稳定排序；继续扩大故障、并发和错误差分矩阵 |
+| Lease | grant/revoke/keepalive/ttl/list | 兼容核心语义 | meta/attachment 已与用户 revision 隔离并原子提交，Grant durable 后才发布，List 按到期时间稳定排序；继续扩大故障、并发和错误差分矩阵 |
 | Auth | 用户、角色、权限、token | 兼容核心语义 | 管理 API、key-range RBAC、token 生命周期、Watch/Lease 持续鉴权及多副本故障转移已验证 |
 | Cluster | MemberList | 兼容（需配置） | DBaaS 通过 `--initial-cluster` 注入完整 KubeBrain 服务副本；未配置时仅返回本机与 leader 的降级视图，不应启用 AutoSync |
 | Cluster | add/remove/update/promote | 平台替代 | 由 DBaaS 控制面扩缩 KubeBrain、PD、TiKV；RPC 保持明确 Unimplemented |
@@ -908,6 +908,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   单元连续 20 轮和 race 通过。独立 keyspace 的 TiKV/PD exact image 上，官方 client Auth
   lifecycle 新增 attached-key TTL、LeaseLeases 与 KeepAliveOnce 后完整通过，确认合法鉴权
   流量不受影响；临时 auth 实例已销毁。
+- **Lease A54 grant publish-after-commit（2026-07-17）**：对照 etcd
+  `/root/etcd/server/etcdserver/v3_server.go` 的 `LeaseGrant -> raftRequest` 及
+  `apply/backend.go` 的 `Lessor.Grant` apply 顺序，发现 KubeBrain 原先先把 lease 放入 active
+  map 并启动 timer，再提交 TiKV meta。显式 ID 的并发 Put 因而可在 Grant 尚未 durable 时
+  成功，若 meta 随后失败，该已确认 Put 又会被 grant cleanup 删除。现以 `pendingLeases`
+  单独预留 ID：并发 duplicate Grant 仍返回 `lease already exists`，但 Put/TTL/List 均只看
+  committed active map；InternalPut 成功后才设置 deadline、发布并启动 timer。失败路径用保留
+  原 leadership epoch 的 fresh bounded context 尝试清理 commit-undetermined meta，再释放
+  reservation；lease-state generation 阻止跨 `StopLeases`/reload 的迟到 commit 重新污染
+  follower snapshot。阻塞 meta 测试证明 commit 前 Put 返回 `lease not found`、commit 后可用；
+  cancel 测试证明失败不泄漏 active/pending 且同 ID 可重试；state reset 测试证明迟到成功返回
+  `Unavailable` 且不发布。三组 focused 连续 50 轮及 race 连续 10 轮通过，三副本 TiKV/PD
+  exact image 上官方 Lease lifecycle/order 双端差分连续 20 轮通过。
 
 ### P1：通用服务能力
 

@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"sync"
 	"testing"
 	"time"
 
@@ -43,6 +44,25 @@ type fakeLeaseKeepAliveServer struct {
 type observingRevisionBackend struct {
 	BackendShim
 	observed chan<- struct{}
+}
+
+type blockingLeaseMetaBackend struct {
+	BackendShim
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (b *blockingLeaseMetaBackend) InternalPut(ctx context.Context, key, value []byte) error {
+	if string(key) == string(leaseStorageKey(5201)) {
+		b.once.Do(func() { close(b.entered) })
+		select {
+		case <-b.release:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return b.BackendShim.InternalPut(ctx, key, value)
 }
 
 func (b observingRevisionBackend) GetCurrentRevision() uint64 {
@@ -285,6 +305,100 @@ func TestLeaseGrantClampsSmallTTLLikeEtcd(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, minLeaseTTL, ttlResp.GrantedTTL)
 	}
+}
+
+func TestLeaseGrantPublishesOnlyAfterMetadataCommit(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	shim := &blockingLeaseMetaBackend{
+		BackendShim: server.backend,
+		entered:     make(chan struct{}),
+		release:     make(chan struct{}),
+	}
+	server.backend = shim
+
+	grantDone := make(chan error, 1)
+	go func() {
+		_, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 30, ID: 5201})
+		grantDone <- err
+	}()
+	<-shim.entered
+
+	_, err := server.Put(ctx, &etcdserverpb.PutRequest{
+		Key: []byte("/registry/leases/pending"), Value: []byte("value"), Lease: 5201,
+	})
+	require.Equal(t, codes.NotFound, status.Code(err))
+	require.Equal(t, "etcdserver: requested lease not found", status.Convert(err).Message())
+	_, err = server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 30, ID: 5201})
+	require.Equal(t, codes.FailedPrecondition, status.Code(err), "pending ID must reject a duplicate grant")
+
+	close(shim.release)
+	require.NoError(t, <-grantDone)
+	_, err = server.Put(ctx, &etcdserverpb.PutRequest{
+		Key: []byte("/registry/leases/pending"), Value: []byte("value"), Lease: 5201,
+	})
+	require.NoError(t, err, "committed lease must become usable")
+}
+
+func TestLeaseGrantFailureReleasesPendingReservation(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	shim := &blockingLeaseMetaBackend{
+		BackendShim: server.backend,
+		entered:     make(chan struct{}),
+		release:     make(chan struct{}),
+	}
+	server.backend = shim
+	ctx, cancel := context.WithCancel(context.Background())
+
+	grantDone := make(chan error, 1)
+	go func() {
+		_, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 30, ID: 5201})
+		grantDone <- err
+	}()
+	<-shim.entered
+	cancel()
+	require.ErrorIs(t, <-grantDone, context.Canceled)
+
+	server.leaseMu.Lock()
+	_, active := server.leases[5201]
+	_, pending := server.pendingLeases[5201]
+	server.leaseMu.Unlock()
+	require.False(t, active)
+	require.False(t, pending)
+
+	close(shim.release)
+	_, err := server.LeaseGrant(context.Background(), &etcdserverpb.LeaseGrantRequest{TTL: 30, ID: 5201})
+	require.NoError(t, err, "failed persistence must not poison the explicit lease ID")
+}
+
+func TestLeaseGrantDoesNotPublishAcrossLeaseStateReset(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	shim := &blockingLeaseMetaBackend{
+		BackendShim: server.backend,
+		entered:     make(chan struct{}),
+		release:     make(chan struct{}),
+	}
+	server.backend = shim
+
+	grantDone := make(chan error, 1)
+	go func() {
+		_, err := server.LeaseGrant(context.Background(), &etcdserverpb.LeaseGrantRequest{TTL: 30, ID: 5201})
+		grantDone <- err
+	}()
+	<-shim.entered
+	server.stopLeases()
+	close(shim.release)
+	require.Equal(t, codes.Unavailable, status.Code(<-grantDone))
+
+	server.leaseMu.Lock()
+	_, active := server.leases[5201]
+	_, pending := server.pendingLeases[5201]
+	server.leaseMu.Unlock()
+	require.False(t, active)
+	require.False(t, pending)
 }
 
 func TestLeaseMetaDoesNotAdvanceKVRevisionAndRestores(t *testing.T) {

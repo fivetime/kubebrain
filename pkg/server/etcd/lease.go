@@ -104,14 +104,39 @@ func (m *leaseManager) LeaseGrant(ctx context.Context, req *etcdserverpb.LeaseGr
 	}
 
 	id := req.ID
-	if id == 0 {
-		id = m.nextLeaseID()
+	var grantGeneration uint64
+	for {
+		if id == 0 {
+			id = m.nextLeaseID()
+		}
+		m.leaseMu.Lock()
+		_, active := m.leases[id]
+		_, pending := m.pendingLeases[id]
+		if !active && !pending {
+			grantGeneration = m.leaseGeneration
+			m.pendingLeases[id] = grantGeneration
+			m.leaseMu.Unlock()
+			break
+		}
+		m.leaseMu.Unlock()
+		if req.ID != 0 {
+			return nil, status.Error(codes.FailedPrecondition, "etcdserver: lease already exists")
+		}
+		id = 0
 	}
 
-	m.leaseMu.Lock()
-	if _, ok := m.leases[id]; ok {
+	if err := m.persistLeaseMeta(ctx, id, ttl); err != nil {
+		// No Put can observe a pending lease, so there are no attached keys to
+		// revoke. Best-effort deletion resolves a commit-undetermined InternalPut
+		// before releasing the ID reservation; leadership fencing prevents an old
+		// leader from deleting a newer leader's grant.
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), unaryRpcTimeout)
+		_ = m.deleteLeaseState(cleanupCtx, id)
+		cleanupCancel()
+		m.leaseMu.Lock()
+		delete(m.pendingLeases, id)
 		m.leaseMu.Unlock()
-		return nil, status.Error(codes.FailedPrecondition, "etcdserver: lease already exists")
+		return nil, mapFenceErr(err)
 	}
 
 	st := &leaseState{
@@ -120,14 +145,20 @@ func (m *leaseManager) LeaseGrant(ctx context.Context, req *etcdserverpb.LeaseGr
 		deadline: time.Now().Add(time.Duration(ttl) * time.Second),
 		keys:     make(map[string]struct{}),
 	}
-	m.scheduleLeaseLocked(st)
-	m.leases[id] = st
-	m.leaseMu.Unlock()
-
-	if err := m.persistLeaseMeta(ctx, st.id, st.ttl); err != nil {
-		_, _ = m.revokeLease(ctx, id)
-		return nil, mapFenceErr(err)
+	m.leaseMu.Lock()
+	pendingGeneration, stillPending := m.pendingLeases[id]
+	if !stillPending || pendingGeneration != grantGeneration || m.leaseGeneration != grantGeneration {
+		delete(m.pendingLeases, id)
+		m.leaseMu.Unlock()
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), unaryRpcTimeout)
+		_ = m.deleteLeaseState(cleanupCtx, id)
+		cleanupCancel()
+		return nil, mapFenceErr(backend.ErrLeadershipFenced)
 	}
+	delete(m.pendingLeases, id)
+	m.leases[id] = st
+	m.scheduleLeaseLocked(st)
+	m.leaseMu.Unlock()
 
 	return &etcdserverpb.LeaseGrantResponse{
 		Header: txnHeader(int64(m.srv.backend.GetCurrentRevision())),
@@ -1024,6 +1055,7 @@ func (m *leaseManager) applyLeaseRecords(records []leaseRecord, attachments map[
 	now := time.Now()
 	m.leaseMu.Lock()
 	defer m.leaseMu.Unlock()
+	m.leaseGeneration++
 	for _, st := range m.leases {
 		if st.timer != nil {
 			st.timer.Stop()
@@ -1094,6 +1126,7 @@ func (m *leaseManager) stopLeases() {
 	m.stopOrphanSweeper()
 	m.leaseMu.Lock()
 	defer m.leaseMu.Unlock()
+	m.leaseGeneration++
 	for _, st := range m.leases {
 		if st.timer != nil {
 			st.timer.Stop()
