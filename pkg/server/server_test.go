@@ -16,6 +16,8 @@ package server
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/golang/mock/gomock"
@@ -25,6 +27,7 @@ import (
 
 	"github.com/kubewharf/kubebrain/pkg/backend"
 	"github.com/kubewharf/kubebrain/pkg/metrics/mock"
+	"github.com/kubewharf/kubebrain/pkg/server/service/leader"
 	imemkv "github.com/kubewharf/kubebrain/pkg/storage/memkv"
 )
 
@@ -65,4 +68,25 @@ func TestLeadershipHealthTransitions(t *testing.T) {
 	s.onStoppedLeading()
 	require.Equal(t, healthpb.HealthCheckResponse_NOT_SERVING, healthStatus(t, s),
 		"losing leadership must report NOT_SERVING so clients stop routing here as leader")
+}
+
+func TestLeaderReadinessWaitsForDurableStartup(t *testing.T) {
+	s := &server{
+		healthServer:   health.NewServer(),
+		leaderElection: &leader.Stub{ElectionInfo: leader.ElectionInfo{IsLeader: true}},
+	}
+	s.healthServer.SetServingStatus("", healthpb.HealthCheckResponse_NOT_SERVING)
+	require.False(t, s.leaderServing(), "election ownership alone must not publish readiness")
+	recorder := httptest.NewRecorder()
+	s.httpReadyHandler(recorder, httptest.NewRequest(http.MethodGet, "/ready", nil))
+	require.Equal(t, http.StatusServiceUnavailable, recorder.Code)
+
+	s.healthServer.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
+	require.True(t, s.leaderServing())
+	recorder = httptest.NewRecorder()
+	s.httpReadyHandler(recorder, httptest.NewRequest(http.MethodGet, "/ready", nil))
+	require.Equal(t, http.StatusOK, recorder.Code)
+
+	s.healthServer.SetServingStatus("", healthpb.HealthCheckResponse_NOT_SERVING)
+	require.False(t, s.leaderServing(), "leadership loss must withdraw readiness")
 }

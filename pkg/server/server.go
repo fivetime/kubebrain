@@ -323,7 +323,7 @@ func (s *server) httpReadyHandler(w http.ResponseWriter, req *http.Request) {
 		klog.Warningf("/ready error (status code %d)", http.StatusMethodNotAllowed)
 		return
 	}
-	if s.leaderElection.IsLeader() {
+	if s.leaderElection.IsLeader() && s.leaderServing() {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(HealthResponse))
 		return
@@ -336,4 +336,9 @@ func (s *server) httpReadyHandler(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 	http.Error(w, "not ready", http.StatusServiceUnavailable)
+}
+
+func (s *server) leaderServing() bool {
+	resp, err := s.healthServer.Check(context.Background(), &healthpb.HealthCheckRequest{})
+	return err == nil && resp.Status == healthpb.HealthCheckResponse_SERVING
 }

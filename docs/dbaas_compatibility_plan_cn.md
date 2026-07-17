@@ -786,6 +786,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   compact marker 区分 `-1`、0 与正 watermark。单元测试固定 empty-prefix Castagnoli CRC、
   current/historical/negative metadata 和未压缩状态；新增官方 client/v3 双端差分，不比较不同
   物理编码的 current hash 数值，只比较 negative hash、signed revision、header gap 与选择关系。
+- **Rollout A42 serving readiness（2026-07-17）**：真实三副本滚动发布中复现 NodePort
+  `Unavailable: proxy is not ready`。Leader 取得 election ownership 后，`/ready` 曾在 durable
+  state reload、event-log 初始化和 physical-compaction resume 完成前直接返回 200；Follower 的
+  proxy readiness 也只核对 leader identity，在旧 Leader 退出后仍可能保留已断开的 gRPC transport。
+  现 Leader readiness 同时要求本地 gRPC health 为 `SERVING`，该状态只在 durable startup 全部
+  成功后发布，并在失去 leadership 时撤销；Follower readiness 要求当前 Leader 对应的 active
+  connection 为 `READY`，`IDLE` channel 会主动发起连接，其余状态均先从 Service endpoints
+  撤流。HTTP 状态转换和真实 gRPC server 断连均有确定性回归，kind + 独立 TiKV/PD 继续以
+  in-cluster 并发 client/v3 load 覆盖整轮三副本 rollout。
 
 ### P1：通用服务能力
 

@@ -130,6 +130,30 @@ func TestCheckClientConnUsesTransportReadiness(t *testing.T) {
 	require.NoError(t, checkClientConn(cli, nil, time.Second))
 }
 
+func TestReadyRejectsDisconnectedLeaderTransport(t *testing.T) {
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	grpcServer := grpc.NewServer()
+	go func() { _ = grpcServer.Serve(lis) }()
+	t.Cleanup(func() { _ = lis.Close() })
+
+	endpoint := lis.Addr().String()
+	cli, err := clientv3.New(clientv3.Config{Endpoints: []string{endpoint}})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = cli.Close() })
+	require.NoError(t, checkClientConn(cli, nil, time.Second))
+	proxy := &etcdProxy{
+		election:  &testLeaderElection{leaderAddress: endpoint},
+		client:    cli,
+		curLeader: endpoint,
+	}
+	require.NoError(t, proxy.Ready())
+
+	grpcServer.Stop()
+	require.Eventually(t, func() bool { return proxy.Ready() != nil }, 5*time.Second, 10*time.Millisecond,
+		"a dead leader transport must withdraw follower readiness before forwarding traffic")
+}
+
 type testLeaderElection struct {
 	leaderAddress string
 	isLeader      bool

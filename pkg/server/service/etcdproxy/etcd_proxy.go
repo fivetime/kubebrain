@@ -29,6 +29,7 @@ import (
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/status"
 	"k8s.io/klog/v2"
 
@@ -535,6 +536,16 @@ func (e *etcdProxy) readyLocked() error {
 	}
 	if e.curLeader != currentLeader {
 		return status.Errorf(codes.Unavailable, "proxy leader %q is stale, current leader %q", e.curLeader, currentLeader)
+	}
+	conn := e.client.ActiveConnection()
+	if conn == nil {
+		return status.Errorf(codes.Unavailable, "proxy connection to leader %q is not ready", currentLeader)
+	}
+	if conn.GetState() == connectivity.Idle {
+		conn.Connect()
+	}
+	if conn.GetState() != connectivity.Ready {
+		return status.Errorf(codes.Unavailable, "proxy connection to leader %q is not ready", currentLeader)
 	}
 	return nil
 }
