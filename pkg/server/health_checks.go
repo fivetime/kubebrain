@@ -18,6 +18,8 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+
+	"github.com/kubewharf/kubebrain/pkg/metrics"
 )
 
 type namedHealthCheck struct {
@@ -47,19 +49,19 @@ func (s *server) addEtcdHealthCheckHandlers(handlers map[string]http.Handler) {
 		// and consequently have no learner member role.
 		{name: "non_learner", check: func(context.Context) error { return nil }},
 	}
-	addHealthCheckGroup(handlers, "/livez", livez)
-	addHealthCheckGroup(handlers, "/readyz", readyz)
+	s.addHealthCheckGroup(handlers, "/livez", "livez", livez)
+	s.addHealthCheckGroup(handlers, "/readyz", "readyz", readyz)
 }
 
-func addHealthCheckGroup(handlers map[string]http.Handler, root string, checks []namedHealthCheck) {
-	handlers[root] = healthCheckHandler(checks, true)
+func (s *server) addHealthCheckGroup(handlers map[string]http.Handler, root, checkType string, checks []namedHealthCheck) {
+	handlers[root] = s.healthCheckHandler(checkType, checks, true)
 	for _, check := range checks {
 		check := check
-		handlers[root+"/"+check.name] = healthCheckHandler([]namedHealthCheck{check}, false)
+		handlers[root+"/"+check.name] = s.healthCheckHandler(checkType, []namedHealthCheck{check}, false)
 	}
 }
 
-func healthCheckHandler(checks []namedHealthCheck, allowExclude bool) http.Handler {
+func (s *server) healthCheckHandler(checkType string, checks []namedHealthCheck, allowExclude bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		if req.Method != http.MethodGet {
 			w.Header().Set("Allow", http.MethodGet)
@@ -85,8 +87,10 @@ func healthCheckHandler(checks []namedHealthCheck, allowExclude bool) http.Handl
 			if err := check.check(req.Context()); err != nil {
 				result += fmt.Sprintf("[-]%s failed: %v\n", check.name, err)
 				failed = true
+				s.recordHealthCheck(checkType, check.name, false)
 			} else {
 				result += fmt.Sprintf("[+]%s ok\n", check.name)
+				s.recordHealthCheck(checkType, check.name, true)
 			}
 		}
 		if failed {
@@ -100,4 +104,26 @@ func healthCheckHandler(checks []namedHealthCheck, allowExclude bool) http.Handl
 		}
 		_, _ = fmt.Fprint(w, "ok\n")
 	})
+}
+
+func (s *server) recordHealthCheck(checkType, name string, success bool) {
+	if s.metricCli == nil {
+		return
+	}
+	status := "error"
+	value := 0
+	if success {
+		status = "success"
+		value = 1
+	}
+	tags := []metrics.T{
+		metrics.Tag("type", checkType),
+		metrics.Tag("name", name),
+	}
+	_ = s.metricCli.EmitGauge("etcd.server.healthcheck", value, tags...)
+	_ = s.metricCli.EmitCounter(
+		"etcd.server.healthchecks_total",
+		1,
+		append(tags, metrics.Tag("status", status))...,
+	)
 }

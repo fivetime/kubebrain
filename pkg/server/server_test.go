@@ -23,10 +23,12 @@ import (
 
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/health"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 
 	"github.com/kubewharf/kubebrain/pkg/backend"
+	"github.com/kubewharf/kubebrain/pkg/metrics"
 	"github.com/kubewharf/kubebrain/pkg/metrics/mock"
 	"github.com/kubewharf/kubebrain/pkg/server/service/leader"
 	"github.com/kubewharf/kubebrain/pkg/storage"
@@ -36,6 +38,31 @@ import (
 type healthStorage struct {
 	storage.KvStorage
 	fail bool
+}
+
+type healthMetricEvent struct {
+	kind  string
+	name  string
+	value interface{}
+	tags  []metrics.T
+}
+
+type healthMetricRecorder struct {
+	events []healthMetricEvent
+}
+
+func (r *healthMetricRecorder) GetGrpcServerOption() []grpc.ServerOption { return nil }
+func (r *healthMetricRecorder) GetHttpHandlers() map[string]http.Handler { return nil }
+func (r *healthMetricRecorder) EmitHistogram(string, interface{}, ...metrics.T) error {
+	return nil
+}
+func (r *healthMetricRecorder) EmitCounter(name string, value interface{}, tags ...metrics.T) error {
+	r.events = append(r.events, healthMetricEvent{kind: "counter", name: name, value: value, tags: tags})
+	return nil
+}
+func (r *healthMetricRecorder) EmitGauge(name string, value interface{}, tags ...metrics.T) error {
+	r.events = append(r.events, healthMetricEvent{kind: "gauge", name: name, value: value, tags: tags})
+	return nil
 }
 
 func (s *healthStorage) Get(ctx context.Context, key []byte) ([]byte, error) {
@@ -230,4 +257,71 @@ func TestEtcdHealthCheckHandlersAvailableOnInfoPort(t *testing.T) {
 	} {
 		require.Contains(t, handlers, path)
 	}
+}
+
+func TestEtcdHealthCheckMetrics(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	m := mock.NewMinimalMetrics(ctrl)
+	kv := &healthStorage{KvStorage: imemkv.NewKvStorage()}
+	b := backend.NewBackend(kv, backend.Config{Prefix: "/registry", Identity: "test"}, m)
+	defer func() { require.NoError(t, b.(interface{ Close() error }).Close()) }()
+	recorder := &healthMetricRecorder{}
+	s := &server{
+		healthServer:   health.NewServer(),
+		leaderElection: &leader.Stub{},
+		backend:        b,
+		metricCli:      recorder,
+	}
+	s.healthServer.SetServingStatus("", healthpb.HealthCheckResponse_NOT_SERVING)
+	handlers := s.GetClientHttpHandlers()
+
+	response := httptest.NewRecorder()
+	handlers["/readyz"].ServeHTTP(response, httptest.NewRequest(
+		http.MethodGet,
+		"/readyz?exclude=data_corruption&exclude=non_learner",
+		nil,
+	))
+	require.Equal(t, http.StatusServiceUnavailable, response.Code)
+	require.Equal(t, []healthMetricEvent{
+		{
+			kind: "gauge", name: "etcd.server.healthcheck", value: 1,
+			tags: []metrics.T{metrics.Tag("type", "readyz"), metrics.Tag("name", "serializable_read")},
+		},
+		{
+			kind: "counter", name: "etcd.server.healthchecks_total", value: 1,
+			tags: []metrics.T{
+				metrics.Tag("type", "readyz"),
+				metrics.Tag("name", "serializable_read"),
+				metrics.Tag("status", "success"),
+			},
+		},
+		{
+			kind: "gauge", name: "etcd.server.healthcheck", value: 0,
+			tags: []metrics.T{metrics.Tag("type", "readyz"), metrics.Tag("name", "linearizable_read")},
+		},
+		{
+			kind: "counter", name: "etcd.server.healthchecks_total", value: 1,
+			tags: []metrics.T{
+				metrics.Tag("type", "readyz"),
+				metrics.Tag("name", "linearizable_read"),
+				metrics.Tag("status", "error"),
+			},
+		},
+	}, recorder.events)
+
+	recorder.events = nil
+	response = httptest.NewRecorder()
+	s.httpHealthHandler(response, httptest.NewRequest(http.MethodGet, "/health", nil))
+	require.Equal(t, http.StatusServiceUnavailable, response.Code)
+	require.Equal(t, []healthMetricEvent{{
+		kind: "counter", name: "etcd.server.health_failures", value: 1,
+	}}, recorder.events)
+
+	recorder.events = nil
+	response = httptest.NewRecorder()
+	s.httpHealthHandler(response, httptest.NewRequest(http.MethodGet, "/health?serializable=true", nil))
+	require.Equal(t, http.StatusOK, response.Code)
+	require.Equal(t, []healthMetricEvent{{
+		kind: "counter", name: "etcd.server.health_success", value: 1,
+	}}, recorder.events)
 }

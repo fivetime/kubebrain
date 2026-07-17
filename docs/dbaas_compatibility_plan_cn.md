@@ -1603,6 +1603,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   约 1.6 秒后 `/readyz` 自动恢复。最终部署 3/3 Ready、zero restart。containerd
   运行时 exact image
   `73bfdfb4eedb9b5a3a1b65ac1afaba14012c7f670431e1aaac39f5ee0d246836`。
+- **Endpoint A98 health-check observability（2026-07-17）**：继续对照
+  `/root/etcd/server/etcdserver/api/etcdhttp/health.go` 的 `recordMetrics` 及
+  `health_test.go:checkMetrics`，A97 虽对齐 HTTP 契约，但没有输出 etcd 的检查级
+  Prometheus 指标，DBaaS 无法仅凭 metrics 区分后端不可读和线性读无 leader。
+  现每次实际执行的 livez/readyz 分项检查均更新
+  `etcd_server_healthcheck{type,name}` gauge，并累加
+  `etcd_server_healthchecks_total{type,name,status}`；root `exclude` 跳过的检查不
+  产生样本，type/name/status 全部来自固定注册表，不接受用户输入，避免高基数。
+  传统 `/health` 同时补齐 `etcd_server_health_success` 与
+  `etcd_server_health_failures` counter。结构化 recorder 回归固定成功/失败值、
+  标签、exclude 与 legacy counter；full test、server race 和 full vet 全通过。
+  三副本 KubeBrain + 独立 TiKV/PD 正常态逐 Pod 抓取 `/metrics`，五个分项 gauge
+  均为 1，success counter 均存在；删除 leader 并固定直连 follower 后，第一个
+  `/readyz` 503 采样即观测 `linearizable_read` gauge=0、error counter=1，而
+  serializable/data/non-learner 保持成功。恢复后 gauge 自动回到 1，error counter
+  保留累计值（故障窗口最终为 15），部署恢复 3/3 Ready、zero restart。同步修正
+  observability 文档中已过时的“丢 leader 会重启”说明，并新增换主与共享存储不可读
+  的分项告警建议。containerd 运行时 exact image
+  `49fedf479a7c029b2fd92509aed94d3bcafd97f31709721293de1d8afb029955`。
 
 ### P1：通用服务能力
 

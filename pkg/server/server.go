@@ -354,10 +354,23 @@ func (s *server) httpHealthHandler(w http.ResponseWriter, req *http.Request) {
 	}
 	serializable := req.URL.Query().Get("serializable") == "true"
 	if reason := s.healthFailureReason(req.Context(), serializable); reason != "" {
+		s.recordLegacyHealth(false)
 		s.writeUnhealthy(w, reason)
 		return
 	}
+	s.recordLegacyHealth(true)
 	s.writeHealthy(w)
+}
+
+func (s *server) recordLegacyHealth(success bool) {
+	if s.metricCli == nil {
+		return
+	}
+	name := "etcd.server.health_failures"
+	if success {
+		name = "etcd.server.health_success"
+	}
+	_ = s.metricCli.EmitCounter(name, 1)
 }
 
 func (s *server) httpPingHandler(w http.ResponseWriter, req *http.Request) {
