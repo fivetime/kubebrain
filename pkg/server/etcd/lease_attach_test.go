@@ -32,10 +32,68 @@ import (
 
 	"github.com/kubewharf/kubebrain/pkg/backend"
 	"github.com/kubewharf/kubebrain/pkg/metrics/mock"
+	"github.com/kubewharf/kubebrain/pkg/storage"
 	"github.com/kubewharf/kubebrain/pkg/storage/memkv"
 )
 
 var errFakeDelete = errors.New("injected delete failure")
+
+type commitThenUncertainLeaseShim struct {
+	BackendShim
+	trigger               atomic.Bool
+	remainingReadFailures atomic.Int32
+}
+
+func (s *commitThenUncertainLeaseShim) TxnApply(ctx context.Context, ops []backend.TxnWriteOp, guards []backend.TxnGuard, prevKV []bool) ([]*etcdserverpb.ResponseOp, uint64, []backend.TxnWriteResult, error) {
+	responses, revision, results, err := s.BackendShim.TxnApply(ctx, ops, guards, prevKV)
+	if err == nil && s.trigger.CompareAndSwap(true, false) {
+		s.remainingReadFailures.Store(3)
+		return nil, revision, nil, storage.NewErrUncertainResult(context.DeadlineExceeded)
+	}
+	return responses, revision, results, err
+}
+
+func (s *commitThenUncertainLeaseShim) InternalGet(ctx context.Context, key []byte) ([]byte, error) {
+	for {
+		remaining := s.remainingReadFailures.Load()
+		if remaining == 0 {
+			return s.BackendShim.InternalGet(ctx, key)
+		}
+		if s.remainingReadFailures.CompareAndSwap(remaining, remaining-1) {
+			return nil, storage.ErrUnavailable
+		}
+	}
+}
+
+func TestCommittedUncertainLeasedPutReconcilesIndexBeforeRevoke(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	const leaseID int64 = 90018
+	key := []byte("/registry/events/ns/uncertain-lease")
+
+	_, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 300, ID: leaseID})
+	require.NoError(t, err)
+	shim := &commitThenUncertainLeaseShim{BackendShim: server.backend}
+	server.backend = shim
+	server.leaseManager.srv.backend = shim
+
+	shim.trigger.Store(true)
+	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("value"), Lease: leaseID})
+	require.ErrorIs(t, err, storage.ErrUncertainResult)
+	require.Eventually(t, func() bool {
+		return server.leaseIDForKey(string(key)) == leaseID
+	}, 2*time.Second, 10*time.Millisecond, "committed attachment was not reconciled into the leader index")
+	require.Zero(t, shim.remainingReadFailures.Load())
+
+	_, err = server.LeaseRevoke(ctx, &etcdserverpb.LeaseRevokeRequest{ID: leaseID})
+	require.NoError(t, err)
+	got, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: key})
+	require.NoError(t, err)
+	require.Empty(t, got.Kvs, "revoke must delete the committed-uncertain leased key")
+	_, err = shim.InternalGet(ctx, leaseAttachKey(string(key)))
+	require.Error(t, err, "revoke must remove the durable attachment")
+}
 
 func TestLeasedPutReturnsPrevKV(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)

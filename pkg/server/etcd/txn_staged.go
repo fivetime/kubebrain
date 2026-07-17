@@ -74,6 +74,7 @@ func (s *RPCServer) executeStagedGenericTxnAtRevision(ctx context.Context, txn *
 	writes, userCount := s.withLeaseAttachmentOps(writes)
 	_, revision, results, err := s.backend.TxnApply(ctx, writes, guards, make([]bool, len(writes)))
 	if err != nil {
+		s.reconcileLeaseIndexesAfterUncertain(err, revision, writes, userCount)
 		return nil, err
 	}
 	rewriteTxnRevision(resp, e.pendingRev, int64(revision))

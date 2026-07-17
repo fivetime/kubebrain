@@ -1215,6 +1215,7 @@ func (s *RPCServer) tryAtomicGenericTxn(ctx context.Context, txn *etcdserverpb.T
 	prevKVs = append(prevKVs, make([]bool, len(writes)-userCount)...)
 	responses, rev, results, err := s.backend.TxnApply(ctx, writes, guards, prevKVs)
 	if err != nil {
+		s.reconcileLeaseIndexesAfterUncertain(err, rev, writes, userCount)
 		return nil, true, err
 	}
 	for i := 0; i < userCount; i++ {

@@ -32,6 +32,7 @@ import (
 	"k8s.io/klog/v2"
 
 	"github.com/kubewharf/kubebrain/pkg/backend"
+	"github.com/kubewharf/kubebrain/pkg/storage"
 )
 
 // leaseStoragePrefix holds one small meta record per lease: leases/<id> -> {id,ttl}.
@@ -468,6 +469,7 @@ func (m *leaseManager) putLeasedAtomic(ctx context.Context, put *etcdserverpb.Pu
 	prevKVs[0] = put.PrevKv
 	responses, rev, _, err := m.srv.backend.TxnApply(ctx, ops, nil, prevKVs)
 	if err != nil {
+		m.reconcileLeaseIndexesAfterUncertain(err, rev, ops, 1)
 		return nil, err
 	}
 	// The durable attachment committed atomically with the value above; update
@@ -529,6 +531,93 @@ func (m *leaseManager) applyLeaseIndexes(writes []backend.TxnWriteOp, results []
 			continue
 		}
 		m.bindKeyIndexOnly(writes[i].Lease, string(writes[i].Key))
+	}
+}
+
+func (m *leaseManager) reconcileLeaseIndexesAfterUncertain(err error, revision uint64, writes []backend.TxnWriteOp, userCount int) {
+	if !errors.Is(err, storage.ErrUncertainResult) || revision == 0 || userCount == 0 {
+		return
+	}
+	keys := make([]string, 0, userCount)
+	for i := 0; i < userCount; i++ {
+		attachmentKey := leaseAttachKey(string(writes[i].Key))
+		for j := userCount; j < len(writes); j++ {
+			if string(writes[j].Key) == string(attachmentKey) {
+				keys = append(keys, string(writes[i].Key))
+				break
+			}
+		}
+	}
+	if len(keys) == 0 {
+		return
+	}
+	go m.reconcileLeaseIndexesAtRevision(revision, keys)
+}
+
+// reconcileLeaseIndexesAtRevision waits until the backend has resolved an
+// uncertain transaction, then rebuilds the affected in-memory bindings from the
+// durable attachment records. The exclusive lease-write lock orders this repair
+// against every later attach, detach, revoke, and expiry operation.
+func (m *leaseManager) reconcileLeaseIndexesAtRevision(revision uint64, keys []string) {
+	for m.srv.backend.GetCurrentRevision() < revision {
+		if _, leading := m.srv.peers.EpochAndLeadingFresh(); !leading {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	retryDelay := 100 * time.Millisecond
+	for {
+		m.leaseWriteMu.Lock()
+		if _, leading := m.srv.peers.EpochAndLeadingFresh(); !leading {
+			m.leaseWriteMu.Unlock()
+			return
+		}
+		bindings := make(map[string]int64, len(keys))
+		retry := false
+		for _, key := range keys {
+			ctx, cancel := context.WithTimeout(context.Background(), unaryRpcTimeout)
+			value, err := m.srv.backend.InternalGet(ctx, leaseAttachKey(key))
+			cancel()
+			switch {
+			case err == nil:
+				id, parseErr := strconv.ParseInt(string(value), 10, 64)
+				if parseErr != nil {
+					m.leaseWriteMu.Unlock()
+					m.srv.metricCli.EmitCounter("lease.uncertain_reconcile.err", 1)
+					klog.ErrorS(parseErr, "invalid durable lease attachment during uncertain reconciliation",
+						"key", key, "revision", revision)
+					return
+				}
+				bindings[key] = id
+			case errors.Is(err, storage.ErrKeyNotFound):
+				bindings[key] = 0
+			default:
+				retry = true
+				m.srv.metricCli.EmitCounter("lease.uncertain_reconcile.retry", 1)
+				klog.ErrorS(err, "durable lease attachment unavailable during uncertain reconciliation",
+					"key", key, "revision", revision, "retryAfter", retryDelay)
+			}
+			if retry {
+				break
+			}
+		}
+		if !retry {
+			for key, id := range bindings {
+				m.bindKeyIndexOnly(id, key)
+			}
+			m.leaseWriteMu.Unlock()
+			m.srv.metricCli.EmitCounter("lease.uncertain_reconcile.success", 1)
+			return
+		}
+		m.leaseWriteMu.Unlock()
+		time.Sleep(retryDelay)
+		if retryDelay < time.Second {
+			retryDelay *= 2
+			if retryDelay > time.Second {
+				retryDelay = time.Second
+			}
+		}
 	}
 }
 
@@ -983,6 +1072,7 @@ func (m *leaseManager) deleteRangeWithAttachments(ctx context.Context, request *
 	}
 	responses, revision, results, err := m.srv.backend.TxnApply(ctx, allWrites, guards, prevKVs)
 	if err != nil {
+		m.reconcileLeaseIndexesAfterUncertain(err, revision, allWrites, userCount)
 		return nil, err
 	}
 	response := &etcdserverpb.DeleteRangeResponse{Header: txnHeader(int64(revision))}

@@ -543,7 +543,10 @@ func (b *backendShim) GetCompactRevisionFresh(ctx context.Context) (uint64, erro
 func (b *backendShim) TxnApply(ctx context.Context, ops []backend.TxnWriteOp, guards []backend.TxnGuard, prevKv []bool) ([]*etcdserverpb.ResponseOp, uint64, []backend.TxnWriteResult, error) {
 	results, rev, err := b.backend.TxnApply(ctx, ops, guards)
 	if err != nil {
-		return nil, 0, nil, err
+		// Preserve the reserved revision on an uncertain commit. Lease-index
+		// reconciliation waits for the backend collector to resolve this revision
+		// before reading the durable attachment records.
+		return nil, rev, nil, err
 	}
 	responses := make([]*etcdserverpb.ResponseOp, len(ops))
 	for i := range ops {

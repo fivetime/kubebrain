@@ -1207,6 +1207,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   与 version 语义黑盒各连续 10 轮通过；最终 TiKV 与部署均恢复 Ready。第二轮故障中
   active leader 超过 5s renew deadline 后按既有 watch-cache self-fence 策略 exit 255，
   Kubernetes 重建 1 次，非探针失败或事务 resolver 崩溃。
+- **Lease A75 uncertain attachment reconciliation（2026-07-17）**：A74 已能判定
+  uncertain `TxnApply` 的 durable 结果并恢复 watch，但 etcd 层只在 `TxnApply` 返回成功
+  后更新 `keyLeaseIndex`。若 leased Put 的 value + attachment 已提交却返回 uncertain，
+  当前 leader 会漏记该绑定，随后 revoke/expiry 不会删除该键，直到 leader reload 才
+  自愈。现 backend shim 在错误路径保留 reserved revision；普通 leased Put、atomic
+  generic Txn、staged Txn 和带 attachment 的 DeleteRange 遇到
+  `storage.ErrUncertainResult` 时，等待 collector committed/skip 该 revision，再仅针对
+  本批实际包含 attachment mutation 的用户键读取 durable record。对账持
+  `leaseWriteMu.Lock`，与后续 attach/detach/revoke/expiry 排序，并在读取失败时以
+  100ms 到 1s 指数退避整组重试；节点已失去 leadership 则退出，由新 leader reload
+  权威状态。确定性测试让真实 memkv batch 先提交 value+attachment、调用层再收到
+  uncertain，并连续注入 3 次 attachment `ErrUnavailable`；索引最终恢复，紧随其后的
+  revoke 同时删除 user key 和 attachment。聚焦普通与 race 各连续 20 轮、
+  full/race/vet 全部通过。三副本 TiKV/PD exact image
+  `31165d4ff79b7c361cb469b9d2a204c392962ddc47faae1215885b32175e6763`
+  上 lease Porcupine 基线连续 5 轮及 TiKV Pod 删除恢复历史均为 `Ok`；故障轮未捕获
+  ambiguous lease RPC，因此仅作为恢复回归，uncertain 分支以确定性注入为主证据。
+  相邻 lease history 再连续 3 轮通过；参考 etcd differential 因本轮未启动 reference
+  endpoint 明确跳过，不计为通过。
 
 ### P1：通用服务能力
 
