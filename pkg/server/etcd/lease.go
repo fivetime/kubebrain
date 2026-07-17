@@ -180,6 +180,11 @@ func (m *leaseManager) LeaseKeepAlive(stream etcdserverpb.Lease_LeaseKeepAliveSe
 		if err != nil {
 			return err
 		}
+		// Match etcd's LeaseServer: capture the header before authorization and
+		// renewal. A concurrent revoke may advance the store after a successful
+		// renew; reporting that later revision would imply the lease survived a
+		// revoke already visible at or before the response revision.
+		responseRevision := m.srv.backend.GetCurrentRevision()
 		// Match etcd's checkLeaseRenew on every message, not only when the
 		// long-lived stream is opened. Renewing a lease is a write to every key
 		// attached to it; otherwise a caller that only knows the lease ID can keep
@@ -217,7 +222,7 @@ func (m *leaseManager) LeaseKeepAlive(stream etcdserverpb.Lease_LeaseKeepAliveSe
 			ttl = 0
 		}
 		if err := stream.Send(&etcdserverpb.LeaseKeepAliveResponse{
-			Header: txnHeader(int64(m.srv.backend.GetCurrentRevision())),
+			Header: txnHeader(int64(responseRevision)),
 			ID:     req.ID,
 			TTL:    ttl,
 		}); err != nil {

@@ -863,6 +863,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   明确保留 nil，不为刻意省略 Header 的 RPC 伪造 ClusterId/MemberId/RaftTerm。server 单测固定
   nil shape，完整/race/vet 通过；官方 client/v3 双端 maintenance 差分连续 20 轮一致，
   exact-image 三副本逐 Pod 均验证 Header=nil，其他 Status/Range/Watch Header term 检查仍通过。
+- **Lease A50 KeepAlive response revision fence（2026-07-17）**：对照
+  `/root/etcd/server/etcdserver/api/v3rpc/lease.go:LeaseKeepAlive` 的明确注释和实现，
+  KeepAlive 必须在发起 renew 前捕获 Header revision；否则 renew 成功后并发 Revoke 已在
+  revision R 可见，迟到的 Header 仍可能报告 R 或更高，使客户端误判该 lease 在该 revision
+  仍存活。KubeBrain 原先先 `refreshLease`、后读 current revision；现每个 stream message 在
+  Recv 后、鉴权和 renew 前固定 response revision，Follower proxy 继续保留 Leader 返回的
+  Header。确定性测试以 `leaseMu` 阻塞 renew，确认 revision read 已先发生，再人为推进 backend
+  revision 并释放锁，最终 response 仍保持旧值；该测试连续 race 通过。完整 server/vet 通过，
+  exact-image 三副本 TiKV/PD 上官方 client/v3 Lease 全生命周期双端差分连续 20 轮一致。
 
 ### P1：通用服务能力
 

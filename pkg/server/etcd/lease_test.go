@@ -40,6 +40,19 @@ type fakeLeaseKeepAliveServer struct {
 	onSend   func()
 }
 
+type observingRevisionBackend struct {
+	BackendShim
+	observed chan<- struct{}
+}
+
+func (b observingRevisionBackend) GetCurrentRevision() uint64 {
+	select {
+	case b.observed <- struct{}{}:
+	default:
+	}
+	return b.BackendShim.GetCurrentRevision()
+}
+
 func (f *fakeLeaseKeepAliveServer) Recv() (*etcdserverpb.LeaseKeepAliveRequest, error) {
 	if len(f.requests) == 0 {
 		return nil, io.EOF
@@ -203,6 +216,42 @@ func TestLeaseKeepAliveUnknownLeaseMatchesEtcd(t *testing.T) {
 	require.Equal(t, int64(9999), stream.sent[0].ID)
 	require.Zero(t, stream.sent[0].TTL)
 	require.Equal(t, int64(server.backend.GetCurrentRevision()), stream.sent[0].Header.Revision)
+}
+
+func TestLeaseKeepAliveCapturesRevisionBeforeRenewal(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	grant, err := server.LeaseGrant(context.Background(), &etcdserverpb.LeaseGrantRequest{TTL: 30, ID: 10001})
+	require.NoError(t, err)
+
+	base := server.backend
+	initialRevision := base.GetCurrentRevision()
+	observed := make(chan struct{}, 1)
+	server.backend = observingRevisionBackend{BackendShim: base, observed: observed}
+	server.leaseMu.Lock()
+	locked := true
+	defer func() {
+		if locked {
+			server.leaseMu.Unlock()
+		}
+	}()
+
+	stream := &fakeLeaseKeepAliveServer{requests: []*etcdserverpb.LeaseKeepAliveRequest{{ID: grant.ID}}}
+	done := make(chan error, 1)
+	go func() { done <- server.LeaseKeepAlive(stream) }()
+
+	select {
+	case <-observed:
+	case <-time.After(time.Second):
+		t.Fatal("keepalive did not capture its response revision before waiting for lease renewal")
+	}
+	base.SetCurrentRevision(initialRevision + 1)
+	server.leaseMu.Unlock()
+	locked = false
+	require.NoError(t, <-done)
+	require.Len(t, stream.sent, 1)
+	require.Equal(t, int64(initialRevision), stream.sent[0].Header.Revision)
+	require.Equal(t, int64(30), stream.sent[0].TTL)
 }
 
 func TestLeaseGrantDuplicateAndTooLargeTTLMatchEtcdErrors(t *testing.T) {
