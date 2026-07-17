@@ -345,6 +345,21 @@ func TestWatchFragmentLimitUsesConfiguredRequestBytesWithEtcdOverhead(t *testing
 	require.Equal(t, 1024+512*1024, server.watchFragmentBytes())
 }
 
+func TestPeriodicProgressSuppressesOneTickAfterEvent(t *testing.T) {
+	state := newPeriodicProgressState()
+	require.True(t, state.tick(), "a newly created quiet watch is eligible")
+	require.True(t, state.tick(), "a quiet watch remains eligible each interval")
+
+	state.eventSent()
+	require.False(t, state.tick(), "an event suppresses the next progress tick")
+	require.True(t, state.tick(), "the suppressed tick rearms periodic progress")
+
+	state.eventSent()
+	state.eventSent()
+	require.False(t, state.tick(), "multiple events before a tick still suppress exactly one tick")
+	require.True(t, state.tick())
+}
+
 func TestCancelCompactedWatchResponseUsesBackendCompactRevisionAndErrorReason(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

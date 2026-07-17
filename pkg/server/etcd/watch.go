@@ -105,6 +105,24 @@ type watch struct {
 	syncedRev uint64
 }
 
+type periodicProgressState struct {
+	eligible bool
+}
+
+func newPeriodicProgressState() periodicProgressState {
+	return periodicProgressState{eligible: true}
+}
+
+func (s *periodicProgressState) eventSent() {
+	s.eligible = false
+}
+
+func (s *periodicProgressState) tick() bool {
+	send := s.eligible
+	s.eligible = true
+	return send
+}
+
 // syncedRevSnapshot returns a copy of every active watch's delivered
 // watermark, for per-watch progress responses (#39).
 func (w *watcher) syncedRevSnapshot() map[int64]uint64 {
@@ -577,6 +595,7 @@ func (w *watcher) Watch(ctx context.Context, id int64, r *etcdserverpb.WatchCrea
 	var sendErr error
 	var progressTicker *time.Ticker
 	var progressC <-chan time.Time
+	progressState := newPeriodicProgressState()
 	if r.ProgressNotify {
 		interval := w.backend.WatchProgressNotifyInterval()
 		if interval <= 0 {
@@ -647,9 +666,15 @@ func (w *watcher) Watch(ctx context.Context, id int64, r *etcdserverpb.WatchCrea
 				// These events are now delivered; the watch is synced through the
 				// highest revision in this batch.
 				util.StoreMaxUint64(&wt.syncedRev, uint64(watchResponse.Header.Revision))
+				progressState.eventSent()
 			}
 		case <-progressC:
 			if sendErr != nil {
+				continue
+			}
+			if !progressState.tick() {
+				// Match etcd: an event proves progress, so suppress the next
+				// periodic response and rearm the watch for the following tick.
 				continue
 			}
 			// Report the revision actually delivered to this watch, never the

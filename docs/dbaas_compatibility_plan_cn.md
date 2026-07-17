@@ -971,6 +971,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `RequestTooLarge` 而非 transport `ResourceExhausted`。focused 连续 50 轮、相关 race 连续
   10 轮及 full/vet 通过；1 MiB 自定义上限下，旧 A57 稳定复现 `[2]/[false]` 对 reference
   `[1,1]/[true,false]`，三副本 TiKV/PD exact image `122c002bf172` 双端差分连续 20 轮通过。
+- **Watch A59 periodic progress elision（2026-07-17）**：对照
+  `/root/etcd/server/etcdserver/api/v3rpc/watch.go` 的 `sws.progress` 状态机：启用
+  `ProgressNotify` 的 watch 在发送 event 后将 eligibility 置 false，下一次 ticker 仅重新
+  arm 而不发送冗余 progress，再下一 tick 才对持续 quiet 的 watch 通知。KubeBrain 原先每个
+  tick 无条件发送。现每个 watch goroutine 维护同构状态，成功交付非空 event batch 后 suppress
+  exactly one tick；新增纯状态机单元测试覆盖 quiet/event/multi-event 序列，并以官方
+  client/v3 从首个 progress 对齐 tick，相隔 200ms 写入 watched key，验证 event 后 1200ms
+  无 progress、随后 1500ms 内恢复通知。旧 A58 exact image 在首个 post-event tick 稳定
+  复现冗余 progress；状态机单元连续 100 轮、相关 Watch pipeline race 连续 10 轮及
+  full/vet 通过，三副本 TiKV/PD exact image `dacfe140d352` 官方 client 场景连续 10 轮通过。
 
 ### P1：通用服务能力
 
