@@ -152,11 +152,11 @@ func (s *RPCServer) RangeStream(r *etcdserverpb.RangeRequest, rs etcdserverpb.KV
 	if !isDefaultRangeStreamOrdering(r) {
 		return status.Error(codes.Unimplemented, "RangeStream does not support custom sort orders")
 	}
-	// CountOnly and limited requests need Count/More semantics over the complete
-	// ordered range. Reuse the already-compatible unary implementation and wrap
-	// its bounded result as one stream message. Unlimited scans retain the
-	// partitioned, byte-bounded streaming path used by kube-apiserver.
-	if r.CountOnly || r.Limit > 0 {
+	// CountOnly has no KV payload to stream. Limited requests still use the
+	// scanner below: after sending Limit KVs, drain the pinned scan while only
+	// counting the remainder so Count/More stay exact without materializing a
+	// unary result.
+	if r.CountOnly {
 		resp, err := s.Range(ctx, proto.Clone(r).(*etcdserverpb.RangeRequest))
 		if err != nil {
 			return rangeStreamStatusErr(err)
@@ -192,10 +192,11 @@ func (s *RPCServer) RangeStream(r *etcdserverpb.RangeRequest, rs etcdserverpb.KV
 		return rangeStreamStatusErr(err)
 	}
 	var (
-		sentAny   bool
-		headerRev int64
-		chunks    int
-		count     int64
+		terminalSeen bool
+		headerRev    int64
+		chunks       int
+		sentCount    int64
+		totalCount   int64
 	)
 	for chunk := range ch {
 		if chunk.err != nil {
@@ -205,36 +206,53 @@ func (s *RPCServer) RangeStream(r *etcdserverpb.RangeRequest, rs etcdserverpb.KV
 			return status.Error(codes.Unavailable, chunk.err.Error())
 		}
 		headerRev = chunk.resp.Header.Revision
-		count += int64(len(chunk.resp.Kvs))
+		terminal := len(chunk.resp.Kvs) == 0
+		if terminal {
+			terminalSeen = true
+		}
+		totalCount += int64(len(chunk.resp.Kvs))
 		// Scanner.More is an internal "another scanner chunk follows" marker.
 		// etcd's wire More means the client Limit truncated the requested range;
 		// an unlimited stream therefore reports false on every chunk. The terminal
 		// header-only response carries the merged response's total Count.
 		chunk.resp.More = false
-		if len(chunk.resp.Kvs) == 0 {
-			chunk.resp.Count = count
+		if terminal {
+			chunk.resp.Count = totalCount
+			chunk.resp.More = r.Limit > 0 && totalCount > sentCount
+		} else if r.Limit > 0 {
+			remaining := r.Limit - sentCount
+			switch {
+			case remaining <= 0:
+				chunk.resp.Kvs = nil
+			case int64(len(chunk.resp.Kvs)) > remaining:
+				chunk.resp.Kvs = chunk.resp.Kvs[:remaining]
+			}
 		}
+		if !terminal && len(chunk.resp.Kvs) == 0 {
+			// The limit was already satisfied; drain this scanner chunk only to
+			// compute the terminal Count/More without retaining or sending it.
+			continue
+		}
+		sentCount += int64(len(chunk.resp.Kvs))
 		if r.KeysOnly {
 			for _, kv := range chunk.resp.Kvs {
 				kv.Value = nil
 			}
 		}
-		final := len(chunk.resp.Kvs) == 0
-		for _, response := range splitRangeStreamResponse(chunk.resp, int(s.maxRequestBytes), final) {
+		for _, response := range splitRangeStreamResponse(chunk.resp, int(s.maxRequestBytes), terminal) {
 			if err := rs.Send(response); err != nil {
 				s.metricCli.EmitCounter("read.range_stream.send_err", 1)
 				return err
 			}
 			chunks++
 		}
-		sentAny = true
 	}
-	if !sentAny {
-		// The channel closed without any chunk — the client's context was canceled
-		// before even the terminal header chunk (disconnect). Nothing to complete.
+	if !terminalSeen {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+		s.metricCli.EmitCounter("read.range_stream.err", 1)
+		return status.Error(codes.Unavailable, "range stream ended without terminal metadata")
 	}
 	if err := s.ensureAuthRevision(ctx, caller); err != nil {
 		return err

@@ -43,6 +43,32 @@ type fakeRangeStreamServer struct {
 	sent []*etcdserverpb.RangeStreamResponse
 }
 
+type listCountingBackendShim struct {
+	BackendShim
+	listCalls int
+}
+
+type prematureRangeStreamBackendShim struct {
+	BackendShim
+}
+
+func (b *prematureRangeStreamBackendShim) RangeStreamChan(
+	context.Context, []byte, []byte, uint64,
+) (<-chan rangeStreamChunk, error) {
+	ch := make(chan rangeStreamChunk, 1)
+	ch <- rangeStreamChunk{resp: &etcdserverpb.RangeResponse{
+		Header: txnHeader(7),
+		Kvs:    []*mvccpb.KeyValue{{Key: []byte("/premature/key"), Value: []byte("value")}},
+	}}
+	close(ch)
+	return ch, nil
+}
+
+func (b *listCountingBackendShim) List(ctx context.Context, req *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
+	b.listCalls++
+	return b.BackendShim.List(ctx, req)
+}
+
 func (s *fakeRangeStreamServer) Send(resp *etcdserverpb.RangeStreamResponse) error {
 	s.sent = append(s.sent, resp)
 	return nil
@@ -326,9 +352,11 @@ func TestRangeStreamChunksRespectConfiguredMessageTarget(t *testing.T) {
 		require.Equal(t, fmt.Sprintf("/chunk-target/%02d", i), string(key))
 	}
 
+	tracked := &listCountingBackendShim{BackendShim: server.backend}
+	server.backend = tracked
 	limited := &fakeRangeStreamServer{ctx: ctx}
 	require.NoError(t, server.RangeStream(&etcdserverpb.RangeRequest{
-		Key: []byte("/chunk-target/"), RangeEnd: []byte("/chunk-target0"), Limit: 12,
+		Key: []byte("/chunk-target/"), RangeEnd: []byte("/chunk-target0"), Limit: 5,
 	}, limited))
 	require.Greater(t, len(limited.sent), 1,
 		"a bounded RangeStream must not collapse a large result into one message")
@@ -344,7 +372,25 @@ func TestRangeStreamChunksRespectConfiguredMessageTarget(t *testing.T) {
 	}
 	require.NotNil(t, limited.sent[len(limited.sent)-1].RangeResponse.Header)
 	require.EqualValues(t, 12, limited.sent[len(limited.sent)-1].RangeResponse.Count)
-	require.Equal(t, 12, limitedKeys)
+	require.True(t, limited.sent[len(limited.sent)-1].RangeResponse.More)
+	require.Equal(t, 5, limitedKeys)
+	require.Zero(t, tracked.listCalls,
+		"bounded RangeStream must not materialize a unary List response")
+}
+
+func TestRangeStreamRejectsPrematureBackendClose(t *testing.T) {
+	server, cleanup := newRangeStreamTestServer(t)
+	defer cleanup()
+	server.backend = &prematureRangeStreamBackendShim{BackendShim: server.backend}
+
+	stream := &fakeRangeStreamServer{ctx: context.Background()}
+	err := server.RangeStream(&etcdserverpb.RangeRequest{
+		Key: []byte("/premature/"), RangeEnd: []byte("/premature0"),
+	}, stream)
+	require.Equal(t, codes.Unavailable, status.Code(err))
+	require.Equal(t, "range stream ended without terminal metadata", status.Convert(err).Message())
+	require.Len(t, stream.sent, 1,
+		"the partial chunk may already be on the wire, but the terminal status must invalidate it")
 }
 
 // TestWatchNegativeStartRevisionCanceledInStream pins the black-magic retirement: a

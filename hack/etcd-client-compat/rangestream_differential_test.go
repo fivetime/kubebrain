@@ -33,7 +33,7 @@ func TestRangeStreamProductionChunkTarget(t *testing.T) {
 	defer cancel()
 
 	prefix := fmt.Sprintf("/dbaas-rangestream-chunks/%d/", time.Now().UnixNano())
-	for i := 0; i < 8; i++ {
+	for i := 0; i < 9; i++ {
 		value := make([]byte, 320*1024)
 		value[0] = byte(i)
 		_, err = cli.Put(ctx, fmt.Sprintf("%s%02d", prefix, i), string(value))
@@ -45,12 +45,13 @@ func TestRangeStreamProductionChunkTarget(t *testing.T) {
 		_, _ = cli.Delete(cleanupCtx, prefix, clientv3.WithPrefix())
 	}()
 
-	check := func(opts ...clientv3.OpOption) {
+	check := func(wantKVs, wantCount int, wantMore bool, opts ...clientv3.OpOption) {
 		stream, streamErr := cli.GetStream(ctx, prefix,
 			append([]clientv3.OpOption{clientv3.WithPrefix()}, opts...)...)
 		require.NoError(t, streamErr)
 		count := 0
 		chunks := 0
+		var final *etcdserverpb.RangeResponse
 		for chunk := range stream {
 			require.NoError(t, chunk.Err())
 			require.NotNil(t, chunk.RangeResponse)
@@ -58,13 +59,19 @@ func TestRangeStreamProductionChunkTarget(t *testing.T) {
 			require.LessOrEqual(t, proto.Size(wire), 1572864)
 			count += len(chunk.Kvs)
 			chunks++
+			if chunk.Header != nil {
+				final = chunk.RangeResponse
+			}
 		}
-		require.Equal(t, 8, count)
+		require.Equal(t, wantKVs, count)
 		require.Greater(t, chunks, 1)
+		require.NotNil(t, final)
+		require.EqualValues(t, wantCount, final.Count)
+		require.Equal(t, wantMore, final.More)
 	}
 
-	check()
-	check(clientv3.WithLimit(8))
+	check(9, 9, false)
+	check(8, 9, true, clientv3.WithLimit(8))
 }
 
 // TestRangeStreamDifferentialAgainstReferenceEtcd drives the public 3.7

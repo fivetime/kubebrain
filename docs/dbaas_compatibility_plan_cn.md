@@ -1716,6 +1716,31 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Ready、zero restart，无 RangeStream failure/Panic/Fatal，endpoint health 约 60ms。
   containerd 运行时 exact image
   `ca22cca67771b25e78f4835119923009d8bbcdd19530a826d2526fb5c9ed7cb3`。
+- **RangeStream A103 bounded scan without unary materialization
+  （2026-07-17）**：A102 对齐 wire chunk 后继续审计发现，`Limit>0` 分支仍先调用
+  unary `Range/List` 物化全部返回 KVs，再把结果切成多个消息；网络块虽受限，服务端
+  峰值内存仍随 Limit/对象大小增长，违背 etcd 3.7 RangeStream 为大 LIST 限制内存的
+  核心目的。对照 `/root/etcd/server/etcdserver/v3_server.go:rangeStream` 到达 limit
+  后对剩余范围计数的方式，现 bounded 请求也直接进入 pinned partition scanner：
+  只发送前 Limit 个有序 KV，后续 scanner chunk 立即丢弃 value 引用并仅累计键数，
+  最终 header-only chunk 返回同一 revision 的精确总 Count，以及
+  `More=(total>sent)`。因此内存始终受 scanner worker/buffer/chunk 上限约束，不依赖
+  count-index 是否 ready，也不产生第二个 revision 窗口。`CountOnly` 因无 KV payload
+  继续走专用精确 Count。完成条件同时改为必须观察到 scanner terminal marker；若后端
+  在已发送部分 KVs 后提前关闭 channel，则返回 Unavailable 使 client/v3 丢弃部分结果，
+  不再因“曾发送过数据”而误报成功。
+
+  确定性回归固定 12 键、Limit=5，验证只返回 5 键、Count=12、More=true、terminal
+  metadata 唯一，且 instrumentation 证明 unary `List` 调用次数为 0；提前关闭回归
+  固定部分数据后无 terminal 必须返回 Unavailable。RangeStream focused 普通 50 轮、
+  race 10 轮、full test、完整 server race 与 full vet 全通过。
+  三副本 KubeBrain + 独立 TiKV/PD 上用 9 个约 320KiB value 验证约 2.8MiB 结果集：
+  unlimited 为 9/Count=9/More=false，Limit=8 为 8/Count=9/More=true，两条路径连续
+  5 轮通过且每个 wire chunk 不超过 production 1.5MiB。对本机 reference etcd 的
+  五类 RangeStream 差分再连续 5 轮通过。最终三个 Pod Ready、zero restart，无
+  RangeStream failure/Panic/Fatal，endpoint health 约 47ms。containerd 运行时
+  exact image
+  `4db3cea1825122acf0924f597620373c6b9c45c74ffb4c9938638f5c4754d8f1`。
 
 ### P1：通用服务能力
 
