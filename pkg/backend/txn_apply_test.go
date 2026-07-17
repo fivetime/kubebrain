@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -30,6 +31,67 @@ import (
 	"github.com/kubewharf/kubebrain/pkg/storage"
 	imemkv "github.com/kubewharf/kubebrain/pkg/storage/memkv"
 )
+
+type commitThenUncertainStorage struct {
+	storage.KvStorage
+	trigger                 atomic.Bool
+	failReadsAfterUncertain int32
+	remainingReadFailures   atomic.Int32
+}
+
+func (s *commitThenUncertainStorage) BeginBatchWrite() storage.BatchWrite {
+	return &commitThenUncertainBatch{BatchWrite: s.KvStorage.BeginBatchWrite(), storage: s}
+}
+
+func (s *commitThenUncertainStorage) Get(ctx context.Context, key []byte) ([]byte, error) {
+	for {
+		remaining := s.remainingReadFailures.Load()
+		if remaining == 0 {
+			return s.KvStorage.Get(ctx, key)
+		}
+		if s.remainingReadFailures.CompareAndSwap(remaining, remaining-1) {
+			return nil, storage.ErrUnavailable
+		}
+	}
+}
+
+type commitThenUncertainBatch struct {
+	storage.BatchWrite
+	storage *commitThenUncertainStorage
+}
+
+func (b *commitThenUncertainBatch) Commit(ctx context.Context) error {
+	uncertain := b.storage.trigger.CompareAndSwap(true, false)
+	err := b.BatchWrite.Commit(ctx)
+	if err == nil && uncertain {
+		b.storage.remainingReadFailures.Store(b.storage.failReadsAfterUncertain)
+		return storage.NewErrUncertainResult(context.DeadlineExceeded)
+	}
+	return err
+}
+
+type uncommittedUncertainStorage struct {
+	storage.KvStorage
+	trigger atomic.Bool
+}
+
+func (s *uncommittedUncertainStorage) BeginBatchWrite() storage.BatchWrite {
+	if s.trigger.CompareAndSwap(true, false) {
+		return uncertainNoopBatch{}
+	}
+	return s.KvStorage.BeginBatchWrite()
+}
+
+type uncertainNoopBatch struct{}
+
+func (uncertainNoopBatch) PutIfNotExist([]byte, []byte, int64) {}
+func (uncertainNoopBatch) CAS([]byte, []byte, []byte, int64)   {}
+func (uncertainNoopBatch) Put([]byte, []byte, int64)           {}
+func (uncertainNoopBatch) Del([]byte)                          {}
+func (uncertainNoopBatch) DelCurrent(storage.Iter)             {}
+func (uncertainNoopBatch) Commit(context.Context) error {
+	return storage.NewErrUncertainResult(context.DeadlineExceeded)
+}
 
 func newTxnApplyBackend(t *testing.T) (*backend, context.Context) {
 	ctrl := gomock.NewController(t)
@@ -102,6 +164,99 @@ func TestTxnApplySingleRevisionAtomic(t *testing.T) {
 	require.Equal(t, rev, r)
 	v, _ = liveValue(t, b, ctx, del)
 	require.Equal(t, "", v, "deleted key must be gone")
+}
+
+func TestTxnApplyCommittedUncertainResultResolvesAsOneTransaction(t *testing.T) {
+	defaultRetryInterval, defaultCheckInterval := retryInterval, checkInterval
+	retryInterval, checkInterval = 10*time.Millisecond, 10*time.Millisecond
+	defer func() { retryInterval, checkInterval = defaultRetryInterval, defaultCheckInterval }()
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	metrics := mock.NewMinimalMetrics(ctrl)
+	mem := imemkv.NewKvStorage()
+	defer func() { require.NoError(t, mem.Close()) }()
+	store := &commitThenUncertainStorage{KvStorage: mem, failReadsAfterUncertain: 3}
+	b := NewBackend(store, Config{
+		Prefix: prefix, Identity: getStorageIdentity(), EnableEtcdCompatibility: true,
+	}, metrics).(*backend)
+	b.SetCurrentRevision(uint64(time.Now().UnixNano()))
+	ctx := context.Background()
+	left := []byte(prefix + "/txn-uncertain/left")
+	right := []byte(prefix + "/txn-uncertain/right")
+
+	store.trigger.Store(true)
+	_, revision, err := b.TxnApply(ctx, []TxnWriteOp{
+		{Key: left, Value: []byte("left")},
+		{Key: right, Value: []byte("right")},
+	}, nil)
+	require.ErrorIs(t, err, storage.ErrUncertainResult)
+	require.NotZero(t, revision)
+	require.Eventually(t, func() bool {
+		return b.GetCurrentRevision() >= revision
+	}, 2*time.Second, time.Millisecond, "whole-txn resolver did not publish the committed revision")
+
+	leftValue, leftRevision := liveValue(t, b, ctx, left)
+	rightValue, rightRevision := liveValue(t, b, ctx, right)
+	require.Equal(t, "left", leftValue)
+	require.Equal(t, "right", rightValue)
+	require.Equal(t, revision, leftRevision)
+	require.Equal(t, revision, rightRevision)
+
+	// Wait well past the shortened legacy single-key retry interval. The old
+	// path rewrote each key independently here, producing two newer revisions.
+	time.Sleep(100 * time.Millisecond)
+	_, leftRevision = liveValue(t, b, ctx, left)
+	_, rightRevision = liveValue(t, b, ctx, right)
+	require.Equal(t, revision, leftRevision)
+	require.Equal(t, revision, rightRevision)
+
+	events := getEventsFromRev(ctx, b, revision, 2)
+	require.Len(t, events, 2)
+	require.Equal(t, revision, events[0].Kv.Revision)
+	require.Equal(t, revision, events[1].Kv.Revision)
+}
+
+func TestTxnApplyUncommittedUncertainResultSkipsAsOneTransaction(t *testing.T) {
+	defaultRetryInterval, defaultCheckInterval := retryInterval, checkInterval
+	retryInterval, checkInterval = 10*time.Millisecond, 10*time.Millisecond
+	defer func() { retryInterval, checkInterval = defaultRetryInterval, defaultCheckInterval }()
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	metrics := mock.NewMinimalMetrics(ctrl)
+	mem := imemkv.NewKvStorage()
+	defer func() { require.NoError(t, mem.Close()) }()
+	store := &uncommittedUncertainStorage{KvStorage: mem}
+	b := NewBackend(store, Config{
+		Prefix: prefix, Identity: getStorageIdentity(), EnableEtcdCompatibility: true,
+	}, metrics).(*backend)
+	b.SetCurrentRevision(uint64(time.Now().UnixNano()))
+	ctx := context.Background()
+	left := []byte(prefix + "/txn-uncertain-not-committed/left")
+	right := []byte(prefix + "/txn-uncertain-not-committed/right")
+
+	store.trigger.Store(true)
+	_, revision, err := b.TxnApply(ctx, []TxnWriteOp{
+		{Key: left, Value: []byte("left")},
+		{Key: right, Value: []byte("right")},
+	}, nil)
+	require.ErrorIs(t, err, storage.ErrUncertainResult)
+	require.Eventually(t, func() bool {
+		return b.GetCurrentRevision() >= revision
+	}, time.Second, time.Millisecond, "whole-txn resolver did not skip the uncommitted revision")
+	leftValue, leftRevision := liveValue(t, b, ctx, left)
+	rightValue, rightRevision := liveValue(t, b, ctx, right)
+	require.Empty(t, leftValue)
+	require.Empty(t, rightValue)
+	require.Zero(t, leftRevision)
+	require.Zero(t, rightRevision)
+
+	time.Sleep(100 * time.Millisecond)
+	_, leftRevision = liveValue(t, b, ctx, left)
+	_, rightRevision = liveValue(t, b, ctx, right)
+	require.Zero(t, leftRevision)
+	require.Zero(t, rightRevision)
 }
 
 // TestTxnApplyRecreateOverTombstone verifies a put on a previously-deleted key

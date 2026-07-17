@@ -1190,6 +1190,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   snapshot、123 次成功续租、367 次预期鉴权拒绝和 70 个保护绑定周期，无泄露、死锁
   或停滞。相邻 KeepAlive/revoke/TTL 回归连续 3 轮通过；最终 auth disabled、临时
   principal 清理、lease list=0，部署 3/3 ready、zero restart。
+- **Txn A74 uncertain commit atomic resolution（2026-07-17）**：TiKV
+  `ErrResultUndetermined` 会映射为 `storage.ErrUncertainResult`。原 `TxnApply` 将一笔
+  多键事务的 invalid events 逐键送入 async FIFO；若原 TiKV batch 实际已提交，队列会
+  以不同的新 revision 重写各键，破坏事务原子性。pre-fix `50c94f6` 的确定性存储注入
+  稳定复现两个键分别变为 original+1 等后续 revision。现 uncertain 多键事务不再进入
+  单键修复队列，而是读取与用户 mutation 同批原子写入的 event-log marker：全部存在即
+  按原 revision 一次发布整批 watch events，全部不存在即一次跳过该 revision，mixed
+  或暂时性读取错误则以 100ms 到 1s 的有界指数退避重试整笔事务，不猜测结果。
+  committed/not-committed 两条确定性路径均覆盖，其中 committed 路径先注入 3 次
+  `ErrUnavailable`；聚焦普通测试 100 轮、race 20 轮以及 full/race/vet 全部通过。
+  三副本 KubeBrain + 独立 TiKV/PD exact image
+  `cdb642a82cc0ad3f950375a13577bf9aba2253772c0a75f629b04f40095d3f08`
+  上，无故障 Porcupine 多键历史连续 5 轮通过；两次删除唯一 TiKV Pod 分别产生 3 和
+  2 个 ambiguous Txn 结果，两次完整历史均为 `Ok`。相邻五类事务原子性、staged view
+  与 version 语义黑盒各连续 10 轮通过；最终 TiKV 与部署均恢复 Ready。第二轮故障中
+  active leader 超过 5s renew deadline 后按既有 watch-cache self-fence 策略 exit 255，
+  Kubernetes 重建 1 次，非探针失败或事务 resolver 崩溃。
 
 ### P1：通用服务能力
 

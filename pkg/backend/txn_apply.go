@@ -34,6 +34,8 @@ import (
 // chosen branch may have flipped) and retry.
 var ErrTxnGuardConflict = errors.New("txn compare guard conflict")
 
+var errTxnResolvedNotCommitted = errors.New("uncertain txn resolved as not committed")
+
 // TxnWriteOp is one write in a transaction: a Put (Delete=false) or a
 // single-key Delete. Value is the raw (un-enveloped) put value.
 type TxnWriteOp struct {
@@ -422,6 +424,17 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 
 	// Phase 4: atomic commit.
 	if cerr := b.commitUserBatch(ctx, batch); cerr != nil {
+		if errors.Is(cerr, storage.ErrUncertainResult) && txnHasEffectiveUserWrite(preps) {
+			// A multi-key txn must never enter the single-key uncertain retry
+			// queue: if the original batch committed, that queue would rewrite
+			// each key at a separate revision and expose torn transaction state.
+			// Event-log records were staged in the same atomic batch, so resolve
+			// the whole outcome from those durable markers and publish once.
+			go b.resolveUncertainTxn(preps, newRevision)
+			klog.ErrorS(cerr, "txn apply commit result uncertain; resolving as one transaction",
+				"revision", newRevision, "ops", len(ops))
+			return nil, newRevision, false, cerr
+		}
 		b.notifyInvalidTxn(preps, newRevision, cerr)
 		if errors.Is(cerr, storage.ErrCASFailed) {
 			// Distinguish a compare-guard conflict (the caller must re-evaluate the
@@ -488,6 +501,110 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 	b.notifyBatch(events)
 	b.waitCommittedRevision(ctx, newRevision) // apply-then-ack (#35)
 	return results, newRevision, false, nil
+}
+
+func txnHasEffectiveUserWrite(preps []txnPrep) bool {
+	for i := range preps {
+		if preps[i].effective && !preps[i].op.Internal {
+			return true
+		}
+	}
+	return false
+}
+
+func (b *backend) resolveUncertainTxn(preps []txnPrep, revision uint64) {
+	retryDelay := 100 * time.Millisecond
+	for {
+		ctx, cancel := context.WithTimeout(context.Background(), unaryRpcTimeout)
+		committed, err := b.txnCommitRecorded(ctx, preps, revision)
+		cancel()
+		if err != nil {
+			b.metricCli.EmitCounter("txn.uncertain.resolve.retry", 1)
+			klog.ErrorS(err, "failed to resolve uncertain txn; retrying whole transaction",
+				"revision", revision, "retryAfter", retryDelay)
+			time.Sleep(retryDelay)
+			if retryDelay < time.Second {
+				retryDelay *= 2
+				if retryDelay > time.Second {
+					retryDelay = time.Second
+				}
+			}
+			continue
+		}
+		if committed {
+			klog.InfoS("resolved uncertain txn as committed", "revision", revision)
+			b.notifyBatch(b.txnWatchEvents(preps, revision))
+			b.metricCli.EmitCounter("txn.uncertain.resolve.committed", 1)
+			return
+		}
+		// Use a definite marker so the collector advances without feeding these
+		// events into the single-key repair queue.
+		klog.InfoS("resolved uncertain txn as not committed", "revision", revision)
+		b.notifyInvalidTxn(preps, revision, errTxnResolvedNotCommitted)
+		b.metricCli.EmitCounter("txn.uncertain.resolve.not_committed", 1)
+		return
+	}
+}
+
+// txnCommitRecorded checks event-log records written atomically with every
+// effective user mutation. All present means the transaction committed; none
+// means it did not. A mixed result contradicts TiKV batch atomicity and is
+// retried rather than guessed.
+func (b *backend) txnCommitRecorded(ctx context.Context, preps []txnPrep, revision uint64) (bool, error) {
+	expected, found := 0, 0
+	for i := range preps {
+		p := &preps[i]
+		if !p.effective || p.op.Internal {
+			continue
+		}
+		expected++
+		_, err := b.kv.Get(ctx, b.ks.EncodeEventLogKey(revision, p.op.Key))
+		switch {
+		case err == nil:
+			found++
+		case errors.Is(err, storage.ErrKeyNotFound):
+		default:
+			return false, err
+		}
+	}
+	switch {
+	case expected == 0:
+		return false, errors.New("uncertain txn has no user event markers")
+	case found == expected:
+		return true, nil
+	case found == 0:
+		return false, nil
+	default:
+		return false, fmt.Errorf("uncertain txn has mixed event markers: found %d of %d at revision %d",
+			found, expected, revision)
+	}
+}
+
+func (b *backend) txnWatchEvents(preps []txnPrep, revision uint64) []*common.WatchEvent {
+	events := make([]*common.WatchEvent, 0, len(preps))
+	for i := range preps {
+		p := &preps[i]
+		if !p.effective || p.op.Internal {
+			continue
+		}
+		verb := proto.Event_PUT
+		value := b.eventValue(p.op.Value, p.meta, nil)
+		if p.op.Delete {
+			verb = proto.Event_DELETE
+			value = p.prevValue
+		} else if p.create {
+			verb = proto.Event_CREATE
+		}
+		events = append(events, &common.WatchEvent{
+			Revision:     revision,
+			PrevRevision: p.curRev,
+			Valid:        true,
+			ResourceVerb: verb,
+			Key:          p.op.Key,
+			Value:        value,
+		})
+	}
+	return events
 }
 
 // txnConflictIsGuard reports whether a commit CAS failure was on a compare-guard

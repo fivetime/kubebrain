@@ -8,6 +8,9 @@ Tier 1 和 Tier 2 均已实现，本文件后续“现状与缺陷”记录的�
 - 单键 compare 生成“精确 revision / 仍不存在” OCC guard；range compare 通过 `BeginRangeTxn` 写屏障排除扫描后的 phantom insert。
 - `stagedTxnExecutor` 在固定 `baseRev` 上构造事务内有序视图，支持 Range、range delete、`IgnoreValue`、`IgnoreLease` 和 nested txn，最后将每键最终状态一次提交。
 - etcd 的重复 put、put/delete 区间重叠等非法形状在执行前拒绝；不再依赖非原子顺序执行来处理合法的多操作事务。
+- TiKV 返回不确定提交结果时，以同批 event-log marker 解析整笔事务的 committed/not-committed
+  状态；不会再把多键事务拆入单键异步修复队列。解析期间 collector 保持 revision 顺序，
+  committed 结果按原 revision 发布完整事件批，not-committed 结果原子跳过。
 
 验证证据：
 
@@ -60,4 +63,7 @@ etcd 层 `executeGenericTxn` 改为：评估 compare 选分支 → 收集该分�
 
 ## 剩余验证边界
 
-事务实现不再有已知语义缺口。DBaaS 上线门槛仍应包含多副本 leader 故障发生在高并发通用 txn 中途的黑盒测试，以及 TiKV uncertain commit 注入；它们验证故障恢复和 ACK 边界，不改变本文件已实现的事务模型。
+事务实现不再有已知语义缺口。TiKV uncertain commit 的 committed/not-committed
+确定性注入、多副本环境下两轮 TiKV Pod 删除，以及可表达 ambiguous RPC 的 Porcupine
+多键历史已通过。后续生产演练仍需在多 store/多 PD、跨可用区网络分区和多点故障拓扑
+持续扩大覆盖；这些验证 ACK 边界和运维拓扑，不改变本文件已实现的事务模型。
