@@ -530,6 +530,10 @@ func TestExpiryKeepsLeaseAndRecordWhenKeyDeleteFails(t *testing.T) {
 	// Make deletes of `survivor` fail, then run expiry.
 	shim := &failDeleteShim{BackendShim: server.backend, failKey: survivor, fail: true}
 	server.backend = shim
+	server.leaseMu.Lock()
+	server.leases[leaseID].timer.Stop()
+	server.leases[leaseID].deadline = time.Now().Add(-time.Second)
+	server.leaseMu.Unlock()
 	server.expireLease(leaseID)
 
 	// The lease must NOT have been removed: its record still exists and it is still
@@ -538,7 +542,7 @@ func TestExpiryKeepsLeaseAndRecordWhenKeyDeleteFails(t *testing.T) {
 	require.NoError(t, err)
 	ttlResp, err := server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: leaseID, Keys: true})
 	require.NoError(t, err)
-	require.Greater(t, ttlResp.TTL, int64(0), "lease must still be alive after a failed expiry")
+	require.Zero(t, ttlResp.TTL, "failed revoke keeps the expired lease pending for retry")
 	require.Len(t, ttlResp.Keys, 2, "no key may be unbound when expiry did not complete")
 
 	// Now let deletes succeed; a re-run finishes expiry cleanly.

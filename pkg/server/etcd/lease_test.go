@@ -313,6 +313,60 @@ func TestLeaseKeepAliveUnknownLeaseMatchesEtcd(t *testing.T) {
 	require.Equal(t, int64(server.backend.GetCurrentRevision()), stream.sent[0].Header.Revision)
 }
 
+func TestLeaseKeepAliveCannotResurrectExpiredLease(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	const leaseID int64 = 10000
+	_, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 30, ID: leaseID})
+	require.NoError(t, err)
+
+	server.leaseMu.Lock()
+	st := server.leases[leaseID]
+	require.NotNil(t, st)
+	st.timer.Stop()
+	st.deadline = time.Now().Add(-time.Second)
+	server.leaseMu.Unlock()
+
+	stream := &fakeLeaseKeepAliveServer{
+		requests: []*etcdserverpb.LeaseKeepAliveRequest{{ID: leaseID}},
+	}
+	require.NoError(t, server.LeaseKeepAlive(stream))
+	require.Len(t, stream.sent, 1)
+	require.Zero(t, stream.sent[0].TTL, "expired lease must not be renewed before delayed revoke runs")
+
+	server.leaseMu.Lock()
+	require.False(t, server.leases[leaseID].deadline.After(time.Now()))
+	server.leaseMu.Unlock()
+	server.expireLease(leaseID)
+	ttl, err := server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: leaseID})
+	require.NoError(t, err)
+	require.Equal(t, int64(-1), ttl.TTL)
+}
+
+func TestStaleExpiryCallbackDoesNotRevokeRenewedLease(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	const leaseID int64 = 10002
+	_, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 30, ID: leaseID})
+	require.NoError(t, err)
+
+	server.leaseMu.Lock()
+	st := server.leases[leaseID]
+	require.NotNil(t, st)
+	st.deadline = time.Now().Add(30 * time.Second)
+	server.leaseMu.Unlock()
+
+	// Model a timer callback that was queued before a successful keepalive reset
+	// the timer. The callback must observe the new deadline and stand down.
+	server.expireLease(leaseID)
+	ttl, err := server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: leaseID})
+	require.NoError(t, err)
+	require.Positive(t, ttl.TTL)
+	require.Equal(t, int64(30), ttl.GrantedTTL)
+}
+
 func TestLeaseKeepAliveCapturesRevisionBeforeRenewal(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

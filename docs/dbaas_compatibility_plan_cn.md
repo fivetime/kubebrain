@@ -1062,6 +1062,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   TTL=-1。atomic focused 连续 100 轮、timer-heavy focused 连续 50 轮、focused race 连续
   100 轮及 full/race/vet 通过；三副本 TiKV/PD exact image `133c27c01042` 为 3/3 ready、
   zero restart，atomic revoke、signed-ID lifecycle 与 TTL boundary 联合场景连续 20 轮通过。
+- **Lease A66 renew/expiry deadline fence（2026-07-17）**：对照 etcd
+  `server/lease/lessor.go:Lessor.Renew` 对 `l.expired()` 的检查及等待 revoke 完成的语义，
+  发现 KubeBrain 有两个互补竞态：timer callback 已到期但尚未执行时，keepalive 会无条件把
+  past deadline 推后，从而复活已过期 lease；反向地，`time.Timer.Reset` 无法撤回已经开始的
+  callback，成功 keepalive 后 stale callback 仍会无条件删除刚续期的 lease/key。现
+  `refreshLease` 与 revoke/expiry 通过 `leaseWriteMu` shared/exclusive 排序，并在锁内拒绝
+  `deadline <= now`；`expireLease` 取得 exclusive lock 后重新检查 deadline，若 keepalive
+  已推进则重新 arm timer 并退出。确定性测试分别把 deadline 置于过去后延迟 callback，要求
+  keepalive 返回 TTL=0 且不能推进 deadline；以及直接模拟已排队 callback，要求 renewed lease
+  保持存活。原 expiry storage-failure test 也改为显式 past deadline，确认失败时 expired
+  lease 以 TTL=0 和完整 bindings 等待 retry。官方 client/v3 黑盒测试等待 2s lease 进入仍
+  live 的 final-subsecond `TTL=0`，续期后越过原 deadline 再验证 lease/key，避免把 TTL
+  truncation 错当 expiry。focused 连续 100 轮、focused race 连续 100 轮及 full/race/vet
+  通过；三副本 TiKV/PD exact image `b565fb3b9bbe` 为 3/3 ready、zero restart，renew-boundary、
+  atomic revoke、signed-ID lifecycle 与 TTL boundary 联合场景连续 20 轮通过。
 
 ### P1：通用服务能力
 

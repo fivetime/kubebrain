@@ -569,13 +569,26 @@ func (m *leaseManager) leaseIDForKey(key string) int64 {
 }
 
 func (m *leaseManager) refreshLease(id int64) (int64, error) {
+	// Serialize against revoke/expiry. In particular, an expiry callback that
+	// already won the exclusive lock must finish before this renewal, while a
+	// successful renewal prevents expiry from observing the old deadline.
+	m.leaseWriteMu.RLock()
+	defer m.leaseWriteMu.RUnlock()
+
 	m.leaseMu.Lock()
 	st, ok := m.leases[id]
 	if !ok {
 		m.leaseMu.Unlock()
 		return 0, leaseNotFound(id)
 	}
-	st.deadline = time.Now().Add(time.Duration(st.ttl) * time.Second)
+	now := time.Now()
+	// Match etcd lessor.Renew: a lease whose deadline has passed cannot be
+	// resurrected merely because its asynchronous revoke callback was delayed.
+	if !st.deadline.After(now) {
+		m.leaseMu.Unlock()
+		return 0, leaseNotFound(id)
+	}
+	st.deadline = now.Add(time.Duration(st.ttl) * time.Second)
 	m.scheduleLeaseLocked(st)
 	ttl := st.ttl
 	m.leaseMu.Unlock()
@@ -707,6 +720,22 @@ func (m *leaseManager) revokeLeaseLocked(ctx context.Context, id int64) (uint64,
 func (m *leaseManager) expireLease(id int64) {
 	m.leaseWriteMu.Lock()
 	defer m.leaseWriteMu.Unlock()
+
+	// time.Timer.Reset cannot prevent a callback that has already started.
+	// Recheck under the same operation lock used by refreshLease so a stale
+	// callback never revokes a lease whose keepalive moved the deadline forward.
+	m.leaseMu.Lock()
+	st, ok := m.leases[id]
+	if !ok {
+		m.leaseMu.Unlock()
+		return
+	}
+	if st.deadline.After(time.Now()) {
+		m.scheduleLeaseLocked(st)
+		m.leaseMu.Unlock()
+		return
+	}
+	m.leaseMu.Unlock()
 
 	epoch, leadingFresh := m.srv.peers.EpochAndLeadingFresh()
 	if !leadingFresh {
