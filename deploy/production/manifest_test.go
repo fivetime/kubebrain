@@ -58,6 +58,7 @@ func TestProductionManifestsProvideStableCompleteMembership(t *testing.T) {
 			require.True(t, found)
 			require.Contains(t, args, "--advertise-host=$(POD_NAME).kubebrain-peer.kubebrain-system.svc")
 			require.Contains(t, args, "--initial-cluster="+expectedInitialCluster(tc.scheme))
+			require.Contains(t, args, "--max-requests-inflight=1024")
 
 			env, found, err := unstructured.NestedSlice(container, "env")
 			require.NoError(t, err)

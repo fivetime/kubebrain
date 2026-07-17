@@ -56,9 +56,13 @@ type Config struct {
 
 	MaxTxnOps       uint
 	MaxRequestBytes uint
-	AuthToken       string
-	BcryptCost      uint
-	AuthTokenTTL    uint
+	// MaxRequestsInFlight limits concurrent public client RPCs per process.
+	// Zero preserves etcd's unlimited default. Peer RPCs are deliberately
+	// excluded so overload cannot block leader and revision coordination.
+	MaxRequestsInFlight uint32
+	AuthToken           string
+	BcryptCost          uint
+	AuthTokenTTL        uint
 
 	ClusterMembers []*etcdserverpb.Member
 }

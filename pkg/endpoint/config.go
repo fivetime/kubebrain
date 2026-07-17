@@ -99,6 +99,7 @@ type Config struct {
 	GRPCMaxConnectionAge      time.Duration
 	GRPCMaxConnectionAgeGrace time.Duration
 	MaxConcurrentStreams      uint32
+	MaxRequestsInFlight       uint32
 	GRPCKeepAliveMinTime      time.Duration
 	GRPCKeepAliveInterval     time.Duration
 	GRPCKeepAliveTimeout      time.Duration
@@ -150,6 +151,7 @@ func (c *Config) getServerConfig() server.Config {
 		RetryPeriod:         c.RetryPeriod,
 		MaxTxnOps:           c.MaxTxnOps,
 		MaxRequestBytes:     c.MaxRequestBytes,
+		MaxRequestsInFlight: c.MaxRequestsInFlight,
 		AuthToken:           c.AuthToken,
 		BcryptCost:          c.BcryptCost,
 		AuthTokenTTL:        c.AuthTokenTTL,

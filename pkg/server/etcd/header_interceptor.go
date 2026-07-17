@@ -23,6 +23,8 @@ import (
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/proto"
+
+	"github.com/kubewharf/kubebrain/pkg/metrics"
 )
 
 // ClientServerOptions returns client-facing gRPC admission and response options.
@@ -39,10 +41,64 @@ import (
 // local identity's id and ClusterId the storage cluster's id.
 func (s *RPCServer) ClientServerOptions() []grpc.ServerOption {
 	return []grpc.ServerOption{
+		grpc.ChainUnaryInterceptor(s.admitUnary, s.stampUnary),
+		grpc.ChainStreamInterceptor(s.admitStream, s.stampStream),
+		grpc.MaxRecvMsgSize(int(s.maxRequestBytes + grpcOverheadBytes)),
+	}
+}
+
+// PeerServerOptions keeps response identity and request-size behavior identical
+// on the peer listener, but reserves it from public-client overload admission.
+func (s *RPCServer) PeerServerOptions() []grpc.ServerOption {
+	return []grpc.ServerOption{
 		grpc.ChainUnaryInterceptor(s.stampUnary),
 		grpc.ChainStreamInterceptor(s.stampStream),
 		grpc.MaxRecvMsgSize(int(s.maxRequestBytes + grpcOverheadBytes)),
 	}
+}
+
+func (s *RPCServer) acquireRequest(method, kind string) bool {
+	limit := int64(s.maxRequestsInFlight)
+	if limit == 0 {
+		return true
+	}
+	s.admissionMu.Lock()
+	defer s.admissionMu.Unlock()
+	if s.requestsInFlight >= limit {
+		s.metricCli.EmitCounter("grpc.server.admission.rejected", 1,
+			metrics.Tag("method", method), metrics.Tag("kind", kind))
+		return false
+	}
+	s.requestsInFlight++
+	s.metricCli.EmitGauge("grpc.server.admission.inflight", s.requestsInFlight)
+	return true
+}
+
+func (s *RPCServer) releaseRequest() {
+	s.admissionMu.Lock()
+	defer s.admissionMu.Unlock()
+	s.requestsInFlight--
+	s.metricCli.EmitGauge("grpc.server.admission.inflight", s.requestsInFlight)
+}
+
+func (s *RPCServer) admitUnary(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+	if !s.acquireRequest(info.FullMethod, "unary") {
+		return nil, rpctypes.ErrGRPCRequestTooManyRequests
+	}
+	if s.maxRequestsInFlight != 0 {
+		defer s.releaseRequest()
+	}
+	return handler(ctx, req)
+}
+
+func (s *RPCServer) admitStream(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+	if !s.acquireRequest(info.FullMethod, "stream") {
+		return rpctypes.ErrGRPCRequestTooManyRequests
+	}
+	if s.maxRequestsInFlight != 0 {
+		defer s.releaseRequest()
+	}
+	return handler(srv, ss)
 }
 
 func (s *RPCServer) localMemberID() uint64 {

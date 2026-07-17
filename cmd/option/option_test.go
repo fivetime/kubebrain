@@ -53,6 +53,7 @@ func TestTLSFlagsBindToExpectedSecurityConfigFields(t *testing.T) {
 		"--grpc-max-connection-age=1h",
 		"--grpc-max-connection-age-grace=5m",
 		"--max-concurrent-streams=32",
+		"--max-requests-inflight=17",
 		"--grpc-keepalive-min-time=7s",
 		"--grpc-keepalive-interval=3m",
 		"--grpc-keepalive-timeout=11s",
@@ -88,6 +89,7 @@ func TestTLSFlagsBindToExpectedSecurityConfigFields(t *testing.T) {
 	require.Equal(t, time.Hour, o.epsConf.GRPCMaxConnectionAge)
 	require.Equal(t, 5*time.Minute, o.epsConf.GRPCMaxConnectionAgeGrace)
 	require.Equal(t, uint32(32), o.epsConf.MaxConcurrentStreams)
+	require.Equal(t, uint32(17), o.epsConf.MaxRequestsInFlight)
 	require.Equal(t, 7*time.Second, o.epsConf.GRPCKeepAliveMinTime)
 	require.Equal(t, 3*time.Minute, o.epsConf.GRPCKeepAliveInterval)
 	require.Equal(t, 11*time.Second, o.epsConf.GRPCKeepAliveTimeout)
@@ -101,6 +103,7 @@ func TestTLSFlagsBindToExpectedSecurityConfigFields(t *testing.T) {
 func TestTransportPolicyDefaultsMatchEtcd(t *testing.T) {
 	o := NewOptions()
 	require.Equal(t, ^uint32(0), o.epsConf.MaxConcurrentStreams)
+	require.Zero(t, o.epsConf.MaxRequestsInFlight)
 	require.Equal(t, 5*time.Second, o.epsConf.GRPCKeepAliveMinTime)
 	require.Equal(t, 2*time.Hour, o.epsConf.GRPCKeepAliveInterval)
 	require.Equal(t, 20*time.Second, o.epsConf.GRPCKeepAliveTimeout)

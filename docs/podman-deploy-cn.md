@@ -231,6 +231,7 @@ EOF
 | `--compatible-with-etcd=true`            | **必开。** 原生 apiserver 依赖它；同时它是 follower → leader 写转发的开关 |
 | `--max-txn-ops` / `--max-request-bytes`  | 每个 txn 的最大操作数与单请求 protobuf payload 上限；默认与 etcd 一致为 `128` / `1572864`，所有副本必须一致 |
 | `--max-concurrent-streams`               | 每条 client HTTP/2 连接可同时打开的 stream 数；默认 `4294967295` 与 etcd 一致，DBaaS 下调前必须计入 watch、lease keepalive 与普通 RPC |
+| `--max-requests-inflight`                | 每个 KubeBrain 进程公开 client 平面的并发 RPC 总数；默认 `0` 不限制，生产建议按 CPU/延迟压测设置（参考清单为 `1024`）。跨连接生效，超限返回 etcd 标准 `ResourceExhausted: too many requests`；peer 平面保留独立容量 |
 | `--grpc-keepalive-*`                     | client ping 最小间隔默认 `5s`；server ping interval/timeout 默认 `2h/20s`，对应项设 `0` 可禁用 |
 | `--auth-token` / `--auth-token-ttl`      | 当前仅支持 `simple`（默认），token TTL 默认 `300s`；`jwt,...` 会启动失败而非静默降级 |
 | `--bcrypt-cost`                          | 明文密码 bcrypt cost，默认 `10`；超出 bcrypt 允许范围时与 etcd 一样回退默认值 |
@@ -703,10 +704,11 @@ Volume=/etc/kubebrain/certs:/etc/kubebrain/certs:ro
 | 限额    | `--max-txn-ops`                         | 128     | txn 最大操作数（含嵌套预算）                    |
 | 限额    | `--max-request-bytes`                   | 1572864 | 单请求 protobuf payload 上限                    |
 | 限额    | `--max-concurrent-streams`              | 4294967295 | 每条 HTTP/2 连接的并发 stream 上限             |
+| 限额    | `--max-requests-inflight`               | 0       | 每进程 client RPC 总并发；0 不限制              |
 | gRPC    | `--grpc-keepalive-min-time`             | 5s      | client ping 最小间隔；0 关闭 enforcement        |
 | gRPC    | `--grpc-keepalive-interval`             | 2h      | server ping 周期；0 关闭 server ping            |
 | gRPC    | `--grpc-keepalive-timeout`              | 20s     | server 等待 ping ACK 时间；0 关闭 server ping   |
-| Auth    | `--auth-token`                          | simple  | token provider；JWT 尚不支持且会 fail loudly    |
+| Auth    | `--auth-token`                          | simple  | `simple` 或 etcd 兼容的 `jwt,...` token provider |
 | Auth    | `--auth-token-ttl`                      | 300     | token 有效期（秒）；0 回退 300                   |
 | Auth    | `--bcrypt-cost`                         | 10      | 新增/修改明文密码时的 bcrypt cost                |
 | GC      | `--storage-gc-lifetime`                 | 10m     | leader 推进 TiKV GC safepoint 的保留窗口。**0=关闭;裸 PD+TiKV 必须开**(无 TiDB 时它是唯一推进者) |

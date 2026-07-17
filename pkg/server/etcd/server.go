@@ -16,6 +16,7 @@ package etcd
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -84,6 +85,9 @@ type RPCServer struct {
 	clientCertAuth       bool
 	maxTxnOps            int
 	maxRequestBytes      uint
+	maxRequestsInFlight  uint32
+	admissionMu          sync.Mutex
+	requestsInFlight     int64
 
 	// The lease subsystem: its state and logic live in leaseManager (lease.go /
 	// lease_manager.go). Embedded so the lease gRPC handlers and the write-path
@@ -95,6 +99,12 @@ type RPCServer struct {
 // of a client certificate already verified by the gRPC TLS transport.
 func (s *RPCServer) SetClientCertAuth(enabled bool) {
 	s.clientCertAuth = enabled
+}
+
+// SetMaxRequestsInFlight sets the process-wide public client RPC limit. It is
+// configured before serving starts, so readers need no additional lock.
+func (s *RPCServer) SetMaxRequestsInFlight(limit uint32) {
+	s.maxRequestsInFlight = limit
 }
 
 type leaseState struct {

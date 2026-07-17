@@ -213,9 +213,10 @@ func (e *Endpoint) buildClientGrpcServer() exposedServer {
 func (e *Endpoint) buildPeerGrpcServer() exposedServer {
 	opts := append(grpcTransportOptions(e.config), e.metrics.GetGrpcServerOption()...)
 	opts = append(opts, grpc.StatsHandler(e.tlsIdentities))
-	// The peer listener currently registers the same RPC surface as the client
-	// listener, so it must not bypass request admission or response stamping.
-	opts = append(opts, e.server.ClientServerOptions()...)
+	// The peer listener registers the same RPC surface for internal forwarding,
+	// but keeps reserved capacity while still applying request-size and response
+	// identity handling.
+	opts = append(opts, e.server.PeerServerOptions()...)
 	grpcServer := grpc.NewServer(opts...)
 	e.server.RegisterPeer(grpcServer)
 	return newGrpcServer(grpcServer)

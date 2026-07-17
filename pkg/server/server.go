@@ -41,9 +41,13 @@ type Server interface {
 
 	// ClientServerOptions returns grpc.ServerOptions that must be applied when
 	// building the CLIENT grpc server (before service registration) — currently
-	// the etcd response-header stamping interceptors (ClusterId/MemberId), which
-	// Cilium clustermesh's per-response cluster-id validation depends on (#79).
+	// request admission and etcd response-header stamping interceptors.
 	ClientServerOptions() []grpc.ServerOption
+
+	// PeerServerOptions returns response options for the peer listener. It
+	// intentionally excludes public-client admission so internal coordination
+	// retains capacity during client overload.
+	PeerServerOptions() []grpc.ServerOption
 
 	// RegisterPeer registers grpc service for peer
 	RegisterPeer(server *grpc.Server)
@@ -95,6 +99,7 @@ func NewServer(ctx context.Context, backend backend.Backend, metricCli metrics.M
 	// construct etcd & brian grpc server
 	s.etcdServer = etcd.New(backend, metricCli, peerService)
 	s.etcdServer.SetRequestLimits(config.MaxTxnOps, config.MaxRequestBytes)
+	s.etcdServer.SetMaxRequestsInFlight(config.MaxRequestsInFlight)
 	s.etcdServer.SetAuthConfiguration(config.AuthToken, config.BcryptCost, config.AuthTokenTTL)
 	s.etcdServer.SetClientCertAuth(config.ClientCertAuth)
 	// MemberList ClientURLs: advertise the homogeneous client port with the
@@ -203,6 +208,11 @@ func (s *server) RegisterClient(server *grpc.Server) {
 // ClientServerOptions implements Server interface
 func (s *server) ClientServerOptions() []grpc.ServerOption {
 	return s.etcdServer.ClientServerOptions()
+}
+
+// PeerServerOptions implements Server interface.
+func (s *server) PeerServerOptions() []grpc.ServerOption {
+	return s.etcdServer.PeerServerOptions()
 }
 
 // RegisterPeer implement Server interface

@@ -1266,6 +1266,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `--enable-storage-metrics=true` 滚动部署后 3/3 Ready、zero restart；etcd
   `Status.header.cluster_id=7662961163671170154` 与 TiKV client 从 PD 取得的 cluster ID
   完全一致，实时 Put/Get/Delete 通过。
+- **Admission A79 instance-wide client concurrency（2026-07-17）**：现有
+  `--max-concurrent-streams` 与 etcd 一致只约束单条 HTTP/2 connection，多连接流量可
+  绕过它并耗尽一个 KubeBrain 实例。新增 `--max-requests-inflight`（默认 `0` 保持 etcd
+  无全局上限，生产清单显式 `1024`），统一计算公开 client listener 上 unary 与完整
+  stream 生命周期的总并发；超限返回 etcd 已定义的
+  `ErrGRPCRequestTooManyRequests`（`ResourceExhausted: etcdserver: too many requests`）。
+  peer listener 继续执行 request-size 检查和 response header stamping，但不消耗公开
+  client 槽位，为 leader/revision 协调及内部转发保留容量。新增 inflight gauge 与按
+  method/kind 标记的 rejected counter。两个独立连接、长 stream、disabled fast path、
+  peer reserve 和生产 manifest 测试普通/race 各连续 20 轮，full/race/vet 全部通过。
+  exact image
+  `035ce26167b8b41ceccdeddeef7778fa4dafabdfa3e5b216bd0c93f090e96a04`
+  在三副本 KubeBrain + 独立 TiKV/PD 上以临时 limit=1 验证：同一 Pod 的 client watch
+  占槽后，第二连接 Status 稳定收到标准 ResourceExhausted，指标显示 inflight=1、
+  rejected method=`/etcdserverpb.Maintenance/Status`；同时 peer listener 的 Status
+  成功并返回正确 PD cluster ID。取消 watch 后 inflight 回零且 client health 成功。
+  最终恢复 limit=1024，部署 3/3 Ready、zero restart。
 
 ### P1：通用服务能力
 
@@ -1278,8 +1295,8 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
 2. `client/v3/concurrency` mutex/election/session、lease 自然过期和 failover
    recipe 已通过；继续增加长时间 soak。
 3. 建立 DBaaS 控制面契约：创建、扩缩、升级、备份、恢复、证书轮换、销毁。
-4. 建立实例级限额和计量：请求字节与 txn 操作数已对齐 etcd；继续补 CPU、内存、PV、
-   备份容量、网络、QPS、watch 数及容量计量，限额错误必须稳定且可观测。
+4. 建立实例级限额和计量：请求字节、txn 操作数及跨连接 client RPC 总并发已具备稳定
+   错误与指标；继续补 CPU、内存、PV、备份容量、网络、QPS、watch 数及容量计量。
 
 ### P2：运维兼容和长期验证
 
