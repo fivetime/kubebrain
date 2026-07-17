@@ -46,7 +46,7 @@
 
 | 项 | 文件+符号 | 为什么痛 | 重构 | 工作量 |
 |---|---|---|---|---|
-| C1 | `pkg/storage/interface.go` `BatchWrite` 契约 vs tikv/badger/memkv `batch.go` | 同一 per-key 契约实现出**三种结构**(tikv 延迟带-ctx 闭包 / badger 延迟无-ctx 闭包 / memkv 即时求值+首错闩锁),错误时机与冲突检测形状全不同;**本战役 #44/#45/#65 三个修复全是"让后端 X 的 CAS/错误语义对齐 memkv",各自被迫在不同控制流里重推一遍**,且无共享契约测试防下次漂移 | 抽一套后端无关的表驱动契约测试套件(CAS-on-missing、PutIfNotExist-on-existing、DelCurrent-version-mismatch、commit-失败-uncertain),每个后端都跑过;长期考虑共享 batch 骨架,后端只填 per-op 原语 | medium |
+| C1（A77 已闭环） | `pkg/storage/interface.go` `BatchWrite` 契约 vs tikv/badger/memkv `batch.go` | 三种实现仍有不同控制流，但共享 `storagetest.RunBatchWriteContract` 已统一锁定 PutIfNotExist、CAS missing/mismatch、Put/Del、batch conflict atomicity，以及 `DelCurrent` unchanged/stale snapshot 语义；TiKV uncertain commit 映射另由 A74 committed/not-committed 注入覆盖 | memkv/Badger CI 直接执行共享套件；真实 TiKV/PD 以同一套件连续验证。长期若继续增加 batch 原语，再评估共享骨架 | done |
 | C2 | `pkg/storage/metrics/store.go` `NewKvStorage/gcStoreWrapper`(29-52) | 可选能力(GC、ExclusiveKvStorage)不在 KvStorage 接口内,embed 不提升,需手工重新暴露;GC 已用额外 wrapper 修好,**但 ExclusiveKvStorage 未暴露**——scanner.go:219 做 `r.store.(storage.ExclusiveKvStorage)`,一旦某后端实现它、经 metrics 包装后类型断言静默失败、优化被关且无编译错无测试。这是 #37 记录过的陷阱只修了一半,且是 O(2^n) 组合风险 | 用单一能力转发 wrapper 检测并重新暴露每个已知可选接口;至少现在补上 ExclusiveKvStorage 直通或加一个"包装后仍满足接口"的测试 | medium |
 | C3 | `watcherhub.go:108/114` `newProgressMarker/isProgressMarker` vs `backendshim.go:1035` `isBackendProgressMarker` | "单元素批次且 event.Kv 为 nil = 带内 progress marker"这一跨层协议编码一次、解码两次(两个不同包);marker 表示一改,三处不同步则 watch 静默误分类事件 | 给 marker 单一归属:backend 包导出 `NewProgressMarker/IsProgressMarker`,server/etcd 复用 | small |
 

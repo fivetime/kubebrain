@@ -59,6 +59,16 @@ func RunBatchWriteContract(t *testing.T, newKV func(t *testing.T) storage.KvStor
 		}
 		require.True(t, errors.Is(err, storage.ErrKeyNotFound), "absent key must miss cleanly, got %v", err)
 	}
+	snapshotOne := func(t *testing.T, kv storage.KvStorage, name string) storage.Iter {
+		k := key(t, name)
+		end := append(append([]byte(nil), k...), 0)
+		it, err := kv.Iter(ctx, k, end, 0, 0)
+		require.NoError(t, err)
+		require.NoError(t, it.Next(ctx))
+		require.Equal(t, k, it.Key())
+		t.Cleanup(func() { require.NoError(t, it.Close()) })
+		return it
+	}
 
 	t.Run("PutIfNotExist_on_missing_commits", func(t *testing.T) {
 		kv := newKV(t)
@@ -128,6 +138,31 @@ func RunBatchWriteContract(t *testing.T, newKV func(t *testing.T) storage.KvStor
 		b.Del(key(t, "k"))
 		require.NoError(t, b.Commit(ctx))
 		mustAbsent(t, kv, "k")
+	})
+
+	t.Run("DelCurrent_unchanged_snapshot_removes", func(t *testing.T) {
+		kv := newKV(t)
+		seed(t, kv, "k", "v1")
+		it := snapshotOne(t, kv, "k")
+		b := kv.BeginBatchWrite()
+		b.DelCurrent(it)
+		require.NoError(t, b.Commit(ctx))
+		mustAbsent(t, kv, "k")
+	})
+
+	t.Run("DelCurrent_changed_snapshot_fails_CAS", func(t *testing.T) {
+		kv := newKV(t)
+		seed(t, kv, "k", "v1")
+		it := snapshotOne(t, kv, "k")
+		seed(t, kv, "k", "v2")
+		b := kv.BeginBatchWrite()
+		b.DelCurrent(it)
+		err := b.Commit(ctx)
+		require.True(t, errors.Is(err, storage.ErrCASFailed),
+			"DelCurrent after a snapshot-visible value changed must fail CAS, got %v", err)
+		v, getErr := get(t, kv, "k")
+		require.NoError(t, getErr)
+		require.Equal(t, []byte("v2"), v, "failed DelCurrent must retain the replacement")
 	})
 
 	t.Run("batch_is_atomic_on_conflict", func(t *testing.T) {

@@ -1239,6 +1239,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   在 `--read-only --user 65532:65532 --security-opt no-new-privileges --cap-drop ALL`
   下正常启动 CLI；full test 通过。required anti-affinity 有意未部署到单节点 kind，
   其不可调度正是对错误生产拓扑的 fail-closed 行为。
+- **Storage A77 cross-engine BatchWrite contract（2026-07-17）**：重新核对维护性
+  审计 C1，确认共享 `storagetest.RunBatchWriteContract` 已接入 memkv、Badger 和 opt-in
+  TiKV，但缺少计划中明确列出的 `DelCurrent` 版本语义。现同一套件新增 iterator snapshot
+  未变化时成功删除，以及 snapshot 后 key 被覆盖时必须返回 `ErrCASFailed`、保留 replacement
+  两条契约；连同既有 PutIfNotExist、CAS missing/mismatch、Put/Del 和 conflict batch
+  atomicity 共 10 条。memkv/Badger 各连续 20 轮通过；测试二进制作为临时 Pod 在 kind
+  集群原生 DNS/网络内直连独立 TiKV/PD，完整套件连续 10 轮通过。TiKV uncertain commit
+  映射由 A74 的 committed/not-committed 注入继续覆盖。同期启动 `/root/etcd` 3.8 alpha
+  独立参考实例，Compact、DeleteRange、HashKV、Lease、自然过期、MemberList、Put、
+  Range/RangeStream、Serializable Read、三类 Txn 和 WatchControl differential 全部
+  通过；JWT 需要独立 JWT 配置端点，按测试前置条件跳过，不计为通过。
 
 ### P1：通用服务能力
 
