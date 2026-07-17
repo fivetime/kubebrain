@@ -328,6 +328,10 @@ type backend struct {
 	incrementalStreak int
 	compactSignal     chan struct{}
 	compactScanMu     sync.Mutex
+	// compactCtx holds the current leader-election lifecycle context. Background
+	// physical GC uses it so losing leadership cancels an in-flight shared-TiKV
+	// scan; direct/single-node backends retain a Background context.
+	compactCtx atomic.Value
 
 	// compactRevCache memoizes the persisted compact revision so revisioned reads
 	// (compaction checks, txn/watch validation) don't each do a storage Get for a
@@ -462,6 +466,7 @@ func NewBackend(kv storage.KvStorage, config Config, metricCli metrics.Metrics) 
 		compactSignal:         make(chan struct{}, 1),
 		metricCli:             metricCli,
 	}
+	b.compactCtx.Store(compactContextHolder{ctx: context.Background()})
 
 	if config.EnableCountIndex && config.EnableEtcdCompatibility {
 		b.countIndex = countindex.New(config.CountIndexMaxKeys)

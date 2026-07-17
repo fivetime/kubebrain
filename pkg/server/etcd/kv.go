@@ -739,7 +739,8 @@ func (s *RPCServer) Compact(ctx context.Context, r *etcdserverpb.CompactionReque
 	if !caller.isRoot() {
 		return nil, rpctypes.ErrPermissionDenied
 	}
-	if !s.peers.IsLeader() {
+	epoch, leadingFresh := s.peers.EpochAndLeadingFresh()
+	if !leadingFresh {
 		s.metricCli.EmitCounter("write.follower", 1)
 		if s.peers.EtcdProxyEnabled() {
 			proxyCtx, err := s.forwardAuthToken(ctx, caller)
@@ -750,6 +751,7 @@ func (s *RPCServer) Compact(ctx context.Context, r *etcdserverpb.CompactionReque
 		}
 		return nil, s.notLeaderErr("compact")
 	}
+	ctx = backend.WithLeadershipEpoch(ctx, epoch)
 	if err := s.peers.SyncReadRevision(ctx); err != nil {
 		return nil, err
 	}
@@ -781,7 +783,7 @@ func (s *RPCServer) Compact(ctx context.Context, r *etcdserverpb.CompactionReque
 		compactResp, err = s.backend.CompactAsync(ctx, uint64(r.Revision))
 	}
 	if err != nil {
-		return nil, err
+		return nil, mapFenceErr(err)
 	}
 	if r.Revision > 0 && compactResp != nil && compactResp.Header != nil && compactResp.Header.Revision < r.Revision {
 		return nil, status.Errorf(codes.Unavailable, "etcdserver: mvcc: compact revision %d is pending behind requested revision %d", compactResp.Header.Revision, r.Revision)

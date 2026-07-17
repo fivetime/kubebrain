@@ -1168,6 +1168,34 @@ func TestCompactReturnsRetryableErrorWhenBackendCompactsBelowRequestedRevision(t
 	require.Contains(t, err.Error(), "pending behind requested revision")
 }
 
+func TestCompactIsFencedAcrossLeadershipChange(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	ctx := context.Background()
+	put, err := server.Put(ctx, &etcdserverpb.PutRequest{
+		Key:   []byte("/registry/pods/compact-fence"),
+		Value: []byte("v"),
+	})
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		return server.backend.GetCurrentRevision() >= uint64(put.Header.Revision)
+	}, time.Second, 10*time.Millisecond)
+
+	// testPeerService admits the request at epoch 0. Change the backend's
+	// commit-time epoch to 1 so setCompactRecord must reject the stale leader
+	// before opening its CAS batch.
+	server.backend.(*backendShim).backend.SetLeadershipFence(func() (uint64, bool) { return 1, true })
+	_, err = server.Compact(ctx, &etcdserverpb.CompactionRequest{Revision: put.Header.Revision})
+	require.Error(t, err)
+	require.Equal(t, codes.Unavailable, status.Code(err))
+	require.Contains(t, err.Error(), backend.ErrLeadershipFenced.Error())
+
+	hasMarker, markerErr := server.backend.HasCompactRevision(ctx)
+	require.NoError(t, markerErr)
+	require.False(t, hasMarker, "a deposed leader must not advance the shared compact watermark")
+}
+
 func TestFollowerCompactProxiesToLeader(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()

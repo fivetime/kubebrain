@@ -32,10 +32,21 @@ import (
 	"github.com/kubewharf/kubebrain/pkg/storage"
 )
 
+type compactContextHolder struct {
+	ctx context.Context
+}
+
 func (b *backend) Compact(ctx context.Context, revision uint64) (*proto.CompactResponse, error) {
 	revision = b.clampCompactRevision(revision)
 
-	err := b.compact(ctx, revision)
+	var err error
+	ctx, err = b.withCurrentLeadershipEpoch(ctx)
+	if err != nil {
+		return &proto.CompactResponse{Header: responseHeader(revision)}, err
+	}
+	ctx, cancel := b.withCompactionLeadership(ctx)
+	defer cancel()
+	err = b.compact(ctx, revision)
 	if err != nil {
 		klog.Errorf("backend compact with revision %d failed %v", revision, err)
 	}
@@ -45,12 +56,30 @@ func (b *backend) Compact(ctx context.Context, revision uint64) (*proto.CompactR
 	return compactResponse, err
 }
 
+func (b *backend) withCompactionLeadership(ctx context.Context) (context.Context, context.CancelFunc) {
+	merged, cancel := context.WithCancel(ctx)
+	holder, _ := b.compactCtx.Load().(compactContextHolder)
+	if holder.ctx == nil {
+		return merged, cancel
+	}
+	stop := context.AfterFunc(holder.ctx, cancel)
+	return merged, func() {
+		stop()
+		cancel()
+	}
+}
+
 // CompactAsync advances the compact watermark synchronously and schedules the
 // physical version GC in the background. See the Backend interface for why the
 // hot Compact RPC path uses this instead of the fully synchronous Compact.
 func (b *backend) CompactAsync(ctx context.Context, revision uint64) (uint64, error) {
 	revision = b.clampCompactRevision(revision)
 
+	var err error
+	ctx, err = b.withCurrentLeadershipEpoch(ctx)
+	if err != nil {
+		return 0, err
+	}
 	advanced, err := b.setCompactRecord(ctx, revision)
 	if err != nil {
 		klog.Errorf("backend compact-async with revision %d failed %v", revision, err)
@@ -394,6 +423,11 @@ func (b *backend) schedulePhysicalCompact(revision uint64) {
 }
 
 func (b *backend) ResumePhysicalCompaction(ctx context.Context) error {
+	// Leadership callbacks pass a context canceled when this node loses the
+	// term. Every later background scan uses this lifecycle instead of an
+	// immortal context, preventing old and new leaders from scanning the shared
+	// TiKV keyspace concurrently.
+	b.compactCtx.Store(compactContextHolder{ctx: ctx})
 	revision, err := b.GetCompactRevisionFresh(ctx)
 	if err != nil {
 		return err
@@ -410,13 +444,16 @@ const physicalCompactRetryInterval = time.Second
 // time, always compacting up to the latest requested revision (coalescing any
 // requests that arrived while a scan was running).
 func (b *backend) runCompactor() {
-	ctx := context.Background()
 	var lastScanned uint64
 	for range b.compactSignal {
 		for {
 			target := atomic.LoadUint64(&b.compactTriggerRev)
 			if target <= lastScanned {
 				break
+			}
+			ctx := context.Background()
+			if holder, ok := b.compactCtx.Load().(compactContextHolder); ok && holder.ctx != nil {
+				ctx = holder.ctx
 			}
 			if err := b.physicalCompact(ctx, target); err != nil {
 				// Do not claim completion. Retry independently of a newer logical
@@ -532,6 +569,9 @@ func (b *backend) setCompactRecord(ctx context.Context, revision uint64) (advanc
 	}
 	revisionBytes := make([]byte, 8)
 	binary.BigEndian.PutUint64(revisionBytes, revision)
+	if err := b.fenceAdmit(ctx); err != nil {
+		return false, err
+	}
 	batch := b.kv.BeginBatchWrite()
 	if len(val) > 0 {
 		// if compact revision already set before

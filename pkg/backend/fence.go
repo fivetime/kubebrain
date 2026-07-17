@@ -44,6 +44,25 @@ func leadershipEpochFromContext(ctx context.Context) (uint64, bool) {
 	return epoch, ok
 }
 
+// withCurrentLeadershipEpoch captures the current term for internal maintenance
+// callers that did not pass through an RPC admission gate (for example the
+// auto-compactor). Direct/single-node backends have no registered fence and
+// remain unrestricted.
+func (b *backend) withCurrentLeadershipEpoch(ctx context.Context) (context.Context, error) {
+	if _, ok := leadershipEpochFromContext(ctx); ok {
+		return ctx, nil
+	}
+	h, _ := b.fenceFn.Load().(fenceHolder)
+	if h.fn == nil {
+		return ctx, nil
+	}
+	epoch, fresh := h.fn()
+	if !fresh {
+		return nil, ErrLeadershipFenced
+	}
+	return WithLeadershipEpoch(ctx, epoch), nil
+}
+
 // fenceHolder wraps the leadership-epoch source for storage in an atomic.Value
 // (which needs a single concrete type and cannot hold a bare func or nil). A zero
 // holder (fn == nil) means the fence is disabled.

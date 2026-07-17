@@ -225,3 +225,63 @@ func TestResumePhysicalCompactionFromPersistedWatermark(t *testing.T) {
 		return atomic.LoadUint64(&fresh.compactDoneRev) >= target
 	}, 3*time.Second, 10*time.Millisecond, "new leader must resume GC from durable logical watermark")
 }
+
+func TestPhysicalCompactionTransfersAcrossLeadershipContexts(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	m := mock.NewMinimalMetrics(ctrl)
+	kv := &cancelFirstPartitionsKV{
+		KvStorage: imemkv.NewKvStorage(),
+		entered:   make(chan struct{}),
+	}
+	defer func() { require.NoError(t, kv.Close()) }()
+	target := uint64(time.Now().UnixNano())
+
+	b := NewBackend(kv, Config{Prefix: prefix, Identity: "leader-transfer", EnableEtcdCompatibility: true}, m).(*backend)
+	b.SetCurrentRevision(target)
+	advanced, err := b.setCompactRecord(context.Background(), target)
+	require.NoError(t, err)
+	require.True(t, advanced)
+
+	oldCtx, stopOldLeader := context.WithCancel(context.Background())
+	require.NoError(t, b.ResumePhysicalCompaction(oldCtx))
+	<-kv.entered
+	stopOldLeader()
+	require.Never(t, func() bool {
+		return atomic.LoadUint64(&b.compactDoneRev) >= target
+	}, 100*time.Millisecond, 5*time.Millisecond,
+		"a scan canceled with the old leadership term must not report completion")
+
+	newCtx, stopNewLeader := context.WithCancel(context.Background())
+	defer stopNewLeader()
+	require.NoError(t, b.ResumePhysicalCompaction(newCtx))
+	require.Eventually(t, func() bool {
+		return atomic.LoadUint64(&b.compactDoneRev) >= target
+	}, 3*time.Second, 10*time.Millisecond,
+		"the new leadership term must resume the durable physical-GC target")
+}
+
+func TestCompactAsyncCapturesEpochForInternalCaller(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	m := mock.NewMinimalMetrics(ctrl)
+	kv := imemkv.NewKvStorage()
+	defer func() { require.NoError(t, kv.Close()) }()
+	b := NewBackend(kv, Config{Prefix: prefix, Identity: "auto-compact-fence", EnableEtcdCompatibility: true}, m).(*backend)
+	target := uint64(time.Now().UnixNano())
+	b.SetCurrentRevision(target)
+
+	var checks atomic.Uint64
+	b.SetLeadershipFence(func() (uint64, bool) {
+		if checks.Add(1) == 1 {
+			return 1, true
+		}
+		return 2, true
+	})
+
+	_, err := b.CompactAsync(context.Background(), target)
+	require.ErrorIs(t, err, ErrLeadershipFenced)
+	hasMarker, markerErr := b.HasCompactRevision(context.Background())
+	require.NoError(t, markerErr)
+	require.False(t, hasMarker, "internal compaction must be fenced if leadership changes before CAS")
+}

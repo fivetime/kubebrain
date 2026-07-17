@@ -1402,6 +1402,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   watch 测试连续 3 轮通过，每轮 100/100 事件完整，compact boundary 可读且 boundary-1
   标准拒绝。exact image
   `875b570a9008cd25f6763a95731961bd43625db2849b64f1c5e44774b5734e11`。
+- **Compact A87 shared-TiKV leader ownership（2026-07-17）**：etcd 每个 member
+  清理自己的 bbolt；KubeBrain 三副本共享同一 TiKV keyspace，因此 physical GC
+  必须只有当前 leader 执行。审计发现启动恢复虽仅在 `onStartedLeading` 调用，
+  `runCompactor` 却使用永久 `context.Background()`；旧 leader 失去任期后仍可继续
+  扫描，新 leader 同时从持久化 watermark 恢复，造成重复全量 GC/I/O 放大。同步
+  Compact 入口也只检查瞬时 `IsLeader`，未像 Put/Delete/Txn 一样携带 epoch，旧 leader
+  可在准入后推进共享 logical watermark。现 `ResumePhysicalCompaction` 注册
+  leader-election lifecycle context，后台每轮扫描使用该 context，失去任期立即取消；
+  新任期注册新 context 并唤醒同一 durable target。Compact RPC 改用
+  `EpochAndLeadingFresh` 准入，logical watermark CAS 前通过 `fenceAdmit` 复核 epoch，
+  stale term 映射标准可重试 `Unavailable`；auto-compactor 等无 RPC context 的内部调用
+  会主动捕获当前 epoch，关闭 ticker-check 到 CAS 的 TOCTOU。测试覆盖旧 context 扫描
+  取消后不得完成、新 context 无新增 logical request 即接续完成，RPC epoch 变化不创建
+  compact marker，以及内部 CompactAsync 捕获 epoch 后被提交前切主 fence；普通 50 轮、
+  race 10 轮及 full test/backend+server race/full vet 全通过。三副本 TiKV/PD 上
+  Physical=true 并发 100 次读写/watch 连续 3 轮通过；compact fault smoke 在 30 轮
+  compact、4 readers/723 reads 中删除并重建一个副本后完成。exact image
+  `315604ad8d076af06e9d38220a8c0993004dd1a1632f9281279e8cab1c3191d2`。
 
 ### P1：通用服务能力
 
