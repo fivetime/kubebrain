@@ -87,3 +87,25 @@ func TestRequestLimitReturnsEtcdErrorOverGRPC(t *testing.T) {
 	require.Equal(t, status.Code(rpctypes.ErrGRPCRequestTooLarge), status.Code(err))
 	require.Equal(t, status.Convert(rpctypes.ErrGRPCRequestTooLarge).Message(), status.Convert(err).Message())
 }
+
+func TestRequestLimitTransportAllowanceMatchesEtcd(t *testing.T) {
+	server := &RPCServer{maxTxnOps: defaultMaxTxnOps, maxRequestBytes: 1024}
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///bufnet",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return listener.Dial() }))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+
+	// This exceeds both the payload limit and KubeBrain's old max+512-byte
+	// transport window, but remains within etcd's max+512-KiB allowance.
+	request := &etcdserverpb.PutRequest{Key: []byte("key"), Value: make([]byte, 256*1024)}
+	_, err = etcdserverpb.NewKVClient(conn).Put(context.Background(), request)
+	require.Equal(t, status.Code(rpctypes.ErrGRPCRequestTooLarge), status.Code(err))
+	require.Equal(t, status.Convert(rpctypes.ErrGRPCRequestTooLarge).Message(), status.Convert(err).Message())
+}

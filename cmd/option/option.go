@@ -148,7 +148,7 @@ func (o *KubeBrainOption) AddFlags(fs *pflag.FlagSet) {
 	fs.DurationVar(&o.epsConf.GRPCKeepAliveInterval, "grpc-keepalive-interval", o.epsConf.GRPCKeepAliveInterval, "Frequency of server-to-client keepalive pings; 0 disables server pings.")
 	fs.DurationVar(&o.epsConf.GRPCKeepAliveTimeout, "grpc-keepalive-timeout", o.epsConf.GRPCKeepAliveTimeout, "Time to wait for a keepalive response; 0 disables server pings.")
 	fs.UintVar(&o.epsConf.MaxTxnOps, "max-txn-ops", o.epsConf.MaxTxnOps, "Maximum number of operations permitted in a transaction.")
-	fs.UintVar(&o.epsConf.MaxRequestBytes, "max-request-bytes", o.epsConf.MaxRequestBytes, "Maximum client request payload size in bytes, excluding 512 bytes of gRPC framing overhead.")
+	fs.UintVar(&o.epsConf.MaxRequestBytes, "max-request-bytes", o.epsConf.MaxRequestBytes, "Maximum client request payload size in bytes, excluding 512 KiB of gRPC transport overhead.")
 	fs.StringVar(&o.epsConf.AuthToken, "auth-token", o.epsConf.AuthToken, "Authentication token provider: simple or jwt with etcd-compatible options.")
 	fs.UintVar(&o.epsConf.BcryptCost, "bcrypt-cost", o.epsConf.BcryptCost, "Bcrypt cost factor for hashing authentication passwords; out-of-range values use the bcrypt default.")
 	fs.UintVar(&o.epsConf.AuthTokenTTL, "auth-token-ttl", o.epsConf.AuthTokenTTL, "Authentication token lifetime in seconds; 0 uses the 300-second default.")

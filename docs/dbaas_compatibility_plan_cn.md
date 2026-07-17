@@ -957,6 +957,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   并校验 reference etcd 与 KubeBrain 的 control response 序列一致。focused 连续 50 轮、
   control-path race 连续 10 轮及 full/vet 通过；三副本 TiKV/PD exact image
   `d0d54fdcc7c6` 上 raw gRPC 双端差分连续 20 轮通过。
+- **Watch A58 configured fragmentation ceiling（2026-07-17）**：对照
+  `/root/etcd/server/etcdserver/api/v3rpc/watch.go` 的 `sendFragments` 与
+  `MaxRequestBytesWithOverhead`，发现 KubeBrain 对 `Fragment=true` 的 watch response
+  固定使用 2 MiB 分片阈值，虽然碰巧等于 etcd 默认的 `1572864+512KiB`，却不会随 DBaaS 实例的
+  `--max-request-bytes` 配额变化。审计同时发现 KubeBrain 将 etcd 的 512 KiB gRPC
+  transport allowance 误写成 512 bytes，影响 server receive 与 follower proxy send 上限；
+  现统一修正为 `512*1024` 并同步 overflow validation/CLI 文案。Watch 复用该 admission 常量，
+  每个 stream 按 server 配置计算 response fragment ceiling。新增单元测试锁定配置传播，
+  raw gRPC 双端差分则分别写入两个 800 KiB value，再以小型 prefix DeleteRange 请求 `PrevKv`：
+  放大的 watch response 必须按 reference etcd 相同的 event 数与 `Fragment` flag 分片。
+  另以超过旧 512-byte transport window、但位于 etcd 512-KiB allowance 内的请求验证稳定返回
+  `RequestTooLarge` 而非 transport `ResourceExhausted`。focused 连续 50 轮、相关 race 连续
+  10 轮及 full/vet 通过；1 MiB 自定义上限下，旧 A57 稳定复现 `[2]/[false]` 对 reference
+  `[1,1]/[true,false]`，三副本 TiKV/PD exact image `122c002bf172` 双端差分连续 20 轮通过。
 
 ### P1：通用服务能力
 

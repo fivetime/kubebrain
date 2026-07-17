@@ -41,7 +41,7 @@ func (s *RPCServer) ClientServerOptions() []grpc.ServerOption {
 	return []grpc.ServerOption{
 		grpc.ChainUnaryInterceptor(s.stampUnary),
 		grpc.ChainStreamInterceptor(s.stampStream),
-		grpc.MaxRecvMsgSize(int(s.maxRequestBytes + 512)),
+		grpc.MaxRecvMsgSize(int(s.maxRequestBytes + grpcOverheadBytes)),
 	}
 }
 

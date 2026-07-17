@@ -81,7 +81,7 @@ func proxyCallOptions(maxRequestBytes uint) []grpc.CallOption {
 	}
 	return []grpc.CallOption{
 		grpc.FailFast(false),
-		grpc.MaxCallSendMsgSize(int(maxRequestBytes + 512)),
+		grpc.MaxCallSendMsgSize(int(maxRequestBytes + 512*1024)),
 		grpc.MaxCallRecvMsgSize(math.MaxInt32),
 	}
 }

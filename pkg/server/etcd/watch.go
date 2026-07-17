@@ -44,7 +44,6 @@ var (
 	watcherID int64
 )
 
-const defaultWatchFragmentBytes = 2 * 1024 * 1024
 const onDemandProgressSyncWait = 100 * time.Millisecond
 
 // watcher correspond to one stream, one watcher has many watches
@@ -635,7 +634,7 @@ func (w *watcher) Watch(ctx context.Context, id int64, r *etcdserverpb.WatchCrea
 			w.metricCli.EmitGauge("watch.watch_stream.push", watchResponse.Header.Revision)
 			w.metricCli.EmitHistogram("watch.watch_stream.push.size", proto.Size(watchResponse))
 			if r.Fragment {
-				sendErr = sendWatchFragments(watchResponse, defaultWatchFragmentBytes, w.Send)
+				sendErr = sendWatchFragments(watchResponse, w.grpcServer.watchFragmentBytes(), w.Send)
 			} else {
 				sendErr = w.Send(watchResponse)
 			}
@@ -680,6 +679,10 @@ func (w *watcher) Watch(ctx context.Context, id int64, r *etcdserverpb.WatchCrea
 			}
 		}
 	}
+}
+
+func (s *RPCServer) watchFragmentBytes() int {
+	return int(s.maxRequestBytes + grpcOverheadBytes)
 }
 
 func sendWatchFragments(response *etcdserverpb.WatchResponse, maxBytes int, send func(*etcdserverpb.WatchResponse) error) error {

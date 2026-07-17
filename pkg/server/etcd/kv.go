@@ -40,6 +40,7 @@ const (
 	compactRevKey          = "compact_rev_key"
 	defaultMaxTxnOps       = 128
 	defaultMaxRequestBytes = 1572864
+	grpcOverheadBytes      = 512 * 1024
 )
 
 func (s *RPCServer) Range(ctx context.Context, r *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {

@@ -340,6 +340,11 @@ func TestSendWatchFragmentsMatchesEtcdFlags(t *testing.T) {
 	require.Equal(t, [][]byte{[]byte("a"), []byte("b"), []byte("c")}, keys)
 }
 
+func TestWatchFragmentLimitUsesConfiguredRequestBytesWithEtcdOverhead(t *testing.T) {
+	server := &RPCServer{maxRequestBytes: 1024}
+	require.Equal(t, 1024+512*1024, server.watchFragmentBytes())
+}
+
 func TestCancelCompactedWatchResponseUsesBackendCompactRevisionAndErrorReason(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

@@ -2,12 +2,14 @@ package compat
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
+	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
@@ -33,6 +35,76 @@ func TestWatchControlDifferentialAgainstReferenceEtcd(t *testing.T) {
 		runSingleWatchProgressScenario(t, reference),
 		runSingleWatchProgressScenario(t, compatEndpoint()),
 	)
+	referenceFragments := runWatchFragmentScenario(t, reference, "reference")
+	kubebrainFragments := runWatchFragmentScenario(t, compatEndpoint(), "kubebrain")
+	require.Equal(t, referenceFragments, kubebrainFragments)
+}
+
+type watchFragmentOutcome struct {
+	EventCounts    []int
+	FragmentFlags  []bool
+	PrevValueBytes []int
+}
+
+func runWatchFragmentScenario(t *testing.T, endpoint, instance string) watchFragmentOutcome {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	conn, err := grpc.NewClient(endpoint, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+
+	prefix := fmt.Sprintf("/dbaas-watch-fragment/%s/%d/", instance, time.Now().UnixNano())
+	keys := []string{prefix + "a", prefix + "b"}
+	value := make([]byte, 800*1024)
+	kv := etcdserverpb.NewKVClient(conn)
+	var revision int64
+	for _, key := range keys {
+		resp, putErr := kv.Put(ctx, &etcdserverpb.PutRequest{Key: []byte(key), Value: value})
+		require.NoError(t, putErr)
+		revision = resp.Header.Revision
+	}
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_, _ = kv.DeleteRange(cleanupCtx, &etcdserverpb.DeleteRangeRequest{
+			Key: []byte(prefix), RangeEnd: []byte(clientv3.GetPrefixRangeEnd(prefix)),
+		})
+	})
+
+	stream, err := etcdserverpb.NewWatchClient(conn).Watch(ctx)
+	require.NoError(t, err)
+	require.NoError(t, stream.Send(&etcdserverpb.WatchRequest{
+		RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{CreateRequest: &etcdserverpb.WatchCreateRequest{
+			Key: []byte(prefix), RangeEnd: []byte(clientv3.GetPrefixRangeEnd(prefix)),
+			StartRevision: revision + 1, PrevKv: true, Fragment: true,
+		}},
+	}))
+	created, err := stream.Recv()
+	require.NoError(t, err)
+	require.True(t, created.Created)
+
+	_, err = kv.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{
+		Key: []byte(prefix), RangeEnd: []byte(clientv3.GetPrefixRangeEnd(prefix)), PrevKv: true,
+	})
+	require.NoError(t, err)
+
+	var outcome watchFragmentOutcome
+	for {
+		resp, recvErr := stream.Recv()
+		require.NoError(t, recvErr)
+		require.NotEmpty(t, resp.Events)
+		outcome.EventCounts = append(outcome.EventCounts, len(resp.Events))
+		outcome.FragmentFlags = append(outcome.FragmentFlags, resp.Fragment)
+		for _, event := range resp.Events {
+			outcome.PrevValueBytes = append(outcome.PrevValueBytes, len(event.PrevKv.GetValue()))
+		}
+		if !resp.Fragment {
+			break
+		}
+	}
+	require.NoError(t, stream.CloseSend())
+	return outcome
 }
 
 func runSingleWatchProgressScenario(t *testing.T, endpoint string) watchControlOutcome {

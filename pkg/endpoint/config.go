@@ -33,6 +33,8 @@ import (
 	etcdserver "github.com/kubewharf/kubebrain/pkg/server/etcd"
 )
 
+const grpcOverheadBytes = 512 * 1024
+
 type secureMode int
 
 func (s secureMode) String() string {
@@ -102,7 +104,7 @@ type Config struct {
 	GRPCKeepAliveTimeout      time.Duration
 
 	// MaxTxnOps and MaxRequestBytes mirror etcd's client admission limits.
-	// MaxRequestBytes excludes the 512-byte gRPC framing allowance.
+	// MaxRequestBytes excludes the 512 KiB gRPC transport allowance.
 	MaxTxnOps       uint
 	MaxRequestBytes uint
 
@@ -227,8 +229,8 @@ func (c *Config) Validate() error {
 	if c.MaxTxnOps > uint(math.MaxInt) {
 		return fmt.Errorf("max txn ops %d exceeds platform limit %d", c.MaxTxnOps, math.MaxInt)
 	}
-	if c.MaxRequestBytes > uint(math.MaxInt-512) {
-		return fmt.Errorf("max request bytes %d exceeds platform limit %d", c.MaxRequestBytes, math.MaxInt-512)
+	if c.MaxRequestBytes > uint(math.MaxInt-grpcOverheadBytes) {
+		return fmt.Errorf("max request bytes %d exceeds platform limit %d", c.MaxRequestBytes, math.MaxInt-grpcOverheadBytes)
 	}
 	if err := etcdserver.ValidateAuthTokenProvider(c.AuthToken); err != nil {
 		return err

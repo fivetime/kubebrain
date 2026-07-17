@@ -163,7 +163,7 @@ func TestRequestLimitOverflowValidation(t *testing.T) {
 		}
 	}
 	config := base()
-	config.MaxRequestBytes = uint(math.MaxInt - 511)
+	config.MaxRequestBytes = uint(math.MaxInt - grpcOverheadBytes + 1)
 	require.ErrorContains(t, config.Validate(), "max request bytes")
 
 	config = base()
