@@ -421,6 +421,15 @@ func (w *watcher) Start(c context.Context, r *etcdserverpb.WatchCreateRequest) {
 	// could skip events. The published revision is at/below every still-in-flight
 	// event (see initSyncedRev above), so it is a safe, non-skipping resume floor.
 	createdRev := w.responseRevision()
+	if r.StartRevision == 0 {
+		// Register from-now watches as an explicit historical watch from the
+		// created watermark forward. Send(Created) happens before the backend
+		// goroutine subscribes, so leaving revision zero here creates a gap where
+		// a committed event can land before AddWatcher and be skipped forever.
+		// Replaying from createdRev+1 closes that gap; backend.Watch installs its
+		// live subscriber before scanning history, so the handoff is lossless.
+		r.StartRevision = int64(createdRev) + 1
+	}
 	if err := w.Send(&etcdserverpb.WatchResponse{
 		Header:  txnHeader(int64(createdRev)),
 		Created: true,

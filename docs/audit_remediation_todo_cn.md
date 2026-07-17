@@ -180,8 +180,7 @@
 - [x] **#62** [low] Proxy LeaseKeepAlive opens a new gRPC stream per keepalive message and never drains it  
   `pkg/server/service/etcdproxy/etcd_proxy.go` — 每次转发用 per-call 可取消 ctx（`context.WithCancel`）+ `defer cancel()`，返回时把 leader 侧流**完全拆除**（原 `CloseSend()` 只半关、接收侧半开泄漏到长命 caller ctx 结束）。每消息一条新流是当前 unary 式接口的固有结构（fully 复用需重构接口，Low，未做）。经 follower 代理跑 lease 生命周期/keepalive/compaction 存活测试通过。
 - [x] **#63** [low] Proxy watch started at revision 0 silently loses events across a leader change  
-  `pkg/server/service/etcdproxy/etcd_proxy.go` — 两处：(1) watch options 加 `WithProgressNotify`，让 leader 在**空闲**时也周期广播其 revision；(2) 用 `nextWatchRevision(cur, wresp.Header.Revision)` 按响应头推进 `watchRevision`（事件响应头 ≥ 事件 ModRevision，故涵盖原按事件推进；空闲进度响应也能推进——正是原来 rev=0 watch 换主丢 gap 的场景；Created 响应头为 0，helper 忽略以免回退到历史起点）。`TestNextWatchRevision` 钉死推进/不回退/忽略 0；经 follower 代理跑 rev-0 watch + watch-history 测试通过。
-  > 残留窗口：leader 的 Created 响应头目前是 0（首个 progress 有 1s 延迟），故换主若发生在 watch 建立后 1s 内且无事件仍可能丢 gap；根治需让 leader 的 Created 响应回填当前 revision，但那会影响 apiserver 直连 watch，属独立改动，未做。
+  `pkg/server/service/etcdproxy/etcd_proxy.go` — 两处：(1) watch options 加 `WithProgressNotify`，让 leader 在**空闲**时也周期广播其 revision；(2) 用 `nextWatchRevision(cur, wresp.Header.Revision)` 按响应头推进 `watchRevision`（事件响应头 ≥ 事件 ModRevision，故涵盖原按事件推进；空闲进度响应也能推进——正是原来 rev=0 watch 换主丢 gap 的场景）。后续 `969aa75` 已让 Created header 回填安全的 published revision，proxy 可立即建立 resume floor；A61 再将 leader from-now backend 注册改为从该 floor+1 replay，关闭 Created 发送与 `AddWatcher` 之间的同主丢事件窗口。`TestNextWatchRevision` 钉死推进/不回退/兼容旧 server 的 0 header；经 follower 代理跑 rev-0 watch + watch-history 测试通过。
 
 ### P7 — 存储引擎健壮性 / 杂项
 

@@ -184,8 +184,8 @@ func (t *testLeaderElection) GetElectionInfo() (leader.ElectionInfo, error) {
 }
 
 // TestNextWatchRevision pins the #63 resume-revision logic: advance to
-// headerRev+1, never move backwards, and ignore a zero header (Created response)
-// so a from-now watch is not rewound to the start of history on reconnect.
+// headerRev+1 (including a positive Created header), never move backwards, and
+// ignore zero so a from-now watch is not rewound on reconnect.
 func TestNextWatchRevision(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -194,6 +194,7 @@ func TestNextWatchRevision(t *testing.T) {
 		want      uint64
 	}{
 		{name: "created response (rev 0) leaves from-now watch untouched", current: 0, headerRev: 0, want: 0},
+		{name: "created response establishes resume floor", current: 0, headerRev: 42, want: 43},
 		{name: "first concrete revision resolves from-now watch", current: 0, headerRev: 100, want: 101},
 		{name: "advances on newer revision", current: 101, headerRev: 150, want: 151},
 		{name: "does not move backwards for stale header", current: 200, headerRev: 150, want: 200},

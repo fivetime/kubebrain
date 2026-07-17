@@ -652,8 +652,8 @@ func (e *etcdProxy) Watch(ctx context.Context, key, rangeEnd []byte, revision ui
 					// per-event advancement) and, thanks to WithProgressNotify,
 					// also advances on idle progress notifications that carry no
 					// events — the case where the old code left watchRevision at
-					// its initial value (0 for a from-now watch). The Created
-					// response carries revision 0, which nextWatchRevision ignores.
+					// its initial value (0 for a from-now watch). A positive Created
+					// header also establishes the resume floor immediately.
 					watchRevision = nextWatchRevision(watchRevision, wresp.Header.Revision)
 					outputCh <- watchResultFromResponse(wresp)
 				}
@@ -685,9 +685,9 @@ func watchOptionsForRange(rangeEnd []byte, revision uint64) []clientv3.OpOption 
 }
 
 // nextWatchRevision returns the resume revision after a watch response whose
-// header covers store revision headerRev. It never moves backwards, and ignores
-// a zero header revision (e.g. the Created response) so the proxy does not rewind
-// a from-now watch to the beginning of history.
+// header covers store revision headerRev. It never moves backwards and ignores a
+// zero header revision, so an older server cannot rewind a from-now watch to the
+// beginning of history.
 func nextWatchRevision(current uint64, headerRev int64) uint64 {
 	if headerRev <= 0 {
 		return current

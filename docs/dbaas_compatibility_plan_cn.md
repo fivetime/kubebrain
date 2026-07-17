@@ -993,6 +993,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   实测约 62ms，稳定复现未 clamp；table focused 连续 100 轮、相关 backend/Watch race
   连续 10 轮及 full/vet 通过。三副本 TiKV/PD exact image `e4afbbc9dd52` 在 1ms 输入下
   官方 client probe 连续 20 轮通过，且同配置下完整 suite 通过。
+- **Watch A61 from-now registration fence（2026-07-17）**：对照 etcd
+  `server/etcdserver/api/v3rpc/watch.go` 先调用 `watchStream.Watch` 注册、再发送
+  Created control response 的顺序，发现 KubeBrain leader 反向执行：先 `Send(Created)`，
+  后由 goroutine 调 `backend.Watch(..., revision=0)`/`AddWatcher`。两步之间提交的事件既不在
+  live subscriber 中，也不会被 revision-0 watch 回放，会在不发生断线的正常 stream 上
+  永久丢失。现复用 Created header 与 `syncedRev` 的 published watermark，将 leader
+  from-now 请求在启动 backend goroutine 前转换为 `watermark+1`；backend 已保证先安装 live
+  subscriber 再回放 history，因此交接无缝且不会重复/跳过。新增确定性
+  `TestLeaderFromNowWatchReplaysWriteDuringCreatedResponse`，在 Created `Send` callback 内
+  提交 watched key，锁定旧实现必丢、修复后必达；官方 client/v3
+  `TestFromNowWatchDoesNotLoseImmediatePostCreateWrite` 在三副本 TiKV/PD exact image
+  `5c8646871cd1` 上连续 10 轮（500 次 create 后立即 Put）全达，并同时通过 watch-history
+  fallback/update 语义。focused 连续 20 轮、相关 race 连续 10 轮及 full/race/vet 通过。
+  proxy resume 测试也明确正数 Created header 立即推进 floor，0 仅为旧 server 兼容。
 
 ### P1：通用服务能力
 

@@ -78,6 +78,29 @@ func (s *fakeWatchServer) RecvMsg(interface{}) error {
 	return context.Canceled
 }
 
+type createCallbackWatchServer struct {
+	*fakeWatchServer
+	onCreated func()
+	mu        sync.Mutex
+	sent      []*etcdserverpb.WatchResponse
+}
+
+func (s *createCallbackWatchServer) Send(resp *etcdserverpb.WatchResponse) error {
+	s.mu.Lock()
+	s.sent = append(s.sent, resp)
+	s.mu.Unlock()
+	if resp.Created && s.onCreated != nil {
+		s.onCreated()
+	}
+	return nil
+}
+
+func (s *createCallbackWatchServer) snapshot() []*etcdserverpb.WatchResponse {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]*etcdserverpb.WatchResponse(nil), s.sent...)
+}
+
 func TestIsExpectedWatchCloseError(t *testing.T) {
 	tests := []struct {
 		name string
@@ -486,6 +509,40 @@ func TestFollowerFromNowWatchUsesSynchronizedRevisionFence(t *testing.T) {
 	require.GreaterOrEqual(t, len(stream.sent), 1)
 	require.Equal(t, int64(50), stream.sent[0].Header.Revision)
 	require.True(t, stream.sent[0].Created)
+}
+
+func TestLeaderFromNowWatchReplaysWriteDuringCreatedResponse(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	key := []byte("/registry/watch/create-gap")
+	stream := &createCallbackWatchServer{
+		fakeWatchServer: &fakeWatchServer{ctx: ctx},
+		onCreated: func() {
+			_, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("during-created")})
+			require.NoError(t, err)
+		},
+	}
+	w := &watcher{
+		backend:     server.backend,
+		grpcServer:  server,
+		watchServer: stream,
+		watches:     make(map[int64]*watch),
+		metricCli:   server.metricCli,
+	}
+
+	w.Start(ctx, &etcdserverpb.WatchCreateRequest{Key: key})
+	require.Eventually(t, func() bool {
+		return len(stream.snapshot()) >= 2
+	}, 5*time.Second, 10*time.Millisecond)
+	responses := stream.snapshot()
+	require.True(t, responses[0].Created)
+	require.Len(t, responses[1].Events, 1)
+	require.Equal(t, key, responses[1].Events[0].Kv.Key)
+	require.Equal(t, []byte("during-created"), responses[1].Events[0].Kv.Value)
+	w.Close()
 }
 
 func TestClientWatchCancelUsesControlRevision(t *testing.T) {
