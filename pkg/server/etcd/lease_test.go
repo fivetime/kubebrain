@@ -244,6 +244,18 @@ func TestLeaseTimeToLiveUnknownLeaseMatchesEtcd(t *testing.T) {
 	require.Equal(t, int64(server.backend.GetCurrentRevision()), resp.Header.Revision)
 }
 
+func TestRemainingTTLTruncatesLiveSubsecondToZeroLikeEtcd(t *testing.T) {
+	require.Equal(t, int64(1), remainingTTL(&leaseState{
+		deadline: time.Now().Add(1500 * time.Millisecond),
+	}))
+	require.Equal(t, int64(0), remainingTTL(&leaseState{
+		deadline: time.Now().Add(500 * time.Millisecond),
+	}), "etcd truncates a live final sub-second instead of rounding it up")
+	require.Equal(t, int64(0), remainingTTL(&leaseState{
+		deadline: time.Now().Add(-time.Millisecond),
+	}))
+}
+
 func TestLeaseKeepAliveUnknownLeaseMatchesEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

@@ -1022,6 +1022,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   deadline 前无法覆盖 filtered PUT，A62 exact image `bfbc0b86cc65` 上连续 20 轮（500 次
   NOPUT+RequestProgress）全过，并同时跑 1,000 次 A61 registration、watch-history/update
   场景；focused 50 轮、相关 race 20 轮及 full/race/vet 通过。
+- **Lease A63 final-subsecond TTL truncation（2026-07-17）**：对照 etcd
+  `server/etcdserver/v3_server.go:leaseTimeToLive` 的
+  `int64(le.Remaining().Seconds())`，live lease 最后不足 1 秒时应返回 `TTL=0`，lease 真正从
+  lessor 删除后才返回 `TTL=-1`。kind control-plane 的 reference etcd 对 2s lease 实测连续
+  多次 `remaining(0s)` 后才 `already expired`。KubeBrain 原 `remainingTTL` 特判
+  `deadline still future && truncated==0 -> 1`，客户端只能看到 `1 -> -1`。现删除该向上取整，
+  保留过期 duration clamp 到 0。`TestRemainingTTLTruncatesLiveSubsecondToZeroLikeEtcd`
+  直接钉死 1.5s→1、0.5s→0、past→0；官方 client/v3
+  `TestLeaseTimeToLiveReportsZeroBeforeExpiry` 要求完整观察 `0 -> -1`。A62 exact image 稳定
+  复现未见 0，A63 exact image `9afcd402886b` 连续 10 个 2s lease 生命周期全过，并同时回归
+  A62 filtered-watch；focused/race 各 100 轮及 full/race/vet 通过。
 
 ### P1：通用服务能力
 

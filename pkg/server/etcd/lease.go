@@ -878,9 +878,6 @@ func remainingTTL(st *leaseState) int64 {
 	if ttl < 0 {
 		return 0
 	}
-	if ttl == 0 && time.Now().Before(st.deadline) {
-		return 1
-	}
 	return ttl
 }
 
