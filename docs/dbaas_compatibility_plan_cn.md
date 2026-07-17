@@ -1048,6 +1048,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   MaxInt64 lease 的 leader pod，replacement leader reload 后 lease/key 均存活、首个 auto ID
   仍 positive/distinct。focused/race 各 100 轮及 full/race/vet 通过，failover 后 3/3
   replacement pods 均 zero restart。
+- **Lease A65 atomic revoke metadata deletion（2026-07-17）**：对照 etcd
+  `server/lease/lessor.go:Lessor.Revoke`，attached key 与 lease backend metadata 必须位于
+  同一个 backend transaction。KubeBrain 原先先以 `TxnApply` 提交 user key 和 attachment
+  index 删除，再单独 `InternalDelete` lease metadata；若两次提交之间进程退出，新 leader
+  会从残留 metadata 恢复一个已经没有 key 的 lease，且客户端已收到 revoke key 删除。
+  现 revoke 与自然过期均把 lease metadata delete 作为 internal op 加入同一个
+  `TxnApply`，提交成功后才清理内存 lease；即使 attachment 指向的 user key 已不存在或已换绑，
+  也会回收 stale index。注入 combined transaction failure 的单元测试确认 key、metadata、
+  TTL 和 attached-key index 全部保留，regrant ordering test 也改为拦截 transaction 内的
+  metadata delete。新增官方 client/v3 黑盒测试以 reverse lexical 顺序挂载两个 key，
+  要求 revoke response、两个排序后的 DELETE event 共用同一 revision，随后 range 为空且
+  TTL=-1。atomic focused 连续 100 轮、timer-heavy focused 连续 50 轮、focused race 连续
+  100 轮及 full/race/vet 通过；三副本 TiKV/PD exact image `133c27c01042` 为 3/3 ready、
+  zero restart，atomic revoke、signed-ID lifecycle 与 TTL boundary 联合场景连续 20 轮通过。
 
 ### P1：通用服务能力
 

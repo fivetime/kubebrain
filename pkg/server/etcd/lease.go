@@ -647,7 +647,7 @@ func (m *leaseManager) deleteLeasedKey(ctx context.Context, id int64, key string
 // in the same TiKV transaction and therefore add no revision of their own.
 func (m *leaseManager) deleteLeasedKeysAtomic(ctx context.Context, id int64, keys []string) (uint64, error) {
 	for attempt := 0; attempt < 4; attempt++ {
-		ops := make([]backend.TxnWriteOp, 0, len(keys)*2)
+		ops := make([]backend.TxnWriteOp, 0, len(keys)*2+1)
 		guards := make([]backend.TxnGuard, 0, len(keys))
 		for _, key := range keys {
 			m.leaseMu.Lock()
@@ -660,18 +660,20 @@ func (m *leaseManager) deleteLeasedKeysAtomic(ctx context.Context, id int64, key
 			if err != nil {
 				return 0, err
 			}
-			if len(resp.Kvs) == 0 || resp.Kvs[0].Lease != id {
-				continue
+			if len(resp.Kvs) > 0 && resp.Kvs[0].Lease == id {
+				ops = append(ops, backend.TxnWriteOp{Delete: true, Key: []byte(key)})
+				guards = append(guards, backend.TxnGuard{Key: []byte(key), Revision: uint64(resp.Kvs[0].ModRevision)})
 			}
-			ops = append(ops,
-				backend.TxnWriteOp{Delete: true, Key: []byte(key)},
-				backend.TxnWriteOp{Delete: true, Internal: true, Key: leaseAttachKey(key)},
-			)
-			guards = append(guards, backend.TxnGuard{Key: []byte(key), Revision: uint64(resp.Kvs[0].ModRevision)})
+			// Reclaim the durable binding even if the user key is already gone or
+			// no longer carries this lease. leaseWriteMu excludes a concurrent
+			// rebind while this snapshot commits.
+			ops = append(ops, backend.TxnWriteOp{Delete: true, Internal: true, Key: leaseAttachKey(key)})
 		}
-		if len(ops) == 0 {
-			return m.srv.backend.GetCurrentRevision(), nil
-		}
+		// Match etcd lessor.Revoke: lease metadata and every attached key are
+		// deleted by one backend transaction. A crash can therefore observe
+		// neither side or both, never resurrect an empty lease after its keys
+		// were already committed deleted.
+		ops = append(ops, backend.TxnWriteOp{Delete: true, Internal: true, Key: leaseStorageKey(id)})
 		prevKV := make([]bool, len(ops))
 		_, rev, _, err := m.srv.backend.TxnApply(ctx, ops, guards, prevKV)
 		if errors.Is(err, backend.ErrTxnGuardConflict) {
@@ -698,8 +700,8 @@ func (m *leaseManager) revokeLeaseLocked(ctx context.Context, id int64) (uint64,
 	if err != nil {
 		return 0, err
 	}
-	_, err = m.removeLease(ctx, id)
-	return rev, err
+	m.forgetLease(id)
+	return rev, nil
 }
 
 func (m *leaseManager) expireLease(id int64) {
@@ -727,7 +729,7 @@ func (m *leaseManager) expireLease(id int64) {
 		return
 	}
 	// Every bound key is gone; now drop the lease record and attachment records.
-	_, _ = m.removeLease(ctx, id)
+	m.forgetLease(id)
 }
 
 // leaseKeysSnapshot returns a copy of the keys currently attached to lease id
@@ -760,35 +762,22 @@ func (m *leaseManager) retryLeaseExpiry(id int64) {
 	st.timer.Reset(leaseExpiryRetryInterval)
 }
 
-func (m *leaseManager) removeLease(ctx context.Context, id int64) ([]string, error) {
+func (m *leaseManager) forgetLease(id int64) {
 	m.leaseMu.Lock()
 	st, ok := m.leases[id]
 	if !ok {
 		m.leaseMu.Unlock()
-		return nil, leaseNotFound(id)
+		return
 	}
 	if st.timer != nil {
 		st.timer.Stop()
 	}
-	keys := make([]string, 0, len(st.keys))
 	for key := range st.keys {
-		keys = append(keys, key)
 		delete(m.keyLeaseIndex, key)
 	}
-	sort.Strings(keys)
 	delete(m.leases, id)
 	atomic.StoreInt64(&m.leasedKeyCount, int64(len(m.keyLeaseIndex)))
 	m.leaseMu.Unlock()
-
-	err := m.deleteLeaseState(ctx, id)
-	// Remove each key's attachment record so the leasekeys/ keyspace does not leak
-	// live records pointing at a now-deleted lease (recovery skips orphans, but they
-	// would never be reclaimed otherwise). Same O(keys) order as the object deletes
-	// the caller performs on expiry.
-	for _, key := range keys {
-		_ = m.detachKeyFromStorage(ctx, key)
-	}
-	return keys, err
 }
 
 func (m *leaseManager) keysInDeleteRange(ctx context.Context, r *etcdserverpb.DeleteRangeRequest) ([]string, error) {

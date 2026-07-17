@@ -62,16 +62,33 @@ type blockingLeaseMetaDeleteBackend struct {
 	once    sync.Once
 }
 
-func (b *blockingLeaseMetaDeleteBackend) InternalDelete(ctx context.Context, key []byte) error {
-	if string(key) == string(b.key) {
-		b.once.Do(func() { close(b.entered) })
-		select {
-		case <-b.release:
-		case <-ctx.Done():
-			return ctx.Err()
+type failAtomicLeaseRevokeBackend struct {
+	BackendShim
+	leaseID int64
+}
+
+func (b *failAtomicLeaseRevokeBackend) TxnApply(ctx context.Context, ops []backend.TxnWriteOp, guards []backend.TxnGuard, prevKV []bool) ([]*etcdserverpb.ResponseOp, uint64, []backend.TxnWriteResult, error) {
+	for _, op := range ops {
+		if op.Delete && op.Internal && string(op.Key) == string(leaseStorageKey(b.leaseID)) {
+			return nil, 0, nil, errFakeDelete
 		}
 	}
-	return b.BackendShim.InternalDelete(ctx, key)
+	return b.BackendShim.TxnApply(ctx, ops, guards, prevKV)
+}
+
+func (b *blockingLeaseMetaDeleteBackend) TxnApply(ctx context.Context, ops []backend.TxnWriteOp, guards []backend.TxnGuard, prevKV []bool) ([]*etcdserverpb.ResponseOp, uint64, []backend.TxnWriteResult, error) {
+	for _, op := range ops {
+		if op.Delete && op.Internal && string(op.Key) == string(b.key) {
+			b.once.Do(func() { close(b.entered) })
+			select {
+			case <-b.release:
+			case <-ctx.Done():
+				return nil, 0, nil, ctx.Err()
+			}
+			break
+		}
+	}
+	return b.BackendShim.TxnApply(ctx, ops, guards, prevKV)
 }
 
 func (b *blockingLeaseMetaBackend) InternalPut(ctx context.Context, key, value []byte) error {
@@ -213,6 +230,31 @@ func TestLeaseRevokeDeletesAllKeysAtOneRevision(t *testing.T) {
 		require.Empty(t, current.Kvs)
 	}
 	require.Equal(t, uint64(revoked.Header.Revision), server.backend.GetCurrentRevision())
+}
+
+func TestLeaseRevokeTransactionFailureRetainsKeysAndMetadata(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	const leaseID int64 = 1012
+	key := []byte("/registry/leases/atomic-failure")
+	_, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 300, ID: leaseID})
+	require.NoError(t, err)
+	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("value"), Lease: leaseID})
+	require.NoError(t, err)
+
+	server.backend = &failAtomicLeaseRevokeBackend{BackendShim: server.backend, leaseID: leaseID}
+	_, err = server.LeaseRevoke(ctx, &etcdserverpb.LeaseRevokeRequest{ID: leaseID})
+	require.ErrorIs(t, err, errFakeDelete)
+
+	current, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: key})
+	require.NoError(t, err)
+	require.Len(t, current.Kvs, 1, "failed atomic revoke must retain the attached user key")
+	_, err = server.backend.InternalGet(ctx, leaseStorageKey(leaseID))
+	require.NoError(t, err, "failed atomic revoke must retain durable lease metadata")
+	ttl, err := server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: leaseID, Keys: true})
+	require.NoError(t, err)
+	require.Equal(t, [][]byte{key}, ttl.Keys)
 }
 
 func TestLeaseRejectsUnknownLease(t *testing.T) {
