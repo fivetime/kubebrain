@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"math"
 	"sync"
 	"testing"
 	"time"
@@ -337,6 +338,26 @@ func TestLeaseGrantClampsSmallTTLLikeEtcd(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, minLeaseTTL, ttlResp.GrantedTTL)
 	}
+}
+
+func TestAutomaticLeaseIDStaysPositiveAfterMaxExplicitIDReload(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	server.leaseID = 100
+	server.applyLeaseRecords([]leaseRecord{
+		{ID: math.MaxInt64, TTL: 300},
+		{ID: math.MinInt64, TTL: 300},
+		{ID: -1, TTL: 300},
+	}, nil)
+
+	require.Equal(t, int64(100), server.leaseID,
+		"explicit/restored IDs must not reseed etcd's independent auto-ID generator")
+	require.Equal(t, int64(101), server.nextLeaseID())
+
+	overflow := newLeaseManager(nil, math.MaxInt64)
+	require.Equal(t, int64(1), overflow.nextLeaseID(),
+		"automatic IDs wrap within the positive int64 range and skip zero")
 }
 
 func TestLeaseGrantPublishesOnlyAfterMetadataCommit(t *testing.T) {

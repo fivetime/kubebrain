@@ -1033,6 +1033,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `TestLeaseTimeToLiveReportsZeroBeforeExpiry` 要求完整观察 `0 -> -1`。A62 exact image 稳定
   复现未见 0，A63 exact image `9afcd402886b` 连续 10 个 2s lease 生命周期全过，并同时回归
   A62 filtered-watch；focused/race 各 100 轮及 full/race/vet 通过。
+- **Lease A64 signed explicit IDs vs positive auto IDs（2026-07-17）**：对照 etcd
+  `server/etcdserver/v3_server.go:LeaseGrant`（auto ID 对 `reqIDGen.Next()` mask
+  `MaxInt64` 并跳过 0）及 `tests/integration/v3_lease_test.go:TestV3LeaseNegativeID`
+  （explicit ID 支持 `-1/MaxInt64/MinInt64` 并可恢复）。KubeBrain 原 restore 对每条 lease
+  执行 `if id > leaseID { leaseID=id }`；恢复 explicit MaxInt64 后 auto counter 被推到上限，
+  下一次 `atomic.AddInt64` 溢出为 MinInt64，违反 etcd auto ID 只为正数且把 explicit/auto
+  generator 混为一体。现 restore 不再以 explicit ID 重播 generator；`nextLeaseID` mask
+  `MaxInt64` 并跳过 0，极限 wrap 为 1，已有 grant/pending map collision loop 继续兜底。
+  `TestAutomaticLeaseIDStaysPositiveAfterMaxExplicitIDReload` 稳定钉死 old code 的
+  Max→Min overflow 与 fixed 100→101/Max→1；官方 client/v3 对
+  `-1/MaxInt64/MinInt64` 逐一执行 grant/attach/TTL(keys)/revoke，并检查后续 auto positive。
+  三副本 TiKV/PD exact image `666d2d7ad04f` 上 signed lifecycle 连续 20 轮；另实际删除持有
+  MaxInt64 lease 的 leader pod，replacement leader reload 后 lease/key 均存活、首个 auto ID
+  仍 positive/distinct。focused/race 各 100 轮及 full/race/vet 通过，failover 后 3/3
+  replacement pods 均 zero restart。
 
 ### P1：通用服务能力
 

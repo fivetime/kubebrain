@@ -15,6 +15,7 @@
 package etcd
 
 import (
+	"math"
 	"sync"
 	"sync/atomic"
 
@@ -83,5 +84,13 @@ func newLeaseManager(srv *RPCServer, initialID int64) *leaseManager {
 }
 
 func (m *leaseManager) nextLeaseID() int64 {
-	return atomic.AddInt64(&m.leaseID, 1)
+	for {
+		// etcd masks generated request IDs to positive int64 and retries zero.
+		// Explicit lease IDs may use the full signed range, but they must never
+		// force automatic allocation into negative IDs after counter overflow.
+		id := atomic.AddInt64(&m.leaseID, 1) & math.MaxInt64
+		if id != 0 {
+			return id
+		}
+	}
 }

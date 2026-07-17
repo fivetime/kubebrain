@@ -1084,9 +1084,6 @@ func (m *leaseManager) applyLeaseRecords(records []leaseRecord, attachments map[
 		if record.LegacyStorage || len(record.Keys) > 0 {
 			legacy = append(legacy, record.ID)
 		}
-		if st.id > m.leaseID {
-			m.leaseID = st.id
-		}
 		m.leases[st.id] = st
 	}
 	// Per-key attachment records (#17). Attachments for a lease that no longer has
