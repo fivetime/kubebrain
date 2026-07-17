@@ -50,6 +50,77 @@ func TestTxnDifferentialAgainstReferenceEtcd(t *testing.T) {
 	require.Equal(t, etcd, kubebrain)
 }
 
+type unconditionalTxnResult struct {
+	EmptySucceeded   bool
+	EmptyResponses   int
+	EmptyRevision    int64
+	WriteSucceeded   bool
+	WriteResponses   int
+	WriteRevision    int64
+	WrittenValue     string
+	FailureKeyExists bool
+}
+
+func TestTxnUnconditionalFailureBranchDifferentialAgainstReferenceEtcd(t *testing.T) {
+	reference := os.Getenv("REFERENCE_ETCD_ENDPOINT")
+	if reference == "" {
+		t.Skip("set REFERENCE_ETCD_ENDPOINT to run differential compatibility tests")
+	}
+
+	require.Equal(t,
+		runUnconditionalTxnScenario(t, reference, "etcd"),
+		runUnconditionalTxnScenario(t, compatEndpoint(), "kubebrain"),
+	)
+}
+
+func runUnconditionalTxnScenario(t *testing.T, endpoint, instance string) unconditionalTxnResult {
+	t.Helper()
+	cli, err := clientv3.New(clientv3.Config{Endpoints: []string{endpoint}, DialTimeout: 3 * time.Second})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, cli.Close()) })
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	t.Cleanup(cancel)
+	prefix := fmt.Sprintf("/dbaas-txn-unconditional/%s/%d/", instance, time.Now().UnixNano())
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_, _ = cli.Delete(cleanupCtx, prefix, clientv3.WithPrefix())
+	})
+
+	base, err := cli.Get(ctx, prefix, clientv3.WithPrefix())
+	require.NoError(t, err)
+	failureKey := prefix + "failure"
+	empty, err := cli.Txn(ctx).Else(clientv3.OpGet(failureKey)).Commit()
+	require.NoError(t, err)
+
+	writtenKey := prefix + "written"
+	written, err := cli.Txn(ctx).
+		Then(clientv3.OpPut(writtenKey, "value")).
+		Else(clientv3.OpPut(failureKey, "must-not-write")).
+		Commit()
+	require.NoError(t, err)
+	current, err := cli.Get(ctx, prefix, clientv3.WithPrefix())
+	require.NoError(t, err)
+
+	result := unconditionalTxnResult{
+		EmptySucceeded: empty.Succeeded,
+		EmptyResponses: len(empty.Responses),
+		EmptyRevision:  empty.Header.Revision - base.Header.Revision,
+		WriteSucceeded: written.Succeeded,
+		WriteResponses: len(written.Responses),
+		WriteRevision:  written.Header.Revision - base.Header.Revision,
+	}
+	for _, kv := range current.Kvs {
+		switch string(kv.Key) {
+		case writtenKey:
+			result.WrittenValue = string(kv.Value)
+		case failureKey:
+			result.FailureKeyExists = true
+		}
+	}
+	return result
+}
+
 func TestTxnConcurrentCreateDifferentialAgainstReferenceEtcd(t *testing.T) {
 	reference := os.Getenv("REFERENCE_ETCD_ENDPOINT")
 	if reference == "" {

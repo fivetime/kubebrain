@@ -194,6 +194,68 @@ func TestReadonlyTxnWithNonSerializableRangeStillRoutesToLeader(t *testing.T) {
 	require.Equal(t, int64(42), resp.Header.Revision)
 }
 
+func TestTxnWithoutComparesIgnoresNonEmptyFailureBranch(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+
+	failure := []*etcdserverpb.RequestOp{{Request: &etcdserverpb.RequestOp_RequestRange{
+		RequestRange: &etcdserverpb.RangeRequest{Key: []byte("/txn/unreachable")},
+	}}}
+	empty, err := server.Txn(ctx, &etcdserverpb.TxnRequest{Failure: failure})
+	require.NoError(t, err)
+	require.True(t, empty.Succeeded)
+	require.Empty(t, empty.Responses)
+	require.NotNil(t, empty.Header)
+
+	written, err := server.Txn(ctx, &etcdserverpb.TxnRequest{
+		Success: []*etcdserverpb.RequestOp{{Request: &etcdserverpb.RequestOp_RequestPut{
+			RequestPut: &etcdserverpb.PutRequest{Key: []byte("/txn/unconditional"), Value: []byte("value")},
+		}}},
+		Failure: failure,
+	})
+	require.NoError(t, err)
+	require.True(t, written.Succeeded)
+	require.Len(t, written.Responses, 1)
+	require.NotNil(t, written.Responses[0].GetResponsePut())
+
+	stored, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: []byte("/txn/unconditional")})
+	require.NoError(t, err)
+	require.Len(t, stored.Kvs, 1)
+	require.Equal(t, []byte("value"), stored.Kvs[0].Value)
+}
+
+func TestNestedTxnWithoutComparesIgnoresNonEmptyFailureBranch(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	nested := &etcdserverpb.TxnRequest{
+		Success: []*etcdserverpb.RequestOp{{Request: &etcdserverpb.RequestOp_RequestRange{
+			RequestRange: &etcdserverpb.RangeRequest{Key: []byte("/txn/nested/success")},
+		}}},
+		Failure: []*etcdserverpb.RequestOp{{Request: &etcdserverpb.RequestOp_RequestPut{
+			RequestPut: &etcdserverpb.PutRequest{Key: []byte("/txn/nested/failure"), Value: []byte("must-not-write")},
+		}}},
+	}
+	resp, err := server.Txn(context.Background(), &etcdserverpb.TxnRequest{
+		Success: []*etcdserverpb.RequestOp{{Request: &etcdserverpb.RequestOp_RequestTxn{
+			RequestTxn: nested,
+		}}},
+	})
+	require.NoError(t, err)
+	require.True(t, resp.Succeeded)
+	require.Len(t, resp.Responses, 1)
+	nestedResp := resp.Responses[0].GetResponseTxn()
+	require.NotNil(t, nestedResp)
+	require.True(t, nestedResp.Succeeded)
+	require.Len(t, nestedResp.Responses, 1)
+	require.NotNil(t, nestedResp.Responses[0].GetResponseRange())
+
+	stored, err := server.Range(context.Background(), &etcdserverpb.RangeRequest{Key: []byte("/txn/nested/failure")})
+	require.NoError(t, err)
+	require.Empty(t, stored.Kvs)
+}
+
 func TestHistoricalRangeUsesDurableFollowerWatermark(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

@@ -1811,6 +1811,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   -w json` 与临时 reference etcd 差分：两端均返回完整非零四字段、4 KVs、Count=4。
   最终三个 Pod Ready、zero restart，无 error/Panic/Fatal，运行时 exact image
   `517e5a8f66891a5da531ab15b6fb67ebf7e8c64f1a731d72b44ccc6034656fa8`。
+- **Txn A108 unconditional Success with unreachable Failure（2026-07-17）**：
+  对照 reference etcd 的 Txn apply 选择规则发现，合法请求在 `Compare` 为空时总是
+  选择 `Success`；即使 `Failure` 非空也不会执行。KubeBrain 原先只把
+  `Compare`、`Failure` 同时为空识别为 simple Txn，因此这类请求会落入
+  `unsupported transaction`，并向官方 client/v3 泄漏 gRPC `Unknown`。
+
+  现无 Compare 的请求统一进入 generic atomic Txn executor；不可达的 Failure 仍由
+  入口完成结构校验、操作数限制和鉴权，但不再影响分支选择。顶层与嵌套回归分别固定
+  空 Success、带写 Success 及不可达 Failure 不产生读响应或写入。focused 普通
+  30 轮、focused race 10 轮、`go test ./...`、`go vet ./...`、compat module
+  `go vet ./...` 与完整 server race（230.819s）通过。A108 镜像滚动到三副本
+  KubeBrain + 独立 TiKV/PD 后，官方 client/v3 对临时 reference etcd 与
+  `127.0.0.1:4379` 连续 10 轮差分，Succeeded、响应数、相对 revision、Success
+  写值及 Failure key 不存在全部一致。最终三个 Pod Ready、zero restart，外部端点
+  status/health 正常，运行时 exact image
+  `6335acb1c5826769d61888ac08d5ccef0d79e076c58ef8ac1495c32c897457d1`。
 
 ### P1：通用服务能力
 

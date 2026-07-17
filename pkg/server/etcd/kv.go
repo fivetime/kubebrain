@@ -504,9 +504,9 @@ func (s *RPCServer) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etc
 	} else if ok := isCompact(txn); ok {
 		response, err = s.compact(ctx, txn)
 		methodTag = metrics.Tag("method", "compact")
-	} else if isSimpleSuccessTxn(txn) {
+	} else if isUnconditionalTxn(txn) {
 		response, err = s.executeGenericTxn(ctx, txn)
-		methodTag = metrics.Tag("method", "txn-simple")
+		methodTag = metrics.Tag("method", "txn-unconditional")
 	} else if isComparableTxn(txn) {
 		response, err = s.executeGenericTxn(ctx, txn)
 		methodTag = metrics.Tag("method", "txn-compare")
@@ -1133,8 +1133,11 @@ func isUpdate(txn *etcdserverpb.TxnRequest) (writeShape, bool) {
 	return writeShape{}, false
 }
 
-func isSimpleSuccessTxn(txn *etcdserverpb.TxnRequest) bool {
-	if len(txn.Compare) != 0 || len(txn.Failure) != 0 {
+// With no compares etcd unconditionally selects Success. Failure still has to
+// pass request validation and authorization, but its presence does not make the
+// transaction shape unsupported.
+func isUnconditionalTxn(txn *etcdserverpb.TxnRequest) bool {
+	if len(txn.Compare) != 0 {
 		return false
 	}
 	return txnOpsSupported(txn.Success)
