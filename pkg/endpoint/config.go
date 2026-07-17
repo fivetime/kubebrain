@@ -102,6 +102,7 @@ type Config struct {
 	MaxRequestsInFlight       uint32
 	MaxRequestRate            uint32
 	RequestRateBurst          uint32
+	MaxDeleteRangeKeys        uint32
 	MaxWatches                uint32
 	GRPCKeepAliveMinTime      time.Duration
 	GRPCKeepAliveInterval     time.Duration
@@ -162,6 +163,7 @@ func (c *Config) getServerConfig() server.Config {
 		MaxRequestsInFlight: c.MaxRequestsInFlight,
 		MaxRequestRate:      c.MaxRequestRate,
 		RequestRateBurst:    c.RequestRateBurst,
+		MaxDeleteRangeKeys:  c.MaxDeleteRangeKeys,
 		MaxWatches:          c.MaxWatches,
 		AuthToken:           c.AuthToken,
 		BcryptCost:          c.BcryptCost,

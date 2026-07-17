@@ -918,14 +918,7 @@ func (s *RPCServer) DeleteRange(ctx context.Context, r *etcdserverpb.DeleteRange
 	if keyErr != nil {
 		return nil, keyErr
 	}
-	var response *etcdserverpb.DeleteRangeResponse
-	var err error
-	leasedDelete := s.hasLeasedKey(deletedKeys)
-	if leasedDelete {
-		response, err = s.deleteRangeWithAttachments(ctx, r, deletedKeys)
-	} else {
-		response, err = s.backend.DeleteRange(ctx, r)
-	}
+	response, err := s.deleteRangeWithAttachments(ctx, r, deletedKeys)
 	successTag := getSuccessMetricTagByErr(err)
 	s.metricCli.EmitCounter("write", 1, metrics.Tag("method", "delete-range"), successTag, errClassTag(err))
 	s.metricCli.EmitHistogram("write.latency", time.Since(startTime).Seconds(), metrics.Tag("method", "delete-range"), successTag)
@@ -1461,12 +1454,9 @@ func (s *RPCServer) executeTxnWithCursor(ctx context.Context, txn *etcdserverpb.
 				if err != nil {
 					return nil, err
 				}
-				deleteResp, err = s.backend.DeleteRange(ctx, del)
+				deleteResp, err = s.deleteRangeWithAttachments(ctx, del, deletedKeys)
 				if err != nil {
 					return nil, err
-				}
-				for _, key := range deletedKeys {
-					s.unbindKeyFromLease(ctx, key)
 				}
 			}
 			resp.Header = deleteResp.Header

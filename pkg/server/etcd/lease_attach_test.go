@@ -295,6 +295,16 @@ type failDeleteShim struct {
 	fail    bool
 }
 
+type recordingDeleteRangeListShim struct {
+	BackendShim
+	limit int64
+}
+
+func (s *recordingDeleteRangeListShim) List(ctx context.Context, r *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
+	s.limit = r.Limit
+	return s.BackendShim.List(ctx, r)
+}
+
 type demoteBeforeTxnApplyShim struct {
 	BackendShim
 	demote func()
@@ -635,6 +645,101 @@ func TestLargeLeasedDeleteRangeFailureIsAtomic(t *testing.T) {
 		_, err = server.backend.InternalGet(ctx, leaseAttachKey(key))
 		require.NoError(t, err)
 	}
+}
+
+func TestLargeLeaselessDeleteRangeFailureIsAtomic(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	const keyCount = 129
+	prefix := "/registry/events/large-plain-delete-failure/"
+	keys := make([]string, 0, keyCount)
+	for i := 0; i < keyCount; i++ {
+		key := fmt.Sprintf("%s%03d", prefix, i)
+		keys = append(keys, key)
+		_, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: []byte(key), Value: []byte("value")})
+		require.NoError(t, err)
+	}
+
+	server.backend = &failDeleteShim{
+		BackendShim: server.backend,
+		failKey:     keys[len(keys)-1],
+		fail:        true,
+	}
+	before := server.backend.GetCurrentRevision()
+	_, err := server.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{
+		Key: []byte(prefix), RangeEnd: prefixEnd([]byte(prefix)),
+	})
+	require.ErrorIs(t, err, errFakeDelete)
+	require.Equal(t, before, server.backend.GetCurrentRevision())
+
+	remaining, err := server.Range(ctx, &etcdserverpb.RangeRequest{
+		Key: []byte(prefix), RangeEnd: prefixEnd([]byte(prefix)),
+	})
+	require.NoError(t, err)
+	require.Len(t, remaining.Kvs, keyCount)
+}
+
+func TestDeleteRangeKeyLimitRejectsBeforeMutation(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	prefix := "/registry/events/delete-limit/"
+	for i := 0; i < 4; i++ {
+		_, err := server.Put(ctx, &etcdserverpb.PutRequest{
+			Key: []byte(fmt.Sprintf("%s%d", prefix, i)), Value: []byte("value"),
+		})
+		require.NoError(t, err)
+	}
+	recorder := &recordingDeleteRangeListShim{BackendShim: server.backend}
+	server.backend = recorder
+	server.SetMaxDeleteRangeKeys(3)
+	before := server.backend.GetCurrentRevision()
+
+	_, err := server.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{
+		Key: []byte(prefix), RangeEnd: prefixEnd([]byte(prefix)),
+	})
+	require.Equal(t, codes.ResourceExhausted, status.Code(err))
+	require.Equal(t, "etcdserver: too many requests", status.Convert(err).Message())
+	require.Equal(t, int64(4), recorder.limit, "admission scan must stop at limit+1")
+	require.Equal(t, before, server.backend.GetCurrentRevision())
+	remaining, err := server.Range(ctx, &etcdserverpb.RangeRequest{
+		Key: []byte(prefix), RangeEnd: prefixEnd([]byte(prefix)),
+	})
+	require.NoError(t, err)
+	require.Len(t, remaining.Kvs, 4)
+}
+
+func TestTxnDeleteRangeCannotBypassKeyLimit(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	prefix := "/registry/events/txn-delete-limit/"
+	for i := 0; i < 3; i++ {
+		_, err := server.Put(ctx, &etcdserverpb.PutRequest{
+			Key: []byte(fmt.Sprintf("%s%d", prefix, i)), Value: []byte("value"),
+		})
+		require.NoError(t, err)
+	}
+	server.SetMaxDeleteRangeKeys(2)
+	before := server.backend.GetCurrentRevision()
+
+	_, err := server.Txn(ctx, &etcdserverpb.TxnRequest{
+		Success: []*etcdserverpb.RequestOp{{
+			Request: &etcdserverpb.RequestOp_RequestDeleteRange{
+				RequestDeleteRange: &etcdserverpb.DeleteRangeRequest{
+					Key: []byte(prefix), RangeEnd: prefixEnd([]byte(prefix)),
+				},
+			},
+		}},
+	})
+	require.Equal(t, codes.ResourceExhausted, status.Code(err))
+	require.Equal(t, before, server.backend.GetCurrentRevision())
+	remaining, err := server.Range(ctx, &etcdserverpb.RangeRequest{
+		Key: []byte(prefix), RangeEnd: prefixEnd([]byte(prefix)),
+	})
+	require.NoError(t, err)
+	require.Len(t, remaining.Kvs, 3)
 }
 
 // TestExpiryKeepsLeaseAndRecordWhenKeyDeleteFails pins #36: expiry deletes the

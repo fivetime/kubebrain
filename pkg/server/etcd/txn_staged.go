@@ -21,6 +21,7 @@ import (
 
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/mvccpb"
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/kubewharf/kubebrain/pkg/backend"
@@ -201,9 +202,13 @@ func (e *stagedTxnExecutor) put(r *etcdserverpb.PutRequest) (*etcdserverpb.PutRe
 }
 
 func (e *stagedTxnExecutor) deleteRange(r *etcdserverpb.DeleteRangeRequest) (*etcdserverpb.DeleteRangeResponse, error) {
-	kvs, err := e.currentRange(r.Key, r.RangeEnd)
+	kvs, err := e.currentRangeLimited(r.Key, r.RangeEnd, e.srv.maxDeleteRangeKeys)
 	if err != nil {
 		return nil, err
+	}
+	if e.srv.maxDeleteRangeKeys > 0 && len(kvs) > int(e.srv.maxDeleteRangeKeys) {
+		e.srv.metricCli.EmitCounter("delete_range.admission.rejected", 1)
+		return nil, rpctypes.ErrGRPCRequestTooManyRequests
 	}
 	resp := &etcdserverpb.DeleteRangeResponse{Header: txnHeader(e.visibleRevision())}
 	for _, kv := range kvs {
@@ -230,12 +235,28 @@ func (e *stagedTxnExecutor) stage(op backend.TxnWriteOp) {
 }
 
 func (e *stagedTxnExecutor) currentRange(start, end []byte) ([]*mvccpb.KeyValue, error) {
+	return e.currentRangeLimited(start, end, 0)
+}
+
+func (e *stagedTxnExecutor) currentRangeLimited(start, end []byte, maxKeys uint32) ([]*mvccpb.KeyValue, error) {
 	if isEmptyNonFromKeyRange(start, end) {
 		return nil, nil
 	}
 	var resp *etcdserverpb.RangeResponse
 	var err error
 	request := &etcdserverpb.RangeRequest{Key: start, RangeEnd: end, Revision: e.baseRev}
+	if maxKeys > 0 && len(end) != 0 {
+		// A prior staged delete may remove a base key from this transaction's
+		// logical view. Read one replacement for each such key plus the overflow
+		// sentinel, keeping the scan bounded without rejecting a valid txn.
+		limit := int64(maxKeys) + 1
+		for key, mutation := range e.mutations {
+			if mutation.op.Delete && txnKeyInRange([]byte(key), start, end) {
+				limit++
+			}
+		}
+		request.Limit = limit
+	}
 	if len(end) == 0 {
 		resp, err = e.srv.backend.Get(e.ctx, request)
 	} else {

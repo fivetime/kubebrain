@@ -62,6 +62,9 @@ type Config struct {
 	// RequestRateBurst is the token bucket capacity. Both zero disable it.
 	MaxRequestRate   uint32
 	RequestRateBurst uint32
+	// MaxDeleteRangeKeys bounds keys in one atomic range deletion. Zero keeps
+	// etcd's unlimited behavior.
+	MaxDeleteRangeKeys uint32
 	// MaxWatches limits active logical watches per process. One gRPC Watch
 	// stream can multiplex many watches, so the RPC limit cannot substitute it.
 	// Zero preserves etcd's unlimited behavior.

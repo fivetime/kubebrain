@@ -108,6 +108,7 @@ func NewOptions() *KubeBrainOption {
 			MaxRequestsInFlight:       0,
 			MaxRequestRate:            0,
 			RequestRateBurst:          0,
+			MaxDeleteRangeKeys:        0,
 			MaxWatches:                0,
 			GRPCKeepAliveMinTime:      5 * time.Second,
 			GRPCKeepAliveInterval:     2 * time.Hour,
@@ -151,6 +152,7 @@ func (o *KubeBrainOption) AddFlags(fs *pflag.FlagSet) {
 	fs.Uint32Var(&o.epsConf.MaxRequestsInFlight, "max-requests-inflight", o.epsConf.MaxRequestsInFlight, "Maximum concurrent RPCs accepted by each public client endpoint; 0 disables the instance-wide limit.")
 	fs.Uint32Var(&o.epsConf.MaxRequestRate, "max-request-rate", o.epsConf.MaxRequestRate, "Maximum public client request messages accepted per second; unary RPCs and each inbound stream message count once; 0 disables together with --request-rate-burst=0.")
 	fs.Uint32Var(&o.epsConf.RequestRateBurst, "request-rate-burst", o.epsConf.RequestRateBurst, "Token bucket burst for --max-request-rate; must be positive when rate limiting is enabled and 0 when disabled.")
+	fs.Uint32Var(&o.epsConf.MaxDeleteRangeKeys, "max-delete-range-keys", o.epsConf.MaxDeleteRangeKeys, "Maximum keys permitted in one atomic DeleteRange; 0 preserves etcd's unlimited behavior.")
 	fs.Uint32Var(&o.epsConf.MaxWatches, "max-watches", o.epsConf.MaxWatches, "Maximum active logical watches per process across all multiplexed Watch streams; 0 disables the limit.")
 	fs.DurationVar(&o.epsConf.GRPCKeepAliveMinTime, "grpc-keepalive-min-time", o.epsConf.GRPCKeepAliveMinTime, "Minimum interval that a client should wait before sending keepalive pings; 0 disables enforcement.")
 	fs.DurationVar(&o.epsConf.GRPCKeepAliveInterval, "grpc-keepalive-interval", o.epsConf.GRPCKeepAliveInterval, "Frequency of server-to-client keepalive pings; 0 disables server pings.")

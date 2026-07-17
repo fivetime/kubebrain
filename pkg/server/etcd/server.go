@@ -90,6 +90,7 @@ type RPCServer struct {
 	admissionMu          sync.Mutex
 	requestsInFlight     int64
 	requestRateLimiter   *rate.Limiter
+	maxDeleteRangeKeys   uint32
 	maxWatches           uint32
 	watchQuotaMu         sync.Mutex
 	activeWatches        int64
@@ -120,6 +121,12 @@ func (s *RPCServer) SetRequestRateLimit(requestsPerSecond, burst uint32) {
 		return
 	}
 	s.requestRateLimiter = rate.NewLimiter(rate.Limit(requestsPerSecond), int(burst))
+}
+
+// SetMaxDeleteRangeKeys bounds keys materialized into one atomic DeleteRange.
+// Zero preserves etcd's unlimited behavior.
+func (s *RPCServer) SetMaxDeleteRangeKeys(limit uint32) {
+	s.maxDeleteRangeKeys = limit
 }
 
 // SetMaxWatches sets the process-wide logical watch limit. It is configured

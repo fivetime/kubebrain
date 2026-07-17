@@ -101,6 +101,7 @@ func NewServer(ctx context.Context, backend backend.Backend, metricCli metrics.M
 	s.etcdServer.SetRequestLimits(config.MaxTxnOps, config.MaxRequestBytes)
 	s.etcdServer.SetMaxRequestsInFlight(config.MaxRequestsInFlight)
 	s.etcdServer.SetRequestRateLimit(config.MaxRequestRate, config.RequestRateBurst)
+	s.etcdServer.SetMaxDeleteRangeKeys(config.MaxDeleteRangeKeys)
 	s.etcdServer.SetMaxWatches(config.MaxWatches)
 	s.etcdServer.SetAuthConfiguration(config.AuthToken, config.BcryptCost, config.AuthTokenTTL)
 	s.etcdServer.SetClientCertAuth(config.ClientCertAuth)

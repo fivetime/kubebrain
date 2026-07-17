@@ -2039,15 +2039,13 @@ func TestOrphanIndexSelfHeal(t *testing.T) {
 	})
 }
 
-// TestBackendDeleteRangeChunksLargeRange deletes a range larger than
-// deleteRangeChunkSize to exercise the multi-chunk path: every key must be
-// deleted and reported, even though the chunks commit at their own revisions
-// (a large range cannot be one atomic TiKV txn).
-func TestBackendDeleteRangeChunksLargeRange(t *testing.T) {
+// TestBackendDeleteRangeLargeRangeIsAtomic pins etcd's one-request,
+// one-revision contract above the former 128-key chunk boundary.
+func TestBackendDeleteRangeLargeRangeIsAtomic(t *testing.T) {
 	suite, closer := newTestSuites(t, memKvStorage)
 	defer closer()
 
-	const n = 300 // > deleteRangeChunkSize (128): spans 3 chunks
+	const n = 300
 	baseKey := path.Join(prefix, "delete-range-chunk")
 	keys := make([]string, 0, n)
 	for i := 0; i < n; i++ {
@@ -2067,10 +2065,13 @@ func TestBackendDeleteRangeChunksLargeRange(t *testing.T) {
 	}
 	suite.ast.Len(kvs, n)
 
+	before := suite.backend.GetCurrentRevision()
 	deleteResp, err := suite.backend.DeleteRange(suite.ctx, kvs)
 	suite.ast.NoError(err)
 	suite.ast.True(deleteResp.Succeeded)
 	suite.ast.Len(deleteResp.Kvs, n, "every key in the range must be reported deleted")
+	suite.ast.Equal(before+1, deleteResp.Header.Revision)
+	suite.ast.Equal(before+1, suite.backend.GetCurrentRevision())
 
 	// All keys are gone.
 	for _, key := range keys {

@@ -206,6 +206,7 @@ Exec=--pd-addrs=${PD_ADDRS} \
      --max-requests-inflight=1024 \
      --max-request-rate=2000 \
      --request-rate-burst=4000 \
+     --max-delete-range-keys=1024 \
      --max-watches=10000
 Volume=/var/log/kubebrain:/var/log/kubebrain:Z
 
@@ -237,6 +238,7 @@ EOF
 | `--max-concurrent-streams`               | 每条 client HTTP/2 连接可同时打开的 stream 数；默认 `4294967295` 与 etcd 一致，DBaaS 下调前必须计入 watch、lease keepalive 与普通 RPC |
 | `--max-requests-inflight`                | 每个 KubeBrain 进程公开 client 平面的并发 RPC 总数；默认 `0` 不限制，生产建议按 CPU/延迟压测设置（参考清单为 `1024`）。跨连接生效，超限返回 etcd 标准 `ResourceExhausted: too many requests`；peer 平面保留独立容量 |
 | `--max-request-rate` / `--request-rate-burst` | 每进程公开 client 请求 token bucket；默认必须同为 `0`（关闭），启用时必须同为正数（参考清单 `2000 msg/s`、burst `4000`）。每个 unary RPC 及 stream 入站 message 各计一次，超限返回 etcd 标准 `ResourceExhausted: too many requests`；三副本总入口预算约为单实例的 3 倍 |
+| `--max-delete-range-keys`               | 一个原子 `DeleteRange` 最多删除的 key 数；默认 `0` 保持 etcd 不限数量的行为，生产参考值 `1024` 用于约束 TiKV 单事务大小。服务只扫描 `limit+1` 个 key 即前置拒绝，返回标准 `ResourceExhausted: too many requests`，不分配 revision、不产生部分删除；所有副本必须一致 |
 | `--max-watches`                          | 每个 KubeBrain 进程的逻辑 Watch 总数（同一 gRPC stream 内的 multiplexed Watch 也逐个计数）；默认 `0` 不限制，生产建议按内存与 Watch 建立/事件延迟压测设置（参考清单为 `10000`）。超限 create 返回 created+canceled response 及 `etcdserver: too many requests`，原 stream 保持可用 |
 | `--grpc-keepalive-*`                     | client ping 最小间隔默认 `5s`；server ping interval/timeout 默认 `2h/20s`，对应项设 `0` 可禁用 |
 | `--auth-token` / `--auth-token-ttl`      | 当前仅支持 `simple`（默认），token TTL 默认 `300s`；`jwt,...` 会启动失败而非静默降级 |
@@ -715,6 +717,7 @@ Volume=/etc/kubebrain/certs:/etc/kubebrain/certs:ro
 | 限额    | `--max-requests-inflight`               | 0       | 每进程 client RPC 总并发；0 不限制              |
 | 限额    | `--max-request-rate`                    | 0       | 每进程 client 请求 message/s；与 burst 同时启停 |
 | 限额    | `--request-rate-burst`                  | 0       | 请求速率 token bucket 容量                      |
+| 限额    | `--max-delete-range-keys`               | 0       | 单次原子范围删除 key 上限；0 不限制              |
 | 限额    | `--max-watches`                         | 0       | 每进程逻辑 Watch 总数；0 不限制                  |
 | gRPC    | `--grpc-keepalive-min-time`             | 5s      | client ping 最小间隔；0 关闭 enforcement        |
 | gRPC    | `--grpc-keepalive-interval`             | 2h      | server ping 周期；0 关闭 server ping            |

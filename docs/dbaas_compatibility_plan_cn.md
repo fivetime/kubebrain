@@ -1321,6 +1321,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   create 经 peer 代理成功、第三条 message 标准拒绝。指标精确为 unary rejected=5、
   stream_message rejected=5、inflight=0。最终恢复 2000/4000，部署 3/3 Ready、
   zero restart，实时 endpoint health 与 Put/Get/Delete 通过。
+- **KV A82 atomic large DeleteRange（2026-07-17）**：对照 etcd
+  `server/etcdserver/v3_server.go:DeleteRange` 的单次 Raft apply 语义，发现 KubeBrain
+  非租约范围删除每 128 key 分块提交，导致一个请求产生多个 revision，后续 chunk
+  失败时还会暴露部分删除；租约路径虽已原子化，但普通 key 与事务内 DeleteRange
+  仍可走旧路径。现所有范围删除统一通过一个 `TxnApply`，用户 tombstone、watch event
+  与 lease attachment 在同一 TiKV 事务和同一 MVCC revision 提交，不确定提交沿用事务级
+  解析，不再逐 key 补偿。新增 `--max-delete-range-keys`（默认 `0` 保持 etcd 不限数量，
+  生产清单 `1024`）：启用后以 `limit+1` 的有界扫描在写入前拒绝超大范围，返回标准
+  `ResourceExhausted: etcdserver: too many requests`，不消耗 revision；指标
+  `delete_range_admission_rejected` 可用于发现调用方误用。单元测试覆盖 300 key 后端
+  单 revision、129 个无租约 key 的尾部故障全回滚、上限有界扫描与零写入，并覆盖
+  CLI/config/manifest 传播。full test、受影响包 race 与 full vet 均通过；官方
+  `client/v3` 在三副本 KubeBrain + 独立 TiKV/PD、临时 limit=256 下验证：129 key
+  DeleteRange 返回 129 个 PrevKV 且只推进一个 revision，257 key 的普通与 Txn
+  DeleteRange 均标准拒绝，revision 不变且 257 key 全部保留，指标精确增加 2。
+  exact image
+  `4584b5ed9623b56b8af8df46ec11d1e7c09618d9236342d661ecbf593646f440`；
+  最终恢复 limit=1024，部署 3/3 Ready、zero restart，实时 health 与 CRUD 通过。
 
 ### P1：通用服务能力
 

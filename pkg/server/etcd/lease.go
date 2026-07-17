@@ -27,6 +27,7 @@ import (
 
 	"go.etcd.io/etcd/api/v3/authpb"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"k8s.io/klog/v2"
@@ -1013,27 +1014,26 @@ func (m *leaseManager) keysInDeleteRange(ctx context.Context, r *etcdserverpb.De
 	if isEmptyNonFromKeyRange(r.Key, r.RangeEnd) {
 		return nil, nil
 	}
-	resp, err := m.srv.backend.List(ctx, &etcdserverpb.RangeRequest{
+	listRequest := &etcdserverpb.RangeRequest{
 		Key:      r.Key,
 		RangeEnd: r.RangeEnd,
-	})
+	}
+	if m.srv.maxDeleteRangeKeys > 0 {
+		listRequest.Limit = int64(m.srv.maxDeleteRangeKeys) + 1
+	}
+	resp, err := m.srv.backend.List(ctx, listRequest)
 	if err != nil {
 		return nil, err
+	}
+	if m.srv.maxDeleteRangeKeys > 0 && len(resp.Kvs) > int(m.srv.maxDeleteRangeKeys) {
+		m.srv.metricCli.EmitCounter("delete_range.admission.rejected", 1)
+		return nil, rpctypes.ErrGRPCRequestTooManyRequests
 	}
 	keys := make([]string, 0, len(resp.Kvs))
 	for _, kv := range resp.Kvs {
 		keys = append(keys, string(kv.Key))
 	}
 	return keys, nil
-}
-
-func (m *leaseManager) hasLeasedKey(keys []string) bool {
-	for _, key := range keys {
-		if m.leaseIDForKey(key) != 0 {
-			return true
-		}
-	}
-	return false
 }
 
 // deleteRangeWithAttachments keeps user tombstones and durable lease attachment

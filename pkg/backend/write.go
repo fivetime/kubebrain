@@ -25,7 +25,6 @@ import (
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
 
 	"github.com/kubewharf/kubebrain/pkg/backend/coder"
-	"github.com/kubewharf/kubebrain/pkg/backend/common"
 	"github.com/kubewharf/kubebrain/pkg/storage"
 )
 
@@ -367,11 +366,9 @@ func (b *backend) healOrphanIndex(ctx context.Context, key []byte) (bool, error)
 	return true, nil
 }
 
-// DeleteRange removes a set of live keys in one storage batch. Like etcd, all
-// keys deleted by one range request share the same modification revision.
+// DeleteRange removes a set of live keys atomically. Like etcd, all keys deleted
+// by one range request share the same modification revision.
 func (b *backend) DeleteRange(ctx context.Context, kvs []*proto.KeyValue) (resp *DeleteRangeResponse, err error) {
-	unlock := b.lockLogicalWrite(ctx)
-	defer unlock()
 	ts := time.Now()
 	defer func() {
 		var respRev uint64
@@ -399,143 +396,34 @@ func (b *backend) DeleteRange(ctx context.Context, kvs []*proto.KeyValue) (resp 
 		return resp, nil
 	}
 
-	pending := make([]pendingDelete, 0, len(kvs))
+	ops := make([]TxnWriteOp, 0, len(kvs))
+	guards := make([]TxnGuard, 0, len(kvs))
 	for _, kv := range kvs {
 		if kv == nil || len(kv.Key) == 0 || kv.Revision == 0 {
 			continue
 		}
-		pending = append(pending, pendingDelete{
-			key:         append([]byte(nil), kv.Key...),
-			value:       append([]byte(nil), kv.Value...),
-			oldRevision: kv.Revision,
-		})
+		key := append([]byte(nil), kv.Key...)
+		ops = append(ops, TxnWriteOp{Delete: true, Key: key})
+		guards = append(guards, TxnGuard{Key: key, Revision: kv.Revision})
 	}
-	if len(pending) == 0 {
+	if len(ops) == 0 {
 		return resp, nil
 	}
-	// One giant storage batch fails once the range is large (a single oversized
-	// TiKV transaction is rejected). Split into bounded chunks, each committed as
-	// its own atomic sub-delete at its own revision. This trades etcd's
-	// all-at-one-revision atomicity (impossible on TiKV's bounded txns for a huge
-	// range) for large ranges succeeding; each chunk is still atomic and its watch
-	// events are delivered normally, and a mid-range failure leaves the earlier
-	// chunks durably deleted (reported in resp.Kvs) instead of the whole range
-	// failing. k8s does not issue large multi-key DeleteRanges (DeleteCollection /
-	// namespace teardown delete objects individually), so this affects raw-client /
-	// operational bulk deletes.
-	for start := 0; start < len(pending); start += deleteRangeChunkSize {
-		end := minInt(start+deleteRangeChunkSize, len(pending))
-		chunkKvs, chunkRev, cerr := b.deleteRangeChunk(ctx, pending[start:end])
-		resp.Kvs = append(resp.Kvs, chunkKvs...)
-		if chunkRev != 0 {
-			resp.Header = responseHeader(chunkRev)
+	results, revision, err := b.TxnApply(ctx, ops, guards)
+	if err != nil {
+		resp.Succeeded = false
+		return resp, err
+	}
+	resp.Header = responseHeader(revision)
+	for _, result := range results {
+		if !result.Deleted {
+			continue
 		}
-		if cerr != nil {
-			resp.Succeeded = false
-			return resp, cerr
-		}
+		resp.Kvs = append(resp.Kvs, &proto.KeyValue{
+			Key: result.Key, Value: result.PrevValue, Revision: result.PrevRevision,
+		})
 	}
 	return resp, nil
-}
-
-// deleteRangeChunkSize bounds how many keys one DeleteRange storage transaction
-// deletes, so a large range does not build a single oversized TiKV txn (which the
-// backend rejects). Each chunk is one atomic commit at one revision.
-const deleteRangeChunkSize = 128
-
-// pendingDelete is one validated live key queued for deletion by DeleteRange.
-type pendingDelete struct {
-	key         []byte
-	value       []byte
-	oldRevision uint64
-}
-
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-// deleteRangeChunk atomically deletes one bounded group of already-validated live
-// keys at a single freshly-dealt revision, returning the deleted KVs and that
-// revision. It mirrors the original single-batch DeleteRange body.
-func (b *backend) deleteRangeChunk(ctx context.Context, pending []pendingDelete) ([]*proto.KeyValue, uint64, error) {
-	var maxOldRevision uint64
-	for _, item := range pending {
-		maxOldRevision = maxUint64(maxOldRevision, item.oldRevision)
-	}
-	baseRevision := maxUint64(maxOldRevision, b.GetCurrentRevision())
-	newRevision, dealErr := b.deal(baseRevision)
-	if dealErr != nil {
-		// The revision was already consumed from the TSO; publish an invalid
-		// event so the event collector can skip past it instead of stalling
-		// on it forever (freezing all lists/watches).
-		b.notify(ctx, pending[0].key, nil, newRevision, 0, false, proto.Event_DELETE, dealErr)
-		return nil, newRevision, dealErr
-	}
-	if newRevision <= baseRevision {
-		err := fmt.Errorf("cas failed, new revision is %d existing revision is %d", newRevision, baseRevision)
-		b.notify(ctx, pending[0].key, nil, newRevision, 0, false, proto.Event_DELETE, err)
-		return nil, newRevision, err
-	}
-	newRevisionBytes := append(uint64ToBytes(newRevision), 0)
-	// Fence just before opening the batch (FINDING #39). A rejection is handled by
-	// the same invalid-event path as a commit failure below, so the collector
-	// advances past newRevision instead of stalling.
-	err := b.fenceAdmit(ctx)
-	if err == nil {
-		batch := b.kv.BeginBatchWrite()
-		for _, item := range pending {
-			revisionKey := b.coder.EncodeRevisionKey(item.key)
-			objectKey := b.coder.EncodeObjectKey(item.key, newRevision)
-			batch.CAS(revisionKey, newRevisionBytes, uint64ToBytes(item.oldRevision), 0)
-			batch.Put(objectKey, tombStoneBytes, 0)
-			appendEventLog(b.ks, batch, newRevision, item.key, proto.Event_DELETE, item.oldRevision)
-		}
-		err = b.commitUserBatch(ctx, batch)
-	}
-	if err != nil {
-		// Fill the dealt revision's ring slot with invalid per-key events so
-		// (a) the collector advances past it and (b) an uncertain commit is
-		// re-resolved per key by the async retry queue, exactly like the
-		// single-key delete failure path.
-		invalidEvents := make([]*common.WatchEvent, 0, len(pending))
-		for _, item := range pending {
-			invalidEvents = append(invalidEvents, &common.WatchEvent{
-				Revision:     newRevision,
-				PrevRevision: item.oldRevision,
-				Valid:        false,
-				ResourceVerb: proto.Event_DELETE,
-				Key:          item.key,
-				Value:        item.value,
-				Err:          err,
-			})
-		}
-		b.notifyBatch(invalidEvents)
-		return nil, newRevision, err
-	}
-
-	kvs := make([]*proto.KeyValue, 0, len(pending))
-	watchEvents := make([]*common.WatchEvent, 0, len(pending))
-	for _, item := range pending {
-		kvs = append(kvs, &proto.KeyValue{
-			Key:      item.key,
-			Value:    item.value,
-			Revision: item.oldRevision,
-		})
-		watchEvents = append(watchEvents, &common.WatchEvent{
-			Revision:     newRevision,
-			PrevRevision: item.oldRevision,
-			Valid:        true,
-			ResourceVerb: proto.Event_DELETE,
-			Key:          item.key,
-			Value:        item.value,
-		})
-	}
-	b.notifyBatch(watchEvents)
-	b.waitCommittedRevision(ctx, newRevision) // apply-then-ack (#35)
-	return kvs, newRevision, nil
 }
 
 // Update implements Backend interface
