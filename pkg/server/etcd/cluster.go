@@ -82,7 +82,6 @@ func (s *RPCServer) memberListResponse(members []*etcdserverpb.Member) *etcdserv
 		Header: &etcdserverpb.ResponseHeader{
 			ClusterId: s.backend.ClusterID(),
 			MemberId:  s.memberIDFromAddress(s.backend.GetResourceLock().Identity()),
-			Revision:  int64(s.backend.GetCurrentRevision()),
 		},
 		Members: members,
 	}

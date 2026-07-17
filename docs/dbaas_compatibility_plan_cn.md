@@ -845,6 +845,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   fail-closed，不发送 term 0；确定性测试覆盖 lock observation、unary/watch Header 和无 race。
   exact-image 三副本在 failover 前均报告 Header/top-level term 72，删除 Leader 后新旧副本
   全部收敛到 73；官方 client/v3 双端差分连续 20 轮通过，并检查普通 Range/Watch Header term 为正。
+- **Cluster A48 MemberList Header revision（2026-07-17）**：对照
+  `/root/etcd/server/etcdserver/api/v3rpc/member.go:ClusterServer.header` 确认 Cluster RPC
+  Header 只含 ClusterId、MemberId 与 RaftTerm，不携带 MVCC revision。KubeBrain 曾把
+  TiKV TSO-backed current revision 填入 MemberList，官方 client/v3 双端差分在先写入正
+  revision 后稳定复现 `reference=0`、KubeBrain 为大正数；现移除该字段，保留 interceptor
+  统一填 term。确定性/race/full/vet 均通过，exact-image 三副本逐 Pod 均返回 revision=0、
+  term=74，双端差分连续 20 轮通过；in-cluster `clientv3.Sync` 后 Put/Get 连续 20 轮通过。
+  本次开发 Deployment 未配置 `--initial-cluster`，动态 fallback 在 Leader 仅列自身、Follower
+  仅列自身与 Leader，不能证明三成员 AutoSync；生产 DBaaS 控制面仍必须为稳定身份的所有副本
+  下发相同完整 membership，或后续实现等价的全副本服务发现，不能把该 fallback 当成完成态。
 
 ### P1：通用服务能力
 

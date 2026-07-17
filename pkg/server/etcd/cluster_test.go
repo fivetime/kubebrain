@@ -38,6 +38,7 @@ func TestMemberListReturnsCurrentMember(t *testing.T) {
 	require.NotNil(t, resp.Header)
 	require.NotZero(t, resp.Header.MemberId)
 	require.Equal(t, server.backend.ClusterID(), resp.Header.ClusterId)
+	require.Zero(t, resp.Header.Revision, "etcd cluster response headers do not carry an MVCC revision")
 	require.Len(t, resp.Members, 1)
 	require.Equal(t, "test-peer", resp.Members[0].Name)
 	require.Equal(t, []string{"http://test-peer"}, resp.Members[0].PeerURLs)

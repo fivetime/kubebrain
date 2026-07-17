@@ -2,6 +2,7 @@ package compat
 
 import (
 	"context"
+	"os"
 	"sort"
 	"testing"
 	"time"
@@ -9,6 +10,38 @@ import (
 	"github.com/stretchr/testify/require"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
+
+func TestMemberListHeaderDifferentialAgainstReferenceEtcd(t *testing.T) {
+	reference := os.Getenv("REFERENCE_ETCD_ENDPOINT")
+	if reference == "" {
+		t.Skip("set REFERENCE_ETCD_ENDPOINT to run differential compatibility tests")
+	}
+	referenceRevision := memberListHeaderRevision(t, reference)
+	kubebrainRevision := memberListHeaderRevision(t, compatEndpoint())
+	require.Equal(t, referenceRevision, kubebrainRevision)
+	require.Zero(t, kubebrainRevision)
+}
+
+func memberListHeaderRevision(t *testing.T, endpoint string) int64 {
+	t.Helper()
+	cli, err := clientv3.New(clientv3.Config{Endpoints: []string{endpoint}, DialTimeout: 3 * time.Second})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, cli.Close()) })
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	key := "/dbaas-memberlist/header-revision"
+	put, err := cli.Put(ctx, key, "1")
+	require.NoError(t, err)
+	require.Positive(t, put.Header.Revision)
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_, _ = cli.Delete(cleanupCtx, key)
+	})
+	resp, err := cli.MemberList(ctx)
+	require.NoError(t, err)
+	return resp.Header.Revision
+}
 
 func TestMemberListSupportsOfficialClientSync(t *testing.T) {
 	cli, err := clientv3.New(clientv3.Config{
