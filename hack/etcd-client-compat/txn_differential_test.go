@@ -61,6 +61,91 @@ func TestTxnConcurrentCreateDifferentialAgainstReferenceEtcd(t *testing.T) {
 	require.Equal(t, etcd, kubebrain)
 }
 
+type txnLeaseResult struct {
+	CreateSucceeded bool
+	CreateRevision  int64
+	KeysAfterCreate int
+	DeleteSucceeded bool
+	DeleteRevision  int64
+	DeletePrev      *normalizedKV
+	KeysAfterDelete int
+	DuplicateError  authErrorOutcome
+	DuplicateAbsent bool
+}
+
+func TestTxnLeaseAttachmentDifferentialAgainstReferenceEtcd(t *testing.T) {
+	reference := os.Getenv("REFERENCE_ETCD_ENDPOINT")
+	if reference == "" {
+		t.Skip("set REFERENCE_ETCD_ENDPOINT to run differential compatibility tests")
+	}
+	require.Equal(t,
+		runTxnLeaseScenario(t, reference, "etcd"),
+		runTxnLeaseScenario(t, compatEndpoint(), "kubebrain"),
+	)
+}
+
+func runTxnLeaseScenario(t *testing.T, endpoint, instance string) txnLeaseResult {
+	t.Helper()
+	cli, err := clientv3.New(clientv3.Config{Endpoints: []string{endpoint}, DialTimeout: 3 * time.Second})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, cli.Close()) })
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	t.Cleanup(cancel)
+	prefix := fmt.Sprintf("/dbaas-txn-lease/%s/%d/", instance, time.Now().UnixNano())
+	base, err := cli.Get(ctx, prefix, clientv3.WithPrefix())
+	require.NoError(t, err)
+	baseRev := base.Header.Revision
+	lease, err := cli.Grant(ctx, 300)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_, _ = cli.Revoke(cleanupCtx, lease.ID)
+	})
+	key := prefix + "fast"
+	created, err := cli.Txn(ctx).
+		If(clientv3.Compare(clientv3.ModRevision(key), "=", 0)).
+		Then(clientv3.OpPut(key, "value", clientv3.WithLease(lease.ID))).
+		Else(clientv3.OpGet(key)).Commit()
+	require.NoError(t, err)
+	afterCreate, err := cli.TimeToLive(ctx, lease.ID, clientv3.WithAttachedKeys())
+	require.NoError(t, err)
+	current, err := cli.Get(ctx, key)
+	require.NoError(t, err)
+	require.Len(t, current.Kvs, 1)
+	deleted, err := cli.Txn(ctx).
+		If(clientv3.Compare(clientv3.ModRevision(key), "=", current.Kvs[0].ModRevision)).
+		Then(clientv3.OpDelete(key, clientv3.WithPrevKV())).Commit()
+	require.NoError(t, err)
+	afterDelete, err := cli.TimeToLive(ctx, lease.ID, clientv3.WithAttachedKeys())
+	require.NoError(t, err)
+
+	duplicateKey := prefix + "duplicate"
+	_, duplicateErr := cli.Txn(ctx).Then(
+		clientv3.OpPut(duplicateKey, "temporary", clientv3.WithLease(lease.ID)),
+		clientv3.OpDelete(duplicateKey),
+	).Commit()
+	require.Error(t, duplicateErr)
+	duplicateCurrent, err := cli.Get(ctx, duplicateKey)
+	require.NoError(t, err)
+
+	result := txnLeaseResult{
+		CreateSucceeded: created.Succeeded,
+		CreateRevision:  created.Header.Revision - baseRev,
+		KeysAfterCreate: len(afterCreate.Keys),
+		DeleteSucceeded: deleted.Succeeded,
+		DeleteRevision:  deleted.Header.Revision - baseRev,
+		KeysAfterDelete: len(afterDelete.Keys),
+		DuplicateError:  authError(duplicateErr),
+		DuplicateAbsent: len(duplicateCurrent.Kvs) == 0,
+	}
+	if previous := deleted.Responses[0].GetResponseDeleteRange().PrevKvs; len(previous) == 1 {
+		normalized := normalizeKV(previous[0], prefix, baseRev)
+		result.DeletePrev = &normalized
+	}
+	return result
+}
+
 type concurrentCreateResult struct {
 	Succeeded int
 	Failed    int

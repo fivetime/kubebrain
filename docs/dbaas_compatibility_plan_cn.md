@@ -756,7 +756,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `PrevKv` 直接取同批 pre-read。故障注入拒绝 batch 时证明 value/attachment 同时保留，重试后
   deletion count、旧 value/lease 和 `LeaseTimeToLive(Keys=true)` 与 etcd 一致；扩展 lease 双端
   差分连续 10 轮、完整差分矩阵通过。真实三副本删除后全量滚动重启，存活 lease 从 TiKV
-  恢复后 keys 仍为空。generic Txn 的旧 sequential fallback 尚未纳入本保证，继续单独收敛。
+  恢复后 keys 仍为空。generic Txn 的旧 sequential fallback 当时尚未纳入本保证，后续由 A39 收敛。
+- **Lease A39 Txn fast-shape attachment 原子性（2026-07-17）**：继续审计 A38 留项发现，
+  Kubernetes 风格的 create/update/compare-delete fast shape 会绕过 generic `TxnApply`，先提交
+  用户值再调用 `bindKeyToLease`/`unbindKeyFromLease`，仍存在相同崩溃窗口。dispatcher 现检测
+  请求 lease 或 key 当前 binding：任何会新增、换绑、清除 attachment 的 fast shape 均回落到
+  guarded atomic generic path；纯 leaseless fast shape 保留原优化。generic 单写绕过也已删除，
+  因而所有含写 generic Txn 只走 atomic/staged executor，cursor fallback 仅处理无写分支；重叠
+  Put/Delete 继续按 etcd 在验证层返回 `InvalidArgument: duplicate key given in txn request`。
+  故障注入分别拒绝 leased create/delete batch，证明 key 与 attachment 不会单边出现或消失；
+  新增双端场景覆盖 create、compare-delete+PrevKV、TTL attached keys 与 duplicate rejection，真实
+  TiKV/PD 三副本对 reference etcd 连续 10 轮一致。
 
 ### P1：通用服务能力
 

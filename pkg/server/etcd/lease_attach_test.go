@@ -248,6 +248,91 @@ type blockLeasedPutShim struct {
 	release chan struct{}
 }
 
+type failLeaseMutationShim struct {
+	BackendShim
+	key  string
+	fail bool
+}
+
+func (s *failLeaseMutationShim) TxnApply(ctx context.Context, ops []backend.TxnWriteOp, guards []backend.TxnGuard, prevKV []bool) ([]*etcdserverpb.ResponseOp, uint64, []backend.TxnWriteResult, error) {
+	if s.fail {
+		for _, op := range ops {
+			if !op.Internal && string(op.Key) == s.key {
+				return nil, 0, nil, errFakeDelete
+			}
+		}
+	}
+	return s.BackendShim.TxnApply(ctx, ops, guards, prevKV)
+}
+
+func TestTxnFastShapesMutateLeaseAttachmentsAtomically(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	const leaseID int64 = 9041
+	key := []byte("/registry/lease-fence/fast-shape")
+	_, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 300, ID: leaseID})
+	require.NoError(t, err)
+	shim := &failLeaseMutationShim{BackendShim: server.backend, key: string(key), fail: true}
+	server.backend = shim
+
+	create := &etcdserverpb.TxnRequest{
+		Compare: []*etcdserverpb.Compare{{
+			Key: key, Target: etcdserverpb.Compare_MOD, Result: etcdserverpb.Compare_EQUAL,
+			TargetUnion: &etcdserverpb.Compare_ModRevision{ModRevision: 0},
+		}},
+		Success: []*etcdserverpb.RequestOp{{Request: &etcdserverpb.RequestOp_RequestPut{
+			RequestPut: &etcdserverpb.PutRequest{Key: key, Value: []byte("value"), Lease: leaseID},
+		}}},
+	}
+	_, err = server.Txn(ctx, create)
+	require.ErrorIs(t, err, errFakeDelete)
+	absent, err := shim.Get(ctx, &etcdserverpb.RangeRequest{Key: key})
+	require.NoError(t, err)
+	require.Empty(t, absent.Kvs)
+	_, err = shim.InternalGet(ctx, leaseAttachKey(string(key)))
+	require.Error(t, err, "failed create must not leave an attachment")
+
+	shim.fail = false
+	created, err := server.Txn(ctx, create)
+	require.NoError(t, err)
+	require.True(t, created.Succeeded)
+	stored, err := shim.Get(ctx, &etcdserverpb.RangeRequest{Key: key})
+	require.NoError(t, err)
+	require.Len(t, stored.Kvs, 1)
+	_, err = shim.InternalGet(ctx, leaseAttachKey(string(key)))
+	require.NoError(t, err)
+
+	remove := &etcdserverpb.TxnRequest{
+		Compare: []*etcdserverpb.Compare{{
+			Key: key, Target: etcdserverpb.Compare_MOD, Result: etcdserverpb.Compare_EQUAL,
+			TargetUnion: &etcdserverpb.Compare_ModRevision{ModRevision: stored.Kvs[0].ModRevision},
+		}},
+		Success: []*etcdserverpb.RequestOp{{Request: &etcdserverpb.RequestOp_RequestDeleteRange{
+			RequestDeleteRange: &etcdserverpb.DeleteRangeRequest{Key: key, PrevKv: true},
+		}}},
+	}
+	shim.fail = true
+	_, err = server.Txn(ctx, remove)
+	require.ErrorIs(t, err, errFakeDelete)
+	stillPresent, err := shim.Get(ctx, &etcdserverpb.RangeRequest{Key: key})
+	require.NoError(t, err)
+	require.Len(t, stillPresent.Kvs, 1)
+	_, err = shim.InternalGet(ctx, leaseAttachKey(string(key)))
+	require.NoError(t, err, "failed delete must retain its attachment")
+
+	shim.fail = false
+	removed, err := server.Txn(ctx, remove)
+	require.NoError(t, err)
+	require.True(t, removed.Succeeded)
+	deleteResponse := removed.Responses[0].GetResponseDeleteRange()
+	require.Equal(t, int64(1), deleteResponse.Deleted)
+	require.Equal(t, []byte("value"), deleteResponse.PrevKvs[0].Value)
+	require.Equal(t, leaseID, deleteResponse.PrevKvs[0].Lease)
+	_, err = shim.InternalGet(ctx, leaseAttachKey(string(key)))
+	require.Error(t, err, "successful delete must remove its attachment")
+}
+
 func (s *blockLeasedPutShim) TxnApply(ctx context.Context, ops []backend.TxnWriteOp, guards []backend.TxnGuard, prevKV []bool) ([]*etcdserverpb.ResponseOp, uint64, []backend.TxnWriteResult, error) {
 	for _, op := range ops {
 		if !op.Internal && !op.Delete && op.Lease != 0 {

@@ -366,7 +366,7 @@ func (s *RPCServer) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etc
 		methodTag, successTag metrics.T
 		failedKey             string
 	)
-	if sh, ok := isCreate(txn); ok {
+	if sh, ok := isCreate(txn); ok && !s.writeShapeTouchesLease(sh) {
 		var put *etcdserverpb.PutRequest
 		put, err = s.putWithEffectiveOptions(ctx, sh.put)
 		if err != nil {
@@ -382,7 +382,7 @@ func (s *RPCServer) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etc
 		} else {
 			s.bindKeyToLease(ctx, put.Lease, string(put.Key))
 		}
-	} else if sh, ok := isCompareDelete(txn); ok {
+	} else if sh, ok := isCompareDelete(txn); ok && !s.writeShapeTouchesLease(sh) {
 		response, err = s.backend.CompareDelete(ctx, sh.deleteReq, sh.rev, sh.includeFailure)
 		methodTag = metrics.Tag("method", "delete")
 		if err != nil || !response.Succeeded {
@@ -390,7 +390,7 @@ func (s *RPCServer) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etc
 		} else {
 			s.unbindKeyFromLease(ctx, string(sh.key))
 		}
-	} else if sh, ok := isDelete(txn); ok {
+	} else if sh, ok := isDelete(txn); ok && !s.writeShapeTouchesLease(sh) {
 		response, err = s.backend.Delete(ctx, sh.key, sh.rev, sh.includeFailure)
 		methodTag = metrics.Tag("method", "delete")
 		if err != nil || !response.Succeeded {
@@ -398,7 +398,7 @@ func (s *RPCServer) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etc
 		} else {
 			s.unbindKeyFromLease(ctx, string(sh.key))
 		}
-	} else if sh, ok := isUpdate(txn); ok {
+	} else if sh, ok := isUpdate(txn); ok && !s.writeShapeTouchesLease(sh) {
 		var put *etcdserverpb.PutRequest
 		put, err = s.putWithEffectiveOptions(ctx, sh.put)
 		if err != nil {
@@ -964,6 +964,17 @@ type writeShape struct {
 	includeFailure bool
 }
 
+func (s *RPCServer) writeShapeTouchesLease(shape writeShape) bool {
+	if shape.put != nil && shape.put.Lease != 0 {
+		return true
+	}
+	key := shape.key
+	if len(key) == 0 && shape.put != nil {
+		key = shape.put.Key
+	}
+	return len(key) != 0 && s.leaseIDForKey(string(key)) != 0
+}
+
 func isCreate(txn *etcdserverpb.TxnRequest) (writeShape, bool) {
 	if len(txn.Compare) == 1 &&
 		txn.Compare[0].Target == etcdserverpb.Compare_MOD &&
@@ -1179,12 +1190,6 @@ func (s *RPCServer) tryAtomicGenericTxn(ctx context.Context, txn *etcdserverpb.T
 	}
 	if !eligible || len(plan.writes) == 0 {
 		return nil, false, nil
-	}
-	if len(plan.writes) < 2 && len(guards) == 0 && len(paths) == 1 {
-		write := plan.writes[0]
-		if write.Lease == 0 && s.leaseIDForKey(string(write.Key)) == 0 {
-			return nil, false, nil
-		}
 	}
 	plan.root = root
 	// Validate all put leases up front: an atomic txn must reject as a whole if a
