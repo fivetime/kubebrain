@@ -45,6 +45,7 @@ var (
 )
 
 const defaultWatchFragmentBytes = 2 * 1024 * 1024
+const onDemandProgressSyncWait = 100 * time.Millisecond
 
 // watcher correspond to one stream, one watcher has many watches
 type watcher struct {
@@ -107,6 +108,43 @@ func (w *watcher) minSyncedRevision() (uint64, bool) {
 		}
 	}
 	return minRev, found
+}
+
+// waitStreamProgressRevision returns the minimum delivered revision once every
+// active watch has caught up through target. A stream-wide WatchId=-1 progress
+// response is safe only at that floor; otherwise clientv3 would broadcast a
+// revision that a slower watch has not delivered yet.
+func (w *watcher) waitStreamProgressRevision(ctx context.Context, target uint64, timeout time.Duration) (uint64, bool) {
+	if target == 0 {
+		return 0, false
+	}
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	ticker := time.NewTicker(2 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		snapshot := w.syncedRevSnapshot()
+		var minRev uint64
+		allSynced := len(snapshot) > 0
+		for _, rev := range snapshot {
+			if minRev == 0 || rev < minRev {
+				minRev = rev
+			}
+			if rev < target {
+				allSynced = false
+			}
+		}
+		if allSynced {
+			return minRev, true
+		}
+		select {
+		case <-ctx.Done():
+			return 0, false
+		case <-deadline.C:
+			return 0, false
+		case <-ticker.C:
+		}
+	}
 }
 
 func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) error {
@@ -183,6 +221,7 @@ func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) error {
 			w.CancelRequest(msg.GetCancelRequest().WatchId)
 		} else if msg.GetProgressRequest() != nil {
 			s.metricCli.EmitCounter("watch.progress.request", 1)
+			targetRevision := s.backend.GetPublishedRevision()
 			// Kick one immediate marker fan-out so the watermark converges NOW
 			// rather than on the next ticker beat. The snapshot answered below is
 			// still the current (possibly one-interval-stale) value — markers ride
@@ -191,6 +230,31 @@ func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) error {
 			// k8s 1.37 ConsistentListFromCache convergence at poll granularity
 			// instead of ticker granularity (and off its 3s LIST-fallback cliff).
 			s.backend.KickWatchProgress()
+			snapshot := w.syncedRevSnapshot()
+			if len(snapshot) == 1 {
+				var singleRev uint64
+				for _, rev := range snapshot {
+					singleRev = rev
+				}
+				if singleRev > 0 {
+					if err := w.Send(&etcdserverpb.WatchResponse{
+						Header: txnHeader(int64(singleRev)), WatchId: -1,
+					}); err != nil {
+						klog.ErrorS(err, "watch send stream progress response err", "watcher", w.id)
+						return err
+					}
+					continue
+				}
+			}
+			if rev, synced := w.waitStreamProgressRevision(ws.Context(), targetRevision, onDemandProgressSyncWait); synced {
+				if err := w.Send(&etcdserverpb.WatchResponse{
+					Header: txnHeader(int64(rev)), WatchId: -1,
+				}); err != nil {
+					klog.ErrorS(err, "watch send stream progress response err", "watcher", w.id)
+					return err
+				}
+				continue
+			}
 			// Per-watch progress (#39): answer RequestProgress with one
 			// header-only response PER WATCH, each carrying that watch's own
 			// delivered watermark (syncedRev). clientv3 routes responses by
@@ -221,25 +285,8 @@ func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) error {
 					return err
 				}
 			}
-			// A stream-level (WatchId=-1) response is BROADCAST to every watch
-			// by clientv3, so per etcd semantics (mvcc progressIfSync) it may
-			// only carry a revision every watch has truly delivered. The
-			// per-watch responses above already give each consumer its own
-			// truthful progress, so -1 is only used as a fallback when the
-			// stream has no active watches (nothing can be behind).
-			if len(w.syncedRevSnapshot()) == 0 {
-				backendRev, err := safeBackendRevision(ws.Context(), s.backend)
-				if err != nil {
-					return err
-				}
-				if err := w.Send(&etcdserverpb.WatchResponse{
-					Header:  txnHeader(int64(backendRev)),
-					WatchId: -1,
-				}); err != nil {
-					klog.ErrorS(err, "watch send progress response err", "watcher", w.id)
-					return err
-				}
-			}
+			// With no active watches etcd's progressAll has nothing to send.
+			// Likewise, do not synthesize a stream response here.
 		} else {
 			s.metricCli.EmitCounter("watch.request.unsupported", 1)
 			klog.Info("watch receive message unsupported type")

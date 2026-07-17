@@ -28,6 +28,50 @@ func TestWatchControlDifferentialAgainstReferenceEtcd(t *testing.T) {
 		runWatchControlScenario(t, reference),
 		runWatchControlScenario(t, compatEndpoint()),
 	)
+	require.Equal(t,
+		runSingleWatchProgressScenario(t, reference),
+		runSingleWatchProgressScenario(t, compatEndpoint()),
+	)
+}
+
+func runSingleWatchProgressScenario(t *testing.T, endpoint string) watchControlOutcome {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	conn, err := grpc.NewClient(endpoint, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	stream, err := etcdserverpb.NewWatchClient(conn).Watch(ctx)
+	require.NoError(t, err)
+	watchKey := []byte("/dbaas-watch-control/progress")
+	require.NoError(t, stream.Send(&etcdserverpb.WatchRequest{
+		RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{CreateRequest: &etcdserverpb.WatchCreateRequest{
+			Key: watchKey, WatchId: 51,
+		}},
+	}))
+	created, err := stream.Recv()
+	require.NoError(t, err)
+	require.True(t, created.Created)
+	_, err = etcdserverpb.NewKVClient(conn).Put(ctx, &etcdserverpb.PutRequest{Key: watchKey, Value: []byte("1")})
+	require.NoError(t, err)
+	events, err := stream.Recv()
+	require.NoError(t, err)
+	require.Len(t, events.Events, 1)
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_, _ = etcdserverpb.NewKVClient(conn).DeleteRange(cleanupCtx, &etcdserverpb.DeleteRangeRequest{Key: watchKey})
+	})
+	require.NoError(t, stream.Send(&etcdserverpb.WatchRequest{
+		RequestUnion: &etcdserverpb.WatchRequest_ProgressRequest{ProgressRequest: &etcdserverpb.WatchProgressRequest{}},
+	}))
+	progress, err := stream.Recv()
+	require.NoError(t, err)
+	require.NoError(t, stream.CloseSend())
+	return watchControlOutcome{
+		WatchID: progress.WatchId, Created: progress.Created,
+		Canceled: progress.Canceled, CancelReason: progress.CancelReason,
+	}
 }
 
 func runWatchControlScenario(t *testing.T, endpoint string) []watchControlOutcome {

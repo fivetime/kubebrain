@@ -636,6 +636,23 @@ func TestMinSyncedRevisionReportsSlowestWatch(t *testing.T) {
 	require.Equal(t, uint64(3), rev, "must report the slowest watch, never a faster one")
 }
 
+func TestWaitStreamProgressRevisionRequiresEveryWatch(t *testing.T) {
+	w := &watcher{watches: map[int64]*watch{
+		1: {syncedRev: 9},
+		2: {syncedRev: 7},
+	}}
+	rev, ok := w.waitStreamProgressRevision(context.Background(), 7, time.Millisecond)
+	require.True(t, ok)
+	require.Equal(t, uint64(7), rev)
+
+	_, ok = w.waitStreamProgressRevision(context.Background(), 8, time.Millisecond)
+	require.False(t, ok, "a stream-wide response must wait for the slowest watch")
+
+	empty := &watcher{watches: map[int64]*watch{}}
+	_, ok = empty.waitStreamProgressRevision(context.Background(), 1, time.Millisecond)
+	require.False(t, ok, "etcd emits no progress response without an active watch")
+}
+
 // TestWatchProgressRequestReportsSyncedNotGlobalRevision reproduces the progress
 // notification data-loss bug: because the backend advances the global current
 // revision before the corresponding events reach a watch, a progress
@@ -685,20 +702,16 @@ func TestWatchProgressRequestReportsSyncedNotGlobalRevision(t *testing.T) {
 		t.Fatalf("watch returned unexpected error: %v", err)
 	}
 
-	// Per-watch progress (#39): the response carries the WATCH's own id and its
-	// truthful delivered watermark. A stream-level -1 (which clientv3 would
-	// broadcast) must NOT appear while a lagging watch is active — that was the
-	// original data-loss vector this test pins.
+	// A one-watch stream can use etcd's stream-wide -1 ID safely, but its header
+	// must remain that watch's truthful delivered watermark rather than the
+	// newer global revision.
 	var progress *etcdserverpb.WatchResponse
 	for _, resp := range stream.fakeWatchServer.sent {
 		if resp.WatchId == -1 && len(resp.Events) == 0 && !resp.Created && !resp.Canceled {
-			t.Fatalf("stream-level -1 progress broadcast while a watch is lagging: rev=%d", resp.Header.Revision)
-		}
-		if resp.WatchId >= 0 && len(resp.Events) == 0 && !resp.Created && !resp.Canceled && resp.Header != nil {
 			progress = resp
 		}
 	}
-	require.NotNil(t, progress, "expected a per-watch progress notification response")
+	require.NotNil(t, progress, "expected a stream-wide progress notification response")
 	require.Equal(t, startRev-1, progress.Header.Revision,
 		"progress must report the delivered/synced revision, not the global current revision")
 	require.Less(t, progress.Header.Revision, int64(global),

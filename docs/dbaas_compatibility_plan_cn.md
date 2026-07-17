@@ -812,6 +812,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   两者不混用。确定性测试覆盖初始/多次切换、负 record 和存储失败 fail-closed；官方 client/v3
   双端检查两端 term 均为正；真实三副本逐 Pod Status 在删除 Leader 前全部为 63，替换并完成
   failover 后新旧三副本全部收敛到 64，同时 leader identity 与 revision 一致更新。
+- **Watch A45 RequestProgress stream ID（2026-07-17）**：raw gRPC 双端差分在创建单个
+  `watch_id=51`、接收该 key 的 Put event 后请求 progress，reference etcd 根据
+  `/root/etcd/server/storage/mvcc/watchable_store.go:progressAll/progressIfSync` 返回一个
+  stream-wide `WatchId=-1` response，KubeBrain 曾直接返回 `WatchId=51`；无 active watch
+  时还会伪造 `-1` response，而 etcd 不发送。现 RequestProgress 先 kick FIFO progress marker，
+  单 watch stream 立即以该 watch 的 delivered watermark 发送标准 `-1`；multiplexed stream
+  最多等待 100ms，全部 watches 都到达 captured published revision 后以最慢 watermark 发送
+  `-1`，空 stream 保持静默。若大规模 multiplexed stream 中仍有 lagging watch，则保留逐
+  watch 安全 watermark 的扩展响应，避免慢 initial sync 阻塞其他
+  kube-apiserver cacher；任何 stream-wide revision 都不会越过最慢 watch。确定性测试覆盖
+  synchronized floor、laggard timeout 与 empty stream，完整 server race 通过；exact-image
+  三副本 TiKV/PD 上 raw control 双端差分连续 20 轮一致，普通 history/update watch 同轮通过。
 
 ### P1：通用服务能力
 
