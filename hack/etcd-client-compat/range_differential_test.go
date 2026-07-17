@@ -24,8 +24,13 @@ type rangeDifferentialResult struct {
 	DeleteRevision     int64
 	Historical         normalizedRange
 	Filtered           normalizedRange
+	FilteredCountOnly  normalizedRange
+	FilteredLimited    normalizedRange
 	Limited            normalizedRange
 	KeysOnly           normalizedRange
+	PointCountOnly     normalizedRange
+	PointKeysOnly      normalizedRange
+	NegativeRevision   normalizedRange
 	NoOpDeleteRevision int64
 	NoOpDeleteCount    int64
 	RevisionAfterNoOp  int64
@@ -86,6 +91,19 @@ func runRangeDifferentialScenario(t *testing.T, endpoint, instance string) range
 		clientv3.WithSort(clientv3.SortByKey, clientv3.SortAscend),
 	)
 	require.NoError(t, err)
+	filteredCountOnly, err := cli.Get(ctx, prefix,
+		clientv3.WithPrefix(),
+		clientv3.WithMinModRev(updateB.Header.Revision),
+		clientv3.WithCountOnly(),
+	)
+	require.NoError(t, err)
+	filteredLimited, err := cli.Get(ctx, prefix,
+		clientv3.WithPrefix(),
+		clientv3.WithMinCreateRev(putA.Header.Revision),
+		clientv3.WithLimit(1),
+		clientv3.WithSort(clientv3.SortByKey, clientv3.SortAscend),
+	)
+	require.NoError(t, err)
 	limited, err := cli.Get(ctx, prefix,
 		clientv3.WithPrefix(),
 		clientv3.WithRev(putC.Header.Revision),
@@ -99,10 +117,20 @@ func runRangeDifferentialScenario(t *testing.T, endpoint, instance string) range
 		clientv3.WithSort(clientv3.SortByKey, clientv3.SortAscend),
 	)
 	require.NoError(t, err)
+	pointCountOnly, err := cli.Get(ctx, prefix+"b", clientv3.WithCountOnly())
+	require.NoError(t, err)
+	pointKeysOnly, err := cli.Get(ctx, prefix+"b", clientv3.WithKeysOnly())
+	require.NoError(t, err)
 
 	noOpDelete, err := cli.Delete(ctx, prefix+"z", clientv3.WithRange(prefix+"a"))
 	require.NoError(t, err)
 	afterNoOp, err := cli.Get(ctx, prefix, clientv3.WithPrefix())
+	require.NoError(t, err)
+	negativeRevision, err := cli.Get(ctx, prefix,
+		clientv3.WithPrefix(),
+		clientv3.WithRev(-1),
+		clientv3.WithSort(clientv3.SortByKey, clientv3.SortAscend),
+	)
 	require.NoError(t, err)
 	_, futureErr := cli.Get(ctx, prefix, clientv3.WithPrefix(), clientv3.WithRev(afterNoOp.Header.Revision+100))
 	require.Error(t, futureErr)
@@ -118,8 +146,13 @@ func runRangeDifferentialScenario(t *testing.T, endpoint, instance string) range
 		DeleteRevision:     deleteC.Header.Revision - baseRev,
 		Historical:         normalizeRange(historical, prefix, baseRev),
 		Filtered:           normalizeRange(filtered, prefix, baseRev),
+		FilteredCountOnly:  normalizeRange(filteredCountOnly, prefix, baseRev),
+		FilteredLimited:    normalizeRange(filteredLimited, prefix, baseRev),
 		Limited:            normalizeRange(limited, prefix, baseRev),
 		KeysOnly:           normalizeRange(keysOnly, prefix, baseRev),
+		PointCountOnly:     normalizeRange(pointCountOnly, prefix, baseRev),
+		PointKeysOnly:      normalizeRange(pointKeysOnly, prefix, baseRev),
+		NegativeRevision:   normalizeRange(negativeRevision, prefix, baseRev),
 		NoOpDeleteRevision: noOpDelete.Header.Revision - baseRev,
 		NoOpDeleteCount:    noOpDelete.Deleted,
 		RevisionAfterNoOp:  afterNoOp.Header.Revision - baseRev,

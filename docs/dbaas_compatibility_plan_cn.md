@@ -1844,6 +1844,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   执行 serializable historical Range，三个副本均返回旧值且 lease 为零。最终三个
   Pod Ready、zero restart，外部 endpoint health 正常，运行时 exact image
   `26409541219fe09070769ed3b314d6961cce0892a26e7ad911a6f78b019ca092`。
+- **Range A110 option-combination differential expansion（2026-07-17）**：
+  继续对照 `/root/etcd/server/etcdserver/txn/range.go` 的 filter、sort、limit 与
+  response assembly 顺序，扩展官方 client/v3 双端差分矩阵。新增 filtered
+  CountOnly（无 KVs、Count 保持过滤前范围总数）、revision filter + limit 的
+  More/Count、point CountOnly、point KeysOnly，以及负 revision 读取当前快照；
+  所有结果结构化比较 header 相对 revision、KV metadata/value、Count 和 More。
+
+  这轮审计也排除了三个疑点：负 revision 在双端都按当前快照处理；staged Txn
+  每次 Range 都克隆 base/staged KV，KeysOnly 不会污染后续事务视图；Watch
+  fragment 的阈值、字段复制与末片标志已和 upstream 一致。扩展后的 Range
+  differential 在临时 reference etcd 与在线三副本 TiKV-backed KubeBrain 间连续
+  10 轮通过，race 下再连续 3 轮通过；`go test ./...`、根模块与 compat module
+  `go vet ./...` 及完整 server race（202.756s）通过。A110 仅增加兼容性测试，
+  不改变服务二进制；验证时三个 Pod Ready、zero restart、endpoint health 正常，
+  运行时 exact image 仍为
+  `26409541219fe09070769ed3b314d6961cce0892a26e7ad911a6f78b019ca092`。
 
 ### P1：通用服务能力
 
