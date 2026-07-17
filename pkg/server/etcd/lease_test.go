@@ -351,6 +351,32 @@ func TestLeaseLeasesListsGrantedLeases(t *testing.T) {
 	require.Equal(t, int64(server.backend.GetCurrentRevision()), resp.Header.Revision)
 }
 
+func TestLeaseLeasesOrdersByExpiryLikeEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	ctx := context.Background()
+	for _, id := range []int64{3003, 3001, 3002} {
+		_, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 30, ID: id})
+		require.NoError(t, err)
+	}
+
+	server.leaseMu.Lock()
+	now := time.Now()
+	server.leases[3001].deadline = now.Add(time.Second)
+	server.leases[3002].deadline = now.Add(2 * time.Second)
+	server.leases[3003].deadline = now.Add(3 * time.Second)
+	server.leaseMu.Unlock()
+
+	resp, err := server.LeaseLeases(ctx, &etcdserverpb.LeaseLeasesRequest{})
+	require.NoError(t, err)
+	require.Equal(t, []*etcdserverpb.LeaseStatus{
+		{ID: 3001},
+		{ID: 3002},
+		{ID: 3003},
+	}, resp.Leases)
+}
+
 func TestLeaseRestoreFromBackend(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	metrics := mock.NewMinimalMetrics(ctrl)

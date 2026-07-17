@@ -320,12 +320,22 @@ func (m *leaseManager) LeaseLeases(ctx context.Context, req *etcdserverpb.LeaseL
 
 	m.leaseMu.Lock()
 	defer m.leaseMu.Unlock()
+	leases := make([]*leaseState, 0, len(m.leases))
+	for _, lease := range m.leases {
+		leases = append(leases, lease)
+	}
+	sort.Slice(leases, func(i, j int) bool {
+		if leases[i].deadline.Equal(leases[j].deadline) {
+			return leases[i].id < leases[j].id
+		}
+		return leases[i].deadline.Before(leases[j].deadline)
+	})
 	resp := &etcdserverpb.LeaseLeasesResponse{
 		Header: txnHeader(int64(m.srv.backend.GetCurrentRevision())),
-		Leases: make([]*etcdserverpb.LeaseStatus, 0, len(m.leases)),
+		Leases: make([]*etcdserverpb.LeaseStatus, 0, len(leases)),
 	}
-	for id := range m.leases {
-		resp.Leases = append(resp.Leases, &etcdserverpb.LeaseStatus{ID: id})
+	for _, lease := range leases {
+		resp.Leases = append(resp.Leases, &etcdserverpb.LeaseStatus{ID: lease.id})
 	}
 	return resp, nil
 }

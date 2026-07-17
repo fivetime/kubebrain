@@ -36,7 +36,7 @@ Raft、bbolt 和成员管理内部实现，而是对通用 etcd v3 客户端提�
 | KV | Compact | 兼容核心语义 | P0：继续对齐 logical/physical 行为、错误与异步 GC |
 | KV | RangeStream | 兼容核心语义 | etcd 3.7 支持的 CountOnly/Limit/KeysOnly/默认排序已对齐；自定义排序与 revision filter 同 etcd 明确 Unimplemented |
 | Watch | create/cancel/progress/history/prevKV | 兼容核心语义 | P0：用官方客户端做事件完整性、压缩、断线恢复和慢消费者测试 |
-| Lease | grant/revoke/keepalive/ttl/list | 兼容核心语义 | meta/attachment 已与用户 revision 隔离并原子提交；继续扩大故障、并发和错误差分矩阵 |
+| Lease | grant/revoke/keepalive/ttl/list | 兼容核心语义 | meta/attachment 已与用户 revision 隔离并原子提交，List 按到期时间稳定排序；继续扩大故障、并发和错误差分矩阵 |
 | Auth | 用户、角色、权限、token | 兼容核心语义 | 管理 API、key-range RBAC、token 生命周期、Watch/Lease 持续鉴权及多副本故障转移已验证 |
 | Cluster | MemberList | 兼容（需配置） | DBaaS 通过 `--initial-cluster` 注入完整 KubeBrain 服务副本；未配置时仅返回本机与 leader 的降级视图，不应启用 AutoSync |
 | Cluster | add/remove/update/promote | 平台替代 | 由 DBaaS 控制面扩缩 KubeBrain、PD、TiKV；RPC 保持明确 Unimplemented |
@@ -885,6 +885,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Leader ordinal 并等待新 UID 与 EndpointSlice ready 后，重建 Pod 保持原 member ID，完整
   membership 与 Sync 再连续 20 轮通过。仅等待旧 Pod 的 Ready condition 会误判替换完成，
   failover 自动化必须同时核对 UID/endpoint generation。
+- **Lease A52 list expiry order（2026-07-17）**：对照
+  `/root/etcd/server/lease/lessor.go` 的 `Leases`（按 `leasesByExpiry` 排序）及
+  `/root/etcd/tests/integration/v3_lease_test.go` 的 `TestV3LeaseLeases`，发现
+  KubeBrain `LeaseLeases` 直接遍历 Go map，官方 client 观察到的 lease 顺序随机。新增
+  `TestLeaseLeasesOrdersByExpiryLikeEtcd`，人为设置与 ID/map 顺序不同的 deadline，修复前
+  连续 20 轮稳定失败；现持 `leaseMu` 快照 active lease 后按绝对 deadline 排序，相同
+  deadline 以 ID 作确定性 tie-break，不改变过期调度或 TTL。官方 client 双端测试以
+  303/301/302 秒乱序 Grant 验证相对位置：旧 exact image 连续 10 轮中失败 9 轮，修复后的
+  三副本 TiKV/PD exact image 连同既有 Lease 全生命周期差分连续 20 轮全部通过；focused
+  race 与完整 server/full/vet 通过。
 
 ### P1：通用服务能力
 

@@ -47,6 +47,53 @@ func TestLeaseDifferentialAgainstReferenceEtcd(t *testing.T) {
 	)
 }
 
+func TestLeaseListExpiryOrderAgainstReferenceEtcd(t *testing.T) {
+	reference := os.Getenv("REFERENCE_ETCD_ENDPOINT")
+	if reference == "" {
+		t.Skip("set REFERENCE_ETCD_ENDPOINT to run differential compatibility tests")
+	}
+	kubebrain := os.Getenv("KUBEBRAIN_ETCD_ENDPOINT")
+	if kubebrain == "" {
+		t.Fatal("set KUBEBRAIN_ETCD_ENDPOINT explicitly for differential tests")
+	}
+
+	requireLeaseListExpiryOrder(t, reference)
+	requireLeaseListExpiryOrder(t, kubebrain)
+}
+
+func requireLeaseListExpiryOrder(t *testing.T, endpoint string) {
+	t.Helper()
+	cli, err := clientv3.New(clientv3.Config{Endpoints: []string{endpoint}, DialTimeout: 3 * time.Second})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, cli.Close()) })
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	var grants []*clientv3.LeaseGrantResponse
+	for _, ttl := range []int64{303, 301, 302} {
+		grant, err := cli.Grant(ctx, ttl)
+		require.NoError(t, err)
+		grants = append(grants, grant)
+		t.Cleanup(func() {
+			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cleanupCancel()
+			_, _ = cli.Revoke(cleanupCtx, grant.ID)
+		})
+	}
+
+	resp, err := cli.Leases(ctx)
+	require.NoError(t, err)
+	positions := make(map[clientv3.LeaseID]int, len(resp.Leases))
+	for i, lease := range resp.Leases {
+		positions[lease.ID] = i
+	}
+	for _, grant := range grants {
+		require.Contains(t, positions, grant.ID)
+	}
+	require.Less(t, positions[grants[1].ID], positions[grants[2].ID])
+	require.Less(t, positions[grants[2].ID], positions[grants[0].ID])
+}
+
 func runLeaseDifferentialScenario(t *testing.T, endpoint, instance string) leaseDifferentialResult {
 	t.Helper()
 	cli, err := clientv3.New(clientv3.Config{Endpoints: []string{endpoint}, DialTimeout: 3 * time.Second})
