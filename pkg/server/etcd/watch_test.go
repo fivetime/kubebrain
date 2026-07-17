@@ -949,6 +949,75 @@ func TestWatchProgressNeverOvertakesBufferedEvent(t *testing.T) {
 	<-done
 }
 
+func TestFilteredWatchAdvancesThroughFullBatchRevision(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	fed := make(chan etcdproxy.WatchResult)
+	server.peers = testPeerService{
+		isLeader:     false,
+		proxyEnabled: true,
+		watchFn: func(context.Context, []byte, []byte, uint64) (<-chan etcdproxy.WatchResult, error) {
+			return fed, nil
+		},
+	}
+
+	stream := &fakeWatchServer{ctx: context.Background()}
+	wt := &watch{start: "/registry/watch/filtered/"}
+	w := &watcher{
+		backend:     server.backend,
+		watchServer: stream,
+		grpcServer:  server,
+		watches:     map[int64]*watch{7: wt},
+		metricCli:   server.metricCli,
+	}
+	w.wg.Add(1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		w.Watch(context.Background(), 7, &etcdserverpb.WatchCreateRequest{
+			Key:           []byte("/registry/watch/filtered/"),
+			RangeEnd:      []byte("/registry/watch/filtered0"),
+			StartRevision: 5,
+			Filters:       []etcdserverpb.WatchCreateRequest_FilterType{etcdserverpb.WatchCreateRequest_NOPUT},
+		})
+	}()
+
+	// A fully filtered PUT batch emits no response but still advances the
+	// watcher's delivered watermark through the batch revision.
+	fed <- etcdproxy.WatchResult{
+		Revision: 9,
+		Events: []*mvccpb.Event{{
+			Type: mvccpb.PUT,
+			Kv:   &mvccpb.KeyValue{Key: []byte("/registry/watch/filtered/a"), ModRevision: 9},
+		}},
+	}
+	require.Eventually(t, func() bool {
+		return atomic.LoadUint64(&wt.syncedRev) == 9
+	}, time.Second, time.Millisecond)
+	require.Empty(t, stream.sent)
+
+	// The visible DELETE is older than a filtered PUT in the same covered
+	// batch. etcd reports the batch revision, not the last visible event's rev.
+	fed <- etcdproxy.WatchResult{
+		Revision: 12,
+		Events: []*mvccpb.Event{
+			{Type: mvccpb.DELETE, Kv: &mvccpb.KeyValue{Key: []byte("/registry/watch/filtered/a"), ModRevision: 10}},
+			{Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{Key: []byte("/registry/watch/filtered/b"), ModRevision: 12}},
+		},
+	}
+	require.Eventually(t, func() bool {
+		return atomic.LoadUint64(&wt.syncedRev) == 12
+	}, time.Second, time.Millisecond)
+	require.Len(t, stream.sent, 1)
+	require.Equal(t, int64(12), stream.sent[0].Header.Revision)
+	require.Len(t, stream.sent[0].Events, 1)
+	require.Equal(t, mvccpb.DELETE, stream.sent[0].Events[0].Type)
+
+	close(fed)
+	<-done
+}
+
 // TestFromNowWatchSeedsFromPublishedNotCurrentRevision pins the seed hardening: a
 // StartRevision==0 watch seeds its progress floor from GetPublishedRevision (the
 // safe frontier), never GetCurrentRevision (advanced pre-publish), so the first

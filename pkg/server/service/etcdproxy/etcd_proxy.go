@@ -709,7 +709,10 @@ func watchResultFromResponse(wresp clientv3.WatchResponse) WatchResult {
 	if wresp.IsProgressNotify() {
 		return WatchResult{ProgressRevision: uint64(wresp.Header.Revision)}
 	}
-	return WatchResult{Events: convertEvents(wresp.Events)}
+	return WatchResult{
+		Events:   convertEvents(wresp.Events),
+		Revision: uint64(wresp.Header.Revision),
+	}
 }
 
 func convertEvents(events []*clientv3.Event) []*mvccpb.Event {

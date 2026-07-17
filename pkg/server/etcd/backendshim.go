@@ -904,7 +904,11 @@ func (b *backendShim) Watch(ctx context.Context, key string, revision uint64) (<
 				// could never catch up (#45).
 				b.prefetchPrevKvs(events)
 				etcdEvents := make([]*mvccpb.Event, 0, len(events))
+				var batchRevision uint64
 				for _, e := range events {
+					if revision := watchEventRevision(e); revision > batchRevision {
+						batchRevision = revision
+					}
 					etcdEvent, err := b.watchEventToEtcdEvent(ctx, e)
 					if err != nil {
 						klog.ErrorS(err, "failed to transform watch event", "key", e.GetKv().GetKey(), "revision", watchEventRevision(e), "type", e.GetType())
@@ -913,7 +917,7 @@ func (b *backendShim) Watch(ctx context.Context, key string, revision uint64) (<
 					etcdEvents = append(etcdEvents, etcdEvent)
 				}
 				select {
-				case out <- etcdproxy.WatchResult{Events: etcdEvents}:
+				case out <- etcdproxy.WatchResult{Events: etcdEvents, Revision: batchRevision}:
 				case <-ctx.Done():
 					return
 				}

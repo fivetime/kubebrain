@@ -60,6 +60,7 @@ func TestWatchResultFromResponseMapsProgressNotify(t *testing.T) {
 	require.True(t, progress.IsProgressNotify())
 	got := watchResultFromResponse(progress)
 	require.Equal(t, uint64(42), got.ProgressRevision)
+	require.Zero(t, got.Revision)
 	require.Empty(t, got.Events)
 
 	// Event response: events present -> not a progress notify.
@@ -72,6 +73,7 @@ func TestWatchResultFromResponseMapsProgressNotify(t *testing.T) {
 	require.False(t, event.IsProgressNotify())
 	got = watchResultFromResponse(event)
 	require.Equal(t, uint64(0), got.ProgressRevision)
+	require.Equal(t, uint64(43), got.Revision)
 	require.Len(t, got.Events, 1)
 	require.Equal(t, []byte("k"), got.Events[0].Kv.Key)
 }

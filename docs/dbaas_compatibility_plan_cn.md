@@ -1007,6 +1007,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `5c8646871cd1` 上连续 10 轮（500 次 create 后立即 Put）全达，并同时通过 watch-history
   fallback/update 语义。focused 连续 20 轮、相关 race 连续 10 轮及 full/race/vet 通过。
   proxy resume 测试也明确正数 Created header 立即推进 floor，0 仅为旧 server 兼容。
+- **Watch A62 filtered batch watermark（2026-07-17）**：对照 etcd
+  `server/storage/mvcc/watchable_store.go:watcher.send` 与
+  `server/etcdserver/api/v3rpc/watch.go`，etcd 在 filter 去掉部分或全部 event 后仍先推进
+  watcher `minRev`，有可见 event 时 response header 使用原始 `WatchResponse.Revision`。
+  KubeBrain 原 `WatchResult` 只携带 event，RPC 层 filter 后以“最后一个可见 event”的
+  ModRevision 当 header；若全部被 NOPUT/NODELETE 去掉则直接 continue，`syncedRev` 完全不
+  前进，导致 RequestProgress 也无法证明已越过被过滤写。现 local backend translator 与
+  follower proxy 均显式传递 batch `Revision`；部分可见响应用该 revision，全部过滤则静默
+  推进 watermark（不误发 event，也不触发 event 后 progress-elision）。确定性
+  `TestFilteredWatchAdvancesThroughFullBatchRevision` 覆盖 full-filter rev 9 静默推进及
+  DELETE rev 10 + filtered PUT rev 12 返回 header 12；proxy mapping 也锁定 leader header。
+  官方 client/v3 `TestFilteredWatchProgressCoversSuppressedWrites` 在 A61 image 上稳定于 5s
+  deadline 前无法覆盖 filtered PUT，A62 exact image `bfbc0b86cc65` 上连续 20 轮（500 次
+  NOPUT+RequestProgress）全过，并同时跑 1,000 次 A61 registration、watch-history/update
+  场景；focused 50 轮、相关 race 20 轮及 full/race/vet 通过。
 
 ### P1：通用服务能力
 

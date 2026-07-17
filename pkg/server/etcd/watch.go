@@ -649,12 +649,28 @@ func (w *watcher) Watch(ctx context.Context, id int64, r *etcdserverpb.WatchCrea
 			if !r.PrevKv {
 				events = withoutWatchPrevKvs(events)
 			}
+			batchRevision := result.Revision
+			if batchRevision == 0 {
+				// Compatibility fallback for older/internal WatchResult producers.
+				for _, event := range result.Events {
+					if revision := uint64(event.GetKv().GetModRevision()); revision > batchRevision {
+						batchRevision = revision
+					}
+				}
+			}
 			if len(events) == 0 {
+				// etcd advances the watcher's min revision even when its filters
+				// suppress every event in a batch. Preserve that delivered
+				// watermark so the next progress response does not lag behind
+				// filtered writes.
+				if wt != nil {
+					util.StoreMaxUint64(&wt.syncedRev, batchRevision)
+				}
 				continue
 			}
 			watchResponse := &etcdserverpb.WatchResponse{
 				Header: &etcdserverpb.ResponseHeader{
-					Revision: events[len(events)-1].Kv.ModRevision,
+					Revision: int64(batchRevision),
 				},
 				WatchId: id,
 				Events:  events,
