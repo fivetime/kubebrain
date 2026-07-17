@@ -2,6 +2,7 @@ package compat
 
 import (
 	"context"
+	"os"
 	"sort"
 	"testing"
 	"time"
@@ -9,6 +10,36 @@ import (
 	"github.com/stretchr/testify/require"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
+
+const defaultEtcdBackendQuota int64 = 2 * 1024 * 1024 * 1024
+
+func TestMaintenanceStatusDefaultQuotaMatchesReferenceEtcd(t *testing.T) {
+	reference := os.Getenv("REFERENCE_ETCD_ENDPOINT")
+	if reference == "" {
+		t.Skip("set REFERENCE_ETCD_ENDPOINT to run differential compatibility tests")
+	}
+	kubebrain := os.Getenv("KUBEBRAIN_ETCD_ENDPOINT")
+	if kubebrain == "" {
+		t.Fatal("set KUBEBRAIN_ETCD_ENDPOINT explicitly for differential tests")
+	}
+
+	referenceQuota := maintenanceStatusQuota(t, reference)
+	kubebrainQuota := maintenanceStatusQuota(t, kubebrain)
+	require.Equal(t, referenceQuota, kubebrainQuota)
+	require.Equal(t, defaultEtcdBackendQuota, kubebrainQuota)
+}
+
+func maintenanceStatusQuota(t *testing.T, endpoint string) int64 {
+	t.Helper()
+	cli, err := clientv3.New(clientv3.Config{Endpoints: []string{endpoint}, DialTimeout: 3 * time.Second})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, cli.Close()) })
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	resp, err := cli.Status(ctx, endpoint)
+	require.NoError(t, err)
+	return resp.DbSizeQuota
+}
 
 // TestMaintenanceHashKVSemantics exercises KubeBrain through etcd's official
 // client. Hash values are backend-layout-specific, so the compatibility

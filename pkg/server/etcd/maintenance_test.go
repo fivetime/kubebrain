@@ -69,6 +69,7 @@ func TestMaintenanceBasicDiagnostics(t *testing.T) {
 	require.False(t, statusResp.DowngradeInfo.Enabled)
 	require.EqualValues(t, 1, statusResp.DbSize)
 	require.EqualValues(t, 1, statusResp.DbSizeInUse)
+	require.Equal(t, defaultEtcdBackendQuota, statusResp.DbSizeQuota)
 
 	hashResp, err := server.HashKV(ctx, &etcdserverpb.HashKVRequest{})
 	require.NoError(t, err)

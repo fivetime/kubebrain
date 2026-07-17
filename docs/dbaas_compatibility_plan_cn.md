@@ -40,7 +40,7 @@ Raft、bbolt 和成员管理内部实现，而是对通用 etcd v3 客户端提�
 | Auth | 用户、角色、权限、token | 兼容核心语义 | 管理 API、key-range RBAC、token 生命周期、Watch/Lease 持续鉴权及多副本故障转移已验证 |
 | Cluster | MemberList | 兼容（需配置） | DBaaS 通过 `--initial-cluster` 注入完整 KubeBrain 服务副本；未配置时仅返回本机与 leader 的降级视图，不应启用 AutoSync |
 | Cluster | add/remove/update/promote | 平台替代 | 由 DBaaS 控制面扩缩 KubeBrain、PD、TiKV；RPC 保持明确 Unimplemented |
-| Maintenance | Status | 兼容核心语义 | 返回真实服务身份、版本、leader/revision；bbolt 容量字段使用兼容 sentinel，真实容量转到实例指标 |
+| Maintenance | Status | 兼容核心语义 | 返回真实服务身份、版本、leader/revision；bbolt 容量与默认 quota 字段使用兼容 sentinel，真实容量转到实例指标 |
 | Maintenance | Snapshot | 平台替代 | 使用 TiKV BR/PITR；控制面提供备份、恢复和导出任务，不伪造 etcd snapshot |
 | Maintenance | Defragment | 平台替代 | TiKV GC/compaction 管理，不执行 bbolt 碎片整理 |
 | Maintenance | Alarm/DbSize | 平台替代 | 用 PD/TiKV 容量、磁盘、region 和配额告警；etcd 专属字段保持可解释值 |
@@ -795,6 +795,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   connection 为 `READY`，`IDLE` channel 会主动发起连接，其余状态均先从 Service endpoints
   撤流。HTTP 状态转换和真实 gRPC server 断连均有确定性回归，kind + 独立 TiKV/PD 继续以
   in-cluster 并发 client/v3 load 覆盖整轮三副本 rollout。
+- **Maintenance A43 Status default quota（2026-07-17）**：官方 `etcdctl endpoint status`
+  发现 KubeBrain 广告 3.7 协议却遗漏 3.6 起的 `DbSizeQuota`，输出 quota 为 0；同配置下
+  reference etcd 根据 `/root/etcd/server/etcdserver/api/v3rpc/maintenance.go:Status`
+  回落到 `storage.DefaultQuotaBytes=2 GiB`。现 Status 返回相同默认 quota sentinel，并继续以
+  `DbSize=DbSizeInUse=1` 表示无 bbolt fragmentation；该值只维持协议与工具兼容，不伪装
+  TiKV 容量或实例售卖限额，真实 store disk/region/quota 仍由 PD/TiKV 指标和 DBaaS 控制面
+  提供。server 回归固定非零默认值，官方 client/v3 双端差分在修复前稳定得到
+  `reference=2147483648, KubeBrain=0`，修复后要求两端精确相等。
 
 ### P1：通用服务能力
 

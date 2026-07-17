@@ -51,6 +51,11 @@ import (
 // k8s.io/apiserver/pkg/storage/etcd3/watcher.go (sync()).
 const Version = "3.7.0"
 
+// etcd substitutes this value when --quota-backend-bytes is unset. KubeBrain's
+// actual capacity belongs to TiKV/PD, but Status must still return a nonzero
+// protocol-compatible value for etcdctl and other 3.6+ clients.
+const defaultEtcdBackendQuota int64 = 2 * 1024 * 1024 * 1024
+
 func (s *RPCServer) Alarm(ctx context.Context, req *etcdserverpb.AlarmRequest) (*etcdserverpb.AlarmResponse, error) {
 	s.metricCli.EmitCounter("maintenance.alarm", 1)
 	if req.GetAction() == etcdserverpb.AlarmRequest_GET {
@@ -99,6 +104,7 @@ func (s *RPCServer) Status(ctx context.Context, _ *etcdserverpb.StatusRequest) (
 		// docs/observability_cn.md.
 		DbSize:        1,
 		DbSizeInUse:   1,
+		DbSizeQuota:   defaultEtcdBackendQuota,
 		Errors:        nil,
 		IsLearner:     false,
 		DowngradeInfo: &etcdserverpb.DowngradeInfo{Enabled: false},
