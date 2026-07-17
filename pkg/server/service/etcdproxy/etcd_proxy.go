@@ -18,8 +18,6 @@ import (
 	"context"
 	"crypto/tls"
 	"math"
-	"net"
-	"strconv"
 	"sync"
 	"time"
 
@@ -41,9 +39,6 @@ import (
 const proxyConnectTimeout = 5 * time.Second
 
 type etcdProxy struct {
-	// clientPort dials the leader's client endpoint instead of its peer
-	// address when >0 (#41); see NewEtcdProxy.
-	clientPort int
 	// allowInsecure permits TLS-to-plaintext fallback only for an endpoint
 	// explicitly configured to serve both modes.
 	allowInsecure bool
@@ -89,15 +84,12 @@ func proxyCallOptions(maxRequestBytes uint) []grpc.CallOption {
 const proxyReadyWaitTimeout = 2 * time.Second
 
 // NewEtcdProxy return an ETCD proxy for forward request to leader.
-// clientPort, when >0, is the homogeneous client-facing etcd port: the proxy
-// dials the leader's CLIENT endpoint instead of the peer address carried by
-// the election identity — the peer port multiplexes gRPC through cmux and
-// does not reliably serve the KV service (#41: forwarded counts to
-// leader:peerPort hung to the request deadline while leader:clientPort
-// answered in <1s).
-func NewEtcdProxy(leaderElection leader.LeaderElection, tlsConfig *tls.Config, clientPort int, allowInsecure bool, maxRequestBytes uint) EtcdProxy {
+// The election identity is the leader's peer endpoint. That listener registers
+// the complete RPC surface without public admission, so forwarding there counts
+// each external request exactly once at its ingress replica.
+func NewEtcdProxy(leaderElection leader.LeaderElection, tlsConfig *tls.Config, allowInsecure bool, maxRequestBytes uint) EtcdProxy {
 	proxy := &etcdProxy{
-		election: leaderElection, tlsConfig: tlsConfig, clientPort: clientPort,
+		election: leaderElection, tlsConfig: tlsConfig,
 		allowInsecure: allowInsecure, callOptions: proxyCallOptions(maxRequestBytes),
 	}
 	proxy.updateClient()
@@ -183,20 +175,8 @@ func (e *etcdProxy) updateClient() {
 	klog.InfoS("try to conn to new leader", "leaderIdentity", curLeader)
 	tlsConfigs := e.dialTLSConfigs()
 
-	// Dial the leader's client endpoint: the identity carries the peer port.
+	// The election identity is already the leader's peer endpoint.
 	dialEndpoint := curLeader
-	if e.clientPort > 0 {
-		if host, _, splitErr := net.SplitHostPort(curLeader); splitErr == nil {
-			dialEndpoint = net.JoinHostPort(host, strconv.Itoa(e.clientPort))
-		}
-	} else {
-		// A zero client port means an embedder built the config without the
-		// ClientPort field: the dial falls back to the identity's PEER port,
-		// where cmux never serves KV — requests hang to their deadline. Loud
-		// warning instead of silent legacy behavior (review #51).
-		klog.InfoS("WARNING: etcd proxy has no client port configured; dialing the leader's peer port, which serves no KV",
-			"leader", curLeader)
-	}
 	for _, tlsConfig := range tlsConfigs {
 		dialTimeout := e.connectionTimeout()
 		var dialOptions []grpc.DialOption

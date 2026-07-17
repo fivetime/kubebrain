@@ -100,6 +100,8 @@ type Config struct {
 	GRPCMaxConnectionAgeGrace time.Duration
 	MaxConcurrentStreams      uint32
 	MaxRequestsInFlight       uint32
+	MaxRequestRate            uint32
+	RequestRateBurst          uint32
 	MaxWatches                uint32
 	GRPCKeepAliveMinTime      time.Duration
 	GRPCKeepAliveInterval     time.Duration
@@ -128,12 +130,16 @@ type Config struct {
 
 func (c *Config) getServerConfig() server.Config {
 	var clientTLS *tls.Config
+	var proxyTLS *tls.Config
 	clientCertAuth := false
-	clientAllowInsecure := false
+	proxyAllowInsecure := false
 	if c.ClientSecurityConfig != nil {
 		clientTLS = c.ClientSecurityConfig.getClientTLSConfig()
 		clientCertAuth = c.ClientSecurityConfig.ClientAuth
-		clientAllowInsecure = c.ClientSecurityConfig.AllowInsecure
+	}
+	if c.PeerSecurityConfig != nil {
+		proxyTLS = c.PeerSecurityConfig.getClientTLSConfig()
+		proxyAllowInsecure = c.PeerSecurityConfig.AllowInsecure
 	}
 	return server.Config{
 		EnableEtcdProxy: c.EnableEtcdCompatibility,
@@ -146,13 +152,16 @@ func (c *Config) getServerConfig() server.Config {
 		// full-scan fallback (review #51).
 		ClientTLS:           clientTLS,
 		ClientCertAuth:      clientCertAuth,
-		ClientAllowInsecure: clientAllowInsecure,
+		ProxyTLS:            proxyTLS,
+		ProxyAllowInsecure:  proxyAllowInsecure,
 		LeaseDuration:       c.LeaseDuration,
 		RenewDeadline:       c.RenewDeadline,
 		RetryPeriod:         c.RetryPeriod,
 		MaxTxnOps:           c.MaxTxnOps,
 		MaxRequestBytes:     c.MaxRequestBytes,
 		MaxRequestsInFlight: c.MaxRequestsInFlight,
+		MaxRequestRate:      c.MaxRequestRate,
+		RequestRateBurst:    c.RequestRateBurst,
 		MaxWatches:          c.MaxWatches,
 		AuthToken:           c.AuthToken,
 		BcryptCost:          c.BcryptCost,
@@ -235,6 +244,9 @@ func (c *Config) Validate() error {
 	}
 	if c.MaxRequestBytes > uint(math.MaxInt-grpcOverheadBytes) {
 		return fmt.Errorf("max request bytes %d exceeds platform limit %d", c.MaxRequestBytes, math.MaxInt-grpcOverheadBytes)
+	}
+	if (c.MaxRequestRate == 0) != (c.RequestRateBurst == 0) {
+		return fmt.Errorf("max request rate and request rate burst must both be zero or both be positive")
 	}
 	if err := etcdserver.ValidateAuthTokenProvider(c.AuthToken); err != nil {
 		return err

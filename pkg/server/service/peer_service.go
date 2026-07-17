@@ -36,16 +36,12 @@ type Config struct {
 
 	// TLS is the secure config of peer service client
 	TLS *tls.Config
-	// AllowInsecure mirrors the client endpoint's explicit mixed TLS/plaintext
+	// AllowInsecure mirrors the peer endpoint's explicit mixed TLS/plaintext
 	// mode. A TLS-only deployment must never downgrade proxy traffic.
 	AllowInsecure bool
 
 	// EnableEtcdProxy is the flag if etcd proxy should start
 	EnableEtcdProxy bool
-
-	// ClientPort is the homogeneous client-facing etcd port used to dial the
-	// leader (see server.Config.ClientPort; #41).
-	ClientPort int
 
 	// MaxRequestBytes keeps follower forwarding at the same admission ceiling
 	// as the exposed client server.
@@ -63,7 +59,7 @@ func NewPeerService(le leader.LeaderElection, m metrics.Metrics, b backend.Backe
 		config:         config,
 	}
 	if config.EnableEtcdProxy {
-		ps.EtcdProxy = etcdproxy.NewEtcdProxy(le, config.TLS, config.ClientPort, config.AllowInsecure, config.MaxRequestBytes)
+		ps.EtcdProxy = etcdproxy.NewEtcdProxy(le, config.TLS, config.AllowInsecure, config.MaxRequestBytes)
 	}
 	return ps
 }

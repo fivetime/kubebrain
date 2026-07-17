@@ -22,6 +22,7 @@ import (
 
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"golang.org/x/crypto/bcrypt"
+	"golang.org/x/time/rate"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/protobuf/proto"
@@ -88,6 +89,7 @@ type RPCServer struct {
 	maxRequestsInFlight  uint32
 	admissionMu          sync.Mutex
 	requestsInFlight     int64
+	requestRateLimiter   *rate.Limiter
 	maxWatches           uint32
 	watchQuotaMu         sync.Mutex
 	activeWatches        int64
@@ -108,6 +110,16 @@ func (s *RPCServer) SetClientCertAuth(enabled bool) {
 // configured before serving starts, so readers need no additional lock.
 func (s *RPCServer) SetMaxRequestsInFlight(limit uint32) {
 	s.maxRequestsInFlight = limit
+}
+
+// SetRequestRateLimit configures the process-wide public client request-message
+// token bucket. Validation guarantees rate and burst are both zero or positive.
+func (s *RPCServer) SetRequestRateLimit(requestsPerSecond, burst uint32) {
+	if requestsPerSecond == 0 {
+		s.requestRateLimiter = nil
+		return
+	}
+	s.requestRateLimiter = rate.NewLimiter(rate.Limit(requestsPerSecond), int(burst))
 }
 
 // SetMaxWatches sets the process-wide logical watch limit. It is configured

@@ -81,7 +81,22 @@ func (s *RPCServer) releaseRequest() {
 	s.metricCli.EmitGauge("grpc.server.admission.inflight", s.requestsInFlight)
 }
 
+func (s *RPCServer) allowRequestRate(method, kind string) bool {
+	if s.requestRateLimiter == nil {
+		return true
+	}
+	if s.requestRateLimiter.Allow() {
+		return true
+	}
+	s.metricCli.EmitCounter("grpc.server.rate_limit.rejected", 1,
+		metrics.Tag("method", method), metrics.Tag("kind", kind))
+	return false
+}
+
 func (s *RPCServer) admitUnary(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+	if !s.allowRequestRate(info.FullMethod, "unary") {
+		return nil, rpctypes.ErrGRPCRequestTooManyRequests
+	}
 	if !s.acquireRequest(info.FullMethod, "unary") {
 		return nil, rpctypes.ErrGRPCRequestTooManyRequests
 	}
@@ -98,7 +113,24 @@ func (s *RPCServer) admitStream(srv any, ss grpc.ServerStream, info *grpc.Stream
 	if s.maxRequestsInFlight != 0 {
 		defer s.releaseRequest()
 	}
-	return handler(srv, ss)
+	return handler(srv, &rateLimitedServerStream{
+		ServerStream: ss,
+		server:       s,
+		method:       info.FullMethod,
+	})
+}
+
+type rateLimitedServerStream struct {
+	grpc.ServerStream
+	server *RPCServer
+	method string
+}
+
+func (s *rateLimitedServerStream) RecvMsg(message any) error {
+	if !s.server.allowRequestRate(s.method, "stream_message") {
+		return rpctypes.ErrGRPCRequestTooManyRequests
+	}
+	return s.ServerStream.RecvMsg(message)
 }
 
 func (s *RPCServer) localMemberID() uint64 {

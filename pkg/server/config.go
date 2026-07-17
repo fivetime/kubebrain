@@ -34,16 +34,13 @@ type Config struct {
 	// the client endpoint after the TLS layer has verified the certificate.
 	ClientCertAuth bool
 
-	// ClientAllowInsecure permits the follower proxy to fall back to plaintext
-	// only when the client endpoint itself explicitly serves plaintext too.
-	ClientAllowInsecure bool
-
-	// ClientPort is the port every node's client-facing etcd endpoint listens
-	// on (deployments are homogeneous). The etcd proxy dials the LEADER's
-	// client endpoint with it — the peer port carried by the election identity
-	// multiplexes gRPC through cmux and does not reliably serve the KV service
-	// (#41: proxied counts to leader:peerPort hung to the deadline).
+	// ClientPort and ClientTLS describe the advertised public endpoint.
 	ClientPort int
+	// ProxyTLS and ProxyAllowInsecure describe the internal peer endpoint used
+	// for follower-to-leader forwarding. Proxy traffic must not re-enter public
+	// admission on the leader and consume a second tenant token/slot.
+	ProxyTLS           *tls.Config
+	ProxyAllowInsecure bool
 
 	// EnableEtcdProxy is the flag if etcd proxy should start
 	EnableEtcdProxy bool
@@ -60,6 +57,11 @@ type Config struct {
 	// Zero preserves etcd's unlimited default. Peer RPCs are deliberately
 	// excluded so overload cannot block leader and revision coordination.
 	MaxRequestsInFlight uint32
+	// MaxRequestRate limits public client request messages per second. Unary
+	// RPCs consume one token; streaming RPCs consume one per inbound message.
+	// RequestRateBurst is the token bucket capacity. Both zero disable it.
+	MaxRequestRate   uint32
+	RequestRateBurst uint32
 	// MaxWatches limits active logical watches per process. One gRPC Watch
 	// stream can multiplex many watches, so the RPC limit cannot substitute it.
 	// Zero preserves etcd's unlimited behavior.
@@ -73,10 +75,9 @@ type Config struct {
 
 func (c Config) getPeerServiceConfig() service.Config {
 	return service.Config{
-		TLS:             c.ClientTLS,
-		AllowInsecure:   c.ClientAllowInsecure,
+		TLS:             c.ProxyTLS,
+		AllowInsecure:   c.ProxyAllowInsecure,
 		EnableEtcdProxy: c.EnableEtcdProxy,
-		ClientPort:      c.ClientPort,
 		MaxRequestBytes: c.MaxRequestBytes,
 	}
 }

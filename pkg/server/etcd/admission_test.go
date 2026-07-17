@@ -17,10 +17,12 @@ package etcd
 import (
 	"context"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -163,4 +165,116 @@ func TestClientAdmissionDisabledDoesNotTrackRequests(t *testing.T) {
 	defer closeFn()
 	require.True(t, rpc.acquireRequest("method", "unary"))
 	require.Zero(t, rpc.requestsInFlight)
+}
+
+func TestClientRequestRateLimitsUnaryAndReservesPeer(t *testing.T) {
+	rpc, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	rpc.SetRequestRateLimit(1, 2)
+
+	clientHealth := health.NewServer()
+	clientHealth.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
+	clientListener := startAdmissionServer(t, rpc.ClientServerOptions(), clientHealth)
+	client := admissionClient(t, clientListener)
+	for i := 0; i < 2; i++ {
+		response, err := client.Check(context.Background(), &healthpb.HealthCheckRequest{})
+		require.NoError(t, err)
+		require.Equal(t, healthpb.HealthCheckResponse_SERVING, response.Status)
+	}
+	_, err := client.Check(context.Background(), &healthpb.HealthCheckRequest{})
+	require.Equal(t, codes.ResourceExhausted, status.Code(err))
+	require.Equal(t, "etcdserver: too many requests", status.Convert(err).Message())
+
+	peerHealth := health.NewServer()
+	peerHealth.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
+	peerListener := startAdmissionServer(t, rpc.PeerServerOptions(), peerHealth)
+	peer := admissionClient(t, peerListener)
+	response, err := peer.Check(context.Background(), &healthpb.HealthCheckRequest{})
+	require.NoError(t, err, "peer listener must not consume the public rate budget")
+	require.Equal(t, healthpb.HealthCheckResponse_SERVING, response.Status)
+}
+
+func TestClientRequestRateCountsEveryWatchStreamMessage(t *testing.T) {
+	rpc, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	rpc.SetRequestRateLimit(1, 1)
+
+	listener := bufconn.Listen(1 << 20)
+	server := grpc.NewServer(rpc.ClientServerOptions()...)
+	etcdserverpb.RegisterWatchServer(server, rpc)
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(server.Stop)
+	conn, err := grpc.NewClient("passthrough:///rate-limited-watch",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	stream, err := etcdserverpb.NewWatchClient(conn).Watch(ctx)
+	require.NoError(t, err)
+	require.NoError(t, stream.Send(&etcdserverpb.WatchRequest{
+		RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{
+			CreateRequest: &etcdserverpb.WatchCreateRequest{Key: []byte("/rate/first"), WatchId: 1},
+		},
+	}))
+	created, err := stream.Recv()
+	require.NoError(t, err)
+	require.True(t, created.Created)
+	require.Equal(t, int64(1), created.WatchId)
+
+	// The server may close as soon as it receives this message, so Send can race
+	// with the terminal status and return EOF. Recv is the authoritative status.
+	_ = stream.Send(&etcdserverpb.WatchRequest{
+		RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{
+			CreateRequest: &etcdserverpb.WatchCreateRequest{Key: []byte("/rate/second"), WatchId: 2},
+		},
+	})
+	_, err = stream.Recv()
+	require.Equal(t, codes.ResourceExhausted, status.Code(err))
+	require.Equal(t, "etcdserver: too many requests", status.Convert(err).Message())
+}
+
+func TestClientRequestRateDisabledDoesNotReject(t *testing.T) {
+	rpc, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	for i := 0; i < 100; i++ {
+		require.True(t, rpc.allowRequestRate("method", "unary"))
+	}
+}
+
+func TestClientRequestRateBurstIsAtomicAcrossConnections(t *testing.T) {
+	rpc, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	const (
+		burst      = 7
+		contenders = 64
+	)
+	rpc.SetRequestRateLimit(1, burst)
+
+	start := make(chan struct{})
+	results := make(chan bool, contenders)
+	var wg sync.WaitGroup
+	wg.Add(contenders)
+	for i := 0; i < contenders; i++ {
+		go func() {
+			defer wg.Done()
+			<-start
+			results <- rpc.allowRequestRate("method", "unary")
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+
+	admitted := 0
+	for allowed := range results {
+		if allowed {
+			admitted++
+		}
+	}
+	require.Equal(t, burst, admitted)
 }

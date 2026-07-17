@@ -1301,6 +1301,26 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `f03aa369bba116007f5bec340ccf5fa98aabd33390e33365e0d1e6a74b5518e3`；
   最终恢复 limit=10000，部署 3/3 Ready、zero restart，实时
   `endpoint health` 与 Put/Get/Delete 通过。
+- **Admission A81 client request-message rate limit（2026-07-17）**：A79 仅限制
+  在途 RPC，短 unary 洪峰可在并发槽释放后继续无限进入；若只按 stream 建立扣 token，
+  单条 Watch/LeaseKeepAlive 双向流也可无限发送消息。新增成对 fail-loud 参数
+  `--max-request-rate`/`--request-rate-burst`（默认均 `0` 保持 etcd 无公开 QPS 配置的
+  行为，生产清单为每进程 `2000 msg/s`、burst `4000`），使用并发安全 token bucket：
+  unary 每 RPC、stream 每入站 message 各扣一个 token，超限统一返回 etcd 标准
+  `ResourceExhausted: etcdserver: too many requests`，并按 method/kind 记录
+  `grpc_server_rate_limit_rejected`。真实 follower 验证同时发现 etcd proxy 仍拨 leader
+  client 端口，导致外部请求在入口和 leader 重复消耗 QPS/A79 并发预算；现 proxy 改拨
+  election identity 的 peer 端口并使用独立 peer TLS/ServerName，leader 内部执行不再进入
+  public admission。peer listener 本就注册完整 RPC surface，生产网络必须仅允许副本访问。
+  CLI/config/TLS 传播、成对校验、unary burst/refill、64 并发原子争抢、同 stream 多消息、
+  peer reserve 测试普通 100 轮、race 50 轮及 full/race/vet 全部通过。三副本 KubeBrain
+  + 独立 TiKV/PD exact image
+  `61c62b1cfbe4162cff56b28fb93731a7afb083fb28d4e4c6919eb8b5dfdad58a`
+  上，明确连接 follower、临时 rate=1/burst=2 连续 5 轮：每轮 3 个并发 unary 恰好
+  2 成功/1 拒绝，peer health 同时成功，refill 后 client 恢复；同一 Watch stream 前两条
+  create 经 peer 代理成功、第三条 message 标准拒绝。指标精确为 unary rejected=5、
+  stream_message rejected=5、inflight=0。最终恢复 2000/4000，部署 3/3 Ready、
+  zero restart，实时 endpoint health 与 Put/Get/Delete 通过。
 
 ### P1：通用服务能力
 
@@ -1313,9 +1333,9 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
 2. `client/v3/concurrency` mutex/election/session、lease 自然过期和 failover
    recipe 已通过；继续增加长时间 soak。
 3. 建立 DBaaS 控制面契约：创建、扩缩、升级、备份、恢复、证书轮换、销毁。
-4. 建立实例级限额和计量：请求字节、txn 操作数、跨连接 client RPC 总并发及逻辑
-   Watch 总数已具备稳定错误与指标；继续补 CPU、内存、PV、备份容量、网络、QPS 及
-   容量计量。
+4. 建立实例级限额和计量：请求字节、txn 操作数、跨连接 client RPC 总并发、client
+   请求 QPS/burst 及逻辑 Watch 总数已具备稳定错误与指标；继续补 CPU、内存、PV、
+   备份容量、网络及容量计量。
 
 ### P2：运维兼容和长期验证
 

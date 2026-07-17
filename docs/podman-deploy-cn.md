@@ -202,7 +202,11 @@ Exec=--pd-addrs=${PD_ADDRS} \
      --enable-count-index=true \
      --count-index-max-keys=0 \
      --storage-gc-lifetime=10m \
-     --enable-storage-metrics=true
+     --enable-storage-metrics=true \
+     --max-requests-inflight=1024 \
+     --max-request-rate=2000 \
+     --request-rate-burst=4000 \
+     --max-watches=10000
 Volume=/var/log/kubebrain:/var/log/kubebrain:Z
 
 [Service]
@@ -232,6 +236,7 @@ EOF
 | `--max-txn-ops` / `--max-request-bytes`  | 每个 txn 的最大操作数与单请求 protobuf payload 上限；默认与 etcd 一致为 `128` / `1572864`，所有副本必须一致 |
 | `--max-concurrent-streams`               | 每条 client HTTP/2 连接可同时打开的 stream 数；默认 `4294967295` 与 etcd 一致，DBaaS 下调前必须计入 watch、lease keepalive 与普通 RPC |
 | `--max-requests-inflight`                | 每个 KubeBrain 进程公开 client 平面的并发 RPC 总数；默认 `0` 不限制，生产建议按 CPU/延迟压测设置（参考清单为 `1024`）。跨连接生效，超限返回 etcd 标准 `ResourceExhausted: too many requests`；peer 平面保留独立容量 |
+| `--max-request-rate` / `--request-rate-burst` | 每进程公开 client 请求 token bucket；默认必须同为 `0`（关闭），启用时必须同为正数（参考清单 `2000 msg/s`、burst `4000`）。每个 unary RPC 及 stream 入站 message 各计一次，超限返回 etcd 标准 `ResourceExhausted: too many requests`；三副本总入口预算约为单实例的 3 倍 |
 | `--max-watches`                          | 每个 KubeBrain 进程的逻辑 Watch 总数（同一 gRPC stream 内的 multiplexed Watch 也逐个计数）；默认 `0` 不限制，生产建议按内存与 Watch 建立/事件延迟压测设置（参考清单为 `10000`）。超限 create 返回 created+canceled response 及 `etcdserver: too many requests`，原 stream 保持可用 |
 | `--grpc-keepalive-*`                     | client ping 最小间隔默认 `5s`；server ping interval/timeout 默认 `2h/20s`，对应项设 `0` 可禁用 |
 | `--auth-token` / `--auth-token-ttl`      | 当前仅支持 `simple`（默认），token TTL 默认 `300s`；`jwt,...` 会启动失败而非静默降级 |
@@ -244,6 +249,8 @@ EOF
 | `--enable-pprof`                         | **仅排障时临时加**。会在 info 端口暴露 pprof，扩大攻击面（永远不会出现在 client 口） |
 
 > ⚠️ **`--key-prefix` 已删除(2026-07-15 起的镜像)**:内部协调键(选主锁、compact 水位)固定使用 `/kubebrain-internal`,与客户端键前缀无关。升级到新镜像时**必须从 `Exec=` 里删掉 `--key-prefix` 行**,否则进程以 `unknown flag` 拒绝启动(故意 fail-loud)。旧镜像(≤2026-07-14)仍需要该参数且必须设 `/registry`(错位=物理 GC 全废,P0)。
+
+> ⚠️ **peer 端口 3380 只允许 KubeBrain 副本互通。** follower 将请求从该端口转发给 leader，以确保公开 client QPS/并发预算只在入口计一次；若把 peer 端口暴露给普通租户，租户可绕过公开 admission。
 
 ### 4.3 部署（三台并行，自动选主）
 
@@ -706,6 +713,8 @@ Volume=/etc/kubebrain/certs:/etc/kubebrain/certs:ro
 | 限额    | `--max-request-bytes`                   | 1572864 | 单请求 protobuf payload 上限                    |
 | 限额    | `--max-concurrent-streams`              | 4294967295 | 每条 HTTP/2 连接的并发 stream 上限             |
 | 限额    | `--max-requests-inflight`               | 0       | 每进程 client RPC 总并发；0 不限制              |
+| 限额    | `--max-request-rate`                    | 0       | 每进程 client 请求 message/s；与 burst 同时启停 |
+| 限额    | `--request-rate-burst`                  | 0       | 请求速率 token bucket 容量                      |
 | 限额    | `--max-watches`                         | 0       | 每进程逻辑 Watch 总数；0 不限制                  |
 | gRPC    | `--grpc-keepalive-min-time`             | 5s      | client ping 最小间隔；0 关闭 enforcement        |
 | gRPC    | `--grpc-keepalive-interval`             | 2h      | server ping 周期；0 关闭 server ping            |

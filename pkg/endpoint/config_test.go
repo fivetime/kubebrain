@@ -55,7 +55,7 @@ func TestConfig(t *testing.T) {
 
 	conf := Config{
 		Port: 2379, PeerPort: 2380, MaxTxnOps: 64, MaxRequestBytes: 1048576,
-		MaxRequestsInFlight: 17, MaxWatches: 23,
+		MaxRequestsInFlight: 17, MaxRequestRate: 19, RequestRateBurst: 29, MaxWatches: 23,
 		AuthToken: "simple", BcryptCost: 7, AuthTokenTTL: 45,
 		ClientSecurityConfig: &SecurityConfig{
 			CertFile:      getAuthPath("server.crt"),
@@ -82,14 +82,27 @@ func TestConfig(t *testing.T) {
 	ast.ElementsMatch([]string{"h2", "http/1.1"}, conf.ClientSecurityConfig.getServerTLSConfig().NextProtos)
 	ast.ElementsMatch([]string{"h2", "http/1.1"}, conf.PeerSecurityConfig.getServerTLSConfig().NextProtos)
 	ast.True(conf.getServerConfig().ClientCertAuth)
-	ast.True(conf.getServerConfig().ClientAllowInsecure)
+	ast.NotNil(conf.getServerConfig().ProxyTLS)
+	ast.Equal("kubebrain-peer.kubebrain-system.svc", conf.getServerConfig().ProxyTLS.ServerName)
+	ast.True(conf.getServerConfig().ProxyAllowInsecure)
 	ast.Equal(uint(64), conf.getServerConfig().MaxTxnOps)
 	ast.Equal(uint(1048576), conf.getServerConfig().MaxRequestBytes)
 	ast.Equal(uint32(17), conf.getServerConfig().MaxRequestsInFlight)
+	ast.Equal(uint32(19), conf.getServerConfig().MaxRequestRate)
+	ast.Equal(uint32(29), conf.getServerConfig().RequestRateBurst)
 	ast.Equal(uint32(23), conf.getServerConfig().MaxWatches)
 	ast.Equal("simple", conf.getServerConfig().AuthToken)
 	ast.Equal(uint(7), conf.getServerConfig().BcryptCost)
 	ast.Equal(uint(45), conf.getServerConfig().AuthTokenTTL)
+}
+
+func TestRequestRateLimitRequiresRateAndBurstTogether(t *testing.T) {
+	for _, conf := range []*Config{
+		{Port: 2379, PeerPort: 2380, MaxRequestRate: 1},
+		{Port: 2379, PeerPort: 2380, RequestRateBurst: 1},
+	} {
+		require.ErrorContains(t, conf.Validate(), "must both be zero or both be positive")
+	}
 }
 
 func TestAuthTokenProviderValidation(t *testing.T) {
