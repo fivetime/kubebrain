@@ -19,6 +19,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
 	"sync"
@@ -1007,11 +1008,11 @@ func isExpectedWatchCloseError(err error) bool {
 	if err == nil {
 		return false
 	}
-	if errors.Is(err, context.Canceled) {
+	if errors.Is(err, context.Canceled) || errors.Is(err, io.EOF) {
 		return true
 	}
 	code := status.Code(err)
-	if code == codes.Canceled {
+	if code == codes.Canceled || code == codes.InvalidArgument || code == codes.ResourceExhausted {
 		return true
 	}
 	if code == codes.Unavailable && strings.Contains(err.Error(), "transport is closing") {

@@ -226,6 +226,16 @@ type stampedServerStream struct {
 	s *RPCServer
 }
 
+func (w *stampedServerStream) RecvMsg(m any) error {
+	if err := w.ServerStream.RecvMsg(m); err != nil {
+		return err
+	}
+	if message, ok := m.(proto.Message); ok && uint(proto.Size(message)) > w.s.maxRequestBytes {
+		return rpctypes.ErrGRPCRequestTooLarge
+	}
+	return nil
+}
+
 func (w *stampedServerStream) SendMsg(m any) error {
 	term, err := w.s.responseRaftTerm(w.Context())
 	if err != nil {

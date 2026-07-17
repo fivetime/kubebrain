@@ -109,3 +109,38 @@ func TestRequestLimitTransportAllowanceMatchesEtcd(t *testing.T) {
 	require.Equal(t, status.Code(rpctypes.ErrGRPCRequestTooLarge), status.Code(err))
 	require.Equal(t, status.Convert(rpctypes.ErrGRPCRequestTooLarge).Message(), status.Convert(err).Message())
 }
+
+func TestStreamRequestLimitUsesEtcdPayloadBoundaryAndError(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	server.SetRequestLimits(defaultMaxTxnOps, 64)
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterWatchServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///stream-request-limit",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return listener.Dial() }))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+
+	stream, err := etcdserverpb.NewWatchClient(conn).Watch(context.Background())
+	require.NoError(t, err)
+	request := &etcdserverpb.WatchRequest{
+		RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{
+			CreateRequest: &etcdserverpb.WatchCreateRequest{
+				Key:     make([]byte, 128),
+				WatchId: 1,
+			},
+		},
+	}
+	require.Greater(t, proto.Size(request), 64)
+	require.NoError(t, stream.Send(request),
+		"the message fits etcd's transport allowance and must reach the logical payload check")
+	_, err = stream.Recv()
+	require.Equal(t, status.Code(rpctypes.ErrGRPCRequestTooLarge), status.Code(err))
+	require.Equal(t, status.Convert(rpctypes.ErrGRPCRequestTooLarge).Message(), status.Convert(err).Message())
+}

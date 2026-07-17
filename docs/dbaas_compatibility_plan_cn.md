@@ -1670,6 +1670,27 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `TestPhysicalCompactionUnderTraffic` 与 endpoint health 通过，health proposal
   约 29ms。containerd 运行时 exact image
   `7a446d7d10bef67974164ede87a5573ff0ea9ff065f1bc189faa752daedc87f7`。
+- **Admission A101 streaming request payload limit（2026-07-17）**：复核
+  `--max-request-bytes` 的全入口契约时发现，unary interceptor 会按
+  `proto.Size(request)` 严格拒绝逻辑 payload 超限，但 stream interceptor 只依赖
+  gRPC `MaxRecvMsgSize(max+512KiB)`。后者与 `/root/etcd/server/etcdserver/api/v3rpc/grpc.go`
+  一样为 protobuf/transport 开销保留窗口，不能替代 KubeBrain 已对 unary 承诺的实例
+  payload 限额；恶意 Watch create 可用超长 key/range 在同一连接反复分配并绕过
+  production 1.5MiB 上限。现统一 stamped stream 在底层成功解码每条入站 protobuf 后
+  执行相同的逻辑大小检查，Watch（以及未来任何新增 client/peer stream 消息）超限均
+  返回 `InvalidArgument: etcdserver: request is too large`，不会进入业务 handler；
+  固定只有 lease ID 的 KeepAlive 消息也经过同一路径。Watch 接收日志同时把
+  `io.EOF`、客户端取消、payload 超限与 QPS admission 拒绝归为正常 stream 关闭，
+  不再允许合法关闭或恶意超限请求污染 Error 告警；内部/transport 异常仍保留 Error。
+
+  bufconn 黑盒固定 64-byte 上限下 128-byte key 能通过 transport decoder、但被逻辑层
+  拒绝；focused 普通 20 轮、race 5 轮、full test、完整 etcd server race 与 full vet
+  全通过。三副本 KubeBrain + 独立 TiKV/PD 的 production 1.5MiB 配置上，1.75MiB
+  Watch create 连续 10 轮均返回标准错误，随后正常 Kubernetes Watch+Lease 流通过，
+  且两种关闭均无 Error/Fatal 日志；endpoint health 约 37ms，三个 Pod 均 Ready、
+  zero restart。containerd 运行时
+  exact image
+  `7f8f99e8be078a443fc2f669a0355086a6680a0b88828ea0872d6ede5c70993a`。
 
 ### P1：通用服务能力
 

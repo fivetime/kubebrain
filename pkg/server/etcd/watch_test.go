@@ -17,6 +17,7 @@ package etcd
 import (
 	"context"
 	"errors"
+	"io"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -177,9 +178,12 @@ func TestIsExpectedWatchCloseError(t *testing.T) {
 		want bool
 	}{
 		{name: "nil", err: nil, want: false},
+		{name: "client close send", err: io.EOF, want: true},
 		{name: "context canceled", err: context.Canceled, want: true},
 		{name: "wrapped context canceled", err: errors.Join(errors.New("recv failed"), context.Canceled), want: true},
 		{name: "grpc canceled", err: status.Error(codes.Canceled, "context canceled"), want: true},
+		{name: "request too large", err: rpctypes.ErrGRPCRequestTooLarge, want: true},
+		{name: "rate limited", err: rpctypes.ErrGRPCRequestTooManyRequests, want: true},
 		{name: "transport closing", err: status.Error(codes.Unavailable, "transport is closing"), want: true},
 		{name: "internal", err: status.Error(codes.Internal, "backend watch failed"), want: false},
 		{name: "plain error", err: errors.New("backend watch failed"), want: false},
