@@ -2269,6 +2269,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `kubebrain:a132-txn-range-first-revision` 后三 Pod Ready、zero restart，
   `/health` 与 `/readyz` 正常，运行时 exact image
   `33b23b61fdfdd3ecceaa8256502e6ce442c1174be6f9f33b1e5e8e5627c0e001`。
+- **Lease A133 Grant TTL/ID boundary differential（2026-07-18）**：对照
+  `/root/etcd/server/lease/lessor.go:Grant` 与公开 Lease gRPC，新增 raw
+  LeaseGrant 双端矩阵。矩阵覆盖 TTL `math.MinInt64`、`-1`、`0`、`1`、最小值
+  `2`、最大值 `9_000_000_000`、最大值加一及 `math.MaxInt64`，同时覆盖显式
+  ID、自动 ID 和重复 ID。双方均把小于最小值的 TTL 夹到 2 秒并在响应中回显，
+  精确接受最大值；超上限返回 gRPC `OutOfRange`、
+  `etcdserver: too large lease TTL`。自动 ID 保证非零，重复显式 ID 返回
+  `FailedPrecondition`、`etcdserver: lease already exists`，成功创建的租约均在
+  场景结束时撤销。
+
+  临时 `/root/etcd` 3.8.0-alpha.0 reference 与在线三副本 TiKV-backed
+  KubeBrain 间连续 10 轮、race 3 轮通过，未发现新实现差异。完整 compat suite
+  用时 84.310s，`go test ./...`、根模块与 compat module `go vet ./...`、强制
+  backend race（54.546s）及完整 server race（241.911s）通过。本轮只增加兼容性
+  测试，不改变服务二进制；在线集群继续运行
+  `kubebrain:a132-txn-range-first-revision`，三 Pod Ready、zero restart，
+  `/health` 与 `/readyz` 正常，exact image 仍为
+  `33b23b61fdfdd3ecceaa8256502e6ce442c1174be6f9f33b1e5e8e5627c0e001`。
 
 ### P1：通用服务能力
 
