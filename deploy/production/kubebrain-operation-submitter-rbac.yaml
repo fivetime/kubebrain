@@ -1,0 +1,45 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kubebrain-operation-submitter
+  namespace: kubebrain-operations
+  labels:
+    app.kubernetes.io/name: kubebrain-operation-submitter
+    app.kubernetes.io/part-of: kubebrain
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kubebrain-operation-submitter
+  namespace: kubebrain-operations
+  labels:
+    app.kubernetes.io/name: kubebrain-operation-submitter
+    app.kubernetes.io/part-of: kubebrain
+rules:
+  - apiGroups:
+      - dbaas.kubebrain.io
+    resources:
+      - kubebrainoperations
+    verbs:
+      - create
+      - get
+      - list
+      - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kubebrain-operation-submitter
+  namespace: kubebrain-operations
+  labels:
+    app.kubernetes.io/name: kubebrain-operation-submitter
+    app.kubernetes.io/part-of: kubebrain
+subjects:
+  - kind: ServiceAccount
+    name: kubebrain-operation-submitter
+    namespace: kubebrain-operations
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: kubebrain-operation-submitter
