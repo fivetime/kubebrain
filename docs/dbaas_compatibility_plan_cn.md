@@ -2800,6 +2800,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   这是 StatefulSet/EndpointSlice 生命周期窗口而非搜索域问题；当前 clientv3 和内部
   leader 连接会重试并恢复。后续可通过故障预算测试量化窗口，但不得把完整 FQDN
   误记为消除 Pod 替换期间的 DNS 不可用。
+- **Test A166 destructive binary-range isolation（2026-07-18）**：在真实集群运行
+  全套双端差分时，A162 重启测试遗留的 `0xfe` 前缀键被 binary mutation 的
+  `[fe,ff)` DeleteRange 当作测试数据删除；旧 cleanup 还分别使用 `ff`/`00`
+  FromKey，测试失败时可能清理共享 endpoint 上不属于测试的任意业务键。该失败不是
+  KubeBrain 范围语义差异，而是兼容测试本身缺少隔离保护。
+
+  binary key/mutation 差分现于写入前用 KeysOnly+Limit=1 检查所有将读取或删除的全局
+  二进制范围，发现任意既有键即明确要求 disposable endpoint 并 fail-fast；cleanup
+  只逐项删除测试声明的 exact key，不再执行开放范围删除。清理由 `t.Cleanup` 在写入
+  前注册，部分写入或后续断言失败也不会扩大影响。干净范围上的两项双端差分通过，
+  随后参考 etcd `d947b2086` 与真实 TiKV-backed KubeBrain 的完整兼容模块 176.9 秒
+  通过；仓库全量测试通过。该项仅修改测试工具，无需重建数据面镜像。
 
 ### P1：通用服务能力
 
