@@ -318,8 +318,8 @@ func (b *backend) boundedHistoryScan(ctx context.Context, prefix string, fromRev
 // [fromRevision, currentRevision]. It is invoked through historyScanGroup so a
 // reconnect herd shares one execution rather than each issuing its own scan.
 func (b *backend) scanHistoryEvents(ctx context.Context, prefix string, fromRevision, currentRevision uint64) ([]*proto.Event, error) {
-	start := b.coder.EncodeObjectKey([]byte(prefix), 0)
-	end := b.coder.EncodeObjectKey(PrefixEnd([]byte(prefix)), 0)
+	prefixBytes := []byte(prefix)
+	start, end := b.historyPrefixBounds(prefixBytes)
 	iter, err := b.kv.Iter(ctx, start, end, 0, 0)
 	if err != nil {
 		return nil, err
@@ -348,9 +348,15 @@ func (b *backend) scanHistoryEvents(ctx context.Context, prefix string, fromRevi
 			}
 			return nil, err
 		}
+		if b.ks.IsInternalStorageKey(iter.Key()) {
+			continue
+		}
 		key, rev, err := b.coder.Decode(iter.Key())
 		if err != nil {
 			return nil, err
+		}
+		if !bytes.HasPrefix(key, prefixBytes) {
+			continue
 		}
 		if rev == 0 || bytes.HasPrefix(key, etcdMetadataPrefix) {
 			// revision key or internal metadata: not an event
@@ -420,6 +426,22 @@ func (b *backend) scanHistoryEvents(ctx context.Context, prefix string, fromRevi
 		return events[i].Revision < events[j].Revision
 	})
 	return events, nil
+}
+
+func (b *backend) historyPrefixBounds(prefix []byte) (start, end []byte) {
+	if len(prefix) == 0 {
+		start = b.ks.ObjectKeyspaceStart()
+	} else {
+		encoded := b.coder.EncodeObjectKey(prefix, 0)
+		start = append(append([]byte(nil), encoded[:len(encoded)-9]...), 0)
+	}
+	prefixEnd := PrefixEnd(prefix)
+	if isFromKeyEnd(prefixEnd) {
+		end = b.ks.ObjectKeyspaceEnd()
+	} else {
+		end = b.coder.EncodeObjectKey(prefixEnd, 0)
+	}
+	return start, end
 }
 
 func (b *backend) processEvents(ctx context.Context, cancel context.CancelFunc, out chan<- []*proto.Event, in <-chan []*proto.Event,

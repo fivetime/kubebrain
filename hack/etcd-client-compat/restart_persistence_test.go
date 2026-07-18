@@ -48,6 +48,12 @@ func TestReplicatedRestartPreservesState(t *testing.T) {
 	deletedKey := prefix + "deleted"
 	leasedKey := prefix + "leased"
 	historyKey := prefix + "history"
+	binaryPrefix := append([]byte{0xfe}, []byte(prefix+"binary/")...)
+	binaryKeys := [][]byte{
+		append([]byte(nil), binaryPrefix...),
+		append(append([]byte(nil), binaryPrefix...), 0),
+		append(append([]byte(nil), binaryPrefix...), 1),
+	}
 
 	durablePut, err := cli.Put(ctx, durableKey, "before-restart")
 	require.NoError(t, err)
@@ -64,6 +70,21 @@ func TestReplicatedRestartPreservesState(t *testing.T) {
 	historyPut, err := cli.Put(ctx, historyKey, "replay-after-restart")
 	require.NoError(t, err)
 	beforeRevision := historyPut.Header.Revision
+	var binaryStartRevision int64
+	for i, key := range binaryKeys {
+		put, putErr := cli.Put(ctx, string(key), fmt.Sprintf("binary-%d", i))
+		require.NoError(t, putErr)
+		if i == 0 {
+			binaryStartRevision = put.Header.Revision
+		}
+	}
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cleanupCancel()
+		for _, key := range binaryKeys {
+			_, _ = cli.Delete(cleanupCtx, string(key))
+		}
+	})
 
 	errCh := make(chan error, 1)
 	stop := make(chan struct{})
@@ -148,6 +169,28 @@ func TestReplicatedRestartPreservesState(t *testing.T) {
 		require.Equal(t, "replay-after-restart", string(response.Events[0].Kv.Value))
 	case <-watchCtx.Done():
 		t.Fatal("timed out replaying persisted watch history")
+	}
+
+	binaryWatchCtx, binaryWatchCancel := context.WithTimeout(ctx, 15*time.Second)
+	defer binaryWatchCancel()
+	binaryWatch := cli.Watch(
+		binaryWatchCtx, string(binaryPrefix),
+		clientv3.WithPrefix(), clientv3.WithRev(binaryStartRevision),
+	)
+	var binaryEvents []*clientv3.Event
+	for len(binaryEvents) < len(binaryKeys) {
+		select {
+		case response := <-binaryWatch:
+			require.NoError(t, response.Err())
+			binaryEvents = append(binaryEvents, response.Events...)
+		case <-binaryWatchCtx.Done():
+			t.Fatalf("timed out replaying binary prefix history; got %d events", len(binaryEvents))
+		}
+	}
+	require.Len(t, binaryEvents, len(binaryKeys))
+	for i := range binaryKeys {
+		require.Equal(t, binaryKeys[i], binaryEvents[i].Kv.Key)
+		require.Equal(t, fmt.Sprintf("binary-%d", i), string(binaryEvents[i].Kv.Value))
 	}
 
 	after, err := cli.Put(ctx, durableKey, "after-restart")

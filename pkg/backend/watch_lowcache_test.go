@@ -61,7 +61,7 @@ func TestBackendWatchLowCacheTransientFailureNotCompaction(t *testing.T) {
 	// Arm a transient failure for the history scan over baseKey (its start key is
 	// unique to the full-prefix scan, so setup reads are unaffected). This is a
 	// storage error, not compaction.
-	fkv.failSubstr = b.coder.EncodeObjectKey([]byte(baseKey), 0)
+	fkv.failSubstr, _ = b.historyPrefixBounds([]byte(baseKey))
 	atomic.StoreInt32(&fkv.remaining, 1)
 
 	ch, err := b.Watch(ctx, baseKey, createA.Header.Revision)

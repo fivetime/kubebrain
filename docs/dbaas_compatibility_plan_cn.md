@@ -2751,6 +2751,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   结果，不会让并发写后的新低字节扩展键被旧 negative cache 隐藏。真实 TiKV 上相同
   2880 组矩阵两轮降至约 29.9/31.2 秒，较 A160 改善但仍高于 A159；二进制
   unary/RangeStream/Txn/standalone mutation 参考差分脱离并发压测后连续 10 轮通过。
+- **Watch A162 binary prefix cold-history replay（2026-07-18）**：沿 A160 的编码
+  根因审计重启恢复路径，发现实时 Watch 使用原始用户键前缀路由而不受影响，但 event
+  log 不可服务时的存储历史回放仍扫描
+  `[Encode(prefix), Encode(PrefixEnd(prefix)))`。该范围会漏掉 `prefix+00/01`；
+  arbitrary range Watch 使用空后端前缀时，`PrefixEnd(empty)={0}` 还会形成错误的
+  空历史范围。因此 Pod 重启、冷缓存或 event-log watermark 之前的历史 Watch 可能
+  静默缺事件。
+
+  历史回放现以原始 `magic+prefix+00` 为起点；空 prefix 从租户 object keyspace
+  起点开始，无可用 prefix end 时止于租户边界。解码后再用 `bytes.HasPrefix` 排除
+  end 边界低字节扩展和内部 event-log/internal KV family。一次 Iter、每键版本连续、
+  DELETE PrevKV 恢复和 reconnect-herd singleflight 不变量保持不变。单元测试固定
+  `fe`、`fe00`、`fe01` 与 `ff00` 的前缀/全范围回放，并将真实全副本重启测试扩展为
+  重启后从首个 revision 恢复三个二进制前缀事件。
 
 ### P1：通用服务能力
 

@@ -87,7 +87,7 @@ func TestHistoryScanHerdSharesOneScan(t *testing.T) {
 	b.watchCache.Add(newEvent(proto.Event_PUT, updateA.Header.Revision, newKeyValue(keyA, "a2", updateA.Header.Revision)))
 
 	// Gate the history scan of baseKey so every caller piles onto the group.
-	gkv.gateSubstr = b.coder.EncodeObjectKey([]byte(baseKey), 0)
+	gkv.gateSubstr, _ = b.historyPrefixBounds([]byte(baseKey))
 
 	const N = 50
 	results := make([][]*proto.Event, N)
@@ -152,7 +152,7 @@ func TestHistoryScanBucketSharesNearbyRevisions(t *testing.T) {
 	require.NotEqual(t, r1, r2)
 	require.Equal(t, r1/bucket, r2/bucket, "test setup: both revisions must share a bucket")
 
-	gkv.gateSubstr = b.coder.EncodeObjectKey([]byte(baseKey), 0)
+	gkv.gateSubstr, _ = b.historyPrefixBounds([]byte(baseKey))
 
 	// Two callers at DIFFERENT revisions (r1, r2) within the same bucket.
 	type res struct {
@@ -197,7 +197,7 @@ func setupMidScanWrite(t *testing.T, b *backend, gkv *gatedIterKV) (baseKey stri
 	waitUntilRevisionEqualOrTimeout(b, createA.Header.Revision)
 	r1 = createA.Header.Revision
 	c1 = b.GetCurrentRevision()
-	gkv.gateSubstr = b.coder.EncodeObjectKey([]byte(baseKey), 0)
+	gkv.gateSubstr, _ = b.historyPrefixBounds([]byte(baseKey))
 
 	launchExecutor = func() (*[]*proto.Event, *error, *sync.WaitGroup) {
 		var evs []*proto.Event
@@ -329,7 +329,7 @@ func TestHistoryScanWaiterHonorsOwnCtx(t *testing.T) {
 	require.NoError(t, err)
 	waitUntilRevisionEqualOrTimeout(b, createA.Header.Revision)
 	cur := b.GetCurrentRevision()
-	gkv.gateSubstr = b.coder.EncodeObjectKey([]byte(baseKey), 0)
+	gkv.gateSubstr, _ = b.historyPrefixBounds([]byte(baseKey))
 
 	// Executor: holds the scan open (gated) in the background.
 	var execDone sync.WaitGroup

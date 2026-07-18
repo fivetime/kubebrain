@@ -134,3 +134,43 @@ func TestHistoryWatchEventsNoPerTombstoneReads(t *testing.T) {
 		}
 	}
 }
+
+func TestHistoryScanPreservesBinaryPrefixOrdering(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	m := mock.NewMinimalMetrics(ctrl)
+	ckv := &countingIterKV{KvStorage: imemkv.NewKvStorage()}
+	defer func() { require.NoError(t, ckv.Close()) }()
+	b := NewBackend(ckv, Config{
+		Prefix: prefix, Identity: getStorageIdentity(), EnableEtcdCompatibility: true,
+	}, m).(*backend)
+	b.SetCurrentRevision(uint64(time.Now().UnixNano()))
+	ctx := context.Background()
+
+	fromRevision := b.GetCurrentRevision() + 1
+	keys := [][]byte{{0xfe}, {0xfe, 0x00}, {0xfe, 0x01}, {0xff, 0x00}}
+	for i, key := range keys {
+		_, err := b.Create(ctx, &proto.CreateRequest{Key: key, Value: []byte{byte(i)}})
+		require.NoError(t, err)
+	}
+	currentRevision := b.GetCurrentRevision()
+	waitCommitted(t, b, currentRevision)
+
+	atomic.StoreInt64(&ckv.iters, 0)
+	events, err := b.scanHistoryEvents(ctx, string([]byte{0xfe}), fromRevision, currentRevision)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), atomic.LoadInt64(&ckv.iters))
+	require.Len(t, events, 3)
+	require.Equal(t, [][]byte{{0xfe}, {0xfe, 0x00}, {0xfe, 0x01}}, [][]byte{
+		events[0].Kv.Key, events[1].Kv.Key, events[2].Kv.Key,
+	})
+
+	atomic.StoreInt64(&ckv.iters, 0)
+	all, err := b.scanHistoryEvents(ctx, "", fromRevision, currentRevision)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), atomic.LoadInt64(&ckv.iters))
+	require.Len(t, all, len(keys))
+	for i := range keys {
+		require.Equal(t, keys[i], all[i].Kv.Key)
+	}
+}
