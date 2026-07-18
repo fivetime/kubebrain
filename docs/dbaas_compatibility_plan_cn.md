@@ -3127,7 +3127,8 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   attempt 1 完成，status receipt digest
   `a1a8333123fcb2912603d7e416124c5f9e5f2eb393d62776a21ae7686c3ad245`，
   探针 prefix 零残留。A192-A195 已接入 Backup/RestoreCutover/CertificateRotation/
-  Destroy executor；管理 API 认证授权、跨实例公平调度和审计聚合仍是 P1。
+  Destroy executor；A196/A197 已完成 Kubernetes 原生提交身份和跨实例公平调度，
+  外部管理 API 认证授权及审计聚合仍是 P1。
 - **Operations A192 protected Backup operation executor（2026-07-18）**：新增
   `hack/production/run-backup-operation.sh`，只 claim `Backup` operation 并核对完整参数
   JSON SHA-256。参数固定数据 endpoint/prefix、operation 专属 artifact/receipt 路径、
@@ -3231,6 +3232,33 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   和跨 namespace create 均以非零退出被 RBAC 拒绝，测试 operation 已由管理员清理。
   这关闭 Kubernetes 原生提交入口的最小权限身份；外部管理 API 的 OIDC/租户授权、
   请求审批和不可变审计归档仍是 P1。
+- **Operations A197 instance-fenced fair operation scheduling（2026-07-18）**：
+  operation queue 不再只按 CR 创建时间全局 FIFO。每个 instance 以 SHA-256 派生固定
+  `coordination.k8s.io/v1 Lease` 名称；claim 必须先用 create/update resourceVersion CAS
+  获得实例 Lease，再更新 operation status。holder 绑定 operation UID、attempt 和 worker
+  identity digest；heartbeat 同时续租实例 Lease 与 operation lease，requeue/finish
+  释放实例 Lease。不同 operation CR 之间因此也只有一个可运行，同实例 Backup、切换、
+  轮换、审计和销毁不会并发破坏状态。worker Role 仅新增 namespaced Lease
+  create/get/update/delete，不获得 operation create/delete。
+
+  候选按实例最后一次 `startedAtUnixNano` 从早到晚排序，同实例内保持 creation timestamp/
+  name 稳定顺序；旧 CR 没有纳秒字段时兼容回退到 `startedAtUnix`。新纳秒字段进入 CRD
+  status，避免一秒内快速任务并列后退化为名称排序。worker lease 一旦过期，即使尚未被
+  新 worker 接管，旧 owner 也不能 heartbeat/requeue/finish，关闭原先只检查
+  owner+attempt 而不检查 deadline 的窗口。
+
+  单元测试覆盖同秒不同纳秒公平排序、跨实例并行、同实例串行、完成后放行下一任务、
+  过期 worker 三类动作立即 fenced 和精确 Lease RBAC；production test、race、vet 与
+  CRD/RBAC server-side dry-run 通过。真实 `kind-kubebrain-dbaas` 上实例 A 的两个
+  Backup 与实例 B 并行 claim 为 `A1/B1`，第三个 claim 被拒绝；A1 完成后 A2 才可
+  claim。同实例 D 的两个并发 CertificateRotation claim 退出码为 `0/1`，Running
+  精确为 1；已有服务历史的 A 与从未服务的 C 同时排队时选择 C。纳秒状态真实持久为
+  19 位 `1784390758249455229`，演练后 operation/Lease 残留均为 0。
+
+  首次真实 claim 暴露 Lease `MicroTime` 只接受六位微秒而非 RFC3339Nano 九位格式，
+  API Server 在 operation 进入 Running 前拒绝；实现改用 Kubernetes MicroTime 格式后
+  重跑全部证据通过。当前公平范围是单 operation namespace；多 region/多 namespace
+  管理面的全局公平仍需由上层调度器定义。
 - **Operations A185 certificate rotation completion state（2026-07-18）**：新增
   `hack/production/validate-certificate-rotation.sh`，把 client/peer CA rollover
   收敛为 `begin -> overlap -> complete` 三阶段门禁。begin 固定全部 KubeBrain Pod
@@ -3326,8 +3354,9 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
    gate、UID-fenced 销毁状态机及持久 operation API/worker fencing、Backup/
    RestoreCutover/CertificateRotation/Destroy executors 已建立；继续完成专属
    namespace/凭据外围清理、bucket lifecycle/inventory 对账；Kubernetes 原生提交者
-   与 worker 最小权限身份已分离，继续补外部管理 API 的 OIDC/租户授权、请求审批、
-   不可变审计归档、跨实例公平调度和管理面 HA soak。
+   与 worker 最小权限身份已分离，单 namespace 跨实例公平调度和实例互斥已完成；继续
+   补外部管理 API 的 OIDC/租户授权、请求审批、不可变审计归档、跨 namespace/region
+   全局调度和管理面 HA soak。
 4. 建立实例级限额和计量：请求字节、txn 操作数、跨连接 client RPC 总并发、client
    请求 QPS/burst、逻辑 Watch 总数、CPU/内存饱和、网络错误/丢包及 PD/TiKV PVC 容量
    告警已具备稳定错误或指标，网络 RX/TX 原始计量和逻辑备份 artifact 容量/新鲜度
