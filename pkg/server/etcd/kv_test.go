@@ -2734,54 +2734,48 @@ func TestTxnCompareValueRunsFailureBranch(t *testing.T) {
 	require.Equal(t, int64(1), deleteResp.Deleted)
 }
 
-func TestTxnRejectsInvalidCompareRequest(t *testing.T) {
+func TestTxnRejectsEmptyCompareKey(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
 
-	tests := []struct {
-		name string
-		cmp  *etcdserverpb.Compare
-	}{
-		{
-			name: "empty key",
-			cmp: &etcdserverpb.Compare{
-				Target:      etcdserverpb.Compare_MOD,
-				Result:      etcdserverpb.Compare_EQUAL,
-				TargetUnion: &etcdserverpb.Compare_ModRevision{ModRevision: 1},
-			},
-		},
-		{
-			name: "invalid result",
-			cmp: &etcdserverpb.Compare{
-				Key:         []byte("/registry/generic-txn/invalid-compare"),
-				Target:      etcdserverpb.Compare_MOD,
-				Result:      etcdserverpb.Compare_CompareResult(99),
-				TargetUnion: &etcdserverpb.Compare_ModRevision{ModRevision: 1},
-			},
-		},
-		{
-			name: "invalid target",
-			cmp: &etcdserverpb.Compare{
-				Key:         []byte("/registry/generic-txn/invalid-compare"),
-				Target:      etcdserverpb.Compare_CompareTarget(99),
-				Result:      etcdserverpb.Compare_EQUAL,
-				TargetUnion: &etcdserverpb.Compare_ModRevision{ModRevision: 1},
-			},
-		},
-	}
+	_, err := server.Txn(context.Background(), &etcdserverpb.TxnRequest{
+		Compare: []*etcdserverpb.Compare{{
+			Target:      etcdserverpb.Compare_MOD,
+			Result:      etcdserverpb.Compare_EQUAL,
+			TargetUnion: &etcdserverpb.Compare_ModRevision{ModRevision: 1},
+		}},
+	})
+	require.Error(t, err)
+	require.Equal(t, codes.InvalidArgument, status.Code(err))
+}
 
+func TestTxnUnknownCompareEnumsMatchEtcdFallthrough(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	key := []byte("/registry/generic-txn/unknown-compare")
+	tests := []struct {
+		name      string
+		target    etcdserverpb.Compare_CompareTarget
+		result    etcdserverpb.Compare_CompareResult
+		succeeded bool
+	}{
+		{name: "unknown result", target: etcdserverpb.Compare_MOD, result: 99, succeeded: true},
+		{name: "unknown target equal", target: 99, result: etcdserverpb.Compare_EQUAL, succeeded: true},
+		{name: "unknown target not equal", target: 99, result: etcdserverpb.Compare_NOT_EQUAL, succeeded: false},
+	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := server.Txn(context.Background(), &etcdserverpb.TxnRequest{
-				Compare: []*etcdserverpb.Compare{tt.cmp},
-				Success: []*etcdserverpb.RequestOp{
-					{Request: &etcdserverpb.RequestOp_RequestRange{
-						RequestRange: &etcdserverpb.RangeRequest{Key: []byte("/registry/generic-txn/invalid-compare")},
-					}},
-				},
+			resp, err := server.Txn(context.Background(), &etcdserverpb.TxnRequest{
+				Compare: []*etcdserverpb.Compare{{
+					Key:         key,
+					Target:      tt.target,
+					Result:      tt.result,
+					TargetUnion: &etcdserverpb.Compare_ModRevision{ModRevision: 0},
+				}},
 			})
-			require.Error(t, err)
-			require.Equal(t, codes.InvalidArgument, status.Code(err))
+			require.NoError(t, err)
+			require.Equal(t, tt.succeeded, resp.Succeeded)
 		})
 	}
 }

@@ -602,12 +602,6 @@ func validateTxnRequestWithMaxOps(txn *etcdserverpb.TxnRequest, maxTxnOps int) e
 		if len(cmp.Key) == 0 {
 			return status.Error(codes.InvalidArgument, "etcdserver: key is not provided")
 		}
-		if _, ok := etcdserverpb.Compare_CompareResult_name[int32(cmp.Result)]; !ok {
-			return status.Error(codes.InvalidArgument, "etcdserver: invalid compare result")
-		}
-		if _, ok := etcdserverpb.Compare_CompareTarget_name[int32(cmp.Target)]; !ok {
-			return status.Error(codes.InvalidArgument, "etcdserver: invalid compare target")
-		}
 	}
 	for _, op := range txn.Success {
 		if err := validateTxnRequestOp(op, maxTxnOps-opc); err != nil {

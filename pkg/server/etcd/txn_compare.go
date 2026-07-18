@@ -17,7 +17,6 @@ package etcd
 import (
 	"bytes"
 	"context"
-	"fmt"
 
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/mvccpb"
@@ -94,7 +93,9 @@ func (s *RPCServer) compareSingleKey(cmp *etcdserverpb.Compare, kv *mvccpb.KeyVa
 		}
 		return compareInt64(actual, cmp.GetLease(), cmp.Result), nil
 	default:
-		return false, unsupported(fmt.Sprintf("compare target %s", cmp.Target))
+		// Match upstream compareKV: an unknown target leaves the comparison
+		// result at its zero value, then applies the requested result enum.
+		return compareOrder(0, cmp.Result), nil
 	}
 }
 
@@ -103,11 +104,6 @@ func (s *RPCServer) evalRangeCompare(ctx context.Context, cmp *etcdserverpb.Comp
 }
 
 func (s *RPCServer) evalRangeCompareAtRevision(ctx context.Context, cmp *etcdserverpb.Compare, revision int64) (bool, error) {
-	switch cmp.Target {
-	case etcdserverpb.Compare_MOD, etcdserverpb.Compare_VALUE, etcdserverpb.Compare_VERSION, etcdserverpb.Compare_CREATE, etcdserverpb.Compare_LEASE:
-	default:
-		return false, unsupported(fmt.Sprintf("compare target %s", cmp.Target))
-	}
 	rangeResp, err := s.backend.List(ctx, &etcdserverpb.RangeRequest{
 		Key:      cmp.Key,
 		RangeEnd: cmp.RangeEnd,
@@ -162,37 +158,38 @@ func (s *RPCServer) compareKeyValue(cmp *etcdserverpb.Compare, kv *mvccpb.KeyVal
 		}
 		return compareInt64(actual, cmp.GetLease(), cmp.Result)
 	default:
-		return false
+		return compareOrder(0, cmp.Result)
 	}
 }
 
 func compareInt64(actual, expected int64, result etcdserverpb.Compare_CompareResult) bool {
-	switch result {
-	case etcdserverpb.Compare_EQUAL:
-		return actual == expected
-	case etcdserverpb.Compare_GREATER:
-		return actual > expected
-	case etcdserverpb.Compare_LESS:
-		return actual < expected
-	case etcdserverpb.Compare_NOT_EQUAL:
-		return actual != expected
-	default:
-		return false
+	order := 0
+	switch {
+	case actual < expected:
+		order = -1
+	case actual > expected:
+		order = 1
 	}
+	return compareOrder(order, result)
 }
 
 func compareBytes(actual, expected []byte, result etcdserverpb.Compare_CompareResult) bool {
-	cmp := bytes.Compare(actual, expected)
+	return compareOrder(bytes.Compare(actual, expected), result)
+}
+
+func compareOrder(order int, result etcdserverpb.Compare_CompareResult) bool {
 	switch result {
 	case etcdserverpb.Compare_EQUAL:
-		return cmp == 0
+		return order == 0
 	case etcdserverpb.Compare_GREATER:
-		return cmp > 0
+		return order > 0
 	case etcdserverpb.Compare_LESS:
-		return cmp < 0
+		return order < 0
 	case etcdserverpb.Compare_NOT_EQUAL:
-		return cmp != 0
+		return order != 0
 	default:
-		return false
+		// Upstream compareKV intentionally falls through to true for unknown
+		// result enums. Preserve that observable wire behavior.
+		return true
 	}
 }

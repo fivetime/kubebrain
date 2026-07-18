@@ -1930,6 +1930,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go vet ./...` 及完整 server race（200.694s）通过。服务二进制未变化，三个 Pod
   继续 Ready、zero restart、endpoint health 正常，运行时 exact image 仍为
   `9aad3d31431d75d33ada93cefde660d2a06b3cd644d818b9a4fbf074733a158f`。
+- **Txn A115 unknown Compare enum fallthrough（2026-07-18）**：对照
+  `/root/etcd/server/etcdserver/api/v3rpc/key.go:checkTxnRequest` 与
+  `/root/etcd/server/etcdserver/txn/txn.go:compareKV` 发现，reference 只校验
+  Compare key，不拒绝 protobuf 未知 Result/Target 枚举。其 apply 规则是：未知
+  Result 跳过已知分支并返回 true；未知 Target 保持比较序值为零，再按 Result 判定。
+  KubeBrain 原先在 RPC 入口主动返回 InvalidArgument。raw gRPC 修复前双端探测中，
+  reference 对未知 Result、未知 Target + EQUAL 都返回 OK、选择 Success，KubeBrain
+  分别返回 `invalid compare result` / `invalid compare target`。
+
+  现移除额外 enum validation，并将 point/range compare 共用的结果判定对齐为上述
+  fallthrough；空 Compare key 仍按双方契约返回 InvalidArgument。单元测试覆盖未知
+  Result、未知 Target + EQUAL/NOT_EQUAL 的分支选择，raw protobuf 官方 API 差分同时
+  比较 gRPC 状态、Succeeded 与最终写值。聚焦回归连续 20 轮、`go test ./...`、
+  根模块与 compat module `go vet ./...` 及完整 server race（206.164s）通过。
+  临时 `/root/etcd` reference 与在线三副本 TiKV-backed KubeBrain 修复后差分连续
+  10 轮、race 3 轮通过。部署 `kubebrain:a115-compare-enums` 后三个 Pod Ready、
+  zero restart、endpoint health 正常，运行时 exact image
+  `91343632e7ebe87c1733bc03156c7a8183ab8607ee8f2a80583da170fbf8fd6d`。
 
 ### P1：通用服务能力
 
