@@ -7,8 +7,10 @@ import (
 	"log"
 	"os"
 	"strconv"
+	"time"
 
 	"github.com/kubewharf/kubebrain/hack/backup/internal/backupfile"
+	"github.com/kubewharf/kubebrain/hack/backup/internal/backupmetrics"
 	"github.com/kubewharf/kubebrain/hack/backup/internal/etcdutil"
 	"github.com/kubewharf/kubebrain/hack/backup/internal/record"
 	clientv3 "go.etcd.io/etcd/client/v3"
@@ -110,6 +112,19 @@ func main() {
 	status, err := writer.Commit()
 	if err != nil {
 		log.Fatal(err)
+	}
+	if metricsOutput := os.Getenv("METRICS_OUTPUT"); metricsOutput != "" {
+		info, err := os.Stat(output)
+		if err != nil {
+			log.Fatalf("stat completed backup for metrics: %v", err)
+		}
+		instance := os.Getenv("BACKUP_INSTANCE")
+		if instance == "" {
+			instance = "kubebrain"
+		}
+		if err := backupmetrics.WriteSuccess(metricsOutput, instance, status, info.Size(), time.Now()); err != nil {
+			log.Fatalf("publish backup success metrics: %v", err)
+		}
 	}
 	fmt.Fprintf(os.Stderr, "exported %d records and %d leases from %s at revision %d to %s (sha256 %s)\n",
 		total, status.Leases, prefix, snapshotRevision, output, status.SHA256)

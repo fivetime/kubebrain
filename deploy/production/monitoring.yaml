@@ -226,6 +226,22 @@ spec:
             description: "PVC {{ $labels.persistentvolumeclaim }} has only {{ $value | humanizePercentage }} free space."
     - name: kubebrain.resources
       rules:
+        - alert: KubeBrainLogicalBackupMetricsMissing
+          expr: absent(kubebrain_logical_backup_last_success_timestamp_seconds{instance="kubebrain"}) == 1
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            summary: KubeBrain logical backup success metrics are missing
+            description: "No logical backup success metric is available. Configure METRICS_OUTPUT for the backup job and a Prometheus textfile collector."
+        - alert: KubeBrainLogicalBackupStale
+          expr: time() - kubebrain_logical_backup_last_success_timestamp_seconds{instance="kubebrain"} > 90000
+          for: 15m
+          labels:
+            severity: critical
+          annotations:
+            summary: KubeBrain has no recent successful logical backup
+            description: "The last successful logical backup is {{ $value | humanizeDuration }} old; the production target is at most 25 hours."
         - alert: KubeBrainResourceMetricsMissing
           expr: ((count(container_memory_working_set_bytes{namespace="kubebrain-system",container="kubebrain",image!=""}) + count(container_memory_working_set_bytes{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-2]",container=~"pd|tikv",image!=""})) < 9) or ((count(kube_pod_container_resource_limits{namespace="kubebrain-system",container="kubebrain",resource="memory",unit="byte"}) + count(kube_pod_container_resource_limits{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-2]",container=~"pd|tikv",resource="memory",unit="byte"})) < 9)
           for: 15m

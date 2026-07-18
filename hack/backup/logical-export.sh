@@ -18,6 +18,8 @@ Environment:
   ETCDCTL_CACERT     CA cert for TLS/mTLS endpoint
   ETCDCTL_CERT       client cert for TLS/mTLS endpoint
   ETCDCTL_KEY        client key for TLS/mTLS endpoint
+  METRICS_OUTPUT     optional Prometheus textfile collector output path
+  BACKUP_INSTANCE    metrics instance label, default kubebrain
 
 The export fixes all pages at the first Range response revision and publishes
 the versioned, checksummed backup atomically.
@@ -38,4 +40,5 @@ BATCH_SIZE="${BATCH_SIZE:-1000}"
 
 cd "$ROOT_DIR"
 ENDPOINT="$ENDPOINT" PREFIX="$PREFIX" OUTPUT="$OUTPUT" BATCH_SIZE="$BATCH_SIZE" \
+  METRICS_OUTPUT="${METRICS_OUTPUT:-}" BACKUP_INSTANCE="${BACKUP_INSTANCE:-kubebrain}" \
   go run ./hack/backup/cmd/logical-export
