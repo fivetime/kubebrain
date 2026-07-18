@@ -1,0 +1,232 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ACTION="${ACTION:-}"
+ROTATION_ID="${ROTATION_ID:-}"
+INSTANCE="${INSTANCE:-}"
+STATE_DIR="${STATE_DIR:-}"
+RECEIPT_OUTPUT="${RECEIPT_OUTPUT:-}"
+KUBEBRAIN_NAMESPACE="${KUBEBRAIN_NAMESPACE:-kubebrain-system}"
+POD_SELECTOR="${POD_SELECTOR:-app.kubernetes.io/name=kubebrain}"
+EXPECTED_REPLICAS="${EXPECTED_REPLICAS:-3}"
+ENDPOINT="${ENDPOINT:-}"
+KUBECTL="${KUBECTL:-kubectl}"
+ETCDCTL="${ETCDCTL:-etcdctl}"
+OPENSSL="${OPENSSL:-openssl}"
+KUBE_CONTEXT="${KUBE_CONTEXT:-}"
+
+usage() {
+  cat >&2 <<'EOF'
+Usage:
+  ACTION=begin|overlap|complete ROTATION_ID=<id> INSTANCE=<instance> \
+  STATE_DIR=<durable-dir> ENDPOINT=https://host:2379 \
+  OLD_CACERT=<file> OLD_CERT=<file> OLD_KEY=<file> \
+  NEW_CACERT=<file> NEW_CERT=<file> NEW_KEY=<file> \
+  [OVERLAP_CACERT=<file>] [RECEIPT_OUTPUT=<file>] \
+    hack/production/validate-certificate-rotation.sh
+
+begin records the exact Pod identities and proves the old credentials work.
+overlap proves old and new credentials both work through the overlap CA bundle.
+complete proves the new credentials work, the old client certificate is rejected,
+and no KubeBrain Pod was replaced or restarted. It then publishes a receipt.
+EOF
+  exit 2
+}
+
+for variable in ACTION ROTATION_ID INSTANCE STATE_DIR ENDPOINT OLD_CACERT OLD_CERT OLD_KEY NEW_CACERT NEW_CERT NEW_KEY; do
+  if [[ -z "${!variable:-}" ]]; then
+    echo "${variable} is required" >&2
+    usage
+  fi
+done
+if [[ ! "$ACTION" =~ ^(begin|overlap|complete)$ ]]; then
+  echo "ACTION must be begin, overlap, or complete" >&2
+  exit 2
+fi
+if [[ ! "$ROTATION_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]]; then
+  echo "ROTATION_ID must contain only letters, digits, dot, underscore, and hyphen" >&2
+  exit 2
+fi
+if [[ ! "$INSTANCE" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]]; then
+  echo "INSTANCE must contain only letters, digits, dot, underscore, and hyphen" >&2
+  exit 2
+fi
+if [[ "$ENDPOINT" == *[$'\t\r\n\"\\']* ]]; then
+  echo "ENDPOINT must not contain control characters, quotes, or backslashes" >&2
+  exit 2
+fi
+if ! [[ "$EXPECTED_REPLICAS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "EXPECTED_REPLICAS must be a positive integer" >&2
+  exit 2
+fi
+for variable in OLD_CACERT OLD_CERT OLD_KEY NEW_CACERT NEW_CERT NEW_KEY; do
+  if [[ ! -f "${!variable}" ]]; then
+    echo "${variable} does not exist: ${!variable}" >&2
+    exit 2
+  fi
+done
+
+umask 077
+mkdir -p "$STATE_DIR"
+state_file="${STATE_DIR}/${ROTATION_ID}.state"
+overlap_file="${STATE_DIR}/${ROTATION_ID}.overlap"
+receipt_file="${RECEIPT_OUTPUT:-${STATE_DIR}/${ROTATION_ID}.receipt.json}"
+
+kubectl_args=()
+if [[ -n "$KUBE_CONTEXT" ]]; then
+  kubectl_args+=(--context "$KUBE_CONTEXT")
+fi
+
+fingerprint() {
+  "$OPENSSL" x509 -in "$1" -noout -fingerprint -sha256 |
+    sed 's/^sha256 Fingerprint=//I; s/://g' |
+    tr '[:upper:]' '[:lower:]'
+}
+
+health() {
+  local cacert="$1" cert="$2" key="$3"
+  ETCDCTL_API=3 "$ETCDCTL" \
+    --endpoints="$ENDPOINT" \
+    --cacert="$cacert" \
+    --cert="$cert" \
+    --key="$key" \
+    endpoint health >/dev/null
+}
+
+pod_snapshot() {
+  "$KUBECTL" "${kubectl_args[@]}" -n "$KUBEBRAIN_NAMESPACE" get pods \
+    -l "$POD_SELECTOR" \
+    -o 'jsonpath={range .items[*]}{.metadata.name}{"\t"}{.metadata.uid}{"\t"}{.status.containerStatuses[?(@.name=="kubebrain")].restartCount}{"\t"}{.status.containerStatuses[?(@.name=="kubebrain")].ready}{"\n"}{end}' |
+    LC_ALL=C sort
+}
+
+validate_snapshot() {
+  local snapshot="$1" count
+  count="$(sed '/^$/d' <<<"$snapshot" | wc -l | tr -d ' ')"
+  if [[ "$count" != "$EXPECTED_REPLICAS" ]]; then
+    echo "expected ${EXPECTED_REPLICAS} KubeBrain Pods, got ${count}" >&2
+    exit 1
+  fi
+  if awk -F '\t' 'NF != 4 || $2 == "" || $3 !~ /^[0-9]+$/ || $4 != "true" { exit 1 }' <<<"$snapshot"; then
+    return
+  fi
+  echo "KubeBrain Pod snapshot contains missing identity, restart count, or readiness" >&2
+  exit 1
+}
+
+read_state_header() {
+  IFS=$'\t' read -r state_version state_instance state_rotation state_endpoint \
+    state_old_fingerprint state_new_fingerprint <"$state_file"
+  if [[ "$state_version" != "kubebrain.certificate-rotation.state.v1" ||
+    "$state_instance" != "$INSTANCE" ||
+    "$state_rotation" != "$ROTATION_ID" ||
+    "$state_endpoint" != "$ENDPOINT" ||
+    "$state_old_fingerprint" != "$(fingerprint "$OLD_CERT")" ||
+    "$state_new_fingerprint" != "$(fingerprint "$NEW_CERT")" ]]; then
+    echo "rotation state does not match the requested operation" >&2
+    exit 1
+  fi
+}
+
+assert_pods_unchanged() {
+  local before current
+  before="$(tail -n +2 "$state_file")"
+  current="$(pod_snapshot)"
+  validate_snapshot "$current"
+  if [[ "$current" != "$before" ]]; then
+    echo "KubeBrain Pods were replaced, restarted, or changed readiness during certificate rotation" >&2
+    diff -u <(printf '%s\n' "$before") <(printf '%s\n' "$current") >&2 || true
+    exit 1
+  fi
+}
+
+atomic_publish() {
+  local temporary="$1" destination="$2"
+  sync -f "$temporary"
+  if ! ln "$temporary" "$destination" 2>/dev/null; then
+    if cmp -s "$temporary" "$destination"; then
+      rm -f "$temporary"
+      return
+    fi
+    echo "refusing to overwrite existing evidence: ${destination}" >&2
+    rm -f "$temporary"
+    exit 1
+  fi
+  rm -f "$temporary"
+  sync -f "$(dirname "$destination")"
+}
+
+validate_existing_receipt() {
+  local old_fingerprint="$1" new_fingerprint="$2"
+  [[ "$(wc -l <"$receipt_file" | tr -d ' ')" == "1" ]] &&
+    grep -Fq '"format":"kubebrain.certificate-rotation.receipt.v1"' "$receipt_file" &&
+    grep -Fq "\"instance\":\"${INSTANCE}\"" "$receipt_file" &&
+    grep -Fq "\"rotation_id\":\"${ROTATION_ID}\"" "$receipt_file" &&
+    grep -Fq "\"endpoint\":\"${ENDPOINT}\"" "$receipt_file" &&
+    grep -Fq "\"replicas\":${EXPECTED_REPLICAS}" "$receipt_file" &&
+    grep -Fq "\"old_certificate_sha256\":\"${old_fingerprint}\"" "$receipt_file" &&
+    grep -Fq "\"new_certificate_sha256\":\"${new_fingerprint}\"" "$receipt_file" &&
+    grep -Fq '"pods_unchanged":true' "$receipt_file" &&
+    grep -Fq '"old_certificate_rejected":true' "$receipt_file" &&
+    grep -Eq '"completed_at_unix":[1-9][0-9]*}' "$receipt_file"
+}
+
+case "$ACTION" in
+  begin)
+    snapshot="$(pod_snapshot)"
+    validate_snapshot "$snapshot"
+    health "$OLD_CACERT" "$OLD_CERT" "$OLD_KEY"
+    temporary="$(mktemp "${STATE_DIR}/.${ROTATION_ID}.state.XXXXXX")"
+    printf 'kubebrain.certificate-rotation.state.v1\t%s\t%s\t%s\t%s\t%s\n%s\n' \
+      "$INSTANCE" "$ROTATION_ID" "$ENDPOINT" \
+      "$(fingerprint "$OLD_CERT")" "$(fingerprint "$NEW_CERT")" "$snapshot" >"$temporary"
+    atomic_publish "$temporary" "$state_file"
+    echo "certificate rotation begin gate passed: instance=${INSTANCE} rotation=${ROTATION_ID}"
+    ;;
+  overlap)
+    [[ -f "$state_file" ]] || { echo "begin evidence is missing" >&2; exit 1; }
+    [[ -n "${OVERLAP_CACERT:-}" && -f "$OVERLAP_CACERT" ]] ||
+      { echo "OVERLAP_CACERT is required for overlap" >&2; exit 2; }
+    read_state_header
+    assert_pods_unchanged
+    health "$OVERLAP_CACERT" "$OLD_CERT" "$OLD_KEY"
+    health "$OVERLAP_CACERT" "$NEW_CERT" "$NEW_KEY"
+    temporary="$(mktemp "${STATE_DIR}/.${ROTATION_ID}.overlap.XXXXXX")"
+    printf 'kubebrain.certificate-rotation.overlap.v1\t%s\t%s\n' \
+      "$INSTANCE" "$ROTATION_ID" >"$temporary"
+    atomic_publish "$temporary" "$overlap_file"
+    echo "certificate rotation overlap gate passed: instance=${INSTANCE} rotation=${ROTATION_ID}"
+    ;;
+  complete)
+    [[ -f "$state_file" ]] || { echo "begin evidence is missing" >&2; exit 1; }
+    [[ -f "$overlap_file" ]] || { echo "overlap evidence is missing" >&2; exit 1; }
+    read_state_header
+    assert_pods_unchanged
+    health "$NEW_CACERT" "$NEW_CERT" "$NEW_KEY"
+    if health "$NEW_CACERT" "$OLD_CERT" "$OLD_KEY"; then
+      echo "old client certificate is still accepted after CA cutover" >&2
+      exit 1
+    fi
+    if ! health "$NEW_CACERT" "$NEW_CERT" "$NEW_KEY"; then
+      echo "new credentials failed after the old-credential rejection check; refusing to treat an endpoint outage as certificate rejection" >&2
+      exit 1
+    fi
+    old_fingerprint="$(fingerprint "$OLD_CERT")"
+    new_fingerprint="$(fingerprint "$NEW_CERT")"
+    if [[ -e "$receipt_file" ]]; then
+      if ! validate_existing_receipt "$old_fingerprint" "$new_fingerprint"; then
+        echo "existing receipt does not match the completed rotation" >&2
+        exit 1
+      fi
+      echo "certificate rotation completion gate passed: instance=${INSTANCE} rotation=${ROTATION_ID} receipt=${receipt_file}"
+      exit 0
+    fi
+    completed_at="$(date +%s)"
+    temporary="$(mktemp "${STATE_DIR}/.${ROTATION_ID}.receipt.XXXXXX")"
+    printf '{"format":"kubebrain.certificate-rotation.receipt.v1","instance":"%s","rotation_id":"%s","endpoint":"%s","replicas":%s,"old_certificate_sha256":"%s","new_certificate_sha256":"%s","pods_unchanged":true,"old_certificate_rejected":true,"completed_at_unix":%s}\n' \
+      "$INSTANCE" "$ROTATION_ID" "$ENDPOINT" "$EXPECTED_REPLICAS" \
+      "$old_fingerprint" "$new_fingerprint" "$completed_at" >"$temporary"
+    atomic_publish "$temporary" "$receipt_file"
+    echo "certificate rotation completion gate passed: instance=${INSTANCE} rotation=${ROTATION_ID} receipt=${receipt_file}"
+    ;;
+esac

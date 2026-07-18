@@ -7,6 +7,7 @@ IMAGE_NAME="${IMAGE_NAME:-kubebrain:dev}"
 PD_ADDRS="${PD_ADDRS:-kb-pd.tidb-cluster.svc:2379}"
 LOCAL_PORT="${LOCAL_PORT:-12379}"
 SOAK_LOCAL_PORT="${SOAK_LOCAL_PORT:-22379}"
+ROTATION_GATE_LOCAL_PORT="${ROTATION_GATE_LOCAL_PORT:-32379}"
 REPLICAS="${REPLICAS:-3}"
 RUN_APISERVER_SMOKE="${RUN_APISERVER_SMOKE:-true}"
 RUN_BACKUP_DRILL="${RUN_BACKUP_DRILL:-true}"
@@ -30,6 +31,9 @@ need() {
 need kubectl
 need openssl
 need go
+if [ "$RUN_CERT_ROTATION_SMOKE" = "true" ]; then
+  need etcdctl
+fi
 
 workdir="$(mktemp -d)"
 cleanup() {
@@ -431,6 +435,57 @@ run_backup_drill() {
     "$ROOT_DIR/hack/backup/logical-drill.sh"
 }
 
+run_rotation_gate() {
+  local action="$1"
+  local real_etcdctl
+  real_etcdctl="$(command -v etcdctl)"
+  cat >"${workdir}/rotation-etcdctl" <<EOF
+#!/usr/bin/env bash
+set -uo pipefail
+log="${workdir}/rotation-gate-port-forward.log"
+: >"\$log"
+kubectl -n "${NAMESPACE}" port-forward service/kubebrain-client \
+  "${ROTATION_GATE_LOCAL_PORT}:3379" >"\$log" 2>&1 &
+pf=\$!
+cleanup_gate_forward() {
+  kill "\$pf" >/dev/null 2>&1 || true
+  wait "\$pf" >/dev/null 2>&1 || true
+}
+trap cleanup_gate_forward EXIT
+for _ in \$(seq 1 50); do
+  if ! kill -0 "\$pf" >/dev/null 2>&1; then
+    cat "\$log" >&2
+    exit 1
+  fi
+  if grep -q "Forwarding from 127.0.0.1:${ROTATION_GATE_LOCAL_PORT}" "\$log"; then
+    "${real_etcdctl}" "\$@"
+    exit \$?
+  fi
+  sleep 0.2
+done
+cat "\$log" >&2
+exit 1
+EOF
+  chmod 0700 "${workdir}/rotation-etcdctl"
+  ACTION="$action" \
+    ROTATION_ID=tls-smoke \
+    INSTANCE="$NAMESPACE" \
+    STATE_DIR="${workdir}/rotation-state" \
+    RECEIPT_OUTPUT="${workdir}/rotation-receipt.json" \
+    KUBEBRAIN_NAMESPACE="$NAMESPACE" \
+    EXPECTED_REPLICAS="$REPLICAS" \
+    ENDPOINT="https://127.0.0.1:${ROTATION_GATE_LOCAL_PORT}" \
+    ETCDCTL="${workdir}/rotation-etcdctl" \
+    OLD_CACERT="${workdir}/old-ca.crt" \
+    OLD_CERT="${workdir}/old-tls.crt" \
+    OLD_KEY="${workdir}/old-tls.key" \
+    OVERLAP_CACERT="${workdir}/ca-overlap.crt" \
+    NEW_CACERT="${workdir}/ca-next.crt" \
+    NEW_CERT="${workdir}/tls-next.crt" \
+    NEW_KEY="${workdir}/tls-next.key" \
+    "$ROOT_DIR/hack/production/validate-certificate-rotation.sh"
+}
+
 wait_ready
 
 go mod init kubebrain-tls-smoke >/dev/null
@@ -740,11 +795,13 @@ if [ "$REPLICAS" -ge 3 ]; then
 fi
 
 if [ "$RUN_CERT_ROTATION_SMOKE" = "true" ]; then
+  run_rotation_gate begin
   echo "Publishing old+new CA overlap bundle"
   apply_tls_secrets old-tls.crt old-tls.key ca-overlap.crt
   wait_for_projected_file ca-overlap.crt /etc/kubebrain/client-tls/ca.crt
   wait_for_projected_file ca-overlap.crt /etc/kubebrain/peer-tls/ca.crt
   CA_FILE=ca-overlap.crt CERT_FILE=tls-next.crt KEY_FILE=tls-next.key run_client_smoke
+  run_rotation_gate overlap
 
   go build -o soak-client soak-main.go
   start_soak_port_forward
@@ -783,6 +840,8 @@ if [ "$RUN_CERT_ROTATION_SMOKE" = "true" ]; then
   wait_for_soak_progress "$soak_before"
   CA_FILE=ca-next.crt CERT_FILE=old-tls.crt KEY_FILE=old-tls.key assert_client_rejected
   CA_FILE=ca-next.crt CERT_FILE=tls-next.crt KEY_FILE=tls-next.key run_client_smoke
+  run_rotation_gate complete
+  test -s "${workdir}/rotation-receipt.json"
 
   if [ "$REPLICAS" -ge 3 ]; then
     for pod in "${rotation_pods[@]}"; do
