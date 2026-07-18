@@ -58,7 +58,7 @@ func TestProductionManifestsProvideStableCompleteMembership(t *testing.T) {
 			args, found, err := unstructured.NestedStringSlice(container, "args")
 			require.NoError(t, err)
 			require.True(t, found)
-			require.Contains(t, args, "--advertise-host=$(POD_NAME).kubebrain-peer.kubebrain-system.svc")
+			require.Contains(t, args, "--advertise-host=$(POD_NAME).kubebrain-peer.kubebrain-system.svc.cluster.local")
 			require.Contains(t, args, "--initial-cluster="+expectedInitialCluster(tc.scheme))
 			require.Contains(t, args, "--max-requests-inflight=1024")
 			require.Contains(t, args, "--max-request-rate=2000")
@@ -189,11 +189,11 @@ func TestDevManifestProvidesStableCompleteMembership(t *testing.T) {
 	args, found, err := unstructured.NestedStringSlice(container, "args")
 	require.NoError(t, err)
 	require.True(t, found)
-	require.Contains(t, args, "--advertise-host=$(POD_NAME).kubebrain-peer.kubebrain-dev.svc")
+	require.Contains(t, args, "--advertise-host=$(POD_NAME).kubebrain-peer.kubebrain-dev.svc.cluster.local")
 	require.Contains(t, args,
-		"--initial-cluster=kubebrain-0=http://kubebrain-0.kubebrain-peer.kubebrain-dev.svc:3380,"+
-			"kubebrain-1=http://kubebrain-1.kubebrain-peer.kubebrain-dev.svc:3380,"+
-			"kubebrain-2=http://kubebrain-2.kubebrain-peer.kubebrain-dev.svc:3380",
+		"--initial-cluster=kubebrain-0=http://kubebrain-0.kubebrain-peer.kubebrain-dev.svc.cluster.local:3380,"+
+			"kubebrain-1=http://kubebrain-1.kubebrain-peer.kubebrain-dev.svc.cluster.local:3380,"+
+			"kubebrain-2=http://kubebrain-2.kubebrain-peer.kubebrain-dev.svc.cluster.local:3380",
 	)
 
 	peer := objectByKindAndName(t, objects, "Service", "kubebrain-peer")
@@ -204,9 +204,9 @@ func TestDevManifestProvidesStableCompleteMembership(t *testing.T) {
 }
 
 func expectedInitialCluster(scheme string) string {
-	return "kubebrain-0=" + scheme + "://kubebrain-0.kubebrain-peer.kubebrain-system.svc:3380," +
-		"kubebrain-1=" + scheme + "://kubebrain-1.kubebrain-peer.kubebrain-system.svc:3380," +
-		"kubebrain-2=" + scheme + "://kubebrain-2.kubebrain-peer.kubebrain-system.svc:3380"
+	return "kubebrain-0=" + scheme + "://kubebrain-0.kubebrain-peer.kubebrain-system.svc.cluster.local:3380," +
+		"kubebrain-1=" + scheme + "://kubebrain-1.kubebrain-peer.kubebrain-system.svc.cluster.local:3380," +
+		"kubebrain-2=" + scheme + "://kubebrain-2.kubebrain-peer.kubebrain-system.svc.cluster.local:3380"
 }
 
 func decodeManifest(t *testing.T, path string) []*unstructured.Unstructured {

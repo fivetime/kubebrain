@@ -89,8 +89,8 @@ spec:
             - --port=3379
             - --peer-port=3380
             - --info-port=8080
-            - --advertise-host=$(POD_NAME).kubebrain-peer.kubebrain-system.svc
-            - --initial-cluster=kubebrain-0=https://kubebrain-0.kubebrain-peer.kubebrain-system.svc:3380,kubebrain-1=https://kubebrain-1.kubebrain-peer.kubebrain-system.svc:3380,kubebrain-2=https://kubebrain-2.kubebrain-peer.kubebrain-system.svc:3380
+            - --advertise-host=$(POD_NAME).kubebrain-peer.kubebrain-system.svc.cluster.local
+            - --initial-cluster=kubebrain-0=https://kubebrain-0.kubebrain-peer.kubebrain-system.svc.cluster.local:3380,kubebrain-1=https://kubebrain-1.kubebrain-peer.kubebrain-system.svc.cluster.local:3380,kubebrain-2=https://kubebrain-2.kubebrain-peer.kubebrain-system.svc.cluster.local:3380
             - --pd-addrs=kb-pd.tidb-cluster.svc:2379
             - --compatible-with-etcd=true
             - --max-txn-ops=128
@@ -118,7 +118,7 @@ spec:
             - --peer-cert-file=/etc/kubebrain/peer-tls/tls.crt
             - --peer-key-file=/etc/kubebrain/peer-tls/tls.key
             - --peer-trusted-ca-file=/etc/kubebrain/peer-tls/ca.crt
-            - --peer-tls-server-name=kubebrain-peer.kubebrain-system.svc
+            - --peer-tls-server-name=kubebrain-peer.kubebrain-system.svc.cluster.local
             - --peer-client-cert-auth=true
             - --v=2
           env:

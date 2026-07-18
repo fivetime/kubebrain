@@ -81,6 +81,8 @@ subjectAltName = @alt_names
 DNS.1 = kubebrain-client.${NAMESPACE}.svc
 DNS.2 = kubebrain-peer.${NAMESPACE}.svc
 DNS.3 = kubebrain-peer.kubebrain-system.svc
+DNS.4 = kubebrain-peer.${NAMESPACE}.svc.cluster.local
+DNS.5 = kubebrain-peer.kubebrain-system.svc.cluster.local
 IP.1 = 127.0.0.1
 EOF
 
@@ -190,7 +192,7 @@ sed \
   -e "s/replicas: 3/replicas: ${REPLICAS}/" \
   -e "s#image: kubebrain:dev#image: ${IMAGE_NAME}#" \
   -e "s#--pd-addrs=kb-pd.tidb-cluster.svc:2379#--pd-addrs=${PD_ADDRS}#" \
-  -e "s#--peer-tls-server-name=kubebrain-peer.kubebrain-system.svc#--peer-tls-server-name=kubebrain-peer.${NAMESPACE}.svc#" \
+  -e "s#--peer-tls-server-name=kubebrain-peer.kubebrain-system.svc.cluster.local#--peer-tls-server-name=kubebrain-peer.${NAMESPACE}.svc.cluster.local#" \
   -e "s#--tls-server-name=kubebrain-client.kubebrain-system.svc#--tls-server-name=kubebrain-client.${NAMESPACE}.svc#" \
   -e "s#--grpc-max-connection-age=1h#--grpc-max-connection-age=${GRPC_MAX_CONNECTION_AGE}#" \
   -e "s#--grpc-max-connection-age-grace=5m#--grpc-max-connection-age-grace=${GRPC_MAX_CONNECTION_AGE_GRACE}#" \
