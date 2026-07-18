@@ -13,7 +13,7 @@ revision, record and lease counts, and SHA-256 digest as JSON.
 Environment:
   INPUT              input JSONL path, default kubebrain-logical-backup.jsonl
   FIELD              optional field selector: format, prefix, revision,
-                     created_at_unix, records, or leases
+                     created_at_unix, records, leases, or sha256
   EXPECTED_PREFIX    require an exact source prefix
   MIN_RECORDS        require at least this many records
   MAX_AGE_SECONDS    require a protected creation timestamp no older than this

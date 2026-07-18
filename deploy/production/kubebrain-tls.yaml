@@ -13,6 +13,7 @@ metadata:
   namespace: kubebrain-system
   labels:
     app.kubernetes.io/name: kubebrain
+    app.kubernetes.io/instance: kubebrain
     app.kubernetes.io/component: peer
 automountServiceAccountToken: false
 ---
@@ -23,11 +24,13 @@ metadata:
   namespace: kubebrain-system
   labels:
     app.kubernetes.io/name: kubebrain
+    app.kubernetes.io/instance: kubebrain
 spec:
   minAvailable: 2
   selector:
     matchLabels:
       app.kubernetes.io/name: kubebrain
+      app.kubernetes.io/instance: kubebrain
 ---
 apiVersion: apps/v1
 kind: StatefulSet
@@ -36,6 +39,7 @@ metadata:
   namespace: kubebrain-system
   labels:
     app.kubernetes.io/name: kubebrain
+    app.kubernetes.io/instance: kubebrain
 spec:
   serviceName: kubebrain-peer
   replicas: 3
@@ -46,10 +50,12 @@ spec:
   selector:
     matchLabels:
       app.kubernetes.io/name: kubebrain
+      app.kubernetes.io/instance: kubebrain
   template:
     metadata:
       labels:
         app.kubernetes.io/name: kubebrain
+        app.kubernetes.io/instance: kubebrain
     spec:
       serviceAccountName: kubebrain
       automountServiceAccountToken: false
@@ -67,6 +73,7 @@ spec:
             - labelSelector:
                 matchLabels:
                   app.kubernetes.io/name: kubebrain
+                  app.kubernetes.io/instance: kubebrain
               topologyKey: kubernetes.io/hostname
       containers:
         - name: kubebrain
@@ -184,11 +191,13 @@ metadata:
   namespace: kubebrain-system
   labels:
     app.kubernetes.io/name: kubebrain
+    app.kubernetes.io/instance: kubebrain
     app.kubernetes.io/component: client
 spec:
   type: ClusterIP
   selector:
     app.kubernetes.io/name: kubebrain
+    app.kubernetes.io/instance: kubebrain
   ports:
     - name: client
       port: 3379
@@ -201,6 +210,7 @@ metadata:
   namespace: kubebrain-system
   labels:
     app.kubernetes.io/name: kubebrain
+    app.kubernetes.io/instance: kubebrain
     app.kubernetes.io/component: peer
 spec:
   clusterIP: None
@@ -208,6 +218,7 @@ spec:
   type: ClusterIP
   selector:
     app.kubernetes.io/name: kubebrain
+    app.kubernetes.io/instance: kubebrain
   ports:
     - name: peer
       port: 3380

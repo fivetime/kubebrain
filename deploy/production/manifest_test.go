@@ -24,6 +24,15 @@ func TestProductionManifestsProvideStableCompleteMembership(t *testing.T) {
 	} {
 		t.Run(tc.file, func(t *testing.T) {
 			objects := decodeManifest(t, tc.file)
+			for _, object := range objects {
+				if object.GetKind() == "Namespace" {
+					continue
+				}
+				require.Equal(t, "kubebrain",
+					nestedString(t, object, "metadata", "labels", "app.kubernetes.io/instance"),
+					"%s/%s must carry the DBaaS instance ownership label",
+					object.GetKind(), object.GetName())
+			}
 			workload := objectByKindAndName(t, objects, "StatefulSet", "kubebrain")
 			require.Equal(t, "kubebrain-peer", nestedString(t, workload, "spec", "serviceName"))
 			require.EqualValues(t, 3, nestedInt64(t, workload, "spec", "replicas"))
@@ -89,11 +98,16 @@ func TestProductionManifestsProvideStableCompleteMembership(t *testing.T) {
 			pdb := objectByKindAndName(t, objects, "PodDisruptionBudget", "kubebrain")
 			require.EqualValues(t, 2, nestedInt64(t, pdb, "spec", "minAvailable"))
 			require.Equal(t, "kubebrain", nestedString(t, pdb, "spec", "selector", "matchLabels", "app.kubernetes.io/name"))
+			require.Equal(t, "kubebrain", nestedString(t, pdb, "spec", "selector", "matchLabels", "app.kubernetes.io/instance"))
+			require.Equal(t, "kubebrain", nestedString(t, workload, "spec", "selector", "matchLabels", "app.kubernetes.io/instance"))
+			require.Equal(t, "kubebrain", nestedString(t, workload, "spec", "template", "metadata", "labels", "app.kubernetes.io/instance"))
 
 			peer := objectByKindAndName(t, objects, "Service", "kubebrain-peer")
 			require.Equal(t, "None", nestedString(t, peer, "spec", "clusterIP"))
 			require.True(t, nestedBool(t, peer, "spec", "publishNotReadyAddresses"))
+			require.Equal(t, "kubebrain", nestedString(t, peer, "spec", "selector", "app.kubernetes.io/instance"))
 			client := objectByKindAndName(t, objects, "Service", "kubebrain-client")
+			require.Equal(t, "kubebrain", nestedString(t, client, "spec", "selector", "app.kubernetes.io/instance"))
 			clusterIP, _, err := unstructured.NestedString(client.Object, "spec", "clusterIP")
 			require.NoError(t, err)
 			require.NotEqual(t, "None", clusterIP)
@@ -365,6 +379,7 @@ func prometheusRuleByAlert(t *testing.T, groups []any, alert string) map[string]
 func TestProductionTiDBClusterProvidesDurableHAStorage(t *testing.T) {
 	objects := decodeManifest(t, "tidb-cluster.yaml")
 	cluster := objectByKindAndName(t, objects, "TidbCluster", "kb")
+	require.Equal(t, "kb", nestedString(t, cluster, "metadata", "labels", "app.kubernetes.io/instance"))
 	require.Equal(t, "v8.5.3", nestedString(t, cluster, "spec", "version"))
 	require.Equal(t, "Retain", nestedString(t, cluster, "spec", "pvReclaimPolicy"))
 	require.True(t, nestedBool(t, cluster, "spec", "enableDynamicConfiguration"))

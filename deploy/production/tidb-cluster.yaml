@@ -12,6 +12,7 @@ metadata:
   namespace: tidb-cluster
   labels:
     app.kubernetes.io/name: tidb-cluster
+    app.kubernetes.io/instance: kb
 spec:
   version: v8.5.3
   timezone: UTC

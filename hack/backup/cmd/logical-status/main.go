@@ -38,6 +38,9 @@ func main() {
 	case "leases":
 		fmt.Println(status.Leases)
 		return
+	case "sha256":
+		fmt.Println(status.SHA256)
+		return
 	}
 	if err := json.NewEncoder(os.Stdout).Encode(status); err != nil {
 		log.Fatal(err)
