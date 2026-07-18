@@ -1,6 +1,7 @@
 package objectstore
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 
 const ReceiptFormat = "kubebrain.object-backup.receipt.v1"
 const DeletionReceiptFormat = "kubebrain.object-backup-deletion.receipt.v1"
+const AuditReceiptFormat = "kubebrain.object-operation-audit.receipt.v1"
 
 type Receipt struct {
 	Format           string `json:"format"`
@@ -45,6 +47,26 @@ type DeletionReceipt struct {
 	RetainUntilUnix int64  `json:"retain_until_unix"`
 	VersionAbsent   bool   `json:"version_absent"`
 	DeletedAtUnix   int64  `json:"deleted_at_unix"`
+}
+
+type AuditReceipt struct {
+	Format                 string `json:"format"`
+	OperationID            string `json:"operation_id"`
+	OperationUID           string `json:"operation_uid"`
+	Instance               string `json:"instance"`
+	OperationType          string `json:"operation_type"`
+	Phase                  string `json:"phase"`
+	ExecutionReceiptSHA256 string `json:"execution_receipt_sha256,omitempty"`
+	ObjectStoreID          string `json:"object_store_id"`
+	Bucket                 string `json:"bucket"`
+	ObjectKey              string `json:"object_key"`
+	VersionID              string `json:"version_id"`
+	ArtifactSHA256         string `json:"artifact_sha256"`
+	ObjectBytes            int64  `json:"object_bytes"`
+	RetentionMode          string `json:"retention_mode"`
+	RetainUntilUnix        int64  `json:"retain_until_unix"`
+	RemoteVerified         bool   `json:"remote_verified"`
+	ArchivedAtUnix         int64  `json:"archived_at_unix"`
 }
 
 func (r Receipt) Validate() error {
@@ -92,6 +114,44 @@ func ReadDeletionReceipt(path string) (DeletionReceipt, error) {
 	}
 	if err := json.Unmarshal(data, &receipt); err != nil {
 		return receipt, fmt.Errorf("decode deletion receipt: %w", err)
+	}
+	if err := receipt.Validate(); err != nil {
+		return receipt, err
+	}
+	return receipt, nil
+}
+
+func (r AuditReceipt) Validate() error {
+	if r.Format != AuditReceiptFormat || r.OperationID == "" || r.OperationUID == "" ||
+		r.Instance == "" || r.OperationType == "" ||
+		(r.Phase != "Succeeded" && r.Phase != "Failed") ||
+		(r.Phase == "Succeeded" && !validHexSHA256(r.ExecutionReceiptSHA256)) ||
+		(r.Phase == "Failed" && r.ExecutionReceiptSHA256 != "") ||
+		r.ObjectStoreID == "" || r.Bucket == "" || r.ObjectKey == "" || r.VersionID == "" ||
+		!validHexSHA256(r.ArtifactSHA256) || r.ObjectBytes <= 0 ||
+		(r.RetentionMode != "COMPLIANCE" && r.RetentionMode != "GOVERNANCE") ||
+		r.RetainUntilUnix <= r.ArchivedAtUnix || !r.RemoteVerified || r.ArchivedAtUnix <= 0 {
+		return errors.New("object operation audit receipt is incomplete")
+	}
+	return nil
+}
+
+func validHexSHA256(value string) bool {
+	if len(value) != 64 {
+		return false
+	}
+	_, err := hex.DecodeString(value)
+	return err == nil
+}
+
+func ReadAuditReceipt(path string) (AuditReceipt, error) {
+	var receipt AuditReceipt
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return receipt, err
+	}
+	if err := json.Unmarshal(data, &receipt); err != nil {
+		return receipt, fmt.Errorf("decode operation audit receipt: %w", err)
 	}
 	if err := receipt.Validate(); err != nil {
 		return receipt, err
@@ -157,6 +217,15 @@ func WriteDeletionReceiptAtomic(path string, receipt DeletionReceipt) error {
 	}
 	return writeJSONAtomic(path, receipt, func(path string) (any, error) {
 		return ReadDeletionReceipt(path)
+	})
+}
+
+func WriteAuditReceiptAtomic(path string, receipt AuditReceipt) error {
+	if err := receipt.Validate(); err != nil {
+		return err
+	}
+	return writeJSONAtomic(path, receipt, func(path string) (any, error) {
+		return ReadAuditReceipt(path)
 	})
 }
 

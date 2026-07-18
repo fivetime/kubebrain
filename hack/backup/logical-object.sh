@@ -10,7 +10,7 @@ Usage: hack/backup/logical-object.sh
 Uploads or retention-deletes a logical backup object through the S3 API.
 
 Environment:
-  ACTION                upload or delete
+  ACTION                upload, delete, or archive
   S3_ENDPOINT           required S3-compatible endpoint URL
   OBJECT_STORE_ID       stable control-plane identifier for the S3 account
   S3_BUCKET             required bucket
@@ -28,6 +28,10 @@ Upload:
 Delete:
   RECEIPT_INPUT, DELETE_RECEIPT_OUTPUT, and
   DELETE_CONFIRM=delete:<INSTANCE>:<BACKUP_ID>
+
+Archive:
+  INPUT (kubebrain.operation-audit.v1), RETENTION_MODE,
+  RETAIN_UNTIL_UNIX, RECEIPT_OUTPUT
 EOF
 }
 

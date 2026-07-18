@@ -57,8 +57,20 @@ func main() {
 			log.Fatal(err)
 		}
 		_ = json.NewEncoder(os.Stdout).Encode(deletion)
+	case "archive":
+		receipt, err := objectstore.ArchiveAudit(ctx, client, objectstore.AuditRequest{
+			Input: os.Getenv("INPUT"), ObjectStoreID: os.Getenv("OBJECT_STORE_ID"),
+			Bucket: os.Getenv("S3_BUCKET"), ObjectKey: os.Getenv("S3_OBJECT_KEY"),
+			RetentionMode:   os.Getenv("RETENTION_MODE"),
+			RetainUntilUnix: int64Env("RETAIN_UNTIL_UNIX"),
+			ReceiptOutput:   os.Getenv("RECEIPT_OUTPUT"),
+		})
+		if err != nil {
+			log.Fatal(err)
+		}
+		_ = json.NewEncoder(os.Stdout).Encode(receipt)
 	default:
-		log.Fatal("ACTION must be upload or delete")
+		log.Fatal("ACTION must be upload, delete, or archive")
 	}
 }
 
