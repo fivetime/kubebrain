@@ -2865,6 +2865,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   语义返回 NotFound，并在多个副本产生 `grpc_server_handled_total{grpc_code="NotFound"}`
   计数；新规则不匹配，旧规则会误报。manifest 测试固定完整 PromQL 并禁止退回
   `grpc_code!="OK"`，仓库全量测试通过。该项仅修改监控与文档，无需数据面镜像。
+- **Observability A171 alert metric contract（2026-07-18）**：审计 production
+  PrometheusRule 引用的全部指标，当前名称均能映射到 KubeBrain emitter，或明确来自
+  gRPC middleware、kube-state-metrics 和 Prometheus `up`。新增 CI 契约测试：解析
+  monitoring manifest 中每条告警的 PromQL 指标 token，扫描 `pkg` 下 Go emitter，
+  将点号归一化为 Prometheus 下划线名称，并补齐 histogram 的 `_bucket`、`_count`
+  和 `_sum` 派生序列；仅显式放行
+  `grpc_server_handled_total`、`grpc_server_handling_seconds_bucket`、
+  `kube_statefulset_status_replicas_ready` 和 `up` 四类外部指标。
+
+  部分 counter 采用首次 emit 时注册，未触发对应路径的单次 `/metrics` 抓取不会出现
+  该序列，因此实时抓取只能验证当前运行路径，不能代替静态 emitter 契约。production
+  定向测试和仓库全量测试均通过；该项仅新增测试与文档，无需重建数据面镜像。
 
 ### P1：通用服务能力
 
