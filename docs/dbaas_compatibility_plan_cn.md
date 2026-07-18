@@ -3063,6 +3063,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   verify 非零退出且未发布第二 receipt，源/目标 lease 已 revoke、prefix 已清理。
   receipt 是验证时点证据；对象存储不可变留存由 A188 关闭，流量切换 fencing 和恢复后
   持续审计仍是 P1。
+- **Operations A189 UID-fenced restore traffic cutover（2026-07-18）**：新增
+  `hack/production/switch-restore-traffic.sh`，将恢复流量发布收敛为
+  `prepare -> cutover -> verify -> complete`，并提供 complete 前的 `rollback`。
+  prepare 校验并冻结 A184 restore receipt、Service UID/resourceVersion、精确的
+  name/instance selector，以及源/目标全部 Ready Pod 的 name/UID/restart count。
+  cutover 使用含 UID、resourceVersion 和旧 selector 三个 `test` 的 JSON Patch 原子
+  CAS；selector 改变后不以 patch 成功作为发布成功，而要求受同一 Service UID 控制的
+  EndpointSlice 全部 Ready/Serving/非 Terminating，targetRef UID 集精确等于冻结目标
+  Pod UID 集。verify 与 complete 均从公开 Service endpoint 对完整 logical artifact
+  重做 key/value 和 lease 校验，并要求稳定 receipt 字段与 prepare 凭据一致；complete
+  才发布不可覆盖的 `kubebrain.restore-cutover.receipt.v1`。rollback 以同样 CAS 切回
+  冻结源 Pod UID 集；complete 后禁止 rollback，rollback 后禁止 complete。
+
+  mock 故障矩阵覆盖幂等生命周期、回滚、阶段越级、初始 selector 错误、Pod UID 替换、
+  Service UID 替换、resourceVersion CAS 冲突、外来 EndpointSlice UID、公开数据校验
+  失败和缺 verify 完成。真实 kind 独立 namespace 使用两组各 2 个 Pod 与真实
+  EndpointSlice controller 完成 source→target→source；首次夹具携带额外 selector 时
+  EndpointSlice 为空，门禁超时拒绝发布，修正为精确 selector 后同一 operation 安全
+  重试通过。恢复后持续数据审计和控制面 API/队列编排仍是 P1。
 - **Operations A185 certificate rotation completion state（2026-07-18）**：新增
   `hack/production/validate-certificate-rotation.sh`，把 client/peer CA rollover
   收敛为 `begin -> overlap -> complete` 三阶段门禁。begin 固定全部 KubeBrain Pod

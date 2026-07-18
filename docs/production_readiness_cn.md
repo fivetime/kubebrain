@@ -774,6 +774,23 @@ receipt 使用同目录临时文件、`fsync`、原子 hard-link 和目录 `fsyn
 `verified_at_unix` 时刻的状态，不保证目标之后未被其他客户端修改；切换业务流量前仍应
 执行访问冻结或 revision fencing。
 
+恢复实例进入业务流量前使用 `hack/production/switch-restore-traffic.sh`。该门禁按
+`prepare -> cutover -> verify -> complete` 执行；失败可在 complete 前执行
+`rollback`。prepare 要求 Service selector 恰好为
+`app.kubernetes.io/name=kubebrain` 与源 instance，冻结 Service UID/resourceVersion、
+源和目标全部 Ready Pod 的 name/UID/restart count，以及
+`kubebrain.restore-verification.v1` 的 artifact hash/revision/prefix。cutover 使用
+JSON Patch `test` 同时比较 Service UID、resourceVersion 和旧 instance selector，再
+原子替换 selector；随后要求 EndpointSlice 由同一 Service UID 控制，全部 endpoint
+Ready/Serving/非 Terminating，且 targetRef Pod UID 集精确等于冻结的目标 Pod UID 集。
+
+verify 和 complete 都通过公开 Service endpoint 对完整 logical artifact 再做逐 key/value
+及 lease 校验，结果的前九个稳定字段必须与 prepare receipt 一致。complete 才签发不可
+覆盖的 `kubebrain.restore-cutover.receipt.v1`。rollback 使用相同 CAS 从目标切回源，并
+要求 EndpointSlice 精确恢复到冻结的源 Pod UID 集；已 complete 的 operation 禁止回滚，
+已 rollback 的 operation 禁止 complete。所有状态、marker 和 receipt 均为 0600、
+file/directory `fsync` 且不覆盖发布。
+
 导出默认覆盖 `/registry` 前缀：
 
 ```shell
