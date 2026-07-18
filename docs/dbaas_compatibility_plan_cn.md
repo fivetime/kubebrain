@@ -3988,6 +3988,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   ReadBarrier/Revision/Range/Txn/Mutation/Leadership 相关回归 3 轮通过。三个单副本
   endpoint 和主 Service endpoint proposal 均健康，测试 prefix 为零。本轮未发现新的
   服务端语义差异，运行镜像继续为 `kubebrain:a221-empty-range-compare`。
+- **Operations A231 fail-closed metering completeness（2026-07-18）**：生产
+  PrometheusRule 为 CPU、memory、RX、TX、PVC capacity/available 和备份
+  artifact/timestamp 新增 8 个 source-count recording rule，并用预期的 9 个数据面
+  容器、6 个 PVC、各 1 个备份源计算
+  `kubebrain_dbaas:metering_data_complete`。8 条计量聚合现都以完整性为 1 作为门禁；
+  任一源缺失时不再输出可能被账单系统误当成真实低用量的部分和，而是保留 source count、
+  输出完整性 0，并在持续 15 分钟后触发 critical
+  `KubeBrainMeteringDataIncomplete`。控制面必须将该区间标为不可计费并补采/人工对账，
+  不得以零填充。manifest 测试固定全部 17 条 recording rule、门控 PromQL、实例标签和
+  告警契约。
 - **Operations A185 certificate rotation completion state（2026-07-18）**：新增
   `hack/production/validate-certificate-rotation.sh`，把 client/peer CA rollover
   收敛为 `begin -> overlap -> complete` 三阶段门禁。begin 固定全部 KubeBrain Pod
@@ -4092,8 +4102,8 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
 4. 建立实例级限额和计量：请求字节、txn 操作数、跨连接 client RPC 总并发、client
    请求 QPS/burst、逻辑 Watch 总数、CPU/内存饱和、网络错误/丢包及 PD/TiKV PVC 容量
    告警已具备稳定错误或指标，网络 RX/TX 原始计量和逻辑备份 artifact 容量/新鲜度
-   指标已暴露，单实例资源/容量/网络/备份 recording rules 已建立；继续补控制面
-   缺测处理、计量留存、跨周期积分、价格版本、对象存储成本和审计对账。
+   指标已暴露，单实例资源/容量/网络/备份 recording rules 和 fail-closed 缺测标记已
+   建立；继续补不可变计量留存、跨周期积分、价格版本、对象存储成本和审计对账。
 
 ### P2：运维兼容和长期验证
 

@@ -381,8 +381,11 @@ version 已不存在”补发/复用 receipt；保留期内提前消失则 fail 
 
 每条序列固定带 `dbaas_instance="kubebrain"`，只聚合本实例的 3 个 KubeBrain、
 3 个 PD、3 个 TiKV 容器和 6 个存储 PVC。部署模板化时必须同步替换实例标签、Pod/PVC
-选择器和备份 `BACKUP_INSTANCE`。这些序列是计量输入，不是最终账单；控制面必须另外
-实现缺测处理、不可变采样留存、跨周期积分、价格版本和审计对账。
+选择器和备份 `BACKUP_INSTANCE`。规则同时输出 8 个 `*:sources:count` 和
+`kubebrain_dbaas:metering_data_complete`；只有 9 个容器、6 个 PVC 及唯一备份
+artifact/timestamp 源全部存在时，完整性才为 1，8 条计量输入才会产出。控制面必须把
+完整性不为 1 或计量序列缺失的区间标为不可计费并 fail closed，禁止按零用量结算。
+这些序列不是最终账单；控制面仍须实现不可变采样留存、跨周期积分、价格版本和审计对账。
 
 TiDB Operator 的 BR full/PITR 不能用于 KubeBrain 数据恢复。真实 S3 full backup 和
 独立 PD/TiKV Restore CR 都成功时，备份前已提交的 KubeBrain key 仍未出现在目标集群；

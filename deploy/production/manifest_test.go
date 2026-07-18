@@ -307,19 +307,24 @@ func TestProductionMonitoringProvidesInstanceMetering(t *testing.T) {
 	require.Equal(t, "1m", meteringGroup["interval"])
 
 	expected := map[string]string{
-		"kubebrain_dbaas:cpu_usage_cores:sum": `sum(rate(container_cpu_usage_seconds_total{namespace="kubebrain-system",pod=~"kubebrain-[0-2]",container="kubebrain",image!=""}[5m])) + ` +
-			`sum(rate(container_cpu_usage_seconds_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-2]",container=~"pd|tikv",image!=""}[5m]))`,
-		"kubebrain_dbaas:memory_working_set_bytes:sum": `sum(container_memory_working_set_bytes{namespace="kubebrain-system",pod=~"kubebrain-[0-2]",container="kubebrain",image!=""}) + ` +
-			`sum(container_memory_working_set_bytes{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-2]",container=~"pd|tikv",image!=""})`,
-		"kubebrain_dbaas:network_receive_bytes_per_second:sum": `sum(rate(container_network_receive_bytes_total{namespace="kubebrain-system",pod=~"kubebrain-[0-2]",interface="eth0"}[5m])) + ` +
-			`sum(rate(container_network_receive_bytes_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-2]",interface="eth0"}[5m]))`,
-		"kubebrain_dbaas:network_transmit_bytes_per_second:sum": `sum(rate(container_network_transmit_bytes_total{namespace="kubebrain-system",pod=~"kubebrain-[0-2]",interface="eth0"}[5m])) + ` +
-			`sum(rate(container_network_transmit_bytes_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-2]",interface="eth0"}[5m]))`,
-		"kubebrain_dbaas:storage_provisioned_bytes:sum": `sum(kubelet_volume_stats_capacity_bytes{namespace="tidb-cluster",persistentvolumeclaim=~"(pd-kb-pd|tikv-kb-tikv)-[0-2]"})`,
+		"kubebrain_dbaas:cpu_usage_sources:count":                `count(rate(container_cpu_usage_seconds_total{namespace="kubebrain-system",pod=~"kubebrain-[0-2]",container="kubebrain",image!=""}[5m])) + count(rate(container_cpu_usage_seconds_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-2]",container=~"pd|tikv",image!=""}[5m]))`,
+		"kubebrain_dbaas:memory_working_set_sources:count":       `count(container_memory_working_set_bytes{namespace="kubebrain-system",pod=~"kubebrain-[0-2]",container="kubebrain",image!=""}) + count(container_memory_working_set_bytes{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-2]",container=~"pd|tikv",image!=""})`,
+		"kubebrain_dbaas:network_receive_sources:count":          `count(rate(container_network_receive_bytes_total{namespace="kubebrain-system",pod=~"kubebrain-[0-2]",interface="eth0"}[5m])) + count(rate(container_network_receive_bytes_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-2]",interface="eth0"}[5m]))`,
+		"kubebrain_dbaas:network_transmit_sources:count":         `count(rate(container_network_transmit_bytes_total{namespace="kubebrain-system",pod=~"kubebrain-[0-2]",interface="eth0"}[5m])) + count(rate(container_network_transmit_bytes_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-2]",interface="eth0"}[5m]))`,
+		"kubebrain_dbaas:storage_capacity_sources:count":         `count(kubelet_volume_stats_capacity_bytes{namespace="tidb-cluster",persistentvolumeclaim=~"(pd-kb-pd|tikv-kb-tikv)-[0-2]"})`,
+		"kubebrain_dbaas:storage_available_sources:count":        `count(kubelet_volume_stats_available_bytes{namespace="tidb-cluster",persistentvolumeclaim=~"(pd-kb-pd|tikv-kb-tikv)-[0-2]"})`,
+		"kubebrain_dbaas:logical_backup_artifact_sources:count":  `count(kubebrain_logical_backup_artifact_bytes{instance="kubebrain"})`,
+		"kubebrain_dbaas:logical_backup_timestamp_sources:count": `count(kubebrain_logical_backup_last_success_timestamp_seconds{instance="kubebrain"})`,
+		"kubebrain_dbaas:metering_data_complete":                 `(kubebrain_dbaas:cpu_usage_sources:count == bool 9) * (kubebrain_dbaas:memory_working_set_sources:count == bool 9) * (kubebrain_dbaas:network_receive_sources:count == bool 9) * (kubebrain_dbaas:network_transmit_sources:count == bool 9) * (kubebrain_dbaas:storage_capacity_sources:count == bool 6) * (kubebrain_dbaas:storage_available_sources:count == bool 6) * (kubebrain_dbaas:logical_backup_artifact_sources:count == bool 1) * (kubebrain_dbaas:logical_backup_timestamp_sources:count == bool 1)`,
+		"kubebrain_dbaas:cpu_usage_cores:sum":                    `(sum(rate(container_cpu_usage_seconds_total{namespace="kubebrain-system",pod=~"kubebrain-[0-2]",container="kubebrain",image!=""}[5m])) + sum(rate(container_cpu_usage_seconds_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-2]",container=~"pd|tikv",image!=""}[5m]))) and on() (kubebrain_dbaas:metering_data_complete == 1)`,
+		"kubebrain_dbaas:memory_working_set_bytes:sum":           `(sum(container_memory_working_set_bytes{namespace="kubebrain-system",pod=~"kubebrain-[0-2]",container="kubebrain",image!=""}) + sum(container_memory_working_set_bytes{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-2]",container=~"pd|tikv",image!=""})) and on() (kubebrain_dbaas:metering_data_complete == 1)`,
+		"kubebrain_dbaas:network_receive_bytes_per_second:sum":   `(sum(rate(container_network_receive_bytes_total{namespace="kubebrain-system",pod=~"kubebrain-[0-2]",interface="eth0"}[5m])) + sum(rate(container_network_receive_bytes_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-2]",interface="eth0"}[5m]))) and on() (kubebrain_dbaas:metering_data_complete == 1)`,
+		"kubebrain_dbaas:network_transmit_bytes_per_second:sum":  `(sum(rate(container_network_transmit_bytes_total{namespace="kubebrain-system",pod=~"kubebrain-[0-2]",interface="eth0"}[5m])) + sum(rate(container_network_transmit_bytes_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-2]",interface="eth0"}[5m]))) and on() (kubebrain_dbaas:metering_data_complete == 1)`,
+		"kubebrain_dbaas:storage_provisioned_bytes:sum":          `sum(kubelet_volume_stats_capacity_bytes{namespace="tidb-cluster",persistentvolumeclaim=~"(pd-kb-pd|tikv-kb-tikv)-[0-2]"}) and on() (kubebrain_dbaas:metering_data_complete == 1)`,
 		"kubebrain_dbaas:storage_used_bytes:sum": `clamp_min(sum(kubelet_volume_stats_capacity_bytes{namespace="tidb-cluster",persistentvolumeclaim=~"(pd-kb-pd|tikv-kb-tikv)-[0-2]"}) - ` +
-			`sum(kubelet_volume_stats_available_bytes{namespace="tidb-cluster",persistentvolumeclaim=~"(pd-kb-pd|tikv-kb-tikv)-[0-2]"}), 0)`,
-		"kubebrain_dbaas:logical_backup_artifact_bytes:last": `max(kubebrain_logical_backup_artifact_bytes{instance="kubebrain"})`,
-		"kubebrain_dbaas:logical_backup_age_seconds:last":    `clamp_min(time() - max(kubebrain_logical_backup_last_success_timestamp_seconds{instance="kubebrain"}), 0)`,
+			`sum(kubelet_volume_stats_available_bytes{namespace="tidb-cluster",persistentvolumeclaim=~"(pd-kb-pd|tikv-kb-tikv)-[0-2]"}), 0) and on() (kubebrain_dbaas:metering_data_complete == 1)`,
+		"kubebrain_dbaas:logical_backup_artifact_bytes:last": `max(kubebrain_logical_backup_artifact_bytes{instance="kubebrain"}) and on() (kubebrain_dbaas:metering_data_complete == 1)`,
+		"kubebrain_dbaas:logical_backup_age_seconds:last":    `clamp_min(time() - max(kubebrain_logical_backup_last_success_timestamp_seconds{instance="kubebrain"}), 0) and on() (kubebrain_dbaas:metering_data_complete == 1)`,
 	}
 	rules, ok := meteringGroup["rules"].([]any)
 	require.True(t, ok)
@@ -335,6 +340,11 @@ func TestProductionMonitoringProvidesInstanceMetering(t *testing.T) {
 		delete(expected, record)
 	}
 	require.Empty(t, expected)
+
+	incompleteRule := prometheusRuleByAlert(t, groups, "KubeBrainMeteringDataIncomplete")
+	require.Equal(t, `kubebrain_dbaas:metering_data_complete != 1`, incompleteRule["expr"])
+	require.Equal(t, "15m", incompleteRule["for"])
+	require.Equal(t, "critical", incompleteRule["labels"].(map[string]any)["severity"])
 }
 
 func TestProductionAlertMetricsExist(t *testing.T) {
