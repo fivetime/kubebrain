@@ -3820,6 +3820,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `kubebrain:a221-empty-range-compare`（image ID `sha256:4f3acf823ffa...`、OCI
   revision `9c700059633f5cb1eb68d77dbc4dfabfa90e3962`）完成滚动更新后，制品级差分
   再次约 0.72 秒通过。
+- **Compatibility A222 plain Put at-most-once under ambiguous response（2026-07-18）**：
+  对照上游 `TestKVPutAtMostOnce`，为普通 KV（非 leasing wrapper）新增确定性
+  at-most-once 差分。每轮先通过 TCP bridge Get 预热并确认连接 ready，再仅 blackhole
+  server-to-client 响应；Put request 可到达 reference/KubeBrain 并提交，但客户端在
+  750ms deadline 后只能得到 `DeadlineExceeded`。bridge 必须记录新增丢弃字节，解除
+  黑洞后 direct client 必须观察到该轮唯一 value，且 KV version 相对上一轮必须精确
+  `+1`。这同时排除“请求未到服务端”的假阳性和 client/proxy/backend uncertain retry
+  导致同一逻辑 Put 重复提交。
+
+  每个双端场景连续制造 6 次已提交但响应丢失的 ambiguous Put；reference etcd 与真实
+  TiKV-backed KubeBrain 首轮约 9.3 秒、连续 3 轮约 28.0 秒、race 2 轮约 19.9 秒
+  通过，全部逻辑操作均只推进一次 version。compat module 全量 vet、server/etcd
+  Put/Txn/Mutation/Leadership 相关回归 3 轮通过；三个运行副本 Ready、零重启，endpoint
+  proposal 健康。本轮未发现新的服务端语义差异，运行镜像继续为
+  `kubebrain:a221-empty-range-compare`。
 - **Operations A185 certificate rotation completion state（2026-07-18）**：新增
   `hack/production/validate-certificate-rotation.sh`，把 client/peer CA rollover
   收敛为 `begin -> overlap -> complete` 三阶段门禁。begin 固定全部 KubeBrain Pod
