@@ -305,11 +305,12 @@ case "$ACTION" in
     if [[ -e "$receipt_file" ]]; then
       "$JQ" -e --arg operation "$OPERATION_ID" --arg instance "$INSTANCE" \
         --arg uid "$(state_value SERVICE 2)" --arg target "$TARGET_INSTANCE" \
-        --arg sha "$(state_value HEADER 10)" '
+        --arg sha "$(state_value HEADER 10)" --arg state_sha "$(sha256sum "$state_file" | cut -d " " -f1)" '
           .format == "kubebrain.restore-cutover.receipt.v1" and
           .operation_id == $operation and .instance == $instance and
           .service_uid == $uid and .target_instance == $target and
-          .artifact_sha256 == $sha and .endpoint_uids_matched == true and
+          .artifact_sha256 == $sha and .cutover_state_sha256 == $state_sha and
+          .endpoint_uids_matched == true and
           .public_data_verified == true' "$receipt_file" >/dev/null ||
         { echo "existing restore cutover receipt does not match the operation" >&2; exit 1; }
       exit 0
@@ -320,11 +321,13 @@ case "$ACTION" in
       --arg instance "$INSTANCE" --arg namespace "$SERVICE_NAMESPACE" --arg service "$SERVICE_NAME" \
       --arg service_uid "$(state_value SERVICE 2)" --arg source_instance "$SOURCE_INSTANCE" \
       --arg target_instance "$TARGET_INSTANCE" --arg artifact_sha256 "$(state_value HEADER 10)" \
+      --arg cutover_state_sha256 "$(sha256sum "$state_file" | cut -d " " -f1)" \
       --argjson snapshot_revision "$(state_value HEADER 11)" --argjson replicas "$EXPECTED_REPLICAS" \
       --argjson completed_at_unix "$(date +%s)" \
       '{format:$format,operation_id:$operation_id,instance:$instance,service_namespace:$namespace,
         service_name:$service,service_uid:$service_uid,source_instance:$source_instance,
         target_instance:$target_instance,artifact_sha256:$artifact_sha256,
+        cutover_state_sha256:$cutover_state_sha256,
         snapshot_revision:$snapshot_revision,replicas:$replicas,pod_uids_unchanged:true,
         endpoint_uids_matched:true,public_data_verified:true,completed_at_unix:$completed_at_unix}' >"$temporary"
     atomic_publish "$temporary" "$receipt_file"

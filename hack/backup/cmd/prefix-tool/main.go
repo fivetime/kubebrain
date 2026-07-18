@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/kubewharf/kubebrain/hack/backup/internal/etcdutil"
+	"github.com/kubewharf/kubebrain/hack/internal/etcdutil"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 

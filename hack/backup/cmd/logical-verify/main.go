@@ -11,9 +11,9 @@ import (
 	"time"
 
 	"github.com/kubewharf/kubebrain/hack/backup/internal/backupfile"
-	"github.com/kubewharf/kubebrain/hack/backup/internal/etcdutil"
 	"github.com/kubewharf/kubebrain/hack/backup/internal/record"
 	"github.com/kubewharf/kubebrain/hack/backup/internal/restorereceipt"
+	"github.com/kubewharf/kubebrain/hack/internal/etcdutil"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 

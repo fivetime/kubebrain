@@ -25,6 +25,7 @@ func TestRestoreTrafficCutoverLifecycleAndRollback(t *testing.T) {
 	require.NoError(t, json.Unmarshal(data, &receipt))
 	require.Equal(t, "kubebrain.restore-cutover.receipt.v1", receipt["format"])
 	require.Equal(t, "uid-service", receipt["service_uid"])
+	require.NotEmpty(t, receipt["cutover_state_sha256"])
 	require.Equal(t, true, receipt["endpoint_uids_matched"])
 
 	r := newTrafficFixture(t)
