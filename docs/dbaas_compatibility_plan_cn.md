@@ -2694,6 +2694,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   单测同时覆盖 Put 与选中 Txn 分支，现有 Put 差分和 Txn operation validation
   差分加入该组合。修复前真实 A154 双端差分只在此字段失败；focused race 和主模块
   全量测试通过，最终镜像继续在 3 PD/3 TiKV 三副本上验证。
+- **KV A157 selected Txn validation order（2026-07-18）**：继续对照
+  `/root/etcd/server/etcdserver/txn/txn.go:checkTxn`，etcd 在执行任何写入前按选中
+  分支的操作顺序交错检查 Put lease/Ignore* 与 Range revision。KubeBrain 此前先全局
+  扫描全部 Range revision，导致 `missing lease Put -> future Range` 错误地返回
+  future revision；参考 etcd 返回前一个操作的 LeaseNotFound。反向
+  `future Range -> missing lease Put` 两端均返回 future revision。
+
+  现新增 selected-branch 前序预检，按操作顺序检查 Range compact/future、Put 显式
+  lease、Ignore* 旧 key，并递归保持 nested Txn 顺序；执行/提交前的二次 lease 校验
+  继续防止预检后的状态变化。readonly Txn 与 ordered write Txn 共用单 Range revision
+  helper。双向顺序单测、focused race 和主模块全量测试通过；真实参考差分固定两种
+  顺序，最终镜像继续在 3 PD/3 TiKV 三副本上验证。
 
 ### P1：通用服务能力
 

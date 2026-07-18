@@ -1185,7 +1185,9 @@ func (s *RPCServer) executeGenericTxn(ctx context.Context, txn *etcdserverpb.Txn
 		if err != nil {
 			return nil, err
 		}
-		if err := validateTxnRangeRevisions(txn, paths, int64(compactRevision), int64(s.backend.GetCurrentRevision())); err != nil {
+		if err := s.validateTxnExecutionOrder(
+			ctx, txn, paths, int64(compactRevision), int64(s.backend.GetCurrentRevision()),
+		); err != nil {
 			return nil, err
 		}
 		// Prefer the atomic single-revision path when the chosen branch is a set of
@@ -1461,18 +1463,81 @@ func validateTxnRangeRevisionsCursor(txn *etcdserverpb.TxnRequest, cur *txnPathC
 	}
 	for _, op := range ops {
 		if r := op.GetRequestRange(); r != nil {
-			if r.Revision < -1 || (r.Revision < 0 && compactRevision > 0) {
-				return compactedRevisionError()
-			}
-			if r.Revision > 0 && r.Revision < compactRevision {
-				return compactedRevisionError()
-			}
-			if r.Revision > currentRevision {
-				return futureRevisionError()
+			if err := validateTxnRangeRevision(r, compactRevision, currentRevision); err != nil {
+				return err
 			}
 		}
 		if nested := op.GetRequestTxn(); nested != nil {
 			if err := validateTxnRangeRevisionsCursor(nested, cur, compactRevision, currentRevision); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func validateTxnRangeRevision(r *etcdserverpb.RangeRequest, compactRevision, currentRevision int64) error {
+	if r.Revision < -1 || (r.Revision < 0 && compactRevision > 0) {
+		return compactedRevisionError()
+	}
+	if r.Revision > 0 && r.Revision < compactRevision {
+		return compactedRevisionError()
+	}
+	if r.Revision > currentRevision {
+		return futureRevisionError()
+	}
+	return nil
+}
+
+func (s *RPCServer) validateTxnExecutionOrder(
+	ctx context.Context,
+	txn *etcdserverpb.TxnRequest,
+	paths []bool,
+	compactRevision, currentRevision int64,
+) error {
+	return s.validateTxnExecutionOrderCursor(
+		ctx, txn, &txnPathCursor{paths: paths}, compactRevision, currentRevision,
+	)
+}
+
+func (s *RPCServer) validateTxnExecutionOrderCursor(
+	ctx context.Context,
+	txn *etcdserverpb.TxnRequest,
+	cur *txnPathCursor,
+	compactRevision, currentRevision int64,
+) error {
+	succeeded, err := cur.next()
+	if err != nil {
+		return err
+	}
+	ops := txn.Success
+	if !succeeded {
+		ops = txn.Failure
+	}
+	for _, op := range ops {
+		switch {
+		case op.GetRequestRange() != nil:
+			if err := validateTxnRangeRevision(op.GetRequestRange(), compactRevision, currentRevision); err != nil {
+				return err
+			}
+		case op.GetRequestPut() != nil:
+			put := op.GetRequestPut()
+			if err := s.ensureLeaseExists(put.Lease); err != nil {
+				return err
+			}
+			if put.IgnoreValue || put.IgnoreLease {
+				resp, err := s.backend.Get(ctx, &etcdserverpb.RangeRequest{Key: put.Key})
+				if err != nil {
+					return err
+				}
+				if len(resp.Kvs) == 0 {
+					return txnKeyNotFoundError()
+				}
+			}
+		case op.GetRequestTxn() != nil:
+			if err := s.validateTxnExecutionOrderCursor(
+				ctx, op.GetRequestTxn(), cur, compactRevision, currentRevision,
+			); err != nil {
 				return err
 			}
 		}

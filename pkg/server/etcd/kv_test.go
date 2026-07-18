@@ -2527,6 +2527,36 @@ func TestPutMissingLeasePrecedesMissingIgnoreValueKey(t *testing.T) {
 	require.Equal(t, "etcdserver: requested lease not found", status.Convert(txnErr).Message())
 }
 
+func TestTxnExecutionValidationFollowsSelectedOperationOrder(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	put := &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestPut{
+		RequestPut: &etcdserverpb.PutRequest{
+			Key: []byte("/registry/pods/txn-validation-order-put"), Value: []byte("value"), Lease: 987654321,
+		},
+	}}
+	read := &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestRange{
+		RequestRange: &etcdserverpb.RangeRequest{
+			Key: []byte("/registry/pods/txn-validation-order-range"), Revision: math.MaxInt64,
+		},
+	}}
+
+	_, err := server.Txn(context.Background(), &etcdserverpb.TxnRequest{
+		Success: []*etcdserverpb.RequestOp{put, read},
+	})
+	require.Error(t, err)
+	require.Equal(t, codes.NotFound, status.Code(err))
+	require.Equal(t, "etcdserver: requested lease not found", status.Convert(err).Message())
+
+	_, err = server.Txn(context.Background(), &etcdserverpb.TxnRequest{
+		Success: []*etcdserverpb.RequestOp{read, put},
+	})
+	require.Error(t, err)
+	require.Equal(t, codes.OutOfRange, status.Code(err))
+	require.Equal(t, "etcdserver: mvcc: required revision is a future revision", status.Convert(err).Message())
+}
+
 func TestTxnSimpleSuccessPutWithLeaseIsRevoked(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

@@ -2,6 +2,7 @@ package compat
 
 import (
 	"context"
+	"math"
 	"os"
 	"strings"
 	"testing"
@@ -29,6 +30,57 @@ func TestTxnValidationOrderDifferentialAgainstReferenceEtcd(t *testing.T) {
 		runTxnValidationOrderScenario(t, reference),
 		runTxnValidationOrderScenario(t, compatEndpoint()),
 	)
+}
+
+func TestTxnExecutionValidationOrderDifferentialAgainstReferenceEtcd(t *testing.T) {
+	reference := os.Getenv("REFERENCE_ETCD_ENDPOINT")
+	if reference == "" {
+		t.Skip("set REFERENCE_ETCD_ENDPOINT to run differential compatibility tests")
+	}
+
+	require.Equal(t,
+		runTxnExecutionValidationOrderScenario(t, reference),
+		runTxnExecutionValidationOrderScenario(t, compatEndpoint()),
+	)
+}
+
+func runTxnExecutionValidationOrderScenario(t *testing.T, endpoint string) []txnOperationValidationOutcome {
+	t.Helper()
+	endpoint = strings.TrimPrefix(strings.TrimPrefix(endpoint, "http://"), "https://")
+	conn, err := grpc.NewClient(endpoint, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	client := etcdserverpb.NewKVClient(conn)
+
+	put := &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestPut{
+		RequestPut: &etcdserverpb.PutRequest{
+			Key: []byte("/dbaas-txn-validation-order/missing-lease"), Value: []byte("value"), Lease: 987654321,
+		},
+	}}
+	read := &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestRange{
+		RequestRange: &etcdserverpb.RangeRequest{
+			Key: []byte("/dbaas-txn-validation-order/future"), Revision: math.MaxInt64,
+		},
+	}}
+	tests := []struct {
+		name string
+		ops  []*etcdserverpb.RequestOp
+	}{
+		{name: "lease-before-future-range", ops: []*etcdserverpb.RequestOp{put, read}},
+		{name: "future-range-before-lease", ops: []*etcdserverpb.RequestOp{read, put}},
+	}
+
+	outcomes := make([]txnOperationValidationOutcome, 0, len(tests))
+	for _, test := range tests {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_, callErr := client.Txn(ctx, &etcdserverpb.TxnRequest{Success: test.ops})
+		cancel()
+		require.Error(t, callErr, test.name)
+		outcomes = append(outcomes, txnOperationValidationOutcome{
+			Name: test.name, Code: status.Code(callErr).String(), Message: status.Convert(callErr).Message(),
+		})
+	}
+	return outcomes
 }
 
 func runTxnValidationOrderScenario(t *testing.T, endpoint string) txnValidationOrderOutcome {
