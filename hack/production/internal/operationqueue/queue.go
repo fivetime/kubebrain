@@ -168,6 +168,9 @@ func (q *Queue) Claim(ctx context.Context, owner, operationType string, lease ti
 		if operationType != "" && candidateType != operationType {
 			continue
 		}
+		if requiresApproval(candidateType) && !isApproved(candidate) {
+			continue
+		}
 		phase, _, _ := unstructured.NestedString(candidate.Object, "status", "phase")
 		attempt, _, _ := unstructured.NestedInt64(candidate.Object, "status", "attempt")
 		leaseUntil, _, _ := unstructured.NestedInt64(candidate.Object, "status", "leaseUntilUnix")
@@ -240,6 +243,23 @@ func (q *Queue) Claim(ctx context.Context, owner, operationType string, lease ti
 		return nil, fmt.Errorf("%w: claim conflicts exhausted: %v", ErrNoOperation, lastConflict)
 	}
 	return nil, ErrNoOperation
+}
+
+func requiresApproval(operationType string) bool {
+	switch operationType {
+	case "RestoreCutover", "CertificateRotation", "Destroy", "BackupDeletion":
+		return true
+	default:
+		return false
+	}
+}
+
+func isApproved(object *unstructured.Unstructured) bool {
+	annotations := object.GetAnnotations()
+	approvedBy := annotations[operationaudit.ApprovedByAnnotation]
+	approvalID := annotations[operationaudit.ApprovalIDAnnotation]
+	return approvedBy == operationaudit.ApproverUsername && len(approvalID) <= 128 &&
+		len(validation.IsDNS1123Subdomain(approvalID)) == 0
 }
 
 func (q *Queue) Requeue(
@@ -361,6 +381,45 @@ func (q *Queue) Finish(
 
 func (q *Queue) Get(ctx context.Context, name string) (*unstructured.Unstructured, error) {
 	return q.resource.Get(ctx, name, metav1.GetOptions{})
+}
+
+func (q *Queue) Approve(
+	ctx context.Context,
+	name, approvedBy, approvalID string,
+) (*unstructured.Unstructured, error) {
+	if approvedBy == "" || len(approvalID) > 128 || len(validation.IsDNS1123Subdomain(approvalID)) != 0 {
+		return nil, errors.New("approver and a DNS-compatible approval ID are required")
+	}
+	object, err := q.resource.Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return nil, err
+	}
+	operationType, _, _ := unstructured.NestedString(object.Object, "spec", "type")
+	if !requiresApproval(operationType) {
+		return nil, errors.New("operation type does not require approval")
+	}
+	phase, _, _ := unstructured.NestedString(object.Object, "status", "phase")
+	if phase != "" && phase != PhasePending {
+		return nil, errors.New("only pending operations can be approved")
+	}
+	annotations := object.GetAnnotations()
+	if annotations[operationaudit.ApprovedByAnnotation] != "" ||
+		annotations[operationaudit.ApprovalIDAnnotation] != "" {
+		if annotations[operationaudit.ApprovedByAnnotation] == approvedBy &&
+			annotations[operationaudit.ApprovalIDAnnotation] == approvalID {
+			return object, nil
+		}
+		return nil, errors.New("operation has different immutable approval evidence")
+	}
+	updated := object.DeepCopy()
+	annotations = updated.GetAnnotations()
+	if annotations == nil {
+		annotations = make(map[string]string)
+	}
+	annotations[operationaudit.ApprovedByAnnotation] = approvedBy
+	annotations[operationaudit.ApprovalIDAnnotation] = approvalID
+	updated.SetAnnotations(annotations)
+	return q.resource.Update(ctx, updated, metav1.UpdateOptions{})
 }
 
 func (q *Queue) Delete(ctx context.Context, name string, uid types.UID) error {

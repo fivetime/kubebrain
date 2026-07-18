@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/kubewharf/kubebrain/hack/production/internal/operationqueue"
+	"github.com/kubewharf/kubebrain/hack/production/operationaudit"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/tools/clientcmd"
@@ -19,7 +20,7 @@ import (
 
 func main() {
 	var action, namespace, name, operationID, instance, operationType, parametersSHA string
-	var owner, receiptSHA, message, kubeconfig, contextName string
+	var owner, receiptSHA, message, approvalID, approvedBy, kubeconfig, contextName string
 	var maxAttempts, attempt int64
 	var lease time.Duration
 	flag.StringVar(&action, "action", "", "submit, claim, heartbeat, retry, succeed, fail, or get")
@@ -35,6 +36,8 @@ func main() {
 	flag.DurationVar(&lease, "lease", 2*time.Minute, "worker claim lease")
 	flag.StringVar(&receiptSHA, "receipt-sha256", "", "successful operation receipt digest")
 	flag.StringVar(&message, "message", "", "terminal status message")
+	flag.StringVar(&approvalID, "approval-id", "", "external approval decision ID")
+	flag.StringVar(&approvedBy, "approved-by", operationaudit.ApproverUsername, "approver Kubernetes username")
 	flag.StringVar(&kubeconfig, "kubeconfig", defaultKubeconfig(), "kubeconfig path")
 	flag.StringVar(&contextName, "context", "", "kubeconfig context")
 	flag.Parse()
@@ -72,8 +75,10 @@ func main() {
 		output, err = queue.Finish(ctx, name, owner, attempt, false, "", message)
 	case "get":
 		output, err = queue.Get(ctx, name)
+	case "approve":
+		output, err = queue.Approve(ctx, name, approvedBy, approvalID)
 	default:
-		log.Fatal("action must be submit, claim, heartbeat, retry, succeed, fail, or get")
+		log.Fatal("action must be submit, claim, heartbeat, retry, succeed, fail, get, or approve")
 	}
 	if err != nil {
 		if errors.Is(err, operationqueue.ErrNoOperation) {

@@ -132,6 +132,100 @@ func TestQueueRequeueConsumesAttemptAndFiltersType(t *testing.T) {
 	require.ErrorIs(t, err, ErrFenced)
 }
 
+func TestQueueRequiresApprovalForHighRiskOperations(t *testing.T) {
+	for _, operationType := range []string{
+		"RestoreCutover", "CertificateRotation", "Destroy", "BackupDeletion",
+	} {
+		t.Run(operationType, func(t *testing.T) {
+			queue := newFakeQueue()
+			ctx := context.Background()
+			spec := validSpec()
+			spec.Type = operationType
+			object, err := queue.Submit(ctx, "high-risk", spec)
+			require.NoError(t, err)
+
+			_, err = queue.Claim(ctx, "worker-a", operationType, time.Minute)
+			require.ErrorIs(t, err, ErrNoOperation)
+			pending, err := queue.Get(ctx, object.GetName())
+			require.NoError(t, err)
+			attempt, _, err := unstructured.NestedInt64(pending.Object, "status", "attempt")
+			require.NoError(t, err)
+			require.Zero(t, attempt)
+
+			approved := pending.DeepCopy()
+			approved.SetAnnotations(map[string]string{
+				operationaudit.ApprovedByAnnotation: operationaudit.ApproverUsername,
+				operationaudit.ApprovalIDAnnotation: "approval-1",
+			})
+			_, err = queue.resource.Update(ctx, approved, metav1.UpdateOptions{})
+			require.NoError(t, err)
+
+			claim, err := queue.Claim(ctx, "worker-a", operationType, time.Minute)
+			require.NoError(t, err)
+			require.Equal(t, operationType, claim.Type)
+			require.Equal(t, int64(1), claim.Attempt)
+		})
+	}
+}
+
+func TestQueueDoesNotTreatForgedApprovalAsApproved(t *testing.T) {
+	queue := newFakeQueue()
+	ctx := context.Background()
+	spec := validSpec()
+	spec.Type = "Destroy"
+	object, err := queue.Submit(ctx, "destroy", spec)
+	require.NoError(t, err)
+	object.SetAnnotations(map[string]string{
+		operationaudit.ApprovedByAnnotation: "system:serviceaccount:test:approver",
+		operationaudit.ApprovalIDAnnotation: "approval-1",
+	})
+	_, err = queue.resource.Update(ctx, object, metav1.UpdateOptions{})
+	require.NoError(t, err)
+	_, err = queue.Claim(ctx, "worker-a", "Destroy", time.Minute)
+	require.ErrorIs(t, err, ErrNoOperation)
+}
+
+func TestQueueApprovalIsPendingOnlyAndIdempotent(t *testing.T) {
+	queue := newFakeQueue()
+	ctx := context.Background()
+	spec := validSpec()
+	spec.Type = "Destroy"
+	_, err := queue.Submit(ctx, "destroy", spec)
+	require.NoError(t, err)
+
+	approved, err := queue.Approve(ctx, "destroy", operationaudit.ApproverUsername, "change-123")
+	require.NoError(t, err)
+	require.Equal(t, operationaudit.ApproverUsername,
+		approved.GetAnnotations()[operationaudit.ApprovedByAnnotation])
+	require.Equal(t, "change-123", approved.GetAnnotations()[operationaudit.ApprovalIDAnnotation])
+	retried, err := queue.Approve(ctx, "destroy", operationaudit.ApproverUsername, "change-123")
+	require.NoError(t, err)
+	require.Equal(t, approved.GetResourceVersion(), retried.GetResourceVersion())
+	_, err = queue.Approve(ctx, "destroy", operationaudit.ApproverUsername, "other")
+	require.ErrorContains(t, err, "different immutable approval")
+
+	claim, err := queue.Claim(ctx, "worker-a", "Destroy", time.Minute)
+	require.NoError(t, err)
+	_, err = queue.Approve(ctx, claim.Name, operationaudit.ApproverUsername, "change-123")
+	require.ErrorContains(t, err, "pending")
+}
+
+func TestQueueRejectsApprovalForLowRiskOrInvalidDecision(t *testing.T) {
+	queue := newFakeQueue()
+	ctx := context.Background()
+	_, err := queue.Submit(ctx, "audit", validSpec())
+	require.NoError(t, err)
+	_, err = queue.Approve(ctx, "audit", operationaudit.ApproverUsername, "change-123")
+	require.ErrorContains(t, err, "does not require approval")
+
+	spec := validSpec()
+	spec.Type = "Destroy"
+	_, err = queue.Submit(ctx, "destroy", spec)
+	require.NoError(t, err)
+	_, err = queue.Approve(ctx, "destroy", operationaudit.ApproverUsername, "INVALID_ID")
+	require.ErrorContains(t, err, "DNS-compatible")
+}
+
 func TestQueueRotatesAcrossInstancesAndSerializesEachInstance(t *testing.T) {
 	now := time.Unix(1_000, 0).UTC()
 	queue := newFakeQueue().WithClock(func() time.Time { return now })

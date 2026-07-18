@@ -89,6 +89,35 @@ func TestOperationSubmitterRBACIsNamespacedAndCannotMutateStatus(t *testing.T) {
 	require.Equal(t, rbacParty{Kind: "Role", Name: "kubebrain-operation-submitter"}, binding.RoleRef)
 }
 
+func TestOperationApproverRBACCanOnlyApproveExistingOperations(t *testing.T) {
+	path := filepath.Join("..", "..", "deploy", "production", "kubebrain-operation-approver-rbac.yaml")
+	documents := decodeRBACManifest(t, path)
+	require.Len(t, documents, 3)
+
+	serviceAccount := documents[0]
+	require.Equal(t, "ServiceAccount", serviceAccount.Kind)
+	require.Equal(t, "kubebrain-operation-approver", serviceAccount.Metadata.Name)
+	require.Equal(t, "kubebrain-operations", serviceAccount.Metadata.Namespace)
+	require.NotNil(t, serviceAccount.Automount)
+	require.False(t, *serviceAccount.Automount)
+
+	role := documents[1]
+	require.Equal(t, "Role", role.Kind)
+	require.Equal(t, "kubebrain-operations", role.Metadata.Namespace)
+	require.Equal(t, []rbacRule{{
+		APIGroups: []string{"dbaas.kubebrain.io"},
+		Resources: []string{"kubebrainoperations"},
+		Verbs:     []string{"get", "list", "watch", "update"},
+	}}, role.Rules)
+
+	binding := documents[2]
+	require.Equal(t, rbacParty{
+		Kind: "ServiceAccount", Name: "kubebrain-operation-approver",
+		Namespace: "kubebrain-operations",
+	}, binding.Subjects[0])
+	require.Equal(t, rbacParty{Kind: "Role", Name: "kubebrain-operation-approver"}, binding.RoleRef)
+}
+
 func TestOperationWorkerRBACCanFenceWithLeasesButCannotCreateOperations(t *testing.T) {
 	path := filepath.Join("..", "..", "deploy", "production", "kubebrain-operation-worker-rbac.yaml")
 	documents := decodeRBACManifest(t, path)
@@ -174,11 +203,15 @@ func TestOperationAuditAdmissionRequiresFinalizerAndReleaseEvidence(t *testing.T
 	require.Equal(t, []string{"v1alpha1"}, rule.APIVersions)
 	require.Equal(t, []string{"CREATE", "UPDATE"}, rule.Operations)
 	require.Equal(t, []string{"kubebrainoperations"}, rule.Resources)
-	require.Len(t, policy.Spec.Validations, 2)
+	require.Len(t, policy.Spec.Validations, 5)
 	require.Contains(t, policy.Spec.Validations[0].Expression, operationaudit.Finalizer)
-	require.Contains(t, policy.Spec.Validations[1].Expression, operationaudit.ReceiptSHAAnnotation)
-	require.Contains(t, policy.Spec.Validations[1].Expression, operationaudit.ArtifactSHAAnnotation)
-	require.Contains(t, policy.Spec.Validations[1].Expression, operationaudit.VersionAnnotation)
+	require.Contains(t, policy.Spec.Validations[1].Expression, operationaudit.ApprovedByAnnotation)
+	require.Contains(t, policy.Spec.Validations[2].Expression, "request.userInfo.username")
+	require.Contains(t, policy.Spec.Validations[2].Expression, "kubebrain-operation-approver")
+	require.Contains(t, policy.Spec.Validations[3].Expression, operationaudit.ApprovalIDAnnotation)
+	require.Contains(t, policy.Spec.Validations[4].Expression, operationaudit.ReceiptSHAAnnotation)
+	require.Contains(t, policy.Spec.Validations[4].Expression, operationaudit.ArtifactSHAAnnotation)
+	require.Contains(t, policy.Spec.Validations[4].Expression, operationaudit.VersionAnnotation)
 
 	var binding auditAdmissionManifest
 	require.NoError(t, decoder.Decode(&binding))

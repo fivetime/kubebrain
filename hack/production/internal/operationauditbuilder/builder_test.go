@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kubewharf/kubebrain/hack/production/operationaudit"
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
@@ -36,4 +37,38 @@ func TestFromOperationBindsImmutableSpecAndTerminalStatus(t *testing.T) {
 	require.NoError(t, unstructured.SetNestedField(object.Object, "Running", "status", "phase"))
 	_, err = FromOperation(object)
 	require.ErrorContains(t, err, "incomplete")
+}
+
+func TestFromOperationBindsHighRiskApproval(t *testing.T) {
+	object := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "dbaas.kubebrain.io/v1alpha1",
+		"kind":       "KubeBrainOperation",
+		"metadata": map[string]any{
+			"name": "destroy-1", "namespace": "operations", "uid": "uid-1",
+			"generation": int64(1),
+			"annotations": map[string]any{
+				operationaudit.ApprovedByAnnotation: operationaudit.ApproverUsername,
+				operationaudit.ApprovalIDAnnotation: "change-123",
+			},
+		},
+		"spec": map[string]any{
+			"operationID": "destroy-1", "instance": "instance-a", "type": "Destroy",
+			"parametersSHA256": strings.Repeat("a", 64), "maxAttempts": int64(3),
+		},
+		"status": map[string]any{
+			"phase": "Failed", "owner": "worker-a", "attempt": int64(1),
+			"observedGeneration": int64(1), "startedAtUnix": int64(100),
+			"completedAtUnix": int64(101), "receiptSHA256": "", "message": "failed",
+		},
+	}}
+	artifact, err := FromOperation(object)
+	require.NoError(t, err)
+	require.Equal(t, operationaudit.ApproverUsername, artifact.ApprovedBy)
+	require.Equal(t, "change-123", artifact.ApprovalID)
+
+	annotations := object.GetAnnotations()
+	delete(annotations, operationaudit.ApprovalIDAnnotation)
+	object.SetAnnotations(annotations)
+	_, err = FromOperation(object)
+	require.ErrorContains(t, err, "approval evidence")
 }

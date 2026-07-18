@@ -10,16 +10,20 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 )
 
 const Format = "kubebrain.operation-audit.v1"
 const ArchiveReceiptFormat = "kubebrain.object-operation-audit.receipt.v1"
 const Finalizer = "dbaas.kubebrain.io/operation-audit"
+const ApproverUsername = "system:serviceaccount:kubebrain-operations:kubebrain-operation-approver"
 
 const (
 	ReceiptSHAAnnotation  = "dbaas.kubebrain.io/audit-receipt-sha256"
 	ArtifactSHAAnnotation = "dbaas.kubebrain.io/audit-artifact-sha256"
 	VersionAnnotation     = "dbaas.kubebrain.io/audit-version-id"
+	ApprovedByAnnotation  = "dbaas.kubebrain.io/approved-by"
+	ApprovalIDAnnotation  = "dbaas.kubebrain.io/approval-id"
 )
 
 type Artifact struct {
@@ -32,6 +36,8 @@ type Artifact struct {
 	OperationID        string `json:"operation_id"`
 	Instance           string `json:"instance"`
 	Type               string `json:"type"`
+	ApprovedBy         string `json:"approved_by,omitempty"`
+	ApprovalID         string `json:"approval_id,omitempty"`
 	ParametersSHA256   string `json:"parameters_sha256"`
 	MaxAttempts        int64  `json:"max_attempts"`
 	Phase              string `json:"phase"`
@@ -50,6 +56,8 @@ type Status struct {
 	SHA256   string
 	Bytes    int64
 }
+
+var approvalIDPattern = regexp.MustCompile(`^[a-z0-9]([-a-z0-9.]{0,126}[a-z0-9])?$`)
 
 type ArchiveReceipt struct {
 	Format                 string `json:"format"`
@@ -89,6 +97,15 @@ func (a Artifact) Validate() error {
 	}
 	if a.Phase == "Failed" && a.ReceiptSHA256 != "" {
 		return errors.New("failed operation audit cannot carry a receipt SHA-256")
+	}
+	approvalRequired := a.Type == "RestoreCutover" || a.Type == "CertificateRotation" ||
+		a.Type == "Destroy" || a.Type == "BackupDeletion"
+	if approvalRequired &&
+		(a.ApprovedBy != ApproverUsername || !approvalIDPattern.MatchString(a.ApprovalID)) {
+		return errors.New("high-risk operation audit requires immutable approval evidence")
+	}
+	if !approvalRequired && (a.ApprovedBy != "" || a.ApprovalID != "") {
+		return errors.New("low-risk operation audit cannot carry approval evidence")
 	}
 	return nil
 }

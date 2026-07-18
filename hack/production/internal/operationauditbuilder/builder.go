@@ -34,6 +34,8 @@ func FromOperation(object *unstructured.Unstructured) (operationaudit.Artifact, 
 		ReceiptSHA256:      stringField("status", "receiptSHA256"),
 		Message:            stringField("status", "message"),
 	}
+	artifact.ApprovedBy = object.GetAnnotations()[operationaudit.ApprovedByAnnotation]
+	artifact.ApprovalID = object.GetAnnotations()[operationaudit.ApprovalIDAnnotation]
 	if err := artifact.Validate(); err != nil {
 		return operationaudit.Artifact{}, err
 	}

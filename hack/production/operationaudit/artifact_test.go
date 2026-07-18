@@ -49,7 +49,31 @@ func TestOperationAuditRejectsNonterminalAndInvalidReceipt(t *testing.T) {
 func TestOperationAuditAcceptsBackupDeletion(t *testing.T) {
 	artifact := terminalArtifact()
 	artifact.Type = "BackupDeletion"
+	artifact.ApprovedBy = ApproverUsername
+	artifact.ApprovalID = "change-123"
 	require.NoError(t, artifact.Validate())
+}
+
+func TestOperationAuditRequiresApprovalForHighRiskTypes(t *testing.T) {
+	for _, operationType := range []string{
+		"RestoreCutover", "CertificateRotation", "Destroy", "BackupDeletion",
+	} {
+		artifact := terminalArtifact()
+		artifact.Type = operationType
+		require.ErrorContains(t, artifact.Validate(), "approval evidence")
+		artifact.ApprovedBy = ApproverUsername
+		artifact.ApprovalID = "change-123"
+		require.NoError(t, artifact.Validate())
+		artifact.ApprovedBy = "forged"
+		require.ErrorContains(t, artifact.Validate(), "approval evidence")
+	}
+}
+
+func TestOperationAuditRejectsApprovalOnLowRiskType(t *testing.T) {
+	artifact := terminalArtifact()
+	artifact.ApprovedBy = ApproverUsername
+	artifact.ApprovalID = "change-123"
+	require.ErrorContains(t, artifact.Validate(), "cannot carry approval")
 }
 
 func terminalArtifact() Artifact {
