@@ -3126,8 +3126,27 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   A190 receipt SHA-256 提交终态。真实 CRD→claim→A190 2 秒/3 样本→finish 链路以
   attempt 1 完成，status receipt digest
   `a1a8333123fcb2912603d7e416124c5f9e5f2eb393d62776a21ae7686c3ad245`，
-  探针 prefix 零残留。其余 executor、管理 API 认证授权、跨实例公平调度和审计聚合仍是
-  P1。
+  探针 prefix 零残留。A192 已接入 Backup；RestoreCutover/CertificateRotation/Destroy
+  executor、管理 API 认证授权、跨实例公平调度和审计聚合仍是 P1。
+- **Operations A192 protected Backup operation executor（2026-07-18）**：新增
+  `hack/production/run-backup-operation.sh`，只 claim `Backup` operation 并核对完整参数
+  JSON SHA-256。参数固定数据 endpoint/prefix、operation 专属 artifact/receipt 路径、
+  batch、Object Store ID、bucket/key、retention mode、绝对 retain-until 和 completion
+  gate。首次运行 logical v2 export；崩溃重试发现 artifact 已存在时禁止覆盖，先重做
+  exact prefix/min records/freshness 校验，再调用 A188 条件上传与 exact version 远端
+  下载/retention 复核。导出/上传期间持续 heartbeat；失败 requeue 并消耗 attempt，
+  heartbeat fencing 会终止子进程；Succeeded 绑定 object receipt SHA-256。AWS 与 etcd
+  凭据只由 worker 环境提供，不写参数 CR。
+
+  mock 覆盖首次导出、已有 artifact 安全复用、上传失败 requeue、参数 digest 漂移和
+  heartbeat fencing。真实 CRD→Backup executor→三副本 KubeBrain/TiKV→MinIO Object
+  Lock 链路导出 `/kubebrain-a192-backup` 1 record，snapshot revision
+  `467764733078405161`、artifact digest
+  `c6cdd323b0fcc412ac01d4a6978be0604e935a772d7201362ef535607c039e05`；
+  exact version `4368f8b1-dec6-4d2e-bad8-ff9f08e72824` 远端复核后，operation attempt 1
+  进入 Succeeded，status receipt digest
+  `8d7e1eeff89f3039a7af47fc96bf7e7efe7730069f3a99992e0ebf38a349af97`。
+  COMPLIANCE 保留到期后按 exact version 删除并签发 deletion receipt，源 prefix 计数 0。
 - **Operations A185 certificate rotation completion state（2026-07-18）**：新增
   `hack/production/validate-certificate-rotation.sh`，把 client/peer CA rollover
   收敛为 `begin -> overlap -> complete` 三阶段门禁。begin 固定全部 KubeBrain Pod
@@ -3221,7 +3240,8 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
 3. DBaaS 创建、扩缩、升级的数据面 release gate、备份完成 gate、Object Lock
    上传/保留删除、恢复验证 receipt、UID-fenced 流量切换、恢复后持续审计、证书轮换
    gate、UID-fenced 销毁状态机及持久 operation API/worker fencing 已建立；继续接入
-   其余 executor，完成专属 namespace/凭据外围清理、bucket lifecycle/inventory 对账，
+   RestoreCutover/CertificateRotation/Destroy executor，完成专属 namespace/凭据外围
+   清理、bucket lifecycle/inventory 对账，
    并补 API 认证授权、不可变审计归档、跨实例公平调度和管理面 HA soak。
 4. 建立实例级限额和计量：请求字节、txn 操作数、跨连接 client RPC 总并发、client
    请求 QPS/burst、逻辑 Watch 总数、CPU/内存饱和、网络错误/丢包及 PD/TiKV PVC 容量
