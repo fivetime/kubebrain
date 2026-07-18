@@ -2744,6 +2744,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   整个租户。单元测试固定 `[fe,ff)` 的 Range、Deleted=3 和三项 PrevKV，新增真实
   gRPC mutation 差分覆盖 readonly Txn、Txn DeleteRange、standalone DeleteRange
   及删除后状态。
+- **KV A161 boundary probe latency（2026-07-18）**：A160 在真实 TiKV 上的 2880
+  组矩阵从 A159 的约 19–23 秒增至约 37 秒，确认串行 start/end 邻域探测带来不可忽略
+  的读延迟。两侧探测现于同一固定 revision 并行执行；任一侧命中即可立即选择解码
+  回退，均未命中时则要求两侧都成功后才进入原有有界扫描。该优化不缓存跨 revision
+  结果，不会让并发写后的新低字节扩展键被旧 negative cache 隐藏。
 
 ### P1：通用服务能力
 

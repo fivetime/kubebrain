@@ -242,14 +242,30 @@ func (b *backend) requiresDecodedUserRange(
 	if !isFromKeyEnd(end) {
 		boundaries = append(boundaries, end)
 	}
+	type probeResult struct {
+		found bool
+		err   error
+	}
+	results := make(chan probeResult, len(boundaries))
 	for _, boundary := range boundaries {
-		hasLowExtension, err := b.hasLowByteBoundaryExtension(ctx, boundary, revision)
-		if err != nil {
-			return false, err
-		}
-		if hasLowExtension {
+		boundary := append([]byte(nil), boundary...)
+		go func() {
+			found, err := b.hasLowByteBoundaryExtension(ctx, boundary, revision)
+			results <- probeResult{found: found, err: err}
+		}()
+	}
+	var firstErr error
+	for range boundaries {
+		result := <-results
+		if result.found {
 			return true, nil
 		}
+		if firstErr == nil && result.err != nil {
+			firstErr = result.err
+		}
+	}
+	if firstErr != nil {
+		return false, firstErr
 	}
 	return false, nil
 }
