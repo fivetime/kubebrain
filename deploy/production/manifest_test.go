@@ -60,6 +60,9 @@ func TestProductionManifestsProvideStableCompleteMembership(t *testing.T) {
 			require.True(t, found)
 			require.Contains(t, args, "--advertise-host=$(POD_NAME).kubebrain-peer.kubebrain-system.svc.cluster.local")
 			require.Contains(t, args, "--initial-cluster="+expectedInitialCluster(tc.scheme))
+			require.Contains(t, args, "--enable-count-index=true")
+			require.Contains(t, args, "--count-index-max-keys=5000000")
+			require.Contains(t, args, "--enable-storage-metrics=true")
 			require.Contains(t, args, "--max-requests-inflight=1024")
 			require.Contains(t, args, "--max-request-rate=2000")
 			require.Contains(t, args, "--request-rate-burst=4000")
@@ -190,6 +193,9 @@ func TestDevManifestProvidesStableCompleteMembership(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, found)
 	require.Contains(t, args, "--advertise-host=$(POD_NAME).kubebrain-peer.kubebrain-dev.svc.cluster.local")
+	require.Contains(t, args, "--enable-count-index=true")
+	require.Contains(t, args, "--count-index-max-keys=5000000")
+	require.Contains(t, args, "--enable-storage-metrics=true")
 	require.Contains(t, args,
 		"--initial-cluster=kubebrain-0=http://kubebrain-0.kubebrain-peer.kubebrain-dev.svc.cluster.local:3380,"+
 			"kubebrain-1=http://kubebrain-1.kubebrain-peer.kubebrain-dev.svc.cluster.local:3380,"+

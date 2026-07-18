@@ -51,6 +51,9 @@ spec:
             - --initial-cluster=kubebrain-0=http://kubebrain-0.kubebrain-peer.kubebrain-dev.svc.cluster.local:3380,kubebrain-1=http://kubebrain-1.kubebrain-peer.kubebrain-dev.svc.cluster.local:3380,kubebrain-2=http://kubebrain-2.kubebrain-peer.kubebrain-dev.svc.cluster.local:3380
             - --pd-addrs=kb-pd.tidb-cluster.svc:2379
             - --compatible-with-etcd=true
+            - --enable-count-index=true
+            - --count-index-max-keys=5000000
+            - --enable-storage-metrics=true
             - --max-requests-inflight=1024
             - --max-request-rate=2000
             - --request-rate-burst=4000
