@@ -3610,6 +3610,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   过期响应顺序和 orphaned concurrency session handoff 回归各 5 轮通过，compat module
   全量 vet 通过。本轮无需服务端修改，运行镜像继续为
   `kubebrain:a208-leasing-lock-order`。
+- **Compatibility A211 leasing atomic multi-key cache（2026-07-18）**：
+  对照 `/root/etcd/tests/integration/clientv3/lease/leasing_test.go` 的
+  `TestLeasingTxnAtomicCache`，新增 8-key 并发 leasing Txn 黑盒差分。4 个 writer
+  各执行 8 次事务，每次在同一 revision 将全部 key 更新为同一 generation；4 个 reader
+  持续通过 leasing Txn 读取全部 key。每笔读事务的 8 个 KV 必须具有相同 ModRevision，
+  最终全部 value 也必须属于同一 generation，且所有 32 笔写事务完成并保持 reader
+  进展。
+
+  该场景同时覆盖多 key owner/cache 建立、并发 staged Txn、响应重建、watch 驱动缓存
+  更新，以及 A208 修复后的 logical exclusive/mutation stripe 锁序。参考 etcd 与真实
+  TiKV-backed KubeBrain 连续 5 轮通过，全程未出现 mixed-revision read；连同 A208-A210
+  四组 leasing 差分在真实 endpoint 下 race 3 轮通过，compat module 全量 vet 通过，
+  mutation/range transaction 服务端回归连续 10 轮通过。本轮未发现新的服务端语义差异，
+  运行镜像继续为 `kubebrain:a208-leasing-lock-order`。
 - **Operations A185 certificate rotation completion state（2026-07-18）**：新增
   `hack/production/validate-certificate-rotation.sh`，把 client/peer CA rollover
   收敛为 `begin -> overlap -> complete` 三阶段门禁。begin 固定全部 KubeBrain Pod
