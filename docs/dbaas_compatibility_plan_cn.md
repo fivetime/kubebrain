@@ -47,7 +47,7 @@ Raft、bbolt 和成员管理内部实现，而是对通用 etcd v3 客户端提�
 | Maintenance | Hash/HashKV | 兼容核心语义 | 对指定 revision 的租户 MVCC 实际内容做稳定摘要；用于 KubeBrain 副本一致性校验，数值不与 bbolt 内部编码比较 |
 | Maintenance | MoveLeader/Downgrade | 平台替代 | 分别由服务选主和 DBaaS 升级编排处理 |
 | Endpoint | health/livez/readyz | 兼容核心语义 | `/health`、`/livez`、`/readyz` 及分项检查已对齐；`data_corruption`/`non_learner` 使用 TiKV 架构等价语义，`/ready` 与 `/ping` 为平台探针 |
-| Concurrency | Lock/Election recipes | 兼容核心语义 | 官方 `client/v3/concurrency` Mutex/Election/session、orphan session lease 自然过期接棒及真实 Leader 故障转移已通过；继续长时间 soak |
+| Concurrency | Lock/Election/STM recipes | 兼容核心语义 | 官方 `client/v3/concurrency` Mutex/Election/session/STM、orphan session lease 自然过期接棒、STM 冲突重试/守恒争用及真实 Leader 故障转移已通过；继续长时间 soak |
 
 `Status.Version = 3.7.0` 只表示协议能力门槛，不能作为完整兼容声明。发布说明必须
 引用本矩阵和自动化兼容测试结果。
@@ -3479,6 +3479,30 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `auth can-i --subresource=status` 进一步确认 approver 的 status get/update/patch 均为
   `no`。该项完成 Kubernetes 原生两方审批门禁；
   外部管理 API 的 OIDC、租户到 instance 授权和审批系统 decision 签名/回查仍属 P1。
+- **Compatibility A205 official STM and cross-key Txn fast paths（2026-07-18）**：
+  对照 `/root/etcd/tests/integration/v3_stm_test.go` 增加官方
+  `client/v3/concurrency.NewSTM` 黑盒差分，覆盖 RepeatableReads 新建、abort context
+  不提交、并发删除触发 compare retry，以及 SerializableSnapshot 重复执行。修复前参考
+  etcd 的删除冲突 callback 执行 2 次，真实 TiKV-backed KubeBrain 仅执行 1 次。
+  根因是 `isCreate`、`isUpdate`、`isCompareDelete` 三个单键优化只检查 compare 与
+  mutation 的形状，没有要求两者 key 相同；STM 读取 source key、写入 result key 的
+  跨键 compare 因而绕过通用 Txn 路径，丢失 source conflict。
+
+  三个 fast-path detector 现都要求 compare key 与 mutation key 逐字节相等；跨键请求
+  统一进入通用原子 Txn。服务端回归覆盖不存在 guard 更新不同已有 key、mod guard 写入
+  不同 key、mod guard 删除不同 key；官方 client 差分另固定上述四种跨键 create/update/
+  delete/stale compare 结果。参考 etcd 与 3 KubeBrain/3 PD/3 TiKV 部署的 STM 和跨键
+  差分连续 10 轮通过；10 worker、5 account 的并发 STM 转账守恒测试连续 5 轮通过，
+  目标 server 与 client compatibility race 通过。共享服务上的差分不比较全局 revision
+  增量，并在冲突场景前确认 serializable seed 可见，避免其他请求和 follower revision
+  发布延迟污染场景，但仍明确断言首次 callback 读到 source 且提交必须重试。
+
+  本轮镜像构建还暴露 `build-tikv.sh`/`build-badger.sh` 在严格 metadata 校验失败后仍会
+  继续 `go build` 的 fail-open：无效 Git SHA 曾生成空 provenance 镜像。两个 wrapper
+  现启用 `set -euo pipefail` 并安全引用路径；回归测试用 fake `go` 证明 metadata 失败
+  后绝不调用 build。真实无效 SHA Docker build 非零失败；运行镜像
+  `kubebrain:a205-stm-cross-key` 包含 Version 3.7.0、TiKV storage、完整 40 字节 Git SHA、
+  UTC BuildTime 和 linux/amd64 metadata，三个 KubeBrain Pod Ready 且零重启。
 - **Operations A185 certificate rotation completion state（2026-07-18）**：新增
   `hack/production/validate-certificate-rotation.sh`，把 client/peer CA rollover
   收敛为 `begin -> overlap -> complete` 三阶段门禁。begin 固定全部 KubeBrain Pod
