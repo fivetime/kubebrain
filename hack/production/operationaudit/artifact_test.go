@@ -46,6 +46,12 @@ func TestOperationAuditRejectsNonterminalAndInvalidReceipt(t *testing.T) {
 	require.ErrorContains(t, artifact.Validate(), "incomplete")
 }
 
+func TestOperationAuditAcceptsBackupDeletion(t *testing.T) {
+	artifact := terminalArtifact()
+	artifact.Type = "BackupDeletion"
+	require.NoError(t, artifact.Validate())
+}
+
 func terminalArtifact() Artifact {
 	return Artifact{
 		Format: Format, APIVersion: "dbaas.kubebrain.io/v1alpha1",

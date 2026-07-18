@@ -72,7 +72,7 @@ type ArchiveReceipt struct {
 }
 
 func (a Artifact) Validate() error {
-	operationTypeValid := a.Type == "Backup" || a.Type == "RestoreCutover" ||
+	operationTypeValid := a.Type == "Backup" || a.Type == "BackupDeletion" || a.Type == "RestoreCutover" ||
 		a.Type == "PostRestoreAudit" || a.Type == "CertificateRotation" || a.Type == "Destroy"
 	if a.Format != Format || a.APIVersion != "dbaas.kubebrain.io/v1alpha1" ||
 		a.Namespace == "" || a.Name == "" || a.UID == "" || a.Generation <= 0 ||

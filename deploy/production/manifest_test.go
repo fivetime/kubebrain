@@ -143,6 +143,12 @@ func TestOperationCRDAndWorkerRBACFencePersistentTasks(t *testing.T) {
 	require.Len(t, versions, 1)
 	version := &unstructured.Unstructured{Object: versions[0].(map[string]any)}
 	require.True(t, nestedBool(t, version, "storage"))
+	operationTypes, found, err := unstructured.NestedStringSlice(
+		version.Object, "schema", "openAPIV3Schema", "properties", "spec",
+		"properties", "type", "enum")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Contains(t, operationTypes, "BackupDeletion")
 	_, found, err = unstructured.NestedMap(version.Object, "subresources", "status")
 	require.NoError(t, err)
 	require.True(t, found)
