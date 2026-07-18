@@ -1981,6 +1981,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   race 3 轮通过。部署 `kubebrain:a117-absent-value-compare` 后三个 Pod Ready、
   zero restart、endpoint health 正常，运行时 exact image
   `279d2608ee23f986d3f122b7ca1c7fe1264ca1f990246ee98eaac9c94dd09d21`。
+- **Txn A118 Compare truth-table differential matrix（2026-07-18）**：将
+  `/root/etcd/server/etcdserver/txn/txn.go:applyCompare` 的 Compare 规则固化为
+  24 项 raw protobuf 官方 API 双端差分。矩阵覆盖 VALUE/VERSION/CREATE/MOD/LEASE
+  五类 target、EQUAL/NOT_EQUAL/LESS/GREATER 四类 result，以及 present point、
+  absent point、empty range 和多 key range；revision 与 lease 断言使用各端点自身
+  seed 响应中的精确值，避免把数据库全局状态差异误报为语义差异。多 key 用例同时
+  验证 range Compare 要求范围内每个 KV 都满足，empty range 验证数值 target 的
+  vacuous true 与 VALUE 的强制 false。
+
+  临时 `/root/etcd` 3.8.0-alpha.0 reference 与在线三副本 TiKV-backed KubeBrain
+  首轮及连续 10 轮通过，race 连续 3 轮通过，未发现 A117 之后的新实现差异。本轮
+  同时通过 `go test ./...`、根模块与 compat module `go vet ./...` 及完整 server
+  race（203.166s）。本轮只增加兼容性测试，不改变服务二进制；生产集群继续运行
+  `kubebrain:a117-absent-value-compare`，exact image 为
+  `279d2608ee23f986d3f122b7ca1c7fe1264ca1f990246ee98eaac9c94dd09d21`。
+  三个 Pod 均 Ready、zero restart；分别经 Pod port-forward 验证 leader 与两个
+  follower 的 Status 和写转发均正常，探针 key 已清理。
 
 ### P1：通用服务能力
 
