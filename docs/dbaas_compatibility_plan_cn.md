@@ -3642,6 +3642,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   module 全量 vet 通过。backend compaction/watch/lease/range transaction 回归连续
   10 轮约 98.4 秒、server/etcd 对应回归连续 10 轮约 110.5 秒通过。本轮未发现新的服务端
   语义差异，运行镜像继续为 `kubebrain:a208-leasing-lock-order`。
+- **Compatibility A213 leasing ambiguous owner write（2026-07-18）**：
+  对照 `/root/etcd/tests/integration/clientv3/lease/leasing_test.go` 的
+  `TestLeasingReconnectOwnerConsistency`，把 A212 TCP bridge 扩展为定向
+  server-to-client response blackhole。与上游随机 DropConnections 相比，本轮固定让
+  owner 请求完整到达服务端、由直连 client 观察到新值已提交，同时丢弃 Txn response，
+  直到 owner RPC 返回 DeadlineExceeded，从而确定性覆盖 committed-but-unacknowledged
+  的 ambiguous write。
+
+  恢复时 bridge 关闭旧连接触发 gRPC/watch 重建；owner leasing Get 必须丢弃可能残留的
+  旧缓存，并最终与直读一致地返回已提交值。测试分别硬断言服务端已应用写入、bridge
+  实际丢弃响应字节、owner 调用确实超时和恢复后 cache/server 一致，避免把未发送请求、
+  正常响应或最终旧值误记为通过。
+
+  reference etcd 与真实 TiKV-backed KubeBrain 连续 5 轮通过；A208-A213 六组 leasing
+  差分在真实 endpoint 下 race 3 轮约 43.9 秒通过，compat module 全量 vet 通过。
+  backend Txn/mutation/range/watch 回归连续 10 轮约 48.9 秒、server/etcd 对应回归连续
+  10 轮约 51.3 秒通过。本轮未发现新的服务端语义差异，运行镜像继续为
+  `kubebrain:a208-leasing-lock-order`。
 - **Operations A185 certificate rotation completion state（2026-07-18）**：新增
   `hack/production/validate-certificate-rotation.sh`，把 client/peer CA rollover
   收敛为 `begin -> overlap -> complete` 三阶段门禁。begin 固定全部 KubeBrain Pod

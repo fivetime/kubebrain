@@ -14,13 +14,13 @@ type tcpBridge struct {
 	listener net.Listener
 	target   string
 
-	blackhole atomic.Bool
-	dropped   atomic.Int64
-	closed    atomic.Bool
-	mu        sync.Mutex
-	conns     map[net.Conn]struct{}
-	acceptWG  sync.WaitGroup
-	connWG    sync.WaitGroup
+	blackholeMode atomic.Int32
+	dropped       atomic.Int64
+	closed        atomic.Bool
+	mu            sync.Mutex
+	conns         map[net.Conn]struct{}
+	acceptWG      sync.WaitGroup
+	connWG        sync.WaitGroup
 }
 
 func newTCPBridge(t *testing.T, target string) *tcpBridge {
@@ -43,11 +43,15 @@ func (b *tcpBridge) Endpoint() string {
 }
 
 func (b *tcpBridge) Blackhole() {
-	b.blackhole.Store(true)
+	b.blackholeMode.Store(1)
+}
+
+func (b *tcpBridge) BlackholeResponses() {
+	b.blackholeMode.Store(2)
 }
 
 func (b *tcpBridge) Unblackhole() {
-	b.blackhole.Store(false)
+	b.blackholeMode.Store(0)
 	b.dropConnections()
 }
 
@@ -95,11 +99,11 @@ func (b *tcpBridge) forwardPair(inbound, outbound net.Conn) {
 	copies.Add(2)
 	go func() {
 		defer copies.Done()
-		b.copy(outbound, inbound)
+		b.copy(outbound, inbound, false)
 	}()
 	go func() {
 		defer copies.Done()
-		b.copy(inbound, outbound)
+		b.copy(inbound, outbound, true)
 	}()
 	copies.Wait()
 	_ = inbound.Close()
@@ -108,12 +112,13 @@ func (b *tcpBridge) forwardPair(inbound, outbound net.Conn) {
 	b.untrack(outbound)
 }
 
-func (b *tcpBridge) copy(destination, source net.Conn) {
+func (b *tcpBridge) copy(destination, source net.Conn, response bool) {
 	buffer := make([]byte, 32*1024)
 	for {
 		read, err := source.Read(buffer)
 		if read > 0 {
-			if b.blackhole.Load() {
+			mode := b.blackholeMode.Load()
+			if mode == 1 || (mode == 2 && response) {
 				b.dropped.Add(int64(read))
 			} else {
 				if _, writeErr := destination.Write(buffer[:read]); writeErr != nil {
