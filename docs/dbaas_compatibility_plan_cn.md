@@ -2983,6 +2983,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   KubeBrain/PD/TiKV counter、memory、network、PVC 和 backup 序列，验证 8 个实际
   求值及负 storage/age 钳制为 0。该层已提供规范化单实例计量输入；控制面缺测策略、
   不可变采样留存、跨周期积分、价格版本、对象存储保留成本和审计对账仍未完成。
+- **Operations A180 actionable etcdctl platform errors（2026-07-18）**：对照
+  `/root/etcd/etcdctl/ctlv3/ctl.go`、各 command 和 etcd Maintenance/Cluster RPC，
+  建立 `docs/etcdctl_compatibility_cn.md`。平台替代 RPC 继续使用标准
+  `codes.Unimplemented`，但错误现明确下一步：member mutation 转 DBaaS 扩缩/重配置，
+  snapshot 转 logical backup/restore，MoveLeader 转 rollout/failover，Downgrade 转
+  versioned rollout/rollback，alarm mutation 转 PD/TiKV 告警与修复。错误常量集中定义，
+  同时保留 etcd 的授权顺序，非 root 不会先看到平台管理信息。
+
+  server 单测逐字固定 code/message 和 auth 顺序；官方 client/v3 live test 覆盖
+  AlarmDisarm、SnapshotWithVersion、MoveLeader、Downgrade 及四个 member mutation。
+  新镜像 `kubebrain:a180-platform-guidance` 在真实三副本数据面滚动完成后，
+  `/root/etcd/bin/etcdctl` 逐命令验证上述平台操作均非零退出并显示替代路径；
+  endpoint health/status、member list、alarm list 和 defrag 仍成功，status 正常显示
+  3.7.0、revision/term 和 1 B sentinel。无 alarm 时 `alarm disarm` 由客户端 list 后
+  直接成功，不发送 mutation；direct mutation 的提示由 live client test 固定。
 
 ### P1：通用服务能力
 
@@ -3003,7 +3018,8 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
 
 ### P2：运维兼容和长期验证
 
-1. 明确 `etcdctl` 命令兼容表，为平台替代命令返回可操作提示。
+1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
+   并把表纳入发布说明。
 2. 设计受支持的 transactional TiKV 物理快照/PITR；继续逻辑恢复演练、滚动升级、
    跨可用区故障、磁盘满和长时间 soak。不得用 TiDB BR full/PITR 的成功状态关闭该缺口。
 3. Porcupine 已覆盖无故障 Get/Put/CAS、多键 Txn 原子性和可表达不确定
