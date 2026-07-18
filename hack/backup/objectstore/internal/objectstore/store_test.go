@@ -1,0 +1,279 @@
+package objectstore
+
+import (
+	"bytes"
+	"context"
+	"io"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/aws/smithy-go"
+	"github.com/kubewharf/kubebrain/hack/backup/internal/backupfile"
+	"github.com/kubewharf/kubebrain/hack/backup/internal/record"
+	"github.com/stretchr/testify/require"
+)
+
+func TestUploadAndRetentionDeleteLifecycle(t *testing.T) {
+	artifact := writeArtifact(t)
+	dir := t.TempDir()
+	receiptPath := filepath.Join(dir, "receipt.json")
+	now := time.Unix(2_000_000_000, 0).UTC()
+	client := &fakeS3{}
+	request := UploadRequest{
+		Input: artifact, Instance: "instance-a", BackupID: "backup-1",
+		ObjectStoreID: "store-a",
+		Bucket:        "backups", ObjectKey: "instance-a/backup-1.jsonl",
+		RetentionMode: "COMPLIANCE", RetainUntilUnix: now.Add(time.Minute).Unix(),
+		ExpectedPrefix: "/registry", MinRecords: 1, MaxAgeSeconds: 1_000_000_000,
+		ReceiptOutput: receiptPath, Now: now,
+	}
+
+	receipt, err := Upload(context.Background(), client, request)
+	require.NoError(t, err)
+	require.Equal(t, "version-1", receipt.VersionID)
+	require.True(t, receipt.RemoteVerified)
+	require.Equal(t, now.Add(time.Minute).Unix(), receipt.RetainUntilUnix)
+	require.Equal(t, "*", aws.ToString(client.lastPut.IfNoneMatch))
+	require.Equal(t, types.ChecksumAlgorithmSha256, client.lastPut.ChecksumAlgorithm)
+	require.Equal(t, types.ObjectLockModeCompliance, client.lastPut.ObjectLockMode)
+	require.NotEmpty(t, aws.ToString(client.lastPut.ChecksumSHA256))
+
+	// A retry sees the conditional-write conflict, verifies the existing version,
+	// downloads it again, and reuses the immutable receipt.
+	retried, err := Upload(context.Background(), client, request)
+	require.NoError(t, err)
+	require.Equal(t, receipt, retried)
+	require.Equal(t, 1, client.putCalls)
+
+	deleteReceiptPath := filepath.Join(dir, "deletion-receipt.json")
+	_, err = Delete(context.Background(), client, DeleteRequest{
+		Receipt: receipt, Confirmation: "wrong", ObjectStoreID: "store-a",
+		ReceiptOutput: deleteReceiptPath, Now: now.Add(2 * time.Minute),
+	})
+	require.ErrorContains(t, err, "must exactly equal")
+	_, err = Delete(context.Background(), client, DeleteRequest{
+		Receipt: receipt, Confirmation: "delete:instance-a:backup-1", ObjectStoreID: "store-b",
+		ReceiptOutput: deleteReceiptPath, Now: now.Add(2 * time.Minute),
+	})
+	require.ErrorContains(t, err, "OBJECT_STORE_ID does not match")
+	_, err = Delete(context.Background(), client, DeleteRequest{
+		Receipt: receipt, Confirmation: "delete:instance-a:backup-1",
+		ObjectStoreID: "store-a",
+		ReceiptOutput: deleteReceiptPath, Now: now.Add(59 * time.Second),
+	})
+	require.ErrorContains(t, err, "has not expired")
+	require.False(t, client.deleted)
+
+	deletion, err := Delete(context.Background(), client, DeleteRequest{
+		Receipt: receipt, Confirmation: "delete:instance-a:backup-1",
+		ObjectStoreID: "store-a",
+		ReceiptOutput: deleteReceiptPath, Now: now.Add(60 * time.Second),
+	})
+	require.NoError(t, err)
+	require.True(t, client.deleted)
+	require.True(t, deletion.VersionAbsent)
+
+	retriedDeletion, err := Delete(context.Background(), client, DeleteRequest{
+		Receipt: receipt, Confirmation: "delete:instance-a:backup-1",
+		ObjectStoreID: "store-a",
+		ReceiptOutput: deleteReceiptPath, Now: now.Add(61 * time.Second),
+	})
+	require.NoError(t, err)
+	require.Equal(t, deletion, retriedDeletion)
+}
+
+func TestUploadRefusesConflictingObject(t *testing.T) {
+	artifact := writeArtifact(t)
+	now := time.Unix(2_000_000_000, 0)
+	request := UploadRequest{
+		Input: artifact, Instance: "instance-a", BackupID: "backup-1",
+		ObjectStoreID: "store-a",
+		Bucket:        "backups", ObjectKey: "instance-a/backup-1.jsonl",
+		RetentionMode: "GOVERNANCE", RetainUntilUnix: now.Add(time.Minute).Unix(),
+		ExpectedPrefix: "/registry", MinRecords: 1, MaxAgeSeconds: 1_000_000_000,
+		ReceiptOutput: filepath.Join(t.TempDir(), "receipt.json"), Now: now,
+	}
+	client := &fakeS3{
+		body: []byte("other"),
+		metadata: map[string]string{
+			"kubebrain-backup-id": "different",
+		},
+		versionID:   "existing-version",
+		retainUntil: now.Add(time.Minute),
+		mode:        types.ObjectLockRetentionModeGovernance,
+	}
+	_, err := Upload(context.Background(), client, request)
+	require.ErrorContains(t, err, "refusing to replace conflicting object")
+	require.False(t, client.deleted)
+}
+
+func TestUploadDoesNotPublishReceiptForCorruptRemoteBody(t *testing.T) {
+	artifact := writeArtifact(t)
+	receiptPath := filepath.Join(t.TempDir(), "receipt.json")
+	client := &fakeS3{corruptGet: true}
+	_, err := Upload(context.Background(), client, UploadRequest{
+		Input: artifact, Instance: "instance-a", BackupID: "backup-1",
+		ObjectStoreID: "store-a",
+		Bucket:        "backups", ObjectKey: "instance-a/backup-1.jsonl",
+		RetentionMode: "COMPLIANCE", RetainUntilUnix: time.Unix(2_000_000_060, 0).Unix(),
+		ExpectedPrefix: "/registry", MinRecords: 1, MaxAgeSeconds: 1_000_000_000,
+		ReceiptOutput: receiptPath, Now: time.Unix(2_000_000_000, 0),
+	})
+	require.Error(t, err)
+	_, statErr := os.Stat(receiptPath)
+	require.ErrorIs(t, statErr, os.ErrNotExist)
+}
+
+func TestUploadAppliesProductionArtifactGateBeforeS3(t *testing.T) {
+	artifact := writeArtifact(t)
+	now := time.Now().UTC()
+	for _, tc := range []struct {
+		name       string
+		prefix     string
+		minRecords int
+		maxAge     int64
+		want       string
+	}{
+		{name: "wrong prefix", prefix: "/other", minRecords: 1, maxAge: 60, want: "expected backup prefix"},
+		{name: "record floor", prefix: "/registry", minRecords: 2, maxAge: 60, want: "expected at least 2 records"},
+		{name: "stale", prefix: "/registry", minRecords: 1, maxAge: 1, want: "seconds old"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := &fakeS3{}
+			_, err := Upload(context.Background(), client, UploadRequest{
+				Input: artifact, Instance: "instance-a", BackupID: "backup-1",
+				ObjectStoreID: "store-a",
+				Bucket:        "backups", ObjectKey: "instance-a/backup-1.jsonl",
+				RetentionMode: "COMPLIANCE", RetainUntilUnix: now.Add(time.Hour).Unix(),
+				ExpectedPrefix: tc.prefix, MinRecords: tc.minRecords, MaxAgeSeconds: tc.maxAge,
+				ReceiptOutput: filepath.Join(t.TempDir(), "receipt.json"), Now: now.Add(2 * time.Second),
+			})
+			require.ErrorContains(t, err, tc.want)
+			require.Zero(t, client.putCalls)
+		})
+	}
+}
+
+func TestDeleteRejectsChangedRemoteRetention(t *testing.T) {
+	client := &fakeS3{
+		body: []byte("x"), metadata: map[string]string{"kubebrain-artifact-sha256": "sha"}, versionID: "version-1",
+		retainUntil: time.Unix(2_000_000_100, 0), mode: types.ObjectLockRetentionModeGovernance,
+	}
+	receipt := completeReceipt()
+	_, err := Delete(context.Background(), client, DeleteRequest{
+		Receipt: receipt, Confirmation: "delete:instance-a:backup-1",
+		ObjectStoreID: "store-a",
+		ReceiptOutput: filepath.Join(t.TempDir(), "delete.json"),
+		Now:           time.Unix(2_000_000_200, 0),
+	})
+	require.ErrorContains(t, err, "no longer matches")
+	require.False(t, client.deleted)
+}
+
+func TestDeleteRejectsVersionMissingBeforeRetentionExpiry(t *testing.T) {
+	receipt := completeReceipt()
+	client := &fakeS3{deleted: true}
+	_, err := Delete(context.Background(), client, DeleteRequest{
+		Receipt: receipt, Confirmation: "delete:instance-a:backup-1",
+		ObjectStoreID: "store-a",
+		ReceiptOutput: filepath.Join(t.TempDir(), "delete.json"),
+		Now:           time.Unix(receipt.RetainUntilUnix-1, 0),
+	})
+	require.ErrorContains(t, err, "disappeared before retention expired")
+}
+
+type fakeS3 struct {
+	body        []byte
+	metadata    map[string]string
+	versionID   string
+	retainUntil time.Time
+	mode        types.ObjectLockRetentionMode
+	deleted     bool
+	corruptGet  bool
+	putCalls    int
+	lastPut     *s3.PutObjectInput
+}
+
+func (f *fakeS3) PutObject(_ context.Context, input *s3.PutObjectInput, _ ...func(*s3.Options)) (*s3.PutObjectOutput, error) {
+	f.putCalls++
+	f.lastPut = input
+	if f.versionID != "" {
+		return nil, &smithy.GenericAPIError{Code: "PreconditionFailed", Message: "already exists"}
+	}
+	body, err := io.ReadAll(input.Body)
+	if err != nil {
+		return nil, err
+	}
+	f.body = body
+	f.metadata = input.Metadata
+	f.versionID = "version-1"
+	f.retainUntil = aws.ToTime(input.ObjectLockRetainUntilDate)
+	f.mode = types.ObjectLockRetentionMode(input.ObjectLockMode)
+	return &s3.PutObjectOutput{VersionId: aws.String(f.versionID)}, nil
+}
+
+func (f *fakeS3) HeadObject(_ context.Context, _ *s3.HeadObjectInput, _ ...func(*s3.Options)) (*s3.HeadObjectOutput, error) {
+	if f.deleted || f.versionID == "" {
+		return nil, &smithy.GenericAPIError{Code: "NoSuchVersion", Message: "not found"}
+	}
+	return &s3.HeadObjectOutput{
+		ContentLength: aws.Int64(int64(len(f.body))),
+		Metadata:      f.metadata,
+		VersionId:     aws.String(f.versionID),
+	}, nil
+}
+
+func (f *fakeS3) GetObject(_ context.Context, _ *s3.GetObjectInput, _ ...func(*s3.Options)) (*s3.GetObjectOutput, error) {
+	body := f.body
+	if f.corruptGet {
+		body = append([]byte(nil), body...)
+		body[0] ^= 0xff
+	}
+	return &s3.GetObjectOutput{Body: io.NopCloser(bytes.NewReader(body))}, nil
+}
+
+func (f *fakeS3) GetObjectRetention(
+	_ context.Context,
+	_ *s3.GetObjectRetentionInput,
+	_ ...func(*s3.Options),
+) (*s3.GetObjectRetentionOutput, error) {
+	return &s3.GetObjectRetentionOutput{Retention: &types.ObjectLockRetention{
+		Mode: f.mode, RetainUntilDate: aws.Time(f.retainUntil),
+	}}, nil
+}
+
+func (f *fakeS3) DeleteObject(_ context.Context, _ *s3.DeleteObjectInput, _ ...func(*s3.Options)) (*s3.DeleteObjectOutput, error) {
+	f.deleted = true
+	return &s3.DeleteObjectOutput{}, nil
+}
+
+func writeArtifact(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "backup.jsonl")
+	writer, err := backupfile.NewAtomicWriter(path, "/registry", 12345)
+	require.NoError(t, err)
+	require.NoError(t, writer.Add(record.Record{
+		Key: "L3JlZ2lzdHJ5L2tleQ==", Value: "dmFsdWU=", ModRevision: 12345,
+		CreateRevision: 12345, Version: 1,
+	}))
+	_, err = writer.Commit()
+	require.NoError(t, err)
+	return path
+}
+
+func completeReceipt() Receipt {
+	return Receipt{
+		Format: ReceiptFormat, Instance: "instance-a", BackupID: "backup-1",
+		ObjectStoreID: "store-a",
+		Bucket:        "backups", ObjectKey: "instance-a/backup-1.jsonl", VersionID: "version-1",
+		ArtifactFormat: backupfile.Format, ArtifactSHA256: "sha", SnapshotRevision: 1,
+		CreatedAtUnix: 1, Records: 1, ObjectBytes: 1,
+		RetentionMode: "COMPLIANCE", RetainUntilUnix: 2_000_000_000,
+		RemoteVerified: true, UploadedAtUnix: 1_999_999_000,
+	}
+}
