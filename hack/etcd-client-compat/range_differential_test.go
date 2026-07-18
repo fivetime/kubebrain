@@ -26,10 +26,19 @@ type rangeDifferentialResult struct {
 	Filtered           normalizedRange
 	FilteredCountOnly  normalizedRange
 	FilteredLimited    normalizedRange
+	MaxModFiltered     normalizedRange
+	MaxCreateFiltered  normalizedRange
 	Limited            normalizedRange
 	KeysOnly           normalizedRange
+	ValueSortedKeys    normalizedRange
+	CreateSorted       normalizedRange
+	ModSorted          normalizedRange
+	VersionSorted      normalizedRange
 	PointCountOnly     normalizedRange
 	PointKeysOnly      normalizedRange
+	MissingPoint       normalizedRange
+	EmptyInterval      normalizedRange
+	NegativeLimit      normalizedRange
 	NegativeRevision   normalizedRange
 	NoOpDeleteRevision int64
 	NoOpDeleteCount    int64
@@ -104,11 +113,45 @@ func runRangeDifferentialScenario(t *testing.T, endpoint, instance string) range
 		clientv3.WithSort(clientv3.SortByKey, clientv3.SortAscend),
 	)
 	require.NoError(t, err)
+	maxModFiltered, err := cli.Get(ctx, prefix,
+		clientv3.WithPrefix(),
+		clientv3.WithMaxModRev(updateB.Header.Revision-1),
+		clientv3.WithSort(clientv3.SortByKey, clientv3.SortAscend),
+	)
+	require.NoError(t, err)
+	maxCreateFiltered, err := cli.Get(ctx, prefix,
+		clientv3.WithPrefix(),
+		clientv3.WithMaxCreateRev(putA.Header.Revision),
+		clientv3.WithSort(clientv3.SortByKey, clientv3.SortAscend),
+	)
+	require.NoError(t, err)
 	limited, err := cli.Get(ctx, prefix,
 		clientv3.WithPrefix(),
 		clientv3.WithRev(putC.Header.Revision),
 		clientv3.WithSort(clientv3.SortByValue, clientv3.SortDescend),
 		clientv3.WithLimit(2),
+	)
+	require.NoError(t, err)
+	valueSortedKeys, err := cli.Get(ctx, prefix,
+		clientv3.WithPrefix(),
+		clientv3.WithKeysOnly(),
+		clientv3.WithSort(clientv3.SortByValue, clientv3.SortDescend),
+		clientv3.WithLimit(1),
+	)
+	require.NoError(t, err)
+	createSorted, err := cli.Get(ctx, prefix,
+		clientv3.WithPrefix(),
+		clientv3.WithSort(clientv3.SortByCreateRevision, clientv3.SortDescend),
+	)
+	require.NoError(t, err)
+	modSorted, err := cli.Get(ctx, prefix,
+		clientv3.WithPrefix(),
+		clientv3.WithSort(clientv3.SortByModRevision, clientv3.SortDescend),
+	)
+	require.NoError(t, err)
+	versionSorted, err := cli.Get(ctx, prefix,
+		clientv3.WithPrefix(),
+		clientv3.WithSort(clientv3.SortByVersion, clientv3.SortDescend),
 	)
 	require.NoError(t, err)
 	keysOnly, err := cli.Get(ctx, prefix,
@@ -120,6 +163,16 @@ func runRangeDifferentialScenario(t *testing.T, endpoint, instance string) range
 	pointCountOnly, err := cli.Get(ctx, prefix+"b", clientv3.WithCountOnly())
 	require.NoError(t, err)
 	pointKeysOnly, err := cli.Get(ctx, prefix+"b", clientv3.WithKeysOnly())
+	require.NoError(t, err)
+	missingPoint, err := cli.Get(ctx, prefix+"missing", clientv3.WithCountOnly(), clientv3.WithLimit(1))
+	require.NoError(t, err)
+	emptyInterval, err := cli.Get(ctx, prefix+"z", clientv3.WithRange(prefix+"a"))
+	require.NoError(t, err)
+	negativeLimit, err := cli.Get(ctx, prefix,
+		clientv3.WithPrefix(),
+		clientv3.WithLimit(-1),
+		clientv3.WithSort(clientv3.SortByKey, clientv3.SortAscend),
+	)
 	require.NoError(t, err)
 
 	noOpDelete, err := cli.Delete(ctx, prefix+"z", clientv3.WithRange(prefix+"a"))
@@ -148,10 +201,19 @@ func runRangeDifferentialScenario(t *testing.T, endpoint, instance string) range
 		Filtered:           normalizeRange(filtered, prefix, baseRev),
 		FilteredCountOnly:  normalizeRange(filteredCountOnly, prefix, baseRev),
 		FilteredLimited:    normalizeRange(filteredLimited, prefix, baseRev),
+		MaxModFiltered:     normalizeRange(maxModFiltered, prefix, baseRev),
+		MaxCreateFiltered:  normalizeRange(maxCreateFiltered, prefix, baseRev),
 		Limited:            normalizeRange(limited, prefix, baseRev),
 		KeysOnly:           normalizeRange(keysOnly, prefix, baseRev),
+		ValueSortedKeys:    normalizeRange(valueSortedKeys, prefix, baseRev),
+		CreateSorted:       normalizeRange(createSorted, prefix, baseRev),
+		ModSorted:          normalizeRange(modSorted, prefix, baseRev),
+		VersionSorted:      normalizeRange(versionSorted, prefix, baseRev),
 		PointCountOnly:     normalizeRange(pointCountOnly, prefix, baseRev),
 		PointKeysOnly:      normalizeRange(pointKeysOnly, prefix, baseRev),
+		MissingPoint:       normalizeRange(missingPoint, prefix, baseRev),
+		EmptyInterval:      normalizeRange(emptyInterval, prefix, baseRev),
+		NegativeLimit:      normalizeRange(negativeLimit, prefix, baseRev),
 		NegativeRevision:   normalizeRange(negativeRevision, prefix, baseRev),
 		NoOpDeleteRevision: noOpDelete.Header.Revision - baseRev,
 		NoOpDeleteCount:    noOpDelete.Deleted,

@@ -1915,6 +1915,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   后，临时 `/root/etcd` reference 与在线 KubeBrain 串行差分连续 10 轮、race 3 轮
   通过；三个 Pod 均 Ready、zero restart，endpoint health 正常，运行时 exact image
   `9aad3d31431d75d33ada93cefde660d2a06b3cd644d818b9a4fbf074733a158f`。
+- **Range A114 boundary-combination differential expansion（2026-07-18）**：
+  继续对照 `/root/etcd/server/etcdserver/txn/range.go` 的 `rangeLimit`、
+  `filterRangeResults`、`sortRangeResults` 与 `asembleRangeResponse`，扩展官方
+  client/v3 双端差分矩阵。新增 MaxModRevision、MaxCreateRevision、Create/Mod/
+  Version 排序、KeysOnly + Value 降序 + Limit、缺失 point CountOnly、反向空区间及
+  负 Limit；每项都比较 header 相对 revision、完整 KV metadata、Count 与 More。
+
+  实际 reference 探测确认负 Limit 在 unary Range 与 staged Txn Range 中都按不限量
+  处理；其余新增组合也未发现 A113 运行代码与 reference 的差异，因此本里程碑只把
+  这些边界固化为发布回归门槛，不引入无证据的服务实现改动。扩展矩阵在临时
+  `/root/etcd` reference 与在线三副本 TiKV-backed KubeBrain 间连续 10 轮通过，
+  race 下连续 3 轮通过；Range 聚焦测试、`go test ./...`、根模块与 compat module
+  `go vet ./...` 及完整 server race（200.694s）通过。服务二进制未变化，三个 Pod
+  继续 Ready、zero restart、endpoint health 正常，运行时 exact image 仍为
+  `9aad3d31431d75d33ada93cefde660d2a06b3cd644d818b9a4fbf074733a158f`。
 
 ### P1：通用服务能力
 
