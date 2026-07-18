@@ -1,0 +1,213 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
+
+WORKER_ID="${WORKER_ID:-}"
+PARAMETERS_INPUT="${PARAMETERS_INPUT:-}"
+OPERATION_NAMESPACE="${OPERATION_NAMESPACE:-kubebrain-system}"
+LEASE_SECONDS="${LEASE_SECONDS:-120}"
+HEARTBEAT_INTERVAL_SECONDS="${HEARTBEAT_INTERVAL_SECONDS:-}"
+OPERATIONCTL="${OPERATIONCTL:-}"
+DESTROY_COMMAND="${DESTROY_COMMAND:-${ROOT_DIR}/hack/production/destroy-instance.sh}"
+KUBE_CONTEXT="${KUBE_CONTEXT:-}"
+KUBECONFIG_PATH="${KUBECONFIG_PATH:-}"
+JQ="${JQ:-jq}"
+
+usage() {
+  cat >&2 <<'EOF'
+Usage:
+  WORKER_ID=<stable-worker-id> PARAMETERS_INPUT=<destroy-parameters.json> \
+    hack/production/run-destroy-operation.sh
+
+Claims one Destroy operation, validates the immutable backup bytes and exact
+confirmation token, then drives A187 prepare, quiesce, destroy, and complete
+with worker fencing. Durable A187 evidence selects the takeover phase.
+EOF
+  exit 2
+}
+
+[[ -n "$WORKER_ID" ]] || { echo "WORKER_ID is required" >&2; usage; }
+[[ "$WORKER_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,252}$ ]] ||
+  { echo "WORKER_ID contains unsupported characters" >&2; exit 2; }
+[[ -n "$PARAMETERS_INPUT" && -f "$PARAMETERS_INPUT" ]] ||
+  { echo "PARAMETERS_INPUT is required and must exist" >&2; exit 2; }
+[[ "$LEASE_SECONDS" =~ ^[1-9][0-9]*$ && "$LEASE_SECONDS" -ge 6 ]] ||
+  { echo "LEASE_SECONDS must be an integer of at least 6" >&2; exit 2; }
+command -v "$JQ" >/dev/null || { echo "jq is required" >&2; exit 2; }
+heartbeat_interval="${HEARTBEAT_INTERVAL_SECONDS:-$((LEASE_SECONDS / 3))}"
+[[ "$heartbeat_interval" =~ ^([0-9]+([.][0-9]+)?|[.][0-9]+)$ && "$heartbeat_interval" != 0 ]] ||
+  { echo "HEARTBEAT_INTERVAL_SECONDS must be positive" >&2; exit 2; }
+
+operationctl=()
+if [[ -n "$OPERATIONCTL" ]]; then
+  operationctl=("$OPERATIONCTL")
+else
+  operationctl=(go run ./hack/production/cmd/operationctl)
+fi
+kube_args=(--namespace "$OPERATION_NAMESPACE")
+[[ -n "$KUBE_CONTEXT" ]] && kube_args+=(--context "$KUBE_CONTEXT")
+[[ -n "$KUBECONFIG_PATH" ]] && kube_args+=(--kubeconfig "$KUBECONFIG_PATH")
+run_operationctl() {
+  if [[ -n "$OPERATIONCTL" ]]; then
+    "${operationctl[@]}" "${kube_args[@]}" "$@"
+  else
+    (cd "$ROOT_DIR" && "${operationctl[@]}" "${kube_args[@]}" "$@")
+  fi
+}
+
+claim="$(run_operationctl --action claim --owner "$WORKER_ID" --type Destroy --lease "${LEASE_SECONDS}s")"
+name="$("$JQ" -er '.name' <<<"$claim")"
+operation_id="$("$JQ" -er '.operation_id' <<<"$claim")"
+instance="$("$JQ" -er '.instance' <<<"$claim")"
+attempt="$("$JQ" -er '.attempt | select(. > 0)' <<<"$claim")"
+expected_digest="$("$JQ" -er '.parameters_sha256 | select(test("^[a-f0-9]{64}$"))' <<<"$claim")"
+actual_digest="$(sha256sum "$PARAMETERS_INPUT" | cut -d ' ' -f1)"
+if [[ "$actual_digest" != "$expected_digest" ]]; then
+  run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
+    --message "parameters digest mismatch" >/dev/null
+  echo "claimed operation parameters digest does not match PARAMETERS_INPUT" >&2
+  exit 1
+fi
+
+parameters="$("$JQ" -er '[
+  .state_dir, .backup_input, .backup_file_sha256, .backup_prefix,
+  (.backup_max_age_seconds|tostring), (.backup_min_records|tostring),
+  .confirm_destroy, .receipt_output, .kubebrain_namespace, .kubebrain_statefulset,
+  .tidb_namespace, .tidb_cluster, (.expected_pvcs|tostring),
+  (.timeout_seconds|tostring), (.poll_interval_seconds|tostring),
+  (if (.data_kube_context // "") == "" then "-" else .data_kube_context end),
+  (if (.data_kubeconfig_path // "") == "" then "-" else .data_kubeconfig_path end)
+] | select(length == 17) | @tsv' "$PARAMETERS_INPUT")"
+IFS=$'\t' read -r state_dir backup_input backup_file_sha backup_prefix backup_max_age \
+  backup_min_records confirmation receipt_output kubebrain_namespace kubebrain_statefulset \
+  tidb_namespace tidb_cluster expected_pvcs timeout_seconds poll_seconds data_context \
+  data_kubeconfig <<<"$parameters"
+[[ "$data_context" == "-" ]] && data_context=""
+[[ "$data_kubeconfig" == "-" ]] && data_kubeconfig=""
+for value in "$backup_max_age" "$timeout_seconds"; do
+  [[ "$value" =~ ^[1-9][0-9]*$ ]] ||
+    { echo "destroy parameters contain an invalid positive integer" >&2; exit 2; }
+done
+for value in "$backup_min_records" "$expected_pvcs" "$poll_seconds"; do
+  [[ "$value" =~ ^[0-9]+$ ]] ||
+    { echo "destroy parameters contain an invalid non-negative integer" >&2; exit 2; }
+done
+[[ -f "$backup_input" ]] || { echo "destroy backup input does not exist" >&2; exit 2; }
+[[ "$backup_file_sha" =~ ^[a-f0-9]{64}$ ]] ||
+  { echo "backup_file_sha256 is invalid" >&2; exit 2; }
+actual_backup_sha="$(sha256sum "$backup_input" | cut -d ' ' -f1)"
+if [[ "$actual_backup_sha" != "$backup_file_sha" ]]; then
+  run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
+    --message "destroy backup file digest mismatch" >/dev/null
+  echo "destroy backup bytes do not match the immutable parameter digest" >&2
+  exit 1
+fi
+expected_confirmation="destroy:${instance}:${operation_id}"
+if [[ "$confirmation" != "$expected_confirmation" ]]; then
+  run_operationctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
+    --message "invalid destroy confirmation token" >/dev/null
+  echo "confirm_destroy must exactly equal ${expected_confirmation}" >&2
+  exit 1
+fi
+
+destroy_env=(
+  "OPERATION_ID=${operation_id}" "INSTANCE=${instance}" "STATE_DIR=${state_dir}"
+  "BACKUP_INPUT=${backup_input}" "BACKUP_PREFIX=${backup_prefix}"
+  "BACKUP_MAX_AGE_SECONDS=${backup_max_age}" "BACKUP_MIN_RECORDS=${backup_min_records}"
+  "CONFIRM_DESTROY=${confirmation}" "RECEIPT_OUTPUT=${receipt_output}"
+  "KUBEBRAIN_NAMESPACE=${kubebrain_namespace}" "KUBEBRAIN_STATEFULSET=${kubebrain_statefulset}"
+  "TIDB_NAMESPACE=${tidb_namespace}" "TIDB_CLUSTER=${tidb_cluster}"
+  "EXPECTED_PVCS=${expected_pvcs}" "TIMEOUT_SECONDS=${timeout_seconds}"
+  "POLL_INTERVAL_SECONDS=${poll_seconds}"
+)
+[[ -n "$data_context" ]] && destroy_env+=("KUBE_CONTEXT=${data_context}")
+[[ -n "$data_kubeconfig" ]] && destroy_env+=("KUBECONFIG_PATH=${data_kubeconfig}")
+
+child=0
+heartbeat_pid=0
+fenced=false
+cleanup() {
+  if [[ "$child" -gt 0 ]] && kill -0 "$child" 2>/dev/null; then
+    kill "$child" 2>/dev/null || true
+    wait "$child" 2>/dev/null || true
+  fi
+  if [[ "$heartbeat_pid" -gt 0 ]] && kill -0 "$heartbeat_pid" 2>/dev/null; then
+    kill "$heartbeat_pid" 2>/dev/null || true
+    wait "$heartbeat_pid" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT INT TERM
+
+run_phase() {
+  local phase="$1" phase_rc
+  env "${destroy_env[@]}" ACTION="$phase" "$DESTROY_COMMAND" &
+  child=$!
+  (
+    while true; do
+      sleep "$heartbeat_interval"
+      if ! run_operationctl --action heartbeat --name "$name" --owner "$WORKER_ID" \
+        --attempt "$attempt" --lease "${LEASE_SECONDS}s" >/dev/null; then
+        kill "$child" 2>/dev/null || true
+        exit 75
+      fi
+    done
+  ) &
+  heartbeat_pid=$!
+  set +e
+  wait "$child"
+  phase_rc=$?
+  kill "$heartbeat_pid" 2>/dev/null
+  wait "$heartbeat_pid"
+  heartbeat_rc=$?
+  set -e
+  child=0
+  heartbeat_pid=0
+  if [[ "$heartbeat_rc" == 75 ]]; then
+    fenced=true
+    echo "operation heartbeat failed; worker was fenced during ${phase}" >&2
+    return 75
+  fi
+  return "$phase_rc"
+}
+
+state_file="${state_dir}/${operation_id}.state"
+quiesced_file="${state_dir}/${operation_id}.quiesced"
+destroyed_file="${state_dir}/${operation_id}.destroyed"
+if [[ -e "$receipt_output" ]]; then
+  phases=(complete)
+elif [[ -e "$destroyed_file" ]]; then
+  phases=(complete)
+elif [[ -e "$quiesced_file" ]]; then
+  phases=(destroy complete)
+elif [[ -e "$state_file" ]]; then
+  phases=(quiesce destroy complete)
+else
+  phases=(prepare quiesce destroy complete)
+fi
+
+for phase in "${phases[@]}"; do
+  if run_phase "$phase"; then
+    continue
+  else
+    phase_rc=$?
+  fi
+  if [[ "$fenced" == true ]]; then
+    exit 1
+  fi
+  run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
+    --message "instance destruction ${phase} exited ${phase_rc}" >/dev/null
+  echo "instance destruction failed during ${phase} and was requeued" >&2
+  exit 1
+done
+
+[[ -f "$receipt_output" ]] || {
+  run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
+    --message "destroy receipt missing" >/dev/null
+  echo "instance destruction completed without its receipt" >&2
+  exit 1
+}
+receipt_digest="$(sha256sum "$receipt_output" | cut -d ' ' -f1)"
+run_operationctl --action succeed --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
+  --receipt-sha256 "$receipt_digest" --message "instance destruction completed" >/dev/null
+trap - EXIT INT TERM
