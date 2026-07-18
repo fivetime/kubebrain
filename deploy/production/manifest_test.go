@@ -134,6 +134,17 @@ func TestProductionMonitoringTracksStatefulSetReadiness(t *testing.T) {
 		`sum(increase(count_index_rebuild_err{namespace="kubebrain-system"}[10m])) > 0`,
 		rebuildRule["expr"])
 	require.Equal(t, "0m", rebuildRule["for"])
+
+	grpcRule := prometheusRuleByAlert(t, groups, "KubeBrainGrpcErrors")
+	require.Equal(t,
+		`sum(rate(grpc_server_handled_total{namespace="kubebrain-system",grpc_code=~"Unknown|Internal|DataLoss"}[5m])) > 0`,
+		grpcRule["expr"])
+	require.NotContains(t, grpcRule["expr"], `grpc_code!="OK"`)
+
+	writeRule := prometheusRuleByAlert(t, groups, "KubeBrainWriteFailures")
+	require.Equal(t,
+		`sum(rate(write{namespace="kubebrain-system",success="false",errclass=~"deadline|other"}[5m])) > 0`,
+		writeRule["expr"])
 }
 
 func prometheusRuleByAlert(t *testing.T, groups []any, alert string) map[string]any {

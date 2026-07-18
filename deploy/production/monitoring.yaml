@@ -57,21 +57,21 @@ spec:
     - name: kubebrain.etcd_compat
       rules:
         - alert: KubeBrainGrpcErrors
-          expr: sum(rate(grpc_server_handled_total{namespace="kubebrain-system",grpc_code!="OK"}[5m])) > 0
+          expr: sum(rate(grpc_server_handled_total{namespace="kubebrain-system",grpc_code=~"Unknown|Internal|DataLoss"}[5m])) > 0
           for: 5m
           labels:
             severity: warning
           annotations:
-            summary: KubeBrain is returning non-OK gRPC responses
-            description: "KubeBrain non-OK gRPC response rate is {{ $value }} requests per second."
+            summary: KubeBrain is returning server-fault gRPC responses
+            description: "KubeBrain Unknown/Internal/DataLoss response rate is {{ $value }} requests per second. Expected etcd client errors are excluded."
         - alert: KubeBrainWriteFailures
-          expr: sum(rate(write{namespace="kubebrain-system",success="false"}[5m])) > 0
+          expr: sum(rate(write{namespace="kubebrain-system",success="false",errclass=~"deadline|other"}[5m])) > 0
           for: 5m
           labels:
             severity: critical
           annotations:
-            summary: KubeBrain write failures detected
-            description: "KubeBrain write failure rate is {{ $value }} writes per second."
+            summary: KubeBrain unexpected or timed-out writes detected
+            description: "KubeBrain deadline/unexpected write error rate is {{ $value }} writes per second; retryable failover and client errors are excluded."
         - alert: KubeBrainWatchEventDrops
           expr: sum(rate(watch_event_buffer_stale_drop{namespace="kubebrain-system"}[5m])) > 0
           for: 5m
