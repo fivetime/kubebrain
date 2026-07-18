@@ -2679,8 +2679,9 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
 
   新增真实 gRPC 差分固定空 key、两个非法 sort enum、自定义排序、revision filter
   及组合请求共六种结果。修复前 A153 仅组合请求与参考 etcd 不同；修复后单元回归、
-  focused race、主模块及兼容模块全量测试通过，并在真实 3 PD/3 TiKV、三副本
-  KubeBrain 上再次通过参考差分。
+  focused race、主模块全量测试通过，并在真实 3 PD/3 TiKV、三副本 KubeBrain 上
+  通过六类 validation 参考差分连续 10 轮、五类 RangeStream 行为差分和大消息分块
+  测试。兼容模块无 endpoint 的全量运行会连接默认 `127.0.0.1:3379`，不作为有效证据。
 
 ### P1：通用服务能力
 
