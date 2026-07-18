@@ -3697,6 +3697,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   vet 通过。backend Txn/watch/range transaction/mutation 回归连续 10 轮约 49.0 秒、
   server/etcd 对应回归连续 10 轮约 51.5 秒通过。本轮未发现新的服务端语义差异，运行
   镜像继续为 `kubebrain:a208-leasing-lock-order`。
+- **Compatibility A216 leasing offline compare/deep branches（2026-07-18）**：
+  对照上游 `TestLeasingTxnOwnerIf`、`TestLeasingDo` 和
+  `TestLeasingTxnOwnerPutBranch`，新增三段确定性差分。第一段先缓存 owner key，再将
+  client 双向 blackhole；Value/CreateRevision/ModRevision/Version 各一组 true/false
+  compare 共 8 项必须在 1 秒 budget 内完全从缓存判定，true 分支返回一个 Get response，
+  false 分支不返回 Then response。
+
+  第二段依次通过 leasing `Do` 执行空 Txn、Get、Put、prefix Delete 和空 Txn，返回值
+  必须暴露与输入 operation 匹配的 typed response。第三段构造深度 3、15 key 的固定
+  nested Txn tree，交替选择 Then/Else；仅选中路径 4 个 key 可从 initial 更新为
+  then/else/leaf，全部选中 key ModRevision 必须等于顶层 Txn header revision，未选中
+  key 保持 initial，且每个 leasing cache KV 的完整元数据与直读一致。
+
+  reference etcd 与真实 TiKV-backed KubeBrain 连续 5 轮约 15.7 秒通过；A209
+  leasing-range 与 A216 branching 差分在真实 endpoint 下 race 3 轮约 11.5 秒通过，
+  compat module 全量 vet 通过。backend nested/Txn/branch/range transaction 回归连续
+  10 轮约 35.2 秒、server/etcd 对应回归连续 10 轮约 18.0 秒通过。本轮未发现新的服务端
+  语义差异，运行镜像继续为 `kubebrain:a208-leasing-lock-order`。
 - **Operations A185 certificate rotation completion state（2026-07-18）**：新增
   `hack/production/validate-certificate-rotation.sh`，把 client/peer CA rollover
   收敛为 `begin -> overlap -> complete` 三阶段门禁。begin 固定全部 KubeBrain Pod
