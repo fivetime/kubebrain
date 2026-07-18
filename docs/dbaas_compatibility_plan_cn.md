@@ -2837,6 +2837,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   694ms、ready=true；CountOnly 与全量 Range 均为 5,865，`storage_iter_*` 指标已在
   `/metrics` 暴露，三个 Pod Ready 且零重启。清单测试和仓库全量测试通过；该项仅改变
   部署参数，继续使用已验证的 A164 数据面镜像。
+- **Observability A169 count-index degradation alerts（2026-07-18）**：A168 默认启用
+  5M cap 后，超过上限会正确释放索引并回退 TiKV 全扫，但 production monitoring
+  没有告警，可能把突发的 List/count 读放大静默留到客户端超时才发现。现新增
+  `KubeBrainCountIndexOverflowed`：任一
+  `count_index_overflowed{namespace="kubebrain-system"} > 0` 持续 1m 告警；新增
+  `KubeBrainCountIndexRebuildFailures`：10m 内
+  `count_index_rebuild_err` 增量非零立即告警。
+
+  两项均为 warning，因为数据正确性仍由 scan fallback 保持；处置要求同时扩实例内存
+  和 key cap，禁止只放大 cap。未使用 `count_index_keys == 0`，因为 leader-only 索引
+  使两个 follower 的 keys 正常为 0。真实三副本 `/metrics` 验证 leader
+  `keys=5865, overflowed=0`、followers `keys=0, overflowed=0`，证明该聚合形状不会把
+  follower 误报为故障。manifest 测试固定完整 PromQL、for 和 severity，仓库全量测试
+  通过；当前 kind 未安装 Prometheus Operator/promtool，规则加载验证仍由目标监控环境
+  的发布流水线负责。
 
 ### P1：通用服务能力
 
