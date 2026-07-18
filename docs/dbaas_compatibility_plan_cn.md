@@ -2892,6 +2892,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   namespace/selector 和完整 PromQL，指标契约显式登记两个后端外部序列，仓库全量测试
   通过。当前 kind 未安装 Prometheus Operator CRD，不能在该环境验证规则加载；目标
   监控栈仍须执行 CRD admission/promtool 门禁。该项只改变部署监控，无需重建数据面镜像。
+- **Observability A173 storage capacity guard（2026-07-18）**：Maintenance
+  `DbSize`/Alarm 采用 TiKV/PD 平台替代后，production 仍没有对应 PVC 容量告警，磁盘
+  耗尽只能由后端写失败间接暴露。现对固定三副本 `kb` 实例的
+  `pd-kb-pd-[0-2]`、`tikv-kb-tikv-[0-2]` 增加两层规则：6 个 PVC 中
+  `kubelet_volume_stats_capacity_bytes` 少于 6 持续 15m 报 warning，显式识别不支持
+  volume stats 的 CSI 驱动；任一 PVC 的 available/capacity 低于 15% 持续 10m 报
+  critical。
+
+  真实集群确认 3 个 PD PVC 和 3 个 TiKV PVC 的名称、instance/component 标签及容量；
+  kind local-path 驱动不暴露 kubelet volume stats，因此在目标监控栈中会按设计触发
+  telemetry-missing，而不是静默跳过低容量保护。manifest 测试固定完整 PromQL、
+  severity/for，并将两个 kubelet 序列纳入外部指标契约；Prometheus 3.5
+  `promtool check rules` 成功解析全部 18 条规则，仓库全量测试和真实 endpoint health
+  通过。该项仅修改监控与测试，无需重建数据面镜像。
 
 ### P1：通用服务能力
 
@@ -2905,8 +2919,8 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
    recipe 已通过；继续增加长时间 soak。
 3. 建立 DBaaS 控制面契约：创建、扩缩、升级、备份、恢复、证书轮换、销毁。
 4. 建立实例级限额和计量：请求字节、txn 操作数、跨连接 client RPC 总并发、client
-   请求 QPS/burst 及逻辑 Watch 总数已具备稳定错误与指标；继续补 CPU、内存、PV、
-   备份容量、网络及容量计量。
+   请求 QPS/burst、逻辑 Watch 总数及 PD/TiKV PVC 容量告警已具备稳定错误或指标；
+   继续补 CPU、内存、备份容量、网络及计费级容量聚合。
 
 ### P2：运维兼容和长期验证
 
