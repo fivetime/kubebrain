@@ -2054,6 +2054,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `kubebrain:a120-from-key-interval`，3/3 Ready、zero restart、endpoint health
   正常，exact image 仍为
   `f29788b5c40c2dadb048650036138196b8be0a19d219e1980d8bc8517a29a678`。
+- **Txn/Lease A122 ignore options and attachment transfer matrix
+  （2026-07-18）**：对照
+  `/root/etcd/server/etcdserver/txn/put.go:checkAndGetPrevKV`、`put` 与
+  `/root/etcd/server/etcdserver/txn/txn.go:checkTxn`，补齐通用 Txn 中 ignore option
+  与 lease attachment 生命周期的官方 client/v3 双端差分。场景先将 key 绑定 lease
+  A，再在 Txn 中以 IgnoreValue 保留旧 value 并切换到 lease B，同时读取 staged
+  Range 和 Put PrevKV；随后以 IgnoreLease 更新 value 并保持 lease B。撤销 A 后 key
+  必须仍存在，撤销 B 后 key 必须消失。
+
+  矩阵还验证 `checkTxn` 只检查 Compare 实际选中的路径：未选中的 Failure 携带不存在
+  lease 不影响 Success 提交；选中同一 Failure 时双方均返回 gRPC NotFound、
+  `etcdserver: requested lease not found`，且无 key 落盘。本轮未发现新实现差异。
+  临时 `/root/etcd` 3.8.0-alpha.0 reference 与在线三副本 TiKV-backed KubeBrain
+  首轮及连续 10 轮、race 3 轮通过；`go test ./...`、根模块与 compat module
+  `go vet ./...` 及强制 `-count=1` 完整 server race（203.779s）通过。本轮只增加
+  兼容性测试，不改变服务二进制；在线三副本继续运行
+  `kubebrain:a120-from-key-interval`，3/3 Ready、zero restart、endpoint health
+  正常，exact image 仍为
+  `f29788b5c40c2dadb048650036138196b8be0a19d219e1980d8bc8517a29a678`。
 
 ### P1：通用服务能力
 
