@@ -130,6 +130,9 @@ func (s *RPCServer) SetMaxDeleteRangeKeys(limit uint32) {
 }
 
 func withUnaryRequestTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
+	if _, ok := ctx.Deadline(); ok {
+		return context.WithCancel(ctx)
+	}
 	return context.WithTimeout(ctx, unaryRpcTimeout)
 }
 

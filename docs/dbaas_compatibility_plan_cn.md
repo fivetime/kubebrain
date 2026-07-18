@@ -3735,6 +3735,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   DeleteRange/range transaction/mutation/TxnApply 回归连续 10 轮约 38.0 秒、
   server/etcd 对应回归连续 10 轮约 16.2 秒通过。本轮未发现新的服务端语义差异，运行
   镜像继续为 `kubebrain:a208-leasing-lock-order`。
+- **Compatibility A218 leasing Put/Get/Delete concurrent progress（2026-07-18）**：
+  对照上游 `TestLeasingPutGetDeleteConcurrent`，新增原尺度差分：创建 16 个 leasing
+  client，由 16 个 worker 并发遍历全部 client；每个序列依次 Put、等待 1ms、Get、
+  Delete、等待 2ms。reference etcd 与真实 TiKV-backed KubeBrain 都必须完成全部 256
+  个序列，且最终 leasing Get 与直连 Get 均为空。
+
+  旧 `kubebrain:a208-leasing-lock-order` 单轮约 58.2 秒、隔离 race 单轮约 59.2 秒
+  通过，但隔离连续 2 轮时第二轮约 101 秒返回
+  `Unknown: uncertain error: execution result undetermined`。根因是服务端无条件用
+  10 秒 `unaryRpcTimeout` 包裹请求，即使客户端已显式提供 120 秒 deadline，也会在
+  高争用 TiKV 2PC 尚未完成时提前取消 commit，并把 TiKV result-undetermined 暴露给
+  etcd client。修复后，服务端保留任意客户端 deadline，仅对没有 deadline 的请求
+  应用 10 秒兜底；单元测试同时覆盖无 deadline、500ms 短 deadline 和 30 秒长
+  deadline，并以普通模式 20 轮、race 模式 5 轮通过。
+
+  候选镜像 `kubebrain:a218-client-deadline-candidate` 在原 120 秒测试保护预算下首轮
+  119.8 秒通过，后两轮正确收敛为 `DeadlineExceeded`，没有再出现 uncertain result；
+  这仍暴露单节点 kind 环境连续满争用下的吞吐边界。由于上游使用 `t.Context()` 而非
+  120 秒短 deadline，最终差分改用 5 分钟防挂死预算；完整差分约 90.4 秒通过，隔离
+  race 约 26.9 秒通过，256 个序列及最终状态均与 reference etcd 一致。compat module
+  全量 vet、`pkg/storage/...` 与 `pkg/server/etcd/...` 全量测试通过；三个运行副本
+  全程 Ready、零重启，压测后 endpoint proposal 健康。
 - **Operations A185 certificate rotation completion state（2026-07-18）**：新增
   `hack/production/validate-certificate-rotation.sh`，把 client/peer CA rollover
   收敛为 `begin -> overlap -> complete` 三阶段门禁。begin 固定全部 KubeBrain Pod

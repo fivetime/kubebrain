@@ -38,7 +38,7 @@ func (s *deadlineRecordingShim) TxnApply(ctx context.Context, ops []backend.TxnW
 	return s.BackendShim.TxnApply(ctx, ops, guards, prevKV)
 }
 
-func TestDeleteRangePropagatesServerAndShorterClientDeadline(t *testing.T) {
+func TestDeleteRangePropagatesServerAndClientDeadline(t *testing.T) {
 	for _, tc := range []struct {
 		name          string
 		clientTimeout time.Duration
@@ -52,6 +52,10 @@ func TestDeleteRangePropagatesServerAndShorterClientDeadline(t *testing.T) {
 		{
 			name: "shorter client", clientTimeout: 500 * time.Millisecond,
 			minRemaining: 100 * time.Millisecond, maxRemaining: 500 * time.Millisecond,
+		},
+		{
+			name: "longer client", clientTimeout: 30 * time.Second,
+			minRemaining: 29 * time.Second, maxRemaining: 30 * time.Second,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
