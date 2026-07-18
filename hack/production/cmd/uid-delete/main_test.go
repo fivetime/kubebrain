@@ -58,6 +58,22 @@ func TestDeleteWithUIDReturnsPreconditionConflict(t *testing.T) {
 	require.True(t, apierrors.IsConflict(err), err)
 }
 
+func TestDeleteWithUIDSupportsClusterScopedResources(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, http.MethodDelete, r.Method)
+		require.Equal(t, "/api/v1/namespaces/instance-a", r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"kind":"Status","apiVersion":"v1","status":"Success","code":200}`))
+	}))
+	defer server.Close()
+
+	client, err := dynamicClient(testRESTConfig(server.URL))
+	require.NoError(t, err)
+	require.NoError(t, deleteWithUID(
+		context.Background(), client, "v1", "namespaces", "", "instance-a", "uid-ns",
+	))
+}
+
 func testRESTConfig(server string) *rest.Config {
 	return &rest.Config{
 		Host: server,

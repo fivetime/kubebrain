@@ -4,6 +4,8 @@ metadata:
   name: tidb-cluster
   labels:
     app.kubernetes.io/name: tidb-cluster
+    dbaas.kubebrain.io/instance: kubebrain
+    dbaas.kubebrain.io/dedicated: "true"
 ---
 apiVersion: pingcap.com/v1alpha1
 kind: TidbCluster

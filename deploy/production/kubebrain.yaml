@@ -5,6 +5,8 @@ metadata:
   labels:
     app.kubernetes.io/name: kubebrain
     app.kubernetes.io/component: client
+    dbaas.kubebrain.io/instance: kubebrain
+    dbaas.kubebrain.io/dedicated: "true"
 ---
 apiVersion: v1
 kind: ServiceAccount

@@ -115,6 +115,21 @@ func TestProductionManifestsProvideStableCompleteMembership(t *testing.T) {
 	}
 }
 
+func TestProductionNamespacesDeclareDedicatedInstanceBoundaries(t *testing.T) {
+	for _, file := range []string{"kubebrain.yaml", "kubebrain-tls.yaml", "tidb-cluster.yaml"} {
+		namespace := objectByKindAndName(t, decodeManifest(t, file), "Namespace",
+			map[string]string{
+				"kubebrain.yaml":     "kubebrain-system",
+				"kubebrain-tls.yaml": "kubebrain-system",
+				"tidb-cluster.yaml":  "tidb-cluster",
+			}[file])
+		require.Equal(t, "kubebrain",
+			nestedString(t, namespace, "metadata", "labels", "dbaas.kubebrain.io/instance"))
+		require.Equal(t, "true",
+			nestedString(t, namespace, "metadata", "labels", "dbaas.kubebrain.io/dedicated"))
+	}
+}
+
 func TestOperationCRDAndWorkerRBACFencePersistentTasks(t *testing.T) {
 	crd := objectByKindAndName(
 		t, decodeManifest(t, "kubebrain-operation-crd.yaml"),
@@ -144,11 +159,13 @@ func TestOperationCRDAndWorkerRBACFencePersistentTasks(t *testing.T) {
 	rules, found, err := unstructured.NestedSlice(role.Object, "rules")
 	require.NoError(t, err)
 	require.True(t, found)
-	require.Len(t, rules, 2)
+	require.Len(t, rules, 3)
 	require.Contains(t, rules[0].(map[string]any)["resources"].([]any), "kubebrainoperations")
 	require.NotContains(t, rules[0].(map[string]any)["verbs"].([]any), "create")
 	require.Contains(t, rules[1].(map[string]any)["resources"].([]any), "kubebrainoperations/status")
 	require.Contains(t, rules[1].(map[string]any)["verbs"].([]any), "update")
+	require.Equal(t, []any{"leases"}, rules[2].(map[string]any)["resources"].([]any))
+	require.Equal(t, []any{"create", "get", "update", "delete"}, rules[2].(map[string]any)["verbs"].([]any))
 }
 
 func TestProductionMonitoringTracksStatefulSetReadiness(t *testing.T) {

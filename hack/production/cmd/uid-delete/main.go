@@ -39,8 +39,8 @@ func main() {
 	flag.DurationVar(&timeout, "timeout", 30*time.Second, "API request timeout")
 	flag.Parse()
 
-	if apiVersion == "" || resource == "" || namespace == "" || name == "" || uid == "" {
-		log.Fatal("--api-version, --resource, --namespace, --name, and --uid are required")
+	if apiVersion == "" || resource == "" || name == "" || uid == "" {
+		log.Fatal("--api-version, --resource, --name, and --uid are required")
 	}
 	if timeout <= 0 {
 		log.Fatal("--timeout must be positive")
@@ -96,7 +96,14 @@ func deleteWithUID(
 	}
 	propagation := metav1.DeletePropagationForeground
 	expectedUID := types.UID(uid)
-	return client.Resource(groupVersion.WithResource(resource)).Namespace(namespace).Delete(
+	resourceClient := client.Resource(groupVersion.WithResource(resource))
+	var target dynamic.ResourceInterface
+	if namespace == "" {
+		target = resourceClient
+	} else {
+		target = resourceClient.Namespace(namespace)
+	}
+	return target.Delete(
 		ctx,
 		name,
 		metav1.DeleteOptions{
