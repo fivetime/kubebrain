@@ -463,7 +463,7 @@ func NewBackend(kv storage.KvStorage, config Config, metricCli metrics.Metrics) 
 		ks:                    ks,
 		clusterID:             clusterID,
 		election:              election.NewResourceLockManager(electionConfig, kv),
-		scanner:               scanner.NewScanner(kv, normalCoder, config.getScannerConfig(), metricCli),
+		scanner:               scanner.NewScanner(kv, normalCoder, config.getScannerConfig(ks.IsInternalStorageKey), metricCli),
 		config:                config,
 		capacity:              config.WatchCacheSize,
 		watchEventsRingBuffer: newWatchEventSlots(watchersChanCapacity),

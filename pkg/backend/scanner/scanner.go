@@ -93,6 +93,10 @@ type Config struct {
 
 	// Tombstone is the value bytes used to mark delete
 	Tombstone []byte
+
+	// IsInternalStorageKey identifies raw key families that intentionally share
+	// the tenant keyspace but are not object-MVCC rows.
+	IsInternalStorageKey func([]byte) bool
 }
 
 // Range implements Scanner interface
@@ -120,12 +124,13 @@ func (r *scanner) rangeWithLimit(ctx context.Context, start []byte, end []byte, 
 	}
 	receiver := &commonResultReceiver{limit: int(limit)}
 	w := newWorker(workerConfig{
-		idx:       0,
-		partition: storage.Partition{Start: start, End: end},
-		tso:       tso,
-		revision:  revision,
-		tombstone: r.config.Tombstone,
-		compact:   false,
+		idx:                  0,
+		partition:            storage.Partition{Start: start, End: end},
+		tso:                  tso,
+		revision:             revision,
+		tombstone:            r.config.Tombstone,
+		compact:              false,
+		isInternalStorageKey: r.config.IsInternalStorageKey,
 	}, r.store, r.coder, r.metricCli)
 	_, err = w.run(ctx, receiver)
 	if err != nil {
@@ -256,12 +261,13 @@ func (r *scanner) rangeStreamOrdered(ctx context.Context, start, end []byte, rev
 
 			receiver := newStreamReceiver(revision, result.chunks)
 			worker := newWorker(workerConfig{
-				idx:       idx,
-				partition: partition,
-				tso:       tso,
-				revision:  revision,
-				keysOnly:  keysOnly,
-				tombstone: r.config.Tombstone,
+				idx:                  idx,
+				partition:            partition,
+				tso:                  tso,
+				revision:             revision,
+				keysOnly:             keysOnly,
+				tombstone:            r.config.Tombstone,
+				isInternalStorageKey: r.config.IsInternalStorageKey,
 			}, r.store, r.coder, r.metricCli)
 			_, scanErr := worker.runWithBackoffRetry(workerCtx, receiver)
 			if scanErr == nil {
@@ -370,11 +376,12 @@ func (r *scanner) CompactKeys(ctx context.Context, userKeys [][]byte, revision u
 			// keys (flushed at compactDeleteBatchSize and at each run's end), and
 			// per-key state (prev-tracking, skip bookkeeping) resets in run().
 			w := newWorker(workerConfig{
-				idx:       s,
-				tso:       tso,
-				revision:  revision,
-				compact:   true,
-				tombstone: r.config.Tombstone,
+				idx:                  s,
+				tso:                  tso,
+				revision:             revision,
+				compact:              true,
+				tombstone:            r.config.Tombstone,
+				isInternalStorageKey: r.config.IsInternalStorageKey,
 			}, store, r.coder, r.metricCli)
 			for i := s; i < len(userKeys); i += shards {
 				key := userKeys[i]
@@ -488,13 +495,14 @@ func (r *scanner) scan(ctx context.Context, start []byte, end []byte, revision u
 			// create a worker
 			receiverList[idx] = receiver.fork()
 			w := newWorker(workerConfig{
-				idx:       idx,
-				partition: partitions[idx],
-				tso:       tso,
-				revision:  revision,
-				compact:   compact,
-				keysOnly:  keysOnly,
-				tombstone: r.config.Tombstone,
+				idx:                  idx,
+				partition:            partitions[idx],
+				tso:                  tso,
+				revision:             revision,
+				compact:              compact,
+				keysOnly:             keysOnly,
+				tombstone:            r.config.Tombstone,
+				isInternalStorageKey: r.config.IsInternalStorageKey,
 			}, store, r.coder, r.metricCli)
 
 			// run worker
@@ -582,6 +590,8 @@ type workerConfig struct {
 	// on failover. Dropping the value at the source removes that spike; real
 	// range reads (which need the value) leave it false.
 	keysOnly bool
+
+	isInternalStorageKey func([]byte) bool
 }
 
 func newWorker(conf workerConfig, store storage.KvStorage, coder coder.Coder, metricCli metrics.Metrics) *worker {
@@ -693,7 +703,9 @@ func (w *worker) run(ctx context.Context, receiver resultReceiver) (int, error) 
 		key := it.Key()
 		curUserKey, curRevision, err = w.Decode(key)
 		if err != nil {
-			if w.compact {
+			if w.isInternalStorageKey != nil && w.isInternalStorageKey(key) {
+				klog.V(4).InfoS("skip internal storage key during object scan", "key", key)
+			} else if w.compact {
 				klog.V(4).InfoS("skip non-object key during compact scan", "key", key, "err", err)
 			} else {
 				klog.Errorf("unmarshal object key %s failed %v", key, err)

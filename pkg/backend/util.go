@@ -41,10 +41,11 @@ const (
 	unaryRpcTimeout = 1 * time.Second
 )
 
-func (c *Config) getScannerConfig() scanner.Config {
+func (c *Config) getScannerConfig(isInternalStorageKey func([]byte) bool) scanner.Config {
 	return scanner.Config{
-		CompactKey: getCompactKey(c.Prefix),
-		Tombstone:  tombStoneBytes,
+		CompactKey:           getCompactKey(c.Prefix),
+		Tombstone:            tombStoneBytes,
+		IsInternalStorageKey: isInternalStorageKey,
 	}
 }
 

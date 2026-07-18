@@ -20,6 +20,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -277,6 +278,57 @@ func TestScannerCompactBatchesLargeTombstoneBacklog(t *testing.T) {
 		remaining++
 	}
 	require.Zero(t, remaining, "raw store must hold no object versions after batched compaction")
+}
+
+func TestScannerSkipsInternalStorageRows(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	m := mock.NewMinimalMetrics(ctrl)
+	ks := coder.DefaultKeyspace()
+	c := ks.NewCoder()
+	tomb := []byte("tombstone")
+	kv := imemkv.NewKvStorage()
+	defer kv.Close()
+
+	userKey := []byte("/registry/pods/default/p1")
+	const revision uint64 = 42
+	b := kv.BeginBatchWrite()
+	b.Put(c.EncodeObjectKey(userKey, revision), []byte("value"), 0)
+	b.Put(ks.EncodeEventLogKey(revision, userKey), []byte("event"), 0)
+	b.Put(ks.ElogMetaStartKey(), []byte("watermark"), 0)
+	b.Put(ks.EncodeInternalKey([]byte("lease/meta")), []byte("metadata"), 0)
+	require.NoError(t, b.Commit(context.Background()))
+
+	var classified int32
+	classify := func(key []byte) bool {
+		if !ks.IsInternalStorageKey(key) {
+			return false
+		}
+		atomic.AddInt32(&classified, 1)
+		return true
+	}
+	sc := NewScanner(kv, c, Config{
+		CompactKey:           []byte("/compact"),
+		Tombstone:            tomb,
+		IsInternalStorageKey: classify,
+	}, m)
+
+	kvs, err := sc.Range(
+		context.Background(),
+		ks.ObjectKeyspaceStart(),
+		ks.ObjectKeyspaceEnd(),
+		100,
+		0,
+	)
+	require.NoError(t, err)
+	require.Len(t, kvs, 1)
+	require.Equal(t, userKey, kvs[0].Key)
+	require.Equal(t, []byte("value"), kvs[0].Value)
+	require.Equal(t, revision, kvs[0].Revision)
+	require.EqualValues(t, 3, atomic.LoadInt32(&classified))
+
+	unknownMalformed := append(ks.ObjectKeyspaceStart(), []byte("\x00unknown")...)
+	require.False(t, classify(unknownMalformed), "unknown malformed rows must remain observable as decode errors")
 }
 
 // TestRangeStreamKeysOnlyDropsValues pins the review-51 failover-spike fix: the
