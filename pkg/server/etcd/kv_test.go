@@ -2106,6 +2106,84 @@ func TestTxnComparePutWithoutFailureRange(t *testing.T) {
 	require.Empty(t, staleResp.Responses)
 }
 
+func TestTxnCrossKeyCompareMutationsUseGenericPath(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+
+	t.Run("create compare can update existing different key", func(t *testing.T) {
+		guardKey := []byte("/registry/cross-key/create-guard")
+		targetKey := []byte("/registry/cross-key/create-target")
+		_, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: targetKey, Value: []byte("old")})
+		require.NoError(t, err)
+		response, err := server.Txn(ctx, &etcdserverpb.TxnRequest{
+			Compare: []*etcdserverpb.Compare{{
+				Key: guardKey, Target: etcdserverpb.Compare_MOD, Result: etcdserverpb.Compare_EQUAL,
+				TargetUnion: &etcdserverpb.Compare_ModRevision{ModRevision: 0},
+			}},
+			Success: []*etcdserverpb.RequestOp{{
+				Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{
+					Key: targetKey, Value: []byte("updated"),
+				}},
+			}},
+		})
+		require.NoError(t, err)
+		require.True(t, response.Succeeded)
+		current, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: targetKey})
+		require.NoError(t, err)
+		require.Equal(t, []byte("updated"), current.Kvs[0].Value)
+		require.Equal(t, int64(2), current.Kvs[0].Version)
+	})
+
+	t.Run("mod compare can put different key", func(t *testing.T) {
+		guardKey := []byte("/registry/cross-key/update-guard")
+		targetKey := []byte("/registry/cross-key/update-target")
+		guard, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: guardKey, Value: []byte("guard")})
+		require.NoError(t, err)
+		response, err := server.Txn(ctx, &etcdserverpb.TxnRequest{
+			Compare: []*etcdserverpb.Compare{{
+				Key: guardKey, Target: etcdserverpb.Compare_MOD, Result: etcdserverpb.Compare_EQUAL,
+				TargetUnion: &etcdserverpb.Compare_ModRevision{ModRevision: guard.Header.Revision},
+			}},
+			Success: []*etcdserverpb.RequestOp{{
+				Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{
+					Key: targetKey, Value: []byte("created"),
+				}},
+			}},
+		})
+		require.NoError(t, err)
+		require.True(t, response.Succeeded)
+		current, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: targetKey})
+		require.NoError(t, err)
+		require.Equal(t, []byte("created"), current.Kvs[0].Value)
+	})
+
+	t.Run("mod compare can delete different key", func(t *testing.T) {
+		guardKey := []byte("/registry/cross-key/delete-guard")
+		targetKey := []byte("/registry/cross-key/delete-target")
+		guard, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: guardKey, Value: []byte("guard")})
+		require.NoError(t, err)
+		_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: targetKey, Value: []byte("target")})
+		require.NoError(t, err)
+		response, err := server.Txn(ctx, &etcdserverpb.TxnRequest{
+			Compare: []*etcdserverpb.Compare{{
+				Key: guardKey, Target: etcdserverpb.Compare_MOD, Result: etcdserverpb.Compare_EQUAL,
+				TargetUnion: &etcdserverpb.Compare_ModRevision{ModRevision: guard.Header.Revision},
+			}},
+			Success: []*etcdserverpb.RequestOp{{
+				Request: &etcdserverpb.RequestOp_RequestDeleteRange{
+					RequestDeleteRange: &etcdserverpb.DeleteRangeRequest{Key: targetKey},
+				},
+			}},
+		})
+		require.NoError(t, err)
+		require.True(t, response.Succeeded)
+		current, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: targetKey})
+		require.NoError(t, err)
+		require.Empty(t, current.Kvs)
+	})
+}
+
 func TestTxnComparePutWithPrevKV(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

@@ -1075,7 +1075,8 @@ func isCreate(txn *etcdserverpb.TxnRequest) (writeShape, bool) {
 		txn.Compare[0].GetModRevision() == 0 &&
 		(len(txn.Failure) == 0 || (len(txn.Failure) == 1 && txn.Failure[0].GetRequestRange() != nil)) &&
 		len(txn.Success) == 1 &&
-		txn.Success[0].GetRequestPut() != nil {
+		txn.Success[0].GetRequestPut() != nil &&
+		bytes.Equal(txn.Compare[0].Key, txn.Success[0].GetRequestPut().Key) {
 		return writeShape{put: txn.Success[0].GetRequestPut(), includeFailure: len(txn.Failure) == 1}, true
 	}
 	return writeShape{}, false
@@ -1106,6 +1107,9 @@ func isCompareDelete(txn *etcdserverpb.TxnRequest) (writeShape, bool) {
 		if len(deleteReq.RangeEnd) != 0 {
 			return writeShape{}, false
 		}
+		if !bytes.Equal(txn.Compare[0].Key, deleteReq.Key) {
+			return writeShape{}, false
+		}
 		return writeShape{
 			rev:            txn.Compare[0].GetModRevision(),
 			key:            deleteReq.Key,
@@ -1122,6 +1126,7 @@ func isUpdate(txn *etcdserverpb.TxnRequest) (writeShape, bool) {
 		txn.Compare[0].Result == etcdserverpb.Compare_EQUAL &&
 		len(txn.Success) == 1 &&
 		txn.Success[0].GetRequestPut() != nil &&
+		bytes.Equal(txn.Compare[0].Key, txn.Success[0].GetRequestPut().Key) &&
 		(len(txn.Failure) == 0 || (len(txn.Failure) == 1 && txn.Failure[0].GetRequestRange() != nil)) {
 		return writeShape{
 			rev:            txn.Compare[0].GetModRevision(),
