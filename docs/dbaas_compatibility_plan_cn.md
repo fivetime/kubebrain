@@ -2114,6 +2114,26 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   server race（213.866s）通过。部署 `kubebrain:a124-range-none-lookahead` 后三 Pod
   Ready、zero restart，`/health` 与 `/readyz` 正常，运行时 exact image
   `442fcbe19bcd6c7671f16867178ffddf6f45d182e8a5e12c77b0f352e0a2458a`。
+- **KV/Txn A125 MaxInt64 Limit boundary and sort-target expansion
+  （2026-07-18）**：继续对照
+  `/root/etcd/server/etcdserver/txn/range.go:rangeLimit`，补齐 KEY、VALUE+NONE 和
+  staged Txn Range 的 `Limit=math.MaxInt64` 双端矩阵，并将 A124 的非 KEY/NONE
+  候选窗口扩展到 CREATE、MOD target。seed 创建顺序与 key 顺序相反，确保测试能区分
+  “先取 `Limit+1` 个 key 候选再排序”和全量排序，而不是偶然得到相同结果。
+
+  黑盒验证确认修复前 MaxInt64 结果已与 etcd 一致：KubeBrain 的 int64 `limit++`
+  溢出成负数后被 scanner 当作不限。该结果依赖有符号溢出这一隐式副作用，不适合作为
+  生产契约；现与 etcd 一样仅在 `0 < Limit < MaxInt64` 时增加 More 探测候选，
+  MaxInt64 明确按不限处理。MaxInt64 单元回归连续 30 轮通过，扩展后的完整矩阵在临时
+  `/root/etcd` 3.8.0-alpha.0 reference 与在线三副本 TiKV-backed KubeBrain 间连续
+  10 轮、race 3 轮通过。
+
+  完整 compat suite 用时 70.800s，backend suite 连续 3 轮用时 125.130s；
+  `go test ./...`、根模块与 compat module `go vet ./...`、backend race（52.826s）
+  及强制 `-count=1` 完整 server race（219.657s）通过。部署
+  `kubebrain:a125-range-limit-boundary` 后三 Pod Ready、zero restart，`/health`
+  与 `/readyz` 正常，运行时 exact image
+  `3a91359a4dcb283fa5b040c116f265be6cc5e977fe294f495e9baea336dbe377`。
 
 ### P1：通用服务能力
 

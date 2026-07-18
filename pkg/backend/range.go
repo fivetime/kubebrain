@@ -160,7 +160,7 @@ func (b *backend) List(ctx context.Context, r *proto.RangeRequest) (resp *proto.
 
 	// add limit to check if there is more value
 	limit := r.Limit
-	if limit > 0 {
+	if limit > 0 && limit < math.MaxInt64 {
 		limit++
 	}
 

@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"math"
 	"sync"
 	"testing"
 	"time"
@@ -747,6 +748,29 @@ func TestRangeNonKeyNoneSortUsesEtcdLimitLookahead(t *testing.T) {
 		resp.Kvs[0].Value,
 		resp.Kvs[1].Value,
 	})
+}
+
+func TestRangeMaxIntLimitDoesNotOverflow(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	ctx := context.Background()
+	prefix := "/registry/pods/max-int-limit/"
+	for _, suffix := range []string{"a", "b", "c"} {
+		_, err := server.Put(ctx, &etcdserverpb.PutRequest{
+			Key: []byte(prefix + suffix), Value: []byte(suffix),
+		})
+		require.NoError(t, err)
+	}
+
+	resp, err := server.Range(ctx, &etcdserverpb.RangeRequest{
+		Key: []byte(prefix), RangeEnd: []byte("/registry/pods/max-int-limit0"),
+		Limit: math.MaxInt64,
+	})
+	require.NoError(t, err)
+	require.Equal(t, int64(3), resp.Count)
+	require.Len(t, resp.Kvs, 3)
+	require.False(t, resp.More)
 }
 
 func TestTxnRangeNonKeyNoneSortUsesEtcdLimitLookahead(t *testing.T) {

@@ -3,6 +3,7 @@ package compat
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"strings"
 	"testing"
@@ -61,10 +62,10 @@ func runRangeOptionInteractionScenario(t *testing.T, endpoint, instance string) 
 		key   string
 		value string
 	}{
-		{key: "a", value: "z"},
-		{key: "b", value: "m"},
-		{key: "c", value: "a"},
 		{key: "d", value: "n"},
+		{key: "c", value: "a"},
+		{key: "b", value: "m"},
+		{key: "a", value: "z"},
 	} {
 		_, err = client.Put(ctx, &etcdserverpb.PutRequest{
 			Key: []byte(prefix + seed.key), Value: []byte(seed.value),
@@ -109,6 +110,20 @@ func runRangeOptionInteractionScenario(t *testing.T, endpoint, instance string) 
 			},
 		},
 		{
+			name: "create-none-limit-lookahead",
+			req: &etcdserverpb.RangeRequest{
+				Key: []byte(prefix), RangeEnd: rangeEnd, Limit: 2,
+				SortTarget: etcdserverpb.RangeRequest_CREATE,
+			},
+		},
+		{
+			name: "mod-none-limit-lookahead",
+			req: &etcdserverpb.RangeRequest{
+				Key: []byte(prefix), RangeEnd: rangeEnd, Limit: 2,
+				SortTarget: etcdserverpb.RangeRequest_MOD,
+			},
+		},
+		{
 			name: "keys-only-sorts-by-original-value",
 			req: &etcdserverpb.RangeRequest{
 				Key: []byte(prefix), RangeEnd: rangeEnd, Limit: 2, KeysOnly: true,
@@ -120,6 +135,19 @@ func runRangeOptionInteractionScenario(t *testing.T, endpoint, instance string) 
 			req: &etcdserverpb.RangeRequest{
 				Key: []byte(prefix), RangeEnd: rangeEnd,
 				SortOrder: etcdserverpb.RangeRequest_DESCEND, SortTarget: etcdserverpb.RangeRequest_VERSION,
+			},
+		},
+		{
+			name: "key-max-int-limit",
+			req: &etcdserverpb.RangeRequest{
+				Key: []byte(prefix), RangeEnd: rangeEnd, Limit: math.MaxInt64,
+			},
+		},
+		{
+			name: "value-none-max-int-limit",
+			req: &etcdserverpb.RangeRequest{
+				Key: []byte(prefix), RangeEnd: rangeEnd, Limit: math.MaxInt64,
+				SortTarget: etcdserverpb.RangeRequest_VALUE,
 			},
 		},
 	}
@@ -170,6 +198,15 @@ func runRangeOptionInteractionScenario(t *testing.T, endpoint, instance string) 
 			ops: []*etcdserverpb.RequestOp{
 				rangeRequestOp(&etcdserverpb.RangeRequest{
 					Key: []byte(prefix), RangeEnd: rangeEnd, Limit: 2,
+					SortTarget: etcdserverpb.RangeRequest_VALUE,
+				}),
+			},
+		},
+		{
+			name: "txn-value-none-max-int-limit",
+			ops: []*etcdserverpb.RequestOp{
+				rangeRequestOp(&etcdserverpb.RangeRequest{
+					Key: []byte(prefix), RangeEnd: rangeEnd, Limit: math.MaxInt64,
 					SortTarget: etcdserverpb.RangeRequest_VALUE,
 				}),
 			},
