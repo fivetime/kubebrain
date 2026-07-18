@@ -31,7 +31,7 @@ Raft、bbolt 和成员管理内部实现，而是对通用 etcd v3 客户端提�
 
 | 服务 | 能力 | 当前状态 | DBaaS 处理 |
 | --- | --- | --- | --- |
-| KV | Range/Put/DeleteRange | 部分兼容 | P0：事务内排序、过滤、历史读、大范围删除原子性、生产范围上限及独立 Put/Range/DeleteRange 差分已补齐；继续扩大 TiKV 故障验证 |
+| KV | Range/Put/DeleteRange | 部分兼容 | P0：事务内排序、过滤、历史读、大范围删除原子性、生产范围上限、非 KEY/NONE/Limit 候选窗口及独立 Put/Range/DeleteRange 差分已补齐；继续扩大 TiKV 故障验证 |
 | KV | Txn | 部分兼容 | P0：缺失键 guard、范围 phantom guard、嵌套分支、staged 单 revision 提交及 caller deadline 贯穿后端冲突重试已完成；继续扩大官方客户端差分及 TiKV 故障验证 |
 | KV | Compact | 兼容核心语义 | logical/physical、错误、异步 GC 与请求取消后的后台续扫已对齐；继续长时间故障 soak |
 | KV | RangeStream | 兼容核心语义 | etcd 3.7 支持的 CountOnly/Limit/KeysOnly/默认排序已对齐；自定义排序与 revision filter 同 etcd 明确 Unimplemented |
@@ -2093,6 +2093,27 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `kubebrain:a120-from-key-interval`，3/3 Ready、zero restart，`/health` 与
   `/readyz` 正常，exact image 仍为
   `f29788b5c40c2dadb048650036138196b8be0a19d219e1980d8bc8517a29a678`。
+- **KV/Txn A124 non-key NONE sort limit lookahead（2026-07-18）**：对照
+  `/root/etcd/server/etcdserver/txn/range.go:rangeLimit`、`sortRangeResults` 与
+  `asembleRangeResponse`，新增 raw protobuf Range 选项组合双端矩阵。矩阵覆盖 revision
+  filter 先于 Limit、过滤后的 CountOnly 忽略 Limit、矛盾 filter、VALUE+NONE 默认升序、
+  KeysOnly 按原 value 排序、version 降序，以及 staged Put/Update/Delete 后的 Txn
+  Range；逐项比较有序 key/value/version、Count、More 和事务 revision 关联。
+
+  差分发现 etcd 的一个非直觉契约：当 SortTarget 不是 KEY、SortOrder 为 NONE 且 Limit
+  为正数时，etcd 不做全量排序，而是先按 key 读取 `Limit+1` 个候选，再把 NONE 转为
+  ASCEND 排序并截断。KubeBrain unary Range 原先只取 `Limit` 个候选，返回 `b,a` 而非
+  reference 的 `c,b`；staged Txn Range 原先全量排序，返回 `e,c` 而非 `c,d`。现请求
+  翻译层精确增加一个候选，staged executor 在保留完整 Count 后裁出同样的候选窗口；
+  显式排序和 revision filter 仍保持全量物化，普通 KEY 分页路径不变。两条确定性回归
+  连续 30 轮通过。
+
+  临时 `/root/etcd` 3.8.0-alpha.0 reference 与在线三副本 TiKV-backed KubeBrain
+  完整矩阵连续 10 轮、race 3 轮通过；完整 compat suite 用时 69.078s，
+  `go test ./...`、根模块与 compat module `go vet ./...` 及强制 `-count=1` 完整
+  server race（213.866s）通过。部署 `kubebrain:a124-range-none-lookahead` 后三 Pod
+  Ready、zero restart，`/health` 与 `/readyz` 正常，运行时 exact image
+  `442fcbe19bcd6c7671f16867178ffddf6f45d182e8a5e12c77b0f352e0a2458a`。
 
 ### P1：通用服务能力
 

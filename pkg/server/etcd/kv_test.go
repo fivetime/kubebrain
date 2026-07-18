@@ -711,6 +711,87 @@ func TestRangeSortsByValueAscending(t *testing.T) {
 	})
 }
 
+func TestRangeNonKeyNoneSortUsesEtcdLimitLookahead(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	ctx := context.Background()
+	prefix := "/registry/pods/sort-value-limit/"
+	for key, value := range map[string]string{
+		"a": "z",
+		"b": "y",
+		"c": "a",
+		"d": "0",
+	} {
+		_, err := server.Put(ctx, &etcdserverpb.PutRequest{
+			Key: []byte(prefix + key), Value: []byte(value),
+		})
+		require.NoError(t, err)
+	}
+
+	var resp *etcdserverpb.RangeResponse
+	require.Eventually(t, func() bool {
+		var err error
+		resp, err = server.Range(ctx, &etcdserverpb.RangeRequest{
+			Key: []byte(prefix), RangeEnd: []byte("/registry/pods/sort-value-limit0"),
+			Limit: 2, SortTarget: etcdserverpb.RangeRequest_VALUE,
+		})
+		return err == nil && resp.Count == 4
+	}, time.Second, 10*time.Millisecond)
+	require.True(t, resp.More)
+	require.Equal(t, [][]byte{[]byte(prefix + "c"), []byte(prefix + "b")}, [][]byte{
+		resp.Kvs[0].Key,
+		resp.Kvs[1].Key,
+	})
+	require.Equal(t, [][]byte{[]byte("a"), []byte("y")}, [][]byte{
+		resp.Kvs[0].Value,
+		resp.Kvs[1].Value,
+	})
+}
+
+func TestTxnRangeNonKeyNoneSortUsesEtcdLimitLookahead(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	ctx := context.Background()
+	prefix := "/registry/pods/txn-sort-value-limit/"
+	for _, seed := range []struct {
+		key   string
+		value string
+	}{
+		{key: "a", value: "z"},
+		{key: "b", value: "y"},
+		{key: "c", value: "a"},
+		{key: "d", value: "0"},
+	} {
+		_, err := server.Put(ctx, &etcdserverpb.PutRequest{
+			Key: []byte(prefix + seed.key), Value: []byte(seed.value),
+		})
+		require.NoError(t, err)
+	}
+
+	txn, err := server.Txn(ctx, &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+		{Request: &etcdserverpb.RequestOp_RequestRange{RequestRange: &etcdserverpb.RangeRequest{
+			Key: []byte(prefix), RangeEnd: []byte("/registry/pods/txn-sort-value-limit0"),
+			Limit: 2, SortTarget: etcdserverpb.RangeRequest_VALUE,
+		}}},
+	}})
+	require.NoError(t, err)
+	require.Len(t, txn.Responses, 1)
+	resp := txn.Responses[0].GetResponseRange()
+	require.NotNil(t, resp)
+	require.Equal(t, int64(4), resp.Count)
+	require.True(t, resp.More)
+	require.Equal(t, [][]byte{[]byte(prefix + "c"), []byte(prefix + "b")}, [][]byte{
+		resp.Kvs[0].Key,
+		resp.Kvs[1].Key,
+	})
+	require.Equal(t, [][]byte{[]byte("a"), []byte("y")}, [][]byte{
+		resp.Kvs[0].Value,
+		resp.Kvs[1].Value,
+	})
+}
+
 func TestRangeRejectsInvalidSortOptions(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

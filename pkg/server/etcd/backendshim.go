@@ -19,6 +19,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"time"
 
@@ -649,8 +650,12 @@ func (b *backendShim) Get(ctx context.Context, r *etcdserverpb.RangeRequest) (*e
 
 func (b *backendShim) List(ctx context.Context, r *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
 	limit := r.Limit
-	if needsPostRangeLimit(r) {
+	if needsFullRangeMaterialization(r) {
 		limit = 0
+	} else if needsNonKeyNoneLookahead(r) && limit < math.MaxInt64 {
+		// etcd treats NONE as scan-order for rangeLimit, so it reads Limit+1
+		// key-ordered candidates before coercing a non-KEY target to ASCEND.
+		limit++
 	}
 	request := &proto.RangeRequest{
 		Key:      r.Key,
@@ -785,9 +790,18 @@ func hasRangeRevisionFilters(r *etcdserverpb.RangeRequest) bool {
 }
 
 func needsPostRangeLimit(r *etcdserverpb.RangeRequest) bool {
+	return needsFullRangeMaterialization(r) || needsNonKeyNoneLookahead(r)
+}
+
+func needsFullRangeMaterialization(r *etcdserverpb.RangeRequest) bool {
 	return hasRangeRevisionFilters(r) ||
 		!(r.SortOrder == etcdserverpb.RangeRequest_NONE ||
 			(r.SortTarget == etcdserverpb.RangeRequest_KEY && r.SortOrder == etcdserverpb.RangeRequest_ASCEND))
+}
+
+func needsNonKeyNoneLookahead(r *etcdserverpb.RangeRequest) bool {
+	return r.Limit > 0 && r.SortOrder == etcdserverpb.RangeRequest_NONE &&
+		r.SortTarget != etcdserverpb.RangeRequest_KEY
 }
 
 // rangeStreamChunk is one chunk of a streamed range read: either a partial

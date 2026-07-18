@@ -17,6 +17,7 @@ package etcd
 import (
 	"bytes"
 	"context"
+	"math"
 	"sort"
 
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
@@ -311,6 +312,12 @@ func (e *stagedTxnExecutor) rangeResponse(r *etcdserverpb.RangeRequest) (*etcdse
 		return nil, err
 	}
 	resp := &etcdserverpb.RangeResponse{Header: txnHeader(e.visibleRevision()), Kvs: kvs, Count: int64(len(kvs))}
+	if needsNonKeyNoneLookahead(r) && r.Limit < math.MaxInt64 {
+		candidateLimit := r.Limit + 1
+		if int64(len(resp.Kvs)) > candidateLimit {
+			resp.Kvs = resp.Kvs[:int(candidateLimit)]
+		}
+	}
 	filterRangeKvs(resp, r)
 	if r.CountOnly {
 		resp.Kvs = nil
