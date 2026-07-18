@@ -2812,6 +2812,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   前注册，部分写入或后续断言失败也不会扩大影响。干净范围上的两项双端差分通过，
   随后参考 etcd `d947b2086` 与真实 TiKV-backed KubeBrain 的完整兼容模块 176.9 秒
   通过；仓库全量测试通过。该项仅修改测试工具，无需重建数据面镜像。
+- **Txn A167 nested operation budget differential（2026-07-18）**：逐行对照
+  `/root/etcd/server/etcdserver/api/v3rpc/key.go:checkTxnRequest`，确认 txn 的
+  `--max-txn-ops` 不是简单递归总数：每层先以 compare/success/failure 三者最大长度
+  扣减预算，普通 Range/Put/Delete 不继续收费，只有 nested Txn 使用剩余预算；未选
+  success/failure 分支也必须完整校验。
+
+  双端矩阵新增顶层 128/129、外层 126+一个 nested child 恰好通过、127+child 超限、
+  128 compare 加一个普通 Range 仍通过，以及未选 failure 分支 nested 超限共六种边界，
+  结构化比较 gRPC code/message、是否返回响应和 Succeeded。参考 etcd `d947b2086`
+  与真实 TiKV-backed KubeBrain 全部一致，focused race 和仓库全量测试通过。该轮未发现
+  数据面实现差异，仅补强生产配额契约的黑盒证据，因此无需重建镜像。
 
 ### P1：通用服务能力
 
