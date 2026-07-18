@@ -13,6 +13,7 @@ import (
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/protobuf/proto"
 )
 
 type binaryKeyOutcome struct {
@@ -126,10 +127,10 @@ func requireBinaryRangesEmpty(
 ) {
 	t.Helper()
 	for _, req := range ranges {
-		probe := *req
+		probe := proto.Clone(req).(*etcdserverpb.RangeRequest)
 		probe.Limit = 1
 		probe.KeysOnly = true
-		resp, err := client.Range(ctx, &probe)
+		resp, err := client.Range(ctx, probe)
 		require.NoError(t, err)
 		require.Emptyf(t, resp.Kvs,
 			"binary differential tests require a disposable endpoint; range [%x,%x) contains unrelated key %x",
