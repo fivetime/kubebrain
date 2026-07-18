@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"hash/crc32"
+	"time"
 
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
@@ -63,6 +64,9 @@ func (s *RPCServer) PeerServerOptions() []grpc.ServerOption {
 }
 
 func (s *RPCServer) hasKnownLeader() bool {
+	if availability, ok := s.peers.(interface{ HasLeader() bool }); ok {
+		return availability.HasLeader()
+	}
 	return s.peers.IsLeader() || election.IsLeaderKnown(s.peers.GetLeaderInfo())
 }
 
@@ -86,7 +90,50 @@ func (s *RPCServer) requireLeaderStream(srv any, ss grpc.ServerStream, info *grp
 	if requireLeader(ss.Context()) && !s.hasKnownLeader() {
 		return rpctypes.ErrGRPCNoLeader
 	}
+	if requireLeader(ss.Context()) {
+		return s.monitorRequiredLeaderStream(srv, ss, info, handler)
+	}
 	return handler(srv, ss)
+}
+
+const requireLeaderPollInterval = 100 * time.Millisecond
+
+type serverStreamWithContext struct {
+	grpc.ServerStream
+	ctx context.Context
+}
+
+func (s *serverStreamWithContext) Context() context.Context {
+	return s.ctx
+}
+
+func (s *RPCServer) monitorRequiredLeaderStream(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+	ctx, cancel := context.WithCancelCause(ss.Context())
+	defer cancel(nil)
+	done := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(requireLeaderPollInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if !s.hasKnownLeader() {
+					cancel(rpctypes.ErrGRPCNoLeader)
+					return
+				}
+			}
+		}
+	}()
+	err := handler(srv, &serverStreamWithContext{ServerStream: ss, ctx: ctx})
+	close(done)
+	if errors.Is(context.Cause(ctx), rpctypes.ErrGRPCNoLeader) {
+		return rpctypes.ErrGRPCNoLeader
+	}
+	return err
 }
 
 func (s *RPCServer) acquireRequest(method, kind string) bool {
@@ -150,6 +197,15 @@ func (s *RPCServer) admitStream(srv any, ss grpc.ServerStream, info *grpc.Stream
 	}
 	if s.maxRequestsInFlight != 0 {
 		defer s.releaseRequest()
+	}
+	if requireLeader(ss.Context()) {
+		return s.monitorRequiredLeaderStream(srv, ss, info, func(srv any, monitored grpc.ServerStream) error {
+			return handler(srv, &rateLimitedServerStream{
+				ServerStream: monitored,
+				server:       s,
+				method:       info.FullMethod,
+			})
+		})
 	}
 	return handler(srv, &rateLimitedServerStream{
 		ServerStream: ss,

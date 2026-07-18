@@ -18,6 +18,7 @@ import (
 	"context"
 	"net"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -210,6 +211,43 @@ func TestClientRequireLeaderAcceptsKnownRemoteLeader(t *testing.T) {
 	response, err := client.Check(ctx, &healthpb.HealthCheckRequest{})
 	require.NoError(t, err)
 	require.Equal(t, healthpb.HealthCheckResponse_SERVING, response.Status)
+}
+
+func TestClientRequireLeaderStreamClosesWhenLeaderIsLost(t *testing.T) {
+	rpc, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	var hasLeader atomic.Bool
+	hasLeader.Store(true)
+	rpc.peers = testPeerService{hasLeaderFn: hasLeader.Load}
+
+	streaming := &streamingHealthServer{entered: make(chan struct{})}
+	listener := startAdmissionServer(t, rpc.ClientServerOptions(), streaming)
+	client := admissionClient(t, listener)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	ctx = metadata.NewOutgoingContext(ctx, metadata.Pairs(
+		rpctypes.MetadataRequireLeaderKey, rpctypes.MetadataHasLeader,
+	))
+	stream, err := client.Watch(ctx, &healthpb.HealthCheckRequest{})
+	require.NoError(t, err)
+	recvDone := make(chan error, 1)
+	go func() {
+		_, recvErr := stream.Recv()
+		recvDone <- recvErr
+	}()
+	select {
+	case <-streaming.entered:
+	case <-ctx.Done():
+		t.Fatal("require-leader stream did not start")
+	}
+
+	hasLeader.Store(false)
+	select {
+	case err = <-recvDone:
+		require.ErrorIs(t, err, rpctypes.ErrGRPCNoLeader)
+	case <-ctx.Done():
+		t.Fatal("require-leader stream did not close after leader loss")
+	}
 }
 
 func TestClientRequestRateLimitsUnaryAndReservesPeer(t *testing.T) {

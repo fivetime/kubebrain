@@ -74,3 +74,13 @@ type peerService struct {
 	metricCli metrics.Metrics
 	backend   backend.Backend
 }
+
+// HasLeader exposes the freshness-aware election state to etcd's
+// require-leader admission without widening the PeerService interface used by
+// embedders and test doubles.
+func (p *peerService) HasLeader() bool {
+	if availability, ok := p.LeaderElection.(interface{ HasLeader() bool }); ok {
+		return availability.HasLeader()
+	}
+	return p.LeaderElection.IsLeader()
+}

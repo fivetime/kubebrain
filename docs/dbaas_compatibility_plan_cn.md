@@ -2632,6 +2632,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   上游还会在已建立 stream 生命周期中主动感知 leader 丢失并取消；KubeBrain election
   当前没有可订阅的 cluster leader freshness 通知，该动态关闭语义仍作为后续差距，
   不以本项关闭。
+- **Watch/Lease A151 require-leader stream lifecycle（2026-07-18）**：闭合 A150
+  保留项。选主层现从每次观察到的共享 `LeaderElectionRecord.RenewTime` 计算
+  `RenewTime + LeaseDuration`，本机则继续使用更严格的 `RenewDeadline` freshness；
+  因此缓存中的旧 holder 地址不会无限期冒充有效 leader。peer service 将该状态提供给
+  etcd admission，但没有扩大已有公共接口和测试替身的兼容负担。
+
+  仅带 `etcd-server-leader=true` 的 stream 每 100ms 检查 cluster leader freshness；
+  holder lease 过期时取消 handler context 并返回官方 `ErrGRPCNoLeader`，普通 stream
+  无额外 goroutine/ticker。单测固定有效/过期 election record、本机 fresh leader，
+  以及已建立 gRPC stream 在状态切换后主动关闭；focused race 和完整 leader/server
+  测试通过。`kubebrain:a151-require-leader-loss` 真实 3 PD/3 TiKV 三副本滚动后，
+  官方 client/v3 require-leader Range/Lease/KeepAliveOnce/Watch 连续 100 轮期间删除
+  当前 leader Pod；客户端仅见两次可重试 Unavailable，最终 100 轮全通过并恢复 3/3。
 
 ### P1：通用服务能力
 

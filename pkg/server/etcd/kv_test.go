@@ -41,6 +41,7 @@ import (
 type testPeerService struct {
 	isLeader         bool
 	isLeaderFn       func() bool
+	hasLeaderFn      func() bool
 	epochFn          func() (uint64, bool)
 	noLeader         bool
 	syncReadFn       func(context.Context) error
@@ -99,6 +100,13 @@ func (s testPeerService) IsLeader() bool {
 		return s.isLeaderFn()
 	}
 	return s.isLeader
+}
+
+func (s testPeerService) HasLeader() bool {
+	if s.hasLeaderFn != nil {
+		return s.hasLeaderFn()
+	}
+	return s.IsLeader() || !s.noLeader
 }
 
 func (s testPeerService) EpochAndLeadingFresh() (uint64, bool) {

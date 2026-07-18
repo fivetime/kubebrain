@@ -27,6 +27,7 @@ import (
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
 
 	metricmock "github.com/kubewharf/kubebrain/pkg/metrics/mock"
@@ -92,6 +93,45 @@ func (l *campaignLock) Describe() string {
 type revisionRecorder struct{ revision atomic.Uint64 }
 
 func (r *revisionRecorder) SetCurrentRevision(revision uint64) { r.revision.Store(revision) }
+
+func TestHasLeaderExpiresObservedElectionRecord(t *testing.T) {
+	lock := &campaignLock{
+		record: resourcelock.LeaderElectionRecord{HolderIdentity: "peer"},
+		tso:    1,
+	}
+	election := &leaderElection{
+		resourceLock:  lock,
+		leaseDuration: time.Second,
+		renewDeadline: 500 * time.Millisecond,
+	}
+
+	election.observeLeadershipRecord(resourcelock.LeaderElectionRecord{
+		HolderIdentity: "peer",
+		RenewTime:      metav1.NewTime(time.Now()),
+	})
+	require.True(t, election.HasLeader())
+
+	expired := &leaderElection{
+		resourceLock:  lock,
+		leaseDuration: time.Second,
+		renewDeadline: 500 * time.Millisecond,
+	}
+	expired.observeLeadershipRecord(resourcelock.LeaderElectionRecord{
+		HolderIdentity: "peer",
+		RenewTime:      metav1.NewTime(time.Now().Add(-2 * time.Second)),
+	})
+	require.False(t, expired.HasLeader())
+
+	election.observeLeadershipRecord(resourcelock.LeaderElectionRecord{
+		HolderIdentity: "peer",
+		RenewTime:      metav1.NewTime(time.Now().Add(-2 * time.Second)),
+	})
+	require.True(t, election.HasLeader(), "an older observation must not shorten leader validity")
+
+	atomic.StoreInt32(&election.leader, 1)
+	atomic.StoreInt64(&election.lastRenewNanos, time.Now().UnixNano())
+	require.True(t, election.HasLeader(), "fresh local leadership must not depend on a cached remote record")
+}
 
 func (l termResourceLock) Get(context.Context) (*resourcelock.LeaderElectionRecord, []byte, error) {
 	if l.err != nil {

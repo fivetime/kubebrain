@@ -28,6 +28,7 @@ import (
 	"k8s.io/klog/v2"
 
 	b "github.com/kubewharf/kubebrain/pkg/backend"
+	"github.com/kubewharf/kubebrain/pkg/backend/election"
 	"github.com/kubewharf/kubebrain/pkg/metrics"
 )
 
@@ -110,6 +111,11 @@ type leaderElection struct {
 	// strictly tighter than leaseDuration, so it self-fences before a successor
 	// can acquire. Accessed atomically.
 	lastRenewNanos int64
+	// leaderValidUntilNanos is derived from the latest shared election record
+	// observed by this node. Unlike GetLeaderInfo's cached holder string, it
+	// expires when renewals stop, so require-leader streams do not treat a stale
+	// holder address as a live cluster leader.
+	leaderValidUntilNanos int64
 
 	// leader-election durations (Config.withDefaults applied at construction).
 	// renewDeadline doubles as the leadership-validity bound in
@@ -337,6 +343,16 @@ func (l *leaderElection) EpochAndLeadingFresh() (uint64, bool) {
 	return epoch, fresh
 }
 
+// HasLeader reports whether this node is safely leading or has observed a
+// non-expired shared election lease held by another node.
+func (l *leaderElection) HasLeader() bool {
+	if _, fresh := l.EpochAndLeadingFresh(); fresh {
+		return true
+	}
+	return time.Now().UnixNano() < atomic.LoadInt64(&l.leaderValidUntilNanos) &&
+		election.IsLeaderKnown(l.GetLeaderInfo())
+}
+
 // GetLeaderInfo implements LeaderElection interface
 func (l *leaderElection) GetLeaderInfo() string {
 	leaderAddr, _, _ := l.getLeaderAndVersion()
@@ -368,6 +384,15 @@ func (l *leaderElection) LeadershipTerm(ctx context.Context) (uint64, error) {
 }
 
 func (l *leaderElection) observeLeadershipRecord(record resourcelock.LeaderElectionRecord) {
+	if !record.RenewTime.IsZero() {
+		validUntil := record.RenewTime.Add(l.leaseDuration).UnixNano()
+		for {
+			current := atomic.LoadInt64(&l.leaderValidUntilNanos)
+			if validUntil <= current || atomic.CompareAndSwapInt64(&l.leaderValidUntilNanos, current, validUntil) {
+				break
+			}
+		}
+	}
 	if record.LeaderTransitions < 0 {
 		return
 	}
