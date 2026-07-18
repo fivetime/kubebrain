@@ -3624,6 +3624,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   四组 leasing 差分在真实 endpoint 下 race 3 轮通过，compat module 全量 vet 通过，
   mutation/range transaction 服务端回归连续 10 轮通过。本轮未发现新的服务端语义差异，
   运行镜像继续为 `kubebrain:a208-leasing-lock-order`。
+- **Compatibility A212 leasing reconnect across compaction（2026-07-18）**：
+  对照 `/root/etcd/tests/integration/clientv3/lease/leasing_test.go` 的
+  `TestLeasingReconnectOwnerRevokeCompact`，为外部真实 endpoint 新增测试专用 TCP
+  bridge。bridge 可只 blackhole 第一个 leasing client 的双向连接，在 socket read 后
+  丢弃流量并累计字节数；恢复时关闭全部旧连接，迫使 gRPC/watch 从断连前 revision
+  重建，第二个 client 始终直连。
+
+  差分先由第一个 client 读取 missing key 并建立 owner/watch，再进入 blackhole；
+  直连 client 推进两个 revision 并 compact 到最新 revision。测试在恢复前硬断言确有
+  watch/连接流量被丢弃，排除无故障假阳性；恢复连接后，第二个 leasing client 写入新值，
+  第一个 client 必须跨过 compacted watch revision 完成 owner/cache reconciliation，
+  并返回与直读一致的新值。
+
+  带实际 dropped-byte 证据的 reference etcd 与真实 TiKV-backed KubeBrain 差分连续
+  5 轮通过；A208-A212 五组 leasing 差分在真实 endpoint 下 race 3 轮通过，compat
+  module 全量 vet 通过。backend compaction/watch/lease/range transaction 回归连续
+  10 轮约 98.4 秒、server/etcd 对应回归连续 10 轮约 110.5 秒通过。本轮未发现新的服务端
+  语义差异，运行镜像继续为 `kubebrain:a208-leasing-lock-order`。
 - **Operations A185 certificate rotation completion state（2026-07-18）**：新增
   `hack/production/validate-certificate-rotation.sh`，把 client/peer CA rollover
   收敛为 `begin -> overlap -> complete` 三阶段门禁。begin 固定全部 KubeBrain Pod
