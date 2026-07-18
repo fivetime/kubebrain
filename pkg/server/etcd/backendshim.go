@@ -96,6 +96,11 @@ type BackendShim interface {
 	// branch execute, preventing phantoms under TiKV snapshot isolation.
 	BeginRangeTxn(ctx context.Context) (context.Context, func())
 
+	// BeginMutation coordinates point keys across the read/guard/commit window.
+	// The returned context carries lock ownership so TxnApply does not reacquire
+	// the same stripes.
+	BeginMutation(ctx context.Context, keys ...[]byte) (context.Context, func(), error)
+
 	// Get read a kv from storage
 	Get(ctx context.Context, r *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error)
 
@@ -185,21 +190,28 @@ type backendShim struct {
 	// wired (e.g. in unit tests that construct the shim directly).
 	leaseLookup func(key string) int64
 
-	// Unconditional Put is implemented as Get followed by a CAS. Serialize hot
-	// keys before that read so concurrent requests do not amplify one logical
-	// overwrite into many failed TiKV transactions and consumed MVCC revisions.
-	putLocks [putLockStripeCount]chan struct{}
+	// Public etcd mutations are implemented with optimistic TiKV transactions.
+	// Coordinate overlapping key sets before their read/guard phase so conflicts
+	// are retried internally rather than leaking spurious client-visible results.
+	mutationLocks [mutationLockStripeCount]chan struct{}
 }
 
-const putLockStripeCount = 256
+const mutationLockStripeCount = 256
+
+type mutationLockOwnerKey struct{}
+
+type mutationLockOwner struct {
+	shim    *backendShim
+	stripes map[uint8]struct{}
+}
 
 func NewBackendShim(backend backend.Backend, metricCli metrics.Metrics) BackendShim {
 	shim := &backendShim{
 		backend:   backend,
 		metricCli: metricCli,
 	}
-	for i := range shim.putLocks {
-		shim.putLocks[i] = make(chan struct{}, 1)
+	for i := range shim.mutationLocks {
+		shim.mutationLocks[i] = make(chan struct{}, 1)
 	}
 	shim.prevKvResolver = newPrevKvResolver(shim)
 	shim.countResolver = newCountResolver(shim)
@@ -434,7 +446,7 @@ func (b *backendShim) Put(ctx context.Context, r *etcdserverpb.PutRequest) (*etc
 		return nil, unsupported("ignoreValue")
 	}
 
-	unlock, err := b.lockPutKey(ctx, r.Key)
+	unlock, err := b.lockMutationKeys(ctx, r.Key)
 	if err != nil {
 		return nil, err
 	}
@@ -500,17 +512,87 @@ func (b *backendShim) Put(ctx context.Context, r *etcdserverpb.PutRequest) (*etc
 	}
 }
 
-func (b *backendShim) lockPutKey(ctx context.Context, key []byte) (func(), error) {
-	lock := b.putLocks[putLockStripe(key)]
-	select {
-	case lock <- struct{}{}:
-		return func() { <-lock }, nil
-	case <-ctx.Done():
-		return nil, ctx.Err()
+func (b *backendShim) lockMutationKeys(ctx context.Context, keys ...[]byte) (func(), error) {
+	if len(keys) == 0 {
+		return func() {}, nil
 	}
+	if len(keys) == 1 {
+		stripe := mutationLockStripe(keys[0])
+		if b.mutationStripeOwned(ctx, stripe) {
+			return func() {}, nil
+		}
+		lock := b.mutationLocks[stripe]
+		select {
+		case lock <- struct{}{}:
+			return func() { <-lock }, nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+
+	stripes := make([]uint8, 0, len(keys))
+	seen := make(map[uint8]struct{}, len(keys))
+	for _, key := range keys {
+		stripe := mutationLockStripe(key)
+		if b.mutationStripeOwned(ctx, stripe) {
+			continue
+		}
+		if _, ok := seen[stripe]; ok {
+			continue
+		}
+		seen[stripe] = struct{}{}
+		stripes = append(stripes, stripe)
+	}
+	sort.Slice(stripes, func(i, j int) bool { return stripes[i] < stripes[j] })
+	acquired := make([]chan struct{}, 0, len(stripes))
+	for _, stripe := range stripes {
+		lock := b.mutationLocks[stripe]
+		select {
+		case lock <- struct{}{}:
+			acquired = append(acquired, lock)
+		case <-ctx.Done():
+			for i := len(acquired) - 1; i >= 0; i-- {
+				<-acquired[i]
+			}
+			return nil, ctx.Err()
+		}
+	}
+	return func() {
+		for i := len(acquired) - 1; i >= 0; i-- {
+			<-acquired[i]
+		}
+	}, nil
 }
 
-func putLockStripe(key []byte) uint8 {
+func (b *backendShim) mutationStripeOwned(ctx context.Context, stripe uint8) bool {
+	owner, _ := ctx.Value(mutationLockOwnerKey{}).(*mutationLockOwner)
+	if owner == nil || owner.shim != b {
+		return false
+	}
+	_, ok := owner.stripes[stripe]
+	return ok
+}
+
+func (b *backendShim) BeginMutation(ctx context.Context, keys ...[]byte) (context.Context, func(), error) {
+	unlock, err := b.lockMutationKeys(ctx, keys...)
+	if err != nil {
+		return ctx, nil, err
+	}
+	held := make(map[uint8]struct{}, len(keys))
+	if owner, _ := ctx.Value(mutationLockOwnerKey{}).(*mutationLockOwner); owner != nil && owner.shim == b {
+		for stripe := range owner.stripes {
+			held[stripe] = struct{}{}
+		}
+	}
+	for _, key := range keys {
+		held[mutationLockStripe(key)] = struct{}{}
+	}
+	return context.WithValue(ctx, mutationLockOwnerKey{}, &mutationLockOwner{
+		shim: b, stripes: held,
+	}), unlock, nil
+}
+
+func mutationLockStripe(key []byte) uint8 {
 	var hash uint32 = 2166136261
 	for _, c := range key {
 		hash ^= uint32(c)
@@ -578,6 +660,16 @@ func (b *backendShim) GetCompactRevisionFresh(ctx context.Context) (uint64, erro
 }
 
 func (b *backendShim) TxnApply(ctx context.Context, ops []backend.TxnWriteOp, guards []backend.TxnGuard, prevKv []bool) ([]*etcdserverpb.ResponseOp, uint64, []backend.TxnWriteResult, error) {
+	keys := make([][]byte, 0, len(ops))
+	for i := range ops {
+		keys = append(keys, ops[i].Key)
+	}
+	unlock, err := b.lockMutationKeys(ctx, keys...)
+	if err != nil {
+		return nil, 0, nil, err
+	}
+	defer unlock()
+
 	results, rev, err := b.backend.TxnApply(ctx, ops, guards)
 	if err != nil {
 		// Preserve the reserved revision on an uncertain commit. Lease-index
@@ -618,6 +710,12 @@ func (b *backendShim) BeginRangeTxn(ctx context.Context) (context.Context, func(
 
 func (b *backendShim) DeleteRange(ctx context.Context, r *etcdserverpb.DeleteRangeRequest) (*etcdserverpb.DeleteRangeResponse, error) {
 	if len(r.RangeEnd) == 0 {
+		unlock, err := b.lockMutationKeys(ctx, r.Key)
+		if err != nil {
+			return nil, err
+		}
+		defer unlock()
+
 		resp, err := b.backend.Delete(ctx, &proto.DeleteRequest{Key: r.Key})
 		if err != nil {
 			return nil, err
@@ -635,7 +733,9 @@ func (b *backendShim) DeleteRange(ctx context.Context, r *etcdserverpb.DeleteRan
 		return deleteResp, nil
 	}
 
-	listResp, err := b.backend.List(ctx, &proto.RangeRequest{
+	rangeCtx, unlock := b.backend.BeginRangeTxn(ctx)
+	defer unlock()
+	listResp, err := b.backend.List(rangeCtx, &proto.RangeRequest{
 		Key: r.Key,
 		End: r.RangeEnd,
 	})
@@ -646,7 +746,7 @@ func (b *backendShim) DeleteRange(ctx context.Context, r *etcdserverpb.DeleteRan
 	deleteResp := &etcdserverpb.DeleteRangeResponse{
 		Header: txnHeader(int64(listResp.Header.Revision)),
 	}
-	resp, err := b.backend.DeleteRange(ctx, listResp.Kvs)
+	resp, err := b.backend.DeleteRange(rangeCtx, listResp.Kvs)
 	if err != nil {
 		return nil, err
 	}

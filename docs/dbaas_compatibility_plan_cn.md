@@ -2383,6 +2383,41 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   正常；滚动后无 TSO deadline、still-contended、Panic/Fatal 日志。运行镜像
   `kubebrain:a137-put-key-coordination`，exact image 为
   `c78e30bf5f6b217ad9f7bdf0efc7ed3193d9dbeede93cf43596a3c53d9f6dbb3`。
+- **Mutation A138 point/range delete and Txn conflict coordination
+  （2026-07-18）**：沿 A137 审计其余公开写入口发现，单键 DeleteRange 在
+  Get→CAS 冲突后把 backend `Succeeded=false` 直接映射为 `Deleted=0`；对于请求
+  开始前已存在、期间只有 Put 的 key，这会把“版本被并发覆盖”伪装成“键不存在”。
+  原子 TxnApply 虽会在 compare guard conflict 后重试，但与独立 Put/Delete 没有
+  共同协调边界，热点 key 仍会消耗失败 TiKV 事务和 MVCC revision。范围 Delete
+  也曾在无排他 barrier 的 List 快照后提交 guards，允许并发 phantom Put 迫使整笔
+  请求失败。
+
+  现把 A137 的 Put-only 256-slot FNV-1a stripe 扩展为 context-aware mutation
+  coordinator。单 key Put/Delete 共用零额外集合分配的 fast path；原子 TxnApply
+  对写 key 去重并按 stripe 升序获取，反向释放，避免多键反序死锁；范围 Delete
+  的目标 key 集合也在读取 current revision guards 前通过 `BeginMutation` 取得全部
+  stripe，并把 ownership 写入 context；后续 TxnApply 识别已持有槽而不重入死锁。
+  BackendShim 的直接 range-delete 路径则从 List 到单 revision commit 全程复用已有
+  `BeginRangeTxn` 全局写 barrier。等待任一槽时 caller cancel 会释放已取得槽且不进入
+  backend，固定数组仍无动态 key-lock 生命周期问题。确定性 fake backend 回归预占
+  目标槽并取消 Delete/Txn caller，要求二者返回 `context.Canceled` 且 backend 调用
+  计数为 0；另一路回归要求 BeginMutation context 内的 TxnApply 一秒内完成，防止
+  ownership 重入死锁。旧路径会越过协调层直接调用 backend。协调 focused 普通
+  50 轮、race 10 轮以及 Delete/Txn/Range focused 20 轮通过。
+
+  官方 client/v3 黑盒固定两类并发契约：预置 key 后每轮并发 8 Put 与单 Delete，
+  Delete 在任一可线性化位置都必须返回 `Deleted=1`；8 writers 对同一 key 的
+  无 compare Txn 必须始终选择 Success 且不暴露 guard/CAS 错误。reference etcd
+  两类合并连续 10 轮通过。最终 A138 在线镜像上 640-write hot Put、Put/Delete
+  race 与无条件 hot Txn 三类契约合并连续 3 轮全部通过，用时 59.508s；同 key
+  冲突被协调，不同 stripe 仍并行。
+
+  完整 compat suite 用时 91.776s，`go test ./...`、根模块与 compat module
+  `go vet ./...`、backend race（57.628s）及完整 server race（259.628s）通过。
+  最终 StatefulSet 3/3 Ready、3 updated、zero restart，`/health`、`/readyz`
+  与完整 3-member MemberList 正常；滚动后无 TSO deadline、contention、
+  Panic/Fatal 日志。运行镜像 `kubebrain:a138-mutation-window`，exact image
+  为 `ebb6db1d3449c60c90afd068ac4af554ac194fe0225b29c22ee54a332bc0a1f8`。
 
 ### P1：通用服务能力
 

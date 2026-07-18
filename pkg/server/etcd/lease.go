@@ -1084,6 +1084,18 @@ func (m *leaseManager) keysInDeleteRange(ctx context.Context, r *etcdserverpb.De
 // deletions in the same TiKV transaction. The caller holds leaseWriteMu
 // exclusively, so bindings cannot change between this snapshot and commit.
 func (m *leaseManager) deleteRangeWithAttachments(ctx context.Context, request *etcdserverpb.DeleteRangeRequest, keys []string) (*etcdserverpb.DeleteRangeResponse, error) {
+	mutationKeys := make([][]byte, 0, len(keys))
+	for _, key := range keys {
+		mutationKeys = append(mutationKeys, []byte(key))
+	}
+	var unlock func()
+	var err error
+	ctx, unlock, err = m.srv.backend.BeginMutation(ctx, mutationKeys...)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+
 	writes := make([]backend.TxnWriteOp, 0, len(keys))
 	guards := make([]backend.TxnGuard, 0, len(keys))
 	for _, key := range keys {
