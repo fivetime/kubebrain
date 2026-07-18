@@ -3776,6 +3776,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   3 轮约 5.1 秒通过；compat module 全量 vet、server/etcd 相关 KV/Txn/Range/Lease
   回归 3 轮通过。本轮未发现新的服务端语义差异，运行镜像继续为
   `kubebrain:a218-client-deadline`。
+- **Compatibility A220 leasing canceled/non-owner nested Txn（2026-07-18）**：
+  对照上游 `TestLeasingTxnCancel` 和 `TestLeasingTxnNonOwnerPut`，新增取消与跨 owner
+  原子失效组合差分。owner client 先缓存 3 个 key 并建立 ownership，再通过专属 TCP
+  bridge 双向 blackhole；non-owner leasing client 对其中一个 key 发起 Txn Put，并在
+  250ms 后取消。调用必须返回 `context.Canceled`，bridge 必须记录实际丢弃流量，直读
+  value 必须仍为 initial，证明请求没有在返回 canceled 后暗中提交。
+
+  恢复 owner 连接并确认旧值后，non-owner client 在单笔 Txn 中执行一层 nested Txn
+  Put 和两个顶层 Put。响应必须成功且保留 3 个 response；prefix watch 必须观察到 3
+  个 Put 全部使用顶层 Txn header revision。原 owner leasing cache 随后逐 key 读取的
+  updated value/mod revision 必须与直连读取一致，证明 nested write 能原子撤销其他
+  client 的 owner cache，而非只处理顶层 operation。
+
+  reference etcd 与真实 TiKV-backed KubeBrain 完整差分连续 5 轮约 7.3 秒通过，race
+  3 轮约 5.8 秒通过；compat module 全量 vet、server/etcd 相关 KV/Txn/Range/Lease/
+  Watch 回归 3 轮通过。本轮未发现新的服务端语义差异，运行镜像继续为
+  `kubebrain:a218-client-deadline`。
 - **Operations A185 certificate rotation completion state（2026-07-18）**：新增
   `hack/production/validate-certificate-rotation.sh`，把 client/peer CA rollover
   收敛为 `begin -> overlap -> complete` 三阶段门禁。begin 固定全部 KubeBrain Pod
