@@ -2470,6 +2470,26 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   MemberList 完整，Raft term 273。运行镜像 `kubebrain:a140-backend-quorum`，
   三 Pod 运行时 exact image digest 均为
   `a6c83f8228c67d49bdfcec607b3d3ca745518212e10f0d961fd4e36222bc92ad`。
+- **Restart persistence A141 replicated rolling recovery（2026-07-18）**：
+  对齐 etcd `tests/integration/revision_test.go` 的
+  `TestRevisionMonotonicWithLeaderRestarts` 与 `TestRevisionMonotonicWithRestarts`，
+  新增 opt-in 官方 `client/v3` 黑盒及一键脚本。测试先持久化普通值、删除记录、900
+  秒 lease 附属 key 和独立 watch 历史；外部命令运行期间持续 Range 并拒绝任意成功
+  响应 revision 回退，恢复后验证当前值、删除前历史值与 tombstone、lease ID/TTL/
+  attached keys、从写入 revision 开始的 watch 历史回放，以及下一次 Put revision
+  严格增长。
+
+  `hack/dev/restart-persistence-smoke.sh` 只接受精确 3×KubeBrain、3×PD、3×TiKV
+  拓扑，按单 Pod 删除、等待同名 Pod Ready 的方式顺序恢复全部 9 个成员，避免把
+  Kubernetes Pod 重建等同于数据层恢复。真实集群一轮用时 68.42 秒并完整通过；
+  最终 KubeBrain、PD、TiKV StatefulSet 均 3/3 Ready，TidbCluster `Ready=True`，
+  3-member MemberList 完整、Raft term 275、`/readyz=ok`，近 10 分钟日志未见
+  Panic/Fatal/TSO deadline/contention。完整 compat suite 用时 65.615s，根模块
+  `go test ./...`、根模块与 compat module vet、backend race（52.851s）、TiKV
+  storage race（1.200s）及完整 server/etcd race（264.163s）通过。该门禁证明
+  quorum-preserving 滚动恢复持久性，不替代 BR/PITR、跨可用区分区或多数副本丢失
+  演练。运行镜像仍为 `kubebrain:a140-backend-quorum`，三 Pod exact image digest
+  均为 `a6c83f8228c67d49bdfcec607b3d3ca745518212e10f0d961fd4e36222bc92ad`。
 
 ### P1：通用服务能力
 

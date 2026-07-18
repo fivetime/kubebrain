@@ -66,6 +66,27 @@ hack/dev/verify.sh
 
 `hack/dev/verify.sh` 默认覆盖单元测试、基础 etcd client smoke、3 副本 HA smoke、独立 kube-apiserver 对象生命周期 smoke，以及 3 副本 mTLS 部署下的 TLS HA smoke。TLS HA smoke 会同时验证 etcd client mTLS、standalone kube-apiserver mTLS，以及逐个删除 Pod 后的 mTLS client smoke。
 
+全副本滚动重启持久性验证默认不运行，因为它会依次删除当前开发环境中的 3 个
+KubeBrain、3 个 PD 和 3 个 TiKV Pod。该路径要求精确的 3/3/3 拓扑，并在每次删除后
+等待同名 Pod Ready，始终保留后端 quorum：
+
+```shell
+RUN_RESTART_PERSISTENCE_SMOKE=true \
+RUN_GO_TEST=false \
+RUN_BASIC_SMOKE=false \
+RUN_HA_SMOKE=false \
+RUN_APISERVER_SMOKE=false \
+RUN_TLS_SMOKE=false \
+hack/dev/verify.sh
+```
+
+测试使用官方 `client/v3` 在重启前写入普通 key、已删除 key、长 TTL lease 附属 key
+和 watch 历史；重启期间持续读取并拒绝成功响应的 revision 回退，恢复后验证当前值、
+tombstone 与历史值、lease/附属 key、watch 历史回放，以及新写入 revision 严格增长。
+当前 3×KubeBrain、3×PD、3×TiKV 环境已完成一次 9 Pod 顺序重启，用时 68.42 秒。
+该结果证明 quorum-preserving 滚动恢复的客户端可观察持久性，不替代备份恢复、跨可用区
+分区或同时失去多数副本的灾难恢复演练。
+
 基础 etcd client smoke 当前覆盖 Txn create/update/delete、无 Compare 的多操作 Txn、Value Compare Txn、普通 Put、Range delete、普通空非 from-key range 返回空结果、普通空非 from-key DeleteRange 不删除数据、Txn 中空非 from-key DeleteRange 不删除数据、Watch create/update/delete 事件、update watch 在 `WithPrevKV` 下返回 previous value 且不会被误判为 create、follower proxy watch 保留 leader 返回的 `PrevKV`、点 watch 不会误收到子 key 事件、任意 `[start,end)` range watch 不漏掉范围内非 start 前缀 key且可经 follower proxy 转发、`KEY`/`VALUE`/`MOD`/`CREATE`/`VERSION` sort target、旧 revision watch 在 compact 后返回 `ErrCompacted` 和 `CompactRevision`、Lease grant/keepalive/ttl/revoke、Cluster MemberList，以及 Maintenance Status/HashKV/Compact/AlarmList/Defragment。`Compact` 已按写请求处理，follower 会通过 proxy 转发到当前 leader；带显式 `Revision` 的历史 `Range` 在 follower 上也会转发到 leader，以避免 compact 边界在 follower 上短暂不可见。
 
 独立 kube-apiserver smoke 当前覆盖 namespace、ConfigMap create/update/get/watch/delete、ConfigMap label selector、field selector、chunked list、delete collection、Secret、coordination Lease update，以及 apps Deployment create/update/list 路径。这些路径会触发 kube-apiserver 对 etcd `Range` limit/continue、watch 和批量删除的常见使用形态。

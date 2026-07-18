@@ -178,6 +178,24 @@ hack/dev/verify.sh
 RUN_BACKUP_DRILL=true hack/dev/verify.sh
 ```
 
+3×KubeBrain、3×PD、3×TiKV 的全副本滚动重启持久性 smoke 默认不运行。它会逐个
+删除并等待 9 个 Pod 恢复，同时通过官方 etcd client 验证 revision 不回退、普通值和
+tombstone 不丢失、lease 附属关系保留、历史 watch 可回放，以及恢复后 revision 继续
+增长：
+
+```shell
+RUN_RESTART_PERSISTENCE_SMOKE=true \
+RUN_GO_TEST=false \
+RUN_BASIC_SMOKE=false \
+RUN_HA_SMOKE=false \
+RUN_APISERVER_SMOKE=false \
+RUN_TLS_SMOKE=false \
+hack/dev/verify.sh
+```
+
+脚本会拒绝非精确 3/3/3 的拓扑。当前开发集群已完成一次 9 Pod 顺序重启验证，用时
+68.42 秒，最终三组 StatefulSet 均 3/3 Ready。
+
 恢复覆盖保护 smoke 默认不运行。它只会创建一个独立小前缀，导出后尝试恢复回同一前缀，并确认默认 restore 会拒绝覆盖已有 key：
 
 ```shell

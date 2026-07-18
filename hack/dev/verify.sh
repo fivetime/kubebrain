@@ -8,6 +8,7 @@ RUN_GO_TEST="${RUN_GO_TEST:-true}"
 RUN_BASIC_SMOKE="${RUN_BASIC_SMOKE:-true}"
 RUN_ETCD_CLIENT_COMPAT="${RUN_ETCD_CLIENT_COMPAT:-false}"
 RUN_TIKV_PERSISTENCE_SMOKE="${RUN_TIKV_PERSISTENCE_SMOKE:-false}"
+RUN_RESTART_PERSISTENCE_SMOKE="${RUN_RESTART_PERSISTENCE_SMOKE:-false}"
 RUN_K3S_DATASTORE_SMOKE="${RUN_K3S_DATASTORE_SMOKE:-false}"
 RUN_HA_SMOKE="${RUN_HA_SMOKE:-true}"
 RUN_APISERVER_SMOKE="${RUN_APISERVER_SMOKE:-true}"
@@ -67,6 +68,10 @@ fi
 
 if [ "$RUN_TIKV_PERSISTENCE_SMOKE" = "true" ]; then
   run_step "TiKV persistence smoke" env ENDPOINT="kubebrain.kubebrain-dev.svc:3379" hack/dev/tikv-persistence-smoke.sh
+fi
+
+if [ "$RUN_RESTART_PERSISTENCE_SMOKE" = "true" ]; then
+  run_step "replicated restart persistence smoke" env ENDPOINT="$ENDPOINT" hack/dev/restart-persistence-smoke.sh
 fi
 
 if [ "$RUN_K3S_DATASTORE_SMOKE" = "true" ]; then
