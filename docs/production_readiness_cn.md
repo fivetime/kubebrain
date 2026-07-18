@@ -134,6 +134,38 @@ tombstone 与历史值、lease/附属 key、watch 历史回放，以及新写入
 该结果证明 quorum-preserving 滚动恢复的客户端可观察持久性，不替代备份恢复、跨可用区
 分区或同时失去多数副本的灾难恢复演练。
 
+## 实例发布门禁
+
+控制面在创建、扩缩或升级实例后，不能只把 Kubernetes rollout 完成当作成功。必须传入
+期望镜像、拓扑和 endpoint 执行：
+
+```shell
+KUBE_CONTEXT=production \
+KUBEBRAIN_NAMESPACE=kubebrain-instance-a \
+EXPECTED_IMAGE=registry.example/kubebrain@sha256:<digest> \
+TIDB_NAMESPACE=kubebrain-storage-a \
+TIDB_CLUSTER=kb \
+EXPECTED_KUBEBRAIN_REPLICAS=3 \
+EXPECTED_PD_REPLICAS=3 \
+EXPECTED_TIKV_REPLICAS=3 \
+ENDPOINT=https://instance-a.example:2379 \
+ETCDCTL_CACERT=/run/secrets/ca.crt \
+ETCDCTL_CERT=/run/secrets/client.crt \
+ETCDCTL_KEY=/run/secrets/client.key \
+  hack/production/validate-instance-ready.sh
+```
+
+门禁先要求 TidbCluster `Ready=True` 且 PD/TiKV StatefulSet generation、ready/updated
+replicas 和 revision 全部收敛，再校验期望 PD/TiKV 数量；随后要求 KubeBrain
+StatefulSet observed generation、ready/updated replicas、revision 和精确 image 全部
+匹配，最后通过官方 `etcdctl endpoint health` 提交线性化 proposal。缺少
+`EXPECTED_IMAGE`/`ENDPOINT`、任一状态缺失、旧 revision、错误拓扑、错误镜像或 endpoint
+不健康都会 fail closed。
+
+生产必须使用 image digest；脚本做精确字符串比较，允许本地验证使用不可变测试 tag，
+但不会替控制面判断 tag 是否可变。该门禁可关闭创建/扩缩/升级的“数据面已就绪”阶段，
+不能替代备份、恢复、证书轮换和销毁各自的幂等状态机与回滚证据。
+
 ## 备份恢复生产边界
 
 当前唯一通过端到端恢复验证的生产备份模式是 `kubebrain.logical.v2`。制品包含固定

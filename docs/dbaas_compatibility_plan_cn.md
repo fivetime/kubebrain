@@ -3013,6 +3013,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   API 后，只要增加 RPC、移动 owner 或仅由 forward-compat shim 接住，测试都会要求先
   分类并实现/明确拒绝。针对性测试、race 和 vet 通过；首次人工预估 43 被权威 descriptor
   校正为 42，六个 service 的逐方法检查在总数断言前已全部通过。
+- **Operations A182 executable instance release gate（2026-07-18）**：新增
+  `hack/production/validate-instance-ready.sh`，把控制面创建、扩缩和升级的成功条件从
+  单一 rollout 提升为完整数据面证据。`EXPECTED_IMAGE` 与 `ENDPOINT` 必填且 fail
+  closed；先复用 TidbCluster convergence gate，要求 Ready condition 和 PD/TiKV
+  StatefulSet generation/ready/updated/revision 收敛，再核对期望 PD/TiKV 数量；随后
+  核对 KubeBrain StatefulSet observed generation、期望 replicas、ready/updated、
+  current/update revision 和精确 image，最后执行官方 `etcdctl endpoint health`
+  线性化 proposal。TLS/mTLS 沿用标准 `ETCDCTL_CACERT/CERT/KEY`。
+
+  mock command 测试覆盖收敛发布、错误镜像、stale rollout、错误存储拓扑、endpoint
+  不健康和缺少必填输入；shell syntax、Go test 和 vet 通过。真实
+  `kind-kubebrain-dbaas` 上以当前 `kubebrain:a180-platform-guidance`、3 KubeBrain、
+  3 PD、3 TiKV 和 `127.0.0.1:4379` 执行，TidbCluster convergence、proposal 和最终
+  release gate 全部通过。生产要求 digest；脚本只做精确匹配，不替控制面判断 tag
+  可变性。备份、恢复、证书轮换和销毁的幂等状态机/回滚证据仍是 P1。
 
 ### P1：通用服务能力
 
@@ -3024,7 +3039,8 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
    注入覆盖。
 2. `client/v3/concurrency` mutex/election/session、lease 自然过期和 failover
    recipe 已通过；继续增加长时间 soak。
-3. 建立 DBaaS 控制面契约：创建、扩缩、升级、备份、恢复、证书轮换、销毁。
+3. DBaaS 创建、扩缩、升级的数据面 release gate 已建立；继续建立备份、恢复、证书
+   轮换、销毁的幂等状态机、超时、回滚和审计契约。
 4. 建立实例级限额和计量：请求字节、txn 操作数、跨连接 client RPC 总并发、client
    请求 QPS/burst、逻辑 Watch 总数、CPU/内存饱和、网络错误/丢包及 PD/TiKV PVC 容量
    告警已具备稳定错误或指标，网络 RX/TX 原始计量和逻辑备份 artifact 容量/新鲜度
