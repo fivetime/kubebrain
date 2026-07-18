@@ -2930,6 +2930,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   于控制面已完成账单归集。manifest 测试固定完整 PromQL、severity/for 和六个网络外部
   指标；Prometheus 3.5 成功解析全部 24 条规则，仓库全量测试、TidbCluster Ready 和
   endpoint health 通过。该项只修改监控与测试，无需重建数据面镜像。
+- **Compatibility A176 automated full differential gate（2026-07-18）**：此前各组
+  参考 etcd 差分虽持续运行，但需要人工启动 `/root/etcd/bin/etcd`、选择端口、设置环境
+  变量和清理 data-dir，容易在 CI 中漏跑或复用污染状态。新增可执行入口
+  `hack/etcd-client-compat/run-differential.sh`：要求显式
+  `KUBEBRAIN_ETCD_ENDPOINT`，拒绝已占用的参考端口，创建临时单成员 etcd，等待
+  `/health`，以 `-parallel=1` 运行全部 `Differential` 测试，并用 EXIT trap 停止进程、
+  打印失败日志及删除临时数据。
+
+  真实 TiKV/PD-backed endpoint `127.0.0.1:4379` 上端到端执行成功，62.662s 内通过
+  Alarm、binary key/mutation、client version、Compact、DeleteRange、HashKV、Lease、
+  MemberList、Put、Range/RangeStream、Txn 和 Watch 的全部通用双端组；脚本退出后
+  12379 端口释放且临时目录清理。Auth/JWT 差分按设计跳过，因为它们要求独立、可销毁且
+  配置不同的认证实例，仍由专用 auth/JWT 入口负责，不能据此声称认证差分已运行。
+  `bash -n`、仓库全量测试和 endpoint health 通过；本机没有 shellcheck。
 
 ### P1：通用服务能力
 
