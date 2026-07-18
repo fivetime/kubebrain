@@ -118,6 +118,12 @@ ENDPOINT=127.0.0.1:3379 PREFIX=/registry \
 ENDPOINT=127.0.0.1:3379 hack/backup/lease-restore-smoke.sh
 ```
 
+非覆盖恢复会先用只读 Txn 按批检查全部目标 key，再创建 lease 和写数据；每个写批仍
+保留 `Version(key)==0` compare，关闭预检后的并发写竞争。`BATCH_SIZE` 不得超过目标
+实例 `--max-txn-ops`，通过 `MAX_TXN_OPS` 告知恢复工具；两者默认都是 128。etcd 对
+Txn 操作数取 compare/success/failure 三组长度的最大值，因此 128 compare + 128 Put
+符合默认上限。
+
 基础 etcd client smoke 当前覆盖 Txn create/update/delete、无 Compare 的多操作 Txn、Value Compare Txn、普通 Put、Range delete、普通空非 from-key range 返回空结果、普通空非 from-key DeleteRange 不删除数据、Txn 中空非 from-key DeleteRange 不删除数据、Watch create/update/delete 事件、update watch 在 `WithPrevKV` 下返回 previous value 且不会被误判为 create、follower proxy watch 保留 leader 返回的 `PrevKV`、点 watch 不会误收到子 key 事件、任意 `[start,end)` range watch 不漏掉范围内非 start 前缀 key且可经 follower proxy 转发、`KEY`/`VALUE`/`MOD`/`CREATE`/`VERSION` sort target、旧 revision watch 在 compact 后返回 `ErrCompacted` 和 `CompactRevision`、Lease grant/keepalive/ttl/revoke、Cluster MemberList，以及 Maintenance Status/HashKV/Compact/AlarmList/Defragment。`Compact` 已按写请求处理，follower 会通过 proxy 转发到当前 leader；带显式 `Revision` 的历史 `Range` 在 follower 上也会转发到 leader，以避免 compact 边界在 follower 上短暂不可见。
 
 独立 kube-apiserver smoke 当前覆盖 namespace、ConfigMap create/update/get/watch/delete、ConfigMap label selector、field selector、chunked list、delete collection、Secret、coordination Lease update，以及 apps Deployment create/update/list 路径。这些路径会触发 kube-apiserver 对 etcd `Range` limit/continue、watch 和批量删除的常见使用形态。
@@ -423,6 +429,11 @@ lease 行固定源 ID 和导出时的正数剩余 TTL，尾行记录/lease 总�
 恢复为每个源 lease 生成新目标 ID并保留多 key 共享关系。v1 无 lease 制品继续可恢复；
 v1 中记录非零 lease 时因缺少 TTL 元数据会在任何写入前拒绝。没有 manifest/footer 的
 旧 JSONL 无法证明完整性，同样明确拒绝。
+
+默认非覆盖恢复还会在写入前以批量只读 Txn 扫描所有目标 key；已存在 key 会使整个恢复
+在创建 lease 或 Put 前终止。该预检按 `BATCH_SIZE` 分批，不产生逐 key 网络往返；
+写批的 compare 仍用于防止预检后的并发创建。若实例调整了 `--max-txn-ops`，必须将同一
+值通过 `MAX_TXN_OPS` 传给恢复脚本。
 
 导出默认覆盖 `/registry` 前缀：
 

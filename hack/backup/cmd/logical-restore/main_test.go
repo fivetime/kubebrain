@@ -21,6 +21,12 @@ func TestValidateLeaseReference(t *testing.T) {
 	require.ErrorContains(t, err, "unrestorable lease 123")
 }
 
+func TestValidateBatchSize(t *testing.T) {
+	require.NoError(t, validateBatchSize(128, 128))
+	require.ErrorContains(t, validateBatchSize(129, 128), "exceeds")
+	require.ErrorContains(t, validateBatchSize(1, 0), "must be positive")
+}
+
 func TestEnvBool(t *testing.T) {
 	old := os.Getenv("ALLOW_OVERWRITE")
 	defer os.Setenv("ALLOW_OVERWRITE", old)

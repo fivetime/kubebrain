@@ -2548,6 +2548,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   36 条 `/registry` 全前缀 v2 演练，以及截断、overwrite guard、恢复后内容篡改 smoke
   同轮通过。该能力恢复 snapshot 时剩余 TTL，不保留原 lease ID、原 create/mod
   revision、version 或 watch 历史。
+- **Backup A145 restore preflight and Txn budget（2026-07-18）**：对照 etcd
+  `server/etcdserver/api/v3rpc/key.go:checkTxnRequest`，`max-txn-ops` 取
+  compare/success/failure 三组长度的最大值而非总和；因此默认 128 compare + 128 Put
+  合法。restore 新增 `MAX_TXN_OPS`（默认 128），启动时拒绝更大的 `BATCH_SIZE`，使
+  控制面调整实例 `--max-txn-ops` 时必须同步恢复任务配置。
+
+  原 overwrite guard 只证明同一 Txn 批内原子；大制品在后续批发现已有 key 时，前面
+  批已写入。现非覆盖 restore 在创建目标 lease 或写 key 前，先按 `BATCH_SIZE` 用只读
+  Txn 对全部重写后目标 key 做 existence preflight，网络往返保持 O(N/batch)；正式写批
+  继续使用 `Version(key)==0` compare，关闭预检后的并发创建竞争。真实 3 PD/3 TiKV
+  guard 将两个记录强制拆成 `BATCH_SIZE=1`，第二个目标预置冲突，恢复拒绝且目标 count
+  保持原有 1，证明早期批零写入。单测覆盖 128 边界、129 超限和非法零上限。
 
 ### P1：通用服务能力
 

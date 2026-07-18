@@ -228,6 +228,11 @@ Txn，批内任一 overwrite compare 失败时不会部分写入。默认隔离�
 `/registry` 全前缀隔离恢复、逐值核验与清理；截断 footer 被拒绝且目标计数保持 0，
 两条记录批次中第二条冲突时目标计数保持原有 1。
 
+恢复默认 `BATCH_SIZE=128`、`MAX_TXN_OPS=128`；前者不得超过目标实例
+`--max-txn-ops`。非覆盖模式先用批量只读 Txn 检查全部目标 key，再创建 lease/写入，
+写批仍带缺失 compare 关闭预检后的竞争。overwrite guard 使用 `BATCH_SIZE=1` 把冲突
+放到第二批，确认预检拒绝后第一批也没有写入。
+
 lease-aware smoke 默认不运行；它创建一个永久 key 和两个共享 120 秒 lease 的 key，
 要求 v2 manifest 恰有一个 lease，并验证恢复后永久 key 不带 lease、两个临时 key 共享
 同一新 lease 且 TTL 为正：

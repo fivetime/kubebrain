@@ -8,7 +8,7 @@ usage() {
 Usage: hack/backup/restore-guard-smoke.sh
 
 Verifies that logical restore refuses to overwrite existing keys by default
-without partially applying the rejected transaction batch.
+without applying an earlier transaction batch.
 
 Environment:
   ENDPOINT           etcd endpoint, default 127.0.0.1:3379
@@ -79,7 +79,7 @@ ENDPOINT="$ENDPOINT" PREFIX="$PREFIX" OUTPUT="$OUTPUT" BATCH_SIZE=2 \
   "$ROOT_DIR/hack/backup/logical-export.sh"
 
 if ENDPOINT="$ENDPOINT" INPUT="$OUTPUT" REWRITE_FROM="$PREFIX" \
-  REWRITE_TO="$RESTORE_PREFIX" BATCH_SIZE=2 \
+  REWRITE_TO="$RESTORE_PREFIX" BATCH_SIZE=1 \
   "$ROOT_DIR/hack/backup/logical-restore.sh" >"$RESTORE_LOG" 2>&1; then
   cat "$RESTORE_LOG" >&2
   echo "restore unexpectedly overwrote ${RESTORE_PREFIX}" >&2
@@ -94,7 +94,7 @@ fi
 
 restored_records="$(run_prefix_tool count "$RESTORE_PREFIX")"
 if [ "$restored_records" != "1" ]; then
-  echo "rejected restore partially applied its batch: target count=${restored_records}" >&2
+  echo "rejected restore partially applied an earlier batch: target count=${restored_records}" >&2
   exit 1
 fi
 

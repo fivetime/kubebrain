@@ -42,6 +42,16 @@ func validateLeaseReference(rec record.Record, leaseSpecs map[int64]int64) error
 	return nil
 }
 
+func validateBatchSize(batchSize, maxTxnOps int) error {
+	if maxTxnOps <= 0 {
+		return fmt.Errorf("MAX_TXN_OPS must be positive")
+	}
+	if batchSize > maxTxnOps {
+		return fmt.Errorf("BATCH_SIZE %d exceeds MAX_TXN_OPS %d", batchSize, maxTxnOps)
+	}
+	return nil
+}
+
 func main() {
 	input := os.Getenv("INPUT")
 	rewriteFrom := os.Getenv("REWRITE_FROM")
@@ -50,6 +60,13 @@ func main() {
 	batchSize, err := strconv.Atoi(os.Getenv("BATCH_SIZE"))
 	if err != nil || batchSize <= 0 {
 		log.Fatalf("invalid BATCH_SIZE: %q", os.Getenv("BATCH_SIZE"))
+	}
+	maxTxnOps, err := strconv.Atoi(os.Getenv("MAX_TXN_OPS"))
+	if err != nil || maxTxnOps <= 0 {
+		log.Fatalf("invalid MAX_TXN_OPS: %q", os.Getenv("MAX_TXN_OPS"))
+	}
+	if err := validateBatchSize(batchSize, maxTxnOps); err != nil {
+		log.Fatal(err)
 	}
 	if rewriteFrom == "" && rewriteTo != "" {
 		log.Fatal("REWRITE_TO requires REWRITE_FROM")
@@ -90,6 +107,54 @@ func main() {
 		return validateLeaseReference(rec, leaseSpecs)
 	}); err != nil {
 		log.Fatal(err)
+	}
+
+	if !allowOverwrite {
+		keys := make([]string, 0, batchSize)
+		preflight := func() error {
+			if len(keys) == 0 {
+				return nil
+			}
+			gets := make([]clientv3.Op, 0, len(keys))
+			for _, key := range keys {
+				gets = append(gets, clientv3.OpGet(key))
+			}
+			resp, err := cli.Txn(ctx).Then(gets...).Commit()
+			if err != nil {
+				return err
+			}
+			if len(resp.Responses) != len(keys) {
+				return fmt.Errorf("target preflight returned %d responses for %d keys", len(resp.Responses), len(keys))
+			}
+			for i, response := range resp.Responses {
+				ranged := response.GetResponseRange()
+				if ranged == nil {
+					return fmt.Errorf("target preflight response %d is not a range response", i)
+				}
+				if len(ranged.Kvs) != 0 {
+					return fmt.Errorf("refusing to overwrite existing key %q; set ALLOW_OVERWRITE=true to replace existing records", keys[i])
+				}
+			}
+			keys = keys[:0]
+			return nil
+		}
+		err = verified.Records(func(rec record.Record) error {
+			key, decodeErr := base64.StdEncoding.DecodeString(rec.Key)
+			if decodeErr != nil {
+				return decodeErr
+			}
+			keys = append(keys, string(rewriteKey(key, rewriteFrom, rewriteTo)))
+			if len(keys) == batchSize {
+				return preflight()
+			}
+			return nil
+		})
+		if err == nil {
+			err = preflight()
+		}
+		if err != nil {
+			log.Fatal(err)
+		}
 	}
 
 	targetLeases := make(map[int64]clientv3.LeaseID, len(leaseSpecs))

@@ -15,6 +15,7 @@ Environment:
   REWRITE_FROM       optional source key prefix to rewrite
   REWRITE_TO         optional target key prefix; requires REWRITE_FROM
   BATCH_SIZE         restore batch size, default 128
+  MAX_TXN_OPS        endpoint max-txn-ops setting, default 128
   ALLOW_OVERWRITE    set true to overwrite existing keys, default false
   TIMEOUT            request timeout as Go duration, default 10m
   ETCDCTL_CACERT     CA cert for TLS/mTLS endpoint
@@ -24,7 +25,9 @@ Environment:
 Restore validates the versioned manifest, record count, and SHA-256 before
 writing. Unmanifested legacy JSONL files are rejected. By default restore
 refuses to overwrite existing keys. BATCH_SIZE records are committed in one
-etcd transaction.
+etcd transaction and must not exceed MAX_TXN_OPS. Before creating leases or
+writing data, non-overwrite restore checks all target keys in batched read-only
+transactions; per-write compare guards still close races after that preflight.
 EOF
 }
 
@@ -40,9 +43,10 @@ INPUT="${INPUT:-kubebrain-logical-backup.jsonl}"
 REWRITE_FROM="${REWRITE_FROM:-}"
 REWRITE_TO="${REWRITE_TO:-}"
 BATCH_SIZE="${BATCH_SIZE:-128}"
+MAX_TXN_OPS="${MAX_TXN_OPS:-128}"
 ALLOW_OVERWRITE="${ALLOW_OVERWRITE:-false}"
 
 cd "$ROOT_DIR"
 ENDPOINT="$ENDPOINT" INPUT="$INPUT" REWRITE_FROM="$REWRITE_FROM" REWRITE_TO="$REWRITE_TO" \
-  BATCH_SIZE="$BATCH_SIZE" ALLOW_OVERWRITE="$ALLOW_OVERWRITE" \
+  BATCH_SIZE="$BATCH_SIZE" MAX_TXN_OPS="$MAX_TXN_OPS" ALLOW_OVERWRITE="$ALLOW_OVERWRITE" \
   go run ./hack/backup/cmd/logical-restore
