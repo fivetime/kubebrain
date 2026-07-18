@@ -2228,6 +2228,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   测试，不改变服务二进制；在线集群继续运行 `kubebrain:a127-alarm-header`，
   exact image 仍为
   `3dbda65560a17ecb35e7676aafc5bb2aeeb63c8dc107a27c7e502cf4527d3a25`。
+- **Compact A131 revision/physical error boundary differential
+  （2026-07-18）**：对照
+  `/root/etcd/server/storage/mvcc/kvstore.go:updateCompactRev` 与
+  `/root/etcd/server/etcdserver/v3_server.go:Compact`，新增 raw gRPC Compact
+  边界矩阵。为消除 fresh reference 与长期在线 KubeBrain 的既有 compact history
+  差异，场景先分别 compact 到各端自身 seed revision，再请求 logical/physical
+  `revision=0`、physical `revision=-1` 以及 logical/physical
+  `revision=math.MaxInt64`。零值与负值均精确返回 gRPC `OutOfRange`、
+  `etcdserver: mvcc: required revision has been compacted`；MaxInt64 均返回
+  `OutOfRange`、`etcdserver: mvcc: required revision is a future revision`。
+  Physical 标志不改变校验优先级或错误文本。
+
+  临时 `/root/etcd` 3.8.0-alpha.0 reference 与在线三副本 TiKV-backed
+  KubeBrain 间连续 10 轮、race 3 轮通过，未发现新实现差异。完整 compat suite
+  用时 79.001s，`go test ./...`、根模块与 compat module `go vet ./...`、强制
+  backend race（52.060s）及完整 server race（235.903s）通过。本轮只增加兼容性
+  测试，不改变服务二进制；在线集群继续运行 `kubebrain:a127-alarm-header`，
+  exact image 仍为
+  `3dbda65560a17ecb35e7676aafc5bb2aeeb63c8dc107a27c7e502cf4527d3a25`。
 
 ### P1：通用服务能力
 
