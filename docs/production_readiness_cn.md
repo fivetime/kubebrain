@@ -851,6 +851,23 @@ A189 rollback 允许仅凭 prepare state 运行：这覆盖 Service JSON Patch �
 EndpointSlice 失败而尚未生成 cutover marker 的窗口；rollback 仍用 UID/resourceVersion
 CAS 并要求源 Pod UID 集恢复。
 
+`hack/production/run-certificate-rotation-operation.sh` 接入 CertificateRotation。
+参数同时绑定旧/新/overlap CA、client cert/key 路径及每个文件的 SHA-256，executor 在
+任何发布前重新计算内容摘要，防止固定路径被替换。服务端 Secret 发布不由 CR 提供命令；
+worker 镜像配置受控、可执行且必须幂等的 `PUBLISH_OVERLAP_COMMAND` 与
+`PUBLISH_FINAL_COMMAND`。hook 只接收固定 operation/instance/参数文件环境。
+
+完整顺序为 begin gate、发布双 CA、overlap gate、发布仅新 CA/叶证书、complete gate。
+state-only 接管从双 CA 发布继续，overlap marker 从最终发布继续，已有 receipt 则重做
+complete 在线验证。任一步失败 requeue；新 owner/attempt 可安全重跑幂等 hook。旧 worker
+heartbeat fencing 后立即停止，不发布后续 Secret或提交状态。complete 仍要求新凭据成功、
+旧凭据失败及新凭据再次成功，之后 operation Succeeded 绑定 A185 receipt SHA-256。
+A185 也支持显式 `KUBECONFIG_PATH`。
+
+所有 operation executor 的 heartbeat 均使用独立续租进程，主进程直接 `wait` 工作子进程；
+工作结束后终止 heartbeat。续租失败时 heartbeat 杀掉工作进程并返回 fencing 状态。禁止
+使用 `kill -0` 轮询工作进程完成，因为未 wait 的 zombie 仍可能返回存在并造成无限续租。
+
 参数文件不得包含私钥内容；TLS 凭据由 worker Secret/env 提供。参数文件及 A189 state/
 receipt 必须位于 worker 可读的受保护持久卷。CRD 保存编排状态和摘要，不保存大文件或
 凭据，也不应安装在被该 operation 运维的 KubeBrain 数据面中。

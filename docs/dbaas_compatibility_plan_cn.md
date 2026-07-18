@@ -3168,7 +3168,30 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Service 最终 selector=`target`，A189 receipt 的 endpoint UID/data flags 均为 true，
   operation attempt 1 Succeeded，status receipt digest
   `bd762c609c849ad2fcf6f66cfe0955383c7f78fddc7f07d631fe177195a1bdf0`；测试 prefix 与
-  namespace 已清理。CertificateRotation/Destroy executor 仍是 P1。
+  namespace 已清理。A194 已接入 CertificateRotation；Destroy executor 仍是 P1。
+- **Operations A194 resumable CertificateRotation executor（2026-07-18）**：新增
+  `hack/production/run-certificate-rotation-operation.sh`。operation 参数除旧/新/overlap
+  CA、client cert/key 路径外还绑定每个文件 SHA-256，发布前逐文件复算；固定路径内容漂移
+  会在任何 hook 前拒绝并 requeue。双 CA 与最终 Secret 发布由 worker 镜像配置的受控、
+  可执行、幂等 hook 完成，不允许 CR 注入命令。顺序为 begin→publish-overlap→overlap→
+  publish-final→complete；state、overlap marker、receipt 接管分别从对应安全阶段继续。
+  任一步失败 requeue，heartbeat fencing 终止当前子进程且不执行后续发布。
+
+  mock 覆盖完整生命周期、五步骤逐点失败、三类证据恢复、参数/credential 内容漂移与
+  heartbeat fencing。真实 operation 使用独立参考 etcd mTLS endpoint 和当前 3 个
+  KubeBrain Pod 的 UID/restart/Ready 快照：初始只信旧 CA，overlap hook 切到双 CA，
+  final hook 切到仅新 CA；A185 complete 实际观察旧 client 非零退出、新 client 正向
+  proposal 成功。operation attempt 1 Succeeded，receipt digest
+  `a1f14e461bcce9033bf366e92cf6a396f30aee2174698a700346e5ad2a95313c`，
+  old/new cert fingerprints 为
+  `d1722aaf6be371394a7997b6bba0dc1307ca55a47ebaef35d31e7387933d1a71` /
+  `ed961e379fe806bfcbb82e148951c05fd55d28c0e408d2d6a495ceb214ae6f69`，
+  Pods unchanged 与 old rejected 均为 true，隔离 endpoint/namespace 已清理。
+
+  本轮真实 hook 首次还暴露 Bash `kill -0` 会把未 wait zombie 视作存活并无限 heartbeat；
+  Backup、PostRestoreAudit、RestoreCutover、CertificateRotation 四个 executor 已统一改为
+  主进程 wait 工作子进程、独立 heartbeat 续租，结束后回收 heartbeat，fencing 时由
+  heartbeat 杀工作进程。A185 同时补显式 KUBECONFIG_PATH。Destroy executor 仍是 P1。
 - **Operations A185 certificate rotation completion state（2026-07-18）**：新增
   `hack/production/validate-certificate-rotation.sh`，把 client/peer CA rollover
   收敛为 `begin -> overlap -> complete` 三阶段门禁。begin 固定全部 KubeBrain Pod
@@ -3262,7 +3285,7 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
 3. DBaaS 创建、扩缩、升级的数据面 release gate、备份完成 gate、Object Lock
    上传/保留删除、恢复验证 receipt、UID-fenced 流量切换、恢复后持续审计、证书轮换
    gate、UID-fenced 销毁状态机及持久 operation API/worker fencing 已建立；继续接入
-   CertificateRotation/Destroy executor，完成专属 namespace/凭据外围
+   Destroy executor，完成专属 namespace/凭据外围
    清理、bucket lifecycle/inventory 对账，
    并补 API 认证授权、不可变审计归档、跨实例公平调度和管理面 HA soak。
 4. 建立实例级限额和计量：请求字节、txn 操作数、跨连接 client RPC 总并发、client
