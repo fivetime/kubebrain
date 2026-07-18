@@ -123,6 +123,34 @@ func TestProductionMonitoringTracksStatefulSetReadiness(t *testing.T) {
 		readinessRule["expr"],
 	)
 	require.NotContains(t, readinessRule["expr"], "kube_deployment_")
+
+	overflowRule := prometheusRuleByAlert(t, groups, "KubeBrainCountIndexOverflowed")
+	require.Equal(t, `max(count_index_overflowed{namespace="kubebrain-system"}) > 0`, overflowRule["expr"])
+	require.Equal(t, "1m", overflowRule["for"])
+	require.Equal(t, "warning", overflowRule["labels"].(map[string]any)["severity"])
+
+	rebuildRule := prometheusRuleByAlert(t, groups, "KubeBrainCountIndexRebuildFailures")
+	require.Equal(t,
+		`sum(increase(count_index_rebuild_err{namespace="kubebrain-system"}[10m])) > 0`,
+		rebuildRule["expr"])
+	require.Equal(t, "0m", rebuildRule["for"])
+}
+
+func prometheusRuleByAlert(t *testing.T, groups []any, alert string) map[string]any {
+	t.Helper()
+	for _, rawGroup := range groups {
+		group := rawGroup.(map[string]any)
+		rules, ok := group["rules"].([]any)
+		require.True(t, ok)
+		for _, rawRule := range rules {
+			candidate := rawRule.(map[string]any)
+			if candidate["alert"] == alert {
+				return candidate
+			}
+		}
+	}
+	t.Fatalf("alert %q not found", alert)
+	return nil
 }
 
 func TestProductionTiDBClusterProvidesDurableHAStorage(t *testing.T) {

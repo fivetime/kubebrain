@@ -112,3 +112,19 @@ spec:
           annotations:
             summary: KubeBrain p99 gRPC latency is high
             description: "KubeBrain p99 gRPC latency for {{ $labels.grpc_method }} is above 1 second."
+        - alert: KubeBrainCountIndexOverflowed
+          expr: max(count_index_overflowed{namespace="kubebrain-system"}) > 0
+          for: 1m
+          labels:
+            severity: warning
+          annotations:
+            summary: KubeBrain count index exceeded its key limit
+            description: "The leader count index overflowed and exact counts are falling back to TiKV scans. Increase the instance memory tier and --count-index-max-keys together."
+        - alert: KubeBrainCountIndexRebuildFailures
+          expr: sum(increase(count_index_rebuild_err{namespace="kubebrain-system"}[10m])) > 0
+          for: 0m
+          labels:
+            severity: warning
+          annotations:
+            summary: KubeBrain count index rebuild failed
+            description: "A leader count-index rebuild failed in the last 10 minutes; CountOnly requests may be falling back to TiKV scans."

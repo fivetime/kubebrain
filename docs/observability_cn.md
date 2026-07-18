@@ -20,7 +20,8 @@ KubeBrain 已内置**标准 Prometheus** 指标(真 registry + `promhttp.Handler
 | `read.latency` / `write.latency` histogram(labels: `method`,`success`) | 读写延迟分布 → p99 告警抓延迟/读放大回归。 |
 | `storage_batch_count`(op=`write_batch`)histogram | 存储层批量写延迟(TiKV TSO+raft)。 |
 | `leader_revision` gauge | 当前 leader 的 revision(是否推进)。leader 身份见 info 端口 `/election`。 |
-| `count_index.keys` gauge | 活跃 key 数(对象量)—— 容量/膨胀的**便宜**信号(需 `--enable-count-index`)。 |
+| `count_index.keys` / `count_index.overflowed` gauge | leader 活跃 key 数与索引是否超过 `--count-index-max-keys`；overflow 后正确回退 TiKV 全扫，但 List/count 延迟会明显恶化。followers 的 keys=0 是正常值。 |
+| `count_index.rebuild.err` counter | leader 切换时索引快照重建失败次数；非零表示 CountOnly 暂时回退 TiKV 全扫。 |
 | `watch.collector.stalled` / `watch.collector.skipped_revision` counter | 事件收集器 stall/自愈跳过 —— 正常应为 0,非 0=有 writer 死在 deal↔notify 之间。 |
 | `lease.orphan_sweep.{key_deleted,record_reclaimed,err}` counter | 孤儿 lease 清扫活动 —— 正常应极低。 |
 | `write.fence.reject` counter | 写栅栏拒绝(#39)—— 换主瞬间少量正常;持续高=leader 抖动。 |
@@ -45,6 +46,10 @@ KubeBrain 已内置**标准 Prometheus** 指标(真 registry + `promhttp.Handler
 - **logical watch admission 饱和**:`watch_admission_active` 长期贴近 `--max-watches` 且 `rate(watch_admission_rejected[5m]) > 0`。先排查客户端重复建立/未取消 Watch，再扩容或按内存与事件延迟压测调整限额。
 - **watch-cache 冻结**:apiserver 侧 `Too large resource version` / `Unable to sync caches`(进度通知已修,应为 0);KubeBrain 侧 `watch.collector.stalled` > 0。
 - **版本膨胀**:`count_index.keys` 长期单调上涨且无压缩回落 → 检查 apiserver 压缩循环是否正常(KubeBrain 自身不自动压缩)。
+- **count index 退化**:`max(count_index_overflowed) > 0` 持续 1m，或
+  `increase(count_index_rebuild_err[10m]) > 0`。overflow 时应同时提高实例内存规格和
+  `--count-index-max-keys`，不能只放大 key cap；重建失败先检查 TiKV scan 错误、PD
+  可用性和 leader 切换频率。不要用 `count_index_keys == 0` 告警，followers 正常为 0。
 
 ## DbSize 为什么是 1 字节哨兵(而不是真实容量)
 
