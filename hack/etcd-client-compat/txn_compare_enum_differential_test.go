@@ -42,25 +42,33 @@ func runCompareEnumScenario(t *testing.T, endpoint, instance string) []compareEn
 	client := etcdserverpb.NewKVClient(conn)
 
 	tests := []struct {
-		name   string
-		target etcdserverpb.Compare_CompareTarget
-		result etcdserverpb.Compare_CompareResult
+		name         string
+		target       etcdserverpb.Compare_CompareTarget
+		result       etcdserverpb.Compare_CompareResult
+		compareValue []byte
 	}{
 		{name: "unknown-result", target: etcdserverpb.Compare_MOD, result: 99},
 		{name: "unknown-target-equal", target: 99, result: etcdserverpb.Compare_EQUAL},
 		{name: "unknown-target-not-equal", target: 99, result: etcdserverpb.Compare_NOT_EQUAL},
+		{name: "absent-value-equal-empty", target: etcdserverpb.Compare_VALUE, result: etcdserverpb.Compare_EQUAL},
+		{name: "absent-value-not-equal", target: etcdserverpb.Compare_VALUE, result: etcdserverpb.Compare_NOT_EQUAL, compareValue: []byte("value")},
+		{name: "absent-value-unknown-result", target: etcdserverpb.Compare_VALUE, result: 99},
 	}
 	outcomes := make([]compareEnumOutcome, 0, len(tests))
 	for _, test := range tests {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		key := []byte(fmt.Sprintf("/dbaas-compare-enum/%s/%s/%d", instance, test.name, time.Now().UnixNano()))
+		compare := &etcdserverpb.Compare{
+			Key:         key,
+			Target:      test.target,
+			Result:      test.result,
+			TargetUnion: &etcdserverpb.Compare_ModRevision{ModRevision: 0},
+		}
+		if test.target == etcdserverpb.Compare_VALUE {
+			compare.TargetUnion = &etcdserverpb.Compare_Value{Value: test.compareValue}
+		}
 		resp, callErr := client.Txn(ctx, &etcdserverpb.TxnRequest{
-			Compare: []*etcdserverpb.Compare{{
-				Key:         key,
-				Target:      test.target,
-				Result:      test.result,
-				TargetUnion: &etcdserverpb.Compare_ModRevision{ModRevision: 0},
-			}},
+			Compare: []*etcdserverpb.Compare{compare},
 			Success: []*etcdserverpb.RequestOp{putRequestOp(key, "success")},
 			Failure: []*etcdserverpb.RequestOp{putRequestOp(key, "failure")},
 		})
@@ -75,6 +83,10 @@ func runCompareEnumScenario(t *testing.T, endpoint, instance string) []compareEn
 			Succeeded: resp.Succeeded,
 			Value:     string(ranged.Kvs[0].Value),
 		})
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_, cleanupErr := client.DeleteRange(cleanupCtx, &etcdserverpb.DeleteRangeRequest{Key: key})
+		cleanupCancel()
+		require.NoError(t, cleanupErr)
 	}
 	return outcomes
 }

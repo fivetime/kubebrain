@@ -1963,6 +1963,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   服务二进制；三个 Pod 继续 Ready、zero restart、endpoint health 正常，运行时
   exact image 仍为
   `91343632e7ebe87c1733bc03156c7a8183ab8607ee8f2a80583da170fbf8fd6d`。
+- **Txn A117 absent VALUE compare always fails（2026-07-18）**：继续对照
+  `/root/etcd/server/etcdserver/txn/txn.go:applyCompare` 发现，VALUE compare 对
+  不存在的 point/range 必须在 Result 判定前无条件失败，因为 protobuf 无法区分
+  “不存在的 value”与空字节。KubeBrain range compare 已有该特判，point compare
+  却把 nil 当空字节交给通用比较器；因此不存在 key 的 `VALUE == ""`、
+  `VALUE != "value"` 及未知 Result 都错误选择 Success。修复前 raw gRPC 双端差分
+  精确显示 reference 三项均 Succeeded=false、写入 Failure 值，A115 在线镜像三项
+  均 Succeeded=true、写入 Success 值。
+
+  现 point VALUE compare 在 kv=nil 时直接 false，VERSION/CREATE/MOD/LEASE 对
+  absent key 继续按 upstream 使用零值，A115 的未知 Target/Result fallthrough 规则
+  也保持不变。单元回归覆盖上述三种 VALUE Result 并连续 30 轮通过；扩展后的 raw
+  protobuf 差分同时比较状态、Succeeded 与最终写值。`go test ./...`、根模块与
+  compat module `go vet ./...` 及完整 server race（210.226s）通过。修复后临时
+  `/root/etcd` reference 与在线三副本 TiKV-backed KubeBrain 差分连续 10 轮、
+  race 3 轮通过。部署 `kubebrain:a117-absent-value-compare` 后三个 Pod Ready、
+  zero restart、endpoint health 正常，运行时 exact image
+  `279d2608ee23f986d3f122b7ca1c7fe1264ca1f990246ee98eaac9c94dd09d21`。
 
 ### P1：通用服务能力
 

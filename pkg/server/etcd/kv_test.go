@@ -2734,6 +2734,43 @@ func TestTxnCompareValueRunsFailureBranch(t *testing.T) {
 	require.Equal(t, int64(1), deleteResp.Deleted)
 }
 
+func TestTxnCompareValueAlwaysFailsForAbsentKey(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	key := []byte("/registry/generic-txn/compare-value-absent")
+	tests := []struct {
+		name   string
+		result etcdserverpb.Compare_CompareResult
+		value  []byte
+	}{
+		{name: "equal empty", result: etcdserverpb.Compare_EQUAL},
+		{name: "not equal nonempty", result: etcdserverpb.Compare_NOT_EQUAL, value: []byte("value")},
+		{name: "unknown result", result: etcdserverpb.Compare_CompareResult(99)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp, err := server.Txn(context.Background(), &etcdserverpb.TxnRequest{
+				Compare: []*etcdserverpb.Compare{{
+					Key:         key,
+					Target:      etcdserverpb.Compare_VALUE,
+					Result:      tt.result,
+					TargetUnion: &etcdserverpb.Compare_Value{Value: tt.value},
+				}},
+				Success: []*etcdserverpb.RequestOp{{Request: &etcdserverpb.RequestOp_RequestPut{
+					RequestPut: &etcdserverpb.PutRequest{Key: key, Value: []byte("success")},
+				}}},
+				Failure: []*etcdserverpb.RequestOp{{Request: &etcdserverpb.RequestOp_RequestRange{
+					RequestRange: &etcdserverpb.RangeRequest{Key: key},
+				}}},
+			})
+			require.NoError(t, err)
+			require.False(t, resp.Succeeded)
+			require.Empty(t, resp.Responses[0].GetResponseRange().Kvs)
+		})
+	}
+}
+
 func TestTxnRejectsEmptyCompareKey(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

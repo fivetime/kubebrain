@@ -69,11 +69,12 @@ func (s *RPCServer) compareSingleKey(cmp *etcdserverpb.Compare, kv *mvccpb.KeyVa
 		}
 		return compareInt64(actual, cmp.GetModRevision(), cmp.Result), nil
 	case etcdserverpb.Compare_VALUE:
-		var actual []byte
-		if kv != nil {
-			actual = kv.Value
+		if kv == nil {
+			// Upstream always fails VALUE compares for an absent key. Protobuf
+			// cannot distinguish a missing value from an empty byte string.
+			return false, nil
 		}
-		return compareBytes(actual, cmp.GetValue(), cmp.Result), nil
+		return compareBytes(kv.Value, cmp.GetValue(), cmp.Result), nil
 	case etcdserverpb.Compare_VERSION:
 		actual := int64(0)
 		if kv != nil {
