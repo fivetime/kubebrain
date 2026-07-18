@@ -184,13 +184,20 @@ func TestProductionMonitoringTracksPDAndTiKV(t *testing.T) {
 		"KubeBrainStorageVolumeMetricsMissing": `count(kubelet_volume_stats_capacity_bytes{namespace="tidb-cluster",persistentvolumeclaim=~"(pd-kb-pd|tikv-kb-tikv)-[0-2]"}) < 6`,
 		"KubeBrainStorageVolumeLow": `(kubelet_volume_stats_available_bytes{namespace="tidb-cluster",persistentvolumeclaim=~"(pd-kb-pd|tikv-kb-tikv)-[0-2]"} / ` +
 			`kubelet_volume_stats_capacity_bytes{namespace="tidb-cluster",persistentvolumeclaim=~"(pd-kb-pd|tikv-kb-tikv)-[0-2]"}) < 0.15`,
+		"KubeBrainResourceMetricsMissing":     `((count(container_memory_working_set_bytes{namespace="kubebrain-system",container="kubebrain",image!=""}) + count(container_memory_working_set_bytes{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-2]",container=~"pd|tikv",image!=""})) < 9) or ((count(kube_pod_container_resource_limits{namespace="kubebrain-system",container="kubebrain",resource="memory",unit="byte"}) + count(kube_pod_container_resource_limits{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-2]",container=~"pd|tikv",resource="memory",unit="byte"})) < 9)`,
+		"KubeBrainDataPlaneMemoryHigh":        `((container_memory_working_set_bytes{namespace="kubebrain-system",container="kubebrain",image!=""} / on(namespace,pod,container) kube_pod_container_resource_limits{namespace="kubebrain-system",container="kubebrain",resource="memory",unit="byte"}) > 0.9) or ((container_memory_working_set_bytes{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-2]",container=~"pd|tikv",image!=""} / on(namespace,pod,container) kube_pod_container_resource_limits{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-2]",container=~"pd|tikv",resource="memory",unit="byte"}) > 0.9)`,
+		"KubeBrainDataPlaneCPUThrottlingHigh": `((rate(container_cpu_cfs_throttled_periods_total{namespace="kubebrain-system",container="kubebrain",image!=""}[5m]) / rate(container_cpu_cfs_periods_total{namespace="kubebrain-system",container="kubebrain",image!=""}[5m])) > 0.25) or ((rate(container_cpu_cfs_throttled_periods_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-2]",container=~"pd|tikv",image!=""}[5m]) / rate(container_cpu_cfs_periods_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-2]",container=~"pd|tikv",image!=""}[5m])) > 0.25)`,
 	} {
 		alertRule := prometheusRuleByAlert(t, groups, alert)
 		require.Equal(t, expr, alertRule["expr"])
-		if alert == "KubeBrainStorageVolumeMetricsMissing" {
+		switch alert {
+		case "KubeBrainStorageVolumeMetricsMissing", "KubeBrainResourceMetricsMissing":
 			require.Equal(t, "warning", alertRule["labels"].(map[string]any)["severity"])
 			require.Equal(t, "15m", alertRule["for"])
-		} else {
+		case "KubeBrainDataPlaneCPUThrottlingHigh":
+			require.Equal(t, "warning", alertRule["labels"].(map[string]any)["severity"])
+			require.Equal(t, "15m", alertRule["for"])
+		default:
 			require.Equal(t, "critical", alertRule["labels"].(map[string]any)["severity"])
 		}
 	}
@@ -206,8 +213,12 @@ func TestProductionAlertMetricsExist(t *testing.T) {
 	emitted := emittedMetricNames(t, "../../pkg")
 	for _, external := range []string{
 		"etcd_server_is_leader",
+		"container_cpu_cfs_periods_total",
+		"container_cpu_cfs_throttled_periods_total",
+		"container_memory_working_set_bytes",
 		"grpc_server_handled_total",
 		"grpc_server_handling_seconds_bucket",
+		"kube_pod_container_resource_limits",
 		"kube_statefulset_status_replicas_ready",
 		"kubelet_volume_stats_available_bytes",
 		"kubelet_volume_stats_capacity_bytes",

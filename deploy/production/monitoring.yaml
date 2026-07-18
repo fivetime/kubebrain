@@ -224,3 +224,29 @@ spec:
           annotations:
             summary: KubeBrain storage volume has less than 15% free space
             description: "PVC {{ $labels.persistentvolumeclaim }} has only {{ $value | humanizePercentage }} free space."
+    - name: kubebrain.resources
+      rules:
+        - alert: KubeBrainResourceMetricsMissing
+          expr: ((count(container_memory_working_set_bytes{namespace="kubebrain-system",container="kubebrain",image!=""}) + count(container_memory_working_set_bytes{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-2]",container=~"pd|tikv",image!=""})) < 9) or ((count(kube_pod_container_resource_limits{namespace="kubebrain-system",container="kubebrain",resource="memory",unit="byte"}) + count(kube_pod_container_resource_limits{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-2]",container=~"pd|tikv",resource="memory",unit="byte"})) < 9)
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: KubeBrain data-plane resource metrics are incomplete
+            description: "Expected cAdvisor usage and kube-state-metrics limit series for all 9 KubeBrain/PD/TiKV containers."
+        - alert: KubeBrainDataPlaneMemoryHigh
+          expr: ((container_memory_working_set_bytes{namespace="kubebrain-system",container="kubebrain",image!=""} / on(namespace,pod,container) kube_pod_container_resource_limits{namespace="kubebrain-system",container="kubebrain",resource="memory",unit="byte"}) > 0.9) or ((container_memory_working_set_bytes{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-2]",container=~"pd|tikv",image!=""} / on(namespace,pod,container) kube_pod_container_resource_limits{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-2]",container=~"pd|tikv",resource="memory",unit="byte"}) > 0.9)
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: KubeBrain data-plane container memory exceeds 90% of its limit
+            description: "Container {{ $labels.container }} in {{ $labels.pod }} is using {{ $value | humanizePercentage }} of its memory limit."
+        - alert: KubeBrainDataPlaneCPUThrottlingHigh
+          expr: ((rate(container_cpu_cfs_throttled_periods_total{namespace="kubebrain-system",container="kubebrain",image!=""}[5m]) / rate(container_cpu_cfs_periods_total{namespace="kubebrain-system",container="kubebrain",image!=""}[5m])) > 0.25) or ((rate(container_cpu_cfs_throttled_periods_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-2]",container=~"pd|tikv",image!=""}[5m]) / rate(container_cpu_cfs_periods_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-2]",container=~"pd|tikv",image!=""}[5m])) > 0.25)
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: KubeBrain data-plane container CPU is heavily throttled
+            description: "Container {{ $labels.container }} in {{ $labels.pod }} has {{ $value | humanizePercentage }} CPU periods throttled."
