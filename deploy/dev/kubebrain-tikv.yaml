@@ -3,15 +3,34 @@ kind: Namespace
 metadata:
   name: kubebrain-dev
 ---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kubebrain-peer
+  namespace: kubebrain-dev
+  labels:
+    app.kubernetes.io/name: kubebrain
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app.kubernetes.io/name: kubebrain
+  ports:
+    - name: peer
+      port: 3380
+      targetPort: peer
+---
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet
 metadata:
   name: kubebrain
   namespace: kubebrain-dev
   labels:
     app.kubernetes.io/name: kubebrain
 spec:
-  replicas: 1
+  serviceName: kubebrain-peer
+  replicas: 3
+  podManagementPolicy: Parallel
   selector:
     matchLabels:
       app.kubernetes.io/name: kubebrain
@@ -28,9 +47,21 @@ spec:
             - --port=3379
             - --peer-port=3380
             - --info-port=8080
+            - --advertise-host=$(POD_NAME).kubebrain-peer.kubebrain-dev.svc
+            - --initial-cluster=kubebrain-0=http://kubebrain-0.kubebrain-peer.kubebrain-dev.svc:3380,kubebrain-1=http://kubebrain-1.kubebrain-peer.kubebrain-dev.svc:3380,kubebrain-2=http://kubebrain-2.kubebrain-peer.kubebrain-dev.svc:3380
             - --pd-addrs=kb-pd.tidb-cluster.svc:2379
             - --compatible-with-etcd=true
+            - --max-requests-inflight=1024
+            - --max-request-rate=2000
+            - --request-rate-burst=4000
+            - --max-delete-range-keys=1024
+            - --max-watches=10000
             - --v=2
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
           ports:
             - name: client
               containerPort: 3379

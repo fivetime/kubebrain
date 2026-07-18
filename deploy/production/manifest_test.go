@@ -89,6 +89,34 @@ func TestProductionManifestsProvideStableCompleteMembership(t *testing.T) {
 	}
 }
 
+func TestDevManifestProvidesStableCompleteMembership(t *testing.T) {
+	objects := decodeManifest(t, "../dev/kubebrain-tikv.yaml")
+	workload := objectByKindAndName(t, objects, "StatefulSet", "kubebrain")
+	require.Equal(t, "kubebrain-peer", nestedString(t, workload, "spec", "serviceName"))
+	require.EqualValues(t, 3, nestedInt64(t, workload, "spec", "replicas"))
+
+	containers, found, err := unstructured.NestedSlice(workload.Object, "spec", "template", "spec", "containers")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Len(t, containers, 1)
+	container := containers[0].(map[string]any)
+	args, found, err := unstructured.NestedStringSlice(container, "args")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Contains(t, args, "--advertise-host=$(POD_NAME).kubebrain-peer.kubebrain-dev.svc")
+	require.Contains(t, args,
+		"--initial-cluster=kubebrain-0=http://kubebrain-0.kubebrain-peer.kubebrain-dev.svc:3380,"+
+			"kubebrain-1=http://kubebrain-1.kubebrain-peer.kubebrain-dev.svc:3380,"+
+			"kubebrain-2=http://kubebrain-2.kubebrain-peer.kubebrain-dev.svc:3380",
+	)
+
+	peer := objectByKindAndName(t, objects, "Service", "kubebrain-peer")
+	require.Equal(t, "None", nestedString(t, peer, "spec", "clusterIP"))
+	require.True(t, nestedBool(t, peer, "spec", "publishNotReadyAddresses"))
+	client := objectByKindAndName(t, objects, "Service", "kubebrain")
+	require.Equal(t, "NodePort", nestedString(t, client, "spec", "type"))
+}
+
 func expectedInitialCluster(scheme string) string {
 	return "kubebrain-0=" + scheme + "://kubebrain-0.kubebrain-peer.kubebrain-system.svc:3380," +
 		"kubebrain-1=" + scheme + "://kubebrain-1.kubebrain-peer.kubebrain-system.svc:3380," +

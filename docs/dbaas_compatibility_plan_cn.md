@@ -2326,6 +2326,31 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   服务二进制；在线集群继续运行 `kubebrain:a132-txn-range-first-revision`，
   exact image 仍为
   `33b23b61fdfdd3ecceaa8256502e6ce442c1174be6f9f33b1e5e8e5627c0e001`。
+- **Cluster A136 complete static membership / official client Sync
+  （2026-07-18）**：修复前开发环境虽有 3 个 Ready Deployment Pod，
+  `MemberList` 只能从本地配置推导当前成员与 leader，实际仅返回 2 个成员。生产
+  manifest 已使用 3 副本 StatefulSet、headless peer Service 和完整
+  `--initial-cluster`；本轮把开发 manifest 对齐到相同拓扑，为
+  `kubebrain-{0,1,2}.kubebrain-peer.kubebrain-dev.svc` 提供稳定 peer/client
+  地址，并增加 manifest 回归测试，防止再次部署无完整成员配置的多副本
+  Deployment。
+
+  新增 `MemberListRequest.Linearizable=false/true` raw 双端差分，验证 header
+  revision 为 0、cluster/member ID 非零、raft term 为正、当前成员与 leader
+  均在列表内，且成员具备完整 name、peer URL、client URL；reference etcd 返回
+  1 个成员，KubeBrain 精确返回配置的 3 个成员。连续 10 轮及 race 3 轮通过。
+  官方 client `Sync` 测试分层为：宿主机验证同步结果精确等于公告地址后恢复
+  NodePort 入口继续数据面 smoke；Pod 内设置
+  `KUBEBRAIN_MEMBERLIST_ENDPOINTS_DIALABLE=1`，连续 10 轮直接拨通同步后的
+  `.svc` 地址。跨成员 `Status/HashKV` 一致性也仅在公告地址可拨通的环境启用，
+  Pod 内连续 10 轮通过，覆盖全部 3 个 serving member。
+
+  完整 compat suite 用时 101.980s，`go test ./...`、根模块与 compat module
+  `go vet ./...`、backend race（53.919s）及完整 server race（222.673s）通过。
+  StatefulSet 为 3/3 Ready、3 updated、zero restart，`/health` 与 `/readyz`
+  正常，`MemberList` 精确返回 3 个稳定成员。本轮不改变服务二进制，继续运行
+  `kubebrain:a132-txn-range-first-revision`，exact image 为
+  `33b23b61fdfdd3ecceaa8256502e6ce442c1174be6f9f33b1e5e8e5627c0e001`。
 
 ### P1：通用服务能力
 

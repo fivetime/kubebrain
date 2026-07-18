@@ -240,6 +240,10 @@ func TestMaintenanceHashKVStaysStableAcrossPhysicalCompaction(t *testing.T) {
 }
 
 func TestMaintenanceHashKVMatchesAcrossMembers(t *testing.T) {
+	if os.Getenv("KUBEBRAIN_MEMBERLIST_ENDPOINTS_DIALABLE") != "1" {
+		t.Skip("set KUBEBRAIN_MEMBERLIST_ENDPOINTS_DIALABLE=1 where advertised member endpoints are dialable")
+	}
+
 	endpoint := compatEndpoint()
 	cli, err := clientv3.New(clientv3.Config{Endpoints: []string{endpoint}, DialTimeout: 3 * time.Second})
 	require.NoError(t, err)

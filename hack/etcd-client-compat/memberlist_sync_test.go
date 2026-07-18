@@ -4,12 +4,90 @@ import (
 	"context"
 	"os"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 )
+
+type memberListFlagOutcome struct {
+	Linearizable       bool
+	HeaderRevisionZero bool
+	ClusterIDNonZero   bool
+	MemberIDNonZero    bool
+	RaftTermPositive   bool
+	LocalMemberListed  bool
+	LeaderListed       bool
+	MembersWellFormed  bool
+}
+
+func TestMemberListFlagsDifferentialAgainstReferenceEtcd(t *testing.T) {
+	reference := os.Getenv("REFERENCE_ETCD_ENDPOINT")
+	if reference == "" {
+		t.Skip("set REFERENCE_ETCD_ENDPOINT to run differential compatibility tests")
+	}
+
+	referenceOutcomes, referenceCount := memberListFlagOutcomes(t, reference)
+	kubebrainOutcomes, kubebrainCount := memberListFlagOutcomes(t, compatEndpoint())
+	require.Equal(t, referenceOutcomes, kubebrainOutcomes)
+	require.Equal(t, []memberListFlagOutcome{
+		{
+			HeaderRevisionZero: true, ClusterIDNonZero: true, MemberIDNonZero: true,
+			RaftTermPositive: true, LocalMemberListed: true, LeaderListed: true, MembersWellFormed: true,
+		},
+		{
+			Linearizable: true, HeaderRevisionZero: true, ClusterIDNonZero: true, MemberIDNonZero: true,
+			RaftTermPositive: true, LocalMemberListed: true, LeaderListed: true, MembersWellFormed: true,
+		},
+	}, kubebrainOutcomes)
+	require.Equal(t, 1, referenceCount)
+	require.Equal(t, 3, kubebrainCount)
+}
+
+func memberListFlagOutcomes(t *testing.T, endpoint string) ([]memberListFlagOutcome, int) {
+	t.Helper()
+	endpoint = strings.TrimPrefix(strings.TrimPrefix(endpoint, "http://"), "https://")
+	conn, err := grpc.NewClient(endpoint, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	cluster := etcdserverpb.NewClusterClient(conn)
+	maintenance := etcdserverpb.NewMaintenanceClient(conn)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	statusResp, err := maintenance.Status(ctx, &etcdserverpb.StatusRequest{})
+	require.NoError(t, err)
+	outcomes := make([]memberListFlagOutcome, 0, 2)
+	memberCount := 0
+	for _, linearizable := range []bool{false, true} {
+		resp, listErr := cluster.MemberList(ctx, &etcdserverpb.MemberListRequest{Linearizable: linearizable})
+		require.NoError(t, listErr)
+		if memberCount == 0 {
+			memberCount = len(resp.Members)
+		} else {
+			require.Equal(t, memberCount, len(resp.Members))
+		}
+		localListed, leaderListed, wellFormed := false, false, len(resp.Members) > 0
+		for _, member := range resp.Members {
+			localListed = localListed || member.ID == resp.Header.MemberId
+			leaderListed = leaderListed || member.ID == statusResp.Leader
+			wellFormed = wellFormed && member.ID != 0 && member.Name != "" &&
+				len(member.PeerURLs) > 0 && len(member.ClientURLs) > 0 && !member.IsLearner
+		}
+		outcomes = append(outcomes, memberListFlagOutcome{
+			Linearizable: linearizable, HeaderRevisionZero: resp.Header.Revision == 0,
+			ClusterIDNonZero: resp.Header.ClusterId != 0, MemberIDNonZero: resp.Header.MemberId != 0,
+			RaftTermPositive: resp.Header.RaftTerm > 0, LocalMemberListed: localListed,
+			LeaderListed: leaderListed, MembersWellFormed: wellFormed,
+		})
+	}
+	return outcomes, memberCount
+}
 
 func TestMemberListHeaderDifferentialAgainstReferenceEtcd(t *testing.T) {
 	reference := os.Getenv("REFERENCE_ETCD_ENDPOINT")
@@ -68,6 +146,15 @@ func TestMemberListSupportsOfficialClientSync(t *testing.T) {
 	sort.Strings(expected)
 	sort.Strings(actual)
 	require.Equal(t, expected, actual)
+
+	// Production MemberList advertises stable cluster DNS names. A test launched
+	// on the host can verify the Sync result but cannot resolve *.svc; restore the
+	// ingress endpoint for its data-plane smoke. The explicit opt-in is exercised
+	// by the in-cluster probe, which must prove the synchronized endpoints are
+	// independently dialable.
+	if os.Getenv("KUBEBRAIN_MEMBERLIST_ENDPOINTS_DIALABLE") != "1" {
+		cli.SetEndpoints(compatEndpoint())
+	}
 
 	// The synchronized set may include a configured member that is currently
 	// down, as etcd membership does. gRPC must still select a ready replica.
