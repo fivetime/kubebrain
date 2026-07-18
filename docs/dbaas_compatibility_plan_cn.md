@@ -3574,6 +3574,27 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `sha256:fbc158669052addea02d2567c7ed8402920dad321021036914b4f066dbbe1bc2`；
   顺序滚动后 3 KubeBrain、3 PD、3 TiKV 均 Ready 且零重启，endpoint proposal health
   成功。
+- **Compatibility A209 leasing range/Txn ownership（2026-07-18）**：
+  继续对照 `/root/etcd/tests/integration/clientv3/lease/leasing_test.go` 的
+  `TestLeasingTxnOwnerGetRange`、`TestLeasingTxnOwnerDeleteRange`、
+  `TestLeasingTxnRangeCmp` 和 nested non-owner put 契约，补齐 point-key A208 未覆盖的
+  prefix/range 路径。差分使用两个独立 leasing client：先缓存 4-key prefix（其中一个
+  key Version=2），验证 `Version(prefix)==1` range compare 必须失败；另一 client 再用
+  nested Txn 同 revision 更新已有 key并创建新 key，原 owner 的 prefix cache 必须看到
+  5 个最新 value。
+
+  随后 non-owner leasing client 对该 prefix 执行 DeleteRange。返回 Deleted=5，历史
+  watch 收到 5 个 DELETE event 且所有 ModRevision 等于 delete header revision；原 owner
+  再读 prefix 为空，范围外 sentinel 保持不变。该场景同时穿过 leasing 的 range ownership
+  revoke、guard range compare、nested Txn response rebuild、staged range execution、
+  atomic range delete、watch history 和跨 client cache invalidation。
+
+  参考 etcd 与真实 TiKV-backed KubeBrain 连续 5 轮通过；point/range 两组 leasing
+  差分在真实 endpoint 下 race 3 轮通过，compat module 全量 vet 通过，服务端
+  BeginRangeTxn ownership、nested/range Txn 回归连续 20 轮通过。A208 的 logical
+  exclusive context 覆盖全部 mutation stripes 已足以处理这些范围路径，本轮未发现新的
+  服务端差异，只补齐上游 leasing range 客户端证据。运行镜像继续为 committed-source
+  `kubebrain:a208-leasing-lock-order`；3 KubeBrain、3 PD、3 TiKV 保持 Ready、零重启。
 - **Operations A185 certificate rotation completion state（2026-07-18）**：新增
   `hack/production/validate-certificate-rotation.sh`，把 client/peer CA rollover
   收敛为 `begin -> overlap -> complete` 三阶段门禁。begin 固定全部 KubeBrain Pod
