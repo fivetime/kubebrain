@@ -121,12 +121,16 @@ func TestMemberMutationIsUnsupported(t *testing.T) {
 	ctx := context.Background()
 	_, err := server.MemberAdd(ctx, &etcdserverpb.MemberAddRequest{})
 	require.Equal(t, codes.Unimplemented, status.Code(err))
+	require.Equal(t, memberMutationUnsupportedMessage, status.Convert(err).Message())
 	_, err = server.MemberRemove(ctx, &etcdserverpb.MemberRemoveRequest{})
 	require.Equal(t, codes.Unimplemented, status.Code(err))
+	require.Equal(t, memberMutationUnsupportedMessage, status.Convert(err).Message())
 	_, err = server.MemberUpdate(ctx, &etcdserverpb.MemberUpdateRequest{})
 	require.Equal(t, codes.Unimplemented, status.Code(err))
+	require.Equal(t, memberMutationUnsupportedMessage, status.Convert(err).Message())
 	_, err = server.MemberPromote(ctx, &etcdserverpb.MemberPromoteRequest{})
 	require.Equal(t, codes.Unimplemented, status.Code(err))
+	require.Equal(t, memberMutationUnsupportedMessage, status.Convert(err).Message())
 }
 
 func TestMemberListLinearizableUsesReadBarrier(t *testing.T) {

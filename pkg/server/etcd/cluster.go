@@ -147,7 +147,7 @@ func (s *RPCServer) MemberAdd(ctx context.Context, _ *etcdserverpb.MemberAddRequ
 	if err := s.requireAuthenticated(ctx, true); err != nil {
 		return nil, err
 	}
-	return nil, status.Error(codes.Unimplemented, "member add is not supported")
+	return nil, status.Error(codes.Unimplemented, memberMutationUnsupportedMessage)
 }
 
 // MemberRemove removes an existing member from the cluster.
@@ -156,7 +156,7 @@ func (s *RPCServer) MemberRemove(ctx context.Context, _ *etcdserverpb.MemberRemo
 	if err := s.requireAuthenticated(ctx, true); err != nil {
 		return nil, err
 	}
-	return nil, status.Error(codes.Unimplemented, "member remove is not supported")
+	return nil, status.Error(codes.Unimplemented, memberMutationUnsupportedMessage)
 }
 
 // MemberUpdate updates the peer addresses of the member.
@@ -165,7 +165,7 @@ func (s *RPCServer) MemberUpdate(ctx context.Context, _ *etcdserverpb.MemberUpda
 	if err := s.requireAuthenticated(ctx, true); err != nil {
 		return nil, err
 	}
-	return nil, status.Error(codes.Unimplemented, "member update is not supported")
+	return nil, status.Error(codes.Unimplemented, memberMutationUnsupportedMessage)
 }
 
 // MemberPromote promotes a member from raft learner (non-voting) to raft voting member.
@@ -174,7 +174,7 @@ func (s *RPCServer) MemberPromote(ctx context.Context, _ *etcdserverpb.MemberPro
 	if err := s.requireAuthenticated(ctx, true); err != nil {
 		return nil, err
 	}
-	return nil, status.Error(codes.Unimplemented, "member promote is not supported")
+	return nil, status.Error(codes.Unimplemented, memberMutationUnsupportedMessage)
 }
 
 func memberURLFromAddress(address string) string {

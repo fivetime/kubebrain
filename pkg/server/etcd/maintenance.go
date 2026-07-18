@@ -71,7 +71,7 @@ func (s *RPCServer) Alarm(ctx context.Context, req *etcdserverpb.AlarmRequest) (
 		if err := s.requireAuthenticated(ctx, true); err != nil {
 			return nil, err
 		}
-		return nil, status.Error(codes.Unimplemented, "alarm mutation is managed by the TiKV/PD DBaaS control plane")
+		return nil, status.Error(codes.Unimplemented, alarmMutationUnsupportedMessage)
 	}
 	return &etcdserverpb.AlarmResponse{
 		Header: s.maintenanceHeader(),
@@ -191,7 +191,7 @@ func (s *RPCServer) Snapshot(_ *etcdserverpb.SnapshotRequest, stream etcdserverp
 	if err := s.requireAuthenticated(stream.Context(), true); err != nil {
 		return err
 	}
-	return status.Errorf(codes.Unimplemented, "snapshot is not supported")
+	return status.Error(codes.Unimplemented, snapshotUnsupportedMessage)
 }
 
 func (s *RPCServer) MoveLeader(ctx context.Context, _ *etcdserverpb.MoveLeaderRequest) (*etcdserverpb.MoveLeaderResponse, error) {
@@ -199,7 +199,7 @@ func (s *RPCServer) MoveLeader(ctx context.Context, _ *etcdserverpb.MoveLeaderRe
 	if err := s.requireAuthenticated(ctx, true); err != nil {
 		return nil, err
 	}
-	return nil, status.Errorf(codes.Unimplemented, "move leader is not supported")
+	return nil, status.Error(codes.Unimplemented, moveLeaderUnsupportedMessage)
 }
 
 func (s *RPCServer) Downgrade(ctx context.Context, _ *etcdserverpb.DowngradeRequest) (*etcdserverpb.DowngradeResponse, error) {
@@ -207,7 +207,7 @@ func (s *RPCServer) Downgrade(ctx context.Context, _ *etcdserverpb.DowngradeRequ
 	if err := s.requireAuthenticated(ctx, true); err != nil {
 		return nil, err
 	}
-	return nil, status.Errorf(codes.Unimplemented, "downgrade is not supported")
+	return nil, status.Error(codes.Unimplemented, downgradeUnsupportedMessage)
 }
 
 func (s *RPCServer) requireAuthenticated(ctx context.Context, root bool) error {

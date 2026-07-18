@@ -10,10 +10,56 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 const defaultEtcdBackendQuota int64 = 2 * 1024 * 1024 * 1024
+
+func TestPlatformManagedOperationsReturnActionableErrors(t *testing.T) {
+	endpoint := compatEndpoint()
+	cli, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{endpoint},
+		DialTimeout: 3 * time.Second,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, cli.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	const (
+		memberMessage     = "KubeBrain replicas are stateless; scale or reconfigure them through the DBaaS control plane"
+		alarmMessage      = "etcd alarm mutation does not represent TiKV capacity; use PD/TiKV alerts and DBaaS remediation"
+		snapshotMessage   = "etcd snapshot is unavailable on TiKV; use the DBaaS logical backup and restore workflow"
+		moveLeaderMessage = "KubeBrain leadership is managed automatically; use DBaaS rollout or failover orchestration"
+		downgradeMessage  = "in-place etcd protocol downgrade is unavailable; use a DBaaS versioned rollout or rollback"
+	)
+	requirePlatformError := func(t *testing.T, err error, message string) {
+		t.Helper()
+		require.Equal(t, codes.Unimplemented, status.Code(err))
+		require.Equal(t, message, status.Convert(err).Message())
+	}
+
+	_, err = cli.MemberAdd(ctx, []string{"http://127.0.0.1:12380"})
+	requirePlatformError(t, err, memberMessage)
+	_, err = cli.MemberRemove(ctx, 1)
+	requirePlatformError(t, err, memberMessage)
+	_, err = cli.MemberUpdate(ctx, 1, []string{"http://127.0.0.1:12380"})
+	requirePlatformError(t, err, memberMessage)
+	_, err = cli.MemberPromote(ctx, 1)
+	requirePlatformError(t, err, memberMessage)
+
+	_, err = cli.AlarmDisarm(ctx, &clientv3.AlarmMember{MemberID: 1, Alarm: etcdserverpb.AlarmType_NOSPACE})
+	requirePlatformError(t, err, alarmMessage)
+	_, err = cli.SnapshotWithVersion(ctx)
+	requirePlatformError(t, err, snapshotMessage)
+	_, err = cli.MoveLeader(ctx, 1)
+	requirePlatformError(t, err, moveLeaderMessage)
+	_, err = cli.Downgrade(ctx, clientv3.DowngradeValidate, "3.7.0")
+	requirePlatformError(t, err, downgradeMessage)
+}
 
 func TestMaintenanceStatusMetadataMatchesReferenceEtcd(t *testing.T) {
 	reference := os.Getenv("REFERENCE_ETCD_ENDPOINT")

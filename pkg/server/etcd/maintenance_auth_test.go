@@ -40,6 +40,7 @@ func TestMaintenanceAuthorizationMatchesEtcd(t *testing.T) {
 	require.ErrorIs(t, err, rpctypes.ErrPermissionDenied)
 	_, err = server.Alarm(rootCtx, &etcdserverpb.AlarmRequest{Action: etcdserverpb.AlarmRequest_ACTIVATE})
 	require.Equal(t, codes.Unimplemented, status.Code(err))
+	require.Equal(t, alarmMutationUnsupportedMessage, status.Convert(err).Message())
 
 	_, err = server.HashKV(aliceCtx, &etcdserverpb.HashKVRequest{})
 	require.ErrorIs(t, err, rpctypes.ErrPermissionDenied)
@@ -65,13 +66,16 @@ func TestMaintenanceAuthorizationMatchesEtcd(t *testing.T) {
 	require.ErrorIs(t, err, rpctypes.ErrPermissionDenied)
 	err = server.Snapshot(&etcdserverpb.SnapshotRequest{}, &maintenanceSnapshotServer{ctx: rootCtx})
 	require.Equal(t, codes.Unimplemented, status.Code(err))
+	require.Equal(t, snapshotUnsupportedMessage, status.Convert(err).Message())
 
 	_, err = server.MoveLeader(aliceCtx, &etcdserverpb.MoveLeaderRequest{})
 	require.ErrorIs(t, err, rpctypes.ErrPermissionDenied)
 	_, err = server.MoveLeader(rootCtx, &etcdserverpb.MoveLeaderRequest{})
 	require.Equal(t, codes.Unimplemented, status.Code(err))
+	require.Equal(t, moveLeaderUnsupportedMessage, status.Convert(err).Message())
 	_, err = server.Downgrade(aliceCtx, &etcdserverpb.DowngradeRequest{})
 	require.ErrorIs(t, err, rpctypes.ErrPermissionDenied)
 	_, err = server.Downgrade(rootCtx, &etcdserverpb.DowngradeRequest{})
 	require.Equal(t, codes.Unimplemented, status.Code(err))
+	require.Equal(t, downgradeUnsupportedMessage, status.Convert(err).Message())
 }
