@@ -3715,6 +3715,26 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   compat module 全量 vet 通过。backend nested/Txn/branch/range transaction 回归连续
   10 轮约 35.2 秒、server/etcd 对应回归连续 10 轮约 18.0 秒通过。本轮未发现新的服务端
   语义差异，运行镜像继续为 `kubebrain:a208-leasing-lock-order`。
+- **Compatibility A217 leasing range-delete bounds/contention（2026-07-18）**：
+  对照上游 `TestLeasingDeleteRangeBounds`、
+  `TestLeasingDeleteRangeContendTxn` 和 `TestLeaseDeleteRangeContendDel`。边界场景由
+  reader leasing client 缓存 `j/m` 并建立 owner，另一 client 删除 `k*`；`j/m` value
+  必须保留，owner namespace 中两个 lease key 也必须仍存在，证明 range ownership
+  计算没有越过请求边界。
+
+  争用场景分别执行直接 prefix Delete 和 nested Txn 内 prefix Delete。独立 writer
+  在删除前已完成至少一次 Put/Get，并持续轮转更新 8 个 key；删除返回后通过非取消
+  stop channel 让当前操作自然完成，避免把预期 Canceled 重试混入证据。无论某个 key
+  最终被删除还是被并发 Put 重建，writer leasing cache 的完整 key/value/revision/
+  version/lease 元数据都必须逐 key 与服务端直读一致，两类 `Do` response 也必须分别
+  保留 Delete/Txn 类型。
+
+  初版带 context cancel 的 reference/KubeBrain 差分连续 5 轮约 33.4 秒通过；最终无
+  cancel 噪声版本连续 3 轮约 20.9 秒通过。A209 range 与 A217 range-contention 差分
+  在真实 endpoint 下 race 3 轮约 24.2 秒通过，compat module 全量 vet 通过。backend
+  DeleteRange/range transaction/mutation/TxnApply 回归连续 10 轮约 38.0 秒、
+  server/etcd 对应回归连续 10 轮约 16.2 秒通过。本轮未发现新的服务端语义差异，运行
+  镜像继续为 `kubebrain:a208-leasing-lock-order`。
 - **Operations A185 certificate rotation completion state（2026-07-18）**：新增
   `hack/production/validate-certificate-rotation.sh`，把 client/peer CA rollover
   收敛为 `begin -> overlap -> complete` 三阶段门禁。begin 固定全部 KubeBrain Pod
