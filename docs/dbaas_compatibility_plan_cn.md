@@ -3442,6 +3442,43 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   已有 deletion receipt 后幂等成功；canonical backup/audit receipts 均可生成 inventory
   manifest。对真实 upload receipt 注入 unknown field、对 audit receipt追加第二个 JSON
   值后均非零退出且不发布 manifest，远端状态未改变。
+- **Operations A204 two-party high-risk operation approval（2026-07-18）**：
+  现有 A196 submitter 虽已与 worker 分离，但仍能直接提交 Destroy、恢复切流、证书轮换和
+  到期备份删除，worker 会立即 claim，缺少独立批准者。新增
+  `kubebrain-operation-approver` ServiceAccount/Role/RoleBinding；该身份不能 create、
+  delete、修改 status 或 Lease，只能 get/list/watch/update 已存在 operation。submitter
+  继续只能 create/read，worker 继续只能读主资源、写 status 和持有 Lease，三个身份
+  互不兼任且都没有扩大到数据面资源。
+
+  `RestoreCutover`、`CertificateRotation`、`Destroy`、`BackupDeletion` 被列为高风险。
+  新 operation 一律禁止携带预批准 annotation；未批准的高风险 operation 可以持久排队，
+  但 queue 不 claim、不创建实例 Lease、也不消耗 attempt。新增
+  `operationctl --action approve --approval-id <decision>`，只允许 Pending 高风险
+  operation，写入 `approved-by` 和外部 decision ID；相同证据重试幂等，不同证据拒绝
+  覆盖。admission 以 `request.userInfo.username` 要求首次批准者必须精确为独立 approver
+  ServiceAccount，decision ID 必须是最长 128 字节 DNS-compatible ID，批准后两个字段
+  不可撤销或修改。queue 还独立复核固定 approver username 和 ID，即使 admission
+  被误删也不会执行任意伪造 annotation。终态 `kubebrain.operation-audit.v1` 把
+  approved-by/approval-id 纳入 canonical artifact；四种高风险类型缺失或伪造审批证据
+  均不能归档和 release finalizer，低风险类型也拒绝携带误导性的审批字段。
+
+  单元测试覆盖四类高风险 operation 未批准不可 claim、批准后 attempt 1、伪造/半份
+  approval 不生效、Pending-only、批准幂等/冲突、低风险拒绝多余批准和非法 decision ID；
+  清单测试固定 approver 的精确 namespaced RBAC 及 admission 五条门禁。完整 production
+  test、queue/operationaudit race、vet 和 API Server server-side CEL/RBAC dry-run 通过。
+
+  真实 `kind-kubebrain-dbaas` 使用 submitter、approver、worker 三枚 10 分钟短期
+  ServiceAccount token：submitter 创建未批准 Destroy 成功但无 update 权限；worker
+  claim 返回无任务专用退出码 3 且 attempt 未增加；集群管理员伪造正确 approver 字符串
+  仍被 `request.userInfo.username` 门禁拒绝；携带 approval 的 CREATE 也被拒绝。独立
+  approver 写入 `change-a204` 后 worker 才取得 attempt 1。测试 operation 转 Failed 后
+  approval 修改仍被拒绝，随后 Object Lock 审计归档、finalizer release 和 exact-version
+  到期清理完成。第二个真实 Destroy 终态 artifact 明确保存固定 approver username 和
+  `change-a204-audit`，归档 exact version
+  `a80ded08-07e3-4edf-a4bf-180494c46f94` 到期后也已清理；operation/Lease/对象残留为 0。
+  `auth can-i --subresource=status` 进一步确认 approver 的 status get/update/patch 均为
+  `no`。该项完成 Kubernetes 原生两方审批门禁；
+  外部管理 API 的 OIDC、租户到 instance 授权和审批系统 decision 签名/回查仍属 P1。
 - **Operations A185 certificate rotation completion state（2026-07-18）**：新增
   `hack/production/validate-certificate-rotation.sh`，把 client/peer CA rollover
   收敛为 `begin -> overlap -> complete` 三阶段门禁。begin 固定全部 KubeBrain Pod
@@ -3541,7 +3578,7 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
    Kubernetes 原生提交者与 worker 最小权限身份已分离，单 namespace 跨实例公平调度和
    实例互斥、终态
    operation 的 Object Lock 不可变归档及 finalizer/删除门禁均已完成；继续补外部管理
-   API 的 OIDC/租户授权、请求审批、跨 bucket/account 汇总、跨 namespace/region
+   API 的 OIDC/租户授权、跨 bucket/account 汇总、跨 namespace/region
    全局调度和管理面 HA soak。
 4. 建立实例级限额和计量：请求字节、txn 操作数、跨连接 client RPC 总并发、client
    请求 QPS/burst、逻辑 Watch 总数、CPU/内存饱和、网络错误/丢包及 PD/TiKV PVC 容量
