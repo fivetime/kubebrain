@@ -3126,8 +3126,8 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   A190 receipt SHA-256 提交终态。真实 CRD→claim→A190 2 秒/3 样本→finish 链路以
   attempt 1 完成，status receipt digest
   `a1a8333123fcb2912603d7e416124c5f9e5f2eb393d62776a21ae7686c3ad245`，
-  探针 prefix 零残留。A192/A193 已接入 Backup/RestoreCutover；CertificateRotation/Destroy
-  executor、管理 API 认证授权、跨实例公平调度和审计聚合仍是 P1。
+  探针 prefix 零残留。A192-A195 已接入 Backup/RestoreCutover/CertificateRotation/
+  Destroy executor；管理 API 认证授权、跨实例公平调度和审计聚合仍是 P1。
 - **Operations A192 protected Backup operation executor（2026-07-18）**：新增
   `hack/production/run-backup-operation.sh`，只 claim `Backup` operation 并核对完整参数
   JSON SHA-256。参数固定数据 endpoint/prefix、operation 专属 artifact/receipt 路径、
@@ -3168,7 +3168,7 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Service 最终 selector=`target`，A189 receipt 的 endpoint UID/data flags 均为 true，
   operation attempt 1 Succeeded，status receipt digest
   `bd762c609c849ad2fcf6f66cfe0955383c7f78fddc7f07d631fe177195a1bdf0`；测试 prefix 与
-  namespace 已清理。A194 已接入 CertificateRotation；Destroy executor 仍是 P1。
+  namespace 已清理。A194/A195 已接入 CertificateRotation/Destroy。
 - **Operations A194 resumable CertificateRotation executor（2026-07-18）**：新增
   `hack/production/run-certificate-rotation-operation.sh`。operation 参数除旧/新/overlap
   CA、client cert/key 路径外还绑定每个文件 SHA-256，发布前逐文件复算；固定路径内容漂移
@@ -3191,7 +3191,31 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   本轮真实 hook 首次还暴露 Bash `kill -0` 会把未 wait zombie 视作存活并无限 heartbeat；
   Backup、PostRestoreAudit、RestoreCutover、CertificateRotation 四个 executor 已统一改为
   主进程 wait 工作子进程、独立 heartbeat 续租，结束后回收 heartbeat，fencing 时由
-  heartbeat 杀工作进程。A185 同时补显式 KUBECONFIG_PATH。Destroy executor 仍是 P1。
+  heartbeat 杀工作进程。A185 同时补显式 KUBECONFIG_PATH。
+- **Operations A195 resumable Destroy executor（2026-07-18）**：新增
+  `hack/production/run-destroy-operation.sh`，只 claim `Destroy` operation，并把 A187
+  state/backup/receipt 路径、备份文件 SHA-256、逻辑 prefix/freshness/record gate、
+  KubeBrain/TidbCluster 身份、期望 PVC 数量和超时参数完整绑定到 operation 参数摘要。
+  worker 在任何删除前复算参数文件与备份字节摘要，并要求确认令牌精确等于
+  `destroy:<instance>:<operation_id>`；错误确认直接进入 Failed，备份字节漂移 requeue，
+  两者都不会启动 prepare。
+
+  执行器按 prepare→quiesce→destroy→complete 驱动 A187，每阶段由独立 heartbeat
+  续租；fencing 会终止当前子进程且不再修改 operation 状态。接管时根据不可变 state、
+  quiesced、destroyed marker 或 receipt 从最早安全阶段恢复；A187 的 UID precondition
+  与 NotFound 幂等语义保证部分删除后可继续，成功状态绑定最终 destroy receipt
+  SHA-256。mock 覆盖完整生命周期、四阶段逐点失败、四类证据恢复、错误确认、备份漂移
+  和 heartbeat fencing。
+
+  真实 `kind-kubebrain-dbaas` 演练提交 operation `a195-destroy-1`，从
+  `/dbaas/a195-destroy-proof/` 导出 1-record artifact（revision
+  `467764733078405165`，artifact 内部 digest
+  `3c80d5a71ef90eeba3d3d0de180c0e26f62757a4d2989f0761a1f882569d1fdf`），对独立
+  KubeBrain namespace、暂停 TidbCluster 和 2 PVC 执行四阶段。12 次删除均由 API
+  接受 UID precondition，固定资源、PVC 和存储 workload 残留均为 0；operation
+  attempt 1 Succeeded，status receipt digest
+  `b760a9860fef9326f52ae4360d8b2cb4b674208c6f3280e47770c568d9b54171`。
+  隔离 namespace 与测试 key 随后清理。
 - **Operations A185 certificate rotation completion state（2026-07-18）**：新增
   `hack/production/validate-certificate-rotation.sh`，把 client/peer CA rollover
   收敛为 `begin -> overlap -> complete` 三阶段门禁。begin 固定全部 KubeBrain Pod
@@ -3284,9 +3308,9 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
    recipe 已通过；继续增加长时间 soak。
 3. DBaaS 创建、扩缩、升级的数据面 release gate、备份完成 gate、Object Lock
    上传/保留删除、恢复验证 receipt、UID-fenced 流量切换、恢复后持续审计、证书轮换
-   gate、UID-fenced 销毁状态机及持久 operation API/worker fencing 已建立；继续接入
-   Destroy executor，完成专属 namespace/凭据外围
-   清理、bucket lifecycle/inventory 对账，
+   gate、UID-fenced 销毁状态机及持久 operation API/worker fencing、Backup/
+   RestoreCutover/CertificateRotation/Destroy executors 已建立；继续完成专属
+   namespace/凭据外围清理、bucket lifecycle/inventory 对账，
    并补 API 认证授权、不可变审计归档、跨实例公平调度和管理面 HA soak。
 4. 建立实例级限额和计量：请求字节、txn 操作数、跨连接 client RPC 总并发、client
    请求 QPS/burst、逻辑 Watch 总数、CPU/内存饱和、网络错误/丢包及 PD/TiKV PVC 容量
