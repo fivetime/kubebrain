@@ -3660,6 +3660,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   backend Txn/mutation/range/watch 回归连续 10 轮约 48.9 秒、server/etcd 对应回归连续
   10 轮约 51.3 秒通过。本轮未发现新的服务端语义差异，运行镜像继续为
   `kubebrain:a208-leasing-lock-order`。
+- **Compatibility A214 leasing ambiguous mutation matrix（2026-07-18）**：
+  继续展开上游 `TestLeasingReconnectOwnerConsistency` 的随机操作矩阵，在 A213
+  owner Put 之外，确定性覆盖 owner Delete、Txn(Get+Put)、Txn(Get+Delete)、
+  `Do(Put)` 和 `Do(Delete)`。每项均先建立 owner/cache，再仅 blackhole
+  server-to-client response；直连 client 必须先证明目标 mutation 已提交，bridge
+  必须记录新增丢弃字节，owner 调用必须 DeadlineExceeded，恢复后 leasing Get 的完整
+  key/value/revision/version/lease 元数据必须与直读一致。
+
+  leasing prefix delete 在最终 Txn 前包含 Range RPC；纯 TCP response blackhole 会先
+  截断该前置响应，因此不能确定性制造“range delete 已提交但最终 response 丢失”。
+  本轮没有用延时切换制造时序型假证据：prefix/range delete 的原子语义由 A209 覆盖，
+  compacted watch 断连恢复由 A212 覆盖，而 committed-but-unacknowledged 结论严格限于
+  本轮五项和 A213 Put。
+
+  reference etcd 与真实 TiKV-backed KubeBrain 五操作矩阵连续 3 轮约 27.3 秒通过；
+  A213/A214 两组 ambiguous mutation 差分在真实 endpoint 下 race 3 轮约 34.5 秒通过，
+  compat module 全量 vet 通过。backend Txn/Delete/mutation/range transaction 回归
+  连续 10 轮约 38.3 秒、server/etcd 对应回归连续 10 轮约 58.4 秒通过。本轮未发现新的
+  服务端语义差异，运行镜像继续为 `kubebrain:a208-leasing-lock-order`。
 - **Operations A185 certificate rotation completion state（2026-07-18）**：新增
   `hack/production/validate-certificate-rotation.sh`，把 client/peer CA rollover
   收敛为 `begin -> overlap -> complete` 三阶段门禁。begin 固定全部 KubeBrain Pod
