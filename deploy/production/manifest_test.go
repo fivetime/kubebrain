@@ -122,6 +122,59 @@ func TestProductionMonitoringTracksStatefulSetReadiness(t *testing.T) {
 	require.NotContains(t, readinessRule["expr"], "kube_deployment_")
 }
 
+func TestProductionTiDBClusterProvidesDurableHAStorage(t *testing.T) {
+	objects := decodeManifest(t, "tidb-cluster.yaml")
+	cluster := objectByKindAndName(t, objects, "TidbCluster", "kb")
+	require.Equal(t, "v8.5.3", nestedString(t, cluster, "spec", "version"))
+	require.Equal(t, "Retain", nestedString(t, cluster, "spec", "pvReclaimPolicy"))
+	require.True(t, nestedBool(t, cluster, "spec", "enableDynamicConfiguration"))
+	require.Equal(t, "RollingUpdate", nestedString(t, cluster, "spec", "configUpdateStrategy"))
+
+	for _, component := range []struct {
+		name             string
+		terminationGrace int64
+		cpuRequest       string
+		memoryRequest    string
+		storageRequest   string
+		cpuLimit         string
+		memoryLimit      string
+	}{
+		{name: "pd", terminationGrace: 60, cpuRequest: "1", memoryRequest: "2Gi", storageRequest: "100Gi", cpuLimit: "2", memoryLimit: "4Gi"},
+		{name: "tikv", terminationGrace: 300, cpuRequest: "4", memoryRequest: "8Gi", storageRequest: "500Gi", cpuLimit: "8", memoryLimit: "16Gi"},
+	} {
+		t.Run(component.name, func(t *testing.T) {
+			require.EqualValues(t, 3, nestedInt64(t, cluster, "spec", component.name, "replicas"))
+			require.EqualValues(t, 3, nestedInt64(t, cluster, "spec", component.name, "maxFailoverCount"))
+			require.Equal(t, "RollingUpdate", nestedString(t, cluster, "spec", component.name, "statefulSetUpdateStrategy"))
+			require.EqualValues(t, component.terminationGrace,
+				nestedInt64(t, cluster, "spec", component.name, "terminationGracePeriodSeconds"))
+			require.Equal(t, component.cpuRequest, nestedString(t, cluster, "spec", component.name, "requests", "cpu"))
+			require.Equal(t, component.memoryRequest, nestedString(t, cluster, "spec", component.name, "requests", "memory"))
+			require.Equal(t, component.storageRequest, nestedString(t, cluster, "spec", component.name, "requests", "storage"))
+			require.Equal(t, component.cpuLimit, nestedString(t, cluster, "spec", component.name, "limits", "cpu"))
+			require.Equal(t, component.memoryLimit, nestedString(t, cluster, "spec", component.name, "limits", "memory"))
+
+			antiAffinity, found, err := unstructured.NestedSlice(
+				cluster.Object, "spec", component.name, "affinity", "podAntiAffinity",
+				"requiredDuringSchedulingIgnoredDuringExecution",
+			)
+			require.NoError(t, err)
+			require.True(t, found)
+			require.Len(t, antiAffinity, 1)
+			require.Equal(t, "kubernetes.io/hostname",
+				nestedString(t, &unstructured.Unstructured{Object: antiAffinity[0].(map[string]any)}, "topologyKey"))
+
+			pdb := objectByKindAndName(t, objects, "PodDisruptionBudget", "kb-"+component.name)
+			require.EqualValues(t, 2, nestedInt64(t, pdb, "spec", "minAvailable"))
+			require.Equal(t, component.name,
+				nestedString(t, pdb, "spec", "selector", "matchLabels", "app.kubernetes.io/component"))
+			require.Equal(t, "kb",
+				nestedString(t, pdb, "spec", "selector", "matchLabels", "app.kubernetes.io/instance"))
+		})
+	}
+	require.Equal(t, "10m", nestedString(t, cluster, "spec", "tikv", "evictLeaderTimeout"))
+}
+
 func TestDevManifestProvidesStableCompleteMembership(t *testing.T) {
 	objects := decodeManifest(t, "../dev/kubebrain-tikv.yaml")
 	workload := objectByKindAndName(t, objects, "StatefulSet", "kubebrain")

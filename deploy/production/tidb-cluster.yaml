@@ -23,6 +23,8 @@ spec:
     baseImage: pingcap/pd
     replicas: 3
     maxFailoverCount: 3
+    statefulSetUpdateStrategy: RollingUpdate
+    terminationGracePeriodSeconds: 60
     requests:
       cpu: "1"
       memory: "2Gi"
@@ -45,6 +47,8 @@ spec:
     replicas: 3
     maxFailoverCount: 3
     evictLeaderTimeout: 10m
+    statefulSetUpdateStrategy: RollingUpdate
+    terminationGracePeriodSeconds: 300
     requests:
       cpu: "4"
       memory: "8Gi"

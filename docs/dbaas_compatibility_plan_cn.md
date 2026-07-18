@@ -2587,6 +2587,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   校验通过；真实 kind 环境 KubeBrain、PD、TiKV StatefulSet 均 3/3 Ready 且全部
   updated，TidbCluster `Ready=True`。该环境未安装 Prometheus Operator CRD，因此
   PrometheusRule 的接纳与实际触发仍须在预生产监控栈演练。
+- **Production A148 TiKV/PD rollout contract（2026-07-18）**：独立存储生产清单
+  原有 3 PD/3 TiKV、PV Retain、资源限额、主机强反亲和及 `minAvailable=2` PDB，但
+  组件升级策略和终止宽限期依赖 TiDB Operator 默认值，且没有任何结构化回归测试。现
+  显式固定 PD/TiKV `statefulSetUpdateStrategy: RollingUpdate`，PD termination grace
+  为 60 秒，TiKV 为 300 秒；原有 TiKV `evictLeaderTimeout: 10m` 继续约束删除前的
+  leader 驱逐。
+
+  新增测试固定 TiDB 版本、PV reclaim、动态配置、三副本、failover 上限、CPU/内存/
+  存储请求、资源上限、主机反亲和 topology key、PDB selector/minAvailable，以及上述
+  滚动和终止契约。当前 Operator CRD 的 server-side dry-run 接纳完整生产清单。真实
+  3 PD/3 TiKV kind 环境仅 patch 这四个字段，Operator 先逐成员滚动 PD、再逐成员滚动
+  TiKV；最终 TidbCluster `Ready=True`，两个 StatefulSet 均 3/3 ready/current，
+  生成模板分别为 60/300 秒，KubeBrain etcd 端点保持可提交请求。TiDB Operator 使用
+  rollingUpdate partition 协调升级，不能以普通 `kubectl rollout status` 的
+  “partitioned roll out complete” 作为整集群升级完成证据；控制面必须等待
+  TidbCluster Ready 及 currentRevision/updateRevision 收敛。
 
 ### P1：通用服务能力
 
