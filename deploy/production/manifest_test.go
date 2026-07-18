@@ -177,14 +177,22 @@ func TestProductionMonitoringTracksPDAndTiKV(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, found)
 	for alert, expr := range map[string]string{
-		"KubeBrainPDInsufficientReplicas":   `count(up{namespace="tidb-cluster",service="kb-pd-metrics"} == 1) < 3`,
-		"KubeBrainTiKVInsufficientReplicas": `count(up{namespace="tidb-cluster",service="kb-tikv-metrics"} == 1) < 3`,
-		"KubeBrainPDLeaderUnavailable":      `sum(etcd_server_is_leader{namespace="tidb-cluster",service="kb-pd-metrics"}) != 1`,
-		"KubeBrainTiKVRegionLeaderMissing":  `max(tikv_raftstore_leader_missing{namespace="tidb-cluster",service="kb-tikv-metrics"}) > 0`,
+		"KubeBrainPDInsufficientReplicas":      `count(up{namespace="tidb-cluster",service="kb-pd-metrics"} == 1) < 3`,
+		"KubeBrainTiKVInsufficientReplicas":    `count(up{namespace="tidb-cluster",service="kb-tikv-metrics"} == 1) < 3`,
+		"KubeBrainPDLeaderUnavailable":         `sum(etcd_server_is_leader{namespace="tidb-cluster",service="kb-pd-metrics"}) != 1`,
+		"KubeBrainTiKVRegionLeaderMissing":     `max(tikv_raftstore_leader_missing{namespace="tidb-cluster",service="kb-tikv-metrics"}) > 0`,
+		"KubeBrainStorageVolumeMetricsMissing": `count(kubelet_volume_stats_capacity_bytes{namespace="tidb-cluster",persistentvolumeclaim=~"(pd-kb-pd|tikv-kb-tikv)-[0-2]"}) < 6`,
+		"KubeBrainStorageVolumeLow": `(kubelet_volume_stats_available_bytes{namespace="tidb-cluster",persistentvolumeclaim=~"(pd-kb-pd|tikv-kb-tikv)-[0-2]"} / ` +
+			`kubelet_volume_stats_capacity_bytes{namespace="tidb-cluster",persistentvolumeclaim=~"(pd-kb-pd|tikv-kb-tikv)-[0-2]"}) < 0.15`,
 	} {
 		alertRule := prometheusRuleByAlert(t, groups, alert)
 		require.Equal(t, expr, alertRule["expr"])
-		require.Equal(t, "critical", alertRule["labels"].(map[string]any)["severity"])
+		if alert == "KubeBrainStorageVolumeMetricsMissing" {
+			require.Equal(t, "warning", alertRule["labels"].(map[string]any)["severity"])
+			require.Equal(t, "15m", alertRule["for"])
+		} else {
+			require.Equal(t, "critical", alertRule["labels"].(map[string]any)["severity"])
+		}
 	}
 }
 
@@ -201,6 +209,8 @@ func TestProductionAlertMetricsExist(t *testing.T) {
 		"grpc_server_handled_total",
 		"grpc_server_handling_seconds_bucket",
 		"kube_statefulset_status_replicas_ready",
+		"kubelet_volume_stats_available_bytes",
+		"kubelet_volume_stats_capacity_bytes",
 		"tikv_raftstore_leader_missing",
 		"up",
 	} {

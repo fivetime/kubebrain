@@ -208,3 +208,19 @@ spec:
           annotations:
             summary: KubeBrain TiKV has Regions without a leader
             description: "At least one TiKV store reports Regions without a leader."
+        - alert: KubeBrainStorageVolumeMetricsMissing
+          expr: count(kubelet_volume_stats_capacity_bytes{namespace="tidb-cluster",persistentvolumeclaim=~"(pd-kb-pd|tikv-kb-tikv)-[0-2]"}) < 6
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: KubeBrain storage volume metrics are incomplete
+            description: "Only {{ $value }} of 6 PD/TiKV PVCs expose kubelet capacity metrics. Verify that the production CSI driver implements volume statistics."
+        - alert: KubeBrainStorageVolumeLow
+          expr: (kubelet_volume_stats_available_bytes{namespace="tidb-cluster",persistentvolumeclaim=~"(pd-kb-pd|tikv-kb-tikv)-[0-2]"} / kubelet_volume_stats_capacity_bytes{namespace="tidb-cluster",persistentvolumeclaim=~"(pd-kb-pd|tikv-kb-tikv)-[0-2]"}) < 0.15
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: KubeBrain storage volume has less than 15% free space
+            description: "PVC {{ $labels.persistentvolumeclaim }} has only {{ $value | humanizePercentage }} free space."
