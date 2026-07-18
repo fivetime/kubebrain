@@ -2073,6 +2073,26 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `kubebrain:a120-from-key-interval`，3/3 Ready、zero restart、endpoint health
   正常，exact image 仍为
   `f29788b5c40c2dadb048650036138196b8be0a19d219e1980d8bc8517a29a678`。
+- **KV/Txn A123 from-key execution order and response-state differential
+  （2026-07-18）**：在 A120 已对齐 from-key 区间校验后，进一步补齐 raw protobuf
+  双端执行结果差分。测试分别覆盖“先 Put d、后从 b 删除到键空间末尾”和“先删除、
+  后 Put d”，逐项比较 DeleteRange `Deleted`、有序 `PrevKvs`、Txn 内 Range、事务后
+  最终 Range，以及新 key 的 CreateRevision/ModRevision 是否等于事务 revision。
+  前一种顺序删除 b/c/d，后一种顺序仅删除 b/c 并保留事务中新建的 d；双方响应和最终
+  状态一致。
+
+  from-key 的 `{0}` RangeEnd 会影响起始 key 之后的整个键空间。为避免兼容测试污染
+  共享集群，本轮同时将相关 interval 测试和执行测试迁到 64 字节 `0xff` 开头的近最大
+  专用键空间，并要求重复与 race 验证顺序执行。revision 断言只比较同一事务各响应的
+  关联关系，不依赖共享在线集群可能被其他写入推进的全局 revision 增量。临时
+  `/root/etcd` 3.8.0-alpha.0 reference 与在线三副本 TiKV-backed KubeBrain 连续
+  10 轮、race 3 轮通过；多成员 HashKV/官方 client Sync 经 kind Pod 路由连续 3 轮
+  通过，完整 compat suite 用时 67.129s。`go test ./...`、根模块与 compat module
+  `go vet ./...` 及强制 `-count=1` 完整 server race（201.524s）通过。本轮只增加
+  兼容性测试，不改变服务二进制；在线三副本继续运行
+  `kubebrain:a120-from-key-interval`，3/3 Ready、zero restart，`/health` 与
+  `/readyz` 正常，exact image 仍为
+  `f29788b5c40c2dadb048650036138196b8be0a19d219e1980d8bc8517a29a678`。
 
 ### P1：通用服务能力
 

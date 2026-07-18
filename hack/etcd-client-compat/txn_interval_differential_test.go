@@ -1,6 +1,7 @@
 package compat
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -43,7 +44,8 @@ func runTxnIntervalScenario(t *testing.T, endpoint, instance string) []txnInterv
 	t.Cleanup(func() { require.NoError(t, conn.Close()) })
 
 	client := etcdserverpb.NewKVClient(conn)
-	prefix := fmt.Sprintf("/dbaas-txn-interval/%s/%d/", instance, time.Now().UnixNano())
+	prefix := string(bytes.Repeat([]byte{0xff}, 64)) +
+		fmt.Sprintf("/dbaas-txn-interval/%s/%d/", instance, time.Now().UnixNano())
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	t.Cleanup(func() {
