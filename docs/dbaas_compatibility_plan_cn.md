@@ -2774,7 +2774,8 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Prometheus adapter 现统一用 replacement rune 规范化所有 global/local label value
   为合法 UTF-8，业务调用点无需各自猜测哪些字段可能来自用户键；label name 仍是受信
   配置。回归测试覆盖 counter、gauge、histogram 三类 Emit 和最终 Gather 标签。
-  A162 重启测试将以新镜像再次执行，门槛为二进制历史事件完整且三副本零重启。
+  A162 重启测试以 A163 镜像再次执行约 22.7 秒，普通/二进制历史与租约状态全部恢复；
+  滚动后的三个 KubeBrain Pod 均 Ready、restartCount=0，日志无 panic/invalid UTF-8。
 
 ### P1：通用服务能力
 
