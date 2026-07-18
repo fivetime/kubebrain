@@ -22,9 +22,12 @@ import (
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/kubewharf/kubebrain/pkg/metrics"
+	"github.com/kubewharf/kubebrain/pkg/storage"
 )
 
 // ClientServerOptions returns client-facing gRPC admission and response options.
@@ -225,6 +228,8 @@ func authGRPCError(err error) error {
 		return rpctypes.ErrGRPCInvalidAuthMgmt
 	case errors.Is(err, rpctypes.ErrAuthOldRevision):
 		return rpctypes.ErrGRPCAuthOldRevision
+	case errors.Is(err, storage.ErrUnavailable):
+		return status.Error(codes.Unavailable, err.Error())
 	default:
 		return err
 	}

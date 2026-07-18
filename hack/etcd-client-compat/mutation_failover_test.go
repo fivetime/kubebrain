@@ -125,8 +125,6 @@ func isMutationFailoverAmbiguous(err error) bool {
 	switch status.Code(err) {
 	case codes.Canceled, codes.DeadlineExceeded, codes.Unavailable:
 		return true
-	case codes.Unknown:
-		return strings.Contains(err.Error(), "ErrClientTSOStreamClosed")
 	default:
 		return false
 	}

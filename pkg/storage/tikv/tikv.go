@@ -17,6 +17,7 @@ package tikv
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"math"
 	"sync/atomic"
 	"time"
@@ -191,7 +192,7 @@ func clampGCTarget(target, minServiceSafePoint uint64) uint64 {
 func (s *store) GetTimestampOracle(ctx context.Context) (timestamp uint64, err error) {
 	timestamp, err = s.getClient().GetOracle().GetTimestamp(ctx, oracleOption)
 	if err != nil {
-		return 0, errors.Wrap(err, "fail to get timestamp")
+		return 0, fmt.Errorf("%w: fail to get timestamp: %v", storage.ErrUnavailable, err)
 	}
 	return timestamp, err
 }

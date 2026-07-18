@@ -31,8 +31,8 @@ Raft、bbolt 和成员管理内部实现，而是对通用 etcd v3 客户端提�
 
 | 服务 | 能力 | 当前状态 | DBaaS 处理 |
 | --- | --- | --- | --- |
-| KV | Range/Put/DeleteRange | 部分兼容 | P0：事务内排序、过滤、历史读、大范围删除原子性、生产范围上限、非 KEY/NONE/Limit 候选窗口及独立 Put/Range/DeleteRange 差分已补齐；继续扩大 TiKV 故障验证 |
-| KV | Txn | 部分兼容 | P0：缺失键 guard、范围 phantom guard、嵌套分支、staged 单 revision 提交及 caller deadline 贯穿后端冲突重试已完成；继续扩大官方客户端差分及 TiKV 故障验证 |
+| KV | Range/Put/DeleteRange | 部分兼容 | P0：事务内排序、过滤、历史读、大范围删除原子性、生产范围上限、非 KEY/NONE/Limit 候选窗口及独立 Put/Range/DeleteRange 差分已补齐；3 PD/3 TiKV 单成员故障持续进度已验证 |
+| KV | Txn | 部分兼容 | P0：缺失键 guard、范围 phantom guard、嵌套分支、staged 单 revision 提交及 caller deadline 贯穿后端冲突重试已完成；3 PD/3 TiKV 单成员故障持续进度已验证 |
 | KV | Compact | 兼容核心语义 | logical/physical、错误、异步 GC 与请求取消后的后台续扫已对齐；继续长时间故障 soak |
 | KV | RangeStream | 兼容核心语义 | etcd 3.7 支持的 CountOnly/Limit/KeysOnly/默认排序已对齐；自定义排序与 revision filter 同 etcd 明确 Unimplemented |
 | Watch | create/cancel/progress/history/prevKV/slow-consumer catch-up | 兼容核心语义；后端溢出无缝追赶，控制响应不阻塞接收循环 | P1：继续数天级断线/慢消费者 soak |
@@ -2445,6 +2445,31 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   backend race（54.445s）及最终完整 server race（250.162s）通过。运行镜像
   `kubebrain:a139-proxy-refresh`，三 Pod 运行时 exact image digest 均为
   `194da00e9edf2a3c705ea8020c87d76b6526c1322cacfaa7a756775a2767a583`。
+- **Backend quorum A140 3 PD/3 TiKV continuous progress（2026-07-18）**：
+  把开发验证 TidbCluster 从单 PD/单 TiKV 提升为 3/3，与生产拓扑保持一致；
+  PD API 确认 3 个 member 和 3 个 Up store，三个 store 均持有全部 80 region
+  的副本，最终 leader 分布为 23/29/28。新增 opt-in 官方 client/v3 故障黑盒：
+  8 workers 使用独立 key 持续混合 Put、无 compare Txn 和 Get，外部命令删除
+  当前 PD leader 或一个 TiKV member；故障命令运行期间至少要完成每 worker
+  一次数据操作，恢复后每个 key 必须在 45 秒内 Put+Get 同值。Kubernetes Pod
+  Ready 不再被误当成 region routing 已恢复。`hack/dev/backend-quorum-fault-smoke.sh`
+  校验拓扑必须精确为 3/3，并自动执行两类故障。
+
+  首轮 PD leader 删除暴露 TiKV PD client 的
+  `ErrClientTSOStreamClosed` 被 gRPC 默认编码为 Unknown。现 TiKV storage 的
+  TSO 获取失败保留原始原因并标记为已有 `storage.ErrUnavailable`，统一 gRPC
+  interceptor 只把该明确 sentinel 映射为 `codes.Unavailable`，不掩盖其他未知
+  程序错误；A139/A140 故障判定器相应移除 Unknown 白名单。最终一键脚本中 PD
+  leader 故障窗口完成 1628 次操作，唯一瞬时错误为标准 Unavailable；TiKV member
+  故障窗口完成 101 次操作，仅见标准 DeadlineExceeded，均完成恢复复读。
+
+  完整 compat suite 用时 74.893s，`go test ./...`、根模块与 compat module
+  vet、TiKV storage race（1.214s）、backend race（52.774s）及完整 server race
+  （261.604s）通过。最终 KubeBrain StatefulSet 3/3 Ready、zero restart，
+  PD/TiKV StatefulSet 均 3/3 Ready，TidbCluster `Ready=True`，3-member
+  MemberList 完整，Raft term 273。运行镜像 `kubebrain:a140-backend-quorum`，
+  三 Pod 运行时 exact image digest 均为
+  `a6c83f8228c67d49bdfcec607b3d3ca745518212e10f0d961fd4e36222bc92ad`。
 
 ### P1：通用服务能力
 

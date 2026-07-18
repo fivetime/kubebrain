@@ -1,12 +1,15 @@
 package etcd
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+
+	"github.com/kubewharf/kubebrain/pkg/storage"
 )
 
 func TestAuthGRPCErrorMapsPublicStatusCodes(t *testing.T) {
@@ -19,6 +22,7 @@ func TestAuthGRPCErrorMapsPublicStatusCodes(t *testing.T) {
 		{rpctypes.ErrInvalidAuthToken, codes.Unauthenticated},
 		{rpctypes.ErrAuthNotEnabled, codes.FailedPrecondition},
 		{rpctypes.ErrRootUserNotExist, codes.FailedPrecondition},
+		{fmt.Errorf("tso: %w", storage.ErrUnavailable), codes.Unavailable},
 	}
 	for _, test := range tests {
 		require.Equal(t, test.code, status.Code(authGRPCError(test.err)))
