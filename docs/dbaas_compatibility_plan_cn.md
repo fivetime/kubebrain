@@ -2998,6 +2998,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   endpoint health/status、member list、alarm list 和 defrag 仍成功，status 正常显示
   3.7.0、revision/term 和 1 B sentinel。无 alarm 时 `alarm disarm` 由客户端 list 后
   直接成功，不发送 mutation；direct mutation 的提示由 live client test 固定。
+- **Compatibility A181 explicit public RPC surface guard（2026-07-18）**：逐项枚举
+  `/root/etcd/api/etcdserverpb/rpc.proto` 和当前 `go.etcd.io/etcd/api/v3 v3.7.0`
+  生成的六个 gRPC `ServiceDesc`，确认 42 个公共 RPC 均有 KubeBrain 显式方法，没有
+  依赖嵌入 `Unimplemented*Server` 才“实现”的静默缺口。KV、Watch、Cluster、
+  Maintenance、Auth 归属 `RPCServer`，五个 Lease RPC 归属独立 `leaseManager`。
+  proto 中的 `LeaseCheckpointRequest` 只被
+  `/root/etcd/api/etcdserverpb/raft_internal.proto` 引用，是 etcd 内部 Raft apply
+  消息而非公开 Lease Service RPC；KubeBrain 已用 TiKV 持久 remaining-TTL checkpoint
+  实现等价 failover/restart 边界，不能为它伪造一个公开 endpoint。
+
+  新增 AST + descriptor guard：测试从生产 `.go` 文件收集 receiver 上显式声明的方法，
+  对每个 unary/stream descriptor 要求正确 owner，并固定当前总数 42。未来升级 etcd
+  API 后，只要增加 RPC、移动 owner 或仅由 forward-compat shim 接住，测试都会要求先
+  分类并实现/明确拒绝。针对性测试、race 和 vet 通过；首次人工预估 43 被权威 descriptor
+  校正为 42，六个 service 的逐方法检查在总数断言前已全部通过。
 
 ### P1：通用服务能力
 
