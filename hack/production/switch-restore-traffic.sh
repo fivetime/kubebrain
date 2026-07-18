@@ -282,7 +282,7 @@ case "$ACTION" in
     atomic_publish "$temporary" "$verified_file"
     ;;
   rollback)
-    [[ -f "$state_file" && -f "$cutover_file" ]] || { echo "cutover evidence is missing" >&2; exit 1; }
+    [[ -f "$state_file" ]] || { echo "prepare evidence is missing" >&2; exit 1; }
     [[ ! -e "$receipt_file" ]] || { echo "completed cutover cannot be rolled back" >&2; exit 1; }
     state_header
     assert_pods_unchanged source "$SOURCE_INSTANCE"

@@ -65,9 +65,23 @@ func TestRestoreTrafficCutoverFailsClosed(t *testing.T) {
 	}
 }
 
+func TestRestoreTrafficRollbackRecoversPatchBeforeCutoverMarker(t *testing.T) {
+	f := newTrafficFixture(t)
+	f.run(t, "prepare", true, "")
+	require.NoError(t, os.WriteFile(filepath.Join(f.dir, "selector-target"), []byte("1"), 0o600))
+	f.run(t, "rollback", true, "")
+	data, err := os.ReadFile(filepath.Join(f.stateDir(), "restore-1.rollback"))
+	require.NoError(t, err)
+	require.Contains(t, string(data), "ROLLBACK")
+}
+
 type trafficFixture struct {
 	dir, state string
 	env        []string
+}
+
+func (f *trafficFixture) stateDir() string {
+	return f.state
 }
 
 func newTrafficFixture(t *testing.T) *trafficFixture {
