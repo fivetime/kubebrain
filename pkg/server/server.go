@@ -108,7 +108,7 @@ func NewServer(ctx context.Context, backend backend.Backend, metricCli metrics.M
 	// is rejected instead of committed-yet-unwatched (FINDING #39).
 	backend.SetLeadershipFence(election.EpochAndLeadingFresh)
 	// revisionSyncer sync revision from leader to follower
-	peerService := service.NewPeerService(election, metricCli, backend, config.getPeerServiceConfig())
+	peerService := service.NewPeerService(ctx, election, metricCli, backend, config.getPeerServiceConfig())
 	// construct etcd & brian grpc server
 	s.etcdServer = etcd.New(backend, metricCli, peerService)
 	s.etcdServer.SetRequestLimits(config.MaxTxnOps, config.MaxRequestBytes)

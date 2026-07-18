@@ -300,6 +300,8 @@ type mutableLeaderElection struct {
 
 func (m *mutableLeaderElection) Campaign(context.Context) {}
 
+func (m *mutableLeaderElection) RefreshLeaderInfo(context.Context) error { return nil }
+
 func (m *mutableLeaderElection) GetLeaderInfo() string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -374,7 +376,9 @@ func (t *testRevisionServer) run() (cancel func()) {
 		} else {
 			listener = c.Match(cmux.TLS())
 		}
+		t.wg.Add(1)
 		go func() {
+			defer t.wg.Done()
 			err := c.Serve()
 			t.t.Logf("cmux exit err:%v", err)
 		}()
@@ -395,8 +399,8 @@ func (t *testRevisionServer) run() (cancel func()) {
 	t.wg.Add(1)
 	go func() {
 		defer func() {
-			t.wg.Done()
 			t.t.Logf("server existed addr:%s", server.Addr)
+			t.wg.Done()
 		}()
 
 		var err error

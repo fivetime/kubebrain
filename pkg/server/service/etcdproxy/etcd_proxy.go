@@ -87,7 +87,7 @@ const proxyReadyWaitTimeout = 2 * time.Second
 // The election identity is the leader's peer endpoint. That listener registers
 // the complete RPC surface without public admission, so forwarding there counts
 // each external request exactly once at its ingress replica.
-func NewEtcdProxy(leaderElection leader.LeaderElection, tlsConfig *tls.Config, allowInsecure bool, maxRequestBytes uint) EtcdProxy {
+func NewEtcdProxy(ctx context.Context, leaderElection leader.LeaderElection, tlsConfig *tls.Config, allowInsecure bool, maxRequestBytes uint) EtcdProxy {
 	proxy := &etcdProxy{
 		election: leaderElection, tlsConfig: tlsConfig,
 		allowInsecure: allowInsecure, callOptions: proxyCallOptions(maxRequestBytes),
@@ -95,18 +95,22 @@ func NewEtcdProxy(leaderElection leader.LeaderElection, tlsConfig *tls.Config, a
 	proxy.updateClient()
 	go func() {
 		defer util.Recover()
-		proxy.checkLeaderLoop()
+		proxy.checkLeaderLoop(ctx)
 	}()
 
 	return proxy
 }
 
-func (e *etcdProxy) checkLeaderLoop() {
+func (e *etcdProxy) checkLeaderLoop(ctx context.Context) {
 	timer := time.NewTimer(time.Second)
 	defer timer.Stop()
 	for {
 		e.updateClient()
-		<-timer.C
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+		}
 		timer.Reset(time.Second)
 	}
 }
@@ -157,6 +161,18 @@ func (e *etcdProxy) updateClient() {
 	}
 
 	curLeader := e.election.GetLeaderInfo()
+	if !election.IsLeaderKnown(curLeader) {
+		refreshCtx, cancel := context.WithTimeout(context.Background(), e.connectionTimeout())
+		err := e.election.RefreshLeaderInfo(refreshCtx)
+		cancel()
+		if err != nil {
+			e.lock.Lock()
+			e.err = err
+			e.lock.Unlock()
+			return
+		}
+		curLeader = e.election.GetLeaderInfo()
+	}
 	e.lock.RLock()
 	sameLeader := curLeader == e.curLeader
 	e.lock.RUnlock()

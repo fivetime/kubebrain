@@ -39,6 +39,10 @@ type LeaderElection interface {
 
 	// GetLeaderInfo get leader info, return peer address
 	GetLeaderInfo() string
+	// RefreshLeaderInfo reloads the shared election record into the local lock
+	// cache. Callers use this only when the cached holder is unknown after a
+	// failover; steady-state reads remain storage-free through GetLeaderInfo.
+	RefreshLeaderInfo(ctx context.Context) error
 
 	// LeadershipTerm returns the cluster-wide election term. It is derived from
 	// the shared resource-lock transition counter, so leaders and followers
@@ -337,6 +341,11 @@ func (l *leaderElection) EpochAndLeadingFresh() (uint64, bool) {
 func (l *leaderElection) GetLeaderInfo() string {
 	leaderAddr, _, _ := l.getLeaderAndVersion()
 	return leaderAddr
+}
+
+func (l *leaderElection) RefreshLeaderInfo(ctx context.Context) error {
+	_, _, err := l.resourceLock.Get(ctx)
+	return err
 }
 
 // LeadershipTerm implements LeaderElection. client-go starts

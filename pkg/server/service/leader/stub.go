@@ -31,6 +31,10 @@ func (s *Stub) GetLeaderInfo() string {
 	return s.ElectionInfo.LeaderAddress
 }
 
+func (s *Stub) RefreshLeaderInfo(context.Context) error {
+	return nil
+}
+
 func (s *Stub) LeadershipTerm(context.Context) (uint64, error) {
 	if s.Term == 0 {
 		return 1, nil

@@ -132,6 +132,36 @@ func TestCheckClientConnUsesTransportReadiness(t *testing.T) {
 	require.NoError(t, checkClientConn(cli, nil, time.Second))
 }
 
+func TestUpdateClientRefreshesUnknownLeader(t *testing.T) {
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	server := grpc.NewServer()
+	go func() { _ = server.Serve(lis) }()
+	t.Cleanup(func() {
+		server.Stop()
+		_ = lis.Close()
+	})
+
+	electionState := &testLeaderElection{leaderAddress: "empty"}
+	electionState.refresh = func() {
+		electionState.leaderAddress = lis.Addr().String()
+	}
+	proxy := &etcdProxy{
+		election:    electionState,
+		dialTimeout: time.Second,
+	}
+	t.Cleanup(func() {
+		proxy.lock.Lock()
+		defer proxy.lock.Unlock()
+		proxy.resetClient()
+	})
+
+	proxy.updateClient()
+
+	require.Equal(t, lis.Addr().String(), proxy.curLeader)
+	require.NoError(t, proxy.Ready())
+}
+
 func TestReadyRejectsDisconnectedLeaderTransport(t *testing.T) {
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
@@ -159,12 +189,20 @@ func TestReadyRejectsDisconnectedLeaderTransport(t *testing.T) {
 type testLeaderElection struct {
 	leaderAddress string
 	isLeader      bool
+	refresh       func()
 }
 
 func (t *testLeaderElection) Campaign(context.Context) {}
 
 func (t *testLeaderElection) GetLeaderInfo() string {
 	return t.leaderAddress
+}
+
+func (t *testLeaderElection) RefreshLeaderInfo(context.Context) error {
+	if t.refresh != nil {
+		t.refresh()
+	}
+	return nil
 }
 
 func (t *testLeaderElection) LeadershipTerm(context.Context) (uint64, error) {

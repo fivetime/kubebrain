@@ -2418,6 +2418,33 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   与完整 3-member MemberList 正常；滚动后无 TSO deadline、contention、
   Panic/Fatal 日志。运行镜像 `kubebrain:a138-mutation-window`，exact image
   为 `ebb6db1d3449c60c90afd068ac4af554ac194fe0225b29c22ee54a332bc0a1f8`。
+- **Mutation/Proxy A139 backend failover recovery（2026-07-18）**：新增 opt-in
+  官方 client/v3 破坏性黑盒测试。测试以 6 workers、每 worker 30 次操作持续对
+  同一热点 key 混合 Put、Delete 与无 compare Txn，并通过
+  `KUBEBRAIN_MUTATION_FAILOVER_COMMAND` 删除唯一 PD Pod。故障窗口只接受 caller
+  cancel/deadline、gRPC Canceled/DeadlineExceeded/Unavailable，以及 TiKV PD
+  client 原样透出的精确 `ErrClientTSOStreamClosed`；任意其他 Unknown 仍立即失败。
+  测试要求至少出现一次提交结果不确定，并在 45 秒内重新完成
+  Put→unconditional Txn→Delete(`Deleted=1`)，从外部证明 mutation stripe 未泄漏。
+
+  重复故障验证发现一个产品恢复缺陷：失去领导权的 follower 可把本地 resource-lock
+  缓存更新为 `empty`，而 etcd proxy 只读该缓存；当旧 term 初始化仍在退出时，该
+  follower 会长期 `/ready=503`，即使共享锁中已有新 leader。现
+  `LeaderElection.RefreshLeaderInfo` 只在缓存未知时以有界 context 重读共享选举记录，
+  稳态请求仍使用无存储 I/O 的缓存；proxy 后台循环绑定根服务 context，关闭时先停止
+  刷新，避免 Badger 已关闭后继续访问。确定性测试固定
+  `empty→refresh→connect→Ready` 转换。全仓门禁还发现 revision 测试 cmux/server
+  goroutine 在子测试返回后使用 `testing.T`，现纳入 WaitGroup，并保证最后日志先于
+  `Done`；该包 race 连续 3 轮通过。
+
+  最终镜像上删除/重建唯一 PD 后，180 次热点混合 mutation 故障测试用时 23.583s
+  并恢复；三个 KubeBrain Pod 随即全部 Ready、zero restart，日志显示 follower
+  重新连接新 leader，leader 在同一进程中 lost/reacquired。`MemberList` 完整返回
+  3 个 started member，`/readyz=ok`，Raft term 从 A138 的 258 增至 270。完整
+  compat suite 用时 84.366s，`go test ./...`、根模块与 compat module vet、
+  backend race（54.445s）及最终完整 server race（250.162s）通过。运行镜像
+  `kubebrain:a139-proxy-refresh`，三 Pod 运行时 exact image digest 均为
+  `194da00e9edf2a3c705ea8020c87d76b6526c1322cacfaa7a756775a2767a583`。
 
 ### P1：通用服务能力
 

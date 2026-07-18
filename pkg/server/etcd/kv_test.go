@@ -71,6 +71,8 @@ func (testPeerService) Close() error {
 func (testPeerService) Campaign(context.Context) {
 }
 
+func (testPeerService) RefreshLeaderInfo(context.Context) error { return nil }
+
 func (s testPeerService) GetLeaderInfo() string {
 	if s.noLeader {
 		return ""

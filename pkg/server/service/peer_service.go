@@ -15,6 +15,7 @@
 package service
 
 import (
+	"context"
 	"crypto/tls"
 
 	"github.com/kubewharf/kubebrain/pkg/backend"
@@ -49,7 +50,7 @@ type Config struct {
 }
 
 // NewPeerService return a PeerService for server
-func NewPeerService(le leader.LeaderElection, m metrics.Metrics, b backend.Backend, config Config) PeerService {
+func NewPeerService(ctx context.Context, le leader.LeaderElection, m metrics.Metrics, b backend.Backend, config Config) PeerService {
 	ps := &peerService{
 		LeaderElection: le,
 		RevisionSyncer: revision.NewRevisionSyncer(b, m, le, config.TLS),
@@ -59,7 +60,7 @@ func NewPeerService(le leader.LeaderElection, m metrics.Metrics, b backend.Backe
 		config:         config,
 	}
 	if config.EnableEtcdProxy {
-		ps.EtcdProxy = etcdproxy.NewEtcdProxy(le, config.TLS, config.AllowInsecure, config.MaxRequestBytes)
+		ps.EtcdProxy = etcdproxy.NewEtcdProxy(ctx, le, config.TLS, config.AllowInsecure, config.MaxRequestBytes)
 	}
 	return ps
 }
