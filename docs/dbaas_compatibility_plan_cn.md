@@ -3965,6 +3965,29 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   通过；双端测试 prefix 为零，隔离 Pod Ready/零重启，主 endpoint proposal 健康。
   etcdctl 矩阵现明确包含 `--rev` 历史重放与 compacted 错误。本轮未发现服务端语义
   差异，运行镜像继续为 `kubebrain:a221-empty-range-compare`。
+- **Compatibility A230 client ordering across replica UID replacement（2026-07-18）**：
+  对照上游 `TestDetectKvOrderViolation`、`TestDetectTxnOrderViolation`、
+  `TestEndpointSwitchResolvesViolation` 与 `TestUnresolvableOrderViolation`，新增真实
+  多副本 endpoint ordering 门禁。etcd 测试通过停机制造成员本地 MVCC 落后；KubeBrain
+  副本无本地数据副本并共享 TiKV，因此可观察契约是 UID 重建后首次可服务的 serializable
+  read 必须直接达到 durable revision，而不能先暴露 stale response 再由 client wrapper
+  换 endpoint。
+
+  测试为 `kubebrain-0/1/2` 创建三个临时、按 Pod name selector 固定的 NodePort Service，
+  client 先只连接副本 0，并用 upstream `ordering.NewKV` 记录已见 revision。随后读取
+  `kubebrain-2` 旧 UID、删除该 Pod；在其他副本连续提交 8 个双 key Txn 后，等待同名 Pod
+  以新 UID Ready，再强制 ordering client 只连接副本 2。其 serializable Get 必须立即
+  看到最后 value 且 header revision 不低于最后写 revision；同连接的 serializable
+  multi-Get Txn 也必须满足该下界。最后依次固定到副本 1、0、2 读取，所有结果必须单调，
+  order-violation callback 总数必须严格为 0。
+
+  首轮及最终制品复检均约 7.6 秒、连续 5 轮约 41.3 秒、race 3 轮约 25.7 秒通过，
+  共完成 10 次真实 Pod UID replacement；每次新容器 restart count 为 0。upstream
+  ordering package 连续 10 轮、compat module 全量 vet、server/etcd 与 revision
+  service 的 Serializable/
+  ReadBarrier/Revision/Range/Txn/Mutation/Leadership 相关回归 3 轮通过。三个单副本
+  endpoint 和主 Service endpoint proposal 均健康，测试 prefix 为零。本轮未发现新的
+  服务端语义差异，运行镜像继续为 `kubebrain:a221-empty-range-compare`。
 - **Operations A185 certificate rotation completion state（2026-07-18）**：新增
   `hack/production/validate-certificate-rotation.sh`，把 client/peer CA rollover
   收敛为 `begin -> overlap -> complete` 三阶段门禁。begin 固定全部 KubeBrain Pod
