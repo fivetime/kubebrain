@@ -17,6 +17,7 @@ type tcpBridge struct {
 	blackholeMode atomic.Int32
 	dropped       atomic.Int64
 	droppedConns  atomic.Int64
+	acceptedConns atomic.Int64
 	closed        atomic.Bool
 	mu            sync.Mutex
 	conns         map[net.Conn]struct{}
@@ -56,6 +57,10 @@ func (b *tcpBridge) Unblackhole() {
 	b.dropConnections()
 }
 
+func (b *tcpBridge) Resume() {
+	b.blackholeMode.Store(0)
+}
+
 func (b *tcpBridge) DroppedBytes() int64 {
 	return b.dropped.Load()
 }
@@ -66,6 +71,10 @@ func (b *tcpBridge) DropConnections() {
 
 func (b *tcpBridge) DroppedConnections() int64 {
 	return b.droppedConns.Load()
+}
+
+func (b *tcpBridge) AcceptedConnections() int64 {
+	return b.acceptedConns.Load()
 }
 
 func (b *tcpBridge) Close() {
@@ -85,6 +94,7 @@ func (b *tcpBridge) accept() {
 		if err != nil {
 			return
 		}
+		b.acceptedConns.Add(1)
 		outbound, err := net.DialTimeout("tcp", b.target, 3*time.Second)
 		if err != nil {
 			_ = inbound.Close()

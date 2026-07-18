@@ -3863,6 +3863,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Leadership/Unary/Deadline 相关回归 3 轮通过；双端测试 prefix 均为零残留，三个运行
   副本 Ready、零重启，endpoint proposal 健康。本轮未发现新的服务端语义差异，无需
   重建服务端制品，运行镜像继续为 `kubebrain:a221-empty-range-compare`。
+- **Compatibility A225 in-flight Get cancellation preserves transport（2026-07-18）**：
+  对照上游 `TestKVGetCancel`，把仅使用预取消 context 的本地 client 检查强化为真实
+  in-flight RPC 差分。每端先通过专属 TCP bridge 建立且确认恰好一条 transport；每轮
+  只 blackhole server-to-client 流量，等待 bridge 确认 Range response 字节已被丢弃后
+  再取消 context。Get 必须返回 `context.Canceled`；bridge 随后只恢复转发、不主动断开
+  连接，client 的 active gRPC connection 对象、bridge accepted connection 总数和主动
+  drop 总数必须全部不变。紧接着同一 client/transport 执行 Put 与 Get，必须读到该轮
+  新值，证明单个 canceled HTTP/2 stream 不会污染共享连接上的后续 RPC。
+
+  reference etcd 与真实 TiKV-backed KubeBrain 每端连续执行 4 轮 in-flight cancel；
+  首轮约 0.45 秒、连续 5 轮约 2.2 秒、race 3 轮约 2.5 秒通过。修改后的 bridge 对
+  A222-A224 request/response blackhole 场景回归约 22.0 秒通过，compat module 全量
+  vet、server/etcd Range/Unary/Deadline/Cancel/ReadBarrier/Leadership 相关回归 3 轮
+  通过。本轮未发现新的服务端语义差异，无需重建服务端制品，运行镜像继续为
+  `kubebrain:a221-empty-range-compare`。
 - **Operations A185 certificate rotation completion state（2026-07-18）**：新增
   `hack/production/validate-certificate-rotation.sh`，把 client/peer CA rollover
   收敛为 `begin -> overlap -> complete` 三阶段门禁。begin 固定全部 KubeBrain Pod
