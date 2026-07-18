@@ -3503,6 +3503,26 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   后绝不调用 build。真实无效 SHA Docker build 非零失败；运行镜像
   `kubebrain:a205-stm-cross-key` 包含 Version 3.7.0、TiKV storage、完整 40 字节 Git SHA、
   UTC BuildTime 和 linux/amd64 metadata，三个 KubeBrain Pod Ready 且零重启。
+- **Production A206 committed-source provenance and compat vet gate（2026-07-18）**：
+  A205 后完整 compat module `go vet ./...` 暴露二进制 key disposable-endpoint probe
+  仍用值复制 `RangeRequest`，会复制 protobuf `MessageState` 内部 mutex。probe 现改用
+  `proto.Clone` 后再覆写 Limit/KeysOnly，不共享调用方 request 的 protobuf 状态；
+  compat module 全量 vet 恢复通过。参考 etcd 与真实 TiKV-backed KubeBrain 的完整
+  `hack/etcd-client-compat` 套件强制 uncached 运行 164.159 秒通过。
+
+  同时纠正 A205 运行证据的 provenance 缺口：旧镜像包含未提交 A205 工作树代码，但 OCI
+  revision 仍指向构建前提交，无法由 Git revision 重建同一源码。A206 先提交全部实现和
+  vet 修复，再通过 `git archive HEAD` 创建不含用户未提交 `go.mod` 的干净构建上下文；
+  镜像 `kubebrain:a206-provenance` 的 OCI revision 与二进制 `version` 均为
+  `81af103e938e858fbaf08bcf6a4cf03b9136404a`，Version 3.7.0、Storage TiKV、
+  Go 1.26.5、linux/amd64、UTC BuildTime 也逐项一致。镜像 ID 为
+  `sha256:f0ca86de3cfd3263b061c7a2d2ccd961afe37a85cd33f51f8744cc70c9f97c0a`。
+
+  kind 顺序滚动三个 KubeBrain Pod 后全部 Ready、零重启，3 PD/3 TiKV 同样 Ready、
+  零重启；endpoint status 返回 3.7.0 且 proposal health 成功。二进制 key、STM、
+  跨键 fast-shape Txn 差分在新镜像上连续 3 轮通过。后续生产发布必须从 committed
+  source archive 或等价的 clean checkout 构建，不能仅给 dirty worktree 贴 HEAD
+  revision 标签。
 - **Operations A185 certificate rotation completion state（2026-07-18）**：新增
   `hack/production/validate-certificate-rotation.sh`，把 client/peer CA rollover
   收敛为 `begin -> overlap -> complete` 三阶段门禁。begin 固定全部 KubeBrain Pod
