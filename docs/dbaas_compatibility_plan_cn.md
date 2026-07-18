@@ -2173,6 +2173,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `kubebrain:a127-alarm-header` 后三 Pod Ready、zero restart，`/health` 与
   `/readyz` 正常，运行时 exact image
   `3dbda65560a17ecb35e7676aafc5bb2aeeb63c8dc107a27c7e502cf4527d3a25`。
+- **KV A128 standalone DeleteRange boundary differential（2026-07-18）**：
+  对照 `/root/etcd/server/etcdserver/api/v3rpc/key.go:checkDeleteRequest`、
+  `/root/etcd/server/etcdserver/txn/delete.go:deleteRange` 和
+  `/root/etcd/server/storage/mvcc/kvstore_txn.go:deleteRange`，补齐 standalone
+  raw gRPC DeleteRange 边界双端矩阵。矩阵验证 `RangeEnd={0}` 从起始 key 删除
+  到键空间末尾，`RangeEnd==Key` 与 `RangeEnd<Key` 均为空区间；from-key 删除的
+  `Deleted`、有序 `PrevKvs`、共享删除 revision 和最终剩余 key 与 reference
+  一致，两个空区间不推进 revision、不返回 PrevKV 且保持全部 seed key。
+
+  from-key 会影响起始 key 之后的整个键空间，因此测试沿用 64 字节 `0xff` 前缀的
+  近上界专用空间，避免污染共享在线实例；每个场景结束后再用有界 prefix 清理。
+  临时 `/root/etcd` 3.8.0-alpha.0 reference 与在线三副本 TiKV-backed
+  KubeBrain 间连续 10 轮、race 3 轮通过，未发现新实现差异。完整 compat suite
+  用时 73.911s，`go test ./...`、根模块与 compat module `go vet ./...`、强制
+  backend race（52.537s）及完整 server race（206.960s）通过。本轮只增加兼容性
+  测试，不改变服务二进制；在线集群继续运行 `kubebrain:a127-alarm-header`，
+  exact image 仍为
+  `3dbda65560a17ecb35e7676aafc5bb2aeeb63c8dc107a27c7e502cf4527d3a25`。
 
 ### P1：通用服务能力
 
