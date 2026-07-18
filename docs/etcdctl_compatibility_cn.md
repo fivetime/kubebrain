@@ -34,7 +34,7 @@
 | `downgrade validate/enable/cancel` | 平台替代 | 使用版本化 rollout/rollback，不启动 etcd downgrade job |
 | `snapshot save` | 平台替代 | 使用 `kubebrain.logical.v2` 备份/恢复流程 |
 | `snapshot restore/status` | 客户端离线 | 只识别 etcd backend snapshot，不识别 KubeBrain logical artifact |
-| `make-mirror` | 支持 | 发布门禁双向验证 prefix 基线、1001-key 分页、持续增删改及 source/destination 双端 RBAC；跨区域长期镜像仍需独立 soak |
+| `make-mirror` | 支持 | 发布门禁双向验证 prefix 基线、1001-key 分页、持续增删改、`--rev` 历史重放/compacted 错误及 source/destination 双端 RBAC；跨区域长期镜像仍需独立 soak |
 | `check perf`、`check datascale` | 非生产保证 | 仅为客户端负载工具；不能替代 KubeBrain 正确性、容量或 SLO 验证 |
 | `version`、`help` | 客户端离线 | 只报告本地 etcdctl 二进制信息 |
 
@@ -59,3 +59,5 @@ client/v3 live test 固定，并在真实三副本 KubeBrain + 独立 3 PD/3 TiK
 鉴权 `make-mirror` 门禁必须使用独立 KubeBrain `--keyspace`，并显式设置
 `KUBEBRAIN_AUTH_MIRROR_ENDPOINT`；测试会拒绝该值与共享
 `KUBEBRAIN_ETCD_ENDPOINT` 相同，也会在两端初始 auth 已启用或存在用户时 fail closed。
+`--rev`/compaction 门禁同样要求显式 disposable
+`KUBEBRAIN_MIRROR_COMPACTION_ENDPOINT`，禁止在共享主实例推进 compact revision。

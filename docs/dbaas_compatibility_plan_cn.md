@@ -3943,6 +3943,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   的测试 prefix 均为零，主 endpoint proposal 健康。`make-mirror` 命令矩阵现明确包含
   双端鉴权契约；跨区域长期复制仍需独立 soak。本轮未发现服务端语义差异，运行镜像继续
   为 `kubebrain:a221-empty-range-compare`。
+- **Compatibility A229 make-mirror revision replay and compacted failure（2026-07-18）**：
+  继续对照 `client/v3/mirror/syncer.go` 与 etcdctl `makeMirror` 的 `--rev` 路径，新增
+  历史重放和已丢失历史 fail-closed 差分。每个方向先在 mirror 启动前完成 seed Txn 和
+  update Txn，再以 `--rev=<update revision>` 启动真实 CLI；目标必须只重放该 revision
+  的 `a` 更新、`b` 删除和 `c` 创建，不复制更早的 `ignored` seed key，且 `a/c` 必须
+  共享目标 ModRevision。
+
+  compaction 分支连续写入 revision C 与 C+1，compact 到 C+1 后要求从 C 启动 mirror。
+  reference 与 KubeBrain 都必须在 10 秒内非零退出，输出标准
+  `etcdserver: mvcc: required revision has been compacted`，目标 prefix 必须保持为空。
+  初版曾 compact 到 C 后也从 C 请求，CLI 持续等待至测试 deadline；这是 compact
+  watermark 等值边界而非确定已丢失历史。最终门禁使用严格 `requested < compacted`
+  的无歧义契约，不把等值行为误报为差异。
+
+  真实验证在临时 `kubebrain-a229-mirror` namespace 使用
+  `--keyspace=a229-mirror-revision`，完全隔离主实例 compact watermark。双向首轮约
+  0.87 秒、连续 10 轮约 9.2 秒、race 5 轮约 5.8 秒通过；已有 Compact 与
+  CompactRevisionBoundary 差分连续 3 轮约 1.1 秒通过。compat module 全量 vet、
+  server/etcd Compact/Compaction/Watch/Range/Txn/Mutation/Leadership 相关回归 3 轮
+  通过；双端测试 prefix 为零，隔离 Pod Ready/零重启，主 endpoint proposal 健康。
+  etcdctl 矩阵现明确包含 `--rev` 历史重放与 compacted 错误。本轮未发现服务端语义
+  差异，运行镜像继续为 `kubebrain:a221-empty-range-compare`。
 - **Operations A185 certificate rotation completion state（2026-07-18）**：新增
   `hack/production/validate-certificate-rotation.sh`，把 client/peer CA rollover
   收敛为 `begin -> overlap -> complete` 三阶段门禁。begin 固定全部 KubeBrain Pod
