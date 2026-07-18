@@ -3288,7 +3288,44 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `57a195392c9bca4b340c8ad453382b8cb3f71e53e16b0c87b3e5d2c13ed18b43`。
   二次归档 receipt 不变；另一终态 operation 竞争同 key 非零退出且无 receipt；保留期内
   exact-version 删除被 MinIO 拒绝，到期删除后 A198 object/version 与测试 CR 残留均为
-  0。下一步仍需用 finalizer/控制器强制“先归档再允许删除”，并做 bucket inventory 对账。
+  0。A199 已补 finalizer/删除门禁；bucket inventory 对账仍是 P1。
+- **Operations A199 audit-before-delete admission and finalizer release（2026-07-18）**：
+  `operationqueue.Submit` 创建每个新 operation 时默认加入
+  `dbaas.kubebrain.io/operation-audit` finalizer；提前 DELETE 只设置 deletionTimestamp，
+  CR 保持 Terminating，终态 spec/status/UID 仍可被归档。新增 fail-closed
+  `ValidatingAdmissionPolicy`/binding：直接 CREATE 缺 finalizer 被拒绝；UPDATE 移除
+  finalizer 时必须是 Succeeded/Failed，并同时携带 64 位 archive receipt/artifact
+  SHA-256 与非空 exact version ID。约束不能放 CRD CEL，因为 CRD validation 的 metadata
+  类型不暴露 finalizers/annotations；真实 server-side 编译首先发现并拒绝该错误方案，
+  随后迁移到 admission policy。
+
+  `operation-audit --action release` 在移除 finalizer 前重新严格解析本地 artifact 和
+  `kubebrain.object-operation-audit.receipt.v1`，要求 receipt 的 operation ID/UID/
+  instance/type/phase/execution receipt、artifact SHA/bytes 全部匹配，再从 API Server
+  读取当前终态 CR 并逐字段比对。通过后以单次 resourceVersion update 写入 receipt SHA、
+  artifact SHA、version ID annotations 并只移除自身 finalizer，保留其他控制器
+  finalizer；冲突、错误 UID、终态漂移、receipt 非 canonical 或缺证据都 fail closed。
+  归档脚本在 exact-version 下载和 retention 复核完成后才调用 release，崩溃重试可复用
+  同一 Object Lock receipt。
+
+  独立 archiver ServiceAccount 的 namespaced Role 只有 operation get/update；实际
+  subresource 检查 status update=`no`，create/delete/Lease update 也均为 `no`。CRD
+  immutable-spec CEL 继续阻止该主资源 update 权限修改 operation 参数。结构与状态机测试
+  覆盖默认 finalizer、其他 finalizer 保留、release 幂等、错误 receipt UID、当前终态漂移、
+  admission 资源范围/Fail/Deny 和精确 RBAC；production test、race、vet、server-side
+  dry-run 和 shell syntax 全部通过。
+
+  真实 `kind-kubebrain-dbaas` 首次提前删除后 CR 保持
+  deletionTimestamp+finalizer；这次还发现 Kubernetes 将删除中 CR generation 从 1
+  推到 2，而终态 observedGeneration 保持 1，artifact gate 因而修正为
+  `0 < observedGeneration <= generation`（spec 仍不可变）。归档 exact version
+  `0fccf959-5029-435f-8753-8e5974bba086` 后 release 放行同一次删除。第二轮使用 10 分钟
+  短期 archiver ServiceAccount token 独立完成 capture/archive/release，operation UID
+  `01628f73-558b-4008-905f-0bf1901a6455`、artifact digest
+  `357b410de53c31320c24d31224351377b9eaba77d6d7e76a76e9faf2bb89b79f`、exact version
+  `14def952-ec44-44c4-bb61-3630e471ffd1`。直接无 finalizer CREATE 和无 archive annotations
+  removal 均被 admission 拒绝；两份 COMPLIANCE object 到期后按 exact version 清理，
+  A199 object/version、operation 和 Lease 残留均为 0。
 - **Operations A185 certificate rotation completion state（2026-07-18）**：新增
   `hack/production/validate-certificate-rotation.sh`，把 client/peer CA rollover
   收敛为 `begin -> overlap -> complete` 三阶段门禁。begin 固定全部 KubeBrain Pod
@@ -3384,9 +3421,9 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
    gate、UID-fenced 销毁状态机及持久 operation API/worker fencing、Backup/
    RestoreCutover/CertificateRotation/Destroy executors 已建立；继续完成专属
    namespace/凭据外围清理、bucket lifecycle/inventory 对账；Kubernetes 原生提交者
-   与 worker 最小权限身份已分离，单 namespace 跨实例公平调度和实例互斥已完成；继续
-   终态 operation 的 Object Lock 不可变归档已完成；继续补外部管理 API 的 OIDC/租户
-   授权、请求审批、归档 finalizer/删除门禁与 inventory 对账、跨 namespace/region
+   与 worker 最小权限身份已分离，单 namespace 跨实例公平调度和实例互斥、终态
+   operation 的 Object Lock 不可变归档及 finalizer/删除门禁均已完成；继续补外部管理
+   API 的 OIDC/租户授权、请求审批、bucket inventory 对账、跨 namespace/region
    全局调度和管理面 HA soak。
 4. 建立实例级限额和计量：请求字节、txn 操作数、跨连接 client RPC 总并发、client
    请求 QPS/burst、逻辑 Watch 总数、CPU/内存饱和、网络错误/丢包及 PD/TiKV PVC 容量
