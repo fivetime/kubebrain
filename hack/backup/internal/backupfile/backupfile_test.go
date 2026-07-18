@@ -21,17 +21,19 @@ func TestAtomicWriterAndVerifiedReader(t *testing.T) {
 	status, err := writer.Commit()
 	require.NoError(t, err)
 	require.Equal(t, 2, status.Records)
+	require.Positive(t, status.CreatedAtUnix)
 
 	verified, err := OpenVerified(path)
 	require.NoError(t, err)
 	defer verified.Close()
 	require.Equal(t, Status{
-		Format:   Format,
-		Prefix:   "/registry",
-		Revision: 42,
-		Records:  2,
-		Leases:   1,
-		SHA256:   status.SHA256,
+		Format:        Format,
+		Prefix:        "/registry",
+		Revision:      42,
+		CreatedAtUnix: status.CreatedAtUnix,
+		Records:       2,
+		Leases:        1,
+		SHA256:        status.SHA256,
 	}, verified.Status())
 	var records []record.Record
 	require.NoError(t, verified.Records(func(rec record.Record) error {
@@ -60,6 +62,20 @@ func TestOpenVerifiedReadsLegacyFormat(t *testing.T) {
 	require.Equal(t, LegacyFormat, status.Format)
 	require.Equal(t, 1, status.Records)
 	require.Zero(t, status.Leases)
+	require.Zero(t, status.CreatedAtUnix)
+}
+
+func TestOpenVerifiedReadsV2WithoutCreationTimestamp(t *testing.T) {
+	header := []byte("{\"type\":\"kubebrain.logical.v2\",\"prefix\":\"/registry\",\"revision\":42}\n")
+	digest := sha256.Sum256(header)
+	footer := []byte("{\"type\":\"footer\",\"records\":0,\"sha256\":\"" + hex.EncodeToString(digest[:]) + "\"}\n")
+	path := filepath.Join(t.TempDir(), "old-v2.jsonl")
+	require.NoError(t, os.WriteFile(path, append(header, footer...), 0o600))
+
+	status, err := Inspect(path)
+	require.NoError(t, err)
+	require.Equal(t, Format, status.Format)
+	require.Zero(t, status.CreatedAtUnix)
 }
 
 func TestOpenVerifiedRejectsInvalidLeaseMetadata(t *testing.T) {

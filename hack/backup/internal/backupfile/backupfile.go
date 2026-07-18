@@ -13,6 +13,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/kubewharf/kubebrain/hack/backup/internal/record"
 )
@@ -23,9 +24,10 @@ const (
 )
 
 type Header struct {
-	Type     string `json:"type"`
-	Prefix   string `json:"prefix"`
-	Revision int64  `json:"revision"`
+	Type          string `json:"type"`
+	Prefix        string `json:"prefix"`
+	Revision      int64  `json:"revision"`
+	CreatedAtUnix int64  `json:"created_at_unix,omitempty"`
 }
 
 type Footer struct {
@@ -36,12 +38,13 @@ type Footer struct {
 }
 
 type Status struct {
-	Format   string `json:"format"`
-	Prefix   string `json:"prefix"`
-	Revision int64  `json:"revision"`
-	Records  int    `json:"records"`
-	Leases   int    `json:"leases"`
-	SHA256   string `json:"sha256"`
+	Format        string `json:"format"`
+	Prefix        string `json:"prefix"`
+	Revision      int64  `json:"revision"`
+	CreatedAtUnix int64  `json:"created_at_unix,omitempty"`
+	Records       int    `json:"records"`
+	Leases        int    `json:"leases"`
+	SHA256        string `json:"sha256"`
 }
 
 type AtomicWriter struct {
@@ -52,6 +55,7 @@ type AtomicWriter struct {
 	leases   int
 	prefix   string
 	revision int64
+	created  int64
 	closed   bool
 }
 
@@ -71,9 +75,11 @@ func NewAtomicWriter(output, prefix string, revision int64) (*AtomicWriter, erro
 	}
 	writer := &AtomicWriter{
 		output: output, temp: temp, hash: sha256.New(),
-		prefix: prefix, revision: revision,
+		prefix: prefix, revision: revision, created: time.Now().UTC().Unix(),
 	}
-	header := Header{Type: Format, Prefix: prefix, Revision: revision}
+	header := Header{
+		Type: Format, Prefix: prefix, Revision: revision, CreatedAtUnix: writer.created,
+	}
 	if err := writer.writeHashedJSON(header); err != nil {
 		writer.Abort()
 		return nil, err
@@ -143,7 +149,7 @@ func (w *AtomicWriter) Commit() (Status, error) {
 		return Status{}, err
 	}
 	return Status{
-		Format: Format, Prefix: w.prefix, Revision: w.revision,
+		Format: Format, Prefix: w.prefix, Revision: w.revision, CreatedAtUnix: w.created,
 		Records: w.records, Leases: w.leases, SHA256: sum,
 	}, nil
 }
@@ -338,6 +344,9 @@ func validate(reader io.Reader) (Status, error) {
 	if header.Revision <= 0 {
 		return Status{}, fmt.Errorf("invalid backup revision %d", header.Revision)
 	}
+	if header.CreatedAtUnix < 0 {
+		return Status{}, fmt.Errorf("invalid backup creation timestamp %d", header.CreatedAtUnix)
+	}
 
 	digest := sha256.New()
 	digest.Write(headerLine)
@@ -434,11 +443,12 @@ func validate(reader io.Reader) (Status, error) {
 		return Status{}, fmt.Errorf("backup SHA-256 mismatch: footer=%s actual=%s", footer.SHA256, actualHash)
 	}
 	return Status{
-		Format:   header.Type,
-		Prefix:   header.Prefix,
-		Revision: header.Revision,
-		Records:  records,
-		Leases:   leases,
-		SHA256:   actualHash,
+		Format:        header.Type,
+		Prefix:        header.Prefix,
+		Revision:      header.Revision,
+		CreatedAtUnix: header.CreatedAtUnix,
+		Records:       records,
+		Leases:        leases,
+		SHA256:        actualHash,
 	}, nil
 }
