@@ -2776,6 +2776,30 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   配置。回归测试覆盖 counter、gauge、histogram 三类 Emit 和最终 Gather 标签。
   A162 重启测试以 A163 镜像再次执行约 22.7 秒，普通/二进制历史与租约状态全部恢复；
   滚动后的三个 KubeBrain Pod 均 Ready、restartCount=0，日志无 panic/invalid UTF-8。
+- **Storage A164 internal-row object scan filter（2026-07-18）**：A162 首轮真实重启
+  暴露 count-index 全租户重建会把 event log、event-log watermark 和通用 internal
+  KV 当作 object-MVCC key 解码。结果因解码失败后跳过而未产生错误计数，但每次启动
+  会产生大量 `unmarshal object key` 日志和无效格式化，既增加启动 CPU/I/O，也会
+  淹没真正的未知物理 key 损坏。
+
+  scanner 现由 keyspace 注入统一的 `IsInternalStorageKey` 分类器；Range、RangeStream、
+  CompactKeys 和通用分区 scan 的 worker 对已知三类内部行仅作 V(4) 跳过，未知畸形
+  key 仍保留 error 日志。单测在同一物理范围混入一个合法对象和三类内部行，固定对象
+  结果、分类次数及未知畸形 key 不得误分类；focused race 和主模块全量测试通过。
+  A164 镜像在真实 3 PD/3 TiKV、三副本 KubeBrain 上启用 count index 后，从 TiKV
+  重建 5,645/5,651 个 live key 分别耗时约 462/420ms，日志无 object-key 解码错误；
+  最终重启持久化回归约 22.0 秒通过，三个 Pod Ready、restartCount=0。
+- **Deploy A165 fully-qualified peer DNS（2026-07-18）**：dev、production plain/TLS
+  StatefulSet 的 advertise identity、静态 initial-cluster 和 peer TLS server name
+  统一改为 `.svc.cluster.local`，避免运行时 resolver 对 `.svc` 短名是否继续应用搜索域
+  的差异；TLS smoke 证书同步加入完整 service FQDN SAN，manifest 测试固定 plain/TLS
+  和 dev 三套配置。
+
+  Pod 内对三个完整 ordinal FQDN 的解析验证通过，真实滚动重启及二进制历史恢复约
+  22.0 秒通过。删除旧 ordinal 到新 Pod EndpointSlice 建立之间仍存在短暂 NXDOMAIN，
+  这是 StatefulSet/EndpointSlice 生命周期窗口而非搜索域问题；当前 clientv3 和内部
+  leader 连接会重试并恢复。后续可通过故障预算测试量化窗口，但不得把完整 FQDN
+  误记为消除 Pod 替换期间的 DNS 不可用。
 
 ### P1：通用服务能力
 
