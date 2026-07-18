@@ -156,6 +156,7 @@ func TestMaintenanceBasicDiagnostics(t *testing.T) {
 	alarmResp, err := server.Alarm(ctx, &etcdserverpb.AlarmRequest{})
 	require.NoError(t, err)
 	require.Empty(t, alarmResp.Alarms)
+	require.Equal(t, int64(server.backend.GetCurrentRevision()), alarmResp.Header.Revision)
 
 	defragResp, err := server.Defragment(ctx, &etcdserverpb.DefragmentRequest{})
 	require.NoError(t, err)

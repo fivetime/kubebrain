@@ -2152,6 +2152,27 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   通过。本轮未发现实现差异，只增加兼容性测试；在线集群继续运行
   `kubebrain:a125-range-limit-boundary`，运行时 exact image 仍为
   `3a91359a4dcb283fa5b040c116f265be6cc5e977fe294f495e9baea336dbe377`。
+- **Maintenance A127 Alarm GET linearizable header（2026-07-18）**：对照
+  `/root/etcd/server/etcdserver/v3_server.go:Alarm`、
+  `/root/etcd/server/etcdserver/apply/backend.go:Alarm` 与
+  `/root/etcd/server/etcdserver/api/v3rpc/maintenance.go:Alarm`，新增 raw gRPC
+  `Alarm(GET)` 双端矩阵，覆盖 NONE、NOSPACE、CORRUPT、未知 AlarmType 和
+  `MemberID=math.MaxUint64`。空告警实例上双方均返回空集合且接受所有过滤形状；
+  `ACTIVATE/DEACTIVATE` 仍按既定 DBaaS 边界由 TiKV/PD 控制面替代。
+
+  差分发现 reference 的 Alarm GET 经 Raft request 线性化，刚完成 Put 后响应
+  Header.Revision 等于当前 MVCC revision；KubeBrain 原先未执行 read barrier，
+  请求落到 follower 时可能成功返回滞后的本地 revision。现 GET 在任意有效身份
+  鉴权后先执行 `SyncReadRevision`，同步失败返回可重试错误，不再暴露陈旧 header；
+  mutation 路径的 root 鉴权和 Unimplemented 契约不变。确定性 diagnostics 与
+  read-barrier 回归连续 30 轮通过，临时 `/root/etcd` 3.8.0-alpha.0 reference
+  与在线三副本 TiKV-backed KubeBrain 差分连续 10 轮、race 3 轮通过。
+
+  完整 compat suite 用时 75.319s，`go test ./...`、根模块与 compat module
+  `go vet ./...`、backend race 及完整 server race（217.107s）通过。部署
+  `kubebrain:a127-alarm-header` 后三 Pod Ready、zero restart，`/health` 与
+  `/readyz` 正常，运行时 exact image
+  `3dbda65560a17ecb35e7676aafc5bb2aeeb63c8dc107a27c7e502cf4527d3a25`。
 
 ### P1：通用服务能力
 

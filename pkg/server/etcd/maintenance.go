@@ -64,6 +64,9 @@ func (s *RPCServer) Alarm(ctx context.Context, req *etcdserverpb.AlarmRequest) (
 		if err := s.requireAuthenticated(ctx, false); err != nil {
 			return nil, err
 		}
+		if err := s.peers.SyncReadRevision(ctx); err != nil {
+			return nil, readBarrierStatusErr(err)
+		}
 	} else {
 		if err := s.requireAuthenticated(ctx, true); err != nil {
 			return nil, err

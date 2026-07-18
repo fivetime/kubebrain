@@ -57,6 +57,12 @@ func TestReadBarrierFailuresAreRetryableAcrossRPCs(t *testing.T) {
 			_, err := server.Status(ctx, &etcdserverpb.StatusRequest{})
 			return err
 		}},
+		{"alarm get", func() error {
+			_, err := server.Alarm(ctx, &etcdserverpb.AlarmRequest{
+				Action: etcdserverpb.AlarmRequest_GET,
+			})
+			return err
+		}},
 		{"hash", func() error {
 			_, err := server.Hash(ctx, &etcdserverpb.HashRequest{})
 			return err
