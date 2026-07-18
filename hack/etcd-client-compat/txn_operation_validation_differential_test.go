@@ -15,9 +15,11 @@ import (
 )
 
 type txnOperationValidationOutcome struct {
-	Name    string
-	Code    string
-	Message string
+	Name        string
+	Code        string
+	Message     string
+	HasResponse bool
+	Succeeded   bool
 }
 
 func TestTxnOperationValidationDifferentialAgainstReferenceEtcd(t *testing.T) {
@@ -29,6 +31,10 @@ func TestTxnOperationValidationDifferentialAgainstReferenceEtcd(t *testing.T) {
 	require.Equal(t,
 		runTxnOperationValidationScenario(t, reference),
 		runTxnOperationValidationScenario(t, compatEndpoint()),
+	)
+	require.Equal(t,
+		runTxnOperationBudgetScenario(t, reference),
+		runTxnOperationBudgetScenario(t, compatEndpoint()),
 	)
 }
 
@@ -114,6 +120,84 @@ func runTxnOperationValidationScenario(t *testing.T, endpoint string) []txnOpera
 			Code:    status.Code(callErr).String(),
 			Message: status.Convert(callErr).Message(),
 		})
+	}
+	return outcomes
+}
+
+func runTxnOperationBudgetScenario(t *testing.T, endpoint string) []txnOperationValidationOutcome {
+	t.Helper()
+	endpoint = strings.TrimPrefix(strings.TrimPrefix(endpoint, "http://"), "https://")
+	conn, err := grpc.NewClient(endpoint, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	client := etcdserverpb.NewKVClient(conn)
+
+	rangeOp := func(suffix byte) *etcdserverpb.RequestOp {
+		return &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestRange{
+			RequestRange: &etcdserverpb.RangeRequest{
+				Key: []byte{'/', 'd', 'b', 'a', 'a', 's', '/', 'b', 'u', 'd', 'g', 'e', 't', '/', suffix},
+			},
+		}}
+	}
+	rangeOps := func(n int) []*etcdserverpb.RequestOp {
+		ops := make([]*etcdserverpb.RequestOp, n)
+		for i := range ops {
+			ops[i] = rangeOp(byte(i))
+		}
+		return ops
+	}
+	nested := func(ops []*etcdserverpb.RequestOp) *etcdserverpb.RequestOp {
+		return &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestTxn{
+			RequestTxn: &etcdserverpb.TxnRequest{Success: ops},
+		}}
+	}
+	compares := make([]*etcdserverpb.Compare, 128)
+	for i := range compares {
+		compares[i] = &etcdserverpb.Compare{
+			Key:         []byte{'/', 'd', 'b', 'a', 'a', 's', '/', 'c', 'm', 'p', '/', byte(i)},
+			Result:      etcdserverpb.Compare_EQUAL,
+			Target:      etcdserverpb.Compare_VERSION,
+			TargetUnion: &etcdserverpb.Compare_Version{Version: 0},
+		}
+	}
+
+	tests := []struct {
+		name string
+		txn  *etcdserverpb.TxnRequest
+	}{
+		{name: "top-level-at-limit", txn: &etcdserverpb.TxnRequest{Success: rangeOps(128)}},
+		{name: "top-level-over-limit", txn: &etcdserverpb.TxnRequest{Success: rangeOps(129)}},
+		{name: "nested-exact-remaining-budget", txn: &etcdserverpb.TxnRequest{
+			Success: append(rangeOps(126), nested(rangeOps(1))),
+		}},
+		{name: "nested-over-remaining-budget", txn: &etcdserverpb.TxnRequest{
+			Success: append(rangeOps(127), nested(rangeOps(1))),
+		}},
+		{name: "compare-max-does-not-charge-range-child", txn: &etcdserverpb.TxnRequest{
+			Compare: compares,
+			Success: []*etcdserverpb.RequestOp{rangeOp(0)},
+		}},
+		{name: "unselected-failure-nested-over-budget", txn: &etcdserverpb.TxnRequest{
+			Success: rangeOps(1),
+			Failure: append(rangeOps(127), nested(rangeOps(1))),
+		}},
+	}
+
+	outcomes := make([]txnOperationValidationOutcome, 0, len(tests))
+	for _, test := range tests {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		resp, callErr := client.Txn(ctx, test.txn)
+		cancel()
+		outcome := txnOperationValidationOutcome{
+			Name:    test.name,
+			Code:    status.Code(callErr).String(),
+			Message: status.Convert(callErr).Message(),
+		}
+		if resp != nil {
+			outcome.HasResponse = true
+			outcome.Succeeded = resp.Succeeded
+		}
+		outcomes = append(outcomes, outcome)
 	}
 	return outcomes
 }
