@@ -838,6 +838,19 @@ revision、records、retention，成功后 operation status 绑定 object receip
 整个导出/上传期间维持 operation heartbeat；失败 requeue，fencing 时终止本地流程。
 S3 access key/secret 和 etcd TLS 凭据只通过 worker Secret/env 注入，不进入参数文件或 CR。
 
+`hack/production/run-restore-cutover-operation.sh` 接入 RestoreCutover。参数绑定 A184
+restore receipt、logical artifact、A189 state/receipt 路径、Service、源/目标 instance、
+replicas、公开 endpoint 和 Kubernetes context。执行器按 prepare、cutover、verify、
+complete 驱动，每阶段独立续租。prepare 失败可 retry；从 cutover 调用开始，任何失败都
+必须执行 rollback 并写 Failed 终态，避免已改 selector 的操作被当成普通重试。
+
+worker 接管时依据 A189 持久证据恢复：只有 state 从 cutover 继续，有 cutover marker 从
+verify 继续，已有 receipt 则重做 complete 在线复检后提交；rollback marker 直接记 Failed。
+heartbeat fencing 时旧 worker 终止子进程且不再回滚或提交，由新 owner/attempt 接管。
+A189 rollback 允许仅凭 prepare state 运行：这覆盖 Service JSON Patch 已提交、但等待
+EndpointSlice 失败而尚未生成 cutover marker 的窗口；rollback 仍用 UID/resourceVersion
+CAS 并要求源 Pod UID 集恢复。
+
 参数文件不得包含私钥内容；TLS 凭据由 worker Secret/env 提供。参数文件及 A189 state/
 receipt 必须位于 worker 可读的受保护持久卷。CRD 保存编排状态和摘要，不保存大文件或
 凭据，也不应安装在被该 operation 运维的 KubeBrain 数据面中。

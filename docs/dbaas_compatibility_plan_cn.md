@@ -3126,7 +3126,7 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   A190 receipt SHA-256 提交终态。真实 CRD→claim→A190 2 秒/3 样本→finish 链路以
   attempt 1 完成，status receipt digest
   `a1a8333123fcb2912603d7e416124c5f9e5f2eb393d62776a21ae7686c3ad245`，
-  探针 prefix 零残留。A192 已接入 Backup；RestoreCutover/CertificateRotation/Destroy
+  探针 prefix 零残留。A192/A193 已接入 Backup/RestoreCutover；CertificateRotation/Destroy
   executor、管理 API 认证授权、跨实例公平调度和审计聚合仍是 P1。
 - **Operations A192 protected Backup operation executor（2026-07-18）**：新增
   `hack/production/run-backup-operation.sh`，只 claim `Backup` operation 并核对完整参数
@@ -3147,6 +3147,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   进入 Succeeded，status receipt digest
   `8d7e1eeff89f3039a7af47fc96bf7e7efe7730069f3a99992e0ebf38a349af97`。
   COMPLIANCE 保留到期后按 exact version 删除并签发 deletion receipt，源 prefix 计数 0。
+- **Operations A193 resumable RestoreCutover executor（2026-07-18）**：新增
+  `hack/production/run-restore-cutover-operation.sh`，绑定 A184 restore receipt、logical
+  artifact、A189 state/receipt、Service 与源/目标 instance 等完整参数摘要，按
+  prepare→cutover→verify→complete 驱动并逐阶段 heartbeat。prepare 失败 retry；cutover
+  开始后任一阶段失败都尝试 rollback，再以 rollback 成功/失败明文写 Failed，禁止把可能
+  已改变 selector 的操作普通重试。fencing 会终止子进程且不再操作流量。
+
+  接管恢复按不可变证据选择起点：state-only 从 cutover、cutover marker 从 verify、
+  receipt 从 complete 在线复检继续，rollback marker 直接终态失败。同步修复 A189 的部分
+  切换窗口：Service patch 可能已提交但 EndpointSlice 等待失败，此时没有 cutover marker；
+  rollback 现只要求 prepare state，再按当前 selector CAS 切回并验证冻结源 Pod UID 集。
+  测试覆盖全成功、prepare retry、cutover/verify/complete 自动 rollback、rollback 失败、
+  参数漂移、heartbeat fencing、四类接管证据及 patch-before-marker 回滚。
+
+  真实 CRD→executor→A189 使用两组各 2 个真实 Pod 与 Service/EndpointSlice controller，
+  公开三副本 KubeBrain endpoint 对 1-record artifact 做 verify/complete 两次逐值复核；
+  artifact revision `467764733078405163`、digest
+  `60c975348322ac8cb2f4f22502cd0fab167fb9af66c27027653948ae27bdbee3`。
+  Service 最终 selector=`target`，A189 receipt 的 endpoint UID/data flags 均为 true，
+  operation attempt 1 Succeeded，status receipt digest
+  `bd762c609c849ad2fcf6f66cfe0955383c7f78fddc7f07d631fe177195a1bdf0`；测试 prefix 与
+  namespace 已清理。CertificateRotation/Destroy executor 仍是 P1。
 - **Operations A185 certificate rotation completion state（2026-07-18）**：新增
   `hack/production/validate-certificate-rotation.sh`，把 client/peer CA rollover
   收敛为 `begin -> overlap -> complete` 三阶段门禁。begin 固定全部 KubeBrain Pod
@@ -3240,7 +3262,7 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
 3. DBaaS 创建、扩缩、升级的数据面 release gate、备份完成 gate、Object Lock
    上传/保留删除、恢复验证 receipt、UID-fenced 流量切换、恢复后持续审计、证书轮换
    gate、UID-fenced 销毁状态机及持久 operation API/worker fencing 已建立；继续接入
-   RestoreCutover/CertificateRotation/Destroy executor，完成专属 namespace/凭据外围
+   CertificateRotation/Destroy executor，完成专属 namespace/凭据外围
    清理、bucket lifecycle/inventory 对账，
    并补 API 认证授权、不可变审计归档、跨实例公平调度和管理面 HA soak。
 4. 建立实例级限额和计量：请求字节、txn 操作数、跨连接 client RPC 总并发、client
