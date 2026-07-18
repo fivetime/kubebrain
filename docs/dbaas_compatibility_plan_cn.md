@@ -2877,6 +2877,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   部分 counter 采用首次 emit 时注册，未触发对应路径的单次 `/metrics` 抓取不会出现
   该序列，因此实时抓取只能验证当前运行路径，不能代替静态 emitter 契约。production
   定向测试和仓库全量测试均通过；该项仅新增测试与文档，无需重建数据面镜像。
+- **Observability A172 PD/TiKV health coverage（2026-07-18）**：独立实例原先只有
+  KubeBrain ServiceMonitor 和告警，PD/TiKV 即使丢 quorum、无 leader 或 Region 无
+  leader，也只能等客户端错误间接暴露。production 现为 `kb` 实例增加两个 headless
+  metrics Service：PD 2379 和 TiKV 独立 20180 端口，并由跨 namespace ServiceMonitor
+  逐 Pod 抓取；selector 固定 instance/component/part-of，不会把同 namespace 的恢复
+  集群混入生产实例。
+
+  新增 critical 告警覆盖 PD/TiKV 任一可抓取副本少于 3、PD
+  `etcd_server_is_leader` 总和不为 1，以及
+  `tikv_raftstore_leader_missing > 0`。真实 3 PD/3 TiKV 集群的两个 Service 均生成
+  3 个 Ready EndpointSlice 地址；逐 PD 抓取 leader 值为 `0/1/0`，TiKV
+  `leader_missing=0`。manifest 测试固定 Service selector/端口、ServiceMonitor
+  namespace/selector 和完整 PromQL，指标契约显式登记两个后端外部序列，仓库全量测试
+  通过。当前 kind 未安装 Prometheus Operator CRD，不能在该环境验证规则加载；目标
+  监控栈仍须执行 CRD admission/promtool 门禁。该项只改变部署监控，无需重建数据面镜像。
 
 ### P1：通用服务能力
 
