@@ -2944,6 +2944,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   12379 端口释放且临时目录清理。Auth/JWT 差分按设计跳过，因为它们要求独立、可销毁且
   配置不同的认证实例，仍由专用 auth/JWT 入口负责，不能据此声称认证差分已运行。
   `bash -n`、仓库全量测试和 endpoint health 通过；本机没有 shellcheck。
+- **Compatibility A177 destructive differential isolation（2026-07-18）**：复审 A176
+  runner 发现完整套件包含 Compact；即使测试 key 均隔离，Compact 仍会推进目标实例的
+  全局 compact revision，可能删除其他租户/测试的历史，因此“显式 endpoint”不足以防止
+  误指生产。runner 现默认 fail-closed，必须同时设置
+  `ALLOW_DESTRUCTIVE_DIFFERENTIAL=true`，并在创建参考 data-dir 前用
+  `etcdctl endpoint health` 验证目标；mTLS 继续通过标准
+  `ETCDCTL_CACERT`/`ETCDCTL_CERT`/`ETCDCTL_KEY` 环境传入。
+
+  未设置确认变量时稳定拒绝且说明 Compact 风险；确认后指向不可达 endpoint 时在参考
+  实例启动前失败且不产生临时目录；确认后指向 disposable 真实 TiKV/PD endpoint 的完整
+  差分 52.183s 通过，退出后 12379 端口和临时目录均释放。`bash -n`、仓库全量测试、
+  TidbCluster Ready 与 endpoint health 通过。控制面/CI 必须只给一次性兼容测试实例设置
+  该变量，禁止在共享或生产实例上运行。
 
 ### P1：通用服务能力
 
