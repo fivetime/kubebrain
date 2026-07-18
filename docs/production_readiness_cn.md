@@ -145,6 +145,26 @@ lease 元数据记录剩余 TTL；restore 为目标生成新 lease ID，同时�
 BACKUP_MODE=logical hack/backup/production-mode-check.sh
 ```
 
+生产备份 Job 必须设置 `METRICS_OUTPUT`，将成功结果写入 node-exporter 或等价
+Prometheus textfile collector 的共享目录；`BACKUP_INSTANCE` 必须与实例名一致，
+生产清单默认使用 `kubebrain`。指标文件仅在 artifact 已原子提交且可 `stat` 后原子
+替换，失败导出不会刷新上一次成功时间：
+
+```shell
+METRICS_OUTPUT=/var/lib/node_exporter/textfile_collector/kubebrain-backup.prom \
+BACKUP_INSTANCE=kubebrain \
+ENDPOINT=127.0.0.1:3379 PREFIX=/registry \
+OUTPUT=/backup/kubebrain-logical-backup.jsonl \
+  hack/backup/logical-export.sh
+```
+
+控制面必须采集 `kubebrain_logical_backup_last_success_timestamp_seconds`、
+`kubebrain_logical_backup_artifact_bytes`、`kubebrain_logical_backup_records`、
+`kubebrain_logical_backup_leases` 和 `kubebrain_logical_backup_snapshot_revision`。
+生产规则在成功指标缺失 1 小时后 warning，最近成功备份超过 25 小时且持续 15 分钟后
+critical。25 小时阈值为每日备份留出 1 小时调度抖动，不代表所有套餐都采用同一 RPO；
+更严格套餐必须下调规则。
+
 TiDB Operator 的 BR full/PITR 不能用于 KubeBrain 数据恢复。真实 S3 full backup 和
 独立 PD/TiKV Restore CR 都成功时，备份前已提交的 KubeBrain key 仍未出现在目标集群；
 任务 `Complete` 只证明 TiDB 管理范围恢复成功。BR raw 每次只处理一个 CF 且仍为实验

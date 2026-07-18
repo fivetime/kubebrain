@@ -2957,6 +2957,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   差分 52.183s 通过，退出后 12379 端口和临时目录均释放。`bash -n`、仓库全量测试、
   TidbCluster Ready 与 endpoint health 通过。控制面/CI 必须只给一次性兼容测试实例设置
   该变量，禁止在共享或生产实例上运行。
+- **Operations A178 logical backup capacity and freshness metrics（2026-07-18）**：
+  逻辑备份此前只有 artifact 完整性，没有可供控制面判断容量和 RPO 的稳定指标。export
+  现可通过 `METRICS_OUTPUT` 在 artifact 原子提交后发布 Prometheus textfile，包含最近
+  成功时间、artifact bytes、record/lease count 和 snapshot revision，并以
+  `BACKUP_INSTANCE` 区分实例。指标同样使用临时文件、`fsync`、rename 和目录
+  `fsync`；失败导出不会刷新上一次成功时间，避免把失败尝试误报成可恢复备份。
+
+  production rule 对默认实例的成功指标缺失 1 小时 warning，超过 25 小时未成功且
+  持续 15 分钟 critical。单元测试固定 label 转义、权限、全部 gauge、临时文件清理和
+  错误输入不覆盖旧成功状态；manifest 测试固定 PromQL、severity/for 和指标存在性。
+  真实 TiKV/PD endpoint 对隔离前缀导出 1 条记录：v2 artifact 完整性、revision 和
+  SHA-256 校验通过，textfile 报告 370 bytes、1 record、0 lease，测试 key 随后清理。
+  该能力提供单实例原始容量/新鲜度；跨实例保留策略、对象存储占用和计费聚合仍是 P1。
 
 ### P1：通用服务能力
 
@@ -2971,8 +2984,8 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
 3. 建立 DBaaS 控制面契约：创建、扩缩、升级、备份、恢复、证书轮换、销毁。
 4. 建立实例级限额和计量：请求字节、txn 操作数、跨连接 client RPC 总并发、client
    请求 QPS/burst、逻辑 Watch 总数、CPU/内存饱和、网络错误/丢包及 PD/TiKV PVC 容量
-   告警已具备稳定错误或指标，网络 RX/TX 原始计量已暴露；继续补备份容量及计费级
-   资源/容量/网络聚合。
+   告警已具备稳定错误或指标，网络 RX/TX 原始计量和逻辑备份 artifact 容量/新鲜度
+   指标已暴露；继续补计费级资源/容量/网络聚合。
 
 ### P2：运维兼容和长期验证
 
