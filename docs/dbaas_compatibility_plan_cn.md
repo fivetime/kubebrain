@@ -2906,6 +2906,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   severity/for，并将两个 kubelet 序列纳入外部指标契约；Prometheus 3.5
   `promtool check rules` 成功解析全部 18 条规则，仓库全量测试和真实 endpoint health
   通过。该项仅修改监控与测试，无需重建数据面镜像。
+- **Observability A174 resource saturation guard（2026-07-18）**：production 已为
+  KubeBrain/PD/TiKV 配置 CPU、内存 request/limit，但原监控无法在 OOMKill 或延迟尖峰
+  前识别资源饱和。现对 3 个 KubeBrain、3 个 PD、3 个 TiKV 主集群容器增加三项规则：
+  cAdvisor working-set 或 kube-state-metrics memory limit 序列不足 9 个持续 15m 报
+  telemetry warning；working-set/limit 超过 90% 持续 10m 报 critical；5m CPU CFS
+  throttled periods 比例超过 25% 持续 15m 报 warning。
+
+  TiKV/PD selector 使用 `kb-(pd|tikv)-[0-2]`，不会把 `kb-restore-*` 混入售卖实例。
+  真实 kubelet cAdvisor 验证 container/namespace/pod/image 标签，并精确匹配 6 条主存储
+  集群 working-set 序列；当前 dev 工作负载没有 limit，不能用于验证 production quota
+  比例，这是清单差异而非规则缺口。manifest 测试固定完整 PromQL、severity/for 和全部
+  外部指标名；Prometheus 3.5 成功解析 21 条规则，仓库全量测试、TidbCluster Ready 与
+  endpoint health 均通过。该项只修改监控与测试，无需重建数据面镜像。
 
 ### P1：通用服务能力
 
@@ -2919,8 +2932,8 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
    recipe 已通过；继续增加长时间 soak。
 3. 建立 DBaaS 控制面契约：创建、扩缩、升级、备份、恢复、证书轮换、销毁。
 4. 建立实例级限额和计量：请求字节、txn 操作数、跨连接 client RPC 总并发、client
-   请求 QPS/burst、逻辑 Watch 总数及 PD/TiKV PVC 容量告警已具备稳定错误或指标；
-   继续补 CPU、内存、备份容量、网络及计费级容量聚合。
+   请求 QPS/burst、逻辑 Watch 总数、CPU/内存饱和及 PD/TiKV PVC 容量告警已具备稳定
+   错误或指标；继续补备份容量、网络及计费级资源/容量聚合。
 
 ### P2：运维兼容和长期验证
 
