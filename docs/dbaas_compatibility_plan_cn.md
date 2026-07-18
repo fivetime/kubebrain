@@ -3062,6 +3062,27 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   1 artifact lease/1 verified target lease 全部核对；篡改目标 permanent value 后
   verify 非零退出且未发布第二 receipt，源/目标 lease 已 revoke、prefix 已清理。
   receipt 是验证时点证据；对象存储不可变留存、流量切换 fencing 和恢复后持续审计仍是 P1。
+- **Operations A185 certificate rotation completion state（2026-07-18）**：新增
+  `hack/production/validate-certificate-rotation.sh`，把 client/peer CA rollover
+  收敛为 `begin -> overlap -> complete` 三阶段门禁。begin 固定全部 KubeBrain Pod
+  name/UID/restart count/Ready 状态及旧、新证书 SHA-256，并要求旧凭据 endpoint
+  proposal 成功；overlap 要求 Pod 快照不变且旧、新 client 凭据同时成功；complete
+  要求新凭据成功、旧凭据失败，并在失败后立即再次用新凭据成功，防止把 endpoint
+  outage 误记成旧证书已撤销。
+
+  状态和 `kubebrain.certificate-rotation.receipt.v1` 都以 0600 临时文件、file
+  `fsync`、不可覆盖 hard-link 和目录同步发布；receipt 绑定 instance、rotation ID、
+  endpoint、replicas、旧/新证书指纹、Pod 未变、旧证书拒绝和完成时间。同参数重试会
+  重做全部在线检查后复用原 receipt，参数漂移或证据冲突 fail closed。mock 测试覆盖
+  完整生命周期、幂等 complete、阶段越级、overlap 新凭据失败、Pod UID 变化、旧凭据
+  仍被接受、endpoint outage 误判和不安全 evidence 字段。
+
+  门禁已接入 `hack/dev/tls-smoke.sh`。真实单节点 kind 上以独立 TLS namespace 完成
+  CA overlap、叶证书热替换、撤旧、旧证书拒绝和新证书正向复检后签发 receipt；整个
+  rollover Pod 零重启，长连接 watch/lease reconnect soak 持续完成 161 次写入。首次
+  演练曾因 port-forward 退出把不可达误判为拒绝，新增正向复检后才重新通过，证明该
+  fail-closed 分支由真实故障驱动。生产三副本 peer/auth+mTLS 热轮换能力已有 A25-A30
+  smoke 证据；A185 本次在单节点环境验证的是平台完成契约，跨 AZ 仍需预生产重跑。
 
 ### P1：通用服务能力
 
@@ -3073,8 +3094,9 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
    注入覆盖。
 2. `client/v3/concurrency` mutex/election/session、lease 自然过期和 failover
    recipe 已通过；继续增加长时间 soak。
-3. DBaaS 创建、扩缩、升级的数据面 release gate 已建立；继续建立备份、恢复、证书
-   轮换、销毁的幂等状态机、超时、回滚和审计契约。
+3. DBaaS 创建、扩缩、升级的数据面 release gate、备份完成 gate、恢复验证 receipt
+   和证书轮换三阶段完成 gate 已建立；继续建立对象存储上传/保留、恢复流量切换和销毁
+   的幂等状态机，并补控制面任务超时、回滚、不可变审计归档与跨实例调度。
 4. 建立实例级限额和计量：请求字节、txn 操作数、跨连接 client RPC 总并发、client
    请求 QPS/burst、逻辑 Watch 总数、CPU/内存饱和、网络错误/丢包及 PD/TiKV PVC 容量
    告警已具备稳定错误或指标，网络 RX/TX 原始计量和逻辑备份 artifact 容量/新鲜度

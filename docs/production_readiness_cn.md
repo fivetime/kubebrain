@@ -164,7 +164,52 @@ StatefulSet observed generation、ready/updated replicas、revision 和精确 im
 
 生产必须使用 image digest；脚本做精确字符串比较，允许本地验证使用不可变测试 tag，
 但不会替控制面判断 tag 是否可变。该门禁可关闭创建/扩缩/升级的“数据面已就绪”阶段，
-不能替代备份、恢复、证书轮换和销毁各自的幂等状态机与回滚证据。
+不能替代备份、恢复和销毁各自的幂等状态机与回滚证据。
+
+## 证书轮换完成门禁
+
+client/peer CA rollover 必须按 `begin`、`overlap`、`complete` 三阶段执行
+`hack/production/validate-certificate-rotation.sh`。控制面先持久化旧、新 CA、client
+证书和私钥，再使用同一个 `ROTATION_ID`、`INSTANCE`、`STATE_DIR` 和 endpoint 调用：
+
+```shell
+common_env=(
+  ROTATION_ID=instance-a-20260718
+  INSTANCE=instance-a
+  STATE_DIR=/var/lib/kubebrain-operations/certificate-rotations
+  KUBEBRAIN_NAMESPACE=kubebrain-instance-a
+  EXPECTED_REPLICAS=3
+  ENDPOINT=https://instance-a.example:2379
+  OLD_CACERT=/run/rotation/old-ca.crt
+  OLD_CERT=/run/rotation/old-client.crt
+  OLD_KEY=/run/rotation/old-client.key
+  OVERLAP_CACERT=/run/rotation/overlap-ca.crt
+  NEW_CACERT=/run/rotation/new-ca.crt
+  NEW_CERT=/run/rotation/new-client.crt
+  NEW_KEY=/run/rotation/new-client.key
+  RECEIPT_OUTPUT=/var/lib/kubebrain-operations/instance-a-20260718.json
+)
+env "${common_env[@]}" ACTION=begin hack/production/validate-certificate-rotation.sh
+# 发布 old+new CA trust bundle 后：
+env "${common_env[@]}" ACTION=overlap hack/production/validate-certificate-rotation.sh
+# 切换叶证书并从 trust bundle 删除 old CA 后：
+env "${common_env[@]}" ACTION=complete hack/production/validate-certificate-rotation.sh
+```
+
+`begin` 要求全部 Pod Ready，记录排序后的 Pod name、UID、`kubebrain` container restart
+count，并用旧凭据完成 `endpoint health`。`overlap` 要求 Pod 快照完全不变，且旧、新
+client 凭据都能通过 overlap bundle 提交 proposal。`complete` 再次固定 Pod 身份和
+重启计数，要求新凭据成功、旧凭据失败，随后立刻用新凭据复检；因此 endpoint outage
+不能冒充旧证书撤销。任一阶段次序错误、rotation 参数/证书指纹变化、Pod 替换/重启、
+副本不 Ready 或证据冲突都 fail closed。
+
+完成后原子发布 `kubebrain.certificate-rotation.receipt.v1`，绑定 instance、
+rotation ID、endpoint、replicas、旧/新证书 SHA-256、完成时间，并明确记录
+`pods_unchanged=true` 和 `old_certificate_rejected=true`。状态与 receipt 使用 0600
+权限、临时文件 `fsync`、不可覆盖 hard-link 和目录同步；同输入重试会重做在线检查并
+复用原 receipt。`STATE_DIR` 和 receipt 必须位于持久、受访问控制的操作记录卷，完成后
+再归档到不可变审计存储。该门禁验证数据面完成条件，不替控制面实现 Secret 发布超时、
+阶段回滚或跨实例任务调度。
 
 ## 备份恢复生产边界
 
