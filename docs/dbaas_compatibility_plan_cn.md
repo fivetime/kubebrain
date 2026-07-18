@@ -3083,6 +3083,34 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   演练曾因 port-forward 退出把不可达误判为拒绝，新增正向复检后才重新通过，证明该
   fail-closed 分支由真实故障驱动。生产三副本 peer/auth+mTLS 热轮换能力已有 A25-A30
   smoke 证据；A185 本次在单节点环境验证的是平台完成契约，跨 AZ 仍需预生产重跑。
+- **Operations A187 UID-fenced instance destruction（2026-07-18）**：生产
+  KubeBrain/TidbCluster 清单补齐 `app.kubernetes.io/instance` 所有权标签，KubeBrain
+  workload/service/PDB selector 同步绑定 instance，避免多实例 namespace 中仅靠 name
+  误选。新增 `hack/production/destroy-instance.sh` 四阶段状态机：prepare 先用逻辑 v2
+  completion gate 校验 backup prefix、最少记录数和最大年龄，记录 protected digest/
+  revision，再冻结 KubeBrain、TidbCluster、PDB、Service、ServiceAccount 和每块
+  PD/TiKV PVC 的 UID；quiesce 要求精确 `destroy:<instance>:<operation>` token 后缩容
+  KubeBrain 到 0；destroy 删除前重查 UID 和未记录 PVC；complete 要求固定资源、PVC
+  以及 PD/TiKV Pod/StatefulSet 全部消失后签发 `kubebrain.destroy.receipt.v1`。
+
+  `hack/production/cmd/uid-delete` 使用 dynamic client 发送
+  `DeleteOptions.preconditions.uid` 和 foreground propagation，关闭 `kubectl delete
+  NAME` 在 get/delete 间名称复用的竞态。状态、阶段 marker 和 receipt 均不可覆盖、
+  file/directory fsync；中断重试接受 NotFound，但同名新 UID、额外匹配 PVC、存储
+  workload residue 或 evidence 冲突均 fail closed。mock 测试覆盖完整生命周期和
+  prepare/destroy/complete 重试、阶段越级、错误确认、备份失败、StatefulSet UID 漂移、
+  新增 PVC 及 TiKV StatefulSet 残留；HTTP API 测试固定 DeleteOptions UID body 和
+  Conflict 传播。
+
+  真实 `kind-kubebrain-dbaas` 隔离演练从 `/dbaas/a187-destroy-proof/` 导出 1-record
+  v2 artifact（revision `467764733078405143`，digest
+  `3346940f8431c77c5b8ce823e32b022586ea2377b9801396c3d7d5f21b9eb3e7`），对两个临时
+  namespace 中暂停 TidbCluster、2 PVC 和完整外围资源执行 prepare/quiesce/destroy/
+  complete。12 次删除均由 API 接受 UID precondition，资源/PVC/workload residue 为
+  0，complete 二次调用复用同一 receipt；测试 namespace 和 key 已清理，主 3
+  KubeBrain、3 PD、3 TiKV 均 Ready 且零重启。首次 quiesce 因当前 kubectl 不支持
+  `jsonpath={len(.items)}` 超时且未删除资源，计数改为稳定 `-o name | wc -l` 后才通过。
+  namespace、TLS Secret、外部备份和账单记录保留给控制面按独立策略对账/清理。
 
 ### P1：通用服务能力
 
@@ -3094,9 +3122,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
    注入覆盖。
 2. `client/v3/concurrency` mutex/election/session、lease 自然过期和 failover
    recipe 已通过；继续增加长时间 soak。
-3. DBaaS 创建、扩缩、升级的数据面 release gate、备份完成 gate、恢复验证 receipt
-   和证书轮换三阶段完成 gate 已建立；继续建立对象存储上传/保留、恢复流量切换和销毁
-   的幂等状态机，并补控制面任务超时、回滚、不可变审计归档与跨实例调度。
+3. DBaaS 创建、扩缩、升级的数据面 release gate、备份完成 gate、恢复验证 receipt、
+   证书轮换 gate 和 UID-fenced 销毁状态机已建立；继续建立对象存储上传/保留、恢复
+   流量切换、专属 namespace/凭据外围清理，并补控制面任务超时、回滚、不可变审计归档
+   与跨实例调度。
 4. 建立实例级限额和计量：请求字节、txn 操作数、跨连接 client RPC 总并发、client
    请求 QPS/burst、逻辑 Watch 总数、CPU/内存饱和、网络错误/丢包及 PD/TiKV PVC 容量
    告警已具备稳定错误或指标，网络 RX/TX 原始计量和逻辑备份 artifact 容量/新鲜度

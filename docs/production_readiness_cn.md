@@ -211,6 +211,66 @@ rotation ID、endpoint、replicas、旧/新证书 SHA-256、完成时间，并�
 再归档到不可变审计存储。该门禁验证数据面完成条件，不替控制面实现 Secret 发布超时、
 阶段回滚或跨实例任务调度。
 
+## 实例销毁状态机
+
+生产清单中的 KubeBrain 与 TidbCluster 都固定携带 `app.kubernetes.io/instance`
+所有权标签；StatefulSet、Pod、Service 和 PDB selector 同步包含该标签。模板化时必须
+替换为 DBaaS instance ID。销毁不得调用 namespace 级泛删，也不得只按资源名称执行
+`kubectl delete`，因为后者不带 UID precondition，可能删除同名重建的新实例。
+
+控制面使用同一组参数依次执行：
+
+```shell
+common_env=(
+  OPERATION_ID=instance-a-delete-20260718
+  INSTANCE=instance-a
+  STATE_DIR=/var/lib/kubebrain-operations/destroy
+  BACKUP_INPUT=/backup/instance-a-final.jsonl
+  BACKUP_PREFIX=/registry
+  BACKUP_MAX_AGE_SECONDS=3600
+  BACKUP_MIN_RECORDS=1
+  KUBE_CONTEXT=production
+  KUBEBRAIN_NAMESPACE=kubebrain-instance-a
+  KUBEBRAIN_STATEFULSET=kubebrain
+  TIDB_NAMESPACE=kubebrain-storage-a
+  TIDB_CLUSTER=instance-a
+  EXPECTED_PVCS=6
+)
+env "${common_env[@]}" ACTION=prepare hack/production/destroy-instance.sh
+
+confirm=destroy:instance-a:instance-a-delete-20260718
+env "${common_env[@]}" ACTION=quiesce CONFIRM_DESTROY="$confirm" \
+  hack/production/destroy-instance.sh
+env "${common_env[@]}" ACTION=destroy CONFIRM_DESTROY="$confirm" \
+  hack/production/destroy-instance.sh
+env "${common_env[@]}" ACTION=complete CONFIRM_DESTROY="$confirm" \
+  RECEIPT_OUTPUT=/var/lib/kubebrain-operations/instance-a-delete-20260718.json \
+  hack/production/destroy-instance.sh
+```
+
+`prepare` 先通过 `logical-status` 完整校验 `kubebrain.logical.v2` artifact 的 prefix、
+最少记录数、受 SHA-256 保护的创建时间和最大年龄，再记录 artifact digest/revision；
+随后固定 KubeBrain StatefulSet、client/peer Service、PDB、ServiceAccount、
+TidbCluster、PD/TiKV PDB/metrics Service 及每块 PD/TiKV PVC 的 UID。PVC 数量必须精确
+等于 `EXPECTED_PVCS`，component 只能是 `pd` 或 `tikv`。
+
+`quiesce` 只有在确认令牌精确等于 `destroy:<INSTANCE>:<OPERATION_ID>` 时才把
+KubeBrain StatefulSet 缩到 0，并等待 ready replicas 与实例 Pod 都归零。备份最大年龄
+表示该套餐接受的销毁 RPO；状态机不把“最近一小时备份”宣称成零数据损失。要求 RPO=0
+时，控制面必须先 fence 客户流量，在停写窗口导出最终 artifact，再调用 prepare。
+
+`destroy` 再次核对所有仍存在资源的 UID，并拒绝任何新出现或同名换 UID 的实例 PVC。
+删除由 `hack/production/cmd/uid-delete` 直接发送 Kubernetes
+`DeleteOptions.preconditions.uid` 与 foreground propagation；中断重试允许资源已经
+不存在，但名称复用立即失败。最终还要求全部固定资源、实例 PVC、PD/TiKV Pod 和
+StatefulSet 均为空。`complete` 重复 absence gate 后原子发布
+`kubebrain.destroy.receipt.v1`，绑定 instance、operation ID、两个 namespace、
+TidbCluster 名、备份 digest/revision 和完成时间；同输入重试复用原 receipt。
+
+脚本刻意不删除 namespace、TLS Secret、外部对象存储 artifact、监控规则或控制面账单
+记录：namespace 可能共享，而审计/备份数据必须按独立保留策略处理。平台只有在 receipt
+归档到不可变审计存储并完成外围资源清单对账后，才能删除专属 namespace 和凭据。
+
 ## 备份恢复生产边界
 
 当前唯一通过端到端恢复验证的生产备份模式是 `kubebrain.logical.v2`。制品包含固定
