@@ -67,6 +67,46 @@ func TestOperationSubmitterRBACIsNamespacedAndCannotMutateStatus(t *testing.T) {
 	require.Equal(t, rbacParty{Kind: "Role", Name: "kubebrain-operation-submitter"}, binding.RoleRef)
 }
 
+func TestOperationWorkerRBACCanFenceWithLeasesButCannotCreateOperations(t *testing.T) {
+	path := filepath.Join("..", "..", "deploy", "production", "kubebrain-operation-worker-rbac.yaml")
+	documents := decodeRBACManifest(t, path)
+	require.Len(t, documents, 4)
+
+	serviceAccount := documents[1]
+	require.Equal(t, "ServiceAccount", serviceAccount.Kind)
+	require.Equal(t, "kubebrain-operation-worker", serviceAccount.Metadata.Name)
+	require.Equal(t, "kubebrain-operations", serviceAccount.Metadata.Namespace)
+
+	role := documents[2]
+	require.Equal(t, "Role", role.Kind)
+	require.Equal(t, "kubebrain-operations", role.Metadata.Namespace)
+	require.Equal(t, []rbacRule{
+		{
+			APIGroups: []string{"dbaas.kubebrain.io"},
+			Resources: []string{"kubebrainoperations"},
+			Verbs:     []string{"get", "list", "watch"},
+		},
+		{
+			APIGroups: []string{"dbaas.kubebrain.io"},
+			Resources: []string{"kubebrainoperations/status"},
+			Verbs:     []string{"get", "update", "patch"},
+		},
+		{
+			APIGroups: []string{"coordination.k8s.io"},
+			Resources: []string{"leases"},
+			Verbs:     []string{"create", "get", "update", "delete"},
+		},
+	}, role.Rules)
+
+	binding := documents[3]
+	require.Equal(t, "RoleBinding", binding.Kind)
+	require.Equal(t, rbacParty{
+		Kind: "ServiceAccount", Name: "kubebrain-operation-worker",
+		Namespace: "kubebrain-operations",
+	}, binding.Subjects[0])
+	require.Equal(t, rbacParty{Kind: "Role", Name: "kubebrain-operation-worker"}, binding.RoleRef)
+}
+
 func decodeRBACManifest(t *testing.T, path string) []rbacManifest {
 	t.Helper()
 	file, err := os.Open(path)

@@ -2,9 +2,11 @@ package operationqueue
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -20,6 +22,12 @@ var Resource = schema.GroupVersionResource{
 	Group: "dbaas.kubebrain.io", Version: "v1alpha1", Resource: "kubebrainoperations",
 }
 
+var LeaseResource = schema.GroupVersionResource{
+	Group: "coordination.k8s.io", Version: "v1", Resource: "leases",
+}
+
+const microTimeFormat = "2006-01-02T15:04:05.000000Z07:00"
+
 const (
 	PhasePending   = "Pending"
 	PhaseRunning   = "Running"
@@ -28,9 +36,10 @@ const (
 )
 
 var (
-	ErrNoOperation = errors.New("no claimable operation")
-	ErrFenced      = errors.New("operation worker is fenced")
-	ErrTerminal    = errors.New("operation is terminal")
+	ErrNoOperation  = errors.New("no claimable operation")
+	ErrFenced       = errors.New("operation worker is fenced")
+	ErrTerminal     = errors.New("operation is terminal")
+	ErrInstanceBusy = errors.New("operation instance is busy")
 )
 
 type Spec struct {
@@ -56,12 +65,14 @@ type Claim struct {
 
 type Queue struct {
 	resource dynamic.ResourceInterface
+	leases   dynamic.ResourceInterface
 	now      func() time.Time
 }
 
 func New(client dynamic.Interface, namespace string) *Queue {
 	return &Queue{
 		resource: client.Resource(Resource).Namespace(namespace),
+		leases:   client.Resource(LeaseResource).Namespace(namespace),
 		now:      func() time.Time { return time.Now().UTC() },
 	}
 }
@@ -118,14 +129,36 @@ func (q *Queue) Claim(ctx context.Context, owner, operationType string, lease ti
 	if err != nil {
 		return nil, err
 	}
+	lastStarted := make(map[string]int64)
+	for i := range list.Items {
+		instance, _, _ := unstructured.NestedString(list.Items[i].Object, "spec", "instance")
+		started, found, _ := unstructured.NestedInt64(
+			list.Items[i].Object, "status", "startedAtUnixNano",
+		)
+		if !found {
+			seconds, _, _ := unstructured.NestedInt64(
+				list.Items[i].Object, "status", "startedAtUnix",
+			)
+			started = seconds * int64(time.Second)
+		}
+		if started > lastStarted[instance] {
+			lastStarted[instance] = started
+		}
+	}
 	sort.Slice(list.Items, func(i, j int) bool {
+		leftInstance, _, _ := unstructured.NestedString(list.Items[i].Object, "spec", "instance")
+		rightInstance, _, _ := unstructured.NestedString(list.Items[j].Object, "spec", "instance")
+		if lastStarted[leftInstance] != lastStarted[rightInstance] {
+			return lastStarted[leftInstance] < lastStarted[rightInstance]
+		}
 		left, right := list.Items[i].GetCreationTimestamp(), list.Items[j].GetCreationTimestamp()
 		if left.Equal(&right) {
 			return list.Items[i].GetName() < list.Items[j].GetName()
 		}
 		return left.Before(&right)
 	})
-	now := q.now().Unix()
+	nowTime := q.now()
+	now := nowTime.Unix()
 	var lastConflict error
 	for i := range list.Items {
 		candidate := &list.Items[i]
@@ -171,6 +204,15 @@ func (q *Queue) Claim(ctx context.Context, owner, operationType string, lease ti
 			}
 			continue
 		}
+		instance, _, _ := unstructured.NestedString(candidate.Object, "spec", "instance")
+		holder := leaseHolder(candidate, owner, attempt+1)
+		if err := q.acquireInstanceLease(ctx, instance, holder, lease); err != nil {
+			if errors.Is(err, ErrInstanceBusy) || apierrors.IsConflict(err) {
+				lastConflict = err
+				continue
+			}
+			return nil, err
+		}
 		updated := candidate.DeepCopy()
 		_ = unstructured.SetNestedField(updated.Object, PhaseRunning, "status", "phase")
 		_ = unstructured.SetNestedField(updated.Object, owner, "status", "owner")
@@ -178,13 +220,16 @@ func (q *Queue) Claim(ctx context.Context, owner, operationType string, lease ti
 		_ = unstructured.SetNestedField(updated.Object, now+int64(lease/time.Second), "status", "leaseUntilUnix")
 		_ = unstructured.SetNestedField(updated.Object, updated.GetGeneration(), "status", "observedGeneration")
 		_ = unstructured.SetNestedField(updated.Object, now, "status", "startedAtUnix")
+		_ = unstructured.SetNestedField(updated.Object, nowTime.UnixNano(), "status", "startedAtUnixNano")
 		_ = unstructured.SetNestedField(updated.Object, "", "status", "message")
 		claimed, updateErr := q.resource.UpdateStatus(ctx, updated, metav1.UpdateOptions{})
 		if apierrors.IsConflict(updateErr) {
+			_ = q.releaseInstanceLease(ctx, instance, holder)
 			lastConflict = updateErr
 			continue
 		}
 		if updateErr != nil {
+			_ = q.releaseInstanceLease(ctx, instance, holder)
 			return nil, updateErr
 		}
 		return claimFrom(claimed)
@@ -205,9 +250,11 @@ func (q *Queue) Requeue(
 	if err != nil {
 		return nil, err
 	}
-	if err := requireWorker(object, owner, attempt); err != nil {
+	if err := q.requireWorker(object, owner, attempt); err != nil {
 		return nil, err
 	}
+	instance, _, _ := unstructured.NestedString(object.Object, "spec", "instance")
+	holder := leaseHolder(object, owner, attempt)
 	updated := object.DeepCopy()
 	_ = unstructured.SetNestedField(updated.Object, PhasePending, "status", "phase")
 	_ = unstructured.SetNestedField(updated.Object, "", "status", "owner")
@@ -216,6 +263,9 @@ func (q *Queue) Requeue(
 	result, err := q.resource.UpdateStatus(ctx, updated, metav1.UpdateOptions{})
 	if apierrors.IsConflict(err) {
 		return nil, ErrFenced
+	}
+	if err == nil {
+		_ = q.releaseInstanceLease(ctx, instance, holder)
 	}
 	return result, err
 }
@@ -228,7 +278,15 @@ func (q *Queue) Heartbeat(ctx context.Context, name, owner string, attempt int64
 	if err != nil {
 		return nil, err
 	}
-	if err := requireWorker(object, owner, attempt); err != nil {
+	if err := q.requireWorker(object, owner, attempt); err != nil {
+		return nil, err
+	}
+	instance, _, _ := unstructured.NestedString(object.Object, "spec", "instance")
+	holder := leaseHolder(object, owner, attempt)
+	if err := q.acquireInstanceLease(ctx, instance, holder, lease); err != nil {
+		if errors.Is(err, ErrInstanceBusy) || apierrors.IsConflict(err) {
+			return nil, ErrFenced
+		}
 		return nil, err
 	}
 	now := q.now().Unix()
@@ -274,9 +332,11 @@ func (q *Queue) Finish(
 		}
 		return nil, ErrTerminal
 	}
-	if err := requireWorker(object, owner, attempt); err != nil {
+	if err := q.requireWorker(object, owner, attempt); err != nil {
 		return nil, err
 	}
+	instance, _, _ := unstructured.NestedString(object.Object, "spec", "instance")
+	holder := leaseHolder(object, owner, attempt)
 	updated := object.DeepCopy()
 	targetPhase := PhaseFailed
 	if succeeded {
@@ -290,6 +350,9 @@ func (q *Queue) Finish(
 	result, err := q.resource.UpdateStatus(ctx, updated, metav1.UpdateOptions{})
 	if apierrors.IsConflict(err) {
 		return nil, ErrFenced
+	}
+	if err == nil {
+		_ = q.releaseInstanceLease(ctx, instance, holder)
 	}
 	return result, err
 }
@@ -306,14 +369,16 @@ func (q *Queue) Delete(ctx context.Context, name string, uid types.UID) error {
 	})
 }
 
-func requireWorker(object *unstructured.Unstructured, owner string, attempt int64) error {
+func (q *Queue) requireWorker(object *unstructured.Unstructured, owner string, attempt int64) error {
 	phase, _, _ := unstructured.NestedString(object.Object, "status", "phase")
 	if phase == PhaseSucceeded || phase == PhaseFailed {
 		return ErrTerminal
 	}
 	actualOwner, _, _ := unstructured.NestedString(object.Object, "status", "owner")
 	actualAttempt, _, _ := unstructured.NestedInt64(object.Object, "status", "attempt")
-	if phase != PhaseRunning || actualOwner != owner || actualAttempt != attempt {
+	leaseUntil, _, _ := unstructured.NestedInt64(object.Object, "status", "leaseUntilUnix")
+	if phase != PhaseRunning || actualOwner != owner || actualAttempt != attempt ||
+		leaseUntil < q.now().Unix() {
 		return ErrFenced
 	}
 	return nil
@@ -346,4 +411,92 @@ func specMatches(object *unstructured.Unstructured, spec Spec) bool {
 	return operationID == spec.OperationID && instance == spec.Instance &&
 		operationType == spec.Type && digest == spec.ParametersSHA256 &&
 		maxAttempts == spec.MaxAttempts
+}
+
+func (q *Queue) acquireInstanceLease(
+	ctx context.Context,
+	instance, holder string,
+	duration time.Duration,
+) error {
+	if instance == "" {
+		return errors.New("operation instance is empty")
+	}
+	name := instanceLeaseName(instance)
+	now := q.now().UTC()
+	nowText := now.Format(microTimeFormat)
+	seconds := int64(duration / time.Second)
+	lease := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "coordination.k8s.io/v1",
+		"kind":       "Lease",
+		"metadata": map[string]any{
+			"name": name,
+			"labels": map[string]any{
+				"app.kubernetes.io/name":       "kubebrain-operation-instance-lock",
+				"app.kubernetes.io/managed-by": "kubebrain-operation-worker",
+			},
+		},
+		"spec": map[string]any{
+			"holderIdentity":       holder,
+			"leaseDurationSeconds": seconds,
+			"acquireTime":          nowText,
+			"renewTime":            nowText,
+		},
+	}}
+	_, err := q.leases.Create(ctx, lease, metav1.CreateOptions{})
+	if err == nil {
+		return nil
+	}
+	if !apierrors.IsAlreadyExists(err) {
+		return err
+	}
+	existing, err := q.leases.Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return err
+	}
+	currentHolder, _, _ := unstructured.NestedString(existing.Object, "spec", "holderIdentity")
+	renewText, _, _ := unstructured.NestedString(existing.Object, "spec", "renewTime")
+	currentSeconds, _, _ := unstructured.NestedInt64(existing.Object, "spec", "leaseDurationSeconds")
+	renewed, parseErr := time.Parse(time.RFC3339Nano, renewText)
+	if currentHolder != holder && (parseErr != nil || !renewed.Add(time.Duration(currentSeconds)*time.Second).Before(now)) {
+		return ErrInstanceBusy
+	}
+	updated := existing.DeepCopy()
+	if currentHolder != holder {
+		_ = unstructured.SetNestedField(updated.Object, nowText, "spec", "acquireTime")
+	}
+	_ = unstructured.SetNestedField(updated.Object, holder, "spec", "holderIdentity")
+	_ = unstructured.SetNestedField(updated.Object, seconds, "spec", "leaseDurationSeconds")
+	_ = unstructured.SetNestedField(updated.Object, nowText, "spec", "renewTime")
+	_, err = q.leases.Update(ctx, updated, metav1.UpdateOptions{})
+	return err
+}
+
+func (q *Queue) releaseInstanceLease(ctx context.Context, instance, holder string) error {
+	name := instanceLeaseName(instance)
+	existing, err := q.leases.Get(ctx, name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	currentHolder, _, _ := unstructured.NestedString(existing.Object, "spec", "holderIdentity")
+	if currentHolder != holder {
+		return ErrFenced
+	}
+	uid := existing.GetUID()
+	return q.leases.Delete(ctx, name, metav1.DeleteOptions{
+		Preconditions: &metav1.Preconditions{UID: &uid},
+	})
+}
+
+func instanceLeaseName(instance string) string {
+	digest := sha256.Sum256([]byte(instance))
+	return fmt.Sprintf("kubebrain-instance-%x", digest[:16])
+}
+
+func leaseHolder(object *unstructured.Unstructured, owner string, attempt int64) string {
+	ownerDigest := sha256.Sum256([]byte(owner))
+	return string(object.GetUID()) + ":" + strconv.FormatInt(attempt, 10) + ":" +
+		fmt.Sprintf("%x", ownerDigest[:8])
 }

@@ -125,6 +125,10 @@ spec:
                   type: integer
                   format: int64
                   minimum: 0
+                startedAtUnixNano:
+                  type: integer
+                  format: int64
+                  minimum: 0
                 completedAtUnix:
                   type: integer
                   format: int64

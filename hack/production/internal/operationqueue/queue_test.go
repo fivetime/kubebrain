@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -129,6 +130,96 @@ func TestQueueRequeueConsumesAttemptAndFiltersType(t *testing.T) {
 	require.ErrorIs(t, err, ErrFenced)
 }
 
+func TestQueueRotatesAcrossInstancesAndSerializesEachInstance(t *testing.T) {
+	now := time.Unix(1_000, 0).UTC()
+	queue := newFakeQueue().WithClock(func() time.Time { return now })
+	ctx := context.Background()
+
+	history := validSpec()
+	history.OperationID = "a-history"
+	history.Instance = "instance-a"
+	historyObject, err := queue.Submit(ctx, "a-history", history)
+	require.NoError(t, err)
+	setOperationStatus(t, queue, historyObject, map[string]any{
+		"phase": PhaseSucceeded, "startedAtUnix": int64(900),
+		"startedAtUnixNano": int64(900_000_000_900),
+		"completedAtUnix":   int64(901), "receiptSHA256": strings.Repeat("a", 64),
+	})
+	bHistory := validSpec()
+	bHistory.OperationID = "b-history"
+	bHistory.Instance = "instance-b"
+	bHistoryObject, err := queue.Submit(ctx, "b-history", bHistory)
+	require.NoError(t, err)
+	setOperationStatus(t, queue, bHistoryObject, map[string]any{
+		"phase": PhaseSucceeded, "startedAtUnix": int64(900),
+		"startedAtUnixNano": int64(900_000_000_100),
+		"completedAtUnix":   int64(901), "receiptSHA256": strings.Repeat("a", 64),
+	})
+
+	aFirst := validSpec()
+	aFirst.OperationID = "a-first"
+	aFirst.Instance = "instance-a"
+	_, err = queue.Submit(ctx, "a-first", aFirst)
+	require.NoError(t, err)
+	aSecond := aFirst
+	aSecond.OperationID = "a-second"
+	_, err = queue.Submit(ctx, "a-second", aSecond)
+	require.NoError(t, err)
+	b := validSpec()
+	b.OperationID = "b-first"
+	b.Instance = "instance-b"
+	_, err = queue.Submit(ctx, "b-first", b)
+	require.NoError(t, err)
+
+	claimB, err := queue.Claim(ctx, "worker-b", "", time.Minute)
+	require.NoError(t, err)
+	require.Equal(t, "b-first", claimB.Name)
+	claimA, err := queue.Claim(ctx, "worker-a", "", time.Minute)
+	require.NoError(t, err)
+	require.Equal(t, "a-first", claimA.Name)
+
+	_, err = queue.Claim(ctx, "worker-c", "", time.Minute)
+	require.ErrorIs(t, err, ErrNoOperation)
+	_, err = queue.Finish(ctx, claimA.Name, claimA.Owner, claimA.Attempt, true, strings.Repeat("b", 64), "done")
+	require.NoError(t, err)
+	nextA, err := queue.Claim(ctx, "worker-c", "", time.Minute)
+	require.NoError(t, err)
+	require.Equal(t, "a-second", nextA.Name)
+}
+
+func TestQueueFencesExpiredWorkerBeforeTakeover(t *testing.T) {
+	now := time.Unix(1_000, 0).UTC()
+	queue := newFakeQueue().WithClock(func() time.Time { return now })
+	ctx := context.Background()
+	_, err := queue.Submit(ctx, "operation-1", validSpec())
+	require.NoError(t, err)
+	claim, err := queue.Claim(ctx, "worker-a", "", 10*time.Second)
+	require.NoError(t, err)
+
+	now = now.Add(11 * time.Second)
+	_, err = queue.Heartbeat(ctx, claim.Name, claim.Owner, claim.Attempt, time.Minute)
+	require.ErrorIs(t, err, ErrFenced)
+	_, err = queue.Requeue(ctx, claim.Name, claim.Owner, claim.Attempt, "late")
+	require.ErrorIs(t, err, ErrFenced)
+	_, err = queue.Finish(
+		ctx, claim.Name, claim.Owner, claim.Attempt, true, strings.Repeat("a", 64), "late",
+	)
+	require.ErrorIs(t, err, ErrFenced)
+}
+
+func setOperationStatus(
+	t *testing.T,
+	queue *Queue,
+	object *unstructured.Unstructured,
+	status map[string]any,
+) {
+	t.Helper()
+	updated := object.DeepCopy()
+	updated.Object["status"] = status
+	_, err := queue.resource.UpdateStatus(context.Background(), updated, metav1.UpdateOptions{})
+	require.NoError(t, err)
+}
+
 func validSpec() Spec {
 	return Spec{
 		OperationID: "operation-1", Instance: "instance-a", Type: "PostRestoreAudit",
@@ -139,7 +230,8 @@ func validSpec() Spec {
 func newFakeQueue() *Queue {
 	client := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(
 		runtime.NewScheme(), map[schema.GroupVersionResource]string{
-			Resource: "KubeBrainOperationList",
+			Resource:      "KubeBrainOperationList",
+			LeaseResource: "LeaseList",
 		},
 	)
 	return New(client, "test")
