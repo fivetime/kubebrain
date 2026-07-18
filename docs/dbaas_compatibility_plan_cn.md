@@ -2574,6 +2574,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   注入失败，真实 3 PD/3 TiKV 上两个已确认批逆序回滚，目标 count=0。单测固定逆序和
   首个冲突即停止的 fail-closed 行为。
 
+- **Production A147 StatefulSet readiness alert（2026-07-18）**：生产工作负载已从
+  Deployment 迁移为 StatefulSet，但 `KubeBrainReadinessUnavailable` 仍查询
+  `kube_deployment_status_replicas_available`，导致正常安装中该时间序列不存在、告警
+  静默。现改查 `kube_statefulset_status_replicas_ready`，并用
+  `or on() vector(0)` 将 kube-state-metrics 缺失同样视为零 ready，避免监控链路故障
+  被 PromQL 空向量吞掉；告警文案同步使用 StatefulSet/ready 语义。
+
+  manifest 回归测试按 PrometheusRule 的告警名结构化定位并固定完整表达式，同时固定两
+  套生产清单的 RollingUpdate、30 秒 termination grace、三副本和
+  `PodDisruptionBudget minAvailable=2` 契约。Prometheus 3.5 `promtool check rules`
+  校验通过；真实 kind 环境 KubeBrain、PD、TiKV StatefulSet 均 3/3 Ready 且全部
+  updated，TidbCluster `Ready=True`。该环境未安装 Prometheus Operator CRD，因此
+  PrometheusRule 的接纳与实际触发仍须在预生产监控栈演练。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range

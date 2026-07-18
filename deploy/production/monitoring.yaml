@@ -47,13 +47,13 @@ spec:
             summary: KubeBrain has fewer than 3 scrapeable replicas
             description: "Only {{ $value }} KubeBrain replicas are currently scrapeable."
         - alert: KubeBrainReadinessUnavailable
-          expr: kube_deployment_status_replicas_available{namespace="kubebrain-system",deployment="kubebrain"} < 3
+          expr: (kube_statefulset_status_replicas_ready{namespace="kubebrain-system",statefulset="kubebrain"} or on() vector(0)) < 3
           for: 5m
           labels:
             severity: critical
           annotations:
-            summary: KubeBrain Deployment has unavailable replicas
-            description: "KubeBrain has {{ $value }} available Deployment replicas."
+            summary: KubeBrain StatefulSet has unavailable replicas
+            description: "KubeBrain has {{ $value }} ready StatefulSet replicas."
     - name: kubebrain.etcd_compat
       rules:
         - alert: KubeBrainGrpcErrors

@@ -24,6 +24,8 @@ func TestProductionManifestsProvideStableCompleteMembership(t *testing.T) {
 			workload := objectByKindAndName(t, objects, "StatefulSet", "kubebrain")
 			require.Equal(t, "kubebrain-peer", nestedString(t, workload, "spec", "serviceName"))
 			require.EqualValues(t, 3, nestedInt64(t, workload, "spec", "replicas"))
+			require.Equal(t, "RollingUpdate", nestedString(t, workload, "spec", "updateStrategy", "type"))
+			require.EqualValues(t, 30, nestedInt64(t, workload, "spec", "template", "spec", "terminationGracePeriodSeconds"))
 			require.False(t, nestedBool(t, workload, "spec", "template", "spec", "automountServiceAccountToken"))
 			require.True(t, nestedBool(t, workload, "spec", "template", "spec", "securityContext", "runAsNonRoot"))
 			require.EqualValues(t, 65532, nestedInt64(t, workload, "spec", "template", "spec", "securityContext", "runAsUser"))
@@ -78,6 +80,10 @@ func TestProductionManifestsProvideStableCompleteMembership(t *testing.T) {
 			serviceAccount := objectByKindAndName(t, objects, "ServiceAccount", "kubebrain")
 			require.False(t, nestedBool(t, serviceAccount, "automountServiceAccountToken"))
 
+			pdb := objectByKindAndName(t, objects, "PodDisruptionBudget", "kubebrain")
+			require.EqualValues(t, 2, nestedInt64(t, pdb, "spec", "minAvailable"))
+			require.Equal(t, "kubebrain", nestedString(t, pdb, "spec", "selector", "matchLabels", "app.kubernetes.io/name"))
+
 			peer := objectByKindAndName(t, objects, "Service", "kubebrain-peer")
 			require.Equal(t, "None", nestedString(t, peer, "spec", "clusterIP"))
 			require.True(t, nestedBool(t, peer, "spec", "publishNotReadyAddresses"))
@@ -87,6 +93,33 @@ func TestProductionManifestsProvideStableCompleteMembership(t *testing.T) {
 			require.NotEqual(t, "None", clusterIP)
 		})
 	}
+}
+
+func TestProductionMonitoringTracksStatefulSetReadiness(t *testing.T) {
+	objects := decodeManifest(t, "monitoring.yaml")
+	rule := objectByKindAndName(t, objects, "PrometheusRule", "kubebrain")
+	groups, found, err := unstructured.NestedSlice(rule.Object, "spec", "groups")
+	require.NoError(t, err)
+	require.True(t, found)
+
+	var readinessRule map[string]any
+	for _, rawGroup := range groups {
+		group := rawGroup.(map[string]any)
+		rules, ok := group["rules"].([]any)
+		require.True(t, ok)
+		for _, rawRule := range rules {
+			candidate := rawRule.(map[string]any)
+			if candidate["alert"] == "KubeBrainReadinessUnavailable" {
+				readinessRule = candidate
+			}
+		}
+	}
+	require.NotNil(t, readinessRule)
+	require.Equal(t,
+		`(kube_statefulset_status_replicas_ready{namespace="kubebrain-system",statefulset="kubebrain"} or on() vector(0)) < 3`,
+		readinessRule["expr"],
+	)
+	require.NotContains(t, readinessRule["expr"], "kube_deployment_")
 }
 
 func TestDevManifestProvidesStableCompleteMembership(t *testing.T) {
