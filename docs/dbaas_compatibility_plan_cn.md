@@ -2134,6 +2134,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `kubebrain:a125-range-limit-boundary` 后三 Pod Ready、zero restart，`/health`
   与 `/readyz` 正常，运行时 exact image
   `3a91359a4dcb283fa5b040c116f265be6cc5e977fe294f495e9baea336dbe377`。
+- **Maintenance A126 HashKV revision boundary differential（2026-07-18）**：
+  对照 `/root/etcd/server/storage/mvcc/kvstore.go:hashByRev`，补齐 raw
+  Maintenance `HashKV` 的 revision 边界双端矩阵。矩阵覆盖 `-1`、`0`、当前写入
+  revision、未来 revision 和 `math.MaxInt64`：负 revision 被接受并返回
+  `HashRevision=-1`，其空 revision window 哈希在双方均精确为 `0x40a4756d`；
+  `0` 表示 latest，当前 revision 精确回显请求 revision，未来值与 MaxInt64 均返回
+  gRPC `OutOfRange` 和完整消息
+  `etcdserver: mvcc: required revision is a future revision`。
+
+  reference 与在线 KubeBrain 拥有独立的全局 revision 和 compact 历史，因此测试
+  比较请求与响应间的不变量，并验证 `CompactRevision` 为 etcd 合法的 `-1` 或正值，
+  不错误比较两套数据库的绝对 revision。矩阵在临时 `/root/etcd`
+  3.8.0-alpha.0 reference 与在线三副本 TiKV-backed KubeBrain 间连续 10 轮、
+  race 3 轮通过；完整 compat suite 用时 74.991s，`go test ./...`、根模块与 compat
+  module `go vet ./...`、backend race（52.834s）及完整 server race（202.804s）
+  通过。本轮未发现实现差异，只增加兼容性测试；在线集群继续运行
+  `kubebrain:a125-range-limit-boundary`，运行时 exact image 仍为
+  `3a91359a4dcb283fa5b040c116f265be6cc5e977fe294f495e9baea336dbe377`。
 
 ### P1：通用服务能力
 
