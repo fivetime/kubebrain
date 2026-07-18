@@ -196,16 +196,19 @@ func runMakeMirrorDirection(t *testing.T, etcdctl, sourceEndpoint, destinationEn
 
 func startMakeMirror(t *testing.T, etcdctl, sourceEndpoint, destinationEndpoint, sourcePrefix, destinationPrefix string) func() {
 	t.Helper()
-	processCtx, cancel := context.WithCancel(context.Background())
-	command := exec.CommandContext(
-		processCtx,
-		etcdctl,
+	return startMirrorCommand(t, etcdctl,
 		"--endpoints="+sourceEndpoint,
 		"make-mirror",
 		"--prefix="+sourcePrefix,
 		"--dest-prefix="+destinationPrefix,
 		destinationEndpoint,
 	)
+}
+
+func startMirrorCommand(t *testing.T, commandName string, args ...string) func() {
+	t.Helper()
+	processCtx, cancel := context.WithCancel(context.Background())
+	command := exec.CommandContext(processCtx, commandName, args...)
 	require.NoError(t, command.Start())
 	processDone := make(chan struct{})
 	go func() {

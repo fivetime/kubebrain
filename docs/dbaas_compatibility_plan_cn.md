@@ -3917,6 +3917,32 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   中 `make-mirror` 已从“非生产保证”提升为“支持”；跨区域长期复制仍需独立 soak，不能
   由该确定性发布门禁替代。本轮未发现服务端语义差异，运行镜像继续为
   `kubebrain:a221-empty-range-compare`。
+- **Compatibility A228 authenticated make-mirror on isolated keyspace（2026-07-18）**：
+  对照上游 `tests/integration/clientv3/mirror_auth_test.go`，扩展 A227 的真实 CLI 门禁
+  到 source/destination 双端 RBAC。测试只接受显式
+  `KUBEBRAIN_AUTH_MIRROR_ENDPOINT`，并拒绝其等于共享主 endpoint；两端在任何 mutation
+  前必须 auth-disabled 且 user list 为空。每端创建 root 与仅对
+  `/dbaas-auth-mirror/` 有 ReadWrite 权限的 `mirror-syncer`，启用 auth 后先证明匿名
+  Range 返回标准 `ErrUserEmpty`，再以 etcdctl `--user` 与 `--dest-user` 分别执行
+  reference→KubeBrain、KubeBrain→reference。
+
+  两个方向均验证两个 seed key 的基线同步，以及源端同 revision 更新 `a`、删除 `b`、
+  创建 `c` 后目标精确为 `a/c` 且 ModRevision 相同。teardown 必须先用受限用户清理
+  prefix，再由 root 禁用 auth，并删除 syncer role/user 与 root user；最后 AuthStatus
+  必须 disabled、user list 必须为空，确保同一隔离实例可重复使用。
+
+  真实验证在 `kubebrain-a228-auth` 临时 namespace 启动单副本
+  `kubebrain:a221-empty-range-compare`，以 `--keyspace=a228-auth-mirror` 复用独立
+  TiKV/PD 集群但与主数据面物理隔离。首轮约 2.66 秒、连续 5 轮约 13.1 秒、串行 race
+  3 轮约 9.0 秒通过；加强初始/最终 auth 安全门后再次约 2.7 秒通过。一次把普通与 race
+  并行运行会因两组测试竞争全局 auth 状态而让匿名 bootstrap 返回 `ErrUserEmpty`，改为
+  符合 auth 状态机约束的串行执行后稳定通过，不记为服务端差异。
+
+  compat module 全量 vet、server/etcd Auth/Range/Watch/Txn/Mutation/Leadership 相关
+  回归 3 轮约 40.8 秒通过；隔离 Pod 与主三个副本均 Ready、零重启，隔离/主 keyspace
+  的测试 prefix 均为零，主 endpoint proposal 健康。`make-mirror` 命令矩阵现明确包含
+  双端鉴权契约；跨区域长期复制仍需独立 soak。本轮未发现服务端语义差异，运行镜像继续
+  为 `kubebrain:a221-empty-range-compare`。
 - **Operations A185 certificate rotation completion state（2026-07-18）**：新增
   `hack/production/validate-certificate-rotation.sh`，把 client/peer CA rollover
   收敛为 `begin -> overlap -> complete` 三阶段门禁。begin 固定全部 KubeBrain Pod
