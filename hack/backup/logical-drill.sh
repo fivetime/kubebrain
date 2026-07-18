@@ -14,7 +14,7 @@ then clean up by default.
 Environment:
   ENDPOINT           etcd endpoint, default 127.0.0.1:3379
   PREFIX             key prefix to export, default /registry
-  RESTORE_PREFIX     isolated restore prefix, default /registry-restore-drill-<time>-<pid>
+  RESTORE_PREFIX     isolated restore prefix, default /kubebrain-restore-drill-<time>-<pid>
   OUTPUT             backup JSONL path, default temporary file
   BATCH_SIZE         export page size, default 1000
   REQUIRE_RECORDS    fail if export is empty, default true
@@ -36,7 +36,7 @@ esac
 
 ENDPOINT="${ENDPOINT:-127.0.0.1:3379}"
 PREFIX="${PREFIX:-/registry}"
-RESTORE_PREFIX="${RESTORE_PREFIX:-/registry-restore-drill-$(date +%s)-$$}"
+RESTORE_PREFIX="${RESTORE_PREFIX:-/kubebrain-restore-drill-$(date +%s)-$$}"
 OUTPUT="${OUTPUT:-$(mktemp -t kubebrain-logical-drill.XXXXXX.jsonl)}"
 BATCH_SIZE="${BATCH_SIZE:-1000}"
 REQUIRE_RECORDS="${REQUIRE_RECORDS:-true}"

@@ -87,6 +87,30 @@ tombstone 与历史值、lease/附属 key、watch 历史回放，以及新写入
 该结果证明 quorum-preserving 滚动恢复的客户端可观察持久性，不替代备份恢复、跨可用区
 分区或同时失去多数副本的灾难恢复演练。
 
+## 备份恢复生产边界
+
+当前唯一通过端到端恢复验证的生产备份模式是 `kubebrain.logical.v1`。制品包含固定
+snapshot revision、源 prefix、记录数和 SHA-256，先写临时文件并 `fsync` 后原子发布；
+restore 在写目标前完整校验，并默认拒绝覆盖已有 key。每次发布备份配置前必须通过：
+
+```shell
+BACKUP_MODE=logical hack/backup/production-mode-check.sh
+```
+
+TiDB Operator 的 BR full/PITR 不能用于 KubeBrain 数据恢复。真实 S3 full backup 和
+独立 PD/TiKV Restore CR 都成功时，备份前已提交的 KubeBrain key 仍未出现在目标集群；
+任务 `Complete` 只证明 TiDB 管理范围恢复成功。BR raw 每次只处理一个 CF 且仍为实验
+功能，不能提供已经验证的 transactional KV 跨 CF 一致快照。因此控制面必须拒绝
+`br-full`、`br-pitr` 和 `br-raw`，并保留物理 PITR 为显式未完成项。
+
+上线前至少执行一次全 `/registry` 隔离恢复，要求非空、记录数一致、逐 key/value 校验
+通过且清理成功：
+
+```shell
+ENDPOINT=127.0.0.1:3379 PREFIX=/registry \
+  hack/backup/logical-drill.sh
+```
+
 基础 etcd client smoke 当前覆盖 Txn create/update/delete、无 Compare 的多操作 Txn、Value Compare Txn、普通 Put、Range delete、普通空非 from-key range 返回空结果、普通空非 from-key DeleteRange 不删除数据、Txn 中空非 from-key DeleteRange 不删除数据、Watch create/update/delete 事件、update watch 在 `WithPrevKV` 下返回 previous value 且不会被误判为 create、follower proxy watch 保留 leader 返回的 `PrevKV`、点 watch 不会误收到子 key 事件、任意 `[start,end)` range watch 不漏掉范围内非 start 前缀 key且可经 follower proxy 转发、`KEY`/`VALUE`/`MOD`/`CREATE`/`VERSION` sort target、旧 revision watch 在 compact 后返回 `ErrCompacted` 和 `CompactRevision`、Lease grant/keepalive/ttl/revoke、Cluster MemberList，以及 Maintenance Status/HashKV/Compact/AlarmList/Defragment。`Compact` 已按写请求处理，follower 会通过 proxy 转发到当前 leader；带显式 `Revision` 的历史 `Range` 在 follower 上也会转发到 leader，以避免 compact 边界在 follower 上短暂不可见。
 
 独立 kube-apiserver smoke 当前覆盖 namespace、ConfigMap create/update/get/watch/delete、ConfigMap label selector、field selector、chunked list、delete collection、Secret、coordination Lease update，以及 apps Deployment create/update/list 路径。这些路径会触发 kube-apiserver 对 etcd `Range` limit/continue、watch 和批量删除的常见使用形态。

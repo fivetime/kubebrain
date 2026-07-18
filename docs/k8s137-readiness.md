@@ -74,4 +74,9 @@ RangeStream 的 identity metadata 位于 `RangeStreamResponse.range_response.hea
 
 - `etcd_db_total_size_in_bytes`(DbSize)为 1 字节兼容哨兵(TiKV 容量语义不同)。容量观测走 TiKV/PD 指标带外抓取;依赖 DbSize 的告警需改造。
 - 北极星规模(千万级)建议开启 apiserver 的 `ConsistentListFromCacheSkipTimeoutFallback` gate(1.37 Alpha):progress 超时改返 429 而非穿透存储全量 LIST,对存储纯减压。
-- `etcdctl snapshot save` 不支持(Unimplemented);备份走 TiKV 生态(BR)。
+- `etcdctl snapshot save` 不支持（`Unimplemented`）。当前生产恢复路径是
+  `kubebrain.logical.v1` 逻辑备份；不能把 TiDB Operator 的 BR full/PITR 当作
+  KubeBrain 数据备份。独立目标集群实测 Restore CR 虽为 `Complete`，但备份前写入的
+  KubeBrain key 不存在于恢复结果中。BR raw 又是按单 CF 操作的实验功能，无法为
+  transactional KV 提供已验证的一致快照。控制面发布备份任务前必须运行
+  `BACKUP_MODE=... hack/backup/production-mode-check.sh`。

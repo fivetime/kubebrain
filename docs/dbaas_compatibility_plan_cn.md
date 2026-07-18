@@ -2511,7 +2511,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   整批拒绝且 target count 保持原有 1。overwrite guard、恢复后内容篡改和完整性
   smoke 连续通过。完整 compat suite 用时 61.927s，`go test ./...`、全仓与 backup
   vet、backup race（各包约 1.05s）通过。该里程碑只增强对象级逻辑迁移/隔离恢复，
-  不保留原 revision/lease/watch 历史，也不替代 TiKV BR 全量与 PITR 主灾备路径。
+  不保留原 revision/lease/watch 历史；A143 已证明 TiDB BR 全量与 PITR 不能作为
+  KubeBrain 主灾备路径。
+- **Backup A143 physical restore boundary（2026-07-18）**：在源 3 PD/3 TiKV
+  集群 revision `467759280324349580` 写入备份前标记，使用 TiDB Operator v1.6.5、
+  BR v8.5.3 和集群内 S3 兼容对象存储执行 full backup。任务成功备份 131 ranges、
+  1473 KV、422188 bytes，checksum 通过，commit TS
+  `467759848010022914`。随后写入备份后标记，并把该对象恢复到完全独立的
+  `kb-restore` PD/TiKV 集群；Restore CR 在 7 秒内 `Complete`。
+
+  连接目标 PD 的隔离 KubeBrain 对两个标记均返回空，尤其备份前标记缺失，实证 TiDB
+  BR full 只覆盖 TiDB 元数据所描述的范围，成功状态不代表 KubeBrain transactional
+  key 已备份。BR raw CLI 每次只接受一个 `default/write/lock` CF，官方仍标记
+  experimental；分别备份 CF 不能提供已验证的跨 CF 事务快照，因此也不冒充生产能力。
+  新增 `production-mode-check.sh`：控制面只允许 `logical`，对 `br-full`、`br-pitr`、
+  `br-raw` 和未知模式 fail closed；smoke 固定该契约。当前生产 DR 基线是 A142
+  checksummed/atomic logical artifact 加隔离恢复与逐值验证。物理 PITR 保持明确缺口，
+  直到 TiKV 提供受支持的 transactional key-range snapshot/PITR，或 KubeBrain 引入
+  自有一致的跨 CF 物理备份实现。
 
 ### P1：通用服务能力
 
@@ -2531,7 +2548,8 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
 ### P2：运维兼容和长期验证
 
 1. 明确 `etcdctl` 命令兼容表，为平台替代命令返回可操作提示。
-2. 增加 BR/PITR 恢复演练、滚动升级、跨可用区故障、磁盘满和长时间 soak。
+2. 设计受支持的 transactional TiKV 物理快照/PITR；继续逻辑恢复演练、滚动升级、
+   跨可用区故障、磁盘满和长时间 soak。不得用 TiDB BR full/PITR 的成功状态关闭该缺口。
 3. Porcupine 已覆盖无故障 Get/Put/CAS、多键 Txn 原子性和可表达不确定
    写结果的 KubeBrain Leader/TiKV/PD 故障历史；继续扩展 lease 模型，并在
    多 store/多 PD 预生产拓扑上做分区和多点故障注入。

@@ -221,9 +221,25 @@ revision。`kubebrain.logical.v1` 格式包含源 prefix、snapshot revision、�
 SHA-256，并经临时文件 `fsync` 后原子发布；restore/verify 在访问目标 key 前验证完整
 文件，旧版无 manifest 的 JSONL 会被拒绝。可用
 `INPUT=... hack/backup/logical-status.sh` 离线查看状态。恢复按 `BATCH_SIZE` 使用一个
-Txn，批内任一 overwrite compare 失败时不会部分写入。当前真实环境已通过 34 条
+Txn，批内任一 overwrite compare 失败时不会部分写入。默认隔离目标使用
+`/kubebrain-restore-drill-*`，不会与默认源 `/registry` 重叠。当前真实环境已通过 35 条
 `/registry` 全前缀隔离恢复、逐值核验与清理；截断 footer 被拒绝且目标计数保持 0，
 两条记录批次中第二条冲突时目标计数保持原有 1。
+
+生产控制面必须先对备份实现执行 fail-closed 预检：
+
+```shell
+BACKUP_MODE=logical hack/backup/production-mode-check.sh
+hack/backup/production-mode-check-smoke.sh
+```
+
+目前只有 `logical` 会通过。2026-07-18 在独立 `kb-restore` PD/TiKV 集群中完成了
+TiDB Operator v1.6.5 + BR v8.5.3 的 S3 full backup/Restore CR 实测：备份 131 ranges、
+422188 bytes，Backup 和 Restore 均为 `Complete`，commit TS 为
+`467759848010022914`；但备份前 revision `467759280324349580` 写入的
+`/dbaas/a143/pre-backup` 在恢复后的 KubeBrain endpoint 中不存在。这证明成功状态只
+代表 TiDB 管理数据恢复成功，不代表 KubeBrain transactional key 被备份。BR raw
+一次只处理一个 RocksDB CF 且仍为实验功能，不能作为事务型 KubeBrain 的生产一致快照。
 
 此前还完成过 4091 条 `/registry`、TLS/mTLS 4148 条及 `/registry/smoke` 712 条旧格式
 演练；这些历史结果证明当时的数据路径规模，但旧文件本身不满足 v1 完整性契约，升级后
