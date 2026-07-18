@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kubewharf/kubebrain/hack/production/operationaudit"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -23,6 +24,7 @@ func TestQueueLifecycleAndExpiredLeaseFencing(t *testing.T) {
 
 	first, err := queue.Submit(ctx, "restore-1", spec)
 	require.NoError(t, err)
+	require.Equal(t, []string{operationaudit.Finalizer}, first.GetFinalizers())
 	second, err := queue.Submit(ctx, "restore-1", spec)
 	require.NoError(t, err)
 	require.Equal(t, first.GetName(), second.GetName())

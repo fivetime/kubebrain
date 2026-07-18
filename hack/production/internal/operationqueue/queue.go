@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/kubewharf/kubebrain/hack/production/operationaudit"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -104,6 +105,7 @@ func (q *Queue) Submit(ctx context.Context, name string, spec Spec) (*unstructur
 			"maxAttempts":      spec.MaxAttempts,
 		},
 	}}
+	object.SetFinalizers([]string{operationaudit.Finalizer})
 	created, err := q.resource.Create(ctx, object, metav1.CreateOptions{})
 	if err == nil {
 		return created, nil

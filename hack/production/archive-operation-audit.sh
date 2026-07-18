@@ -36,3 +36,6 @@ RETENTION_MODE="$RETENTION_MODE" \
 RETAIN_UNTIL_UNIX="$RETAIN_UNTIL_UNIX" \
 RECEIPT_OUTPUT="$RECEIPT_OUTPUT" \
   "$ROOT_DIR/hack/backup/logical-object.sh"
+
+(cd "$ROOT_DIR" && go run ./hack/production/cmd/operation-audit \
+  --action release "${audit_args[@]}" --receipt "$RECEIPT_OUTPUT")

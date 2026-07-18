@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/kubewharf/kubebrain/hack/production/internal/operationauditbuilder"
+	"github.com/kubewharf/kubebrain/hack/production/internal/operationauditrelease"
 	"github.com/kubewharf/kubebrain/hack/production/internal/operationqueue"
 	"github.com/kubewharf/kubebrain/hack/production/operationaudit"
 	"k8s.io/client-go/dynamic"
@@ -16,15 +17,17 @@ import (
 )
 
 func main() {
-	var namespace, name, output, kubeconfig, contextName string
+	var action, namespace, name, output, receipt, kubeconfig, contextName string
+	flag.StringVar(&action, "action", "capture", "capture or release")
 	flag.StringVar(&namespace, "namespace", "kubebrain-operations", "operation namespace")
 	flag.StringVar(&name, "name", "", "terminal operation name")
 	flag.StringVar(&output, "output", "", "immutable audit artifact output")
+	flag.StringVar(&receipt, "receipt", "", "verified Object Lock archive receipt")
 	flag.StringVar(&kubeconfig, "kubeconfig", defaultKubeconfig(), "kubeconfig path")
 	flag.StringVar(&contextName, "context", "", "kubeconfig context")
 	flag.Parse()
-	if name == "" || output == "" {
-		log.Fatal("name and output are required")
+	if name == "" || output == "" || (action == "release" && receipt == "") {
+		log.Fatal("name/output and release receipt are required")
 	}
 
 	loading := &clientcmd.ClientConfigLoadingRules{ExplicitPath: kubeconfig}
@@ -39,16 +42,27 @@ func main() {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	object, err := operationqueue.New(client, namespace).Get(ctx, name)
-	if err != nil {
-		log.Fatal(err)
-	}
-	artifact, err := operationauditbuilder.FromOperation(object)
-	if err != nil {
-		log.Fatal(err)
-	}
-	if err := operationaudit.WriteAtomic(output, artifact); err != nil {
-		log.Fatal(err)
+	switch action {
+	case "capture":
+		object, err := operationqueue.New(client, namespace).Get(ctx, name)
+		if err != nil {
+			log.Fatal(err)
+		}
+		artifact, err := operationauditbuilder.FromOperation(object)
+		if err != nil {
+			log.Fatal(err)
+		}
+		if err := operationaudit.WriteAtomic(output, artifact); err != nil {
+			log.Fatal(err)
+		}
+	case "release":
+		if _, err := operationauditrelease.Release(
+			ctx, client, namespace, name, output, receipt,
+		); err != nil {
+			log.Fatal(err)
+		}
+	default:
+		log.Fatal("action must be capture or release")
 	}
 }
 

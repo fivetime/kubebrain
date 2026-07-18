@@ -1,0 +1,31 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: kubebrain-operation-audit
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups:
+          - dbaas.kubebrain.io
+        apiVersions:
+          - v1alpha1
+        operations:
+          - CREATE
+          - UPDATE
+        resources:
+          - kubebrainoperations
+  validations:
+    - expression: 'request.operation != "CREATE" || (has(object.metadata.finalizers) && object.metadata.finalizers.exists(f, f == "dbaas.kubebrain.io/operation-audit"))'
+      message: new operations require the audit archive finalizer
+    - expression: 'request.operation != "UPDATE" || !has(oldObject.metadata.finalizers) || !oldObject.metadata.finalizers.exists(f, f == "dbaas.kubebrain.io/operation-audit") || (has(object.metadata.finalizers) && object.metadata.finalizers.exists(f, f == "dbaas.kubebrain.io/operation-audit")) || (object.status.phase in ["Succeeded", "Failed"] && has(object.metadata.annotations) && "dbaas.kubebrain.io/audit-receipt-sha256" in object.metadata.annotations && object.metadata.annotations["dbaas.kubebrain.io/audit-receipt-sha256"].matches("^[a-f0-9]{64}$") && "dbaas.kubebrain.io/audit-artifact-sha256" in object.metadata.annotations && object.metadata.annotations["dbaas.kubebrain.io/audit-artifact-sha256"].matches("^[a-f0-9]{64}$") && "dbaas.kubebrain.io/audit-version-id" in object.metadata.annotations && size(object.metadata.annotations["dbaas.kubebrain.io/audit-version-id"]) > 0)'
+      message: removing the audit finalizer requires terminal archive evidence
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: kubebrain-operation-audit
+spec:
+  policyName: kubebrain-operation-audit
+  validationActions:
+    - Deny

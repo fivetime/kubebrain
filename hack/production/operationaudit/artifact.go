@@ -13,6 +13,14 @@ import (
 )
 
 const Format = "kubebrain.operation-audit.v1"
+const ArchiveReceiptFormat = "kubebrain.object-operation-audit.receipt.v1"
+const Finalizer = "dbaas.kubebrain.io/operation-audit"
+
+const (
+	ReceiptSHAAnnotation  = "dbaas.kubebrain.io/audit-receipt-sha256"
+	ArtifactSHAAnnotation = "dbaas.kubebrain.io/audit-artifact-sha256"
+	VersionAnnotation     = "dbaas.kubebrain.io/audit-version-id"
+)
 
 type Artifact struct {
 	Format             string `json:"format"`
@@ -43,6 +51,26 @@ type Status struct {
 	Bytes    int64
 }
 
+type ArchiveReceipt struct {
+	Format                 string `json:"format"`
+	OperationID            string `json:"operation_id"`
+	OperationUID           string `json:"operation_uid"`
+	Instance               string `json:"instance"`
+	OperationType          string `json:"operation_type"`
+	Phase                  string `json:"phase"`
+	ExecutionReceiptSHA256 string `json:"execution_receipt_sha256,omitempty"`
+	ObjectStoreID          string `json:"object_store_id"`
+	Bucket                 string `json:"bucket"`
+	ObjectKey              string `json:"object_key"`
+	VersionID              string `json:"version_id"`
+	ArtifactSHA256         string `json:"artifact_sha256"`
+	ObjectBytes            int64  `json:"object_bytes"`
+	RetentionMode          string `json:"retention_mode"`
+	RetainUntilUnix        int64  `json:"retain_until_unix"`
+	RemoteVerified         bool   `json:"remote_verified"`
+	ArchivedAtUnix         int64  `json:"archived_at_unix"`
+}
+
 func (a Artifact) Validate() error {
 	operationTypeValid := a.Type == "Backup" || a.Type == "RestoreCutover" ||
 		a.Type == "PostRestoreAudit" || a.Type == "CertificateRotation" || a.Type == "Destroy"
@@ -52,7 +80,7 @@ func (a Artifact) Validate() error {
 		!validSHA256(a.ParametersSHA256) || a.MaxAttempts <= 0 ||
 		(a.Phase != "Succeeded" && a.Phase != "Failed") ||
 		a.Owner == "" || a.Attempt <= 0 || a.Attempt > a.MaxAttempts ||
-		a.ObservedGeneration != a.Generation || a.StartedAtUnix <= 0 ||
+		a.ObservedGeneration <= 0 || a.ObservedGeneration > a.Generation || a.StartedAtUnix <= 0 ||
 		a.CompletedAtUnix < a.StartedAtUnix {
 		return errors.New("terminal operation audit artifact is incomplete")
 	}
@@ -71,6 +99,62 @@ func validSHA256(value string) bool {
 	}
 	_, err := hex.DecodeString(value)
 	return err == nil
+}
+
+func (r ArchiveReceipt) Validate() error {
+	if r.Format != ArchiveReceiptFormat || r.OperationID == "" || r.OperationUID == "" ||
+		r.Instance == "" || r.OperationType == "" ||
+		(r.Phase != "Succeeded" && r.Phase != "Failed") ||
+		(r.Phase == "Succeeded" && !validSHA256(r.ExecutionReceiptSHA256)) ||
+		(r.Phase == "Failed" && r.ExecutionReceiptSHA256 != "") ||
+		r.ObjectStoreID == "" || r.Bucket == "" || r.ObjectKey == "" || r.VersionID == "" ||
+		!validSHA256(r.ArtifactSHA256) || r.ObjectBytes <= 0 ||
+		(r.RetentionMode != "COMPLIANCE" && r.RetentionMode != "GOVERNANCE") ||
+		r.RetainUntilUnix <= r.ArchivedAtUnix || !r.RemoteVerified || r.ArchivedAtUnix <= 0 {
+		return errors.New("object operation audit receipt is incomplete")
+	}
+	return nil
+}
+
+func InspectArchiveReceipt(path string) (ArchiveReceipt, string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ArchiveReceipt{}, "", err
+	}
+	var receipt ArchiveReceipt
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&receipt); err != nil {
+		return ArchiveReceipt{}, "", fmt.Errorf("decode operation audit receipt: %w", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return ArchiveReceipt{}, "", errors.New("operation audit receipt contains trailing JSON")
+		}
+		return ArchiveReceipt{}, "", fmt.Errorf("decode trailing operation audit receipt data: %w", err)
+	}
+	canonical, err := json.Marshal(receipt)
+	if err != nil {
+		return ArchiveReceipt{}, "", err
+	}
+	canonical = append(canonical, '\n')
+	if !bytes.Equal(data, canonical) {
+		return ArchiveReceipt{}, "", errors.New("operation audit receipt is not canonical")
+	}
+	if err := receipt.Validate(); err != nil {
+		return ArchiveReceipt{}, "", err
+	}
+	sum := sha256.Sum256(data)
+	return receipt, hex.EncodeToString(sum[:]), nil
+}
+
+func (r ArchiveReceipt) Matches(status Status) bool {
+	artifact := status.Artifact
+	return r.OperationID == artifact.OperationID && r.OperationUID == artifact.UID &&
+		r.Instance == artifact.Instance && r.OperationType == artifact.Type &&
+		r.Phase == artifact.Phase && r.ExecutionReceiptSHA256 == artifact.ReceiptSHA256 &&
+		r.ArtifactSHA256 == status.SHA256 && r.ObjectBytes == status.Bytes
 }
 
 func WriteAtomic(path string, artifact Artifact) error {
