@@ -14,6 +14,7 @@ Environment:
   INPUT              input JSONL path, default kubebrain-logical-backup.jsonl
   REWRITE_FROM       optional source key prefix to rewrite
   REWRITE_TO         optional target key prefix; requires REWRITE_FROM
+  RECEIPT_OUTPUT     atomically publish a JSON verification receipt after success
   TIMEOUT            request timeout as Go duration, default 10m
   ETCDCTL_CACERT     CA cert for TLS/mTLS endpoint
   ETCDCTL_CERT       client cert for TLS/mTLS endpoint
@@ -35,7 +36,9 @@ ENDPOINT="${ENDPOINT:-127.0.0.1:3379}"
 INPUT="${INPUT:-kubebrain-logical-backup.jsonl}"
 REWRITE_FROM="${REWRITE_FROM:-}"
 REWRITE_TO="${REWRITE_TO:-}"
+RECEIPT_OUTPUT="${RECEIPT_OUTPUT:-}"
 
 cd "$ROOT_DIR"
 ENDPOINT="$ENDPOINT" INPUT="$INPUT" REWRITE_FROM="$REWRITE_FROM" REWRITE_TO="$REWRITE_TO" \
+  RECEIPT_OUTPUT="$RECEIPT_OUTPUT" \
   go run ./hack/backup/cmd/logical-verify
