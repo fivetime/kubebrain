@@ -786,10 +786,26 @@ Ready/Serving/非 Terminating，且 targetRef Pod UID 集精确等于冻结的�
 
 verify 和 complete 都通过公开 Service endpoint 对完整 logical artifact 再做逐 key/value
 及 lease 校验，结果的前九个稳定字段必须与 prepare receipt 一致。complete 才签发不可
-覆盖的 `kubebrain.restore-cutover.receipt.v1`。rollback 使用相同 CAS 从目标切回源，并
+覆盖的 `kubebrain.restore-cutover.receipt.v1`；receipt 还包含 cutover state 文件
+SHA-256，将冻结的 Service/Pod UID 行绑定到完成证据。rollback 使用相同 CAS 从目标切回源，并
 要求 EndpointSlice 精确恢复到冻结的源 Pod UID 集；已 complete 的 operation 禁止回滚，
 已 rollback 的 operation 禁止 complete。所有状态、marker 和 receipt 均为 0600、
 file/directory `fsync` 且不覆盖发布。
+
+切流完成后使用 `hack/production/audit-restored-instance.sh` 运行持续观察窗口。默认持续
+3600 秒、间隔 60 秒且至少 10 个样本；生产控制面应按实例 SLO 调大窗口。脚本先核对
+A189 state SHA-256 与 receipt，再在每个样本前后检查 Service UID/精确 selector、目标
+Pod name/UID/restart/Ready 快照和 EndpointSlice targetRef UID 集。每个样本经公开 endpoint
+执行 60 秒 lease grant、`createRevision=0` 条件 Put、线性 Get（核对 value 与 lease）、
+value 条件 Delete、删除确认和 lease revoke；探针 key 使用加密随机 nonce，失败时也由
+lease 限制残留时间。跨样本 revision 必须单调不降，持续时间使用单调时钟计算。
+
+窗口内任一拓扑或数据检查失败都不发布成功凭据。完整持续时间及最少样本均满足后，才以
+0600、file/directory `fsync`、不可覆盖 hard-link 发布
+`kubebrain.post-restore-audit.receipt.v1`，记录 cutover operation、artifact/state 身份、
+窗口、样本数及首末 revision。已有 receipt 的重试仍会重新执行一次完整拓扑检查与真实
+数据探针。KubeBrain 网关共享同一 TiKV MVCC 后端，不存在 etcd 各成员独立 backend；
+因此不能用成员间 `endpoint hashkv` 代替上述端到端审计。
 
 导出默认覆盖 `/registry` 前缀：
 

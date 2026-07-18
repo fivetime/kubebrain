@@ -3081,7 +3081,27 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   失败和缺 verify 完成。真实 kind 独立 namespace 使用两组各 2 个 Pod 与真实
   EndpointSlice controller 完成 source→target→source；首次夹具携带额外 selector 时
   EndpointSlice 为空，门禁超时拒绝发布，修正为精确 selector 后同一 operation 安全
-  重试通过。恢复后持续数据审计和控制面 API/队列编排仍是 P1。
+  重试通过。A190 又为 receipt 增加 cutover state SHA-256，将冻结 Pod UID 行绑定到
+  完成证据。控制面 API/队列编排仍是 P1。
+- **Operations A190 post-restore continuous data audit（2026-07-18）**：新增
+  `hack/production/cmd/etcd-audit-probe` 与
+  `hack/production/audit-restored-instance.sh`。官方 etcd 可比较各成员独立 backend 的
+  `HashKV` 并触发 CORRUPT alarm；KubeBrain 三个网关共享 TiKV MVCC，成员 hash 比较没有
+  独立副本语义。因此 A190 在持续窗口中审计实际服务路径：每个样本经公开 endpoint 完成
+  lease grant、`createRevision=0` 条件 Put、线性 Get 的 value/lease 核对、value 条件
+  Delete、删除确认和 revoke；随机 key 位于专用审计 prefix，lease 限制故障残留。
+
+  每个探针前后都核对 A189 state SHA-256、Service UID/精确 target selector、目标 Pod
+  name/UID/restart/Ready 集及 EndpointSlice owner/targetRef UID 集。窗口使用单调时钟，
+  同时要求最短 duration、最少 samples 和跨样本 revision 单调不降；任一步失败不发布
+  receipt。完成后以 0600、file/directory fsync 和不可覆盖 hard-link 签发
+  `kubebrain.post-restore-audit.receipt.v1`；重试已有 receipt 仍执行在线拓扑与事务探针。
+  mock 覆盖 receipt/state 篡改、Service/Pod/EndpointSlice 漂移、探针失败、畸形证据和
+  revision 回退。真实三副本 KubeBrain/TiKV endpoint 探针写 revision
+  `467764733078405147`、删 revision `467764733078405148` 且 prefix 零残留；随后真实
+  Kubernetes Service/EndpointSlice controller 与同一数据面完成 2 秒、3 样本窗口，
+  首末 delete revision 为 `467764733078405150/467764733078405154`，receipt 发布且
+  prefix 零残留。控制面 API、持久任务队列和多租户审计聚合仍是 P1。
 - **Operations A185 certificate rotation completion state（2026-07-18）**：新增
   `hack/production/validate-certificate-rotation.sh`，把 client/peer CA rollover
   收敛为 `begin -> overlap -> complete` 三阶段门禁。begin 固定全部 KubeBrain Pod
