@@ -55,7 +55,7 @@ KubeBrain 的目标不是"内部函数看起来对"，而是**"对 Kubernetes �
 ```
 改代码
   → go build ./... && go test ./pkg/...            # 编译 + 内部单测（含 -race）
-  → docker build --build-arg STORAGE=tikv -t kubebrain:dev .
+  → hack/dev/up.sh 从宿主 git 注入版本、提交 SHA 和 UTC build date 后执行 docker build
   → kind load docker-image kubebrain:dev --name kubebrain-dev
   → kubectl -n kubebrain-dev rollout restart deploy/kubebrain
   → 黑盒验证：KUBEBRAIN_ETCD_ENDPOINT=<node-ip>:30079 go test ./hack/etcd-client-compat/...

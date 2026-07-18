@@ -75,7 +75,15 @@ elif [ -n "$KIND_NODE_IMAGE" ]; then
   echo "cluster ${CLUSTER_NAME} already exists; KIND_NODE_IMAGE only applies when creating a new kind cluster" >&2
 fi
 
-docker build --build-arg STORAGE=tikv -t "$IMAGE_NAME" .
+kubebrain_version="${KUBEBRAIN_VERSION:-$(git describe --abbrev=0 --tags 2>/dev/null || git rev-parse --abbrev-ref HEAD)}"
+kubebrain_git_sha="${KUBEBRAIN_GIT_SHA:-$(git rev-parse HEAD)}"
+kubebrain_build_date="${KUBEBRAIN_BUILD_DATE:-$(date -u "+%Y-%m-%dT%H:%M:%SZ")}"
+docker build \
+  --build-arg STORAGE=tikv \
+  --build-arg "KUBEBRAIN_VERSION=$kubebrain_version" \
+  --build-arg "KUBEBRAIN_GIT_SHA=$kubebrain_git_sha" \
+  --build-arg "KUBEBRAIN_BUILD_DATE=$kubebrain_build_date" \
+  -t "$IMAGE_NAME" .
 kind load docker-image "$IMAGE_NAME" --name "$CLUSTER_NAME"
 
 helm repo add pingcap https://charts.pingcap.com/ >/dev/null

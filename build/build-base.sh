@@ -14,14 +14,25 @@
 # limitations under the License.
 
 export pkg="github.com/kubewharf/kubebrain/cmd/version"
-export version=$(git describe --abbrev=0 --tags || git rev-parse --abbrev-ref HEAD) # tag or branch
-export sha=$(git rev-parse --short HEAD)                                            # commit id
+export version="${KUBEBRAIN_VERSION:-$(git describe --abbrev=0 --tags 2>/dev/null || git rev-parse --abbrev-ref HEAD 2>/dev/null || true)}"
+export sha="${KUBEBRAIN_GIT_SHA:-$(git rev-parse --short HEAD 2>/dev/null || true)}"
 export go_version=$(go env GOVERSION)
 export go_os=$(go env GOOS)
 export go_arch=$(go env GOARCH)
 export go_os_arch="$go_os/$go_arch"
 export storage=$1
-export date=$(date "+%Y-%m-%d-%H:%M:%S")
+export date="${KUBEBRAIN_BUILD_DATE:-$(date -u "+%Y-%m-%dT%H:%M:%SZ")}"
+
+if [[ "${REQUIRE_BUILD_METADATA:-false}" == "true" ]]; then
+  if [[ -z "$version" || -z "$sha" || -z "$date" ]]; then
+    echo "KUBEBRAIN_VERSION, KUBEBRAIN_GIT_SHA, and KUBEBRAIN_BUILD_DATE are required" >&2
+    return 1 2>/dev/null || exit 1
+  fi
+  if ! [[ "$sha" =~ ^[0-9a-fA-F]{40}$ ]]; then
+    echo "KUBEBRAIN_GIT_SHA must be a full 40-character hexadecimal commit ID" >&2
+    return 1 2>/dev/null || exit 1
+  fi
+fi
 
 echo -e "\033[32m"
 echo -e "build env "

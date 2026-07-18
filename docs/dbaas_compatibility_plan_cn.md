@@ -2645,6 +2645,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   测试通过。`kubebrain:a151-require-leader-loss` 真实 3 PD/3 TiKV 三副本滚动后，
   官方 client/v3 require-leader Range/Lease/KeepAliveOnce/Watch 连续 100 轮期间删除
   当前 leader Pod；客户端仅见两次可重试 Unavailable，最终 100 轮全通过并恢复 3/3。
+- **Production A152 traceable container builds（2026-07-18）**：实际 A150/A151
+  Docker 构建日志显示 `.dockerignore` 排除 `.git` 后，旧 `build-base.sh` 的 git
+  命令失败却继续编译，镜像中 `Version`/`Git SHA` 为空，无法证明运行副本来自哪个
+  commit。现 Dockerfile 要求 CI 显式注入 version、40 位完整十六进制 commit SHA 和
+  UTC build date；缺字段在编译前 fail closed。二进制 ldflags 与 OCI
+  `org.opencontainers.image.version/revision/created` labels 使用同一输入，开发
+  `up.sh` 从宿主 git 注入，直接本地 build 脚本仍可回退读取 git。
+
+  构建契约测试覆盖显式值进入 ldflags、缺失值拒绝和缩写 SHA 拒绝；生产就绪文档新增
+  CI 命令及 label/二进制交叉核验门槛。带测试 metadata 的实际 TiKV 镜像构建成功，
+  `docker inspect` 与容器内 `kube-brain version` 三项完全一致；最终提交镜像继续以
+  本提交 SHA 重建并滚动验证。
 
 ### P1：通用服务能力
 

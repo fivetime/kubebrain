@@ -36,6 +36,25 @@ hack/production/wait-tidbcluster-ready.sh
 执行 KubeBrain endpoint health 和实际 Put/Get/Delete；资源收敛不单独证明数据面语义
 健康。
 
+## 生产镜像追踪
+
+Docker 构建不会把 `.git` 复制到镜像上下文，因此版本、完整 commit SHA 和 UTC 构建时间
+必须由 CI 显式注入，缺少任一字段时 Dockerfile 会在编译前失败：
+
+```shell
+docker build \
+  --build-arg STORAGE=tikv \
+  --build-arg "KUBEBRAIN_VERSION=${RELEASE_VERSION}" \
+  --build-arg "KUBEBRAIN_GIT_SHA=${GIT_COMMIT}" \
+  --build-arg "KUBEBRAIN_BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  -t "${IMAGE_REPOSITORY}:${RELEASE_VERSION}" .
+```
+
+`KUBEBRAIN_GIT_SHA` 必须是 40 位十六进制完整 commit ID。构建结果同时把三个值写入
+`kube-brain version` 和 OCI `org.opencontainers.image.version/revision/created`
+labels；发布门槛必须比较两处值，并确认 revision 对应 CI checkout，而不是仅检查镜像
+tag。
+
 ## 真-k3s 消费端驱动验证进展（2026-07-03）
 
 用真实 kube-apiserver（k3s v1.36，`--datastore-endpoint` 指向 KubeBrain-on-TiKV）端到端驱动，已完成（脚本 `hack/dev/k3s-load-smoke.sh` 一键复跑）：
