@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 KUBEBRAIN_ENDPOINT="${KUBEBRAIN_ETCD_ENDPOINT:-${ENDPOINT:-}}"
+ALLOW_DESTRUCTIVE_DIFFERENTIAL="${ALLOW_DESTRUCTIVE_DIFFERENTIAL:-false}"
 REFERENCE_ETCD_BIN="${REFERENCE_ETCD_BIN:-/root/etcd/bin/etcd}"
 REFERENCE_CLIENT_URL="${REFERENCE_CLIENT_URL:-http://127.0.0.1:12379}"
 REFERENCE_PEER_URL="${REFERENCE_PEER_URL:-http://127.0.0.1:12380}"
@@ -16,10 +17,16 @@ need() {
 }
 
 need curl
+need etcdctl
 need go
 
 if [ -z "$KUBEBRAIN_ENDPOINT" ]; then
   echo "set KUBEBRAIN_ETCD_ENDPOINT to the KubeBrain endpoint under test" >&2
+  exit 1
+fi
+if [ "$ALLOW_DESTRUCTIVE_DIFFERENTIAL" != true ]; then
+  echo "refusing destructive differential suite: Compact advances the target instance's global compact revision" >&2
+  echo "use a disposable KubeBrain instance and set ALLOW_DESTRUCTIVE_DIFFERENTIAL=true" >&2
   exit 1
 fi
 if [ ! -x "$REFERENCE_ETCD_BIN" ]; then
@@ -28,6 +35,11 @@ if [ ! -x "$REFERENCE_ETCD_BIN" ]; then
 fi
 if curl --fail --silent --max-time 1 "${REFERENCE_CLIENT_URL}/health" >/dev/null 2>&1; then
   echo "reference client URL is already in use: $REFERENCE_CLIENT_URL" >&2
+  exit 1
+fi
+
+if ! ETCDCTL_API=3 etcdctl --endpoints="$KUBEBRAIN_ENDPOINT" endpoint health; then
+  echo "KubeBrain endpoint health preflight failed: $KUBEBRAIN_ENDPOINT" >&2
   exit 1
 fi
 
