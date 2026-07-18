@@ -2351,6 +2351,38 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   正常，`MemberList` 精确返回 3 个稳定成员。本轮不改变服务二进制，继续运行
   `kubebrain:a132-txn-range-first-revision`，exact image 为
   `33b23b61fdfdd3ecceaa8256502e6ce442c1174be6f9f33b1e5e8e5627c0e001`。
+- **Put/Lease A137 hot-key coordination and lease-read boundaries
+  （2026-07-18）**：新增 raw Lease read 双端矩阵，对照
+  `/root/etcd/server/etcdserver/api/v3rpc/lease.go:LeaseTimeToLive`、
+  `/root/etcd/server/etcdserver/v3_server.go:LeaseLeases` 与
+  `/root/etcd/server/lease/lessor.go:Leases`。矩阵固定 ID `0` 在
+  `Keys=false/true` 下均返回成功、`ID=0`、`TTL=-1`、`GrantedTTL=0` 和空 keys；
+  活租约在 keys=false 时省略附件、keys=true 时返回完整无重复集合，TTL 位于
+  `(0, GrantedTTL]`；LeaseLeases 包含活租约且所有 ID 非零。三类 read header
+  均要求 cluster/member ID、revision、raft term 为正。附件 keys 来自集合，reference
+  wire 顺序不稳定，因此差分按集合比较，不把 KubeBrain 的确定性排序误写成 etcd
+  契约。临时 `/root/etcd` 3.8.0-alpha.0 reference 与在线 KubeBrain 间普通
+  10 轮、race 3 轮通过。
+
+  该边界测试本身未发现 Lease 差异，但完整 compat suite 在无并行 race 负载时再次
+  复现 `TestConcurrentPutSameKeyNeverFails`：16 writers 对同一 key 的 640 次
+  unconditional Put 中 1 次超过 15 秒 caller deadline，单轮约 35 秒。根因是
+  KubeBrain 用 Get→CAS 模拟 unconditional Put；同 leader 上的并发请求会把一个热点
+  key 放大为大量失败 TiKV 事务、已消费 MVCC revision 和 committed-watermark
+  等待。etcd 的 Raft apply 天然串行这些写。现 backend shim 使用固定 256 槽、
+  FNV-1a key stripe 的 context-aware 协调器，只在现有 Put Get→Create/Update
+  重试循环外串行同槽请求；等待响应 caller cancel，固定数组不会产生动态 key
+  lock map 泄漏，不同槽位仍并行。确定性测试覆盖同 key 最大并发为 1、不同槽位
+  可并行以及 canceled waiter 立即退出，focused 普通 50 轮、race 10 轮通过。
+
+  A137 镜像滚动后热点测试连续 10 轮、共 6400 次 Put 全部通过，用时
+  135.990s，平均每轮约 13.6 秒；完整 compat suite 用时 88.106s。
+  `go test ./...`、根模块与 compat module `go vet ./...`、backend race
+  （58.192s）及完整 server race（239.958s）通过。最终 StatefulSet 3/3 Ready、
+  3 updated、zero restart，`/health`、`/readyz` 与完整 3-member MemberList
+  正常；滚动后无 TSO deadline、still-contended、Panic/Fatal 日志。运行镜像
+  `kubebrain:a137-put-key-coordination`，exact image 为
+  `c78e30bf5f6b217ad9f7bdf0efc7ed3193d9dbeede93cf43596a3c53d9f6dbb3`。
 
 ### P1：通用服务能力
 

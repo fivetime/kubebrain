@@ -184,12 +184,22 @@ type backendShim struct {
 	// none), wired to the server's keyLeaseIndex via SetLeaseLookup. nil until
 	// wired (e.g. in unit tests that construct the shim directly).
 	leaseLookup func(key string) int64
+
+	// Unconditional Put is implemented as Get followed by a CAS. Serialize hot
+	// keys before that read so concurrent requests do not amplify one logical
+	// overwrite into many failed TiKV transactions and consumed MVCC revisions.
+	putLocks [putLockStripeCount]chan struct{}
 }
+
+const putLockStripeCount = 256
 
 func NewBackendShim(backend backend.Backend, metricCli metrics.Metrics) BackendShim {
 	shim := &backendShim{
 		backend:   backend,
 		metricCli: metricCli,
+	}
+	for i := range shim.putLocks {
+		shim.putLocks[i] = make(chan struct{}, 1)
 	}
 	shim.prevKvResolver = newPrevKvResolver(shim)
 	shim.countResolver = newCountResolver(shim)
@@ -424,6 +434,12 @@ func (b *backendShim) Put(ctx context.Context, r *etcdserverpb.PutRequest) (*etc
 		return nil, unsupported("ignoreValue")
 	}
 
+	unlock, err := b.lockPutKey(ctx, r.Key)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+
 	var prevKv *mvccpb.KeyValue
 	// etcd Put is unconditional and never fails on concurrent modification. We
 	// emulate it with a Get-then-Create/Update CAS loop, so retry until it wins
@@ -482,6 +498,25 @@ func (b *backendShim) Put(ctx context.Context, r *etcdserverpb.PutRequest) (*etc
 			return resp, nil
 		}
 	}
+}
+
+func (b *backendShim) lockPutKey(ctx context.Context, key []byte) (func(), error) {
+	lock := b.putLocks[putLockStripe(key)]
+	select {
+	case lock <- struct{}{}:
+		return func() { <-lock }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func putLockStripe(key []byte) uint8 {
+	var hash uint32 = 2166136261
+	for _, c := range key {
+		hash ^= uint32(c)
+		hash *= 16777619
+	}
+	return uint8(hash)
 }
 
 // Compact is driven by the apiserver's periodic compaction (etcd-compaction-interval);
