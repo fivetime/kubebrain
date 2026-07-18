@@ -2823,6 +2823,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   结构化比较 gRPC code/message、是否返回响应和 Succeeded。参考 etcd `d947b2086`
   与真实 TiKV-backed KubeBrain 全部一致，focused race 和仓库全量测试通过。该轮未发现
   数据面实现差异，仅补强生产配额契约的黑盒证据，因此无需重建镜像。
+- **Deploy A168 count-index declarative defaults（2026-07-18）**：运行集群已手工启用
+  count index 并用于 A164 重启验证，但 dev、production plain/TLS manifest 未固化该
+  参数，重建实例会退回全表 Count 扫描；生产文档又明确要求大规模 List/count 开启
+  A-index，形成声明式配置漂移。三份清单现统一配置
+  `--enable-count-index=true`、`--count-index-max-keys=5000000` 和
+  `--enable-storage-metrics=true`，manifest 测试固定三项。
+
+  5M cap 与代码默认一致，适配模板的 4Gi memory limit；超过上限时索引释放并回退扫描，
+  不以 OOM 换性能。`storage-gc-lifetime=10m` 已由程序默认生效，通用模板不重复配置；
+  auto-compaction retention 仍按 Kubernetes/Cilium 等租户策略由控制面选择，不能使用
+  一个通用硬编码值。真实三副本滚动后 leader 从 TiKV 重建 5,865 个 live key，约
+  694ms、ready=true；CountOnly 与全量 Range 均为 5,865，`storage_iter_*` 指标已在
+  `/metrics` 暴露，三个 Pod Ready 且零重启。清单测试和仓库全量测试通过；该项仅改变
+  部署参数，继续使用已验证的 A164 数据面镜像。
 
 ### P1：通用服务能力
 
