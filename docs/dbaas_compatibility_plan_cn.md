@@ -2560,6 +2560,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   继续使用 `Version(key)==0` compare，关闭预检后的并发创建竞争。真实 3 PD/3 TiKV
   guard 将两个记录强制拆成 `BATCH_SIZE=1`，第二个目标预置冲突，恢复拒绝且目标 count
   保持原有 1，证明早期批零写入。单测覆盖 128 边界、129 超限和非法零上限。
+- **Backup A146 acknowledged-batch conditional rollback（2026-07-18）**：目标
+  preflight 和每批 CAS 不能处理后端在第 N 批返回错误：前 N-1 个已确认批此前会残留。
+  现默认非覆盖 restore 保存每个成功 Txn 的 key 集与响应 revision；后续失败时按逆序
+  发送同规模 Txn，以每个 key 的 `ModRevision==batchRevision` 为 compare 后 Delete。
+  同批 Put 共享一个 revision，compare 任一失败会使整批删除不执行，因此恢复后的并发
+  更新不会被误删，错误明确标记 rollback incomplete。
+
+  lease key 先按 revision 删除再撤销本轮目标 lease；`ALLOW_OVERWRITE=true` 因无法用
+  Delete 重建被覆盖的旧 value/lease，明确不自动回滚。提交成功但响应丢失的事务不在
+  acknowledged 列表中，仍保留为人工核对的不确定结果。新增 test-only
+  `FAIL_AFTER_BATCHES` 和 opt-in smoke：3 条记录以 `BATCH_SIZE=1` 恢复，第 2 批提交后
+  注入失败，真实 3 PD/3 TiKV 上两个已确认批逆序回滚，目标 count=0。单测固定逆序和
+  首个冲突即停止的 fail-closed 行为。
 
 ### P1：通用服务能力
 

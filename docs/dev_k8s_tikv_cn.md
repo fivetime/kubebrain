@@ -233,6 +233,15 @@ Txn，批内任一 overwrite compare 失败时不会部分写入。默认隔离�
 写批仍带缺失 compare 关闭预检后的竞争。overwrite guard 使用 `BATCH_SIZE=1` 把冲突
 放到第二批，确认预检拒绝后第一批也没有写入。
 
+已确认写批会记录 commit revision；后续批失败时，默认非覆盖恢复按逆序用
+`ModRevision==commitRevision` compare+Delete 回滚，key 被并发修改时拒绝误删。
+`ALLOW_OVERWRITE=true` 不自动回滚。真实 fault injection smoke 将 3 条记录按每批 1 条
+恢复，在第 2 批提交后注入失败，要求目标 count 回到 0：
+
+```shell
+RUN_RESTORE_ROLLBACK_SMOKE=true hack/dev/verify.sh
+```
+
 lease-aware smoke 默认不运行；它创建一个永久 key 和两个共享 120 秒 lease 的 key，
 要求 v2 manifest 恰有一个 lease，并验证恢复后永久 key 不带 lease、两个临时 key 共享
 同一新 lease 且 TTL 为正：

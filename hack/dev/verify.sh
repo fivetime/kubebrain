@@ -17,6 +17,7 @@ RUN_TLS_SMOKE="${RUN_TLS_SMOKE:-true}"
 RUN_BACKUP_DRILL="${RUN_BACKUP_DRILL:-false}"
 RUN_BACKUP_INTEGRITY_SMOKE="${RUN_BACKUP_INTEGRITY_SMOKE:-false}"
 RUN_LEASE_BACKUP_SMOKE="${RUN_LEASE_BACKUP_SMOKE:-false}"
+RUN_RESTORE_ROLLBACK_SMOKE="${RUN_RESTORE_ROLLBACK_SMOKE:-false}"
 RUN_RESTORE_GUARD_SMOKE="${RUN_RESTORE_GUARD_SMOKE:-false}"
 RUN_VERIFY_CONTENT_SMOKE="${RUN_VERIFY_CONTENT_SMOKE:-false}"
 RUN_FAULT_SMOKE="${RUN_FAULT_SMOKE:-false}"
@@ -106,6 +107,10 @@ fi
 
 if [ "$RUN_LEASE_BACKUP_SMOKE" = "true" ]; then
   run_step "lease-aware logical backup restore smoke" env ENDPOINT="$ENDPOINT" hack/backup/lease-restore-smoke.sh
+fi
+
+if [ "$RUN_RESTORE_ROLLBACK_SMOKE" = "true" ]; then
+  run_step "logical restore rollback smoke" env ENDPOINT="$ENDPOINT" hack/backup/restore-rollback-smoke.sh
 fi
 
 if [ "$RUN_RESTORE_GUARD_SMOKE" = "true" ]; then

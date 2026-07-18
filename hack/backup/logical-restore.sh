@@ -17,6 +17,7 @@ Environment:
   BATCH_SIZE         restore batch size, default 128
   MAX_TXN_OPS        endpoint max-txn-ops setting, default 128
   ALLOW_OVERWRITE    set true to overwrite existing keys, default false
+  FAIL_AFTER_BATCHES test-only fault injection; fail after N committed batches
   TIMEOUT            request timeout as Go duration, default 10m
   ETCDCTL_CACERT     CA cert for TLS/mTLS endpoint
   ETCDCTL_CERT       client cert for TLS/mTLS endpoint
@@ -28,6 +29,9 @@ refuses to overwrite existing keys. BATCH_SIZE records are committed in one
 etcd transaction and must not exceed MAX_TXN_OPS. Before creating leases or
 writing data, non-overwrite restore checks all target keys in batched read-only
 transactions; per-write compare guards still close races after that preflight.
+If a later batch fails, acknowledged batches are deleted in reverse order only
+when every key still has that batch's commit revision. ALLOW_OVERWRITE disables
+automatic rollback because deleting cannot reconstruct overwritten values.
 EOF
 }
 
@@ -45,8 +49,10 @@ REWRITE_TO="${REWRITE_TO:-}"
 BATCH_SIZE="${BATCH_SIZE:-128}"
 MAX_TXN_OPS="${MAX_TXN_OPS:-128}"
 ALLOW_OVERWRITE="${ALLOW_OVERWRITE:-false}"
+FAIL_AFTER_BATCHES="${FAIL_AFTER_BATCHES:-}"
 
 cd "$ROOT_DIR"
 ENDPOINT="$ENDPOINT" INPUT="$INPUT" REWRITE_FROM="$REWRITE_FROM" REWRITE_TO="$REWRITE_TO" \
   BATCH_SIZE="$BATCH_SIZE" MAX_TXN_OPS="$MAX_TXN_OPS" ALLOW_OVERWRITE="$ALLOW_OVERWRITE" \
+  FAIL_AFTER_BATCHES="$FAIL_AFTER_BATCHES" \
   go run ./hack/backup/cmd/logical-restore

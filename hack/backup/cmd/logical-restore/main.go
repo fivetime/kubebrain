@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -52,6 +53,20 @@ func validateBatchSize(batchSize, maxTxnOps int) error {
 	return nil
 }
 
+type committedBatch struct {
+	keys     []string
+	revision int64
+}
+
+func rollbackCommittedBatches(batches []committedBatch, rollback func(committedBatch) error) error {
+	for i := len(batches) - 1; i >= 0; i-- {
+		if err := rollback(batches[i]); err != nil {
+			return fmt.Errorf("rollback batch %d at revision %d: %w", i, batches[i].revision, err)
+		}
+	}
+	return nil
+}
+
 func main() {
 	input := os.Getenv("INPUT")
 	rewriteFrom := os.Getenv("REWRITE_FROM")
@@ -67,6 +82,13 @@ func main() {
 	}
 	if err := validateBatchSize(batchSize, maxTxnOps); err != nil {
 		log.Fatal(err)
+	}
+	failAfterBatches := 0
+	if value := os.Getenv("FAIL_AFTER_BATCHES"); value != "" {
+		failAfterBatches, err = strconv.Atoi(value)
+		if err != nil || failAfterBatches <= 0 {
+			log.Fatalf("invalid FAIL_AFTER_BATCHES: %q", value)
+		}
 	}
 	if rewriteFrom == "" && rewriteTo != "" {
 		log.Fatal("REWRITE_TO requires REWRITE_FROM")
@@ -174,6 +196,8 @@ func main() {
 		targetLeases[sourceID] = granted.ID
 	}
 	ops := make([]kvPair, 0, batchSize)
+	committed := make([]committedBatch, 0)
+	committedCount := 0
 	total := 0
 	flush := func() error {
 		if len(ops) == 0 {
@@ -207,6 +231,20 @@ func main() {
 		if !resp.Succeeded {
 			return fmt.Errorf("refusing to overwrite one or more existing keys in restore batch; set ALLOW_OVERWRITE=true to replace existing records")
 		}
+		if !allowOverwrite {
+			if resp.Header == nil || resp.Header.Revision <= 0 {
+				return fmt.Errorf("restore batch committed without a valid response revision")
+			}
+			keys := make([]string, 0, len(ops))
+			for _, op := range ops {
+				keys = append(keys, string(op.key))
+			}
+			committed = append(committed, committedBatch{keys: keys, revision: resp.Header.Revision})
+		}
+		committedCount++
+		if failAfterBatches > 0 && committedCount >= failAfterBatches {
+			return fmt.Errorf("injected failure after %d committed batches", committedCount)
+		}
 		ops = ops[:0]
 		return nil
 	}
@@ -230,13 +268,40 @@ func main() {
 		}
 		return nil
 	})
-	if err != nil {
-		cleanupTargetLeases()
-		log.Fatal(err)
+	if err == nil {
+		err = flush()
 	}
-	if err := flush(); err != nil {
+	if err != nil {
+		restoreErr := err
+		var rollbackErr error
+		if !allowOverwrite {
+			rollbackCtx, rollbackCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer rollbackCancel()
+			rollbackErr = rollbackCommittedBatches(committed, func(batch committedBatch) error {
+				compares := make([]clientv3.Cmp, 0, len(batch.keys))
+				deletes := make([]clientv3.Op, 0, len(batch.keys))
+				for _, key := range batch.keys {
+					compares = append(compares, clientv3.Compare(clientv3.ModRevision(key), "=", batch.revision))
+					deletes = append(deletes, clientv3.OpDelete(key))
+				}
+				resp, txnErr := cli.Txn(rollbackCtx).If(compares...).Then(deletes...).Commit()
+				if txnErr != nil {
+					return txnErr
+				}
+				if !resp.Succeeded {
+					return errors.New("one or more restored keys changed after commit; refusing to delete concurrent data")
+				}
+				return nil
+			})
+		}
 		cleanupTargetLeases()
-		log.Fatal(err)
+		if rollbackErr != nil {
+			log.Fatalf("restore failed: %v; rollback incomplete: %v", restoreErr, rollbackErr)
+		}
+		if allowOverwrite {
+			log.Fatalf("restore failed: %v; ALLOW_OVERWRITE=true prevents safe automatic rollback", restoreErr)
+		}
+		log.Fatalf("restore failed and committed batches were rolled back: %v", restoreErr)
 	}
 	status := verified.Status()
 	fmt.Fprintf(os.Stderr, "restored %d records and %d leases from %s to %s (snapshot revision %d, sha256 %s)\n",

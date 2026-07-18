@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"testing"
 
@@ -25,6 +26,34 @@ func TestValidateBatchSize(t *testing.T) {
 	require.NoError(t, validateBatchSize(128, 128))
 	require.ErrorContains(t, validateBatchSize(129, 128), "exceeds")
 	require.ErrorContains(t, validateBatchSize(1, 0), "must be positive")
+}
+
+func TestRollbackCommittedBatchesRunsInReverseOrder(t *testing.T) {
+	batches := []committedBatch{
+		{keys: []string{"a"}, revision: 10},
+		{keys: []string{"b"}, revision: 11},
+		{keys: []string{"c"}, revision: 12},
+	}
+	var revisions []int64
+	require.NoError(t, rollbackCommittedBatches(batches, func(batch committedBatch) error {
+		revisions = append(revisions, batch.revision)
+		return nil
+	}))
+	require.Equal(t, []int64{12, 11, 10}, revisions)
+}
+
+func TestRollbackCommittedBatchesStopsOnConflict(t *testing.T) {
+	batches := []committedBatch{
+		{keys: []string{"a"}, revision: 10},
+		{keys: []string{"b"}, revision: 11},
+	}
+	var revisions []int64
+	err := rollbackCommittedBatches(batches, func(batch committedBatch) error {
+		revisions = append(revisions, batch.revision)
+		return errors.New("changed")
+	})
+	require.ErrorContains(t, err, "rollback batch 1 at revision 11")
+	require.Equal(t, []int64{11}, revisions)
 }
 
 func TestEnvBool(t *testing.T) {
