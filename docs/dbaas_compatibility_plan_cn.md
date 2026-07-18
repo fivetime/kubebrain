@@ -3259,6 +3259,36 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   API Server 在 operation 进入 Running 前拒绝；实现改用 Kubernetes MicroTime 格式后
   重跑全部证据通过。当前公平范围是单 operation namespace；多 region/多 namespace
   管理面的全局公平仍需由上层调度器定义。
+- **Operations A198 Object-Lock terminal operation audit archive（2026-07-18）**：
+  新增 `kubebrain.operation-audit.v1` 规范化 artifact、`operation-audit` Kubernetes
+  读取命令和 `archive-operation-audit.sh`。artifact 只接受 Succeeded/Failed 终态，
+  绑定 CR namespace/name/UID/generation、不可变 operation ID/instance/type/参数
+  SHA-256/maxAttempts，以及 owner/attempt/observedGeneration/start/complete/message；
+  Succeeded 还必须绑定执行 receipt SHA-256，Failed 禁止伪带 receipt。JSON 使用固定
+  struct 顺序、单行换行和严格 unknown/trailing/canonical 校验，以 0600、file/directory
+  fsync、不可覆盖 hard-link 发布；同 operation 终态漂移不能改写本地 artifact。
+
+  A188 objectstore module 新增专用 `archive` 动作。上传前冻结 artifact 完整字节，复核
+  size/SHA-256，消除 inspect→Put 的本地文件 TOCTOU；随后使用 S3
+  `PutObject If-None-Match:*`、完整 checksum、COMPLIANCE/GOVERNANCE Object Lock 和
+  operation/UID/phase/execution receipt 等 metadata 条件写。返回 version ID 后重新下载
+  exact version，逐字节复核并读取 retention，之后才签发不可覆盖的
+  `kubebrain.object-operation-audit.receipt.v1`。已有 receipt 重试会重做远端 body 与
+  retention 检查，不产生新 version；同 key 只有全部 metadata/size 一致才可恢复
+  “Put 已成功、receipt 未发布”的崩溃窗口，否则拒绝替换。
+
+  测试覆盖规范化/权限/不可覆盖、非终态、成功态缺 receipt、非法摘要、同 key 冲突、
+  远端 body 损坏、retention 漂移、exact-version 幂等和不发布错误 receipt；根 module
+  production test、独立 objectstore module test、两侧 race/vet 与 shell syntax 通过。
+  真实 `kind-kubebrain-dbaas` 终态 operation `a198-audit-1` 归档到启用 versioning+
+  Object Lock 的 MinIO，operation UID
+  `5923b9fd-3ed8-4459-833c-44c5d8bf8110`、artifact digest
+  `6ab9ec91367e65bfd2200d9119c22d28c636075f8a1e291dc79d11f3199c9a67`、exact version
+  `b7db6435-a066-4baa-a947-d4fd145b805f`、archive receipt digest
+  `57a195392c9bca4b340c8ad453382b8cb3f71e53e16b0c87b3e5d2c13ed18b43`。
+  二次归档 receipt 不变；另一终态 operation 竞争同 key 非零退出且无 receipt；保留期内
+  exact-version 删除被 MinIO 拒绝，到期删除后 A198 object/version 与测试 CR 残留均为
+  0。下一步仍需用 finalizer/控制器强制“先归档再允许删除”，并做 bucket inventory 对账。
 - **Operations A185 certificate rotation completion state（2026-07-18）**：新增
   `hack/production/validate-certificate-rotation.sh`，把 client/peer CA rollover
   收敛为 `begin -> overlap -> complete` 三阶段门禁。begin 固定全部 KubeBrain Pod
@@ -3355,7 +3385,8 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
    RestoreCutover/CertificateRotation/Destroy executors 已建立；继续完成专属
    namespace/凭据外围清理、bucket lifecycle/inventory 对账；Kubernetes 原生提交者
    与 worker 最小权限身份已分离，单 namespace 跨实例公平调度和实例互斥已完成；继续
-   补外部管理 API 的 OIDC/租户授权、请求审批、不可变审计归档、跨 namespace/region
+   终态 operation 的 Object Lock 不可变归档已完成；继续补外部管理 API 的 OIDC/租户
+   授权、请求审批、归档 finalizer/删除门禁与 inventory 对账、跨 namespace/region
    全局调度和管理面 HA soak。
 4. 建立实例级限额和计量：请求字节、txn 操作数、跨连接 client RPC 总并发、client
    请求 QPS/burst、逻辑 Watch 总数、CPU/内存饱和、网络错误/丢包及 PD/TiKV PVC 容量
