@@ -3422,6 +3422,26 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   随后完成 Object Lock 审计归档和 finalizer release；归档 version 到期后精确删除，
   空 inventory 证明 backup/audit prefix 均无 version/delete marker，operation/Lease
   残留为 0。主 3 KubeBrain、3 PD、3 TiKV 均 Ready 且零重启。
+- **Operations A203 canonical object evidence parsing（2026-07-18）**：
+  A202 lifecycle 审计发现 objectstore 模块的 backup upload、backup deletion 和
+  operation audit receipt reader 仍使用宽松 `json.Unmarshal`；它虽然校验必要字段，
+  但会接受未知字段、前导空白和其他非 canonical bytes，且不能给所有调用方提供一致的
+  单一 JSON 值契约。inventory 和独立 operation-audit reader 已严格校验，因此同一
+  inventory manifest builder 的不同 evidence 类型存在不一致。
+
+  三类 reader 现统一使用 `json.Decoder.DisallowUnknownFields`，要求第二次 decode
+  立即得到 EOF，并将结构重新 marshal 为 canonical 单行 JSON 与原始 bytes 逐字节比较；
+  之后才执行 receipt 语义验证。这样参数文件固定的 SHA-256、不可覆盖本地 evidence 和
+  manifest builder 读取的是同一唯一编码，未知控制面字段、尾随第二个 JSON 值、缩进或
+  前导空白均 fail closed。atomic writer 的已有 receipt 幂等路径也经过同一严格 reader，
+  不会把语义相同但字节不同的文件视为可复用证据。
+
+  单元测试对 backup/deletion/audit 三类 receipt 分别覆盖 canonical 成功、前导空白、
+  unknown field 和 trailing JSON；objectstore 全套 test/race/vet 与 A202 executor 回归
+  通过。真实 A202 已删除 exact version 再次执行 delete，严格读取 canonical upload 和
+  已有 deletion receipt 后幂等成功；canonical backup/audit receipts 均可生成 inventory
+  manifest。对真实 upload receipt 注入 unknown field、对 audit receipt追加第二个 JSON
+  值后均非零退出且不发布 manifest，远端状态未改变。
 - **Operations A185 certificate rotation completion state（2026-07-18）**：新增
   `hack/production/validate-certificate-rotation.sh`，把 client/peer CA rollover
   收敛为 `begin -> overlap -> complete` 三阶段门禁。begin 固定全部 KubeBrain Pod
