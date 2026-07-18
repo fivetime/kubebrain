@@ -3326,6 +3326,38 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `14def952-ec44-44c4-bb61-3630e471ffd1`。直接无 finalizer CREATE 和无 archive annotations
   removal 均被 admission 拒绝；两份 COMPLIANCE object 到期后按 exact version 清理，
   A199 object/version、operation 和 Lease 残留均为 0。
+- **Operations A200 exact-version bucket inventory reconciliation（2026-07-18）**：
+  A188 objectstore module 新增 `manifest` 与 `inventory` 动作。
+  `kubebrain.object-inventory-manifest.v1` 从已验证的 logical backup/audit archive
+  receipts 生成，不接受手工不受约束的远端列表；绑定稳定 Object Store ID、bucket、
+  严格 prefix，并为每个期望对象绑定 artifact format、key、exact version ID、
+  SHA-256、bytes、retention mode/absolute retain-until。builder 自动按 key/version
+  排序、拒绝重复/跨 prefix/不同 store 或 bucket，并以 canonical 单行 JSON、0600、
+  file/directory fsync 和不可覆盖写发布。
+
+  inventory 使用 `ListObjectVersions` 的 key+version 双 marker 分页扫描完整 prefix，
+  要求页游标严格前进且 version identity 不重复；远端 version 集必须与 manifest
+  精确相等，任何缺失或额外 version、任何 delete marker 都 fail closed。随后对每个
+  exact version 执行 HeadObject，核对 size、format、Object Store ID、artifact digest、
+  bytes 与 retain-until metadata，并用 GetObjectRetention 核对 mode/date。全部通过才签发
+  canonical、不可覆盖的 `kubebrain.object-inventory.receipt.v1`，绑定 manifest SHA-256、
+  expected/remote counts、delete marker=0 和检查时间；重试仍重做完整远端对账后复用原
+  receipt。manifest 可为空，用于证明受管 prefix 无残留。
+
+  fake S3 覆盖双 marker 分页、clean 幂等、缺失/额外 version、delete marker、
+  metadata/retention 漂移、分页不前进、manifest 非 canonical/乱序/重复及错误 store；
+  错误路径均不发布 receipt。独立 objectstore module test/race/vet、完整 production
+  test、shell syntax 和 diff check 通过。真实 MinIO 在
+  `operation-inventory-a200/` 先归档 2 个 COMPLIANCE operation versions，clean receipt
+  返回 expected/remote=`2/2`、manifest digest
+  `6a2c1c7635e57a0a4c2b50000e36c4e67fd4627d7db36b09e45b177d5588069e`。
+  加入第三个未登记 version 后旧 manifest 非零退出且无 receipt；更新 3-version manifest
+  后通过，再创建 delete marker 后同样拒绝且无 receipt。移除 marker 后最终 clean receipt
+  expected/remote=`3/3`、manifest digest
+  `c62034dd6c1c0d48f9c422a690d6b524af4c1d13c3656974f1d21672e5670211`、receipt digest
+  `692d9258b5820160c6be3c1be3c1e3ef541cccd4e17caf3fa04fb108deb71708`。
+  三个 exact versions 到期后按 manifest 清理，A200 prefix 与 operation 残留均为 0。
+  lifecycle 删除必须先更新控制面期望清单；跨 bucket/account 汇总与定期调度仍属管理面。
 - **Operations A185 certificate rotation completion state（2026-07-18）**：新增
   `hack/production/validate-certificate-rotation.sh`，把 client/peer CA rollover
   收敛为 `begin -> overlap -> complete` 三阶段门禁。begin 固定全部 KubeBrain Pod
@@ -3420,10 +3452,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
    上传/保留删除、恢复验证 receipt、UID-fenced 流量切换、恢复后持续审计、证书轮换
    gate、UID-fenced 销毁状态机及持久 operation API/worker fencing、Backup/
    RestoreCutover/CertificateRotation/Destroy executors 已建立；继续完成专属
-   namespace/凭据外围清理、bucket lifecycle/inventory 对账；Kubernetes 原生提交者
-   与 worker 最小权限身份已分离，单 namespace 跨实例公平调度和实例互斥、终态
+   namespace/凭据外围清理和 bucket lifecycle 调度；exact-version inventory 对账已完成；
+   Kubernetes 原生提交者与 worker 最小权限身份已分离，单 namespace 跨实例公平调度和
+   实例互斥、终态
    operation 的 Object Lock 不可变归档及 finalizer/删除门禁均已完成；继续补外部管理
-   API 的 OIDC/租户授权、请求审批、bucket inventory 对账、跨 namespace/region
+   API 的 OIDC/租户授权、请求审批、跨 bucket/account 汇总、跨 namespace/region
    全局调度和管理面 HA soak。
 4. 建立实例级限额和计量：请求字节、txn 操作数、跨连接 client RPC 总并发、client
    请求 QPS/burst、逻辑 Watch 总数、CPU/内存饱和、网络错误/丢包及 PD/TiKV PVC 容量
