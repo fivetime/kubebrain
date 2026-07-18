@@ -52,8 +52,8 @@ need() {
 
 need go
 
-if [ "$PREFIX" = "$RESTORE_PREFIX" ]; then
-  echo "RESTORE_PREFIX must differ from PREFIX" >&2
+if [[ "$RESTORE_PREFIX" == "$PREFIX"* ]] || [[ "$PREFIX" == "$RESTORE_PREFIX"* ]]; then
+  echo "PREFIX and RESTORE_PREFIX must not overlap" >&2
   exit 1
 fi
 
@@ -77,7 +77,7 @@ echo "Exporting ${PREFIX} from ${ENDPOINT} to ${OUTPUT}"
 ENDPOINT="$ENDPOINT" PREFIX="$PREFIX" OUTPUT="$OUTPUT" BATCH_SIZE="$BATCH_SIZE" \
   "$ROOT_DIR/hack/backup/logical-export.sh"
 
-exported_records="$(wc -l < "$OUTPUT" | tr -d ' ')"
+exported_records="$(INPUT="$OUTPUT" FIELD=records "$ROOT_DIR/hack/backup/logical-status.sh")"
 if [ "$REQUIRE_RECORDS" = "true" ] && [ "$exported_records" -eq 0 ]; then
   echo "exported zero records from ${PREFIX}" >&2
   exit 1

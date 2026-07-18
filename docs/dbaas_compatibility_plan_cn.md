@@ -2490,6 +2490,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   quorum-preserving 滚动恢复持久性，不替代 BR/PITR、跨可用区分区或多数副本丢失
   演练。运行镜像仍为 `kubebrain:a140-backend-quorum`，三 Pod exact image digest
   均为 `a6c83f8228c67d49bdfcec607b3d3ca745518212e10f0d961fd4e36222bc92ad`。
+- **Backup A142 logical artifact integrity（2026-07-18）**：对照 etcd
+  `etcdutl/snapshot/v3_snapshot.go` 的 `Status` 与 `copyAndVerifyDB`：官方 restore
+  会先验证 snapshot 结构和 SHA-256，再修改目标 DB；原 logical JSONL 没有版本、
+  manifest、记录数或摘要，截断文件仍可能被 restore/verify 当成完整输入，造成静默
+  缺数。现引入 `kubebrain.logical.v1`：header 固定源 prefix 与 snapshot revision，
+  footer 固定总记录数及覆盖 header/全部记录的 SHA-256；同时验证 revision 为正、
+  每个 key 位于 manifest prefix 内且无重复 key。单测覆盖截断、内容篡改、footer 后
+  追加数据、prefix 不匹配、重复 key，以及 abort 不覆盖已有备份。
+
+  export 在目标同目录写 0600 临时文件，文件 `fsync` 后原子 rename 并同步父目录；
+  status/restore/verify 先复制到私有临时文件并完整验证，restore 在验证成功前不创建
+  etcd client、不写目标。新增 `logical-status.sh` 返回格式、revision、记录数和摘要；
+  `BATCH_SIZE` 现真正使用单个 Txn 提交一批 compare+Put，批内冲突不再逐 key 部分
+  落盘。旧无 manifest JSONL 无法证明完整性，明确 fail closed，升级后需重新导出。
+
+  真实 3 PD/3 TiKV 环境中，34 条 `/registry` 在 revision
+  `467759280324347731` 导出并以 8 条/Txn 隔离恢复，count/逐值 verify 均为 34 后
+  清理；截断 footer 的恢复被拒绝且目标 count=0；两条记录中第二条目标已存在时，
+  整批拒绝且 target count 保持原有 1。overwrite guard、恢复后内容篡改和完整性
+  smoke 连续通过。完整 compat suite 用时 61.927s，`go test ./...`、全仓与 backup
+  vet、backup race（各包约 1.05s）通过。该里程碑只增强对象级逻辑迁移/隔离恢复，
+  不保留原 revision/lease/watch 历史，也不替代 TiKV BR 全量与 PITR 主灾备路径。
 
 ### P1：通用服务能力
 

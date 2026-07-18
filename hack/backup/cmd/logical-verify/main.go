@@ -1,16 +1,15 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"log"
 	"os"
 	"strings"
 
+	"github.com/kubewharf/kubebrain/hack/backup/internal/backupfile"
 	"github.com/kubewharf/kubebrain/hack/backup/internal/etcdutil"
 	"github.com/kubewharf/kubebrain/hack/backup/internal/record"
 )
@@ -34,6 +33,12 @@ func main() {
 		log.Fatal("REWRITE_TO requires REWRITE_FROM")
 	}
 
+	verified, err := backupfile.OpenVerified(input)
+	if err != nil {
+		log.Fatalf("backup integrity validation failed: %v", err)
+	}
+	defer verified.Close()
+
 	cli, err := etcdutil.NewClientFromEnv()
 	if err != nil {
 		log.Fatal(err)
@@ -44,47 +49,38 @@ func main() {
 		log.Fatal(err)
 	}
 
-	f, err := os.Open(input)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer f.Close()
-
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 1024*1024), 64*1024*1024)
 	total := 0
-	for scanner.Scan() {
-		var rec record.Record
-		if err := json.Unmarshal(scanner.Bytes(), &rec); err != nil {
-			log.Fatal(err)
-		}
+	err = verified.Records(func(rec record.Record) error {
 		key, err := base64.StdEncoding.DecodeString(rec.Key)
 		if err != nil {
-			log.Fatal(err)
+			return err
 		}
 		value, err := base64.StdEncoding.DecodeString(rec.Value)
 		if err != nil {
-			log.Fatal(err)
+			return err
 		}
 		key = rewriteKey(key, rewriteFrom, rewriteTo)
 
 		resp, err := cli.Get(ctx, string(key))
 		if err != nil {
-			log.Fatal(err)
+			return err
 		}
 		if len(resp.Kvs) != 1 {
-			log.Fatalf("expected restored key %q exactly once, got %d", string(key), len(resp.Kvs))
+			return fmt.Errorf("expected restored key %q exactly once, got %d", string(key), len(resp.Kvs))
 		}
 		if !bytes.Equal(resp.Kvs[0].Value, value) {
-			log.Fatalf("restored value mismatch for key %q", string(key))
+			return fmt.Errorf("restored value mismatch for key %q", string(key))
 		}
 		total++
-	}
-	if err := scanner.Err(); err != nil {
+		return nil
+	})
+	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Fprintf(os.Stderr, "verified %d restored records from %s\n", total, input)
+	status := verified.Status()
+	fmt.Fprintf(os.Stderr, "verified %d restored records from %s (snapshot revision %d, sha256 %s)\n",
+		total, input, status.Revision, status.SHA256)
 }

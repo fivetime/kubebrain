@@ -208,7 +208,26 @@ RUN_RESTORE_GUARD_SMOKE=true hack/dev/verify.sh
 RUN_VERIFY_CONTENT_SMOKE=true hack/dev/verify.sh
 ```
 
-备份脚本同时支持 TLS/mTLS endpoint，可通过 `ETCDCTL_CACERT`、`ETCDCTL_CERT`、`ETCDCTL_KEY` 或 `CACERT`、`CERT`、`KEY` 传入证书。导出脚本会固定首个分页 `Range` 返回的 revision，避免混合快照；恢复脚本默认拒绝覆盖已有 key，需要覆盖恢复时显式设置 `ALLOW_OVERWRITE=true`。这些脚本现在运行仓库内的 Go command，不再在每次执行时创建临时 Go module 或动态拉取依赖。`TIMEOUT` 可调整导出、恢复、count、内容校验和清理的请求超时时间，默认 `10m`。每个 `hack/backup/*.sh` 脚本都支持 `--help` 查看参数。当前本地已通过一次完整 logical drill：导出 `/registry` 下 4091 条记录，恢复到隔离前缀，计数校验为 4091 条，并完成临时记录清理；新增 TLS 参数支持后已再次通过同规模明文回归。固定 revision 分页和默认防覆盖恢复已通过 `/registry/smoke` 712 条记录 drill 和专用 `RUN_RESTORE_GUARD_SMOKE=true` 覆盖拒绝验证；迁移到仓库内 Go command 后已再次通过同样的 712 条 drill 与 restore guard 验证，新增 `TIMEOUT` 参数后也已用 `TIMEOUT=2m` 通过 712 条 drill，`--help` 和 `TIMEOUT=2m` restore guard smoke 也已通过。当前 drill 还会逐条校验恢复后的 key/value 内容，最近一次 `/registry/smoke` 712 条内容校验通过；`RUN_VERIFY_CONTENT_SMOKE=true` 也已确认篡改恢复 value 会被 `logical-verify` 捕获。
+备份文件完整性 smoke 默认不运行。它会截断 v1 footer，确认 restore 在写入任何目标
+key 前拒绝损坏文件：
+
+```shell
+RUN_BACKUP_INTEGRITY_SMOKE=true hack/dev/verify.sh
+```
+
+备份脚本同时支持 TLS/mTLS endpoint，可通过 `ETCDCTL_CACERT`、`ETCDCTL_CERT`、
+`ETCDCTL_KEY` 或 `CACERT`、`CERT`、`KEY` 传入证书。导出固定首个分页 Range
+revision。`kubebrain.logical.v1` 格式包含源 prefix、snapshot revision、记录数和
+SHA-256，并经临时文件 `fsync` 后原子发布；restore/verify 在访问目标 key 前验证完整
+文件，旧版无 manifest 的 JSONL 会被拒绝。可用
+`INPUT=... hack/backup/logical-status.sh` 离线查看状态。恢复按 `BATCH_SIZE` 使用一个
+Txn，批内任一 overwrite compare 失败时不会部分写入。当前真实环境已通过 34 条
+`/registry` 全前缀隔离恢复、逐值核验与清理；截断 footer 被拒绝且目标计数保持 0，
+两条记录批次中第二条冲突时目标计数保持原有 1。
+
+此前还完成过 4091 条 `/registry`、TLS/mTLS 4148 条及 `/registry/smoke` 712 条旧格式
+演练；这些历史结果证明当时的数据路径规模，但旧文件本身不满足 v1 完整性契约，升级后
+必须重新导出。`TIMEOUT` 可调整超时，默认 `10m`；所有脚本支持 `--help`。
 
 故障注入 smoke 默认不运行，因为它会删除当前 dev 环境中的 KubeBrain、PD 和 TiKV Pod。需要覆盖该路径时显式启用：
 

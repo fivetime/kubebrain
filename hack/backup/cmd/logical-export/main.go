@@ -3,12 +3,12 @@ package main
 import (
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"log"
 	"os"
 	"strconv"
 
+	"github.com/kubewharf/kubebrain/hack/backup/internal/backupfile"
 	"github.com/kubewharf/kubebrain/hack/backup/internal/etcdutil"
 	"github.com/kubewharf/kubebrain/hack/backup/internal/record"
 	clientv3 "go.etcd.io/etcd/client/v3"
@@ -37,12 +37,6 @@ func main() {
 		log.Fatal(err)
 	}
 
-	out, err := os.Create(output)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer out.Close()
-
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
@@ -50,6 +44,12 @@ func main() {
 	end := []byte(clientv3.GetPrefixRangeEnd(prefix))
 	total := 0
 	var snapshotRevision int64
+	var writer *backupfile.AtomicWriter
+	defer func() {
+		if writer != nil {
+			writer.Abort()
+		}
+	}()
 	for {
 		opts := []clientv3.OpOption{
 			clientv3.WithRange(string(end)),
@@ -64,6 +64,13 @@ func main() {
 		}
 		if snapshotRevision == 0 && resp.Header != nil {
 			snapshotRevision = resp.Header.Revision
+			writer, err = backupfile.NewAtomicWriter(output, prefix, snapshotRevision)
+			if err != nil {
+				log.Fatal(err)
+			}
+		}
+		if writer == nil {
+			log.Fatal("range response did not contain a revision")
 		}
 		for _, kv := range resp.Kvs {
 			rec := record.Record{
@@ -74,7 +81,7 @@ func main() {
 				Version:        kv.Version,
 				Lease:          kv.Lease,
 			}
-			if err := json.NewEncoder(out).Encode(&rec); err != nil {
+			if err := writer.Add(rec); err != nil {
 				log.Fatal(err)
 			}
 			total++
@@ -84,5 +91,10 @@ func main() {
 		}
 		start = nextKey(resp.Kvs[len(resp.Kvs)-1].Key)
 	}
-	fmt.Fprintf(os.Stderr, "exported %d records from %s at revision %d to %s\n", total, prefix, snapshotRevision, output)
+	status, err := writer.Commit()
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Fprintf(os.Stderr, "exported %d records from %s at revision %d to %s (sha256 %s)\n",
+		total, prefix, snapshotRevision, output, status.SHA256)
 }

@@ -19,7 +19,8 @@ Environment:
   ETCDCTL_CERT       client cert for TLS/mTLS endpoint
   ETCDCTL_KEY        client key for TLS/mTLS endpoint
 
-The export fixes all pages at the first Range response revision.
+The export fixes all pages at the first Range response revision and publishes
+the versioned, checksummed backup atomically.
 EOF
 }
 

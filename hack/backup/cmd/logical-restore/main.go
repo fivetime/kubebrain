@@ -1,16 +1,15 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"log"
 	"os"
 	"strconv"
 	"strings"
 
+	"github.com/kubewharf/kubebrain/hack/backup/internal/backupfile"
 	"github.com/kubewharf/kubebrain/hack/backup/internal/etcdutil"
 	"github.com/kubewharf/kubebrain/hack/backup/internal/record"
 	clientv3 "go.etcd.io/etcd/client/v3"
@@ -45,6 +44,12 @@ func main() {
 		log.Fatal("REWRITE_TO requires REWRITE_FROM")
 	}
 
+	verified, err := backupfile.OpenVerified(input)
+	if err != nil {
+		log.Fatalf("backup integrity validation failed: %v", err)
+	}
+	defer verified.Close()
+
 	cli, err := etcdutil.NewClientFromEnv()
 	if err != nil {
 		log.Fatal(err)
@@ -55,73 +60,69 @@ func main() {
 		log.Fatal(err)
 	}
 
-	f, err := os.Open(input)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer f.Close()
-
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 1024*1024), 64*1024*1024)
 	type kvPair struct {
 		key   []byte
 		value []byte
 	}
 	ops := make([]kvPair, 0, batchSize)
 	total := 0
-	flush := func() {
+	flush := func() error {
 		if len(ops) == 0 {
-			return
+			return nil
 		}
+		txn := cli.Txn(ctx)
+		compares := make([]clientv3.Cmp, 0, len(ops))
+		puts := make([]clientv3.Op, 0, len(ops))
 		for _, op := range ops {
 			key := string(op.key)
-			value := string(op.value)
-			if allowOverwrite {
-				if _, err := cli.Put(ctx, key, value); err != nil {
-					log.Fatal(err)
-				}
-				continue
+			if !allowOverwrite {
+				compares = append(compares, clientv3.Compare(clientv3.Version(key), "=", 0))
 			}
-			resp, err := cli.Txn(ctx).
-				If(clientv3.Compare(clientv3.Version(key), "=", 0)).
-				Then(clientv3.OpPut(key, value)).
-				Commit()
-			if err != nil {
-				log.Fatal(err)
-			}
-			if !resp.Succeeded {
-				log.Fatalf("refusing to overwrite existing key %q; set ALLOW_OVERWRITE=true to replace existing records", key)
-			}
+			puts = append(puts, clientv3.OpPut(key, string(op.value)))
+		}
+		if len(compares) > 0 {
+			txn = txn.If(compares...)
+		}
+		resp, err := txn.Then(puts...).Commit()
+		if err != nil {
+			return err
+		}
+		if !resp.Succeeded {
+			return fmt.Errorf("refusing to overwrite one or more existing keys in restore batch; set ALLOW_OVERWRITE=true to replace existing records")
 		}
 		ops = ops[:0]
+		return nil
 	}
 
-	for scanner.Scan() {
-		var rec record.Record
-		if err := json.Unmarshal(scanner.Bytes(), &rec); err != nil {
-			log.Fatal(err)
-		}
+	err = verified.Records(func(rec record.Record) error {
 		key, err := base64.StdEncoding.DecodeString(rec.Key)
 		if err != nil {
-			log.Fatal(err)
+			return err
 		}
 		value, err := base64.StdEncoding.DecodeString(rec.Value)
 		if err != nil {
-			log.Fatal(err)
+			return err
 		}
 		key = rewriteKey(key, rewriteFrom, rewriteTo)
 		ops = append(ops, kvPair{key: key, value: value})
 		total++
 		if len(ops) >= batchSize {
-			flush()
+			if err := flush(); err != nil {
+				return err
+			}
 		}
-	}
-	if err := scanner.Err(); err != nil {
+		return nil
+	})
+	if err != nil {
 		log.Fatal(err)
 	}
-	flush()
-	fmt.Fprintf(os.Stderr, "restored %d records from %s to %s\n", total, input, os.Getenv("ENDPOINT"))
+	if err := flush(); err != nil {
+		log.Fatal(err)
+	}
+	status := verified.Status()
+	fmt.Fprintf(os.Stderr, "restored %d records from %s to %s (snapshot revision %d, sha256 %s)\n",
+		total, input, os.Getenv("ENDPOINT"), status.Revision, status.SHA256)
 }

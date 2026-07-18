@@ -18,6 +18,9 @@ Environment:
   ETCDCTL_CACERT     CA cert for TLS/mTLS endpoint
   ETCDCTL_CERT       client cert for TLS/mTLS endpoint
   ETCDCTL_KEY        client key for TLS/mTLS endpoint
+
+The backup manifest, record count, and SHA-256 are validated before comparing
+restored key/value content. Unmanifested legacy JSONL files are rejected.
 EOF
 }
 

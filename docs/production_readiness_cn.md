@@ -382,6 +382,15 @@ hack/dev/verify.sh
 
 逻辑备份脚本会运行仓库内 Go command，依赖随主 `go.mod` 管理，不会在每次演练时创建临时 Go module 或动态拉取依赖。默认请求超时时间为 `10m`，大集群演练可以通过 `TIMEOUT=30m` 这类 Go duration 字符串调整导出、恢复、count、内容校验和清理超时。所有 `hack/backup/*.sh` 脚本都支持 `--help` 查看参数。
 
+当前格式为 `kubebrain.logical.v1`：首行 manifest 固定源 prefix 与 snapshot revision，
+尾行记录总数和覆盖 manifest/全部记录的 SHA-256。导出先写同目录临时文件，完成
+`fsync` 后原子 rename 并同步父目录；中断导出不会把不完整内容发布到目标路径。
+`logical-status.sh`、restore 和 verify 都会先复制并验证完整文件，缺 footer、记录数
+不符、内容篡改或 footer 后附加数据均 fail closed。restore 在任何 etcd 写入前完成
+验证，并按 `BATCH_SIZE` 把 compare 与 Put 放入同一个 Txn，使单批冲突不会部分落盘。
+旧版没有 manifest/footer 的 JSONL 无法证明完整性，现明确拒绝；升级前应重新生成
+逻辑备份。
+
 导出默认覆盖 `/registry` 前缀：
 
 ```shell
@@ -391,6 +400,13 @@ hack/backup/logical-export.sh
 ```
 
 导出脚本会在首个分页 `Range` 响应的 revision 上固定后续分页请求，避免导出过程跨多个 etcd revision 形成混合快照。导出日志会打印本次 logical backup 使用的 snapshot revision。
+
+可离线检查格式、revision、记录数与摘要：
+
+```shell
+INPUT=/tmp/kubebrain-registry-backup.jsonl \
+hack/backup/logical-status.sh
+```
 
 恢复演练建议先重写到隔离前缀，避免覆盖真实对象：
 
@@ -418,6 +434,14 @@ ENDPOINT=127.0.0.1:3379 \
 hack/backup/verify-content-smoke.sh
 ```
 
+可以用完整性 smoke 截断 v1 footer，并确认 restore 在写入任何目标 key 前拒绝损坏
+文件：
+
+```shell
+ENDPOINT=127.0.0.1:3379 \
+hack/backup/backup-integrity-smoke.sh
+```
+
 可以用脚本自动完成导出、隔离恢复、计数校验、逐条 key/value 内容校验和清理：
 
 ```shell
@@ -437,7 +461,12 @@ PREFIX=/registry \
 hack/backup/logical-drill.sh
 ```
 
-也可以使用较短的 `CACERT`、`CERT`、`KEY` 环境变量。当前本地已在明文 dev endpoint 上通过一次完整 logical drill：从 `127.0.0.1:3379` 导出 `/registry` 下 4091 条记录，恢复到隔离前缀 `/registry-restore-drill-*`，count-only 校验为 4091 条，并删除全部 4091 条 drill 记录；新增 TLS 参数支持后已再次通过同规模明文回归。TLS/mTLS 路径也已通过验证：临时 mTLS KubeBrain endpoint 上全量 `/registry` drill 导出 4148 条、恢复 4148 条、校验 4148 条并清理；默认 TLS smoke 则使用较小的 `/registry/tls-smoke` 前缀，避免日常回归被历史对象数量放大。固定 revision 分页和默认防覆盖恢复已通过 `/registry/smoke` 712 条记录 drill 验证，专用 restore guard smoke 也已确认直接恢复回已有前缀时会拒绝覆盖已有 key；迁移到仓库内 Go command 后已再次通过 712 条 drill 与 restore guard 验证，新增 `TIMEOUT` 参数后也已用 `TIMEOUT=2m` 通过 712 条 drill，脚本 `--help` 输出和 `TIMEOUT=2m` restore guard smoke 也已通过。当前 drill 已从 count-only 扩展为 key/value 内容校验，最近一次 `/registry/smoke` 712 条内容校验通过；专用 verify-content smoke 已确认篡改恢复 value 会被 `logical-verify` 捕获。
+也可以使用较短的 `CACERT`、`CERT`、`KEY` 环境变量。v1 格式当前已在真实
+TiKV/PD 环境完成 34 条 `/registry` 全前缀隔离恢复、逐值核验和清理；截断 footer
+被拒绝且目标计数保持 0，两条记录批次中第二条冲突时目标计数保持原有 1。此前旧格式
+曾通过明文 4091 条、TLS/mTLS 4148 条及 `/registry/smoke` 712 条演练；这些历史结果
+证明当时的数据路径规模，但旧文件本身不满足 v1 完整性契约，升级后必须重新导出。
+专用 verify-content smoke 仍确认恢复结果 value 被篡改时 `logical-verify` 会失败。
 
 恢复后至少验证：
 
