@@ -33,6 +33,7 @@ type txnDifferentialResult struct {
 	CountRangeRev int64
 	Count         int64
 	CountKVs      int
+	CountMore     bool
 	FinalRangeRev int64
 	Final         []normalizedKV
 	ErrorCode     string
@@ -374,7 +375,8 @@ func runTxnDifferentialScenario(t *testing.T, endpoint, instance string) txnDiff
 		clientv3.OpPut(b, "new-b"),
 		clientv3.OpGet(prefix, clientv3.WithPrefix(), clientv3.WithSort(clientv3.SortByKey, clientv3.SortAscend)),
 		clientv3.OpPut(a, "new-a", clientv3.WithIgnoreLease(), clientv3.WithPrevKV()),
-		clientv3.OpGet(prefix, clientv3.WithPrefix(), clientv3.WithMinModRev(baseRev+1), clientv3.WithCountOnly()),
+		clientv3.OpGet(prefix, clientv3.WithPrefix(), clientv3.WithMinModRev(baseRev+1),
+			clientv3.WithCountOnly(), clientv3.WithLimit(1)),
 	).Commit()
 	require.NoError(t, err)
 	require.Len(t, txn.Responses, 4)
@@ -398,6 +400,7 @@ func runTxnDifferentialScenario(t *testing.T, endpoint, instance string) txnDiff
 		CountRangeRev: countRange.Header.Revision - baseRev,
 		Count:         countRange.Count,
 		CountKVs:      len(countRange.Kvs),
+		CountMore:     countRange.More,
 		FinalRangeRev: final.Header.Revision - baseRev,
 		Final:         normalizeKVs(final.Kvs, prefix, baseRev),
 		ErrorCode:     missingStatus.Code().String(),

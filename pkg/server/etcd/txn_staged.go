@@ -312,14 +312,14 @@ func (e *stagedTxnExecutor) rangeResponse(r *etcdserverpb.RangeRequest) (*etcdse
 	}
 	resp := &etcdserverpb.RangeResponse{Header: txnHeader(e.visibleRevision()), Kvs: kvs, Count: int64(len(kvs))}
 	filterRangeKvs(resp, r)
+	if r.CountOnly {
+		resp.Kvs = nil
+		return resp, nil
+	}
 	sortRangeKvs(resp.Kvs, r)
 	if r.Limit > 0 && int64(len(resp.Kvs)) > r.Limit {
 		resp.More = true
 		resp.Kvs = resp.Kvs[:int(r.Limit)]
-	}
-	if r.CountOnly {
-		resp.Kvs = nil
-		return resp, nil
 	}
 	if r.KeysOnly {
 		for _, kv := range resp.Kvs {

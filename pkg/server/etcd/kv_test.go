@@ -2283,6 +2283,7 @@ func TestTxnRangeOptionsApplyToStagedView(t *testing.T) {
 			RangeEnd:       []byte(prefix + "z"),
 			MinModRevision: before + 1,
 			CountOnly:      true,
+			Limit:          1,
 		}}},
 		{Request: &etcdserverpb.RequestOp_RequestRange{RequestRange: &etcdserverpb.RangeRequest{
 			Key:        []byte(prefix),
@@ -2299,6 +2300,7 @@ func TestTxnRangeOptionsApplyToStagedView(t *testing.T) {
 	counted := resp.Responses[2].GetResponseRange()
 	require.Equal(t, int64(3), counted.Count)
 	require.Empty(t, counted.Kvs)
+	require.False(t, counted.More, "CountOnly ignores Limit and never reports truncated KVs")
 
 	limited := resp.Responses[3].GetResponseRange()
 	require.Equal(t, int64(3), limited.Count)

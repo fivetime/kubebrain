@@ -1899,6 +1899,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `kubebrain:a112-logical-hash` 后三个 Pod Ready、zero restart、endpoint health
   正常，运行时 exact image
   `27820dd7a512621a16182ea03afb63f716f4d4ecc6206fcd18ef729291a5a005`。
+- **Txn A113 staged CountOnly ignores Limit（2026-07-18）**：继续对照
+  `/root/etcd/server/etcdserver/txn/range.go` 的 `executeRange` 与
+  `asembleRangeResponse` 发现，reference etcd 的 MVCC CountOnly 只返回总数而不返回
+  KVs，因此即使请求同时携带 Limit，也不会截断 KVs 或报告 `More`。KubeBrain 普通
+  Range 已满足该契约，但 staged Txn Range 原先先应用 Limit、设置 `More=true`，再
+  清空 CountOnly 的 KVs。修复前官方 client/v3 双端差分精确复现：两端 Count=2、
+  KVs=0，仅 KubeBrain `More=true`。
+
+  staged executor 现于 filter 后直接完成 CountOnly 响应，跳过无可观察意义的排序、
+  Limit 和 KeysOnly；普通 staged Range 的 Limit/More 行为保持不变。单元回归将
+  CountOnly 与 Limit=1 组合并固定 `More=false`，官方 client/v3 差分也结构化比较
+  `CountMore`。聚焦回归连续 30 轮、`go test ./...`、根模块与 compat module
+  `go vet ./...`、完整 server race（212.484s）通过。部署到三副本 + 独立 TiKV/PD
+  后，临时 `/root/etcd` reference 与在线 KubeBrain 串行差分连续 10 轮、race 3 轮
+  通过；三个 Pod 均 Ready、zero restart，endpoint health 正常，运行时 exact image
+  `9aad3d31431d75d33ada93cefde660d2a06b3cd644d818b9a4fbf074733a158f`。
 
 ### P1：通用服务能力
 
