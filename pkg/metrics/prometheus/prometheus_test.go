@@ -17,6 +17,7 @@ package prometheus
 import (
 	"runtime"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/golang/mock/gomock"
 	"github.com/prometheus/client_golang/prometheus"
@@ -154,4 +155,30 @@ func Test_convertToFloat64(t *testing.T) {
 		}
 	})
 
+}
+
+func TestEmitMetricsSanitizesInvalidUTF8LabelValues(t *testing.T) {
+	newRegistry := prometheus.NewRegistry()
+	registerer, gather = newRegistry, newRegistry
+	defer func() {
+		registerer, gather = prometheus.DefaultRegisterer, prometheus.DefaultGatherer
+	}()
+
+	invalid := string([]byte{0xfe, '/', 0xff})
+	p := NewMetrics(metrics.Tag("global", invalid))
+	assert.NotPanics(t, func() {
+		assert.NoError(t, p.EmitCounter("invalid_utf8.counter", 1, metrics.Tag("prefix", invalid)))
+		assert.NoError(t, p.EmitGauge("invalid_utf8.gauge", 1, metrics.Tag("prefix", invalid)))
+		assert.NoError(t, p.EmitHistogram("invalid_utf8.histogram", 1, metrics.Tag("prefix", invalid)))
+	})
+
+	families, err := newRegistry.Gather()
+	assert.NoError(t, err)
+	for _, family := range families {
+		for _, metric := range family.Metric {
+			for _, label := range metric.Label {
+				assert.True(t, utf8.ValidString(label.GetValue()), "invalid label on %s", family.GetName())
+			}
+		}
+	}
 }

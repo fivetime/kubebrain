@@ -2765,6 +2765,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   DELETE PrevKV 恢复和 reconnect-herd singleflight 不变量保持不变。单元测试固定
   `fe`、`fe00`、`fe01` 与 `ff00` 的前缀/全范围回放，并将真实全副本重启测试扩展为
   重启后从首个 revision 恢复三个二进制前缀事件。
+- **Observability A163 binary label safety（2026-07-18）**：A162 真实重启验证虽然
+  正确恢复三个二进制历史事件，但 Watch channel 关闭时把原始非 UTF-8 prefix 作为
+  Prometheus label，client_golang 在 `CounterVec.With` 中 panic，造成一个 KubeBrain
+  容器以 exit 2 重启。该问题证明通用字节键兼容必须覆盖日志/指标等旁路，不能只验证
+  KV 响应。
+
+  Prometheus adapter 现统一用 replacement rune 规范化所有 global/local label value
+  为合法 UTF-8，业务调用点无需各自猜测哪些字段可能来自用户键；label name 仍是受信
+  配置。回归测试覆盖 counter、gauge、histogram 三类 Emit 和最终 Gather 标签。
+  A162 重启测试将以新镜像再次执行，门槛为二进制历史事件完整且三副本零重启。
 
 ### P1：通用服务能力
 

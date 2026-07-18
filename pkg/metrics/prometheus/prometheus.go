@@ -139,13 +139,17 @@ func (pw *prometheusWrapper) labelsToMap(labels []metrics.T) (ret map[string]str
 	ret = make(map[string]string)
 
 	for _, label := range pw.globalLabels {
-		ret[label.Name] = label.Value
+		ret[label.Name] = validLabelValue(label.Value)
 	}
 
 	for _, label := range labels {
-		ret[label.Name] = label.Value
+		ret[label.Name] = validLabelValue(label.Value)
 	}
 	return
+}
+
+func validLabelValue(value string) string {
+	return strings.ToValidUTF8(value, "\uFFFD")
 }
 
 func (pw *prometheusWrapper) extractLabelNames(labels []metrics.T) (ret []string) {
