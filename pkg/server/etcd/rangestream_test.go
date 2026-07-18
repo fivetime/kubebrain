@@ -173,6 +173,38 @@ func TestRangeStreamEmptyRangeStillSendsHeaderRevision(t *testing.T) {
 		"apiserver reads Header.Revision as the sync's initial revision")
 }
 
+func TestRangeStreamPreservesBinaryUserKeyOrdering(t *testing.T) {
+	server, cleanup := newRangeStreamTestServer(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	for i, key := range [][]byte{{0x00}, {0x00, 0x00}, {0x00, 0x01}, {0x01}} {
+		_, err := server.Put(ctx, &etcdserverpb.PutRequest{
+			Key: key, Value: []byte{byte(i)},
+		})
+		require.NoError(t, err)
+	}
+
+	stream := &fakeRangeStreamServer{ctx: ctx}
+	require.NoError(t, server.RangeStream(&etcdserverpb.RangeRequest{
+		Key: []byte{0x00}, RangeEnd: []byte{0x01},
+	}, stream))
+
+	var keys [][]byte
+	var final *etcdserverpb.RangeResponse
+	for _, response := range stream.sent {
+		require.NotNil(t, response.RangeResponse)
+		for _, kv := range response.RangeResponse.Kvs {
+			keys = append(keys, kv.Key)
+		}
+		final = response.RangeResponse
+	}
+	require.Equal(t, [][]byte{{0x00}, {0x00, 0x00}, {0x00, 0x01}}, keys)
+	require.NotNil(t, final)
+	require.Equal(t, int64(3), final.Count)
+	require.False(t, final.More)
+}
+
 func TestSerializableRangeStreamBypassesLeaderRevisionSync(t *testing.T) {
 	server, cleanup := newRangeStreamTestServer(t)
 	defer cleanup()

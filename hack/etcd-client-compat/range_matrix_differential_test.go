@@ -3,6 +3,7 @@ package compat
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"strings"
 	"testing"
@@ -45,7 +46,7 @@ func runRangeOptionMatrixScenario(t *testing.T, endpoint, instance string) []ran
 	t.Cleanup(func() { require.NoError(t, conn.Close()) })
 	client := etcdserverpb.NewKVClient(conn)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	t.Cleanup(cancel)
 	prefix := fmt.Sprintf("/dbaas-range-matrix/%s/%d/", instance, time.Now().UnixNano())
 	end := []byte(clientv3.GetPrefixRangeEnd(prefix))
@@ -80,6 +81,21 @@ func runRangeOptionMatrixScenario(t *testing.T, endpoint, instance string) []ran
 		}
 		modRevisions[i] = lastRevision
 	}
+	recreated, err := client.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{
+		Key: []byte(prefix + "f"),
+	})
+	require.NoError(t, err)
+	require.Equal(t, int64(1), recreated.Deleted)
+	for version := 0; version < 6; version++ {
+		put, putErr := client.Put(ctx, &etcdserverpb.PutRequest{
+			Key: []byte(prefix + "f"), Value: []byte(fmt.Sprintf("recreated-%d", version)),
+		})
+		require.NoError(t, putErr)
+		if version == 0 {
+			createRevisions[5] = put.Header.Revision
+		}
+		modRevisions[5] = put.Header.Revision
+	}
 
 	type filterCase struct {
 		name string
@@ -93,6 +109,10 @@ func runRangeOptionMatrixScenario(t *testing.T, endpoint, instance string) []ran
 		{name: "mod-window", minM: modRevisions[1], maxM: modRevisions[4]},
 		{name: "create-window", minC: createRevisions[1], maxC: createRevisions[4]},
 		{name: "contradictory", minM: modRevisions[4], maxM: modRevisions[1]},
+		{name: "negative-min", minM: -1, minC: -1},
+		{name: "negative-max", maxM: -1, maxC: -1},
+		{name: "maximum-min", minM: math.MaxInt64, minC: math.MaxInt64},
+		{name: "maximum-max", maxM: math.MaxInt64, maxC: math.MaxInt64},
 	}
 	modes := []struct {
 		name      string
@@ -123,11 +143,12 @@ func runRangeOptionMatrixScenario(t *testing.T, endpoint, instance string) []ran
 		{name: "current"},
 		{name: "historical", revision: historicalRevision},
 	}
-	outcomes := make([]rangeMatrixOutcome, 0, len(revisions)*len(targets)*len(orders)*2*len(filters)*len(modes))
+	limits := []int64{-1, 0, 2, math.MaxInt64}
+	outcomes := make([]rangeMatrixOutcome, 0, len(revisions)*len(targets)*len(orders)*len(limits)*len(filters)*len(modes))
 	for _, revision := range revisions {
 		for _, target := range targets {
 			for _, order := range orders {
-				for _, limit := range []int64{0, 2} {
+				for _, limit := range limits {
 					for _, filter := range filters {
 						for _, mode := range modes {
 							name := fmt.Sprintf(

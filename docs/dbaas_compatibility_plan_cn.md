@@ -2717,6 +2717,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Count，普通 range 的 More 不变。单测明确构造更新后的历史快照并断言
   `Count=3, KVs=[], More=false`；focused race、主模块全量及最终 720 组参考差分通过，
   最终镜像继续在 3 PD/3 TiKV 三副本上验证。
+- **KV A159 binary key range ordering（2026-07-18）**：将 standalone Range
+  矩阵扩展到 negative/MaxInt64 revision filter、Limit -1/0/2/MaxInt64 和删除后重建
+  key 的 create/version 重置，current/historical 共 2880 组与参考 etcd 一致。另以
+  `00`、嵌入 NUL、`ff` 及其后缀构造原始字节键，发现内部
+  `user-key + '$' + revision` 编码不能直接表示低于分隔符的范围边界，且此前把任意
+  尾随 NUL 当作 Kubernetes pagination，导致 `[00,01)` 和 `ff` FromKey 漏键。
+
+  普通 ASCII/prefix 范围继续使用原有 TiKV 有界扫描；仅 FromKey 或包含不安全低字节
+  的边界走解码后的用户键过滤与字节序排序回退，并由 List、Count、RangeStream 共用。
+  单测固定 NUL 区间和 `ff` FromKey 的 Count/More/Limit；真实 gRPC 差分同时覆盖 unary、
+  historical delete point 及 RangeStream。该回退当前需物化租户完整 keyspace，属于
+  通用二进制兼容的正确性路径，后续容量优化不得改变用户键字节序语义。
 
 ### P1：通用服务能力
 

@@ -1543,6 +1543,44 @@ func TestRangeWithFromKeyMatchesEtcd(t *testing.T) {
 	require.Empty(t, countResp.Kvs)
 }
 
+func TestRangePreservesBinaryUserKeyOrdering(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	ctx := context.Background()
+	for i, key := range [][]byte{
+		{0x00},
+		{0x00, 0x00},
+		{0x00, 0x01},
+		{0xff},
+		{0xff, 0x00},
+		{0xff, 0x01},
+	} {
+		_, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte{byte(i)}})
+		require.NoError(t, err)
+	}
+
+	nul, err := server.Range(ctx, &etcdserverpb.RangeRequest{
+		Key: []byte{0x00}, RangeEnd: []byte{0x01},
+	})
+	require.NoError(t, err)
+	require.Len(t, nul.Kvs, 3)
+	require.Equal(t, [][]byte{{0x00}, {0x00, 0x00}, {0x00, 0x01}}, [][]byte{
+		nul.Kvs[0].Key, nul.Kvs[1].Key, nul.Kvs[2].Key,
+	})
+
+	fromFF, err := server.Range(ctx, &etcdserverpb.RangeRequest{
+		Key: []byte{0xff}, RangeEnd: []byte{0}, Limit: 2,
+	})
+	require.NoError(t, err)
+	require.Equal(t, int64(3), fromFF.Count)
+	require.True(t, fromFF.More)
+	require.Len(t, fromFF.Kvs, 2)
+	require.Equal(t, [][]byte{{0xff}, {0xff, 0x00}}, [][]byte{
+		fromFF.Kvs[0].Key, fromFF.Kvs[1].Key,
+	})
+}
+
 func TestDeleteRangeWithFromKeyMatchesEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"sort"
 	"time"
 
 	"github.com/pkg/errors"
@@ -155,16 +156,23 @@ func (b *backend) List(ctx context.Context, r *proto.RangeRequest) (resp *proto.
 		return nil, errors.New("invalid range end")
 	}
 
-	key := b.rangeStartKey(r.Key)
-	rangeEnd := b.rangeEndKey(r.End)
-
 	// add limit to check if there is more value
 	limit := r.Limit
 	if limit > 0 && limit < math.MaxInt64 {
 		limit++
 	}
 
-	kvs, err := b.scanner.Range(ctx, key, rangeEnd, reqRevision, limit)
+	var kvs []*proto.KeyValue
+	if needsDecodedUserRange(r.Key, r.End) {
+		kvs, err = b.decodedUserRange(ctx, r.Key, r.End, reqRevision)
+		if err == nil && limit > 0 && int64(len(kvs)) > limit {
+			kvs = kvs[:limit]
+		}
+	} else {
+		key := b.rangeStartKey(r.Key)
+		rangeEnd := b.rangeEndKey(r.End)
+		kvs, err = b.scanner.Range(ctx, key, rangeEnd, reqRevision, limit)
+	}
 	if err != nil {
 		klog.ErrorS(err, "backend range err", "key", string(r.GetKey()), "end", string(r.GetEnd()), "revision", r.GetRevision())
 		return nil, err
@@ -204,6 +212,48 @@ func isFromKeyEnd(userKey []byte) bool {
 	return len(userKey) == 1 && userKey[0] == 0
 }
 
+func needsDecodedUserRange(start, end []byte) bool {
+	if isFromKeyEnd(end) {
+		return true
+	}
+	for _, boundary := range [][]byte{start, end} {
+		for _, value := range boundary {
+			if value <= '$' {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (b *backend) decodedUserRange(
+	ctx context.Context,
+	start, end []byte,
+	revision uint64,
+) ([]*proto.KeyValue, error) {
+	kvs, err := b.scanner.Range(
+		ctx, b.ks.ObjectKeyspaceStart(), b.ks.ObjectKeyspaceEnd(), revision, 0,
+	)
+	if err != nil {
+		return nil, err
+	}
+	filtered := kvs[:0]
+	fromKey := isFromKeyEnd(end)
+	for _, kv := range kvs {
+		if bytes.Compare(kv.Key, start) < 0 {
+			continue
+		}
+		if !fromKey && bytes.Compare(kv.Key, end) >= 0 {
+			continue
+		}
+		filtered = append(filtered, kv)
+	}
+	sort.Slice(filtered, func(i, j int) bool {
+		return bytes.Compare(filtered[i].Key, filtered[j].Key) < 0
+	})
+	return filtered, nil
+}
+
 // Count implements Backend interface
 func (b *backend) Count(ctx context.Context, r *proto.CountRequest) (resp *proto.CountResponse, err error) {
 	ts := time.Now()
@@ -232,8 +282,15 @@ func (b *backend) Count(ctx context.Context, r *proto.CountRequest) (resp *proto
 		return &proto.CountResponse{Header: responseHeader(rev), Count: uint64(c)}, nil
 	}
 
-	key, rangeEnd := b.rangeStartKey(r.Key), b.rangeEndKey(r.End)
-	count, err := b.scanner.Count(ctx, key, rangeEnd, rev)
+	var count int
+	if needsDecodedUserRange(r.Key, r.End) {
+		kvs, rangeErr := b.decodedUserRange(ctx, r.Key, r.End, rev)
+		err = rangeErr
+		count = len(kvs)
+	} else {
+		key, rangeEnd := b.rangeStartKey(r.Key), b.rangeEndKey(r.End)
+		count, err = b.scanner.Count(ctx, key, rangeEnd, rev)
+	}
 	if err != nil {
 		klog.Errorf("backend count %v return err %v", r, err)
 		return nil, err
@@ -313,6 +370,39 @@ func (b *backend) RangeStream(ctx context.Context, userStart, userEnd []byte, re
 	}
 	if rev == 0 {
 		rev = curRev
+	}
+	if needsDecodedUserRange(userStart, userEnd) {
+		kvs, rangeErr := b.decodedUserRange(ctx, userStart, userEnd, rev)
+		if rangeErr != nil {
+			return nil, rangeErr
+		}
+		stream := make(chan *proto.StreamRangeResponse)
+		go func() {
+			defer close(stream)
+			responses := make([]*proto.StreamRangeResponse, 0, 2)
+			if len(kvs) != 0 {
+				responses = append(responses, &proto.StreamRangeResponse{
+					RangeResponse: &proto.RangeResponse{
+						Header: responseHeader(rev),
+						Kvs:    kvs,
+						More:   true,
+					},
+				})
+			}
+			responses = append(responses, &proto.StreamRangeResponse{
+				RangeResponse: &proto.RangeResponse{
+					Header: responseHeader(rev),
+				},
+			})
+			for _, response := range responses {
+				select {
+				case stream <- response:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}()
+		return stream, nil
 	}
 	key := b.rangeStartKey(userStart)
 	rangeEnd := b.rangeEndKey(userEnd)
