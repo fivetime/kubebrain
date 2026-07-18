@@ -3045,6 +3045,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   额外把含新 header 的 2-record artifact 恢复到隔离 prefix，count 和逐值 verify
   通过，源/目标均清理。这关闭备份 artifact 的完成/RPO 证据；对象存储上传幂等、
   保留删除和恢复状态机仍是 P1。
+- **Operations A184 immutable restore verification receipt（2026-07-18）**：
+  `logical-verify` 新增可选 `RECEIPT_OUTPUT`，仅在 artifact 完整性、全部目标 key/value、
+  permanent/lease 绑定映射和目标 lease 正 TTL 验证完成后发布
+  `kubebrain.restore-verification.v1`。receipt 绑定 artifact format/SHA-256/snapshot
+  revision/创建时间、source/target prefix、record count、artifact/target lease count
+  和 `verified_at_unix`，不写 endpoint/证书。启用 receipt 且 rewrite 时，
+  `REWRITE_FROM` 必须精确等于 artifact prefix 且 `REWRITE_TO` 非空，避免验证子树后
+  生成“整份恢复完成”的含糊证据。
+
+  receipt 以 0600 同目录临时文件写入、file `fsync` 后原子 hard-link 到最终路径并同步
+  目录；已存在的 operation receipt 不能覆盖。单元测试覆盖完整 JSON/权限/临时文件
+  清理、不完整输入不替换旧证据、第二次有效写也不能替换，以及 target prefix 绑定；
+  receipt/verify race 和 vet 通过。真实 TiKV/PD 隔离演练导出并恢复 2 records（1
+  permanent、1 leased），receipt 的 artifact hash/revision、source/target、2 records、
+  1 artifact lease/1 verified target lease 全部核对；篡改目标 permanent value 后
+  verify 非零退出且未发布第二 receipt，源/目标 lease 已 revoke、prefix 已清理。
+  receipt 是验证时点证据；对象存储不可变留存、流量切换 fencing 和恢复后持续审计仍是 P1。
 
 ### P1：通用服务能力
 

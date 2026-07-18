@@ -580,6 +580,29 @@ Prometheus/控制面时钟 5 分钟也会拒绝；生产节点必须保持时间
 ENDPOINT=127.0.0.1:3379 hack/backup/restore-rollback-smoke.sh
 ```
 
+控制面宣布 restore 成功前必须再次逐值 verify，并为 restore operation ID 使用唯一
+receipt 路径：
+
+```shell
+ENDPOINT=https://instance.example:2379 \
+INPUT=/backup/kubebrain-logical-backup.jsonl \
+REWRITE_FROM=/registry \
+REWRITE_TO=/registry-restore-operation-123 \
+RECEIPT_OUTPUT=/audit/restore-operation-123.json \
+  hack/backup/logical-verify.sh
+```
+
+只有 artifact 完整性、每个目标 key/value、永久/lease 绑定关系和目标 lease 正 TTL
+全部通过后，工具才原子发布 `kubebrain.restore-verification.v1`。receipt 绑定 artifact
+format/SHA-256/snapshot revision/创建时间、源/目标 prefix、record/lease count 和验证
+时间，不记录 endpoint 或证书。启用 receipt 且 rewrite 时，`REWRITE_FROM` 必须精确等于
+artifact prefix，禁止对子树验证后声称完成整份恢复。
+
+receipt 使用同目录临时文件、`fsync`、原子 hard-link 和目录 `fsync`，目标已存在时拒绝
+覆盖；控制面必须把 operation ID receipt 写入不可变审计存储。receipt 证明
+`verified_at_unix` 时刻的状态，不保证目标之后未被其他客户端修改；切换业务流量前仍应
+执行访问冻结或 revision fencing。
+
 导出默认覆盖 `/registry` 前缀：
 
 ```shell
