@@ -3793,6 +3793,30 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   3 轮约 5.8 秒通过；compat module 全量 vet、server/etcd 相关 KV/Txn/Range/Lease/
   Watch 回归 3 轮通过。本轮未发现新的服务端语义差异，运行镜像继续为
   `kubebrain:a218-client-deadline`。
+- **Compatibility A221 leasing owner delete with open upper bound（2026-07-18）**：
+  对照上游 `TestLeasingOwnerDeleteFrom`，新增 `WithFromKey` owner-delete 差分。由于
+  from-key 是全局开放范围，共享 DBaaS endpoint 上不能使用普通 ASCII 测试前缀；用例
+  把数据放入双 `0xff` 高位二进制命名空间，并让 owner metadata 排在业务数据之前，
+  从而只删除本用例创建的尾部 key。删除必须返回 typed Delete response 和 Deleted=3，
+  三条 watch delete event 必须共享 response header revision；范围前的 key/owner 必须
+  保留，范围内 leasing cache 与直读都必须为空，owner metadata 数量也必须与 reference
+  etcd 一致。
+
+  旧 `kubebrain:a218-client-deadline` 确定性返回
+  `Unknown: invalid range end`。etcd leasing client 会把业务 `{0}` 开放上界拼接到
+  owner prefix，形成 `ownerPrefix + "\x00"`；该值不再是开放上界，且字典序低于
+  `ownerPrefix + dataKey`，所以 owner guard 是反向空 range。普通 Range、DeleteRange
+  和 staged Txn 已短路这种空区间，但 `evalRangeCompareAtRevision` 仍直接调用
+  backend.List，导致 TiKV backend 的 `invalid range end` 泄漏。修复后反向 range
+  compare 使用 etcd 的空集合规则：VALUE compare 为 false，其他 target 按不存在 key
+  的零值比较；回归同时验证 leasing 使用的 `CreateRevision < 1` 为 true，避免把所有
+  空 compare 粗略处理成同一结果。
+
+  候选镜像 `kubebrain:a221-empty-range-compare-candidate` 完成三副本滚动更新后，真实
+  TiKV-backed 差分首轮约 1.8 秒、连续 5 轮约 8.7 秒、race 3 轮约 4.5 秒通过。聚焦
+  server race 10 轮、`pkg/storage/...` 与 `pkg/server/etcd/...` 全量测试、compat
+  module 全量 vet 通过；reference/KubeBrain 双 `0xff` 测试命名空间均确认零残留，
+  三个运行副本 Ready、零重启。
 - **Operations A185 certificate rotation completion state（2026-07-18）**：新增
   `hack/production/validate-certificate-rotation.sh`，把 client/peer CA rollover
   收敛为 `begin -> overlap -> complete` 三阶段门禁。begin 固定全部 KubeBrain Pod

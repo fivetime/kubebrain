@@ -105,6 +105,12 @@ func (s *RPCServer) evalRangeCompare(ctx context.Context, cmp *etcdserverpb.Comp
 }
 
 func (s *RPCServer) evalRangeCompareAtRevision(ctx context.Context, cmp *etcdserverpb.Compare, revision int64) (bool, error) {
+	if isEmptyNonFromKeyRange(cmp.Key, cmp.RangeEnd) {
+		if cmp.Target == etcdserverpb.Compare_VALUE {
+			return false, nil
+		}
+		return s.compareKeyValue(cmp, nil), nil
+	}
 	rangeResp, err := s.backend.List(ctx, &etcdserverpb.RangeRequest{
 		Key:      cmp.Key,
 		RangeEnd: cmp.RangeEnd,

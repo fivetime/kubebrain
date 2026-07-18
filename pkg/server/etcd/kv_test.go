@@ -3636,6 +3636,48 @@ func TestTxnRangeCompareValueFailsForEmptyRange(t *testing.T) {
 	require.Empty(t, resp.Responses[0].GetResponseRange().Kvs)
 }
 
+func TestTxnRangeCompareReverseEmptyRangeMatchesEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	for _, test := range []struct {
+		name      string
+		compare   *etcdserverpb.Compare
+		succeeded bool
+	}{
+		{
+			name: "create revision uses absent zero value",
+			compare: &etcdserverpb.Compare{
+				Key:         []byte("owners/data"),
+				RangeEnd:    []byte("owners/\x00"),
+				Target:      etcdserverpb.Compare_CREATE,
+				Result:      etcdserverpb.Compare_LESS,
+				TargetUnion: &etcdserverpb.Compare_CreateRevision{CreateRevision: 1},
+			},
+			succeeded: true,
+		},
+		{
+			name: "value compare fails for empty range",
+			compare: &etcdserverpb.Compare{
+				Key:         []byte("owners/data"),
+				RangeEnd:    []byte("owners/\x00"),
+				Target:      etcdserverpb.Compare_VALUE,
+				Result:      etcdserverpb.Compare_EQUAL,
+				TargetUnion: &etcdserverpb.Compare_Value{Value: []byte{}},
+			},
+			succeeded: false,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			resp, err := server.Txn(context.Background(), &etcdserverpb.TxnRequest{
+				Compare: []*etcdserverpb.Compare{test.compare},
+			})
+			require.NoError(t, err)
+			require.Equal(t, test.succeeded, resp.Succeeded)
+		})
+	}
+}
+
 func TestTxnHasRangeCompareRecursesIntoNestedBranches(t *testing.T) {
 	point := &etcdserverpb.TxnRequest{Compare: []*etcdserverpb.Compare{{Key: []byte("point")}}}
 	require.False(t, txnHasRangeCompare(point))
