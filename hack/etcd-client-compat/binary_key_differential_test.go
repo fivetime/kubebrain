@@ -50,6 +50,9 @@ func runBinaryKeyScenario(t *testing.T, endpoint string) []binaryKeyOutcome {
 		{0x00, 0x00},
 		{0x00, 0x01},
 		{0x7f, 0x00},
+		{0xfe},
+		{0xfe, 0x00},
+		{0xfe, 0x01},
 		{0xff},
 		{0xff, 0x00},
 		{0xff, 0x01},
@@ -63,7 +66,7 @@ func runBinaryKeyScenario(t *testing.T, endpoint string) []binaryKeyOutcome {
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cleanupCancel()
-		for _, key := range keys[:4] {
+		for _, key := range keys[:7] {
 			_, _ = client.DeleteRange(cleanupCtx, &etcdserverpb.DeleteRangeRequest{Key: key})
 		}
 		_, _ = client.DeleteRange(cleanupCtx, &etcdserverpb.DeleteRangeRequest{
@@ -81,6 +84,12 @@ func runBinaryKeyScenario(t *testing.T, endpoint string) []binaryKeyOutcome {
 		}),
 		binaryRangeOutcome(t, ctx, client, "embedded-nul-point", &etcdserverpb.RangeRequest{
 			Key: []byte{0x7f, 0x00},
+		}),
+		binaryRangeOutcome(t, ctx, client, "high-prefix", &etcdserverpb.RangeRequest{
+			Key: []byte{0xfe}, RangeEnd: []byte{0xff},
+		}),
+		binaryRangeStreamOutcome(t, ctx, client, "high-prefix-stream", &etcdserverpb.RangeRequest{
+			Key: []byte{0xfe}, RangeEnd: []byte{0xff},
 		}),
 		binaryRangeOutcome(t, ctx, client, "ff-from-key", &etcdserverpb.RangeRequest{
 			Key: []byte{0xff}, RangeEnd: []byte{0},

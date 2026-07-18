@@ -1552,6 +1552,9 @@ func TestRangePreservesBinaryUserKeyOrdering(t *testing.T) {
 		{0x00},
 		{0x00, 0x00},
 		{0x00, 0x01},
+		{0xfe},
+		{0xfe, 0x00},
+		{0xfe, 0x01},
 		{0xff},
 		{0xff, 0x00},
 		{0xff, 0x01},
@@ -1578,6 +1581,25 @@ func TestRangePreservesBinaryUserKeyOrdering(t *testing.T) {
 	require.Len(t, fromFF.Kvs, 2)
 	require.Equal(t, [][]byte{{0xff}, {0xff, 0x00}}, [][]byte{
 		fromFF.Kvs[0].Key, fromFF.Kvs[1].Key,
+	})
+
+	highPrefix, err := server.Range(ctx, &etcdserverpb.RangeRequest{
+		Key: []byte{0xfe}, RangeEnd: []byte{0xff},
+	})
+	require.NoError(t, err)
+	require.Len(t, highPrefix.Kvs, 3)
+	require.Equal(t, [][]byte{{0xfe}, {0xfe, 0x00}, {0xfe, 0x01}}, [][]byte{
+		highPrefix.Kvs[0].Key, highPrefix.Kvs[1].Key, highPrefix.Kvs[2].Key,
+	})
+
+	deleted, err := server.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{
+		Key: []byte{0xfe}, RangeEnd: []byte{0xff}, PrevKv: true,
+	})
+	require.NoError(t, err)
+	require.Equal(t, int64(3), deleted.Deleted)
+	require.Len(t, deleted.PrevKvs, 3)
+	require.Equal(t, [][]byte{{0xfe}, {0xfe, 0x00}, {0xfe, 0x01}}, [][]byte{
+		deleted.PrevKvs[0].Key, deleted.PrevKvs[1].Key, deleted.PrevKvs[2].Key,
 	})
 }
 

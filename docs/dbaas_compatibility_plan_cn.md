@@ -2729,6 +2729,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   单测固定 NUL 区间和 `ff` FromKey 的 Count/More/Limit；真实 gRPC 差分同时覆盖 unary、
   historical delete point 及 RangeStream。该回退当前需物化租户完整 keyspace，属于
   通用二进制兼容的正确性路径，后续容量优化不得改变用户键字节序语义。
+- **KV A160 boundary-prefix binary ordering（2026-07-18）**：继续扩展原始字节键
+  差分后发现 A159 的静态判定仍不充分：即使请求边界 `fe`/`ff` 自身没有低字节，
+  内部 `{user-key}$revision` 排序也会把 `fe00`/`fe01` 放到 `fe` 的版本行之前，
+  并把 `ff00`/`ff01` 放到 `ff` 边界之前。修复前 `[fe,ff)` 因而错误返回
+  `fe,ff00,ff01`；standalone DeleteRange 只报告并删除 `fe`，而参考 etcd 返回并删除
+  `fe,fe00,fe01`。Txn 的低字节 `[00,01)` 路径因 A159 已走全扫描而正确。
+
+  现于普通高字节 start/end 两侧先执行极窄的内部边界邻域探测
+  `boundary+[00,'$')`；实际发现错排扩展键时才切换到解码用户键的完整过滤与排序。
+  边界自身含低字节仍直接回退。该选择逻辑由 List、Count、RangeStream 共用，因此
+  unary、stream、Txn Range、Txn/standalone DeleteRange 保持同一字节序语义；常见
+  Kubernetes ASCII/prefix 范围没有低字节扩展键，继续使用 TiKV 有界扫描而非物化
+  整个租户。单元测试固定 `[fe,ff)` 的 Range、Deleted=3 和三项 PrevKV，新增真实
+  gRPC mutation 差分覆盖 readonly Txn、Txn DeleteRange、standalone DeleteRange
+  及删除后状态。
 
 ### P1：通用服务能力
 

@@ -162,8 +162,12 @@ func (b *backend) List(ctx context.Context, r *proto.RangeRequest) (resp *proto.
 		limit++
 	}
 
+	decodedRange, err := b.requiresDecodedUserRange(ctx, r.Key, r.End, reqRevision)
+	if err != nil {
+		return nil, err
+	}
 	var kvs []*proto.KeyValue
-	if needsDecodedUserRange(r.Key, r.End) {
+	if decodedRange {
 		kvs, err = b.decodedUserRange(ctx, r.Key, r.End, reqRevision)
 		if err == nil && limit > 0 && int64(len(kvs)) > limit {
 			kvs = kvs[:limit]
@@ -212,9 +216,9 @@ func isFromKeyEnd(userKey []byte) bool {
 	return len(userKey) == 1 && userKey[0] == 0
 }
 
-func needsDecodedUserRange(start, end []byte) bool {
+func boundaryRequiresDecodedUserRange(start, end []byte) bool {
 	if isFromKeyEnd(end) {
-		return true
+		end = nil
 	}
 	for _, boundary := range [][]byte{start, end} {
 		for _, value := range boundary {
@@ -224,6 +228,46 @@ func needsDecodedUserRange(start, end []byte) bool {
 		}
 	}
 	return false
+}
+
+func (b *backend) requiresDecodedUserRange(
+	ctx context.Context,
+	start, end []byte,
+	revision uint64,
+) (bool, error) {
+	if boundaryRequiresDecodedUserRange(start, end) {
+		return true, nil
+	}
+	boundaries := [][]byte{start}
+	if !isFromKeyEnd(end) {
+		boundaries = append(boundaries, end)
+	}
+	for _, boundary := range boundaries {
+		hasLowExtension, err := b.hasLowByteBoundaryExtension(ctx, boundary, revision)
+		if err != nil {
+			return false, err
+		}
+		if hasLowExtension {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (b *backend) hasLowByteBoundaryExtension(
+	ctx context.Context,
+	boundary []byte,
+	revision uint64,
+) (bool, error) {
+	encoded := b.coder.EncodeObjectKey(boundary, 0)
+	rawPrefix := encoded[:len(encoded)-9]
+	start := append(append([]byte(nil), rawPrefix...), 0)
+	end := append(append([]byte(nil), rawPrefix...), '$')
+	kvs, err := b.scanner.Range(ctx, start, end, revision, 1)
+	if err != nil {
+		return false, err
+	}
+	return len(kvs) != 0, nil
 }
 
 func (b *backend) decodedUserRange(
@@ -282,8 +326,12 @@ func (b *backend) Count(ctx context.Context, r *proto.CountRequest) (resp *proto
 		return &proto.CountResponse{Header: responseHeader(rev), Count: uint64(c)}, nil
 	}
 
+	decodedRange, err := b.requiresDecodedUserRange(ctx, r.Key, r.End, rev)
+	if err != nil {
+		return nil, err
+	}
 	var count int
-	if needsDecodedUserRange(r.Key, r.End) {
+	if decodedRange {
 		kvs, rangeErr := b.decodedUserRange(ctx, r.Key, r.End, rev)
 		err = rangeErr
 		count = len(kvs)
@@ -371,7 +419,11 @@ func (b *backend) RangeStream(ctx context.Context, userStart, userEnd []byte, re
 	if rev == 0 {
 		rev = curRev
 	}
-	if needsDecodedUserRange(userStart, userEnd) {
+	decodedRange, err := b.requiresDecodedUserRange(ctx, userStart, userEnd, rev)
+	if err != nil {
+		return nil, err
+	}
+	if decodedRange {
 		kvs, rangeErr := b.decodedUserRange(ctx, userStart, userEnd, rev)
 		if rangeErr != nil {
 			return nil, rangeErr
