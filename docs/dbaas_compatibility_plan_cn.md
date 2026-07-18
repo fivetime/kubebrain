@@ -3523,6 +3523,26 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   跨键 fast-shape Txn 差分在新镜像上连续 3 轮通过。后续生产发布必须从 committed
   source archive 或等价的 clean checkout 构建，不能仅给 dirty worktree 贴 HEAD
   revision 标签。
+- **Compatibility A207 official client Watch fragmentation（2026-07-18）**：
+  对照 `/root/etcd/tests/integration/clientv3/watch/watch_fragment_test.go` 补齐
+  `clientv3.WithFragment` 的黑盒差分。既有 Watch control 差分只直接读取 raw gRPC
+  response，证明多个大 `PrevKv` DELETE event 的 `Fragment=true/.../false` 标志与
+  etcd 一致；它没有证明官方 client 能在单条聚合响应超过其 receive limit 时接收并
+  重组 fragments。
+
+  新场景在参考 etcd 与真实 TiKV-backed KubeBrain 分别写入 10 个 1 MiB value，从写入
+  前 revision 建立 prefix history watch，并把独立 watcher client 的
+  `MaxCallRecvMsgSize` 限为 1.5 MiB。单 event 可接收，但未 fragmentation 的约 10 MiB
+  聚合响应必然得到 ResourceExhausted；两端启用 `WithFragment` 后均由官方 client
+  重组为完整 10 events，连续 3 轮通过。最初用两个 800 KiB event 校准时参考 etcd
+  也因 protobuf 编码后消息比 1.6 MiB limit 多 166 bytes 而拒绝，证明测试不能忽略
+  wire encoding 开销；最终场景严格采用上游容量形状。
+
+  带真实 reference/KubeBrain endpoint 的 Watch control + fragment compat race、
+  compat module 全量 vet，以及服务端 fragment flag/limit 单测 10 轮通过。当前
+  KubeBrain 已正确读取 `WatchCreateRequest.Fragment`、按配置阈值分片并仅在最后一片
+  清除 Fragment；本轮未发现实现差异，只增加缺失的官方 client 接收上限证据。三个
+  KubeBrain Pod 和 3 PD/3 TiKV 在测试后保持 Ready、零重启。
 - **Operations A185 certificate rotation completion state（2026-07-18）**：新增
   `hack/production/validate-certificate-rotation.sh`，把 client/peer CA rollover
   收敛为 `begin -> overlap -> complete` 三阶段门禁。begin 固定全部 KubeBrain Pod
