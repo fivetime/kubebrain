@@ -1290,6 +1290,64 @@ func TestCompactNegativeRevisionCannotDiscardHistory(t *testing.T) {
 	require.Equal(t, []byte("v1"), historical.Kvs[0].Value)
 }
 
+func TestRangeNegativeRevisionFollowsFirstRevision(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	ctx := context.Background()
+	key := []byte("/registry/pods/negative-range-revision")
+	put, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("value")})
+	require.NoError(t, err)
+	rangeOp := func(revision int64) *etcdserverpb.RequestOp {
+		return &etcdserverpb.RequestOp{
+			Request: &etcdserverpb.RequestOp_RequestRange{
+				RequestRange: &etcdserverpb.RangeRequest{Key: key, Revision: revision},
+			},
+		}
+	}
+
+	resp, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: key, Revision: -1})
+	require.NoError(t, err)
+	require.Len(t, resp.Kvs, 1)
+
+	resp, err = server.Range(ctx, &etcdserverpb.RangeRequest{Key: key, Revision: -2})
+	require.NoError(t, err)
+	require.Len(t, resp.Kvs, 1)
+
+	txnResp, err := server.Txn(ctx, &etcdserverpb.TxnRequest{
+		Success: []*etcdserverpb.RequestOp{rangeOp(-1)},
+	})
+	require.NoError(t, err)
+	require.Len(t, txnResp.Responses, 1)
+
+	_, err = server.Txn(ctx, &etcdserverpb.TxnRequest{
+		Success: []*etcdserverpb.RequestOp{rangeOp(-2)},
+	})
+	require.ErrorIs(t, err, rpctypes.ErrGRPCCompacted)
+
+	txnResp, err = server.Txn(ctx, &etcdserverpb.TxnRequest{
+		Compare: []*etcdserverpb.Compare{{
+			Key: key, Target: etcdserverpb.Compare_VERSION, Result: etcdserverpb.Compare_GREATER,
+			TargetUnion: &etcdserverpb.Compare_Version{Version: 0},
+		}},
+		Success: []*etcdserverpb.RequestOp{rangeOp(0)},
+		Failure: []*etcdserverpb.RequestOp{rangeOp(-1)},
+	})
+	require.NoError(t, err)
+	require.True(t, txnResp.Succeeded)
+
+	_, err = server.Compact(ctx, &etcdserverpb.CompactionRequest{Revision: put.Header.Revision})
+	require.NoError(t, err)
+
+	resp, err = server.Range(ctx, &etcdserverpb.RangeRequest{Key: key, Revision: -1})
+	require.NoError(t, err)
+	require.Len(t, resp.Kvs, 1)
+	_, err = server.Txn(ctx, &etcdserverpb.TxnRequest{
+		Success: []*etcdserverpb.RequestOp{rangeOp(-1)},
+	})
+	require.ErrorIs(t, err, rpctypes.ErrGRPCCompacted)
+}
+
 func TestCompactOlderRevisionReturnsCurrentHeader(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

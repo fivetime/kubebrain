@@ -2247,6 +2247,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   测试，不改变服务二进制；在线集群继续运行 `kubebrain:a127-alarm-header`，
   exact image 仍为
   `3dbda65560a17ecb35e7676aafc5bb2aeeb63c8dc107a27c7e502cf4527d3a25`。
+- **KV/Txn A132 Range negative revision and FirstRev boundary
+  （2026-07-18）**：对照
+  `/root/etcd/server/etcdserver/txn/range.go:checkRange` 与实际 raw gRPC
+  路径，补齐负 revision、`math.MaxInt64`、point/range、CountOnly、KeysOnly
+  及 Txn 已选/未选分支的双端矩阵。一元 Range 会把任意负 revision 归一为 latest，
+  即使已有 compact history 仍成功；Txn 内嵌 Range 保留原始 revision，并按
+  `FirstRev` 校验。fresh store 的 `FirstRev=-1`，因此 `revision=-1` 合法、
+  `revision=-2` 返回 compacted；完成逻辑压缩后 `-1` 也返回 gRPC
+  `OutOfRange` 和
+  `etcdserver: mvcc: required revision has been compacted`。未选中的 Txn 分支
+  不提前校验，MaxInt64 仍返回 future revision。
+
+  差分发现 KubeBrain 原先只校验正 revision，导致已选 Txn 分支中的负 revision
+  在 compact 后仍成功。现 Txn revision validator 按 compact 状态实现等价
+  `FirstRev` 边界，同时保持一元 Range 的负值归一化行为。确定性单元回归连续
+  30 轮通过；临时 `/root/etcd` 3.8.0-alpha.0 reference 与在线三副本
+  TiKV-backed KubeBrain 的 9 场景矩阵连续 10 轮、race 3 轮通过。完整 compat
+  suite 用时 90.294s，`go test ./...`、根模块与 compat module `go vet ./...`、
+  backend race（52.958s）及完整 server race（236.293s）通过。部署
+  `kubebrain:a132-txn-range-first-revision` 后三 Pod Ready、zero restart，
+  `/health` 与 `/readyz` 正常，运行时 exact image
+  `33b23b61fdfdd3ecceaa8256502e6ce442c1174be6f9f33b1e5e8e5627c0e001`。
 
 ### P1：通用服务能力
 

@@ -1453,6 +1453,9 @@ func validateTxnRangeRevisionsCursor(txn *etcdserverpb.TxnRequest, cur *txnPathC
 	}
 	for _, op := range ops {
 		if r := op.GetRequestRange(); r != nil {
+			if r.Revision < -1 || (r.Revision < 0 && compactRevision > 0) {
+				return compactedRevisionError()
+			}
 			if r.Revision > 0 && r.Revision < compactRevision {
 				return compactedRevisionError()
 			}
