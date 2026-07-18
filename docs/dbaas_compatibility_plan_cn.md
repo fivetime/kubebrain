@@ -3849,6 +3849,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   compat module 全量 vet、server/etcd Txn/Mutation/Leadership 相关回归 3 轮通过；
   三个运行副本 Ready、零重启，endpoint proposal 健康。本轮未发现新的服务端语义
   差异，无需重建服务端制品，运行镜像继续为 `kubebrain:a221-empty-range-compare`。
+- **Compatibility A224 failed Put followed by same-client Get retry（2026-07-18）**：
+  对照上游 `TestKVPutFailGetRetry`，补齐与 A222/A223 响应丢失场景互补的 request 丢失
+  差分。每轮先用 bridged client 完成 Get 预热，再启用双向 blackhole，使 Put request
+  字节确定被 bridge 丢弃并在 750ms 后返回 `DeadlineExceeded`。仍处于黑洞期间，
+  direct client 必须确认目标 key 不存在；解除黑洞会主动断开旧连接，原 bridged client
+  随后的 Get 必须在 5 秒内重连成功并同样返回空结果。每轮使用独立 key，避免前一轮
+  连接状态或数据结果掩盖幽灵写入。
+
+  reference etcd 与真实 TiKV-backed KubeBrain 每端连续执行 4 轮确定失败 Put；首轮约
+  6.2 秒、连续 3 轮约 18.8 秒、race 2 轮约 13.7 秒通过。A222-A224 响应丢失/请求丢失
+  组合连续 2 轮约 44.1 秒通过，compat module 全量 vet、server/etcd Put/Txn/Mutation/
+  Leadership/Unary/Deadline 相关回归 3 轮通过；双端测试 prefix 均为零残留，三个运行
+  副本 Ready、零重启，endpoint proposal 健康。本轮未发现新的服务端语义差异，无需
+  重建服务端制品，运行镜像继续为 `kubebrain:a221-empty-range-compare`。
 - **Operations A185 certificate rotation completion state（2026-07-18）**：新增
   `hack/production/validate-certificate-rotation.sh`，把 client/peer CA rollover
   收敛为 `begin -> overlap -> complete` 三阶段门禁。begin 固定全部 KubeBrain Pod
