@@ -2211,6 +2211,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （206.392s）通过。本轮只增加兼容性测试，不改变服务二进制；在线集群继续运行
   `kubebrain:a127-alarm-header`，exact image 仍为
   `3dbda65560a17ecb35e7676aafc5bb2aeeb63c8dc107a27c7e502cf4527d3a25`。
+- **Watch A130 start revision boundary differential（2026-07-18）**：对照
+  `/root/etcd/server/etcdserver/api/v3rpc/watch.go` 与
+  `/root/etcd/server/storage/mvcc/watchable_store.go`，新增 raw 双向 Watch gRPC
+  revision 边界矩阵。`start_revision=0` 创建后只接收后续 Put；
+  `start_revision=seed revision` 在 Created 后回放该历史 Put；
+  `start_revision=current+1` 允许创建并等待下一 revision；`math.MaxInt64` 同样
+  创建成功，普通 Put 不会被提前交付，显式 Cancel 随后返回空 CancelReason。
+  矩阵同时固定 Created header 不早于创建前基线、事件 ModRevision 等于对应写
+  revision，以及 MaxInt64 watch 的 cancel header 不早于测试 Put。
+
+  临时 `/root/etcd` 3.8.0-alpha.0 reference 与在线三副本 TiKV-backed
+  KubeBrain 间连续 10 轮、race 3 轮通过，未发现新实现差异。完整 compat suite
+  用时 76.408s，`go test ./...`、根模块与 compat module `go vet ./...`、强制
+  backend race（50.975s）及完整 server race（205.314s）通过。本轮只增加兼容性
+  测试，不改变服务二进制；在线集群继续运行 `kubebrain:a127-alarm-header`，
+  exact image 仍为
+  `3dbda65560a17ecb35e7676aafc5bb2aeeb63c8dc107a27c7e502cf4527d3a25`。
 
 ### P1：通用服务能力
 
