@@ -3835,6 +3835,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Put/Txn/Mutation/Leadership 相关回归 3 轮通过；三个运行副本 Ready、零重启，endpoint
   proposal 健康。本轮未发现新的服务端语义差异，运行镜像继续为
   `kubebrain:a221-empty-range-compare`。
+- **Compatibility A223 nested multi-key Txn at-most-once under ambiguous response（2026-07-18）**：
+  对照上游 `TestTxnWriteFail` 的事务写失败契约，将 A222 的确定性响应黑洞模型扩展到
+  嵌套、多 key Txn。每端先在同一事务中创建三个 key；每轮通过 bridge 预热连接后，
+  一个嵌套 Txn 写前两个 key，外层 Txn 再写第三个 key。bridge 仅丢弃 server-to-client
+  响应，客户端必须在 750ms 后得到 `DeadlineExceeded` 且 bridge 必须观测到丢弃字节；
+  direct client 随后必须看到三个新 value，每个 key version 相对上一轮精确 `+1`，
+  且三个 key 的 ModRevision 完全相同。该组合同时验证 ambiguous response 不会触发
+  重复提交，并验证嵌套操作仍保持单事务原子 revision。
+
+  reference etcd 与真实 TiKV-backed KubeBrain 每端连续制造 4 次已提交但响应丢失的
+  ambiguous Txn；首轮约 6.6 秒、连续 3 轮约 19.6 秒、race 2 轮约 14.3 秒通过。
+  compat module 全量 vet、server/etcd Txn/Mutation/Leadership 相关回归 3 轮通过；
+  三个运行副本 Ready、零重启，endpoint proposal 健康。本轮未发现新的服务端语义
+  差异，无需重建服务端制品，运行镜像继续为 `kubebrain:a221-empty-range-compare`。
 - **Operations A185 certificate rotation completion state（2026-07-18）**：新增
   `hack/production/validate-certificate-rotation.sh`，把 client/peer CA rollover
   收敛为 `begin -> overlap -> complete` 三阶段门禁。begin 固定全部 KubeBrain Pod
