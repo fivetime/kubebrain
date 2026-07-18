@@ -3816,7 +3816,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   TiKV-backed 差分首轮约 1.8 秒、连续 5 轮约 8.7 秒、race 3 轮约 4.5 秒通过。聚焦
   server race 10 轮、`pkg/storage/...` 与 `pkg/server/etcd/...` 全量测试、compat
   module 全量 vet 通过；reference/KubeBrain 双 `0xff` 测试命名空间均确认零残留，
-  三个运行副本 Ready、零重启。
+  三个运行副本 Ready、零重启。提交 `9c70005` 的最终镜像
+  `kubebrain:a221-empty-range-compare`（image ID `sha256:4f3acf823ffa...`、OCI
+  revision `9c700059633f5cb1eb68d77dbc4dfabfa90e3962`）完成滚动更新后，制品级差分
+  再次约 0.72 秒通过。
 - **Operations A185 certificate rotation completion state（2026-07-18）**：新增
   `hack/production/validate-certificate-rotation.sh`，把 client/peer CA rollover
   收敛为 `begin -> overlap -> complete` 三阶段门禁。begin 固定全部 KubeBrain Pod
