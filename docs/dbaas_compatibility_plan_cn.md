@@ -3389,6 +3389,39 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `48eb3d658431b440bc807c386bc7cb9cfa1f9e9322593eb8520d7e095539af60`，
   `namespaces_absent=true`、`credentials_absent=true`。临时控制 Namespace 已清理；
   主 3 个 KubeBrain Pod 保持 Ready 且零重启。
+- **Operations A202 exact-version backup lifecycle operation（2026-07-18）**：
+  `KubeBrainOperation` 新增 `BackupDeletion` 类型和
+  `hack/production/run-backup-deletion-operation.sh` executor。operation 参数文件除
+  source upload receipt、删除前/后 inventory manifest 路径外，还必须固定三份输入的
+  SHA-256；worker claim 后再次逐字节复核，避免仅冻结路径却允许控制面证据在执行期间
+  被替换。删除前 manifest 必须精确包含 source receipt 的 key/version/artifact digest，
+  删除后 manifest 必须不再包含该 exact version，且两份 manifest 必须属于相同稳定
+  Object Store ID/bucket。
+
+  executor 先运行 A200 exact-version inventory，证明控制面旧期望与远端完整一致；随后
+  复用 A188 Object Lock delete，只有绝对 retain-until 到期并且远端 metadata/retention
+  仍与 upload receipt 一致时才删除该 version；最后按已移除版本的新期望 manifest
+  再次 inventory，拒绝额外 version、缺失 version 或 delete marker。成功 operation
+  receipt `kubebrain.backup-deletion-operation.receipt.v1` 不可覆盖，并绑定 source
+  receipt、pre/post manifest、pre/post inventory receipt、deletion receipt 的 SHA-256
+  及 exact key/version。崩溃重试复用每阶段不可变 receipt，heartbeat 失败仍由 operation
+  attempt fencing 中止。
+
+  mock 测试覆盖三阶段顺序、完整重试、pre/delete/post 任一步失败 requeue、参数 digest
+  漂移、manifest bytes 漂移、删除 receipt identity 伪造、post manifest 仍含目标版本、
+  heartbeat fencing 和最终 receipt 幂等；CRD test 固定 `BackupDeletion` enum。真实
+  归档演练还发现 operation audit artifact 类型白名单漏掉新类型，导致 finalizer 无法
+  release；该路径保持 fail closed 且未上传错误审计，白名单和回归测试补齐后才继续。
+
+  真实 `kind-kubebrain-dbaas` 向 MinIO `kubebrain-logical` 上传
+  `backup-lifecycle-a202/a202-backup-1.jsonl` COMPLIANCE exact version
+  `9de8224a-07a9-48cd-b7cb-7328393aae22`。保留期内 attempt 1 明确返回 retention 未到期并
+  requeue；到期后 attempt 2 先取得 pre inventory expected/remote=`1/1`，删除 exact
+  version，再取得 post inventory=`0/0`，operation Succeeded，execution receipt digest
+  `02149fe13e88cd8b548a9dda8837819966326750200795b452488be5a8d167f7`。终态 operation
+  随后完成 Object Lock 审计归档和 finalizer release；归档 version 到期后精确删除，
+  空 inventory 证明 backup/audit prefix 均无 version/delete marker，operation/Lease
+  残留为 0。主 3 KubeBrain、3 PD、3 TiKV 均 Ready 且零重启。
 - **Operations A185 certificate rotation completion state（2026-07-18）**：新增
   `hack/production/validate-certificate-rotation.sh`，把 client/peer CA rollover
   收敛为 `begin -> overlap -> complete` 三阶段门禁。begin 固定全部 KubeBrain Pod
@@ -3482,8 +3515,9 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
 3. DBaaS 创建、扩缩、升级的数据面 release gate、备份完成 gate、Object Lock
    上传/保留删除、恢复验证 receipt、UID-fenced 流量切换、恢复后持续审计、证书轮换
    gate、UID-fenced 销毁状态机及持久 operation API/worker fencing、Backup/
-   RestoreCutover/CertificateRotation/Destroy executors、专属 namespace/凭据外围
-   UID-fenced 清理已建立；继续完成 bucket lifecycle 调度；exact-version inventory 对账已完成；
+   RestoreCutover/CertificateRotation/Destroy/BackupDeletion executors、专属
+   namespace/凭据外围 UID-fenced 清理和 backup exact-version bucket lifecycle operation
+   已建立；exact-version inventory 对账已完成；继续补管理面定期策略触发与跨账户保留规划；
    Kubernetes 原生提交者与 worker 最小权限身份已分离，单 namespace 跨实例公平调度和
    实例互斥、终态
    operation 的 Object Lock 不可变归档及 finalizer/删除门禁均已完成；继续补外部管理
