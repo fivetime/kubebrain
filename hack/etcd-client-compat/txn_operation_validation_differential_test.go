@@ -66,6 +66,12 @@ func runTxnOperationValidationScenario(t *testing.T, endpoint string) []txnOpera
 			}},
 		},
 		{
+			name: "put-missing-lease-precedes-missing-ignore-value-key",
+			op: &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestPut{
+				RequestPut: &etcdserverpb.PutRequest{Key: key, Lease: 987654321, IgnoreValue: true},
+			}},
+		},
+		{
 			name: "range-empty-key-precedes-invalid-sort",
 			op: &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestRange{
 				RequestRange: &etcdserverpb.RangeRequest{SortOrder: 99, SortTarget: 99},

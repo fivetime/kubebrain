@@ -1013,6 +1013,14 @@ func (s *RPCServer) DeleteRange(ctx context.Context, r *etcdserverpb.DeleteRange
 }
 
 func (s *RPCServer) putWithEffectiveOptions(ctx context.Context, r *etcdserverpb.PutRequest) (*etcdserverpb.PutRequest, error) {
+	// etcd validates the explicitly requested lease before loading the previous
+	// KV needed by IgnoreValue/IgnoreLease. Preserve that error precedence when
+	// both the key and lease are missing.
+	if r.IgnoreValue || r.IgnoreLease {
+		if err := s.ensureLeaseExists(r.Lease); err != nil {
+			return nil, err
+		}
+	}
 	if !r.IgnoreLease && !r.IgnoreValue {
 		return r, nil
 	}

@@ -176,6 +176,11 @@ func (e *stagedTxnExecutor) stagedPutKV(op backend.TxnWriteOp) (*mvccpb.KeyValue
 }
 
 func (e *stagedTxnExecutor) put(r *etcdserverpb.PutRequest) (*etcdserverpb.PutResponse, error) {
+	if r.IgnoreValue || r.IgnoreLease {
+		if err := e.srv.ensureLeaseExists(r.Lease); err != nil {
+			return nil, err
+		}
+	}
 	current, err := e.currentPoint(r.Key)
 	if err != nil {
 		return nil, err

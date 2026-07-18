@@ -2682,6 +2682,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   focused race、主模块全量测试通过，并在真实 3 PD/3 TiKV、三副本 KubeBrain 上
   通过六类 validation 参考差分连续 10 轮、五类 RangeStream 行为差分和大消息分块
   测试。兼容模块无 endpoint 的全量运行会连接默认 `127.0.0.1:3379`，不作为有效证据。
+- **KV A156 Put lease error precedence（2026-07-18）**：对照
+  `/root/etcd/server/etcdserver/txn/put.go:checkPut` 发现，etcd 在读取
+  IgnoreValue/IgnoreLease 所需旧 KV 前先验证请求显式 lease。A154 对“缺失 key +
+  IgnoreValue + 不存在 lease”错误地先返回
+  `InvalidArgument: etcdserver: key not found`，参考 etcd 返回
+  `NotFound: etcdserver: requested lease not found`。
+
+  standalone Put 的 `putWithEffectiveOptions` 和 Txn staged executor 现均先校验显式
+  lease，再解析旧值；解析后仍校验最终继承的 lease，避免把已失效绑定重新写回。
+  单测同时覆盖 Put 与选中 Txn 分支，现有 Put 差分和 Txn operation validation
+  差分加入该组合。修复前真实 A154 双端差分只在此字段失败；focused race 和主模块
+  全量测试通过，最终镜像继续在 3 PD/3 TiKV 三副本上验证。
 
 ### P1：通用服务能力
 

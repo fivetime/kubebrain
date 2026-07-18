@@ -2499,6 +2499,34 @@ func TestPutIgnoreLeaseRequiresExistingKey(t *testing.T) {
 	require.Empty(t, get.Kvs)
 }
 
+func TestPutMissingLeasePrecedesMissingIgnoreValueKey(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	req := &etcdserverpb.PutRequest{
+		Key:         []byte("/registry/pods/missing-key-and-lease"),
+		Lease:       987654321,
+		IgnoreValue: true,
+	}
+	_, putErr := server.Put(context.Background(), req)
+	require.Error(t, putErr)
+	require.Equal(t, codes.NotFound, status.Code(putErr))
+	require.Equal(t, "etcdserver: requested lease not found", status.Convert(putErr).Message())
+
+	_, txnErr := server.Txn(context.Background(), &etcdserverpb.TxnRequest{
+		Success: []*etcdserverpb.RequestOp{{
+			Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{
+				Key:         append([]byte(nil), req.Key...),
+				Lease:       req.Lease,
+				IgnoreValue: req.IgnoreValue,
+			}},
+		}},
+	})
+	require.Error(t, txnErr)
+	require.Equal(t, codes.NotFound, status.Code(txnErr))
+	require.Equal(t, "etcdserver: requested lease not found", status.Convert(txnErr).Message())
+}
+
 func TestTxnSimpleSuccessPutWithLeaseIsRevoked(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

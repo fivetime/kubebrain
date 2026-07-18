@@ -25,6 +25,7 @@ type putDifferentialResult struct {
 	Current             normalizedKV
 	MissingLease        authErrorOutcome
 	MissingIgnoreValue  authErrorOutcome
+	MissingKeyAndLease  authErrorOutcome
 	EmptyKey            authErrorOutcome
 	ValueWithIgnore     authErrorOutcome
 	LeaseWithIgnore     authErrorOutcome
@@ -88,6 +89,11 @@ func runPutDifferentialScenario(t *testing.T, endpoint, instance string) putDiff
 	_, missingLeaseErr := cli.Put(ctx, key, "bad", clientv3.WithLease(clientv3.LeaseID(leaseBase+100)))
 	_, missingIgnoreValueErr := cli.Put(ctx, missing, "", clientv3.WithIgnoreValue())
 	raw := etcdserverpb.NewKVClient(cli.ActiveConnection())
+	_, missingKeyAndLeaseErr := raw.Put(ctx, &etcdserverpb.PutRequest{
+		Key:         []byte(missing),
+		Lease:       leaseBase + 100,
+		IgnoreValue: true,
+	})
 	_, emptyKeyErr := raw.Put(ctx, &etcdserverpb.PutRequest{Value: []byte("bad")})
 	_, valueWithIgnoreErr := raw.Put(ctx, &etcdserverpb.PutRequest{Key: []byte(key), Value: []byte("bad"), IgnoreValue: true})
 	_, leaseWithIgnoreErr := raw.Put(ctx, &etcdserverpb.PutRequest{Key: []byte(key), Lease: int64(leaseA.ID), IgnoreLease: true})
@@ -104,6 +110,7 @@ func runPutDifferentialScenario(t *testing.T, endpoint, instance string) putDiff
 		Current:             normalizeKV(current.Kvs[0], prefix, baseRev),
 		MissingLease:        authError(missingLeaseErr),
 		MissingIgnoreValue:  authError(missingIgnoreValueErr),
+		MissingKeyAndLease:  authError(missingKeyAndLeaseErr),
 		EmptyKey:            authError(emptyKeyErr),
 		ValueWithIgnore:     authError(valueWithIgnoreErr),
 		LeaseWithIgnore:     authError(leaseWithIgnoreErr),
