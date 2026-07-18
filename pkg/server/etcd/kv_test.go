@@ -1004,6 +1004,36 @@ func TestRangeCountOnlyLimitWithModRevisionFilterDoesNotTruncateCount(t *testing
 	require.False(t, rangeResp.More)
 }
 
+func TestHistoricalRangeCountOnlyLimitNeverReportsMore(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	ctx := context.Background()
+	prefix := "/registry/pods/historical-count-limit/"
+	end := []byte("/registry/pods/historical-count-limit0")
+	var historicalRevision int64
+	for _, suffix := range []string{"a", "b", "c"} {
+		resp, err := server.Put(ctx, &etcdserverpb.PutRequest{
+			Key: []byte(prefix + suffix), Value: []byte("initial"),
+		})
+		require.NoError(t, err)
+		historicalRevision = resp.Header.Revision
+	}
+	_, err := server.Put(ctx, &etcdserverpb.PutRequest{
+		Key: []byte(prefix + "a"), Value: []byte("updated"),
+	})
+	require.NoError(t, err)
+
+	resp, err := server.Range(ctx, &etcdserverpb.RangeRequest{
+		Key: []byte(prefix), RangeEnd: end, Revision: historicalRevision,
+		Limit: 1, CountOnly: true,
+	})
+	require.NoError(t, err)
+	require.Equal(t, int64(3), resp.Count)
+	require.Empty(t, resp.Kvs)
+	require.False(t, resp.More)
+}
+
 func TestRangeCreateRevisionFilter(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

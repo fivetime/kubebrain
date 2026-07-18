@@ -2706,6 +2706,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   继续防止预检后的状态变化。readonly Txn 与 ordered write Txn 共用单 Range revision
   helper。双向顺序单测、focused race 和主模块全量测试通过；真实参考差分固定两种
   顺序，最终镜像继续在 3 PD/3 TiKV 三副本上验证。
+- **KV A158 historical CountOnly More（2026-07-18）**：新增 standalone Range
+  确定性组合矩阵，以唯一 value/version/create/mod 的六个 key 覆盖 current 与
+  historical revision、五种 sort target、三种 order、Limit 0/2、四组 revision
+  filter 及 full/KeysOnly/CountOnly，共 720 个双端请求。current 的 360 组全部一致；
+  historical 矩阵发现 CountOnly+Limit 经 List fallback 后错误保留底层分页
+  `More=true`，参考 etcd 始终为 false。
+
+  `applyRangeOptions` 现于 CountOnly 最终整形时同时清空 KVs 和 More；Limit 仍不截断
+  Count，普通 range 的 More 不变。单测明确构造更新后的历史快照并断言
+  `Count=3, KVs=[], More=false`；focused race、主模块全量及最终 720 组参考差分通过，
+  最终镜像继续在 3 PD/3 TiKV 三副本上验证。
 
 ### P1：通用服务能力
 

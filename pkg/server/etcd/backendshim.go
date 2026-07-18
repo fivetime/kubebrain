@@ -843,6 +843,7 @@ func applyRangeOptions(resp *etcdserverpb.RangeResponse, r *etcdserverpb.RangeRe
 	applyRangeLimit(resp, r)
 	if r.CountOnly {
 		resp.Kvs = nil
+		resp.More = false
 		return resp
 	}
 	if !r.KeysOnly {
