@@ -146,11 +146,11 @@ func (s *RPCServer) RangeStream(r *etcdserverpb.RangeRequest, rs etcdserverpb.KV
 	// Match etcd's checkRangeStreamRequest: NONE means the natural ascending-key
 	// order regardless of SortTarget, and explicit ASCEND+KEY is equivalent.
 	// Other sort orders and revision filters cannot be streamed incrementally.
-	if hasRangeRevisionFilters(r) {
-		return status.Error(codes.Unimplemented, "RangeStream does not support revision filters")
-	}
 	if !isDefaultRangeStreamOrdering(r) {
 		return status.Error(codes.Unimplemented, "RangeStream does not support custom sort orders")
+	}
+	if hasRangeRevisionFilters(r) {
+		return status.Error(codes.Unimplemented, "RangeStream does not support revision filters")
 	}
 	// CountOnly has no KV payload to stream. Limited requests still use the
 	// scanner below: after sending Limit KVs, drain the pinned scan while only

@@ -2669,6 +2669,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   server-side UTF-8 分支；新增参考 etcd/KubeBrain 双端差分固定缺失/合法成功和该传输
   错误，连续 10 轮通过。server-side 官方 InvalidArgument 分支仍用于可注入原始 metadata
   的代理、其他传输实现及未来 grpc-go 行为。
+- **KV A154 RangeStream validation order（2026-07-18）**：逐项对照
+  `/root/etcd/server/etcdserver/api/v3rpc/key.go` 的独立 KV 请求校验，确认
+  Range/Put/DeleteRange 的空 key、非法 sort enum、IgnoreValue/value 和
+  IgnoreLease/lease 冲突均已匹配；审计发现 RangeStream 同时携带自定义排序与
+  revision filter 时错误优先级相反。现按 etcd 顺序先检查排序，再检查 revision
+  filter，因此组合非法请求稳定返回
+  `Unimplemented: RangeStream does not support custom sort orders`。
+
+  新增真实 gRPC 差分固定空 key、两个非法 sort enum、自定义排序、revision filter
+  及组合请求共六种结果。修复前 A153 仅组合请求与参考 etcd 不同；修复后单元回归、
+  focused race、主模块及兼容模块全量测试通过，并在真实 3 PD/3 TiKV、三副本
+  KubeBrain 上再次通过参考差分。
 
 ### P1：通用服务能力
 

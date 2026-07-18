@@ -234,11 +234,29 @@ func TestRangeStreamRejectsUnsupportedShapes(t *testing.T) {
 	ctx := context.Background()
 
 	cases := []struct {
-		name string
-		req  *etcdserverpb.RangeRequest
+		name    string
+		req     *etcdserverpb.RangeRequest
+		message string
 	}{
-		{"modRevisionFilter", &etcdserverpb.RangeRequest{Key: []byte("/a"), RangeEnd: []byte("/b"), MinModRevision: 5}},
-		{"sortOrder", &etcdserverpb.RangeRequest{Key: []byte("/a"), RangeEnd: []byte("/b"), SortOrder: etcdserverpb.RangeRequest_DESCEND, SortTarget: etcdserverpb.RangeRequest_KEY}},
+		{
+			name:    "modRevisionFilter",
+			req:     &etcdserverpb.RangeRequest{Key: []byte("/a"), RangeEnd: []byte("/b"), MinModRevision: 5},
+			message: "RangeStream does not support revision filters",
+		},
+		{
+			name:    "sortOrder",
+			req:     &etcdserverpb.RangeRequest{Key: []byte("/a"), RangeEnd: []byte("/b"), SortOrder: etcdserverpb.RangeRequest_DESCEND, SortTarget: etcdserverpb.RangeRequest_KEY},
+			message: "RangeStream does not support custom sort orders",
+		},
+		{
+			name: "sortOrderBeforeRevisionFilter",
+			req: &etcdserverpb.RangeRequest{
+				Key: []byte("/a"), RangeEnd: []byte("/b"),
+				SortOrder: etcdserverpb.RangeRequest_DESCEND, SortTarget: etcdserverpb.RangeRequest_KEY,
+				MinModRevision: 5,
+			},
+			message: "RangeStream does not support custom sort orders",
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -246,6 +264,7 @@ func TestRangeStreamRejectsUnsupportedShapes(t *testing.T) {
 			err := server.RangeStream(c.req, rs)
 			require.Error(t, err)
 			require.Equal(t, codes.Unimplemented, status.Code(err))
+			require.Equal(t, c.message, status.Convert(err).Message())
 			require.Empty(t, rs.sent, "no chunks on a rejected request")
 		})
 	}
