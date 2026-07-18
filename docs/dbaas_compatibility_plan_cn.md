@@ -2191,6 +2191,26 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   测试，不改变服务二进制；在线集群继续运行 `kubebrain:a127-alarm-header`，
   exact image 仍为
   `3dbda65560a17ecb35e7676aafc5bb2aeeb63c8dc107a27c7e502cf4527d3a25`。
+- **Lease A129 signed ID TTL/List boundary differential（2026-07-18）**：
+  审计 `/root/etcd/server/etcdserver/v3_server.go:LeaseTimeToLive`、
+  `LeaseLeases` 与
+  `/root/etcd/server/etcdserver/api/v3rpc/lease.go:LeaseTimeToLive` 后，新增 raw
+  Lease gRPC 双端矩阵。矩阵以显式 ID `-1`、`math.MinInt64` 和
+  `math.MaxInt64` 分别 Grant 300 秒租约并绑定 key，验证 Grant 不推进用户 MVCC
+  revision、TTL 响应回显完整 signed ID、剩余 TTL 位于合法区间、GrantedTTL
+  精确为 300、`Keys=false` 不返回 key、`Keys=true` 返回唯一 attachment，以及
+  LeaseLeases 包含该 ID。Revoke 后同 ID 的 TTL 请求仍成功返回 `TTL=-1`、
+  `GrantedTTL=0`、空 Keys 和不落后于绑定 Put 的 header。
+
+  同时确认 `LeaseCheckpointRequest` 仅属于 etcd InternalRaftRequest，不是公开
+  Lease gRPC；KubeBrain 以持久化 remaining-TTL checkpoint 和换主恢复提供架构
+  等价能力，不伪造客户端 RPC。临时 `/root/etcd` 3.8.0-alpha.0 reference 与
+  在线三副本 TiKV-backed KubeBrain 间连续 10 轮、race 3 轮通过，未发现新实现
+  差异。完整 compat suite 用时 75.549s，`go test ./...`、根模块与 compat
+  module `go vet ./...`、强制 backend race（51.819s）及完整 server race
+  （206.392s）通过。本轮只增加兼容性测试，不改变服务二进制；在线集群继续运行
+  `kubebrain:a127-alarm-header`，exact image 仍为
+  `3dbda65560a17ecb35e7676aafc5bb2aeeb63c8dc107a27c7e502cf4527d3a25`。
 
 ### P1：通用服务能力
 
