@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"io"
 	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -145,6 +148,70 @@ func TestProductionMonitoringTracksStatefulSetReadiness(t *testing.T) {
 	require.Equal(t,
 		`sum(rate(write{namespace="kubebrain-system",success="false",errclass=~"deadline|other"}[5m])) > 0`,
 		writeRule["expr"])
+}
+
+func TestProductionAlertMetricsExist(t *testing.T) {
+	objects := decodeManifest(t, "monitoring.yaml")
+	rule := objectByKindAndName(t, objects, "PrometheusRule", "kubebrain")
+	groups, found, err := unstructured.NestedSlice(rule.Object, "spec", "groups")
+	require.NoError(t, err)
+	require.True(t, found)
+
+	emitted := emittedMetricNames(t, "../../pkg")
+	for _, external := range []string{
+		"grpc_server_handled_total",
+		"grpc_server_handling_seconds_bucket",
+		"kube_statefulset_status_replicas_ready",
+		"up",
+	} {
+		emitted[external] = struct{}{}
+	}
+
+	metricRE := regexp.MustCompile(`\b([a-zA-Z_:][a-zA-Z0-9_:]*)\{`)
+	for _, rawGroup := range groups {
+		group := rawGroup.(map[string]any)
+		rules, ok := group["rules"].([]any)
+		require.True(t, ok)
+		for _, rawRule := range rules {
+			candidate := rawRule.(map[string]any)
+			alert, _ := candidate["alert"].(string)
+			expr, _ := candidate["expr"].(string)
+			for _, match := range metricRE.FindAllStringSubmatch(expr, -1) {
+				_, ok := emitted[match[1]]
+				require.Truef(t, ok, "alert %s references metric %s, which is not emitted", alert, match[1])
+			}
+		}
+	}
+}
+
+func emittedMetricNames(t *testing.T, root string) map[string]struct{} {
+	t.Helper()
+	emitRE := regexp.MustCompile(`Emit(Counter|Gauge|Histogram)\("([^"]+)"`)
+	names := make(map[string]struct{})
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || !strings.HasSuffix(path, ".go") {
+			return nil
+		}
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		for _, match := range emitRE.FindAllSubmatch(data, -1) {
+			name := strings.ReplaceAll(string(match[2]), ".", "_")
+			names[name] = struct{}{}
+			if string(match[1]) == "Histogram" {
+				names[name+"_bucket"] = struct{}{}
+				names[name+"_count"] = struct{}{}
+				names[name+"_sum"] = struct{}{}
+			}
+		}
+		return nil
+	})
+	require.NoError(t, err)
+	return names
 }
 
 func prometheusRuleByAlert(t *testing.T, groups []any, alert string) map[string]any {
