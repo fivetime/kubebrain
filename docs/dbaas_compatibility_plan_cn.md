@@ -2034,6 +2034,26 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Pod Ready、zero restart，逐 Pod Status 与 leader/follower 写转发正常，运行时
   exact image
   `f29788b5c40c2dadb048650036138196b8be0a19d219e1980d8bc8517a29a678`。
+- **KV/Txn A121 operation validation and revision-filter Count matrix
+  （2026-07-18）**：继续对照
+  `/root/etcd/server/etcdserver/api/v3rpc/key.go:checkRangeRequest`、
+  `checkPutRequest`、`checkDeleteRequest`，补齐 Txn 内嵌 RequestOp 的 raw protobuf
+  多错误优先级差分。八项矩阵覆盖空 key 优先于 Put ignore-value、ignore-value
+  优先于 ignore-lease、单独 ignore-lease、空 Range key 优先于未知 sort enum、
+  未知 SortOrder/SortTarget，以及空 DeleteRange key 和空 RequestOp；双方 gRPC
+  code 与完整 message 一致。
+
+  同时新增普通 Range、CountOnly Range 和“先 Put、后 Range”的 staged Txn revision
+  filter 双端矩阵，固化 upstream 的容易误解契约：`Count` 是应用 revision filter
+  前请求 range 的总 key 数，`Kvs` 才是过滤后的集合，CountOnly 不返回 KVs；staged
+  Put 使用事务 revision 参与 MinModRevision 过滤。本轮未发现新实现差异。两组矩阵
+  在临时 `/root/etcd` 3.8.0-alpha.0 reference 与在线三副本 TiKV-backed
+  KubeBrain 间连续 10 轮、race 3 轮通过；`go test ./...`、根模块与 compat module
+  `go vet ./...` 及强制 `-count=1` 完整 server race（210.312s）通过。本轮只增加
+  兼容性测试，不改变服务二进制；在线三副本继续运行
+  `kubebrain:a120-from-key-interval`，3/3 Ready、zero restart、endpoint health
+  正常，exact image 仍为
+  `f29788b5c40c2dadb048650036138196b8be0a19d219e1980d8bc8517a29a678`。
 
 ### P1：通用服务能力
 
