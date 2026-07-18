@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/kubewharf/kubebrain/hack/backup/internal/etcdutil"
@@ -54,6 +55,30 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
+	case "lease-put":
+		ttl, err := strconv.ParseInt(os.Getenv("LEASE_TTL"), 10, 64)
+		if err != nil || ttl <= 0 {
+			log.Fatalf("invalid LEASE_TTL %q", os.Getenv("LEASE_TTL"))
+		}
+		lease, err := cli.Grant(ctx, ttl)
+		if err != nil {
+			log.Fatal(err)
+		}
+		suffixes := strings.Split(os.Getenv("KEY_SUFFIXES"), ",")
+		if len(suffixes) == 0 || (len(suffixes) == 1 && suffixes[0] == "") {
+			log.Fatal("KEY_SUFFIXES is required")
+		}
+		ops := make([]clientv3.Op, 0, len(suffixes))
+		for _, suffix := range suffixes {
+			if suffix == "" {
+				log.Fatal("KEY_SUFFIXES contains an empty suffix")
+			}
+			ops = append(ops, clientv3.OpPut(prefix+suffix, value, clientv3.WithLease(lease.ID)))
+		}
+		if _, err := cli.Txn(ctx).Then(ops...).Commit(); err != nil {
+			log.Fatal(err)
+		}
+		fmt.Println(lease.ID)
 	default:
 		log.Fatalf("unknown ACTION %q", action)
 	}

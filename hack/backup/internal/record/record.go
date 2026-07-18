@@ -8,3 +8,9 @@ type Record struct {
 	Version        int64  `json:"version"`
 	Lease          int64  `json:"lease"`
 }
+
+type Lease struct {
+	Type string `json:"type"`
+	ID   int64  `json:"id"`
+	TTL  int64  `json:"ttl"`
+}

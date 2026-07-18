@@ -89,9 +89,10 @@ tombstone 与历史值、lease/附属 key、watch 历史回放，以及新写入
 
 ## 备份恢复生产边界
 
-当前唯一通过端到端恢复验证的生产备份模式是 `kubebrain.logical.v1`。制品包含固定
+当前唯一通过端到端恢复验证的生产备份模式是 `kubebrain.logical.v2`。制品包含固定
 snapshot revision、源 prefix、记录数和 SHA-256，先写临时文件并 `fsync` 后原子发布；
-restore 在写目标前完整校验，并默认拒绝覆盖已有 key。每次发布备份配置前必须通过：
+lease 元数据记录剩余 TTL；restore 为目标生成新 lease ID，同时保持 key 关联和共享
+关系。restore 在写目标前完整校验，并默认拒绝覆盖已有 key。每次发布备份配置前必须通过：
 
 ```shell
 BACKUP_MODE=logical hack/backup/production-mode-check.sh
@@ -109,6 +110,12 @@ TiDB Operator 的 BR full/PITR 不能用于 KubeBrain 数据恢复。真实 S3 f
 ```shell
 ENDPOINT=127.0.0.1:3379 PREFIX=/registry \
   hack/backup/logical-drill.sh
+```
+
+同时必须执行 lease-aware 演练，验证临时 key 不会在恢复后永久化：
+
+```shell
+ENDPOINT=127.0.0.1:3379 hack/backup/lease-restore-smoke.sh
 ```
 
 基础 etcd client smoke 当前覆盖 Txn create/update/delete、无 Compare 的多操作 Txn、Value Compare Txn、普通 Put、Range delete、普通空非 from-key range 返回空结果、普通空非 from-key DeleteRange 不删除数据、Txn 中空非 from-key DeleteRange 不删除数据、Watch create/update/delete 事件、update watch 在 `WithPrevKV` 下返回 previous value 且不会被误判为 create、follower proxy watch 保留 leader 返回的 `PrevKV`、点 watch 不会误收到子 key 事件、任意 `[start,end)` range watch 不漏掉范围内非 start 前缀 key且可经 follower proxy 转发、`KEY`/`VALUE`/`MOD`/`CREATE`/`VERSION` sort target、旧 revision watch 在 compact 后返回 `ErrCompacted` 和 `CompactRevision`、Lease grant/keepalive/ttl/revoke、Cluster MemberList，以及 Maintenance Status/HashKV/Compact/AlarmList/Defragment。`Compact` 已按写请求处理，follower 会通过 proxy 转发到当前 leader；带显式 `Revision` 的历史 `Range` 在 follower 上也会转发到 leader，以避免 compact 边界在 follower 上短暂不可见。
@@ -406,14 +413,16 @@ hack/dev/verify.sh
 
 逻辑备份脚本会运行仓库内 Go command，依赖随主 `go.mod` 管理，不会在每次演练时创建临时 Go module 或动态拉取依赖。默认请求超时时间为 `10m`，大集群演练可以通过 `TIMEOUT=30m` 这类 Go duration 字符串调整导出、恢复、count、内容校验和清理超时。所有 `hack/backup/*.sh` 脚本都支持 `--help` 查看参数。
 
-当前格式为 `kubebrain.logical.v1`：首行 manifest 固定源 prefix 与 snapshot revision，
-尾行记录总数和覆盖 manifest/全部记录的 SHA-256。导出先写同目录临时文件，完成
+当前格式为 `kubebrain.logical.v2`：首行 manifest 固定源 prefix 与 snapshot revision，
+lease 行固定源 ID 和导出时的正数剩余 TTL，尾行记录/lease 总数和覆盖 manifest/全部
+记录的 SHA-256。导出先写同目录临时文件，完成
 `fsync` 后原子 rename 并同步父目录；中断导出不会把不完整内容发布到目标路径。
 `logical-status.sh`、restore 和 verify 都会先复制并验证完整文件，缺 footer、记录数
 不符、内容篡改或 footer 后附加数据均 fail closed。restore 在任何 etcd 写入前完成
 验证，并按 `BATCH_SIZE` 把 compare 与 Put 放入同一个 Txn，使单批冲突不会部分落盘。
-旧版没有 manifest/footer 的 JSONL 无法证明完整性，现明确拒绝；升级前应重新生成
-逻辑备份。
+恢复为每个源 lease 生成新目标 ID并保留多 key 共享关系。v1 无 lease 制品继续可恢复；
+v1 中记录非零 lease 时因缺少 TTL 元数据会在任何写入前拒绝。没有 manifest/footer 的
+旧 JSONL 无法证明完整性，同样明确拒绝。
 
 导出默认覆盖 `/registry` 前缀：
 

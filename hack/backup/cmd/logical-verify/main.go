@@ -12,6 +12,7 @@ import (
 	"github.com/kubewharf/kubebrain/hack/backup/internal/backupfile"
 	"github.com/kubewharf/kubebrain/hack/backup/internal/etcdutil"
 	"github.com/kubewharf/kubebrain/hack/backup/internal/record"
+	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
 func rewriteKey(key []byte, from, to string) []byte {
@@ -53,6 +54,8 @@ func main() {
 	defer cancel()
 
 	total := 0
+	targetLeaseBySource := make(map[int64]int64)
+	sourceLeaseByTarget := make(map[int64]int64)
 	err = verified.Records(func(rec record.Record) error {
 		key, err := base64.StdEncoding.DecodeString(rec.Key)
 		if err != nil {
@@ -74,13 +77,40 @@ func main() {
 		if !bytes.Equal(resp.Kvs[0].Value, value) {
 			return fmt.Errorf("restored value mismatch for key %q", string(key))
 		}
+		targetLease := resp.Kvs[0].Lease
+		if rec.Lease == 0 {
+			if targetLease != 0 {
+				return fmt.Errorf("restored permanent key %q unexpectedly has lease %d", string(key), targetLease)
+			}
+		} else {
+			if targetLease == 0 {
+				return fmt.Errorf("restored leased key %q is permanent", string(key))
+			}
+			if existing, ok := targetLeaseBySource[rec.Lease]; ok && existing != targetLease {
+				return fmt.Errorf("source lease %d restored as multiple target leases", rec.Lease)
+			}
+			if existing, ok := sourceLeaseByTarget[targetLease]; ok && existing != rec.Lease {
+				return fmt.Errorf("source leases %d and %d merged into target lease %d", existing, rec.Lease, targetLease)
+			}
+			targetLeaseBySource[rec.Lease] = targetLease
+			sourceLeaseByTarget[targetLease] = rec.Lease
+		}
 		total++
 		return nil
 	})
 	if err != nil {
 		log.Fatal(err)
 	}
+	for sourceID, targetID := range targetLeaseBySource {
+		ttl, err := cli.TimeToLive(ctx, clientv3.LeaseID(targetID))
+		if err != nil {
+			log.Fatalf("read restored lease for source %d: %v", sourceID, err)
+		}
+		if ttl.TTL <= 0 {
+			log.Fatalf("restored lease for source %d is expired", sourceID)
+		}
+	}
 	status := verified.Status()
-	fmt.Fprintf(os.Stderr, "verified %d restored records from %s (snapshot revision %d, sha256 %s)\n",
-		total, input, status.Revision, status.SHA256)
+	fmt.Fprintf(os.Stderr, "verified %d restored records and %d leases from %s (snapshot revision %d, sha256 %s)\n",
+		total, len(targetLeaseBySource), input, status.Revision, status.SHA256)
 }

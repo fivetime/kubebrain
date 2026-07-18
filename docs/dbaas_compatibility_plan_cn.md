@@ -2529,6 +2529,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   checksummed/atomic logical artifact 加隔离恢复与逐值验证。物理 PITR 保持明确缺口，
   直到 TiKV 提供受支持的 transactional key-range snapshot/PITR，或 KubeBrain 引入
   自有一致的跨 CF 物理备份实现。
+- **Backup A144 lease-aware logical restore（2026-07-18）**：A142 v1 虽已把
+  `mvccpb.KeyValue.Lease` 写入记录，restore 却忽略该字段，导致临时 key 灾备后静默
+  变成永久 key。现升级为 `kubebrain.logical.v2`：首次遇到源 lease 时通过官方
+  client/v3 `TimeToLive` 读取正数剩余 TTL并写一条去重 lease metadata；导出期间 lease
+  已过期则 fail closed。footer 同时校验记录数、lease 数和覆盖全部行的 SHA-256，
+  validator 拒绝重复/无效 lease 及引用未声明 lease 的记录。
+
+  restore 在写 key 前完成制品验证和 lease 引用验证，为每个源
+  lease Grant 一个新的目标 ID；Put 使用 `WithLease`，同源 lease 的多个 key 保持共享，
+  不把源 ID 与目标已有 lease 冲突。创建 lease 后发生失败会撤销本轮已创建目标 lease。
+  verify 同时断言永久 key 仍永久、leased key 非永久、同源 lease 不拆分、不同源 lease
+  不合并且目标 TTL 为正。v1 无 lease 制品继续可读；v1 中存在非零 lease 因无法恢复
+  TTL，在任何目标写入前拒绝并要求重导。
+
+  真实 3 PD/3 TiKV smoke 使用一个永久 key 和两个共享 120 秒 lease 的 key，v2 导出
+  3 records/1 lease，隔离恢复、count、value、lease 等价关系及 TTL 全部通过并清理；
+  36 条 `/registry` 全前缀 v2 演练，以及截断、overwrite guard、恢复后内容篡改 smoke
+  同轮通过。该能力恢复 snapshot 时剩余 TTL，不保留原 lease ID、原 create/mod
+  revision、version 或 watch 历史。
 
 ### P1：通用服务能力
 

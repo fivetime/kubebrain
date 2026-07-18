@@ -8,11 +8,11 @@ usage() {
 Usage: hack/backup/logical-status.sh
 
 Validates a logical backup and prints its format, source prefix, snapshot
-revision, record count, and SHA-256 digest as JSON.
+revision, record and lease counts, and SHA-256 digest as JSON.
 
 Environment:
   INPUT              input JSONL path, default kubebrain-logical-backup.jsonl
-  FIELD              optional field selector; currently supports records
+  FIELD              optional field selector; supports records or leases
 EOF
 }
 

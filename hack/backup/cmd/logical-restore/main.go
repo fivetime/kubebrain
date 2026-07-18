@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/kubewharf/kubebrain/hack/backup/internal/backupfile"
 	"github.com/kubewharf/kubebrain/hack/backup/internal/etcdutil"
@@ -29,6 +30,16 @@ func rewriteKey(key []byte, from, to string) []byte {
 func envBool(name string) bool {
 	value := strings.ToLower(strings.TrimSpace(os.Getenv(name)))
 	return value == "1" || value == "true" || value == "yes"
+}
+
+func validateLeaseReference(rec record.Record, leaseSpecs map[int64]int64) error {
+	if rec.Lease == 0 {
+		return nil
+	}
+	if _, exists := leaseSpecs[rec.Lease]; !exists {
+		return fmt.Errorf("backup record references unrestorable lease %d; re-export with %s", rec.Lease, backupfile.Format)
+	}
+	return nil
 }
 
 func main() {
@@ -66,6 +77,36 @@ func main() {
 	type kvPair struct {
 		key   []byte
 		value []byte
+		lease int64
+	}
+	leaseSpecs := make(map[int64]int64)
+	if err := verified.Leases(func(lease record.Lease) error {
+		leaseSpecs[lease.ID] = lease.TTL
+		return nil
+	}); err != nil {
+		log.Fatal(err)
+	}
+	if err := verified.Records(func(rec record.Record) error {
+		return validateLeaseReference(rec, leaseSpecs)
+	}); err != nil {
+		log.Fatal(err)
+	}
+
+	targetLeases := make(map[int64]clientv3.LeaseID, len(leaseSpecs))
+	cleanupTargetLeases := func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cleanupCancel()
+		for _, id := range targetLeases {
+			_, _ = cli.Revoke(cleanupCtx, id)
+		}
+	}
+	for sourceID, ttl := range leaseSpecs {
+		granted, grantErr := cli.Grant(ctx, ttl)
+		if grantErr != nil {
+			cleanupTargetLeases()
+			log.Fatalf("restore lease %d: %v", sourceID, grantErr)
+		}
+		targetLeases[sourceID] = granted.ID
 	}
 	ops := make([]kvPair, 0, batchSize)
 	total := 0
@@ -81,7 +122,15 @@ func main() {
 			if !allowOverwrite {
 				compares = append(compares, clientv3.Compare(clientv3.Version(key), "=", 0))
 			}
-			puts = append(puts, clientv3.OpPut(key, string(op.value)))
+			opts := make([]clientv3.OpOption, 0, 1)
+			if op.lease != 0 {
+				targetID, exists := targetLeases[op.lease]
+				if !exists {
+					return fmt.Errorf("backup record references unrestorable lease %d; re-export with %s", op.lease, backupfile.Format)
+				}
+				opts = append(opts, clientv3.WithLease(targetID))
+			}
+			puts = append(puts, clientv3.OpPut(key, string(op.value), opts...))
 		}
 		if len(compares) > 0 {
 			txn = txn.If(compares...)
@@ -107,7 +156,7 @@ func main() {
 			return err
 		}
 		key = rewriteKey(key, rewriteFrom, rewriteTo)
-		ops = append(ops, kvPair{key: key, value: value})
+		ops = append(ops, kvPair{key: key, value: value, lease: rec.Lease})
 		total++
 		if len(ops) >= batchSize {
 			if err := flush(); err != nil {
@@ -117,12 +166,14 @@ func main() {
 		return nil
 	})
 	if err != nil {
+		cleanupTargetLeases()
 		log.Fatal(err)
 	}
 	if err := flush(); err != nil {
+		cleanupTargetLeases()
 		log.Fatal(err)
 	}
 	status := verified.Status()
-	fmt.Fprintf(os.Stderr, "restored %d records from %s to %s (snapshot revision %d, sha256 %s)\n",
-		total, input, os.Getenv("ENDPOINT"), status.Revision, status.SHA256)
+	fmt.Fprintf(os.Stderr, "restored %d records and %d leases from %s to %s (snapshot revision %d, sha256 %s)\n",
+		total, status.Leases, input, os.Getenv("ENDPOINT"), status.Revision, status.SHA256)
 }

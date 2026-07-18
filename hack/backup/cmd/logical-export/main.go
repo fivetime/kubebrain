@@ -45,6 +45,7 @@ func main() {
 	total := 0
 	var snapshotRevision int64
 	var writer *backupfile.AtomicWriter
+	exportedLeases := make(map[int64]struct{})
 	defer func() {
 		if writer != nil {
 			writer.Abort()
@@ -73,6 +74,21 @@ func main() {
 			log.Fatal("range response did not contain a revision")
 		}
 		for _, kv := range resp.Kvs {
+			if kv.Lease != 0 {
+				if _, exists := exportedLeases[kv.Lease]; !exists {
+					ttl, ttlErr := cli.TimeToLive(ctx, clientv3.LeaseID(kv.Lease))
+					if ttlErr != nil {
+						log.Fatalf("read lease %d TTL: %v", kv.Lease, ttlErr)
+					}
+					if ttl.TTL <= 0 {
+						log.Fatalf("lease %d expired while exporting snapshot revision %d", kv.Lease, snapshotRevision)
+					}
+					if err := writer.AddLease(record.Lease{ID: kv.Lease, TTL: ttl.TTL}); err != nil {
+						log.Fatal(err)
+					}
+					exportedLeases[kv.Lease] = struct{}{}
+				}
+			}
 			rec := record.Record{
 				Key:            base64.StdEncoding.EncodeToString(kv.Key),
 				Value:          base64.StdEncoding.EncodeToString(kv.Value),
@@ -95,6 +111,6 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Fprintf(os.Stderr, "exported %d records from %s at revision %d to %s (sha256 %s)\n",
-		total, prefix, snapshotRevision, output, status.SHA256)
+	fmt.Fprintf(os.Stderr, "exported %d records and %d leases from %s at revision %d to %s (sha256 %s)\n",
+		total, status.Leases, prefix, snapshotRevision, output, status.SHA256)
 }

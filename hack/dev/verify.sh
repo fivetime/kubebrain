@@ -16,6 +16,7 @@ RUN_INCLUSTER_APISERVER_SMOKE="${RUN_INCLUSTER_APISERVER_SMOKE:-false}"
 RUN_TLS_SMOKE="${RUN_TLS_SMOKE:-true}"
 RUN_BACKUP_DRILL="${RUN_BACKUP_DRILL:-false}"
 RUN_BACKUP_INTEGRITY_SMOKE="${RUN_BACKUP_INTEGRITY_SMOKE:-false}"
+RUN_LEASE_BACKUP_SMOKE="${RUN_LEASE_BACKUP_SMOKE:-false}"
 RUN_RESTORE_GUARD_SMOKE="${RUN_RESTORE_GUARD_SMOKE:-false}"
 RUN_VERIFY_CONTENT_SMOKE="${RUN_VERIFY_CONTENT_SMOKE:-false}"
 RUN_FAULT_SMOKE="${RUN_FAULT_SMOKE:-false}"
@@ -101,6 +102,10 @@ fi
 
 if [ "$RUN_BACKUP_INTEGRITY_SMOKE" = "true" ]; then
   run_step "logical backup integrity smoke" env ENDPOINT="$ENDPOINT" hack/backup/backup-integrity-smoke.sh
+fi
+
+if [ "$RUN_LEASE_BACKUP_SMOKE" = "true" ]; then
+  run_step "lease-aware logical backup restore smoke" env ENDPOINT="$ENDPOINT" hack/backup/lease-restore-smoke.sh
 fi
 
 if [ "$RUN_RESTORE_GUARD_SMOKE" = "true" ]; then

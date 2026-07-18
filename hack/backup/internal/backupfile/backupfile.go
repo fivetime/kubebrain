@@ -17,7 +17,10 @@ import (
 	"github.com/kubewharf/kubebrain/hack/backup/internal/record"
 )
 
-const Format = "kubebrain.logical.v1"
+const (
+	Format       = "kubebrain.logical.v2"
+	LegacyFormat = "kubebrain.logical.v1"
+)
 
 type Header struct {
 	Type     string `json:"type"`
@@ -28,6 +31,7 @@ type Header struct {
 type Footer struct {
 	Type    string `json:"type"`
 	Records int    `json:"records"`
+	Leases  int    `json:"leases,omitempty"`
 	SHA256  string `json:"sha256"`
 }
 
@@ -36,6 +40,7 @@ type Status struct {
 	Prefix   string `json:"prefix"`
 	Revision int64  `json:"revision"`
 	Records  int    `json:"records"`
+	Leases   int    `json:"leases"`
 	SHA256   string `json:"sha256"`
 }
 
@@ -44,6 +49,7 @@ type AtomicWriter struct {
 	temp     *os.File
 	hash     hash.Hash
 	records  int
+	leases   int
 	prefix   string
 	revision int64
 	closed   bool
@@ -86,12 +92,27 @@ func (w *AtomicWriter) Add(rec record.Record) error {
 	return nil
 }
 
+func (w *AtomicWriter) AddLease(lease record.Lease) error {
+	if w.closed {
+		return errors.New("backup writer is closed")
+	}
+	lease.Type = "lease"
+	if lease.ID == 0 || lease.TTL <= 0 {
+		return fmt.Errorf("invalid lease id=%d ttl=%d", lease.ID, lease.TTL)
+	}
+	if err := w.writeHashedJSON(lease); err != nil {
+		return err
+	}
+	w.leases++
+	return nil
+}
+
 func (w *AtomicWriter) Commit() (Status, error) {
 	if w.closed {
 		return Status{}, errors.New("backup writer is closed")
 	}
 	sum := hex.EncodeToString(w.hash.Sum(nil))
-	footer := Footer{Type: "footer", Records: w.records, SHA256: sum}
+	footer := Footer{Type: "footer", Records: w.records, Leases: w.leases, SHA256: sum}
 	if err := writeJSONLine(w.temp, footer); err != nil {
 		w.Abort()
 		return Status{}, err
@@ -123,7 +144,7 @@ func (w *AtomicWriter) Commit() (Status, error) {
 	}
 	return Status{
 		Format: Format, Prefix: w.prefix, Revision: w.revision,
-		Records: w.records, SHA256: sum,
+		Records: w.records, Leases: w.leases, SHA256: sum,
 	}, nil
 }
 
@@ -232,6 +253,9 @@ func (v *Verified) Records(fn func(record.Record) error) error {
 		if probe.Type == "footer" {
 			return nil
 		}
+		if probe.Type == "lease" {
+			continue
+		}
 		if probe.Type != "" {
 			return fmt.Errorf("unexpected backup record type %q", probe.Type)
 		}
@@ -241,6 +265,45 @@ func (v *Verified) Records(fn func(record.Record) error) error {
 		}
 		if err := fn(rec); err != nil {
 			return err
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return err
+	}
+	return errors.New("backup footer is missing")
+}
+
+func (v *Verified) Leases(fn func(record.Lease) error) error {
+	if _, err := v.file.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+	scanner := bufio.NewScanner(v.file)
+	scanner.Buffer(make([]byte, 1024*1024), 64*1024*1024)
+	if !scanner.Scan() {
+		return errors.New("backup header is missing")
+	}
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		var probe struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(line, &probe); err != nil {
+			return err
+		}
+		switch probe.Type {
+		case "footer":
+			return nil
+		case "lease":
+			var lease record.Lease
+			if err := json.Unmarshal(line, &lease); err != nil {
+				return err
+			}
+			if err := fn(lease); err != nil {
+				return err
+			}
+		case "":
+		default:
+			return fmt.Errorf("unexpected backup record type %q", probe.Type)
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -269,7 +332,7 @@ func validate(reader io.Reader) (Status, error) {
 	if err := json.Unmarshal(headerLine, &header); err != nil {
 		return Status{}, fmt.Errorf("invalid backup header: %w", err)
 	}
-	if header.Type != Format {
+	if header.Type != Format && header.Type != LegacyFormat {
 		return Status{}, fmt.Errorf("unsupported backup format %q", header.Type)
 	}
 	if header.Revision <= 0 {
@@ -280,7 +343,9 @@ func validate(reader io.Reader) (Status, error) {
 	digest.Write(headerLine)
 	digest.Write([]byte{'\n'})
 	records := 0
+	leases := 0
 	seenKeys := make(map[string]struct{})
+	seenLeases := make(map[int64]struct{})
 	var footer Footer
 	foundFooter := false
 	for scanner.Scan() {
@@ -300,6 +365,26 @@ func validate(reader io.Reader) (Status, error) {
 				return Status{}, errors.New("backup contains data after footer")
 			}
 			break
+		}
+		if probe.Type == "lease" {
+			if header.Type != Format {
+				return Status{}, fmt.Errorf("lease metadata is not supported in backup format %q", header.Type)
+			}
+			var lease record.Lease
+			if err := json.Unmarshal(line, &lease); err != nil {
+				return Status{}, fmt.Errorf("invalid backup lease %d: %w", leases+1, err)
+			}
+			if lease.ID == 0 || lease.TTL <= 0 {
+				return Status{}, fmt.Errorf("invalid backup lease id=%d ttl=%d", lease.ID, lease.TTL)
+			}
+			if _, exists := seenLeases[lease.ID]; exists {
+				return Status{}, fmt.Errorf("duplicate backup lease %d", lease.ID)
+			}
+			seenLeases[lease.ID] = struct{}{}
+			digest.Write(line)
+			digest.Write([]byte{'\n'})
+			leases++
+			continue
 		}
 		if probe.Type != "" {
 			return Status{}, fmt.Errorf("unexpected backup record type %q", probe.Type)
@@ -323,6 +408,11 @@ func validate(reader io.Reader) (Status, error) {
 		if _, err := base64.StdEncoding.DecodeString(rec.Value); err != nil {
 			return Status{}, fmt.Errorf("invalid backup record %d value: %w", records+1, err)
 		}
+		if header.Type == Format && rec.Lease != 0 {
+			if _, exists := seenLeases[rec.Lease]; !exists {
+				return Status{}, fmt.Errorf("backup record %d references undeclared lease %d", records+1, rec.Lease)
+			}
+		}
 		digest.Write(line)
 		digest.Write([]byte{'\n'})
 		records++
@@ -336,6 +426,9 @@ func validate(reader io.Reader) (Status, error) {
 	if footer.Records != records {
 		return Status{}, fmt.Errorf("backup record count mismatch: footer=%d actual=%d", footer.Records, records)
 	}
+	if footer.Leases != leases {
+		return Status{}, fmt.Errorf("backup lease count mismatch: footer=%d actual=%d", footer.Leases, leases)
+	}
 	actualHash := hex.EncodeToString(digest.Sum(nil))
 	if footer.SHA256 != actualHash {
 		return Status{}, fmt.Errorf("backup SHA-256 mismatch: footer=%s actual=%s", footer.SHA256, actualHash)
@@ -345,6 +438,7 @@ func validate(reader io.Reader) (Status, error) {
 		Prefix:   header.Prefix,
 		Revision: header.Revision,
 		Records:  records,
+		Leases:   leases,
 		SHA256:   actualHash,
 	}, nil
 }

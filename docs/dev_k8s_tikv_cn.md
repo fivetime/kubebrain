@@ -208,7 +208,7 @@ RUN_RESTORE_GUARD_SMOKE=true hack/dev/verify.sh
 RUN_VERIFY_CONTENT_SMOKE=true hack/dev/verify.sh
 ```
 
-备份文件完整性 smoke 默认不运行。它会截断 v1 footer，确认 restore 在写入任何目标
+备份文件完整性 smoke 默认不运行。它会截断 v2 footer，确认 restore 在写入任何目标
 key 前拒绝损坏文件：
 
 ```shell
@@ -217,14 +217,24 @@ RUN_BACKUP_INTEGRITY_SMOKE=true hack/dev/verify.sh
 
 备份脚本同时支持 TLS/mTLS endpoint，可通过 `ETCDCTL_CACERT`、`ETCDCTL_CERT`、
 `ETCDCTL_KEY` 或 `CACERT`、`CERT`、`KEY` 传入证书。导出固定首个分页 Range
-revision。`kubebrain.logical.v1` 格式包含源 prefix、snapshot revision、记录数和
-SHA-256，并经临时文件 `fsync` 后原子发布；restore/verify 在访问目标 key 前验证完整
-文件，旧版无 manifest 的 JSONL 会被拒绝。可用
+revision。`kubebrain.logical.v2` 格式包含源 prefix、snapshot revision、记录/lease
+数和 SHA-256；每个 lease 记录导出时的正数剩余 TTL。制品经临时文件 `fsync` 后原子
+发布；restore 为目标生成新 lease ID并保持多 key 共享关系，restore/verify 在访问目标
+key 前验证完整文件。v1 无 lease 制品仍可恢复，v1 中有非零 lease 的记录会在任何写入
+前拒绝，旧版无 manifest 的 JSONL 也会被拒绝。可用
 `INPUT=... hack/backup/logical-status.sh` 离线查看状态。恢复按 `BATCH_SIZE` 使用一个
 Txn，批内任一 overwrite compare 失败时不会部分写入。默认隔离目标使用
 `/kubebrain-restore-drill-*`，不会与默认源 `/registry` 重叠。当前真实环境已通过 35 条
 `/registry` 全前缀隔离恢复、逐值核验与清理；截断 footer 被拒绝且目标计数保持 0，
 两条记录批次中第二条冲突时目标计数保持原有 1。
+
+lease-aware smoke 默认不运行；它创建一个永久 key 和两个共享 120 秒 lease 的 key，
+要求 v2 manifest 恰有一个 lease，并验证恢复后永久 key 不带 lease、两个临时 key 共享
+同一新 lease 且 TTL 为正：
+
+```shell
+RUN_LEASE_BACKUP_SMOKE=true hack/dev/verify.sh
+```
 
 生产控制面必须先对备份实现执行 fail-closed 预检：
 

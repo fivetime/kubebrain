@@ -14,8 +14,12 @@ func main() {
 	if err != nil {
 		log.Fatalf("backup integrity validation failed: %v", err)
 	}
-	if os.Getenv("FIELD") == "records" {
+	switch os.Getenv("FIELD") {
+	case "records":
 		fmt.Println(status.Records)
+		return
+	case "leases":
+		fmt.Println(status.Leases)
 		return
 	}
 	if err := json.NewEncoder(os.Stdout).Encode(status); err != nil {

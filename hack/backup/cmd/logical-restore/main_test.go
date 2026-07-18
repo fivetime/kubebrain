@@ -4,6 +4,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/kubewharf/kubebrain/hack/backup/internal/record"
 	"github.com/stretchr/testify/require"
 )
 
@@ -11,6 +12,13 @@ func TestRewriteKey(t *testing.T) {
 	require.Equal(t, []byte("/target/a"), rewriteKey([]byte("/source/a"), "/source", "/target"))
 	require.Equal(t, []byte("/other/a"), rewriteKey([]byte("/other/a"), "/source", "/target"))
 	require.Equal(t, []byte("/source/a"), rewriteKey([]byte("/source/a"), "", "/target"))
+}
+
+func TestValidateLeaseReference(t *testing.T) {
+	require.NoError(t, validateLeaseReference(record.Record{}, nil))
+	require.NoError(t, validateLeaseReference(record.Record{Lease: 123}, map[int64]int64{123: 30}))
+	err := validateLeaseReference(record.Record{Lease: 123}, nil)
+	require.ErrorContains(t, err, "unrestorable lease 123")
 }
 
 func TestEnvBool(t *testing.T) {
