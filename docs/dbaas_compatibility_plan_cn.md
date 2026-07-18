@@ -3043,8 +3043,8 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   通过，错 prefix 非零退出，等待后 age=3s/max=1s 非零退出。手工只把 header 时间戳
   加 1 秒后，status 在年龄判断前以 SHA-256 mismatch 拒绝；隔离测试 key 已清理。
   额外把含新 header 的 2-record artifact 恢复到隔离 prefix，count 和逐值 verify
-  通过，源/目标均清理。这关闭备份 artifact 的完成/RPO 证据；对象存储上传幂等、
-  保留删除和恢复状态机仍是 P1。
+  通过，源/目标均清理。这关闭备份 artifact 的完成/RPO 证据；对象存储上传幂等和
+  保留删除由 A188 关闭，恢复流量切换状态机仍是 P1。
 - **Operations A184 immutable restore verification receipt（2026-07-18）**：
   `logical-verify` 新增可选 `RECEIPT_OUTPUT`，仅在 artifact 完整性、全部目标 key/value、
   permanent/lease 绑定映射和目标 lease 正 TTL 验证完成后发布
@@ -3061,7 +3061,8 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   permanent、1 leased），receipt 的 artifact hash/revision、source/target、2 records、
   1 artifact lease/1 verified target lease 全部核对；篡改目标 permanent value 后
   verify 非零退出且未发布第二 receipt，源/目标 lease 已 revoke、prefix 已清理。
-  receipt 是验证时点证据；对象存储不可变留存、流量切换 fencing 和恢复后持续审计仍是 P1。
+  receipt 是验证时点证据；对象存储不可变留存由 A188 关闭，流量切换 fencing 和恢复后
+  持续审计仍是 P1。
 - **Operations A185 certificate rotation completion state（2026-07-18）**：新增
   `hack/production/validate-certificate-rotation.sh`，把 client/peer CA rollover
   收敛为 `begin -> overlap -> complete` 三阶段门禁。begin 固定全部 KubeBrain Pod
@@ -3111,6 +3112,36 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   KubeBrain、3 PD、3 TiKV 均 Ready 且零重启。首次 quiesce 因当前 kubectl 不支持
   `jsonpath={len(.items)}` 超时且未删除资源，计数改为稳定 `-o name | wc -l` 后才通过。
   namespace、TLS Secret、外部备份和账单记录保留给控制面按独立策略对账/清理。
+- **Operations A188 Object-Lock backup lifecycle（2026-07-18）**：新增独立 Go
+  module `hack/backup/objectstore` 和入口 `hack/backup/logical-object.sh`。upload 只接受
+  通过 format/exact prefix/min records/max age gate 的 `kubebrain.logical.v2`，要求
+  控制面提供固定绝对 `RETAIN_UNTIL_UNIX`，用 AWS SigV4 S3 `PutObject
+  If-None-Match:*`、完整对象 SHA-256 checksum 和 COMPLIANCE/GOVERNANCE Object Lock
+  发布；不存在先 HEAD 再无条件 PUT 的覆盖竞态。同 key 冲突只有在 size 与全部绑定
+  metadata 一致时才视作可能重试，否则拒绝替换。
+
+  Put 返回 version ID 后，工具重新下载该精确 version，使用生产 backup parser 验证
+  format/digest/revision/records/leases，并通过 GetObjectRetention 核对 mode 和绝对
+  retain-until，之后才以不可覆盖、file/directory fsync 方式签发
+  `kubebrain.object-backup.receipt.v1`。receipt/object metadata 还绑定控制面稳定
+  `OBJECT_STORE_ID`，避免不同 S3 账户的同 bucket/key/version 三元组被混淆。已有 receipt
+  重试会重新下载和核对 retention，不创建新 version、不漂移保留期限。delete 必须匹配
+  `delete:<instance>:<backup-id>`，再次核对 exact version、artifact digest 与 retention；
+  未到期拒绝，到期只删 receipt 中 version，Head 确认不存在后签发
+  `kubebrain.object-backup-deletion.receipt.v1`。删除后崩溃可幂等补证，保留期内 version
+  提前消失则 fail closed。
+
+  fake S3 测试覆盖 upload/delete 完整生命周期、条件冲突后的同内容重试、不同 artifact
+  拒绝覆盖、远端 body 损坏不发 receipt、prefix/record/freshness gate、错误删除确认、
+  retention 未到期、远端 retention 漂移、提前消失、到期删除和删除 receipt 重试；
+  receipt 权限/不可覆盖也有独立测试。真实 MinIO 使用启用 versioning+Object Lock 的
+  `kubebrain-logical` bucket：1-record artifact（revision
+  `467764733078405143`，digest
+  `3346940f8431c77c5b8ce823e32b022586ea2377b9801396c3d7d5f21b9eb3e7`）完成条件上传、
+  精确 version 下载复核、同 operation 双次返回同 receipt；保留期内 delete 非零退出，
+  到期删除及二次删除复用同一 deletion receipt。另以不同有效 artifact（revision
+  `467764733078405145`）竞争同 key，被 `If-None-Match` 拒绝且未生成替换 receipt；
+  最终 `mc ls --versions --recursive` 确认 bucket 无对象/version residue，测试 key 已清理。
 
 ### P1：通用服务能力
 
@@ -3122,10 +3153,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
    注入覆盖。
 2. `client/v3/concurrency` mutex/election/session、lease 自然过期和 failover
    recipe 已通过；继续增加长时间 soak。
-3. DBaaS 创建、扩缩、升级的数据面 release gate、备份完成 gate、恢复验证 receipt、
-   证书轮换 gate 和 UID-fenced 销毁状态机已建立；继续建立对象存储上传/保留、恢复
-   流量切换、专属 namespace/凭据外围清理，并补控制面任务超时、回滚、不可变审计归档
-   与跨实例调度。
+3. DBaaS 创建、扩缩、升级的数据面 release gate、备份完成 gate、Object Lock
+   上传/保留删除、恢复验证 receipt、证书轮换 gate 和 UID-fenced 销毁状态机已建立；
+   继续建立恢复流量切换、专属 namespace/凭据外围清理、bucket lifecycle/inventory
+   对账，并补控制面任务超时、回滚、不可变审计归档与跨实例调度。
 4. 建立实例级限额和计量：请求字节、txn 操作数、跨连接 client RPC 总并发、client
    请求 QPS/burst、逻辑 Watch 总数、CPU/内存饱和、网络错误/丢包及 PD/TiKV PVC 容量
    告警已具备稳定错误或指标，网络 RX/TX 原始计量和逻辑备份 artifact 容量/新鲜度

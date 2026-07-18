@@ -302,6 +302,72 @@ OUTPUT=/backup/kubebrain-logical-backup.jsonl \
 critical。25 小时阈值为每日备份留出 1 小时调度抖动，不代表所有套餐都采用同一 RPO；
 更严格套餐必须下调规则。
 
+### 对象存储不可变发布与保留删除
+
+本地 artifact 完成不等于异地备份完成。生产对象存储 bucket 必须启用 versioning 和
+S3 Object Lock；上传角色需要 Put/Get/Head/GetObjectRetention 权限，删除角色应独立
+授予 DeleteObjectVersion，且工具不会发送 governance bypass。对象发布使用独立模块
+`hack/backup/objectstore`：
+
+```shell
+retain_until=$(( $(date +%s) + 2592000 ))
+ACTION=upload \
+S3_ENDPOINT=https://s3.example.internal \
+OBJECT_STORE_ID=primary-backup-account \
+S3_BUCKET=kubebrain-backups \
+S3_OBJECT_KEY=instance-a/backup-20260718.jsonl \
+S3_FORCE_PATH_STYLE=false \
+AWS_REGION=us-east-1 \
+AWS_ACCESS_KEY_ID=... \
+AWS_SECRET_ACCESS_KEY=... \
+INPUT=/backup/instance-a.jsonl \
+INSTANCE=instance-a \
+BACKUP_ID=backup-20260718 \
+EXPECTED_PREFIX=/registry \
+MIN_RECORDS=1 \
+MAX_AGE_SECONDS=3600 \
+RETENTION_MODE=COMPLIANCE \
+RETAIN_UNTIL_UNIX="$retain_until" \
+RECEIPT_OUTPUT=/var/lib/kubebrain-operations/backup-20260718.object.json \
+  hack/backup/logical-object.sh
+```
+
+`OBJECT_STORE_ID` 是控制面分配给对象存储账户的稳定 ID，不能使用可能变化的 endpoint
+DNS 代替。`RETAIN_UNTIL_UNIX` 必须由控制面固定为绝对时间，不能在每次重试时用相对
+秒数重新计算。
+上传前工具只接受完整 `kubebrain.logical.v2`，并校验 exact prefix、记录下限和受 artifact
+SHA-256 保护的创建时间。S3 Put 使用 `If-None-Match: *`，因此并发调用不能覆盖同 key；
+冲突时仅在现有 version 的大小和全部 KubeBrain metadata 一致时进入幂等复核。
+
+Put 成功后不能依赖 ETag 或 metadata：工具按返回的 version ID 下载完整对象到临时文件，
+重新执行 artifact parser/SHA-256/record 校验，再读取远端 Object Lock mode 和
+retain-until。全部一致后才原子发布 `kubebrain.object-backup.receipt.v1`，绑定 instance、
+backup ID、object store ID、bucket/key/version、artifact format/digest/revision/时间/
+记录数/lease 数、对象字节数和保留策略。已有 receipt 的重试会重新下载该精确 version
+并复核 retention，不会产生新 version 或移动保留期限。
+
+保留删除必须读取上传 receipt，并使用独立确认令牌：
+
+```shell
+ACTION=delete \
+S3_ENDPOINT=https://s3.example.internal \
+OBJECT_STORE_ID=primary-backup-account \
+S3_FORCE_PATH_STYLE=false \
+AWS_REGION=us-east-1 \
+AWS_ACCESS_KEY_ID=... \
+AWS_SECRET_ACCESS_KEY=... \
+RECEIPT_INPUT=/var/lib/kubebrain-operations/backup-20260718.object.json \
+DELETE_RECEIPT_OUTPUT=/var/lib/kubebrain-operations/backup-20260718.deleted.json \
+DELETE_CONFIRM=delete:instance-a:backup-20260718 \
+  hack/backup/logical-object.sh
+```
+
+删除前重新核对 exact version 的大小、artifact digest 和远端 retention；retain-until
+未到直接失败，到期后仅删除 receipt 指定的 version，并以 Head 确认该 version 不可读后
+发布 `kubebrain.object-backup-deletion.receipt.v1`。删除后崩溃重试可根据“到期且精确
+version 已不存在”补发/复用 receipt；保留期内提前消失则 fail closed。两个 receipt
+都必须归档到不可变审计存储。bucket 生命周期规则只能作为调度器，不能替代该完成证据。
+
 `deploy/production/monitoring.yaml` 还以 1 分钟周期生成实例级计量序列：
 
 - `kubebrain_dbaas:cpu_usage_cores:sum`；
