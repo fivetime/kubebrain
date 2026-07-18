@@ -3679,6 +3679,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   compat module 全量 vet 通过。backend Txn/Delete/mutation/range transaction 回归
   连续 10 轮约 38.3 秒、server/etcd 对应回归连续 10 轮约 58.4 秒通过。本轮未发现新的
   服务端语义差异，运行镜像继续为 `kubebrain:a208-leasing-lock-order`。
+- **Compatibility A215 leasing operations under connection churn（2026-07-18）**：
+  对照上游 `TestLeasingReconnectTxn` 和 `TestLeasingReconnectNonOwnerGet`，扩展 A212
+  TCP bridge 以统计并主动关闭活动连接。missing-key 条件 Txn 在 5 次连续 socket drop
+  窗口内必须自行重连并成功返回空 Get 分支；随后预置 5 个偶数 key，对 10 个 existing/
+  missing key 分别在 3 次 socket drop 窗口内执行 leasing Get，每次均必须在 5 秒 budget
+  内完成。
+
+  每个 Txn/Get 都先通过 started barrier 确认首次 socket drop 已完成，其余 drop 再与
+  调用并发；窗口结束后还比较 drop 前后计数。每个 Get 的完整 key/value/create
+  revision/mod revision/version/lease 元数据必须与独立直连 client 一致。初版 20/10
+  次断连虽连续 5 轮通过，但产生无必要的连接风暴和大量 retry 日志；最终 5/3 次配置
+  保留实际故障重叠证据并把 5 轮耗时收敛到约 14.9 秒。
+
+  reference etcd 与真实 TiKV-backed KubeBrain 最终场景连续 5 轮通过；加入首次断连
+  barrier 后 A215 差分在真实 endpoint 下 race 3 轮约 12.8 秒通过，compat module 全量
+  vet 通过。backend Txn/watch/range transaction/mutation 回归连续 10 轮约 49.0 秒、
+  server/etcd 对应回归连续 10 轮约 51.5 秒通过。本轮未发现新的服务端语义差异，运行
+  镜像继续为 `kubebrain:a208-leasing-lock-order`。
 - **Operations A185 certificate rotation completion state（2026-07-18）**：新增
   `hack/production/validate-certificate-rotation.sh`，把 client/peer CA rollover
   收敛为 `begin -> overlap -> complete` 三阶段门禁。begin 固定全部 KubeBrain Pod
