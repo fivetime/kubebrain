@@ -1998,6 +1998,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `279d2608ee23f986d3f122b7ca1c7fe1264ca1f990246ee98eaac9c94dd09d21`。
   三个 Pod 均 Ready、zero restart；分别经 Pod port-forward 验证 leader 与两个
   follower 的 Status 和写转发均正常，探针 key 已清理。
+- **Txn A119 branch validation error precedence（2026-07-18）**：对照
+  `/root/etcd/server/etcdserver/api/v3rpc/key.go:checkTxnRequest` 与
+  `kvServer.Txn` 发现，reference 先递归校验 Success、Failure 两个分支中的全部
+  RequestOp，再分别执行 put/delete interval 重叠检查。KubeBrain 原先在校验
+  Failure 前先检查 Success interval，因此“Success 重复 Put 同一 key + Failure
+  Put 空 key”的 raw 请求虽然双方都返回 InvalidArgument，reference message 是
+  `etcdserver: key is not provided`，KubeBrain 却提前返回
+  `etcdserver: duplicate key given in txn request`。
+
+  现将两个分支的 RequestOp 校验保持在全部 interval 检查之前，duplicate/overlap
+  算法和事务执行路径不变。单元回归连续 30 轮通过；raw protobuf 双端差分同时比较
+  gRPC code 与完整 message，修复后在临时 `/root/etcd` 3.8.0-alpha.0 reference
+  与在线三副本 TiKV-backed KubeBrain 间连续 10 轮、race 3 轮通过。`go test
+  ./...`、根模块与 compat module `go vet ./...` 及完整 server race（210.254s）
+  通过。部署 `kubebrain:a119-txn-validation-order` 后三个 Pod Ready、zero
+  restart；逐 Pod Status 与 leader/follower 写转发正常，运行时 exact image
+  `bce1813a12cf11814c08dcda3815c71e85e7733208d80b290aa94ee6ff5c1cba`。
 
 ### P1：通用服务能力
 

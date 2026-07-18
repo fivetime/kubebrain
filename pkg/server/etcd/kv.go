@@ -608,13 +608,13 @@ func validateTxnRequestWithMaxOps(txn *etcdserverpb.TxnRequest, maxTxnOps int) e
 			return err
 		}
 	}
-	if err := validateTxnIntervals(txn.Success); err != nil {
-		return err
-	}
 	for _, op := range txn.Failure {
 		if err := validateTxnRequestOp(op, maxTxnOps-opc); err != nil {
 			return err
 		}
+	}
+	if err := validateTxnIntervals(txn.Success); err != nil {
+		return err
 	}
 	if err := validateTxnIntervals(txn.Failure); err != nil {
 		return err

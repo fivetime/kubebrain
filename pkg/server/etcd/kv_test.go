@@ -2866,6 +2866,29 @@ func TestTxnRejectsInvalidRequestOps(t *testing.T) {
 	}
 }
 
+func TestTxnValidatesBothBranchesBeforeDuplicateKeys(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	key := []byte("/registry/generic-txn/validation-order")
+	_, err := server.Txn(context.Background(), &etcdserverpb.TxnRequest{
+		Success: []*etcdserverpb.RequestOp{
+			{Request: &etcdserverpb.RequestOp_RequestPut{
+				RequestPut: &etcdserverpb.PutRequest{Key: key, Value: []byte("v1")},
+			}},
+			{Request: &etcdserverpb.RequestOp_RequestPut{
+				RequestPut: &etcdserverpb.PutRequest{Key: key, Value: []byte("v2")},
+			}},
+		},
+		Failure: []*etcdserverpb.RequestOp{
+			{Request: &etcdserverpb.RequestOp_RequestPut{
+				RequestPut: &etcdserverpb.PutRequest{Value: []byte("invalid")},
+			}},
+		},
+	})
+	require.EqualError(t, err, "rpc error: code = InvalidArgument desc = etcdserver: key is not provided")
+}
+
 func TestTxnRejectsTooManyOpsLikeEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
