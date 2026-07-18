@@ -100,3 +100,45 @@ spec:
       app.kubernetes.io/name: tidb-cluster
       app.kubernetes.io/instance: kb
       app.kubernetes.io/component: tikv
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kb-pd-metrics
+  namespace: tidb-cluster
+  labels:
+    app.kubernetes.io/name: tidb-cluster
+    app.kubernetes.io/instance: kb
+    app.kubernetes.io/component: pd
+    app.kubernetes.io/part-of: kubebrain
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: tidb-cluster
+    app.kubernetes.io/instance: kb
+    app.kubernetes.io/component: pd
+  ports:
+    - name: metrics
+      port: 2379
+      targetPort: client
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kb-tikv-metrics
+  namespace: tidb-cluster
+  labels:
+    app.kubernetes.io/name: tidb-cluster
+    app.kubernetes.io/instance: kb
+    app.kubernetes.io/component: tikv
+    app.kubernetes.io/part-of: kubebrain
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: tidb-cluster
+    app.kubernetes.io/instance: kb
+    app.kubernetes.io/component: tikv
+  ports:
+    - name: metrics
+      port: 20180
+      targetPort: 20180

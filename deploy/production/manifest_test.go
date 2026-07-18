@@ -150,6 +150,44 @@ func TestProductionMonitoringTracksStatefulSetReadiness(t *testing.T) {
 		writeRule["expr"])
 }
 
+func TestProductionMonitoringTracksPDAndTiKV(t *testing.T) {
+	objects := decodeManifest(t, "monitoring.yaml")
+	for _, component := range []string{"pd", "tikv"} {
+		monitor := objectByKindAndName(t, objects, "ServiceMonitor", "kubebrain-"+component)
+		namespaces, found, err := unstructured.NestedStringSlice(
+			monitor.Object, "spec", "namespaceSelector", "matchNames")
+		require.NoError(t, err)
+		require.True(t, found)
+		require.Equal(t, []string{"tidb-cluster"}, namespaces)
+		require.Equal(t, "kb",
+			nestedString(t, monitor, "spec", "selector", "matchLabels", "app.kubernetes.io/instance"))
+		require.Equal(t, component,
+			nestedString(t, monitor, "spec", "selector", "matchLabels", "app.kubernetes.io/component"))
+		require.Equal(t, "kubebrain",
+			nestedString(t, monitor, "spec", "selector", "matchLabels", "app.kubernetes.io/part-of"))
+		endpoints, found, err := unstructured.NestedSlice(monitor.Object, "spec", "endpoints")
+		require.NoError(t, err)
+		require.True(t, found)
+		require.Len(t, endpoints, 1)
+		require.Equal(t, "metrics", endpoints[0].(map[string]any)["port"])
+	}
+
+	rule := objectByKindAndName(t, objects, "PrometheusRule", "kubebrain")
+	groups, found, err := unstructured.NestedSlice(rule.Object, "spec", "groups")
+	require.NoError(t, err)
+	require.True(t, found)
+	for alert, expr := range map[string]string{
+		"KubeBrainPDInsufficientReplicas":   `count(up{namespace="tidb-cluster",service="kb-pd-metrics"} == 1) < 3`,
+		"KubeBrainTiKVInsufficientReplicas": `count(up{namespace="tidb-cluster",service="kb-tikv-metrics"} == 1) < 3`,
+		"KubeBrainPDLeaderUnavailable":      `sum(etcd_server_is_leader{namespace="tidb-cluster",service="kb-pd-metrics"}) != 1`,
+		"KubeBrainTiKVRegionLeaderMissing":  `max(tikv_raftstore_leader_missing{namespace="tidb-cluster",service="kb-tikv-metrics"}) > 0`,
+	} {
+		alertRule := prometheusRuleByAlert(t, groups, alert)
+		require.Equal(t, expr, alertRule["expr"])
+		require.Equal(t, "critical", alertRule["labels"].(map[string]any)["severity"])
+	}
+}
+
 func TestProductionAlertMetricsExist(t *testing.T) {
 	objects := decodeManifest(t, "monitoring.yaml")
 	rule := objectByKindAndName(t, objects, "PrometheusRule", "kubebrain")
@@ -159,9 +197,11 @@ func TestProductionAlertMetricsExist(t *testing.T) {
 
 	emitted := emittedMetricNames(t, "../../pkg")
 	for _, external := range []string{
+		"etcd_server_is_leader",
 		"grpc_server_handled_total",
 		"grpc_server_handling_seconds_bucket",
 		"kube_statefulset_status_replicas_ready",
+		"tikv_raftstore_leader_missing",
 		"up",
 	} {
 		emitted[external] = struct{}{}
@@ -282,6 +322,33 @@ func TestProductionTiDBClusterProvidesDurableHAStorage(t *testing.T) {
 		})
 	}
 	require.Equal(t, "10m", nestedString(t, cluster, "spec", "tikv", "evictLeaderTimeout"))
+
+	for _, component := range []struct {
+		name       string
+		port       int64
+		targetPort any
+	}{
+		{name: "pd", port: 2379, targetPort: "client"},
+		{name: "tikv", port: 20180, targetPort: int64(20180)},
+	} {
+		service := objectByKindAndName(t, objects, "Service", "kb-"+component.name+"-metrics")
+		require.Equal(t, "None", nestedString(t, service, "spec", "clusterIP"))
+		require.Equal(t, "kb",
+			nestedString(t, service, "spec", "selector", "app.kubernetes.io/instance"))
+		require.Equal(t, component.name,
+			nestedString(t, service, "spec", "selector", "app.kubernetes.io/component"))
+		ports, found, err := unstructured.NestedSlice(service.Object, "spec", "ports")
+		require.NoError(t, err)
+		require.True(t, found)
+		require.Len(t, ports, 1)
+		port := ports[0].(map[string]any)
+		require.EqualValues(t, component.port, port["port"])
+		if targetPort, ok := component.targetPort.(int64); ok {
+			require.EqualValues(t, targetPort, port["targetPort"])
+		} else {
+			require.Equal(t, component.targetPort, port["targetPort"])
+		}
+	}
 }
 
 func TestDevManifestProvidesStableCompleteMembership(t *testing.T) {
