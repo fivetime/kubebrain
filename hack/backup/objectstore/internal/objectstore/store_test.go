@@ -3,6 +3,7 @@ package objectstore
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -197,6 +198,10 @@ type fakeS3 struct {
 	corruptGet  bool
 	putCalls    int
 	lastPut     *s3.PutObjectInput
+	listOutputs []*s3.ListObjectVersionsOutput
+	listCalls   int
+	heads       map[string]*s3.HeadObjectOutput
+	retentions  map[string]*s3.GetObjectRetentionOutput
 }
 
 func (f *fakeS3) PutObject(_ context.Context, input *s3.PutObjectInput, _ ...func(*s3.Options)) (*s3.PutObjectOutput, error) {
@@ -217,7 +222,13 @@ func (f *fakeS3) PutObject(_ context.Context, input *s3.PutObjectInput, _ ...fun
 	return &s3.PutObjectOutput{VersionId: aws.String(f.versionID)}, nil
 }
 
-func (f *fakeS3) HeadObject(_ context.Context, _ *s3.HeadObjectInput, _ ...func(*s3.Options)) (*s3.HeadObjectOutput, error) {
+func (f *fakeS3) HeadObject(_ context.Context, input *s3.HeadObjectInput, _ ...func(*s3.Options)) (*s3.HeadObjectOutput, error) {
+	if f.heads != nil {
+		if output, ok := f.heads[aws.ToString(input.Key)+"\x00"+aws.ToString(input.VersionId)]; ok {
+			return output, nil
+		}
+		return nil, &smithy.GenericAPIError{Code: "NoSuchVersion", Message: "not found"}
+	}
 	if f.deleted || f.versionID == "" {
 		return nil, &smithy.GenericAPIError{Code: "NoSuchVersion", Message: "not found"}
 	}
@@ -239,9 +250,15 @@ func (f *fakeS3) GetObject(_ context.Context, _ *s3.GetObjectInput, _ ...func(*s
 
 func (f *fakeS3) GetObjectRetention(
 	_ context.Context,
-	_ *s3.GetObjectRetentionInput,
+	input *s3.GetObjectRetentionInput,
 	_ ...func(*s3.Options),
 ) (*s3.GetObjectRetentionOutput, error) {
+	if f.retentions != nil {
+		if output, ok := f.retentions[aws.ToString(input.Key)+"\x00"+aws.ToString(input.VersionId)]; ok {
+			return output, nil
+		}
+		return nil, &smithy.GenericAPIError{Code: "NoSuchVersion", Message: "not found"}
+	}
 	return &s3.GetObjectRetentionOutput{Retention: &types.ObjectLockRetention{
 		Mode: f.mode, RetainUntilDate: aws.Time(f.retainUntil),
 	}}, nil
@@ -250,6 +267,29 @@ func (f *fakeS3) GetObjectRetention(
 func (f *fakeS3) DeleteObject(_ context.Context, _ *s3.DeleteObjectInput, _ ...func(*s3.Options)) (*s3.DeleteObjectOutput, error) {
 	f.deleted = true
 	return &s3.DeleteObjectOutput{}, nil
+}
+
+func (f *fakeS3) ListObjectVersions(
+	_ context.Context,
+	_ *s3.ListObjectVersionsInput,
+	_ ...func(*s3.Options),
+) (*s3.ListObjectVersionsOutput, error) {
+	if len(f.listOutputs) != 0 {
+		index := f.listCalls
+		f.listCalls++
+		if index >= len(f.listOutputs) {
+			return nil, errors.New("unexpected inventory page")
+		}
+		return f.listOutputs[index], nil
+	}
+	output := &s3.ListObjectVersionsOutput{}
+	if !f.deleted && f.versionID != "" {
+		output.Versions = []types.ObjectVersion{{
+			Key: aws.String("object"), VersionId: aws.String(f.versionID),
+			Size: aws.Int64(int64(len(f.body))),
+		}}
+	}
+	return output, nil
 }
 
 func writeArtifact(t *testing.T) string {

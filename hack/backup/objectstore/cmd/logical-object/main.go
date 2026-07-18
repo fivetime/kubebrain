@@ -21,11 +21,27 @@ import (
 func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), durationEnv("TIMEOUT", 30*time.Minute))
 	defer cancel()
+	action := os.Getenv("ACTION")
+	if action == "manifest" {
+		var receiptPaths []string
+		if err := json.Unmarshal([]byte(os.Getenv("RECEIPT_INPUTS_JSON")), &receiptPaths); err != nil {
+			log.Fatal("RECEIPT_INPUTS_JSON must be a JSON string array")
+		}
+		status, err := objectstore.BuildInventoryManifest(
+			receiptPaths, os.Getenv("OBJECT_STORE_ID"), os.Getenv("S3_BUCKET"),
+			os.Getenv("INVENTORY_PREFIX"), os.Getenv("INVENTORY_OUTPUT"),
+		)
+		if err != nil {
+			log.Fatal(err)
+		}
+		_ = json.NewEncoder(os.Stdout).Encode(status)
+		return
+	}
 	client, err := newClient(ctx)
 	if err != nil {
 		log.Fatal(err)
 	}
-	switch os.Getenv("ACTION") {
+	switch action {
 	case "upload":
 		retainUntilUnix := int64Env("RETAIN_UNTIL_UNIX")
 		minRecords := nonNegativeIntEnv("MIN_RECORDS")
@@ -69,8 +85,17 @@ func main() {
 			log.Fatal(err)
 		}
 		_ = json.NewEncoder(os.Stdout).Encode(receipt)
+	case "inventory":
+		receipt, err := objectstore.ReconcileInventory(ctx, client, objectstore.InventoryRequest{
+			Input: os.Getenv("INVENTORY_INPUT"), ObjectStoreID: os.Getenv("OBJECT_STORE_ID"),
+			ReceiptOutput: os.Getenv("RECEIPT_OUTPUT"),
+		})
+		if err != nil {
+			log.Fatal(err)
+		}
+		_ = json.NewEncoder(os.Stdout).Encode(receipt)
 	default:
-		log.Fatal("ACTION must be upload, delete, or archive")
+		log.Fatal("ACTION must be upload, delete, archive, manifest, or inventory")
 	}
 }
 
