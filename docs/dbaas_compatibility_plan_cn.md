@@ -3216,6 +3216,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   attempt 1 Succeeded，status receipt digest
   `b760a9860fef9326f52ae4360d8b2cb4b674208c6f3280e47770c568d9b54171`。
   隔离 namespace 与测试 key 随后清理。
+- **Operations A196 least-privilege operation submitter identity（2026-07-18）**：
+  新增 `deploy/production/kubebrain-operation-submitter-rbac.yaml`，将管理面提交身份与
+  worker 身份分离。namespaced submitter ServiceAccount 不自动挂载 token；Role 只允许
+  对 `kubebrainoperations` 执行 create/get/list/watch，不授予 update/patch/delete，
+  也不授予 `kubebrainoperations/status`。因此提交者可创建并观察不可变 operation，
+  但不能认领任务、伪造终态、删除审计对象或跨 namespace 提交。
+
+  manifest 结构测试固定 ServiceAccount、Role、RoleBinding 的 namespace、subject、
+  roleRef 和精确 verb/resource 集；client/server dry-run、production test、race 和 vet
+  通过。真实 `kind-kubebrain-dbaas` API Server impersonation 返回本 namespace
+  create/get=`yes/yes`，spec update/delete/status update/cross-namespace
+  create=`no/no/no/no`；submitter 实际创建 operation 成功，实际 status patch、delete
+  和跨 namespace create 均以非零退出被 RBAC 拒绝，测试 operation 已由管理员清理。
+  这关闭 Kubernetes 原生提交入口的最小权限身份；外部管理 API 的 OIDC/租户授权、
+  请求审批和不可变审计归档仍是 P1。
 - **Operations A185 certificate rotation completion state（2026-07-18）**：新增
   `hack/production/validate-certificate-rotation.sh`，把 client/peer CA rollover
   收敛为 `begin -> overlap -> complete` 三阶段门禁。begin 固定全部 KubeBrain Pod
@@ -3310,8 +3325,9 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
    上传/保留删除、恢复验证 receipt、UID-fenced 流量切换、恢复后持续审计、证书轮换
    gate、UID-fenced 销毁状态机及持久 operation API/worker fencing、Backup/
    RestoreCutover/CertificateRotation/Destroy executors 已建立；继续完成专属
-   namespace/凭据外围清理、bucket lifecycle/inventory 对账，
-   并补 API 认证授权、不可变审计归档、跨实例公平调度和管理面 HA soak。
+   namespace/凭据外围清理、bucket lifecycle/inventory 对账；Kubernetes 原生提交者
+   与 worker 最小权限身份已分离，继续补外部管理 API 的 OIDC/租户授权、请求审批、
+   不可变审计归档、跨实例公平调度和管理面 HA soak。
 4. 建立实例级限额和计量：请求字节、txn 操作数、跨连接 client RPC 总并发、client
    请求 QPS/burst、逻辑 Watch 总数、CPU/内存饱和、网络错误/丢包及 PD/TiKV PVC 容量
    告警已具备稳定错误或指标，网络 RX/TX 原始计量和逻辑备份 artifact 容量/新鲜度
