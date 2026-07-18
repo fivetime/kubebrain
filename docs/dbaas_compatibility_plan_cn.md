@@ -2852,6 +2852,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   follower 误报为故障。manifest 测试固定完整 PromQL、for 和 severity，仓库全量测试
   通过；当前 kind 未安装 Prometheus Operator/promtool，规则加载验证仍由目标监控环境
   的发布流水线负责。
+- **Observability A170 expected etcd error alert filtering（2026-07-18）**：production
+  `KubeBrainGrpcErrors` 原先匹配所有 `grpc_code!="OK"`，会把 NotFound、
+  InvalidArgument、OutOfRange、Unavailable、ResourceExhausted 和 Unimplemented
+  等正常 etcd 控制流、调用方错误、换主、配额保护或平台替代能力持续报为服务故障。
+  `KubeBrainWriteFailures` 同样只看 `success=false`，没有使用已存在的低基数
+  `errclass`，会把可恢复错误升级为 critical。
+
+  gRPC 规则现仅匹配 `Unknown|Internal|DataLoss`；write 规则仅匹配
+  `errclass=~"deadline|other"`，明确排除 revision、unavailable、fenced、not_found、
+  invalid 和 canceled。真实三副本 endpoint 注入不存在 Lease 的 Revoke/Put，按 etcd
+  语义返回 NotFound，并在多个副本产生 `grpc_server_handled_total{grpc_code="NotFound"}`
+  计数；新规则不匹配，旧规则会误报。manifest 测试固定完整 PromQL 并禁止退回
+  `grpc_code!="OK"`，仓库全量测试通过。该项仅修改监控与文档，无需数据面镜像。
 
 ### P1：通用服务能力
 
