@@ -705,7 +705,20 @@ func (b *backendShim) TxnApply(ctx context.Context, ops []backend.TxnWriteOp, gu
 }
 
 func (b *backendShim) BeginRangeTxn(ctx context.Context) (context.Context, func()) {
-	return b.backend.BeginRangeTxn(ctx)
+	rangeCtx, unlock := b.backend.BeginRangeTxn(ctx)
+	// The backend's exclusive logical-write lock already protects every key for
+	// the lifetime of a staged range transaction. Mark every mutation stripe as
+	// owned so point writes inside the transaction do not reacquire a stripe.
+	// Atomic writes acquire stripe -> logical RLock; reacquiring here after the
+	// logical exclusive lock would invert that order and deadlock under mixed
+	// staged/atomic contention.
+	held := make(map[uint8]struct{}, len(b.mutationLocks))
+	for stripe := range b.mutationLocks {
+		held[uint8(stripe)] = struct{}{}
+	}
+	return context.WithValue(rangeCtx, mutationLockOwnerKey{}, &mutationLockOwner{
+		shim: b, stripes: held,
+	}), unlock
 }
 
 func (b *backendShim) DeleteRange(ctx context.Context, r *etcdserverpb.DeleteRangeRequest) (*etcdserverpb.DeleteRangeResponse, error) {

@@ -32,6 +32,10 @@ func (b *mutationLockProbeBackend) TxnApply(context.Context, []backend.TxnWriteO
 	return []backend.TxnWriteResult{{}}, 1, nil
 }
 
+func (b *mutationLockProbeBackend) BeginRangeTxn(ctx context.Context) (context.Context, func()) {
+	return ctx, func() {}
+}
+
 func TestMutationKeyLockSerializesSameKey(t *testing.T) {
 	shim := &backendShim{}
 	for i := range shim.mutationLocks {
@@ -150,6 +154,30 @@ func TestBeginMutationCarriesOwnershipIntoTxnApply(t *testing.T) {
 		require.NoError(t, err)
 	case <-time.After(time.Second):
 		t.Fatal("TxnApply reacquired a mutation stripe already owned by its context")
+	}
+	require.True(t, probe.txnApplyCalled)
+}
+
+func TestBeginRangeTxnOwnsAllMutationStripes(t *testing.T) {
+	probe := &mutationLockProbeBackend{}
+	shim := &backendShim{backend: probe}
+	for i := range shim.mutationLocks {
+		shim.mutationLocks[i] = make(chan struct{}, 1)
+	}
+	ctx, unlock := shim.BeginRangeTxn(context.Background())
+	defer unlock()
+
+	done := make(chan error, 1)
+	go func() {
+		_, _, _, err := shim.TxnApply(ctx,
+			[]backend.TxnWriteOp{{Key: []byte("/staged/key")}}, nil, []bool{false})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("range transaction reacquired a mutation stripe under the logical write lock")
 	}
 	require.True(t, probe.txnApplyCalled)
 }
