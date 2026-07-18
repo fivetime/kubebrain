@@ -23,11 +23,13 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/health"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 )
@@ -165,6 +167,49 @@ func TestClientAdmissionDisabledDoesNotTrackRequests(t *testing.T) {
 	defer closeFn()
 	require.True(t, rpc.acquireRequest("method", "unary"))
 	require.Zero(t, rpc.requestsInFlight)
+}
+
+func TestClientRequireLeaderRejectsUnaryAndStreamWithoutKnownLeader(t *testing.T) {
+	rpc, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	rpc.peers = testPeerService{isLeader: false, noLeader: true}
+
+	healthServer := health.NewServer()
+	healthServer.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
+	listener := startAdmissionServer(t, rpc.ClientServerOptions(), healthServer)
+	client := admissionClient(t, listener)
+
+	requireLeaderCtx := metadata.NewOutgoingContext(context.Background(), metadata.Pairs(
+		rpctypes.MetadataRequireLeaderKey, rpctypes.MetadataHasLeader,
+	))
+	_, err := client.Check(requireLeaderCtx, &healthpb.HealthCheckRequest{})
+	require.ErrorIs(t, err, rpctypes.ErrGRPCNoLeader)
+
+	stream, err := client.Watch(requireLeaderCtx, &healthpb.HealthCheckRequest{})
+	require.NoError(t, err)
+	_, err = stream.Recv()
+	require.ErrorIs(t, err, rpctypes.ErrGRPCNoLeader)
+
+	response, err := client.Check(context.Background(), &healthpb.HealthCheckRequest{})
+	require.NoError(t, err)
+	require.Equal(t, healthpb.HealthCheckResponse_SERVING, response.Status)
+}
+
+func TestClientRequireLeaderAcceptsKnownRemoteLeader(t *testing.T) {
+	rpc, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	rpc.peers = testPeerService{isLeader: false}
+
+	healthServer := health.NewServer()
+	healthServer.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
+	listener := startAdmissionServer(t, rpc.ClientServerOptions(), healthServer)
+	client := admissionClient(t, listener)
+	ctx := metadata.NewOutgoingContext(context.Background(), metadata.Pairs(
+		rpctypes.MetadataRequireLeaderKey, rpctypes.MetadataHasLeader,
+	))
+	response, err := client.Check(ctx, &healthpb.HealthCheckRequest{})
+	require.NoError(t, err)
+	require.Equal(t, healthpb.HealthCheckResponse_SERVING, response.Status)
 }
 
 func TestClientRequestRateLimitsUnaryAndReservesPeer(t *testing.T) {

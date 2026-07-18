@@ -23,9 +23,11 @@ import (
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/kubewharf/kubebrain/pkg/backend/election"
 	"github.com/kubewharf/kubebrain/pkg/metrics"
 	"github.com/kubewharf/kubebrain/pkg/storage"
 )
@@ -54,10 +56,37 @@ func (s *RPCServer) ClientServerOptions() []grpc.ServerOption {
 // on the peer listener, but reserves it from public-client overload admission.
 func (s *RPCServer) PeerServerOptions() []grpc.ServerOption {
 	return []grpc.ServerOption{
-		grpc.ChainUnaryInterceptor(s.stampUnary),
-		grpc.ChainStreamInterceptor(s.stampStream),
+		grpc.ChainUnaryInterceptor(s.requireLeaderUnary, s.stampUnary),
+		grpc.ChainStreamInterceptor(s.requireLeaderStream, s.stampStream),
 		grpc.MaxRecvMsgSize(int(s.maxRequestBytes + grpcOverheadBytes)),
 	}
+}
+
+func (s *RPCServer) hasKnownLeader() bool {
+	return s.peers.IsLeader() || election.IsLeaderKnown(s.peers.GetLeaderInfo())
+}
+
+func requireLeader(ctx context.Context) bool {
+	md, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		return false
+	}
+	values := md.Get(rpctypes.MetadataRequireLeaderKey)
+	return len(values) > 0 && values[0] == rpctypes.MetadataHasLeader
+}
+
+func (s *RPCServer) requireLeaderUnary(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+	if requireLeader(ctx) && !s.hasKnownLeader() {
+		return nil, rpctypes.ErrGRPCNoLeader
+	}
+	return handler(ctx, req)
+}
+
+func (s *RPCServer) requireLeaderStream(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+	if requireLeader(ss.Context()) && !s.hasKnownLeader() {
+		return rpctypes.ErrGRPCNoLeader
+	}
+	return handler(srv, ss)
 }
 
 func (s *RPCServer) acquireRequest(method, kind string) bool {
@@ -97,6 +126,9 @@ func (s *RPCServer) allowRequestRate(method, kind string) bool {
 }
 
 func (s *RPCServer) admitUnary(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+	if requireLeader(ctx) && !s.hasKnownLeader() {
+		return nil, rpctypes.ErrGRPCNoLeader
+	}
 	if !s.allowRequestRate(info.FullMethod, "unary") {
 		return nil, rpctypes.ErrGRPCRequestTooManyRequests
 	}
@@ -110,6 +142,9 @@ func (s *RPCServer) admitUnary(ctx context.Context, req any, info *grpc.UnarySer
 }
 
 func (s *RPCServer) admitStream(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+	if requireLeader(ss.Context()) && !s.hasKnownLeader() {
+		return rpctypes.ErrGRPCNoLeader
+	}
 	if !s.acquireRequest(info.FullMethod, "stream") {
 		return rpctypes.ErrGRPCRequestTooManyRequests
 	}

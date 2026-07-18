@@ -2615,6 +2615,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   StatefulSet revision 收敛并立即返回。生产就绪文档同步把 production manifest 定义
   为需平台注入 StorageClass、镜像、跨 AZ、网络、证书和监控的测试基线，并把等待器及
   后续 endpoint/实际读写检查写入升级门槛。
+- **Watch/Lease A150 require-leader admission（2026-07-18）**：对照
+  `/root/etcd/server/etcdserver/api/v3rpc/interceptor.go`，官方 client
+  `WithRequireLeader` 通过 incoming metadata
+  `etcd-server-leader=true` 要求服务端在无 leader 时返回
+  `Unavailable: etcdserver: no leader`。KubeBrain 此前完全忽略该 metadata，Range
+  等读 RPC 即使调用方显式要求 leader 仍会在选主空窗继续执行。
+
+  public 和 peer gRPC listener 现统一在 handler 前检查 metadata；本机 leader 或已知
+  远端 leader 时继续处理，未知 holder 时返回官方 `ErrGRPCNoLeader`。public 拒绝发生
+  在 QPS/并发配额之前，内部 peer 转发同样检查但不消耗公共配额。真实 gRPC bufconn
+  测试覆盖 unary、stream 建立、无 metadata 放行及 follower 已知远端 leader 放行，
+  focused race 和完整 server 测试通过。`kubebrain:a150-require-leader` 在真实
+  3 PD/3 TiKV 上滚动为 3/3 Ready、零重启；官方 client/v3 黑盒以
+  `WithRequireLeader` 完成 Range、Lease Grant、KeepAliveOnce 和 Watch。
+  上游还会在已建立 stream 生命周期中主动感知 leader 丢失并取消；KubeBrain election
+  当前没有可订阅的 cluster leader freshness 通知，该动态关闭语义仍作为后续差距，
+  不以本项关闭。
 
 ### P1：通用服务能力
 
