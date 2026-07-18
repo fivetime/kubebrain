@@ -165,6 +165,22 @@ OUTPUT=/backup/kubebrain-logical-backup.jsonl \
 critical。25 小时阈值为每日备份留出 1 小时调度抖动，不代表所有套餐都采用同一 RPO；
 更严格套餐必须下调规则。
 
+`deploy/production/monitoring.yaml` 还以 1 分钟周期生成实例级计量序列：
+
+- `kubebrain_dbaas:cpu_usage_cores:sum`；
+- `kubebrain_dbaas:memory_working_set_bytes:sum`；
+- `kubebrain_dbaas:network_receive_bytes_per_second:sum` 和
+  `kubebrain_dbaas:network_transmit_bytes_per_second:sum`；
+- `kubebrain_dbaas:storage_provisioned_bytes:sum` 和
+  `kubebrain_dbaas:storage_used_bytes:sum`；
+- `kubebrain_dbaas:logical_backup_artifact_bytes:last` 和
+  `kubebrain_dbaas:logical_backup_age_seconds:last`。
+
+每条序列固定带 `dbaas_instance="kubebrain"`，只聚合本实例的 3 个 KubeBrain、
+3 个 PD、3 个 TiKV 容器和 6 个存储 PVC。部署模板化时必须同步替换实例标签、Pod/PVC
+选择器和备份 `BACKUP_INSTANCE`。这些序列是计量输入，不是最终账单；控制面必须另外
+实现缺测处理、不可变采样留存、跨周期积分、价格版本和审计对账。
+
 TiDB Operator 的 BR full/PITR 不能用于 KubeBrain 数据恢复。真实 S3 full backup 和
 独立 PD/TiKV Restore CR 都成功时，备份前已提交的 KubeBrain key 仍未出现在目标集群；
 任务 `Complete` 只证明 TiDB 管理范围恢复成功。BR raw 每次只处理一个 CF 且仍为实验

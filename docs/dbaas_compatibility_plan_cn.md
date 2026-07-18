@@ -2970,6 +2970,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   真实 TiKV/PD endpoint 对隔离前缀导出 1 条记录：v2 artifact 完整性、revision 和
   SHA-256 校验通过，textfile 报告 370 bytes、1 record、0 lease，测试 key 随后清理。
   该能力提供单实例原始容量/新鲜度；跨实例保留策略、对象存储占用和计费聚合仍是 P1。
+- **Operations A179 instance metering recording rules（2026-07-18）**：production
+  PrometheusRule 新增 1 分钟实例级聚合，统一输出
+  `dbaas_instance="kubebrain"`：数据面 CPU cores、working-set memory、RX/TX
+  bytes/s、PD/TiKV PVC provisioned/used bytes，以及最近逻辑备份 artifact bytes
+  和 age。容器选择器严格限定 3 个 KubeBrain 与独立 `kb` 集群的 3 PD/3 TiKV，
+  PVC 选择器严格限定对应 6 个卷，避免同 namespace 其他实例串账；used bytes 与
+  backup age 对短暂抓取/时钟偏差执行 `clamp_min(..., 0)`。
+
+  manifest 测试固定 8 个 record 名、完整 PromQL、1 分钟 interval 和实例标签。
+  Prometheus 3.5 `promtool check rules` 成功解析全部 34 条规则；合成规则测试分别输入
+  KubeBrain/PD/TiKV counter、memory、network、PVC 和 backup 序列，验证 8 个实际
+  求值及负 storage/age 钳制为 0。该层已提供规范化单实例计量输入；控制面缺测策略、
+  不可变采样留存、跨周期积分、价格版本、对象存储保留成本和审计对账仍未完成。
 
 ### P1：通用服务能力
 
@@ -2985,7 +2998,8 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
 4. 建立实例级限额和计量：请求字节、txn 操作数、跨连接 client RPC 总并发、client
    请求 QPS/burst、逻辑 Watch 总数、CPU/内存饱和、网络错误/丢包及 PD/TiKV PVC 容量
    告警已具备稳定错误或指标，网络 RX/TX 原始计量和逻辑备份 artifact 容量/新鲜度
-   指标已暴露；继续补计费级资源/容量/网络聚合。
+   指标已暴露，单实例资源/容量/网络/备份 recording rules 已建立；继续补控制面
+   缺测处理、计量留存、跨周期积分、价格版本、对象存储成本和审计对账。
 
 ### P2：运维兼容和长期验证
 
