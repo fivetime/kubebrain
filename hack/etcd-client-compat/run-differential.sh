@@ -5,6 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 KUBEBRAIN_ENDPOINT="${KUBEBRAIN_ETCD_ENDPOINT:-${ENDPOINT:-}}"
 ALLOW_DESTRUCTIVE_DIFFERENTIAL="${ALLOW_DESTRUCTIVE_DIFFERENTIAL:-false}"
 REFERENCE_ETCD_BIN="${REFERENCE_ETCD_BIN:-/root/etcd/bin/etcd}"
+ETCDCTL_BIN="${ETCDCTL_BIN:-/root/etcd/bin/etcdctl}"
 REFERENCE_CLIENT_URL="${REFERENCE_CLIENT_URL:-http://127.0.0.1:12379}"
 REFERENCE_PEER_URL="${REFERENCE_PEER_URL:-http://127.0.0.1:12380}"
 TEST_TIMEOUT="${TEST_TIMEOUT:-20m}"
@@ -31,6 +32,10 @@ if [ "$ALLOW_DESTRUCTIVE_DIFFERENTIAL" != true ]; then
 fi
 if [ ! -x "$REFERENCE_ETCD_BIN" ]; then
   echo "reference etcd binary is not executable: $REFERENCE_ETCD_BIN" >&2
+  exit 1
+fi
+if [ ! -x "$ETCDCTL_BIN" ]; then
+  echo "etcdctl binary is not executable: $ETCDCTL_BIN" >&2
   exit 1
 fi
 if curl --fail --silent --max-time 1 "${REFERENCE_CLIENT_URL}/health" >/dev/null 2>&1; then
@@ -92,6 +97,7 @@ fi
   cd "$ROOT_DIR/hack/etcd-client-compat"
   REFERENCE_ETCD_ENDPOINT="${REFERENCE_CLIENT_URL#http://}" \
     KUBEBRAIN_ETCD_ENDPOINT="$KUBEBRAIN_ENDPOINT" \
+    ETCDCTL_BIN="$ETCDCTL_BIN" \
     go test . -run Differential -count=1 -parallel=1 -timeout="$TEST_TIMEOUT" -v
 )
 test_succeeded=true

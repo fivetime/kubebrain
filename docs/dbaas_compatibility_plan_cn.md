@@ -3895,6 +3895,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Range/Txn/Delete/Watch/Mutation/Leadership 相关回归 3 轮通过，双端测试 prefix 零
   残留。本轮未发现新的服务端语义差异，无需重建服务端制品，运行镜像继续为
   `kubebrain:a221-empty-range-compare`。
+- **Compatibility A227 etcdctl make-mirror bidirectional release gate（2026-07-18）**：
+  对照上游 `client/v3/mirror/syncer.go`、`tests/integration/clientv3/mirror_test.go`
+  与 `etcdctl/ctlv3/command/make_mirror_command.go`，新增真实
+  `/root/etcd/bin/etcdctl make-mirror` 发布门禁。小型场景分别执行 reference→KubeBrain
+  和 KubeBrain→reference：两个 seed key 必须完成 SyncBase，随后源端同一 Txn 内更新
+  `a`、删除 `b`、创建 `c`，目标端必须最终精确为 `a/c`，且两个存活 key 的 ModRevision
+  相同，证明 make-mirror 按源 revision 将更新批次原子提交到目标。
+
+  独立分页场景在 KubeBrain source 以受 `--max-txn-ops` 约束的批次创建 1001 个 key，
+  强制跨越 mirror SyncBase 的固定 1000-key page；reference destination 必须完整收到
+  `key-0000` 至 `key-1000`。双向小型场景首轮约 0.53 秒、连续 10 轮约 4.7 秒、race
+  5 轮约 3.6 秒通过；分页场景包含强制成功的双端清理约 30.1 秒，race 约 38.1 秒通过。
+  首次分页验证虽复制成功，但 10 秒 cleanup deadline 对真实 TiKV 大范围删除不足并留下
+  双端各 1001 key；门禁现使用 60 秒清理预算且强制检查错误，旧残留已清除，最终双端
+  prefix 均为零。
+
+  `run-differential.sh` 现显式校验并传入 `ETCDCTL_BIN`，两个测试名纳入 `Differential`
+  选择器，确保不是手工旁路测试。compat module 全量 vet、server/etcd Range/Watch/Txn/
+  Delete/Mutation/Leadership 相关回归 3 轮通过。`docs/etcdctl_compatibility_cn.md`
+  中 `make-mirror` 已从“非生产保证”提升为“支持”；跨区域长期复制仍需独立 soak，不能
+  由该确定性发布门禁替代。本轮未发现服务端语义差异，运行镜像继续为
+  `kubebrain:a221-empty-range-compare`。
 - **Operations A185 certificate rotation completion state（2026-07-18）**：新增
   `hack/production/validate-certificate-rotation.sh`，把 client/peer CA rollover
   收敛为 `begin -> overlap -> complete` 三阶段门禁。begin 固定全部 KubeBrain Pod
