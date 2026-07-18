@@ -3760,6 +3760,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `kubebrain:a218-client-deadline`（image ID `sha256:ef0d22946a5c...`、OCI revision
   `e2cbc554bfa77c59dbae6f7a885df56d83088781`）完成三副本滚动更新后，制品级完整差分
   再次约 35.6 秒通过。
+- **Compatibility A219 leasing cache isolation/options/TTL bypass（2026-07-18）**：
+  对照上游 `TestLeasingOverwriteResponse`、`TestLeasingOwnerPutResponse`、
+  `TestLeasingGetWithOpts` 和 `TestLeasingGetNoLeaseTTL`，新增确定性组合差分。先让
+  leasing client 取得普通 key 所有权，篡改第一次 Get 返回对象中的 key/value byte
+  slice，再次 Get 必须仍返回原值，证明调用方无法通过 response alias 污染内部缓存。
+  owner Put 后进入 TCP 双向 blackhole；离线 Get 的 value/version/mod revision 必须与
+  Put response 一致，keys-only、count-only、limit、key sort、min/max create revision、
+  min/max mod revision 和 serializable 选项都必须由本地 owner cache 正确处理。
+
+  同一场景还通过直连 client 写入附带 60 秒 lease 的业务 key。在线首次读取成功后，
+  blackhole 窗口内再次 leasing Get 必须耗尽 500ms deadline，且 bridge 必须记录实际
+  丢弃流量，证明带 TTL 的业务 key 没有被错误视为可离线服务的 owner cache 数据。
+  reference etcd 与真实 TiKV-backed KubeBrain 完整差分连续 5 轮约 6.1 秒通过，race
+  3 轮约 5.1 秒通过；compat module 全量 vet、server/etcd 相关 KV/Txn/Range/Lease
+  回归 3 轮通过。本轮未发现新的服务端语义差异，运行镜像继续为
+  `kubebrain:a218-client-deadline`。
 - **Operations A185 certificate rotation completion state（2026-07-18）**：新增
   `hack/production/validate-certificate-rotation.sh`，把 client/peer CA rollover
   收敛为 `begin -> overlap -> complete` 三阶段门禁。begin 固定全部 KubeBrain Pod
