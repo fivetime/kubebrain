@@ -3358,6 +3358,37 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `692d9258b5820160c6be3c1be3c1e3ef541cccd4e17caf3fa04fb108deb71708`。
   三个 exact versions 到期后按 manifest 清理，A200 prefix 与 operation 残留均为 0。
   lifecycle 删除必须先更新控制面期望清单；跨 bucket/account 汇总与定期调度仍属管理面。
+- **Operations A201 dedicated namespace and credential boundary cleanup（2026-07-18）**：
+  生产 KubeBrain 与 TiDB Cluster Namespace 清单新增
+  `dbaas.kubebrain.io/instance` 和 `dbaas.kubebrain.io/dedicated=true` 边界标签；
+  未同时匹配实例和 dedicated 标签的共享 Namespace 不可进入清理状态。扩展
+  `uid-delete` 支持 cluster-scoped resource，Namespace 删除继续使用 API Server
+  `DeleteOptions.preconditions.uid` 和 foreground propagation，不退化为仅按名称删除。
+
+  新增 `hack/production/cleanup-instance-boundaries.sh` 的 prepare/delete/complete
+  状态机。prepare 必须先验证 A187 `kubebrain.destroy.receipt.v1` 的实例、两个
+  Namespace 和 `resources_absent=true`，冻结该回执 SHA-256、两个 Namespace UID，
+  以及位于独立管理 Namespace、同时带 instance/credential 所有权标签的外部 Secret
+  UID。delete 要求精确 `cleanup:<instance>:<cleanup-id>` 确认，重新验证回执摘要和
+  全部 UID 后才删除 Secret 与 Namespace；complete 等待全部边界消失后签发不可覆盖、
+  file/directory fsync 的 `kubebrain.boundary-cleanup.receipt.v1`。同名资源 UID
+  变化、回执被替换、共享 Namespace、错误凭据标签和错误确认均 fail closed；NotFound
+  可安全重试。
+
+  mock 测试覆盖 prepare/delete/complete 与 receipt 幂等、集群级删除参数、错误确认、
+  Namespace/Secret 所有权错误、两类 UID 漂移和销毁回执 digest 漂移。测试曾捕获
+  `snapshot_secret` 位于 `printf` 命令替换时 Bash 忽略非零状态的 fail-open，现已改为
+  显式赋值检查后才写入状态。完整 production test、目标 race、vet、shell syntax 和
+  manifest test 通过；同时修正 worker RBAC 清单测试，使其精确验证既有 Lease
+  create/get/update/delete 权限。
+
+  真实 `kind-kubebrain-dbaas` 隔离演练创建 `a201-kb`、`a201-storage` 两个专属
+  Namespace 和独立 `a201-control` 中两个凭据 Secret。错误确认非零退出且四个目标
+  均保留；正确确认后四次 API 删除均接受准备阶段记录的真实 UID，completion receipt
+  digest 绑定的 destroy receipt SHA-256 为
+  `48eb3d658431b440bc807c386bc7cb9cfa1f9e9322593eb8520d7e095539af60`，
+  `namespaces_absent=true`、`credentials_absent=true`。临时控制 Namespace 已清理；
+  主 3 个 KubeBrain Pod 保持 Ready 且零重启。
 - **Operations A185 certificate rotation completion state（2026-07-18）**：新增
   `hack/production/validate-certificate-rotation.sh`，把 client/peer CA rollover
   收敛为 `begin -> overlap -> complete` 三阶段门禁。begin 固定全部 KubeBrain Pod
@@ -3451,8 +3482,8 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
 3. DBaaS 创建、扩缩、升级的数据面 release gate、备份完成 gate、Object Lock
    上传/保留删除、恢复验证 receipt、UID-fenced 流量切换、恢复后持续审计、证书轮换
    gate、UID-fenced 销毁状态机及持久 operation API/worker fencing、Backup/
-   RestoreCutover/CertificateRotation/Destroy executors 已建立；继续完成专属
-   namespace/凭据外围清理和 bucket lifecycle 调度；exact-version inventory 对账已完成；
+   RestoreCutover/CertificateRotation/Destroy executors、专属 namespace/凭据外围
+   UID-fenced 清理已建立；继续完成 bucket lifecycle 调度；exact-version inventory 对账已完成；
    Kubernetes 原生提交者与 worker 最小权限身份已分离，单 namespace 跨实例公平调度和
    实例互斥、终态
    operation 的 Object Lock 不可变归档及 finalizer/删除门禁均已完成；继续补外部管理
