@@ -1,0 +1,60 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kubebrain-operations
+  labels:
+    app.kubernetes.io/name: kubebrain-operation-worker
+    app.kubernetes.io/part-of: kubebrain
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kubebrain-operation-worker
+  namespace: kubebrain-operations
+  labels:
+    app.kubernetes.io/name: kubebrain-operation-worker
+    app.kubernetes.io/part-of: kubebrain
+automountServiceAccountToken: true
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kubebrain-operation-worker
+  namespace: kubebrain-operations
+  labels:
+    app.kubernetes.io/name: kubebrain-operation-worker
+    app.kubernetes.io/part-of: kubebrain
+rules:
+  - apiGroups:
+      - dbaas.kubebrain.io
+    resources:
+      - kubebrainoperations
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - dbaas.kubebrain.io
+    resources:
+      - kubebrainoperations/status
+    verbs:
+      - get
+      - update
+      - patch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kubebrain-operation-worker
+  namespace: kubebrain-operations
+  labels:
+    app.kubernetes.io/name: kubebrain-operation-worker
+    app.kubernetes.io/part-of: kubebrain
+subjects:
+  - kind: ServiceAccount
+    name: kubebrain-operation-worker
+    namespace: kubebrain-operations
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: kubebrain-operation-worker

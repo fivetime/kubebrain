@@ -1,0 +1,137 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: kubebrainoperations.dbaas.kubebrain.io
+spec:
+  group: dbaas.kubebrain.io
+  scope: Namespaced
+  names:
+    plural: kubebrainoperations
+    singular: kubebrainoperation
+    kind: KubeBrainOperation
+    shortNames:
+      - kbop
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Instance
+          type: string
+          jsonPath: .spec.instance
+        - name: Type
+          type: string
+          jsonPath: .spec.type
+        - name: Phase
+          type: string
+          jsonPath: .status.phase
+        - name: Attempt
+          type: integer
+          jsonPath: .status.attempt
+        - name: Owner
+          type: string
+          jsonPath: .status.owner
+      schema:
+        openAPIV3Schema:
+          type: object
+          x-kubernetes-validations:
+            - rule: '!has(oldSelf.status) || !has(oldSelf.status.phase) || !(oldSelf.status.phase in ["Succeeded", "Failed"]) || self.status == oldSelf.status'
+              message: terminal operation status is immutable
+            - rule: '!has(self.status) || !has(self.status.phase) || ((!has(oldSelf.status) || !has(oldSelf.status.phase)) ? self.status.phase in ["Pending", "Running"] : (oldSelf.status.phase == "Pending" ? self.status.phase in ["Pending", "Running", "Failed"] : (oldSelf.status.phase == "Running" ? self.status.phase in ["Running", "Pending", "Succeeded", "Failed"] : self.status.phase == oldSelf.status.phase)))'
+              message: operation phase transition is not allowed
+            - rule: '!has(self.status) || !has(self.status.attempt) || self.status.attempt <= self.spec.maxAttempts'
+              message: status attempt cannot exceed spec maxAttempts
+            - rule: '!has(oldSelf.status) || !has(oldSelf.status.attempt) || !has(self.status) || !has(self.status.attempt) || self.status.attempt >= oldSelf.status.attempt'
+              message: status attempt cannot decrease
+            - rule: '!has(oldSelf.status) || !has(oldSelf.status.owner) || !has(self.status) || !has(self.status.owner) || self.status.owner == oldSelf.status.owner || (self.status.phase == "Pending" && self.status.owner == "") || self.status.attempt > oldSelf.status.attempt'
+              message: owner changes require a higher fencing attempt or explicit requeue
+            - rule: '!has(self.status) || !has(self.status.phase) || self.status.phase != "Running" || (self.status.owner != "" && self.status.attempt > 0 && self.status.leaseUntilUnix > 0)'
+              message: running operations require owner, attempt, and lease
+            - rule: '!has(self.status) || !has(self.status.phase) || self.status.phase != "Pending" || ((!has(self.status.owner) || self.status.owner == "") && (!has(self.status.leaseUntilUnix) || self.status.leaseUntilUnix == 0))'
+              message: pending operations cannot retain an owner or lease
+            - rule: '!has(self.status) || !has(self.status.phase) || !(self.status.phase in ["Succeeded", "Failed"]) || (self.status.leaseUntilUnix == 0 && self.status.completedAtUnix > 0)'
+              message: terminal operations require completion time and no lease
+            - rule: '!has(self.status) || !has(self.status.phase) || self.status.phase != "Succeeded" || size(self.status.receiptSHA256) == 64'
+              message: succeeded operations require a receipt SHA-256
+          required:
+            - spec
+          properties:
+            spec:
+              type: object
+              x-kubernetes-validations:
+                - rule: self == oldSelf
+                  message: operation spec is immutable
+              required:
+                - operationID
+                - instance
+                - type
+                - parametersSHA256
+                - maxAttempts
+              properties:
+                operationID:
+                  type: string
+                  minLength: 1
+                  maxLength: 128
+                  pattern: '^[A-Za-z0-9][A-Za-z0-9._-]*$'
+                instance:
+                  type: string
+                  minLength: 1
+                  maxLength: 128
+                  pattern: '^[A-Za-z0-9][A-Za-z0-9._-]*$'
+                type:
+                  type: string
+                  enum:
+                    - Backup
+                    - RestoreCutover
+                    - PostRestoreAudit
+                    - CertificateRotation
+                    - Destroy
+                parametersSHA256:
+                  type: string
+                  pattern: '^[a-f0-9]{64}$'
+                maxAttempts:
+                  type: integer
+                  format: int64
+                  minimum: 1
+                  maximum: 100
+            status:
+              type: object
+              properties:
+                phase:
+                  type: string
+                  enum:
+                    - Pending
+                    - Running
+                    - Succeeded
+                    - Failed
+                owner:
+                  type: string
+                  maxLength: 253
+                attempt:
+                  type: integer
+                  format: int64
+                  minimum: 0
+                leaseUntilUnix:
+                  type: integer
+                  format: int64
+                  minimum: 0
+                observedGeneration:
+                  type: integer
+                  format: int64
+                  minimum: 0
+                startedAtUnix:
+                  type: integer
+                  format: int64
+                  minimum: 0
+                completedAtUnix:
+                  type: integer
+                  format: int64
+                  minimum: 0
+                receiptSHA256:
+                  type: string
+                  pattern: '^$|^[a-f0-9]{64}$'
+                message:
+                  type: string
+                  maxLength: 4096

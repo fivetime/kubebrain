@@ -115,6 +115,42 @@ func TestProductionManifestsProvideStableCompleteMembership(t *testing.T) {
 	}
 }
 
+func TestOperationCRDAndWorkerRBACFencePersistentTasks(t *testing.T) {
+	crd := objectByKindAndName(
+		t, decodeManifest(t, "kubebrain-operation-crd.yaml"),
+		"CustomResourceDefinition", "kubebrainoperations.dbaas.kubebrain.io",
+	)
+	require.Equal(t, "Namespaced", nestedString(t, crd, "spec", "scope"))
+	require.Equal(t, "KubeBrainOperation", nestedString(t, crd, "spec", "names", "kind"))
+	versions, found, err := unstructured.NestedSlice(crd.Object, "spec", "versions")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Len(t, versions, 1)
+	version := &unstructured.Unstructured{Object: versions[0].(map[string]any)}
+	require.True(t, nestedBool(t, version, "storage"))
+	_, found, err = unstructured.NestedMap(version.Object, "subresources", "status")
+	require.NoError(t, err)
+	require.True(t, found)
+	validations, found, err := unstructured.NestedSlice(
+		version.Object, "schema", "openAPIV3Schema", "x-kubernetes-validations")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.GreaterOrEqual(t, len(validations), 7)
+
+	objects := decodeManifest(t, "kubebrain-operation-worker-rbac.yaml")
+	account := objectByKindAndName(t, objects, "ServiceAccount", "kubebrain-operation-worker")
+	require.True(t, nestedBool(t, account, "automountServiceAccountToken"))
+	role := objectByKindAndName(t, objects, "Role", "kubebrain-operation-worker")
+	rules, found, err := unstructured.NestedSlice(role.Object, "rules")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Len(t, rules, 2)
+	require.Contains(t, rules[0].(map[string]any)["resources"].([]any), "kubebrainoperations")
+	require.NotContains(t, rules[0].(map[string]any)["verbs"].([]any), "create")
+	require.Contains(t, rules[1].(map[string]any)["resources"].([]any), "kubebrainoperations/status")
+	require.Contains(t, rules[1].(map[string]any)["verbs"].([]any), "update")
+}
+
 func TestProductionMonitoringTracksStatefulSetReadiness(t *testing.T) {
 	objects := decodeManifest(t, "monitoring.yaml")
 	rule := objectByKindAndName(t, objects, "PrometheusRule", "kubebrain")
