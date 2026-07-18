@@ -19,6 +19,7 @@ import (
 	"errors"
 	"hash/crc32"
 	"time"
+	"unicode/utf8"
 
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
@@ -79,7 +80,22 @@ func requireLeader(ctx context.Context) bool {
 	return len(values) > 0 && values[0] == rpctypes.MetadataHasLeader
 }
 
+func validateClientAPIVersion(ctx context.Context) error {
+	md, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		return nil
+	}
+	values := md.Get(rpctypes.MetadataClientAPIVersionKey)
+	if len(values) > 0 && !utf8.ValidString(values[0]) {
+		return rpctypes.ErrGRPCInvalidClientAPIVersion
+	}
+	return nil
+}
+
 func (s *RPCServer) requireLeaderUnary(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+	if err := validateClientAPIVersion(ctx); err != nil {
+		return nil, err
+	}
 	if requireLeader(ctx) && !s.hasKnownLeader() {
 		return nil, rpctypes.ErrGRPCNoLeader
 	}
@@ -87,6 +103,9 @@ func (s *RPCServer) requireLeaderUnary(ctx context.Context, req any, info *grpc.
 }
 
 func (s *RPCServer) requireLeaderStream(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+	if err := validateClientAPIVersion(ss.Context()); err != nil {
+		return err
+	}
 	if requireLeader(ss.Context()) && !s.hasKnownLeader() {
 		return rpctypes.ErrGRPCNoLeader
 	}
@@ -173,6 +192,9 @@ func (s *RPCServer) allowRequestRate(method, kind string) bool {
 }
 
 func (s *RPCServer) admitUnary(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+	if err := validateClientAPIVersion(ctx); err != nil {
+		return nil, err
+	}
 	if requireLeader(ctx) && !s.hasKnownLeader() {
 		return nil, rpctypes.ErrGRPCNoLeader
 	}
@@ -189,6 +211,9 @@ func (s *RPCServer) admitUnary(ctx context.Context, req any, info *grpc.UnarySer
 }
 
 func (s *RPCServer) admitStream(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+	if err := validateClientAPIVersion(ss.Context()); err != nil {
+		return err
+	}
 	if requireLeader(ss.Context()) && !s.hasKnownLeader() {
 		return rpctypes.ErrGRPCNoLeader
 	}

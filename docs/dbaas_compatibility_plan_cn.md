@@ -2657,6 +2657,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   CI 命令及 label/二进制交叉核验门槛。带测试 metadata 的实际 TiKV 镜像构建成功，
   `docker inspect` 与容器内 `kube-brain version` 三项完全一致；最终提交镜像继续以
   本提交 SHA 重建并滚动验证。
+- **gRPC A153 client API version metadata（2026-07-18）**：继续对照
+  `/root/etcd/server/etcdserver/api/v3rpc/interceptor.go`，补齐
+  `client-api-version` incoming metadata 验证。public/peer 的 unary/stream 均在
+  handler 和公共 QPS/并发配额之前检查第一个值；缺失或合法 UTF-8 放行，非法 UTF-8
+  返回官方 `ErrGRPCInvalidClientAPIVersion`，避免代理链把畸形版本传播到日志和指标。
+
+  直接 incoming-context gRPC interceptor 测试覆盖四条路径、handler 未执行及配额未
+  消耗。当前 grpc-go 会在客户端发送前先拒绝非打印 ASCII，因此标准网络客户端观察到
+  `Internal: header key ... contains value with non-printable ASCII characters`，不会到达
+  server-side UTF-8 分支；新增参考 etcd/KubeBrain 双端差分固定缺失/合法成功和该传输
+  错误，连续 10 轮通过。server-side 官方 InvalidArgument 分支仍用于可注入原始 metadata
+  的代理、其他传输实现及未来 grpc-go 行为。
 
 ### P1：通用服务能力
 

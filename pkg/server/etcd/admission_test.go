@@ -250,6 +250,76 @@ func TestClientRequireLeaderStreamClosesWhenLeaderIsLost(t *testing.T) {
 	}
 }
 
+func TestClientAPIVersionMetadataValidation(t *testing.T) {
+	rpc, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	rpc.SetMaxRequestsInFlight(1)
+	rpc.SetRequestRateLimit(1, 2)
+
+	for _, tc := range []struct {
+		name    string
+		value   *string
+		wantErr bool
+	}{
+		{name: "missing"},
+		{name: "valid", value: ptr("3.7.0")},
+		{name: "invalid UTF-8", value: ptr(string([]byte{0xff})), wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			if tc.value != nil {
+				ctx = metadata.NewIncomingContext(ctx, metadata.Pairs(
+					rpctypes.MetadataClientAPIVersionKey, *tc.value,
+				))
+			}
+			unaryCalled := false
+			_, err := rpc.admitUnary(ctx, nil, &grpc.UnaryServerInfo{FullMethod: "/test.Unary"},
+				func(context.Context, any) (any, error) {
+					unaryCalled = true
+					return &healthpb.HealthCheckResponse{}, nil
+				})
+			if tc.wantErr {
+				require.ErrorIs(t, err, rpctypes.ErrGRPCInvalidClientAPIVersion)
+				require.False(t, unaryCalled)
+				require.Zero(t, rpc.requestsInFlight)
+				return
+			}
+			require.NoError(t, err)
+			require.True(t, unaryCalled)
+		})
+	}
+}
+
+func TestPeerClientAPIVersionMetadataRejectsUnaryAndStream(t *testing.T) {
+	rpc, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs(
+		rpctypes.MetadataClientAPIVersionKey, string([]byte{0xff}),
+	))
+
+	called := false
+	_, err := rpc.requireLeaderUnary(ctx, nil, &grpc.UnaryServerInfo{},
+		func(context.Context, any) (any, error) {
+			called = true
+			return nil, nil
+		})
+	require.ErrorIs(t, err, rpctypes.ErrGRPCInvalidClientAPIVersion)
+	require.False(t, called)
+
+	stream := &serverStreamWithContext{ctx: ctx}
+	err = rpc.requireLeaderStream(nil, stream, &grpc.StreamServerInfo{},
+		func(any, grpc.ServerStream) error {
+			called = true
+			return nil
+		})
+	require.ErrorIs(t, err, rpctypes.ErrGRPCInvalidClientAPIVersion)
+	require.False(t, called)
+}
+
+func ptr[T any](value T) *T {
+	return &value
+}
+
 func TestClientRequestRateLimitsUnaryAndReservesPeer(t *testing.T) {
 	rpc, closeFn := newTestRPCServer(t)
 	defer closeFn()
