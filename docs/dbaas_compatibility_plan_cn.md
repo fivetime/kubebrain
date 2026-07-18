@@ -3878,6 +3878,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   vet、server/etcd Range/Unary/Deadline/Cancel/ReadBarrier/Leadership 相关回归 3 轮
   通过。本轮未发现新的服务端语义差异，无需重建服务端制品，运行镜像继续为
   `kubebrain:a221-empty-range-compare`。
+- **Compatibility A226 clientv3 namespace range/Txn/Watch isolation（2026-07-18）**：
+  对照上游 `tests/integration/clientv3/namespace_test.go` 与
+  `tests/integration/v3_kv_test.go::TestKVWithEmptyValue`，新增 namespace wrapper
+  端到端差分。每端在唯一物理 tenant prefix 下写入 `a/b/c`，并在 prefix 字典序后继
+  `tenant0/` 放置相邻 key；namespaced `Get("", WithFromKey)` 必须只返回去前缀后的
+  `a/b/c`。随后 namespaced Txn 通过 value compare，在 nested Txn 中更新 `a`、创建
+  `d`，并由外层删除 `b`；nested Put 与 Delete 的 PrevKv key 必须递归去前缀，三条
+  namespaced Watch event 必须暴露逻辑 key 且共享顶层 Txn revision。
+
+  事务后 namespace 必须精确包含 `a/c/d`；`Delete("", WithFromKey, WithPrevKV)` 必须
+  返回 Deleted=3 和去前缀后的三个 PrevKv，namespace 随后为空，而物理相邻 key 仍保留。
+  reference etcd 与真实 TiKV-backed KubeBrain 首轮约 2.7 秒、连续 5 轮约 13.3 秒、
+  race 3 轮约 8.7 秒通过；Namespace/TxnFromKey/LeasingFromKey 组合连续 3 轮约 13.3
+  秒通过。upstream namespace package 连续 3 轮、compat module 全量 vet、server/etcd
+  Range/Txn/Delete/Watch/Mutation/Leadership 相关回归 3 轮通过，双端测试 prefix 零
+  残留。本轮未发现新的服务端语义差异，无需重建服务端制品，运行镜像继续为
+  `kubebrain:a221-empty-range-compare`。
 - **Operations A185 certificate rotation completion state（2026-07-18）**：新增
   `hack/production/validate-certificate-rotation.sh`，把 client/peer CA rollover
   收敛为 `begin -> overlap -> complete` 三阶段门禁。begin 固定全部 KubeBrain Pod
