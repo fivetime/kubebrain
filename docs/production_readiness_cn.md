@@ -6,7 +6,35 @@
 
 - 本地 kind、standalone kube-apiserver、临时 in-cluster kube-apiserver 只能证明一部分 API 行为。
 - 判断能否替代 etcd，最终必须把真实 Kubernetes/k3s apiserver 的 `--etcd-servers` 指向 KubeBrain，在真实 TiKV/PD 后端上跑对象生命周期、list/watch、lease、compact、apiserver 重启和 KubeBrain leader 切换验证。
-- `deploy/dev` 和 `deploy/production` 下的 YAML 只作为本地/测试脚手架，不表达推荐生产运维策略。
+- `deploy/dev` 只用于本地验证；`deploy/production` 是经过结构化测试的高可用基线，但
+  平台仍必须注入生产镜像、StorageClass、跨可用区调度、网络策略、证书和监控栈，不能
+  不经环境适配直接发布。
+
+## TiKV/PD 升级完成门槛
+
+TiDB Operator 通过 StatefulSet `rollingUpdate.partition` 逐成员协调 PD、TiKV 升级。
+`kubectl rollout status` 在只更新一个成员时也可能输出
+`partitioned roll out complete`，不能作为 DBaaS 控制面宣告升级完成的依据。发布或
+配置变更后必须运行：
+
+```shell
+KUBE_CONTEXT=production \
+NAMESPACE=tidb-cluster \
+TIDB_CLUSTER=kb \
+TIMEOUT_SECONDS=1800 \
+hack/production/wait-tidbcluster-ready.sh
+```
+
+等待器同时要求：
+
+1. TidbCluster 的 `Ready` condition 为 `True`；
+2. PD/TiKV StatefulSet 的 generation 已被 controller 观察；
+3. desired、ready、updated 副本数相等且大于零；
+4. `currentRevision` 与 `updateRevision` 相等。
+
+任一条件超时都会返回非零并打印 CR 与两个 StatefulSet 的诊断信息。控制面随后仍应
+执行 KubeBrain endpoint health 和实际 Put/Get/Delete；资源收敛不单独证明数据面语义
+健康。
 
 ## 真-k3s 消费端驱动验证进展（2026-07-03）
 

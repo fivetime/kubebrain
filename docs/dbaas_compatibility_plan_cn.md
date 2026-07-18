@@ -2603,6 +2603,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   rollingUpdate partition 协调升级，不能以普通 `kubectl rollout status` 的
   “partitioned roll out complete” 作为整集群升级完成证据；控制面必须等待
   TidbCluster Ready 及 currentRevision/updateRevision 收敛。
+- **Control plane A149 strict TiDB convergence gate（2026-07-18）**：新增
+  `hack/production/wait-tidbcluster-ready.sh` 作为发布和配置变更后的控制面门槛。
+  它不把 TidbCluster 单独的 Ready condition 当作充分条件；还要求 PD/TiKV
+  StatefulSet generation 已观察、desired=ready=updated 且大于零，以及
+  currentRevision=updateRevision。超时返回非零并打印 CR/StatefulSet 诊断，context、
+  namespace、cluster、timeout 和 poll interval 均可由环境注入。
+
+  回归测试固定完整收敛成功，并证明 Ready=True 但 partition 仅 updated 1/3、generation
+  尚未观察或 CR Ready=False 都不能提前成功。真实 3 PD/3 TiKV 集群上等待器确认两组
+  StatefulSet revision 收敛并立即返回。生产就绪文档同步把 production manifest 定义
+  为需平台注入 StorageClass、镜像、跨 AZ、网络、证书和监控的测试基线，并把等待器及
+  后续 endpoint/实际读写检查写入升级门槛。
 
 ### P1：通用服务能力
 
