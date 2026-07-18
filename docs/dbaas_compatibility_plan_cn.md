@@ -3543,6 +3543,37 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   KubeBrain 已正确读取 `WatchCreateRequest.Fragment`、按配置阈值分片并仅在最后一片
   清除 Fragment；本轮未发现实现差异，只增加缺失的官方 client 接收上限证据。三个
   KubeBrain Pod 和 3 PD/3 TiKV 在测试后保持 Ready、零重启。
+- **Compatibility A208 etcd 3.7 leasing client lock order（2026-07-18）**：
+  对照 `/root/etcd/tests/integration/clientv3/lease/leasing_test.go` 首次引入
+  `go.etcd.io/etcd/client/v3/leasing` 黑盒差分。场景组合两个 leasing KV client 的
+  missing-key acquire、跨 client owner/cache invalidation、`WithPrevKV`、历史 revision、
+  non-owner delete，以及同一 owner 对同一 data key 的 8 个并发 Put；最终缓存必须返回
+  最高 ModRevision、Version=11 且删除后不可继续读到旧值。
+
+  修复前参考 etcd 快速完成，但真实 TiKV-backed KubeBrain 的并发阶段多笔 Txn 每 10 秒
+  才返回 DeadlineExceeded；即使 client 重试后约 32.65 秒偶尔收敛，也违反上游
+  `TestLeasingConcurrentPut` 的进度契约。直接连接 leader 仍复现，排除了 follower proxy。
+  根因是 atomic Txn 采用 `mutation stripe -> backend logical RLock`，而 leasing owner
+  竞争会混入需要 range/read staged execution 的 Txn，后者采用
+  `backend logical exclusive -> mutation stripe`；两类请求命中相同 data key 时形成锁序
+  反转，直到 unary deadline 打破等待。
+
+  `backendShim.BeginRangeTxn` 在取得 backend logical exclusive 后，现把返回 context 标记
+  为已覆盖全部 mutation stripes。staged transaction 内的 point Put/Delete/TxnApply
+  因此不再二次取得 stripe；全局 exclusive 已保证其 read/guard/write 窗口内没有其他
+  backend writer，atomic writer 即使先取得 stripe也必须先完成 logical RLock 临界区，
+  不再形成等待环。确定性单测固定 range transaction 内 TxnApply 不得重取 stripe，原有
+  same-key serialization/cancel/BeginMutation ownership 回归连续 20 轮及目标 race
+  10 轮通过，完整 server test 通过。
+
+  leasing 并发阶段现使用独立 5 秒 budget；参考 etcd 与修复后的 KubeBrain 差分连续
+  10 轮通过，每轮总场景从旧版约 32 秒降到 0.8–1.7 秒。真实 endpoint 的差分 race
+  3 轮通过；STM、无条件 Txn、Put/Delete 三组并发回归各 5 轮合计 105.009 秒通过。
+  committed-source 镜像 `kubebrain:a208-leasing-lock-order` revision
+  `3d72aca1284f0dc259264c31e898763fce81ee96`、image ID
+  `sha256:fbc158669052addea02d2567c7ed8402920dad321021036914b4f066dbbe1bc2`；
+  顺序滚动后 3 KubeBrain、3 PD、3 TiKV 均 Ready 且零重启，endpoint proposal health
+  成功。
 - **Operations A185 certificate rotation completion state（2026-07-18）**：新增
   `hack/production/validate-certificate-rotation.sh`，把 client/peer CA rollover
   收敛为 `begin -> overlap -> complete` 三阶段门禁。begin 固定全部 KubeBrain Pod
