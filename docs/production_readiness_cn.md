@@ -807,6 +807,32 @@ lease 限制残留时间。跨样本 revision 必须单调不降，持续时间�
 数据探针。KubeBrain 网关共享同一 TiKV MVCC 后端，不存在 etcd 各成员独立 backend；
 因此不能用成员间 `endpoint hashkv` 代替上述端到端审计。
 
+### DBaaS 持久操作 API
+
+生产管理集群先安装 `deploy/production/kubebrain-operation-crd.yaml`，operation worker
+使用 `deploy/production/kubebrain-operation-worker-rbac.yaml`。namespaced
+`KubeBrainOperation.dbaas.kubebrain.io/v1alpha1` spec 包含稳定 operation ID、instance、
+操作类型、完整参数文件 SHA-256 和 maxAttempts，并由 CEL 保证创建后不可变。当前类型
+覆盖 Backup、RestoreCutover、PostRestoreAudit、CertificateRotation 和 Destroy。
+
+`hack/production/cmd/operationctl` 提供 submit、claim、heartbeat、retry、succeed、fail
+和 get。claim 按创建时间稳定排序，通过 status resourceVersion CAS 从 Pending 或租约
+过期的 Running 中认领；每次认领递增 attempt。owner+attempt 是 fencing token，旧 worker
+在接管后不能 heartbeat、retry 或提交终态。heartbeat 延长 lease；retry 清除 owner/
+lease 回到 Pending 但保留已消耗 attempt；达到 maxAttempts 的 operation 由下一次扫描
+CAS 标记 Failed。Succeeded/Failed 终态由 CRD admission 保证不可变。同 owner/attempt/
+receipt 的 finish 可幂等重试，不同结果不能覆盖。
+
+worker RBAC 只允许 get/list/watch operation 及 get/update/patch status，不允许 create、
+delete 或修改 spec；submit 权限只应授予管理面 API 身份。成功状态必须记录不可变操作
+receipt 的 SHA-256。`hack/production/run-post-restore-audit-operation.sh` 已把 A190 接入：
+只 claim PostRestoreAudit，核对参数 JSON 摘要，在子审计运行期间续租；heartbeat 失败会
+终止本地进程，审计失败 requeue，成功才将 receipt 摘要写入 Succeeded。
+
+参数文件不得包含私钥内容；TLS 凭据由 worker Secret/env 提供。参数文件及 A189 state/
+receipt 必须位于 worker 可读的受保护持久卷。CRD 保存编排状态和摘要，不保存大文件或
+凭据，也不应安装在被该 operation 运维的 KubeBrain 数据面中。
+
 导出默认覆盖 `/registry` 前缀：
 
 ```shell

@@ -3101,7 +3101,33 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `467764733078405147`、删 revision `467764733078405148` 且 prefix 零残留；随后真实
   Kubernetes Service/EndpointSlice controller 与同一数据面完成 2 秒、3 样本窗口，
   首末 delete revision 为 `467764733078405150/467764733078405154`，receipt 发布且
-  prefix 零残留。控制面 API、持久任务队列和多租户审计聚合仍是 P1。
+  prefix 零残留。多租户审计聚合仍是 P1。
+- **Operations A191 persistent operation API and worker fencing（2026-07-18）**：
+  新增 namespaced `KubeBrainOperation.dbaas.kubebrain.io/v1alpha1` CRD、
+  `hack/production/internal/operationqueue` 和 `operationctl`。spec 绑定 operation ID、
+  instance、类型、完整参数 SHA-256 与 maxAttempts，并由 CEL admission 保证不可变；
+  status 使用 Kubernetes resourceVersion CAS 认领。Pending 或过期 Running 可 claim，
+  每次递增 attempt；owner+attempt 是 fencing token，旧 worker 不能 heartbeat/retry/
+  finish。heartbeat 续租，retry 清 owner/lease 后保留 attempt，达到 maxAttempts 的任务
+  被扫描为 Failed；Succeeded/Failed 终态不可变。同 owner/attempt/receipt finish 可在
+  响应丢失后幂等重试，不同终态证据拒绝覆盖。
+
+  CRD CEL 还要求 attempt 不下降/不超过上限、owner 变更必须提高 attempt 或显式 requeue、
+  Running 必须有 owner/attempt/lease、Pending 不能残留 owner/lease、终态必须清 lease
+  并记录完成时间、Succeeded 必须有 receipt SHA-256。worker Role 只允许读取 operation
+  与更新 status，不允许 create/delete/spec 写入。真实 kind API Server 上两 worker 并发
+  claim 结果为 `0/3`（仅一个成功）；2 秒 lease 过期后 worker-c 以 attempt 2 接管，旧
+  worker heartbeat 非零退出；重复 finish 成功，直接复活终态、修改 spec 和不增 attempt
+  换 owner 均被 admission 拒绝。ServiceAccount impersonation 验证
+  get/status-update=`yes/yes`、create/delete=`no/no`。
+
+  `run-post-restore-audit-operation.sh` 首个接入 A190：只 claim PostRestoreAudit，核对
+  参数文件 digest，运行期间 heartbeat，fencing 时终止子进程，失败 requeue，成功将
+  A190 receipt SHA-256 提交终态。真实 CRD→claim→A190 2 秒/3 样本→finish 链路以
+  attempt 1 完成，status receipt digest
+  `a1a8333123fcb2912603d7e416124c5f9e5f2eb393d62776a21ae7686c3ad245`，
+  探针 prefix 零残留。其余 executor、管理 API 认证授权、跨实例公平调度和审计聚合仍是
+  P1。
 - **Operations A185 certificate rotation completion state（2026-07-18）**：新增
   `hack/production/validate-certificate-rotation.sh`，把 client/peer CA rollover
   收敛为 `begin -> overlap -> complete` 三阶段门禁。begin 固定全部 KubeBrain Pod
@@ -3193,9 +3219,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
 2. `client/v3/concurrency` mutex/election/session、lease 自然过期和 failover
    recipe 已通过；继续增加长时间 soak。
 3. DBaaS 创建、扩缩、升级的数据面 release gate、备份完成 gate、Object Lock
-   上传/保留删除、恢复验证 receipt、证书轮换 gate 和 UID-fenced 销毁状态机已建立；
-   继续建立恢复流量切换、专属 namespace/凭据外围清理、bucket lifecycle/inventory
-   对账，并补控制面任务超时、回滚、不可变审计归档与跨实例调度。
+   上传/保留删除、恢复验证 receipt、UID-fenced 流量切换、恢复后持续审计、证书轮换
+   gate、UID-fenced 销毁状态机及持久 operation API/worker fencing 已建立；继续接入
+   其余 executor，完成专属 namespace/凭据外围清理、bucket lifecycle/inventory 对账，
+   并补 API 认证授权、不可变审计归档、跨实例公平调度和管理面 HA soak。
 4. 建立实例级限额和计量：请求字节、txn 操作数、跨连接 client RPC 总并发、client
    请求 QPS/burst、逻辑 Watch 总数、CPU/内存饱和、网络错误/丢包及 PD/TiKV PVC 容量
    告警已具备稳定错误或指标，网络 RX/TX 原始计量和逻辑备份 artifact 容量/新鲜度
