@@ -3595,6 +3595,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   exclusive context 覆盖全部 mutation stripes 已足以处理这些范围路径，本轮未发现新的
   服务端差异，只补齐上游 leasing range 客户端证据。运行镜像继续为 committed-source
   `kubebrain:a208-leasing-lock-order`；3 KubeBrain、3 PD、3 TiKV 保持 Ready、零重启。
+- **Compatibility A210 leasing session expiry/recovery（2026-07-18）**：
+  对照 `/root/etcd/tests/integration/clientv3/lease/leasing_test.go` 的
+  `TestLeasingSessionExpire` 和 session cancel 路径，新增短 TTL leasing client
+  黑盒差分。场景先由第一个 client 缓存旧值并取得 owner lease，再由独立官方 client
+  显式 Revoke 该 lease，以确定性方式模拟 session 失效；确认 owner key 删除后，第二个
+  leasing client 写入新值，第一个 client 必须丢弃旧缓存、返回新值并建立不同于旧 lease
+  的新 owner。
+
+  新 owner 的创建由 leasing client 异步完成，因此不能在首次新值读取后立即断言 owner
+  已出现；初版即时检查在参考 etcd 与 KubeBrain 间呈现时序差异，但在有界轮询中两者均
+  完成重建。这是观测时机差异而非持久语义缺口。最终差分连续 5 轮通过，point/range/
+  session-expiry 三组 leasing 差分在真实 endpoint 下 race 3 轮通过；keepalive 零 TTL、
+  过期响应顺序和 orphaned concurrency session handoff 回归各 5 轮通过，compat module
+  全量 vet 通过。本轮无需服务端修改，运行镜像继续为
+  `kubebrain:a208-leasing-lock-order`。
 - **Operations A185 certificate rotation completion state（2026-07-18）**：新增
   `hack/production/validate-certificate-rotation.sh`，把 client/peer CA rollover
   收敛为 `begin -> overlap -> complete` 三阶段门禁。begin 固定全部 KubeBrain Pod
