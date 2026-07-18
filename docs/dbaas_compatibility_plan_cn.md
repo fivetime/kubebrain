@@ -3756,7 +3756,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   120 秒短 deadline，最终差分改用 5 分钟防挂死预算；完整差分约 90.4 秒通过，隔离
   race 约 26.9 秒通过，256 个序列及最终状态均与 reference etcd 一致。compat module
   全量 vet、`pkg/storage/...` 与 `pkg/server/etcd/...` 全量测试通过；三个运行副本
-  全程 Ready、零重启，压测后 endpoint proposal 健康。
+  全程 Ready、零重启，压测后 endpoint proposal 健康。提交 `e2cbc55` 的最终镜像
+  `kubebrain:a218-client-deadline`（image ID `sha256:ef0d22946a5c...`、OCI revision
+  `e2cbc554bfa77c59dbae6f7a885df56d83088781`）完成三副本滚动更新后，制品级完整差分
+  再次约 35.6 秒通过。
 - **Operations A185 certificate rotation completion state（2026-07-18）**：新增
   `hack/production/validate-certificate-rotation.sh`，把 client/peer CA rollover
   收敛为 `begin -> overlap -> complete` 三阶段门禁。begin 固定全部 KubeBrain Pod
