@@ -2287,6 +2287,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `kubebrain:a132-txn-range-first-revision`，三 Pod Ready、zero restart，
   `/health` 与 `/readyz` 正常，exact image 仍为
   `33b23b61fdfdd3ecceaa8256502e6ce442c1174be6f9f33b1e5e8e5627c0e001`。
+- **Lease A134 KeepAlive stream/Revoke signed-ID boundary differential
+  （2026-07-18）**：对照
+  `/root/etcd/server/etcdserver/api/v3rpc/lease.go:leaseKeepAlive` 与公开
+  Lease gRPC，新增 13 场景 raw 双端状态机矩阵。同一双向 KeepAlive 流先发送
+  ID `0` 和不存在的正 ID，双方均返回匹配 ID、`TTL=0` 的成功响应且不关闭流；
+  随后同一流继续成功续租 `-1`、`math.MinInt64` 和 `math.MaxInt64` 三个显式
+  租约，返回 TTL 位于 `(0, GrantedTTL]`，response header revision 为正。
+
+  三个 signed ID 首次 Revoke 均成功；再次 Revoke，以及对 ID `0` 和未知 ID
+  的 Revoke，均精确返回 gRPC `NotFound`、
+  `etcdserver: requested lease not found`。临时 `/root/etcd`
+  3.8.0-alpha.0 reference 与在线三副本 TiKV-backed KubeBrain 间连续 10 轮、
+  race 3 轮通过，未发现新实现差异。完整 compat suite 用时 87.788s，
+  `go test ./...`、根模块与 compat module `go vet ./...`、强制 backend race
+  （54.506s）及完整 server race（232.768s）通过。本轮只增加兼容性测试，不改变
+  服务二进制；在线集群继续运行 `kubebrain:a132-txn-range-first-revision`，
+  exact image 仍为
+  `33b23b61fdfdd3ecceaa8256502e6ce442c1174be6f9f33b1e5e8e5627c0e001`。
 
 ### P1：通用服务能力
 
