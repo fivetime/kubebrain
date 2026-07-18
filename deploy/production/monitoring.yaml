@@ -250,3 +250,27 @@ spec:
           annotations:
             summary: KubeBrain data-plane container CPU is heavily throttled
             description: "Container {{ $labels.container }} in {{ $labels.pod }} has {{ $value | humanizePercentage }} CPU periods throttled."
+        - alert: KubeBrainNetworkMetricsMissing
+          expr: ((count(container_network_receive_bytes_total{namespace="kubebrain-system",pod=~"kubebrain-[0-2]",interface="eth0"}) + count(container_network_receive_bytes_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-2]",interface="eth0"})) < 9) or ((count(container_network_transmit_bytes_total{namespace="kubebrain-system",pod=~"kubebrain-[0-2]",interface="eth0"}) + count(container_network_transmit_bytes_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-2]",interface="eth0"})) < 9)
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: KubeBrain data-plane network metrics are incomplete
+            description: "Expected cAdvisor RX and TX byte counters for all 9 KubeBrain/PD/TiKV pod interfaces."
+        - alert: KubeBrainNetworkErrors
+          expr: (sum by (namespace, pod, interface) (increase(container_network_receive_errors_total{namespace="kubebrain-system",pod=~"kubebrain-[0-2]",interface="eth0"}[10m]) + increase(container_network_transmit_errors_total{namespace="kubebrain-system",pod=~"kubebrain-[0-2]",interface="eth0"}[10m])) > 0) or (sum by (namespace, pod, interface) (increase(container_network_receive_errors_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-2]",interface="eth0"}[10m]) + increase(container_network_transmit_errors_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-2]",interface="eth0"}[10m])) > 0)
+          for: 0m
+          labels:
+            severity: warning
+          annotations:
+            summary: KubeBrain data-plane network interface errors detected
+            description: "Pod {{ $labels.pod }} reported {{ $value }} RX/TX errors on {{ $labels.interface }} in 10 minutes."
+        - alert: KubeBrainNetworkPacketDrops
+          expr: (sum by (namespace, pod, interface) (increase(container_network_receive_packets_dropped_total{namespace="kubebrain-system",pod=~"kubebrain-[0-2]",interface="eth0"}[10m]) + increase(container_network_transmit_packets_dropped_total{namespace="kubebrain-system",pod=~"kubebrain-[0-2]",interface="eth0"}[10m])) > 0) or (sum by (namespace, pod, interface) (increase(container_network_receive_packets_dropped_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-2]",interface="eth0"}[10m]) + increase(container_network_transmit_packets_dropped_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-2]",interface="eth0"}[10m])) > 0)
+          for: 0m
+          labels:
+            severity: warning
+          annotations:
+            summary: KubeBrain data-plane network packets were dropped
+            description: "Pod {{ $labels.pod }} dropped {{ $value }} RX/TX packets on {{ $labels.interface }} in 10 minutes."

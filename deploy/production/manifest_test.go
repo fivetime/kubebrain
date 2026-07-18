@@ -187,16 +187,23 @@ func TestProductionMonitoringTracksPDAndTiKV(t *testing.T) {
 		"KubeBrainResourceMetricsMissing":     `((count(container_memory_working_set_bytes{namespace="kubebrain-system",container="kubebrain",image!=""}) + count(container_memory_working_set_bytes{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-2]",container=~"pd|tikv",image!=""})) < 9) or ((count(kube_pod_container_resource_limits{namespace="kubebrain-system",container="kubebrain",resource="memory",unit="byte"}) + count(kube_pod_container_resource_limits{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-2]",container=~"pd|tikv",resource="memory",unit="byte"})) < 9)`,
 		"KubeBrainDataPlaneMemoryHigh":        `((container_memory_working_set_bytes{namespace="kubebrain-system",container="kubebrain",image!=""} / on(namespace,pod,container) kube_pod_container_resource_limits{namespace="kubebrain-system",container="kubebrain",resource="memory",unit="byte"}) > 0.9) or ((container_memory_working_set_bytes{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-2]",container=~"pd|tikv",image!=""} / on(namespace,pod,container) kube_pod_container_resource_limits{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-2]",container=~"pd|tikv",resource="memory",unit="byte"}) > 0.9)`,
 		"KubeBrainDataPlaneCPUThrottlingHigh": `((rate(container_cpu_cfs_throttled_periods_total{namespace="kubebrain-system",container="kubebrain",image!=""}[5m]) / rate(container_cpu_cfs_periods_total{namespace="kubebrain-system",container="kubebrain",image!=""}[5m])) > 0.25) or ((rate(container_cpu_cfs_throttled_periods_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-2]",container=~"pd|tikv",image!=""}[5m]) / rate(container_cpu_cfs_periods_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-2]",container=~"pd|tikv",image!=""}[5m])) > 0.25)`,
+		"KubeBrainNetworkMetricsMissing":      `((count(container_network_receive_bytes_total{namespace="kubebrain-system",pod=~"kubebrain-[0-2]",interface="eth0"}) + count(container_network_receive_bytes_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-2]",interface="eth0"})) < 9) or ((count(container_network_transmit_bytes_total{namespace="kubebrain-system",pod=~"kubebrain-[0-2]",interface="eth0"}) + count(container_network_transmit_bytes_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-2]",interface="eth0"})) < 9)`,
+		"KubeBrainNetworkErrors":              `(sum by (namespace, pod, interface) (increase(container_network_receive_errors_total{namespace="kubebrain-system",pod=~"kubebrain-[0-2]",interface="eth0"}[10m]) + increase(container_network_transmit_errors_total{namespace="kubebrain-system",pod=~"kubebrain-[0-2]",interface="eth0"}[10m])) > 0) or (sum by (namespace, pod, interface) (increase(container_network_receive_errors_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-2]",interface="eth0"}[10m]) + increase(container_network_transmit_errors_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-2]",interface="eth0"}[10m])) > 0)`,
+		"KubeBrainNetworkPacketDrops":         `(sum by (namespace, pod, interface) (increase(container_network_receive_packets_dropped_total{namespace="kubebrain-system",pod=~"kubebrain-[0-2]",interface="eth0"}[10m]) + increase(container_network_transmit_packets_dropped_total{namespace="kubebrain-system",pod=~"kubebrain-[0-2]",interface="eth0"}[10m])) > 0) or (sum by (namespace, pod, interface) (increase(container_network_receive_packets_dropped_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-2]",interface="eth0"}[10m]) + increase(container_network_transmit_packets_dropped_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-2]",interface="eth0"}[10m])) > 0)`,
 	} {
 		alertRule := prometheusRuleByAlert(t, groups, alert)
 		require.Equal(t, expr, alertRule["expr"])
 		switch alert {
-		case "KubeBrainStorageVolumeMetricsMissing", "KubeBrainResourceMetricsMissing":
+		case "KubeBrainStorageVolumeMetricsMissing", "KubeBrainResourceMetricsMissing", "KubeBrainNetworkMetricsMissing":
 			require.Equal(t, "warning", alertRule["labels"].(map[string]any)["severity"])
 			require.Equal(t, "15m", alertRule["for"])
-		case "KubeBrainDataPlaneCPUThrottlingHigh":
+		case "KubeBrainDataPlaneCPUThrottlingHigh", "KubeBrainNetworkErrors", "KubeBrainNetworkPacketDrops":
 			require.Equal(t, "warning", alertRule["labels"].(map[string]any)["severity"])
-			require.Equal(t, "15m", alertRule["for"])
+			if alert == "KubeBrainDataPlaneCPUThrottlingHigh" {
+				require.Equal(t, "15m", alertRule["for"])
+			} else {
+				require.Equal(t, "0m", alertRule["for"])
+			}
 		default:
 			require.Equal(t, "critical", alertRule["labels"].(map[string]any)["severity"])
 		}
@@ -216,6 +223,12 @@ func TestProductionAlertMetricsExist(t *testing.T) {
 		"container_cpu_cfs_periods_total",
 		"container_cpu_cfs_throttled_periods_total",
 		"container_memory_working_set_bytes",
+		"container_network_receive_bytes_total",
+		"container_network_receive_errors_total",
+		"container_network_receive_packets_dropped_total",
+		"container_network_transmit_bytes_total",
+		"container_network_transmit_errors_total",
+		"container_network_transmit_packets_dropped_total",
 		"grpc_server_handled_total",
 		"grpc_server_handling_seconds_bucket",
 		"kube_pod_container_resource_limits",
