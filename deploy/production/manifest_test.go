@@ -215,6 +215,55 @@ func TestProductionMonitoringTracksPDAndTiKV(t *testing.T) {
 	}
 }
 
+func TestProductionMonitoringProvidesInstanceMetering(t *testing.T) {
+	objects := decodeManifest(t, "monitoring.yaml")
+	rule := objectByKindAndName(t, objects, "PrometheusRule", "kubebrain")
+	groups, found, err := unstructured.NestedSlice(rule.Object, "spec", "groups")
+	require.NoError(t, err)
+	require.True(t, found)
+
+	var meteringGroup map[string]any
+	for _, rawGroup := range groups {
+		group := rawGroup.(map[string]any)
+		if group["name"] == "kubebrain.metering" {
+			meteringGroup = group
+			break
+		}
+	}
+	require.NotNil(t, meteringGroup)
+	require.Equal(t, "1m", meteringGroup["interval"])
+
+	expected := map[string]string{
+		"kubebrain_dbaas:cpu_usage_cores:sum": `sum(rate(container_cpu_usage_seconds_total{namespace="kubebrain-system",pod=~"kubebrain-[0-2]",container="kubebrain",image!=""}[5m])) + ` +
+			`sum(rate(container_cpu_usage_seconds_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-2]",container=~"pd|tikv",image!=""}[5m]))`,
+		"kubebrain_dbaas:memory_working_set_bytes:sum": `sum(container_memory_working_set_bytes{namespace="kubebrain-system",pod=~"kubebrain-[0-2]",container="kubebrain",image!=""}) + ` +
+			`sum(container_memory_working_set_bytes{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-2]",container=~"pd|tikv",image!=""})`,
+		"kubebrain_dbaas:network_receive_bytes_per_second:sum": `sum(rate(container_network_receive_bytes_total{namespace="kubebrain-system",pod=~"kubebrain-[0-2]",interface="eth0"}[5m])) + ` +
+			`sum(rate(container_network_receive_bytes_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-2]",interface="eth0"}[5m]))`,
+		"kubebrain_dbaas:network_transmit_bytes_per_second:sum": `sum(rate(container_network_transmit_bytes_total{namespace="kubebrain-system",pod=~"kubebrain-[0-2]",interface="eth0"}[5m])) + ` +
+			`sum(rate(container_network_transmit_bytes_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-2]",interface="eth0"}[5m]))`,
+		"kubebrain_dbaas:storage_provisioned_bytes:sum": `sum(kubelet_volume_stats_capacity_bytes{namespace="tidb-cluster",persistentvolumeclaim=~"(pd-kb-pd|tikv-kb-tikv)-[0-2]"})`,
+		"kubebrain_dbaas:storage_used_bytes:sum": `clamp_min(sum(kubelet_volume_stats_capacity_bytes{namespace="tidb-cluster",persistentvolumeclaim=~"(pd-kb-pd|tikv-kb-tikv)-[0-2]"}) - ` +
+			`sum(kubelet_volume_stats_available_bytes{namespace="tidb-cluster",persistentvolumeclaim=~"(pd-kb-pd|tikv-kb-tikv)-[0-2]"}), 0)`,
+		"kubebrain_dbaas:logical_backup_artifact_bytes:last": `max(kubebrain_logical_backup_artifact_bytes{instance="kubebrain"})`,
+		"kubebrain_dbaas:logical_backup_age_seconds:last":    `clamp_min(time() - max(kubebrain_logical_backup_last_success_timestamp_seconds{instance="kubebrain"}), 0)`,
+	}
+	rules, ok := meteringGroup["rules"].([]any)
+	require.True(t, ok)
+	require.Len(t, rules, len(expected))
+	for _, rawRule := range rules {
+		recordingRule := rawRule.(map[string]any)
+		record, ok := recordingRule["record"].(string)
+		require.True(t, ok)
+		expr, exists := expected[record]
+		require.Truef(t, exists, "unexpected recording rule %q", record)
+		require.Equal(t, expr, recordingRule["expr"])
+		require.Equal(t, map[string]any{"dbaas_instance": "kubebrain"}, recordingRule["labels"])
+		delete(expected, record)
+	}
+	require.Empty(t, expected)
+}
+
 func TestProductionAlertMetricsExist(t *testing.T) {
 	objects := decodeManifest(t, "monitoring.yaml")
 	rule := objectByKindAndName(t, objects, "PrometheusRule", "kubebrain")
@@ -227,6 +276,7 @@ func TestProductionAlertMetricsExist(t *testing.T) {
 		"etcd_server_is_leader",
 		"container_cpu_cfs_periods_total",
 		"container_cpu_cfs_throttled_periods_total",
+		"container_cpu_usage_seconds_total",
 		"container_memory_working_set_bytes",
 		"container_network_receive_bytes_total",
 		"container_network_receive_errors_total",
@@ -236,6 +286,7 @@ func TestProductionAlertMetricsExist(t *testing.T) {
 		"container_network_transmit_packets_dropped_total",
 		"grpc_server_handled_total",
 		"grpc_server_handling_seconds_bucket",
+		"kubebrain_logical_backup_artifact_bytes",
 		"kubebrain_logical_backup_last_success_timestamp_seconds",
 		"kube_pod_container_resource_limits",
 		"kube_statefulset_status_replicas_ready",

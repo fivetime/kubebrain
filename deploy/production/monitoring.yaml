@@ -74,6 +74,41 @@ metadata:
     app.kubernetes.io/name: kubebrain
 spec:
   groups:
+    - name: kubebrain.metering
+      interval: 1m
+      rules:
+        - record: kubebrain_dbaas:cpu_usage_cores:sum
+          expr: sum(rate(container_cpu_usage_seconds_total{namespace="kubebrain-system",pod=~"kubebrain-[0-2]",container="kubebrain",image!=""}[5m])) + sum(rate(container_cpu_usage_seconds_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-2]",container=~"pd|tikv",image!=""}[5m]))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:memory_working_set_bytes:sum
+          expr: sum(container_memory_working_set_bytes{namespace="kubebrain-system",pod=~"kubebrain-[0-2]",container="kubebrain",image!=""}) + sum(container_memory_working_set_bytes{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-2]",container=~"pd|tikv",image!=""})
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:network_receive_bytes_per_second:sum
+          expr: sum(rate(container_network_receive_bytes_total{namespace="kubebrain-system",pod=~"kubebrain-[0-2]",interface="eth0"}[5m])) + sum(rate(container_network_receive_bytes_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-2]",interface="eth0"}[5m]))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:network_transmit_bytes_per_second:sum
+          expr: sum(rate(container_network_transmit_bytes_total{namespace="kubebrain-system",pod=~"kubebrain-[0-2]",interface="eth0"}[5m])) + sum(rate(container_network_transmit_bytes_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-2]",interface="eth0"}[5m]))
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:storage_provisioned_bytes:sum
+          expr: sum(kubelet_volume_stats_capacity_bytes{namespace="tidb-cluster",persistentvolumeclaim=~"(pd-kb-pd|tikv-kb-tikv)-[0-2]"})
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:storage_used_bytes:sum
+          expr: clamp_min(sum(kubelet_volume_stats_capacity_bytes{namespace="tidb-cluster",persistentvolumeclaim=~"(pd-kb-pd|tikv-kb-tikv)-[0-2]"}) - sum(kubelet_volume_stats_available_bytes{namespace="tidb-cluster",persistentvolumeclaim=~"(pd-kb-pd|tikv-kb-tikv)-[0-2]"}), 0)
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:logical_backup_artifact_bytes:last
+          expr: max(kubebrain_logical_backup_artifact_bytes{instance="kubebrain"})
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:logical_backup_age_seconds:last
+          expr: clamp_min(time() - max(kubebrain_logical_backup_last_success_timestamp_seconds{instance="kubebrain"}), 0)
+          labels:
+            dbaas_instance: kubebrain
     - name: kubebrain.availability
       rules:
         - alert: KubeBrainTargetDown
