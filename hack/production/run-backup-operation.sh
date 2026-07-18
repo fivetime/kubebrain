@@ -113,35 +113,42 @@ run_backup() {
 }
 
 child=0
+heartbeat_pid=0
 cleanup() {
   if [[ "$child" -gt 0 ]] && kill -0 "$child" 2>/dev/null; then
     kill "$child" 2>/dev/null || true
     wait "$child" 2>/dev/null || true
+  fi
+  if [[ "$heartbeat_pid" -gt 0 ]] && kill -0 "$heartbeat_pid" 2>/dev/null; then
+    kill "$heartbeat_pid" 2>/dev/null || true
+    wait "$heartbeat_pid" 2>/dev/null || true
   fi
 }
 trap cleanup EXIT INT TERM
 run_backup &
 child=$!
 heartbeat_interval=$((LEASE_SECONDS / 3))
-heartbeat_failed=false
-while kill -0 "$child" 2>/dev/null; do
-  sleep "$heartbeat_interval"
-  if ! kill -0 "$child" 2>/dev/null; then
-    break
-  fi
-  if ! run_operationctl --action heartbeat --name "$name" --owner "$WORKER_ID" \
-    --attempt "$attempt" --lease "${LEASE_SECONDS}s" >/dev/null; then
-    heartbeat_failed=true
-    kill "$child" 2>/dev/null || true
-    break
-  fi
-done
+(
+  while true; do
+    sleep "$heartbeat_interval"
+    if ! run_operationctl --action heartbeat --name "$name" --owner "$WORKER_ID" \
+      --attempt "$attempt" --lease "${LEASE_SECONDS}s" >/dev/null; then
+      kill "$child" 2>/dev/null || true
+      exit 75
+    fi
+  done
+) &
+heartbeat_pid=$!
 set +e
 wait "$child"
 backup_rc=$?
+kill "$heartbeat_pid" 2>/dev/null
+wait "$heartbeat_pid"
+heartbeat_rc=$?
 set -e
 child=0
-if [[ "$heartbeat_failed" == true ]]; then
+heartbeat_pid=0
+if [[ "$heartbeat_rc" == 75 ]]; then
   echo "operation heartbeat failed; worker was fenced" >&2
   exit 1
 fi

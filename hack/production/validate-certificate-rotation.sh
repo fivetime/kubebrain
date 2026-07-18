@@ -14,6 +14,7 @@ KUBECTL="${KUBECTL:-kubectl}"
 ETCDCTL="${ETCDCTL:-etcdctl}"
 OPENSSL="${OPENSSL:-openssl}"
 KUBE_CONTEXT="${KUBE_CONTEXT:-}"
+KUBECONFIG_PATH="${KUBECONFIG_PATH:-}"
 
 usage() {
   cat >&2 <<'EOF'
@@ -75,6 +76,9 @@ receipt_file="${RECEIPT_OUTPUT:-${STATE_DIR}/${ROTATION_ID}.receipt.json}"
 kubectl_args=()
 if [[ -n "$KUBE_CONTEXT" ]]; then
   kubectl_args+=(--context "$KUBE_CONTEXT")
+fi
+if [[ -n "$KUBECONFIG_PATH" ]]; then
+  kubectl_args+=(--kubeconfig "$KUBECONFIG_PATH")
 fi
 
 fingerprint() {
