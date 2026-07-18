@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 # Copyright 2022 ByteDance and/or its affiliates
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,12 +18,12 @@ BIN_NAME="kube-brain"
 BIN_DIR="./bin"
 WORK_DIR="$(cd "$(dirname "${BASH_SOURCE}")/.." && pwd -P)"
 
-echo ${WORK_DIR}
-cd ${WORK_DIR} || exit
-mkdir -p $BIN_DIR
+echo "${WORK_DIR}"
+cd "${WORK_DIR}"
+mkdir -p "$BIN_DIR"
 
 storage=TiKV
-source $WORK_DIR/build/build-base.sh $storage
+source "$WORK_DIR/build/build-base.sh" "$storage"
 
-cd ./cmd || exit
-go build --tags tikv -o ../$BIN_DIR/$BIN_NAME -ldflags "$ldflags"
+cd ./cmd
+go build --tags tikv -o "../$BIN_DIR/$BIN_NAME" -ldflags "$ldflags"
