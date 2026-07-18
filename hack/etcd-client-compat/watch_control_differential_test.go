@@ -35,9 +35,77 @@ func TestWatchControlDifferentialAgainstReferenceEtcd(t *testing.T) {
 		runSingleWatchProgressScenario(t, reference),
 		runSingleWatchProgressScenario(t, compatEndpoint()),
 	)
+	require.Equal(t,
+		runWatchFilterEnumScenario(t, reference, "reference"),
+		runWatchFilterEnumScenario(t, compatEndpoint(), "kubebrain"),
+	)
 	referenceFragments := runWatchFragmentScenario(t, reference, "reference")
 	kubebrainFragments := runWatchFragmentScenario(t, compatEndpoint(), "kubebrain")
 	require.Equal(t, referenceFragments, kubebrainFragments)
+}
+
+type watchFilterEnumOutcome struct {
+	UnknownTypes   []int32
+	DuplicateTypes []int32
+}
+
+func runWatchFilterEnumScenario(t *testing.T, endpoint, instance string) watchFilterEnumOutcome {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	conn, err := grpc.NewClient(endpoint, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	kv := etcdserverpb.NewKVClient(conn)
+	prefix := fmt.Sprintf("/dbaas-watch-filter-enum/%s/%d/", instance, time.Now().UnixNano())
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_, _ = kv.DeleteRange(cleanupCtx, &etcdserverpb.DeleteRangeRequest{
+			Key: []byte(prefix), RangeEnd: []byte(clientv3.GetPrefixRangeEnd(prefix)),
+		})
+	})
+
+	run := func(suffix string, filters []etcdserverpb.WatchCreateRequest_FilterType, wantEvents int) []int32 {
+		key := []byte(prefix + suffix)
+		put, putErr := kv.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("value")})
+		require.NoError(t, putErr)
+		_, deleteErr := kv.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{Key: key})
+		require.NoError(t, deleteErr)
+
+		stream, watchErr := etcdserverpb.NewWatchClient(conn).Watch(ctx)
+		require.NoError(t, watchErr)
+		require.NoError(t, stream.Send(&etcdserverpb.WatchRequest{
+			RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{CreateRequest: &etcdserverpb.WatchCreateRequest{
+				Key: key, StartRevision: put.Header.Revision, Filters: filters,
+			}},
+		}))
+		created, recvErr := stream.Recv()
+		require.NoError(t, recvErr)
+		require.True(t, created.Created)
+
+		types := make([]int32, 0, wantEvents)
+		for len(types) < wantEvents {
+			response, eventErr := stream.Recv()
+			require.NoError(t, eventErr)
+			for _, event := range response.Events {
+				types = append(types, int32(event.Type))
+			}
+		}
+		require.Len(t, types, wantEvents)
+		require.NoError(t, stream.CloseSend())
+		return types
+	}
+
+	return watchFilterEnumOutcome{
+		UnknownTypes: run("unknown",
+			[]etcdserverpb.WatchCreateRequest_FilterType{etcdserverpb.WatchCreateRequest_FilterType(99)}, 2),
+		DuplicateTypes: run("duplicate",
+			[]etcdserverpb.WatchCreateRequest_FilterType{
+				etcdserverpb.WatchCreateRequest_NOPUT,
+				etcdserverpb.WatchCreateRequest_NOPUT,
+			}, 1),
+	}
 }
 
 type watchFragmentOutcome struct {

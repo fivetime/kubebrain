@@ -1948,6 +1948,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   10 轮、race 3 轮通过。部署 `kubebrain:a115-compare-enums` 后三个 Pod Ready、
   zero restart、endpoint health 正常，运行时 exact image
   `91343632e7ebe87c1733bc03156c7a8183ab8607ee8f2a80583da170fbf8fd6d`。
+- **Watch A116 unknown/duplicate filter differential（2026-07-18）**：对照
+  `/root/etcd/server/etcdserver/api/v3rpc/watch.go:FiltersFromRequest` 与
+  `/root/etcd/server/storage/mvcc/watchable_store.go`，补齐 raw protobuf WatchCreate
+  filter 边界。reference 对未知 FilterType 不返回错误，而是忽略该项；重复 NOPUT
+  等价于一个 NOPUT，不会取消 watch 或重复事件。KubeBrain 的实时与历史过滤实现已
+  满足该规则，本轮将其固化为官方 API 双端差分：未知 filter 的历史 watch 收到 PUT、
+  DELETE，重复 NOPUT 只收到 DELETE，并继续比较既有 create/cancel/progress/fragment
+  控制契约。
+
+  新矩阵在临时 `/root/etcd` reference 与在线三副本 TiKV-backed KubeBrain 间连续
+  10 轮通过，race 下连续 3 轮通过；`go test ./...`、根模块与 compat module
+  `go vet ./...` 及完整 server race（202.077s）通过。本轮只增加兼容性测试，不改变
+  服务二进制；三个 Pod 继续 Ready、zero restart、endpoint health 正常，运行时
+  exact image 仍为
+  `91343632e7ebe87c1733bc03156c7a8183ab8607ee8f2a80583da170fbf8fd6d`。
 
 ### P1：通用服务能力
 
