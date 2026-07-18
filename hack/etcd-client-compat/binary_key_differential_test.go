@@ -57,22 +57,23 @@ func runBinaryKeyScenario(t *testing.T, endpoint string) []binaryKeyOutcome {
 		{0xff, 0x00},
 		{0xff, 0x01},
 	}
+	requireBinaryRangesEmpty(t, ctx, client,
+		&etcdserverpb.RangeRequest{Key: []byte{0x00}, RangeEnd: []byte{0x01}},
+		&etcdserverpb.RangeRequest{Key: []byte{0x7f, 0x00}},
+		&etcdserverpb.RangeRequest{Key: []byte{0xfe}, RangeEnd: []byte{0xff}},
+		&etcdserverpb.RangeRequest{Key: []byte{0xff}, RangeEnd: []byte{0}},
+	)
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		deleteExactKeys(cleanupCtx, client, keys)
+	})
 	for i, key := range keys {
 		_, err = client.Put(ctx, &etcdserverpb.PutRequest{
 			Key: key, Value: []byte{byte('a' + i)},
 		})
 		require.NoError(t, err)
 	}
-	t.Cleanup(func() {
-		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cleanupCancel()
-		for _, key := range keys[:7] {
-			_, _ = client.DeleteRange(cleanupCtx, &etcdserverpb.DeleteRangeRequest{Key: key})
-		}
-		_, _ = client.DeleteRange(cleanupCtx, &etcdserverpb.DeleteRangeRequest{
-			Key: []byte{0xff}, RangeEnd: []byte{0},
-		})
-	})
 
 	outcomes := []binaryKeyOutcome{
 		binaryRangeOutcome(t, ctx, client, "nul-point", &etcdserverpb.RangeRequest{Key: []byte{0x00}}),
@@ -115,6 +116,38 @@ func runBinaryKeyScenario(t *testing.T, endpoint string) []binaryKeyOutcome {
 		}),
 	)
 	return outcomes
+}
+
+func requireBinaryRangesEmpty(
+	t *testing.T,
+	ctx context.Context,
+	client etcdserverpb.KVClient,
+	ranges ...*etcdserverpb.RangeRequest,
+) {
+	t.Helper()
+	for _, req := range ranges {
+		probe := *req
+		probe.Limit = 1
+		probe.KeysOnly = true
+		resp, err := client.Range(ctx, &probe)
+		require.NoError(t, err)
+		require.Emptyf(t, resp.Kvs,
+			"binary differential tests require a disposable endpoint; range [%x,%x) contains unrelated key %x",
+			req.Key, req.RangeEnd, firstKey(resp))
+	}
+}
+
+func firstKey(resp *etcdserverpb.RangeResponse) []byte {
+	if len(resp.Kvs) == 0 {
+		return nil
+	}
+	return resp.Kvs[0].Key
+}
+
+func deleteExactKeys(ctx context.Context, client etcdserverpb.KVClient, keys [][]byte) {
+	for _, key := range keys {
+		_, _ = client.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{Key: key})
+	}
 }
 
 func binaryRangeOutcome(

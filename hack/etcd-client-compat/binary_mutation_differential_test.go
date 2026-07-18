@@ -53,19 +53,23 @@ func runBinaryMutationScenario(t *testing.T, endpoint string) []binaryMutationOu
 		{0xfe, 0x01},
 		{0xff},
 	}
+	requireBinaryRangesEmpty(t, ctx, client,
+		&etcdserverpb.RangeRequest{Key: []byte{0x00}, RangeEnd: []byte{0x01}},
+		&etcdserverpb.RangeRequest{Key: []byte{0x01}},
+		&etcdserverpb.RangeRequest{Key: []byte{0xfe}, RangeEnd: []byte{0xff}},
+		&etcdserverpb.RangeRequest{Key: []byte{0xff}},
+	)
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		deleteExactKeys(cleanupCtx, client, keys)
+	})
 	for i, key := range keys {
 		_, err = client.Put(ctx, &etcdserverpb.PutRequest{
 			Key: key, Value: []byte{byte('a' + i)},
 		})
 		require.NoError(t, err)
 	}
-	t.Cleanup(func() {
-		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cleanupCancel()
-		_, _ = client.DeleteRange(cleanupCtx, &etcdserverpb.DeleteRangeRequest{
-			Key: []byte{0x00}, RangeEnd: []byte{0},
-		})
-	})
 
 	txnRange, err := client.Txn(ctx, &etcdserverpb.TxnRequest{
 		Success: []*etcdserverpb.RequestOp{{
