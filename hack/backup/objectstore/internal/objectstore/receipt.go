@@ -1,10 +1,12 @@
 package objectstore
 
 import (
+	"bytes"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 )
@@ -87,8 +89,8 @@ func ReadReceipt(path string) (Receipt, error) {
 	if err != nil {
 		return receipt, err
 	}
-	if err := json.Unmarshal(data, &receipt); err != nil {
-		return receipt, fmt.Errorf("decode receipt: %w", err)
+	if err := decodeCanonicalReceipt(data, &receipt, "object backup receipt"); err != nil {
+		return receipt, err
 	}
 	if err := receipt.Validate(); err != nil {
 		return receipt, err
@@ -112,8 +114,8 @@ func ReadDeletionReceipt(path string) (DeletionReceipt, error) {
 	if err != nil {
 		return receipt, err
 	}
-	if err := json.Unmarshal(data, &receipt); err != nil {
-		return receipt, fmt.Errorf("decode deletion receipt: %w", err)
+	if err := decodeCanonicalReceipt(data, &receipt, "object backup deletion receipt"); err != nil {
+		return receipt, err
 	}
 	if err := receipt.Validate(); err != nil {
 		return receipt, err
@@ -150,13 +152,34 @@ func ReadAuditReceipt(path string) (AuditReceipt, error) {
 	if err != nil {
 		return receipt, err
 	}
-	if err := json.Unmarshal(data, &receipt); err != nil {
-		return receipt, fmt.Errorf("decode operation audit receipt: %w", err)
+	if err := decodeCanonicalReceipt(data, &receipt, "object operation audit receipt"); err != nil {
+		return receipt, err
 	}
 	if err := receipt.Validate(); err != nil {
 		return receipt, err
 	}
 	return receipt, nil
+}
+
+func decodeCanonicalReceipt(data []byte, destination any, description string) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(destination); err != nil {
+		return fmt.Errorf("decode %s: %w", description, err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return fmt.Errorf("%s contains trailing JSON", description)
+	}
+	canonical, err := json.Marshal(destination)
+	if err != nil {
+		return err
+	}
+	canonical = append(canonical, '\n')
+	if !bytes.Equal(data, canonical) {
+		return fmt.Errorf("%s is not canonical", description)
+	}
+	return nil
 }
 
 func WriteReceiptAtomic(path string, receipt Receipt) error {
