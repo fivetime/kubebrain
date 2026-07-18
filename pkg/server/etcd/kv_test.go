@@ -3000,6 +3000,45 @@ func TestTxnRejectsPutOverlappingDeleteRange(t *testing.T) {
 	require.Contains(t, err.Error(), "duplicate key")
 }
 
+func TestTxnIntervalValidationMatchesEtcdFromKeySentinel(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	for _, tc := range []struct {
+		name        string
+		deleteFirst bool
+		wantKey     bool
+	}{
+		{name: "delete then put", deleteFirst: true, wantKey: true},
+		{name: "put then delete", wantKey: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			prefix := "/registry/generic-txn/from-key/" + tc.name + "/"
+			key := []byte(prefix + "z")
+			deleteOp := &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestDeleteRange{
+				RequestDeleteRange: &etcdserverpb.DeleteRangeRequest{
+					Key:      []byte(prefix + "m"),
+					RangeEnd: []byte{0},
+				},
+			}}
+			putOp := &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestPut{
+				RequestPut: &etcdserverpb.PutRequest{Key: key, Value: []byte("value")},
+			}}
+			ops := []*etcdserverpb.RequestOp{putOp, deleteOp}
+			if tc.deleteFirst {
+				ops = []*etcdserverpb.RequestOp{deleteOp, putOp}
+			}
+
+			resp, err := server.Txn(context.Background(), &etcdserverpb.TxnRequest{Success: ops})
+			require.NoError(t, err)
+			require.True(t, resp.Succeeded)
+			stored, err := server.Range(context.Background(), &etcdserverpb.RangeRequest{Key: key})
+			require.NoError(t, err)
+			require.Equal(t, tc.wantKey, len(stored.Kvs) == 1)
+		})
+	}
+}
+
 func TestTxnAllowsSameKeyInDifferentBranches(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

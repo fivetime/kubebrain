@@ -641,10 +641,9 @@ func validateTxnRequestOp(op *etcdserverpb.RequestOp, maxTxnOps int) error {
 }
 
 type txnDeleteInterval struct {
-	start     []byte
-	end       []byte
-	point     bool
-	openEnded bool
+	start []byte
+	end   []byte
+	point bool
 }
 
 func validateTxnIntervals(ops []*etcdserverpb.RequestOp) error {
@@ -726,9 +725,8 @@ func newTxnDeleteInterval(r *etcdserverpb.DeleteRangeRequest) txnDeleteInterval 
 		return txnDeleteInterval{start: r.Key, point: true}
 	}
 	return txnDeleteInterval{
-		start:     r.Key,
-		end:       r.RangeEnd,
-		openEnded: len(r.RangeEnd) == 1 && r.RangeEnd[0] == 0,
+		start: r.Key,
+		end:   r.RangeEnd,
 	}
 }
 
@@ -739,7 +737,7 @@ func (i txnDeleteInterval) contains(key []byte) bool {
 	if bytes.Compare(key, i.start) < 0 {
 		return false
 	}
-	return i.openEnded || bytes.Compare(key, i.end) < 0
+	return bytes.Compare(key, i.end) < 0
 }
 
 func duplicateTxnKeyError() error {

@@ -2015,6 +2015,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   通过。部署 `kubebrain:a119-txn-validation-order` 后三个 Pod Ready、zero
   restart；逐 Pod Status 与 leader/follower 写转发正常，运行时 exact image
   `bce1813a12cf11814c08dcda3815c71e85e7733208d80b290aa94ee6ff5c1cba`。
+- **Txn A120 from-key interval validation parity（2026-07-18）**：对照
+  `/root/etcd/server/etcdserver/api/v3rpc/key.go:checkIntervals` 与
+  `/root/etcd/pkg/adt/interval_tree.go:StringAffineComparable` 发现，reference 的
+  duplicate-key 校验只将空字符串视为 affine 正无穷；标准 from-key RangeEnd
+  `{0}` 仍按原始字节区间参与校验。因此同一 Txn 中 DeleteRange(from-key) 与范围内
+  Put 无论先后都被 reference 接受，再由事务执行顺序决定最终 key 是否存在。
+  KubeBrain 原先在自定义 interval 中把 `{0}` 特判为 open-ended，提前以
+  `etcdserver: duplicate key given in txn request` 拒绝这两类请求。
+
+  现移除校验层的额外 `{0}` open-ended 特判；实际 DeleteRange 执行层仍保持 etcd
+  from-key 语义。端到端单元测试覆盖 Delete→Put 最终保留 key、Put→Delete 最终删除
+  key，并连续 30 轮通过。raw protobuf 双端矩阵还覆盖范围前 Put、空 range 和反向
+  range；修复前仅两项 from-key overlap 不同，修复后在临时 `/root/etcd`
+  3.8.0-alpha.0 reference 与在线三副本 TiKV-backed KubeBrain 间连续 10 轮、
+  race 3 轮通过。`go test ./...`、根模块与 compat module `go vet ./...` 及完整
+  server race（210.599s）通过。部署 `kubebrain:a120-from-key-interval` 后三个
+  Pod Ready、zero restart，逐 Pod Status 与 leader/follower 写转发正常，运行时
+  exact image
+  `f29788b5c40c2dadb048650036138196b8be0a19d219e1980d8bc8517a29a678`。
 
 ### P1：通用服务能力
 
