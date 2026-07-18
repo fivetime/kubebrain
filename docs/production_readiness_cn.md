@@ -539,7 +539,8 @@ hack/dev/verify.sh
 
 逻辑备份脚本会运行仓库内 Go command，依赖随主 `go.mod` 管理，不会在每次演练时创建临时 Go module 或动态拉取依赖。默认请求超时时间为 `10m`，大集群演练可以通过 `TIMEOUT=30m` 这类 Go duration 字符串调整导出、恢复、count、内容校验和清理超时。所有 `hack/backup/*.sh` 脚本都支持 `--help` 查看参数。
 
-当前格式为 `kubebrain.logical.v2`：首行 manifest 固定源 prefix 与 snapshot revision，
+当前格式为 `kubebrain.logical.v2`：首行 manifest 固定源 prefix、snapshot revision
+与导出开始时间，
 lease 行固定源 ID 和导出时的正数剩余 TTL，尾行记录/lease 总数和覆盖 manifest/全部
 记录的 SHA-256。导出先写同目录临时文件，完成
 `fsync` 后原子 rename 并同步父目录；中断导出不会把不完整内容发布到目标路径。
@@ -549,6 +550,23 @@ lease 行固定源 ID 和导出时的正数剩余 TTL，尾行记录/lease 总�
 恢复为每个源 lease 生成新目标 ID并保留多 key 共享关系。v1 无 lease 制品继续可恢复；
 v1 中记录非零 lease 时因缺少 TTL 元数据会在任何写入前拒绝。没有 manifest/footer 的
 旧 JSONL 无法证明完整性，同样明确拒绝。
+
+新导出的 v2 manifest 还包含 `created_at_unix`，它与 snapshot revision、prefix 和
+records 一起进入 footer SHA-256；控制面不能修改时间戳来伪造 RPO。备份 Job 上传
+artifact 后，必须对最终下载对象执行完成门禁，例如每日 `/registry` 备份：
+
+```shell
+INPUT=/backup/kubebrain-logical-backup.jsonl \
+EXPECTED_PREFIX=/registry \
+MIN_RECORDS=1 \
+MAX_AGE_SECONDS=90000 \
+  hack/backup/logical-status.sh
+```
+
+该命令依次验证整个 artifact、精确 source prefix、最小记录数和受保护创建时间。旧 v1
+以及没有 `created_at_unix` 的早期 v2 仍可 inspect/restore，但设置
+`MAX_AGE_SECONDS` 时会 fail closed，不能使用文件 mtime 作为替代证据。时间戳超过
+Prometheus/控制面时钟 5 分钟也会拒绝；生产节点必须保持时间同步。
 
 默认非覆盖恢复还会在写入前以批量只读 Txn 扫描所有目标 key；已存在 key 会使整个恢复
 在创建 lease 或 Put 前终止。该预检按 `BATCH_SIZE` 分批，不产生逐 key 网络往返；

@@ -3028,6 +3028,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   3 PD、3 TiKV 和 `127.0.0.1:4379` 执行，TidbCluster convergence、proposal 和最终
   release gate 全部通过。生产要求 digest；脚本只做精确匹配，不替控制面判断 tag
   可变性。备份、恢复、证书轮换和销毁的幂等状态机/回滚证据仍是 P1。
+- **Operations A183 protected backup completion gate（2026-07-18）**：逻辑 v2
+  artifact header 新增 `created_at_unix`，记录 snapshot 导出开始时间，并与 format、
+  prefix、revision 和 records 一起进入 footer SHA-256。`logical-status` 新增
+  `EXPECTED_PREFIX`、`MIN_RECORDS` 和 `MAX_AGE_SECONDS`，先完成全文件复制/摘要验证，
+  再执行精确 prefix、非空/容量下限和 RPO freshness gate；超过 5 分钟的未来时间也
+  fail closed。旧 v1 和没有时间戳的早期 v2 保持可读/可恢复，但不能在要求 freshness
+  时靠文件 mtime 冒充新备份。
+
+  单元测试覆盖新 writer/status 时间戳、旧 v1/v2 兼容、正确 completion contract、错
+  prefix、记录不足、缺时间戳、过期、未来时间和非法门禁参数；backup 相关测试和 race
+  通过。真实 TiKV/PD endpoint 导出隔离 prefix 的 1 record v2 artifact，status 返回
+  revision `467764733078405126`、受保护时间戳和 SHA-256；正确 prefix/min=1/age=60
+  通过，错 prefix 非零退出，等待后 age=3s/max=1s 非零退出。手工只把 header 时间戳
+  加 1 秒后，status 在年龄判断前以 SHA-256 mismatch 拒绝；隔离测试 key 已清理。
+  额外把含新 header 的 2-record artifact 恢复到隔离 prefix，count 和逐值 verify
+  通过，源/目标均清理。这关闭备份 artifact 的完成/RPO 证据；对象存储上传幂等、
+  保留删除和恢复状态机仍是 P1。
 
 ### P1：通用服务能力
 
