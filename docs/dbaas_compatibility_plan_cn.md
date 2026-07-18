@@ -2305,6 +2305,27 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   服务二进制；在线集群继续运行 `kubebrain:a132-txn-range-first-revision`，
   exact image 仍为
   `33b23b61fdfdd3ecceaa8256502e6ce442c1174be6f9f33b1e5e8e5627c0e001`。
+- **Watch A135 signed/extreme ID and empty-range control differential
+  （2026-07-18）**：对照
+  `/root/etcd/server/storage/mvcc/watcher.go:watchStream.Watch` 与
+  `/root/etcd/server/etcdserver/api/v3rpc/watch.go`，新增单一复用流上的 15 响应
+  raw 双端状态机矩阵。显式 watch ID `-1`、`math.MinInt64` 和
+  `math.MaxInt64` 均合法创建；其中 `-1` 虽也是错误响应使用的 InvalidWatchID，
+  仍可由 `Created/Canceled` 字段无歧义地区分。显式极值不推进自动 ID allocator，
+  后续自动创建仍返回 ID `0`。
+
+  重复 MaxInt64 返回 `WatchId=-1`、`Created=true`、`Canceled=true` 和
+  `mvcc: duplicate watch ID provided on the WatchStream`；`Key==RangeEnd` 与
+  `Key>RangeEnd` 均返回相同控制形状及
+  `mvcc: watcher range is empty`。这些错误不会关闭流，后续创建和取消正常；取消
+  未知 ID 被静默忽略且不插入额外响应。临时 `/root/etcd`
+  3.8.0-alpha.0 reference 与在线三副本 TiKV-backed KubeBrain 间连续 10 轮、
+  race 3 轮通过，未发现新实现差异。完整 compat suite 用时 92.868s，
+  `go test ./...`、根模块与 compat module `go vet ./...`、强制 backend race
+  （52.000s）及完整 server race（221.349s）通过。本轮只增加兼容性测试，不改变
+  服务二进制；在线集群继续运行 `kubebrain:a132-txn-range-first-revision`，
+  exact image 仍为
+  `33b23b61fdfdd3ecceaa8256502e6ce442c1174be6f9f33b1e5e8e5627c0e001`。
 
 ### P1：通用服务能力
 
