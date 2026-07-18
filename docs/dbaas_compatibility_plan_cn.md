@@ -1877,6 +1877,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `kubebrain:a111-hash-snapshot` 后三个 Pod Ready、zero restart、endpoint health
   正常，运行时 exact image
   `7a9baf3394131856e5620225c0172c3cefcb4f11e6a38460f6c597f7aa341dd1`。
+- **Maintenance A112 logical-compaction-aware HashKV（2026-07-18）**：
+  继续对照 `/root/etcd/server/storage/mvcc/hash.go:unsafeHashByRev` 与
+  `hashByRev`，发现 A111 后 `CompactRevision` 仍在 hash 锁释放后另行读取，且
+  KubeBrain 摘要所有尚未被异步物理 GC 删除的 MVCC 行。logical Compact 已成功但
+  physical GC 尚未追上时，响应会同时携带新 watermark 和旧物理摘要；修复前在线
+  A111 镜像稳定复现 Compact 后 Hash 仍为 `0xd06ee218`，未排除已计划删除的版本。
+
+  现 backend `HashKVResult` 从一个 write-fenced snapshot 原子返回 Hash、
+  HashRevision、CurrentRevision 与 CompactRevision；compact watermark CAS 与 hash
+  通过同一 `logicalWriteMu` 串行。hash 在 watermark 以下按 user key 仅保留最新
+  live version、排除 tombstone，在 watermark 以上保留目标 revision 可见的版本，
+  与 physical compactor 的保留规则一致，因此异步 GC 前后摘要稳定。historical/
+  future revision 也在同一锁内对 current/compact snapshot 复核，避免 handler 外层
+  校验后 watermark 又推进。确定性测试覆盖 live 多版本与已删除 key、hash 后立即
+  推进 watermark 的字段撕裂及校验后并发 compact，并连续 10 轮及 race 通过。官方
+  client/v3 场景在 `/root/etcd` reference 连续 3 轮通过；真实
+  TiKV-backed KubeBrain 连续 3 轮、race 1 轮通过，A111 并发 Header 回归再连续
+  3 轮通过。`go test ./...`、根模块与 compat module `go vet ./...`、compact/hash
+  聚焦回归 3 轮及最终完整 server race（232.211s）通过。部署
+  `kubebrain:a112-logical-hash` 后三个 Pod Ready、zero restart、endpoint health
+  正常，运行时 exact image
+  `27820dd7a512621a16182ea03afb63f716f4d4ecc6206fcd18ef729291a5a005`。
 
 ### P1：通用服务能力
 

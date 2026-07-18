@@ -145,10 +145,9 @@ type Backend interface {
 	// Count counts the number of kvs in range
 	Count(ctx context.Context, r *proto.CountRequest) (*proto.CountResponse, error)
 
-	// HashKV returns a deterministic checksum of the retained object MVCC
-	// versions at or below revision. A zero revision selects the current one;
-	// currentRevision is captured from the same write-fenced snapshot.
-	HashKV(ctx context.Context, revision int64) (hash uint32, hashedRevision, currentRevision int64, err error)
+	// HashKV returns a deterministic checksum and all revision metadata from one
+	// write-fenced logical snapshot. A zero revision selects the current one.
+	HashKV(ctx context.Context, revision int64) (HashKVResult, error)
 
 	// CountAtRevision returns the exact live-key count of [key,end) at rev from
 	// the in-memory count index; served is false when it must fall back to a scan.
@@ -222,6 +221,13 @@ type Backend interface {
 	// leader's in-flight write cannot be committed-yet-unwatched (FINDING #39).
 	// fn returns (current epoch, still-safely-leading). Unset = fence disabled.
 	SetLeadershipFence(fn func() (uint64, bool))
+}
+
+type HashKVResult struct {
+	Hash            uint32
+	HashRevision    int64
+	CurrentRevision int64
+	CompactRevision int64
 }
 
 var _ Backend = (*backend)(nil)

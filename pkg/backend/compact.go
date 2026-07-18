@@ -137,14 +137,8 @@ func (b *backend) clampCompactRevision(revision uint64) uint64 {
 }
 
 func (b *backend) HasCompactRevision(ctx context.Context) (bool, error) {
-	val, err := b.kv.Get(ctx, getCompactKey(b.config.Prefix))
-	if err == storage.ErrKeyNotFound {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	return len(val) >= 8, nil
+	_, exists, err := b.loadCompactRevisionState(ctx)
+	return exists, err
 }
 
 // compactRevCacheTTL bounds how stale a cached compact revision may be. The
@@ -200,17 +194,22 @@ func (b *backend) GetCompactRevisionFresh(ctx context.Context) (uint64, error) {
 
 // loadCompactRevision reads the persisted compact revision from storage.
 func (b *backend) loadCompactRevision(ctx context.Context) (uint64, error) {
+	rev, _, err := b.loadCompactRevisionState(ctx)
+	return rev, err
+}
+
+func (b *backend) loadCompactRevisionState(ctx context.Context) (uint64, bool, error) {
 	val, err := b.kv.Get(ctx, getCompactKey(b.config.Prefix))
 	if err == storage.ErrKeyNotFound {
-		return 0, nil
+		return 0, false, nil
 	}
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
-	if len(val) == 0 {
-		return 0, nil
+	if len(val) < 8 {
+		return 0, false, nil
 	}
-	return binary.BigEndian.Uint64(val), nil
+	return binary.BigEndian.Uint64(val), true, nil
 }
 
 // updateCompactRevCache advances the cached compact revision (never backwards)
@@ -593,6 +592,9 @@ func autoCompactTarget(currentRev, retention, compactRev uint64, leading bool) (
 // already-stored compact revision, so the caller can skip a redundant compaction
 // that would otherwise regress the watermark.
 func (b *backend) setCompactRecord(ctx context.Context, revision uint64) (advanced bool, err error) {
+	b.logicalWriteMu.Lock()
+	defer b.logicalWriteMu.Unlock()
+
 	// get stored compact revision
 	val, err := b.kv.Get(ctx, getCompactKey(b.config.Prefix))
 	if err != nil && err != storage.ErrKeyNotFound {

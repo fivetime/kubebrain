@@ -16,6 +16,7 @@ package etcd
 
 import (
 	"context"
+	"errors"
 	"hash/crc32"
 
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
@@ -23,6 +24,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/kubewharf/kubebrain/pkg/backend"
 	"github.com/kubewharf/kubebrain/pkg/backend/election"
 )
 
@@ -136,13 +138,13 @@ func (s *RPCServer) Hash(ctx context.Context, _ *etcdserverpb.HashRequest) (*etc
 	if err := s.peers.SyncReadRevision(ctx); err != nil {
 		return nil, readBarrierStatusErr(err)
 	}
-	hash, _, currentRevision, err := s.backend.HashKV(ctx, 0)
+	hashResult, err := s.backend.HashKV(ctx, 0)
 	if err != nil {
 		return nil, err
 	}
 	return &etcdserverpb.HashResponse{
-		Header: txnHeader(currentRevision),
-		Hash:   hash,
+		Header: txnHeader(hashResult.CurrentRevision),
+		Hash:   hashResult.Hash,
 	}, nil
 }
 
@@ -163,27 +165,21 @@ func (s *RPCServer) HashKV(ctx context.Context, req *etcdserverpb.HashKVRequest)
 			return nil, err
 		}
 	}
-	hash, hashRevision, currentRevision, err := s.backend.HashKV(ctx, revision)
+	hashResult, err := s.backend.HashKV(ctx, revision)
 	if err != nil {
+		if errors.Is(err, backend.ErrHashKVCompacted) {
+			return nil, compactedRevisionError()
+		}
+		if errors.Is(err, backend.ErrHashKVFuture) {
+			return nil, futureRevisionError()
+		}
 		return nil, err
-	}
-	compactRevision, err := s.backend.GetCompactRevision(ctx)
-	if err != nil {
-		return nil, err
-	}
-	hasCompactRevision, err := s.backend.HasCompactRevision(ctx)
-	if err != nil {
-		return nil, err
-	}
-	responseCompactRevision := int64(compactRevision)
-	if !hasCompactRevision {
-		responseCompactRevision = -1
 	}
 	return &etcdserverpb.HashKVResponse{
-		Header:          txnHeader(currentRevision),
-		Hash:            hash,
-		CompactRevision: responseCompactRevision,
-		HashRevision:    hashRevision,
+		Header:          txnHeader(hashResult.CurrentRevision),
+		Hash:            hashResult.Hash,
+		CompactRevision: hashResult.CompactRevision,
+		HashRevision:    hashResult.HashRevision,
 	}, nil
 }
 

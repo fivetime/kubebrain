@@ -21,26 +21,58 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
+
+	"github.com/kubewharf/kubebrain/pkg/backend"
 )
 
 type writeAfterHashBackendShim struct {
 	BackendShim
-	t               *testing.T
-	currentRevision int64
+	t      *testing.T
+	result backend.HashKVResult
 }
 
-func (b *writeAfterHashBackendShim) HashKV(ctx context.Context, revision int64) (uint32, int64, int64, error) {
-	hash, hashRevision, currentRevision, err := b.BackendShim.HashKV(ctx, revision)
+type compactAfterHashBackendShim struct {
+	BackendShim
+	t      *testing.T
+	result backend.HashKVResult
+}
+
+type compactBeforeHashBackendShim struct {
+	BackendShim
+	t      *testing.T
+	target uint64
+}
+
+func (b *compactBeforeHashBackendShim) HashKV(ctx context.Context, revision int64) (backend.HashKVResult, error) {
+	_, err := b.BackendShim.CompactAsync(ctx, b.target)
+	require.NoError(b.t, err)
+	return b.BackendShim.HashKV(ctx, revision)
+}
+
+func (b *compactAfterHashBackendShim) HashKV(ctx context.Context, revision int64) (backend.HashKVResult, error) {
+	result, err := b.BackendShim.HashKV(ctx, revision)
 	if err != nil {
-		return 0, 0, 0, err
+		return backend.HashKVResult{}, err
 	}
-	b.currentRevision = currentRevision
+	b.result = result
+	_, err = b.BackendShim.CompactAsync(ctx, uint64(result.HashRevision))
+	require.NoError(b.t, err)
+	return result, nil
+}
+
+func (b *writeAfterHashBackendShim) HashKV(ctx context.Context, revision int64) (backend.HashKVResult, error) {
+	result, err := b.BackendShim.HashKV(ctx, revision)
+	if err != nil {
+		return backend.HashKVResult{}, err
+	}
+	b.result = result
 	_, err = b.BackendShim.Put(ctx, &etcdserverpb.PutRequest{
 		Key:   []byte("/registry/maintenance/write-after-hash"),
-		Value: []byte(fmt.Sprintf("after-%d", hashRevision)),
+		Value: []byte(fmt.Sprintf("after-%d", result.HashRevision)),
 	})
 	require.NoError(b.t, err)
-	return hash, hashRevision, currentRevision, nil
+	return result, nil
 }
 
 // TestStatusVersionEnablesRequestWatchProgress guards the exact gate the
@@ -171,11 +203,54 @@ func TestMaintenanceHashHeadersStayPinnedToHashedRevision(t *testing.T) {
 			server.backend = backend
 			header, err := tt.call(ctx, server)
 			require.NoError(t, err)
-			require.Equal(t, backend.currentRevision, header.Revision)
+			require.Equal(t, backend.result.CurrentRevision, header.Revision)
 			require.Greater(t, int64(server.backend.GetCurrentRevision()), header.Revision,
 				"the injected post-hash write must advance current revision")
 		})
 	}
+}
+
+func TestMaintenanceHashKVCompactRevisionComesFromHashedSnapshot(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	_, err := server.Put(ctx, &etcdserverpb.PutRequest{
+		Key: []byte("/registry/maintenance/before-compact"), Value: []byte("before"),
+	})
+	require.NoError(t, err)
+
+	backend := &compactAfterHashBackendShim{BackendShim: server.backend, t: t}
+	server.backend = backend
+	resp, err := server.HashKV(ctx, &etcdserverpb.HashKVRequest{})
+	require.NoError(t, err)
+	require.Equal(t, backend.result.CompactRevision, resp.CompactRevision)
+	require.Equal(t, int64(-1), resp.CompactRevision)
+	hasCompactRevision, err := server.backend.HasCompactRevision(ctx)
+	require.NoError(t, err)
+	require.True(t, hasCompactRevision,
+		"the injected post-hash compaction must advance storage after the snapshot")
+}
+
+func TestMaintenanceHashKVRechecksCompactionInsideHashedSnapshot(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	first, err := server.Put(ctx, &etcdserverpb.PutRequest{
+		Key: []byte("/registry/maintenance/hash-before-compact"), Value: []byte("v1"),
+	})
+	require.NoError(t, err)
+	second, err := server.Put(ctx, &etcdserverpb.PutRequest{
+		Key: []byte("/registry/maintenance/hash-before-compact"), Value: []byte("v2"),
+	})
+	require.NoError(t, err)
+
+	server.backend = &compactBeforeHashBackendShim{
+		BackendShim: server.backend,
+		t:           t,
+		target:      uint64(second.Header.Revision),
+	}
+	_, err = server.HashKV(ctx, &etcdserverpb.HashKVRequest{Revision: first.Header.Revision})
+	require.ErrorIs(t, err, rpctypes.ErrGRPCCompacted)
 }
 
 func TestStatusReportsNoLeaderInsteadOfClaimingSelf(t *testing.T) {

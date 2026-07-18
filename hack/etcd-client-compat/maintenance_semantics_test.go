@@ -193,6 +193,52 @@ func TestMaintenanceHashKVHeaderStaysAtHashedSnapshotUnderWrites(t *testing.T) {
 	}
 }
 
+func TestMaintenanceHashKVStaysStableAcrossPhysicalCompaction(t *testing.T) {
+	endpoint := compatEndpoint()
+	cli, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{endpoint},
+		DialTimeout: 3 * time.Second,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, cli.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	key := testPrefix(t) + "/hash-physical-compact"
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cleanupCancel()
+		_, _ = cli.Delete(cleanupCtx, key)
+	})
+
+	for i := 0; i < 8; i++ {
+		_, err = cli.Put(ctx, key, fmt.Sprintf("value-%d", i))
+		require.NoError(t, err)
+	}
+	before, err := cli.HashKV(ctx, endpoint, 0)
+	require.NoError(t, err)
+	require.Equal(t, before.Header.Revision, before.HashRevision)
+
+	_, err = cli.Compact(ctx, before.HashRevision)
+	require.NoError(t, err)
+	afterLogical, err := cli.HashKV(ctx, endpoint, 0)
+	require.NoError(t, err)
+	require.Equal(t, before.HashRevision, afterLogical.CompactRevision)
+	require.NotEqual(t, before.Hash, afterLogical.Hash,
+		"logical compaction must remove superseded versions from the hash")
+
+	for i := 0; i < 10; i++ {
+		time.Sleep(100 * time.Millisecond)
+		afterPhysicalProgress, hashErr := cli.HashKV(ctx, endpoint, 0)
+		require.NoError(t, hashErr)
+		require.Equal(t, afterLogical.Hash, afterPhysicalProgress.Hash,
+			"physical GC progress must not change the logical hash")
+		require.Equal(t, afterLogical.CompactRevision, afterPhysicalProgress.CompactRevision)
+		require.Equal(t, afterPhysicalProgress.Header.Revision, afterPhysicalProgress.HashRevision)
+		require.GreaterOrEqual(t, afterPhysicalProgress.HashRevision, afterPhysicalProgress.CompactRevision)
+	}
+}
+
 func TestMaintenanceHashKVMatchesAcrossMembers(t *testing.T) {
 	endpoint := compatEndpoint()
 	cli, err := clientv3.New(clientv3.Config{Endpoints: []string{endpoint}, DialTimeout: 3 * time.Second})
