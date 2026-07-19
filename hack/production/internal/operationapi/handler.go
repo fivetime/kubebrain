@@ -8,6 +8,7 @@ import (
 	"mime"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/kubewharf/kubebrain/hack/production/internal/operationqueue"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -22,9 +23,10 @@ type OperationStore interface {
 }
 
 type Handler struct {
-	authenticator Authenticator
-	store         OperationStore
-	mux           *http.ServeMux
+	authenticator  Authenticator
+	store          OperationStore
+	mux            *http.ServeMux
+	requestTimeout time.Duration
 }
 
 type submitRequest struct {
@@ -59,11 +61,19 @@ type errorResponse struct {
 	Error string `json:"error"`
 }
 
-func NewHandler(authenticator Authenticator, store OperationStore) (*Handler, error) {
+func NewHandler(
+	authenticator Authenticator, store OperationStore, requestTimeout time.Duration,
+) (*Handler, error) {
 	if authenticator == nil || store == nil {
 		return nil, errors.New("operation API authenticator and store are required")
 	}
-	handler := &Handler{authenticator: authenticator, store: store, mux: http.NewServeMux()}
+	if requestTimeout <= 0 {
+		return nil, errors.New("operation API request timeout must be positive")
+	}
+	handler := &Handler{
+		authenticator: authenticator, store: store, mux: http.NewServeMux(),
+		requestTimeout: requestTimeout,
+	}
 	handler.mux.HandleFunc("GET /healthz", handler.health)
 	handler.mux.HandleFunc("POST /v1/operations", handler.submit)
 	handler.mux.HandleFunc("GET /v1/operations/{name}", handler.get)
@@ -73,7 +83,35 @@ func NewHandler(authenticator Authenticator, store OperationStore) (*Handler, er
 func (h *Handler) ServeHTTP(response http.ResponseWriter, request *http.Request) {
 	response.Header().Set("Cache-Control", "no-store")
 	response.Header().Set("X-Content-Type-Options", "nosniff")
+	if request.URL.Path != "/healthz" {
+		ctx, cancel := context.WithTimeout(request.Context(), h.requestTimeout)
+		defer cancel()
+		request = request.WithContext(ctx)
+	}
 	h.mux.ServeHTTP(response, request)
+}
+
+func (h *Handler) Ready(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, h.requestTimeout)
+	defer cancel()
+	const probeName = "kubebrain-readiness-probe-do-not-create"
+	_, err := h.store.Get(ctx, probeName)
+	if err == nil || isExpectedProbeNotFound(err, probeName) {
+		return nil
+	}
+	return err
+}
+
+func isExpectedProbeNotFound(err error, probeName string) bool {
+	if !apierrors.IsNotFound(err) {
+		return false
+	}
+	statusError, ok := err.(apierrors.APIStatus)
+	if !ok {
+		return false
+	}
+	details := statusError.Status().Details
+	return details != nil && details.Name == probeName
 }
 
 func (h *Handler) health(response http.ResponseWriter, _ *http.Request) {
@@ -83,6 +121,10 @@ func (h *Handler) health(response http.ResponseWriter, _ *http.Request) {
 func (h *Handler) principal(response http.ResponseWriter, request *http.Request) (Principal, bool) {
 	principal, err := h.authenticator.Authenticate(request.Context(), request.Header.Get("Authorization"))
 	if err != nil {
+		if dependencyContextError(err) {
+			writeJSON(response, http.StatusServiceUnavailable, errorResponse{Error: "authentication dependency unavailable"})
+			return Principal{}, false
+		}
 		response.Header().Set("WWW-Authenticate", `Bearer realm="kubebrain-operation-api"`)
 		writeJSON(response, http.StatusUnauthorized, errorResponse{Error: "unauthorized"})
 		return Principal{}, false
@@ -128,6 +170,8 @@ func (h *Handler) submit(response http.ResponseWriter, request *http.Request) {
 	})
 	if err != nil {
 		switch {
+		case dependencyContextError(err):
+			writeJSON(response, http.StatusServiceUnavailable, errorResponse{Error: "operation dependency unavailable"})
 		case apierrors.IsConflict(err), strings.Contains(err.Error(), "different immutable spec"):
 			writeJSON(response, http.StatusConflict, errorResponse{Error: "operation conflicts with an existing request"})
 		case apierrors.IsInvalid(err), strings.Contains(err.Error(), "invalid operation"),
@@ -158,7 +202,9 @@ func (h *Handler) get(response http.ResponseWriter, request *http.Request) {
 	}
 	object, err := h.store.Get(request.Context(), request.PathValue("name"))
 	if err != nil {
-		if apierrors.IsNotFound(err) {
+		if dependencyContextError(err) {
+			writeJSON(response, http.StatusServiceUnavailable, errorResponse{Error: "operation dependency unavailable"})
+		} else if apierrors.IsNotFound(err) {
 			writeJSON(response, http.StatusNotFound, errorResponse{Error: "operation not found"})
 		} else {
 			writeJSON(response, http.StatusInternalServerError, errorResponse{Error: "operation lookup failed"})
@@ -172,6 +218,14 @@ func (h *Handler) get(response http.ResponseWriter, request *http.Request) {
 		return
 	}
 	writeJSON(response, http.StatusOK, summarizeOperation(object))
+}
+
+func dependencyContextError(err error) bool {
+	return errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, context.Canceled) ||
+		errors.Is(err, ErrOIDCUnavailable) ||
+		apierrors.IsTimeout(err) ||
+		apierrors.IsServerTimeout(err)
 }
 
 func summarizeOperation(object *unstructured.Unstructured) operationResponse {

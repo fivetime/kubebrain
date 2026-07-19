@@ -23,7 +23,7 @@ import (
 func main() {
 	var address, namespace, issuer, audience, tenantClaim, instancesClaim string
 	var certFile, keyFile, kubeconfig string
-	var oidcCacheTTL, oidcRefreshBackoff, certReloadInterval time.Duration
+	var oidcCacheTTL, oidcRefreshBackoff, certReloadInterval, dependencyRequestTimeout time.Duration
 	flag.StringVar(&address, "listen-address", ":8443", "HTTPS listen address")
 	flag.StringVar(&namespace, "namespace", "kubebrain-operations", "operation namespace")
 	flag.StringVar(&issuer, "oidc-issuer", "", "trusted OIDC issuer URL")
@@ -35,6 +35,8 @@ func main() {
 	flag.StringVar(&certFile, "tls-cert-file", "", "HTTPS server certificate")
 	flag.StringVar(&keyFile, "tls-key-file", "", "HTTPS server private key")
 	flag.DurationVar(&certReloadInterval, "tls-reload-interval", 30*time.Second, "TLS certificate reload interval")
+	flag.DurationVar(&dependencyRequestTimeout, "dependency-request-timeout", 5*time.Second,
+		"deadline for OIDC and Kubernetes Operation API requests")
 	flag.StringVar(&kubeconfig, "kubeconfig", "", "optional kubeconfig; in-cluster credentials are used by default")
 	flag.Parse()
 	if certFile == "" || keyFile == "" {
@@ -46,6 +48,9 @@ func main() {
 	}
 	if certReloadInterval <= 0 {
 		log.Fatal("--tls-reload-interval must be positive")
+	}
+	if dependencyRequestTimeout <= 0 {
+		log.Fatal("--dependency-request-timeout must be positive")
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -66,14 +71,21 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	handler, err := operationapi.NewHandler(authenticator, operationqueue.New(client, namespace))
+	handler, err := operationapi.NewHandler(
+		authenticator, operationqueue.New(client, namespace), dependencyRequestTimeout,
+	)
 	if err != nil {
 		log.Fatal(err)
 	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/readyz", func(response http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("/readyz", func(response http.ResponseWriter, request *http.Request) {
 		if err := certificate.ValidAt(time.Now()); err != nil {
 			http.Error(response, "TLS certificate is not ready", http.StatusServiceUnavailable)
+			return
+		}
+		if err := handler.Ready(request.Context()); err != nil {
+			log.Printf("readiness Operation API probe failed: %v", err)
+			http.Error(response, "Kubernetes Operation API is not ready", http.StatusServiceUnavailable)
 			return
 		}
 		response.WriteHeader(http.StatusNoContent)

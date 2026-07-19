@@ -23,6 +23,8 @@ import (
 
 const oidcDocumentLimit = 1 << 20
 
+var ErrOIDCUnavailable = errors.New("OIDC provider unavailable")
+
 type Principal struct {
 	Subject   string
 	Tenant    string
@@ -234,7 +236,7 @@ func (a *OIDCAuthenticator) key(ctx context.Context, kid string) (*rsa.PublicKey
 		return nil, errors.New("OIDC signing key is unknown")
 	}
 	if now.Before(retryAfter) {
-		return nil, errors.New("OIDC JWKS refresh is in failure backoff")
+		return nil, ErrOIDCUnavailable
 	}
 
 	a.refreshMu.Lock()
@@ -254,13 +256,13 @@ func (a *OIDCAuthenticator) key(ctx context.Context, kid string) (*rsa.PublicKey
 		return nil, errors.New("OIDC signing key is unknown")
 	}
 	if now.Before(retryAfter) {
-		return nil, errors.New("OIDC JWKS refresh is in failure backoff")
+		return nil, ErrOIDCUnavailable
 	}
 	if err := a.refresh(ctx); err != nil {
 		a.mu.Lock()
 		a.retryAfter = time.Now().Add(a.config.RefreshBackoff)
 		a.mu.Unlock()
-		return nil, err
+		return nil, fmt.Errorf("%w: %v", ErrOIDCUnavailable, err)
 	}
 	a.mu.RLock()
 	key, found = a.keys[kid]
@@ -292,6 +294,9 @@ func (a *OIDCAuthenticator) Authenticate(ctx context.Context, authorization stri
 	}, jwt.WithValidMethods([]string{jwt.SigningMethodRS256.Alg()}),
 		jwt.WithIssuer(a.config.Issuer), jwt.WithAudience(a.config.Audience),
 		jwt.WithExpirationRequired())
+	if errors.Is(err, ErrOIDCUnavailable) {
+		return Principal{}, err
+	}
 	if err != nil || !parsed.Valid {
 		return Principal{}, errors.New("OIDC token is invalid")
 	}

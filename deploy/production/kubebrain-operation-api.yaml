@@ -127,6 +127,7 @@ spec:
             - --tls-cert-file=/var/run/kubebrain-api-tls/tls.crt
             - --tls-key-file=/var/run/kubebrain-api-tls/tls.key
             - --tls-reload-interval=30s
+            - --dependency-request-timeout=5s
           env:
             - name: OIDC_ISSUER
               valueFrom:

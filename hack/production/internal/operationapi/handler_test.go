@@ -31,6 +31,7 @@ func (a staticAuthenticator) Authenticate(context.Context, string) (Principal, e
 type memoryOperationStore struct {
 	objects map[string]*unstructured.Unstructured
 	spec    operationqueue.Spec
+	getErr  error
 }
 
 func (s *memoryOperationStore) Submit(
@@ -48,10 +49,20 @@ func (s *memoryOperationStore) Submit(
 }
 
 func (s *memoryOperationStore) Get(_ context.Context, name string) (*unstructured.Unstructured, error) {
+	if s.getErr != nil {
+		return nil, s.getErr
+	}
 	if object := s.objects[name]; object != nil {
 		return object.DeepCopy(), nil
 	}
 	return nil, apierrors.NewNotFound(schema.GroupResource{Group: "dbaas.kubebrain.io", Resource: "operations"}, name)
+}
+
+type blockingAuthenticator struct{}
+
+func (blockingAuthenticator) Authenticate(ctx context.Context, _ string) (Principal, error) {
+	<-ctx.Done()
+	return Principal{}, ctx.Err()
 }
 
 func operationObject(name string, spec operationqueue.Spec) *unstructured.Unstructured {
@@ -79,7 +90,7 @@ func authorizedPrincipal() Principal {
 
 func TestHandlerSubmitsImmutableTenantIdentityAndReturnsSanitizedObject(t *testing.T) {
 	store := &memoryOperationStore{objects: make(map[string]*unstructured.Unstructured)}
-	handler, err := NewHandler(staticAuthenticator{principal: authorizedPrincipal()}, store)
+	handler, err := NewHandler(staticAuthenticator{principal: authorizedPrincipal()}, store, time.Second)
 	require.NoError(t, err)
 	body := `{
 		"name":"backup-1","operation_id":"backup-1","tenant":"tenant-a",
@@ -110,7 +121,7 @@ func TestHandlerPreventsCrossTenantAndCrossInstanceEnumeration(t *testing.T) {
 			Instance: "instance-b", Type: "Backup", ParametersSHA256: strings.Repeat("b", 64), MaxAttempts: 3,
 		}),
 	}}
-	handler, err := NewHandler(staticAuthenticator{principal: authorizedPrincipal()}, store)
+	handler, err := NewHandler(staticAuthenticator{principal: authorizedPrincipal()}, store, time.Second)
 	require.NoError(t, err)
 	for _, test := range []struct {
 		name   string
@@ -139,7 +150,7 @@ func TestHandlerPreventsCrossTenantAndCrossInstanceEnumeration(t *testing.T) {
 
 func TestHandlerFailsClosedOnAuthenticationAndMalformedInput(t *testing.T) {
 	store := &memoryOperationStore{objects: make(map[string]*unstructured.Unstructured)}
-	denied, err := NewHandler(staticAuthenticator{err: errors.New("invalid token")}, store)
+	denied, err := NewHandler(staticAuthenticator{err: errors.New("invalid token")}, store, time.Second)
 	require.NoError(t, err)
 	request := httptest.NewRequest(http.MethodGet, "/v1/operations/missing", nil)
 	response := httptest.NewRecorder()
@@ -147,7 +158,7 @@ func TestHandlerFailsClosedOnAuthenticationAndMalformedInput(t *testing.T) {
 	require.Equal(t, http.StatusUnauthorized, response.Code)
 	require.Contains(t, response.Header().Get("WWW-Authenticate"), "Bearer")
 
-	allowed, err := NewHandler(staticAuthenticator{principal: authorizedPrincipal()}, store)
+	allowed, err := NewHandler(staticAuthenticator{principal: authorizedPrincipal()}, store, time.Second)
 	require.NoError(t, err)
 	request = httptest.NewRequest(http.MethodPost, "/v1/operations", strings.NewReader(`{"unknown":true}`))
 	request.Header.Set("Content-Type", "application/json")
@@ -164,7 +175,7 @@ func TestHandlerFailsClosedOnAuthenticationAndMalformedInput(t *testing.T) {
 
 func TestHandlerRejectsUnboundParameterSecret(t *testing.T) {
 	store := &memoryOperationStore{objects: make(map[string]*unstructured.Unstructured)}
-	handler, err := NewHandler(staticAuthenticator{principal: authorizedPrincipal()}, store)
+	handler, err := NewHandler(staticAuthenticator{principal: authorizedPrincipal()}, store, time.Second)
 	require.NoError(t, err)
 	for _, fields := range []string{
 		`"parameters_secret":"params-tenant-b-backup","parameters_key":"parameters.json",`,
@@ -186,12 +197,67 @@ func TestHandlerRejectsUnboundParameterSecret(t *testing.T) {
 }
 
 func TestHandlerHealthDoesNotRequireIdentity(t *testing.T) {
-	handler, err := NewHandler(staticAuthenticator{err: errors.New("must not be called")}, &memoryOperationStore{})
+	handler, err := NewHandler(
+		staticAuthenticator{err: errors.New("must not be called")}, &memoryOperationStore{}, time.Second,
+	)
 	require.NoError(t, err)
 	request := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	require.Equal(t, http.StatusOK, response.Code)
+}
+
+func TestHandlerReadyRequiresNamedOperationNotFound(t *testing.T) {
+	handler, err := NewHandler(
+		staticAuthenticator{principal: authorizedPrincipal()},
+		&memoryOperationStore{objects: make(map[string]*unstructured.Unstructured)}, time.Second,
+	)
+	require.NoError(t, err)
+	require.NoError(t, handler.Ready(context.Background()))
+
+	handler.store = &memoryOperationStore{getErr: errors.New("operation API unavailable")}
+	require.ErrorContains(t, handler.Ready(context.Background()), "operation API unavailable")
+
+	handler.store = &memoryOperationStore{getErr: apierrors.NewNotFound(
+		schema.GroupResource{Group: "dbaas.kubebrain.io", Resource: "kubebrainoperations"}, "",
+	)}
+	require.Error(t, handler.Ready(context.Background()), "a missing CRD route must not pass readiness")
+}
+
+func TestHandlerDependencyDeadlineReturnsServiceUnavailable(t *testing.T) {
+	handler, err := NewHandler(
+		blockingAuthenticator{}, &memoryOperationStore{}, 10*time.Millisecond,
+	)
+	require.NoError(t, err)
+	request := httptest.NewRequest(http.MethodGet, "/v1/operations/missing", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	require.Equal(t, http.StatusServiceUnavailable, response.Code)
+	require.Empty(t, response.Header().Get("WWW-Authenticate"))
+
+	handler, err = NewHandler(
+		staticAuthenticator{principal: authorizedPrincipal()},
+		&memoryOperationStore{getErr: context.DeadlineExceeded}, time.Second,
+	)
+	require.NoError(t, err)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	require.Equal(t, http.StatusServiceUnavailable, response.Code)
+
+	handler, err = NewHandler(
+		staticAuthenticator{err: ErrOIDCUnavailable}, &memoryOperationStore{}, time.Second,
+	)
+	require.NoError(t, err)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	require.Equal(t, http.StatusServiceUnavailable, response.Code)
+}
+
+func TestNewHandlerRequiresPositiveRequestTimeout(t *testing.T) {
+	_, err := NewHandler(
+		staticAuthenticator{}, &memoryOperationStore{}, 0,
+	)
+	require.ErrorContains(t, err, "timeout must be positive")
 }
 
 func TestHTTPSAPIAuthenticatesOIDCTokenAndSubmitsOperation(t *testing.T) {
@@ -209,7 +275,7 @@ func TestHTTPSAPIAuthenticatesOIDCTokenAndSubmitsOperation(t *testing.T) {
 	})
 	require.NoError(t, err)
 	store := &memoryOperationStore{objects: make(map[string]*unstructured.Unstructured)}
-	handler, err := NewHandler(authenticator, store)
+	handler, err := NewHandler(authenticator, store, time.Second)
 	require.NoError(t, err)
 	apiServer := httptest.NewTLSServer(handler)
 	defer apiServer.Close()
