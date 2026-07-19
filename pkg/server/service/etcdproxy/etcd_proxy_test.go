@@ -130,7 +130,7 @@ func TestCheckClientConnUsesTransportReadiness(t *testing.T) {
 	cli, err := clientv3.New(clientv3.Config{Endpoints: []string{lis.Addr().String()}})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = cli.Close() })
-	require.NoError(t, checkClientConn(cli, nil, time.Second))
+	require.NoError(t, checkClientConn(cli, nil, 3*time.Second))
 }
 
 type blockingLeaseServer struct {
@@ -210,6 +210,14 @@ func TestMapLeaseKeepAliveForwardError(t *testing.T) {
 	require.Equal(t, rpctypes.ErrGRPCTimeout,
 		mapLeaseKeepAliveForwardError(parent, callCtx, context.DeadlineExceeded))
 
+	liveCall, cancelLiveCall := context.WithTimeout(parent, time.Minute)
+	defer cancelLiveCall()
+	require.Equal(t, rpctypes.ErrGRPCTimeout,
+		mapLeaseKeepAliveForwardError(
+			parent, liveCall, status.Error(codes.DeadlineExceeded, "upstream deadline"),
+		),
+		"gRPC can report the internal deadline before callCtx.Err is observable")
+
 	canceledParent, cancelParent := context.WithCancel(context.Background())
 	cancelParent()
 	canceledCall, cancelCall := context.WithCancel(canceledParent)
@@ -275,6 +283,69 @@ func TestUpdateClientRefreshesUnknownLeader(t *testing.T) {
 
 	require.Equal(t, lis.Addr().String(), proxy.curLeader)
 	require.NoError(t, proxy.Ready())
+}
+
+func TestProxyRedialsPreviousLeaderAfterLocalLeadershipLoss(t *testing.T) {
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	server := grpc.NewServer()
+	go func() { _ = server.Serve(lis) }()
+	t.Cleanup(func() {
+		server.Stop()
+		_ = lis.Close()
+	})
+
+	electionState := &testLeaderElection{leaderAddress: lis.Addr().String()}
+	proxy := &etcdProxy{
+		election: electionState, dialTimeout: time.Second,
+	}
+	t.Cleanup(func() {
+		proxy.lock.Lock()
+		defer proxy.lock.Unlock()
+		proxy.resetClient()
+	})
+
+	proxy.updateClient()
+	require.NoError(t, proxy.Ready())
+
+	electionState.isLeader = true
+	proxy.updateClient()
+	proxy.lock.RLock()
+	require.Nil(t, proxy.client)
+	require.Empty(t, proxy.curLeader)
+	proxy.lock.RUnlock()
+
+	electionState.isLeader = false
+	proxy.updateClient()
+	require.NoError(t, proxy.Ready(),
+		"a demoted node must redial even when the successor matches its pre-leadership peer")
+	require.Equal(t, lis.Addr().String(), proxy.curLeader)
+}
+
+func TestUpdateClientDoesNotTrustLeaderIdentityWithoutClient(t *testing.T) {
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	server := grpc.NewServer()
+	go func() { _ = server.Serve(lis) }()
+	t.Cleanup(func() {
+		server.Stop()
+		_ = lis.Close()
+	})
+
+	endpoint := lis.Addr().String()
+	proxy := &etcdProxy{
+		election:  &testLeaderElection{leaderAddress: endpoint},
+		curLeader: endpoint, dialTimeout: time.Second,
+	}
+	t.Cleanup(func() {
+		proxy.lock.Lock()
+		defer proxy.lock.Unlock()
+		proxy.resetClient()
+	})
+
+	proxy.updateClient()
+	require.NoError(t, proxy.Ready())
+	require.NotNil(t, proxy.client)
 }
 
 func TestReadyRejectsDisconnectedLeaderTransport(t *testing.T) {

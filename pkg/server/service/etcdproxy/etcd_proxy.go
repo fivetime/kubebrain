@@ -185,6 +185,12 @@ func (e *etcdProxy) updateClient() {
 		if e.resetClient() {
 			klog.InfoS("reset client caused by becoming leader")
 		}
+		// A leader does not forward, so the cached forwarding identity is no
+		// longer backed by a client. Clear it before a later demotion: if the
+		// successor is the same address we previously followed, retaining this
+		// value would make the sameLeader fast path skip redial forever.
+		e.curLeader = ""
+		e.err = nil
 		return
 	}
 
@@ -202,7 +208,7 @@ func (e *etcdProxy) updateClient() {
 		curLeader = e.election.GetLeaderInfo()
 	}
 	e.lock.RLock()
-	sameLeader := curLeader == e.curLeader
+	sameLeader := e.client != nil && curLeader == e.curLeader
 	e.lock.RUnlock()
 	if sameLeader || !election.IsLeaderKnown(curLeader) {
 		return
@@ -532,7 +538,13 @@ func (e *etcdProxy) LeaseKeepAlive(ctx context.Context, req *etcdserverpb.LeaseK
 }
 
 func mapLeaseKeepAliveForwardError(parentCtx, callCtx context.Context, err error) error {
-	if err != nil && callCtx.Err() == context.DeadlineExceeded && parentCtx.Err() == nil {
+	// grpc may surface codes.DeadlineExceeded just before callCtx.Err becomes
+	// observable to this goroutine. The parent still being live distinguishes
+	// the proxy's bounded forwarding deadline from caller cancellation.
+	if err != nil && parentCtx.Err() == nil &&
+		(callCtx.Err() == context.DeadlineExceeded ||
+			errors.Is(err, context.DeadlineExceeded) ||
+			status.Code(err) == codes.DeadlineExceeded) {
 		return rpctypes.ErrGRPCTimeout
 	}
 	return err
