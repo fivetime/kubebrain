@@ -149,6 +149,7 @@ spec:
             - --namespace-inventory-key=namespaces.json
             - --requested-by=system:serviceaccount:kubebrain-operations:kubebrain-backup-scheduler
             - --poll-interval=30s
+            - --reconcile-timeout=2m
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

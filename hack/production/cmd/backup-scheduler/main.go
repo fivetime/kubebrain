@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/kubewharf/kubebrain/hack/production/internal/backupscheduler"
+	"github.com/kubewharf/kubebrain/hack/production/internal/reconcilebudget"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -19,7 +20,7 @@ import (
 func main() {
 	var namespace, namespacesText, inventoryName, inventoryNamespace, inventoryKey string
 	var requester, kubeconfig, contextName string
-	var pollInterval time.Duration
+	var pollInterval, reconcileTimeout time.Duration
 	var once bool
 	flag.StringVar(&namespace, "namespace", "kubebrain-operations", "policy and operation namespace")
 	flag.StringVar(&namespacesText, "namespaces", "", "comma-separated allowlist of policy and operation namespaces; overrides --namespace")
@@ -30,10 +31,15 @@ func main() {
 	flag.StringVar(&kubeconfig, "kubeconfig", "", "kubeconfig path; empty uses in-cluster credentials")
 	flag.StringVar(&contextName, "context", "", "kubeconfig context")
 	flag.DurationVar(&pollInterval, "poll-interval", time.Minute, "policy reconciliation interval")
+	flag.DurationVar(&reconcileTimeout, "reconcile-timeout", 2*time.Minute,
+		"maximum duration of one policy reconciliation")
 	flag.BoolVar(&once, "once", false, "reconcile once and exit")
 	flag.Parse()
 	if pollInterval < 10*time.Second {
 		log.Fatal("poll-interval must be at least 10s")
+	}
+	if reconcileTimeout <= 0 {
+		log.Fatal("reconcile-timeout must be positive")
 	}
 	if requester == "" || len(requester) > 253 {
 		log.Fatal("requested-by must contain 1 to 253 characters")
@@ -67,7 +73,7 @@ func main() {
 	defer stop()
 
 	for {
-		submitted, err := scheduler.Reconcile(ctx)
+		submitted, err := reconcilebudget.Run(ctx, reconcileTimeout, scheduler.Reconcile)
 		if err != nil {
 			log.Printf("reconcile failed: %v", err)
 		} else if submitted > 0 {

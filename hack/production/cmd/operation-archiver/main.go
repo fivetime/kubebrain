@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/kubewharf/kubebrain/hack/production/internal/operationarchiver"
+	"github.com/kubewharf/kubebrain/hack/production/internal/reconcilebudget"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -19,7 +20,7 @@ func main() {
 	var inventoryName, inventoryNamespace, inventoryKey string
 	var executor, objectStoreID, bucket, prefix, retentionMode string
 	var kubeconfig, contextName string
-	var pollInterval, retentionDuration time.Duration
+	var pollInterval, retentionDuration, reconcileTimeout time.Duration
 	var maxBatch int
 	var once bool
 	flag.StringVar(&inventoryName, "namespace-inventory-configmap", "", "ConfigMap containing the namespace allowlist")
@@ -32,6 +33,8 @@ func main() {
 	flag.StringVar(&retentionMode, "retention-mode", "COMPLIANCE", "COMPLIANCE or GOVERNANCE")
 	flag.DurationVar(&retentionDuration, "retention-duration", 8760*time.Hour, "retention measured from terminal completion time")
 	flag.DurationVar(&pollInterval, "poll-interval", time.Minute, "reconciliation interval")
+	flag.DurationVar(&reconcileTimeout, "reconcile-timeout", 15*time.Minute,
+		"maximum duration of one reconciliation, including object archive uploads")
 	flag.IntVar(&maxBatch, "max-batch", 32, "maximum terminal operations processed per reconciliation")
 	flag.StringVar(&kubeconfig, "kubeconfig", "", "kubeconfig path; empty uses in-cluster credentials")
 	flag.StringVar(&contextName, "context", "", "kubeconfig context")
@@ -42,6 +45,9 @@ func main() {
 	}
 	if pollInterval < 10*time.Second {
 		log.Fatal("poll-interval must be at least 10s")
+	}
+	if reconcileTimeout <= 0 {
+		log.Fatal("reconcile-timeout must be positive")
 	}
 	config, err := clientConfig(kubeconfig, contextName)
 	if err != nil {
@@ -66,7 +72,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	for {
-		processed, err := controller.Reconcile(ctx)
+		processed, err := reconcilebudget.Run(ctx, reconcileTimeout, controller.Reconcile)
 		if err != nil {
 			log.Printf("reconcile failed after archiving %d operations: %v", processed, err)
 		} else if processed > 0 {

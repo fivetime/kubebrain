@@ -79,6 +79,28 @@ func TestArchiveProcessorRejectsExpiredRetentionBeforeExecutor(t *testing.T) {
 	require.False(t, called)
 }
 
+func TestArchiveProcessorPropagatesReconcileCancellationToExecutor(t *testing.T) {
+	object := terminalOperation()
+	client := fake.NewSimpleDynamicClient(runtime.NewScheme(), object)
+	processor, err := NewArchiveProcessor(
+		client, "/executor", "store-a", "bucket", "audit", "COMPLIANCE", 24*time.Hour,
+	)
+	require.NoError(t, err)
+	processor.now = func() time.Time { return time.Unix(110, 0) }
+	processor.run = func(ctx context.Context, _ string, _ []string) error {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	err = processor.Process(ctx, object)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	updated, getErr := client.Resource(operationqueue.Resource).Namespace("tenant-a").
+		Get(context.Background(), "operation-a", metav1.GetOptions{})
+	require.NoError(t, getErr)
+	require.Contains(t, updated.GetFinalizers(), operationaudit.Finalizer)
+}
+
 func TestMergeEnvironmentOverridesExistingValues(t *testing.T) {
 	merged := mergeEnvironment(
 		[]string{"ACTION=delete", "S3_BUCKET=wrong", "KEEP=value"},

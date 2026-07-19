@@ -148,6 +148,7 @@ spec:
             - --retention-mode=COMPLIANCE
             - --retention-duration=8760h
             - --poll-interval=1m
+            - --reconcile-timeout=15m
             - --max-batch=32
           resources:
             requests:
