@@ -223,21 +223,83 @@ func TestDeleteRejectsVersionMissingBeforeRetentionExpiry(t *testing.T) {
 	require.ErrorContains(t, err, "disappeared before retention expired")
 }
 
+func TestDeleteReconcilesCommittedResponseError(t *testing.T) {
+	receipt := completeReceipt()
+	client := matchingDeleteClient(receipt)
+	client.deleteErr = context.DeadlineExceeded
+	ctx, cancel := context.WithCancel(context.Background())
+	client.deleteCancel = cancel
+	client.failHeadOnCanceledContext = true
+	receiptPath := filepath.Join(t.TempDir(), "delete.json")
+
+	deletion, err := Delete(ctx, client, DeleteRequest{
+		Receipt: receipt, Confirmation: "delete:instance-a:backup-1",
+		ObjectStoreID: "store-a", ReceiptOutput: receiptPath,
+		Now: time.Unix(receipt.RetainUntilUnix, 0),
+	})
+	require.NoError(t, err)
+	require.True(t, deletion.VersionAbsent)
+	require.Equal(t, receipt.RetainUntilUnix, deletion.DeletedAtUnix)
+	_, err = ReadDeletionReceipt(receiptPath)
+	require.NoError(t, err)
+}
+
+func TestDeleteRejectsUncommittedResponseError(t *testing.T) {
+	receipt := completeReceipt()
+	client := matchingDeleteClient(receipt)
+	client.deleteErr = errors.New("request failed")
+	client.deleteWithoutCommit = true
+	receiptPath := filepath.Join(t.TempDir(), "delete.json")
+
+	_, err := Delete(context.Background(), client, DeleteRequest{
+		Receipt: receipt, Confirmation: "delete:instance-a:backup-1",
+		ObjectStoreID: "store-a", ReceiptOutput: receiptPath,
+		Now: time.Unix(receipt.RetainUntilUnix, 0),
+	})
+	require.ErrorContains(t, err, "delete retained object version: request failed")
+	require.ErrorContains(t, err, "deleted object version is still readable")
+	_, statErr := os.Stat(receiptPath)
+	require.ErrorIs(t, statErr, os.ErrNotExist)
+}
+
+func TestDeleteRejectsUninspectableResponseError(t *testing.T) {
+	receipt := completeReceipt()
+	client := matchingDeleteClient(receipt)
+	client.deleteErr = errors.New("request failed")
+	client.headAfterDeleteErr = errors.New("head unavailable")
+	receiptPath := filepath.Join(t.TempDir(), "delete.json")
+
+	_, err := Delete(context.Background(), client, DeleteRequest{
+		Receipt: receipt, Confirmation: "delete:instance-a:backup-1",
+		ObjectStoreID: "store-a", ReceiptOutput: receiptPath,
+		Now: time.Unix(receipt.RetainUntilUnix, 0),
+	})
+	require.ErrorContains(t, err, "delete retained object version: request failed")
+	require.ErrorContains(t, err, "verify deleted object version: head unavailable")
+	_, statErr := os.Stat(receiptPath)
+	require.ErrorIs(t, statErr, os.ErrNotExist)
+}
+
 type fakeS3 struct {
-	body             []byte
-	metadata         map[string]string
-	versionID        string
-	retainUntil      time.Time
-	mode             types.ObjectLockRetentionMode
-	deleted          bool
-	corruptGet       bool
-	omitLastModified bool
-	putCalls         int
-	lastPut          *s3.PutObjectInput
-	listOutputs      []*s3.ListObjectVersionsOutput
-	listCalls        int
-	heads            map[string]*s3.HeadObjectOutput
-	retentions       map[string]*s3.GetObjectRetentionOutput
+	body                      []byte
+	metadata                  map[string]string
+	versionID                 string
+	retainUntil               time.Time
+	mode                      types.ObjectLockRetentionMode
+	deleted                   bool
+	corruptGet                bool
+	omitLastModified          bool
+	putCalls                  int
+	lastPut                   *s3.PutObjectInput
+	listOutputs               []*s3.ListObjectVersionsOutput
+	listCalls                 int
+	heads                     map[string]*s3.HeadObjectOutput
+	retentions                map[string]*s3.GetObjectRetentionOutput
+	deleteErr                 error
+	deleteWithoutCommit       bool
+	headAfterDeleteErr        error
+	deleteCancel              context.CancelFunc
+	failHeadOnCanceledContext bool
 }
 
 func (f *fakeS3) PutObject(_ context.Context, input *s3.PutObjectInput, _ ...func(*s3.Options)) (*s3.PutObjectOutput, error) {
@@ -258,12 +320,18 @@ func (f *fakeS3) PutObject(_ context.Context, input *s3.PutObjectInput, _ ...fun
 	return &s3.PutObjectOutput{VersionId: aws.String(f.versionID)}, nil
 }
 
-func (f *fakeS3) HeadObject(_ context.Context, input *s3.HeadObjectInput, _ ...func(*s3.Options)) (*s3.HeadObjectOutput, error) {
+func (f *fakeS3) HeadObject(ctx context.Context, input *s3.HeadObjectInput, _ ...func(*s3.Options)) (*s3.HeadObjectOutput, error) {
 	if f.heads != nil {
 		if output, ok := f.heads[aws.ToString(input.Key)+"\x00"+aws.ToString(input.VersionId)]; ok {
 			return output, nil
 		}
 		return nil, &smithy.GenericAPIError{Code: "NoSuchVersion", Message: "not found"}
+	}
+	if f.deleted && f.headAfterDeleteErr != nil {
+		return nil, f.headAfterDeleteErr
+	}
+	if f.deleted && f.failHeadOnCanceledContext && ctx.Err() != nil {
+		return nil, ctx.Err()
 	}
 	if f.deleted || f.versionID == "" {
 		return nil, &smithy.GenericAPIError{Code: "NoSuchVersion", Message: "not found"}
@@ -305,7 +373,15 @@ func (f *fakeS3) GetObjectRetention(
 }
 
 func (f *fakeS3) DeleteObject(_ context.Context, _ *s3.DeleteObjectInput, _ ...func(*s3.Options)) (*s3.DeleteObjectOutput, error) {
-	f.deleted = true
+	if !f.deleteWithoutCommit {
+		f.deleted = true
+	}
+	if f.deleteCancel != nil {
+		f.deleteCancel()
+	}
+	if f.deleteErr != nil {
+		return nil, f.deleteErr
+	}
 	return &s3.DeleteObjectOutput{}, nil
 }
 
@@ -355,5 +431,16 @@ func completeReceipt() Receipt {
 		CreatedAtUnix: 1, Records: 1, ObjectBytes: 1,
 		RetentionMode: "COMPLIANCE", RetainUntilUnix: 2_000_000_000,
 		RemoteVerified: true, UploadedAtUnix: 1_999_999_000,
+	}
+}
+
+func matchingDeleteClient(receipt Receipt) *fakeS3 {
+	return &fakeS3{
+		body: []byte("x"),
+		metadata: map[string]string{
+			"kubebrain-artifact-sha256": receipt.ArtifactSHA256,
+		},
+		versionID: receipt.VersionID, retainUntil: time.Unix(receipt.RetainUntilUnix, 0),
+		mode: types.ObjectLockRetentionMode(receipt.RetentionMode),
 	}
 }

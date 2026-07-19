@@ -238,6 +238,8 @@ type DeleteRequest struct {
 	Now           time.Time
 }
 
+const deletionReconciliationTimeout = 5 * time.Second
+
 func Delete(ctx context.Context, client S3API, request DeleteRequest) (DeletionReceipt, error) {
 	receipt := request.Receipt
 	if err := receipt.Validate(); err != nil {
@@ -292,18 +294,31 @@ func Delete(ctx context.Context, client S3API, request DeleteRequest) (DeletionR
 		Bucket: aws.String(receipt.Bucket), Key: aws.String(receipt.ObjectKey), VersionId: aws.String(receipt.VersionID),
 	})
 	if err != nil {
-		return DeletionReceipt{}, fmt.Errorf("delete retained object version: %w", err)
+		deleteErr := fmt.Errorf("delete retained object version: %w", err)
+		reconcileCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), deletionReconciliationTimeout)
+		defer cancel()
+		if verifyErr := verifyDeletedVersion(reconcileCtx, client, receipt); verifyErr != nil {
+			return DeletionReceipt{}, errors.Join(deleteErr, verifyErr)
+		}
+		return publishDeletionReceipt(request.ReceiptOutput, receipt)
 	}
-	_, err = client.HeadObject(ctx, &s3.HeadObjectInput{
+	if err := verifyDeletedVersion(ctx, client, receipt); err != nil {
+		return DeletionReceipt{}, err
+	}
+	return publishDeletionReceipt(request.ReceiptOutput, receipt)
+}
+
+func verifyDeletedVersion(ctx context.Context, client S3API, receipt Receipt) error {
+	_, err := client.HeadObject(ctx, &s3.HeadObjectInput{
 		Bucket: aws.String(receipt.Bucket), Key: aws.String(receipt.ObjectKey), VersionId: aws.String(receipt.VersionID),
 	})
 	if err == nil {
-		return DeletionReceipt{}, errors.New("deleted object version is still readable")
+		return errors.New("deleted object version is still readable")
 	}
 	if !isNotFound(err) {
-		return DeletionReceipt{}, fmt.Errorf("verify deleted object version: %w", err)
+		return fmt.Errorf("verify deleted object version: %w", err)
 	}
-	return publishDeletionReceipt(request.ReceiptOutput, receipt)
+	return nil
 }
 
 func publishDeletionReceipt(path string, source Receipt) (DeletionReceipt, error) {
