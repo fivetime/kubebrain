@@ -4385,6 +4385,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   race 连续 30 轮通过。全新 upstream etcd 与独立 TiKV keyspace 的官方 client/v3
   差分确认：普通用户虽可写目标 `/auth-allowed/`，仍不能把直接 Put 或 Txn Put 绑定到
   已承载 `/auth-protected/` 的 lease，且两端精确错误一致。
+- **Watch A253 future-revision progress fencing（2026-07-19）**：对照 upstream
+  `/root/etcd` commit `973847aa2`。KubeBrain 为历史 watch 把 `syncedRev` 初始化为
+  `StartRevision-1`；当起点仍在未来时，显式 `RequestProgress` 和周期
+  `ProgressNotify` 会把这个尚不存在的 revision 立即发给 client，错误宣称 watch 已经
+  同步，可能使恢复逻辑跳过未来事件。
+
+  每个 watch 现保存原始 start revision，progress snapshot 只包含 published watermark
+  已到达起点的 watch；只要同 stream 仍有未来 watch，就禁止 stream-wide progress，
+  per-watch fallback 只回应已具备资格的 watch。周期路径使用同一 published fence。
+  created response 仍立即返回，不阻塞 watch 建立。确定性测试固定
+  `published=5/start=10/synced=9`：起点前显式及周期 progress 均静默，published 推进到
+  10 后才允许发送 revision 9。相关普通测试连续 50 轮、race 连续 20 轮通过。全新
+  upstream etcd 与候选二进制的独立 TiKV keyspace 官方 client/v3 差分同样确认：
+  `base+2` 起点前 150ms 无 progress，两个写推进后先收到目标事件，再收到合法 progress。
 
 ### P1：通用服务能力
 

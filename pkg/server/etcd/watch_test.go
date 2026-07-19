@@ -1173,6 +1173,82 @@ func TestWatchProgressNeverOvertakesBufferedEvent(t *testing.T) {
 	<-done
 }
 
+type futureProgressBackend struct {
+	BackendShim
+	published atomic.Uint64
+	interval  time.Duration
+}
+
+func (b *futureProgressBackend) GetPublishedRevision() uint64 {
+	return b.published.Load()
+}
+
+func (b *futureProgressBackend) WatchProgressNotifyInterval() time.Duration {
+	return b.interval
+}
+
+func TestFutureRevisionWatchSuppressesProgressUntilPublished(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	backend := &futureProgressBackend{BackendShim: server.backend, interval: 5 * time.Millisecond}
+	backend.published.Store(5)
+	fed := make(chan etcdproxy.WatchResult)
+	server.peers = testPeerService{
+		isLeader:     false,
+		proxyEnabled: true,
+		watchFn: func(context.Context, []byte, []byte, uint64) (<-chan etcdproxy.WatchResult, error) {
+			return fed, nil
+		},
+	}
+
+	stream := &controllableWatchServer{ctx: context.Background()}
+	wt := &watch{
+		cancel:        func() {},
+		start:         "/registry/watch/future",
+		startRevision: 10,
+		syncedRev:     9,
+	}
+	w := &watcher{
+		backend:     backend,
+		watchServer: stream,
+		grpcServer:  server,
+		watches:     map[int64]*watch{7: wt},
+		metricCli:   server.metricCli,
+	}
+
+	snapshot, allEligible := w.progressSyncedRevSnapshot()
+	require.False(t, allEligible)
+	require.Empty(t, snapshot)
+	_, synced := w.waitStreamProgressRevision(context.Background(), 5, 10*time.Millisecond)
+	require.False(t, synced, "stream progress must not bypass a future-revision watch")
+
+	w.wg.Add(1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		w.Watch(context.Background(), 7, &etcdserverpb.WatchCreateRequest{
+			Key:            []byte("/registry/watch/future"),
+			StartRevision:  10,
+			ProgressNotify: true,
+		})
+	}()
+	require.Never(t, func() bool {
+		return len(stream.snapshot()) != 0
+	}, 30*time.Millisecond, 2*time.Millisecond)
+
+	backend.published.Store(10)
+	require.Eventually(t, func() bool {
+		return len(stream.snapshot()) >= 1
+	}, time.Second, time.Millisecond)
+	sent := stream.snapshot()
+	require.Equal(t, int64(9), sent[0].Header.Revision)
+	require.Equal(t, int64(7), sent[0].WatchId)
+
+	close(fed)
+	<-done
+}
+
 func TestFilteredWatchAdvancesThroughFullBatchRevision(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

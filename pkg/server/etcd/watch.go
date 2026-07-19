@@ -108,6 +108,10 @@ type watch struct {
 	cancel     func()
 	start, end string
 	quotaHeld  bool
+	// startRevision fences progress for a watch created in the future. etcd
+	// does not report progress until the store has actually reached this
+	// revision; StartRevision==0 watches are eligible immediately.
+	startRevision uint64
 	// syncedRev is the highest revision this watch has actually delivered to the
 	// client (or the caught-up revision captured at creation). Progress
 	// notifications must never advertise a revision beyond syncedRev: the global
@@ -149,6 +153,39 @@ func (w *watcher) syncedRevSnapshot() map[int64]uint64 {
 	return m
 }
 
+// progressSyncedRevSnapshot returns only watches whose requested start revision
+// has been reached by the published store watermark. allEligible is false when
+// a stream-wide progress response would be unsafe because any active watch is
+// still waiting for a future revision.
+func (w *watcher) progressSyncedRevSnapshot() (snapshot map[int64]uint64, allEligible bool) {
+	w.Lock()
+	defer w.Unlock()
+	snapshot = make(map[int64]uint64, len(w.watches))
+	allEligible = len(w.watches) > 0
+	var (
+		published       uint64
+		publishedLoaded bool
+	)
+	for id, wt := range w.watches {
+		if wt.startRevision > 0 {
+			if !publishedLoaded {
+				if w.backend == nil {
+					allEligible = false
+					continue
+				}
+				published = w.backend.GetPublishedRevision()
+				publishedLoaded = true
+			}
+			if wt.startRevision > published {
+				allEligible = false
+				continue
+			}
+		}
+		snapshot[id] = atomic.LoadUint64(&wt.syncedRev)
+	}
+	return snapshot, allEligible
+}
+
 // minSyncedRevision returns the minimum revision delivered across all active
 // watches on the stream, and whether any watch is active.
 func (w *watcher) minSyncedRevision() (uint64, bool) {
@@ -179,9 +216,9 @@ func (w *watcher) waitStreamProgressRevision(ctx context.Context, target uint64,
 	ticker := time.NewTicker(2 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		snapshot := w.syncedRevSnapshot()
+		snapshot, allEligible := w.progressSyncedRevSnapshot()
 		var minRev uint64
-		allSynced := len(snapshot) > 0
+		allSynced := allEligible
 		for _, rev := range snapshot {
 			if minRev == 0 || rev < minRev {
 				minRev = rev
@@ -298,8 +335,8 @@ func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) error {
 			// k8s 1.37 ConsistentListFromCache convergence at poll granularity
 			// instead of ticker granularity (and off its 3s LIST-fallback cliff).
 			s.backend.KickWatchProgress()
-			snapshot := w.syncedRevSnapshot()
-			if len(snapshot) == 1 {
+			snapshot, allEligible := w.progressSyncedRevSnapshot()
+			if allEligible && len(snapshot) == 1 {
 				var singleRev uint64
 				for _, rev := range snapshot {
 					singleRev = rev
@@ -340,7 +377,8 @@ func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) error {
 			// apiserver crash-loops forever. Per-watch progress is also what
 			// the periodic notify path already emits, and syncedRev never
 			// over-reports (it advances only via delivered events/markers).
-			for id, rev := range w.syncedRevSnapshot() {
+			snapshot, _ = w.progressSyncedRevSnapshot()
+			for id, rev := range snapshot {
 				if rev == 0 {
 					// Range-stream pseudo-watches never emit progress.
 					continue
@@ -431,11 +469,12 @@ func (w *watcher) Start(c context.Context, r *etcdserverpb.WatchCreateRequest) {
 		initSyncedRev = w.backend.GetPublishedRevision()
 	}
 	w.watches[id] = &watch{
-		cancel:    cancel,
-		start:     string(r.Key),
-		end:       string(r.RangeEnd),
-		quotaHeld: w.grpcServer.maxWatches != 0,
-		syncedRev: initSyncedRev,
+		cancel:        cancel,
+		start:         string(r.Key),
+		end:           string(r.RangeEnd),
+		quotaHeld:     w.grpcServer.maxWatches != 0,
+		startRevision: uint64(r.StartRevision),
+		syncedRev:     initSyncedRev,
 	}
 	if len(w.watches) > 1 {
 		klog.InfoS("watcher reuse", "id", w.id, "size", len(w.watches))
@@ -831,6 +870,12 @@ func (w *watcher) Watch(ctx context.Context, id int64, r *etcdserverpb.WatchCrea
 				// with Header.Revision==0 is not a valid progress notification
 				// (clientv3 IsProgressNotify requires a non-zero revision), so skip
 				// it; the next tick reports the real revision once it advances.
+				continue
+			}
+			if wt != nil && wt.startRevision > w.backend.GetPublishedRevision() {
+				// A future-revision watch is not synchronized merely because its
+				// initial watermark is StartRevision-1. Wait until the published
+				// store revision reaches the requested start.
 				continue
 			}
 			progressResp := &etcdserverpb.WatchResponse{

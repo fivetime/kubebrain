@@ -21,6 +21,8 @@ type watchRevisionBoundaryOutcome struct {
 	CreatedHeaderAtBase      bool
 	EventValues              []string
 	EventAtWriteRevision     bool
+	ProgressSuppressedFuture bool
+	ProgressAfterStart       bool
 	Canceled                 bool
 	CancelReason             string
 	CancelHeaderAtOrAfterPut bool
@@ -48,11 +50,13 @@ func TestWatchRevisionBoundaryDifferentialAgainstReferenceEtcd(t *testing.T) {
 			EventAtWriteRevision: true,
 		},
 		{
-			Name:                 "future-next",
-			Created:              true,
-			CreatedHeaderAtBase:  true,
-			EventValues:          []string{"future"},
-			EventAtWriteRevision: true,
+			Name:                     "future-next",
+			Created:                  true,
+			CreatedHeaderAtBase:      true,
+			EventValues:              []string{"future"},
+			EventAtWriteRevision:     true,
+			ProgressSuppressedFuture: true,
+			ProgressAfterStart:       true,
 		},
 		{
 			Name:                     "maximum",
@@ -132,14 +136,57 @@ func runWatchRevisionBoundaryScenario(
 		require.NoError(t, rangeErr)
 		stream, streamErr := watch.Watch(ctx)
 		require.NoError(t, streamErr)
-		sendWatchCreate(t, stream, key, 303, base.Header.Revision+1)
+		startRevision := base.Header.Revision + 2
+		sendWatchCreate(t, stream, key, 303, startRevision)
 		created := recvWatchResponse(t, stream)
+		require.NoError(t, stream.Send(&etcdserverpb.WatchRequest{
+			RequestUnion: &etcdserverpb.WatchRequest_ProgressRequest{
+				ProgressRequest: &etcdserverpb.WatchProgressRequest{},
+			},
+		}))
+		type receiveResult struct {
+			response *etcdserverpb.WatchResponse
+			err      error
+		}
+		pending := make(chan receiveResult, 1)
+		go func() {
+			response, receiveErr := stream.Recv()
+			pending <- receiveResult{response: response, err: receiveErr}
+		}()
+		var received receiveResult
+		progressSuppressed := false
+		receivedEarly := false
+		select {
+		case received = <-pending:
+			receivedEarly = true
+		case <-time.After(150 * time.Millisecond):
+			progressSuppressed = true
+		}
+		_, putErr := kv.Put(ctx, &etcdserverpb.PutRequest{
+			Key: []byte(prefix + "future-unrelated"), Value: []byte("advance"),
+		})
+		require.NoError(t, putErr)
 		put, putErr := kv.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("future")})
 		require.NoError(t, putErr)
-		event := recvWatchResponse(t, stream)
-		outcomes = append(outcomes, normalizeWatchRevisionOutcome(
+		if !receivedEarly {
+			received = <-pending
+		}
+		require.NoError(t, received.err)
+		event := received.response
+		require.NoError(t, stream.Send(&etcdserverpb.WatchRequest{
+			RequestUnion: &etcdserverpb.WatchRequest_ProgressRequest{
+				ProgressRequest: &etcdserverpb.WatchProgressRequest{},
+			},
+		}))
+		progress := recvWatchResponse(t, stream)
+		outcome := normalizeWatchRevisionOutcome(
 			"future-next", created, event, base.Header.Revision, put.Header.Revision,
-		))
+		)
+		outcome.ProgressSuppressedFuture = progressSuppressed
+		outcome.ProgressAfterStart = !progress.Created && !progress.Canceled &&
+			len(progress.Events) == 0 && progress.Header != nil &&
+			progress.Header.Revision >= startRevision
+		outcomes = append(outcomes, outcome)
 		require.NoError(t, stream.CloseSend())
 	})
 
