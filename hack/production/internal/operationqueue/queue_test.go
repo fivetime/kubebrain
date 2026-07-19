@@ -17,6 +17,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 	clientgotesting "k8s.io/client-go/testing"
 )
@@ -836,6 +837,59 @@ func TestClaimLeaseWriteReconciliationOutlivesCanceledParent(t *testing.T) {
 		"claim status cancellation must clean a reconciled Lease create")
 }
 
+func TestSubmitReconcilesCommittedCreateAfterLostResponse(t *testing.T) {
+	client := fakeQueueClient()
+	queue := New(client, "test")
+	client.PrependReactor("create", Resource.Resource, func(
+		action clientgotesting.Action,
+	) (bool, runtime.Object, error) {
+		object := action.(clientgotesting.CreateAction).GetObject()
+		require.NoError(t, client.Tracker().Create(Resource, object, "test"))
+		return true, nil, errors.New("submit response lost after commit")
+	})
+
+	created, err := queue.Submit(context.Background(), "backup-1", validSpec())
+	require.NoError(t, err)
+	require.Equal(t, "backup-1", created.GetName())
+	require.Contains(t, created.GetFinalizers(), operationaudit.Finalizer)
+}
+
+func TestSubmitRejectsMismatchedCommittedObject(t *testing.T) {
+	client := fakeQueueClient()
+	queue := New(client, "test")
+	client.PrependReactor("create", Resource.Resource, func(
+		action clientgotesting.Action,
+	) (bool, runtime.Object, error) {
+		object := action.(clientgotesting.CreateAction).GetObject().(*unstructured.Unstructured).DeepCopy()
+		require.NoError(t, unstructured.SetNestedField(
+			object.Object, "replacement-instance", "spec", "instance",
+		))
+		require.NoError(t, client.Tracker().Create(Resource, object, "test"))
+		return true, nil, errors.New("submit response lost after commit")
+	})
+
+	created, err := queue.Submit(context.Background(), "backup-1", validSpec())
+	require.Nil(t, created)
+	require.ErrorContains(t, err, "different immutable spec")
+}
+
+func TestSubmitRejectsCommittedObjectWithoutAuditFinalizer(t *testing.T) {
+	client := fakeQueueClient()
+	queue := New(client, "test")
+	client.PrependReactor("create", Resource.Resource, func(
+		action clientgotesting.Action,
+	) (bool, runtime.Object, error) {
+		object := action.(clientgotesting.CreateAction).GetObject().(*unstructured.Unstructured).DeepCopy()
+		object.SetFinalizers(nil)
+		require.NoError(t, client.Tracker().Create(Resource, object, "test"))
+		return true, nil, errors.New("submit response lost after commit")
+	})
+
+	created, err := queue.Submit(context.Background(), "backup-1", validSpec())
+	require.Nil(t, created)
+	require.ErrorContains(t, err, "missing the audit finalizer")
+}
+
 func TestQueueRejectsSpecDriftAndInvalidCompletion(t *testing.T) {
 	queue := newFakeQueue()
 	ctx := context.Background()
@@ -1064,6 +1118,94 @@ func TestQueueApprovalIsPendingOnlyAndIdempotent(t *testing.T) {
 	require.ErrorContains(t, err, "pending")
 }
 
+func TestApproveReconcilesCommittedUpdateAfterLostResponse(t *testing.T) {
+	client := fakeQueueClient()
+	queue := New(client, "test")
+	ctx := context.Background()
+	spec := validSpec()
+	spec.Type = "Destroy"
+	object, err := queue.Submit(ctx, "destroy", spec)
+	require.NoError(t, err)
+	object.SetUID(types.UID("uid-destroy"))
+	_, err = queue.resource.Update(ctx, object, metav1.UpdateOptions{})
+	require.NoError(t, err)
+	client.PrependReactor("update", Resource.Resource, func(
+		action clientgotesting.Action,
+	) (bool, runtime.Object, error) {
+		updated := action.(clientgotesting.UpdateAction).GetObject()
+		require.NoError(t, client.Tracker().Update(Resource, updated, "test"))
+		return true, nil, errors.New("approval response lost after commit")
+	})
+
+	approved, err := queue.Approve(
+		ctx, "destroy", operationaudit.ApproverUsername, "change-123",
+	)
+	require.NoError(t, err)
+	require.Equal(t, types.UID("uid-destroy"), approved.GetUID())
+	require.Equal(t, "change-123",
+		approved.GetAnnotations()[operationaudit.ApprovalIDAnnotation])
+}
+
+func TestApproveReportsWriteAndReconciliationFailures(t *testing.T) {
+	client := fakeQueueClient()
+	queue := New(client, "test")
+	ctx := context.Background()
+	spec := validSpec()
+	spec.Type = "Destroy"
+	_, err := queue.Submit(ctx, "destroy", spec)
+	require.NoError(t, err)
+	getCalls := 0
+	client.PrependReactor("get", Resource.Resource, func(
+		clientgotesting.Action,
+	) (bool, runtime.Object, error) {
+		getCalls++
+		if getCalls > 1 {
+			return true, nil, errors.New("approval reconciliation unavailable")
+		}
+		return false, nil, nil
+	})
+	client.PrependReactor("update", Resource.Resource, func(
+		clientgotesting.Action,
+	) (bool, runtime.Object, error) {
+		return true, nil, errors.New("approval write unavailable")
+	})
+
+	approved, err := queue.Approve(
+		ctx, "destroy", operationaudit.ApproverUsername, "change-123",
+	)
+	require.Nil(t, approved)
+	require.ErrorContains(t, err, "approval write unavailable")
+	require.ErrorContains(t, err, "approval reconciliation unavailable")
+}
+
+func TestApproveRejectsReplacementUIDAfterFailedUpdate(t *testing.T) {
+	client := fakeQueueClient()
+	queue := New(client, "test")
+	ctx := context.Background()
+	spec := validSpec()
+	spec.Type = "Destroy"
+	object, err := queue.Submit(ctx, "destroy", spec)
+	require.NoError(t, err)
+	object.SetUID(types.UID("uid-original"))
+	_, err = queue.resource.Update(ctx, object, metav1.UpdateOptions{})
+	require.NoError(t, err)
+	client.PrependReactor("update", Resource.Resource, func(
+		action clientgotesting.Action,
+	) (bool, runtime.Object, error) {
+		replacement := action.(clientgotesting.UpdateAction).GetObject().(*unstructured.Unstructured).DeepCopy()
+		replacement.SetUID(types.UID("uid-replacement"))
+		require.NoError(t, client.Tracker().Delete(Resource, "test", "destroy"))
+		require.NoError(t, client.Tracker().Create(Resource, replacement, "test"))
+		return true, nil, errors.New("approval response lost after replacement")
+	})
+
+	approved, err := queue.Approve(
+		ctx, "destroy", operationaudit.ApproverUsername, "change-123",
+	)
+	require.Nil(t, approved)
+	require.ErrorContains(t, err, "operation was replaced while approving")
+}
+
 func TestQueueRejectsApprovalForLowRiskOrInvalidDecision(t *testing.T) {
 	queue := newFakeQueue()
 	ctx := context.Background()
@@ -1078,6 +1220,61 @@ func TestQueueRejectsApprovalForLowRiskOrInvalidDecision(t *testing.T) {
 	require.NoError(t, err)
 	_, err = queue.Approve(ctx, "destroy", operationaudit.ApproverUsername, "INVALID_ID")
 	require.ErrorContains(t, err, "DNS-compatible")
+}
+
+func TestDeleteReconcilesCommittedUIDFencedDelete(t *testing.T) {
+	client := fakeQueueClient()
+	queue := New(client, "test")
+	ctx := context.Background()
+	createOperationForDelete(t, queue, "delete-me", types.UID("uid-original"))
+	client.PrependReactor("delete", Resource.Resource, func(
+		clientgotesting.Action,
+	) (bool, runtime.Object, error) {
+		require.NoError(t, client.Tracker().Delete(Resource, "test", "delete-me"))
+		return true, nil, errors.New("delete response lost after commit")
+	})
+
+	require.NoError(t, queue.Delete(ctx, "delete-me", types.UID("uid-original")))
+	_, err := queue.Get(ctx, "delete-me")
+	require.True(t, apierrors.IsNotFound(err))
+}
+
+func TestDeletePreservesReplacementAfterFailedDelete(t *testing.T) {
+	client := fakeQueueClient()
+	queue := New(client, "test")
+	ctx := context.Background()
+	createOperationForDelete(t, queue, "delete-me", types.UID("uid-original"))
+	client.PrependReactor("delete", Resource.Resource, func(
+		clientgotesting.Action,
+	) (bool, runtime.Object, error) {
+		require.NoError(t, client.Tracker().Delete(Resource, "test", "delete-me"))
+		replacement := operationForDelete("delete-me", types.UID("uid-replacement"))
+		require.NoError(t, client.Tracker().Create(Resource, replacement, "test"))
+		return true, nil, errors.New("delete response lost after replacement")
+	})
+
+	require.NoError(t, queue.Delete(ctx, "delete-me", types.UID("uid-original")))
+	replacement, err := queue.Get(ctx, "delete-me")
+	require.NoError(t, err)
+	require.Equal(t, types.UID("uid-replacement"), replacement.GetUID())
+}
+
+func TestDeletePreservesErrorWhileOriginalTargetExists(t *testing.T) {
+	client := fakeQueueClient()
+	queue := New(client, "test")
+	ctx := context.Background()
+	createOperationForDelete(t, queue, "delete-me", types.UID("uid-original"))
+	client.PrependReactor("delete", Resource.Resource, func(
+		clientgotesting.Action,
+	) (bool, runtime.Object, error) {
+		return true, nil, errors.New("delete unavailable")
+	})
+
+	err := queue.Delete(ctx, "delete-me", types.UID("uid-original"))
+	require.ErrorContains(t, err, "delete unavailable")
+	remaining, getErr := queue.Get(ctx, "delete-me")
+	require.NoError(t, getErr)
+	require.Equal(t, types.UID("uid-original"), remaining.GetUID())
 }
 
 func TestQueueRotatesAcrossInstancesAndSerializesEachInstance(t *testing.T) {
@@ -1168,6 +1365,24 @@ func setOperationStatus(
 	updated.Object["status"] = status
 	_, err := queue.resource.UpdateStatus(context.Background(), updated, metav1.UpdateOptions{})
 	require.NoError(t, err)
+}
+
+func createOperationForDelete(t *testing.T, queue *Queue, name string, uid types.UID) {
+	t.Helper()
+	_, err := queue.resource.Create(
+		context.Background(), operationForDelete(name, uid), metav1.CreateOptions{},
+	)
+	require.NoError(t, err)
+}
+
+func operationForDelete(name string, uid types.UID) *unstructured.Unstructured {
+	object := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": Resource.Group + "/" + Resource.Version,
+		"kind":       "KubeBrainOperation",
+		"metadata":   map[string]any{"name": name},
+	}}
+	object.SetUID(uid)
+	return object
 }
 
 func validSpec() Spec {

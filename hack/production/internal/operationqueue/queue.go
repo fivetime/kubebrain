@@ -151,15 +151,22 @@ func (q *Queue) Submit(ctx context.Context, name string, spec Spec) (*unstructur
 	if err == nil {
 		return created, nil
 	}
-	if !apierrors.IsAlreadyExists(err) {
-		return nil, err
-	}
-	existing, getErr := q.resource.Get(ctx, name, metav1.GetOptions{})
+	reconcileCtx, cancel := leaseCleanupContext(ctx)
+	defer cancel()
+	existing, getErr := q.resource.Get(reconcileCtx, name, metav1.GetOptions{})
 	if getErr != nil {
-		return nil, getErr
+		if apierrors.IsNotFound(getErr) && !apierrors.IsAlreadyExists(err) {
+			return nil, err
+		}
+		return nil, errors.Join(
+			err, fmt.Errorf("inspect operation after failed submit: %w", getErr),
+		)
 	}
 	if !specMatches(existing, spec) {
 		return nil, errors.New("existing operation has a different immutable spec")
+	}
+	if !containsString(existing.GetFinalizers(), operationaudit.Finalizer) {
+		return nil, errors.New("existing operation is missing the audit finalizer")
 	}
 	return existing, nil
 }
@@ -782,15 +789,62 @@ func (q *Queue) Approve(
 	annotations[operationaudit.ApprovedByAnnotation] = approvedBy
 	annotations[operationaudit.ApprovalIDAnnotation] = approvalID
 	updated.SetAnnotations(annotations)
-	return q.resource.Update(ctx, updated, metav1.UpdateOptions{})
+	result, err := q.resource.Update(ctx, updated, metav1.UpdateOptions{})
+	if err == nil {
+		return result, nil
+	}
+	reconcileCtx, cancel := leaseCleanupContext(ctx)
+	defer cancel()
+	latest, getErr := q.resource.Get(reconcileCtx, name, metav1.GetOptions{})
+	if getErr != nil {
+		return nil, errors.Join(
+			err, fmt.Errorf("inspect operation after failed approval: %w", getErr),
+		)
+	}
+	if latest.GetUID() != object.GetUID() {
+		return nil, errors.Join(err, errors.New("operation was replaced while approving"))
+	}
+	latestAnnotations := latest.GetAnnotations()
+	if latestAnnotations[operationaudit.ApprovedByAnnotation] == approvedBy &&
+		latestAnnotations[operationaudit.ApprovalIDAnnotation] == approvalID {
+		return latest, nil
+	}
+	return nil, err
 }
 
 func (q *Queue) Delete(ctx context.Context, name string, uid types.UID) error {
 	policy := metav1.DeletePropagationForeground
-	return q.resource.Delete(ctx, name, metav1.DeleteOptions{
+	err := q.resource.Delete(ctx, name, metav1.DeleteOptions{
 		Preconditions:     &metav1.Preconditions{UID: &uid},
 		PropagationPolicy: &policy,
 	})
+	if err == nil || apierrors.IsNotFound(err) {
+		return nil
+	}
+	reconcileCtx, cancel := leaseCleanupContext(ctx)
+	defer cancel()
+	current, getErr := q.resource.Get(reconcileCtx, name, metav1.GetOptions{})
+	if apierrors.IsNotFound(getErr) {
+		return nil
+	}
+	if getErr != nil {
+		return errors.Join(
+			err, fmt.Errorf("inspect operation after failed delete: %w", getErr),
+		)
+	}
+	if current.GetUID() != uid {
+		return nil
+	}
+	return err
+}
+
+func containsString(values []string, wanted string) bool {
+	for _, value := range values {
+		if value == wanted {
+			return true
+		}
+	}
+	return false
 }
 
 func (q *Queue) requireWorker(object *unstructured.Unstructured, owner string, attempt int64) error {
