@@ -861,6 +861,15 @@ API 每 30 秒在线重载 `kubebrain-operation-api-tls`。轮换契约与 param
 后必须逐 Pod 验证新 serial、UID 不变和零重启。更换签发 CA 时，外部负载均衡器、调用方
 和探针必须先进入旧/新 CA 双信任窗口，再更新 API 叶证书，最后撤旧 CA。
 
+`/readyz` 还会在 `--dependency-request-timeout=5s` 内 GET 一个固定不存在的 Operation，
+只接受带精确探测名称的 NotFound；CRD 路由缺失、RBAC、transport、timeout 或 API 过载
+均返回 503 并摘流。OIDC/JWKS 和业务 Operation 请求使用相同 deadline：JWKS provider
+不可用或刷新失败、Kubernetes Forbidden/Unauthorized/timeout/503/429 返回可重试 503，
+真正的无效 token、签名、issuer/audience/claim 或 unknown kid 仍返回 401。`/healthz`
+不访问 OIDC 或 Kubernetes，保持 liveness 语义。上线应临时撤销并恢复 API Role 的
+Operation `get/create`，验证外部 GET 与 readiness 按 `404/204 -> 503/503 -> 404/204`
+变化，并确认所有 Pod UID 不变、零重启。
+
 验证器通过 OIDC discovery 获取 JWKS，未知 kid 会触发刷新；缓存过期且刷新失败时拒绝
 token，不继续信任可能已撤下的旧 key。除 loopback 测试外 issuer/JWKS 必须使用 HTTPS。
 API ServiceAccount 仅有 namespaced operation `create/get`，没有 list/watch、status、

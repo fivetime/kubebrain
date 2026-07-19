@@ -4743,6 +4743,27 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   恢复 RBAC 后两者重新 Ready/204，Pod UID 不变且零重启；无效 token 参数请求在 20ms 内
   返回 401。smoke 后 broker 恢复零副本并删除临时 TLS Secret。
 
+- **Operations A273 operation API dependency-aware readiness（2026-07-19）**：
+  外部 operation API 原 `/readyz` 在 A271 后仍只验证 TLS；Operation CRD/RBAC/API 已故障
+  时继续接流，OIDC JWKS 网络失败又被折叠为用户 token invalid 401，Kubernetes RBAC
+  错误则返回不可重试语义的 500。对齐
+  `/root/etcd/server/etcdserver/api/etcdhttp/health.go` 的有 deadline 真实 API 检查，
+  API 现以统一 5 秒预算探测固定 Operation GET，并严格区分对象 NotFound 与 CRD 路由
+  NotFound。外部 OIDC 和 Operation 请求继承同一预算；JWKS provider 不可用/刷新退避、
+  context deadline，以及 Kubernetes Forbidden/Unauthorized/timeout/503/429 均稳定返回
+  503，真实无效身份仍为 401，liveness 不访问依赖。
+
+  operation API/OIDC 与 manifest focused 连续 10 轮、race 连续 20 轮、全量 production
+  测试和 vet 均通过。精确提交
+  `c82dd16d44d1c9945dad3948cae76543b7e6425c` 构建非 root 镜像
+  `kubebrain:a273-operation-api-dependency-readiness`（image ID
+  `sha256:e19a3d04ffe81acccde62cd408d18a833d52bc4c6398c713d1cdeae1ae165d68`）。
+  kind 双副本使用真实 HTTPS discovery/JWKS 与 RS256 token，健康时 readiness 204、
+  liveness 200、授权 GET missing 404（约 23ms）。撤销 API Role 后 readiness 与同一
+  OIDC GET 均立即 503，两个 Pod 在 12 秒内 NotReady，liveness 仍为 200；恢复 Role 后
+  readiness 回到 204，两个 UID 不变且零重启。smoke 后 API 恢复零副本，临时 OIDC/TLS/
+  CA 均删除。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
