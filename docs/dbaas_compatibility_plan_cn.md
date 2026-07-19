@@ -5171,6 +5171,34 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   已清理。archiver 与六类零副本 executor 模板更新到 A290；A288/A289 的 COMPLIANCE
   验证 version 继续保留到各自期限，到期后按 exact version 清理。
 
+- **Backup A291 uncertain exact-version deletion reconciliation（2026-07-19）**：
+  S3 `DeleteObject` 可能已经提交 exact-version 删除，但客户端因超时、连接中断或响应
+  丢失只收到错误。旧实现直接返回，不能在同一调用内区分“未提交”和“已提交但响应丢失”。
+  这与参考 etcd `client/v3/retry.go` 的 `isSafeRetryMutableRPC` 原则一致：连接建立后的
+  mutable write 不能盲重试，否则破坏 write-at-most-once；必须用可观察状态对账。
+
+  现在删除错误后使用独立 5 秒预算，保留原 context values 但不继承取消信号，Head
+  receipt 绑定的 bucket/key/version。只有明确 `NoSuchVersion`/NotFound 才确认已提交并
+  发布确定性 deletion receipt；version 仍可读或 Head 失败时用 `errors.Join` 同时返回
+  原删除错误和检查错误，不发布 receipt。成功响应后的验证也复用同一 exact-version
+  helper。回归测试确定性覆盖提交后取消父 context 并丢失响应、未提交且仍可读、提交后
+  无法检查三种结果。focused 连续 200 轮、focused race 50 轮、objectstore 全包连续
+  50 轮、全包 race 20 轮、BackupDeletion 连续 10 轮 172.518 秒、production 全量
+  91.684 秒和两侧 vet 均通过。代码提交
+  `d5f30cc38df19fccdaa3e5a886dd9cf4b1c32654`。
+
+  精确提交构建非 root TiKV 镜像 `kubebrain:a291-delete-write-reconcile`（image ID
+  `sha256:79de7a9356e8a331dd40af4e86aef92fcaa184528c3d5f625234741970ed6767`）。
+  真实 KubeBrain `/registry` 在 revision `467796068338761731` 导出 58 条记录、0 lease，
+  artifact SHA-256 为
+  `8f78a93cdb7d67a3c6a368408ac28b80ddb8bf7e8ff973b9c0a3e78f2feebd6d`。MinIO
+  GOVERNANCE version `17c19d61-219b-4fdc-b6ff-535e41973c33` 保留到 `1784505138`；
+  故障代理把三次已由 MinIO 成功处理的 DELETE 响应全部转换为 502，随后同一 CLI 调用
+  Head 精确 version 得到 NotFound 并成功退出。deletion receipt SHA-256 为
+  `2dcca9410e131da53950ebe8eaefc7dbb5e763b0a52a711c3316733020332c13`，测试 version
+  已清理。archiver 与六类零副本 executor 模板更新到 A291；主 KubeBrain 3/3、
+  PD/TiKV 3+3、A277 scheduler 2/2 当前均 Ready。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range

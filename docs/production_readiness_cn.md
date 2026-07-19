@@ -377,7 +377,10 @@ version 已不存在”补发/复用 receipt；保留期内提前消失则 fail 
 删除时间；每次重试仍以 exact-version Head NotFound 重新证明当前不存在，实际工作流完成
 时间由上层 BackupDeletion operation receipt 记录。这样即使本地删除 receipt 随 Pod
 丢失，重建后的 canonical JSON 和 SHA 也保持稳定。bucket 生命周期规则只能作为调度器，
-不能替代该完成证据。
+不能替代该完成证据。`DeleteObject` 返回错误也不等于服务端未提交：工具使用不继承原
+请求取消信号的独立 5 秒预算 Head 指定 version；只有 NotFound 才确认提交并发布 receipt。
+version 仍可读或 Head 本身失败时，同时保留原删除错误和检查错误并 fail closed，不盲目
+重发其他 version 的删除。
 
 `deploy/production/monitoring.yaml` 还以 1 分钟周期生成实例级计量序列：
 
