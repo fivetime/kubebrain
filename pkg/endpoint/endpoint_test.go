@@ -17,6 +17,7 @@ package endpoint
 import (
 	"context"
 	"io/ioutil"
+	"net"
 	"net/http"
 	"path"
 	"path/filepath"
@@ -32,6 +33,7 @@ import (
 	"github.com/kubewharf/kubebrain/pkg/server"
 	"github.com/kubewharf/kubebrain/pkg/storage"
 	ibadger "github.com/kubewharf/kubebrain/pkg/storage/badger"
+	imemkv "github.com/kubewharf/kubebrain/pkg/storage/memkv"
 )
 
 func newBadgerStorage(t *testing.T, ast *assert.Assertions) storage.KvStorage {
@@ -111,4 +113,31 @@ func TestRunEndpoint(t *testing.T) {
 
 	cancel()
 	ast.NoError(eg.Wait())
+}
+
+func TestRunEndpointBindFailureStopsBackgroundWorkBeforeBackendClose(t *testing.T) {
+	clientListener, err := net.Listen("tcp", "127.0.0.1:0")
+	assert.NoError(t, err)
+	defer clientListener.Close()
+	peerListener, err := net.Listen("tcp", "127.0.0.1:0")
+	assert.NoError(t, err)
+	defer peerListener.Close()
+
+	ctrl := gomock.NewController(t)
+	m := mockmetrics.NewMinimalMetrics(ctrl)
+	kv := imemkv.NewKvStorage()
+	b := backend.NewBackend(kv, backend.Config{
+		Identity: "bind-failure", EnableEtcdCompatibility: true,
+	}, m)
+	conf := &Config{
+		Port:                 clientListener.Addr().(*net.TCPAddr).Port,
+		PeerPort:             peerListener.Addr().(*net.TCPAddr).Port,
+		ClientSecurityConfig: &SecurityConfig{},
+		PeerSecurityConfig:   &SecurityConfig{},
+	}
+
+	runErr := NewEndpoint(b, m, conf).Run(context.Background())
+	assert.Error(t, runErr)
+	assert.Contains(t, runErr.Error(), "address already in use")
+	ctrl.Finish()
 }

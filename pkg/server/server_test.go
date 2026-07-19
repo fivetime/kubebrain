@@ -19,7 +19,9 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/require"
@@ -38,6 +40,20 @@ import (
 type healthStorage struct {
 	storage.KvStorage
 	fail bool
+}
+
+type blockingLeadershipBackend struct {
+	backend.Backend
+	entered chan struct{}
+	exited  chan struct{}
+	once    sync.Once
+}
+
+func (b *blockingLeadershipBackend) ResumePhysicalCompaction(ctx context.Context) error {
+	b.once.Do(func() { close(b.entered) })
+	<-ctx.Done()
+	close(b.exited)
+	return ctx.Err()
 }
 
 type healthMetricEvent struct {
@@ -84,6 +100,37 @@ func healthStatus(t *testing.T, s *server) healthpb.HealthCheckResponse_ServingS
 	resp, err := s.healthServer.Check(context.Background(), &healthpb.HealthCheckRequest{})
 	require.NoError(t, err)
 	return resp.Status
+}
+
+func TestCloseWaitsForLeadershipCallbackBeforeReturning(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	m := mock.NewMinimalMetrics(ctrl)
+	kv := imemkv.NewKvStorage()
+	base := backend.NewBackend(kv, backend.Config{
+		Prefix: "/registry", Identity: "close-waits", EnableEtcdCompatibility: true,
+	}, m)
+	blocking := &blockingLeadershipBackend{
+		Backend: base,
+		entered: make(chan struct{}),
+		exited:  make(chan struct{}),
+	}
+	s := NewServer(context.Background(), blocking, m, Config{})
+
+	select {
+	case <-blocking.entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("leader callback did not reach startup work")
+	}
+
+	require.NoError(t, s.Close())
+	select {
+	case <-blocking.exited:
+	default:
+		t.Fatal("Close returned before the leadership callback exited")
+	}
+	require.NoError(t, s.Close(), "Close must remain idempotent")
+	require.NoError(t, base.(interface{ Close() error }).Close())
+	ctrl.Finish()
 }
 
 // TestLeadershipHealthTransitions pins #61: losing leadership must flip the gRPC

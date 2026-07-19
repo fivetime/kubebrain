@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"sync"
 	"time"
 
 	"google.golang.org/grpc"
@@ -63,6 +64,9 @@ type Server interface {
 
 	// GetInfoHttpHandlers returns http handlers for node info
 	GetInfoHttpHandlers() map[string]http.Handler
+
+	// Close stops background service work and releases client resources.
+	Close() error
 }
 
 type server struct {
@@ -79,26 +83,42 @@ type server struct {
 	backend        backend.Backend
 
 	config Config
+
+	cancel       context.CancelFunc
+	campaignDone chan struct{}
+	closeOnce    sync.Once
+	closeErr     error
 }
 
 func (s *server) Close() error {
-	if s.etcdServer != nil {
-		s.etcdServer.Close()
-	}
-	if s.peers != nil {
-		return s.peers.Close()
-	}
-	return nil
+	s.closeOnce.Do(func() {
+		if s.cancel != nil {
+			s.cancel()
+		}
+		if s.campaignDone != nil {
+			<-s.campaignDone
+		}
+		if s.etcdServer != nil {
+			s.etcdServer.Close()
+		}
+		if s.peers != nil {
+			s.closeErr = s.peers.Close()
+		}
+	})
+	return s.closeErr
 }
 
 // NewServer returns the server
 func NewServer(ctx context.Context, backend backend.Backend, metricCli metrics.Metrics, config Config) Server {
+	runCtx, cancel := context.WithCancel(ctx)
 	s := &server{
 		// health server to tell client whether this instance is leader
 		healthServer: health.NewServer(),
 		metricCli:    metricCli,
 		backend:      backend,
 		config:       config,
+		cancel:       cancel,
+		campaignDone: make(chan struct{}),
 	}
 	// leader election callbacks are methods on s; s.etcdServer is assigned below
 	// (before Campaign runs) and read by onStartedLeading.
@@ -111,7 +131,7 @@ func NewServer(ctx context.Context, backend backend.Backend, metricCli metrics.M
 	// is rejected instead of committed-yet-unwatched (FINDING #39).
 	backend.SetLeadershipFence(election.EpochAndLeadingFresh)
 	// revisionSyncer sync revision from leader to follower
-	peerService := service.NewPeerService(ctx, election, metricCli, backend, config.getPeerServiceConfig())
+	peerService := service.NewPeerService(runCtx, election, metricCli, backend, config.getPeerServiceConfig())
 	// construct etcd & brian grpc server
 	s.etcdServer = etcd.New(backend, metricCli, peerService)
 	s.etcdServer.SetRequestLimits(config.MaxTxnOps, config.MaxRequestBytes)
@@ -126,9 +146,13 @@ func NewServer(ctx context.Context, backend backend.Backend, metricCli metrics.M
 	// instead of the peer identity's http://host:peerPort.
 	s.etcdServer.SetAdvertiseClientInfo(config.ClientPort, config.ClientTLS != nil)
 	s.etcdServer.SetStaticMembers(config.ClusterMembers)
-	s.brainServer = brain.New(ctx, backend, metricCli, peerService)
+	s.brainServer = brain.New(backend, metricCli, peerService)
 	s.leaderElection = election
 	s.peers = peerService
+	go func() {
+		defer close(s.campaignDone)
+		peerService.Campaign(runCtx)
+	}()
 	return s
 }
 

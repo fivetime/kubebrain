@@ -4302,6 +4302,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   serializable read、STM、Txn 与 Watch，共 261.657 秒全部通过；Watch/Lease 子集另连续
   3 轮通过。未发现新的客户端可观察差异，因此没有为制造提交而改动运行时路径；A246
   固化 upstream 2026 年新增回归面，防止后续 scanner/chunker 优化破坏已验证语义。
+- **Runtime A247 startup-failure shutdown fencing（2026-07-19）**：A246 全量门禁与临时
+  reference etcd 并行时真实触发 `12379/12380 address already in use`；旧
+  `Endpoint.Run` 随即关闭 Badger，但 `brain.New` 用无法被 endpoint 取消的父 context
+  偷启 Campaign，已获得 leadership 的 `EnsureEventLogStart` 在 storage close 后继续读，
+  最终于 Badger skiplist `IncrRef` SIGSEGV，掩盖原始可操作的 bind 错误。
+
+  Campaign 生命周期现由应用 `server` 明确持有：`NewServer` 创建专属 context/done，
+  `Close` 幂等执行 cancel，等待 client-go `OnStoppedLeading` join 当前
+  `onStartedLeading` 回调，再关闭 lease 和 peer/proxy 资源。Endpoint 在构造 server 前
+  创建运行 context，并严格按“listener 退出→取消/等待后台服务→关闭 backend”清理；
+  brain 协议层不再启动无主 goroutine。PeerService close 还会等待 etcd proxy 的
+  leader-check loop，并关闭当前 clientv3/gRPC 连接，而非仅清 revision HTTP idle
+  connections。可控 compaction-start 屏障证明 `Close` 不会先于 leadership callback
+  返回，真实双端口占用测试固定返回 `address already in use`，proxy 测试固定 loop/client
+  清理；三项普通测试与 race 各连续 20 轮通过，server/endpoint 全包通过。
 
 ### P1：通用服务能力
 

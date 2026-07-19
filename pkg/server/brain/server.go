@@ -15,7 +15,6 @@
 package brain
 
 import (
-	"context"
 	"strconv"
 	"time"
 
@@ -41,14 +40,12 @@ type Server struct {
 	peers     service.PeerService
 }
 
-func New(ctx context.Context, backend b.Backend, metricCli metrics.Metrics, peerServer service.PeerService) *Server {
-	server := &Server{
+func New(backend b.Backend, metricCli metrics.Metrics, peerServer service.PeerService) *Server {
+	return &Server{
 		backend:   backend,
 		metricCli: metricCli,
 		peers:     peerServer,
 	}
-	go server.peers.Campaign(ctx)
-	return server
 }
 
 // Register register kube-wharf rpc protocol server

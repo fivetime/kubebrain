@@ -67,6 +67,11 @@ type etcdProxy struct {
 	// leader with its own dial (#41). Held for the whole function; acquired before
 	// `lock` so the lock order is always updateMu -> lock.
 	updateMu sync.Mutex
+
+	cancel    context.CancelFunc
+	loopDone  chan struct{}
+	closeOnce sync.Once
+	closeErr  error
 }
 
 func (e *etcdProxy) EtcdProxyEnabled() bool {
@@ -91,17 +96,37 @@ const proxyReadyWaitTimeout = 2 * time.Second
 // the complete RPC surface without public admission, so forwarding there counts
 // each external request exactly once at its ingress replica.
 func NewEtcdProxy(ctx context.Context, leaderElection leader.LeaderElection, tlsConfig *tls.Config, allowInsecure bool, maxRequestBytes uint) EtcdProxy {
+	runCtx, cancel := context.WithCancel(ctx)
 	proxy := &etcdProxy{
 		election: leaderElection, tlsConfig: tlsConfig,
 		allowInsecure: allowInsecure, callOptions: proxyCallOptions(maxRequestBytes),
+		cancel: cancel, loopDone: make(chan struct{}),
 	}
 	proxy.updateClient()
 	go func() {
 		defer util.Recover()
-		proxy.checkLeaderLoop(ctx)
+		defer close(proxy.loopDone)
+		proxy.checkLeaderLoop(runCtx)
 	}()
 
 	return proxy
+}
+
+func (e *etcdProxy) Close() error {
+	e.closeOnce.Do(func() {
+		e.cancel()
+		<-e.loopDone
+		e.updateMu.Lock()
+		e.lock.Lock()
+		if e.client != nil {
+			e.closeErr = e.client.Close()
+			e.client = nil
+		}
+		e.curLeader = ""
+		e.lock.Unlock()
+		e.updateMu.Unlock()
+	})
+	return e.closeErr
 }
 
 func (e *etcdProxy) checkLeaderLoop(ctx context.Context) {

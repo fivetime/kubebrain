@@ -218,6 +218,35 @@ func TestMapLeaseKeepAliveForwardError(t *testing.T) {
 		mapLeaseKeepAliveForwardError(canceledParent, canceledCall, context.Canceled))
 }
 
+func TestCloseStopsLeaderLoopAndClosesClient(t *testing.T) {
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	server := grpc.NewServer()
+	go func() { _ = server.Serve(lis) }()
+	t.Cleanup(func() {
+		server.Stop()
+		_ = lis.Close()
+	})
+
+	endpoint := lis.Addr().String()
+	proxy := NewEtcdProxy(context.Background(), &testLeaderElection{
+		leaderAddress: endpoint,
+	}, nil, true, 0).(*etcdProxy)
+	require.NoError(t, proxy.Ready())
+
+	require.NoError(t, proxy.Close())
+	select {
+	case <-proxy.loopDone:
+	default:
+		t.Fatal("Close returned before the leader-check loop exited")
+	}
+	proxy.lock.RLock()
+	require.Nil(t, proxy.client)
+	require.Empty(t, proxy.curLeader)
+	proxy.lock.RUnlock()
+	require.NoError(t, proxy.Close(), "Close must remain idempotent")
+}
+
 func TestUpdateClientRefreshesUnknownLeader(t *testing.T) {
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)

@@ -17,6 +17,7 @@ package service
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 
 	"github.com/kubewharf/kubebrain/pkg/backend"
 	"github.com/kubewharf/kubebrain/pkg/metrics"
@@ -73,6 +74,14 @@ type peerService struct {
 	config    Config
 	metricCli metrics.Metrics
 	backend   backend.Backend
+}
+
+func (p *peerService) Close() error {
+	var proxyErr error
+	if closer, ok := p.EtcdProxy.(interface{ Close() error }); ok {
+		proxyErr = closer.Close()
+	}
+	return errors.Join(proxyErr, p.RevisionSyncer.Close())
 }
 
 // HasLeader exposes the freshness-aware election state to etcd's

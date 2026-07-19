@@ -70,21 +70,14 @@ func NewEndpoint(b backend.Backend, m metrics.Metrics, config *Config) *Endpoint
 //	                           └─ HTTP
 //	InfoPort  ───  Insecure   ─── HTTP
 func (e *Endpoint) Run(ctx context.Context) (err error) {
-
-	e.server = server.NewServer(ctx, e.backend, e.metrics, e.config.getServerConfig())
+	runCtx, cancel := context.WithCancel(ctx)
+	e.server = server.NewServer(runCtx, e.backend, e.metrics, e.config.getServerConfig())
 	defer func() {
-		if closer, ok := e.server.(interface{ Close() error }); ok {
-			err = errors.Join(err, closer.Close())
-		}
+		cancel()
+		err = errors.Join(err, e.server.Close())
 		if closer, ok := e.backend.(interface{ Close() error }); ok {
 			err = errors.Join(err, closer.Close())
 		}
-	}()
-
-	// start exposed server
-	ctx, cancel := context.WithCancel(ctx)
-	defer func() {
-		cancel()
 		if err != nil {
 			klog.ErrorS(err, "shutdown")
 		} else {
@@ -92,22 +85,22 @@ func (e *Endpoint) Run(ctx context.Context) (err error) {
 		}
 	}()
 
-	group, ctx := errgroup.WithContext(ctx)
+	group, runCtx := errgroup.WithContext(runCtx)
 
 	group.Go(func() error {
 		defer cancel()
-		return e.runClientServer(ctx)
+		return e.runClientServer(runCtx)
 	})
 
 	group.Go(func() error {
 		defer cancel()
-		return e.runPeerServer(ctx)
+		return e.runPeerServer(runCtx)
 	})
 
 	if e.config.InfoPort != 0 {
 		group.Go(func() error {
 			defer cancel()
-			return e.runMetricsServer(ctx)
+			return e.runMetricsServer(runCtx)
 		})
 
 	}
