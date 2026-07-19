@@ -108,11 +108,11 @@ func (h *Handler) Ready(ctx context.Context) error {
 	defer cancel()
 	const probeName = "kubebrain-readiness-probe-do-not-create"
 	if _, err := h.dynamic.Resource(operationqueue.Resource).Namespace(h.identityNamespace).
-		Get(ctx, probeName, metav1.GetOptions{}); err != nil && !apierrors.IsNotFound(err) {
+		Get(ctx, probeName, metav1.GetOptions{}); err != nil && !isExpectedProbeNotFound(err, probeName) {
 		return fmt.Errorf("probe operation API: %w", err)
 	}
 	if _, err := h.dynamic.Resource(operationqueue.SecretResource).Namespace(h.identityNamespace).
-		Get(ctx, probeName, metav1.GetOptions{}); err != nil && !apierrors.IsNotFound(err) {
+		Get(ctx, probeName, metav1.GetOptions{}); err != nil && !isExpectedProbeNotFound(err, probeName) {
 		return fmt.Errorf("probe Secret API: %w", err)
 	}
 	if _, err := h.tokens.AuthenticationV1().TokenReviews().Create(
@@ -125,6 +125,18 @@ func (h *Handler) Ready(ctx context.Context) error {
 		return fmt.Errorf("probe TokenReview API: %w", err)
 	}
 	return nil
+}
+
+func isExpectedProbeNotFound(err error, probeName string) bool {
+	if !apierrors.IsNotFound(err) {
+		return false
+	}
+	statusError, ok := err.(apierrors.APIStatus)
+	if !ok {
+		return false
+	}
+	details := statusError.Status().Details
+	return details != nil && details.Name == probeName
 }
 
 func (h *Handler) authenticate(request *http.Request, token string) (string, error) {

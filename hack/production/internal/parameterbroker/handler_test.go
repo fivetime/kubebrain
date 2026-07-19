@@ -14,6 +14,7 @@ import (
 	"github.com/kubewharf/kubebrain/hack/production/internal/operationqueue"
 	"github.com/stretchr/testify/require"
 	authenticationv1 "k8s.io/api/authentication/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -141,9 +142,16 @@ func TestReadyFailsClosedWhenAnyCriticalAPIIsUnavailable(t *testing.T) {
 		name     string
 		resource string
 		tokens   bool
+		err      error
 	}{
-		{name: "operation API", resource: "kubebrainoperations"},
-		{name: "Secret API", resource: "secrets"},
+		{name: "operation API", resource: "kubebrainoperations", err: errors.New("dependency unavailable")},
+		{name: "Secret API", resource: "secrets", err: errors.New("dependency unavailable")},
+		{
+			name: "operation CRD route", resource: "kubebrainoperations",
+			err: apierrors.NewNotFound(schema.GroupResource{
+				Group: operationqueue.Resource.Group, Resource: operationqueue.Resource.Resource,
+			}, ""),
+		},
 		{name: "TokenReview API", tokens: true},
 	}
 	for _, tc := range tests {
@@ -159,7 +167,7 @@ func TestReadyFailsClosedWhenAnyCriticalAPIIsUnavailable(t *testing.T) {
 				dynamicClient.PrependReactor("get", tc.resource, func(
 					k8stesting.Action,
 				) (bool, runtime.Object, error) {
-					return true, nil, errors.New("dependency unavailable")
+					return true, nil, tc.err
 				})
 			}
 			if tc.tokens {
@@ -171,7 +179,7 @@ func TestReadyFailsClosedWhenAnyCriticalAPIIsUnavailable(t *testing.T) {
 			}
 			handler, err := NewHandler(tokens, dynamicClient, "test", testAudience, time.Second)
 			require.NoError(t, err)
-			require.ErrorContains(t, handler.Ready(context.Background()), "dependency unavailable")
+			require.Error(t, handler.Ready(context.Background()))
 		})
 	}
 }
