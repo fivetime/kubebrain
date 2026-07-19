@@ -973,6 +973,13 @@ kubectl -n kubebrain-operations patch configmap kubebrain-backup-scheduler-inven
 scheduler ServiceAccount 身份会进入 immutable Operation spec 和终态审计。Deployment
 包含 zone/hostname topology spread，PDB 最多允许 1 个副本不可用。
 
+scheduler 每轮 reconcile 使用 `--reconcile-timeout=2m`，预算覆盖 inventory、Policy、
+模板 Secret、immutable parameters Secret 和 Operation 的全部 Kubernetes API 调用。
+API endpoint 黑洞、网络分区或 admission 卡顿必须在 deadline 后记录失败并进入下一轮；
+不得因为一个无响应调用永久占住长驻副本。`--once` 模式超时返回非零，供发布门禁直接
+判定失败。调整 namespace/policy 规模时可显式增加预算，但禁止设为零或依赖 Pod 重启
+终止挂起调用。
+
 中央 worker、approver 和 archiver 可分别通过以下未绑定 ClusterRole 获得目标
 namespace 的最小权限：
 
@@ -1041,6 +1048,12 @@ kubectl -n kubebrain-operations rollout status deployment/kubebrain-operation-ar
 已晚于完整保留窗口，archiver 会 fail closed，必须按审计事件处置，禁止缩短保留期或手工
 移除 finalizer。中央 archiver Role 只能读取指定 inventory，并 list/get/update Operation
 主资源；它不能读取 worker Secret、修改 status、管理 Lease、创建或删除 Operation。
+
+archiver 每轮使用 `--reconcile-timeout=15m`，预算覆盖 inventory/Operation 扫描、最多
+32 个 Object Lock executor 和 finalizer release。deadline 会传入 `CommandContext` 并
+终止卡住的对象存储子进程；超时对象不得生成 receipt、不得释放 audit finalizer，下一轮
+仍按同一 object key、retention 和 exact-version 规则重试。扩大 `--max-batch` 或跨区域
+对象存储延迟时必须同步核算该预算，不能通过关闭 timeout 获得表面吞吐。
 
 ```shell
 NS=tenant-a-operations

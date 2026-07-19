@@ -4764,6 +4764,27 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   readiness 回到 204，两个 UID 不变且零重启。smoke 后 API 恢复零副本，临时 OIDC/TLS/
   CA 均删除。
 
+- **Operations A274 bounded scheduler/archiver reconciliation（2026-07-19）**：
+  backup scheduler 与 operation archiver 原先把进程生命周期 context 直接传给整轮
+  reconcile；Kubernetes API 黑洞可永久占住 scheduler，archiver 的 Object Lock 子进程
+  也只有 Pod 终止才会取消，HA 副本无法按 poll 周期重试。对齐
+  `/root/etcd/server/etcdserver/api/etcdhttp/health.go` 以 request timeout 包围真实依赖
+  调用的故障边界，新增共享 reconcile budget：父 context 取消立即传播，单轮 deadline
+  到期取消所有 Kubernetes API 和 `CommandContext` 子进程，同时保留已完成计数与聚合错误。
+  scheduler 生产预算为 2 分钟；archiver 为 15 分钟，覆盖最多 32 个串行 Object Lock
+  操作。超时 archive 不生成 receipt、不释放 finalizer，下一轮仍使用稳定 identity 重试。
+
+  budget、archiver processor 与 manifest focused 连续 20 轮、race 连续 20 轮、全量
+  production 测试和 vet 均通过。精确提交
+  `c4d663ef9a1cfa4e1ee82180d980383f131a0992` 构建非 root 镜像
+  `kubebrain:a274-controller-reconcile-deadline`（image ID
+  `sha256:8ce57c4b87e42fd3e0c4da0ebbd7f64e0d95cc875bc62479c455d5b121a4a45d`）。
+  最终镜像中的 scheduler 与 archiver 分别连接故意不完成 TLS 握手的假 Kubernetes API，
+  `--once --reconcile-timeout=2s` 均退出 1 并报告 `context deadline exceeded`，包含容器
+  启动/销毁开销的端到端时间分别为 2729ms、2832ms。kind 双副本 scheduler 滚动到 A274
+  后跨过至少一个 30 秒 poll，两个 Pod Ready、零重启且无 reconcile 错误；archiver 保持
+  零副本并更新到 A274/15m 模板，三副本 KubeBrain 数据面不受影响。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
