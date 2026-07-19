@@ -5071,6 +5071,29 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   主 KubeBrain 3/3 Ready（A285）、PD/TiKV 3+3 Ready、A277 scheduler 2/2 Ready。
   audit finalizer release 的 Update 不确定提交仍是独立后续差距，本阶段不声称关闭。
 
+- **Operations A287 audit finalizer release reconciliation（2026-07-19）**：
+  A286 保留的 release Update 不确定提交已关闭。`operationauditrelease.Release` 在 Update
+  返回错误后使用独立 5 秒预算回读；只有原 UID、audit finalizer 已移除及 receipt SHA、
+  artifact SHA、object version 三项 annotation 全部精确匹配时确认提交。NotFound 表示
+  finalizer 已释放且对象已完成删除；replacement UID 和 inspect 失败均 fail closed，后者
+  聚合原写与回读错误。构造更新对象时还复制 annotation map，避免修改首次 GET 快照。
+
+  单包连续 200 轮、race 50 轮、archiver/CLI 集成面连续 50 轮、production 全量
+  91.910 秒及 `go vet ./hack/production/...` 均通过。可靠性提交
+  `6797694c079cc0f245007149b73653bd697a2119`。镜像审计发现 Dockerfile 未发布已有的
+  `cmd/operation-audit`，提交 `daee1648cc6884e2c64e15e997bda87ece7908b7` 同时构建并复制
+  该非 root CLI。由后一精确提交构建 TiKV 镜像
+  `kubebrain:a287-audit-release-reconcile`（image ID
+  `sha256:c61c5ada21bf870206a5cbe687b5d02b40633aae043d96b2a24601ab1ad722f3`）。
+
+  kind 真实 smoke 由 Backup executor 身份把 Operation 合法推进到 Succeeded；镜像内
+  `kubebrain-operation-audit` capture 得到 745 字节 canonical artifact（SHA-256
+  `a4647f5e784fa0066fe2bfd9ac049fcdc6f2c4f73c7fb5bee9b9962d6606d02f`），再由专用
+  archiver 身份 release。结果仅移除 audit finalizer，保留 `example.com/a287-smoke`，
+  三项 archive annotation 精确匹配；同证据重试前后 resourceVersion 均为 `644714`。
+  测试对象按门禁清理。archiver 和六类零副本 executor 模板更新到 A287；主 KubeBrain
+  3/3、PD/TiKV 3+3、A277 scheduler 2/2 当前均 Ready。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range

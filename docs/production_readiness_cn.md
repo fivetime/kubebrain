@@ -1084,6 +1084,15 @@ finalizer 时才按成功返回。Approve 的 Update 失败后只接受原 UID �
 必须列出实际支持的 `approve` action，生产审批 smoke 必须使用专用 approver 身份并通过
 ValidatingAdmissionPolicy，不得用管理员身份绕过。
 
+Audit finalizer release 的 Update 也按不确定提交处理。写失败后使用脱离原请求取消信号、
+最多 5 秒的 GET：仅当 UID 未变、audit finalizer 已消失且 receipt SHA、artifact SHA、
+object version 三项 annotation 与已验证归档证据完全一致时确认成功；对象已 NotFound
+表示 finalizer 已释放且删除完成。不同 UID、部分 annotation、finalizer 仍存在或回读失败
+均 fail closed，回读错误与原写错误聚合。生产镜像必须包含
+`kubebrain-operation-audit`，发布 smoke 需以 executor 身份创建合法终态、以专用
+archiver 身份 capture/release，并确认其他控制器的 finalizer 未被移除；同一证据重试
+不得改变 resourceVersion。
+
 该补偿只处理 Kubernetes coordination Lease；外部系统副作用仍由 Operation fencing 与
 幂等 receipt 约束。
 
