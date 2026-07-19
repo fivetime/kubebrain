@@ -360,6 +360,10 @@ func TestOperationParameterBrokerOwnsTheOnlyExecutorParameterSecretPermission(t 
 	require.NoError(t, err)
 	require.True(t, found)
 	require.Equal(t, []string{"/usr/local/bin/kubebrain-operation-parameter-broker"}, command)
+	args, found, err := unstructured.NestedStringSlice(container.Object, "args")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Contains(t, args, "--tls-reload-interval=30s")
 	require.True(t, nestedBool(t, container, "securityContext", "readOnlyRootFilesystem"))
 
 	role := objectByKindAndName(t, objects, "Role", "kubebrain-operation-parameter-broker")

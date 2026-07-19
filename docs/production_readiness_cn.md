@@ -1106,6 +1106,14 @@ Secret list/watch、Operation list/watch/status 或 Lease 权限。projected tok
 不可用、CA 错误、token 失效或 worker Lease 过期时 executor 必须 fail closed 并 requeue，
 不得回退为直接读取 Secret。
 
+broker 每 30 秒重新读取 mounted TLS Secret。新 `tls.crt`/`tls.key` 只有在公私钥匹配、
+叶证书已生效且未过期时才会原子接管新握手；无效更新保留上一份有效证书并记录错误。
+readiness 使用 `/readyz` 检查当前证书有效期，证书最终过期时必须摘流；liveness
+`/healthz` 不因轮换失败杀死仍可诊断的进程。同一 CA 下轮换叶证书时，记录两个 broker
+Pod UID，更新 Secret 后在 30 秒加 probe 容差内验证 endpoint 呈现新 serial，且 Pod UID
+不变。轮换 CA 时必须先把旧、新 CA 同时发布到 executor trust bundle，再换 broker
+叶证书，最后确认所有 executor 使用新 CA 后撤旧；服务端热加载不能替代该双信任窗口。
+
 六类生产 executor 模板位于
 `deploy/production/kubebrain-operation-executors.yaml`，默认全部为零副本。启用任意一类
 之前必须创建同名 `*-executor-env` Secret 和 `*-executor-workspace` PVC；证书轮换还必须

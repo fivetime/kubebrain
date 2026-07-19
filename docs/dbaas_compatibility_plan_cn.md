@@ -4694,6 +4694,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   reference etcd 定向差分连续 10 轮通过；修改前的零间隔场景仍作为性能/饱和测试问题，
   不再混入语义发布门禁。
 
+- **Operations A270 parameter broker online TLS leaf rotation（2026-07-19）**：
+  A268 broker 原先由 `ListenAndServeTLS` 在启动时一次性加载 Secret，更新
+  `tls.crt`/`tls.key` 后必须重启 Pod 才能生效。现新增通用原子证书 reloader：启动时
+  fail closed，运行中每 30 秒校验完整 key pair、叶证书 NotBefore/NotAfter，成功后才
+  替换 `GetCertificate` 指针；错误更新保留最后一份有效证书。`/readyz` 同时检查当前
+  证书有效期，旧证书最终到期会摘流，`/healthz` 保留进程诊断能力。
+
+  真实 HTTPS 握手测试在同一 listener 上依次看到 serial 1、serial 2，并证明损坏私钥
+  reload 失败后仍呈现 serial 2；周期 reload、取消和错误回调均有确定性测试，20 轮 race、
+  全量 production 脚本/控制器测试、manifest 测试和 vet 通过。该能力关闭同 CA 叶证书
+  在线轮换缺口；CA 更换仍必须由控制面执行旧/新 CA 双信任窗口，不能只更新服务端 Secret。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
