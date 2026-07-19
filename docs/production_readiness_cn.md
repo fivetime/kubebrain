@@ -1055,6 +1055,11 @@ Heartbeat 同样是先续租实例 Lease、再 CAS 更新 Operation status。sta
 `leaseUntilUnix` 精确匹配，则判定写入已提交，按成功返回并保留 Lease；否则按旧
 holder 和 Lease UID 清理后 fencing。若重读失败，必须同时返回 status 与重读错误并保留
 Lease，不能在提交结果未知时开放同一实例给其他 Operation；Lease TTL 作为最终恢复边界。
+实例 Lease 自身的 Create/Update 也可能已提交但响应丢失。非 AlreadyExists 的 Create
+错误和任意 Update 错误必须在独立 5 秒预算内 GET 同名 Lease，并精确比较
+holderIdentity、leaseDurationSeconds、acquireTime 和 renewTime；四项全部匹配才按写入
+成功继续。任一字段漂移仍返回原写错误；GET 失败与写错误聚合返回，不能凭名称或 holder
+单独相同推断提交成功。
 该补偿只处理 Kubernetes coordination Lease；外部系统副作用仍由 Operation fencing 与
 幂等 receipt 约束。
 

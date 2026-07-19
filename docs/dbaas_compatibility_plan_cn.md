@@ -4969,6 +4969,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `leaseB=false`。kind 六类 executor Deployment 均保持零副本并更新到 A282；三副本
   KubeBrain、三 PD、三 TiKV 和 A277 双副本 scheduler 均 Ready、零重启。
 
+- **Operations A283 instance Lease write reconciliation（2026-07-19）**：
+  A282 关闭了 Heartbeat status 的不确定提交窗口，但实例 Lease 的 Create/Update 若已在
+  API Server 持久化后丢失响应，仍会被当作失败：Claim 留下无 owner status 的孤立锁，
+  Heartbeat 则使持有有效续租的 worker 退出。现在非 AlreadyExists 的 Create 错误和任意
+  Update 错误都在独立 5 秒预算内 GET 同名 Lease，只有 holderIdentity、
+  leaseDurationSeconds、acquireTime、renewTime 四项与本次写入全部精确匹配才按成功
+  继续。字段漂移保留原写错误；GET 失败聚合 write/inspect 错误。父 context 已取消时
+  仍可确认提交，并由后续 Claim status 补偿按 holder+UID 清理。
+
+  Lease focused 连续 50 轮、operationqueue 全包连续 100 轮、race 连续 50 轮、全量
+  production 测试（90.325 秒）和 vet 均通过。精确提交
+  `871296ee9027c4ef3d8caaa60c1e7c93728faa6a` 构建非 root 镜像
+  `kubebrain:a283-lease-write-reconcile`（image ID
+  `sha256:e763191327e426425c8c29759343399cb6478b9d59f9c55886e7467953e5ee88`）。
+  最终 operationctl 连续连接线程化假 Kubernetes API：Claim 的 Lease Create 已持久化
+  后返回 503，GET 精确确认并成功提交 Running status；随后 Heartbeat 收到
+  AlreadyExists，Lease Update 已持久化后返回 503，再次 GET 确认并成功更新 status。
+  最终事件中 Create/Update 各一次、status PUT 两次、Lease GET 三次，
+  `leasePresent=true`、Operation 保持 attempt 1 Running，没有重复认领或孤立锁。kind
+  六类 executor Deployment 均保持零副本并更新到 A283；三副本 KubeBrain、三 PD、三
+  TiKV 和 A277 双副本 scheduler 均 Ready、零重启。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
