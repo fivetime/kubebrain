@@ -4399,6 +4399,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   10 后才允许发送 revision 9。相关普通测试连续 50 轮、race 连续 20 轮通过。全新
   upstream etcd 与候选二进制的独立 TiKV keyspace 官方 client/v3 差分同样确认：
   `base+2` 起点前 150ms 无 progress，两个写推进后先收到目标事件，再收到合法 progress。
+- **Watch A254 delivered-watermark progress fencing（2026-07-19）**：继续审计 A253
+  发现 published watermark 与单个 watch 的 FIFO event stream 之间仍有窗口：全局
+  published 已到 future start，但该 watch 的 event/progress marker 尚未被消费时，周期
+  路径仍可能发送初始化的 `StartRevision-1`。这个响应虽然没有越过未来，却低于 client
+  请求起点，且错误表示该 watch 已同步。
+
+  progress snapshot 和周期通知现统一以 watch 自身的 delivered `syncedRev` 为资格：
+  `startRevision > syncedRev` 时保持静默；只有同一 FIFO 中的事件或 in-band progress
+  marker 到达 start 后才允许响应。资格判断不再读取可能先行的全局 published watermark。
+  确定性测试固定 `published=5/start=10/synced=9`，分别确认 published 前静默、
+  published 推进到 10 但 marker 未到仍静默，以及 marker=10 后才发送 revision 10；
+  显式 RequestProgress 同样永不返回低于 start 的 header。相关普通测试连续 50 轮、
+  race 连续 20 轮通过。真实三副本 A253 基线经 Service 命中 follower 后，官方
+  client/v3 `WithProgressNotify` quiet watch 连续复现首个 progress 超时：follower 把
+  from-now 请求改写为正数起点，却错误等待自身滞后的 published watermark；该复现作为
+  A254 部署后同一黑盒的发布门禁。
 
 ### P1：通用服务能力
 

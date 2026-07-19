@@ -1039,13 +1039,12 @@ func TestWaitStreamProgressRevisionRequiresEveryWatch(t *testing.T) {
 	require.False(t, ok, "etcd emits no progress response without an active watch")
 }
 
-// TestWatchProgressRequestReportsSyncedNotGlobalRevision reproduces the progress
-// notification data-loss bug: because the backend advances the global current
-// revision before the corresponding events reach a watch, a progress
-// notification that echoes the global revision tells the client it is synced
-// through revisions whose events it has not received. A watch on an idle key
-// must report only the revision it has actually delivered.
-func TestWatchProgressRequestReportsSyncedNotGlobalRevision(t *testing.T) {
+// TestWatchProgressRequestNeverReportsBelowStart reproduces the progress
+// notification data-loss bug: neither the global revision nor the synthetic
+// StartRevision-1 watermark proves that this watch has consumed the matching
+// FIFO event stream. If the backend catch-up marker races with the scripted
+// client close, a response is optional, but it must never be below the start.
+func TestWatchProgressRequestNeverReportsBelowStart(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
 
@@ -1066,8 +1065,8 @@ func TestWatchProgressRequestReportsSyncedNotGlobalRevision(t *testing.T) {
 	global := server.backend.GetCurrentRevision()
 	require.Greater(t, global, uint64(1))
 
-	// Watch an idle key from the current revision; no events will ever be
-	// delivered to it, so it is synced only through startRevision-1.
+	// Watch an idle key from the current revision. The scripted client requests
+	// progress immediately and then closes, racing the backend catch-up marker.
 	startRev := int64(global)
 	stream := &scriptedWatchServer{
 		fakeWatchServer: &fakeWatchServer{ctx: ctx},
@@ -1088,20 +1087,13 @@ func TestWatchProgressRequestReportsSyncedNotGlobalRevision(t *testing.T) {
 		t.Fatalf("watch returned unexpected error: %v", err)
 	}
 
-	// A one-watch stream can use etcd's stream-wide -1 ID safely, but its header
-	// must remain that watch's truthful delivered watermark rather than the
-	// newer global revision.
-	var progress *etcdserverpb.WatchResponse
+	// StartRevision-1 is only a resume floor, not proof of synchronization.
 	for _, resp := range stream.fakeWatchServer.sent {
 		if resp.WatchId == -1 && len(resp.Events) == 0 && !resp.Created && !resp.Canceled {
-			progress = resp
+			require.GreaterOrEqual(t, resp.Header.Revision, startRev,
+				"progress must be backed by this watch's delivered watermark")
 		}
 	}
-	require.NotNil(t, progress, "expected a stream-wide progress notification response")
-	require.Equal(t, startRev-1, progress.Header.Revision,
-		"progress must report the delivered/synced revision, not the global current revision")
-	require.Less(t, progress.Header.Revision, int64(global),
-		"progress must not advertise the global revision that runs ahead of undelivered events")
 }
 
 // TestWatchProgressNeverOvertakesBufferedEvent pins the buffered-in-ch safety
@@ -1187,7 +1179,7 @@ func (b *futureProgressBackend) WatchProgressNotifyInterval() time.Duration {
 	return b.interval
 }
 
-func TestFutureRevisionWatchSuppressesProgressUntilPublished(t *testing.T) {
+func TestFutureRevisionWatchSuppressesProgressUntilDelivered(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
 
@@ -1238,11 +1230,15 @@ func TestFutureRevisionWatchSuppressesProgressUntilPublished(t *testing.T) {
 	}, 30*time.Millisecond, 2*time.Millisecond)
 
 	backend.published.Store(10)
-	require.Eventually(t, func() bool {
-		return len(stream.snapshot()) >= 1
-	}, time.Second, time.Millisecond)
+	require.Never(t, func() bool {
+		return len(stream.snapshot()) != 0
+	}, 30*time.Millisecond, 2*time.Millisecond,
+		"published revision alone must not bypass the watch's delivered watermark")
+
+	fed <- etcdproxy.WatchResult{ProgressRevision: 10}
+	require.Eventually(t, func() bool { return len(stream.snapshot()) >= 1 }, time.Second, time.Millisecond)
 	sent := stream.snapshot()
-	require.Equal(t, int64(9), sent[0].Header.Revision)
+	require.Equal(t, int64(10), sent[0].Header.Revision)
 	require.Equal(t, int64(7), sent[0].WatchId)
 
 	close(fed)

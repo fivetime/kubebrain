@@ -153,35 +153,22 @@ func (w *watcher) syncedRevSnapshot() map[int64]uint64 {
 	return m
 }
 
-// progressSyncedRevSnapshot returns only watches whose requested start revision
-// has been reached by the published store watermark. allEligible is false when
-// a stream-wide progress response would be unsafe because any active watch is
-// still waiting for a future revision.
+// progressSyncedRevSnapshot returns only watches whose own delivered watermark
+// has reached the requested start revision. allEligible is false when a
+// stream-wide progress response would be unsafe because any active watch is
+// still waiting for its first event or in-band progress marker.
 func (w *watcher) progressSyncedRevSnapshot() (snapshot map[int64]uint64, allEligible bool) {
 	w.Lock()
 	defer w.Unlock()
 	snapshot = make(map[int64]uint64, len(w.watches))
 	allEligible = len(w.watches) > 0
-	var (
-		published       uint64
-		publishedLoaded bool
-	)
 	for id, wt := range w.watches {
-		if wt.startRevision > 0 {
-			if !publishedLoaded {
-				if w.backend == nil {
-					allEligible = false
-					continue
-				}
-				published = w.backend.GetPublishedRevision()
-				publishedLoaded = true
-			}
-			if wt.startRevision > published {
-				allEligible = false
-				continue
-			}
+		syncedRev := atomic.LoadUint64(&wt.syncedRev)
+		if wt.startRevision > syncedRev {
+			allEligible = false
+			continue
 		}
-		snapshot[id] = atomic.LoadUint64(&wt.syncedRev)
+		snapshot[id] = syncedRev
 	}
 	return snapshot, allEligible
 }
@@ -872,10 +859,10 @@ func (w *watcher) Watch(ctx context.Context, id int64, r *etcdserverpb.WatchCrea
 				// it; the next tick reports the real revision once it advances.
 				continue
 			}
-			if wt != nil && wt.startRevision > w.backend.GetPublishedRevision() {
-				// A future-revision watch is not synchronized merely because its
-				// initial watermark is StartRevision-1. Wait until the published
-				// store revision reaches the requested start.
+			if wt != nil && wt.startRevision > revision {
+				// A future-revision watch is not synchronized merely because the
+				// global store reached its start. Wait for this watch's FIFO event
+				// stream to deliver an event or progress marker at that revision.
 				continue
 			}
 			progressResp := &etcdserverpb.WatchResponse{
