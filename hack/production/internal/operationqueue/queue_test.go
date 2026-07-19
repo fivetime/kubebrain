@@ -12,6 +12,7 @@ import (
 
 	"github.com/kubewharf/kubebrain/hack/production/operationaudit"
 	"github.com/stretchr/testify/require"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -331,6 +332,167 @@ func TestLeaseCleanupContextOutlivesCanceledParentWithBoundedDeadline(t *testing
 	deadline, found := cleanup.Deadline()
 	require.True(t, found)
 	require.WithinDuration(t, time.Now().Add(leaseCleanupTimeout), deadline, time.Second)
+}
+
+func TestHeartbeatReconcilesCommittedStatusAfterLostResponse(t *testing.T) {
+	client := fakeQueueClient()
+	now := time.Unix(1_000, 0).UTC()
+	queue := New(client, "test").WithClock(func() time.Time { return now })
+	ctx := context.Background()
+	_, err := queue.Submit(ctx, "backup-1", validSpec())
+	require.NoError(t, err)
+	claim, err := queue.Claim(ctx, "worker-a", "PostRestoreAudit", time.Minute)
+	require.NoError(t, err)
+	client.PrependReactor("update", Resource.Resource, func(
+		action clientgotesting.Action,
+	) (bool, runtime.Object, error) {
+		if action.GetSubresource() != "status" {
+			return false, nil, nil
+		}
+		updated := action.(clientgotesting.UpdateAction).GetObject()
+		require.NoError(t, client.Tracker().Update(Resource, updated, "test"))
+		return true, nil, errors.New("response lost after commit")
+	})
+
+	reconciled, err := queue.Heartbeat(
+		ctx, claim.Name, claim.Owner, claim.Attempt, 90*time.Second,
+	)
+	require.NoError(t, err)
+	require.Equal(t, int64(1_090), reconciled.LeaseUntilUnix)
+	leases, err := client.Resource(LeaseResource).Namespace("test").
+		List(ctx, metav1.ListOptions{})
+	require.NoError(t, err)
+	require.Len(t, leases.Items, 1)
+}
+
+func TestHeartbeatReleasesRenewedLeaseAfterStatusConflict(t *testing.T) {
+	client := fakeQueueClient()
+	queue := New(client, "test")
+	ctx := context.Background()
+	_, err := queue.Submit(ctx, "backup-1", validSpec())
+	require.NoError(t, err)
+	claim, err := queue.Claim(ctx, "worker-a", "PostRestoreAudit", time.Minute)
+	require.NoError(t, err)
+	client.PrependReactor("update", Resource.Resource, func(
+		action clientgotesting.Action,
+	) (bool, runtime.Object, error) {
+		if action.GetSubresource() == "status" {
+			return true, nil, apierrors.NewConflict(
+				schema.GroupResource{Group: Resource.Group, Resource: Resource.Resource},
+				claim.Name, errors.New("injected conflict"),
+			)
+		}
+		return false, nil, nil
+	})
+
+	reconciled, err := queue.Heartbeat(
+		ctx, claim.Name, claim.Owner, claim.Attempt, 2*time.Minute,
+	)
+	require.Nil(t, reconciled)
+	require.ErrorIs(t, err, ErrFenced)
+	leases, err := client.Resource(LeaseResource).Namespace("test").
+		List(ctx, metav1.ListOptions{})
+	require.NoError(t, err)
+	require.Empty(t, leases.Items)
+}
+
+func TestHeartbeatPreservesLeaseWhenReconciliationIsUnavailable(t *testing.T) {
+	client := fakeQueueClient()
+	queue := New(client, "test")
+	ctx := context.Background()
+	_, err := queue.Submit(ctx, "backup-1", validSpec())
+	require.NoError(t, err)
+	claim, err := queue.Claim(ctx, "worker-a", "PostRestoreAudit", time.Minute)
+	require.NoError(t, err)
+	getCalls := 0
+	client.PrependReactor("get", Resource.Resource, func(
+		clientgotesting.Action,
+	) (bool, runtime.Object, error) {
+		getCalls++
+		if getCalls > 1 {
+			return true, nil, errors.New("reconciliation unavailable")
+		}
+		return false, nil, nil
+	})
+	client.PrependReactor("update", Resource.Resource, func(
+		action clientgotesting.Action,
+	) (bool, runtime.Object, error) {
+		if action.GetSubresource() == "status" {
+			return true, nil, errors.New("status response unavailable")
+		}
+		return false, nil, nil
+	})
+
+	reconciled, err := queue.Heartbeat(
+		ctx, claim.Name, claim.Owner, claim.Attempt, 2*time.Minute,
+	)
+	require.Nil(t, reconciled)
+	require.ErrorContains(t, err, "status response unavailable")
+	require.ErrorContains(t, err, "reconciliation unavailable")
+	leases, err := client.Resource(LeaseResource).Namespace("test").
+		List(ctx, metav1.ListOptions{})
+	require.NoError(t, err)
+	require.Len(t, leases.Items, 1)
+}
+
+func TestHeartbeatReportsStatusAndLeaseCleanupFailures(t *testing.T) {
+	client := fakeQueueClient()
+	queue := New(client, "test")
+	ctx := context.Background()
+	_, err := queue.Submit(ctx, "backup-1", validSpec())
+	require.NoError(t, err)
+	claim, err := queue.Claim(ctx, "worker-a", "PostRestoreAudit", time.Minute)
+	require.NoError(t, err)
+	client.PrependReactor("update", Resource.Resource, func(
+		action clientgotesting.Action,
+	) (bool, runtime.Object, error) {
+		if action.GetSubresource() == "status" {
+			return true, nil, errors.New("status unavailable")
+		}
+		return false, nil, nil
+	})
+	client.PrependReactor("delete", LeaseResource.Resource, func(
+		clientgotesting.Action,
+	) (bool, runtime.Object, error) {
+		return true, nil, errors.New("lease cleanup unavailable")
+	})
+
+	reconciled, err := queue.Heartbeat(
+		ctx, claim.Name, claim.Owner, claim.Attempt, 2*time.Minute,
+	)
+	require.Nil(t, reconciled)
+	require.ErrorContains(t, err, "status unavailable")
+	require.ErrorContains(t, err, "lease cleanup unavailable")
+}
+
+func TestHeartbeatCleanupOutlivesCanceledParent(t *testing.T) {
+	client := fakeQueueClient()
+	queue := New(client, "test")
+	ctx, cancel := context.WithCancel(context.Background())
+	_, err := queue.Submit(ctx, "backup-1", validSpec())
+	require.NoError(t, err)
+	claim, err := queue.Claim(ctx, "worker-a", "PostRestoreAudit", time.Minute)
+	require.NoError(t, err)
+	client.PrependReactor("update", Resource.Resource, func(
+		action clientgotesting.Action,
+	) (bool, runtime.Object, error) {
+		if action.GetSubresource() != "status" {
+			return false, nil, nil
+		}
+		cancel()
+		return true, nil, ctx.Err()
+	})
+
+	reconciled, err := queue.Heartbeat(
+		ctx, claim.Name, claim.Owner, claim.Attempt, 2*time.Minute,
+	)
+	require.Nil(t, reconciled)
+	require.ErrorIs(t, err, context.Canceled)
+	require.ErrorIs(t, err, ErrFenced)
+	leases, listErr := client.Resource(LeaseResource).Namespace("test").
+		List(context.Background(), metav1.ListOptions{})
+	require.NoError(t, listErr)
+	require.Empty(t, leases.Items)
 }
 
 func TestQueueRejectsSpecDriftAndInvalidCompletion(t *testing.T) {

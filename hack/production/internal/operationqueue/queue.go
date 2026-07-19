@@ -476,13 +476,48 @@ func (q *Queue) Heartbeat(ctx context.Context, name, owner string, attempt int64
 	updated := object.DeepCopy()
 	_ = unstructured.SetNestedField(updated.Object, now+int64(lease/time.Second), "status", "leaseUntilUnix")
 	result, err := q.resource.UpdateStatus(ctx, updated, metav1.UpdateOptions{})
-	if apierrors.IsConflict(err) {
-		return nil, ErrFenced
-	}
 	if err != nil {
-		return nil, err
+		reconciled, reconcileErr := q.reconcileFailedHeartbeat(
+			ctx, name, owner, attempt, instance, holder,
+			now+int64(lease/time.Second),
+		)
+		if reconcileErr == nil {
+			return reconciled, nil
+		}
+		if apierrors.IsConflict(err) && errors.Is(reconcileErr, ErrFenced) {
+			return nil, ErrFenced
+		}
+		return nil, errors.Join(err, reconcileErr)
 	}
 	return claimFrom(result)
+}
+
+func (q *Queue) reconcileFailedHeartbeat(
+	parent context.Context,
+	name, owner string,
+	attempt int64,
+	instance, holder string,
+	leaseUntil int64,
+) (*Claim, error) {
+	ctx, cancel := leaseCleanupContext(parent)
+	defer cancel()
+	latest, err := q.resource.Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("inspect operation after failed heartbeat: %w", err)
+	}
+	phase, _, _ := unstructured.NestedString(latest.Object, "status", "phase")
+	actualOwner, _, _ := unstructured.NestedString(latest.Object, "status", "owner")
+	actualAttempt, _, _ := unstructured.NestedInt64(latest.Object, "status", "attempt")
+	actualLeaseUntil, _, _ := unstructured.NestedInt64(latest.Object, "status", "leaseUntilUnix")
+	if phase == PhaseRunning && actualOwner == owner && actualAttempt == attempt &&
+		actualLeaseUntil == leaseUntil {
+		return claimFrom(latest)
+	}
+	if releaseErr := q.releaseInstanceLease(ctx, instance, holder); releaseErr != nil &&
+		!errors.Is(releaseErr, ErrFenced) {
+		return nil, fmt.Errorf("release instance lease after failed heartbeat: %w", releaseErr)
+	}
+	return nil, ErrFenced
 }
 
 func (q *Queue) Finish(
