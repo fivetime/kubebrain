@@ -1033,6 +1033,13 @@ inventory 无效时 claim 在读取任何 Operation 前 fail closed。中央 wor
 `get` 指定 inventory ConfigMap；各目标 namespace 的 Operation/Secret/Lease 权限仍来自
 逐 namespace RoleBinding。
 
+全局公平排序要求 inventory 中每个 namespace 的同类型队列检查全部成功。任一 list
+超时、权限拒绝或 API 故障时不得在其余健康队列继续 claim；context 取消后立即停止后续
+检查。排序后最久未服务队列的 claim 若返回非 `ErrNoOperation` 错误，也必须原样失败，
+不能跳到较新的队列。`operationctl` 退出码 3 只表示所有成功检查的队列确实没有可认领
+Operation；上述依赖故障退出 1，供 supervisor 使用 failure backoff 和告警区分空闲与
+控制面故障。
+
 终态审计归档器使用同一 inventory。先创建仅供 archiver 使用的对象存储 Secret；bucket
 必须已启用 versioning 与 Object Lock，凭据不得与 backup executor 或 worker 共用：
 

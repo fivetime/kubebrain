@@ -4875,6 +4875,31 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   CertificateRotation、Destroy 六个 Deployment 均保持零副本并更新到 A278；三副本
   KubeBrain、三 PD、三 TiKV 以及 A277 双副本 scheduler 均 Ready、零重启。
 
+- **Operations A279 fail-closed cross-namespace claim errors（2026-07-19）**：
+  `ClaimAcrossNamespaces` 原先会忽略某个 namespace 的队列检查错误并尝试健康队列；
+  若最终没有成功 claim，又把检查/claim 错误格式化进以 `ErrNoOperation` 包装的字符串。
+  `operationctl` 因而把 Kubernetes 超时、RBAC 拒绝和网络故障误判为退出码 3 的正常
+  空闲；当后续队列有待办时还可能在无法证明“最久未服务”排序的情况下直接认领，隐藏
+  全局公平性缺口。
+
+  跨 namespace claim 现于每次队列检查和 claim 前检查父 context，取消后立即停止。
+  检查阶段可聚合普通错误以提供 namespace 上下文，但只要任一检查失败就不进入 claim；
+  claim 阶段按 `lastStarted/namespace` 排序，`ErrNoOperation` 才允许检查下一队列，
+  首个其他错误立即 fail closed。原始错误使用 `%w`/`errors.Join` 保留，只有全部队列
+  成功检查且均空闲时才返回 `ErrNoOperation`。
+
+  operationqueue focused 连续 100 轮、race 连续 50 轮、全量 production 测试
+  （91.819 秒）和 vet 均通过。精确提交
+  `2cbf5d0b49f07f4a0ff0b25ae7ca6bc336c7a732` 构建非 root 镜像
+  `kubebrain:a279-claim-fail-closed`（image ID
+  `sha256:5dc9cf60ed1d50e2c5097cec287f68cfd59e4664c68b91641e128fe6fcc34ed8`）。
+  最终镜像的 operationctl 连接线程化假 Kubernetes API：两个队列都为空时退出 3 且
+  无输出；`tenant-a` list 返回 503、`tenant-b` 存在 Pending Backup 时退出 1，并保留
+  `tenant-a: inspect queue: tenant-a API unavailable`。服务端记录的
+  POST/PUT/PATCH/DELETE 总数为 0，证明故障路径没有 claim 副作用。kind 六类 executor
+  Deployment 均保持零副本并更新到 A279；三副本 KubeBrain、三 PD、三 TiKV 和 A277
+  双副本 scheduler 均 Ready、零重启。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
