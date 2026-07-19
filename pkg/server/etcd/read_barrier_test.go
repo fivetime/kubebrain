@@ -25,7 +25,7 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-func TestReadBarrierFailuresAreRetryableAcrossRPCs(t *testing.T) {
+func TestReadBarrierFailuresAreRetryableForClusterRPCs(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
 
@@ -53,22 +53,10 @@ func TestReadBarrierFailuresAreRetryableAcrossRPCs(t *testing.T) {
 			})
 			return err
 		}},
-		{"status", func() error {
-			_, err := server.Status(ctx, &etcdserverpb.StatusRequest{})
-			return err
-		}},
 		{"alarm get", func() error {
 			_, err := server.Alarm(ctx, &etcdserverpb.AlarmRequest{
 				Action: etcdserverpb.AlarmRequest_GET,
 			})
-			return err
-		}},
-		{"hash", func() error {
-			_, err := server.Hash(ctx, &etcdserverpb.HashRequest{})
-			return err
-		}},
-		{"hash kv", func() error {
-			_, err := server.HashKV(ctx, &etcdserverpb.HashKVRequest{})
 			return err
 		}},
 	}

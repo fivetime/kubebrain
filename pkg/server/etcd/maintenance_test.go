@@ -16,12 +16,15 @@ package etcd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/kubewharf/kubebrain/pkg/backend"
 )
@@ -263,6 +266,51 @@ func TestStatusReportsNoLeaderInsteadOfClaimingSelf(t *testing.T) {
 	require.NoError(t, err)
 	require.Zero(t, resp.Leader)
 	require.Contains(t, resp.Errors, "etcdserver: no leader")
+}
+
+func TestLocalMaintenanceDiagnosticsDoNotRequireLeaderBarrier(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	put, err := server.Put(ctx, &etcdserverpb.PutRequest{
+		Key: []byte("/registry/maintenance/no-leader"), Value: []byte("value"),
+	})
+	require.NoError(t, err)
+
+	barrierErr := errors.New("leader unavailable")
+	barrierCalls := 0
+	server.peers = testPeerService{
+		noLeader: true,
+		syncReadFn: func(context.Context) error {
+			barrierCalls++
+			return barrierErr
+		},
+		currentTermFn: func() uint64 { return 7 },
+	}
+
+	statusResp, err := server.Status(ctx, &etcdserverpb.StatusRequest{})
+	require.NoError(t, err)
+	require.Zero(t, statusResp.Leader)
+	require.Contains(t, statusResp.Errors, rpctypes.ErrNoLeader.Error())
+	require.Equal(t, uint64(7), statusResp.RaftTerm)
+
+	hashResp, err := server.Hash(ctx, &etcdserverpb.HashRequest{})
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, hashResp.Header.Revision, put.Header.Revision)
+
+	hashKVResp, err := server.HashKV(ctx, &etcdserverpb.HashKVRequest{
+		Revision: put.Header.Revision,
+	})
+	require.NoError(t, err)
+	require.Equal(t, put.Header.Revision, hashKVResp.HashRevision)
+	require.Equal(t, 2, barrierCalls,
+		"Hash and HashKV should attempt a revision refresh without requiring it")
+
+	_, err = server.Alarm(ctx, &etcdserverpb.AlarmRequest{Action: etcdserverpb.AlarmRequest_GET})
+	require.Equal(t, codes.Unavailable, status.Code(err),
+		"Alarm GET remains a cluster-wide alarm-store query and must keep its read barrier")
+	require.Equal(t, barrierErr.Error(), status.Convert(err).Message())
+	require.Equal(t, 3, barrierCalls, "Alarm GET must retain its required read barrier")
 }
 
 func TestStatusUsesCachedLeadershipTerm(t *testing.T) {

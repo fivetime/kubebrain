@@ -673,7 +673,10 @@ hack/dev/verify.sh
 - 普通空非 from-key `DeleteRange`，例如 `[key,key)` 或 start 大于 end 的范围，按 etcd 行为返回 `Deleted=0` 且不删除数据。
 - `Watch`、progress notify、watch progress request；PUT 更新事件会按 `WithPrevKV` 返回 previous value，并避免被 clientv3/Kubernetes 误判为 create 事件；点 watch、prefix watch 和任意 `[start,end)` range watch 会按 etcd key 范围语义过滤事件；follower proxy watch 会在 leader 变化或可重试连接错误后内部重连并从下一 revision 继续
 - `LeaseGrant`、`LeaseRevoke`、`LeaseKeepAlive`、`LeaseTimeToLive`、`LeaseLeases`
-- `Maintenance.Status`、`Hash`、`HashKV`、`Alarm`、`Defragment`
+- `Maintenance.Status`、`Hash`、`HashKV`、`Alarm`、`Defragment`；其中
+  Status/Hash/HashKV 与 etcd 一样是成员本地诊断；Hash/HashKV 在 leader 可达时尽力刷新
+  副本 revision cache，但不要求 leader read barrier 成功，可在选主和 leader 故障窗口
+  用于 endpoint/hash 排障
 - `Cluster.MemberList` 兼容视图
 - `Auth` service 已注册但显式返回 `Unimplemented`，避免客户端看到 unknown service；KubeBrain 当前不提供 etcd auth/role/user 语义。
 

@@ -40,11 +40,11 @@ Raft、bbolt 和成员管理内部实现，而是对通用 etcd v3 客户端提�
 | Auth | 用户、角色、权限、token | 兼容核心语义 | 管理 API、key-range RBAC、token 生命周期、Watch/Lease 持续鉴权及多副本故障转移已验证 |
 | Cluster | MemberList | 兼容（需配置） | DBaaS 通过 `--initial-cluster` 注入完整 KubeBrain 服务副本；未配置时仅返回本机与 leader 的降级视图，不应启用 AutoSync |
 | Cluster | add/remove/update/promote | 平台替代 | 由 DBaaS 控制面扩缩 KubeBrain、PD、TiKV；RPC 保持明确 Unimplemented |
-| Maintenance | Status | 兼容核心语义 | 返回真实服务身份、版本、leader/revision/共享选主 term；bbolt 容量与默认 quota 字段使用兼容 sentinel，真实容量转到实例指标 |
+| Maintenance | Status | 兼容核心语义 | 返回真实服务身份、版本、leader/revision/共享选主 term；成员本地诊断不依赖 leader read barrier；bbolt 容量与默认 quota 字段使用兼容 sentinel，真实容量转到实例指标 |
 | Maintenance | Snapshot | 平台替代 | 使用 TiKV BR/PITR；控制面提供备份、恢复和导出任务，不伪造 etcd snapshot |
 | Maintenance | Defragment | 平台替代 | TiKV GC/compaction 管理，不执行 bbolt 碎片整理 |
 | Maintenance | Alarm/DbSize | 平台替代 | 用 PD/TiKV 容量、磁盘、region 和配额告警；etcd 专属字段保持可解释值 |
-| Maintenance | Hash/HashKV | 兼容核心语义 | 对指定 revision 的租户 MVCC 实际内容做稳定摘要；用于 KubeBrain 副本一致性校验，数值不与 bbolt 内部编码比较 |
+| Maintenance | Hash/HashKV | 兼容核心语义 | 对指定 revision 的租户 MVCC 实际内容做稳定摘要；成员本地诊断不依赖 KubeBrain leader，数值不与 bbolt 内部编码比较 |
 | Maintenance | MoveLeader/Downgrade | 平台替代 | 分别由服务选主和 DBaaS 升级编排处理 |
 | Endpoint | health/livez/readyz | 兼容核心语义 | `/health`、`/livez`、`/readyz` 及分项检查已对齐；`data_corruption`/`non_learner` 使用 TiKV 架构等价语义，`/ready` 与 `/ping` 为平台探针 |
 | Concurrency | Lock/Election/STM recipes | 兼容核心语义 | 官方 `client/v3/concurrency` Mutex/Election/session/STM、orphan session lease 自然过期接棒、STM 冲突重试/守恒争用及真实 Leader 故障转移已通过；继续长时间 soak |
@@ -4534,6 +4534,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   再删除绑定和 namespace。真实 API Server 授权矩阵验证绑定 namespace 允许精确动作、
   未绑定 namespace 全拒绝。多 namespace worker/archiver Deployment 编排、动态 inventory
   与跨 cluster/region 生命周期仍是 P1。
+
+- **Maintenance A263 leader-independent local diagnostics（2026-07-19）**：对照
+  `/root/etcd/server/etcdserver/api/v3rpc/maintenance.go`，upstream `Status` 直接读取
+  member 本地 raft/backend 状态，`Hash`/`HashKV` 直接读取本地 MVCC snapshot，三者都不
+  提交 raft read request。KubeBrain 此前额外调用 `SyncReadRevision`，导致 leader
+  不可达时 follower 的 endpoint status 和一致性 hash 也返回 Unavailable，妨碍故障诊断。
+
+  现移除 Status 的 leader barrier；Hash/HashKV 因 KubeBrain 的 committed-revision cache
+  是副本本地状态而 TiKV MVCC 数据为共享状态，在 leader 可达时尽力刷新 revision 以固定
+  最新一致快照，但刷新失败不会中断成员本地诊断。HashKV 仍在 backend
+  `logicalWriteMu` 内读取 revision、compact watermark 和 MVCC iterator 的同一快照，
+  Status 无 leader时返回 `Leader=0` 和 `etcdserver: no leader` diagnostics。Alarm GET
+  仍查询集群 alarm store，保留强制 barrier。确定性测试令 `SyncReadRevision` 失败，
+  固定 Status/Hash/HashKV 成功而 Alarm GET 失败；真实三副本删除 leader 窗口继续验证
+  幸存 follower 诊断可用。
 
 ### P1：通用服务能力
 

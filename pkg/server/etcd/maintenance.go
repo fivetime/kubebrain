@@ -84,9 +84,6 @@ func (s *RPCServer) Status(ctx context.Context, _ *etcdserverpb.StatusRequest) (
 	if err := s.requireAuthenticated(ctx, false); err != nil {
 		return nil, err
 	}
-	if err := s.peers.SyncReadRevision(ctx); err != nil {
-		return nil, readBarrierStatusErr(err)
-	}
 	revision := s.backend.GetCurrentRevision()
 	leader := s.memberIDFromAddress(s.peers.GetLeaderInfo())
 	term, err := s.responseRaftTerm(ctx)
@@ -138,9 +135,10 @@ func (s *RPCServer) Hash(ctx context.Context, _ *etcdserverpb.HashRequest) (*etc
 	if err := s.requireAuthenticated(ctx, true); err != nil {
 		return nil, err
 	}
-	if err := s.peers.SyncReadRevision(ctx); err != nil {
-		return nil, readBarrierStatusErr(err)
-	}
+	// KubeBrain's committed revision is cached per replica even though the MVCC
+	// data is shared in TiKV. Refresh it when possible, but preserve etcd's
+	// member-local diagnostic behavior when the leader is unavailable.
+	_ = s.peers.SyncReadRevision(ctx)
 	hashResult, err := s.backend.HashKV(ctx, 0)
 	if err != nil {
 		return nil, err
@@ -156,9 +154,9 @@ func (s *RPCServer) HashKV(ctx context.Context, req *etcdserverpb.HashKVRequest)
 	if err := s.requireAuthenticated(ctx, true); err != nil {
 		return nil, err
 	}
-	if err := s.peers.SyncReadRevision(ctx); err != nil {
-		return nil, readBarrierStatusErr(err)
-	}
+	// A successful refresh pins normal-operation hashes to the latest committed
+	// revision. A failed refresh must not make this local diagnostic unavailable.
+	_ = s.peers.SyncReadRevision(ctx)
 	revision := req.GetRevision()
 	if req.GetRevision() > 0 {
 		// Use the request context so a cancelled/expired HashKV call aborts the
