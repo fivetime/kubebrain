@@ -5018,6 +5018,34 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `kubebrain-1`，主 KubeBrain 恢复 3/3 Ready、零容器重启。该本地 leader view 长期失效
   的自动恢复仍是后续可靠性差距，不能以本次人工 Pod 重建视为已关闭。
 
+- **Follower proxy A285 same-process leadership recovery（2026-07-19）**：
+  A284 观察到的长期 `RAFT NO LEADER` 根因是 etcd proxy 的本地状态机：副本成为 leader
+  时会关闭 forwarding client，却保留此前 follower 阶段的 `curLeader`。若该进程后来
+  失去领导权，而 successor 正好是这个旧地址，same-leader 快路径因字符串相等直接返回，
+  即使 client 已为 nil，之后每秒循环也永不重新拨号。现在成为 leader 时同时清空
+  `curLeader` 和旧错误；same-leader 快路径还必须要求非 nil client。回归测试覆盖
+  follower→leader→demotion→同一旧 leader 的完整生命周期，以及 nil client 配旧身份
+  的防御状态。
+
+  调试同时关闭 LeaseKeepAlive 内部 deadline 的竞态：gRPC 可能先返回
+  `codes.DeadlineExceeded`，本地 `callCtx.Err()` 稍后才可见；父请求仍存活时两种信号都
+  统一映射为 etcd timeout。相关生命周期/超时 focused 连续 200 轮、focused race 50 轮、
+  etcdproxy 全包连续 50 轮、全包 race 20 轮、server 全量、`pkg/...` 全量（backend
+  42.236 秒、etcd 34.726 秒）和 vet 均通过。精确提交
+  `9ef79182feb3482f502d5c2c64fee4b34dc0c1a9` 构建非 root 镜像
+  `kubebrain:a285-proxy-leadership-recovery`（image ID
+  `sha256:81936469bdfb6537ac37c0f5a0bc3ebd299246cef178d1293507a1a5e2085573`）。
+
+  kind 主 StatefulSet 在 17.330 秒内滚动到 A285。第一次暂停 `kubebrain-2` 12 秒触发
+  liveness 容器重启，因此仅作为测试窗口校准，不计入同进程恢复证据。第二次选择此前已
+  作为 follower 连接 `kubebrain-1`、随后成为 leader 的 `kubebrain-0`：暂停 PID 9 秒后，
+  `kubebrain-1` 在 term 410 接任；恢复原 PID 后日志记录 `stopped leading`、同进程
+  election retry，并约 1 秒后 `conn to new leader` 指向 `kubebrain-1`。`kubebrain-0`
+  Pod UID 始终为 `eea0a338-2987-4bfd-aa92-ab2e2d93acf5`、restartCount 0，三端
+  `/ready` 均返回 200，endpoint status 一致报告 leader `kubebrain-1`、term 410。
+  PD/TiKV 3+3 Ready；六类零副本 executor 模板也更新到 A285。A284 的本地 proxy
+  leader view 长期失效差距由此关闭。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range

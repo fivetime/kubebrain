@@ -609,6 +609,14 @@ RUN_INCLUSTER_ROLLOUT_SMOKE=true hack/dev/verify.sh
 
 该路径曾暴露出滚动期间 follower proxy 持续等待旧 leader IP，导致写请求拖到客户端 deadline 并以 `Unknown desc = context deadline exceeded` 失败的问题；当前 proxy readiness 等待已加短上限，超时返回可重试 `Unavailable`，避免单次请求被旧 leader 窗口拖死。复测中仍能看到退出 Pod 连接关闭后的 etcd client 重试日志，但集群内 load 最终 400 轮操作全部完成、无失败。后续长压应继续观察该窗口对 apiserver watch/list 的影响。
 
+follower proxy 成为本地 leader 时必须同时关闭 forwarding client 并清空缓存的
+`curLeader`。失去领导权后，即使 successor 恰好等于其成为 leader 前连接的地址，也必须
+重新拨号；`curLeader` 相同但 client 为 nil 时不得走 same-leader 快路径。生产故障门禁
+应暂停当前 leader 进程略超过 election LeaseDuration、但短于 liveness 重启阈值，确认
+另一副本接任后恢复原进程；原 Pod UID 和 restartCount 必须不变，日志必须出现
+`stopped leading`、同进程重试以及到 successor 的 `conn to new leader`，所有副本
+`/ready` 最终返回 200。
+
 prefix watch catch-up 还修复了一个边界：当 watch cache 中混有其他 prefix 的更高 revision 时，后续 live watch 起点应从最后一个已发送的匹配 prefix 事件之后继续，而不是从全局 newest revision 之后继续，避免跳过本 prefix 事件。
 
 该路径后来又暴露出 follower 通过 HTTP `/status` 向旧 leader 同步 read revision 时会把超时直接返回给 kube-apiserver；当前 revision sync 已改为使用请求 context、对 leader 未选出/连接拒绝/超时/旧 leader 返回非 OK 等 rollout 窗口错误做短周期重试，并在 leader 地址变化后使用新 leader 继续同步。follower watch proxy 也已改为在 leader 变化或可重试连接错误时内部重连，并从最后已发送 revision 的下一位继续 watch，避免主动把 KubeBrain leader 切换暴露为 watch channel 关闭。
