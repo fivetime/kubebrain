@@ -419,9 +419,10 @@ func (q *Queue) Requeue(
 	actualOwner, _, _ := unstructured.NestedString(object.Object, "status", "owner")
 	actualAttempt, _, _ := unstructured.NestedInt64(object.Object, "status", "attempt")
 	actualMessage, _, _ := unstructured.NestedString(object.Object, "status", "message")
+	actualLeaseUntil, _, _ := unstructured.NestedInt64(object.Object, "status", "leaseUntilUnix")
 	if phase == PhasePending {
 		if owner == "" || attempt <= 0 || actualOwner != "" ||
-			actualAttempt != attempt || actualMessage != message {
+			actualAttempt != attempt || actualMessage != message || actualLeaseUntil != 0 {
 			return nil, ErrFenced
 		}
 		instance, _, _ := unstructured.NestedString(object.Object, "spec", "instance")
@@ -442,15 +443,48 @@ func (q *Queue) Requeue(
 	_ = unstructured.SetNestedField(updated.Object, int64(0), "status", "leaseUntilUnix")
 	_ = unstructured.SetNestedField(updated.Object, message, "status", "message")
 	result, err := q.resource.UpdateStatus(ctx, updated, metav1.UpdateOptions{})
-	if apierrors.IsConflict(err) {
-		return nil, ErrFenced
-	}
-	if err == nil {
-		if releaseErr := q.releaseInstanceLeaseForCleanup(ctx, instance, holder); releaseErr != nil {
-			return result, fmt.Errorf("release instance lease after requeue: %w", releaseErr)
+	if err != nil {
+		latest, committed, reconcileErr := q.reconcileFailedStatusTransition(
+			ctx, name, instance, holder, "requeue",
+			func(candidate *unstructured.Unstructured) bool {
+				candidatePhase, _, _ := unstructured.NestedString(
+					candidate.Object, "status", "phase",
+				)
+				candidateOwner, _, _ := unstructured.NestedString(
+					candidate.Object, "status", "owner",
+				)
+				candidateAttempt, _, _ := unstructured.NestedInt64(
+					candidate.Object, "status", "attempt",
+				)
+				candidateMessage, _, _ := unstructured.NestedString(
+					candidate.Object, "status", "message",
+				)
+				candidateLeaseUntil, _, _ := unstructured.NestedInt64(
+					candidate.Object, "status", "leaseUntilUnix",
+				)
+				return candidatePhase == PhasePending && candidateOwner == "" &&
+					candidateAttempt == attempt && candidateMessage == message &&
+					candidateLeaseUntil == 0
+			},
+		)
+		if committed {
+			if reconcileErr != nil {
+				return latest, reconcileErr
+			}
+			return latest, nil
 		}
+		if reconcileErr != nil {
+			return nil, errors.Join(err, reconcileErr)
+		}
+		if apierrors.IsConflict(err) {
+			return nil, ErrFenced
+		}
+		return nil, err
 	}
-	return result, err
+	if releaseErr := q.releaseInstanceLeaseForCleanup(ctx, instance, holder); releaseErr != nil {
+		return result, fmt.Errorf("release instance lease after requeue: %w", releaseErr)
+	}
+	return result, nil
 }
 
 func (q *Queue) Heartbeat(ctx context.Context, name, owner string, attempt int64, lease time.Duration) (*Claim, error) {
@@ -540,12 +574,19 @@ func (q *Queue) Finish(
 		actualAttempt, _, _ := unstructured.NestedInt64(object.Object, "status", "attempt")
 		actualReceipt, _, _ := unstructured.NestedString(object.Object, "status", "receiptSHA256")
 		actualMessage, _, _ := unstructured.NestedString(object.Object, "status", "message")
+		actualLeaseUntil, _, _ := unstructured.NestedInt64(
+			object.Object, "status", "leaseUntilUnix",
+		)
+		actualCompletedAt, _, _ := unstructured.NestedInt64(
+			object.Object, "status", "completedAtUnix",
+		)
 		expectedPhase := PhaseFailed
 		if succeeded {
 			expectedPhase = PhaseSucceeded
 		}
 		if phase == expectedPhase && actualOwner == owner && actualAttempt == attempt &&
-			actualReceipt == receiptSHA256 && actualMessage == message {
+			actualReceipt == receiptSHA256 && actualMessage == message &&
+			actualLeaseUntil == 0 && actualCompletedAt > 0 {
 			instance, _, _ := unstructured.NestedString(object.Object, "spec", "instance")
 			holder := leaseHolder(object, owner, attempt)
 			if releaseErr := q.retryInstanceLeaseCleanup(ctx, instance, holder); releaseErr != nil {
@@ -571,15 +612,78 @@ func (q *Queue) Finish(
 	_ = unstructured.SetNestedField(updated.Object, receiptSHA256, "status", "receiptSHA256")
 	_ = unstructured.SetNestedField(updated.Object, message, "status", "message")
 	result, err := q.resource.UpdateStatus(ctx, updated, metav1.UpdateOptions{})
-	if apierrors.IsConflict(err) {
-		return nil, ErrFenced
-	}
-	if err == nil {
-		if releaseErr := q.releaseInstanceLeaseForCleanup(ctx, instance, holder); releaseErr != nil {
-			return result, fmt.Errorf("release instance lease after finish: %w", releaseErr)
+	if err != nil {
+		latest, committed, reconcileErr := q.reconcileFailedStatusTransition(
+			ctx, name, instance, holder, "finish",
+			func(candidate *unstructured.Unstructured) bool {
+				candidatePhase, _, _ := unstructured.NestedString(
+					candidate.Object, "status", "phase",
+				)
+				candidateOwner, _, _ := unstructured.NestedString(
+					candidate.Object, "status", "owner",
+				)
+				candidateAttempt, _, _ := unstructured.NestedInt64(
+					candidate.Object, "status", "attempt",
+				)
+				candidateReceipt, _, _ := unstructured.NestedString(
+					candidate.Object, "status", "receiptSHA256",
+				)
+				candidateMessage, _, _ := unstructured.NestedString(
+					candidate.Object, "status", "message",
+				)
+				candidateLeaseUntil, _, _ := unstructured.NestedInt64(
+					candidate.Object, "status", "leaseUntilUnix",
+				)
+				candidateCompletedAt, _, _ := unstructured.NestedInt64(
+					candidate.Object, "status", "completedAtUnix",
+				)
+				return candidatePhase == targetPhase && candidateOwner == owner &&
+					candidateAttempt == attempt && candidateReceipt == receiptSHA256 &&
+					candidateMessage == message && candidateLeaseUntil == 0 &&
+					candidateCompletedAt > 0
+			},
+		)
+		if committed {
+			if reconcileErr != nil {
+				return latest, reconcileErr
+			}
+			return latest, nil
 		}
+		if reconcileErr != nil {
+			return nil, errors.Join(err, reconcileErr)
+		}
+		if apierrors.IsConflict(err) {
+			return nil, ErrFenced
+		}
+		return nil, err
 	}
-	return result, err
+	if releaseErr := q.releaseInstanceLeaseForCleanup(ctx, instance, holder); releaseErr != nil {
+		return result, fmt.Errorf("release instance lease after finish: %w", releaseErr)
+	}
+	return result, nil
+}
+
+func (q *Queue) reconcileFailedStatusTransition(
+	parent context.Context,
+	name, instance, holder, transition string,
+	committed func(*unstructured.Unstructured) bool,
+) (*unstructured.Unstructured, bool, error) {
+	ctx, cancel := leaseCleanupContext(parent)
+	defer cancel()
+	latest, err := q.resource.Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return nil, false, fmt.Errorf(
+			"inspect operation after failed %s: %w", transition, err,
+		)
+	}
+	isCommitted := committed(latest)
+	if releaseErr := q.releaseInstanceLease(ctx, instance, holder); releaseErr != nil &&
+		!errors.Is(releaseErr, ErrFenced) {
+		return latest, isCommitted, fmt.Errorf(
+			"release instance lease after failed %s: %w", transition, releaseErr,
+		)
+	}
+	return latest, isCommitted, nil
 }
 
 func (q *Queue) Get(ctx context.Context, name string) (*unstructured.Unstructured, error) {

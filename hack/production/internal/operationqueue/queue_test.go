@@ -318,6 +318,205 @@ func TestRequeueRetriesLeaseCleanupAfterPendingStatusCommit(t *testing.T) {
 	require.ErrorIs(t, err, ErrFenced)
 }
 
+func TestFinishReconcilesCommittedStatusAfterLostResponse(t *testing.T) {
+	client := fakeQueueClient()
+	queue := New(client, "test")
+	ctx := context.Background()
+	_, err := queue.Submit(ctx, "backup-1", validSpec())
+	require.NoError(t, err)
+	claim, err := queue.Claim(ctx, "worker-a", "PostRestoreAudit", time.Minute)
+	require.NoError(t, err)
+	statusUpdates := 0
+	client.PrependReactor("update", Resource.Resource, func(
+		action clientgotesting.Action,
+	) (bool, runtime.Object, error) {
+		if action.GetSubresource() != "status" {
+			return false, nil, nil
+		}
+		statusUpdates++
+		updated := action.(clientgotesting.UpdateAction).GetObject()
+		require.NoError(t, client.Tracker().Update(Resource, updated, "test"))
+		return true, nil, errors.New("finish response lost after commit")
+	})
+
+	finished, err := queue.Finish(
+		ctx, claim.Name, claim.Owner, claim.Attempt,
+		true, strings.Repeat("a", 64), "complete",
+	)
+	require.NoError(t, err)
+	require.Equal(t, 1, statusUpdates)
+	phase, _, _ := unstructured.NestedString(finished.Object, "status", "phase")
+	require.Equal(t, PhaseSucceeded, phase)
+	leases, err := client.Resource(LeaseResource).Namespace("test").
+		List(ctx, metav1.ListOptions{})
+	require.NoError(t, err)
+	require.Empty(t, leases.Items)
+}
+
+func TestRequeueReconcilesCommittedStatusAfterLostResponse(t *testing.T) {
+	client := fakeQueueClient()
+	queue := New(client, "test")
+	ctx := context.Background()
+	_, err := queue.Submit(ctx, "backup-1", validSpec())
+	require.NoError(t, err)
+	claim, err := queue.Claim(ctx, "worker-a", "PostRestoreAudit", time.Minute)
+	require.NoError(t, err)
+	statusUpdates := 0
+	client.PrependReactor("update", Resource.Resource, func(
+		action clientgotesting.Action,
+	) (bool, runtime.Object, error) {
+		if action.GetSubresource() != "status" {
+			return false, nil, nil
+		}
+		statusUpdates++
+		updated := action.(clientgotesting.UpdateAction).GetObject()
+		require.NoError(t, client.Tracker().Update(Resource, updated, "test"))
+		return true, nil, errors.New("requeue response lost after commit")
+	})
+
+	pending, err := queue.Requeue(
+		ctx, claim.Name, claim.Owner, claim.Attempt, "transient",
+	)
+	require.NoError(t, err)
+	require.Equal(t, 1, statusUpdates)
+	phase, _, _ := unstructured.NestedString(pending.Object, "status", "phase")
+	require.Equal(t, PhasePending, phase)
+	leases, err := client.Resource(LeaseResource).Namespace("test").
+		List(ctx, metav1.ListOptions{})
+	require.NoError(t, err)
+	require.Empty(t, leases.Items)
+}
+
+func TestFinishPreservesLeaseWhenStatusReconciliationIsUnavailable(t *testing.T) {
+	client := fakeQueueClient()
+	queue := New(client, "test")
+	ctx := context.Background()
+	_, err := queue.Submit(ctx, "backup-1", validSpec())
+	require.NoError(t, err)
+	claim, err := queue.Claim(ctx, "worker-a", "PostRestoreAudit", time.Minute)
+	require.NoError(t, err)
+	getCalls := 0
+	client.PrependReactor("get", Resource.Resource, func(
+		clientgotesting.Action,
+	) (bool, runtime.Object, error) {
+		getCalls++
+		if getCalls > 1 {
+			return true, nil, errors.New("finish reconciliation unavailable")
+		}
+		return false, nil, nil
+	})
+	client.PrependReactor("update", Resource.Resource, func(
+		action clientgotesting.Action,
+	) (bool, runtime.Object, error) {
+		if action.GetSubresource() == "status" {
+			return true, nil, errors.New("finish status unavailable")
+		}
+		return false, nil, nil
+	})
+
+	finished, err := queue.Finish(
+		ctx, claim.Name, claim.Owner, claim.Attempt,
+		true, strings.Repeat("a", 64), "complete",
+	)
+	require.Nil(t, finished)
+	require.ErrorContains(t, err, "finish status unavailable")
+	require.ErrorContains(t, err, "finish reconciliation unavailable")
+	leases, err := client.Resource(LeaseResource).Namespace("test").
+		List(ctx, metav1.ListOptions{})
+	require.NoError(t, err)
+	require.Len(t, leases.Items, 1)
+}
+
+func TestFinishStatusReconciliationOutlivesCanceledParent(t *testing.T) {
+	client := fakeQueueClient()
+	queue := New(client, "test")
+	ctx, cancel := context.WithCancel(context.Background())
+	_, err := queue.Submit(ctx, "backup-1", validSpec())
+	require.NoError(t, err)
+	claim, err := queue.Claim(ctx, "worker-a", "PostRestoreAudit", time.Minute)
+	require.NoError(t, err)
+	client.PrependReactor("update", Resource.Resource, func(
+		action clientgotesting.Action,
+	) (bool, runtime.Object, error) {
+		if action.GetSubresource() != "status" {
+			return false, nil, nil
+		}
+		updated := action.(clientgotesting.UpdateAction).GetObject()
+		require.NoError(t, client.Tracker().Update(Resource, updated, "test"))
+		cancel()
+		return true, nil, ctx.Err()
+	})
+
+	finished, err := queue.Finish(
+		ctx, claim.Name, claim.Owner, claim.Attempt,
+		true, strings.Repeat("a", 64), "complete",
+	)
+	require.NoError(t, err)
+	phase, _, _ := unstructured.NestedString(finished.Object, "status", "phase")
+	require.Equal(t, PhaseSucceeded, phase)
+	leases, listErr := client.Resource(LeaseResource).Namespace("test").
+		List(context.Background(), metav1.ListOptions{})
+	require.NoError(t, listErr)
+	require.Empty(t, leases.Items)
+}
+
+func TestRequeueConflictCleansOldLeaseBeforeFencing(t *testing.T) {
+	client := fakeQueueClient()
+	queue := New(client, "test")
+	ctx := context.Background()
+	_, err := queue.Submit(ctx, "backup-1", validSpec())
+	require.NoError(t, err)
+	claim, err := queue.Claim(ctx, "worker-a", "PostRestoreAudit", time.Minute)
+	require.NoError(t, err)
+	client.PrependReactor("update", Resource.Resource, func(
+		action clientgotesting.Action,
+	) (bool, runtime.Object, error) {
+		if action.GetSubresource() == "status" {
+			return true, nil, apierrors.NewConflict(
+				schema.GroupResource{Group: Resource.Group, Resource: Resource.Resource},
+				claim.Name, errors.New("injected conflict"),
+			)
+		}
+		return false, nil, nil
+	})
+
+	pending, err := queue.Requeue(
+		ctx, claim.Name, claim.Owner, claim.Attempt, "transient",
+	)
+	require.Nil(t, pending)
+	require.ErrorIs(t, err, ErrFenced)
+	leases, err := client.Resource(LeaseResource).Namespace("test").
+		List(ctx, metav1.ListOptions{})
+	require.NoError(t, err)
+	require.Empty(t, leases.Items)
+}
+
+func TestStatusTransitionRetriesRejectIncompleteCommittedState(t *testing.T) {
+	queue := newFakeQueue()
+	ctx := context.Background()
+	object, err := queue.Submit(ctx, "backup-1", validSpec())
+	require.NoError(t, err)
+	setOperationStatus(t, queue, object, map[string]any{
+		"phase": PhasePending, "owner": "", "attempt": int64(1),
+		"leaseUntilUnix": int64(10), "message": "transient",
+	})
+	_, err = queue.Requeue(ctx, "backup-1", "worker-a", 1, "transient")
+	require.ErrorIs(t, err, ErrFenced)
+
+	object, err = queue.Get(ctx, "backup-1")
+	require.NoError(t, err)
+	setOperationStatus(t, queue, object, map[string]any{
+		"phase": PhaseSucceeded, "owner": "worker-a", "attempt": int64(1),
+		"leaseUntilUnix": int64(0), "completedAtUnix": int64(0),
+		"receiptSHA256": strings.Repeat("a", 64), "message": "complete",
+	})
+	_, err = queue.Finish(
+		ctx, "backup-1", "worker-a", 1,
+		true, strings.Repeat("a", 64), "complete",
+	)
+	require.ErrorIs(t, err, ErrTerminal)
+}
+
 func TestLeaseCleanupContextOutlivesCanceledParentWithBoundedDeadline(t *testing.T) {
 	type contextKey string
 	parent, cancelParent := context.WithCancel(
