@@ -3,6 +3,7 @@ package operationqueue
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"sort"
@@ -27,6 +28,8 @@ var LeaseResource = schema.GroupVersionResource{
 	Group: "coordination.k8s.io", Version: "v1", Resource: "leases",
 }
 
+var SecretResource = schema.GroupVersionResource{Group: "", Version: "v1", Resource: "secrets"}
+
 const microTimeFormat = "2006-01-02T15:04:05.000000Z07:00"
 
 const (
@@ -48,6 +51,8 @@ type Spec struct {
 	Instance         string
 	Type             string
 	ParametersSHA256 string
+	ParametersSecret string
+	ParametersKey    string
 	MaxAttempts      int64
 }
 
@@ -59,6 +64,8 @@ type Claim struct {
 	Instance         string `json:"instance"`
 	Type             string `json:"type"`
 	ParametersSHA256 string `json:"parameters_sha256"`
+	ParametersSecret string `json:"parameters_secret,omitempty"`
+	ParametersKey    string `json:"parameters_key,omitempty"`
 	Owner            string `json:"owner"`
 	Attempt          int64  `json:"attempt"`
 	LeaseUntilUnix   int64  `json:"lease_until_unix"`
@@ -67,6 +74,7 @@ type Claim struct {
 type Queue struct {
 	resource dynamic.ResourceInterface
 	leases   dynamic.ResourceInterface
+	secrets  dynamic.ResourceInterface
 	now      func() time.Time
 }
 
@@ -74,6 +82,7 @@ func New(client dynamic.Interface, namespace string) *Queue {
 	return &Queue{
 		resource: client.Resource(Resource).Namespace(namespace),
 		leases:   client.Resource(LeaseResource).Namespace(namespace),
+		secrets:  client.Resource(SecretResource).Namespace(namespace),
 		now:      func() time.Time { return time.Now().UTC() },
 	}
 }
@@ -91,19 +100,29 @@ func (q *Queue) Submit(ctx context.Context, name string, spec Spec) (*unstructur
 		len(spec.ParametersSHA256) != 64 || spec.MaxAttempts <= 0 {
 		return nil, errors.New("operation spec is incomplete")
 	}
+	if (spec.ParametersSecret == "") != (spec.ParametersKey == "") {
+		return nil, errors.New("parameter secret name and key must be specified together")
+	}
+	specObject := map[string]any{
+		"operationID":      spec.OperationID,
+		"instance":         spec.Instance,
+		"type":             spec.Type,
+		"parametersSHA256": spec.ParametersSHA256,
+		"maxAttempts":      spec.MaxAttempts,
+	}
+	if spec.ParametersSecret != "" {
+		specObject["parametersSecretRef"] = map[string]any{
+			"name": spec.ParametersSecret,
+			"key":  spec.ParametersKey,
+		}
+	}
 	object := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "dbaas.kubebrain.io/v1alpha1",
 		"kind":       "KubeBrainOperation",
 		"metadata": map[string]any{
 			"name": name,
 		},
-		"spec": map[string]any{
-			"operationID":      spec.OperationID,
-			"instance":         spec.Instance,
-			"type":             spec.Type,
-			"parametersSHA256": spec.ParametersSHA256,
-			"maxAttempts":      spec.MaxAttempts,
-		},
+		"spec": specObject,
 	}}
 	object.SetFinalizers([]string{operationaudit.Finalizer})
 	created, err := q.resource.Create(ctx, object, metav1.CreateOptions{})
@@ -383,6 +402,39 @@ func (q *Queue) Get(ctx context.Context, name string) (*unstructured.Unstructure
 	return q.resource.Get(ctx, name, metav1.GetOptions{})
 }
 
+func (q *Queue) Parameters(ctx context.Context, name string) ([]byte, error) {
+	object, err := q.resource.Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return nil, err
+	}
+	secretName, _, _ := unstructured.NestedString(
+		object.Object, "spec", "parametersSecretRef", "name",
+	)
+	key, _, _ := unstructured.NestedString(object.Object, "spec", "parametersSecretRef", "key")
+	expected, _, _ := unstructured.NestedString(object.Object, "spec", "parametersSHA256")
+	if secretName == "" || key == "" {
+		return nil, errors.New("operation does not reference managed parameters")
+	}
+	secret, err := q.secrets.Get(ctx, secretName, metav1.GetOptions{})
+	if err != nil {
+		return nil, err
+	}
+	immutable, _, _ := unstructured.NestedBool(secret.Object, "immutable")
+	encoded, found, err := unstructured.NestedString(secret.Object, "data", key)
+	if err != nil || !found || !immutable {
+		return nil, errors.New("parameter secret must be immutable and contain the referenced key")
+	}
+	data, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return nil, errors.New("parameter secret contains invalid base64 data")
+	}
+	actual := fmt.Sprintf("%x", sha256.Sum256(data))
+	if actual != expected {
+		return nil, errors.New("parameter secret digest does not match operation spec")
+	}
+	return data, nil
+}
+
 func (q *Queue) Approve(
 	ctx context.Context,
 	name, approvedBy, approvalID string,
@@ -450,6 +502,8 @@ func claimFrom(object *unstructured.Unstructured) (*Claim, error) {
 	instance, _, _ := unstructured.NestedString(object.Object, "spec", "instance")
 	operationType, _, _ := unstructured.NestedString(object.Object, "spec", "type")
 	digest, _, _ := unstructured.NestedString(object.Object, "spec", "parametersSHA256")
+	secret, _, _ := unstructured.NestedString(object.Object, "spec", "parametersSecretRef", "name")
+	key, _, _ := unstructured.NestedString(object.Object, "spec", "parametersSecretRef", "key")
 	owner, _, _ := unstructured.NestedString(object.Object, "status", "owner")
 	attempt, _, _ := unstructured.NestedInt64(object.Object, "status", "attempt")
 	leaseUntil, _, _ := unstructured.NestedInt64(object.Object, "status", "leaseUntilUnix")
@@ -459,7 +513,8 @@ func claimFrom(object *unstructured.Unstructured) (*Claim, error) {
 	return &Claim{
 		Name: object.GetName(), UID: string(object.GetUID()), ResourceVersion: object.GetResourceVersion(),
 		OperationID: operationID, Instance: instance, Type: operationType,
-		ParametersSHA256: digest, Owner: owner, Attempt: attempt, LeaseUntilUnix: leaseUntil,
+		ParametersSHA256: digest, ParametersSecret: secret, ParametersKey: key,
+		Owner: owner, Attempt: attempt, LeaseUntilUnix: leaseUntil,
 	}, nil
 }
 
@@ -469,9 +524,12 @@ func specMatches(object *unstructured.Unstructured, spec Spec) bool {
 	operationType, _, _ := unstructured.NestedString(object.Object, "spec", "type")
 	digest, _, _ := unstructured.NestedString(object.Object, "spec", "parametersSHA256")
 	maxAttempts, _, _ := unstructured.NestedInt64(object.Object, "spec", "maxAttempts")
+	secret, _, _ := unstructured.NestedString(object.Object, "spec", "parametersSecretRef", "name")
+	key, _, _ := unstructured.NestedString(object.Object, "spec", "parametersSecretRef", "key")
 	return operationID == spec.OperationID && instance == spec.Instance &&
 		operationType == spec.Type && digest == spec.ParametersSHA256 &&
-		maxAttempts == spec.MaxAttempts
+		maxAttempts == spec.MaxAttempts && secret == spec.ParametersSecret &&
+		key == spec.ParametersKey
 }
 
 func (q *Queue) acquireInstanceLease(

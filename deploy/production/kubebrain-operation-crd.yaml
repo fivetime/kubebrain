@@ -92,6 +92,22 @@ spec:
                 parametersSHA256:
                   type: string
                   pattern: '^[a-f0-9]{64}$'
+                parametersSecretRef:
+                  type: object
+                  required:
+                    - name
+                    - key
+                  properties:
+                    name:
+                      type: string
+                      minLength: 1
+                      maxLength: 253
+                      pattern: '^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$'
+                    key:
+                      type: string
+                      minLength: 1
+                      maxLength: 253
+                      pattern: '^[-._a-zA-Z0-9]+$'
                 maxAttempts:
                   type: integer
                   format: int64

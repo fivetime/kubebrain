@@ -20,16 +20,19 @@ import (
 
 func main() {
 	var action, namespace, name, operationID, instance, operationType, parametersSHA string
+	var parametersSecret, parametersKey string
 	var owner, receiptSHA, message, approvalID, approvedBy, kubeconfig, contextName string
 	var maxAttempts, attempt int64
 	var lease time.Duration
-	flag.StringVar(&action, "action", "", "submit, claim, heartbeat, retry, succeed, fail, or get")
+	flag.StringVar(&action, "action", "", "submit, claim, parameters, heartbeat, retry, succeed, fail, or get")
 	flag.StringVar(&namespace, "namespace", "kubebrain-system", "operation namespace")
 	flag.StringVar(&name, "name", "", "operation resource name")
 	flag.StringVar(&operationID, "operation-id", "", "stable external operation ID")
 	flag.StringVar(&instance, "instance", "", "instance ID")
 	flag.StringVar(&operationType, "type", "", "operation type or claim filter")
 	flag.StringVar(&parametersSHA, "parameters-sha256", "", "immutable parameters digest")
+	flag.StringVar(&parametersSecret, "parameters-secret", "", "immutable parameters Secret name")
+	flag.StringVar(&parametersKey, "parameters-key", "", "immutable parameters Secret key")
 	flag.Int64Var(&maxAttempts, "max-attempts", 3, "maximum worker claims")
 	flag.StringVar(&owner, "owner", "", "worker identity")
 	flag.Int64Var(&attempt, "attempt", 0, "worker fencing attempt")
@@ -61,10 +64,20 @@ func main() {
 	case "submit":
 		output, err = queue.Submit(ctx, name, operationqueue.Spec{
 			OperationID: operationID, Instance: instance, Type: operationType,
-			ParametersSHA256: parametersSHA, MaxAttempts: maxAttempts,
+			ParametersSHA256: parametersSHA, ParametersSecret: parametersSecret,
+			ParametersKey: parametersKey, MaxAttempts: maxAttempts,
 		})
 	case "claim":
 		output, err = queue.Claim(ctx, owner, operationType, lease)
+	case "parameters":
+		var data []byte
+		data, err = queue.Parameters(ctx, name)
+		if err == nil {
+			if _, writeErr := os.Stdout.Write(data); writeErr != nil {
+				log.Fatal(writeErr)
+			}
+			return
+		}
 	case "heartbeat":
 		output, err = queue.Heartbeat(ctx, name, owner, attempt, lease)
 	case "retry":
@@ -78,7 +91,7 @@ func main() {
 	case "approve":
 		output, err = queue.Approve(ctx, name, approvedBy, approvalID)
 	default:
-		log.Fatal("action must be submit, claim, heartbeat, retry, succeed, fail, get, or approve")
+		log.Fatal("action must be submit, claim, parameters, heartbeat, retry, succeed, fail, get, or approve")
 	}
 	if err != nil {
 		if errors.Is(err, operationqueue.ErrNoOperation) {

@@ -26,7 +26,8 @@ RUN test -n "$KUBEBRAIN_VERSION" \
       tikv) bash ./build/build-tikv.sh ;; \
       badger) bash ./build/build-badger.sh ;; \
       *) echo "unsupported STORAGE=$STORAGE" >&2; exit 1 ;; \
-    esac
+    esac \
+    && go build -trimpath -o /src/bin/kubebrain-backup-scheduler ./hack/production/cmd/backup-scheduler
 
 FROM alpine:3.23
 
@@ -44,6 +45,7 @@ RUN apk add --no-cache ca-certificates \
     && adduser -S -D -H -h /nonexistent -s /sbin/nologin -u 65532 -G kubebrain kubebrain
 
 COPY --from=build /src/bin/kube-brain /usr/local/bin/kube-brain
+COPY --from=build /src/bin/kubebrain-backup-scheduler /usr/local/bin/kubebrain-backup-scheduler
 
 USER 65532:65532
 EXPOSE 3379 3380 8080

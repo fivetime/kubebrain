@@ -4242,6 +4242,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   到期删除及二次删除复用同一 deletion receipt。另以不同有效 artifact（revision
   `467764733078405145`）竞争同 key，被 `If-None-Match` 拒绝且未生成替换 receipt；
   最终 `mc ls --versions --recursive` 确认 bucket 无对象/version residue，测试 key 已清理。
+- **Operations A243 HA-safe periodic backup policy（2026-07-19）**：新增 namespaced
+  `KubeBrainBackupPolicy` CRD 和 `backup-scheduler`。策略以 UTC epoch 固定时间槽生成
+  `backup-<policy>-<slot>`，只提交策略创建后的最新到期槽，不无界回填历史；双副本
+  Deployment 无需 leader election，依靠确定性名称、Kubernetes Create 原子性和
+  `operationqueue.Submit` immutable-spec 比对收敛到单一 Backup operation。
+
+  参数模板保存在管理 namespace 的 Secret；scheduler 结构化解析 JSON，强制
+  artifact、receipt 和 object key 包含 operation ID，占位展开后覆盖 backup ID、
+  retain-until 和 scheduled time，再创建 operation 专属 immutable Secret。Operation
+  spec 新增 Secret name/key 引用并继续绑定完整参数 SHA-256。worker RBAC 只增加
+  Secret get；`operationctl parameters` 同时要求 Secret immutable、key 存在、base64
+  有效且 digest 精确匹配，Backup executor 可在无本地参数文件时安全取回。模板漂移、
+  同名 Secret 内容冲突和摘要漂移均 fail closed，手工参数文件流程保持兼容。
+
+  单元测试覆盖两 scheduler 并发竞争只生成一个 operation/Secret、创建后首个合法槽、
+  suspend、不回填和非唯一输出拒绝；queue 测试固定 immutable/digest 门禁，shell 测试
+  覆盖 managed parameters 路径。生产 CRD/RBAC/Deployment 结构测试及 Kubernetes API
+  server dry-run 已通过。该增量关闭“管理面定期策略触发”缺口；跨 namespace/region
+  全局调度、跨账户保留规划和管理面长时间 HA soak 仍保留。
 
 ### P1：通用服务能力
 
@@ -4258,7 +4277,7 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
    gate、UID-fenced 销毁状态机及持久 operation API/worker fencing、Backup/
    RestoreCutover/CertificateRotation/Destroy/BackupDeletion executors、专属
    namespace/凭据外围 UID-fenced 清理和 backup exact-version bucket lifecycle operation
-   已建立；exact-version inventory 对账已完成；继续补管理面定期策略触发与跨账户保留规划；
+   已建立；exact-version inventory 对账和 HA-safe 定期策略触发已完成；继续补跨账户保留规划；
    Kubernetes 原生提交者与 worker 最小权限身份已分离，单 namespace 跨实例公平调度和
    实例互斥、终态
    operation 的 Object Lock 不可变归档及 finalizer/删除门禁均已完成；继续补外部管理

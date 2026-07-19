@@ -2,7 +2,10 @@ package operationqueue
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -84,6 +87,39 @@ func TestQueueRejectsSpecDriftAndInvalidCompletion(t *testing.T) {
 	require.NoError(t, err)
 	_, err = queue.Finish(ctx, claim.Name, claim.Owner, claim.Attempt, true, "", "")
 	require.ErrorContains(t, err, "requires a receipt")
+}
+
+func TestQueueLoadsDigestBoundImmutableParameters(t *testing.T) {
+	queue := newFakeQueue()
+	ctx := context.Background()
+	parameters := []byte("{\"backup_id\":\"backup-1\"}\n")
+	spec := validSpec()
+	spec.ParametersSHA256 = fmt.Sprintf("%x", sha256.Sum256(parameters))
+	spec.ParametersSecret = "backup-1-parameters"
+	spec.ParametersKey = "parameters.json"
+	_, err := queue.secrets.Create(ctx, &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "v1", "kind": "Secret",
+		"metadata":  map[string]any{"name": spec.ParametersSecret},
+		"immutable": true,
+		"data": map[string]any{
+			spec.ParametersKey: base64.StdEncoding.EncodeToString(parameters),
+		},
+	}}, metav1.CreateOptions{})
+	require.NoError(t, err)
+	_, err = queue.Submit(ctx, "backup-1", spec)
+	require.NoError(t, err)
+
+	actual, err := queue.Parameters(ctx, "backup-1")
+	require.NoError(t, err)
+	require.Equal(t, parameters, actual)
+
+	secret, err := queue.secrets.Get(ctx, spec.ParametersSecret, metav1.GetOptions{})
+	require.NoError(t, err)
+	secret.Object["immutable"] = false
+	_, err = queue.secrets.Update(ctx, secret, metav1.UpdateOptions{})
+	require.NoError(t, err)
+	_, err = queue.Parameters(ctx, "backup-1")
+	require.ErrorContains(t, err, "must be immutable")
 }
 
 func TestQueueStopsAfterMaximumAttempts(t *testing.T) {
@@ -326,8 +362,9 @@ func validSpec() Spec {
 func newFakeQueue() *Queue {
 	client := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(
 		runtime.NewScheme(), map[schema.GroupVersionResource]string{
-			Resource:      "KubeBrainOperationList",
-			LeaseResource: "LeaseList",
+			Resource:       "KubeBrainOperationList",
+			LeaseResource:  "LeaseList",
+			SecretResource: "SecretList",
 		},
 	)
 	return New(client, "test")

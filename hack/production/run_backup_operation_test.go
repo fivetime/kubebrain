@@ -45,6 +45,13 @@ func TestBackupOperationRejectsParameterDrift(t *testing.T) {
 	require.Contains(t, f.log(t), "--action retry")
 }
 
+func TestBackupOperationLoadsManagedParameters(t *testing.T) {
+	f := newBackupRunnerFixture(t, false)
+	f.env = append(f.env, "MANAGED_PARAMETERS="+f.parameters, "PARAMETERS_INPUT=")
+	f.run(t, true, "")
+	require.Contains(t, f.log(t), "--action parameters --name backup-1")
+}
+
 func TestBackupOperationStopsWhenHeartbeatIsFenced(t *testing.T) {
 	f := newBackupRunnerFixture(t, false)
 	f.run(t, false, "OBJECT_SLEEP=3", "heartbeat failed")
@@ -88,6 +95,8 @@ printf 'operationctl %s\n' "$*" >>"$FAKE_DIR/actions.log"
 if [[ " $* " == *" --action claim "* ]]; then
   digest="${CLAIM_DIGEST:-$PARAMETERS_DIGEST}"
   printf '{"name":"backup-1","uid":"uid-op","resource_version":"1","operation_id":"backup-1","instance":"instance-a","type":"Backup","parameters_sha256":"%s","owner":"worker-a","attempt":1,"lease_until_unix":999999}\n' "$digest"
+elif [[ " $* " == *" --action parameters "* ]]; then
+  cat "$MANAGED_PARAMETERS"
 elif [[ " $* " == *" --action heartbeat "* && "${HEARTBEAT_FAIL:-true}" == true ]]; then
   exit 1
 else

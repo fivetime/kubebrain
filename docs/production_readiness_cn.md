@@ -841,6 +841,43 @@ revision、records、retention，成功后 operation status 绑定 object receip
 整个导出/上传期间维持 operation heartbeat；失败 requeue，fencing 时终止本地流程。
 S3 access key/secret 和 etcd TLS 凭据只通过 worker Secret/env 注入，不进入参数文件或 CR。
 
+定期备份由 `KubeBrainBackupPolicy` 和双副本
+`kubebrain-backup-scheduler` 触发。先安装：
+
+```shell
+kubectl apply -f deploy/production/kubebrain-operation-crd.yaml
+kubectl apply -f deploy/production/kubebrain-backup-policy-crd.yaml
+kubectl apply -f deploy/production/kubebrain-backup-scheduler.yaml
+```
+
+模板 Secret 的 `parameters.json` 使用与 Backup executor 相同的结构，但
+`artifact_output`、`receipt_output` 和 `s3_object_key` 必须包含
+`{operation_id}`。scheduler 会覆盖 `backup_id`、`retain_until_unix`，并记录
+`scheduled_unix`；模板不得包含 S3 或 TLS 凭据。策略示例：
+
+```yaml
+apiVersion: dbaas.kubebrain.io/v1alpha1
+kind: KubeBrainBackupPolicy
+metadata:
+  name: instance-a-daily
+  namespace: kubebrain-operations
+spec:
+  instance: instance-a
+  intervalSeconds: 86400
+  retentionSeconds: 2592000
+  maxAttempts: 3
+  parametersTemplateSecretRef:
+    name: instance-a-backup-template
+    key: parameters.json
+```
+
+时间槽以 Unix epoch 的 UTC 整数倍对齐。策略创建后只触发最新到期槽，不回填创建前
+或 scheduler 停机期间的历史槽，避免恢复后形成无界队列。operation 名称为
+`backup-<policy>-<slot-unix>`；多个 scheduler 副本竞争时只会创建同一个不可变参数
+Secret 和同一个 operation。已有同名资源内容不同会 fail closed。worker 未设置
+`PARAMETERS_INPUT` 时通过 `operationctl --action parameters` 读取 operation 绑定的
+immutable Secret，并再次校验 SHA-256；手工参数文件模式继续保留。
+
 `hack/production/run-restore-cutover-operation.sh` 接入 RestoreCutover。参数绑定 A184
 restore receipt、logical artifact、A189 state/receipt 路径、Service、源/目标 instance、
 replicas、公开 endpoint 和 Kubernetes context。执行器按 prepare、cutover、verify、

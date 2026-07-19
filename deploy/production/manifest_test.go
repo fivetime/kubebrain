@@ -165,13 +165,41 @@ func TestOperationCRDAndWorkerRBACFencePersistentTasks(t *testing.T) {
 	rules, found, err := unstructured.NestedSlice(role.Object, "rules")
 	require.NoError(t, err)
 	require.True(t, found)
-	require.Len(t, rules, 3)
+	require.Len(t, rules, 4)
 	require.Contains(t, rules[0].(map[string]any)["resources"].([]any), "kubebrainoperations")
 	require.NotContains(t, rules[0].(map[string]any)["verbs"].([]any), "create")
 	require.Contains(t, rules[1].(map[string]any)["resources"].([]any), "kubebrainoperations/status")
 	require.Contains(t, rules[1].(map[string]any)["verbs"].([]any), "update")
 	require.Equal(t, []any{"leases"}, rules[2].(map[string]any)["resources"].([]any))
 	require.Equal(t, []any{"create", "get", "update", "delete"}, rules[2].(map[string]any)["verbs"].([]any))
+	require.Equal(t, []any{"secrets"}, rules[3].(map[string]any)["resources"].([]any))
+	require.Equal(t, []any{"get"}, rules[3].(map[string]any)["verbs"].([]any))
+}
+
+func TestBackupSchedulerIsHAAndLeastPrivilege(t *testing.T) {
+	crd := objectByKindAndName(
+		t, decodeManifest(t, "kubebrain-backup-policy-crd.yaml"),
+		"CustomResourceDefinition", "kubebrainbackuppolicies.dbaas.kubebrain.io",
+	)
+	require.Equal(t, "Namespaced", nestedString(t, crd, "spec", "scope"))
+	require.Equal(t, "KubeBrainBackupPolicy", nestedString(t, crd, "spec", "names", "kind"))
+
+	objects := decodeManifest(t, "kubebrain-backup-scheduler.yaml")
+	deployment := objectByKindAndName(t, objects, "Deployment", "kubebrain-backup-scheduler")
+	require.EqualValues(t, 2, nestedInt64(t, deployment, "spec", "replicas"))
+	require.Equal(t, "kubebrain-backup-scheduler",
+		nestedString(t, deployment, "spec", "template", "spec", "serviceAccountName"))
+	require.True(t, nestedBool(t, deployment, "spec", "template", "spec", "securityContext", "runAsNonRoot"))
+
+	role := objectByKindAndName(t, objects, "Role", "kubebrain-backup-scheduler")
+	rules, found, err := unstructured.NestedSlice(role.Object, "rules")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Len(t, rules, 3)
+	require.Equal(t, []any{"create", "get"}, rules[1].(map[string]any)["verbs"].([]any))
+	require.Equal(t, []any{"create", "get"}, rules[2].(map[string]any)["verbs"].([]any))
+	require.NotContains(t, rules[1].(map[string]any)["verbs"].([]any), "update")
+	require.NotContains(t, rules[2].(map[string]any)["verbs"].([]any), "update")
 }
 
 func TestProductionMonitoringTracksStatefulSetReadiness(t *testing.T) {

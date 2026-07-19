@@ -147,6 +147,11 @@ func TestOperationWorkerRBACCanFenceWithLeasesButCannotCreateOperations(t *testi
 			Resources: []string{"leases"},
 			Verbs:     []string{"create", "get", "update", "delete"},
 		},
+		{
+			APIGroups: []string{""},
+			Resources: []string{"secrets"},
+			Verbs:     []string{"get"},
+		},
 	}, role.Rules)
 
 	binding := documents[3]
