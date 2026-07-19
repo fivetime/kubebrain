@@ -220,6 +220,7 @@ func TestOperationArchiverIsFailClosedAndHardened(t *testing.T) {
 	require.Contains(t, args, "--object-store-id=$(OBJECT_STORE_ID)")
 	require.Contains(t, args, "--bucket=$(S3_BUCKET)")
 	require.Contains(t, args, "--reconcile-timeout=15m")
+	require.Contains(t, args, "--archive-timeout=2m")
 	require.True(t, nestedBool(t, container, "securityContext", "readOnlyRootFilesystem"))
 	require.False(t, nestedBool(t, container, "securityContext", "allowPrivilegeEscalation"))
 	pdb := objectByKindAndName(t, objects, "PodDisruptionBudget", "kubebrain-operation-archiver")

@@ -20,7 +20,7 @@ func main() {
 	var inventoryName, inventoryNamespace, inventoryKey string
 	var executor, objectStoreID, bucket, prefix, retentionMode string
 	var kubeconfig, contextName string
-	var pollInterval, retentionDuration, reconcileTimeout time.Duration
+	var pollInterval, retentionDuration, reconcileTimeout, archiveTimeout time.Duration
 	var maxBatch int
 	var once bool
 	flag.StringVar(&inventoryName, "namespace-inventory-configmap", "", "ConfigMap containing the namespace allowlist")
@@ -35,6 +35,8 @@ func main() {
 	flag.DurationVar(&pollInterval, "poll-interval", time.Minute, "reconciliation interval")
 	flag.DurationVar(&reconcileTimeout, "reconcile-timeout", 15*time.Minute,
 		"maximum duration of one reconciliation, including object archive uploads")
+	flag.DurationVar(&archiveTimeout, "archive-timeout", 2*time.Minute,
+		"maximum duration of one operation archive and finalizer release")
 	flag.IntVar(&maxBatch, "max-batch", 32, "maximum terminal operations processed per reconciliation")
 	flag.StringVar(&kubeconfig, "kubeconfig", "", "kubeconfig path; empty uses in-cluster credentials")
 	flag.StringVar(&contextName, "context", "", "kubeconfig context")
@@ -48,6 +50,9 @@ func main() {
 	}
 	if reconcileTimeout <= 0 {
 		log.Fatal("reconcile-timeout must be positive")
+	}
+	if archiveTimeout <= 0 || archiveTimeout > reconcileTimeout {
+		log.Fatal("archive-timeout must be positive and no greater than reconcile-timeout")
 	}
 	config, err := clientConfig(kubeconfig, contextName)
 	if err != nil {
@@ -63,8 +68,12 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	boundedProcessor, err := operationarchiver.WithTimeout(processor, archiveTimeout)
+	if err != nil {
+		log.Fatal(err)
+	}
 	controller, err := operationarchiver.New(
-		client, processor, inventoryNamespace, inventoryName, inventoryKey, maxBatch,
+		client, boundedProcessor, inventoryNamespace, inventoryName, inventoryKey, maxBatch,
 	)
 	if err != nil {
 		log.Fatal(err)

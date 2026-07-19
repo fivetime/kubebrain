@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/kubewharf/kubebrain/hack/production/internal/namespaceinventory"
 	"github.com/kubewharf/kubebrain/hack/production/internal/operationqueue"
@@ -19,6 +20,19 @@ import (
 type recordingProcessor struct {
 	names []string
 	fail  map[string]error
+}
+
+type blockingFirstProcessor struct {
+	names []string
+}
+
+func (p *blockingFirstProcessor) Process(ctx context.Context, object *unstructured.Unstructured) error {
+	p.names = append(p.names, object.GetName())
+	if object.GetName() == "blocked" {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	return nil
 }
 
 func (p *recordingProcessor) Process(_ context.Context, object *unstructured.Unstructured) error {
@@ -65,6 +79,33 @@ func TestControllerIsolatesNamespaceAndOperationFailures(t *testing.T) {
 	require.Contains(t, err.Error(), "remote unavailable")
 	require.Equal(t, 1, processed)
 	require.Equal(t, []string{"tenant-a/bad", "tenant-a/good"}, processor.names)
+}
+
+func TestControllerContinuesAfterPerOperationArchiveTimeout(t *testing.T) {
+	client := fakeClient(t,
+		inventory("tenant-a"),
+		operation("tenant-a", "blocked", "Succeeded", 1, true),
+		operation("tenant-a", "following", "Succeeded", 2, true),
+	)
+	processor := &blockingFirstProcessor{}
+	bounded, err := WithTimeout(processor, 10*time.Millisecond)
+	require.NoError(t, err)
+	controller, err := New(client, bounded, "control", "inventory", "", 10)
+	require.NoError(t, err)
+
+	start := time.Now()
+	processed, err := controller.Reconcile(context.Background())
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.Equal(t, 1, processed)
+	require.Equal(t, []string{"blocked", "following"}, processor.names)
+	require.Less(t, time.Since(start), time.Second)
+}
+
+func TestArchiveTimeoutRejectsInvalidConfiguration(t *testing.T) {
+	_, err := WithTimeout(nil, time.Second)
+	require.ErrorContains(t, err, "processor is required")
+	_, err = WithTimeout(&recordingProcessor{}, 0)
+	require.ErrorContains(t, err, "timeout must be positive")
 }
 
 func TestControllerFailsClosedBeforeListingOnInvalidInventory(t *testing.T) {

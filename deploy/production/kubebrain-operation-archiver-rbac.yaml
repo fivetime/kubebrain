@@ -149,6 +149,7 @@ spec:
             - --retention-duration=8760h
             - --poll-interval=1m
             - --reconcile-timeout=15m
+            - --archive-timeout=2m
             - --max-batch=32
           resources:
             requests:
