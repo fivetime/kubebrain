@@ -205,6 +205,7 @@ func (s *RPCServer) RangeStream(r *etcdserverpb.RangeRequest, rs etcdserverpb.KV
 		chunks       int
 		sentCount    int64
 		totalCount   int64
+		dataRevision uint64
 	)
 	for chunk := range ch {
 		if chunk.err != nil {
@@ -214,6 +215,9 @@ func (s *RPCServer) RangeStream(r *etcdserverpb.RangeRequest, rs etcdserverpb.KV
 			return status.Error(codes.Unavailable, chunk.err.Error())
 		}
 		headerRev = chunk.resp.Header.Revision
+		if dataRevision == 0 {
+			dataRevision = uint64(headerRev)
+		}
 		terminal := len(chunk.resp.Kvs) == 0
 		if terminal {
 			terminalSeen = true
@@ -249,6 +253,23 @@ func (s *RPCServer) RangeStream(r *etcdserverpb.RangeRequest, rs etcdserverpb.KV
 			}
 		}
 		for _, response := range splitRangeStreamResponse(chunk.resp, int(s.maxRequestBytes), terminal) {
+			// etcd executes a revisioned Range for every chunk. If compaction
+			// advances past the pinned snapshot after a partial response, the
+			// next chunk must terminate with ErrCompacted; completing the stream
+			// would make already-compacted history appear valid. Check each wire
+			// chunk, not just each backend batch, because one batch can split
+			// into several gRPC messages.
+			if chunks > 0 {
+				compactRevision, compactErr := s.backend.GetCompactRevisionFresh(ctx)
+				if compactErr != nil {
+					s.metricCli.EmitCounter("read.range_stream.err", 1)
+					return rangeStreamStatusErr(compactErr)
+				}
+				if compactRevision > dataRevision {
+					s.metricCli.EmitCounter("read.range_stream.err", 1)
+					return compactedRevisionError()
+				}
+			}
 			if err := rs.Send(response); err != nil {
 				s.metricCli.EmitCounter("read.range_stream.send_err", 1)
 				return err

@@ -4275,6 +4275,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   scanner 数据继续固定在请求 revision。直接 handler 测试逐字段比较 point/empty stream
   与 unary，并固定历史旧值 + 当前 header 的组合；双端测试同时保留 limit Count/More 和
   from-key 顺序，防止修复退化已有流式语义。
+- **KV A245 RangeStream partial-compaction fencing（2026-07-19）**：继续对照
+  `/root/etcd/tests/integration/v3_grpc_test.go::TestV3RangeStreamPartialThenCompacted`。
+  KubeBrain scanner 原只在启动快照前检查一次 compact watermark；首块已发送后若另一请求
+  把 compaction 推过固定快照，TiKV MVCC 仍可让已打开的历史快照读完，因此流错误以 OK
+  结束。etcd 每块重新执行 revisioned Range，下一块会返回
+  `OutOfRange/mvcc: required revision has been compacted`，使客户端丢弃已收到的部分结果。
+
+  RangeStream 现从首个 backend chunk 固定 data revision，并在首块之后每个 gRPC wire
+  chunk 发送前读取 fresh compact watermark；watermark 越过 data revision 立即以标准
+  compacted status 终止。检查位于 wire split 内而非仅 backend batch 边界，因为一个
+  1.5MiB scanner batch 仍可能按公开消息上限拆成多块。可控 Send 屏障单测稳定复现
+  “首块→推进 revision→physical compact→继续发送”的旧 OK 结果并固定新错误。
+  双端 live 测试只接受显式 disposable `KUBEBRAIN_COMPACTION_ENDPOINT`，拒绝共享主
+  endpoint；真实验证使用独立 `--keyspace=a245-compact`，不推进生产实例 watermark。
 
 ### P1：通用服务能力
 

@@ -43,6 +43,21 @@ type fakeRangeStreamServer struct {
 	sent []*etcdserverpb.RangeStreamResponse
 }
 
+type blockingRangeStreamServer struct {
+	fakeRangeStreamServer
+	firstSent chan struct{}
+	release   chan struct{}
+}
+
+func (s *blockingRangeStreamServer) Send(resp *etcdserverpb.RangeStreamResponse) error {
+	s.sent = append(s.sent, resp)
+	if len(s.sent) == 1 {
+		close(s.firstSent)
+		<-s.release
+	}
+	return nil
+}
+
 type listCountingBackendShim struct {
 	BackendShim
 	listCalls int
@@ -482,6 +497,47 @@ func TestRangeStreamRejectsPrematureBackendClose(t *testing.T) {
 	require.Equal(t, "range stream ended without terminal metadata", status.Convert(err).Message())
 	require.Len(t, stream.sent, 1,
 		"the partial chunk may already be on the wire, but the terminal status must invalidate it")
+}
+
+func TestRangeStreamPartialThenCompacted(t *testing.T) {
+	server, cleanup := newRangeStreamTestServer(t)
+	defer cleanup()
+	server.SetRequestLimits(defaultMaxTxnOps, 256)
+	ctx := context.Background()
+	for i := 0; i < 20; i++ {
+		_, err := server.Put(ctx, &etcdserverpb.PutRequest{
+			Key:   []byte(fmt.Sprintf("/partial-compact/%02d", i)),
+			Value: []byte(fmt.Sprintf("value-%02d-%090d", i, i)),
+		})
+		require.NoError(t, err)
+	}
+
+	stream := &blockingRangeStreamServer{
+		fakeRangeStreamServer: fakeRangeStreamServer{ctx: ctx},
+		firstSent:             make(chan struct{}),
+		release:               make(chan struct{}),
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- server.RangeStream(&etcdserverpb.RangeRequest{
+			Key: []byte("/partial-compact/"), RangeEnd: []byte("/partial-compact0"),
+		}, stream)
+	}()
+	<-stream.firstSent
+	advance, err := server.Put(ctx, &etcdserverpb.PutRequest{
+		Key: []byte("/zz-partial-compact-advance"), Value: []byte("value"),
+	})
+	require.NoError(t, err)
+	_, err = server.Compact(ctx, &etcdserverpb.CompactionRequest{
+		Revision: advance.Header.Revision, Physical: true,
+	})
+	require.NoError(t, err)
+	close(stream.release)
+
+	err = <-done
+	require.Equal(t, codes.OutOfRange, status.Code(err))
+	require.ErrorContains(t, err, "required revision has been compacted")
+	require.NotEmpty(t, stream.sent[0].RangeResponse.Kvs)
 }
 
 // TestWatchNegativeStartRevisionCanceledInStream pins the black-magic retirement: a
