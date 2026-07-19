@@ -4086,6 +4086,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   race 历史约 8.0 秒通过，故障窗口记录 9 个可表达的不确定结果，Put/Get/KeepAlive/
   Revoke 整体仍可线性化。全仓 test/vet 通过。无 leader + `WithRequireLeader` 的
   `ErrGRPCNoLeader` 已由 A121 stream interceptor 覆盖，本轮不重复改变该契约。
+- **Production A237 commit-exact KeepAlive timeout artifact（2026-07-19）**：
+  A236 候选镜像包含 KeepAlive timeout 修复，但 OCI revision 仍指向构建前的 A235
+  提交，且构建上下文包含用户未提交的 `go.mod`；该产物无法由 revision 精确重建，
+  不满足 A206 已确立的生产 provenance 门禁。
+
+  本轮先提交发布记录，再仅从最终提交的 `git archive HEAD` 构建
+  `kubebrain:a237-provenance-exact`。构建前验证归档内 `go.mod` 与 Git blob 完全一致，
+  且不携带工作区改动；构建后同时验证 OCI revision 和二进制 `version` 的 Git SHA
+  等于同一完整提交 ID。精确镜像顺序滚动 3 个 KubeBrain Pod 后全部 Ready、零重启，
+  endpoint proposal 健康；再次删除真实 leader 执行 race Porcupine lease lifecycle
+  历史，覆盖 Put/Get/KeepAlive/Revoke 的故障窗口并保持可线性化。A236 的代理包
+  普通/race 重复测试与全仓 test/vet 结果继续作为该精确源码归档的构建前质量证据。
 - **Operations A185 certificate rotation completion state（2026-07-18）**：新增
   `hack/production/validate-certificate-rotation.sh`，把 client/peer CA rollover
   收敛为 `begin -> overlap -> complete` 三阶段门禁。begin 固定全部 KubeBrain Pod
