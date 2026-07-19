@@ -35,6 +35,8 @@ func TestQueueLifecycleAndExpiredLeaseFencing(t *testing.T) {
 	claimA, err := queue.Claim(ctx, "worker-a", "PostRestoreAudit", 30*time.Second)
 	require.NoError(t, err)
 	require.Equal(t, int64(1), claimA.Attempt)
+	require.Equal(t, "tenant-a", claimA.Tenant)
+	require.Equal(t, "user-123", claimA.RequestedBy)
 	require.Equal(t, int64(1_030), claimA.LeaseUntilUnix)
 
 	now = now.Add(10 * time.Second)
@@ -82,6 +84,19 @@ func TestQueueRejectsSpecDriftAndInvalidCompletion(t *testing.T) {
 	drift.ParametersSHA256 = strings.Repeat("f", 64)
 	_, err = queue.Submit(ctx, "backup-1", drift)
 	require.ErrorContains(t, err, "different immutable spec")
+	tenantDrift := spec
+	tenantDrift.Tenant = "tenant-b"
+	_, err = queue.Submit(ctx, "backup-1", tenantDrift)
+	require.ErrorContains(t, err, "different immutable spec")
+	requesterDrift := spec
+	requesterDrift.RequestedBy = "user-456"
+	_, err = queue.Submit(ctx, "backup-1", requesterDrift)
+	require.ErrorContains(t, err, "different immutable spec")
+
+	invalidTenant := spec
+	invalidTenant.Tenant = "Invalid_Tenant"
+	_, err = queue.Submit(ctx, "invalid-tenant", invalidTenant)
+	require.ErrorContains(t, err, "invalid operation tenant")
 
 	claim, err := queue.Claim(ctx, "worker-a", "", time.Minute)
 	require.NoError(t, err)
@@ -354,7 +369,8 @@ func setOperationStatus(
 
 func validSpec() Spec {
 	return Spec{
-		OperationID: "operation-1", Instance: "instance-a", Type: "PostRestoreAudit",
+		OperationID: "operation-1", Tenant: "tenant-a", RequestedBy: "user-123",
+		Instance: "instance-a", Type: "PostRestoreAudit",
 		ParametersSHA256: strings.Repeat("a", 64), MaxAttempts: 3,
 	}
 }

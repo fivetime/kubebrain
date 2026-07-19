@@ -48,6 +48,8 @@ var (
 
 type Spec struct {
 	OperationID      string
+	Tenant           string
+	RequestedBy      string
 	Instance         string
 	Type             string
 	ParametersSHA256 string
@@ -61,6 +63,8 @@ type Claim struct {
 	UID              string `json:"uid"`
 	ResourceVersion  string `json:"resource_version"`
 	OperationID      string `json:"operation_id"`
+	Tenant           string `json:"tenant,omitempty"`
+	RequestedBy      string `json:"requested_by,omitempty"`
 	Instance         string `json:"instance"`
 	Type             string `json:"type"`
 	ParametersSHA256 string `json:"parameters_sha256"`
@@ -100,6 +104,14 @@ func (q *Queue) Submit(ctx context.Context, name string, spec Spec) (*unstructur
 		len(spec.ParametersSHA256) != 64 || spec.MaxAttempts <= 0 {
 		return nil, errors.New("operation spec is incomplete")
 	}
+	if spec.Tenant != "" {
+		if errs := validation.IsDNS1123Label(spec.Tenant); len(errs) > 0 {
+			return nil, fmt.Errorf("invalid operation tenant: %s", errs[0])
+		}
+	}
+	if len(spec.RequestedBy) > 253 {
+		return nil, errors.New("operation requester exceeds 253 characters")
+	}
 	if (spec.ParametersSecret == "") != (spec.ParametersKey == "") {
 		return nil, errors.New("parameter secret name and key must be specified together")
 	}
@@ -109,6 +121,12 @@ func (q *Queue) Submit(ctx context.Context, name string, spec Spec) (*unstructur
 		"type":             spec.Type,
 		"parametersSHA256": spec.ParametersSHA256,
 		"maxAttempts":      spec.MaxAttempts,
+	}
+	if spec.Tenant != "" {
+		specObject["tenant"] = spec.Tenant
+	}
+	if spec.RequestedBy != "" {
+		specObject["requestedBy"] = spec.RequestedBy
 	}
 	if spec.ParametersSecret != "" {
 		specObject["parametersSecretRef"] = map[string]any{
@@ -499,6 +517,8 @@ func (q *Queue) requireWorker(object *unstructured.Unstructured, owner string, a
 
 func claimFrom(object *unstructured.Unstructured) (*Claim, error) {
 	operationID, _, _ := unstructured.NestedString(object.Object, "spec", "operationID")
+	tenant, _, _ := unstructured.NestedString(object.Object, "spec", "tenant")
+	requestedBy, _, _ := unstructured.NestedString(object.Object, "spec", "requestedBy")
 	instance, _, _ := unstructured.NestedString(object.Object, "spec", "instance")
 	operationType, _, _ := unstructured.NestedString(object.Object, "spec", "type")
 	digest, _, _ := unstructured.NestedString(object.Object, "spec", "parametersSHA256")
@@ -512,7 +532,8 @@ func claimFrom(object *unstructured.Unstructured) (*Claim, error) {
 	}
 	return &Claim{
 		Name: object.GetName(), UID: string(object.GetUID()), ResourceVersion: object.GetResourceVersion(),
-		OperationID: operationID, Instance: instance, Type: operationType,
+		OperationID: operationID, Tenant: tenant, RequestedBy: requestedBy,
+		Instance: instance, Type: operationType,
 		ParametersSHA256: digest, ParametersSecret: secret, ParametersKey: key,
 		Owner: owner, Attempt: attempt, LeaseUntilUnix: leaseUntil,
 	}, nil
@@ -520,13 +541,16 @@ func claimFrom(object *unstructured.Unstructured) (*Claim, error) {
 
 func specMatches(object *unstructured.Unstructured, spec Spec) bool {
 	operationID, _, _ := unstructured.NestedString(object.Object, "spec", "operationID")
+	tenant, _, _ := unstructured.NestedString(object.Object, "spec", "tenant")
+	requestedBy, _, _ := unstructured.NestedString(object.Object, "spec", "requestedBy")
 	instance, _, _ := unstructured.NestedString(object.Object, "spec", "instance")
 	operationType, _, _ := unstructured.NestedString(object.Object, "spec", "type")
 	digest, _, _ := unstructured.NestedString(object.Object, "spec", "parametersSHA256")
 	maxAttempts, _, _ := unstructured.NestedInt64(object.Object, "spec", "maxAttempts")
 	secret, _, _ := unstructured.NestedString(object.Object, "spec", "parametersSecretRef", "name")
 	key, _, _ := unstructured.NestedString(object.Object, "spec", "parametersSecretRef", "key")
-	return operationID == spec.OperationID && instance == spec.Instance &&
+	return operationID == spec.OperationID && tenant == spec.Tenant &&
+		requestedBy == spec.RequestedBy && instance == spec.Instance &&
 		operationType == spec.Type && digest == spec.ParametersSHA256 &&
 		maxAttempts == spec.MaxAttempts && secret == spec.ParametersSecret &&
 		key == spec.ParametersKey

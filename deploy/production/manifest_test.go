@@ -149,6 +149,19 @@ func TestOperationCRDAndWorkerRBACFencePersistentTasks(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, found)
 	require.Contains(t, operationTypes, "BackupDeletion")
+	tenantType := nestedString(
+		t, version, "schema", "openAPIV3Schema", "properties", "spec",
+		"properties", "tenant", "type",
+	)
+	require.Equal(t, "string", tenantType)
+	require.EqualValues(t, 63, nestedInt64(
+		t, version, "schema", "openAPIV3Schema", "properties", "spec",
+		"properties", "tenant", "maxLength",
+	))
+	require.EqualValues(t, 253, nestedInt64(
+		t, version, "schema", "openAPIV3Schema", "properties", "spec",
+		"properties", "requestedBy", "maxLength",
+	))
 	_, found, err = unstructured.NestedMap(version.Object, "subresources", "status")
 	require.NoError(t, err)
 	require.True(t, found)
@@ -174,6 +187,32 @@ func TestOperationCRDAndWorkerRBACFencePersistentTasks(t *testing.T) {
 	require.Equal(t, []any{"create", "get", "update", "delete"}, rules[2].(map[string]any)["verbs"].([]any))
 	require.Equal(t, []any{"secrets"}, rules[3].(map[string]any)["resources"].([]any))
 	require.Equal(t, []any{"get"}, rules[3].(map[string]any)["verbs"].([]any))
+}
+
+func TestOperationAPIIsFailClosedAndHardened(t *testing.T) {
+	objects := decodeManifest(t, "kubebrain-operation-api.yaml")
+	deployment := objectByKindAndName(t, objects, "Deployment", "kubebrain-operation-api")
+	require.EqualValues(t, 0, nestedInt64(t, deployment, "spec", "replicas"))
+	require.EqualValues(t, 0, nestedInt64(t, deployment, "spec", "strategy", "rollingUpdate", "maxUnavailable"))
+	require.EqualValues(t, 1, nestedInt64(t, deployment, "spec", "strategy", "rollingUpdate", "maxSurge"))
+	require.True(t, nestedBool(t, deployment, "spec", "template", "spec", "automountServiceAccountToken"))
+	require.True(t, nestedBool(t, deployment, "spec", "template", "spec", "securityContext", "runAsNonRoot"))
+	containers, found, err := unstructured.NestedSlice(deployment.Object, "spec", "template", "spec", "containers")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Len(t, containers, 1)
+	container := &unstructured.Unstructured{Object: containers[0].(map[string]any)}
+	command, found, err := unstructured.NestedStringSlice(container.Object, "command")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, []string{"/usr/local/bin/kubebrain-operation-api"}, command)
+	require.True(t, nestedBool(t, container, "securityContext", "readOnlyRootFilesystem"))
+	require.False(t, nestedBool(t, container, "securityContext", "allowPrivilegeEscalation"))
+	require.Equal(t, "/healthz", nestedString(t, container, "readinessProbe", "httpGet", "path"))
+	require.Equal(t, "HTTPS", nestedString(t, container, "readinessProbe", "httpGet", "scheme"))
+
+	pdb := objectByKindAndName(t, objects, "PodDisruptionBudget", "kubebrain-operation-api")
+	require.EqualValues(t, 1, nestedInt64(t, pdb, "spec", "minAvailable"))
 }
 
 func TestBackupSchedulerIsHAAndLeastPrivilege(t *testing.T) {

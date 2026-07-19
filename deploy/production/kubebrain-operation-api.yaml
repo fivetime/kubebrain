@@ -1,0 +1,178 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kubebrain-operation-api
+  namespace: kubebrain-operations
+  labels:
+    app.kubernetes.io/name: kubebrain-operation-api
+    app.kubernetes.io/part-of: kubebrain
+automountServiceAccountToken: true
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kubebrain-operation-api
+  namespace: kubebrain-operations
+  labels:
+    app.kubernetes.io/name: kubebrain-operation-api
+    app.kubernetes.io/part-of: kubebrain
+rules:
+  - apiGroups:
+      - dbaas.kubebrain.io
+    resources:
+      - kubebrainoperations
+    verbs:
+      - create
+      - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kubebrain-operation-api
+  namespace: kubebrain-operations
+  labels:
+    app.kubernetes.io/name: kubebrain-operation-api
+    app.kubernetes.io/part-of: kubebrain
+subjects:
+  - kind: ServiceAccount
+    name: kubebrain-operation-api
+    namespace: kubebrain-operations
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: kubebrain-operation-api
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kubebrain-operation-api
+  namespace: kubebrain-operations
+  labels:
+    app.kubernetes.io/name: kubebrain-operation-api
+    app.kubernetes.io/part-of: kubebrain
+spec:
+  selector:
+    app.kubernetes.io/name: kubebrain-operation-api
+  ports:
+    - name: https
+      port: 443
+      targetPort: https
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kubebrain-operation-api
+  namespace: kubebrain-operations
+  labels:
+    app.kubernetes.io/name: kubebrain-operation-api
+    app.kubernetes.io/part-of: kubebrain
+spec:
+  # Fail closed until the OIDC and TLS Secrets described below are provisioned.
+  replicas: 0
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kubebrain-operation-api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kubebrain-operation-api
+        app.kubernetes.io/part-of: kubebrain
+    spec:
+      serviceAccountName: kubebrain-operation-api
+      automountServiceAccountToken: true
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: kubebrain-operation-api
+      containers:
+        - name: api
+          image: kubebrain:dev
+          imagePullPolicy: IfNotPresent
+          command:
+            - /usr/local/bin/kubebrain-operation-api
+          args:
+            - --listen-address=:8443
+            - --namespace=kubebrain-operations
+            - --oidc-issuer=$(OIDC_ISSUER)
+            - --oidc-audience=$(OIDC_AUDIENCE)
+            - --tls-cert-file=/var/run/kubebrain-api-tls/tls.crt
+            - --tls-key-file=/var/run/kubebrain-api-tls/tls.key
+          env:
+            - name: OIDC_ISSUER
+              valueFrom:
+                secretKeyRef:
+                  name: kubebrain-operation-api-oidc
+                  key: issuer
+            - name: OIDC_AUDIENCE
+              valueFrom:
+                secretKeyRef:
+                  name: kubebrain-operation-api-oidc
+                  key: audience
+          ports:
+            - name: https
+              containerPort: 8443
+          readinessProbe:
+            httpGet:
+              scheme: HTTPS
+              path: /healthz
+              port: https
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              scheme: HTTPS
+              path: /healthz
+              port: https
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: "1"
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: tls
+              mountPath: /var/run/kubebrain-api-tls
+              readOnly: true
+      volumes:
+        - name: tls
+          secret:
+            secretName: kubebrain-operation-api-tls
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: kubebrain-operation-api
+  namespace: kubebrain-operations
+  labels:
+    app.kubernetes.io/name: kubebrain-operation-api
+    app.kubernetes.io/part-of: kubebrain
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kubebrain-operation-api

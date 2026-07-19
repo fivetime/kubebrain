@@ -19,7 +19,7 @@ import (
 )
 
 func main() {
-	var action, namespace, name, operationID, instance, operationType, parametersSHA string
+	var action, namespace, name, operationID, tenant, requestedBy, instance, operationType, parametersSHA string
 	var parametersSecret, parametersKey string
 	var owner, receiptSHA, message, approvalID, approvedBy, kubeconfig, contextName string
 	var maxAttempts, attempt int64
@@ -28,6 +28,8 @@ func main() {
 	flag.StringVar(&namespace, "namespace", "kubebrain-system", "operation namespace")
 	flag.StringVar(&name, "name", "", "operation resource name")
 	flag.StringVar(&operationID, "operation-id", "", "stable external operation ID")
+	flag.StringVar(&tenant, "tenant", "", "tenant ID recorded in the immutable operation spec")
+	flag.StringVar(&requestedBy, "requested-by", "", "requester identity recorded in the immutable operation spec")
 	flag.StringVar(&instance, "instance", "", "instance ID")
 	flag.StringVar(&operationType, "type", "", "operation type or claim filter")
 	flag.StringVar(&parametersSHA, "parameters-sha256", "", "immutable parameters digest")
@@ -63,7 +65,8 @@ func main() {
 	switch action {
 	case "submit":
 		output, err = queue.Submit(ctx, name, operationqueue.Spec{
-			OperationID: operationID, Instance: instance, Type: operationType,
+			OperationID: operationID, Tenant: tenant, RequestedBy: requestedBy,
+			Instance: instance, Type: operationType,
 			ParametersSHA256: parametersSHA, ParametersSecret: parametersSecret,
 			ParametersKey: parametersKey, MaxAttempts: maxAttempts,
 		})

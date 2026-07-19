@@ -814,8 +814,9 @@ lease 限制残留时间。跨样本 revision 必须单调不降，持续时间�
 
 生产管理集群先安装 `deploy/production/kubebrain-operation-crd.yaml`，operation worker
 使用 `deploy/production/kubebrain-operation-worker-rbac.yaml`。namespaced
-`KubeBrainOperation.dbaas.kubebrain.io/v1alpha1` spec 包含稳定 operation ID、instance、
-操作类型、完整参数文件 SHA-256 和 maxAttempts，并由 CEL 保证创建后不可变。当前类型
+`KubeBrainOperation.dbaas.kubebrain.io/v1alpha1` spec 包含稳定 operation ID、可选
+tenant/requestedBy、instance、操作类型、完整参数文件 SHA-256 和 maxAttempts，并由
+CEL 保证创建后不可变。当前类型
 覆盖 Backup、RestoreCutover、PostRestoreAudit、CertificateRotation 和 Destroy。
 
 `hack/production/cmd/operationctl` 提供 submit、claim、heartbeat、retry、succeed、fail
@@ -831,6 +832,33 @@ delete 或修改 spec；submit 权限只应授予管理面 API 身份。成功�
 receipt 的 SHA-256。`hack/production/run-post-restore-audit-operation.sh` 已把 A190 接入：
 只 claim PostRestoreAudit，核对参数 JSON 摘要，在子审计运行期间续租；heartbeat 失败会
 终止本地进程，审计失败 requeue，成功才将 receipt 摘要写入 Succeeded。
+
+外部提交入口使用 `deploy/production/kubebrain-operation-api.yaml`。Deployment 默认
+`replicas: 0`，必须先创建 `kubebrain-operation-api-oidc` Secret（`issuer`、`audience`）
+和 `kubebrain-operation-api-tls` TLS Secret，再扩容。API 只提供
+`POST /v1/operations`、`GET /v1/operations/{name}` 和不含依赖状态的 `/healthz`；
+必须通过 HTTPS。OIDC token 必须使用 RS256，包含匹配的 issuer/audience、有效 exp、
+sub、DNS label 格式 tenant 及字符串数组 `kubebrain_instances`。tenant 必须与请求一致，
+instance 必须在数组中（受信任的控制面 token 可显式使用 `*`）。提交时 sub 固化为
+immutable `requestedBy`，tenant 同样进入 spec、worker claim 和终态审计 artifact。
+参数 Secret 只能引用受信控制面预置的 `params-<tenant>-*` 对象，且 key 固定为
+`parameters.json`；API ServiceAccount 不具备 Secret 读取或写入权限。
+跨租户或未授权实例的 submit/get 统一返回 404，避免实例和 operation 枚举。
+
+验证器通过 OIDC discovery 获取 JWKS，未知 kid 会触发刷新；缓存过期且刷新失败时拒绝
+token，不继续信任可能已撤下的旧 key。除 loopback 测试外 issuer/JWKS 必须使用 HTTPS。
+API ServiceAccount 仅有 namespaced operation `create/get`，没有 list/watch、status、
+Secret、Lease、update 或 delete 权限。启用示例：
+
+```shell
+kubectl -n kubebrain-operations create secret generic kubebrain-operation-api-oidc \
+  --from-literal=issuer=https://idp.example.com \
+  --from-literal=audience=kubebrain-operation-api
+kubectl -n kubebrain-operations create secret tls kubebrain-operation-api-tls \
+  --cert=/path/to/tls.crt --key=/path/to/tls.key
+kubectl apply -f deploy/production/kubebrain-operation-api.yaml
+kubectl -n kubebrain-operations scale deployment/kubebrain-operation-api --replicas=2
+```
 
 `hack/production/run-backup-operation.sh` 接入受保护 Backup。参数文件固定 endpoint、
 prefix、operation 专属 artifact/receipt 路径、分页大小、Object Store ID、bucket/object

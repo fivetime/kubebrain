@@ -89,6 +89,34 @@ func TestOperationSubmitterRBACIsNamespacedAndCannotMutateStatus(t *testing.T) {
 	require.Equal(t, rbacParty{Kind: "Role", Name: "kubebrain-operation-submitter"}, binding.RoleRef)
 }
 
+func TestOperationAPIRBACCanOnlySubmitAndReadOperations(t *testing.T) {
+	path := filepath.Join("..", "..", "deploy", "production", "kubebrain-operation-api.yaml")
+	documents := decodeRBACManifest(t, path)
+	require.Len(t, documents, 6)
+
+	serviceAccount := documents[0]
+	require.Equal(t, "ServiceAccount", serviceAccount.Kind)
+	require.Equal(t, "kubebrain-operation-api", serviceAccount.Metadata.Name)
+	require.Equal(t, "kubebrain-operations", serviceAccount.Metadata.Namespace)
+	require.NotNil(t, serviceAccount.Automount)
+	require.True(t, *serviceAccount.Automount)
+
+	role := documents[1]
+	require.Equal(t, "Role", role.Kind)
+	require.Equal(t, []rbacRule{{
+		APIGroups: []string{"dbaas.kubebrain.io"},
+		Resources: []string{"kubebrainoperations"},
+		Verbs:     []string{"create", "get"},
+	}}, role.Rules)
+
+	binding := documents[2]
+	require.Equal(t, rbacParty{
+		Kind: "ServiceAccount", Name: "kubebrain-operation-api",
+		Namespace: "kubebrain-operations",
+	}, binding.Subjects[0])
+	require.Equal(t, rbacParty{Kind: "Role", Name: "kubebrain-operation-api"}, binding.RoleRef)
+}
+
 func TestOperationApproverRBACCanOnlyApproveExistingOperations(t *testing.T) {
 	path := filepath.Join("..", "..", "deploy", "production", "kubebrain-operation-approver-rbac.yaml")
 	documents := decodeRBACManifest(t, path)

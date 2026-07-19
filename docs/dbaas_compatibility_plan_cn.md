@@ -4475,6 +4475,26 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   limit、12 个 revision filter 与 4 个 payload mode，共 5,760 个双端请求形状，
   完整结果一致。根模块全量、真实三副本 client/v3 兼容模块全量及两处 vet 均通过；
   参考 etcd、端口和临时目录均已清理。
+- **Operations A259 OIDC tenant-authorized submission API（2026-07-19）**：
+  持久 operation queue 原只有 Kubernetes 原生提交身份，外部调用者无法安全映射到
+  tenant/instance，终态 artifact 也无法证明请求者。Operation spec 现增加可选但不可变的
+  `tenant` 与 `requestedBy`，幂等 Submit 将两者纳入精确 spec 比较；worker Claim 和
+  Object Lock 终态审计 artifact 保留相同字段。内部 scheduler/CLI 的空值保持向后兼容，
+  新外部 API 强制两者完整。
+
+  新增 TLS-only `kubebrain-operation-api`：OIDC discovery/JWKS 验证强制 RS256、kid、
+  issuer、audience、exp、sub、DNS tenant 和显式 instance claim；未知 kid 刷新 JWKS，
+  缓存过期且刷新失败时 fail closed，非 loopback issuer/JWKS 禁止明文 HTTP。POST submit
+  与 GET operation 都要求 token tenant 和 instance 授权，越权统一 404 防枚举；请求体
+  限 64 KiB、拒绝未知 JSON 字段，响应不暴露参数 Secret 引用；参数引用仅允许
+  `params-<tenant>-*` / `parameters.json`。ServiceAccount 仅拥有 namespaced operation
+  create/get，不能 list、watch、读取 Secret、修改 status 或删除。
+  Deployment 在 OIDC/TLS Secret 配置前保持 replicas=0 fail closed。
+
+  OIDC key rotation、错误 audience/tenant/claim、过期缓存刷新失败、跨租户/实例访问、
+  严格 body 和响应脱敏均有确定性测试；operation API/queue/audit race 连续 10 轮、
+  production 包全量、manifest 单测和 Kubernetes server dry-run 均通过。管理 API 的
+  多副本 HA、外部 IdP 故障 soak、全局 tenant inventory 与跨 namespace/region 调度仍是 P1。
 
 ### P1：通用服务能力
 
@@ -4495,8 +4515,8 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
    Kubernetes 原生提交者与 worker 最小权限身份已分离，单 namespace 跨实例公平调度和
    实例互斥、终态
    operation 的 Object Lock 不可变归档及 finalizer/删除门禁均已完成；继续补外部管理
-   API 的 OIDC/租户授权、跨 bucket/account 汇总、跨 namespace/region
-   全局调度和管理面 HA soak。
+   API 的 OIDC/tenant/instance 授权入口已完成；继续补跨 bucket/account 汇总、
+   跨 namespace/region 全局调度和管理面/外部 IdP HA soak。
 4. 建立实例级限额和计量：请求字节、txn 操作数、跨连接 client RPC 总并发、client
    请求 QPS/burst、逻辑 Watch 总数、CPU/内存饱和、网络错误/丢包及 PD/TiKV PVC 容量
    告警已具备稳定错误或指标，网络 RX/TX 原始计量和逻辑备份 artifact 容量/新鲜度

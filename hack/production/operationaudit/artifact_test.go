@@ -80,7 +80,8 @@ func terminalArtifact() Artifact {
 	return Artifact{
 		Format: Format, APIVersion: "dbaas.kubebrain.io/v1alpha1",
 		Namespace: "operations", Name: "backup-1", UID: "uid-1", Generation: 1,
-		OperationID: "backup-1", Instance: "instance-a", Type: "Backup",
+		OperationID: "backup-1", Tenant: "tenant-a", RequestedBy: "user-123",
+		Instance: "instance-a", Type: "Backup",
 		ParametersSHA256: strings.Repeat("a", 64), MaxAttempts: 3,
 		Phase: "Succeeded", Owner: "worker-a", Attempt: 1, ObservedGeneration: 1,
 		StartedAtUnix: 100, StartedAtUnixNano: 100_000_000_001, CompletedAtUnix: 101,

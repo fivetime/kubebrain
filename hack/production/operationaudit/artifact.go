@@ -34,6 +34,8 @@ type Artifact struct {
 	UID                string `json:"uid"`
 	Generation         int64  `json:"generation"`
 	OperationID        string `json:"operation_id"`
+	Tenant             string `json:"tenant,omitempty"`
+	RequestedBy        string `json:"requested_by,omitempty"`
 	Instance           string `json:"instance"`
 	Type               string `json:"type"`
 	ApprovedBy         string `json:"approved_by,omitempty"`

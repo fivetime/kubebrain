@@ -18,7 +18,8 @@ func TestFromOperationBindsImmutableSpecAndTerminalStatus(t *testing.T) {
 			"uid": "uid-1", "generation": int64(1),
 		},
 		"spec": map[string]any{
-			"operationID": "backup-1", "instance": "instance-a", "type": "Backup",
+			"operationID": "backup-1", "tenant": "tenant-a", "requestedBy": "user-123",
+			"instance": "instance-a", "type": "Backup",
 			"parametersSHA256": strings.Repeat("a", 64), "maxAttempts": int64(3),
 		},
 		"status": map[string]any{
@@ -31,6 +32,8 @@ func TestFromOperationBindsImmutableSpecAndTerminalStatus(t *testing.T) {
 	artifact, err := FromOperation(object)
 	require.NoError(t, err)
 	require.Equal(t, "uid-1", artifact.UID)
+	require.Equal(t, "tenant-a", artifact.Tenant)
+	require.Equal(t, "user-123", artifact.RequestedBy)
 	require.Equal(t, strings.Repeat("a", 64), artifact.ParametersSHA256)
 	require.Equal(t, strings.Repeat("b", 64), artifact.ReceiptSHA256)
 
