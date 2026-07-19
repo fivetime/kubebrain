@@ -36,6 +36,19 @@ func TestPostRestoreAuditOperationRejectsParameterDrift(t *testing.T) {
 	require.Contains(t, f.log(t), "--action retry")
 }
 
+func TestPostRestoreAuditOperationLoadsManagedParameters(t *testing.T) {
+	f := newOperationRunnerFixture(t)
+	env := make([]string, 0, len(f.env))
+	for _, value := range f.env {
+		if !strings.HasPrefix(value, "PARAMETERS_INPUT=") {
+			env = append(env, value)
+		}
+	}
+	f.env = env
+	f.run(t, true, "")
+	require.Contains(t, f.log(t), "--action parameters")
+}
+
 type operationRunnerFixture struct {
 	dir, parameters string
 	env             []string
@@ -65,6 +78,8 @@ printf '%s\n' "$*" >>"$FAKE_DIR/operationctl.log"
 if [[ " $* " == *" --action claim "* ]]; then
   digest="${CLAIM_DIGEST:-$PARAMETERS_DIGEST}"
   printf '{"name":"audit-1","uid":"uid-op","resource_version":"1","operation_id":"audit-1","instance":"instance-a","type":"PostRestoreAudit","parameters_sha256":"%s","owner":"worker-a","attempt":1,"lease_until_unix":999999}\n' "$digest"
+elif [[ " $* " == *" --action parameters "* ]]; then
+  cat "$MANAGED_PARAMETERS"
 else
   echo '{}'
 fi
@@ -83,6 +98,7 @@ chmod 600 "$RECEIPT_OUTPUT"
 			"OPERATION_NAMESPACE=ops", "LEASE_SECONDS=6",
 			"OPERATIONCTL=" + operationctl, "AUDIT_COMMAND=" + audit,
 			"FAKE_DIR=" + dir, "PARAMETERS_DIGEST=" + digest,
+			"MANAGED_PARAMETERS=" + parameters,
 		},
 	}
 }

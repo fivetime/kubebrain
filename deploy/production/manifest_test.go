@@ -224,6 +224,97 @@ func TestOperationArchiverIsFailClosedAndHardened(t *testing.T) {
 	require.EqualValues(t, 1, nestedInt64(t, pdb, "spec", "maxUnavailable"))
 }
 
+func TestOperationExecutorsAreTypeIsolatedFailClosedTemplates(t *testing.T) {
+	objects := decodeManifest(t, "kubebrain-operation-executors.yaml")
+	expected := map[string]struct {
+		script string
+		secret string
+		claim  string
+	}{
+		"kubebrain-backup-executor": {
+			"run-backup-operation.sh", "kubebrain-backup-executor-env",
+			"kubebrain-backup-executor-workspace",
+		},
+		"kubebrain-backup-deletion-executor": {
+			"run-backup-deletion-operation.sh", "kubebrain-backup-deletion-executor-env",
+			"kubebrain-backup-deletion-executor-workspace",
+		},
+		"kubebrain-restore-cutover-executor": {
+			"run-restore-cutover-operation.sh", "kubebrain-restore-cutover-executor-env",
+			"kubebrain-restore-cutover-executor-workspace",
+		},
+		"kubebrain-post-restore-audit-executor": {
+			"run-post-restore-audit-operation.sh", "kubebrain-post-restore-audit-executor-env",
+			"kubebrain-post-restore-audit-executor-workspace",
+		},
+		"kubebrain-certificate-rotation-executor": {
+			"run-certificate-rotation-operation.sh", "kubebrain-certificate-rotation-executor-env",
+			"kubebrain-certificate-rotation-executor-workspace",
+		},
+		"kubebrain-destroy-executor": {
+			"run-destroy-operation.sh", "kubebrain-destroy-executor-env",
+			"kubebrain-destroy-executor-workspace",
+		},
+	}
+	require.Len(t, objects, len(expected))
+	for name, want := range expected {
+		deployment := objectByKindAndName(t, objects, "Deployment", name)
+		require.EqualValues(t, 0, nestedInt64(t, deployment, "spec", "replicas"))
+		require.EqualValues(t, 0, nestedInt64(t, deployment, "spec", "strategy", "rollingUpdate", "maxUnavailable"))
+		require.EqualValues(t, 1, nestedInt64(t, deployment, "spec", "strategy", "rollingUpdate", "maxSurge"))
+		require.Equal(t, "kubebrain-operation-worker",
+			nestedString(t, deployment, "spec", "template", "spec", "serviceAccountName"))
+		require.True(t, nestedBool(t, deployment, "spec", "template", "spec", "automountServiceAccountToken"))
+		require.True(t, nestedBool(t, deployment, "spec", "template", "spec", "securityContext", "runAsNonRoot"))
+		spread, found, err := unstructured.NestedSlice(
+			deployment.Object, "spec", "template", "spec", "topologySpreadConstraints",
+		)
+		require.NoError(t, err)
+		require.True(t, found)
+		require.Len(t, spread, 2)
+		containers, found, err := unstructured.NestedSlice(
+			deployment.Object, "spec", "template", "spec", "containers",
+		)
+		require.NoError(t, err)
+		require.True(t, found)
+		require.Len(t, containers, 1)
+		container := &unstructured.Unstructured{Object: containers[0].(map[string]any)}
+		command, found, err := unstructured.NestedStringSlice(container.Object, "command")
+		require.NoError(t, err)
+		require.True(t, found)
+		require.Equal(t, []string{"/usr/local/bin/kubebrain-operation-worker"}, command)
+		args, found, err := unstructured.NestedStringSlice(container.Object, "args")
+		require.NoError(t, err)
+		require.True(t, found)
+		require.Contains(t, args[0], want.script)
+		require.True(t, nestedBool(t, container, "securityContext", "readOnlyRootFilesystem"))
+		require.False(t, nestedBool(t, container, "securityContext", "allowPrivilegeEscalation"))
+		envFrom, found, err := unstructured.NestedSlice(container.Object, "envFrom")
+		require.NoError(t, err)
+		require.True(t, found)
+		require.Len(t, envFrom, 1)
+		require.Equal(t, want.secret, nestedString(
+			t, &unstructured.Unstructured{Object: envFrom[0].(map[string]any)},
+			"secretRef", "name",
+		))
+		volumes, found, err := unstructured.NestedSlice(
+			deployment.Object, "spec", "template", "spec", "volumes",
+		)
+		require.NoError(t, err)
+		require.True(t, found)
+		var workspace *unstructured.Unstructured
+		for _, raw := range volumes {
+			volume := &unstructured.Unstructured{Object: raw.(map[string]any)}
+			if nestedString(t, volume, "name") == "workspace" {
+				workspace = volume
+			}
+		}
+		require.NotNil(t, workspace)
+		require.Equal(t, want.claim,
+			nestedString(t, workspace, "persistentVolumeClaim", "claimName"))
+	}
+}
+
 func TestOperationAPIIsFailClosedAndHardened(t *testing.T) {
 	objects := decodeManifest(t, "kubebrain-operation-api.yaml")
 	deployment := objectByKindAndName(t, objects, "Deployment", "kubebrain-operation-api")

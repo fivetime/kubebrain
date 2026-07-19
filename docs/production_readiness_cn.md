@@ -1072,6 +1072,29 @@ A185 也支持显式 `KUBECONFIG_PATH`。
 工作结束后终止 heartbeat。续租失败时 heartbeat 杀掉工作进程并返回 fencing 状态。禁止
 使用 `kill -0` 轮询工作进程完成，因为未 wait 的 zombie 仍可能返回存在并造成无限续租。
 
+六类生产 executor 模板位于
+`deploy/production/kubebrain-operation-executors.yaml`，默认全部为零副本。启用任意一类
+之前必须创建同名 `*-executor-env` Secret 和 `*-executor-workspace` PVC；证书轮换还必须
+创建 `kubebrain-certificate-rotation-executor-hooks` Secret，键
+`publish-overlap`、`publish-final` 必须是可执行、幂等且受发布流程审计的程序。生产 PVC
+必须支持 RWX 和 `runAsUser/fsGroup=65532`；两个副本会竞争同一队列并依赖 Lease/attempt
+fencing，RWO 卷或节点本地卷不能满足跨节点接管。参数里的 artifact、state、receipt 路径
+必须位于 `/var/lib/kubebrain-operation`，临时文件才可放 `/tmp`。
+
+Secret 只保存该类型所需 endpoint、对象存储或 Kubernetes context 配置，不得放集群管理员
+kubeconfig，也不得把私钥写入 Operation parameters。长驻 Pod 不设置 `PARAMETERS_INPUT`：
+executor claim 后由 operationctl 按 immutable Secret 名称和 SHA-256 获取参数，避免 Pod
+启动配置与实际 claim 错配。上线顺序是应用零副本模板、完成 Secret/PVC 权限检查、以
+one-shot Operation 做 claim/heartbeat/receipt 演练，再扩到两个副本并观察无重复副作用。
+滚动策略允许升级期间短暂三副本竞争，所有外部 hook 因此必须按 operation UID 和 attempt
+幂等。
+
+六类模板共用 `kubebrain-operation-worker` ServiceAccount。独立 env Secret/PVC 能避免
+正常配置路径中的跨类型凭据挂载，但该 ServiceAccount 为动态参数仍可在已绑定 namespace
+执行 Secret `get`；这不是抵御已攻陷 executor 的强多租户隔离。要求该边界时，应为类型或
+租户拆分 operation namespace、inventory、ServiceAccount 和精确 RoleBinding，并分别运行
+模板副本。
+
 参数文件不得包含私钥内容；TLS 凭据由 worker Secret/env 提供。参数文件及 A189 state/
 receipt 必须位于 worker 可读的受保护持久卷。CRD 保存编排状态和摘要，不保存大文件或
 凭据，也不应安装在被该 operation 运维的 KubeBrain 数据面中。

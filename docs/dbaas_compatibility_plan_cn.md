@@ -4632,6 +4632,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `not-json` 后 one-shot reconcile 退出 1、archived=0，恢复默认 inventory 后临时
   namespace、Secret 和 Operation 均清理。具体六类 executor Deployment 模板仍是后续 P1。
 
+- **Operations A267 type-isolated executor runtime（2026-07-19）**：
+  A266 已能跨 namespace 调度、claim 和归档 Operation，但六类 executor 仍只有脚本，
+  缺少可直接审计和部署的镜像入口、依赖及工作负载模板。新增通用
+  `kubebrain-operation-worker` supervisor，在 SIGTERM 时终止当前子进程，并以独立成功/
+  失败退避循环运行单一类型脚本。生产镜像固定包含 operationctl、逻辑备份/校验、审计
+  probe、UID 删除工具、六类执行脚本及其 bash、jq、openssl、kubectl、etcdctl 运行时依赖。
+
+  `kubebrain-operation-executors.yaml` 提供 Backup、BackupDeletion、RestoreCutover、
+  PostRestoreAudit、CertificateRotation、Destroy 六个独立 Deployment。模板默认零副本，
+  每类只挂载自己的 env Secret 和持久 workspace PVC，证书轮换另挂只读可执行 hook
+  Secret；容器非 root、只读根文件系统、删除 capabilities、限制资源，并使用零中断滚动
+  策略和 zone/hostname spread。所有执行脚本均先 claim，再从 Operation 绑定的 immutable
+  parameters Secret 读取和校验摘要，不再要求控制面预先把某个参数文件注入长驻 Pod。
+
+  这里的隔离边界是进程、环境 Secret 和 workspace 挂载隔离，不是独立 Kubernetes API
+  身份：六类模板仍共用 operation-worker ServiceAccount，而该身份为跨 namespace 动态参数
+  读取保留 Secret get。高合规租户必须把不同类型/租户放入独立 operation namespace 和
+  ServiceAccount/RBAC 域，不能把本模板宣称为抵御已被攻陷 worker 的强多租户边界。
+  启用前还必须提供支持多副本接管的 RWX 持久卷、完成参数路径/证书/hook 校验，并先以
+  one-shot Operation 验证 claim、heartbeat fencing 和终态 receipt；具体跨账户/跨区域
+  executor 身份隔离仍是后续 P1。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range

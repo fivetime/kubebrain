@@ -30,8 +30,8 @@ EOF
 [[ -n "$WORKER_ID" ]] || { echo "WORKER_ID is required" >&2; usage; }
 [[ "$WORKER_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,252}$ ]] ||
   { echo "WORKER_ID contains unsupported characters" >&2; exit 2; }
-[[ -n "$PARAMETERS_INPUT" && -f "$PARAMETERS_INPUT" ]] ||
-  { echo "PARAMETERS_INPUT is required and must exist" >&2; exit 2; }
+[[ -z "$PARAMETERS_INPUT" || -f "$PARAMETERS_INPUT" ]] ||
+  { echo "PARAMETERS_INPUT must exist when provided" >&2; exit 2; }
 [[ "$LEASE_SECONDS" =~ ^[1-9][0-9]*$ && "$LEASE_SECONDS" -ge 6 ]] ||
   { echo "LEASE_SECONDS must be an integer of at least 6" >&2; exit 2; }
 command -v "$JQ" >/dev/null || { echo "jq is required" >&2; exit 2; }
@@ -65,6 +65,18 @@ operation_id="$("$JQ" -er '.operation_id' <<<"$claim")"
 instance="$("$JQ" -er '.instance' <<<"$claim")"
 attempt="$("$JQ" -er '.attempt | select(. > 0)' <<<"$claim")"
 expected_digest="$("$JQ" -er '.parameters_sha256 | select(test("^[a-f0-9]{64}$"))' <<<"$claim")"
+managed_parameters=""
+if [[ -z "$PARAMETERS_INPUT" ]]; then
+  managed_parameters="$(mktemp)"
+  PARAMETERS_INPUT="$managed_parameters"
+fi
+cleanup_parameters() {
+  [[ -z "$managed_parameters" ]] || rm -f "$managed_parameters"
+}
+trap cleanup_parameters EXIT
+if [[ -n "$managed_parameters" ]]; then
+  run_operationctl --action parameters --name "$name" >"$PARAMETERS_INPUT"
+fi
 actual_digest="$(sha256sum "$PARAMETERS_INPUT" | cut -d ' ' -f1)"
 if [[ "$actual_digest" != "$expected_digest" ]]; then
   run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
@@ -151,6 +163,7 @@ run_workflow() {
 child=0
 heartbeat_pid=0
 cleanup() {
+  cleanup_parameters
   if [[ "$child" -gt 0 ]] && kill -0 "$child" 2>/dev/null; then
     kill "$child" 2>/dev/null || true
     wait "$child" 2>/dev/null || true
