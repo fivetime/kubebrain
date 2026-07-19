@@ -605,6 +605,37 @@ func TestRangeKeysOnlyOmitsValuesForList(t *testing.T) {
 	}
 }
 
+func TestRangeCountOnlyTakesPrecedenceOverKeysOnly(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	ctx := context.Background()
+	prefix := "/registry/pods/keys-and-count/"
+	for _, suffix := range []string{"a", "b", "c"} {
+		_, err := server.Put(ctx, &etcdserverpb.PutRequest{
+			Key:   []byte(prefix + suffix),
+			Value: []byte("hidden-" + suffix),
+		})
+		require.NoError(t, err)
+	}
+
+	var response *etcdserverpb.RangeResponse
+	require.Eventually(t, func() bool {
+		var err error
+		response, err = server.Range(ctx, &etcdserverpb.RangeRequest{
+			Key:       []byte(prefix),
+			RangeEnd:  []byte("/registry/pods/keys-and-count0"),
+			KeysOnly:  true,
+			CountOnly: true,
+		})
+		return err == nil && response.Count == 3
+	}, time.Second, 10*time.Millisecond)
+	require.Empty(t, response.Kvs)
+	require.False(t, response.More)
+	require.NotNil(t, response.Header)
+	require.Positive(t, response.Header.Revision)
+}
+
 func TestRangeEmptyNonFromKeyRangeMatchesEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

@@ -31,7 +31,7 @@ Raft、bbolt 和成员管理内部实现，而是对通用 etcd v3 客户端提�
 
 | 服务 | 能力 | 当前状态 | DBaaS 处理 |
 | --- | --- | --- | --- |
-| KV | Range/Put/DeleteRange | 兼容核心语义 | 排序、过滤、历史读、大范围删除原子性、生产范围上限、非 KEY/NONE/Limit 候选窗口及独立差分已补齐；当前无已知语义差异，继续扩大生成式输入与长时故障 soak |
+| KV | Range/Put/DeleteRange | 兼容核心语义 | 排序、过滤、历史读、大范围删除原子性、生产范围上限、非 KEY/NONE/Limit 候选窗口及 KeysOnly+CountOnly 优先级差分已补齐；当前无已知语义差异，继续扩大生成式输入与长时故障 soak |
 | KV | Txn | 兼容核心语义 | 缺失键 guard、范围 phantom guard、嵌套分支、staged 单 revision、写前错误验证及 caller deadline 贯穿后端冲突重试已完成；当前无已知语义差异，继续扩大生成式嵌套矩阵与多点故障 soak |
 | KV | Compact | 兼容核心语义 | logical/physical、错误、异步 GC 与请求取消后的后台续扫已对齐；继续长时间故障 soak |
 | KV | RangeStream | 兼容核心语义 | etcd 3.7 支持的 CountOnly/Limit/KeysOnly/默认排序已对齐；自定义排序与 revision filter 同 etcd 明确 Unimplemented |
@@ -4461,6 +4461,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   连续 10 轮、真实三副本 client/v3 兼容模块全量、根模块全量及两处 vet 均通过；
   并行争用同一 TiKV 时曾使一次根模块 backend 门禁失败，停止并行负载后 backend
   单独及根模块串行全量均通过，因此不把测试环境资源竞争误报为产品回归。
+- **Range A258 KeysOnly + CountOnly precedence（2026-07-19）**：对照 upstream
+  `/root/etcd` commit `e40f9c68e` 的
+  `tests/integration/clientv3/TestKVGetKeysOnlyWithCountOnly`。两个标志同时设置时
+  `CountOnly` 必须优先：response 保留当前 header 和精确 Count，但 `Kvs` 为空且
+  `More=false`。KubeBrain 的无 revision filter Count 快路径直接返回无 payload count，
+  其他路径的 `applyRangeOptions` 也先处理 CountOnly，因此本轮未发现运行时实现差异。
+
+  新增服务层 `TestRangeCountOnlyTakesPrecedenceOverKeysOnly` 穿过 RPC Count 快路径，
+  普通连续 30 轮和 race 连续 20 轮通过；新增官方 client/v3 黑盒在全新 upstream
+  etcd 与真实三副本 KubeBrain 各连续 20 轮通过。生成式 Range option 差分新增
+  `keys-and-count` mode，覆盖 2 个 revision、5 个 sort target、3 个 order、4 个
+  limit、12 个 revision filter 与 4 个 payload mode，共 5,760 个双端请求形状，
+  完整结果一致。根模块全量、真实三副本 client/v3 兼容模块全量及两处 vet 均通过；
+  参考 etcd、端口和临时目录均已清理。
 
 ### P1：通用服务能力
 

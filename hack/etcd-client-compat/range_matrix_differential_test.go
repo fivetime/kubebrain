@@ -122,6 +122,7 @@ func runRangeOptionMatrixScenario(t *testing.T, endpoint, instance string) []ran
 		{name: "full"},
 		{name: "keys", keysOnly: true},
 		{name: "count", countOnly: true},
+		{name: "keys-and-count", keysOnly: true, countOnly: true},
 	}
 	targets := []etcdserverpb.RangeRequest_SortTarget{
 		etcdserverpb.RangeRequest_KEY,
