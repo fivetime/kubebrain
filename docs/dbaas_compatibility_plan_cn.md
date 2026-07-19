@@ -4851,6 +4851,30 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   一个 30 秒生产 poll，两个 Pod Ready、零重启且无 reconcile 错误；三副本 KubeBrain、
   三 PD 和三 TiKV 均 Ready，主数据面零重启。
 
+- **Operations A278 worker executor process-group cancellation（2026-07-19）**：
+  A267 的 `kubebrain-operation-worker` 使用 `exec.CommandContext` 运行六类 executor，
+  SIGTERM/context 取消只向直接 shell 发送 kill。shell 派生的逻辑导出、kubectl、证书
+  hook 或销毁命令可在 supervisor 和 Pod 主进程退出后继续运行，绕过本地停机边界并产生
+  未受观察的副作用。A275 已在 archiver 的 `CombinedOutput` 场景证明同一根因，但该修复
+  尚未覆盖 worker。
+
+  新增共享 `internal/processgroup`：executor 以独立 process group 启动，取消时向负
+  PGID 发送 `SIGKILL`，leader 已退出的 ESRCH 映射为 `os.ErrProcessDone`。operation
+  archiver 改为复用同一实现并保留 pipe `WaitDelay`；operation worker 在连接 stdio 前
+  应用同一配置。worker 回归测试让后台后代在 200ms 后写生存标记，取消后等待 300ms，
+  连续 50 轮均确认标记不存在；worker/archiver race 连续 30 轮、全量 production 测试
+  （90.794 秒）和 vet 均通过。
+
+  精确提交 `ff2c674405d25c81af86e36c78e8ae552b401ee4` 构建非 root 镜像
+  `kubebrain:a278-worker-process-group`（image ID
+  `sha256:48c982206734f49475f3854f6ea90388b4477ee28a7cd27ffa3970da936e23ae`）。
+  最终镜像容器中的测试 executor 先写 ready，再派生计划 3 秒后写 `survived` 的后台
+  后代；ready 后向 worker 发送 TERM，容器 0 秒内以状态 0 退出并记录
+  `executor failed: context canceled`。停止后等待 4 秒仍无 `survived`，证明真实镜像
+  回收完整进程组。kind 中 Backup、BackupDeletion、RestoreCutover、PostRestoreAudit、
+  CertificateRotation、Destroy 六个 Deployment 均保持零副本并更新到 A278；三副本
+  KubeBrain、三 PD、三 TiKV 以及 A277 双副本 scheduler 均 Ready、零重启。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range

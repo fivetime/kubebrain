@@ -838,6 +838,14 @@ receipt 的 SHA-256。`hack/production/run-post-restore-audit-operation.sh` 已�
 只 claim PostRestoreAudit，核对参数 JSON 摘要，在子审计运行期间续租；heartbeat 失败会
 终止本地进程，审计失败 requeue，成功才将 receipt 摘要写入 Succeeded。
 
+`kubebrain-operation-worker` 把每次 executor 放入独立进程组。Pod SIGTERM、supervisor
+context 取消或 heartbeat 触发的脚本退出必须终止 shell 及仍在同组的全部后代，避免备份、
+恢复、切流、证书轮换或销毁命令在 worker 已退出后继续产生本地或远端副作用。executor
+脚本禁止使用 `setsid` 或自行创建脱离 supervisor 的 session；需要异步工作的外部系统
+必须通过 Operation receipt 和 fencing API 显式建模，不能依赖孤儿进程。进程组取消只
+封闭本地执行树，远端幂等仍必须依赖稳定 operation ID、owner/attempt fencing 与
+exact-version receipt。
+
 外部提交入口使用 `deploy/production/kubebrain-operation-api.yaml`。Deployment 默认
 `replicas: 0`，必须先创建 `kubebrain-operation-api-oidc` Secret（`issuer`、`audience`）
 和 `kubebrain-operation-api-tls` TLS Secret，再扩容。API 只提供
