@@ -4330,6 +4330,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `a248-auth` keyspace 启用 Auth 后直接发送 gRPC metadata，连续 3 轮确认裸 token 与
   Bearer token 成功，小写 bearer 稳定返回
   `Unauthenticated/etcdserver: invalid auth token`；未改动主实例 Auth 状态。
+- **Read A249 leader-change read barrier fencing（2026-07-19）**：对照 upstream
+  `/root/etcd` commit `9f83a29b3` 的 ReadIndex/leader-change race。KubeBrain follower
+  原在请求前读取 leader address，收到 `/status` 成功响应后直接更新 backend read
+  revision；若旧 leader 在 handler 已通过 `IsLeader` 检查后失去 leadership，旧响应与
+  新 leader cache 更新同时到达，follower 可接受已失效 revision 并让线性读返回旧值。
+
+  revision syncer 现于请求前固定 leader identity 和已观察的共享 election term，解析
+  非零 revision 后重新读取 identity、term 与本节点 leader 状态；identity 变化、term
+  变化或本节点已接任时均丢弃响应，以显式 `leader changed while fetching revision`
+  进入既有有界重试。term 栅栏同时覆盖 A→B→A 回到同地址的 ABA 场景。双 HTTP leader
+  可控测试修复前稳定把 backend revision 从 42 错设为旧 leader 的 1000，修复后改向
+  新 leader 取得 2000；同地址 term 递增测试也固定必须发起第二次 fetch。identity 测试
+  连续 100 轮、两类竞态 race 各连续 20 轮、revision 包和主仓全量测试通过。真实 kind
+  三副本先在 rollout 中替换当前 leader，再由 upstream `ordering.NewKV` 直连三个副本
+  并删除 `kubebrain-2` 触发第二次 Pod UID replacement；replacement 期间提交 8 个双键
+  Txn，重建副本与全部 endpoint 最终均返回最新值且 revision 不低于写 revision，
+  serializable/Txn ordering violation 为 0。
 
 ### P1：通用服务能力
 

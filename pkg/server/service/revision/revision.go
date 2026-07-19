@@ -56,6 +56,7 @@ var (
 	syncRevTimeout         = time.Second
 	syncRevRetryBackoff    = 250 * time.Millisecond
 	syncRevMaxRetryElapsed = 8 * time.Second
+	errLeaderChanged       = errors.New("leader changed while fetching revision")
 )
 
 type revisionSyncer struct {
@@ -276,6 +277,9 @@ func retryableLeaderRevisionErr(err error) bool {
 	if errors.Is(err, context.DeadlineExceeded) {
 		return true
 	}
+	if errors.Is(err, errLeaderChanged) {
+		return true
+	}
 	var netErr net.Error
 	if errors.As(err, &netErr) && netErr.Timeout() {
 		return true
@@ -354,6 +358,7 @@ func (r *revisionSyncer) getRevisionFromLeader(ctx context.Context) (uint64, err
 	if !election.IsLeaderKnown(leaderAddress) {
 		return 0, status.Errorf(codes.Unavailable, "leader is not elected")
 	}
+	leaderTerm := r.leaderElection.CurrentLeadershipTerm()
 	r.metricCli.EmitGauge("follower.getleader", 1, metrics.Tag("leader", leaderAddress))
 	startTime := time.Now()
 
@@ -401,6 +406,20 @@ func (r *revisionSyncer) getRevisionFromLeader(ctx context.Context) (uint64, err
 		// response rather than rewinding the follower's read index to 0 (#42).
 		r.metricCli.EmitCounter("follower.get.revision.zero", 1, metrics.Tag("leader", leaderAddress))
 		return 0, fmt.Errorf("leader %s returned zero revision (body=%q)", leaderAddress, string(responseBody))
+	}
+	currentLeader := r.leaderElection.GetLeaderInfo()
+	currentTerm := r.leaderElection.CurrentLeadershipTerm()
+	currentIsLeader := r.leaderElection.IsLeader()
+	if currentIsLeader ||
+		currentLeader != leaderAddress ||
+		(leaderTerm != 0 && currentTerm != 0 && currentTerm != leaderTerm) {
+		r.metricCli.EmitCounter("follower.get.revision.leader_changed", 1,
+			metrics.Tag("leader", leaderAddress))
+		return 0, fmt.Errorf(
+			"%w: requested leader=%s term=%d, current leader=%s term=%d, isLeader=%t",
+			errLeaderChanged, leaderAddress, leaderTerm, currentLeader, currentTerm,
+			currentIsLeader,
+		)
 	}
 	r.metricCli.EmitGauge("follower.get.revision", revision.Revision, metrics.Tag("leader", leaderAddress))
 	return revision.Revision, nil

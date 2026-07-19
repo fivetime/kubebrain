@@ -296,6 +296,7 @@ func TestRevisionSyncerRetriesLeaderChange(t *testing.T) {
 type mutableLeaderElection struct {
 	mu            sync.RWMutex
 	leaderAddress string
+	term          uint64
 }
 
 func (m *mutableLeaderElection) Campaign(context.Context) {}
@@ -309,10 +310,17 @@ func (m *mutableLeaderElection) GetLeaderInfo() string {
 }
 
 func (m *mutableLeaderElection) LeadershipTerm(context.Context) (uint64, error) {
-	return 1, nil
+	return m.CurrentLeadershipTerm(), nil
 }
 
-func (m *mutableLeaderElection) CurrentLeadershipTerm() uint64 { return 1 }
+func (m *mutableLeaderElection) CurrentLeadershipTerm() uint64 {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.term == 0 {
+		return 1
+	}
+	return m.term
+}
 
 func (m *mutableLeaderElection) IsLeader() bool {
 	return false
@@ -332,6 +340,97 @@ func (m *mutableLeaderElection) setLeaderAddress(address string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.leaderAddress = address
+	m.term++
+}
+
+func (m *mutableLeaderElection) advanceTerm() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.term++
+}
+
+func TestRevisionSyncerRejectsResponseAcrossLeaderChange(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	mockMetrics := mock.NewMinimalMetrics(ctrl)
+
+	oldEntered := make(chan struct{})
+	releaseOld := make(chan struct{})
+	oldLeader := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		close(oldEntered)
+		<-releaseOld
+		_ = json.NewEncoder(w).Encode(LeaderRevision{Revision: 1000})
+	}))
+	defer oldLeader.Close()
+	newLeader := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(LeaderRevision{Revision: 2000})
+	}))
+	defer newLeader.Close()
+
+	election := &mutableLeaderElection{
+		leaderAddress: strings.TrimPrefix(oldLeader.URL, "http://"),
+		term:          1,
+	}
+	backend := &backendStub{currentRev: 42}
+	syncer := NewRevisionSyncer(backend, mockMetrics, election, nil)
+	defer syncer.Close()
+
+	done := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		done <- syncer.SyncReadRevision(ctx)
+	}()
+	<-oldEntered
+	election.setLeaderAddress(strings.TrimPrefix(newLeader.URL, "http://"))
+	close(releaseOld)
+
+	require.NoError(t, <-done)
+	require.Equal(t, uint64(2000), backend.currentRev,
+		"a response from a deposed leader must be discarded and retried")
+}
+
+func TestRevisionSyncerRejectsResponseAcrossLeadershipTermChange(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	mockMetrics := mock.NewMinimalMetrics(ctrl)
+
+	var calls atomic.Int32
+	firstEntered := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	sameAddressLeader := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if calls.Add(1) == 1 {
+			close(firstEntered)
+			<-releaseFirst
+			_ = json.NewEncoder(w).Encode(LeaderRevision{Revision: 1000})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(LeaderRevision{Revision: 2000})
+	}))
+	defer sameAddressLeader.Close()
+
+	election := &mutableLeaderElection{
+		leaderAddress: strings.TrimPrefix(sameAddressLeader.URL, "http://"),
+		term:          1,
+	}
+	backend := &backendStub{currentRev: 42}
+	syncer := NewRevisionSyncer(backend, mockMetrics, election, nil)
+	defer syncer.Close()
+
+	done := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		done <- syncer.SyncReadRevision(ctx)
+	}()
+	<-firstEntered
+	election.advanceTerm()
+	close(releaseFirst)
+
+	require.NoError(t, <-done)
+	require.Equal(t, uint64(2000), backend.currentRev)
+	require.Equal(t, int32(2), calls.Load(),
+		"a new election term at the same address must force a fresh revision fetch")
 }
 
 type testRevisionServer struct {
