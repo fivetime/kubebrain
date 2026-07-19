@@ -4111,6 +4111,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Put 仍拒绝。聚焦单元矩阵连续 20 轮通过，全仓 test/vet 通过；修复前真实双端差分仅该
   项出现 `OK`/`InvalidArgument` 差异，其余 9 项一致。修复前完整双端 Differential
   253.469 秒通过既有全部组，并由本轮新增门禁暴露原覆盖空白。
+- **Compatibility A239 Txn header revision snapshot contract（2026-07-19）**：
+  对照上游 `/root/etcd/tests/integration/v3_grpc_test.go` 的 `TestV3TxnRevision` 与
+  `TestV3TxnCmpHeaderRev`，补齐事务 response header 的双端门禁。顺序矩阵确认只读
+  Range Txn 与删除不存在键的 Txn 均不推进 revision（相对 seed delta=0），单 Put Txn
+  只推进一次（delta=1）。
+
+  并发矩阵使用 500 个独立缺失键，同时启动 Put 与 `Version(key)==0` 的只读 compare
+  Txn。若 Put revision 大于 Txn header，则 Txn 必须成功；若 Txn header 不小于 Put
+  revision，则 Txn 必须失败，从而禁止 `Succeeded` 与 response header 描述不同 MVCC
+  快照。真实 etcd 3.7 与三副本 TiKV-backed KubeBrain 均为零违规。该审计未发现新的
+  服务端差异，新增测试作为后续 read barrier、compare guard 和 header 计算修改的持续
+  P0 回归门禁。
 - **Operations A185 certificate rotation completion state（2026-07-18）**：新增
   `hack/production/validate-certificate-rotation.sh`，把 client/peer CA rollover
   收敛为 `begin -> overlap -> complete` 三阶段门禁。begin 固定全部 KubeBrain Pod
