@@ -161,6 +161,46 @@ func TestQueueLoadsDigestBoundImmutableParameters(t *testing.T) {
 	require.ErrorContains(t, err, "must be immutable")
 }
 
+func TestQueueOnlyLoadsParametersForCurrentTypeBoundWorker(t *testing.T) {
+	now := time.Unix(1_000, 0).UTC()
+	queue := newFakeQueue().WithClock(func() time.Time { return now })
+	ctx := context.Background()
+	parameters := []byte("{\"operation\":\"audit\"}\n")
+	spec := validSpec()
+	spec.ParametersSHA256 = fmt.Sprintf("%x", sha256.Sum256(parameters))
+	spec.ParametersSecret = "audit-parameters"
+	spec.ParametersKey = "parameters.json"
+	_, err := queue.secrets.Create(ctx, &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "v1", "kind": "Secret",
+		"metadata":  map[string]any{"name": spec.ParametersSecret},
+		"immutable": true,
+		"data": map[string]any{
+			spec.ParametersKey: base64.StdEncoding.EncodeToString(parameters),
+		},
+	}}, metav1.CreateOptions{})
+	require.NoError(t, err)
+	_, err = queue.Submit(ctx, "audit-1", spec)
+	require.NoError(t, err)
+	claim, err := queue.Claim(ctx, "audit-worker", spec.Type, time.Minute)
+	require.NoError(t, err)
+
+	actual, err := queue.ParametersForWorker(
+		ctx, claim.Name, spec.Type, claim.Owner, claim.Attempt,
+	)
+	require.NoError(t, err)
+	require.Equal(t, parameters, actual)
+	_, err = queue.ParametersForWorker(ctx, claim.Name, "Backup", claim.Owner, claim.Attempt)
+	require.ErrorContains(t, err, "type does not match")
+	_, err = queue.ParametersForWorker(ctx, claim.Name, spec.Type, "other-worker", claim.Attempt)
+	require.ErrorIs(t, err, ErrFenced)
+	_, err = queue.ParametersForWorker(ctx, claim.Name, spec.Type, claim.Owner, claim.Attempt+1)
+	require.ErrorIs(t, err, ErrFenced)
+
+	now = now.Add(61 * time.Second)
+	_, err = queue.ParametersForWorker(ctx, claim.Name, spec.Type, claim.Owner, claim.Attempt)
+	require.ErrorIs(t, err, ErrFenced)
+}
+
 func TestQueueStopsAfterMaximumAttempts(t *testing.T) {
 	now := time.Unix(1_000, 0).UTC()
 	queue := newFakeQueue().WithClock(func() time.Time { return now })

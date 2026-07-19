@@ -4654,6 +4654,33 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   one-shot Operation 验证 claim、heartbeat fencing 和终态 receipt；具体跨账户/跨区域
   executor 身份隔离仍是后续 P1。
 
+- **Operations A268 type-bound parameter broker（2026-07-19）**：
+  A267 的六类进程虽只挂载各自 env Secret/PVC，但共用 worker ServiceAccount 为读取动态
+  parameters Secret 仍拥有 namespace 级 Secret get；被攻陷的任一 executor 可绕过正常
+  脚本读取同 namespace 其他类型凭据，并可尝试 claim 错误类型 Operation。
+
+  对齐 etcd 在 `/root/etcd/server/auth/store.go` 的 `AuthInfoFromCtx` 后再执行
+  `IsRangePermitted`，以及 `/root/etcd/server/etcdserver/api/v3rpc/watch.go` 对长连接请求
+  持续做身份/范围授权的边界：参数内容也必须在已认证身份、授权类型和当前 fencing token
+  同时成立后才可读取，不能把“持有 namespace token”等同于参数授权。
+
+  新增独立 `kubebrain-operation-parameter-broker` HTTPS 服务。executor 使用 audience 固定为
+  `kubebrain-operation-parameters` 的短期 projected ServiceAccount token；broker 通过
+  Kubernetes TokenReview 验证 token audience 和精确 SA 名称，将六个 SA 固定映射到六种
+  Operation type，并在读取 immutable Secret 前同时验证请求 namespace、当前 Running
+  owner、attempt 和未过期 Lease。响应强制 `no-store`，错误身份、类型、owner、attempt、
+  audience 或 Lease 一律不返回参数内容。只有 broker SA 在完成显式 RoleBinding 的 operation
+  namespace 拥有 Operation/Secret get；六个 executor SA 的中央和 managed namespace Role
+  均不含 Secret 权限。
+
+  六类 Deployment 改用独立 ServiceAccount，并挂载 broker 专用 token 和只读 CA。
+  fail-closed ValidatingAdmissionPolicy 在 status subresource 上把每种 Operation type 与
+  对应 SA 用户名绑定，因此错误类型 SA 即使能 list Operation，也不能完成 claim CAS、
+  heartbeat 或终态提交。broker、AdmissionPolicy 和 executor 模板都默认零副本或依赖显式
+  TLS/CA 配置；单元/race 测试覆盖正确读取、跨类型拒绝、未知 SA、错误 audience、旧 owner/
+  attempt 和过期 Lease。NetworkPolicy 将 broker 入口限制为六类 executor Pod；后续继续补
+  跨集群 broker HA、证书在线轮换和可移植的 Kubernetes API egress 策略。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range

@@ -1,0 +1,136 @@
+package parameterbroker
+
+import (
+	"errors"
+	"fmt"
+	"net/http"
+	"strconv"
+	"strings"
+
+	"github.com/kubewharf/kubebrain/hack/production/internal/operationqueue"
+	authenticationv1 "k8s.io/api/authentication/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/validation"
+	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/kubernetes"
+)
+
+const maxTokenBytes = 16 << 10
+
+var serviceAccountTypes = map[string]string{
+	"kubebrain-backup-executor":               "Backup",
+	"kubebrain-backup-deletion-executor":      "BackupDeletion",
+	"kubebrain-restore-cutover-executor":      "RestoreCutover",
+	"kubebrain-post-restore-audit-executor":   "PostRestoreAudit",
+	"kubebrain-certificate-rotation-executor": "CertificateRotation",
+	"kubebrain-destroy-executor":              "Destroy",
+}
+
+type Handler struct {
+	tokens            kubernetes.Interface
+	dynamic           dynamic.Interface
+	identityNamespace string
+	audience          string
+}
+
+func NewHandler(
+	tokens kubernetes.Interface, dynamicClient dynamic.Interface, namespace, audience string,
+) (http.Handler, error) {
+	if tokens == nil || dynamicClient == nil {
+		return nil, errors.New("Kubernetes clients are required")
+	}
+	if namespace == "" || audience == "" {
+		return nil, errors.New("namespace and audience are required")
+	}
+	return &Handler{
+		tokens: tokens, dynamic: dynamicClient, identityNamespace: namespace, audience: audience,
+	}, nil
+}
+
+func (h *Handler) ServeHTTP(response http.ResponseWriter, request *http.Request) {
+	if request.Method == http.MethodGet && request.URL.Path == "/healthz" {
+		response.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if request.Method != http.MethodGet || request.URL.Path != "/v1/parameters" {
+		http.Error(response, "not found", http.StatusNotFound)
+		return
+	}
+	token, err := bearerToken(request.Header.Get("Authorization"))
+	if err != nil {
+		http.Error(response, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	operationType, err := h.authenticate(request, token)
+	if err != nil {
+		http.Error(response, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	name := request.URL.Query().Get("name")
+	namespace := request.URL.Query().Get("namespace")
+	owner := request.URL.Query().Get("owner")
+	attempt, err := strconv.ParseInt(request.URL.Query().Get("attempt"), 10, 64)
+	if len(validation.IsDNS1123Label(namespace)) != 0 ||
+		name == "" || owner == "" || err != nil || attempt <= 0 {
+		http.Error(response, "namespace, name, owner, and positive attempt are required", http.StatusBadRequest)
+		return
+	}
+	parameters, err := operationqueue.New(h.dynamic, namespace).
+		ParametersForWorker(request.Context(), name, operationType, owner, attempt)
+	if err != nil {
+		http.Error(response, "parameters unavailable", http.StatusForbidden)
+		return
+	}
+	response.Header().Set("Content-Type", "application/json")
+	response.Header().Set("Cache-Control", "no-store")
+	response.Header().Set("X-Content-Type-Options", "nosniff")
+	response.WriteHeader(http.StatusOK)
+	_, _ = response.Write(parameters)
+}
+
+func (h *Handler) authenticate(request *http.Request, token string) (string, error) {
+	review, err := h.tokens.AuthenticationV1().TokenReviews().Create(
+		request.Context(),
+		&authenticationv1.TokenReview{Spec: authenticationv1.TokenReviewSpec{
+			Token: token, Audiences: []string{h.audience},
+		}},
+		metav1.CreateOptions{},
+	)
+	if err != nil || !review.Status.Authenticated || review.Status.Error != "" {
+		return "", errors.New("token review failed")
+	}
+	if !contains(review.Status.Audiences, h.audience) {
+		return "", errors.New("token audience was not authenticated")
+	}
+	prefix := fmt.Sprintf("system:serviceaccount:%s:", h.identityNamespace)
+	serviceAccount := strings.TrimPrefix(review.Status.User.Username, prefix)
+	if serviceAccount == review.Status.User.Username {
+		return "", errors.New("caller is not an executor service account")
+	}
+	operationType, ok := serviceAccountTypes[serviceAccount]
+	if !ok {
+		return "", errors.New("caller service account is not allowed")
+	}
+	return operationType, nil
+}
+
+func bearerToken(header string) (string, error) {
+	const prefix = "Bearer "
+	if !strings.HasPrefix(header, prefix) {
+		return "", errors.New("bearer token is required")
+	}
+	token := strings.TrimSpace(strings.TrimPrefix(header, prefix))
+	if token == "" || len(token) > maxTokenBytes {
+		return "", errors.New("invalid bearer token")
+	}
+	return token, nil
+}
+
+func contains(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}

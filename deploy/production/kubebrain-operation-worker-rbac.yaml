@@ -14,7 +14,7 @@ metadata:
   labels:
     app.kubernetes.io/name: kubebrain-operation-worker
     app.kubernetes.io/part-of: kubebrain
-automountServiceAccountToken: true
+automountServiceAccountToken: false
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -58,12 +58,6 @@ rules:
       - get
       - update
       - delete
-  - apiGroups:
-      - ""
-    resources:
-      - secrets
-    verbs:
-      - get
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -75,7 +69,22 @@ metadata:
     app.kubernetes.io/part-of: kubebrain
 subjects:
   - kind: ServiceAccount
-    name: kubebrain-operation-worker
+    name: kubebrain-backup-executor
+    namespace: kubebrain-operations
+  - kind: ServiceAccount
+    name: kubebrain-backup-deletion-executor
+    namespace: kubebrain-operations
+  - kind: ServiceAccount
+    name: kubebrain-restore-cutover-executor
+    namespace: kubebrain-operations
+  - kind: ServiceAccount
+    name: kubebrain-post-restore-audit-executor
+    namespace: kubebrain-operations
+  - kind: ServiceAccount
+    name: kubebrain-certificate-rotation-executor
+    namespace: kubebrain-operations
+  - kind: ServiceAccount
+    name: kubebrain-destroy-executor
     namespace: kubebrain-operations
 roleRef:
   apiGroup: rbac.authorization.k8s.io

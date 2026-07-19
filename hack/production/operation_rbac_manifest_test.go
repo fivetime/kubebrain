@@ -182,19 +182,21 @@ func TestOperationWorkerRBACCanFenceWithLeasesButCannotCreateOperations(t *testi
 			Resources: []string{"leases"},
 			Verbs:     []string{"create", "get", "update", "delete"},
 		},
-		{
-			APIGroups: []string{""},
-			Resources: []string{"secrets"},
-			Verbs:     []string{"get"},
-		},
 	}, role.Rules)
 
 	binding := documents[3]
 	require.Equal(t, "RoleBinding", binding.Kind)
-	require.Equal(t, rbacParty{
-		Kind: "ServiceAccount", Name: "kubebrain-operation-worker",
-		Namespace: "kubebrain-operations",
-	}, binding.Subjects[0])
+	require.Len(t, binding.Subjects, 6)
+	for _, name := range []string{
+		"kubebrain-backup-executor", "kubebrain-backup-deletion-executor",
+		"kubebrain-restore-cutover-executor",
+		"kubebrain-post-restore-audit-executor",
+		"kubebrain-certificate-rotation-executor", "kubebrain-destroy-executor",
+	} {
+		require.Contains(t, binding.Subjects, rbacParty{
+			Kind: "ServiceAccount", Name: name, Namespace: "kubebrain-operations",
+		})
+	}
 	require.Equal(t, rbacParty{Kind: "Role", Name: "kubebrain-operation-worker"}, binding.RoleRef)
 }
 
@@ -273,7 +275,7 @@ func TestManagedNamespaceRBACDefinesUnboundLeastPrivilegeRoles(t *testing.T) {
 		"..", "..", "deploy", "production", "kubebrain-operation-managed-namespace-rbac.yaml",
 	)
 	documents := decodeRBACManifest(t, path)
-	require.Len(t, documents, 3)
+	require.Len(t, documents, 4)
 	for _, document := range documents {
 		require.Equal(t, "ClusterRole", document.Kind)
 		require.Empty(t, document.Metadata.Namespace)
@@ -296,24 +298,30 @@ func TestManagedNamespaceRBACDefinesUnboundLeastPrivilegeRoles(t *testing.T) {
 			Resources: []string{"leases"},
 			Verbs:     []string{"create", "get", "update", "delete"},
 		},
-		{
-			APIGroups: []string{""},
-			Resources: []string{"secrets"},
-			Verbs:     []string{"get"},
-		},
 	}, documents[0].Rules)
-	require.Equal(t, "kubebrain-operation-approver-managed-namespace", documents[1].Metadata.Name)
+	require.Equal(t, "kubebrain-operation-parameter-broker-managed-namespace",
+		documents[1].Metadata.Name)
+	require.Equal(t, []rbacRule{{
+		APIGroups: []string{"dbaas.kubebrain.io"},
+		Resources: []string{"kubebrainoperations"},
+		Verbs:     []string{"get"},
+	}, {
+		APIGroups: []string{""},
+		Resources: []string{"secrets"},
+		Verbs:     []string{"get"},
+	}}, documents[1].Rules)
+	require.Equal(t, "kubebrain-operation-approver-managed-namespace", documents[2].Metadata.Name)
 	require.Equal(t, []rbacRule{{
 		APIGroups: []string{"dbaas.kubebrain.io"},
 		Resources: []string{"kubebrainoperations"},
 		Verbs:     []string{"get", "list", "watch", "update"},
-	}}, documents[1].Rules)
-	require.Equal(t, "kubebrain-operation-archiver-managed-namespace", documents[2].Metadata.Name)
+	}}, documents[2].Rules)
+	require.Equal(t, "kubebrain-operation-archiver-managed-namespace", documents[3].Metadata.Name)
 	require.Equal(t, []rbacRule{{
 		APIGroups: []string{"dbaas.kubebrain.io"},
 		Resources: []string{"kubebrainoperations"},
 		Verbs:     []string{"get", "list", "update"},
-	}}, documents[2].Rules)
+	}}, documents[3].Rules)
 }
 
 func decodeRBACManifest(t *testing.T, path string) []rbacManifest {

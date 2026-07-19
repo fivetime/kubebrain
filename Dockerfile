@@ -31,6 +31,7 @@ RUN test -n "$KUBEBRAIN_VERSION" \
     && go build -trimpath -o /src/bin/kubebrain-operation-api ./hack/production/cmd/operation-api \
     && go build -trimpath -o /src/bin/kubebrain-operationctl ./hack/production/cmd/operationctl \
     && go build -trimpath -o /src/bin/kubebrain-operation-worker ./hack/production/cmd/operation-worker \
+    && go build -trimpath -o /src/bin/kubebrain-operation-parameter-broker ./hack/production/cmd/operation-parameter-broker \
     && go build -trimpath -o /src/bin/kubebrain-operation-archiver ./hack/production/cmd/operation-archiver \
     && go build -trimpath -o /src/bin/kubebrain-logical-export ./hack/backup/cmd/logical-export \
     && go build -trimpath -o /src/bin/kubebrain-logical-status ./hack/backup/cmd/logical-status \
@@ -60,6 +61,7 @@ COPY --from=build /src/bin/kubebrain-backup-scheduler /usr/local/bin/kubebrain-b
 COPY --from=build /src/bin/kubebrain-operation-api /usr/local/bin/kubebrain-operation-api
 COPY --from=build /src/bin/kubebrain-operationctl /usr/local/bin/kubebrain-operationctl
 COPY --from=build /src/bin/kubebrain-operation-worker /usr/local/bin/kubebrain-operation-worker
+COPY --from=build /src/bin/kubebrain-operation-parameter-broker /usr/local/bin/kubebrain-operation-parameter-broker
 COPY --from=build /src/bin/kubebrain-operation-archiver /usr/local/bin/kubebrain-operation-archiver
 COPY --from=build /src/bin/kubebrain-logical-object /usr/local/bin/kubebrain-logical-object
 COPY --from=build /src/bin/kubebrain-logical-export /usr/local/bin/kubebrain-logical-export

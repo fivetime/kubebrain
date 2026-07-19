@@ -1,0 +1,42 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: kubebrain-operation-worker-type
+  labels:
+    app.kubernetes.io/name: kubebrain-operation-worker
+    app.kubernetes.io/part-of: kubebrain
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [dbaas.kubebrain.io]
+        apiVersions: [v1alpha1]
+        operations: [UPDATE]
+        resources: [kubebrainoperations/status]
+        scope: Namespaced
+  validations:
+    - expression: |
+        (object.spec.type == "Backup" &&
+          request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-backup-executor") ||
+        (object.spec.type == "BackupDeletion" &&
+          request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-backup-deletion-executor") ||
+        (object.spec.type == "RestoreCutover" &&
+          request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-restore-cutover-executor") ||
+        (object.spec.type == "PostRestoreAudit" &&
+          request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-post-restore-audit-executor") ||
+        (object.spec.type == "CertificateRotation" &&
+          request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-certificate-rotation-executor") ||
+        (object.spec.type == "Destroy" &&
+          request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-destroy-executor")
+      message: operation status updates require the executor identity bound to the operation type
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: kubebrain-operation-worker-type
+  labels:
+    app.kubernetes.io/name: kubebrain-operation-worker
+    app.kubernetes.io/part-of: kubebrain
+spec:
+  policyName: kubebrain-operation-worker-type
+  validationActions: [Deny]

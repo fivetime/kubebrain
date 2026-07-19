@@ -831,7 +831,9 @@ CAS 标记 Failed。Succeeded/Failed 终态由 CRD admission 保证不可变。�
 receipt 的 finish 可幂等重试，不同结果不能覆盖。
 
 worker RBAC 只允许 get/list/watch operation 及 get/update/patch status，不允许 create、
-delete 或修改 spec；submit 权限只应授予管理面 API 身份。成功状态必须记录不可变操作
+delete、修改 spec 或读取 Secret；submit 权限只应授予管理面 API 身份。六类 executor
+分别使用同名 ServiceAccount，`kubebrain-operation-worker-type` AdmissionPolicy 将 status
+更新用户与 `spec.type` 绑定，跨类型 SA 不能 claim、heartbeat 或提交终态。成功状态必须记录不可变操作
 receipt 的 SHA-256。`hack/production/run-post-restore-audit-operation.sh` 已把 A190 接入：
 只 claim PostRestoreAudit，核对参数 JSON 摘要，在子审计运行期间续租；heartbeat 失败会
 终止本地进程，审计失败 requeue，成功才将 receipt 摘要写入 Succeeded。
@@ -960,12 +962,15 @@ scheduler ServiceAccount 身份会进入 immutable Operation spec 和终态审�
 namespace 的最小权限：
 
 - `kubebrain-operation-worker-managed-namespace`
+- `kubebrain-operation-parameter-broker-managed-namespace`
 - `kubebrain-operation-approver-managed-namespace`
 - `kubebrain-operation-archiver-managed-namespace`
 
 每个角色都必须在目标 namespace 建立独立 RoleBinding，subject 分别指向
-`kubebrain-operations` 中同名 ServiceAccount。ClusterRole 清单不会创建绑定，也不授予
-cluster-wide 访问。worker 只读 Operation/Secret、更新 status 并管理 Lease；approver
+`kubebrain-operations` 中对应 ServiceAccount。worker RoleBinding 必须同时列出六个
+`*-executor` SA，parameter-broker RoleBinding 只列出 broker SA。ClusterRole 清单不会
+创建绑定，也不授予 cluster-wide 访问。worker 只读 Operation、更新 status 并管理 Lease；
+parameter broker 只 get Operation/Secret；approver
 只能读取和更新 Operation 主资源；archiver 只能 get/update Operation 主资源，不能修改
 status 或读取 Secret。
 
@@ -1026,7 +1031,15 @@ kubectl -n kubebrain-operations rollout status deployment/kubebrain-operation-ar
 NS=tenant-a-operations
 kubectl -n "$NS" create rolebinding kubebrain-operation-worker \
   --clusterrole=kubebrain-operation-worker-managed-namespace \
-  --serviceaccount=kubebrain-operations:kubebrain-operation-worker
+  --serviceaccount=kubebrain-operations:kubebrain-backup-executor \
+  --serviceaccount=kubebrain-operations:kubebrain-backup-deletion-executor \
+  --serviceaccount=kubebrain-operations:kubebrain-restore-cutover-executor \
+  --serviceaccount=kubebrain-operations:kubebrain-post-restore-audit-executor \
+  --serviceaccount=kubebrain-operations:kubebrain-certificate-rotation-executor \
+  --serviceaccount=kubebrain-operations:kubebrain-destroy-executor
+kubectl -n "$NS" create rolebinding kubebrain-operation-parameter-broker \
+  --clusterrole=kubebrain-operation-parameter-broker-managed-namespace \
+  --serviceaccount=kubebrain-operations:kubebrain-operation-parameter-broker
 kubectl -n "$NS" create rolebinding kubebrain-operation-approver \
   --clusterrole=kubebrain-operation-approver-managed-namespace \
   --serviceaccount=kubebrain-operations:kubebrain-operation-approver
@@ -1072,6 +1085,27 @@ A185 也支持显式 `KUBECONFIG_PATH`。
 工作结束后终止 heartbeat。续租失败时 heartbeat 杀掉工作进程并返回 fencing 状态。禁止
 使用 `kill -0` 轮询工作进程完成，因为未 wait 的 zombie 仍可能返回存在并造成无限续租。
 
+参数读取服务使用
+`deploy/production/kubebrain-operation-parameter-broker.yaml`，默认零副本。先签发服务端
+证书，SAN 必须包含
+`kubebrain-operation-parameter-broker.kubebrain-operations.svc`，写入 Secret
+`kubebrain-operation-parameter-broker-tls` 的 `tls.crt`/`tls.key`；签发 CA 以 `ca.crt`
+写入 ConfigMap `kubebrain-operation-parameter-broker-ca`。应用
+`kubebrain-operation-worker-admission.yaml` 后扩 broker 到两个副本，并先验证：
+
+```shell
+kubectl -n kubebrain-operations auth can-i get secrets \
+  --as=system:serviceaccount:kubebrain-operations:kubebrain-backup-executor
+kubectl -n kubebrain-operations auth can-i get secrets \
+  --as=system:serviceaccount:kubebrain-operations:kubebrain-operation-parameter-broker
+```
+
+结果必须依次为 `no`、`yes`。broker SA 另有且只有 TokenReview create ClusterRole；禁止授予
+Secret list/watch、Operation list/watch/status 或 Lease 权限。projected token audience
+固定为 `kubebrain-operation-parameters`，不能复用默认 Kubernetes API token。broker
+不可用、CA 错误、token 失效或 worker Lease 过期时 executor 必须 fail closed 并 requeue，
+不得回退为直接读取 Secret。
+
 六类生产 executor 模板位于
 `deploy/production/kubebrain-operation-executors.yaml`，默认全部为零副本。启用任意一类
 之前必须创建同名 `*-executor-env` Secret 和 `*-executor-workspace` PVC；证书轮换还必须
@@ -1089,11 +1123,11 @@ one-shot Operation 做 claim/heartbeat/receipt 演练，再扩到两个副本并
 滚动策略允许升级期间短暂三副本竞争，所有外部 hook 因此必须按 operation UID 和 attempt
 幂等。
 
-六类模板共用 `kubebrain-operation-worker` ServiceAccount。独立 env Secret/PVC 能避免
-正常配置路径中的跨类型凭据挂载，但该 ServiceAccount 为动态参数仍可在已绑定 namespace
-执行 Secret `get`；这不是抵御已攻陷 executor 的强多租户隔离。要求该边界时，应为类型或
-租户拆分 operation namespace、inventory、ServiceAccount 和精确 RoleBinding，并分别运行
-模板副本。
+六类模板使用独立 ServiceAccount。它们能读取 Operation、更新 status 和管理实例 Lease，
+但不能调用 Secret API；动态参数只能由 broker 在验证 SA 类型、owner、attempt 和 Lease
+后返回。该边界阻断同 namespace 的跨类型 Secret 读取，但 env Secret/PVC 本身仍由 kubelet
+挂载，节点或 broker 被攻陷不在此边界内。更高等级租户仍应拆分 operation namespace、
+inventory、broker、KMS 密钥和精确 RoleBinding。
 
 参数文件不得包含私钥内容；TLS 凭据由 worker Secret/env 提供。参数文件及 A189 state/
 receipt 必须位于 worker 可读的受保护持久卷。CRD 保存编排状态和摘要，不保存大文件或

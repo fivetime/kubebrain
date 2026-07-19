@@ -173,12 +173,12 @@ func TestOperationCRDAndWorkerRBACFencePersistentTasks(t *testing.T) {
 
 	objects := decodeManifest(t, "kubebrain-operation-worker-rbac.yaml")
 	account := objectByKindAndName(t, objects, "ServiceAccount", "kubebrain-operation-worker")
-	require.True(t, nestedBool(t, account, "automountServiceAccountToken"))
+	require.False(t, nestedBool(t, account, "automountServiceAccountToken"))
 	role := objectByKindAndName(t, objects, "Role", "kubebrain-operation-worker")
 	rules, found, err := unstructured.NestedSlice(role.Object, "rules")
 	require.NoError(t, err)
 	require.True(t, found)
-	require.Len(t, rules, 5)
+	require.Len(t, rules, 4)
 	require.Equal(t, []any{"configmaps"}, rules[0].(map[string]any)["resources"].([]any))
 	require.Equal(t, []any{"kubebrain-backup-scheduler-inventory"},
 		rules[0].(map[string]any)["resourceNames"].([]any))
@@ -189,8 +189,9 @@ func TestOperationCRDAndWorkerRBACFencePersistentTasks(t *testing.T) {
 	require.Contains(t, rules[2].(map[string]any)["verbs"].([]any), "update")
 	require.Equal(t, []any{"leases"}, rules[3].(map[string]any)["resources"].([]any))
 	require.Equal(t, []any{"create", "get", "update", "delete"}, rules[3].(map[string]any)["verbs"].([]any))
-	require.Equal(t, []any{"secrets"}, rules[4].(map[string]any)["resources"].([]any))
-	require.Equal(t, []any{"get"}, rules[4].(map[string]any)["verbs"].([]any))
+	for _, raw := range rules {
+		require.NotContains(t, raw.(map[string]any)["resources"].([]any), "secrets")
+	}
 }
 
 func TestOperationArchiverIsFailClosedAndHardened(t *testing.T) {
@@ -256,13 +257,15 @@ func TestOperationExecutorsAreTypeIsolatedFailClosedTemplates(t *testing.T) {
 			"kubebrain-destroy-executor-workspace",
 		},
 	}
-	require.Len(t, objects, len(expected))
+	require.Len(t, objects, len(expected)*2)
 	for name, want := range expected {
+		account := objectByKindAndName(t, objects, "ServiceAccount", name)
+		require.False(t, nestedBool(t, account, "automountServiceAccountToken"))
 		deployment := objectByKindAndName(t, objects, "Deployment", name)
 		require.EqualValues(t, 0, nestedInt64(t, deployment, "spec", "replicas"))
 		require.EqualValues(t, 0, nestedInt64(t, deployment, "spec", "strategy", "rollingUpdate", "maxUnavailable"))
 		require.EqualValues(t, 1, nestedInt64(t, deployment, "spec", "strategy", "rollingUpdate", "maxSurge"))
-		require.Equal(t, "kubebrain-operation-worker",
+		require.Equal(t, name,
 			nestedString(t, deployment, "spec", "template", "spec", "serviceAccountName"))
 		require.True(t, nestedBool(t, deployment, "spec", "template", "spec", "automountServiceAccountToken"))
 		require.True(t, nestedBool(t, deployment, "spec", "template", "spec", "securityContext", "runAsNonRoot"))
@@ -302,17 +305,128 @@ func TestOperationExecutorsAreTypeIsolatedFailClosedTemplates(t *testing.T) {
 		)
 		require.NoError(t, err)
 		require.True(t, found)
-		var workspace *unstructured.Unstructured
+		var workspace, parameterToken, parameterCA *unstructured.Unstructured
 		for _, raw := range volumes {
 			volume := &unstructured.Unstructured{Object: raw.(map[string]any)}
-			if nestedString(t, volume, "name") == "workspace" {
+			switch nestedString(t, volume, "name") {
+			case "workspace":
 				workspace = volume
+			case "parameter-token":
+				parameterToken = volume
+			case "parameter-ca":
+				parameterCA = volume
 			}
 		}
 		require.NotNil(t, workspace)
 		require.Equal(t, want.claim,
 			nestedString(t, workspace, "persistentVolumeClaim", "claimName"))
+		require.NotNil(t, parameterToken)
+		require.NotNil(t, parameterCA)
+		sources, found, err := unstructured.NestedSlice(
+			parameterToken.Object, "projected", "sources",
+		)
+		require.NoError(t, err)
+		require.True(t, found)
+		require.Len(t, sources, 1)
+		require.Equal(t, "kubebrain-operation-parameters", nestedString(
+			t, &unstructured.Unstructured{Object: sources[0].(map[string]any)},
+			"serviceAccountToken", "audience",
+		))
+		require.Equal(t, "kubebrain-operation-parameter-broker-ca",
+			nestedString(t, parameterCA, "configMap", "name"))
 	}
+}
+
+func TestOperationParameterBrokerOwnsTheOnlyExecutorParameterSecretPermission(t *testing.T) {
+	objects := decodeManifest(t, "kubebrain-operation-parameter-broker.yaml")
+	deployment := objectByKindAndName(
+		t, objects, "Deployment", "kubebrain-operation-parameter-broker",
+	)
+	require.EqualValues(t, 0, nestedInt64(t, deployment, "spec", "replicas"))
+	require.EqualValues(t, 0, nestedInt64(
+		t, deployment, "spec", "strategy", "rollingUpdate", "maxUnavailable",
+	))
+	require.True(t, nestedBool(
+		t, deployment, "spec", "template", "spec", "securityContext", "runAsNonRoot",
+	))
+	containers, found, err := unstructured.NestedSlice(
+		deployment.Object, "spec", "template", "spec", "containers",
+	)
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Len(t, containers, 1)
+	container := &unstructured.Unstructured{Object: containers[0].(map[string]any)}
+	command, found, err := unstructured.NestedStringSlice(container.Object, "command")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, []string{"/usr/local/bin/kubebrain-operation-parameter-broker"}, command)
+	require.True(t, nestedBool(t, container, "securityContext", "readOnlyRootFilesystem"))
+
+	role := objectByKindAndName(t, objects, "Role", "kubebrain-operation-parameter-broker")
+	rules, found, err := unstructured.NestedSlice(role.Object, "rules")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Len(t, rules, 2)
+	require.Equal(t, []any{"kubebrainoperations"}, rules[0].(map[string]any)["resources"].([]any))
+	require.Equal(t, []any{"get"}, rules[0].(map[string]any)["verbs"].([]any))
+	require.Equal(t, []any{"secrets"}, rules[1].(map[string]any)["resources"].([]any))
+	require.Equal(t, []any{"get"}, rules[1].(map[string]any)["verbs"].([]any))
+
+	tokenRole := objectByKindAndName(
+		t, objects, "ClusterRole", "kubebrain-operation-parameter-broker-token-review",
+	)
+	tokenRules, found, err := unstructured.NestedSlice(tokenRole.Object, "rules")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Len(t, tokenRules, 1)
+	require.Equal(t, []any{"tokenreviews"}, tokenRules[0].(map[string]any)["resources"].([]any))
+	require.Equal(t, []any{"create"}, tokenRules[0].(map[string]any)["verbs"].([]any))
+	networkPolicy := objectByKindAndName(
+		t, objects, "NetworkPolicy", "kubebrain-operation-parameter-broker",
+	)
+	require.Equal(t, "kubebrain-operation-parameter-broker", nestedString(
+		t, networkPolicy, "spec", "podSelector", "matchLabels", "app.kubernetes.io/name",
+	))
+
+	managed := objectByKindAndName(
+		t, decodeManifest(t, "kubebrain-operation-managed-namespace-rbac.yaml"),
+		"ClusterRole", "kubebrain-operation-worker-managed-namespace",
+	)
+	managedRules, found, err := unstructured.NestedSlice(managed.Object, "rules")
+	require.NoError(t, err)
+	require.True(t, found)
+	for _, raw := range managedRules {
+		require.NotContains(t, raw.(map[string]any)["resources"].([]any), "secrets")
+	}
+}
+
+func TestOperationWorkerAdmissionBindsStatusUpdatesToExecutorType(t *testing.T) {
+	objects := decodeManifest(t, "kubebrain-operation-worker-admission.yaml")
+	policy := objectByKindAndName(
+		t, objects, "ValidatingAdmissionPolicy", "kubebrain-operation-worker-type",
+	)
+	require.Equal(t, "Fail", nestedString(t, policy, "spec", "failurePolicy"))
+	validations, found, err := unstructured.NestedSlice(policy.Object, "spec", "validations")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Len(t, validations, 1)
+	expression := validations[0].(map[string]any)["expression"].(string)
+	for _, name := range []string{
+		"kubebrain-backup-executor", "kubebrain-backup-deletion-executor",
+		"kubebrain-restore-cutover-executor", "kubebrain-post-restore-audit-executor",
+		"kubebrain-certificate-rotation-executor", "kubebrain-destroy-executor",
+	} {
+		require.Contains(t, expression, name)
+	}
+	binding := objectByKindAndName(
+		t, objects, "ValidatingAdmissionPolicyBinding", "kubebrain-operation-worker-type",
+	)
+	actions, found, err := unstructured.NestedStringSlice(
+		binding.Object, "spec", "validationActions",
+	)
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, []string{"Deny"}, actions)
 }
 
 func TestOperationAPIIsFailClosedAndHardened(t *testing.T) {

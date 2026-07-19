@@ -1,3 +1,51 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kubebrain-backup-executor
+  namespace: kubebrain-operations
+  labels: {app.kubernetes.io/name: kubebrain-backup-executor, app.kubernetes.io/part-of: kubebrain}
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kubebrain-backup-deletion-executor
+  namespace: kubebrain-operations
+  labels: {app.kubernetes.io/name: kubebrain-backup-deletion-executor, app.kubernetes.io/part-of: kubebrain}
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kubebrain-restore-cutover-executor
+  namespace: kubebrain-operations
+  labels: {app.kubernetes.io/name: kubebrain-restore-cutover-executor, app.kubernetes.io/part-of: kubebrain}
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kubebrain-post-restore-audit-executor
+  namespace: kubebrain-operations
+  labels: {app.kubernetes.io/name: kubebrain-post-restore-audit-executor, app.kubernetes.io/part-of: kubebrain}
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kubebrain-certificate-rotation-executor
+  namespace: kubebrain-operations
+  labels: {app.kubernetes.io/name: kubebrain-certificate-rotation-executor, app.kubernetes.io/part-of: kubebrain}
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kubebrain-destroy-executor
+  namespace: kubebrain-operations
+  labels: {app.kubernetes.io/name: kubebrain-destroy-executor, app.kubernetes.io/part-of: kubebrain}
+automountServiceAccountToken: false
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -17,7 +65,7 @@ spec:
     metadata:
       labels: *backupLabels
     spec:
-      serviceAccountName: kubebrain-operation-worker
+      serviceAccountName: kubebrain-backup-executor
       automountServiceAccountToken: true
       securityContext: &podSecurity
         runAsNonRoot: true
@@ -55,6 +103,9 @@ spec:
             - {name: OPERATION_NAMESPACE_INVENTORY_CONFIGMAP, value: kubebrain-backup-scheduler-inventory}
             - {name: OPERATION_NAMESPACE_INVENTORY_NAMESPACE, value: kubebrain-operations}
             - {name: OPERATION_NAMESPACE_INVENTORY_KEY, value: namespaces.json}
+            - {name: OPERATION_PARAMETERS_ENDPOINT, value: "https://kubebrain-operation-parameter-broker.kubebrain-operations.svc"}
+            - {name: OPERATION_PARAMETERS_TOKEN_FILE, value: /var/run/secrets/kubebrain-parameter/token}
+            - {name: OPERATION_PARAMETERS_CA_FILE, value: /var/run/secrets/kubebrain-parameter-ca/ca.crt}
             - {name: EXPORT_COMMAND, value: /usr/local/bin/kubebrain-logical-export}
             - {name: STATUS_COMMAND, value: /usr/local/bin/kubebrain-logical-status}
             - {name: OBJECT_COMMAND, value: /usr/local/bin/kubebrain-logical-object}
@@ -71,12 +122,22 @@ spec:
           volumeMounts: &workspaceMounts
             - {name: workspace, mountPath: /var/lib/kubebrain-operation}
             - {name: tmp, mountPath: /tmp}
+            - {name: parameter-token, mountPath: /var/run/secrets/kubebrain-parameter, readOnly: true}
+            - {name: parameter-ca, mountPath: /var/run/secrets/kubebrain-parameter-ca, readOnly: true}
       volumes: &workspaceVolumes
         - name: workspace
           persistentVolumeClaim:
             claimName: kubebrain-backup-executor-workspace
         - name: tmp
           emptyDir: {sizeLimit: 256Mi}
+        - name: parameter-token
+          projected:
+            sources:
+              - serviceAccountToken: {path: token, audience: kubebrain-operation-parameters, expirationSeconds: 3600}
+        - name: parameter-ca
+          configMap:
+            name: kubebrain-operation-parameter-broker-ca
+            items: [{key: ca.crt, path: ca.crt}]
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -95,7 +156,7 @@ spec:
   template:
     metadata: {labels: *backupDeletionLabels}
     spec:
-      serviceAccountName: kubebrain-operation-worker
+      serviceAccountName: kubebrain-backup-deletion-executor
       automountServiceAccountToken: true
       securityContext:
         runAsNonRoot: true
@@ -120,6 +181,9 @@ spec:
             - {name: OPERATION_NAMESPACE_INVENTORY_CONFIGMAP, value: kubebrain-backup-scheduler-inventory}
             - {name: OPERATION_NAMESPACE_INVENTORY_NAMESPACE, value: kubebrain-operations}
             - {name: OPERATION_NAMESPACE_INVENTORY_KEY, value: namespaces.json}
+            - {name: OPERATION_PARAMETERS_ENDPOINT, value: "https://kubebrain-operation-parameter-broker.kubebrain-operations.svc"}
+            - {name: OPERATION_PARAMETERS_TOKEN_FILE, value: /var/run/secrets/kubebrain-parameter/token}
+            - {name: OPERATION_PARAMETERS_CA_FILE, value: /var/run/secrets/kubebrain-parameter-ca/ca.crt}
             - {name: OBJECT_COMMAND, value: /usr/local/bin/kubebrain-logical-object}
           envFrom: [{secretRef: {name: kubebrain-backup-deletion-executor-env}}]
           resources:
@@ -132,12 +196,16 @@ spec:
           volumeMounts:
             - {name: workspace, mountPath: /var/lib/kubebrain-operation}
             - {name: tmp, mountPath: /tmp}
+            - {name: parameter-token, mountPath: /var/run/secrets/kubebrain-parameter, readOnly: true}
+            - {name: parameter-ca, mountPath: /var/run/secrets/kubebrain-parameter-ca, readOnly: true}
       volumes:
         - name: workspace
           persistentVolumeClaim:
             claimName: kubebrain-backup-deletion-executor-workspace
         - name: tmp
           emptyDir: {sizeLimit: 256Mi}
+        - {name: parameter-token, projected: {sources: [{serviceAccountToken: {path: token, audience: kubebrain-operation-parameters, expirationSeconds: 3600}}]}}
+        - {name: parameter-ca, configMap: {name: kubebrain-operation-parameter-broker-ca, items: [{key: ca.crt, path: ca.crt}]}}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -156,7 +224,7 @@ spec:
   template:
     metadata: {labels: *restoreLabels}
     spec:
-      serviceAccountName: kubebrain-operation-worker
+      serviceAccountName: kubebrain-restore-cutover-executor
       automountServiceAccountToken: true
       securityContext:
         runAsNonRoot: true
@@ -181,6 +249,9 @@ spec:
             - {name: OPERATION_NAMESPACE_INVENTORY_CONFIGMAP, value: kubebrain-backup-scheduler-inventory}
             - {name: OPERATION_NAMESPACE_INVENTORY_NAMESPACE, value: kubebrain-operations}
             - {name: OPERATION_NAMESPACE_INVENTORY_KEY, value: namespaces.json}
+            - {name: OPERATION_PARAMETERS_ENDPOINT, value: "https://kubebrain-operation-parameter-broker.kubebrain-operations.svc"}
+            - {name: OPERATION_PARAMETERS_TOKEN_FILE, value: /var/run/secrets/kubebrain-parameter/token}
+            - {name: OPERATION_PARAMETERS_CA_FILE, value: /var/run/secrets/kubebrain-parameter-ca/ca.crt}
             - {name: CUTOVER_COMMAND, value: /opt/kubebrain/hack/production/switch-restore-traffic.sh}
             - {name: LOGICAL_VERIFY, value: /usr/local/bin/kubebrain-logical-verify}
           envFrom: [{secretRef: {name: kubebrain-restore-cutover-executor-env}}]
@@ -194,12 +265,16 @@ spec:
           volumeMounts:
             - {name: workspace, mountPath: /var/lib/kubebrain-operation}
             - {name: tmp, mountPath: /tmp}
+            - {name: parameter-token, mountPath: /var/run/secrets/kubebrain-parameter, readOnly: true}
+            - {name: parameter-ca, mountPath: /var/run/secrets/kubebrain-parameter-ca, readOnly: true}
       volumes:
         - name: workspace
           persistentVolumeClaim:
             claimName: kubebrain-restore-cutover-executor-workspace
         - name: tmp
           emptyDir: {sizeLimit: 256Mi}
+        - {name: parameter-token, projected: {sources: [{serviceAccountToken: {path: token, audience: kubebrain-operation-parameters, expirationSeconds: 3600}}]}}
+        - {name: parameter-ca, configMap: {name: kubebrain-operation-parameter-broker-ca, items: [{key: ca.crt, path: ca.crt}]}}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -218,7 +293,7 @@ spec:
   template:
     metadata: {labels: *auditLabels}
     spec:
-      serviceAccountName: kubebrain-operation-worker
+      serviceAccountName: kubebrain-post-restore-audit-executor
       automountServiceAccountToken: true
       securityContext:
         runAsNonRoot: true
@@ -243,6 +318,9 @@ spec:
             - {name: OPERATION_NAMESPACE_INVENTORY_CONFIGMAP, value: kubebrain-backup-scheduler-inventory}
             - {name: OPERATION_NAMESPACE_INVENTORY_NAMESPACE, value: kubebrain-operations}
             - {name: OPERATION_NAMESPACE_INVENTORY_KEY, value: namespaces.json}
+            - {name: OPERATION_PARAMETERS_ENDPOINT, value: "https://kubebrain-operation-parameter-broker.kubebrain-operations.svc"}
+            - {name: OPERATION_PARAMETERS_TOKEN_FILE, value: /var/run/secrets/kubebrain-parameter/token}
+            - {name: OPERATION_PARAMETERS_CA_FILE, value: /var/run/secrets/kubebrain-parameter-ca/ca.crt}
             - {name: AUDIT_COMMAND, value: /opt/kubebrain/hack/production/audit-restored-instance.sh}
             - {name: PROBE, value: /usr/local/bin/kubebrain-etcd-audit-probe}
           envFrom: [{secretRef: {name: kubebrain-post-restore-audit-executor-env}}]
@@ -256,12 +334,16 @@ spec:
           volumeMounts:
             - {name: workspace, mountPath: /var/lib/kubebrain-operation}
             - {name: tmp, mountPath: /tmp}
+            - {name: parameter-token, mountPath: /var/run/secrets/kubebrain-parameter, readOnly: true}
+            - {name: parameter-ca, mountPath: /var/run/secrets/kubebrain-parameter-ca, readOnly: true}
       volumes:
         - name: workspace
           persistentVolumeClaim:
             claimName: kubebrain-post-restore-audit-executor-workspace
         - name: tmp
           emptyDir: {sizeLimit: 256Mi}
+        - {name: parameter-token, projected: {sources: [{serviceAccountToken: {path: token, audience: kubebrain-operation-parameters, expirationSeconds: 3600}}]}}
+        - {name: parameter-ca, configMap: {name: kubebrain-operation-parameter-broker-ca, items: [{key: ca.crt, path: ca.crt}]}}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -280,7 +362,7 @@ spec:
   template:
     metadata: {labels: *rotationLabels}
     spec:
-      serviceAccountName: kubebrain-operation-worker
+      serviceAccountName: kubebrain-certificate-rotation-executor
       automountServiceAccountToken: true
       securityContext:
         runAsNonRoot: true
@@ -305,6 +387,9 @@ spec:
             - {name: OPERATION_NAMESPACE_INVENTORY_CONFIGMAP, value: kubebrain-backup-scheduler-inventory}
             - {name: OPERATION_NAMESPACE_INVENTORY_NAMESPACE, value: kubebrain-operations}
             - {name: OPERATION_NAMESPACE_INVENTORY_KEY, value: namespaces.json}
+            - {name: OPERATION_PARAMETERS_ENDPOINT, value: "https://kubebrain-operation-parameter-broker.kubebrain-operations.svc"}
+            - {name: OPERATION_PARAMETERS_TOKEN_FILE, value: /var/run/secrets/kubebrain-parameter/token}
+            - {name: OPERATION_PARAMETERS_CA_FILE, value: /var/run/secrets/kubebrain-parameter-ca/ca.crt}
             - {name: ROTATION_COMMAND, value: /opt/kubebrain/hack/production/validate-certificate-rotation.sh}
             - {name: PUBLISH_OVERLAP_COMMAND, value: /opt/kubebrain-executor-hooks/publish-overlap}
             - {name: PUBLISH_FINAL_COMMAND, value: /opt/kubebrain-executor-hooks/publish-final}
@@ -320,6 +405,8 @@ spec:
             - {name: workspace, mountPath: /var/lib/kubebrain-operation}
             - {name: tmp, mountPath: /tmp}
             - {name: hooks, mountPath: /opt/kubebrain-executor-hooks, readOnly: true}
+            - {name: parameter-token, mountPath: /var/run/secrets/kubebrain-parameter, readOnly: true}
+            - {name: parameter-ca, mountPath: /var/run/secrets/kubebrain-parameter-ca, readOnly: true}
       volumes:
         - name: workspace
           persistentVolumeClaim:
@@ -330,6 +417,8 @@ spec:
           secret:
             secretName: kubebrain-certificate-rotation-executor-hooks
             defaultMode: 365
+        - {name: parameter-token, projected: {sources: [{serviceAccountToken: {path: token, audience: kubebrain-operation-parameters, expirationSeconds: 3600}}]}}
+        - {name: parameter-ca, configMap: {name: kubebrain-operation-parameter-broker-ca, items: [{key: ca.crt, path: ca.crt}]}}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -348,7 +437,7 @@ spec:
   template:
     metadata: {labels: *destroyLabels}
     spec:
-      serviceAccountName: kubebrain-operation-worker
+      serviceAccountName: kubebrain-destroy-executor
       automountServiceAccountToken: true
       securityContext:
         runAsNonRoot: true
@@ -373,6 +462,9 @@ spec:
             - {name: OPERATION_NAMESPACE_INVENTORY_CONFIGMAP, value: kubebrain-backup-scheduler-inventory}
             - {name: OPERATION_NAMESPACE_INVENTORY_NAMESPACE, value: kubebrain-operations}
             - {name: OPERATION_NAMESPACE_INVENTORY_KEY, value: namespaces.json}
+            - {name: OPERATION_PARAMETERS_ENDPOINT, value: "https://kubebrain-operation-parameter-broker.kubebrain-operations.svc"}
+            - {name: OPERATION_PARAMETERS_TOKEN_FILE, value: /var/run/secrets/kubebrain-parameter/token}
+            - {name: OPERATION_PARAMETERS_CA_FILE, value: /var/run/secrets/kubebrain-parameter-ca/ca.crt}
             - {name: DESTROY_COMMAND, value: /opt/kubebrain/hack/production/destroy-instance.sh}
             - {name: UID_DELETE, value: /usr/local/bin/kubebrain-uid-delete}
             - {name: LOGICAL_STATUS, value: /usr/local/bin/kubebrain-logical-status}
@@ -387,9 +479,13 @@ spec:
           volumeMounts:
             - {name: workspace, mountPath: /var/lib/kubebrain-operation}
             - {name: tmp, mountPath: /tmp}
+            - {name: parameter-token, mountPath: /var/run/secrets/kubebrain-parameter, readOnly: true}
+            - {name: parameter-ca, mountPath: /var/run/secrets/kubebrain-parameter-ca, readOnly: true}
       volumes:
         - name: workspace
           persistentVolumeClaim:
             claimName: kubebrain-destroy-executor-workspace
         - name: tmp
           emptyDir: {sizeLimit: 256Mi}
+        - {name: parameter-token, projected: {sources: [{serviceAccountToken: {path: token, audience: kubebrain-operation-parameters, expirationSeconds: 3600}}]}}
+        - {name: parameter-ca, configMap: {name: kubebrain-operation-parameter-broker-ca, items: [{key: ca.crt, path: ca.crt}]}}

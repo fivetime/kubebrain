@@ -511,6 +511,29 @@ func (q *Queue) Parameters(ctx context.Context, name string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	return q.parameters(ctx, object)
+}
+
+func (q *Queue) ParametersForWorker(
+	ctx context.Context, name, operationType, owner string, attempt int64,
+) ([]byte, error) {
+	object, err := q.resource.Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return nil, err
+	}
+	actualType, _, _ := unstructured.NestedString(object.Object, "spec", "type")
+	if actualType != operationType {
+		return nil, errors.New("operation type does not match worker identity")
+	}
+	if err := q.requireWorker(object, owner, attempt); err != nil {
+		return nil, err
+	}
+	return q.parameters(ctx, object)
+}
+
+func (q *Queue) parameters(
+	ctx context.Context, object *unstructured.Unstructured,
+) ([]byte, error) {
 	secretName, _, _ := unstructured.NestedString(
 		object.Object, "spec", "parametersSecretRef", "name",
 	)

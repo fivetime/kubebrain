@@ -2,12 +2,19 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
+	"net/url"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/kubewharf/kubebrain/hack/production/internal/namespaceinventory"
@@ -22,6 +29,7 @@ import (
 func main() {
 	var action, namespace, name, operationID, tenant, requestedBy, instance, operationType, parametersSHA string
 	var parametersSecret, parametersKey string
+	var parametersEndpoint, parametersTokenFile, parametersCAFile string
 	var inventoryName, inventoryNamespace, inventoryKey string
 	var owner, receiptSHA, message, approvalID, approvedBy, kubeconfig, contextName string
 	var maxAttempts, attempt int64
@@ -46,6 +54,14 @@ func main() {
 	flag.StringVar(&parametersSHA, "parameters-sha256", "", "immutable parameters digest")
 	flag.StringVar(&parametersSecret, "parameters-secret", "", "immutable parameters Secret name")
 	flag.StringVar(&parametersKey, "parameters-key", "", "immutable parameters Secret key")
+	flag.StringVar(&parametersEndpoint, "parameters-endpoint",
+		os.Getenv("OPERATION_PARAMETERS_ENDPOINT"), "HTTPS operation parameter broker endpoint")
+	flag.StringVar(&parametersTokenFile, "parameters-token-file",
+		envOrDefault("OPERATION_PARAMETERS_TOKEN_FILE", "/var/run/secrets/kubebrain-parameter/token"),
+		"projected service account token used by the parameter broker")
+	flag.StringVar(&parametersCAFile, "parameters-ca-file",
+		envOrDefault("OPERATION_PARAMETERS_CA_FILE", "/var/run/secrets/kubebrain-parameter-ca/ca.crt"),
+		"parameter broker CA bundle")
 	flag.Int64Var(&maxAttempts, "max-attempts", 3, "maximum worker claims")
 	flag.StringVar(&owner, "owner", "", "worker identity")
 	flag.Int64Var(&attempt, "attempt", 0, "worker fencing attempt")
@@ -95,7 +111,14 @@ func main() {
 		}
 	case "parameters":
 		var data []byte
-		data, err = queue.Parameters(ctx, name)
+		if parametersEndpoint != "" {
+			data, err = brokerParameters(
+				ctx, parametersEndpoint, parametersTokenFile, parametersCAFile,
+				namespace, name, owner, attempt,
+			)
+		} else {
+			data, err = queue.Parameters(ctx, name)
+		}
 		if err == nil {
 			if _, writeErr := os.Stdout.Write(data); writeErr != nil {
 				log.Fatal(writeErr)
@@ -154,4 +177,59 @@ func envOrDefault(name, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func brokerParameters(
+	ctx context.Context, endpoint, tokenFile, caFile, namespace, name, owner string, attempt int64,
+) ([]byte, error) {
+	if name == "" || owner == "" || attempt <= 0 {
+		return nil, errors.New("broker parameters require name, owner, and positive attempt")
+	}
+	base, err := url.Parse(endpoint)
+	if err != nil || base.Scheme != "https" || base.Host == "" || base.RawQuery != "" {
+		return nil, errors.New("parameters endpoint must be an HTTPS origin")
+	}
+	base.Path = strings.TrimSuffix(base.Path, "/") + "/v1/parameters"
+	query := base.Query()
+	query.Set("namespace", namespace)
+	query.Set("name", name)
+	query.Set("owner", owner)
+	query.Set("attempt", strconv.FormatInt(attempt, 10))
+	base.RawQuery = query.Encode()
+	token, err := os.ReadFile(tokenFile)
+	if err != nil {
+		return nil, fmt.Errorf("read parameter broker token: %w", err)
+	}
+	ca, err := os.ReadFile(caFile)
+	if err != nil {
+		return nil, fmt.Errorf("read parameter broker CA: %w", err)
+	}
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM(ca) {
+		return nil, errors.New("parameter broker CA contains no certificates")
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, base.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("Authorization", "Bearer "+strings.TrimSpace(string(token)))
+	client := &http.Client{
+		Timeout: 15 * time.Second,
+		Transport: &http.Transport{TLSClientConfig: &tls.Config{
+			MinVersion: tls.VersionTLS12, RootCAs: roots,
+		}},
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		return nil, fmt.Errorf("parameter broker request: %w", err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(response.Body, 4<<20))
+	if err != nil {
+		return nil, err
+	}
+	if response.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("parameter broker returned HTTP %d", response.StatusCode)
+	}
+	return body, nil
 }

@@ -82,7 +82,8 @@ if [[ -z "$PARAMETERS_INPUT" ]]; then
   managed_parameters="$(mktemp)"
   PARAMETERS_INPUT="$managed_parameters"
   trap 'rm -f "$managed_parameters"' EXIT
-  run_operationctl --action parameters --name "$name" >"$PARAMETERS_INPUT"
+  run_operationctl --action parameters --name "$name" --owner "$WORKER_ID" \
+    --attempt "$attempt" >"$PARAMETERS_INPUT"
 fi
 actual_digest="$(sha256sum "$PARAMETERS_INPUT" | cut -d ' ' -f1)"
 if [[ "$actual_digest" != "$expected_digest" ]]; then

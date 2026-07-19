@@ -31,12 +31,21 @@ rules:
       - get
       - update
       - delete
-  - apiGroups:
-      - ""
-    resources:
-      - secrets
-    verbs:
-      - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kubebrain-operation-parameter-broker-managed-namespace
+  labels:
+    app.kubernetes.io/name: kubebrain-operation-parameter-broker
+    app.kubernetes.io/part-of: kubebrain
+rules:
+  - apiGroups: [dbaas.kubebrain.io]
+    resources: [kubebrainoperations]
+    verbs: [get]
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole

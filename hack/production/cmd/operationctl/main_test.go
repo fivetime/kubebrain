@@ -1,7 +1,11 @@
 package main
 
 import (
+	"encoding/pem"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -15,6 +19,64 @@ func TestDefaultKubeconfigOnlyUsesExplicitEnvironment(t *testing.T) {
 
 	t.Setenv("KUBECONFIG", "/explicit/config")
 	require.Equal(t, "/explicit/config", defaultKubeconfig())
+}
+
+func TestBrokerParametersUsesTLSBearerAndFencingIdentity(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(
+		response http.ResponseWriter, request *http.Request,
+	) {
+		require.Equal(t, "/v1/parameters", request.URL.Path)
+		require.Equal(t, "tenant-a", request.URL.Query().Get("namespace"))
+		require.Equal(t, "backup-1", request.URL.Query().Get("name"))
+		require.Equal(t, "worker-a", request.URL.Query().Get("owner"))
+		require.Equal(t, "2", request.URL.Query().Get("attempt"))
+		require.Equal(t, "Bearer projected-token", request.Header.Get("Authorization"))
+		response.WriteHeader(http.StatusOK)
+		_, _ = response.Write([]byte("{\"bound\":true}\n"))
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	tokenPath := filepath.Join(dir, "token")
+	caPath := filepath.Join(dir, "ca.crt")
+	require.NoError(t, os.WriteFile(tokenPath, []byte("projected-token\n"), 0o600))
+	require.NoError(t, os.WriteFile(caPath, pem.EncodeToMemory(&pem.Block{
+		Type: "CERTIFICATE", Bytes: server.Certificate().Raw,
+	}), 0o600))
+	parameters, err := brokerParameters(
+		t.Context(), server.URL, tokenPath, caPath,
+		"tenant-a", "backup-1", "worker-a", 2,
+	)
+	require.NoError(t, err)
+	require.JSONEq(t, `{"bound":true}`, string(parameters))
+}
+
+func TestBrokerParametersRejectsInsecureEndpointAndNonSuccess(t *testing.T) {
+	_, err := brokerParameters(
+		t.Context(), "http://parameters.example", "missing", "missing",
+		"tenant-a", "backup-1", "worker-a", 1,
+	)
+	require.ErrorContains(t, err, "HTTPS origin")
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(
+		response http.ResponseWriter, _ *http.Request,
+	) {
+		http.Error(response, "denied", http.StatusForbidden)
+	}))
+	defer server.Close()
+	dir := t.TempDir()
+	tokenPath := filepath.Join(dir, "token")
+	caPath := filepath.Join(dir, "ca.crt")
+	require.NoError(t, os.WriteFile(tokenPath, []byte("token"), 0o600))
+	require.NoError(t, os.WriteFile(caPath, pem.EncodeToMemory(&pem.Block{
+		Type: "CERTIFICATE", Bytes: server.Certificate().Raw,
+	}), 0o600))
+	_, err = brokerParameters(
+		t.Context(), server.URL, tokenPath, caPath,
+		"tenant-a", "backup-1", "worker-a", 1,
+	)
+	require.ErrorContains(t, err, "HTTP 403")
+	require.NotContains(t, err.Error(), "denied")
 }
 
 func TestClientConfigFallsBackToStandardLocalKubeconfig(t *testing.T) {
