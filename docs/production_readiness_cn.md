@@ -1045,6 +1045,11 @@ status CAS 若冲突、超时或失败，worker 必须用脱离原请求取消�
 context，按 holder identity 和 Lease UID precondition 释放刚取得的实例锁。status 主错误
 与 cleanup 错误必须同时返回；补偿失败时不能继续扫描其他候选。Requeue/Finish 已成功
 提交 Pending/终态 status 后也使用相同独立预算释放 Lease，并把释放失败暴露给调用方。
+调用方可用完全相同的 owner、attempt 和结果重试已提交的 Requeue/Finish；Queue 不重复
+写 status，只重新执行 5 秒 Lease cleanup。Finish 必须精确匹配终态 phase、receipt 和
+message；Requeue 必须精确匹配 Pending phase、已清空 owner、原 attempt 和 message。
+任何不一致仍被 fencing 拒绝。重试清理发现 Lease 已不存在或 holder 已被替换时视为
+旧 holder 已完成清理，绝不删除替代 holder。
 该补偿只处理 Kubernetes coordination Lease；外部系统副作用仍由 Operation fencing 与
 幂等 receipt 约束。
 

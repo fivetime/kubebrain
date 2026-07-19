@@ -4925,6 +4925,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   零副本并更新到 A280；三副本 KubeBrain、三 PD、三 TiKV 和 A277 双副本 scheduler
   均 Ready、零重启。
 
+- **Operations A281 committed Lease cleanup retry（2026-07-19）**：
+  A280 会在 Requeue/Finish status 已提交但 Lease 清理失败时明确报错，不过调用方重试
+  相同请求时，终态幂等分支和 Pending fencing 分支会直接返回，无法清除遗留 Lease。
+  现在 Finish 仅在 phase、owner、attempt、receipt 和 message 全部精确匹配时重试清理；
+  Requeue 仅在 Pending、owner 已清空、attempt 与 message 精确匹配时重试清理。两条路径
+  都复用独立的 5 秒 cleanup budget。不同结果仍被 fencing/terminal guard 拒绝；Lease
+  不存在或 holder 已替换视为旧 holder 已清理，替代 holder 不会被删除。
+
+  operationqueue focused 连续 50 轮、全包连续 100 轮、race 连续 50 轮、全量 production
+  测试（90.895 秒）和 vet 均通过。精确提交
+  `27e58f14df5bdd259f5ee472e757e48eb91f4e0b` 构建非 root 镜像
+  `kubebrain:a281-lease-cleanup-retry`（image ID
+  `sha256:4ffc1899d1ac296714a8139cb87deb7344c93c44ef6726346d7813d264693db3`）。
+  最终 operationctl 连接线程化假 Kubernetes API：第一次 Finish 只写入一次 Succeeded
+  status，随后注入 Lease DELETE 503 并退出 1；第二次完全相同的 Finish 未再写 status，
+  只执行 GET/DELETE 补偿并退出 0。服务端最终统计 `statusPuts=1`、
+  `deleteAttempts=2`、`leasePresent=false`，事件顺序为
+  `get-operation -> put-status -> get-lease -> delete-lease-failed -> get-operation ->
+  get-lease -> delete-lease-succeeded`。kind 六类 executor Deployment 均保持零副本并
+  更新到 A281；三副本 KubeBrain、三 PD、三 TiKV 和 A277 双副本 scheduler 均 Ready、
+  零重启。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
