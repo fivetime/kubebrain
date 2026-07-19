@@ -4445,6 +4445,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `ErrCompacted`，且禁止键零落库。全新 upstream etcd 与真实三副本 TiKV-backed
   KubeBrain 各连续 10 轮通过；服务层已有
   `TestTxnRangeCompactedRevisionIsCheckedBeforeWrites` 固定提交前路径校验。
+- **Auth/Txn A257 PrevKV and lease RBAC regression coverage（2026-07-19）**：
+  对照 upstream `/root/etcd` commit `70a2b4871`。该修复要求 Txn 内 Put 复用完整
+  Put 鉴权，而不能只检查目标键 WRITE 权限：`PrevKv=true` 还必须拥有目标键 READ
+  权限，携带 lease 还必须能写该 lease 已关联的所有键，嵌套 Txn 和未选分支也必须在
+  mutation 前完成相同检查。KubeBrain 的 `authorizeTxn` 已递归调用 `authorizePut`，
+  lease 路径还在 `leaseWriteMu` 内二次鉴权，因此本轮未发现运行时实现差异。
+
+  新增服务层 `TestAuthTxnPutPrevKVRequiresReadAndWrite`，用仅 WRITE 用户覆盖顶层和
+  嵌套 Txn Put + PrevKV，均返回精确 `ErrPermissionDenied` 且旧值保持不变；连续
+  20 轮通过。官方 client/v3 Auth 差分增加同一 write-only 场景，并与既有 leased
+  Txn Put 场景共同固定 upstream 修复的两个分支；全新 upstream etcd 和真实独立
+  `a257-auth-diff2` TiKV keyspace 的 KubeBrain 完整 Auth 生命周期结果一致。一次性
+  Pod、Service、端口转发、参考 etcd 和临时目录均已清理。相关 Auth 服务层 race
+  连续 10 轮、真实三副本 client/v3 兼容模块全量、根模块全量及两处 vet 均通过；
+  并行争用同一 TiKV 时曾使一次根模块 backend 门禁失败，停止并行负载后 backend
+  单独及根模块串行全量均通过，因此不把测试环境资源竞争误报为产品回归。
 
 ### P1：通用服务能力
 

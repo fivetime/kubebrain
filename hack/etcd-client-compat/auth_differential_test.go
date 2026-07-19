@@ -66,6 +66,8 @@ type authDifferentialOutcome struct {
 	RootKeepAliveOK           bool
 	UserLeasedPut             authErrorOutcome
 	UserLeasedTxnPut          authErrorOutcome
+	WriterTxnPutPrevKV        authErrorOutcome
+	WriterTxnValuePreserved   bool
 }
 
 func runConcurrentClientOperations(count int, operation func(int) error) []error {
@@ -131,7 +133,11 @@ func collectAuthDifferentialOutcome(t *testing.T, endpoint string) authDifferent
 	require.NoError(t, err)
 	_, err = bootstrap.UserAdd(ctx, "alice", "alice-secret")
 	require.NoError(t, err)
+	_, err = bootstrap.UserAdd(ctx, "writer", "writer-secret")
+	require.NoError(t, err)
 	_, err = bootstrap.RoleAdd(ctx, "allowed")
+	require.NoError(t, err)
+	_, err = bootstrap.RoleAdd(ctx, "write-only")
 	require.NoError(t, err)
 	_, err = bootstrap.RoleGrantPermission(
 		ctx,
@@ -143,6 +149,16 @@ func collectAuthDifferentialOutcome(t *testing.T, endpoint string) authDifferent
 	require.NoError(t, err)
 	_, err = bootstrap.UserGrantRole(ctx, "alice", "allowed")
 	require.NoError(t, err)
+	_, err = bootstrap.RoleGrantPermission(
+		ctx,
+		"write-only",
+		"/auth-write-only/key",
+		"",
+		clientv3.PermissionType(clientv3.PermWrite),
+	)
+	require.NoError(t, err)
+	_, err = bootstrap.UserGrantRole(ctx, "writer", "write-only")
+	require.NoError(t, err)
 	_, implicitRootRoleErr := bootstrap.RoleGet(ctx, "root")
 	_, err = bootstrap.AuthEnable(ctx)
 	require.NoError(t, err)
@@ -153,6 +169,7 @@ func collectAuthDifferentialOutcome(t *testing.T, endpoint string) authDifferent
 	_, noPasswordErr := bootstrap.Authenticate(ctx, "nopass", "password")
 	root := authClient(t, endpoint, "root", "root-secret")
 	alice := authClient(t, endpoint, "alice", "alice-secret")
+	writer := authClient(t, endpoint, "writer", "writer-secret")
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cleanupCancel()
@@ -183,6 +200,14 @@ func collectAuthDifferentialOutcome(t *testing.T, endpoint string) authDifferent
 	_, userLeasedTxnPutErr := alice.Txn(ctx).Then(
 		clientv3.OpPut("/auth-allowed/leased-txn-put", "value", clientv3.WithLease(protectedLease.ID)),
 	).Commit()
+	_, err = root.Put(ctx, "/auth-write-only/key", "before")
+	require.NoError(t, err)
+	_, writerTxnPutPrevKVErr := writer.Txn(ctx).Then(
+		clientv3.OpPut("/auth-write-only/key", "after", clientv3.WithPrevKV()),
+	).Commit()
+	writerTxnValue, err := root.Get(ctx, "/auth-write-only/key")
+	require.NoError(t, err)
+	require.Len(t, writerTxnValue.Kvs, 1)
 
 	_, err = root.UserGrantRole(ctx, "root", "root")
 	require.NoError(t, err)
@@ -314,6 +339,8 @@ func collectAuthDifferentialOutcome(t *testing.T, endpoint string) authDifferent
 		RootKeepAliveOK:           rootKeepAliveErr == nil,
 		UserLeasedPut:             authError(userLeasedPutErr),
 		UserLeasedTxnPut:          authError(userLeasedTxnPutErr),
+		WriterTxnPutPrevKV:        authError(writerTxnPutPrevKVErr),
+		WriterTxnValuePreserved:   string(writerTxnValue.Kvs[0].Value) == "before",
 	}
 }
 
@@ -329,6 +356,8 @@ func TestAuthDifferentialAgainstEtcd(t *testing.T) {
 	reference := collectAuthDifferentialOutcome(t, referenceEndpoint)
 	require.True(t, reference.UserLeasedPut.PermissionDenied)
 	require.True(t, reference.UserLeasedTxnPut.PermissionDenied)
+	require.True(t, reference.WriterTxnPutPrevKV.PermissionDenied)
+	require.True(t, reference.WriterTxnValuePreserved)
 	actual := collectAuthDifferentialOutcome(t, kubebrainEndpoint)
 	require.Equal(t, reference, actual)
 }

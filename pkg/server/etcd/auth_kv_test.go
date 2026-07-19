@@ -194,3 +194,61 @@ func TestAuthDeletePrevKVRequiresReadAndWrite(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, stored.Kvs, 1, "read denial for PrevKV must happen before deletion")
 }
+
+func TestAuthTxnPutPrevKVRequiresReadAndWrite(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		txn  func(*etcdserverpb.PutRequest) *etcdserverpb.TxnRequest
+	}{
+		{
+			name: "top level",
+			txn: func(put *etcdserverpb.PutRequest) *etcdserverpb.TxnRequest {
+				return &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{{
+					Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: put},
+				}}}
+			},
+		},
+		{
+			name: "nested",
+			txn: func(put *etcdserverpb.PutRequest) *etcdserverpb.TxnRequest {
+				return &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{{
+					Request: &etcdserverpb.RequestOp_RequestTxn{RequestTxn: &etcdserverpb.TxnRequest{
+						Success: []*etcdserverpb.RequestOp{{
+							Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: put},
+						}},
+					}},
+				}}}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server, closeFn := newTestRPCServer(t)
+			defer closeFn()
+			ctx := context.Background()
+			require.NoError(t, server.auth.userAdd(ctx, &etcdserverpb.AuthUserAddRequest{Name: "root", Password: "root-secret"}))
+			require.NoError(t, server.auth.roleAdd(ctx, "root"))
+			require.NoError(t, server.auth.userGrantRole(ctx, "root", "root"))
+			require.NoError(t, server.auth.userAdd(ctx, &etcdserverpb.AuthUserAddRequest{Name: "writer", Password: "secret"}))
+			require.NoError(t, server.auth.roleAdd(ctx, "writer"))
+			require.NoError(t, server.auth.userGrantRole(ctx, "writer", "writer"))
+			require.NoError(t, server.auth.roleGrantPermission(ctx, "writer", &authpb.Permission{
+				PermType: authpb.WRITE, Key: []byte("key"),
+			}))
+			_, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: []byte("key"), Value: []byte("before")})
+			require.NoError(t, err)
+			require.NoError(t, server.auth.enable(ctx))
+			token, err := server.tokens.authenticate(ctx, "writer", "secret")
+			require.NoError(t, err)
+			writerCtx := metadata.NewIncomingContext(ctx, metadata.Pairs(rpctypes.TokenFieldNameGRPC, token))
+
+			_, err = server.Txn(writerCtx, tc.txn(&etcdserverpb.PutRequest{
+				Key: []byte("key"), Value: []byte("after"), PrevKv: true,
+			}))
+			require.ErrorIs(t, err, rpctypes.ErrPermissionDenied)
+			stored, err := server.backend.Get(context.Background(), &etcdserverpb.RangeRequest{Key: []byte("key")})
+			require.NoError(t, err)
+			require.Len(t, stored.Kvs, 1)
+			require.Equal(t, []byte("before"), stored.Kvs[0].Value, "read denial for PrevKV must happen before txn mutation")
+		})
+	}
+}
