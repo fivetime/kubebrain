@@ -4289,6 +4289,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   “首块→推进 revision→physical compact→继续发送”的旧 OK 结果并固定新错误。
   双端 live 测试只接受显式 disposable `KUBEBRAIN_COMPACTION_ENDPOINT`，拒绝共享主
   endpoint；真实验证使用独立 `--keyspace=a245-compact`，不推进生产实例 watermark。
+- **KV A246 RangeStream upstream regression gates（2026-07-19）**：继续对照
+  `/root/etcd/tests/integration/v3_grpc_test.go::TestV3RangeStreamWriteBetweenChunks`
+  和 `TestV3RangeStreamLargeValues`。可控 `Send` 屏障在首块后提交一个仍位于请求范围内的
+  新 key，确认最终结果、Count 和 header revision 仍固定在流启动快照；另把公开消息目标
+  压到 256 bytes、写入 20 个 1 KiB value，确认不可拆分的单 KV 独占一块但不会令 chunker
+  停滞或丢键。两项直接 handler 门禁连续 10 轮通过。
+
+  本轮还以 reference etcd 对共享实例执行全部非 Compact `*Differential*` 黑盒（Compact
+  继续只允许 disposable keyspace），覆盖 Alarm、binary key/mutation、Delete、HashKV、
+  Lease、leasing 故障/重连、make-mirror、MemberList、namespace、Put、Range/RangeStream、
+  serializable read、STM、Txn 与 Watch，共 261.657 秒全部通过；Watch/Lease 子集另连续
+  3 轮通过。未发现新的客户端可观察差异，因此没有为制造提交而改动运行时路径；A246
+  固化 upstream 2026 年新增回归面，防止后续 scanner/chunker 优化破坏已验证语义。
 
 ### P1：通用服务能力
 

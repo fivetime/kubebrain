@@ -484,6 +484,88 @@ func TestRangeStreamChunksRespectConfiguredMessageTarget(t *testing.T) {
 		"bounded RangeStream must not materialize a unary List response")
 }
 
+func TestRangeStreamLargeValueExceedingMessageTargetStillProgresses(t *testing.T) {
+	server, cleanup := newRangeStreamTestServer(t)
+	defer cleanup()
+	server.SetRequestLimits(defaultMaxTxnOps, 256)
+	ctx := context.Background()
+
+	value := make([]byte, 1024)
+	for i := 0; i < 20; i++ {
+		value[0] = byte(i)
+		_, err := server.Put(ctx, &etcdserverpb.PutRequest{
+			Key:   []byte(fmt.Sprintf("/large-stream/%02d", i)),
+			Value: append([]byte(nil), value...),
+		})
+		require.NoError(t, err)
+	}
+
+	stream := &fakeRangeStreamServer{ctx: ctx}
+	require.NoError(t, server.RangeStream(&etcdserverpb.RangeRequest{
+		Key: []byte("/large-stream/"), RangeEnd: []byte("/large-stream0"),
+	}, stream))
+
+	var keys int
+	for _, chunk := range stream.sent {
+		require.LessOrEqual(t, len(chunk.RangeResponse.Kvs), 1,
+			"an indivisible KV over the target must be emitted alone")
+		keys += len(chunk.RangeResponse.Kvs)
+	}
+	require.Equal(t, 20, keys)
+	require.GreaterOrEqual(t, len(stream.sent), 21,
+		"every oversized KV plus terminal metadata must make forward progress")
+	require.EqualValues(t, 20, stream.sent[len(stream.sent)-1].RangeResponse.Count)
+}
+
+func TestRangeStreamPinsRevisionAcrossConcurrentWrite(t *testing.T) {
+	server, cleanup := newRangeStreamTestServer(t)
+	defer cleanup()
+	server.SetRequestLimits(defaultMaxTxnOps, 256)
+	ctx := context.Background()
+
+	const n = 20
+	for i := 0; i < n; i++ {
+		_, err := server.Put(ctx, &etcdserverpb.PutRequest{
+			Key:   []byte(fmt.Sprintf("/pinned-stream/%02d", i)),
+			Value: []byte(fmt.Sprintf("value-%02d-%090d", i, i)),
+		})
+		require.NoError(t, err)
+	}
+	pinnedRevision := server.backend.GetCurrentRevision()
+
+	stream := &blockingRangeStreamServer{
+		fakeRangeStreamServer: fakeRangeStreamServer{ctx: ctx},
+		firstSent:             make(chan struct{}),
+		release:               make(chan struct{}),
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- server.RangeStream(&etcdserverpb.RangeRequest{
+			Key: []byte("/pinned-stream/"), RangeEnd: []byte("/pinned-stream0"),
+		}, stream)
+	}()
+
+	<-stream.firstSent
+	_, err := server.Put(ctx, &etcdserverpb.PutRequest{
+		Key: []byte("/pinned-stream/99"), Value: []byte("late"),
+	})
+	require.NoError(t, err)
+	close(stream.release)
+	require.NoError(t, <-done)
+
+	var keys []string
+	for _, chunk := range stream.sent {
+		for _, kv := range chunk.RangeResponse.Kvs {
+			keys = append(keys, string(kv.Key))
+		}
+	}
+	require.Len(t, keys, n)
+	require.NotContains(t, keys, "/pinned-stream/99")
+	final := stream.sent[len(stream.sent)-1].RangeResponse
+	require.Equal(t, int64(pinnedRevision), final.Header.Revision)
+	require.EqualValues(t, n, final.Count)
+}
+
 func TestRangeStreamRejectsPrematureBackendClose(t *testing.T) {
 	server, cleanup := newRangeStreamTestServer(t)
 	defer cleanup()
