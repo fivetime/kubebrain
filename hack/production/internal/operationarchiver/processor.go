@@ -9,6 +9,7 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/kubewharf/kubebrain/hack/production/internal/operationauditbuilder"
@@ -98,8 +99,26 @@ func (p *ArchiveProcessor) Process(ctx context.Context, object *unstructured.Uns
 func (p *ArchiveProcessor) runCommand(ctx context.Context, executable string, environment []string) error {
 	command := exec.CommandContext(ctx, executable)
 	command.Env = mergeEnvironment(os.Environ(), environment)
+	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	command.Cancel = func() error {
+		if command.Process == nil {
+			return nil
+		}
+		err := syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
+		if errors.Is(err, syscall.ESRCH) {
+			return os.ErrProcessDone
+		}
+		return err
+	}
+	command.WaitDelay = 5 * time.Second
 	output, err := command.CombinedOutput()
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return fmt.Errorf(
+				"object archive executor failed: %w: %s",
+				ctxErr, strings.TrimSpace(string(output)),
+			)
+		}
 		return fmt.Errorf("object archive executor failed: %w: %s", err, strings.TrimSpace(string(output)))
 	}
 	return nil

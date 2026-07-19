@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -99,6 +100,20 @@ func TestArchiveProcessorPropagatesReconcileCancellationToExecutor(t *testing.T)
 		Get(context.Background(), "operation-a", metav1.GetOptions{})
 	require.NoError(t, getErr)
 	require.Contains(t, updated.GetFinalizers(), operationaudit.Finalizer)
+}
+
+func TestArchiveCommandCancellationKillsDescendantProcessGroup(t *testing.T) {
+	processor := &ArchiveProcessor{}
+	executable := filepath.Join(t.TempDir(), "blocking-executor")
+	require.NoError(t, os.WriteFile(
+		executable, []byte("#!/bin/sh\nsleep 60\n"), 0o700,
+	))
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	err := processor.runCommand(ctx, executable, nil)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.Less(t, time.Since(start), 2*time.Second)
 }
 
 func TestMergeEnvironmentOverridesExistingValues(t *testing.T) {
