@@ -34,7 +34,10 @@ func main() {
 	var owner, receiptSHA, message, approvalID, approvedBy, kubeconfig, contextName string
 	var maxAttempts, attempt int64
 	var lease time.Duration
-	flag.StringVar(&action, "action", "", "submit, claim, parameters, heartbeat, retry, succeed, fail, or get")
+	flag.StringVar(
+		&action, "action", "",
+		"submit, claim, parameters, heartbeat, retry, succeed, fail, get, or approve",
+	)
 	flag.StringVar(&namespace, "namespace", "kubebrain-system", "operation namespace")
 	flag.StringVar(&inventoryName, "namespace-inventory-configmap",
 		os.Getenv("OPERATION_NAMESPACE_INVENTORY_CONFIGMAP"),
