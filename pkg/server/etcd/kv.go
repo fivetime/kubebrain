@@ -152,11 +152,12 @@ func (s *RPCServer) RangeStream(r *etcdserverpb.RangeRequest, rs etcdserverpb.KV
 	if hasRangeRevisionFilters(r) {
 		return status.Error(codes.Unimplemented, "RangeStream does not support revision filters")
 	}
-	// CountOnly has no KV payload to stream. Limited requests still use the
-	// scanner below: after sending Limit KVs, drain the pinned scan while only
-	// counting the remainder so Count/More stay exact without materializing a
-	// unary result.
-	if r.CountOnly {
+	// CountOnly has no KV payload to stream. A point lookup is inherently
+	// bounded to one KV, and empty/reversed intervals must not enter the
+	// partition scanner: its encoded MVCC borders are meaningful only for a
+	// non-empty range. Use the unary path for these shapes, matching etcd's
+	// Range result exactly while keeping recursive ranges on the bounded stream.
+	if r.CountOnly || len(r.RangeEnd) == 0 || isEmptyNonFromKeyRange(r.Key, r.RangeEnd) {
 		resp, err := s.Range(ctx, proto.Clone(r).(*etcdserverpb.RangeRequest))
 		if err != nil {
 			return rangeStreamStatusErr(err)
@@ -184,6 +185,13 @@ func (s *RPCServer) RangeStream(r *etcdserverpb.RangeRequest, rs etcdserverpb.KV
 		}
 	}
 	if err := s.checkRequestedRevision(ctx, r.Revision); err != nil {
+		return rangeStreamStatusErr(err)
+	}
+	// The data snapshot is pinned to r.Revision, but etcd's response header is
+	// the store revision observed when the stream starts. In particular, a
+	// historical RangeStream returns old KVs with a current header revision.
+	streamHeaderRevision, err := safeBackendRevision(ctx, s.backend)
+	if err != nil {
 		return rangeStreamStatusErr(err)
 	}
 	ch, err := s.backend.RangeStreamChan(ctx, r.Key, r.RangeEnd, uint64(r.Revision))
@@ -217,6 +225,7 @@ func (s *RPCServer) RangeStream(r *etcdserverpb.RangeRequest, rs etcdserverpb.KV
 		// header-only response carries the merged response's total Count.
 		chunk.resp.More = false
 		if terminal {
+			chunk.resp.Header = txnHeader(int64(streamHeaderRevision))
 			chunk.resp.Count = totalCount
 			chunk.resp.More = r.Limit > 0 && totalCount > sentCount
 		} else if r.Limit > 0 {

@@ -173,6 +173,44 @@ func TestRangeStreamEmptyRangeStillSendsHeaderRevision(t *testing.T) {
 		"apiserver reads Header.Revision as the sync's initial revision")
 }
 
+func TestRangeStreamPointAndEmptyIntervalsMatchUnaryRange(t *testing.T) {
+	server, cleanup := newRangeStreamTestServer(t)
+	defer cleanup()
+	ctx := context.Background()
+	_, err := server.Put(ctx, &etcdserverpb.PutRequest{
+		Key: []byte("/shape/a"), Value: []byte("value"),
+	})
+	require.NoError(t, err)
+
+	for _, test := range []struct {
+		name string
+		req  *etcdserverpb.RangeRequest
+	}{
+		{name: "point hit", req: &etcdserverpb.RangeRequest{Key: []byte("/shape/a")}},
+		{name: "point miss", req: &etcdserverpb.RangeRequest{Key: []byte("/shape/missing")}},
+		{name: "equal interval", req: &etcdserverpb.RangeRequest{
+			Key: []byte("/shape/a"), RangeEnd: []byte("/shape/a"),
+		}},
+		{name: "reversed interval", req: &etcdserverpb.RangeRequest{
+			Key: []byte("/shape/z"), RangeEnd: []byte("/shape/a"),
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			unary, rangeErr := server.Range(ctx, proto.Clone(test.req).(*etcdserverpb.RangeRequest))
+			require.NoError(t, rangeErr)
+			stream := &fakeRangeStreamServer{ctx: ctx}
+			require.NoError(t, server.RangeStream(
+				proto.Clone(test.req).(*etcdserverpb.RangeRequest), stream,
+			))
+			merged := &etcdserverpb.RangeResponse{}
+			for _, chunk := range stream.sent {
+				proto.Merge(merged, chunk.RangeResponse)
+			}
+			require.True(t, proto.Equal(unary, merged), "stream=%s unary=%s", merged, unary)
+		})
+	}
+}
+
 func TestRangeStreamPreservesBinaryUserKeyOrdering(t *testing.T) {
 	server, cleanup := newRangeStreamTestServer(t)
 	defer cleanup()
@@ -233,7 +271,7 @@ func TestHistoricalRangeStreamUsesDurableFollowerWatermark(t *testing.T) {
 	key := []byte("/stream-history/key")
 	first, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("v1")})
 	require.NoError(t, err)
-	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("v2")})
+	second, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("v2")})
 	require.NoError(t, err)
 	require.Eventually(t, func() bool {
 		rev, getErr := server.backend.GetDurableRevision(ctx)
@@ -258,6 +296,8 @@ func TestHistoricalRangeStreamUsesDurableFollowerWatermark(t *testing.T) {
 		}
 	}
 	require.Equal(t, [][]byte{[]byte("v1")}, values)
+	require.Equal(t, second.Header.Revision,
+		rs.sent[len(rs.sent)-1].RangeResponse.Header.Revision)
 }
 
 func TestRangeStreamRejectsUnsupportedShapes(t *testing.T) {

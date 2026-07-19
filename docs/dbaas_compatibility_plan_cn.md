@@ -4261,6 +4261,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   覆盖 managed parameters 路径。生产 CRD/RBAC/Deployment 结构测试及 Kubernetes API
   server dry-run 已通过。该增量关闭“管理面定期策略触发”缺口；跨 namespace/region
   全局调度、跨账户保留规划和管理面长时间 HA soak 仍保留。
+- **KV A244 RangeStream common-shape parity（2026-07-19）**：对照
+  `/root/etcd/tests/integration/v3_grpc_test.go` 的 common Range/RangeStream 矩阵新增
+  双端黑盒，补齐此前只覆盖 prefix 大范围、limit/count/keys-only 和二进制边界但遗漏的
+  point hit/miss、`[k,k)`、反向区间、from-key 与历史 revision。首次对 reference etcd
+  运行稳定复现三个差异：point stream 错误为空；反向区间因编码后的 MVCC scanner border
+  失序而泄露一个历史值；历史数据虽正确固定在请求 revision，终态 header 却错误报告该
+  历史 revision，而 etcd 报告请求开始时观察到的当前 store revision。
+
+  `RangeStream` 现将天然至多一个 KV 的 point 请求以及空/反向区间路由到同语义 unary
+  Range，再按流式 wire envelope 发送；递归范围仍走有界 partition scanner，不引入全量
+  materialization。一般流在 revision/auth/read barrier 后独立固定当前 header revision，
+  scanner 数据继续固定在请求 revision。直接 handler 测试逐字段比较 point/empty stream
+  与 unary，并固定历史旧值 + 当前 header 的组合；双端测试同时保留 limit Count/More 和
+  from-key 顺序，防止修复退化已有流式语义。
 
 ### P1：通用服务能力
 
