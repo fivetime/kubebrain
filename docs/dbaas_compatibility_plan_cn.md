@@ -4317,6 +4317,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   connections。可控 compaction-start 屏障证明 `Close` 不会先于 leadership callback
   返回，真实双端口占用测试固定返回 `address already in use`，proxy 测试固定 loop/client
   清理；三项普通测试与 race 各连续 20 轮通过，server/endpoint 全包通过。
+- **Auth A248 Bearer-prefixed token parity（2026-07-19）**：对照 upstream
+  `/root/etcd` commit `43a4c4ecd`。etcd 现允许 gRPC `token` metadata 使用 OAuth 风格的
+  `Bearer <token>`；KubeBrain 原把整段值交给 simple/JWT verifier，因而稳定返回
+  `InvalidArgument/etcdserver: invalid auth token`。鉴权入口现与 etcd 一样只精确剥离
+  大小写敏感的 `"Bearer "` 前缀，裸 token 行为不变，`"bearer "` 仍 fail closed。
+
+  request-local caller 继续保存原始 metadata 值，因此 follower 向 leader 转发时保持
+  `Bearer` 凭据逐字不变，不会重复添加或降级为另一种凭据。单元回归同时覆盖裸 token、
+  Bearer token、错误大小写和 outgoing metadata，定向普通测试连续 20 轮、race 连续
+  20 轮及 server 全包通过。官方 client/v3 live 门禁在共享 TiKV 的独立
+  `a248-auth` keyspace 启用 Auth 后直接发送 gRPC metadata，连续 3 轮确认裸 token 与
+  Bearer token 成功，小写 bearer 稳定返回
+  `Unauthenticated/etcdserver: invalid auth token`；未改动主实例 Auth 状态。
 
 ### P1：通用服务能力
 

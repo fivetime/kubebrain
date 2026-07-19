@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"sort"
+	"strings"
 
 	"go.etcd.io/etcd/api/v3/authpb"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
@@ -40,7 +41,8 @@ func (s *RPCServer) authCallerFromContext(ctx context.Context) (*authCaller, err
 	if len(values) != 1 || values[0] == "" {
 		return nil, rpctypes.ErrInvalidAuthToken
 	}
-	claims, err := s.tokens.verify(ctx, values[0])
+	token := strings.TrimPrefix(values[0], "Bearer ")
+	claims, err := s.tokens.verify(ctx, token)
 	if err != nil {
 		return nil, err
 	}
