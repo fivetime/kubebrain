@@ -3998,6 +3998,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `KubeBrainMeteringDataIncomplete`。控制面必须将该区间标为不可计费并补采/人工对账，
   不得以零填充。manifest 测试固定全部 17 条 recording rule、门控 PromQL、实例标签和
   告警契约。
+- **Operations A232 admission quota across replica replacement（2026-07-19）**：
+  对照 etcd gRPC server 对一个 stream 生命周期占用一个并发 slot 的 admission 行为，
+  新增真实三副本故障门禁。隔离滚动把
+  `--max-requests-inflight` 从生产默认 1024 临时降到 1，并用两个按 Pod name 固定的
+  NodePort 分别连接 victim 和 control 副本。Health Watch 在 victim 收到首个状态后持续
+  占用唯一 slot；同 Pod Health Check 必须返回标准
+  `ResourceExhausted: etcdserver: too many requests`，同时 control Pod 必须正常响应，
+  明确该限额是副本本地容量而不是错误的进程间共享计数。
+
+  测试随后记录 victim UID 并删除 Pod，要求旧 stream 在 30 秒内终止、同名 Pod 以新 UID
+  Ready，且同一个固定 endpoint 上的首个 Health Check 立即成功，证明进程替换不会继承
+  已死亡 stream 的 in-flight 计数。首轮约 10.0 秒、连续 5 轮约 46.8 秒、race 3 轮约
+  29.5 秒通过，共完成 9 次真实 victim UID replacement。临时 Service 已删除，StatefulSet
+  已恢复 `--max-requests-inflight=1024` 并完成三副本滚动；该门禁补齐取消释放单测之外的
+  真实故障证据，不把 per-replica admission 误述为 DBaaS 全局租户配额。
 - **Operations A185 certificate rotation completion state（2026-07-18）**：新增
   `hack/production/validate-certificate-rotation.sh`，把 client/peer CA rollover
   收敛为 `begin -> overlap -> complete` 三阶段门禁。begin 固定全部 KubeBrain Pod
@@ -4085,7 +4100,7 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
    auth+mTLS failover、服务端/内部客户端叶证书热轮换、CA trust pool 双信任窗口与撤旧
    及真实三副本在线轮换、长连接 drain/reconnect soak、CRL/cipher/TLS version 策略、
    独立 outbound client cert/key 与 peer CN/SAN allowlist 已完成；下一步扩大配额与故障
-   注入覆盖。
+   注入覆盖。client RPC 并发限额已覆盖真实副本 UID replacement 后的计数释放。
 2. `client/v3/concurrency` mutex/election/session、lease 自然过期和 failover
    recipe 已通过；继续增加长时间 soak。
 3. DBaaS 创建、扩缩、升级的数据面 release gate、备份完成 gate、Object Lock
