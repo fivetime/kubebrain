@@ -193,6 +193,37 @@ func TestOperationCRDAndWorkerRBACFencePersistentTasks(t *testing.T) {
 	require.Equal(t, []any{"get"}, rules[4].(map[string]any)["verbs"].([]any))
 }
 
+func TestOperationArchiverIsFailClosedAndHardened(t *testing.T) {
+	objects := decodeManifest(t, "kubebrain-operation-archiver-rbac.yaml")
+	deployment := objectByKindAndName(t, objects, "Deployment", "kubebrain-operation-archiver")
+	require.EqualValues(t, 0, nestedInt64(t, deployment, "spec", "replicas"))
+	require.EqualValues(t, 0, nestedInt64(t, deployment, "spec", "strategy", "rollingUpdate", "maxUnavailable"))
+	require.EqualValues(t, 1, nestedInt64(t, deployment, "spec", "strategy", "rollingUpdate", "maxSurge"))
+	require.True(t, nestedBool(t, deployment, "spec", "template", "spec", "automountServiceAccountToken"))
+	require.True(t, nestedBool(t, deployment, "spec", "template", "spec", "securityContext", "runAsNonRoot"))
+	containers, found, err := unstructured.NestedSlice(
+		deployment.Object, "spec", "template", "spec", "containers",
+	)
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Len(t, containers, 1)
+	container := &unstructured.Unstructured{Object: containers[0].(map[string]any)}
+	command, found, err := unstructured.NestedStringSlice(container.Object, "command")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, []string{"/usr/local/bin/kubebrain-operation-archiver"}, command)
+	args, found, err := unstructured.NestedStringSlice(container.Object, "args")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Contains(t, args, "--namespace-inventory-configmap=kubebrain-backup-scheduler-inventory")
+	require.Contains(t, args, "--object-store-id=$(OBJECT_STORE_ID)")
+	require.Contains(t, args, "--bucket=$(S3_BUCKET)")
+	require.True(t, nestedBool(t, container, "securityContext", "readOnlyRootFilesystem"))
+	require.False(t, nestedBool(t, container, "securityContext", "allowPrivilegeEscalation"))
+	pdb := objectByKindAndName(t, objects, "PodDisruptionBudget", "kubebrain-operation-archiver")
+	require.EqualValues(t, 1, nestedInt64(t, pdb, "spec", "maxUnavailable"))
+}
+
 func TestOperationAPIIsFailClosedAndHardened(t *testing.T) {
 	objects := decodeManifest(t, "kubebrain-operation-api.yaml")
 	deployment := objectByKindAndName(t, objects, "Deployment", "kubebrain-operation-api")

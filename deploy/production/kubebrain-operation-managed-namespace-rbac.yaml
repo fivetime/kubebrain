@@ -70,4 +70,5 @@ rules:
       - kubebrainoperations
     verbs:
       - get
+      - list
       - update

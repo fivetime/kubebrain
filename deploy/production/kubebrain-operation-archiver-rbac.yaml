@@ -18,11 +18,20 @@ metadata:
     app.kubernetes.io/part-of: kubebrain
 rules:
   - apiGroups:
+      - ""
+    resources:
+      - configmaps
+    resourceNames:
+      - kubebrain-backup-scheduler-inventory
+    verbs:
+      - get
+  - apiGroups:
       - dbaas.kubebrain.io
     resources:
       - kubebrainoperations
     verbs:
       - get
+      - list
       - update
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -41,3 +50,136 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
   name: kubebrain-operation-archiver
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kubebrain-operation-archiver
+  namespace: kubebrain-operations
+  labels:
+    app.kubernetes.io/name: kubebrain-operation-archiver
+    app.kubernetes.io/part-of: kubebrain
+spec:
+  replicas: 0
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kubebrain-operation-archiver
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kubebrain-operation-archiver
+        app.kubernetes.io/part-of: kubebrain
+    spec:
+      serviceAccountName: kubebrain-operation-archiver
+      automountServiceAccountToken: true
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: kubebrain-operation-archiver
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: kubebrain-operation-archiver
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: archiver
+          image: kubebrain:dev
+          imagePullPolicy: IfNotPresent
+          command:
+            - /usr/local/bin/kubebrain-operation-archiver
+          env:
+            - name: S3_ENDPOINT
+              valueFrom:
+                secretKeyRef:
+                  name: kubebrain-operation-archive-object-store
+                  key: endpoint
+            - name: AWS_REGION
+              valueFrom:
+                secretKeyRef:
+                  name: kubebrain-operation-archive-object-store
+                  key: region
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: kubebrain-operation-archive-object-store
+                  key: access-key-id
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: kubebrain-operation-archive-object-store
+                  key: secret-access-key
+            - name: S3_FORCE_PATH_STYLE
+              valueFrom:
+                secretKeyRef:
+                  name: kubebrain-operation-archive-object-store
+                  key: force-path-style
+            - name: OBJECT_STORE_ID
+              valueFrom:
+                secretKeyRef:
+                  name: kubebrain-operation-archive-object-store
+                  key: object-store-id
+            - name: S3_BUCKET
+              valueFrom:
+                secretKeyRef:
+                  name: kubebrain-operation-archive-object-store
+                  key: bucket
+          args:
+            - --namespace-inventory-configmap=kubebrain-backup-scheduler-inventory
+            - --namespace-inventory-namespace=kubebrain-operations
+            - --namespace-inventory-key=namespaces.json
+            - --object-store-id=$(OBJECT_STORE_ID)
+            - --bucket=$(S3_BUCKET)
+            - --object-prefix=operation-audit
+            - --retention-mode=COMPLIANCE
+            - --retention-duration=8760h
+            - --poll-interval=1m
+            - --max-batch=32
+          resources:
+            requests:
+              cpu: 50m
+              memory: 96Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: kubebrain-operation-archiver
+  namespace: kubebrain-operations
+  labels:
+    app.kubernetes.io/name: kubebrain-operation-archiver
+    app.kubernetes.io/part-of: kubebrain
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kubebrain-operation-archiver

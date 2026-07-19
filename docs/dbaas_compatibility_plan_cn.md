@@ -4591,6 +4591,47 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   合法排序和六类损坏输入；Backup executor 黑盒固定后续 succeed 使用 claim 返回的
   namespace。动态 archiver 扫描/归档编排和具体 executor Deployment 模板仍是后续 P1。
 
+- **Operations A266 inventory-aware HA operation audit archiver（2026-07-19）**：
+  A265 后终态 Operation 的 Object Lock 归档仍需人工逐个指定 namespace/name 执行脚本；
+  tenant 加入动态 inventory 后，未归档 finalizer 会永久阻止删除，而 archiver 没有可部署
+  的扫描与重试进程。
+
+  新增 `kubebrain-operation-archiver` 控制器，每轮先严格读取与 scheduler/worker 共用的
+  namespace inventory；inventory 损坏时在列出任何 Operation 前 fail closed。合法
+  namespace 分别列出 Operation，只选择仍持有 audit finalizer 的 Succeeded/Failed 终态，
+  按 completed time、namespace、name 稳定排序并以跨轮轮转窗口限制每轮 batch，避免一个
+  持续失败的最老对象饿死后续租户。单 namespace list 或单 operation 归档失败会聚合报告，
+  但不阻止其他 namespace/operation 前进。
+
+  processor 从当前终态对象生成规范化 artifact，object key 固定为
+  `<prefix>/<namespace>/<operation-uid>.json`，retain-until 固定为
+  `completedAtUnix + retention-duration`，因此多副本并发、进程崩溃和跨轮重试不会改变
+  identity 或保留策略。上传仍调用 A198 的 Go Object Lock executor，保留
+  If-None-Match、exact-version 下载、body/metadata/retention 复核和不可覆盖 receipt；
+  只有验证 receipt 后才调用 A199 release。两个 archiver 同时处理同一 UID 时可复用同一
+  exact version，resourceVersion 冲突的一方下一轮观察 finalizer 已释放，不需要持有
+  worker Secret 或 Lease。
+
+  生产镜像加入 archiver 与 logical-object 两个静态二进制；Deployment 具备只读根文件系统、
+  临时文件限额、资源限额、zone/hostname spread、PDB 和独立 ServiceAccount。中央 Role
+  仅可 get 指定 inventory ConfigMap，并 list/get/update Operation 主资源；目标 namespace
+  ClusterRole 同样只新增 list，不授予 Secret、status、Lease、create 或 delete。模板默认
+  replicas=0，必须先创建 `kubebrain-operation-archive-object-store` Secret、验证 Object
+  Lock/versioning/retention，再显式扩为两个副本。确定性与 race 测试覆盖跨 namespace
+  排序、invalid inventory 零访问、batch、失败隔离、稳定 key/retention、远端验证后
+  finalizer release、过期 retention 拒绝和子进程环境覆盖；API Server dry-run 固定清单
+  与 RBAC。
+
+  真实 `kind-kubebrain-dbaas` 使用两个临时 namespace 和双副本 archiver 竞争处理两个
+  Failed Backup Operation。MinIO 独立 bucket 已启用 versioning/Object Lock，两边分别
+  产生一个 633-byte COMPLIANCE exact version，version ID 与 CR archive annotations
+  一致，两个 finalizer 均释放；一个副本完成两项，另一副本完成一项并在第二项
+  resourceVersion 冲突后安全重试，Pod 均零重启。ServiceAccount 对指定 inventory
+  ConfigMap get=yes、ConfigMap list=no、目标 Secret get=no、Operation status
+  update=no（使用 subresource SAR），而主资源 list/get/update 正常。inventory 改为
+  `not-json` 后 one-shot reconcile 退出 1、archived=0，恢复默认 inventory 后临时
+  namespace、Secret 和 Operation 均清理。具体六类 executor Deployment 模板仍是后续 P1。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range

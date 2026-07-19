@@ -201,7 +201,7 @@ func TestOperationWorkerRBACCanFenceWithLeasesButCannotCreateOperations(t *testi
 func TestOperationArchiverRBACCanOnlyReadAndReleaseOperations(t *testing.T) {
 	path := filepath.Join("..", "..", "deploy", "production", "kubebrain-operation-archiver-rbac.yaml")
 	documents := decodeRBACManifest(t, path)
-	require.Len(t, documents, 3)
+	require.Len(t, documents, 5)
 
 	serviceAccount := documents[0]
 	require.Equal(t, "ServiceAccount", serviceAccount.Kind)
@@ -212,11 +212,19 @@ func TestOperationArchiverRBACCanOnlyReadAndReleaseOperations(t *testing.T) {
 
 	role := documents[1]
 	require.Equal(t, "Role", role.Kind)
-	require.Equal(t, []rbacRule{{
-		APIGroups: []string{"dbaas.kubebrain.io"},
-		Resources: []string{"kubebrainoperations"},
-		Verbs:     []string{"get", "update"},
-	}}, role.Rules)
+	require.Equal(t, []rbacRule{
+		{
+			APIGroups:     []string{""},
+			Resources:     []string{"configmaps"},
+			ResourceNames: []string{"kubebrain-backup-scheduler-inventory"},
+			Verbs:         []string{"get"},
+		},
+		{
+			APIGroups: []string{"dbaas.kubebrain.io"},
+			Resources: []string{"kubebrainoperations"},
+			Verbs:     []string{"get", "list", "update"},
+		},
+	}, role.Rules)
 
 	binding := documents[2]
 	require.Equal(t, rbacParty{
@@ -304,7 +312,7 @@ func TestManagedNamespaceRBACDefinesUnboundLeastPrivilegeRoles(t *testing.T) {
 	require.Equal(t, []rbacRule{{
 		APIGroups: []string{"dbaas.kubebrain.io"},
 		Resources: []string{"kubebrainoperations"},
-		Verbs:     []string{"get", "update"},
+		Verbs:     []string{"get", "list", "update"},
 	}}, documents[2].Rules)
 }
 

@@ -29,7 +29,10 @@ RUN test -n "$KUBEBRAIN_VERSION" \
     esac \
     && go build -trimpath -o /src/bin/kubebrain-backup-scheduler ./hack/production/cmd/backup-scheduler \
     && go build -trimpath -o /src/bin/kubebrain-operation-api ./hack/production/cmd/operation-api \
-    && go build -trimpath -o /src/bin/kubebrain-operationctl ./hack/production/cmd/operationctl
+    && go build -trimpath -o /src/bin/kubebrain-operationctl ./hack/production/cmd/operationctl \
+    && go build -trimpath -o /src/bin/kubebrain-operation-archiver ./hack/production/cmd/operation-archiver \
+    && cd /src/hack/backup/objectstore \
+    && go build -trimpath -o /src/bin/kubebrain-logical-object ./cmd/logical-object
 
 FROM alpine:3.23
 
@@ -50,6 +53,8 @@ COPY --from=build /src/bin/kube-brain /usr/local/bin/kube-brain
 COPY --from=build /src/bin/kubebrain-backup-scheduler /usr/local/bin/kubebrain-backup-scheduler
 COPY --from=build /src/bin/kubebrain-operation-api /usr/local/bin/kubebrain-operation-api
 COPY --from=build /src/bin/kubebrain-operationctl /usr/local/bin/kubebrain-operationctl
+COPY --from=build /src/bin/kubebrain-operation-archiver /usr/local/bin/kubebrain-operation-archiver
+COPY --from=build /src/bin/kubebrain-logical-object /usr/local/bin/kubebrain-logical-object
 
 USER 65532:65532
 EXPOSE 3379 3380 8080

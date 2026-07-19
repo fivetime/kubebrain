@@ -991,6 +991,37 @@ inventory 无效时 claim 在读取任何 Operation 前 fail closed。中央 wor
 `get` 指定 inventory ConfigMap；各目标 namespace 的 Operation/Secret/Lease 权限仍来自
 逐 namespace RoleBinding。
 
+终态审计归档器使用同一 inventory。先创建仅供 archiver 使用的对象存储 Secret；bucket
+必须已启用 versioning 与 Object Lock，凭据不得与 backup executor 或 worker 共用：
+
+```shell
+kubectl -n kubebrain-operations create secret generic \
+  kubebrain-operation-archive-object-store \
+  --from-literal=endpoint=https://s3.example.invalid \
+  --from-literal=region=us-east-1 \
+  --from-literal=access-key-id='<archiver-access-key>' \
+  --from-literal=secret-access-key='<archiver-secret-key>' \
+  --from-literal=force-path-style=false \
+  --from-literal=object-store-id=operations-audit-primary \
+  --from-literal=bucket=kubebrain-operation-audit
+```
+
+先用零副本 Deployment 做清单和 Secret 引用检查，再显式扩为两个副本：
+
+```shell
+kubectl -n kubebrain-operations scale deployment/kubebrain-operation-archiver --replicas=2
+kubectl -n kubebrain-operations rollout status deployment/kubebrain-operation-archiver
+```
+
+每个终态对象固定写入
+`operation-audit/<namespace>/<operation-uid>.json`；保留截止时间固定从
+`status.completedAtUnix` 加 Deployment 的 `--retention-duration` 计算，不随重试时间
+滑动。多副本可安全竞争同一对象：Object Lock executor 只接受同 body/metadata/retention
+的 exact-version 恢复，并在远端下载和 retention 复核后才释放 audit finalizer。若终态
+已晚于完整保留窗口，archiver 会 fail closed，必须按审计事件处置，禁止缩短保留期或手工
+移除 finalizer。中央 archiver Role 只能读取指定 inventory，并 list/get/update Operation
+主资源；它不能读取 worker Secret、修改 status、管理 Lease、创建或删除 Operation。
+
 ```shell
 NS=tenant-a-operations
 kubectl -n "$NS" create rolebinding kubebrain-operation-worker \
