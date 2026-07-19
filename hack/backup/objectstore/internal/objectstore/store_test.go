@@ -51,6 +51,14 @@ func TestUploadAndRetentionDeleteLifecycle(t *testing.T) {
 	require.Equal(t, receipt, retried)
 	require.Equal(t, 1, client.putCalls)
 
+	restartedRequest := request
+	restartedRequest.ReceiptOutput = filepath.Join(t.TempDir(), "receipt.json")
+	restartedRequest.Now = now.Add(time.Second)
+	recovered, err := Upload(context.Background(), client, restartedRequest)
+	require.NoError(t, err)
+	require.Equal(t, receipt, recovered)
+	require.Equal(t, 2, client.putCalls)
+
 	deleteReceiptPath := filepath.Join(dir, "deletion-receipt.json")
 	_, err = Delete(context.Background(), client, DeleteRequest{
 		Receipt: receipt, Confirmation: "wrong", ObjectStoreID: "store-a",
@@ -126,6 +134,23 @@ func TestUploadDoesNotPublishReceiptForCorruptRemoteBody(t *testing.T) {
 		ReceiptOutput: receiptPath, Now: time.Unix(2_000_000_000, 0),
 	})
 	require.Error(t, err)
+	_, statErr := os.Stat(receiptPath)
+	require.ErrorIs(t, statErr, os.ErrNotExist)
+}
+
+func TestUploadDoesNotPublishReceiptWithoutExactVersionTimestamp(t *testing.T) {
+	artifact := writeArtifact(t)
+	receiptPath := filepath.Join(t.TempDir(), "receipt.json")
+	client := &fakeS3{omitLastModified: true}
+	_, err := Upload(context.Background(), client, UploadRequest{
+		Input: artifact, Instance: "instance-a", BackupID: "backup-1",
+		ObjectStoreID: "store-a",
+		Bucket:        "backups", ObjectKey: "instance-a/backup-1.jsonl",
+		RetentionMode: "COMPLIANCE", RetainUntilUnix: time.Unix(2_000_000_060, 0).Unix(),
+		ExpectedPrefix: "/registry", MinRecords: 1, MaxAgeSeconds: 1_000_000_000,
+		ReceiptOutput: receiptPath, Now: time.Unix(2_000_000_000, 0),
+	})
+	require.ErrorContains(t, err, "invalid last-modified timestamp")
 	_, statErr := os.Stat(receiptPath)
 	require.ErrorIs(t, statErr, os.ErrNotExist)
 }

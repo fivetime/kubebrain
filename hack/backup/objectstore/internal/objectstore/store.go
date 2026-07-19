@@ -136,6 +136,13 @@ func Upload(ctx context.Context, client S3API, request UploadRequest) (Receipt, 
 	if versionID == "" {
 		return Receipt{}, errors.New("object store did not return a version ID; Object Lock/versioning is required")
 	}
+	uploadedAtUnix, err := exactVersionModifiedAt(
+		ctx, client, request.Bucket, request.ObjectKey, versionID,
+		metadata, info.Size(), retainUntil,
+	)
+	if err != nil {
+		return Receipt{}, err
+	}
 
 	verified, err := verifyRemote(ctx, client, request.Bucket, request.ObjectKey, versionID, status, info.Size())
 	if err != nil {
@@ -152,7 +159,7 @@ func Upload(ctx context.Context, client S3API, request UploadRequest) (Receipt, 
 		SnapshotRevision: status.Revision, CreatedAtUnix: status.CreatedAtUnix,
 		Records: status.Records, Leases: status.Leases, ObjectBytes: info.Size(),
 		RetentionMode: request.RetentionMode, RetainUntilUnix: retainUntil.Unix(),
-		RemoteVerified: verified, UploadedAtUnix: now.Unix(),
+		RemoteVerified: verified, UploadedAtUnix: uploadedAtUnix,
 	}
 	if err := WriteReceiptAtomic(request.ReceiptOutput, receipt); err != nil {
 		return Receipt{}, err
@@ -396,6 +403,33 @@ func validateHead(head *s3.HeadObjectOutput, expected map[string]string, size in
 		}
 	}
 	return nil
+}
+
+func exactVersionModifiedAt(
+	ctx context.Context,
+	client S3API,
+	bucket, objectKey, versionID string,
+	metadata map[string]string,
+	size int64,
+	retainUntil time.Time,
+) (int64, error) {
+	head, err := client.HeadObject(ctx, &s3.HeadObjectInput{
+		Bucket: aws.String(bucket), Key: aws.String(objectKey), VersionId: aws.String(versionID),
+	})
+	if err != nil {
+		return 0, fmt.Errorf("read exact object metadata: %w", err)
+	}
+	if err := validateHead(head, metadata, size); err != nil {
+		return 0, fmt.Errorf("validate exact object metadata: %w", err)
+	}
+	if aws.ToString(head.VersionId) != versionID {
+		return 0, errors.New("exact object returned a different version ID")
+	}
+	if head.LastModified == nil || head.LastModified.Unix() <= 0 ||
+		!head.LastModified.Before(retainUntil) {
+		return 0, errors.New("exact object has an invalid last-modified timestamp")
+	}
+	return head.LastModified.Unix(), nil
 }
 
 func fileSHA256(path string) (string, error) {

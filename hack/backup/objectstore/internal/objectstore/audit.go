@@ -105,24 +105,13 @@ func ArchiveAudit(ctx context.Context, client S3API, request AuditRequest) (Audi
 	if versionID == "" {
 		return AuditReceipt{}, errors.New("object store did not return a version ID; Object Lock/versioning is required")
 	}
-	exactHead, err := client.HeadObject(ctx, &s3.HeadObjectInput{
-		Bucket: aws.String(request.Bucket), Key: aws.String(request.ObjectKey),
-		VersionId: aws.String(versionID),
-	})
+	archivedAtUnix, err := exactVersionModifiedAt(
+		ctx, client, request.Bucket, request.ObjectKey, versionID,
+		metadata, status.Bytes, retainUntil,
+	)
 	if err != nil {
-		return AuditReceipt{}, fmt.Errorf("read exact operation audit object metadata: %w", err)
+		return AuditReceipt{}, err
 	}
-	if err := validateHead(exactHead, metadata, status.Bytes); err != nil {
-		return AuditReceipt{}, fmt.Errorf("validate exact operation audit object metadata: %w", err)
-	}
-	if aws.ToString(exactHead.VersionId) != versionID {
-		return AuditReceipt{}, errors.New("exact operation audit object returned a different version ID")
-	}
-	if exactHead.LastModified == nil || exactHead.LastModified.Unix() <= 0 ||
-		!exactHead.LastModified.Before(retainUntil) {
-		return AuditReceipt{}, errors.New("exact operation audit object has an invalid last-modified timestamp")
-	}
-	archivedAtUnix := exactHead.LastModified.Unix()
 	if err := verifyAuditRemote(ctx, client, request, versionID, status); err != nil {
 		return AuditReceipt{}, err
 	}
