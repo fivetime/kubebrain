@@ -186,6 +186,98 @@ func TestClaimAcrossNamespacesDoesNotSkipClaimFailure(t *testing.T) {
 		"the later queue must be inspected for fairness but not claimed after an earlier failure")
 }
 
+func TestClaimReleasesInstanceLeaseAfterCanceledStatusUpdate(t *testing.T) {
+	client := fakeQueueClient()
+	queue := New(client, "test")
+	ctx, cancel := context.WithCancel(context.Background())
+	_, err := queue.Submit(ctx, "backup-1", validSpec())
+	require.NoError(t, err)
+	client.PrependReactor("update", Resource.Resource, func(
+		action clientgotesting.Action,
+	) (bool, runtime.Object, error) {
+		if action.GetSubresource() != "status" {
+			return false, nil, nil
+		}
+		cancel()
+		return true, nil, ctx.Err()
+	})
+
+	claim, err := queue.Claim(ctx, "worker-a", "PostRestoreAudit", time.Minute)
+	require.Nil(t, claim)
+	require.ErrorIs(t, err, context.Canceled)
+	leases, listErr := client.Resource(LeaseResource).Namespace("test").
+		List(context.Background(), metav1.ListOptions{})
+	require.NoError(t, listErr)
+	require.Empty(t, leases.Items)
+}
+
+func TestClaimReportsStatusAndLeaseCleanupFailures(t *testing.T) {
+	client := fakeQueueClient()
+	queue := New(client, "test")
+	ctx := context.Background()
+	_, err := queue.Submit(ctx, "backup-1", validSpec())
+	require.NoError(t, err)
+	client.PrependReactor("update", Resource.Resource, func(
+		action clientgotesting.Action,
+	) (bool, runtime.Object, error) {
+		if action.GetSubresource() == "status" {
+			return true, nil, errors.New("status unavailable")
+		}
+		return false, nil, nil
+	})
+	client.PrependReactor("delete", LeaseResource.Resource, func(
+		clientgotesting.Action,
+	) (bool, runtime.Object, error) {
+		return true, nil, errors.New("lease cleanup unavailable")
+	})
+
+	claim, err := queue.Claim(ctx, "worker-a", "PostRestoreAudit", time.Minute)
+	require.Nil(t, claim)
+	require.ErrorContains(t, err, "status unavailable")
+	require.ErrorContains(t, err, "lease cleanup unavailable")
+	require.NotErrorIs(t, err, ErrNoOperation)
+}
+
+func TestFinishReportsLeaseCleanupFailureAfterTerminalStatusCommit(t *testing.T) {
+	client := fakeQueueClient()
+	queue := New(client, "test")
+	ctx := context.Background()
+	_, err := queue.Submit(ctx, "backup-1", validSpec())
+	require.NoError(t, err)
+	claim, err := queue.Claim(ctx, "worker-a", "PostRestoreAudit", time.Minute)
+	require.NoError(t, err)
+	client.PrependReactor("delete", LeaseResource.Resource, func(
+		clientgotesting.Action,
+	) (bool, runtime.Object, error) {
+		return true, nil, errors.New("lease cleanup unavailable")
+	})
+
+	result, err := queue.Finish(
+		ctx, claim.Name, claim.Owner, claim.Attempt,
+		true, strings.Repeat("a", 64), "complete",
+	)
+	require.NotNil(t, result)
+	require.ErrorContains(t, err, "release instance lease after finish")
+	phase, _, _ := unstructured.NestedString(result.Object, "status", "phase")
+	require.Equal(t, PhaseSucceeded, phase)
+}
+
+func TestLeaseCleanupContextOutlivesCanceledParentWithBoundedDeadline(t *testing.T) {
+	type contextKey string
+	parent, cancelParent := context.WithCancel(
+		context.WithValue(context.Background(), contextKey("trace"), "trace-a"),
+	)
+	cancelParent()
+	cleanup, cancelCleanup := leaseCleanupContext(parent)
+	defer cancelCleanup()
+
+	require.NoError(t, cleanup.Err())
+	require.Equal(t, "trace-a", cleanup.Value(contextKey("trace")))
+	deadline, found := cleanup.Deadline()
+	require.True(t, found)
+	require.WithinDuration(t, time.Now().Add(leaseCleanupTimeout), deadline, time.Second)
+}
+
 func TestQueueRejectsSpecDriftAndInvalidCompletion(t *testing.T) {
 	queue := newFakeQueue()
 	ctx := context.Background()

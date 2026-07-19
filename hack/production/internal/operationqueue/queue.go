@@ -31,6 +31,7 @@ var LeaseResource = schema.GroupVersionResource{
 var SecretResource = schema.GroupVersionResource{Group: "", Version: "v1", Resource: "secrets"}
 
 const microTimeFormat = "2006-01-02T15:04:05.000000Z07:00"
+const leaseCleanupTimeout = 5 * time.Second
 
 const (
 	PhasePending   = "Pending"
@@ -272,13 +273,22 @@ func (q *Queue) Claim(ctx context.Context, owner, operationType string, lease ti
 		_ = unstructured.SetNestedField(updated.Object, "", "status", "message")
 		claimed, updateErr := q.resource.UpdateStatus(ctx, updated, metav1.UpdateOptions{})
 		if apierrors.IsConflict(updateErr) {
-			_ = q.releaseInstanceLease(ctx, instance, holder)
+			releaseErr := q.releaseInstanceLeaseForCleanup(ctx, instance, holder)
+			if releaseErr != nil {
+				return nil, errors.Join(
+					updateErr,
+					fmt.Errorf("release instance lease after claim conflict: %w", releaseErr),
+				)
+			}
 			lastConflict = updateErr
 			continue
 		}
 		if updateErr != nil {
-			_ = q.releaseInstanceLease(ctx, instance, holder)
-			return nil, updateErr
+			releaseErr := q.releaseInstanceLeaseForCleanup(ctx, instance, holder)
+			return nil, errors.Join(
+				updateErr,
+				wrapIfError("release instance lease after failed claim", releaseErr),
+			)
 		}
 		claim, claimErr := claimFrom(claimed)
 		if claimErr == nil {
@@ -420,7 +430,9 @@ func (q *Queue) Requeue(
 		return nil, ErrFenced
 	}
 	if err == nil {
-		_ = q.releaseInstanceLease(ctx, instance, holder)
+		if releaseErr := q.releaseInstanceLeaseForCleanup(ctx, instance, holder); releaseErr != nil {
+			return result, fmt.Errorf("release instance lease after requeue: %w", releaseErr)
+		}
 	}
 	return result, err
 }
@@ -507,7 +519,9 @@ func (q *Queue) Finish(
 		return nil, ErrFenced
 	}
 	if err == nil {
-		_ = q.releaseInstanceLease(ctx, instance, holder)
+		if releaseErr := q.releaseInstanceLeaseForCleanup(ctx, instance, holder); releaseErr != nil {
+			return result, fmt.Errorf("release instance lease after finish: %w", releaseErr)
+		}
 	}
 	return result, err
 }
@@ -750,6 +764,26 @@ func (q *Queue) releaseInstanceLease(ctx context.Context, instance, holder strin
 	return q.leases.Delete(ctx, name, metav1.DeleteOptions{
 		Preconditions: &metav1.Preconditions{UID: &uid},
 	})
+}
+
+func (q *Queue) releaseInstanceLeaseForCleanup(
+	parent context.Context,
+	instance, holder string,
+) error {
+	ctx, cancel := leaseCleanupContext(parent)
+	defer cancel()
+	return q.releaseInstanceLease(ctx, instance, holder)
+}
+
+func leaseCleanupContext(parent context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(parent), leaseCleanupTimeout)
+}
+
+func wrapIfError(message string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("%s: %w", message, err)
 }
 
 func instanceLeaseName(instance string) string {
