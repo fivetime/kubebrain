@@ -4034,6 +4034,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `kubebrain:a233-lease-reload-ready` 滚动后 3 Pod Ready/零重启；连续三次删除当前
   leader（含一轮 race）分别约 8.2、10.1、6.4 秒通过。最终一轮在约 2.5 秒重载窗口
   实际观察到连续标准 `Unavailable` 后恢复，未再出现错误的 `LeaseNotFound`。
+- **Compatibility A234 lease attachment recovery across replica replacement（2026-07-19）**：
+  对照上游 `TestV3LeaseRevokeAndRecover`、
+  `TestV3LeaseRecoverKeyWithDetachedLease` 和
+  `TestV3LeaseRecoverKeyWithMultipleLease`，新增公开 client endpoint 上的真实 leader
+  Pod UID replacement 门禁。故障前同时构造三类 durable 状态：已撤销 lease 及其已删
+  key、从 lease 覆盖为 leaseless 的 detached key、依次从 lease A 重绑到 lease B 的
+  key。删除当前 leader 后，测试等待继任者权威返回三个活 lease 与已撤销 lease
+  `TTL=-1`，再逐项验证撤销 detached lease 不删除 leaseless key、撤销旧 lease A 不
+  删除仍绑定 B 的 key、已撤销 key 不复活，且最终撤销 B 正常删除 key。
+
+  使用运行镜像 `kubebrain:a233-lease-reload-ready` 连续轮换
+  `kubebrain-1/2/0` 三个当前 leader，分别约 6.1、5.2、6.1 秒通过，其中第二轮启用
+  race；每次均经历 Pod UID replacement，恢复窗口只见可重试的
+  `Unavailable`/连接关闭。测试 prefix 清零，3 Pod Ready/零重启，公开 endpoint
+  proposal 健康。compat vet、门禁无环境模式 10 轮、相关附件恢复 race 3 轮及全仓
+  test 通过。本轮未发现新的服务端语义差异；新增证据把原有内部 attachment 单元保证
+  提升为真实 TiKV/PD 共享数据面换主后的 client/v3 契约。
 - **Operations A185 certificate rotation completion state（2026-07-18）**：新增
   `hack/production/validate-certificate-rotation.sh`，把 client/peer CA rollover
   收敛为 `begin -> overlap -> complete` 三阶段门禁。begin 固定全部 KubeBrain Pod
