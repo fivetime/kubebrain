@@ -21,6 +21,7 @@ func main() {
 	var namespace, namespacesText, inventoryName, inventoryNamespace, inventoryKey string
 	var requester, kubeconfig, contextName string
 	var pollInterval, reconcileTimeout time.Duration
+	var maxPolicies int
 	var once bool
 	flag.StringVar(&namespace, "namespace", "kubebrain-operations", "policy and operation namespace")
 	flag.StringVar(&namespacesText, "namespaces", "", "comma-separated allowlist of policy and operation namespaces; overrides --namespace")
@@ -33,6 +34,8 @@ func main() {
 	flag.DurationVar(&pollInterval, "poll-interval", time.Minute, "policy reconciliation interval")
 	flag.DurationVar(&reconcileTimeout, "reconcile-timeout", 2*time.Minute,
 		"maximum duration of one policy reconciliation")
+	flag.IntVar(&maxPolicies, "max-policies", backupscheduler.DefaultMaxPolicies,
+		"maximum backup policies attempted per reconciliation")
 	flag.BoolVar(&once, "once", false, "reconcile once and exit")
 	flag.Parse()
 	if pollInterval < 10*time.Second {
@@ -40,6 +43,9 @@ func main() {
 	}
 	if reconcileTimeout <= 0 {
 		log.Fatal("reconcile-timeout must be positive")
+	}
+	if maxPolicies <= 0 {
+		log.Fatal("max-policies must be positive")
 	}
 	if requester == "" || len(requester) > 253 {
 		log.Fatal("requested-by must contain 1 to 253 characters")
@@ -69,6 +75,9 @@ func main() {
 		scheduler = backupscheduler.NewForNamespaces(client, namespaces)
 	}
 	scheduler.WithRequester(requester)
+	if err := scheduler.SetMaxPolicies(maxPolicies); err != nil {
+		log.Fatal(err)
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 

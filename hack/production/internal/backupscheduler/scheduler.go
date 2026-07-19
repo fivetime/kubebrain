@@ -7,7 +7,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/kubewharf/kubebrain/hack/production/internal/namespaceinventory"
@@ -27,6 +29,12 @@ var PolicyResource = schema.GroupVersionResource{
 const parametersKey = "parameters.json"
 const DefaultRequester = "kubebrain-backup-scheduler"
 const DefaultInventoryKey = namespaceinventory.DefaultKey
+const DefaultMaxPolicies = 256
+
+type policyCandidate struct {
+	namespace string
+	object    *unstructured.Unstructured
+}
 
 type Scheduler struct {
 	client             dynamic.Interface
@@ -35,7 +43,11 @@ type Scheduler struct {
 	inventoryName      string
 	inventoryKey       string
 	requester          string
+	maxPolicies        int
 	now                func() time.Time
+	reconcile          func(context.Context, string, *unstructured.Unstructured) (bool, error)
+	cursorMu           sync.Mutex
+	cursor             string
 }
 
 func New(client dynamic.Interface, namespace string) *Scheduler {
@@ -43,20 +55,26 @@ func New(client dynamic.Interface, namespace string) *Scheduler {
 }
 
 func NewForNamespaces(client dynamic.Interface, namespaces []string) *Scheduler {
-	return &Scheduler{
+	scheduler := &Scheduler{
 		client: client, staticNamespaces: append([]string(nil), namespaces...),
-		requester: DefaultRequester, now: func() time.Time { return time.Now().UTC() },
+		requester: DefaultRequester, maxPolicies: DefaultMaxPolicies,
+		now: func() time.Time { return time.Now().UTC() },
 	}
+	scheduler.reconcile = scheduler.reconcilePolicy
+	return scheduler
 }
 
 func NewForInventory(client dynamic.Interface, namespace, name, key string) *Scheduler {
 	if key == "" {
 		key = DefaultInventoryKey
 	}
-	return &Scheduler{
+	scheduler := &Scheduler{
 		client: client, inventoryNamespace: namespace, inventoryName: name, inventoryKey: key,
-		requester: DefaultRequester, now: func() time.Time { return time.Now().UTC() },
+		requester: DefaultRequester, maxPolicies: DefaultMaxPolicies,
+		now: func() time.Time { return time.Now().UTC() },
 	}
+	scheduler.reconcile = scheduler.reconcilePolicy
+	return scheduler
 }
 
 func (s *Scheduler) WithRequester(requester string) *Scheduler {
@@ -69,33 +87,98 @@ func (s *Scheduler) WithClock(now func() time.Time) *Scheduler {
 	return s
 }
 
+func (s *Scheduler) SetMaxPolicies(maxPolicies int) error {
+	if maxPolicies <= 0 {
+		return errors.New("backup scheduler max policies must be positive")
+	}
+	s.maxPolicies = maxPolicies
+	return nil
+}
+
 func (s *Scheduler) Reconcile(ctx context.Context) (int, error) {
 	namespaces, err := s.namespaces(ctx)
 	if err != nil {
 		return 0, err
 	}
-	submitted := 0
+	var candidates []policyCandidate
 	var reconcileErrs []error
 	for _, namespace := range namespaces {
+		if err := ctx.Err(); err != nil {
+			reconcileErrs = append(reconcileErrs, err)
+			break
+		}
 		list, err := s.client.Resource(PolicyResource).Namespace(namespace).
 			List(ctx, metav1.ListOptions{})
 		if err != nil {
 			reconcileErrs = append(reconcileErrs, fmt.Errorf("%s: list policies: %w", namespace, err))
+			if ctx.Err() != nil {
+				break
+			}
 			continue
 		}
 		for i := range list.Items {
-			created, err := s.reconcilePolicy(ctx, namespace, &list.Items[i])
-			if err != nil {
-				reconcileErrs = append(reconcileErrs,
-					fmt.Errorf("%s/%s: %w", namespace, list.Items[i].GetName(), err))
-				continue
-			}
-			if created {
-				submitted++
-			}
+			candidates = append(candidates, policyCandidate{
+				namespace: namespace,
+				object:    list.Items[i].DeepCopy(),
+			})
+		}
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidateKey(candidates[i]) < candidateKey(candidates[j])
+	})
+	candidates = s.nextBatch(candidates)
+	submitted := 0
+	for _, candidate := range candidates {
+		if err := ctx.Err(); err != nil {
+			reconcileErrs = append(reconcileErrs, err)
+			break
+		}
+		created, err := s.reconcile(ctx, candidate.namespace, candidate.object)
+		s.markAttempted(candidate)
+		if err != nil {
+			reconcileErrs = append(reconcileErrs,
+				fmt.Errorf("%s/%s: %w", candidate.namespace, candidate.object.GetName(), err))
+			continue
+		}
+		if created {
+			submitted++
 		}
 	}
 	return submitted, errors.Join(reconcileErrs...)
+}
+
+func (s *Scheduler) nextBatch(candidates []policyCandidate) []policyCandidate {
+	if len(candidates) == 0 {
+		return candidates
+	}
+	s.cursorMu.Lock()
+	cursor := s.cursor
+	s.cursorMu.Unlock()
+	start := 0
+	if cursor != "" {
+		start = sort.Search(len(candidates), func(i int) bool {
+			return candidateKey(candidates[i]) > cursor
+		})
+		if start == len(candidates) {
+			start = 0
+		}
+	}
+	batchSize := min(s.maxPolicies, len(candidates))
+	batch := make([]policyCandidate, 0, batchSize)
+	for offset := 0; offset < batchSize; offset++ {
+		batch = append(batch, candidates[(start+offset)%len(candidates)])
+	}
+	return batch
+}
+
+func (s *Scheduler) markAttempted(candidate policyCandidate) {
+	s.cursorMu.Lock()
+	s.cursor = candidateKey(candidate)
+	s.cursorMu.Unlock()
+}
+
+func candidateKey(candidate policyCandidate) string {
+	return candidate.namespace + "/" + candidate.object.GetName()
 }
 
 func (s *Scheduler) namespaces(ctx context.Context) ([]string, error) {

@@ -150,6 +150,7 @@ spec:
             - --requested-by=system:serviceaccount:kubebrain-operations:kubebrain-backup-scheduler
             - --poll-interval=30s
             - --reconcile-timeout=2m
+            - --max-policies=256
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

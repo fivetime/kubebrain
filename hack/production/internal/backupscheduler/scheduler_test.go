@@ -148,6 +148,71 @@ func TestReconcileAcrossNamespacesIsolatesPolicyFailure(t *testing.T) {
 	require.Len(t, operations.Items, 1)
 }
 
+func TestReconcileResumesAfterLastAttemptWhenDeadlineExpires(t *testing.T) {
+	client := fakeClient()
+	for _, name := range []string{"a", "b", "c"} {
+		createPolicyNamedIn(t, client, "tenant-a", name, false)
+	}
+	scheduler := NewForNamespaces(client, []string{"tenant-a"})
+	require.NoError(t, scheduler.SetMaxPolicies(2))
+	var attempted []string
+	blocked := false
+	scheduler.reconcile = func(
+		ctx context.Context,
+		namespace string,
+		policy *unstructured.Unstructured,
+	) (bool, error) {
+		attempted = append(attempted, namespace+"/"+policy.GetName())
+		if !blocked {
+			blocked = true
+			<-ctx.Done()
+			return false, ctx.Err()
+		}
+		return true, nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	count, err := scheduler.Reconcile(ctx)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.Zero(t, count)
+	require.Equal(t, []string{"tenant-a/a"}, attempted)
+
+	count, err = scheduler.Reconcile(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, 2, count)
+	require.Equal(t, []string{"tenant-a/a", "tenant-a/b", "tenant-a/c"}, attempted)
+}
+
+func TestReconcileAppliesGlobalPolicyBatchAcrossNamespaces(t *testing.T) {
+	client := fakeClient()
+	for _, namespace := range []string{"tenant-a", "tenant-b"} {
+		for _, name := range []string{"a", "b"} {
+			createPolicyNamedIn(t, client, namespace, name, false)
+		}
+	}
+	scheduler := NewForNamespaces(client, []string{"tenant-a", "tenant-b"})
+	require.NoError(t, scheduler.SetMaxPolicies(3))
+	var attempted []string
+	scheduler.reconcile = func(
+		_ context.Context,
+		namespace string,
+		policy *unstructured.Unstructured,
+	) (bool, error) {
+		attempted = append(attempted, namespace+"/"+policy.GetName())
+		return true, nil
+	}
+
+	count, err := scheduler.Reconcile(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, 3, count)
+	require.Equal(t, []string{"tenant-a/a", "tenant-a/b", "tenant-b/a"}, attempted)
+}
+
+func TestSetMaxPoliciesRejectsInvalidLimit(t *testing.T) {
+	require.ErrorContains(t, New(nil, "test").SetMaxPolicies(0), "must be positive")
+}
+
 func TestDynamicNamespaceInventoryAppliesWithoutSchedulerRestart(t *testing.T) {
 	client := fakeClient()
 	for _, namespace := range []string{"tenant-a", "tenant-b"} {
@@ -278,9 +343,19 @@ func createPolicyIn(
 	suspended bool,
 ) {
 	t.Helper()
+	createPolicyNamedIn(t, client, namespace, "daily", suspended)
+}
+
+func createPolicyNamedIn(
+	t *testing.T,
+	client *dynamicfake.FakeDynamicClient,
+	namespace, name string,
+	suspended bool,
+) {
+	t.Helper()
 	policy := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "dbaas.kubebrain.io/v1alpha1", "kind": "KubeBrainBackupPolicy",
-		"metadata": map[string]any{"name": "daily"},
+		"metadata": map[string]any{"name": name},
 		"spec": map[string]any{
 			"tenant": "tenant-a", "instance": "instance-a", "intervalSeconds": int64(3600),
 			"retentionSeconds": int64(86400), "maxAttempts": int64(3), "suspend": suspended,

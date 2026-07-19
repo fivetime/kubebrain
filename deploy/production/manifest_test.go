@@ -553,6 +553,7 @@ func TestBackupSchedulerIsHAAndLeastPrivilege(t *testing.T) {
 	require.Contains(t, args,
 		"--requested-by=system:serviceaccount:kubebrain-operations:kubebrain-backup-scheduler")
 	require.Contains(t, args, "--reconcile-timeout=2m")
+	require.Contains(t, args, "--max-policies=256")
 	spreads, found, err := unstructured.NestedSlice(
 		deployment.Object, "spec", "template", "spec", "topologySpreadConstraints",
 	)
