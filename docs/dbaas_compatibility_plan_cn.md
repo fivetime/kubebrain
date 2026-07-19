@@ -31,8 +31,8 @@ Raft、bbolt 和成员管理内部实现，而是对通用 etcd v3 客户端提�
 
 | 服务 | 能力 | 当前状态 | DBaaS 处理 |
 | --- | --- | --- | --- |
-| KV | Range/Put/DeleteRange | 部分兼容 | P0：事务内排序、过滤、历史读、大范围删除原子性、生产范围上限、非 KEY/NONE/Limit 候选窗口及独立 Put/Range/DeleteRange 差分已补齐；3 PD/3 TiKV 单成员故障持续进度已验证 |
-| KV | Txn | 部分兼容 | P0：缺失键 guard、范围 phantom guard、嵌套分支、staged 单 revision 提交及 caller deadline 贯穿后端冲突重试已完成；3 PD/3 TiKV 单成员故障持续进度已验证 |
+| KV | Range/Put/DeleteRange | 兼容核心语义 | 排序、过滤、历史读、大范围删除原子性、生产范围上限、非 KEY/NONE/Limit 候选窗口及独立差分已补齐；当前无已知语义差异，继续扩大生成式输入与长时故障 soak |
+| KV | Txn | 兼容核心语义 | 缺失键 guard、范围 phantom guard、嵌套分支、staged 单 revision、写前错误验证及 caller deadline 贯穿后端冲突重试已完成；当前无已知语义差异，继续扩大生成式嵌套矩阵与多点故障 soak |
 | KV | Compact | 兼容核心语义 | logical/physical、错误、异步 GC 与请求取消后的后台续扫已对齐；继续长时间故障 soak |
 | KV | RangeStream | 兼容核心语义 | etcd 3.7 支持的 CountOnly/Limit/KeysOnly/默认排序已对齐；自定义排序与 revision filter 同 etcd 明确 Unimplemented |
 | Watch | create/cancel/progress/history/prevKV/slow-consumer catch-up | 兼容核心语义；后端溢出无缝追赶，控制响应不阻塞接收循环 | P1：继续数天级断线/慢消费者 soak |
@@ -4148,6 +4148,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   lease ID，`kvToEtcdKv` 对新值直接读取 inline metadata；内存索引仅作为 legacy raw
   value fallback。本轮未发现新的服务端差异，该测试防止后续 envelope 或 follower read
   优化重新引入字段丢失和 revoke 后 stale TTL。
+- **Compatibility A242 KV/Txn core-semantics graduation（2026-07-19）**：
+  重新逐项审计当前矩阵、`/root/etcd/tests/integration/v3_grpc_test.go`、
+  `v3_kv_test.go`、`clientv3/{kv,txn}_test.go` 与本仓库 113 个 compat 测试文件。
+  Range/Put/DeleteRange 已覆盖 protobuf 边界、完整 sort/filter/limit 交互、历史与
+  compact/future revision、empty/from-key、binary key、lease options、响应丢失
+  at-most-once 和 follower 路径；Txn 已覆盖 compare 全矩阵、嵌套分支、范围 phantom
+  guard、重复区间、写前错误验证、单 revision、ambiguous response 和并发 header
+  snapshot。
+
+  A238 新增上游重复区间矩阵时确实发现并修复最后一个已知差异；其后完整双端
+  Differential 253.469 秒通过，A239-A241 又补齐并发 Txn header、Lease 压力和逐副本
+  读取门禁，未产生新差异。因此矩阵将 KV 基础操作和 Txn 从“部分兼容”提升为“兼容核心
+  语义”。这不是宣称复制 etcd Raft/bbolt 内部实现，也不关闭生成式输入、数天 soak、
+  多点网络/磁盘故障和 TiKV 物理 PITR 等剩余生产验证；这些继续作为 P1/P2 门禁，不再
+  被误写成已知客户端协议差异。
 - **Operations A185 certificate rotation completion state（2026-07-18）**：新增
   `hack/production/validate-certificate-rotation.sh`，把 client/peer CA rollover
   收敛为 `begin -> overlap -> complete` 三阶段门禁。begin 固定全部 KubeBrain Pod
