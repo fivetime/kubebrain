@@ -4807,6 +4807,27 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   后续候选未被饿死。kind archiver 保持零副本并更新到 A275/2m 模板；三副本 KubeBrain、
   三 PD 和三 TiKV 均 Ready，主数据面零重启。
 
+- **Operations A276 deadline-aware archive fairness（2026-07-19）**：
+  A275 的数字轮转游标在选择批次时一次性前移 `max-batch`。当整轮 deadline 在首项耗尽，
+  剩余候选仍会收到已取消 context，并被游标视为已经轮转；候选因成功归档从列表删除时，
+  数字下标还会随列表收缩漂移。大量积压下，两种行为都会无谓延长未实际尝试对象的等待。
+  archiver 现于每次处理前检查父 context，整轮取消后立即停止；游标改为最后实际尝试对象
+  的 `completedAtUnix/namespace/name` 稳定身份，只在 processor 返回后推进。下一轮以
+  `sort.Search` 从该身份之后恢复，身份已从列表消失时仍能选择正确后继，并在到达末尾后
+  环回。单项 archive timeout 使用独立子 context，父 context 尚有效时仍继续本批次，
+  保持 A275 的失败隔离语义。
+
+  archiver focused 连续 50 轮、race 连续 30 轮、全量 production 测试（91.735 秒）和
+  vet 均通过。精确提交 `fc7a8163f2c94cc6b6696a48f28e4a735454098c` 构建非 root
+  镜像 `kubebrain:a276-archive-deadline-fairness`（image ID
+  `sha256:38e57850327fd097231bfaf9c3144b47545e2078c2cb8bf0a1b87a1809fcbce8`）。
+  最终镜像连接假 Kubernetes API 返回 `blocked/following/last` 三个终态 Operation，
+  使用 `--archive-timeout=2s --reconcile-timeout=2s --max-batch=3` 连续运行：第一轮
+  仅报告 `blocked` deadline；10 秒 poll 后第二轮先报告 `following` 与 `last` 的快速
+  失败，最后才环回 `blocked` deadline。外部 16 秒观察窗退出 124，完整日志证明未尝试
+  候选没有被整轮取消虚假推进。kind archiver 保持零副本并更新到 A276；三副本
+  KubeBrain、三 PD 和三 TiKV 均 Ready，主数据面零重启。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range

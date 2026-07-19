@@ -1060,6 +1060,13 @@ executor 在独立进程组中运行；单项超时会终止 shell 及其全部�
 后拖住 reconcile。该 Operation 保留 audit finalizer，控制器聚合错误后继续处理本批次
 后续候选，防止一个失效对象存储请求长期饿死其他租户的终态归档。
 
+若整轮 `--reconcile-timeout` 先耗尽，archiver 会停止向剩余候选传递已取消的 context。
+公平游标只在一个候选被实际调用后推进，并记录其
+`completedAtUnix/namespace/name` 稳定排序身份；下一轮从该身份之后恢复，即使已完成候选
+因 finalizer 释放而从列表消失，也不会因数组下标收缩跳过紧随项。游标是单个 archiver
+进程的吞吐公平状态，不是 correctness fence；Pod 重启后从最旧候选开始，多副本仍依赖
+Object Lock exact-version 与 Kubernetes resourceVersion 保证幂等和并发安全。
+
 ```shell
 NS=tenant-a-operations
 kubectl -n "$NS" create rolebinding kubebrain-operation-worker \
