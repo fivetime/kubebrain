@@ -916,11 +916,14 @@ Secret 和同一个 operation。已有同名资源内容不同会 fail closed。
 `PARAMETERS_INPUT` 时通过 `operationctl --action parameters` 读取 operation 绑定的
 immutable Secret，并再次校验 SHA-256；手工参数文件模式继续保留。
 
-一个 scheduler Deployment 可用
-`--namespaces=kubebrain-operations,tenant-a-operations,tenant-b-operations`
-显式管理多个 namespace。allowlist 拒绝空值、重复项和非法 DNS label；不会自动扫描所有
-namespace。清单中的 ClusterRole 本身不授予权限，默认 RoleBinding 只绑定
-`kubebrain-operations`。每增加一个 namespace，必须在该 namespace 创建 RoleBinding：
+一个 scheduler Deployment 从 `kubebrain-operations/kubebrain-backup-scheduler-inventory`
+ConfigMap 的 `namespaces.json` 读取严格 JSON namespace allowlist，并在每轮 reconcile
+重新读取，因此更新无需重启 Deployment。allowlist 拒绝空数组、空值、重复项、非法 DNS
+label 和非字符串数组；ConfigMap 缺失、key 缺失或 JSON 非法时整轮 fail closed，不沿用
+进程内旧值，也不会自动扫描所有 namespace。scheduler ServiceAccount 只能 `get` 这个
+resourceName，不能 list/watch 或读取其他 ConfigMap。清单中的 ClusterRole 本身不授予
+权限，默认 RoleBinding 只绑定 `kubebrain-operations`。每增加一个 namespace，必须先在
+该 namespace 创建 RoleBinding：
 
 ```yaml
 apiVersion: rbac.authorization.k8s.io/v1
@@ -936,6 +939,15 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
   name: kubebrain-backup-scheduler-managed-namespace
+```
+
+确认 scheduler、worker、approver、archiver 四个 binding 的授权矩阵通过后，再把目标
+namespace 加入 inventory，例如：
+
+```shell
+kubectl -n kubebrain-operations patch configmap kubebrain-backup-scheduler-inventory \
+  --type merge \
+  -p '{"data":{"namespaces.json":"[\"kubebrain-operations\",\"tenant-a-operations\"]"}}'
 ```
 
 目标 namespace 还必须部署 operation worker 及其 namespaced RBAC。策略、模板 Secret、
@@ -972,8 +984,9 @@ kubectl -n "$NS" create rolebinding kubebrain-operation-archiver \
 
 namespace 下线顺序必须是：先 suspend/delete BackupPolicy，停止新提交；等待所有 Operation
 进入 Succeeded/Failed；完成 Object Lock 审计归档并确认
-`dbaas.kubebrain.io/operation-audit` finalizer 已移除；再停止 worker/archiver、删除
-RoleBinding 和 namespace。直接删除仍含 Pending/Running 或未归档终态 Operation 的
+`dbaas.kubebrain.io/operation-audit` finalizer 已移除；再从 `namespaces.json` 删除目标
+namespace，并至少等待一次 scheduler reconcile，确认日志不再访问该 namespace；最后停止
+worker/archiver、删除 RoleBinding 和 namespace。直接删除仍含 Pending/Running 或未归档终态 Operation 的
 namespace 会按设计停在 Terminating，禁止绕过 admission 强删 finalizer。
 
 `hack/production/run-restore-cutover-operation.sh` 接入 RestoreCutover。参数绑定 A184

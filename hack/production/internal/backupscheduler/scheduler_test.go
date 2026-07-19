@@ -147,6 +147,87 @@ func TestReconcileAcrossNamespacesIsolatesPolicyFailure(t *testing.T) {
 	require.Len(t, operations.Items, 1)
 }
 
+func TestDynamicNamespaceInventoryAppliesWithoutSchedulerRestart(t *testing.T) {
+	client := fakeClient()
+	for _, namespace := range []string{"tenant-a", "tenant-b"} {
+		createTemplateIn(t, client, namespace, validTemplate())
+		createPolicyIn(t, client, namespace, false)
+	}
+	createInventory(t, client, `["tenant-a"]`)
+	scheduler := NewForInventory(client, "control", "scheduler-inventory", "").
+		WithClock(func() time.Time { return time.Unix(1_700_003_000, 0).UTC() })
+
+	count, err := scheduler.Reconcile(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, 1, count)
+	tenantBOperations, err := client.Resource(operationqueue.Resource).Namespace("tenant-b").
+		List(context.Background(), metav1.ListOptions{})
+	require.NoError(t, err)
+	require.Empty(t, tenantBOperations.Items)
+
+	updateInventory(t, client, `["tenant-b","tenant-a"]`)
+	count, err = scheduler.Reconcile(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, 2, count)
+	tenantBOperations, err = client.Resource(operationqueue.Resource).Namespace("tenant-b").
+		List(context.Background(), metav1.ListOptions{})
+	require.NoError(t, err)
+	require.Len(t, tenantBOperations.Items, 1)
+}
+
+func TestDynamicNamespaceInventoryFailsClosedBeforePolicyAccess(t *testing.T) {
+	for _, raw := range []string{
+		`[]`,
+		`[""]`,
+		`["tenant-a","tenant-a"]`,
+		`["Tenant_A"]`,
+		`{"namespace":"tenant-a"}`,
+		`not-json`,
+	} {
+		t.Run(raw, func(t *testing.T) {
+			client := fakeClient()
+			createTemplateIn(t, client, "tenant-a", validTemplate())
+			createPolicyIn(t, client, "tenant-a", false)
+			createInventory(t, client, raw)
+
+			count, err := NewForInventory(
+				client, "control", "scheduler-inventory", DefaultInventoryKey,
+			).Reconcile(context.Background())
+			require.Zero(t, count)
+			require.Error(t, err)
+			operations, listErr := client.Resource(operationqueue.Resource).Namespace("tenant-a").
+				List(context.Background(), metav1.ListOptions{})
+			require.NoError(t, listErr)
+			require.Empty(t, operations.Items)
+		})
+	}
+}
+
+func TestDynamicNamespaceInventoryRequiresConfigMapAndDataKey(t *testing.T) {
+	client := fakeClient()
+	scheduler := NewForInventory(
+		client, "control", "scheduler-inventory", DefaultInventoryKey,
+	)
+	count, err := scheduler.Reconcile(context.Background())
+	require.Zero(t, count)
+	require.ErrorContains(t, err, "read namespace inventory")
+
+	createInventory(t, client, `["tenant-a"]`)
+	inventory, err := client.Resource(ConfigMapResource).Namespace("control").Get(
+		context.Background(), "scheduler-inventory", metav1.GetOptions{},
+	)
+	require.NoError(t, err)
+	delete(inventory.Object, "data")
+	_, err = client.Resource(ConfigMapResource).Namespace("control").Update(
+		context.Background(), inventory, metav1.UpdateOptions{},
+	)
+	require.NoError(t, err)
+
+	count, err = scheduler.Reconcile(context.Background())
+	require.Zero(t, count)
+	require.ErrorContains(t, err, `missing data key "namespaces.json"`)
+}
+
 func validTemplate() map[string]any {
 	return map[string]any{
 		"endpoint": "https://etcd", "prefix": "/registry/", "artifact_output": "/work/{operation_id}.json",
@@ -215,6 +296,35 @@ func createPolicyIn(
 	require.NoError(t, err)
 }
 
+func createInventory(t *testing.T, client *dynamicfake.FakeDynamicClient, raw string) {
+	t.Helper()
+	_, err := client.Resource(ConfigMapResource).Namespace("control").Create(
+		context.Background(),
+		&unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "v1", "kind": "ConfigMap",
+			"metadata": map[string]any{"name": "scheduler-inventory"},
+			"data":     map[string]any{DefaultInventoryKey: raw},
+		}},
+		metav1.CreateOptions{},
+	)
+	require.NoError(t, err)
+}
+
+func updateInventory(t *testing.T, client *dynamicfake.FakeDynamicClient, raw string) {
+	t.Helper()
+	inventory, err := client.Resource(ConfigMapResource).Namespace("control").Get(
+		context.Background(), "scheduler-inventory", metav1.GetOptions{},
+	)
+	require.NoError(t, err)
+	require.NoError(t, unstructured.SetNestedField(
+		inventory.Object, raw, "data", DefaultInventoryKey,
+	))
+	_, err = client.Resource(ConfigMapResource).Namespace("control").Update(
+		context.Background(), inventory, metav1.UpdateOptions{},
+	)
+	require.NoError(t, err)
+}
+
 func fakeClient() *dynamicfake.FakeDynamicClient {
 	return dynamicfake.NewSimpleDynamicClientWithCustomListKinds(
 		runtime.NewScheme(), map[schema.GroupVersionResource]string{
@@ -222,6 +332,7 @@ func fakeClient() *dynamicfake.FakeDynamicClient {
 			operationqueue.Resource:       "KubeBrainOperationList",
 			operationqueue.LeaseResource:  "LeaseList",
 			operationqueue.SecretResource: "SecretList",
+			ConfigMapResource:             "ConfigMapList",
 		},
 	)
 }

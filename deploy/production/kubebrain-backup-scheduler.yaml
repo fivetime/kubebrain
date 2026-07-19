@@ -1,4 +1,15 @@
 apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kubebrain-backup-scheduler-inventory
+  namespace: kubebrain-operations
+  labels:
+    app.kubernetes.io/name: kubebrain-backup-scheduler
+    app.kubernetes.io/part-of: kubebrain
+data:
+  namespaces.json: '["kubebrain-operations"]'
+---
+apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: kubebrain-backup-scheduler
@@ -14,6 +25,14 @@ metadata:
   name: kubebrain-backup-scheduler
   namespace: kubebrain-operations
 rules:
+  - apiGroups:
+      - ""
+    resources:
+      - configmaps
+    resourceNames:
+      - kubebrain-backup-scheduler-inventory
+    verbs:
+      - get
   - apiGroups:
       - dbaas.kubebrain.io
     resources:
@@ -125,7 +144,9 @@ spec:
           command:
             - /usr/local/bin/kubebrain-backup-scheduler
           args:
-            - --namespaces=kubebrain-operations
+            - --namespace-inventory-configmap=kubebrain-backup-scheduler-inventory
+            - --namespace-inventory-namespace=kubebrain-operations
+            - --namespace-inventory-key=namespaces.json
             - --requested-by=system:serviceaccount:kubebrain-operations:kubebrain-backup-scheduler
             - --poll-interval=30s
           securityContext:

@@ -4550,6 +4550,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   固定 Status/Hash/HashKV 成功而 Alarm GET 失败；真实三副本删除 leader 窗口继续验证
   幸存 follower 诊断可用。
 
+- **Operations A264 fail-closed dynamic namespace inventory（2026-07-19）**：
+  A261 的多 namespace scheduler 仍把 allowlist 固化在 Deployment args，租户 onboarding/
+  teardown 每次都要求修改 PodTemplate 并滚动双副本，配置与逐 namespace RBAC binding
+  也缺少明确发布顺序。
+
+  scheduler 现可在每轮 reconcile 从中央 ConfigMap 的指定 data key 读取严格 JSON
+  namespace 数组；空数组、空值、重复、非法 DNS label、错误 JSON、ConfigMap/key 缺失
+  均在任何 policy list 或 Operation submit 前令整轮 fail closed，绝不沿用进程内旧值。
+  合法 inventory 排序后执行，更新无需重启。生产 ServiceAccount 只有对单一
+  `kubebrain-backup-scheduler-inventory` resourceName 的 ConfigMap `get`，不能 list/watch
+  namespace、读取其他 ConfigMap，目标 Secret/Operation 权限仍由未绑定 ClusterRole 加
+  每 namespace RoleBinding 显式授予。默认 inventory 只含 `kubebrain-operations`。
+
+  确定性测试使用同一 scheduler 实例将 inventory 从 tenant-a 动态扩为 tenant-a/tenant-b，
+  固定两边 queue/Secret 隔离；六类损坏 inventory 均零提交。清单测试固定精确
+  resourceNames RBAC、动态 flags、默认 JSON 和 ClusterRole 不含 ConfigMap 权限。生产
+  runbook 明确 onboarding 先绑定四类身份再加入 inventory，teardown 先 suspend/排空/
+  归档、移出 inventory 并等待 reconcile，再删除 binding。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
@@ -4570,7 +4589,7 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
    实例互斥、终态
    operation 的 Object Lock 不可变归档及 finalizer/删除门禁均已完成；继续补外部管理
    API 的 OIDC/tenant/instance 授权入口和显式 allowlist 多 namespace 定期调度已完成；
-   继续补跨 bucket/account 汇总、动态 namespace inventory、跨 cluster/region 全局调度
+   继续补跨 bucket/account 汇总、跨 cluster/region 全局调度
    和管理面/外部 IdP HA soak。
 4. 建立实例级限额和计量：请求字节、txn 操作数、跨连接 client RPC 总并发、client
    请求 QPS/burst、逻辑 Watch 总数、CPU/内存饱和、网络错误/丢包及 PD/TiKV PVC 容量

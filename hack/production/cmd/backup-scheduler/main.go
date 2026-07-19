@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"log"
 	"os"
@@ -12,18 +11,21 @@ import (
 	"time"
 
 	"github.com/kubewharf/kubebrain/hack/production/internal/backupscheduler"
-	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 )
 
 func main() {
-	var namespace, namespacesText, requester, kubeconfig, contextName string
+	var namespace, namespacesText, inventoryName, inventoryNamespace, inventoryKey string
+	var requester, kubeconfig, contextName string
 	var pollInterval time.Duration
 	var once bool
 	flag.StringVar(&namespace, "namespace", "kubebrain-operations", "policy and operation namespace")
 	flag.StringVar(&namespacesText, "namespaces", "", "comma-separated allowlist of policy and operation namespaces; overrides --namespace")
+	flag.StringVar(&inventoryName, "namespace-inventory-configmap", "", "ConfigMap read on every reconciliation for a dynamic namespace allowlist")
+	flag.StringVar(&inventoryNamespace, "namespace-inventory-namespace", "kubebrain-operations", "namespace containing --namespace-inventory-configmap")
+	flag.StringVar(&inventoryKey, "namespace-inventory-key", backupscheduler.DefaultInventoryKey, "ConfigMap data key containing a JSON namespace array")
 	flag.StringVar(&requester, "requested-by", backupscheduler.DefaultRequester, "immutable requester identity written to generated operations")
 	flag.StringVar(&kubeconfig, "kubeconfig", "", "kubeconfig path; empty uses in-cluster credentials")
 	flag.StringVar(&contextName, "context", "", "kubeconfig context")
@@ -36,9 +38,8 @@ func main() {
 	if requester == "" || len(requester) > 253 {
 		log.Fatal("requested-by must contain 1 to 253 characters")
 	}
-	namespaces, err := parseNamespaces(namespace, namespacesText)
-	if err != nil {
-		log.Fatal(err)
+	if inventoryName != "" && namespacesText != "" {
+		log.Fatal("--namespace-inventory-configmap and --namespaces are mutually exclusive")
 	}
 
 	config, err := clientConfig(kubeconfig, contextName)
@@ -49,7 +50,19 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	scheduler := backupscheduler.NewForNamespaces(client, namespaces).WithRequester(requester)
+	var scheduler *backupscheduler.Scheduler
+	if inventoryName != "" {
+		scheduler = backupscheduler.NewForInventory(
+			client, inventoryNamespace, inventoryName, inventoryKey,
+		)
+	} else {
+		namespaces, err := parseNamespaces(namespace, namespacesText)
+		if err != nil {
+			log.Fatal(err)
+		}
+		scheduler = backupscheduler.NewForNamespaces(client, namespaces)
+	}
+	scheduler.WithRequester(requester)
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -80,23 +93,11 @@ func parseNamespaces(single, multiple string) ([]string, error) {
 	if multiple == "" {
 		multiple = single
 	}
-	seen := make(map[string]struct{})
 	var namespaces []string
 	for _, raw := range strings.Split(multiple, ",") {
-		namespace := strings.TrimSpace(raw)
-		if namespace == "" {
-			return nil, errors.New("namespace allowlist contains an empty value")
-		}
-		if problems := validation.IsDNS1123Label(namespace); len(problems) != 0 {
-			return nil, errors.New("invalid namespace " + namespace + ": " + problems[0])
-		}
-		if _, duplicate := seen[namespace]; duplicate {
-			return nil, errors.New("namespace allowlist contains duplicate " + namespace)
-		}
-		seen[namespace] = struct{}{}
-		namespaces = append(namespaces, namespace)
+		namespaces = append(namespaces, strings.TrimSpace(raw))
 	}
-	return namespaces, nil
+	return backupscheduler.ValidateNamespaces(namespaces)
 }
 
 func clientConfig(kubeconfig, contextName string) (*rest.Config, error) {

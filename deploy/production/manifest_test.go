@@ -263,11 +263,15 @@ func TestBackupSchedulerIsHAAndLeastPrivilege(t *testing.T) {
 	rules, found, err := unstructured.NestedSlice(role.Object, "rules")
 	require.NoError(t, err)
 	require.True(t, found)
-	require.Len(t, rules, 3)
-	require.Equal(t, []any{"create", "get"}, rules[1].(map[string]any)["verbs"].([]any))
+	require.Len(t, rules, 4)
+	require.Equal(t, []any{"configmaps"}, rules[0].(map[string]any)["resources"].([]any))
+	require.Equal(t, []any{"kubebrain-backup-scheduler-inventory"},
+		rules[0].(map[string]any)["resourceNames"].([]any))
+	require.Equal(t, []any{"get"}, rules[0].(map[string]any)["verbs"].([]any))
 	require.Equal(t, []any{"create", "get"}, rules[2].(map[string]any)["verbs"].([]any))
-	require.NotContains(t, rules[1].(map[string]any)["verbs"].([]any), "update")
+	require.Equal(t, []any{"create", "get"}, rules[3].(map[string]any)["verbs"].([]any))
 	require.NotContains(t, rules[2].(map[string]any)["verbs"].([]any), "update")
+	require.NotContains(t, rules[3].(map[string]any)["verbs"].([]any), "update")
 	binding := objectByKindAndName(t, objects, "RoleBinding", "kubebrain-backup-scheduler")
 	require.Equal(t, "Role",
 		nestedString(t, binding, "roleRef", "kind"))
@@ -277,7 +281,13 @@ func TestBackupSchedulerIsHAAndLeastPrivilege(t *testing.T) {
 	clusterRules, found, err := unstructured.NestedSlice(clusterRole.Object, "rules")
 	require.NoError(t, err)
 	require.True(t, found)
-	require.Equal(t, rules, clusterRules)
+	require.Len(t, clusterRules, 3)
+	require.Equal(t, rules[1:], clusterRules)
+	inventory := objectByKindAndName(
+		t, objects, "ConfigMap", "kubebrain-backup-scheduler-inventory",
+	)
+	require.Equal(t, `["kubebrain-operations"]`,
+		nestedString(t, inventory, "data", "namespaces.json"))
 	containers, found, err := unstructured.NestedSlice(
 		deployment.Object, "spec", "template", "spec", "containers",
 	)
@@ -286,7 +296,11 @@ func TestBackupSchedulerIsHAAndLeastPrivilege(t *testing.T) {
 	args, found, err := unstructured.NestedStringSlice(containers[0].(map[string]any), "args")
 	require.NoError(t, err)
 	require.True(t, found)
-	require.Contains(t, args, "--namespaces=kubebrain-operations")
+	require.NotContains(t, args, "--namespaces=kubebrain-operations")
+	require.Contains(t, args,
+		"--namespace-inventory-configmap=kubebrain-backup-scheduler-inventory")
+	require.Contains(t, args, "--namespace-inventory-namespace=kubebrain-operations")
+	require.Contains(t, args, "--namespace-inventory-key=namespaces.json")
 	require.Contains(t, args,
 		"--requested-by=system:serviceaccount:kubebrain-operations:kubebrain-backup-scheduler")
 	spreads, found, err := unstructured.NestedSlice(
