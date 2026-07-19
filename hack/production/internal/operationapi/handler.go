@@ -225,7 +225,12 @@ func dependencyContextError(err error) bool {
 		errors.Is(err, context.Canceled) ||
 		errors.Is(err, ErrOIDCUnavailable) ||
 		apierrors.IsTimeout(err) ||
-		apierrors.IsServerTimeout(err)
+		apierrors.IsServerTimeout(err) ||
+		apierrors.IsForbidden(err) ||
+		apierrors.IsUnauthorized(err) ||
+		apierrors.IsServiceUnavailable(err) ||
+		apierrors.IsTooManyRequests(err) ||
+		apierrors.IsInternalError(err)
 }
 
 func summarizeOperation(object *unstructured.Unstructured) operationResponse {

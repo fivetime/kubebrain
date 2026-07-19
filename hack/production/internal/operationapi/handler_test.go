@@ -245,6 +245,18 @@ func TestHandlerDependencyDeadlineReturnsServiceUnavailable(t *testing.T) {
 	require.Equal(t, http.StatusServiceUnavailable, response.Code)
 
 	handler, err = NewHandler(
+		staticAuthenticator{principal: authorizedPrincipal()},
+		&memoryOperationStore{getErr: apierrors.NewForbidden(
+			schema.GroupResource{Group: "dbaas.kubebrain.io", Resource: "kubebrainoperations"},
+			"missing", errors.New("RBAC denied"),
+		)}, time.Second,
+	)
+	require.NoError(t, err)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	require.Equal(t, http.StatusServiceUnavailable, response.Code)
+
+	handler, err = NewHandler(
 		staticAuthenticator{err: ErrOIDCUnavailable}, &memoryOperationStore{}, time.Second,
 	)
 	require.NoError(t, err)
