@@ -4415,6 +4415,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   client/v3 `WithProgressNotify` quiet watch 连续复现首个 progress 超时：follower 把
   from-now 请求改写为正数起点，却错误等待自身滞后的 published watermark；该复现作为
   A254 部署后同一黑盒的发布门禁。
+- **Watch A255 follower from-now progress identity（2026-07-19）**：A254 三副本部署
+  后，上述 quiet-watch 黑盒仍稳定超时，进一步证明问题不只是 follower 本地 published：
+  为关闭 created response 与 backend 注册之间的事件缺口，follower 会把客户端原始
+  `StartRevision=0` 改写成安全恢复点 `R+1`；A253/A254 随后丢失原始请求身份，把这个
+  内部恢复点误当成客户端显式 future revision。没有后续写入时，leader 代理 watch 与
+  follower 外层 watch 互相等待 progress，形成活性死锁。
+
+  watcher 现分别保存 backend `StartRevision` 与客户端 `progressStartRevision`。普通及
+  显式历史/future watch 两者相同；仅 follower from-now 注册保持 backend 从 `R+1`
+  无缝回放，同时 progress floor 保留 0，允许外层立即报告已安全同步的 R。真正的
+  future watch 仍要求自身 FIFO event/marker 达到起点。确定性测试制造
+  `current > published`，确认重写请求以 `published+1` 注册、`syncedRev=published` 且
+  `progressStartRevision=0`；与 future progress 组合测试普通连续 100 轮、race 连续
+  20 轮通过。真实三副本 A254 基线的官方 client/v3 quiet-watch cadence 稳定超时；
+  A255 部署后同一用例连续 10 轮通过，随后 client/v3 兼容模块全量、根模块全量及
+  两处 vet 均通过。
 
 ### P1：通用服务能力
 

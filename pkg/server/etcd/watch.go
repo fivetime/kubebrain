@@ -108,10 +108,12 @@ type watch struct {
 	cancel     func()
 	start, end string
 	quotaHeld  bool
-	// startRevision fences progress for a watch created in the future. etcd
-	// does not report progress until the store has actually reached this
-	// revision; StartRevision==0 watches are eligible immediately.
-	startRevision uint64
+	// progressStartRevision is the client's requested progress floor. It normally
+	// equals WatchCreateRequest.StartRevision, except when a follower rewrites a
+	// from-now request to R+1 internally to close the proxy registration gap.
+	// That backend resume point must not turn the original revision-zero request
+	// into a client-visible future watch.
+	progressStartRevision uint64
 	// syncedRev is the highest revision this watch has actually delivered to the
 	// client (or the caught-up revision captured at creation). Progress
 	// notifications must never advertise a revision beyond syncedRev: the global
@@ -164,7 +166,7 @@ func (w *watcher) progressSyncedRevSnapshot() (snapshot map[int64]uint64, allEli
 	allEligible = len(w.watches) > 0
 	for id, wt := range w.watches {
 		syncedRev := atomic.LoadUint64(&wt.syncedRev)
-		if wt.startRevision > syncedRev {
+		if wt.progressStartRevision > syncedRev {
 			allEligible = false
 			continue
 		}
@@ -299,11 +301,12 @@ func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) error {
 				klog.InfoS("watch follower", "revision", r.StartRevision, "addr", s.backend.GetResourceLock().Identity(), "leader", leaderInfo)
 				return status.Errorf(codes.Unavailable, "watch error addr is %s leader %s", s.backend.GetResourceLock().Identity(), leaderInfo)
 			}
+			progressStartRevision := r.StartRevision
 			if !s.peers.IsLeader() && r.StartRevision == 0 {
 				r.StartRevision = int64(w.responseRevision()) + 1
 			}
 
-			w.Start(ws.Context(), r)
+			w.start(ws.Context(), r, uint64(progressStartRevision))
 		} else if cancelRequest := msg.GetCancelRequest(); cancelRequest != nil {
 			if err := w.syncControlRevision(ws.Context()); err != nil {
 				return err
@@ -401,6 +404,10 @@ func watchAuthCancelReason(err error) string {
 }
 
 func (w *watcher) Start(c context.Context, r *etcdserverpb.WatchCreateRequest) {
+	w.start(c, r, uint64(r.StartRevision))
+}
+
+func (w *watcher) start(c context.Context, r *etcdserverpb.WatchCreateRequest, progressStartRevision uint64) {
 	w.Lock()
 	ctx, cancel := context.WithCancel(c)
 	if r.WatchId != 0 {
@@ -456,12 +463,12 @@ func (w *watcher) Start(c context.Context, r *etcdserverpb.WatchCreateRequest) {
 		initSyncedRev = w.backend.GetPublishedRevision()
 	}
 	w.watches[id] = &watch{
-		cancel:        cancel,
-		start:         string(r.Key),
-		end:           string(r.RangeEnd),
-		quotaHeld:     w.grpcServer.maxWatches != 0,
-		startRevision: uint64(r.StartRevision),
-		syncedRev:     initSyncedRev,
+		cancel:                cancel,
+		start:                 string(r.Key),
+		end:                   string(r.RangeEnd),
+		quotaHeld:             w.grpcServer.maxWatches != 0,
+		progressStartRevision: progressStartRevision,
+		syncedRev:             initSyncedRev,
 	}
 	if len(w.watches) > 1 {
 		klog.InfoS("watcher reuse", "id", w.id, "size", len(w.watches))
@@ -859,7 +866,7 @@ func (w *watcher) Watch(ctx context.Context, id int64, r *etcdserverpb.WatchCrea
 				// it; the next tick reports the real revision once it advances.
 				continue
 			}
-			if wt != nil && wt.startRevision > revision {
+			if wt != nil && wt.progressStartRevision > revision {
 				// A future-revision watch is not synchronized merely because the
 				// global store reached its start. Wait for this watch's FIFO event
 				// stream to deliver an event or progress marker at that revision.

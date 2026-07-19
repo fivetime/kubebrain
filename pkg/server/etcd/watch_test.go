@@ -1196,10 +1196,10 @@ func TestFutureRevisionWatchSuppressesProgressUntilDelivered(t *testing.T) {
 
 	stream := &controllableWatchServer{ctx: context.Background()}
 	wt := &watch{
-		cancel:        func() {},
-		start:         "/registry/watch/future",
-		startRevision: 10,
-		syncedRev:     9,
+		cancel:                func() {},
+		start:                 "/registry/watch/future",
+		progressStartRevision: 10,
+		syncedRev:             9,
 	}
 	w := &watcher{
 		backend:     backend,
@@ -1314,11 +1314,10 @@ func TestFilteredWatchAdvancesThroughFullBatchRevision(t *testing.T) {
 	<-done
 }
 
-// TestFromNowWatchSeedsFromPublishedNotCurrentRevision pins the seed hardening: a
-// StartRevision==0 watch seeds its progress floor from GetPublishedRevision (the
-// safe frontier), never GetCurrentRevision (advanced pre-publish), so the first
-// progress report cannot over-report a still-in-flight event.
-func TestFromNowWatchSeedsFromPublishedNotCurrentRevision(t *testing.T) {
+// TestRewrittenFromNowWatchPreservesPublishedProgressFloor pins both sides of
+// follower registration: the backend resumes from published+1 to close the
+// create gap, while progress retains the client's original revision-zero floor.
+func TestRewrittenFromNowWatchPreservesPublishedProgressFloor(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
 
@@ -1339,23 +1338,26 @@ func TestFromNowWatchSeedsFromPublishedNotCurrentRevision(t *testing.T) {
 		watches:     make(map[int64]*watch),
 		metricCli:   server.metricCli,
 	}
-	w.Start(ctx, &etcdserverpb.WatchCreateRequest{
+	w.start(ctx, &etcdserverpb.WatchCreateRequest{
 		Key:            []byte("/registry/watch/from-now"),
-		StartRevision:  0,
+		StartRevision:  int64(published) + 1,
 		ProgressNotify: true,
-	})
+	}, 0)
 
-	// The freshly-created watch's seed must equal the published revision, not the
-	// (higher) current revision.
+	// The rewritten watch is caught up through published, and must remain
+	// immediately progress-eligible as an original from-now request.
 	var seed uint64
+	var progressStart uint64
 	w.Lock()
 	require.Len(t, w.watches, 1)
 	for _, wt := range w.watches {
 		seed = atomic.LoadUint64(&wt.syncedRev)
+		progressStart = wt.progressStartRevision
 	}
 	w.Unlock()
 	require.Equal(t, published, seed, "from-now watch must seed from published revision")
 	require.Less(t, seed, current, "from-now watch must not seed from the pre-publish current revision")
+	require.Zero(t, progressStart, "internal R+1 resume must not create a client-visible future watch")
 }
 
 // controllableWatchServer is a thread-safe Watch stream whose Recv blocks on a
