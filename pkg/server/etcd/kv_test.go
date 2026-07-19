@@ -3523,6 +3523,35 @@ func TestTxnIntervalValidationAllowsNestedThenElseSameKey(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestTxnIntervalValidationRejectsParentPutAndNestedDeleteInEitherOrder(t *testing.T) {
+	key := []byte("/registry/generic-txn/nested-delete/a")
+	put := &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestPut{
+		RequestPut: &etcdserverpb.PutRequest{Key: key, Value: []byte("value")},
+	}}
+	nestedDelete := &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestTxn{
+		RequestTxn: &etcdserverpb.TxnRequest{
+			Success: []*etcdserverpb.RequestOp{
+				{Request: &etcdserverpb.RequestOp_RequestDeleteRange{
+					RequestDeleteRange: &etcdserverpb.DeleteRangeRequest{
+						Key:      []byte("/registry/generic-txn/nested-delete/"),
+						RangeEnd: []byte("/registry/generic-txn/nested-delete0"),
+					},
+				}},
+			},
+		},
+	}}
+
+	for _, ops := range [][]*etcdserverpb.RequestOp{
+		{put, nestedDelete},
+		{nestedDelete, put},
+	} {
+		err := validateTxnRequest(&etcdserverpb.TxnRequest{Success: ops})
+		require.Error(t, err)
+		require.Equal(t, codes.InvalidArgument, status.Code(err))
+		require.Contains(t, err.Error(), "duplicate key")
+	}
+}
+
 func TestTxnIntervalValidationRejectsDuplicateNestedSiblingPuts(t *testing.T) {
 	key := []byte("/registry/generic-txn/nested-sibling/a")
 

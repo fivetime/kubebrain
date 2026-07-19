@@ -4098,6 +4098,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   endpoint proposal 健康；再次删除真实 leader 执行 race Porcupine lease lifecycle
   历史，覆盖 Put/Get/KeepAlive/Revoke 的故障窗口并保持可线性化。A236 的代理包
   普通/race 重复测试与全仓 test/vet 结果继续作为该精确源码归档的构建前质量证据。
+- **Compatibility A238 nested Txn delete-interval duplicate key validation（2026-07-19）**：
+  对照上游 `/root/etcd/tests/integration/v3_grpc_test.go:TestV3TxnDuplicateKeys`
+  和 `server/etcdserver/api/v3rpc/key.go:checkIntervals` 补齐全部 10 项嵌套区间矩阵。
+  新差分稳定发现 `Then(Put(k), Then(DeleteRange(containing k)))` 在 etcd 返回
+  `InvalidArgument: etcdserver: duplicate key given in txn request`，KubeBrain 却成功执行。
+
+  根因是本地 interval collector 在同一轮按请求顺序处理当前层 Put 和子事务，位于 Put
+  后方的子事务删除区间无法反向检查已经收集的 Put。现与 etcd 一致分成两阶段：先递归
+  汇总全部子事务 Then/Else 的 Put 与删除区间，再检查当前层全部 Put。父层 Put 与子事务
+  DeleteRange 的前后两种顺序均拒绝，互斥 Then/Else 内同键 Put 仍合法，兄弟子事务重复
+  Put 仍拒绝。聚焦单元矩阵连续 20 轮通过，全仓 test/vet 通过；修复前真实双端差分仅该
+  项出现 `OK`/`InvalidArgument` 差异，其余 9 项一致。修复前完整双端 Differential
+  253.469 秒通过既有全部组，并由本轮新增门禁暴露原覆盖空白。
 - **Operations A185 certificate rotation completion state（2026-07-18）**：新增
   `hack/production/validate-certificate-rotation.sh`，把 client/peer CA rollover
   收敛为 `begin -> overlap -> complete` 三阶段门禁。begin 固定全部 KubeBrain Pod

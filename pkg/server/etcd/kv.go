@@ -660,41 +660,48 @@ func collectTxnIntervals(ops []*etcdserverpb.RequestOp) (map[string]struct{}, []
 	}
 
 	putKeys := make(map[string]struct{})
+	// Match etcd's checkIntervals ordering: collect every child transaction's
+	// puts and delete intervals before checking puts at this level. Otherwise a
+	// Put followed by a nested DeleteRange containing that key is accepted
+	// merely because the child appears later in the request.
 	for _, op := range ops {
-		if nested := op.GetRequestTxn(); nested != nil {
-			thenPuts, thenDeletes, err := collectTxnIntervals(nested.Success)
-			if err != nil {
-				return nil, deleteIntervals, err
-			}
-			elsePuts, elseDeletes, err := collectTxnIntervals(nested.Failure)
-			if err != nil {
-				return nil, deleteIntervals, err
-			}
-			for key := range thenPuts {
-				if _, ok := putKeys[key]; ok {
-					return nil, deleteIntervals, duplicateTxnKeyError()
-				}
-				if txnIntervalsContain(deleteIntervals, []byte(key)) {
-					return nil, deleteIntervals, duplicateTxnKeyError()
-				}
-				putKeys[key] = struct{}{}
-			}
-			for key := range elsePuts {
-				if _, ok := putKeys[key]; ok {
-					if _, safe := thenPuts[key]; !safe {
-						return nil, deleteIntervals, duplicateTxnKeyError()
-					}
-				}
-				if txnIntervalsContain(deleteIntervals, []byte(key)) {
-					return nil, deleteIntervals, duplicateTxnKeyError()
-				}
-				putKeys[key] = struct{}{}
-			}
-			deleteIntervals = append(deleteIntervals, thenDeletes...)
-			deleteIntervals = append(deleteIntervals, elseDeletes...)
+		nested := op.GetRequestTxn()
+		if nested == nil {
 			continue
 		}
+		thenPuts, thenDeletes, err := collectTxnIntervals(nested.Success)
+		if err != nil {
+			return nil, deleteIntervals, err
+		}
+		elsePuts, elseDeletes, err := collectTxnIntervals(nested.Failure)
+		if err != nil {
+			return nil, deleteIntervals, err
+		}
+		for key := range thenPuts {
+			if _, ok := putKeys[key]; ok {
+				return nil, deleteIntervals, duplicateTxnKeyError()
+			}
+			if txnIntervalsContain(deleteIntervals, []byte(key)) {
+				return nil, deleteIntervals, duplicateTxnKeyError()
+			}
+			putKeys[key] = struct{}{}
+		}
+		for key := range elsePuts {
+			if _, ok := putKeys[key]; ok {
+				if _, safe := thenPuts[key]; !safe {
+					return nil, deleteIntervals, duplicateTxnKeyError()
+				}
+			}
+			if txnIntervalsContain(deleteIntervals, []byte(key)) {
+				return nil, deleteIntervals, duplicateTxnKeyError()
+			}
+			putKeys[key] = struct{}{}
+		}
+		deleteIntervals = append(deleteIntervals, thenDeletes...)
+		deleteIntervals = append(deleteIntervals, elseDeletes...)
+	}
 
+	for _, op := range ops {
 		r := op.GetRequestPut()
 		if r == nil {
 			continue
