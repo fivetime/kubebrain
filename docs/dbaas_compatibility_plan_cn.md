@@ -5144,6 +5144,33 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   COMPLIANCE version 保留到 `1784506884`，到期后按 exact version 清理。archiver 与六类
   零副本 executor 模板更新到 A289。
 
+- **Backup A290 deterministic cross-process deletion receipt recovery（2026-07-19）**：
+  exact-version 删除成功后，S3 不提供可恢复的物理删除时间；旧实现把本次调用的 `Now`
+  写入 `deleted_at_unix`，导致本地 receipt 随 Pod 丢失后，同一已删除 version 的重建
+  receipt SHA 变化。该 SHA 会进入 BackupDeletion operation 完成证据和不可变审计归档，
+  因而必须跨进程稳定。
+
+  删除许可仍使用当前时钟并重新核对远端 retention；到期前拒绝，保留期内 version 提前
+  消失仍 fail closed。成功删除或到期后恢复时都以 exact-version Head NotFound 证明当前
+  不存在，并把 `deleted_at_unix` 固定为 `retain_until_unix`，语义是最早合法删除边界；
+  实际工作流完成时间由上层 operation receipt 承担。校验器和生产 executor 同步要求两者
+  精确相等。测试覆盖同路径重试、全新 receipt 路径和推进后的请求时钟；focused 连续
+  200 轮、focused race 50 轮、objectstore 全包连续 50 轮、全包 race 20 轮、
+  BackupDeletion 选择性连续 3 轮 51.825 秒、production 全量 91.166 秒以及两侧 vet
+  均通过。代码提交 `65b10ed212680e86847d30a3ae2dbb18ca13f5e6`。
+
+  精确提交构建非 root TiKV 镜像 `kubebrain:a290-stable-deletion-receipt`（image ID
+  `sha256:28d0461e1fa046dea9f6af75a29cd6f646794111820265c2e3988e0d55b3e81c`）。
+  真实 KubeBrain `/registry` 在 revision `467796068338761731` 导出 58 条记录、0 lease，
+  artifact SHA-256 为
+  `95ddc319c1d3288eb3153269fe439ce8199aa94c85fe3f12db039acf8163c389`。真实 MinIO
+  GOVERNANCE version `8626e1dd-21f0-42ff-b94d-11fe2eb8ecca` 保留到 `1784504294`：
+  到期前删除被拒绝且不生成 receipt；到期后首次删除与两秒后的独立容器、全新路径恢复
+  得到逐字节相同的 canonical receipt，SHA-256 均为
+  `35650ecf927e27fe24eeeeb42e29f57c680fca4d92ffb914b7da76a2ee57d93c`，且 version
+  已清理。archiver 与六类零副本 executor 模板更新到 A290；A288/A289 的 COMPLIANCE
+  验证 version 继续保留到各自期限，到期后按 exact version 清理。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range

@@ -372,7 +372,12 @@ DELETE_CONFIRM=delete:instance-a:backup-20260718 \
 未到直接失败，到期后仅删除 receipt 指定的 version，并以 Head 确认该 version 不可读后
 发布 `kubebrain.object-backup-deletion.receipt.v1`。删除后崩溃重试可根据“到期且精确
 version 已不存在”补发/复用 receipt；保留期内提前消失则 fail closed。两个 receipt
-都必须归档到不可变审计存储。bucket 生命周期规则只能作为调度器，不能替代该完成证据。
+都必须归档到不可变审计存储。删除 receipt 的 `deleted_at_unix` 固定等于
+`retain_until_unix`，表示该 version 的最早合法删除边界，而不是对象存储无法恢复的物理
+删除时间；每次重试仍以 exact-version Head NotFound 重新证明当前不存在，实际工作流完成
+时间由上层 BackupDeletion operation receipt 记录。这样即使本地删除 receipt 随 Pod
+丢失，重建后的 canonical JSON 和 SHA 也保持稳定。bucket 生命周期规则只能作为调度器，
+不能替代该完成证据。
 
 `deploy/production/monitoring.yaml` 还以 1 分钟周期生成实例级计量序列：
 
