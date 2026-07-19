@@ -1040,6 +1040,14 @@ inventory 无效时 claim 在读取任何 Operation 前 fail closed。中央 wor
 Operation；上述依赖故障退出 1，供 supervisor 使用 failure backoff 和告警区分空闲与
 控制面故障。
 
+实例 claim 是 Lease 与 Operation status 的两阶段提交。Lease create/update 成功后，
+status CAS 若冲突、超时或失败，worker 必须用脱离原请求取消信号但最多 5 秒的 cleanup
+context，按 holder identity 和 Lease UID precondition 释放刚取得的实例锁。status 主错误
+与 cleanup 错误必须同时返回；补偿失败时不能继续扫描其他候选。Requeue/Finish 已成功
+提交 Pending/终态 status 后也使用相同独立预算释放 Lease，并把释放失败暴露给调用方。
+该补偿只处理 Kubernetes coordination Lease；外部系统副作用仍由 Operation fencing 与
+幂等 receipt 约束。
+
 终态审计归档器使用同一 inventory。先创建仅供 archiver 使用的对象存储 Secret；bucket
 必须已启用 versioning 与 Object Lock，凭据不得与 backup executor 或 worker 共用：
 

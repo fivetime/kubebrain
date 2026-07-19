@@ -4900,6 +4900,31 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Deployment 均保持零副本并更新到 A279；三副本 KubeBrain、三 PD、三 TiKV 和 A277
   双副本 scheduler 均 Ready、零重启。
 
+- **Operations A280 bounded instance Lease compensation（2026-07-19）**：
+  Queue claim 先取得 `coordination.k8s.io/Lease`，再 CAS 更新 Operation status。若 status
+  请求冲突、超时或失败，原实现用同一个请求 context 释放 Lease，并忽略 release 错误；
+  context 已取消时清理无法发出，留下没有 Operation owner 的孤立实例锁直到 TTL。类似地，
+  Requeue/Finish 提交 status 后的 release 也使用原 context 且静默忽略失败。
+
+  新增 5 秒 `leaseCleanupContext`，通过 `context.WithoutCancel` 保留 tracing/value，但
+  与原请求取消信号解耦并重新施加严格 deadline。Claim status 冲突时只有补偿成功才继续
+  候选；普通 status 错误与补偿错误通过 `errors.Join` 同时返回。Requeue/Finish 已提交
+  status 后若释放失败，返回已提交对象和显式 cleanup 错误。释放继续先 GET 校验精确
+  holder，再以 Lease UID precondition DELETE，避免迟到补偿删除新 holder。
+
+  operationqueue focused 连续 100 轮、race 连续 50 轮、全量 production 测试
+  （90.103 秒）和 vet 均通过。精确提交
+  `b431207d6c304a4e72d8d92cf59013370b880a65` 构建非 root 镜像
+  `kubebrain:a280-lease-cleanup`（image ID
+  `sha256:6ff6cb97f260a50dbda2263153dd1b8119d700652b2a741708a078cad34dd1ed`）。
+  最终 operationctl 连接线程化假 Kubernetes API：Lease POST 成功后，status PUT 保持
+  35 秒，使 CLI 的 30 秒 context 到期。CLI 在 30.765 秒退出 1 并报告
+  `context deadline exceeded`；服务端事件严格为
+  `lease-created -> status-started -> cleanup-get -> cleanup-delete`，cleanup 在原 deadline
+  后约 30ms 发出，最终 `lease_present=false`。kind 六类 executor Deployment 均保持
+  零副本并更新到 A280；三副本 KubeBrain、三 PD、三 TiKV 和 A277 双副本 scheduler
+  均 Ready、零重启。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
