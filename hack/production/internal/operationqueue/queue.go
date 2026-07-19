@@ -779,7 +779,7 @@ func (q *Queue) acquireInstanceLease(
 		return nil
 	}
 	if !apierrors.IsAlreadyExists(err) {
-		return err
+		return q.reconcileInstanceLeaseWrite(ctx, name, lease, err)
 	}
 	existing, err := q.leases.Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
@@ -800,7 +800,50 @@ func (q *Queue) acquireInstanceLease(
 	_ = unstructured.SetNestedField(updated.Object, seconds, "spec", "leaseDurationSeconds")
 	_ = unstructured.SetNestedField(updated.Object, nowText, "spec", "renewTime")
 	_, err = q.leases.Update(ctx, updated, metav1.UpdateOptions{})
-	return err
+	if err == nil {
+		return nil
+	}
+	return q.reconcileInstanceLeaseWrite(ctx, name, updated, err)
+}
+
+func (q *Queue) reconcileInstanceLeaseWrite(
+	parent context.Context,
+	name string,
+	expected *unstructured.Unstructured,
+	writeErr error,
+) error {
+	ctx, cancel := leaseCleanupContext(parent)
+	defer cancel()
+	actual, err := q.leases.Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return errors.Join(
+			writeErr,
+			fmt.Errorf("inspect instance lease after failed write: %w", err),
+		)
+	}
+	if instanceLeaseStateMatches(actual, expected) {
+		return nil
+	}
+	return writeErr
+}
+
+func instanceLeaseStateMatches(actual, expected *unstructured.Unstructured) bool {
+	for _, field := range []string{
+		"holderIdentity", "acquireTime", "renewTime",
+	} {
+		actualValue, _, _ := unstructured.NestedString(actual.Object, "spec", field)
+		expectedValue, _, _ := unstructured.NestedString(expected.Object, "spec", field)
+		if actualValue != expectedValue {
+			return false
+		}
+	}
+	actualDuration, _, _ := unstructured.NestedInt64(
+		actual.Object, "spec", "leaseDurationSeconds",
+	)
+	expectedDuration, _, _ := unstructured.NestedInt64(
+		expected.Object, "spec", "leaseDurationSeconds",
+	)
+	return actualDuration == expectedDuration
 }
 
 func (q *Queue) releaseInstanceLease(ctx context.Context, instance, holder string) error {

@@ -495,6 +495,148 @@ func TestHeartbeatCleanupOutlivesCanceledParent(t *testing.T) {
 	require.Empty(t, leases.Items)
 }
 
+func TestClaimReconcilesCommittedLeaseCreateAfterLostResponse(t *testing.T) {
+	client := fakeQueueClient()
+	queue := New(client, "test")
+	ctx := context.Background()
+	_, err := queue.Submit(ctx, "backup-1", validSpec())
+	require.NoError(t, err)
+	client.PrependReactor("create", LeaseResource.Resource, func(
+		action clientgotesting.Action,
+	) (bool, runtime.Object, error) {
+		lease := action.(clientgotesting.CreateAction).GetObject()
+		require.NoError(t, client.Tracker().Create(LeaseResource, lease, "test"))
+		return true, nil, errors.New("lease create response lost")
+	})
+
+	claim, err := queue.Claim(ctx, "worker-a", "PostRestoreAudit", time.Minute)
+	require.NoError(t, err)
+	require.Equal(t, "backup-1", claim.Name)
+	leases, err := client.Resource(LeaseResource).Namespace("test").
+		List(ctx, metav1.ListOptions{})
+	require.NoError(t, err)
+	require.Len(t, leases.Items, 1)
+}
+
+func TestHeartbeatReconcilesCommittedLeaseUpdateAfterLostResponse(t *testing.T) {
+	client := fakeQueueClient()
+	now := time.Unix(1_000, 0).UTC()
+	queue := New(client, "test").WithClock(func() time.Time { return now })
+	ctx := context.Background()
+	_, err := queue.Submit(ctx, "backup-1", validSpec())
+	require.NoError(t, err)
+	claim, err := queue.Claim(ctx, "worker-a", "PostRestoreAudit", time.Minute)
+	require.NoError(t, err)
+	now = now.Add(10 * time.Second)
+	client.PrependReactor("update", LeaseResource.Resource, func(
+		action clientgotesting.Action,
+	) (bool, runtime.Object, error) {
+		lease := action.(clientgotesting.UpdateAction).GetObject()
+		require.NoError(t, client.Tracker().Update(LeaseResource, lease, "test"))
+		return true, nil, errors.New("lease update response lost")
+	})
+
+	heartbeat, err := queue.Heartbeat(
+		ctx, claim.Name, claim.Owner, claim.Attempt, 2*time.Minute,
+	)
+	require.NoError(t, err)
+	require.Equal(t, int64(1_130), heartbeat.LeaseUntilUnix)
+	leases, err := client.Resource(LeaseResource).Namespace("test").
+		List(ctx, metav1.ListOptions{})
+	require.NoError(t, err)
+	require.Len(t, leases.Items, 1)
+	renewed, _, _ := unstructured.NestedString(
+		leases.Items[0].Object, "spec", "renewTime",
+	)
+	require.Equal(t, now.Format(microTimeFormat), renewed)
+}
+
+func TestClaimReportsLeaseWriteAndReconciliationFailures(t *testing.T) {
+	client := fakeQueueClient()
+	queue := New(client, "test")
+	ctx := context.Background()
+	_, err := queue.Submit(ctx, "backup-1", validSpec())
+	require.NoError(t, err)
+	client.PrependReactor("create", LeaseResource.Resource, func(
+		clientgotesting.Action,
+	) (bool, runtime.Object, error) {
+		return true, nil, errors.New("lease write unavailable")
+	})
+	client.PrependReactor("get", LeaseResource.Resource, func(
+		clientgotesting.Action,
+	) (bool, runtime.Object, error) {
+		return true, nil, errors.New("lease inspection unavailable")
+	})
+
+	claim, err := queue.Claim(ctx, "worker-a", "PostRestoreAudit", time.Minute)
+	require.Nil(t, claim)
+	require.ErrorContains(t, err, "lease write unavailable")
+	require.ErrorContains(t, err, "lease inspection unavailable")
+	operation, getErr := queue.Get(ctx, "backup-1")
+	require.NoError(t, getErr)
+	phase, _, _ := unstructured.NestedString(operation.Object, "status", "phase")
+	require.Empty(t, phase)
+}
+
+func TestClaimRejectsMismatchedLeaseAfterFailedCreate(t *testing.T) {
+	client := fakeQueueClient()
+	queue := New(client, "test")
+	ctx := context.Background()
+	_, err := queue.Submit(ctx, "backup-1", validSpec())
+	require.NoError(t, err)
+	client.PrependReactor("create", LeaseResource.Resource, func(
+		action clientgotesting.Action,
+	) (bool, runtime.Object, error) {
+		lease := action.(clientgotesting.CreateAction).GetObject().(*unstructured.Unstructured).DeepCopy()
+		require.NoError(t, unstructured.SetNestedField(
+			lease.Object, "2000-01-01T00:00:00.000000Z", "spec", "renewTime",
+		))
+		require.NoError(t, client.Tracker().Create(LeaseResource, lease, "test"))
+		return true, nil, errors.New("lease create response lost")
+	})
+
+	claim, err := queue.Claim(ctx, "worker-a", "PostRestoreAudit", time.Minute)
+	require.Nil(t, claim)
+	require.ErrorContains(t, err, "lease create response lost")
+	operation, getErr := queue.Get(ctx, "backup-1")
+	require.NoError(t, getErr)
+	phase, _, _ := unstructured.NestedString(operation.Object, "status", "phase")
+	require.Empty(t, phase)
+}
+
+func TestClaimLeaseWriteReconciliationOutlivesCanceledParent(t *testing.T) {
+	client := fakeQueueClient()
+	queue := New(client, "test")
+	ctx, cancel := context.WithCancel(context.Background())
+	_, err := queue.Submit(ctx, "backup-1", validSpec())
+	require.NoError(t, err)
+	client.PrependReactor("create", LeaseResource.Resource, func(
+		action clientgotesting.Action,
+	) (bool, runtime.Object, error) {
+		lease := action.(clientgotesting.CreateAction).GetObject()
+		require.NoError(t, client.Tracker().Create(LeaseResource, lease, "test"))
+		cancel()
+		return true, nil, ctx.Err()
+	})
+	client.PrependReactor("update", Resource.Resource, func(
+		action clientgotesting.Action,
+	) (bool, runtime.Object, error) {
+		if action.GetSubresource() == "status" {
+			return true, nil, ctx.Err()
+		}
+		return false, nil, nil
+	})
+
+	claim, err := queue.Claim(ctx, "worker-a", "PostRestoreAudit", time.Minute)
+	require.Nil(t, claim)
+	require.ErrorIs(t, err, context.Canceled)
+	leases, listErr := client.Resource(LeaseResource).Namespace("test").
+		List(context.Background(), metav1.ListOptions{})
+	require.NoError(t, listErr)
+	require.Empty(t, leases.Items,
+		"claim status cancellation must clean a reconciled Lease create")
+}
+
 func TestQueueRejectsSpecDriftAndInvalidCompletion(t *testing.T) {
 	queue := newFakeQueue()
 	ctx := context.Background()
