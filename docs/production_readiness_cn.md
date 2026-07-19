@@ -1055,6 +1055,11 @@ archiver 每轮使用 `--reconcile-timeout=15m`，预算覆盖 inventory/Operati
 仍按同一 object key、retention 和 exact-version 规则重试。扩大 `--max-batch` 或跨区域
 对象存储延迟时必须同步核算该预算，不能通过关闭 timeout 获得表面吞吐。
 
+每个 Operation 另有 `--archive-timeout=2m` 独立预算，且必须为正并不大于整轮预算。
+executor 在独立进程组中运行；单项超时会终止 shell 及其全部后代，避免后代继承输出管道
+后拖住 reconcile。该 Operation 保留 audit finalizer，控制器聚合错误后继续处理本批次
+后续候选，防止一个失效对象存储请求长期饿死其他租户的终态归档。
+
 ```shell
 NS=tenant-a-operations
 kubectl -n "$NS" create rolebinding kubebrain-operation-worker \

@@ -4785,6 +4785,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   后跨过至少一个 30 秒 poll，两个 Pod Ready、零重启且无 reconcile 错误；archiver 保持
   零副本并更新到 A274/15m 模板，三副本 KubeBrain 数据面不受影响。
 
+- **Operations A275 isolated archive item timeout（2026-07-19）**：
+  A274 的整轮 deadline 仍允许批次首个 Object Lock 上传占满全部 15 分钟预算，使后续
+  终态 Operation 无法获得处理机会。archiver 新增 `--archive-timeout=2m` 单项预算，
+  配置必须为正且不大于 `--reconcile-timeout`；单项失败或超时保留 audit finalizer，
+  不生成 receipt，并在聚合错误的同时继续处理本批次后续候选。
+
+  首次用真实最终二进制烟测时还发现 `exec.CommandContext` 只终止 executor shell：
+  shell 派生的后代继承 `CombinedOutput` 管道后可继续存活，使 Go 等待管道 EOF 并越过
+  单项 deadline。executor 现以独立进程组启动，取消时向整个进程组发送 `SIGKILL`，
+  并优先返回 context deadline，封闭 shell 及其后代的资源泄漏边界。归档器 focused
+  连续 20 轮、race 连续 20 轮、全量 production 测试（92.367 秒）和 vet 均通过。
+  精确提交 `b7549df32f1a03c6002b6c20ada414b3d9abfc86` 构建非 root 镜像
+  `kubebrain:a275-archive-item-timeout`（image ID
+  `sha256:ca99e7bf7c963eac2636c8f9cd4a8d3ad0636bdbb1d1db44d275de946fdd0d09`）。
+
+  最终镜像连接假 Kubernetes API 返回两个终态 Operation：首项 executor 派生
+  `sleep 60`，次项立即退出 42。`--archive-timeout=1s --reconcile-timeout=5s
+  --max-batch=2 --once` 在 1.710 秒退出 1，日志同时报告首项
+  `context deadline exceeded` 与次项 `following-fast-failure`，证明完整进程组被回收且
+  后续候选未被饿死。kind archiver 保持零副本并更新到 A275/2m 模板；三副本 KubeBrain、
+  三 PD 和三 TiKV 均 Ready，主数据面零重启。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
