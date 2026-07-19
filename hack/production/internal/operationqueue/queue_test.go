@@ -17,6 +17,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
+	clientgotesting "k8s.io/client-go/testing"
 )
 
 func TestQueueLifecycleAndExpiredLeaseFencing(t *testing.T) {
@@ -95,6 +96,94 @@ func TestClaimAcrossNamespacesPrioritizesLeastRecentlyServedQueue(t *testing.T) 
 	require.NoError(t, err)
 	require.Equal(t, "tenant-b", second.Namespace,
 		"an unserved namespace must win over a namespace that just started work")
+}
+
+func TestClaimAcrossNamespacesReturnsIdleOnlyWhenAllQueuesAreEmpty(t *testing.T) {
+	claim, err := ClaimAcrossNamespaces(
+		context.Background(), fakeQueueClient(), []string{"tenant-a", "tenant-b"},
+		"worker-a", "PostRestoreAudit", time.Minute,
+	)
+	require.Nil(t, claim)
+	require.ErrorIs(t, err, ErrNoOperation)
+}
+
+func TestClaimAcrossNamespacesFailsClosedWhenQueueInspectionFails(t *testing.T) {
+	client := fakeQueueClient()
+	ctx := context.Background()
+	_, err := New(client, "tenant-b").Submit(ctx, "backup-1", validSpec())
+	require.NoError(t, err)
+	client.PrependReactor("list", Resource.Resource, func(
+		action clientgotesting.Action,
+	) (bool, runtime.Object, error) {
+		if action.GetNamespace() == "tenant-a" {
+			return true, nil, errors.New("tenant-a API unavailable")
+		}
+		return false, nil, nil
+	})
+
+	claim, err := ClaimAcrossNamespaces(
+		ctx, client, []string{"tenant-a", "tenant-b"},
+		"worker-a", "PostRestoreAudit", time.Minute,
+	)
+	require.Nil(t, claim)
+	require.ErrorContains(t, err, "tenant-a API unavailable")
+	require.NotErrorIs(t, err, ErrNoOperation)
+	operation, getErr := New(client, "tenant-b").Get(ctx, "backup-1")
+	require.NoError(t, getErr)
+	phase, _, _ := unstructured.NestedString(operation.Object, "status", "phase")
+	require.Empty(t, phase)
+}
+
+func TestClaimAcrossNamespacesStopsInspectionWhenContextIsCanceled(t *testing.T) {
+	client := fakeQueueClient()
+	ctx, cancel := context.WithCancel(context.Background())
+	inspected := []string{}
+	client.PrependReactor("list", Resource.Resource, func(
+		action clientgotesting.Action,
+	) (bool, runtime.Object, error) {
+		inspected = append(inspected, action.GetNamespace())
+		cancel()
+		return true, nil, ctx.Err()
+	})
+
+	claim, err := ClaimAcrossNamespaces(
+		ctx, client, []string{"tenant-a", "tenant-b"},
+		"worker-a", "PostRestoreAudit", time.Minute,
+	)
+	require.Nil(t, claim)
+	require.ErrorIs(t, err, context.Canceled)
+	require.NotErrorIs(t, err, ErrNoOperation)
+	require.Equal(t, []string{"tenant-a"}, inspected)
+}
+
+func TestClaimAcrossNamespacesDoesNotSkipClaimFailure(t *testing.T) {
+	client := fakeQueueClient()
+	ctx := context.Background()
+	for _, namespace := range []string{"tenant-a", "tenant-b"} {
+		_, err := New(client, namespace).Submit(ctx, "backup-1", validSpec())
+		require.NoError(t, err)
+	}
+	listCalls := map[string]int{}
+	client.PrependReactor("list", Resource.Resource, func(
+		action clientgotesting.Action,
+	) (bool, runtime.Object, error) {
+		namespace := action.GetNamespace()
+		listCalls[namespace]++
+		if namespace == "tenant-a" && listCalls[namespace] == 2 {
+			return true, nil, errors.New("tenant-a claim unavailable")
+		}
+		return false, nil, nil
+	})
+
+	claim, err := ClaimAcrossNamespaces(
+		ctx, client, []string{"tenant-a", "tenant-b"},
+		"worker-a", "PostRestoreAudit", time.Minute,
+	)
+	require.Nil(t, claim)
+	require.ErrorContains(t, err, "tenant-a claim unavailable")
+	require.NotErrorIs(t, err, ErrNoOperation)
+	require.Equal(t, 1, listCalls["tenant-b"],
+		"the later queue must be inspected for fairness but not claimed after an earlier failure")
 }
 
 func TestQueueRejectsSpecDriftAndInvalidCompletion(t *testing.T) {

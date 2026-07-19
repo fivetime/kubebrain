@@ -203,6 +203,9 @@ func (q *Queue) Claim(ctx context.Context, owner, operationType string, lease ti
 	now := nowTime.Unix()
 	var lastConflict error
 	for i := range list.Items {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		candidate := &list.Items[i]
 		candidateType, _, _ := unstructured.NestedString(candidate.Object, "spec", "type")
 		if operationType != "" && candidateType != operationType {
@@ -308,15 +311,24 @@ func ClaimAcrossNamespaces(
 	queues := make([]namespaceQueue, 0, len(namespaces))
 	var inspectErrs []error
 	for _, namespace := range namespaces {
+		if err := ctx.Err(); err != nil {
+			return nil, errors.Join(append(inspectErrs, err)...)
+		}
 		queue := New(client, namespace)
 		lastStarted, err := queue.lastStarted(ctx, operationType)
 		if err != nil {
 			inspectErrs = append(inspectErrs, fmt.Errorf("%s: inspect queue: %w", namespace, err))
+			if ctx.Err() != nil {
+				return nil, errors.Join(inspectErrs...)
+			}
 			continue
 		}
 		queues = append(queues, namespaceQueue{
 			namespace: namespace, lastStarted: lastStarted, queue: queue,
 		})
+	}
+	if len(inspectErrs) != 0 {
+		return nil, errors.Join(inspectErrs...)
 	}
 	sort.Slice(queues, func(i, j int) bool {
 		if queues[i].lastStarted != queues[j].lastStarted {
@@ -324,19 +336,17 @@ func ClaimAcrossNamespaces(
 		}
 		return queues[i].namespace < queues[j].namespace
 	})
-	var claimErrs []error
 	for _, candidate := range queues {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		claim, err := candidate.queue.Claim(ctx, owner, operationType, lease)
 		if err == nil {
 			return claim, nil
 		}
 		if !errors.Is(err, ErrNoOperation) {
-			claimErrs = append(claimErrs, fmt.Errorf("%s: claim: %w", candidate.namespace, err))
+			return nil, fmt.Errorf("%s: claim: %w", candidate.namespace, err)
 		}
-	}
-	allErrs := append(inspectErrs, claimErrs...)
-	if len(allErrs) != 0 {
-		return nil, fmt.Errorf("%w: %v", ErrNoOperation, errors.Join(allErrs...))
 	}
 	return nil, ErrNoOperation
 }
