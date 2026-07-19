@@ -4371,6 +4371,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   member/alarm，普通用户 alarm disarm 被拒绝，且两端结果逐字段一致。服务端 member
   与 maintenance 授权单测普通模式连续 50 轮通过；race 模式连续 20 轮通过。本增量只
   扩大持续兼容门禁，不改动运行时。
+- **Auth A252 leased Put/Txn attachment TOCTOU fencing（2026-07-19）**：对照
+  upstream `/root/etcd` commit `70a2b4871` 对 Txn Put 的完整 `checkPutAuth` 修复。
+  KubeBrain 已检查 `PrevKv` 读权限和目标 lease 上全部绑定键的写权限，但 Put/Txn 在
+  入口授权后才获取 `leaseWriteMu`；有权限的并发写者可在两者之间给同一 lease 绑定普通
+  用户无权访问的键，使后者用旧 attachment 快照通过 RBAC。
+
+  leader 路径现保留入口检查以维持 follower 与错误优先级，并在取得共享 lease 写锁后
+  对完整 Put/Txn（含嵌套 Txn Put）重新授权；锁持续持有到原子 TiKV 提交及 attachment
+  index 更新完成，因此最终检查使用的键集合不可再变化。可控 leader admission 回归让
+  请求通过首次鉴权后暂停，再向 lease 注入受保护键；普通 Put 与嵌套 Txn 修复前会继续
+  写入，修复后均在触达存储前返回 `PermissionDenied`。定向普通测试连续 100 轮、
+  race 连续 30 轮通过。全新 upstream etcd 与独立 TiKV keyspace 的官方 client/v3
+  差分确认：普通用户虽可写目标 `/auth-allowed/`，仍不能把直接 Put 或 Txn Put 绑定到
+  已承载 `/auth-protected/` 的 lease，且两端精确错误一致。
 
 ### P1：通用服务能力
 

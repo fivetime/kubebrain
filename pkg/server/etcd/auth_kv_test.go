@@ -2,7 +2,9 @@ package etcd
 
 import (
 	"context"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/authpb"
@@ -86,6 +88,86 @@ func TestAuthTxnChecksNestedCompare(t *testing.T) {
 	stored, err := server.backend.Get(context.Background(), &etcdserverpb.RangeRequest{Key: []byte("/allowed/nested")})
 	require.NoError(t, err)
 	require.Empty(t, stored.Kvs)
+}
+
+func TestAuthLeasedPutRechecksAttachmentsAfterLeaderAdmission(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		call func(context.Context, *RPCServer, int64) error
+	}{
+		{
+			name: "put",
+			call: func(ctx context.Context, server *RPCServer, leaseID int64) error {
+				_, err := server.Put(ctx, &etcdserverpb.PutRequest{
+					Key: []byte("/allowed/put"), Value: []byte("value"), Lease: leaseID,
+				})
+				return err
+			},
+		},
+		{
+			name: "nested txn put",
+			call: func(ctx context.Context, server *RPCServer, leaseID int64) error {
+				_, err := server.Txn(ctx, &etcdserverpb.TxnRequest{
+					Success: []*etcdserverpb.RequestOp{{Request: &etcdserverpb.RequestOp_RequestTxn{
+						RequestTxn: &etcdserverpb.TxnRequest{
+							Success: []*etcdserverpb.RequestOp{{Request: &etcdserverpb.RequestOp_RequestPut{
+								RequestPut: &etcdserverpb.PutRequest{
+									Key: []byte("/allowed/txn"), Value: []byte("value"), Lease: leaseID,
+								},
+							}}},
+						},
+					}}},
+				})
+				return err
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server, closeFn := newTestRPCServer(t)
+			defer closeFn()
+			aliceCtx := setupAuthKVUser(t, server)
+			lease, err := server.LeaseGrant(aliceCtx, &etcdserverpb.LeaseGrantRequest{TTL: 60})
+			require.NoError(t, err)
+			_, err = server.Put(aliceCtx, &etcdserverpb.PutRequest{
+				Key: []byte("/allowed/existing"), Value: []byte("allowed"), Lease: lease.ID,
+			})
+			require.NoError(t, err)
+
+			admitted := make(chan struct{})
+			release := make(chan struct{})
+			var admittedOnce sync.Once
+			server.peers = testPeerService{
+				isLeader: true,
+				epochFn: func() (uint64, bool) {
+					admittedOnce.Do(func() { close(admitted) })
+					<-release
+					return 1, true
+				},
+			}
+
+			done := make(chan error, 1)
+			go func() { done <- tc.call(aliceCtx, server, lease.ID) }()
+			select {
+			case <-admitted:
+			case <-time.After(time.Second):
+				t.Fatal("leased write did not pass its initial authorization")
+			}
+
+			// Model a root writer that attached a key Alice cannot write while
+			// this request was between admission authorization and the lease lock.
+			server.bindKeyToLease(context.Background(), lease.ID, "/denied/concurrent")
+			close(release)
+			require.ErrorIs(t, <-done, rpctypes.ErrPermissionDenied)
+
+			key := []byte("/allowed/put")
+			if tc.name == "nested txn put" {
+				key = []byte("/allowed/txn")
+			}
+			stored, err := server.backend.Get(context.Background(), &etcdserverpb.RangeRequest{Key: key})
+			require.NoError(t, err)
+			require.Empty(t, stored.Kvs, "stale lease authorization must not reach storage")
+		})
+	}
 }
 
 func TestAuthDeletePrevKVRequiresReadAndWrite(t *testing.T) {

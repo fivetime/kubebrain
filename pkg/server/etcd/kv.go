@@ -477,6 +477,13 @@ func (s *RPCServer) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etc
 	ctx = backend.WithLeadershipEpoch(ctx, epoch)
 	s.leaseWriteMu.RLock()
 	defer s.leaseWriteMu.RUnlock()
+	// A privileged writer may attach a protected key to a referenced lease
+	// between the admission check above and this lock. Re-check against the
+	// locked attachment snapshot so a leased Put nested anywhere in the txn
+	// cannot pass RBAC using stale lease membership.
+	if authErr = s.authorizeTxn(caller, txn); authErr != nil {
+		return nil, authErr
+	}
 	var (
 		err                   error
 		response              *etcdserverpb.TxnResponse
@@ -966,6 +973,12 @@ func (s *RPCServer) Put(ctx context.Context, r *etcdserverpb.PutRequest) (*etcds
 	ctx = backend.WithLeadershipEpoch(ctx, epoch)
 	s.leaseWriteMu.RLock()
 	defer s.leaseWriteMu.RUnlock()
+	// Keep the lease key snapshot used by RBAC stable through the durable write.
+	// The admission check remains above for follower/error-order compatibility;
+	// this second check closes a concurrent attachment TOCTOU on the leader.
+	if authErr = s.authorizePut(caller, r); authErr != nil {
+		return nil, authErr
+	}
 	put, err := s.putWithEffectiveOptions(ctx, r)
 	if err != nil {
 		return nil, err

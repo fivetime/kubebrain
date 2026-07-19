@@ -2,6 +2,7 @@ package compat
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -9,14 +10,16 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
 type authErrorOutcome struct {
-	Code    codes.Code
-	Message string
+	Code             codes.Code
+	Message          string
+	PermissionDenied bool
 }
 
 type authDifferentialOutcome struct {
@@ -61,6 +64,8 @@ type authDifferentialOutcome struct {
 	RootHashOK                bool
 	UserKeepAlive             authErrorOutcome
 	RootKeepAliveOK           bool
+	UserLeasedPut             authErrorOutcome
+	UserLeasedTxnPut          authErrorOutcome
 }
 
 func runConcurrentClientOperations(count int, operation func(int) error) []error {
@@ -85,7 +90,11 @@ func runConcurrentClientOperations(count int, operation func(int) error) []error
 }
 
 func authError(err error) authErrorOutcome {
-	return authErrorOutcome{Code: status.Code(err), Message: status.Convert(err).Message()}
+	return authErrorOutcome{
+		Code:             status.Code(err),
+		Message:          status.Convert(err).Message(),
+		PermissionDenied: errors.Is(err, rpctypes.ErrPermissionDenied),
+	}
 }
 
 func authRangeStream(t *testing.T, ctx context.Context, cli *clientv3.Client) (*clientv3.GetResponse, error) {
@@ -122,6 +131,18 @@ func collectAuthDifferentialOutcome(t *testing.T, endpoint string) authDifferent
 	require.NoError(t, err)
 	_, err = bootstrap.UserAdd(ctx, "alice", "alice-secret")
 	require.NoError(t, err)
+	_, err = bootstrap.RoleAdd(ctx, "allowed")
+	require.NoError(t, err)
+	_, err = bootstrap.RoleGrantPermission(
+		ctx,
+		"allowed",
+		"/auth-allowed/",
+		clientv3.GetPrefixRangeEnd("/auth-allowed/"),
+		clientv3.PermissionType(clientv3.PermReadWrite),
+	)
+	require.NoError(t, err)
+	_, err = bootstrap.UserGrantRole(ctx, "alice", "allowed")
+	require.NoError(t, err)
 	_, implicitRootRoleErr := bootstrap.RoleGet(ctx, "root")
 	_, err = bootstrap.AuthEnable(ctx)
 	require.NoError(t, err)
@@ -156,6 +177,12 @@ func collectAuthDifferentialOutcome(t *testing.T, endpoint string) authDifferent
 	_, rootHashErr := root.HashKV(ctx, root.Endpoints()[0], 0)
 	_, userKeepAliveErr := alice.KeepAliveOnce(ctx, protectedLease.ID)
 	_, rootKeepAliveErr := root.KeepAliveOnce(ctx, protectedLease.ID)
+	_, userLeasedPutErr := alice.Put(
+		ctx, "/auth-allowed/leased-put", "value", clientv3.WithLease(protectedLease.ID),
+	)
+	_, userLeasedTxnPutErr := alice.Txn(ctx).Then(
+		clientv3.OpPut("/auth-allowed/leased-txn-put", "value", clientv3.WithLease(protectedLease.ID)),
+	).Commit()
 
 	_, err = root.UserGrantRole(ctx, "root", "root")
 	require.NoError(t, err)
@@ -285,6 +312,8 @@ func collectAuthDifferentialOutcome(t *testing.T, endpoint string) authDifferent
 		RootHashOK:                rootHashErr == nil,
 		UserKeepAlive:             authError(userKeepAliveErr),
 		RootKeepAliveOK:           rootKeepAliveErr == nil,
+		UserLeasedPut:             authError(userLeasedPutErr),
+		UserLeasedTxnPut:          authError(userLeasedTxnPutErr),
 	}
 }
 
@@ -298,6 +327,8 @@ func TestAuthDifferentialAgainstEtcd(t *testing.T) {
 		t.Skip("set ETCD_AUTH_DIFF_ENDPOINT and KUBEBRAIN_AUTH_DIFF_ENDPOINT to empty disposable instances")
 	}
 	reference := collectAuthDifferentialOutcome(t, referenceEndpoint)
+	require.True(t, reference.UserLeasedPut.PermissionDenied)
+	require.True(t, reference.UserLeasedTxnPut.PermissionDenied)
 	actual := collectAuthDifferentialOutcome(t, kubebrainEndpoint)
 	require.Equal(t, reference, actual)
 }
