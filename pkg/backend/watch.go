@@ -52,7 +52,7 @@ func (b *backend) Watch(ctx context.Context, prefix string, revision uint64) (<-
 	readChan, err := b.watcherHub.AddWatcher(ctx, []byte(prefix))
 	if err != nil {
 		cancel()
-		klog.ErrorS(err, "add watcher failed", "chan", readChan)
+		klog.ErrorS(err, "add watcher failed", "subscription", watchChannelID(readChan))
 		return nil, err
 	}
 
@@ -450,7 +450,7 @@ func (b *backend) processEvents(ctx context.Context, cancel context.CancelFunc, 
 	klog.InfoS("start process events chan", "prefix", prefix, "revision", revision)
 
 	defer func() {
-		klog.InfoS("events chan closed", "chan", in, "prefix", prefix)
+		klog.InfoS("events chan closed", "subscription", watchChannelID(in), "prefix", prefix)
 		b.metricCli.EmitCounter("watcherhub.events_chan.closed", 1, metrics.Tag("prefix", prefix))
 		close(out)
 		klog.InfoS("watch channel closed", "prefix", prefix)

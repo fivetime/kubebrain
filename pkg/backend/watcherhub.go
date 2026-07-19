@@ -17,6 +17,7 @@ package backend
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -123,6 +124,10 @@ func IsProgressMarker(events []*proto.Event) bool {
 	return len(events) == 1 && events[0] != nil && events[0].Kv == nil
 }
 
+func watchChannelID(ch any) string {
+	return fmt.Sprintf("%p", ch)
+}
+
 // PublishedRevision returns the highest revision fully fanned out to subscribers.
 func (w *WatcherHub) PublishedRevision() uint64 {
 	return atomic.LoadUint64(&w.publishedRev)
@@ -159,7 +164,7 @@ func (w *WatcherHub) AddWatcher(ctx context.Context, prefix []byte) (<-chan []*p
 	w.subs[sub] = append([]byte(nil), prefix...)
 	go func() {
 		<-ctx.Done()
-		klog.V(4).InfoS("ctx done, deleting watcher", "chan", sub)
+		klog.V(4).InfoS("ctx done, deleting watcher", "subscription", watchChannelID(sub))
 		w.DeleteWatcher(sub, true)
 	}()
 
@@ -173,7 +178,7 @@ func (w *WatcherHub) DeleteWatcher(sub chan []*proto.Event, lock bool) {
 		w.Lock()
 	}
 	if _, ok := w.subs[sub]; ok {
-		klog.InfoS("close event chan in watcher hub", "chan", sub)
+		klog.InfoS("close event chan in watcher hub", "subscription", watchChannelID(sub))
 		close(sub)
 		delete(w.subs, sub)
 	} else if st, ok := w.catchingUp[sub]; ok {
@@ -298,7 +303,7 @@ func (w *WatcherHub) broadcast(item []*proto.Event) {
 // wired.
 func (w *WatcherHub) beginCatchUp(sub chan []*proto.Event, missed []*proto.Event) {
 	if w.ringLookup == nil || len(missed) == 0 {
-		klog.InfoS("drop slow consumer", "chan", sub, "bufSize", w.subBufferSize())
+		klog.InfoS("drop slow consumer", "subscription", watchChannelID(sub), "bufSize", w.subBufferSize())
 		w.metricCli.EmitCounter("drop.slow.watcher", 1)
 		w.DeleteWatcher(sub, true)
 		return
@@ -319,7 +324,7 @@ func (w *WatcherHub) beginCatchUp(sub chan []*proto.Event, missed []*proto.Event
 	w.catchingUp[sub] = st
 	w.Unlock()
 	w.metricCli.EmitCounter("watcher_hub.catch_up.entered", 1)
-	klog.InfoS("slow consumer entering ring catch-up", "chan", sub,
+	klog.InfoS("slow consumer entering ring catch-up", "subscription", watchChannelID(sub),
 		"prefix", string(prefix), "fromRev", fromRev, "bufSize", w.subBufferSize())
 	go w.catchUp(sub, st, fromRev)
 }
@@ -386,7 +391,7 @@ func (w *WatcherHub) catchUp(sub chan []*proto.Event, st *catchUpState, fromRev 
 			w.subs[sub] = st.prefix
 			w.Unlock()
 			w.metricCli.EmitCounter("watcher_hub.catch_up.recovered", 1)
-			klog.InfoS("slow consumer caught up, re-attached", "chan", sub, "nextRev", fromRev)
+			klog.InfoS("slow consumer caught up, re-attached", "subscription", watchChannelID(sub), "nextRev", fromRev)
 			return
 		}
 		// The ring advanced while we replayed; go replay the new tail.
@@ -401,7 +406,7 @@ func (w *WatcherHub) finishCatchUp(sub chan []*proto.Event, st *catchUpState, ms
 	delete(w.catchingUp, sub)
 	w.Unlock()
 	close(sub)
-	klog.InfoS(msg, "chan", sub, "prefix", string(st.prefix))
+	klog.InfoS(msg, "subscription", watchChannelID(sub), "prefix", string(st.prefix))
 	if dropMetric != "" {
 		w.metricCli.EmitCounter(dropMetric, 1)
 	}

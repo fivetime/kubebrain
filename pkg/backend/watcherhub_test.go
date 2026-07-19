@@ -37,6 +37,12 @@ func newTestWatcherHub(t *testing.T, bufSize int) *WatcherHub {
 	}
 }
 
+func TestWatchChannelIDIsStructuredLogSafe(t *testing.T) {
+	ch := make(chan []*proto.Event)
+	require.Regexp(t, `^0x[0-9a-f]+$`, watchChannelID(ch))
+	require.NotContains(t, watchChannelID(ch), "unsupported type")
+}
+
 func batch(rev uint64) []*proto.Event {
 	return []*proto.Event{{Revision: rev, Kv: &proto.KeyValue{Revision: rev}}}
 }

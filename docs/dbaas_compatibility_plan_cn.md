@@ -4431,6 +4431,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   20 轮通过。真实三副本 A254 基线的官方 client/v3 quiet-watch cadence 稳定超时；
   A255 部署后同一用例连续 10 轮通过，随后 client/v3 兼容模块全量、根模块全量及
   两处 vet 均通过。
+- **Watch/Txn A256 structured lifecycle logs and compacted-range atomicity
+  （2026-07-19）**：A255 运行态审计发现 Watch 正常关闭日志把 Go channel 直接作为
+  structured field，klog 编码后产生 `<internal error: json: unsupported type: chan ...>`；
+  这不是服务错误，却会污染审计并触发基于 `error` 文本的生产告警。WatcherHub 与
+  backend Watch 的 8 个生命周期日志点现统一输出 `subscription=0x...` 稳定指针标识，
+  不再暴露不可序列化对象；格式单测和相关 backend 普通连续 20 轮、race 连续 10 轮通过。
+
+  同时对照 upstream `/root/etcd` commit `fbba4f46e` 的
+  `tests/integration/txn_range_consistency_test.go` 补官方 client/v3 黑盒：先写两个
+  revision 并 compact，再提交“读取已 compact 历史 revision，随后 Put 禁止键”的 Txn。
+  KubeBrain 不依赖 Raft follower apply，但必须满足相同客户端不变量：Txn 返回精确
+  `ErrCompacted`，且禁止键零落库。全新 upstream etcd 与真实三副本 TiKV-backed
+  KubeBrain 各连续 10 轮通过；服务层已有
+  `TestTxnRangeCompactedRevisionIsCheckedBeforeWrites` 固定提交前路径校验。
 
 ### P1：通用服务能力
 
