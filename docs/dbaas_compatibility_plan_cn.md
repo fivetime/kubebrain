@@ -4123,6 +4123,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   快照。真实 etcd 3.7 与三副本 TiKV-backed KubeBrain 均为零违规。该审计未发现新的
   服务端差异，新增测试作为后续 read barrier、compare guard 和 header 计算修改的持续
   P0 回归门禁。
+- **Compatibility A240 concurrent Lease renew/TTL stress（2026-07-19）**：
+  对照上游 `/root/etcd/tests/integration/v3_lease_test.go` 的
+  `TestV3LeaseRenewStress{WithClusterClient}` 和
+  `TestV3LeaseTimeToLiveStress{WithClusterClient}`，新增官方 client/v3 双端压力门禁。
+  每端由 32 个 worker 各执行 8 轮 Grant(60s)、KeepAliveOnce、TimeToLive、Revoke，
+  同时覆盖 leader 本地处理、三副本 Service 负载均衡与 follower proxy。
+
+  一轮共 256 个完整 lease 生命周期；真实 etcd 3.7 与三副本 TiKV-backed KubeBrain
+  均全部完成，KeepAlive TTL=0、意外 `ErrLeaseNotFound` 和其他错误计数均为 0。该审计
+  未发现新的服务端差异，新增测试持续约束 `leaseCheckpointMu`、`leaseWriteMu`、
+  `leaseMu` 的 renew/TTL/revoke 并发顺序，以及 follower forwarding 不得在压力下制造
+  伪 lease-not-found。
 - **Operations A185 certificate rotation completion state（2026-07-18）**：新增
   `hack/production/validate-certificate-rotation.sh`，把 client/peer CA rollover
   收敛为 `begin -> overlap -> complete` 三阶段门禁。begin 固定全部 KubeBrain Pod
