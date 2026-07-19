@@ -38,6 +38,14 @@ func TestArchiveAuditUploadsVerifiesAndRetriesExactVersion(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, receipt, retried)
 	require.Equal(t, 1, client.putCalls)
+
+	restartedRequest := request
+	restartedRequest.ReceiptOutput = filepath.Join(t.TempDir(), "receipt.json")
+	restartedRequest.Now = now.Add(time.Minute)
+	recovered, err := ArchiveAudit(context.Background(), client, restartedRequest)
+	require.NoError(t, err)
+	require.Equal(t, receipt, recovered)
+	require.Equal(t, 2, client.putCalls)
 }
 
 func TestArchiveAuditRejectsConflictCorruptionAndRetentionDrift(t *testing.T) {
@@ -78,6 +86,14 @@ func TestArchiveAuditRejectsConflictCorruptionAndRetentionDrift(t *testing.T) {
 		actual, err := ReadAuditReceipt(request.ReceiptOutput)
 		require.NoError(t, err)
 		require.Equal(t, receipt, actual)
+	})
+	t.Run("missing remote timestamp", func(t *testing.T) {
+		request := newRequest(t)
+		client := &fakeS3{omitLastModified: true}
+		_, err := ArchiveAudit(context.Background(), client, request)
+		require.ErrorContains(t, err, "invalid last-modified timestamp")
+		_, statErr := os.Stat(request.ReceiptOutput)
+		require.ErrorIs(t, statErr, os.ErrNotExist)
 	})
 }
 

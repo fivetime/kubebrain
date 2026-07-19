@@ -189,19 +189,20 @@ func TestDeleteRejectsVersionMissingBeforeRetentionExpiry(t *testing.T) {
 }
 
 type fakeS3 struct {
-	body        []byte
-	metadata    map[string]string
-	versionID   string
-	retainUntil time.Time
-	mode        types.ObjectLockRetentionMode
-	deleted     bool
-	corruptGet  bool
-	putCalls    int
-	lastPut     *s3.PutObjectInput
-	listOutputs []*s3.ListObjectVersionsOutput
-	listCalls   int
-	heads       map[string]*s3.HeadObjectOutput
-	retentions  map[string]*s3.GetObjectRetentionOutput
+	body             []byte
+	metadata         map[string]string
+	versionID        string
+	retainUntil      time.Time
+	mode             types.ObjectLockRetentionMode
+	deleted          bool
+	corruptGet       bool
+	omitLastModified bool
+	putCalls         int
+	lastPut          *s3.PutObjectInput
+	listOutputs      []*s3.ListObjectVersionsOutput
+	listCalls        int
+	heads            map[string]*s3.HeadObjectOutput
+	retentions       map[string]*s3.GetObjectRetentionOutput
 }
 
 func (f *fakeS3) PutObject(_ context.Context, input *s3.PutObjectInput, _ ...func(*s3.Options)) (*s3.PutObjectOutput, error) {
@@ -232,11 +233,15 @@ func (f *fakeS3) HeadObject(_ context.Context, input *s3.HeadObjectInput, _ ...f
 	if f.deleted || f.versionID == "" {
 		return nil, &smithy.GenericAPIError{Code: "NoSuchVersion", Message: "not found"}
 	}
-	return &s3.HeadObjectOutput{
+	output := &s3.HeadObjectOutput{
 		ContentLength: aws.Int64(int64(len(f.body))),
 		Metadata:      f.metadata,
 		VersionId:     aws.String(f.versionID),
-	}, nil
+	}
+	if !f.omitLastModified {
+		output.LastModified = aws.Time(time.Unix(2_000_000_000, 0).UTC())
+	}
+	return output, nil
 }
 
 func (f *fakeS3) GetObject(_ context.Context, _ *s3.GetObjectInput, _ ...func(*s3.Options)) (*s3.GetObjectOutput, error) {
