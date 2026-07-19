@@ -34,12 +34,18 @@ spec:
             spec:
               type: object
               required:
+                - tenant
                 - instance
                 - intervalSeconds
                 - retentionSeconds
                 - maxAttempts
                 - parametersTemplateSecretRef
               properties:
+                tenant:
+                  type: string
+                  minLength: 1
+                  maxLength: 63
+                  pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
                 instance:
                   type: string
                   minLength: 1

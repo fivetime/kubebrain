@@ -15,6 +15,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/dynamic"
 )
 
@@ -23,21 +24,29 @@ var PolicyResource = schema.GroupVersionResource{
 }
 
 const parametersKey = "parameters.json"
+const DefaultRequester = "kubebrain-backup-scheduler"
 
 type Scheduler struct {
-	policies dynamic.ResourceInterface
-	secrets  dynamic.ResourceInterface
-	queue    *operationqueue.Queue
-	now      func() time.Time
+	client     dynamic.Interface
+	namespaces []string
+	requester  string
+	now        func() time.Time
 }
 
 func New(client dynamic.Interface, namespace string) *Scheduler {
+	return NewForNamespaces(client, []string{namespace})
+}
+
+func NewForNamespaces(client dynamic.Interface, namespaces []string) *Scheduler {
 	return &Scheduler{
-		policies: client.Resource(PolicyResource).Namespace(namespace),
-		secrets:  client.Resource(operationqueue.SecretResource).Namespace(namespace),
-		queue:    operationqueue.New(client, namespace),
-		now:      func() time.Time { return time.Now().UTC() },
+		client: client, namespaces: append([]string(nil), namespaces...),
+		requester: DefaultRequester, now: func() time.Time { return time.Now().UTC() },
 	}
+}
+
+func (s *Scheduler) WithRequester(requester string) *Scheduler {
+	s.requester = requester
+	return s
 }
 
 func (s *Scheduler) WithClock(now func() time.Time) *Scheduler {
@@ -46,20 +55,25 @@ func (s *Scheduler) WithClock(now func() time.Time) *Scheduler {
 }
 
 func (s *Scheduler) Reconcile(ctx context.Context) (int, error) {
-	list, err := s.policies.List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return 0, err
-	}
 	submitted := 0
 	var reconcileErrs []error
-	for i := range list.Items {
-		created, err := s.reconcilePolicy(ctx, &list.Items[i])
+	for _, namespace := range s.namespaces {
+		list, err := s.client.Resource(PolicyResource).Namespace(namespace).
+			List(ctx, metav1.ListOptions{})
 		if err != nil {
-			reconcileErrs = append(reconcileErrs, fmt.Errorf("%s: %w", list.Items[i].GetName(), err))
+			reconcileErrs = append(reconcileErrs, fmt.Errorf("%s: list policies: %w", namespace, err))
 			continue
 		}
-		if created {
-			submitted++
+		for i := range list.Items {
+			created, err := s.reconcilePolicy(ctx, namespace, &list.Items[i])
+			if err != nil {
+				reconcileErrs = append(reconcileErrs,
+					fmt.Errorf("%s/%s: %w", namespace, list.Items[i].GetName(), err))
+				continue
+			}
+			if created {
+				submitted++
+			}
 		}
 	}
 	return submitted, errors.Join(reconcileErrs...)
@@ -67,12 +81,14 @@ func (s *Scheduler) Reconcile(ctx context.Context) (int, error) {
 
 func (s *Scheduler) reconcilePolicy(
 	ctx context.Context,
+	namespace string,
 	policy *unstructured.Unstructured,
 ) (bool, error) {
 	suspended, _, _ := unstructured.NestedBool(policy.Object, "spec", "suspend")
 	if suspended {
 		return false, nil
 	}
+	tenant, _, _ := unstructured.NestedString(policy.Object, "spec", "tenant")
 	instance, _, _ := unstructured.NestedString(policy.Object, "spec", "instance")
 	interval, _, _ := unstructured.NestedInt64(policy.Object, "spec", "intervalSeconds")
 	retention, _, _ := unstructured.NestedInt64(policy.Object, "spec", "retentionSeconds")
@@ -83,7 +99,8 @@ func (s *Scheduler) reconcilePolicy(
 	templateKey, _, _ := unstructured.NestedString(
 		policy.Object, "spec", "parametersTemplateSecretRef", "key",
 	)
-	if instance == "" || interval < 300 || retention <= 0 || maxAttempts <= 0 ||
+	if len(validation.IsDNS1123Label(tenant)) != 0 || instance == "" ||
+		interval < 300 || retention <= 0 || maxAttempts <= 0 ||
 		templateName == "" || templateKey == "" {
 		return false, errors.New("policy spec is incomplete")
 	}
@@ -98,17 +115,18 @@ func (s *Scheduler) reconcilePolicy(
 	}
 	secretName := "params-" + operationID
 	parameters, err := s.renderParameters(
-		ctx, templateName, templateKey, operationID, slot, retention,
+		ctx, namespace, templateName, templateKey, operationID, slot, retention,
 	)
 	if err != nil {
 		return false, err
 	}
 	digest := fmt.Sprintf("%x", sha256.Sum256(parameters))
-	if err := s.ensureParametersSecret(ctx, policy, secretName, parameters); err != nil {
+	if err := s.ensureParametersSecret(ctx, namespace, policy, secretName, parameters); err != nil {
 		return false, err
 	}
-	_, err = s.queue.Submit(ctx, operationID, operationqueue.Spec{
-		OperationID: operationID, Instance: instance, Type: "Backup",
+	_, err = operationqueue.New(s.client, namespace).Submit(ctx, operationID, operationqueue.Spec{
+		OperationID: operationID, Tenant: tenant, RequestedBy: s.requester,
+		Instance: instance, Type: "Backup",
 		ParametersSHA256: digest, ParametersSecret: secretName, ParametersKey: parametersKey,
 		MaxAttempts: maxAttempts,
 	})
@@ -120,10 +138,11 @@ func (s *Scheduler) reconcilePolicy(
 
 func (s *Scheduler) renderParameters(
 	ctx context.Context,
-	secretName, key, operationID string,
+	namespace, secretName, key, operationID string,
 	slot, retention int64,
 ) ([]byte, error) {
-	secret, err := s.secrets.Get(ctx, secretName, metav1.GetOptions{})
+	secret, err := s.client.Resource(operationqueue.SecretResource).Namespace(namespace).
+		Get(ctx, secretName, metav1.GetOptions{})
 	if err != nil {
 		return nil, err
 	}
@@ -158,6 +177,7 @@ func (s *Scheduler) renderParameters(
 
 func (s *Scheduler) ensureParametersSecret(
 	ctx context.Context,
+	namespace string,
 	policy *unstructured.Unstructured,
 	name string,
 	parameters []byte,
@@ -187,14 +207,15 @@ func (s *Scheduler) ensureParametersSecret(
 			parametersKey: base64.StdEncoding.EncodeToString(parameters),
 		},
 	}}
-	_, err := s.secrets.Create(ctx, secret, metav1.CreateOptions{})
+	secrets := s.client.Resource(operationqueue.SecretResource).Namespace(namespace)
+	_, err := secrets.Create(ctx, secret, metav1.CreateOptions{})
 	if err == nil {
 		return nil
 	}
 	if !apierrors.IsAlreadyExists(err) {
 		return err
 	}
-	existing, getErr := s.secrets.Get(ctx, name, metav1.GetOptions{})
+	existing, getErr := secrets.Get(ctx, name, metav1.GetOptions{})
 	if getErr != nil {
 		return getErr
 	}

@@ -895,6 +895,7 @@ metadata:
   name: instance-a-daily
   namespace: kubebrain-operations
 spec:
+  tenant: tenant-a
   instance: instance-a
   intervalSeconds: 86400
   retentionSeconds: 2592000
@@ -910,6 +911,34 @@ spec:
 Secret 和同一个 operation。已有同名资源内容不同会 fail closed。worker 未设置
 `PARAMETERS_INPUT` 时通过 `operationctl --action parameters` 读取 operation 绑定的
 immutable Secret，并再次校验 SHA-256；手工参数文件模式继续保留。
+
+一个 scheduler Deployment 可用
+`--namespaces=kubebrain-operations,tenant-a-operations,tenant-b-operations`
+显式管理多个 namespace。allowlist 拒绝空值、重复项和非法 DNS label；不会自动扫描所有
+namespace。清单中的 ClusterRole 本身不授予权限，默认 RoleBinding 只绑定
+`kubebrain-operations`。每增加一个 namespace，必须在该 namespace 创建 RoleBinding：
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kubebrain-backup-scheduler
+  namespace: tenant-a-operations
+subjects:
+  - kind: ServiceAccount
+    name: kubebrain-backup-scheduler
+    namespace: kubebrain-operations
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kubebrain-backup-scheduler-managed-namespace
+```
+
+目标 namespace 还必须部署 operation worker 及其 namespaced RBAC。策略、模板 Secret、
+生成的 immutable Secret 和 Operation 始终留在同一 namespace；一个 namespace 失败只会
+产生带 `namespace/policy` 的聚合错误，不阻止其他 namespace 提交。策略 tenant 与
+scheduler ServiceAccount 身份会进入 immutable Operation spec 和终态审计。Deployment
+包含 zone/hostname topology spread，PDB 最多允许 1 个副本不可用。
 
 `hack/production/run-restore-cutover-operation.sh` 接入 RestoreCutover。参数绑定 A184
 restore receipt、logical artifact、A189 state/receipt 路径、Service、源/目标 instance、

@@ -237,6 +237,20 @@ func TestBackupSchedulerIsHAAndLeastPrivilege(t *testing.T) {
 	)
 	require.Equal(t, "Namespaced", nestedString(t, crd, "spec", "scope"))
 	require.Equal(t, "KubeBrainBackupPolicy", nestedString(t, crd, "spec", "names", "kind"))
+	versions, found, err := unstructured.NestedSlice(crd.Object, "spec", "versions")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Len(t, versions, 1)
+	version := &unstructured.Unstructured{Object: versions[0].(map[string]any)}
+	required, found, err := unstructured.NestedStringSlice(
+		version.Object, "schema", "openAPIV3Schema", "properties", "spec", "required",
+	)
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Contains(t, required, "tenant")
+	require.Equal(t, "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+		nestedString(t, version, "schema", "openAPIV3Schema", "properties", "spec",
+			"properties", "tenant", "pattern"))
 
 	objects := decodeManifest(t, "kubebrain-backup-scheduler.yaml")
 	deployment := objectByKindAndName(t, objects, "Deployment", "kubebrain-backup-scheduler")
@@ -254,6 +268,35 @@ func TestBackupSchedulerIsHAAndLeastPrivilege(t *testing.T) {
 	require.Equal(t, []any{"create", "get"}, rules[2].(map[string]any)["verbs"].([]any))
 	require.NotContains(t, rules[1].(map[string]any)["verbs"].([]any), "update")
 	require.NotContains(t, rules[2].(map[string]any)["verbs"].([]any), "update")
+	binding := objectByKindAndName(t, objects, "RoleBinding", "kubebrain-backup-scheduler")
+	require.Equal(t, "Role",
+		nestedString(t, binding, "roleRef", "kind"))
+	clusterRole := objectByKindAndName(
+		t, objects, "ClusterRole", "kubebrain-backup-scheduler-managed-namespace",
+	)
+	clusterRules, found, err := unstructured.NestedSlice(clusterRole.Object, "rules")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, rules, clusterRules)
+	containers, found, err := unstructured.NestedSlice(
+		deployment.Object, "spec", "template", "spec", "containers",
+	)
+	require.NoError(t, err)
+	require.True(t, found)
+	args, found, err := unstructured.NestedStringSlice(containers[0].(map[string]any), "args")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Contains(t, args, "--namespaces=kubebrain-operations")
+	require.Contains(t, args,
+		"--requested-by=system:serviceaccount:kubebrain-operations:kubebrain-backup-scheduler")
+	spreads, found, err := unstructured.NestedSlice(
+		deployment.Object, "spec", "template", "spec", "topologySpreadConstraints",
+	)
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Len(t, spreads, 2)
+	pdb := objectByKindAndName(t, objects, "PodDisruptionBudget", "kubebrain-backup-scheduler")
+	require.EqualValues(t, 1, nestedInt64(t, pdb, "spec", "maxUnavailable"))
 }
 
 func TestProductionMonitoringTracksStatefulSetReadiness(t *testing.T) {

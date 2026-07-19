@@ -4506,6 +4506,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Secret 配置后扩为 3 副本。跨 Pod 刷新协调、真实外部 IdP 长时间故障 soak 与跨 region
   管理 API 仍是 P1。
 
+- **Operations A261 explicit multi-namespace backup scheduling（2026-07-19）**：
+  Backup scheduler 新增严格 DNS 校验、去重的 `--namespaces` allowlist；单个双副本
+  Deployment 可按固定顺序协调多个 operation namespace，同名 policy 在不同 namespace
+  生成彼此隔离的 Operation 和 immutable 参数 Secret。单 namespace list/template/policy
+  失败以 `namespace/policy` 聚合返回，不阻塞其他 namespace 的到期提交。BackupPolicy
+  新增强制 tenant，生成 Operation 固化 tenant 与 scheduler ServiceAccount 身份，供全局
+  审计归属。
+
+  RBAC 保留原 namespaced Role/RoleBinding 以支持无中断升级，另增加未全局绑定的可复用
+  ClusterRole；每个额外受管 namespace 必须显式 RoleBinding 给中央 scheduler
+  ServiceAccount，因此没有 cluster-wide Secret 或 Operation 权限。默认清单仍只授权
+  `kubebrain-operations`。Deployment 新增 zone/hostname
+  topology spread 和 `maxUnavailable: 1` PDB。测试覆盖双 namespace 同名策略隔离、单
+  namespace 故障隔离、allowlist 非法/重复拒绝、RBAC/HA 清单及 API server dry-run。
+  跨 Kubernetes cluster/region 调度、动态 namespace inventory 和全局容量感知仍是 P1。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
@@ -4525,8 +4541,9 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
    Kubernetes 原生提交者与 worker 最小权限身份已分离，单 namespace 跨实例公平调度和
    实例互斥、终态
    operation 的 Object Lock 不可变归档及 finalizer/删除门禁均已完成；继续补外部管理
-   API 的 OIDC/tenant/instance 授权入口已完成；继续补跨 bucket/account 汇总、
-   跨 namespace/region 全局调度和管理面/外部 IdP HA soak。
+   API 的 OIDC/tenant/instance 授权入口和显式 allowlist 多 namespace 定期调度已完成；
+   继续补跨 bucket/account 汇总、动态 namespace inventory、跨 cluster/region 全局调度
+   和管理面/外部 IdP HA soak。
 4. 建立实例级限额和计量：请求字节、txn 操作数、跨连接 client RPC 总并发、client
    请求 QPS/burst、逻辑 Watch 总数、CPU/内存饱和、网络错误/丢包及 PD/TiKV PVC 容量
    告警已具备稳定错误或指标，网络 RX/TX 原始计量和逻辑备份 artifact 容量/新鲜度

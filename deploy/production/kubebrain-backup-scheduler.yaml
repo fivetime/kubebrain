@@ -38,6 +38,34 @@ rules:
       - get
 ---
 apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kubebrain-backup-scheduler-managed-namespace
+rules:
+  - apiGroups:
+      - dbaas.kubebrain.io
+    resources:
+      - kubebrainbackuppolicies
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - dbaas.kubebrain.io
+    resources:
+      - kubebrainoperations
+    verbs:
+      - create
+      - get
+  - apiGroups:
+      - ""
+    resources:
+      - secrets
+    verbs:
+      - create
+      - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: kubebrain-backup-scheduler
@@ -71,6 +99,19 @@ spec:
         app.kubernetes.io/part-of: kubebrain
     spec:
       serviceAccountName: kubebrain-backup-scheduler
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: kubebrain-backup-scheduler
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: kubebrain-backup-scheduler
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532
@@ -84,7 +125,8 @@ spec:
           command:
             - /usr/local/bin/kubebrain-backup-scheduler
           args:
-            - --namespace=kubebrain-operations
+            - --namespaces=kubebrain-operations
+            - --requested-by=system:serviceaccount:kubebrain-operations:kubebrain-backup-scheduler
             - --poll-interval=30s
           securityContext:
             allowPrivilegeEscalation: false
@@ -99,3 +141,17 @@ spec:
             limits:
               cpu: 250m
               memory: 128Mi
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: kubebrain-backup-scheduler
+  namespace: kubebrain-operations
+  labels:
+    app.kubernetes.io/name: kubebrain-backup-scheduler
+    app.kubernetes.io/part-of: kubebrain
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kubebrain-backup-scheduler

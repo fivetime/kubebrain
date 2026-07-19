@@ -49,6 +49,10 @@ func TestReconcileIsDeterministicAcrossReplicas(t *testing.T) {
 	operation := operations.Items[0]
 	operationID, _, _ := unstructured.NestedString(operation.Object, "spec", "operationID")
 	require.Equal(t, "backup-daily-1700002800", operationID)
+	tenant, _, _ := unstructured.NestedString(operation.Object, "spec", "tenant")
+	require.Equal(t, "tenant-a", tenant)
+	requestedBy, _, _ := unstructured.NestedString(operation.Object, "spec", "requestedBy")
+	require.Equal(t, DefaultRequester, requestedBy)
 	secretName, _, _ := unstructured.NestedString(
 		operation.Object, "spec", "parametersSecretRef", "name",
 	)
@@ -99,6 +103,50 @@ func TestReconcileRejectsNonUniqueOutputTemplate(t *testing.T) {
 	require.ErrorContains(t, err, "s3_object_key must contain {operation_id}")
 }
 
+func TestReconcileAcrossNamespacesKeepsQueuesAndSecretsIsolated(t *testing.T) {
+	client := fakeClient()
+	for _, namespace := range []string{"tenant-a", "tenant-b"} {
+		createTemplateIn(t, client, namespace, validTemplate())
+		createPolicyIn(t, client, namespace, false)
+	}
+	now := time.Unix(1_700_003_000, 0).UTC()
+	count, err := NewForNamespaces(client, []string{"tenant-a", "tenant-b"}).
+		WithClock(func() time.Time { return now }).Reconcile(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, 2, count)
+
+	for _, namespace := range []string{"tenant-a", "tenant-b"} {
+		operations, err := client.Resource(operationqueue.Resource).Namespace(namespace).
+			List(context.Background(), metav1.ListOptions{})
+		require.NoError(t, err)
+		require.Len(t, operations.Items, 1)
+		require.Equal(t, namespace, operations.Items[0].GetNamespace())
+		secretName, _, _ := unstructured.NestedString(
+			operations.Items[0].Object, "spec", "parametersSecretRef", "name",
+		)
+		_, err = client.Resource(operationqueue.SecretResource).Namespace(namespace).
+			Get(context.Background(), secretName, metav1.GetOptions{})
+		require.NoError(t, err)
+	}
+}
+
+func TestReconcileAcrossNamespacesIsolatesPolicyFailure(t *testing.T) {
+	client := fakeClient()
+	createTemplateIn(t, client, "tenant-a", validTemplate())
+	createPolicyIn(t, client, "tenant-a", false)
+	createPolicyIn(t, client, "tenant-b", false)
+	now := time.Unix(1_700_003_000, 0).UTC()
+
+	count, err := NewForNamespaces(client, []string{"tenant-b", "tenant-a"}).
+		WithClock(func() time.Time { return now }).Reconcile(context.Background())
+	require.Equal(t, 1, count)
+	require.ErrorContains(t, err, "tenant-b/daily")
+	operations, listErr := client.Resource(operationqueue.Resource).Namespace("tenant-a").
+		List(context.Background(), metav1.ListOptions{})
+	require.NoError(t, listErr)
+	require.Len(t, operations.Items, 1)
+}
+
 func validTemplate() map[string]any {
 	return map[string]any{
 		"endpoint": "https://etcd", "prefix": "/registry/", "artifact_output": "/work/{operation_id}.json",
@@ -112,9 +160,19 @@ func validTemplate() map[string]any {
 
 func createTemplate(t *testing.T, client *dynamicfake.FakeDynamicClient, template map[string]any) {
 	t.Helper()
+	createTemplateIn(t, client, "test", template)
+}
+
+func createTemplateIn(
+	t *testing.T,
+	client *dynamicfake.FakeDynamicClient,
+	namespace string,
+	template map[string]any,
+) {
+	t.Helper()
 	raw, err := json.Marshal(template)
 	require.NoError(t, err)
-	_, err = client.Resource(operationqueue.SecretResource).Namespace("test").Create(
+	_, err = client.Resource(operationqueue.SecretResource).Namespace(namespace).Create(
 		context.Background(),
 		&unstructured.Unstructured{Object: map[string]any{
 			"apiVersion": "v1", "kind": "Secret",
@@ -128,11 +186,21 @@ func createTemplate(t *testing.T, client *dynamicfake.FakeDynamicClient, templat
 
 func createPolicy(t *testing.T, client *dynamicfake.FakeDynamicClient, suspended bool) {
 	t.Helper()
+	createPolicyIn(t, client, "test", suspended)
+}
+
+func createPolicyIn(
+	t *testing.T,
+	client *dynamicfake.FakeDynamicClient,
+	namespace string,
+	suspended bool,
+) {
+	t.Helper()
 	policy := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "dbaas.kubebrain.io/v1alpha1", "kind": "KubeBrainBackupPolicy",
 		"metadata": map[string]any{"name": "daily"},
 		"spec": map[string]any{
-			"instance": "instance-a", "intervalSeconds": int64(3600),
+			"tenant": "tenant-a", "instance": "instance-a", "intervalSeconds": int64(3600),
 			"retentionSeconds": int64(86400), "maxAttempts": int64(3), "suspend": suspended,
 			"parametersTemplateSecretRef": map[string]any{
 				"name": "daily-template", "key": "parameters.json",
@@ -141,7 +209,7 @@ func createPolicy(t *testing.T, client *dynamicfake.FakeDynamicClient, suspended
 	}}
 	policy.SetUID(types.UID(strings.Repeat("a", 32)))
 	policy.SetCreationTimestamp(metav1.NewTime(time.Unix(1_699_999_600, 0)))
-	_, err := client.Resource(PolicyResource).Namespace("test").Create(
+	_, err := client.Resource(PolicyResource).Namespace(namespace).Create(
 		context.Background(), policy, metav1.CreateOptions{},
 	)
 	require.NoError(t, err)
