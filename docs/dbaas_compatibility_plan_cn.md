@@ -5094,6 +5094,30 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   测试对象按门禁清理。archiver 和六类零副本 executor 模板更新到 A287；主 KubeBrain
   3/3、PD/TiKV 3+3、A277 scheduler 2/2 当前均 Ready。
 
+- **Operations A288 deterministic cross-process audit receipt recovery（2026-07-19）**：
+  审计 A287 后发现，archiver 每次 Process 都使用新的临时 receipt 目录；远端 exact
+  version 已存在但本地 receipt 丢失时，objectstore 以本次重试的 `Now` 填充
+  `ArchivedAtUnix`。因此同一不可变 version 在 Pod 重启或两个 archiver 竞争时会产生不同
+  receipt SHA，既不满足跨进程幂等，也可能让竞争的 finalizer release 使用不同证据。
+
+  现在上传成功或条件冲突恢复取得 version ID 后，统一 Head 精确 version，复核 metadata、
+  size 和返回的 version ID，并以远端 `LastModified` 固化 `ArchivedAtUnix`。时间戳缺失、
+  非正数或不早于 retain-until 时 fail closed 且不发布 receipt。测试使用全新 receipt
+  路径并把重试时钟推进一分钟，仍要求 receipt 完全相同；同时覆盖缺失远端时间戳。
+  focused 连续 200 轮、focused race 50 轮、objectstore 全包连续 50 轮、全包 race
+  20 轮、archiver/audit 集成面连续 100 轮、production 全量 91.887 秒及两侧 vet 均通过。
+  代码提交 `59fecd3cc308a6dabfd5569f773ae64093b633b9`。
+
+  由该精确提交构建非 root TiKV 镜像 `kubebrain:a288-stable-audit-receipt`（image ID
+  `sha256:f1061f11b680197a25b972c9a077616668251295b0d5da1f7d03c98c861a7741`）。
+  真实 MinIO `kubebrain-logical/operation-audit-a288/a288-receipt-smoke.json` 首次归档
+  version `65c34a04-8a1a-488e-a32d-d1e06055a78e`；相隔 2 秒的第二个独立容器使用全新
+  本地 receipt 路径，从远端恢复后仍得到 `archived_at_unix=1784502112`，两份 receipt
+  SHA-256 均为 `0128eff09b1a6c869153bf0d293b33f323c46ebc756c8a80ccf04bca7d3308d5`
+  且逐字节相同。该 COMPLIANCE version 保留到 `1784505711`，到期后必须按 exact version
+  清理。archiver 与六类零副本 executor 模板更新到 A288；主 KubeBrain 3/3、PD/TiKV
+  3+3、A277 scheduler 2/2 当前均 Ready。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range

@@ -1127,6 +1127,13 @@ kubectl -n kubebrain-operations rollout status deployment/kubebrain-operation-ar
 移除 finalizer。中央 archiver Role 只能读取指定 inventory，并 list/get/update Operation
 主资源；它不能读取 worker Secret、修改 status、管理 Lease、创建或删除 Operation。
 
+跨进程恢复不得用当前重试时间重新生成 archive receipt。上传成功或
+`If-None-Match: *` 冲突恢复取得 version ID 后，executor 必须 Head 精确 version，重新核对
+version ID、metadata 和 size，并把该 version 的远端 `LastModified` 固化为
+`archived_at_unix`。缺失、非正数或不早于 retain-until 的时间戳均不得发布 receipt。
+发布门禁应删除本地 receipt 后再次运行相同 archive，请求时间可以变化，但两份 canonical
+receipt 必须逐字节相同；只复用同一路径上的已有本地 receipt 不能证明跨 Pod 幂等。
+
 archiver 每轮使用 `--reconcile-timeout=15m`，预算覆盖 inventory/Operation 扫描、最多
 32 个 Object Lock executor 和 finalizer release。deadline 会传入 `CommandContext` 并
 终止卡住的对象存储子进程；超时对象不得生成 receipt、不得释放 audit finalizer，下一轮
