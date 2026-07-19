@@ -9,11 +9,11 @@ import (
 	"path"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/kubewharf/kubebrain/hack/production/internal/operationauditbuilder"
 	"github.com/kubewharf/kubebrain/hack/production/internal/operationauditrelease"
+	"github.com/kubewharf/kubebrain/hack/production/internal/processgroup"
 	"github.com/kubewharf/kubebrain/hack/production/operationaudit"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/client-go/dynamic"
@@ -99,17 +99,7 @@ func (p *ArchiveProcessor) Process(ctx context.Context, object *unstructured.Uns
 func (p *ArchiveProcessor) runCommand(ctx context.Context, executable string, environment []string) error {
 	command := exec.CommandContext(ctx, executable)
 	command.Env = mergeEnvironment(os.Environ(), environment)
-	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	command.Cancel = func() error {
-		if command.Process == nil {
-			return nil
-		}
-		err := syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
-		if errors.Is(err, syscall.ESRCH) {
-			return os.ErrProcessDone
-		}
-		return err
-	}
+	processgroup.Configure(command)
 	command.WaitDelay = 5 * time.Second
 	output, err := command.CombinedOutput()
 	if err != nil {

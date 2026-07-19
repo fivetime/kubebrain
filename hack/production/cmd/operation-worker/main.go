@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"syscall"
 	"time"
+
+	"github.com/kubewharf/kubebrain/hack/production/internal/processgroup"
 )
 
 func main() {
@@ -64,6 +66,7 @@ func main() {
 
 func run(ctx context.Context, executable string) error {
 	command := exec.CommandContext(ctx, executable)
+	processgroup.Configure(command)
 	command.Stdin = os.Stdin
 	command.Stdout = os.Stdout
 	command.Stderr = os.Stderr
