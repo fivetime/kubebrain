@@ -206,13 +206,28 @@ func TestOperationAPIIsFailClosedAndHardened(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, found)
 	require.Equal(t, []string{"/usr/local/bin/kubebrain-operation-api"}, command)
+	args, found, err := unstructured.NestedStringSlice(container.Object, "args")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Contains(t, args, "--oidc-jwks-cache-ttl=5m")
+	require.Contains(t, args, "--oidc-jwks-refresh-backoff=5s")
 	require.True(t, nestedBool(t, container, "securityContext", "readOnlyRootFilesystem"))
 	require.False(t, nestedBool(t, container, "securityContext", "allowPrivilegeEscalation"))
 	require.Equal(t, "/healthz", nestedString(t, container, "readinessProbe", "httpGet", "path"))
 	require.Equal(t, "HTTPS", nestedString(t, container, "readinessProbe", "httpGet", "scheme"))
+	spreads, found, err := unstructured.NestedSlice(
+		deployment.Object, "spec", "template", "spec", "topologySpreadConstraints",
+	)
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Len(t, spreads, 2)
+	require.Equal(t, "topology.kubernetes.io/zone",
+		nestedString(t, &unstructured.Unstructured{Object: spreads[0].(map[string]any)}, "topologyKey"))
+	require.Equal(t, "kubernetes.io/hostname",
+		nestedString(t, &unstructured.Unstructured{Object: spreads[1].(map[string]any)}, "topologyKey"))
 
 	pdb := objectByKindAndName(t, objects, "PodDisruptionBudget", "kubebrain-operation-api")
-	require.EqualValues(t, 1, nestedInt64(t, pdb, "spec", "minAvailable"))
+	require.EqualValues(t, 1, nestedInt64(t, pdb, "spec", "maxUnavailable"))
 }
 
 func TestBackupSchedulerIsHAAndLeastPrivilege(t *testing.T) {

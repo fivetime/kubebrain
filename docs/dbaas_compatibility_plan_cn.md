@@ -4496,6 +4496,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   production 包全量、manifest 单测和 Kubernetes server dry-run 均通过。管理 API 的
   多副本 HA、外部 IdP 故障 soak、全局 tenant inventory 与跨 namespace/region 调度仍是 P1。
 
+- **Operations A260 OIDC refresh storm control（2026-07-19）**：管理 API 的 JWKS
+  cache miss 现由进程内互斥合并；并发 unknown `kid` 只触发一次刷新，刷新失败和未知 key
+  使用固定内存、可配置的 fail-closed 退避窗口，避免攻击者用无限 key ID 扩张缓存或在
+  IdP 故障时制造 outbound 请求风暴。已缓存且未过期的合法 key 继续工作；缓存过期且刷新
+  失败仍拒绝认证，不回退到 stale trust。确定性并发测试覆盖 64 caller 单次刷新、20 次
+  故障请求只产生一次失败刷新及 IdP 恢复后的自动重试。Deployment 显式配置 5 分钟 TTL/
+  5 秒退避，新增 zone/hostname topology spread，PDB 改为 `maxUnavailable: 1`，用于
+  Secret 配置后扩为 3 副本。跨 Pod 刷新协调、真实外部 IdP 长时间故障 soak 与跨 region
+  管理 API 仍是 P1。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range

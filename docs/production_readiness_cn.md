@@ -843,6 +843,11 @@ instance 必须在数组中（受信任的控制面 token 可显式使用 `*`）
 immutable `requestedBy`，tenant 同样进入 spec、worker claim 和终态审计 artifact。
 参数 Secret 只能引用受信控制面预置的 `params-<tenant>-*` 对象，且 key 固定为
 `parameters.json`；API ServiceAccount 不具备 Secret 读取或写入权限。
+JWKS 默认缓存 5 分钟；并发 cache miss 合并为单次刷新，unknown `kid` 或刷新失败后
+fail closed 退避 5 秒，避免外部 IdP 故障或伪造 key ID 造成刷新惊群。可用
+`--oidc-jwks-cache-ttl` 和 `--oidc-jwks-refresh-backoff` 调整，但退避期间不会继续信任
+已经过期的 key。完成 Secret 配置后建议扩为 3 副本；清单包含 zone/hostname topology
+spread，PDB `maxUnavailable: 1`。
 跨租户或未授权实例的 submit/get 统一返回 404，避免实例和 operation 枚举。
 
 验证器通过 OIDC discovery 获取 JWKS，未知 kid 会触发刷新；缓存过期且刷新失败时拒绝

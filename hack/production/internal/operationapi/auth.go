@@ -46,14 +46,18 @@ type OIDCConfig struct {
 	InstancesClaim string
 	HTTPClient     *http.Client
 	CacheTTL       time.Duration
+	RefreshBackoff time.Duration
 }
 
 type OIDCAuthenticator struct {
-	config  OIDCConfig
-	jwksURL string
-	mu      sync.RWMutex
-	keys    map[string]*rsa.PublicKey
-	expires time.Time
+	config       OIDCConfig
+	jwksURL      string
+	refreshMu    sync.Mutex
+	mu           sync.RWMutex
+	keys         map[string]*rsa.PublicKey
+	expires      time.Time
+	retryAfter   time.Time
+	unknownUntil time.Time
 }
 
 type discoveryDocument struct {
@@ -87,6 +91,9 @@ func NewOIDCAuthenticator(ctx context.Context, config OIDCConfig) (*OIDCAuthenti
 	}
 	if config.CacheTTL <= 0 {
 		config.CacheTTL = 5 * time.Minute
+	}
+	if config.RefreshBackoff <= 0 {
+		config.RefreshBackoff = 5 * time.Second
 	}
 	if config.HTTPClient == nil {
 		config.HTTPClient = &http.Client{Timeout: 10 * time.Second}
@@ -188,6 +195,7 @@ func (a *OIDCAuthenticator) refresh(ctx context.Context) error {
 	a.mu.Lock()
 	a.keys = keys
 	a.expires = time.Now().Add(a.config.CacheTTL)
+	a.retryAfter = time.Time{}
 	a.mu.Unlock()
 	return nil
 }
@@ -212,20 +220,55 @@ func rsaJWK(raw jwk) (*rsa.PublicKey, error) {
 }
 
 func (a *OIDCAuthenticator) key(ctx context.Context, kid string) (*rsa.PublicKey, error) {
+	now := time.Now()
 	a.mu.RLock()
 	key, found := a.keys[kid]
-	expired := time.Now().After(a.expires)
+	expired := now.After(a.expires)
+	unknownUntil := a.unknownUntil
+	retryAfter := a.retryAfter
 	a.mu.RUnlock()
 	if found && !expired {
 		return key, nil
 	}
+	if !found && now.Before(unknownUntil) {
+		return nil, errors.New("OIDC signing key is unknown")
+	}
+	if now.Before(retryAfter) {
+		return nil, errors.New("OIDC JWKS refresh is in failure backoff")
+	}
+
+	a.refreshMu.Lock()
+	defer a.refreshMu.Unlock()
+
+	now = time.Now()
+	a.mu.RLock()
+	key, found = a.keys[kid]
+	expired = now.After(a.expires)
+	unknownUntil = a.unknownUntil
+	retryAfter = a.retryAfter
+	a.mu.RUnlock()
+	if found && !expired {
+		return key, nil
+	}
+	if !found && now.Before(unknownUntil) {
+		return nil, errors.New("OIDC signing key is unknown")
+	}
+	if now.Before(retryAfter) {
+		return nil, errors.New("OIDC JWKS refresh is in failure backoff")
+	}
 	if err := a.refresh(ctx); err != nil {
+		a.mu.Lock()
+		a.retryAfter = time.Now().Add(a.config.RefreshBackoff)
+		a.mu.Unlock()
 		return nil, err
 	}
 	a.mu.RLock()
-	defer a.mu.RUnlock()
 	key, found = a.keys[kid]
+	a.mu.RUnlock()
 	if !found {
+		a.mu.Lock()
+		a.unknownUntil = time.Now().Add(a.config.RefreshBackoff)
+		a.mu.Unlock()
 		return nil, errors.New("OIDC signing key is unknown")
 	}
 	return key, nil

@@ -98,6 +98,19 @@ spec:
                 labelSelector:
                   matchLabels:
                     app.kubernetes.io/name: kubebrain-operation-api
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: kubebrain-operation-api
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: kubebrain-operation-api
       containers:
         - name: api
           image: kubebrain:dev
@@ -109,6 +122,8 @@ spec:
             - --namespace=kubebrain-operations
             - --oidc-issuer=$(OIDC_ISSUER)
             - --oidc-audience=$(OIDC_AUDIENCE)
+            - --oidc-jwks-cache-ttl=5m
+            - --oidc-jwks-refresh-backoff=5s
             - --tls-cert-file=/var/run/kubebrain-api-tls/tls.crt
             - --tls-key-file=/var/run/kubebrain-api-tls/tls.key
           env:
@@ -172,7 +187,7 @@ metadata:
     app.kubernetes.io/name: kubebrain-operation-api
     app.kubernetes.io/part-of: kubebrain
 spec:
-  minAvailable: 1
+  maxUnavailable: 1
   selector:
     matchLabels:
       app.kubernetes.io/name: kubebrain-operation-api

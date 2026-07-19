@@ -22,12 +22,15 @@ import (
 func main() {
 	var address, namespace, issuer, audience, tenantClaim, instancesClaim string
 	var certFile, keyFile, kubeconfig string
+	var oidcCacheTTL, oidcRefreshBackoff time.Duration
 	flag.StringVar(&address, "listen-address", ":8443", "HTTPS listen address")
 	flag.StringVar(&namespace, "namespace", "kubebrain-operations", "operation namespace")
 	flag.StringVar(&issuer, "oidc-issuer", "", "trusted OIDC issuer URL")
 	flag.StringVar(&audience, "oidc-audience", "", "required OIDC audience")
 	flag.StringVar(&tenantClaim, "oidc-tenant-claim", "tenant", "OIDC tenant claim")
 	flag.StringVar(&instancesClaim, "oidc-instances-claim", "kubebrain_instances", "OIDC allowed instances claim")
+	flag.DurationVar(&oidcCacheTTL, "oidc-jwks-cache-ttl", 5*time.Minute, "OIDC JWKS cache lifetime")
+	flag.DurationVar(&oidcRefreshBackoff, "oidc-jwks-refresh-backoff", 5*time.Second, "fail-closed retry delay after a JWKS refresh failure or unknown key ID")
 	flag.StringVar(&certFile, "tls-cert-file", "", "HTTPS server certificate")
 	flag.StringVar(&keyFile, "tls-key-file", "", "HTTPS server private key")
 	flag.StringVar(&kubeconfig, "kubeconfig", "", "optional kubeconfig; in-cluster credentials are used by default")
@@ -49,6 +52,7 @@ func main() {
 	}
 	authenticator, err := operationapi.NewOIDCAuthenticator(ctx, operationapi.OIDCConfig{
 		Issuer: issuer, Audience: audience, TenantClaim: tenantClaim, InstancesClaim: instancesClaim,
+		CacheTTL: oidcCacheTTL, RefreshBackoff: oidcRefreshBackoff,
 	})
 	if err != nil {
 		log.Fatal(err)
