@@ -22,13 +22,15 @@ import (
 
 func main() {
 	var address, namespace, audience, certFile, keyFile, kubeconfig string
-	var certReloadInterval time.Duration
+	var certReloadInterval, kubernetesRequestTimeout time.Duration
 	flag.StringVar(&address, "listen-address", ":8443", "HTTPS listen address")
 	flag.StringVar(&namespace, "namespace", "kubebrain-operations", "operation namespace")
 	flag.StringVar(&audience, "token-audience", "kubebrain-operation-parameters", "required projected service account token audience")
 	flag.StringVar(&certFile, "tls-cert-file", "", "HTTPS server certificate")
 	flag.StringVar(&keyFile, "tls-key-file", "", "HTTPS server private key")
 	flag.DurationVar(&certReloadInterval, "tls-reload-interval", 30*time.Second, "TLS certificate reload interval")
+	flag.DurationVar(&kubernetesRequestTimeout, "kubernetes-request-timeout", 5*time.Second,
+		"deadline for TokenReview, Operation, and Secret API requests")
 	flag.StringVar(&kubeconfig, "kubeconfig", "", "optional kubeconfig; in-cluster credentials are used by default")
 	flag.Parse()
 	if certFile == "" || keyFile == "" {
@@ -40,6 +42,9 @@ func main() {
 	}
 	if certReloadInterval <= 0 {
 		log.Fatal("--tls-reload-interval must be positive")
+	}
+	if kubernetesRequestTimeout <= 0 {
+		log.Fatal("--kubernetes-request-timeout must be positive")
 	}
 	config, err := kubernetesConfig(kubeconfig)
 	if err != nil {
@@ -54,14 +59,21 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	handler, err := parameterbroker.NewHandler(tokens, dynamicClient, namespace, audience)
+	handler, err := parameterbroker.NewHandler(
+		tokens, dynamicClient, namespace, audience, kubernetesRequestTimeout,
+	)
 	if err != nil {
 		log.Fatal(err)
 	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/readyz", func(response http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("/readyz", func(response http.ResponseWriter, request *http.Request) {
 		if err := certificate.ValidAt(time.Now()); err != nil {
 			http.Error(response, "TLS certificate is not ready", http.StatusServiceUnavailable)
+			return
+		}
+		if err := handler.Ready(request.Context()); err != nil {
+			log.Printf("readiness dependency probe failed: %v", err)
+			http.Error(response, "Kubernetes dependencies are not ready", http.StatusServiceUnavailable)
 			return
 		}
 		response.WriteHeader(http.StatusNoContent)

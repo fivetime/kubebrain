@@ -1,14 +1,17 @@
 package parameterbroker
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/kubewharf/kubebrain/hack/production/internal/operationqueue"
 	authenticationv1 "k8s.io/api/authentication/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/dynamic"
@@ -31,19 +34,25 @@ type Handler struct {
 	dynamic           dynamic.Interface
 	identityNamespace string
 	audience          string
+	requestTimeout    time.Duration
 }
 
 func NewHandler(
 	tokens kubernetes.Interface, dynamicClient dynamic.Interface, namespace, audience string,
-) (http.Handler, error) {
+	requestTimeout time.Duration,
+) (*Handler, error) {
 	if tokens == nil || dynamicClient == nil {
 		return nil, errors.New("Kubernetes clients are required")
 	}
 	if namespace == "" || audience == "" {
 		return nil, errors.New("namespace and audience are required")
 	}
+	if requestTimeout <= 0 {
+		return nil, errors.New("request timeout must be positive")
+	}
 	return &Handler{
 		tokens: tokens, dynamic: dynamicClient, identityNamespace: namespace, audience: audience,
+		requestTimeout: requestTimeout,
 	}, nil
 }
 
@@ -56,6 +65,9 @@ func (h *Handler) ServeHTTP(response http.ResponseWriter, request *http.Request)
 		http.Error(response, "not found", http.StatusNotFound)
 		return
 	}
+	ctx, cancel := context.WithTimeout(request.Context(), h.requestTimeout)
+	defer cancel()
+	request = request.WithContext(ctx)
 	token, err := bearerToken(request.Header.Get("Authorization"))
 	if err != nil {
 		http.Error(response, "unauthorized", http.StatusUnauthorized)
@@ -86,6 +98,33 @@ func (h *Handler) ServeHTTP(response http.ResponseWriter, request *http.Request)
 	response.Header().Set("X-Content-Type-Options", "nosniff")
 	response.WriteHeader(http.StatusOK)
 	_, _ = response.Write(parameters)
+}
+
+// Ready verifies every Kubernetes API path required to serve a parameter
+// request. Missing probe objects are expected; transport, discovery, and RBAC
+// failures make the broker unready.
+func (h *Handler) Ready(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, h.requestTimeout)
+	defer cancel()
+	const probeName = "kubebrain-readiness-probe-do-not-create"
+	if _, err := h.dynamic.Resource(operationqueue.Resource).Namespace(h.identityNamespace).
+		Get(ctx, probeName, metav1.GetOptions{}); err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("probe operation API: %w", err)
+	}
+	if _, err := h.dynamic.Resource(operationqueue.SecretResource).Namespace(h.identityNamespace).
+		Get(ctx, probeName, metav1.GetOptions{}); err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("probe Secret API: %w", err)
+	}
+	if _, err := h.tokens.AuthenticationV1().TokenReviews().Create(
+		ctx,
+		&authenticationv1.TokenReview{Spec: authenticationv1.TokenReviewSpec{
+			Token: "kubebrain-readiness-invalid-token", Audiences: []string{h.audience},
+		}},
+		metav1.CreateOptions{},
+	); err != nil {
+		return fmt.Errorf("probe TokenReview API: %w", err)
+	}
+	return nil
 }
 
 func (h *Handler) authenticate(request *http.Request, token string) (string, error) {

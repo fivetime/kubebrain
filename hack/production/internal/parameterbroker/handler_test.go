@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -29,7 +30,7 @@ func TestHandlerReturnsOnlyCurrentTypeBoundWorkerParameters(t *testing.T) {
 	handler, err := NewHandler(
 		tokenClient("system:serviceaccount:test:kubebrain-post-restore-audit-executor",
 			[]string{testAudience}, true),
-		dynamicClient, "test", testAudience,
+		dynamicClient, "test", testAudience, time.Second,
 	)
 	require.NoError(t, err)
 
@@ -96,7 +97,7 @@ func TestHandlerFailsClosedForIdentityTypeAudienceAndFencing(t *testing.T) {
 			dynamicClient, claim, _ := claimedOperation(t)
 			handler, err := NewHandler(
 				tokenClient(tc.username, tc.audiences, tc.authenticated),
-				dynamicClient, "test", testAudience,
+				dynamicClient, "test", testAudience, time.Second,
 			)
 			require.NoError(t, err)
 			owner := claim.Owner
@@ -115,6 +116,72 @@ func TestHandlerFailsClosedForIdentityTypeAudienceAndFencing(t *testing.T) {
 			require.NotContains(t, response.Body.String(), "audit")
 		})
 	}
+}
+
+func TestReadyChecksOperationSecretAndTokenReviewAPIs(t *testing.T) {
+	dynamicClient := fake.NewSimpleDynamicClientWithCustomListKinds(
+		runtime.NewScheme(), map[schema.GroupVersionResource]string{
+			operationqueue.Resource:       "KubeBrainOperationList",
+			operationqueue.SecretResource: "SecretList",
+		},
+	)
+	tokens := tokenClient("", nil, false)
+	handler, err := NewHandler(tokens, dynamicClient, "test", testAudience, time.Second)
+	require.NoError(t, err)
+	require.NoError(t, handler.Ready(context.Background()))
+	require.Len(t, dynamicClient.Actions(), 2)
+	require.Equal(t, "kubebrainoperations", dynamicClient.Actions()[0].GetResource().Resource)
+	require.Equal(t, "secrets", dynamicClient.Actions()[1].GetResource().Resource)
+	require.Len(t, tokens.Actions(), 1)
+	require.Equal(t, "tokenreviews", tokens.Actions()[0].GetResource().Resource)
+}
+
+func TestReadyFailsClosedWhenAnyCriticalAPIIsUnavailable(t *testing.T) {
+	tests := []struct {
+		name     string
+		resource string
+		tokens   bool
+	}{
+		{name: "operation API", resource: "kubebrainoperations"},
+		{name: "Secret API", resource: "secrets"},
+		{name: "TokenReview API", tokens: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dynamicClient := fake.NewSimpleDynamicClientWithCustomListKinds(
+				runtime.NewScheme(), map[schema.GroupVersionResource]string{
+					operationqueue.Resource:       "KubeBrainOperationList",
+					operationqueue.SecretResource: "SecretList",
+				},
+			)
+			tokens := tokenClient("", nil, false)
+			if tc.resource != "" {
+				dynamicClient.PrependReactor("get", tc.resource, func(
+					k8stesting.Action,
+				) (bool, runtime.Object, error) {
+					return true, nil, errors.New("dependency unavailable")
+				})
+			}
+			if tc.tokens {
+				tokens.PrependReactor("create", "tokenreviews", func(
+					k8stesting.Action,
+				) (bool, runtime.Object, error) {
+					return true, nil, errors.New("dependency unavailable")
+				})
+			}
+			handler, err := NewHandler(tokens, dynamicClient, "test", testAudience, time.Second)
+			require.NoError(t, err)
+			require.ErrorContains(t, handler.Ready(context.Background()), "dependency unavailable")
+		})
+	}
+}
+
+func TestNewHandlerRequiresPositiveDependencyTimeout(t *testing.T) {
+	_, err := NewHandler(
+		kubernetesfake.NewSimpleClientset(), fake.NewSimpleDynamicClient(runtime.NewScheme()),
+		"test", testAudience, 0,
+	)
+	require.ErrorContains(t, err, "timeout must be positive")
 }
 
 func claimedOperation(t *testing.T) (*fake.FakeDynamicClient, *operationqueue.Claim, []byte) {

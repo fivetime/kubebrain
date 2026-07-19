@@ -139,6 +139,7 @@ spec:
             - --tls-cert-file=/var/run/kubebrain-parameter-tls/tls.crt
             - --tls-key-file=/var/run/kubebrain-parameter-tls/tls.key
             - --tls-reload-interval=30s
+            - --kubernetes-request-timeout=5s
           ports:
             - {name: https, containerPort: 8443}
           readinessProbe:
