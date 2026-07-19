@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -111,6 +112,8 @@ func runLeasingRangeContentionScenario(
 	contendedCachesMatched := true
 	for modeIndex, mode := range modes {
 		modePrefix := fmt.Sprintf("%scontend/%d/", prefix, modeIndex)
+		modeCtx, modeCancel := context.WithTimeout(context.Background(), 45*time.Second)
+		defer modeCancel()
 		deleter, closeDeleter, newErr := leasing.NewKV(client, ownerPrefix)
 		require.NoError(t, newErr)
 		defer closeDeleter()
@@ -121,15 +124,20 @@ func runLeasingRangeContentionScenario(
 		const keys = 8
 		for index := 0; index < keys; index++ {
 			key := fmt.Sprintf("%s%02d", modePrefix, index)
-			_, err = client.Put(ctx, key, "initial")
+			_, err = client.Put(modeCtx, key, "initial")
 			require.NoError(t, err)
-			_, err = writer.Get(ctx, key)
+			_, err = writer.Get(modeCtx, key)
 			require.NoError(t, err)
 		}
 
 		stopWriter := make(chan struct{})
 		started := make(chan struct{})
 		writerDone := make(chan error, 1)
+		var stopOnce sync.Once
+		stop := func() error {
+			stopOnce.Do(func() { close(stopWriter) })
+			return <-writerDone
+		}
 		var writerOperations atomic.Int64
 		go func() {
 			close(started)
@@ -141,15 +149,28 @@ func runLeasingRangeContentionScenario(
 				default:
 				}
 				key := fmt.Sprintf("%s%02d", modePrefix, iteration%keys)
-				if _, putErr := writer.Put(ctx, key, fmt.Sprintf("writer-%d", iteration)); putErr != nil {
+				if _, putErr := writer.Put(modeCtx, key, fmt.Sprintf("writer-%d", iteration)); putErr != nil {
 					writerDone <- putErr
 					return
 				}
-				if _, getErr := writer.Get(ctx, key); getErr != nil {
+				if _, getErr := writer.Get(modeCtx, key); getErr != nil {
 					writerDone <- getErr
 					return
 				}
 				writerOperations.Add(1)
+				// Keep this a contention semantics test rather than an endpoint
+				// saturation benchmark. leasing builds range guards across
+				// multiple RPCs, so a zero-yield writer can make completion depend
+				// entirely on local-etcd versus remote-TiKV latency.
+				select {
+				case <-stopWriter:
+					writerDone <- nil
+					return
+				case <-modeCtx.Done():
+					writerDone <- modeCtx.Err()
+					return
+				case <-time.After(100 * time.Millisecond):
+				}
 			}
 		}()
 		<-started
@@ -157,10 +178,11 @@ func runLeasingRangeContentionScenario(
 			return writerOperations.Load() > 0
 		}, 5*time.Second, time.Millisecond, mode.name)
 
-		deleteResponse, deleteErr := deleter.Do(ctx, mode.op(modePrefix))
+		deleteResponse, deleteErr := deleter.Do(modeCtx, mode.op(modePrefix))
+		writerErr := stop()
+		modeCancel()
 		require.NoError(t, deleteErr, mode.name)
-		close(stopWriter)
-		require.NoError(t, <-writerDone, mode.name)
+		require.NoError(t, writerErr, mode.name)
 		modeProgress := writerOperations.Load() > 0
 		writersMadeProgress = writersMadeProgress && modeProgress
 		if mode.name == "delete" {

@@ -4681,6 +4681,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   attempt 和过期 Lease。NetworkPolicy 将 broker 入口限制为六类 executor Pod；后续继续补
   跨集群 broker HA、证书在线轮换和可移植的 Kubernetes API egress 策略。
 
+- **Compatibility A269 leasing range-contention gate isolation（2026-07-19）**：
+  全量官方 client/v3 差分首次在 `nested-txn-delete` 上触发 45 秒超时。服务端调用链、
+  leader 转发和日志复核确认没有范围屏障重入死锁；`leasing` 的范围写守卫会先读取
+  range 最大 revision，再用后续 Txn 比较该 revision。零间隔 writer 因此把单节点
+  reference etcd 与远程 TiKV 的绝对延迟差放大为无提交窗口，不是响应语义差异。
+
+  差分场景现为每种 delete shape 使用独立 45 秒预算，错误路径先停止并回收 writer，
+  且 writer 每轮保留 100ms 调度窗口。测试仍要求 writer 在删除期间实际完成操作，并
+  对照普通 prefix delete、嵌套 Txn prefix delete 的响应类型、边界 key/owner 保留和
+  删除后的 leasing cache/direct read 一致性。真实三副本 TiKV 数据面与 `/root/etcd`
+  reference etcd 定向差分连续 10 轮通过；修改前的零间隔场景仍作为性能/饱和测试问题，
+  不再混入语义发布门禁。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
