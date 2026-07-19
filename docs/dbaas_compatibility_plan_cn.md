@@ -4713,9 +4713,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Deployment readiness 已从 `/healthz` 切换到 `/readyz`，liveness 保持不变。
 
   operation API/OIDC、TLS reloader 与 manifest 功能测试连续 10 轮通过，operation API
-  和 reloader race 连续 20 轮通过，vet 无告警。运行手册明确同 CA 叶证书逐 Pod serial/
-  UID/重启验证，以及 CA 更新必须执行调用方双信任窗口；下一步用 A271 精确镜像在 kind
-  双副本 API 上完成真实 Secret 更新与 OIDC submit/get smoke。
+  和 reloader race 连续 20 轮通过，vet 无告警。精确提交
+  `a4a6657440586b12954a8085a44aefec9c14438f` 构建镜像
+  `kubebrain:a271-operation-api-tls-reload`（image ID
+  `sha256:9e62c910cd5a319c9d784f166badaea8aac00424a87cb67f27e83c59c28a97a7`）
+  在 kind 双副本 API 上把证书 serial 3001 在线更新为 3002，两个 Pod 在 23 秒内收敛，
+  UID 不变且零重启。真实 RS256 OIDC token 的 submit 返回 202，轮换前后 get 均返回
+  200，两个 Pod 的 `/readyz` 均返回 204。smoke Operation 由 Backup executor 正常领取
+  并进入 Failed 终态，archiver 写入 661-byte COMPLIANCE exact version、复核一年保留期
+  后释放 audit finalizer，CR 正常删除。运行手册明确同 CA 叶证书逐 Pod serial/UID/重启
+  验证，以及 CA 更新必须执行调用方双信任窗口。
 
 ### P1：通用服务能力
 
