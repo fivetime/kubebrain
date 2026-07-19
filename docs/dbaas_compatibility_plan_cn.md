@@ -4991,6 +4991,33 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   六类 executor Deployment 均保持零副本并更新到 A283；三副本 KubeBrain、三 PD、三
   TiKV 和 A277 双副本 scheduler 均 Ready、零重启。
 
+- **Operations A284 status transition reconciliation（2026-07-19）**：
+  A281 允许调用方在 Requeue/Finish status 已提交但 Lease 清理失败后用相同请求补偿，
+  但 status PUT 本身已提交、响应丢失时，单次 operationctl 仍会误报失败并留下 Lease。
+  现在两条转换在任意 status 错误后使用独立 5 秒预算线性化 GET：Requeue 精确匹配
+  Pending、空 owner、原 attempt/message 和零 lease deadline；Finish 精确匹配目标终态、
+  原 owner/attempt、receipt/message、零 lease deadline 和正数 completion time。确认
+  已提交时清理 Lease 并按成功返回；确认未提交时也清理退出 worker 的旧 holder，再保留
+  原写错误，冲突映射为 fencing；inspect 失败则聚合错误并保留 Lease。后续幂等重试也
+  使用相同系统字段约束，部分或畸形 status 不可伪装成完成。
+
+  transition focused 连续 50 轮、operationqueue 全包连续 100 轮、race 连续 50 轮、
+  全量 production 测试（91.474 秒）和 vet 均通过。精确提交
+  `629c4353362f33fadaf3a6aa464c7f87a8403512` 构建非 root 镜像
+  `kubebrain:a284-status-transition-reconcile`（image ID
+  `sha256:331fa088c5882187318b966ad867211e47b6d08bea291e09c73d0cd746d91ff6`）。
+  最终 operationctl 对两个已认领 Operation 分别执行 Finish/Requeue；假 Kubernetes API
+  均持久化 status PUT 后返回 503。两次单调用均 GET 确认、GET/DELETE 精确 Lease 并
+  退出 0；最终每个 status PUT 恰好一次、`leaseDeletes=2`、`leaseCount=0`，状态分别为
+  Succeeded 和 Pending，Pending 保留 attempt 1 且 owner 为空。kind 六类 executor
+  Deployment 保持零副本并更新到 A284，PD/TiKV 3+3 和 A277 scheduler 2/2 Ready。
+
+  更新后的健康检查发现长期运行的 `kubebrain-2` 本地 `/ready` 返回
+  `RAFT NO LEADER`，成员表仍有完整三成员，`kubebrain-0/1` 可服务且 `kubebrain-1`
+  已成为 leader；120 秒内未自动恢复。重建该无状态 Pod 后 1.571 秒 Ready，并重新连接
+  `kubebrain-1`，主 KubeBrain 恢复 3/3 Ready、零容器重启。该本地 leader view 长期失效
+  的自动恢复仍是后续可靠性差距，不能以本次人工 Pod 重建视为已关闭。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
