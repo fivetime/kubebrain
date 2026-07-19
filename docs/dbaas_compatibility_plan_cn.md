@@ -4828,6 +4828,29 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   候选没有被整轮取消虚假推进。kind archiver 保持零副本并更新到 A276；三副本
   KubeBrain、三 PD 和三 TiKV 均 Ready，主数据面零重启。
 
+- **Operations A277 bounded and resumable backup policy batches（2026-07-19）**：
+  backup scheduler 虽有 A274 的 2 分钟整轮 deadline，但原实现没有 policy 批次上限，
+  也没有跨轮游标；一个 API 调用耗尽 context 后仍会遍历其余 namespace 与 Policy，
+  大规模 inventory 下既产生无效取消请求，也无法保证未尝试 Policy 的恢复顺序。
+  scheduler 新增全局 `--max-policies=256`，先收集 inventory 中所有 Policy，再按
+  `namespace/name` 稳定排序并截取批次。游标只在 policy reconciler 实际返回后推进；
+  namespace list 或 policy 处理期间父 context 取消时立即停止，下一轮用 `sort.Search`
+  从最后实际尝试身份之后恢复并在末尾环回。游标仅负责单 Pod 吞吐公平；HA 副本仍通过
+  确定性 slot Operation ID、immutable Secret exact-content 校验和 AlreadyExists 收敛。
+
+  scheduler/CLI/manifest focused 连续 30 轮、scheduler race 连续 30 轮、全量 production
+  测试（91.948 秒）和 vet 均通过。精确提交
+  `6f18fab39187481c88aa70f4a6691bdc83dcce47` 构建非 root 镜像
+  `kubebrain:a277-backup-policy-fairness`（image ID
+  `sha256:4543d0dc7ecdeca560d1c708e7c314b6c15be8219550a57ab7814dc82e246db7`）。
+  最终镜像连接线程化假 Kubernetes API，inventory 返回 `a/b/c` 三个 Policy；
+  `template-a` GET 永不响应，`template-b/c` 立即 404。使用
+  `--reconcile-timeout=2s --max-policies=2 --poll-interval=10s` 连续运行时，第一轮
+  15:03:56 只报告 `tenant-a/a` deadline，第二轮 15:04:06 只报告 `tenant-a/b` 与
+  `tenant-a/c`，证明未尝试候选按身份恢复。kind 双副本 scheduler 滚动到 A277 并跨过
+  一个 30 秒生产 poll，两个 Pod Ready、零重启且无 reconcile 错误；三副本 KubeBrain、
+  三 PD 和三 TiKV 均 Ready，主数据面零重启。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range

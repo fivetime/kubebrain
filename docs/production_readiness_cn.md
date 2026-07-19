@@ -980,6 +980,13 @@ API endpoint 黑洞、网络分区或 admission 卡顿必须在 deadline 后记�
 判定失败。调整 namespace/policy 规模时可显式增加预算，但禁止设为零或依赖 Pod 重启
 终止挂起调用。
 
+scheduler 每轮最多实际尝试 `--max-policies=256` 个 Policy，该上限作用于 inventory
+内所有 namespace 的全局候选集合。候选按 `namespace/name` 稳定排序；游标仅在一次
+Policy reconcile 实际返回后推进，整轮 context 取消后立即停止，下一轮从最后尝试身份的
+后继恢复。游标是单进程吞吐公平状态，Pod 重启后从排序起点重新开始；双副本 correctness
+仍由确定性的 slot Operation ID、immutable parameters Secret 内容校验和 Kubernetes
+create/AlreadyExists 语义保证。扩大上限前必须确认 2 分钟预算能覆盖对应 API 调用量。
+
 中央 worker、approver 和 archiver 可分别通过以下未绑定 ClusterRole 获得目标
 namespace 的最小权限：
 
