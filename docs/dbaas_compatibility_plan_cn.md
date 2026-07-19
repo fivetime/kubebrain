@@ -5118,6 +5118,32 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   清理。archiver 与六类零副本 executor 模板更新到 A288；主 KubeBrain 3/3、PD/TiKV
   3+3、A277 scheduler 2/2 当前均 Ready。
 
+- **Backup A289 deterministic cross-process upload receipt recovery（2026-07-19）**：
+  A288 的时间不稳定同样存在于通用逻辑备份 Upload：本地 receipt 随 Pod 消失后，条件
+  冲突恢复会用本次重试 `Now` 生成 `UploadedAtUnix`，使同一 backup exact version 的
+  receipt SHA 变化。该 SHA 会进入 Backup operation 成功状态、后续 BackupDeletion 参数
+  和 inventory manifest，因而不是纯展示字段。
+
+  backup 与 audit 现共用 exact-version Head 校验：复核 metadata、size、返回的 version
+  ID，并以远端 `LastModified` 固化 upload/archive 时间。缺失、非正数或不早于
+  retain-until 的时间戳都不发布 receipt。测试用新 receipt 路径和推进后的请求时钟验证
+  跨进程恢复逐字段相同，并固定缺时间戳 fail closed。focused 连续 200 轮、focused race
+  50 轮、objectstore 全包连续 50 轮、全包 race 20 轮、production 备份/清单/删除/归档
+  选择性连续 3 轮 88.452 秒、production 全量 91.644 秒和两侧 vet 均通过。代码提交
+  `88af66382a706b75068553542149eed658aa1ddf`。
+
+  精确提交构建非 root TiKV 镜像 `kubebrain:a289-stable-backup-receipt`（image ID
+  `sha256:d799a4ef88a0f3863f950ff29a9b39fe306295f8742fa3c175ef335945150d4d`）。
+  真实 KubeBrain `/registry` 在 revision `467796068338761731` 导出 58 条记录、0 lease，
+  artifact SHA-256 为
+  `48eb2a4c2754fd49364a639d3d3df4652d21154dae811b276c36db6f3fabf27a`。MinIO
+  `kubebrain-logical/backup-a289/a289-stable-receipt.jsonl` version
+  `d09262ba-aa03-4680-a2e7-3292b9f9eec1` 由第二个独立容器用全新 receipt 路径恢复后，
+  `uploaded_at_unix` 仍为 `1784503285`；两份 canonical receipt SHA-256 均为
+  `0b7ecb9f07898699dab174381fe9da200b6367cc7e6eaee3b2179e8721fa32a5` 且逐字节相同。
+  COMPLIANCE version 保留到 `1784506884`，到期后按 exact version 清理。archiver 与六类
+  零副本 executor 模板更新到 A289。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range

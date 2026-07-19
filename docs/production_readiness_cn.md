@@ -346,6 +346,12 @@ backup ID、object store ID、bucket/key/version、artifact format/digest/revisi
 记录数/lease 数、对象字节数和保留策略。已有 receipt 的重试会重新下载该精确 version
 并复核 retention，不会产生新 version 或移动保留期限。
 
+本地 receipt 丢失后的跨进程恢复还必须 Head 精确 version，复核 version ID、metadata、
+size，并用远端 `LastModified` 固化 `uploaded_at_unix`；不得使用当前重试时间。缺失或
+非法远端时间戳时不发布 receipt。发布验证必须换用全新本地 receipt 路径再次上传相同
+key，确认 canonical receipt 逐字节一致；这同时保证备份完成 operation 使用稳定的
+receipt SHA，后续 exact-version 删除和 inventory manifest 不会因 Pod 重启绑定不同证据。
+
 保留删除必须读取上传 receipt，并使用独立确认令牌：
 
 ```shell
