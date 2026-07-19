@@ -4947,6 +4947,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   更新到 A281；三副本 KubeBrain、三 PD、三 TiKV 和 A277 双副本 scheduler 均 Ready、
   零重启。
 
+- **Operations A282 heartbeat commit reconciliation（2026-07-19）**：
+  Heartbeat 原先先续长实例 Lease，再 CAS 更新 Operation status；status 冲突或失败会
+  直接返回，已退出 worker 的 Lease 仍可能阻塞同实例一个完整租期。现在任何 status
+  错误都会进入脱离父取消信号、最多 5 秒的 reconciliation：重读结果精确匹配 Running、
+  owner、attempt 和目标 `leaseUntilUnix` 时，判定响应丢失但提交成功，返回重建 claim
+  并保留 Lease；不匹配时按旧 holder 和 UID precondition 删除 Lease 后 fencing。重读
+  本身失败时聚合原始 status 与 inspect 错误并保留 Lease，以 TTL 换取 uncertain commit
+  下的单实例安全；清理失败同样显式聚合，替代 holder 不会被删除。
+
+  Heartbeat focused 连续 50 轮、operationqueue 全包连续 100 轮、race 连续 50 轮、
+  全量 production 测试（91.653 秒）和 vet 均通过。精确提交
+  `3512edc2cdd9263b93d519b06bc472ed190ce009` 构建非 root 镜像
+  `kubebrain:a282-heartbeat-reconcile`（image ID
+  `sha256:d9d27fcb92fc46f63b63f50f269fdf981f8da91f22f2e33054f568c5735f3d03`）。
+  最终 operationctl 连接线程化假 Kubernetes API：`backup-1` 的 Lease PUT 后 status PUT
+  已持久化但返回 503，reconciliation GET 读到目标 deadline，CLI 退出 0、status PUT
+  仅一次且 Lease 保留；`backup-2` 的 status PUT 返回 409 且未持久化，reconciliation
+  读到旧 deadline，随后 GET/DELETE 精确 Lease 并以 fencing 退出 1。最终统计
+  `statusPuts={backup-1:1,backup-2:1}`、`leaseDeletes=1`、`leaseA=true`、
+  `leaseB=false`。kind 六类 executor Deployment 均保持零副本并更新到 A282；三副本
+  KubeBrain、三 PD、三 TiKV 和 A277 双副本 scheduler 均 Ready、零重启。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range

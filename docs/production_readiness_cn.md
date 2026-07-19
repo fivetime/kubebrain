@@ -1050,6 +1050,11 @@ context，按 holder identity 和 Lease UID precondition 释放刚取得的实�
 message；Requeue 必须精确匹配 Pending phase、已清空 owner、原 attempt 和 message。
 任何不一致仍被 fencing 拒绝。重试清理发现 Lease 已不存在或 holder 已被替换时视为
 旧 holder 已完成清理，绝不删除替代 holder。
+Heartbeat 同样是先续租实例 Lease、再 CAS 更新 Operation status。status 请求失败后必须
+在独立 5 秒预算内重读 Operation：若 Running phase、owner、attempt 和目标
+`leaseUntilUnix` 精确匹配，则判定写入已提交，按成功返回并保留 Lease；否则按旧
+holder 和 Lease UID 清理后 fencing。若重读失败，必须同时返回 status 与重读错误并保留
+Lease，不能在提交结果未知时开放同一实例给其他 Operation；Lease TTL 作为最终恢复边界。
 该补偿只处理 Kubernetes coordination Lease；外部系统副作用仍由 Operation fencing 与
 幂等 receipt 约束。
 
