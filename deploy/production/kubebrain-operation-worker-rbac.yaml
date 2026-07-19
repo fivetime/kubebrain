@@ -26,6 +26,14 @@ metadata:
     app.kubernetes.io/part-of: kubebrain
 rules:
   - apiGroups:
+      - ""
+    resources:
+      - configmaps
+    resourceNames:
+      - kubebrain-backup-scheduler-inventory
+    verbs:
+      - get
+  - apiGroups:
       - dbaas.kubebrain.io
     resources:
       - kubebrainoperations

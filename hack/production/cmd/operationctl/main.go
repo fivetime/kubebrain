@@ -8,24 +8,35 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"path/filepath"
 	"time"
 
+	"github.com/kubewharf/kubebrain/hack/production/internal/namespaceinventory"
 	"github.com/kubewharf/kubebrain/hack/production/internal/operationqueue"
 	"github.com/kubewharf/kubebrain/hack/production/operationaudit"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 )
 
 func main() {
 	var action, namespace, name, operationID, tenant, requestedBy, instance, operationType, parametersSHA string
 	var parametersSecret, parametersKey string
+	var inventoryName, inventoryNamespace, inventoryKey string
 	var owner, receiptSHA, message, approvalID, approvedBy, kubeconfig, contextName string
 	var maxAttempts, attempt int64
 	var lease time.Duration
 	flag.StringVar(&action, "action", "", "submit, claim, parameters, heartbeat, retry, succeed, fail, or get")
 	flag.StringVar(&namespace, "namespace", "kubebrain-system", "operation namespace")
+	flag.StringVar(&inventoryName, "namespace-inventory-configmap",
+		os.Getenv("OPERATION_NAMESPACE_INVENTORY_CONFIGMAP"),
+		"ConfigMap used for a cross-namespace claim")
+	flag.StringVar(&inventoryNamespace, "namespace-inventory-namespace",
+		envOrDefault("OPERATION_NAMESPACE_INVENTORY_NAMESPACE", "kubebrain-operations"),
+		"namespace containing --namespace-inventory-configmap")
+	flag.StringVar(&inventoryKey, "namespace-inventory-key",
+		envOrDefault("OPERATION_NAMESPACE_INVENTORY_KEY", namespaceinventory.DefaultKey),
+		"ConfigMap data key containing a JSON namespace array")
 	flag.StringVar(&name, "name", "", "operation resource name")
 	flag.StringVar(&operationID, "operation-id", "", "stable external operation ID")
 	flag.StringVar(&tenant, "tenant", "", "tenant ID recorded in the immutable operation spec")
@@ -47,9 +58,7 @@ func main() {
 	flag.StringVar(&contextName, "context", "", "kubeconfig context")
 	flag.Parse()
 
-	loading := &clientcmd.ClientConfigLoadingRules{ExplicitPath: kubeconfig}
-	overrides := &clientcmd.ConfigOverrides{CurrentContext: contextName}
-	config, err := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loading, overrides).ClientConfig()
+	config, err := clientConfig(kubeconfig, contextName)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -71,7 +80,19 @@ func main() {
 			ParametersKey: parametersKey, MaxAttempts: maxAttempts,
 		})
 	case "claim":
-		output, err = queue.Claim(ctx, owner, operationType, lease)
+		if inventoryName == "" {
+			output, err = queue.Claim(ctx, owner, operationType, lease)
+		} else {
+			var namespaces []string
+			namespaces, err = namespaceinventory.Load(
+				ctx, client, inventoryNamespace, inventoryName, inventoryKey,
+			)
+			if err == nil {
+				output, err = operationqueue.ClaimAcrossNamespaces(
+					ctx, client, namespaces, owner, operationType, lease,
+				)
+			}
+		}
 	case "parameters":
 		var data []byte
 		data, err = queue.Parameters(ctx, name)
@@ -113,11 +134,24 @@ func main() {
 }
 
 func defaultKubeconfig() string {
-	if value := os.Getenv("KUBECONFIG"); value != "" {
+	return os.Getenv("KUBECONFIG")
+}
+
+func clientConfig(kubeconfig, contextName string) (*rest.Config, error) {
+	if kubeconfig == "" {
+		if config, err := rest.InClusterConfig(); err == nil {
+			return config, nil
+		}
+	}
+	loading := clientcmd.NewDefaultClientConfigLoadingRules()
+	loading.ExplicitPath = kubeconfig
+	overrides := &clientcmd.ConfigOverrides{CurrentContext: contextName}
+	return clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loading, overrides).ClientConfig()
+}
+
+func envOrDefault(name, fallback string) string {
+	if value := os.Getenv(name); value != "" {
 		return value
 	}
-	if home, err := os.UserHomeDir(); err == nil {
-		return filepath.Join(home, ".kube", "config")
-	}
-	return ""
+	return fallback
 }

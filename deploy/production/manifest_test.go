@@ -178,15 +178,19 @@ func TestOperationCRDAndWorkerRBACFencePersistentTasks(t *testing.T) {
 	rules, found, err := unstructured.NestedSlice(role.Object, "rules")
 	require.NoError(t, err)
 	require.True(t, found)
-	require.Len(t, rules, 4)
-	require.Contains(t, rules[0].(map[string]any)["resources"].([]any), "kubebrainoperations")
-	require.NotContains(t, rules[0].(map[string]any)["verbs"].([]any), "create")
-	require.Contains(t, rules[1].(map[string]any)["resources"].([]any), "kubebrainoperations/status")
-	require.Contains(t, rules[1].(map[string]any)["verbs"].([]any), "update")
-	require.Equal(t, []any{"leases"}, rules[2].(map[string]any)["resources"].([]any))
-	require.Equal(t, []any{"create", "get", "update", "delete"}, rules[2].(map[string]any)["verbs"].([]any))
-	require.Equal(t, []any{"secrets"}, rules[3].(map[string]any)["resources"].([]any))
-	require.Equal(t, []any{"get"}, rules[3].(map[string]any)["verbs"].([]any))
+	require.Len(t, rules, 5)
+	require.Equal(t, []any{"configmaps"}, rules[0].(map[string]any)["resources"].([]any))
+	require.Equal(t, []any{"kubebrain-backup-scheduler-inventory"},
+		rules[0].(map[string]any)["resourceNames"].([]any))
+	require.Equal(t, []any{"get"}, rules[0].(map[string]any)["verbs"].([]any))
+	require.Contains(t, rules[1].(map[string]any)["resources"].([]any), "kubebrainoperations")
+	require.NotContains(t, rules[1].(map[string]any)["verbs"].([]any), "create")
+	require.Contains(t, rules[2].(map[string]any)["resources"].([]any), "kubebrainoperations/status")
+	require.Contains(t, rules[2].(map[string]any)["verbs"].([]any), "update")
+	require.Equal(t, []any{"leases"}, rules[3].(map[string]any)["resources"].([]any))
+	require.Equal(t, []any{"create", "get", "update", "delete"}, rules[3].(map[string]any)["verbs"].([]any))
+	require.Equal(t, []any{"secrets"}, rules[4].(map[string]any)["resources"].([]any))
+	require.Equal(t, []any{"get"}, rules[4].(map[string]any)["verbs"].([]any))
 }
 
 func TestOperationAPIIsFailClosedAndHardened(t *testing.T) {

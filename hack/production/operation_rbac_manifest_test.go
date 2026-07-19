@@ -26,9 +26,10 @@ type rbacMetadata struct {
 }
 
 type rbacRule struct {
-	APIGroups []string `yaml:"apiGroups"`
-	Resources []string `yaml:"resources"`
-	Verbs     []string `yaml:"verbs"`
+	APIGroups     []string `yaml:"apiGroups"`
+	Resources     []string `yaml:"resources"`
+	ResourceNames []string `yaml:"resourceNames"`
+	Verbs         []string `yaml:"verbs"`
 }
 
 type rbacParty struct {
@@ -160,6 +161,12 @@ func TestOperationWorkerRBACCanFenceWithLeasesButCannotCreateOperations(t *testi
 	require.Equal(t, "Role", role.Kind)
 	require.Equal(t, "kubebrain-operations", role.Metadata.Namespace)
 	require.Equal(t, []rbacRule{
+		{
+			APIGroups:     []string{""},
+			Resources:     []string{"configmaps"},
+			ResourceNames: []string{"kubebrain-backup-scheduler-inventory"},
+			Verbs:         []string{"get"},
+		},
 		{
 			APIGroups: []string{"dbaas.kubebrain.io"},
 			Resources: []string{"kubebrainoperations"},

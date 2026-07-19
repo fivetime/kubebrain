@@ -28,7 +28,8 @@ RUN test -n "$KUBEBRAIN_VERSION" \
       *) echo "unsupported STORAGE=$STORAGE" >&2; exit 1 ;; \
     esac \
     && go build -trimpath -o /src/bin/kubebrain-backup-scheduler ./hack/production/cmd/backup-scheduler \
-    && go build -trimpath -o /src/bin/kubebrain-operation-api ./hack/production/cmd/operation-api
+    && go build -trimpath -o /src/bin/kubebrain-operation-api ./hack/production/cmd/operation-api \
+    && go build -trimpath -o /src/bin/kubebrain-operationctl ./hack/production/cmd/operationctl
 
 FROM alpine:3.23
 
@@ -48,6 +49,7 @@ RUN apk add --no-cache ca-certificates \
 COPY --from=build /src/bin/kube-brain /usr/local/bin/kube-brain
 COPY --from=build /src/bin/kubebrain-backup-scheduler /usr/local/bin/kubebrain-backup-scheduler
 COPY --from=build /src/bin/kubebrain-operation-api /usr/local/bin/kubebrain-operation-api
+COPY --from=build /src/bin/kubebrain-operationctl /usr/local/bin/kubebrain-operationctl
 
 USER 65532:65532
 EXPOSE 3379 3380 8080

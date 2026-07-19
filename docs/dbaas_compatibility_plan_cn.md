@@ -4556,7 +4556,7 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   也缺少明确发布顺序。
 
   scheduler 现可在每轮 reconcile 从中央 ConfigMap 的指定 data key 读取严格 JSON
-  namespace 数组；空数组、空值、重复、非法 DNS label、错误 JSON、ConfigMap/key 缺失
+  namespace 数组；超过 256 项、空数组、空值、重复、非法 DNS label、错误 JSON、ConfigMap/key 缺失
   均在任何 policy list 或 Operation submit 前令整轮 fail closed，绝不沿用进程内旧值。
   合法 inventory 排序后执行，更新无需重启。生产 ServiceAccount 只有对单一
   `kubebrain-backup-scheduler-inventory` resourceName 的 ConfigMap `get`，不能 list/watch
@@ -4568,6 +4568,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   resourceNames RBAC、动态 flags、默认 JSON 和 ClusterRole 不含 ConfigMap 权限。生产
   runbook 明确 onboarding 先绑定四类身份再加入 inventory，teardown 先 suspend/排空/
   归档、移出 inventory 并等待 reconcile，再删除 binding。
+
+- **Operations A265 inventory-aware cross-namespace worker claim（2026-07-19）**：
+  A264 只让 scheduler 动态创建多 namespace Operation；类型专属 worker 仍把
+  `OPERATION_NAMESPACE` 固定为单一队列，新增租户即使完成 scheduler/worker RoleBinding，
+  任务仍会永久 Pending。直接建立持有所有 executor 凭据的“万能 worker”会扩大 blast
+  radius，因此保留按 operation type 隔离的执行器，只扩展其 claim 底座。
+
+  namespace inventory 解析已抽成 scheduler/worker 共用包，严格 JSON、DNS、重复和空数组
+  规则只有一份。`kubebrain-operationctl claim` 可从同一 ConfigMap 读取 allowlist，按每个
+  namespace 内匹配类型 Operation 的最近 `startedAtUnixNano` 排序，优先最久未服务队列，
+  再调用原有 Queue claim，保留实例 Lease、审批、attempt、过期接管和 resourceVersion
+  fencing。Claim 新增 namespace 字段；Backup、BackupDeletion、CertificateRotation、
+  Destroy、PostRestoreAudit、RestoreCutover 六类脚本在 claim 后把 parameters/heartbeat/
+  terminal update 固定到该 namespace。生产镜像新增 `/usr/local/bin/kubebrain-operationctl`；
+  未显式传 kubeconfig 时优先使用 Pod ServiceAccount 的 in-cluster config，本地执行再回退
+  标准 kubeconfig loading rules，避免非 root 容器错误读取 `/nonexistent/.kube/config`。
+
+  worker 中央 Role 只增加指定 inventory ConfigMap 的 `get`，managed namespace
+  ClusterRole 不增加 ConfigMap 权限。确定性测试固定同一 worker 第一次从 canonical
+  tenant-a claim、第二次必须优先尚未服务的 tenant-b；共享 loader 普通/race 测试覆盖
+  合法排序和六类损坏输入；Backup executor 黑盒固定后续 succeed 使用 claim 返回的
+  namespace。动态 archiver 扫描/归档编排和具体 executor Deployment 模板仍是后续 P1。
 
 ### P1：通用服务能力
 

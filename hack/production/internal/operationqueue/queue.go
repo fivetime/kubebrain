@@ -59,6 +59,7 @@ type Spec struct {
 }
 
 type Claim struct {
+	Namespace        string `json:"namespace"`
 	Name             string `json:"name"`
 	UID              string `json:"uid"`
 	ResourceVersion  string `json:"resource_version"`
@@ -76,18 +77,20 @@ type Claim struct {
 }
 
 type Queue struct {
-	resource dynamic.ResourceInterface
-	leases   dynamic.ResourceInterface
-	secrets  dynamic.ResourceInterface
-	now      func() time.Time
+	namespace string
+	resource  dynamic.ResourceInterface
+	leases    dynamic.ResourceInterface
+	secrets   dynamic.ResourceInterface
+	now       func() time.Time
 }
 
 func New(client dynamic.Interface, namespace string) *Queue {
 	return &Queue{
-		resource: client.Resource(Resource).Namespace(namespace),
-		leases:   client.Resource(LeaseResource).Namespace(namespace),
-		secrets:  client.Resource(SecretResource).Namespace(namespace),
-		now:      func() time.Time { return time.Now().UTC() },
+		namespace: namespace,
+		resource:  client.Resource(Resource).Namespace(namespace),
+		leases:    client.Resource(LeaseResource).Namespace(namespace),
+		secrets:   client.Resource(SecretResource).Namespace(namespace),
+		now:       func() time.Time { return time.Now().UTC() },
 	}
 }
 
@@ -274,12 +277,95 @@ func (q *Queue) Claim(ctx context.Context, owner, operationType string, lease ti
 			_ = q.releaseInstanceLease(ctx, instance, holder)
 			return nil, updateErr
 		}
-		return claimFrom(claimed)
+		claim, claimErr := claimFrom(claimed)
+		if claimErr == nil {
+			claim.Namespace = q.namespace
+		}
+		return claim, claimErr
 	}
 	if lastConflict != nil {
 		return nil, fmt.Errorf("%w: claim conflicts exhausted: %v", ErrNoOperation, lastConflict)
 	}
 	return nil, ErrNoOperation
+}
+
+type namespaceQueue struct {
+	namespace   string
+	lastStarted int64
+	queue       *Queue
+}
+
+// ClaimAcrossNamespaces prioritizes the namespace that has gone longest
+// without starting a matching operation, then relies on Queue.Claim for the
+// existing per-instance fairness, Lease exclusion, and optimistic fencing.
+func ClaimAcrossNamespaces(
+	ctx context.Context,
+	client dynamic.Interface,
+	namespaces []string,
+	owner, operationType string,
+	lease time.Duration,
+) (*Claim, error) {
+	queues := make([]namespaceQueue, 0, len(namespaces))
+	var inspectErrs []error
+	for _, namespace := range namespaces {
+		queue := New(client, namespace)
+		lastStarted, err := queue.lastStarted(ctx, operationType)
+		if err != nil {
+			inspectErrs = append(inspectErrs, fmt.Errorf("%s: inspect queue: %w", namespace, err))
+			continue
+		}
+		queues = append(queues, namespaceQueue{
+			namespace: namespace, lastStarted: lastStarted, queue: queue,
+		})
+	}
+	sort.Slice(queues, func(i, j int) bool {
+		if queues[i].lastStarted != queues[j].lastStarted {
+			return queues[i].lastStarted < queues[j].lastStarted
+		}
+		return queues[i].namespace < queues[j].namespace
+	})
+	var claimErrs []error
+	for _, candidate := range queues {
+		claim, err := candidate.queue.Claim(ctx, owner, operationType, lease)
+		if err == nil {
+			return claim, nil
+		}
+		if !errors.Is(err, ErrNoOperation) {
+			claimErrs = append(claimErrs, fmt.Errorf("%s: claim: %w", candidate.namespace, err))
+		}
+	}
+	allErrs := append(inspectErrs, claimErrs...)
+	if len(allErrs) != 0 {
+		return nil, fmt.Errorf("%w: %v", ErrNoOperation, errors.Join(allErrs...))
+	}
+	return nil, ErrNoOperation
+}
+
+func (q *Queue) lastStarted(ctx context.Context, operationType string) (int64, error) {
+	list, err := q.resource.List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return 0, err
+	}
+	var latest int64
+	for i := range list.Items {
+		candidateType, _, _ := unstructured.NestedString(list.Items[i].Object, "spec", "type")
+		if operationType != "" && candidateType != operationType {
+			continue
+		}
+		started, found, _ := unstructured.NestedInt64(
+			list.Items[i].Object, "status", "startedAtUnixNano",
+		)
+		if !found {
+			seconds, _, _ := unstructured.NestedInt64(
+				list.Items[i].Object, "status", "startedAtUnix",
+			)
+			started = seconds * int64(time.Second)
+		}
+		if started > latest {
+			latest = started
+		}
+	}
+	return latest, nil
 }
 
 func requiresApproval(operationType string) bool {

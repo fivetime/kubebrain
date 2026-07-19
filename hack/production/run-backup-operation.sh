@@ -56,6 +56,11 @@ run_operationctl() {
 }
 
 claim="$(run_operationctl --action claim --owner "$WORKER_ID" --type Backup --lease "${LEASE_SECONDS}s")"
+claimed_namespace="$("$JQ" -r '.namespace // empty' <<<"$claim")"
+if [[ -n "$claimed_namespace" ]]; then
+  OPERATION_NAMESPACE="$claimed_namespace"
+  kube_args+=(--namespace "$OPERATION_NAMESPACE")
+fi
 name="$("$JQ" -er '.name' <<<"$claim")"
 operation_id="$("$JQ" -er '.operation_id' <<<"$claim")"
 instance="$("$JQ" -er '.instance' <<<"$claim")"

@@ -918,7 +918,7 @@ immutable Secret，并再次校验 SHA-256；手工参数文件模式继续保�
 
 一个 scheduler Deployment 从 `kubebrain-operations/kubebrain-backup-scheduler-inventory`
 ConfigMap 的 `namespaces.json` 读取严格 JSON namespace allowlist，并在每轮 reconcile
-重新读取，因此更新无需重启 Deployment。allowlist 拒绝空数组、空值、重复项、非法 DNS
+重新读取，因此更新无需重启 Deployment。allowlist 最多 256 项，拒绝空数组、空值、重复项、非法 DNS
 label 和非字符串数组；ConfigMap 缺失、key 缺失或 JSON 非法时整轮 fail closed，不沿用
 进程内旧值，也不会自动扫描所有 namespace。scheduler ServiceAccount 只能 `get` 这个
 resourceName，不能 list/watch 或读取其他 ConfigMap。清单中的 ClusterRole 本身不授予
@@ -968,6 +968,28 @@ namespace 的最小权限：
 cluster-wide 访问。worker 只读 Operation/Secret、更新 status 并管理 Lease；approver
 只能读取和更新 Operation 主资源；archiver 只能 get/update Operation 主资源，不能修改
 status 或读取 Secret。
+
+类型专属 worker 可设置以下环境变量，让 `kubebrain-operationctl --action claim` 使用与
+scheduler 相同的动态 inventory：
+
+```shell
+OPERATIONCTL=/usr/local/bin/kubebrain-operationctl
+OPERATION_NAMESPACE_INVENTORY_CONFIGMAP=kubebrain-backup-scheduler-inventory
+OPERATION_NAMESPACE_INVENTORY_NAMESPACE=kubebrain-operations
+OPERATION_NAMESPACE_INVENTORY_KEY=namespaces.json
+```
+
+容器内未设置 `KUBECONFIG_PATH` 时，operationctl 使用 Pod ServiceAccount 的 in-cluster
+config；本地运维执行才回退 client-go 标准 kubeconfig 搜索。不得把管理员 kubeconfig
+挂入 worker Pod。
+
+跨 namespace claim 先比较各队列同类型 Operation 的最近启动时间，优先处理最久未被
+服务的 namespace；进入目标 namespace 后继续复用原有实例 Lease、attempt 和
+resourceVersion fencing。claim response 固化 `namespace`，六类 executor 脚本随后把
+parameters、heartbeat、retry/fail/succeed 全部固定到该 namespace，禁止跨队列续租或提交。
+inventory 无效时 claim 在读取任何 Operation 前 fail closed。中央 worker Role 只能
+`get` 指定 inventory ConfigMap；各目标 namespace 的 Operation/Secret/Lease 权限仍来自
+逐 namespace RoleBinding。
 
 ```shell
 NS=tenant-a-operations

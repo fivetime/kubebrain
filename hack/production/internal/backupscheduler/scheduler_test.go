@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kubewharf/kubebrain/hack/production/internal/namespaceinventory"
 	"github.com/kubewharf/kubebrain/hack/production/internal/operationqueue"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -213,12 +214,12 @@ func TestDynamicNamespaceInventoryRequiresConfigMapAndDataKey(t *testing.T) {
 	require.ErrorContains(t, err, "read namespace inventory")
 
 	createInventory(t, client, `["tenant-a"]`)
-	inventory, err := client.Resource(ConfigMapResource).Namespace("control").Get(
+	inventory, err := client.Resource(namespaceinventory.ConfigMapResource).Namespace("control").Get(
 		context.Background(), "scheduler-inventory", metav1.GetOptions{},
 	)
 	require.NoError(t, err)
 	delete(inventory.Object, "data")
-	_, err = client.Resource(ConfigMapResource).Namespace("control").Update(
+	_, err = client.Resource(namespaceinventory.ConfigMapResource).Namespace("control").Update(
 		context.Background(), inventory, metav1.UpdateOptions{},
 	)
 	require.NoError(t, err)
@@ -298,7 +299,7 @@ func createPolicyIn(
 
 func createInventory(t *testing.T, client *dynamicfake.FakeDynamicClient, raw string) {
 	t.Helper()
-	_, err := client.Resource(ConfigMapResource).Namespace("control").Create(
+	_, err := client.Resource(namespaceinventory.ConfigMapResource).Namespace("control").Create(
 		context.Background(),
 		&unstructured.Unstructured{Object: map[string]any{
 			"apiVersion": "v1", "kind": "ConfigMap",
@@ -312,14 +313,14 @@ func createInventory(t *testing.T, client *dynamicfake.FakeDynamicClient, raw st
 
 func updateInventory(t *testing.T, client *dynamicfake.FakeDynamicClient, raw string) {
 	t.Helper()
-	inventory, err := client.Resource(ConfigMapResource).Namespace("control").Get(
+	inventory, err := client.Resource(namespaceinventory.ConfigMapResource).Namespace("control").Get(
 		context.Background(), "scheduler-inventory", metav1.GetOptions{},
 	)
 	require.NoError(t, err)
 	require.NoError(t, unstructured.SetNestedField(
 		inventory.Object, raw, "data", DefaultInventoryKey,
 	))
-	_, err = client.Resource(ConfigMapResource).Namespace("control").Update(
+	_, err = client.Resource(namespaceinventory.ConfigMapResource).Namespace("control").Update(
 		context.Background(), inventory, metav1.UpdateOptions{},
 	)
 	require.NoError(t, err)
@@ -328,11 +329,11 @@ func updateInventory(t *testing.T, client *dynamicfake.FakeDynamicClient, raw st
 func fakeClient() *dynamicfake.FakeDynamicClient {
 	return dynamicfake.NewSimpleDynamicClientWithCustomListKinds(
 		runtime.NewScheme(), map[schema.GroupVersionResource]string{
-			PolicyResource:                "KubeBrainBackupPolicyList",
-			operationqueue.Resource:       "KubeBrainOperationList",
-			operationqueue.LeaseResource:  "LeaseList",
-			operationqueue.SecretResource: "SecretList",
-			ConfigMapResource:             "ConfigMapList",
+			PolicyResource:                       "KubeBrainBackupPolicyList",
+			operationqueue.Resource:              "KubeBrainOperationList",
+			operationqueue.LeaseResource:         "LeaseList",
+			operationqueue.SecretResource:        "SecretList",
+			namespaceinventory.ConfigMapResource: "ConfigMapList",
 		},
 	)
 }

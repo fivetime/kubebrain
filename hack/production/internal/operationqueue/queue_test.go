@@ -35,6 +35,7 @@ func TestQueueLifecycleAndExpiredLeaseFencing(t *testing.T) {
 	claimA, err := queue.Claim(ctx, "worker-a", "PostRestoreAudit", 30*time.Second)
 	require.NoError(t, err)
 	require.Equal(t, int64(1), claimA.Attempt)
+	require.Equal(t, "test", claimA.Namespace)
 	require.Equal(t, "tenant-a", claimA.Tenant)
 	require.Equal(t, "user-123", claimA.RequestedBy)
 	require.Equal(t, int64(1_030), claimA.LeaseUntilUnix)
@@ -71,6 +72,29 @@ func TestQueueLifecycleAndExpiredLeaseFencing(t *testing.T) {
 	require.ErrorIs(t, err, ErrTerminal)
 	_, err = queue.Claim(ctx, "worker-c", "PostRestoreAudit", 30*time.Second)
 	require.ErrorIs(t, err, ErrNoOperation)
+}
+
+func TestClaimAcrossNamespacesPrioritizesLeastRecentlyServedQueue(t *testing.T) {
+	client := fakeQueueClient()
+	ctx := context.Background()
+	for _, namespace := range []string{"tenant-a", "tenant-b"} {
+		_, err := New(client, namespace).Submit(ctx, "backup-1", validSpec())
+		require.NoError(t, err)
+	}
+
+	first, err := ClaimAcrossNamespaces(
+		ctx, client, []string{"tenant-b", "tenant-a"}, "worker-a", "PostRestoreAudit", time.Minute,
+	)
+	require.NoError(t, err)
+	require.Equal(t, "tenant-a", first.Namespace,
+		"equal service watermarks use canonical namespace order")
+
+	second, err := ClaimAcrossNamespaces(
+		ctx, client, []string{"tenant-b", "tenant-a"}, "worker-a", "PostRestoreAudit", time.Minute,
+	)
+	require.NoError(t, err)
+	require.Equal(t, "tenant-b", second.Namespace,
+		"an unserved namespace must win over a namespace that just started work")
 }
 
 func TestQueueRejectsSpecDriftAndInvalidCompletion(t *testing.T) {
@@ -376,12 +400,15 @@ func validSpec() Spec {
 }
 
 func newFakeQueue() *Queue {
-	client := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(
+	return New(fakeQueueClient(), "test")
+}
+
+func fakeQueueClient() *dynamicfake.FakeDynamicClient {
+	return dynamicfake.NewSimpleDynamicClientWithCustomListKinds(
 		runtime.NewScheme(), map[schema.GroupVersionResource]string{
 			Resource:       "KubeBrainOperationList",
 			LeaseResource:  "LeaseList",
 			SecretResource: "SecretList",
 		},
 	)
-	return New(client, "test")
 }
