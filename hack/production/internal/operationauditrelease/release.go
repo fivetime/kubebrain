@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/kubewharf/kubebrain/hack/production/internal/operationauditbuilder"
 	"github.com/kubewharf/kubebrain/hack/production/internal/operationqueue"
@@ -58,10 +59,14 @@ func Release(
 		return nil, errors.New("operation audit finalizer is missing without matching archive annotations")
 	}
 	updated := object.DeepCopy()
-	annotations[operationaudit.ReceiptSHAAnnotation] = receiptSHA
-	annotations[operationaudit.ArtifactSHAAnnotation] = artifactStatus.SHA256
-	annotations[operationaudit.VersionAnnotation] = receipt.VersionID
-	updated.SetAnnotations(annotations)
+	updatedAnnotations := make(map[string]string, len(annotations)+3)
+	for key, value := range annotations {
+		updatedAnnotations[key] = value
+	}
+	updatedAnnotations[operationaudit.ReceiptSHAAnnotation] = receiptSHA
+	updatedAnnotations[operationaudit.ArtifactSHAAnnotation] = artifactStatus.SHA256
+	updatedAnnotations[operationaudit.VersionAnnotation] = receipt.VersionID
+	updated.SetAnnotations(updatedAnnotations)
 	finalizers := make([]string, 0, len(object.GetFinalizers())-1)
 	for _, finalizer := range object.GetFinalizers() {
 		if finalizer != operationaudit.Finalizer {
@@ -70,10 +75,36 @@ func Release(
 	}
 	updated.SetFinalizers(finalizers)
 	result, err := resource.Update(ctx, updated, metav1.UpdateOptions{})
+	if err == nil {
+		return result, nil
+	}
+	reconcileCtx, cancel := releaseReconciliationContext(ctx)
+	defer cancel()
+	currentObject, getErr := resource.Get(reconcileCtx, name, metav1.GetOptions{})
+	if apierrors.IsNotFound(getErr) {
+		return updated, nil
+	}
+	if getErr != nil {
+		return nil, errors.Join(
+			err, fmt.Errorf("inspect operation after failed audit release: %w", getErr),
+		)
+	}
+	if currentObject.GetUID() != object.GetUID() {
+		return nil, errors.Join(
+			err, errors.New("operation was replaced while releasing audit finalizer"),
+		)
+	}
+	currentAnnotations := currentObject.GetAnnotations()
+	if !contains(currentObject.GetFinalizers(), operationaudit.Finalizer) &&
+		currentAnnotations[operationaudit.ReceiptSHAAnnotation] == receiptSHA &&
+		currentAnnotations[operationaudit.ArtifactSHAAnnotation] == artifactStatus.SHA256 &&
+		currentAnnotations[operationaudit.VersionAnnotation] == receipt.VersionID {
+		return currentObject, nil
+	}
 	if apierrors.IsConflict(err) {
 		return nil, fmt.Errorf("operation changed while releasing audit finalizer: %w", err)
 	}
-	return result, err
+	return nil, err
 }
 
 func contains(values []string, wanted string) bool {
@@ -83,4 +114,8 @@ func contains(values []string, wanted string) bool {
 		}
 	}
 	return false
+}
+
+func releaseReconciliationContext(parent context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(parent), 5*time.Second)
 }

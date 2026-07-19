@@ -3,6 +3,7 @@ package operationauditrelease
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,7 +16,9 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
+	clientgotesting "k8s.io/client-go/testing"
 )
 
 func TestReleaseVerifiesArchiveAndRemovesOnlyAuditFinalizer(t *testing.T) {
@@ -66,6 +69,105 @@ func TestReleaseRejectsReceiptAndCurrentOperationDrift(t *testing.T) {
 		)
 		require.ErrorContains(t, err, "current terminal operation does not match")
 	})
+}
+
+func TestReleaseReconcilesCommittedUpdateAfterLostResponse(t *testing.T) {
+	object := archivedOperation()
+	client := releaseClient(object)
+	artifactPath, receiptPath, receiptSHA := writeReleaseEvidence(t, object)
+	client.PrependReactor("update", operationqueue.Resource.Resource, func(
+		action clientgotesting.Action,
+	) (bool, runtime.Object, error) {
+		updated := action.(clientgotesting.UpdateAction).GetObject()
+		require.NoError(t, client.Tracker().Update(
+			operationqueue.Resource, updated, "operations",
+		))
+		return true, nil, errors.New("release response lost after commit")
+	})
+
+	result, err := Release(
+		context.Background(), client, "operations", "backup-1", artifactPath, receiptPath,
+	)
+	require.NoError(t, err)
+	require.NotContains(t, result.GetFinalizers(), operationaudit.Finalizer)
+	require.Equal(t, receiptSHA,
+		result.GetAnnotations()[operationaudit.ReceiptSHAAnnotation])
+}
+
+func TestReleaseReconciliationOutlivesCanceledParent(t *testing.T) {
+	object := archivedOperation()
+	client := releaseClient(object)
+	artifactPath, receiptPath, _ := writeReleaseEvidence(t, object)
+	ctx, cancel := context.WithCancel(context.Background())
+	client.PrependReactor("update", operationqueue.Resource.Resource, func(
+		action clientgotesting.Action,
+	) (bool, runtime.Object, error) {
+		updated := action.(clientgotesting.UpdateAction).GetObject()
+		require.NoError(t, client.Tracker().Update(
+			operationqueue.Resource, updated, "operations",
+		))
+		cancel()
+		return true, nil, ctx.Err()
+	})
+
+	result, err := Release(
+		ctx, client, "operations", "backup-1", artifactPath, receiptPath,
+	)
+	require.NoError(t, err)
+	require.NotContains(t, result.GetFinalizers(), operationaudit.Finalizer)
+}
+
+func TestReleaseRejectsReplacementUIDAfterFailedUpdate(t *testing.T) {
+	object := archivedOperation()
+	client := releaseClient(object)
+	artifactPath, receiptPath, _ := writeReleaseEvidence(t, object)
+	client.PrependReactor("update", operationqueue.Resource.Resource, func(
+		action clientgotesting.Action,
+	) (bool, runtime.Object, error) {
+		replacement := action.(clientgotesting.UpdateAction).GetObject().(*unstructured.Unstructured).DeepCopy()
+		replacement.SetUID(types.UID("uid-replacement"))
+		require.NoError(t, client.Tracker().Delete(
+			operationqueue.Resource, "operations", "backup-1",
+		))
+		require.NoError(t, client.Tracker().Create(
+			operationqueue.Resource, replacement, "operations",
+		))
+		return true, nil, errors.New("release response lost after replacement")
+	})
+
+	result, err := Release(
+		context.Background(), client, "operations", "backup-1", artifactPath, receiptPath,
+	)
+	require.Nil(t, result)
+	require.ErrorContains(t, err, "operation was replaced while releasing audit finalizer")
+}
+
+func TestReleaseReportsWriteAndInspectionFailures(t *testing.T) {
+	object := archivedOperation()
+	client := releaseClient(object)
+	artifactPath, receiptPath, _ := writeReleaseEvidence(t, object)
+	getCalls := 0
+	client.PrependReactor("get", operationqueue.Resource.Resource, func(
+		clientgotesting.Action,
+	) (bool, runtime.Object, error) {
+		getCalls++
+		if getCalls > 1 {
+			return true, nil, errors.New("release inspection unavailable")
+		}
+		return false, nil, nil
+	})
+	client.PrependReactor("update", operationqueue.Resource.Resource, func(
+		clientgotesting.Action,
+	) (bool, runtime.Object, error) {
+		return true, nil, errors.New("release write unavailable")
+	})
+
+	result, err := Release(
+		context.Background(), client, "operations", "backup-1", artifactPath, receiptPath,
+	)
+	require.Nil(t, result)
+	require.ErrorContains(t, err, "release write unavailable")
+	require.ErrorContains(t, err, "release inspection unavailable")
 }
 
 func releaseClient(object *unstructured.Unstructured) *dynamicfake.FakeDynamicClient {
