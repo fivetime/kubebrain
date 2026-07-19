@@ -5046,6 +5046,31 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   PD/TiKV 3+3 Ready；六类零副本 executor 模板也更新到 A285。A284 的本地 proxy
   leader view 长期失效差距由此关闭。
 
+- **Operations A286 management write reconciliation（2026-07-19）**：
+  Operation Submit、Approve 和 UID-fenced Delete 过去把 Kubernetes API 的非成功响应
+  直接视为未提交，无法区分服务端已持久化但响应丢失。现在三条路径都在独立 5 秒预算内
+  线性化回读：Submit 仅接受 immutable spec 完全一致且仍有 audit finalizer 的对象；
+  Approve 仅接受原 UID 上完全一致的 approver/approval ID，同名替换 fail closed；
+  Delete 仅在 NotFound 或不同 UID 时确认旧目标已经消失，并保留替代对象。回读本身失败
+  时聚合原写错误和 inspect 错误。
+
+  回归测试确定性注入 Create/Update/Delete 已提交后丢失响应、spec/finalizer 漂移、
+  approval inspect 故障、replacement UID 及原删除目标仍存在。管理写 focused 连续
+  100 轮、focused race 25 轮、operationqueue 全包连续 100 轮、production 全量
+  92.449 秒和 `go vet ./hack/production/...` 均通过。代码提交
+  `dad352a2504b3ae128adb8a5d12b51dd1bf4600a`；同时提交
+  `3fa46c7dfdd3d83e664a6394155e72eb16461302` 修正 `operationctl --help` 遗漏的
+  `approve` action。由后一精确提交构建非 root TiKV 镜像
+  `kubebrain:a286-management-write-reconcile`（image ID
+  `sha256:6550f1fe3a27d77e6aa2b5691adee1e4d93cc96cc7a9005785aa7b786e6fdee7`）。
+
+  镜像内 `operationctl` 对 kind API 完成真实 Destroy Submit；管理员身份审批被
+  ValidatingAdmissionPolicy 正确拒绝，切换到专用 approver ServiceAccount 后 Approve
+  成功并写入不可变证据。测试对象随后由 Destroy executor 身份合法迁移到终态，补齐归档
+  证据后释放 finalizer 并删除。六类 executor Deployment 保持零副本并更新到 A286；
+  主 KubeBrain 3/3 Ready（A285）、PD/TiKV 3+3 Ready、A277 scheduler 2/2 Ready。
+  audit finalizer release 的 Update 不确定提交仍是独立后续差距，本阶段不声称关闭。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range

@@ -1074,6 +1074,16 @@ Finish 只有目标终态、原 owner/attempt、receipt/message、`leaseUntilUni
 `completedAtUnix` 全部匹配才确认提交。无论写入已确认还是线性化 GET 证明未提交，退出
 worker 都按 holder+UID 清理旧 Lease；GET 失败时保留 Lease 并聚合错误。冲突且未提交
 继续返回 fencing，畸形或部分 status 不得进入幂等成功分支。
+
+Operation 管理写也必须处理“服务端已提交、客户端丢失响应”。Submit 的 Create 返回任意
+错误后，用独立 5 秒预算 GET 同名对象；只有 immutable spec 完全一致且仍带 audit
+finalizer 时才按成功返回。Approve 的 Update 失败后只接受原 UID 且
+`approved-by`/`approval-id` 完全一致的对象；同名替换必须报错。UID-precondition Delete
+失败后，GET 为 NotFound 或返回不同 UID 表示原目标已消失，可按成功返回且不得删除替代
+对象；相同 UID 仍存在时保留原错误。回读失败必须与原写错误聚合。`operationctl --help`
+必须列出实际支持的 `approve` action，生产审批 smoke 必须使用专用 approver 身份并通过
+ValidatingAdmissionPolicy，不得用管理员身份绕过。
+
 该补偿只处理 Kubernetes coordination Lease；外部系统副作用仍由 Operation fencing 与
 幂等 receipt 约束。
 
