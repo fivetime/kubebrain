@@ -4135,6 +4135,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   未发现新的服务端差异，新增测试持续约束 `leaseCheckpointMu`、`leaseWriteMu`、
   `leaseMu` 的 renew/TTL/revoke 并发顺序，以及 follower forwarding 不得在压力下制造
   伪 lease-not-found。
+- **Compatibility A241 direct-replica Lease read after revoke（2026-07-19）**：
+  对照上游 `TestV3GetNonExistLease` 的逐成员读取方式，新增绕过 Service、分别直连三个
+  KubeBrain Pod client endpoint 的黑盒门禁。每轮经 Service Grant 并绑定 key 后，每个
+  Pod 必须在 Range 中返回相同非零 Lease，并由 `TimeToLive(Keys=true)` 返回正 TTL 和
+  完整 attached key；Revoke 后先以每个 endpoint 的 linearizable Range 建立观察屏障，
+  再要求 key absent、TTL=-1 且 keys 为空。
+
+  真实三副本 TiKV-backed 部署连续 10 轮通过，覆盖 leader 本地读取和两个 follower 的
+  proxy/read 路径。审计同时纠正旧文档中“follower 最新 Range 因 leader-only
+  `keyLeaseIndex` 返回 Lease=0”的过时限制：value envelope v2 已持久化每个 MVCC 版本的
+  lease ID，`kvToEtcdKv` 对新值直接读取 inline metadata；内存索引仅作为 legacy raw
+  value fallback。本轮未发现新的服务端差异，该测试防止后续 envelope 或 follower read
+  优化重新引入字段丢失和 revoke 后 stale TTL。
 - **Operations A185 certificate rotation completion state（2026-07-18）**：新增
   `hack/production/validate-certificate-rotation.sh`，把 client/peer CA rollover
   收敛为 `begin -> overlap -> complete` 三阶段门禁。begin 固定全部 KubeBrain Pod
