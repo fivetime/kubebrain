@@ -52,6 +52,11 @@ type authDifferentialOutcome struct {
 	RootRangeStreamCount      int
 	AnonymousStatus           authErrorOutcome
 	UserStatusOK              bool
+	AnonymousMemberList       authErrorOutcome
+	UserMemberListOK          bool
+	AnonymousAlarmList        authErrorOutcome
+	UserAlarmListOK           bool
+	UserAlarmDisarm           authErrorOutcome
 	UserHash                  authErrorOutcome
 	RootHashOK                bool
 	UserKeepAlive             authErrorOutcome
@@ -142,6 +147,11 @@ func collectAuthDifferentialOutcome(t *testing.T, endpoint string) authDifferent
 	require.NoError(t, rootRangeStreamErr)
 	_, anonymousStatusErr := bootstrap.Status(ctx, bootstrap.Endpoints()[0])
 	_, userStatusErr := alice.Status(ctx, alice.Endpoints()[0])
+	_, anonymousMemberListErr := bootstrap.MemberList(ctx)
+	_, userMemberListErr := alice.MemberList(ctx)
+	_, anonymousAlarmListErr := bootstrap.AlarmList(ctx)
+	_, userAlarmListErr := alice.AlarmList(ctx)
+	_, userAlarmDisarmErr := alice.AlarmDisarm(ctx, &clientv3.AlarmMember{})
 	_, userHashErr := alice.HashKV(ctx, alice.Endpoints()[0], 0)
 	_, rootHashErr := root.HashKV(ctx, root.Endpoints()[0], 0)
 	_, userKeepAliveErr := alice.KeepAliveOnce(ctx, protectedLease.ID)
@@ -266,6 +276,11 @@ func collectAuthDifferentialOutcome(t *testing.T, endpoint string) authDifferent
 		RootRangeStreamCount:      len(rootRangeStream.Kvs),
 		AnonymousStatus:           authError(anonymousStatusErr),
 		UserStatusOK:              userStatusErr == nil,
+		AnonymousMemberList:       authError(anonymousMemberListErr),
+		UserMemberListOK:          userMemberListErr == nil,
+		AnonymousAlarmList:        authError(anonymousAlarmListErr),
+		UserAlarmListOK:           userAlarmListErr == nil,
+		UserAlarmDisarm:           authError(userAlarmDisarmErr),
 		UserHash:                  authError(userHashErr),
 		RootHashOK:                rootHashErr == nil,
 		UserKeepAlive:             authError(userKeepAliveErr),

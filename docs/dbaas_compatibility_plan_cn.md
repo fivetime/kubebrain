@@ -4359,6 +4359,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   这也证明动态 `GetConfigForClient` clone 保持稳定 session ticket key，而不是因恢复实际
   未发生产生假阳性。两项普通测试各连续 50 轮、race 各连续 20 轮通过；现有实现已与
   upstream 最终修法一致，因此本增量只增加安全回归门禁，不改动运行时。
+- **Auth A251 non-admin maintenance/member read compatibility（2026-07-19）**：对照
+  upstream `/root/etcd` commits `114f6ad80` 与 `a2987fdee`，审计 Auth 开启后普通
+  已认证用户访问 maintenance status、member list 与 alarm list 的行为，以及 alarm
+  disarm 仍要求 root 的授权边界。KubeBrain 现有 handler 已采用相同边界，本增量把
+  member list、alarm list 和 alarm disarm 纳入官方 client/v3 双端 Auth 差分结果，
+  同时保留匿名请求、普通用户和 root 操作的精确 gRPC code/message 比较。
+
+  使用全新独立数据分别启动 upstream etcd 与独立 keyspace KubeBrain Pod，完整 Auth
+  生命周期 live 差分一次通过：匿名 member/alarm list 均被拒绝，普通已认证用户可读取
+  member/alarm，普通用户 alarm disarm 被拒绝，且两端结果逐字段一致。服务端 member
+  与 maintenance 授权单测普通模式连续 50 轮通过；race 模式连续 20 轮通过。本增量只
+  扩大持续兼容门禁，不改动运行时。
 
 ### P1：通用服务能力
 
