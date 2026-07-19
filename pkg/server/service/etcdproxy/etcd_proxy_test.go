@@ -24,6 +24,7 @@ import (
 
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/mvccpb"
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -130,6 +131,91 @@ func TestCheckClientConnUsesTransportReadiness(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = cli.Close() })
 	require.NoError(t, checkClientConn(cli, nil, time.Second))
+}
+
+type blockingLeaseServer struct {
+	etcdserverpb.UnimplementedLeaseServer
+	received chan int64
+}
+
+func (s *blockingLeaseServer) LeaseKeepAlive(stream etcdserverpb.Lease_LeaseKeepAliveServer) error {
+	req, err := stream.Recv()
+	if err != nil {
+		return err
+	}
+	s.received <- req.ID
+	<-stream.Context().Done()
+	return stream.Context().Err()
+}
+
+func TestLeaseKeepAliveForwardingTimeoutAndCancellation(t *testing.T) {
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	blocking := &blockingLeaseServer{received: make(chan int64, 2)}
+	server := grpc.NewServer()
+	etcdserverpb.RegisterLeaseServer(server, blocking)
+	go func() { _ = server.Serve(lis) }()
+	t.Cleanup(func() {
+		server.Stop()
+		_ = lis.Close()
+	})
+
+	endpoint := lis.Addr().String()
+	cli, err := clientv3.New(clientv3.Config{Endpoints: []string{endpoint}})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = cli.Close() })
+	require.NoError(t, checkClientConn(cli, nil, time.Second))
+	proxy := &etcdProxy{
+		election:  &testLeaderElection{leaderAddress: endpoint},
+		client:    cli,
+		curLeader: endpoint,
+	}
+
+	originalTimeout := leaseKeepAliveForwardTimeout
+	t.Cleanup(func() { leaseKeepAliveForwardTimeout = originalTimeout })
+	leaseKeepAliveForwardTimeout = 100 * time.Millisecond
+	start := time.Now()
+	_, err = proxy.LeaseKeepAlive(context.Background(), &etcdserverpb.LeaseKeepAliveRequest{ID: 1})
+	require.Equal(t, rpctypes.ErrorDesc(rpctypes.ErrGRPCTimeout), rpctypes.ErrorDesc(err))
+	require.GreaterOrEqual(t, time.Since(start), 100*time.Millisecond)
+	require.Less(t, time.Since(start), time.Second)
+
+	leaseKeepAliveForwardTimeout = time.Minute
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, callErr := proxy.LeaseKeepAlive(ctx, &etcdserverpb.LeaseKeepAliveRequest{ID: 2})
+		done <- callErr
+	}()
+	select {
+	case id := <-blocking.received:
+		require.Equal(t, int64(1), id)
+	case <-time.After(time.Second):
+		t.Fatal("leader did not receive first forwarded keepalive")
+	}
+	select {
+	case id := <-blocking.received:
+		require.Equal(t, int64(2), id)
+	case <-time.After(time.Second):
+		t.Fatal("leader did not receive forwarded keepalive")
+	}
+	cancel()
+	require.Equal(t, codes.Canceled, status.Code(<-done))
+}
+
+func TestMapLeaseKeepAliveForwardError(t *testing.T) {
+	parent := context.Background()
+	callCtx, cancel := context.WithDeadline(parent, time.Now().Add(-time.Second))
+	defer cancel()
+	require.Equal(t, rpctypes.ErrGRPCTimeout,
+		mapLeaseKeepAliveForwardError(parent, callCtx, context.DeadlineExceeded))
+
+	canceledParent, cancelParent := context.WithCancel(context.Background())
+	cancelParent()
+	canceledCall, cancelCall := context.WithCancel(canceledParent)
+	defer cancelCall()
+	require.Equal(t, context.Canceled,
+		mapLeaseKeepAliveForwardError(canceledParent, canceledCall, context.Canceled))
 }
 
 func TestUpdateClientRefreshesUnknownLeader(t *testing.T) {

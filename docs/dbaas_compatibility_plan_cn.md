@@ -4066,6 +4066,26 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   及全仓 test/vet 通过。本轮审计曾尝试要求恢复后必须观察到 `TTL>=2`，但该值会被
   client 固定连接上的 follower proxy 恢复耗时消耗，且不属于上游测试契约；因此撤销
   相关服务端初始化重排，没有把测试传输时序误报成租约语义缺陷。
+- **Compatibility A236 forwarded KeepAlive timeout contract（2026-07-19）**：
+  对照上游 `TestV3LeaseKeepAliveForwardingCatchError` 的 forwarding timeout 与 client
+  cancellation 分支，审计发现 follower 为每条 KeepAlive 消息创建到 leader 的 bidi
+  stream 时只继承外部长连接 context。leader transport 已连接但不返回 response 时，
+  `Recv()` 可无限挂住，既不满足 etcd 的 lease HTTP timeout，也不返回标准
+  `Unavailable: etcdserver: request timed out`。
+
+  现每条 follower-to-leader KeepAlive 转发具有独立 5 秒预算，建流、Send、Recv 任一
+  阶段由该预算耗尽都映射为 `rpctypes.ErrGRPCTimeout`；若外部 client 先 cancel 或先到
+  deadline，保留原始 `Canceled`/deadline 语义。代理自身预算不是 transport 断连，不再
+  因本地 timeout 重置共享 leader client、连带中断其他 follower 请求。真实阻塞 gRPC
+  Lease server 测试确认 100ms 注入预算稳定返回官方 timeout，client cancellation
+  立即返回 `Canceled`，并覆盖统一三阶段错误映射；代理包全量普通 20 轮约 46.9 秒、
+  race 10 轮约 25.5 秒通过。
+
+  镜像 `kubebrain:a236-keepalive-forward-timeout` 滚动后 3 Pod Ready/零重启，公开
+  endpoint proposal 健康。删除真实 leader 的 client/v3 Porcupine lease lifecycle
+  race 历史约 8.0 秒通过，故障窗口记录 9 个可表达的不确定结果，Put/Get/KeepAlive/
+  Revoke 整体仍可线性化。全仓 test/vet 通过。无 leader + `WithRequireLeader` 的
+  `ErrGRPCNoLeader` 已由 A121 stream interceptor 覆盖，本轮不重复改变该契约。
 - **Operations A185 certificate rotation completion state（2026-07-18）**：新增
   `hack/production/validate-certificate-rotation.sh`，把 client/peer CA rollover
   收敛为 `begin -> overlap -> complete` 三阶段门禁。begin 固定全部 KubeBrain Pod

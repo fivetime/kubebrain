@@ -24,6 +24,7 @@ import (
 	"github.com/pkg/errors"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/mvccpb"
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -37,6 +38,8 @@ import (
 )
 
 const proxyConnectTimeout = 5 * time.Second
+
+var leaseKeepAliveForwardTimeout = 5 * time.Second
 
 type etcdProxy struct {
 	// allowInsecure permits TLS-to-plaintext fallback only for an endpoint
@@ -478,20 +481,36 @@ func (e *etcdProxy) LeaseKeepAlive(ctx context.Context, req *etcdserverpb.LeaseK
 	// cancel it on return so the leader-side stream is fully torn down instead of
 	// left half-open (CloseSend only closes the send direction, leaking the
 	// receive side until the long-lived caller context ends) (#62).
-	callCtx, cancel := context.WithCancel(ctx)
+	callCtx, cancel := context.WithTimeout(ctx, leaseKeepAliveForwardTimeout)
 	defer cancel()
 	stream, err := etcdserverpb.NewLeaseClient(client.ActiveConnection()).LeaseKeepAlive(callCtx, e.callOptions...)
 	if err != nil {
+		if mapped := mapLeaseKeepAliveForwardError(ctx, callCtx, err); mapped != err {
+			return nil, mapped
+		}
 		e.markForwardError(ctx, client, err)
 		return nil, err
 	}
 	if err := stream.Send(req); err != nil {
+		if mapped := mapLeaseKeepAliveForwardError(ctx, callCtx, err); mapped != err {
+			return nil, mapped
+		}
 		e.markForwardError(ctx, client, err)
 		return nil, err
 	}
 	resp, err := stream.Recv()
+	if mapped := mapLeaseKeepAliveForwardError(ctx, callCtx, err); mapped != err {
+		return nil, mapped
+	}
 	e.markForwardError(ctx, client, err)
 	return resp, err
+}
+
+func mapLeaseKeepAliveForwardError(parentCtx, callCtx context.Context, err error) error {
+	if err != nil && callCtx.Err() == context.DeadlineExceeded && parentCtx.Err() == nil {
+		return rpctypes.ErrGRPCTimeout
+	}
+	return err
 }
 
 func (e *etcdProxy) LeaseTimeToLive(ctx context.Context, req *etcdserverpb.LeaseTimeToLiveRequest) (*etcdserverpb.LeaseTimeToLiveResponse, error) {
