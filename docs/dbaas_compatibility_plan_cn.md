@@ -4013,6 +4013,27 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   29.5 秒通过，共完成 9 次真实 victim UID replacement。临时 Service 已删除，StatefulSet
   已恢复 `--max-requests-inflight=1024` 并完成三副本滚动；该门禁补齐取消释放单测之外的
   真实故障证据，不把 per-replica admission 误述为 DBaaS 全局租户配额。
+- **Compatibility A233 lease switch across leader reload（2026-07-19）**：
+  对照上游 `/root/etcd/tests/integration/v3_lease_test.go` 的
+  `TestV3LeaseSwitch`，新增 24 轮 reference etcd/KubeBrain 差分和 32 轮真实 leader
+  删除门禁。每轮把同一 key 从 lease A 并发切换到 lease B 并撤销 A，要求新 value 与
+  lease B 绑定保留、A 的 TTL 为 -1，最终撤销 B 删除 key。一次 reference 对比连续
+  10 轮约 35.7 秒通过。
+
+  首次真实 leader 删除复现出继任者已发布 leader 身份、但 `ReloadLeases` 尚未完成的
+  窗口；绑定到已存在 lease B 的 Put 会收到确定性的
+  `NotFound: etcdserver: requested lease not found`，重试后才成功。现选主回调在发布
+  leader 前调用 `PrepareLeaseReload`，撤销 gRPC health readiness，并关闭原子
+  `leaseReady` 门；Grant/Revoke/KeepAlive、TTL/List 及所有带 lease 的 KV 写在完整
+  durable snapshot 重载前统一返回可重试
+  `Unavailable: etcdserver: lease state is reloading`。`ReloadLeases` 仅在加载、迁移
+  和 sweeper 启动完成后开门，失去 leadership/停止 leases 时立即再次关闭。
+
+  单元测试固定重载期间 Put/TTL/Grant 的错误码及重载后原 lease 可继续绑定，focused
+  race 3 轮、server 相关包、全仓 test/vet 均通过。镜像
+  `kubebrain:a233-lease-reload-ready` 滚动后 3 Pod Ready/零重启；连续三次删除当前
+  leader（含一轮 race）分别约 8.2、10.1、6.4 秒通过。最终一轮在约 2.5 秒重载窗口
+  实际观察到连续标准 `Unavailable` 后恢复，未再出现错误的 `LeaseNotFound`。
 - **Operations A185 certificate rotation completion state（2026-07-18）**：新增
   `hack/production/validate-certificate-rotation.sh`，把 client/peer CA rollover
   收敛为 `begin -> overlap -> complete` 三阶段门禁。begin 固定全部 KubeBrain Pod

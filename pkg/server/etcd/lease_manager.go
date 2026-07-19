@@ -77,6 +77,9 @@ type leaseManager struct {
 	// no lease) must not take leaseMu per key. Updated under leaseMu, read with
 	// atomics.
 	leasedKeyCount int64
+	// leaseReady is false while a newly elected leader reloads the durable lease
+	// snapshot. The stale follower map cannot answer definitive lease lookups.
+	leaseReady atomic.Bool
 
 	workerCtx    context.Context
 	workerCancel context.CancelFunc
@@ -89,7 +92,7 @@ type leaseManager struct {
 // newLeaseManager builds a leaseManager owned by srv; deps are read through srv.
 func newLeaseManager(srv *RPCServer, initialID int64) *leaseManager {
 	workerCtx, workerCancel := context.WithCancel(context.Background())
-	return &leaseManager{
+	manager := &leaseManager{
 		srv:                 srv,
 		leaseID:             initialID,
 		leases:              make(map[int64]*leaseState),
@@ -99,6 +102,9 @@ func newLeaseManager(srv *RPCServer, initialID int64) *leaseManager {
 		workerCtx:           workerCtx,
 		workerCancel:        workerCancel,
 	}
+	// Standalone/test servers do not run election callbacks.
+	manager.leaseReady.Store(true)
+	return manager
 }
 
 func (m *leaseManager) startWorker(run func(context.Context)) bool {

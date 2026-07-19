@@ -102,6 +102,9 @@ func (m *leaseManager) LeaseGrant(ctx context.Context, req *etcdserverpb.LeaseGr
 		}
 		return nil, err
 	}
+	if err := m.requireLeaseReady(); err != nil {
+		return nil, err
+	}
 	ctx = backend.WithLeadershipEpoch(ctx, epoch)
 	m.leaseWriteMu.RLock()
 	defer m.leaseWriteMu.RUnlock()
@@ -200,6 +203,9 @@ func (m *leaseManager) LeaseRevoke(ctx context.Context, req *etcdserverpb.LeaseR
 		}
 		return nil, err
 	}
+	if err := m.requireLeaseReady(); err != nil {
+		return nil, err
+	}
 	ctx = backend.WithLeadershipEpoch(ctx, epoch)
 	m.leaseWriteMu.Lock()
 	defer m.leaseWriteMu.Unlock()
@@ -262,6 +268,9 @@ func (m *leaseManager) LeaseKeepAlive(stream etcdserverpb.Lease_LeaseKeepAliveSe
 				return err
 			}
 			continue
+		}
+		if err := m.requireLeaseReady(); err != nil {
+			return err
 		}
 
 		renewCtx := backend.WithLeadershipEpoch(stream.Context(), epoch)
@@ -433,6 +442,9 @@ func (m *leaseManager) authorizeLeaseKeys(ctx context.Context, caller *authCalle
 func (m *leaseManager) ensureLeaseExists(id int64) error {
 	if id == 0 {
 		return nil
+	}
+	if err := m.requireLeaseReady(); err != nil {
+		return err
 	}
 	m.leaseMu.Lock()
 	defer m.leaseMu.Unlock()
@@ -1161,9 +1173,16 @@ func leaseNotFound(id int64) error {
 	return status.Error(codes.NotFound, "etcdserver: requested lease not found")
 }
 
+func (m *leaseManager) requireLeaseReady() error {
+	if m.leaseReady.Load() {
+		return nil
+	}
+	return status.Error(codes.Unavailable, "etcdserver: lease state is reloading")
+}
+
 func (m *leaseManager) requireLeaseLeader(op string) error {
 	if m.srv.peers.IsLeader() {
-		return nil
+		return m.requireLeaseReady()
 	}
 	m.srv.metricCli.EmitCounter("lease.follower", 1)
 	return status.Errorf(codes.Unavailable, "%s error addr is %s leader %s", op, m.srv.backend.GetResourceLock().Identity(), m.srv.peers.GetLeaderInfo())
@@ -1206,6 +1225,7 @@ func (m *leaseManager) ReloadLeases(ctx context.Context) error {
 	// Start the safety-net sweeper that reclaims leased keys whose expiry timer was
 	// never (re)armed because their attachment outlived its lease meta record.
 	m.startOrphanSweeper(ctx)
+	m.leaseReady.Store(true)
 	return nil
 }
 
@@ -1446,7 +1466,15 @@ func (m *leaseManager) StopLeases() {
 	m.stopLeases()
 }
 
+// PrepareLeaseReload withdraws the stale follower snapshot before leadership is
+// published. ReloadLeases opens the gate only after the durable snapshot is
+// completely installed.
+func (m *leaseManager) PrepareLeaseReload() {
+	m.leaseReady.Store(false)
+}
+
 func (m *leaseManager) stopLeases() {
+	m.leaseReady.Store(false)
 	m.leaseCheckpointMu.Lock()
 	defer m.leaseCheckpointMu.Unlock()
 	// Stop the sweeper first (it acquires leaseMu itself, so must run outside the

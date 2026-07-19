@@ -1026,6 +1026,35 @@ func TestReloadLeasesAdoptsLeasesGrantedAfterSnapshot(t *testing.T) {
 	require.Len(t, leases.Leases, 2)
 }
 
+func TestLeaseSnapshotIsUnavailableUntilReloadCompletes(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	ctx := context.Background()
+	lease, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 300, ID: 7101})
+	require.NoError(t, err)
+
+	server.PrepareLeaseReload()
+
+	_, err = server.Put(ctx, &etcdserverpb.PutRequest{
+		Key: []byte("/registry/leases/reloading"), Value: []byte("value"), Lease: lease.ID,
+	})
+	require.Equal(t, codes.Unavailable, status.Code(err))
+	require.Contains(t, err.Error(), "lease state is reloading")
+
+	_, err = server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: lease.ID})
+	require.Equal(t, codes.Unavailable, status.Code(err))
+
+	_, err = server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 300, ID: 7102})
+	require.Equal(t, codes.Unavailable, status.Code(err))
+
+	require.NoError(t, server.ReloadLeases(ctx))
+	_, err = server.Put(ctx, &etcdserverpb.PutRequest{
+		Key: []byte("/registry/leases/reloading"), Value: []byte("value"), Lease: lease.ID,
+	})
+	require.NoError(t, err)
+}
+
 // TestKeepAliveDoesNotWriteStorage pins the write-amplification fix: a
 // LeaseKeepAlive must only bump the in-memory expiry/timer and must NOT persist
 // the lease record (which would mint a fresh MVCC version + watch event per

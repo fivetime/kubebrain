@@ -102,7 +102,10 @@ func NewServer(ctx context.Context, backend backend.Backend, metricCli metrics.M
 	}
 	// leader election callbacks are methods on s; s.etcdServer is assigned below
 	// (before Campaign runs) and read by onStartedLeading.
-	election := leader.NewLeaderElection(backend, metricCli, s.onStartedLeading, s.onStoppedLeading, config.getLeaderConfig())
+	election := leader.NewLeaderElection(
+		backend, metricCli, s.onPreparingLeading, s.onStartedLeading, s.onStoppedLeading,
+		config.getLeaderConfig(),
+	)
 	// Wire the write fence: the backend re-checks this leadership epoch/freshness
 	// immediately before every data commit, so a deposed leader's in-flight write
 	// is rejected instead of committed-yet-unwatched (FINDING #39).
@@ -133,6 +136,13 @@ func NewServer(ctx context.Context, backend backend.Backend, metricCli metrics.M
 // leaderReloadRetryInterval is how long onStartedLeading waits before retrying a
 // failed lease reload; until it succeeds the node does not advertise readiness.
 const leaderReloadRetryInterval = time.Second
+
+func (s *server) onPreparingLeading() {
+	s.healthServer.SetServingStatus("", healthpb.HealthCheckResponse_NOT_SERVING)
+	if s.etcdServer != nil {
+		s.etcdServer.PrepareLeaseReload()
+	}
+}
 
 func (s *server) onStartedLeading(ctx context.Context) {
 	// Register this leadership lifecycle before any other startup work. Physical

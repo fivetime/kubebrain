@@ -202,14 +202,23 @@ func TestCampaignReacquiresLeadershipAfterStorageOutage(t *testing.T) {
 
 	var starts atomic.Int32
 	var stops atomic.Int32
+	var prepares atomic.Int32
+	var preparePublishedLeader atomic.Bool
 	var activeCallbacks atomic.Int32
 	var maxActiveCallbacks atomic.Int32
 	var restoreOnce sync.Once
 	firstStarted := make(chan struct{})
-	election := &leaderElection{
+	var election *leaderElection
+	election = &leaderElection{
 		backend:      revisions,
 		resourceLock: lock,
 		metricCli:    m,
+		onPreparingLeading: func() {
+			prepares.Add(1)
+			if election.IsLeader() {
+				preparePublishedLeader.Store(true)
+			}
+		},
 		onStartedLeading: func(leadingCtx context.Context) {
 			active := activeCallbacks.Add(1)
 			defer activeCallbacks.Add(-1)
@@ -260,6 +269,10 @@ func TestCampaignReacquiresLeadershipAfterStorageOutage(t *testing.T) {
 		"campaign must remain alive and reacquire leadership after storage recovers")
 	require.Equal(t, int32(1), maxActiveCallbacks.Load(),
 		"adjacent leadership callbacks must never overlap")
+	require.False(t, preparePublishedLeader.Load(),
+		"preparing callback must run before leadership is published")
+	require.Equal(t, starts.Load(), prepares.Load(),
+		"every leadership term must prepare its dependent state exactly once")
 	cancel()
 	select {
 	case <-done:

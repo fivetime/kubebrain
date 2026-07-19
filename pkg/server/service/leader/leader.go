@@ -87,6 +87,9 @@ type leaderElection struct {
 	metricCli    metrics.Metrics
 	// onStartedLeading is called when a LeaderElector client starts leading
 	onStartedLeading func(context.Context)
+	// onPreparingLeading runs before leader ownership is published to RPC
+	// goroutines.
+	onPreparingLeading func()
 	// onStoppedLeading is called when a LeaderElector client stops leading
 	onStoppedLeading func()
 	// leader indicates whether this instance is leader (1 = leader). It is written
@@ -220,17 +223,25 @@ func (r *renewStampingLock) Update(ctx context.Context, ler resourcelock.LeaderE
 // NewLeaderElection returns a LeaderElection based on resourcelock of
 // backend.Backend. cfg's zero fields take their defaults (8/5/1s); callers that
 // expose the durations should Validate cfg before this.
-func NewLeaderElection(backend b.Backend, metricCli metrics.Metrics, onStartedLeading func(context.Context), onStoppedLeading func(), cfg Config) LeaderElection {
+func NewLeaderElection(
+	backend b.Backend,
+	metricCli metrics.Metrics,
+	onPreparingLeading func(),
+	onStartedLeading func(context.Context),
+	onStoppedLeading func(),
+	cfg Config,
+) LeaderElection {
 	cfg = cfg.withDefaults()
 	return &leaderElection{
-		backend:          backend,
-		resourceLock:     backend.GetResourceLock(),
-		metricCli:        metricCli,
-		onStartedLeading: onStartedLeading,
-		onStoppedLeading: onStoppedLeading,
-		leaseDuration:    cfg.LeaseDuration,
-		renewDeadline:    cfg.RenewDeadline,
-		retryPeriod:      cfg.RetryPeriod,
+		backend:            backend,
+		resourceLock:       backend.GetResourceLock(),
+		metricCli:          metricCli,
+		onPreparingLeading: onPreparingLeading,
+		onStartedLeading:   onStartedLeading,
+		onStoppedLeading:   onStoppedLeading,
+		leaseDuration:      cfg.LeaseDuration,
+		renewDeadline:      cfg.RenewDeadline,
+		retryPeriod:        cfg.RetryPeriod,
 	}
 }
 
@@ -270,6 +281,9 @@ func (l *leaderElection) Campaign(ctx context.Context) {
 					// so every admitted write is fenced to this exact term.
 					atomic.AddUint64(&l.epoch, 1)
 					l.stampRenew()
+					if l.onPreparingLeading != nil {
+						l.onPreparingLeading()
+					}
 					atomic.StoreInt32(&l.leader, 1)
 					l.onStartedLeading(leadingCtx)
 				},
