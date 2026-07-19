@@ -4522,6 +4522,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   namespace 故障隔离、allowlist 非法/重复拒绝、RBAC/HA 清单及 API server dry-run。
   跨 Kubernetes cluster/region 调度、动态 namespace inventory 和全局容量感知仍是 P1。
 
+- **Operations A262 managed namespace lifecycle RBAC（2026-07-19）**：补齐 A261
+  暴露的执行/审批/归档权限边界。新增三个未绑定 ClusterRole，分别精确复制默认
+  namespaced worker、approver、archiver 权限；目标 namespace 必须显式 RoleBinding 给
+  `kubebrain-operations` 中的中央 ServiceAccount，不创建 ClusterRoleBinding。结构测试
+  固定 worker 不能创建 Operation、approver 不能写 status/Secret、archiver 不能写
+  status 或读 Secret，所有可复用角色自身不包含 subject。
+
+  onboarding 文档现要求 scheduler、worker、approver、archiver 四类 namespace binding；
+  teardown 要先 suspend policy、排空 Operation、完成 Object Lock 审计归档并释放 finalizer，
+  再删除绑定和 namespace。真实 API Server 授权矩阵验证绑定 namespace 允许精确动作、
+  未绑定 namespace 全拒绝。多 namespace worker/archiver Deployment 编排、动态 inventory
+  与跨 cluster/region 生命周期仍是 P1。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range

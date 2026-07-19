@@ -879,6 +879,7 @@ S3 access key/secret 和 etcd TLS 凭据只通过 worker Secret/env 注入，不
 
 ```shell
 kubectl apply -f deploy/production/kubebrain-operation-crd.yaml
+kubectl apply -f deploy/production/kubebrain-operation-managed-namespace-rbac.yaml
 kubectl apply -f deploy/production/kubebrain-backup-policy-crd.yaml
 kubectl apply -f deploy/production/kubebrain-backup-scheduler.yaml
 ```
@@ -939,6 +940,38 @@ roleRef:
 产生带 `namespace/policy` 的聚合错误，不阻止其他 namespace 提交。策略 tenant 与
 scheduler ServiceAccount 身份会进入 immutable Operation spec 和终态审计。Deployment
 包含 zone/hostname topology spread，PDB 最多允许 1 个副本不可用。
+
+中央 worker、approver 和 archiver 可分别通过以下未绑定 ClusterRole 获得目标
+namespace 的最小权限：
+
+- `kubebrain-operation-worker-managed-namespace`
+- `kubebrain-operation-approver-managed-namespace`
+- `kubebrain-operation-archiver-managed-namespace`
+
+每个角色都必须在目标 namespace 建立独立 RoleBinding，subject 分别指向
+`kubebrain-operations` 中同名 ServiceAccount。ClusterRole 清单不会创建绑定，也不授予
+cluster-wide 访问。worker 只读 Operation/Secret、更新 status 并管理 Lease；approver
+只能读取和更新 Operation 主资源；archiver 只能 get/update Operation 主资源，不能修改
+status 或读取 Secret。
+
+```shell
+NS=tenant-a-operations
+kubectl -n "$NS" create rolebinding kubebrain-operation-worker \
+  --clusterrole=kubebrain-operation-worker-managed-namespace \
+  --serviceaccount=kubebrain-operations:kubebrain-operation-worker
+kubectl -n "$NS" create rolebinding kubebrain-operation-approver \
+  --clusterrole=kubebrain-operation-approver-managed-namespace \
+  --serviceaccount=kubebrain-operations:kubebrain-operation-approver
+kubectl -n "$NS" create rolebinding kubebrain-operation-archiver \
+  --clusterrole=kubebrain-operation-archiver-managed-namespace \
+  --serviceaccount=kubebrain-operations:kubebrain-operation-archiver
+```
+
+namespace 下线顺序必须是：先 suspend/delete BackupPolicy，停止新提交；等待所有 Operation
+进入 Succeeded/Failed；完成 Object Lock 审计归档并确认
+`dbaas.kubebrain.io/operation-audit` finalizer 已移除；再停止 worker/archiver、删除
+RoleBinding 和 namespace。直接删除仍含 Pending/Running 或未归档终态 Operation 的
+namespace 会按设计停在 Terminating，禁止绕过 admission 强删 finalizer。
 
 `hack/production/run-restore-cutover-operation.sh` 接入 RestoreCutover。参数绑定 A184
 restore receipt、logical artifact、A189 state/receipt 路径、Service、源/目标 instance、

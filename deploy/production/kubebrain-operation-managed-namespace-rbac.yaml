@@ -1,0 +1,73 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kubebrain-operation-worker-managed-namespace
+  labels:
+    app.kubernetes.io/name: kubebrain-operation-worker
+    app.kubernetes.io/part-of: kubebrain
+rules:
+  - apiGroups:
+      - dbaas.kubebrain.io
+    resources:
+      - kubebrainoperations
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - dbaas.kubebrain.io
+    resources:
+      - kubebrainoperations/status
+    verbs:
+      - get
+      - update
+      - patch
+  - apiGroups:
+      - coordination.k8s.io
+    resources:
+      - leases
+    verbs:
+      - create
+      - get
+      - update
+      - delete
+  - apiGroups:
+      - ""
+    resources:
+      - secrets
+    verbs:
+      - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kubebrain-operation-approver-managed-namespace
+  labels:
+    app.kubernetes.io/name: kubebrain-operation-approver
+    app.kubernetes.io/part-of: kubebrain
+rules:
+  - apiGroups:
+      - dbaas.kubebrain.io
+    resources:
+      - kubebrainoperations
+    verbs:
+      - get
+      - list
+      - watch
+      - update
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kubebrain-operation-archiver-managed-namespace
+  labels:
+    app.kubernetes.io/name: kubebrain-operation-archiver
+    app.kubernetes.io/part-of: kubebrain
+rules:
+  - apiGroups:
+      - dbaas.kubebrain.io
+    resources:
+      - kubebrainoperations
+    verbs:
+      - get
+      - update

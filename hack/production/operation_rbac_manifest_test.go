@@ -253,6 +253,54 @@ func TestOperationAuditAdmissionRequiresFinalizerAndReleaseEvidence(t *testing.T
 	require.Equal(t, []string{"Deny"}, binding.Spec.ValidationActions)
 }
 
+func TestManagedNamespaceRBACDefinesUnboundLeastPrivilegeRoles(t *testing.T) {
+	path := filepath.Join(
+		"..", "..", "deploy", "production", "kubebrain-operation-managed-namespace-rbac.yaml",
+	)
+	documents := decodeRBACManifest(t, path)
+	require.Len(t, documents, 3)
+	for _, document := range documents {
+		require.Equal(t, "ClusterRole", document.Kind)
+		require.Empty(t, document.Metadata.Namespace)
+		require.Empty(t, document.Subjects, "the reusable role must not grant itself to any identity")
+	}
+	require.Equal(t, "kubebrain-operation-worker-managed-namespace", documents[0].Metadata.Name)
+	require.Equal(t, []rbacRule{
+		{
+			APIGroups: []string{"dbaas.kubebrain.io"},
+			Resources: []string{"kubebrainoperations"},
+			Verbs:     []string{"get", "list", "watch"},
+		},
+		{
+			APIGroups: []string{"dbaas.kubebrain.io"},
+			Resources: []string{"kubebrainoperations/status"},
+			Verbs:     []string{"get", "update", "patch"},
+		},
+		{
+			APIGroups: []string{"coordination.k8s.io"},
+			Resources: []string{"leases"},
+			Verbs:     []string{"create", "get", "update", "delete"},
+		},
+		{
+			APIGroups: []string{""},
+			Resources: []string{"secrets"},
+			Verbs:     []string{"get"},
+		},
+	}, documents[0].Rules)
+	require.Equal(t, "kubebrain-operation-approver-managed-namespace", documents[1].Metadata.Name)
+	require.Equal(t, []rbacRule{{
+		APIGroups: []string{"dbaas.kubebrain.io"},
+		Resources: []string{"kubebrainoperations"},
+		Verbs:     []string{"get", "list", "watch", "update"},
+	}}, documents[1].Rules)
+	require.Equal(t, "kubebrain-operation-archiver-managed-namespace", documents[2].Metadata.Name)
+	require.Equal(t, []rbacRule{{
+		APIGroups: []string{"dbaas.kubebrain.io"},
+		Resources: []string{"kubebrainoperations"},
+		Verbs:     []string{"get", "update"},
+	}}, documents[2].Rules)
+}
+
 func decodeRBACManifest(t *testing.T, path string) []rbacManifest {
 	t.Helper()
 	file, err := os.Open(path)
