@@ -4051,6 +4051,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   proposal 健康。compat vet、门禁无环境模式 10 轮、相关附件恢复 race 3 轮及全仓
   test 通过。本轮未发现新的服务端语义差异；新增证据把原有内部 attachment 单元保证
   提升为真实 TiKV/PD 共享数据面换主后的 client/v3 契约。
+- **Compatibility A235 near-expiry lease promotion（2026-07-19）**：对照上游
+  `TestV3LeasePromote`，新增短租约接近到期时的真实 leader replacement 门禁。公开
+  client/v3 endpoint Grant 3 秒 lease 并绑定 key，等待 TTL 降至 1 秒后删除当前
+  leader；继任者必须刷新并接管该 lease，故障恢复后 lease TTL 必须仍为正、key/value
+  与 lease ID 必须保持，随后 lease 必须在新截止时间自然变为 TTL=-1 并删除 key。
+  每次 TTL/Get 探测使用独立 300ms context，避免一次 follower proxy 内部重试吞掉整个
+  断言窗口，同时不把 `Unavailable` 当作成功。
+
+  在已提交镜像 `kubebrain:a233-lease-reload-ready` 上连续三次删除当前 leader，
+  最终门禁分别约 8.3、8.4、7.4 秒通过，其中一轮启用 race；恢复窗口只见有界
+  `DeadlineExceeded`，之后均实际观察到活 lease/key 和最终自然删除。测试 prefix
+  清零，3 Pod Ready/零重启，endpoint proposal 健康；compat vet、无环境 race 10 轮
+  及全仓 test/vet 通过。本轮审计曾尝试要求恢复后必须观察到 `TTL>=2`，但该值会被
+  client 固定连接上的 follower proxy 恢复耗时消耗，且不属于上游测试契约；因此撤销
+  相关服务端初始化重排，没有把测试传输时序误报成租约语义缺陷。
 - **Operations A185 certificate rotation completion state（2026-07-18）**：新增
   `hack/production/validate-certificate-rotation.sh`，把 client/peer CA rollover
   收敛为 `begin -> overlap -> complete` 三阶段门禁。begin 固定全部 KubeBrain Pod
