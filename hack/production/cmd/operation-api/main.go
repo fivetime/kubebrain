@@ -14,6 +14,7 @@ import (
 
 	"github.com/kubewharf/kubebrain/hack/production/internal/operationapi"
 	"github.com/kubewharf/kubebrain/hack/production/internal/operationqueue"
+	"github.com/kubewharf/kubebrain/hack/production/internal/tlscertreload"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -22,7 +23,7 @@ import (
 func main() {
 	var address, namespace, issuer, audience, tenantClaim, instancesClaim string
 	var certFile, keyFile, kubeconfig string
-	var oidcCacheTTL, oidcRefreshBackoff time.Duration
+	var oidcCacheTTL, oidcRefreshBackoff, certReloadInterval time.Duration
 	flag.StringVar(&address, "listen-address", ":8443", "HTTPS listen address")
 	flag.StringVar(&namespace, "namespace", "kubebrain-operations", "operation namespace")
 	flag.StringVar(&issuer, "oidc-issuer", "", "trusted OIDC issuer URL")
@@ -33,10 +34,18 @@ func main() {
 	flag.DurationVar(&oidcRefreshBackoff, "oidc-jwks-refresh-backoff", 5*time.Second, "fail-closed retry delay after a JWKS refresh failure or unknown key ID")
 	flag.StringVar(&certFile, "tls-cert-file", "", "HTTPS server certificate")
 	flag.StringVar(&keyFile, "tls-key-file", "", "HTTPS server private key")
+	flag.DurationVar(&certReloadInterval, "tls-reload-interval", 30*time.Second, "TLS certificate reload interval")
 	flag.StringVar(&kubeconfig, "kubeconfig", "", "optional kubeconfig; in-cluster credentials are used by default")
 	flag.Parse()
 	if certFile == "" || keyFile == "" {
 		log.Fatal("--tls-cert-file and --tls-key-file are required")
+	}
+	certificate, err := tlscertreload.New(certFile, keyFile)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if certReloadInterval <= 0 {
+		log.Fatal("--tls-reload-interval must be positive")
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -61,18 +70,33 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/readyz", func(response http.ResponseWriter, _ *http.Request) {
+		if err := certificate.ValidAt(time.Now()); err != nil {
+			http.Error(response, "TLS certificate is not ready", http.StatusServiceUnavailable)
+			return
+		}
+		response.WriteHeader(http.StatusNoContent)
+	})
+	mux.Handle("/", handler)
 	server := &http.Server{
-		Addr: address, Handler: handler,
+		Addr: address, Handler: mux,
 		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second,
 		WriteTimeout: 30 * time.Second, IdleTimeout: 2 * time.Minute,
 		MaxHeaderBytes: 32 << 10,
 		TLSConfig: &tls.Config{
-			MinVersion: tls.VersionTLS12,
+			MinVersion:     tls.VersionTLS12,
+			GetCertificate: certificate.GetCertificate,
 		},
 	}
+	go func() {
+		_ = certificate.Run(ctx, certReloadInterval, func(err error) {
+			log.Printf("TLS certificate reload failed; retaining previous certificate: %v", err)
+		})
+	}()
 	errs := make(chan error, 1)
 	go func() {
-		errs <- server.ListenAndServeTLS(certFile, keyFile)
+		errs <- server.ListenAndServeTLS("", "")
 	}()
 	select {
 	case err = <-errs:

@@ -855,6 +855,12 @@ fail closed 退避 5 秒，避免外部 IdP 故障或伪造 key ID 造成刷新�
 spread，PDB `maxUnavailable: 1`。
 跨租户或未授权实例的 submit/get 统一返回 404，避免实例和 operation 枚举。
 
+API 每 30 秒在线重载 `kubebrain-operation-api-tls`。轮换契约与 parameter broker
+相同：只接纳匹配且处于有效期内的完整 key pair，无效更新保留旧证书；readiness
+`/readyz` 检查当前证书有效期，liveness `/healthz` 保留诊断。更新同一 CA 签发的叶证书
+后必须逐 Pod 验证新 serial、UID 不变和零重启。更换签发 CA 时，外部负载均衡器、调用方
+和探针必须先进入旧/新 CA 双信任窗口，再更新 API 叶证书，最后撤旧 CA。
+
 验证器通过 OIDC discovery 获取 JWKS，未知 kid 会触发刷新；缓存过期且刷新失败时拒绝
 token，不继续信任可能已撤下的旧 key。除 loopback 测试外 issuer/JWKS 必须使用 HTTPS。
 API ServiceAccount 仅有 namespaced operation `create/get`，没有 list/watch、status、

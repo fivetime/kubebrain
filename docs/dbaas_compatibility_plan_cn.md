@@ -4706,6 +4706,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   全量 production 脚本/控制器测试、manifest 测试和 vet 通过。该能力关闭同 CA 叶证书
   在线轮换缺口；CA 更换仍必须由控制面执行旧/新 CA 双信任窗口，不能只更新服务端 Secret。
 
+- **Operations A271 operation API online TLS leaf rotation（2026-07-19）**：
+  外部 OIDC operation API 是生产管理面的另一处 `ListenAndServeTLS` 静态加载点。现复用
+  A270 原子证书 reloader，增加 30 秒轮询、`GetCertificate` 在线接管和证书有效期
+  `/readyz`；无效 Secret 更新继续使用最后一份有效证书，证书过期则摘流但不杀死进程。
+  Deployment readiness 已从 `/healthz` 切换到 `/readyz`，liveness 保持不变。
+
+  operation API/OIDC、TLS reloader 与 manifest 功能测试连续 10 轮通过，operation API
+  和 reloader race 连续 20 轮通过，vet 无告警。运行手册明确同 CA 叶证书逐 Pod serial/
+  UID/重启验证，以及 CA 更新必须执行调用方双信任窗口；下一步用 A271 精确镜像在 kind
+  双副本 API 上完成真实 Secret 更新与 OIDC submit/get smoke。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range

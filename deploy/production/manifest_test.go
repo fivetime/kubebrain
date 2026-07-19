@@ -455,9 +455,10 @@ func TestOperationAPIIsFailClosedAndHardened(t *testing.T) {
 	require.True(t, found)
 	require.Contains(t, args, "--oidc-jwks-cache-ttl=5m")
 	require.Contains(t, args, "--oidc-jwks-refresh-backoff=5s")
+	require.Contains(t, args, "--tls-reload-interval=30s")
 	require.True(t, nestedBool(t, container, "securityContext", "readOnlyRootFilesystem"))
 	require.False(t, nestedBool(t, container, "securityContext", "allowPrivilegeEscalation"))
-	require.Equal(t, "/healthz", nestedString(t, container, "readinessProbe", "httpGet", "path"))
+	require.Equal(t, "/readyz", nestedString(t, container, "readinessProbe", "httpGet", "path"))
 	require.Equal(t, "HTTPS", nestedString(t, container, "readinessProbe", "httpGet", "scheme"))
 	spreads, found, err := unstructured.NestedSlice(
 		deployment.Object, "spec", "template", "spec", "topologySpreadConstraints",

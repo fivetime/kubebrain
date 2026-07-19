@@ -126,6 +126,7 @@ spec:
             - --oidc-jwks-refresh-backoff=5s
             - --tls-cert-file=/var/run/kubebrain-api-tls/tls.crt
             - --tls-key-file=/var/run/kubebrain-api-tls/tls.key
+            - --tls-reload-interval=30s
           env:
             - name: OIDC_ISSUER
               valueFrom:
@@ -143,7 +144,7 @@ spec:
           readinessProbe:
             httpGet:
               scheme: HTTPS
-              path: /healthz
+              path: /readyz
               port: https
             periodSeconds: 5
             timeoutSeconds: 2
