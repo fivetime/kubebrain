@@ -4347,6 +4347,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   并删除 `kubebrain-2` 触发第二次 Pod UID replacement；replacement 期间提交 8 个双键
   Txn，重建副本与全部 endpoint 最终均返回最新值且 revision 不低于写 revision，
   serializable/Txn ordering violation 为 0。
+- **TLS A250 CRL checks on resumed sessions（2026-07-19）**：对照 upstream
+  `/root/etcd` commits `2308ce157` 与 `e84205af4`。后者把 CRL hook 从
+  `VerifyPeerCertificate` 改为 `VerifyConnection`，因为恢复握手同样必须重新读取动态
+  CRL 并拒绝已撤销 leaf。审计确认 KubeBrain A30 已使用最终形态，但原测试每次都做完整
+  握手，不能证明 callback 在 session resumption 上生效。
+
+  新增 TLS 1.2 session cache 回归的双向矩阵：入站 mTLS client 与出站内部 client 均先
+  完成首个 full handshake，再要求第二次 `ConnectionState.DidResume=true`；随后原地写入
+  新 CRL，第三次尝试恢复同一 session 必须分别在 server/client 端返回 revoked serial。
+  这也证明动态 `GetConfigForClient` clone 保持稳定 session ticket key，而不是因恢复实际
+  未发生产生假阳性。两项普通测试各连续 50 轮、race 各连续 20 轮通过；现有实现已与
+  upstream 最终修法一致，因此本增量只增加安全回归门禁，不改动运行时。
 
 ### P1：通用服务能力
 

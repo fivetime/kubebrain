@@ -498,3 +498,82 @@ func TestCertificateRevocationListReloadedForEveryHandshake(t *testing.T) {
 		&tls.Config{Certificates: []tls.Certificate{serverCertificate}}, security.getClientTLSConfig())
 	require.ErrorContains(t, clientErr, "can not parse certificate revocation list")
 }
+
+func TestCertificateRevocationListRejectsResumedClientSession(t *testing.T) {
+	ca := newRotationCA(t)
+	serverDir := t.TempDir()
+	serverCertPath, serverKeyPath := writeRotationCertificate(
+		t, serverDir, "server", ca, 901, "rotation.test",
+	)
+	caPath, crlPath := filepath.Join(serverDir, "ca.crt"), filepath.Join(serverDir, "revoked.crl")
+	writeRotationCA(t, caPath, ca)
+	writeRotationCRL(t, crlPath, ca)
+	security := &SecurityConfig{
+		CertFile: serverCertPath, KeyFile: serverKeyPath, CA: caPath, CRL: crlPath,
+		ServerName: "rotation.test", ClientAuth: true,
+		minVersion: tls.VersionTLS12, maxVersion: tls.VersionTLS12,
+	}
+	require.NoError(t, security.validate())
+
+	clientDir := t.TempDir()
+	clientCertPath, clientKeyPath := writeRotationCertificate(
+		t, clientDir, "client", ca, 902, "rotation.test",
+	)
+	clientCertificate, clientLeaf := leafCertificate(t, clientCertPath, clientKeyPath)
+	clientConfig := &tls.Config{
+		Certificates:       []tls.Certificate{clientCertificate},
+		InsecureSkipVerify: true,
+		MinVersion:         tls.VersionTLS12,
+		MaxVersion:         tls.VersionTLS12,
+		ClientSessionCache: tls.NewLRUClientSessionCache(1),
+		ServerName:         "rotation.test",
+	}
+
+	_, first := handshakeTLS(t, security.getServerTLSConfig(), clientConfig)
+	require.False(t, first.DidResume)
+	_, resumed := handshakeTLS(t, security.getServerTLSConfig(), clientConfig)
+	require.True(t, resumed.DidResume, "the negative CRL check must exercise a resumed TLS session")
+
+	writeRotationCRL(t, crlPath, ca, clientLeaf.SerialNumber)
+	_, _, serverErr, _ := tryHandshakeTLS(t, security.getServerTLSConfig(), clientConfig)
+	require.ErrorContains(t, serverErr, "revoked")
+}
+
+func TestCertificateRevocationListRejectsResumedServerSession(t *testing.T) {
+	ca := newRotationCA(t)
+	serverDir := t.TempDir()
+	serverCertPath, serverKeyPath := writeRotationCertificate(
+		t, serverDir, "server", ca, 911, "rotation.test",
+	)
+	serverCertificate, serverLeaf := leafCertificate(t, serverCertPath, serverKeyPath)
+	serverConfig := &tls.Config{
+		Certificates: []tls.Certificate{serverCertificate},
+		MinVersion:   tls.VersionTLS12,
+		MaxVersion:   tls.VersionTLS12,
+	}
+
+	clientDir := t.TempDir()
+	clientCertPath, clientKeyPath := writeRotationCertificate(
+		t, clientDir, "client", ca, 912, "rotation.test",
+	)
+	caPath, crlPath := filepath.Join(clientDir, "ca.crt"), filepath.Join(clientDir, "revoked.crl")
+	writeRotationCA(t, caPath, ca)
+	writeRotationCRL(t, crlPath, ca)
+	security := &SecurityConfig{
+		CertFile: clientCertPath, KeyFile: clientKeyPath, CA: caPath, CRL: crlPath,
+		ServerName: "rotation.test",
+		minVersion: tls.VersionTLS12, maxVersion: tls.VersionTLS12,
+	}
+	require.NoError(t, security.validate())
+	clientConfig := security.getClientTLSConfig()
+	clientConfig.ClientSessionCache = tls.NewLRUClientSessionCache(1)
+
+	_, first := handshakeTLS(t, serverConfig, clientConfig)
+	require.False(t, first.DidResume)
+	_, resumed := handshakeTLS(t, serverConfig, clientConfig)
+	require.True(t, resumed.DidResume, "the negative CRL check must exercise a resumed TLS session")
+
+	writeRotationCRL(t, crlPath, ca, serverLeaf.SerialNumber)
+	_, _, _, clientErr := tryHandshakeTLS(t, serverConfig, clientConfig)
+	require.ErrorContains(t, clientErr, "revoked")
+}
