@@ -240,7 +240,7 @@ done
   .instance == $instance and .backup_id == $backup and .object_store_id == $store and
   .bucket == $bucket and .object_key == $key and .version_id == $version and
   .artifact_sha256 == $artifact and .version_absent == true and
-  .retain_until_unix > 0 and .deleted_at_unix >= .retain_until_unix' \
+  .retain_until_unix > 0 and .deleted_at_unix == .retain_until_unix' \
   "$deletion_receipt" >/dev/null ||
   { echo "backup deletion receipt is invalid" >&2; exit 1; }
 pre_inventory_sha="$(sha256sum "$pre_inventory_receipt" | cut -d ' ' -f1)"

@@ -85,6 +85,12 @@ func completeDeletionReceipt() DeletionReceipt {
 	}
 }
 
+func TestDeletionReceiptRequiresDeterministicRetentionBoundary(t *testing.T) {
+	receipt := completeDeletionReceipt()
+	receipt.DeletedAtUnix++
+	require.ErrorContains(t, receipt.Validate(), "incomplete")
+}
+
 func completeAuditReceipt() AuditReceipt {
 	return AuditReceipt{
 		Format: AuditReceiptFormat, OperationID: "operation-1", OperationUID: "uid-1",

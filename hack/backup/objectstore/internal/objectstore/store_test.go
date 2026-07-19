@@ -94,6 +94,16 @@ func TestUploadAndRetentionDeleteLifecycle(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Equal(t, deletion, retriedDeletion)
+
+	restartedDeletion, err := Delete(context.Background(), client, DeleteRequest{
+		Receipt: receipt, Confirmation: "delete:instance-a:backup-1",
+		ObjectStoreID: "store-a",
+		ReceiptOutput: filepath.Join(t.TempDir(), "deletion-receipt.json"),
+		Now:           now.Add(2 * time.Minute),
+	})
+	require.NoError(t, err)
+	require.Equal(t, deletion, restartedDeletion)
+	require.Equal(t, receipt.RetainUntilUnix, restartedDeletion.DeletedAtUnix)
 }
 
 func TestUploadRefusesConflictingObject(t *testing.T) {

@@ -102,7 +102,7 @@ func (r DeletionReceipt) Validate() error {
 	if r.Format != DeletionReceiptFormat || r.Instance == "" || r.BackupID == "" || r.ObjectStoreID == "" ||
 		r.Bucket == "" || r.ObjectKey == "" || r.VersionID == "" || r.ArtifactSHA256 == "" ||
 		(r.RetentionMode != "COMPLIANCE" && r.RetentionMode != "GOVERNANCE") ||
-		r.RetainUntilUnix <= 0 || !r.VersionAbsent || r.DeletedAtUnix < r.RetainUntilUnix {
+		r.RetainUntilUnix <= 0 || !r.VersionAbsent || r.DeletedAtUnix != r.RetainUntilUnix {
 		return errors.New("object backup deletion receipt is incomplete")
 	}
 	return nil

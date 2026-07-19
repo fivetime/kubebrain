@@ -267,7 +267,7 @@ func Delete(ctx context.Context, client S3API, request DeleteRequest) (DeletionR
 		if now.Unix() < receipt.RetainUntilUnix {
 			return DeletionReceipt{}, errors.New("object version disappeared before retention expired")
 		}
-		return publishDeletionReceipt(request.ReceiptOutput, receipt, now)
+		return publishDeletionReceipt(request.ReceiptOutput, receipt)
 	}
 	if aws.ToString(head.VersionId) != receipt.VersionID ||
 		aws.ToInt64(head.ContentLength) != receipt.ObjectBytes ||
@@ -303,16 +303,17 @@ func Delete(ctx context.Context, client S3API, request DeleteRequest) (DeletionR
 	if !isNotFound(err) {
 		return DeletionReceipt{}, fmt.Errorf("verify deleted object version: %w", err)
 	}
-	return publishDeletionReceipt(request.ReceiptOutput, receipt, now)
+	return publishDeletionReceipt(request.ReceiptOutput, receipt)
 }
 
-func publishDeletionReceipt(path string, source Receipt, now time.Time) (DeletionReceipt, error) {
+func publishDeletionReceipt(path string, source Receipt) (DeletionReceipt, error) {
 	receipt := DeletionReceipt{
 		Format: DeletionReceiptFormat, Instance: source.Instance, BackupID: source.BackupID,
 		ObjectStoreID: source.ObjectStoreID,
 		Bucket:        source.Bucket, ObjectKey: source.ObjectKey, VersionID: source.VersionID,
 		ArtifactSHA256: source.ArtifactSHA256, RetentionMode: source.RetentionMode,
-		RetainUntilUnix: source.RetainUntilUnix, VersionAbsent: true, DeletedAtUnix: now.Unix(),
+		RetainUntilUnix: source.RetainUntilUnix, VersionAbsent: true,
+		DeletedAtUnix: source.RetainUntilUnix,
 	}
 	if existing, err := ReadDeletionReceipt(path); err == nil {
 		if existing.Instance == receipt.Instance && existing.BackupID == receipt.BackupID &&
