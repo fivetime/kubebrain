@@ -35,6 +35,21 @@ func (p *blockingFirstProcessor) Process(ctx context.Context, object *unstructur
 	return nil
 }
 
+type blockOnceProcessor struct {
+	names   []string
+	blocked bool
+}
+
+func (p *blockOnceProcessor) Process(ctx context.Context, object *unstructured.Unstructured) error {
+	p.names = append(p.names, object.GetName())
+	if !p.blocked {
+		p.blocked = true
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	return nil
+}
+
 func (p *recordingProcessor) Process(_ context.Context, object *unstructured.Unstructured) error {
 	key := object.GetNamespace() + "/" + object.GetName()
 	p.names = append(p.names, key)
@@ -101,6 +116,30 @@ func TestControllerContinuesAfterPerOperationArchiveTimeout(t *testing.T) {
 	require.Less(t, time.Since(start), time.Second)
 }
 
+func TestControllerResumesAfterLastAttemptWhenReconcileDeadlineExpires(t *testing.T) {
+	client := fakeClient(t,
+		inventory("tenant-a"),
+		operation("tenant-a", "blocked", "Succeeded", 1, true),
+		operation("tenant-a", "following", "Succeeded", 2, true),
+		operation("tenant-a", "last", "Succeeded", 3, true),
+	)
+	processor := &blockOnceProcessor{}
+	controller, err := New(client, processor, "control", "inventory", "", 2)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	processed, err := controller.Reconcile(ctx)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.Zero(t, processed)
+	require.Equal(t, []string{"blocked"}, processor.names)
+
+	processed, err = controller.Reconcile(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, 2, processed)
+	require.Equal(t, []string{"blocked", "following", "last"}, processor.names)
+}
+
 func TestArchiveTimeoutRejectsInvalidConfiguration(t *testing.T) {
 	_, err := WithTimeout(nil, time.Second)
 	require.ErrorContains(t, err, "processor is required")
@@ -137,6 +176,30 @@ func TestControllerHonorsGlobalBatchLimit(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 1, processed)
 	require.Equal(t, []string{"tenant-a/one"}, processor.names)
+	processed, err = controller.Reconcile(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, 1, processed)
+	require.Equal(t, []string{"tenant-a/one", "tenant-a/two"}, processor.names)
+}
+
+func TestControllerCursorSurvivesRemovalOfLastAttemptedCandidate(t *testing.T) {
+	client := fakeClient(t,
+		inventory("tenant-a"),
+		operation("tenant-a", "one", "Succeeded", 1, true),
+		operation("tenant-a", "two", "Succeeded", 2, true),
+		operation("tenant-a", "three", "Succeeded", 3, true),
+	)
+	processor := &recordingProcessor{fail: map[string]error{}}
+	controller, err := New(client, processor, "control", "inventory", "", 1)
+	require.NoError(t, err)
+
+	processed, err := controller.Reconcile(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, 1, processed)
+	require.Equal(t, []string{"tenant-a/one"}, processor.names)
+	require.NoError(t, client.Resource(operationqueue.Resource).Namespace("tenant-a").
+		Delete(context.Background(), "one", metav1.DeleteOptions{}))
+
 	processed, err = controller.Reconcile(context.Background())
 	require.NoError(t, err)
 	require.Equal(t, 1, processed)

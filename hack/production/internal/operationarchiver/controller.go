@@ -27,7 +27,14 @@ type Controller struct {
 	inventoryKey       string
 	maxBatch           int
 	cursorMu           sync.Mutex
-	cursor             int
+	cursor             candidateCursor
+}
+
+type candidateCursor struct {
+	completedAt int64
+	namespace   string
+	name        string
+	valid       bool
 }
 
 func New(
@@ -86,31 +93,69 @@ func (c *Controller) Reconcile(ctx context.Context) (int, error) {
 	candidates = c.nextBatch(candidates)
 	processed := 0
 	for _, candidate := range candidates {
+		if err := ctx.Err(); err != nil {
+			errs = append(errs, err)
+			break
+		}
 		if err := c.processor.Process(ctx, candidate); err != nil {
 			errs = append(errs, fmt.Errorf(
 				"archive operation %s/%s: %w",
 				candidate.GetNamespace(), candidate.GetName(), err,
 			))
+			c.markAttempted(candidate)
 			continue
 		}
+		c.markAttempted(candidate)
 		processed++
 	}
 	return processed, errors.Join(errs...)
 }
 
 func (c *Controller) nextBatch(candidates []*unstructured.Unstructured) []*unstructured.Unstructured {
-	if len(candidates) <= c.maxBatch {
+	if len(candidates) == 0 {
 		return candidates
 	}
 	c.cursorMu.Lock()
-	defer c.cursorMu.Unlock()
-	start := c.cursor % len(candidates)
-	batch := make([]*unstructured.Unstructured, 0, c.maxBatch)
-	for offset := 0; offset < c.maxBatch; offset++ {
+	cursor := c.cursor
+	c.cursorMu.Unlock()
+	start := 0
+	if cursor.valid {
+		start = sort.Search(len(candidates), func(i int) bool {
+			return cursorLess(cursor, candidates[i])
+		})
+		if start == len(candidates) {
+			start = 0
+		}
+	}
+	batchSize := min(c.maxBatch, len(candidates))
+	batch := make([]*unstructured.Unstructured, 0, batchSize)
+	for offset := 0; offset < batchSize; offset++ {
 		batch = append(batch, candidates[(start+offset)%len(candidates)])
 	}
-	c.cursor = (start + c.maxBatch) % len(candidates)
 	return batch
+}
+
+func (c *Controller) markAttempted(candidate *unstructured.Unstructured) {
+	completedAt, _, _ := unstructured.NestedInt64(candidate.Object, "status", "completedAtUnix")
+	c.cursorMu.Lock()
+	c.cursor = candidateCursor{
+		completedAt: completedAt,
+		namespace:   candidate.GetNamespace(),
+		name:        candidate.GetName(),
+		valid:       true,
+	}
+	c.cursorMu.Unlock()
+}
+
+func cursorLess(cursor candidateCursor, candidate *unstructured.Unstructured) bool {
+	completedAt, _, _ := unstructured.NestedInt64(candidate.Object, "status", "completedAtUnix")
+	if cursor.completedAt != completedAt {
+		return cursor.completedAt < completedAt
+	}
+	if cursor.namespace != candidate.GetNamespace() {
+		return cursor.namespace < candidate.GetNamespace()
+	}
+	return cursor.name < candidate.GetName()
 }
 
 func needsArchive(object *unstructured.Unstructured) bool {
