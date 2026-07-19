@@ -246,10 +246,15 @@ func TestFinishReportsLeaseCleanupFailureAfterTerminalStatusCommit(t *testing.T)
 	require.NoError(t, err)
 	claim, err := queue.Claim(ctx, "worker-a", "PostRestoreAudit", time.Minute)
 	require.NoError(t, err)
+	deleteCalls := 0
 	client.PrependReactor("delete", LeaseResource.Resource, func(
 		clientgotesting.Action,
 	) (bool, runtime.Object, error) {
-		return true, nil, errors.New("lease cleanup unavailable")
+		deleteCalls++
+		if deleteCalls == 1 {
+			return true, nil, errors.New("lease cleanup unavailable")
+		}
+		return false, nil, nil
 	})
 
 	result, err := queue.Finish(
@@ -260,6 +265,56 @@ func TestFinishReportsLeaseCleanupFailureAfterTerminalStatusCommit(t *testing.T)
 	require.ErrorContains(t, err, "release instance lease after finish")
 	phase, _, _ := unstructured.NestedString(result.Object, "status", "phase")
 	require.Equal(t, PhaseSucceeded, phase)
+	retried, err := queue.Finish(
+		ctx, claim.Name, claim.Owner, claim.Attempt,
+		true, strings.Repeat("a", 64), "complete",
+	)
+	require.NoError(t, err)
+	require.Equal(t, result.GetResourceVersion(), retried.GetResourceVersion())
+	leases, err := client.Resource(LeaseResource).Namespace("test").
+		List(ctx, metav1.ListOptions{})
+	require.NoError(t, err)
+	require.Empty(t, leases.Items)
+}
+
+func TestRequeueRetriesLeaseCleanupAfterPendingStatusCommit(t *testing.T) {
+	client := fakeQueueClient()
+	queue := New(client, "test")
+	ctx := context.Background()
+	_, err := queue.Submit(ctx, "backup-1", validSpec())
+	require.NoError(t, err)
+	claim, err := queue.Claim(ctx, "worker-a", "PostRestoreAudit", time.Minute)
+	require.NoError(t, err)
+	deleteCalls := 0
+	client.PrependReactor("delete", LeaseResource.Resource, func(
+		clientgotesting.Action,
+	) (bool, runtime.Object, error) {
+		deleteCalls++
+		if deleteCalls == 1 {
+			return true, nil, errors.New("lease cleanup unavailable")
+		}
+		return false, nil, nil
+	})
+
+	result, err := queue.Requeue(
+		ctx, claim.Name, claim.Owner, claim.Attempt, "transient",
+	)
+	require.NotNil(t, result)
+	require.ErrorContains(t, err, "release instance lease after requeue")
+	retried, err := queue.Requeue(
+		ctx, claim.Name, claim.Owner, claim.Attempt, "transient",
+	)
+	require.NoError(t, err)
+	require.Equal(t, result.GetResourceVersion(), retried.GetResourceVersion())
+	leases, err := client.Resource(LeaseResource).Namespace("test").
+		List(ctx, metav1.ListOptions{})
+	require.NoError(t, err)
+	require.Empty(t, leases.Items)
+
+	_, err = queue.Requeue(
+		ctx, claim.Name, claim.Owner, claim.Attempt, "different result",
+	)
+	require.ErrorIs(t, err, ErrFenced)
 }
 
 func TestLeaseCleanupContextOutlivesCanceledParentWithBoundedDeadline(t *testing.T) {

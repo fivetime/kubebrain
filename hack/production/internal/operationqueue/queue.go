@@ -415,6 +415,22 @@ func (q *Queue) Requeue(
 	if err != nil {
 		return nil, err
 	}
+	phase, _, _ := unstructured.NestedString(object.Object, "status", "phase")
+	actualOwner, _, _ := unstructured.NestedString(object.Object, "status", "owner")
+	actualAttempt, _, _ := unstructured.NestedInt64(object.Object, "status", "attempt")
+	actualMessage, _, _ := unstructured.NestedString(object.Object, "status", "message")
+	if phase == PhasePending {
+		if owner == "" || attempt <= 0 || actualOwner != "" ||
+			actualAttempt != attempt || actualMessage != message {
+			return nil, ErrFenced
+		}
+		instance, _, _ := unstructured.NestedString(object.Object, "spec", "instance")
+		holder := leaseHolder(object, owner, attempt)
+		if releaseErr := q.retryInstanceLeaseCleanup(ctx, instance, holder); releaseErr != nil {
+			return object, fmt.Errorf("retry instance lease cleanup after requeue: %w", releaseErr)
+		}
+		return object, nil
+	}
 	if err := q.requireWorker(object, owner, attempt); err != nil {
 		return nil, err
 	}
@@ -495,6 +511,11 @@ func (q *Queue) Finish(
 		}
 		if phase == expectedPhase && actualOwner == owner && actualAttempt == attempt &&
 			actualReceipt == receiptSHA256 && actualMessage == message {
+			instance, _, _ := unstructured.NestedString(object.Object, "spec", "instance")
+			holder := leaseHolder(object, owner, attempt)
+			if releaseErr := q.retryInstanceLeaseCleanup(ctx, instance, holder); releaseErr != nil {
+				return object, fmt.Errorf("retry instance lease cleanup after finish: %w", releaseErr)
+			}
 			return object, nil
 		}
 		return nil, ErrTerminal
@@ -773,6 +794,17 @@ func (q *Queue) releaseInstanceLeaseForCleanup(
 	ctx, cancel := leaseCleanupContext(parent)
 	defer cancel()
 	return q.releaseInstanceLease(ctx, instance, holder)
+}
+
+func (q *Queue) retryInstanceLeaseCleanup(
+	parent context.Context,
+	instance, holder string,
+) error {
+	err := q.releaseInstanceLeaseForCleanup(parent, instance, holder)
+	if errors.Is(err, ErrFenced) {
+		return nil
+	}
+	return err
 }
 
 func leaseCleanupContext(parent context.Context) (context.Context, context.CancelFunc) {
