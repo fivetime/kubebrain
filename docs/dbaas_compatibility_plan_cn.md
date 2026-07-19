@@ -4724,6 +4724,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   后释放 audit finalizer，CR 正常删除。运行手册明确同 CA 叶证书逐 Pod serial/UID/重启
   验证，以及 CA 更新必须执行调用方双信任窗口。
 
+- **Operations A272 parameter broker dependency-aware readiness（2026-07-19）**：
+  parameter broker 原 `/readyz` 只检查 TLS 叶证书，即使 TokenReview 权限、Operation CRD
+  或 Secret API 已不可用仍保持 Ready，Service 会继续把 executor 请求送入必然失败的
+  Pod；client-go 请求也只继承外部连接 context，没有独立的 Kubernetes 依赖预算。对齐
+  `/root/etcd/server/etcdserver/api/etcdhttp/health.go` 的有时限真实 API 检查，broker
+  现以统一 5 秒 deadline 探测 TokenReview create、Operation get 和 Secret get，业务参数
+  请求也使用同一 deadline。固定不存在对象和无效 token 不读取凭据；NotFound/未认证表示
+  路径可用，transport、discovery、超时或 RBAC 错误 fail closed 返回 503，liveness 保持
+  独立。
+
+  focused 与 manifest 测试连续 10 轮、race 连续 20 轮、全量 production 测试和 vet 均
+  通过。精确提交 `1db3dfb15d944f5488a7ff8951645aa3edebba20` 构建非 root 镜像
+  `kubebrain:a272-broker-dependency-readiness`（image ID
+  `sha256:6438825a3d6416da24775c4f0b54a5cf5d358ec77dd4aeb03a4750cb9715788d`）。
+  kind 双副本初始 `/readyz`/`/healthz` 均为 204；撤销 TokenReview create 后第一次
+  readiness 请求立即 503，两个 Pod 在 11 秒内均变为 NotReady，而 `/healthz` 仍为 204。
+  恢复 RBAC 后两者重新 Ready/204，Pod UID 不变且零重启；无效 token 参数请求在 20ms 内
+  返回 401。smoke 后 broker 恢复零副本并删除临时 TLS Secret。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range

@@ -1112,6 +1112,15 @@ Secret list/watch、Operation list/watch/status 或 Lease 权限。projected tok
 不可用、CA 错误、token 失效或 worker Lease 过期时 executor 必须 fail closed 并 requeue，
 不得回退为直接读取 Secret。
 
+broker 的 `/readyz` 不只检查当前 TLS 证书，还会在同一个
+`--kubernetes-request-timeout=5s` 预算内探测 TokenReview create、Operation get 和 Secret
+get 三条实际服务路径。探测使用固定不存在的对象名和无效 token，不读取业务 Secret；
+NotFound/未认证结果表示 API 路径可用，transport、discovery、超时或 RBAC 错误均返回 503
+并把 Pod 摘出 Service。`/healthz` 仍只表示进程存活，不能作为接流条件。业务参数请求也
+使用相同 deadline，Kubernetes API 故障时不得让 handler 无界堆积。上线后应临时撤销并
+恢复 broker 的 TokenReview 权限，确认所有副本按 `204 -> 503/NotReady -> 204/Ready`
+变化，且 UID 不变、零重启。
+
 broker 每 30 秒重新读取 mounted TLS Secret。新 `tls.crt`/`tls.key` 只有在公私钥匹配、
 叶证书已生效且未过期时才会原子接管新握手；无效更新保留上一份有效证书并记录错误。
 readiness 使用 `/readyz` 检查当前证书有效期，证书最终过期时必须摘流；liveness
