@@ -5687,6 +5687,32 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   runtime 差距，只增加永久故障门禁，不重建 A311 镜像；小时级、跨可用区和网络分区
   soak 仍属于 P2 未完成项。
 
+- **Watch A313 quota release across transport/Pod replacement（2026-07-20）**：
+  对照 upstream `/root/etcd/server/etcdserver/api/v3rpc/watch.go` 的单 gRPC stream
+  多 logical Watch 控制响应语义。A80 已以 `max-watches=1` 证明显式 cancel 后槽位
+  可复用，单测也固定 `watcher.Close` 同步释放；但真实 transport 强制断开和承载进程
+  UID replacement 尚无门禁。该缺口不能由 A232 的 RPC in-flight replacement 代替：
+  一个 Watch RPC slot 内可 multiplex 多个逻辑 Watch，两套计数及释放生命周期不同。
+
+  新增显式 opt-in 的 protobuf client 故障门禁，要求专属 Pod endpoint 和临时
+  `max-watches=2`。测试先在一个 stream 创建两个 Watch 并确认第三个收到
+  `Created=true,Canceled=true,WatchId=-1,CancelReason="etcdserver: too many
+  requests"`，随后直接关闭底层 gRPC connection、不发送 cancel；新 connection 必须
+  立即再次接纳两个 Watch。第二阶段保持两个槽位占用并删除 victim Pod，要求旧 stream
+  在 30 秒内终止、同名 Pod 以新 UID Ready、专属 endpoint 确认可路由到 replacement，
+  再次接纳两个 Watch 且拒绝第三个。helper 按 multiplex 契约跳过可穿插在 create ack
+  前的非 Created progress 响应，避免把合法 progress 错判为配额响应。
+
+  默认 skip/compile 连续 100 轮通过（0.038 秒），compat `go vet` 通过。首轮真实门禁
+  9.91 秒通过；重复运行最初暴露 Pod Ready 早于 EndpointSlice/NodePort 更新的短暂
+  `connection refused`，门禁现把固定 endpoint TCP 可达纳入恢复条件。修正后 A311
+  三副本 TiKV-backed KubeBrain 普通 5 轮在 50.60 秒通过，race 3 轮在 30.33 秒通过；
+  加首轮共完成 9 次成功的 victim UID replacement。每轮均固定断连后的两个槽位完整
+  释放、旧进程 stream 关闭和新进程从零接纳；生产 `max-watches=10000` 已恢复，临时
+  Service 已删除。最终 KubeBrain 3/3 Ready 且 restartCount=0，PD/TiKV 3+3 Ready，
+  exact A311 image、endpoint proposal health 和 production release gate 通过。本轮
+  未发现 runtime 差距，只补齐永久配额故障证据，不重建相同镜像。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
@@ -5694,7 +5720,8 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
    auth+mTLS failover、服务端/内部客户端叶证书热轮换、CA trust pool 双信任窗口与撤旧
    及真实三副本在线轮换、长连接 drain/reconnect soak、CRL/cipher/TLS version 策略、
    独立 outbound client cert/key 与 peer CN/SAN allowlist 已完成；下一步扩大配额与故障
-   注入覆盖。client RPC 并发限额已覆盖真实副本 UID replacement 后的计数释放。
+   注入覆盖。client RPC 并发限额和 logical Watch 配额均已覆盖真实副本 UID
+   replacement 后的计数释放。
 2. `client/v3/concurrency` mutex/election/session、lease 自然过期和 failover
    recipe 已通过；64 lease/8 client/3 次连续 leader replacement 的加速 renewal
    soak 已建立，继续增加小时级和跨可用区 soak。
