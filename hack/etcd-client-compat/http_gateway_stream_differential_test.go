@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -16,16 +17,24 @@ import (
 )
 
 type httpGatewayStreamOutcome struct {
-	WatchContentType       string
-	WatchChunked           bool
-	WatchCreated           bool
-	WatchEventKey          string
-	WatchEventValue        string
-	WatchPreviousValue     string
-	ObserveContentType     string
-	ObserveChunked         bool
-	ObserveInitialValue    string
-	ObserveProclaimedValue string
+	WatchContentType        string
+	WatchChunked            bool
+	WatchCreated            bool
+	WatchEventKey           string
+	WatchEventValue         string
+	WatchPreviousValue      string
+	ObserveContentType      string
+	ObserveChunked          bool
+	ObserveInitialValue     string
+	ObserveProclaimedValue  string
+	KeepAliveContentType    string
+	KeepAliveChunked        bool
+	KeepAliveFrameCount     int
+	KeepAliveIDsMatch       bool
+	KeepAliveValidPositive  bool
+	KeepAliveUnknownZero    bool
+	KeepAliveUnknownOmitted bool
+	KeepAliveEndedWithEOF   bool
 }
 
 func TestHTTPGatewayStreamsDifferentialAgainstReferenceEtcd(t *testing.T) {
@@ -73,6 +82,16 @@ func runHTTPGatewayStreamScenario(t *testing.T, endpoint, _ string, leaseID stri
 		require.Equal(t, http.StatusOK, response.StatusCode)
 		return response, bufio.NewReader(response.Body)
 	}
+	openRawStream := func(path, body string) (*http.Response, *bufio.Reader) {
+		t.Helper()
+		request, err := http.NewRequest(http.MethodPost, baseURL+path, strings.NewReader(body))
+		require.NoError(t, err)
+		request.Header.Set("Content-Type", "application/json")
+		response, err := client.Do(request)
+		require.NoError(t, err, path)
+		require.Equal(t, http.StatusOK, response.StatusCode)
+		return response, bufio.NewReader(response.Body)
+	}
 	readResult := func(reader *bufio.Reader) map[string]any {
 		t.Helper()
 		line, err := reader.ReadBytes('\n')
@@ -107,6 +126,29 @@ func runHTTPGatewayStreamScenario(t *testing.T, endpoint, _ string, leaseID stri
 	name := "/a357/http-observe/election"
 	post("/v3/lease/grant", map[string]any{"ID": leaseID, "TTL": "30"})
 	t.Cleanup(func() { post("/v3/lease/revoke", map[string]any{"ID": leaseID}) })
+	unknownLeaseID := "9563579"
+	keepAliveResponse, keepAliveReader := openRawStream("/v3/lease/keepalive",
+		"{\"ID\":\""+leaseID+"\"}\n"+
+			"{\"ID\":\""+unknownLeaseID+"\"}\n"+
+			"{\"ID\":\""+leaseID+"\"}\n")
+	keepAliveResults := make([]map[string]any, 0, 3)
+	for range 3 {
+		keepAliveResults = append(keepAliveResults, readResult(keepAliveReader))
+	}
+	_, keepAliveEndErr := keepAliveReader.ReadBytes('\n')
+	require.NoError(t, keepAliveResponse.Body.Close())
+	keepAliveTTL := func(index int) int64 {
+		t.Helper()
+		rawTTL, found := keepAliveResults[index]["TTL"]
+		if !found {
+			return 0
+		}
+		ttlString, ok := rawTTL.(string)
+		require.True(t, ok, "non-string TTL in %#v", keepAliveResults[index])
+		ttl, err := strconv.ParseInt(ttlString, 10, 64)
+		require.NoError(t, err)
+		return ttl
+	}
 	campaign := post("/v3/election/campaign", map[string]any{
 		"name": encode(name), "lease": leaseID, "value": encode("leader-one"),
 	})
@@ -129,6 +171,16 @@ func runHTTPGatewayStreamScenario(t *testing.T, endpoint, _ string, leaseID stri
 		ObserveChunked:         containsString(observeResponse.TransferEncoding, "chunked"),
 		ObserveInitialValue:    stringField(initial, "value"),
 		ObserveProclaimedValue: stringField(proclaimed, "value"),
+		KeepAliveContentType:   keepAliveResponse.Header.Get("Content-Type"),
+		KeepAliveChunked:       containsString(keepAliveResponse.TransferEncoding, "chunked"),
+		KeepAliveFrameCount:    len(keepAliveResults),
+		KeepAliveIDsMatch: stringField(keepAliveResults[0], "ID") == leaseID &&
+			stringField(keepAliveResults[1], "ID") == unknownLeaseID &&
+			stringField(keepAliveResults[2], "ID") == leaseID,
+		KeepAliveValidPositive:  keepAliveTTL(0) > 0 && keepAliveTTL(2) > 0,
+		KeepAliveUnknownZero:    keepAliveTTL(1) == 0,
+		KeepAliveUnknownOmitted: keepAliveResults[1]["TTL"] == nil,
+		KeepAliveEndedWithEOF:   keepAliveEndErr == io.EOF,
 	}
 }
 

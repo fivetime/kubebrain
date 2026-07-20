@@ -85,6 +85,29 @@ type gatewayElectionServer struct {
 	next <-chan struct{}
 }
 
+type gatewayLeaseServer struct {
+	etcdserverpb.UnimplementedLeaseServer
+}
+
+func (s *gatewayLeaseServer) LeaseKeepAlive(stream etcdserverpb.Lease_LeaseKeepAliveServer) error {
+	for {
+		request, err := stream.Recv()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if err := stream.Send(&etcdserverpb.LeaseKeepAliveResponse{
+			Header: &etcdserverpb.ResponseHeader{Revision: request.ID + 50},
+			ID:     request.ID,
+			TTL:    request.ID + 10,
+		}); err != nil {
+			return err
+		}
+	}
+}
+
 func (s *gatewayElectionServer) Observe(request *v3electionpb.LeaderRequest, stream v3electionpb.Election_ObserveServer) error {
 	if err := stream.Send(&v3electionpb.LeaderResponse{
 		Header: &etcdserverpb.ResponseHeader{Revision: 41},
@@ -183,6 +206,7 @@ func TestGRPCGatewayStreamsWatchAndElectionResponses(t *testing.T) {
 	watchNext := make(chan struct{})
 	electionNext := make(chan struct{})
 	etcdserverpb.RegisterWatchServer(grpcServer, &gatewayWatchServer{next: watchNext})
+	etcdserverpb.RegisterLeaseServer(grpcServer, &gatewayLeaseServer{})
 	v3electionpb.RegisterElectionServer(grpcServer, &gatewayElectionServer{next: electionNext})
 	go func() { _ = grpcServer.Serve(listener) }()
 	t.Cleanup(grpcServer.Stop)
@@ -228,4 +252,24 @@ func TestGRPCGatewayStreamsWatchAndElectionResponses(t *testing.T) {
 		`{"result":{"header":{"revision":"41"},"kv":{"key":"ZWxlY3Rpb24=","mod_revision":"41","value":"bGVhZGVyLW9uZQ=="}}}`,
 		`{"result":{"header":{"revision":"42"},"kv":{"key":"ZWxlY3Rpb24=","mod_revision":"42","value":"bGVhZGVyLXR3bw=="}}}`,
 		electionNext)
+
+	request, err := http.NewRequest(http.MethodPost, httpServer.URL+"/v3/lease/keepalive",
+		strings.NewReader("{\"ID\":\"1\"}\n{\"ID\":\"2\"}\n"))
+	require.NoError(t, err)
+	request.Header.Set("Content-Type", "application/json")
+	response, err := http.DefaultClient.Do(request)
+	require.NoError(t, err)
+	defer response.Body.Close()
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	require.Equal(t, "application/json", response.Header.Get("Content-Type"))
+	require.Contains(t, response.TransferEncoding, "chunked")
+	reader := bufio.NewReader(response.Body)
+	line, err := reader.ReadString('\n')
+	require.NoError(t, err)
+	require.JSONEq(t, `{"result":{"header":{"revision":"51"},"ID":"1","TTL":"11"}}`, line)
+	line, err = reader.ReadString('\n')
+	require.NoError(t, err)
+	require.JSONEq(t, `{"result":{"header":{"revision":"52"},"ID":"2","TTL":"12"}}`, line)
+	_, err = reader.ReadString('\n')
+	require.ErrorIs(t, err, io.EOF)
 }
