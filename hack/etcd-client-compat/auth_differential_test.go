@@ -68,6 +68,14 @@ type authDifferentialOutcome struct {
 	UserLeasedTxnPut          authErrorOutcome
 	WriterTxnPutPrevKV        authErrorOutcome
 	WriterTxnValuePreserved   bool
+	NestedDeniedRange         authErrorOutcome
+	NestedDeniedPut           authErrorOutcome
+	NestedDeniedDelete        authErrorOutcome
+	NestedLeasedPut           authErrorOutcome
+	NestedPutPrevKV           authErrorOutcome
+	NestedDeniedPutPreserved  bool
+	NestedDeletePreserved     bool
+	NestedPrevKVPreserved     bool
 }
 
 func runConcurrentClientOperations(count int, operation func(int) error) []error {
@@ -208,6 +216,43 @@ func collectAuthDifferentialOutcome(t *testing.T, endpoint string) authDifferent
 	writerTxnValue, err := root.Get(ctx, "/auth-write-only/key")
 	require.NoError(t, err)
 	require.Len(t, writerTxnValue.Kvs, 1)
+	twoLevelNested := func(op clientv3.Op) clientv3.Op {
+		return clientv3.OpTxn(nil, []clientv3.Op{
+			clientv3.OpTxn(nil, []clientv3.Op{op}, nil),
+		}, nil)
+	}
+	_, nestedDeniedRangeErr := alice.Txn(ctx).Then(
+		twoLevelNested(clientv3.OpGet("/auth-denied/range")),
+	).Commit()
+	_, err = root.Put(ctx, "/auth-denied/put", "before")
+	require.NoError(t, err)
+	_, nestedDeniedPutErr := alice.Txn(ctx).Then(clientv3.OpTxn(
+		nil,
+		[]clientv3.Op{clientv3.OpGet("/auth-allowed/")},
+		[]clientv3.Op{clientv3.OpPut("/auth-denied/put", "after")},
+	)).Commit()
+	nestedDeniedPutValue, err := root.Get(ctx, "/auth-denied/put")
+	require.NoError(t, err)
+	require.Len(t, nestedDeniedPutValue.Kvs, 1)
+	_, err = root.Put(ctx, "/auth-denied/delete", "before")
+	require.NoError(t, err)
+	_, nestedDeniedDeleteErr := alice.Txn(ctx).Then(
+		twoLevelNested(clientv3.OpDelete("/auth-denied/delete", clientv3.WithPrevKV())),
+	).Commit()
+	nestedDeleteValue, err := root.Get(ctx, "/auth-denied/delete")
+	require.NoError(t, err)
+	require.Len(t, nestedDeleteValue.Kvs, 1)
+	_, nestedLeasedPutErr := alice.Txn(ctx).Then(
+		twoLevelNested(clientv3.OpPut(
+			"/auth-allowed/nested-leased", "value", clientv3.WithLease(protectedLease.ID),
+		)),
+	).Commit()
+	_, nestedPutPrevKVErr := writer.Txn(ctx).Then(
+		twoLevelNested(clientv3.OpPut("/auth-write-only/key", "nested-after", clientv3.WithPrevKV())),
+	).Commit()
+	nestedPrevKVValue, err := root.Get(ctx, "/auth-write-only/key")
+	require.NoError(t, err)
+	require.Len(t, nestedPrevKVValue.Kvs, 1)
 
 	_, err = root.UserGrantRole(ctx, "root", "root")
 	require.NoError(t, err)
@@ -341,6 +386,14 @@ func collectAuthDifferentialOutcome(t *testing.T, endpoint string) authDifferent
 		UserLeasedTxnPut:          authError(userLeasedTxnPutErr),
 		WriterTxnPutPrevKV:        authError(writerTxnPutPrevKVErr),
 		WriterTxnValuePreserved:   string(writerTxnValue.Kvs[0].Value) == "before",
+		NestedDeniedRange:         authError(nestedDeniedRangeErr),
+		NestedDeniedPut:           authError(nestedDeniedPutErr),
+		NestedDeniedDelete:        authError(nestedDeniedDeleteErr),
+		NestedLeasedPut:           authError(nestedLeasedPutErr),
+		NestedPutPrevKV:           authError(nestedPutPrevKVErr),
+		NestedDeniedPutPreserved:  string(nestedDeniedPutValue.Kvs[0].Value) == "before",
+		NestedDeletePreserved:     string(nestedDeleteValue.Kvs[0].Value) == "before",
+		NestedPrevKVPreserved:     string(nestedPrevKVValue.Kvs[0].Value) == "before",
 	}
 }
 
