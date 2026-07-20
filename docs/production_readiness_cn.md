@@ -403,11 +403,22 @@ version 仍可读或 Head 本身失败时，同时保留原删除错误和检查
 `kubebrain_dbaas:metering_data_complete`；只有 9 个容器、6 个 PVC 及唯一备份
 artifact/timestamp 源全部存在时，完整性才为 1，8 条计量输入才会产出。控制面必须把
 完整性不为 1 或计量序列缺失的区间标为不可计费并 fail closed，禁止按零用量结算。
+规则还生成小时窗口序列：
+
+- `kubebrain_dbaas:metering_hour_complete` 要求整个 `[1h]` 窗口的分钟完整性最小值为
+  1，且至少存在 60 个 evaluation 样本；
+- CPU 使用量通过原始 counter 的 `increase[1h]` 输出
+  `kubebrain_dbaas:cpu_usage_core_seconds:hour`；
+- 网络收发通过原始 counter 的 `increase[1h]` 输出
+  `kubebrain_dbaas:network_{receive,transmit}_bytes:hour`；
+- 内存、provisioned storage 和 used storage 输出完整窗口的 `hour_avg`。
+
 这些序列不是最终账单。`deploy/production/kubebrain-metering-archive.yaml` 每小时在
-UTC 第 17 分钟查询已结束且等待 10 分钟的完整小时槽位；只有完整性序列唯一等于 1，
-且上述 8 条序列各自唯一、实例标签精确匹配、值为非负有限数、样本不晚于查询时间并且
-不超过 5 分钟陈旧时，才生成 `kubebrain.metering-sample.v1`。artifact ID、对象键和
-JSON 字节均由实例与槽位确定，重试同一槽位不得生成新内容或第二个对象版本。
+UTC 第 17 分钟查询已结束且等待 10 分钟的完整小时槽位；只有小时完整性序列唯一等于
+1，且 8 条 v2 输入各自唯一、实例标签精确匹配、值为非负有限数、样本不晚于查询时间
+并且不超过 5 分钟陈旧时，才生成 `kubebrain.metering-sample.v2`。规则部署后不足完整
+60 分钟历史时不得产生首个 v2 artifact。artifact ID、对象键和 JSON 字节均由实例与
+槽位确定，重试同一槽位不得生成新内容或第二个对象版本。
 
 归档器通过 `kubebrain-logical-object` 的通用 `ACTION=blob` 路径执行条件上传，要求
 bucket 已启用 versioning 和 Object Lock。上传固定使用 SHA-256 checksum、
@@ -424,19 +435,20 @@ bearer token 参数，不能沿用模板中的集群内明文地址。
 `deploy/production/kubebrain-metering-rollup.yaml` 每日 UTC 00:47 处理前一完整 UTC 日，
 且只从不可变小时对象读取，不重新查询 Prometheus。每个对象键由实例和 slot 确定；
 `ACTION=blob-read` 先枚举 exact key，要求恰好一个 version 且无 delete marker，再按
-version ID 核对 format、artifact ID、instance、store、大小、SHA-256 metadata、
+version ID 核对 format allowlist、artifact ID、instance、store、大小、SHA-256 metadata、
 Object Lock mode 和 retain-until，下载后重新计算字节 digest。24 个 canonical sample
 必须按小时连续覆盖完整日期、实例一致、指标顺序固定且每个源保留期达到自身
 `slot_end + retention_duration`；任一小时缺失、重复、损坏或保留不足时不得生成日汇总。
 
-`kubebrain.metering-rollup.v1` 内嵌全部 24 个源的 key、version ID、digest、大小和
-retain-until。CPU、内存、网络收发、provisioned/used storage 使用固定的小时末样本
-保持法，计算 `quantity = Σ(sample_value × 3600)`，分别输出 `core_seconds`、`bytes`
-或 `byte_seconds`；备份 artifact 大小和 age 仅输出 min/max/last 观测值，不计入对象
-存储费用。这里 CPU/网络输入仍是既有 5 分钟 rate，因此这是明确、可重放的约定采样
-积分，不是底层累计 counter 的精确小时 increase；后续价格版本必须固定该测量策略，
-禁止在同一价格版本下静默更改。日汇总经同一 immutable blob 路径归档，保留截止点取
-最早源样本的保留截止点，避免汇总仍在而引用源已过期。
+`kubebrain.metering-rollup.v2` 内嵌全部 24 个源的 artifact format、key、version ID、
+digest、大小和 retain-until。v2 CPU core-seconds 与网络 bytes 已是小时 counter
+increase，直接跨槽求和；内存和两项存储的 hour_avg 乘以 3600 后求和，输出
+byte-seconds；备份 artifact 大小和 age 仅输出 min/max/last 观测值，不计入对象存储
+费用。升级日允许显式 allowlist 中的 `metering-sample.v1` 与 v2 混合：v1 CPU/网络
+仍按旧的小时末 rate 保持法乘 3600，v2 按 counter increase 直接累加，每个 source 的
+format 固定其公式。未知格式、format 与下载内容不一致或重复 allowlist 都会拒绝。
+旧 v1 artifact 保持不可变，不原地重解释或改写。日汇总经同一 immutable blob 路径
+归档，保留截止点取最早源样本的保留截止点，避免汇总仍在而引用源已过期。
 
 默认任务只处理上一 UTC 日。CronJob 长时间停机后必须逐日使用
 `--period-end-unix=<UTC 日界 Unix 秒>` 回补；显式 period end 必须按 24 小时对齐且
@@ -445,8 +457,10 @@ retain-until。CPU、内存、网络收发、provisioned/used storage 使用固�
 version。小时归档凭据只需写 `metering-samples`；日汇总凭据应限制为读取该前缀并写
 `metering-rollups`，两个 CronJob 使用不同 Secret。
 
-不可变小时采样和跨日采样积分仍不构成最终账单。控制面仍须实现价格版本、对象存储
-成本和审计对账；采样缺口必须保持不可计费状态，禁止按零用量补算。
+不可变小时采样和跨日积分仍不构成最终账单。Prometheus `increase` 会按 scrape
+边界执行 counter reset 处理和窗口外推，价格版本必须明确采用该测量语义。控制面仍须
+实现价格版本、对象存储成本和审计对账；采样缺口必须保持不可计费状态，禁止按零用量
+补算。
 
 TiDB Operator 的 BR full/PITR 不能用于 KubeBrain 数据恢复。真实 S3 full backup 和
 独立 PD/TiKV Restore CR 都成功时，备份前已提交的 KubeBrain key 仍未出现在目标集群；
