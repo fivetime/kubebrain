@@ -6884,6 +6884,35 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   255.605 秒通过。CORRUPT alarm 仍由 TiKV/PD 数据完整性与 DBaaS 管理面处理，RPC
   保持明确平台替代；本次只补已实现且会实际阻断写入的 NOSPACE 状态可见性。
 
+- **Maintenance A352 active alarm HTTP health semantics（2026-07-20）**：继续对照
+  `/root/etcd/server/etcdserver/api/etcdhttp/health.go`，发现 upstream 传统
+  `/health` 在 leader/API 检查前先检查 alarm；active NOSPACE 返回 HTTP 503 和精确
+  reason，`exclude=NOSPACE` 可跳过，而 `serializable=true` 只跳过 leader 要求、
+  不跳过 alarm。KubeBrain 原先只检查 leader 与 Range，因此配额已阻断增长写入时仍
+  返回 HTTP 200。
+
+  提交 `2d37ae2` 使 `/health` fail closed 查询租户 `QuotaStatus`，active 时返回
+  `{"health":"false","reason":"ALARM NOSPACE"}`，alarm store 错误返回
+  `ALARM ERROR:<error>`；支持重复 `exclude` 参数，并保持 alarm 先于 no-leader。
+  健康响应也固定包含空 `reason`。`/ready` 与 `/readyz` 刻意不检查 NOSPACE，与
+  upstream readiness 语义一致，使容量故障期间读和恢复操作仍可接流。提交 `bd644b0`
+  将告警激活窗口内两个 readiness 端点的 HTTP 200 纳入真实运行差分门禁。
+
+  从 `2d37ae2cde203765e0693f7599329c4e9ddb9925` 的 `git archive` 构建
+  `kubebrain:a352-http-health-alarm`，image ID
+  `sha256:a8b95082aca753cfe844267e1af13950685991f0bdd2b463d4629d763ab9df4b`，
+  OCI revision、Go 1.26.5/linux/amd64 与 `65532:65532` 匹配。在当前
+  `/root/etcd` reference 与独立 `a352` TiKV keyspace 上，healthy、active、
+  active+serializable、active+exclude、disarmed 的 HTTP 状态码和精确响应体连续
+  10 轮完全一致；同一 active 窗口的 `/ready`、`/readyz?verbose` 均为 200。
+  KubeBrain Pod UID `6fc12f62-c9a6-4961-a503-d05e5c9b6070`，Ready、
+  restartCount=0，以只读根文件系统、non-root、drop ALL 和 RuntimeDefault seccomp
+  运行，真实 PD/TiKV 3+3 健康。
+
+  聚焦单元测试 50 轮、目标 race 10 轮、`pkg/server` 20 轮和 live differential
+  10 轮通过；完整根测试、`pkg/server` race 及根/compat vet 通过。CORRUPT 仍由
+  TiKV/PD 数据完整性与管理面处理，不能通过 `exclude=CORRUPT` 虚构本地 alarm。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
