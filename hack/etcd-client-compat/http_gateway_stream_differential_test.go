@@ -39,7 +39,7 @@ func TestHTTPGatewayStreamsDifferentialAgainstReferenceEtcd(t *testing.T) {
 	require.Equal(t, referenceOutcome, kubebrainOutcome)
 }
 
-func runHTTPGatewayStreamScenario(t *testing.T, endpoint, instance, leaseID string) httpGatewayStreamOutcome {
+func runHTTPGatewayStreamScenario(t *testing.T, endpoint, _ string, leaseID string) httpGatewayStreamOutcome {
 	t.Helper()
 	client := &http.Client{Timeout: 15 * time.Second}
 	baseURL := strings.TrimRight(endpoint, "/")
@@ -88,7 +88,7 @@ func runHTTPGatewayStreamScenario(t *testing.T, endpoint, instance, leaseID stri
 		return fieldValue
 	}
 
-	key := "/a357/http-stream/" + instance
+	key := "/a357/http-stream/watch-key"
 	post("/v3/kv/deleterange", map[string]any{"key": encode(key)})
 	post("/v3/kv/put", map[string]any{"key": encode(key), "value": encode("before")})
 	watchResponse, watchReader := openStream("/v3/watch", map[string]any{
@@ -104,7 +104,7 @@ func runHTTPGatewayStreamScenario(t *testing.T, endpoint, instance, leaseID stri
 	kv := requireMapField(t, event, "kv")
 	previous := requireMapField(t, event, "prev_kv")
 
-	name := "/a357/http-observe/" + instance
+	name := "/a357/http-observe/election"
 	post("/v3/lease/grant", map[string]any{"ID": leaseID, "TTL": "30"})
 	t.Cleanup(func() { post("/v3/lease/revoke", map[string]any{"ID": leaseID}) })
 	campaign := post("/v3/election/campaign", map[string]any{
