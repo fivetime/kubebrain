@@ -28,7 +28,7 @@ func TestRequestRateLimit(t *testing.T) {
 	}
 
 	dial := func(endpoint string) (*grpc.ClientConn, healthpb.HealthClient) {
-		conn, err := grpc.NewClient(endpoint, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		conn, err := grpc.NewClient(grpcTarget(endpoint), grpc.WithTransportCredentials(insecure.NewCredentials()))
 		require.NoError(t, err)
 		t.Cleanup(func() { require.NoError(t, conn.Close()) })
 		return conn, healthpb.NewHealthClient(conn)

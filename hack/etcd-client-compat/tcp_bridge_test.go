@@ -32,7 +32,7 @@ func newTCPBridge(t *testing.T, target string) *tcpBridge {
 	require.NoError(t, err)
 	bridge := &tcpBridge{
 		listener: listener,
-		target:   bridgeDialTarget(target),
+		target:   grpcTarget(target),
 		conns:    make(map[net.Conn]struct{}),
 	}
 	bridge.acceptWG.Add(1)
@@ -41,7 +41,7 @@ func newTCPBridge(t *testing.T, target string) *tcpBridge {
 	return bridge
 }
 
-func bridgeDialTarget(endpoint string) string {
+func grpcTarget(endpoint string) string {
 	return strings.TrimPrefix(strings.TrimPrefix(endpoint, "http://"), "https://")
 }
 

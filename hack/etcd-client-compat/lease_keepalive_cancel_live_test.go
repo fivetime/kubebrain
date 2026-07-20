@@ -26,7 +26,7 @@ func TestLeaseKeepAliveFollowerCancellationMetricsLive(t *testing.T) {
 	if endpoint == "" || metricsURL == "" {
 		t.Skip("set LEASE_KEEPALIVE_FOLLOWER_ENDPOINT and LEASE_KEEPALIVE_FOLLOWER_METRICS_URL")
 	}
-	conn, err := grpc.NewClient(endpoint, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.NewClient(grpcTarget(endpoint), grpc.WithTransportCredentials(insecure.NewCredentials()))
 	require.NoError(t, err)
 	defer conn.Close()
 	client := etcdserverpb.NewLeaseClient(conn)

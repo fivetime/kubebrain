@@ -6,7 +6,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestBridgeDialTarget(t *testing.T) {
+func TestGRPCTarget(t *testing.T) {
 	for _, testCase := range []struct {
 		name     string
 		endpoint string
@@ -17,7 +17,7 @@ func TestBridgeDialTarget(t *testing.T) {
 		{name: "https", endpoint: "https://etcd.example.test:2379", want: "etcd.example.test:2379"},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
-			require.Equal(t, testCase.want, bridgeDialTarget(testCase.endpoint))
+			require.Equal(t, testCase.want, grpcTarget(testCase.endpoint))
 		})
 	}
 }

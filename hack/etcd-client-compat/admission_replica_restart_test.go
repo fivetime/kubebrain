@@ -93,7 +93,7 @@ func TestAdmissionQuotaResetsAfterReplicaRestart(t *testing.T) {
 
 func admissionHealthClient(t *testing.T, endpoint string) (*grpc.ClientConn, healthpb.HealthClient) {
 	t.Helper()
-	conn, err := grpc.NewClient(endpoint, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.NewClient(grpcTarget(endpoint), grpc.WithTransportCredentials(insecure.NewCredentials()))
 	require.NoError(t, err)
 	t.Cleanup(func() {
 		require.NoError(t, conn.Close())
