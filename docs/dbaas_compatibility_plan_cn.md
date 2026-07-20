@@ -5661,6 +5661,32 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   和 endpoint proposal health 全部通过，证明版本指标在正常启动和持久状态恢复后
   都不会丢失。
 
+- **Lease A312 repeated-leader renewal soak（2026-07-20）**：对照 upstream
+  `/root/etcd/client/v3/lease.go` 的 `KeepAlive`、`resetRecv`、
+  `sendKeepAliveLoop` 和 `deadlineLoop`。clientv3 在 keepalive stream 断开后必须
+  重建 stream、重新发送所有到期 lease ID，并在原 TTL deadline 前收到正 TTL 响应；
+  否则即使一次 `KeepAliveOnce` 或单 lease failover 通过，批量长期连接仍可能静默关闭
+  channel 并让 attached key 过期。现有 A240 只覆盖 256 个短
+  Grant/KeepAliveOnce/TTL/Revoke 周期，已有 failover 门禁也只绑定单 session 或单
+  lease，不能证明多客户端持续 stream 跨连续 leader replacement。
+
+  新增显式 opt-in 的破坏性门禁：8 个独立 clientv3 client 各维持 8 个 TTL=30s lease
+  及 attached key，共 64 条持续 KeepAlive；外部命令每轮动态发现并删除当前 leader，
+  连续执行 3 轮。每轮替换完成后，测试为每条 lease 记录响应水位，要求全部 64 条都
+  收到严格更新的正 TTL 响应，再逐 key 验证仍存在并绑定原 lease；任一 channel 提前
+  关闭、错误响应、响应停滞、key 丢失或 lease 改绑均立即失败。结束时主动停止 stream、
+  revoke 全部 lease，并确认隔离前缀为空。未显式设置 failover command 时测试默认
+  skip，避免在共享或生产实例误执行 Pod 删除。
+
+  compat 确定性 skip/compile 连续 100 轮通过（0.028 秒），race 连续 50 轮通过
+  （1.127 秒），compat `go vet` 通过。A311 三副本 TiKV-backed KubeBrain 上普通与
+  race 两轮真实门禁分别在 64.69/64.41 秒通过，共完成 6 次当前 leader replacement；
+  首轮后三个 Pod UID 均变化，证明三轮不是重复删除旧对象或空操作。每轮全部 64 条
+  stream 恢复并保持 key/lease 绑定，最终测试前缀无残留，KubeBrain 3/3 Ready 且
+  restartCount=0，PD/TiKV 3+3 Ready，endpoint proposal health 通过。本轮未发现
+  runtime 差距，只增加永久故障门禁，不重建 A311 镜像；小时级、跨可用区和网络分区
+  soak 仍属于 P2 未完成项。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
@@ -5670,7 +5696,8 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
    独立 outbound client cert/key 与 peer CN/SAN allowlist 已完成；下一步扩大配额与故障
    注入覆盖。client RPC 并发限额已覆盖真实副本 UID replacement 后的计数释放。
 2. `client/v3/concurrency` mutex/election/session、lease 自然过期和 failover
-   recipe 已通过；继续增加长时间 soak。
+   recipe 已通过；64 lease/8 client/3 次连续 leader replacement 的加速 renewal
+   soak 已建立，继续增加小时级和跨可用区 soak。
 3. DBaaS 创建、扩缩、升级的数据面 release gate、备份完成 gate、Object Lock
    上传/保留删除、恢复验证 receipt、UID-fenced 流量切换、恢复后持续审计、证书轮换
    gate、UID-fenced 销毁状态机及持久 operation API/worker fencing、Backup/
