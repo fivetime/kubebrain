@@ -121,6 +121,7 @@ func NewOptions() *KubeBrainOption {
 			TLSMinVersion:             "TLS1.2",
 			CORS:                      []string{"*"},
 			HostWhitelist:             []string{"*"},
+			EnableGRPCGateway:         true,
 		},
 		// The namespace for KubeBrain-internal coordination keys (leader-election
 		// lock, compact watermark) is a fixed constant, NOT configuration: it is
@@ -170,6 +171,7 @@ func (o *KubeBrainOption) AddFlags(fs *pflag.FlagSet) {
 	fs.StringSliceVar(&o.epsConf.CipherSuites, "cipher-suites", o.epsConf.CipherSuites, "Comma-separated TLS cipher suite names for client, peer, and info endpoints. TLS 1.3 suites are selected by Go and cannot be configured.")
 	fs.StringSliceVar(&o.epsConf.CORS, "cors", o.epsConf.CORS, "Comma-separated whitelist of origins for client HTTP CORS; empty or * allows all.")
 	fs.StringSliceVar(&o.epsConf.HostWhitelist, "host-whitelist", o.epsConf.HostWhitelist, "Comma-separated acceptable Host names for plaintext client HTTP requests; empty or * allows all.")
+	fs.BoolVar(&o.epsConf.EnableGRPCGateway, "enable-grpc-gateway", o.epsConf.EnableGRPCGateway, "Enable the etcd v3 JSON/HTTP gateway on the client port.")
 	fs.StringSliceVar(&o.SkippedPrefixes, "skip-key-prefix", o.SkippedPrefixes, "Comma-separated, non-overlapping user key prefixes excluded from physical compaction. Values must be non-empty and must not end in '/'.")
 	fs.StringVar(&o.ClusterName, "cluster-name", o.ClusterName, "cluster name; used ONLY as the metrics 'cluster' tag. For data isolation on a shared storage cluster use --keyspace")
 	fs.StringVar(&o.Keyspace, "keyspace", o.Keyspace, "tenant keyspace on the shared storage cluster ([a-z0-9-], max 64). Every key family (objects, event log, internal metadata, coordination keys) is derived from it, so clusters with different keyspaces on one TiKV cannot see or garbage-collect each other's data. Empty (default) = the original single-tenant keyspace; existing deployments keep their data. All replicas of one cluster MUST agree")

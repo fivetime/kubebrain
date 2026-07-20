@@ -90,6 +90,11 @@ type Config struct {
 	CORS          []string
 	HostWhitelist []string
 
+	// EnableGRPCGateway exposes etcd's generated v3 JSON/HTTP gateway on the
+	// client port. Requests self-dial the local gRPC listener so every normal
+	// interceptor and authorization check remains in force.
+	EnableGRPCGateway bool
+
 	// EnableEtcdCompatibility is the flag if KubeWharf should try to be compatible with etcd3
 	EnableEtcdCompatibility bool
 

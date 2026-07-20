@@ -17,16 +17,26 @@ package endpoint
 import (
 	"context"
 	"errors"
+	"fmt"
+	"math"
+	"net"
 	"net/http"
+	"strconv"
 	// Deliberately NOT importing net/http/pprof: its init() registers handlers on
 	// http.DefaultServeMux, which would re-expose unauthenticated pprof the moment
 	// anything serves DefaultServeMux. pprof is wired explicitly and gated behind
 	// EnablePprof in pprof.go (#32).
 
+	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/keepalive"
+	"google.golang.org/protobuf/encoding/protojson"
 	"k8s.io/klog/v2"
+
+	etcdservergw "go.etcd.io/etcd/api/v3/etcdserverpb/gw"
 
 	"github.com/kubewharf/kubebrain/pkg/backend"
 	"github.com/kubewharf/kubebrain/pkg/metrics"
@@ -124,7 +134,17 @@ func (e *Endpoint) buildExposedServers(sc *SecurityConfig, servers ...exposedSer
 }
 
 func (e *Endpoint) runClientServer(ctx context.Context) error {
-	clientHttp := e.buildClientHttpServer()
+	clientHttp, gatewayConn, err := e.buildClientHttpServer(ctx)
+	if err != nil {
+		return err
+	}
+	if gatewayConn != nil {
+		defer func() {
+			if err := gatewayConn.Close(); err != nil {
+				klog.ErrorS(err, "close gRPC gateway connection")
+			}
+		}()
+	}
 	clientGrpc := e.buildClientGrpcServer()
 	exposedServers := e.buildExposedServers(e.config.ClientSecurityConfig, clientHttp, clientGrpc)
 	clientServiceGroup := newRootServer(e.config.Port, exposedServers...)
@@ -149,7 +169,7 @@ func (e *Endpoint) runMetricsServer(ctx context.Context) error {
 	return infoServiceGroup.run(ctx)
 }
 
-func (e *Endpoint) buildClientHttpServer() exposedServer {
+func (e *Endpoint) buildClientHttpServer(ctx context.Context) (exposedServer, *grpc.ClientConn, error) {
 	// The client port is the production data plane reachable by every etcd client.
 	// It must NOT expose /metrics or /debug/pprof there: those are unauthenticated
 	// info-disclosure and (pprof) CPU/heap DoS vectors. Metrics and (opt-in) pprof
@@ -158,8 +178,77 @@ func (e *Endpoint) buildClientHttpServer() exposedServer {
 	handlersMaps := []map[string]http.Handler{
 		e.server.GetClientHttpHandlers(),
 	}
+	var gatewayConn *grpc.ClientConn
+	if e.config.EnableGRPCGateway {
+		gateway, conn, err := e.buildGRPCGateway(ctx)
+		if err != nil {
+			return nil, nil, err
+		}
+		gatewayConn = conn
+		handlersMaps = append(handlersMaps, map[string]http.Handler{"/": gateway})
+	}
 
-	return newHTTPAccessControlledServer(e.config.CORS, e.config.HostWhitelist, handlersMaps...)
+	return newHTTPAccessControlledServer(e.config.CORS, e.config.HostWhitelist, handlersMaps...), gatewayConn, nil
+}
+
+type gatewayRegisterFunc func(context.Context, *runtime.ServeMux, *grpc.ClientConn) error
+
+func (e *Endpoint) buildGRPCGateway(ctx context.Context) (http.Handler, *grpc.ClientConn, error) {
+	target := net.JoinHostPort("127.0.0.1", strconv.Itoa(e.config.Port))
+	dialOptions := []grpc.DialOption{
+		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(math.MaxInt32)),
+	}
+	if e.config.ClientSecurityConfig.mode() == modeOnlySecure {
+		tlsConfig := e.config.ClientSecurityConfig.getClientTLSConfig()
+		if tlsConfig == nil {
+			return nil, nil, fmt.Errorf("gRPC gateway requires client TLS config for TLS-only endpoint")
+		}
+		tlsConfig = tlsConfig.Clone()
+		tlsConfig.InsecureSkipVerify = true
+		tlsConfig.ServerName = ""
+		dialOptions = append(dialOptions, grpc.WithTransportCredentials(credentials.NewTLS(tlsConfig)))
+	} else {
+		dialOptions = append(dialOptions, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	}
+	conn, err := grpc.NewClient(target, dialOptions...)
+	if err != nil {
+		return nil, nil, fmt.Errorf("create gRPC gateway client: %w", err)
+	}
+
+	mux, err := newGRPCGatewayMux(ctx, conn)
+	if err != nil {
+		_ = conn.Close()
+		return nil, nil, err
+	}
+	return mux, conn, nil
+}
+
+func newGRPCGatewayMux(ctx context.Context, conn *grpc.ClientConn) (http.Handler, error) {
+	mux := runtime.NewServeMux(
+		runtime.WithMarshalerOption(runtime.MIMEWildcard, &runtime.HTTPBodyMarshaler{
+			Marshaler: &runtime.JSONPb{
+				MarshalOptions: protojson.MarshalOptions{
+					UseProtoNames:   true,
+					EmitUnpopulated: false,
+				},
+				UnmarshalOptions: protojson.UnmarshalOptions{DiscardUnknown: true},
+			},
+		}),
+	)
+	registers := []gatewayRegisterFunc{
+		etcdservergw.RegisterKVHandler,
+		etcdservergw.RegisterWatchHandler,
+		etcdservergw.RegisterLeaseHandler,
+		etcdservergw.RegisterClusterHandler,
+		etcdservergw.RegisterMaintenanceHandler,
+		etcdservergw.RegisterAuthHandler,
+	}
+	for _, register := range registers {
+		if err := register(ctx, mux, conn); err != nil {
+			return nil, fmt.Errorf("register gRPC gateway handler: %w", err)
+		}
+	}
+	return mux, nil
 }
 
 func (e *Endpoint) buildPeerHttpServer() exposedServer {

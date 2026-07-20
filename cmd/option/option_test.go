@@ -130,6 +130,7 @@ func TestTransportPolicyDefaultsMatchEtcd(t *testing.T) {
 	require.Equal(t, uint(300), o.epsConf.AuthTokenTTL)
 	require.Equal(t, []string{"*"}, o.epsConf.CORS)
 	require.Equal(t, []string{"*"}, o.epsConf.HostWhitelist)
+	require.True(t, o.epsConf.EnableGRPCGateway)
 }
 
 // TestWatchProgressNotifyIntervalValidation locks the k8s-1.37-review guard:
