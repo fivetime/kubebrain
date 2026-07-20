@@ -100,6 +100,14 @@ gate 的运行时依赖，版本必须落在受支持 Kubernetes server 的 `±1
 从最终非 root 镜像运行 `kubectl version --client -o json`，并用同一二进制连接目标
 Kubernetes API。checksum 门禁不等于跨架构运行验证；当前 arm64 仍需独立 CI runner。
 
+`TARGETARCH` 必须同时控制 kubectl 下载和 build stage 的 `GOARCH`；所有 KubeBrain
+数据面、备份、计量和 operation 二进制必须设置 `GOOS=linux GOARCH=${TARGETARCH}`，
+且 `kube-brain version` 的 `Go OS/Arch` 必须与最终 image platform 一致。发布多架构
+manifest 前，应从每个 build stage/final image 提取全部可执行文件并检查 ELF machine，
+禁止同一镜像混入不同架构。交叉编译和静态 ELF 检查不能替代运行验证：amd64 与 arm64
+都必须在对应原生 runner 上完成容器启动、kubectl/API、TiKV/PD 和 readiness smoke，
+再合并 manifest list。
+
 ## 真-k3s 消费端驱动验证进展（2026-07-03）
 
 用真实 kube-apiserver（k3s v1.36，`--datastore-endpoint` 指向 KubeBrain-on-TiKV）端到端驱动，已完成（脚本 `hack/dev/k3s-load-smoke.sh` 一键复跑）：

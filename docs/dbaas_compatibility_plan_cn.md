@@ -6765,6 +6765,37 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   initialization failure/panic/fatal/segmentation/data race/storage error；PD/TiKV
   3+3 Ready。
 
+- **Production A348 target-architecture binary coherence（2026-07-20）**：A347 按
+  `TARGETARCH` 选择官方 kubectl 后继续审计 multi-arch 路径，发现全部 KubeBrain 和
+  运维 Go 二进制仍继承 builder 主机架构。以 `TARGETARCH=arm64` 发布时会得到 arm64
+  kubectl 与 amd64 数据面混装的不可启动镜像，且 `kube-brain version` 错报
+  `linux/amd64`。
+
+  build stage 现设置 `GOOS=linux GOARCH=${TARGETARCH}`，覆盖 `build-tikv.sh`、
+  `build-badger.sh` 以及 Dockerfile 内全部 production/backup/objectstore `go build`。
+  顺序门禁要求该环境位于源码 COPY 和编译前；`build-base.sh` 实际 metadata 测试以
+  `GOARCH=arm64` 运行，固定 ldflags 中 `GoOsArch=linux/arm64`。build 包连续 20 轮和
+  race 10 轮通过。
+
+  从实现提交 `890600f6c459e101459531b075d2807a37fcd2ec` 的同一 `git archive`
+  分别构建 arm64 build stage 与 amd64 完整 image，context 7.352 MB，两个 module
+  download 均命中缓存。arm64 日志显示 kubectl checksum OK、`go_arch=arm64`；
+  从 build image 提取的 23 个可执行文件全部为静态 ARM AArch64 ELF，`kube-brain`
+  Go metadata 同时记录 `GOARCH=arm64`、`GoOsArch=linux/arm64` 和完整 commit。
+  amd64 最终镜像的 23 个可执行文件则全部为 x86-64，version 报
+  `linux/amd64`，不存在混合架构。
+
+  amd64 镜像 `kubebrain:a348-cross-arch-coherence` ID 为
+  `sha256:f229498aa8f520631123318f2a6040762cb64723ecc40402494e5a1cf87f7782`，
+  OCI revision 与二进制 version 匹配，运行用户 `65532:65532`。该镜像在独立
+  `a348-cross-arch-coherence` keyspace、真实 3 PD/3 TiKV 上 Ready；Put/Get/Delete
+  `/a348/production-ready` 成功，endpoint proposal health 70.349226ms，
+  `/ready` 与四项 readyz 全部通过。Pod UID
+  `c9dbdc09-f825-4dc4-a1b9-cd58fa3d6280`、restartCount=0，日志无
+  initialization failure/panic/fatal/segmentation/data race/storage error；PD/TiKV
+  3+3 Ready。当前宿主无 arm64 执行环境，因此 arm64 最终 runtime、Kubernetes API 与
+  TiKV/PD smoke 仍须在原生 arm64 CI runner 完成后才能发布 multi-arch manifest。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
