@@ -5794,6 +5794,51 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   完成；价格版本、底层 counter 精确 increase 策略、对象存储成本和账单审计对账仍属
   P1，不能据此宣称最终 billing 已完成。
 
+- **Metering A316 counter-based hourly contract v2（2026-07-20）**：修复 A315 已明确
+  保留的 CPU/网络 5 分钟 rate 小时末外推误差。保留 v1 recording rules 和 immutable
+  artifact 语义不变，新增 `kubebrain_dbaas:metering_hour_complete`：过去一小时的
+  `metering_data_complete` 最小值必须为 1，并且至少有 60 个一分钟 evaluation 样本，
+  防止规则刚部署时用短窗口冒充完整小时。新增 CPU 原始 counter `increase[1h]`
+  core-seconds、网络收发 counter `increase[1h]` bytes，以及内存和
+  provisioned/used storage 的完整小时平均值；全部继续受小时完整性 gate 约束。
+
+  `kubebrain.metering-sample.v2` 固定采集上述 6 个小时资源量/均值和两项备份观测。
+  `kubebrain.metering-rollup.v2` 对 CPU core-seconds 和网络 bytes 直接跨槽求和，对
+  内存和存储 hour_avg 乘 3600 生成 byte-seconds。Prometheus `increase` 的 counter
+  reset 处理和 scrape 边界外推是该版本测量契约的一部分，后续价格版本不得静默改用
+  其他公式。备份 artifact/age 仍只产生 min/max/last，不当作对象存储费用。
+
+  升级日可包含 v1/v2 混合小时：generic `blob-read` 从单 format 改为最多 8 项、非空、
+  无重复的显式 allowlist；远端 metadata 必须命中 allowlist，receipt 返回实际 format。
+  Roller 只允许已知 v1/v2，把每个 source 的 artifact format 固定进 v2 rollup；v1
+  CPU/网络按旧 rate×3600，v2 按小时 increase 直接累加，未知或 format/content 不一致
+  均拒绝。由此不需要覆盖旧对象，也不会在升级日混用公式而不留证据。
+
+  官方 Prometheus `promtool v3.5.0 check rules` 对完整 51 条生产规则通过；当前 kind
+  集群未安装 Prometheus Operator CRD，因此本轮不把 Kubernetes dry-run 或真实一小时
+  Prometheus evaluation 冒充已执行证据。计量包普通测试通过（0.078 秒），确定性
+  连续 100 轮通过（4.713 秒），race 连续 20 轮通过（4.440 秒）；对象存储普通测试
+  通过（0.168 秒），确定性连续 100 轮通过（12.599 秒），race 连续 20 轮通过
+  （14.595 秒）。两个模块 vet、根模块全量测试/vet 和 production manifest 测试通过。
+  单测覆盖 60 点门禁的规则文本、v1/v2 指标顺序、混合升级日公式、format allowlist
+  和 canonical source format。
+
+  真实 MinIO Object Lock v2 集成连续两次读取 24 个小时 source 并归档同一日 rollup，
+  源码执行器 2.01 秒、最终镜像执行器 2.02 秒通过；独立 `mc` 清点正好 25 个 version，
+  全部 versionOrdinal=1。10,572-byte rollup 的 format 为
+  `kubebrain.metering-rollup.v2`，SHA-256 checksum/metadata、exact version 和
+  COMPLIANCE retain-until 均匹配；临时 NodePort/检查 Pod 已删除。
+
+  发布镜像 `kubebrain:a316-counter-metering` 由完整代码提交
+  `1833bf07c4c00adc9da1832430099d403c139ddf` 构建，本地镜像 digest 为
+  `sha256:185922837cb38410f327ad3d12f84f1e76a64bf5892bedc1b67a7fbae24547d4`，
+  OCI revision/version 和镜像内对象执行器均已核对。A315 三副本 StatefulSet 有序
+  滚动到 A316 后 3/3 Ready、restartCount=0，PD/TiKV 3+3 Ready，etcdctl Status
+  保持 3.7.0，endpoint proposal health 和 production release gate 全部通过。
+  counter-based 小时测量与混合格式迁移至此完成；价格版本、对象存储成本和账单审计
+  对账仍属 P1。真实 Prometheus 一小时 evaluation 应在安装 Operator 的预生产监控
+  集群作为额外发布门禁补跑。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
@@ -5822,8 +5867,9 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
    请求 QPS/burst、逻辑 Watch 总数、CPU/内存饱和、网络错误/丢包及 PD/TiKV PVC 容量
    告警已具备稳定错误或指标，网络 RX/TX 原始计量和逻辑备份 artifact 容量/新鲜度
    指标已暴露，单实例资源/容量/网络/备份 recording rules 和 fail-closed 缺测标记已
-   建立，不可变小时采样留存和确定性跨日采样积分已完成；继续补价格版本、底层 counter
-   精确 increase 策略、对象存储成本和审计对账。
+   建立，不可变小时采样、counter-based 小时窗口和确定性跨日积分已完成；继续补价格
+   版本、对象存储成本和审计对账，并在具备 Prometheus Operator 的预生产环境补真实
+   一小时规则 evaluation 门禁。
 
 ### P2：运维兼容和长期验证
 
