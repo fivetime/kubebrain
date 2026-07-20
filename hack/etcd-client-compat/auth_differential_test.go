@@ -20,6 +20,7 @@ type authErrorOutcome struct {
 	Code             codes.Code
 	Message          string
 	PermissionDenied bool
+	UserEmpty        bool
 }
 
 type authDifferentialOutcome struct {
@@ -64,6 +65,10 @@ type authDifferentialOutcome struct {
 	RootHashOK                bool
 	UserKeepAlive             authErrorOutcome
 	RootKeepAliveOK           bool
+	AnonymousLeaseList        authErrorOutcome
+	UserLeaseList             authErrorOutcome
+	RootLeaseListContains     bool
+	UserLeaseListAfterRevoke  bool
 	UserLeasedPut             authErrorOutcome
 	UserLeasedTxnPut          authErrorOutcome
 	WriterTxnPutPrevKV        authErrorOutcome
@@ -104,6 +109,7 @@ func authError(err error) authErrorOutcome {
 		Code:             status.Code(err),
 		Message:          status.Convert(err).Message(),
 		PermissionDenied: errors.Is(err, rpctypes.ErrPermissionDenied),
+		UserEmpty:        errors.Is(err, rpctypes.ErrUserEmpty),
 	}
 }
 
@@ -183,6 +189,22 @@ func collectAuthDifferentialOutcome(t *testing.T, endpoint string) authDifferent
 		defer cleanupCancel()
 		_, _ = root.Revoke(cleanupCtx, protectedLease.ID)
 		_, _ = root.AuthDisable(cleanupCtx)
+		if users, listErr := bootstrap.UserList(cleanupCtx); listErr == nil {
+			for _, user := range users.Users {
+				if detail, getErr := bootstrap.UserGet(cleanupCtx, user); getErr == nil {
+					for _, role := range detail.Roles {
+						_, _ = bootstrap.UserRevokeRole(cleanupCtx, user, role)
+					}
+				}
+				_, _ = bootstrap.UserDelete(cleanupCtx, user)
+			}
+		}
+		if roles, listErr := bootstrap.RoleList(cleanupCtx); listErr == nil {
+			for _, role := range roles.Roles {
+				_, _ = bootstrap.RoleDelete(cleanupCtx, role)
+			}
+		}
+		_, _ = bootstrap.Delete(cleanupCtx, "/auth-", clientv3.WithPrefix())
 	})
 	_, anonymousCompactErr := bootstrap.Compact(ctx, compactRevisions[0])
 	_, userCompactErr := alice.Compact(ctx, compactRevisions[1])
@@ -202,6 +224,17 @@ func collectAuthDifferentialOutcome(t *testing.T, endpoint string) authDifferent
 	_, rootHashErr := root.HashKV(ctx, root.Endpoints()[0], 0)
 	_, userKeepAliveErr := alice.KeepAliveOnce(ctx, protectedLease.ID)
 	_, rootKeepAliveErr := root.KeepAliveOnce(ctx, protectedLease.ID)
+	_, anonymousLeaseListErr := bootstrap.Leases(ctx)
+	_, userLeaseListErr := alice.Leases(ctx)
+	rootLeaseList, rootLeaseListErr := root.Leases(ctx)
+	require.NoError(t, rootLeaseListErr)
+	rootLeaseListContains := false
+	for _, lease := range rootLeaseList.Leases {
+		if lease.ID == protectedLease.ID {
+			rootLeaseListContains = true
+			break
+		}
+	}
 	_, userLeasedPutErr := alice.Put(
 		ctx, "/auth-allowed/leased-put", "value", clientv3.WithLease(protectedLease.ID),
 	)
@@ -253,6 +286,9 @@ func collectAuthDifferentialOutcome(t *testing.T, endpoint string) authDifferent
 	nestedPrevKVValue, err := root.Get(ctx, "/auth-write-only/key")
 	require.NoError(t, err)
 	require.Len(t, nestedPrevKVValue.Kvs, 1)
+	_, err = root.Revoke(ctx, protectedLease.ID)
+	require.NoError(t, err)
+	_, userLeaseListAfterRevokeErr := alice.Leases(ctx)
 
 	_, err = root.UserGrantRole(ctx, "root", "root")
 	require.NoError(t, err)
@@ -382,6 +418,10 @@ func collectAuthDifferentialOutcome(t *testing.T, endpoint string) authDifferent
 		RootHashOK:                rootHashErr == nil,
 		UserKeepAlive:             authError(userKeepAliveErr),
 		RootKeepAliveOK:           rootKeepAliveErr == nil,
+		AnonymousLeaseList:        authError(anonymousLeaseListErr),
+		UserLeaseList:             authError(userLeaseListErr),
+		RootLeaseListContains:     rootLeaseListContains,
+		UserLeaseListAfterRevoke:  userLeaseListAfterRevokeErr == nil,
 		UserLeasedPut:             authError(userLeasedPutErr),
 		UserLeasedTxnPut:          authError(userLeasedTxnPutErr),
 		WriterTxnPutPrevKV:        authError(writerTxnPutPrevKVErr),
@@ -409,6 +449,10 @@ func TestAuthDifferentialAgainstEtcd(t *testing.T) {
 	reference := collectAuthDifferentialOutcome(t, referenceEndpoint)
 	require.True(t, reference.UserLeasedPut.PermissionDenied)
 	require.True(t, reference.UserLeasedTxnPut.PermissionDenied)
+	require.True(t, reference.AnonymousLeaseList.UserEmpty)
+	require.True(t, reference.UserLeaseList.PermissionDenied)
+	require.True(t, reference.RootLeaseListContains)
+	require.True(t, reference.UserLeaseListAfterRevoke)
 	require.True(t, reference.WriterTxnPutPrevKV.PermissionDenied)
 	require.True(t, reference.WriterTxnValuePreserved)
 	actual := collectAuthDifferentialOutcome(t, kubebrainEndpoint)
