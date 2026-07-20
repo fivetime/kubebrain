@@ -37,11 +37,15 @@ type httpGatewayOutcome struct {
 }
 
 type httpGatewayAuthOutcome struct {
-	AnonymousStatus  int
-	AnonymousCode    int
-	TokenNonEmpty    bool
-	AuthorizedStatus int
-	DisableStatus    int
+	AnonymousStatus        int
+	AnonymousCode          int
+	TokenNonEmpty          bool
+	AuthorizedStatus       int
+	AnonymousLockStatus    int
+	AnonymousLockCode      int
+	AuthorizedLockStatus   int
+	AuthorizedUnlockStatus int
+	DisableStatus          int
 }
 
 type httpGatewayConcurrencyOutcome struct {
@@ -309,9 +313,15 @@ func runHTTPGatewayAuthScenario(t *testing.T, endpoint string) httpGatewayAuthOu
 		return response.StatusCode, decoded
 	}
 
+	const leaseID = "8563563"
+	lockName := base64.StdEncoding.EncodeToString([]byte("/a356/http-auth-lock"))
+	_, _ = post("/v3/lease/revoke", fmt.Sprintf(`{"ID":%q}`, leaseID), "")
+	status, _ := post("/v3/lease/grant", fmt.Sprintf(`{"ID":%q,"TTL":"30"}`, leaseID), "")
+	require.Equal(t, http.StatusOK, status)
+
 	_, _ = post("/v3/auth/user/delete", `{"name":"root"}`, "")
 	_, _ = post("/v3/auth/role/delete", `{"role":"root"}`, "")
-	status, _ := post("/v3/auth/user/add", `{"name":"root","password":"a355-password"}`, "")
+	status, _ = post("/v3/auth/user/add", `{"name":"root","password":"a355-password"}`, "")
 	require.Equal(t, http.StatusOK, status)
 	status, _ = post("/v3/auth/role/add", `{"name":"root"}`, "")
 	require.Equal(t, http.StatusOK, status)
@@ -323,6 +333,10 @@ func runHTTPGatewayAuthScenario(t *testing.T, endpoint string) httpGatewayAuthOu
 	anonymousStatus, anonymous := post("/v3/kv/range", `{"key":"L2EzNTUv"}`, "")
 	codeValue, ok := anonymous["code"].(float64)
 	require.True(t, ok, "missing anonymous error code in %#v", anonymous)
+	anonymousLockStatus, anonymousLock := post("/v3/lock/lock",
+		fmt.Sprintf(`{"name":%q,"lease":%q}`, lockName, leaseID), "")
+	anonymousLockCodeValue, ok := anonymousLock["code"].(float64)
+	require.True(t, ok, "missing anonymous lock error code in %#v", anonymousLock)
 
 	status, authenticated := post("/v3/auth/authenticate",
 		`{"name":"root","password":"a355-password"}`, "")
@@ -332,19 +346,32 @@ func runHTTPGatewayAuthScenario(t *testing.T, endpoint string) httpGatewayAuthOu
 	require.NotEmpty(t, token)
 
 	authorizedStatus, _ := post("/v3/kv/range", `{"key":"L2EzNTUv"}`, token)
+	authorizedLockStatus, authorizedLock := post("/v3/lock/lock",
+		fmt.Sprintf(`{"name":%q,"lease":%q}`, lockName, leaseID), token)
+	lockKey, ok := authorizedLock["key"].(string)
+	require.True(t, ok, "missing authorized lock key in %#v", authorizedLock)
+	authorizedUnlockStatus, _ := post("/v3/lock/unlock", fmt.Sprintf(`{"key":%q}`, lockKey), token)
 	disableStatus, _ := post("/v3/auth/disable", `{}`, token)
 	require.Equal(t, http.StatusOK, authorizedStatus)
+	require.Equal(t, http.StatusOK, authorizedLockStatus)
+	require.Equal(t, http.StatusOK, authorizedUnlockStatus)
+	status, _ = post("/v3/lease/revoke", fmt.Sprintf(`{"ID":%q}`, leaseID), "")
+	require.Equal(t, http.StatusOK, status)
 	status, _ = post("/v3/auth/user/delete", `{"name":"root"}`, token)
 	require.Equal(t, http.StatusOK, status)
 	status, _ = post("/v3/auth/role/delete", `{"role":"root"}`, token)
 	require.Equal(t, http.StatusOK, status)
 
 	return httpGatewayAuthOutcome{
-		AnonymousStatus:  anonymousStatus,
-		AnonymousCode:    int(codeValue),
-		TokenNonEmpty:    token != "",
-		AuthorizedStatus: authorizedStatus,
-		DisableStatus:    disableStatus,
+		AnonymousStatus:        anonymousStatus,
+		AnonymousCode:          int(codeValue),
+		TokenNonEmpty:          token != "",
+		AuthorizedStatus:       authorizedStatus,
+		AnonymousLockStatus:    anonymousLockStatus,
+		AnonymousLockCode:      int(anonymousLockCodeValue),
+		AuthorizedLockStatus:   authorizedLockStatus,
+		AuthorizedUnlockStatus: authorizedUnlockStatus,
+		DisableStatus:          disableStatus,
 	}
 }
 

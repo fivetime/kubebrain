@@ -22,9 +22,7 @@ import (
 
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
-	"go.etcd.io/etcd/server/v3/etcdserver/api/v3election"
 	"go.etcd.io/etcd/server/v3/etcdserver/api/v3election/v3electionpb"
-	"go.etcd.io/etcd/server/v3/etcdserver/api/v3lock"
 	"go.etcd.io/etcd/server/v3/etcdserver/api/v3lock/v3lockpb"
 	"go.etcd.io/etcd/server/v3/proxy/grpcproxy/adapter"
 	"golang.org/x/crypto/bcrypt"
@@ -302,8 +300,8 @@ func (s *RPCServer) Register(server *grpc.Server) {
 	etcdserverpb.RegisterClusterServer(server, s)
 	etcdserverpb.RegisterMaintenanceServer(server, s)
 	etcdserverpb.RegisterAuthServer(server, s)
-	v3lockpb.RegisterLockServer(server, v3lock.NewLockServer(s.concurrencyClient))
-	v3electionpb.RegisterElectionServer(server, v3election.NewElectionServer(s.concurrencyClient))
+	v3lockpb.RegisterLockServer(server, newLockServer(s.concurrencyClient))
+	v3electionpb.RegisterElectionServer(server, newElectionServer(s.concurrencyClient))
 }
 
 func newConcurrencyClient(server *RPCServer) *clientv3.Client {

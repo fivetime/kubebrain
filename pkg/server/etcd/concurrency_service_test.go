@@ -22,11 +22,11 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
-	"go.etcd.io/etcd/server/v3/etcdserver/api/v3election"
 	"go.etcd.io/etcd/server/v3/etcdserver/api/v3election/v3electionpb"
-	"go.etcd.io/etcd/server/v3/etcdserver/api/v3lock"
 	"go.etcd.io/etcd/server/v3/etcdserver/api/v3lock/v3lockpb"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 )
 
 func TestDedicatedLockAndElectionServicesUseKubeBrainBackend(t *testing.T) {
@@ -42,7 +42,7 @@ func TestDedicatedLockAndElectionServicesUseKubeBrainBackend(t *testing.T) {
 	contenderLease, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 30})
 	require.NoError(t, err)
 
-	lockServer := v3lock.NewLockServer(server.concurrencyClient)
+	lockServer := newLockServer(server.concurrencyClient)
 	locked, err := lockServer.Lock(ctx, &v3lockpb.LockRequest{
 		Name:  []byte("/a356/lock"),
 		Lease: lease.ID,
@@ -89,7 +89,7 @@ func TestDedicatedLockAndElectionServicesUseKubeBrainBackend(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, storedLock.Kvs)
 
-	electionServer := v3election.NewElectionServer(server.concurrencyClient)
+	electionServer := newElectionServer(server.concurrencyClient)
 	campaign, err := electionServer.Campaign(ctx, &v3electionpb.CampaignRequest{
 		Name:  []byte("/a356/election"),
 		Lease: lease.ID,
@@ -138,9 +138,10 @@ func TestDedicatedLockServicePreservesCallerAuthentication(t *testing.T) {
 	require.NoError(t, server.auth.userGrantRole(ctx, "root", "root"))
 	require.NoError(t, server.auth.enable(ctx))
 
-	lockServer := v3lock.NewLockServer(server.concurrencyClient)
+	lockServer := newLockServer(server.concurrencyClient)
 	_, err = lockServer.Lock(ctx, &v3lockpb.LockRequest{Name: []byte("/a356/auth"), Lease: lease.ID})
-	require.ErrorIs(t, err, rpctypes.ErrUserEmpty)
+	require.Equal(t, codes.Unknown, status.Code(err))
+	require.Equal(t, status.Convert(rpctypes.ErrUserEmpty).Message(), status.Convert(err).Message())
 
 	authenticated, err := server.Authenticate(ctx, &etcdserverpb.AuthenticateRequest{
 		Name: "root", Password: "secret",
