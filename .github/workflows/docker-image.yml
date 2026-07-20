@@ -39,9 +39,17 @@ jobs:
       - name: Compute image tag
         id: vars
         run: |
-          short_sha="$(git log -1 --pretty=%h)"
+          revision="$(git rev-parse HEAD)"
+          short_sha="$(git rev-parse --short=12 HEAD)"
+          version="$(git describe --tags --exact-match 2>/dev/null || printf '0.0.0-%s' "$short_sha")"
+          echo "revision=${revision}" >> "$GITHUB_OUTPUT"
           echo "short_sha=${short_sha}" >> "$GITHUB_OUTPUT"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
           echo "image=${REGISTRY}/${IMAGE_NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -54,12 +62,35 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push TiKV image
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
+          platforms: linux/amd64,linux/arm64
           push: true
           build-args: |
             STORAGE=tikv
+            KUBEBRAIN_VERSION=${{ steps.vars.outputs.version }}
+            KUBEBRAIN_GIT_SHA=${{ steps.vars.outputs.revision }}
+            KUBEBRAIN_BUILD_DATE=${{ steps.vars.outputs.created }}
           tags: |
             ${{ steps.vars.outputs.image }}:${{ steps.vars.outputs.short_sha }}
+            ${{ steps.vars.outputs.image }}:${{ steps.vars.outputs.revision }}
             ${{ steps.vars.outputs.image }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: mode=max
+          sbom: true
+
+      - name: Verify published multi-platform index
+        run: |
+          reference="${{ steps.vars.outputs.image }}@${{ steps.build.outputs.digest }}"
+          docker buildx imagetools inspect --raw "$reference" > "$RUNNER_TEMP/manifest.json"
+          jq -e '
+            [.manifests[].platform
+              | select(.os == "linux" and (.architecture == "amd64" or .architecture == "arm64"))
+              | .architecture] | sort == ["amd64", "arm64"]
+          ' "$RUNNER_TEMP/manifest.json"
+          test "$(jq '[.manifests[] | select(.platform.os == "linux")] | length' \
+            "$RUNNER_TEMP/manifest.json")" -eq 2
+          docker buildx imagetools inspect "$reference"

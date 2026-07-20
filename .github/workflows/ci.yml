@@ -15,7 +15,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  GO_VERSION: "1.22.x"
+  GO_VERSION: "1.26.5"
   ETCD_COMPAT_GO_VERSION: "1.26.x"
 
 jobs:
@@ -78,11 +78,42 @@ jobs:
       - name: Build Badger binary
         run: make badger
 
+      - name: Compute image metadata
+        id: image
+        run: |
+          echo "version=ci-$(git rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
+          echo "revision=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
       - name: Build TiKV Docker image
-        run: docker build --build-arg STORAGE=tikv -t kubebrain:ci-tikv .
+        run: |
+          docker build \
+            --build-arg TARGETARCH=amd64 \
+            --build-arg STORAGE=tikv \
+            --build-arg KUBEBRAIN_VERSION="${{ steps.image.outputs.version }}" \
+            --build-arg KUBEBRAIN_GIT_SHA="${{ steps.image.outputs.revision }}" \
+            --build-arg KUBEBRAIN_BUILD_DATE="${{ steps.image.outputs.created }}" \
+            -t kubebrain:ci-tikv .
+          test "$(docker image inspect kubebrain:ci-tikv \
+            --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')" \
+            = "${{ steps.image.outputs.revision }}"
+          test "$(docker image inspect kubebrain:ci-tikv --format '{{ .Config.User }}')" \
+            = "65532:65532"
+          test "$(docker run --rm --entrypoint kubectl kubebrain:ci-tikv \
+            version --client -o json | jq -r .clientVersion.gitVersion)" = "v1.36.2"
 
       - name: Build Badger Docker image
-        run: docker build --build-arg STORAGE=badger -t kubebrain:ci-badger .
+        run: |
+          docker build \
+            --build-arg TARGETARCH=amd64 \
+            --build-arg STORAGE=badger \
+            --build-arg KUBEBRAIN_VERSION="${{ steps.image.outputs.version }}" \
+            --build-arg KUBEBRAIN_GIT_SHA="${{ steps.image.outputs.revision }}" \
+            --build-arg KUBEBRAIN_BUILD_DATE="${{ steps.image.outputs.created }}" \
+            -t kubebrain:ci-badger .
+          test "$(docker image inspect kubebrain:ci-badger \
+            --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')" \
+            = "${{ steps.image.outputs.revision }}"
 
   etcd-client-compat-compile:
     name: etcd client compat compile
