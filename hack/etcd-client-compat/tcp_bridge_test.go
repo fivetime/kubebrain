@@ -2,6 +2,7 @@ package compat
 
 import (
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -31,13 +32,17 @@ func newTCPBridge(t *testing.T, target string) *tcpBridge {
 	require.NoError(t, err)
 	bridge := &tcpBridge{
 		listener: listener,
-		target:   target,
+		target:   bridgeDialTarget(target),
 		conns:    make(map[net.Conn]struct{}),
 	}
 	bridge.acceptWG.Add(1)
 	go bridge.accept()
 	t.Cleanup(bridge.Close)
 	return bridge
+}
+
+func bridgeDialTarget(endpoint string) string {
+	return strings.TrimPrefix(strings.TrimPrefix(endpoint, "http://"), "https://")
 }
 
 func (b *tcpBridge) Endpoint() string {
