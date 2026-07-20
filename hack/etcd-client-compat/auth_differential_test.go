@@ -65,6 +65,11 @@ type authDifferentialOutcome struct {
 	RootHashOK                bool
 	UserKeepAlive             authErrorOutcome
 	RootKeepAliveOK           bool
+	AnonymousTTL              authErrorOutcome
+	AnonymousTTLWithKeys      authErrorOutcome
+	UserTTLOK                 bool
+	UserTTLWithKeys           authErrorOutcome
+	RootTTLContainsProtected  bool
 	AnonymousLeaseList        authErrorOutcome
 	UserLeaseList             authErrorOutcome
 	RootLeaseListContains     bool
@@ -224,6 +229,21 @@ func collectAuthDifferentialOutcome(t *testing.T, endpoint string) authDifferent
 	_, rootHashErr := root.HashKV(ctx, root.Endpoints()[0], 0)
 	_, userKeepAliveErr := alice.KeepAliveOnce(ctx, protectedLease.ID)
 	_, rootKeepAliveErr := root.KeepAliveOnce(ctx, protectedLease.ID)
+	_, anonymousTTLErr := bootstrap.TimeToLive(ctx, protectedLease.ID)
+	_, anonymousTTLWithKeysErr := bootstrap.TimeToLive(
+		ctx, protectedLease.ID, clientv3.WithAttachedKeys(),
+	)
+	_, userTTLErr := alice.TimeToLive(ctx, protectedLease.ID)
+	_, userTTLWithKeysErr := alice.TimeToLive(ctx, protectedLease.ID, clientv3.WithAttachedKeys())
+	rootTTL, rootTTLErr := root.TimeToLive(ctx, protectedLease.ID, clientv3.WithAttachedKeys())
+	require.NoError(t, rootTTLErr)
+	rootTTLContainsProtected := false
+	for _, key := range rootTTL.Keys {
+		if string(key) == "/auth-protected/leased" {
+			rootTTLContainsProtected = true
+			break
+		}
+	}
 	_, anonymousLeaseListErr := bootstrap.Leases(ctx)
 	_, userLeaseListErr := alice.Leases(ctx)
 	rootLeaseList, rootLeaseListErr := root.Leases(ctx)
@@ -418,6 +438,11 @@ func collectAuthDifferentialOutcome(t *testing.T, endpoint string) authDifferent
 		RootHashOK:                rootHashErr == nil,
 		UserKeepAlive:             authError(userKeepAliveErr),
 		RootKeepAliveOK:           rootKeepAliveErr == nil,
+		AnonymousTTL:              authError(anonymousTTLErr),
+		AnonymousTTLWithKeys:      authError(anonymousTTLWithKeysErr),
+		UserTTLOK:                 userTTLErr == nil,
+		UserTTLWithKeys:           authError(userTTLWithKeysErr),
+		RootTTLContainsProtected:  rootTTLContainsProtected,
 		AnonymousLeaseList:        authError(anonymousLeaseListErr),
 		UserLeaseList:             authError(userLeaseListErr),
 		RootLeaseListContains:     rootLeaseListContains,
@@ -449,6 +474,11 @@ func TestAuthDifferentialAgainstEtcd(t *testing.T) {
 	reference := collectAuthDifferentialOutcome(t, referenceEndpoint)
 	require.True(t, reference.UserLeasedPut.PermissionDenied)
 	require.True(t, reference.UserLeasedTxnPut.PermissionDenied)
+	require.True(t, reference.AnonymousTTL.UserEmpty)
+	require.True(t, reference.AnonymousTTLWithKeys.UserEmpty)
+	require.True(t, reference.UserTTLOK)
+	require.True(t, reference.UserTTLWithKeys.PermissionDenied)
+	require.True(t, reference.RootTTLContainsProtected)
 	require.True(t, reference.AnonymousLeaseList.UserEmpty)
 	require.True(t, reference.UserLeaseList.PermissionDenied)
 	require.True(t, reference.RootLeaseListContains)
