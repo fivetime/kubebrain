@@ -43,7 +43,7 @@ Raft、bbolt 和成员管理内部实现，而是对通用 etcd v3 客户端提�
 | Maintenance | Status | 兼容核心语义 | 返回真实服务身份、版本、leader/revision/共享选主 term；配置 quota 时报告租户最新逻辑 key+value 字节，未配置时使用兼容 sentinel；TiKV 物理容量转到实例指标 |
 | Maintenance | Snapshot | 平台替代 | 使用 TiKV BR/PITR；控制面提供备份、恢复和导出任务，不伪造 etcd snapshot |
 | Maintenance | Defragment | 平台替代 | TiKV GC/compaction 管理，不执行 bbolt 碎片整理 |
-| Maintenance | Alarm/DbSize | 兼容 NOSPACE 核心语义 | keyspace 级逻辑容量原子计量、持久 NOSPACE、list/disarm 已支持；CORRUPT 与 bbolt fragmentation 仍由平台可观测性替代 |
+| Maintenance | Alarm/DbSize | 兼容 NOSPACE 核心语义 | keyspace 级逻辑容量原子计量、持久 sticky NOSPACE、list/activate/disarm 与 capped write state 已支持；CORRUPT 与 bbolt fragmentation 仍由平台可观测性替代 |
 | Maintenance | Hash/HashKV | 兼容核心语义 | 对指定 revision 的租户 MVCC 实际内容做稳定摘要；成员本地诊断不依赖 KubeBrain leader，数值不与 bbolt 内部编码比较 |
 | Maintenance | MoveLeader/Downgrade | 平台替代 | 分别由服务选主和 DBaaS 升级编排处理 |
 | Endpoint | health/livez/readyz | 兼容核心语义 | `/health`、`/livez`、`/readyz` 及分项检查已对齐；`data_corruption`/`non_learner` 使用 TiKV 架构等价语义，`/ready` 与 `/ping` 为平台探针 |
@@ -6175,8 +6175,9 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   若存量已超过新上限，readiness 前立即持久激活 NOSPACE。
 
   正增长超过上限时返回标准 etcd `ResourceExhausted / mvcc: database space exceeded`
-  并持久激活 NOSPACE；拒绝发生在分配 revision 前。告警期间仍允许缩小 value、删除和
-  lease revoke 释放容量，但拒绝 Put/Txn 正增长和 LeaseGrant；用量严格低于 quota 后
+  并持久激活 NOSPACE；拒绝发生在分配 revision 前。A329 对照上游后纠正告警期行为：
+  sticky alarm 激活后所有 Put（包括缩小 value）及任一分支含 Put 的 Txn 均拒绝；
+  删除和 lease revoke 仍可释放容量。用量严格低于 quota 后
   `Alarm(DEACTIVATE, NOSPACE)` 可解除。`Status` 报告逻辑用量与配置 quota，新增
   `quota.logical_usage_bytes`、`quota.backend_bytes`、`quota.nospace` 指标。该数字不
   等同 bbolt 文件或 TiKV 物理磁盘占用，后者继续由 PD/TiKV 指标管理。
@@ -6195,6 +6196,36 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `kubebrain:a320-object-request-metering` 保持 3/3 Ready、restartCount=0，
   PD/TiKV 3+3 Ready，production release gate 与 44.116ms endpoint proposal
   health 通过。
+
+- **Capacity A329 sticky NOSPACE capped write state（2026-07-20）**：对照
+  `/root/etcd/server/etcdserver/apply/capped.go` 的 capped applier 与
+  `BackendQuota.Cost` 行为，修复 A328 告警期仍允许缩小 value 的偏差。持久
+  NOSPACE 激活后，普通 Put 无论逻辑用量 delta 是否为负均返回标准
+  `ResourceExhausted`；Txn 在执行 compare 前检查 success、failure 及嵌套 Txn，
+  只要任一分支包含 Put 就整体拒绝，因此未选中分支不能绕过 capped state。
+  delete-only/read-only Txn 与 LeaseRevoke 保持可用，LeaseGrant 继续拒绝，释放容量后
+  必须显式 disarm 才恢复写入。
+
+  Maintenance API 新增 root-only `Alarm(ACTIVATE, NOSPACE)`，用于管理面和故障注入；
+  quota 未配置时 fail closed 为 `FailedPrecondition`，成功 activate/deactivate 均返回
+  当前 member 的 NOSPACE `AlarmMember`。CORRUPT 和其他 alarm mutation 仍返回
+  `Unimplemented`。backend 层也在 TiKV transaction 提交前读取持久 alarm，避免绕过
+  RPC 层的内部写路径破坏该状态。
+
+  新增 raw gRPC 双端差分，逐项核对手工 activate、缩小 Put、未选中 Put 分支、
+  delete-only/read-only Txn、LeaseGrant、deactivate 和恢复写。参考 etcd 与
+  `kubebrain:a329-nospace-cap` 在真实 3 PD/3 TiKV、独立 `a329-quota` keyspace
+  首轮通过，连续 5 轮 1.876 秒、race 3 轮 2.328 秒通过；相同镜像在全新
+  `a329-compat-2` keyspace 的完整差分套件 272.882 秒通过。此前受并行测试争用而
+  超时的 paginated mirror 与 Txn compare-header 用例，隔离后分别以 27.24 秒和
+  39.20 秒通过。
+
+  聚焦 backend/server race 各 3 轮通过；根模块串行
+  `go test -p 1 -count=1 ./...`、根/compat `go vet ./...`、`git diff --check` 和完整
+  生产 Dockerfile 构建通过，镜像 ID
+  `sha256:d25e66602be3d0212a565c85052488f132ce25d68e6f7e3ce9adb8216a62631c`。
+  在线 `kubebrain:a320-object-request-metering` release gate 保持 KubeBrain 3/3、
+  PD/TiKV 3+3 Ready，endpoint proposal health 41.970ms。
 
 ### P1：通用服务能力
 

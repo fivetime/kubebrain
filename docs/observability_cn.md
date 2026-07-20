@@ -57,7 +57,8 @@ KubeBrain 已内置**标准 Prometheus** 指标(真 registry + `promhttp.Handler
   可用性和 leader 切换频率。不要用 `count_index_keys == 0` 告警，followers 正常为 0。
 - **租户逻辑容量**：启用 `--quota-backend-bytes` 后，监控
   `quota.logical_usage_bytes / quota.backend_bytes`，建议在 80% 和 90% 分级告警；
-  `quota.nospace == 1` 表示已触发持久 NOSPACE。扩容或删除数据使 usage 严格低于
+  `quota.nospace == 1` 表示已触发持久 NOSPACE。告警激活后所有 Put（包括缩小
+  value）和任一分支含 Put 的 Txn 均拒绝；应通过删除或 lease revoke 使 usage 严格低于
   quota 后，再执行 `etcdctl alarm disarm`。这些指标统计当前存活 key+value 的逻辑
   字节，不包含 MVCC 历史、事件日志、lease/auth 元数据和 TiKV 副本开销。
 
@@ -71,4 +72,5 @@ fragmentation 可报告”，不表示 TiKV 实际占用。
 - **要物理字节/磁盘水位** → 抓 **TiKV/PD 自己的 Prometheus 指标**(store size、region count)。
 - **要对象数** → KubeBrain 的 `count_index.keys`(便宜、现成)。
 - **defrag**：安全 no-op，TiKV 自身 compaction/GC 由存储平台管理。
-- **Alarm**：支持配额触发的 NOSPACE list/disarm；CORRUPT 仍无对应语义。
+- **Alarm**：支持配额触发的 NOSPACE list/disarm，以及 root-only raw gRPC
+  `Alarm(ACTIVATE, NOSPACE)` 故障注入；CORRUPT 仍无对应语义。

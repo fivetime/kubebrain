@@ -26,8 +26,8 @@
 | `endpoint status` | 支持 | 真实身份、leader、revision、term；配置 quota 时返回租户逻辑用量，否则使用兼容 sentinel |
 | `endpoint hashkv` | 支持 | 同一 KubeBrain keyspace/同 revision 可比较；数值不与 bbolt hash 比较 |
 | `member list` | 支持（需配置） | 生产必须通过 `--initial-cluster` 注入全部 KubeBrain 副本 |
-| `alarm list` | 支持 | 返回该 keyspace 持久 NOSPACE；CORRUPT 无对应语义 |
-| `alarm disarm` | 支持 NOSPACE | 用量严格低于 quota 后可解除；其他 alarm mutation 返回 `Unimplemented` |
+| `alarm list` | 支持 | 返回该 keyspace 持久 sticky NOSPACE；CORRUPT 无对应语义 |
+| `alarm disarm` | 支持 NOSPACE | 告警期所有 Put 和任一分支含 Put 的 Txn 均拒绝；删除使逻辑用量严格低于 quota 后可解除 |
 | `defrag` | 安全 no-op | 返回成功且不执行 bbolt defrag；TiKV 自身 compaction/GC 由存储平台管理 |
 | `member add/remove/update/promote` | 平台替代 | KubeBrain 副本无本地数据，使用 DBaaS 扩缩或重配置 |
 | `move-leader` | 平台替代 | 使用 DBaaS rollout/failover；数据面选主自动完成 |
