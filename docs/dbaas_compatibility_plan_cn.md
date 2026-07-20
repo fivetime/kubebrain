@@ -6549,6 +6549,33 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `sha256:9394b0dec6036f04dbaf6150c07d52c5bda9126a5b47d6e58b5be053949cc484`，
   OCI revision 与实现提交一致，运行用户为 `65532:65532`。
 
+- **Production A340 bounded Docker build context（2026-07-20）**：连续 production
+  镜像构建审计发现 daemon context 为 448.3 MB，而 689 个 tracked file 合计仅约
+  7.8 MB。根因是 `.gitignore` 已排除但 `.dockerignore` 漏掉的本地 `.dev`：四份
+  kube-apiserver 二进制、版本矩阵和 smoke 工件共约 422 MB；它们不参与 Dockerfile
+  的任何 COPY/编译，却放大每次上传、缓存失效和本地敏感测试工件暴露面。
+
+  `.dockerignore` 现同步排除 `.dev`、`.claude`、IDE 配置、`output` 及根级
+  kube/loadgen/smoke 二进制，并保留原 `.git`、`bin`、coverage 等规则。新增
+  `build/dockerignore_test.go` 固定高风险排除项，同时断言 `build/cmd/hack/pkg` 和
+  `go.mod/go.sum` 不可被根级规则误排。聚焦 build test 20 轮、build/production
+  test+vet、根模块 `go test -p 1 -count=1 ./...`、根模块与
+  `hack/etcd-client-compat` 的 `go vet ./...`、`git diff --check` 均通过。
+
+  使用提交 metadata 的完整 TiKV production Dockerfile 构建 context 从 448.3 MB
+  降至 7.319 MB，约减少 98.4%，全部 47 个 build stage 成功。镜像内
+  `kube-brain version` 为 3.7.0/TiKV、Git SHA
+  `ccc3890190f271a23e7b4066bd24ae4c3ff217e3`、Go 1.26.5、UTC build time，与 OCI
+  label 完全一致。镜像 ID
+  `sha256:f2b8199801a472eaf98b43e1b9a081fa79291e4da93dfac66041186735efb0e2`，
+  运行用户为 `65532:65532`。
+
+  `kubebrain:a340-docker-context` 在独立 `a340-docker-context` keyspace、真实
+  3 PD/3 TiKV 上 Ready；Put/Get 返回 `/a340/context=compact`，四项 readyz 全部
+  通过，endpoint proposal health 97.755ms。Pod UID
+  `f68b124b-1fcc-44ac-b8dc-4dc1da01dd5e`、restartCount=0，日志无
+  initialization failure/panic/fatal/storage error，PD/TiKV 3+3 Ready。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range

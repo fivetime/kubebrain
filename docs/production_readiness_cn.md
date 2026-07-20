@@ -55,6 +55,13 @@ docker build \
 labels；发布门槛必须比较两处值，并确认 revision 对应 CI checkout，而不是仅检查镜像
 tag。
 
+构建上下文必须使用仓库根目录的 `.dockerignore`。`.git`、`.dev`、`bin`、IDE 配置、
+本地 output/coverage 和根级临时二进制不得发送给 Docker daemon；这些目录可能包含
+数百 MiB 的 kube-apiserver、测试数据、私钥或开发日志，既不参与 production 编译，也
+不应影响缓存键。`build/dockerignore_test.go` 固定这些排除项，并同时保护
+`build`、`cmd`、`hack`、`pkg`、`go.mod`、`go.sum` 不被根级规则误排。发布构建日志
+应记录最终 context 大小；异常增长必须先审计新增本地工件或 COPY 依赖再放行。
+
 ## 真-k3s 消费端驱动验证进展（2026-07-03）
 
 用真实 kube-apiserver（k3s v1.36，`--datastore-endpoint` 指向 KubeBrain-on-TiKV）端到端驱动，已完成（脚本 `hack/dev/k3s-load-smoke.sh` 一键复跑）：
