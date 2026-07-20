@@ -5353,6 +5353,34 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   7.13 秒通过，无陈旧成功响应；StatefulSet 恢复 3/3 Ready、0 restart，PD/TiKV
   3+3 Running。
 
+- **Lease A299 uncertain revoke reconciliation（2026-07-20）**：继续审计 lease
+  metadata 删除与 attachment 更新的 TiKV 模糊提交边界。普通 Put/Delete/Txn 已把用户
+  KV 与 attachment 放在同一 `TxnApply`，并有 revision-aware index reconciliation；
+  但 lease revoke 的原子事务若已经删除全部 key、attachment 和 metadata，响应却以
+  `ErrUncertainResult` 丢失，旧实现仍保留内存 lease。后续 KeepAlive 可以把已删除的
+  metadata 重新写回，形成无 attached key 的 lease 复活，并让当前 leader 与 durable
+  state 持续分歧。
+
+  revoke 现在只对 `ErrUncertainResult` 使用不继承调用方取消信号的独立 5 秒预算，
+  线性化读取该 lease 的 canonical metadata key。metadata 缺失可证明同一 TiKV 原子
+  transaction 中的 key、attachment 与 metadata 删除全部提交，此时 revoke 按成功
+  收敛并清除内存 lease；metadata 仍存在或检查失败则保留原 uncertain error 和内存状态，
+  fail closed。确定性测试分别注入 commit-then-error 与未提交 uncertain result，固定
+  前者必须返回成功、key/attachment/metadata/TTL 全部消失，后者必须保留 key、metadata
+  与 attached-key TTL。focused 连续 100 轮、race 连续 20 轮、server 全包
+  31.703 秒、根模块全量（production 91.161 秒）和 `go vet ./...` 均通过。代码提交
+  `f5b6b8448108a171adf7263717f1515adaaa644c`。
+
+  从该提交的 `git archive` 构建非 root 镜像
+  `kubebrain:a299-uncertain-revoke-reconcile`（image ID
+  `sha256:11465cfc4bed6aeb90404ad1bc6033f3f917276b1da6057e3014b451744e667a`，
+  embedded version `3.7.0-dbaas.a299`、完整 SHA、用户 `65532:65532`）。三副本
+  StatefulSet 无中断滚动后，direct replica Lease 生命周期连续 20 轮通过；两个独立
+  KubeBrain replica endpoint 的 KeepAlive/Revoke 收敛连续 10 轮、71.754 秒通过。
+  固定 follower `kubebrain-0` 并删除 leader `kubebrain-2` 的 authoritative Lease
+  read failover 门禁 7.49 秒通过，选举期间只有预期 deadline failure、无陈旧成功响应。
+  最终 KubeBrain 3/3 Ready、0 restart，独立 PD/TiKV 3+3 Running。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
