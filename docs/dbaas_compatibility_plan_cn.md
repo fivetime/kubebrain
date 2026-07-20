@@ -5610,6 +5610,29 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   KubeBrain 3/3 Ready 且 0 restart，PD/TiKV 3+3 Ready。现有 runtime 已正确，本轮
   不重建语义相同的镜像。
 
+- **Read A310 non-reused freshness fence after cancellation（2026-07-20）**：
+  对照 upstream `/root/etcd` commit `e2f4f485e`。etcd 的 ReadIndex loop 原先在首次
+  发送及 first-commit/timeout 重试时复用同一个 request ID，延迟的旧 ReadState
+  可能被误认作当前响应；修复后每次发送使用唯一 ID，并接受本轮已发送 ID 集中的响应。
+  该规则与 A249 的 leader-change response fencing 互补：即使 leader identity 未变，
+  后到 reader 也不能消费在自己 call 之前已发起的 freshness fence。
+
+  KubeBrain 不使用 Raft ReadIndex，而是从 leader `/status` 获取 TiKV committed
+  revision；现有 double-buffer fetch 已保证中途到达的 reader 进入 `next`，下一次
+  HTTP fetch 只会在当前 fetch 完成后启动，因此每个 reader 得到的 fence 都在其 call
+  之后发起。新增取消反例：reader A 启动并阻塞 F1 后取消，reader B 才到达；尽管共享
+  F1 继续收尾，B 必须排入 F2，只能得到 revision 200，不能泄漏 F1 的 revision 100。
+  该测试与既有 mid-flight reader 门禁组合连续 100 轮通过（1.653 秒），race 连续
+  50 轮通过（2.173 秒），revision 全包通过（5.079 秒）。
+
+  A300 三副本上通过专属 endpoint 确认当前 leader 为 `kubebrain-2` 后删除该 Pod，
+  5 client 的 150 次并发 Range/Put/CAS 捕获 4 个不确定 RPC，包括旧 leader DNS
+  消失、proxy not-ready 和 transport close；Porcupine register 完整历史仍为 `Ok`
+  （6.361 秒）。替换 Pod Ready 后无故障历史连续 5 轮通过（2.453 秒）。根 revision
+  包与 compat 模块相关 `go vet` 通过，三个临时直连 Service 已删除，未使用
+  port-forward；最终 KubeBrain 3/3 Ready 且 0 restart，PD/TiKV 3+3 Ready。现有
+  runtime 已正确，本轮不重建语义相同的镜像。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
