@@ -289,6 +289,10 @@ func (b *backend) DisarmNoSpace(ctx context.Context, memberID uint64) (bool, err
 		return false, nil
 	}
 	raw, err := b.InternalGet(ctx, quotaAlarmKey)
+	if errors.Is(err, storage.ErrKeyNotFound) {
+		b.emitQuotaMetrics(usage, false)
+		return false, nil
+	}
 	if err != nil {
 		return false, err
 	}

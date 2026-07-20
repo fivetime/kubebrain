@@ -1,8 +1,10 @@
 package backend
 
 import (
+	"bytes"
 	"context"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -13,6 +15,28 @@ import (
 	"github.com/kubewharf/kubebrain/pkg/storage"
 	imemkv "github.com/kubewharf/kubebrain/pkg/storage/memkv"
 )
+
+type blockSecondAlarmReadStorage struct {
+	storage.KvStorage
+	alarmKey []byte
+	enabled  atomic.Bool
+	reads    atomic.Int32
+	blocked  chan struct{}
+	release  chan struct{}
+	once     sync.Once
+}
+
+func (s *blockSecondAlarmReadStorage) Get(ctx context.Context, key []byte) ([]byte, error) {
+	if s.enabled.Load() && bytes.Equal(key, s.alarmKey) && s.reads.Add(1) == 2 {
+		s.once.Do(func() { close(s.blocked) })
+		select {
+		case <-s.release:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	return s.KvStorage.Get(ctx, key)
+}
 
 func newQuotaBackend(t *testing.T, quota int64) (*backend, context.Context) {
 	t.Helper()
@@ -291,6 +315,54 @@ func TestDisarmNoSpaceReconcilesCommittedUncertainDeletion(t *testing.T) {
 	removed, err := b.DisarmNoSpace(context.Background(), owner)
 	require.NoError(t, err)
 	require.True(t, removed)
+	_, active, err := b.NoSpaceAlarm(context.Background())
+	require.NoError(t, err)
+	require.False(t, active)
+}
+
+func TestDisarmNoSpaceConcurrentDeletionIsIdempotent(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+	base := imemkv.NewKvStorage()
+	t.Cleanup(func() { require.NoError(t, base.Close()) })
+	store := &blockSecondAlarmReadStorage{
+		KvStorage: base,
+		blocked:   make(chan struct{}),
+		release:   make(chan struct{}),
+	}
+	b := NewBackend(store, Config{
+		Prefix:                  prefix,
+		Identity:                getStorageIdentity(),
+		EnableEtcdCompatibility: true,
+		QuotaBackendBytes:       10,
+	}, mock.NewMinimalMetrics(ctrl)).(*backend)
+	store.alarmKey = b.ks.EncodeInternalKey(quotaAlarmKey)
+	require.NoError(t, b.EnsureQuotaInitialized(context.Background()))
+
+	const owner uint64 = 424242
+	_, err := b.ArmNoSpace(context.Background(), owner)
+	require.NoError(t, err)
+	store.enabled.Store(true)
+
+	type result struct {
+		removed bool
+		err     error
+	}
+	delayed := make(chan result, 1)
+	go func() {
+		removed, disarmErr := b.DisarmNoSpace(context.Background(), owner)
+		delayed <- result{removed: removed, err: disarmErr}
+	}()
+	<-store.blocked
+
+	removed, err := b.DisarmNoSpace(context.Background(), owner)
+	require.NoError(t, err)
+	require.True(t, removed)
+	close(store.release)
+
+	got := <-delayed
+	require.NoError(t, got.err)
+	require.False(t, got.removed, "the later linearized duplicate returns a successful empty result")
 	_, active, err := b.NoSpaceAlarm(context.Background())
 	require.NoError(t, err)
 	require.False(t, active)
