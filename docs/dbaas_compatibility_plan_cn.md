@@ -5477,6 +5477,27 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   证明运行组合中的取消 stream 未绕过 metrics。最终 KubeBrain、PD、TiKV 均 3/3
   Ready，未遗留 port-forward；本轮只显式化并锁定现有正确行为，不需重建 runtime。
 
+- **Auth A304 nested Txn/PrevKV/leased Put differential（2026-07-20）**：对照
+  upstream `/root/etcd` commits `204097b19`（递归检查嵌套 Txn 两个分支）与
+  `70a2b4871`（Txn PrevKV 及带 lease Put 授权）。代码审计确认 KubeBrain 已递归
+  授权嵌套 compare/success/failure 操作；Put PrevKV 同时要求 key 的 READ/WRITE，
+  带 lease Put 还会在 leader admission 后持锁复检目标 lease 及其全部既有 attached
+  key 的 WRITE 权限。因此本轮没有修改运行时，而是把这些容易在事务重构中退化的规则
+  加入永久黑盒差分矩阵。
+
+  新矩阵覆盖两层嵌套的拒绝 Range、未选中 else 分支中的拒绝 Put、带 PrevKV 的拒绝
+  Delete、绑定受保护 lease 的 Put，以及 write-only 用户执行 PrevKV Put；并由 root
+  复读确认被拒绝的 Put/Delete/PrevKV 均未改变原值。fresh upstream etcd 与认证状态
+  为空的隔离 restore KubeBrain 实例逐字段差分通过（4.397 秒）。主三副本实例已有其他
+  认证测试遗留的受保护对象，本轮没有为追求空环境而破坏该状态，只执行健康门禁；临时
+  NodePort Service 已删除，全程未使用 port-forward。
+
+  相关确定性单测连续 50 轮通过（87.379 秒），关键授权门禁 race 连续 20 轮通过
+  （446.663 秒），完整 `TestAuth` 测试组通过（12.865 秒），compat 测试在无外部
+  endpoint 时连续 20 轮完成编译/skip 门禁，`go vet ./pkg/server/etcd` 通过。最终
+  KubeBrain 3/3 Ready 且 0 restart，PD/TiKV 3+3 Ready；未发现新的运行时兼容性差距，
+  不重建与 A300 相同的 runtime 镜像。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
