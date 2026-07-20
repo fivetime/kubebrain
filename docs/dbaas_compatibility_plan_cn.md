@@ -43,7 +43,7 @@ Raft、bbolt 和成员管理内部实现，而是对通用 etcd v3 客户端提�
 | Maintenance | Status | 兼容核心语义 | 返回真实服务身份、版本、leader/revision/共享选主 term；配置 quota 时报告租户最新逻辑 key+value 字节，未配置时使用兼容 sentinel；TiKV 物理容量转到实例指标 |
 | Maintenance | Snapshot | 平台替代 | 使用 TiKV BR/PITR；控制面提供备份、恢复和导出任务，不伪造 etcd snapshot |
 | Maintenance | Defragment | 平台替代 | TiKV GC/compaction 管理，不执行 bbolt 碎片整理 |
-| Maintenance | Alarm/DbSize | 兼容 NOSPACE 核心语义 | keyspace 级逻辑容量原子计量、持久 sticky NOSPACE、list/activate/disarm 与 capped write state 已支持；CORRUPT 与 bbolt fragmentation 仍由平台可观测性替代 |
+| Maintenance | Alarm/DbSize | 兼容 NOSPACE 核心语义 | keyspace 级逻辑容量原子计量、持久 sticky NOSPACE、list/activate/disarm、mutation no-op 与 capped write state 已支持；任意虚构 member 的多告警、CORRUPT 与 bbolt fragmentation 仍为边界 |
 | Maintenance | Hash/HashKV | 兼容核心语义 | 对指定 revision 的租户 MVCC 实际内容做稳定摘要；成员本地诊断不依赖 KubeBrain leader，数值不与 bbolt 内部编码比较 |
 | Maintenance | MoveLeader/Downgrade | 平台替代 | 分别由服务选主和 DBaaS 升级编排处理 |
 | Endpoint | health/livez/readyz | 兼容核心语义 | `/health`、`/livez`、`/readyz` 及分项检查已对齐；`data_corruption`/`non_learner` 使用 TiKV 架构等价语义，`/ready` 与 `/ping` 为平台探针 |
@@ -6226,6 +6226,34 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `sha256:d25e66602be3d0212a565c85052488f132ce25d68e6f7e3ce9adb8216a62631c`。
   在线 `kubebrain:a320-object-request-metering` release gate 保持 KubeBrain 3/3、
   PD/TiKV 3+3 Ready，endpoint proposal health 41.970ms。
+
+- **Maintenance A330 Alarm mutation no-op / member guard（2026-07-20）**：继续对照
+  `/root/etcd/server/etcdserver/apply/backend.go:Alarm`、
+  `/root/etcd/server/etcdserver/api/v3alarm/alarms.go` 和
+  `/root/etcd/tests/integration/v3_alarm_test.go`，补齐 NOSPACE mutation 的幂等响应。
+  `ACTIVATE(NONE)`、`DEACTIVATE(NONE)` 现与 etcd 一致返回成功空列表；解除请求仅在
+  member ID 匹配当前返回的 tenant alarm 时生效，错误 member 返回成功空列表且不能
+  清除告警；正确解除首次返回一个 `AlarmMember`，重复解除返回空列表。
+
+  backend `DisarmNoSpace` 状态接口现显式返回“是否移除”，RPC 不再把不存在的告警
+  伪报为已解除。扩展 raw gRPC 双端矩阵到 13 步，同时比较 code 与 alarm 数量，覆盖
+  NONE 空操作、activate、错误 member、错误解除后 Put 仍被 capped、缩小 Put、
+  未选中 Put 分支、delete/read-only Txn、LeaseGrant、正确/重复解除和恢复写。
+  参考 etcd 与 `kubebrain:a330-alarm-mutation` 在真实 3 PD/3 TiKV、独立
+  `a330-quota` keyspace 首轮 0.444 秒、连续 10 轮 3.590 秒、race 3 轮 2.270 秒
+  通过；独立 `a330-compat` keyspace 的完整差分套件 222.112 秒通过。
+
+  根模块 `go test -p 1 -count=1 ./...`、聚焦 backend/server race 各 3 轮、根/compat
+  `go vet ./...`、`git diff --check` 和完整生产 Dockerfile 构建均通过；镜像 ID
+  `sha256:6b65ecc3a241ebd17c7f29d160cc9c0741ef2b02de7ac5ce47acd765b9ec2042`。
+  两个真实 TiKV-backed Pod 均 Ready、restartCount=0 且无 panic/fatal/storage error。
+  在线 `kubebrain:a320-object-request-metering` release gate 保持 KubeBrain 3/3、
+  PD/TiKV 3+3 Ready，endpoint proposal health 46.229ms。
+
+  KubeBrain 的 NOSPACE 是独立 keyspace 的单一容量状态，不伪造 etcd 可手工写入的
+  “任意虚构 member ID 各自持有多条 NOSPACE alarm”存储；GET 返回当前 serving
+  member 对应的 tenant alarm。该差异不影响 `etcdctl alarm list/disarm` 和自动容量
+  保护，但 raw Maintenance 调用方不得依赖人为构造多 member alarm。
 
 ### P1：通用服务能力
 

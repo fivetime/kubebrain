@@ -73,4 +73,5 @@ fragmentation 可报告”，不表示 TiKV 实际占用。
 - **要对象数** → KubeBrain 的 `count_index.keys`(便宜、现成)。
 - **defrag**：安全 no-op，TiKV 自身 compaction/GC 由存储平台管理。
 - **Alarm**：支持配额触发的 NOSPACE list/disarm，以及 root-only raw gRPC
-  `Alarm(ACTIVATE, NOSPACE)` 故障注入；CORRUPT 仍无对应语义。
+  `Alarm(ACTIVATE, NOSPACE)` 故障注入；NONE mutation 和重复 disarm 为成功空操作，
+  错误 member ID 不会解除 tenant alarm；CORRUPT 仍无对应语义。
