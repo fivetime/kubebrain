@@ -78,4 +78,11 @@ fragmentation 可报告”，不表示 TiKV 实际占用。
   identity 的稳定 ID；owner 跨 serving replica 稳定，任一 endpoint 可使用该 owner
   解除。激活或解除提交结果不确定时服务端会独立回读确认；解除后若不同 owner 已重新
   激活，旧 alarm 的解除返回成功但 `quota.nospace` 保持 1，调用方应重新执行
-  `alarm list`。错误 owner 不会解除 tenant alarm。CORRUPT 仍无对应语义。
+  `alarm list`。首次启动创建 quota usage 或因存量超额自动激活 alarm 的提交结果不确定
+  时，同样会在 readiness 前独立回读确认。错误 owner 不会解除 tenant alarm。
+  CORRUPT 仍无对应语义。
+
+active NOSPACE 是容量保护状态，不是进程不可服务：`/ready`、`/readyz` 应继续通过，
+读和释放容量的删除操作仍可用；`etcdctl endpoint health` 的线性化 proposal 会按 etcd
+契约返回 `Active Alarm(s): NOSPACE` 和 unhealthy。告警系统应以 `quota.nospace`/
+`alarm list` 区分该状态，不能把 endpoint health 的这一结果直接等同于 Pod 未就绪。

@@ -43,7 +43,7 @@ Raft、bbolt 和成员管理内部实现，而是对通用 etcd v3 客户端提�
 | Maintenance | Status | 兼容核心语义 | 返回真实服务身份、版本、leader/revision/共享选主 term；配置 quota 时报告租户最新逻辑 key+value 字节，未配置时使用兼容 sentinel；TiKV 物理容量转到实例指标 |
 | Maintenance | Snapshot | 平台替代 | 使用 TiKV BR/PITR；控制面提供备份、恢复和导出任务，不伪造 etcd snapshot |
 | Maintenance | Defragment | 平台替代 | TiKV GC/compaction 管理，不执行 bbolt 碎片整理 |
-| Maintenance | Alarm/DbSize | 兼容 NOSPACE 核心语义 | keyspace 级逻辑容量原子计量、持久/显式 owner、sticky NOSPACE、list/activate/disarm、跨 endpoint mutation、不确定 mutation 回读、no-op 与 capped write state 已支持；任意虚构 member 的多告警、CORRUPT 与 bbolt fragmentation 仍为边界 |
+| Maintenance | Alarm/DbSize | 兼容 NOSPACE 核心语义 | keyspace 级逻辑容量原子计量、持久/显式 owner、sticky NOSPACE、list/activate/disarm、跨 endpoint mutation、启动初始化与 mutation 的不确定提交回读、no-op 与 capped write state 已支持；任意虚构 member 的多告警、CORRUPT 与 bbolt fragmentation 仍为边界 |
 | Maintenance | Hash/HashKV | 兼容核心语义 | 对指定 revision 的租户 MVCC 实际内容做稳定摘要；成员本地诊断不依赖 KubeBrain leader，数值不与 bbolt 内部编码比较 |
 | Maintenance | MoveLeader/Downgrade | 平台替代 | 分别由服务选主和 DBaaS 升级编排处理 |
 | Endpoint | health/livez/readyz | 兼容核心语义 | `/health`、`/livez`、`/readyz` 及分项检查已对齐；`data_corruption`/`non_learner` 使用 TiKV 架构等价语义，`/ready` 与 `/ping` 为平台探针 |
@@ -6378,6 +6378,40 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `git diff --check` 和完整 production Dockerfile 构建通过。实现提交
   `a2757e961b31202a15a60fbdc9774d4d1e3f4eca`，镜像 ID
   `sha256:5f286aab4a660af32506abe680be582dab266edd115b055b188e8937cf7bbe19`，
+  OCI revision 与实现提交一致，运行用户为 `65532:65532`。
+
+- **Maintenance A335 quota startup reconciliation（2026-07-20）**：继续审计
+  A328 的 readiness 前配额初始化。首次写入 `quota/usage` 若 TiKV 已提交但响应丢失，
+  旧实现会直接启动失败；存量 usage 超过新 quota 时又通过重复的 raw batch 激活
+  NOSPACE，未继承 A333 的不确定提交回读。对照
+  `/root/etcd/server/etcdserver/api/v3rpc/quota.go` 的 quota alarmer 和
+  `/root/etcd/server/etcdserver/server.go` 的 alarm 恢复语义，本轮让初始化在独占
+  logical write barrier 内复用正常 CAS 路径，并把首次 usage 创建纳入独立 5 秒
+  线性化回读：读到合法 8 字节 usage 即按已提交继续，确认 key 缺失则保留原
+  `ErrUncertainResult`，短暂 `ErrUnavailable` 每 50ms 重试，永久读取/解码/超时错误
+  与原提交错误聚合。启动超额改为调用统一 `activateNoSpace`，继承显式首 owner 和
+  uncertain activation reconciliation，且不会在持有 barrier 时重入死锁。
+
+  确定性 batch 故障注入覆盖 usage commit-then-uncertain 后两次 transient read
+  failure、usage uncommitted-uncertain，以及存量超额时 alarm
+  commit-then-uncertain 后两次 transient read failure；这些分支由存储层可控注入
+  证明，不以不可控网络断连猜测提交结果。quota 初始化 20 轮、race 10 轮，以及与
+  range transaction barrier 组合的 20 轮和 race 10 轮均通过；聚焦 quota suite、
+  backend vet、根/compat vet 和根模块 `go test -p 1 -count=1 ./...` 通过。
+
+  真实 3 PD/3 TiKV 使用独立 `a335-quota-startup` keyspace 做两阶段重启：第一阶段
+  无 quota 写入 114 字节存量，第二阶段以相同 identity/keyspace 和
+  `--quota-backend-bytes=32` 启动。新 Pod UID
+  `ebb17321-0670-4e68-a5d0-f33441fbb50d` Ready、restartCount=0，`/ready` 和
+  `/readyz?verbose` 全部通过；`alarm list` 返回 member 293549777 的 NOSPACE，
+  Status 返回 `DbSize=DbSizeInUse=114`、`DbSizeQuota=32`，存量 key 可读，新 Put
+  返回标准 `ResourceExhausted: etcdserver: mvcc: database space exceeded`。
+  active NOSPACE 下 `etcdctl endpoint health` 按 etcd 契约报告 unhealthy，但这不
+  表示 serving/readiness 失败。日志无 quota 初始化错误、panic/fatal/storage error。
+
+  实现提交 `67995f46a17076f7849ae675ffa8e3b6aa96052d`；production 镜像
+  `kubebrain:a335-quota-startup-reconcile` 的 ID 为
+  `sha256:3cadba2ecc14dafc0db99dd2b9f5a1527edcb17d5023500fed751d8401d5188f`，
   OCI revision 与实现提交一致，运行用户为 `65532:65532`。
 
 ### P1：通用服务能力

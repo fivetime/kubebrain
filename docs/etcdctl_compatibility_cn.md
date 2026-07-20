@@ -22,11 +22,11 @@
 | `lock`、`elect` | 支持 | 官方 `client/v3/concurrency` recipe 已覆盖 |
 | `auth`、`user *`、`role *` | 支持 | 需实例启用 auth；管理 API、RBAC 和 token 生命周期已覆盖 |
 | `compaction` | 支持 | logical/physical compaction 和历史错误语义已覆盖 |
-| `endpoint health` | 支持 | 执行线性化 proposal；用于 endpoint 发布门禁 |
+| `endpoint health` | 支持 | 执行线性化 proposal；正常态用于 endpoint 发布门禁；active NOSPACE 时按 etcd 契约返回 unhealthy，Pod readiness 仍可正常 |
 | `endpoint status` | 支持 | 真实身份、leader、revision、term；配置 quota 时返回租户逻辑用量，否则使用兼容 sentinel |
 | `endpoint hashkv` | 支持 | 同一 KubeBrain keyspace/同 revision 可比较；数值不与 bbolt hash 比较 |
 | `member list` | 支持（需配置） | 生产必须通过 `--initial-cluster` 注入全部 KubeBrain 副本 |
-| `alarm list` | 支持 | 返回该 keyspace 持久 sticky NOSPACE 及稳定 owner member ID；raw ACTIVATE 的非零显式 owner 原样保留；CORRUPT 无对应语义 |
+| `alarm list` | 支持 | 返回该 keyspace 持久 sticky NOSPACE 及稳定 owner member ID；启动存量超过 quota 时 readiness 前自动恢复/激活；raw ACTIVATE 的非零显式 owner 原样保留；CORRUPT 无对应语义 |
 | `alarm disarm` | 支持 NOSPACE | 可从任一副本解除 list 返回的持久 owner；错误 owner 和重复解除为空操作；提交结果不确定时回读精确旧 alarm 判定 |
 | `defrag` | 安全 no-op | 返回成功且不执行 bbolt defrag；TiKV 自身 compaction/GC 由存储平台管理 |
 | `member add/remove/update/promote` | 平台替代 | KubeBrain 副本无本地数据，使用 DBaaS 扩缩或重配置 |
