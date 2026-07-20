@@ -105,7 +105,6 @@ func runHTTPGatewayStreamScenario(t *testing.T, endpoint, instance, leaseID stri
 	previous := requireMapField(t, event, "prev_kv")
 
 	name := "/a357/http-observe/" + instance
-	post("/v3/lease/revoke", map[string]any{"ID": leaseID})
 	post("/v3/lease/grant", map[string]any{"ID": leaseID, "TTL": "30"})
 	t.Cleanup(func() { post("/v3/lease/revoke", map[string]any{"ID": leaseID}) })
 	campaign := post("/v3/election/campaign", map[string]any{
