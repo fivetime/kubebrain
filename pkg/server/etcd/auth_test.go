@@ -21,8 +21,25 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
+
+	"github.com/kubewharf/kubebrain/pkg/storage"
 )
+
+type authRevisionBarrierShim struct {
+	BackendShim
+	current uint64
+}
+
+func (s *authRevisionBarrierShim) GetCurrentRevision() uint64 {
+	return s.current
+}
+
+func (s *authRevisionBarrierShim) SetCurrentRevision(revision uint64) {
+	s.current = revision
+}
 
 func TestAuthEnableValidatesBootstrapAndDisableRequiresRoot(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
@@ -80,6 +97,33 @@ func TestAuthRPCHeadersTrackCurrentUserRevision(t *testing.T) {
 	roleGetResponse, err := server.RoleGet(ctx, &etcdserverpb.AuthRoleGetRequest{Role: "header-role"})
 	require.NoError(t, err)
 	require.Equal(t, int64(revision), roleGetResponse.Header.Revision)
+}
+
+func TestAuthRPCHeaderWaitsForLeaderRevision(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	shim := &authRevisionBarrierShim{BackendShim: server.backend, current: 100}
+	server.backend = shim
+	server.peers = testPeerService{syncReadFn: func(context.Context) error {
+		shim.SetCurrentRevision(200)
+		return nil
+	}}
+
+	response, err := server.AuthStatus(context.Background(), &etcdserverpb.AuthStatusRequest{})
+	require.NoError(t, err)
+	require.Equal(t, int64(200), response.Header.Revision)
+}
+
+func TestAuthRPCHeaderFailsClosedWhenRevisionBarrierFails(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	server.peers = testPeerService{syncReadFn: func(context.Context) error {
+		return storage.ErrUnavailable
+	}}
+
+	response, err := server.AuthStatus(context.Background(), &etcdserverpb.AuthStatusRequest{})
+	require.Nil(t, response)
+	require.Equal(t, codes.Unavailable, status.Code(err))
 }
 
 func TestAuthRPCBootstrapAndEnabledSafetyBoundary(t *testing.T) {
