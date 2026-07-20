@@ -361,14 +361,15 @@ func (s *server) revisionHandler(w http.ResponseWriter, req *http.Request) {
 }
 
 const (
-	HealthResponse       = `{"health":"true"}`
+	HealthResponse       = `{"health":"true","reason":""}`
 	healthCheckTimeout   = 5 * time.Second
 	healthNoLeaderReason = "RAFT NO LEADER"
+	healthNoSpaceReason  = "ALARM NOSPACE"
 )
 
 type healthResponse struct {
 	Health string `json:"health"`
-	Reason string `json:"reason,omitempty"`
+	Reason string `json:"reason"`
 }
 
 // versionHandler serves the etcd-compatible GET /version endpoint. kubeadm's
@@ -400,6 +401,17 @@ func (s *server) httpHealthHandler(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	serializable := req.URL.Query().Get("serializable") == "true"
+	excludedAlarms := make(map[string]struct{})
+	for _, alarm := range req.URL.Query()["exclude"] {
+		if alarm != "" {
+			excludedAlarms[alarm] = struct{}{}
+		}
+	}
+	if reason := s.healthAlarmFailureReason(req.Context(), excludedAlarms); reason != "" {
+		s.recordLegacyHealth(false)
+		s.writeUnhealthy(w, reason)
+		return
+	}
 	if reason := s.healthFailureReason(req.Context(), serializable); reason != "" {
 		s.recordLegacyHealth(false)
 		s.writeUnhealthy(w, reason)
@@ -433,6 +445,23 @@ func (s *server) writeHealthy(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(HealthResponse))
+}
+
+func (s *server) healthAlarmFailureReason(ctx context.Context, excluded map[string]struct{}) string {
+	if _, ok := excluded["NOSPACE"]; ok {
+		return ""
+	}
+	if s.backend == nil {
+		return ""
+	}
+	_, _, noSpace, err := s.backend.QuotaStatus(ctx)
+	if err != nil {
+		return "ALARM ERROR:" + err.Error()
+	}
+	if noSpace {
+		return healthNoSpaceReason
+	}
+	return ""
 }
 
 func (s *server) writeUnhealthy(w http.ResponseWriter, reason string) {

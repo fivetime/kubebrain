@@ -228,6 +228,51 @@ func TestHTTPHealthChecksLeaderAndBackend(t *testing.T) {
 	require.JSONEq(t, HealthResponse, recorder.Body.String())
 }
 
+func TestHTTPHealthMatchesEtcdNoSpaceAlarmSemantics(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	m := mock.NewMinimalMetrics(ctrl)
+	kv := imemkv.NewKvStorage()
+	b := backend.NewBackend(kv, backend.Config{
+		Prefix:            "/registry",
+		Identity:          "health-quota-test",
+		QuotaBackendBytes: 1,
+	}, m)
+	require.NoError(t, b.EnsureQuotaInitialized(context.Background()))
+	defer func() { require.NoError(t, b.(interface{ Close() error }).Close()) }()
+	s := &server{
+		healthServer:   health.NewServer(),
+		leaderElection: &leader.Stub{ElectionInfo: leader.ElectionInfo{IsLeader: true}},
+		backend:        b,
+	}
+	s.healthServer.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
+	_, err := b.ArmNoSpace(context.Background(), 42)
+	require.NoError(t, err)
+
+	for _, target := range []string{"/health", "/health?serializable=true", "/health?exclude=CORRUPT"} {
+		recorder := httptest.NewRecorder()
+		s.httpHealthHandler(recorder, httptest.NewRequest(http.MethodGet, target, nil))
+		require.Equal(t, http.StatusServiceUnavailable, recorder.Code, target)
+		require.JSONEq(t, `{"health":"false","reason":"ALARM NOSPACE"}`, recorder.Body.String(), target)
+	}
+
+	recorder := httptest.NewRecorder()
+	s.httpHealthHandler(recorder, httptest.NewRequest(http.MethodGet, "/health?exclude=NOSPACE", nil))
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.JSONEq(t, HealthResponse, recorder.Body.String())
+
+	recorder = httptest.NewRecorder()
+	s.httpReadyHandler(recorder, httptest.NewRequest(http.MethodGet, "/ready", nil))
+	require.Equal(t, http.StatusOK, recorder.Code, "NOSPACE must not withdraw serving readiness")
+	require.JSONEq(t, HealthResponse, recorder.Body.String())
+
+	s.leaderElection = &leader.Stub{}
+	recorder = httptest.NewRecorder()
+	s.httpHealthHandler(recorder, httptest.NewRequest(http.MethodGet, "/health", nil))
+	require.Equal(t, http.StatusServiceUnavailable, recorder.Code)
+	require.JSONEq(t, `{"health":"false","reason":"ALARM NOSPACE"}`, recorder.Body.String(),
+		"etcd checks alarms before leader availability")
+}
+
 func TestEtcdLivezAndReadyzChecks(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	m := mock.NewMinimalMetrics(ctrl)
