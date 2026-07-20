@@ -76,6 +76,15 @@ runtime-stage 的同名 `ARG` 与 OCI `LABEL` 必须位于 `apk add` 和所有�
 发布流水线应至少保留一次 metadata-only cache probe，防止每次 commit SHA 变化都重新
 下载依赖或安装运行时包。
 
+所有 production Dockerfile `FROM` 必须同时保留可读版本 tag 和不可变
+`@sha256:<OCI-index-digest>`，不能只依赖 `golang:...` 或 `alpine:...` 的可变 tag。
+`build/dockerignore_test.go` 会逐行拒绝未固定 digest 的 stage。升级 Go 或 Alpine 时，
+必须从 registry 重新解析目标 tag 的 OCI index digest，确认发布架构（当前
+`linux/amd64`）存在对应子 manifest，再在同一提交中更新 tag、digest 和测试定位字符串；
+完整 production build、镜像内 `kube-brain version`、OCI labels、非 root 用户及真实
+TiKV/PD smoke 全部通过后才能发布。镜像自身使用 digest 部署不能替代基础镜像固定：
+前者保证部署不可变，后者保证同一源码提交可重建到已审计的工具链和根文件系统。
+
 ## 真-k3s 消费端驱动验证进展（2026-07-03）
 
 用真实 kube-apiserver（k3s v1.36，`--datastore-endpoint` 指向 KubeBrain-on-TiKV）端到端驱动，已完成（脚本 `hack/dev/k3s-load-smoke.sh` 一键复跑）：

@@ -6677,6 +6677,34 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   上 Compact/Compaction/PhysicalCompaction 定向 compat 回归 6.477 秒通过。A343 的
   `8871b6c` 只新增结果测试，晚于运行镜像 revision，不改变被验证的数据面二进制。
 
+- **Production A345 immutable base-image inputs（2026-07-20）**：production artifact
+  已要求完整源码 SHA、OCI labels 和最终 image digest，但 Dockerfile 的
+  `golang:1.26-bookworm`、`alpine:3.23` 仍是可变 tag；同一 KubeBrain commit 在 tag
+  漂移后可能静默使用不同编译器、系统库或根文件系统，现有 provenance 无法证明这些
+  外部构建输入。
+
+  两个 stage 现分别固定到 OCI index digest
+  `sha256:1ecb7edf62a0408027bd5729dfd6b1b8766e578e8df93995b225dfd0944eb651`
+  和 `sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952bc2d6daf40`，
+  同时保留可读 tag。远端 manifest 校验确认两者均为 OCI image index，并包含
+  `linux/amd64` 子 manifest。新增构建门禁枚举每个 `FROM`，要求
+  `tag@sha256:<64 hex>`，避免新增 stage 或后续重构退回 tag-only；聚焦测试 20 轮、
+  race 10 轮及根/compat vet 通过。
+
+  从实现提交 `e9319c275cfea82a87b96f45b321d9d5d68e5cc7` 的 `git archive` 完整构建
+  `kubebrain:a345-pinned-base-images`，context 7.341 MB，49 个 stage 全部成功；
+  image ID
+  `sha256:b58db02d6c1c5fba34f542004a6d19eca9fe11850d9cc5055a4527e58c0f07c6`，
+  OCI revision 与二进制 version 均为该完整提交，版本 3.7.0/TiKV、Go 1.26.5、
+  linux/amd64、运行用户 `65532:65532`。
+
+  该镜像在独立 `a345-pinned-base-images` keyspace、真实 3 PD/3 TiKV 上 Ready。
+  Put/Get/Delete `/a345/production-ready` 成功，endpoint proposal health
+  29.611449ms，`/ready` 与四项 readyz 全部通过。Pod UID
+  `0e363602-7041-4684-a341-9a86a25833d3`、restartCount=0，日志无
+  initialization failure/panic/fatal/segmentation/data race/storage error；PD/TiKV
+  3+3 Ready。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
