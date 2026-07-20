@@ -118,6 +118,23 @@ revision、运行用户和 kubectl 版本。release workflow 必须使用 QEMU�
 后必须恰好存在 `linux/amd64`、`linux/arm64` 两个 runtime manifest。任一架构构建、
 attestation 或 index 检查失败都不得更新 `latest` 作为可消费发布。
 
+GitHub Actions 自身也是发布供应链的一部分。所有 `uses:` 必须固定到 40 位 commit SHA，
+不能仅写 `@v4`、`@v6` 或 branch；版本注释只用于 Dependabot/人工升级可读性，不参与
+解析。所有 checkout 必须设置 `persist-credentials: false`，避免后续仓库脚本继承
+GitHub token。手工 image 发布只接受 40 位完整 commit，checkout 后必须比较实际 HEAD，
+并确认该 commit 是 `origin/main` 的 ancestor；未合并 feature branch、缩写 SHA 和可变
+branch/tag 都应 fail closed。只有 main push 可自动触发 packages 写入，工作流必须先
+验证不可变双架构 digest，再 promotion `latest`。
+
+integration runner 下载的 kind、kubectl 和 Helm 也必须固定版本、仅允许 HTTPS/TLS 1.2+
+并在安装前校验官方 SHA-256；禁止直接执行 `main` 分支安装脚本。默认 kind node image
+必须同时保留可读 Kubernetes tag 和 OCI index digest。当前固定 kind v0.32.0、
+kubectl v1.36.1、Helm v3.18.4 和
+`kindest/node:v1.36.1@sha256:3489c7674813ba5d8b1a9977baea8a6e553784dab7b84759d1014dbd78f7ebd5`。
+升级时必须从对应上游 release/checksum 和 registry manifest 重新取得值，在独立提交中
+更新，并跑真实 integration workflow；本地 YAML/契约测试只能证明声明，不证明托管
+runner、GHCR 权限或外部服务可用。
+
 ## 真-k3s 消费端驱动验证进展（2026-07-03）
 
 用真实 kube-apiserver（k3s v1.36，`--datastore-endpoint` 指向 KubeBrain-on-TiKV）端到端驱动，已完成（脚本 `hack/dev/k3s-load-smoke.sh` 一键复跑）：

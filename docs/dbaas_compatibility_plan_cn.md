@@ -6831,6 +6831,29 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Kubernetes API、TiKV/PD 与 readiness smoke 后，才可把该 ref 标记为 production
   multi-arch release。
 
+- **Production A350 immutable CI supply chain（2026-07-20）**：A349 保证 image 内容与
+  multi-arch index 后继续审计 workflow 自身，发现 checkout/setup-go/upload-artifact
+  及四个 Docker Actions 均引用可变 major tag；checkout 默认把 token 留在 git
+  credential；integration 无 checksum 下载 kind/kubectl，并直接执行 Helm `main`
+  安装脚本，默认 kind node image 也只有可变 tag。手工 image 发布还接受 branch/tag
+  `source_ref`，会在解析后移动，且可选择未合并分支进入 packages 写权限 job。
+
+  提交 `0ed2adb` 将 14 个 `uses:` 全部固定到上游 major tag 当前对应的 40 位 commit，
+  保留版本注释并对所有 checkout 设置 `persist-credentials: false`。release 只由 main
+  push 自动触发；workflow_dispatch 为空时使用触发 commit，显式输入必须是 checkout
+  后完全匹配的 40 位 SHA，且是 `origin/main` ancestor，未合并 dbaas HEAD 的负向验证
+  正确返回非零，当前 origin/main 完整 SHA 的正向验证通过。
+
+  integration Go 固定为 1.26.5；kind v0.32.0、kubectl v1.36.1、Helm v3.18.4 分别通过
+  官方 HTTPS/TLS 1.2 URL 下载并固定 SHA-256，实际重新下载后的三项 `sha256sum -c`
+  全部为 OK。默认 kind node 固定为
+  `kindest/node:v1.36.1@sha256:3489c7674813ba5d8b1a9977baea8a6e553784dab7b84759d1014dbd78f7ebd5`；
+  registry 返回的 OCI index 包含 linux/amd64 与 linux/arm64。新增测试解析全部 workflow，
+  拒绝非 40 位 action 引用、checkout credential 遗漏、未校验工具、Helm branch 脚本、
+  非 main release 和可变 source ref；核心契约连续 100 轮、build 包 20 轮及 race 10 轮
+  通过。GitHub 托管 runner 上的 integration 和有 packages 写权限的 multi-arch
+  publish 仍须在合并后真实执行，本地证据不能代替该外部发布门禁。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
