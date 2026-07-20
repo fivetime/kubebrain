@@ -48,7 +48,7 @@ func TestLongLeaseFailoverUsesRemainingTTLCheckpoint(t *testing.T) {
 
 	output, err := exec.CommandContext(ctx, "bash", "-c", failoverCommand).CombinedOutput()
 	require.NoErrorf(t, err, "failover command: %s", strings.TrimSpace(string(output)))
-	output, err = exec.CommandContext(ctx, "kubectl", "-n", namespace, "rollout", "status", "deployment/kubebrain", "--timeout=75s").CombinedOutput()
+	output, err = waitForKubeBrainRollout(ctx, namespace)
 	require.NoErrorf(t, err, "wait for KubeBrain recovery: %s", strings.TrimSpace(string(output)))
 
 	var recovered *clientv3.LeaseTimeToLiveResponse
