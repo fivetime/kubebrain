@@ -208,24 +208,35 @@ func grpcTransportOptions(config *Config) []grpc.ServerOption {
 }
 
 func (e *Endpoint) buildClientGrpcServer() exposedServer {
-	opts := append(grpcTransportOptions(e.config), e.metrics.GetGrpcServerOption()...)
-	opts = append(opts, grpc.StatsHandler(e.tlsIdentities))
-	opts = append(opts, e.server.ClientServerOptions()...)
-	grpcServer := grpc.NewServer(opts...)
+	grpcServer := grpc.NewServer(e.clientGrpcServerOptions()...)
 	e.server.RegisterClient(grpcServer)
 	return newGrpcServer(grpcServer)
 }
 
+func (e *Endpoint) clientGrpcServerOptions() []grpc.ServerOption {
+	// Keep metrics interceptors outermost. They must observe calls rejected by
+	// admission/require-leader interceptors before a service handler runs, matching
+	// upstream etcd's serverMetrics-before-newInterceptor ordering (0c68e485a).
+	opts := append(grpcTransportOptions(e.config), e.metrics.GetGrpcServerOption()...)
+	opts = append(opts, grpc.StatsHandler(e.tlsIdentities))
+	opts = append(opts, e.server.ClientServerOptions()...)
+	return opts
+}
+
 func (e *Endpoint) buildPeerGrpcServer() exposedServer {
+	grpcServer := grpc.NewServer(e.peerGrpcServerOptions()...)
+	e.server.RegisterPeer(grpcServer)
+	return newGrpcServer(grpcServer)
+}
+
+func (e *Endpoint) peerGrpcServerOptions() []grpc.ServerOption {
 	opts := append(grpcTransportOptions(e.config), e.metrics.GetGrpcServerOption()...)
 	opts = append(opts, grpc.StatsHandler(e.tlsIdentities))
 	// The peer listener registers the same RPC surface for internal forwarding,
 	// but keeps reserved capacity while still applying request-size and response
 	// identity handling.
 	opts = append(opts, e.server.PeerServerOptions()...)
-	grpcServer := grpc.NewServer(opts...)
-	e.server.RegisterPeer(grpcServer)
-	return newGrpcServer(grpcServer)
+	return opts
 }
 
 func (e *Endpoint) buildMetricsHttpServer() exposedServer {
