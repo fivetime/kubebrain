@@ -62,6 +62,26 @@ func TestAuthEnableUsesImplicitEtcdRootRole(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestAuthRPCHeadersTrackCurrentUserRevision(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	const revision = uint64(12345)
+	server.backend.SetCurrentRevision(revision)
+
+	ctx := context.Background()
+	statusResponse, err := server.AuthStatus(ctx, &etcdserverpb.AuthStatusRequest{})
+	require.NoError(t, err)
+	require.Equal(t, int64(revision), statusResponse.Header.Revision)
+
+	roleAddResponse, err := server.RoleAdd(ctx, &etcdserverpb.AuthRoleAddRequest{Name: "header-role"})
+	require.NoError(t, err)
+	require.Equal(t, int64(revision), roleAddResponse.Header.Revision)
+
+	roleGetResponse, err := server.RoleGet(ctx, &etcdserverpb.AuthRoleGetRequest{Role: "header-role"})
+	require.NoError(t, err)
+	require.Equal(t, int64(revision), roleGetResponse.Header.Revision)
+}
+
 func TestAuthRPCBootstrapAndEnabledSafetyBoundary(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
