@@ -56,6 +56,8 @@ func TestReleaseWorkflowPublishesVerifiedMultiPlatformImage(t *testing.T) {
 		"uses: docker/setup-buildx-action@v3",
 		"uses: docker/build-push-action@v6",
 		"platforms: linux/amd64,linux/arm64",
+		"cache-from: type=gha",
+		"cache-to: type=gha,mode=max",
 		"KUBEBRAIN_VERSION=${{ steps.vars.outputs.version }}",
 		"KUBEBRAIN_GIT_SHA=${{ steps.vars.outputs.revision }}",
 		"KUBEBRAIN_BUILD_DATE=${{ steps.vars.outputs.created }}",

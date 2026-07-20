@@ -10,7 +10,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-var pinnedBaseImage = regexp.MustCompile(`(?m)^FROM [^\s@]+:[^\s@]+@sha256:[a-f0-9]{64}(?: AS [a-zA-Z0-9_-]+)?$`)
+var pinnedBaseImage = regexp.MustCompile(
+	`(?m)^FROM (?:--platform=\$\{[A-Z]+\} )?[^\s@]+:[^\s@]+@sha256:[a-f0-9]{64}(?: AS [a-zA-Z0-9_-]+)?$`,
+)
 
 func TestDockerfilePinsEveryBaseImageByDigest(t *testing.T) {
 	dockerfile, err := os.ReadFile("../Dockerfile")
@@ -152,7 +154,7 @@ func TestDockerfileMetadataDoesNotInvalidateDependencyOrRuntimePackageLayers(t *
 	require.NoError(t, err)
 	content := string(dockerfile)
 
-	buildStart := strings.Index(content, "FROM golang:1.26-bookworm@sha256:")
+	buildStart := strings.Index(content, "FROM --platform=${BUILDPLATFORM} golang:1.26-bookworm@sha256:")
 	require.NotEqual(t, -1, buildStart)
 	sourceCopy := strings.Index(content[buildStart:], "COPY . .")
 	require.NotEqual(t, -1, sourceCopy)
@@ -178,4 +180,16 @@ func TestDockerfileMetadataDoesNotInvalidateDependencyOrRuntimePackageLayers(t *
 	require.Less(t, runtimeScripts, runtimeMetadata)
 	require.Contains(t, content[buildMetadata:], "RUN test -n \"$KUBEBRAIN_VERSION\"")
 	require.Contains(t, content[runtimeMetadata:], "LABEL org.opencontainers.image.title=\"KubeBrain\"")
+}
+
+func TestDockerfileUsesNativeBuildPlatformForCrossCompilation(t *testing.T) {
+	dockerfile, err := os.ReadFile("../Dockerfile")
+	require.NoError(t, err)
+	content := string(dockerfile)
+
+	require.Contains(t, content, "ARG BUILDPLATFORM=linux/amd64")
+	require.Contains(t, content,
+		"FROM --platform=${BUILDPLATFORM} golang:1.26-bookworm@sha256:")
+	require.Equal(t, 1, strings.Count(content, "--platform=${BUILDPLATFORM}"),
+		"only the compiler stage should use the build platform; runtime must use the target platform")
 }
