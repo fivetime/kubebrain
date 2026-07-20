@@ -458,9 +458,58 @@ version。小时归档凭据只需写 `metering-samples`；日汇总凭据应限
 `metering-rollups`，两个 CronJob 使用不同 Secret。
 
 不可变小时采样和跨日积分仍不构成最终账单。Prometheus `increase` 会按 scrape
-边界执行 counter reset 处理和窗口外推，价格版本必须明确采用该测量语义。控制面仍须
-实现价格版本、对象存储成本和审计对账；采样缺口必须保持不可计费状态，禁止按零用量
-补算。
+边界执行 counter reset 处理和窗口外推，价格版本必须明确采用该测量语义。下面的
+不可变价格目录和 charge 关闭资源 quantity 的版本化定价；对象存储成本、adjustment
+和最终账单审计仍未完成。采样缺口必须保持不可计费状态，禁止按零用量补算。
+
+价格目录使用 `kubebrain.metering-price-catalog.v1`。目录必须包含稳定 version、
+三位大写 currency、覆盖完整计量周期的 `[effective_start_unix,effective_end_unix)`、
+固定 `measurement_policy="kubebrain.metering-rollup.v2"`，以及与 rollup 六项 quantity
+同顺序的 rate。`unit_price` 是每个 quantity unit 的货币单位十进制字符串，最多 18 位
+小数，禁止指数、负值、前导零和无意义尾零；目录不包含备份观测项或对象存储价格。
+canonical JSON 必须先经过财务/产品审批，再执行专用 publisher：
+
+```shell
+jq -c . approved-price-catalog.pretty.json > approved-price-catalog.json
+
+S3_ENDPOINT=https://s3.example.internal \
+AWS_REGION=us-east-1 \
+AWS_ACCESS_KEY_ID=... \
+AWS_SECRET_ACCESS_KEY=... \
+S3_FORCE_PATH_STYLE=false \
+  kubebrain-metering-price-publish \
+    --input=approved-price-catalog.json \
+    --price-scope=global \
+    --object-store-id=primary-metering-account \
+    --bucket=kubebrain-metering \
+    --price-prefix=metering-prices \
+    --retention-mode=COMPLIANCE \
+    --retention-duration=61320h
+```
+
+publisher 在任何 S3 请求前执行 strict/canonical schema 校验；对象键固定为
+`metering-prices/<scope>/<version>.json`，artifact ID 固定为 version，retain-until
+固定为 `effective_end + retention_duration`。同 version 内容、有效期、价格或保留期
+不同都会与既有对象冲突，禁止覆盖。只有 publisher receipt 已独立核验后，才把
+`deploy/production/kubebrain-metering-charge.yaml` 的
+`replace-with-approved-version` 替换为该 version；占位值不得直接上线。
+
+charge CronJob 每日 UTC 01:17 读取前一日 exact rollup 和 ConfigMap 固定的 exact price
+version。两个对象都必须单 version、无 delete marker、format/ID/store/digest/retention
+匹配，且目录有效期覆盖完整 rollup；任一条件失败都不得生成 charge。
+`kubebrain.metering-charge.v1` 内嵌 rollup 和 catalog 的 key、version ID、digest、
+bytes、retain-until，逐行记录 quantity 的无指数十进制表示、unit price 和
+`amount_micros`。计算先把 quantity 与 unit price 转为任意精度有理数，再逐行执行
+`half_even_to_currency_micro.v1`，总额只对已舍入行求和，所有金额使用非负 int64 微
+货币单位。二进制浮点乘法不得决定金额。
+
+charge 对象键只由 instance 和 period 构成，不含 price version。同一周期更换价格版本
+会得到不同内容并被 immutable key 冲突拒绝，禁止生成两份并行 charge 或静默重定价；
+后续更正必须使用尚未实现的 adjustment/credit artifact。正常任务和
+`--period-end-unix` 回补共用同一键。charge Secret 应只允许读取 rollup/price prefix
+并写 charge prefix；价格 publisher 使用独立审批身份。当前 charge 只覆盖六项数据面
+资源 quantity，不包含对象存储实际版本占用、请求费、税费、折扣、付款或最终 invoice，
+这些仍须由后续账单审计和 adjustment 流程完成。
 
 TiDB Operator 的 BR full/PITR 不能用于 KubeBrain 数据恢复。真实 S3 full backup 和
 独立 PD/TiKV Restore CR 都成功时，备份前已提交的 KubeBrain key 仍未出现在目标集群；
