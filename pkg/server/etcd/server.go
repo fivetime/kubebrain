@@ -21,6 +21,12 @@ import (
 	"time"
 
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
+	clientv3 "go.etcd.io/etcd/client/v3"
+	"go.etcd.io/etcd/server/v3/etcdserver/api/v3election"
+	"go.etcd.io/etcd/server/v3/etcdserver/api/v3election/v3electionpb"
+	"go.etcd.io/etcd/server/v3/etcdserver/api/v3lock"
+	"go.etcd.io/etcd/server/v3/etcdserver/api/v3lock/v3lockpb"
+	"go.etcd.io/etcd/server/v3/proxy/grpcproxy/adapter"
 	"golang.org/x/crypto/bcrypt"
 	"golang.org/x/time/rate"
 	"google.golang.org/grpc"
@@ -95,6 +101,8 @@ type RPCServer struct {
 	maxWatches           uint32
 	watchQuotaMu         sync.Mutex
 	activeWatches        int64
+
+	concurrencyClient *clientv3.Client
 
 	// The lease subsystem: its state and logic live in leaseManager (lease.go /
 	// lease_manager.go). Embedded so the lease gRPC handlers and the write-path
@@ -174,6 +182,7 @@ func New(backend b.Backend, metricCli metrics.Metrics, peers service.PeerService
 	// The lease subsystem borrows its deps from server (backend/peers/metrics),
 	// so it is wired after server exists and reads them live through server.
 	server.leaseManager = newLeaseManager(server, time.Now().UnixNano())
+	server.concurrencyClient = newConcurrencyClient(server)
 	// Wire read/watch KeyValues to carry the lease attached to each key (etcd
 	// parity). Safe to set before serving: New runs single-threaded.
 	server.backend.SetLeaseLookup(server.leaseIDForKey)
@@ -226,6 +235,9 @@ func New(backend b.Backend, metricCli metrics.Metrics, peers service.PeerService
 // Close stops lease timers and waits for every lease-owned background task.
 // Endpoint invokes it after listeners drain and before the backend closes TiKV.
 func (s *RPCServer) Close() {
+	if s.concurrencyClient != nil {
+		_ = s.concurrencyClient.Close()
+	}
 	s.leaseManager.close()
 }
 
@@ -290,4 +302,14 @@ func (s *RPCServer) Register(server *grpc.Server) {
 	etcdserverpb.RegisterClusterServer(server, s)
 	etcdserverpb.RegisterMaintenanceServer(server, s)
 	etcdserverpb.RegisterAuthServer(server, s)
+	v3lockpb.RegisterLockServer(server, v3lock.NewLockServer(s.concurrencyClient))
+	v3electionpb.RegisterElectionServer(server, v3election.NewElectionServer(s.concurrencyClient))
+}
+
+func newConcurrencyClient(server *RPCServer) *clientv3.Client {
+	client := clientv3.NewCtxClient(context.Background())
+	client.KV = clientv3.NewKVFromKVClient(adapter.KvServerToKvClient(server), client)
+	client.Lease = clientv3.NewLeaseFromLeaseClient(adapter.LeaseServerToLeaseClient(server), client, time.Second)
+	client.Watcher = clientv3.NewWatchFromWatchClient(adapter.WatchServerToWatchClient(server), client)
+	return client
 }

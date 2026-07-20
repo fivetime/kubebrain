@@ -22,9 +22,10 @@ require (
 	github.com/tikv/client-go/v2 v2.0.7
 	go.etcd.io/etcd/api/v3 v3.7.0
 	go.etcd.io/etcd/client/v3 v3.7.0
-	golang.org/x/crypto v0.51.0
+	go.etcd.io/etcd/server/v3 v3.7.0
+	golang.org/x/crypto v0.52.0
 	golang.org/x/sync v0.20.0
-	golang.org/x/time v0.14.0
+	golang.org/x/time v0.15.0
 	google.golang.org/grpc v1.81.0
 	k8s.io/apimachinery v0.36.2
 	k8s.io/client-go v0.36.2

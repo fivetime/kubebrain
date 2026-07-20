@@ -44,6 +44,19 @@ type httpGatewayAuthOutcome struct {
 	DisableStatus    int
 }
 
+type httpGatewayConcurrencyOutcome struct {
+	LockStatus       int
+	LockKeyPresent   bool
+	UnlockStatus     int
+	CampaignStatus   int
+	LeaderKeyPresent bool
+	LeaderLeaseMatch bool
+	InitialValue     string
+	ProclaimStatus   int
+	UpdatedValue     string
+	ResignStatus     int
+}
+
 func TestHTTPGatewayDifferentialAgainstReferenceEtcd(t *testing.T) {
 	reference := os.Getenv("REFERENCE_ETCD_GATEWAY_ENDPOINT")
 	kubebrain := os.Getenv("KUBEBRAIN_GATEWAY_ENDPOINT")
@@ -60,6 +73,92 @@ func TestHTTPGatewayAuthDifferentialAgainstReferenceEtcd(t *testing.T) {
 		t.Skip("set REFERENCE_ETCD_GATEWAY_ENDPOINT and KUBEBRAIN_GATEWAY_ENDPOINT")
 	}
 	require.Equal(t, runHTTPGatewayAuthScenario(t, reference), runHTTPGatewayAuthScenario(t, kubebrain))
+}
+
+func TestHTTPGatewayConcurrencyDifferentialAgainstReferenceEtcd(t *testing.T) {
+	reference := os.Getenv("REFERENCE_ETCD_GATEWAY_ENDPOINT")
+	kubebrain := os.Getenv("KUBEBRAIN_GATEWAY_ENDPOINT")
+	if reference == "" || kubebrain == "" {
+		t.Skip("set REFERENCE_ETCD_GATEWAY_ENDPOINT and KUBEBRAIN_GATEWAY_ENDPOINT")
+	}
+	require.Equal(t,
+		runHTTPGatewayConcurrencyScenario(t, reference, "8563561"),
+		runHTTPGatewayConcurrencyScenario(t, kubebrain, "8563562"),
+	)
+}
+
+func runHTTPGatewayConcurrencyScenario(t *testing.T, endpoint, leaseID string) httpGatewayConcurrencyOutcome {
+	t.Helper()
+	client := &http.Client{Timeout: 10 * time.Second}
+	baseURL := strings.TrimRight(endpoint, "/")
+	name := []byte("/a356/http-concurrency")
+	encodedName := base64.StdEncoding.EncodeToString(name)
+
+	post := func(path string, body any) (int, map[string]any) {
+		t.Helper()
+		rawBody, err := json.Marshal(body)
+		require.NoError(t, err)
+		request, err := http.NewRequest(http.MethodPost, baseURL+path, bytes.NewReader(rawBody))
+		require.NoError(t, err)
+		request.Header.Set("Content-Type", "application/json")
+		response, err := client.Do(request)
+		require.NoError(t, err, path)
+		defer response.Body.Close()
+		rawResponse, err := io.ReadAll(response.Body)
+		require.NoError(t, err, path)
+		decoded := make(map[string]any)
+		require.NoError(t, json.Unmarshal(rawResponse, &decoded), "%s: %s", path, rawResponse)
+		return response.StatusCode, decoded
+	}
+	stringField := func(value map[string]any, field string) string {
+		t.Helper()
+		got, ok := value[field].(string)
+		require.True(t, ok, "missing string field %q in %#v", field, value)
+		return got
+	}
+
+	// Fixed IDs make cleanup idempotent while each side remains independent.
+	post("/v3/lease/revoke", map[string]any{"ID": leaseID})
+	status, grant := post("/v3/lease/grant", map[string]any{"ID": leaseID, "TTL": "30"})
+	require.Equal(t, http.StatusOK, status, grant)
+	t.Cleanup(func() { post("/v3/lease/revoke", map[string]any{"ID": leaseID}) })
+
+	outcome := httpGatewayConcurrencyOutcome{}
+	lockStatus, lock := post("/v3/lock/lock", map[string]any{"name": encodedName, "lease": leaseID})
+	outcome.LockStatus = lockStatus
+	lockKey := stringField(lock, "key")
+	outcome.LockKeyPresent = lockKey != ""
+	unlockStatus, _ := post("/v3/lock/unlock", map[string]any{"key": lockKey})
+	outcome.UnlockStatus = unlockStatus
+
+	campaignStatus, campaign := post("/v3/election/campaign", map[string]any{
+		"name": encodedName, "lease": leaseID, "value": base64.StdEncoding.EncodeToString([]byte("first")),
+	})
+	outcome.CampaignStatus = campaignStatus
+	leader, ok := campaign["leader"].(map[string]any)
+	require.True(t, ok, "missing leader in %#v", campaign)
+	outcome.LeaderKeyPresent = stringField(leader, "key") != ""
+	outcome.LeaderLeaseMatch = stringField(leader, "lease") == leaseID
+
+	leaderStatus, current := post("/v3/election/leader", map[string]any{"name": encodedName})
+	require.Equal(t, http.StatusOK, leaderStatus, current)
+	kv, ok := current["kv"].(map[string]any)
+	require.True(t, ok, "missing leader kv in %#v", current)
+	outcome.InitialValue = stringField(kv, "value")
+
+	proclaimStatus, _ := post("/v3/election/proclaim", map[string]any{
+		"leader": leader, "value": base64.StdEncoding.EncodeToString([]byte("second")),
+	})
+	outcome.ProclaimStatus = proclaimStatus
+	leaderStatus, current = post("/v3/election/leader", map[string]any{"name": encodedName})
+	require.Equal(t, http.StatusOK, leaderStatus, current)
+	kv, ok = current["kv"].(map[string]any)
+	require.True(t, ok, "missing updated leader kv in %#v", current)
+	outcome.UpdatedValue = stringField(kv, "value")
+
+	resignStatus, _ := post("/v3/election/resign", map[string]any{"leader": leader})
+	outcome.ResignStatus = resignStatus
+	return outcome
 }
 
 func runHTTPGatewayScenario(t *testing.T, endpoint string) httpGatewayOutcome {

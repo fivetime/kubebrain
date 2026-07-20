@@ -1,0 +1,158 @@
+// Copyright 2026 ByteDance and/or its affiliates
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package etcd
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/require"
+	"go.etcd.io/etcd/api/v3/etcdserverpb"
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
+	"go.etcd.io/etcd/server/v3/etcdserver/api/v3election"
+	"go.etcd.io/etcd/server/v3/etcdserver/api/v3election/v3electionpb"
+	"go.etcd.io/etcd/server/v3/etcdserver/api/v3lock"
+	"go.etcd.io/etcd/server/v3/etcdserver/api/v3lock/v3lockpb"
+	"google.golang.org/grpc/metadata"
+)
+
+func TestDedicatedLockAndElectionServicesUseKubeBrainBackend(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer func() {
+		_ = server.concurrencyClient.Close()
+		closeFn()
+	}()
+
+	ctx := context.Background()
+	lease, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 30})
+	require.NoError(t, err)
+	contenderLease, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 30})
+	require.NoError(t, err)
+
+	lockServer := v3lock.NewLockServer(server.concurrencyClient)
+	locked, err := lockServer.Lock(ctx, &v3lockpb.LockRequest{
+		Name:  []byte("/a356/lock"),
+		Lease: lease.ID,
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, locked.Key)
+
+	storedLock, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: locked.Key})
+	require.NoError(t, err)
+	require.Len(t, storedLock.Kvs, 1)
+	require.Equal(t, lease.ID, storedLock.Kvs[0].Lease)
+
+	contenderResult := make(chan *v3lockpb.LockResponse, 1)
+	contenderError := make(chan error, 1)
+	go func() {
+		response, lockErr := lockServer.Lock(ctx, &v3lockpb.LockRequest{
+			Name:  []byte("/a356/lock"),
+			Lease: contenderLease.ID,
+		})
+		contenderResult <- response
+		contenderError <- lockErr
+	}()
+	select {
+	case err := <-contenderError:
+		t.Fatalf("contender completed before unlock: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	unlocked, err := lockServer.Unlock(ctx, &v3lockpb.UnlockRequest{Key: locked.Key})
+	require.NoError(t, err)
+	require.NotNil(t, unlocked.Header)
+	select {
+	case err := <-contenderError:
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("contender did not acquire lock after unlock")
+	}
+	contender := <-contenderResult
+	require.NotNil(t, contender)
+	require.NotEqual(t, locked.Key, contender.Key)
+	_, err = lockServer.Unlock(ctx, &v3lockpb.UnlockRequest{Key: contender.Key})
+	require.NoError(t, err)
+	storedLock, err = server.Range(ctx, &etcdserverpb.RangeRequest{Key: locked.Key})
+	require.NoError(t, err)
+	require.Empty(t, storedLock.Kvs)
+
+	electionServer := v3election.NewElectionServer(server.concurrencyClient)
+	campaign, err := electionServer.Campaign(ctx, &v3electionpb.CampaignRequest{
+		Name:  []byte("/a356/election"),
+		Lease: lease.ID,
+		Value: []byte("first"),
+	})
+	require.NoError(t, err)
+	require.NotNil(t, campaign.Leader)
+	require.NotEmpty(t, campaign.Leader.Key)
+
+	leader, err := electionServer.Leader(ctx, &v3electionpb.LeaderRequest{Name: []byte("/a356/election")})
+	require.NoError(t, err)
+	require.Equal(t, []byte("first"), leader.Kv.Value)
+
+	proclaimed, err := electionServer.Proclaim(ctx, &v3electionpb.ProclaimRequest{
+		Leader: campaign.Leader,
+		Value:  []byte("second"),
+	})
+	require.NoError(t, err)
+	require.NotNil(t, proclaimed.Header)
+	leader, err = electionServer.Leader(ctx, &v3electionpb.LeaderRequest{Name: []byte("/a356/election")})
+	require.NoError(t, err)
+	require.Equal(t, []byte("second"), leader.Kv.Value)
+
+	resigned, err := electionServer.Resign(ctx, &v3electionpb.ResignRequest{Leader: campaign.Leader})
+	require.NoError(t, err)
+	require.NotNil(t, resigned.Header)
+	leaderKey, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: campaign.Leader.Key})
+	require.NoError(t, err)
+	require.Empty(t, leaderKey.Kvs)
+}
+
+func TestDedicatedLockServicePreservesCallerAuthentication(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer func() {
+		_ = server.concurrencyClient.Close()
+		closeFn()
+	}()
+
+	ctx := context.Background()
+	lease, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 30})
+	require.NoError(t, err)
+	require.NoError(t, server.auth.userAdd(ctx, &etcdserverpb.AuthUserAddRequest{
+		Name: "root", Password: "secret",
+	}))
+	require.NoError(t, server.auth.roleAdd(ctx, "root"))
+	require.NoError(t, server.auth.userGrantRole(ctx, "root", "root"))
+	require.NoError(t, server.auth.enable(ctx))
+
+	lockServer := v3lock.NewLockServer(server.concurrencyClient)
+	_, err = lockServer.Lock(ctx, &v3lockpb.LockRequest{Name: []byte("/a356/auth"), Lease: lease.ID})
+	require.ErrorIs(t, err, rpctypes.ErrUserEmpty)
+
+	authenticated, err := server.Authenticate(ctx, &etcdserverpb.AuthenticateRequest{
+		Name: "root", Password: "secret",
+	})
+	require.NoError(t, err)
+	rootCtx := metadata.NewIncomingContext(ctx, metadata.Pairs(
+		rpctypes.TokenFieldNameGRPC, authenticated.Token,
+	))
+	locked, err := lockServer.Lock(rootCtx, &v3lockpb.LockRequest{
+		Name: []byte("/a356/auth"), Lease: lease.ID,
+	})
+	require.NoError(t, err)
+	_, err = lockServer.Unlock(rootCtx, &v3lockpb.UnlockRequest{Key: locked.Key})
+	require.NoError(t, err)
+}

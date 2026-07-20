@@ -25,6 +25,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/mvccpb"
+	"go.etcd.io/etcd/server/v3/etcdserver/api/v3lock/v3lockpb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/test/bufconn"
@@ -33,6 +34,18 @@ import (
 type gatewayKVServer struct {
 	etcdserverpb.UnimplementedKVServer
 	request *etcdserverpb.RangeRequest
+}
+
+type gatewayLockServer struct {
+	v3lockpb.UnimplementedLockServer
+	request *v3lockpb.UnlockRequest
+}
+
+func (s *gatewayLockServer) Unlock(_ context.Context, request *v3lockpb.UnlockRequest) (*v3lockpb.UnlockResponse, error) {
+	s.request = request
+	return &v3lockpb.UnlockResponse{
+		Header: &etcdserverpb.ResponseHeader{ClusterId: 21, MemberId: 22, Revision: 23, RaftTerm: 24},
+	}, nil
 }
 
 func (s *gatewayKVServer) Range(_ context.Context, request *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
@@ -54,7 +67,9 @@ func TestGRPCGatewayUsesGeneratedEtcdJSONContract(t *testing.T) {
 	listener := bufconn.Listen(1024 * 1024)
 	grpcServer := grpc.NewServer()
 	kvServer := &gatewayKVServer{}
+	lockServer := &gatewayLockServer{}
 	etcdserverpb.RegisterKVServer(grpcServer, kvServer)
+	v3lockpb.RegisterLockServer(grpcServer, lockServer)
 	go func() { _ = grpcServer.Serve(listener) }()
 	t.Cleanup(grpcServer.Stop)
 
@@ -85,4 +100,17 @@ func TestGRPCGatewayUsesGeneratedEtcdJSONContract(t *testing.T) {
 	require.NotNil(t, kvServer.request)
 	require.Equal(t, []byte("a"), kvServer.request.Key)
 	require.Equal(t, int64(1), kvServer.request.Limit)
+
+	request = httptest.NewRequest(http.MethodPost, "/v3/lock/unlock",
+		strings.NewReader(`{"key":"L2xvY2svMDE=","unknown_field":"discarded"}`))
+	request.Header.Set("Content-Type", "application/json")
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	require.Equal(t, http.StatusOK, response.Code)
+	require.JSONEq(t, `{
+		"header":{"cluster_id":"21","member_id":"22","revision":"23","raft_term":"24"}
+	}`, response.Body.String())
+	require.NotNil(t, lockServer.request)
+	require.Equal(t, []byte("/lock/01"), lockServer.request.Key)
 }

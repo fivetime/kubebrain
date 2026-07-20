@@ -37,6 +37,8 @@ import (
 	"k8s.io/klog/v2"
 
 	etcdservergw "go.etcd.io/etcd/api/v3/etcdserverpb/gw"
+	v3electiongw "go.etcd.io/etcd/server/v3/etcdserver/api/v3election/v3electionpb/gw"
+	v3lockgw "go.etcd.io/etcd/server/v3/etcdserver/api/v3lock/v3lockpb/gw"
 
 	"github.com/kubewharf/kubebrain/pkg/backend"
 	"github.com/kubewharf/kubebrain/pkg/metrics"
@@ -242,6 +244,8 @@ func newGRPCGatewayMux(ctx context.Context, conn *grpc.ClientConn) (http.Handler
 		etcdservergw.RegisterClusterHandler,
 		etcdservergw.RegisterMaintenanceHandler,
 		etcdservergw.RegisterAuthHandler,
+		v3lockgw.RegisterLockHandler,
+		v3electiongw.RegisterElectionHandler,
 	}
 	for _, register := range registers {
 		if err := register(ctx, mux, conn); err != nil {
