@@ -70,6 +70,13 @@ type failAtomicLeaseRevokeBackend struct {
 	leaseID int64
 }
 
+type uncertainLeaseRevokeBackend struct {
+	BackendShim
+	leaseID int64
+	commit  bool
+	failed  bool
+}
+
 type committedCheckpointErrorBackend struct {
 	BackendShim
 	leaseID int64
@@ -109,6 +116,24 @@ func (b *failAtomicLeaseRevokeBackend) TxnApply(ctx context.Context, ops []backe
 	for _, op := range ops {
 		if op.Delete && op.Internal && string(op.Key) == string(leaseStorageKey(b.leaseID)) {
 			return nil, 0, nil, errFakeDelete
+		}
+	}
+	return b.BackendShim.TxnApply(ctx, ops, guards, prevKV)
+}
+
+func (b *uncertainLeaseRevokeBackend) TxnApply(ctx context.Context, ops []backend.TxnWriteOp, guards []backend.TxnGuard, prevKV []bool) ([]*etcdserverpb.ResponseOp, uint64, []backend.TxnWriteResult, error) {
+	target := string(leaseStorageKey(b.leaseID))
+	for _, op := range ops {
+		if !b.failed && op.Delete && op.Internal && string(op.Key) == target {
+			b.failed = true
+			if !b.commit {
+				return nil, 0, nil, storage.NewErrUncertainResult(context.DeadlineExceeded)
+			}
+			_, revision, _, err := b.BackendShim.TxnApply(ctx, ops, guards, prevKV)
+			if err != nil {
+				return nil, revision, nil, err
+			}
+			return nil, revision, nil, storage.NewErrUncertainResult(context.DeadlineExceeded)
 		}
 	}
 	return b.BackendShim.TxnApply(ctx, ops, guards, prevKV)
@@ -293,6 +318,71 @@ func TestEmptyLeaseRevokeDeletesDurableMetadata(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, int64(-1), ttl.TTL,
 		"an empty revoked lease must not resurrect after leader reload")
+}
+
+func TestCommittedUncertainLeaseRevokeForgetsInMemoryLease(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	const leaseID int64 = 2051
+	key := []byte("/registry/leases/uncertain-revoke")
+	_, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 300, ID: leaseID})
+	require.NoError(t, err)
+	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("value"), Lease: leaseID})
+	require.NoError(t, err)
+
+	shim := &uncertainLeaseRevokeBackend{
+		BackendShim: server.backend,
+		leaseID:     leaseID,
+		commit:      true,
+	}
+	server.backend = shim
+	revoked, err := server.LeaseRevoke(ctx, &etcdserverpb.LeaseRevokeRequest{ID: leaseID})
+	require.NoError(t, err)
+	require.Positive(t, revoked.Header.Revision)
+	require.True(t, shim.failed)
+
+	current, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: key})
+	require.NoError(t, err)
+	require.Empty(t, current.Kvs)
+	_, err = shim.InternalGet(ctx, leaseStorageKey(leaseID))
+	require.ErrorIs(t, err, storage.ErrKeyNotFound)
+	_, err = shim.InternalGet(ctx, leaseAttachKey(string(key)))
+	require.ErrorIs(t, err, storage.ErrKeyNotFound)
+	ttl, err := server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: leaseID})
+	require.NoError(t, err)
+	require.Equal(t, int64(-1), ttl.TTL,
+		"a committed revoke must not leave an in-memory lease that keepalive can resurrect")
+}
+
+func TestUncommittedUncertainLeaseRevokeRetainsLease(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	const leaseID int64 = 2052
+	key := []byte("/registry/leases/uncommitted-revoke")
+	_, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 300, ID: leaseID})
+	require.NoError(t, err)
+	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("value"), Lease: leaseID})
+	require.NoError(t, err)
+
+	shim := &uncertainLeaseRevokeBackend{
+		BackendShim: server.backend,
+		leaseID:     leaseID,
+	}
+	server.backend = shim
+	_, err = server.LeaseRevoke(ctx, &etcdserverpb.LeaseRevokeRequest{ID: leaseID})
+	require.ErrorIs(t, err, storage.ErrUncertainResult)
+	require.True(t, shim.failed)
+
+	current, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: key})
+	require.NoError(t, err)
+	require.Len(t, current.Kvs, 1)
+	_, err = shim.InternalGet(ctx, leaseStorageKey(leaseID))
+	require.NoError(t, err)
+	ttl, err := server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: leaseID, Keys: true})
+	require.NoError(t, err)
+	require.Equal(t, [][]byte{key}, ttl.Keys)
 }
 
 func TestLeaseRevokeTransactionFailureRetainsKeysAndMetadata(t *testing.T) {

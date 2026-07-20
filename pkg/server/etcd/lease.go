@@ -941,11 +941,36 @@ func (m *leaseManager) deleteLeasedKeysAtomic(ctx context.Context, id int64, key
 		if errors.Is(err, backend.ErrTxnGuardConflict) {
 			continue
 		}
+		if errors.Is(err, storage.ErrUncertainResult) &&
+			m.reconcileLeaseRevoke(ctx, id) == nil {
+			return rev, nil
+		}
 		return rev, err
 	}
 	// A persistently racing key remains attached; leave the lease intact so the
 	// next expiry/revoke attempt can retry instead of orphaning it.
 	return 0, status.Error(codes.Unavailable, "etcdserver: lease keys changed during revoke")
+}
+
+// reconcileLeaseRevoke resolves a lost response from the atomic revoke batch.
+// Lease metadata is deleted in the same TiKV transaction as every user key and
+// attachment, so its absence proves the entire revoke committed. Its presence
+// proves that this caller must retain the in-memory lease and report the original
+// uncertain result.
+func (m *leaseManager) reconcileLeaseRevoke(ctx context.Context, id int64) error {
+	reconcileCtx, cancel := context.WithTimeout(
+		context.WithoutCancel(ctx), leaseMetadataReconciliationTimeout,
+	)
+	defer cancel()
+
+	_, err := m.srv.backend.InternalGet(reconcileCtx, leaseStorageKey(id))
+	if errors.Is(err, storage.ErrKeyNotFound) {
+		return nil
+	}
+	if err == nil {
+		return errors.New("lease metadata remains after uncertain revoke")
+	}
+	return fmt.Errorf("inspect lease metadata after uncertain revoke: %w", err)
 }
 
 // revokeLeaseLocked tears down a lease while the caller holds leaseWriteMu.
