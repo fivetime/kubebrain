@@ -15,7 +15,9 @@
 package endpoint
 
 import (
+	"bufio"
 	"context"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -25,6 +27,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/mvccpb"
+	"go.etcd.io/etcd/server/v3/etcdserver/api/v3election/v3electionpb"
 	"go.etcd.io/etcd/server/v3/etcdserver/api/v3lock/v3lockpb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -39,6 +42,65 @@ type gatewayKVServer struct {
 type gatewayLockServer struct {
 	v3lockpb.UnimplementedLockServer
 	request *v3lockpb.UnlockRequest
+}
+
+type gatewayWatchServer struct {
+	etcdserverpb.UnimplementedWatchServer
+	next <-chan struct{}
+}
+
+func (s *gatewayWatchServer) Watch(stream etcdserverpb.Watch_WatchServer) error {
+	request, err := stream.Recv()
+	if err != nil {
+		return err
+	}
+	if request.GetCreateRequest() == nil {
+		return nil
+	}
+	if _, err := stream.Recv(); err != io.EOF {
+		return err
+	}
+	if err := stream.Send(&etcdserverpb.WatchResponse{
+		Header: &etcdserverpb.ResponseHeader{Revision: 31}, WatchId: 7, Created: true,
+	}); err != nil {
+		return err
+	}
+	select {
+	case <-s.next:
+	case <-stream.Context().Done():
+		return stream.Context().Err()
+	}
+	return stream.Send(&etcdserverpb.WatchResponse{
+		Header:  &etcdserverpb.ResponseHeader{Revision: 32},
+		WatchId: 7,
+		Events: []*mvccpb.Event{{
+			Type: mvccpb.PUT,
+			Kv:   &mvccpb.KeyValue{Key: []byte("watch-key"), Value: []byte("watch-value"), ModRevision: 32},
+		}},
+	})
+}
+
+type gatewayElectionServer struct {
+	v3electionpb.UnimplementedElectionServer
+	next <-chan struct{}
+}
+
+func (s *gatewayElectionServer) Observe(request *v3electionpb.LeaderRequest, stream v3electionpb.Election_ObserveServer) error {
+	if err := stream.Send(&v3electionpb.LeaderResponse{
+		Header: &etcdserverpb.ResponseHeader{Revision: 41},
+		Kv:     &mvccpb.KeyValue{Key: request.Name, Value: []byte("leader-one"), ModRevision: 41},
+	}); err != nil {
+		return err
+	}
+	select {
+	case <-s.next:
+	case <-stream.Context().Done():
+		return stream.Context().Err()
+	}
+	return stream.Send(&v3electionpb.LeaderResponse{
+		Header: &etcdserverpb.ResponseHeader{Revision: 42},
+		Kv:     &mvccpb.KeyValue{Key: request.Name, Value: []byte("leader-two"), ModRevision: 42},
+	})
 }
 
 func (s *gatewayLockServer) Unlock(_ context.Context, request *v3lockpb.UnlockRequest) (*v3lockpb.UnlockResponse, error) {
@@ -113,4 +175,57 @@ func TestGRPCGatewayUsesGeneratedEtcdJSONContract(t *testing.T) {
 	}`, response.Body.String())
 	require.NotNil(t, lockServer.request)
 	require.Equal(t, []byte("/lock/01"), lockServer.request.Key)
+}
+
+func TestGRPCGatewayStreamsWatchAndElectionResponses(t *testing.T) {
+	listener := bufconn.Listen(1024 * 1024)
+	grpcServer := grpc.NewServer()
+	watchNext := make(chan struct{})
+	electionNext := make(chan struct{})
+	etcdserverpb.RegisterWatchServer(grpcServer, &gatewayWatchServer{next: watchNext})
+	v3electionpb.RegisterElectionServer(grpcServer, &gatewayElectionServer{next: electionNext})
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///bufnet",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return listener.Dial() }),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	handler, err := newGRPCGatewayMux(context.Background(), conn)
+	require.NoError(t, err)
+	httpServer := httptest.NewServer(handler)
+	t.Cleanup(httpServer.Close)
+
+	assertStream := func(path, body, first, second string, release chan struct{}) {
+		t.Helper()
+		request, err := http.NewRequest(http.MethodPost, httpServer.URL+path, strings.NewReader(body))
+		require.NoError(t, err)
+		request.Header.Set("Content-Type", "application/json")
+		response, err := http.DefaultClient.Do(request)
+		require.NoError(t, err)
+		defer response.Body.Close()
+		require.Equal(t, http.StatusOK, response.StatusCode)
+		require.Equal(t, "application/json", response.Header.Get("Content-Type"))
+		require.Contains(t, response.TransferEncoding, "chunked")
+
+		reader := bufio.NewReader(response.Body)
+		line, err := reader.ReadString('\n')
+		require.NoError(t, err)
+		require.JSONEq(t, first, line)
+		close(release)
+		line, err = reader.ReadString('\n')
+		require.NoError(t, err)
+		require.JSONEq(t, second, line)
+	}
+
+	assertStream("/v3/watch", `{"create_request":{"key":"d2F0Y2gta2V5"}}`,
+		`{"result":{"header":{"revision":"31"},"watch_id":"7","created":true}}`,
+		`{"result":{"header":{"revision":"32"},"watch_id":"7","events":[{"kv":{"key":"d2F0Y2gta2V5","mod_revision":"32","value":"d2F0Y2gtdmFsdWU="}}]}}`,
+		watchNext)
+	assertStream("/v3/election/observe", `{"name":"ZWxlY3Rpb24="}`,
+		`{"result":{"header":{"revision":"41"},"kv":{"key":"ZWxlY3Rpb24=","mod_revision":"41","value":"bGVhZGVyLW9uZQ=="}}}`,
+		`{"result":{"header":{"revision":"42"},"kv":{"key":"ZWxlY3Rpb24=","mod_revision":"42","value":"bGVhZGVyLXR3bw=="}}}`,
+		electionNext)
 }

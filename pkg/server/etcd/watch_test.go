@@ -1391,6 +1391,20 @@ type controllableWatchServer struct {
 	sent []*etcdserverpb.WatchResponse
 }
 
+type halfClosedWatchServer struct {
+	*controllableWatchServer
+	once sync.Once
+}
+
+func (s *halfClosedWatchServer) Recv() (*etcdserverpb.WatchRequest, error) {
+	var request *etcdserverpb.WatchRequest
+	s.once.Do(func() { request = <-s.recv })
+	if request != nil {
+		return request, nil
+	}
+	return nil, io.EOF
+}
+
 func (s *controllableWatchServer) Send(resp *etcdserverpb.WatchResponse) error {
 	s.mu.Lock()
 	s.sent = append(s.sent, resp)
@@ -1418,6 +1432,52 @@ func (s *controllableWatchServer) snapshot() []*etcdserverpb.WatchResponse {
 	out := make([]*etcdserverpb.WatchResponse, len(s.sent))
 	copy(out, s.sent)
 	return out
+}
+
+func TestWatchHalfCloseKeepsResponseStreamAlive(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	server.SetMaxWatches(1)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	stream := &halfClosedWatchServer{controllableWatchServer: &controllableWatchServer{
+		ctx:  ctx,
+		recv: make(chan *etcdserverpb.WatchRequest, 1),
+	}}
+	stream.recv <- &etcdserverpb.WatchRequest{RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{
+		CreateRequest: &etcdserverpb.WatchCreateRequest{Key: []byte("/watch/http-half-close")},
+	}}
+
+	done := make(chan error, 1)
+	go func() { done <- server.Watch(stream) }()
+	require.Eventually(t, func() bool {
+		responses := stream.snapshot()
+		return len(responses) > 0 && responses[0].Created
+	}, 2*time.Second, time.Millisecond)
+
+	select {
+	case err := <-done:
+		require.Failf(t, "watch returned after CloseSend", "error: %v", err)
+	case <-time.After(25 * time.Millisecond):
+	}
+	require.Equal(t, int64(1), server.activeWatches)
+
+	_, err := server.Put(ctx, &etcdserverpb.PutRequest{
+		Key: []byte("/watch/http-half-close"), Value: []byte("after-eof"),
+	})
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		for _, response := range stream.snapshot() {
+			if len(response.Events) == 1 && string(response.Events[0].Kv.Value) == "after-eof" {
+				return true
+			}
+		}
+		return false
+	}, 2*time.Second, time.Millisecond)
+
+	cancel()
+	require.ErrorIs(t, <-done, context.Canceled)
+	require.Zero(t, server.activeWatches)
 }
 
 // TestQuietWatchProgressAdvancesWhileOtherKeysWritten is the headline repro of

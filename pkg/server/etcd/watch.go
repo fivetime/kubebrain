@@ -259,6 +259,14 @@ func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) error {
 	for {
 		msg, err := ws.Recv()
 		if err != nil {
+			if errors.Is(err, io.EOF) {
+				// CloseSend only half-closes a bidirectional watch stream. Keep the
+				// active watches and response side alive until the client also closes
+				// the stream context. The generated HTTP gateway reaches this path as
+				// soon as it finishes decoding the finite JSON request body.
+				<-ws.Context().Done()
+				return ws.Context().Err()
+			}
 			// log watch infos on stream when stream err occurs
 			w.Lock()
 			watchInfo := make([]string, 0, len(w.watches))
