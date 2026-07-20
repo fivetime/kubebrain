@@ -403,7 +403,26 @@ version 仍可读或 Head 本身失败时，同时保留原删除错误和检查
 `kubebrain_dbaas:metering_data_complete`；只有 9 个容器、6 个 PVC 及唯一备份
 artifact/timestamp 源全部存在时，完整性才为 1，8 条计量输入才会产出。控制面必须把
 完整性不为 1 或计量序列缺失的区间标为不可计费并 fail closed，禁止按零用量结算。
-这些序列不是最终账单；控制面仍须实现不可变采样留存、跨周期积分、价格版本和审计对账。
+这些序列不是最终账单。`deploy/production/kubebrain-metering-archive.yaml` 每小时在
+UTC 第 17 分钟查询已结束且等待 10 分钟的完整小时槽位；只有完整性序列唯一等于 1，
+且上述 8 条序列各自唯一、实例标签精确匹配、值为非负有限数、样本不晚于查询时间并且
+不超过 5 分钟陈旧时，才生成 `kubebrain.metering-sample.v1`。artifact ID、对象键和
+JSON 字节均由实例与槽位确定，重试同一槽位不得生成新内容或第二个对象版本。
+
+归档器通过 `kubebrain-logical-object` 的通用 `ACTION=blob` 路径执行条件上传，要求
+bucket 已启用 versioning 和 Object Lock。上传固定使用 SHA-256 checksum、
+`If-None-Match: *`、exact version ID 与 COMPLIANCE retain-until；随后重新下载精确
+version、逐字节核对 artifact，并读取远端 retention。只有全部验证通过才发布
+`kubebrain.object-immutable-blob.receipt.v1`。条件冲突仅在远端元数据、大小、digest、
+保留期和内容全部匹配时视为幂等恢复；任何缺测、重复序列、陈旧/未来样本、对象冲突、
+无 version ID、保留策略漂移或收据不匹配都会 fail closed。生产模板默认保留 7 年，
+使用独立对象存储 Secret、禁止 ServiceAccount token、只读根文件系统和非 root 身份；
+多实例部署必须同步替换 `--instance`、对象前缀、recording-rule 标签与选择器，并为每个
+实例保留唯一归档职责。Prometheus 跨网络访问时必须配置 HTTPS、CA、server name 和
+bearer token 参数，不能沿用模板中的集群内明文地址。
+
+不可变小时采样只关闭原始计量证据留存，不构成最终账单。控制面仍须实现跨周期积分、
+价格版本、对象存储成本和审计对账；采样缺口必须保持不可计费状态，禁止按零用量补算。
 
 TiDB Operator 的 BR full/PITR 不能用于 KubeBrain 数据恢复。真实 S3 full backup 和
 独立 PD/TiKV Restore CR 都成功时，备份前已提交的 KubeBrain key 仍未出现在目标集群；
