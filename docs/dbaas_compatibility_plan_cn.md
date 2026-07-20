@@ -6515,6 +6515,40 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `sha256:abae028e361cd69180a10a5ea7479725ad22402261e152d24f37ba045f557a89`，
   OCI revision 与实现提交一致，运行用户为 `65532:65532`。
 
+- **Maintenance A339 alarm activation owner linearization（2026-07-20）**：
+  A338 后审计对称的 ACTIVATE/DEACTIVATE 交错。对照
+  `/root/etcd/server/etcdserver/api/v3alarm/alarms.go:Activate`，upstream 在锁内
+  持久化后直接返回该 `AlarmMember`；KubeBrain 此前先执行 Put-if-absent，再额外
+  `NoSpaceAlarm` 回读 owner。若新 alarm 已提交、并发 disarm 在回读前删除，
+  ACTIVATE 会成功却返回 `MemberID=0`；若 Put-if-absent 因既有 owner 冲突，而该
+  owner 又在冲突回读前被解除，也会出现相同无效响应。
+
+  激活 helper 现直接返回线性化时确定的 owner：新建提交成功立即返回请求 owner，
+  即使之后的 DEACTIVATE 已成为最终状态；CAS conflict 时回读仍存在的合法 alarm 并
+  返回首 owner，若 key 已消失则重试 Put-if-absent，直到本次 owner 成功持久化或读到
+  另一个持久 owner。uncertain commit 仍用独立预算回读；确认缺失时保留原 uncertain
+  error，不能因重试生成无法判定的双重提交结果。
+
+  两个确定性 storage wrapper 分别在 alarm create 已提交但 Commit 尚未返回时完成
+  并发 disarm，以及在 CAS conflict 后 owner 回读前完成 disarm。修复前两者稳定返回
+  owner 0；修复后各 100 轮、race 20 轮通过，前者返回已提交 owner 且最终状态为
+  disarmed，后者重试并持久化请求 owner。完整 Arm/Disarm race 10 轮、
+  backend/server 全包、根模块 `go test -p 1 -count=1 ./...`、根模块与
+  `hack/etcd-client-compat` 的 `go vet ./...`、`git diff --check` 均通过。
+
+  真实 3 PD/3 TiKV 使用独立 `a339-activation-owner` keyspace、quota=128：
+  每轮先持久 seed owner，再让 32 个不同显式 owner ACTIVATE 与 32 个 seed owner
+  DEACTIVATE 同时竞争，连续 20 轮。640 个激活响应全部恰好包含一个非零 owner，
+  640 个解除请求零 RPC 错误，最终 alarm 可完整清理。Pod UID
+  `eed59df7-3d13-438b-bec7-57c3b88de966` Ready、restartCount=0，
+  `/readyz?verbose` 全部通过，最终 endpoint proposal health 20.573ms，日志无 quota
+  初始化错误、panic/fatal/storage error，PD/TiKV 3+3 Ready。
+
+  实现提交 `e2be437cddce808332c000ca3a317765a9f052c8`；production 镜像
+  `kubebrain:a339-activation-owner-linearization` 的 ID 为
+  `sha256:9394b0dec6036f04dbaf6150c07d52c5bda9126a5b47d6e58b5be053949cc484`，
+  OCI revision 与实现提交一致，运行用户为 `65532:65532`。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
