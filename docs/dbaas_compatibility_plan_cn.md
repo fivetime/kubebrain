@@ -7116,6 +7116,34 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   测试和根 vet 均通过。长时 keepalive 断线重连、leader replacement 与网络故障 soak
   仍属于 P1，不由有限 body 的确定性测试替代。
 
+- **Compatibility A359 blocked HTTP Lock/Campaign cancellation（2026-07-20）**：
+  对照 `/root/etcd/server/etcdserver/api/v3lock/lock.go`、
+  `/root/etcd/server/etcdserver/api/v3election/election.go` 及
+  `/root/etcd/client/v3/concurrency/{mutex,election}.go`，确认阻塞中的 Lock/Campaign
+  收到 request context cancel 后必须用内部 client context 删除自己的租约绑定队列键。
+  否则 HTTP client 虽已断开，残留 waiter 仍可能在 owner 释放后取得锁或领导权，造成
+  无消费者的幽灵接棒并阻塞后续请求。
+
+  提交 `58be8b5` 增加 bufconn 网关回归，直接阻塞 fake Lock/Campaign handler，取消
+  HTTP request 后同时要求 client 收到 `context.Canceled` 且 gRPC handler context
+  Done。真实双端测试为 Lock 和 Campaign 各准备 owner、canceled waiter、successor
+  三个独立 lease；通过 KV prefix Count 确认 waiter 键已实际入队后才取消，要求计数从
+  2 收敛到 1，再释放 owner 并确认 successor 立即取得资源，最后要求前缀归零。该形状
+  固定 HTTP context、generated gateway、本机 gRPC adapter、Watch waitDeletes 和清理
+  Delete 的完整链路，而不是依赖定时 sleep 推断。
+
+  exact image 从 `58be8b575d960034eb265ff52ed045e987c7278b` 的 `git archive`
+  构建，tag `kubebrain:a359-http-concurrency-cancel`，image ID
+  `sha256:329d91a06c88d095227a7600402a633044f2b5ab41bf5a6c60980bb80632b5fc`，
+  OCI version `0.0.0-a359.1`、revision、Go 1.26.5/linux/amd64、TiKV 和运行用户
+  `65532:65532` 均匹配。在真实 3 PD/3 TiKV 独立 `a359-release` keyspace 上，final
+  Pod UID `8805db6f-d1db-4df8-8ba7-b96a8606a093`，Ready、restartCount=0、只读根
+  文件系统、non-root、drop ALL、RuntimeDefault seccomp，日志无 initialization
+  failure/panic/fatal/segmentation/data race/storage error。精确镜像双端差分连续 20 轮
+  （共 40 个 canceled waiter）通过，候选探测 20 轮、双端 race 5 轮、gateway race
+  50 轮、完整根测试和根 vet 均通过。未发现运行时代码差异，本轮关闭的是此前缺失的
+  阻塞 HTTP 并发请求取消清理门禁；leader replacement 与网络半断连接仍需长时 soak。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
