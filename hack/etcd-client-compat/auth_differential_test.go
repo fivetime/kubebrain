@@ -64,6 +64,16 @@ type authDifferentialOutcome struct {
 	UserAlarmDisarm           authErrorOutcome
 	UserHash                  authErrorOutcome
 	RootHashOK                bool
+	AnonymousDefragment       authErrorOutcome
+	UserDefragment            authErrorOutcome
+	AnonymousSnapshot         authErrorOutcome
+	UserSnapshot              authErrorOutcome
+	AnonymousRawHash          authErrorOutcome
+	UserRawHash               authErrorOutcome
+	AnonymousMoveLeader       authErrorOutcome
+	UserMoveLeader            authErrorOutcome
+	AnonymousDowngrade        authErrorOutcome
+	UserDowngrade             authErrorOutcome
 	UserKeepAlive             authErrorOutcome
 	RootKeepAliveOK           bool
 	AnonymousTTL              authErrorOutcome
@@ -120,11 +130,14 @@ func runConcurrentClientOperations(count int, operation func(int) error) []error
 
 func authError(err error) authErrorOutcome {
 	code := status.Code(err)
+	message := status.Convert(err).Message()
 	return authErrorOutcome{
 		Code:             code,
-		Message:          status.Convert(err).Message(),
+		Message:          message,
 		PermissionDenied: code == codes.PermissionDenied || errors.Is(err, rpctypes.ErrPermissionDenied),
-		UserEmpty:        errors.Is(err, rpctypes.ErrUserEmpty),
+		UserEmpty: errors.Is(err, rpctypes.ErrUserEmpty) ||
+			(code == status.Code(rpctypes.ErrGRPCUserEmpty) &&
+				message == status.Convert(rpctypes.ErrGRPCUserEmpty).Message()),
 	}
 }
 
@@ -241,6 +254,20 @@ func collectAuthDifferentialOutcome(t *testing.T, endpoint string) authDifferent
 	_, userAlarmDisarmErr := alice.AlarmDisarm(ctx, &clientv3.AlarmMember{})
 	_, userHashErr := alice.HashKV(ctx, alice.Endpoints()[0], 0)
 	_, rootHashErr := root.HashKV(ctx, root.Endpoints()[0], 0)
+	_, anonymousDefragmentErr := bootstrap.Defragment(ctx, bootstrap.Endpoints()[0])
+	_, userDefragmentErr := alice.Defragment(ctx, alice.Endpoints()[0])
+	_, anonymousSnapshotErr := bootstrap.SnapshotWithVersion(ctx)
+	_, userSnapshotErr := alice.SnapshotWithVersion(ctx)
+	_, anonymousRawHashErr := etcdserverpb.NewMaintenanceClient(
+		bootstrap.ActiveConnection(),
+	).Hash(ctx, &etcdserverpb.HashRequest{})
+	_, userRawHashErr := etcdserverpb.NewMaintenanceClient(
+		alice.ActiveConnection(),
+	).Hash(ctx, &etcdserverpb.HashRequest{})
+	_, anonymousMoveLeaderErr := bootstrap.MoveLeader(ctx, 0)
+	_, userMoveLeaderErr := alice.MoveLeader(ctx, 0)
+	_, anonymousDowngradeErr := bootstrap.Downgrade(ctx, clientv3.DowngradeValidate, "3.6")
+	_, userDowngradeErr := alice.Downgrade(ctx, clientv3.DowngradeValidate, "3.6")
 	_, userKeepAliveErr := alice.KeepAliveOnce(ctx, protectedLease.ID)
 	_, rootKeepAliveErr := root.KeepAliveOnce(ctx, protectedLease.ID)
 	_, anonymousTTLErr := bootstrap.TimeToLive(ctx, protectedLease.ID)
@@ -542,6 +569,16 @@ func collectAuthDifferentialOutcome(t *testing.T, endpoint string) authDifferent
 		UserAlarmDisarm:           authError(userAlarmDisarmErr),
 		UserHash:                  authError(userHashErr),
 		RootHashOK:                rootHashErr == nil,
+		AnonymousDefragment:       authError(anonymousDefragmentErr),
+		UserDefragment:            authError(userDefragmentErr),
+		AnonymousSnapshot:         authError(anonymousSnapshotErr),
+		UserSnapshot:              authError(userSnapshotErr),
+		AnonymousRawHash:          authError(anonymousRawHashErr),
+		UserRawHash:               authError(userRawHashErr),
+		AnonymousMoveLeader:       authError(anonymousMoveLeaderErr),
+		UserMoveLeader:            authError(userMoveLeaderErr),
+		AnonymousDowngrade:        authError(anonymousDowngradeErr),
+		UserDowngrade:             authError(userDowngradeErr),
 		UserKeepAlive:             authError(userKeepAliveErr),
 		RootKeepAliveOK:           rootKeepAliveErr == nil,
 		AnonymousTTL:              authError(anonymousTTLErr),
@@ -586,6 +623,24 @@ func TestAuthDifferentialAgainstEtcd(t *testing.T) {
 		t.Skip("set ETCD_AUTH_DIFF_ENDPOINT and KUBEBRAIN_AUTH_DIFF_ENDPOINT to empty disposable instances")
 	}
 	reference := collectAuthDifferentialOutcome(t, referenceEndpoint)
+	for name, outcome := range map[string]authErrorOutcome{
+		"Defragment": reference.AnonymousDefragment,
+		"Snapshot":   reference.AnonymousSnapshot,
+		"Hash":       reference.AnonymousRawHash,
+		"MoveLeader": reference.AnonymousMoveLeader,
+		"Downgrade":  reference.AnonymousDowngrade,
+	} {
+		require.True(t, outcome.UserEmpty, "anonymous %s: %+v", name, outcome)
+	}
+	for name, outcome := range map[string]authErrorOutcome{
+		"Defragment": reference.UserDefragment,
+		"Snapshot":   reference.UserSnapshot,
+		"Hash":       reference.UserRawHash,
+		"MoveLeader": reference.UserMoveLeader,
+		"Downgrade":  reference.UserDowngrade,
+	} {
+		require.True(t, outcome.PermissionDenied, "non-root %s: %+v", name, outcome)
+	}
 	require.True(t, reference.UserLeasedPut.PermissionDenied)
 	require.True(t, reference.UserLeasedTxnPut.PermissionDenied)
 	require.True(t, reference.AnonymousTTL.UserEmpty)
