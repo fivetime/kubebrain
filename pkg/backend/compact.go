@@ -676,11 +676,18 @@ func (b *backend) getCompactBorders() [][]byte {
 	// fall between pairs and are never scanned. Used when several KubeBrain
 	// clusters share one TiKV cluster and each must not GC the others' object
 	// types.
-	for _, prefix := range b.config.SkippedPrefixes {
+	skippedPrefixes := append([]string(nil), b.config.SkippedPrefixes...)
+	sort.Strings(skippedPrefixes)
+	var previous string
+	for _, prefix := range skippedPrefixes {
 		key := prefix
 		if !strings.HasSuffix(key, "/") {
 			key = key + "/"
 		}
+		if previous != "" && strings.HasPrefix(key, previous) {
+			continue
+		}
+		previous = key
 		compactBorders = append(compactBorders,
 			b.coder.EncodeObjectKey([]byte(key), 0),
 			b.coder.EncodeObjectKey(PrefixEnd([]byte(key)), 0))

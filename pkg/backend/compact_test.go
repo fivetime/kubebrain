@@ -73,6 +73,25 @@ func TestConstructCompactBordersWithSkippedPrefixOption(t *testing.T) {
 			},
 		},
 		{
+			// Direct backend Config construction can bypass CLI validation.
+			// Duplicate and nested carve-outs must collapse to the parent;
+			// otherwise sorted duplicate borders pair up and scan the range that
+			// was supposed to be excluded.
+			Config{
+				SkippedPrefixes: []string{
+					"/registry/pods/node",
+					"/registry/pods",
+					"/registry/pods",
+				},
+			},
+			[][]byte{
+				coder.DefaultKeyspace().ObjectKeyspaceStart(),
+				encodeRevisionKey([]byte("/registry/pods/")),
+				encodeRevisionKey([]byte("/registry/pods0")),
+				coder.DefaultKeyspace().ObjectKeyspaceEnd(),
+			},
+		},
+		{
 			// The exact regression: --key-prefix set to a value disjoint from the
 			// data must NOT shrink the scanned range — still whole keyspace.
 			Config{Prefix: "/kubebrain"},

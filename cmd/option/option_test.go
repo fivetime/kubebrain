@@ -157,3 +157,35 @@ func TestWatchProgressNotifyIntervalValidation(t *testing.T) {
 	o.watchProgressNotifyInterval = 0
 	require.NoError(t, o.Validate())
 }
+
+func TestSkippedPrefixValidationUsesUserKeyspaceAndRejectsOverlaps(t *testing.T) {
+	newValid := func() *KubeBrainOption {
+		o := NewOptions()
+		fs := pflag.NewFlagSet("test", pflag.ContinueOnError)
+		o.AddFlags(fs)
+		require.NoError(t, fs.Parse([]string{"--pd-addrs=127.0.0.1:2379"}))
+		return o
+	}
+
+	o := newValid()
+	o.Keyspace = "tenant-a"
+	o.SkippedPrefixes = []string{"/registry/pods", "/registry/events", "binary-prefix"}
+	require.NoError(t, o.Validate(),
+		"user-key carve-outs must not depend on the internal coordination prefix or keyspace name")
+
+	for name, prefixes := range map[string][]string{
+		"empty":              {""},
+		"trailing slash":     {"/registry/pods/"},
+		"duplicate":          {"/registry/pods", "/registry/pods"},
+		"nested sorted":      {"/registry", "/registry/pods"},
+		"nested unsorted":    {"/registry/pods", "/registry"},
+		"relative nested":    {"objects/pods", "objects"},
+		"duplicate relative": {"objects", "objects"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			o := newValid()
+			o.SkippedPrefixes = prefixes
+			require.Error(t, o.Validate())
+		})
+	}
+}
