@@ -51,3 +51,23 @@ func TestDockerignoreExcludesLocalBuildArtifacts(t *testing.T) {
 		require.NotContains(t, patterns, "/"+requiredSource)
 	}
 }
+
+func TestDockerfileCachesObjectstoreDependenciesBeforeSourceCopy(t *testing.T) {
+	dockerfile, err := os.ReadFile("../Dockerfile")
+	require.NoError(t, err)
+	content := string(dockerfile)
+
+	steps := []string{
+		"COPY go.mod go.sum ./",
+		"RUN go mod download",
+		"COPY hack/backup/objectstore/go.mod hack/backup/objectstore/go.sum ./hack/backup/objectstore/",
+		"RUN cd hack/backup/objectstore && go mod download",
+		"COPY . .",
+	}
+	previous := -1
+	for _, step := range steps {
+		index := strings.Index(content, step)
+		require.Greater(t, index, previous, "Dockerfile step %q must retain dependency-cache order", step)
+		previous = index
+	}
+}

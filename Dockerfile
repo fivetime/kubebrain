@@ -14,6 +14,9 @@ ENV CGO_ENABLED=0
 COPY go.mod go.sum ./
 RUN go mod download
 
+COPY hack/backup/objectstore/go.mod hack/backup/objectstore/go.sum ./hack/backup/objectstore/
+RUN cd hack/backup/objectstore && go mod download
+
 COPY . .
 
 ARG STORAGE=tikv
