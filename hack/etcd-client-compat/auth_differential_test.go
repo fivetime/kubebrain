@@ -74,6 +74,11 @@ type authDifferentialOutcome struct {
 	KeepAliveStreamFirstOK    bool
 	KeepAliveAfterRoleRevoke  authErrorOutcome
 	KeepAliveAfterRestoreOK   bool
+	WatchStreamFirstCreated   bool
+	WatchCreateAfterRevoke    string
+	ExistingWatchAfterRevoke  bool
+	WatchCreateAfterRestore   bool
+	RestoredWatchFanoutOK     bool
 	AnonymousLeaseList        authErrorOutcome
 	UserLeaseList             authErrorOutcome
 	RootLeaseListContains     bool
@@ -351,6 +356,65 @@ func collectAuthDifferentialOutcome(t *testing.T, endpoint string) authDifferent
 	_, err = root.Revoke(ctx, dynamicLease.ID)
 	require.NoError(t, err)
 	dynamicLeaseID = 0
+	watchStream, err := etcdserverpb.NewWatchClient(alice.ActiveConnection()).Watch(ctx)
+	require.NoError(t, err)
+	const (
+		firstWatchID    = int64(101)
+		restoredWatchID = int64(103)
+	)
+	watchCreate := func(id int64) *etcdserverpb.WatchRequest {
+		return &etcdserverpb.WatchRequest{RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{
+			CreateRequest: &etcdserverpb.WatchCreateRequest{
+				Key: []byte("/auth-allowed/dynamic-watch"), WatchId: id,
+			},
+		}}
+	}
+	require.NoError(t, watchStream.Send(watchCreate(firstWatchID)))
+	firstWatchCreated, err := watchStream.Recv()
+	require.NoError(t, err)
+	watchStreamFirstCreated := firstWatchCreated.Created &&
+		!firstWatchCreated.Canceled && firstWatchCreated.WatchId == firstWatchID
+	_, err = root.RoleRevokePermission(
+		ctx, "allowed", "/auth-allowed/", clientv3.GetPrefixRangeEnd("/auth-allowed/"),
+	)
+	require.NoError(t, err)
+	require.NoError(t, watchStream.Send(watchCreate(102)))
+	watchCreateAfterRevoke, err := watchStream.Recv()
+	require.NoError(t, err)
+	_, err = root.Put(ctx, "/auth-allowed/dynamic-watch", "during-revoke")
+	require.NoError(t, err)
+	existingWatchAfterRevoke, err := watchStream.Recv()
+	require.NoError(t, err)
+	existingWatchAfterRevokeOK := existingWatchAfterRevoke.WatchId == firstWatchID &&
+		len(existingWatchAfterRevoke.Events) == 1 &&
+		string(existingWatchAfterRevoke.Events[0].Kv.Value) == "during-revoke"
+	_, err = root.RoleGrantPermission(
+		ctx,
+		"allowed",
+		"/auth-allowed/",
+		clientv3.GetPrefixRangeEnd("/auth-allowed/"),
+		clientv3.PermissionType(clientv3.PermReadWrite),
+	)
+	require.NoError(t, err)
+	require.NoError(t, watchStream.Send(watchCreate(restoredWatchID)))
+	watchCreateAfterRestore, err := watchStream.Recv()
+	require.NoError(t, err)
+	watchCreateAfterRestoreOK := watchCreateAfterRestore.Created &&
+		!watchCreateAfterRestore.Canceled && watchCreateAfterRestore.WatchId == restoredWatchID
+	_, err = root.Put(ctx, "/auth-allowed/dynamic-watch", "after-restore")
+	require.NoError(t, err)
+	restoredWatchEvents := make(map[int64]bool, 2)
+	for range 2 {
+		response, receiveErr := watchStream.Recv()
+		require.NoError(t, receiveErr)
+		if len(response.Events) == 1 &&
+			string(response.Events[0].Kv.Value) == "after-restore" {
+			restoredWatchEvents[response.WatchId] = true
+		}
+	}
+	restoredWatchFanoutOK := restoredWatchEvents[firstWatchID] &&
+		restoredWatchEvents[restoredWatchID]
+	require.NoError(t, watchStream.CloseSend())
 
 	_, err = root.UserGrantRole(ctx, "root", "root")
 	require.NoError(t, err)
@@ -488,6 +552,11 @@ func collectAuthDifferentialOutcome(t *testing.T, endpoint string) authDifferent
 		KeepAliveStreamFirstOK:    keepAliveStreamFirstOK,
 		KeepAliveAfterRoleRevoke:  authError(keepAliveAfterRoleRevokeErr),
 		KeepAliveAfterRestoreOK:   keepAliveAfterRestoreOK,
+		WatchStreamFirstCreated:   watchStreamFirstCreated,
+		WatchCreateAfterRevoke:    watchCreateAfterRevoke.CancelReason,
+		ExistingWatchAfterRevoke:  existingWatchAfterRevokeOK,
+		WatchCreateAfterRestore:   watchCreateAfterRestoreOK,
+		RestoredWatchFanoutOK:     restoredWatchFanoutOK,
 		AnonymousLeaseList:        authError(anonymousLeaseListErr),
 		UserLeaseList:             authError(userLeaseListErr),
 		RootLeaseListContains:     rootLeaseListContains,
@@ -532,6 +601,11 @@ func TestAuthDifferentialAgainstEtcd(t *testing.T) {
 		reference.KeepAliveAfterRoleRevoke,
 	)
 	require.True(t, reference.KeepAliveAfterRestoreOK)
+	require.True(t, reference.WatchStreamFirstCreated)
+	require.Equal(t, rpctypes.ErrGRPCPermissionDenied.Error(), reference.WatchCreateAfterRevoke)
+	require.True(t, reference.ExistingWatchAfterRevoke)
+	require.True(t, reference.WatchCreateAfterRestore)
+	require.True(t, reference.RestoredWatchFanoutOK)
 	require.True(t, reference.AnonymousLeaseList.UserEmpty)
 	require.True(t, reference.UserLeaseList.PermissionDenied)
 	require.True(t, reference.RootLeaseListContains)
