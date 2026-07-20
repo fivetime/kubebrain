@@ -93,7 +93,7 @@ type BackendShim interface {
 	InternalCAS(ctx context.Context, ops []backend.InternalCASOp) error
 	QuotaStatus(ctx context.Context) (usage, quota int64, noSpace bool, err error)
 	ArmNoSpace(ctx context.Context) error
-	DisarmNoSpace(ctx context.Context) error
+	DisarmNoSpace(ctx context.Context) (bool, error)
 
 	// BeginRangeTxn excludes logical writes while a range compare and its chosen
 	// branch execute, preventing phantoms under TiKV snapshot isolation.
@@ -234,7 +234,7 @@ func (b *backendShim) ArmNoSpace(ctx context.Context) error {
 	return b.backend.ArmNoSpace(ctx)
 }
 
-func (b *backendShim) DisarmNoSpace(ctx context.Context) error {
+func (b *backendShim) DisarmNoSpace(ctx context.Context) (bool, error) {
 	return b.backend.DisarmNoSpace(ctx)
 }
 

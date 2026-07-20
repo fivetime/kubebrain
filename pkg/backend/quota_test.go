@@ -70,7 +70,8 @@ func TestLogicalQuotaTracksLatestBytesAndPersistsNoSpace(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, int64(10), usage)
 	require.True(t, alarm)
-	require.ErrorIs(t, b.DisarmNoSpace(ctx), ErrNoSpace)
+	_, err = b.DisarmNoSpace(ctx)
+	require.ErrorIs(t, err, ErrNoSpace)
 
 	_, _, err = b.TxnApply(ctx, []TxnWriteOp{{Key: []byte("b"), Delete: true}}, nil)
 	require.NoError(t, err, "NOSPACE must allow deletes that recover capacity")
@@ -78,7 +79,9 @@ func TestLogicalQuotaTracksLatestBytesAndPersistsNoSpace(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, int64(8), usage)
 	require.True(t, alarm, "capacity recovery does not implicitly disarm etcd's sticky alarm")
-	require.NoError(t, b.DisarmNoSpace(ctx))
+	removed, err := b.DisarmNoSpace(ctx)
+	require.NoError(t, err)
+	require.True(t, removed)
 	_, _, alarm, err = b.QuotaStatus(ctx)
 	require.NoError(t, err)
 	require.False(t, alarm)
@@ -103,7 +106,9 @@ func TestLogicalQuotaAlarmRejectsAllPutsUntilCapacityRecovery(t *testing.T) {
 	require.NoError(t, err)
 	require.Zero(t, usage)
 	require.True(t, alarm)
-	require.NoError(t, b.DisarmNoSpace(ctx))
+	removed, err := b.DisarmNoSpace(ctx)
+	require.NoError(t, err)
+	require.True(t, removed)
 	_, _, err = b.TxnApply(ctx, []TxnWriteOp{{Key: key, Value: []byte("1")}}, nil)
 	require.NoError(t, err)
 }
@@ -120,7 +125,9 @@ func TestQuotaDisabledPreservesExistingBehavior(t *testing.T) {
 	require.Zero(t, quota)
 	require.False(t, alarm)
 	require.ErrorIs(t, b.ArmNoSpace(ctx), ErrQuotaDisabled)
-	require.NoError(t, b.DisarmNoSpace(ctx))
+	removed, err := b.DisarmNoSpace(ctx)
+	require.NoError(t, err)
+	require.False(t, removed)
 }
 
 func TestQuotaInitializationCountsExistingLiveDataOnce(t *testing.T) {
@@ -201,5 +208,6 @@ func TestQuotaInitializationActivatesNoSpaceForExistingOverage(t *testing.T) {
 	require.Equal(t, int64(len("existing")+len("value")), usage)
 	require.Equal(t, int64(5), quota)
 	require.True(t, alarm)
-	require.ErrorIs(t, limited.DisarmNoSpace(ctx), ErrNoSpace)
+	_, err = limited.DisarmNoSpace(ctx)
+	require.ErrorIs(t, err, ErrNoSpace)
 }

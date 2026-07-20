@@ -108,8 +108,9 @@ type Backend interface {
 	EnsureQuotaInitialized(ctx context.Context) error
 	// ArmNoSpace persistently enables the tenant-wide NOSPACE write cap.
 	ArmNoSpace(ctx context.Context) error
-	// DisarmNoSpace clears NOSPACE only after usage falls below the hard limit.
-	DisarmNoSpace(ctx context.Context) error
+	// DisarmNoSpace clears NOSPACE only after usage falls below the hard limit
+	// and reports whether an active alarm was removed.
+	DisarmNoSpace(ctx context.Context) (bool, error)
 
 	// BeginRangeTxn excludes every logical user-key write until unlock. It is
 	// used only for generic etcd transactions with range compares, because TiKV

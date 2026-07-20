@@ -85,8 +85,9 @@ func TestQuotaRPCNoSpaceRecoveryAndStatus(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, deleteTxn.Responses, 1)
 	deactivate, err := server.Alarm(ctx, &etcdserverpb.AlarmRequest{
-		Action: etcdserverpb.AlarmRequest_DEACTIVATE,
-		Alarm:  etcdserverpb.AlarmType_NOSPACE,
+		Action:   etcdserverpb.AlarmRequest_DEACTIVATE,
+		MemberID: alarmResp.Alarms[0].MemberID,
+		Alarm:    etcdserverpb.AlarmType_NOSPACE,
 	})
 	require.NoError(t, err)
 	require.Len(t, deactivate.Alarms, 1)
@@ -107,13 +108,57 @@ func TestQuotaRPCNoSpaceRecoveryAndStatus(t *testing.T) {
 	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: []byte("m"), Value: []byte("x")})
 	require.Equal(t, codes.ResourceExhausted, status.Code(err))
 	deactivate, err = server.Alarm(ctx, &etcdserverpb.AlarmRequest{
-		Action: etcdserverpb.AlarmRequest_DEACTIVATE,
-		Alarm:  etcdserverpb.AlarmType_NOSPACE,
+		Action:   etcdserverpb.AlarmRequest_DEACTIVATE,
+		MemberID: activate.Alarms[0].MemberID,
+		Alarm:    etcdserverpb.AlarmType_NOSPACE,
 	})
 	require.NoError(t, err)
 	require.Len(t, deactivate.Alarms, 1)
+	deactivate, err = server.Alarm(ctx, &etcdserverpb.AlarmRequest{
+		Action:   etcdserverpb.AlarmRequest_DEACTIVATE,
+		MemberID: activate.Alarms[0].MemberID,
+		Alarm:    etcdserverpb.AlarmType_NOSPACE,
+	})
+	require.NoError(t, err)
+	require.Empty(t, deactivate.Alarms)
 	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: []byte("m"), Value: []byte("x")})
 	require.NoError(t, err)
+}
+
+func TestQuotaRPCAlarmMutationNoOpsMatchEtcd(t *testing.T) {
+	server := newQuotaRPCServer(t, 6)
+	ctx := context.Background()
+
+	for _, action := range []etcdserverpb.AlarmRequest_AlarmAction{
+		etcdserverpb.AlarmRequest_ACTIVATE,
+		etcdserverpb.AlarmRequest_DEACTIVATE,
+	} {
+		response, err := server.Alarm(ctx, &etcdserverpb.AlarmRequest{
+			Action:   action,
+			MemberID: 123,
+			Alarm:    etcdserverpb.AlarmType_NONE,
+		})
+		require.NoError(t, err)
+		require.Empty(t, response.Alarms)
+	}
+
+	activate, err := server.Alarm(ctx, &etcdserverpb.AlarmRequest{
+		Action: etcdserverpb.AlarmRequest_ACTIVATE,
+		Alarm:  etcdserverpb.AlarmType_NOSPACE,
+	})
+	require.NoError(t, err)
+	require.Len(t, activate.Alarms, 1)
+	wrongMember := activate.Alarms[0].MemberID + 1
+	deactivate, err := server.Alarm(ctx, &etcdserverpb.AlarmRequest{
+		Action:   etcdserverpb.AlarmRequest_DEACTIVATE,
+		MemberID: wrongMember,
+		Alarm:    etcdserverpb.AlarmType_NOSPACE,
+	})
+	require.NoError(t, err)
+	require.Empty(t, deactivate.Alarms)
+	list, err := server.Alarm(ctx, &etcdserverpb.AlarmRequest{Action: etcdserverpb.AlarmRequest_GET})
+	require.NoError(t, err)
+	require.Len(t, list.Alarms, 1)
 }
 
 func TestQuotaRPCManualActivationRequiresConfiguredQuota(t *testing.T) {

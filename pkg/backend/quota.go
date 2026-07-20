@@ -150,23 +150,23 @@ func (b *backend) ensureNoSpaceForUsageLocked(ctx context.Context, usage int64) 
 	return nil
 }
 
-func (b *backend) DisarmNoSpace(ctx context.Context) error {
-	usage, quota, _, err := b.QuotaStatus(ctx)
+func (b *backend) DisarmNoSpace(ctx context.Context) (bool, error) {
+	usage, quota, active, err := b.QuotaStatus(ctx)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if quota > 0 && usage >= quota {
-		return ErrNoSpace
+		return false, ErrNoSpace
+	}
+	if !active {
+		b.emitQuotaMetrics(usage, false)
+		return false, nil
 	}
 	err = b.InternalDelete(ctx, quotaAlarmKey)
-	if errors.Is(err, storage.ErrKeyNotFound) {
-		b.emitQuotaMetrics(usage, false)
-		return nil
-	}
 	if err == nil {
 		b.emitQuotaMetrics(usage, false)
 	}
-	return err
+	return err == nil, err
 }
 
 func (b *backend) ArmNoSpace(ctx context.Context) error {
