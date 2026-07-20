@@ -6634,6 +6634,49 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `/ready` 和四项 readyz 全部通过，日志无 panic/fatal/segmentation/data race，
   PD/TiKV 3+3 Ready。
 
+- **Compact A343 safe physical-GC carve-outs（2026-07-20）**：审计 TiKV 平台特有的
+  `--skip-key-prefix`（非 upstream etcd wire protocol）时发现，启动校验错误地要求用户
+  前缀位于内部协调 `--prefix` 下。A62 已把内部 prefix 与用户数据解耦，该限制使真实
+  `/registry/...` carve-out 无法启动。重复或嵌套前缀还会生成重叠排序边界，使一次扫描
+  重新进入本应排除的区间。
+
+  启动配置现允许独立于内部 prefix/keyspace 的用户前缀，同时拒绝空值、尾随 `/`、
+  重复和嵌套重叠；错误在连接存储前 fail closed。后端对直接构造的配置另做排序、去重
+  和嵌套折叠。结果级测试分别写入 included/excluded key 的四个版本并强制完整 physical
+  scan，included 只剩当前版本，excluded 保留全部四个版本；逻辑 compact watermark
+  不受 carve-out 影响。实现提交
+  `057210e2af9c5eb8cb468073ae775ca1f6d13b45`，结果测试提交 `8871b6c`；
+  option/backend 聚焦测试 20 轮、race 3 轮通过。
+
+  包含该修复的最终镜像 `kubebrain:a344-metadata-cache` 在独立
+  `a344-safe-skip-prefix` keyspace、真实 3 PD/3 TiKV 上以
+  `--skip-key-prefix=/registry/a344-excluded` Ready。included/excluded key 更新后
+  physical compact 到 revision `467812086451011589`，两者最新值均为 `v2`；
+  `/ready` 与四项 readyz 通过，endpoint proposal health 26.279411ms。Pod UID
+  `20cc4daf-a300-4334-860d-415e67c392b9`、restartCount=0，日志无
+  panic/fatal/segmentation/data race/storage error。独立容器传入 `/registry` 与
+  `/registry/pods` 在存储连接前退出 1，并报告 overlap。
+
+- **Production A344 release metadata cache isolation（2026-07-20）**：A343 production
+  构建暴露 version/SHA/date `ARG` 位于依赖层之前，导致每个新提交都重新执行根模块和
+  objectstore 的 `go mod download`；runtime OCI `LABEL` 位于 `apk add` 之前，也使
+  revision 变化冲掉运行时包安装及后续复制缓存。
+
+  Dockerfile 现把 build-stage metadata ARG 移到 `COPY . .` 后、编译前，把 runtime
+  ARG/LABEL 移到包安装和所有 COPY 后；严格顺序测试连续 20 轮通过。由实现提交
+  `08fd11bb7fe81d3655166e95c1f779b27fe11630` 构建的
+  `kubebrain:a344-metadata-cache` 镜像 ID 为
+  `sha256:95720577f2430389882c7d723b3984c62e0338cddab857a246193bc058e6d3aa`，
+  OCI revision 与二进制 version 一致，版本 3.7.0/TiKV、Go 1.26.5、运行用户
+  `65532:65532`。仅把 SHA 改为测试值的 probe 镜像 ID 为
+  `sha256:242bab03e96583a10a942034427dad0321e12fe0d86000c3927cf07995da0ea3`：
+  两个 module COPY/download、完整源码 COPY 和 runtime `apk add` 均命中缓存，仅编译
+  与 metadata 层重建；build context 为 7.333 MB。
+
+  根模块完整测试、根/compat `go vet ./...`、`git diff --check` 均通过；真实 endpoint
+  上 Compact/Compaction/PhysicalCompaction 定向 compat 回归 6.477 秒通过。A343 的
+  `8871b6c` 只新增结果测试，晚于运行镜像 revision，不改变被验证的数据面二进制。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range

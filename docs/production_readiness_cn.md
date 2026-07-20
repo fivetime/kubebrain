@@ -69,6 +69,13 @@ tag。
 Dockerfile 中根模块下载、objectstore 下载和源码复制的先后顺序；发布构建应检查缓存
 日志，避免新增嵌套 module 绕过该边界。
 
+版本、Git SHA 和构建时间的 build-stage `ARG` 必须位于完整源码复制之后、最终编译之前；
+runtime-stage 的同名 `ARG` 与 OCI `LABEL` 必须位于 `apk add` 和所有制品复制之后。
+只改变发布元数据时，根模块与 objectstore 的依赖下载、`COPY . .` 和 runtime 包安装
+必须命中缓存，仅最终编译及元数据层重建。`build/dockerignore_test.go` 固定该顺序；
+发布流水线应至少保留一次 metadata-only cache probe，防止每次 commit SHA 变化都重新
+下载依赖或安装运行时包。
+
 ## 真-k3s 消费端驱动验证进展（2026-07-03）
 
 用真实 kube-apiserver（k3s v1.36，`--datastore-endpoint` 指向 KubeBrain-on-TiKV）端到端驱动，已完成（脚本 `hack/dev/k3s-load-smoke.sh` 一键复跑）：
@@ -833,6 +840,17 @@ RUN_COMPACT_FAULT_SMOKE=true hack/dev/verify.sh
 默认会在 compact soak 运行期间删除一个 KubeBrain Pod，等待 Deployment 恢复，并确认 compact/read/watch 验证仍能完成。预生产应扩大规模，并分别覆盖删除当前 leader、删除 follower、连续滚动重启和 apiserver watch 重连。
 
 当前本地已多次通过默认 compact fault smoke；最近一次为 60 轮 compact 验证、4 个并发 reader、运行期间删除 1 个 KubeBrain Pod，最终约 2029 次 latest reader 操作，无失败。该脚本曾复现 Pod 重启期间 compact 后旧 revision `Range` 偶发成功的问题；当前通过历史 revision `Range` 转发 leader，以及 `Compact` 返回前等待 compact revision 可见进行加固。
+
+`--skip-key-prefix` 是共享 TiKV keyspace 中用户 key 的物理 GC carve-out，与 KubeBrain
+内部协调 `--prefix` 及 `--keyspace` 相互独立。每个值必须非空、不能以 `/` 结尾，多个
+值不得相同、嵌套或重叠；配置错误必须在连接存储前 fail closed。后端还会对直接传入的
+配置排序、去重并折叠嵌套前缀，避免重叠扫描边界重新进入排除区。
+
+该参数不改变 etcd 逻辑 compact watermark：被排除 key 的旧 revision 仍会按 etcd API
+返回 compacted，但 TiKV 中被替代的物理版本不会被回收。它会持续占用存储，只能用于
+明确划分所有权、由其他系统负责版本回收的共享 keyspace；普通独占 DBaaS 实例不应设置。
+发布前应同时验证 included key 在 physical compact 后只保留当前版本、excluded key 的
+所有物理版本仍存在，并确认最新值均可读。
 
 可选滚动升级 smoke：
 
