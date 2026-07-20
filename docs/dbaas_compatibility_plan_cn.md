@@ -5247,6 +5247,29 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   通过，成员数解析 race 连续 20 轮通过。未配置端点时全包按默认 `127.0.0.1:3379`
   失败属于验证命令配置错误，不计入产品结果。
 
+- **Auth A294 response header revision（2026-07-20）**：对照
+  `/root/etcd/server/etcdserver/apply/backend.go` 的 `newHeader` 及全部 Auth applier
+  响应，AuthStatus、Authenticate 和 User/Role CRUD 的成功 header 必须携带当前用户
+  MVCC revision；Auth mutation 自身不消耗该 revision。KubeBrain 原 `authRPCHeader`
+  只返回空 header，统一拦截器虽补齐 cluster/member/term，却刻意不覆盖方法专属
+  revision，因此所有 Auth 成功响应错误地报告 revision 0。
+
+  新增官方 gRPC 双端差分，以前置 Put 固定当前 revision，并验证 AuthStatus、RoleAdd、
+  RoleGet header revision 均与 Put 一致，同时保留非零 cluster/member/term 断言。修复前
+  参考 etcd 三项均为 true、A292 KubeBrain 三项均为 false；修复后 handler 从 backend
+  当前 revision 构造 Auth header。focused 连续 100 轮、focused race 连续 20 轮、
+  `pkg/server/etcd` 全包 31.594 秒、全包 race 260.744 秒、根模块全量和
+  `go vet ./...` 通过。首次根模块全量与仍监听 `12379/12380` 的参考 etcd 冲突，
+  endpoint 消费端测试连接到参考 3.8 而失败；停止参考进程后 endpoint 定向和根模块
+  全量均通过，不计为产品失败。提交
+  `ce53dd9991153a7c79e0f947ee003776d33b2cad` 构建镜像
+  `kubebrain:a294-auth-header`（image ID
+  `sha256:1d685a98d86fd3f91bbc317296e2f77985891f2505d0fdddc9ab1c29e79cb3a1`）。
+  真实 3 PD + 3 TiKV 的独立 `a294-auth` keyspace 上，新 header 差分连续 10 轮通过；
+  再换全新 `a294-auth-lifecycle` keyspace 和全新参考 etcd 数据目录，完整 Auth 生命周期
+  首轮通过。该生命周期测试要求两个空实例，首轮后只关闭 Auth 而不删除用户，因此不能
+  在同一实例用 `-count>1` 重复，后续 AlreadyExists 不计为产品失败。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range

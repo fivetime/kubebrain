@@ -714,7 +714,9 @@ hack/dev/verify.sh
 - `MemberAdd`、`MemberRemove`、`MemberUpdate`、`MemberPromote` 不支持，因为 KubeBrain 不是 etcd raft 成员管理模型。
 - Auth 可用于数据面用户、角色和 key-range 权限控制；生产仍应叠加 client mTLS、
   网络策略、凭据轮换与运维审计，不把任一单层控制当作完整租户隔离。
-- 通用 etcd v3 `Txn` 语义未完整实现，当前目标仍是 Kubernetes apiserver storage path；已补基础 CAS put、CAS delete、create conflict fallback、无 Compare 顺序执行、基础 Compare 分支执行、基础 range compare、version/create revision compare，但还没有提供完整 etcd 原子事务隔离。
+- 通用 etcd v3 `Txn` 已覆盖缺失键与范围 phantom guard、嵌套分支、同 revision
+  staged commit、写前全分支校验及后端冲突重试；当前差分矩阵无已知原子性差异，仍需
+  继续扩大生成式嵌套输入和多点故障 soak。
 - 多副本下 `Compact` 后旧 revision 立即读的可见性已通过 leader 转发、不足额 compact 可重试错误、`Compact` 返回前可见性等待，以及历史 revision `Range` 转发 leader 做初步加固；本地 smoke、默认 compact soak、默认 compact fault smoke，以及 **3 副本 TiKV+PD 上的负载中混沌 + 单节点/多节点满载 soak** 已通过；仍需**数天级**长时间并发 compact/list/watch 压测确认长周期行为。
 - 对已有历史数据，若写入发生在 metadata 机制引入前，`CreateRevision/Version` 会回退为 `CreateRevision=ModRevision, Version=1`；生产迁移前需要用真实数据集验证是否存在旧数据兼容影响。
 - TLS、认证、授权、证书轮换需要按生产环境补齐。
