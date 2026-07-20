@@ -29,12 +29,12 @@ func TestHTTPHealthAlarmDifferentialAgainstReferenceEtcd(t *testing.T) {
 	}
 
 	require.Equal(t,
-		runHTTPHealthAlarmScenario(t, reference),
-		runHTTPHealthAlarmScenario(t, kubebrain),
+		runHTTPHealthAlarmScenario(t, reference, false),
+		runHTTPHealthAlarmScenario(t, kubebrain, true),
 	)
 }
 
-func runHTTPHealthAlarmScenario(t *testing.T, endpoint string) []httpHealthAlarmOutcome {
+func runHTTPHealthAlarmScenario(t *testing.T, endpoint string, verifyReady bool) []httpHealthAlarmOutcome {
 	t.Helper()
 	grpcEndpoint := strings.TrimPrefix(strings.TrimPrefix(endpoint, "http://"), "https://")
 	conn, err := grpc.NewClient(grpcEndpoint, grpc.WithTransportCredentials(insecure.NewCredentials()))
@@ -90,6 +90,10 @@ func runHTTPHealthAlarmScenario(t *testing.T, endpoint string) []httpHealthAlarm
 	record("active", "/health")
 	record("active-serializable", "/health?serializable=true")
 	record("active-excluded", "/health?exclude=NOSPACE")
+	if verifyReady {
+		requireHTTPHealthStatus(t, client, baseURL+"/ready", http.StatusOK)
+		requireHTTPHealthStatus(t, client, baseURL+"/readyz?verbose", http.StatusOK)
+	}
 	_, err = maintenance.Alarm(ctx, &etcdserverpb.AlarmRequest{
 		Action:   etcdserverpb.AlarmRequest_DEACTIVATE,
 		MemberID: memberID,
@@ -98,4 +102,14 @@ func runHTTPHealthAlarmScenario(t *testing.T, endpoint string) []httpHealthAlarm
 	require.NoError(t, err)
 	record("disarmed", "/health")
 	return outcomes
+}
+
+func requireHTTPHealthStatus(t *testing.T, client *http.Client, url string, want int) {
+	t.Helper()
+	response, err := client.Get(url)
+	require.NoError(t, err)
+	defer response.Body.Close()
+	_, err = io.Copy(io.Discard, response.Body)
+	require.NoError(t, err)
+	require.Equal(t, want, response.StatusCode)
 }
