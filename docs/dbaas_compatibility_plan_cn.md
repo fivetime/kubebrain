@@ -6113,6 +6113,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   3/3、PD/TiKV 3+3 Ready，endpoint proposal health 30.22ms。A324 未发现服务端
   实现差异，只增加永久兼容门禁与确定性测试回收，因此不构建镜像或滚动发布。
 
+- **Auth A325 LeaseTimeToLive attached-key 信息边界（2026-07-20）**：对照
+  `/root/etcd/tests/common/auth_test.go` 的 `TestAuthLeaseTimeToLive` 扩展可销毁实例
+  双端差分。匿名调用无论是否请求 attached keys 均必须返回 `ErrUserEmpty`；普通用户
+  对关联越权 key 的 lease 查询不带 keys 时可读取 TTL，但 `WithAttachedKeys` 必须
+  返回 `PermissionDenied`，防止泄露无权读取的 key 名；root 带 keys 查询必须精确
+  看见受保护 key。该矩阵复用 A324 的受保护 lease，不额外改变 auth 生命周期。
+
+  参考 etcd 与运行当前源码、使用独立 `a325-auth` keyspace 的真实 TiKV-backed
+  KubeBrain 首轮 6.13 秒通过；相同端点连续 5 轮 30.463 秒、race 2 轮 14.115 秒
+  通过。带 scheme 的完整 172-test compat suite 343.983 秒通过；根模块
+  `go test ./...`、根/compat `go vet ./...` 与 `git diff --check` 均通过。在线
+  `kubebrain:a320-object-request-metering` production release gate 保持 KubeBrain
+  3/3、PD/TiKV 3+3 Ready，endpoint proposal health 34.05ms。A325 未发现服务端
+  实现差异，只增加永久信息泄露边界门禁，因此不构建镜像或滚动发布。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
