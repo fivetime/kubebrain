@@ -5498,6 +5498,27 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   KubeBrain 3/3 Ready 且 0 restart，PD/TiKV 3+3 Ready；未发现新的运行时兼容性差距，
   不重建与 A300 相同的 runtime 镜像。
 
+- **Watch A305 canceled-create response header（2026-07-20）**：对照 upstream
+  `/root/etcd` commit `f5912263c`。该修复为 grpcproxy 拒绝无效 Watch range 时返回的
+  `Created && Canceled` 响应补齐非 nil `ResponseHeader`；缺失 header 会破坏依赖
+  create revision 建立恢复下界的官方 client/v3 消费端。审计确认 KubeBrain 的负
+  start revision、鉴权拒绝、重复 Watch ID、空/逆序 range 和 Watch 配额五类本地拒绝
+  已各自携带当前 revision header，但此前由五处手工字面量维持，新增路径容易静默漏掉。
+
+  五类路径现统一使用 `canceledWatchCreateResponse`，构造器固定 `WatchId=-1`、
+  `Created=true`、`Canceled=true` 和非 nil revision header；表驱动测试覆盖全部既有
+  reason 以及空 reason，源码审计只允许该构造器生成 canceled-create 响应。构造及
+  Watch ID/range 单测连续 100 轮通过（1.770 秒），focused race 连续 50 轮通过
+  （4.418 秒），完整 Watch 服务测试通过（2.525 秒），`go vet ./pkg/server/etcd`
+  通过。
+
+  fresh upstream etcd 与 A300 三副本 TiKV-backed KubeBrain 的 Watch ID/range wire
+  差分连续 20 轮通过（0.816 秒）：重复 ID、空 range、逆序 range 均返回正 revision
+  header，错误后同一 multiplexed stream 仍可继续创建和取消 Watch。参考进程及数据
+  目录已清理，未使用 port-forward；最终 KubeBrain 3/3 Ready 且 0 restart，
+  PD/TiKV 3+3 Ready。本轮把已正确的运行语义收敛为不可绕过的构造契约，线上 A300
+  镜像的 wire 证据已一致，因此不重建语义相同的 runtime 镜像。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
