@@ -6093,6 +6093,26 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   PD/TiKV 3+3 Ready，endpoint proposal health 29.67ms。A323 只增加永久兼容门禁，
   不改变服务二进制，因此不构建镜像或滚动发布。
 
+- **Auth A324 LeaseLeases 全局关联键授权（2026-07-20）**：对照
+  `/root/etcd/tests/common/auth_test.go` 的 `TestAuthLeaseLeases` 扩展可销毁实例双端
+  auth 差分。认证启用后，匿名 `LeaseLeases` 必须返回 `ErrUserEmpty`；当任一存活租约
+  关联普通用户无权读取的 key 时，普通用户列举全部租约必须整体返回
+  `PermissionDenied`；root 必须看见目标 lease。root 撤销该越权 lease 后，同一普通
+  用户调用立即恢复成功。断言同时记录语义错误标志，避免把上游当前 gRPC `Unknown`
+  映射误写成稳定错误码契约。
+
+  差分夹具清理同步改为可重入：关闭 auth 后先枚举用户并撤销其全部角色，再删除用户、
+  角色和测试 key，解决 root 仍绑定 root 角色时无法删除的残留。参考 etcd 与运行当前
+  源码、使用独立 `a324-auth-2` keyspace 的真实 TiKV-backed KubeBrain 首轮 5.74 秒
+  通过；相同端点连续 3 轮 17.119 秒、race 2 轮 13.171 秒通过。最终确定性清理又在
+  两个全新参考 etcd 上连续 3 轮 9.024 秒通过。
+
+  带 scheme 的完整 172-test compat suite 381.888 秒通过；根模块
+  `go test ./...`、根/compat `go vet ./...` 与 `git diff --check` 均通过。在线
+  `kubebrain:a320-object-request-metering` production release gate 保持 KubeBrain
+  3/3、PD/TiKV 3+3 Ready，endpoint proposal health 30.22ms。A324 未发现服务端
+  实现差异，只增加永久兼容门禁与确定性测试回收，因此不构建镜像或滚动发布。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
