@@ -47,7 +47,7 @@ Raft、bbolt 和成员管理内部实现，而是对通用 etcd v3 客户端提�
 | Maintenance | Hash/HashKV | 兼容核心语义 | 对指定 revision 的租户 MVCC 实际内容做稳定摘要；成员本地诊断不依赖 KubeBrain leader，数值不与 bbolt 内部编码比较 |
 | Maintenance | MoveLeader/Downgrade | 平台替代 | 分别由服务选主和 DBaaS 升级编排处理 |
 | Endpoint | health/livez/readyz | 兼容核心语义 | `/health`、`/livez`、`/readyz` 及分项检查已对齐；`data_corruption`/`non_learner` 使用 TiKV 架构等价语义，`/ready` 与 `/ping` 为平台探针 |
-| Endpoint | v3 JSON/HTTP gateway | 兼容核心服务 | 默认启用 KV、Watch、Lease、Cluster、Maintenance、Auth generated gateway；经本机 gRPC 回环保留 admission、auth、metrics、限流和 TLS 语义，可用 `--enable-grpc-gateway=false` 关闭；专用 Lock/Election HTTP 服务未注册 |
+| Endpoint | v3 JSON/HTTP gateway | 兼容核心服务 | 默认启用 KV、Watch、Lease、Cluster、Maintenance、Auth、Lock、Election generated gateway；经本机 gRPC 回环保留 admission、auth、metrics、限流和 TLS 语义，可用 `--enable-grpc-gateway=false` 关闭 |
 | Concurrency | Lock/Election/STM recipes | 兼容核心语义 | 官方 `client/v3/concurrency` Mutex/Election/session/STM、orphan session lease 自然过期接棒、STM 冲突重试/守恒争用及真实 Leader 故障转移已通过；继续长时间 soak |
 
 `Status.Version = 3.7.0` 只表示协议能力门槛，不能作为完整兼容声明。发布说明必须
@@ -7012,10 +7012,50 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   及根/compat vet 全部通过；聚焦 gateway 普通 50 轮、race 10 轮，auth 普通 50 轮、
   race 10 轮均通过。
 
-  当前未注册 upstream 独立 v3lock/v3election HTTP 服务；官方 client/v3 concurrency
-  recipe 仍通过 KV/Lease/Watch 工作。Watch gateway 路由已注册并有 generated handler
-  合同覆盖，但 HTTP 流式长连接尚未做长时故障 soak，发布说明不得把本项扩大为完整
-  HTTP surface 或长期流稳定性声明。
+  A355 完成时尚未注册 upstream 独立 v3lock/v3election HTTP 服务，该缺口已由 A356
+  关闭；官方 client/v3 concurrency recipe 继续通过 KV/Lease/Watch 工作。Watch
+  gateway 路由已注册并有 generated handler 合同覆盖，但 HTTP 流式长连接尚未做长时
+  故障 soak，发布说明不得把本项扩大为长期流稳定性声明。
+
+- **Concurrency A356 dedicated Lock/Election gRPC and JSON APIs（2026-07-20）**：
+  对照 `/root/etcd/server/embed/serve.go`、
+  `/root/etcd/server/etcdserver/api/v3lock/lock.go` 和
+  `/root/etcd/server/etcdserver/api/v3election/election.go`，确认普通 etcd server
+  除 client/v3 recipe 外还注册 `v3lockpb.Lock` 与 `v3electionpb.Election`，JSON
+  gateway 对应 `/v3/lock/*` 和 `/v3/election/*`。两项服务本质上复用
+  client/v3 concurrency 的 KV/Lease/Watch recipe，而不是独立 raft 状态。
+
+  提交 `eac694c` 引入匹配现有协议基线的 `server/v3@v3.7.0` generated protobuf 和
+  upstream Lock/Election 实现，以 KubeBrain RPCServer 的 server-to-client adapter
+  构造同进程 client，保持调用者 context、Auth metadata、TiKV revision 与现有
+  KV/Lease/Watch 语义，不增加本机网络回环；client 与 peer gRPC listener 均注册两项
+  服务，A355 gateway 同步注册 generated handlers。确定性测试覆盖 Lock lease 绑定、
+  第二竞争者在 Unlock 前阻塞及之后接棒、Unlock 删除、Campaign、Leader、Proclaim、
+  Resign，以及 Auth 开启时匿名拒绝和 root token 成功。
+
+  双端 Auth 差分进一步发现 current `/root/etcd` 的专用 convenience API 会把内部
+  匿名认证错误暴露为 gRPC `Unknown`/HTTP 500，而标准 KV Range 是
+  `InvalidArgument`/HTTP 400。提交 `a393595` 增加仅包裹 Lock/Election 的错误兼容层，
+  提交 `b9bd615` 让 response-header interceptor 对这两个 service 保留外层状态，
+  但成功响应仍填写 cluster/member/revision/raft_term；标准 KV/Lease/Auth 错误转换
+  不变。该差异现由 reference 双端测试固定，避免把更“规整”的错误码误报为兼容。
+
+  HTTP 双端矩阵覆盖 Lock/Unlock、Campaign/Leader/Proclaim/Resign；Auth 矩阵覆盖
+  anonymous Lock 精确 status/code、Authorization token Lock/Unlock，且继续覆盖
+  A355 的 anonymous/authorized Range 与 AuthDisable。最终 exact image 从
+  `b9bd6159d9df32dea975245617c885b2c3719b64` 的 `git archive` 构建，tag
+  `kubebrain:a356-dedicated-concurrency-release`，image ID
+  `sha256:7e0742e70a6d60354dc08d0257110fa264a6491cd66b9fa77e535c44d63ac2f0`，
+  OCI version `0.0.0-a356.2`、Go 1.26.5/linux/amd64、TiKV、运行用户
+  `65532:65532` 均匹配。
+
+  在真实 3 PD/3 TiKV 独立 `a356-release` keyspace 上，final Pod UID
+  `8db12252-6750-458d-b870-3864ad845288`，Ready、restartCount=0、只读根文件系统、
+  non-root、drop ALL、RuntimeDefault seccomp，日志无 initialization failure/panic/
+  fatal/segmentation/data race/storage error。专用 concurrency 与 Auth 双端矩阵各
+  连续 10 轮一致，A355 核心 JSON 矩阵再连续 10 轮通过。聚焦服务测试普通 20 轮、
+  gateway 合同 20 轮、完整根测试、endpoint/etcd race 及根/compat vet 全部通过。
+  Watch/Observe HTTP streaming 的数天级故障 soak 仍属于 P1，不据此声明长期流稳定性。
 
 ### P1：通用服务能力
 
