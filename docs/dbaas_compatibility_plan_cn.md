@@ -5542,6 +5542,27 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   最终 KubeBrain 3/3 Ready 且 0 restart，PD/TiKV 3+3 Ready。未发现运行时语义或
   读放大差距，因此本轮只增加永久生产性能证据，不重建相同 runtime 镜像。
 
+- **Range A307 revision-visible keys across tombstones（2026-07-20）**：对照
+  upstream `/root/etcd` commit `8ce417fa0`。该改动将 treeIndex `Revisions` 的
+  Limit 判断移到每个 key 的 revision 可见性检查之前，并与 `Range` 统一：Limit
+  只按目标 revision 下存活的 user key 消耗，tombstone、尚未创建或已删除的 key
+  不能占据页面槽位；需要 total count 时则继续遍历其余可见 key。
+
+  KubeBrain 的 TiKV scanner 不使用 treeIndex Revisions，但已有等价数据流：同一 user
+  key 的物理历史版本先折叠为目标 revision 下的最新状态，仅非 tombstone 状态才 append
+  到 limited receiver；receiver 满后停止，精确 Count 独立由 revision-aware count
+  index 计算。新增服务层三阶段门禁：四 key 删除前的历史 revision 以 Limit=2 返回
+  `a,b / Count=4`；删除 `b,d` 后的 revision 以 Limit=1 返回
+  `a / Count=2`；更新 `c`、重建 `b` 并新增 `e` 后，当前 revision 再次返回
+  `a,b / Count=4`。三阶段均要求 `More=true` 且 KeysOnly value 为空。
+
+  服务门禁连续 50 轮通过（1.124 秒），focused race 连续 30 轮通过（3.233 秒），
+  完整 Range 服务测试通过（2.649 秒）。fresh upstream etcd 与 A300 三副本
+  TiKV-backed KubeBrain 对上述三组显式预期连续差分 20 轮通过（4.401 秒）；根模块
+  与 compat 模块相关 `go vet` 均通过。参考进程和数据目录已清理，未使用
+  port-forward；最终 KubeBrain 3/3 Ready 且 0 restart，PD/TiKV 3+3 Ready。
+  未发现运行时差距，因此本轮增加永久历史可见性证据，不重建相同 runtime 镜像。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
