@@ -6148,6 +6148,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   3/3、PD/TiKV 3+3 Ready，endpoint proposal health 32.67ms。A326 未发现服务端
   实现差异，只增加永久长连接授权门禁，因此不构建镜像或滚动发布。
 
+- **Auth A327 multiplex Watch 动态撤权边界（2026-07-20）**：在可销毁实例双端
+  auth 差分中补齐同一 raw gRPC Watch stream 的角色变更状态机。普通用户先成功创建
+  watch；root 撤销其 key-range 权限后，etcd 的既有 watch 不被追溯取消，仍可收到
+  root 对该 key 的后续事件，但同一 multiplex stream 上的新 WatchCreate 必须返回
+  canceled response 和 `etcdserver: permission denied`。恢复权限后，该 stream 必须
+  可再次创建 watch，下一事件同时 fan-out 给旧、新 watch ID。
+
+  该契约明确区分建流身份与 logical WatchCreate 授权：服务端必须逐个鉴权新建请求，
+  拒绝一个 logical watch 不能终止 multiplex stream；同时 KubeBrain 不应擅自强化为
+  撤权即取消已有 watch，否则会偏离 etcd 的长连接行为。参考 etcd 与使用独立
+  `a327-auth` keyspace 的真实 TiKV-backed KubeBrain 首轮 7.24 秒通过；相同端点
+  连续 5 轮 35.812 秒、race 2 轮 17.598 秒通过。
+
+  带 scheme 的完整 172-test compat suite 396.715 秒通过；根模块
+  `go test ./...`、根/compat `go vet ./...` 与 `git diff --check` 均通过。在线
+  `kubebrain:a320-object-request-metering` production release gate 保持 KubeBrain
+  3/3、PD/TiKV 3+3 Ready，endpoint proposal health 39.08ms。A327 未发现服务端
+  实现差异，只增加永久 Watch 授权状态机门禁，因此不构建镜像或滚动发布。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
