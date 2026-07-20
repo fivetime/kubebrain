@@ -74,5 +74,7 @@ fragmentation 可报告”，不表示 TiKV 实际占用。
 - **defrag**：安全 no-op，TiKV 自身 compaction/GC 由存储平台管理。
 - **Alarm**：支持配额触发的 NOSPACE list/disarm，以及 root-only raw gRPC
   `Alarm(ACTIVATE, NOSPACE)` 故障注入；NONE mutation 和重复 disarm 为成功空操作，
-  owner member ID 持久化且跨 serving replica 稳定，任一 endpoint 可使用该 owner
-  解除；错误 owner 不会解除 tenant alarm。CORRUPT 仍无对应语义。
+  raw ACTIVATE 指定的非零 owner member ID 会原样持久化，未指定时使用 backend
+  identity 的稳定 ID；owner 跨 serving replica 稳定，任一 endpoint 可使用该 owner
+  解除。激活提交结果不确定时服务端会独立回读确认，错误 owner 不会解除 tenant
+  alarm。CORRUPT 仍无对应语义。

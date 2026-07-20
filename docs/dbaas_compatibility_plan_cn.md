@@ -43,7 +43,7 @@ Raft、bbolt 和成员管理内部实现，而是对通用 etcd v3 客户端提�
 | Maintenance | Status | 兼容核心语义 | 返回真实服务身份、版本、leader/revision/共享选主 term；配置 quota 时报告租户最新逻辑 key+value 字节，未配置时使用兼容 sentinel；TiKV 物理容量转到实例指标 |
 | Maintenance | Snapshot | 平台替代 | 使用 TiKV BR/PITR；控制面提供备份、恢复和导出任务，不伪造 etcd snapshot |
 | Maintenance | Defragment | 平台替代 | TiKV GC/compaction 管理，不执行 bbolt 碎片整理 |
-| Maintenance | Alarm/DbSize | 兼容 NOSPACE 核心语义 | keyspace 级逻辑容量原子计量、持久 owner/sticky NOSPACE、list/activate/disarm、跨 endpoint mutation、no-op 与 capped write state 已支持；任意虚构 member 的多告警、CORRUPT 与 bbolt fragmentation 仍为边界 |
+| Maintenance | Alarm/DbSize | 兼容 NOSPACE 核心语义 | keyspace 级逻辑容量原子计量、持久/显式 owner、sticky NOSPACE、list/activate/disarm、跨 endpoint mutation、不确定激活回读、no-op 与 capped write state 已支持；任意虚构 member 的多告警、CORRUPT 与 bbolt fragmentation 仍为边界 |
 | Maintenance | Hash/HashKV | 兼容核心语义 | 对指定 revision 的租户 MVCC 实际内容做稳定摘要；成员本地诊断不依赖 KubeBrain leader，数值不与 bbolt 内部编码比较 |
 | Maintenance | MoveLeader/Downgrade | 平台替代 | 分别由服务选主和 DBaaS 升级编排处理 |
 | Endpoint | health/livez/readyz | 兼容核心语义 | `/health`、`/livez`、`/readyz` 及分项检查已对齐；`data_corruption`/`non_learner` 使用 TiKV 架构等价语义，`/ready` 与 `/ping` 为平台探针 |
@@ -6313,6 +6313,39 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   proposal health 分别为 29.023/29.888/30.113ms。在线
   `kubebrain:a320-object-request-metering` release gate 保持 KubeBrain 3/3、
   PD/TiKV 3+3 Ready，endpoint proposal health 13.667ms。
+
+- **Maintenance A333 explicit alarm owner / uncertain activation reconciliation
+  （2026-07-20）**：继续对照
+  `/root/etcd/server/etcdserver/apply/backend.go:Alarm` 与
+  `/root/etcd/server/etcdserver/api/v3alarm/alarms.go:Activate`，发现 raw
+  `Alarm(ACTIVATE, NOSPACE, MemberID=X)` 在 etcd 中持久保存并返回 X，KubeBrain
+  此前却始终改写为 serving Pod 的本地 ID。现 RPC 将请求 member 传入 backend；
+  非零 owner 原样编码到持久 alarm，零值仍回退 backend identity 派生的稳定 ID，
+  保持既有 `etcdctl`/自动配额路径不返回无效 owner。单 keyspace 仍只保存一条
+  tenant-global NOSPACE，重复或并发激活采用 Put-if-absent，全部 caller 返回首个
+  已持久 owner，不伪造上游任意 member 各自持有多条 alarm 的拓扑。
+
+  同时关闭激活 CAS “提交成功但响应丢失”的不确定结果：仅当 storage 返回
+  `ErrUncertainResult` 时，使用独立 5 秒预算线性化回读；短暂
+  `ErrUnavailable` 每 50ms 重试，读到任一持久 alarm 即按幂等成功，确认缺失则保留
+  原 uncertain error，永久读取错误与原错误聚合返回。确定性测试分别注入 commit-then-
+  uncertain（再叠加两次 transient read failure）和 uncommitted-uncertain，证明前者
+  返回请求 owner、后者不能伪报成功；32 路不同 owner 并发激活也只产生一个可读 owner。
+
+  raw gRPC 差分把既有 13 步 capped/mutation 场景的 activate 改为固定
+  `MemberID=424242`，修复前会在 KubeBrain 端稳定失败。参考 etcd 与使用独立
+  `a333-explicit-owner` keyspace 的真实 TiKV-backed
+  `kubebrain:a333-explicit-alarm-owner` 首轮 0.357 秒、连续 20 轮 5.709 秒、
+  race 5 轮 2.697 秒通过；测试 Pod Ready、restartCount=0，PD/TiKV 3+3 Ready，
+  endpoint proposal health 17.780ms，日志无 panic/fatal/storage error。
+
+  聚焦 backend 20 轮、race 10 轮、server 10 轮，根模块
+  `go test -p 1 -count=1 ./...`、根/compat `go vet ./...`、`git diff --check`
+  和完整 production Dockerfile 构建通过。首次全量运行因参考 etcd 占用测试固定的
+  12379/12380 而污染 `pkg/endpoint`，该结果废弃；停止参考服务后 endpoint 单包及
+  全量均通过。实现提交 `c872ec81de08155674ffe482427e2b2282f61979`，镜像 ID
+  `sha256:c17808cb336e3106811559f96dcb5847d0b941a840a7fdf80dbbcb8e71f19fc4`，
+  OCI revision 与实现提交一致，运行用户为 `65532:65532`。
 
 ### P1：通用服务能力
 
