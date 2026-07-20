@@ -108,6 +108,16 @@ manifest 前，应从每个 build stage/final image 提取全部可执行文件�
 都必须在对应原生 runner 上完成容器启动、kubectl/API、TiKV/PD 和 readiness smoke，
 再合并 manifest list。
 
+CI 的 Go 版本必须与 Docker build stage 精确一致，当前均为 1.26.5；CI 构建 TiKV 和
+Badger image 时必须显式传入 `TARGETARCH=amd64` 及上述三项 metadata，并回读 OCI
+revision、运行用户和 kubectl 版本。release workflow 必须使用 QEMU、Buildx 和
+`linux/amd64,linux/arm64`，compiler stage 固定运行在 `${BUILDPLATFORM}` 上执行原生
+交叉编译，runtime stage 则保留目标平台，避免在 QEMU 下运行整套 Go compiler 或把宿主
+架构 runtime 误装进目标 image。发布必须同时生成 max-mode provenance 与 SBOM，使用
+12 位和 40 位 commit SHA tag，并按 build digest 回读 raw OCI index；过滤 attestations
+后必须恰好存在 `linux/amd64`、`linux/arm64` 两个 runtime manifest。任一架构构建、
+attestation 或 index 检查失败都不得更新 `latest` 作为可消费发布。
+
 ## 真-k3s 消费端驱动验证进展（2026-07-03）
 
 用真实 kube-apiserver（k3s v1.36，`--datastore-endpoint` 指向 KubeBrain-on-TiKV）端到端驱动，已完成（脚本 `hack/dev/k3s-load-smoke.sh` 一键复跑）：

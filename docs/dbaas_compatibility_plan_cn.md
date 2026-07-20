@@ -6796,6 +6796,41 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   3+3 Ready。当前宿主无 arm64 执行环境，因此 arm64 最终 runtime、Kubernetes API 与
   TiKV/PD smoke 仍须在原生 arm64 CI runner 完成后才能发布 multi-arch manifest。
 
+- **Production A349 reproducible multi-arch release gate（2026-07-20）**：A348 完成
+  二进制交叉编译后继续审计实际 GitHub Actions 路径，发现 CI 仍使用 Go 1.22.x，且
+  image build 未注入 Dockerfile 已强制要求的 version/full revision/UTC created；
+  release workflow 只发布 amd64，也没有 SBOM、provenance 或发布后 OCI index 检查。
+  这些问题会使普通 CI image 直接 fail closed，或把未经双架构验证的单架构 image
+  标记为生产发布。
+
+  提交 `cb32860` 将 CI 对齐 Go 1.26.5，并为 TiKV/Badger image 统一传入完整 metadata、
+  回读 revision/non-root user/kubectl；release 使用 QEMU、Buildx、
+  `linux/amd64,linux/arm64`、GHA cache、max provenance 与 SBOM，发布 12 位和完整
+  commit SHA tag，并按 digest 校验 raw OCI index 恰好包含两个 Linux runtime
+  architecture。提交 `739f5c1` 进一步把 compiler stage 固定到
+  `${BUILDPLATFORM}`，由原生 Go toolchain 交叉编译 `${TARGETARCH}`，runtime stage
+  继续由 BuildKit 选择目标平台。新增 workflow YAML/契约测试固定 metadata 参数、
+  双架构、cache、attestation 和 index 检查顺序；build 包连续 20 轮与 race 10 轮通过，
+  未知 s390x 仍在源码编译前 fail closed。后续审计又发现 `latest` 原先与不可变 tag
+  同步推送、早于 index verification；提交 `9343714` 将其改为验证 digest 后通过
+  `imagetools create` 原子 promotion，并回读确认 `latest` 指向同一 digest。
+
+  从 `739f5c1e5848c885e2e8d19a1454e75b04d3074e` 的 `git archive` 构建 TiKV 与
+  Badger amd64 image 均成功。TiKV image
+  `sha256:8957f2ab140b70035b87d9555e3f943943fc1c07716eb6eb16907c5f3055a8c0`、
+  Badger image
+  `sha256:eb5570840ae6aa3403c0e1239a19f81549da420bba2ad464811645abe9fa76bb`；
+  两者 OCI revision 与二进制 version 均为完整提交，运行用户 `65532:65532`，
+  Go 1.26.5/linux/amd64，kubectl v1.36.2。TiKV image 在独立 `a349` keyspace、
+  真实 3 PD/3 TiKV 上 Ready，endpoint proposal health、Put/Get/Delete、
+  `/ready` 与 `/readyz` 全部通过，且以只读根文件系统、drop ALL capabilities 运行。
+
+  当前验证宿主没有 docker buildx、registry 写权限或原生 arm64 runtime，因此没有伪造
+  已发布 multi-arch index 的结论。GitHub Actions 必须在实际 release ref 上完成双架构
+  build/push、SBOM/provenance 和 digest index 检查，并在原生 arm64 runner 补齐
+  Kubernetes API、TiKV/PD 与 readiness smoke 后，才可把该 ref 标记为 production
+  multi-arch release。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
