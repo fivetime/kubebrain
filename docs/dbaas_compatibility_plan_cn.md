@@ -6604,6 +6604,36 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `61f63029-912c-4313-9537-e1f561a65a8f`、restartCount=0，日志无
   panic/fatal/segmentation/data race，PD/TiKV 3+3 Ready。
 
+- **Compatibility A342 maintenance auth differential completion（2026-07-20）**：
+  对照 `/root/etcd/server/etcdserver/api/v3rpc/maintenance.go` 的
+  `authMaintenanceServer`，复核维护 RPC 的鉴权优先级。现有双端 Auth 差分仅覆盖
+  Status、Alarm 和 HashKV；Defragment、流式 Snapshot、raw Hash、MoveLeader、
+  Downgrade 虽有进程内测试，但没有证明真实 gRPC token 提取、stream context 和
+  平台替代错误之前的鉴权顺序。
+
+  `TestAuthDifferentialAgainstEtcd` 现同时记录上述五类 RPC 的匿名和普通非 root
+  结果，并要求参考 etcd 与 KubeBrain 的 canonical gRPC code/message 完全相等：
+  匿名请求均为 `etcdserver: user name is empty`，非 root 请求均为
+  `etcdserver: permission denied`，不能先泄露 Snapshot/MoveLeader/Downgrade 的
+  平台边界。SnapshotWithVersion 与 raw generated client 会保留 canonical
+  code/message、但其包装 error 不保证 `errors.Is`；`authError` 因此同时按 upstream
+  精确 code/message 识别 `ErrGRPCUserEmpty`，没有放宽结构化比较。
+
+  全新 reference etcd 与独立 `a342-maintenance-auth-race` TiKV keyspace 的完整 Auth
+  生命周期及新增矩阵通过，race 运行 10.985 秒通过。完整 compat suite 使用显式
+  reference/KubeBrain endpoint、单线程运行，376.397 秒通过。期间还发现
+  `TestPlatformManagedOperationsReturnActionableErrors` 仍把 NOSPACE Alarm mutation
+  当作 Unimplemented；A330-A339 已实现该兼容能力，当前矩阵也已升级，因此删除这个
+  与产品状态冲突的陈旧断言。修正后的平台边界测试和 lease generation
+  linearizability baseline 各连续 10 轮通过。
+
+  根模块 `go test -p 1 -count=1 ./...`、根模块与 compat 的 `go vet ./...`、
+  `git diff --check` 均通过。A342 只增强兼容测试，不改变服务二进制，因此继续使用
+  已提交源码构建的 `kubebrain:a341-objectstore-module-cache`。该镜像在独立 keyspace
+  上 Pod UID `0162a49a-2933-421c-a760-cc144f36046f` Ready、restartCount=0，
+  `/ready` 和四项 readyz 全部通过，日志无 panic/fatal/segmentation/data race，
+  PD/TiKV 3+3 Ready。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
