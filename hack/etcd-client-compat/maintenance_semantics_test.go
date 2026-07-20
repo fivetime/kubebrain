@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
-	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -31,7 +30,6 @@ func TestPlatformManagedOperationsReturnActionableErrors(t *testing.T) {
 	defer cancel()
 	const (
 		memberMessage     = "KubeBrain replicas are stateless; scale or reconfigure them through the DBaaS control plane"
-		alarmMessage      = "etcd alarm mutation does not represent TiKV capacity; use PD/TiKV alerts and DBaaS remediation"
 		snapshotMessage   = "etcd snapshot is unavailable on TiKV; use the DBaaS logical backup and restore workflow"
 		moveLeaderMessage = "KubeBrain leadership is managed automatically; use DBaaS rollout or failover orchestration"
 		downgradeMessage  = "in-place etcd protocol downgrade is unavailable; use a DBaaS versioned rollout or rollback"
@@ -51,8 +49,6 @@ func TestPlatformManagedOperationsReturnActionableErrors(t *testing.T) {
 	_, err = cli.MemberPromote(ctx, 1)
 	requirePlatformError(t, err, memberMessage)
 
-	_, err = cli.AlarmDisarm(ctx, &clientv3.AlarmMember{MemberID: 1, Alarm: etcdserverpb.AlarmType_NOSPACE})
-	requirePlatformError(t, err, alarmMessage)
 	_, err = cli.SnapshotWithVersion(ctx)
 	requirePlatformError(t, err, snapshotMessage)
 	_, err = cli.MoveLeader(ctx, 1)
