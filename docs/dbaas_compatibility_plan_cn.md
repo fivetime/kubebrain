@@ -5456,6 +5456,27 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   轮通过。最终 KubeBrain 3/3 Ready、0 container restart，PD/TiKV 3+3 Ready，
   未遗留 port-forward。未复现运行时兼容性差距，因此不重建相同 runtime 镜像。
 
+- **Observability A303 metrics-before-handler interceptors（2026-07-20）**：跟进
+  upstream `/root/etcd` commit `0c68e485a`。etcd 将 server metrics unary/stream
+  interceptor 移到 require-leader 等 handler-specific interceptor 之前，否则被
+  前置拒绝的请求不会进入 `grpc_server_handled_total`，过载、无 leader 和 client
+  cancellation 的错误率会被系统性低估。KubeBrain 的 endpoint 已先追加 metrics
+  `UnaryInterceptor`/`StreamInterceptor`，再追加 client admission 或 peer
+  require-leader 的 `Chain*Interceptor`；grpc-go 会把单 interceptor 放在 chain
+  外层，现有顺序与 upstream 一致，但此前没有永久测试保护，重排 options 即可静默
+  破坏生产告警。
+
+  将 client/peer gRPC option 装配提炼为显式方法并标注该顺序契约，新增
+  `TestGRPCMetricsObserveCallsRejectedBeforeHandlers`：client 与 peer 两条 listener
+  路径分别以 unary Health Check 和 stream Health Watch 触发 handler 前
+  `ResourceExhausted`，外层 metrics 必须同时观测最终 code；若顺序回归，测试在 1 秒
+  内明确失败。focused 连续 100 轮、race 连续 50 轮通过，endpoint 与 Prometheus
+  metrics 全包 20.034/0.021 秒通过，相关 `go vet` 通过。真实 A300 三副本 info
+  endpoint 同时确认已有
+  `grpc_server_handled_total{grpc_code="Canceled",grpc_method="Watch",...}` 计数，
+  证明运行组合中的取消 stream 未绕过 metrics。最终 KubeBrain、PD、TiKV 均 3/3
+  Ready，未遗留 port-forward；本轮只显式化并锁定现有正确行为，不需重建 runtime。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
