@@ -544,6 +544,43 @@ resource rollup、storage rollup 和 catalog 三份 exact-version source。v1 �
 小时 storage snapshot 并发布已审批 v2 catalog。请求费、税费、折扣、付款、最终
 invoice 和 adjustment/credit artifact 仍未实现，不能把 v2 charge 宣称为最终发票。
 
+账单纠错不得覆盖既有 charge。`kubebrain.metering-adjustment.v1` 使用非零 signed
+`amount_micros`：正数是补收，负数是 credit；reason 只允许 `billing_error`、
+`service_credit`、`sla_credit` 或 `tax_correction`。每个 adjustment 固定唯一 ID、
+实例、单日 charge 周期/币种、charge exact-version source，以及
+`kubebrain-billing-approver` 身份、外部 approval ID 和不得早于 charge 周期结束且不得
+晚于发布时刻的批准时间。adjustment 还必须在批准时绑定唯一 `invoice_id`，防止同一
+credit 被两个 invoice plan 重复应用。任何自由文本客户信息都不应写入该长期保留对象。
+
+最终结算使用 `kubebrain.metering-invoice-plan.v1`，而不是列举 prefix 自动吸收对象。
+plan 固定 invoice ID、实例、UTC 账期、币种、按日连续且有序的 charge format 列表，
+以及严格排序且无重复的 adjustment ID 列表；同样携带不可变审批证据。由此迟到的
+charge/adjustment、同 ID 不同内容或第二份 plan 都不能改变已批准账期。先用
+`kubebrain-metering-settlement-publish --kind=adjustment` 发布所有 approved
+adjustment，再用 `--kind=plan` 发布 plan；publisher 在任何 S3 请求前执行 strict
+schema/canonical、审批时间和保留期校验。
+
+`kubebrain-metering-invoice-finalize` 先读 exact plan，再按 plan 顺序读取每个日
+charge 和 adjustment。它独立复核 receipt 与下载字节 digest、format/ID/instance/
+period/currency/retention，要求 adjustment 的 charge source 与该日实际 charge
+receipt 完全相同，并要求 adjustment 的 invoice ID 等于 plan ID。subtotal 和 signed
+adjustment total 都使用 int64 溢出保护；最终 total 不允许为负，负余额必须进入下一
+账期 credit 流程。`kubebrain.metering-invoice.v1` 固化 plan、全部 charge 和 adjustment
+exact-version source、分项金额与三个合计。finalized-at 固定为 plan 批准时间，使崩溃
+重试逐字节确定；invoice key 只由实例和 plan ID 构成，禁止覆盖。
+
+所有 settlement 对象的 retain-until 取账期首日第一个小时 source 的
+`period_start + 1h + retention_duration`，invoice 不得比其最早 charge source 活得
+更久；finalizer 要求每个输入至少保留至该边界。`deploy/production/
+kubebrain-metering-invoice.yaml` 默认每月 2 日 UTC 02:17 运行，ConfigMap 的
+`replace-with-approved-invoice-plan` 只能在 adjustment、plan publisher receipt
+独立核验后替换。CronJob 使用只读根文件系统、非 root、无 ServiceAccount token 和
+只允许读取 charge/adjustment/plan、写 invoice prefix 的独立 Secret。
+
+该 invoice 是 KubeBrain 数据面资源结算证据，不是完整税务/收款系统。对象请求费、
+税率计算、折扣规则、付款、退款、应收账款、发票编号法规和外部总账过账仍须由财务
+控制面实现；`tax_correction` 只记录已由外部审批系统算出的微货币调整，不能替代税引擎。
+
 TiDB Operator 的 BR full/PITR 不能用于 KubeBrain 数据恢复。真实 S3 full backup 和
 独立 PD/TiKV Restore CR 都成功时，备份前已提交的 KubeBrain key 仍未出现在目标集群；
 任务 `Complete` 只证明 TiDB 管理范围恢复成功。BR raw 每次只处理一个 CF 且仍为实验
