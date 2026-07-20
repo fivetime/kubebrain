@@ -5878,6 +5878,57 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   与审计对账仍属 P1。真实 Prometheus 一小时 evaluation 仍须在安装 Operator 的
   预生产监控集群补作发布证据。
 
+- **Metering A318 exact-version 对象存储保留量计费（2026-07-20）**：关闭 A317
+  `logical_backup_artifact_bytes:last` 不能表示全部保留 version 的缺口。nested
+  objectstore 新增 `kubebrain.object-usage.receipt.v1`：对实例独占 prefix 完整分页
+  `ListObjectVersions`，拒绝 delete marker、重复/非法 identity 和未前进分页，再逐
+  exact version 核对 allowlist format、store ID、Head/list bytes、artifact SHA
+  metadata、Object Lock mode/retain-until。排序后的完整 version evidence 产生
+  `versions_sha256`，总字节使用 int64 溢出保护；未知 format、metadata/retention 漂移
+  或控制面漏报均 fail closed。
+
+  每小时锁定 `kubebrain.object-storage-sample.v1`，绑定 source store/bucket/prefix、
+  allowlist、version count、total bytes、versions digest 和 checked-at。source
+  inventory 与 metering evidence 使用两套显式 endpoint/credential 子进程环境和独立
+  Secret，且均不挂载 ServiceAccount token。一次审查发现生产 Cron 在每小时第 27
+  分钟运行，却把 10 分钟 eligibility delay 误作 checked-at 最大窗口，会稳定拒绝正常
+  采样；修复后 10 分钟只选择完整小时，采集/重试证据窗口固定 45 分钟，Roller 再次
+  校验该窗口并有第 27 分钟回归测试。
+
+  日 Roller 只读取连续 24 个 exact snapshot，scope/allowlist 必须整日不变，输出
+  `kubebrain.object-storage-rollup.v1`。计量策略明确为小时末离散持有量
+  `sum(total_object_bytes * 3600)`，不是对象事件的连续积分；历史时点不能用当前
+  inventory 伪造回填。`kubebrain.metering-price-catalog.v2` 在原 6 项后追加
+  `object_storage_byte_seconds/byte_seconds`，measurement policy 固定为
+  `kubebrain.metering-rollup.v2+object-storage-rollup.v1`。Biller 显式固定 catalog
+  format 后读取 resource/storage 两份 rollup，生成含三份 exact-version source 和
+  7 行金额的 `kubebrain.metering-charge.v2`；v1 继续可读但禁止混入 storage source，
+  同周期 charge key 继续阻止静默重定价。
+
+  storage/billing 普通测试通过；确定性连续 100 轮分别 1.123/1.095 秒，storage race
+  连续 20 轮 2.041 秒。nested objectstore race 20 轮 14.479 秒、确定性 100 轮
+  12.708 秒；根模块全量测试（production 包 91.156 秒）、根/nested vet、manifest
+  测试、client dry-run 和 diff check 均通过。测试覆盖完整分页、delete marker、
+  metadata/retention/scope 漂移、24 槽连续性、缺槽、digest/bytes 篡改、溢出、
+  两套凭据隔离、v1/v2 source 约束和缺 storage rollup 时零归档。
+
+  真实 MinIO Object Lock 先锁定一个 3,430-byte logical source，再由实际 usage 和
+  storage archiver 生成 448-byte snapshot；exact-version 下载证明 remoteVersions=1、
+  deleteMarkers=0、totalObjectBytes=3,430，和源对象字节完全一致。实际 Publisher、
+  resource/storage rollup 与 v2 Biller 的完整链路以源码 executor 1.85 秒、最终镜像
+  executor 0.79 秒通过；重复计费返回同一 receipt，第二个 v2 价格版本对同周期重算被
+  immutable charge 冲突拒绝。临时 NodePort 已删除，测试对象按 COMPLIANCE 到期。
+
+  发布镜像 `kubebrain:a318-storage-metering` 的代码提交为
+  `89e383d0d90799357dd544fc4e3b17547db6ebbf`，本地 digest 为
+  `sha256:de340ef2bab7614c1d8f0a2a96bf99e5afec7c6524f24590ff6269a8efdb549f`；
+  OCI revision/version 和镜像内 storage-archive、storage-rollup、v2 charge 及对象
+  执行器均已核对。A317 三副本 StatefulSet 有序滚动到 A318 后 3/3 Ready、
+  restartCount=0，PD/TiKV 3+3 Ready，endpoint proposal health 和 production release
+  gate 全部通过。对象 storage byte-time 资源 charge 至此完成；请求费、税费、折扣、
+  adjustment/credit、最终 invoice/审计对账仍属 P1，真实连续 24 小时采样还应在
+  预生产验证后再启用 v2 catalog。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
@@ -5907,8 +5958,9 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
    告警已具备稳定错误或指标，网络 RX/TX 原始计量和逻辑备份 artifact 容量/新鲜度
    指标已暴露，单实例资源/容量/网络/备份 recording rules 和 fail-closed 缺测标记已
    建立，不可变小时采样、counter-based 小时窗口、确定性跨日积分、不可变资源价格
-   版本和 charge 已完成；继续补对象存储成本、adjustment/credit、最终 invoice 与审计
-   对账，并在具备 Prometheus Operator 的预生产环境补真实一小时规则 evaluation 门禁。
+   版本、对象 storage byte-time 和 v2 charge 已完成；继续补对象请求费、税费/折扣、
+   adjustment/credit、最终 invoice 与审计对账，并在具备 Prometheus Operator 的
+   预生产环境补真实一小时规则 evaluation 和连续 24 小时 storage sampling 门禁。
 
 ### P2：运维兼容和长期验证
 
