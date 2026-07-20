@@ -106,6 +106,8 @@ type Backend interface {
 	// live user keys. It must complete on leadership acquisition before writes
 	// are served when quota enforcement is enabled.
 	EnsureQuotaInitialized(ctx context.Context) error
+	// ArmNoSpace persistently enables the tenant-wide NOSPACE write cap.
+	ArmNoSpace(ctx context.Context) error
 	// DisarmNoSpace clears NOSPACE only after usage falls below the hard limit.
 	DisarmNoSpace(ctx context.Context) error
 

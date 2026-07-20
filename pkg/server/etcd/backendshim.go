@@ -92,6 +92,7 @@ type BackendShim interface {
 	InternalDelete(ctx context.Context, key []byte) error
 	InternalCAS(ctx context.Context, ops []backend.InternalCASOp) error
 	QuotaStatus(ctx context.Context) (usage, quota int64, noSpace bool, err error)
+	ArmNoSpace(ctx context.Context) error
 	DisarmNoSpace(ctx context.Context) error
 
 	// BeginRangeTxn excludes logical writes while a range compare and its chosen
@@ -227,6 +228,10 @@ func (b *backendShim) InternalGet(ctx context.Context, key []byte) ([]byte, erro
 
 func (b *backendShim) QuotaStatus(ctx context.Context) (usage, quota int64, noSpace bool, err error) {
 	return b.backend.QuotaStatus(ctx)
+}
+
+func (b *backendShim) ArmNoSpace(ctx context.Context) error {
+	return b.backend.ArmNoSpace(ctx)
 }
 
 func (b *backendShim) DisarmNoSpace(ctx context.Context) error {

@@ -93,7 +93,28 @@ func (s *RPCServer) Alarm(ctx context.Context, req *etcdserverpb.AlarmRequest) (
 		if err := s.backend.DisarmNoSpace(ctx); err != nil {
 			return nil, mapFenceErr(err)
 		}
-		return &etcdserverpb.AlarmResponse{Header: s.maintenanceHeader()}, nil
+		response := &etcdserverpb.AlarmResponse{Header: s.maintenanceHeader()}
+		response.Alarms = []*etcdserverpb.AlarmMember{{
+			MemberID: response.Header.MemberId,
+			Alarm:    etcdserverpb.AlarmType_NOSPACE,
+		}}
+		return response, nil
+	case etcdserverpb.AlarmRequest_ACTIVATE:
+		if err := s.requireAuthenticated(ctx, true); err != nil {
+			return nil, err
+		}
+		if req.GetAlarm() != etcdserverpb.AlarmType_NOSPACE {
+			return nil, status.Error(codes.Unimplemented, alarmMutationUnsupportedMessage)
+		}
+		if err := s.backend.ArmNoSpace(ctx); err != nil {
+			return nil, mapFenceErr(err)
+		}
+		response := &etcdserverpb.AlarmResponse{Header: s.maintenanceHeader()}
+		response.Alarms = []*etcdserverpb.AlarmMember{{
+			MemberID: response.Header.MemberId,
+			Alarm:    etcdserverpb.AlarmType_NOSPACE,
+		}}
+		return response, nil
 	default:
 		if err := s.requireAuthenticated(ctx, true); err != nil {
 			return nil, err

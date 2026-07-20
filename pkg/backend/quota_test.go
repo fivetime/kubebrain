@@ -84,7 +84,7 @@ func TestLogicalQuotaTracksLatestBytesAndPersistsNoSpace(t *testing.T) {
 	require.False(t, alarm)
 }
 
-func TestLogicalQuotaRejectsGrowingUpdateButAllowsShrink(t *testing.T) {
+func TestLogicalQuotaAlarmRejectsAllPutsUntilCapacityRecovery(t *testing.T) {
 	b, ctx := newQuotaBackend(t, 6)
 	key := []byte("key")
 	_, _, err := b.TxnApply(ctx, []TxnWriteOp{{Key: key, Value: []byte("123")}}, nil)
@@ -96,11 +96,16 @@ func TestLogicalQuotaRejectsGrowingUpdateButAllowsShrink(t *testing.T) {
 	require.Equal(t, "123", value)
 
 	_, _, err = b.TxnApply(ctx, []TxnWriteOp{{Key: key, Value: []byte("1")}}, nil)
+	require.ErrorIs(t, err, ErrNoSpace, "sticky NOSPACE caps shrinking puts too")
+	_, _, err = b.TxnApply(ctx, []TxnWriteOp{{Key: key, Delete: true}}, nil)
 	require.NoError(t, err)
 	usage, _, alarm, err := b.QuotaStatus(ctx)
 	require.NoError(t, err)
-	require.Equal(t, int64(4), usage)
+	require.Zero(t, usage)
 	require.True(t, alarm)
+	require.NoError(t, b.DisarmNoSpace(ctx))
+	_, _, err = b.TxnApply(ctx, []TxnWriteOp{{Key: key, Value: []byte("1")}}, nil)
+	require.NoError(t, err)
 }
 
 func TestQuotaDisabledPreservesExistingBehavior(t *testing.T) {
@@ -114,6 +119,7 @@ func TestQuotaDisabledPreservesExistingBehavior(t *testing.T) {
 	require.Zero(t, usage)
 	require.Zero(t, quota)
 	require.False(t, alarm)
+	require.ErrorIs(t, b.ArmNoSpace(ctx), ErrQuotaDisabled)
 	require.NoError(t, b.DisarmNoSpace(ctx))
 }
 

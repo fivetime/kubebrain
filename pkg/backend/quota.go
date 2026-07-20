@@ -10,6 +10,7 @@ import (
 )
 
 var ErrNoSpace = errors.New("etcdserver: no space")
+var ErrQuotaDisabled = errors.New("quota enforcement is disabled")
 var ErrQuotaUninitialized = errors.New("quota usage is not initialized")
 
 var (
@@ -166,6 +167,13 @@ func (b *backend) DisarmNoSpace(ctx context.Context) error {
 		b.emitQuotaMetrics(usage, false)
 	}
 	return err
+}
+
+func (b *backend) ArmNoSpace(ctx context.Context) error {
+	if b.config.QuotaBackendBytes == 0 {
+		return ErrQuotaDisabled
+	}
+	return b.activateNoSpace(ctx)
 }
 
 func (b *backend) activateNoSpace(ctx context.Context) error {

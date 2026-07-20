@@ -484,6 +484,15 @@ func (s *RPCServer) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etc
 	if authErr = s.authorizeTxn(caller, txn); authErr != nil {
 		return nil, authErr
 	}
+	if txnContainsPut(txn) {
+		_, _, noSpace, quotaErr := s.backend.QuotaStatus(ctx)
+		if quotaErr != nil {
+			return nil, mapFenceErr(quotaErr)
+		}
+		if noSpace {
+			return nil, rpctypes.ErrGRPCNoSpace
+		}
+	}
 	var (
 		err                   error
 		response              *etcdserverpb.TxnResponse
@@ -569,6 +578,20 @@ func (s *RPCServer) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etc
 		}
 	}
 	return response, mapFenceErr(err)
+}
+
+func txnContainsPut(txn *etcdserverpb.TxnRequest) bool {
+	if txn == nil {
+		return false
+	}
+	for _, ops := range [][]*etcdserverpb.RequestOp{txn.Success, txn.Failure} {
+		for _, op := range ops {
+			if op.GetRequestPut() != nil || txnContainsPut(op.GetRequestTxn()) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // Match upstream txn.IsTxnReadonly/IsTxnSerializable: nested transactions and
@@ -1794,6 +1817,9 @@ func mapFenceErr(err error) error {
 	}
 	if errors.Is(err, backend.ErrQuotaUninitialized) {
 		return status.Error(codes.Unavailable, "quota usage is not initialized")
+	}
+	if errors.Is(err, backend.ErrQuotaDisabled) {
+		return status.Error(codes.FailedPrecondition, backend.ErrQuotaDisabled.Error())
 	}
 	if errors.Is(err, backend.ErrLeadershipFenced) {
 		return status.Errorf(codes.Unavailable, "write rejected: leadership changed during commit, retry on current leader")

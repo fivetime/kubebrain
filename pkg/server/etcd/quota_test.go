@@ -68,6 +68,8 @@ func TestQuotaRPCNoSpaceRecoveryAndStatus(t *testing.T) {
 
 	_, err = server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 30})
 	require.Equal(t, codes.ResourceExhausted, status.Code(err))
+	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: []byte("key"), Value: []byte("1")})
+	require.Equal(t, codes.ResourceExhausted, status.Code(err), "sticky alarm rejects shrinking puts")
 	_, err = server.Txn(ctx, &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{{
 		Request: &etcdserverpb.RequestOp_RequestPut{
 			RequestPut: &etcdserverpb.PutRequest{Key: []byte("z"), Value: []byte("1")},
@@ -75,13 +77,19 @@ func TestQuotaRPCNoSpaceRecoveryAndStatus(t *testing.T) {
 	}}})
 	require.Equal(t, codes.ResourceExhausted, status.Code(err))
 
-	_, err = server.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{Key: []byte("key")})
+	deleteTxn, err := server.Txn(ctx, &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{{
+		Request: &etcdserverpb.RequestOp_RequestDeleteRange{
+			RequestDeleteRange: &etcdserverpb.DeleteRangeRequest{Key: []byte("key")},
+		},
+	}}})
 	require.NoError(t, err)
-	_, err = server.Alarm(ctx, &etcdserverpb.AlarmRequest{
+	require.Len(t, deleteTxn.Responses, 1)
+	deactivate, err := server.Alarm(ctx, &etcdserverpb.AlarmRequest{
 		Action: etcdserverpb.AlarmRequest_DEACTIVATE,
 		Alarm:  etcdserverpb.AlarmType_NOSPACE,
 	})
 	require.NoError(t, err)
+	require.Len(t, deactivate.Alarms, 1)
 	alarmResp, err = server.Alarm(ctx, &etcdserverpb.AlarmRequest{Action: etcdserverpb.AlarmRequest_GET})
 	require.NoError(t, err)
 	require.Empty(t, alarmResp.Alarms)
@@ -89,4 +97,49 @@ func TestQuotaRPCNoSpaceRecoveryAndStatus(t *testing.T) {
 	rangeResp, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: []byte("key")})
 	require.NoError(t, err)
 	require.Empty(t, rangeResp.Kvs)
+
+	activate, err := server.Alarm(ctx, &etcdserverpb.AlarmRequest{
+		Action: etcdserverpb.AlarmRequest_ACTIVATE,
+		Alarm:  etcdserverpb.AlarmType_NOSPACE,
+	})
+	require.NoError(t, err)
+	require.Len(t, activate.Alarms, 1)
+	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: []byte("m"), Value: []byte("x")})
+	require.Equal(t, codes.ResourceExhausted, status.Code(err))
+	deactivate, err = server.Alarm(ctx, &etcdserverpb.AlarmRequest{
+		Action: etcdserverpb.AlarmRequest_DEACTIVATE,
+		Alarm:  etcdserverpb.AlarmType_NOSPACE,
+	})
+	require.NoError(t, err)
+	require.Len(t, deactivate.Alarms, 1)
+	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: []byte("m"), Value: []byte("x")})
+	require.NoError(t, err)
+}
+
+func TestQuotaRPCManualActivationRequiresConfiguredQuota(t *testing.T) {
+	server := newQuotaRPCServer(t, 0)
+	_, err := server.Alarm(context.Background(), &etcdserverpb.AlarmRequest{
+		Action: etcdserverpb.AlarmRequest_ACTIVATE,
+		Alarm:  etcdserverpb.AlarmType_NOSPACE,
+	})
+	require.Equal(t, codes.FailedPrecondition, status.Code(err))
+}
+
+func TestTxnContainsPutAcrossBranchesAndNesting(t *testing.T) {
+	put := func() *etcdserverpb.RequestOp {
+		return &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestPut{
+			RequestPut: &etcdserverpb.PutRequest{Key: []byte("key")},
+		}}
+	}
+	read := &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestRange{
+		RequestRange: &etcdserverpb.RangeRequest{Key: []byte("key")},
+	}}
+	require.False(t, txnContainsPut(&etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{read}}))
+	require.True(t, txnContainsPut(&etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{put()}}))
+	require.True(t, txnContainsPut(&etcdserverpb.TxnRequest{Failure: []*etcdserverpb.RequestOp{put()}}))
+	require.True(t, txnContainsPut(&etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{{
+		Request: &etcdserverpb.RequestOp_RequestTxn{RequestTxn: &etcdserverpb.TxnRequest{
+			Failure: []*etcdserverpb.RequestOp{put()},
+		}},
+	}}}))
 }
