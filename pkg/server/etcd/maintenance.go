@@ -26,6 +26,7 @@ import (
 
 	"github.com/kubewharf/kubebrain/pkg/backend"
 	"github.com/kubewharf/kubebrain/pkg/backend/election"
+	"github.com/kubewharf/kubebrain/pkg/metrics"
 )
 
 // Version is the single source of truth for the etcd version KubeBrain claims,
@@ -52,6 +53,20 @@ import (
 // See k8s.io/apiserver/pkg/storage/feature/feature_support_checker.go and
 // k8s.io/apiserver/pkg/storage/etcd3/watcher.go (sync()).
 const Version = "3.7.0"
+
+// ClusterVersion is etcd's major.minor protocol version label. Upstream keeps
+// this separate from the full server binary version so rolling-upgrade alerts
+// can distinguish binary patch skew from a cluster protocol transition.
+const ClusterVersion = "3.7"
+
+func emitVersionMetrics(metricCli metrics.Metrics) {
+	_ = metricCli.EmitGauge(
+		"etcd.server.version", 1, metrics.Tag("server_version", Version),
+	)
+	_ = metricCli.EmitGauge(
+		"etcd.cluster.version", 1, metrics.Tag("cluster_version", ClusterVersion),
+	)
+}
 
 // etcd substitutes this value when --quota-backend-bytes is unset. KubeBrain's
 // actual capacity belongs to TiKV/PD, but Status must still return a nonzero

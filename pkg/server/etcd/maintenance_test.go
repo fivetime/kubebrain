@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
@@ -27,6 +28,8 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/kubewharf/kubebrain/pkg/backend"
+	"github.com/kubewharf/kubebrain/pkg/metrics"
+	"github.com/kubewharf/kubebrain/pkg/metrics/mock"
 )
 
 type writeAfterHashBackendShim struct {
@@ -102,6 +105,21 @@ func TestStatusVersionEnablesRequestWatchProgress(t *testing.T) {
 	supported := ge3_5_13 || (ge3_4_31 && lt3_5_0)
 	require.True(t, supported,
 		"Status.Version %q does not satisfy the apiserver RequestWatchProgress gate (>=3.5.13 or [3.4.31,3.5.0))", resp.Version)
+}
+
+func TestVersionMetricsMatchAdvertisedProtocolVersions(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	metricCli := mock.NewMockMetrics(ctrl)
+	metricCli.EXPECT().EmitGauge(
+		"etcd.server.version", 1, metrics.Tag("server_version", Version),
+	).Return(nil)
+	metricCli.EXPECT().EmitGauge(
+		"etcd.cluster.version", 1, metrics.Tag("cluster_version", ClusterVersion),
+	).Return(nil)
+
+	emitVersionMetrics(metricCli)
+	require.Equal(t, Version[:len(ClusterVersion)], ClusterVersion)
+	require.Equal(t, byte('.'), Version[len(ClusterVersion)])
 }
 
 func TestMaintenanceBasicDiagnostics(t *testing.T) {

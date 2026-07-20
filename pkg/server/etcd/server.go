@@ -219,6 +219,7 @@ func New(backend b.Backend, metricCli metrics.Metrics, peers service.PeerService
 	if err := server.restoreLeases(context.Background()); err != nil {
 		klog.ErrorS(err, "restore leases failed")
 	}
+	emitVersionMetrics(metricCli)
 	return server
 }
 
