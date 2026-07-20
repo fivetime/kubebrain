@@ -6073,6 +6073,26 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   KubeBrain 3/3、PD/TiKV 3+3 Ready，endpoint proposal health 28.40ms。A322
   只修测试门禁，不改变服务二进制，因此不构建镜像或滚动 StatefulSet。
 
+- **Watch A323 mixed PrevKV 独立 stream 隔离（2026-07-20）**：对照
+  `/root/etcd/tests/integration/clientv3/watch/watch_test.go` 的
+  `TestWatchMixedPrevKVOnSameKeySeparateStreams` 补齐双端黑盒。6 个 watcher 通过不同
+  outgoing metadata 强制建立独立 gRPC watch stream，其中 3 个请求 `WithPrevKV`、
+  3 个明确不请求；同一 key 连续更新 8 次后，每轮同时核对全部 stream 的当前
+  key/value、带 PrevKV stream 的精确前值，以及不带 PrevKV stream 必须保持
+  `PrevKv=nil`。
+
+  该场景约束 KubeBrain 共享 backend event 的所有权：`watch.go` 不能为不请求前值的
+  watcher 原地清除共享 protobuf event，否则其他较慢 stream 会随机丢 PrevKV；当前
+  `withoutWatchPrevKvs` 为每个 event 构造 field-level shallow copy，只清除副本字段。
+  参考 etcd 3.7 与真实 TiKV-backed KubeBrain 连续 10 轮（每端每轮 48 个事件）
+  15.004 秒通过，race 连续 3 轮 1.931 秒通过，未发现跨 stream 污染或服务实现差异。
+
+  带 scheme 的完整 compat suite 346.268 秒通过；根模块 `go test ./...`、根/compat
+  `go vet ./...` 与 `git diff --check` 均通过。在线
+  `kubebrain:a320-object-request-metering` release gate 保持 KubeBrain 3/3、
+  PD/TiKV 3+3 Ready，endpoint proposal health 29.67ms。A323 只增加永久兼容门禁，
+  不改变服务二进制，因此不构建镜像或滚动发布。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
