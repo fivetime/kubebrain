@@ -651,3 +651,60 @@ func TestReadIndexMidFlightReaderGetsFreshFetch(t *testing.T) {
 	require.Equal(t, uint64(200), bRev, "mid-flight reader B must get a fresh (second) fetch, not the in-flight one")
 	require.Equal(t, int32(2), atomic.LoadInt32(&callCount), "readers arriving during one fetch coalesce into exactly one next fetch")
 }
+
+func TestReadIndexCanceledReaderDoesNotLeakFetchToNextReader(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	mockMetrics := mock.NewMinimalMetrics(ctrl)
+
+	var callCount atomic.Int32
+	firstEntered := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		n := callCount.Add(1)
+		if n == 1 {
+			close(firstEntered)
+			<-releaseFirst
+		}
+		_ = json.NewEncoder(w).Encode(LeaderRevision{Revision: uint64(n) * 100})
+	}))
+	defer srv.Close()
+	addr := strings.TrimPrefix(srv.URL, "http://")
+
+	bs := &backendStub{}
+	le := &leader.Stub{ElectionInfo: leader.ElectionInfo{IsLeader: false, LeaderAddress: addr}}
+	rs := NewRevisionSyncer(bs, mockMetrics, le, nil).(*revisionSyncer)
+	defer rs.Close()
+
+	firstCtx, cancelFirst := context.WithCancel(context.Background())
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := rs.getFreshRevisionFromLeader(firstCtx)
+		firstDone <- err
+	}()
+	<-firstEntered
+	cancelFirst()
+	require.ErrorIs(t, <-firstDone, context.Canceled)
+
+	type result struct {
+		revision uint64
+		err      error
+	}
+	secondDone := make(chan result, 1)
+	go func() {
+		revision, err := rs.getFreshRevisionFromLeader(context.Background())
+		secondDone <- result{revision: revision, err: err}
+	}()
+	require.Eventually(t, func() bool {
+		rs.fetchMu.Lock()
+		defer rs.fetchMu.Unlock()
+		return rs.next != nil
+	}, time.Second, time.Millisecond)
+
+	close(releaseFirst)
+	second := <-secondDone
+	require.NoError(t, second.err)
+	require.Equal(t, uint64(200), second.revision,
+		"a reader arriving after cancellation must wait for a fetch started after its own arrival")
+	require.Equal(t, int32(2), callCount.Load())
+}
