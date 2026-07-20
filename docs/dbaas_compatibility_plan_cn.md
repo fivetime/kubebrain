@@ -43,7 +43,7 @@ Raft、bbolt 和成员管理内部实现，而是对通用 etcd v3 客户端提�
 | Maintenance | Status | 兼容核心语义 | 返回真实服务身份、版本、leader/revision/共享选主 term；配置 quota 时报告租户最新逻辑 key+value 字节，未配置时使用兼容 sentinel；TiKV 物理容量转到实例指标 |
 | Maintenance | Snapshot | 平台替代 | 使用 TiKV BR/PITR；控制面提供备份、恢复和导出任务，不伪造 etcd snapshot |
 | Maintenance | Defragment | 平台替代 | TiKV GC/compaction 管理，不执行 bbolt 碎片整理 |
-| Maintenance | Alarm/DbSize | 兼容 NOSPACE 核心语义 | keyspace 级逻辑容量原子计量、持久 sticky NOSPACE、list/activate/disarm、mutation no-op 与 capped write state 已支持；任意虚构 member 的多告警、CORRUPT 与 bbolt fragmentation 仍为边界 |
+| Maintenance | Alarm/DbSize | 兼容 NOSPACE 核心语义 | keyspace 级逻辑容量原子计量、持久 sticky NOSPACE、list/activate/disarm、跨 member mutation、no-op 与 capped write state 已支持；任意虚构 member 的多告警、CORRUPT 与 bbolt fragmentation 仍为边界 |
 | Maintenance | Hash/HashKV | 兼容核心语义 | 对指定 revision 的租户 MVCC 实际内容做稳定摘要；成员本地诊断不依赖 KubeBrain leader，数值不与 bbolt 内部编码比较 |
 | Maintenance | MoveLeader/Downgrade | 平台替代 | 分别由服务选主和 DBaaS 升级编排处理 |
 | Endpoint | health/livez/readyz | 兼容核心语义 | `/health`、`/livez`、`/readyz` 及分项检查已对齐；`data_corruption`/`non_learner` 使用 TiKV 架构等价语义，`/ready` 与 `/ping` 为平台探针 |
@@ -6254,6 +6254,32 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   “任意虚构 member ID 各自持有多条 NOSPACE alarm”存储；GET 返回当前 serving
   member 对应的 tenant alarm。该差异不影响 `etcdctl alarm list/disarm` 和自动容量
   保护，但 raw Maintenance 调用方不得依赖人为构造多 member alarm。
+
+- **Maintenance A331 cross-serving-member alarm disarm（2026-07-20）**：三副本审计发现
+  A330 的 member guard 仅接受当前 serving member，会在 `alarm list` 与后续
+  `alarm disarm` 被负载均衡到不同 Pod 时把合法解除误判为空操作。对照
+  `/root/etcd/server/etcdserver/v3_server.go:Alarm` 的 Raft request 路径和
+  `/root/etcd/server/etcdserver/api/v3alarm/alarms.go:Deactivate`，现允许
+  `MemberList` 中任一静态 KubeBrain member ID，以及动态模式中的本地/当前 leader ID
+  解除 tenant-global NOSPACE；不在成员集合中的虚构 ID 仍返回成功空列表且不清告警。
+  成功响应保留请求指定的 member ID，与 etcd 返回被解除 `AlarmMember` 的形状一致。
+
+  审计同时定位到 A329/A330 的 `AlarmMember.MemberID` 在 header interceptor 执行前从
+  空 header 读取，网络响应实际为 0。activate/get 现直接使用稳定的
+  `localMemberID()`，返回真实非零 serving member；gRPC response header 仍由统一
+  interceptor 标记。新增环境门控的三 endpoint 黑盒测试：Pod A activate，Pod B list
+  并返回不同 member ID，Pod C 先用虚构 ID 验证 Put 仍被 capped，再用 Pod B 的 ID
+  disarm 并确认返回 member 与恢复写。
+
+  `kubebrain:a331-cross-member-alarm` 在真实 3 PD/3 TiKV、三个共享独立
+  `a331-cross-member` keyspace 的 KubeBrain Pod 上首轮 0.315 秒、连续 20 轮
+  3.505 秒、race 5 轮 2.082 秒通过；服务端聚焦 race 5 轮 2.186 秒通过。根模块
+  `go test -p 1 -count=1 ./...`、根/compat `go vet ./...`、`git diff --check` 和完整
+  生产 Dockerfile 构建通过；镜像 ID
+  `sha256:ba2c0daec6616dc4d3c070da2a346b3d52cd0e006ea75854d1042751dd8d5786`。
+  三个测试 Pod 均 Ready、restartCount=0 且无 panic/fatal/storage error。在线
+  `kubebrain:a320-object-request-metering` release gate 保持 KubeBrain 3/3、
+  PD/TiKV 3+3 Ready，endpoint proposal health 15.938ms。
 
 ### P1：通用服务能力
 
