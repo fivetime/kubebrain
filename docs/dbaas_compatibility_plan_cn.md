@@ -5381,6 +5381,42 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   read failover 门禁 7.49 秒通过，选举期间只有预期 deadline failure、无陈旧成功响应。
   最终 KubeBrain 3/3 Ready、0 restart，独立 PD/TiKV 3+3 Running。
 
+- **Lease A300 priority revoke admission under overload（2026-07-20）**：跟进
+  upstream `/root/etcd` commit `59ce0ce31` 的 `PriorityRequest` 过载语义。etcd 在
+  Raft committed/applied backlog 超过普通阈值后仍为 LeaseRevoke 保留一段有界空间，
+  避免普通写流量让租约无法及时释放。KubeBrain 没有本地 Raft apply backlog，对应的
+  生产过载边界是 public client 的 process-wide inflight 和 QPS token bucket；旧实现
+  在两者耗尽时都把 LeaseRevoke 与普通 Range/Put 一样直接
+  `ResourceExhausted`，attached key 只能等待自然过期。
+
+  启用任一 admission limit 时，现从该 limit 派生只允许
+  `/etcdserverpb.Lease/LeaseRevoke` 使用的 10% reserve（向上取整、至少 1）：
+  普通请求在原 limit 处继续 fail closed，不能占用 reserve；revoke 先使用共享预算，
+  仅在共享预算耗尽后使用独立 inflight/token reserve，reserve 本身耗尽后同样拒绝，
+  不形成无限旁路。新增
+  `grpc.server.admission.priority_admitted` 与
+  `grpc.server.rate_limit.priority_admitted` 计数，使容量耗尽但安全回收仍成功的状态
+  可观测。生产默认 1024 inflight 对应 103 个 revoke reserve；2000 QPS/4000 burst
+  分别对应 200/400 reserve。
+
+  容量、隔离和拒绝边界 focused 连续 100 轮，完整 admission 组连续 30 轮、race
+  连续 20 轮，server 全包 31.601 秒；根模块全量（production 90.122 秒、
+  backend 41.467 秒、server/etcd 31.818 秒）和 `go vet ./...` 均通过。运行时代码提交
+  `09e1b67514bdf45d89301a9fa2378aa97fb43589`，永久黑盒门禁提交
+  `28bf3bc224e05006081ae5c181f0a9bcf9fffa58`。
+
+  从 runtime 提交的 `git archive` 构建非 root 镜像
+  `kubebrain:a300-priority-revoke-admission`（image ID
+  `sha256:d1104191fa43f2636f220177c3cd87b58a2ad4850b568bfa06c78eefa1ad3d85`，
+  embedded version `3.7.0-dbaas.a300`、完整 SHA、用户 `65532:65532`）。三副本
+  StatefulSet 无中断滚动后，将专用验证实例的
+  `--max-requests-inflight` 从 1024 暂降到 1；固定 `kubebrain-0` endpoint，以已创建
+  Watch 占满唯一普通槽位，raw Range 每轮均返回 `ResourceExhausted`，同连接
+  LeaseRevoke 仍通过 reserve 成功并删除 attached key，连续 20 轮 2.807 秒通过。
+  参数随后恢复 1024 并完成第二次滚动；标准 Kubernetes Watch+Lease、atomic revoke
+  和 signed lease ID 生命周期连续 20 轮 9.198 秒通过。最终 KubeBrain 3/3 Ready、
+  0 restart，PD/TiKV 3+3 Running，未遗留 port-forward。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
