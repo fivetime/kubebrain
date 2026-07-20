@@ -418,7 +418,7 @@ func (s *server) httpHealthHandler(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	s.recordLegacyHealth(true)
-	s.writeHealthy(w)
+	s.writeLegacyHealthHealthy(w)
 }
 
 func (s *server) recordLegacyHealth(success bool) {
@@ -443,6 +443,12 @@ func (s *server) httpPingHandler(w http.ResponseWriter, req *http.Request) {
 
 func (s *server) writeHealthy(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(HealthResponse))
+}
+
+func (s *server) writeLegacyHealthHealthy(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(HealthResponse))
 }

@@ -214,6 +214,8 @@ func TestHTTPHealthChecksLeaderAndBackend(t *testing.T) {
 	s.httpHealthHandler(recorder, httptest.NewRequest(http.MethodGet, "/health?serializable=true", nil))
 	require.Equal(t, http.StatusOK, recorder.Code)
 	require.JSONEq(t, HealthResponse, recorder.Body.String())
+	require.Equal(t, "text/plain; charset=utf-8", recorder.Header().Get("Content-Type"))
+	require.Empty(t, recorder.Header().Get("X-Content-Type-Options"))
 
 	kv.fail = true
 	recorder = httptest.NewRecorder()
@@ -253,12 +255,16 @@ func TestHTTPHealthMatchesEtcdNoSpaceAlarmSemantics(t *testing.T) {
 		s.httpHealthHandler(recorder, httptest.NewRequest(http.MethodGet, target, nil))
 		require.Equal(t, http.StatusServiceUnavailable, recorder.Code, target)
 		require.JSONEq(t, `{"health":"false","reason":"ALARM NOSPACE"}`, recorder.Body.String(), target)
+		require.Equal(t, "text/plain; charset=utf-8", recorder.Header().Get("Content-Type"), target)
+		require.Equal(t, "nosniff", recorder.Header().Get("X-Content-Type-Options"), target)
 	}
 
 	recorder := httptest.NewRecorder()
 	s.httpHealthHandler(recorder, httptest.NewRequest(http.MethodGet, "/health?exclude=NOSPACE", nil))
 	require.Equal(t, http.StatusOK, recorder.Code)
 	require.JSONEq(t, HealthResponse, recorder.Body.String())
+	require.Equal(t, "text/plain; charset=utf-8", recorder.Header().Get("Content-Type"))
+	require.Empty(t, recorder.Header().Get("X-Content-Type-Options"))
 
 	recorder = httptest.NewRecorder()
 	s.httpReadyHandler(recorder, httptest.NewRequest(http.MethodGet, "/ready", nil))

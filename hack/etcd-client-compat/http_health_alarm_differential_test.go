@@ -16,9 +16,11 @@ import (
 )
 
 type httpHealthAlarmOutcome struct {
-	Name   string
-	Status int
-	Body   string
+	Name                string
+	Status              int
+	Body                string
+	ContentType         string
+	XContentTypeOptions string
 }
 
 func TestHTTPHealthAlarmDifferentialAgainstReferenceEtcd(t *testing.T) {
@@ -76,7 +78,11 @@ func runHTTPHealthAlarmScenario(t *testing.T, endpoint string, verifyReady bool)
 		require.NoError(t, readErr, name)
 		require.NoError(t, closeErr, name)
 		outcomes = append(outcomes, httpHealthAlarmOutcome{
-			Name: name, Status: response.StatusCode, Body: strings.TrimSpace(string(body)),
+			Name:                name,
+			Status:              response.StatusCode,
+			Body:                strings.TrimSpace(string(body)),
+			ContentType:         response.Header.Get("Content-Type"),
+			XContentTypeOptions: response.Header.Get("X-Content-Type-Options"),
 		})
 	}
 
