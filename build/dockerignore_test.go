@@ -126,6 +126,7 @@ func TestDockerfilePinsOfficialKubectlForSupportedArchitectures(t *testing.T) {
 
 	for _, required := range []string{
 		"ARG TARGETARCH=amd64",
+		"ENV GOOS=linux GOARCH=${TARGETARCH}",
 		"ARG KUBECTL_VERSION=v1.36.2",
 		"amd64) KUBECTL_SHA256=1e9045ec32bea85da43de85f0065358529ea7c7a152eca78154fba5b58c27d82",
 		"arm64) KUBECTL_SHA256=c957eb8c4bea27a3bb35b269edd9082e27f027f7b76b20b5bf4afebc726c6d3e",
@@ -136,6 +137,14 @@ func TestDockerfilePinsOfficialKubectlForSupportedArchitectures(t *testing.T) {
 		require.Contains(t, content, required)
 	}
 	require.NotContains(t, content, "kubectl=1.34.2-r6")
+
+	targetArch := strings.Index(content, "ARG TARGETARCH=amd64")
+	goTarget := strings.Index(content, "ENV GOOS=linux GOARCH=${TARGETARCH}")
+	sourceCopy := strings.Index(content, "COPY . .")
+	compile := strings.Index(content, "bash ./build/build-tikv.sh")
+	require.Less(t, targetArch, goTarget)
+	require.Less(t, goTarget, sourceCopy)
+	require.Less(t, goTarget, compile)
 }
 
 func TestDockerfileMetadataDoesNotInvalidateDependencyOrRuntimePackageLayers(t *testing.T) {

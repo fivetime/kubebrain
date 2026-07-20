@@ -14,6 +14,7 @@ COPY hack/backup/objectstore/go.mod hack/backup/objectstore/go.sum ./hack/backup
 RUN cd hack/backup/objectstore && go mod download
 
 ARG TARGETARCH=amd64
+ENV GOOS=linux GOARCH=${TARGETARCH}
 ARG KUBECTL_VERSION=v1.36.2
 RUN mkdir -p /src/bin \
     && case "$TARGETARCH" in \

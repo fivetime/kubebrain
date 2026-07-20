@@ -27,6 +27,26 @@ func TestBuildBaseUsesExplicitMetadata(t *testing.T) {
 	require.Contains(t, string(output), "-X github.com/kubewharf/kubebrain/cmd/version.Version=v1.2.3")
 }
 
+func TestBuildBaseUsesCrossCompileTargetInVersionMetadata(t *testing.T) {
+	command := exec.Command("bash", "-c",
+		`source ./build-base.sh TiKV && printf '%s\n' "$go_os" "$go_arch" "$ldflags"`)
+	command.Dir = "."
+	command.Env = append(os.Environ(),
+		"GOOS=linux",
+		"GOARCH=arm64",
+		"KUBEBRAIN_VERSION=v1.2.3",
+		"KUBEBRAIN_GIT_SHA=0123456789abcdef0123456789abcdef01234567",
+		"KUBEBRAIN_BUILD_DATE=2026-07-18T10:00:00Z",
+		"REQUIRE_BUILD_METADATA=true",
+	)
+	output, err := command.CombinedOutput()
+	require.NoError(t, err, string(output))
+	require.Contains(t, string(output), "go_os     \tlinux")
+	require.Contains(t, string(output), "go_arch   \tarm64")
+	require.Contains(t, string(output),
+		"-X github.com/kubewharf/kubebrain/cmd/version.GoOsArch=linux/arm64")
+}
+
 func TestBuildBaseStrictModeRejectsAbbreviatedSHA(t *testing.T) {
 	command := exec.Command("bash", "-c", `source ./build-base.sh TiKV`)
 	command.Dir = "."
