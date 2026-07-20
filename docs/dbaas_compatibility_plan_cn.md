@@ -6576,6 +6576,34 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `f68b124b-1fcc-44ac-b8dc-4dc1da01dd5e`、restartCount=0，日志无
   initialization failure/panic/fatal/storage error，PD/TiKV 3+3 Ready。
 
+- **Production A341 nested module dependency cache（2026-07-20）**：A340 将 Docker
+  context 收敛后，继续审计原 47-step production Dockerfile，发现根模块已在
+  `COPY . .` 前缓存 `go mod download`，但独立
+  `hack/backup/objectstore/go.mod` 仍随全部源码复制；任意普通源码变更都会使其 AWS
+  SDK 等依赖在最终编译步骤重新解析和下载。
+
+  Dockerfile 现先复制 objectstore 的 `go.mod/go.sum`，在独立层执行
+  `cd hack/backup/objectstore && go mod download`，再复制完整源码。新增严格顺序测试
+  固定“根模块依赖、objectstore 依赖、完整源码”边界，聚焦测试连续 20 轮通过。
+  初次 A341 构建 context 为 7.322 MB，新增 objectstore 下载层成功完成；随后加入一个
+  未被 ignore 的临时源码探针，第二次完整构建 context 为 7.323 MB：根模块
+  `go mod download`、objectstore module COPY 及其 `go mod download` 均明确显示
+  `Using cache`，`COPY . .` 与生产编译则重新执行，编译日志没有 AWS module 下载。
+  探针已在验证后删除，两次构建产物均为同一镜像 ID
+  `sha256:1decc8ba6cabf328673fc11c0801a6a4036d9ec80504f8727104ae886c807a81`。
+
+  镜像 `kubebrain:a341-objectstore-module-cache` 内 `kube-brain version` 为
+  3.7.0/TiKV、Git SHA `28e064582c5a1d71152a5c75f3ed6ecac444951d`、Go 1.26.5、
+  UTC build time，OCI labels 与之完全一致，运行用户为 `65532:65532`。根模块
+  `go test -p 1 -count=1 ./...`、根模块与 `hack/etcd-client-compat` 的
+  `go vet ./...`、`git diff --check` 均通过。
+
+  该镜像在独立 `a341-objectstore-cache` keyspace、真实 3 PD/3 TiKV 上 Ready；
+  Put/Get 返回 `a341/production-ready=verified`，四项 readyz 全部通过，endpoint
+  proposal health 94.94675ms。Pod UID
+  `61f63029-912c-4313-9537-e1f561a65a8f`、restartCount=0，日志无
+  panic/fatal/segmentation/data race，PD/TiKV 3+3 Ready。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range

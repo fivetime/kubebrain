@@ -62,6 +62,13 @@ tag。
 `build`、`cmd`、`hack`、`pkg`、`go.mod`、`go.sum` 不被根级规则误排。发布构建日志
 应记录最终 context 大小；异常增长必须先审计新增本地工件或 COPY 依赖再放行。
 
+仓库内独立 Go module 必须在 `COPY . .` 前单独复制其 `go.mod/go.sum` 并执行
+`go mod download`。当前 `hack/backup/objectstore` 与根模块各有独立依赖层；普通源码
+变更只应使源码复制和编译层失效，不得重新下载任一模块依赖。对应模块的
+`go.mod/go.sum` 变更则必须使该模块下载层失效。`build/dockerignore_test.go` 同时固定
+Dockerfile 中根模块下载、objectstore 下载和源码复制的先后顺序；发布构建应检查缓存
+日志，避免新增嵌套 module 绕过该边界。
+
 ## 真-k3s 消费端驱动验证进展（2026-07-03）
 
 用真实 kube-apiserver（k3s v1.36，`--datastore-endpoint` 指向 KubeBrain-on-TiKV）端到端驱动，已完成（脚本 `hack/dev/k3s-load-smoke.sh` 一键复跑）：
