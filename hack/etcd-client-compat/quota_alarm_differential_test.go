@@ -47,6 +47,91 @@ func TestQuotaAlarmCappedStateDifferentialAgainstReferenceEtcd(t *testing.T) {
 	require.Equal(t, want, runQuotaAlarmCappedScenario(t, kubebrain))
 }
 
+func TestQuotaAlarmCrossEndpointDisarm(t *testing.T) {
+	rawEndpoints := os.Getenv("KUBEBRAIN_MULTI_QUOTA_ENDPOINTS")
+	if rawEndpoints == "" {
+		t.Skip("set KUBEBRAIN_MULTI_QUOTA_ENDPOINTS to three comma-separated replica endpoints")
+	}
+	endpoints := strings.Split(rawEndpoints, ",")
+	require.Len(t, endpoints, 3)
+
+	connections := make([]*grpc.ClientConn, 0, len(endpoints))
+	for _, endpoint := range endpoints {
+		endpoint = strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(endpoint, "http://"), "https://"))
+		connection, err := grpc.NewClient(endpoint, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		require.NoError(t, err)
+		connections = append(connections, connection)
+	}
+	t.Cleanup(func() {
+		for _, connection := range connections {
+			require.NoError(t, connection.Close())
+		}
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	kv := etcdserverpb.NewKVClient(connections[0])
+	first := etcdserverpb.NewMaintenanceClient(connections[0])
+	second := etcdserverpb.NewMaintenanceClient(connections[1])
+	third := etcdserverpb.NewMaintenanceClient(connections[2])
+	key := []byte(testPrefix(t) + "/cross-endpoint-alarm")
+	_, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("value")})
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		if alarms, getErr := first.Alarm(cleanupCtx, &etcdserverpb.AlarmRequest{
+			Action: etcdserverpb.AlarmRequest_GET,
+			Alarm:  etcdserverpb.AlarmType_NOSPACE,
+		}); getErr == nil {
+			for _, alarm := range alarms.Alarms {
+				_, _ = first.Alarm(cleanupCtx, &etcdserverpb.AlarmRequest{
+					Action:   etcdserverpb.AlarmRequest_DEACTIVATE,
+					MemberID: alarm.MemberID,
+					Alarm:    etcdserverpb.AlarmType_NOSPACE,
+				})
+			}
+		}
+		_, _ = kv.DeleteRange(cleanupCtx, &etcdserverpb.DeleteRangeRequest{Key: key})
+	})
+
+	activated, err := first.Alarm(ctx, &etcdserverpb.AlarmRequest{
+		Action: etcdserverpb.AlarmRequest_ACTIVATE,
+		Alarm:  etcdserverpb.AlarmType_NOSPACE,
+	})
+	require.NoError(t, err)
+	require.Len(t, activated.Alarms, 1)
+	listed, err := second.Alarm(ctx, &etcdserverpb.AlarmRequest{
+		Action: etcdserverpb.AlarmRequest_GET,
+		Alarm:  etcdserverpb.AlarmType_NOSPACE,
+	})
+	require.NoError(t, err)
+	require.Len(t, listed.Alarms, 1)
+	require.NotZero(t, activated.Alarms[0].MemberID)
+	require.NotZero(t, listed.Alarms[0].MemberID)
+	require.NotEqual(t, activated.Alarms[0].MemberID, listed.Alarms[0].MemberID)
+
+	wrong, err := third.Alarm(ctx, &etcdserverpb.AlarmRequest{
+		Action:   etcdserverpb.AlarmRequest_DEACTIVATE,
+		MemberID: ^uint64(0),
+		Alarm:    etcdserverpb.AlarmType_NOSPACE,
+	})
+	require.NoError(t, err)
+	require.Empty(t, wrong.Alarms)
+	_, err = kv.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("blocked")})
+	require.Equal(t, codes.ResourceExhausted, status.Code(err))
+
+	disarmed, err := third.Alarm(ctx, &etcdserverpb.AlarmRequest{
+		Action:   etcdserverpb.AlarmRequest_DEACTIVATE,
+		MemberID: listed.Alarms[0].MemberID,
+		Alarm:    etcdserverpb.AlarmType_NOSPACE,
+	})
+	require.NoError(t, err)
+	require.Equal(t, listed.Alarms, disarmed.Alarms)
+	_, err = kv.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("restored")})
+	require.NoError(t, err)
+}
+
 func runQuotaAlarmCappedScenario(t *testing.T, endpoint string) []quotaAlarmOutcome {
 	t.Helper()
 	endpoint = strings.TrimPrefix(strings.TrimPrefix(endpoint, "http://"), "https://")

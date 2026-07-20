@@ -94,7 +94,7 @@ func (s *RPCServer) Alarm(ctx context.Context, req *etcdserverpb.AlarmRequest) (
 		if req.GetAlarm() != etcdserverpb.AlarmType_NOSPACE {
 			return nil, status.Error(codes.Unimplemented, alarmMutationUnsupportedMessage)
 		}
-		if req.GetMemberID() != response.Header.MemberId {
+		if !s.isKnownAlarmMemberID(req.GetMemberID()) {
 			return response, nil
 		}
 		removed, err := s.backend.DisarmNoSpace(ctx)
@@ -103,7 +103,7 @@ func (s *RPCServer) Alarm(ctx context.Context, req *etcdserverpb.AlarmRequest) (
 		}
 		if removed {
 			response.Alarms = []*etcdserverpb.AlarmMember{{
-				MemberID: response.Header.MemberId,
+				MemberID: req.GetMemberID(),
 				Alarm:    etcdserverpb.AlarmType_NOSPACE,
 			}}
 		}
@@ -123,7 +123,7 @@ func (s *RPCServer) Alarm(ctx context.Context, req *etcdserverpb.AlarmRequest) (
 			return nil, mapFenceErr(err)
 		}
 		response.Alarms = []*etcdserverpb.AlarmMember{{
-			MemberID: response.Header.MemberId,
+			MemberID: s.localMemberID(),
 			Alarm:    etcdserverpb.AlarmType_NOSPACE,
 		}}
 		return response, nil
@@ -141,11 +141,24 @@ func (s *RPCServer) Alarm(ctx context.Context, req *etcdserverpb.AlarmRequest) (
 	if noSpace && (req.GetAlarm() == etcdserverpb.AlarmType_NONE ||
 		req.GetAlarm() == etcdserverpb.AlarmType_NOSPACE) {
 		response.Alarms = []*etcdserverpb.AlarmMember{{
-			MemberID: response.Header.MemberId,
+			MemberID: s.localMemberID(),
 			Alarm:    etcdserverpb.AlarmType_NOSPACE,
 		}}
 	}
 	return response, nil
+}
+
+func (s *RPCServer) isKnownAlarmMemberID(memberID uint64) bool {
+	if memberID == s.localMemberID() {
+		return true
+	}
+	for _, member := range s.staticMembers {
+		if member.GetID() == memberID {
+			return true
+		}
+	}
+	leader := s.peers.GetLeaderInfo()
+	return election.IsLeaderKnown(leader) && s.memberIDFromAddress(leader) == memberID
 }
 
 func (s *RPCServer) Status(ctx context.Context, _ *etcdserverpb.StatusRequest) (*etcdserverpb.StatusResponse, error) {

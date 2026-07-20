@@ -148,7 +148,7 @@ func TestQuotaRPCAlarmMutationNoOpsMatchEtcd(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Len(t, activate.Alarms, 1)
-	wrongMember := activate.Alarms[0].MemberID + 1
+	wrongMember := ^uint64(0)
 	deactivate, err := server.Alarm(ctx, &etcdserverpb.AlarmRequest{
 		Action:   etcdserverpb.AlarmRequest_DEACTIVATE,
 		MemberID: wrongMember,
@@ -159,6 +159,17 @@ func TestQuotaRPCAlarmMutationNoOpsMatchEtcd(t *testing.T) {
 	list, err := server.Alarm(ctx, &etcdserverpb.AlarmRequest{Action: etcdserverpb.AlarmRequest_GET})
 	require.NoError(t, err)
 	require.Len(t, list.Alarms, 1)
+
+	foreignMember := activate.Alarms[0].MemberID + 1
+	server.staticMembers = []*etcdserverpb.Member{{ID: foreignMember}}
+	deactivate, err = server.Alarm(ctx, &etcdserverpb.AlarmRequest{
+		Action:   etcdserverpb.AlarmRequest_DEACTIVATE,
+		MemberID: foreignMember,
+		Alarm:    etcdserverpb.AlarmType_NOSPACE,
+	})
+	require.NoError(t, err)
+	require.Len(t, deactivate.Alarms, 1, "any advertised member may disarm the tenant alarm")
+	require.Equal(t, foreignMember, deactivate.Alarms[0].MemberID)
 }
 
 func TestQuotaRPCManualActivationRequiresConfiguredQuota(t *testing.T) {
