@@ -6941,6 +6941,45 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   及根/compat vet 均通过。差分现已覆盖 A352 曾遗漏的 HTTP 表示层，后续改变 legacy
   health writer 会直接触发双端失败。
 
+- **Endpoint A354 client HTTP CORS and Host access control（2026-07-20）**：继续
+  对照 `/root/etcd/server/embed/serve.go` 的 access controller、
+  `addCORSHeader` 和 OPTIONS 短路，以及
+  `/root/etcd/server/etcdserver/server_access_control.go`。upstream 默认
+  `--cors=*`、`--host-whitelist=*`，每个 client HTTP 响应带三项 CORS 头；
+  OPTIONS 在路由 handler 前直接返回 200。显式 Origin allowlist 只回显匹配项，
+  plaintext 未知 Host 返回 421 防止 CVE-2018-5702 DNS rebinding，TLS 请求跳过
+  该 Host 检查。KubeBrain 原先没有这层包装，A353 的差分也未比较 CORS。
+
+  提交 `437a07f` 在 client HTTP mux 外增加统一 access controller，新增
+  `--cors` 与 `--host-whitelist`，默认均为 `*`；空列表同 upstream 允许全部。
+  peer 与 info/metrics 构造器保持不变，避免浏览器访问策略意外扩散到内部或诊断端口。
+  单元测试固定默认三项头、OPTIONS 不进入 handler、允许/拒绝 Origin、Host 带端口
+  解析、plaintext 421 且拒绝响应不带 CORS，以及 TLS 绕过 Host 防护；CLI 测试固定
+  默认值和逗号分隔绑定。live differential 新增 OPTIONS 场景，并对所有 health/alarm
+  场景比较 `Access-Control-Allow-Methods/Origin/Headers`。
+
+  从 `437a07fe10ff7f5093a35b7bf7e22e63f6d495e0` 的 `git archive` 构建
+  `kubebrain:a354-http-access`，image ID
+  `sha256:3b74af5c7dd9bbabaa88c87c8241b3e7c80415af86e9286d051deff792ce83ba`；
+  OCI revision、版本 `0.0.0-a354`、Go 1.26.5/linux/amd64、TiKV 与
+  `65532:65532` 均匹配。默认配置对当前 `/root/etcd` reference 执行 healthy、
+  OPTIONS、active、active+serializable、active+exclude、disarmed 全表示层比较，
+  连续 10 轮完全一致。
+
+  同一 exact image 再以 `--cors=https://console.example`、
+  `--host-whitelist=allowed.internal` 和独立 `a354-custom` keyspace 运行：允许
+  Origin 返回精确三项头和 200，拒绝 Origin 仍完成 health 但不返回 CORS，未知
+  plaintext Host 返回 421 且无 CORS，允许 Host 的 OPTIONS 返回空 body 200。
+  Pod UID `160a66ae-b03c-41f6-b281-60ec3a6dc96b`，Ready、restartCount=0，
+  只读根文件系统、non-root、drop ALL、RuntimeDefault seccomp；真实 3 PD/3 TiKV
+  全部 Running，日志无 initialization failure/panic/fatal/segmentation/data race/
+  storage error。
+
+  聚焦普通 50 轮、race 10 轮、endpoint/option 全包 20 轮（endpoint 399.589 秒）、
+  compat 编译、完整根测试、完整 endpoint/option race 及根/compat vet 均通过。
+  `/proxy/health` 经审计确认只属于独立 `etcd grpc-proxy` 进程，普通 etcd server
+  不注册；KubeBrain 数据面不伪造该路由。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range

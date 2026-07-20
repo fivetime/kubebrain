@@ -1017,6 +1017,13 @@ hack/dev/verify.sh
   平台健康检查不能只看 gRPC/HTTP Ready，还必须把非空 Status Errors 或失败的传统
   `/health` 视为需处置状态。
 - `Cluster.MemberList` 兼容视图
+- client HTTP 入口与 etcd 一样默认返回
+  `Access-Control-Allow-Origin: *`，并在 OPTIONS 预检时直接返回 200；可通过
+  `--cors` 配置精确 Origin allowlist。plaintext HTTP 可通过 `--host-whitelist`
+  限制 Host，未知 Host 返回 421，防止 DNS rebinding；TLS 请求不依赖 Host
+  allowlist。生产若允许浏览器或不可信网络访问 client 端口，应同时启用 TLS、收紧
+  CORS 和 Host，而不是保留兼容默认 `*`。这些控制只包装 client HTTP，不向
+  peer 或 info/metrics 端口扩散。
 - `Auth` 已实现 etcd 兼容的用户、角色、key-range 权限和 token 生命周期，并覆盖
   Watch/Lease 持续鉴权及多副本故障转移；生产启用流程见 Auth 设计与兼容性计划。
 
