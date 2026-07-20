@@ -1068,6 +1068,9 @@ hack/dev/verify.sh
   已建立流不能因后续撤权或改密被追溯关闭；新建的无权限流按 upstream 返回 HTTP 200 空体。
   follower 对 leader 的内部连接就绪检查必须使用 peer `grpc.health.v1.Health/Check` 并要求
   `SERVING`，不得用未认证的 Maintenance RPC，也不得为探测签发或配置内部 root token。
+  clientv3 AutoSync 可在 Auth 开启时由普通用户执行，但其结果会完全替换当前 endpoint；所有
+  副本必须配置相同、完整的 `--initial-cluster`，且 MemberList ClientURLs 必须从客户端网络
+  可解析、可拨号并匹配 TLS 身份，不能把仅 peer 可达的地址暴露为 ClientURL。
 
 ## 仍需补齐或确认
 

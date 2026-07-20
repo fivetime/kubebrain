@@ -7359,6 +7359,30 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   RuntimeDefault seccomp 生效。启动首秒仅有 headless Service DNS 尚未发布时的预期重试，
   DNS 就绪后两个 follower 均通过 Health Check 连接 leader。
 
+- **Compatibility A368 authenticated clientv3 AutoSync（2026-07-20）**：提交
+  `7b1d412` 补齐现有覆盖空洞：此前 Auth 差分只证明普通用户可单次 MemberList，Sync 测试
+  则只在 Auth 关闭时显式调用。新双端场景为无管理权限的 alice 仅授予探测 prefix READ，
+  从无 scheme 的 seed endpoint 创建 `AutoSyncInterval=100ms` client，要求后台自动将 endpoint
+  精确替换为 MemberList 的非 learner ClientURLs，并通过替换后的 resolver 完成授权 Range。
+  `/root/etcd` 3.8.0-alpha.0 与本机单副本 KubeBrain 单轮通过、连续 20 轮 21.32 秒通过，
+  race 10 轮 12.49 秒通过；未发现运行时代码差异，兼容子模块 vet 通过。
+
+  exact image `kubebrain:a368-authenticated-autosync` 从 `7b1d412` 干净归档构建，image ID
+  `sha256:c8292bf2f5e0a3e13905ecfc9f4d4cfdf1606aa600e181d7d5e22b73b3e25583`，OCI version
+  `0.0.0-a368.1`、revision `7b1d412d9282d70605917be5dcc77f17fa24b784`、Go
+  1.26.5/linux/amd64、TiKV、运行用户 `65532:65532`。在独立 3 PD/3 TiKV、隔离
+  `a368-authenticated-autosync-final` keyspace 和三 KubeBrain 副本内运行静态 compat probe：
+  每轮从 `kubebrain:3379` ClusterIP seed 启动，AutoSync 必须改成三条稳定 Pod DNS ClientURL，
+  再经这些地址完成普通用户 Range；连续 20 轮约 36 秒全部通过。
+
+  三个 Pod UID 为 `b61e2521-a179-4a02-8a40-d0baec2299b4`、
+  `66df325d-70d8-4dfc-ab07-3e6a8330a872`、`0faafb80-d27f-4105-b01c-26b1a4370e5e`，
+  均 Ready、restartCount=0、runtime digest 一致。负载日志无 user-empty/panic/fatal/data race/
+  storage error；Parallel StatefulSet 启动最初两秒存在 headless Service 尚未发布 leader Pod DNS
+  的预期 unavailable 重试，DNS 就绪后恢复且不影响最终 readiness 或 AutoSync。生产控制面仍
+  必须为所有副本注入相同完整 `--initial-cluster`，否则 MemberList 的 fallback 集合不完整，
+  AutoSync 会合法但危险地缩减客户端 endpoint 集合。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
