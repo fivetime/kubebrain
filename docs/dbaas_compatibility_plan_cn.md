@@ -5293,6 +5293,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   revision `467798570765385731` 后，两个 follower 与 leader 的 AuthStatus header 均
   精确返回该 revision，测试键已在 revision `467798570765385732` 删除。
 
+- **Maintenance A296 Hash protocol differential（2026-07-20）**：审计
+  `/root/etcd/server/etcdserver/api/v3rpc/maintenance.go` 的 `Hash` 与认证 wrapper。
+  参考 etcd 先要求 root 权限，再计算 member-local backend hash，并把被 hash 的
+  revision 放入 response header。KubeBrain 保留相同权限顺序；由于用户 MVCC 数据由
+  TiKV 共享、committed revision cache 属于副本本地状态，计算前 best-effort 刷新
+  revision，但 leader 暂时不可用时仍保留 member-local 诊断能力。
+
+  新增官方 Maintenance/KV gRPC 双端差分门禁，验证首次 Hash header 不落后于前置
+  Put、无写时 hash 与 revision 稳定、更新后 revision 严格推进且 hash 改变。测试刻意
+  不比较 hash 数值：参考 etcd hash 的是 bbolt backend，KubeBrain hash 的是 TiKV 中
+  保留的逻辑 MVCC 状态，物理编码不同不应伪装成数值兼容。参考 etcd 与真实
+  3 PD + 3 TiKV、3 副本 KubeBrain 连续 10 轮结果一致。同期复核 auth/barrier
+  ordering：reference MemberList 的 linearizable barrier 同样位于 auth 检查之前，
+  不存在可修复差异；typed nil transaction oneof 经 protobuf wire 解码为默认嵌套
+  message，按空 key 拒绝，不构成远程 nil dereference。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
