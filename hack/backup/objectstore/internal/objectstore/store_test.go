@@ -165,6 +165,51 @@ func TestUploadDoesNotPublishReceiptWithoutExactVersionTimestamp(t *testing.T) {
 	require.ErrorIs(t, statErr, os.ErrNotExist)
 }
 
+func TestUploadReconcilesCommittedResponseError(t *testing.T) {
+	artifact := writeArtifact(t)
+	now := time.Unix(2_000_000_000, 0)
+	ctx, cancel := context.WithCancel(context.Background())
+	client := &fakeS3{
+		putErr:                    context.DeadlineExceeded,
+		putCancel:                 cancel,
+		failHeadOnCanceledContext: true,
+	}
+	receiptPath := filepath.Join(t.TempDir(), "receipt.json")
+
+	receipt, err := Upload(ctx, client, UploadRequest{
+		Input: artifact, Instance: "instance-a", BackupID: "backup-1",
+		ObjectStoreID: "store-a", Bucket: "backups", ObjectKey: "instance-a/backup-1.jsonl",
+		RetentionMode: "COMPLIANCE", RetainUntilUnix: now.Add(time.Minute).Unix(),
+		ExpectedPrefix: "/registry", MinRecords: 1, MaxAgeSeconds: 1_000_000_000,
+		ReceiptOutput: receiptPath, Now: now,
+	})
+	require.NoError(t, err)
+	require.Equal(t, "version-1", receipt.VersionID)
+	require.True(t, receipt.RemoteVerified)
+	require.Equal(t, 1, client.putCalls)
+	_, err = ReadReceipt(receiptPath)
+	require.NoError(t, err)
+}
+
+func TestUploadRejectsUncommittedResponseError(t *testing.T) {
+	artifact := writeArtifact(t)
+	now := time.Unix(2_000_000_000, 0)
+	client := &fakeS3{putErr: errors.New("request failed"), putWithoutCommit: true}
+	receiptPath := filepath.Join(t.TempDir(), "receipt.json")
+
+	_, err := Upload(context.Background(), client, UploadRequest{
+		Input: artifact, Instance: "instance-a", BackupID: "backup-1",
+		ObjectStoreID: "store-a", Bucket: "backups", ObjectKey: "instance-a/backup-1.jsonl",
+		RetentionMode: "COMPLIANCE", RetainUntilUnix: now.Add(time.Minute).Unix(),
+		ExpectedPrefix: "/registry", MinRecords: 1, MaxAgeSeconds: 1_000_000_000,
+		ReceiptOutput: receiptPath, Now: now,
+	})
+	require.ErrorContains(t, err, "conditional object upload: request failed")
+	require.ErrorContains(t, err, "inspect object after failed conditional upload")
+	_, statErr := os.Stat(receiptPath)
+	require.ErrorIs(t, statErr, os.ErrNotExist)
+}
+
 func TestUploadAppliesProductionArtifactGateBeforeS3(t *testing.T) {
 	artifact := writeArtifact(t)
 	now := time.Now().UTC()
@@ -300,6 +345,9 @@ type fakeS3 struct {
 	headAfterDeleteErr        error
 	deleteCancel              context.CancelFunc
 	failHeadOnCanceledContext bool
+	putErr                    error
+	putWithoutCommit          bool
+	putCancel                 context.CancelFunc
 }
 
 func (f *fakeS3) PutObject(_ context.Context, input *s3.PutObjectInput, _ ...func(*s3.Options)) (*s3.PutObjectOutput, error) {
@@ -312,11 +360,19 @@ func (f *fakeS3) PutObject(_ context.Context, input *s3.PutObjectInput, _ ...fun
 	if err != nil {
 		return nil, err
 	}
-	f.body = body
-	f.metadata = input.Metadata
-	f.versionID = "version-1"
-	f.retainUntil = aws.ToTime(input.ObjectLockRetainUntilDate)
-	f.mode = types.ObjectLockRetentionMode(input.ObjectLockMode)
+	if !f.putWithoutCommit {
+		f.body = body
+		f.metadata = input.Metadata
+		f.versionID = "version-1"
+		f.retainUntil = aws.ToTime(input.ObjectLockRetainUntilDate)
+		f.mode = types.ObjectLockRetentionMode(input.ObjectLockMode)
+	}
+	if f.putCancel != nil {
+		f.putCancel()
+	}
+	if f.putErr != nil {
+		return nil, f.putErr
+	}
 	return &s3.PutObjectOutput{VersionId: aws.String(f.versionID)}, nil
 }
 
@@ -330,7 +386,7 @@ func (f *fakeS3) HeadObject(ctx context.Context, input *s3.HeadObjectInput, _ ..
 	if f.deleted && f.headAfterDeleteErr != nil {
 		return nil, f.headAfterDeleteErr
 	}
-	if f.deleted && f.failHeadOnCanceledContext && ctx.Err() != nil {
+	if f.failHeadOnCanceledContext && ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
 	if f.deleted || f.versionID == "" {

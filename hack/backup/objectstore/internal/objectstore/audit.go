@@ -86,36 +86,56 @@ func ArchiveAudit(ctx context.Context, client S3API, request AuditRequest) (Audi
 		ObjectLockRetainUntilDate: aws.Time(retainUntil),
 	})
 	var versionID string
+	verificationCtx := ctx
 	if putErr == nil {
 		versionID = aws.ToString(output.VersionId)
-	} else if isPreconditionFailure(putErr) {
-		head, headErr := client.HeadObject(ctx, &s3.HeadObjectInput{
+	} else {
+		headCtx := ctx
+		if !isPreconditionFailure(putErr) {
+			reconcileCtx, cancel := objectWriteReconciliationContext(ctx)
+			defer cancel()
+			verificationCtx = reconcileCtx
+			headCtx = reconcileCtx
+		}
+		head, headErr := client.HeadObject(headCtx, &s3.HeadObjectInput{
 			Bucket: aws.String(request.Bucket), Key: aws.String(request.ObjectKey),
 		})
 		if headErr != nil {
-			return AuditReceipt{}, fmt.Errorf("conditional audit upload conflicted and existing object cannot be read: %w", headErr)
+			if isPreconditionFailure(putErr) {
+				return AuditReceipt{}, fmt.Errorf(
+					"conditional audit upload conflicted and existing object cannot be read: %w", headErr,
+				)
+			}
+			return AuditReceipt{}, errors.Join(
+				fmt.Errorf("conditional audit object upload: %w", putErr),
+				fmt.Errorf("inspect audit object after failed conditional upload: %w", headErr),
+			)
 		}
 		if err := validateHead(head, metadata, status.Bytes); err != nil {
-			return AuditReceipt{}, fmt.Errorf("refusing to replace conflicting audit object: %w", err)
+			conflictErr := fmt.Errorf("refusing to replace conflicting audit object: %w", err)
+			if isPreconditionFailure(putErr) {
+				return AuditReceipt{}, conflictErr
+			}
+			return AuditReceipt{}, errors.Join(
+				fmt.Errorf("conditional audit object upload: %w", putErr), conflictErr,
+			)
 		}
 		versionID = aws.ToString(head.VersionId)
-	} else {
-		return AuditReceipt{}, fmt.Errorf("conditional audit object upload: %w", putErr)
 	}
 	if versionID == "" {
 		return AuditReceipt{}, errors.New("object store did not return a version ID; Object Lock/versioning is required")
 	}
 	archivedAtUnix, err := exactVersionModifiedAt(
-		ctx, client, request.Bucket, request.ObjectKey, versionID,
+		verificationCtx, client, request.Bucket, request.ObjectKey, versionID,
 		metadata, status.Bytes, retainUntil,
 	)
 	if err != nil {
 		return AuditReceipt{}, err
 	}
-	if err := verifyAuditRemote(ctx, client, request, versionID, status); err != nil {
+	if err := verifyAuditRemote(verificationCtx, client, request, versionID, status); err != nil {
 		return AuditReceipt{}, err
 	}
-	if err := validateAuditRetention(ctx, client, request, versionID, retainUntil); err != nil {
+	if err := validateAuditRetention(verificationCtx, client, request, versionID, retainUntil); err != nil {
 		return AuditReceipt{}, err
 	}
 	artifact := status.Artifact

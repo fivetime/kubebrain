@@ -117,38 +117,58 @@ func Upload(ctx context.Context, client S3API, request UploadRequest) (Receipt, 
 		ObjectLockRetainUntilDate: aws.Time(retainUntil),
 	})
 	var versionID string
+	verificationCtx := ctx
 	if putErr == nil {
 		versionID = aws.ToString(output.VersionId)
-	} else if isPreconditionFailure(putErr) {
-		head, headErr := client.HeadObject(ctx, &s3.HeadObjectInput{
+	} else {
+		headCtx := ctx
+		if !isPreconditionFailure(putErr) {
+			reconcileCtx, cancel := objectWriteReconciliationContext(ctx)
+			defer cancel()
+			verificationCtx = reconcileCtx
+			headCtx = reconcileCtx
+		}
+		head, headErr := client.HeadObject(headCtx, &s3.HeadObjectInput{
 			Bucket: aws.String(request.Bucket), Key: aws.String(request.ObjectKey),
 		})
 		if headErr != nil {
-			return Receipt{}, fmt.Errorf("conditional upload conflicted and existing object cannot be read: %w", headErr)
+			if isPreconditionFailure(putErr) {
+				return Receipt{}, fmt.Errorf(
+					"conditional upload conflicted and existing object cannot be read: %w", headErr,
+				)
+			}
+			return Receipt{}, errors.Join(
+				fmt.Errorf("conditional object upload: %w", putErr),
+				fmt.Errorf("inspect object after failed conditional upload: %w", headErr),
+			)
 		}
 		if err := validateHead(head, metadata, info.Size()); err != nil {
-			return Receipt{}, fmt.Errorf("refusing to replace conflicting object: %w", err)
+			conflictErr := fmt.Errorf("refusing to replace conflicting object: %w", err)
+			if isPreconditionFailure(putErr) {
+				return Receipt{}, conflictErr
+			}
+			return Receipt{}, errors.Join(fmt.Errorf("conditional object upload: %w", putErr), conflictErr)
 		}
 		versionID = aws.ToString(head.VersionId)
-	} else {
-		return Receipt{}, fmt.Errorf("conditional object upload: %w", putErr)
 	}
 	if versionID == "" {
 		return Receipt{}, errors.New("object store did not return a version ID; Object Lock/versioning is required")
 	}
 	uploadedAtUnix, err := exactVersionModifiedAt(
-		ctx, client, request.Bucket, request.ObjectKey, versionID,
+		verificationCtx, client, request.Bucket, request.ObjectKey, versionID,
 		metadata, info.Size(), retainUntil,
 	)
 	if err != nil {
 		return Receipt{}, err
 	}
 
-	verified, err := verifyRemote(ctx, client, request.Bucket, request.ObjectKey, versionID, status, info.Size())
+	verified, err := verifyRemote(
+		verificationCtx, client, request.Bucket, request.ObjectKey, versionID, status, info.Size(),
+	)
 	if err != nil {
 		return Receipt{}, err
 	}
-	if err := validateRemoteRetention(ctx, client, versionID, request, retainUntil); err != nil {
+	if err := validateRemoteRetention(verificationCtx, client, versionID, request, retainUntil); err != nil {
 		return Receipt{}, err
 	}
 	receipt := Receipt{
@@ -446,6 +466,12 @@ func exactVersionModifiedAt(
 		return 0, errors.New("exact object has an invalid last-modified timestamp")
 	}
 	return head.LastModified.Unix(), nil
+}
+
+const objectWriteReconciliationTimeout = 30 * time.Minute
+
+func objectWriteReconciliationContext(parent context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(parent), objectWriteReconciliationTimeout)
 }
 
 func fileSHA256(path string) (string, error) {

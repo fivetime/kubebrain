@@ -97,6 +97,47 @@ func TestArchiveAuditRejectsConflictCorruptionAndRetentionDrift(t *testing.T) {
 	})
 }
 
+func TestArchiveAuditReconcilesCommittedResponseError(t *testing.T) {
+	now := time.Unix(2_000_000_000, 0).UTC()
+	ctx, cancel := context.WithCancel(context.Background())
+	client := &fakeS3{
+		putErr:                    context.DeadlineExceeded,
+		putCancel:                 cancel,
+		failHeadOnCanceledContext: true,
+	}
+	request := AuditRequest{
+		Input: writeAuditArtifact(t), ObjectStoreID: "store-a", Bucket: "audits",
+		ObjectKey: "instance-a/operation-1.json", RetentionMode: "COMPLIANCE",
+		RetainUntilUnix: now.Add(time.Hour).Unix(),
+		ReceiptOutput:   filepath.Join(t.TempDir(), "receipt.json"), Now: now,
+	}
+
+	receipt, err := ArchiveAudit(ctx, client, request)
+	require.NoError(t, err)
+	require.Equal(t, "version-1", receipt.VersionID)
+	require.True(t, receipt.RemoteVerified)
+	require.Equal(t, 1, client.putCalls)
+	_, err = ReadAuditReceipt(request.ReceiptOutput)
+	require.NoError(t, err)
+}
+
+func TestArchiveAuditRejectsUncommittedResponseError(t *testing.T) {
+	now := time.Unix(2_000_000_000, 0).UTC()
+	client := &fakeS3{putErr: context.DeadlineExceeded, putWithoutCommit: true}
+	request := AuditRequest{
+		Input: writeAuditArtifact(t), ObjectStoreID: "store-a", Bucket: "audits",
+		ObjectKey: "instance-a/operation-1.json", RetentionMode: "COMPLIANCE",
+		RetainUntilUnix: now.Add(time.Hour).Unix(),
+		ReceiptOutput:   filepath.Join(t.TempDir(), "receipt.json"), Now: now,
+	}
+
+	_, err := ArchiveAudit(context.Background(), client, request)
+	require.ErrorContains(t, err, "conditional audit object upload")
+	require.ErrorContains(t, err, "inspect audit object after failed conditional upload")
+	_, statErr := os.Stat(request.ReceiptOutput)
+	require.ErrorIs(t, statErr, os.ErrNotExist)
+}
+
 func writeAuditArtifact(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "audit.json")
