@@ -1060,6 +1060,44 @@ func TestLeaseFollowerProxiesKeepAlive(t *testing.T) {
 	require.Equal(t, int64(30), stream.sent[0].TTL)
 }
 
+func TestLeaseFollowerKeepAlivePreservesClientCancellation(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	metrics := mock.NewMinimalMetrics(ctrl)
+	kv := memkv.NewKvStorage()
+	b := backend.NewBackend(kv, backend.Config{
+		Identity:                "proxy-follower-keepalive-cancel-test-peer",
+		EnableEtcdCompatibility: true,
+	}, metrics)
+	ctx, cancel := context.WithCancel(context.Background())
+	forwarding := make(chan struct{})
+	server := New(b, metrics, testPeerService{
+		isLeader:     false,
+		proxyEnabled: true,
+		leaseKeepAliveFn: func(forwardCtx context.Context, req *etcdserverpb.LeaseKeepAliveRequest) (*etcdserverpb.LeaseKeepAliveResponse, error) {
+			require.Equal(t, int64(7002), req.ID)
+			close(forwarding)
+			<-forwardCtx.Done()
+			return nil, forwardCtx.Err()
+		},
+	})
+	defer func() {
+		server.stopLeases()
+		require.NoError(t, kv.Close())
+		ctrl.Finish()
+	}()
+
+	stream := &fakeLeaseKeepAliveServer{
+		ctx: ctx, requests: []*etcdserverpb.LeaseKeepAliveRequest{{ID: 7002}},
+	}
+	done := make(chan error, 1)
+	go func() { done <- server.LeaseKeepAlive(stream) }()
+	<-forwarding
+	cancel()
+
+	require.ErrorIs(t, <-done, context.Canceled)
+	require.Empty(t, stream.sent)
+}
+
 func TestLeaseFollowerDoesNotExpireKeys(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	metrics := mock.NewMinimalMetrics(ctrl)
