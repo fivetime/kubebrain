@@ -1065,6 +1065,75 @@ func TestMeteringRollupCronJobRequiresCompleteImmutableDay(t *testing.T) {
 		"COPY --from=build /src/bin/kubebrain-metering-rollup /usr/local/bin/kubebrain-metering-rollup")
 }
 
+func TestMeteringChargeCronJobPinsApprovedImmutablePriceVersion(t *testing.T) {
+	objects := decodeManifest(t, "kubebrain-metering-charge.yaml")
+	policy := objectByKindAndName(t, objects, "ConfigMap", "kubebrain-metering-price-policy")
+	require.Equal(t, "global", nestedString(t, policy, "data", "price-scope"))
+	require.Equal(t, "replace-with-approved-version", nestedString(t, policy, "data", "price-version"))
+
+	job := objectByKindAndName(t, objects, "CronJob", "kubebrain-metering-charge")
+	require.Equal(t, "17 1 * * *", nestedString(t, job, "spec", "schedule"))
+	require.Equal(t, "Etc/UTC", nestedString(t, job, "spec", "timeZone"))
+	require.Equal(t, "Forbid", nestedString(t, job, "spec", "concurrencyPolicy"))
+	require.EqualValues(t, 1800, nestedInt64(t, job, "spec", "startingDeadlineSeconds"))
+	require.False(t, nestedBool(t, job,
+		"spec", "jobTemplate", "spec", "template", "spec", "automountServiceAccountToken"))
+
+	containers, found, err := unstructured.NestedSlice(
+		job.Object, "spec", "jobTemplate", "spec", "template", "spec", "containers",
+	)
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Len(t, containers, 1)
+	container := &unstructured.Unstructured{Object: containers[0].(map[string]any)}
+	command, found, err := unstructured.NestedStringSlice(container.Object, "command")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, []string{"/usr/local/bin/kubebrain-metering-charge"}, command)
+	args, found, err := unstructured.NestedStringSlice(container.Object, "args")
+	require.NoError(t, err)
+	require.True(t, found)
+	for _, expected := range []string{
+		"--instance=kubebrain",
+		"--price-scope=$(PRICE_SCOPE)",
+		"--price-version=$(PRICE_VERSION)",
+		"--rollup-prefix=metering-rollups",
+		"--price-prefix=metering-prices",
+		"--charge-prefix=metering-charges",
+		"--retention-mode=COMPLIANCE",
+		"--retention-duration=61320h",
+		"--period-duration=24h",
+	} {
+		require.Contains(t, args, expected)
+	}
+	require.True(t, nestedBool(t, container, "securityContext", "readOnlyRootFilesystem"))
+	require.False(t, nestedBool(t, container, "securityContext", "allowPrivilegeEscalation"))
+	env, found, err := unstructured.NestedSlice(container.Object, "env")
+	require.NoError(t, err)
+	require.True(t, found)
+	for _, raw := range env {
+		entry := &unstructured.Unstructured{Object: raw.(map[string]any)}
+		name := nestedString(t, entry, "name")
+		if name == "PRICE_SCOPE" || name == "PRICE_VERSION" {
+			require.Equal(t, "kubebrain-metering-price-policy",
+				nestedString(t, entry, "valueFrom", "configMapKeyRef", "name"))
+			continue
+		}
+		require.Equal(t, "kubebrain-metering-charge-object-store",
+			nestedString(t, entry, "valueFrom", "secretKeyRef", "name"))
+	}
+	dockerfile, err := os.ReadFile("../../Dockerfile")
+	require.NoError(t, err)
+	require.Contains(t, string(dockerfile),
+		"go build -trimpath -o /src/bin/kubebrain-metering-charge ./hack/production/cmd/metering-charge")
+	require.Contains(t, string(dockerfile),
+		"COPY --from=build /src/bin/kubebrain-metering-charge /usr/local/bin/kubebrain-metering-charge")
+	require.Contains(t, string(dockerfile),
+		"go build -trimpath -o /src/bin/kubebrain-metering-price-publish ./hack/production/cmd/metering-price-publish")
+	require.Contains(t, string(dockerfile),
+		"COPY --from=build /src/bin/kubebrain-metering-price-publish /usr/local/bin/kubebrain-metering-price-publish")
+}
+
 func expectedInitialCluster(scheme string) string {
 	return "kubebrain-0=" + scheme + "://kubebrain-0.kubebrain-peer.kubebrain-system.svc.cluster.local:3380," +
 		"kubebrain-1=" + scheme + "://kubebrain-1.kubebrain-peer.kubebrain-system.svc.cluster.local:3380," +
