@@ -368,51 +368,64 @@ func (b *backend) ArmNoSpace(ctx context.Context, memberID uint64) (uint64, erro
 	if memberID == 0 {
 		memberID = b.quotaAlarmMemberID()
 	}
-	if err := b.activateNoSpaceForMember(ctx, memberID); err != nil {
-		return 0, err
-	}
-	owner, _, err := b.NoSpaceAlarm(ctx)
-	return owner, err
+	return b.activateNoSpaceForMember(ctx, memberID)
 }
 
 func (b *backend) activateNoSpace(ctx context.Context) error {
-	return b.activateNoSpaceForMember(ctx, b.quotaAlarmMemberID())
+	_, err := b.activateNoSpaceForMember(ctx, b.quotaAlarmMemberID())
+	return err
 }
 
-func (b *backend) activateNoSpaceForMember(ctx context.Context, memberID uint64) error {
-	err := b.InternalCAS(ctx, []InternalCASOp{{
-		Key:   quotaAlarmKey,
-		Value: encodeQuotaAlarm(memberID),
-	}})
-	if errors.Is(err, storage.ErrCASFailed) {
-		b.metricCli.EmitGauge("quota.nospace", 1)
-		return nil
+func (b *backend) activateNoSpaceForMember(ctx context.Context, memberID uint64) (uint64, error) {
+	for {
+		err := b.InternalCAS(ctx, []InternalCASOp{{
+			Key:   quotaAlarmKey,
+			Value: encodeQuotaAlarm(memberID),
+		}})
+		switch {
+		case err == nil:
+			b.metricCli.EmitGauge("quota.nospace", 1)
+			return memberID, nil
+		case errors.Is(err, storage.ErrCASFailed):
+			owner, active, readErr := b.NoSpaceAlarm(ctx)
+			if readErr != nil {
+				return 0, readErr
+			}
+			if !active {
+				continue
+			}
+			b.metricCli.EmitGauge("quota.nospace", 1)
+			return owner, nil
+		case !errors.Is(err, storage.ErrUncertainResult):
+			return 0, err
+		}
+		return b.reconcileNoSpaceActivation(ctx, err)
 	}
-	if err == nil {
-		b.metricCli.EmitGauge("quota.nospace", 1)
-		return nil
-	}
-	if !errors.Is(err, storage.ErrUncertainResult) {
-		return err
-	}
+}
 
+func (b *backend) reconcileNoSpaceActivation(
+	ctx context.Context, commitErr error,
+) (uint64, error) {
 	reconcileCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), quotaAlarmReconcileTimeout)
 	defer cancel()
 	for {
-		_, active, reconcileErr := b.NoSpaceAlarm(reconcileCtx)
+		owner, active, reconcileErr := b.NoSpaceAlarm(reconcileCtx)
 		if reconcileErr == nil {
 			if active {
 				b.metricCli.EmitGauge("quota.nospace", 1)
-				return nil
+				return owner, nil
 			}
-			return err
+			return 0, commitErr
 		}
 		if !errors.Is(reconcileErr, storage.ErrUnavailable) {
-			return errors.Join(err, fmt.Errorf("reconcile NOSPACE activation: %w", reconcileErr))
+			return 0, errors.Join(commitErr, fmt.Errorf("reconcile NOSPACE activation: %w", reconcileErr))
 		}
 		select {
 		case <-reconcileCtx.Done():
-			return errors.Join(err, fmt.Errorf("reconcile NOSPACE activation: %w", reconcileCtx.Err()))
+			return 0, errors.Join(
+				commitErr,
+				fmt.Errorf("reconcile NOSPACE activation: %w", reconcileCtx.Err()),
+			)
 		case <-time.After(50 * time.Millisecond):
 		}
 	}

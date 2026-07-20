@@ -26,6 +26,38 @@ type blockSecondAlarmReadStorage struct {
 	once     sync.Once
 }
 
+type blockFirstCommitStorage struct {
+	storage.KvStorage
+	trigger   atomic.Bool
+	committed chan struct{}
+	release   chan struct{}
+}
+
+func (s *blockFirstCommitStorage) BeginBatchWrite() storage.BatchWrite {
+	return &blockFirstCommitBatch{
+		BatchWrite: s.KvStorage.BeginBatchWrite(),
+		storage:    s,
+	}
+}
+
+type blockFirstCommitBatch struct {
+	storage.BatchWrite
+	storage *blockFirstCommitStorage
+}
+
+func (b *blockFirstCommitBatch) Commit(ctx context.Context) error {
+	err := b.BatchWrite.Commit(ctx)
+	if err == nil && b.storage.trigger.CompareAndSwap(true, false) {
+		close(b.storage.committed)
+		select {
+		case <-b.storage.release:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return err
+}
+
 func (s *blockSecondAlarmReadStorage) Get(ctx context.Context, key []byte) ([]byte, error) {
 	if s.enabled.Load() && bytes.Equal(key, s.alarmKey) && s.reads.Add(1) == 2 {
 		s.once.Do(func() { close(s.blocked) })
@@ -245,6 +277,102 @@ func TestArmNoSpaceConcurrentActivationReturnsPersistedOwner(t *testing.T) {
 	for owner := range owners {
 		require.Equal(t, persisted, owner)
 	}
+}
+
+func TestArmNoSpaceReturnsCommittedOwnerWhenConcurrentDisarmWinsResponseRace(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+	base := imemkv.NewKvStorage()
+	t.Cleanup(func() { require.NoError(t, base.Close()) })
+	store := &blockFirstCommitStorage{
+		KvStorage: base,
+		committed: make(chan struct{}),
+		release:   make(chan struct{}),
+	}
+	b := NewBackend(store, Config{
+		Prefix:                  prefix,
+		Identity:                getStorageIdentity(),
+		EnableEtcdCompatibility: true,
+		QuotaBackendBytes:       10,
+	}, mock.NewMinimalMetrics(ctrl)).(*backend)
+	require.NoError(t, b.EnsureQuotaInitialized(context.Background()))
+
+	const owner uint64 = 424242
+	store.trigger.Store(true)
+	type result struct {
+		owner uint64
+		err   error
+	}
+	activated := make(chan result, 1)
+	go func() {
+		gotOwner, armErr := b.ArmNoSpace(context.Background(), owner)
+		activated <- result{owner: gotOwner, err: armErr}
+	}()
+	<-store.committed
+
+	removed, err := b.DisarmNoSpace(context.Background(), owner)
+	require.NoError(t, err)
+	require.True(t, removed)
+	close(store.release)
+
+	got := <-activated
+	require.NoError(t, got.err)
+	require.Equal(t, owner, got.owner, "ACTIVATE returns the owner persisted at its linearization point")
+	_, active, err := b.NoSpaceAlarm(context.Background())
+	require.NoError(t, err)
+	require.False(t, active, "the later DEACTIVATE remains the final state")
+}
+
+func TestArmNoSpaceRetriesWhenConflictingOwnerIsConcurrentlyDisarmed(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+	base := imemkv.NewKvStorage()
+	t.Cleanup(func() { require.NoError(t, base.Close()) })
+	store := &blockSecondAlarmReadStorage{
+		KvStorage: base,
+		blocked:   make(chan struct{}),
+		release:   make(chan struct{}),
+	}
+	b := NewBackend(store, Config{
+		Prefix:                  prefix,
+		Identity:                getStorageIdentity(),
+		EnableEtcdCompatibility: true,
+		QuotaBackendBytes:       10,
+	}, mock.NewMinimalMetrics(ctrl)).(*backend)
+	store.alarmKey = b.ks.EncodeInternalKey(quotaAlarmKey)
+	require.NoError(t, b.EnsureQuotaInitialized(context.Background()))
+
+	const (
+		existingOwner  uint64 = 424242
+		requestedOwner uint64 = 424243
+	)
+	_, err := b.ArmNoSpace(context.Background(), existingOwner)
+	require.NoError(t, err)
+	store.enabled.Store(true)
+
+	type result struct {
+		owner uint64
+		err   error
+	}
+	activated := make(chan result, 1)
+	go func() {
+		owner, armErr := b.ArmNoSpace(context.Background(), requestedOwner)
+		activated <- result{owner: owner, err: armErr}
+	}()
+	<-store.blocked
+
+	removed, err := b.DisarmNoSpace(context.Background(), existingOwner)
+	require.NoError(t, err)
+	require.True(t, removed)
+	close(store.release)
+
+	got := <-activated
+	require.NoError(t, got.err)
+	require.Equal(t, requestedOwner, got.owner)
+	persisted, active, err := b.NoSpaceAlarm(context.Background())
+	require.NoError(t, err)
+	require.True(t, active)
+	require.Equal(t, requestedOwner, persisted)
 }
 
 func TestArmNoSpaceReconcilesCommittedUncertainActivation(t *testing.T) {
