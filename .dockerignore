@@ -1,5 +1,13 @@
 .git
+.dev
+.claude
+.idea
+.vscode
 bin
 data
+output
 coverage.out
 .DS_Store
+/kube*
+/loadgen
+/tikv-persistence-smoke
