@@ -24,18 +24,34 @@ import (
 // behind after orphaning their implicit sessions. The failover command must
 // discover and delete the current KubeBrain leader.
 func TestHTTPGatewayZeroLeaseExpiryAcrossLeaderFailover(t *testing.T) {
+	runHTTPGatewayZeroLeaseExpiryAcrossLeaderFailover(t,
+		"KUBEBRAIN_ZERO_LEASE_EXPIRY_FAILOVER_COMMAND", 1)
+}
+
+// TestHTTPGatewayZeroLeaseExpiryAcrossRepeatedLeaderFailover proves that each
+// promotion extends an implicit session lease at most once and that both
+// leases still expire after the final replacement.
+func TestHTTPGatewayZeroLeaseExpiryAcrossRepeatedLeaderFailover(t *testing.T) {
+	runHTTPGatewayZeroLeaseExpiryAcrossLeaderFailover(t,
+		"KUBEBRAIN_ZERO_LEASE_EXPIRY_REPEATED_FAILOVER_COMMAND", 2)
+}
+
+func runHTTPGatewayZeroLeaseExpiryAcrossLeaderFailover(
+	t *testing.T, failoverCommandEnv string, failoverCycles int,
+) {
+	t.Helper()
 	gatewayEndpoint := os.Getenv("KUBEBRAIN_GATEWAY_ENDPOINT")
 	etcdEndpoint := os.Getenv("KUBEBRAIN_ETCD_ENDPOINT")
-	failoverCommand := os.Getenv("KUBEBRAIN_ZERO_LEASE_EXPIRY_FAILOVER_COMMAND")
+	failoverCommand := os.Getenv(failoverCommandEnv)
 	if gatewayEndpoint == "" || etcdEndpoint == "" || failoverCommand == "" {
-		t.Skip("set KUBEBRAIN_GATEWAY_ENDPOINT, KUBEBRAIN_ETCD_ENDPOINT, and KUBEBRAIN_ZERO_LEASE_EXPIRY_FAILOVER_COMMAND")
+		t.Skipf("set KUBEBRAIN_GATEWAY_ENDPOINT, KUBEBRAIN_ETCD_ENDPOINT, and %s", failoverCommandEnv)
 	}
 	namespace := os.Getenv("KUBEBRAIN_FAILOVER_NAMESPACE")
 	if namespace == "" {
 		namespace = "kubebrain-dev"
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(failoverCycles+2)*time.Minute)
 	t.Cleanup(cancel)
 	cli, err := clientv3.New(clientv3.Config{
 		Endpoints: []string{etcdEndpoint}, DialTimeout: 3 * time.Second,
@@ -45,7 +61,7 @@ func TestHTTPGatewayZeroLeaseExpiryAcrossLeaderFailover(t *testing.T) {
 
 	post := newConcurrencyFailoverHTTPPoster(t, gatewayEndpoint)
 	encode := func(value string) string { return base64.StdEncoding.EncodeToString([]byte(value)) }
-	prefix := fmt.Sprintf("/a363/zero-lease-failover/%d", time.Now().UnixNano())
+	prefix := fmt.Sprintf("/zero-lease-failover/%d/%d", failoverCycles, time.Now().UnixNano())
 
 	lockResponse := post("/v3/lock/lock", map[string]any{"name": encode(prefix + "/lock")})
 	lockKey := decodeConcurrencyFailoverField(t, lockResponse, "key")
@@ -77,38 +93,44 @@ func TestHTTPGatewayZeroLeaseExpiryAcrossLeaderFailover(t *testing.T) {
 	require.Positive(t, lockInitial.TTL)
 	require.Positive(t, campaignInitial.TTL)
 
-	var lockBeforeFailover, campaignBeforeFailover int64
-	require.Eventually(t, func() bool {
-		lockTTL, lockErr := cli.TimeToLive(ctx, lockLease)
-		campaignTTL, campaignErr := cli.TimeToLive(ctx, campaignLease)
-		ready := lockErr == nil && campaignErr == nil &&
-			lockTTL.TTL > 0 && lockTTL.TTL <= 30 &&
-			campaignTTL.TTL > 0 && campaignTTL.TTL <= 30
-		if ready {
-			lockBeforeFailover = lockTTL.TTL
-			campaignBeforeFailover = campaignTTL.TTL
-		}
-		return ready
-	}, 40*time.Second, 250*time.Millisecond, "implicit session leases must count down before failover")
+	for cycle := 1; cycle <= failoverCycles; cycle++ {
+		var lockBeforeFailover, campaignBeforeFailover int64
+		require.Eventuallyf(t, func() bool {
+			lockTTL, lockErr := cli.TimeToLive(ctx, lockLease)
+			campaignTTL, campaignErr := cli.TimeToLive(ctx, campaignLease)
+			ready := lockErr == nil && campaignErr == nil &&
+				lockTTL.TTL > 0 && lockTTL.TTL <= 30 &&
+				campaignTTL.TTL > 0 && campaignTTL.TTL <= 30
+			if ready {
+				lockBeforeFailover = lockTTL.TTL
+				campaignBeforeFailover = campaignTTL.TTL
+			}
+			return ready
+		}, 40*time.Second, 250*time.Millisecond,
+			"implicit session leases must count down before failover cycle %d", cycle)
 
-	failoverStarted := time.Now()
-	output, err := exec.CommandContext(ctx, "bash", "-c", failoverCommand).CombinedOutput()
-	require.NoErrorf(t, err, "delete current leader: %s", strings.TrimSpace(string(output)))
-	t.Logf("leader replacement command completed in %s: %s", time.Since(failoverStarted), strings.TrimSpace(string(output)))
-	output, err = waitForKubeBrainRollout(ctx, namespace)
-	require.NoErrorf(t, err, "wait for replacement replica: %s", strings.TrimSpace(string(output)))
+		failoverStarted := time.Now()
+		output, failoverErr := exec.CommandContext(ctx, "bash", "-c", failoverCommand).CombinedOutput()
+		require.NoErrorf(t, failoverErr, "delete current leader in cycle %d: %s",
+			cycle, strings.TrimSpace(string(output)))
+		t.Logf("leader replacement cycle %d completed in %s: %s",
+			cycle, time.Since(failoverStarted), strings.TrimSpace(string(output)))
+		output, failoverErr = waitForKubeBrainRollout(ctx, namespace)
+		require.NoErrorf(t, failoverErr, "wait for replacement replica in cycle %d: %s",
+			cycle, strings.TrimSpace(string(output)))
 
-	// Match etcd lessor.Promote: without a five-minute checkpoint, promotion
-	// refreshes each lease from its granted TTL. This is a one-time failover
-	// extension, not evidence that the orphan session resumed its keepalive.
-	lockAfterFailover := concurrencyFailoverLeaseTTL(t, ctx, cli, lockLease)
-	campaignAfterFailover := concurrencyFailoverLeaseTTL(t, ctx, cli, campaignLease)
-	require.Greater(t, lockAfterFailover.TTL, lockBeforeFailover+20)
-	require.Greater(t, campaignAfterFailover.TTL, campaignBeforeFailover+20)
-	require.LessOrEqual(t, lockAfterFailover.TTL, int64(65))
-	require.LessOrEqual(t, campaignAfterFailover.TTL, int64(65))
-	require.Equal(t, int64(60), lockAfterFailover.GrantedTTL)
-	require.Equal(t, int64(60), campaignAfterFailover.GrantedTTL)
+		// Match etcd lessor.Promote: without a five-minute checkpoint,
+		// promotion refreshes each lease from its granted TTL. Every cycle is
+		// a one-time failover extension, not a resumed session keepalive.
+		lockAfterFailover := concurrencyFailoverLeaseTTL(t, ctx, cli, lockLease)
+		campaignAfterFailover := concurrencyFailoverLeaseTTL(t, ctx, cli, campaignLease)
+		require.Greater(t, lockAfterFailover.TTL, lockBeforeFailover+20)
+		require.Greater(t, campaignAfterFailover.TTL, campaignBeforeFailover+20)
+		require.LessOrEqual(t, lockAfterFailover.TTL, int64(65))
+		require.LessOrEqual(t, campaignAfterFailover.TTL, int64(65))
+		require.Equal(t, int64(60), lockAfterFailover.GrantedTTL)
+		require.Equal(t, int64(60), campaignAfterFailover.GrantedTTL)
+	}
 
 	require.Eventually(t, func() bool {
 		lockTTL, lockErr := cli.TimeToLive(ctx, lockLease)
