@@ -108,6 +108,13 @@ func (m *leaseManager) LeaseGrant(ctx context.Context, req *etcdserverpb.LeaseGr
 	if err := m.requireLeaseReady(); err != nil {
 		return nil, err
 	}
+	_, _, noSpace, err := m.srv.backend.QuotaStatus(ctx)
+	if err != nil {
+		return nil, mapFenceErr(err)
+	}
+	if noSpace {
+		return nil, rpctypes.ErrGRPCNoSpace
+	}
 	ctx = backend.WithLeadershipEpoch(ctx, epoch)
 	m.leaseWriteMu.RLock()
 	defer m.leaseWriteMu.RUnlock()

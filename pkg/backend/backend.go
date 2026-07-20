@@ -99,6 +99,15 @@ type Backend interface {
 	// exact previous values. It does not consume user MVCC revisions or emit
 	// watch events. A guard conflict returns storage.ErrCASFailed.
 	InternalCAS(ctx context.Context, ops []InternalCASOp) error
+	// QuotaStatus returns tenant-scoped logical usage, configured quota and the
+	// persisted NOSPACE alarm state. A zero quota means enforcement is disabled.
+	QuotaStatus(ctx context.Context) (usage, quota int64, noSpace bool, err error)
+	// EnsureQuotaInitialized atomically records the logical size of all existing
+	// live user keys. It must complete on leadership acquisition before writes
+	// are served when quota enforcement is enabled.
+	EnsureQuotaInitialized(ctx context.Context) error
+	// DisarmNoSpace clears NOSPACE only after usage falls below the hard limit.
+	DisarmNoSpace(ctx context.Context) error
 
 	// BeginRangeTxn excludes every logical user-key write until unlock. It is
 	// used only for generic etcd transactions with range compares, because TiKV
@@ -374,6 +383,10 @@ type backend struct {
 type Config struct {
 	// EnableEtcdCompatibility make backend compatible with etcd3
 	EnableEtcdCompatibility bool
+
+	// QuotaBackendBytes limits latest logical user key+value bytes in this
+	// tenant. Usage is committed atomically with every user mutation.
+	QuotaBackendBytes int64
 
 	// Prefix is the range that backend is in charge of
 	Prefix string

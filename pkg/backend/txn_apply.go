@@ -326,6 +326,56 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 		return results, cur, false, nil
 	}
 
+	var (
+		quotaUsageRaw  []byte
+		nextQuotaUsage int64
+	)
+	if b.config.QuotaBackendBytes > 0 {
+		raw, usageErr := b.kv.Get(ctx, b.ks.EncodeInternalKey(quotaUsageKey))
+		currentUsage := int64(0)
+		switch {
+		case errors.Is(usageErr, storage.ErrKeyNotFound):
+			return nil, baseRevision, false, ErrQuotaUninitialized
+		case usageErr != nil:
+			return nil, baseRevision, false, usageErr
+		default:
+			quotaUsageRaw = raw
+			currentUsage, usageErr = decodeQuotaUsage(raw)
+			if usageErr != nil {
+				return nil, baseRevision, false, usageErr
+			}
+		}
+		delta := int64(0)
+		for i := range preps {
+			p := &preps[i]
+			if !p.effective || p.op.Internal {
+				continue
+			}
+			if p.op.Delete {
+				delta -= int64(len(p.op.Key)) + logicalStoredValueSize(p.prevValue)
+				continue
+			}
+			if p.create {
+				delta += int64(len(p.op.Key))
+			} else {
+				delta -= logicalStoredValueSize(p.prevValue)
+			}
+			delta += int64(len(p.op.Value))
+		}
+		nextQuotaUsage = currentUsage + delta
+		if nextQuotaUsage < 0 {
+			return nil, baseRevision, false, fmt.Errorf(
+				"quota usage underflow: current=%d delta=%d", currentUsage, delta,
+			)
+		}
+		if delta > 0 && nextQuotaUsage > b.config.QuotaBackendBytes {
+			if alarmErr := b.activateNoSpace(ctx); alarmErr != nil {
+				return nil, baseRevision, false, alarmErr
+			}
+			return nil, baseRevision, false, ErrNoSpace
+		}
+	}
+
 	// Phase 2: allocate the single txn revision.
 	newRevision, derr := b.deal(baseRevision)
 	if derr != nil {
@@ -353,6 +403,15 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 	// key means the txn's branch may have flipped and must be re-evaluated, which
 	// takes precedence over merely re-applying a write.
 	batch := b.kv.BeginBatchWrite()
+	if b.config.QuotaBackendBytes > 0 {
+		usageKey := b.ks.EncodeInternalKey(quotaUsageKey)
+		nextUsage := encodeQuotaUsage(nextQuotaUsage)
+		if quotaUsageRaw == nil {
+			batch.PutIfNotExist(usageKey, nextUsage, 0)
+		} else {
+			batch.CAS(usageKey, nextUsage, quotaUsageRaw, 0)
+		}
+	}
 	guardKeys := make(map[string]struct{}, len(guards))
 	for _, gp := range guardPreps {
 		guardKeys[string(gp.key)] = struct{}{}
@@ -514,6 +573,9 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 		results[i] = res
 	}
 	b.notifyBatch(events)
+	if b.config.QuotaBackendBytes > 0 {
+		b.metricCli.EmitGauge("quota.logical_usage_bytes", nextQuotaUsage)
+	}
 	b.waitCommittedRevision(ctx, newRevision) // apply-then-ack (#35)
 	return results, newRevision, false, nil
 }

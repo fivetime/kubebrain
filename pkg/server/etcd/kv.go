@@ -1789,6 +1789,12 @@ func (s *RPCServer) compact(ctx context.Context, txn *etcdserverpb.TxnRequest) (
 // current leader, exactly like the not-leader gate above (FINDING #39). Other
 // errors pass through unchanged.
 func mapFenceErr(err error) error {
+	if errors.Is(err, backend.ErrNoSpace) {
+		return rpctypes.ErrGRPCNoSpace
+	}
+	if errors.Is(err, backend.ErrQuotaUninitialized) {
+		return status.Error(codes.Unavailable, "quota usage is not initialized")
+	}
 	if errors.Is(err, backend.ErrLeadershipFenced) {
 		return status.Errorf(codes.Unavailable, "write rejected: leadership changed during commit, retry on current leader")
 	}

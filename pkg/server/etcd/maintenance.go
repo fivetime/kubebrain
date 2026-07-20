@@ -75,23 +75,44 @@ const defaultEtcdBackendQuota int64 = 2 * 1024 * 1024 * 1024
 
 func (s *RPCServer) Alarm(ctx context.Context, req *etcdserverpb.AlarmRequest) (*etcdserverpb.AlarmResponse, error) {
 	s.metricCli.EmitCounter("maintenance.alarm", 1)
-	if req.GetAction() == etcdserverpb.AlarmRequest_GET {
+	switch req.GetAction() {
+	case etcdserverpb.AlarmRequest_GET:
 		if err := s.requireAuthenticated(ctx, false); err != nil {
 			return nil, err
 		}
 		if err := s.peers.SyncReadRevision(ctx); err != nil {
 			return nil, readBarrierStatusErr(err)
 		}
-	} else {
+	case etcdserverpb.AlarmRequest_DEACTIVATE:
+		if err := s.requireAuthenticated(ctx, true); err != nil {
+			return nil, err
+		}
+		if req.GetAlarm() != etcdserverpb.AlarmType_NOSPACE {
+			return nil, status.Error(codes.Unimplemented, alarmMutationUnsupportedMessage)
+		}
+		if err := s.backend.DisarmNoSpace(ctx); err != nil {
+			return nil, mapFenceErr(err)
+		}
+		return &etcdserverpb.AlarmResponse{Header: s.maintenanceHeader()}, nil
+	default:
 		if err := s.requireAuthenticated(ctx, true); err != nil {
 			return nil, err
 		}
 		return nil, status.Error(codes.Unimplemented, alarmMutationUnsupportedMessage)
 	}
-	return &etcdserverpb.AlarmResponse{
-		Header: s.maintenanceHeader(),
-		Alarms: nil,
-	}, nil
+	_, _, noSpace, err := s.backend.QuotaStatus(ctx)
+	if err != nil {
+		return nil, err
+	}
+	response := &etcdserverpb.AlarmResponse{Header: s.maintenanceHeader()}
+	if noSpace && (req.GetAlarm() == etcdserverpb.AlarmType_NONE ||
+		req.GetAlarm() == etcdserverpb.AlarmType_NOSPACE) {
+		response.Alarms = []*etcdserverpb.AlarmMember{{
+			MemberID: response.Header.MemberId,
+			Alarm:    etcdserverpb.AlarmType_NOSPACE,
+		}}
+	}
+	return response, nil
 }
 
 func (s *RPCServer) Status(ctx context.Context, _ *etcdserverpb.StatusRequest) (*etcdserverpb.StatusResponse, error) {
@@ -100,6 +121,17 @@ func (s *RPCServer) Status(ctx context.Context, _ *etcdserverpb.StatusRequest) (
 		return nil, err
 	}
 	revision := s.backend.GetCurrentRevision()
+	usage, quota, _, quotaErr := s.backend.QuotaStatus(ctx)
+	if quotaErr != nil {
+		return nil, quotaErr
+	}
+	dbSize := usage
+	if dbSize == 0 {
+		dbSize = 1
+	}
+	if quota == 0 {
+		quota = defaultEtcdBackendQuota
+	}
 	leader := s.memberIDFromAddress(s.peers.GetLeaderInfo())
 	term, err := s.responseRaftTerm(ctx)
 	if err != nil {
@@ -113,20 +145,13 @@ func (s *RPCServer) Status(ctx context.Context, _ *etcdserverpb.StatusRequest) (
 		RaftIndex:        revision,
 		RaftAppliedIndex: revision,
 		RaftTerm:         term,
-		// DbSize uses a 1-byte compatibility sentinel: it exists in etcd to warn before the hard
-		// --quota-backend-bytes NOSPACE cliff (and to drive defrag). The TiKV
-		// backend has no per-logical-DB quota (it scales horizontally), so that
-		// semantics does not apply and a synthesized number would only invite
-		// etcd-style false quota alarms. Zero is not usable either: etcdctl 3.7's
-		// endpoint-status table divides DbSizeInUse by DbSize and panics on zero.
-		// Equal 1-byte sentinels report 0% fragmentation without pretending to
-		// measure TiKV capacity. Real capacity is observed out of band:
-		// TiKV/PD's own metrics (store disk, region count) for bytes, and
-		// KubeBrain's count_index.keys gauge for object count. See
-		// docs/observability_cn.md.
-		DbSize:        1,
-		DbSizeInUse:   1,
-		DbSizeQuota:   defaultEtcdBackendQuota,
+		// With a configured quota these fields report the tenant's latest logical
+		// key+value bytes. Without one they retain the nonzero sentinel required
+		// by etcdctl's fragmentation calculation; TiKV physical capacity remains
+		// observable through PD/TiKV metrics.
+		DbSize:        dbSize,
+		DbSizeInUse:   dbSize,
+		DbSizeQuota:   quota,
 		Errors:        nil,
 		IsLearner:     false,
 		DowngradeInfo: &etcdserverpb.DowngradeInfo{Enabled: false},

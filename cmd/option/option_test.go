@@ -63,6 +63,7 @@ func TestTLSFlagsBindToExpectedSecurityConfigFields(t *testing.T) {
 		"--grpc-keepalive-timeout=11s",
 		"--max-txn-ops=64",
 		"--max-request-bytes=1048576",
+		"--quota-backend-bytes=2097152",
 		"--auth-token=simple",
 		"--bcrypt-cost=7",
 		"--auth-token-ttl=45",
@@ -103,6 +104,7 @@ func TestTLSFlagsBindToExpectedSecurityConfigFields(t *testing.T) {
 	require.Equal(t, 11*time.Second, o.epsConf.GRPCKeepAliveTimeout)
 	require.Equal(t, uint(64), o.epsConf.MaxTxnOps)
 	require.Equal(t, uint(1048576), o.epsConf.MaxRequestBytes)
+	require.Equal(t, int64(2097152), o.quotaBackendBytes)
 	require.Equal(t, "simple", o.epsConf.AuthToken)
 	require.Equal(t, uint(7), o.epsConf.BcryptCost)
 	require.Equal(t, uint(45), o.epsConf.AuthTokenTTL)

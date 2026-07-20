@@ -1,0 +1,92 @@
+// Copyright 2026 ByteDance and/or its affiliates
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+
+package etcd
+
+import (
+	"context"
+	"testing"
+
+	"github.com/golang/mock/gomock"
+	"github.com/stretchr/testify/require"
+	"go.etcd.io/etcd/api/v3/etcdserverpb"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
+	"github.com/kubewharf/kubebrain/pkg/backend"
+	"github.com/kubewharf/kubebrain/pkg/metrics/mock"
+	"github.com/kubewharf/kubebrain/pkg/storage/memkv"
+)
+
+func newQuotaRPCServer(t *testing.T, quota int64) *RPCServer {
+	t.Helper()
+	ctrl := gomock.NewController(t)
+	metrics := mock.NewMinimalMetrics(ctrl)
+	kv := memkv.NewKvStorage()
+	b := backend.NewBackend(kv, backend.Config{
+		Identity:                "quota-test-peer",
+		EnableEtcdCompatibility: true,
+		QuotaBackendBytes:       quota,
+	}, metrics)
+	require.NoError(t, b.EnsureQuotaInitialized(context.Background()))
+	server := New(b, metrics, testPeerService{isLeader: true})
+	t.Cleanup(func() {
+		server.stopLeases()
+		require.NoError(t, kv.Close())
+		ctrl.Finish()
+	})
+	return server
+}
+
+func TestQuotaRPCNoSpaceRecoveryAndStatus(t *testing.T) {
+	server := newQuotaRPCServer(t, 6)
+	ctx := context.Background()
+
+	initial, err := server.Status(ctx, &etcdserverpb.StatusRequest{})
+	require.NoError(t, err)
+	require.Equal(t, int64(1), initial.DbSize)
+	require.Equal(t, int64(6), initial.DbSizeQuota)
+
+	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: []byte("key"), Value: []byte("123")})
+	require.NoError(t, err)
+	statusResp, err := server.Status(ctx, &etcdserverpb.StatusRequest{})
+	require.NoError(t, err)
+	require.Equal(t, int64(6), statusResp.DbSize)
+	require.Equal(t, statusResp.DbSize, statusResp.DbSizeInUse)
+
+	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: []byte("x"), Value: []byte("y")})
+	require.Equal(t, codes.ResourceExhausted, status.Code(err))
+	alarmResp, err := server.Alarm(ctx, &etcdserverpb.AlarmRequest{Action: etcdserverpb.AlarmRequest_GET})
+	require.NoError(t, err)
+	require.Len(t, alarmResp.Alarms, 1)
+	require.Equal(t, etcdserverpb.AlarmType_NOSPACE, alarmResp.Alarms[0].Alarm)
+
+	_, err = server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 30})
+	require.Equal(t, codes.ResourceExhausted, status.Code(err))
+	_, err = server.Txn(ctx, &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{{
+		Request: &etcdserverpb.RequestOp_RequestPut{
+			RequestPut: &etcdserverpb.PutRequest{Key: []byte("z"), Value: []byte("1")},
+		},
+	}}})
+	require.Equal(t, codes.ResourceExhausted, status.Code(err))
+
+	_, err = server.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{Key: []byte("key")})
+	require.NoError(t, err)
+	_, err = server.Alarm(ctx, &etcdserverpb.AlarmRequest{
+		Action: etcdserverpb.AlarmRequest_DEACTIVATE,
+		Alarm:  etcdserverpb.AlarmType_NOSPACE,
+	})
+	require.NoError(t, err)
+	alarmResp, err = server.Alarm(ctx, &etcdserverpb.AlarmRequest{Action: etcdserverpb.AlarmRequest_GET})
+	require.NoError(t, err)
+	require.Empty(t, alarmResp.Alarms)
+
+	rangeResp, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: []byte("key")})
+	require.NoError(t, err)
+	require.Empty(t, rangeResp.Kvs)
+}

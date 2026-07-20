@@ -186,6 +186,19 @@ func (s *server) onStartedLeading(ctx context.Context) {
 		case <-time.After(leaderReloadRetryInterval):
 		}
 	}
+	for {
+		err := s.backend.EnsureQuotaInitialized(ctx)
+		if err == nil {
+			break
+		}
+		s.metricCli.EmitCounter("quota.initialize.err", 1)
+		klog.ErrorS(err, "quota usage initialization failed; retrying before serving")
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(leaderReloadRetryInterval):
+		}
+	}
 	// Reconstruct lease state from storage BEFORE advertising readiness (review
 	// #6). A stale follower snapshot's expiry timers would otherwise wrongly delete
 	// kept-alive leases or orphan newly-granted ones. Retry on failure rather than

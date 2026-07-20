@@ -75,6 +75,7 @@ type KubeBrainOption struct {
 
 	enableCountIndex        bool
 	countIndexMaxKeys       int
+	quotaBackendBytes       int64
 	autoCompactionRetention uint64
 	historyScanRevBucket    uint64
 
@@ -159,6 +160,7 @@ func (o *KubeBrainOption) AddFlags(fs *pflag.FlagSet) {
 	fs.DurationVar(&o.epsConf.GRPCKeepAliveTimeout, "grpc-keepalive-timeout", o.epsConf.GRPCKeepAliveTimeout, "Time to wait for a keepalive response; 0 disables server pings.")
 	fs.UintVar(&o.epsConf.MaxTxnOps, "max-txn-ops", o.epsConf.MaxTxnOps, "Maximum number of operations permitted in a transaction.")
 	fs.UintVar(&o.epsConf.MaxRequestBytes, "max-request-bytes", o.epsConf.MaxRequestBytes, "Maximum client request payload size in bytes, excluding 512 KiB of gRPC transport overhead.")
+	fs.Int64Var(&o.quotaBackendBytes, "quota-backend-bytes", o.quotaBackendBytes, "Maximum latest logical user key+value bytes in this tenant keyspace; 0 disables. Exceeding the limit raises NOSPACE and rejects growing writes.")
 	fs.StringVar(&o.epsConf.AuthToken, "auth-token", o.epsConf.AuthToken, "Authentication token provider: simple or jwt with etcd-compatible options.")
 	fs.UintVar(&o.epsConf.BcryptCost, "bcrypt-cost", o.epsConf.BcryptCost, "Bcrypt cost factor for hashing authentication passwords; out-of-range values use the bcrypt default.")
 	fs.UintVar(&o.epsConf.AuthTokenTTL, "auth-token-ttl", o.epsConf.AuthTokenTTL, "Authentication token lifetime in seconds; 0 uses the 300-second default.")
@@ -301,6 +303,9 @@ func (o *KubeBrainOption) Validate() error {
 	if _, err := coder.NewKeyspace(o.Keyspace); err != nil {
 		return err
 	}
+	if o.quotaBackendBytes < 0 {
+		return fmt.Errorf("--quota-backend-bytes must be non-negative")
+	}
 
 	const watchProgressNotifyIntervalMax = 2500 * time.Millisecond
 	if o.watchProgressNotifyInterval > watchProgressNotifyIntervalMax {
@@ -369,6 +374,7 @@ func (o *KubeBrainOption) Run(ctx context.Context) error {
 		Identity:                    identity,
 		SkippedPrefixes:             o.SkippedPrefixes,
 		EnableEtcdCompatibility:     o.epsConf.EnableEtcdCompatibility,
+		QuotaBackendBytes:           o.quotaBackendBytes,
 		WatchCacheSize:              o.watchCacheSize,
 		WatchFanoutBuffer:           o.watchFanoutBuffer,
 		StorageGCLifetime:           o.storageGCLifetime,

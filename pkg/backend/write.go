@@ -30,6 +30,9 @@ import (
 
 // Create implements Backend interface
 func (b *backend) Create(ctx context.Context, put *proto.CreateRequest) (resp *proto.CreateResponse, err error) {
+	if b.config.QuotaBackendBytes > 0 {
+		return b.quotaCreate(ctx, put)
+	}
 	unlock := b.lockLogicalWrite(ctx)
 	defer unlock()
 	ts := time.Now()
@@ -183,6 +186,9 @@ func (b *backend) createBatchWithMetadata(ctx context.Context, revisionKey, obje
 
 // Delete implements Backend interface
 func (b *backend) Delete(ctx context.Context, r *proto.DeleteRequest) (*proto.DeleteResponse, error) {
+	if b.config.QuotaBackendBytes > 0 {
+		return b.quotaDelete(ctx, r)
+	}
 	unlock := b.lockLogicalWrite(ctx)
 	defer unlock()
 	return b.deleteOnce(ctx, r, true)
@@ -428,6 +434,9 @@ func (b *backend) DeleteRange(ctx context.Context, kvs []*proto.KeyValue) (resp 
 
 // Update implements Backend interface
 func (b *backend) Update(ctx context.Context, r *proto.UpdateRequest) (*proto.UpdateResponse, error) {
+	if b.config.QuotaBackendBytes > 0 {
+		return b.quotaUpdate(ctx, r)
+	}
 	unlock := b.lockLogicalWrite(ctx)
 	defer unlock()
 	return b.updateOnce(ctx, r, true)
