@@ -6128,6 +6128,26 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   3/3、PD/TiKV 3+3 Ready，endpoint proposal health 34.05ms。A325 未发现服务端
   实现差异，只增加永久信息泄露边界门禁，因此不构建镜像或滚动发布。
 
+- **Auth A326 keepalive stream 动态撤权（2026-07-20）**：在可销毁实例双端 auth
+  差分中补齐长连接逐请求鉴权。普通用户创建 lease 并绑定授权 key 后，通过 raw
+  `LeaseKeepAlive` stream 的首个请求必须成功；root 撤销该 key-range 权限后，同一
+  stream 的下一请求必须立即返回 gRPC `PermissionDenied`，不能沿用建流时的授权
+  快照；恢复权限后新 keepalive 请求必须再次成功。该场景扩展了上游
+  `TestAuthLeaseKeepAlive` 的一次性 root 验证，并为 KubeBrain 已有的逐消息鉴权实现
+  建立真实 TiKV 黑盒门禁。
+
+  raw generated gRPC client 返回标准 `codes.PermissionDenied`，但不会像 clientv3
+  一样包装为可被 `errors.Is(..., rpctypes.ErrPermissionDenied)` 识别的错误；差分
+  错误归类因此统一接受标准 gRPC code 或 rpctypes 语义匹配，避免入口不同造成假阴性。
+  参考 etcd 与使用独立 `a326-auth-2` keyspace 的真实 TiKV-backed KubeBrain 首轮
+  6.73 秒通过；相同端点连续 5 轮 33.984 秒、race 2 轮 15.466 秒通过。
+
+  带 scheme 的完整 172-test compat suite 349.346 秒通过；根模块
+  `go test ./...`、根/compat `go vet ./...` 与 `git diff --check` 均通过。在线
+  `kubebrain:a320-object-request-metering` production release gate 保持 KubeBrain
+  3/3、PD/TiKV 3+3 Ready，endpoint proposal health 32.67ms。A326 未发现服务端
+  实现差异，只增加永久长连接授权门禁，因此不构建镜像或滚动发布。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
