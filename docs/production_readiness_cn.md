@@ -1051,6 +1051,9 @@ hack/dev/verify.sh
   session lease 并立即 Orphan keepalive。Unlock/Resign 只删除键、不撤销自动 lease；
   Campaign response 暴露 lease，Lock response 不暴露，后者需从返回 key 的 KV metadata
   反查或等待自然到期。容量与泄漏监控应计入这类短时 orphan lease。
+  发布验证还必须让未 Unlock/Resign 的自动 lease 自然过期，确认内部 keepalive 已停止、
+  lease TTL 最终为 -1 且键自动删除。到期前最后一秒 TTL=0 在 JSON 中会省略 `TTL`
+  字段但仍保留 `grantedTTL=60`，不能将该瞬间误判为 lease 已不存在。
 - `Auth` 已实现 etcd 兼容的用户、角色、key-range 权限和 token 生命周期，并覆盖
   Watch/Lease 持续鉴权及多副本故障转移；生产启用流程见 Auth 设计与兼容性计划。
 

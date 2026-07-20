@@ -7195,6 +7195,32 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   候选矩阵 20 轮、双端 race 10 轮、服务 race 50 轮、完整根测试和根 vet 均通过；
   每轮显式回收自动 lease，未用 namespace 删除掩盖测试资源泄漏。未发现运行时代码差异。
 
+- **Compatibility A362 zero-lease natural expiry（2026-07-20）**：A361 证明
+  lease=0 会创建 60 秒 orphan session，但随后显式 revoke，尚不能证明 dedicated
+  service 的 `Session.Orphan` 真正终止内部 keepalive。提交 `5a268af` 增加约一分钟的
+  HTTP 双端场景：Lock/Campaign 均不调用 Unlock/Resign，也不主动 revoke；reference
+  与 KubeBrain 作为并行子测试同时计时，创建后约 2 秒要求两个 TTL 都从初值下降，随后
+  最多等待 75 秒，直到两个 LeaseTimeToLive 均返回 -1 且两个队列键都消失。
+
+  首轮测试还固定一个 protobuf JSON 边界：lease 仍存在但进入最后一秒时 TTL=0，
+  `EmitUnpopulated=false` 会省略 `TTL`，同时 `grantedTTL=60` 仍存在；真正过期后 upstream
+  才显式返回 `TTL:"-1"` 且省略零值 grantedTTL。修正测试解析后，候选 reference
+  61.05s、KubeBrain 60.17s 通过；race instrumentation 下完整双端场景约 62.15s 通过。
+  这同时证明自动 lease 不会被隐藏的 keepalive goroutine 永久续租，lease timer 会原子
+  删除 Lock/Election 键。
+
+  exact image 从 `5a268af7ceae1e1cd9a6b8baea96a8658f222b6e` 的 `git archive`
+  构建，tag `kubebrain:a362-zero-lease-expiry`，image ID
+  `sha256:d5534f02874179d343b7873a8af7865bca65ba5e4ff67178c0fdb108bde605a1`，
+  OCI version `0.0.0-a362.1`、revision、Go 1.26.5/linux/amd64、TiKV 和运行用户
+  `65532:65532` 均匹配。在真实 3 PD/3 TiKV 独立 `a362-release` keyspace 上，final
+  Pod UID `13b8939a-c7ba-487c-b5b6-f504b7f67e67`，Ready、restartCount=0、只读根
+  文件系统、non-root、drop ALL、RuntimeDefault seccomp；完整到期负载后日志仍无
+  initialization failure/panic/fatal/segmentation/data race/storage error。精确镜像最终
+  场景 KubeBrain 60.18s、reference 61.05s 通过，完整根测试、根 vet 和真实双端 race
+  均通过。未发现运行时代码差异；多副本 leader replacement 跨越自动 lease 到期边界
+  仍属于后续故障 soak。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
