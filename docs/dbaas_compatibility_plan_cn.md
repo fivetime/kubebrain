@@ -7144,6 +7144,32 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   50 轮、完整根测试和根 vet 均通过。未发现运行时代码差异，本轮关闭的是此前缺失的
   阻塞 HTTP 并发请求取消清理门禁；leader replacement 与网络半断连接仍需长时 soak。
 
+- **Compatibility A360 dedicated concurrency error matrix（2026-07-20）**：对照
+  `/root/etcd/server/etcdserver/api/v3lock/lock.go`、
+  `/root/etcd/server/etcdserver/api/v3election/election.go` 和真实 upstream gateway，
+  固定专用 convenience API 的非直觉错误外观。Lock 使用不存在 lease、Unlock 空 key、
+  Campaign 使用不存在 lease、Proclaim/Resign 缺失 leader、Leader 查询空 election，
+  upstream 均返回 gRPC `Unknown`，generated HTTP gateway 均为 status 500/code 2；消息
+  分别精确为 `etcdserver: requested lease not found`、`etcdserver: key is not provided`、
+  `"leader" field must be provided` 和 `election: no leader`。这些接口没有沿用底层标准
+  KV/Lease 的 400/404，兼容层不能擅自把错误变得更规整。
+
+  提交 `67d504a` 增加服务层六用例回归，直接断言 adapter 返回的 gRPC code/message；
+  HTTP 双端矩阵先断言 reference 的固定 baseline，再比较 KubeBrain，避免两端共同漂移
+  仍误判通过。静态审计曾怀疑不存在 lease 的 NotFound 会逃过 A356 wrapper，但真实
+  adapter 路径最终已映射为 Unknown，未形成运行时差异；本轮因此不扩大错误转换范围，
+  只增加精确门禁，避免误伤 context cancellation、Unavailable 等应保留状态。
+
+  exact image 从 `67d504a04befb8612bdc2fea91aa20f5d3a55267` 的 `git archive`
+  构建，tag `kubebrain:a360-concurrency-errors`，image ID
+  `sha256:5cc94a24af36d6729d6156febc463e0c9d7fcfc5599849629ab6e4224e7f74dc`，
+  OCI version `0.0.0-a360.1`、revision、Go 1.26.5/linux/amd64、TiKV 和运行用户
+  `65532:65532` 均匹配。在真实 3 PD/3 TiKV 独立 `a360-release` keyspace 上，final
+  Pod UID `ed195505-e48b-44cc-a026-0d818eac9c55`，Ready、restartCount=0、只读根
+  文件系统、non-root、drop ALL、RuntimeDefault seccomp，日志无 initialization
+  failure/panic/fatal/segmentation/data race/storage error。精确镜像双端矩阵连续 50 轮、
+  候选矩阵 20 轮、双端 race 10 轮、服务 race 50 轮、完整根测试和根 vet 均通过。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
