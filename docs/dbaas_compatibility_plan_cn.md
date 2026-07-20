@@ -5929,6 +5929,51 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   adjustment/credit、最终 invoice/审计对账仍属 P1，真实连续 24 小时采样还应在
   预生产验证后再启用 v2 catalog。
 
+- **Metering A319 approved adjustment 与 final invoice（2026-07-20）**：不再用覆盖
+  charge 的方式纠错。新增 `kubebrain.metering-adjustment.v1`，用非零 signed
+  amount-micros 表示补收或 credit，固定 reason code、单日 charge 周期/币种和该
+  charge 的完整 exact-version source。adjustment 必须携带专用 billing approver
+  身份、外部 approval ID、不得早于周期结束且不得晚于发布时刻的审批时间，并在批准时
+  绑定唯一 invoice ID。一次实现审查发现只保证 plan 内 adjustment ID 唯一仍允许两张
+  invoice 重复抵扣同一 credit；invoice ID 交叉绑定和回归测试关闭了该漏洞。
+
+  新增 `kubebrain.metering-invoice-plan.v1` 作为不可变结算集合边界。plan 固定 invoice
+  ID、实例、UTC 账期、币种、逐日连续且有序的 charge format，以及排序无重复的
+  adjustment ID；finalizer 不列举 prefix，因此迟到对象不能静默进入已审批账期。专用
+  publisher 在任何 S3 请求前执行 strict/canonical schema、审批时间和保留期校验。
+  同 plan/adjustment ID 不同内容只能触发 Object Lock 冲突。
+
+  `kubebrain.metering-invoice.v1` 先固定 plan exact version，再按 plan 顺序读取并独立
+  校验每个 charge/adjustment receipt、下载字节、digest、format/ID/instance/period/
+  currency/retention。每项 adjustment 的 charge source 必须与对应日实际 charge
+  receipt 完全相同，且 invoice ID 必须等于 plan ID。subtotal 与 signed adjustment
+  total 使用 int64 溢出保护，最终 total 不允许为负；plan approval timestamp 固定为
+  finalized-at，使崩溃重试逐字节确定。invoice 内嵌 plan、全部 charge 和 adjustment
+  exact-version source 与可重算金额。
+
+  billing 普通测试、根模块全量测试/vet、manifest 测试、client dry-run 和 diff check
+  全部通过；确定性连续 100 轮 1.657 秒、race 连续 20 轮 3.637 秒。覆盖 forged/future
+  approval、非连续 charge、重复 adjustment、币种/周期/source 错配、signed total
+  溢出、负 invoice、非 canonical 篡改、publisher 校验前零 S3、plan→charge→adjustment
+  固定读取顺序、缺源零归档和两次 finalization 字节一致。
+
+  真实 MinIO Object Lock 链路依次锁定 v2 charge、approved adjustment、approved
+  invoice plan 和 final invoice；两次 finalize 返回同一 receipt，修改同 plan ID 内容
+  被不可变冲突拒绝。源码 executor 1.38 秒、最终镜像 executor 2.02 秒通过；临时
+  NodePort 已删除，测试对象按 COMPLIANCE 到期。
+
+  发布镜像 `kubebrain:a319-invoice-settlement` 由代码提交
+  `9eb8f46226c11345f49e412ec3b254465c6c9cf7` 构建，本地 digest 为
+  `sha256:490740d748aad4b20aa824ef15c6b20ce790fcb326f8997fe7f7934da5ce361a`；
+  OCI revision/version 和镜像内 settlement-publish、invoice-finalize 与对象执行器
+  均已核对。一次短 SHA 构建在生成镜像前被 metadata gate 拒绝。A318 三副本
+  StatefulSet 有序滚动到 A319 后 3/3 Ready、restartCount=0，PD/TiKV 3+3 Ready，
+  endpoint proposal health 和 production release gate 全部通过。
+
+  不可变 adjustment/credit 和数据面 final invoice 至此完成，但它不是完整税务/收款
+  系统。对象请求费、税率计算、折扣规则、付款/退款、应收账款、法规发票编号、外部
+  总账过账及跨账户财务对账仍属 P1；`tax_correction` 只能承载外部系统已批准的结果。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
@@ -5958,9 +6003,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
    告警已具备稳定错误或指标，网络 RX/TX 原始计量和逻辑备份 artifact 容量/新鲜度
    指标已暴露，单实例资源/容量/网络/备份 recording rules 和 fail-closed 缺测标记已
    建立，不可变小时采样、counter-based 小时窗口、确定性跨日积分、不可变资源价格
-   版本、对象 storage byte-time 和 v2 charge 已完成；继续补对象请求费、税费/折扣、
-   adjustment/credit、最终 invoice 与审计对账，并在具备 Prometheus Operator 的
-   预生产环境补真实一小时规则 evaluation 和连续 24 小时 storage sampling 门禁。
+   版本、对象 storage byte-time、v2 charge、approved adjustment/credit 和 final
+   invoice 已完成；继续补对象请求费、税率/折扣、付款/退款、应收账款、法规发票编号、
+   外部总账过账与跨账户财务对账，并在具备 Prometheus Operator 的预生产环境补真实
+   一小时规则 evaluation 和连续 24 小时 storage sampling 门禁。
 
 ### P2：运维兼容和长期验证
 
