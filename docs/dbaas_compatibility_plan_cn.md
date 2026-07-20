@@ -5713,6 +5713,41 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   exact A311 image、endpoint proposal health 和 production release gate 通过。本轮
   未发现 runtime 差距，只补齐永久配额故障证据，不重建相同镜像。
 
+- **Metering A314 immutable hourly sample archive（2026-07-20）**：关闭计量原始
+  证据的不可变留存缺口，不把该能力误作最终计费。新增
+  `kubebrain.metering-sample.v1` canonical artifact：每次处理由当前时间减去 10 分钟
+  finalization delay 后截断到整小时，固定 slot start/end、artifact ID 和对象键；先
+  要求 `kubebrain_dbaas:metering_data_complete` 唯一等于 1，再逐条查询 8 个既有
+  recording rule。每条序列必须唯一、精确带目标 `dbaas_instance`、值非负且有限、
+  timestamp 不晚于查询时间且不超过 5 分钟陈旧，否则整个槽位 fail closed。
+
+  对象存储模块新增通用 typed immutable blob archive。上传限制为非空且不超过 16 MiB，
+  使用 SHA-256 checksum、`If-None-Match: *`、Object Lock mode/retain-until 和业务
+  元数据；只接受对象存储返回的 exact version ID。上传后按 exact version 重新下载并
+  逐字节校验，再读取远端 retention；只有全部匹配才原子发布
+  `kubebrain.object-immutable-blob.receipt.v1`。若 Put 返回不确定错误或条件冲突，只在
+  已存在对象的 format、artifact ID、instance、store、digest、大小、保留期和内容全部
+  匹配时恢复同一收据，冲突对象绝不覆盖。生产 CronJob 每小时 UTC 第 17 分钟运行，
+  `Forbid` 并发、900 秒启动/运行 deadline，默认 COMPLIANCE 保留 7 年，使用独立
+  Object Store Secret、无 ServiceAccount token、非 root 和只读根文件系统。
+
+  计量包普通测试通过（0.058 秒），确定性连续 100 轮通过（2.435 秒），race 连续
+  20 轮通过（2.548 秒）；对象存储模块普通/race/vet、生产 manifest 测试与
+  `kubectl apply --dry-run=client`、根模块全量测试和 `go vet ./...` 均通过。真实
+  MinIO bucket 启用 versioning/Object Lock 后，同一小时槽位连续归档两次得到相同
+  receipt，独立检查只存在一个 938-byte exact version，COMPLIANCE retention、
+  SHA-256 checksum/metadata 和业务 metadata 全部匹配。该 integration test 保留为
+  显式 opt-in 门禁，不在缺少专用 Object Lock store 时静默模拟成功。
+
+  发布镜像 `kubebrain:a314-metering-archive` 由完整代码提交
+  `4cacd189afd87c74842223b741c0da93c0d07a1f` 构建，本地镜像 digest 为
+  `sha256:a8a1796e57de6b9757c76ef3f48218d45d07df7290f0381becadc90ed163a4d5`；
+  OCI revision、version 和两个新增二进制均已在容器内核对。A311 三副本
+  StatefulSet 有序滚动到 A314 后 3/3 Ready、restartCount=0，PD/TiKV 3+3 Ready，
+  etcdctl Status 仍返回 3.7.0，endpoint proposal health 和 production release gate
+  全部通过。不可变小时采样留存至此完成；跨周期积分、价格版本、对象存储成本和审计
+  对账仍属于 P1，缺测区间仍必须保持不可计费，禁止按零用量结算。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
@@ -5741,7 +5776,8 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
    请求 QPS/burst、逻辑 Watch 总数、CPU/内存饱和、网络错误/丢包及 PD/TiKV PVC 容量
    告警已具备稳定错误或指标，网络 RX/TX 原始计量和逻辑备份 artifact 容量/新鲜度
    指标已暴露，单实例资源/容量/网络/备份 recording rules 和 fail-closed 缺测标记已
-   建立；继续补不可变计量留存、跨周期积分、价格版本、对象存储成本和审计对账。
+   建立，不可变小时采样留存已完成；继续补跨周期积分、价格版本、对象存储成本和审计
+   对账。
 
 ### P2：运维兼容和长期验证
 
