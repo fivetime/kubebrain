@@ -5563,6 +5563,30 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   port-forward；最终 KubeBrain 3/3 Ready 且 0 restart，PD/TiKV 3+3 Ready。
   未发现运行时差距，因此本轮增加永久历史可见性证据，不重建相同 runtime 镜像。
 
+- **Lease A308 follower KeepAlive cancellation status（2026-07-20）**：对照
+  upstream `/root/etcd` commit `b54c88406`。旧 etcd Lease server 在 stream context
+  被取消时把所有 `context.Canceled` 重写为 `ErrGRPCNoLeader/Unavailable`，因此客户端
+  主动取消一个经 follower 转发的 KeepAlive，服务端 metrics 却记录
+  `Unavailable`，污染可用性 SLO 和无 leader 告警。upstream 现保留 context 原始错误，
+  只有 require-leader monitor 自身负责产生 NoLeader。
+
+  KubeBrain 的 follower 路径把原 stream context 直接传入 leader unary 转发，返回值
+  原样向上交付，不存在该错误重写。新增阻塞转发单测：确认请求已进入 peer
+  `LeaseKeepAlive` 后取消客户端 context，leader 调用必须立即看到同一 cancellation，
+  follower handler 返回 `context.Canceled`，且不能发送伪响应。确定性门禁连续 100
+  轮通过（1.575 秒），focused race 连续 50 轮通过（3.729 秒），完整 Lease 服务测试
+  通过（9.342 秒）。
+
+  新增可重复 live compat 门禁，以显式 follower endpoint 和该 Pod metrics URL 批量
+  取消 200 条 KeepAlive stream，并在前后解析
+  `grpc_server_handled_total`。A300 三副本中的 follower `kubebrain-0` 实测 0.148 秒
+  通过：94 条实际进入服务端 handler，最终
+  `LeaseKeepAlive/Canceled=94`，`Unavailable=0`；未进入 handler 的连接由客户端在
+  admission 前取消，不应计入服务端。根模块与 compat 模块相关 `go vet` 均通过，
+  临时 follower client/metrics NodePort Service 已删除，未使用 port-forward。
+  最终 KubeBrain 3/3 Ready 且 0 restart，PD/TiKV 3+3 Ready；现有 runtime 已正确，
+  本轮不重建语义相同的镜像。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
