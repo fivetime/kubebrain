@@ -2,7 +2,7 @@ ARG KUBEBRAIN_VERSION
 ARG KUBEBRAIN_GIT_SHA
 ARG KUBEBRAIN_BUILD_DATE
 
-FROM golang:1.26-bookworm AS build
+FROM golang:1.26-bookworm@sha256:1ecb7edf62a0408027bd5729dfd6b1b8766e578e8df93995b225dfd0944eb651 AS build
 
 WORKDIR /src
 ENV CGO_ENABLED=0
@@ -52,7 +52,7 @@ RUN test -n "$KUBEBRAIN_VERSION" \
     && cd /src/hack/backup/objectstore \
     && go build -trimpath -o /src/bin/kubebrain-logical-object ./cmd/logical-object
 
-FROM alpine:3.23
+FROM alpine:3.23@sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952bc2d6daf40
 
 RUN apk add --no-cache bash ca-certificates coreutils curl etcd-ctl jq kubectl openssl \
     && addgroup -S -g 65532 kubebrain \

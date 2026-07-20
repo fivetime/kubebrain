@@ -3,11 +3,31 @@ package build_test
 import (
 	"bufio"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
+
+var pinnedBaseImage = regexp.MustCompile(`(?m)^FROM [^\s@]+:[^\s@]+@sha256:[a-f0-9]{64}(?: AS [a-zA-Z0-9_-]+)?$`)
+
+func TestDockerfilePinsEveryBaseImageByDigest(t *testing.T) {
+	dockerfile, err := os.ReadFile("../Dockerfile")
+	require.NoError(t, err)
+
+	var fromLines []string
+	for _, line := range strings.Split(string(dockerfile), "\n") {
+		if strings.HasPrefix(line, "FROM ") {
+			fromLines = append(fromLines, line)
+		}
+	}
+	require.NotEmpty(t, fromLines)
+	for _, line := range fromLines {
+		require.Regexp(t, pinnedBaseImage, line,
+			"base images must retain a readable version tag and an immutable sha256 digest")
+	}
+}
 
 func TestDockerignoreExcludesLocalBuildArtifacts(t *testing.T) {
 	file, err := os.Open("../.dockerignore")
@@ -77,7 +97,7 @@ func TestDockerfileMetadataDoesNotInvalidateDependencyOrRuntimePackageLayers(t *
 	require.NoError(t, err)
 	content := string(dockerfile)
 
-	buildStart := strings.Index(content, "FROM golang:1.26-bookworm AS build")
+	buildStart := strings.Index(content, "FROM golang:1.26-bookworm@sha256:")
 	require.NotEqual(t, -1, buildStart)
 	sourceCopy := strings.Index(content[buildStart:], "COPY . .")
 	require.NotEqual(t, -1, sourceCopy)
@@ -88,7 +108,7 @@ func TestDockerfileMetadataDoesNotInvalidateDependencyOrRuntimePackageLayers(t *
 	require.NotContains(t, content[buildStart:sourceCopy], "ARG KUBEBRAIN_",
 		"release metadata changes must not invalidate module download layers")
 
-	runtimeStart := strings.Index(content, "FROM alpine:3.23")
+	runtimeStart := strings.Index(content, "FROM alpine:3.23@sha256:")
 	require.NotEqual(t, -1, runtimeStart)
 	runtimePackages := strings.Index(content[runtimeStart:], "RUN apk add --no-cache")
 	runtimeScripts := strings.Index(content[runtimeStart:], "COPY hack/production/*.sh")
