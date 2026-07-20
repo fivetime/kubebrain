@@ -66,13 +66,23 @@ func TestReleaseWorkflowPublishesVerifiedMultiPlatformImage(t *testing.T) {
 		"docker buildx imagetools inspect --raw",
 		`sort == ["amd64", "arm64"]`,
 		`steps.vars.outputs.image }}@${{ steps.build.outputs.digest`,
+		"Promote verified image to latest",
+		"docker buildx imagetools create",
 	} {
 		require.Contains(t, content, required)
 	}
+	tagsStart := strings.Index(content, "          tags: |")
+	require.NotEqual(t, -1, tagsStart)
+	cacheStart := strings.Index(content[tagsStart:], "          cache-from:")
+	require.NotEqual(t, -1, cacheStart)
+	require.NotContains(t, content[tagsStart:tagsStart+cacheStart], ":latest")
 	require.Less(t,
 		strings.Index(content, "uses: docker/setup-qemu-action@v3"),
 		strings.Index(content, "uses: docker/build-push-action@v6"))
 	require.Less(t,
 		strings.Index(content, "uses: docker/build-push-action@v6"),
 		strings.Index(content, "Verify published multi-platform index"))
+	require.Less(t,
+		strings.Index(content, "Verify published multi-platform index"),
+		strings.Index(content, "Promote verified image to latest"))
 }

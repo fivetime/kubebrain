@@ -76,7 +76,6 @@ jobs:
           tags: |
             ${{ steps.vars.outputs.image }}:${{ steps.vars.outputs.short_sha }}
             ${{ steps.vars.outputs.image }}:${{ steps.vars.outputs.revision }}
-            ${{ steps.vars.outputs.image }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
           provenance: mode=max
@@ -94,3 +93,13 @@ jobs:
           test "$(jq '[.manifests[] | select(.platform.os == "linux")] | length' \
             "$RUNNER_TEMP/manifest.json")" -eq 2
           docker buildx imagetools inspect "$reference"
+
+      - name: Promote verified image to latest
+        run: |
+          reference="${{ steps.vars.outputs.image }}@${{ steps.build.outputs.digest }}"
+          docker buildx imagetools create \
+            --tag "${{ steps.vars.outputs.image }}:latest" \
+            "$reference"
+          test "$(docker buildx imagetools inspect \
+            "${{ steps.vars.outputs.image }}:latest" --format '{{json .Manifest}}' |
+            jq -r '.digest')" = "${{ steps.build.outputs.digest }}"
