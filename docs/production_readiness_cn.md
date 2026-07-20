@@ -1039,7 +1039,9 @@ hack/dev/verify.sh
   不能只检查路由 200。Watch/Observe generated HTTP streaming 已覆盖有限请求体
   CloseSend 后继续推送、逐帧 flush、chunked NDJSON envelope、响应取消和 logical
   Watch 配额释放，并通过 reference etcd 双端差分；仍需预生产长时故障与慢消费者
-  soak，不得据此声明长期流稳定性。
+  soak，不得据此声明长期流稳定性。LeaseKeepAlive HTTP 双向流还覆盖同一有限 body
+  内多条 JSON 请求、逐请求响应、未知 lease 的 TTL=0 零值省略以及 body EOF 后正常
+  结束；发布门禁应保留多消息形状，不能只验证单次 grant/keepalive。
 - `Auth` 已实现 etcd 兼容的用户、角色、key-range 权限和 token 生命周期，并覆盖
   Watch/Lease 持续鉴权及多副本故障转移；生产启用流程见 Auth 设计与兼容性计划。
 

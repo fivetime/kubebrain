@@ -7089,6 +7089,33 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   的目标流式场景执行 race。数天级网络故障、leader replacement 和慢消费者 soak 仍为
   P1，不能由这些确定性测试替代。
 
+- **Compatibility A358 HTTP LeaseKeepAlive streaming（2026-07-20）**：对照
+  `/root/etcd/api/etcdserverpb/gw/rpc.pb.gw.go` 的 generated
+  `request_Lease_LeaseKeepAlive_0` 与
+  `/root/etcd/server/etcdserver/api/v3rpc/lease.go`，确认 `/v3/lease/keepalive`
+  会把同一 HTTP body 中连续的 JSON 对象逐个发送到双向 gRPC stream；body EOF 触发
+  `CloseSend`，服务端处理完已接收消息后正常返回。每条请求各产生一个 newline-delimited
+  `{"result":...}` chunk；未知 lease 不终止 stream，返回原 ID 与 TTL=0，而当前
+  proto JSON `EmitUnpopulated=false` 会省略零值 `TTL` 字段。
+
+  提交 `90ab9f3` 增加 bufconn + 真实 HTTP server 合同测试，以两个连续请求固定
+  chunked/content-type、响应顺序、string-int64 字段、帧数和最终 EOF；真实 reference
+  差分在有效 lease、未知 lease、同一有效 lease三条请求上固定 ID 顺序、有效 TTL>0、
+  未知 TTL 字段省略及响应正常结束，并与 A357 Watch/Observe 场景共同执行。探测未发现
+  运行时代码差异，本轮关闭的是此前缺失的跨 Lease/JSON 流式发布门禁。
+
+  exact image 从 `90ab9f34c75f6a42996f095ff4fd2bd2cddc6833` 的 `git archive`
+  构建，tag `kubebrain:a358-http-lease-stream`，image ID
+  `sha256:9895064d2059955b50c53d327e4f144c0d5438456fe7ff7cecae328d17fb4c65`，
+  OCI version `0.0.0-a358.1`、revision、Go 1.26.5/linux/amd64、TiKV 和运行用户
+  `65532:65532` 均匹配。在真实 3 PD/3 TiKV 独立 `a358-release` keyspace 上，final
+  Pod UID `82c8a068-6b1c-4382-9624-7985baccca58`，Ready、restartCount=0、只读根
+  文件系统、non-root、drop ALL、RuntimeDefault seccomp，日志无 initialization
+  failure/panic/fatal/segmentation/data race/storage error。精确镜像双端完整流式场景连续
+  10 轮、此前候选探测 10 轮、双端 race 3 轮、generated gateway race 20 轮、完整根
+  测试和根 vet 均通过。长时 keepalive 断线重连、leader replacement 与网络故障 soak
+  仍属于 P1，不由有限 body 的确定性测试替代。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
