@@ -6733,6 +6733,38 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   initialization failure/panic/fatal/segmentation/data race/storage error；PD/TiKV
   3+3 Ready。
 
+- **Production A347 kubectl/server skew alignment（2026-07-20）**：A346 固定软件包后
+  发现 production image 内 Alpine `kubectl v1.34.2` 与仓库已声明、系统验证的
+  Kubernetes v1.35/v1.36 server 窗口不一致。Kubernetes 只保证 kubectl 与 apiserver
+  相差不超过一个 minor；1.34 client 访问 1.36 server 超出保证，而该二进制被 restore
+  cutover、certificate rotation、destroy、release gate 等生产脚本广泛调用。
+
+  Dockerfile 现从官方 `dl.k8s.io` 获取 v1.36.2，并对 amd64
+  `1e9045ec32bea85da43de85f0065358529ea7c7a152eca78154fba5b58c27d82`、arm64
+  `c957eb8c4bea27a3bb35b269edd9082e27f027f7b76b20b5bf4afebc726c6d3e`
+  分别执行 SHA-256 校验；下载只允许 HTTPS/TLS 1.2+，未知 `TARGETARCH` 在
+  `COPY . .` 和源码编译前 fail closed。Alpine 1.34.2 包已移除，最终 runtime 只复制
+  校验后的官方二进制。构建门禁固定版本、双架构 digest、URL、校验和 COPY 路径；
+  聚焦测试 20 轮、race 10 轮通过。arm64 本轮只验证官方 checksum 供应链，仍需 arm64
+  runner 做真实构建与运行。
+
+  从实现提交 `c23f3b6f29715f38f453b7b605c80ba190f20cdb` 的 `git archive` 构建
+  `kubebrain:a347-kubectl-skew`，context 7.348 MB，两个 module download 命中缓存，
+  `/src/bin/kubectl: OK` 后 53 个 stage 全部成功；s390x 负向构建在源码编译前明确
+  报 `unsupported TARGETARCH=s390x`。image ID
+  `sha256:f0a21158b6d2599e62aee70aa2421b4effd108013955e1bdced66dcc8be84882`，
+  OCI revision 与二进制 version 匹配，版本 3.7.0/TiKV、Go 1.26.5、linux/amd64、
+  运行用户 `65532:65532`。
+
+  最终非 root 镜像内 `kubectl version` 为 client v1.36.2，并成功连接 kind
+  Kubernetes v1.36.1 API、读取 `kubebrain-dev` namespace。相同镜像在独立
+  `a347-kubectl-skew` TiKV keyspace 上 Ready；Put/Get/Delete
+  `/a347/production-ready` 成功，endpoint proposal health 25.749785ms，
+  `/ready` 与四项 readyz 全部通过。Pod UID
+  `1aca73cc-350b-4a1c-90c9-a9e3b0acba14`、restartCount=0，日志无
+  initialization failure/panic/fatal/segmentation/data race/storage error；PD/TiKV
+  3+3 Ready。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range

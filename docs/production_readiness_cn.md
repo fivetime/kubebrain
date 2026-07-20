@@ -92,6 +92,14 @@ runtime stage 的每个显式 `apk add` 包也必须使用 `name=version-rN` 精
 外部输入；需要离线或字节级长期重建时，平台还必须使用受控 APK repository snapshot，
 或把已验证最终镜像按 digest 复制到受保留策略约束的内部 registry。
 
+镜像内 `kubectl` 是 DBaaS backup、restore、certificate rotation、destroy 和 release
+gate 的运行时依赖，版本必须落在受支持 Kubernetes server 的 `±1 minor` skew 窗口内。
+当前支持并系统验证 v1.35/v1.36，因此使用官方 v1.36.2 二进制，而不是 Alpine v3.23
+提供的 v1.34.2。amd64/arm64 下载必须分别固定官方 SHA-256，使用 HTTPS/TLS 1.2+，
+校验成功后才复制进 runtime；不支持的 `TARGETARCH` 必须在源码编译前失败。发布门槛需
+从最终非 root 镜像运行 `kubectl version --client -o json`，并用同一二进制连接目标
+Kubernetes API。checksum 门禁不等于跨架构运行验证；当前 arm64 仍需独立 CI runner。
+
 ## 真-k3s 消费端驱动验证进展（2026-07-03）
 
 用真实 kube-apiserver（k3s v1.36，`--datastore-endpoint` 指向 KubeBrain-on-TiKV）端到端驱动，已完成（脚本 `hack/dev/k3s-load-smoke.sh` 一键复跑）：
