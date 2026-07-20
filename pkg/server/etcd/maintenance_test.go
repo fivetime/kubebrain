@@ -50,6 +50,15 @@ type compactBeforeHashBackendShim struct {
 	target uint64
 }
 
+type alarmReadErrorBackendShim struct {
+	BackendShim
+	err error
+}
+
+func (b *alarmReadErrorBackendShim) NoSpaceAlarm(context.Context) (uint64, bool, error) {
+	return 0, false, b.err
+}
+
 func (b *compactBeforeHashBackendShim) HashKV(ctx context.Context, revision int64) (backend.HashKVResult, error) {
 	_, err := b.BackendShim.CompactAsync(ctx, b.target)
 	require.NoError(b.t, err)
@@ -284,6 +293,41 @@ func TestStatusReportsNoLeaderInsteadOfClaimingSelf(t *testing.T) {
 	require.NoError(t, err)
 	require.Zero(t, resp.Leader)
 	require.Contains(t, resp.Errors, "etcdserver: no leader")
+}
+
+func TestStatusReportsNoLeaderBeforeActiveAlarms(t *testing.T) {
+	server := newQuotaRPCServer(t, 1)
+	server.peers = testPeerService{noLeader: true, currentTermFn: func() uint64 { return 1 }}
+	ctx := context.Background()
+
+	alarm, err := server.Alarm(ctx, &etcdserverpb.AlarmRequest{
+		Action: etcdserverpb.AlarmRequest_ACTIVATE,
+		Alarm:  etcdserverpb.AlarmType_NOSPACE,
+	})
+	require.NoError(t, err)
+	require.Len(t, alarm.Alarms, 1)
+
+	resp, err := server.Status(ctx, &etcdserverpb.StatusRequest{})
+	require.NoError(t, err)
+	require.Equal(t, []string{
+		rpctypes.ErrNoLeader.Error(),
+		alarm.Alarms[0].String(),
+	}, resp.Errors)
+}
+
+func TestStatusDoesNotHideActiveAlarmReadFailure(t *testing.T) {
+	server := newQuotaRPCServer(t, 1)
+	ctx := context.Background()
+	_, err := server.Alarm(ctx, &etcdserverpb.AlarmRequest{
+		Action: etcdserverpb.AlarmRequest_ACTIVATE,
+		Alarm:  etcdserverpb.AlarmType_NOSPACE,
+	})
+	require.NoError(t, err)
+
+	wantErr := errors.New("alarm metadata unavailable")
+	server.backend = &alarmReadErrorBackendShim{BackendShim: server.backend, err: wantErr}
+	_, err = server.Status(ctx, &etcdserverpb.StatusRequest{})
+	require.ErrorIs(t, err, wantErr)
 }
 
 func TestLocalMaintenanceDiagnosticsDoNotRequireLeaderBarrier(t *testing.T) {

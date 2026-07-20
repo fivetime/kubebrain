@@ -65,6 +65,9 @@ func TestQuotaRPCNoSpaceRecoveryAndStatus(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, alarmResp.Alarms, 1)
 	require.Equal(t, etcdserverpb.AlarmType_NOSPACE, alarmResp.Alarms[0].Alarm)
+	statusResp, err = server.Status(ctx, &etcdserverpb.StatusRequest{})
+	require.NoError(t, err)
+	require.Equal(t, []string{alarmResp.Alarms[0].String()}, statusResp.Errors)
 
 	_, err = server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 30})
 	require.Equal(t, codes.ResourceExhausted, status.Code(err))
@@ -107,6 +110,9 @@ func TestQuotaRPCNoSpaceRecoveryAndStatus(t *testing.T) {
 	alarmResp, err = server.Alarm(ctx, &etcdserverpb.AlarmRequest{Action: etcdserverpb.AlarmRequest_GET})
 	require.NoError(t, err)
 	require.Empty(t, alarmResp.Alarms)
+	statusResp, err = server.Status(ctx, &etcdserverpb.StatusRequest{})
+	require.NoError(t, err)
+	require.Empty(t, statusResp.Errors)
 
 	rangeResp, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: []byte("key")})
 	require.NoError(t, err)

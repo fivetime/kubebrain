@@ -159,9 +159,22 @@ func (s *RPCServer) Status(ctx context.Context, _ *etcdserverpb.StatusRequest) (
 		return nil, err
 	}
 	revision := s.backend.GetCurrentRevision()
-	usage, quota, _, quotaErr := s.backend.QuotaStatus(ctx)
+	usage, quota, noSpace, quotaErr := s.backend.QuotaStatus(ctx)
 	if quotaErr != nil {
 		return nil, quotaErr
+	}
+	var noSpaceAlarm *etcdserverpb.AlarmMember
+	if noSpace {
+		memberID, active, alarmErr := s.backend.NoSpaceAlarm(ctx)
+		if alarmErr != nil {
+			return nil, alarmErr
+		}
+		if active {
+			noSpaceAlarm = &etcdserverpb.AlarmMember{
+				MemberID: memberID,
+				Alarm:    etcdserverpb.AlarmType_NOSPACE,
+			}
+		}
 	}
 	dbSize := usage
 	if dbSize == 0 {
@@ -196,6 +209,9 @@ func (s *RPCServer) Status(ctx context.Context, _ *etcdserverpb.StatusRequest) (
 	}
 	if leader == 0 {
 		resp.Errors = append(resp.Errors, rpctypes.ErrNoLeader.Error())
+	}
+	if noSpaceAlarm != nil {
+		resp.Errors = append(resp.Errors, noSpaceAlarm.String())
 	}
 	return resp, nil
 }
