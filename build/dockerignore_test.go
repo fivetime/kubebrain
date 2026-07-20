@@ -29,6 +29,31 @@ func TestDockerfilePinsEveryBaseImageByDigest(t *testing.T) {
 	}
 }
 
+func TestDockerfilePinsEveryExplicitRuntimePackage(t *testing.T) {
+	dockerfile, err := os.ReadFile("../Dockerfile")
+	require.NoError(t, err)
+	content := string(dockerfile)
+
+	start := strings.Index(content, "RUN apk add --no-cache")
+	require.NotEqual(t, -1, start)
+	end := strings.Index(content[start:], "&& addgroup")
+	require.NotEqual(t, -1, end)
+	install := strings.ReplaceAll(content[start:start+end], "\\", "")
+
+	expected := []string{
+		"bash=5.3.3-r1",
+		"ca-certificates=20260611-r0",
+		"coreutils=9.8-r1",
+		"curl=8.20.0-r0",
+		"etcd-ctl=3.6.10-r1",
+		"jq=1.8.1-r0",
+		"kubectl=1.34.2-r6",
+		"openssl=3.5.7-r0",
+	}
+	require.Equal(t, append([]string{"RUN", "apk", "add", "--no-cache"}, expected...), strings.Fields(install),
+		"runtime package additions and upgrades must pin exact versions")
+}
+
 func TestDockerignoreExcludesLocalBuildArtifacts(t *testing.T) {
 	file, err := os.Open("../.dockerignore")
 	require.NoError(t, err)

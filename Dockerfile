@@ -54,7 +54,15 @@ RUN test -n "$KUBEBRAIN_VERSION" \
 
 FROM alpine:3.23@sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952bc2d6daf40
 
-RUN apk add --no-cache bash ca-certificates coreutils curl etcd-ctl jq kubectl openssl \
+RUN apk add --no-cache \
+      bash=5.3.3-r1 \
+      ca-certificates=20260611-r0 \
+      coreutils=9.8-r1 \
+      curl=8.20.0-r0 \
+      etcd-ctl=3.6.10-r1 \
+      jq=1.8.1-r0 \
+      kubectl=1.34.2-r6 \
+      openssl=3.5.7-r0 \
     && addgroup -S -g 65532 kubebrain \
     && adduser -S -D -H -h /nonexistent -s /sbin/nologin -u 65532 -G kubebrain kubebrain
 
