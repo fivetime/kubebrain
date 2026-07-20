@@ -22,6 +22,7 @@ type rangeStreamCommonOutcome struct {
 	More            bool
 	HeaderIsCurrent bool
 	Code            string
+	EndedWithEOF    bool
 }
 
 func TestRangeStreamCommonShapesDifferentialAgainstReferenceEtcd(t *testing.T) {
@@ -101,6 +102,7 @@ func runRangeStreamCommonShapes(
 		for {
 			chunk, recvErr := stream.Recv()
 			if errors.Is(recvErr, io.EOF) {
+				outcome.EndedWithEOF = true
 				break
 			}
 			if recvErr != nil {
@@ -119,6 +121,10 @@ func runRangeStreamCommonShapes(
 			}
 		}
 		outcomes = append(outcomes, outcome)
+	}
+	for _, outcome := range outcomes {
+		require.True(t, outcome.EndedWithEOF, "%s did not terminate with io.EOF", outcome.Name)
+		require.Empty(t, outcome.Code, "%s returned a terminal gRPC error", outcome.Name)
 	}
 	return outcomes
 }
