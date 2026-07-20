@@ -77,6 +77,19 @@ func TestQuotaRPCNoSpaceRecoveryAndStatus(t *testing.T) {
 	}}})
 	require.Equal(t, codes.ResourceExhausted, status.Code(err))
 
+	deactivate, err := server.Alarm(ctx, &etcdserverpb.AlarmRequest{
+		Action:   etcdserverpb.AlarmRequest_DEACTIVATE,
+		MemberID: alarmResp.Alarms[0].MemberID,
+		Alarm:    etcdserverpb.AlarmType_NOSPACE,
+	})
+	require.NoError(t, err)
+	require.Len(t, deactivate.Alarms, 1, "etcd allows disarm while usage is at the limit")
+	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: []byte("key"), Value: []byte("1")})
+	require.Equal(t, codes.ResourceExhausted, status.Code(err))
+	alarmResp, err = server.Alarm(ctx, &etcdserverpb.AlarmRequest{Action: etcdserverpb.AlarmRequest_GET})
+	require.NoError(t, err)
+	require.Len(t, alarmResp.Alarms, 1, "the first Put after disarm must re-arm NOSPACE")
+
 	deleteTxn, err := server.Txn(ctx, &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{{
 		Request: &etcdserverpb.RequestOp_RequestDeleteRange{
 			RequestDeleteRange: &etcdserverpb.DeleteRangeRequest{Key: []byte("key")},
@@ -84,7 +97,7 @@ func TestQuotaRPCNoSpaceRecoveryAndStatus(t *testing.T) {
 	}}})
 	require.NoError(t, err)
 	require.Len(t, deleteTxn.Responses, 1)
-	deactivate, err := server.Alarm(ctx, &etcdserverpb.AlarmRequest{
+	deactivate, err = server.Alarm(ctx, &etcdserverpb.AlarmRequest{
 		Action:   etcdserverpb.AlarmRequest_DEACTIVATE,
 		MemberID: alarmResp.Alarms[0].MemberID,
 		Alarm:    etcdserverpb.AlarmType_NOSPACE,

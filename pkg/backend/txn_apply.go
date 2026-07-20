@@ -395,7 +395,8 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 				"quota usage underflow: current=%d delta=%d", currentUsage, delta,
 			)
 		}
-		if delta > 0 && nextQuotaUsage > b.config.QuotaBackendBytes {
+		if hasPut && (currentUsage >= b.config.QuotaBackendBytes ||
+			nextQuotaUsage > b.config.QuotaBackendBytes) {
 			if alarmErr := b.activateNoSpace(ctx); alarmErr != nil {
 				return nil, baseRevision, false, alarmErr
 			}

@@ -72,8 +72,16 @@ func TestLogicalQuotaTracksLatestBytesAndPersistsNoSpace(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, int64(10), usage)
 	require.True(t, alarm)
-	_, err = b.DisarmNoSpace(ctx, b.quotaAlarmMemberID())
-	require.ErrorIs(t, err, ErrNoSpace)
+	removed, err := b.DisarmNoSpace(ctx, b.quotaAlarmMemberID())
+	require.NoError(t, err)
+	require.True(t, removed, "etcd permits alarm deactivation at the quota limit")
+	_, _, err = b.TxnApply(ctx, []TxnWriteOp{{
+		Key: key, Value: []byte("1"),
+	}}, nil)
+	require.ErrorIs(t, err, ErrNoSpace, "the next Put at the limit must re-arm NOSPACE")
+	_, _, alarm, err = b.QuotaStatus(ctx)
+	require.NoError(t, err)
+	require.True(t, alarm)
 
 	_, _, err = b.TxnApply(ctx, []TxnWriteOp{{Key: []byte("b"), Delete: true}}, nil)
 	require.NoError(t, err, "NOSPACE must allow deletes that recover capacity")
@@ -81,7 +89,7 @@ func TestLogicalQuotaTracksLatestBytesAndPersistsNoSpace(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, int64(8), usage)
 	require.True(t, alarm, "capacity recovery does not implicitly disarm etcd's sticky alarm")
-	removed, err := b.DisarmNoSpace(ctx, b.quotaAlarmMemberID())
+	removed, err = b.DisarmNoSpace(ctx, b.quotaAlarmMemberID())
 	require.NoError(t, err)
 	require.True(t, removed)
 	_, _, alarm, err = b.QuotaStatus(ctx)
@@ -540,8 +548,16 @@ func TestQuotaInitializationActivatesNoSpaceForExistingOverage(t *testing.T) {
 	require.Equal(t, int64(len("existing")+len("value")), usage)
 	require.Equal(t, int64(5), quota)
 	require.True(t, alarm)
-	_, err = limited.DisarmNoSpace(ctx, limited.quotaAlarmMemberID())
+	removed, err := limited.DisarmNoSpace(ctx, limited.quotaAlarmMemberID())
+	require.NoError(t, err)
+	require.True(t, removed, "startup overage does not prevent explicit deactivation")
+	_, _, err = limited.TxnApply(ctx, []TxnWriteOp{{
+		Key: []byte("existing"), Value: []byte("x"),
+	}}, nil)
 	require.ErrorIs(t, err, ErrNoSpace)
+	_, _, alarm, err = limited.QuotaStatus(ctx)
+	require.NoError(t, err)
+	require.True(t, alarm, "an over-quota Put after disarm must restore capped state")
 }
 
 func TestQuotaInitializationReconcilesCommittedUncertainUsage(t *testing.T) {

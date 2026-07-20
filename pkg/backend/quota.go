@@ -280,12 +280,9 @@ func (b *backend) ensureNoSpaceForUsageLocked(ctx context.Context, usage int64) 
 }
 
 func (b *backend) DisarmNoSpace(ctx context.Context, memberID uint64) (bool, error) {
-	usage, quota, active, err := b.QuotaStatus(ctx)
+	usage, _, active, err := b.QuotaStatus(ctx)
 	if err != nil {
 		return false, err
-	}
-	if quota > 0 && usage >= quota {
-		return false, ErrNoSpace
 	}
 	if !active {
 		b.emitQuotaMetrics(usage, false)

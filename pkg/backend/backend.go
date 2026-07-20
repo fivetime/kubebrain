@@ -113,8 +113,8 @@ type Backend interface {
 	ArmNoSpace(ctx context.Context, memberID uint64) (uint64, error)
 	// NoSpaceAlarm returns the persisted alarm owner and active state.
 	NoSpaceAlarm(ctx context.Context) (memberID uint64, active bool, err error)
-	// DisarmNoSpace clears NOSPACE only after usage falls below the hard limit
-	// when memberID owns it, and reports whether an active alarm was removed.
+	// DisarmNoSpace clears NOSPACE when memberID owns it and reports whether an
+	// active alarm was removed. A subsequent over-quota Put re-arms the alarm.
 	DisarmNoSpace(ctx context.Context, memberID uint64) (bool, error)
 
 	// BeginRangeTxn excludes every logical user-key write until unlock. It is
