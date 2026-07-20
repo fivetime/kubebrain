@@ -47,7 +47,6 @@ func TestDockerfilePinsEveryExplicitRuntimePackage(t *testing.T) {
 		"curl=8.20.0-r0",
 		"etcd-ctl=3.6.10-r1",
 		"jq=1.8.1-r0",
-		"kubectl=1.34.2-r6",
 		"openssl=3.5.7-r0",
 	}
 	require.Equal(t, append([]string{"RUN", "apk", "add", "--no-cache"}, expected...), strings.Fields(install),
@@ -107,6 +106,9 @@ func TestDockerfileCachesObjectstoreDependenciesBeforeSourceCopy(t *testing.T) {
 		"RUN go mod download",
 		"COPY hack/backup/objectstore/go.mod hack/backup/objectstore/go.sum ./hack/backup/objectstore/",
 		"RUN cd hack/backup/objectstore && go mod download",
+		"ARG KUBECTL_VERSION=v1.36.2",
+		"curl --proto '=https' --tlsv1.2 -fsSLo /src/bin/kubectl",
+		"echo \"${KUBECTL_SHA256}  /src/bin/kubectl\" | sha256sum -c -",
 		"COPY . .",
 	}
 	previous := -1
@@ -115,6 +117,25 @@ func TestDockerfileCachesObjectstoreDependenciesBeforeSourceCopy(t *testing.T) {
 		require.Greater(t, index, previous, "Dockerfile step %q must retain dependency-cache order", step)
 		previous = index
 	}
+}
+
+func TestDockerfilePinsOfficialKubectlForSupportedArchitectures(t *testing.T) {
+	dockerfile, err := os.ReadFile("../Dockerfile")
+	require.NoError(t, err)
+	content := string(dockerfile)
+
+	for _, required := range []string{
+		"ARG TARGETARCH=amd64",
+		"ARG KUBECTL_VERSION=v1.36.2",
+		"amd64) KUBECTL_SHA256=1e9045ec32bea85da43de85f0065358529ea7c7a152eca78154fba5b58c27d82",
+		"arm64) KUBECTL_SHA256=c957eb8c4bea27a3bb35b269edd9082e27f027f7b76b20b5bf4afebc726c6d3e",
+		`"https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${TARGETARCH}/kubectl"`,
+		`echo "${KUBECTL_SHA256}  /src/bin/kubectl" | sha256sum -c -`,
+		"COPY --from=build /src/bin/kubectl /usr/local/bin/kubectl",
+	} {
+		require.Contains(t, content, required)
+	}
+	require.NotContains(t, content, "kubectl=1.34.2-r6")
 }
 
 func TestDockerfileMetadataDoesNotInvalidateDependencyOrRuntimePackageLayers(t *testing.T) {
