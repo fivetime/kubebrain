@@ -31,6 +31,68 @@ func TestStatusAlarmDifferentialAgainstReferenceEtcd(t *testing.T) {
 	)
 }
 
+func TestStatusAlarmCrossEndpointVisibility(t *testing.T) {
+	rawEndpoints := os.Getenv("KUBEBRAIN_MULTI_QUOTA_ENDPOINTS")
+	if rawEndpoints == "" {
+		t.Skip("set KUBEBRAIN_MULTI_QUOTA_ENDPOINTS to three comma-separated replica endpoints")
+	}
+	endpoints := strings.Split(rawEndpoints, ",")
+	require.Len(t, endpoints, 3)
+
+	connections := make([]*grpc.ClientConn, 0, len(endpoints))
+	clients := make([]etcdserverpb.MaintenanceClient, 0, len(endpoints))
+	for _, endpoint := range endpoints {
+		endpoint = strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(endpoint, "http://"), "https://"))
+		connection, err := grpc.NewClient(endpoint, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		require.NoError(t, err)
+		connections = append(connections, connection)
+		clients = append(clients, etcdserverpb.NewMaintenanceClient(connection))
+	}
+	t.Cleanup(func() {
+		for _, connection := range connections {
+			require.NoError(t, connection.Close())
+		}
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	const memberID uint64 = 515151
+	activated, err := clients[0].Alarm(ctx, &etcdserverpb.AlarmRequest{
+		Action:   etcdserverpb.AlarmRequest_ACTIVATE,
+		MemberID: memberID,
+		Alarm:    etcdserverpb.AlarmType_NOSPACE,
+	})
+	require.NoError(t, err)
+	require.Len(t, activated.Alarms, 1)
+	wantErrors := []string{activated.Alarms[0].String()}
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_, _ = clients[0].Alarm(cleanupCtx, &etcdserverpb.AlarmRequest{
+			Action:   etcdserverpb.AlarmRequest_DEACTIVATE,
+			MemberID: memberID,
+			Alarm:    etcdserverpb.AlarmType_NOSPACE,
+		})
+	})
+
+	for i, client := range clients {
+		statusResponse, statusErr := client.Status(ctx, &etcdserverpb.StatusRequest{})
+		require.NoError(t, statusErr, "endpoint %d", i)
+		require.Equal(t, wantErrors, statusResponse.Errors, "endpoint %d", i)
+	}
+	_, err = clients[2].Alarm(ctx, &etcdserverpb.AlarmRequest{
+		Action:   etcdserverpb.AlarmRequest_DEACTIVATE,
+		MemberID: memberID,
+		Alarm:    etcdserverpb.AlarmType_NOSPACE,
+	})
+	require.NoError(t, err)
+	for i, client := range clients {
+		statusResponse, statusErr := client.Status(ctx, &etcdserverpb.StatusRequest{})
+		require.NoError(t, statusErr, "endpoint %d", i)
+		require.Empty(t, statusResponse.Errors, "endpoint %d", i)
+	}
+}
+
 func runStatusAlarmScenario(t *testing.T, endpoint string) statusAlarmOutcome {
 	t.Helper()
 	endpoint = strings.TrimPrefix(strings.TrimPrefix(endpoint, "http://"), "https://")
