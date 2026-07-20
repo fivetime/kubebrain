@@ -5323,6 +5323,36 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   根模块全量和 vet 通过。该审计未发现服务实现差异，因而只增加永久回归门禁，
   不制造无依据的运行时修改。
 
+- **Lease A298 uncertain checkpoint write reconciliation（2026-07-20）**：继续对照
+  `/root/etcd/server/lease/lessor.go` 的 periodic checkpoint 与 Renew clear ordering。
+  KubeBrain 已用 `leaseCheckpointMu` 排序 checkpoint/renew，但 TiKV `InternalPut`
+  可能已经提交 remaining TTL record、客户端却只收到取消或传输错误。旧实现此时不更新
+  内存 `remainingTTL`；若 KeepAlive 在一秒 checkpoint retry 前续租，它会把内存 deadline
+  恢复到完整 TTL，却因内存仍为 0 而不清除实际 durable checkpoint。下一次 leader
+  reload 会按旧 remaining TTL 恢复，导致刚续租的 lease 提前过期。
+
+  lease canonical metadata 写现在对任意失败使用不继承父取消信号的独立 5 秒预算，
+  线性化读取同一 internal key；只有字节完全等于本次 `{id,ttl,remainingTTL}` record
+  才确认已提交。检查失败或当前值不同使用 `errors.Join` 保留原写错误并 fail closed。
+  该边界同时保护 Grant metadata、周期 checkpoint 和 renew checkpoint clear。确定性
+  回归让底层先提交 240 秒 checkpoint、取消父 context 再丢失响应；修复前随后 KeepAlive
+  返回 600 秒但 durable record 仍为 240，修复后精确清零。另固定未提交写必须报告状态
+  漂移。三组 focused 连续 100 轮、focused race 30 轮、Lease 全组连续 20 轮
+  88.391 秒、server 全包 31.508 秒、根模块全量和 vet 均通过。代码提交
+  `d69fe1384f07579b00db8cae1af7c0bc067509f3`。
+
+  从该提交的 `git archive` 构建非 root 镜像
+  `kubebrain:a298-lease-metadata-reconcile`（image ID
+  `sha256:bfe586feb2f03cd8521423b460a00b4dcb346e8a2565a3504b4604a3aef5b2b4`），
+  避免把工作区未提交文件混入 SHA 证据。三副本 StatefulSet 无中断滚动后，三个 direct
+  replica 的 Grant/TTL/attached-key/Revoke 连续 20 轮通过，Watch+Lease 与 atomic
+  attached-key revoke 各连续 10 轮通过。运行验证同时发现六个 failover 门禁仍硬编码
+  等待旧 `deployment/kubebrain`；提交 `4b88d9d` 改为默认等待生产
+  `statefulset/kubebrain`，并允许一次性拓扑显式覆盖。最终连接固定在 follower
+  `kubebrain-0`，删除 leader `kubebrain-1` 后 authoritative Lease read 门禁
+  7.13 秒通过，无陈旧成功响应；StatefulSet 恢复 3/3 Ready、0 restart，PD/TiKV
+  3+3 Running。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
