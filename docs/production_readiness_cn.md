@@ -1036,8 +1036,10 @@ hack/dev/verify.sh
   `/ping`/`/ready` 探针，不能把无证书访问 client `/health` 当作进程故障。
   Lock/Election 使用 upstream client/v3 concurrency recipe 及现有 KV/Lease/Watch
   后端；生产必须验证 lease-backed Lock 竞争接棒和 Election campaign/proclaim/resign，
-  不能只检查路由 200。Watch/Observe HTTP streaming 仍需预生产长时故障 soak；不得
-  据此声明长期流稳定性。
+  不能只检查路由 200。Watch/Observe generated HTTP streaming 已覆盖有限请求体
+  CloseSend 后继续推送、逐帧 flush、chunked NDJSON envelope、响应取消和 logical
+  Watch 配额释放，并通过 reference etcd 双端差分；仍需预生产长时故障与慢消费者
+  soak，不得据此声明长期流稳定性。
 - `Auth` 已实现 etcd 兼容的用户、角色、key-range 权限和 token 生命周期，并覆盖
   Watch/Lease 持续鉴权及多副本故障转移；生产启用流程见 Auth 设计与兼容性计划。
 

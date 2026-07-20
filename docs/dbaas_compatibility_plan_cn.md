@@ -7057,6 +7057,38 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   gateway 合同 20 轮、完整根测试、endpoint/etcd race 及根/compat vet 全部通过。
   Watch/Observe HTTP streaming 的数天级故障 soak 仍属于 P1，不据此声明长期流稳定性。
 
+- **Compatibility A357 HTTP Watch/Observe streaming（2026-07-20）**：对照
+  `/root/etcd/server/etcdserver/api/v3rpc/watch.go` 与 grpc-gateway generated
+  handlers/runtime，确认 JSON Watch 在有限请求体解码完成后会对 gRPC 请求侧执行
+  `CloseSend`，但服务端必须继续保留响应侧直到 HTTP client 取消。原 KubeBrain
+  `RPCServer.Watch` 把 `io.EOF` 当作整个双向流结束，导致 `/v3/watch` 只发送 created
+  帧便关闭；提交 `e5a4504` 将 EOF 按半关闭处理，保留 active watches 和发送侧，直到
+  stream context 取消后同步关闭并释放配额。
+
+  单元测试固定“create -> EOF -> Put event 仍送达 -> context cancel 后退出且配额归零”；
+  bufconn + 真实 HTTP server 合同测试固定 Watch 和 Election Observe 的
+  `Transfer-Encoding: chunked`、`application/json`、每条换行分隔的
+  `{"result":...}` envelope、base64/string-int64 编码，并在第二条消息尚未放行时读到
+  第一条，证明逐帧 flush。独立兼容测试用有限 Watch body 读取 created 后执行 Put，
+  校验 event/prev_kv；Observe 先读当前 leader，再 Proclaim 并读取更新。
+
+  exact image 从 `e5a4504a15e1fea5e6417a0dd5dfecb3b25cb35d` 的 `git archive`
+  构建，tag `kubebrain:a357-http-streams`，image ID
+  `sha256:5d2adc05b9d963e9004aecbf3a5b0aa72323ddce327dc1e46af464fda4274056`，
+  OCI version `0.0.0-a357.1`、revision、Go 1.26.5/linux/amd64、TiKV 和运行用户
+  `65532:65532` 均匹配。在真实 3 PD/3 TiKV 独立 `a357-release` keyspace 上，Pod UID
+  `8d9ae064-c947-477c-9dc2-2fe7e15b3f7d`，Ready、restartCount=0、只读根文件系统、
+  non-root、drop ALL、RuntimeDefault seccomp，日志无 initialization failure/panic/
+  fatal/segmentation/data race/storage error。
+
+  reference etcd 双端流式差分连续 10 轮通过；候选以 `--max-watches=1` 运行，逐轮关闭
+  HTTP response 后下一轮仍可创建 Watch，证明取消传播和配额释放。双端流式 race 3 轮、
+  服务/gateway 聚焦 race 20 轮、既有核心与 concurrency HTTP 双端回归 3 轮、完整根
+  测试和根 vet 均通过。未配置本地 `127.0.0.1:3379` 时直接运行 compat 全套 race 会按
+  设计尝试 live endpoint 并 connection refused，不计为通过；本轮仅对已显式配置双端
+  的目标流式场景执行 race。数天级网络故障、leader replacement 和慢消费者 soak 仍为
+  P1，不能由这些确定性测试替代。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
