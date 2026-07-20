@@ -1,6 +1,7 @@
 package backend
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -226,8 +227,51 @@ func (b *backend) DisarmNoSpace(ctx context.Context, memberID uint64) (bool, err
 	}
 	if err == nil {
 		b.emitQuotaMetrics(usage, false)
+		return true, nil
 	}
-	return err == nil, err
+	if !errors.Is(err, storage.ErrUncertainResult) {
+		return false, err
+	}
+	return b.reconcileNoSpaceDisarm(ctx, raw, usage, err)
+}
+
+func (b *backend) reconcileNoSpaceDisarm(
+	ctx context.Context, previous []byte, usage int64, commitErr error,
+) (bool, error) {
+	reconcileCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), quotaAlarmReconcileTimeout)
+	defer cancel()
+	for {
+		current, err := b.InternalGet(reconcileCtx, quotaAlarmKey)
+		switch {
+		case errors.Is(err, storage.ErrKeyNotFound):
+			b.emitQuotaMetrics(usage, false)
+			return true, nil
+		case err == nil && bytes.Equal(current, previous):
+			return false, commitErr
+		case err == nil:
+			if _, decodeErr := decodeQuotaAlarm(current); decodeErr != nil {
+				return false, errors.Join(
+					commitErr,
+					fmt.Errorf("reconcile NOSPACE deactivation: %w", decodeErr),
+				)
+			}
+			b.emitQuotaMetrics(usage, true)
+			return true, nil
+		case !errors.Is(err, storage.ErrUnavailable):
+			return false, errors.Join(
+				commitErr,
+				fmt.Errorf("reconcile NOSPACE deactivation: %w", err),
+			)
+		}
+		select {
+		case <-reconcileCtx.Done():
+			return false, errors.Join(
+				commitErr,
+				fmt.Errorf("reconcile NOSPACE deactivation: %w", reconcileCtx.Err()),
+			)
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
 }
 
 func (b *backend) ArmNoSpace(ctx context.Context, memberID uint64) (uint64, error) {

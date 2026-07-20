@@ -259,6 +259,116 @@ func TestArmNoSpacePreservesUncommittedUncertainError(t *testing.T) {
 	require.False(t, active)
 }
 
+func TestDisarmNoSpaceReconcilesCommittedUncertainDeletion(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+	base := imemkv.NewKvStorage()
+	t.Cleanup(func() { require.NoError(t, base.Close()) })
+	store := &commitThenUncertainStorage{
+		KvStorage:               base,
+		failReadsAfterUncertain: 2,
+	}
+	b := NewBackend(store, Config{
+		Prefix:                  prefix,
+		Identity:                getStorageIdentity(),
+		EnableEtcdCompatibility: true,
+		QuotaBackendBytes:       10,
+	}, mock.NewMinimalMetrics(ctrl)).(*backend)
+	require.NoError(t, b.EnsureQuotaInitialized(context.Background()))
+
+	const owner uint64 = 424242
+	_, err := b.ArmNoSpace(context.Background(), owner)
+	require.NoError(t, err)
+	store.trigger.Store(true)
+	removed, err := b.DisarmNoSpace(context.Background(), owner)
+	require.NoError(t, err)
+	require.True(t, removed)
+	_, active, err := b.NoSpaceAlarm(context.Background())
+	require.NoError(t, err)
+	require.False(t, active)
+}
+
+func TestDisarmNoSpacePreservesUncommittedUncertainError(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+	base := imemkv.NewKvStorage()
+	t.Cleanup(func() { require.NoError(t, base.Close()) })
+	store := &uncommittedUncertainStorage{KvStorage: base}
+	b := NewBackend(store, Config{
+		Prefix:                  prefix,
+		Identity:                getStorageIdentity(),
+		EnableEtcdCompatibility: true,
+		QuotaBackendBytes:       10,
+	}, mock.NewMinimalMetrics(ctrl)).(*backend)
+	require.NoError(t, b.EnsureQuotaInitialized(context.Background()))
+
+	const owner uint64 = 424242
+	_, err := b.ArmNoSpace(context.Background(), owner)
+	require.NoError(t, err)
+	store.trigger.Store(true)
+	removed, err := b.DisarmNoSpace(context.Background(), owner)
+	require.ErrorIs(t, err, storage.ErrUncertainResult)
+	require.False(t, removed)
+	persisted, active, readErr := b.NoSpaceAlarm(context.Background())
+	require.NoError(t, readErr)
+	require.True(t, active)
+	require.Equal(t, owner, persisted)
+}
+
+func TestDisarmNoSpaceReconcilesReplacementAfterUncertainDeletion(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+	base := imemkv.NewKvStorage()
+	t.Cleanup(func() { require.NoError(t, base.Close()) })
+	store := &commitThenUncertainStorage{
+		KvStorage:    base,
+		readBlocked:  make(chan struct{}),
+		releaseReads: make(chan struct{}),
+	}
+	b := NewBackend(store, Config{
+		Prefix:                  prefix,
+		Identity:                getStorageIdentity(),
+		EnableEtcdCompatibility: true,
+		QuotaBackendBytes:       10,
+	}, mock.NewMinimalMetrics(ctrl)).(*backend)
+	require.NoError(t, b.EnsureQuotaInitialized(context.Background()))
+
+	const (
+		owner       uint64 = 424242
+		replacement uint64 = 424243
+	)
+	_, err := b.ArmNoSpace(context.Background(), owner)
+	require.NoError(t, err)
+	store.trigger.Store(true)
+	type result struct {
+		removed bool
+		err     error
+	}
+	resultCh := make(chan result, 1)
+	go func() {
+		removed, disarmErr := b.DisarmNoSpace(context.Background(), owner)
+		resultCh <- result{removed: removed, err: disarmErr}
+	}()
+	<-store.readBlocked
+
+	batch := base.BeginBatchWrite()
+	batch.PutIfNotExist(
+		b.ks.EncodeInternalKey(quotaAlarmKey),
+		encodeQuotaAlarm(replacement),
+		0,
+	)
+	require.NoError(t, batch.Commit(context.Background()))
+	close(store.releaseReads)
+
+	got := <-resultCh
+	require.NoError(t, got.err)
+	require.True(t, got.removed)
+	persisted, active, err := b.NoSpaceAlarm(context.Background())
+	require.NoError(t, err)
+	require.True(t, active)
+	require.Equal(t, replacement, persisted)
+}
+
 func TestQuotaInitializationCountsExistingLiveDataOnce(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
