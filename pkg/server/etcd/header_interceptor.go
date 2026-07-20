@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"hash/crc32"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -334,11 +335,23 @@ func (s *RPCServer) stampUnary(ctx context.Context, req any, info *grpc.UnarySer
 		}
 		stampHeader(resp, s.backend.ClusterID(), s.localMemberID(), term)
 	}
+	if isDedicatedConcurrencyMethod(info.FullMethod) {
+		return resp, err
+	}
 	return resp, authGRPCError(err)
 }
 
 func (s *RPCServer) stampStream(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
-	return authGRPCError(handler(srv, &stampedServerStream{ServerStream: ss, s: s}))
+	err := handler(srv, &stampedServerStream{ServerStream: ss, s: s})
+	if isDedicatedConcurrencyMethod(info.FullMethod) {
+		return err
+	}
+	return authGRPCError(err)
+}
+
+func isDedicatedConcurrencyMethod(method string) bool {
+	return strings.HasPrefix(method, "/v3lockpb.Lock/") ||
+		strings.HasPrefix(method, "/v3electionpb.Election/")
 }
 
 func authGRPCError(err error) error {

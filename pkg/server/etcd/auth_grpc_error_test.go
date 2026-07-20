@@ -34,3 +34,22 @@ func TestAuthGRPCErrorPreservesEtcdNoPasswordBehavior(t *testing.T) {
 	require.Equal(t, codes.Unknown, status.Code(err))
 	require.Equal(t, errNoPasswordUser.Error(), status.Convert(err).Message())
 }
+
+func TestDedicatedConcurrencyMethodClassification(t *testing.T) {
+	for _, method := range []string{
+		"/v3lockpb.Lock/Lock",
+		"/v3lockpb.Lock/Unlock",
+		"/v3electionpb.Election/Campaign",
+		"/v3electionpb.Election/Observe",
+	} {
+		require.True(t, isDedicatedConcurrencyMethod(method), method)
+	}
+	for _, method := range []string{
+		"/etcdserverpb.KV/Range",
+		"/etcdserverpb.Lease/LeaseKeepAlive",
+		"/v3lockpb.Other/Lock",
+		"",
+	} {
+		require.False(t, isDedicatedConcurrencyMethod(method), method)
+	}
+}
