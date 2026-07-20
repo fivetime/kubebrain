@@ -57,10 +57,12 @@ func (b *Biller) Validate() error {
 		b.Bucket == "" || b.RollupPrefix == "" || b.PricePrefix == "" || b.ChargePrefix == "" ||
 		b.RollupPrefix == b.PricePrefix || b.RollupPrefix == b.ChargePrefix ||
 		b.PricePrefix == b.ChargePrefix ||
-		(b.PriceCatalogFormat != CatalogFormat && b.PriceCatalogFormat != CatalogFormatV2) ||
-		(b.PriceCatalogFormat == CatalogFormatV2 && (b.StorageRollupPrefix == "" ||
-			b.StorageRollupPrefix == b.RollupPrefix || b.StorageRollupPrefix == b.PricePrefix ||
-			b.StorageRollupPrefix == b.ChargePrefix)) ||
+		(b.PriceCatalogFormat != CatalogFormat && b.PriceCatalogFormat != CatalogFormatV2 &&
+			b.PriceCatalogFormat != CatalogFormatV3) ||
+		((b.PriceCatalogFormat == CatalogFormatV2 || b.PriceCatalogFormat == CatalogFormatV3) &&
+			(b.StorageRollupPrefix == "" ||
+				b.StorageRollupPrefix == b.RollupPrefix || b.StorageRollupPrefix == b.PricePrefix ||
+				b.StorageRollupPrefix == b.ChargePrefix)) ||
 		(b.RetentionMode != "COMPLIANCE" && b.RetentionMode != "GOVERNANCE") ||
 		b.RetentionDuration <= 0 || b.PeriodDuration != 24*time.Hour ||
 		b.FinalizationDelay < 0 || b.RetentionDuration <= b.FinalizationDelay+b.PeriodDuration {
@@ -110,7 +112,11 @@ func (b *Biller) Process(ctx context.Context) (Charge, []byte, error) {
 	)
 	rollupPath := path.Join(dir, "rollup.json")
 	rollupSource, output, err := b.readImmutable(
-		ctx, meteringarchive.RollupFormat, rollupArtifactID, b.Instance,
+		ctx, map[string]string{
+			CatalogFormat:   meteringarchive.RollupFormat,
+			CatalogFormatV2: meteringarchive.RollupFormat,
+			CatalogFormatV3: meteringarchive.RollupFormatV3,
+		}[b.PriceCatalogFormat], rollupArtifactID, b.Instance,
 		rollupKey, rollupPath, retainUntil,
 	)
 	if err != nil {
@@ -139,7 +145,8 @@ func (b *Biller) Process(ctx context.Context) (Charge, []byte, error) {
 		return Charge{}, output, err
 	}
 	var charge Charge
-	if catalogStatus.Catalog.Format == CatalogFormatV2 {
+	if catalogStatus.Catalog.Format == CatalogFormatV2 ||
+		catalogStatus.Catalog.Format == CatalogFormatV3 {
 		storageKey := path.Join(
 			b.StorageRollupPrefix, b.Instance, periodStart.Format("2006/01/02"),
 			fmt.Sprintf("%d-%d.json", periodStart.Unix(), periodEnd.Unix()),
@@ -156,10 +163,17 @@ func (b *Biller) Process(ctx context.Context) (Charge, []byte, error) {
 		if readErr != nil {
 			return Charge{}, storageOutput, readErr
 		}
-		charge, err = BuildChargeV2(
-			rollup, rollupSource, storageStatus.Rollup, storageSource,
-			catalogStatus.Catalog, catalogSource,
-		)
+		if catalogStatus.Catalog.Format == CatalogFormatV3 {
+			charge, err = BuildChargeV3(
+				rollup, rollupSource, storageStatus.Rollup, storageSource,
+				catalogStatus.Catalog, catalogSource,
+			)
+		} else {
+			charge, err = BuildChargeV2(
+				rollup, rollupSource, storageStatus.Rollup, storageSource,
+				catalogStatus.Catalog, catalogSource,
+			)
+		}
 	} else {
 		charge, err = BuildCharge(rollup, rollupSource, catalogStatus.Catalog, catalogSource)
 	}

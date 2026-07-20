@@ -108,6 +108,39 @@ func TestBuildRollupPreservesMixedV1V2UpgradeDay(t *testing.T) {
 	require.Equal(t, float64(348-3+3*3600), rollup.Quantities[2].Value)
 }
 
+func TestBuildRollupV3SumsExactObjectRequests(t *testing.T) {
+	start := time.Unix(1_700_006_400, 0).UTC()
+	inputs := rollupInputs(start, 24)
+	for i := range inputs {
+		inputs[i].Sample.Format = FormatV3
+		inputs[i].Sample.ObjectRequestPeriodEndUnix = inputs[i].Sample.SlotEndUnix
+		inputs[i].Source.ArtifactFormat = FormatV3
+		for metric := len(Metrics); metric < len(MetricsV3); metric++ {
+			inputs[i].Sample.Metrics = append(inputs[i].Sample.Metrics, MetricValue{
+				Name: MetricsV3[metric], Value: float64(metric + i + 1),
+				TimestampUnix: inputs[i].Sample.QueryUnix - 10,
+			})
+		}
+	}
+	rollup, err := BuildRollup("instance-a", start, start.Add(24*time.Hour),
+		time.Hour, 5*time.Minute, inputs)
+	require.NoError(t, err)
+	require.Equal(t, RollupFormatV3, rollup.Format)
+	require.Len(t, rollup.Quantities, 10)
+	require.Equal(t, "object_storage_write_requests", rollup.Quantities[6].Name)
+	require.Equal(t, float64(492), rollup.Quantities[6].Value)
+
+	forged := rollup
+	forged.Sources = append([]SampleSource(nil), rollup.Sources...)
+	forged.Sources[0].ArtifactFormat = Format
+	require.ErrorContains(t, forged.Validate(), "invalid source")
+
+	inputs[0].Sample.Metrics[len(Metrics)].Value = 1.5
+	_, err = BuildRollup("instance-a", start, start.Add(24*time.Hour),
+		time.Hour, 5*time.Minute, inputs)
+	require.ErrorContains(t, err, "exact")
+}
+
 func TestRollupRejectsMutationAndNonCanonicalInput(t *testing.T) {
 	start := time.Unix(1_700_006_400, 0).UTC()
 	rollup, err := BuildRollup(

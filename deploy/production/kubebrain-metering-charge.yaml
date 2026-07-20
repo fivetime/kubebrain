@@ -8,7 +8,7 @@ metadata:
     app.kubernetes.io/part-of: kubebrain
 data:
   price-scope: global
-  price-catalog-format: kubebrain.metering-price-catalog.v2
+  price-catalog-format: kubebrain.metering-price-catalog.v3
   price-version: replace-with-approved-version
 ---
 apiVersion: batch/v1

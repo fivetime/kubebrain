@@ -19,10 +19,13 @@ import (
 	"time"
 )
 
+const FormatV3 = "kubebrain.metering-sample.v3"
 const Format = "kubebrain.metering-sample.v2"
 const LegacyFormat = "kubebrain.metering-sample.v1"
 
 const completenessMetric = "kubebrain_dbaas:metering_hour_complete"
+const objectRequestCompletenessMetric = "kubebrain_dbaas:object_request_hour_complete"
+const objectRequestPeriodEndMetric = "kubebrain_dbaas:object_request_period_end:last"
 
 var Metrics = []string{
 	"kubebrain_dbaas:cpu_usage_core_seconds:hour",
@@ -34,6 +37,13 @@ var Metrics = []string{
 	"kubebrain_dbaas:logical_backup_artifact_bytes:last",
 	"kubebrain_dbaas:logical_backup_age_seconds:last",
 }
+
+var MetricsV3 = append(append([]string(nil), Metrics...),
+	"kubebrain_dbaas:object_store_write_requests:hour",
+	"kubebrain_dbaas:object_store_list_requests:hour",
+	"kubebrain_dbaas:object_store_read_requests:hour",
+	"kubebrain_dbaas:object_store_delete_requests:hour",
+)
 
 var LegacyMetrics = []string{
 	"kubebrain_dbaas:cpu_usage_cores:sum",
@@ -55,13 +65,14 @@ type MetricValue struct {
 }
 
 type Sample struct {
-	Format        string        `json:"format"`
-	Instance      string        `json:"instance"`
-	SlotStartUnix int64         `json:"slot_start_unix"`
-	SlotEndUnix   int64         `json:"slot_end_unix"`
-	QueryUnix     int64         `json:"query_unix"`
-	Complete      bool          `json:"complete"`
-	Metrics       []MetricValue `json:"metrics"`
+	Format                     string        `json:"format"`
+	Instance                   string        `json:"instance"`
+	SlotStartUnix              int64         `json:"slot_start_unix"`
+	SlotEndUnix                int64         `json:"slot_end_unix"`
+	QueryUnix                  int64         `json:"query_unix"`
+	Complete                   bool          `json:"complete"`
+	ObjectRequestPeriodEndUnix int64         `json:"object_request_period_end_unix,omitempty"`
+	Metrics                    []MetricValue `json:"metrics"`
 }
 
 type Status struct {
@@ -75,6 +86,7 @@ type Collector struct {
 	Client       *http.Client
 	BearerToken  string
 	MaxStaleness time.Duration
+	Format       string
 }
 
 func NewCollector(rawURL string, client *http.Client, bearerToken string, maxStaleness time.Duration) (*Collector, error) {
@@ -90,7 +102,17 @@ func NewCollector(rawURL string, client *http.Client, bearerToken string, maxSta
 	}
 	return &Collector{
 		BaseURL: base, Client: client, BearerToken: bearerToken, MaxStaleness: maxStaleness,
+		Format: Format,
 	}, nil
+}
+
+func NewCollectorV3(rawURL string, client *http.Client, bearerToken string, maxStaleness time.Duration) (*Collector, error) {
+	collector, err := NewCollector(rawURL, client, bearerToken, maxStaleness)
+	if err != nil {
+		return nil, err
+	}
+	collector.Format = FormatV3
+	return collector, nil
 }
 
 func (c *Collector) Collect(ctx context.Context, instance string, slotStart, slotEnd time.Time) (Sample, error) {
@@ -109,8 +131,28 @@ func (c *Collector) Collect(ctx context.Context, instance string, slotStart, slo
 	if complete.Value != 1 {
 		return Sample{}, fmt.Errorf("metering data is incomplete at %d", slotEnd.Unix())
 	}
-	values := make([]MetricValue, 0, len(Metrics))
-	for _, name := range Metrics {
+	metrics := Metrics
+	if c.Format == FormatV3 {
+		requestsComplete, err := c.queryOne(ctx, objectRequestCompletenessMetric, instance, slotEnd)
+		if err != nil {
+			return Sample{}, fmt.Errorf("query object request completeness: %w", err)
+		}
+		if requestsComplete.Value != 1 {
+			return Sample{}, fmt.Errorf("object request data is incomplete at %d", slotEnd.Unix())
+		}
+		requestPeriodEnd, queryErr := c.queryOne(ctx, objectRequestPeriodEndMetric, instance, slotEnd)
+		if queryErr != nil {
+			return Sample{}, fmt.Errorf("query object request period end: %w", queryErr)
+		}
+		if requestPeriodEnd.Value != float64(slotEnd.Unix()) {
+			return Sample{}, fmt.Errorf("object request period does not end at %d", slotEnd.Unix())
+		}
+		metrics = MetricsV3
+	} else if c.Format != Format {
+		return Sample{}, errors.New("metering collector format is unsupported")
+	}
+	values := make([]MetricValue, 0, len(metrics))
+	for _, name := range metrics {
 		value, err := c.queryOne(ctx, name, instance, slotEnd)
 		if err != nil {
 			return Sample{}, fmt.Errorf("query %s: %w", name, err)
@@ -118,8 +160,11 @@ func (c *Collector) Collect(ctx context.Context, instance string, slotStart, slo
 		values = append(values, value)
 	}
 	sample := Sample{
-		Format: Format, Instance: instance, SlotStartUnix: slotStart.Unix(),
+		Format: c.Format, Instance: instance, SlotStartUnix: slotStart.Unix(),
 		SlotEndUnix: slotEnd.Unix(), QueryUnix: slotEnd.Unix(), Complete: true, Metrics: values,
+	}
+	if c.Format == FormatV3 {
+		sample.ObjectRequestPeriodEndUnix = slotEnd.Unix()
 	}
 	if err := sample.Validate(c.MaxStaleness); err != nil {
 		return Sample{}, err
@@ -206,10 +251,12 @@ func (c *Collector) queryOne(
 }
 
 func (s Sample) Validate(maxStaleness time.Duration) error {
-	expectedMetrics := Metrics
+	expectedMetrics := MetricsV3
 	if s.Format == LegacyFormat {
 		expectedMetrics = LegacyMetrics
-	} else if s.Format != Format {
+	} else if s.Format == Format {
+		expectedMetrics = Metrics
+	} else if s.Format != FormatV3 {
 		return errors.New("metering sample has an unsupported format")
 	}
 	if !instancePattern.MatchString(s.Instance) ||
@@ -218,11 +265,19 @@ func (s Sample) Validate(maxStaleness time.Duration) error {
 		maxStaleness <= 0 {
 		return errors.New("metering sample is incomplete")
 	}
+	if (s.Format == FormatV3 && s.ObjectRequestPeriodEndUnix != s.SlotEndUnix) ||
+		(s.Format != FormatV3 && s.ObjectRequestPeriodEndUnix != 0) {
+		return errors.New("metering sample object request period is invalid")
+	}
 	for i, metric := range s.Metrics {
 		if metric.Name != expectedMetrics[i] || math.IsNaN(metric.Value) || math.IsInf(metric.Value, 0) ||
 			metric.Value < 0 || metric.TimestampUnix > s.QueryUnix ||
 			s.QueryUnix-metric.TimestampUnix > int64(maxStaleness/time.Second) {
 			return errors.New("metering sample contains an invalid metric")
+		}
+		if s.Format == FormatV3 && i >= len(Metrics) &&
+			(metric.Value != math.Trunc(metric.Value) || metric.Value > 1<<53) {
+			return errors.New("object request metric must be an exact non-negative integer")
 		}
 	}
 	return nil

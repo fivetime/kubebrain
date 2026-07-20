@@ -92,7 +92,7 @@ func (r *Roller) Process(ctx context.Context) (Rollup, []byte, error) {
 		output, err := r.Run(ctx, r.Executor, []string{
 			"ACTION=blob-read",
 			"OUTPUT=" + outputPath,
-			`ARTIFACT_FORMATS_JSON=["` + LegacyFormat + `","` + Format + `"]`,
+			`ARTIFACT_FORMATS_JSON=["` + LegacyFormat + `","` + Format + `","` + FormatV3 + `"]`,
 			"ARTIFACT_ID=" + artifactID,
 			"INSTANCE=" + r.Instance,
 			"OBJECT_STORE_ID=" + r.ObjectStoreID,
@@ -159,7 +159,7 @@ func (r *Roller) Process(ctx context.Context) (Rollup, []byte, error) {
 	output, err := r.Run(ctx, r.Executor, []string{
 		"ACTION=blob",
 		"INPUT=" + rollupPath,
-		"ARTIFACT_FORMAT=" + RollupFormat,
+		"ARTIFACT_FORMAT=" + rollup.Format,
 		"ARTIFACT_ID=" + artifactID,
 		"INSTANCE=" + r.Instance,
 		"OBJECT_STORE_ID=" + r.ObjectStoreID,
@@ -215,7 +215,8 @@ func parseBlobReadReceipt(
 		return receipt, errors.New("metering sample read receipt contains trailing JSON")
 	}
 	if receipt.Format != "kubebrain.object-immutable-blob-read.receipt.v1" ||
-		(receipt.ArtifactFormat != Format && receipt.ArtifactFormat != LegacyFormat) ||
+		(receipt.ArtifactFormat != FormatV3 && receipt.ArtifactFormat != Format &&
+			receipt.ArtifactFormat != LegacyFormat) ||
 		receipt.ArtifactID != artifactID ||
 		receipt.Instance != instance || receipt.ObjectStoreID != objectStoreID ||
 		receipt.Bucket != bucket || receipt.ObjectKey != objectKey ||
@@ -235,7 +236,7 @@ func validateRollupExecutorReceipt(
 	status RollupStatus,
 ) error {
 	return validateExecutorReceipt(
-		data, RollupFormat, artifactID, instance, objectStoreID, bucket, objectKey,
+		data, status.Rollup.Format, artifactID, instance, objectStoreID, bucket, objectKey,
 		retentionMode, retainUntil, status.SHA256, status.Bytes,
 	)
 }

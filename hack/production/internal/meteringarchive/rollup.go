@@ -15,6 +15,7 @@ import (
 	"time"
 )
 
+const RollupFormatV3 = "kubebrain.metering-rollup.v3"
 const RollupFormat = "kubebrain.metering-rollup.v2"
 
 var digestPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -80,6 +81,17 @@ var quantityDefinitions = []struct {
 	{"storage_used_byte_seconds", "byte_seconds", 5},
 }
 
+var requestQuantityDefinitions = []struct {
+	name   string
+	unit   string
+	metric int
+}{
+	{"object_storage_write_requests", "requests", 8},
+	{"object_storage_list_requests", "requests", 9},
+	{"object_storage_read_requests", "requests", 10},
+	{"object_storage_delete_requests", "requests", 11},
+}
+
 var observationDefinitions = []struct {
 	name   string
 	unit   string
@@ -109,9 +121,26 @@ func BuildRollup(
 	}
 	slotSeconds := int64(slotDuration / time.Second)
 	sources := make([]SampleSource, len(inputs))
-	quantities := make([]Quantity, len(quantityDefinitions))
+	includeRequests := true
+	for _, input := range inputs {
+		if input.Sample.Format != FormatV3 {
+			includeRequests = false
+			break
+		}
+	}
+	definitions := append([]struct {
+		name   string
+		unit   string
+		metric int
+	}{}, quantityDefinitions...)
+	rollupFormat := RollupFormat
+	if includeRequests {
+		definitions = append(definitions, requestQuantityDefinitions...)
+		rollupFormat = RollupFormatV3
+	}
+	quantities := make([]Quantity, len(definitions))
 	observations := make([]Observation, len(observationDefinitions))
-	for i, definition := range quantityDefinitions {
+	for i, definition := range definitions {
 		quantities[i] = Quantity{Name: definition.name, Unit: definition.unit}
 	}
 	for i, definition := range observationDefinitions {
@@ -131,14 +160,15 @@ func BuildRollup(
 			input.Sample.SlotStartUnix != expectedStart || input.Sample.SlotEndUnix != expectedEnd ||
 			source.SlotStartUnix != expectedStart || source.SlotEndUnix != expectedEnd ||
 			source.ArtifactFormat != input.Sample.Format ||
-			(source.ArtifactFormat != Format && source.ArtifactFormat != LegacyFormat) ||
+			(source.ArtifactFormat != FormatV3 && source.ArtifactFormat != Format &&
+				source.ArtifactFormat != LegacyFormat) ||
 			source.ObjectKey == "" || source.VersionID == "" ||
 			!digestPattern.MatchString(source.ArtifactSHA256) || source.ObjectBytes <= 0 ||
 			source.RetainUntilUnix < periodEnd.Unix() {
 			return Rollup{}, fmt.Errorf("metering sample %d source does not match the period", i)
 		}
 		sources[i] = source
-		for j, definition := range quantityDefinitions {
+		for j, definition := range definitions {
 			value := input.Sample.Metrics[definition.metric].Value
 			if input.Sample.Format == LegacyFormat || definition.metric == 1 ||
 				definition.metric == 4 || definition.metric == 5 {
@@ -147,6 +177,11 @@ func BuildRollup(
 			quantities[j].Value += value
 			if math.IsInf(quantities[j].Value, 0) || math.IsNaN(quantities[j].Value) {
 				return Rollup{}, errors.New("metering rollup quantity overflowed")
+			}
+			if definition.metric >= len(Metrics) &&
+				(quantities[j].Value != math.Trunc(quantities[j].Value) ||
+					quantities[j].Value > 1<<53) {
+				return Rollup{}, errors.New("object request rollup is not an exact integer")
 			}
 		}
 		for j, definition := range observationDefinitions {
@@ -157,7 +192,7 @@ func BuildRollup(
 		}
 	}
 	rollup := Rollup{
-		Format: RollupFormat, Instance: instance,
+		Format: rollupFormat, Instance: instance,
 		PeriodStartUnix: periodStart.Unix(), PeriodEndUnix: periodEnd.Unix(),
 		SlotSeconds: slotSeconds, Complete: true, Sources: sources,
 		Quantities: quantities, Observations: observations,
@@ -169,11 +204,21 @@ func BuildRollup(
 }
 
 func (r Rollup) Validate() error {
-	if r.Format != RollupFormat || !instancePattern.MatchString(r.Instance) ||
+	definitions := quantityDefinitions
+	if r.Format == RollupFormatV3 {
+		definitions = append(append([]struct {
+			name   string
+			unit   string
+			metric int
+		}{}, quantityDefinitions...), requestQuantityDefinitions...)
+	} else if r.Format != RollupFormat {
+		return errors.New("metering rollup has an unsupported format")
+	}
+	if !instancePattern.MatchString(r.Instance) ||
 		r.PeriodStartUnix <= 0 || r.PeriodEndUnix <= r.PeriodStartUnix ||
 		r.SlotSeconds < 60 || (r.PeriodEndUnix-r.PeriodStartUnix)%r.SlotSeconds != 0 ||
 		!r.Complete || len(r.Sources) != int((r.PeriodEndUnix-r.PeriodStartUnix)/r.SlotSeconds) ||
-		len(r.Quantities) != len(quantityDefinitions) ||
+		len(r.Quantities) != len(definitions) ||
 		len(r.Observations) != len(observationDefinitions) {
 		return errors.New("metering rollup is incomplete")
 	}
@@ -181,7 +226,9 @@ func (r Rollup) Validate() error {
 		expectedStart := r.PeriodStartUnix + int64(i)*r.SlotSeconds
 		if source.SlotStartUnix != expectedStart ||
 			source.SlotEndUnix != expectedStart+r.SlotSeconds ||
-			(source.ArtifactFormat != Format && source.ArtifactFormat != LegacyFormat) ||
+			(source.ArtifactFormat != FormatV3 && source.ArtifactFormat != Format &&
+				source.ArtifactFormat != LegacyFormat) ||
+			(r.Format == RollupFormatV3 && source.ArtifactFormat != FormatV3) ||
 			source.ObjectKey == "" || source.VersionID == "" ||
 			!digestPattern.MatchString(source.ArtifactSHA256) || source.ObjectBytes <= 0 ||
 			source.RetainUntilUnix < r.PeriodEndUnix {
@@ -189,10 +236,14 @@ func (r Rollup) Validate() error {
 		}
 	}
 	for i, quantity := range r.Quantities {
-		definition := quantityDefinitions[i]
+		definition := definitions[i]
 		if quantity.Name != definition.name || quantity.Unit != definition.unit ||
 			quantity.Value < 0 || math.IsNaN(quantity.Value) || math.IsInf(quantity.Value, 0) {
 			return errors.New("metering rollup contains an invalid quantity")
+		}
+		if definition.metric >= len(Metrics) &&
+			(quantity.Value != math.Trunc(quantity.Value) || quantity.Value > 1<<53) {
+			return errors.New("metering rollup contains an inexact object request quantity")
 		}
 	}
 	for i, observation := range r.Observations {

@@ -16,8 +16,10 @@ import (
 
 const CatalogFormat = "kubebrain.metering-price-catalog.v1"
 const CatalogFormatV2 = "kubebrain.metering-price-catalog.v2"
+const CatalogFormatV3 = "kubebrain.metering-price-catalog.v3"
 const MeasurementPolicy = "kubebrain.metering-rollup.v2"
 const MeasurementPolicyV2 = "kubebrain.metering-rollup.v2+object-storage-rollup.v1"
+const MeasurementPolicyV3 = "kubebrain.metering-rollup.v3+object-storage-rollup.v1"
 
 var versionPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`)
 var currencyPattern = regexp.MustCompile(`^[A-Z]{3}$`)
@@ -66,6 +68,20 @@ var pricedQuantitiesV2 = append(append([]struct {
 	unit string
 }{"object_storage_byte_seconds", "byte_seconds"})
 
+var pricedQuantitiesV3 = append(append([]struct {
+	name string
+	unit string
+}{}, pricedQuantities...), []struct {
+	name string
+	unit string
+}{
+	{"object_storage_write_requests", "requests"},
+	{"object_storage_list_requests", "requests"},
+	{"object_storage_read_requests", "requests"},
+	{"object_storage_delete_requests", "requests"},
+	{"object_storage_byte_seconds", "byte_seconds"},
+}...)
+
 func (c Catalog) Validate() error {
 	definitions, policy, ok := catalogDefinitions(c.Format)
 	if !ok || !versionPattern.MatchString(c.Version) ||
@@ -97,6 +113,8 @@ func catalogDefinitions(format string) ([]struct {
 		return pricedQuantities, MeasurementPolicy, true
 	case CatalogFormatV2:
 		return pricedQuantitiesV2, MeasurementPolicyV2, true
+	case CatalogFormatV3:
+		return pricedQuantitiesV3, MeasurementPolicyV3, true
 	default:
 		return nil, "", false
 	}

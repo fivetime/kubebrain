@@ -119,7 +119,8 @@ func (a Adjustment) Validate() error {
 	}
 	artifactID := periodArtifactIDUnix(a.Instance, a.PeriodStartUnix, a.PeriodEndUnix)
 	if (a.ChargeSource.ArtifactFormat != ChargeFormat &&
-		a.ChargeSource.ArtifactFormat != ChargeFormatV2) ||
+		a.ChargeSource.ArtifactFormat != ChargeFormatV2 &&
+		a.ChargeSource.ArtifactFormat != ChargeFormatV3) ||
 		validateSource(a.ChargeSource, a.ChargeSource.ArtifactFormat, artifactID,
 			a.PeriodEndUnix) != nil {
 		return errors.New("metering adjustment charge source is invalid")
@@ -139,7 +140,8 @@ func (p InvoicePlan) Validate() error {
 	for i, charge := range p.Charges {
 		start := p.PeriodStartUnix + int64(i)*86400
 		if charge.PeriodStartUnix != start || charge.PeriodEndUnix != start+86400 ||
-			(charge.ArtifactFormat != ChargeFormat && charge.ArtifactFormat != ChargeFormatV2) {
+			(charge.ArtifactFormat != ChargeFormat && charge.ArtifactFormat != ChargeFormatV2 &&
+				charge.ArtifactFormat != ChargeFormatV3) {
 			return errors.New("metering invoice plan charges are not complete and ordered")
 		}
 	}
@@ -255,7 +257,8 @@ func (i Invoice) Validate() error {
 		artifactID := periodArtifactIDUnix(i.Instance, start, start+86400)
 		if charge.TotalMicros < 0 ||
 			(charge.Source.ArtifactFormat != ChargeFormat &&
-				charge.Source.ArtifactFormat != ChargeFormatV2) ||
+				charge.Source.ArtifactFormat != ChargeFormatV2 &&
+				charge.Source.ArtifactFormat != ChargeFormatV3) ||
 			validateSource(charge.Source, charge.Source.ArtifactFormat, artifactID,
 				i.PeriodEndUnix) != nil {
 			return errors.New("metering invoice contains an invalid charge")

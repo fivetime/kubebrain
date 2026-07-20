@@ -79,6 +79,50 @@ func TestCollectorBuildsCanonicalCompleteSample(t *testing.T) {
 	require.ErrorContains(t, err, "not canonical")
 }
 
+func TestCollectorV3RequiresAndArchivesExactObjectRequestCounts(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		query := request.URL.Query().Get("query")
+		value := "1"
+		if strings.HasPrefix(query, objectRequestPeriodEndMetric+"{") {
+			value = "1700003600"
+		}
+		if strings.HasPrefix(query, MetricsV3[len(Metrics)]+"{") {
+			value = "17"
+		}
+		writePrometheusVector(t, response, "instance-a", 1_700_003_590, value)
+	}))
+	defer server.Close()
+	collector, err := NewCollectorV3(server.URL, server.Client(), "", 5*time.Minute)
+	require.NoError(t, err)
+	sample, err := collector.Collect(context.Background(), "instance-a",
+		time.Unix(1_700_000_000, 0), time.Unix(1_700_003_600, 0))
+	require.NoError(t, err)
+	require.Equal(t, FormatV3, sample.Format)
+	require.Len(t, sample.Metrics, len(MetricsV3))
+	require.Equal(t, float64(17), sample.Metrics[len(Metrics)].Value)
+
+	sample.Metrics[len(Metrics)].Value = 1.5
+	require.ErrorContains(t, sample.Validate(5*time.Minute), "exact")
+	sample.Metrics[len(Metrics)].Value = float64(1<<53) + 2
+	require.ErrorContains(t, sample.Validate(5*time.Minute), "exact")
+}
+
+func TestCollectorV3FailsClosedWithoutRequestCompleteness(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		value := "1"
+		if strings.HasPrefix(request.URL.Query().Get("query"), objectRequestCompletenessMetric+"{") {
+			value = "0"
+		}
+		writePrometheusVector(t, response, "instance-a", 1_700_003_590, value)
+	}))
+	defer server.Close()
+	collector, err := NewCollectorV3(server.URL, server.Client(), "", 5*time.Minute)
+	require.NoError(t, err)
+	_, err = collector.Collect(context.Background(), "instance-a",
+		time.Unix(1_700_000_000, 0), time.Unix(1_700_003_600, 0))
+	require.ErrorContains(t, err, "object request data is incomplete")
+}
+
 func TestCollectorFailsClosedOnIncompleteDuplicateStaleAndInvalidValues(t *testing.T) {
 	tests := []struct {
 		name      string

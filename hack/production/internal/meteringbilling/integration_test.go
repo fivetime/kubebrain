@@ -96,7 +96,7 @@ func TestMeteringChargeAgainstObjectLockStore(t *testing.T) {
 	require.Error(t, err, string(output))
 }
 
-func TestMeteringChargeV2AgainstObjectLockStore(t *testing.T) {
+func TestMeteringChargeV3AgainstObjectLockStore(t *testing.T) {
 	endpoint := os.Getenv("METERING_ARCHIVE_S3_ENDPOINT")
 	bucket := os.Getenv("METERING_ARCHIVE_S3_BUCKET")
 	executor := os.Getenv("METERING_ARCHIVE_EXECUTOR")
@@ -118,11 +118,11 @@ func TestMeteringChargeV2AgainstObjectLockStore(t *testing.T) {
 		strconv.FormatInt(periodEnd.Unix(), 10) + ".json"
 
 	resourcePath := filepath.Join(dir, "resource-rollup.json")
-	_, err := meteringarchive.WriteRollupAtomic(resourcePath, validRollupForPeriod(periodStart))
+	_, err := meteringarchive.WriteRollupAtomic(resourcePath, validRollupV3ForPeriod(periodStart))
 	require.NoError(t, err)
 	archiveForIntegration(
 		t, executor, bucket, resourcePath, filepath.Join(dir, "resource.receipt.json"),
-		meteringarchive.RollupFormat, artifactID, "instance-a",
+		meteringarchive.RollupFormatV3, artifactID, "instance-a",
 		basePrefix+"/rollups/instance-a/"+periodKey, retainUntil,
 	)
 	storagePath := filepath.Join(dir, "storage-rollup.json")
@@ -134,8 +134,8 @@ func TestMeteringChargeV2AgainstObjectLockStore(t *testing.T) {
 		basePrefix+"/storage-rollups/instance-a/"+periodKey, retainUntil,
 	)
 
-	catalog := validCatalogV2ForPeriod()
-	catalog.Version = "price-a318-v1"
+	catalog := validCatalogV3ForPeriod()
+	catalog.Version = "price-a320-v1"
 	catalogPath := filepath.Join(dir, "catalog.json")
 	_, err = WriteCatalogAtomic(catalogPath, catalog)
 	require.NoError(t, err)
@@ -149,7 +149,7 @@ func TestMeteringChargeV2AgainstObjectLockStore(t *testing.T) {
 
 	biller := &Biller{
 		Instance: "instance-a", PriceScope: "global", PriceVersion: catalog.Version,
-		PriceCatalogFormat: CatalogFormatV2, Executor: executor,
+		PriceCatalogFormat: CatalogFormatV3, Executor: executor,
 		ObjectStoreID: "a315-minio", Bucket: bucket,
 		RollupPrefix:        basePrefix + "/rollups",
 		StorageRollupPrefix: basePrefix + "/storage-rollups",
@@ -165,20 +165,21 @@ func TestMeteringChargeV2AgainstObjectLockStore(t *testing.T) {
 	second, secondOutput, err := biller.Process(ctx)
 	require.NoError(t, err, string(secondOutput))
 	require.Equal(t, first, second)
-	require.Equal(t, ChargeFormatV2, first.Format)
-	require.Len(t, first.Lines, 7)
-	require.Equal(t, "object_storage_byte_seconds", first.Lines[6].Name)
+	require.Equal(t, ChargeFormatV3, first.Format)
+	require.Len(t, first.Lines, 11)
+	require.Equal(t, "object_storage_write_requests", first.Lines[6].Name)
+	require.Equal(t, "object_storage_byte_seconds", first.Lines[10].Name)
 	require.NotNil(t, first.StorageRollupSource)
 
 	var firstReceipt, secondReceipt map[string]any
 	require.NoError(t, json.Unmarshal(firstOutput, &firstReceipt))
 	require.NoError(t, json.Unmarshal(secondOutput, &secondReceipt))
 	require.Equal(t, firstReceipt, secondReceipt)
-	require.Equal(t, ChargeFormatV2, firstReceipt["artifact_format"])
+	require.Equal(t, ChargeFormatV3, firstReceipt["artifact_format"])
 
-	repriced := validCatalogV2ForPeriod()
-	repriced.Version = "price-a318-v2"
-	repriced.Rates[6].UnitPrice = "0.000000002"
+	repriced := validCatalogV3ForPeriod()
+	repriced.Version = "price-a320-v2"
+	repriced.Rates[6].UnitPrice = "0.000002"
 	repricedPath := filepath.Join(dir, "catalog-v2.json")
 	_, err = WriteCatalogAtomic(repricedPath, repriced)
 	require.NoError(t, err)

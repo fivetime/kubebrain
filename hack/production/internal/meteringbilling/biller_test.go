@@ -154,6 +154,61 @@ func TestBillerV2RequiresExactStorageRollup(t *testing.T) {
 	require.NotNil(t, charge.StorageRollupSource)
 }
 
+func TestBillerV3ReadsRequestRollupAndArchivesCharge(t *testing.T) {
+	now := time.Date(2026, 7, 21, 1, 17, 0, 0, time.UTC)
+	start := time.Date(2026, 7, 20, 0, 0, 0, 0, time.UTC)
+	biller := validBiller(now)
+	biller.PriceVersion = "price-requests-2026-07"
+	biller.PriceCatalogFormat = CatalogFormatV3
+	biller.StorageRollupPrefix = "metering-storage-rollups"
+	biller.Run = func(_ context.Context, _ string, environment []string) ([]byte, error) {
+		values := envMap(environment)
+		if values["ACTION"] == "blob-read" {
+			switch values["ARTIFACT_FORMAT"] {
+			case meteringarchive.RollupFormatV3:
+				status, err := meteringarchive.WriteRollupAtomic(
+					values["OUTPUT"], validRollupV3ForPeriod(start),
+				)
+				require.NoError(t, err)
+				return readReceiptJSON(t, values, status.SHA256, status.Bytes)
+			case CatalogFormatV3:
+				status, err := WriteCatalogAtomic(values["OUTPUT"], validCatalogV3ForPeriod())
+				require.NoError(t, err)
+				return readReceiptJSON(t, values, status.SHA256, status.Bytes)
+			case meteringstorage.RollupFormat:
+				status, err := meteringstorage.WriteRollupAtomic(
+					values["OUTPUT"], validStorageRollup(start),
+				)
+				require.NoError(t, err)
+				return readReceiptJSON(t, values, status.SHA256, status.Bytes)
+			}
+		}
+		if values["ACTION"] == "blob" {
+			artifact, err := os.ReadFile(values["INPUT"])
+			require.NoError(t, err)
+			sum := sha256.Sum256(artifact)
+			retainUntil, err := strconv.ParseInt(values["RETAIN_UNTIL_UNIX"], 10, 64)
+			require.NoError(t, err)
+			return json.Marshal(map[string]any{
+				"format":          "kubebrain.object-immutable-blob.receipt.v1",
+				"artifact_format": ChargeFormatV3, "artifact_id": values["ARTIFACT_ID"],
+				"instance": "instance-a", "object_store_id": "store-a", "bucket": "metering",
+				"object_key": values["S3_OBJECT_KEY"], "version_id": "charge-v3",
+				"artifact_sha256": hex.EncodeToString(sum[:]), "object_bytes": len(artifact),
+				"retention_mode": "COMPLIANCE", "retain_until_unix": retainUntil,
+				"remote_verified": true, "archived_at_unix": now.Unix(),
+			})
+		}
+		t.Fatalf("unexpected action or format: %v", values)
+		return nil, nil
+	}
+	charge, _, err := biller.Process(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, ChargeFormatV3, charge.Format)
+	require.Equal(t, "object_storage_write_requests", charge.Lines[6].Name)
+	require.Equal(t, "object_storage_byte_seconds", charge.Lines[10].Name)
+}
+
 func validBiller(now time.Time) *Biller {
 	return &Biller{
 		Instance: "instance-a", PriceScope: "global", PriceVersion: "price-2026-07",
@@ -176,6 +231,21 @@ func validRollupForPeriod(start time.Time) meteringarchive.Rollup {
 		rollup.Sources[i].SlotEndUnix += offset
 		rollup.Sources[i].RetainUntilUnix += offset
 	}
+	return rollup
+}
+
+func validRollupV3ForPeriod(start time.Time) meteringarchive.Rollup {
+	rollup := validRollupForPeriod(start)
+	rollup.Format = meteringarchive.RollupFormatV3
+	for i := range rollup.Sources {
+		rollup.Sources[i].ArtifactFormat = meteringarchive.FormatV3
+	}
+	rollup.Quantities = append(rollup.Quantities,
+		meteringarchive.Quantity{Name: "object_storage_write_requests", Unit: "requests", Value: 10},
+		meteringarchive.Quantity{Name: "object_storage_list_requests", Unit: "requests", Value: 20},
+		meteringarchive.Quantity{Name: "object_storage_read_requests", Unit: "requests", Value: 30},
+		meteringarchive.Quantity{Name: "object_storage_delete_requests", Unit: "requests", Value: 40},
+	)
 	return rollup
 }
 

@@ -109,6 +109,30 @@ spec:
           expr: count(kubebrain_logical_backup_last_success_timestamp_seconds{instance="kubebrain"})
           labels:
             dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:object_store_write_request_sources:count
+          expr: count(kubebrain_object_store_request_count{dbaas_instance="kubebrain",request_class="write",window="1h"}) or on() vector(0)
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:object_store_list_request_sources:count
+          expr: count(kubebrain_object_store_request_count{dbaas_instance="kubebrain",request_class="list",window="1h"}) or on() vector(0)
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:object_store_read_request_sources:count
+          expr: count(kubebrain_object_store_request_count{dbaas_instance="kubebrain",request_class="read",window="1h"}) or on() vector(0)
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:object_store_delete_request_sources:count
+          expr: count(kubebrain_object_store_request_count{dbaas_instance="kubebrain",request_class="delete",window="1h"}) or on() vector(0)
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:object_request_period_end_sources:count
+          expr: count(kubebrain_object_store_request_period_end_seconds{dbaas_instance="kubebrain",window="1h"}) or on() vector(0)
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:object_request_data_complete
+          expr: (kubebrain_dbaas:object_store_write_request_sources:count == bool 1) * (kubebrain_dbaas:object_store_list_request_sources:count == bool 1) * (kubebrain_dbaas:object_store_read_request_sources:count == bool 1) * (kubebrain_dbaas:object_store_delete_request_sources:count == bool 1) * (kubebrain_dbaas:object_request_period_end_sources:count == bool 1)
+          labels:
+            dbaas_instance: kubebrain
         - record: kubebrain_dbaas:metering_data_complete
           expr: (kubebrain_dbaas:cpu_usage_sources:count == bool 9) * (kubebrain_dbaas:memory_working_set_sources:count == bool 9) * (kubebrain_dbaas:network_receive_sources:count == bool 9) * (kubebrain_dbaas:network_transmit_sources:count == bool 9) * (kubebrain_dbaas:storage_capacity_sources:count == bool 6) * (kubebrain_dbaas:storage_available_sources:count == bool 6) * (kubebrain_dbaas:logical_backup_artifact_sources:count == bool 1) * (kubebrain_dbaas:logical_backup_timestamp_sources:count == bool 1)
           labels:
@@ -149,6 +173,14 @@ spec:
           expr: (min_over_time(kubebrain_dbaas:metering_data_complete[1h]) == 1) * (count_over_time(kubebrain_dbaas:metering_data_complete[1h]) >= bool 60)
           labels:
             dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:object_request_hour_complete
+          expr: (min_over_time(kubebrain_dbaas:object_request_data_complete[1h]) == 1) * (count_over_time(kubebrain_dbaas:object_request_data_complete[1h]) >= bool 60)
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:object_request_period_end:last
+          expr: max(kubebrain_object_store_request_period_end_seconds{dbaas_instance="kubebrain",window="1h"}) and on() (kubebrain_dbaas:object_request_hour_complete == 1)
+          labels:
+            dbaas_instance: kubebrain
         - record: kubebrain_dbaas:cpu_usage_core_seconds:hour
           expr: (sum(increase(container_cpu_usage_seconds_total{namespace="kubebrain-system",pod=~"kubebrain-[0-2]",container="kubebrain",image!=""}[1h])) + sum(increase(container_cpu_usage_seconds_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-2]",container=~"pd|tikv",image!=""}[1h]))) and on() (kubebrain_dbaas:metering_hour_complete == 1)
           labels:
@@ -171,6 +203,22 @@ spec:
             dbaas_instance: kubebrain
         - record: kubebrain_dbaas:storage_used_bytes:hour_avg
           expr: avg_over_time(kubebrain_dbaas:storage_used_bytes:sum[1h]) and on() (kubebrain_dbaas:metering_hour_complete == 1)
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:object_store_write_requests:hour
+          expr: sum(kubebrain_object_store_request_count{dbaas_instance="kubebrain",request_class="write",window="1h"}) and on() (kubebrain_dbaas:object_request_hour_complete == 1)
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:object_store_list_requests:hour
+          expr: sum(kubebrain_object_store_request_count{dbaas_instance="kubebrain",request_class="list",window="1h"}) and on() (kubebrain_dbaas:object_request_hour_complete == 1)
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:object_store_read_requests:hour
+          expr: sum(kubebrain_object_store_request_count{dbaas_instance="kubebrain",request_class="read",window="1h"}) and on() (kubebrain_dbaas:object_request_hour_complete == 1)
+          labels:
+            dbaas_instance: kubebrain
+        - record: kubebrain_dbaas:object_store_delete_requests:hour
+          expr: sum(kubebrain_object_store_request_count{dbaas_instance="kubebrain",request_class="delete",window="1h"}) and on() (kubebrain_dbaas:object_request_hour_complete == 1)
           labels:
             dbaas_instance: kubebrain
     - name: kubebrain.availability
@@ -333,6 +381,14 @@ spec:
           annotations:
             summary: KubeBrain billing inputs are incomplete
             description: "At least one required KubeBrain, PD, TiKV, PVC, or backup metric source is missing. Billing export must fail closed for this interval."
+        - alert: KubeBrainObjectRequestMeteringDataIncomplete
+          expr: kubebrain_dbaas:object_request_data_complete != 1
+          for: 15m
+          labels:
+            severity: critical
+          annotations:
+            summary: KubeBrain object request billing inputs are incomplete
+            description: "The provider request exporter does not expose exactly one finalized hourly count for every write, list, read, and delete class. Request billing must fail closed."
         - alert: KubeBrainLogicalBackupMetricsMissing
           expr: absent(kubebrain_logical_backup_last_success_timestamp_seconds{instance="kubebrain"}) == 1
           for: 1h

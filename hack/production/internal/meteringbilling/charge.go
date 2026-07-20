@@ -18,6 +18,7 @@ import (
 
 const ChargeFormat = "kubebrain.metering-charge.v1"
 const ChargeFormatV2 = "kubebrain.metering-charge.v2"
+const ChargeFormatV3 = "kubebrain.metering-charge.v3"
 const RoundingPolicy = "half_even_to_currency_micro.v1"
 
 type Source struct {
@@ -81,6 +82,19 @@ func BuildChargeV2(
 	)
 }
 
+func BuildChargeV3(
+	rollup meteringarchive.Rollup,
+	rollupSource Source,
+	storageRollup meteringstorage.Rollup,
+	storageRollupSource Source,
+	catalog Catalog,
+	catalogSource Source,
+) (Charge, error) {
+	return buildCharge(
+		rollup, rollupSource, &storageRollup, &storageRollupSource, catalog, catalogSource,
+	)
+}
+
 func buildCharge(
 	rollup meteringarchive.Rollup,
 	rollupSource Source,
@@ -97,8 +111,18 @@ func buildCharge(
 	}
 	definitions, _, _ := catalogDefinitions(catalog.Format)
 	chargeFormat := ChargeFormat
-	if catalog.Format == CatalogFormatV2 {
-		chargeFormat = ChargeFormatV2
+	if catalog.Format == CatalogFormatV2 || catalog.Format == CatalogFormatV3 {
+		if catalog.Format == CatalogFormatV2 {
+			chargeFormat = ChargeFormatV2
+			if rollup.Format != meteringarchive.RollupFormat {
+				return Charge{}, errors.New("price catalog v2 requires metering rollup v2")
+			}
+		} else {
+			chargeFormat = ChargeFormatV3
+			if rollup.Format != meteringarchive.RollupFormatV3 {
+				return Charge{}, errors.New("price catalog v3 requires metering rollup v3")
+			}
+		}
 		if storageRollup == nil || storageRollupSource == nil {
 			return Charge{}, errors.New("object storage rollup is required by price catalog v2")
 		}
@@ -118,7 +142,7 @@ func buildCharge(
 		return Charge{}, errors.New("price catalog does not cover the complete metering period")
 	}
 	if err := validateSource(
-		rollupSource, meteringarchive.RollupFormat,
+		rollupSource, rollup.Format,
 		rollup.Instance+":"+strconv.FormatInt(rollup.PeriodStartUnix, 10)+":"+
 			strconv.FormatInt(rollup.PeriodEndUnix, 10),
 		rollup.PeriodEndUnix,
@@ -193,6 +217,12 @@ func (c Charge) Validate() error {
 		if c.StorageRollupSource == nil {
 			return errors.New("metering charge v2 lacks object storage source")
 		}
+	} else if c.Format == ChargeFormatV3 {
+		definitions = pricedQuantitiesV3
+		catalogFormat = CatalogFormatV3
+		if c.StorageRollupSource == nil {
+			return errors.New("metering charge v3 lacks object storage source")
+		}
 	} else {
 		return errors.New("metering charge is incomplete")
 	}
@@ -203,7 +233,11 @@ func (c Charge) Validate() error {
 		c.TotalMicros < 0 {
 		return errors.New("metering charge is incomplete")
 	}
-	if err := validateSource(c.RollupSource, meteringarchive.RollupFormat,
+	rollupFormat := meteringarchive.RollupFormat
+	if c.Format == ChargeFormatV3 {
+		rollupFormat = meteringarchive.RollupFormatV3
+	}
+	if err := validateSource(c.RollupSource, rollupFormat,
 		c.Instance+":"+strconv.FormatInt(c.PeriodStartUnix, 10)+":"+
 			strconv.FormatInt(c.PeriodEndUnix, 10), c.PeriodEndUnix); err != nil {
 		return err
@@ -225,6 +259,13 @@ func (c Charge) Validate() error {
 			!decimalPattern.MatchString(line.QuantityDecimal) ||
 			!decimalPattern.MatchString(line.UnitPrice) || line.AmountMicros < 0 {
 			return errors.New("metering charge contains an invalid line")
+		}
+		if c.Format == ChargeFormatV3 && i >= len(pricedQuantities) &&
+			i < len(pricedQuantitiesV3)-1 {
+			requests, ok := new(big.Int).SetString(line.QuantityDecimal, 10)
+			if !ok || requests.Sign() < 0 || requests.Cmp(new(big.Int).Lsh(big.NewInt(1), 53)) > 0 {
+				return errors.New("metering charge contains an inexact object request quantity")
+			}
 		}
 		amount, err := amountMicros(line.QuantityDecimal, line.UnitPrice)
 		if err != nil || amount != line.AmountMicros {

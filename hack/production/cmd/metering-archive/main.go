@@ -48,7 +48,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	collector, err := meteringarchive.NewCollector(prometheusURL, client, token, maxStaleness)
+	collector, err := meteringarchive.NewCollectorV3(prometheusURL, client, token, maxStaleness)
 	if err != nil {
 		log.Fatal(err)
 	}

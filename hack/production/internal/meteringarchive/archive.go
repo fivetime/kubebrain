@@ -94,7 +94,7 @@ func (a *Archiver) Process(ctx context.Context) (Sample, []byte, error) {
 	environment := []string{
 		"ACTION=blob",
 		"INPUT=" + artifactPath,
-		"ARTIFACT_FORMAT=" + Format,
+		"ARTIFACT_FORMAT=" + sample.Format,
 		"ARTIFACT_ID=" + artifactID,
 		"INSTANCE=" + a.Instance,
 		"OBJECT_STORE_ID=" + a.ObjectStoreID,
@@ -111,7 +111,7 @@ func (a *Archiver) Process(ctx context.Context) (Sample, []byte, error) {
 		)
 	}
 	if err := validateExecutorReceipt(
-		output, Format, artifactID, a.Instance, a.ObjectStoreID, a.Bucket, objectKey,
+		output, sample.Format, artifactID, a.Instance, a.ObjectStoreID, a.Bucket, objectKey,
 		a.RetentionMode, retainUntil, status.SHA256, status.Bytes,
 	); err != nil {
 		return Sample{}, output, err

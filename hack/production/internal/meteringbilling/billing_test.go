@@ -112,6 +112,46 @@ func TestBuildChargeV2IncludesImmutableObjectStorageUsage(t *testing.T) {
 	require.ErrorContains(t, charge.Validate(), "storage")
 }
 
+func TestBuildChargeV3PricesExactObjectRequests(t *testing.T) {
+	start := time.Date(2026, 7, 20, 0, 0, 0, 0, time.UTC)
+	rollup := validRollupV3ForPeriod(start)
+	storage := validStorageRollup(start)
+	catalog := validCatalogV3ForPeriod()
+	artifactID := "instance-a:" + strconv.FormatInt(start.Unix(), 10) + ":" +
+		strconv.FormatInt(start.Add(24*time.Hour).Unix(), 10)
+	charge, err := BuildChargeV3(
+		rollup, validSource(meteringarchive.RollupFormatV3, artifactID, "resource-rollup"),
+		storage, validSource(meteringstorage.RollupFormat, artifactID, "storage-rollup"),
+		catalog, validSource(CatalogFormatV3, catalog.Version, "catalog"),
+	)
+	require.NoError(t, err)
+	require.Equal(t, ChargeFormatV3, charge.Format)
+	require.Len(t, charge.Lines, 11)
+	require.Equal(t, "10", charge.Lines[6].QuantityDecimal)
+	require.Equal(t, "object_storage_delete_requests", charge.Lines[9].Name)
+	require.Equal(t, "object_storage_byte_seconds", charge.Lines[10].Name)
+	require.NoError(t, charge.Validate())
+
+	forged := charge
+	forged.Lines = append([]Line(nil), charge.Lines...)
+	forged.Lines[6].QuantityDecimal = "1.5"
+	forged.Lines[6].AmountMicros, err = amountMicros("1.5", forged.Lines[6].UnitPrice)
+	require.NoError(t, err)
+	forged.TotalMicros = 0
+	for _, line := range forged.Lines {
+		forged.TotalMicros += line.AmountMicros
+	}
+	require.ErrorContains(t, forged.Validate(), "inexact")
+
+	_, err = BuildChargeV3(
+		validRollupForPeriod(start),
+		validSource(meteringarchive.RollupFormat, artifactID, "resource-rollup"),
+		storage, validSource(meteringstorage.RollupFormat, artifactID, "storage-rollup"),
+		catalog, validSource(CatalogFormatV3, catalog.Version, "catalog"),
+	)
+	require.ErrorContains(t, err, "requires metering rollup v3")
+}
+
 func validCatalog() Catalog {
 	rates := make([]Rate, len(pricedQuantities))
 	prices := []string{"0.0000005", "0.0000005", "0.000001", "0.000001", "0.000001", "0.000001"}
@@ -134,6 +174,24 @@ func validCatalogV2ForPeriod() Catalog {
 		Name: "object_storage_byte_seconds", Unit: "byte_seconds", UnitPrice: "0.000000001",
 	})
 	return catalog
+}
+
+func validCatalogV3ForPeriod() Catalog {
+	base := validCatalogForPeriod()
+	rates := append([]Rate(nil), base.Rates...)
+	for _, definition := range pricedQuantitiesV3[len(pricedQuantities) : len(pricedQuantitiesV3)-1] {
+		rates = append(rates, Rate{
+			Name: definition.name, Unit: definition.unit, UnitPrice: "0.000001",
+		})
+	}
+	rates = append(rates, Rate{
+		Name: "object_storage_byte_seconds", Unit: "byte_seconds", UnitPrice: "0.000000001",
+	})
+	return Catalog{
+		Format: CatalogFormatV3, Version: "price-requests-2026-07", Currency: base.Currency,
+		EffectiveStartUnix: base.EffectiveStartUnix, EffectiveEndUnix: base.EffectiveEndUnix,
+		MeasurementPolicy: MeasurementPolicyV3, Rates: rates,
+	}
 }
 
 func validStorageRollup(start time.Time) meteringstorage.Rollup {
