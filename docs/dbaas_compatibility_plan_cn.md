@@ -6043,6 +6043,36 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   均 3/3 Ready，production release gate 与 32.08ms endpoint proposal health 通过。
   A321 仅增强测试代码、未改变数据面运行路径，因此不制造新镜像或无意义滚动发布。
 
+- **Compatibility A322 raw gRPC endpoint normalization（2026-07-20）**：A321
+  完整差分诊断使用 `http://host:port` 时，clientv3 场景和 TCP bridge 修复后可正常
+  建连，但 `TestStreamRequestLimit` 与 `TestWatchControlDifferential` 仍在约
+  430 秒后把完整 URL 直接交给 `grpc.NewClient`，以 `too many colons in address`
+  失败。该差异来自测试传输入口而非数据面：同一套 suite 中已有约 30 个 raw gRPC
+  helper 各自 TrimPrefix，另有 admission、request-rate、stream-limit、watch
+  control/quota 和 lease keepalive cancel 等入口没有处理，导致 endpoint 表达形式
+  影响发布结论。
+
+  A321 的 bridge-only helper 提升为 package 级 `grpcTarget`，统一处理 bare、
+  `http://` 和 `https://` target；全部尚未标准化的 raw gRPC/health/watch 入口和
+  TCP bridge 共同调用它。带 scheme 的 StreamRequestLimit、WatchControl、Get
+  cancel、ambiguous leasing 与 helper 回归连续 3 轮 31.873 秒通过，focused race
+  2.886 秒通过；最终参考 etcd 与真实 TiKV-backed KubeBrain 均使用
+  `http://...` 的完整 172-test compat suite 以 344.220 秒通过，证明修复覆盖全套
+  而非只绕过首个失败。
+
+  同期复核已知 revision 跳号差异：当前 `BatchWrite` 只支持调用者预先给出期望值
+  的 CAS，不能在同一事务中读取全局 revision、分配 next 并把结果返回给对象键编码；
+  TSO 又必须在存储提交前分配 revision，失败后通过 invalid event 推进 collector。
+  因此删除 invalid event 或复用失败 revision 会破坏并发唯一性、uncertain commit
+  解析和 watch 连续推进。正确方案需新增存储层事务内 read-modify-write revision
+  原语，并同时重构所有写路径、event log 和 uncertain resolution，不能用 leader-local
+  序列化假装关闭跨 leader 差异。
+
+  根模块 `go test ./...`、根/compat `go vet ./...` 和 `git diff --check` 全部通过。
+  在线 `kubebrain:a320-object-request-metering` production release gate 通过，
+  KubeBrain 3/3、PD/TiKV 3+3 Ready，endpoint proposal health 28.40ms。A322
+  只修测试门禁，不改变服务二进制，因此不构建镜像或滚动 StatefulSet。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
