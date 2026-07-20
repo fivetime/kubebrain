@@ -1057,6 +1057,8 @@ hack/dev/verify.sh
   多副本换主会按 etcd `lessor.Promote` 语义从 granted TTL 一次性恢复未 checkpoint 的
   短 lease，因此换主后 TTL 回到约 60 秒不是 keepalive 泄漏。门禁应记录换主前后的 TTL，
   确认发生这次 promotion，并继续等待它最终到期及删除键；不要用原始创建时间作为到期上限。
+  连续换主时每轮都必须先观察 TTL 从上轮恢复值重新下降，再触发下一轮；最后一次换主后
+  不再注入故障并等待 TTL=-1。这样可区分合法的逐轮 promotion 与进程残留的持续 keepalive。
 - `Auth` 已实现 etcd 兼容的用户、角色、key-range 权限和 token 生命周期，并覆盖
   Watch/Lease 持续鉴权及多副本故障转移；生产启用流程见 Auth 设计与兼容性计划。
 

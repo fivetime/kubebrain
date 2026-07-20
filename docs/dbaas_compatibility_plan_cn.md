@@ -7250,6 +7250,37 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   无 initialization failure/panic/fatal/segmentation/data race/storage error。完整根测试、
   根 vet、兼容子模块 vet 和真实 race 均通过；未发现需要修改的运行时代码。
 
+- **Compatibility A364 repeated zero-lease leader replacement（2026-07-20）**：
+  提交 `7c63981` 将 A363 单轮场景抽成按周期运行的共享门禁，并新增独立破坏性变量控制的
+  两轮当前 leader replacement 测试。两个自动 session lease 每轮都必须先从上轮 promotion
+  后的约 60 秒重新下降到不高于 30 秒，故障命令才重新查询全部 Pod `/election`、证明本轮
+  受害者 `IsLeader=true` 并删除它；successor 恢复后两个 lease 都必须比故障前增加超过
+  20 秒但不高于 65 秒，且 granted TTL 仍为 60。第二轮完成后停止注入故障，最多等待
+  75 秒要求两个 lease 同时返回 TTL=-1 且 Lock/Election 键消失。单轮和双轮分别使用
+  `KUBEBRAIN_ZERO_LEASE_EXPIRY_FAILOVER_COMMAND` 与
+  `KUBEBRAIN_ZERO_LEASE_EXPIRY_REPEATED_FAILOVER_COMMAND`，常规 CI 缺少对应变量时独立 Skip。
+
+  候选真实 TiKV 场景 121.42 秒通过，两轮分别删除 leader `kubebrain-2` 与
+  `kubebrain-1`；race instrumentation 121.29 秒通过，两轮分别删除 leader
+  `kubebrain-0` 与 `kubebrain-2`。每轮等待 TTL 再次下降本身证明 promotion 后没有持续
+  keepalive，最后自然到期则证明连续 promotion 只延长故障恢复窗口，不会永久保留队列键。
+
+  exact image 从 `7c639814fb19b636394006a9205b395a3edb9a5f` 的 `git archive`
+  构建，tag `kubebrain:a364-repeated-zero-lease-failover`，image ID
+  `sha256:5f5bfc4abb502ebd088ac866beb8d15bb6a267a37dec12969070ea30afe32e7a`，
+  OCI version `0.0.0-a364.1`、revision、Go 1.26.5/linux/amd64、TiKV 和运行用户
+  `65532:65532` 均匹配。在真实 3 PD/3 TiKV 独立
+  `a364-repeated-zero-lease-final` keyspace 上，精确镜像最终场景 121.48 秒通过：第一轮
+  删除 `kubebrain-0` UID `267a375d-d51d-42c8-bb7a-d7979afea1e0`，第二轮删除
+  `kubebrain-2` UID `d5a67335-af80-4144-9775-3fe17e28b0b0`，两者删除前均由
+  `/election` 证明为当前 leader；最终三个 Pod UID 分别为
+  `77e8d7f2-ee15-4849-9e6b-121977e00e57`、`4285f882-f9ee-4ea3-96d7-8241a013f331`、
+  `faec2b6c-dc14-4435-ba90-1b1789416a50`，均 Ready、restartCount=0，运行时 digest
+  `sha256:f61d15df222d58fcb062d655e2e3cc28ef5edc561ded7c5ac8395f95044b4077`
+  一致，只读根文件系统、non-root、drop ALL、RuntimeDefault seccomp 生效，完整负载后日志
+  无 initialization failure/panic/fatal/segmentation/data race/storage error。完整根测试、
+  根 vet、兼容子模块 vet 和真实 race 均通过；未发现需要修改的运行时代码。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
