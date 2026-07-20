@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"hash/crc32"
 
 	"github.com/kubewharf/kubebrain/pkg/storage"
 )
@@ -33,6 +34,44 @@ func encodeQuotaUsage(usage int64) []byte {
 	value := make([]byte, 8)
 	binary.BigEndian.PutUint64(value, uint64(usage))
 	return value
+}
+
+func encodeQuotaAlarm(memberID uint64) []byte {
+	value := make([]byte, 8)
+	binary.BigEndian.PutUint64(value, memberID)
+	return value
+}
+
+func decodeQuotaAlarm(value []byte) (uint64, error) {
+	if len(value) == 1 && value[0] == 1 {
+		return 0, nil
+	}
+	if len(value) != 8 {
+		return 0, fmt.Errorf("invalid NOSPACE alarm metadata length %d", len(value))
+	}
+	return binary.BigEndian.Uint64(value), nil
+}
+
+func (b *backend) quotaAlarmMemberID() uint64 {
+	return uint64(crc32.ChecksumIEEE([]byte(b.config.Identity)))
+}
+
+func (b *backend) NoSpaceAlarm(ctx context.Context) (memberID uint64, active bool, err error) {
+	raw, err := b.InternalGet(ctx, quotaAlarmKey)
+	switch {
+	case errors.Is(err, storage.ErrKeyNotFound):
+		return 0, false, nil
+	case err != nil:
+		return 0, false, err
+	}
+	memberID, err = decodeQuotaAlarm(raw)
+	if err != nil {
+		return 0, false, err
+	}
+	if memberID == 0 {
+		memberID = b.quotaAlarmMemberID()
+	}
+	return memberID, true, nil
 }
 
 func (b *backend) QuotaStatus(ctx context.Context) (usage, quota int64, noSpace bool, err error) {
@@ -141,7 +180,7 @@ func (b *backend) ensureNoSpaceForUsageLocked(ctx context.Context, usage int64) 
 		return err
 	}
 	batch := b.kv.BeginBatchWrite()
-	batch.PutIfNotExist(alarmKey, []byte{1}, 0)
+	batch.PutIfNotExist(alarmKey, encodeQuotaAlarm(b.quotaAlarmMemberID()), 0)
 	err := batch.Commit(ctx)
 	if err != nil && !errors.Is(err, storage.ErrCASFailed) {
 		return err
@@ -150,7 +189,7 @@ func (b *backend) ensureNoSpaceForUsageLocked(ctx context.Context, usage int64) 
 	return nil
 }
 
-func (b *backend) DisarmNoSpace(ctx context.Context) (bool, error) {
+func (b *backend) DisarmNoSpace(ctx context.Context, memberID uint64) (bool, error) {
 	usage, quota, active, err := b.QuotaStatus(ctx)
 	if err != nil {
 		return false, err
@@ -162,22 +201,48 @@ func (b *backend) DisarmNoSpace(ctx context.Context) (bool, error) {
 		b.emitQuotaMetrics(usage, false)
 		return false, nil
 	}
-	err = b.InternalDelete(ctx, quotaAlarmKey)
+	raw, err := b.InternalGet(ctx, quotaAlarmKey)
+	if err != nil {
+		return false, err
+	}
+	owner, err := decodeQuotaAlarm(raw)
+	if err != nil {
+		return false, err
+	}
+	if owner != 0 && owner != memberID {
+		return false, nil
+	}
+	err = b.InternalCAS(ctx, []InternalCASOp{{
+		Key:            quotaAlarmKey,
+		Expected:       raw,
+		ExpectedExists: true,
+		Delete:         true,
+	}})
+	if errors.Is(err, storage.ErrCASFailed) {
+		return false, nil
+	}
 	if err == nil {
 		b.emitQuotaMetrics(usage, false)
 	}
 	return err == nil, err
 }
 
-func (b *backend) ArmNoSpace(ctx context.Context) error {
+func (b *backend) ArmNoSpace(ctx context.Context) (uint64, error) {
 	if b.config.QuotaBackendBytes == 0 {
-		return ErrQuotaDisabled
+		return 0, ErrQuotaDisabled
 	}
-	return b.activateNoSpace(ctx)
+	if err := b.activateNoSpace(ctx); err != nil {
+		return 0, err
+	}
+	memberID, _, err := b.NoSpaceAlarm(ctx)
+	return memberID, err
 }
 
 func (b *backend) activateNoSpace(ctx context.Context) error {
-	err := b.InternalCAS(ctx, []InternalCASOp{{Key: quotaAlarmKey, Value: []byte{1}}})
+	err := b.InternalCAS(ctx, []InternalCASOp{{
+		Key:   quotaAlarmKey,
+		Value: encodeQuotaAlarm(b.quotaAlarmMemberID()),
+	}})
 	if errors.Is(err, storage.ErrCASFailed) {
 		b.metricCli.EmitGauge("quota.nospace", 1)
 		return nil

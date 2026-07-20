@@ -92,8 +92,9 @@ type BackendShim interface {
 	InternalDelete(ctx context.Context, key []byte) error
 	InternalCAS(ctx context.Context, ops []backend.InternalCASOp) error
 	QuotaStatus(ctx context.Context) (usage, quota int64, noSpace bool, err error)
-	ArmNoSpace(ctx context.Context) error
-	DisarmNoSpace(ctx context.Context) (bool, error)
+	ArmNoSpace(ctx context.Context) (uint64, error)
+	NoSpaceAlarm(ctx context.Context) (memberID uint64, active bool, err error)
+	DisarmNoSpace(ctx context.Context, memberID uint64) (bool, error)
 
 	// BeginRangeTxn excludes logical writes while a range compare and its chosen
 	// branch execute, preventing phantoms under TiKV snapshot isolation.
@@ -230,12 +231,16 @@ func (b *backendShim) QuotaStatus(ctx context.Context) (usage, quota int64, noSp
 	return b.backend.QuotaStatus(ctx)
 }
 
-func (b *backendShim) ArmNoSpace(ctx context.Context) error {
+func (b *backendShim) ArmNoSpace(ctx context.Context) (uint64, error) {
 	return b.backend.ArmNoSpace(ctx)
 }
 
-func (b *backendShim) DisarmNoSpace(ctx context.Context) (bool, error) {
-	return b.backend.DisarmNoSpace(ctx)
+func (b *backendShim) NoSpaceAlarm(ctx context.Context) (memberID uint64, active bool, err error) {
+	return b.backend.NoSpaceAlarm(ctx)
+}
+
+func (b *backendShim) DisarmNoSpace(ctx context.Context, memberID uint64) (bool, error) {
+	return b.backend.DisarmNoSpace(ctx, memberID)
 }
 
 func (b *backendShim) GetDurableRevision(ctx context.Context) (uint64, error) {

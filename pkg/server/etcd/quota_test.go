@@ -168,8 +168,14 @@ func TestQuotaRPCAlarmMutationNoOpsMatchEtcd(t *testing.T) {
 		Alarm:    etcdserverpb.AlarmType_NOSPACE,
 	})
 	require.NoError(t, err)
-	require.Len(t, deactivate.Alarms, 1, "any advertised member may disarm the tenant alarm")
-	require.Equal(t, foreignMember, deactivate.Alarms[0].MemberID)
+	require.Empty(t, deactivate.Alarms, "a known member that does not own the alarm must not disarm it")
+	deactivate, err = server.Alarm(ctx, &etcdserverpb.AlarmRequest{
+		Action:   etcdserverpb.AlarmRequest_DEACTIVATE,
+		MemberID: activate.Alarms[0].MemberID,
+		Alarm:    etcdserverpb.AlarmType_NOSPACE,
+	})
+	require.NoError(t, err)
+	require.Equal(t, activate.Alarms, deactivate.Alarms)
 }
 
 func TestQuotaRPCManualActivationRequiresConfiguredQuota(t *testing.T) {

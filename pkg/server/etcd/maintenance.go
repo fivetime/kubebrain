@@ -94,10 +94,7 @@ func (s *RPCServer) Alarm(ctx context.Context, req *etcdserverpb.AlarmRequest) (
 		if req.GetAlarm() != etcdserverpb.AlarmType_NOSPACE {
 			return nil, status.Error(codes.Unimplemented, alarmMutationUnsupportedMessage)
 		}
-		if !s.isKnownAlarmMemberID(req.GetMemberID()) {
-			return response, nil
-		}
-		removed, err := s.backend.DisarmNoSpace(ctx)
+		removed, err := s.backend.DisarmNoSpace(ctx, req.GetMemberID())
 		if err != nil {
 			return nil, mapFenceErr(err)
 		}
@@ -119,11 +116,12 @@ func (s *RPCServer) Alarm(ctx context.Context, req *etcdserverpb.AlarmRequest) (
 		if req.GetAlarm() != etcdserverpb.AlarmType_NOSPACE {
 			return nil, status.Error(codes.Unimplemented, alarmMutationUnsupportedMessage)
 		}
-		if err := s.backend.ArmNoSpace(ctx); err != nil {
+		memberID, err := s.backend.ArmNoSpace(ctx)
+		if err != nil {
 			return nil, mapFenceErr(err)
 		}
 		response.Alarms = []*etcdserverpb.AlarmMember{{
-			MemberID: s.localMemberID(),
+			MemberID: memberID,
 			Alarm:    etcdserverpb.AlarmType_NOSPACE,
 		}}
 		return response, nil
@@ -140,25 +138,19 @@ func (s *RPCServer) Alarm(ctx context.Context, req *etcdserverpb.AlarmRequest) (
 	response := &etcdserverpb.AlarmResponse{Header: s.maintenanceHeader()}
 	if noSpace && (req.GetAlarm() == etcdserverpb.AlarmType_NONE ||
 		req.GetAlarm() == etcdserverpb.AlarmType_NOSPACE) {
+		memberID, active, alarmErr := s.backend.NoSpaceAlarm(ctx)
+		if alarmErr != nil {
+			return nil, alarmErr
+		}
+		if !active {
+			return response, nil
+		}
 		response.Alarms = []*etcdserverpb.AlarmMember{{
-			MemberID: s.localMemberID(),
+			MemberID: memberID,
 			Alarm:    etcdserverpb.AlarmType_NOSPACE,
 		}}
 	}
 	return response, nil
-}
-
-func (s *RPCServer) isKnownAlarmMemberID(memberID uint64) bool {
-	if memberID == s.localMemberID() {
-		return true
-	}
-	for _, member := range s.staticMembers {
-		if member.GetID() == memberID {
-			return true
-		}
-	}
-	leader := s.peers.GetLeaderInfo()
-	return election.IsLeaderKnown(leader) && s.memberIDFromAddress(leader) == memberID
 }
 
 func (s *RPCServer) Status(ctx context.Context, _ *etcdserverpb.StatusRequest) (*etcdserverpb.StatusResponse, error) {

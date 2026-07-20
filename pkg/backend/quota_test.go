@@ -70,7 +70,7 @@ func TestLogicalQuotaTracksLatestBytesAndPersistsNoSpace(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, int64(10), usage)
 	require.True(t, alarm)
-	_, err = b.DisarmNoSpace(ctx)
+	_, err = b.DisarmNoSpace(ctx, b.quotaAlarmMemberID())
 	require.ErrorIs(t, err, ErrNoSpace)
 
 	_, _, err = b.TxnApply(ctx, []TxnWriteOp{{Key: []byte("b"), Delete: true}}, nil)
@@ -79,7 +79,7 @@ func TestLogicalQuotaTracksLatestBytesAndPersistsNoSpace(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, int64(8), usage)
 	require.True(t, alarm, "capacity recovery does not implicitly disarm etcd's sticky alarm")
-	removed, err := b.DisarmNoSpace(ctx)
+	removed, err := b.DisarmNoSpace(ctx, b.quotaAlarmMemberID())
 	require.NoError(t, err)
 	require.True(t, removed)
 	_, _, alarm, err = b.QuotaStatus(ctx)
@@ -106,7 +106,7 @@ func TestLogicalQuotaAlarmRejectsAllPutsUntilCapacityRecovery(t *testing.T) {
 	require.NoError(t, err)
 	require.Zero(t, usage)
 	require.True(t, alarm)
-	removed, err := b.DisarmNoSpace(ctx)
+	removed, err := b.DisarmNoSpace(ctx, b.quotaAlarmMemberID())
 	require.NoError(t, err)
 	require.True(t, removed)
 	_, _, err = b.TxnApply(ctx, []TxnWriteOp{{Key: key, Value: []byte("1")}}, nil)
@@ -124,10 +124,46 @@ func TestQuotaDisabledPreservesExistingBehavior(t *testing.T) {
 	require.Zero(t, usage)
 	require.Zero(t, quota)
 	require.False(t, alarm)
-	require.ErrorIs(t, b.ArmNoSpace(ctx), ErrQuotaDisabled)
-	removed, err := b.DisarmNoSpace(ctx)
+	_, err = b.ArmNoSpace(ctx)
+	require.ErrorIs(t, err, ErrQuotaDisabled)
+	removed, err := b.DisarmNoSpace(ctx, b.quotaAlarmMemberID())
 	require.NoError(t, err)
 	require.False(t, removed)
+}
+
+func TestNoSpaceAlarmPersistsOwnerAndGuardsDisarm(t *testing.T) {
+	b, ctx := newQuotaBackend(t, 10)
+	wantOwner := b.quotaAlarmMemberID()
+	owner, err := b.ArmNoSpace(ctx)
+	require.NoError(t, err)
+	require.Equal(t, wantOwner, owner)
+	owner, active, err := b.NoSpaceAlarm(ctx)
+	require.NoError(t, err)
+	require.True(t, active)
+	require.Equal(t, wantOwner, owner)
+
+	removed, err := b.DisarmNoSpace(ctx, ^uint64(0))
+	require.NoError(t, err)
+	require.False(t, removed)
+	_, active, err = b.NoSpaceAlarm(ctx)
+	require.NoError(t, err)
+	require.True(t, active)
+
+	removed, err = b.DisarmNoSpace(ctx, wantOwner)
+	require.NoError(t, err)
+	require.True(t, removed)
+	_, active, err = b.NoSpaceAlarm(ctx)
+	require.NoError(t, err)
+	require.False(t, active)
+
+	require.NoError(t, b.InternalPut(ctx, quotaAlarmKey, []byte{1}))
+	owner, active, err = b.NoSpaceAlarm(ctx)
+	require.NoError(t, err)
+	require.True(t, active)
+	require.Equal(t, wantOwner, owner, "legacy alarm metadata maps to the local owner")
+	removed, err = b.DisarmNoSpace(ctx, ^uint64(0))
+	require.NoError(t, err)
+	require.True(t, removed, "legacy metadata accepts any owner during rolling upgrade")
 }
 
 func TestQuotaInitializationCountsExistingLiveDataOnce(t *testing.T) {
@@ -208,6 +244,6 @@ func TestQuotaInitializationActivatesNoSpaceForExistingOverage(t *testing.T) {
 	require.Equal(t, int64(len("existing")+len("value")), usage)
 	require.Equal(t, int64(5), quota)
 	require.True(t, alarm)
-	_, err = limited.DisarmNoSpace(ctx)
+	_, err = limited.DisarmNoSpace(ctx, limited.quotaAlarmMemberID())
 	require.ErrorIs(t, err, ErrNoSpace)
 }

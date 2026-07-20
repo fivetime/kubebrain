@@ -109,7 +109,7 @@ func TestQuotaAlarmCrossEndpointDisarm(t *testing.T) {
 	require.Len(t, listed.Alarms, 1)
 	require.NotZero(t, activated.Alarms[0].MemberID)
 	require.NotZero(t, listed.Alarms[0].MemberID)
-	require.NotEqual(t, activated.Alarms[0].MemberID, listed.Alarms[0].MemberID)
+	require.Equal(t, activated.Alarms, listed.Alarms, "alarm owner must remain stable across serving replicas")
 
 	wrong, err := third.Alarm(ctx, &etcdserverpb.AlarmRequest{
 		Action:   etcdserverpb.AlarmRequest_DEACTIVATE,
