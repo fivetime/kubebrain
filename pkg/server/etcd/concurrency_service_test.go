@@ -232,3 +232,62 @@ func TestDedicatedConcurrencyServiceErrorsMatchEtcd(t *testing.T) {
 		})
 	}
 }
+
+func TestDedicatedConcurrencyZeroLeaseCreatesDefaultSession(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer func() {
+		_ = server.concurrencyClient.Close()
+		closeFn()
+	}()
+
+	ctx := context.Background()
+	lockServer := newLockServer(server.concurrencyClient)
+	locked, err := lockServer.Lock(ctx, &v3lockpb.LockRequest{Name: []byte("/a361/lock")})
+	require.NoError(t, err)
+	lockKV, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: locked.Key})
+	require.NoError(t, err)
+	require.Len(t, lockKV.Kvs, 1)
+	lockLease := lockKV.Kvs[0].Lease
+	require.NotZero(t, lockLease)
+	lockTTL, err := server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: lockLease})
+	require.NoError(t, err)
+	require.Equal(t, int64(60), lockTTL.GrantedTTL)
+	require.Positive(t, lockTTL.TTL)
+	_, err = lockServer.Unlock(ctx, &v3lockpb.UnlockRequest{Key: locked.Key})
+	require.NoError(t, err)
+	lockKV, err = server.Range(ctx, &etcdserverpb.RangeRequest{Key: locked.Key})
+	require.NoError(t, err)
+	require.Empty(t, lockKV.Kvs)
+	lockTTL, err = server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: lockLease})
+	require.NoError(t, err)
+	require.Positive(t, lockTTL.TTL)
+	_, err = server.LeaseRevoke(ctx, &etcdserverpb.LeaseRevokeRequest{ID: lockLease})
+	require.NoError(t, err)
+
+	electionServer := newElectionServer(server.concurrencyClient)
+	campaign, err := electionServer.Campaign(ctx, &v3electionpb.CampaignRequest{
+		Name: []byte("/a361/election"), Value: []byte("leader"),
+	})
+	require.NoError(t, err)
+	require.NotNil(t, campaign.Leader)
+	require.NotZero(t, campaign.Leader.Lease)
+	require.NotEqual(t, lockLease, campaign.Leader.Lease)
+	electionKV, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: campaign.Leader.Key})
+	require.NoError(t, err)
+	require.Len(t, electionKV.Kvs, 1)
+	require.Equal(t, campaign.Leader.Lease, electionKV.Kvs[0].Lease)
+	electionTTL, err := server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: campaign.Leader.Lease})
+	require.NoError(t, err)
+	require.Equal(t, int64(60), electionTTL.GrantedTTL)
+	require.Positive(t, electionTTL.TTL)
+	_, err = electionServer.Resign(ctx, &v3electionpb.ResignRequest{Leader: campaign.Leader})
+	require.NoError(t, err)
+	electionKV, err = server.Range(ctx, &etcdserverpb.RangeRequest{Key: campaign.Leader.Key})
+	require.NoError(t, err)
+	require.Empty(t, electionKV.Kvs)
+	electionTTL, err = server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: campaign.Leader.Lease})
+	require.NoError(t, err)
+	require.Positive(t, electionTTL.TTL)
+	_, err = server.LeaseRevoke(ctx, &etcdserverpb.LeaseRevokeRequest{ID: campaign.Leader.Lease})
+	require.NoError(t, err)
+}
