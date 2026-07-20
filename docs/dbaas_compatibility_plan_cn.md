@@ -5587,6 +5587,29 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   最终 KubeBrain 3/3 Ready 且 0 restart，PD/TiKV 3+3 Ready；现有 runtime 已正确，
   本轮不重建语义相同的镜像。
 
+- **RangeStream A309 successful termination with EOF（2026-07-20）**：对照
+  upstream `/root/etcd` commit `967feb0d6`。etcd grpcproxy 的进程内
+  `chanStream` 原先在 server-streaming handler 成功返回 nil 后只关闭 context，
+  没有向 client side 投递 terminal status；`RecvMsg` 因而可能挂起或返回 context
+  错误，而 gRPC ClientStream 契约要求正常完成严格返回 `io.EOF`。upstream 现把 nil
+  handler 结果显式转换为 EOF。
+
+  KubeBrain 不使用该 chan adapter，RangeStream handler 成功返回 nil 后由真实 grpc-go
+  transport 产生 EOF；follower 也先执行 read barrier 再从本地 durable TiKV snapshot
+  流式读取，不经过另一套会吞掉 terminal status 的内存代理。已有 bufconn 测试只隐式
+  覆盖非空 recursive range，本轮将 common-shape 双端结果增加显式
+  `EndedWithEOF`，并逐项 fail closed 断言 point hit、point miss、相等空区间、逆序空
+  区间、Limit、历史 revision 和 from-key 七种成功形状都没有 terminal gRPC code。
+
+  fresh upstream etcd 与通过专属 NodePort 明确直连的 follower `kubebrain-0` 连续
+  20 轮双端差分通过（5.132 秒），七种形状全部 EOF 且内容、Count、More、header 与
+  unary Range 一致。bufconn 真实 gRPC EOF/terminal metadata 门禁 race 连续 50 轮
+  通过（5.051 秒），完整 RangeStream 服务测试通过（0.667 秒），compat race
+  编译/skip 连续 50 轮通过（1.092 秒），根模块与 compat 模块相关 `go vet` 通过。
+  参考进程、数据目录和临时 follower Service 均已清理，未使用 port-forward；最终
+  KubeBrain 3/3 Ready 且 0 restart，PD/TiKV 3+3 Ready。现有 runtime 已正确，本轮
+  不重建语义相同的镜像。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
