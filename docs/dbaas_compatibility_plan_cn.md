@@ -5309,6 +5309,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   不存在可修复差异；typed nil transaction oneof 经 protobuf wire 解码为默认嵌套
   message，按空 key 拒绝，不构成远程 nil dereference。
 
+- **Lease A297 KeepAlive/Revoke buffered convergence（2026-07-20）**：跟进
+  upstream `/root/etcd` commit `a81b6d623` 明确的官方 client/v3 契约：`Revoke`
+  返回后，`KeepAlive` channel 仍可能交付撤销前已经缓冲的正 TTL 响应。该数量取决于
+  stream 调度，不能错误收紧为“Revoke 后绝对零响应”；但客户端仍必须在下一次续租
+  发现 lease 不存在后关闭 channel，且已绑定 key 和 lease 均不可恢复。
+
+  新增官方 client/v3 双端生命周期门禁：先等待首个有效 KeepAlive，再 Revoke；
+  允许任意数量但要求 ID/TTL 合法的已缓冲响应，同时要求 5 秒内 channel 关闭、
+  key 消失且 TimeToLive 精确返回 `-1`。全新参考 etcd 与真实 3 PD + 3 TiKV、
+  3 副本 KubeBrain 连续 20 轮均通过，每轮约一个 keepalive 周期后收敛，总计
+  142.140 秒；清理测试噪声后双端再连续 2 轮、真实双端 race 3 轮 22.475 秒通过，
+  根模块全量和 vet 通过。该审计未发现服务实现差异，因而只增加永久回归门禁，
+  不制造无依据的运行时修改。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
