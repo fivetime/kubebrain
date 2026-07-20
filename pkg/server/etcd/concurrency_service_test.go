@@ -157,3 +157,78 @@ func TestDedicatedLockServicePreservesCallerAuthentication(t *testing.T) {
 	_, err = lockServer.Unlock(rootCtx, &v3lockpb.UnlockRequest{Key: locked.Key})
 	require.NoError(t, err)
 }
+
+func TestDedicatedConcurrencyServiceErrorsMatchEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer func() {
+		_ = server.concurrencyClient.Close()
+		closeFn()
+	}()
+
+	ctx := context.Background()
+	lockServer := newLockServer(server.concurrencyClient)
+	electionServer := newElectionServer(server.concurrencyClient)
+	tests := []struct {
+		name    string
+		call    func() error
+		message string
+	}{
+		{
+			name: "lock missing lease",
+			call: func() error {
+				_, err := lockServer.Lock(ctx, &v3lockpb.LockRequest{Name: []byte("/a360/lock"), Lease: 999999})
+				return err
+			},
+			message: "etcdserver: requested lease not found",
+		},
+		{
+			name: "unlock empty key",
+			call: func() error {
+				_, err := lockServer.Unlock(ctx, &v3lockpb.UnlockRequest{})
+				return err
+			},
+			message: "etcdserver: key is not provided",
+		},
+		{
+			name: "campaign missing lease",
+			call: func() error {
+				_, err := electionServer.Campaign(ctx, &v3electionpb.CampaignRequest{
+					Name: []byte("/a360/election"), Lease: 999999, Value: []byte("value"),
+				})
+				return err
+			},
+			message: "etcdserver: requested lease not found",
+		},
+		{
+			name: "proclaim missing leader",
+			call: func() error {
+				_, err := electionServer.Proclaim(ctx, &v3electionpb.ProclaimRequest{})
+				return err
+			},
+			message: `"leader" field must be provided`,
+		},
+		{
+			name: "resign missing leader",
+			call: func() error {
+				_, err := electionServer.Resign(ctx, &v3electionpb.ResignRequest{})
+				return err
+			},
+			message: `"leader" field must be provided`,
+		},
+		{
+			name: "leader not found",
+			call: func() error {
+				_, err := electionServer.Leader(ctx, &v3electionpb.LeaderRequest{Name: []byte("/a360/no-leader")})
+				return err
+			},
+			message: "election: no leader",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := test.call()
+			require.Equal(t, codes.Unknown, status.Code(err))
+			require.Equal(t, test.message, status.Convert(err).Message())
+		})
+	}
+}
