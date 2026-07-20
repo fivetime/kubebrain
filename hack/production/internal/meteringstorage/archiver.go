@@ -117,7 +117,7 @@ func (a *Archiver) Process(ctx context.Context) (Snapshot, []byte, error) {
 		usage.Prefix != a.SourcePrefix+"/" ||
 		!equalStrings(usage.AllowedFormats, a.AllowedFormats) ||
 		usage.CheckedAtUnix < slotEnd.Unix() ||
-		usage.CheckedAtUnix-slotEnd.Unix() > int64(a.FinalizationDelay/time.Second) {
+		usage.CheckedAtUnix-slotEnd.Unix() > maxSnapshotFinalizationDelay {
 		return Snapshot{}, output, errors.New("object storage usage receipt does not match sample slot")
 	}
 	snapshot, err := BuildSnapshot(a.Instance, slotStart.Unix(), slotEnd.Unix(), usage)

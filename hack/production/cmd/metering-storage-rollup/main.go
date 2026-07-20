@@ -23,7 +23,7 @@ func main() {
 	flag.StringVar(&retentionMode, "retention-mode", "COMPLIANCE", "COMPLIANCE or GOVERNANCE")
 	flag.DurationVar(&retentionDuration, "retention-duration", 7*365*24*time.Hour, "evidence retention from slot end")
 	flag.DurationVar(&finalizationDelay, "finalization-delay", 45*time.Minute, "delay after the complete UTC day")
-	flag.DurationVar(&sampleFinalizationDelay, "sample-finalization-delay", 10*time.Minute, "maximum delay encoded in hourly samples")
+	flag.DurationVar(&sampleFinalizationDelay, "sample-finalization-delay", 45*time.Minute, "maximum delay encoded in hourly samples")
 	flag.DurationVar(&timeout, "timeout", 20*time.Minute, "overall read and archive deadline")
 	flag.Int64Var(&periodEndUnix, "period-end-unix", 0, "optional aligned historical period end")
 	flag.Parse()

@@ -15,7 +15,7 @@ import (
 )
 
 func TestArchiverMeasuresBeforeArchivingAndIsDeterministic(t *testing.T) {
-	now := time.Unix(1_784_509_800, 0).UTC()
+	now := time.Unix(1_784_510_820, 0).UTC()
 	var firstArtifact []byte
 	calls := 0
 	run := func(_ context.Context, _ string, environment []string) ([]byte, error) {

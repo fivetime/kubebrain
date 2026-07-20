@@ -172,7 +172,7 @@ spec:
                 - --retention-mode=COMPLIANCE
                 - --retention-duration=61320h
                 - --finalization-delay=45m
-                - --sample-finalization-delay=10m
+                - --sample-finalization-delay=45m
                 - --timeout=20m
               resources:
                 requests: {cpu: 25m, memory: 64Mi}

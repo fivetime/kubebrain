@@ -102,6 +102,12 @@ func (r *Roller) Process(ctx context.Context) (Rollup, []byte, error) {
 		if err != nil {
 			return Rollup{}, output, fmt.Errorf("validate object storage sample %d: %w", i, err)
 		}
+		if status.Snapshot.CheckedAtUnix-status.Snapshot.SlotEndUnix >
+			int64(r.SampleFinalizationDelay/time.Second) {
+			return Rollup{}, output, fmt.Errorf(
+				"object storage sample %d exceeds configured finalization window", i,
+			)
+		}
 		artifact, err := os.ReadFile(outputPath)
 		if err != nil {
 			return Rollup{}, output, err

@@ -15,7 +15,7 @@ import (
 
 const SnapshotFormat = "kubebrain.object-storage-sample.v1"
 const UsageReceiptFormat = "kubebrain.object-usage.receipt.v1"
-const maxSnapshotFinalizationDelay = int64(30 * 60)
+const maxSnapshotFinalizationDelay = int64(45 * 60)
 
 var identifierPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`)
 var digestPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)

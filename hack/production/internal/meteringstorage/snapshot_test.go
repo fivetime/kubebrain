@@ -30,7 +30,7 @@ func TestSnapshotRejectsInvalidEvidenceAndSlot(t *testing.T) {
 	snapshot.DeleteMarkers = 1
 	require.Error(t, snapshot.Validate())
 	snapshot = validSnapshot()
-	snapshot.CheckedAtUnix = snapshot.SlotEndUnix + 1801
+	snapshot.CheckedAtUnix = snapshot.SlotEndUnix + 2701
 	require.Error(t, snapshot.Validate())
 }
 
