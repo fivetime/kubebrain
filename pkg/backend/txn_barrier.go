@@ -22,7 +22,11 @@ type rangeTxnOwnerKey struct{}
 // this transaction reuse the exclusive lock instead of trying to RLock it.
 func (b *backend) BeginRangeTxn(ctx context.Context) (context.Context, func()) {
 	b.logicalWriteMu.Lock()
-	return context.WithValue(ctx, rangeTxnOwnerKey{}, b), b.logicalWriteMu.Unlock
+	return b.withLogicalWriteOwnership(ctx), b.logicalWriteMu.Unlock
+}
+
+func (b *backend) withLogicalWriteOwnership(ctx context.Context) context.Context {
+	return context.WithValue(ctx, rangeTxnOwnerKey{}, b)
 }
 
 func (b *backend) lockLogicalWrite(ctx context.Context) func() {

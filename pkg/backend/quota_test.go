@@ -450,3 +450,91 @@ func TestQuotaInitializationActivatesNoSpaceForExistingOverage(t *testing.T) {
 	_, err = limited.DisarmNoSpace(ctx, limited.quotaAlarmMemberID())
 	require.ErrorIs(t, err, ErrNoSpace)
 }
+
+func TestQuotaInitializationReconcilesCommittedUncertainUsage(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+	base := imemkv.NewKvStorage()
+	t.Cleanup(func() { require.NoError(t, base.Close()) })
+	metrics := mock.NewMinimalMetrics(ctrl)
+	ctx := context.Background()
+
+	unlimited := NewBackend(base, Config{
+		Prefix:                  prefix,
+		Identity:                getStorageIdentity(),
+		EnableEtcdCompatibility: true,
+	}, metrics).(*backend)
+	unlimited.SetCurrentRevision(uint64(time.Now().UnixNano()))
+	_, _, err := unlimited.TxnApply(ctx, []TxnWriteOp{{
+		Key: []byte("existing"), Value: []byte("value"),
+	}}, nil)
+	require.NoError(t, err)
+
+	store := &commitThenUncertainStorage{
+		KvStorage:               base,
+		failReadsAfterUncertain: 2,
+	}
+	limited := NewBackend(store, Config{
+		Prefix:                  prefix,
+		Identity:                getStorageIdentity(),
+		EnableEtcdCompatibility: true,
+		QuotaBackendBytes:       100,
+	}, metrics).(*backend)
+	limited.SetCurrentRevision(unlimited.GetCurrentRevision())
+	store.trigger.Store(true)
+	require.NoError(t, limited.EnsureQuotaInitialized(ctx))
+
+	usage, quota, alarm, err := limited.QuotaStatus(ctx)
+	require.NoError(t, err)
+	require.Equal(t, int64(len("existing")+len("value")), usage)
+	require.Equal(t, int64(100), quota)
+	require.False(t, alarm)
+}
+
+func TestQuotaInitializationPreservesUncommittedUncertainUsageError(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+	base := imemkv.NewKvStorage()
+	t.Cleanup(func() { require.NoError(t, base.Close()) })
+	store := &uncommittedUncertainStorage{KvStorage: base}
+	b := NewBackend(store, Config{
+		Prefix:                  prefix,
+		Identity:                getStorageIdentity(),
+		EnableEtcdCompatibility: true,
+		QuotaBackendBytes:       100,
+	}, mock.NewMinimalMetrics(ctrl)).(*backend)
+	b.SetCurrentRevision(uint64(time.Now().UnixNano()))
+
+	store.trigger.Store(true)
+	err := b.EnsureQuotaInitialized(context.Background())
+	require.ErrorIs(t, err, storage.ErrUncertainResult)
+	_, _, _, statusErr := b.QuotaStatus(context.Background())
+	require.ErrorIs(t, statusErr, ErrQuotaUninitialized)
+}
+
+func TestQuotaInitializationReconcilesCommittedUncertainOverageAlarm(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+	base := imemkv.NewKvStorage()
+	t.Cleanup(func() { require.NoError(t, base.Close()) })
+	store := &commitThenUncertainStorage{
+		KvStorage:               base,
+		failReadsAfterUncertain: 2,
+	}
+	b := NewBackend(store, Config{
+		Prefix:                  prefix,
+		Identity:                getStorageIdentity(),
+		EnableEtcdCompatibility: true,
+		QuotaBackendBytes:       5,
+	}, mock.NewMinimalMetrics(ctrl)).(*backend)
+	b.SetCurrentRevision(uint64(time.Now().UnixNano()))
+	require.NoError(t, b.InternalPut(context.Background(), quotaUsageKey, encodeQuotaUsage(10)))
+
+	store.trigger.Store(true)
+	require.NoError(t, b.EnsureQuotaInitialized(context.Background()))
+	usage, quota, alarm, err := b.QuotaStatus(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, int64(10), usage)
+	require.Equal(t, int64(5), quota)
+	require.True(t, alarm)
+}

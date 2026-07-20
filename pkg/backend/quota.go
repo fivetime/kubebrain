@@ -113,6 +113,7 @@ func (b *backend) EnsureQuotaInitialized(ctx context.Context) error {
 	}
 	b.logicalWriteMu.Lock()
 	defer b.logicalWriteMu.Unlock()
+	ctx = b.withLogicalWriteOwnership(ctx)
 
 	usageKey := b.ks.EncodeInternalKey(quotaUsageKey)
 	if raw, err := b.kv.Get(ctx, usageKey); err == nil {
@@ -162,10 +163,57 @@ func (b *backend) EnsureQuotaInitialized(ctx context.Context) error {
 		}
 		return b.ensureNoSpaceForUsageLocked(ctx, actualUsage)
 	}
+	if errors.Is(err, storage.ErrUncertainResult) {
+		actualUsage, initialized, reconcileErr := b.reconcileQuotaInitialization(ctx, err)
+		if reconcileErr != nil {
+			return reconcileErr
+		}
+		if !initialized {
+			return err
+		}
+		return b.ensureNoSpaceForUsageLocked(ctx, actualUsage)
+	}
 	if err != nil {
 		return err
 	}
 	return b.ensureNoSpaceForUsageLocked(ctx, usage)
+}
+
+func (b *backend) reconcileQuotaInitialization(
+	ctx context.Context, commitErr error,
+) (usage int64, initialized bool, err error) {
+	reconcileCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), quotaAlarmReconcileTimeout)
+	defer cancel()
+	usageKey := b.ks.EncodeInternalKey(quotaUsageKey)
+	for {
+		raw, getErr := b.kv.Get(reconcileCtx, usageKey)
+		switch {
+		case errors.Is(getErr, storage.ErrKeyNotFound):
+			return 0, false, nil
+		case getErr == nil:
+			usage, decodeErr := decodeQuotaUsage(raw)
+			if decodeErr != nil {
+				return 0, false, errors.Join(
+					commitErr,
+					fmt.Errorf("reconcile quota initialization: %w", decodeErr),
+				)
+			}
+			return usage, true, nil
+		case !errors.Is(getErr, storage.ErrUnavailable):
+			return 0, false, errors.Join(
+				commitErr,
+				fmt.Errorf("reconcile quota initialization: %w", getErr),
+			)
+		}
+		select {
+		case <-reconcileCtx.Done():
+			return 0, false, errors.Join(
+				commitErr,
+				fmt.Errorf("reconcile quota initialization: %w", reconcileCtx.Err()),
+			)
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
 }
 
 func (b *backend) ensureNoSpaceForUsageLocked(ctx context.Context, usage int64) error {
@@ -180,13 +228,7 @@ func (b *backend) ensureNoSpaceForUsageLocked(ctx context.Context, usage int64) 
 	} else if !errors.Is(err, storage.ErrKeyNotFound) {
 		return err
 	}
-	if err := b.fenceAdmit(ctx); err != nil {
-		return err
-	}
-	batch := b.kv.BeginBatchWrite()
-	batch.PutIfNotExist(alarmKey, encodeQuotaAlarm(b.quotaAlarmMemberID()), 0)
-	err := batch.Commit(ctx)
-	if err != nil && !errors.Is(err, storage.ErrCASFailed) {
+	if err := b.activateNoSpace(ctx); err != nil {
 		return err
 	}
 	b.emitQuotaMetrics(usage, true)
