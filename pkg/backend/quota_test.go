@@ -2,6 +2,7 @@ package backend
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -9,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/kubewharf/kubebrain/pkg/metrics/mock"
+	"github.com/kubewharf/kubebrain/pkg/storage"
 	imemkv "github.com/kubewharf/kubebrain/pkg/storage/memkv"
 )
 
@@ -124,7 +126,7 @@ func TestQuotaDisabledPreservesExistingBehavior(t *testing.T) {
 	require.Zero(t, usage)
 	require.Zero(t, quota)
 	require.False(t, alarm)
-	_, err = b.ArmNoSpace(ctx)
+	_, err = b.ArmNoSpace(ctx, 0)
 	require.ErrorIs(t, err, ErrQuotaDisabled)
 	removed, err := b.DisarmNoSpace(ctx, b.quotaAlarmMemberID())
 	require.NoError(t, err)
@@ -134,7 +136,7 @@ func TestQuotaDisabledPreservesExistingBehavior(t *testing.T) {
 func TestNoSpaceAlarmPersistsOwnerAndGuardsDisarm(t *testing.T) {
 	b, ctx := newQuotaBackend(t, 10)
 	wantOwner := b.quotaAlarmMemberID()
-	owner, err := b.ArmNoSpace(ctx)
+	owner, err := b.ArmNoSpace(ctx, 0)
 	require.NoError(t, err)
 	require.Equal(t, wantOwner, owner)
 	owner, active, err := b.NoSpaceAlarm(ctx)
@@ -164,6 +166,97 @@ func TestNoSpaceAlarmPersistsOwnerAndGuardsDisarm(t *testing.T) {
 	removed, err = b.DisarmNoSpace(ctx, ^uint64(0))
 	require.NoError(t, err)
 	require.True(t, removed, "legacy metadata accepts any owner during rolling upgrade")
+}
+
+func TestArmNoSpacePersistsExplicitOwnerAndKeepsFirstOwner(t *testing.T) {
+	b, ctx := newQuotaBackend(t, 10)
+	const explicitOwner uint64 = 424242
+
+	owner, err := b.ArmNoSpace(ctx, explicitOwner)
+	require.NoError(t, err)
+	require.Equal(t, explicitOwner, owner)
+
+	owner, err = b.ArmNoSpace(ctx, explicitOwner+1)
+	require.NoError(t, err)
+	require.Equal(t, explicitOwner, owner, "repeated activation must preserve the persisted owner")
+}
+
+func TestArmNoSpaceConcurrentActivationReturnsPersistedOwner(t *testing.T) {
+	b, ctx := newQuotaBackend(t, 10)
+	const workers = 32
+	start := make(chan struct{})
+	owners := make(chan uint64, workers)
+	errs := make(chan error, workers)
+	var wg sync.WaitGroup
+	for i := uint64(1); i <= workers; i++ {
+		wg.Add(1)
+		go func(requested uint64) {
+			defer wg.Done()
+			<-start
+			owner, err := b.ArmNoSpace(ctx, requested)
+			owners <- owner
+			errs <- err
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	close(owners)
+	close(errs)
+
+	for err := range errs {
+		require.NoError(t, err)
+	}
+	persisted, active, err := b.NoSpaceAlarm(ctx)
+	require.NoError(t, err)
+	require.True(t, active)
+	require.NotZero(t, persisted)
+	for owner := range owners {
+		require.Equal(t, persisted, owner)
+	}
+}
+
+func TestArmNoSpaceReconcilesCommittedUncertainActivation(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+	base := imemkv.NewKvStorage()
+	t.Cleanup(func() { require.NoError(t, base.Close()) })
+	store := &commitThenUncertainStorage{KvStorage: base}
+	store.failReadsAfterUncertain = 2
+	b := NewBackend(store, Config{
+		Prefix:                  prefix,
+		Identity:                getStorageIdentity(),
+		EnableEtcdCompatibility: true,
+		QuotaBackendBytes:       10,
+	}, mock.NewMinimalMetrics(ctrl)).(*backend)
+	require.NoError(t, b.EnsureQuotaInitialized(context.Background()))
+
+	store.trigger.Store(true)
+	const requestedOwner uint64 = 424242
+	owner, err := b.ArmNoSpace(context.Background(), requestedOwner)
+	require.NoError(t, err)
+	require.Equal(t, requestedOwner, owner)
+}
+
+func TestArmNoSpacePreservesUncommittedUncertainError(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+	base := imemkv.NewKvStorage()
+	t.Cleanup(func() { require.NoError(t, base.Close()) })
+	store := &uncommittedUncertainStorage{KvStorage: base}
+	b := NewBackend(store, Config{
+		Prefix:                  prefix,
+		Identity:                getStorageIdentity(),
+		EnableEtcdCompatibility: true,
+		QuotaBackendBytes:       10,
+	}, mock.NewMinimalMetrics(ctrl)).(*backend)
+	require.NoError(t, b.EnsureQuotaInitialized(context.Background()))
+
+	store.trigger.Store(true)
+	_, err := b.ArmNoSpace(context.Background(), 424242)
+	require.ErrorIs(t, err, storage.ErrUncertainResult)
+	_, active, readErr := b.NoSpaceAlarm(context.Background())
+	require.NoError(t, readErr)
+	require.False(t, active)
 }
 
 func TestQuotaInitializationCountsExistingLiveDataOnce(t *testing.T) {

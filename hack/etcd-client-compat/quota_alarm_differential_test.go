@@ -187,12 +187,15 @@ func runQuotaAlarmCappedScenario(t *testing.T, endpoint string) []quotaAlarmOutc
 	})
 	record("deactivate-none", response, err)
 
+	const requestedAlarmMemberID uint64 = 424242
 	activate, err := maintenance.Alarm(ctx, &etcdserverpb.AlarmRequest{
-		Action: etcdserverpb.AlarmRequest_ACTIVATE,
-		Alarm:  etcdserverpb.AlarmType_NOSPACE,
+		Action:   etcdserverpb.AlarmRequest_ACTIVATE,
+		MemberID: requestedAlarmMemberID,
+		Alarm:    etcdserverpb.AlarmType_NOSPACE,
 	})
 	record("activate", activate, err)
 	require.Len(t, activate.GetAlarms(), 1)
+	require.Equal(t, requestedAlarmMemberID, activate.Alarms[0].MemberID)
 	alarmMemberID := activate.Alarms[0].MemberID
 
 	response, err = maintenance.Alarm(ctx, &etcdserverpb.AlarmRequest{

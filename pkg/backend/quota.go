@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/crc32"
+	"time"
 
 	"github.com/kubewharf/kubebrain/pkg/storage"
 )
@@ -13,6 +14,8 @@ import (
 var ErrNoSpace = errors.New("etcdserver: no space")
 var ErrQuotaDisabled = errors.New("quota enforcement is disabled")
 var ErrQuotaUninitialized = errors.New("quota usage is not initialized")
+
+const quotaAlarmReconcileTimeout = 5 * time.Second
 
 var (
 	quotaUsageKey = []byte("quota/usage")
@@ -227,21 +230,28 @@ func (b *backend) DisarmNoSpace(ctx context.Context, memberID uint64) (bool, err
 	return err == nil, err
 }
 
-func (b *backend) ArmNoSpace(ctx context.Context) (uint64, error) {
+func (b *backend) ArmNoSpace(ctx context.Context, memberID uint64) (uint64, error) {
 	if b.config.QuotaBackendBytes == 0 {
 		return 0, ErrQuotaDisabled
 	}
-	if err := b.activateNoSpace(ctx); err != nil {
+	if memberID == 0 {
+		memberID = b.quotaAlarmMemberID()
+	}
+	if err := b.activateNoSpaceForMember(ctx, memberID); err != nil {
 		return 0, err
 	}
-	memberID, _, err := b.NoSpaceAlarm(ctx)
-	return memberID, err
+	owner, _, err := b.NoSpaceAlarm(ctx)
+	return owner, err
 }
 
 func (b *backend) activateNoSpace(ctx context.Context) error {
+	return b.activateNoSpaceForMember(ctx, b.quotaAlarmMemberID())
+}
+
+func (b *backend) activateNoSpaceForMember(ctx context.Context, memberID uint64) error {
 	err := b.InternalCAS(ctx, []InternalCASOp{{
 		Key:   quotaAlarmKey,
-		Value: encodeQuotaAlarm(b.quotaAlarmMemberID()),
+		Value: encodeQuotaAlarm(memberID),
 	}})
 	if errors.Is(err, storage.ErrCASFailed) {
 		b.metricCli.EmitGauge("quota.nospace", 1)
@@ -249,8 +259,32 @@ func (b *backend) activateNoSpace(ctx context.Context) error {
 	}
 	if err == nil {
 		b.metricCli.EmitGauge("quota.nospace", 1)
+		return nil
 	}
-	return err
+	if !errors.Is(err, storage.ErrUncertainResult) {
+		return err
+	}
+
+	reconcileCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), quotaAlarmReconcileTimeout)
+	defer cancel()
+	for {
+		_, active, reconcileErr := b.NoSpaceAlarm(reconcileCtx)
+		if reconcileErr == nil {
+			if active {
+				b.metricCli.EmitGauge("quota.nospace", 1)
+				return nil
+			}
+			return err
+		}
+		if !errors.Is(reconcileErr, storage.ErrUnavailable) {
+			return errors.Join(err, fmt.Errorf("reconcile NOSPACE activation: %w", reconcileErr))
+		}
+		select {
+		case <-reconcileCtx.Done():
+			return errors.Join(err, fmt.Errorf("reconcile NOSPACE activation: %w", reconcileCtx.Err()))
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
 }
 
 func (b *backend) emitQuotaMetrics(usage int64, noSpace bool) {

@@ -107,8 +107,9 @@ type Backend interface {
 	// are served when quota enforcement is enabled.
 	EnsureQuotaInitialized(ctx context.Context) error
 	// ArmNoSpace persistently enables the tenant-wide NOSPACE write cap and
-	// returns the member that owns the existing or newly created alarm.
-	ArmNoSpace(ctx context.Context) (uint64, error)
+	// returns the member that owns the existing or newly created alarm. A zero
+	// requested owner uses this backend's stable member ID.
+	ArmNoSpace(ctx context.Context, memberID uint64) (uint64, error)
 	// NoSpaceAlarm returns the persisted alarm owner and active state.
 	NoSpaceAlarm(ctx context.Context) (memberID uint64, active bool, err error)
 	// DisarmNoSpace clears NOSPACE only after usage falls below the hard limit

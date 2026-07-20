@@ -178,6 +178,30 @@ func TestQuotaRPCAlarmMutationNoOpsMatchEtcd(t *testing.T) {
 	require.Equal(t, activate.Alarms, deactivate.Alarms)
 }
 
+func TestQuotaRPCAlarmActivationPersistsRequestedMember(t *testing.T) {
+	server := newQuotaRPCServer(t, 6)
+	ctx := context.Background()
+	const requestedOwner uint64 = 424242
+
+	activate, err := server.Alarm(ctx, &etcdserverpb.AlarmRequest{
+		Action:   etcdserverpb.AlarmRequest_ACTIVATE,
+		MemberID: requestedOwner,
+		Alarm:    etcdserverpb.AlarmType_NOSPACE,
+	})
+	require.NoError(t, err)
+	require.Equal(t, []*etcdserverpb.AlarmMember{{
+		MemberID: requestedOwner,
+		Alarm:    etcdserverpb.AlarmType_NOSPACE,
+	}}, activate.Alarms)
+
+	list, err := server.Alarm(ctx, &etcdserverpb.AlarmRequest{
+		Action: etcdserverpb.AlarmRequest_GET,
+		Alarm:  etcdserverpb.AlarmType_NOSPACE,
+	})
+	require.NoError(t, err)
+	require.Equal(t, activate.Alarms, list.Alarms)
+}
+
 func TestQuotaRPCManualActivationRequiresConfiguredQuota(t *testing.T) {
 	server := newQuotaRPCServer(t, 0)
 	_, err := server.Alarm(context.Background(), &etcdserverpb.AlarmRequest{

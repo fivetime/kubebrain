@@ -116,7 +116,7 @@ func (s *RPCServer) Alarm(ctx context.Context, req *etcdserverpb.AlarmRequest) (
 		if req.GetAlarm() != etcdserverpb.AlarmType_NOSPACE {
 			return nil, status.Error(codes.Unimplemented, alarmMutationUnsupportedMessage)
 		}
-		memberID, err := s.backend.ArmNoSpace(ctx)
+		memberID, err := s.backend.ArmNoSpace(ctx, req.GetMemberID())
 		if err != nil {
 			return nil, mapFenceErr(err)
 		}
