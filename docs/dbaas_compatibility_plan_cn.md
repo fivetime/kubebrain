@@ -43,7 +43,7 @@ Raft、bbolt 和成员管理内部实现，而是对通用 etcd v3 客户端提�
 | Maintenance | Status | 兼容核心语义 | 返回真实服务身份、版本、leader/revision/共享选主 term；配置 quota 时报告租户最新逻辑 key+value 字节，未配置时使用兼容 sentinel；TiKV 物理容量转到实例指标 |
 | Maintenance | Snapshot | 平台替代 | 使用 TiKV BR/PITR；控制面提供备份、恢复和导出任务，不伪造 etcd snapshot |
 | Maintenance | Defragment | 平台替代 | TiKV GC/compaction 管理，不执行 bbolt 碎片整理 |
-| Maintenance | Alarm/DbSize | 兼容 NOSPACE 核心语义 | keyspace 级逻辑容量原子计量、持久 sticky NOSPACE、list/activate/disarm、跨 member mutation、no-op 与 capped write state 已支持；任意虚构 member 的多告警、CORRUPT 与 bbolt fragmentation 仍为边界 |
+| Maintenance | Alarm/DbSize | 兼容 NOSPACE 核心语义 | keyspace 级逻辑容量原子计量、持久 owner/sticky NOSPACE、list/activate/disarm、跨 endpoint mutation、no-op 与 capped write state 已支持；任意虚构 member 的多告警、CORRUPT 与 bbolt fragmentation 仍为边界 |
 | Maintenance | Hash/HashKV | 兼容核心语义 | 对指定 revision 的租户 MVCC 实际内容做稳定摘要；成员本地诊断不依赖 KubeBrain leader，数值不与 bbolt 内部编码比较 |
 | Maintenance | MoveLeader/Downgrade | 平台替代 | 分别由服务选主和 DBaaS 升级编排处理 |
 | Endpoint | health/livez/readyz | 兼容核心语义 | `/health`、`/livez`、`/readyz` 及分项检查已对齐；`data_corruption`/`non_learner` 使用 TiKV 架构等价语义，`/ready` 与 `/ping` 为平台探针 |
@@ -6280,6 +6280,39 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   三个测试 Pod 均 Ready、restartCount=0 且无 panic/fatal/storage error。在线
   `kubebrain:a320-object-request-metering` release gate 保持 KubeBrain 3/3、
   PD/TiKV 3+3 Ready，endpoint proposal health 15.938ms。
+
+- **Maintenance A332 persisted alarm owner / CAS disarm（2026-07-20）**：继续审计 A331
+  发现其允许任一已发布 member 解除 tenant alarm，但上游
+  `/root/etcd/server/etcdserver/api/v3alarm/alarms.go` 持久保存实际
+  `AlarmMember`：Pod A 激活后从 Pod B GET 仍应返回 A，而不是随 serving replica
+  漂移。NOSPACE 内部元数据现从单字节 active marker 升级为 8 字节 member ID；
+  自动超限和手工 activate 均以 backend identity 的稳定 member ID 执行
+  Put-if-absent，因此重复激活保留首个 owner。
+
+  `NoSpaceAlarm` 在所有副本读取同一持久 owner；`DisarmNoSpace(memberID)` 在 backend
+  内先核对 owner，再用 exact-value CAS 删除，错误 owner、重复解除或读取后被替换的
+  告警均为空操作，不再存在 RPC 检查与删除之间的 TOCTOU。旧版单字节 marker 可直接
+  读取并映射为本地 owner；滚动升级期间为避免跨 Pod owner 漂移阻塞恢复，旧格式接受
+  任意请求 owner 后执行 exact-value CAS 删除。无需离线迁移，解除后再次激活自然写入
+  新格式并启用严格 owner 校验。
+
+  三 endpoint 黑盒门禁现要求 Pod A activate 与 Pod B list 返回完全相同且非零的
+  `AlarmMember`，Pod C 用虚构 ID 不能解除，再用持久 owner 成功 disarm。真实
+  3 PD/3 TiKV、三个共享独立 `a332-alarm-owner` keyspace 的
+  `kubebrain:a332-alarm-owner` 首轮 0.296 秒、连续 20 轮 3.493 秒、race 5 轮
+  2.115 秒通过；参考 etcd 的完整 13 步 capped/mutation 矩阵串行首轮 0.308 秒、
+  连续 10 轮 2.639 秒、race 5 轮 5.548 秒通过。并行运行两组破坏性参考测试会互相
+  修改全局 alarm，因此该门禁必须串行。
+
+  backend/server 聚焦 race 各 5 轮、根模块 `go test -p 1 -count=1 ./...`、
+  根/compat `go vet ./...`、`git diff --check` 和完整生产 Dockerfile 构建通过；
+  镜像 ID
+  `sha256:153f9e29078c71c34a5e501b7c254c7371c628257bc0c6850a5090e4795d6ae4`。
+  三个测试 Pod 均 Ready、restartCount=0；并发 race 期间 `a332-2` 出现一次 TiKV
+  region request `context deadline exceeded` 并自动 refill，之后三个 endpoint
+  proposal health 分别为 29.023/29.888/30.113ms。在线
+  `kubebrain:a320-object-request-metering` release gate 保持 KubeBrain 3/3、
+  PD/TiKV 3+3 Ready，endpoint proposal health 13.667ms。
 
 ### P1：通用服务能力
 
