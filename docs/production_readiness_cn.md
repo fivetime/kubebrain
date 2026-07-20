@@ -1047,6 +1047,10 @@ hack/dev/verify.sh
   专用 Lock/Election convenience API 的不存在 lease、空 unlock key、缺失 leader 和
   无当前 leader 错误在当前 upstream 中均为 gRPC Unknown/HTTP 500；不得擅自按底层
   KV/Lease API “规范化”为 400/404，发布门禁需比较精确 code 和 message。
+  Lock/Campaign 的 `lease=0` 不是永久键：upstream 会自动 Grant 独立的默认 60 秒
+  session lease 并立即 Orphan keepalive。Unlock/Resign 只删除键、不撤销自动 lease；
+  Campaign response 暴露 lease，Lock response 不暴露，后者需从返回 key 的 KV metadata
+  反查或等待自然到期。容量与泄漏监控应计入这类短时 orphan lease。
 - `Auth` 已实现 etcd 兼容的用户、角色、key-range 权限和 token 生命周期，并覆盖
   Watch/Lease 持续鉴权及多副本故障转移；生产启用流程见 Auth 设计与兼容性计划。
 

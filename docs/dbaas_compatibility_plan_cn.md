@@ -7170,6 +7170,31 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   failure/panic/fatal/segmentation/data race/storage error。精确镜像双端矩阵连续 50 轮、
   候选矩阵 20 轮、双端 race 10 轮、服务 race 50 轮、完整根测试和根 vet 均通过。
 
+- **Compatibility A361 zero-lease Lock/Campaign sessions（2026-07-20）**：对照
+  `/root/etcd/client/v3/concurrency/session.go` 与 dedicated Lock/Election server，确认
+  请求 `lease=0` 时 `concurrency.NewSession` 会自动 Grant 默认 60 秒 lease；service
+  随后调用 `Session.Orphan` 停止 keepalive，但不会 revoke。Lock response 只返回 key，
+  不返回自动 lease ID；Campaign 的 `LeaderKey.Lease` 会暴露它。Unlock/Resign 只删除
+  队列键，自动 lease 在剩余 TTL 内继续存在，随后自然过期。这是 upstream 资源生命周期，
+  不能把零值误作永久无 lease 键，也不能在成功返回时擅自 revoke。
+
+  提交 `e181c91` 增加服务回归：通过 Lock key 的 KV lease metadata 反查隐藏 lease，
+  对 Campaign 校验 response lease 与键 metadata 相同；两者均要求非零、互相独立、
+  GrantedTTL=60、当前 TTL>0，Unlock/Resign 后键消失但 lease 仍存活，最后显式 revoke
+  避免测试泄漏。HTTP 双端矩阵执行同一流程，并先断言 reference 的完整布尔 baseline，
+  覆盖 generated JSON、string-int64、KV metadata、TTL 及清理链路。
+
+  exact image 从 `e181c91fb82356f72fef12eeaccf2a72b96d3ef7` 的 `git archive`
+  构建，tag `kubebrain:a361-zero-lease-concurrency`，image ID
+  `sha256:8cb3d42cd5b1e57a4ed118927554dec66067815523728f28b878f3a5a6f9e5cf`，
+  OCI version `0.0.0-a361.1`、revision、Go 1.26.5/linux/amd64、TiKV 和运行用户
+  `65532:65532` 均匹配。在真实 3 PD/3 TiKV 独立 `a361-release` keyspace 上，final
+  Pod UID `5c605788-63a9-4599-a7dc-81fc0a0722bc`，Ready、restartCount=0、只读根
+  文件系统、non-root、drop ALL、RuntimeDefault seccomp，日志无 initialization
+  failure/panic/fatal/segmentation/data race/storage error。精确镜像双端矩阵连续 20 轮、
+  候选矩阵 20 轮、双端 race 10 轮、服务 race 50 轮、完整根测试和根 vet 均通过；
+  每轮显式回收自动 lease，未用 namespace 删除掩盖测试资源泄漏。未发现运行时代码差异。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
