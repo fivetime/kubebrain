@@ -5435,6 +5435,27 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   container restart，PD/TiKV 3+3 Ready，未遗留 port-forward。该门禁未复现运行时
   兼容性差距，因此 A301 只增加永久正确性证据，不重建与 A300 runtime 相同的镜像。
 
+- **Lease A302 watch-backed natural-expiry linearizability（2026-07-20）**：继续扩展
+  A301 代际模型，增加 KeepAlive 与 synthetic natural-expire 操作。对照 upstream
+  `/root/etcd/server/lease/lessor.go` 的 expired lease revoke/renew 排序，以及
+  commit `943f4d296` 的 renew 后置存在性复检：自然过期不能只由 wall-clock sleep
+  推断完成。新门禁以 lease DELETE watch event 为权威完成证据，把 expire 操作的
+  call 定位在 Grant/KeepAlive 后最早可能 deadline，把 return 定位在客户端实际收到
+  DELETE；窗口内持续并发 Get 与 TimeToLive，Porcupine 因而可以合法排列尚未完成的
+  expiry，同时拒绝“expiry 已完成但 lease 或 attached key 仍存活”。纯模型反例明确
+  钉住 lease/key 必须在同一个状态转换中死亡。
+
+  `TestClientV3LeaseNaturalExpiryHistoryIsLinearizable` 连续使用同一显式 ID 执行三轮
+  Grant、leased Put、自然过期和 regrant，其中一轮在旧 deadline 前 KeepAlive；
+  Watch 在 leader/follower transport 关闭时按最后已见 revision 无损续订，不能因
+  failover 丢失 DELETE 后误报成功。A300 精确运行镜像上的三副本 KubeBrain + 独立
+  三 PD/三 TiKV 无故障连续 5 轮 36.072 秒通过。删除权威 `etcdctl endpoint status`
+  确认的 leader 后，恢复 Watch 捕获自然 DELETE，完整历史 7.906 秒返回 `Ok`。
+  恢复后与 TTL=0、expired KeepAlive deletion ordering、旧 deadline callback fencing
+  三项既有门禁组合连续 3 轮 46.114 秒通过；模型正反例连续 100 轮、race 连续 50
+  轮通过。最终 KubeBrain 3/3 Ready、0 container restart，PD/TiKV 3+3 Ready，
+  未遗留 port-forward。未复现运行时兼容性差距，因此不重建相同 runtime 镜像。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
@@ -5470,9 +5491,9 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
 2. 设计受支持的 transactional TiKV 物理快照/PITR；继续逻辑恢复演练、滚动升级、
    跨可用区故障、磁盘满和长时间 soak。不得用 TiDB BR full/PITR 的成功状态关闭该缺口。
 3. Porcupine 已覆盖无故障 Get/Put/CAS、多键 Txn 原子性、lease lifecycle、
-   显式 ID revoke/regrant 代际隔离，以及可表达不确定写结果的 KubeBrain
-   Leader/TiKV/PD 故障历史；继续扩展 lease 自然过期模型，并在多 store/多 PD
-   预生产拓扑上做分区和多点故障注入。
+   显式 ID revoke/regrant 代际隔离、watch-backed 自然过期，以及可表达不确定写
+   结果的 KubeBrain Leader/TiKV/PD 故障历史；继续扩展批量 lease/长时间 renewal
+   模型，并在多 store/多 PD 预生产拓扑上做分区和多点故障注入。
    大规模性能测试不能替代正确性证明。
 
 ## 提交规则
