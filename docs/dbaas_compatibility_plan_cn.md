@@ -5270,6 +5270,29 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   首轮通过。该生命周期测试要求两个空实例，首轮后只关闭 Auth 而不删除用户，因此不能
   在同一实例用 `-count>1` 重复，后续 AlreadyExists 不计为产品失败。
 
+- **Auth A295 linearized response revision（2026-07-20）**：继续对照
+  `/root/etcd/server/etcdserver/v3_server.go`：AuthStatus 通过 raft request，
+  Authenticate 先做 `LinearizableReadNotify`，其余 Auth mutation 也在 raft apply
+  时用 `newHeader`。A294 虽补了非零 revision，却直接读取本副本
+  `GetCurrentRevision` cache；新副本追赶或 follower 暂时落后时可能成功返回陈旧
+  header，与 etcd 的线性化点不符。
+
+  所有成功 Auth RPC 现在在构造 header 前执行 leader revision barrier；barrier 推进
+  本地 cache 后才返回 revision，失败则使用标准可重试错误失败关闭。Auth metadata
+  mutation 仍不消耗用户 MVCC revision。回归测试模拟 cache=100、leader=200，要求
+  AuthStatus 只返回 200；barrier 返回 storage unavailable 时必须得到 gRPC
+  `Unavailable` 且无响应。focused 连续 100 轮、focused race 连续 20 轮、
+  `pkg/server/etcd` 全包 31.804 秒、全包 race 256.380 秒、根模块全量、
+  peer/leader/revision 服务测试和 `go vet ./...` 均通过。
+
+  代码提交 `cbd13a216d5a96feeaa60c57c587d6f472f4ab44` 构建镜像
+  `kubebrain:a295-auth-revision-barrier`（image ID
+  `sha256:d9800850a5ea6a273bdbc1733c296555f00755fd403d7875f94859d1545c393b`）。
+  独立 `a295-auth` keyspace 上 Auth header 差分连续 10 轮、完整 Auth 生命周期通过。
+  主三副本随后从 A285 无中断滚动到 A295，3/3 Ready、0 restart；leader 写入测试键
+  revision `467798570765385731` 后，两个 follower 与 leader 的 AuthStatus header 均
+  精确返回该 revision，测试键已在 revision `467798570765385732` 删除。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
