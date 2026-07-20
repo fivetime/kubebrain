@@ -947,6 +947,61 @@ func TestDevManifestProvidesStableCompleteMembership(t *testing.T) {
 	require.Equal(t, "NodePort", nestedString(t, client, "spec", "type"))
 }
 
+func TestMeteringArchiveCronJobIsFailClosedAndImmutable(t *testing.T) {
+	objects := decodeManifest(t, "kubebrain-metering-archive.yaml")
+	job := objectByKindAndName(t, objects, "CronJob", "kubebrain-metering-archive")
+	require.Equal(t, "17 * * * *", nestedString(t, job, "spec", "schedule"))
+	require.Equal(t, "Etc/UTC", nestedString(t, job, "spec", "timeZone"))
+	require.Equal(t, "Forbid", nestedString(t, job, "spec", "concurrencyPolicy"))
+	require.EqualValues(t, 900, nestedInt64(t, job, "spec", "startingDeadlineSeconds"))
+	require.EqualValues(t, 3, nestedInt64(t, job, "spec", "jobTemplate", "spec", "backoffLimit"))
+	require.EqualValues(t, 900, nestedInt64(t, job, "spec", "jobTemplate", "spec", "activeDeadlineSeconds"))
+	require.False(t, nestedBool(t, job,
+		"spec", "jobTemplate", "spec", "template", "spec", "automountServiceAccountToken"))
+
+	containers, found, err := unstructured.NestedSlice(
+		job.Object, "spec", "jobTemplate", "spec", "template", "spec", "containers",
+	)
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Len(t, containers, 1)
+	container := &unstructured.Unstructured{Object: containers[0].(map[string]any)}
+	command, found, err := unstructured.NestedStringSlice(container.Object, "command")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, []string{"/usr/local/bin/kubebrain-metering-archive"}, command)
+	args, found, err := unstructured.NestedStringSlice(container.Object, "args")
+	require.NoError(t, err)
+	require.True(t, found)
+	for _, expected := range []string{
+		"--instance=kubebrain",
+		"--retention-mode=COMPLIANCE",
+		"--retention-duration=61320h",
+		"--slot-duration=1h",
+		"--finalization-delay=10m",
+		"--max-staleness=5m",
+	} {
+		require.Contains(t, args, expected)
+	}
+	require.True(t, nestedBool(t, container, "securityContext", "readOnlyRootFilesystem"))
+	require.False(t, nestedBool(t, container, "securityContext", "allowPrivilegeEscalation"))
+	env, found, err := unstructured.NestedSlice(container.Object, "env")
+	require.NoError(t, err)
+	require.True(t, found)
+	for _, raw := range env {
+		entry := &unstructured.Unstructured{Object: raw.(map[string]any)}
+		require.Equal(t, "kubebrain-metering-archive-object-store",
+			nestedString(t, entry, "valueFrom", "secretKeyRef", "name"))
+	}
+
+	dockerfile, err := os.ReadFile("../../Dockerfile")
+	require.NoError(t, err)
+	require.Contains(t, string(dockerfile),
+		"go build -trimpath -o /src/bin/kubebrain-metering-archive ./hack/production/cmd/metering-archive")
+	require.Contains(t, string(dockerfile),
+		"COPY --from=build /src/bin/kubebrain-metering-archive /usr/local/bin/kubebrain-metering-archive")
+}
+
 func expectedInitialCluster(scheme string) string {
 	return "kubebrain-0=" + scheme + "://kubebrain-0.kubebrain-peer.kubebrain-system.svc.cluster.local:3380," +
 		"kubebrain-1=" + scheme + "://kubebrain-1.kubebrain-peer.kubebrain-system.svc.cluster.local:3380," +

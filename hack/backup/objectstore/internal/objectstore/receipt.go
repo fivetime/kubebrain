@@ -14,6 +14,7 @@ import (
 const ReceiptFormat = "kubebrain.object-backup.receipt.v1"
 const DeletionReceiptFormat = "kubebrain.object-backup-deletion.receipt.v1"
 const AuditReceiptFormat = "kubebrain.object-operation-audit.receipt.v1"
+const BlobReceiptFormat = "kubebrain.object-immutable-blob.receipt.v1"
 
 type Receipt struct {
 	Format           string `json:"format"`
@@ -69,6 +70,23 @@ type AuditReceipt struct {
 	RetainUntilUnix        int64  `json:"retain_until_unix"`
 	RemoteVerified         bool   `json:"remote_verified"`
 	ArchivedAtUnix         int64  `json:"archived_at_unix"`
+}
+
+type BlobReceipt struct {
+	Format          string `json:"format"`
+	ArtifactFormat  string `json:"artifact_format"`
+	ArtifactID      string `json:"artifact_id"`
+	Instance        string `json:"instance"`
+	ObjectStoreID   string `json:"object_store_id"`
+	Bucket          string `json:"bucket"`
+	ObjectKey       string `json:"object_key"`
+	VersionID       string `json:"version_id"`
+	ArtifactSHA256  string `json:"artifact_sha256"`
+	ObjectBytes     int64  `json:"object_bytes"`
+	RetentionMode   string `json:"retention_mode"`
+	RetainUntilUnix int64  `json:"retain_until_unix"`
+	RemoteVerified  bool   `json:"remote_verified"`
+	ArchivedAtUnix  int64  `json:"archived_at_unix"`
 }
 
 func (r Receipt) Validate() error {
@@ -153,6 +171,32 @@ func ReadAuditReceipt(path string) (AuditReceipt, error) {
 		return receipt, err
 	}
 	if err := decodeCanonicalReceipt(data, &receipt, "object operation audit receipt"); err != nil {
+		return receipt, err
+	}
+	if err := receipt.Validate(); err != nil {
+		return receipt, err
+	}
+	return receipt, nil
+}
+
+func (r BlobReceipt) Validate() error {
+	if r.Format != BlobReceiptFormat || r.ArtifactFormat == "" || r.ArtifactID == "" ||
+		r.Instance == "" || r.ObjectStoreID == "" || r.Bucket == "" || r.ObjectKey == "" ||
+		r.VersionID == "" || !validHexSHA256(r.ArtifactSHA256) || r.ObjectBytes <= 0 ||
+		(r.RetentionMode != "COMPLIANCE" && r.RetentionMode != "GOVERNANCE") ||
+		r.RetainUntilUnix <= r.ArchivedAtUnix || !r.RemoteVerified || r.ArchivedAtUnix <= 0 {
+		return errors.New("object immutable blob receipt is incomplete")
+	}
+	return nil
+}
+
+func ReadBlobReceipt(path string) (BlobReceipt, error) {
+	var receipt BlobReceipt
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return receipt, err
+	}
+	if err := decodeCanonicalReceipt(data, &receipt, "object immutable blob receipt"); err != nil {
 		return receipt, err
 	}
 	if err := receipt.Validate(); err != nil {
@@ -249,6 +293,15 @@ func WriteAuditReceiptAtomic(path string, receipt AuditReceipt) error {
 	}
 	return writeJSONAtomic(path, receipt, func(path string) (any, error) {
 		return ReadAuditReceipt(path)
+	})
+}
+
+func WriteBlobReceiptAtomic(path string, receipt BlobReceipt) error {
+	if err := receipt.Validate(); err != nil {
+		return err
+	}
+	return writeJSONAtomic(path, receipt, func(path string) (any, error) {
+		return ReadBlobReceipt(path)
 	})
 }
 

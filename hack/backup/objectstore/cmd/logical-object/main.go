@@ -85,6 +85,19 @@ func main() {
 			log.Fatal(err)
 		}
 		_ = json.NewEncoder(os.Stdout).Encode(receipt)
+	case "blob":
+		receipt, err := objectstore.ArchiveBlob(ctx, client, objectstore.BlobRequest{
+			Input: os.Getenv("INPUT"), ArtifactFormat: os.Getenv("ARTIFACT_FORMAT"),
+			ArtifactID: os.Getenv("ARTIFACT_ID"), Instance: os.Getenv("INSTANCE"),
+			ObjectStoreID: os.Getenv("OBJECT_STORE_ID"), Bucket: os.Getenv("S3_BUCKET"),
+			ObjectKey: os.Getenv("S3_OBJECT_KEY"), RetentionMode: os.Getenv("RETENTION_MODE"),
+			RetainUntilUnix: int64Env("RETAIN_UNTIL_UNIX"),
+			ReceiptOutput:   os.Getenv("RECEIPT_OUTPUT"),
+		})
+		if err != nil {
+			log.Fatal(err)
+		}
+		_ = json.NewEncoder(os.Stdout).Encode(receipt)
 	case "inventory":
 		receipt, err := objectstore.ReconcileInventory(ctx, client, objectstore.InventoryRequest{
 			Input: os.Getenv("INVENTORY_INPUT"), ObjectStoreID: os.Getenv("OBJECT_STORE_ID"),
@@ -95,7 +108,7 @@ func main() {
 		}
 		_ = json.NewEncoder(os.Stdout).Encode(receipt)
 	default:
-		log.Fatal("ACTION must be upload, delete, archive, manifest, or inventory")
+		log.Fatal("ACTION must be upload, delete, archive, blob, manifest, or inventory")
 	}
 }
 
