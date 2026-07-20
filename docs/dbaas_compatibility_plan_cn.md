@@ -7281,6 +7281,36 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   无 initialization failure/panic/fatal/segmentation/data race/storage error。完整根测试、
   根 vet、兼容子模块 vet 和真实 race 均通过；未发现需要修改的运行时代码。
 
+- **Compatibility A365 HTTP concurrency authorization（2026-07-20）**：提交
+  `9b9456f` 增加 Auth 启用下的 Lock/Election HTTP 双端差分，reference 使用
+  `/root/etcd` 源码构建的 3.8.0-alpha.0、Git SHA `d947b2086`。场景创建非 root
+  `alice`，只授予 `/a365/concurrency/allowed/` prefix READWRITE：显式 lease 下
+  Lock/Unlock、Campaign/Leader/Proclaim/Resign 必须全部 HTTP 200；对 denied prefix 的
+  Lock、Campaign、Leader 必须 HTTP 500、gRPC JSON code 2，permission denied 消息与
+  upstream 一致。root 随后撤销 allowed 权限，已签发 alice token 必须立即被同一路径拒绝；
+  重新授权后同一 token 必须恢复 Lock/Unlock；最后修改 alice 密码，旧 token 必须返回
+  HTTP 500/code 2/`etcdserver: invalid auth token`。这固定 dedicated service 经内部
+  client 执行 Txn/Range/Delete 时仍保留外部调用者身份及实时 auth revision，而不是以
+  KubeBrain 服务身份绕过 key-range RBAC。
+
+  候选双端场景单轮 1.83 秒通过，连续 20 轮 39.16 秒通过，race 10 轮 28.10 秒通过；
+  未发现运行时代码差异。exact image 从
+  `9b9456fefc0e9b36e36ebb53e61718c807075d5e` 的 `git archive` 构建，tag
+  `kubebrain:a365-concurrency-http-authz`，image ID
+  `sha256:2b8003855c9e5e4e4c37f45cc9e94a81b601662b998c6b73defa4e767688d9c5`，
+  OCI version `0.0.0-a365.1`、revision、Go 1.26.5/linux/amd64、TiKV 和运行用户
+  `65532:65532` 均匹配。
+
+  在真实 3 PD/3 TiKV 独立 `a365-concurrency-authz-final` keyspace 上，三副本精确镜像
+  经 NodePort 随机落到 leader/follower 的最终矩阵 20 轮 42.58 秒通过，race 10 轮
+  21.24 秒通过。三个 Pod UID 分别为 `879ca4ee-0c5e-450f-bf98-4861bcba747e`、
+  `5bfeccf9-b644-4533-988c-9b8ed8ab98d9`、`491cf57e-86d6-496c-acc6-fa2bdd7375ee`，
+  均 Ready、restartCount=0，运行时 digest
+  `sha256:ab2eda4a054481ccf80c508779305fe668752fca7a3751afe298626665f786c0`
+  一致，只读根文件系统、non-root、drop ALL、RuntimeDefault seccomp 生效，完整负载后日志
+  无 initialization failure/panic/fatal/segmentation/data race/storage error。完整根测试、
+  根 vet、兼容子模块 vet 和真实 race 均通过。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range

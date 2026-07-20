@@ -1061,6 +1061,9 @@ hack/dev/verify.sh
   不再注入故障并等待 TTL=-1。这样可区分合法的逐轮 promotion 与进程残留的持续 keepalive。
 - `Auth` 已实现 etcd 兼容的用户、角色、key-range 权限和 token 生命周期，并覆盖
   Watch/Lease 持续鉴权及多副本故障转移；生产启用流程见 Auth 设计与兼容性计划。
+  HTTP Lock/Election dedicated service 同样必须使用调用者 token 校验其生成队列键所在
+  prefix；撤销权限应立即影响已签发 token，改密应使旧 token 失效。其 upstream 错误契约
+  特殊：HTTP 500、gRPC code 2(Unknown)，消息仍为 permission denied/invalid auth token。
 
 ## 仍需补齐或确认
 
