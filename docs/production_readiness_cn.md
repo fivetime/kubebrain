@@ -1024,6 +1024,17 @@ hack/dev/verify.sh
   allowlist。生产若允许浏览器或不可信网络访问 client 端口，应同时启用 TLS、收紧
   CORS 和 Host，而不是保留兼容默认 `*`。这些控制只包装 client HTTP，不向
   peer 或 info/metrics 端口扩散。
+- client HTTP 入口默认启用 etcd v3 JSON gateway，支持 KV、Watch、Lease、Cluster、
+  Maintenance 和 Auth generated routes。请求经本机 gRPC 回环，仍受数据面认证、
+  admission、metrics、请求大小和并发/速率限制；TLS-only 与 client-cert-auth 模式
+  会使用服务配置的客户端身份完成内部 mTLS。HTTP token 使用标准
+  `Authorization: <token>` 或 `Authorization: Bearer <token>`。不需要 JSON API 的
+  实例可显式设置 `--enable-grpc-gateway=false` 缩小 HTTP surface，并在发布门禁确认
+  `/v3/*` 返回 404、`/health` 仍可用。启用 client-cert-auth 时，Kubernetes 原生
+  HTTPS probe 无法携带客户端证书；生产 Pod 应继续用不暴露数据的 info 端口
+  `/ping`/`/ready` 探针，不能把无证书访问 client `/health` 当作进程故障。
+  专用 v3lock/v3election HTTP 服务当前未注册，Watch HTTP streaming 仍需预生产长时
+  故障 soak；不得据此声明完整 upstream HTTP surface。
 - `Auth` 已实现 etcd 兼容的用户、角色、key-range 权限和 token 生命周期，并覆盖
   Watch/Lease 持续鉴权及多副本故障转移；生产启用流程见 Auth 设计与兼容性计划。
 

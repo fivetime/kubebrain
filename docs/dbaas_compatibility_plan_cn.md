@@ -47,6 +47,7 @@ Raft、bbolt 和成员管理内部实现，而是对通用 etcd v3 客户端提�
 | Maintenance | Hash/HashKV | 兼容核心语义 | 对指定 revision 的租户 MVCC 实际内容做稳定摘要；成员本地诊断不依赖 KubeBrain leader，数值不与 bbolt 内部编码比较 |
 | Maintenance | MoveLeader/Downgrade | 平台替代 | 分别由服务选主和 DBaaS 升级编排处理 |
 | Endpoint | health/livez/readyz | 兼容核心语义 | `/health`、`/livez`、`/readyz` 及分项检查已对齐；`data_corruption`/`non_learner` 使用 TiKV 架构等价语义，`/ready` 与 `/ping` 为平台探针 |
+| Endpoint | v3 JSON/HTTP gateway | 兼容核心服务 | 默认启用 KV、Watch、Lease、Cluster、Maintenance、Auth generated gateway；经本机 gRPC 回环保留 admission、auth、metrics、限流和 TLS 语义，可用 `--enable-grpc-gateway=false` 关闭；专用 Lock/Election HTTP 服务未注册 |
 | Concurrency | Lock/Election/STM recipes | 兼容核心语义 | 官方 `client/v3/concurrency` Mutex/Election/session/STM、orphan session lease 自然过期接棒、STM 冲突重试/守恒争用及真实 Leader 故障转移已通过；继续长时间 soak |
 
 `Status.Version = 3.7.0` 只表示协议能力门槛，不能作为完整兼容声明。发布说明必须
@@ -6979,6 +6980,42 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   compat 编译、完整根测试、完整 endpoint/option race 及根/compat vet 均通过。
   `/proxy/health` 经审计确认只属于独立 `etcd grpc-proxy` 进程，普通 etcd server
   不注册；KubeBrain 数据面不伪造该路由。
+
+- **Endpoint A355 etcd v3 JSON/HTTP grpc-gateway（2026-07-20）**：对照
+  `/root/etcd/server/embed/config.go` 与 `/root/etcd/server/embed/serve.go`，确认
+  upstream 默认启用 generated grpc-gateway，并使用 proto field name、base64 bytes、
+  string 形式的 64-bit integer 和忽略未知 JSON 字段的 marshaler。KubeBrain 原 client
+  HTTP 入口只有健康检查，所有 `/v3/*` 路由均缺失。
+
+  提交 `bbb39f4` 增加默认开启的 `--enable-grpc-gateway`，注册 KV、Watch、Lease、
+  Cluster、Maintenance、Auth generated handlers。gateway 延迟回环连接本机 gRPC，
+  因而继续经过现有 admission、auth、metrics、请求大小和并发/速率限制；明文使用
+  loopback plaintext，TLS-only 使用同一客户端证书和 CA 建立本机 mTLS。提交
+  `faaeb37` 让鉴权层在标准 gRPC `token` 之外接受 gateway 转发的
+  `authorization` metadata，并保持 raw token 与 Bearer token 兼容。generated
+  JSON 合同测试固定 base64、snake_case、string int64 与 unknown-field discard。
+
+  新增双端 HTTP 差分覆盖 Put/Range/Txn/DeleteRange、Lease 生命周期、MemberList、
+  Status、AuthStatus 和 malformed base64；鉴权矩阵覆盖 root/role 建立、AuthEnable、
+  anonymous 拒绝、HTTP Authenticate、Authorization token 读及 AuthDisable/清理。
+  当前 `/root/etcd` reference 与独立 TiKV keyspace 同跑，两组矩阵各连续 10 轮一致。
+  从 `faaeb3753ddb550413630e519cff0c8171bce295` 的 `git archive` 构建
+  `kubebrain:a355-json-gateway-auth`，源码镜像 ID
+  `sha256:14bf6c378f12592cdcede76f63666b7d2a0eb4deca416d113a221703e633574f`，
+  OCI revision、版本 `0.0.0-a355.1`、Go 1.26.5/linux/amd64、TiKV 与
+  `65532:65532` 均匹配。
+
+  同一 exact image 在真实 3 PD/3 TiKV 上以 TLS-only + client-cert-auth 启动，
+  外部携带客户端证书执行 JSON Put/Range/DeleteRange 成功，证明外部 mTLS 和内部
+  gateway mTLS 回环均可用；再以 `--enable-grpc-gateway=false` 启动，`/health`
+  保持 200 且 `/v3/kv/range` 精确返回 404。完整根测试、endpoint/etcd/option race
+  及根/compat vet 全部通过；聚焦 gateway 普通 50 轮、race 10 轮，auth 普通 50 轮、
+  race 10 轮均通过。
+
+  当前未注册 upstream 独立 v3lock/v3election HTTP 服务；官方 client/v3 concurrency
+  recipe 仍通过 KV/Lease/Watch 工作。Watch gateway 路由已注册并有 generated handler
+  合同覆盖，但 HTTP 流式长连接尚未做长时故障 soak，发布说明不得把本项扩大为完整
+  HTTP surface 或长期流稳定性声明。
 
 ### P1：通用服务能力
 
