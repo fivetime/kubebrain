@@ -5839,6 +5839,45 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   对账仍属 P1。真实 Prometheus 一小时 evaluation 应在安装 Operator 的预生产监控
   集群作为额外发布门禁补跑。
 
+- **Metering A317 不可变价格版本与资源计费（2026-07-20）**：新增
+  `kubebrain.metering-price-catalog.v1`，将稳定版本、三位大写币种、有效期和固定
+  `kubebrain.metering-rollup.v2` 策略绑定到 6 项有序资源单价。单价必须是无指数、
+  无多余零且最多 18 位小数的 canonical decimal；Publisher 在发起任何 S3 请求前
+  完成完整 canonical 校验，并按 `scope/version.json` 写入 Object Lock。
+
+  新增 `kubebrain.metering-charge.v1`。Biller 依次读取并独立校验 exact-version
+  rollup 与 price catalog receipt、下载字节和 SHA-256，且价格有效期必须完整覆盖
+  计费周期。计算先把十进制精确转换为 `big.Rat`，再逐资源行执行
+  `half_even_to_currency_micro.v1` 银行家舍入并检查 int64 溢出，总额是已舍入行之和。
+  charge 固化两类 source 的 format/artifact ID/object key/version/SHA/bytes/retain
+  证据。同一实例和周期只有一个 charge object key，价格版本不参与 key；因此第二个
+  价格版本不能静默重算同一周期，未来纠错必须使用独立 adjustment/credit artifact。
+  CronJob 默认在 UTC 01:17 对前一完整日计费，也提供显式 period-end 历史回填。
+
+  billing 包普通测试通过（0.024 秒），确定性连续 100 轮通过（0.762 秒），race
+  连续 20 轮通过（2.142 秒）；focused vet、根模块全量测试/vet、production manifest
+  测试和 client dry-run 均通过。单测覆盖 half-even 边界、价格覆盖区间、固定顺序、
+  canonical decimal/source、篡改和溢出拒绝、Publisher 先校验后访问对象存储，以及
+  Biller 的 fail-closed 读取顺序。
+
+  真实 MinIO Object Lock 集成由实际 Publisher 写入 v1 catalog，再由 Biller 对锁定
+  v2 rollup 生成 charge；重复执行返回同一 receipt，发布 v2 catalog 后尝试重算同一
+  周期被不可变 charge 冲突拒绝。源码执行器测试曾以 0.35 秒通过，最终 A317 镜像内
+  对象执行器复验以 4.58 秒通过。独立对象清点得到 4 个 version，全部
+  versionOrdinal=1；1,765-byte charge 的 format、SHA-256 metadata/checksum、exact
+  version 和 COMPLIANCE retain-until 均匹配。临时 NodePort/检查 Pod 已删除，锁定
+  测试对象按保留策略到期。
+
+  发布镜像 `kubebrain:a317-metering-prices` 由完整代码提交
+  `cbe08d1dec4c4f39616c58f72d642c9df97f0702` 构建，本地镜像 digest 为
+  `sha256:ca8d1cab91cf99aa8b9c6ff32007ec632dc7fbe90be6a4097b466e9ef488ffb1`；
+  OCI revision/version 及镜像内 charge、price-publish 和对象执行器均已核对。A316
+  三副本 StatefulSet 有序滚动到 A317 后 3/3 Ready、restartCount=0，PD/TiKV 3+3
+  Ready，endpoint proposal health 和 production release gate 全部通过。不可变资源
+  价格版本和 charge 至此完成；对象存储保留成本、adjustment/credit、最终 invoice
+  与审计对账仍属 P1。真实 Prometheus 一小时 evaluation 仍须在安装 Operator 的
+  预生产监控集群补作发布证据。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
@@ -5867,9 +5906,9 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
    请求 QPS/burst、逻辑 Watch 总数、CPU/内存饱和、网络错误/丢包及 PD/TiKV PVC 容量
    告警已具备稳定错误或指标，网络 RX/TX 原始计量和逻辑备份 artifact 容量/新鲜度
    指标已暴露，单实例资源/容量/网络/备份 recording rules 和 fail-closed 缺测标记已
-   建立，不可变小时采样、counter-based 小时窗口和确定性跨日积分已完成；继续补价格
-   版本、对象存储成本和审计对账，并在具备 Prometheus Operator 的预生产环境补真实
-   一小时规则 evaluation 门禁。
+   建立，不可变小时采样、counter-based 小时窗口、确定性跨日积分、不可变资源价格
+   版本和 charge 已完成；继续补对象存储成本、adjustment/credit、最终 invoice 与审计
+   对账，并在具备 Prometheus Operator 的预生产环境补真实一小时规则 evaluation 门禁。
 
 ### P2：运维兼容和长期验证
 
