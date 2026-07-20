@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc/codes"
@@ -70,6 +71,9 @@ type authDifferentialOutcome struct {
 	UserTTLOK                 bool
 	UserTTLWithKeys           authErrorOutcome
 	RootTTLContainsProtected  bool
+	KeepAliveStreamFirstOK    bool
+	KeepAliveAfterRoleRevoke  authErrorOutcome
+	KeepAliveAfterRestoreOK   bool
 	AnonymousLeaseList        authErrorOutcome
 	UserLeaseList             authErrorOutcome
 	RootLeaseListContains     bool
@@ -110,10 +114,11 @@ func runConcurrentClientOperations(count int, operation func(int) error) []error
 }
 
 func authError(err error) authErrorOutcome {
+	code := status.Code(err)
 	return authErrorOutcome{
-		Code:             status.Code(err),
+		Code:             code,
 		Message:          status.Convert(err).Message(),
-		PermissionDenied: errors.Is(err, rpctypes.ErrPermissionDenied),
+		PermissionDenied: code == codes.PermissionDenied || errors.Is(err, rpctypes.ErrPermissionDenied),
 		UserEmpty:        errors.Is(err, rpctypes.ErrUserEmpty),
 	}
 }
@@ -189,10 +194,14 @@ func collectAuthDifferentialOutcome(t *testing.T, endpoint string) authDifferent
 	root := authClient(t, endpoint, "root", "root-secret")
 	alice := authClient(t, endpoint, "alice", "alice-secret")
 	writer := authClient(t, endpoint, "writer", "writer-secret")
+	var dynamicLeaseID clientv3.LeaseID
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cleanupCancel()
 		_, _ = root.Revoke(cleanupCtx, protectedLease.ID)
+		if dynamicLeaseID != 0 {
+			_, _ = root.Revoke(cleanupCtx, dynamicLeaseID)
+		}
 		_, _ = root.AuthDisable(cleanupCtx)
 		if users, listErr := bootstrap.UserList(cleanupCtx); listErr == nil {
 			for _, user := range users.Users {
@@ -309,6 +318,39 @@ func collectAuthDifferentialOutcome(t *testing.T, endpoint string) authDifferent
 	_, err = root.Revoke(ctx, protectedLease.ID)
 	require.NoError(t, err)
 	_, userLeaseListAfterRevokeErr := alice.Leases(ctx)
+	dynamicLease, err := alice.Grant(ctx, 60)
+	require.NoError(t, err)
+	dynamicLeaseID = dynamicLease.ID
+	_, err = alice.Put(
+		ctx, "/auth-allowed/dynamic-keepalive", "value", clientv3.WithLease(dynamicLease.ID),
+	)
+	require.NoError(t, err)
+	keepAliveStream, err := etcdserverpb.NewLeaseClient(alice.ActiveConnection()).LeaseKeepAlive(ctx)
+	require.NoError(t, err)
+	require.NoError(t, keepAliveStream.Send(&etcdserverpb.LeaseKeepAliveRequest{ID: int64(dynamicLease.ID)}))
+	firstKeepAlive, firstKeepAliveErr := keepAliveStream.Recv()
+	require.NoError(t, firstKeepAliveErr)
+	keepAliveStreamFirstOK := firstKeepAlive.ID == int64(dynamicLease.ID) && firstKeepAlive.TTL > 0
+	_, err = root.RoleRevokePermission(
+		ctx, "allowed", "/auth-allowed/", clientv3.GetPrefixRangeEnd("/auth-allowed/"),
+	)
+	require.NoError(t, err)
+	require.NoError(t, keepAliveStream.Send(&etcdserverpb.LeaseKeepAliveRequest{ID: int64(dynamicLease.ID)}))
+	_, keepAliveAfterRoleRevokeErr := keepAliveStream.Recv()
+	_, err = root.RoleGrantPermission(
+		ctx,
+		"allowed",
+		"/auth-allowed/",
+		clientv3.GetPrefixRangeEnd("/auth-allowed/"),
+		clientv3.PermissionType(clientv3.PermReadWrite),
+	)
+	require.NoError(t, err)
+	restoredKeepAlive, keepAliveAfterRestoreErr := alice.KeepAliveOnce(ctx, dynamicLease.ID)
+	keepAliveAfterRestoreOK := keepAliveAfterRestoreErr == nil &&
+		restoredKeepAlive.ID == dynamicLease.ID && restoredKeepAlive.TTL > 0
+	_, err = root.Revoke(ctx, dynamicLease.ID)
+	require.NoError(t, err)
+	dynamicLeaseID = 0
 
 	_, err = root.UserGrantRole(ctx, "root", "root")
 	require.NoError(t, err)
@@ -443,6 +485,9 @@ func collectAuthDifferentialOutcome(t *testing.T, endpoint string) authDifferent
 		UserTTLOK:                 userTTLErr == nil,
 		UserTTLWithKeys:           authError(userTTLWithKeysErr),
 		RootTTLContainsProtected:  rootTTLContainsProtected,
+		KeepAliveStreamFirstOK:    keepAliveStreamFirstOK,
+		KeepAliveAfterRoleRevoke:  authError(keepAliveAfterRoleRevokeErr),
+		KeepAliveAfterRestoreOK:   keepAliveAfterRestoreOK,
 		AnonymousLeaseList:        authError(anonymousLeaseListErr),
 		UserLeaseList:             authError(userLeaseListErr),
 		RootLeaseListContains:     rootLeaseListContains,
@@ -479,6 +524,14 @@ func TestAuthDifferentialAgainstEtcd(t *testing.T) {
 	require.True(t, reference.UserTTLOK)
 	require.True(t, reference.UserTTLWithKeys.PermissionDenied)
 	require.True(t, reference.RootTTLContainsProtected)
+	require.True(t, reference.KeepAliveStreamFirstOK)
+	require.True(
+		t,
+		reference.KeepAliveAfterRoleRevoke.PermissionDenied,
+		"unexpected reference keepalive error after role revoke: %+v",
+		reference.KeepAliveAfterRoleRevoke,
+	)
+	require.True(t, reference.KeepAliveAfterRestoreOK)
 	require.True(t, reference.AnonymousLeaseList.UserEmpty)
 	require.True(t, reference.UserLeaseList.PermissionDenied)
 	require.True(t, reference.RootLeaseListContains)
