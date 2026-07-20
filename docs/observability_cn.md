@@ -86,3 +86,9 @@ active NOSPACE 是容量保护状态，不是进程不可服务：`/ready`、`/r
 读和释放容量的删除操作仍可用；`etcdctl endpoint health` 的线性化 proposal 会按 etcd
 契约返回 `Active Alarm(s): NOSPACE` 和 unhealthy。告警系统应以 `quota.nospace`/
 `alarm list` 区分该状态，不能把 endpoint health 的这一结果直接等同于 Pod 未就绪。
+
+变更 `--quota-backend-bytes` 时，同一 keyspace 的所有 serving 副本必须使用一致值。
+禁用 quota 会在 leadership readiness 前把持久 tracking marker 置为 dirty；重新启用
+会先扫描 live key 重建 usage，再把 usage 与 clean marker 原子提交。重建失败或滚动期间
+启用/禁用配置混用时，Status/写入返回 quota uninitialized 并保持 fail closed；此时应
+完成一致配置 rollout 并观察 `quota.initialize.err`，不能手工修改内部 marker 或 usage。

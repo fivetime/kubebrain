@@ -43,7 +43,7 @@ Raft、bbolt 和成员管理内部实现，而是对通用 etcd v3 客户端提�
 | Maintenance | Status | 兼容核心语义 | 返回真实服务身份、版本、leader/revision/共享选主 term；配置 quota 时报告租户最新逻辑 key+value 字节，未配置时使用兼容 sentinel；TiKV 物理容量转到实例指标 |
 | Maintenance | Snapshot | 平台替代 | 使用 TiKV BR/PITR；控制面提供备份、恢复和导出任务，不伪造 etcd snapshot |
 | Maintenance | Defragment | 平台替代 | TiKV GC/compaction 管理，不执行 bbolt 碎片整理 |
-| Maintenance | Alarm/DbSize | 兼容 NOSPACE 核心语义 | keyspace 级逻辑容量原子计量、持久/显式 owner、sticky NOSPACE、list/activate/disarm、跨 endpoint mutation、启动初始化与 mutation 的不确定提交回读、no-op 与 capped write state 已支持；任意虚构 member 的多告警、CORRUPT 与 bbolt fragmentation 仍为边界 |
+| Maintenance | Alarm/DbSize | 兼容 NOSPACE 核心语义 | keyspace 级逻辑容量原子计量、禁用窗口 dirty 标记与重新启用重建、持久/显式 owner、sticky NOSPACE、list/activate/disarm、跨 endpoint mutation、启动初始化与 mutation 的不确定提交回读、no-op 与 capped write state 已支持；任意虚构 member 的多告警、CORRUPT 与 bbolt fragmentation 仍为边界 |
 | Maintenance | Hash/HashKV | 兼容核心语义 | 对指定 revision 的租户 MVCC 实际内容做稳定摘要；成员本地诊断不依赖 KubeBrain leader，数值不与 bbolt 内部编码比较 |
 | Maintenance | MoveLeader/Downgrade | 平台替代 | 分别由服务选主和 DBaaS 升级编排处理 |
 | Endpoint | health/livez/readyz | 兼容核心语义 | `/health`、`/livez`、`/readyz` 及分项检查已对齐；`data_corruption`/`non_learner` 使用 TiKV 架构等价语义，`/ready` 与 `/ping` 为平台探针 |
@@ -6413,6 +6413,41 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `kubebrain:a335-quota-startup-reconcile` 的 ID 为
   `sha256:3cadba2ecc14dafc0db99dd2b9f5a1527edcb17d5023500fed751d8401d5188f`，
   OCI revision 与实现提交一致，运行用户为 `65532:65532`。
+
+- **Maintenance A336 quota re-enable usage rebuild（2026-07-20）**：A335 仍会在
+  找到合法 `quota/usage` 时快速恢复，但该元数据只在 quota 启用期间随用户 mutation
+  更新。可复现序列为：启用 quota 写入并产生 usage，禁用 quota 后增加数据，再重新
+  启用；旧实现直接信任禁用窗口前的 usage，低估存量并可能放行超额写。
+
+  本轮新增 tenant 内部 `quota/tracking` clean/dirty 状态。禁用 quota 的 leader 必须
+  在 serving 前持久写 dirty；启用时只有 clean 且 usage 合法才走快速恢复，否则在
+  logical write barrier 内扫描指定 revision 的全部 live key，并用单个 TiKV batch
+  CAS 原子更新精确 usage 与 clean marker。旧版本没有 marker、未知 marker、dirty
+  marker 或 usage 缺失均 fail closed 并重建；`QuotaStatus` 和 mutation 热路径也检查
+  clean marker，不能静默消费陈旧值。CAS 冲突由启动重试重新扫描，不采用可能仍基于
+  陈旧 base 的冲突值；不确定提交继续按 A335 同时回读 clean marker 与合法 usage。
+
+  backend 回归覆盖 enabled(2 B) -> disabled write(usage 元数据仍为 2 B) ->
+  re-enabled 的 4 B 精确重建和 3 B quota 自动 NOSPACE，以及旧版本无 marker、伪造
+  usage=1 时按真实 `legacy` key+value 重建。quota 聚焦套件、聚焦 race 10 轮、
+  backend 全包、server/etcd 全包、根模块 `go test -p 1 -count=1 ./...`、根模块与
+  `hack/etcd-client-compat` 的 `go vet ./...`、`git diff --check` 均通过。
+
+  真实 3 PD/3 TiKV 使用独立 `a336-quota-reenable` keyspace 做三阶段 Pod 重建：
+  quota=256 时写入 23 B 并建立 clean usage；禁用 quota 后新增 54 B，Status 按禁用
+  契约返回 sentinel；随后 quota=32 启动，在 readiness 前重建为精确 77 B 并激活
+  member 1553413814 的 NOSPACE。最终 Pod UID
+  `7c631b6e-b664-49fa-a9e7-35f1ff372cc1` Ready、restartCount=0，
+  `/readyz?verbose` 全部通过，两条跨阶段存量均可读，新 Put 返回标准
+  `ResourceExhausted: etcdserver: mvcc: database space exceeded`，日志无 quota
+  初始化错误、panic/fatal/storage error，PD/TiKV 3+3 Ready。
+
+  实现提交 `756730f5757b2cd42ce8076de4bee0feb2909e20`；production 镜像
+  `kubebrain:a336-quota-reenable-rebuild` 的 ID 为
+  `sha256:ce206ad48336beaf6c95bfcf82c7b39b402f93f7845da26e77c92a3c81574a97`，
+  OCI revision 与实现提交一致，运行用户为 `65532:65532`。同一 keyspace 的所有
+  serving 副本必须使用一致 quota 配置；滚动混配时 dirty marker 会让启用副本
+  fail closed，不能把该保护当作长期混合配置支持。
 
 ### P1：通用服务能力
 
