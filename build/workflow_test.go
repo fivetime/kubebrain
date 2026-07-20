@@ -2,6 +2,7 @@ package build_test
 
 import (
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -20,6 +21,31 @@ func TestWorkflowsAreValidYAML(t *testing.T) {
 			require.NoError(t, err)
 			var workflow any
 			require.NoError(t, yaml.Unmarshal(content, &workflow))
+		})
+	}
+}
+
+func TestWorkflowActionsArePinnedAndCheckoutDropsCredentials(t *testing.T) {
+	actionPattern := regexp.MustCompile(`(?m)^\s*uses:\s+([^#\s]+)`)
+	pinnedActionPattern := regexp.MustCompile(`^[^@\s]+@[0-9a-f]{40}$`)
+
+	for _, path := range []string{
+		"../.github/workflows/ci.yml",
+		"../.github/workflows/docker-image.yml",
+		"../.github/workflows/integration.yml",
+	} {
+		t.Run(path, func(t *testing.T) {
+			workflow, err := os.ReadFile(path)
+			require.NoError(t, err)
+			content := string(workflow)
+			actions := actionPattern.FindAllStringSubmatch(content, -1)
+			require.NotEmpty(t, actions)
+			for _, action := range actions {
+				require.Regexp(t, pinnedActionPattern, action[1])
+			}
+			require.Equal(t,
+				strings.Count(content, "actions/checkout@"),
+				strings.Count(content, "persist-credentials: false"))
 		})
 	}
 }
@@ -52,9 +78,9 @@ func TestReleaseWorkflowPublishesVerifiedMultiPlatformImage(t *testing.T) {
 	content := string(workflow)
 
 	for _, required := range []string{
-		"uses: docker/setup-qemu-action@v3",
-		"uses: docker/setup-buildx-action@v3",
-		"uses: docker/build-push-action@v6",
+		"uses: docker/setup-qemu-action@",
+		"uses: docker/setup-buildx-action@",
+		"uses: docker/build-push-action@",
 		"platforms: linux/amd64,linux/arm64",
 		"cache-from: type=gha",
 		"cache-to: type=gha,mode=max",
@@ -68,21 +94,50 @@ func TestReleaseWorkflowPublishesVerifiedMultiPlatformImage(t *testing.T) {
 		`steps.vars.outputs.image }}@${{ steps.build.outputs.digest`,
 		"Promote verified image to latest",
 		"docker buildx imagetools create",
+		"Verify immutable release source",
+		`ref: ${{ github.event.inputs.source_ref || github.sha }}`,
+		`test "$revision" = "$REQUESTED_REVISION"`,
+		`git merge-base --is-ancestor "$revision" origin/main`,
+		"branches:\n      - main",
 	} {
 		require.Contains(t, content, required)
 	}
+	require.NotContains(t, content, "      - master")
 	tagsStart := strings.Index(content, "          tags: |")
 	require.NotEqual(t, -1, tagsStart)
 	cacheStart := strings.Index(content[tagsStart:], "          cache-from:")
 	require.NotEqual(t, -1, cacheStart)
 	require.NotContains(t, content[tagsStart:tagsStart+cacheStart], ":latest")
 	require.Less(t,
-		strings.Index(content, "uses: docker/setup-qemu-action@v3"),
-		strings.Index(content, "uses: docker/build-push-action@v6"))
+		strings.Index(content, "uses: docker/setup-qemu-action@"),
+		strings.Index(content, "uses: docker/build-push-action@"))
 	require.Less(t,
-		strings.Index(content, "uses: docker/build-push-action@v6"),
+		strings.Index(content, "uses: docker/build-push-action@"),
 		strings.Index(content, "Verify published multi-platform index"))
 	require.Less(t,
 		strings.Index(content, "Verify published multi-platform index"),
 		strings.Index(content, "Promote verified image to latest"))
+}
+
+func TestIntegrationToolDownloadsAreVersionedAndVerified(t *testing.T) {
+	workflow, err := os.ReadFile("../.github/workflows/integration.yml")
+	require.NoError(t, err)
+	content := string(workflow)
+
+	for _, required := range []string{
+		`GO_VERSION: "1.26.5"`,
+		"kindest/node:v1.36.1@sha256:3489c7674813ba5d8b1a9977baea8a6e553784dab7b84759d1014dbd78f7ebd5",
+		"kind/releases/download/v0.32.0/kind-linux-amd64",
+		"50030de23cf40a18505f20426f6a8506bedf13c6e509244bd1fa9463721b0f54",
+		"release/v1.36.1/bin/linux/amd64/kubectl",
+		"629d3f410e09bf49b64ae7079f7f0bda1191efed311f7d37fdbab0ad5b0ec2b7",
+		"helm-v3.18.4-linux-amd64.tar.gz",
+		"f8180838c23d7c7d797b208861fecb591d9ce1690d8704ed1e4cb8e2add966c1",
+		"curl --proto '=https' --tlsv1.2",
+		"sha256sum -c -",
+	} {
+		require.Contains(t, content, required)
+	}
+	require.Equal(t, 3, strings.Count(content, "sha256sum -c -"))
+	require.NotContains(t, content, "raw.githubusercontent.com/helm/helm/main")
 }
