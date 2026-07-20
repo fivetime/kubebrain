@@ -507,9 +507,42 @@ charge 对象键只由 instance 和 period 构成，不含 price version。同�
 会得到不同内容并被 immutable key 冲突拒绝，禁止生成两份并行 charge 或静默重定价；
 后续更正必须使用尚未实现的 adjustment/credit artifact。正常任务和
 `--period-end-unix` 回补共用同一键。charge Secret 应只允许读取 rollup/price prefix
-并写 charge prefix；价格 publisher 使用独立审批身份。当前 charge 只覆盖六项数据面
-资源 quantity，不包含对象存储实际版本占用、请求费、税费、折扣、付款或最终 invoice，
-这些仍须由后续账单审计和 adjustment 流程完成。
+并写 charge prefix；价格 publisher 使用独立审批身份。
+
+对象存储保留量不能由 `logical_backup_artifact_bytes:last` 推导；该指标只有最近一次
+备份大小，既不包含仍被保留的旧 version，也不能发现 delete marker 或控制面漏报对象。
+`deploy/production/kubebrain-metering-storage.yaml` 因此每小时直接扫描实例专属 source
+prefix。`ACTION=usage` 使用 `ListObjectVersions` 的 key/version 双 marker 完整分页，
+拒绝任意 delete marker、重复/无 ID version 和未前进分页；随后对每个 exact version
+执行 Head 和 GetObjectRetention，核对 allowlist format、account ID、bytes、artifact
+digest metadata、COMPLIANCE/GOVERNANCE mode 与 retain-until。总字节使用 int64
+溢出保护，排序后的完整 version identity/evidence 计算 `versions_sha256`。prefix
+必须只属于一个 DBaaS 实例；共享 prefix 会把其他实例费用计入本实例，不能上线。
+
+小时 CronJob 在整点后第 27 分钟运行，10 分钟 finalization delay 只决定选择最近已经
+结束的小时；实际 checked-at 允许位于 slot end 后 45 分钟内，以覆盖调度和重试。
+`kubebrain.object-storage-sample.v1` 固定 source store/bucket/prefix、allowlist、version
+数量、总字节、versions digest 和 checked-at，再写入独立计量 Object Lock bucket。
+source 凭据只能 List/Head/GetRetention 实例 prefix，evidence 凭据只能写/读
+`metering-storage-samples` 与 `metering-storage-rollups`；二进制通过两套显式前缀环境
+变量启动子执行器，禁止让 source 写权限或 evidence 凭据访问备份内容。
+
+每日 UTC 00:57 的 Roller 只读取前一 UTC 日 24 个 exact snapshot；任一缺槽、时间窗
+超限、scope/allowlist 变化、digest/bytes/retention 不匹配都会 fail closed。
+`kubebrain.object-storage-rollup.v1` 采用明确的离散计费策略：
+`object_storage_byte_seconds = sum(hour_end_total_object_bytes * 3600)`。它不是对象创建/
+删除事件的连续时间积分；产品价格必须按该小时末持有量语义审批。历史时点无法从当前
+bucket 状态可靠重建，所以小时 snapshot 不支持伪造回填；CronJob 中断造成的缺槽必须
+进入人工不可计费/调整流程，不能拿当前 inventory 补写旧小时。
+
+`kubebrain.metering-price-catalog.v2` 固定 measurement policy
+`kubebrain.metering-rollup.v2+object-storage-rollup.v1`，在 v1 六项 rate 后追加
+`object_storage_byte_seconds/byte_seconds`。Biller 只有在 ConfigMap 显式固定 v2
+format 时才读取第二份 rollup，并生成 `kubebrain.metering-charge.v2`；charge 内嵌
+resource rollup、storage rollup 和 catalog 三份 exact-version source。v1 目录/charge
+仍可读取但不能携带 storage source。生产模板默认 v2，启用前必须先连续获得完整 24
+小时 storage snapshot 并发布已审批 v2 catalog。请求费、税费、折扣、付款、最终
+invoice 和 adjustment/credit artifact 仍未实现，不能把 v2 charge 宣称为最终发票。
 
 TiDB Operator 的 BR full/PITR 不能用于 KubeBrain 数据恢复。真实 S3 full backup 和
 独立 PD/TiKV Restore CR 都成功时，备份前已提交的 KubeBrain key 仍未出现在目标集群；
