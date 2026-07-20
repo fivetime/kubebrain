@@ -28,6 +28,7 @@ const (
 	leaseRevoke
 	leaseGrant
 	leaseTimeToLive
+	leaseExpire
 )
 
 type leaseState struct {
@@ -39,6 +40,7 @@ type leaseState struct {
 type leaseInput struct {
 	kind  leaseOpKind
 	value int
+	ttl   int64
 }
 
 type leaseOutput struct {
@@ -77,14 +79,14 @@ var leaseGenerationModel = (&porcupine.NondeterministicModel{
 			return []interface{}{current}
 		}
 		if out.notFound {
-			if current.alive || (in.kind != leasePut && in.kind != leaseRevoke) {
+			if current.alive || (in.kind != leasePut && in.kind != leaseKeepAlive && in.kind != leaseRevoke) {
 				return nil
 			}
 			return []interface{}{current}
 		}
 		if out.failed {
 			switch in.kind {
-			case leaseRead, leaseTimeToLive:
+			case leaseRead, leaseTimeToLive, leaseKeepAlive:
 				return []interface{}{current}
 			case leaseGrant:
 				if current.alive {
@@ -130,7 +132,16 @@ var leaseGenerationModel = (&porcupine.NondeterministicModel{
 			if out.alive == current.alive {
 				return []interface{}{current}
 			}
+		case leaseKeepAlive:
+			if current.alive {
+				return []interface{}{current}
+			}
 		case leaseRevoke:
+			if current.alive {
+				current.alive, current.present, current.value = false, false, 0
+				return []interface{}{current}
+			}
+		case leaseExpire:
 			if current.alive {
 				current.alive, current.present, current.value = false, false, 0
 				return []interface{}{current}
@@ -240,9 +251,11 @@ func describeLeaseInput(in leaseInput) string {
 	case leaseRevoke:
 		return "revoke()"
 	case leaseGrant:
-		return "grant()"
+		return fmt.Sprintf("grant(%ds)", in.ttl)
 	case leaseTimeToLive:
 		return "time-to-live()"
+	case leaseExpire:
+		return "natural-expire()"
 	default:
 		return "unknown"
 	}
@@ -272,6 +285,25 @@ func TestLeaseGenerationModelFencesRegrantedLease(t *testing.T) {
 		{ClientId: 1, Input: leaseInput{kind: leaseRead}, Call: 9, Output: leaseGenerationOutput{present: true, value: 1}, Return: 10},
 	}
 	require.Equal(t, porcupine.Illegal, porcupine.CheckOperationsTimeout(leaseGenerationModel, staleKey, time.Second))
+}
+
+func TestLeaseGenerationModelRequiresAtomicNaturalExpiry(t *testing.T) {
+	prefix := []porcupine.Operation{
+		{ClientId: 0, Input: leaseInput{kind: leaseGrant, ttl: 2}, Call: 1, Output: leaseGenerationOutput{}, Return: 2},
+		{ClientId: 0, Input: leaseInput{kind: leasePut, value: 1}, Call: 3, Output: leaseGenerationOutput{}, Return: 4},
+		{ClientId: 1, Input: leaseInput{kind: leaseExpire}, Call: 5, Output: leaseGenerationOutput{}, Return: 6},
+	}
+	valid := append(append([]porcupine.Operation{}, prefix...),
+		porcupine.Operation{ClientId: 2, Input: leaseInput{kind: leaseRead}, Call: 7, Output: leaseGenerationOutput{}, Return: 8})
+	require.Equal(t, porcupine.Ok, porcupine.CheckOperationsTimeout(leaseGenerationModel, valid, time.Second))
+
+	staleKey := append(append([]porcupine.Operation{}, prefix...),
+		porcupine.Operation{ClientId: 2, Input: leaseInput{kind: leaseRead}, Call: 7, Output: leaseGenerationOutput{present: true, value: 1}, Return: 8})
+	require.Equal(t, porcupine.Illegal, porcupine.CheckOperationsTimeout(leaseGenerationModel, staleKey, time.Second))
+
+	staleLease := append(append([]porcupine.Operation{}, prefix...),
+		porcupine.Operation{ClientId: 2, Input: leaseInput{kind: leaseTimeToLive}, Call: 7, Output: leaseGenerationOutput{alive: true}, Return: 8})
+	require.Equal(t, porcupine.Illegal, porcupine.CheckOperationsTimeout(leaseGenerationModel, staleLease, time.Second))
 }
 
 func TestLeaseModelRequiresAtomicKeyDeletionOnRevoke(t *testing.T) {
@@ -383,6 +415,137 @@ func TestClientV3LeaseGenerationHistoryIsLinearizable(t *testing.T) {
 		}
 	}
 	require.Equalf(t, porcupine.Ok, result, "lease generation history result: %s", result)
+}
+
+func TestClientV3LeaseNaturalExpiryHistoryIsLinearizable(t *testing.T) {
+	const (
+		rounds = 3
+		ttl    = 2 * time.Second
+	)
+	endpoint := os.Getenv("KUBEBRAIN_ETCD_ENDPOINT")
+	if endpoint == "" {
+		t.Skip("set KUBEBRAIN_ETCD_ENDPOINT to run the lease natural-expiry linearizability history")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	cli, err := clientv3.New(clientv3.Config{Endpoints: []string{endpoint}, DialTimeout: 3 * time.Second})
+	require.NoError(t, err)
+	key := fmt.Sprintf("/dbaas-linearizability/lease-expiry/%d", time.Now().UnixNano())
+	leaseID := clientv3.LeaseID(time.Now().UnixNano() & int64(^uint64(0)>>1))
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_, _ = cli.Revoke(cleanupCtx, leaseID)
+		_, _ = cli.Delete(cleanupCtx, key)
+		_ = cli.Close()
+	})
+
+	var clock atomic.Int64
+	var historyMu sync.Mutex
+	history := make([]porcupine.Operation, 0, 160)
+	appendOperation := func(clientID int, input leaseInput, call int64, output leaseGenerationOutput, returned int64) {
+		historyMu.Lock()
+		history = append(history, porcupine.Operation{
+			ClientId: clientID, Input: input, Call: call, Output: output, Return: returned,
+		})
+		historyMu.Unlock()
+	}
+	invoke := func(clientID int, input leaseInput) time.Time {
+		started := time.Now()
+		call := clock.Add(1)
+		output, invokeErr := invokeLeaseGenerationOperation(ctx, cli, key, leaseID, input)
+		returned := clock.Add(1)
+		if invokeErr != nil {
+			require.True(t, isAmbiguousRPCError(invokeErr), "unexpected %s error: %v", describeLeaseInput(input), invokeErr)
+			output.failed = true
+		}
+		appendOperation(clientID, input, call, output, returned)
+		return started
+	}
+
+	var faultWorkers sync.WaitGroup
+	faultErrCh := make(chan error, 1)
+	if failoverPod := linearizabilityDeletePod(); failoverPod != "" {
+		startLinearizabilityPodDeletion(ctx, &clock, failoverPod, faultErrCh, &faultWorkers)
+	}
+	for round := 0; round < rounds; round++ {
+		before, err := cli.Get(ctx, key)
+		require.NoError(t, err)
+		require.Empty(t, before.Kvs)
+		watchRevision := before.Header.Revision + 1
+		watchCtx, watchCancel := context.WithCancel(ctx)
+		watch := cli.Watch(watchCtx, key, clientv3.WithRev(watchRevision), clientv3.WithCreatedNotify(), clientv3.WithPrevKV())
+		created := <-watch
+		require.NoError(t, created.Err())
+		require.True(t, created.Created, "watch must acknowledge creation before the leased put")
+
+		deadlineAnchor := invoke(0, leaseInput{kind: leaseGrant, ttl: int64(ttl / time.Second)})
+		invoke(1, leaseInput{kind: leasePut, value: 300 + round})
+		if round%2 == 1 {
+			time.Sleep(900 * time.Millisecond)
+			deadlineAnchor = invoke(2, leaseInput{kind: leaseKeepAlive})
+		}
+		if delay := deadlineAnchor.Add(ttl).Sub(time.Now()); delay > 0 {
+			time.Sleep(delay)
+		}
+
+		expiryCall := clock.Add(1)
+		expiryDone := make(chan int64, 1)
+		go func() {
+			for {
+				for response := range watch {
+					if response.Err() != nil {
+						break
+					}
+					for _, event := range response.Events {
+						if event.Kv.ModRevision >= watchRevision {
+							watchRevision = event.Kv.ModRevision + 1
+						}
+						if event.Type == clientv3.EventTypeDelete {
+							expiryDone <- clock.Add(1)
+							return
+						}
+					}
+				}
+				if watchCtx.Err() != nil {
+					expiryDone <- -1
+					return
+				}
+				watch = cli.Watch(watchCtx, key, clientv3.WithRev(watchRevision), clientv3.WithPrevKV())
+			}
+		}()
+
+		var expiryReturn int64
+		for expiryReturn == 0 {
+			select {
+			case expiryReturn = <-expiryDone:
+			default:
+				invoke(3, leaseInput{kind: leaseRead})
+				invoke(4, leaseInput{kind: leaseTimeToLive})
+				time.Sleep(50 * time.Millisecond)
+			}
+		}
+		watchCancel()
+		require.Positive(t, expiryReturn, "watch closed before natural lease deletion")
+		appendOperation(5, leaseInput{kind: leaseExpire}, expiryCall, leaseGenerationOutput{}, expiryReturn)
+		invoke(3, leaseInput{kind: leaseRead})
+		invoke(4, leaseInput{kind: leaseTimeToLive})
+	}
+	faultWorkers.Wait()
+	close(faultErrCh)
+	for faultErr := range faultErrCh {
+		require.NoError(t, faultErr)
+	}
+
+	result := porcupine.CheckOperationsTimeout(leaseGenerationModel, history, 10*time.Second)
+	if result != porcupine.Ok {
+		sort.Slice(history, func(i, j int) bool { return history[i].Call < history[j].Call })
+		for _, operation := range history {
+			t.Logf("client=%d call=%d return=%d %s", operation.ClientId, operation.Call, operation.Return,
+				leaseGenerationModel.DescribeOperation(operation.Input, operation.Output))
+		}
+	}
+	require.Equalf(t, porcupine.Ok, result, "lease natural-expiry history result: %s", result)
 }
 
 func TestClientV3LeaseLifecycleHistoryIsLinearizable(t *testing.T) {
@@ -534,8 +697,12 @@ func invokeLeaseGenerationOperation(
 ) (leaseGenerationOutput, error) {
 	switch input.kind {
 	case leaseGrant:
+		ttl := input.ttl
+		if ttl == 0 {
+			ttl = 300
+		}
 		_, err := etcdserverpb.NewLeaseClient(cli.ActiveConnection()).LeaseGrant(ctx,
-			&etcdserverpb.LeaseGrantRequest{TTL: 300, ID: int64(leaseID)})
+			&etcdserverpb.LeaseGrantRequest{TTL: ttl, ID: int64(leaseID)})
 		if errors.Is(err, rpctypes.ErrLeaseExist) {
 			return leaseGenerationOutput{alreadyAlive: true}, nil
 		}
@@ -571,6 +738,15 @@ func invokeLeaseGenerationOperation(
 			return leaseGenerationOutput{}, markAmbiguousRPCError(err)
 		}
 		return leaseGenerationOutput{alive: resp.TTL >= 0}, nil
+	case leaseKeepAlive:
+		resp, err := cli.KeepAliveOnce(ctx, leaseID)
+		if errors.Is(err, rpctypes.ErrLeaseNotFound) || (err == nil && (resp == nil || resp.TTL <= 0)) {
+			return leaseGenerationOutput{notFound: true}, nil
+		}
+		if err != nil {
+			return leaseGenerationOutput{}, markAmbiguousRPCError(err)
+		}
+		return leaseGenerationOutput{}, nil
 	case leaseRevoke:
 		_, err := cli.Revoke(ctx, leaseID)
 		if errors.Is(err, rpctypes.ErrLeaseNotFound) {
