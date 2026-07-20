@@ -64,7 +64,6 @@ func TestStatusAlarmCrossEndpointVisibility(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Len(t, activated.Alarms, 1)
-	wantErrors := []string{activated.Alarms[0].String()}
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cleanupCancel()
@@ -75,10 +74,15 @@ func TestStatusAlarmCrossEndpointVisibility(t *testing.T) {
 		})
 	})
 
-	for i, client := range clients {
+	firstStatus, err := clients[0].Status(ctx, &etcdserverpb.StatusRequest{})
+	require.NoError(t, err)
+	require.Len(t, firstStatus.Errors, 1)
+	require.Contains(t, firstStatus.Errors[0], "memberID:515151")
+	require.Contains(t, firstStatus.Errors[0], "alarm:NOSPACE")
+	for i, client := range clients[1:] {
 		statusResponse, statusErr := client.Status(ctx, &etcdserverpb.StatusRequest{})
-		require.NoError(t, statusErr, "endpoint %d", i)
-		require.Equal(t, wantErrors, statusResponse.Errors, "endpoint %d", i)
+		require.NoError(t, statusErr, "endpoint %d", i+1)
+		require.Equal(t, firstStatus.Errors, statusResponse.Errors, "endpoint %d", i+1)
 	}
 	_, err = clients[2].Alarm(ctx, &etcdserverpb.AlarmRequest{
 		Action:   etcdserverpb.AlarmRequest_DEACTIVATE,
