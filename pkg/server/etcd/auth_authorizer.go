@@ -36,6 +36,9 @@ func (s *RPCServer) authCallerFromContext(ctx context.Context) (*authCaller, err
 	}
 	values := metadata.ValueFromIncomingContext(ctx, rpctypes.TokenFieldNameGRPC)
 	if len(values) == 0 {
+		values = metadata.ValueFromIncomingContext(ctx, rpctypes.TokenFieldNameSwagger)
+	}
+	if len(values) == 0 {
 		return s.authCallerFromTLS(ctx, snapshot)
 	}
 	if len(values) != 1 || values[0] == "" {

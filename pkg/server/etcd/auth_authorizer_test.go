@@ -107,19 +107,21 @@ func TestAuthCallerAcceptsBearerPrefixedToken(t *testing.T) {
 	require.Len(t, tokens, 1)
 	token := tokens[0]
 
-	for _, credential := range []string{token, "Bearer " + token} {
-		incoming := metadata.NewIncomingContext(
-			ctx, metadata.Pairs(rpctypes.TokenFieldNameGRPC, credential),
-		)
-		caller, err := server.authCallerFromContext(incoming)
-		require.NoError(t, err)
-		require.Equal(t, "alice", caller.username)
-		require.Equal(t, credential, caller.forwardToken)
-		forwarded, err := server.forwardAuthToken(ctx, caller)
-		require.NoError(t, err)
-		md, ok := metadata.FromOutgoingContext(forwarded)
-		require.True(t, ok)
-		require.Equal(t, []string{credential}, md.Get(rpctypes.TokenFieldNameGRPC))
+	for _, field := range []string{rpctypes.TokenFieldNameGRPC, rpctypes.TokenFieldNameSwagger} {
+		for _, credential := range []string{token, "Bearer " + token} {
+			incoming := metadata.NewIncomingContext(
+				ctx, metadata.Pairs(field, credential),
+			)
+			caller, err := server.authCallerFromContext(incoming)
+			require.NoError(t, err)
+			require.Equal(t, "alice", caller.username)
+			require.Equal(t, credential, caller.forwardToken)
+			forwarded, err := server.forwardAuthToken(ctx, caller)
+			require.NoError(t, err)
+			md, ok := metadata.FromOutgoingContext(forwarded)
+			require.True(t, ok)
+			require.Equal(t, []string{credential}, md.Get(rpctypes.TokenFieldNameGRPC))
+		}
 	}
 
 	incoming := metadata.NewIncomingContext(
