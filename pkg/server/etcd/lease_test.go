@@ -17,6 +17,7 @@ package etcd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"math"
 	"sort"
@@ -67,6 +68,41 @@ type blockingLeaseMetaDeleteBackend struct {
 type failAtomicLeaseRevokeBackend struct {
 	BackendShim
 	leaseID int64
+}
+
+type committedCheckpointErrorBackend struct {
+	BackendShim
+	leaseID int64
+	failed  bool
+	cancel  context.CancelFunc
+}
+
+func (b *committedCheckpointErrorBackend) InternalPut(ctx context.Context, key, value []byte) error {
+	if err := b.BackendShim.InternalPut(ctx, key, value); err != nil {
+		return err
+	}
+	if b.failed || string(key) != string(leaseStorageKey(b.leaseID)) {
+		return nil
+	}
+	var record leaseRecord
+	if err := json.Unmarshal(value, &record); err != nil || record.RemainingTTL == 0 {
+		return nil
+	}
+	b.failed = true
+	if b.cancel != nil {
+		b.cancel()
+		return ctx.Err()
+	}
+	return errors.New("lease checkpoint response lost after commit")
+}
+
+type rejectedLeaseMetadataBackend struct {
+	BackendShim
+	err error
+}
+
+func (b *rejectedLeaseMetadataBackend) InternalPut(context.Context, []byte, []byte) error {
+	return b.err
 }
 
 func (b *failAtomicLeaseRevokeBackend) TxnApply(ctx context.Context, ops []backend.TxnWriteOp, guards []backend.TxnGuard, prevKV []bool) ([]*etcdserverpb.ResponseOp, uint64, []backend.TxnWriteResult, error) {
@@ -1156,6 +1192,66 @@ func TestLeaseCheckpointBoundsReloadAndRenewClearsIt(t *testing.T) {
 	require.Zero(t, checkpoint.RemainingTTL)
 	require.Equal(t, beforeRevision, server.backend.GetCurrentRevision(),
 		"checkpoint clear must remain outside user MVCC")
+}
+
+func TestLeaseRenewClearsCommittedCheckpointAfterLostWriteResponse(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	const leaseID int64 = 8203
+	_, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 600, ID: leaseID})
+	require.NoError(t, err)
+
+	server.leaseMu.Lock()
+	st := server.leases[leaseID]
+	require.NotNil(t, st)
+	st.timer.Stop()
+	st.checkpointTimer.Stop()
+	st.deadline = time.Now().Add(240 * time.Second)
+	server.leaseMu.Unlock()
+
+	checkpointCtx, cancelCheckpoint := context.WithCancel(context.Background())
+	ambiguous := &committedCheckpointErrorBackend{
+		BackendShim: server.backend,
+		leaseID:     leaseID,
+		cancel:      cancelCheckpoint,
+	}
+	server.backend = ambiguous
+	server.checkpointLeaseWithContext(checkpointCtx, leaseID)
+	require.True(t, ambiguous.failed, "the checkpoint write must commit before its response is lost")
+	require.ErrorIs(t, checkpointCtx.Err(), context.Canceled)
+
+	stream := &fakeLeaseKeepAliveServer{
+		requests: []*etcdserverpb.LeaseKeepAliveRequest{{ID: leaseID}},
+	}
+	require.NoError(t, server.LeaseKeepAlive(stream))
+	require.Len(t, stream.sent, 1)
+	require.Equal(t, int64(600), stream.sent[0].TTL)
+
+	data, err := server.backend.InternalGet(ctx, leaseStorageKey(leaseID))
+	require.NoError(t, err)
+	var record leaseRecord
+	require.NoError(t, json.Unmarshal(data, &record))
+	require.Zero(t, record.RemainingTTL,
+		"renew must clear a checkpoint whose commit was confirmed after its response was lost")
+}
+
+func TestLeaseMetadataFailedWriteRequiresExactReadback(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	const leaseID int64 = 8204
+	_, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 600, ID: leaseID})
+	require.NoError(t, err)
+
+	writeErr := errors.New("lease metadata write rejected")
+	server.backend = &rejectedLeaseMetadataBackend{
+		BackendShim: server.backend,
+		err:         writeErr,
+	}
+	err = server.persistLeaseCheckpoint(ctx, leaseID, 600, 240)
+	require.ErrorIs(t, err, writeErr)
+	require.ErrorContains(t, err, "lease metadata differs after failed write")
 }
 
 func TestSpreadLeaseExpiriesMatchesEtcdPromotionRate(t *testing.T) {

@@ -15,9 +15,11 @@
 package etcd
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"sort"
@@ -65,6 +67,7 @@ func (m *leaseManager) keysForLease(id int64) []string {
 
 const leaseExpiryRetryInterval = time.Second
 const leaseCheckpointInterval = 5 * time.Minute
+const leaseMetadataReconciliationTimeout = 5 * time.Second
 const defaultLeaseRevokeRate = 1000
 const latestRestoreRevision = int64(^uint64(0) >> 1)
 const maxLeaseTTL = int64(9000000000)
@@ -1736,7 +1739,32 @@ func (m *leaseManager) persistLeaseCheckpoint(ctx context.Context, id, ttl, rema
 	if err != nil {
 		return err
 	}
-	return m.srv.backend.InternalPut(ctx, leaseStorageKey(id), data)
+	key := leaseStorageKey(id)
+	if err = m.srv.backend.InternalPut(ctx, key, data); err == nil {
+		return nil
+	}
+
+	// A TiKV commit can succeed even when its response is lost to cancellation
+	// or a transport failure. Treating that as definitely uncommitted is unsafe:
+	// an unobserved remaining-TTL checkpoint would not be cleared by the next
+	// keepalive, so a later leader could expire a freshly renewed lease early.
+	// The record is canonical and fully replaces one internal key, making an
+	// exact linearized readback sufficient to prove this write's final state.
+	reconcileCtx, cancel := context.WithTimeout(
+		context.WithoutCancel(ctx), leaseMetadataReconciliationTimeout,
+	)
+	defer cancel()
+	current, getErr := m.srv.backend.InternalGet(reconcileCtx, key)
+	if getErr != nil {
+		return errors.Join(
+			err,
+			fmt.Errorf("inspect lease metadata after failed write: %w", getErr),
+		)
+	}
+	if bytes.Equal(current, data) {
+		return nil
+	}
+	return errors.Join(err, errors.New("lease metadata differs after failed write"))
 }
 
 // attachKeyToStorage records that userKey is attached to lease id as a single
