@@ -123,6 +123,22 @@ func TestCollectorV3FailsClosedWithoutRequestCompleteness(t *testing.T) {
 	require.ErrorContains(t, err, "object request data is incomplete")
 }
 
+func TestCollectorV3RejectsWrongFinalizedRequestPeriod(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		value := "1"
+		if strings.HasPrefix(request.URL.Query().Get("query"), objectRequestPeriodEndMetric+"{") {
+			value = "1700000000"
+		}
+		writePrometheusVector(t, response, "instance-a", 1_700_003_590, value)
+	}))
+	defer server.Close()
+	collector, err := NewCollectorV3(server.URL, server.Client(), "", 5*time.Minute)
+	require.NoError(t, err)
+	_, err = collector.Collect(context.Background(), "instance-a",
+		time.Unix(1_700_000_000, 0), time.Unix(1_700_003_600, 0))
+	require.ErrorContains(t, err, "period does not end")
+}
+
 func TestCollectorFailsClosedOnIncompleteDuplicateStaleAndInvalidValues(t *testing.T) {
 	tests := []struct {
 		name      string
