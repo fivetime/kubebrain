@@ -5519,6 +5519,29 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   PD/TiKV 3+3 Ready。本轮把已正确的运行语义收敛为不可绕过的构造契约，线上 A300
   镜像的 wire 证据已一致，因此不重建语义相同的 runtime 镜像。
 
+- **Range A306 limited KeysOnly with exact total count（2026-07-20）**：对照
+  upstream `/root/etcd` commit `dd57ad39f`。该修复使内存 treeIndex 在
+  `FastKeysOnly + Limit` 下只收集页面内 key，同时可继续遍历索引得到精确 total
+  count，避免为有限响应构造整个范围的 KeyValue。KubeBrain 没有 etcd 的本地 MVCC
+  treeIndex，但现有 TiKV 路径已采用等价且更适合独立存储的数据流：对象扫描只请求
+  `Limit+1` 判断 `More`，精确 Count 由 revision-aware count index 提供，随后只转换
+  页面内 KeyValue 并清空 Value。
+
+  新增存储读取上界门禁，创建 100 个带较大 value 的 key 后执行
+  `KeysOnly + Limit=3`：响应必须只含 3 个空 value key、`Count=100`、`More=true`，
+  底层最多读取 10 行。实测为 9 行，包括 4 个页面候选和用户边界低字节扩展的固定安全
+  探测；该上界与范围总大小无关，防止 count index 或页面 limit 回归后退化为 O(N)
+  value 扫描。确定性门禁连续 50 轮通过（1.408 秒），race 连续 20 轮通过
+  （3.287 秒），完整 Range 服务测试通过（2.613 秒）。
+
+  官方 client/v3 双端差分固定三组显式预期：当前 revision 下删除后的前三个 key、
+  `Count=11/More=true`；历史 revision 下原前三个 key、`Count=8/More=true`；Limit
+  大于总数时返回全部 11 个 key 且 `More=false`，所有 Value 均为空。fresh upstream
+  etcd 与 A300 三副本 TiKV-backed KubeBrain 连续 20 轮通过（5.770 秒）。根模块及
+  compat 模块相关 `go vet` 通过，参考进程和数据目录已清理，未使用 port-forward；
+  最终 KubeBrain 3/3 Ready 且 0 restart，PD/TiKV 3+3 Ready。未发现运行时语义或
+  读放大差距，因此本轮只增加永久生产性能证据，不重建相同 runtime 镜像。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
