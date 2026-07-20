@@ -6177,8 +6177,9 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   正增长超过上限时返回标准 etcd `ResourceExhausted / mvcc: database space exceeded`
   并持久激活 NOSPACE；拒绝发生在分配 revision 前。A329 对照上游后纠正告警期行为：
   sticky alarm 激活后所有 Put（包括缩小 value）及任一分支含 Put 的 Txn 均拒绝；
-  删除和 lease revoke 仍可释放容量。用量严格低于 quota 后
-  `Alarm(DEACTIVATE, NOSPACE)` 可解除。`Status` 报告逻辑用量与配置 quota，新增
+  删除和 lease revoke 仍可释放容量。`Alarm(DEACTIVATE, NOSPACE)` 可按 etcd
+  契约随时解除；若用量仍达到 quota，下一次含 Put 请求会立即重新激活。`Status`
+  报告逻辑用量与配置 quota，新增
   `quota.logical_usage_bytes`、`quota.backend_bytes`、`quota.nospace` 指标。该数字不
   等同 bbolt 文件或 TiKV 物理磁盘占用，后者继续由 PD/TiKV 指标管理。
 
@@ -6448,6 +6449,39 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   OCI revision 与实现提交一致，运行用户为 `65532:65532`。同一 keyspace 的所有
   serving 副本必须使用一致 quota 配置；滚动混配时 dirty marker 会让启用副本
   fail closed，不能把该保护当作长期混合配置支持。
+
+- **Maintenance A337 over-quota alarm disarm（2026-07-20）**：继续对照
+  `/root/etcd/server/etcdserver/apply/backend.go:Alarm` 与
+  `/root/etcd/server/etcdserver/api/v3alarm/alarms.go:Deactivate`。upstream
+  DEACTIVATE 只按 member/type 删除持久 alarm，不读取 backend quota；KubeBrain
+  此前却在 `usage >= quota` 时返回 `ResourceExhausted`，使
+  `etcdctl alarm disarm` 多出非标准容量前置条件。
+
+  参考 etcd 以 `--quota-backend-bytes=1` 启动，Status 为
+  `DbSize=28672, DbSizeQuota=1`：Put 激活 NOSPACE 后，仍超额时 `alarm disarm`
+  成功且 list 为空；下一次 Put 返回标准 NOSPACE 并重新激活同 member alarm。
+  KubeBrain 现同样允许 owner 在 exact/over-quota 状态解除 alarm，同时收紧无 alarm
+  写入预检：当前 usage 已达到 quota 时，任一含 Put 的请求（包括 shrinking/no-op Put
+  和混合 Txn）都会在分配 revision 前重新激活 NOSPACE 并拒绝；delete-only 仍可降容。
+  从低于 quota 增长到恰好等于 quota 的首次 Put 继续成功。
+
+  backend 与 RPC 回归固定 exact-limit disarm -> shrinking Put re-arm ->
+  delete-only -> second disarm -> recovered Put 状态机；聚焦 20 轮、race 10 轮、
+  backend/server 全包、根模块 `go test -p 1 -count=1 ./...`、根模块与
+  `hack/etcd-client-compat` 的 `go vet ./...`、`git diff --check` 均通过。
+
+  真实 3 PD/3 TiKV 使用独立 `a337-overquota-disarm` keyspace 和 quota=16：
+  7 B key + 9 B value 首次写到精确 16 B；下一 Put 激活 member 3508521812 的
+  NOSPACE；16/16 B 时 disarm 成功且 list 清空；shrinking Put 随即返回
+  `ResourceExhausted` 并重新激活；delete-only 后再次 disarm，`/ok=z` 成功且 Status
+  为 4/16 B。Pod UID `37f24614-33b0-499d-ac10-d210bb75730b` Ready、
+  restartCount=0，`/readyz?verbose` 全部通过，最终 endpoint proposal health
+  18.004ms，日志无 quota 初始化错误、panic/fatal/storage error，PD/TiKV 3+3 Ready。
+
+  实现提交 `1a9fbf54cdab5a729d3c7cbced5635673ccbceda`；production 镜像
+  `kubebrain:a337-overquota-disarm` 的 ID 为
+  `sha256:7c7963e0dd019e9b568f8f0894d5f737062c7996e28bdeb6b93f76504b998a05`，
+  OCI revision 与实现提交一致，运行用户为 `65532:65532`。
 
 ### P1：通用服务能力
 

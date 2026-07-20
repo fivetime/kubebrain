@@ -59,8 +59,10 @@ KubeBrain 已内置**标准 Prometheus** 指标(真 registry + `promhttp.Handler
   `quota.logical_usage_bytes / quota.backend_bytes`，建议在 80% 和 90% 分级告警；
   `quota.nospace == 1` 表示已触发持久 NOSPACE。告警激活后所有 Put（包括缩小
   value）和任一分支含 Put 的 Txn 均拒绝；应通过删除或 lease revoke 使 usage 严格低于
-  quota 后，再执行 `etcdctl alarm disarm`。这些指标统计当前存活 key+value 的逻辑
-  字节，不包含 MVCC 历史、事件日志、lease/auth 元数据和 TiKV 副本开销。
+  quota 后，再执行 `etcdctl alarm disarm`。与 etcd 一致，达到/超过 quota 时执行
+  disarm 本身也会成功，但下一次含 Put 请求会立即重新激活 NOSPACE，因此不能把短暂
+  清空 alarm list 当作容量已经恢复。这些指标统计当前存活 key+value 的逻辑字节，
+  不包含 MVCC 历史、事件日志、lease/auth 元数据和 TiKV 副本开销。
 
 ## DbSize 与物理容量
 
