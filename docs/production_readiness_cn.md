@@ -415,9 +415,10 @@ artifact/timestamp 源全部存在时，完整性才为 1，8 条计量输入才
 
 这些序列不是最终账单。`deploy/production/kubebrain-metering-archive.yaml` 每小时在
 UTC 第 17 分钟查询已结束且等待 10 分钟的完整小时槽位；只有小时完整性序列唯一等于
-1，且 8 条 v2 输入各自唯一、实例标签精确匹配、值为非负有限数、样本不晚于查询时间
-并且不超过 5 分钟陈旧时，才生成 `kubebrain.metering-sample.v2`。规则部署后不足完整
-60 分钟历史时不得产生首个 v2 artifact。artifact ID、对象键和 JSON 字节均由实例与
+1，且 8 条资源/备份输入及后述 4 条对象请求输入各自唯一、实例标签精确匹配、值为
+非负有限数、样本不晚于查询时间并且不超过 5 分钟陈旧时，才生成
+`kubebrain.metering-sample.v3`。规则部署后不足完整 60 分钟历史时不得产生首个 v3
+artifact。v1/v2 仅用于读取历史对象。artifact ID、对象键和 JSON 字节均由实例与
 槽位确定，重试同一槽位不得生成新内容或第二个对象版本。
 
 归档器通过 `kubebrain-logical-object` 的通用 `ACTION=blob` 路径执行条件上传，要求
@@ -431,6 +432,25 @@ version、逐字节核对 artifact，并读取远端 retention。只有全部验
 多实例部署必须同步替换 `--instance`、对象前缀、recording-rule 标签与选择器，并为每个
 实例保留唯一归档职责。Prometheus 跨网络访问时必须配置 HTTPS、CA、server name 和
 bearer token 参数，不能沿用模板中的集群内明文地址。
+
+对象请求费不从 `kubebrain-logical-object` 子进程次数、S3 重试次数或当前 inventory
+反推。供应商/网关 exporter 必须按实例持续暴露前一个已完成小时的精确最终值：
+`kubebrain_object_store_request_count{dbaas_instance,request_class,window="1h"}`，其中
+`request_class` 恰好为 `write`、`list`、`read`、`delete`；并同时暴露
+`kubebrain_object_store_request_period_end_seconds{dbaas_instance,window="1h"}`。
+每个实例/类别和 period-end 必须各只有一条序列。分类必须由供应商账单 API 操作表
+明确映射，并计入供应商实际收费的重试、复制和生命周期请求；不同供应商不能未经审批
+复用分类。exporter 输出必须是非负整数且不大于 IEEE-754 可精确表达上限 `2^53`，
+period-end 必须是对应 UTC 小时边界。
+
+recording rules 对五个源分别计数，缺失时用显式零值保持告警可见；只有整个小时至少
+60 次 evaluation 都恰好存在五个唯一源时，
+`kubebrain_dbaas:object_request_hour_complete` 才为 1。小时请求规则只转发 exporter
+提供的 finalized gauge，不对 counter 做 `increase` 或舍入。
+`kubebrain.metering-sample.v3` 在 v2 八项指标后追加四类请求数，并内嵌
+`object_request_period_end_unix`；归档器要求该值精确等于 artifact `slot_end`。
+缺类、重复、非整数、超出 `2^53`、陈旧、未来或错窗都会 fail closed。v1/v2 sample
+继续严格可读，已有不可变对象不重写。
 
 `deploy/production/kubebrain-metering-rollup.yaml` 每日 UTC 00:47 处理前一完整 UTC 日，
 且只从不可变小时对象读取，不重新查询 Prometheus。每个对象键由实例和 slot 确定；
@@ -449,6 +469,12 @@ byte-seconds；备份 artifact 大小和 age 仅输出 min/max/last 观测值，
 format 固定其公式。未知格式、format 与下载内容不一致或重复 allowlist 都会拒绝。
 旧 v1 artifact 保持不可变，不原地重解释或改写。日汇总经同一 immutable blob 路径
 归档，保留截止点取最早源样本的保留截止点，避免汇总仍在而引用源已过期。
+
+只有 24 个小时源全部为 sample v3 时才生成 `kubebrain.metering-rollup.v3`，并在原六项
+资源 quantity 后按固定顺序追加 write/list/read/delete 四类整数请求总数。任何 v3
+rollup source 不是 sample v3、请求量为小数或累计超过 `2^53` 都会在独立读取时拒绝。
+v2/v3 混合升级日仍生成 v2 rollup，不静默生成不完整请求 quantity，因此不能使用 v3
+价格目录结算；应等待首个完整 v3 UTC 日，缺失日进入人工不可计费/adjustment 流程。
 
 默认任务只处理上一 UTC 日。CronJob 长时间停机后必须逐日使用
 `--period-end-unix=<UTC 日界 Unix 秒>` 回补；显式 period end 必须按 24 小时对齐且
@@ -541,8 +567,18 @@ bucket 状态可靠重建，所以小时 snapshot 不支持伪造回填；CronJo
 format 时才读取第二份 rollup，并生成 `kubebrain.metering-charge.v2`；charge 内嵌
 resource rollup、storage rollup 和 catalog 三份 exact-version source。v1 目录/charge
 仍可读取但不能携带 storage source。生产模板默认 v2，启用前必须先连续获得完整 24
-小时 storage snapshot 并发布已审批 v2 catalog。请求费、税费、折扣、付款、最终
-invoice 和 adjustment/credit artifact 仍未实现，不能把 v2 charge 宣称为最终发票。
+小时 storage snapshot 并发布已审批 v2 catalog。v2 仍可用于历史账期，不能把它宣称为
+包含请求成本的最终发票。
+
+`kubebrain.metering-price-catalog.v3` 固定 measurement policy
+`kubebrain.metering-rollup.v3+object-storage-rollup.v1`，rate 顺序是六项资源、write/
+list/read/delete 四类 `requests`，最后是 `object_storage_byte_seconds`。Biller 只有在
+ConfigMap 固定 v3 format 时才读取 exact v3 resource rollup、storage rollup 和 v3
+catalog，并生成 11 行 `kubebrain.metering-charge.v3`。charge 自身再次要求四项请求
+quantity 为 `0..2^53` 的十进制整数，金额仍采用逐行精确有理数乘法和 half-even 到
+微货币。生产模板默认 v3；启用前必须部署经财务批准的供应商分类 exporter、积累完整
+24 小时 v3 sample，并发布覆盖该账期的 approved v3 catalog。invoice plan/finalizer
+接受 v1/v2/v3 charge exact version，历史 invoice 不重写。
 
 账单纠错不得覆盖既有 charge。`kubebrain.metering-adjustment.v1` 使用非零 signed
 `amount_micros`：正数是补收，负数是 credit；reason 只允许 `billing_error`、
@@ -577,8 +613,9 @@ kubebrain-metering-invoice.yaml` 默认每月 2 日 UTC 02:17 运行，ConfigMap
 独立核验后替换。CronJob 使用只读根文件系统、非 root、无 ServiceAccount token 和
 只允许读取 charge/adjustment/plan、写 invoice prefix 的独立 Secret。
 
-该 invoice 是 KubeBrain 数据面资源结算证据，不是完整税务/收款系统。对象请求费、
-税率计算、折扣规则、付款、退款、应收账款、发票编号法规和外部总账过账仍须由财务
+该 invoice 是 KubeBrain 数据面资源结算证据，不是完整税务/收款系统。供应商请求
+分类/exporter 与账单的周期性对账、税率计算、折扣规则、付款、退款、应收账款、发票
+编号法规和外部总账过账仍须由财务
 控制面实现；`tax_correction` 只记录已由外部审批系统算出的微货币调整，不能替代税引擎。
 
 TiDB Operator 的 BR full/PITR 不能用于 KubeBrain 数据恢复。真实 S3 full backup 和

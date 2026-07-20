@@ -5974,6 +5974,50 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   系统。对象请求费、税率计算、折扣规则、付款/退款、应收账款、法规发票编号、外部
   总账过账及跨账户财务对账仍属 P1；`tax_correction` 只能承载外部系统已批准的结果。
 
+- **Metering A320 对象请求费与 charge v3（2026-07-20）**：请求成本不再从本地
+  executor 调用或重试推断。定义供应商/网关 exporter 输入合同：
+  `kubebrain_object_store_request_count` 必须按实例和 `write/list/read/delete` 四类
+  输出前一完整小时的 finalized 非负整数，`kubebrain_object_store_request_period_end_seconds`
+  显式绑定该小时结束时间。recording rules 对五个源分别要求恰好一条，并用
+  `or on() vector(0)` 让完全缺失仍触发 critical 告警；完整 60 次 evaluation 后才
+  转发请求 gauge。分类映射负责纳入供应商实际收费的重试、复制和生命周期请求，数据面
+  不猜测不同供应商 API 的计价类别。
+
+  `kubebrain.metering-sample.v3` 在 v2 八项后追加四类请求量并内嵌 period-end，要求
+  与 slot end 精确相等、值为 `0..2^53` 的整数。24 个源全部为 v3 才生成
+  `kubebrain.metering-rollup.v3`；任一旧格式源都会生成不含请求量的 v2 rollup，避免
+  升级日被静默少收。v3 rollup 自身要求全部 source format 为 sample v3，并对四项
+  日总量再次执行整数/上限校验，关闭伪造 canonical rollup 绕过构造器的路径。
+
+  新增 `kubebrain.metering-price-catalog.v3`，measurement policy 固定为
+  `kubebrain.metering-rollup.v3+object-storage-rollup.v1`，11 项 rate 顺序为六项资源、
+  write/list/read/delete 和 storage byte-seconds。`kubebrain.metering-charge.v3`
+  固定三份 exact-version source 和 11 行可重算金额；独立读取时仍拒绝小数请求量。
+  settlement adjustment、plan 和 invoice allowlist 同步接受 v3，v1/v2 历史证据保持
+  可读且不改写。生产 charge ConfigMap 默认切到 v3，但没有完整 v3 UTC 日与 approved
+  catalog 时必须 fail closed。
+
+  根模块 `go test ./...`、`go vet ./...`、manifest 测试和 diff check 通过；核心包
+  确定性 100 轮分别 5.071/2.041 秒，race 20 轮分别 4.838/4.247 秒。专项覆盖请求
+  completeness 缺失、错 period、小数/超 `2^53`、v3 rollup 引用 v2 source、v2/v3
+  混合升级日、v3 catalog/rollup 代际错配、伪造 charge 小数和固定 11 行顺序。
+  当前 kind 未安装 Prometheus Operator CRD，因此 `monitoring.yaml` 的 client dry-run
+  按预期无法解析 `ServiceMonitor/PrometheusRule`；结构和完整 PromQL 由 manifest
+  测试固定，真实一小时 evaluation 仍保留为预生产门禁。
+
+  源码 executor 和最终镜像 executor 分别对独立 MinIO Object Lock bucket 完成真实
+  v3 链路：锁定 resource/storage rollup 与 catalog，连续两次生成同一 charge/receipt，
+  再以同 charge key 不同 approved 价格验证 immutable conflict；分别 0.44/0.48 秒。
+  发布镜像 `kubebrain:a320-object-request-metering` 从干净代码提交
+  `8327eab27ed5d29ce9b2b656c99b9dc8380973fa` 构建，本地 digest 为
+  `sha256:62ec7246b31d7346263b8d7f876caca04cf7eb7bd04b4cde920351c34800262c`，
+  OCI revision/version 和镜像内 archive/rollup/charge/object executor 已核对。A319
+  三副本 StatefulSet 有序滚动到 A320 后 3/3 Ready、restartCount=0，独立 PD/TiKV
+  3+3 Ready，endpoint proposal health 19.78ms 和 production release gate 均通过。
+
+  数据面对象请求 charge 至此完成；供应商分类 exporter 与供应商账单周期对账、税率/
+  折扣、付款/退款、应收账款、法规发票编号、外部总账及跨账户财务对账仍属 P1。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
@@ -6003,8 +6047,9 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
    告警已具备稳定错误或指标，网络 RX/TX 原始计量和逻辑备份 artifact 容量/新鲜度
    指标已暴露，单实例资源/容量/网络/备份 recording rules 和 fail-closed 缺测标记已
    建立，不可变小时采样、counter-based 小时窗口、确定性跨日积分、不可变资源价格
-   版本、对象 storage byte-time、v2 charge、approved adjustment/credit 和 final
-   invoice 已完成；继续补对象请求费、税率/折扣、付款/退款、应收账款、法规发票编号、
+   版本、对象 storage byte-time、对象请求费、v3 charge、approved adjustment/credit
+   和 final invoice 已完成；继续补供应商分类 exporter/供应商账单周期对账、税率/
+   折扣、付款/退款、应收账款、法规发票编号、
    外部总账过账与跨账户财务对账，并在具备 Prometheus Operator 的预生产环境补真实
    一小时规则 evaluation 和连续 24 小时 storage sampling 门禁。
 
