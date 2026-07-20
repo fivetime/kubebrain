@@ -15,6 +15,7 @@
 package backend
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -331,6 +332,15 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 		nextQuotaUsage int64
 	)
 	if b.config.QuotaBackendBytes > 0 {
+		tracking, trackingErr := b.kv.Get(ctx, b.ks.EncodeInternalKey(quotaTrackingKey))
+		switch {
+		case errors.Is(trackingErr, storage.ErrKeyNotFound):
+			return nil, baseRevision, false, ErrQuotaUninitialized
+		case trackingErr != nil:
+			return nil, baseRevision, false, trackingErr
+		case !bytes.Equal(tracking, quotaTrackingClean):
+			return nil, baseRevision, false, ErrQuotaUninitialized
+		}
 		raw, usageErr := b.kv.Get(ctx, b.ks.EncodeInternalKey(quotaUsageKey))
 		currentUsage := int64(0)
 		switch {

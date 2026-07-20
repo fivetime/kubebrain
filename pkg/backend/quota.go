@@ -19,8 +19,11 @@ var ErrQuotaUninitialized = errors.New("quota usage is not initialized")
 const quotaAlarmReconcileTimeout = 5 * time.Second
 
 var (
-	quotaUsageKey = []byte("quota/usage")
-	quotaAlarmKey = []byte("quota/alarm/nospace")
+	quotaUsageKey      = []byte("quota/usage")
+	quotaTrackingKey   = []byte("quota/tracking")
+	quotaTrackingClean = []byte{1}
+	quotaTrackingDirty = []byte{0}
+	quotaAlarmKey      = []byte("quota/alarm/nospace")
 )
 
 func decodeQuotaUsage(value []byte) (int64, error) {
@@ -83,6 +86,13 @@ func (b *backend) QuotaStatus(ctx context.Context) (usage, quota int64, noSpace 
 	if quota == 0 {
 		return 0, 0, false, nil
 	}
+	tracking, trackingErr := b.InternalGet(ctx, quotaTrackingKey)
+	if trackingErr != nil || !bytes.Equal(tracking, quotaTrackingClean) {
+		if errors.Is(trackingErr, storage.ErrKeyNotFound) || trackingErr == nil {
+			return 0, quota, false, ErrQuotaUninitialized
+		}
+		return 0, quota, false, trackingErr
+	}
 	raw, getErr := b.InternalGet(ctx, quotaUsageKey)
 	switch {
 	case errors.Is(getErr, storage.ErrKeyNotFound):
@@ -109,21 +119,27 @@ func (b *backend) QuotaStatus(ctx context.Context) (usage, quota int64, noSpace 
 
 func (b *backend) EnsureQuotaInitialized(ctx context.Context) error {
 	if b.config.QuotaBackendBytes == 0 {
-		return nil
+		return b.InternalPut(ctx, quotaTrackingKey, quotaTrackingDirty)
 	}
 	b.logicalWriteMu.Lock()
 	defer b.logicalWriteMu.Unlock()
 	ctx = b.withLogicalWriteOwnership(ctx)
 
+	trackingKey := b.ks.EncodeInternalKey(quotaTrackingKey)
 	usageKey := b.ks.EncodeInternalKey(quotaUsageKey)
-	if raw, err := b.kv.Get(ctx, usageKey); err == nil {
-		usage, decodeErr := decodeQuotaUsage(raw)
-		if decodeErr != nil {
-			return decodeErr
+	trackingRaw, trackingErr := b.kv.Get(ctx, trackingKey)
+	if trackingErr == nil && bytes.Equal(trackingRaw, quotaTrackingClean) {
+		if raw, err := b.kv.Get(ctx, usageKey); err == nil {
+			usage, decodeErr := decodeQuotaUsage(raw)
+			if decodeErr != nil {
+				return decodeErr
+			}
+			return b.ensureNoSpaceForUsageLocked(ctx, usage)
+		} else if !errors.Is(err, storage.ErrKeyNotFound) {
+			return err
 		}
-		return b.ensureNoSpaceForUsageLocked(ctx, usage)
-	} else if !errors.Is(err, storage.ErrKeyNotFound) {
-		return err
+	} else if trackingErr != nil && !errors.Is(trackingErr, storage.ErrKeyNotFound) {
+		return trackingErr
 	}
 
 	revision, err := b.safeCurrentRevision(ctx)
@@ -149,19 +165,25 @@ func (b *backend) EnsureQuotaInitialized(ctx context.Context) error {
 	if err := b.fenceAdmit(ctx); err != nil {
 		return err
 	}
+	usageRaw, usageErr := b.kv.Get(ctx, usageKey)
+	if usageErr != nil && !errors.Is(usageErr, storage.ErrKeyNotFound) {
+		return usageErr
+	}
 	batch := b.kv.BeginBatchWrite()
-	batch.PutIfNotExist(usageKey, encodeQuotaUsage(usage), 0)
+	if errors.Is(usageErr, storage.ErrKeyNotFound) {
+		batch.PutIfNotExist(usageKey, encodeQuotaUsage(usage), 0)
+	} else {
+		batch.CAS(usageKey, encodeQuotaUsage(usage), usageRaw, 0)
+	}
+	switch {
+	case errors.Is(trackingErr, storage.ErrKeyNotFound):
+		batch.PutIfNotExist(trackingKey, quotaTrackingClean, 0)
+	default:
+		batch.CAS(trackingKey, quotaTrackingClean, trackingRaw, 0)
+	}
 	err = batch.Commit(ctx)
 	if errors.Is(err, storage.ErrCASFailed) {
-		raw, getErr := b.kv.Get(ctx, usageKey)
-		if getErr != nil {
-			return getErr
-		}
-		actualUsage, decodeErr := decodeQuotaUsage(raw)
-		if decodeErr != nil {
-			return decodeErr
-		}
-		return b.ensureNoSpaceForUsageLocked(ctx, actualUsage)
+		return storage.ErrCASFailed
 	}
 	if errors.Is(err, storage.ErrUncertainResult) {
 		actualUsage, initialized, reconcileErr := b.reconcileQuotaInitialization(ctx, err)
@@ -186,6 +208,28 @@ func (b *backend) reconcileQuotaInitialization(
 	defer cancel()
 	usageKey := b.ks.EncodeInternalKey(quotaUsageKey)
 	for {
+		tracking, trackingErr := b.kv.Get(reconcileCtx, b.ks.EncodeInternalKey(quotaTrackingKey))
+		switch {
+		case errors.Is(trackingErr, storage.ErrKeyNotFound):
+			return 0, false, nil
+		case trackingErr == nil && !bytes.Equal(tracking, quotaTrackingClean):
+			return 0, false, nil
+		case trackingErr != nil && !errors.Is(trackingErr, storage.ErrUnavailable):
+			return 0, false, errors.Join(
+				commitErr,
+				fmt.Errorf("reconcile quota tracking state: %w", trackingErr),
+			)
+		case errors.Is(trackingErr, storage.ErrUnavailable):
+			select {
+			case <-reconcileCtx.Done():
+				return 0, false, errors.Join(
+					commitErr,
+					fmt.Errorf("reconcile quota tracking state: %w", reconcileCtx.Err()),
+				)
+			case <-time.After(50 * time.Millisecond):
+			}
+			continue
+		}
 		raw, getErr := b.kv.Get(reconcileCtx, usageKey)
 		switch {
 		case errors.Is(getErr, storage.ErrKeyNotFound):

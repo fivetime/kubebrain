@@ -415,6 +415,99 @@ func TestQuotaInitializationCountsExistingLiveDataOnce(t *testing.T) {
 	require.Equal(t, int64(len("live")+len("value")+len("later")+len("x")), usage)
 }
 
+func TestQuotaReenableRebuildsUsageDirtyWhileDisabled(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	kv := imemkv.NewKvStorage()
+	defer func() { require.NoError(t, kv.Close()) }()
+	metrics := mock.NewMinimalMetrics(ctrl)
+	ctx := context.Background()
+
+	limited := NewBackend(kv, Config{
+		Prefix:                  prefix,
+		Identity:                getStorageIdentity(),
+		EnableEtcdCompatibility: true,
+		QuotaBackendBytes:       100,
+	}, metrics).(*backend)
+	limited.SetCurrentRevision(uint64(time.Now().UnixNano()))
+	require.NoError(t, limited.EnsureQuotaInitialized(ctx))
+	_, _, err := limited.TxnApply(ctx, []TxnWriteOp{{
+		Key: []byte("a"), Value: []byte("x"),
+	}}, nil)
+	require.NoError(t, err)
+
+	unlimited := NewBackend(kv, Config{
+		Prefix:                  prefix,
+		Identity:                getStorageIdentity(),
+		EnableEtcdCompatibility: true,
+	}, metrics).(*backend)
+	unlimited.SetCurrentRevision(limited.GetCurrentRevision())
+	require.NoError(t, unlimited.EnsureQuotaInitialized(ctx))
+	_, _, err = unlimited.TxnApply(ctx, []TxnWriteOp{{
+		Key: []byte("b"), Value: []byte("y"),
+	}}, nil)
+	require.NoError(t, err)
+
+	stale, err := limited.InternalGet(ctx, quotaUsageKey)
+	require.NoError(t, err)
+	staleUsage, err := decodeQuotaUsage(stale)
+	require.NoError(t, err)
+	require.Equal(t, int64(2), staleUsage, "disabled writes do not maintain quota usage")
+
+	reenabled := NewBackend(kv, Config{
+		Prefix:                  prefix,
+		Identity:                getStorageIdentity(),
+		EnableEtcdCompatibility: true,
+		QuotaBackendBytes:       3,
+	}, metrics).(*backend)
+	reenabled.SetCurrentRevision(unlimited.GetCurrentRevision())
+	_, _, _, err = reenabled.QuotaStatus(ctx)
+	require.ErrorIs(t, err, ErrQuotaUninitialized)
+	require.NoError(t, reenabled.EnsureQuotaInitialized(ctx))
+
+	usage, quota, alarm, err := reenabled.QuotaStatus(ctx)
+	require.NoError(t, err)
+	require.Equal(t, int64(4), usage)
+	require.Equal(t, int64(3), quota)
+	require.True(t, alarm, "rebuilt overage must activate NOSPACE before serving")
+}
+
+func TestQuotaInitializationRebuildsLegacyUsageWithoutTrackingMarker(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	kv := imemkv.NewKvStorage()
+	defer func() { require.NoError(t, kv.Close()) }()
+	metrics := mock.NewMinimalMetrics(ctrl)
+	ctx := context.Background()
+
+	unlimited := NewBackend(kv, Config{
+		Prefix:                  prefix,
+		Identity:                getStorageIdentity(),
+		EnableEtcdCompatibility: true,
+	}, metrics).(*backend)
+	unlimited.SetCurrentRevision(uint64(time.Now().UnixNano()))
+	_, _, err := unlimited.TxnApply(ctx, []TxnWriteOp{{
+		Key: []byte("legacy"), Value: []byte("value"),
+	}}, nil)
+	require.NoError(t, err)
+	require.NoError(t, unlimited.InternalPut(ctx, quotaUsageKey, encodeQuotaUsage(1)))
+	require.NoError(t, unlimited.InternalDelete(ctx, quotaTrackingKey))
+
+	limited := NewBackend(kv, Config{
+		Prefix:                  prefix,
+		Identity:                getStorageIdentity(),
+		EnableEtcdCompatibility: true,
+		QuotaBackendBytes:       100,
+	}, metrics).(*backend)
+	limited.SetCurrentRevision(unlimited.GetCurrentRevision())
+	require.NoError(t, limited.EnsureQuotaInitialized(ctx))
+
+	usage, _, alarm, err := limited.QuotaStatus(ctx)
+	require.NoError(t, err)
+	require.Equal(t, int64(len("legacy")+len("value")), usage)
+	require.False(t, alarm)
+}
+
 func TestQuotaInitializationActivatesNoSpaceForExistingOverage(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
@@ -529,6 +622,7 @@ func TestQuotaInitializationReconcilesCommittedUncertainOverageAlarm(t *testing.
 	}, mock.NewMinimalMetrics(ctrl)).(*backend)
 	b.SetCurrentRevision(uint64(time.Now().UnixNano()))
 	require.NoError(t, b.InternalPut(context.Background(), quotaUsageKey, encodeQuotaUsage(10)))
+	require.NoError(t, b.InternalPut(context.Background(), quotaTrackingKey, quotaTrackingClean))
 
 	store.trigger.Store(true)
 	require.NoError(t, b.EnsureQuotaInitialized(context.Background()))

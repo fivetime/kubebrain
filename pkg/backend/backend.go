@@ -102,9 +102,10 @@ type Backend interface {
 	// QuotaStatus returns tenant-scoped logical usage, configured quota and the
 	// persisted NOSPACE alarm state. A zero quota means enforcement is disabled.
 	QuotaStatus(ctx context.Context) (usage, quota int64, noSpace bool, err error)
-	// EnsureQuotaInitialized atomically records the logical size of all existing
-	// live user keys. It must complete on leadership acquisition before writes
-	// are served when quota enforcement is enabled.
+	// EnsureQuotaInitialized marks quota tracking dirty while enforcement is
+	// disabled, or atomically records the logical size of all existing live user
+	// keys when enabled. It must complete on leadership acquisition before writes
+	// are served.
 	EnsureQuotaInitialized(ctx context.Context) error
 	// ArmNoSpace persistently enables the tenant-wide NOSPACE write cap and
 	// returns the member that owns the existing or newly created alarm. A zero
