@@ -43,7 +43,7 @@ Raft、bbolt 和成员管理内部实现，而是对通用 etcd v3 客户端提�
 | Maintenance | Status | 兼容核心语义 | 返回真实服务身份、版本、leader/revision/共享选主 term；配置 quota 时报告租户最新逻辑 key+value 字节，未配置时使用兼容 sentinel；TiKV 物理容量转到实例指标 |
 | Maintenance | Snapshot | 平台替代 | 使用 TiKV BR/PITR；控制面提供备份、恢复和导出任务，不伪造 etcd snapshot |
 | Maintenance | Defragment | 平台替代 | TiKV GC/compaction 管理，不执行 bbolt 碎片整理 |
-| Maintenance | Alarm/DbSize | 兼容 NOSPACE 核心语义 | keyspace 级逻辑容量原子计量、持久/显式 owner、sticky NOSPACE、list/activate/disarm、跨 endpoint mutation、不确定激活回读、no-op 与 capped write state 已支持；任意虚构 member 的多告警、CORRUPT 与 bbolt fragmentation 仍为边界 |
+| Maintenance | Alarm/DbSize | 兼容 NOSPACE 核心语义 | keyspace 级逻辑容量原子计量、持久/显式 owner、sticky NOSPACE、list/activate/disarm、跨 endpoint mutation、不确定 mutation 回读、no-op 与 capped write state 已支持；任意虚构 member 的多告警、CORRUPT 与 bbolt fragmentation 仍为边界 |
 | Maintenance | Hash/HashKV | 兼容核心语义 | 对指定 revision 的租户 MVCC 实际内容做稳定摘要；成员本地诊断不依赖 KubeBrain leader，数值不与 bbolt 内部编码比较 |
 | Maintenance | MoveLeader/Downgrade | 平台替代 | 分别由服务选主和 DBaaS 升级编排处理 |
 | Endpoint | health/livez/readyz | 兼容核心语义 | `/health`、`/livez`、`/readyz` 及分项检查已对齐；`data_corruption`/`non_learner` 使用 TiKV 架构等价语义，`/ready` 与 `/ping` 为平台探针 |
@@ -6345,6 +6345,39 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   12379/12380 而污染 `pkg/endpoint`，该结果废弃；停止参考服务后 endpoint 单包及
   全量均通过。实现提交 `c872ec81de08155674ffe482427e2b2282f61979`，镜像 ID
   `sha256:c17808cb336e3106811559f96dcb5847d0b941a840a7fdf80dbbcb8e71f19fc4`，
+  OCI revision 与实现提交一致，运行用户为 `65532:65532`。
+
+- **Maintenance A334 uncertain alarm disarm reconciliation（2026-07-20）**：
+  A333 只关闭 activate 的不确定提交；审计 `DisarmNoSpace` 发现其 exact-value CAS
+  若在 TiKV 已提交删除后丢失响应，仍向 root 返回错误，客户端重试时又只得到成功
+  空列表。对照 `/root/etcd/server/etcdserver/apply/backend.go:Alarm` 与
+  `/root/etcd/server/etcdserver/api/v3alarm/alarms.go:Deactivate` 的 Raft apply
+  幂等状态变更，本轮为解除路径增加同样的独立 5 秒线性化回读，不把 caller
+  cancellation 传播到提交结果判定。
+
+  回读以 CAS 前保存的精确 alarm 字节为判据：key 缺失证明旧 alarm 已删除，返回一次
+  removed；值不同且新格式合法，证明旧 alarm 已删除后又被另一 owner 激活，仍返回
+  removed 但保持 `quota.nospace=1`；精确旧值仍在时无法区分未提交与同 owner ABA，
+  保守保留原 `ErrUncertainResult`。短暂 `ErrUnavailable` 每 50ms 重试；畸形替代值、
+  永久读取错误或预算超时与原提交错误聚合，不能伪报成功。
+
+  backend 确定性故障注入覆盖 commit-then-uncertain 后两次 transient read failure、
+  uncommitted-uncertain，以及在回读阻塞窗口中由不同 owner 重激活三种状态。聚焦
+  Arm/Disarm 20 轮、race 10 轮和 server Alarm 10 轮通过；一次并行 backend/server
+  全包运行中 backend 高负载用例失败且输出被截断，单独串行 backend 42.915 秒通过，
+  该并行结果不计入门禁。
+
+  参考 etcd 与使用独立 `a334-uncertain-disarm` keyspace 的真实 TiKV-backed
+  `kubebrain:a334-uncertain-alarm-disarm` 正常 mutation/capped 状态机首轮
+  0.340 秒、连续 20 轮 5.550 秒、race 5 轮 2.641 秒通过；uncertain commit 分支
+  由可控 batch 故障注入证明，不以不可控网络断连猜测提交结果。测试 Pod Ready、
+  restartCount=0，PD/TiKV 3+3 Ready，最终 endpoint proposal health 27.702ms，
+  日志无 panic/fatal/storage error。
+
+  根模块 `go test -p 1 -count=1 ./...`、根/compat `go vet ./...`、
+  `git diff --check` 和完整 production Dockerfile 构建通过。实现提交
+  `a2757e961b31202a15a60fbdc9774d4d1e3f4eca`，镜像 ID
+  `sha256:5f286aab4a660af32506abe680be582dab266edd115b055b188e8937cf7bbe19`，
   OCI revision 与实现提交一致，运行用户为 `65532:65532`。
 
 ### P1：通用服务能力

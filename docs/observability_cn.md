@@ -76,5 +76,6 @@ fragmentation 可报告”，不表示 TiKV 实际占用。
   `Alarm(ACTIVATE, NOSPACE)` 故障注入；NONE mutation 和重复 disarm 为成功空操作，
   raw ACTIVATE 指定的非零 owner member ID 会原样持久化，未指定时使用 backend
   identity 的稳定 ID；owner 跨 serving replica 稳定，任一 endpoint 可使用该 owner
-  解除。激活提交结果不确定时服务端会独立回读确认，错误 owner 不会解除 tenant
-  alarm。CORRUPT 仍无对应语义。
+  解除。激活或解除提交结果不确定时服务端会独立回读确认；解除后若不同 owner 已重新
+  激活，旧 alarm 的解除返回成功但 `quota.nospace` 保持 1，调用方应重新执行
+  `alarm list`。错误 owner 不会解除 tenant alarm。CORRUPT 仍无对应语义。
