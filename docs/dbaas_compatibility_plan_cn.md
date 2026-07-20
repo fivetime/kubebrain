@@ -5633,6 +5633,34 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   port-forward；最终 KubeBrain 3/3 Ready 且 0 restart，PD/TiKV 3+3 Ready。现有
   runtime 已正确，本轮不重建语义相同的镜像。
 
+- **Observability A311 recovered etcd version metrics（2026-07-20）**：对照
+  upstream `/root/etcd` commit `f55d8a061`。该修复在 server `Recover()` 路径恢复
+  `etcd_cluster_version` gauge，避免进程重启后只有内存中的集群版本恢复、对应
+  Prometheus 指标却持续缺失。A300 三副本运行时实测同时缺少
+  `etcd_server_version` 和 `etcd_cluster_version`，因此这不是仅需测试覆盖的等价
+  实现，而是实际可观测性差距。
+
+  KubeBrain 现固定公开 etcd 兼容版本 `3.7.0` 和集群主次版本 `3.7`，并在
+  `New` 完成 lease 恢复后发出 `etcd.server.version` 与
+  `etcd.cluster.version` gauge；Prometheus adapter 最终分别生成
+  `etcd_server_version{cluster="default",server_version="3.7.0"}` 和
+  `etcd_cluster_version{cluster="default",cluster_version="3.7"}`。精确 mock
+  门禁固定 metric 名、label、值及完整版本与主次版本关系：确定性连续 100 轮通过
+  （0.075 秒），race 连续 100 轮通过（1.375 秒），Maintenance status/version
+  组合连续 20 轮通过（0.800 秒），`go vet ./pkg/server/etcd` 通过。
+
+  发布镜像 `kubebrain:a311-version-metrics` 由完整代码提交
+  `6d1717727e968438fbb26f7214d7b8943bd112b5` 构建，本地镜像 digest 为
+  `sha256:e397b0ca246467ea1af2952c765677b78bed721c9a3b38952815765c6dffc739`；
+  首次故意误用短 SHA 的构建被既有 release metadata gate 正确拒绝。三副本
+  StatefulSet 有序滚动后，三个 Pod 均直接抓取到上述两项精确指标，`/version` 返回
+  server/cluster `3.7.0/3.7.0`，etcdctl Status 返回 version/storage version
+  `3.7.0/3.7.0`。确认 `kubebrain-0` 为 follower 后删除并重新创建该 Pod，恢复后的
+  两项指标、member ID 和 follower 身份均保持正确，三个 Pod 最终 Ready 且
+  restartCount=0。生产 release gate 以精确镜像名验证 KubeBrain 3/3、PD/TiKV 3+3
+  和 endpoint proposal health 全部通过，证明版本指标在正常启动和持久状态恢复后
+  都不会丢失。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
