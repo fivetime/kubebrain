@@ -43,7 +43,7 @@ Raft、bbolt 和成员管理内部实现，而是对通用 etcd v3 客户端提�
 | Maintenance | Status | 兼容核心语义 | 返回真实服务身份、版本、leader/revision/共享选主 term；配置 quota 时报告租户最新逻辑 key+value 字节，未配置时使用兼容 sentinel；TiKV 物理容量转到实例指标 |
 | Maintenance | Snapshot | 平台替代 | 使用 TiKV BR/PITR；控制面提供备份、恢复和导出任务，不伪造 etcd snapshot |
 | Maintenance | Defragment | 平台替代 | TiKV GC/compaction 管理，不执行 bbolt 碎片整理 |
-| Maintenance | Alarm/DbSize | 兼容 NOSPACE 核心语义 | keyspace 级逻辑容量原子计量、禁用窗口 dirty 标记与重新启用重建、持久/显式 owner、sticky NOSPACE、list/activate/disarm、跨 endpoint mutation、启动初始化与 mutation 的不确定提交回读、no-op 与 capped write state 已支持；任意虚构 member 的多告警、CORRUPT 与 bbolt fragmentation 仍为边界 |
+| Maintenance | Alarm/DbSize | 兼容 NOSPACE 核心语义 | keyspace 级逻辑容量原子计量、禁用窗口 dirty 标记与重新启用重建、持久/显式 owner、sticky NOSPACE、list/activate/disarm、跨 endpoint 与并发 mutation、启动初始化与 mutation 的不确定提交回读、no-op 与 capped write state 已支持；任意虚构 member 的多告警、CORRUPT 与 bbolt fragmentation 仍为边界 |
 | Maintenance | Hash/HashKV | 兼容核心语义 | 对指定 revision 的租户 MVCC 实际内容做稳定摘要；成员本地诊断不依赖 KubeBrain leader，数值不与 bbolt 内部编码比较 |
 | Maintenance | MoveLeader/Downgrade | 平台替代 | 分别由服务选主和 DBaaS 升级编排处理 |
 | Endpoint | health/livez/readyz | 兼容核心语义 | `/health`、`/livez`、`/readyz` 及分项检查已对齐；`data_corruption`/`non_learner` 使用 TiKV 架构等价语义，`/ready` 与 `/ping` 为平台探针 |
@@ -6481,6 +6481,38 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   实现提交 `1a9fbf54cdab5a729d3c7cbced5635673ccbceda`；production 镜像
   `kubebrain:a337-overquota-disarm` 的 ID 为
   `sha256:7c7963e0dd019e9b568f8f0894d5f737062c7996e28bdeb6b93f76504b998a05`，
+  OCI revision 与实现提交一致，运行用户为 `65532:65532`。
+
+- **Maintenance A338 concurrent alarm disarm idempotency（2026-07-20）**：
+  对照 `/root/etcd/server/etcdserver/api/v3alarm/alarms.go:Deactivate`，upstream
+  在 `AlarmStore.mu` 下串行查询并删除；并发重复解除只有一个请求返回
+  `AlarmMember`，其余成功空列表。KubeBrain 的 `DisarmNoSpace` 为避免错误 owner
+  删除新 alarm，会先读 Status、再读精确 alarm 字节、最后 CAS；若另一请求恰在两次
+  读取之间完成删除，后一个请求此前把 `ErrKeyNotFound` 直接暴露为 RPC 错误，破坏
+  幂等契约。
+
+  现第二次精确读取发现 key 已缺失时，以该读取作为“另一解除已先线性化”的点，更新
+  `quota.nospace=0` 并返回 `(removed=false, nil)`；RPC 因而返回成功空列表。CAS
+  conflict、不同 owner replacement、畸形值、永久读取错误和 uncertain commit 仍沿用
+  A333/A334 的保守分支，不被错误归类为成功删除。
+
+  确定性 storage wrapper 暂停第一个请求的第二次 alarm Get，让另一个请求完成删除后
+  再恢复，修复前稳定得到 `ErrKeyNotFound`；修复后 100 轮和 race 20 轮均为一个
+  removed、一个成功 empty，完整 Arm/Disarm race 10 轮、backend/server 全包、
+  根模块 `go test -p 1 -count=1 ./...`、根模块与
+  `hack/etcd-client-compat` 的 `go vet ./...`、`git diff --check` 均通过。
+
+  真实 3 PD/3 TiKV 使用独立 `a338-concurrent-disarm` keyspace、quota=128：
+  每轮以 200 B value 的被拒 Put 激活 member 1881591022 的 NOSPACE，再由 64 个独立
+  `etcdctl alarm disarm` 并发解除，连续 20 轮共 1280 请求零失败；每轮恰好一个响应
+  返回 removed alarm，累计 20 个 removed、1260 个成功 empty，且每轮最终 list 为空。
+  Pod UID `01a72a34-8059-4a47-af27-419074eb5d94` Ready、restartCount=0，
+  `/readyz?verbose` 全部通过，最终 endpoint proposal health 21.861ms，日志无 quota
+  初始化错误、panic/fatal/storage error，PD/TiKV 3+3 Ready。
+
+  实现提交 `2d0b1566bb2d72963524c1a2f2369b5b612863f9`；production 镜像
+  `kubebrain:a338-concurrent-disarm` 的 ID 为
+  `sha256:abae028e361cd69180a10a5ea7479725ad22402261e152d24f37ba045f557a89`，
   OCI revision 与实现提交一致，运行用户为 `65532:65532`。
 
 ### P1：通用服务能力

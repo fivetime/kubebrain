@@ -27,7 +27,7 @@
 | `endpoint hashkv` | 支持 | 同一 KubeBrain keyspace/同 revision 可比较；数值不与 bbolt hash 比较 |
 | `member list` | 支持（需配置） | 生产必须通过 `--initial-cluster` 注入全部 KubeBrain 副本 |
 | `alarm list` | 支持 | 返回该 keyspace 持久 sticky NOSPACE 及稳定 owner member ID；启动存量超过 quota 时 readiness 前自动恢复/激活；raw ACTIVATE 的非零显式 owner 原样保留；CORRUPT 无对应语义 |
-| `alarm disarm` | 支持 NOSPACE | 可从任一副本解除 list 返回的持久 owner，达到/超过 quota 时也可解除但下一次 Put 会重新激活；错误 owner 和重复解除为空操作；提交结果不确定时回读精确旧 alarm 判定 |
+| `alarm disarm` | 支持 NOSPACE | 可从任一副本解除 list 返回的持久 owner，达到/超过 quota 时也可解除但下一次 Put 会重新激活；错误 owner、重复及并发重复解除为空操作；提交结果不确定时回读精确旧 alarm 判定 |
 | `defrag` | 安全 no-op | 返回成功且不执行 bbolt defrag；TiKV 自身 compaction/GC 由存储平台管理 |
 | `member add/remove/update/promote` | 平台替代 | KubeBrain 副本无本地数据，使用 DBaaS 扩缩或重配置 |
 | `move-leader` | 平台替代 | 使用 DBaaS rollout/failover；数据面选主自动完成 |
