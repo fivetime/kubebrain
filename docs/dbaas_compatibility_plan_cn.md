@@ -40,10 +40,10 @@ Raft、bbolt 和成员管理内部实现，而是对通用 etcd v3 客户端提�
 | Auth | 用户、角色、权限、token | 兼容核心语义 | 管理 API、key-range RBAC、token 生命周期、Watch/Lease 持续鉴权及多副本故障转移已验证 |
 | Cluster | MemberList | 兼容（需配置） | DBaaS 通过 `--initial-cluster` 注入完整 KubeBrain 服务副本；未配置时仅返回本机与 leader 的降级视图，不应启用 AutoSync |
 | Cluster | add/remove/update/promote | 平台替代 | 由 DBaaS 控制面扩缩 KubeBrain、PD、TiKV；RPC 保持明确 Unimplemented |
-| Maintenance | Status | 兼容核心语义 | 返回真实服务身份、版本、leader/revision/共享选主 term；成员本地诊断不依赖 leader read barrier；bbolt 容量与默认 quota 字段使用兼容 sentinel，真实容量转到实例指标 |
+| Maintenance | Status | 兼容核心语义 | 返回真实服务身份、版本、leader/revision/共享选主 term；配置 quota 时报告租户最新逻辑 key+value 字节，未配置时使用兼容 sentinel；TiKV 物理容量转到实例指标 |
 | Maintenance | Snapshot | 平台替代 | 使用 TiKV BR/PITR；控制面提供备份、恢复和导出任务，不伪造 etcd snapshot |
 | Maintenance | Defragment | 平台替代 | TiKV GC/compaction 管理，不执行 bbolt 碎片整理 |
-| Maintenance | Alarm/DbSize | 平台替代 | 用 PD/TiKV 容量、磁盘、region 和配额告警；etcd 专属字段保持可解释值 |
+| Maintenance | Alarm/DbSize | 兼容 NOSPACE 核心语义 | keyspace 级逻辑容量原子计量、持久 NOSPACE、list/disarm 已支持；CORRUPT 与 bbolt fragmentation 仍由平台可观测性替代 |
 | Maintenance | Hash/HashKV | 兼容核心语义 | 对指定 revision 的租户 MVCC 实际内容做稳定摘要；成员本地诊断不依赖 KubeBrain leader，数值不与 bbolt 内部编码比较 |
 | Maintenance | MoveLeader/Downgrade | 平台替代 | 分别由服务选主和 DBaaS 升级编排处理 |
 | Endpoint | health/livez/readyz | 兼容核心语义 | `/health`、`/livez`、`/readyz` 及分项检查已对齐；`data_corruption`/`non_learner` 使用 TiKV 架构等价语义，`/ready` 与 `/ping` 为平台探针 |
@@ -6166,6 +6166,35 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `kubebrain:a320-object-request-metering` production release gate 保持 KubeBrain
   3/3、PD/TiKV 3+3 Ready，endpoint proposal health 39.08ms。A327 未发现服务端
   实现差异，只增加永久 Watch 授权状态机门禁，因此不构建镜像或滚动发布。
+
+- **Capacity A328 tenant logical quota / NOSPACE（2026-07-20）**：新增
+  `--quota-backend-bytes`（默认 0 禁用），按 keyspace 原子计量当前存活用户
+  key+value 逻辑字节。用量元数据与用户 MVCC、event log 在同一 TiKV transaction
+  CAS 提交，因此多副本和换主后保持一致；首次启用由 leader 在 readiness 前独占扫描
+  存量数据并 PutIfNotExist 初始化，初始化失败时 fail closed，不会把存量误算为 0；
+  若存量已超过新上限，readiness 前立即持久激活 NOSPACE。
+
+  正增长超过上限时返回标准 etcd `ResourceExhausted / mvcc: database space exceeded`
+  并持久激活 NOSPACE；拒绝发生在分配 revision 前。告警期间仍允许缩小 value、删除和
+  lease revoke 释放容量，但拒绝 Put/Txn 正增长和 LeaseGrant；用量严格低于 quota 后
+  `Alarm(DEACTIVATE, NOSPACE)` 可解除。`Status` 报告逻辑用量与配置 quota，新增
+  `quota.logical_usage_bytes`、`quota.backend_bytes`、`quota.nospace` 指标。该数字不
+  等同 bbolt 文件或 TiKV 物理磁盘占用，后者继续由 PD/TiKV 指标管理。
+
+  backend 单测覆盖 exact-limit、拒绝不消费 revision、sticky alarm、缩容恢复、禁用
+  行为和存量数据一次性初始化；RPC 单测覆盖 Status、Put/Txn NOSPACE、Alarm
+  list/disarm、Delete 恢复和 LeaseGrant 阻断。聚焦 backend/server race 各 3 轮、
+  根模块 `go test -count=1 ./...`、根/compat `go vet ./...` 和完整生产 Dockerfile
+  构建均通过。
+
+  `kubebrain:a328-tenant-quota` 在独立 `a328-quota` keyspace、真实 3 PD/3 TiKV 上
+  验证：64 B exact-limit 成功，继续增长返回 NOSPACE，alarm list、LeaseGrant 阻断、
+  Delete/disarm/恢复写、usage/quota/nospace 指标均正确；Pod 重建后 11 B 用量、数据
+  和已解除 alarm 状态保持。相同镜像的独立 `a328-compat` keyspace 完整差分套件
+  310.952 秒通过。临时资源已清理；在线
+  `kubebrain:a320-object-request-metering` 保持 3/3 Ready、restartCount=0，
+  PD/TiKV 3+3 Ready，production release gate 与 44.116ms endpoint proposal
+  health 通过。
 
 ### P1：通用服务能力
 

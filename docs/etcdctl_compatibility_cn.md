@@ -23,11 +23,11 @@
 | `auth`、`user *`、`role *` | 支持 | 需实例启用 auth；管理 API、RBAC 和 token 生命周期已覆盖 |
 | `compaction` | 支持 | logical/physical compaction 和历史错误语义已覆盖 |
 | `endpoint health` | 支持 | 执行线性化 proposal；用于 endpoint 发布门禁 |
-| `endpoint status` | 支持 | 真实身份、leader、revision、term；容量字段为 TiKV 架构 sentinel |
+| `endpoint status` | 支持 | 真实身份、leader、revision、term；配置 quota 时返回租户逻辑用量，否则使用兼容 sentinel |
 | `endpoint hashkv` | 支持 | 同一 KubeBrain keyspace/同 revision 可比较；数值不与 bbolt hash 比较 |
 | `member list` | 支持（需配置） | 生产必须通过 `--initial-cluster` 注入全部 KubeBrain 副本 |
-| `alarm list` | 支持 | TiKV 架构没有 etcd NOSPACE/CORRUPT alarm，正常返回空列表 |
-| `alarm disarm` | 条件 no-op/平台替代 | 无 alarm 时 etcdctl 仅 list 后成功；直接 mutation 返回可操作 `Unimplemented` |
+| `alarm list` | 支持 | 返回该 keyspace 持久 NOSPACE；CORRUPT 无对应语义 |
+| `alarm disarm` | 支持 NOSPACE | 用量严格低于 quota 后可解除；其他 alarm mutation 返回 `Unimplemented` |
 | `defrag` | 安全 no-op | 返回成功且不执行 bbolt defrag；TiKV 自身 compaction/GC 由存储平台管理 |
 | `member add/remove/update/promote` | 平台替代 | KubeBrain 副本无本地数据，使用 DBaaS 扩缩或重配置 |
 | `move-leader` | 平台替代 | 使用 DBaaS rollout/failover；数据面选主自动完成 |

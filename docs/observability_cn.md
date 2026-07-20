@@ -55,11 +55,20 @@ KubeBrain 已内置**标准 Prometheus** 指标(真 registry + `promhttp.Handler
   `increase(count_index_rebuild_err[10m]) > 0`。overflow 时应同时提高实例内存规格和
   `--count-index-max-keys`，不能只放大 key cap；重建失败先检查 TiKV scan 错误、PD
   可用性和 leader 切换频率。不要用 `count_index_keys == 0` 告警，followers 正常为 0。
+- **租户逻辑容量**：启用 `--quota-backend-bytes` 后，监控
+  `quota.logical_usage_bytes / quota.backend_bytes`，建议在 80% 和 90% 分级告警；
+  `quota.nospace == 1` 表示已触发持久 NOSPACE。扩容或删除数据使 usage 严格低于
+  quota 后，再执行 `etcdctl alarm disarm`。这些指标统计当前存活 key+value 的逻辑
+  字节，不包含 MVCC 历史、事件日志、lease/auth 元数据和 TiKV 副本开销。
 
-## DbSize 为什么是 1 字节哨兵(而不是真实容量)
+## DbSize 与物理容量
 
-`Maintenance.Status.DbSize`/`DbSizeInUse` **有意返回相等的 1 字节哨兵**。etcd 的 DbSize 之所以重要,是因为 etcd 有硬配额(`--quota-backend-bytes`,超了变只读 NOSPACE)→ 需在撞墙前告警 + defrag。**TiKV 没有单逻辑库 bbolt 配额**,这套语义不适用;合成容量会制造假配额告警。不能返回 0,因为官方 etcdctl 3.7 的 `endpoint status -w table` 会计算 `DbSizeInUse/DbSize` 并除零 panic。1/1 只表达“无 etcd fragmentation 可报告”,不表示实际占用。
+启用 `--quota-backend-bytes` 时，`Maintenance.Status.DbSize`/`DbSizeInUse`
+返回该 keyspace 当前存活 key+value 的逻辑字节，`DbSizeQuota` 返回配置上限。未启用时
+仍返回相等的 1 字节哨兵和 etcd 默认 2 GiB quota 兼容值；1/1 只表达“无 bbolt
+fragmentation 可报告”，不表示 TiKV 实际占用。
 
-- **要字节/磁盘水位** → 抓 **TiKV/PD 自己的 Prometheus 指标**(store size、region count)。
+- **要物理字节/磁盘水位** → 抓 **TiKV/PD 自己的 Prometheus 指标**(store size、region count)。
 - **要对象数** → KubeBrain 的 `count_index.keys`(便宜、现成)。
-- **defrag / Alarm**:no-op(TiKV 自压缩,无 NOSPACE)。
+- **defrag**：安全 no-op，TiKV 自身 compaction/GC 由存储平台管理。
+- **Alarm**：支持配额触发的 NOSPACE list/disarm；CORRUPT 仍无对应语义。
