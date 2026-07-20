@@ -4,10 +4,6 @@ ARG KUBEBRAIN_BUILD_DATE
 
 FROM golang:1.26-bookworm AS build
 
-ARG KUBEBRAIN_VERSION
-ARG KUBEBRAIN_GIT_SHA
-ARG KUBEBRAIN_BUILD_DATE
-
 WORKDIR /src
 ENV CGO_ENABLED=0
 
@@ -19,6 +15,9 @@ RUN cd hack/backup/objectstore && go mod download
 
 COPY . .
 
+ARG KUBEBRAIN_VERSION
+ARG KUBEBRAIN_GIT_SHA
+ARG KUBEBRAIN_BUILD_DATE
 ARG STORAGE=tikv
 RUN test -n "$KUBEBRAIN_VERSION" \
     && test -n "$KUBEBRAIN_GIT_SHA" \
@@ -55,15 +54,6 @@ RUN test -n "$KUBEBRAIN_VERSION" \
 
 FROM alpine:3.23
 
-ARG KUBEBRAIN_VERSION
-ARG KUBEBRAIN_GIT_SHA
-ARG KUBEBRAIN_BUILD_DATE
-
-LABEL org.opencontainers.image.title="KubeBrain" \
-      org.opencontainers.image.version="$KUBEBRAIN_VERSION" \
-      org.opencontainers.image.revision="$KUBEBRAIN_GIT_SHA" \
-      org.opencontainers.image.created="$KUBEBRAIN_BUILD_DATE"
-
 RUN apk add --no-cache bash ca-certificates coreutils curl etcd-ctl jq kubectl openssl \
     && addgroup -S -g 65532 kubebrain \
     && adduser -S -D -H -h /nonexistent -s /sbin/nologin -u 65532 -G kubebrain kubebrain
@@ -92,6 +82,14 @@ COPY --from=build /src/bin/kubebrain-etcd-audit-probe /usr/local/bin/kubebrain-e
 COPY --from=build /src/bin/kubebrain-uid-delete /usr/local/bin/kubebrain-uid-delete
 COPY hack/backup/logical-export.sh hack/backup/logical-status.sh hack/backup/logical-verify.sh /opt/kubebrain/hack/backup/
 COPY hack/production/*.sh /opt/kubebrain/hack/production/
+
+ARG KUBEBRAIN_VERSION
+ARG KUBEBRAIN_GIT_SHA
+ARG KUBEBRAIN_BUILD_DATE
+LABEL org.opencontainers.image.title="KubeBrain" \
+      org.opencontainers.image.version="$KUBEBRAIN_VERSION" \
+      org.opencontainers.image.revision="$KUBEBRAIN_GIT_SHA" \
+      org.opencontainers.image.created="$KUBEBRAIN_BUILD_DATE"
 
 USER 65532:65532
 EXPOSE 3379 3380 8080
