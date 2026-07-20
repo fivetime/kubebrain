@@ -5233,6 +5233,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   GOVERNANCE version 到期后均已按精确 version 清理。archiver 与六类零副本 executor
   模板更新到 A292；主 KubeBrain 3/3、PD/TiKV 3+3、A277 scheduler 2/2 当前均 Ready。
 
+- **Compatibility A293 topology-explicit differential gate（2026-07-20）**：
+  对照 `/root/etcd/server/etcdserver/api/v3rpc/member.go` 的 `MemberList` 代理语义和
+  `/root/etcd/client/v3/cluster.go` 的官方客户端入口，完整差分套件在独立
+  `a293-diff2` TiKV keyspace 上执行。此前 `TestMemberListFlagsDifferentialAgainstReferenceEtcd`
+  把 KubeBrain 成员数硬编码为 3，导致一次性单成员验证拓扑产生假失败，也无法显式证明
+  发布环境使用了预期成员数。现由 `KUBEBRAIN_EXPECTED_MEMBER_COUNT` 声明拓扑，默认仍为
+  生产基线 3；空值、非数字和非正数均失败关闭。一次性隔离实例可显式设为 1，成员响应
+  的 header、leader/local member 和成员字段完整性断言保持不变。修改前全量
+  Differential 在 244.067 秒内完成，除硬编码成员数 `want=3, got=1` 外，已执行的
+  KV/Txn/Watch/Lease/Compact/HashKV/MemberList/namespace/client recipe 场景均通过；
+  修改后 MemberList 定向差分通过，兼容模块全包在真实 TiKV/PD 隔离端点上 82.831 秒
+  通过，成员数解析 race 连续 20 轮通过。未配置端点时全包按默认 `127.0.0.1:3379`
+  失败属于验证命令配置错误，不计入产品结果。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range

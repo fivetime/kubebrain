@@ -704,14 +704,16 @@ hack/dev/verify.sh
   副本 revision cache，但不要求 leader read barrier 成功，可在选主和 leader 故障窗口
   用于 endpoint/hash 排障
 - `Cluster.MemberList` 兼容视图
-- `Auth` service 已注册但显式返回 `Unimplemented`，避免客户端看到 unknown service；KubeBrain 当前不提供 etcd auth/role/user 语义。
+- `Auth` 已实现 etcd 兼容的用户、角色、key-range 权限和 token 生命周期，并覆盖
+  Watch/Lease 持续鉴权及多副本故障转移；生产启用流程见 Auth 设计与兼容性计划。
 
 ## 仍需补齐或确认
 
 - **`Maintenance.Snapshot` 刻意不实现（设计决定，非缺口）。** etcd 的 snapshot API 存在是因为 etcd 是自包含单机 bbolt 库、数据只在自己肚子里；KubeBrain 的数据在 TiKV，备份/DR 由 **TiKV 原生 BR + PITR（日志备份）** 承担，能力全面强于 etcd snapshot（全量+增量、秒级时间点恢复、S3、各 region 并行、TB 级）。把整个 TiKV 数据集通过 etcd 流式 snapshot API 拉成单文件反而是倒退。**备份恢复走 TiKV/PD 侧，不走 etcd snapshot；DR 待办 = 做一次 TiKV BR 全量+PITR 恢复演练，确认恢复后 KubeBrain MVCC 修订号连贯（PD TSO 单调，会推进过任何已恢复修订值）。**
 - 仓库另提供 `hack/backup/logical-export.sh` / `logical-restore.sh` 作为 Kubernetes 对象级**逻辑**备份/恢复演练入口（用于迁移/隔离前缀校验，不保留 etcd revision/lease 语义，非主备份路径）。当前本地已通过 `/registry` 4091 条记录的导出、隔离前缀恢复、计数校验和清理。
 - `MemberAdd`、`MemberRemove`、`MemberUpdate`、`MemberPromote` 不支持，因为 KubeBrain 不是 etcd raft 成员管理模型。
-- etcd Auth user/role/permission 管理不支持；生产访问控制应依赖 client mTLS、网络策略、Kubernetes apiserver 认证授权和运维侧凭据管理。
+- Auth 可用于数据面用户、角色和 key-range 权限控制；生产仍应叠加 client mTLS、
+  网络策略、凭据轮换与运维审计，不把任一单层控制当作完整租户隔离。
 - 通用 etcd v3 `Txn` 语义未完整实现，当前目标仍是 Kubernetes apiserver storage path；已补基础 CAS put、CAS delete、create conflict fallback、无 Compare 顺序执行、基础 Compare 分支执行、基础 range compare、version/create revision compare，但还没有提供完整 etcd 原子事务隔离。
 - 多副本下 `Compact` 后旧 revision 立即读的可见性已通过 leader 转发、不足额 compact 可重试错误、`Compact` 返回前可见性等待，以及历史 revision `Range` 转发 leader 做初步加固；本地 smoke、默认 compact soak、默认 compact fault smoke，以及 **3 副本 TiKV+PD 上的负载中混沌 + 单节点/多节点满载 soak** 已通过；仍需**数天级**长时间并发 compact/list/watch 压测确认长周期行为。
 - 对已有历史数据，若写入发生在 metadata 机制引入前，`CreateRevision/Version` 会回退为 `CreateRevision=ModRevision, Version=1`；生产迁移前需要用真实数据集验证是否存在旧数据兼容影响。

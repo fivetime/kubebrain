@@ -2,8 +2,10 @@ package compat
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -34,6 +36,8 @@ func TestMemberListFlagsDifferentialAgainstReferenceEtcd(t *testing.T) {
 
 	referenceOutcomes, referenceCount := memberListFlagOutcomes(t, reference)
 	kubebrainOutcomes, kubebrainCount := memberListFlagOutcomes(t, compatEndpoint())
+	expectedKubeBrainCount, err := expectedKubeBrainMemberCount()
+	require.NoError(t, err)
 	require.Equal(t, referenceOutcomes, kubebrainOutcomes)
 	require.Equal(t, []memberListFlagOutcome{
 		{
@@ -46,7 +50,44 @@ func TestMemberListFlagsDifferentialAgainstReferenceEtcd(t *testing.T) {
 		},
 	}, kubebrainOutcomes)
 	require.Equal(t, 1, referenceCount)
-	require.Equal(t, 3, kubebrainCount)
+	require.Equal(t, expectedKubeBrainCount, kubebrainCount)
+}
+
+func expectedKubeBrainMemberCount() (int, error) {
+	raw, ok := os.LookupEnv("KUBEBRAIN_EXPECTED_MEMBER_COUNT")
+	return parseExpectedKubeBrainMemberCount(raw, ok)
+}
+
+func parseExpectedKubeBrainMemberCount(raw string, configured bool) (int, error) {
+	const defaultMemberCount = 3
+
+	if !configured {
+		return defaultMemberCount, nil
+	}
+	count, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || count <= 0 {
+		return 0, fmt.Errorf("KUBEBRAIN_EXPECTED_MEMBER_COUNT must be a positive integer, got %q", raw)
+	}
+	return count, nil
+}
+
+func TestExpectedKubeBrainMemberCount(t *testing.T) {
+	t.Run("production default", func(t *testing.T) {
+		count, err := parseExpectedKubeBrainMemberCount("", false)
+		require.NoError(t, err)
+		require.Equal(t, 3, count)
+	})
+	t.Run("disposable topology", func(t *testing.T) {
+		count, err := parseExpectedKubeBrainMemberCount("1", true)
+		require.NoError(t, err)
+		require.Equal(t, 1, count)
+	})
+	for _, value := range []string{"", "0", "-1", "three"} {
+		t.Run("reject "+value, func(t *testing.T) {
+			_, err := parseExpectedKubeBrainMemberCount(value, true)
+			require.Error(t, err)
+		})
+	}
 }
 
 func memberListFlagOutcomes(t *testing.T, endpoint string) ([]memberListFlagOutcome, int) {
