@@ -1006,7 +1006,10 @@ hack/dev/verify.sh
 - `Maintenance.Status`、`Hash`、`HashKV`、`Alarm`、`Defragment`；其中
   Status/Hash/HashKV 与 etcd 一样是成员本地诊断；Hash/HashKV 在 leader 可达时尽力刷新
   副本 revision cache，但不要求 leader read barrier 成功，可在选主和 leader 故障窗口
-  用于 endpoint/hash 排障
+  用于 endpoint/hash 排障。Status 的 `Errors` 与 etcd 一样先报告 no-leader，再追加
+  当前持久 alarm 的 `AlarmMember.String()`；因此 NOSPACE 生效时，每个 KubeBrain
+  副本都会向 `etcdctl endpoint status` 暴露同一 alarm owner，disarm 后同步消失。
+  平台健康检查不能只看 gRPC/HTTP Ready，还必须把非空 Status Errors 视为需处置状态。
 - `Cluster.MemberList` 兼容视图
 - `Auth` 已实现 etcd 兼容的用户、角色、key-range 权限和 token 生命周期，并覆盖
   Watch/Lease 持续鉴权及多副本故障转移；生产启用流程见 Auth 设计与兼容性计划。

@@ -6854,6 +6854,36 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   通过。GitHub 托管 runner 上的 integration 和有 packages 写权限的 multi-arch
   publish 仍须在合并后真实执行，本地证据不能代替该外部发布门禁。
 
+- **Maintenance A351 active alarm visibility in Status（2026-07-20）**：对照
+  `/root/etcd/server/etcdserver/api/v3rpc/maintenance.go` 发现 upstream `Status`
+  会在 no-leader error 之后追加所有 active `AlarmMember.String()`。KubeBrain 已在 TiKV
+  持久化 NOSPACE、支持跨副本 Alarm GET/disarm 并据此拒绝写入，但 Status 只报告
+  no-leader；因此 `etcdctl endpoint status` 和运维控制器可能在写入已被配额封锁时仍把
+  endpoint 判断为无 error。
+
+  提交 `1c78d14` 使 Status 复用同一次 `QuotaStatus` 的 active 标志，仅 active 时读取
+  持久 alarm owner，按 upstream 字符串原样追加；no-leader 保持在前，owner 元数据读取
+  失败则整个 Status 失败，禁止静默假健康。单元测试覆盖 alarm 可见/disarm 消失、
+  no-leader+NOSPACE 顺序及 owner 读取失败。提交 `e2b1009`、`4ef1157` 增加单端点
+  reference 差分和三副本共享可见性测试，并避免由 compat client 的不同 protobuf
+  `String()` 格式重建服务端字符串。
+
+  从 `1c78d14ee32a92f358e05fc615680d246c20f156` 的 `git archive` 构建
+  `kubebrain:a351-status-alarm`，image ID
+  `sha256:c349332c37e9fdbf5ce5acb87e4b1843b44d07c21e214a907426a7ba7574965e`，
+  OCI revision、二进制 SHA、TiKV、Go 1.26.5/linux/amd64 与 `65532:65532` 均匹配。
+  对当前 `/root/etcd` reference 和独立 `a351` TiKV keyspace 执行相同 member ID 的
+  activate/status/disarm/status，连续 10 轮 `Errors` 完全一致。另在独立 `a351-ha`
+  keyspace 启动三 KubeBrain 副本：副本 0 activate 后三个副本 Status 字符串完全一致，
+  副本 2 disarm 后三个均为空，连续 10 轮通过。三副本及单副本 Pod 全部 Ready、
+  restartCount=0，真实 3 PD/3 TiKV 健康，无 initialization failure/panic/fatal/
+  segmentation/data race/storage error。
+
+  聚焦普通 50 轮、race 10 轮、compat 编译、根 `go test -p 1 -count=1 ./...`、根与
+  compat `go vet ./...` 均通过；完整 `go test -race ./pkg/server/etcd -count=1`
+  255.605 秒通过。CORRUPT alarm 仍由 TiKV/PD 数据完整性与 DBaaS 管理面处理，RPC
+  保持明确平台替代；本次只补已实现且会实际阻断写入的 NOSPACE 状态可见性。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
