@@ -6018,6 +6018,31 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   数据面对象请求 charge 至此完成；供应商分类 exporter 与供应商账单周期对账、税率/
   折扣、付款/退款、应收账款、法规发票编号、外部总账及跨账户财务对账仍属 P1。
 
+- **KV A321 空键 namespace 与差分桥接可靠性（2026-07-20）**：继续对照
+  `/root/etcd/tests/integration/v3_kv_test.go:TestKVWithEmptyValue`，新增官方
+  `client/v3/namespace` 双端差分。普通空键 Delete 必须精确返回
+  `InvalidArgument: etcdserver: key is not provided`；同一个空业务键配合
+  `WithFromKey` 经 namespace 前缀转换后则必须能列出并删除该 namespace 内全部
+  对象，且不能越过 64-byte `0xff` 隔离前缀。参考 etcd 3.7 与真实
+  TiKV-backed KubeBrain 的错误 code/message、可见 key、删除数和残留数连续 10 轮
+  一致，race 连续 3 轮通过。本轮未发现数据面实现差异，新增门禁防止后续空键校验
+  错误地发生在 namespace 转换之后。
+
+  全量差分首次使用 clientv3 可接受的 `http://host:port` 参考地址时，暴露共享
+  `tcpBridge` 直接把 URL 交给 `net.DialTimeout`：桥接永远连接失败，
+  Get cancel 用例等待 30 秒，后续 leasing 初始化又在无 context 的
+  `leasing.NewKV` 中等到全套 10 分钟超时。桥接器现统一去除 `http://`/`https://`
+  scheme，并用 bare/http/https 三组单元测试固定 dial target；带 scheme 的 Get
+  cancel、ambiguous leasing 和空键场景分别以 0.36/8.80/0.81 秒通过。完整 suite
+  仍按脚本规定的裸 `host:port`（部分 raw gRPC 测试的显式契约）执行，最终
+  362.817 秒通过。
+
+  根模块 `go test ./...`、根/compat `go vet ./...`、桥接 normalization race
+  连续 10 轮和 `git diff --check` 均通过。在线 StatefulSet 仍运行已提交源码构建的
+  `kubebrain:a320-object-request-metering`，3/3 Ready、restartCount=0；独立 PD/TiKV
+  均 3/3 Ready，production release gate 与 32.08ms endpoint proposal health 通过。
+  A321 仅增强测试代码、未改变数据面运行路径，因此不制造新镜像或无意义滚动发布。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
