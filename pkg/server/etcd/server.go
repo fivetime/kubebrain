@@ -90,6 +90,7 @@ type RPCServer struct {
 	admissionMu          sync.Mutex
 	requestsInFlight     int64
 	requestRateLimiter   *rate.Limiter
+	priorityRateLimiter  *rate.Limiter
 	maxDeleteRangeKeys   uint32
 	maxWatches           uint32
 	watchQuotaMu         sync.Mutex
@@ -107,20 +108,26 @@ func (s *RPCServer) SetClientCertAuth(enabled bool) {
 	s.clientCertAuth = enabled
 }
 
-// SetMaxRequestsInFlight sets the process-wide public client RPC limit. It is
-// configured before serving starts, so readers need no additional lock.
+// SetMaxRequestsInFlight sets the process-wide public client RPC limit. A
+// bounded revoke-only reserve is derived from it. Configuration happens before
+// serving starts, so readers need no additional lock.
 func (s *RPCServer) SetMaxRequestsInFlight(limit uint32) {
 	s.maxRequestsInFlight = limit
 }
 
 // SetRequestRateLimit configures the process-wide public client request-message
-// token bucket. Validation guarantees rate and burst are both zero or positive.
+// token bucket and its bounded revoke-only reserve. Validation guarantees rate
+// and burst are both zero or positive.
 func (s *RPCServer) SetRequestRateLimit(requestsPerSecond, burst uint32) {
 	if requestsPerSecond == 0 {
 		s.requestRateLimiter = nil
+		s.priorityRateLimiter = nil
 		return
 	}
 	s.requestRateLimiter = rate.NewLimiter(rate.Limit(requestsPerSecond), int(burst))
+	priorityRate := priorityAdmissionReserve(requestsPerSecond)
+	priorityBurst := priorityAdmissionReserve(burst)
+	s.priorityRateLimiter = rate.NewLimiter(rate.Limit(priorityRate), int(priorityBurst))
 }
 
 // SetMaxDeleteRangeKeys bounds keys materialized into one atomic DeleteRange.

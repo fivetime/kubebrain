@@ -160,12 +160,20 @@ func (s *RPCServer) acquireRequest(method, kind string) bool {
 	if limit == 0 {
 		return true
 	}
+	admissionLimit := limit
+	if isPriorityAdmissionMethod(method) {
+		admissionLimit += int64(priorityAdmissionReserve(s.maxRequestsInFlight))
+	}
 	s.admissionMu.Lock()
 	defer s.admissionMu.Unlock()
-	if s.requestsInFlight >= limit {
+	if s.requestsInFlight >= admissionLimit {
 		s.metricCli.EmitCounter("grpc.server.admission.rejected", 1,
 			metrics.Tag("method", method), metrics.Tag("kind", kind))
 		return false
+	}
+	if s.requestsInFlight >= limit {
+		s.metricCli.EmitCounter("grpc.server.admission.priority_admitted", 1,
+			metrics.Tag("method", method), metrics.Tag("kind", kind))
 	}
 	s.requestsInFlight++
 	s.metricCli.EmitGauge("grpc.server.admission.inflight", s.requestsInFlight)
@@ -186,9 +194,34 @@ func (s *RPCServer) allowRequestRate(method, kind string) bool {
 	if s.requestRateLimiter.Allow() {
 		return true
 	}
+	if isPriorityAdmissionMethod(method) &&
+		s.priorityRateLimiter != nil &&
+		s.priorityRateLimiter.Allow() {
+		s.metricCli.EmitCounter("grpc.server.rate_limit.priority_admitted", 1,
+			metrics.Tag("method", method), metrics.Tag("kind", kind))
+		return true
+	}
 	s.metricCli.EmitCounter("grpc.server.rate_limit.rejected", 1,
 		metrics.Tag("method", method), metrics.Tag("kind", kind))
 	return false
+}
+
+func isPriorityAdmissionMethod(method string) bool {
+	return method == etcdserverpb.Lease_LeaseRevoke_FullMethodName
+}
+
+// priorityAdmissionReserve is a bounded ten-percent reserve that ordinary
+// traffic cannot consume. At least one revoke remains admissible for any
+// enabled limit, while revokes still fail closed once their reserve is full.
+func priorityAdmissionReserve(limit uint32) uint32 {
+	reserve := limit / 10
+	if limit%10 != 0 {
+		reserve++
+	}
+	if reserve == 0 && limit != 0 {
+		return 1
+	}
+	return reserve
 }
 
 func (s *RPCServer) admitUnary(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {

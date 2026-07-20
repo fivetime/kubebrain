@@ -170,6 +170,55 @@ func TestClientAdmissionDisabledDoesNotTrackRequests(t *testing.T) {
 	require.Zero(t, rpc.requestsInFlight)
 }
 
+func TestLeaseRevokeUsesBoundedInflightReserve(t *testing.T) {
+	rpc, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	rpc.SetMaxRequestsInFlight(10)
+
+	for range 10 {
+		require.True(t, rpc.acquireRequest("/etcdserverpb.KV/Put", "unary"))
+	}
+	require.False(t, rpc.acquireRequest("/etcdserverpb.KV/Range", "unary"),
+		"ordinary traffic must not consume the revoke reserve")
+	require.True(t, rpc.acquireRequest(etcdserverpb.Lease_LeaseRevoke_FullMethodName, "unary"))
+	require.False(t, rpc.acquireRequest(etcdserverpb.Lease_LeaseRevoke_FullMethodName, "unary"),
+		"revoke traffic remains bounded after consuming its reserve")
+
+	for range 11 {
+		rpc.releaseRequest()
+	}
+	require.Zero(t, rpc.requestsInFlight)
+}
+
+func TestLeaseRevokeUsesBoundedRateReserve(t *testing.T) {
+	rpc, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	rpc.SetRequestRateLimit(1, 1)
+
+	require.True(t, rpc.allowRequestRate("/etcdserverpb.KV/Put", "unary"))
+	require.False(t, rpc.allowRequestRate("/etcdserverpb.KV/Range", "unary"),
+		"ordinary traffic must not consume the revoke reserve")
+	require.True(t, rpc.allowRequestRate(etcdserverpb.Lease_LeaseRevoke_FullMethodName, "unary"))
+	require.False(t, rpc.allowRequestRate(etcdserverpb.Lease_LeaseRevoke_FullMethodName, "unary"),
+		"revoke traffic remains bounded after consuming its reserve")
+}
+
+func TestPriorityAdmissionReserveRoundsUpTenPercent(t *testing.T) {
+	for _, test := range []struct {
+		limit uint32
+		want  uint32
+	}{
+		{limit: 0, want: 0},
+		{limit: 1, want: 1},
+		{limit: 9, want: 1},
+		{limit: 10, want: 1},
+		{limit: 11, want: 2},
+		{limit: 1024, want: 103},
+	} {
+		require.Equal(t, test.want, priorityAdmissionReserve(test.limit))
+	}
+}
+
 func TestClientRequireLeaderRejectsUnaryAndStreamWithoutKnownLeader(t *testing.T) {
 	rpc, closeFn := newTestRPCServer(t)
 	defer closeFn()
