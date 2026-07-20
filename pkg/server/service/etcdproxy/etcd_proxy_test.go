@@ -28,6 +28,8 @@ import (
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/health"
+	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/status"
 
 	"github.com/kubewharf/kubebrain/pkg/server/service/leader"
@@ -117,10 +119,18 @@ func TestWaitReadyReturnsUnavailableWhenLeaderConnectionIsNotReady(t *testing.T)
 	require.Less(t, time.Since(start), 4*time.Second)
 }
 
-func TestCheckClientConnUsesTransportReadiness(t *testing.T) {
+func registerServingHealth(server *grpc.Server) *health.Server {
+	healthServer := health.NewServer()
+	healthServer.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
+	healthpb.RegisterHealthServer(server, healthServer)
+	return healthServer
+}
+
+func TestCheckClientConnRequiresServingHealth(t *testing.T) {
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
-	server := grpc.NewServer() // Deliberately exposes no etcd RPC service.
+	server := grpc.NewServer()
+	healthServer := registerServingHealth(server)
 	go func() { _ = server.Serve(lis) }()
 	t.Cleanup(func() {
 		server.Stop()
@@ -131,6 +141,10 @@ func TestCheckClientConnUsesTransportReadiness(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = cli.Close() })
 	require.NoError(t, checkClientConn(cli, nil, 3*time.Second))
+	healthServer.SetServingStatus("", healthpb.HealthCheckResponse_NOT_SERVING)
+	err = checkClientConn(cli, nil, time.Second)
+	require.Equal(t, codes.Unavailable, status.Code(err))
+	require.Contains(t, status.Convert(err).Message(), "NOT_SERVING")
 }
 
 type blockingLeaseServer struct {
@@ -153,6 +167,7 @@ func TestLeaseKeepAliveForwardingTimeoutAndCancellation(t *testing.T) {
 	require.NoError(t, err)
 	blocking := &blockingLeaseServer{received: make(chan int64, 2)}
 	server := grpc.NewServer()
+	registerServingHealth(server)
 	etcdserverpb.RegisterLeaseServer(server, blocking)
 	go func() { _ = server.Serve(lis) }()
 	t.Cleanup(func() {
@@ -230,6 +245,7 @@ func TestCloseStopsLeaderLoopAndClosesClient(t *testing.T) {
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	server := grpc.NewServer()
+	registerServingHealth(server)
 	go func() { _ = server.Serve(lis) }()
 	t.Cleanup(func() {
 		server.Stop()
@@ -259,6 +275,7 @@ func TestUpdateClientRefreshesUnknownLeader(t *testing.T) {
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	server := grpc.NewServer()
+	registerServingHealth(server)
 	go func() { _ = server.Serve(lis) }()
 	t.Cleanup(func() {
 		server.Stop()
@@ -289,6 +306,7 @@ func TestProxyRedialsPreviousLeaderAfterLocalLeadershipLoss(t *testing.T) {
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	server := grpc.NewServer()
+	registerServingHealth(server)
 	go func() { _ = server.Serve(lis) }()
 	t.Cleanup(func() {
 		server.Stop()
@@ -326,6 +344,7 @@ func TestUpdateClientDoesNotTrustLeaderIdentityWithoutClient(t *testing.T) {
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	server := grpc.NewServer()
+	registerServingHealth(server)
 	go func() { _ = server.Serve(lis) }()
 	t.Cleanup(func() {
 		server.Stop()
@@ -352,6 +371,7 @@ func TestReadyRejectsDisconnectedLeaderTransport(t *testing.T) {
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	grpcServer := grpc.NewServer()
+	registerServingHealth(grpcServer)
 	go func() { _ = grpcServer.Serve(lis) }()
 	t.Cleanup(func() { _ = lis.Close() })
 

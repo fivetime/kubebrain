@@ -29,6 +29,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/connectivity"
+	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/status"
 	"k8s.io/klog/v2"
 
@@ -321,23 +322,20 @@ func checkClientConn(client *clientv3.Client, clientErr error, timeout time.Dura
 		return clientErr
 	}
 
-	// grpc.NewClient is lazy and ignores WithBlock. Exercise one cheap RPC to
-	// prove TCP, mTLS, HTTP/2 and service routing. Once auth is enabled the
-	// proxy's own certificate may not map to an auth user; any application-level
-	// rejection still proves the transport is ready because forwarded calls carry
-	// the end user's token separately.
-	_, err := etcdserverpb.NewMaintenanceClient(client.ActiveConnection()).Status(
-		ctx, &etcdserverpb.StatusRequest{},
+	// grpc.NewClient is lazy and ignores WithBlock. The peer listener exposes
+	// the standard health service outside etcd Auth, so this proves TCP, mTLS,
+	// HTTP/2, service routing, and completed server initialization without an
+	// internal privileged token or an unauthenticated Maintenance.Status call.
+	response, err := healthpb.NewHealthClient(client.ActiveConnection()).Check(
+		ctx, &healthpb.HealthCheckRequest{},
 	)
-	if err == nil {
-		return nil
-	}
-	switch status.Code(err) {
-	case codes.Unavailable, codes.DeadlineExceeded, codes.Canceled:
+	if err != nil {
 		return err
-	default:
-		return nil
 	}
+	if response.GetStatus() != healthpb.HealthCheckResponse_SERVING {
+		return status.Errorf(codes.Unavailable, "leader health status is %s", response.GetStatus())
+	}
+	return nil
 }
 
 func (e *etcdProxy) readyClient(ctx context.Context) (*clientv3.Client, string, <-chan struct{}, error) {
