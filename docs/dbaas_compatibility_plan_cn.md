@@ -5417,6 +5417,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   和 signed lease ID 生命周期连续 20 轮 9.198 秒通过。最终 KubeBrain 3/3 Ready、
   0 restart，PD/TiKV 3+3 Running，未遗留 port-forward。
 
+- **Lease A301 explicit-ID generation linearizability（2026-07-20）**：扩展 A40
+  Porcupine lease lifecycle，新增显式 ID 的 Grant、lease-bound Put、Get、
+  TimeToLive、Revoke 和同 ID regrant 代际模型。确定性模型反例要求成功 Revoke
+  原子删除旧 attached key，成功 regrant 必须从无 key 的新代际开始，并拒绝已完成的
+  旧 revoke 删除新代际 key；Grant 的 `lease already exists`、Put/Revoke 的
+  `lease not found` 作为确定性结果，只有 transport/timeout 类错误按可能提交或未提交
+  分叉。client/v3 高层 Grant 不接受显式 ID，门禁通过同一官方 client connection 上的
+  generated `LeaseGrantRequest{ID: ...}` 覆盖真实 wire API。
+
+  模型正反例连续 100 轮、race 连续 50 轮通过；A300 精确运行镜像上的三副本
+  KubeBrain + 独立三 PD/三 TiKV，以 NodePort 直接执行 20 轮无故障历史，共 1000
+  个并发操作全部为 `Ok`。随后删除当前 leader `kubebrain-1`，150 操作历史捕获 26
+  个不确定 RPC（包括 proxy not-ready 和 revision deadline），并观测到恢复后的确定性
+  LeaseExist/LeaseNotFound，完整历史仍为 `Ok`。副本恢复后，旧 lifecycle 与新
+  generation history 组合连续 5 轮 7.735 秒通过。最终 KubeBrain 3/3 Ready、0
+  container restart，PD/TiKV 3+3 Ready，未遗留 port-forward。该门禁未复现运行时
+  兼容性差距，因此 A301 只增加永久正确性证据，不重建与 A300 runtime 相同的镜像。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
@@ -5451,9 +5469,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
    并把表纳入发布说明。
 2. 设计受支持的 transactional TiKV 物理快照/PITR；继续逻辑恢复演练、滚动升级、
    跨可用区故障、磁盘满和长时间 soak。不得用 TiDB BR full/PITR 的成功状态关闭该缺口。
-3. Porcupine 已覆盖无故障 Get/Put/CAS、多键 Txn 原子性和可表达不确定
-   写结果的 KubeBrain Leader/TiKV/PD 故障历史；继续扩展 lease 模型，并在
-   多 store/多 PD 预生产拓扑上做分区和多点故障注入。
+3. Porcupine 已覆盖无故障 Get/Put/CAS、多键 Txn 原子性、lease lifecycle、
+   显式 ID revoke/regrant 代际隔离，以及可表达不确定写结果的 KubeBrain
+   Leader/TiKV/PD 故障历史；继续扩展 lease 自然过期模型，并在多 store/多 PD
+   预生产拓扑上做分区和多点故障注入。
    大规模性能测试不能替代正确性证明。
 
 ## 提交规则
