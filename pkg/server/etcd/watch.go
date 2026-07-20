@@ -310,6 +310,13 @@ func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) error {
 				}
 				continue
 			}
+			watchCtx := ws.Context()
+			if !s.peers.IsLeader() && s.peers.EtcdProxyEnabled() {
+				watchCtx, authErr = s.forwardAuthToken(watchCtx, caller)
+				if authErr != nil {
+					return authErr
+				}
+			}
 			// normal watch request can only be handled by leader
 			if !s.peers.IsLeader() && !s.peers.EtcdProxyEnabled() {
 				s.metricCli.EmitCounter("watch.follower", 1)
@@ -322,7 +329,7 @@ func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) error {
 				r.StartRevision = int64(w.responseRevision()) + 1
 			}
 
-			w.start(ws.Context(), r, uint64(progressStartRevision))
+			w.start(watchCtx, r, uint64(progressStartRevision))
 		} else if cancelRequest := msg.GetCancelRequest(); cancelRequest != nil {
 			if err := w.syncControlRevision(ws.Context()); err != nil {
 				return err

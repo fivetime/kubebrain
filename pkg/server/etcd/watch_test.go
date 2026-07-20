@@ -1480,6 +1480,50 @@ func TestWatchHalfCloseKeepsResponseStreamAlive(t *testing.T) {
 	require.Zero(t, server.activeWatches)
 }
 
+func TestAuthorizedFollowerWatchForwardsAuthToken(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	aliceCtx := setupAuthKVUser(t, server)
+
+	proxyCalled := make(chan struct{})
+	proxyResults := make(chan etcdproxy.WatchResult)
+	close(proxyResults)
+	server.peers = testPeerService{
+		isLeader: false, proxyEnabled: true,
+		watchFn: func(ctx context.Context, key, rangeEnd []byte, revision uint64) (<-chan etcdproxy.WatchResult, error) {
+			md, ok := metadata.FromOutgoingContext(ctx)
+			require.True(t, ok)
+			tokens := md.Get(rpctypes.TokenFieldNameGRPC)
+			require.Len(t, tokens, 1)
+			claims, err := server.tokens.verify(context.Background(), tokens[0])
+			require.NoError(t, err)
+			require.Equal(t, "alice", claims.Username)
+			require.Equal(t, []byte("/allowed/watch"), key)
+			close(proxyCalled)
+			return proxyResults, nil
+		},
+	}
+
+	ctx, cancel := context.WithCancel(aliceCtx)
+	stream := &controllableWatchServer{
+		ctx: ctx, recv: make(chan *etcdserverpb.WatchRequest, 1),
+	}
+	stream.recv <- &etcdserverpb.WatchRequest{RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{
+		CreateRequest: &etcdserverpb.WatchCreateRequest{Key: []byte("/allowed/watch")},
+	}}
+
+	done := make(chan error, 1)
+	go func() { done <- server.Watch(stream) }()
+	select {
+	case <-proxyCalled:
+	case <-time.After(2 * time.Second):
+		require.FailNow(t, "follower watch was not forwarded")
+	}
+
+	cancel()
+	require.ErrorIs(t, <-done, context.Canceled)
+}
+
 // TestQuietWatchProgressAdvancesWhileOtherKeysWritten is the headline repro of
 // the confirmed frozen-progress bug, driven end-to-end through the real
 // RPCServer.Watch pipeline under -race. A ProgressNotify watch on a quiet key
