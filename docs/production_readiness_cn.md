@@ -351,6 +351,10 @@ size，并用远端 `LastModified` 固化 `uploaded_at_unix`；不得使用当�
 非法远端时间戳时不发布 receipt。发布验证必须换用全新本地 receipt 路径再次上传相同
 key，确认 canonical receipt 逐字节一致；这同时保证备份完成 operation 使用稳定的
 receipt SHA，后续 exact-version 删除和 inventory manifest 不会因 Pod 重启绑定不同证据。
+Put 返回非冲突错误也不能假定未提交或盲目重传：工具用不继承原请求取消信号的独立
+30 分钟上限 Head 当前 version；只有 metadata/size 完全一致，且后续精确 version
+LastModified、完整 artifact 下载解析和 retention 全部通过，才确认已提交并发布 receipt。
+当前对象不存在、冲突或任一证明失败时同时保留原 Put 错误并 fail closed。
 
 保留删除必须读取上传 receipt，并使用独立确认令牌：
 
@@ -1147,6 +1151,9 @@ version ID、metadata 和 size，并把该 version 的远端 `LastModified` 固�
 `archived_at_unix`。缺失、非正数或不早于 retain-until 的时间戳均不得发布 receipt。
 发布门禁应删除本地 receipt 后再次运行相同 archive，请求时间可以变化，但两份 canonical
 receipt 必须逐字节相同；只复用同一路径上的已有本地 receipt 不能证明跨 Pod 幂等。
+Put 返回 generic 错误时使用与 backup 相同的独立 30 分钟完整证明链；只有当前对象、
+精确 version metadata、完整审计 artifact 和 Object Lock retention 全部匹配才可恢复。
+该预算覆盖大对象下载，不能缩成只够一次 Head 的管理写对账窗口。
 
 archiver 每轮使用 `--reconcile-timeout=15m`，预算覆盖 inventory/Operation 扫描、最多
 32 个 Object Lock executor 和 finalizer release。deadline 会传入 `CommandContext` 并

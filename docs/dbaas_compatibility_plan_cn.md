@@ -5199,6 +5199,40 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   已清理。archiver 与六类零副本 executor 模板更新到 A291；主 KubeBrain 3/3、
   PD/TiKV 3+3、A277 scheduler 2/2 当前均 Ready。
 
+- **Backup/Audit A292 uncertain conditional Put reconciliation（2026-07-20）**：
+  backup Upload 和 audit ArchiveAudit 过去只对明确 `PreconditionFailed` 做当前对象
+  Head；普通超时、5xx 或响应损坏即使 `If-None-Match: *` Put 已提交也直接失败。参考
+  etcd `client/v3/retry.go` 的 `isSafeRetryMutableRPC`，连接建立后的 mutable write 不能
+  盲重试；条件写的可观察最终状态必须成为提交判断依据。
+
+  两条路径现在对 generic Put 错误建立不继承父取消信号的独立 30 分钟证明预算。先 Head
+  当前 version 并严格匹配 metadata/size，再 Head 精确 version 固化远端 LastModified，
+  下载并解析完整 backup/audit artifact，最后复核 Object Lock mode 和 retain-until；
+  全部通过才发布 receipt。30 分钟而非删除对账的 5 秒，是因为完整逻辑备份可能很大。
+  明确 PreconditionFailed 的既有跨进程恢复仍使用调用 context。当前对象不存在、冲突或
+  任一检查失败时用 `errors.Join` 保留原写错误且不发布 receipt。测试覆盖 Put 提交后
+  取消父 context/丢失响应，以及未提交后的 NotFound；第一次只保护 Head 的实现被测试
+  捕获为后续 exact-version 校验使用 canceled context，修复后整条证明链共享独立预算。
+
+  focused 连续 200 轮、focused race 50 轮、objectstore 全包连续 50 轮、全包 race
+  20 轮、backup/audit/archiver 选择性连续 5 轮 112.416 秒、production 非缓存全量
+  91.730 秒和两侧 vet 均通过。代码提交
+  `0fe9e88f752761f3ae63ff6c742f4c5bcd764b86`。精确提交构建非 root TiKV 镜像
+  `kubebrain:a292-object-write-reconcile`（image ID
+  `sha256:b562f91cf2ef7b65d7fddc2b3b3d71f62def35c7ed2eee77352efa45db420240`）。
+
+  故障代理在 MinIO 成功提交后把两次 Put 响应改为非重试 418。真实 KubeBrain
+  `/registry` revision `467796068338761731` 的 58 条记录、0 lease artifact
+  SHA-256 为 `f34ebd103ba3822158da6d1d3dde4b6318fc05b8d282908e1c332ecf5cb24c33`；
+  backup version `e97a68d1-376c-4727-a5eb-0a98f29af7ed` 在同一调用恢复，receipt
+  SHA-256 为 `67d819e38aabcb444aa0f1b5034d66552a1608aa152775a0919e1976972be464`。
+  654 字节 canonical audit artifact SHA-256 为
+  `99c44665a22f5cdab86b768eae572fde3ec83711ee82bd194f0c449f6b67fbbc`；audit version
+  `0736a581-ddd7-405b-899c-fdd66f496b5c` 同样恢复，receipt SHA-256 为
+  `d082755208f2394924277e3f5001fd479b640e7582890ae351e229b4900429d9`。两个
+  GOVERNANCE version 到期后均已按精确 version 清理。archiver 与六类零副本 executor
+  模板更新到 A292；主 KubeBrain 3/3、PD/TiKV 3+3、A277 scheduler 2/2 当前均 Ready。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
