@@ -6705,6 +6705,34 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   initialization failure/panic/fatal/segmentation/data race/storage error；PD/TiKV
   3+3 Ready。
 
+- **Production A346 pinned runtime package inputs（2026-07-20）**：A345 固定两个
+  base image OCI index 后继续审计构建输入，发现 runtime `apk add` 的八个显式包仍未
+  指定版本。Alpine v3.23 仓库更新会让同一源码和同一 base digest 静默获得不同
+  `kubectl`、`etcdctl`、OpenSSL 或 CA bundle，最终 image digest 虽变化，但源码
+  provenance 不能解释差异。
+
+  Dockerfile 现固定 `bash=5.3.3-r1`、`ca-certificates=20260611-r0`、
+  `coreutils=9.8-r1`、`curl=8.20.0-r0`、`etcd-ctl=3.6.10-r1`、
+  `jq=1.8.1-r0`、`kubectl=1.34.2-r6` 和 `openssl=3.5.7-r0`。构建测试提取
+  `apk add` block，要求包集合与精确版本完全相等，新增或升级必须显式评审；固定
+  Alpine image 上的独立安装探针和最终镜像 `apk list --installed` 均逐项匹配。
+  聚焦测试 20 轮、race 10 轮及根/compat vet 通过。该门禁固定顶层包；长期离线
+  字节级重建仍需受控 APK repository snapshot 或保留最终 digest 镜像。
+
+  从实现提交 `9b38f0690814021c8412c130e1f759002dd2a28c` 的 `git archive` 构建
+  `kubebrain:a346-pinned-runtime-packages`，context 7.345 MB，两个 module
+  COPY/download 均命中缓存，49 个 stage 全部成功。image ID
+  `sha256:ad1ec8f5a0dd350428561934d48338a13d802cc1df64f0edc8c35c169efb81c5`，
+  OCI revision 与二进制 version 均匹配完整提交，版本 3.7.0/TiKV、Go 1.26.5、
+  linux/amd64、运行用户 `65532:65532`。
+
+  该镜像在独立 `a346-pinned-runtime-packages` keyspace、真实 3 PD/3 TiKV 上
+  Ready。Put/Get/Delete `/a346/production-ready` 成功，endpoint proposal health
+  24.116694ms，`/ready` 与四项 readyz 全部通过。Pod UID
+  `40ce1d07-a33f-44b7-b88f-90a733c75e88`、restartCount=0，日志无
+  initialization failure/panic/fatal/segmentation/data race/storage error；PD/TiKV
+  3+3 Ready。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range

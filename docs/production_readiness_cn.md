@@ -85,6 +85,13 @@ runtime-stage 的同名 `ARG` 与 OCI `LABEL` 必须位于 `apk add` 和所有�
 TiKV/PD smoke 全部通过后才能发布。镜像自身使用 digest 部署不能替代基础镜像固定：
 前者保证部署不可变，后者保证同一源码提交可重建到已审计的工具链和根文件系统。
 
+runtime stage 的每个显式 `apk add` 包也必须使用 `name=version-rN` 精确版本；新增包或
+升级版本必须同时更新 Dockerfile 和构建门禁，并用固定 Alpine index 实际安装、再从
+最终镜像 `apk list --installed` 交叉核验。版本从 v3.23 仓库消失时构建应 fail closed，
+不得删除版本约束临时放行。该约束防止顶层工具静默升级，但 Alpine 仓库和传递依赖仍是
+外部输入；需要离线或字节级长期重建时，平台还必须使用受控 APK repository snapshot，
+或把已验证最终镜像按 digest 复制到受保留策略约束的内部 registry。
+
 ## 真-k3s 消费端驱动验证进展（2026-07-03）
 
 用真实 kube-apiserver（k3s v1.36，`--datastore-endpoint` 指向 KubeBrain-on-TiKV）端到端驱动，已完成（脚本 `hack/dev/k3s-load-smoke.sh` 一键复跑）：
