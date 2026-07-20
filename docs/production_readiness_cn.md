@@ -1011,9 +1011,11 @@ hack/dev/verify.sh
   副本都会向 `etcdctl endpoint status` 暴露同一 alarm owner，disarm 后同步消失。
   传统 `/health` 同样先检查 active NOSPACE：生效时返回 503 和
   `{"health":"false","reason":"ALARM NOSPACE"}`；`exclude=NOSPACE` 可显式跳过，
-  `serializable=true` 不跳过 alarm。`/ready`/`readyz` 刻意不因 NOSPACE 摘流，
-  以便客户端继续读取和执行恢复操作。平台健康检查不能只看 gRPC/HTTP Ready，还必须
-  把非空 Status Errors 或失败的传统 `/health` 视为需处置状态。
+  `serializable=true` 不跳过 alarm。成功与失败响应均使用 upstream 的
+  `text/plain; charset=utf-8`；失败响应另带 `X-Content-Type-Options: nosniff`。
+  `/ready`/`readyz` 刻意不因 NOSPACE 摘流，以便客户端继续读取和执行恢复操作。
+  平台健康检查不能只看 gRPC/HTTP Ready，还必须把非空 Status Errors 或失败的传统
+  `/health` 视为需处置状态。
 - `Cluster.MemberList` 兼容视图
 - `Auth` 已实现 etcd 兼容的用户、角色、key-range 权限和 token 生命周期，并覆盖
   Watch/Lease 持续鉴权及多副本故障转移；生产启用流程见 Auth 设计与兼容性计划。

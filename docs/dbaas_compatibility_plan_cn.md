@@ -6913,6 +6913,34 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   10 轮通过；完整根测试、`pkg/server` race 及根/compat vet 通过。CORRUPT 仍由
   TiKV/PD 数据完整性与管理面处理，不能通过 `exclude=CORRUPT` 虚构本地 alarm。
 
+- **Maintenance A353 legacy HTTP health response headers（2026-07-20）**：A352 的
+  双端门禁只比较状态码和响应体，继续审计
+  `/root/etcd/server/etcdserver/api/etcdhttp/health.go` 并以真实 reference HTTP
+  响应确认：成功 `/health` 虽返回 JSON 形状的文本，但媒体类型是
+  `text/plain; charset=utf-8`，且不带 `X-Content-Type-Options`；失败路径经
+  `http.Error` 返回同一媒体类型并带 `nosniff`。KubeBrain 原先复用平台
+  `/ready`/`ping` writer，使成功 `/health` 错报 `application/json`。
+
+  提交 `fe6c0c1` 为 legacy `/health` 分离成功 writer，平台 `/ready` 与 `/ping`
+  继续保持既有 JSON 契约；单元测试固定成功、NOSPACE 失败和 exclude 恢复三类响应头，
+  live differential 对 healthy、active、active+serializable、active+exclude、
+  disarmed 的状态码、响应体、`Content-Type` 和 `X-Content-Type-Options` 全量比较。
+
+  从 `fe6c0c1120cf63cce7161fb84dd74e0f1c9ea6f0` 的 `git archive` 构建
+  `kubebrain:a353-health-headers`，image ID
+  `sha256:55c469b26ecbba8d359ad4d376fcd436119a0852e960973b930e6e7f3ed37875`；
+  OCI revision、版本 `0.0.0-a353`、Go 1.26.5/linux/amd64、TiKV 与
+  `65532:65532` 均匹配。对当前 `/root/etcd` reference 和独立 `a353` keyspace
+  连续 10 轮完整 HTTP 差分通过，告警期 `/ready`、`/readyz?verbose` 仍为 200。
+  Pod UID `3d5433e5-617f-4e41-9919-94948840dce4`，Ready、restartCount=0，
+  只读根文件系统、non-root、drop ALL、RuntimeDefault seccomp；真实 3 PD/3 TiKV
+  全部 Running，日志无 initialization failure/panic/fatal/segmentation/data race/
+  storage error。
+
+  聚焦普通 50 轮、race 10 轮、compat 编译、完整根测试、完整 `pkg/server` race
+  及根/compat vet 均通过。差分现已覆盖 A352 曾遗漏的 HTTP 表示层，后续改变 legacy
+  health writer 会直接触发双端失败。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
