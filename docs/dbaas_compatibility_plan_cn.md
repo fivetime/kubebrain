@@ -7311,6 +7311,31 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   无 initialization failure/panic/fatal/segmentation/data race/storage error。完整根测试、
   根 vet、兼容子模块 vet 和真实 race 均通过。
 
+- **Compatibility A366 HTTP Election Observe auth change（2026-07-20）**：提交
+  `aff0ed7` 增加 upstream 双端差分：已有 Observe 在 role 撤权或用户改密后仍应继续接收
+  Proclaim；使用旧 auth revision、当前无权限或已失效 token 新建 Observe 时，HTTP 契约为
+  200 且空响应体。单副本 TiKV 连续 20 轮和 race 10 轮通过，但首个 A366.1 三副本精确
+  镜像稳定暴露 follower 差异：已有 Observe 以 EOF 关闭，leader 日志为
+  `etcdserver: user name is empty`。
+
+  根因是 Watch create 仅在 ingress follower 本地鉴权，传给 leader proxy 的 context 未携带
+  caller token。提交 `7b92188` 使用既有 `forwardAuthToken` 为该 watch 的首次转发及后续重连
+  保留身份，并增加 follower proxy token 回归测试；leader 只在 watch 建立时鉴权，因此后续
+  撤权/改密不会追溯关闭已建立流，和 etcd 一致。核心包、race、endpoint、全仓 vet 均通过；
+  全仓测试初次运行仅因仍占用 12379/12380 的 reference etcd 被 endpoint 测试误连而失败，
+  清理 reference 后受影响包通过。
+
+  最终 exact image `kubebrain:a366-election-observe-auth` 从 `7b92188` 干净归档构建，image ID
+  `sha256:d91cd0a507c8f0e0133a5dc6ecc2b09c425a8f77e0e03cd8a580e28959f0ede1`，OCI version
+  `0.0.0-a366.2`、revision `7b92188ef9e0f87829ac8f97a6fbdf356ea7dcaf`、Go
+  1.26.5/linux/amd64、TiKV、运行用户 `65532:65532`。真实 3 PD/3 TiKV、三 KubeBrain
+  副本、NodePort 随机 leader/follower 的最终矩阵连续 20 轮 56.12 秒、race 10 轮 28.31 秒
+  通过。Pod UID 为 `629bc0f1-2f64-420b-9c63-7354a934ef48`、
+  `8a4a1615-0196-47a1-948d-0387c50bd33e`、`c9556aa7-903f-40c1-acf1-d0b6a7bf4804`，
+  均 Ready、restartCount=0，runtime digest 一致。负载后无 proxy watch error/panic/fatal/data
+  race；auth 启用时 follower 的 unauthenticated `Maintenance/Status` 健康探测仍产生
+  `user name is empty` 告警，属于后续需消除的内部探测噪声，不影响本轮请求正确性。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range

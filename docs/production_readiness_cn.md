@@ -1064,6 +1064,8 @@ hack/dev/verify.sh
   HTTP Lock/Election dedicated service 同样必须使用调用者 token 校验其生成队列键所在
   prefix；撤销权限应立即影响已签发 token，改密应使旧 token 失效。其 upstream 错误契约
   特殊：HTTP 500、gRPC code 2(Unknown)，消息仍为 permission denied/invalid auth token。
+  Election Observe/底层 Watch 则只在创建时鉴权：follower 转发必须携带 caller token，但
+  已建立流不能因后续撤权或改密被追溯关闭；新建的无权限流按 upstream 返回 HTTP 200 空体。
 
 ## 仍需补齐或确认
 
