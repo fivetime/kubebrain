@@ -23,6 +23,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
@@ -87,6 +88,32 @@ type gatewayElectionServer struct {
 
 type gatewayLeaseServer struct {
 	etcdserverpb.UnimplementedLeaseServer
+}
+
+type gatewayBlockingLockServer struct {
+	v3lockpb.UnimplementedLockServer
+	started  chan struct{}
+	canceled chan struct{}
+}
+
+func (s *gatewayBlockingLockServer) Lock(ctx context.Context, _ *v3lockpb.LockRequest) (*v3lockpb.LockResponse, error) {
+	close(s.started)
+	<-ctx.Done()
+	close(s.canceled)
+	return nil, ctx.Err()
+}
+
+type gatewayBlockingElectionServer struct {
+	v3electionpb.UnimplementedElectionServer
+	started  chan struct{}
+	canceled chan struct{}
+}
+
+func (s *gatewayBlockingElectionServer) Campaign(ctx context.Context, _ *v3electionpb.CampaignRequest) (*v3electionpb.CampaignResponse, error) {
+	close(s.started)
+	<-ctx.Done()
+	close(s.canceled)
+	return nil, ctx.Err()
 }
 
 func (s *gatewayLeaseServer) LeaseKeepAlive(stream etcdserverpb.Lease_LeaseKeepAliveServer) error {
@@ -272,4 +299,58 @@ func TestGRPCGatewayStreamsWatchAndElectionResponses(t *testing.T) {
 	require.JSONEq(t, `{"result":{"header":{"revision":"52"},"ID":"2","TTL":"12"}}`, line)
 	_, err = reader.ReadString('\n')
 	require.ErrorIs(t, err, io.EOF)
+}
+
+func TestGRPCGatewayPropagatesConcurrencyRequestCancellation(t *testing.T) {
+	listener := bufconn.Listen(1024 * 1024)
+	grpcServer := grpc.NewServer()
+	lockServer := &gatewayBlockingLockServer{started: make(chan struct{}), canceled: make(chan struct{})}
+	electionServer := &gatewayBlockingElectionServer{started: make(chan struct{}), canceled: make(chan struct{})}
+	v3lockpb.RegisterLockServer(grpcServer, lockServer)
+	v3electionpb.RegisterElectionServer(grpcServer, electionServer)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///bufnet",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return listener.Dial() }),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	handler, err := newGRPCGatewayMux(context.Background(), conn)
+	require.NoError(t, err)
+	httpServer := httptest.NewServer(handler)
+	t.Cleanup(httpServer.Close)
+
+	assertCanceled := func(path, body string, started, canceled <-chan struct{}) {
+		t.Helper()
+		ctx, cancel := context.WithCancel(context.Background())
+		request, err := http.NewRequestWithContext(ctx, http.MethodPost, httpServer.URL+path, strings.NewReader(body))
+		require.NoError(t, err)
+		request.Header.Set("Content-Type", "application/json")
+		done := make(chan error, 1)
+		go func() {
+			response, requestErr := http.DefaultClient.Do(request)
+			if response != nil {
+				response.Body.Close()
+			}
+			done <- requestErr
+		}()
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			require.FailNow(t, "gRPC handler did not start", path)
+		}
+		cancel()
+		require.ErrorIs(t, <-done, context.Canceled)
+		select {
+		case <-canceled:
+		case <-time.After(time.Second):
+			require.FailNow(t, "gRPC handler did not observe cancellation", path)
+		}
+	}
+
+	assertCanceled("/v3/lock/lock", `{"name":"bG9jaw==","lease":"1"}`, lockServer.started, lockServer.canceled)
+	assertCanceled("/v3/election/campaign", `{"name":"ZWxlY3Rpb24=","lease":"2","value":"dmFsdWU="}`,
+		electionServer.started, electionServer.canceled)
 }
