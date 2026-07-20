@@ -101,6 +101,83 @@ func TestCompactAsyncAdvancesWatermarkSyncThenGCsInBackground(t *testing.T) {
 	require.Equal(t, "v6", string(StripInlineValue(got.Kv.Value)))
 }
 
+func TestCompactAsyncFullScanPreservesSkippedPrefixVersions(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	m := mock.NewMinimalMetrics(ctrl)
+	kv := imemkv.NewKvStorage()
+	defer func() { require.NoError(t, kv.Close()) }()
+
+	skippedPrefix := prefix + "/skip-gc/excluded"
+	b := NewBackend(kv, Config{
+		Prefix:                  prefix,
+		Identity:                getStorageIdentity(),
+		EnableEtcdCompatibility: true,
+		SkippedPrefixes:         []string{skippedPrefix},
+	}, m).(*backend)
+	b.SetCurrentRevision(uint64(time.Now().UnixNano()))
+	ctx := context.Background()
+
+	includedKey := []byte(prefix + "/skip-gc/included/key")
+	excludedKey := []byte(skippedPrefix + "/key")
+	writeVersions := func(key []byte) uint64 {
+		created, err := b.Create(ctx, &proto.CreateRequest{Key: key, Value: []byte("v1")})
+		require.NoError(t, err)
+		last := created.Header.Revision
+		for i := 2; i <= 4; i++ {
+			updated, err := b.Update(ctx, &proto.UpdateRequest{
+				Kv: &proto.KeyValue{
+					Key:      key,
+					Value:    []byte(fmt.Sprintf("v%d", i)),
+					Revision: last,
+				},
+			})
+			require.NoError(t, err)
+			require.True(t, updated.Succeeded)
+			last = updated.Header.Revision
+		}
+		return last
+	}
+	includedRevision := writeVersions(includedKey)
+	excludedRevision := writeVersions(excludedKey)
+	target := max(includedRevision, excludedRevision)
+	require.Eventually(t, func() bool { return b.GetCurrentRevision() >= target }, 5*time.Second, 2*time.Millisecond)
+
+	countVersions := func(key []byte) int {
+		iter, err := b.kv.Iter(ctx, b.coder.EncodeObjectKey(key, ^uint64(0)), b.coder.EncodeObjectKey(key, 0), 0, 0)
+		require.NoError(t, err)
+		defer iter.Close()
+		count := 0
+		for {
+			if err := iter.Next(ctx); err != nil {
+				if err == io.EOF {
+					return count
+				}
+				require.NoError(t, err)
+			}
+			if _, revision, decodeErr := b.coder.Decode(iter.Key()); decodeErr == nil && revision != 0 {
+				count++
+			}
+		}
+	}
+	require.Equal(t, 4, countVersions(includedKey))
+	require.Equal(t, 4, countVersions(excludedKey))
+
+	// Force this compaction through the periodic full-keyspace scanner. The
+	// incremental path has an independent skipped-key filter.
+	b.incrementalStreak = incrementalCompactMaxStreak
+	compactedRevision, err := b.CompactAsync(ctx, target)
+	require.NoError(t, err)
+	require.Equal(t, target, compactedRevision)
+	require.Eventually(t, func() bool {
+		return atomic.LoadUint64(&b.compactDoneRev) >= target
+	}, 5*time.Second, 5*time.Millisecond)
+
+	require.Equal(t, 1, countVersions(includedKey))
+	require.Equal(t, 4, countVersions(excludedKey),
+		"full-scan physical compaction must not enter a configured carve-out")
+}
+
 // TestCompactAsyncCoalescesConcurrentRequests drives many overlapping
 // CompactAsync calls and asserts they all resolve (no deadlock, monotonic
 // watermark, background GC still converges).
