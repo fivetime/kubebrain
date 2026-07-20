@@ -56,7 +56,7 @@ func (p *Publisher) Publish(ctx context.Context) (CatalogStatus, []byte, error) 
 	output, err := p.Run(ctx, p.Executor, []string{
 		"ACTION=blob",
 		"INPUT=" + p.Input,
-		"ARTIFACT_FORMAT=" + CatalogFormat,
+		"ARTIFACT_FORMAT=" + status.Catalog.Format,
 		"ARTIFACT_ID=" + status.Catalog.Version,
 		"INSTANCE=" + p.PriceScope,
 		"OBJECT_STORE_ID=" + p.ObjectStoreID,
@@ -73,7 +73,7 @@ func (p *Publisher) Publish(ctx context.Context) (CatalogStatus, []byte, error) 
 		)
 	}
 	if _, err := parseBlobReceipt(
-		output, CatalogFormat, status.Catalog.Version, p.PriceScope, p.ObjectStoreID,
+		output, status.Catalog.Format, status.Catalog.Version, p.PriceScope, p.ObjectStoreID,
 		p.Bucket, objectKey, retainUntil.Unix(), status.SHA256, status.Bytes,
 	); err != nil {
 		return CatalogStatus{}, output, err

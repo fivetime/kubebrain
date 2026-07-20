@@ -15,7 +15,9 @@ import (
 )
 
 const CatalogFormat = "kubebrain.metering-price-catalog.v1"
+const CatalogFormatV2 = "kubebrain.metering-price-catalog.v2"
 const MeasurementPolicy = "kubebrain.metering-rollup.v2"
+const MeasurementPolicyV2 = "kubebrain.metering-rollup.v2+object-storage-rollup.v1"
 
 var versionPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`)
 var currencyPattern = regexp.MustCompile(`^[A-Z]{3}$`)
@@ -56,15 +58,24 @@ var pricedQuantities = []struct {
 	{"storage_used_byte_seconds", "byte_seconds"},
 }
 
+var pricedQuantitiesV2 = append(append([]struct {
+	name string
+	unit string
+}{}, pricedQuantities...), struct {
+	name string
+	unit string
+}{"object_storage_byte_seconds", "byte_seconds"})
+
 func (c Catalog) Validate() error {
-	if c.Format != CatalogFormat || !versionPattern.MatchString(c.Version) ||
+	definitions, policy, ok := catalogDefinitions(c.Format)
+	if !ok || !versionPattern.MatchString(c.Version) ||
 		!currencyPattern.MatchString(c.Currency) || c.EffectiveStartUnix <= 0 ||
 		c.EffectiveEndUnix <= c.EffectiveStartUnix ||
-		c.MeasurementPolicy != MeasurementPolicy || len(c.Rates) != len(pricedQuantities) {
+		c.MeasurementPolicy != policy || len(c.Rates) != len(definitions) {
 		return errors.New("metering price catalog is incomplete")
 	}
 	for i, rate := range c.Rates {
-		expected := pricedQuantities[i]
+		expected := definitions[i]
 		if rate.Name != expected.name || rate.Unit != expected.unit ||
 			!decimalPattern.MatchString(rate.UnitPrice) {
 			return errors.New("metering price catalog contains an invalid rate")
@@ -75,6 +86,20 @@ func (c Catalog) Validate() error {
 		}
 	}
 	return nil
+}
+
+func catalogDefinitions(format string) ([]struct {
+	name string
+	unit string
+}, string, bool) {
+	switch format {
+	case CatalogFormat:
+		return pricedQuantities, MeasurementPolicy, true
+	case CatalogFormatV2:
+		return pricedQuantitiesV2, MeasurementPolicyV2, true
+	default:
+		return nil, "", false
+	}
 }
 
 func ReadCatalog(path string) (CatalogStatus, error) {

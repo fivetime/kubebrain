@@ -1069,6 +1069,8 @@ func TestMeteringChargeCronJobPinsApprovedImmutablePriceVersion(t *testing.T) {
 	objects := decodeManifest(t, "kubebrain-metering-charge.yaml")
 	policy := objectByKindAndName(t, objects, "ConfigMap", "kubebrain-metering-price-policy")
 	require.Equal(t, "global", nestedString(t, policy, "data", "price-scope"))
+	require.Equal(t, "kubebrain.metering-price-catalog.v2",
+		nestedString(t, policy, "data", "price-catalog-format"))
 	require.Equal(t, "replace-with-approved-version", nestedString(t, policy, "data", "price-version"))
 
 	job := objectByKindAndName(t, objects, "CronJob", "kubebrain-metering-charge")
@@ -1097,7 +1099,9 @@ func TestMeteringChargeCronJobPinsApprovedImmutablePriceVersion(t *testing.T) {
 		"--instance=kubebrain",
 		"--price-scope=$(PRICE_SCOPE)",
 		"--price-version=$(PRICE_VERSION)",
+		"--price-catalog-format=$(PRICE_CATALOG_FORMAT)",
 		"--rollup-prefix=metering-rollups",
+		"--storage-rollup-prefix=metering-storage-rollups",
 		"--price-prefix=metering-prices",
 		"--charge-prefix=metering-charges",
 		"--retention-mode=COMPLIANCE",
@@ -1114,7 +1118,7 @@ func TestMeteringChargeCronJobPinsApprovedImmutablePriceVersion(t *testing.T) {
 	for _, raw := range env {
 		entry := &unstructured.Unstructured{Object: raw.(map[string]any)}
 		name := nestedString(t, entry, "name")
-		if name == "PRICE_SCOPE" || name == "PRICE_VERSION" {
+		if name == "PRICE_SCOPE" || name == "PRICE_VERSION" || name == "PRICE_CATALOG_FORMAT" {
 			require.Equal(t, "kubebrain-metering-price-policy",
 				nestedString(t, entry, "valueFrom", "configMapKeyRef", "name"))
 			continue
@@ -1132,6 +1136,52 @@ func TestMeteringChargeCronJobPinsApprovedImmutablePriceVersion(t *testing.T) {
 		"go build -trimpath -o /src/bin/kubebrain-metering-price-publish ./hack/production/cmd/metering-price-publish")
 	require.Contains(t, string(dockerfile),
 		"COPY --from=build /src/bin/kubebrain-metering-price-publish /usr/local/bin/kubebrain-metering-price-publish")
+}
+
+func TestObjectStorageMeteringUsesSeparatedSourceAndEvidenceCredentials(t *testing.T) {
+	objects := decodeManifest(t, "kubebrain-metering-storage.yaml")
+	archive := objectByKindAndName(t, objects, "CronJob", "kubebrain-metering-storage-archive")
+	rollup := objectByKindAndName(t, objects, "CronJob", "kubebrain-metering-storage-rollup")
+	require.Equal(t, "27 * * * *", nestedString(t, archive, "spec", "schedule"))
+	require.Equal(t, "57 0 * * *", nestedString(t, rollup, "spec", "schedule"))
+	for _, job := range []*unstructured.Unstructured{archive, rollup} {
+		require.Equal(t, "Etc/UTC", nestedString(t, job, "spec", "timeZone"))
+		require.Equal(t, "Forbid", nestedString(t, job, "spec", "concurrencyPolicy"))
+		require.False(t, nestedBool(t, job,
+			"spec", "jobTemplate", "spec", "template", "spec", "automountServiceAccountToken"))
+		containerValues, found, err := unstructured.NestedSlice(
+			job.Object, "spec", "jobTemplate", "spec", "template", "spec", "containers",
+		)
+		require.NoError(t, err)
+		require.True(t, found)
+		require.Len(t, containerValues, 1)
+		container := &unstructured.Unstructured{Object: containerValues[0].(map[string]any)}
+		require.True(t, nestedBool(t, container, "securityContext", "readOnlyRootFilesystem"))
+		require.False(t, nestedBool(t, container, "securityContext", "allowPrivilegeEscalation"))
+	}
+	containers, _, _ := unstructured.NestedSlice(
+		archive.Object, "spec", "jobTemplate", "spec", "template", "spec", "containers",
+	)
+	env, _, _ := unstructured.NestedSlice(containers[0].(map[string]any), "env")
+	secrets := map[string]string{}
+	for _, raw := range env {
+		entry := &unstructured.Unstructured{Object: raw.(map[string]any)}
+		name := nestedString(t, entry, "name")
+		if strings.HasPrefix(name, "SOURCE_") && name != "SOURCE_PREFIX" {
+			secrets[name] = nestedString(t, entry, "valueFrom", "secretKeyRef", "name")
+		}
+		if strings.HasPrefix(name, "METERING_") {
+			secrets[name] = nestedString(t, entry, "valueFrom", "secretKeyRef", "name")
+		}
+	}
+	require.Equal(t, "kubebrain-metering-storage-source", secrets["SOURCE_AWS_ACCESS_KEY_ID"])
+	require.Equal(t, "kubebrain-metering-storage-evidence", secrets["METERING_AWS_ACCESS_KEY_ID"])
+	require.NotEqual(t, secrets["SOURCE_AWS_ACCESS_KEY_ID"], secrets["METERING_AWS_ACCESS_KEY_ID"])
+
+	dockerfile, err := os.ReadFile("../../Dockerfile")
+	require.NoError(t, err)
+	require.Contains(t, string(dockerfile), "kubebrain-metering-storage-archive")
+	require.Contains(t, string(dockerfile), "kubebrain-metering-storage-rollup")
 }
 
 func expectedInitialCluster(scheme string) string {

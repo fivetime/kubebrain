@@ -126,8 +126,22 @@ func main() {
 			log.Fatal(err)
 		}
 		_ = json.NewEncoder(os.Stdout).Encode(receipt)
+	case "usage":
+		var allowedFormats []string
+		if err := json.Unmarshal([]byte(os.Getenv("ALLOWED_FORMATS_JSON")), &allowedFormats); err != nil {
+			log.Fatal("ALLOWED_FORMATS_JSON must be a JSON string array")
+		}
+		receipt, err := objectstore.MeasureUsage(ctx, client, objectstore.UsageRequest{
+			ObjectStoreID: os.Getenv("OBJECT_STORE_ID"), Bucket: os.Getenv("S3_BUCKET"),
+			Prefix: os.Getenv("USAGE_PREFIX"), AllowedFormats: allowedFormats,
+			ReceiptOutput: os.Getenv("RECEIPT_OUTPUT"),
+		})
+		if err != nil {
+			log.Fatal(err)
+		}
+		_ = json.NewEncoder(os.Stdout).Encode(receipt)
 	default:
-		log.Fatal("ACTION must be upload, delete, archive, blob, blob-read, manifest, or inventory")
+		log.Fatal("ACTION must be upload, delete, archive, blob, blob-read, manifest, inventory, or usage")
 	}
 }
 

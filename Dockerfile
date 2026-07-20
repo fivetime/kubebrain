@@ -38,6 +38,8 @@ RUN test -n "$KUBEBRAIN_VERSION" \
     && go build -trimpath -o /src/bin/kubebrain-metering-rollup ./hack/production/cmd/metering-rollup \
     && go build -trimpath -o /src/bin/kubebrain-metering-charge ./hack/production/cmd/metering-charge \
     && go build -trimpath -o /src/bin/kubebrain-metering-price-publish ./hack/production/cmd/metering-price-publish \
+    && go build -trimpath -o /src/bin/kubebrain-metering-storage-archive ./hack/production/cmd/metering-storage-archive \
+    && go build -trimpath -o /src/bin/kubebrain-metering-storage-rollup ./hack/production/cmd/metering-storage-rollup \
     && go build -trimpath -o /src/bin/kubebrain-logical-export ./hack/backup/cmd/logical-export \
     && go build -trimpath -o /src/bin/kubebrain-logical-status ./hack/backup/cmd/logical-status \
     && go build -trimpath -o /src/bin/kubebrain-logical-verify ./hack/backup/cmd/logical-verify \
@@ -73,6 +75,8 @@ COPY --from=build /src/bin/kubebrain-metering-archive /usr/local/bin/kubebrain-m
 COPY --from=build /src/bin/kubebrain-metering-rollup /usr/local/bin/kubebrain-metering-rollup
 COPY --from=build /src/bin/kubebrain-metering-charge /usr/local/bin/kubebrain-metering-charge
 COPY --from=build /src/bin/kubebrain-metering-price-publish /usr/local/bin/kubebrain-metering-price-publish
+COPY --from=build /src/bin/kubebrain-metering-storage-archive /usr/local/bin/kubebrain-metering-storage-archive
+COPY --from=build /src/bin/kubebrain-metering-storage-rollup /usr/local/bin/kubebrain-metering-storage-rollup
 COPY --from=build /src/bin/kubebrain-logical-object /usr/local/bin/kubebrain-logical-object
 COPY --from=build /src/bin/kubebrain-logical-export /usr/local/bin/kubebrain-logical-export
 COPY --from=build /src/bin/kubebrain-logical-status /usr/local/bin/kubebrain-logical-status

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/kubewharf/kubebrain/hack/production/internal/meteringarchive"
+	"github.com/kubewharf/kubebrain/hack/production/internal/meteringstorage"
 	"github.com/stretchr/testify/require"
 )
 
@@ -98,6 +99,59 @@ func TestBillerFailsBeforeChargeOnMissingCatalogAndRejectsFuturePeriod(t *testin
 	biller.PeriodEnd = time.Date(2026, 7, 21, 0, 0, 0, 0, time.UTC)
 	_, _, err = biller.Process(context.Background())
 	require.ErrorContains(t, err, "not eligible")
+}
+
+func TestBillerV2RequiresExactStorageRollup(t *testing.T) {
+	now := time.Date(2026, 7, 21, 1, 17, 0, 0, time.UTC)
+	start := time.Date(2026, 7, 20, 0, 0, 0, 0, time.UTC)
+	biller := validBiller(now)
+	biller.PriceVersion = "price-storage-2026-07"
+	biller.PriceCatalogFormat = CatalogFormatV2
+	biller.StorageRollupPrefix = "metering-storage-rollups"
+	calls := 0
+	biller.Run = func(_ context.Context, _ string, environment []string) ([]byte, error) {
+		calls++
+		values := envMap(environment)
+		switch values["ACTION"] {
+		case "blob-read":
+			switch values["ARTIFACT_FORMAT"] {
+			case meteringarchive.RollupFormat:
+				status, err := meteringarchive.WriteRollupAtomic(values["OUTPUT"], validRollupForPeriod(start))
+				require.NoError(t, err)
+				return readReceiptJSON(t, values, status.SHA256, status.Bytes)
+			case CatalogFormatV2:
+				status, err := WriteCatalogAtomic(values["OUTPUT"], validCatalogV2ForPeriod())
+				require.NoError(t, err)
+				return readReceiptJSON(t, values, status.SHA256, status.Bytes)
+			case meteringstorage.RollupFormat:
+				status, err := meteringstorage.WriteRollupAtomic(values["OUTPUT"], validStorageRollup(start))
+				require.NoError(t, err)
+				return readReceiptJSON(t, values, status.SHA256, status.Bytes)
+			}
+		case "blob":
+			artifact, err := os.ReadFile(values["INPUT"])
+			require.NoError(t, err)
+			sum := sha256.Sum256(artifact)
+			retainUntil, err := strconv.ParseInt(values["RETAIN_UNTIL_UNIX"], 10, 64)
+			require.NoError(t, err)
+			return json.Marshal(map[string]any{
+				"format":          "kubebrain.object-immutable-blob.receipt.v1",
+				"artifact_format": ChargeFormatV2, "artifact_id": values["ARTIFACT_ID"],
+				"instance": "instance-a", "object_store_id": "store-a", "bucket": "metering",
+				"object_key": values["S3_OBJECT_KEY"], "version_id": "charge-v2",
+				"artifact_sha256": hex.EncodeToString(sum[:]), "object_bytes": len(artifact),
+				"retention_mode": "COMPLIANCE", "retain_until_unix": retainUntil,
+				"remote_verified": true, "archived_at_unix": now.Unix(),
+			})
+		}
+		t.Fatalf("unexpected action or format: %v", values)
+		return nil, nil
+	}
+	charge, _, err := biller.Process(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, ChargeFormatV2, charge.Format)
+	require.Equal(t, 4, calls)
+	require.NotNil(t, charge.StorageRollupSource)
 }
 
 func validBiller(now time.Time) *Biller {

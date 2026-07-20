@@ -13,9 +13,11 @@ import (
 	"strconv"
 
 	"github.com/kubewharf/kubebrain/hack/production/internal/meteringarchive"
+	"github.com/kubewharf/kubebrain/hack/production/internal/meteringstorage"
 )
 
 const ChargeFormat = "kubebrain.metering-charge.v1"
+const ChargeFormatV2 = "kubebrain.metering-charge.v2"
 const RoundingPolicy = "half_even_to_currency_micro.v1"
 
 type Source struct {
@@ -37,17 +39,18 @@ type Line struct {
 }
 
 type Charge struct {
-	Format          string `json:"format"`
-	Instance        string `json:"instance"`
-	PeriodStartUnix int64  `json:"period_start_unix"`
-	PeriodEndUnix   int64  `json:"period_end_unix"`
-	Currency        string `json:"currency"`
-	PriceVersion    string `json:"price_version"`
-	RoundingPolicy  string `json:"rounding_policy"`
-	RollupSource    Source `json:"rollup_source"`
-	CatalogSource   Source `json:"catalog_source"`
-	Lines           []Line `json:"lines"`
-	TotalMicros     int64  `json:"total_micros"`
+	Format              string  `json:"format"`
+	Instance            string  `json:"instance"`
+	PeriodStartUnix     int64   `json:"period_start_unix"`
+	PeriodEndUnix       int64   `json:"period_end_unix"`
+	Currency            string  `json:"currency"`
+	PriceVersion        string  `json:"price_version"`
+	RoundingPolicy      string  `json:"rounding_policy"`
+	RollupSource        Source  `json:"rollup_source"`
+	StorageRollupSource *Source `json:"storage_rollup_source,omitempty"`
+	CatalogSource       Source  `json:"catalog_source"`
+	Lines               []Line  `json:"lines"`
+	TotalMicros         int64   `json:"total_micros"`
 }
 
 type ChargeStatus struct {
@@ -62,11 +65,53 @@ func BuildCharge(
 	catalog Catalog,
 	catalogSource Source,
 ) (Charge, error) {
+	return buildCharge(rollup, rollupSource, nil, nil, catalog, catalogSource)
+}
+
+func BuildChargeV2(
+	rollup meteringarchive.Rollup,
+	rollupSource Source,
+	storageRollup meteringstorage.Rollup,
+	storageRollupSource Source,
+	catalog Catalog,
+	catalogSource Source,
+) (Charge, error) {
+	return buildCharge(
+		rollup, rollupSource, &storageRollup, &storageRollupSource, catalog, catalogSource,
+	)
+}
+
+func buildCharge(
+	rollup meteringarchive.Rollup,
+	rollupSource Source,
+	storageRollup *meteringstorage.Rollup,
+	storageRollupSource *Source,
+	catalog Catalog,
+	catalogSource Source,
+) (Charge, error) {
 	if err := rollup.Validate(); err != nil {
 		return Charge{}, err
 	}
 	if err := catalog.Validate(); err != nil {
 		return Charge{}, err
+	}
+	definitions, _, _ := catalogDefinitions(catalog.Format)
+	chargeFormat := ChargeFormat
+	if catalog.Format == CatalogFormatV2 {
+		chargeFormat = ChargeFormatV2
+		if storageRollup == nil || storageRollupSource == nil {
+			return Charge{}, errors.New("object storage rollup is required by price catalog v2")
+		}
+		if err := storageRollup.Validate(); err != nil {
+			return Charge{}, err
+		}
+		if storageRollup.Instance != rollup.Instance ||
+			storageRollup.PeriodStartUnix != rollup.PeriodStartUnix ||
+			storageRollup.PeriodEndUnix != rollup.PeriodEndUnix {
+			return Charge{}, errors.New("object storage rollup does not match resource rollup")
+		}
+	} else if storageRollup != nil || storageRollupSource != nil {
+		return Charge{}, errors.New("price catalog v1 cannot include object storage rollup")
 	}
 	if catalog.EffectiveStartUnix > rollup.PeriodStartUnix ||
 		catalog.EffectiveEndUnix < rollup.PeriodEndUnix {
@@ -80,19 +125,33 @@ func BuildCharge(
 	); err != nil {
 		return Charge{}, fmt.Errorf("rollup source: %w", err)
 	}
-	if err := validateSource(catalogSource, CatalogFormat, catalog.Version, rollup.PeriodEndUnix); err != nil {
+	if err := validateSource(catalogSource, catalog.Format, catalog.Version, rollup.PeriodEndUnix); err != nil {
 		return Charge{}, fmt.Errorf("catalog source: %w", err)
 	}
-	lines := make([]Line, len(pricedQuantities))
+	if storageRollup != nil {
+		if err := validateSource(*storageRollupSource, meteringstorage.RollupFormat,
+			rollup.Instance+":"+strconv.FormatInt(rollup.PeriodStartUnix, 10)+":"+
+				strconv.FormatInt(rollup.PeriodEndUnix, 10), rollup.PeriodEndUnix); err != nil {
+			return Charge{}, fmt.Errorf("storage rollup source: %w", err)
+		}
+	}
+	lines := make([]Line, len(definitions))
 	var total int64
-	for i, expected := range pricedQuantities {
-		quantity := rollup.Quantities[i]
+	for i, expected := range definitions {
 		rate := catalog.Rates[i]
-		if quantity.Name != expected.name || quantity.Unit != expected.unit ||
+		var quantityName, quantityUnit, quantityDecimal string
+		if i < len(rollup.Quantities) {
+			quantity := rollup.Quantities[i]
+			quantityName, quantityUnit = quantity.Name, quantity.Unit
+			quantityDecimal = strconv.FormatFloat(quantity.Value, 'f', -1, 64)
+		} else {
+			quantityName, quantityUnit = "object_storage_byte_seconds", "byte_seconds"
+			quantityDecimal = strconv.FormatInt(storageRollup.ObjectStorageByteSeconds, 10)
+		}
+		if quantityName != expected.name || quantityUnit != expected.unit ||
 			rate.Name != expected.name || rate.Unit != expected.unit {
 			return Charge{}, errors.New("rollup quantity and price rate do not align")
 		}
-		quantityDecimal := strconv.FormatFloat(quantity.Value, 'f', -1, 64)
 		amount, err := amountMicros(quantityDecimal, rate.UnitPrice)
 		if err != nil {
 			return Charge{}, fmt.Errorf("price %s: %w", expected.name, err)
@@ -107,10 +166,11 @@ func BuildCharge(
 		}
 	}
 	charge := Charge{
-		Format: ChargeFormat, Instance: rollup.Instance,
+		Format: chargeFormat, Instance: rollup.Instance,
 		PeriodStartUnix: rollup.PeriodStartUnix, PeriodEndUnix: rollup.PeriodEndUnix,
 		Currency: catalog.Currency, PriceVersion: catalog.Version,
-		RoundingPolicy: RoundingPolicy, RollupSource: rollupSource, CatalogSource: catalogSource,
+		RoundingPolicy: RoundingPolicy, RollupSource: rollupSource,
+		StorageRollupSource: storageRollupSource, CatalogSource: catalogSource,
 		Lines: lines, TotalMicros: total,
 	}
 	if err := charge.Validate(); err != nil {
@@ -120,10 +180,26 @@ func BuildCharge(
 }
 
 func (c Charge) Validate() error {
-	if c.Format != ChargeFormat || c.Instance == "" ||
+	var definitions []struct{ name, unit string }
+	catalogFormat := CatalogFormat
+	if c.Format == ChargeFormat {
+		definitions = pricedQuantities
+		if c.StorageRollupSource != nil {
+			return errors.New("metering charge v1 contains object storage source")
+		}
+	} else if c.Format == ChargeFormatV2 {
+		definitions = pricedQuantitiesV2
+		catalogFormat = CatalogFormatV2
+		if c.StorageRollupSource == nil {
+			return errors.New("metering charge v2 lacks object storage source")
+		}
+	} else {
+		return errors.New("metering charge is incomplete")
+	}
+	if c.Instance == "" ||
 		c.PeriodStartUnix <= 0 || c.PeriodEndUnix <= c.PeriodStartUnix ||
 		!currencyPattern.MatchString(c.Currency) || !versionPattern.MatchString(c.PriceVersion) ||
-		c.RoundingPolicy != RoundingPolicy || len(c.Lines) != len(pricedQuantities) ||
+		c.RoundingPolicy != RoundingPolicy || len(c.Lines) != len(definitions) ||
 		c.TotalMicros < 0 {
 		return errors.New("metering charge is incomplete")
 	}
@@ -132,12 +208,19 @@ func (c Charge) Validate() error {
 			strconv.FormatInt(c.PeriodEndUnix, 10), c.PeriodEndUnix); err != nil {
 		return err
 	}
-	if err := validateSource(c.CatalogSource, CatalogFormat, c.PriceVersion, c.PeriodEndUnix); err != nil {
+	if c.StorageRollupSource != nil {
+		if err := validateSource(*c.StorageRollupSource, meteringstorage.RollupFormat,
+			c.Instance+":"+strconv.FormatInt(c.PeriodStartUnix, 10)+":"+
+				strconv.FormatInt(c.PeriodEndUnix, 10), c.PeriodEndUnix); err != nil {
+			return err
+		}
+	}
+	if err := validateSource(c.CatalogSource, catalogFormat, c.PriceVersion, c.PeriodEndUnix); err != nil {
 		return err
 	}
 	var total int64
 	for i, line := range c.Lines {
-		expected := pricedQuantities[i]
+		expected := definitions[i]
 		if line.Name != expected.name || line.Unit != expected.unit ||
 			!decimalPattern.MatchString(line.QuantityDecimal) ||
 			!decimalPattern.MatchString(line.UnitPrice) || line.AmountMicros < 0 {

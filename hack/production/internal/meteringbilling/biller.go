@@ -17,39 +17,50 @@ import (
 	"time"
 
 	"github.com/kubewharf/kubebrain/hack/production/internal/meteringarchive"
+	"github.com/kubewharf/kubebrain/hack/production/internal/meteringstorage"
 	"github.com/kubewharf/kubebrain/hack/production/internal/processgroup"
 )
 
 type CommandRunner func(context.Context, string, []string) ([]byte, error)
 
 type Biller struct {
-	Instance          string
-	PriceScope        string
-	PriceVersion      string
-	Executor          string
-	ObjectStoreID     string
-	Bucket            string
-	RollupPrefix      string
-	PricePrefix       string
-	ChargePrefix      string
-	RetentionMode     string
-	RetentionDuration time.Duration
-	PeriodDuration    time.Duration
-	FinalizationDelay time.Duration
-	PeriodEnd         time.Time
-	Now               func() time.Time
-	Run               CommandRunner
+	Instance            string
+	PriceScope          string
+	PriceVersion        string
+	PriceCatalogFormat  string
+	Executor            string
+	ObjectStoreID       string
+	Bucket              string
+	RollupPrefix        string
+	StorageRollupPrefix string
+	PricePrefix         string
+	ChargePrefix        string
+	RetentionMode       string
+	RetentionDuration   time.Duration
+	PeriodDuration      time.Duration
+	FinalizationDelay   time.Duration
+	PeriodEnd           time.Time
+	Now                 func() time.Time
+	Run                 CommandRunner
 }
 
 func (b *Biller) Validate() error {
 	b.RollupPrefix = strings.Trim(b.RollupPrefix, "/")
+	b.StorageRollupPrefix = strings.Trim(b.StorageRollupPrefix, "/")
 	b.PricePrefix = strings.Trim(b.PricePrefix, "/")
 	b.ChargePrefix = strings.Trim(b.ChargePrefix, "/")
+	if b.PriceCatalogFormat == "" {
+		b.PriceCatalogFormat = CatalogFormat
+	}
 	if !versionPattern.MatchString(b.Instance) || !versionPattern.MatchString(b.PriceScope) ||
 		!versionPattern.MatchString(b.PriceVersion) || b.Executor == "" || b.ObjectStoreID == "" ||
 		b.Bucket == "" || b.RollupPrefix == "" || b.PricePrefix == "" || b.ChargePrefix == "" ||
 		b.RollupPrefix == b.PricePrefix || b.RollupPrefix == b.ChargePrefix ||
 		b.PricePrefix == b.ChargePrefix ||
+		(b.PriceCatalogFormat != CatalogFormat && b.PriceCatalogFormat != CatalogFormatV2) ||
+		(b.PriceCatalogFormat == CatalogFormatV2 && (b.StorageRollupPrefix == "" ||
+			b.StorageRollupPrefix == b.RollupPrefix || b.StorageRollupPrefix == b.PricePrefix ||
+			b.StorageRollupPrefix == b.ChargePrefix)) ||
 		(b.RetentionMode != "COMPLIANCE" && b.RetentionMode != "GOVERNANCE") ||
 		b.RetentionDuration <= 0 || b.PeriodDuration != 24*time.Hour ||
 		b.FinalizationDelay < 0 || b.RetentionDuration <= b.FinalizationDelay+b.PeriodDuration {
@@ -117,7 +128,7 @@ func (b *Biller) Process(ctx context.Context) (Charge, []byte, error) {
 	catalogKey := path.Join(b.PricePrefix, b.PriceScope, b.PriceVersion+".json")
 	catalogPath := path.Join(dir, "catalog.json")
 	catalogSource, output, err := b.readImmutable(
-		ctx, CatalogFormat, b.PriceVersion, b.PriceScope,
+		ctx, b.PriceCatalogFormat, b.PriceVersion, b.PriceScope,
 		catalogKey, catalogPath, retainUntil,
 	)
 	if err != nil {
@@ -127,7 +138,31 @@ func (b *Biller) Process(ctx context.Context) (Charge, []byte, error) {
 	if err != nil {
 		return Charge{}, output, err
 	}
-	charge, err := BuildCharge(rollup, rollupSource, catalogStatus.Catalog, catalogSource)
+	var charge Charge
+	if catalogStatus.Catalog.Format == CatalogFormatV2 {
+		storageKey := path.Join(
+			b.StorageRollupPrefix, b.Instance, periodStart.Format("2006/01/02"),
+			fmt.Sprintf("%d-%d.json", periodStart.Unix(), periodEnd.Unix()),
+		)
+		storagePath := path.Join(dir, "storage-rollup.json")
+		storageSource, storageOutput, readErr := b.readImmutable(
+			ctx, meteringstorage.RollupFormat, rollupArtifactID, b.Instance,
+			storageKey, storagePath, retainUntil,
+		)
+		if readErr != nil {
+			return Charge{}, storageOutput, fmt.Errorf("read object storage rollup: %w", readErr)
+		}
+		storageStatus, readErr := meteringstorage.ReadRollup(storagePath)
+		if readErr != nil {
+			return Charge{}, storageOutput, readErr
+		}
+		charge, err = BuildChargeV2(
+			rollup, rollupSource, storageStatus.Rollup, storageSource,
+			catalogStatus.Catalog, catalogSource,
+		)
+	} else {
+		charge, err = BuildCharge(rollup, rollupSource, catalogStatus.Catalog, catalogSource)
+	}
 	if err != nil {
 		return Charge{}, output, err
 	}
@@ -145,7 +180,7 @@ func (b *Biller) Process(ctx context.Context) (Charge, []byte, error) {
 	output, err = b.Run(ctx, b.Executor, []string{
 		"ACTION=blob",
 		"INPUT=" + chargePath,
-		"ARTIFACT_FORMAT=" + ChargeFormat,
+		"ARTIFACT_FORMAT=" + charge.Format,
 		"ARTIFACT_ID=" + chargeArtifactID,
 		"INSTANCE=" + b.Instance,
 		"OBJECT_STORE_ID=" + b.ObjectStoreID,
@@ -162,7 +197,7 @@ func (b *Biller) Process(ctx context.Context) (Charge, []byte, error) {
 		)
 	}
 	if _, err := parseBlobReceipt(
-		output, ChargeFormat, chargeArtifactID, b.Instance, b.ObjectStoreID,
+		output, charge.Format, chargeArtifactID, b.Instance, b.ObjectStoreID,
 		b.Bucket, chargeKey, retainUntil, status.SHA256, status.Bytes,
 	); err != nil {
 		return Charge{}, output, err

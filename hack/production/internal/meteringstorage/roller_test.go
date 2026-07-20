@@ -1,0 +1,80 @@
+package meteringstorage
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"os"
+	"strconv"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/require"
+)
+
+func TestStorageRollerReadsEveryExactSnapshotBeforeArchive(t *testing.T) {
+	periodEnd := time.Unix(1_784_592_000, 0).UTC().Truncate(24 * time.Hour)
+	periodStart := periodEnd.Add(-24 * time.Hour)
+	readCalls := 0
+	archiveCalls := 0
+	run := func(_ context.Context, _ string, environment []string) ([]byte, error) {
+		values := environmentValues(environment)
+		switch values["ACTION"] {
+		case "blob-read":
+			index := readCalls
+			readCalls++
+			slotStart := periodStart.Add(time.Duration(index) * time.Hour)
+			snapshot := validSnapshot()
+			snapshot.SlotStartUnix = slotStart.Unix()
+			snapshot.SlotEndUnix = slotStart.Add(time.Hour).Unix()
+			snapshot.CheckedAtUnix = snapshot.SlotEndUnix + 1
+			status, err := WriteSnapshotAtomic(values["OUTPUT"], snapshot)
+			require.NoError(t, err)
+			receipt := blobReadReceipt{
+				Format:         "kubebrain.object-immutable-blob-read.receipt.v1",
+				ArtifactFormat: SnapshotFormat, ArtifactID: values["ARTIFACT_ID"],
+				Instance: "instance-a", ObjectStoreID: "metering-store", Bucket: "metering",
+				ObjectKey: values["S3_OBJECT_KEY"], VersionID: "snapshot-version",
+				ArtifactSHA256: status.SHA256, ObjectBytes: status.Bytes,
+				RetentionMode:   "COMPLIANCE",
+				RetainUntilUnix: periodStart.Add(8 * 365 * 24 * time.Hour).Unix(),
+				RemoteVerified:  true,
+			}
+			return json.Marshal(receipt)
+		case "blob":
+			archiveCalls++
+			artifact, err := os.ReadFile(values["INPUT"])
+			require.NoError(t, err)
+			sum := sha256.Sum256(artifact)
+			retainUntil, err := strconv.ParseInt(values["RETAIN_UNTIL_UNIX"], 10, 64)
+			require.NoError(t, err)
+			receipt := blobReceipt{
+				Format:         "kubebrain.object-immutable-blob.receipt.v1",
+				ArtifactFormat: RollupFormat, ArtifactID: values["ARTIFACT_ID"],
+				Instance: "instance-a", ObjectStoreID: "metering-store", Bucket: "metering",
+				ObjectKey: values["S3_OBJECT_KEY"], VersionID: "rollup-version",
+				ArtifactSHA256: hex.EncodeToString(sum[:]), ObjectBytes: int64(len(artifact)),
+				RetentionMode: "COMPLIANCE", RetainUntilUnix: retainUntil,
+				RemoteVerified: true, ArchivedAtUnix: periodEnd.Add(time.Hour).Unix(),
+			}
+			return json.Marshal(receipt)
+		default:
+			t.Fatalf("unexpected action %q", values["ACTION"])
+		}
+		return nil, nil
+	}
+	roller := &Roller{
+		Instance: "instance-a", Executor: "executor", ObjectStoreID: "metering-store",
+		Bucket: "metering", SnapshotPrefix: "metering-storage-samples",
+		RollupPrefix: "metering-storage-rollups", RetentionMode: "COMPLIANCE",
+		RetentionDuration: 7 * 365 * 24 * time.Hour, FinalizationDelay: 45 * time.Minute,
+		SampleFinalizationDelay: 10 * time.Minute, PeriodEnd: periodEnd,
+		Now: func() time.Time { return periodEnd.Add(time.Hour) }, Run: run,
+	}
+	rollup, _, err := roller.Process(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, 24, readCalls)
+	require.Equal(t, 1, archiveCalls)
+	require.Equal(t, int64(24*303*3600), rollup.ObjectStorageByteSeconds)
+}
