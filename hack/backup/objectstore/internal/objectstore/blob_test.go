@@ -145,7 +145,7 @@ func TestReadBlobRequiresOneProtectedExactVersion(t *testing.T) {
 		Key: aws.String("samples/slot-100.json"), VersionId: aws.String("version-1"),
 		Size: aws.Int64(int64(len(body))),
 	}}}
-	client.listOutputs = []*s3.ListObjectVersionsOutput{page, page, page}
+	client.listOutputs = []*s3.ListObjectVersionsOutput{page, page, page, page}
 	output := filepath.Join(t.TempDir(), "download.json")
 	request := BlobReadRequest{
 		Output: output, ArtifactFormat: "sample.v1", ArtifactID: "slot-100",
@@ -163,6 +163,13 @@ func TestReadBlobRequiresOneProtectedExactVersion(t *testing.T) {
 	retried, err := ReadBlob(context.Background(), client, request)
 	require.NoError(t, err)
 	require.Equal(t, receipt, retried)
+
+	allowedRequest := request
+	allowedRequest.ArtifactFormat = ""
+	allowedRequest.ArtifactFormats = []string{"legacy.v1", "sample.v1"}
+	allowed, err := ReadBlob(context.Background(), client, allowedRequest)
+	require.NoError(t, err)
+	require.Equal(t, "sample.v1", allowed.ArtifactFormat)
 
 	require.NoError(t, os.WriteFile(output, []byte("conflict"), 0o600))
 	_, err = ReadBlob(context.Background(), client, request)

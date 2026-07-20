@@ -715,6 +715,16 @@ func TestProductionMonitoringProvidesInstanceMetering(t *testing.T) {
 			`sum(kubelet_volume_stats_available_bytes{namespace="tidb-cluster",persistentvolumeclaim=~"(pd-kb-pd|tikv-kb-tikv)-[0-2]"}), 0) and on() (kubebrain_dbaas:metering_data_complete == 1)`,
 		"kubebrain_dbaas:logical_backup_artifact_bytes:last": `max(kubebrain_logical_backup_artifact_bytes{instance="kubebrain"}) and on() (kubebrain_dbaas:metering_data_complete == 1)`,
 		"kubebrain_dbaas:logical_backup_age_seconds:last":    `clamp_min(time() - max(kubebrain_logical_backup_last_success_timestamp_seconds{instance="kubebrain"}), 0) and on() (kubebrain_dbaas:metering_data_complete == 1)`,
+		"kubebrain_dbaas:metering_hour_complete":             `(min_over_time(kubebrain_dbaas:metering_data_complete[1h]) == 1) * (count_over_time(kubebrain_dbaas:metering_data_complete[1h]) >= bool 60)`,
+		"kubebrain_dbaas:cpu_usage_core_seconds:hour": `(sum(increase(container_cpu_usage_seconds_total{namespace="kubebrain-system",pod=~"kubebrain-[0-2]",container="kubebrain",image!=""}[1h])) + ` +
+			`sum(increase(container_cpu_usage_seconds_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-2]",container=~"pd|tikv",image!=""}[1h]))) and on() (kubebrain_dbaas:metering_hour_complete == 1)`,
+		"kubebrain_dbaas:memory_working_set_bytes:hour_avg": `avg_over_time(kubebrain_dbaas:memory_working_set_bytes:sum[1h]) and on() (kubebrain_dbaas:metering_hour_complete == 1)`,
+		"kubebrain_dbaas:network_receive_bytes:hour": `(sum(increase(container_network_receive_bytes_total{namespace="kubebrain-system",pod=~"kubebrain-[0-2]",interface="eth0"}[1h])) + ` +
+			`sum(increase(container_network_receive_bytes_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-2]",interface="eth0"}[1h]))) and on() (kubebrain_dbaas:metering_hour_complete == 1)`,
+		"kubebrain_dbaas:network_transmit_bytes:hour": `(sum(increase(container_network_transmit_bytes_total{namespace="kubebrain-system",pod=~"kubebrain-[0-2]",interface="eth0"}[1h])) + ` +
+			`sum(increase(container_network_transmit_bytes_total{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-2]",interface="eth0"}[1h]))) and on() (kubebrain_dbaas:metering_hour_complete == 1)`,
+		"kubebrain_dbaas:storage_provisioned_bytes:hour_avg": `avg_over_time(kubebrain_dbaas:storage_provisioned_bytes:sum[1h]) and on() (kubebrain_dbaas:metering_hour_complete == 1)`,
+		"kubebrain_dbaas:storage_used_bytes:hour_avg":        `avg_over_time(kubebrain_dbaas:storage_used_bytes:sum[1h]) and on() (kubebrain_dbaas:metering_hour_complete == 1)`,
 	}
 	rules, ok := meteringGroup["rules"].([]any)
 	require.True(t, ok)

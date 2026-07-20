@@ -92,7 +92,7 @@ func (r *Roller) Process(ctx context.Context) (Rollup, []byte, error) {
 		output, err := r.Run(ctx, r.Executor, []string{
 			"ACTION=blob-read",
 			"OUTPUT=" + outputPath,
-			"ARTIFACT_FORMAT=" + Format,
+			`ARTIFACT_FORMATS_JSON=["` + LegacyFormat + `","` + Format + `"]`,
 			"ARTIFACT_ID=" + artifactID,
 			"INSTANCE=" + r.Instance,
 			"OBJECT_STORE_ID=" + r.ObjectStoreID,
@@ -128,7 +128,8 @@ func (r *Roller) Process(ctx context.Context) (Rollup, []byte, error) {
 			Sample: sample,
 			Source: SampleSource{
 				SlotStartUnix: sample.SlotStartUnix, SlotEndUnix: sample.SlotEndUnix,
-				ObjectKey: objectKey, VersionID: receipt.VersionID,
+				ArtifactFormat: receipt.ArtifactFormat,
+				ObjectKey:      objectKey, VersionID: receipt.VersionID,
 				ArtifactSHA256: receipt.ArtifactSHA256, ObjectBytes: receipt.ObjectBytes,
 				RetainUntilUnix: receipt.RetainUntilUnix,
 			},
@@ -214,7 +215,8 @@ func parseBlobReadReceipt(
 		return receipt, errors.New("metering sample read receipt contains trailing JSON")
 	}
 	if receipt.Format != "kubebrain.object-immutable-blob-read.receipt.v1" ||
-		receipt.ArtifactFormat != Format || receipt.ArtifactID != artifactID ||
+		(receipt.ArtifactFormat != Format && receipt.ArtifactFormat != LegacyFormat) ||
+		receipt.ArtifactID != artifactID ||
 		receipt.Instance != instance || receipt.ObjectStoreID != objectStoreID ||
 		receipt.Bucket != bucket || receipt.ObjectKey != objectKey ||
 		receipt.VersionID == "" || !digestPattern.MatchString(receipt.ArtifactSHA256) ||

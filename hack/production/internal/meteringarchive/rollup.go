@@ -15,13 +15,14 @@ import (
 	"time"
 )
 
-const RollupFormat = "kubebrain.metering-rollup.v1"
+const RollupFormat = "kubebrain.metering-rollup.v2"
 
 var digestPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 type SampleSource struct {
 	SlotStartUnix   int64  `json:"slot_start_unix"`
 	SlotEndUnix     int64  `json:"slot_end_unix"`
+	ArtifactFormat  string `json:"artifact_format"`
 	ObjectKey       string `json:"object_key"`
 	VersionID       string `json:"version_id"`
 	ArtifactSHA256  string `json:"artifact_sha256"`
@@ -129,6 +130,8 @@ func BuildRollup(
 		if input.Sample.Instance != instance ||
 			input.Sample.SlotStartUnix != expectedStart || input.Sample.SlotEndUnix != expectedEnd ||
 			source.SlotStartUnix != expectedStart || source.SlotEndUnix != expectedEnd ||
+			source.ArtifactFormat != input.Sample.Format ||
+			(source.ArtifactFormat != Format && source.ArtifactFormat != LegacyFormat) ||
 			source.ObjectKey == "" || source.VersionID == "" ||
 			!digestPattern.MatchString(source.ArtifactSHA256) || source.ObjectBytes <= 0 ||
 			source.RetainUntilUnix < periodEnd.Unix() {
@@ -136,7 +139,12 @@ func BuildRollup(
 		}
 		sources[i] = source
 		for j, definition := range quantityDefinitions {
-			quantities[j].Value += input.Sample.Metrics[definition.metric].Value * float64(slotSeconds)
+			value := input.Sample.Metrics[definition.metric].Value
+			if input.Sample.Format == LegacyFormat || definition.metric == 1 ||
+				definition.metric == 4 || definition.metric == 5 {
+				value *= float64(slotSeconds)
+			}
+			quantities[j].Value += value
 			if math.IsInf(quantities[j].Value, 0) || math.IsNaN(quantities[j].Value) {
 				return Rollup{}, errors.New("metering rollup quantity overflowed")
 			}
@@ -173,6 +181,7 @@ func (r Rollup) Validate() error {
 		expectedStart := r.PeriodStartUnix + int64(i)*r.SlotSeconds
 		if source.SlotStartUnix != expectedStart ||
 			source.SlotEndUnix != expectedStart+r.SlotSeconds ||
+			(source.ArtifactFormat != Format && source.ArtifactFormat != LegacyFormat) ||
 			source.ObjectKey == "" || source.VersionID == "" ||
 			!digestPattern.MatchString(source.ArtifactSHA256) || source.ObjectBytes <= 0 ||
 			source.RetainUntilUnix < r.PeriodEndUnix {

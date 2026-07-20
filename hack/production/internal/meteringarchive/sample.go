@@ -19,11 +19,23 @@ import (
 	"time"
 )
 
-const Format = "kubebrain.metering-sample.v1"
+const Format = "kubebrain.metering-sample.v2"
+const LegacyFormat = "kubebrain.metering-sample.v1"
 
-const completenessMetric = "kubebrain_dbaas:metering_data_complete"
+const completenessMetric = "kubebrain_dbaas:metering_hour_complete"
 
 var Metrics = []string{
+	"kubebrain_dbaas:cpu_usage_core_seconds:hour",
+	"kubebrain_dbaas:memory_working_set_bytes:hour_avg",
+	"kubebrain_dbaas:network_receive_bytes:hour",
+	"kubebrain_dbaas:network_transmit_bytes:hour",
+	"kubebrain_dbaas:storage_provisioned_bytes:hour_avg",
+	"kubebrain_dbaas:storage_used_bytes:hour_avg",
+	"kubebrain_dbaas:logical_backup_artifact_bytes:last",
+	"kubebrain_dbaas:logical_backup_age_seconds:last",
+}
+
+var LegacyMetrics = []string{
 	"kubebrain_dbaas:cpu_usage_cores:sum",
 	"kubebrain_dbaas:memory_working_set_bytes:sum",
 	"kubebrain_dbaas:network_receive_bytes_per_second:sum",
@@ -194,14 +206,20 @@ func (c *Collector) queryOne(
 }
 
 func (s Sample) Validate(maxStaleness time.Duration) error {
-	if s.Format != Format || !instancePattern.MatchString(s.Instance) ||
+	expectedMetrics := Metrics
+	if s.Format == LegacyFormat {
+		expectedMetrics = LegacyMetrics
+	} else if s.Format != Format {
+		return errors.New("metering sample has an unsupported format")
+	}
+	if !instancePattern.MatchString(s.Instance) ||
 		s.SlotStartUnix <= 0 || s.SlotEndUnix <= s.SlotStartUnix ||
-		s.QueryUnix != s.SlotEndUnix || !s.Complete || len(s.Metrics) != len(Metrics) ||
+		s.QueryUnix != s.SlotEndUnix || !s.Complete || len(s.Metrics) != len(expectedMetrics) ||
 		maxStaleness <= 0 {
 		return errors.New("metering sample is incomplete")
 	}
 	for i, metric := range s.Metrics {
-		if metric.Name != Metrics[i] || math.IsNaN(metric.Value) || math.IsInf(metric.Value, 0) ||
+		if metric.Name != expectedMetrics[i] || math.IsNaN(metric.Value) || math.IsInf(metric.Value, 0) ||
 			metric.Value < 0 || metric.TimestampUnix > s.QueryUnix ||
 			s.QueryUnix-metric.TimestampUnix > int64(maxStaleness/time.Second) {
 			return errors.New("metering sample contains an invalid metric")

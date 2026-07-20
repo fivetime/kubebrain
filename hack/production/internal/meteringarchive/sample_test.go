@@ -161,6 +161,14 @@ func TestSampleValidationPinsMetricOrderAndSlot(t *testing.T) {
 	sample := validSample()
 	require.NoError(t, sample.Validate(5*time.Minute))
 
+	legacy := sample
+	legacy.Format = LegacyFormat
+	legacy.Metrics = append([]MetricValue(nil), sample.Metrics...)
+	for i := range legacy.Metrics {
+		legacy.Metrics[i].Name = LegacyMetrics[i]
+	}
+	require.NoError(t, legacy.Validate(5*time.Minute))
+
 	reordered := sample
 	reordered.Metrics = append([]MetricValue(nil), sample.Metrics...)
 	reordered.Metrics[0], reordered.Metrics[1] = reordered.Metrics[1], reordered.Metrics[0]

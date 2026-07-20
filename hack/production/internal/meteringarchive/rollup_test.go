@@ -19,9 +19,9 @@ func TestBuildRollupIntegratesCompleteOrderedSlots(t *testing.T) {
 	require.Equal(t, RollupFormat, rollup.Format)
 	require.True(t, rollup.Complete)
 	require.Len(t, rollup.Sources, 24)
-	require.Equal(t, float64(300*3600), rollup.Quantities[0].Value)
+	require.Equal(t, float64(300), rollup.Quantities[0].Value)
 	require.Equal(t, float64(324*3600), rollup.Quantities[1].Value)
-	require.Equal(t, float64(348*3600), rollup.Quantities[2].Value)
+	require.Equal(t, float64(348), rollup.Quantities[2].Value)
 	require.Equal(t, float64(7), rollup.Observations[0].Min)
 	require.Equal(t, float64(30), rollup.Observations[0].Max)
 	require.Equal(t, float64(30), rollup.Observations[0].Last)
@@ -89,6 +89,25 @@ func TestBuildRollupRejectsMissingDuplicateAndMismatchedSources(t *testing.T) {
 	}
 }
 
+func TestBuildRollupPreservesMixedV1V2UpgradeDay(t *testing.T) {
+	start := time.Unix(1_700_006_400, 0).UTC()
+	inputs := rollupInputs(start, 24)
+	inputs[0].Sample.Format = LegacyFormat
+	inputs[0].Source.ArtifactFormat = LegacyFormat
+	for i := range inputs[0].Sample.Metrics {
+		inputs[0].Sample.Metrics[i].Name = LegacyMetrics[i]
+	}
+	rollup, err := BuildRollup(
+		"instance-a", start, start.Add(24*time.Hour),
+		time.Hour, 5*time.Minute, inputs,
+	)
+	require.NoError(t, err)
+	require.Equal(t, LegacyFormat, rollup.Sources[0].ArtifactFormat)
+	require.Equal(t, Format, rollup.Sources[1].ArtifactFormat)
+	require.Equal(t, float64(300-1+3600), rollup.Quantities[0].Value)
+	require.Equal(t, float64(348-3+3*3600), rollup.Quantities[2].Value)
+}
+
 func TestRollupRejectsMutationAndNonCanonicalInput(t *testing.T) {
 	start := time.Unix(1_700_006_400, 0).UTC()
 	rollup, err := BuildRollup(
@@ -130,6 +149,7 @@ func rollupInputs(start time.Time, count int) []VerifiedSample {
 			Sample: sample,
 			Source: SampleSource{
 				SlotStartUnix: sample.SlotStartUnix, SlotEndUnix: sample.SlotEndUnix,
+				ArtifactFormat: sample.Format,
 				ObjectKey:      "samples/instance-a/" + slotStart.Format("20060102/15"),
 				VersionID:      "version-" + slotStart.Format("15"),
 				ArtifactSHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",

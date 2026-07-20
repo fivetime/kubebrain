@@ -64,7 +64,7 @@ func TestMeteringDailyRollupAgainstObjectLockStore(t *testing.T) {
 	now := time.Now().UTC()
 	periodEnd := now.Add(-30 * time.Minute).Truncate(24 * time.Hour)
 	periodStart := periodEnd.Add(-24 * time.Hour)
-	basePrefix := "metering-rollup-integration-" + strconv.FormatInt(periodEnd.Unix(), 10)
+	basePrefix := "metering-rollup-v2-integration-" + strconv.FormatInt(periodEnd.Unix(), 10)
 	dir := t.TempDir()
 	for i := 0; i < 24; i++ {
 		slotStart := periodStart.Add(time.Duration(i) * time.Hour)

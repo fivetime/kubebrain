@@ -99,9 +99,16 @@ func main() {
 		}
 		_ = json.NewEncoder(os.Stdout).Encode(receipt)
 	case "blob-read":
+		var artifactFormats []string
+		if raw := os.Getenv("ARTIFACT_FORMATS_JSON"); raw != "" {
+			if err := json.Unmarshal([]byte(raw), &artifactFormats); err != nil {
+				log.Fatal("ARTIFACT_FORMATS_JSON must be a JSON string array")
+			}
+		}
 		receipt, err := objectstore.ReadBlob(ctx, client, objectstore.BlobReadRequest{
 			Output: os.Getenv("OUTPUT"), ArtifactFormat: os.Getenv("ARTIFACT_FORMAT"),
-			ArtifactID: os.Getenv("ARTIFACT_ID"), Instance: os.Getenv("INSTANCE"),
+			ArtifactFormats: artifactFormats,
+			ArtifactID:      os.Getenv("ARTIFACT_ID"), Instance: os.Getenv("INSTANCE"),
 			ObjectStoreID: os.Getenv("OBJECT_STORE_ID"), Bucket: os.Getenv("S3_BUCKET"),
 			ObjectKey:          os.Getenv("S3_OBJECT_KEY"),
 			MinRetainUntilUnix: int64Env("MIN_RETAIN_UNTIL_UNIX"),

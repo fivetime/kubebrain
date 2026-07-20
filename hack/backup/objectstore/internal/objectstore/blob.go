@@ -37,6 +37,7 @@ type BlobRequest struct {
 type BlobReadRequest struct {
 	Output             string
 	ArtifactFormat     string
+	ArtifactFormats    []string
 	ArtifactID         string
 	Instance           string
 	ObjectStoreID      string
@@ -166,7 +167,11 @@ func ArchiveBlob(ctx context.Context, client S3API, request BlobRequest) (BlobRe
 }
 
 func ReadBlob(ctx context.Context, client S3API, request BlobReadRequest) (BlobReadReceipt, error) {
-	if request.Output == "" || request.ArtifactFormat == "" || request.ArtifactID == "" ||
+	allowedFormats, err := blobReadFormats(request)
+	if err != nil {
+		return BlobReadReceipt{}, err
+	}
+	if request.Output == "" || request.ArtifactID == "" ||
 		request.Instance == "" || request.ObjectStoreID == "" || request.Bucket == "" ||
 		request.ObjectKey == "" || request.MinRetainUntilUnix <= 0 {
 		return BlobReadReceipt{}, errors.New("immutable blob read request is incomplete")
@@ -201,13 +206,14 @@ func ReadBlob(ctx context.Context, client S3API, request BlobReadRequest) (BlobR
 	}
 	size := aws.ToInt64(head.ContentLength)
 	digest := head.Metadata["kubebrain-artifact-sha256"]
+	artifactFormat := head.Metadata["kubebrain-format"]
 	retainUntilUnix, err := strconv.ParseInt(head.Metadata["kubebrain-retain-until-unix"], 10, 64)
 	if err != nil {
 		return BlobReadReceipt{}, errors.New("immutable blob retain-until metadata is invalid")
 	}
 	if aws.ToString(head.VersionId) != versionID || size <= 0 || size > maxImmutableBlobBytes ||
 		aws.ToInt64(version.Size) != size || !validHexSHA256(digest) ||
-		head.Metadata["kubebrain-format"] != request.ArtifactFormat ||
+		!allowedFormats[artifactFormat] ||
 		head.Metadata["kubebrain-artifact-id"] != request.ArtifactID ||
 		head.Metadata["kubebrain-instance"] != request.Instance ||
 		head.Metadata["kubebrain-object-store-id"] != request.ObjectStoreID ||
@@ -251,7 +257,7 @@ func ReadBlob(ctx context.Context, client S3API, request BlobReadRequest) (BlobR
 		return BlobReadReceipt{}, err
 	}
 	receipt := BlobReadReceipt{
-		Format: BlobReadReceiptFormat, ArtifactFormat: request.ArtifactFormat,
+		Format: BlobReadReceiptFormat, ArtifactFormat: artifactFormat,
 		ArtifactID: request.ArtifactID, Instance: request.Instance,
 		ObjectStoreID: request.ObjectStoreID, Bucket: request.Bucket, ObjectKey: request.ObjectKey,
 		VersionID: versionID, ArtifactSHA256: digest, ObjectBytes: size,
@@ -262,6 +268,27 @@ func ReadBlob(ctx context.Context, client S3API, request BlobReadRequest) (BlobR
 		return BlobReadReceipt{}, err
 	}
 	return receipt, nil
+}
+
+func blobReadFormats(request BlobReadRequest) (map[string]bool, error) {
+	if request.ArtifactFormat != "" && len(request.ArtifactFormats) != 0 {
+		return nil, errors.New("immutable blob read must use one format selector")
+	}
+	formats := request.ArtifactFormats
+	if request.ArtifactFormat != "" {
+		formats = []string{request.ArtifactFormat}
+	}
+	if len(formats) == 0 || len(formats) > 8 {
+		return nil, errors.New("immutable blob read format allowlist is invalid")
+	}
+	allowed := make(map[string]bool, len(formats))
+	for _, format := range formats {
+		if format == "" || allowed[format] {
+			return nil, errors.New("immutable blob read format allowlist is invalid")
+		}
+		allowed[format] = true
+	}
+	return allowed, nil
 }
 
 func writeBlobOutputAtomic(path string, body []byte) error {
