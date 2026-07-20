@@ -5748,6 +5748,52 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   全部通过。不可变小时采样留存至此完成；跨周期积分、价格版本、对象存储成本和审计
   对账仍属于 P1，缺测区间仍必须保持不可计费，禁止按零用量结算。
 
+- **Metering A315 immutable daily sampled rollup（2026-07-20）**：关闭 A314 小时
+  证据之上的确定性跨日采样积分，不重新查询可变 Prometheus 历史。对象执行器新增
+  `blob-read`：按 exact key 分页枚举 version，要求恰好一个 version 且没有 delete
+  marker；随后按 exact version ID 核对 format、artifact ID、instance、store、大小、
+  SHA-256 metadata、Object Lock mode/retain-until，下载响应还必须返回同一 version ID，
+  字节数和重新计算的 digest 必须匹配，才原子发布本地输入和
+  `kubebrain.object-immutable-blob-read.receipt.v1`。这避免 S3 “latest object”语义、
+  覆盖版本或本地输出冲突进入计费证据链。
+
+  `kubebrain-metering-rollup` 每日 UTC 00:47 处理前一完整 UTC 日，严格读取 24 个连续
+  小时槽。`kubebrain.metering-rollup.v1` 固定内嵌每个源的 key、version ID、digest、
+  bytes 和 retain-until；任一缺槽、重复/乱序槽、实例错配、非 canonical sample、
+  指标顺序变化、源保留不足或 receipt/下载字节不一致都会在写汇总前 fail closed。
+  CPU、内存、网络收发及 provisioned/used storage 采用明确的小时末样本保持契约，
+  `quantity = Σ(value × 3600)`，输出 core-seconds、bytes 或 byte-seconds；备份大小和
+  age 仅保留 min/max/last，不伪装成对象存储费用。CPU/网络源仍是 5 分钟 rate，因此
+  这是可重放的约定采样积分，不声称等于底层 counter 的精确 increase。
+
+  日汇总继续经 Object Lock 条件上传，retain-until 固定为最早小时源的保留截止点，
+  防止汇总引用先过期的源。默认运行与显式
+  `--period-end-unix=<aligned UTC boundary>` 回补使用相同 artifact ID/object key；
+  只允许已超过 finalization delay 的完整历史日，未来、未对齐或未完成周期直接拒绝。
+  生产 CronJob 使用独立 Secret、无 ServiceAccount token、非 root、只读根文件系统，
+  其对象身份应只允许读 sample prefix 和写 rollup prefix。
+
+  对象存储包普通测试通过（0.175 秒），确定性连续 100 轮通过（12.442 秒），race
+  连续 20 轮通过（14.770 秒）；计量包普通测试通过（0.083 秒），确定性连续 100 轮
+  通过（4.591 秒），race 连续 20 轮通过（4.408 秒）。两个模块 vet、根模块全量
+  `go test ./...`/`go vet ./...`、production manifest 测试和 Kubernetes client
+  dry-run 均通过。真实 MinIO Object Lock 集成写入完整 24 小时样本并连续执行两次
+  日汇总，源码执行器 1.99 秒、最终镜像执行器 3.30 秒通过；独立 `mc` 清点正好得到
+  24 个 sample version 和一个 9,336-byte rollup version，全部 versionOrdinal=1、
+  无 delete marker。汇总 exact version 的 format、artifact ID、SHA-256 checksum/
+  metadata、COMPLIANCE retain-until 均匹配；临时 NodePort 和检查 Pod 已删除，锁定
+  测试对象按保留策略到期。
+
+  发布镜像 `kubebrain:a315-metering-rollup` 由完整代码提交
+  `4cede7ca741408ff200ea407e09aa875b6e07e8d` 构建，本地镜像 digest 为
+  `sha256:c488d29a1dcab5e68411281ec39dcf927de8e23241a7bf729285bcb7f8afe4e1`；
+  OCI revision/version、rollup backfill 参数和镜像内对象执行器均已核对。一次错误
+  SHA 的构建在生成镜像前被中止，没有进入发布。A314 三副本 StatefulSet 有序滚动到
+  A315 后 3/3 Ready、restartCount=0，PD/TiKV 3+3 Ready，etcdctl Status 保持 3.7.0，
+  endpoint proposal health 和 production release gate 全部通过。跨日采样积分至此
+  完成；价格版本、底层 counter 精确 increase 策略、对象存储成本和账单审计对账仍属
+  P1，不能据此宣称最终 billing 已完成。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
@@ -5776,8 +5822,8 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
    请求 QPS/burst、逻辑 Watch 总数、CPU/内存饱和、网络错误/丢包及 PD/TiKV PVC 容量
    告警已具备稳定错误或指标，网络 RX/TX 原始计量和逻辑备份 artifact 容量/新鲜度
    指标已暴露，单实例资源/容量/网络/备份 recording rules 和 fail-closed 缺测标记已
-   建立，不可变小时采样留存已完成；继续补跨周期积分、价格版本、对象存储成本和审计
-   对账。
+   建立，不可变小时采样留存和确定性跨日采样积分已完成；继续补价格版本、底层 counter
+   精确 increase 策略、对象存储成本和审计对账。
 
 ### P2：运维兼容和长期验证
 
