@@ -421,8 +421,32 @@ version、逐字节核对 artifact，并读取远端 retention。只有全部验
 实例保留唯一归档职责。Prometheus 跨网络访问时必须配置 HTTPS、CA、server name 和
 bearer token 参数，不能沿用模板中的集群内明文地址。
 
-不可变小时采样只关闭原始计量证据留存，不构成最终账单。控制面仍须实现跨周期积分、
-价格版本、对象存储成本和审计对账；采样缺口必须保持不可计费状态，禁止按零用量补算。
+`deploy/production/kubebrain-metering-rollup.yaml` 每日 UTC 00:47 处理前一完整 UTC 日，
+且只从不可变小时对象读取，不重新查询 Prometheus。每个对象键由实例和 slot 确定；
+`ACTION=blob-read` 先枚举 exact key，要求恰好一个 version 且无 delete marker，再按
+version ID 核对 format、artifact ID、instance、store、大小、SHA-256 metadata、
+Object Lock mode 和 retain-until，下载后重新计算字节 digest。24 个 canonical sample
+必须按小时连续覆盖完整日期、实例一致、指标顺序固定且每个源保留期达到自身
+`slot_end + retention_duration`；任一小时缺失、重复、损坏或保留不足时不得生成日汇总。
+
+`kubebrain.metering-rollup.v1` 内嵌全部 24 个源的 key、version ID、digest、大小和
+retain-until。CPU、内存、网络收发、provisioned/used storage 使用固定的小时末样本
+保持法，计算 `quantity = Σ(sample_value × 3600)`，分别输出 `core_seconds`、`bytes`
+或 `byte_seconds`；备份 artifact 大小和 age 仅输出 min/max/last 观测值，不计入对象
+存储费用。这里 CPU/网络输入仍是既有 5 分钟 rate，因此这是明确、可重放的约定采样
+积分，不是底层累计 counter 的精确小时 increase；后续价格版本必须固定该测量策略，
+禁止在同一价格版本下静默更改。日汇总经同一 immutable blob 路径归档，保留截止点取
+最早源样本的保留截止点，避免汇总仍在而引用源已过期。
+
+默认任务只处理上一 UTC 日。CronJob 长时间停机后必须逐日使用
+`--period-end-unix=<UTC 日界 Unix 秒>` 回补；显式 period end 必须按 24 小时对齐且
+不晚于 finalization delay 后的最近完整日，未来或未完成周期会 fail closed。正常与
+回补任务共享 deterministic artifact ID/object key，重复执行只能复用同一个 exact
+version。小时归档凭据只需写 `metering-samples`；日汇总凭据应限制为读取该前缀并写
+`metering-rollups`，两个 CronJob 使用不同 Secret。
+
+不可变小时采样和跨日采样积分仍不构成最终账单。控制面仍须实现价格版本、对象存储
+成本和审计对账；采样缺口必须保持不可计费状态，禁止按零用量补算。
 
 TiDB Operator 的 BR full/PITR 不能用于 KubeBrain 数据恢复。真实 S3 full backup 和
 独立 PD/TiKV Restore CR 都成功时，备份前已提交的 KubeBrain key 仍未出现在目标集群；
