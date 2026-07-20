@@ -159,7 +159,7 @@ func (e *Endpoint) buildClientHttpServer() exposedServer {
 		e.server.GetClientHttpHandlers(),
 	}
 
-	return newHttpServerWithHandlers(handlersMaps...)
+	return newHTTPAccessControlledServer(e.config.CORS, e.config.HostWhitelist, handlersMaps...)
 }
 
 func (e *Endpoint) buildPeerHttpServer() exposedServer {

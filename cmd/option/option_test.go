@@ -67,6 +67,8 @@ func TestTLSFlagsBindToExpectedSecurityConfigFields(t *testing.T) {
 		"--auth-token=simple",
 		"--bcrypt-cost=7",
 		"--auth-token-ttl=45",
+		"--cors=https://console-one.example,https://console-two.example",
+		"--host-whitelist=etcd-one.internal,etcd-two.internal",
 	}))
 
 	require.Equal(t, "/client/tls.crt", o.epsConf.ClientSecurityConfig.CertFile)
@@ -108,6 +110,8 @@ func TestTLSFlagsBindToExpectedSecurityConfigFields(t *testing.T) {
 	require.Equal(t, "simple", o.epsConf.AuthToken)
 	require.Equal(t, uint(7), o.epsConf.BcryptCost)
 	require.Equal(t, uint(45), o.epsConf.AuthTokenTTL)
+	require.Equal(t, []string{"https://console-one.example", "https://console-two.example"}, o.epsConf.CORS)
+	require.Equal(t, []string{"etcd-one.internal", "etcd-two.internal"}, o.epsConf.HostWhitelist)
 }
 
 func TestTransportPolicyDefaultsMatchEtcd(t *testing.T) {
@@ -124,6 +128,8 @@ func TestTransportPolicyDefaultsMatchEtcd(t *testing.T) {
 	require.Equal(t, "simple", o.epsConf.AuthToken)
 	require.Equal(t, uint(10), o.epsConf.BcryptCost)
 	require.Equal(t, uint(300), o.epsConf.AuthTokenTTL)
+	require.Equal(t, []string{"*"}, o.epsConf.CORS)
+	require.Equal(t, []string{"*"}, o.epsConf.HostWhitelist)
 }
 
 // TestWatchProgressNotifyIntervalValidation locks the k8s-1.37-review guard:

@@ -84,6 +84,12 @@ type Config struct {
 	// info-disclosure surface; it is never exposed on the client data port (#32).
 	EnablePprof bool
 
+	// CORS and HostWhitelist mirror etcd's client HTTP access controls. An empty
+	// list or "*" allows all. HostWhitelist is enforced only on plaintext HTTP;
+	// TLS already prevents DNS rebinding from redirecting a browser to this port.
+	CORS          []string
+	HostWhitelist []string
+
 	// EnableEtcdCompatibility is the flag if KubeWharf should try to be compatible with etcd3
 	EnableEtcdCompatibility bool
 

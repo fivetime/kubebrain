@@ -58,6 +58,92 @@ func newHttpServerWithHandlers(handlersMaps ...map[string]http.Handler) exposedS
 	return newHttpServer(mux)
 }
 
+func newHTTPAccessControlledServer(cors, hostWhitelist []string, handlersMaps ...map[string]http.Handler) exposedServer {
+	mux := http.NewServeMux()
+	for _, handlersMap := range handlersMaps {
+		for pattern, handler := range handlersMap {
+			mux.Handle(pattern, handler)
+		}
+	}
+	return newHttpServer(newHTTPAccessController(cors, hostWhitelist, mux))
+}
+
+type httpAccessController struct {
+	cors          map[string]struct{}
+	hostWhitelist map[string]struct{}
+	next          http.Handler
+}
+
+func newHTTPAccessController(cors, hostWhitelist []string, next http.Handler) http.Handler {
+	return &httpAccessController{
+		cors:          stringSet(cors),
+		hostWhitelist: stringSet(hostWhitelist),
+		next:          next,
+	}
+}
+
+func stringSet(values []string) map[string]struct{} {
+	set := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		set[value] = struct{}{}
+	}
+	return set
+}
+
+func allows(set map[string]struct{}, value string) bool {
+	if len(set) == 0 {
+		return true
+	}
+	if _, ok := set["*"]; ok {
+		return true
+	}
+	_, ok := set[value]
+	return ok
+}
+
+func requestHostname(req *http.Request) string {
+	host, _, err := net.SplitHostPort(req.Host)
+	if err == nil {
+		return host
+	}
+	return req.Host
+}
+
+func (ac *httpAccessController) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	host := requestHostname(req)
+	if req.TLS == nil && !allows(ac.hostWhitelist, host) {
+		http.Error(w, fmt.Sprintf(`
+etcd received your request, but the Host header was unrecognized.
+
+To fix this, choose one of the following options:
+- Enable TLS, then any HTTPS request will be allowed.
+- Add the hostname you want to use to the whitelist in settings.
+  - e.g. etcd --host-whitelist %q
+
+This requirement has been added to help prevent DNS Rebinding attacks (CVE-2018-5702).
+`, host), http.StatusMisdirectedRequest)
+		return
+	}
+
+	origin := req.Header.Get("Origin")
+	if allows(ac.cors, "*") {
+		addCORSHeaders(w, "*")
+	} else if origin != "" && allows(ac.cors, origin) {
+		addCORSHeaders(w, origin)
+	}
+	if req.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	ac.next.ServeHTTP(w, req)
+}
+
+func addCORSHeaders(w http.ResponseWriter, origin string) {
+	w.Header().Add("Access-Control-Allow-Methods", "POST, GET, OPTIONS, PUT, DELETE")
+	w.Header().Add("Access-Control-Allow-Origin", origin)
+	w.Header().Add("Access-Control-Allow-Headers", "accept, content-type, authorization")
+}
+
 func newHttpServer(handler http.Handler) exposedServer {
 	svr := &http.Server{
 		Handler: handler,

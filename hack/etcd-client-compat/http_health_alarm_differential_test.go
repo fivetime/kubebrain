@@ -21,6 +21,9 @@ type httpHealthAlarmOutcome struct {
 	Body                string
 	ContentType         string
 	XContentTypeOptions string
+	AllowMethods        string
+	AllowOrigin         string
+	AllowHeaders        string
 }
 
 func TestHTTPHealthAlarmDifferentialAgainstReferenceEtcd(t *testing.T) {
@@ -70,8 +73,10 @@ func runHTTPHealthAlarmScenario(t *testing.T, endpoint string, verifyReady bool)
 	baseURL := scheme + grpcEndpoint
 	client := &http.Client{Timeout: 5 * time.Second}
 	outcomes := make([]httpHealthAlarmOutcome, 0, 5)
-	record := func(name, path string) {
-		response, getErr := client.Get(baseURL + path)
+	record := func(name, method, path string) {
+		request, requestErr := http.NewRequestWithContext(ctx, method, baseURL+path, nil)
+		require.NoError(t, requestErr, name)
+		response, getErr := client.Do(request)
 		require.NoError(t, getErr, name)
 		body, readErr := io.ReadAll(response.Body)
 		closeErr := response.Body.Close()
@@ -83,19 +88,23 @@ func runHTTPHealthAlarmScenario(t *testing.T, endpoint string, verifyReady bool)
 			Body:                strings.TrimSpace(string(body)),
 			ContentType:         response.Header.Get("Content-Type"),
 			XContentTypeOptions: response.Header.Get("X-Content-Type-Options"),
+			AllowMethods:        response.Header.Get("Access-Control-Allow-Methods"),
+			AllowOrigin:         response.Header.Get("Access-Control-Allow-Origin"),
+			AllowHeaders:        response.Header.Get("Access-Control-Allow-Headers"),
 		})
 	}
 
-	record("healthy", "/health")
+	record("healthy", http.MethodGet, "/health")
+	record("options", http.MethodOptions, "/health")
 	_, err = maintenance.Alarm(ctx, &etcdserverpb.AlarmRequest{
 		Action:   etcdserverpb.AlarmRequest_ACTIVATE,
 		MemberID: memberID,
 		Alarm:    etcdserverpb.AlarmType_NOSPACE,
 	})
 	require.NoError(t, err)
-	record("active", "/health")
-	record("active-serializable", "/health?serializable=true")
-	record("active-excluded", "/health?exclude=NOSPACE")
+	record("active", http.MethodGet, "/health")
+	record("active-serializable", http.MethodGet, "/health?serializable=true")
+	record("active-excluded", http.MethodGet, "/health?exclude=NOSPACE")
 	if verifyReady {
 		requireHTTPHealthStatus(t, client, baseURL+"/ready", http.StatusOK)
 		requireHTTPHealthStatus(t, client, baseURL+"/readyz?verbose", http.StatusOK)
@@ -106,7 +115,7 @@ func runHTTPHealthAlarmScenario(t *testing.T, endpoint string, verifyReady bool)
 		Alarm:    etcdserverpb.AlarmType_NOSPACE,
 	})
 	require.NoError(t, err)
-	record("disarmed", "/health")
+	record("disarmed", http.MethodGet, "/health")
 	return outcomes
 }
 
