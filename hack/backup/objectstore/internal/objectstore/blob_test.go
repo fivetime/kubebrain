@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/stretchr/testify/require"
 )
@@ -124,4 +125,104 @@ func TestArchiveBlobRejectsEmptyOversizedAndNonCanonicalReceipt(t *testing.T) {
 	require.NoError(t, os.WriteFile(request.ReceiptOutput, append([]byte(" "), data...), 0o600))
 	_, err = ReadBlobReceipt(request.ReceiptOutput)
 	require.ErrorContains(t, err, "not canonical")
+}
+
+func TestReadBlobRequiresOneProtectedExactVersion(t *testing.T) {
+	now := time.Unix(2_000_000_000, 0).UTC()
+	body := []byte("{\"format\":\"sample.v1\"}\n")
+	input := filepath.Join(t.TempDir(), "sample.json")
+	require.NoError(t, os.WriteFile(input, body, 0o600))
+	client := &fakeS3{}
+	_, err := ArchiveBlob(context.Background(), client, BlobRequest{
+		Input: input, ArtifactFormat: "sample.v1", ArtifactID: "slot-100",
+		Instance: "instance-a", ObjectStoreID: "store-a", Bucket: "metering",
+		ObjectKey: "samples/slot-100.json", RetentionMode: "COMPLIANCE",
+		RetainUntilUnix: now.Add(24 * time.Hour).Unix(),
+		ReceiptOutput:   filepath.Join(t.TempDir(), "archive.json"), Now: now,
+	})
+	require.NoError(t, err)
+	page := &s3.ListObjectVersionsOutput{Versions: []types.ObjectVersion{{
+		Key: aws.String("samples/slot-100.json"), VersionId: aws.String("version-1"),
+		Size: aws.Int64(int64(len(body))),
+	}}}
+	client.listOutputs = []*s3.ListObjectVersionsOutput{page, page, page}
+	output := filepath.Join(t.TempDir(), "download.json")
+	request := BlobReadRequest{
+		Output: output, ArtifactFormat: "sample.v1", ArtifactID: "slot-100",
+		Instance: "instance-a", ObjectStoreID: "store-a", Bucket: "metering",
+		ObjectKey: "samples/slot-100.json", MinRetainUntilUnix: now.Add(time.Hour).Unix(),
+	}
+	receipt, err := ReadBlob(context.Background(), client, request)
+	require.NoError(t, err)
+	require.Equal(t, BlobReadReceiptFormat, receipt.Format)
+	require.Equal(t, "version-1", receipt.VersionID)
+	require.Equal(t, "COMPLIANCE", receipt.RetentionMode)
+	downloaded, err := os.ReadFile(output)
+	require.NoError(t, err)
+	require.Equal(t, body, downloaded)
+	retried, err := ReadBlob(context.Background(), client, request)
+	require.NoError(t, err)
+	require.Equal(t, receipt, retried)
+
+	require.NoError(t, os.WriteFile(output, []byte("conflict"), 0o600))
+	_, err = ReadBlob(context.Background(), client, request)
+	require.ErrorContains(t, err, "refusing to overwrite")
+}
+
+func TestReadBlobFailsClosedOnVersionRetentionAndContentDrift(t *testing.T) {
+	now := time.Unix(2_000_000_000, 0).UTC()
+	newFixture := func(t *testing.T) (*fakeS3, BlobReadRequest) {
+		body := []byte("{\"format\":\"sample.v1\"}\n")
+		input := filepath.Join(t.TempDir(), "sample.json")
+		require.NoError(t, os.WriteFile(input, body, 0o600))
+		client := &fakeS3{}
+		_, err := ArchiveBlob(context.Background(), client, BlobRequest{
+			Input: input, ArtifactFormat: "sample.v1", ArtifactID: "slot-100",
+			Instance: "instance-a", ObjectStoreID: "store-a", Bucket: "metering",
+			ObjectKey: "samples/slot-100.json", RetentionMode: "COMPLIANCE",
+			RetainUntilUnix: now.Add(24 * time.Hour).Unix(),
+			ReceiptOutput:   filepath.Join(t.TempDir(), "archive.json"), Now: now,
+		})
+		require.NoError(t, err)
+		client.listOutputs = []*s3.ListObjectVersionsOutput{{Versions: []types.ObjectVersion{{
+			Key: aws.String("samples/slot-100.json"), VersionId: aws.String("version-1"),
+			Size: aws.Int64(int64(len(body))),
+		}}}}
+		return client, BlobReadRequest{
+			Output:         filepath.Join(t.TempDir(), "download.json"),
+			ArtifactFormat: "sample.v1", ArtifactID: "slot-100", Instance: "instance-a",
+			ObjectStoreID: "store-a", Bucket: "metering", ObjectKey: "samples/slot-100.json",
+			MinRetainUntilUnix: now.Add(time.Hour).Unix(),
+		}
+	}
+	t.Run("duplicate version", func(t *testing.T) {
+		client, request := newFixture(t)
+		client.listOutputs[0].Versions = append(client.listOutputs[0].Versions,
+			types.ObjectVersion{
+				Key: aws.String(request.ObjectKey), VersionId: aws.String("version-0"),
+				Size: aws.Int64(int64(len(client.body))),
+			})
+		_, err := ReadBlob(context.Background(), client, request)
+		require.ErrorContains(t, err, "exactly one version")
+	})
+	t.Run("delete marker", func(t *testing.T) {
+		client, request := newFixture(t)
+		client.listOutputs[0].DeleteMarkers = []types.DeleteMarkerEntry{{
+			Key: aws.String(request.ObjectKey), VersionId: aws.String("marker-1"),
+		}}
+		_, err := ReadBlob(context.Background(), client, request)
+		require.ErrorContains(t, err, "delete marker")
+	})
+	t.Run("retention too short", func(t *testing.T) {
+		client, request := newFixture(t)
+		request.MinRetainUntilUnix = now.Add(48 * time.Hour).Unix()
+		_, err := ReadBlob(context.Background(), client, request)
+		require.ErrorContains(t, err, "metadata does not match")
+	})
+	t.Run("corrupt content", func(t *testing.T) {
+		client, request := newFixture(t)
+		client.corruptGet = true
+		_, err := ReadBlob(context.Background(), client, request)
+		require.ErrorContains(t, err, "protected metadata")
+	})
 }

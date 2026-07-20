@@ -64,12 +64,19 @@ func TestCollectorBuildsCanonicalCompleteSample(t *testing.T) {
 	retried, err := WriteAtomic(output, sample, 5*time.Minute)
 	require.NoError(t, err)
 	require.Equal(t, status, retried)
+	read, err := ReadSample(output, 5*time.Minute)
+	require.NoError(t, err)
+	require.Equal(t, sample, read)
 
 	changed := sample
 	changed.Metrics = append([]MetricValue(nil), sample.Metrics...)
 	changed.Metrics[0].Value++
 	_, err = WriteAtomic(output, changed, 5*time.Minute)
 	require.ErrorContains(t, err, "refusing to overwrite")
+
+	require.NoError(t, os.WriteFile(output, append([]byte(" "), first...), 0o600))
+	_, err = ReadSample(output, 5*time.Minute)
+	require.ErrorContains(t, err, "not canonical")
 }
 
 func TestCollectorFailsClosedOnIncompleteDuplicateStaleAndInvalidValues(t *testing.T) {

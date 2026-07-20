@@ -268,6 +268,35 @@ func WriteAtomic(path string, sample Sample, maxStaleness time.Duration) (Status
 	return status, nil
 }
 
+func ReadSample(path string, maxStaleness time.Duration) (Sample, error) {
+	var sample Sample
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return sample, err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&sample); err != nil {
+		return sample, fmt.Errorf("decode metering sample: %w", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return sample, errors.New("metering sample contains trailing JSON")
+	}
+	if err := sample.Validate(maxStaleness); err != nil {
+		return sample, err
+	}
+	canonical, err := json.Marshal(sample)
+	if err != nil {
+		return sample, err
+	}
+	canonical = append(canonical, '\n')
+	if !bytes.Equal(data, canonical) {
+		return sample, errors.New("metering sample is not canonical")
+	}
+	return sample, nil
+}
+
 func joinURLPath(base, suffix string) string {
 	return string(bytes.TrimRight([]byte(base), "/")) + suffix
 }

@@ -111,8 +111,8 @@ func (a *Archiver) Process(ctx context.Context) (Sample, []byte, error) {
 		)
 	}
 	if err := validateExecutorReceipt(
-		output, artifactID, a.Instance, a.ObjectStoreID, a.Bucket, objectKey,
-		a.RetentionMode, retainUntil, status,
+		output, Format, artifactID, a.Instance, a.ObjectStoreID, a.Bucket, objectKey,
+		a.RetentionMode, retainUntil, status.SHA256, status.Bytes,
 	); err != nil {
 		return Sample{}, output, err
 	}
@@ -121,9 +121,10 @@ func (a *Archiver) Process(ctx context.Context) (Sample, []byte, error) {
 
 func validateExecutorReceipt(
 	data []byte,
-	artifactID, instance, objectStoreID, bucket, objectKey, retentionMode string,
+	artifactFormat, artifactID, instance, objectStoreID, bucket, objectKey, retentionMode string,
 	retainUntil int64,
-	status Status,
+	artifactSHA256 string,
+	objectBytes int64,
 ) error {
 	var receipt struct {
 		Format          string `json:"format"`
@@ -151,10 +152,10 @@ func validateExecutorReceipt(
 		return errors.New("metering archive receipt contains trailing JSON")
 	}
 	if receipt.Format != "kubebrain.object-immutable-blob.receipt.v1" ||
-		receipt.ArtifactFormat != Format || receipt.ArtifactID != artifactID ||
+		receipt.ArtifactFormat != artifactFormat || receipt.ArtifactID != artifactID ||
 		receipt.Instance != instance || receipt.ObjectStoreID != objectStoreID ||
 		receipt.Bucket != bucket || receipt.ObjectKey != objectKey || receipt.VersionID == "" ||
-		receipt.ArtifactSHA256 != status.SHA256 || receipt.ObjectBytes != status.Bytes ||
+		receipt.ArtifactSHA256 != artifactSHA256 || receipt.ObjectBytes != objectBytes ||
 		receipt.RetentionMode != retentionMode || receipt.RetainUntilUnix != retainUntil ||
 		!receipt.RemoteVerified || receipt.ArchivedAtUnix <= 0 ||
 		receipt.ArchivedAtUnix >= receipt.RetainUntilUnix {

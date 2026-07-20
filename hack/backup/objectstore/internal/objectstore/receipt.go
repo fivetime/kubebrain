@@ -15,6 +15,7 @@ const ReceiptFormat = "kubebrain.object-backup.receipt.v1"
 const DeletionReceiptFormat = "kubebrain.object-backup-deletion.receipt.v1"
 const AuditReceiptFormat = "kubebrain.object-operation-audit.receipt.v1"
 const BlobReceiptFormat = "kubebrain.object-immutable-blob.receipt.v1"
+const BlobReadReceiptFormat = "kubebrain.object-immutable-blob-read.receipt.v1"
 
 type Receipt struct {
 	Format           string `json:"format"`
@@ -87,6 +88,22 @@ type BlobReceipt struct {
 	RetainUntilUnix int64  `json:"retain_until_unix"`
 	RemoteVerified  bool   `json:"remote_verified"`
 	ArchivedAtUnix  int64  `json:"archived_at_unix"`
+}
+
+type BlobReadReceipt struct {
+	Format          string `json:"format"`
+	ArtifactFormat  string `json:"artifact_format"`
+	ArtifactID      string `json:"artifact_id"`
+	Instance        string `json:"instance"`
+	ObjectStoreID   string `json:"object_store_id"`
+	Bucket          string `json:"bucket"`
+	ObjectKey       string `json:"object_key"`
+	VersionID       string `json:"version_id"`
+	ArtifactSHA256  string `json:"artifact_sha256"`
+	ObjectBytes     int64  `json:"object_bytes"`
+	RetentionMode   string `json:"retention_mode"`
+	RetainUntilUnix int64  `json:"retain_until_unix"`
+	RemoteVerified  bool   `json:"remote_verified"`
 }
 
 func (r Receipt) Validate() error {
@@ -203,6 +220,17 @@ func ReadBlobReceipt(path string) (BlobReceipt, error) {
 		return receipt, err
 	}
 	return receipt, nil
+}
+
+func (r BlobReadReceipt) Validate() error {
+	if r.Format != BlobReadReceiptFormat || r.ArtifactFormat == "" || r.ArtifactID == "" ||
+		r.Instance == "" || r.ObjectStoreID == "" || r.Bucket == "" || r.ObjectKey == "" ||
+		r.VersionID == "" || !validHexSHA256(r.ArtifactSHA256) || r.ObjectBytes <= 0 ||
+		(r.RetentionMode != "COMPLIANCE" && r.RetentionMode != "GOVERNANCE") ||
+		r.RetainUntilUnix <= 0 || !r.RemoteVerified {
+		return errors.New("object immutable blob read receipt is incomplete")
+	}
+	return nil
 }
 
 func decodeCanonicalReceipt(data []byte, destination any, description string) error {

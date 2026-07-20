@@ -409,7 +409,9 @@ func (f *fakeS3) GetObject(_ context.Context, _ *s3.GetObjectInput, _ ...func(*s
 		body = append([]byte(nil), body...)
 		body[0] ^= 0xff
 	}
-	return &s3.GetObjectOutput{Body: io.NopCloser(bytes.NewReader(body))}, nil
+	return &s3.GetObjectOutput{
+		Body: io.NopCloser(bytes.NewReader(body)), VersionId: aws.String(f.versionID),
+	}, nil
 }
 
 func (f *fakeS3) GetObjectRetention(

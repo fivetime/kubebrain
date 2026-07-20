@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"time"
 
@@ -31,6 +32,17 @@ type BlobRequest struct {
 	RetainUntilUnix int64
 	ReceiptOutput   string
 	Now             time.Time
+}
+
+type BlobReadRequest struct {
+	Output             string
+	ArtifactFormat     string
+	ArtifactID         string
+	Instance           string
+	ObjectStoreID      string
+	Bucket             string
+	ObjectKey          string
+	MinRetainUntilUnix int64
 }
 
 func ArchiveBlob(ctx context.Context, client S3API, request BlobRequest) (BlobReceipt, error) {
@@ -151,6 +163,147 @@ func ArchiveBlob(ctx context.Context, client S3API, request BlobRequest) (BlobRe
 		return BlobReceipt{}, err
 	}
 	return receipt, nil
+}
+
+func ReadBlob(ctx context.Context, client S3API, request BlobReadRequest) (BlobReadReceipt, error) {
+	if request.Output == "" || request.ArtifactFormat == "" || request.ArtifactID == "" ||
+		request.Instance == "" || request.ObjectStoreID == "" || request.Bucket == "" ||
+		request.ObjectKey == "" || request.MinRetainUntilUnix <= 0 {
+		return BlobReadReceipt{}, errors.New("immutable blob read request is incomplete")
+	}
+	versions, deleteMarkers, err := listAllVersions(ctx, client, request.Bucket, request.ObjectKey)
+	if err != nil {
+		return BlobReadReceipt{}, err
+	}
+	var version types.ObjectVersion
+	matches := 0
+	for _, candidate := range versions {
+		if aws.ToString(candidate.Key) == request.ObjectKey {
+			version = candidate
+			matches++
+		}
+	}
+	for _, marker := range deleteMarkers {
+		if aws.ToString(marker.Key) == request.ObjectKey {
+			return BlobReadReceipt{}, errors.New("immutable blob has a delete marker")
+		}
+	}
+	if matches != 1 {
+		return BlobReadReceipt{}, fmt.Errorf("immutable blob must have exactly one version, got %d", matches)
+	}
+	versionID := aws.ToString(version.VersionId)
+	head, err := client.HeadObject(ctx, &s3.HeadObjectInput{
+		Bucket: aws.String(request.Bucket), Key: aws.String(request.ObjectKey),
+		VersionId: aws.String(versionID),
+	})
+	if err != nil {
+		return BlobReadReceipt{}, fmt.Errorf("read immutable blob metadata: %w", err)
+	}
+	size := aws.ToInt64(head.ContentLength)
+	digest := head.Metadata["kubebrain-artifact-sha256"]
+	retainUntilUnix, err := strconv.ParseInt(head.Metadata["kubebrain-retain-until-unix"], 10, 64)
+	if err != nil {
+		return BlobReadReceipt{}, errors.New("immutable blob retain-until metadata is invalid")
+	}
+	if aws.ToString(head.VersionId) != versionID || size <= 0 || size > maxImmutableBlobBytes ||
+		aws.ToInt64(version.Size) != size || !validHexSHA256(digest) ||
+		head.Metadata["kubebrain-format"] != request.ArtifactFormat ||
+		head.Metadata["kubebrain-artifact-id"] != request.ArtifactID ||
+		head.Metadata["kubebrain-instance"] != request.Instance ||
+		head.Metadata["kubebrain-object-store-id"] != request.ObjectStoreID ||
+		head.Metadata["kubebrain-object-bytes"] != strconv.FormatInt(size, 10) ||
+		retainUntilUnix < request.MinRetainUntilUnix {
+		return BlobReadReceipt{}, errors.New("immutable blob metadata does not match the read request")
+	}
+	retention, err := client.GetObjectRetention(ctx, &s3.GetObjectRetentionInput{
+		Bucket: aws.String(request.Bucket), Key: aws.String(request.ObjectKey),
+		VersionId: aws.String(versionID),
+	})
+	if err != nil {
+		return BlobReadReceipt{}, fmt.Errorf("read immutable blob retention: %w", err)
+	}
+	if retention.Retention == nil || retention.Retention.RetainUntilDate == nil ||
+		(retention.Retention.Mode != types.ObjectLockRetentionModeCompliance &&
+			retention.Retention.Mode != types.ObjectLockRetentionModeGovernance) ||
+		retention.Retention.RetainUntilDate.Unix() != retainUntilUnix {
+		return BlobReadReceipt{}, errors.New("immutable blob retention does not match metadata")
+	}
+	output, err := client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(request.Bucket), Key: aws.String(request.ObjectKey),
+		VersionId: aws.String(versionID),
+	})
+	if err != nil {
+		return BlobReadReceipt{}, fmt.Errorf("download immutable blob version: %w", err)
+	}
+	defer output.Body.Close()
+	if aws.ToString(output.VersionId) != versionID {
+		return BlobReadReceipt{}, errors.New("downloaded immutable blob returned a different version ID")
+	}
+	body, err := io.ReadAll(io.LimitReader(output.Body, maxImmutableBlobBytes+1))
+	if err != nil {
+		return BlobReadReceipt{}, err
+	}
+	sum := sha256.Sum256(body)
+	if int64(len(body)) != size || fmt.Sprintf("%x", sum[:]) != digest {
+		return BlobReadReceipt{}, errors.New("downloaded immutable blob differs from protected metadata")
+	}
+	if err := writeBlobOutputAtomic(request.Output, body); err != nil {
+		return BlobReadReceipt{}, err
+	}
+	receipt := BlobReadReceipt{
+		Format: BlobReadReceiptFormat, ArtifactFormat: request.ArtifactFormat,
+		ArtifactID: request.ArtifactID, Instance: request.Instance,
+		ObjectStoreID: request.ObjectStoreID, Bucket: request.Bucket, ObjectKey: request.ObjectKey,
+		VersionID: versionID, ArtifactSHA256: digest, ObjectBytes: size,
+		RetentionMode: string(retention.Retention.Mode), RetainUntilUnix: retainUntilUnix,
+		RemoteVerified: true,
+	}
+	if err := receipt.Validate(); err != nil {
+		return BlobReadReceipt{}, err
+	}
+	return receipt, nil
+}
+
+func writeBlobOutputAtomic(path string, body []byte) error {
+	if existing, err := os.ReadFile(path); err == nil {
+		if bytes.Equal(existing, body) {
+			return nil
+		}
+		return fmt.Errorf("refusing to overwrite immutable blob output %q", path)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	dir := filepath.Dir(path)
+	temp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tempName := temp.Name()
+	defer os.Remove(tempName)
+	if err := temp.Chmod(0o600); err != nil {
+		temp.Close()
+		return err
+	}
+	if _, err := temp.Write(body); err != nil {
+		temp.Close()
+		return err
+	}
+	if err := temp.Sync(); err != nil {
+		temp.Close()
+		return err
+	}
+	if err := temp.Close(); err != nil {
+		return err
+	}
+	if err := os.Link(tempName, path); err != nil {
+		return err
+	}
+	directory, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer directory.Close()
+	return directory.Sync()
 }
 
 func readBoundedBlob(path string) ([]byte, error) {
