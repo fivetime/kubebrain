@@ -1054,6 +1054,9 @@ hack/dev/verify.sh
   发布验证还必须让未 Unlock/Resign 的自动 lease 自然过期，确认内部 keepalive 已停止、
   lease TTL 最终为 -1 且键自动删除。到期前最后一秒 TTL=0 在 JSON 中会省略 `TTL`
   字段但仍保留 `grantedTTL=60`，不能将该瞬间误判为 lease 已不存在。
+  多副本换主会按 etcd `lessor.Promote` 语义从 granted TTL 一次性恢复未 checkpoint 的
+  短 lease，因此换主后 TTL 回到约 60 秒不是 keepalive 泄漏。门禁应记录换主前后的 TTL，
+  确认发生这次 promotion，并继续等待它最终到期及删除键；不要用原始创建时间作为到期上限。
 - `Auth` 已实现 etcd 兼容的用户、角色、key-range 权限和 token 生命周期，并覆盖
   Watch/Lease 持续鉴权及多副本故障转移；生产启用流程见 Auth 设计与兼容性计划。
 

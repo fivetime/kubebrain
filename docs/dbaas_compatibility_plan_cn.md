@@ -7221,6 +7221,35 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   均通过。未发现运行时代码差异；多副本 leader replacement 跨越自动 lease 到期边界
   仍属于后续故障 soak。
 
+- **Compatibility A363 zero-lease expiry across leader replacement（2026-07-20）**：
+  提交 `b53d993` 增加真实三副本破坏性门禁，把 A362 的自然到期场景跨越一次当前 leader
+  replacement。测试经 HTTP Lock/Campaign dedicated service 创建两个 lease=0 session，
+  从返回键 metadata 和 Campaign leader 分别取得两个独立 lease ID，确认 granted TTL=60
+  且倒计时到不高于 30 秒后，通过每个 Pod 的 `/election` 证明受害者 `IsLeader=true`，再
+  删除该 Pod并等待 StatefulSet 恢复。successor 必须能查询原 lease/键，并在最多 75 秒内
+  让两个 LeaseTimeToLive 都返回 -1、两个队列键都消失；测试失败时才执行 revoke 兜底。
+
+  首轮候选场景曾按“换主不能刷新 TTL”设计，45 秒后仍未过期。对照 `/root/etcd`
+  `server/lease/lessor.go` 后确认这不是运行时差异：upstream `lessor.Promote(electionTimeout)`
+  会对无 remaining-TTL checkpoint 的 lease 调用 `refresh`，从 granted TTL 加 election
+  timeout 重建 expiry；KubeBrain 同样从 granted TTL 恢复这类短 lease。门禁因此固定真正
+  的兼容不变量：换主前 TTL 已降至约 30，换主后只允许一次性恢复到不高于 65 秒，随后在
+  没有第二次换主时必须自然到期，不能被隐藏 keepalive 永久续租。修正后的候选场景
+  90.48 秒通过，race instrumentation 下 91.52 秒通过。
+
+  exact image 从 `b53d99376eb0c08c50e4a68df8d89bda6a1a2f48` 的 `git archive`
+  构建，tag `kubebrain:a363-zero-lease-failover`，image ID
+  `sha256:355be78f1400bb5bf9bef7d748dea86eb95f88225ec7ec12755b9ceac0ab5d00`，
+  OCI version `0.0.0-a363.1`、revision、Go 1.26.5/linux/amd64、TiKV 和运行用户
+  `65532:65532` 均匹配。在真实 3 PD/3 TiKV 独立
+  `a363-zero-lease-failover-final` keyspace 上，精确镜像最终场景 90.72 秒通过：删除前
+  `kubebrain-2` UID `2a6960d8-8bdf-4ccc-9413-113fc2a09624` 且为当前 leader，替换后 UID
+  `05b92b4e-bf02-49cc-b8c0-7426a633de06`；三副本 Ready、restartCount=0、运行时 digest
+  `sha256:672154cf2cfe166d95f4b13b57d858f3625e0e8e8246dfa4b8ee9cfc3d53db33`
+  一致，只读根文件系统、non-root、drop ALL、RuntimeDefault seccomp 生效，完整负载后日志
+  无 initialization failure/panic/fatal/segmentation/data race/storage error。完整根测试、
+  根 vet、兼容子模块 vet 和真实 race 均通过；未发现需要修改的运行时代码。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
