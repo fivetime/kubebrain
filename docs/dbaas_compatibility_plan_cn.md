@@ -7336,6 +7336,29 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   race；auth 启用时 follower 的 unauthenticated `Maintenance/Status` 健康探测仍产生
   `user name is empty` 告警，属于后续需消除的内部探测噪声，不影响本轮请求正确性。
 
+- **Compatibility A367 Auth-safe peer readiness（2026-07-20）**：A366 三副本验证发现
+  follower 的共享 leader client 每次 `checkClientConn` 都用未认证的
+  `Maintenance.Status` 探测传输；Auth 开启后 leader 正确拒绝它，虽然旧代码把该应用层错误
+  当作 transport ready，但每秒持续产生 `etcdserver: user name is empty` 告警，掩盖真实认证
+  故障。提交 `ba21258` 改为 peer listener 已注册且不经过 etcd Auth 的标准
+  `grpc.health.v1.Health/Check`，并要求状态明确为 `SERVING`。这同时证明 TCP、mTLS、HTTP/2、
+  service routing 和服务初始化完成；不签发内部 root token，`NOT_SERVING`、未注册服务和连接
+  错误均保持 unavailable。单元测试覆盖 SERVING/NOT_SERVING，proxy 包 race、完整根测试和
+  根 vet 通过。
+
+  exact image `kubebrain:a367-peer-health-readiness` 从 `ba21258` 干净归档构建，image ID
+  `sha256:d1bf1b6ada0e2fabcff0118e042debb7e5fd95b5bc33a1c2e6dc4a14c6750e36`，OCI version
+  `0.0.0-a367.1`、revision `ba212586f26c8b0856c128be16a5c4dc69b5cc83`、Go
+  1.26.5/linux/amd64、TiKV、运行用户 `65532:65532`。在独立 3 PD/3 TiKV、隔离
+  `a367-peer-health-final` keyspace 和三 KubeBrain 副本上启用 Auth 后，经 NodePort 发出
+  30 次 root Put；两个 follower 均实际记录 `forward put`，持续 12 秒的 leader readiness
+  探测无 `Maintenance/Status`、`user name is empty`、panic/fatal/proxy error。三个 Pod UID
+  为 `a1d1acfe-eba9-4368-8da0-54c18835ed5f`、
+  `98832d4a-fc5a-4644-9d78-a781acef25d9`、`708793a1-9964-44da-b44f-76194b3706c2`，
+  均 Ready、restartCount=0、runtime digest 一致，non-root、只读根文件系统、drop ALL 和
+  RuntimeDefault seccomp 生效。启动首秒仅有 headless Service DNS 尚未发布时的预期重试，
+  DNS 就绪后两个 follower 均通过 Health Check 连接 leader。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range

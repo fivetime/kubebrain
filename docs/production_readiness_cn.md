@@ -1066,6 +1066,8 @@ hack/dev/verify.sh
   特殊：HTTP 500、gRPC code 2(Unknown)，消息仍为 permission denied/invalid auth token。
   Election Observe/底层 Watch 则只在创建时鉴权：follower 转发必须携带 caller token，但
   已建立流不能因后续撤权或改密被追溯关闭；新建的无权限流按 upstream 返回 HTTP 200 空体。
+  follower 对 leader 的内部连接就绪检查必须使用 peer `grpc.health.v1.Health/Check` 并要求
+  `SERVING`，不得用未认证的 Maintenance RPC，也不得为探测签发或配置内部 root token。
 
 ## 仍需补齐或确认
 
