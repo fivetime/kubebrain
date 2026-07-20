@@ -332,6 +332,26 @@ func TestNormalizeWatchCreateRequestMatchesEtcd(t *testing.T) {
 	})
 }
 
+func TestCanceledWatchCreateResponseAlwaysHasHeader(t *testing.T) {
+	const revision = uint64(42)
+	for _, reason := range []string{
+		"",
+		rpctypes.ErrCompacted.Error(),
+		rpctypes.ErrPermissionDenied.Error(),
+		"mvcc: duplicate watch ID provided on the WatchStream",
+		"mvcc: watcher range is empty",
+		watchQuotaCancelReason,
+	} {
+		response := canceledWatchCreateResponse(revision, reason)
+		require.NotNil(t, response.Header)
+		require.Equal(t, int64(revision), response.Header.Revision)
+		require.Equal(t, int64(-1), response.WatchId)
+		require.True(t, response.Created)
+		require.True(t, response.Canceled)
+		require.Equal(t, reason, response.CancelReason)
+	}
+}
+
 func TestWatchRequestedIDDuplicateAndUnknownCancelMatchEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

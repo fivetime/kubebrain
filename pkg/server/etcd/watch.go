@@ -51,6 +51,16 @@ const watchQuotaCancelReason = "etcdserver: too many requests"
 
 const watchControlBuffer = 16
 
+func canceledWatchCreateResponse(revision uint64, reason string) *etcdserverpb.WatchResponse {
+	return &etcdserverpb.WatchResponse{
+		Header:       txnHeader(int64(revision)),
+		WatchId:      -1,
+		Created:      true,
+		Canceled:     true,
+		CancelReason: reason,
+	}
+}
+
 type watchControlResponse struct {
 	resp *etcdserverpb.WatchResponse
 	done chan error
@@ -273,10 +283,9 @@ func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) error {
 			if r.StartRevision < 0 {
 				// etcd treats a negative start revision as an immediately canceled
 				// create, while keeping the multiplexed stream usable for later watches.
-				if err := w.SendControlAndWait(&etcdserverpb.WatchResponse{
-					Header: txnHeader(int64(w.responseRevision())), WatchId: -1,
-					Created: true, Canceled: true, CancelReason: rpctypes.ErrCompacted.Error(),
-				}); err != nil {
+				if err := w.SendControlAndWait(canceledWatchCreateResponse(
+					w.responseRevision(), rpctypes.ErrCompacted.Error(),
+				)); err != nil {
 					return err
 				}
 				continue
@@ -286,10 +295,9 @@ func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) error {
 				authErr = caller.require(r.Key, r.RangeEnd, authpb.READ)
 			}
 			if authErr != nil {
-				if err := w.SendControlAndWait(&etcdserverpb.WatchResponse{
-					Header: txnHeader(int64(w.responseRevision())), WatchId: -1,
-					Created: true, Canceled: true, CancelReason: watchAuthCancelReason(authErr),
-				}); err != nil {
+				if err := w.SendControlAndWait(canceledWatchCreateResponse(
+					w.responseRevision(), watchAuthCancelReason(authErr),
+				)); err != nil {
 					return err
 				}
 				continue
@@ -414,29 +422,26 @@ func (w *watcher) start(c context.Context, r *etcdserverpb.WatchCreateRequest, p
 		if _, duplicate := w.watches[r.WatchId]; duplicate {
 			w.Unlock()
 			cancel()
-			_ = w.SendControl(&etcdserverpb.WatchResponse{
-				Header: txnHeader(int64(w.responseRevision())), WatchId: -1,
-				Created: true, Canceled: true, CancelReason: "mvcc: duplicate watch ID provided on the WatchStream",
-			})
+			_ = w.SendControl(canceledWatchCreateResponse(
+				w.responseRevision(), "mvcc: duplicate watch ID provided on the WatchStream",
+			))
 			return
 		}
 	}
 	if len(r.RangeEnd) != 0 && bytes.Compare(r.Key, r.RangeEnd) >= 0 {
 		w.Unlock()
 		cancel()
-		_ = w.SendControl(&etcdserverpb.WatchResponse{
-			Header: txnHeader(int64(w.responseRevision())), WatchId: -1,
-			Created: true, Canceled: true, CancelReason: "mvcc: watcher range is empty",
-		})
+		_ = w.SendControl(canceledWatchCreateResponse(
+			w.responseRevision(), "mvcc: watcher range is empty",
+		))
 		return
 	}
 	if !w.grpcServer.acquireWatch() {
 		w.Unlock()
 		cancel()
-		_ = w.SendControl(&etcdserverpb.WatchResponse{
-			Header: txnHeader(int64(w.responseRevision())), WatchId: -1,
-			Created: true, Canceled: true, CancelReason: watchQuotaCancelReason,
-		})
+		_ = w.SendControl(canceledWatchCreateResponse(
+			w.responseRevision(), watchQuotaCancelReason,
+		))
 		return
 	}
 	id, _ := w.allocateWatchIDLocked(r.WatchId)
