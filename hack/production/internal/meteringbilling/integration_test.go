@@ -190,11 +190,112 @@ func TestMeteringChargeV2AgainstObjectLockStore(t *testing.T) {
 	require.Error(t, err, string(output))
 }
 
+func TestMeteringSettlementAgainstObjectLockStore(t *testing.T) {
+	endpoint := os.Getenv("METERING_ARCHIVE_S3_ENDPOINT")
+	bucket := os.Getenv("METERING_ARCHIVE_S3_BUCKET")
+	executor := os.Getenv("METERING_ARCHIVE_EXECUTOR")
+	if endpoint == "" || bucket == "" || executor == "" {
+		t.Skip("set METERING_ARCHIVE_S3_ENDPOINT, METERING_ARCHIVE_S3_BUCKET, and METERING_ARCHIVE_EXECUTOR")
+	}
+	t.Setenv("S3_ENDPOINT", endpoint)
+	t.Setenv("S3_FORCE_PATH_STYLE", "true")
+
+	now := time.Now().UTC()
+	periodEnd := now.Add(-time.Hour).Truncate(24 * time.Hour)
+	periodStart := periodEnd.Add(-24 * time.Hour)
+	retainUntil := periodStart.Add(time.Hour).Add(7 * 24 * time.Hour).Unix()
+	basePrefix := "metering-settlement-integration-" + strconv.FormatInt(periodEnd.Unix(), 10)
+	dir := t.TempDir()
+	charge, _ := settlementCharge(t, periodStart)
+	chargePath := filepath.Join(dir, "charge.json")
+	chargeStatus, err := WriteChargeAtomic(chargePath, charge)
+	require.NoError(t, err)
+	artifactID := periodArtifactID("instance-a", periodStart, periodEnd)
+	chargeKey := basePrefix + "/charges/instance-a/" + periodStart.Format("2006/01/02") +
+		"/" + strconv.FormatInt(periodStart.Unix(), 10) + "-" +
+		strconv.FormatInt(periodEnd.Unix(), 10) + ".json"
+	chargeOutput := archiveForIntegration(
+		t, executor, bucket, chargePath, filepath.Join(dir, "charge.receipt.json"),
+		ChargeFormatV2, artifactID, "instance-a", chargeKey, retainUntil,
+	)
+	chargeReceipt, err := parseBlobReceipt(
+		chargeOutput, ChargeFormatV2, artifactID, "instance-a", "a315-minio",
+		bucket, chargeKey, retainUntil, chargeStatus.SHA256, chargeStatus.Bytes,
+	)
+	require.NoError(t, err)
+	chargeSource := Source{
+		ArtifactFormat: chargeReceipt.ArtifactFormat, ArtifactID: chargeReceipt.ArtifactID,
+		ObjectKey: chargeReceipt.ObjectKey, VersionID: chargeReceipt.VersionID,
+		ArtifactSHA256: chargeReceipt.ArtifactSHA256, ObjectBytes: chargeReceipt.ObjectBytes,
+		RetainUntilUnix: chargeReceipt.RetainUntilUnix,
+	}
+	invoiceID := "invoice-a319-" + strconv.FormatInt(periodEnd.Unix(), 10)
+	adjustment := validAdjustment(periodStart, chargeSource)
+	adjustment.ID = "credit-a319-" + strconv.FormatInt(periodEnd.Unix(), 10)
+	adjustment.InvoiceID = invoiceID
+	adjustment.Approval.ApprovalID = "approval-" + adjustment.ID
+	adjustmentPath := filepath.Join(dir, "adjustment.json")
+	_, err = WriteAdjustmentAtomic(adjustmentPath, adjustment)
+	require.NoError(t, err)
+	publisher := &SettlementPublisher{
+		Input: adjustmentPath, Kind: "adjustment", Executor: executor,
+		ObjectStoreID: "a315-minio", Bucket: bucket,
+		AdjustmentPrefix: basePrefix + "/adjustments",
+		PlanPrefix:       basePrefix + "/plans", RetentionMode: "COMPLIANCE",
+		RetentionDuration: 7 * 24 * time.Hour, Now: time.Now,
+	}
+	output, err := publisher.Publish(context.Background())
+	require.NoError(t, err, string(output))
+
+	plan := validInvoicePlan(periodStart, ChargeFormatV2, []string{adjustment.ID})
+	plan.ID = invoiceID
+	plan.Approval.ApprovalID = "approval-" + invoiceID
+	planPath := filepath.Join(dir, "plan.json")
+	_, err = WriteInvoicePlanAtomic(planPath, plan)
+	require.NoError(t, err)
+	publisher.Input, publisher.Kind = planPath, "plan"
+	output, err = publisher.Publish(context.Background())
+	require.NoError(t, err, string(output))
+
+	finalizer := &InvoiceFinalizer{
+		Instance: "instance-a", PlanID: invoiceID, Executor: executor,
+		ObjectStoreID: "a315-minio", Bucket: bucket,
+		ChargePrefix:     basePrefix + "/charges",
+		AdjustmentPrefix: basePrefix + "/adjustments",
+		PlanPrefix:       basePrefix + "/plans", InvoicePrefix: basePrefix + "/invoices",
+		RetentionMode: "COMPLIANCE", RetentionDuration: 7 * 24 * time.Hour, Now: time.Now,
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	first, firstOutput, err := finalizer.Process(ctx)
+	require.NoError(t, err, string(firstOutput))
+	second, secondOutput, err := finalizer.Process(ctx)
+	require.NoError(t, err, string(secondOutput))
+	require.Equal(t, first, second)
+	require.Equal(t, charge.TotalMicros, first.SubtotalMicros)
+	require.Equal(t, adjustment.AmountMicros, first.AdjustmentTotalMicros)
+	require.Equal(t, charge.TotalMicros+adjustment.AmountMicros, first.TotalMicros)
+	var firstReceipt, secondReceipt map[string]any
+	require.NoError(t, json.Unmarshal(firstOutput, &firstReceipt))
+	require.NoError(t, json.Unmarshal(secondOutput, &secondReceipt))
+	require.Equal(t, firstReceipt, secondReceipt)
+	require.Equal(t, InvoiceFormat, firstReceipt["artifact_format"])
+
+	conflict := plan
+	conflict.AdjustmentIDs = nil
+	conflictPath := filepath.Join(dir, "conflict-plan.json")
+	_, err = WriteInvoicePlanAtomic(conflictPath, conflict)
+	require.NoError(t, err)
+	publisher.Input = conflictPath
+	_, err = publisher.Publish(ctx)
+	require.Error(t, err)
+}
+
 func archiveForIntegration(
 	t *testing.T,
 	executor, bucket, input, receipt, format, artifactID, instance, objectKey string,
 	retainUntil int64,
-) {
+) []byte {
 	t.Helper()
 	output, err := runCommand(context.Background(), executor, []string{
 		"ACTION=blob",
@@ -210,4 +311,5 @@ func archiveForIntegration(
 		"RECEIPT_OUTPUT=" + receipt,
 	})
 	require.NoError(t, err, string(output))
+	return output
 }

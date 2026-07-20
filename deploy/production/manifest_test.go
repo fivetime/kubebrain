@@ -1184,6 +1184,39 @@ func TestObjectStorageMeteringUsesSeparatedSourceAndEvidenceCredentials(t *testi
 	require.Contains(t, string(dockerfile), "kubebrain-metering-storage-rollup")
 }
 
+func TestMeteringInvoicePinsApprovedPlanAndUsesHardenedIdentity(t *testing.T) {
+	objects := decodeManifest(t, "kubebrain-metering-invoice.yaml")
+	policy := objectByKindAndName(t, objects, "ConfigMap", "kubebrain-metering-invoice-policy")
+	require.Equal(t, "replace-with-approved-invoice-plan",
+		nestedString(t, policy, "data", "plan-id"))
+	job := objectByKindAndName(t, objects, "CronJob", "kubebrain-metering-invoice")
+	require.Equal(t, "17 2 2 * *", nestedString(t, job, "spec", "schedule"))
+	require.Equal(t, "Etc/UTC", nestedString(t, job, "spec", "timeZone"))
+	require.Equal(t, "Forbid", nestedString(t, job, "spec", "concurrencyPolicy"))
+	require.False(t, nestedBool(t, job,
+		"spec", "jobTemplate", "spec", "template", "spec", "automountServiceAccountToken"))
+	containers, found, err := unstructured.NestedSlice(
+		job.Object, "spec", "jobTemplate", "spec", "template", "spec", "containers",
+	)
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Len(t, containers, 1)
+	container := &unstructured.Unstructured{Object: containers[0].(map[string]any)}
+	require.Equal(t, "/usr/local/bin/kubebrain-metering-invoice-finalize",
+		nestedStringSlice(t, container, "command")[0])
+	args := nestedStringSlice(t, container, "args")
+	require.Contains(t, args, "--plan-id=$(INVOICE_PLAN_ID)")
+	require.Contains(t, args, "--charge-prefix=metering-charges")
+	require.Contains(t, args, "--adjustment-prefix=metering-adjustments")
+	require.Contains(t, args, "--invoice-prefix=metering-invoices")
+	require.True(t, nestedBool(t, container, "securityContext", "readOnlyRootFilesystem"))
+	require.False(t, nestedBool(t, container, "securityContext", "allowPrivilegeEscalation"))
+	dockerfile, err := os.ReadFile("../../Dockerfile")
+	require.NoError(t, err)
+	require.Contains(t, string(dockerfile), "kubebrain-metering-settlement-publish")
+	require.Contains(t, string(dockerfile), "kubebrain-metering-invoice-finalize")
+}
+
 func expectedInitialCluster(scheme string) string {
 	return "kubebrain-0=" + scheme + "://kubebrain-0.kubebrain-peer.kubebrain-system.svc.cluster.local:3380," +
 		"kubebrain-1=" + scheme + "://kubebrain-1.kubebrain-peer.kubebrain-system.svc.cluster.local:3380," +
@@ -1223,6 +1256,14 @@ func objectByKindAndName(t *testing.T, objects []*unstructured.Unstructured, kin
 func nestedString(t *testing.T, object *unstructured.Unstructured, fields ...string) string {
 	t.Helper()
 	value, found, err := unstructured.NestedString(object.Object, fields...)
+	require.NoError(t, err)
+	require.True(t, found)
+	return value
+}
+
+func nestedStringSlice(t *testing.T, object *unstructured.Unstructured, fields ...string) []string {
+	t.Helper()
+	value, found, err := unstructured.NestedStringSlice(object.Object, fields...)
 	require.NoError(t, err)
 	require.True(t, found)
 	return value

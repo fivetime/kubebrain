@@ -1,0 +1,124 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kubebrain-metering-invoice-policy
+  namespace: kubebrain-operations
+  labels:
+    app.kubernetes.io/name: kubebrain-metering-invoice
+    app.kubernetes.io/part-of: kubebrain
+data:
+  plan-id: replace-with-approved-invoice-plan
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: kubebrain-metering-invoice
+  namespace: kubebrain-operations
+  labels:
+    app.kubernetes.io/name: kubebrain-metering-invoice
+    app.kubernetes.io/part-of: kubebrain
+spec:
+  schedule: "17 2 2 * *"
+  timeZone: Etc/UTC
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 12
+  failedJobsHistoryLimit: 12
+  jobTemplate:
+    spec:
+      backoffLimit: 3
+      activeDeadlineSeconds: 3600
+      ttlSecondsAfterFinished: 2678400
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: kubebrain-metering-invoice
+            app.kubernetes.io/part-of: kubebrain
+        spec:
+          automountServiceAccountToken: false
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: finalizer
+              image: kubebrain:dev
+              imagePullPolicy: IfNotPresent
+              command:
+                - /usr/local/bin/kubebrain-metering-invoice-finalize
+              env:
+                - name: INVOICE_PLAN_ID
+                  valueFrom:
+                    configMapKeyRef:
+                      name: kubebrain-metering-invoice-policy
+                      key: plan-id
+                - name: S3_ENDPOINT
+                  valueFrom:
+                    secretKeyRef:
+                      name: kubebrain-metering-invoice-object-store
+                      key: endpoint
+                - name: AWS_REGION
+                  valueFrom:
+                    secretKeyRef:
+                      name: kubebrain-metering-invoice-object-store
+                      key: region
+                - name: AWS_ACCESS_KEY_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: kubebrain-metering-invoice-object-store
+                      key: access-key-id
+                - name: AWS_SECRET_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: kubebrain-metering-invoice-object-store
+                      key: secret-access-key
+                - name: S3_FORCE_PATH_STYLE
+                  valueFrom:
+                    secretKeyRef:
+                      name: kubebrain-metering-invoice-object-store
+                      key: force-path-style
+                - name: OBJECT_STORE_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: kubebrain-metering-invoice-object-store
+                      key: object-store-id
+                - name: S3_BUCKET
+                  valueFrom:
+                    secretKeyRef:
+                      name: kubebrain-metering-invoice-object-store
+                      key: bucket
+              args:
+                - --instance=kubebrain
+                - --plan-id=$(INVOICE_PLAN_ID)
+                - --object-store-id=$(OBJECT_STORE_ID)
+                - --bucket=$(S3_BUCKET)
+                - --charge-prefix=metering-charges
+                - --adjustment-prefix=metering-adjustments
+                - --plan-prefix=metering-invoice-plans
+                - --invoice-prefix=metering-invoices
+                - --retention-mode=COMPLIANCE
+                - --retention-duration=61320h
+                - --timeout=30m
+              resources:
+                requests:
+                  cpu: 25m
+                  memory: 64Mi
+                limits:
+                  cpu: 500m
+                  memory: 256Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop:
+                    - ALL
+              volumeMounts:
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: tmp
+              emptyDir:
+                sizeLimit: 64Mi
