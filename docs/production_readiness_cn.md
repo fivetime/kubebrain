@@ -145,7 +145,9 @@ manifest 前，应从每个 build stage/final image 提取全部可执行文件�
 都必须在对应原生 runner 上完成容器启动、kubectl/API、TiKV/PD 和 readiness smoke，
 再合并 manifest list。
 
-CI 的 Go 版本必须与 Docker build stage 精确一致，当前均为 1.26.5；CI 构建 TiKV 和
+CI 的 Go 版本必须与 Docker build stage 精确一致，当前均为 1.26.5；Dockerfile 同时固定
+精确 patch tag 和不可变 digest。CI 使用固定 `govulncheck` 版本扫描根模块与生产对象存储
+子模块的可达漏洞，任一命中均阻止发布。CI 构建 TiKV 和
 Badger image 时必须显式传入 `TARGETARCH=amd64` 及上述三项 metadata，并回读 OCI
 revision、运行用户和 kubectl 版本。release workflow 必须使用 QEMU、Buildx 和
 `linux/amd64,linux/arm64`，compiler stage 固定运行在 `${BUILDPLATFORM}` 上执行原生
