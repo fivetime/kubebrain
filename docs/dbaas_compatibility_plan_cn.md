@@ -8301,6 +8301,26 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `kube-brain version` 均为 `32daaca971b3ff0731bd9d4ed3a6e0bb1fec05d2`，容器继续以
   `65532:65532` 非 root 身份运行；三副本已滚动收敛。
 
+- **Maintenance A415 follower-local watch cancel parity（2026-07-21）**：
+  对照 `/root/etcd/server/etcdserver/api/v3rpc/watch.go:serverWatchStream.recvLoop`，修复 follower
+  在处理 WatchCancelRequest 前错误执行 leader `SyncReadRevision` 的差异。上游 cancel 只删除当前
+  stream 的本地 watch、取消其 backend context 并返回 canceled response；它不是线性化读。旧实现
+  在 leader barrier 故障时会先返回 stream 级 `Unavailable`，导致请求中的 logical watch 未被单独
+  cancel，multiplex stream 上其他 watch 也被连带关闭。现取消路径不再发起 barrier，response header
+  使用 stream 已同步的 control revision 与本地 published revision 的较大值；后续新 create 仍必须
+  通过 barrier，不能借此绕过 revision fence。
+
+  修复前注入用例稳定只收到 created response；修复后同一 follower proxy stream 先以 revision 60
+  创建 ID 415，在下一次 barrier 固定失败时仍本地 cancel、返回 revision 60 且立即取消代理 context，
+  随后的 ID 416 create 才执行第二次 barrier 并 fail closed。相关 follower barrier 测试普通 20 轮、
+  race 5 轮通过；三 Pod 直连门禁普通 10 轮、race 5 轮通过，启用直连门禁的完整 compat 93.009 秒，
+  根模块完整测试、root/compat vet 与固定版 staticcheck v0.7.0 全绿。
+
+  镜像 `kubebrain:a415-watch-cancel-local` 的本地 digest 为
+  `sha256:6478d4d2987df032758aa8cda3c2811768441663b6e3d54d5122fbc98dab3d0d`，OCI revision 与容器内
+  `kube-brain version` 均为 `2af56ef869511cde6f1809add804479340f8b80f`，运行用户为
+  `65532:65532`；三副本已滚动收敛。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
