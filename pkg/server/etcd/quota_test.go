@@ -124,6 +124,7 @@ func TestQuotaRPCNoSpaceRecoveryAndStatus(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Len(t, activate.Alarms, 1)
+	require.Zero(t, activate.Alarms[0].MemberID)
 	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: []byte("m"), Value: []byte("x")})
 	require.Equal(t, codes.ResourceExhausted, status.Code(err))
 	deactivate, err = server.Alarm(ctx, &etcdserverpb.AlarmRequest{

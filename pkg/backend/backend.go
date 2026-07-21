@@ -108,7 +108,7 @@ type Backend interface {
 	// are served.
 	EnsureQuotaInitialized(ctx context.Context) error
 	// ArmNoSpace persistently enables the tenant-wide NOSPACE write cap for one
-	// member and returns that member. A zero member uses this backend's stable ID.
+	// member and returns that exact member, including the protocol-valid zero ID.
 	ArmNoSpace(ctx context.Context, memberID uint64) (uint64, error)
 	// NoSpaceAlarms returns every persisted NOSPACE alarm owner in ascending
 	// member-ID order. Legacy single-owner metadata is exposed as one member.

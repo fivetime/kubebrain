@@ -127,10 +127,10 @@ func (b *backend) NoSpaceAlarms(ctx context.Context) ([]uint64, error) {
 	if err != nil {
 		return nil, err
 	}
-	for i := range members {
-		if members[i] == 0 {
-			members[i] = b.quotaAlarmMemberID()
-		}
+	// The original one-byte marker had no owner. Only that exact legacy format
+	// maps to the local stable ID; an eight-byte zero is a valid explicit owner.
+	if len(raw) == 1 && raw[0] == 1 {
+		members[0] = b.quotaAlarmMemberID()
 	}
 	sort.Slice(members, func(i, j int) bool { return members[i] < members[j] })
 	return members, nil
@@ -415,10 +415,8 @@ func (b *backend) reconcileNoSpaceDisarm(
 					fmt.Errorf("reconcile NOSPACE deactivation: %w", decodeErr),
 				)
 			}
-			for i := range members {
-				if members[i] == 0 {
-					members[i] = b.quotaAlarmMemberID()
-				}
+			if len(current) == 1 && current[0] == 1 {
+				members[0] = b.quotaAlarmMemberID()
 			}
 			sort.Slice(members, func(i, j int) bool { return members[i] < members[j] })
 			b.emitQuotaMetrics(usage, true)
@@ -447,9 +445,6 @@ func (b *backend) ArmNoSpace(ctx context.Context, memberID uint64) (uint64, erro
 	if b.config.QuotaBackendBytes == 0 {
 		return 0, ErrQuotaDisabled
 	}
-	if memberID == 0 {
-		memberID = b.quotaAlarmMemberID()
-	}
 	return b.activateNoSpaceForMember(ctx, memberID)
 }
 
@@ -474,10 +469,8 @@ func (b *backend) activateNoSpaceForMember(ctx context.Context, memberID uint64)
 			if readErr != nil {
 				return 0, readErr
 			}
-			for i := range members {
-				if members[i] == 0 {
-					members[i] = b.quotaAlarmMemberID()
-				}
+			if len(raw) == 1 && raw[0] == 1 {
+				members[0] = b.quotaAlarmMemberID()
 			}
 			sort.Slice(members, func(i, j int) bool { return members[i] < members[j] })
 			if quotaAlarmContains(members, memberID) {

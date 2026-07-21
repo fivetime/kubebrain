@@ -200,13 +200,11 @@ func TestQuotaDisabledPreservesExistingBehavior(t *testing.T) {
 func TestNoSpaceAlarmPersistsOwnerAndGuardsDisarm(t *testing.T) {
 	b, ctx := newQuotaBackend(t, 10)
 	wantOwner := b.quotaAlarmMemberID()
-	owner, err := b.ArmNoSpace(ctx, 0)
-	require.NoError(t, err)
-	require.Equal(t, wantOwner, owner)
+	require.NoError(t, b.activateNoSpace(ctx))
 	owner, active, err := b.NoSpaceAlarm(ctx)
 	require.NoError(t, err)
-	require.True(t, active)
 	require.Equal(t, wantOwner, owner)
+	require.True(t, active)
 
 	removed, err := b.DisarmNoSpace(ctx, ^uint64(0))
 	require.NoError(t, err)
@@ -230,6 +228,20 @@ func TestNoSpaceAlarmPersistsOwnerAndGuardsDisarm(t *testing.T) {
 	removed, err = b.DisarmNoSpace(ctx, ^uint64(0))
 	require.NoError(t, err)
 	require.True(t, removed, "legacy metadata accepts any owner during rolling upgrade")
+}
+
+func TestArmNoSpacePreservesExplicitZeroMember(t *testing.T) {
+	b, ctx := newQuotaBackend(t, 10)
+	owner, err := b.ArmNoSpace(ctx, 0)
+	require.NoError(t, err)
+	require.Zero(t, owner)
+
+	members, err := b.NoSpaceAlarms(ctx)
+	require.NoError(t, err)
+	require.Equal(t, []uint64{0}, members)
+	removed, err := b.DisarmNoSpace(ctx, 0)
+	require.NoError(t, err)
+	require.True(t, removed)
 }
 
 func TestArmNoSpacePersistsEveryExplicitMember(t *testing.T) {
