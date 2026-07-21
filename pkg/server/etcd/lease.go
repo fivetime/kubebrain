@@ -241,6 +241,19 @@ func (m *leaseManager) LeaseRevoke(ctx context.Context, req *etcdserverpb.LeaseR
 
 func (m *leaseManager) LeaseKeepAlive(stream etcdserverpb.Lease_LeaseKeepAliveServer) error {
 	m.srv.metricCli.EmitCounter("lease.keepalive", 1)
+	errC := make(chan error, 1)
+	go func() {
+		errC <- m.leaseKeepAlive(stream)
+	}()
+	select {
+	case err := <-errC:
+		return err
+	case <-stream.Context().Done():
+		return status.FromContextError(stream.Context().Err()).Err()
+	}
+}
+
+func (m *leaseManager) leaseKeepAlive(stream etcdserverpb.Lease_LeaseKeepAliveServer) error {
 	for {
 		req, err := stream.Recv()
 		if err == io.EOF {

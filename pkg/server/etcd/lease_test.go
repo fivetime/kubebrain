@@ -43,6 +43,7 @@ type fakeLeaseKeepAliveServer struct {
 	requests []*etcdserverpb.LeaseKeepAliveRequest
 	sent     []*etcdserverpb.LeaseKeepAliveResponse
 	onSend   func()
+	recv     func() (*etcdserverpb.LeaseKeepAliveRequest, error)
 }
 
 type observingRevisionBackend struct {
@@ -175,12 +176,38 @@ func (b observingRevisionBackend) GetCurrentRevision() uint64 {
 }
 
 func (f *fakeLeaseKeepAliveServer) Recv() (*etcdserverpb.LeaseKeepAliveRequest, error) {
+	if f.recv != nil {
+		return f.recv()
+	}
 	if len(f.requests) == 0 {
 		return nil, io.EOF
 	}
 	req := f.requests[0]
 	f.requests = f.requests[1:]
 	return req, nil
+}
+
+func TestLeaseKeepAliveCancellationInterruptsBlockedReceive(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	recvStarted := make(chan struct{})
+	unblockRecv := make(chan struct{})
+	stream := &fakeLeaseKeepAliveServer{
+		ctx: ctx,
+		recv: func() (*etcdserverpb.LeaseKeepAliveRequest, error) {
+			close(recvStarted)
+			<-unblockRecv
+			return nil, io.EOF
+		},
+	}
+	done := make(chan error, 1)
+	go func() { done <- server.LeaseKeepAlive(stream) }()
+	<-recvStarted
+	cancel()
+	require.Equal(t, codes.Canceled, status.Code(<-done))
+	close(unblockRecv)
 }
 
 func (f *fakeLeaseKeepAliveServer) Send(resp *etcdserverpb.LeaseKeepAliveResponse) error {
