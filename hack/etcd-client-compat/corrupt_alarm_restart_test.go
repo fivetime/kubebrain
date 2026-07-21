@@ -44,13 +44,19 @@ func TestCorruptAlarmSurvivesAllReplicaReplacements(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, conn.Close()) })
 	kv := etcdserverpb.NewKVClient(conn)
+	lease := etcdserverpb.NewLeaseClient(conn)
 	maintenance := etcdserverpb.NewMaintenanceClient(conn)
 	statusResponse, err := maintenance.Status(ctx, &etcdserverpb.StatusRequest{})
 	require.NoError(t, err)
 	memberID := statusResponse.Header.MemberId
 	require.NotZero(t, memberID)
 	key := []byte(testPrefix(t) + "/corrupt-alarm-restart")
+	leasedKey := append(append([]byte(nil), key...), []byte("-leased")...)
 	_, err = kv.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("before")})
+	require.NoError(t, err)
+	grant, err := lease.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 2})
+	require.NoError(t, err)
+	_, err = kv.Put(ctx, &etcdserverpb.PutRequest{Key: leasedKey, Value: []byte("leased"), Lease: grant.ID})
 	require.NoError(t, err)
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -59,13 +65,14 @@ func TestCorruptAlarmSurvivesAllReplicaReplacements(t *testing.T) {
 			Action: etcdserverpb.AlarmRequest_DEACTIVATE, Alarm: etcdserverpb.AlarmType_CORRUPT, MemberID: memberID,
 		})
 		_, _ = kv.DeleteRange(cleanupCtx, &etcdserverpb.DeleteRangeRequest{Key: key})
+		_, _ = kv.DeleteRange(cleanupCtx, &etcdserverpb.DeleteRangeRequest{Key: leasedKey})
 	})
 
 	_, err = maintenance.Alarm(ctx, &etcdserverpb.AlarmRequest{
 		Action: etcdserverpb.AlarmRequest_ACTIVATE, Alarm: etcdserverpb.AlarmType_CORRUPT, MemberID: memberID,
 	})
 	require.NoError(t, err)
-	assertCorruptAlarmState(t, ctx, maintenance, kv, infoEndpoint, memberID, key)
+	assertCorruptAlarmState(t, ctx, maintenance, kv, infoEndpoint, memberID, key, leasedKey)
 
 	for _, pod := range pods {
 		oldUID := kubectlPodField(t, kubeContext, namespace, pod, "{.metadata.uid}")
@@ -83,7 +90,7 @@ func TestCorruptAlarmSurvivesAllReplicaReplacements(t *testing.T) {
 			return newUID != "" && newUID != oldUID && ready == "true"
 		}, 90*time.Second, 500*time.Millisecond, "%s replacement did not become Ready", pod)
 
-		assertCorruptAlarmState(t, ctx, maintenance, kv, infoEndpoint, memberID, key)
+		assertCorruptAlarmState(t, ctx, maintenance, kv, infoEndpoint, memberID, key, leasedKey)
 	}
 
 	deactivated, err := maintenance.Alarm(ctx, &etcdserverpb.AlarmRequest{
@@ -95,6 +102,10 @@ func TestCorruptAlarmSurvivesAllReplicaReplacements(t *testing.T) {
 	}}, deactivated.Alarms)
 	_, err = kv.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("restored")})
 	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		response, rangeErr := kv.Range(ctx, &etcdserverpb.RangeRequest{Key: leasedKey})
+		return rangeErr == nil && len(response.Kvs) == 0
+	}, 15*time.Second, 100*time.Millisecond)
 }
 
 func assertCorruptAlarmState(
@@ -105,6 +116,7 @@ func assertCorruptAlarmState(
 	infoEndpoint string,
 	memberID uint64,
 	key []byte,
+	leasedKey []byte,
 ) {
 	t.Helper()
 	require.Eventually(t, func() bool {
@@ -121,6 +133,10 @@ func assertCorruptAlarmState(
 	require.NoError(t, err)
 	require.Len(t, read.Kvs, 1)
 	require.Equal(t, "before", string(read.Kvs[0].Value))
+	leasedRead, err := kv.Range(ctx, &etcdserverpb.RangeRequest{Key: leasedKey})
+	require.NoError(t, err)
+	require.Len(t, leasedRead.Kvs, 1)
+	require.Equal(t, "leased", string(leasedRead.Kvs[0].Value))
 	_, err = kv.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("blocked")})
 	require.Equal(t, codes.DataLoss, status.Code(err))
 	assertCorruptAlarmHTTPState(t, ctx, infoEndpoint)
