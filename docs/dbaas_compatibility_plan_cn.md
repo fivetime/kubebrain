@@ -7909,6 +7909,27 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   全仓 `bash -n`、ShellCheck warning/error、根模块完整 `go test ./...`、`go vet ./...` 和
   Staticcheck 均通过。本轮新增兼容故障门禁，不修改数据面运行时代码或镜像。
 
+- **DBaaS A393 cold physical snapshot candidate executor（2026-07-21）**：
+  核对 TiDB Operator v1.6.5 源码后确认 `TidbCluster.spec.paused` 只停止成员协调，适合作为
+  外部缩容的 operator fence；组件 `suspendAction.suspendStatefulSet` 则会按 TiDB、TiKV、PD
+  等顺序前台删除 StatefulSet 并清空 status，不适合保留控制器身份的快照流程。新增
+  `hack/backup/cold-snapshot-execute.sh`，消费 A388 不可变 inventory，并在变更前重新运行
+  preflight 做规范化全量比对。
+
+  执行器使用 UID/resourceVersion/replica JSON Patch 设置 pause 并停止 KubeBrain、TiKV、PD，
+  等待每个 StatefulSet 的 status replicas 归零后逐 PVC 复核 UID，再创建 operation-labeled
+  VolumeSnapshot。成功门禁要求全部 snapshot ready，并核验绑定 VolumeSnapshotContent 的
+  Retain policy、class、snapshot UID 引用和非空 CSI snapshot handle；随后按 PD、TiKV、解除
+  pause、KubeBrain 恢复，最后 fsync+rename 发布 `kubebrain.cold-physical-snapshot.v1`
+  receipt。错误 trap 尝试相同恢复，失败绝不发布 receipt，并明确提示 retained partial
+  artifacts 需要审计。
+
+  fake-kubectl 状态机专项测试覆盖完整 6 PVC 成功路径和首个 snapshot wait 失败路径，固定
+  quiesce/restore 顺序、恢复尝试、receipt 是否发布及 content handle 数量。当前真实 kind
+  集群仍缺少 VolumeSnapshot API，必须在任何 pause/scale 前失败；尚无具备 CSI 的隔离恢复
+  演练证据，所以该 executor 仍是候选能力，不能关闭 transactional TiKV 物理恢复或 PITR
+  缺口，也不能启用 `BACKUP_MODE=cold-csi`。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range

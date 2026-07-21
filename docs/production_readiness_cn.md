@@ -429,8 +429,31 @@ ALLOW_COLD_PHYSICAL_SNAPSHOT=true \
 `deletionPolicy=Retain`，并精确锁定 KubeBrain StatefulSet UID、TidbCluster UID、TiKV
 cluster ID，以及全部 3+3 Bound PD/TiKV PVC 的 name/UID/PV/storage class/volume mode。
 输出 `kubebrain.cold-physical-snapshot-preflight.v1` 只能作为后续 operation 的不可变输入。
-它**不会**停止流量、暂停 operator、缩容 Pod、创建 VolumeSnapshot 或证明恢复成功，因而
-`BACKUP_MODE=cold-csi` 仍不受支持，更不等于 PITR。缺少 CSI API 的集群必须 fail closed。
+缺少 CSI API 的集群必须 fail closed。
+
+具备 CSI snapshot 能力的隔离预生产集群可使用候选执行器消费该不可变清单：
+
+```shell
+PREFLIGHT_FILE=cold-snapshot-inventory.json \
+OPERATION_ID=instance-a-20260721t120000z \
+RECEIPT_FILE=cold-snapshot-receipt.json \
+KUBE_CONTEXT=preproduction \
+  hack/backup/cold-snapshot-execute.sh
+```
+
+执行器重新运行预检并规范化比对清单，在任何变更前拒绝漂移；用 TidbCluster UID 和
+resourceVersion 设置 `spec.paused=true`，等待 pause 可见并重新取得 StatefulSet fence，随后
+按 KubeBrain、TiKV、PD 顺序将副本缩至零。全部 Pod 退出后才为清单内每个固定 UID PVC 创建
+operation-labeled VolumeSnapshot。只有所有 snapshot `readyToUse=true`，且绑定
+VolumeSnapshotContent 为 `Retain`、class/UID 引用一致并提供非空 snapshot handle，才按 PD、
+TiKV、解除 operator pause、KubeBrain 的顺序恢复。任一错误都由退出 trap 尝试同样的恢复，
+失败不发布成功 receipt；Retain 策略下的部分制品必须进入人工审计，不能自动误删。
+
+成功恢复服务并原子 fsync 发布 `kubebrain.cold-physical-snapshot.v1` receipt 后，仍只证明冷
+快照集合已生成。尚未从 receipt 在隔离集群恢复全部 PD/TiKV volume、核验 cluster identity、
+启动 KubeBrain 并完成 revision/key/lease/watch 验证，因此 `BACKUP_MODE=cold-csi` 仍不受
+支持，更不等于日志型 PITR。生产调用还必须由持久 operation worker 独占实例维护窗口，不能
+从交互终端并发运行。
 
 生产备份 Job 必须设置 `METRICS_OUTPUT`，将成功结果写入 node-exporter 或等价
 Prometheus textfile collector 的共享目录；`BACKUP_INSTANCE` 必须与实例名一致，
