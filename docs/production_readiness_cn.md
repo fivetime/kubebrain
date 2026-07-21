@@ -447,8 +447,9 @@ KUBE_CONTEXT=preproduction \
 
 控制面必须先阻断该实例的新写入，再用当前 `logical-export.sh` 对实例完整 keyspace prefix 生成
 `kubebrain.logical.v2` witness；executor 默认要求 witness 至少一个记录、创建不超过 300 秒，并
-在任何 mutation 前验证内部 digest、prefix 和格式。逻辑 lease 记录现同时保存 remaining TTL 与
-granted TTL；旧 artifact 仍可用于逻辑恢复，但缺 `granted_ttl` 时不能证明物理 lease identity。
+在任何 mutation 前验证内部 digest、prefix、格式，并以 `REQUIRE_GRANTED_TTL=true` 逐条确认 lease
+同时具有合法的 remaining TTL 与 granted TTL。旧 artifact 仍可用于逻辑恢复，但包含 lease 且缺
+`granted_ttl` 时会在 pause、缩容或创建 VolumeSnapshot 前失败，不能作为物理 lease identity 证据。
 snapshot receipt 将 witness 的 format/prefix/revision/record/lease count、内部 SHA-256 和整个文件
 SHA-256 一并绑定。若 witness 后仍有 Put/Delete/Txn，最终恢复的 current-exact 门禁会因 value 或
 create/mod/version/lease 元数据漂移而失败，不能生成语义成功 receipt。

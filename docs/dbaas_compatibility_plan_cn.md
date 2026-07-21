@@ -7999,6 +7999,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   通过且测试 prefix、lease、port-forward 已清理。该运行证明 verifier 能检测当前真实数据面，
   仍不是 CSI 恢复证据；只有在真正由 A395 恢复的隔离集群重复通过，才能关闭 cold full restore。
 
+- **DBaaS A397 physical witness fail-fast gate（2026-07-21）**：
+  对照 `/root/etcd/server/etcdserver/apply/uber_applier_test.go` 的
+  `TestUberApplier_Alarm_Quota`，复核 NOSPACE 下 Put、含写 Txn、只读 Txn、Delete、LeaseGrant/
+  Revoke 和 Compaction 的允许/拒绝边界；KubeBrain 的 `pkg/server/etcd/quota_test.go` 及
+  `hack/etcd-client-compat/quota_alarm_differential_test.go` 已覆盖相同请求矩阵、告警 owner 稳定性和
+  跨 endpoint disarm，因此本轮未发现需修改的数据面差异。
+
+  审计同时发现 A396 的旧 `logical.v2` 租约见证虽缺 `granted_ttl`，仍会被 snapshot executor 接受，
+  直到恢复后的语义验证才失败。`logical-status` 现提供显式 `REQUIRE_GRANTED_TTL=true` 门禁，完整
+  遍历已校验 lease；cold snapshot executor 在任何 pause、缩容或 VolumeSnapshot create 前强制
+  启用。无 lease 和当前 exporter 生成的见证继续通过；旧租约 artifact 默认仍可用于逻辑恢复，
+  但不能充当物理恢复见证。fake-kubectl 回归测试确认拒绝路径只有只读 preflight 调用，不产生
+  Patch、snapshot 或 receipt。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
