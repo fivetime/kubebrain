@@ -8490,6 +8490,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   v0.7.0 均通过。本轮未发现当前运行时字段遗漏，只增加协议升级失败快显测试，因此不重建
   与 A422 字节相同的生产镜像。
 
+#### A425 KubeBrain 生产 Pod 跨可用区放置偏好
+
+- 生产 TLS/非 TLS StatefulSet 原有三副本、主机级 required pod anti-affinity 和
+  `minAvailable=2` PDB，可避免同节点故障，但调度器仍可把三个不同节点全部选在同一 zone，
+  无法承受整区故障。两套清单现增加 weight=100、`topology.kubernetes.io/zone` 的 preferred
+  pod anti-affinity，并使用完整 instance selector；多 zone 集群优先把副本跨区分散，单 zone
+  或节点缺 zone label 时仍可调度，不把软拓扑条件升级为容量不足时的发布阻塞。
+- manifest 测试同时固定 hostname required 条目、zone preferred 条目的 weight/topologyKey
+  及 name+instance selector，TLS/非 TLS 聚焦普通 100 轮、race 20 轮通过。临时建立空
+  `kubebrain-system` namespace 后，两套完整清单均通过 Kubernetes API server dry-run，随后
+  namespace 已删除；production 包、root 全量测试、vet、staticcheck v0.7.0 均通过。
+- 当前 kind 只有单节点，不能承载既有三 Pod 主机级 required anti-affinity，因此不把单节点
+  环境伪装成多 zone 调度证据。该变更只更新生产部署 artifact，不改变 A422 服务端镜像；
+  下一次多 zone 预生产发布需以三个 Pod 的 `topology.kubernetes.io/zone` 实际分布和单 zone
+  故障注入作为运行门禁。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
