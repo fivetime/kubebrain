@@ -68,6 +68,11 @@ type prematureRangeStreamBackendShim struct {
 	BackendShim
 }
 
+type canceledRangeStreamBackendShim struct {
+	BackendShim
+	entered chan struct{}
+}
+
 func (b *prematureRangeStreamBackendShim) RangeStreamChan(
 	context.Context, []byte, []byte, uint64,
 ) (<-chan rangeStreamChunk, error) {
@@ -77,6 +82,18 @@ func (b *prematureRangeStreamBackendShim) RangeStreamChan(
 		Kvs:    []*mvccpb.KeyValue{{Key: []byte("/premature/key"), Value: []byte("value")}},
 	}}
 	close(ch)
+	return ch, nil
+}
+
+func (b *canceledRangeStreamBackendShim) RangeStreamChan(
+	ctx context.Context, _, _ []byte, _ uint64,
+) (<-chan rangeStreamChunk, error) {
+	ch := make(chan rangeStreamChunk)
+	close(b.entered)
+	go func() {
+		<-ctx.Done()
+		close(ch)
+	}()
 	return ch, nil
 }
 
@@ -187,6 +204,40 @@ func TestRangeStreamEmptyRangeStillSendsHeaderRevision(t *testing.T) {
 	require.Empty(t, last.RangeResponse.Kvs)
 	require.Greater(t, last.RangeResponse.Header.Revision, int64(0),
 		"apiserver reads Header.Revision as the sync's initial revision")
+}
+
+func TestRangeStreamNormalizesContextStatus(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		timeout time.Duration
+		code    codes.Code
+	}{
+		{name: "canceled", code: codes.Canceled},
+		{name: "deadline", timeout: 50 * time.Millisecond, code: codes.DeadlineExceeded},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server, cleanup := newRangeStreamTestServer(t)
+			defer cleanup()
+			entered := make(chan struct{})
+			server.backend = &canceledRangeStreamBackendShim{BackendShim: server.backend, entered: entered}
+			ctx, cancel := context.WithCancel(context.Background())
+			if test.timeout > 0 {
+				ctx, cancel = context.WithTimeout(context.Background(), test.timeout)
+			}
+			defer cancel()
+			done := make(chan error, 1)
+			go func() {
+				done <- server.RangeStream(&etcdserverpb.RangeRequest{
+					Key: []byte("/cancel/"), RangeEnd: []byte("/cancel0"), Serializable: true,
+				}, &fakeRangeStreamServer{ctx: ctx})
+			}()
+			<-entered
+			if test.code == codes.Canceled {
+				cancel()
+			}
+			require.Equal(t, test.code, status.Code(<-done))
+		})
+	}
 }
 
 func TestRangeStreamPointAndEmptyIntervalsMatchUnaryRange(t *testing.T) {
