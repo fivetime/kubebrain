@@ -9,6 +9,7 @@ ETCDCTL_BIN="${ETCDCTL_BIN:-/root/etcd/bin/etcdctl}"
 REFERENCE_CLIENT_URL="${REFERENCE_CLIENT_URL:-http://127.0.0.1:12379}"
 REFERENCE_PEER_URL="${REFERENCE_PEER_URL:-http://127.0.0.1:12380}"
 TEST_TIMEOUT="${TEST_TIMEOUT:-20m}"
+ADVERTISED_ENDPOINT_TIMEOUT="${ADVERTISED_ENDPOINT_TIMEOUT:-5s}"
 KUBEBRAIN_EXPECTED_MEMBER_COUNT="${KUBEBRAIN_EXPECTED_MEMBER_COUNT-3}"
 
 need() {
@@ -19,8 +20,8 @@ need() {
 }
 
 need curl
-need etcdctl
 need go
+need jq
 
 if [ -z "$KUBEBRAIN_ENDPOINT" ]; then
   echo "set KUBEBRAIN_ETCD_ENDPOINT to the KubeBrain endpoint under test" >&2
@@ -44,10 +45,32 @@ if curl --fail --silent --max-time 1 "${REFERENCE_CLIENT_URL}/health" >/dev/null
   exit 1
 fi
 
-if ! ETCDCTL_API=3 etcdctl --endpoints="$KUBEBRAIN_ENDPOINT" endpoint health; then
+if ! ETCDCTL_API=3 "$ETCDCTL_BIN" --endpoints="$KUBEBRAIN_ENDPOINT" endpoint health; then
   echo "KubeBrain endpoint health preflight failed: $KUBEBRAIN_ENDPOINT" >&2
   exit 1
 fi
+
+if ! member_list_json="$(ETCDCTL_API=3 "$ETCDCTL_BIN" --endpoints="$KUBEBRAIN_ENDPOINT" member list -w json)"; then
+  echo "KubeBrain MemberList preflight failed: $KUBEBRAIN_ENDPOINT" >&2
+  exit 1
+fi
+mapfile -t advertised_client_urls < <(
+  jq -r '[.members[] | select((.name // "") != "" and ((.isLearner // false) | not)) | .clientURLs[]?] | unique[]' \
+    <<<"$member_list_json"
+)
+if [ "${#advertised_client_urls[@]}" -eq 0 ]; then
+  echo "KubeBrain MemberList preflight returned no advertised client URLs" >&2
+  exit 1
+fi
+for advertised_client_url in "${advertised_client_urls[@]}"; do
+  if ! ETCDCTL_API=3 "$ETCDCTL_BIN" \
+    --command-timeout="$ADVERTISED_ENDPOINT_TIMEOUT" \
+    --endpoints="$advertised_client_url" endpoint health >/dev/null; then
+    echo "KubeBrain advertised client URL is unreachable from the differential runner: $advertised_client_url" >&2
+    echo "run the suite from a routable network or publish an externally reachable --advertise-client-urls value" >&2
+    exit 1
+  fi
+done
 
 data_dir="$(mktemp -d "${TMPDIR:-/tmp}/kubebrain-reference-etcd.XXXXXX")"
 reference_log="$data_dir/etcd.log"
