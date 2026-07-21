@@ -8367,6 +8367,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   与 reference etcd 一致；`LeaseCheckpointRequest` 只属于 `InternalRaftRequest`，不在公开
   `LeaseServer` RPC 面。公开 42 个 RPC 的显式实现/拒绝门禁继续覆盖 API 升级。
 
+#### A418 Watch stream 取消状态归一化
+
+- 对照 `/root/etcd/server/etcdserver/api/v3rpc/watch.go`，上游 Watch handler 在 receive loop
+  或 stream context 返回 `context.Canceled` 时统一转换为
+  `rpctypes.ErrGRPCWatchCanceled`。KubeBrain 此前在 raw gRPC `CloseSend` 后等待 context 的
+  路径及若干内部取消路径直接返回标准库错误，gRPC Prometheus 会将其记为 `Unknown`，而非
+  etcd 客户端和 SLO 预期的 `Canceled`。现于 `RPCServer.Watch` 单一出口检查错误链，只归一化
+  `context.Canceled`，不改变 compaction、auth、quota、read barrier 或 transport 错误。
+- 现有负 revision、follower revision fence、quota、HTTP half-close、auth 和 forwarded watch
+  测试均改为约束公开 `codes.Canceled`；聚焦普通 20 轮、race 5 轮及 `pkg/server/etcd` 全包
+  通过。新增真实指标门禁每轮必须先收到 watch-created，再取消 stream；固定真实 follower
+  连续 5 轮共 1000 次创建/取消全部通过，`grpc_server_handled_total{grpc_code="Canceled"}`
+  增长，`Unknown` 与 `Unavailable` 均不增长，逻辑 watch 正常释放。
+- root 全量测试/vet/staticcheck v0.7.0 通过，独立 compat module 指定真实 NodePort 后 uncached
+  全量 105.011 秒通过。镜像 `kubebrain:a418-watch-cancel-status-local` digest 为
+  `sha256:ef84a2893520a222b87f8969bf2acc4aa3d4492c780dfba66eb9287eb98a6f8a`，OCI revision 与
+  容器版本均为 `1e20dad823744ad97180ddff1c2883da3e60c87a`，运行用户 `65532:65532`；三
+  KubeBrain 副本 Ready、零重启，主 PD/TiKV 3+3 Ready，health/readyz 正常且无 alarm。
+- 本轮候选审计同时确认：KV 非法 sort/空 operation/嵌套 txn budget 已有差分矩阵；Lease TTL
+  边界已有上游 `MaxLeaseTTL` 对齐；上游 gRPC Health 的 `allGRPCServices` 即空字符串，当前
+  service-name 注册不存在缺口。未把这些已对齐路径重复包装成修复。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
