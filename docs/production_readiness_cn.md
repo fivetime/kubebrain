@@ -17,6 +17,11 @@
 MemberList 会把该列表交给 clientv3 替换原 endpoint 集合，错误的内部 DNS 会使已成功
 bootstrap 的客户端在下一次 AutoSync 后整体断连。
 
+每个实例必须使用全局唯一且创建后不可变的 `--keyspace`。production 基线中的
+`kubebrain-system` 仅是清单默认值；DBaaS 控制面实例化清单时必须替换为稳定实例 ID，并
+在发布、扩缩和升级门禁中逐字校验。复用或变更 keyspace 会让实例读到其他租户数据，或让
+原数据看似消失，因此不能依赖默认空 keyspace，也不能把 namespace 名直接当作跨集群唯一值。
+
 ## 租户逻辑配额
 
 标准 dedicated 实例必须显式设置 `--quota-backend-bytes`。production 明文和 TLS 基线均
@@ -255,6 +260,7 @@ tombstone 与历史值、lease/附属 key、watch 历史回放，以及新写入
 KUBE_CONTEXT=production \
 KUBEBRAIN_NAMESPACE=kubebrain-instance-a \
 EXPECTED_IMAGE=registry.example/kubebrain@sha256:<digest> \
+EXPECTED_KEYSPACE=instance-a \
 EXPECTED_QUOTA_BACKEND_BYTES=429496729600 \
 EXPECTED_ADVERTISE_CLIENT_URLS=https://instance-a.example:2379 \
 TIDB_NAMESPACE=kubebrain-storage-a \
@@ -272,9 +278,9 @@ ETCDCTL_KEY=/run/secrets/client.key \
 门禁先要求 TidbCluster `Ready=True` 且 PD/TiKV StatefulSet generation、ready/updated
 replicas 和 revision 全部收敛，再校验期望 PD/TiKV 数量；随后要求 KubeBrain
 StatefulSet observed generation、ready/updated replicas、revision、精确 image，以及 Pod
-template 中唯一的 `--quota-backend-bytes` 和 `--advertise-client-urls` 全部匹配，最后
+template 中唯一的 `--keyspace`、`--quota-backend-bytes` 和 `--advertise-client-urls` 全部匹配，最后
 通过官方 `etcdctl endpoint health` 提交线性化 proposal。缺少 `EXPECTED_IMAGE`/
-`EXPECTED_QUOTA_BACKEND_BYTES`/`EXPECTED_ADVERTISE_CLIENT_URLS`/`ENDPOINT`、任一状态
+`EXPECTED_KEYSPACE`/`EXPECTED_QUOTA_BACKEND_BYTES`/`EXPECTED_ADVERTISE_CLIENT_URLS`/`ENDPOINT`、任一状态
 缺失、旧 revision、错误拓扑、错误镜像、quota/client URL 缺失/重复/不匹配或 endpoint
 不健康都会 fail closed。
 

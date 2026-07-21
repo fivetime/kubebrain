@@ -7,6 +7,7 @@ KUBEBRAIN_NAMESPACE="${KUBEBRAIN_NAMESPACE:-kubebrain-system}"
 KUBEBRAIN_STATEFULSET="${KUBEBRAIN_STATEFULSET:-kubebrain}"
 EXPECTED_KUBEBRAIN_REPLICAS="${EXPECTED_KUBEBRAIN_REPLICAS:-3}"
 EXPECTED_IMAGE="${EXPECTED_IMAGE:-}"
+EXPECTED_KEYSPACE="${EXPECTED_KEYSPACE:-}"
 EXPECTED_QUOTA_BACKEND_BYTES="${EXPECTED_QUOTA_BACKEND_BYTES:-}"
 EXPECTED_ADVERTISE_CLIENT_URLS="${EXPECTED_ADVERTISE_CLIENT_URLS:-}"
 TIDB_NAMESPACE="${TIDB_NAMESPACE:-tidb-cluster}"
@@ -26,6 +27,10 @@ if [[ -z "$EXPECTED_IMAGE" ]]; then
 fi
 if [[ -z "$ENDPOINT" ]]; then
   echo "ENDPOINT is required" >&2
+  exit 2
+fi
+if [[ -z "$EXPECTED_KEYSPACE" ]]; then
+  echo "EXPECTED_KEYSPACE is required" >&2
   exit 2
 fi
 if ! [[ "$EXPECTED_QUOTA_BACKEND_BYTES" =~ ^[1-9][0-9]*$ ]]; then
@@ -131,9 +136,31 @@ if [[ "$advertise_arg_count" -ne 1 || "$advertise_arg_mismatch" == "true" ]]; th
   exit 1
 fi
 
+keyspace_arg_count=0
+keyspace_arg_mismatch=false
+while IFS= read -r arg; do
+  if [[ "$arg" == --keyspace=* ]]; then
+    keyspace_arg_count=$((keyspace_arg_count + 1))
+    if [[ "$arg" != "--keyspace=${EXPECTED_KEYSPACE}" ]]; then
+      keyspace_arg_mismatch=true
+    fi
+  fi
+done <<<"$kubebrain_args"
+if [[ "$keyspace_arg_count" -ne 1 || "$keyspace_arg_mismatch" == "true" ]]; then
+  echo "KubeBrain keyspace configuration mismatch: expected exactly --keyspace=${EXPECTED_KEYSPACE}" >&2
+  printf 'actual keyspace args:' >&2
+  while IFS= read -r arg; do
+    if [[ "$arg" == --keyspace=* ]]; then
+      printf ' %s' "$arg" >&2
+    fi
+  done <<<"$kubebrain_args"
+  printf '\n' >&2
+  exit 1
+fi
+
 if ! ETCDCTL_API=3 "$ETCDCTL" --endpoints="$ENDPOINT" endpoint health; then
   echo "KubeBrain endpoint health failed: $ENDPOINT" >&2
   exit 1
 fi
 
-echo "KubeBrain instance release gate passed: endpoint=${ENDPOINT} image=${EXPECTED_IMAGE} quota=${EXPECTED_QUOTA_BACKEND_BYTES} advertise_client_urls=${EXPECTED_ADVERTISE_CLIENT_URLS} replicas=${EXPECTED_KUBEBRAIN_REPLICAS} PD/TiKV=${EXPECTED_PD_REPLICAS}/${EXPECTED_TIKV_REPLICAS}"
+echo "KubeBrain instance release gate passed: endpoint=${ENDPOINT} image=${EXPECTED_IMAGE} keyspace=${EXPECTED_KEYSPACE} quota=${EXPECTED_QUOTA_BACKEND_BYTES} advertise_client_urls=${EXPECTED_ADVERTISE_CLIENT_URLS} replicas=${EXPECTED_KUBEBRAIN_REPLICAS} PD/TiKV=${EXPECTED_PD_REPLICAS}/${EXPECTED_TIKV_REPLICAS}"

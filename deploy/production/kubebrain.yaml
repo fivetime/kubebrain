@@ -102,6 +102,7 @@ spec:
             - --advertise-client-urls=http://kubebrain-client.kubebrain-system.svc:3379
             - --initial-cluster=kubebrain-0=http://kubebrain-0.kubebrain-peer.kubebrain-system.svc.cluster.local:3380,kubebrain-1=http://kubebrain-1.kubebrain-peer.kubebrain-system.svc.cluster.local:3380,kubebrain-2=http://kubebrain-2.kubebrain-peer.kubebrain-system.svc.cluster.local:3380
             - --pd-addrs=kb-pd.tidb-cluster.svc:2379
+            - --keyspace=kubebrain-system
             - --compatible-with-etcd=true
             - --enable-count-index=true
             - --count-index-max-keys=5000000
