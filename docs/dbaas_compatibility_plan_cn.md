@@ -43,7 +43,7 @@ Raft、bbolt 和成员管理内部实现，而是对通用 etcd v3 客户端提�
 | Maintenance | Status | 兼容核心语义 | 返回真实服务身份、版本、leader/revision/共享选主 term；配置 quota 时报告租户最新逻辑 key+value 字节，未配置时使用兼容 sentinel；TiKV 物理容量转到实例指标 |
 | Maintenance | Snapshot | 平台替代 | 使用 TiKV BR/PITR；控制面提供备份、恢复和导出任务，不伪造 etcd snapshot |
 | Maintenance | Defragment | 平台替代 | TiKV GC/compaction 管理，不执行 bbolt 碎片整理 |
-| Maintenance | Alarm/DbSize | 兼容 NOSPACE 核心语义 | keyspace 级逻辑容量原子计量、禁用窗口 dirty 标记与重新启用重建、持久 member 集合（含零值与任意 ID）、sticky NOSPACE、list/activate/disarm、跨 endpoint 与并发 mutation、启动初始化与 mutation 的不确定提交回读、no-op 与 capped write state 已支持；CORRUPT 与 bbolt fragmentation 仍为平台边界 |
+| Maintenance | Alarm/DbSize | 兼容 NOSPACE 核心语义 | keyspace 级逻辑容量原子计量、禁用窗口 dirty 标记与重新启用重建、持久 member 集合（含零值与任意 ID）、sticky NOSPACE、list/activate/disarm、无配置 quota 的手工 capped state、跨 endpoint 与并发 mutation、启动初始化与 mutation 的不确定提交回读及 no-op 已支持；CORRUPT 与 bbolt fragmentation 仍为平台边界 |
 | Maintenance | Hash/HashKV | 兼容核心语义 | 对指定 revision 的租户 MVCC 实际内容做稳定摘要；成员本地诊断不依赖 KubeBrain leader，数值不与 bbolt 内部编码比较 |
 | Maintenance | MoveLeader/Downgrade | 平台替代 | 分别由服务选主和 DBaaS 升级编排处理 |
 | Endpoint | health/livez/readyz | 兼容核心语义 | `/health`、`/livez`、`/readyz` 及分项检查已对齐；`data_corruption`/`non_learner` 使用 TiKV 架构等价语义，`/ready` 与 `/ping` 为平台探针 |
@@ -7474,6 +7474,38 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   panic/fatal/data race/storage error。至此 NOSPACE 支持零值、任意显式 ID 和多 member
   集合；剩余 Alarm 边界仅为 TiKV/PD 与管理面负责的 CORRUPT，以及不适用于 TiKV 的
   bbolt fragmentation。
+
+- **Maintenance A372 manual NOSPACE without configured quota（2026-07-21）**：对照
+  `/root/etcd/server/etcdserver/apply/uber_applier.go:restoreAlarms` 与
+  `apply/capped.go` 确认，持久 NOSPACE 会安装 capped applier，与 backend quota 数值
+  无关：手工 ACTIVATE 必须成功并阻断 Put、含 Put 的 Txn 和 LeaseGrant，同时 Range、
+  只读 Txn、DeleteRange 与 DEACTIVATE 保持可用。KubeBrain 此前在
+  `--quota-backend-bytes=0` 时直接以 FailedPrecondition 拒绝 ACTIVATE，后续三类写入均
+  错误成功；新增双端回归在 A371 镜像上完整复现该差异。
+
+  提交 `746c92f` 解除 `ArmNoSpace` 与逻辑用量配置的耦合；quota=0 的 `QuotaStatus`
+  仍读取持久 alarm key，但不初始化或伪造 usage。统一 `TxnApply` 在用量计数条件之外先
+  对有效用户 Put 检查告警，单键 Put 的 legacy Create/Update 快路径在 RPC leader/auth
+  fence 后执行同一检查；Delete-only 和内部元数据写不受影响。LeaseGrant 与含 Put Txn
+  继续复用原有 `QuotaStatus` 门禁。不可达的 `ErrQuotaDisabled` 及 FailedPrecondition 映射
+  已删除。由于 quota=0 不再跳过 alarm store，storage unavailable 的 `/health` 按既有
+  alarm-first 契约返回 `ALARM ERROR`，对应回归同步固定。
+
+  本机 Badger 双端差分普通 20 轮、race 10 轮通过，backend/server 聚焦 race、完整
+  `go test ./...` 与 `go vet ./...` 通过。exact runtime image
+  `kubebrain:a372-manual-alarm-no-quota` 从 `746c92f` 干净 Git archive 构建，image ID
+  `sha256:77309e6aa1f92c0d5f9752bbded78b7219c2d2161efe3e5b60aab78f4a2c1790`，
+  OCI version `0.0.0-a372.1`、revision `746c92fdabee5570586a61e6cb533e7c78935bc9`、
+  Go 1.26.5/linux/amd64、TiKV。
+
+  在独立 3 PD/3 TiKV、隔离 `a372-manual-alarm-no-quota-final` keyspace、明确没有
+  `--quota-backend-bytes` 的三 KubeBrain 副本上，完整十步手工 capped-state reference
+  差分连续 20 轮通过；三条 Pod 直连 endpoint 的跨副本 activate/list/wrong-disarm/
+  blocked-Put/correct-disarm 场景连续 20 轮通过。三 Pod UID 为
+  `733e652f-82d4-4a91-af36-5c2b474ab469`、`8a83fbf0-98de-4722-8c13-ff9d7f9d8daf`、
+  `d2e741d4-0f6a-4332-9e00-d6b4e349c7c8`，均 Ready、restartCount=0、runtime digest
+  `sha256:6418808055474914d6f998871278fbc286c25b625db523c0aef27c80ba3eb20e`，日志无
+  panic/fatal/data race/storage error。
 
 ### P1：通用服务能力
 
