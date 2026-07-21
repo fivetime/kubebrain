@@ -95,9 +95,11 @@ func TestQuotaAlarmCrossEndpointDisarm(t *testing.T) {
 		_, _ = kv.DeleteRange(cleanupCtx, &etcdserverpb.DeleteRangeRequest{Key: key})
 	})
 
+	const requestedMemberID uint64 = 424242
 	activated, err := first.Alarm(ctx, &etcdserverpb.AlarmRequest{
-		Action: etcdserverpb.AlarmRequest_ACTIVATE,
-		Alarm:  etcdserverpb.AlarmType_NOSPACE,
+		Action:   etcdserverpb.AlarmRequest_ACTIVATE,
+		MemberID: requestedMemberID,
+		Alarm:    etcdserverpb.AlarmType_NOSPACE,
 	})
 	require.NoError(t, err)
 	require.Len(t, activated.Alarms, 1)
@@ -107,8 +109,8 @@ func TestQuotaAlarmCrossEndpointDisarm(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Len(t, listed.Alarms, 1)
-	require.NotZero(t, activated.Alarms[0].MemberID)
-	require.NotZero(t, listed.Alarms[0].MemberID)
+	require.Equal(t, requestedMemberID, activated.Alarms[0].MemberID)
+	require.Equal(t, requestedMemberID, listed.Alarms[0].MemberID)
 	require.Equal(t, activated.Alarms, listed.Alarms, "alarm owner must remain stable across serving replicas")
 
 	wrong, err := third.Alarm(ctx, &etcdserverpb.AlarmRequest{
