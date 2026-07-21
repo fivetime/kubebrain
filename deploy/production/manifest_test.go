@@ -961,6 +961,24 @@ func TestProductionTiDBClusterProvidesDurableHAStorage(t *testing.T) {
 			require.Equal(t, "kubernetes.io/hostname",
 				nestedString(t, &unstructured.Unstructured{Object: antiAffinity[0].(map[string]any)}, "topologyKey"))
 
+			preferredAntiAffinity, found, err := unstructured.NestedSlice(
+				cluster.Object, "spec", component.name, "affinity", "podAntiAffinity",
+				"preferredDuringSchedulingIgnoredDuringExecution",
+			)
+			require.NoError(t, err)
+			require.True(t, found)
+			require.Len(t, preferredAntiAffinity, 1)
+			preference := &unstructured.Unstructured{Object: preferredAntiAffinity[0].(map[string]any)}
+			require.EqualValues(t, 100, nestedInt64(t, preference, "weight"))
+			require.Equal(t, "topology.kubernetes.io/zone",
+				nestedString(t, preference, "podAffinityTerm", "topologyKey"))
+			require.Equal(t, "tidb-cluster",
+				nestedString(t, preference, "podAffinityTerm", "labelSelector", "matchLabels", "app.kubernetes.io/name"))
+			require.Equal(t, "kb",
+				nestedString(t, preference, "podAffinityTerm", "labelSelector", "matchLabels", "app.kubernetes.io/instance"))
+			require.Equal(t, component.name,
+				nestedString(t, preference, "podAffinityTerm", "labelSelector", "matchLabels", "app.kubernetes.io/component"))
+
 			pdb := objectByKindAndName(t, objects, "PodDisruptionBudget", "kb-"+component.name)
 			require.EqualValues(t, 2, nestedInt64(t, pdb, "spec", "minAvailable"))
 			require.Equal(t, component.name,

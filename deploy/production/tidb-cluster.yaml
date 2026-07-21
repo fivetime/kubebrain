@@ -44,6 +44,15 @@ spec:
                 app.kubernetes.io/instance: kb
                 app.kubernetes.io/component: pd
             topologyKey: kubernetes.io/hostname
+        preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: tidb-cluster
+                  app.kubernetes.io/instance: kb
+                  app.kubernetes.io/component: pd
+              topologyKey: topology.kubernetes.io/zone
     config: {}
   tikv:
     baseImage: pingcap/tikv
@@ -68,6 +77,15 @@ spec:
                 app.kubernetes.io/instance: kb
                 app.kubernetes.io/component: tikv
             topologyKey: kubernetes.io/hostname
+        preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: tidb-cluster
+                  app.kubernetes.io/instance: kb
+                  app.kubernetes.io/component: tikv
+              topologyKey: topology.kubernetes.io/zone
     config: {}
 ---
 apiVersion: policy/v1
