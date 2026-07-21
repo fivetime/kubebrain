@@ -8184,6 +8184,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   继续使用 `kubebrain:a404-corrupt-expired-ttl`。最终 alarm 为空，health/readyz 全绿，
   3 KubeBrain、3 PD、3 TiKV 均 Ready，临时参考 etcd 已停止。
 
+- **Maintenance A407 explicit unsupported-surface gate（2026-07-21）**：
+  复扫 etcd API descriptor 的 42 个公开 RPC、KubeBrain production receiver 和矩阵分类，确认没有
+  依赖 `Unimplemented*Server` 嵌入而意外暴露的缺口。新增 AST 门禁进一步限定公开 handler 中
+  `codes.Unimplemented` 的唯一允许集合：上游同样条件拒绝 custom-sort/revision-filter 的
+  RangeStream、非法 Alarm 类型，以及由 DBaaS 控制面替代的 MemberAdd/Remove/Update/Promote、
+  Snapshot、MoveLeader、Downgrade。任何其他已兼容 RPC 将来被显式降级都会使测试失败；提交
+  `19ec951`。聚焦普通/race、根模块完整测试、root vet 与固定版 staticcheck 全部通过。
+
+  首轮完整 compat 在 lease generation 线性化基线记录到 1 个模糊 RPC 结果，但旧断言只保留计数，
+  无法区分连接瞬断、限流或服务端状态。聚焦连续 10 轮未复现；门禁现保持“基线必须零模糊失败”
+  的严格判定，同时在失败信息中保留 client、operation、输入和原始 RPC error，提交 `0e67336`。
+  增强后聚焦普通 3 轮、race 及完整 compat 121.074 秒通过，compat vet/staticcheck 全绿，因此当前
+  没有证据支持放宽判定或修改服务端。服务端字节未变化，运行镜像继续为
+  `kubebrain:a404-corrupt-expired-ttl`；最终 alarm 为空，health/readyz 全绿，3 KubeBrain、
+  3 PD、3 TiKV 均 Ready。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
