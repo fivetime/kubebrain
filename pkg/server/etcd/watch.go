@@ -314,18 +314,36 @@ func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) error {
 				}
 				continue
 			}
+			quotaReserved := s.maxWatches != 0
+			if !s.acquireWatch() {
+				if err := w.SendControlAndWait(canceledWatchCreateResponse(
+					w.responseRevision(), watchQuotaCancelReason,
+				)); err != nil {
+					return err
+				}
+				continue
+			}
+			releaseReservedQuota := func() {
+				if quotaReserved {
+					s.releaseWatch()
+					quotaReserved = false
+				}
+			}
 			if err := w.syncControlRevision(ws.Context()); err != nil {
+				releaseReservedQuota()
 				return err
 			}
 			watchCtx := ws.Context()
 			if !s.peers.IsLeader() && s.peers.EtcdProxyEnabled() {
 				watchCtx, authErr = s.forwardAuthToken(watchCtx, caller)
 				if authErr != nil {
+					releaseReservedQuota()
 					return authErr
 				}
 			}
 			// normal watch request can only be handled by leader
 			if !s.peers.IsLeader() && !s.peers.EtcdProxyEnabled() {
+				releaseReservedQuota()
 				s.metricCli.EmitCounter("watch.follower", 1)
 				leaderInfo := s.peers.GetLeaderInfo()
 				klog.InfoS("watch follower", "revision", r.StartRevision, "addr", s.backend.GetResourceLock().Identity(), "leader", leaderInfo)
@@ -336,7 +354,7 @@ func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) error {
 				r.StartRevision = int64(w.responseRevision()) + 1
 			}
 
-			w.start(watchCtx, r, uint64(progressStartRevision))
+			w.start(watchCtx, r, uint64(progressStartRevision), quotaReserved)
 		} else if cancelRequest := msg.GetCancelRequest(); cancelRequest != nil {
 			// Match etcd's stream-local cancellation: removing an existing watch
 			// does not require a leader read barrier. The response header uses this
@@ -442,17 +460,24 @@ func watchAuthCancelReason(err error) string {
 }
 
 func (w *watcher) Start(c context.Context, r *etcdserverpb.WatchCreateRequest) {
-	w.start(c, r, uint64(r.StartRevision))
+	w.start(c, r, uint64(r.StartRevision), false)
 }
 
-func (w *watcher) start(c context.Context, r *etcdserverpb.WatchCreateRequest, progressStartRevision uint64) {
+func (w *watcher) start(c context.Context, r *etcdserverpb.WatchCreateRequest, progressStartRevision uint64, quotaReserved bool) {
 	w.Lock()
 	ctx, cancel := context.WithCancel(c)
+	releaseReservedQuota := func() {
+		if quotaReserved {
+			w.grpcServer.releaseWatch()
+			quotaReserved = false
+		}
+	}
 	// Match etcd watchStream.Watch validation order: an empty range wins over
 	// duplicate-ID detection when both fields are invalid.
 	if len(r.RangeEnd) != 0 && bytes.Compare(r.Key, r.RangeEnd) >= 0 {
 		w.Unlock()
 		cancel()
+		releaseReservedQuota()
 		_ = w.SendControl(canceledWatchCreateResponse(
 			w.responseRevision(), "mvcc: watcher range is empty",
 		))
@@ -462,19 +487,23 @@ func (w *watcher) start(c context.Context, r *etcdserverpb.WatchCreateRequest, p
 		if _, duplicate := w.watches[r.WatchId]; duplicate {
 			w.Unlock()
 			cancel()
+			releaseReservedQuota()
 			_ = w.SendControl(canceledWatchCreateResponse(
 				w.responseRevision(), "mvcc: duplicate watch ID provided on the WatchStream",
 			))
 			return
 		}
 	}
-	if !w.grpcServer.acquireWatch() {
+	if !quotaReserved && !w.grpcServer.acquireWatch() {
 		w.Unlock()
 		cancel()
 		_ = w.SendControl(canceledWatchCreateResponse(
 			w.responseRevision(), watchQuotaCancelReason,
 		))
 		return
+	}
+	if !quotaReserved {
+		quotaReserved = w.grpcServer.maxWatches != 0
 	}
 	id, _ := w.allocateWatchIDLocked(r.WatchId)
 
@@ -503,7 +532,7 @@ func (w *watcher) start(c context.Context, r *etcdserverpb.WatchCreateRequest, p
 		cancel:                cancel,
 		start:                 string(r.Key),
 		end:                   string(r.RangeEnd),
-		quotaHeld:             w.grpcServer.maxWatches != 0,
+		quotaHeld:             quotaReserved,
 		progressStartRevision: progressStartRevision,
 		syncedRev:             initSyncedRev,
 	}

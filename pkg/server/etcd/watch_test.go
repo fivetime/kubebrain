@@ -919,6 +919,74 @@ func TestFollowerWatchCancelPrecedesReadBarrier(t *testing.T) {
 	}, time.Second, time.Millisecond)
 }
 
+func TestFollowerWatchQuotaRejectionPrecedesReadBarrier(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	server.SetMaxWatches(1)
+	server.activeWatches = 1
+
+	var barrierCalls atomic.Int64
+	server.peers = testPeerService{
+		isLeader: false,
+		syncReadFn: func(context.Context) error {
+			barrierCalls.Add(1)
+			return errors.New("leader revision transport failed")
+		},
+	}
+	stream := &scriptedWatchServer{
+		fakeWatchServer: &fakeWatchServer{ctx: context.Background()},
+		reqs: []*etcdserverpb.WatchRequest{{
+			RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{CreateRequest: &etcdserverpb.WatchCreateRequest{
+				Key: []byte("/watch/quota-local"), WatchId: 416,
+			}},
+		}},
+	}
+	err := server.Watch(stream)
+	require.ErrorIs(t, err, context.Canceled)
+	require.Zero(t, barrierCalls.Load(), "a locally full watch quota must not enter the read barrier")
+	require.Len(t, stream.sent, 1)
+	require.True(t, stream.sent[0].Created)
+	require.True(t, stream.sent[0].Canceled)
+	require.Equal(t, int64(-1), stream.sent[0].WatchId)
+	require.Equal(t, watchQuotaCancelReason, stream.sent[0].CancelReason)
+	require.Equal(t, int64(1), server.activeWatches)
+}
+
+func TestFollowerWatchQuotaReservationReleasedOnCreateFailure(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		barrierErr error
+	}{
+		{name: "read barrier failure", barrierErr: errors.New("leader revision transport failed")},
+		{name: "proxy disabled after barrier"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server, closeFn := newTestRPCServer(t)
+			defer closeFn()
+			server.SetMaxWatches(1)
+			server.peers = testPeerService{
+				isLeader: false,
+				syncReadFn: func(context.Context) error {
+					return test.barrierErr
+				},
+			}
+			stream := &scriptedWatchServer{
+				fakeWatchServer: &fakeWatchServer{ctx: context.Background()},
+				reqs: []*etcdserverpb.WatchRequest{{
+					RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{CreateRequest: &etcdserverpb.WatchCreateRequest{
+						Key: []byte("/watch/quota-release"), WatchId: 417,
+					}},
+				}},
+			}
+			err := server.Watch(stream)
+			require.Equal(t, codes.Unavailable, status.Code(err))
+			require.Zero(t, server.activeWatches)
+			require.True(t, server.acquireWatch(), "failed create must return its reserved watch slot")
+			server.releaseWatch()
+		})
+	}
+}
+
 func TestLeaderFromNowWatchReplaysWriteDuringCreatedResponse(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
@@ -1526,7 +1594,7 @@ func TestRewrittenFromNowWatchPreservesPublishedProgressFloor(t *testing.T) {
 		Key:            []byte("/registry/watch/from-now"),
 		StartRevision:  int64(published) + 1,
 		ProgressNotify: true,
-	}, 0)
+	}, 0, false)
 
 	// The rewritten watch is caught up through published, and must remain
 	// immediately progress-eligible as an original from-now request.
