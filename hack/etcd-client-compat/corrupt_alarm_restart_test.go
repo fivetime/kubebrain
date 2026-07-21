@@ -72,7 +72,7 @@ func TestCorruptAlarmSurvivesAllReplicaReplacements(t *testing.T) {
 		Action: etcdserverpb.AlarmRequest_ACTIVATE, Alarm: etcdserverpb.AlarmType_CORRUPT, MemberID: memberID,
 	})
 	require.NoError(t, err)
-	assertCorruptAlarmState(t, ctx, maintenance, kv, infoEndpoint, memberID, key, leasedKey)
+	assertCorruptAlarmState(t, ctx, maintenance, kv, lease, infoEndpoint, memberID, grant.ID, key, leasedKey)
 
 	for _, pod := range pods {
 		oldUID := kubectlPodField(t, kubeContext, namespace, pod, "{.metadata.uid}")
@@ -90,7 +90,7 @@ func TestCorruptAlarmSurvivesAllReplicaReplacements(t *testing.T) {
 			return newUID != "" && newUID != oldUID && ready == "true"
 		}, 90*time.Second, 500*time.Millisecond, "%s replacement did not become Ready", pod)
 
-		assertCorruptAlarmState(t, ctx, maintenance, kv, infoEndpoint, memberID, key, leasedKey)
+		assertCorruptAlarmState(t, ctx, maintenance, kv, lease, infoEndpoint, memberID, grant.ID, key, leasedKey)
 	}
 
 	deactivated, err := maintenance.Alarm(ctx, &etcdserverpb.AlarmRequest{
@@ -113,8 +113,10 @@ func assertCorruptAlarmState(
 	ctx context.Context,
 	maintenance etcdserverpb.MaintenanceClient,
 	kv etcdserverpb.KVClient,
+	lease etcdserverpb.LeaseClient,
 	infoEndpoint string,
 	memberID uint64,
+	leaseID int64,
 	key []byte,
 	leasedKey []byte,
 ) {
@@ -137,6 +139,12 @@ func assertCorruptAlarmState(
 	require.NoError(t, err)
 	require.Len(t, leasedRead.Kvs, 1)
 	require.Equal(t, "leased", string(leasedRead.Kvs[0].Value))
+	require.Eventually(t, func() bool {
+		callCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		defer cancel()
+		ttl, err := lease.LeaseTimeToLive(callCtx, &etcdserverpb.LeaseTimeToLiveRequest{ID: leaseID})
+		return err == nil && ttl.TTL < 0
+	}, 30*time.Second, 200*time.Millisecond, "expired lease did not retain its negative TTL under CORRUPT")
 	_, err = kv.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("blocked")})
 	require.Equal(t, codes.DataLoss, status.Code(err))
 	assertCorruptAlarmHTTPState(t, ctx, infoEndpoint)
