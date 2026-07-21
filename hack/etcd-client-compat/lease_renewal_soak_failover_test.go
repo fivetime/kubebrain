@@ -152,6 +152,16 @@ func TestLeaseRenewalSoakAcrossRepeatedLeaderFailover(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, int64(-1), response.TTL, "lease %d remained live after soak cleanup", leases[i].id)
 	}
+	listed, err := clients[0].Leases(cleanupCtx)
+	require.NoError(t, err)
+	owned := make(map[clientv3.LeaseID]struct{}, len(leases))
+	for _, lease := range leases {
+		owned[lease.id] = struct{}{}
+	}
+	for _, lease := range listed.Leases {
+		_, belongsToSoak := owned[lease.ID]
+		require.False(t, belongsToSoak, "lease %d remained listed after soak cleanup", lease.ID)
+	}
 	got, err := clients[0].Get(cleanupCtx, prefix, clientv3.WithPrefix())
 	require.NoError(t, err)
 	require.Empty(t, got.Kvs)

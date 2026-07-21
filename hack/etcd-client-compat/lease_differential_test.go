@@ -24,6 +24,7 @@ type leaseDifferentialResult struct {
 	ListContainsLease bool
 	RevokeRevision    int64
 	KeyAfterRevoke    int
+	ListedAfterRevoke bool
 	UnknownRevision   int64
 	UnknownTTL        int64
 	MinimumGrantedTTL int64
@@ -128,6 +129,12 @@ func runLeaseDifferentialScenario(t *testing.T, endpoint, instance string) lease
 	require.NoError(t, err)
 	unknown, err := cli.TimeToLive(ctx, grant.ID)
 	require.NoError(t, err)
+	afterRevokeList, err := cli.Leases(ctx)
+	require.NoError(t, err)
+	listedAfterRevoke := false
+	for _, lease := range afterRevokeList.Leases {
+		listedAfterRevoke = listedAfterRevoke || lease.ID == grant.ID
+	}
 	minimum, err := cli.Grant(ctx, 0)
 	require.NoError(t, err)
 	_, err = cli.Revoke(ctx, minimum.ID)
@@ -172,6 +179,7 @@ func runLeaseDifferentialScenario(t *testing.T, endpoint, instance string) lease
 		ListContainsLease: contains,
 		RevokeRevision:    revoke.Header.Revision - baseRev,
 		KeyAfterRevoke:    len(after.Kvs),
+		ListedAfterRevoke: listedAfterRevoke,
 		UnknownRevision:   unknown.ResponseHeader.Revision - baseRev,
 		UnknownTTL:        unknown.TTL,
 		MinimumGrantedTTL: minimum.TTL,
