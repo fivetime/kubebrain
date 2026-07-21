@@ -8418,6 +8418,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   不重建与 A418 相同的镜像，运行态继续使用已验证的
   `kubebrain:a418-watch-cancel-status-local`。
 
+#### A421 RangeStream context 结束状态归一化
+
+- 对照 `/root/etcd/server/etcdserver/api/v3rpc/key.go` 与 `util.go`：上游 RangeStream 经
+  `togRPCError` 保留 `context.Canceled`/`DeadlineExceeded`，由 gRPC transport 转换客户端
+  code。KubeBrain 同样保留 raw context error 时，Prometheus stream interceptor 会在
+  transport 转换前读取 handler 返回值，导致一部分已取消请求记为 `Unknown`。现于
+  `RPCServer.RangeStream` 单一出口使用 `status.FromContextError` 显式归一化两类 context
+  结束状态；客户端公开 code 不变，服务端 SLO 指标稳定为 Canceled/DeadlineExceeded。
+- 单元测试在 backend scanner channel 已建立后分别触发 cancel 与 deadline，聚焦普通 50 轮、
+  race 10 轮及 `pkg/server/etcd` 全包通过。真实旧 A418 同 Pod 双端口验证 200 次立即取消时
+  `Unknown` 从 0 增至 59，证明原问题；最终门禁先写入 64 个 64 KiB value、收到首 chunk
+  确认 handler 已进入后再取消，A421 连续 5 轮共 500 次全部通过，每轮 Canceled 增长且
+  Unknown/Unavailable 均不增长。独立 compat module 指定真实 NodePort 后 uncached 全量
+  95.089 秒通过；root 全量测试、vet、staticcheck v0.7.0 均通过。
+- 镜像 `kubebrain:a421-range-stream-context-status-local` 从 `git archive` 的已提交树构建，
+  本地 image ID 为 `sha256:43cd6345b08d8e2b085f8707d2553e09a79389d00e6593f80aa8a09e59b98266`，
+  kind/containerd 导入后的运行 digest 为
+  `sha256:355341f306ca5ed477c4ba0439dab371af83fb86d382ef3e2b634b83fca543b0`；
+  OCI revision 与容器版本均为 `52cd51dff000da1befa7d0f4a658fa363ae42105`，运行用户
+  `65532:65532`。三 KubeBrain 副本 Ready、零重启，主 PD/TiKV 3+3 Ready，health/readyz
+  正常且无 alarm。真实门禁的时序强化另以测试提交记录，不改变该生产二进制。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
