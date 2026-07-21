@@ -7648,6 +7648,39 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   health proposal 成功。错误 quota、重复 quota、必填输入和告警表达式聚焦测试普通 20 轮，
   完整 `go test ./...` 与 `go vet ./...` 通过；无运行时代码变化，未构建新镜像。
 
+- **Compatibility A379 externally reachable MemberList client URLs（2026-07-21）**：
+  对照 `/root/etcd` 的独立 `--initial-advertise-peer-urls` 与
+  `--advertise-client-urls` 契约，在全新 `a379-full-differential` keyspace 上重跑完整
+  Differential 套件。KV/Txn/Watch/Lease/Compact/Hash 等已启用场景通过，但 authenticated
+  AutoSync 确定性失败：KubeBrain 从 `--initial-cluster` peer host 推导
+  `kubebrain-*.kubebrain-peer...svc:3379`，宿主 clientv3 在 Sync 后用这些仅集群内可解析的
+  DNS 整体替换 bootstrap endpoint，随后 Range 因 DNS 不可达超时。完整套件中另有
+  leasing range contention 和 paginated mirror 各一次累积负载超时；用新 reference etcd
+  隔离重跑各 3 轮后分别在 5.9-7.1 秒、21-39 秒全部通过，未误判为语义差异。
+
+  提交 `601d44d` 新增 `--advertise-client-urls`：一个或多个绝对 `http(s)` URL 必须带
+  host/port、不能含 user/path/query/fragment 或规范化后重复，错误配置启动失败。显式值
+  经 option、endpoint/server config 传到 MemberList，并覆盖静态成员和动态降级成员的
+  ClientURLs；未设置时保留按 peer host、client port 与 TLS 模式推导的旧行为。peer URL、
+  leader-election identity 和 follower forwarding 均不改变。production HTTP/TLS 清单
+  分别广告同证书身份一致的 client Service 短 DNS；外部 DBaaS 必须覆盖为所有目标客户端
+  可路由且匹配证书 SAN 的公共 URL。配置/成员/manifest 聚焦普通 20 轮、race 10 轮、
+  完整 `go test ./...` 与 `go vet ./...` 通过。
+
+  exact image `kubebrain:a379-advertise-client-urls` 从
+  `601d44d402f86654f040f754acce0260ae75be46` 干净 Git archive 构建，image ID
+  `sha256:10dd76444979fa778ecae8c613b077c655d095cc545889c72c885d3a72432283`，OCI
+  version `0.0.0-a379.1`、revision 与二进制一致、Go 1.26.5/linux/amd64、TiKV、用户
+  `65532:65532`。真实 3 副本滚动后 MemberList 三成员均广告宿主可达
+  `http://127.0.0.1:22379`，authenticated AutoSync 对 reference etcd/真实 TiKV-backed
+  A379 连续 5 轮全部通过（每轮约 1.5 秒）；Pod UID 为
+  `fb0b1afb-5bbb-4c99-9fae-c7eb5a8ac5ac`、
+  `8ada1a44-846a-4e02-9945-2cd4a6a9cc94`、
+  `e995215f-2a8b-4221-995c-88889e4d8252`，runtime digest
+  `sha256:269c01b256fdbed767da86fcc49306a96f9822c023210478abf4614daaa6c7c2`，均 Ready、
+  restartCount=0。endpoint health 与 Put/Get/Delete 通过，三副本 quota usage/backend/
+  NOSPACE 一致，日志无 panic/fatal/data race/storage/quota/OOM 错误，PD/TiKV 3+3 Ready。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
