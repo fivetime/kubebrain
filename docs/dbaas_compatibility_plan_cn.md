@@ -8403,6 +8403,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   因此不重建与 A418 相同的镜像，运行态继续使用已验证的
   `kubebrain:a418-watch-cancel-status-local`。
 
+#### A420 RangeStream 拆分响应 protobuf 字段升级门禁
+
+- 对照 `/root/etcd/server/etcdserver/v3_server.go` 的 RangeStream 合并契约，审计 KubeBrain
+  自有 `splitRangeStreamResponse` 二次按 wire size 拆分路径。当前 `RangeResponse` 的 Header、
+  Kvs、More、Count 四个 protobuf 字段均完整处理，外层 `RangeStreamResponse` 当前仅含
+  RangeResponse；新增两类结构字段计数门禁，未来依赖升级新增任一字段时会立即要求同步更新
+  手工拆分逻辑，避免仅在大响应中出现静默字段丢失。
+- 新增完整语义测试，以包含四项 Header 标识、三项 KV、More 和 Count 的响应强制触发多段
+  拆分；约束非末段不携带终态元数据，并验证所有分段经 `proto.Merge` 后与源响应完全一致。
+  聚焦普通 50 轮、race 10 轮、`pkg/server/etcd` 全包以及 root 全量测试、vet、staticcheck
+  v0.7.0 均通过。
+- 本轮确认当前生产实现没有字段遗漏，仅新增 API 升级回归门禁；生产服务端字节不变，因此
+  不重建与 A418 相同的镜像，运行态继续使用已验证的
+  `kubebrain:a418-watch-cancel-status-local`。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
