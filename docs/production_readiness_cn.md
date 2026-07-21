@@ -405,6 +405,30 @@ lease 元数据记录剩余 TTL；restore 为目标生成新 lease ID，同时�
 BACKUP_MODE=logical hack/backup/production-mode-check.sh
 ```
 
+独立 PD/TiKV 集群若计划建设停机冷物理 full snapshot，必须先运行只读能力与身份预检：
+
+```shell
+KUBE_CONTEXT=production \
+KUBEBRAIN_NAMESPACE=kubebrain-instance-a \
+TIDB_NAMESPACE=kubebrain-storage-a \
+TIDB_CLUSTER=kb \
+VOLUME_SNAPSHOT_CLASS=retained-csi \
+EXPECTED_KUBEBRAIN_STATEFULSET_UID=<uid> \
+EXPECTED_TIDB_CLUSTER_UID=<uid> \
+EXPECTED_TIKV_CLUSTER_ID=<numeric-cluster-id> \
+EXPECTED_PD_PVCS=3 \
+EXPECTED_TIKV_PVCS=3 \
+ALLOW_COLD_PHYSICAL_SNAPSHOT=true \
+  hack/backup/cold-snapshot-preflight.sh > cold-snapshot-inventory.json
+```
+
+预检要求集群提供 `snapshot.storage.k8s.io` API、VolumeSnapshotClass driver 非空且
+`deletionPolicy=Retain`，并精确锁定 KubeBrain StatefulSet UID、TidbCluster UID、TiKV
+cluster ID，以及全部 3+3 Bound PD/TiKV PVC 的 name/UID/PV/storage class/volume mode。
+输出 `kubebrain.cold-physical-snapshot-preflight.v1` 只能作为后续 operation 的不可变输入。
+它**不会**停止流量、暂停 operator、缩容 Pod、创建 VolumeSnapshot 或证明恢复成功，因而
+`BACKUP_MODE=cold-csi` 仍不受支持，更不等于 PITR。缺少 CSI API 的集群必须 fail closed。
+
 生产备份 Job 必须设置 `METRICS_OUTPUT`，将成功结果写入 node-exporter 或等价
 Prometheus textfile collector 的共享目录；`BACKUP_INSTANCE` 必须与实例名一致，
 生产清单默认使用 `kubebrain`。指标文件仅在 artifact 已原子提交且可 `stat` 后原子
@@ -1117,8 +1141,15 @@ hack/dev/verify.sh
 
 ## 仍需补齐或确认
 
-- **`Maintenance.Snapshot` 刻意不实现（设计决定，非缺口）。** etcd 的 snapshot API 存在是因为 etcd 是自包含单机 bbolt 库、数据只在自己肚子里；KubeBrain 的数据在 TiKV，备份/DR 由 **TiKV 原生 BR + PITR（日志备份）** 承担，能力全面强于 etcd snapshot（全量+增量、秒级时间点恢复、S3、各 region 并行、TB 级）。把整个 TiKV 数据集通过 etcd 流式 snapshot API 拉成单文件反而是倒退。**备份恢复走 TiKV/PD 侧，不走 etcd snapshot；DR 待办 = 做一次 TiKV BR 全量+PITR 恢复演练，确认恢复后 KubeBrain MVCC 修订号连贯（PD TSO 单调，会推进过任何已恢复修订值）。**
-- 仓库另提供 `hack/backup/logical-export.sh` / `logical-restore.sh` 作为 Kubernetes 对象级**逻辑**备份/恢复演练入口（用于迁移/隔离前缀校验，不保留 etcd revision/lease 语义，非主备份路径）。当前本地已通过 `/registry` 4091 条记录的导出、隔离前缀恢复、计数校验和清理。
+- **`Maintenance.Snapshot` 刻意不实现，但物理 PITR 仍是明确缺口。** etcd Snapshot RPC
+  输出单成员 bbolt 文件，不能表示独立 PD/TiKV 集群。真实 A143 演练已证明 TiDB BR
+  full/PITR 不包含 KubeBrain transactional keys，BR raw 也不能提供跨 CF 一致快照，因此
+  不能再把“使用 BR”写成已完成替代方案。当前唯一通过端到端恢复验证的生产模式是
+  `kubebrain.logical.v2`；它不保留原 etcd revision/watch 历史。冷 CSI 多 PVC full
+  snapshot 仍需完成全停机 executor 和隔离恢复演练，日志型 PITR 继续未完成。
+- `hack/backup/logical-export.sh` / `logical-restore.sh` 是当前生产备份与隔离恢复入口；上线
+  前必须按本节后文完成 artifact 完整性、Object Lock、恢复 receipt 和持续审计门禁，不能
+  只用一次本地导出成功声称具备 DR。
 - `MemberAdd`、`MemberRemove`、`MemberUpdate`、`MemberPromote` 不支持，因为 KubeBrain 不是 etcd raft 成员管理模型。
 - Auth 可用于数据面用户、角色和 key-range 权限控制；生产仍应叠加 client mTLS、
   网络策略、凭据轮换与运维审计，不把任一单层控制当作完整租户隔离。
