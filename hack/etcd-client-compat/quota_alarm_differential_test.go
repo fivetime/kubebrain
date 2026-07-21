@@ -21,6 +21,34 @@ type quotaAlarmOutcome struct {
 	AlarmCount int
 }
 
+type quotaAlarmLeaseRecoveryOutcome struct {
+	GrantCode              codes.Code
+	ExplicitRevokeDeleted  bool
+	NaturalExpiryDeleted   bool
+	RenewTTL               int64
+	RenewedPastOldDeadline bool
+	AlarmRemainedSticky    bool
+}
+
+func TestQuotaAlarmLeaseRecoveryDifferentialAgainstReferenceEtcd(t *testing.T) {
+	reference := os.Getenv("REFERENCE_QUOTA_ETCD_ENDPOINT")
+	kubebrain := os.Getenv("KUBEBRAIN_QUOTA_ENDPOINT")
+	if reference == "" || kubebrain == "" {
+		t.Skip("set REFERENCE_QUOTA_ETCD_ENDPOINT and KUBEBRAIN_QUOTA_ENDPOINT")
+	}
+
+	want := runQuotaAlarmLeaseRecoveryScenario(t, reference)
+	require.Equal(t, quotaAlarmLeaseRecoveryOutcome{
+		GrantCode:              codes.ResourceExhausted,
+		ExplicitRevokeDeleted:  true,
+		NaturalExpiryDeleted:   true,
+		RenewTTL:               3,
+		RenewedPastOldDeadline: true,
+		AlarmRemainedSticky:    true,
+	}, want)
+	require.Equal(t, want, runQuotaAlarmLeaseRecoveryScenario(t, kubebrain))
+}
+
 func TestQuotaAlarmCappedStateDifferentialAgainstReferenceEtcd(t *testing.T) {
 	reference := os.Getenv("REFERENCE_QUOTA_ETCD_ENDPOINT")
 	kubebrain := os.Getenv("KUBEBRAIN_QUOTA_ENDPOINT")
@@ -265,4 +293,89 @@ func runQuotaAlarmCappedScenario(t *testing.T, endpoint string) []quotaAlarmOutc
 	_, err = kv.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("restored")})
 	record("put-after-disarm", nil, err)
 	return outcomes
+}
+
+func runQuotaAlarmLeaseRecoveryScenario(t *testing.T, endpoint string) quotaAlarmLeaseRecoveryOutcome {
+	t.Helper()
+	endpoint = strings.TrimPrefix(strings.TrimPrefix(endpoint, "http://"), "https://")
+	conn, err := grpc.NewClient(endpoint, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	kv := etcdserverpb.NewKVClient(conn)
+	lease := etcdserverpb.NewLeaseClient(conn)
+	maintenance := etcdserverpb.NewMaintenanceClient(conn)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	statusResponse, err := maintenance.Status(ctx, &etcdserverpb.StatusRequest{})
+	require.NoError(t, err)
+	memberID := statusResponse.Header.MemberId
+	require.NotZero(t, memberID)
+	prefix := testPrefix(t) + "/quota-lease-recovery"
+	expiryKey := []byte(prefix + "/expiry")
+	renewKey := []byte(prefix + "/renew")
+	revokeKey := []byte(prefix + "/revoke")
+	expiry, err := lease.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 2})
+	require.NoError(t, err)
+	renew, err := lease.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 3})
+	require.NoError(t, err)
+	revoke, err := lease.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 30})
+	require.NoError(t, err)
+	for _, fixture := range []struct {
+		key   []byte
+		lease int64
+	}{{expiryKey, expiry.ID}, {renewKey, renew.ID}, {revokeKey, revoke.ID}} {
+		_, err = kv.Put(ctx, &etcdserverpb.PutRequest{Key: fixture.key, Value: []byte("leased"), Lease: fixture.lease})
+		require.NoError(t, err)
+	}
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_, _ = maintenance.Alarm(cleanupCtx, &etcdserverpb.AlarmRequest{
+			Action: etcdserverpb.AlarmRequest_DEACTIVATE, Alarm: etcdserverpb.AlarmType_NOSPACE, MemberID: memberID,
+		})
+		for _, key := range [][]byte{expiryKey, renewKey, revokeKey} {
+			_, _ = kv.DeleteRange(cleanupCtx, &etcdserverpb.DeleteRangeRequest{Key: key})
+		}
+	})
+	_, err = maintenance.Alarm(ctx, &etcdserverpb.AlarmRequest{
+		Action: etcdserverpb.AlarmRequest_ACTIVATE, Alarm: etcdserverpb.AlarmType_NOSPACE, MemberID: memberID,
+	})
+	require.NoError(t, err)
+
+	_, grantErr := lease.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 30})
+	outcome := quotaAlarmLeaseRecoveryOutcome{GrantCode: status.Code(grantErr)}
+	_, err = lease.LeaseRevoke(ctx, &etcdserverpb.LeaseRevokeRequest{ID: revoke.ID})
+	require.NoError(t, err)
+	revokedRead, err := kv.Range(ctx, &etcdserverpb.RangeRequest{Key: revokeKey})
+	require.NoError(t, err)
+	outcome.ExplicitRevokeDeleted = len(revokedRead.Kvs) == 0
+
+	time.Sleep(1500 * time.Millisecond)
+	renewStream, err := lease.LeaseKeepAlive(ctx)
+	require.NoError(t, err)
+	require.NoError(t, renewStream.Send(&etcdserverpb.LeaseKeepAliveRequest{ID: renew.ID}))
+	renewResponse, err := renewStream.Recv()
+	require.NoError(t, err)
+	require.NoError(t, renewStream.CloseSend())
+	outcome.RenewTTL = renewResponse.TTL
+	require.Eventually(t, func() bool {
+		response, rangeErr := kv.Range(ctx, &etcdserverpb.RangeRequest{Key: expiryKey})
+		return rangeErr == nil && len(response.Kvs) == 0
+	}, 10*time.Second, 100*time.Millisecond)
+	outcome.NaturalExpiryDeleted = true
+
+	time.Sleep(2 * time.Second)
+	renewedRead, err := kv.Range(ctx, &etcdserverpb.RangeRequest{Key: renewKey})
+	require.NoError(t, err)
+	outcome.RenewedPastOldDeadline = len(renewedRead.Kvs) == 1
+	alarms, err := maintenance.Alarm(ctx, &etcdserverpb.AlarmRequest{
+		Action: etcdserverpb.AlarmRequest_GET, Alarm: etcdserverpb.AlarmType_NOSPACE,
+	})
+	require.NoError(t, err)
+	outcome.AlarmRemainedSticky = len(alarms.Alarms) == 1 && alarms.Alarms[0].MemberID == memberID
+	_, err = maintenance.Alarm(ctx, &etcdserverpb.AlarmRequest{
+		Action: etcdserverpb.AlarmRequest_DEACTIVATE, Alarm: etcdserverpb.AlarmType_NOSPACE, MemberID: memberID,
+	})
+	require.NoError(t, err)
+	return outcome
 }
