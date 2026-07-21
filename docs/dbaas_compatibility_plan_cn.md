@@ -7791,6 +7791,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./...` 通过。一次性 reference etcd、端口转发、监听端口和 data-dir 均已清理；
   本轮未修改运行时代码或构建数据面镜像。
 
+- **Compatibility A387 clientv3 naming manager and resolver（2026-07-21）**：
+  对照 `/root/etcd/tests/integration/clientv3/naming/endpoints_test.go` 与
+  `resolver_test.go`，提交 `131d8ff` 增加 EndpointManager/gRPC resolver 双端差分。
+  EndpointManager 必须把同一 Txn 的两个 Add 作为同 revision 批量 watch 更新，List 保留
+  address 与 metadata；单 Txn delete+add 后批量更新和最终列表必须一致，相似的
+  `manager`/`manager-other` 前缀严格隔离，附 lease endpoint 在 Revoke 后必须发出 Delete。
+
+  resolver 场景由测试进程启动两个本地 gRPC health server，分别返回 SERVING 与
+  NOT_SERVING；通过 etcd naming 注册两地址并建立 `etcd:///` pick_first 连接，识别首次
+  实际后端后删除其 EndpointManager 键，resolver 必须消费 prefix watch、移除旧地址并切换
+  到另一状态的后端。结果同时与明确期望及 reference etcd 比较。真实独立 3 PD/3 TiKV、
+  A379 KubeBrain 三副本环境普通 5 轮及 race 5 轮全部通过，每轮约 0.67-0.74 秒；嵌套
+  兼容模块和根模块 `go vet ./...`、根模块完整 `go test ./...` 通过。一次性 reference etcd、
+  两个 gRPC server、端口转发、监听端口和 data-dir 均已清理；本轮未修改运行时代码或
+  构建数据面镜像。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
