@@ -8569,6 +8569,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   证据，因此本轮不把 schema dry-run 当作网络隔离运行证明；平台若改变 namespace/instance/
   Operator 安装位置必须同步实例化 selector。本轮只更新生产部署 artifact，不改变 A422 镜像。
 
+#### A430 NetworkPolicy CNI enforcement 发布门禁
+
+- 将 A429 的人工允许/拒绝检查实现为 `hack/production/validate-network-policy.sh`。门禁要求
+  不可变 digest 探针镜像、唯一 DNS-label probe ID、三个互异 namespace，并在创建 Pod 前
+  fail-closed 校验 client/monitoring/denied 标签。它验证 client 到 KubeBrain 3379、monitoring
+  到 KubeBrain/PD/TiKV 指标端口、KubeBrain 到 PD/TiKV，以及未标记 namespace 到三类数据面
+  的拒绝路径；任一允许失败或拒绝成功都阻止发布。
+- 脚本拒绝复用已有同名 Pod，创建成功后立即登记 trap，连 Ready 等待失败也清理部分资源。
+  fake kubectl 测试覆盖成功、策略绕过、误阻断、标签缺失、Ready 失败、名称碰撞、mutable
+  image 预调用拒绝和 context 传递；普通 100 轮、race 20 轮通过。固定 digest ShellCheck
+  v0.11.0、root 全量测试、vet、staticcheck v0.7.0 均通过，并确认生产镜像含 bash/timeout。
+- 生产文档给出调用契约并明确脚本只证明 TCP/CNI enforcement，不能替代 endpoint health、
+  Put/Get/Delete 或三副本故障验证。当前 kind CNI 未用于伪造通过证据，真实门禁仍须在支持
+  NetworkPolicy 的预生产/生产 CNI 上执行；本轮不改变 A422 服务端镜像。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range

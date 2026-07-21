@@ -44,6 +44,26 @@ NetworkPolicy，并从允许的 client namespace 验证 3379 和业务读写、�
 验证 3378/2379/20180、验证 DNS 与三副本 leader/raft 正常；同时从未标记 namespace 对这些
 端口执行带超时的拒绝探针。任一允许路径失败或拒绝路径成功都必须阻止发布。
 
+策略安装且三类探针 namespace 已准备后，运行可执行门禁；`PROBE_IMAGE` 必须是包含
+`bash`、`timeout`、`sleep` 的不可变 digest（生产 KubeBrain 镜像满足该契约），`PROBE_ID`
+必须对本次发布唯一：
+
+```shell
+KUBE_CONTEXT=production \
+PROBE_ID=release-20260721 \
+PROBE_IMAGE=registry.example/kubebrain@sha256:<64-hex-digest> \
+CLIENT_NAMESPACE=apiserver-client \
+MONITORING_NAMESPACE=monitoring \
+DENIED_NAMESPACE=network-policy-negative-probe \
+  hack/production/validate-network-policy.sh
+```
+
+脚本不修改 namespace 标签；它创建三个临时非重启 Pod，验证 client 3379、monitoring
+3378/2379/20180、KubeBrain 到 PD 2379/TiKV 20160 均可达，再验证未标记 namespace 到
+KubeBrain/PD/TiKV 均不可达。任何失败都返回非零，trap 清理所有已创建 Pod；已有同名 Pod
+会被拒绝而非复用。该门禁只证明 TCP/CNI enforcement，仍须随后运行 endpoint health 和
+实际 Put/Get/Delete，不能把端口连通替代 etcd 语义验证。
+
 `--advertise-host` 是副本间选主/转发身份，不能同时充当 clientv3 Sync/AutoSync 的公开
 地址。生产必须单独设置 `--advertise-client-urls`：仓库基线使用集群内 client Service；
 向集群外提供 DBaaS endpoint 时，平台必须替换为所有目标客户端可解析、可路由的公共
