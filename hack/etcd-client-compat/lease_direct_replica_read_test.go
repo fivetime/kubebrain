@@ -53,6 +53,10 @@ func TestLeaseReadAndRevokeAcrossDirectReplicas(t *testing.T) {
 		require.NoError(t, ttlErr)
 		require.Positive(t, ttl.TTL)
 		require.Equal(t, [][]byte{[]byte(key)}, ttl.Keys)
+		listed, listErr := replica.Leases(ctx)
+		require.NoError(t, listErr)
+		require.True(t, leaseListContains(listed, grant.ID),
+			"direct replica %s omitted live lease %x", endpoint, grant.ID)
 	}
 
 	_, err = service.Revoke(ctx, grant.ID)
@@ -67,5 +71,18 @@ func TestLeaseReadAndRevokeAcrossDirectReplicas(t *testing.T) {
 		require.NoError(t, ttlErr)
 		require.Equal(t, int64(-1), ttl.TTL)
 		require.Empty(t, ttl.Keys)
+		listed, listErr := replica.Leases(ctx)
+		require.NoError(t, listErr)
+		require.False(t, leaseListContains(listed, grant.ID),
+			"direct replica still listed revoked lease %x", grant.ID)
 	}
+}
+
+func leaseListContains(response *clientv3.LeaseLeasesResponse, id clientv3.LeaseID) bool {
+	for _, lease := range response.Leases {
+		if lease.ID == id {
+			return true
+		}
+	}
+	return false
 }
