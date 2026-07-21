@@ -33,6 +33,7 @@ func TestWatchIDRangeBoundaryDifferentialAgainstReferenceEtcd(t *testing.T) {
 		watchCreatedBoundaryOutcome("create-negative-one", -1),
 		watchCreatedBoundaryOutcome("create-minimum", math.MinInt64),
 		watchCreatedBoundaryOutcome("create-maximum", math.MaxInt64),
+		watchCanceledCreateBoundaryOutcome("duplicate-and-equal-range", "mvcc: watcher range is empty"),
 		watchCanceledCreateBoundaryOutcome("duplicate-maximum", "mvcc: duplicate watch ID provided on the WatchStream"),
 		watchCanceledCreateBoundaryOutcome("equal-range", "mvcc: watcher range is empty"),
 		watchCanceledCreateBoundaryOutcome("descending-range", "mvcc: watcher range is empty"),
@@ -79,7 +80,7 @@ func runWatchIDRangeBoundaryScenario(t *testing.T, endpoint string) []watchIDRan
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = stream.CloseSend() })
 
-	outcomes := make([]watchIDRangeBoundaryOutcome, 0, 15)
+	outcomes := make([]watchIDRangeBoundaryOutcome, 0, 16)
 	recv := func(name string) {
 		resp, recvErr := stream.Recv()
 		require.NoError(t, recvErr, name)
@@ -111,6 +112,7 @@ func runWatchIDRangeBoundaryScenario(t *testing.T, endpoint string) []watchIDRan
 	create("create-negative-one", -1, []byte("/dbaas-watch-id/negative-one"), nil)
 	create("create-minimum", math.MinInt64, []byte("/dbaas-watch-id/minimum"), nil)
 	create("create-maximum", math.MaxInt64, []byte("/dbaas-watch-id/maximum"), nil)
+	create("duplicate-and-equal-range", math.MaxInt64, []byte("/dbaas-watch-id/invalid"), []byte("/dbaas-watch-id/invalid"))
 	create("duplicate-maximum", math.MaxInt64, []byte("/dbaas-watch-id/duplicate"), nil)
 	create("equal-range", 100, []byte("/dbaas-watch-id/equal"), []byte("/dbaas-watch-id/equal"))
 	create("descending-range", 101, []byte("/dbaas-watch-id/z"), []byte("/dbaas-watch-id/a"))

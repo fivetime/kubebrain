@@ -421,6 +421,16 @@ func (w *watcher) Start(c context.Context, r *etcdserverpb.WatchCreateRequest) {
 func (w *watcher) start(c context.Context, r *etcdserverpb.WatchCreateRequest, progressStartRevision uint64) {
 	w.Lock()
 	ctx, cancel := context.WithCancel(c)
+	// Match etcd watchStream.Watch validation order: an empty range wins over
+	// duplicate-ID detection when both fields are invalid.
+	if len(r.RangeEnd) != 0 && bytes.Compare(r.Key, r.RangeEnd) >= 0 {
+		w.Unlock()
+		cancel()
+		_ = w.SendControl(canceledWatchCreateResponse(
+			w.responseRevision(), "mvcc: watcher range is empty",
+		))
+		return
+	}
 	if r.WatchId != 0 {
 		if _, duplicate := w.watches[r.WatchId]; duplicate {
 			w.Unlock()
@@ -430,14 +440,6 @@ func (w *watcher) start(c context.Context, r *etcdserverpb.WatchCreateRequest, p
 			))
 			return
 		}
-	}
-	if len(r.RangeEnd) != 0 && bytes.Compare(r.Key, r.RangeEnd) >= 0 {
-		w.Unlock()
-		cancel()
-		_ = w.SendControl(canceledWatchCreateResponse(
-			w.responseRevision(), "mvcc: watcher range is empty",
-		))
-		return
 	}
 	if !w.grpcServer.acquireWatch() {
 		w.Unlock()

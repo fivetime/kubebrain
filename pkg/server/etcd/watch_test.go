@@ -366,20 +366,29 @@ func TestWatchRequestedIDDuplicateAndUnknownCancelMatchEtcd(t *testing.T) {
 	require.True(t, stream.sent[0].Created)
 	require.Equal(t, int64(42), stream.sent[0].WatchId)
 
-	w.Start(context.Background(), &etcdserverpb.WatchCreateRequest{Key: []byte("/watch/duplicate"), WatchId: 42})
+	w.Start(context.Background(), &etcdserverpb.WatchCreateRequest{
+		Key: []byte("/watch/invalid"), RangeEnd: []byte("/watch/invalid"), WatchId: 42,
+	})
 	require.Len(t, stream.sent, 2)
 	require.True(t, stream.sent[1].Created)
 	require.True(t, stream.sent[1].Canceled)
 	require.Equal(t, int64(-1), stream.sent[1].WatchId)
-	require.Equal(t, "mvcc: duplicate watch ID provided on the WatchStream", stream.sent[1].CancelReason)
+	require.Equal(t, "mvcc: watcher range is empty", stream.sent[1].CancelReason)
+
+	w.Start(context.Background(), &etcdserverpb.WatchCreateRequest{Key: []byte("/watch/duplicate"), WatchId: 42})
+	require.Len(t, stream.sent, 3)
+	require.True(t, stream.sent[2].Created)
+	require.True(t, stream.sent[2].Canceled)
+	require.Equal(t, int64(-1), stream.sent[2].WatchId)
+	require.Equal(t, "mvcc: duplicate watch ID provided on the WatchStream", stream.sent[2].CancelReason)
 
 	w.CancelRequest(999)
-	require.Len(t, stream.sent, 2, "etcd silently ignores cancellation of an unknown watch ID")
+	require.Len(t, stream.sent, 3, "etcd silently ignores cancellation of an unknown watch ID")
 	w.CancelRequest(42)
 	w.wg.Wait()
-	require.Len(t, stream.sent, 3, "backend close after client cancellation must not emit a second response")
-	require.True(t, stream.sent[2].Canceled)
-	require.Empty(t, stream.sent[2].CancelReason)
+	require.Len(t, stream.sent, 4, "backend close after client cancellation must not emit a second response")
+	require.True(t, stream.sent[3].Canceled)
+	require.Empty(t, stream.sent[3].CancelReason)
 }
 
 func TestLogicalWatchAdmissionMultiplexCancelAndDisconnect(t *testing.T) {
