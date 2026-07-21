@@ -25,6 +25,7 @@ type corruptAlarmOutcome struct {
 
 type corruptAlarmLeaseExpiryOutcome struct {
 	PresentWhileAlarmed bool
+	NegativeTTL         bool
 	DeletedAfterDisarm  bool
 }
 
@@ -38,6 +39,7 @@ func TestCorruptAlarmDefersLeaseExpiryDifferentialAgainstReferenceEtcd(t *testin
 	want := runCorruptAlarmLeaseExpiryScenario(t, reference)
 	require.Equal(t, corruptAlarmLeaseExpiryOutcome{
 		PresentWhileAlarmed: true,
+		NegativeTTL:         true,
 		DeletedAfterDisarm:  true,
 	}, want)
 	require.Equal(t, want, runCorruptAlarmLeaseExpiryScenario(t, kubebrain))
@@ -277,7 +279,12 @@ func runCorruptAlarmLeaseExpiryScenario(t *testing.T, endpoint string) corruptAl
 	time.Sleep(4 * time.Second)
 	duringAlarm, err := kv.Range(ctx, &etcdserverpb.RangeRequest{Key: key})
 	require.NoError(t, err)
-	outcome := corruptAlarmLeaseExpiryOutcome{PresentWhileAlarmed: len(duringAlarm.Kvs) == 1}
+	ttl, err := lease.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: grant.ID})
+	require.NoError(t, err)
+	outcome := corruptAlarmLeaseExpiryOutcome{
+		PresentWhileAlarmed: len(duringAlarm.Kvs) == 1,
+		NegativeTTL:         ttl.TTL < 0,
+	}
 	_, err = maintenance.Alarm(ctx, &etcdserverpb.AlarmRequest{
 		Action: etcdserverpb.AlarmRequest_DEACTIVATE, Alarm: etcdserverpb.AlarmType_CORRUPT, MemberID: memberID,
 	})

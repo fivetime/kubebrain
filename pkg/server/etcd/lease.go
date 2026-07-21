@@ -1204,11 +1204,10 @@ func (m *leaseManager) deleteRangeWithAttachments(ctx context.Context, request *
 }
 
 func remainingTTL(st *leaseState) int64 {
-	ttl := int64(time.Until(st.deadline).Seconds())
-	if ttl < 0 {
-		return 0
-	}
-	return ttl
+	// Match etcd lessor.Lease.Remaining and leaseTimeToLive: an expired lease
+	// can remain visible while its asynchronous revoke is blocked (for example
+	// by a CORRUPT alarm), and its public TTL continues below zero.
+	return int64(time.Until(st.deadline).Seconds())
 }
 
 func leaseKeys(st *leaseState) [][]byte {

@@ -450,6 +450,9 @@ func TestRemainingTTLTruncatesLiveSubsecondToZeroLikeEtcd(t *testing.T) {
 	require.Equal(t, int64(0), remainingTTL(&leaseState{
 		deadline: time.Now().Add(-time.Millisecond),
 	}))
+	require.Equal(t, int64(-1), remainingTTL(&leaseState{
+		deadline: time.Now().Add(-1500 * time.Millisecond),
+	}), "etcd exposes elapsed whole seconds while an expired lease awaits revoke")
 }
 
 func TestLeaseKeepAliveUnknownLeaseMatchesEtcd(t *testing.T) {

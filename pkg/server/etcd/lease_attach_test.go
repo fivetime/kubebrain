@@ -821,7 +821,7 @@ func TestExpiryKeepsLeaseAndRecordWhenKeyDeleteFails(t *testing.T) {
 	require.NoError(t, err)
 	ttlResp, err := server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: leaseID, Keys: true})
 	require.NoError(t, err)
-	require.Zero(t, ttlResp.TTL, "failed revoke keeps the expired lease pending for retry")
+	require.Negative(t, ttlResp.TTL, "failed revoke keeps the expired lease pending for retry")
 	require.Len(t, ttlResp.Keys, 2, "no key may be unbound when expiry did not complete")
 
 	// Now let deletes succeed; a re-run finishes expiry cleanly.
