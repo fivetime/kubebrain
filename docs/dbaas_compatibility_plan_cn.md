@@ -7507,6 +7507,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `sha256:6418808055474914d6f998871278fbc286c25b625db523c0aef27c80ba3eb20e`，日志无
   panic/fatal/data race/storage error。
 
+- **Maintenance A373 capped operation matrix（2026-07-21）**：继续对照
+  `/root/etcd/server/etcdserver/apply/capped.go` 和 `storage/quota.go` 审计 active
+  NOSPACE 的完整入口。上游 capped applier 仅覆盖 Put、顶层任一分支含 Put 的 Txn 和
+  LeaseGrant；Range、只读 Txn、DeleteRange、delete-only Txn、LeaseTimeToLive、
+  LeaseRevoke 与 alarm disarm 必须继续可用。KubeBrain 的 RPC 门禁与该矩阵一致，
+  Lock 和 Election recipe 使用预先创建的 lease 时也不能通过内部 Txn Put 绕过告警。
+  上游 `costTxn` 不递归计算 nested Txn Put；KubeBrain 保留递归拒绝以避免生产配额绕过，
+  不复制该上游保护缺口。
+
+  `alarm_without_quota_differential_test.go` 从十步扩展为十九步：告警前创建两条 lease，
+  告警后增加 failure-branch Put、TTL 查询、Mutex Lock、Election Campaign、两次 revoke
+  以及 delete-only Txn。官方 concurrency 包会把底层 `ResourceExhausted` Txn 错误包装
+  为普通 Go error，因此 recipe 层 `status.Code` 为 `Unknown`；原始 Put/Txn/LeaseGrant
+  仍精确断言 `ResourceExhausted`。A372 原镜像和隔离 keyspace 上，真实 TiKV 与参考 etcd
+  差分 20 轮、race 10 轮通过；独立兼容套件、根模块 `go test ./...` 和 `go vet ./...`
+  通过。首次并行运行完整套件与告警测试导致共享 keyspace 在告警窗口内按预期拒写，
+  串行隔离后通过。无运行时代码变化，未构建或发布新镜像。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
