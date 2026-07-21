@@ -1,0 +1,11 @@
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: kubebrain-dbaas-critical
+  labels:
+    app.kubernetes.io/name: kubebrain
+    app.kubernetes.io/component: platform
+value: 1000000
+globalDefault: false
+preemptionPolicy: Never
+description: "Keeps KubeBrain, PD, and TiKV ahead of ordinary workloads without preempting them."

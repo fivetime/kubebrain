@@ -34,6 +34,8 @@ func TestProductionManifestsProvideStableCompleteMembership(t *testing.T) {
 					object.GetKind(), object.GetName())
 			}
 			workload := objectByKindAndName(t, objects, "StatefulSet", "kubebrain")
+			require.Equal(t, "kubebrain-dbaas-critical",
+				nestedString(t, workload, "spec", "template", "spec", "priorityClassName"))
 			require.Equal(t, "kubebrain-peer", nestedString(t, workload, "spec", "serviceName"))
 			require.EqualValues(t, 3, nestedInt64(t, workload, "spec", "replicas"))
 			require.Equal(t, "RollingUpdate", nestedString(t, workload, "spec", "updateStrategy", "type"))
@@ -141,6 +143,15 @@ func TestProductionManifestsProvideStableCompleteMembership(t *testing.T) {
 			require.NotEqual(t, "None", clusterIP)
 		})
 	}
+}
+
+func TestProductionPriorityClassIsSharedAndNonPreempting(t *testing.T) {
+	priorityClass := objectByKindAndName(t, decodeManifest(t, "dbaas-priority-class.yaml"),
+		"PriorityClass", "kubebrain-dbaas-critical")
+	require.EqualValues(t, 1000000, nestedInt64(t, priorityClass, "value"))
+	require.False(t, nestedBool(t, priorityClass, "globalDefault"))
+	require.Equal(t, "Never", nestedString(t, priorityClass, "preemptionPolicy"))
+	require.NotEmpty(t, nestedString(t, priorityClass, "description"))
 }
 
 func TestProductionNamespacesDeclareDedicatedInstanceBoundaries(t *testing.T) {
@@ -941,6 +952,8 @@ func TestProductionTiDBClusterProvidesDurableHAStorage(t *testing.T) {
 		{name: "tikv", terminationGrace: 300, cpuRequest: "4", memoryRequest: "8Gi", storageRequest: "500Gi", cpuLimit: "8", memoryLimit: "16Gi"},
 	} {
 		t.Run(component.name, func(t *testing.T) {
+			require.Equal(t, "kubebrain-dbaas-critical",
+				nestedString(t, cluster, "spec", component.name, "priorityClassName"))
 			require.EqualValues(t, 3, nestedInt64(t, cluster, "spec", component.name, "replicas"))
 			require.EqualValues(t, 3, nestedInt64(t, cluster, "spec", component.name, "maxFailoverCount"))
 			require.Equal(t, "RollingUpdate", nestedString(t, cluster, "spec", component.name, "statefulSetUpdateStrategy"))

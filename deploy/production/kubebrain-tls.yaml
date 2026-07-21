@@ -61,6 +61,7 @@ spec:
         app.kubernetes.io/instance: kubebrain
     spec:
       serviceAccountName: kubebrain
+      priorityClassName: kubebrain-dbaas-critical
       automountServiceAccountToken: false
       terminationGracePeriodSeconds: 30
       securityContext:

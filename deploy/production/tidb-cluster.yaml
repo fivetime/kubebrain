@@ -24,6 +24,7 @@ spec:
   imagePullPolicy: IfNotPresent
   pd:
     baseImage: pingcap/pd
+    priorityClassName: kubebrain-dbaas-critical
     replicas: 3
     maxFailoverCount: 3
     statefulSetUpdateStrategy: RollingUpdate
@@ -56,6 +57,7 @@ spec:
     config: {}
   tikv:
     baseImage: pingcap/tikv
+    priorityClassName: kubebrain-dbaas-critical
     replicas: 3
     maxFailoverCount: 3
     evictLeaderTimeout: 10m
