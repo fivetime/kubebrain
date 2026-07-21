@@ -7711,6 +7711,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   quota 和 service advertised URL，StatefulSet 与存储拓扑收敛，endpoint health 成功提交
   线性化 proposal。验证后已停止临时端口转发；本轮无运行时代码变化，不构建新镜像。
 
+- **Compatibility A382 immutable production storage identity（2026-07-21）**：
+  继续审计实例发布边界发现，仅锁定 keyspace 仍不能证明实例连接了期望的 TiKV/PD 集群：
+  错误 `--pd-addrs` 指向另一个恰好含同名 keyspace 的集群时，endpoint health 仍可能成功。
+  提交 `f50f49c` 新增必填 `EXPECTED_PD_ADDRS`，要求 Pod template 中恰好一个逐字匹配的
+  `--pd-addrs`；缺失、错误和重复均 fail closed，成功审计记录同时包含存储地址。该检查与
+  `TIDB_NAMESPACE`/`TIDB_CLUSTER` 的 Ready、StatefulSet revision 和 3 PD/3 TiKV topology
+  收敛组合，控制面必须让期望地址指向同一受管存储集群。
+
+  门禁专项测试连续 20 轮通过，覆盖 PD 地址必填输入及参数缺失、错误、重复；完整
+  `go test ./...` 与 `go vet ./...` 通过。当前独立 3 PD/3 TiKV、A379 KubeBrain 三副本
+  环境真实执行新门禁，精确匹配 `kb-pd.tidb-cluster.svc:2379`、
+  `a379-full-differential` keyspace、A379 image、1 GiB quota 和 service advertised URL，
+  endpoint health 成功提交线性化 proposal。验证后已停止临时端口转发；本轮无运行时代码
+  变化，不构建新镜像。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
