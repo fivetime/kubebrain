@@ -356,6 +356,8 @@ func TestClientV3LeaseGenerationHistoryIsLinearizable(t *testing.T) {
 	history := make([]porcupine.Operation, 0, clients*operationsPerClient)
 	setupErrCh := make(chan error, clients+1)
 	var ambiguousFailures atomic.Int64
+	var ambiguousDetailsMu sync.Mutex
+	var ambiguousDetails []string
 	var workers sync.WaitGroup
 	failoverPod := linearizabilityDeletePod()
 	if failoverPod != "" {
@@ -384,6 +386,10 @@ func TestClientV3LeaseGenerationHistoryIsLinearizable(t *testing.T) {
 					output.failed = true
 					if !output.notFound && !output.alreadyAlive {
 						ambiguousFailures.Add(1)
+						ambiguousDetailsMu.Lock()
+						ambiguousDetails = append(ambiguousDetails,
+							fmt.Sprintf("client=%d operation=%d input=%s error=%v", clientID, i, describeLeaseInput(input), err))
+						ambiguousDetailsMu.Unlock()
 					}
 				}
 				historyMu.Lock()
@@ -402,7 +408,8 @@ func TestClientV3LeaseGenerationHistoryIsLinearizable(t *testing.T) {
 	}
 	require.Len(t, history, clients*operationsPerClient)
 	if failoverPod == "" {
-		require.Zero(t, ambiguousFailures.Load(), "baseline history must not contain ambiguous RPC failures")
+		require.Zero(t, ambiguousFailures.Load(),
+			"baseline history must not contain ambiguous RPC failures: %v", ambiguousDetails)
 	} else {
 		t.Logf("recorded %d ambiguous lease generation RPC failures during pod deletion", ambiguousFailures.Load())
 	}
