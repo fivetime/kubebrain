@@ -604,7 +604,7 @@ func TestExpiredLeaseKeepAliveWaitHonorsStreamCancellation(t *testing.T) {
 	case <-time.After(50 * time.Millisecond):
 	}
 	cancel()
-	require.ErrorIs(t, <-done, context.Canceled)
+	require.Equal(t, codes.Canceled, status.Code(<-done))
 	require.Empty(t, stream.sent)
 }
 
@@ -1165,7 +1165,7 @@ func TestLeaseFollowerKeepAlivePreservesClientCancellation(t *testing.T) {
 	<-forwarding
 	cancel()
 
-	require.ErrorIs(t, <-done, context.Canceled)
+	require.Equal(t, codes.Canceled, status.Code(<-done))
 	require.Empty(t, stream.sent)
 }
 
