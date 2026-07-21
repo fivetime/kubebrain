@@ -22,6 +22,28 @@ kubectl apply -f deploy/production/dbaas-priority-class.yaml
 必须先迁移所有引用；缺失时新 Pod 会保持 Pending。优先级不能替代足够的节点容量、资源
 requests/limits、跨区放置、PDB 和故障演练。
 
+核心数据面网络隔离基线位于 `deploy/production/dbaas-network-policy.yaml`。平台必须先创建
+`kubebrain-system`、`tidb-cluster` namespace，并保留 production 清单中的 instance/dedicated
+标签，再应用策略，最后启动 KubeBrain 与 TidbCluster，避免工作负载先以全通网络运行。默认
+Operator namespace 是 `tidb-admin`；安装位置不同时必须在策略中替换。获准访问 client 3379
+的 namespace 必须显式标记：
+
+```shell
+kubectl label namespace <client-namespace> dbaas.kubebrain.io/client-access=true
+kubectl label namespace <monitoring-namespace> dbaas.kubebrain.io/monitoring-access=true
+kubectl apply -f deploy/production/dbaas-network-policy.yaml
+```
+
+策略只选择当前实例的 KubeBrain、PD、TiKV Pod：同 namespace peer 流量、kube-dns TCP/UDP
+53、KubeBrain 到 PD 2379/TiKV 20160、Operator 到 PD API 2379/TiKV status 20180，以及显式
+标记的 client/monitoring 入口被放行，其余 ingress/egress 默认拒绝。实例化时若修改 namespace、
+instance 名或 Operator 标签，必须同步修改 selector，不能临时增加无 selector 的全放行规则。
+
+API server dry-run 只能证明 schema，不能证明 CNI 执行。生产发布必须确认目标 CNI 支持
+NetworkPolicy，并从允许的 client namespace 验证 3379 和业务读写、从 monitoring namespace
+验证 3378/2379/20180、验证 DNS 与三副本 leader/raft 正常；同时从未标记 namespace 对这些
+端口执行带超时的拒绝探针。任一允许路径失败或拒绝路径成功都必须阻止发布。
+
 `--advertise-host` 是副本间选主/转发身份，不能同时充当 clientv3 Sync/AutoSync 的公开
 地址。生产必须单独设置 `--advertise-client-urls`：仓库基线使用集群内 client Service；
 向集群外提供 DBaaS endpoint 时，平台必须替换为所有目标客户端可解析、可路由的公共

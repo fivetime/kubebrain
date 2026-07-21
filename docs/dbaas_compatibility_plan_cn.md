@@ -8553,6 +8553,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   也不替代 requests/limits、跨 zone 调度、PDB 与 quorum 故障恢复；本轮只更新生产部署
   artifact，不改变 A422 服务端镜像。
 
+#### A429 核心数据面 NetworkPolicy 隔离基线
+
+- 生产核心 namespace 此前没有 NetworkPolicy，任意集群内 Pod 都可尝试访问 KubeBrain client/
+  peer、PD API/raft 和 TiKV client/status 端口。新增四条方向独立策略，只选择当前 instance 的
+  KubeBrain 或 PD/TiKV：允许同 namespace peer、kube-dns TCP/UDP 53、KubeBrain 到 PD 2379/
+  TiKV 20160、默认 `tidb-admin` Operator 到 PD API 2379/TiKV status 20180，以及带显式
+  `client-access`/`monitoring-access` namespace 标签的入口；其他 ingress/egress 默认拒绝。
+- manifest 门禁固定四个对象、namespace、单一 policyType、目标 instance/component selector、
+  namespace selector 和精确端口集合。聚焦普通 100 轮、race 20 轮通过；完整策略通过
+  Kubernetes API server dry-run，临时 namespace 删除且确认无残留；production 包、root 全量
+  测试、vet、staticcheck v0.7.0 均通过。
+- 生产操作文档要求先建/标记 namespace、再应用策略、最后启动工作负载，并要求在真正支持
+  NetworkPolicy 的 CNI 上同时执行允许与拒绝探针。当前 kind 环境不能提供 CNI enforcement
+  证据，因此本轮不把 schema dry-run 当作网络隔离运行证明；平台若改变 namespace/instance/
+  Operator 安装位置必须同步实例化 selector。本轮只更新生产部署 artifact，不改变 A422 镜像。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
