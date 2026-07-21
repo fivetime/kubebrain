@@ -9,8 +9,10 @@ import (
 	"time"
 
 	"github.com/golang/mock/gomock"
+	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
 	"github.com/stretchr/testify/require"
 
+	backendscanner "github.com/kubewharf/kubebrain/pkg/backend/scanner"
 	"github.com/kubewharf/kubebrain/pkg/metrics/mock"
 	"github.com/kubewharf/kubebrain/pkg/storage"
 	imemkv "github.com/kubewharf/kubebrain/pkg/storage/memkv"
@@ -24,6 +26,26 @@ type blockSecondAlarmReadStorage struct {
 	blocked  chan struct{}
 	release  chan struct{}
 	once     sync.Once
+}
+
+type quotaScanRecorder struct {
+	backendscanner.Scanner
+	rangeCalls  atomic.Int32
+	streamCalls atomic.Int32
+}
+
+func (s *quotaScanRecorder) Range(
+	ctx context.Context, start, end []byte, revision uint64, limit int64,
+) ([]*proto.KeyValue, error) {
+	s.rangeCalls.Add(1)
+	return s.Scanner.Range(ctx, start, end, revision, limit)
+}
+
+func (s *quotaScanRecorder) RangeStream(
+	ctx context.Context, start, end []byte, revision uint64, keysOnly bool,
+) chan *proto.StreamRangeResponse {
+	s.streamCalls.Add(1)
+	return s.Scanner.RangeStream(ctx, start, end, revision, keysOnly)
 }
 
 type blockFirstCommitStorage struct {
@@ -691,9 +713,13 @@ func TestQuotaInitializationCountsExistingLiveDataOnce(t *testing.T) {
 		QuotaBackendBytes:       100,
 	}, metrics).(*backend)
 	limited.SetCurrentRevision(unlimited.GetCurrentRevision())
+	recorder := &quotaScanRecorder{Scanner: limited.scanner}
+	limited.scanner = recorder
 	_, _, _, err = limited.QuotaStatus(ctx)
 	require.ErrorIs(t, err, ErrQuotaUninitialized)
 	require.NoError(t, limited.EnsureQuotaInitialized(ctx))
+	require.Zero(t, recorder.rangeCalls.Load())
+	require.EqualValues(t, 1, recorder.streamCalls.Load())
 	usage, quota, alarm, err := limited.QuotaStatus(ctx)
 	require.NoError(t, err)
 	require.Equal(t, int64(len("live")+len("value")), usage)
@@ -703,6 +729,8 @@ func TestQuotaInitializationCountsExistingLiveDataOnce(t *testing.T) {
 	_, _, err = limited.TxnApply(ctx, []TxnWriteOp{{Key: []byte("later"), Value: []byte("x")}}, nil)
 	require.NoError(t, err)
 	require.NoError(t, limited.EnsureQuotaInitialized(ctx))
+	require.Zero(t, recorder.rangeCalls.Load())
+	require.EqualValues(t, 1, recorder.streamCalls.Load())
 	usage, _, _, err = limited.QuotaStatus(ctx)
 	require.NoError(t, err)
 	require.Equal(t, int64(len("live")+len("value")+len("later")+len("x")), usage)

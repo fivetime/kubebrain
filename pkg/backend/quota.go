@@ -209,21 +209,9 @@ func (b *backend) EnsureQuotaInitialized(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	kvs, err := b.scanner.Range(
-		ctx, b.ks.ObjectKeyspaceStart(), b.ks.ObjectKeyspaceEnd(), revision, 0,
-	)
+	usage, err := b.scanQuotaUsage(ctx, revision)
 	if err != nil {
 		return err
-	}
-	var usage int64
-	const maxInt64 = int64(^uint64(0) >> 1)
-	for _, kv := range kvs {
-		keyBytes := int64(len(kv.GetKey()))
-		valueBytes := logicalStoredValueSize(kv.GetValue())
-		if keyBytes > maxInt64-usage || valueBytes > maxInt64-usage-keyBytes {
-			return fmt.Errorf("quota usage overflows int64")
-		}
-		usage += keyBytes + valueBytes
 	}
 	if err := b.fenceAdmit(ctx); err != nil {
 		return err
@@ -262,6 +250,28 @@ func (b *backend) EnsureQuotaInitialized(ctx context.Context) error {
 		return err
 	}
 	return b.ensureNoSpaceForUsageLocked(ctx, usage)
+}
+
+func (b *backend) scanQuotaUsage(ctx context.Context, revision uint64) (int64, error) {
+	stream := b.scanner.RangeStream(
+		ctx, b.ks.ObjectKeyspaceStart(), b.ks.ObjectKeyspaceEnd(), revision, false,
+	)
+	var usage int64
+	const maxInt64 = int64(^uint64(0) >> 1)
+	for response := range stream {
+		if response.GetErr() != "" {
+			return 0, errors.New(response.GetErr())
+		}
+		for _, kv := range response.GetRangeResponse().GetKvs() {
+			keyBytes := int64(len(kv.GetKey()))
+			valueBytes := logicalStoredValueSize(kv.GetValue())
+			if keyBytes > maxInt64-usage || valueBytes > maxInt64-usage-keyBytes {
+				return 0, fmt.Errorf("quota usage overflows int64")
+			}
+			usage += keyBytes + valueBytes
+		}
+	}
+	return usage, nil
 }
 
 func (b *backend) reconcileQuotaInitialization(
