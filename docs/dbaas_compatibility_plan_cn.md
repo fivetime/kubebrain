@@ -8212,6 +8212,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   attached keys 为空，防止成功测试在共享集群留下续约负载。服务端字节与运行镜像不变，继续使用
   `kubebrain:a404-corrupt-expired-ttl`。
 
+- **Maintenance A409 explicit revoke list-visibility gate（2026-07-21）**：
+  对照 `/root/etcd/server/etcdserver/v3_server.go:LeaseLeases` 与
+  `/root/etcd/server/lease/lessor.go:Leases`，补齐显式 LeaseRevoke 的完成边界。双端公开差分现要求
+  Revoke 返回后 attached key 已删除、TimeToLive 为 -1，且紧随其后的 LeaseLeases 不再包含该 ID；
+  64-lease renewal soak 清理也在逐租约 TTL=-1 之外，用一次列表快照拒绝任何本轮 ID 残留。
+
+  参考 etcd 与真实 TiKV-backed KubeBrain 串行差分连续 10 轮通过，64 条 KeepAlive soak 普通
+  39.962 秒、race 39.605 秒通过，完整 compat 104.862 秒、compat vet 与固定版 staticcheck 全绿。
+  一次将 revision 敏感的双端差分和仅施加于 KubeBrain 的 soak 并发运行，按预期造成相对 revision
+  不同；隔离背景写后全部通过，新增的 `ListedAfterRevoke=false` 在污染运行中也始终一致。该结果同时
+  固定测试编排约束：比较 revision 的差分不得承受不对称写负载。未发现服务端差异，不重建镜像；
+  最终 lease list 与 alarm 均为空，endpoint health 正常。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
