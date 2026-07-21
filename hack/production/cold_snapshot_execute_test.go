@@ -1,0 +1,155 @@
+package production_test
+
+import (
+	"encoding/json"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
+
+func TestColdSnapshotExecuteAndRollback(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		failSnapshot bool
+		wantReceipt  bool
+	}{
+		{name: "success restores service and publishes receipt", wantReceipt: true},
+		{name: "snapshot failure restores service without receipt", failSnapshot: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			inventoryFile := filepath.Join(dir, "inventory.json")
+			receiptFile := filepath.Join(dir, "receipt.json")
+			logFile := filepath.Join(dir, "kubectl.log")
+			require.NoError(t, os.WriteFile(inventoryFile, coldSnapshotInventory(t), 0o600))
+			fakeKubectl := filepath.Join(dir, "kubectl")
+			require.NoError(t, os.WriteFile(fakeKubectl, []byte(coldSnapshotFakeKubectl), 0o755))
+
+			command := exec.Command("bash", "../backup/cold-snapshot-execute.sh")
+			command.Env = append(os.Environ(),
+				"KUBECTL="+fakeKubectl,
+				"PREFLIGHT_FILE="+inventoryFile,
+				"RECEIPT_FILE="+receiptFile,
+				"OPERATION_ID=op-20260721",
+				"FAKE_LOG="+logFile,
+				"FAKE_PVC_JSON="+coldSnapshotPVCJSON("Bound"),
+				"FENCE_SETTLE_SECONDS=0",
+				"FAKE_FAIL_SNAPSHOT="+map[bool]string{true: "true", false: "false"}[tc.failSnapshot],
+			)
+			output, err := command.CombinedOutput()
+			if tc.wantReceipt {
+				require.NoError(t, err, string(output))
+				value, readErr := os.ReadFile(receiptFile)
+				require.NoError(t, readErr)
+				var receipt map[string]any
+				require.NoError(t, json.Unmarshal(value, &receipt))
+				require.Equal(t, "kubebrain.cold-physical-snapshot.v1", receipt["format"])
+				require.Len(t, receipt["snapshots"], 6)
+			} else {
+				require.Error(t, err, string(output))
+				require.NoFileExists(t, receiptFile)
+				require.Contains(t, string(output), "service restoration was attempted")
+			}
+
+			logValue, readErr := os.ReadFile(logFile)
+			require.NoError(t, readErr)
+			log := string(logValue)
+			requireOrder(t, log,
+				"patch tidbcluster kb --type=json",
+				"patch statefulset kubebrain --type=json",
+				"patch statefulset kb-tikv --type=json",
+				"patch statefulset kb-pd --type=json",
+				"patch statefulset kb-pd --type=json",
+				"patch statefulset kb-tikv --type=json",
+				"patch tidbcluster kb --type=json",
+				"patch statefulset kubebrain --type=json",
+			)
+		})
+	}
+}
+
+func requireOrder(t *testing.T, value string, parts ...string) {
+	t.Helper()
+	position := 0
+	for _, part := range parts {
+		next := strings.Index(value[position:], part)
+		require.NotEqualf(t, -1, next, "missing or out-of-order %q in:\n%s", part, value)
+		position += next + len(part)
+	}
+}
+
+func coldSnapshotInventory(t *testing.T) []byte {
+	t.Helper()
+	var pvc map[string]any
+	require.NoError(t, json.Unmarshal([]byte(coldSnapshotPVCJSON("Bound")), &pvc))
+	rawItems := pvc["items"].([]any)
+	items := make([]any, 0, len(rawItems))
+	for _, raw := range rawItems {
+		item := raw.(map[string]any)
+		metadata := item["metadata"].(map[string]any)
+		spec := item["spec"].(map[string]any)
+		status := item["status"].(map[string]any)
+		items = append(items, map[string]any{
+			"name": metadata["name"], "uid": metadata["uid"], "pv": spec["volumeName"],
+			"storage_class": spec["storageClassName"], "volume_mode": spec["volumeMode"], "phase": status["phase"],
+		})
+	}
+	value := map[string]any{
+		"format":                "kubebrain.cold-physical-snapshot-preflight.v1",
+		"volume_snapshot_class": map[string]any{"name": "retained", "driver": "csi.example.test", "deletion_policy": "Retain"},
+		"kubebrain":             map[string]any{"namespace": "kubebrain-system", "statefulset": "kubebrain", "uid": "uid-kubebrain"},
+		"storage":               map[string]any{"namespace": "tidb-cluster", "tidb_cluster": "kb", "uid": "uid-tidb", "cluster_id": "7662961163671170154"},
+		"pd_pvcs":               items[:3],
+		"tikv_pvcs":             items[3:],
+	}
+	result, err := json.Marshal(value)
+	require.NoError(t, err)
+	return result
+}
+
+const coldSnapshotFakeKubectl = `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"$FAKE_LOG"
+args="$*"
+if [[ "$args" == *"api-resources"* ]]; then
+  printf '%s\n' volumesnapshots.snapshot.storage.k8s.io volumesnapshotclasses.snapshot.storage.k8s.io
+elif [[ "$args" == *"get volumesnapshotclass"* ]]; then
+  printf 'csi.example.test\tRetain'
+elif [[ "$args" == *"get tidbcluster"* && "$args" == *"jsonpath"* ]]; then
+  printf 'uid-tidb\t7662961163671170154'
+elif [[ "$args" == *"get tidbcluster"* ]]; then
+  printf '{"metadata":{"uid":"uid-tidb","resourceVersion":"10"},"spec":{}}'
+elif [[ "$args" == *"get statefulset kubebrain"* && "$args" == *"jsonpath"* ]]; then
+  printf 'uid-kubebrain'
+elif [[ "$args" == *"get statefulset"* ]]; then
+  name="$(sed -n 's/.*get statefulset \([^ ]*\).*/\1/p' <<<"$args")"
+  uid="uid-${name}"
+  [[ "$name" != kubebrain ]] || uid=uid-kubebrain
+  printf '{"metadata":{"uid":"%s","resourceVersion":"20"},"spec":{"replicas":3}}' "$uid"
+elif [[ "$args" == *"get pvc -l"* ]]; then
+  printf '%s' "$FAKE_PVC_JSON"
+elif [[ "$args" == *"get pvc"* && "$args" == *"jsonpath"* ]]; then
+  name="$(sed -n 's/.*get pvc \([^ ]*\).*/\1/p' <<<"$args")"
+  printf 'uid-%s' "$name"
+elif [[ "$args" == *"create -f -"* ]]; then
+  cat >/dev/null
+elif [[ "$args" == *"wait --for=jsonpath={.status.readyToUse}=true"* ]]; then
+  [[ "$FAKE_FAIL_SNAPSHOT" != true ]] || exit 1
+elif [[ "$args" == *"get volumesnapshotcontent"* ]]; then
+  name="$(sed -n 's/.*get volumesnapshotcontent \([^ ]*\).*/\1/p' <<<"$args")"
+  snapshot="${name#content-}"
+  printf '{"metadata":{"name":"%s","uid":"uid-%s"},"spec":{"deletionPolicy":"Retain","volumeSnapshotClassName":"retained","volumeSnapshotRef":{"uid":"uid-%s"}},"status":{"snapshotHandle":"handle-%s"}}' "$name" "$name" "$snapshot" "$name"
+elif [[ "$args" == *"get volumesnapshot"* ]]; then
+  name="$(sed -n 's/.*get volumesnapshot \([^ ]*\).*/\1/p' <<<"$args")"
+  printf '{"metadata":{"name":"%s","uid":"uid-%s"},"status":{"readyToUse":true,"boundVolumeSnapshotContentName":"content-%s","restoreSize":"1Gi"}}' "$name" "$name" "$name"
+elif [[ "$args" == *"patch "* || "$args" == *"wait "* || "$args" == *"scale "* || "$args" == *"rollout status"* ]]; then
+  :
+else
+  echo "unsupported fake kubectl call: $args" >&2
+  exit 1
+fi
+`
