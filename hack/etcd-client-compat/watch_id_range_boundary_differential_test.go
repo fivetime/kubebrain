@@ -33,6 +33,7 @@ func TestWatchIDRangeBoundaryDifferentialAgainstReferenceEtcd(t *testing.T) {
 		watchCreatedBoundaryOutcome("create-negative-one", -1),
 		watchCreatedBoundaryOutcome("create-minimum", math.MinInt64),
 		watchCreatedBoundaryOutcome("create-maximum", math.MaxInt64),
+		watchCanceledCreateBoundaryOutcome("negative-duplicate-and-equal-range", "etcdserver: mvcc: required revision has been compacted"),
 		watchCanceledCreateBoundaryOutcome("duplicate-and-equal-range", "mvcc: watcher range is empty"),
 		watchCanceledCreateBoundaryOutcome("duplicate-maximum", "mvcc: duplicate watch ID provided on the WatchStream"),
 		watchCanceledCreateBoundaryOutcome("equal-range", "mvcc: watcher range is empty"),
@@ -80,7 +81,7 @@ func runWatchIDRangeBoundaryScenario(t *testing.T, endpoint string) []watchIDRan
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = stream.CloseSend() })
 
-	outcomes := make([]watchIDRangeBoundaryOutcome, 0, 16)
+	outcomes := make([]watchIDRangeBoundaryOutcome, 0, 17)
 	recv := func(name string) {
 		resp, recvErr := stream.Recv()
 		require.NoError(t, recvErr, name)
@@ -90,15 +91,18 @@ func runWatchIDRangeBoundaryScenario(t *testing.T, endpoint string) []watchIDRan
 			HeaderPositive: resp.Header != nil && resp.Header.Revision > 0,
 		})
 	}
-	create := func(name string, id int64, key, end []byte) {
+	createAtRevision := func(name string, id int64, key, end []byte, revision int64) {
 		require.NoError(t, stream.Send(&etcdserverpb.WatchRequest{
 			RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{
 				CreateRequest: &etcdserverpb.WatchCreateRequest{
-					Key: key, RangeEnd: end, WatchId: id,
+					Key: key, RangeEnd: end, WatchId: id, StartRevision: revision,
 				},
 			},
 		}))
 		recv(name)
+	}
+	create := func(name string, id int64, key, end []byte) {
+		createAtRevision(name, id, key, end, 0)
 	}
 	cancelWatch := func(name string, id int64) {
 		require.NoError(t, stream.Send(&etcdserverpb.WatchRequest{
@@ -112,6 +116,8 @@ func runWatchIDRangeBoundaryScenario(t *testing.T, endpoint string) []watchIDRan
 	create("create-negative-one", -1, []byte("/dbaas-watch-id/negative-one"), nil)
 	create("create-minimum", math.MinInt64, []byte("/dbaas-watch-id/minimum"), nil)
 	create("create-maximum", math.MaxInt64, []byte("/dbaas-watch-id/maximum"), nil)
+	createAtRevision("negative-duplicate-and-equal-range", math.MaxInt64,
+		[]byte("/dbaas-watch-id/invalid-negative"), []byte("/dbaas-watch-id/invalid-negative"), -1)
 	create("duplicate-and-equal-range", math.MaxInt64, []byte("/dbaas-watch-id/invalid"), []byte("/dbaas-watch-id/invalid"))
 	create("duplicate-maximum", math.MaxInt64, []byte("/dbaas-watch-id/duplicate"), nil)
 	create("equal-range", 100, []byte("/dbaas-watch-id/equal"), []byte("/dbaas-watch-id/equal"))

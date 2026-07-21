@@ -544,25 +544,31 @@ func TestWatchAutomaticIDsAreMonotonicAndSkipExplicitIDs(t *testing.T) {
 	require.True(t, duplicate)
 }
 
-func TestNegativeWatchRevisionCancelsCreateWithoutClosingStream(t *testing.T) {
+func TestNegativeWatchRevisionPrecedesRangeAndDuplicateWithoutClosingStream(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
 	stream := &scriptedWatchServer{
 		fakeWatchServer: &fakeWatchServer{ctx: context.Background()},
 		reqs: []*etcdserverpb.WatchRequest{
-			{RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{CreateRequest: &etcdserverpb.WatchCreateRequest{Key: []byte("/watch/negative"), StartRevision: -1}}},
+			{RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{CreateRequest: &etcdserverpb.WatchCreateRequest{Key: []byte("/watch/existing"), WatchId: 70}}},
+			{RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{CreateRequest: &etcdserverpb.WatchCreateRequest{
+				Key: []byte("/watch/negative"), RangeEnd: []byte("/watch/negative"), StartRevision: -1, WatchId: 70,
+			}}},
 			{RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{CreateRequest: &etcdserverpb.WatchCreateRequest{Key: []byte("/watch/next"), WatchId: 71}}},
 		},
 	}
 	require.ErrorIs(t, server.Watch(stream), context.Canceled)
-	require.GreaterOrEqual(t, len(stream.sent), 2)
+	require.GreaterOrEqual(t, len(stream.sent), 3)
 	require.True(t, stream.sent[0].Created)
-	require.True(t, stream.sent[0].Canceled)
-	require.Equal(t, int64(-1), stream.sent[0].WatchId)
-	require.Equal(t, rpctypes.ErrCompacted.Error(), stream.sent[0].CancelReason)
+	require.False(t, stream.sent[0].Canceled)
+	require.Equal(t, int64(70), stream.sent[0].WatchId)
 	require.True(t, stream.sent[1].Created)
-	require.False(t, stream.sent[1].Canceled)
-	require.Equal(t, int64(71), stream.sent[1].WatchId)
+	require.True(t, stream.sent[1].Canceled)
+	require.Equal(t, int64(-1), stream.sent[1].WatchId)
+	require.Equal(t, rpctypes.ErrCompacted.Error(), stream.sent[1].CancelReason)
+	require.True(t, stream.sent[2].Created)
+	require.False(t, stream.sent[2].Canceled)
+	require.Equal(t, int64(71), stream.sent[2].WatchId)
 }
 
 func TestSendWatchFragmentsMatchesEtcdFlags(t *testing.T) {
