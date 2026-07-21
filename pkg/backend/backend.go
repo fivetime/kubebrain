@@ -107,14 +107,16 @@ type Backend interface {
 	// keys when enabled. It must complete on leadership acquisition before writes
 	// are served.
 	EnsureQuotaInitialized(ctx context.Context) error
-	// ArmNoSpace persistently enables the tenant-wide NOSPACE write cap and
-	// returns the member that owns the existing or newly created alarm. A zero
-	// requested owner uses this backend's stable member ID.
+	// ArmNoSpace persistently enables the tenant-wide NOSPACE write cap for one
+	// member and returns that member. A zero member uses this backend's stable ID.
 	ArmNoSpace(ctx context.Context, memberID uint64) (uint64, error)
+	// NoSpaceAlarms returns every persisted NOSPACE alarm owner in ascending
+	// member-ID order. Legacy single-owner metadata is exposed as one member.
+	NoSpaceAlarms(ctx context.Context) ([]uint64, error)
 	// NoSpaceAlarm returns the persisted alarm owner and active state.
 	NoSpaceAlarm(ctx context.Context) (memberID uint64, active bool, err error)
-	// DisarmNoSpace clears NOSPACE when memberID owns it and reports whether an
-	// active alarm was removed. A subsequent over-quota Put re-arms the alarm.
+	// DisarmNoSpace removes memberID's NOSPACE alarm and reports whether it was
+	// active. The tenant-wide cap remains while any member alarm exists.
 	DisarmNoSpace(ctx context.Context, memberID uint64) (bool, error)
 
 	// BeginRangeTxn excludes every logical user-key write until unlock. It is

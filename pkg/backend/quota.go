@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/crc32"
+	"sort"
 	"time"
 
 	"github.com/kubewharf/kubebrain/pkg/storage"
@@ -24,6 +25,7 @@ var (
 	quotaTrackingClean = []byte{1}
 	quotaTrackingDirty = []byte{0}
 	quotaAlarmKey      = []byte("quota/alarm/nospace")
+	quotaAlarmSetTag   = byte(2)
 )
 
 func decodeQuotaUsage(value []byte) (int64, error) {
@@ -50,13 +52,52 @@ func encodeQuotaAlarm(memberID uint64) []byte {
 }
 
 func decodeQuotaAlarm(value []byte) (uint64, error) {
+	members, err := decodeQuotaAlarms(value)
+	if err != nil {
+		return 0, err
+	}
+	if len(members) == 0 {
+		return 0, fmt.Errorf("NOSPACE alarm metadata has no members")
+	}
+	return members[0], nil
+}
+
+func encodeQuotaAlarms(memberIDs []uint64) []byte {
+	if len(memberIDs) == 1 {
+		return encodeQuotaAlarm(memberIDs[0])
+	}
+	value := make([]byte, 1+8*len(memberIDs))
+	value[0] = quotaAlarmSetTag
+	for i, memberID := range memberIDs {
+		binary.BigEndian.PutUint64(value[1+8*i:], memberID)
+	}
+	return value
+}
+
+func quotaAlarmContains(memberIDs []uint64, memberID uint64) bool {
+	index := sort.Search(len(memberIDs), func(i int) bool { return memberIDs[i] >= memberID })
+	return index < len(memberIDs) && memberIDs[index] == memberID
+}
+
+func decodeQuotaAlarms(value []byte) ([]uint64, error) {
 	if len(value) == 1 && value[0] == 1 {
-		return 0, nil
+		return []uint64{0}, nil
 	}
-	if len(value) != 8 {
-		return 0, fmt.Errorf("invalid NOSPACE alarm metadata length %d", len(value))
+	if len(value) == 8 {
+		return []uint64{binary.BigEndian.Uint64(value)}, nil
 	}
-	return binary.BigEndian.Uint64(value), nil
+	if len(value) < 17 || value[0] != quotaAlarmSetTag || (len(value)-1)%8 != 0 {
+		return nil, fmt.Errorf("invalid NOSPACE alarm metadata length %d", len(value))
+	}
+	members := make([]uint64, 0, (len(value)-1)/8)
+	for offset := 1; offset < len(value); offset += 8 {
+		memberID := binary.BigEndian.Uint64(value[offset:])
+		if len(members) > 0 && memberID <= members[len(members)-1] {
+			return nil, fmt.Errorf("NOSPACE alarm members are not strictly ordered")
+		}
+		members = append(members, memberID)
+	}
+	return members, nil
 }
 
 func (b *backend) quotaAlarmMemberID() uint64 {
@@ -64,21 +105,35 @@ func (b *backend) quotaAlarmMemberID() uint64 {
 }
 
 func (b *backend) NoSpaceAlarm(ctx context.Context) (memberID uint64, active bool, err error) {
-	raw, err := b.InternalGet(ctx, quotaAlarmKey)
-	switch {
-	case errors.Is(err, storage.ErrKeyNotFound):
-		return 0, false, nil
-	case err != nil:
-		return 0, false, err
-	}
-	memberID, err = decodeQuotaAlarm(raw)
+	members, err := b.NoSpaceAlarms(ctx)
 	if err != nil {
 		return 0, false, err
 	}
-	if memberID == 0 {
-		memberID = b.quotaAlarmMemberID()
+	if len(members) == 0 {
+		return 0, false, nil
 	}
-	return memberID, true, nil
+	return members[0], true, nil
+}
+
+func (b *backend) NoSpaceAlarms(ctx context.Context) ([]uint64, error) {
+	raw, err := b.InternalGet(ctx, quotaAlarmKey)
+	if errors.Is(err, storage.ErrKeyNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	members, err := decodeQuotaAlarms(raw)
+	if err != nil {
+		return nil, err
+	}
+	for i := range members {
+		if members[i] == 0 {
+			members[i] = b.quotaAlarmMemberID()
+		}
+	}
+	sort.Slice(members, func(i, j int) bool { return members[i] < members[j] })
+	return members, nil
 }
 
 func (b *backend) QuotaStatus(ctx context.Context) (usage, quota int64, noSpace bool, err error) {
@@ -296,34 +351,51 @@ func (b *backend) DisarmNoSpace(ctx context.Context, memberID uint64) (bool, err
 	if err != nil {
 		return false, err
 	}
-	owner, err := decodeQuotaAlarm(raw)
+	members, err := decodeQuotaAlarms(raw)
 	if err != nil {
 		return false, err
 	}
-	if owner != 0 && owner != memberID {
+	legacyWildcard := len(raw) == 1 && raw[0] == 1
+	if legacyWildcard {
+		members[0] = b.quotaAlarmMemberID()
+	}
+	if !legacyWildcard && !quotaAlarmContains(members, memberID) {
 		return false, nil
 	}
+	remaining := make([]uint64, 0, len(members)-1)
+	for _, current := range members {
+		if current != memberID && !legacyWildcard {
+			remaining = append(remaining, current)
+		}
+	}
+	op := InternalCASOp{Key: quotaAlarmKey, Expected: raw, ExpectedExists: true}
+	if len(remaining) == 0 {
+		op.Delete = true
+	} else {
+		op.Value = encodeQuotaAlarms(remaining)
+	}
 	err = b.InternalCAS(ctx, []InternalCASOp{{
-		Key:            quotaAlarmKey,
-		Expected:       raw,
-		ExpectedExists: true,
-		Delete:         true,
+		Key:            op.Key,
+		Expected:       op.Expected,
+		ExpectedExists: op.ExpectedExists,
+		Value:          op.Value,
+		Delete:         op.Delete,
 	}})
 	if errors.Is(err, storage.ErrCASFailed) {
 		return false, nil
 	}
 	if err == nil {
-		b.emitQuotaMetrics(usage, false)
+		b.emitQuotaMetrics(usage, len(remaining) > 0)
 		return true, nil
 	}
 	if !errors.Is(err, storage.ErrUncertainResult) {
 		return false, err
 	}
-	return b.reconcileNoSpaceDisarm(ctx, raw, usage, err)
+	return b.reconcileNoSpaceDisarm(ctx, raw, memberID, usage, err)
 }
 
 func (b *backend) reconcileNoSpaceDisarm(
-	ctx context.Context, previous []byte, usage int64, commitErr error,
+	ctx context.Context, previous []byte, memberID uint64, usage int64, commitErr error,
 ) (bool, error) {
 	reconcileCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), quotaAlarmReconcileTimeout)
 	defer cancel()
@@ -336,14 +408,24 @@ func (b *backend) reconcileNoSpaceDisarm(
 		case err == nil && bytes.Equal(current, previous):
 			return false, commitErr
 		case err == nil:
-			if _, decodeErr := decodeQuotaAlarm(current); decodeErr != nil {
+			members, decodeErr := decodeQuotaAlarms(current)
+			if decodeErr != nil {
 				return false, errors.Join(
 					commitErr,
 					fmt.Errorf("reconcile NOSPACE deactivation: %w", decodeErr),
 				)
 			}
+			for i := range members {
+				if members[i] == 0 {
+					members[i] = b.quotaAlarmMemberID()
+				}
+			}
+			sort.Slice(members, func(i, j int) bool { return members[i] < members[j] })
 			b.emitQuotaMetrics(usage, true)
-			return true, nil
+			if !quotaAlarmContains(members, memberID) {
+				return true, nil
+			}
+			return false, commitErr
 		case !errors.Is(err, storage.ErrUnavailable):
 			return false, errors.Join(
 				commitErr,
@@ -378,42 +460,61 @@ func (b *backend) activateNoSpace(ctx context.Context) error {
 
 func (b *backend) activateNoSpaceForMember(ctx context.Context, memberID uint64) (uint64, error) {
 	for {
-		err := b.InternalCAS(ctx, []InternalCASOp{{
-			Key:   quotaAlarmKey,
-			Value: encodeQuotaAlarm(memberID),
-		}})
+		raw, readErr := b.InternalGet(ctx, quotaAlarmKey)
+		members := []uint64(nil)
+		op := InternalCASOp{Key: quotaAlarmKey}
+		switch {
+		case errors.Is(readErr, storage.ErrKeyNotFound):
+			members = []uint64{memberID}
+			op.Value = encodeQuotaAlarms(members)
+		case readErr != nil:
+			return 0, readErr
+		default:
+			members, readErr = decodeQuotaAlarms(raw)
+			if readErr != nil {
+				return 0, readErr
+			}
+			for i := range members {
+				if members[i] == 0 {
+					members[i] = b.quotaAlarmMemberID()
+				}
+			}
+			sort.Slice(members, func(i, j int) bool { return members[i] < members[j] })
+			if quotaAlarmContains(members, memberID) {
+				b.metricCli.EmitGauge("quota.nospace", 1)
+				return memberID, nil
+			}
+			members = append(members, memberID)
+			sort.Slice(members, func(i, j int) bool { return members[i] < members[j] })
+			op.Expected = raw
+			op.ExpectedExists = true
+			op.Value = encodeQuotaAlarms(members)
+		}
+		err := b.InternalCAS(ctx, []InternalCASOp{op})
 		switch {
 		case err == nil:
 			b.metricCli.EmitGauge("quota.nospace", 1)
 			return memberID, nil
 		case errors.Is(err, storage.ErrCASFailed):
-			owner, active, readErr := b.NoSpaceAlarm(ctx)
-			if readErr != nil {
-				return 0, readErr
-			}
-			if !active {
-				continue
-			}
-			b.metricCli.EmitGauge("quota.nospace", 1)
-			return owner, nil
+			continue
 		case !errors.Is(err, storage.ErrUncertainResult):
 			return 0, err
 		}
-		return b.reconcileNoSpaceActivation(ctx, err)
+		return b.reconcileNoSpaceActivation(ctx, memberID, err)
 	}
 }
 
 func (b *backend) reconcileNoSpaceActivation(
-	ctx context.Context, commitErr error,
+	ctx context.Context, memberID uint64, commitErr error,
 ) (uint64, error) {
 	reconcileCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), quotaAlarmReconcileTimeout)
 	defer cancel()
 	for {
-		owner, active, reconcileErr := b.NoSpaceAlarm(reconcileCtx)
+		members, reconcileErr := b.NoSpaceAlarms(reconcileCtx)
 		if reconcileErr == nil {
-			if active {
+			if quotaAlarmContains(members, memberID) {
 				b.metricCli.EmitGauge("quota.nospace", 1)
-				return owner, nil
+				return memberID, nil
 			}
 			return 0, commitErr
 		}

@@ -200,7 +200,7 @@ func TestQuotaRPCAlarmMutationNoOpsMatchEtcd(t *testing.T) {
 func TestQuotaRPCAlarmActivationPersistsRequestedMember(t *testing.T) {
 	server := newQuotaRPCServer(t, 6)
 	ctx := context.Background()
-	const requestedOwner uint64 = 424242
+	const requestedOwner, secondOwner = uint64(424242), uint64(424243)
 
 	activate, err := server.Alarm(ctx, &etcdserverpb.AlarmRequest{
 		Action:   etcdserverpb.AlarmRequest_ACTIVATE,
@@ -212,13 +212,34 @@ func TestQuotaRPCAlarmActivationPersistsRequestedMember(t *testing.T) {
 		MemberID: requestedOwner,
 		Alarm:    etcdserverpb.AlarmType_NOSPACE,
 	}}, activate.Alarms)
+	second, err := server.Alarm(ctx, &etcdserverpb.AlarmRequest{
+		Action:   etcdserverpb.AlarmRequest_ACTIVATE,
+		MemberID: secondOwner,
+		Alarm:    etcdserverpb.AlarmType_NOSPACE,
+	})
+	require.NoError(t, err)
+	require.Equal(t, secondOwner, second.Alarms[0].MemberID)
 
 	list, err := server.Alarm(ctx, &etcdserverpb.AlarmRequest{
 		Action: etcdserverpb.AlarmRequest_GET,
 		Alarm:  etcdserverpb.AlarmType_NOSPACE,
 	})
 	require.NoError(t, err)
-	require.Equal(t, activate.Alarms, list.Alarms)
+	require.Equal(t, []*etcdserverpb.AlarmMember{
+		{MemberID: requestedOwner, Alarm: etcdserverpb.AlarmType_NOSPACE},
+		{MemberID: secondOwner, Alarm: etcdserverpb.AlarmType_NOSPACE},
+	}, list.Alarms)
+
+	deactivate, err := server.Alarm(ctx, &etcdserverpb.AlarmRequest{
+		Action:   etcdserverpb.AlarmRequest_DEACTIVATE,
+		MemberID: requestedOwner,
+		Alarm:    etcdserverpb.AlarmType_NOSPACE,
+	})
+	require.NoError(t, err)
+	require.Equal(t, activate.Alarms, deactivate.Alarms)
+	list, err = server.Alarm(ctx, &etcdserverpb.AlarmRequest{Action: etcdserverpb.AlarmRequest_GET})
+	require.NoError(t, err)
+	require.Equal(t, second.Alarms, list.Alarms)
 }
 
 func TestQuotaRPCManualActivationRequiresConfiguredQuota(t *testing.T) {

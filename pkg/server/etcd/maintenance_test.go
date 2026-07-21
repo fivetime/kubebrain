@@ -55,8 +55,8 @@ type alarmReadErrorBackendShim struct {
 	err error
 }
 
-func (b *alarmReadErrorBackendShim) NoSpaceAlarm(context.Context) (uint64, bool, error) {
-	return 0, false, b.err
+func (b *alarmReadErrorBackendShim) NoSpaceAlarms(context.Context) ([]uint64, error) {
+	return nil, b.err
 }
 
 func (b *compactBeforeHashBackendShim) HashKV(ctx context.Context, revision int64) (backend.HashKVResult, error) {

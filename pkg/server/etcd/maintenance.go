@@ -138,17 +138,16 @@ func (s *RPCServer) Alarm(ctx context.Context, req *etcdserverpb.AlarmRequest) (
 	response := &etcdserverpb.AlarmResponse{Header: s.maintenanceHeader()}
 	if noSpace && (req.GetAlarm() == etcdserverpb.AlarmType_NONE ||
 		req.GetAlarm() == etcdserverpb.AlarmType_NOSPACE) {
-		memberID, active, alarmErr := s.backend.NoSpaceAlarm(ctx)
+		memberIDs, alarmErr := s.backend.NoSpaceAlarms(ctx)
 		if alarmErr != nil {
 			return nil, alarmErr
 		}
-		if !active {
-			return response, nil
+		for _, memberID := range memberIDs {
+			response.Alarms = append(response.Alarms, &etcdserverpb.AlarmMember{
+				MemberID: memberID,
+				Alarm:    etcdserverpb.AlarmType_NOSPACE,
+			})
 		}
-		response.Alarms = []*etcdserverpb.AlarmMember{{
-			MemberID: memberID,
-			Alarm:    etcdserverpb.AlarmType_NOSPACE,
-		}}
 	}
 	return response, nil
 }
@@ -163,17 +162,17 @@ func (s *RPCServer) Status(ctx context.Context, _ *etcdserverpb.StatusRequest) (
 	if quotaErr != nil {
 		return nil, quotaErr
 	}
-	var noSpaceAlarm *etcdserverpb.AlarmMember
+	var noSpaceAlarms []*etcdserverpb.AlarmMember
 	if noSpace {
-		memberID, active, alarmErr := s.backend.NoSpaceAlarm(ctx)
+		memberIDs, alarmErr := s.backend.NoSpaceAlarms(ctx)
 		if alarmErr != nil {
 			return nil, alarmErr
 		}
-		if active {
-			noSpaceAlarm = &etcdserverpb.AlarmMember{
+		for _, memberID := range memberIDs {
+			noSpaceAlarms = append(noSpaceAlarms, &etcdserverpb.AlarmMember{
 				MemberID: memberID,
 				Alarm:    etcdserverpb.AlarmType_NOSPACE,
-			}
+			})
 		}
 	}
 	dbSize := usage
@@ -210,8 +209,8 @@ func (s *RPCServer) Status(ctx context.Context, _ *etcdserverpb.StatusRequest) (
 	if leader == 0 {
 		resp.Errors = append(resp.Errors, rpctypes.ErrNoLeader.Error())
 	}
-	if noSpaceAlarm != nil {
-		resp.Errors = append(resp.Errors, noSpaceAlarm.String())
+	for _, alarm := range noSpaceAlarms {
+		resp.Errors = append(resp.Errors, alarm.String())
 	}
 	return resp, nil
 }

@@ -232,7 +232,7 @@ func TestNoSpaceAlarmPersistsOwnerAndGuardsDisarm(t *testing.T) {
 	require.True(t, removed, "legacy metadata accepts any owner during rolling upgrade")
 }
 
-func TestArmNoSpacePersistsExplicitOwnerAndKeepsFirstOwner(t *testing.T) {
+func TestArmNoSpacePersistsEveryExplicitMember(t *testing.T) {
 	b, ctx := newQuotaBackend(t, 10)
 	const explicitOwner uint64 = 424242
 
@@ -242,10 +242,20 @@ func TestArmNoSpacePersistsExplicitOwnerAndKeepsFirstOwner(t *testing.T) {
 
 	owner, err = b.ArmNoSpace(ctx, explicitOwner+1)
 	require.NoError(t, err)
-	require.Equal(t, explicitOwner, owner, "repeated activation must preserve the persisted owner")
+	require.Equal(t, explicitOwner+1, owner)
+	members, err := b.NoSpaceAlarms(ctx)
+	require.NoError(t, err)
+	require.Equal(t, []uint64{explicitOwner, explicitOwner + 1}, members)
+
+	owner, err = b.ArmNoSpace(ctx, explicitOwner)
+	require.NoError(t, err)
+	require.Equal(t, explicitOwner, owner, "duplicate activation is idempotent")
+	members, err = b.NoSpaceAlarms(ctx)
+	require.NoError(t, err)
+	require.Equal(t, []uint64{explicitOwner, explicitOwner + 1}, members)
 }
 
-func TestArmNoSpaceConcurrentActivationReturnsPersistedOwner(t *testing.T) {
+func TestArmNoSpaceConcurrentActivationPersistsEveryMember(t *testing.T) {
 	b, ctx := newQuotaBackend(t, 10)
 	const workers = 32
 	start := make(chan struct{})
@@ -270,13 +280,64 @@ func TestArmNoSpaceConcurrentActivationReturnsPersistedOwner(t *testing.T) {
 	for err := range errs {
 		require.NoError(t, err)
 	}
-	persisted, active, err := b.NoSpaceAlarm(ctx)
+	members, err := b.NoSpaceAlarms(ctx)
+	require.NoError(t, err)
+	require.Len(t, members, workers)
+	returned := make(map[uint64]bool, workers)
+	for owner := range owners {
+		returned[owner] = true
+	}
+	for memberID := uint64(1); memberID <= workers; memberID++ {
+		require.Equal(t, memberID, members[memberID-1])
+		require.True(t, returned[memberID])
+	}
+}
+
+func TestQuotaAlarmSetEncodingRejectsNonCanonicalMetadata(t *testing.T) {
+	require.Equal(t, []uint64{7}, mustDecodeQuotaAlarms(t, encodeQuotaAlarms([]uint64{7})))
+	require.Equal(t, []uint64{7, 9}, mustDecodeQuotaAlarms(t, encodeQuotaAlarms([]uint64{7, 9})))
+	for _, malformed := range [][]byte{
+		{}, {quotaAlarmSetTag}, append([]byte{quotaAlarmSetTag}, make([]byte, 8)...),
+		encodeQuotaAlarms([]uint64{9, 7}), encodeQuotaAlarms([]uint64{7, 7}),
+	} {
+		_, err := decodeQuotaAlarms(malformed)
+		require.Error(t, err)
+	}
+}
+
+func mustDecodeQuotaAlarms(t *testing.T, raw []byte) []uint64 {
+	t.Helper()
+	members, err := decodeQuotaAlarms(raw)
+	require.NoError(t, err)
+	return members
+}
+
+func TestDisarmNoSpaceRemovesOnlyRequestedMember(t *testing.T) {
+	b, ctx := newQuotaBackend(t, 10)
+	for _, memberID := range []uint64{11, 22} {
+		_, err := b.ArmNoSpace(ctx, memberID)
+		require.NoError(t, err)
+	}
+
+	removed, err := b.DisarmNoSpace(ctx, 11)
+	require.NoError(t, err)
+	require.True(t, removed)
+	members, err := b.NoSpaceAlarms(ctx)
+	require.NoError(t, err)
+	require.Equal(t, []uint64{22}, members)
+	_, _, active, err := b.QuotaStatus(ctx)
 	require.NoError(t, err)
 	require.True(t, active)
-	require.NotZero(t, persisted)
-	for owner := range owners {
-		require.Equal(t, persisted, owner)
-	}
+
+	removed, err = b.DisarmNoSpace(ctx, 11)
+	require.NoError(t, err)
+	require.False(t, removed)
+	removed, err = b.DisarmNoSpace(ctx, 22)
+	require.NoError(t, err)
+	require.True(t, removed)
+	members, err = b.NoSpaceAlarms(ctx)
+	require.NoError(t, err)
+	require.Empty(t, members)
 }
 
 func TestArmNoSpaceReturnsCommittedOwnerWhenConcurrentDisarmWinsResponseRace(t *testing.T) {
