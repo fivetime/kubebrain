@@ -321,6 +321,38 @@ spec:
           annotations:
             summary: KubeBrain count index rebuild failed
             description: "A leader count-index rebuild failed in the last 10 minutes; CountOnly requests may be falling back to TiKV scans."
+        - alert: KubeBrainQuotaNoSpace
+          expr: max(quota_nospace{namespace="kubebrain-system"}) > 0
+          for: 0m
+          labels:
+            severity: critical
+          annotations:
+            summary: KubeBrain tenant quota is blocking growth writes
+            description: "A persistent NOSPACE alarm is active. Delete data or revoke leases to reduce logical usage, then disarm the alarm."
+        - alert: KubeBrainQuotaUsageHigh
+          expr: max(quota_logical_usage_bytes{namespace="kubebrain-system"} / quota_backend_bytes{namespace="kubebrain-system"}) > 0.9
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: KubeBrain tenant logical quota usage is high
+            description: "Logical key/value usage exceeds 90% of the configured tenant quota."
+        - alert: KubeBrainQuotaMetricsInconsistent
+          expr: count(quota_nospace{namespace="kubebrain-system"}) < 3 or (max(quota_nospace{namespace="kubebrain-system"}) - min(quota_nospace{namespace="kubebrain-system"}) > 0)
+          for: 1m
+          labels:
+            severity: warning
+          annotations:
+            summary: KubeBrain replicas disagree on tenant quota state
+            description: "Quota metric series are missing or replicas have reported different NOSPACE state for more than one refresh interval."
+        - alert: KubeBrainQuotaRefreshFailures
+          expr: sum(increase(quota_refresh_err{namespace="kubebrain-system"}[10m])) > 0
+          for: 0m
+          labels:
+            severity: warning
+          annotations:
+            summary: KubeBrain failed to refresh tenant quota metrics
+            description: "At least one replica could not read shared quota metadata from TiKV in the last 10 minutes."
     - name: kubebrain.storage
       rules:
         - alert: KubeBrainPDInsufficientReplicas

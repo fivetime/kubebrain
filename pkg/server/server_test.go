@@ -20,6 +20,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -47,6 +48,25 @@ type blockingLeadershipBackend struct {
 	entered chan struct{}
 	exited  chan struct{}
 	once    sync.Once
+}
+
+type quotaRefreshBackend struct {
+	backend.Backend
+	calls     atomic.Int32
+	completed atomic.Int32
+	block     atomic.Bool
+	err       error
+}
+
+func (b *quotaRefreshBackend) QuotaStatus(ctx context.Context) (int64, int64, bool, error) {
+	b.calls.Add(1)
+	if b.block.Load() {
+		<-ctx.Done()
+		b.completed.Add(1)
+		return 0, 0, false, ctx.Err()
+	}
+	b.completed.Add(1)
+	return 0, 0, false, b.err
 }
 
 func (b *blockingLeadershipBackend) ResumePhysicalCompaction(ctx context.Context) error {
@@ -131,6 +151,60 @@ func TestCloseWaitsForLeadershipCallbackBeforeReturning(t *testing.T) {
 	require.NoError(t, s.Close(), "Close must remain idempotent")
 	require.NoError(t, base.(interface{ Close() error }).Close())
 	ctrl.Finish()
+}
+
+func TestQuotaMetricsRefreshRunsImmediatelyPeriodicallyAndStops(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	m := mock.NewMinimalMetrics(ctrl)
+	kv := imemkv.NewKvStorage()
+	t.Cleanup(func() { require.NoError(t, kv.Close()) })
+	base := backend.NewBackend(kv, backend.Config{
+		Prefix: "/registry", Identity: "quota-refresh", EnableEtcdCompatibility: true,
+	}, m)
+	wrapped := &quotaRefreshBackend{Backend: base}
+	s := &server{backend: wrapped, metricCli: m}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.runQuotaMetricsRefresh(ctx, time.Millisecond, time.Second)
+	}()
+	require.Eventually(t, func() bool { return wrapped.calls.Load() >= 2 }, time.Second, time.Millisecond)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("quota metrics refresh did not stop after context cancellation")
+	}
+	stoppedAt := wrapped.calls.Load()
+	time.Sleep(5 * time.Millisecond)
+	require.Equal(t, stoppedAt, wrapped.calls.Load())
+}
+
+func TestQuotaMetricsRefreshBoundsBlockedStorageRead(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	m := mock.NewMinimalMetrics(ctrl)
+	kv := imemkv.NewKvStorage()
+	t.Cleanup(func() { require.NoError(t, kv.Close()) })
+	base := backend.NewBackend(kv, backend.Config{
+		Prefix: "/registry", Identity: "quota-refresh-timeout", EnableEtcdCompatibility: true,
+	}, m)
+	wrapped := &quotaRefreshBackend{Backend: base}
+	wrapped.block.Store(true)
+	s := &server{backend: wrapped, metricCli: m}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.runQuotaMetricsRefresh(ctx, time.Hour, 5*time.Millisecond)
+	}()
+	require.Eventually(t, func() bool { return wrapped.completed.Load() == 1 }, time.Second, time.Millisecond)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("quota metrics refresh did not stop after a bounded storage timeout")
+	}
 }
 
 // TestLeadershipHealthTransitions pins #61: losing leadership must flip the gRPC

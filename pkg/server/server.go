@@ -84,10 +84,11 @@ type server struct {
 
 	config Config
 
-	cancel       context.CancelFunc
-	campaignDone chan struct{}
-	closeOnce    sync.Once
-	closeErr     error
+	cancel           context.CancelFunc
+	campaignDone     chan struct{}
+	quotaMetricsDone chan struct{}
+	closeOnce        sync.Once
+	closeErr         error
 }
 
 func (s *server) Close() error {
@@ -97,6 +98,9 @@ func (s *server) Close() error {
 		}
 		if s.campaignDone != nil {
 			<-s.campaignDone
+		}
+		if s.quotaMetricsDone != nil {
+			<-s.quotaMetricsDone
 		}
 		if s.etcdServer != nil {
 			s.etcdServer.Close()
@@ -113,12 +117,13 @@ func NewServer(ctx context.Context, backend backend.Backend, metricCli metrics.M
 	runCtx, cancel := context.WithCancel(ctx)
 	s := &server{
 		// health server to tell client whether this instance is leader
-		healthServer: health.NewServer(),
-		metricCli:    metricCli,
-		backend:      backend,
-		config:       config,
-		cancel:       cancel,
-		campaignDone: make(chan struct{}),
+		healthServer:     health.NewServer(),
+		metricCli:        metricCli,
+		backend:          backend,
+		config:           config,
+		cancel:           cancel,
+		campaignDone:     make(chan struct{}),
+		quotaMetricsDone: make(chan struct{}),
 	}
 	// leader election callbacks are methods on s; s.etcdServer is assigned below
 	// (before Campaign runs) and read by onStartedLeading.
@@ -153,7 +158,42 @@ func NewServer(ctx context.Context, backend backend.Backend, metricCli metrics.M
 		defer close(s.campaignDone)
 		peerService.Campaign(runCtx)
 	}()
+	go func() {
+		defer close(s.quotaMetricsDone)
+		s.runQuotaMetricsRefresh(runCtx, quotaMetricsRefreshInterval, quotaMetricsRefreshTimeout)
+	}()
 	return s
+}
+
+const quotaMetricsRefreshInterval = 15 * time.Second
+const quotaMetricsRefreshTimeout = 5 * time.Second
+
+func (s *server) refreshQuotaMetrics(ctx context.Context) {
+	_, _, _, err := s.backend.QuotaStatus(ctx)
+	if err == nil || errors.Is(err, backend.ErrQuotaUninitialized) {
+		return
+	}
+	s.metricCli.EmitCounter("quota.refresh.err", 1)
+	klog.ErrorS(err, "refresh quota metrics from shared storage failed")
+}
+
+func (s *server) runQuotaMetricsRefresh(ctx context.Context, interval, timeout time.Duration) {
+	refresh := func() {
+		refreshCtx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		s.refreshQuotaMetrics(refreshCtx)
+	}
+	refresh()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			refresh()
+		}
+	}
 }
 
 // onStartedLeading is invoked when this instance acquires leadership.
