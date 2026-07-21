@@ -17,10 +17,18 @@ import (
 )
 
 type receipt struct {
-	Format      string     `json:"format"`
-	OperationID string     `json:"operation_id"`
-	Inventory   inventory  `json:"inventory"`
-	Snapshots   []snapshot `json:"snapshots"`
+	Format          string     `json:"format"`
+	OperationID     string     `json:"operation_id"`
+	Inventory       inventory  `json:"inventory"`
+	Snapshots       []snapshot `json:"snapshots"`
+	SemanticWitness struct {
+		Format     string `json:"format"`
+		Prefix     string `json:"prefix"`
+		Revision   int64  `json:"revision"`
+		Records    int    `json:"records"`
+		SHA256     string `json:"sha256"`
+		FileSHA256 string `json:"file_sha256"`
+	} `json:"semantic_witness"`
 }
 
 type inventory struct {
@@ -142,6 +150,11 @@ func render(r receipt, snapshotClass, storageClass string) (map[string]any, erro
 	}
 	if r.OperationID == "" || r.Inventory.VolumeSnapshotClass.Driver == "" || snapshotClass == "" || storageClass == "" {
 		return nil, errors.New("receipt identity, CSI driver and target classes must be non-empty")
+	}
+	if r.SemanticWitness.Format != "kubebrain.logical.v2" || r.SemanticWitness.Prefix == "" ||
+		r.SemanticWitness.Revision <= 0 || r.SemanticWitness.Records <= 0 ||
+		len(r.SemanticWitness.SHA256) != 64 || len(r.SemanticWitness.FileSHA256) != 64 {
+		return nil, errors.New("cold snapshot receipt has no complete semantic witness binding")
 	}
 	namespace := r.Inventory.Storage.Namespace
 	cluster := r.Inventory.Storage.TidbCluster

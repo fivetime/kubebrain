@@ -90,6 +90,12 @@ func TestRenderColdRestoreManifestRejectsIncompleteReceipts(t *testing.T) {
 
 func validReceipt() receipt {
 	value := receipt{Format: "kubebrain.cold-physical-snapshot.v2", OperationID: "restore-test"}
+	value.SemanticWitness.Format = "kubebrain.logical.v2"
+	value.SemanticWitness.Prefix = "/registry"
+	value.SemanticWitness.Revision = 100
+	value.SemanticWitness.Records = 1
+	value.SemanticWitness.SHA256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	value.SemanticWitness.FileSHA256 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 	value.Inventory.VolumeSnapshotClass.Driver = "csi.example.test"
 	value.Inventory.Storage.Namespace = "tidb-cluster"
 	value.Inventory.Storage.TidbCluster = "kb"

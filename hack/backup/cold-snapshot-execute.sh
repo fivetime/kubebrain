@@ -4,6 +4,9 @@ set -euo pipefail
 PREFLIGHT_FILE="${PREFLIGHT_FILE:-}"
 OPERATION_ID="${OPERATION_ID:-}"
 RECEIPT_FILE="${RECEIPT_FILE:-}"
+SEMANTIC_WITNESS_FILE="${SEMANTIC_WITNESS_FILE:-}"
+EXPECTED_WITNESS_PREFIX="${EXPECTED_WITNESS_PREFIX:-}"
+WITNESS_MAX_AGE_SECONDS="${WITNESS_MAX_AGE_SECONDS:-300}"
 WAIT_TIMEOUT="${WAIT_TIMEOUT:-10m}"
 FENCE_SETTLE_SECONDS="${FENCE_SETTLE_SECONDS:-5}"
 KUBECTL="${KUBECTL:-kubectl}"
@@ -13,9 +16,13 @@ fail_input() { echo "$1" >&2; exit 2; }
 [[ "$OPERATION_ID" =~ ^[a-z0-9]([-a-z0-9]{0,38}[a-z0-9])?$ ]] ||
   fail_input "OPERATION_ID must be a lowercase DNS label of at most 40 characters"
 [[ -n "$RECEIPT_FILE" && ! -e "$RECEIPT_FILE" ]] || fail_input "RECEIPT_FILE must name a new file"
+[[ -f "$SEMANTIC_WITNESS_FILE" ]] || fail_input "SEMANTIC_WITNESS_FILE must name a verified logical.v2 witness"
+[[ -n "$EXPECTED_WITNESS_PREFIX" ]] || fail_input "EXPECTED_WITNESS_PREFIX is required"
+[[ "$WITNESS_MAX_AGE_SECONDS" =~ ^[1-9][0-9]*$ ]] || fail_input "WITNESS_MAX_AGE_SECONDS must be a positive integer"
 [[ "$WAIT_TIMEOUT" =~ ^[1-9][0-9]*(s|m|h)$ ]] || fail_input "WAIT_TIMEOUT must be a positive kubectl duration"
 [[ "$FENCE_SETTLE_SECONDS" =~ ^[0-9]+$ ]] || fail_input "FENCE_SETTLE_SECONDS must be a non-negative integer"
 command -v jq >/dev/null 2>&1 || fail_input "jq is required"
+command -v sha256sum >/dev/null 2>&1 || fail_input "sha256sum is required"
 
 inventory="$(jq -cS . "$PREFLIGHT_FILE")" || fail_input "PREFLIGHT_FILE is not valid JSON"
 jq -e '.format == "kubebrain.cold-physical-snapshot-preflight.v2" and
@@ -44,6 +51,11 @@ fresh_inventory="$($script_dir/cold-snapshot-preflight.sh | jq -cS .)"
   echo "live preflight inventory differs from PREFLIGHT_FILE; refusing mutation" >&2
   exit 1
 }
+witness_status="$(cd "$script_dir/../.." && INPUT="$SEMANTIC_WITNESS_FILE" EXPECTED_PREFIX="$EXPECTED_WITNESS_PREFIX" \
+  MIN_RECORDS=1 MAX_AGE_SECONDS="$WITNESS_MAX_AGE_SECONDS" go run ./hack/backup/cmd/logical-status)"
+jq -e '.format == "kubebrain.logical.v2" and (.revision > 0) and (.records > 0) and
+  (.sha256 | test("^[0-9a-f]{64}$"))' <<<"$witness_status" >/dev/null || fail_input "semantic witness status is invalid"
+witness_file_sha256="$(sha256sum "$SEMANTIC_WITNESS_FILE" | awk '{print $1}')"
 
 kubectl_args=()
 [[ -z "${KUBE_CONTEXT:-}" ]] || kubectl_args+=(--context "$KUBE_CONTEXT")
@@ -188,8 +200,10 @@ kb_stopped=false
 
 receipt_tmp="${RECEIPT_FILE}.tmp.$$"
 jq -n --arg format kubebrain.cold-physical-snapshot.v2 --arg operation_id "$OPERATION_ID" \
-  --arg created_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --argjson inventory "$inventory" --argjson snapshots "$snapshots" \
-  '{format:$format,operation_id:$operation_id,created_at:$created_at,inventory:$inventory,snapshots:$snapshots}' >"$receipt_tmp"
+  --arg created_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg witness_file_sha256 "$witness_file_sha256" \
+  --argjson semantic_witness "$witness_status" --argjson inventory "$inventory" --argjson snapshots "$snapshots" \
+  '{format:$format,operation_id:$operation_id,created_at:$created_at,inventory:$inventory,snapshots:$snapshots,
+    semantic_witness:($semantic_witness + {file_sha256:$witness_file_sha256})}' >"$receipt_tmp"
 chmod 600 "$receipt_tmp"
 sync -f "$receipt_tmp"
 mv "$receipt_tmp" "$RECEIPT_FILE"

@@ -85,7 +85,7 @@ func main() {
 					if ttl.TTL <= 0 {
 						log.Fatalf("lease %d expired while exporting snapshot revision %d", kv.Lease, snapshotRevision)
 					}
-					if err := writer.AddLease(record.Lease{ID: kv.Lease, TTL: ttl.TTL}); err != nil {
+					if err := writer.AddLease(record.Lease{ID: kv.Lease, TTL: ttl.TTL, GrantedTTL: ttl.GrantedTTL}); err != nil {
 						log.Fatal(err)
 					}
 					exportedLeases[kv.Lease] = struct{}{}

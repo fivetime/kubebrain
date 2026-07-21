@@ -15,7 +15,7 @@ func TestAtomicWriterAndVerifiedReader(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "backup.jsonl")
 	writer, err := NewAtomicWriter(path, "/registry", 42)
 	require.NoError(t, err)
-	require.NoError(t, writer.AddLease(record.Lease{ID: 123, TTL: 30}))
+	require.NoError(t, writer.AddLease(record.Lease{ID: 123, TTL: 30, GrantedTTL: 60}))
 	require.NoError(t, writer.Add(record.Record{Key: "L3JlZ2lzdHJ5L2E=", Value: "YQ==", ModRevision: 40}))
 	require.NoError(t, writer.Add(record.Record{Key: "L3JlZ2lzdHJ5L2I=", Value: "Yg==", ModRevision: 41, Lease: 123}))
 	status, err := writer.Commit()
@@ -46,7 +46,7 @@ func TestAtomicWriterAndVerifiedReader(t *testing.T) {
 		leases = append(leases, lease)
 		return nil
 	}))
-	require.Equal(t, []record.Lease{{Type: "lease", ID: 123, TTL: 30}}, leases)
+	require.Equal(t, []record.Lease{{Type: "lease", ID: 123, TTL: 30, GrantedTTL: 60}}, leases)
 }
 
 func TestOpenVerifiedReadsLegacyFormat(t *testing.T) {
@@ -103,6 +103,13 @@ func TestOpenVerifiedRejectsInvalidLeaseMetadata(t *testing.T) {
 			require.Error(t, err)
 		})
 	}
+}
+
+func TestAddLeaseRejectsGrantedTTLBelowRemainingTTL(t *testing.T) {
+	writer, err := NewAtomicWriter(filepath.Join(t.TempDir(), "backup.jsonl"), "/registry", 42)
+	require.NoError(t, err)
+	defer writer.Abort()
+	require.ErrorContains(t, writer.AddLease(record.Lease{ID: 123, TTL: 30, GrantedTTL: 29}), "granted_ttl")
 }
 
 func TestOpenVerifiedRejectsTruncatedAndCorruptBackup(t *testing.T) {

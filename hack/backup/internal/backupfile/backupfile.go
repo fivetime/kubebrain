@@ -103,8 +103,8 @@ func (w *AtomicWriter) AddLease(lease record.Lease) error {
 		return errors.New("backup writer is closed")
 	}
 	lease.Type = "lease"
-	if lease.ID == 0 || lease.TTL <= 0 {
-		return fmt.Errorf("invalid lease id=%d ttl=%d", lease.ID, lease.TTL)
+	if lease.ID == 0 || lease.TTL <= 0 || lease.GrantedTTL < 0 || (lease.GrantedTTL > 0 && lease.GrantedTTL < lease.TTL) {
+		return fmt.Errorf("invalid lease id=%d ttl=%d granted_ttl=%d", lease.ID, lease.TTL, lease.GrantedTTL)
 	}
 	if err := w.writeHashedJSON(lease); err != nil {
 		return err
@@ -383,8 +383,8 @@ func validate(reader io.Reader) (Status, error) {
 			if err := json.Unmarshal(line, &lease); err != nil {
 				return Status{}, fmt.Errorf("invalid backup lease %d: %w", leases+1, err)
 			}
-			if lease.ID == 0 || lease.TTL <= 0 {
-				return Status{}, fmt.Errorf("invalid backup lease id=%d ttl=%d", lease.ID, lease.TTL)
+			if lease.ID == 0 || lease.TTL <= 0 || lease.GrantedTTL < 0 || (lease.GrantedTTL > 0 && lease.GrantedTTL < lease.TTL) {
+				return Status{}, fmt.Errorf("invalid backup lease id=%d ttl=%d granted_ttl=%d", lease.ID, lease.TTL, lease.GrantedTTL)
 			}
 			if _, exists := seenLeases[lease.ID]; exists {
 				return Status{}, fmt.Errorf("duplicate backup lease %d", lease.ID)

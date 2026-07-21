@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -127,6 +128,10 @@ func coldRestoreSnapshotReceipt(t *testing.T) []byte {
 	value, err := json.Marshal(map[string]any{
 		"format": "kubebrain.cold-physical-snapshot.v2", "operation_id": "restore-test",
 		"created_at": "2026-07-21T00:00:00Z", "inventory": inventory, "snapshots": snapshots,
+		"semantic_witness": map[string]any{
+			"format": "kubebrain.logical.v2", "prefix": "/registry", "revision": 100, "records": 1, "leases": 0,
+			"sha256": strings.Repeat("a", 64), "file_sha256": strings.Repeat("b", 64),
+		},
 	})
 	require.NoError(t, err)
 	return value

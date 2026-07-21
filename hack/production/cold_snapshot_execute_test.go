@@ -1,12 +1,16 @@
 package production_test
 
 import (
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -26,8 +30,10 @@ func TestColdSnapshotExecuteAndRollback(t *testing.T) {
 			dir := t.TempDir()
 			inventoryFile := filepath.Join(dir, "inventory.json")
 			receiptFile := filepath.Join(dir, "receipt.json")
+			witnessFile := filepath.Join(dir, "witness.jsonl")
 			logFile := filepath.Join(dir, "kubectl.log")
 			require.NoError(t, os.WriteFile(inventoryFile, coldSnapshotInventory(t), 0o600))
+			require.NoError(t, os.WriteFile(witnessFile, coldSemanticWitness(t, "/registry"), 0o600))
 			fakeKubectl := filepath.Join(dir, "kubectl")
 			require.NoError(t, os.WriteFile(fakeKubectl, []byte(coldSnapshotFakeKubectl), 0o755))
 
@@ -37,6 +43,8 @@ func TestColdSnapshotExecuteAndRollback(t *testing.T) {
 				"PREFLIGHT_FILE="+inventoryFile,
 				"RECEIPT_FILE="+receiptFile,
 				"OPERATION_ID=op-20260721",
+				"SEMANTIC_WITNESS_FILE="+witnessFile,
+				"EXPECTED_WITNESS_PREFIX=/registry",
 				"FAKE_LOG="+logFile,
 				"FAKE_PVC_JSON="+coldSnapshotPVCJSON("Bound"),
 				"FENCE_SETTLE_SECONDS=0",
@@ -52,6 +60,7 @@ func TestColdSnapshotExecuteAndRollback(t *testing.T) {
 				require.NoError(t, json.Unmarshal(value, &receipt))
 				require.Equal(t, "kubebrain.cold-physical-snapshot.v2", receipt["format"])
 				require.Len(t, receipt["snapshots"], 6)
+				require.Equal(t, "kubebrain.logical.v2", receipt["semantic_witness"].(map[string]any)["format"])
 			} else {
 				require.Error(t, err, string(output))
 				require.NoFileExists(t, receiptFile)
@@ -73,6 +82,28 @@ func TestColdSnapshotExecuteAndRollback(t *testing.T) {
 			)
 		})
 	}
+}
+
+func coldSemanticWitness(t *testing.T, prefix string) []byte {
+	t.Helper()
+	header, err := json.Marshal(map[string]any{
+		"type": "kubebrain.logical.v2", "prefix": prefix, "revision": 10, "created_at_unix": time.Now().Unix(),
+	})
+	require.NoError(t, err)
+	record, err := json.Marshal(map[string]any{
+		"key":          base64.StdEncoding.EncodeToString([]byte(prefix + "/key")),
+		"value":        base64.StdEncoding.EncodeToString([]byte("value")),
+		"mod_revision": 10, "create_revision": 10, "version": 1, "lease": 0,
+	})
+	require.NoError(t, err)
+	hashed := append(append(append([]byte(nil), header...), '\n'), record...)
+	hashed = append(hashed, '\n')
+	digest := sha256.Sum256(hashed)
+	footer, err := json.Marshal(map[string]any{
+		"type": "footer", "records": 1, "sha256": fmt.Sprintf("%x", digest[:]),
+	})
+	require.NoError(t, err)
+	return append(hashed, append(footer, '\n')...)
 }
 
 func requireOrder(t *testing.T, value string, parts ...string) {

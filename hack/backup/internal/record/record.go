@@ -10,7 +10,8 @@ type Record struct {
 }
 
 type Lease struct {
-	Type string `json:"type"`
-	ID   int64  `json:"id"`
-	TTL  int64  `json:"ttl"`
+	Type       string `json:"type"`
+	ID         int64  `json:"id"`
+	TTL        int64  `json:"ttl"`
+	GrantedTTL int64  `json:"granted_ttl,omitempty"`
 }
