@@ -7681,6 +7681,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   restartCount=0。endpoint health 与 Put/Get/Delete 通过，三副本 quota usage/backend/
   NOSPACE 一致，日志无 panic/fatal/data race/storage/quota/OOM 错误，PD/TiKV 3+3 Ready。
 
+- **Compatibility A380 advertised client URL release gate（2026-07-21）**：
+  提交 `ff0e6fc` 将 A379 的 advertised client URL 纳入生产实例发布门禁。调用方必须显式
+  提供非空 `EXPECTED_ADVERTISE_CLIENT_URLS`；脚本按 KubeBrain 容器名读取 StatefulSet
+  Pod template args，要求恰好一个 `--advertise-client-urls` 且与期望值逐字匹配。参数缺失、
+  错误或重复均在 endpoint health 前 fail closed，成功记录同时输出该 URL，便于控制面审计
+  外部可达地址和证书身份是否按声明发布。该门禁只验证不可变控制面声明，不把集群内 DNS
+  可达性错误地当成外部客户端可达性证明；外部探测仍应使用调用方提供的 `ENDPOINT`。
+
+  门禁专项测试覆盖必填输入以及 advertised client URL 缺失、错误、重复，连续 20 轮通过；
+  完整 `go test ./...` 与 `go vet ./...` 通过。在当前 A379、独立 3 PD/3 TiKV、KubeBrain
+  三副本集群上，真实执行 `validate-instance-ready.sh`：精确 image、1 GiB quota、
+  `http://kubebrain.kubebrain-dev.svc:3379` advertised URL、StatefulSet revision 和全部副本
+  均收敛，经过临时本地转发的 endpoint health 成功提交线性化 proposal。验证后已停止端口
+  转发；本轮无运行时代码变化，不构建新镜像。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
