@@ -8613,6 +8613,27 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   v0.7.0 均通过。本轮未发现当前响应字段遗漏，只增加升级失败快显门禁，因此继续使用已验证
   的 A422 服务端镜像。
 
+#### A433 follower 转发响应 revision 单调性
+
+- 全量差分发现 `StartRevision=math.MaxInt64` 的 Watch 在创建成功、同连接代理 Put、客户端取消后，
+  KubeBrain 的 cancel header 仍可能停留在 Put 前 revision；上游 etcd 则至少返回刚完成 Put 的
+  revision。根因是 follower 把代理响应直接交给客户端，却没有把响应 header 中已提交的 revision
+  回灌本地 committed watermark，而 cancel 为保持 leader 故障时仍可本地完成，不能额外引入读屏障。
+- 新增统一的 forwarded response revision 观察逻辑，覆盖 KV Range/Txn/Compact/Put/DeleteRange 及
+  Lease Grant/Revoke/KeepAlive/TimeToLive/Leases；只在成功且 revision 为正时单调推进 current
+  revision，不推进 published watch watermark。扩展 follower cancel 回归：代理 Put 返回 revision
+  61 后，cancel 不新增读屏障且 header 为 61，后续需要 leader 的新 Watch 仍按原合同失败。
+- 聚焦 race、`pkg/server/etcd` 全包、root 全量测试、vet、staticcheck v0.7.0 均通过。真实独立
+  etcd 对照的 Watch revision boundary 四场景（latest、historical、future、maximum）和隔离重跑的
+  naming 差分全部通过；固定 NodePort health 正常且 alarm 为空。`endpoint health --cluster` 从宿主
+  runner 仍受集群内广告 DNS 不可解析限制，该拓扑问题不作为协议失败。
+- 镜像 `kubebrain:a433-forwarded-revision-local` 从实现提交
+  `fa83c80891782e283cde36a079958f52d7dc4afe` 的 `git archive` 构建，本地 image ID 为
+  `sha256:18c859f8ba0748870f6f67cdb0edd0fd26d19fd47a2a3918c0064272caecf32a`，kind/containerd
+  运行 digest 为 `sha256:afc5edbb59476a9d94d5ff8a3d051bf21dd5f43aeca1fff14695435d315a5504`；
+  运行版本 `0.0.0-a433.1`、Go 1.26.5、TiKV backend、用户 `65532:65532`。三 KubeBrain
+  副本 Ready、零重启，主 PD/TiKV 3+3 Ready。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
