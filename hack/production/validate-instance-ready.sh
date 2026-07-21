@@ -8,6 +8,7 @@ KUBEBRAIN_STATEFULSET="${KUBEBRAIN_STATEFULSET:-kubebrain}"
 EXPECTED_KUBEBRAIN_REPLICAS="${EXPECTED_KUBEBRAIN_REPLICAS:-3}"
 EXPECTED_IMAGE="${EXPECTED_IMAGE:-}"
 EXPECTED_KEYSPACE="${EXPECTED_KEYSPACE:-}"
+EXPECTED_PD_ADDRS="${EXPECTED_PD_ADDRS:-}"
 EXPECTED_QUOTA_BACKEND_BYTES="${EXPECTED_QUOTA_BACKEND_BYTES:-}"
 EXPECTED_ADVERTISE_CLIENT_URLS="${EXPECTED_ADVERTISE_CLIENT_URLS:-}"
 TIDB_NAMESPACE="${TIDB_NAMESPACE:-tidb-cluster}"
@@ -31,6 +32,10 @@ if [[ -z "$ENDPOINT" ]]; then
 fi
 if [[ -z "$EXPECTED_KEYSPACE" ]]; then
   echo "EXPECTED_KEYSPACE is required" >&2
+  exit 2
+fi
+if [[ -z "$EXPECTED_PD_ADDRS" ]]; then
+  echo "EXPECTED_PD_ADDRS is required" >&2
   exit 2
 fi
 if ! [[ "$EXPECTED_QUOTA_BACKEND_BYTES" =~ ^[1-9][0-9]*$ ]]; then
@@ -158,9 +163,31 @@ if [[ "$keyspace_arg_count" -ne 1 || "$keyspace_arg_mismatch" == "true" ]]; then
   exit 1
 fi
 
+pd_addrs_arg_count=0
+pd_addrs_arg_mismatch=false
+while IFS= read -r arg; do
+  if [[ "$arg" == --pd-addrs=* ]]; then
+    pd_addrs_arg_count=$((pd_addrs_arg_count + 1))
+    if [[ "$arg" != "--pd-addrs=${EXPECTED_PD_ADDRS}" ]]; then
+      pd_addrs_arg_mismatch=true
+    fi
+  fi
+done <<<"$kubebrain_args"
+if [[ "$pd_addrs_arg_count" -ne 1 || "$pd_addrs_arg_mismatch" == "true" ]]; then
+  echo "KubeBrain PD address configuration mismatch: expected exactly --pd-addrs=${EXPECTED_PD_ADDRS}" >&2
+  printf 'actual PD address args:' >&2
+  while IFS= read -r arg; do
+    if [[ "$arg" == --pd-addrs=* ]]; then
+      printf ' %s' "$arg" >&2
+    fi
+  done <<<"$kubebrain_args"
+  printf '\n' >&2
+  exit 1
+fi
+
 if ! ETCDCTL_API=3 "$ETCDCTL" --endpoints="$ENDPOINT" endpoint health; then
   echo "KubeBrain endpoint health failed: $ENDPOINT" >&2
   exit 1
 fi
 
-echo "KubeBrain instance release gate passed: endpoint=${ENDPOINT} image=${EXPECTED_IMAGE} keyspace=${EXPECTED_KEYSPACE} quota=${EXPECTED_QUOTA_BACKEND_BYTES} advertise_client_urls=${EXPECTED_ADVERTISE_CLIENT_URLS} replicas=${EXPECTED_KUBEBRAIN_REPLICAS} PD/TiKV=${EXPECTED_PD_REPLICAS}/${EXPECTED_TIKV_REPLICAS}"
+echo "KubeBrain instance release gate passed: endpoint=${ENDPOINT} image=${EXPECTED_IMAGE} keyspace=${EXPECTED_KEYSPACE} pd_addrs=${EXPECTED_PD_ADDRS} quota=${EXPECTED_QUOTA_BACKEND_BYTES} advertise_client_urls=${EXPECTED_ADVERTISE_CLIENT_URLS} replicas=${EXPECTED_KUBEBRAIN_REPLICAS} PD/TiKV=${EXPECTED_PD_REPLICAS}/${EXPECTED_TIKV_REPLICAS}"

@@ -261,6 +261,7 @@ KUBE_CONTEXT=production \
 KUBEBRAIN_NAMESPACE=kubebrain-instance-a \
 EXPECTED_IMAGE=registry.example/kubebrain@sha256:<digest> \
 EXPECTED_KEYSPACE=instance-a \
+EXPECTED_PD_ADDRS=kb-pd.kubebrain-storage-a.svc:2379 \
 EXPECTED_QUOTA_BACKEND_BYTES=429496729600 \
 EXPECTED_ADVERTISE_CLIENT_URLS=https://instance-a.example:2379 \
 TIDB_NAMESPACE=kubebrain-storage-a \
@@ -278,9 +279,9 @@ ETCDCTL_KEY=/run/secrets/client.key \
 门禁先要求 TidbCluster `Ready=True` 且 PD/TiKV StatefulSet generation、ready/updated
 replicas 和 revision 全部收敛，再校验期望 PD/TiKV 数量；随后要求 KubeBrain
 StatefulSet observed generation、ready/updated replicas、revision、精确 image，以及 Pod
-template 中唯一的 `--keyspace`、`--quota-backend-bytes` 和 `--advertise-client-urls` 全部匹配，最后
+template 中唯一的 `--keyspace`、`--pd-addrs`、`--quota-backend-bytes` 和 `--advertise-client-urls` 全部匹配，最后
 通过官方 `etcdctl endpoint health` 提交线性化 proposal。缺少 `EXPECTED_IMAGE`/
-`EXPECTED_KEYSPACE`/`EXPECTED_QUOTA_BACKEND_BYTES`/`EXPECTED_ADVERTISE_CLIENT_URLS`/`ENDPOINT`、任一状态
+`EXPECTED_KEYSPACE`/`EXPECTED_PD_ADDRS`/`EXPECTED_QUOTA_BACKEND_BYTES`/`EXPECTED_ADVERTISE_CLIENT_URLS`/`ENDPOINT`、任一状态
 缺失、旧 revision、错误拓扑、错误镜像、quota/client URL 缺失/重复/不匹配或 endpoint
 不健康都会 fail closed。
 

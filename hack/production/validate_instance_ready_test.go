@@ -103,6 +103,33 @@ func TestValidateInstanceReady(t *testing.T) {
 			wantOutput: "keyspace configuration mismatch",
 		},
 		{
+			name:       "missing PD address argument",
+			image:      "registry/kubebrain@sha256:abc",
+			kubeStatus: "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:abc",
+			kubeArgs:   "--keyspace=instance-a\n--quota-backend-bytes=429496729600\n--advertise-client-urls=https://instance.example:2379",
+			topology:   "3\t3",
+			healthOK:   true,
+			wantOutput: "PD address configuration mismatch",
+		},
+		{
+			name:       "wrong PD address",
+			image:      "registry/kubebrain@sha256:abc",
+			kubeStatus: "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:abc",
+			kubeArgs:   "--keyspace=instance-a\n--pd-addrs=wrong-pd.storage.svc:2379\n--quota-backend-bytes=429496729600\n--advertise-client-urls=https://instance.example:2379",
+			topology:   "3\t3",
+			healthOK:   true,
+			wantOutput: "PD address configuration mismatch",
+		},
+		{
+			name:       "duplicate PD address argument",
+			image:      "registry/kubebrain@sha256:abc",
+			kubeStatus: "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:abc",
+			kubeArgs:   "--keyspace=instance-a\n--pd-addrs=kb-pd.storage.svc:2379\n--pd-addrs=kb-pd.storage.svc:2379\n--quota-backend-bytes=429496729600\n--advertise-client-urls=https://instance.example:2379",
+			topology:   "3\t3",
+			healthOK:   true,
+			wantOutput: "PD address configuration mismatch",
+		},
+		{
 			name:       "wrong image",
 			image:      "registry/kubebrain@sha256:wanted",
 			kubeStatus: "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:old",
@@ -168,7 +195,7 @@ exit 1
 
 			kubeArgs := tc.kubeArgs
 			if kubeArgs == "" {
-				kubeArgs = "--port=3379\n--keyspace=instance-a\n--quota-backend-bytes=429496729600\n--advertise-client-urls=https://instance.example:2379"
+				kubeArgs = "--port=3379\n--keyspace=instance-a\n--pd-addrs=kb-pd.storage.svc:2379\n--quota-backend-bytes=429496729600\n--advertise-client-urls=https://instance.example:2379"
 			}
 			command := exec.Command("bash", "validate-instance-ready.sh")
 			command.Env = append(os.Environ(),
@@ -176,6 +203,7 @@ exit 1
 				"ETCDCTL="+fakeEtcdctl,
 				"EXPECTED_IMAGE="+tc.image,
 				"EXPECTED_KEYSPACE=instance-a",
+				"EXPECTED_PD_ADDRS=kb-pd.storage.svc:2379",
 				"EXPECTED_QUOTA_BACKEND_BYTES=429496729600",
 				"EXPECTED_ADVERTISE_CLIENT_URLS=https://instance.example:2379",
 				"ENDPOINT=https://instance.example:2379",
@@ -199,7 +227,7 @@ exit 1
 
 func TestValidateInstanceReadyRequiresImmutableInputs(t *testing.T) {
 	command := exec.Command("bash", "validate-instance-ready.sh")
-	command.Env = append(os.Environ(), "EXPECTED_IMAGE=", "ENDPOINT=", "EXPECTED_KEYSPACE=", "EXPECTED_QUOTA_BACKEND_BYTES=", "EXPECTED_ADVERTISE_CLIENT_URLS=")
+	command.Env = append(os.Environ(), "EXPECTED_IMAGE=", "ENDPOINT=", "EXPECTED_KEYSPACE=", "EXPECTED_PD_ADDRS=", "EXPECTED_QUOTA_BACKEND_BYTES=", "EXPECTED_ADVERTISE_CLIENT_URLS=")
 	output, err := command.CombinedOutput()
 	require.Error(t, err)
 	require.Contains(t, string(output), "EXPECTED_IMAGE is required")
@@ -209,6 +237,7 @@ func TestValidateInstanceReadyRequiresImmutableInputs(t *testing.T) {
 		"EXPECTED_IMAGE=registry/kubebrain@sha256:abc",
 		"ENDPOINT=https://instance.example:2379",
 		"EXPECTED_KEYSPACE=instance-a",
+		"EXPECTED_PD_ADDRS=kb-pd.storage.svc:2379",
 		"EXPECTED_QUOTA_BACKEND_BYTES=",
 		"EXPECTED_ADVERTISE_CLIENT_URLS=https://instance.example:2379",
 	)
@@ -221,6 +250,7 @@ func TestValidateInstanceReadyRequiresImmutableInputs(t *testing.T) {
 		"EXPECTED_IMAGE=registry/kubebrain@sha256:abc",
 		"ENDPOINT=https://instance.example:2379",
 		"EXPECTED_KEYSPACE=instance-a",
+		"EXPECTED_PD_ADDRS=kb-pd.storage.svc:2379",
 		"EXPECTED_QUOTA_BACKEND_BYTES=429496729600",
 		"EXPECTED_ADVERTISE_CLIENT_URLS=",
 	)
@@ -233,12 +263,26 @@ func TestValidateInstanceReadyRequiresImmutableInputs(t *testing.T) {
 		"EXPECTED_IMAGE=registry/kubebrain@sha256:abc",
 		"ENDPOINT=https://instance.example:2379",
 		"EXPECTED_KEYSPACE=",
+		"EXPECTED_PD_ADDRS=kb-pd.storage.svc:2379",
 		"EXPECTED_QUOTA_BACKEND_BYTES=429496729600",
 		"EXPECTED_ADVERTISE_CLIENT_URLS=https://instance.example:2379",
 	)
 	output, err = command.CombinedOutput()
 	require.Error(t, err)
 	require.Contains(t, string(output), "EXPECTED_KEYSPACE is required")
+
+	command = exec.Command("bash", "validate-instance-ready.sh")
+	command.Env = append(os.Environ(),
+		"EXPECTED_IMAGE=registry/kubebrain@sha256:abc",
+		"ENDPOINT=https://instance.example:2379",
+		"EXPECTED_KEYSPACE=instance-a",
+		"EXPECTED_PD_ADDRS=",
+		"EXPECTED_QUOTA_BACKEND_BYTES=429496729600",
+		"EXPECTED_ADVERTISE_CLIENT_URLS=https://instance.example:2379",
+	)
+	output, err = command.CombinedOutput()
+	require.Error(t, err)
+	require.Contains(t, string(output), "EXPECTED_PD_ADDRS is required")
 }
 
 func boolString(value bool) string {
