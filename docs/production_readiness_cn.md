@@ -428,7 +428,9 @@ ALLOW_COLD_PHYSICAL_SNAPSHOT=true \
 预检要求集群提供 `snapshot.storage.k8s.io` API、VolumeSnapshotClass driver 非空且
 `deletionPolicy=Retain`，并精确锁定 KubeBrain StatefulSet UID、TidbCluster UID、TiKV
 cluster ID，以及全部 3+3 Bound PD/TiKV PVC 的 name/UID/PV/storage class/volume mode。
-输出 `kubebrain.cold-physical-snapshot-preflight.v1` 只能作为后续 operation 的不可变输入。
+输出 `kubebrain.cold-physical-snapshot-preflight.v2` 还固定原 TidbCluster spec，以及每个 PVC 的
+access modes 和 requested storage，作为后续 operation 的不可变恢复蓝图。旧 v1 清单缺少这些
+字段，当前执行器明确拒绝，不能补默认值后继续。
 缺少 CSI API 的集群必须 fail closed。
 
 具备 CSI snapshot 能力的隔离预生产集群可使用候选执行器消费该不可变清单：
@@ -449,11 +451,30 @@ VolumeSnapshotContent 为 `Retain`、class/UID 引用一致并提供非空 snaps
 TiKV、解除 operator pause、KubeBrain 的顺序恢复。任一错误都由退出 trap 尝试同样的恢复，
 失败不发布成功 receipt；Retain 策略下的部分制品必须进入人工审计，不能自动误删。
 
-成功恢复服务并原子 fsync 发布 `kubebrain.cold-physical-snapshot.v1` receipt 后，仍只证明冷
+成功恢复服务并原子 fsync 发布 `kubebrain.cold-physical-snapshot.v2` receipt 后，仍只证明冷
 快照集合已生成。尚未从 receipt 在隔离集群恢复全部 PD/TiKV volume、核验 cluster identity、
 启动 KubeBrain 并完成 revision/key/lease/watch 验证，因此 `BACKUP_MODE=cold-csi` 仍不受
 支持，更不等于日志型 PITR。生产调用还必须由持久 operation worker 独占实例维护窗口，不能
 从交互终端并发运行。
+
+v2 receipt 可离线渲染隔离恢复清单：
+
+```shell
+go run ./hack/backup/cmd/cold-restore-render \
+  --receipt cold-snapshot-receipt.json \
+  --target-snapshot-class retained-csi \
+  --target-storage-class encrypted-csi \
+  --output cold-restore-manifest.json \
+  --confirm-isolated-target
+```
+
+renderer 要求 PVC 与 snapshot handle 完整一一对应、handle 唯一、restore size 不大于请求容量、
+PD/TiKV PVC 数与原 spec replicas 一致，并拒绝 blueprint 身份漂移。输出为静态预绑定的 retained
+VolumeSnapshotContent、VolumeSnapshot、使用 dataSource 的原名 PVC，以及 `paused=true` 的原
+TidbCluster。PD 数据包含原 member identity 和 peer/client URL，因此 namespace、TidbCluster、
+StatefulSet/PVC 名不能改；目标必须是与源数据面网络隔离、但使用相同名字的独立 Kubernetes
+集群。renderer 不访问目标集群，也不验证 snapshot handle 可导入、PVC 已 Bound、恢复后的
+TiKV cluster ID 或 KubeBrain 数据语义；这些仍须由后续 restore executor 和真实 CSI 演练门禁。
 
 生产备份 Job 必须设置 `METRICS_OUTPUT`，将成功结果写入 node-exporter 或等价
 Prometheus textfile collector 的共享目录；`BACKUP_INSTANCE` 必须与实例名一致，

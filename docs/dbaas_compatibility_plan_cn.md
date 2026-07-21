@@ -7930,6 +7930,27 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   演练证据，所以该 executor 仍是候选能力，不能关闭 transactional TiKV 物理恢复或 PITR
   缺口，也不能启用 `BACKUP_MODE=cold-csi`。
 
+- **DBaaS A394 cold physical restore blueprint and renderer（2026-07-21）**：
+  审计 A393 receipt 后确认 v1 只有 snapshot handle 和扁平 PVC 身份，缺少原 TidbCluster spec、
+  PVC access modes/requested storage，以及 snapshot 到源 PVC 的显式映射，无法可靠构造恢复资源。
+  因此把新 preflight/receipt 契约升级为 v2，preflight 额外固定去除 status/运行时 metadata 的
+  TidbCluster blueprint 和 PVC 恢复字段；executor 只接受完整 v2，并在 receipt 中记录每个
+  snapshot 的 source PVC/component。v1 历史制品 fail closed，不用推断默认值伪造可恢复性。
+
+  新增结构化 `hack/backup/cmd/cold-restore-render`。调用方必须显式确认隔离目标，并提供目标
+  VolumeSnapshotClass/StorageClass；renderer 验证 source namespace/name/UID/cluster ID、CSI
+  driver、Kubernetes DNS 名、PD/TiKV replica 数、PVC/snapshot 一一对应、唯一 handle、volume
+  mode/access modes 和 requested storage >= restore size。输出按固定顺序包含预绑定 retained
+  VolumeSnapshotContent、VolumeSnapshot、原名 PVC，以及强制 `paused=true` 的原 TidbCluster，
+  防止 operator 在恢复卷 Bound 前抢先创建空 StatefulSet。
+
+  单元负例覆盖旧 v1、blueprint 改名、副本/PVC 数不符、重复 PVC 映射、重复 handle 和容量不足；
+  A393 fake-kubectl 成功/回滚矩阵同步升级到 v2，并核验源 VolumeSnapshotContent driver 与
+  restoreSize。由于 PD 持久数据绑定原 member DNS identity，renderer 禁止重命名语义并要求
+  同 namespace/name 的隔离 Kubernetes 集群。当前仍缺目标集群 API/driver/空环境 preflight、
+  apply/wait/unpause 状态机，以及真实 CSI 恢复后 cluster ID 和 KubeBrain key/lease/watch 校验，
+  所以物理恢复和 PITR 状态保持未完成。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
