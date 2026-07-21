@@ -287,18 +287,40 @@ func TestWatchBackendPrefix(t *testing.T) {
 }
 
 func TestWithoutWatchPrevKvsDoesNotMutateSharedEvents(t *testing.T) {
+	kvA := &mvccpb.KeyValue{Key: []byte("a"), Value: []byte("value-a")}
+	kvB := &mvccpb.KeyValue{Key: []byte("b"), Value: []byte("value-b")}
 	events := []*mvccpb.Event{
-		{Type: mvccpb.PUT, PrevKv: &mvccpb.KeyValue{Key: []byte("a")}},
+		{Type: mvccpb.PUT, Kv: kvA, PrevKv: &mvccpb.KeyValue{Key: []byte("prev-a")}},
 		nil,
-		{Type: mvccpb.DELETE, PrevKv: &mvccpb.KeyValue{Key: []byte("b")}},
+		{Type: mvccpb.DELETE, Kv: kvB, PrevKv: &mvccpb.KeyValue{Key: []byte("prev-b")}},
 	}
 	withoutPrev := withoutWatchPrevKvs(events)
-	if withoutPrev[0].PrevKv != nil || withoutPrev[2].PrevKv != nil {
-		t.Fatalf("expected prev kvs to be cleared")
+	require.Len(t, withoutPrev, len(events))
+	require.Equal(t, mvccpb.PUT, withoutPrev[0].Type)
+	require.Equal(t, mvccpb.DELETE, withoutPrev[2].Type)
+	require.Same(t, kvA, withoutPrev[0].Kv, "hot path must not clone the KV value")
+	require.Same(t, kvB, withoutPrev[2].Kv, "hot path must not clone the KV value")
+	require.NotSame(t, events[0], withoutPrev[0])
+	require.NotSame(t, events[2], withoutPrev[2])
+	require.Nil(t, withoutPrev[0].PrevKv)
+	require.Nil(t, withoutPrev[1])
+	require.Nil(t, withoutPrev[2].PrevKv)
+	require.NotNil(t, events[0].PrevKv, "source event is shared with PrevKv watchers")
+	require.NotNil(t, events[2].PrevKv, "source event is shared with PrevKv watchers")
+}
+
+func TestEventProtoFieldCount(t *testing.T) {
+	const expectedEventProtoFields = 3
+
+	fields := 0
+	typ := reflect.TypeOf(mvccpb.Event{})
+	for i := 0; i < typ.NumField(); i++ {
+		if typ.Field(i).Tag.Get("protobuf") != "" {
+			fields++
+		}
 	}
-	if events[0].PrevKv == nil || events[2].PrevKv == nil {
-		t.Fatalf("expected source events to keep prev kvs")
-	}
+	require.Equal(t, expectedEventProtoFields, fields,
+		"update withoutWatchPrevKvs when Event gains a protobuf field")
 }
 
 func TestNormalizeWatchCreateRequestMatchesEtcd(t *testing.T) {
