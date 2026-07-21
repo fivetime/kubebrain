@@ -902,6 +902,20 @@ RUN_FAULT_SMOKE=true hack/dev/verify.sh
 
 当前 dev 故障注入会删除 KubeBrain、PD、TiKV Pod 并等待恢复后重新运行基础 smoke。
 
+三副本 StatefulSet 还必须验证官方 clientv3 自身的 endpoint balancer，而不只验证 Service：
+
+```shell
+RUN_INCLUSTER_BALANCER_SMOKE=true hack/dev/verify.sh
+```
+
+该 smoke 在集群内先只连接指定 Pod DNS，建立 unary 连接和带 CreatedNotify 的 prefix Watch，
+再把 client endpoint 集合扩为三个 Pod。临时 fault sidecar 使用仅允许 get/delete 指定 victim
+Pod 的 namespaced Role 删除该副本。探针要求 replacement UID 改变且 Ready、20 个唯一 Watch
+事件严格按 revision 连续到达，并在切换后完成 Put、线性/serializable Get、Txn 和 Delete。
+若删除的是当前 KubeBrain leader，首个使用唯一 key 的条件写允许在有界窗口内观察
+`Unavailable` 并按读取结果消解不确定性；后续操作必须恢复。不能把“零瞬态错误”作为
+leader election 的虚假承诺，也不能把无界重试当成恢复成功。
+
 **已在 3 副本 TiKV + 3 副本 PD 上做过负载中混沌（2026-07-03）**：C=100 写负载下杀 1 个 TiKV store → 0.24% 瞬态错误（TiKV region-leader 重选窗口，超时型）、store ~90s 重建、3 store 全 Up；杀 PD leader → 0.28% 瞬态错误、新 PD leader ~65s 重选；两者均无级联失败、无数据丢失、恢复后读写正常。注意：后端故障还会让当前 KubeBrain leader 以 `klog.Fatal("leader lost")` 退出重启（丢主即干净重启的设计，非缺陷）。生产预演仍应在**跨机多副本**上重跑并记录恢复时间与错误率（当前仍是单机同宿主）。
 
 可选 lease 过期 smoke：

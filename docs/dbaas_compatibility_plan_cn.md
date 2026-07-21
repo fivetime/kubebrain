@@ -7883,6 +7883,32 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./...`、`go vet ./...` 通过。TiKV/Badger 两种构建脚本均以完整 SHA/时间/version
   成功产出二进制。本轮不修改数据面存储语义或部署镜像。
 
+- **Compatibility A392 clientv3 balancer under replica shutdown（2026-07-21）**：
+  对照 `/root/etcd/tests/integration/clientv3/connectivity/server_shutdown_test.go` 的
+  `TestBalancerUnderServerShutdownWatch`、Put/Delete/Txn 和 linearizable/serializable Get
+  场景，确认此前测试主要证明服务端恢复或单 endpoint 重试，没有确定性证明已固定 Pod 的
+  官方 clientv3 会切换 endpoint。新增 `hack/dev/cmd/balancer-smoke` 和
+  `hack/dev/incluster-balancer-smoke.sh`：探针先只连接 victim Pod DNS，完成 unary pin 和
+  CreatedNotify prefix Watch，再开放三个 Pod endpoint；双容器 Job 的 fault sidecar 使用
+  resourceNames 限定的 namespaced Role，只能 get/delete 该 victim Pod。外层脚本固定 Go
+  1.26.5 build digest、从当前 StatefulSet 取得 runtime image、等待 Job Complete/Failed
+  condition，并在任一失败时立即输出双容器诊断；Job、SA、Role、RoleBinding 均唯一命名并
+  由 trap 清理。`RUN_INCLUSTER_BALANCER_SMOKE=true` 已接入 `hack/dev/verify.sh`。
+
+  在真实独立 3 PD/3 TiKV、三 KubeBrain StatefulSet 上先删除 follower `kubebrain-0`：
+  Watch 连续收到 20 个严格递增事件，全部 unary 操作成功，UID 从
+  `460c2bf5-547d-48d6-8262-f706ed0150f6` 变为
+  `0d2f83d6-b5cc-4740-9191-3cdaad3fe5aa`。随后识别当前 leader 后执行更强故障；首版探针
+  立即写入时发现 client 已切到健康 follower，但内部新 leader 尚未就绪，proxy 在 2 秒边界
+  返回一次 `Unavailable`。这不是 endpoint balancer 失败，也不能由 clientv3 对不确定写自动
+  重放。探针因此改为对首个唯一 key 的条件 Txn 做有界重试和读后消歧，后续 19 次写要求
+  直接成功。最终删除 leader `kubebrain-0` 时记录 `transient_failures=1`，20 个 Watch 事件
+  无缺失、last revision `467825214963318807`，Put、两类 Get、Txn、Delete 全部恢复，UID 从
+  `0d2f83d6-b5cc-4740-9191-3cdaad3fe5aa` 变为
+  `2aaea92f-ac4a-43ab-9184-952f3f763923`，三副本 Ready/零重启且无临时 RBAC/Job 残留。
+  全仓 `bash -n`、ShellCheck warning/error、根模块完整 `go test ./...`、`go vet ./...` 和
+  Staticcheck 均通过。本轮新增兼容故障门禁，不修改数据面运行时代码或镜像。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
