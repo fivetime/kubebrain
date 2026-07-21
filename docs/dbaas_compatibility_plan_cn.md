@@ -7865,6 +7865,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   三 Pod 均为新镜像、Ready、零重启，运行版本 `0.0.0-a390.1`、Go 1.26.5、TiKV；临时隧道
   已关闭。该结果验证 `WaitForReady` 迁移未破坏 follower-to-leader forwarding。
 
+- **Production A391 ShellCheck gate and restore source fencing（2026-07-21）**：
+  对全部 72 个 Git 跟踪 shell 脚本运行 upstream 最新稳定 ShellCheck v0.11.0。首次扫描发现
+  构建脚本用 `export name=$(command)` 掩盖命令失败、trap 状态未初始化、`BASH_SOURCE`
+  数组索引遗漏、局部变量声明掩盖返回码、未引用变量和不安全词拆分等 warning。逐项修复后，
+  `bash -n` 与 ShellCheck warning/error 全部通过；jq 单引号程序等 info/style 提示不作为
+  发布阻断。CI 使用完整 digest
+  `sha256:61862eba1fcf09a484ebcc6feea46f1782532571a34ed51fedf90dd25f925a8d`
+  固定 `koalaman/shellcheck:v0.11.0`，并从 `git ls-files '*.sh'` 构造精确输入。开发侧
+  addlicense 也从 `@latest` 固定为 v1.2.0。
+
+  扫描同时暴露 post-restore audit 读取冻结 state 的 source instance、source prefix 和 target
+  prefix 后未使用。现要求 source instance 非空且与 target 不同，两个 prefix 非空且不同，
+  并要求 `kubebrain.restore-cutover.receipt.v1.source_instance` 精确等于 state；任一漂移在持续
+  探针开始前 fail closed。新增 source receipt 漂移与相同 prefix 负例。审计脚本专项普通
+  20 轮、operation runner 普通 3 轮、build 契约 20 轮及恢复相关 race 通过；根模块完整
+  `go test ./...`、`go vet ./...` 通过。TiKV/Badger 两种构建脚本均以完整 SHA/时间/version
+  成功产出二进制。本轮不修改数据面存储语义或部署镜像。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
