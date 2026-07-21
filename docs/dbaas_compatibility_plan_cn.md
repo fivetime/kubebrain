@@ -7726,6 +7726,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   endpoint health 成功提交线性化 proposal。验证后已停止临时端口转发；本轮无运行时代码
   变化，不构建新镜像。
 
+- **Compatibility A383 advertised endpoint differential preflight（2026-07-21）**：
+  在当前 disposable `a379-full-differential` keyspace 上再次端到端执行完整 reference etcd
+  差分。500.773 秒内 Alarm、binary KV、Compact、Delete、Hash/HashKV、Lease/leasing、
+  mirror、Put、Range/RangeStream、STM、Txn 和 Watch 通用组均通过；累积负载下最重的
+  leasing Put/Get/Delete 并发场景耗时 216.92 秒但完整完成 256 个序列。唯一失败是
+  authenticated AutoSync：runner 位于宿主机，在线实例稳定配置广告
+  `http://kubebrain.kubebrain-dev.svc:3379`，clientv3 按 MemberList 替换 bootstrap
+  端口转发后无法解析集群内 DNS。该结果证明测试网络前提不满足，不是 A379 MemberList
+  语义回归；专用 auth/gateway/no-quota 环境的组仍按设计跳过。
+
+  提交 `c4056e5` 让 `run-differential.sh` 在启动 reference etcd 和破坏性测试前读取
+  MemberList JSON，提取全部具名非 learner 成员的去重 ClientURLs，要求列表非空并用可配置
+  的短超时逐一执行 `etcdctl endpoint health`。任一广告地址对 runner 不可达即 fail closed，
+  明确提示从可路由网络运行或发布外部可达 URL；所有 etcdctl 调用统一使用已校验的
+  `ETCDCTL_BIN`，TLS 凭据继续沿用标准环境。缺失 URL 与不可达 URL 专项普通 20 轮、race
+  10 轮通过；真实在线配置从 bootstrap health 到精确指出 service DNS 不可达约 2.4 秒，
+  且未启动 reference etcd。`bash -n`、根模块完整 `go test ./...` 与 `go vet ./...` 通过；
+  本机无 shellcheck。本轮只修改测试门禁，不构建数据面镜像。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
