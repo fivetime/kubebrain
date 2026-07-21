@@ -621,7 +621,7 @@ func TestProductionMonitoringTracksStatefulSetReadiness(t *testing.T) {
 			expr: `max(quota_logical_usage_bytes{namespace="kubebrain-system"} / quota_backend_bytes{namespace="kubebrain-system"}) > 0.9`, forValue: "10m", severity: "warning",
 		},
 		"KubeBrainQuotaMetricsInconsistent": {
-			expr: `count(quota_nospace{namespace="kubebrain-system"}) < 3 or (max(quota_nospace{namespace="kubebrain-system"}) - min(quota_nospace{namespace="kubebrain-system"}) > 0)`, forValue: "1m", severity: "warning",
+			expr: `count(quota_nospace{namespace="kubebrain-system"}) != 3 or count(quota_backend_bytes{namespace="kubebrain-system"}) != 3 or count(quota_logical_usage_bytes{namespace="kubebrain-system"}) != 3 or (max(quota_nospace{namespace="kubebrain-system"}) - min(quota_nospace{namespace="kubebrain-system"}) > 0) or (max(quota_backend_bytes{namespace="kubebrain-system"}) - min(quota_backend_bytes{namespace="kubebrain-system"}) > 0)`, forValue: "1m", severity: "warning",
 		},
 		"KubeBrainQuotaRefreshFailures": {
 			expr: `sum(increase(quota_refresh_err{namespace="kubebrain-system"}[10m])) > 0`, forValue: "0m", severity: "warning",

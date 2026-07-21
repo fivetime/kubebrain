@@ -338,13 +338,13 @@ spec:
             summary: KubeBrain tenant logical quota usage is high
             description: "Logical key/value usage exceeds 90% of the configured tenant quota."
         - alert: KubeBrainQuotaMetricsInconsistent
-          expr: count(quota_nospace{namespace="kubebrain-system"}) < 3 or (max(quota_nospace{namespace="kubebrain-system"}) - min(quota_nospace{namespace="kubebrain-system"}) > 0)
+          expr: count(quota_nospace{namespace="kubebrain-system"}) != 3 or count(quota_backend_bytes{namespace="kubebrain-system"}) != 3 or count(quota_logical_usage_bytes{namespace="kubebrain-system"}) != 3 or (max(quota_nospace{namespace="kubebrain-system"}) - min(quota_nospace{namespace="kubebrain-system"}) > 0) or (max(quota_backend_bytes{namespace="kubebrain-system"}) - min(quota_backend_bytes{namespace="kubebrain-system"}) > 0)
           for: 1m
           labels:
             severity: warning
           annotations:
             summary: KubeBrain replicas disagree on tenant quota state
-            description: "Quota metric series are missing or replicas have reported different NOSPACE state for more than one refresh interval."
+            description: "Quota metric series are missing, duplicated, or replicas have reported different configured quota/NOSPACE state for more than one refresh interval."
         - alert: KubeBrainQuotaRefreshFailures
           expr: sum(increase(quota_refresh_err{namespace="kubebrain-system"}[10m])) > 0
           for: 0m

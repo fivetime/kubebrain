@@ -29,6 +29,12 @@ NOSPACE 和有界流式 usage rebuild 的版本，等待全部 KubeBrain 副本�
 恢复为上一份 Pod template 并等待滚动收敛。移除 quota 会把 tracking 标为 dirty；后续再次
 启用时必须重新流式统计，发布门禁不得复用旧 usage 指标宣告完成。
 
+发布门禁要求 `EXPECTED_QUOTA_BACKEND_BYTES` 为正整数，并核对 StatefulSet Pod template
+中恰好一个同值参数；镜像和 revision 收敛不能替代该检查。运行期
+`KubeBrainQuotaMetricsInconsistent` 要求 NOSPACE、backend quota 和 logical usage 三类
+series 各恰好三份，并比较所有副本的 NOSPACE 与 backend quota 值；缺失、重复或阈值漂移
+持续超过一分钟必须告警。
+
 ## TiKV/PD 升级完成门槛
 
 TiDB Operator 通过 StatefulSet `rollingUpdate.partition` 逐成员协调 PD、TiKV 升级。
@@ -242,6 +248,7 @@ tombstone 与历史值、lease/附属 key、watch 历史回放，以及新写入
 KUBE_CONTEXT=production \
 KUBEBRAIN_NAMESPACE=kubebrain-instance-a \
 EXPECTED_IMAGE=registry.example/kubebrain@sha256:<digest> \
+EXPECTED_QUOTA_BACKEND_BYTES=429496729600 \
 TIDB_NAMESPACE=kubebrain-storage-a \
 TIDB_CLUSTER=kb \
 EXPECTED_KUBEBRAIN_REPLICAS=3 \
@@ -256,10 +263,11 @@ ETCDCTL_KEY=/run/secrets/client.key \
 
 门禁先要求 TidbCluster `Ready=True` 且 PD/TiKV StatefulSet generation、ready/updated
 replicas 和 revision 全部收敛，再校验期望 PD/TiKV 数量；随后要求 KubeBrain
-StatefulSet observed generation、ready/updated replicas、revision 和精确 image 全部
-匹配，最后通过官方 `etcdctl endpoint health` 提交线性化 proposal。缺少
-`EXPECTED_IMAGE`/`ENDPOINT`、任一状态缺失、旧 revision、错误拓扑、错误镜像或 endpoint
-不健康都会 fail closed。
+StatefulSet observed generation、ready/updated replicas、revision、精确 image 和 Pod
+template 中唯一的 `--quota-backend-bytes` 全部匹配，最后通过官方 `etcdctl endpoint
+health` 提交线性化 proposal。缺少 `EXPECTED_IMAGE`/`EXPECTED_QUOTA_BACKEND_BYTES`/
+`ENDPOINT`、任一状态缺失、旧 revision、错误拓扑、错误镜像、quota 缺失/重复/不匹配或
+endpoint 不健康都会 fail closed。
 
 生产必须使用 image digest；脚本做精确字符串比较，允许本地验证使用不可变测试 tag，
 但不会替控制面判断 tag 是否可变。该门禁可关闭创建/扩缩/升级的“数据面已就绪”阶段，
