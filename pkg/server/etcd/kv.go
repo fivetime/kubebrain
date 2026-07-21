@@ -136,13 +136,8 @@ func (s *RPCServer) Range(ctx context.Context, r *etcdserverpb.RangeRequest) (*e
 // stream then ends with a normal return (io.EOF). A
 // backend error aborts the stream with a gRPC status so the apiserver relists
 // rather than treating a partial stream as complete.
-func (s *RPCServer) RangeStream(r *etcdserverpb.RangeRequest, rs etcdserverpb.KV_RangeStreamServer) (err error) {
+func (s *RPCServer) RangeStream(r *etcdserverpb.RangeRequest, rs etcdserverpb.KV_RangeStreamServer) error {
 	ctx := rs.Context()
-	defer func() {
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			err = status.FromContextError(err).Err()
-		}
-	}()
 	startTime := time.Now()
 	klog.V(4).InfoS("RANGE STREAM", "key", r.Key, "rangeEnd", r.RangeEnd, "rev", r.Revision)
 	if err := validateRangeRequest(r); err != nil {

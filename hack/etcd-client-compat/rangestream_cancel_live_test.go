@@ -72,3 +72,37 @@ func TestRangeStreamCancellationMetricsLive(t *testing.T) {
 	require.Equal(t, beforeUnavailable,
 		grpcHandledMetric(t, metricsURL, "etcdserverpb.KV", "RangeStream", "Unavailable"))
 }
+
+func TestRangeStreamImmediateCancellationMetricsLive(t *testing.T) {
+	endpoint := os.Getenv("RANGE_STREAM_ENDPOINT")
+	metricsURL := os.Getenv("RANGE_STREAM_METRICS_URL")
+	if endpoint == "" || metricsURL == "" {
+		t.Skip("set RANGE_STREAM_ENDPOINT and RANGE_STREAM_METRICS_URL")
+	}
+	conn, err := grpc.NewClient(grpcTarget(endpoint), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	require.NoError(t, err)
+	defer conn.Close()
+	client := etcdserverpb.NewKVClient(conn)
+
+	beforeCanceled := grpcHandledMetric(t, metricsURL, "etcdserverpb.KV", "RangeStream", "Canceled")
+	beforeUnknown := grpcHandledMetric(t, metricsURL, "etcdserverpb.KV", "RangeStream", "Unknown")
+	beforeUnavailable := grpcHandledMetric(t, metricsURL, "etcdserverpb.KV", "RangeStream", "Unavailable")
+	for i := 0; i < 200; i++ {
+		ctx, cancel := context.WithCancel(context.Background())
+		stream, streamErr := client.RangeStream(ctx, &etcdserverpb.RangeRequest{
+			Key: []byte("/rangestream-immediate-cancel/"), RangeEnd: []byte("/rangestream-immediate-cancel0"),
+		})
+		require.NoError(t, streamErr)
+		cancel()
+		_, recvErr := stream.Recv()
+		require.Equal(t, codes.Canceled, status.Code(recvErr))
+	}
+
+	require.Eventually(t, func() bool {
+		return grpcHandledMetric(t, metricsURL, "etcdserverpb.KV", "RangeStream", "Canceled") > beforeCanceled
+	}, 5*time.Second, 50*time.Millisecond)
+	require.Equal(t, beforeUnknown,
+		grpcHandledMetric(t, metricsURL, "etcdserverpb.KV", "RangeStream", "Unknown"))
+	require.Equal(t, beforeUnavailable,
+		grpcHandledMetric(t, metricsURL, "etcdserverpb.KV", "RangeStream", "Unavailable"))
+}

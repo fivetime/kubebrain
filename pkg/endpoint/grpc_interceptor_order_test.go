@@ -82,6 +82,10 @@ func (rejectingInterceptorServer) Close() error                                 
 
 func rejectingServerOptions() []grpc.ServerOption {
 	rejected := status.Error(codes.ResourceExhausted, "rejected before handler")
+	return fixedErrorServerOptions(rejected)
+}
+
+func fixedErrorServerOptions(rejected error) []grpc.ServerOption {
 	return []grpc.ServerOption{
 		grpc.ChainUnaryInterceptor(func(
 			context.Context,
@@ -101,6 +105,27 @@ func rejectingServerOptions() []grpc.ServerOption {
 		}),
 	}
 }
+
+type contextErrorInterceptorServer struct {
+	err error
+}
+
+func (s contextErrorInterceptorServer) RegisterClient(server *grpc.Server) {
+	healthpb.RegisterHealthServer(server, health.NewServer())
+}
+func (s contextErrorInterceptorServer) RegisterPeer(server *grpc.Server) {
+	healthpb.RegisterHealthServer(server, health.NewServer())
+}
+func (s contextErrorInterceptorServer) ClientServerOptions() []grpc.ServerOption {
+	return fixedErrorServerOptions(s.err)
+}
+func (s contextErrorInterceptorServer) PeerServerOptions() []grpc.ServerOption {
+	return fixedErrorServerOptions(s.err)
+}
+func (contextErrorInterceptorServer) GetClientHttpHandlers() map[string]http.Handler { return nil }
+func (contextErrorInterceptorServer) GetPeerHttpHandlers() map[string]http.Handler   { return nil }
+func (contextErrorInterceptorServer) GetInfoHttpHandlers() map[string]http.Handler   { return nil }
+func (contextErrorInterceptorServer) Close() error                                   { return nil }
 
 func TestGRPCMetricsObserveCallsRejectedBeforeHandlers(t *testing.T) {
 	for _, test := range []struct {
@@ -151,6 +176,67 @@ func TestGRPCMetricsObserveCallsRejectedBeforeHandlers(t *testing.T) {
 			require.Equal(t, codes.ResourceExhausted, status.Code(err))
 			requireObservedGRPCCode(t, observed.streamCodes, codes.ResourceExhausted)
 		})
+	}
+}
+
+func TestGRPCMetricsObserveNormalizedContextStatus(t *testing.T) {
+	for _, endpointTest := range []struct {
+		name    string
+		options func(*Endpoint) []grpc.ServerOption
+	}{
+		{name: "client", options: (*Endpoint).clientGrpcServerOptions},
+		{name: "peer", options: (*Endpoint).peerGrpcServerOptions},
+	} {
+		for _, statusTest := range []struct {
+			name string
+			err  error
+			code codes.Code
+		}{
+			{name: "canceled", err: context.Canceled, code: codes.Canceled},
+			{name: "deadline", err: context.DeadlineExceeded, code: codes.DeadlineExceeded},
+		} {
+			t.Run(endpointTest.name+"/"+statusTest.name, func(t *testing.T) {
+				observed := &interceptorOrderMetrics{
+					unaryCodes:  make(chan codes.Code, 1),
+					streamCodes: make(chan codes.Code, 1),
+				}
+				endpoint := &Endpoint{
+					metrics:       observed,
+					server:        contextErrorInterceptorServer{err: statusTest.err},
+					config:        &Config{},
+					tlsIdentities: &transportidentity.Registry{},
+				}
+				server := grpc.NewServer(endpointTest.options(endpoint)...)
+				healthpb.RegisterHealthServer(server, health.NewServer())
+				listener := bufconn.Listen(1024 * 1024)
+				go func() { _ = server.Serve(listener) }()
+				t.Cleanup(func() {
+					server.Stop()
+					_ = listener.Close()
+				})
+
+				conn, err := grpc.NewClient(
+					"passthrough:///bufnet",
+					grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+						return listener.Dial()
+					}),
+					grpc.WithTransportCredentials(insecure.NewCredentials()),
+				)
+				require.NoError(t, err)
+				t.Cleanup(func() { _ = conn.Close() })
+				client := healthpb.NewHealthClient(conn)
+
+				_, err = client.Check(t.Context(), &healthpb.HealthCheckRequest{})
+				require.Equal(t, statusTest.code, status.Code(err))
+				requireObservedGRPCCode(t, observed.unaryCodes, statusTest.code)
+
+				watch, err := client.Watch(t.Context(), &healthpb.HealthCheckRequest{})
+				require.NoError(t, err)
+				_, err = watch.Recv()
+				require.Equal(t, statusTest.code, status.Code(err))
+				requireObservedGRPCCode(t, observed.streamCodes, statusTest.code)
+			})
+		}
 	}
 }
 
