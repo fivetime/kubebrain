@@ -105,6 +105,7 @@ spec:
             - --enable-count-index=true
             - --count-index-max-keys=5000000
             - --enable-storage-metrics=true
+            - --quota-backend-bytes=429496729600
             - --max-txn-ops=128
             - --max-request-bytes=1572864
             - --max-concurrent-streams=4294967295

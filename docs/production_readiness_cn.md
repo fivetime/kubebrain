@@ -10,6 +10,25 @@
   平台仍必须注入生产镜像、StorageClass、跨可用区调度、网络策略、证书和监控栈，不能
   不经环境适配直接发布。
 
+## 租户逻辑配额
+
+标准 dedicated 实例必须显式设置 `--quota-backend-bytes`。production 明文和 TLS 基线均
+使用 400 GiB（429496729600 bytes），相对单个 500 GiB TiKV volume 保留容量余量；该值
+统计 tenant 存活 key/value 的逻辑字节，不等于 TiKV 的 MVCC、Raft 副本或 compaction 前
+物理占用。平台按实例规格调整时，必须保持三个 KubeBrain 副本参数完全一致，并同时调整
+容量规划与告警阈值，不能把 `0` 或缺省参数当作有限配额。
+
+从无配额实例启用配额必须分两个发布批次。第一批只升级到支持共享 dirty tracking、sticky
+NOSPACE 和有界流式 usage rebuild 的版本，等待全部 KubeBrain 副本及 PD/TiKV 收敛并完成
+读写验证；第二批才在所有副本 Pod 模板中增加同一个正整数 quota，等待首次 usage rebuild、
+三副本 `quota_backend_bytes`/`quota_logical_usage_bytes`/`quota_nospace` 指标一致，再开放
+控制面操作。若当前 usage 已超过新 quota，NOSPACE 是预期的 fail-closed 状态，必须删除
+数据或提高 quota 后显式 disarm，不能通过临时移除部分副本的 quota 绕过。
+
+回滚同样不能形成混合配置：先停止会扩大数据量的控制面操作，将整个 StatefulSet 一次性
+恢复为上一份 Pod template 并等待滚动收敛。移除 quota 会把 tracking 标为 dirty；后续再次
+启用时必须重新流式统计，发布门禁不得复用旧 usage 指标宣告完成。
+
 ## TiKV/PD 升级完成门槛
 
 TiDB Operator 通过 StatefulSet `rollingUpdate.partition` 逐成员协调 PD、TiKV 升级。

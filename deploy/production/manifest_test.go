@@ -75,6 +75,14 @@ func TestProductionManifestsProvideStableCompleteMembership(t *testing.T) {
 			require.Contains(t, args, "--enable-count-index=true")
 			require.Contains(t, args, "--count-index-max-keys=5000000")
 			require.Contains(t, args, "--enable-storage-metrics=true")
+			quotaArgs := 0
+			for _, arg := range args {
+				if strings.HasPrefix(arg, "--quota-backend-bytes=") {
+					quotaArgs++
+					require.Equal(t, "--quota-backend-bytes=429496729600", arg)
+				}
+			}
+			require.Equal(t, 1, quotaArgs)
 			require.Contains(t, args, "--max-requests-inflight=1024")
 			require.Contains(t, args, "--max-request-rate=2000")
 			require.Contains(t, args, "--request-rate-burst=4000")
