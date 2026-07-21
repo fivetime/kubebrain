@@ -243,13 +243,29 @@ func TestQuotaRPCAlarmActivationPersistsRequestedMember(t *testing.T) {
 	require.Equal(t, second.Alarms, list.Alarms)
 }
 
-func TestQuotaRPCManualActivationRequiresConfiguredQuota(t *testing.T) {
+func TestQuotaRPCManualActivationCapsWritesWithoutConfiguredQuota(t *testing.T) {
 	server := newQuotaRPCServer(t, 0)
-	_, err := server.Alarm(context.Background(), &etcdserverpb.AlarmRequest{
-		Action: etcdserverpb.AlarmRequest_ACTIVATE,
-		Alarm:  etcdserverpb.AlarmType_NOSPACE,
+	ctx := context.Background()
+	const memberID uint64 = 424242
+	activated, err := server.Alarm(ctx, &etcdserverpb.AlarmRequest{
+		Action:   etcdserverpb.AlarmRequest_ACTIVATE,
+		MemberID: memberID,
+		Alarm:    etcdserverpb.AlarmType_NOSPACE,
 	})
-	require.Equal(t, codes.FailedPrecondition, status.Code(err))
+	require.NoError(t, err)
+	require.Equal(t, memberID, activated.Alarms[0].MemberID)
+	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: []byte("blocked"), Value: []byte("value")})
+	require.Equal(t, codes.ResourceExhausted, status.Code(err))
+	_, err = server.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{Key: []byte("blocked")})
+	require.NoError(t, err)
+	_, err = server.Alarm(ctx, &etcdserverpb.AlarmRequest{
+		Action:   etcdserverpb.AlarmRequest_DEACTIVATE,
+		MemberID: memberID,
+		Alarm:    etcdserverpb.AlarmType_NOSPACE,
+	})
+	require.NoError(t, err)
+	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: []byte("restored"), Value: []byte("value")})
+	require.NoError(t, err)
 }
 
 func TestTxnContainsPutAcrossBranchesAndNesting(t *testing.T) {

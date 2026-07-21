@@ -222,7 +222,7 @@ func TestHTTPHealthChecksLeaderAndBackend(t *testing.T) {
 	s.httpHealthHandler(recorder, httptest.NewRequest(http.MethodGet, "/health?serializable=true", nil))
 	require.Equal(t, http.StatusServiceUnavailable, recorder.Code)
 	require.Contains(t, recorder.Body.String(), `"health":"false"`)
-	require.Contains(t, recorder.Body.String(), `"reason":"RANGE ERROR:`)
+	require.Contains(t, recorder.Body.String(), `"reason":"ALARM ERROR:`)
 
 	recorder = httptest.NewRecorder()
 	s.httpPingHandler(recorder, httptest.NewRequest(http.MethodGet, "/ping", nil))

@@ -1002,6 +1002,13 @@ func (s *RPCServer) Put(ctx context.Context, r *etcdserverpb.PutRequest) (*etcds
 	if authErr = s.authorizePut(caller, r); authErr != nil {
 		return nil, authErr
 	}
+	_, _, noSpace, quotaErr := s.backend.QuotaStatus(ctx)
+	if quotaErr != nil {
+		return nil, mapFenceErr(quotaErr)
+	}
+	if noSpace {
+		return nil, rpctypes.ErrGRPCNoSpace
+	}
 	put, err := s.putWithEffectiveOptions(ctx, r)
 	if err != nil {
 		return nil, err
@@ -1816,9 +1823,6 @@ func mapFenceErr(err error) error {
 	}
 	if errors.Is(err, backend.ErrQuotaUninitialized) {
 		return status.Error(codes.Unavailable, "quota usage is not initialized")
-	}
-	if errors.Is(err, backend.ErrQuotaDisabled) {
-		return status.Error(codes.FailedPrecondition, backend.ErrQuotaDisabled.Error())
 	}
 	if errors.Is(err, backend.ErrLeadershipFenced) {
 		return status.Errorf(codes.Unavailable, "write rejected: leadership changed during commit, retry on current leader")
