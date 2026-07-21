@@ -36,7 +36,9 @@ func TestPostRestoreAuditFailsClosed(t *testing.T) {
 		name, drift, want string
 	}{
 		{"cutover receipt mismatch", "receipt-drift", "cutover receipt does not match"},
+		{"source receipt mismatch", "source-receipt-drift", "cutover receipt does not match"},
 		{"cutover state tampered", "state-drift", "cutover receipt does not match"},
+		{"equal restore prefixes", "prefix-state-invalid", "cutover state does not match"},
 		{"service UID drift", "service-drift", "Service UID or target selector changed"},
 		{"pod replacement", "pod-drift", "target Pod UID/readiness/restart fence failed"},
 		{"foreign endpoint", "endpoint-drift", "EndpointSlice target Pod UID set changed"},
@@ -77,7 +79,7 @@ func newAuditFixture(t *testing.T) *auditFixture {
 	require.NoError(t, os.WriteFile(cutoverReceipt, []byte(fmt.Sprintf(`{
 	  "format":"kubebrain.restore-cutover.receipt.v1","operation_id":"cutover-1",
 	  "instance":"instance-a","service_namespace":"ns-a","service_name":"kubebrain",
-	  "service_uid":"uid-service","target_instance":"target","artifact_sha256":"abc123",
+	  "service_uid":"uid-service","source_instance":"source","target_instance":"target","artifact_sha256":"abc123",
 	  "cutover_state_sha256":"%x",
 	  "snapshot_revision":42,"pod_uids_unchanged":true,"endpoint_uids_matched":true,
 	  "public_data_verified":true,"completed_at_unix":100
@@ -135,11 +137,27 @@ func (f *auditFixture) run(t *testing.T, ok bool, extra string, outputs ...strin
 			[]byte(strings.Replace(string(data), `"service_uid":"uid-service"`, `"service_uid":"uid-new"`, 1)),
 			0o600))
 	}
+	if _, err := os.Stat(filepath.Join(f.dir, "source-receipt-drift")); err == nil {
+		path := filepath.Join(f.dir, "cutover.json")
+		data, readErr := os.ReadFile(path)
+		require.NoError(t, readErr)
+		require.NoError(t, os.WriteFile(path,
+			[]byte(strings.Replace(string(data), `"source_instance":"source"`, `"source_instance":"foreign"`, 1)),
+			0o600))
+	}
 	if _, err := os.Stat(filepath.Join(f.dir, "state-drift")); err == nil {
 		path := filepath.Join(f.dir, "cutover.state")
 		data, readErr := os.ReadFile(path)
 		require.NoError(t, readErr)
 		require.NoError(t, os.WriteFile(path, append(data, '\n'), 0o600))
+	}
+	if _, err := os.Stat(filepath.Join(f.dir, "prefix-state-invalid")); err == nil {
+		path := filepath.Join(f.dir, "cutover.state")
+		data, readErr := os.ReadFile(path)
+		require.NoError(t, readErr)
+		require.NoError(t, os.WriteFile(path,
+			[]byte(strings.Replace(string(data), "/registry\t/restored", "/same\t/same", 1)),
+			0o600))
 	}
 	cmd := exec.Command("bash", "audit-restored-instance.sh")
 	cmd.Env = append(os.Environ(), append(f.env, extra)...)

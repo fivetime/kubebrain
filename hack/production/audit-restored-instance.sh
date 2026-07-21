@@ -84,19 +84,22 @@ IFS=$'\t' read -r state_kind state_format state_instance cutover_operation state
 [[ "$state_kind" == "HEADER" && "$state_format" == "kubebrain.restore-cutover.state.v1" &&
   "$state_instance" == "$INSTANCE" && "$state_namespace" == "$SERVICE_NAMESPACE" &&
   "$state_service" == "$SERVICE_NAME" && "$state_target" == "$TARGET_INSTANCE" &&
+  -n "$source_instance" && "$source_instance" != "$state_target" &&
+  -n "$source_prefix" && -n "$target_prefix" && "$source_prefix" != "$target_prefix" &&
   -n "$state_service_uid" && -n "$artifact_sha" && "$snapshot_revision" =~ ^[1-9][0-9]*$ ]] ||
   { echo "cutover state does not match the audit operation" >&2; exit 1; }
 cutover_state_sha="$(sha256sum "$CUTOVER_STATE_INPUT" | cut -d " " -f1)"
 
 "$JQ" -e --arg operation "$cutover_operation" --arg instance "$INSTANCE" \
   --arg namespace "$SERVICE_NAMESPACE" --arg service "$SERVICE_NAME" \
-  --arg uid "$state_service_uid" --arg target "$TARGET_INSTANCE" --arg sha "$artifact_sha" \
+  --arg uid "$state_service_uid" --arg source "$source_instance" \
+  --arg target "$TARGET_INSTANCE" --arg sha "$artifact_sha" \
   --arg state_sha "$cutover_state_sha" \
   --argjson revision "$snapshot_revision" '
     .format == "kubebrain.restore-cutover.receipt.v1" and
     .operation_id == $operation and .instance == $instance and
     .service_namespace == $namespace and .service_name == $service and
-    .service_uid == $uid and .target_instance == $target and
+    .service_uid == $uid and .source_instance == $source and .target_instance == $target and
     .artifact_sha256 == $sha and .snapshot_revision == $revision and
     .cutover_state_sha256 == $state_sha and
     .pod_uids_unchanged == true and .endpoint_uids_matched == true and
