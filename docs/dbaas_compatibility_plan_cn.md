@@ -8225,6 +8225,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   固定测试编排约束：比较 revision 的差分不得承受不对称写负载。未发现服务端差异，不重建镜像；
   最终 lease list 与 alarm 均为空，endpoint health 正常。
 
+- **Maintenance A410 direct-replica lease-list authority gate（2026-07-21）**：
+  对照 `/root/etcd/server/etcdserver/v3_server.go:LeaseLeases` 和 lessor 的 leader 权威状态，扩展
+  三副本直连门禁。通过三个独立 Pod endpoint 逐一验证：Grant 并绑定 key 后，Range、带 keys 的
+  TimeToLive 和 LeaseLeases 都能观察同一 live lease；Service endpoint Revoke 返回后，先以每个
+  endpoint 的线性 Range 建立观察屏障，再要求 TimeToLive=-1、keys 为空且 LeaseLeases 不含该 ID。
+  这防止 follower 将本地启动快照用于列表响应，而绕过现有 TTL 转发测试。
+
+  真实 3 KubeBrain、3 PD、3 TiKV 上聚焦连续 10 轮 2.298 秒、race 3 轮 1.983 秒通过；设置全部
+  三个直连 endpoint 后完整 compat 102.029 秒通过。根模块完整测试、root/compat vet 与固定版
+  staticcheck 全绿。未发现服务端差异，不重建镜像。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
