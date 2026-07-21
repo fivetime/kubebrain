@@ -7776,6 +7776,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   一次性 reference etcd、端口转发、监听端口和 data-dir 均已清理。本轮未修改运行时代码
   或构建数据面镜像。
 
+- **Compatibility A386 clientv3 lock ordering recipes（2026-07-21）**：
+  对照 `/root/etcd/tests/integration/clientv3/experimental/recipes/v3_lock_test.go` 的
+  `TestRWMutex*` 与 `TestMutexWaitsOnCurrentHolder`，提交 `fe1b962` 增加此前基础 Mutex
+  handoff 未覆盖的确定性顺序差分。两个先到 reader 必须并发持有 experimental RWMutex；
+  writer 创建 waiter 后必须等待全部既有 reader，writer 后到的第三个 reader 又必须等待
+  writer，释放顺序固定为 reader→writer→late reader，最终所有 ephemeral key 清空。
+
+  独立 Mutex 场景按 create revision 建立 owner、victim、successor；victim session lease
+  撤销并删除中间 waiter 后，successor 仍不得越过当前 owner，只有 owner Unlock 后才能获取
+  并清理锁键。测试同时固定明确期望和双端结果，避免随机读写比例掩盖 writer fairness 或
+  waiter 越权。真实独立 3 PD/3 TiKV、A379 KubeBrain 三副本环境普通 5 轮与 race 5 轮
+  全部通过，每轮约 2.0-2.2 秒；嵌套兼容模块和根模块 `go vet ./...`、根模块完整
+  `go test ./...` 通过。一次性 reference etcd、端口转发、监听端口和 data-dir 均已清理；
+  本轮未修改运行时代码或构建数据面镜像。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
