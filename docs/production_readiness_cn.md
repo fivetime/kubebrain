@@ -10,6 +10,18 @@
   平台仍必须注入生产镜像、StorageClass、跨可用区调度、网络策略、证书和监控栈，不能
   不经环境适配直接发布。
 
+生产平台在创建 TiDBCluster 或 KubeBrain StatefulSet 前，必须先安装共享的非抢占优先级：
+
+```shell
+kubectl apply -f deploy/production/dbaas-priority-class.yaml
+```
+
+`kubebrain-dbaas-critical` 的值为 1000000，低于 Kubernetes 保留的 system-critical classes，
+`globalDefault=false` 且 `preemptionPolicy=Never`。KubeBrain、PD、TiKV 都显式引用它，以改善
+节点压力下的保留顺序和待调度排序，但不会抢占其他租户 Pod。删除或改名该 PriorityClass 前
+必须先迁移所有引用；缺失时新 Pod 会保持 Pending。优先级不能替代足够的节点容量、资源
+requests/limits、跨区放置、PDB 和故障演练。
+
 `--advertise-host` 是副本间选主/转发身份，不能同时充当 clientv3 Sync/AutoSync 的公开
 地址。生产必须单独设置 `--advertise-client-urls`：仓库基线使用集群内 client Service；
 向集群外提供 DBaaS endpoint 时，平台必须替换为所有目标客户端可解析、可路由的公共

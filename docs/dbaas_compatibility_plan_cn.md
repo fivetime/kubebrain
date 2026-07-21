@@ -8537,6 +8537,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   预生产仍须验证异常 Pod 节点 drain 后的重建、PD/TiKV leader/region 恢复和持续读写；本轮
   只更新生产部署 artifact，不改变 A422 服务端镜像。
 
+#### A428 核心数据面非抢占调度优先级
+
+- 生产 KubeBrain、PD、TiKV 此前未声明 PriorityClass，节点资源压力下会与普通工作负载使用
+  默认优先级竞争，PDB 又无法约束 kubelet 的资源压力驱逐。新增平台级共享
+  `kubebrain-dbaas-critical` PriorityClass（value=1000000、non-global、
+  `preemptionPolicy=Never`），三类核心 Pod 均显式引用；它提高保留和调度排序，但不会通过
+  抢占把其他租户工作负载驱逐。
+- manifest 门禁固定 class 名称、值、globalDefault、preemptionPolicy、description，以及
+  KubeBrain TLS/非 TLS StatefulSet 和 PD/TiKV CR 字段引用。聚焦普通 100 轮、race 20 轮
+  通过；临时实际安装 PriorityClass 后，三套完整生产清单均通过 Kubernetes API server
+  dry-run，随后 cluster-scoped class 与临时 namespace 均删除且确认无残留；production 包、
+  root 全量测试、vet、staticcheck v0.7.0 均通过。
+- 生产操作文档要求 class 先于实例资源安装。PriorityClass 不能阻止节点宕机，不能创造容量，
+  也不替代 requests/limits、跨 zone 调度、PDB 与 quorum 故障恢复；本轮只更新生产部署
+  artifact，不改变 A422 服务端镜像。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
