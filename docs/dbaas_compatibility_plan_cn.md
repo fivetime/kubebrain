@@ -8321,6 +8321,30 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `kube-brain version` 均为 `2af56ef869511cde6f1809add804479340f8b80f`，运行用户为
   `65532:65532`；三副本已滚动收敛。
 
+- **Maintenance A416 follower-local watch quota admission（2026-07-21）**：
+  延续 A413-A415 的 follower-local control response 审计，修复 logical Watch 配额已满时仍先执行
+  leader `SyncReadRevision` 的故障耦合。`--max-watches` 是当前 KubeBrain 进程的资源保护；当本地
+  active counter 已达上限，结果完全由本地状态决定，不应因 leader barrier 故障变成 stream 级
+  `Unavailable`。现于 barrier 前原子 acquire 槽位：配额已满直接返回 `WatchId=-1`、
+  `etcdserver: too many requests` 的 canceled-create；成功预留后才进入 revision fence，并在 barrier
+  失败、forward auth 失败或 proxy 禁用等所有注册前出口释放槽位，成功注册后则把所有权移交给
+  logical watch，由 cancel、backend close 或 stream close 释放。未启用配额时不增加计数。
+
+  修复前故障注入稳定返回 `Unavailable` 且调用一次 barrier；修复后 quota-full 不调用 barrier，
+  multiplex stream 保持协议级可用。额外用例证明 barrier 失败和 barrier 成功但 proxy 禁用均不会
+  泄漏预留；配额、并发原子上限、cancel/disconnect 相关测试普通 20 轮与 race 5 轮通过。真实集群
+  临时设置 `--max-watches=1`，固定当前 leader 的 raw gRPC 占满/拒绝/cancel/复用状态机连续 20 轮
+  通过，随后恢复生产值 10000。固定 follower 连续测试同时确认该限制仍是 per-process：proxy watch
+  会分别占用 ingress 与 leader 的资源槽位，leader 侧异步关闭窗口可独立返回 quota rejection；本轮
+  不把它误述为跨副本的分布式租户总量配额。
+
+  三 Pod 常规直连门禁普通 10 轮、race 5 轮通过；启用直连门禁的完整 compat 88.063 秒，根模块
+  完整测试、root/compat vet 与固定版 staticcheck v0.7.0 全绿。镜像
+  `kubebrain:a416-watch-quota-local` 的本地 digest 为
+  `sha256:6761159336232b7eb1499aacab2c499587b9b256e7b261c6115993dbe1a4bd5d`，OCI revision 与容器内
+  `kube-brain version` 均为 `f2212990b5521a94d51e0246fe9222b3ff71abb8`，运行用户为
+  `65532:65532`；三副本已恢复 `--max-watches=10000` 并滚动收敛。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
