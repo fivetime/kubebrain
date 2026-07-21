@@ -11,6 +11,7 @@ RUN_TIKV_PERSISTENCE_SMOKE="${RUN_TIKV_PERSISTENCE_SMOKE:-false}"
 RUN_RESTART_PERSISTENCE_SMOKE="${RUN_RESTART_PERSISTENCE_SMOKE:-false}"
 RUN_K3S_DATASTORE_SMOKE="${RUN_K3S_DATASTORE_SMOKE:-false}"
 RUN_HA_SMOKE="${RUN_HA_SMOKE:-true}"
+RUN_INCLUSTER_BALANCER_SMOKE="${RUN_INCLUSTER_BALANCER_SMOKE:-false}"
 RUN_APISERVER_SMOKE="${RUN_APISERVER_SMOKE:-true}"
 RUN_INCLUSTER_APISERVER_SMOKE="${RUN_INCLUSTER_APISERVER_SMOKE:-false}"
 RUN_TLS_SMOKE="${RUN_TLS_SMOKE:-true}"
@@ -83,6 +84,10 @@ fi
 
 if [ "$RUN_HA_SMOKE" = "true" ]; then
   run_step "plain HA smoke" env ENDPOINT="$ENDPOINT" hack/dev/ha-smoke.sh
+fi
+
+if [ "$RUN_INCLUSTER_BALANCER_SMOKE" = "true" ]; then
+  run_step "in-cluster client balancer smoke" hack/dev/incluster-balancer-smoke.sh
 fi
 
 if [ "$RUN_APISERVER_SMOKE" = "true" ]; then
