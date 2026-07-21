@@ -476,6 +476,32 @@ StatefulSet/PVC 名不能改；目标必须是与源数据面网络隔离、但�
 集群。renderer 不访问目标集群，也不验证 snapshot handle 可导入、PVC 已 Bound、恢复后的
 TiKV cluster ID 或 KubeBrain 数据语义；这些仍须由后续 restore executor 和真实 CSI 演练门禁。
 
+隔离目标的候选恢复 executor 必须显式绑定两个 Kubernetes UID，不能隐式使用当前 context：
+
+```shell
+KUBE_CONTEXT=isolated-restore \
+EXPECTED_TARGET_KUBE_SYSTEM_UID=<target-kube-system-namespace-uid> \
+EXPECTED_TARGET_NAMESPACE_UID=<target-tidb-namespace-uid> \
+RECEIPT_FILE=cold-snapshot-receipt.json \
+RESTORE_MANIFEST=cold-restore-manifest.json \
+RESTORE_RECEIPT_FILE=cold-restore-receipt.json \
+ALLOW_COLD_PHYSICAL_RESTORE=true \
+  hack/backup/cold-restore-execute.sh
+```
+
+执行器先用同一 renderer 重新生成并规范化比对 manifest，验证 kube-system/目标 namespace UID、
+VolumeSnapshot/TidbCluster API、snapshot class 的 driver+Retain policy、storage class provisioner，
+并要求目标 TidbCluster、PD/TiKV StatefulSet、全部 VSC/VS/PVC 名均不存在。任何门禁失败发生在
+`kubectl create` 前。创建后依次等待全部 VolumeSnapshot ready、PVC Bound，确认新 TidbCluster
+仍为 `paused=true` 后用 UID/resourceVersion Patch 解除 pause，再等待 Ready condition 和 PD/TiKV
+rollout。恢复后的 cluster ID 必须精确等于源 receipt；否则 executor 重新 UID-fenced pause，并按
+TiKV、PD 顺序用 StatefulSet UID/resourceVersion 条件 Patch 缩至零，保留 retained 资源审计。
+
+成功时原子发布 `kubebrain.cold-physical-restore.v1`，绑定源 receipt SHA-256、目标 cluster/
+namespace UID、新 TidbCluster UID/cluster ID、VSC UID/driver/handle 和 PVC UID/PV。该 receipt 只
+证明存储层恢复与身份一致；必须继续在隔离目标部署受审 KubeBrain release，并执行固定 revision、
+key/value、lease TTL/attachment、watch continuity 和写后读验证，才能将这次恢复记为可用演练。
+
 生产备份 Job 必须设置 `METRICS_OUTPUT`，将成功结果写入 node-exporter 或等价
 Prometheus textfile collector 的共享目录；`BACKUP_INSTANCE` 必须与实例名一致，
 生产清单默认使用 `kubebrain`。指标文件仅在 artifact 已原子提交且可 `stat` 后原子

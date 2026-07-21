@@ -7951,6 +7951,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   apply/wait/unpause 状态机，以及真实 CSI 恢复后 cluster ID 和 KubeBrain key/lease/watch 校验，
   所以物理恢复和 PITR 状态保持未完成。
 
+- **DBaaS A395 isolated cold restore target executor（2026-07-21）**：
+  新增 `hack/backup/cold-restore-execute.sh`，把 A394 离线 List 推进为 fail-closed 的目标集群状态机。
+  调用方必须显式批准 cold restore、指定非空 context，并提供预先核验的 kube-system namespace UID
+  与目标 namespace UID。执行器重新运行 renderer 并对 canonical JSON 全量比对，验证目标
+  VolumeSnapshot/TidbCluster API、VolumeSnapshotClass driver+Retain、StorageClass provisioner，
+  以及 TidbCluster、PD/TiKV StatefulSet、所有 VSC/VS/PVC 名均不存在；因此 manifest 篡改、
+  context/namespace 漂移、driver 错配和重复恢复都在 create 前关闭。
+
+  创建预绑定 snapshot 与 PVC 后，状态机等待全部 snapshot ready 和 PVC Bound，核验 TidbCluster
+  新 UID 且仍 paused，再以 UID/resourceVersion Patch unpause，等待 Ready 和两个 StatefulSet
+  rollout。最终 status.clusterID 必须等于源物理集群 ID。任何 unpause 后的失败都会重新条件 pause，
+  并按 TiKV→PD 使用各 StatefulSet UID/resourceVersion/replica test Patch 缩至零；retained VSC、
+  VS 和 PVC 不自动删除。成功 receipt 为 `kubebrain.cold-physical-restore.v1`，绑定源 receipt
+  SHA-256、目标 Kubernetes/namespace UID、新 TidbCluster UID/cluster ID、全部 VSC handle/UID
+  及 PVC/PV inventory。
+
+  fake-kubectl 测试覆盖完整成功、篡改 manifest、目标 TidbCluster 已存在时 create 前失败，以及
+  恢复后 cluster ID 错误时的 pause/TiKV/PD 紧急栅栏和无 receipt；Bash、固定 ShellCheck、Go
+  测试均通过。当前 kind
+  仍无 CSI snapshot API，无法提供真实 handle import/PVC provisioning 证据；executor 也尚未部署
+  KubeBrain 验证 revision、key、lease、watch 和写后读，因此本轮不关闭物理恢复或 PITR 缺口。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
