@@ -101,3 +101,88 @@ func TestCoreRequestProtoFieldCoverage(t *testing.T) {
 		})
 	}
 }
+
+func TestCoreResponseProtoFieldCoverage(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		msg    proto.Message
+		fields map[string]protoreflect.FieldNumber
+	}{
+		{
+			name: "ResponseHeader", msg: &etcdserverpb.ResponseHeader{},
+			fields: map[string]protoreflect.FieldNumber{
+				"cluster_id": 1, "member_id": 2, "revision": 3, "raft_term": 4,
+			},
+		},
+		{
+			name: "RangeResponse", msg: &etcdserverpb.RangeResponse{},
+			fields: map[string]protoreflect.FieldNumber{"header": 1, "kvs": 2, "more": 3, "count": 4},
+		},
+		{
+			name: "PutResponse", msg: &etcdserverpb.PutResponse{},
+			fields: map[string]protoreflect.FieldNumber{"header": 1, "prev_kv": 2},
+		},
+		{
+			name: "DeleteRangeResponse", msg: &etcdserverpb.DeleteRangeResponse{},
+			fields: map[string]protoreflect.FieldNumber{"header": 1, "deleted": 2, "prev_kvs": 3},
+		},
+		{
+			name: "ResponseOp", msg: &etcdserverpb.ResponseOp{},
+			fields: map[string]protoreflect.FieldNumber{
+				"response_range": 1, "response_put": 2, "response_delete_range": 3, "response_txn": 4,
+			},
+		},
+		{
+			name: "TxnResponse", msg: &etcdserverpb.TxnResponse{},
+			fields: map[string]protoreflect.FieldNumber{"header": 1, "succeeded": 2, "responses": 3},
+		},
+		{
+			name: "CompactionResponse", msg: &etcdserverpb.CompactionResponse{},
+			fields: map[string]protoreflect.FieldNumber{"header": 1},
+		},
+		{
+			name: "WatchResponse", msg: &etcdserverpb.WatchResponse{},
+			fields: map[string]protoreflect.FieldNumber{
+				"header": 1, "watch_id": 2, "created": 3, "canceled": 4,
+				"compact_revision": 5, "cancel_reason": 6, "fragment": 7, "events": 11,
+			},
+		},
+		{
+			name: "LeaseGrantResponse", msg: &etcdserverpb.LeaseGrantResponse{},
+			fields: map[string]protoreflect.FieldNumber{"header": 1, "ID": 2, "TTL": 3, "error": 4},
+		},
+		{
+			name: "LeaseRevokeResponse", msg: &etcdserverpb.LeaseRevokeResponse{},
+			fields: map[string]protoreflect.FieldNumber{"header": 1},
+		},
+		{
+			name: "LeaseKeepAliveResponse", msg: &etcdserverpb.LeaseKeepAliveResponse{},
+			fields: map[string]protoreflect.FieldNumber{"header": 1, "ID": 2, "TTL": 3},
+		},
+		{
+			name: "LeaseTimeToLiveResponse", msg: &etcdserverpb.LeaseTimeToLiveResponse{},
+			fields: map[string]protoreflect.FieldNumber{
+				"header": 1, "ID": 2, "TTL": 3, "grantedTTL": 4, "keys": 5,
+			},
+		},
+		{
+			name: "LeaseStatus", msg: &etcdserverpb.LeaseStatus{},
+			fields: map[string]protoreflect.FieldNumber{"ID": 1},
+		},
+		{
+			name: "LeaseLeasesResponse", msg: &etcdserverpb.LeaseLeasesResponse{},
+			fields: map[string]protoreflect.FieldNumber{"header": 1, "leases": 2},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			descriptor := tc.msg.ProtoReflect().Descriptor()
+			actual := make(map[string]protoreflect.FieldNumber, descriptor.Fields().Len())
+			for i := 0; i < descriptor.Fields().Len(); i++ {
+				field := descriptor.Fields().Get(i)
+				actual[string(field.Name())] = field.Number()
+			}
+			require.Equal(t, tc.fields, actual,
+				"etcd API response fields changed; audit every constructor, merge, fragmentation, Txn nesting, and forwarding path before updating this guard")
+		})
+	}
+}
