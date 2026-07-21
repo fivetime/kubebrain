@@ -8440,6 +8440,29 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `65532:65532`。三 KubeBrain 副本 Ready、零重启，主 PD/TiKV 3+3 Ready，health/readyz
   正常且无 alarm。真实门禁的时序强化另以测试提交记录，不改变该生产二进制。
 
+#### A422 gRPC 全局 context 状态归一化
+
+- A421 的 handler 内归一化仍无法覆盖 generated gRPC handler 在读取首条请求前发生的取消：
+  该路径不会进入 `RPCServer.RangeStream`，最外层 Prometheus interceptor 仍可能先看到 raw
+  `context.Canceled` 并记为 Unknown。现于 endpoint 的 client 与 peer server option 链中，
+  在最外层 metrics interceptor 和内层 admission/stamping/generated handler 之间统一插入
+  unary/stream context status normalizer；所有下游 `context.Canceled` 和
+  `DeadlineExceeded` 经 `status.FromContextError` 转成标准 gRPC status，其他错误原样保留。
+  A421 的 RangeStream 局部 defer 及其直调测试已删除，状态归一化职责收敛到唯一边界。
+- 新增 interceptor 顺序集成测试，覆盖 client/peer × unary/stream × canceled/deadline，并继续
+  约束 metrics 必须观察 handler 前 ResourceExhausted，证明新层没有改变 admission 错误码或
+  把 metrics 移到内层；聚焦普通 50 轮、race 20 轮及 endpoint/server 包通过。真实同 Pod
+  双端口门禁连续 5 轮：收到首 RangeStream chunk 后取消共 500 次，请求创建后立即取消共
+  1000 次；每轮 Canceled 增长，Unknown/Unavailable 均不增长。真实 NodePort 的独立 compat
+  module uncached 全量 102.094 秒通过；root 全量测试、vet、staticcheck v0.7.0 均通过。
+- 镜像 `kubebrain:a422-grpc-context-status-local` 从 `git archive` 提交树构建，本地 image ID
+  为 `sha256:86da7520c4ebee1e612ada0156088ec96ae42d38b2de3bcf89c4256b632a3ad4`，
+  kind/containerd 运行 digest 为
+  `sha256:294b0941df69041ac93c8957c07dbcad4bf024423947d4dfe2daff68b44dd79f`；
+  OCI revision 与运行版本均为 `8544e95880f4759c10e273a8b3e781633f14fda6`，Go 1.26.5、
+  TiKV backend、用户 `65532:65532`。三 KubeBrain 副本 Ready、零重启，主 PD/TiKV 3+3
+  Ready，health/readyz 正常且无 alarm。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
