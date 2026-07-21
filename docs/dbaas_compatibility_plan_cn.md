@@ -43,7 +43,7 @@ Raft、bbolt 和成员管理内部实现，而是对通用 etcd v3 客户端提�
 | Maintenance | Status | 兼容核心语义 | 返回真实服务身份、版本、leader/revision/共享选主 term；配置 quota 时报告租户最新逻辑 key+value 字节，未配置时使用兼容 sentinel；TiKV 物理容量转到实例指标 |
 | Maintenance | Snapshot | 平台替代 | 使用 TiKV BR/PITR；控制面提供备份、恢复和导出任务，不伪造 etcd snapshot |
 | Maintenance | Defragment | 平台替代 | TiKV GC/compaction 管理，不执行 bbolt 碎片整理 |
-| Maintenance | Alarm/DbSize | 兼容 NOSPACE/CORRUPT 核心语义 | keyspace 级逻辑容量原子计量、sticky NOSPACE、持久 member 集合及跨 endpoint mutation 已支持；CORRUPT 使用 TiKV 内部元数据持久 member 集合，允许 Range 及空/线性/串行只读 Txn 诊断，阻断 Put/Delete/任一分支含写的 Txn/Compact/LeaseGrant/Revoke，并推迟自然租约过期直至 disarm；双告警并存时 CORRUPT 优先，逐项解除后 NOSPACE 独立延续；3 KubeBrain、3 PD、3 TiKV 全成员顺序重启后告警、写门禁和 health/readyz 状态仍持续；bbolt fragmentation 仍为平台边界 |
+| Maintenance | Alarm/DbSize | 兼容 NOSPACE/CORRUPT 核心语义 | keyspace 级逻辑容量原子计量、sticky NOSPACE、持久 member 集合及跨 endpoint mutation 已支持；CORRUPT 使用 TiKV 内部元数据持久 member 集合，允许 Range 及空/线性/串行只读 Txn 诊断，阻断 Put/Delete/任一分支含写的 Txn/Compact/LeaseGrant/Revoke，并推迟自然租约过期直至 disarm；未过期 lease 仍可 KeepAlive，已过期 KeepAlive 等待 revoke 并在 disarm 后返回 TTL=0；双告警并存时 CORRUPT 优先，逐项解除后 NOSPACE 独立延续；3 KubeBrain、3 PD、3 TiKV 全成员顺序重启后告警、写门禁和 health/readyz 状态仍持续；bbolt fragmentation 仍为平台边界 |
 | Maintenance | Hash/HashKV | 兼容核心语义 | 对指定 revision 的租户 MVCC 实际内容做稳定摘要；成员本地诊断不依赖 KubeBrain leader，数值不与 bbolt 内部编码比较 |
 | Maintenance | MoveLeader/Downgrade | 平台替代 | 分别由服务选主和 DBaaS 升级编排处理 |
 | Endpoint | health/livez/readyz | 兼容核心语义 | `/health`、`/livez`、`/readyz` 及分项检查已对齐；`data_corruption`/`non_learner` 使用 TiKV 架构等价语义，`/ready` 与 `/ping` 为平台探针 |
@@ -8152,6 +8152,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   本地镜像 SHA256 `a48facf45a3ac57dbe5a0cf4a4df9875ea34785ac030978f83c83372e607f245`）。
   三个 KubeBrain Pod 已滚动至该镜像且 Ready、restartCount=0，3 PD、3 TiKV 同为 Ready；最终
   alarm 为空，`/health` 和详细 `/readyz` 全绿，临时参考 etcd 与构建 worktree 均已清理。
+
+- **Maintenance A405 CORRUPT lease keepalive transition gate（2026-07-21）**：
+  对照 `/root/etcd/server/lease/lessor.go:Renew`、
+  `/root/etcd/server/etcdserver/api/v3rpc/lease.go:leaseKeepAlive` 及
+  `/root/etcd/server/etcdserver/server.go:revokeExpiredLeases`，新增双 lease 公开差分状态机。
+  第一条 TTL=3 lease 在 CORRUPT 激活 2 秒后 KeepAlive，必须返回完整 granted TTL=3，并在旧
+  deadline 之后仍保留 attached key，证明 renewal 不经过 CORRUPT mutation applier。第二条
+  TTL=2 lease 先自然到期：key 因 revoke 被 CORRUPT 阻断而保留，KeepAlive 至少 500ms 不得返回
+  或复活 lease；disarm 使 revoke 完成后，同一 stream 必须收到 TTL=0。
+
+  真实上游 etcd 与 A404 KubeBrain 首轮完全一致，串行重复 3 轮 44.636 秒、race 15.684 秒通过；
+  完整 compat 94.624 秒、compat vet 与固定版 staticcheck 全部通过。一次将 repeat 与 race 同时
+  指向同一对破坏性端点的验证产生交叉 alarm，LeaseGrant 正确返回 DataLoss；改为串行编排后稳定
+  通过，因此此类状态机不得并行共享实例。门禁提交
+  `ef3f4bb97a8154464f95e354b173f751f4533962`。本轮未发现服务端差异，不重新构建镜像；运行态继续
+  使用 `kubebrain:a404-corrupt-expired-ttl`，最终 alarm 为空，health/readyz 全绿，3 KubeBrain、
+  3 PD、3 TiKV 均 Ready，临时参考 etcd 已停止。
 
 ### P1：通用服务能力
 
