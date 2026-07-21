@@ -306,6 +306,14 @@ func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) error {
 				}
 				continue
 			}
+			if r.WatchId != 0 && w.hasWatchID(r.WatchId) {
+				if err := w.SendControlAndWait(canceledWatchCreateResponse(
+					w.responseRevision(), "mvcc: duplicate watch ID provided on the WatchStream",
+				)); err != nil {
+					return err
+				}
+				continue
+			}
 			if err := w.syncControlRevision(ws.Context()); err != nil {
 				return err
 			}
@@ -410,6 +418,13 @@ func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) error {
 			klog.Info("watch receive message unsupported type")
 		}
 	}
+}
+
+func (w *watcher) hasWatchID(id int64) bool {
+	w.Lock()
+	defer w.Unlock()
+	_, exists := w.watches[id]
+	return exists
 }
 
 func watchAuthCancelReason(err error) string {

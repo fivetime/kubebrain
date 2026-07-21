@@ -805,6 +805,58 @@ func TestFollowerWatchLocalRejectionsPrecedeReadBarrier(t *testing.T) {
 	require.Equal(t, "mvcc: watcher range is empty", stream.sent[1].CancelReason)
 }
 
+func TestFollowerWatchDuplicateIDPrecedesReadBarrier(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	barrierErr := errors.New("leader revision transport failed")
+	var barrierCalls atomic.Int64
+	proxyResults := make(chan etcdproxy.WatchResult)
+	server.peers = testPeerService{
+		isLeader:     false,
+		proxyEnabled: true,
+		syncReadFn: func(context.Context) error {
+			if barrierCalls.Add(1) == 1 {
+				server.backend.SetCurrentRevision(50)
+				return nil
+			}
+			return barrierErr
+		},
+		watchFn: func(ctx context.Context, _ []byte, _ []byte, _ uint64) (<-chan etcdproxy.WatchResult, error) {
+			go func() {
+				<-ctx.Done()
+				close(proxyResults)
+			}()
+			return proxyResults, nil
+		},
+	}
+	stream := &scriptedWatchServer{
+		fakeWatchServer: &fakeWatchServer{ctx: context.Background()},
+		reqs: []*etcdserverpb.WatchRequest{
+			{RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{CreateRequest: &etcdserverpb.WatchCreateRequest{
+				Key: []byte("/watch/existing"), WatchId: 414,
+			}}},
+			{RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{CreateRequest: &etcdserverpb.WatchCreateRequest{
+				Key: []byte("/watch/duplicate"), WatchId: 414,
+			}}},
+			{RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{CreateRequest: &etcdserverpb.WatchCreateRequest{
+				Key: []byte("/watch/requires-fence"), WatchId: 415,
+			}}},
+		},
+	}
+	err := server.Watch(stream)
+	require.Equal(t, codes.Unavailable, status.Code(err))
+	require.Equal(t, int64(2), barrierCalls.Load(), "duplicate ID must not enter the read barrier")
+	require.GreaterOrEqual(t, len(stream.sent), 2)
+	require.True(t, stream.sent[0].Created)
+	require.False(t, stream.sent[0].Canceled)
+	require.Equal(t, int64(414), stream.sent[0].WatchId)
+	require.True(t, stream.sent[1].Created)
+	require.True(t, stream.sent[1].Canceled)
+	require.Equal(t, int64(-1), stream.sent[1].WatchId)
+	require.Equal(t, "mvcc: duplicate watch ID provided on the WatchStream", stream.sent[1].CancelReason)
+}
+
 func TestLeaderFromNowWatchReplaysWriteDuringCreatedResponse(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
