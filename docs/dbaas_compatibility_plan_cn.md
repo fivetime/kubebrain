@@ -7973,6 +7973,32 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   仍无 CSI snapshot API，无法提供真实 handle import/PVC provisioning 证据；executor 也尚未部署
   KubeBrain 验证 revision、key、lease、watch 和写后读，因此本轮不关闭物理恢复或 PITR 缺口。
 
+- **DBaaS A396 cold restore semantic witness chain（2026-07-21）**：
+  对照 `/root/etcd/server/lease/lessor.go` 的 lease checkpoint/recover 语义、
+  `/root/etcd/server/storage/mvcc/kvstore.go` 的 MVCC restore，以及 clientv3 watch CreatedNotify 行为，
+  确认 KubeBrain `pkg/server/etcd/lease.go` 同样持久化 remaining-TTL checkpoint，并在恢复时以
+  `now + checkpoint` 重建 deadline；冷停机本身不要求沿用绝对 wall-clock deadline。但此前
+  `logical.v2` lease 行只保存导出时 remaining TTL，无法证明物理恢复后的 granted TTL 未漂移。
+  现为 lease witness 增加可选 `granted_ttl`，当前 exporter 必须写入；旧 artifact 的逻辑恢复保持
+  兼容，物理 verifier 则 fail closed 拒绝缺字段 witness。
+
+  A393 snapshot executor 现强制输入最近生成且非空的 semantic witness，mutation 前通过完整
+  logical-status 校验，并在 `kubebrain.cold-physical-snapshot.v2` 中绑定 format、prefix、revision、
+  records、leases、artifact 内部 digest 与文件 SHA-256。A394 renderer 同步拒绝没有完整 witness
+  binding 的早期 v2 receipt。新增 `hack/backup/cmd/cold-restore-verify` 与 wrapper，先验证
+  witness→snapshot→restore receipt hash chain，再在 witness revision 和 current revision 分页读取
+  全 prefix，逐键要求 value/create/mod/version/lease ID 完全一致；每个 lease 要求原 ID、原
+  granted TTL、正 remaining TTL 和精确 attached keys。随后 CreatedNotify watch 探针执行 leased
+  Put、线性 Get、Delete、两次 revision 精确 event 和 Revoke，原子发布
+  `kubebrain.cold-physical-semantic-verify.v1`。
+
+  单元测试逐项破坏 value、create/mod revision、version、lease ID、witness bytes 和 receipt SHA
+  链并要求失败。真实独立 3PD/3TiKV、三 KubeBrain 副本环境对隔离 prefix 创建 1 permanent key、
+  同一显式 600 秒 lease 的 2 keys 后导出；完整链在 revision `467825214963318822` 验证 3 records、
+  1 原 lease，watch probe Put/Delete 为 `467825214963318823/467825214963318824`，全部 exact gate
+  通过且测试 prefix、lease、port-forward 已清理。该运行证明 verifier 能检测当前真实数据面，
+  仍不是 CSI 恢复证据；只有在真正由 A395 恢复的隔离集群重复通过，才能关闭 cold full restore。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range

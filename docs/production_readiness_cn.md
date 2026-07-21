@@ -439,9 +439,19 @@ access modes 和 requested storage，作为后续 operation 的不可变恢复�
 PREFLIGHT_FILE=cold-snapshot-inventory.json \
 OPERATION_ID=instance-a-20260721t120000z \
 RECEIPT_FILE=cold-snapshot-receipt.json \
+SEMANTIC_WITNESS_FILE=cold-snapshot-witness.jsonl \
+EXPECTED_WITNESS_PREFIX=/registry \
 KUBE_CONTEXT=preproduction \
   hack/backup/cold-snapshot-execute.sh
 ```
+
+控制面必须先阻断该实例的新写入，再用当前 `logical-export.sh` 对实例完整 keyspace prefix 生成
+`kubebrain.logical.v2` witness；executor 默认要求 witness 至少一个记录、创建不超过 300 秒，并
+在任何 mutation 前验证内部 digest、prefix 和格式。逻辑 lease 记录现同时保存 remaining TTL 与
+granted TTL；旧 artifact 仍可用于逻辑恢复，但缺 `granted_ttl` 时不能证明物理 lease identity。
+snapshot receipt 将 witness 的 format/prefix/revision/record/lease count、内部 SHA-256 和整个文件
+SHA-256 一并绑定。若 witness 后仍有 Put/Delete/Txn，最终恢复的 current-exact 门禁会因 value 或
+create/mod/version/lease 元数据漂移而失败，不能生成语义成功 receipt。
 
 执行器重新运行预检并规范化比对清单，在任何变更前拒绝漂移；用 TidbCluster UID 和
 resourceVersion 设置 `spec.paused=true`，等待 pause 可见并重新取得 StatefulSet fence，随后
@@ -501,6 +511,26 @@ TiKV、PD 顺序用 StatefulSet UID/resourceVersion 条件 Patch 缩至零，保
 namespace UID、新 TidbCluster UID/cluster ID、VSC UID/driver/handle 和 PVC UID/PV。该 receipt 只
 证明存储层恢复与身份一致；必须继续在隔离目标部署受审 KubeBrain release，并执行固定 revision、
 key/value、lease TTL/attachment、watch continuity 和写后读验证，才能将这次恢复记为可用演练。
+
+部署受审 KubeBrain release 并指向恢复后的 PD 后，运行物理语义门禁：
+
+```shell
+ENDPOINT=https://restored-kubebrain:2379 \
+WITNESS_FILE=cold-snapshot-witness.jsonl \
+SNAPSHOT_RECEIPT_FILE=cold-snapshot-receipt.json \
+RESTORE_RECEIPT_FILE=cold-restore-receipt.json \
+SEMANTIC_RECEIPT_FILE=cold-semantic-receipt.json \
+VERIFY_PREFIX=/__kubebrain/cold-restore-verify/instance-a \
+ETCDCTL_CACERT=<ca> ETCDCTL_CERT=<client-cert> ETCDCTL_KEY=<client-key> \
+  hack/backup/cold-restore-verify.sh
+```
+
+门禁先校验 witness→snapshot receipt→restore receipt 的双 SHA-256 链，再分别在 witness revision
+与当前 revision 全量分页读取 prefix，要求 key/value/create revision/mod revision/version/lease ID
+及记录数完全一致。每个 lease 必须保留原 ID、granted TTL 和精确 attached key 集合且当前 TTL
+为正。最后以 CreatedNotify watch 建立探针，执行附 lease 的 Put、线性读、Delete、两次精确 watch
+event 和 Revoke；成功才原子发布 `kubebrain.cold-physical-semantic-verify.v1`。这仍不能替代真实
+CSI restore 演练，但它是物理恢复完成门禁，而不是普通 endpoint health 检查。
 
 生产备份 Job 必须设置 `METRICS_OUTPUT`，将成功结果写入 node-exporter 或等价
 Prometheus textfile collector 的共享目录；`BACKUP_INSTANCE` 必须与实例名一致，
