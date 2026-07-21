@@ -8281,6 +8281,26 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `sha256:5e1f1ca1d5e949eb39fcb10410fe6c7f93dd7b30362a38ed288320f01cef5eed`，OCI revision 与容器内
   `kube-brain version` 均为 `7083108090fc0145969ac6e65664f3e3ef210b25`；三副本已滚动收敛。
 
+- **Maintenance A414 follower-local duplicate watch rejection parity（2026-07-21）**：
+  继续对照 `/root/etcd/server/storage/mvcc/watcher.go:watchStream.Watch`。上游在 stream-local
+  watcher map 中识别显式重复 ID，并直接返回 `ErrWatcherDuplicateID`，不依赖集群 revision read
+  barrier。KubeBrain 在 A413 后仍先执行 follower `SyncReadRevision`，因此 leader barrier 故障会把
+  本可确定返回的 duplicate canceled response 错误升级为 stream 级 `Unavailable`。现将显式非零
+  watch ID 的 stream-local 预检查移到 read barrier 之前，同时保留 `watcher.start` 内的加锁复检，
+  避免并发状态变化绕过最终注册保护；合法新 ID 仍必须通过 barrier，不能创建 stale watch。
+
+  注入测试先成功注册 ID 414，再令 follower barrier 失败：重复 ID 414 必须不新增 barrier 调用并
+  返回 `mvcc: duplicate watch ID provided on the WatchStream`，新 ID 415 则执行 barrier 并 fail
+  closed；相关 follower barrier 测试普通 20 轮、race 5 轮通过。三 Pod 直连黑盒门禁扩展为逐副本
+  验证 negative、empty-range、duplicate、本地 stream 复用和合法 cancel，普通 10 轮、race 5 轮及
+  环境重启后的复验均通过；启用直连门禁的完整 compat 114.164 秒、稳定环境上的根模块完整测试、
+  root/compat vet 与固定版 staticcheck v0.7.0 全绿。
+
+  镜像 `kubebrain:a414-watch-duplicate-local` 的本地 digest 为
+  `sha256:60c2655adf2244b18926627553501c1307706273ef7634b75f082942f9079651`，OCI revision 与容器内
+  `kube-brain version` 均为 `32daaca971b3ff0731bd9d4ed3a6e0bb1fec05d2`，容器继续以
+  `65532:65532` 非 root 身份运行；三副本已滚动收敛。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
