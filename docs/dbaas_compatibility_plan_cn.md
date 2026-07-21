@@ -43,7 +43,7 @@ Raft、bbolt 和成员管理内部实现，而是对通用 etcd v3 客户端提�
 | Maintenance | Status | 兼容核心语义 | 返回真实服务身份、版本、leader/revision/共享选主 term；配置 quota 时报告租户最新逻辑 key+value 字节，未配置时使用兼容 sentinel；TiKV 物理容量转到实例指标 |
 | Maintenance | Snapshot | 平台替代 | 使用 TiKV BR/PITR；控制面提供备份、恢复和导出任务，不伪造 etcd snapshot |
 | Maintenance | Defragment | 平台替代 | TiKV GC/compaction 管理，不执行 bbolt 碎片整理 |
-| Maintenance | Alarm/DbSize | 兼容 NOSPACE/CORRUPT 核心语义 | keyspace 级逻辑容量原子计量、sticky NOSPACE、持久 member 集合及跨 endpoint mutation 已支持；CORRUPT 使用 TiKV 内部元数据持久 member 集合，阻断 Put/Delete/写 Txn/Compact/LeaseGrant/Revoke，并接入 Status、传统 health 和 readyz；bbolt fragmentation 仍为平台边界 |
+| Maintenance | Alarm/DbSize | 兼容 NOSPACE/CORRUPT 核心语义 | keyspace 级逻辑容量原子计量、sticky NOSPACE、持久 member 集合及跨 endpoint mutation 已支持；CORRUPT 使用 TiKV 内部元数据持久 member 集合，允许 Range 及空/线性/串行只读 Txn 诊断，阻断 Put/Delete/任一分支含写的 Txn/Compact/LeaseGrant/Revoke，并接入 Status、传统 health 和 readyz；bbolt fragmentation 仍为平台边界 |
 | Maintenance | Hash/HashKV | 兼容核心语义 | 对指定 revision 的租户 MVCC 实际内容做稳定摘要；成员本地诊断不依赖 KubeBrain leader，数值不与 bbolt 内部编码比较 |
 | Maintenance | MoveLeader/Downgrade | 平台替代 | 分别由服务选主和 DBaaS 升级编排处理 |
 | Endpoint | health/livez/readyz | 兼容核心语义 | `/health`、`/livez`、`/readyz` 及分项检查已对齐；`data_corruption`/`non_learner` 使用 TiKV 架构等价语义，`/ready` 与 `/ping` 为平台探针 |
@@ -8036,6 +8036,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `fde09307ba9b7bb35b2f0185e2ae0ade9dc0147c`）在独立 3PD/3TiKV、三 KubeBrain 副本滚动 Ready；
   参考差分、跨 endpoint、完整 compat（109.440 秒）通过，运行时轮询实际观察到 health/readyz
   告警并在解除后恢复，测试 key、alarm、参考进程和 port-forward 均已清理。
+
+- **Maintenance A399 CORRUPT read-only Txn continuity（2026-07-21）**：
+  对照 `/root/etcd/server/etcdserver/v3_server.go:Txn` 的 `txn.IsTxnReadonly` 分流，发现
+  A398 仅让 serializable read-only Txn 绕过 CORRUPT 栅栏，linearizable read-only Txn
+  会错误返回 DataLoss；上游 etcd 则让所有只读 Txn 绕过 Raft CORRUPT applier，并保留原有
+  线性读路径。KubeBrain 现以整棵 Txn 请求树判定只读性：空 Txn、linearizable 和
+  serializable read-only Txn 在告警期间继续成功；success/failure 任一分支包含 mutation，
+  即使运行时未选中该分支，整个 Txn 仍返回 `DataLoss: etcdserver: corrupt cluster`。
+
+  新增公开差分矩阵及 gRPC 回归覆盖上述四类边界，并保留三 endpoint 激活、观察、解除测试。
+  聚焦 race、根模块完整测试、vet、staticcheck 均通过；最终镜像
+  `kubebrain:a399-corrupt-readonly`（版本 `0.0.0-a399.1`，revision
+  `ee3a523843f13a10be24cc73fb5ff988db45fbf1`，本地镜像 SHA256
+  `78c58da303b0678597691ba790443007d4c039a45acd21919e221920789418e2`）在独立
+  3PD/3TiKV、三 KubeBrain 副本滚动 Ready。上游 etcd 差分和跨 endpoint 测试通过，完整
+  compat 108.321 秒通过；最终 alarm 列表为空，`/health` 与 `/readyz` 全部健康，测试进程及
+  port-forward 已清理。
 
 ### P1：通用服务能力
 
