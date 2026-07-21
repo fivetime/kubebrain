@@ -63,6 +63,13 @@ KubeBrain 已内置**标准 Prometheus** 指标(真 registry + `promhttp.Handler
   disarm 本身也会成功，但下一次含 Put 请求会立即重新激活 NOSPACE，因此不能把短暂
   清空 alarm list 当作容量已经恢复。这些指标统计当前存活 key+value 的逻辑字节，
   不包含 MVCC 历史、事件日志、lease/auth 元数据和 TiKV 副本开销。
+  每个 serving 副本会立即并每 15 秒从共享 TiKV metadata 刷新这些 gauges，单次读取
+  最多 5 秒；不要依赖某个固定 Pod 的瞬时值。生产规则
+  `KubeBrainQuotaNoSpace`、`KubeBrainQuotaUsageHigh`、
+  `KubeBrainQuotaMetricsInconsistent` 和 `KubeBrainQuotaRefreshFailures` 分别覆盖持久
+  NOSPACE、90% 水位、三副本 series 缺失/不一致以及共享状态读取失败。换主或 mutation
+  后一个刷新周期内的短暂不一致正常；持续超过 1 分钟表示副本无法收敛，不能仅用旧
+  leader 的 stale gauge 判断 tenant 最终状态。
 
 ## DbSize 与物理容量
 

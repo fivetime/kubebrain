@@ -7553,6 +7553,40 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   restartCount=0；disarm 后 gauge=0 且 Put 恢复，日志无 quota initialization error、
   panic/fatal/data race/storage error，PD/TiKV 3+3 Ready。
 
+- **Operations A375 quota metric convergence across replicas（2026-07-21）**：A374 的
+  真实运行证据显示 tenant-global quota gauge 仍由执行初始化或 alarm mutation 的本地
+  进程更新：activate 后 followers 缺 series/保持 0；更危险的是旧 leader 原地失去
+  leadership 后仍存活时会保留 1，新 leader disarm 后 PromQL `max(quota_nospace)` 会
+  永久假告警，而 `min` 又会漏报 active alarm。提交 `d1440a0` 在每个 serving 副本启动
+  立即并每 15 秒调用共享 `QuotaStatus` 刷新 usage/quota/nospace，单次读取以 5 秒独立
+  deadline 截断；正常的首次 quota-uninitialized 窗口不计故障，其余错误累计
+  `quota.refresh.err`。刷新 goroutine 绑定 server context，Close 等待其退出，避免关闭后
+  访问 TiKV。
+
+  `deploy/production/monitoring.yaml` 新增四项精确规则：持续 NOSPACE critical、logical
+  usage 超过 90% 十分钟 warning、三副本 series 少于 3 或值不一致超过一分钟 warning，
+  以及十分钟内 refresh error warning。manifest 测试固定表达式、for 和 severity；循环
+  回归固定立即/周期执行、取消后无残留调用和阻塞 storage read 在 5 秒预算内退出。聚焦
+  普通 20 轮、race 10 轮、完整 `go test ./...` 与 `go vet ./...` 通过。
+
+  首个 A375 候选镜像在部署前 provenance 核验发现手工输入了不存在的完整 SHA
+  `d1440a0d...`，已拒绝使用并从同一干净 archive 以 `git rev-parse` 的真实 SHA 重建。
+  最终 exact image `kubebrain:a375-quota-metric-convergence` image ID
+  `sha256:bc48d8ff5c942a8581eadceddeb107a625fc7ec2ef5ad364caf4d962bf568e34`，OCI
+  version `0.0.0-a375.1`、revision
+  `d1440a066981575954644de9a844deab5cbc5e04`、Go 1.26.5/linux/amd64、TiKV、运行
+  用户 `65532:65532`。
+
+  在独立 3 PD/3 TiKV、1 GiB quota、隔离 `a374-nospace-startup-metric` keyspace 上，
+  owner 41845 activate 后 gauges 从 `1/0/0` 在一个周期内收敛 `1/1/1`。随后向当前 leader
+  PID 1 发送 STOP，等待其他副本接管后 CONT，使旧 leader 在不重建 Pod 的情况下以 stale
+  1 恢复；新 leader disarm 后立即观测 `1/0/0`，20 秒后自动收敛 `0/0/0`，alarm list
+  为空且 Put 恢复。Pod UID 为 `00f6fe22-3f09-4c25-b4b9-1c9161a7f326`、
+  `3ecb5249-4d91-4f3f-95d5-bed62f92ae1b`、`68b3d334-f7f2-4fd4-ad8d-e9ae1c6f6315`，
+  runtime digest `sha256:2cd9f031a5fa9ba3e1ae420ec5f0fd3ff24f38c90f776e1d5ecfcb47e0d90fb3`，
+  全部 Ready、restartCount=0；日志无 quota refresh/initialization error、panic/fatal/
+  data race/storage error，PD/TiKV 3+3 Ready。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
