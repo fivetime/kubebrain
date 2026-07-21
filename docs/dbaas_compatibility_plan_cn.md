@@ -8599,6 +8599,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   v0.7.0 均通过。本轮确认当前运行时无字段遗漏，只增加 API 升级失败快显门禁，因此不重建
   与 A422 字节相同的服务端镜像。
 
+#### A432 核心 etcd 响应 protobuf 字段升级门禁
+
+- 继续对照 etcd API v3.7 descriptor 审计 ResponseHeader、Range/Put/DeleteRange、ResponseOp、
+  Txn、Compaction、Watch 及六类 Lease 响应/状态的所有手工构造、合并、fragment、nested Txn
+  和 follower forwarding 路径。当前字段均已覆盖；LeaseGrant 成功响应的 `error` 按上游保持
+  空字符串，失败由 gRPC status 返回，不是遗漏。Lease TTL 的 GrantedTTL/Keys 与 LeaseLeases
+  的 LeaseStatus ID 也均由同一授权快照填充。
+- 新增 14 类响应的字段名+wire number 精确门禁，包含 ResponseHeader 四字段、ResponseOp
+  oneof 全成员，以及 WatchResponse events 的非连续 field 11。未来 API 增删、改名或重编号时，
+  必须重新审计每个构造器和转换路径，避免新响应字段默认为零值却不触发编译错误。
+- 聚焦普通 100 轮、race 20 轮、`pkg/server/etcd` 全包、root 全量测试、vet、staticcheck
+  v0.7.0 均通过。本轮未发现当前响应字段遗漏，只增加升级失败快显门禁，因此继续使用已验证
+  的 A422 服务端镜像。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
