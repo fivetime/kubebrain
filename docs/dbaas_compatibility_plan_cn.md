@@ -7525,6 +7525,34 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   通过。首次并行运行完整套件与告警测试导致共享 keyspace 在告警窗口内按预期拒写，
   串行隔离后通过。无运行时代码变化，未构建或发布新镜像。
 
+- **Maintenance A374 NOSPACE startup metric recovery（2026-07-21）**：继续审计
+  TiKV quota 的故障与重启路径，发现 `EnsureQuotaInitialized` 在持久 usage 未超过 quota
+  时无条件发布 `quota.nospace=0`，没有检查仍存在的 sticky/manual alarm。写门禁会继续
+  fail closed，但 leader 重启后告警 gauge 会漏报，直到后续 Status/QuotaStatus 请求偶然
+  刷新。提交 `a950973` 让未超额启动分支读取 tenant alarm key：存在时发布 1、缺失时
+  发布 0、读取错误时保持启动失败；该读取只发生在 quota 初始化，不增加请求热路径开销，
+  也不自动解除低用量手工 alarm。
+
+  同轮补齐 TiKV 不确定提交的 quota 原子性证据：commit-then-uncertain 的双 Put Txn 最终
+  两个 key、同一 revision 和精确 logical usage 一起可见；uncommitted-uncertain 则两个 key、
+  revision 和 usage 一起保持未提交，alarm 均不被伪造。三项聚焦测试普通 20 轮、race
+  10 轮通过，完整 `go test ./...` 与 `go vet ./...` 通过。
+
+  exact runtime image `kubebrain:a374-nospace-startup-metric` 从 `a950973` 干净 Git
+  archive 构建，image ID
+  `sha256:1009134640a8a8c51a95a6b4934f16343a74a0acaac48ef12f66369d46bb2dc8`，OCI
+  version `0.0.0-a374.1`、revision
+  `a950973508c1adc45d1da8e02eaf074d3f176c9a`、Go 1.26.5/linux/amd64、TiKV、运行
+  用户 `65532:65532`。在独立 3 PD/3 TiKV、隔离 `a374-nospace-startup-metric`
+  keyspace 和 1 GiB quota 上，以 owner 41844 手工激活 alarm 后滚动重建全部三副本；在
+  未调用 Status/QuotaStatus 前，新 leader 首次 metrics 已为 `quota_nospace=1`，alarm
+  owner 持久不变，Put 返回 ResourceExhausted，Range/Delete 仍成功。新 Pod UID 为
+  `37d590e3-9860-48ff-b07e-abd375b9f077`、`df1253f1-b551-4151-beff-4f7e79c84494`、
+  `4879a37a-32d6-4ce7-a29d-06e1982ee645`，runtime digest
+  `sha256:dc2246071b9416c450c15dec11bbe3d29a06952ea2505a9a570368a500572fa2`，均 Ready、
+  restartCount=0；disarm 后 gauge=0 且 Put 恢复，日志无 quota initialization error、
+  panic/fatal/data race/storage error，PD/TiKV 3+3 Ready。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
