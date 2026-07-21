@@ -19,6 +19,7 @@ import (
 	"go/parser"
 	"go/token"
 	"path/filepath"
+	"sort"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -62,6 +63,66 @@ func TestEtcdAPISurfaceIsExplicit(t *testing.T) {
 		})
 	}
 	require.Equal(t, 42, total, "review and classify every public RPC when the etcd API surface changes")
+}
+
+// TestEtcdAPISurfaceUnimplementedClassification prevents a supported RPC from
+// being silently downgraded to an explicit Unimplemented response. The only
+// public methods allowed to use that status are upstream-compatible conditional
+// rejections and operations deliberately owned by the DBaaS control plane.
+func TestEtcdAPISurfaceUnimplementedClassification(t *testing.T) {
+	require.Equal(t, []string{
+		"Alarm",
+		"Downgrade",
+		"MemberAdd",
+		"MemberPromote",
+		"MemberRemove",
+		"MemberUpdate",
+		"MoveLeader",
+		"RangeStream",
+		"Snapshot",
+	}, publicRPCMethodsReturningUnimplemented(t))
+}
+
+func publicRPCMethodsReturningUnimplemented(t *testing.T) []string {
+	t.Helper()
+	files, err := filepath.Glob("*.go")
+	require.NoError(t, err)
+	fileset := token.NewFileSet()
+	methods := make(map[string]struct{})
+	for _, path := range files {
+		if filepath.Ext(path) != ".go" || len(path) >= len("_test.go") && path[len(path)-len("_test.go"):] == "_test.go" {
+			continue
+		}
+		file, err := parser.ParseFile(fileset, path, nil, 0)
+		require.NoError(t, err, path)
+		for _, declaration := range file.Decls {
+			function, ok := declaration.(*ast.FuncDecl)
+			if !ok || function.Recv == nil || function.Name == nil || function.Body == nil || !function.Name.IsExported() {
+				continue
+			}
+			owner := receiverTypeName(function.Recv.List[0].Type)
+			if owner != "RPCServer" && owner != "leaseManager" {
+				continue
+			}
+			ast.Inspect(function.Body, func(node ast.Node) bool {
+				selector, ok := node.(*ast.SelectorExpr)
+				if !ok {
+					return true
+				}
+				identifier, identifierOK := selector.X.(*ast.Ident)
+				if identifierOK && identifier.Name == "codes" && selector.Sel.Name == "Unimplemented" {
+					methods[function.Name.Name] = struct{}{}
+				}
+				return true
+			})
+		}
+	}
+	result := make([]string, 0, len(methods))
+	for method := range methods {
+		result = append(result, method)
+	}
+	sort.Strings(result)
+	return result
 }
 
 func productionReceiverMethods(t *testing.T) map[string]map[string]struct{} {
