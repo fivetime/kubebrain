@@ -7587,6 +7587,34 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   全部 Ready、restartCount=0；日志无 quota refresh/initialization error、panic/fatal/
   data race/storage error，PD/TiKV 3+3 Ready。
 
+- **Maintenance A376 bounded quota usage rebuild（2026-07-21）**：继续审计 quota
+  在线启用与重新启用路径，发现 `EnsureQuotaInitialized` 通过无 limit 的 `Range` 一次性
+  物化 tenant 全部存活 key/value；在生产 500 GiB TiKV volume 和百万键租户上，该启动
+  路径的内存随数据集线性增长，可能在配额发布滚动中 OOM。提交 `c1fb664` 改用现有
+  partition-parallel、带 backpressure 的 `RangeStream(..., keysOnly=false)`，逐响应累加
+  logical usage，同时保留 int64 overflow、固定 revision、fence 和原子 metadata commit
+  语义。回归测试包装 scanner，明确首次初始化只调用一次 stream API、从不调用无界
+  `Range`，持久 clean 后重复初始化不再扫描；聚焦测试普通 20 轮、race 10 轮、完整
+  `go test ./...` 与 `go vet ./...` 通过。
+
+  exact runtime image `kubebrain:a376-stream-quota-rebuild` 从
+  `c1fb6648b3773407022d1e9f955493d251e12a8e` 干净 Git archive 构建，image ID
+  `sha256:8cec6f228b1171578a232d8b5587fa1e941ee116e20c4df7c40b46aca1ace49d`，OCI
+  version `0.0.0-a376.1`、revision 与二进制版本一致、Go 1.26.5/linux/amd64、TiKV、运行
+  用户 `65532:65532`。在独立 3 PD/3 TiKV 和隔离 keyspace
+  `a376-stream-quota-rebuild` 上，先以无 quota 的 A376 写入 63,874 个存活键；keys-only
+  独立核算 key bytes 1,415,079、固定 value bytes 2,043,968，总 logical usage
+  3,459,047 bytes。随后在线增加 1 GiB quota 并滚动三个副本，全部 Ready、
+  restartCount=0，三副本 `quota_logical_usage_bytes` 均精确为 3,459,047、
+  `quota_backend_bytes=1073741824`、`quota_nospace=0`；新进程 VmHWM 为 128-145 MiB。
+  重建后 count 仍为 63,874，endpoint health 与 Put/Get/Delete 通过，Pod UID 为
+  `d6415085-92d3-4356-96af-e2825ef36af2`、
+  `33241036-e643-479a-8d21-11881c4dc63c`、
+  `3f4e2f5a-fac3-4827-a513-ed5e78c1ee16`，runtime digest
+  `sha256:0da40f91d79e607afbdad6a41c897878559dbd7a6a3a6348475260aec1409625`；日志无 quota
+  refresh/initialization error、panic/fatal/data race/storage error/OOM，PD/TiKV 3+3
+  Ready。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
