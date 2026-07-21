@@ -8264,6 +8264,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   root/compat vet 与固定版 staticcheck 全绿。A411 服务端实现已经符合该顺序，本轮只增强回归门禁，
   运行镜像继续使用 `kubebrain:a411-watch-validation`。
 
+- **Maintenance A413 follower-local watch rejection parity（2026-07-21）**：
+  对照 `/root/etcd/server/etcdserver/api/v3rpc/watch.go:recvLoop`，修复 follower 在处理可本地拒绝的
+  WatchCreateRequest 前过早调用 leader `SyncReadRevision` 的差异。旧实现遇到 leader read barrier
+  故障时，会把负 start revision 或非法范围升级为 stream 级 `Unavailable`；上游分别直接返回
+  compacted 或 empty-range canceled response，且 stream 保持可用。现按
+  `normalize -> negative -> auth -> range -> read barrier -> duplicate/quota/backend` 执行：本地确定性
+  错误不依赖 leader，可能真正创建 watch 的请求仍必须取得同步 revision fence，不能降级为 stale watch。
+
+  注入测试让 follower barrier 固定失败，证明前两条本地非法请求仍返回 control response，第三条合法
+  create 只调用一次 barrier 并以 Unavailable fail closed；聚焦普通 20 轮、race 5 轮通过。新增三个
+  Pod 直连黑盒门禁，逐副本验证两条本地拒绝后仍能创建/取消合法 watch，连续 10 轮及 race 5 轮通过；
+  启用直连门禁的完整 compat 126.353 秒、根模块完整测试、root/compat vet 与固定版 staticcheck 全绿。
+
+  镜像 `kubebrain:a413-watch-local-reject` 的本地 digest 为
+  `sha256:5e1f1ca1d5e949eb39fcb10410fe6c7f93dd7b30362a38ed288320f01cef5eed`，OCI revision 与容器内
+  `kube-brain version` 均为 `7083108090fc0145969ac6e65664f3e3ef210b25`；三副本已滚动收敛。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
