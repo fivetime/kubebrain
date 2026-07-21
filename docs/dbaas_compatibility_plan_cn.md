@@ -43,7 +43,7 @@ Raft、bbolt 和成员管理内部实现，而是对通用 etcd v3 客户端提�
 | Maintenance | Status | 兼容核心语义 | 返回真实服务身份、版本、leader/revision/共享选主 term；配置 quota 时报告租户最新逻辑 key+value 字节，未配置时使用兼容 sentinel；TiKV 物理容量转到实例指标 |
 | Maintenance | Snapshot | 平台替代 | 使用 TiKV BR/PITR；控制面提供备份、恢复和导出任务，不伪造 etcd snapshot |
 | Maintenance | Defragment | 平台替代 | TiKV GC/compaction 管理，不执行 bbolt 碎片整理 |
-| Maintenance | Alarm/DbSize | 兼容 NOSPACE/CORRUPT 核心语义 | keyspace 级逻辑容量原子计量、sticky NOSPACE、持久 member 集合及跨 endpoint mutation 已支持；CORRUPT 使用 TiKV 内部元数据持久 member 集合，允许 Range 及空/线性/串行只读 Txn 诊断，阻断 Put/Delete/任一分支含写的 Txn/Compact/LeaseGrant/Revoke，并推迟自然租约过期直至 disarm；未过期 lease 仍可 KeepAlive，已过期 KeepAlive 等待 revoke 并在 disarm 后返回 TTL=0；双告警并存时 CORRUPT 优先，逐项解除后 NOSPACE 独立延续；3 KubeBrain、3 PD、3 TiKV 全成员顺序重启后告警、写门禁和 health/readyz 状态仍持续；bbolt fragmentation 仍为平台边界 |
+| Maintenance | Alarm/DbSize | 兼容 NOSPACE/CORRUPT 核心语义 | keyspace 级逻辑容量原子计量、sticky NOSPACE、持久 member 集合及跨 endpoint mutation 已支持；NOSPACE 阻断增长写与 LeaseGrant，但允许 LeaseRevoke、自然过期和既有 lease KeepAlive，以保留空间自愈路径；CORRUPT 使用 TiKV 内部元数据持久 member 集合，允许 Range 及空/线性/串行只读 Txn 诊断，阻断 Put/Delete/任一分支含写的 Txn/Compact/LeaseGrant/Revoke，并推迟自然租约过期直至 disarm；未过期 lease 仍可 KeepAlive，已过期 KeepAlive 等待 revoke 并在 disarm 后返回 TTL=0；双告警并存时 CORRUPT 优先，逐项解除后 NOSPACE 独立延续；3 KubeBrain、3 PD、3 TiKV 全成员顺序重启后告警、写门禁和 health/readyz 状态仍持续；bbolt fragmentation 仍为平台边界 |
 | Maintenance | Hash/HashKV | 兼容核心语义 | 对指定 revision 的租户 MVCC 实际内容做稳定摘要；成员本地诊断不依赖 KubeBrain leader，数值不与 bbolt 内部编码比较 |
 | Maintenance | MoveLeader/Downgrade | 平台替代 | 分别由服务选主和 DBaaS 升级编排处理 |
 | Endpoint | health/livez/readyz | 兼容核心语义 | `/health`、`/livez`、`/readyz` 及分项检查已对齐；`data_corruption`/`non_learner` 使用 TiKV 架构等价语义，`/ready` 与 `/ping` 为平台探针 |
@@ -8169,6 +8169,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `ef3f4bb97a8154464f95e354b173f751f4533962`。本轮未发现服务端差异，不重新构建镜像；运行态继续
   使用 `kubebrain:a404-corrupt-expired-ttl`，最终 alarm 为空，health/readyz 全绿，3 KubeBrain、
   3 PD、3 TiKV 均 Ready，临时参考 etcd 已停止。
+
+- **Maintenance A406 NOSPACE lease recovery gate（2026-07-21）**：
+  对照 `/root/etcd/server/etcdserver/apply/capped.go`、
+  `/root/etcd/server/etcdserver/apply/uber_applier_test.go:TestUberApplier_Alarm_Quota` 和
+  lessor expiry/renew 路径，新增三 lease 公开差分状态机。NOSPACE 激活后新 LeaseGrant 必须返回
+  ResourceExhausted；TTL=30 lease 的显式 Revoke 必须成功并删除 attached key；TTL=2 lease 必须
+  自然过期并删除 key；TTL=3 lease 在 1.5 秒时 KeepAlive 必须返回完整 TTL=3，且在原 deadline
+  之后仍存活。即使两条删除路径已释放逻辑空间，NOSPACE 仍须 sticky，只有显式 disarm 才解除。
+
+  真实上游 etcd 与 A404 KubeBrain 首轮一致；串行重复 3 轮 25.684 秒、race 9.581 秒通过。根模块
+  完整测试、完整 compat 91.996 秒、根/compat vet 与固定版 staticcheck 全部通过。门禁提交
+  `cb3e9c180e5f4ac4814dc7b54d2a5cd67a71625c`。本轮未发现服务端差异，不重新构建镜像；运行态
+  继续使用 `kubebrain:a404-corrupt-expired-ttl`。最终 alarm 为空，health/readyz 全绿，
+  3 KubeBrain、3 PD、3 TiKV 均 Ready，临时参考 etcd 已停止。
 
 ### P1：通用服务能力
 
