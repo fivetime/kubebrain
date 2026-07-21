@@ -8584,6 +8584,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Put/Get/Delete 或三副本故障验证。当前 kind CNI 未用于伪造通过证据，真实门禁仍须在支持
   NetworkPolicy 的预生产/生产 CNI 上执行；本轮不改变 A422 服务端镜像。
 
+#### A431 核心 etcd 请求 protobuf 字段升级门禁
+
+- 对照 `/root/etcd` d947b2086 与当前 etcd API v3.7 descriptor，逐项审计 Range、Put、
+  DeleteRange、Compare、RequestOp、Txn、Compaction、WatchCreate/WatchRequest 及五类 Lease
+  请求。现有实现已处理、校验或转发全部当前字段；同时确认 v3.7 `RangeResponse.Count` 不受
+  revision filter 影响的合同在普通 Range、CountOnly 和 staged Txn Range 中均保留过滤前总数，
+  没有把过滤后 Kvs 长度误作 Count。
+- 新增 14 类请求的精确 protobuf descriptor 门禁，不只检查字段数量，还固定每个字段名和 wire
+  number，并覆盖 Compare target union 与 RequestOp request union 的全部成员。未来 etcd API
+  新增、删除、改名或重编号字段时，测试会要求重新审计 validation、authorization、execution、
+  nested Txn 和 follower forwarding，避免生成代码升级后静默忽略新语义。
+- 聚焦普通 100 轮、race 20 轮、`pkg/server/etcd` 全包、root 全量测试、vet、staticcheck
+  v0.7.0 均通过。本轮确认当前运行时无字段遗漏，只增加 API 升级失败快显门禁，因此不重建
+  与 A422 字节相同的服务端镜像。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
