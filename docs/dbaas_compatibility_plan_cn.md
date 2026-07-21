@@ -8522,6 +8522,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Pod 的 zone 分布、TiKV region 副本拓扑和整区故障下注写可用性，软调度偏好不能替代这些
   运行门禁。
 
+#### A427 核心 quorum Pod 异常驱逐策略
+
+- 生产 KubeBrain TLS/非 TLS、PD 与 TiKV 的三副本 PDB 均已有 `minAvailable=2`，但此前使用
+  Kubernetes 默认 `IfHealthyBudget`：当一个运行中 Pod 已不 Ready、只剩两个健康副本时，
+  drain 仍会拒绝驱逐该异常 Pod，可能阻塞故障节点维护和副本在健康节点重建。四类核心 PDB
+  现显式设置 `unhealthyPodEvictionPolicy: AlwaysAllow`；只有已不健康 Pod 可越过预算，健康
+  Pod 的自愿驱逐仍必须满足两个可用副本。
+- TLS/非 TLS KubeBrain 与 PD/TiKV manifest 测试固定该策略和既有 minAvailable；聚焦普通
+  100 轮、race 20 轮通过。三套完整清单均通过 Kubernetes API server dry-run，临时
+  `kubebrain-system` namespace 已无条件删除并确认无残留；production 包、root 全量测试、
+  vet、staticcheck v0.7.0 均通过。
+- PDB 不约束节点宕机等非自愿中断，`AlwaysAllow` 也不会恢复已经丢失的 quorum。多 zone
+  预生产仍须验证异常 Pod 节点 drain 后的重建、PD/TiKV leader/region 恢复和持续读写；本轮
+  只更新生产部署 artifact，不改变 A422 服务端镜像。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
