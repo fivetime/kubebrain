@@ -43,7 +43,7 @@ Raft、bbolt 和成员管理内部实现，而是对通用 etcd v3 客户端提�
 | Maintenance | Status | 兼容核心语义 | 返回真实服务身份、版本、leader/revision/共享选主 term；配置 quota 时报告租户最新逻辑 key+value 字节，未配置时使用兼容 sentinel；TiKV 物理容量转到实例指标 |
 | Maintenance | Snapshot | 平台替代 | 使用 TiKV BR/PITR；控制面提供备份、恢复和导出任务，不伪造 etcd snapshot |
 | Maintenance | Defragment | 平台替代 | TiKV GC/compaction 管理，不执行 bbolt 碎片整理 |
-| Maintenance | Alarm/DbSize | 兼容 NOSPACE/CORRUPT 核心语义 | keyspace 级逻辑容量原子计量、sticky NOSPACE、持久 member 集合及跨 endpoint mutation 已支持；CORRUPT 使用 TiKV 内部元数据持久 member 集合，允许 Range 及空/线性/串行只读 Txn 诊断，阻断 Put/Delete/任一分支含写的 Txn/Compact/LeaseGrant/Revoke；双告警并存时 CORRUPT 优先，逐项解除后 NOSPACE 独立延续，并接入 Status、传统 health 和 readyz；bbolt fragmentation 仍为平台边界 |
+| Maintenance | Alarm/DbSize | 兼容 NOSPACE/CORRUPT 核心语义 | keyspace 级逻辑容量原子计量、sticky NOSPACE、持久 member 集合及跨 endpoint mutation 已支持；CORRUPT 使用 TiKV 内部元数据持久 member 集合，允许 Range 及空/线性/串行只读 Txn 诊断，阻断 Put/Delete/任一分支含写的 Txn/Compact/LeaseGrant/Revoke；双告警并存时 CORRUPT 优先，逐项解除后 NOSPACE 独立延续；全部 serving replica replacement 后告警、写门禁和 health/readyz 状态仍持续；bbolt fragmentation 仍为平台边界 |
 | Maintenance | Hash/HashKV | 兼容核心语义 | 对指定 revision 的租户 MVCC 实际内容做稳定摘要；成员本地诊断不依赖 KubeBrain leader，数值不与 bbolt 内部编码比较 |
 | Maintenance | MoveLeader/Downgrade | 平台替代 | 分别由服务选主和 DBaaS 升级编排处理 |
 | Endpoint | health/livez/readyz | 兼容核心语义 | `/health`、`/livez`、`/readyz` 及分项检查已对齐；`data_corruption`/`non_learner` 使用 TiKV 架构等价语义，`/ready` 与 `/ping` 为平台探针 |
@@ -8072,6 +8072,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   109.754 秒通过。最终 alarm 列表为空，health/readyz 健康，3 KubeBrain、3 PD、3 TiKV
   全部 Ready。因服务端字节未变化，生产运行镜像继续使用已验证的
   `kubebrain:a399-corrupt-readonly`，未制造无意义制品漂移。
+
+- **Maintenance A401 CORRUPT all-replica replacement persistence（2026-07-21）**：
+  A398/A400 已证明 TiKV internal key 的跨 endpoint 可见性，但尚不能排除所有 serving process
+  重建后告警丢失。新增显式 opt-in 的破坏性门禁：经稳定 NodePort 激活 CORRUPT 并写入诊断 key，
+  依次删除 `kubebrain-0/1/2`，每轮等待 Pod UID 变化且 Ready 后重新查询。每次 replacement 后
+  Alarm(GET CORRUPT) 均返回原 member owner，Range 保持可读，Put 持续返回 DataLoss；同时
+  `/health` 持续 503 `ALARM CORRUPT`，`/readyz/data_corruption` 持续 503
+  `alarm activated: CORRUPT`。三个旧进程全部消失后显式 disarm，写入和健康探针恢复。
+
+  门禁普通与 race 模式共运行三轮、累计九次 Pod replacement，分别 24.21、22.75、24.37 秒
+  通过；提交 `b3a16e2144125d26a53552cedbe418b850137ca0`。随后完整 compat 107.371 秒、
+  根模块完整测试、根/compat vet 与 staticcheck 全部通过；最终 alarm 列表为空，3 KubeBrain、
+  3 PD、3 TiKV 全部 Ready。该证据证明 KubeBrain serving process 可无状态替换且告警由共享
+  TiKV 持久化，不等价于 PD/TiKV 全集群重启或物理恢复验证。服务端字节未变化，运行镜像继续为
+  `kubebrain:a399-corrupt-readonly`。
 
 ### P1：通用服务能力
 
