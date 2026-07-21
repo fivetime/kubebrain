@@ -7745,6 +7745,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   且未启动 reference etcd。`bash -n`、根模块完整 `go test ./...` 与 `go vet ./...` 通过；
   本机无 shellcheck。本轮只修改测试门禁，不构建数据面镜像。
 
+- **Compatibility A384 clientv3 Barrier and Queue recipes（2026-07-21）**：
+  对照 `/root/etcd/tests/integration/clientv3/experimental/recipes/v3_barrier_test.go` 与
+  `v3_queue_test.go`，补充此前未进入 DBaaS 黑盒矩阵的高层组合契约。提交 `34fb65b` 使用
+  upstream `client/v3/experimental/recipes` 原生实现，同时驱动一次性 reference etcd 和
+  真实 TiKV-backed KubeBrain：Barrier 必须拒绝重复 Hold、Release 前阻塞、随后释放全部
+  5 个 waiter，且相邻前缀键不能让不存在的精确 barrier 误阻塞；Queue 必须保持五元素
+  FIFO，PriorityQueue 按优先级及同优先级 sequence 排序，三 writer/三 reader 并发消费的
+  9 个唯一值必须无丢失、无重复。测试既比较双端结果，也固定明确 upstream 期望，避免
+  “两端同错”通过。
+
+  真实独立 3 PD/3 TiKV、A379 KubeBrain 三副本环境普通 5 轮和 race 5 轮全部通过，每轮
+  约 2.3-3.4 秒；嵌套兼容模块与根模块 `go vet ./...`、根模块完整 `go test ./...` 通过。
+  一次性 reference etcd、宿主端口转发、12379/12380/22379 监听和临时 data-dir 均已清理。
+  本轮只新增兼容门禁，不修改运行时代码或构建数据面镜像；DoubleBarrier 的 lease/failover
+  组合继续作为下一轮 recipe 覆盖。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
