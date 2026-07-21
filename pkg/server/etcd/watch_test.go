@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -573,8 +574,11 @@ func TestNegativeWatchRevisionPrecedesRangeAndDuplicateWithoutClosingStream(t *t
 
 func TestSendWatchFragmentsMatchesEtcdFlags(t *testing.T) {
 	response := &etcdserverpb.WatchResponse{
-		Header:  &etcdserverpb.ResponseHeader{Revision: 12},
-		WatchId: 7,
+		Header: &etcdserverpb.ResponseHeader{
+			ClusterId: 1, MemberId: 2, Revision: 12, RaftTerm: 3,
+		},
+		WatchId: 7, Created: true, Canceled: true, CompactRevision: 9,
+		CancelReason: "fragment-test",
 		Events: []*mvccpb.Event{
 			{Kv: &mvccpb.KeyValue{Key: []byte("a"), Value: make([]byte, 80)}},
 			{Kv: &mvccpb.KeyValue{Key: []byte("b"), Value: make([]byte, 80)}},
@@ -590,13 +594,31 @@ func TestSendWatchFragmentsMatchesEtcdFlags(t *testing.T) {
 	var keys [][]byte
 	for i, fragment := range fragments {
 		require.Equal(t, int64(7), fragment.WatchId)
-		require.Equal(t, int64(12), fragment.Header.Revision)
+		require.True(t, gproto.Equal(response.Header, fragment.Header))
+		require.True(t, fragment.Created)
+		require.True(t, fragment.Canceled)
+		require.Equal(t, int64(9), fragment.CompactRevision)
+		require.Equal(t, "fragment-test", fragment.CancelReason)
 		require.Equal(t, i < len(fragments)-1, fragment.Fragment)
 		for _, event := range fragment.Events {
 			keys = append(keys, event.Kv.Key)
 		}
 	}
 	require.Equal(t, [][]byte{[]byte("a"), []byte("b"), []byte("c")}, keys)
+}
+
+func TestWatchResponseProtoFieldCount(t *testing.T) {
+	const expectedWatchResponseProtoFields = 8
+
+	fields := 0
+	typ := reflect.TypeOf(etcdserverpb.WatchResponse{})
+	for i := 0; i < typ.NumField(); i++ {
+		if typ.Field(i).Tag.Get("protobuf") != "" {
+			fields++
+		}
+	}
+	require.Equal(t, expectedWatchResponseProtoFields, fields,
+		"update sendWatchFragments when WatchResponse gains a protobuf field")
 }
 
 func TestWatchFragmentLimitUsesConfiguredRequestBytesWithEtcdOverhead(t *testing.T) {
