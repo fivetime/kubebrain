@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"testing"
 	"time"
 
@@ -482,6 +483,57 @@ func TestRangeStreamChunksRespectConfiguredMessageTarget(t *testing.T) {
 	require.Equal(t, 5, limitedKeys)
 	require.Zero(t, tracked.listCalls,
 		"bounded RangeStream must not materialize a unary List response")
+}
+
+func TestSplitRangeStreamResponsePreservesAllFields(t *testing.T) {
+	response := &etcdserverpb.RangeResponse{
+		Header: &etcdserverpb.ResponseHeader{
+			ClusterId: 1, MemberId: 2, Revision: 3, RaftTerm: 4,
+		},
+		Kvs: []*mvccpb.KeyValue{
+			{Key: []byte("a"), Value: make([]byte, 64)},
+			{Key: []byte("b"), Value: make([]byte, 64)},
+			{Key: []byte("c"), Value: make([]byte, 64)},
+		},
+		More:  true,
+		Count: 9,
+	}
+
+	chunks := splitRangeStreamResponse(response, 100, true)
+	require.Greater(t, len(chunks), 1, "test must exercise response splitting")
+	merged := &etcdserverpb.RangeResponse{}
+	for i, chunk := range chunks {
+		require.NotNil(t, chunk.RangeResponse)
+		if i != len(chunks)-1 {
+			require.Nil(t, chunk.RangeResponse.Header)
+			require.False(t, chunk.RangeResponse.More)
+			require.Zero(t, chunk.RangeResponse.Count)
+		}
+		proto.Merge(merged, chunk.RangeResponse)
+	}
+	require.True(t, proto.Equal(response, merged), "merged chunks must equal the source response")
+}
+
+func TestRangeStreamResponseProtoFieldCounts(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		typ      reflect.Type
+		expected int
+	}{
+		{name: "RangeResponse", typ: reflect.TypeOf(etcdserverpb.RangeResponse{}), expected: 4},
+		{name: "RangeStreamResponse", typ: reflect.TypeOf(etcdserverpb.RangeStreamResponse{}), expected: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fields := 0
+			for i := 0; i < test.typ.NumField(); i++ {
+				if test.typ.Field(i).Tag.Get("protobuf") != "" {
+					fields++
+				}
+			}
+			require.Equal(t, test.expected, fields,
+				"update splitRangeStreamResponse when %s gains a protobuf field", test.name)
+		})
+	}
 }
 
 func TestRangeStreamLargeValueExceedingMessageTargetStillProgresses(t *testing.T) {
