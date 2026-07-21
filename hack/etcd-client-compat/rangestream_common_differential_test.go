@@ -48,7 +48,10 @@ func runRangeStreamCommonShapes(
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	t.Cleanup(cancel)
 
-	prefix := "/zz-dbaas-rangestream-common/" + instance + "/"
+	// From-key ranges intentionally extend to the end of the keyspace. Keep this
+	// fixture above the suite's ASCII keys while retaining a finite prefix end,
+	// so concurrently running differential tests cannot leak into its result.
+	prefix := "\xff\xfe" + testPrefix(t) + "/" + instance + "/"
 	_, err = client.Delete(ctx, prefix, clientv3.WithPrefix())
 	require.NoError(t, err)
 	first, err := client.Put(ctx, prefix+"a", "v1")

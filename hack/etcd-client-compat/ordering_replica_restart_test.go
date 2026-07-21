@@ -131,10 +131,7 @@ func TestOrderingWrapperSurvivesReplicaRestart(t *testing.T) {
 			defer callCancel()
 			var getErr error
 			response, getErr = orderedKV.Get(callCtx, key, clientv3.WithSerializable())
-			if getErr != nil {
-				return false
-			}
-			return true
+			return getErr == nil
 		}, 15*time.Second, 200*time.Millisecond)
 		allEndpointsMonotonic = allEndpointsMonotonic &&
 			response.Header.Revision >= latestRevision &&

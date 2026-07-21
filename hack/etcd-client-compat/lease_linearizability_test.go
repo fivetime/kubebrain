@@ -485,7 +485,7 @@ func TestClientV3LeaseNaturalExpiryHistoryIsLinearizable(t *testing.T) {
 			time.Sleep(900 * time.Millisecond)
 			deadlineAnchor = invoke(2, leaseInput{kind: leaseKeepAlive})
 		}
-		if delay := deadlineAnchor.Add(ttl).Sub(time.Now()); delay > 0 {
+		if delay := time.Until(deadlineAnchor.Add(ttl)); delay > 0 {
 			time.Sleep(delay)
 		}
 
