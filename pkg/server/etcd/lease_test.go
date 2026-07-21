@@ -670,6 +670,47 @@ func TestLeaseGrantClampsSmallTTLLikeEtcd(t *testing.T) {
 	}
 }
 
+func TestCorruptAlarmDefersNaturalLeaseExpiry(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	const leaseID = int64(5151)
+	key := []byte("corrupt-expiry")
+
+	_, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 30, ID: leaseID})
+	require.NoError(t, err)
+	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("leased"), Lease: leaseID})
+	require.NoError(t, err)
+	server.leaseMu.Lock()
+	state := server.leases[leaseID]
+	require.NotNil(t, state)
+	state.deadline = time.Now().Add(-time.Second)
+	state.timer.Stop()
+	server.leaseMu.Unlock()
+
+	require.NoError(t, server.backend.ArmCorrupt(ctx, 1))
+	server.expireLeaseWithContext(ctx, leaseID)
+	read, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: key})
+	require.NoError(t, err)
+	require.Len(t, read.Kvs, 1)
+	server.leaseMu.Lock()
+	_, retained := server.leases[leaseID]
+	server.leaseMu.Unlock()
+	require.True(t, retained)
+
+	removed, err := server.backend.DisarmCorrupt(ctx, 1)
+	require.NoError(t, err)
+	require.True(t, removed)
+	server.expireLeaseWithContext(ctx, leaseID)
+	read, err = server.Range(ctx, &etcdserverpb.RangeRequest{Key: key})
+	require.NoError(t, err)
+	require.Empty(t, read.Kvs)
+	server.leaseMu.Lock()
+	_, retained = server.leases[leaseID]
+	server.leaseMu.Unlock()
+	require.False(t, retained)
+}
+
 func TestAutomaticLeaseIDStaysPositiveAfterMaxExplicitIDReload(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

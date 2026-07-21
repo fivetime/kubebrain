@@ -1033,6 +1033,15 @@ func (m *leaseManager) expireLeaseWithContext(workerCtx context.Context, id int6
 		m.retryLeaseExpiry(id)
 		return
 	}
+	// Upstream expired leases are revoked through EtcdServer.LeaseRevoke, so the
+	// CORRUPT applier defers both user-key deletion and lease metadata removal.
+	// Keep the same boundary here: retaining the complete lease lets the normal
+	// expiry retry remove it after the alarm is explicitly disarmed.
+	if err := m.srv.rejectCorrupt(workerCtx); err != nil {
+		m.srv.metricCli.EmitCounter("lease.expire.corrupt_deferred", 1, errClassTag(err))
+		m.retryLeaseExpiry(id)
+		return
+	}
 
 	ctx := backend.WithLeadershipEpoch(workerCtx, epoch)
 	keys, ok := m.leaseKeysSnapshot(id)

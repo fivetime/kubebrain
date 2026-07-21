@@ -23,6 +23,26 @@ type corruptAlarmOutcome struct {
 	AlarmCount int
 }
 
+type corruptAlarmLeaseExpiryOutcome struct {
+	PresentWhileAlarmed bool
+	DeletedAfterDisarm  bool
+}
+
+func TestCorruptAlarmDefersLeaseExpiryDifferentialAgainstReferenceEtcd(t *testing.T) {
+	reference := os.Getenv("REFERENCE_ETCD_ENDPOINT")
+	kubebrain := os.Getenv("KUBEBRAIN_ETCD_ENDPOINT")
+	if reference == "" || kubebrain == "" {
+		t.Skip("set REFERENCE_ETCD_ENDPOINT and KUBEBRAIN_ETCD_ENDPOINT")
+	}
+
+	want := runCorruptAlarmLeaseExpiryScenario(t, reference)
+	require.Equal(t, corruptAlarmLeaseExpiryOutcome{
+		PresentWhileAlarmed: true,
+		DeletedAfterDisarm:  true,
+	}, want)
+	require.Equal(t, want, runCorruptAlarmLeaseExpiryScenario(t, kubebrain))
+}
+
 func TestCorruptAlarmDifferentialAgainstReferenceEtcd(t *testing.T) {
 	reference := os.Getenv("REFERENCE_ETCD_ENDPOINT")
 	kubebrain := os.Getenv("KUBEBRAIN_ETCD_ENDPOINT")
@@ -219,4 +239,53 @@ func readOnlyTxn(key []byte, serializable bool) *etcdserverpb.TxnRequest {
 			Key: key, Serializable: serializable,
 		}},
 	}}}
+}
+
+func runCorruptAlarmLeaseExpiryScenario(t *testing.T, endpoint string) corruptAlarmLeaseExpiryOutcome {
+	t.Helper()
+	endpoint = strings.TrimPrefix(strings.TrimPrefix(endpoint, "http://"), "https://")
+	conn, err := grpc.NewClient(endpoint, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	kv := etcdserverpb.NewKVClient(conn)
+	lease := etcdserverpb.NewLeaseClient(conn)
+	maintenance := etcdserverpb.NewMaintenanceClient(conn)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	statusResponse, err := maintenance.Status(ctx, &etcdserverpb.StatusRequest{})
+	require.NoError(t, err)
+	memberID := statusResponse.Header.MemberId
+	require.NotZero(t, memberID)
+	key := []byte(testPrefix(t) + "/corrupt-expiry")
+	grant, err := lease.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 2})
+	require.NoError(t, err)
+	_, err = kv.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("leased"), Lease: grant.ID})
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_, _ = maintenance.Alarm(cleanupCtx, &etcdserverpb.AlarmRequest{
+			Action: etcdserverpb.AlarmRequest_DEACTIVATE, Alarm: etcdserverpb.AlarmType_CORRUPT, MemberID: memberID,
+		})
+		_, _ = kv.DeleteRange(cleanupCtx, &etcdserverpb.DeleteRangeRequest{Key: key})
+	})
+	_, err = maintenance.Alarm(ctx, &etcdserverpb.AlarmRequest{
+		Action: etcdserverpb.AlarmRequest_ACTIVATE, Alarm: etcdserverpb.AlarmType_CORRUPT, MemberID: memberID,
+	})
+	require.NoError(t, err)
+
+	time.Sleep(4 * time.Second)
+	duringAlarm, err := kv.Range(ctx, &etcdserverpb.RangeRequest{Key: key})
+	require.NoError(t, err)
+	outcome := corruptAlarmLeaseExpiryOutcome{PresentWhileAlarmed: len(duringAlarm.Kvs) == 1}
+	_, err = maintenance.Alarm(ctx, &etcdserverpb.AlarmRequest{
+		Action: etcdserverpb.AlarmRequest_DEACTIVATE, Alarm: etcdserverpb.AlarmType_CORRUPT, MemberID: memberID,
+	})
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		response, rangeErr := kv.Range(ctx, &etcdserverpb.RangeRequest{Key: key})
+		return rangeErr == nil && len(response.Kvs) == 0
+	}, 15*time.Second, 100*time.Millisecond)
+	outcome.DeletedAfterDisarm = true
+	return outcome
 }
