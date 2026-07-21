@@ -7631,6 +7631,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   测试 20 轮、完整 `go test ./...` 与 `go vet ./...` 通过；无运行时代码变化，继续使用
   A376 exact image，未另建镜像。
 
+- **Operations A378 quota configuration convergence gate（2026-07-21）**：A377 固定了
+  production manifest 的 400 GiB quota，但运行时写门禁仍读取各进程本地
+  `QuotaBackendBytes`；原 `KubeBrainQuotaMetricsInconsistent` 只比较 NOSPACE，无法发现
+  副本分别使用 100 GiB/400 GiB 等危险漂移。提交 `e1817eb` 要求实例发布门禁显式提供
+  正整数 `EXPECTED_QUOTA_BACKEND_BYTES`，并在已确认 StatefulSet image/revision/副本收敛
+  后，按 KubeBrain 容器名读取 Pod template args，要求恰好一个完全匹配的 quota 参数；
+  缺失、重复、错误值均 fail closed。门禁成功输出同时记录期望 quota，便于控制面审计。
+
+  同轮扩展 quota 一致性告警：NOSPACE、backend quota、logical usage 三类 series 都必须
+  恰好三份，并比较三副本 NOSPACE 与 backend quota 值；因此 series 缺失/重复、配置漂移
+  或 sticky alarm 未收敛超过一分钟都会告警。首次真实验证发现 kubectl JSONPath 将过滤
+  container 与 range args 组合时返回空结果，门禁按设计拒绝；改用按容器名遍历的 Go
+  template 后，在当前独立 3 PD/3 TiKV、A376 三副本、1 GiB quota 集群上完整执行
+  `validate-instance-ready.sh`，TidbCluster 收敛、精确 image/quota/副本数匹配且 endpoint
+  health proposal 成功。错误 quota、重复 quota、必填输入和告警表达式聚焦测试普通 20 轮，
+  完整 `go test ./...` 与 `go vet ./...` 通过；无运行时代码变化，未构建新镜像。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
