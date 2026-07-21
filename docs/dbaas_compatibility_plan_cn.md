@@ -7383,6 +7383,31 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   必须为所有副本注入相同完整 `--initial-cluster`，否则 MemberList 的 fallback 集合不完整，
   AutoSync 会合法但危险地缩减客户端 endpoint 集合。
 
+- **Compatibility A369 generated nested Txn response headers（2026-07-21）**：对照
+  `/root/etcd/server/etcdserver/txn/txn.go` 的 `newTxnResp`/`executeTxn` 路径确认：每层
+  nested `TxnResponse` 都分配非空 `ResponseHeader`，但只有顶层 Txn 写入最终 revision；
+  nested wrapper 的 header revision 保持零，叶子 Range/Put/Delete 仍携带提交 revision。
+  修复前 KubeBrain 的 atomic plan 与 staged executor 都递归盖写 nested header，因此客户端
+  递归检查响应时可观察到差异。提交 `3d1f332` 使两条路径都创建零值 nested header，并把
+  `stampTxnResponseHeaders` 限定为顶层；单元测试同时固定 nested header 非空且 revision 为零。
+
+  新生成式差分使用固定 seed 369，每轮执行 32 组相互隔离的三层 Txn，覆盖三层 compare
+  成功/失败组合、未选择分支、Put/Delete PrevKV、prefix Range、missing-key compare、递归响应
+  顺序/header/KV revision 和最终状态。本机 Badger 对 `/root/etcd` 连续 20 轮及 race 10 轮
+  通过。提交 `32aef9d` 进一步按被测 Txn revision 归一化提交版本，允许 HA 集群在 seed 与
+  被测 Txn 之间合法推进无关的内部 revision，同时仍要求所有叶子响应与新 KV 精确归属于
+  同一提交 revision，nested wrapper 必须保持零。
+
+  exact runtime image `kubebrain:a369-nested-txn-headers` 从 `3d1f332` 干净 Git archive
+  构建，image ID `sha256:3b9bff628dfd61fff9f920817b7643af3f7e66011207250041473258d186b79c`，
+  OCI version `0.0.0-a369.1`、revision `3d1f332e7b3385a49e6e204ed6b2d7454d522d1b`、
+  Go 1.26.5/linux/amd64、TiKV、运行用户 `65532:65532`。在独立 3 PD/3 TiKV、隔离
+  `a369-nested-txn-headers-final` keyspace 和三 KubeBrain 副本上，真实 TiKV 差分连续
+  20 轮通过，随后显式 3 轮复验 27.294 秒通过；
+  三 Pod Ready、restartCount=0、runtime digest 一致，日志无 panic/fatal/data race/storage
+  error。三 Pod UID 为 `3e58bae8-bd3b-4b80-9fec-91da0bda666d`、
+  `8efd33a0-b450-4b7a-9a80-4c7b357b16a0`、`99149032-7de7-4177-9025-97b826685de4`。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
