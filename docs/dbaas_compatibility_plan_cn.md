@@ -8506,6 +8506,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   下一次多 zone 预生产发布需以三个 Pod 的 `topology.kubernetes.io/zone` 实际分布和单 zone
   故障注入作为运行门禁。
 
+#### A426 PD/TiKV 生产 Pod 跨可用区放置偏好
+
+- KubeBrain 计算副本跨区并不能单独提供整区容灾：生产 TidbCluster 的三 PD、三 TiKV 原先
+  只有主机级 required pod anti-affinity，仍可能集中到同一 zone。PD 与 TiKV 现分别增加
+  weight=100、`topology.kubernetes.io/zone` 的 preferred pod anti-affinity，并用各自完整的
+  name+instance+component selector；保留 hostname 硬约束和 `minAvailable=2` PDB，同时避免
+  zone 容量不足或节点缺 zone label 时让存储集群永久不可调度。
+- manifest 测试固定两类存储组件的 preferred 条目数量、weight、topologyKey 及三项 selector；
+  聚焦普通 100 轮、race 20 轮通过。完整 TiDBCluster 清单通过已安装 TiDB Operator CRD 的
+  Kubernetes API server dry-run；production 包、root 全量测试、vet、staticcheck v0.7.0
+  均通过，dry-run 未修改当前集群。
+- 当前 kind 为单节点，无法验证跨 zone 实际放置，也不应应用生产 hostname 硬反亲和。该变更
+  只更新生产部署 artifact，不改变 A422 服务端镜像；多 zone 预生产发布仍须核验 PD/TiKV
+  Pod 的 zone 分布、TiKV region 副本拓扑和整区故障下注写可用性，软调度偏好不能替代这些
+  运行门禁。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
