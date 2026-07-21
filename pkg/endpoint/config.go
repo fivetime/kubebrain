@@ -474,7 +474,7 @@ func (sc *SecurityConfig) isInsecure() bool {
 		sc.ServerName == "" &&
 		len(sc.AllowedCNs) == 0 &&
 		len(sc.AllowedHostnames) == 0 &&
-		sc.ClientAuth == false
+		!sc.ClientAuth
 }
 
 func (sc *SecurityConfig) init() (err error) {
@@ -623,7 +623,6 @@ func (sc *SecurityConfig) init() (err error) {
 		if sc.CA != "" || sc.ClientAuth {
 			sc.serverTlsConfig.ClientAuth = tls.RequireAndVerifyClientCert
 		}
-		return
 	})
 	return sc.err
 }

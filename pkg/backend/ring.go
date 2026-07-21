@@ -30,7 +30,7 @@ type Ring struct {
 
 func NewRing(l int) *Ring {
 	return &Ring{
-		arr: make([]*proto.Event, l, l),
+		arr: make([]*proto.Event, l),
 		l:   l,
 	}
 }
@@ -106,7 +106,7 @@ func (r *Ring) FindEvents(revision uint64) (ret *FindRet) {
 		return r.arr[r.index(r.s+int64(i))].Revision >= revision
 	})
 
-	ret.events = make([]*proto.Event, int(r.e-r.s-int64(idx)), int(r.e-r.s-int64(idx)))
+	ret.events = make([]*proto.Event, int(r.e-r.s-int64(idx)))
 
 	if r.index(r.e) > r.index(r.s+int64(idx)) {
 		copy(ret.events, r.arr[r.index(r.s+int64(idx)):r.index(r.e)])

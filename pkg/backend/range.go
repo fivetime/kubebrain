@@ -87,7 +87,7 @@ func (b *backend) getLatestInternalVal(ctx context.Context, key []byte) (val []b
 //	modRevision maybe non-zero even if there is a storage.ErrKeyNotFound.
 func (b *backend) get(ctx context.Context, key []byte, revision uint64) (val []byte, modRevision uint64, err error) {
 	val, modRevision, err = b.getInternalVal(ctx, key, revision)
-	if bytes.Compare(val, tombStoneBytes) == 0 {
+	if bytes.Equal(val, tombStoneBytes) {
 		return nil, modRevision, storage.ErrKeyNotFound
 	}
 	return val, modRevision, err
@@ -115,7 +115,7 @@ func (b *backend) getInternalVal(ctx context.Context, key []byte, revision uint6
 	}
 
 	userKey, modRev, err := b.coder.Decode(iter.Key())
-	if modRev == 0 || bytes.Compare(userKey, key) != 0 {
+	if modRev == 0 || !bytes.Equal(userKey, key) {
 		// check if
 		// 1. the internal key is a revision key
 		// 2. the user key is mismatched

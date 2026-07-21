@@ -50,17 +50,6 @@ func encodeQuotaAlarm(memberID uint64) []byte {
 	return value
 }
 
-func decodeQuotaAlarm(value []byte) (uint64, error) {
-	members, err := decodeQuotaAlarms(value)
-	if err != nil {
-		return 0, err
-	}
-	if len(members) == 0 {
-		return 0, fmt.Errorf("NOSPACE alarm metadata has no members")
-	}
-	return members[0], nil
-}
-
 func encodeQuotaAlarms(memberIDs []uint64) []byte {
 	if len(memberIDs) == 1 {
 		return encodeQuotaAlarm(memberIDs[0])

@@ -279,7 +279,7 @@ func (a *OIDCAuthenticator) key(ctx context.Context, kid string) (*rsa.PublicKey
 func (a *OIDCAuthenticator) Authenticate(ctx context.Context, authorization string) (Principal, error) {
 	scheme, tokenText, found := strings.Cut(strings.TrimSpace(authorization), " ")
 	if !found || !strings.EqualFold(scheme, "Bearer") || strings.TrimSpace(tokenText) == "" {
-		return Principal{}, errors.New("Bearer token is required")
+		return Principal{}, errors.New("bearer token is required")
 	}
 	claims := jwt.MapClaims{}
 	parsed, err := jwt.ParseWithClaims(strings.TrimSpace(tokenText), claims, func(token *jwt.Token) (any, error) {

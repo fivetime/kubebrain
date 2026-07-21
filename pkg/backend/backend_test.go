@@ -413,7 +413,6 @@ func (ct *createTestcase) run(t *testing.T, s suite, output <-chan []*proto.Even
 			return
 		}
 		ast.True(noPendingRealEvent(output), expectNoEvent)
-		return
 	})
 
 }
@@ -574,9 +573,7 @@ func sortKvs(kvs []*proto.KeyValue) []*proto.KeyValue {
 
 func extractPartitions(resp *proto.ListPartitionResponse) [][]byte {
 	ret := make([][]byte, len(resp.PartitionKeys))
-	for idx, kv := range resp.PartitionKeys {
-		ret[idx] = kv
-	}
+	copy(ret, resp.PartitionKeys)
 	return ret
 }
 
@@ -1967,25 +1964,6 @@ func noPendingRealEvent(output <-chan []*proto.Event) bool {
 				return true
 			}
 			time.Sleep(5 * time.Millisecond)
-		}
-	}
-}
-
-func waitUntilEventChanFilledOrTimeout(eventChan <-chan []*proto.Event) {
-
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
-	for {
-		if len(eventChan) != 0 {
-			return
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
 		}
 	}
 }

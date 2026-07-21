@@ -16,7 +16,7 @@ package endpoint
 
 import (
 	"context"
-	"io/ioutil"
+	"io"
 	"net"
 	"net/http"
 	"path"
@@ -105,7 +105,7 @@ func TestRunEndpoint(t *testing.T) {
 		t.Logf("testing url %s", url)
 		resp, err := http.Get(url)
 		ast.NoError(err)
-		bs, err := ioutil.ReadAll(resp.Body)
+		bs, err := io.ReadAll(resp.Body)
 		ast.NoError(err)
 		ast.Equal(server.HealthResponse, string(bs))
 		resp.Body.Close()

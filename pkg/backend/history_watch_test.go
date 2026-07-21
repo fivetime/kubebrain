@@ -80,7 +80,6 @@ func TestHistoryWatchEventsNoPerTombstoneReads(t *testing.T) {
 			u, err := b.Update(ctx, &proto.UpdateRequest{Kv: &proto.KeyValue{Key: keys[i], Value: []byte(fmt.Sprintf("v-%d-2", i)), Revision: last}})
 			require.NoError(t, err)
 			require.True(t, u.Succeeded)
-			last = u.Header.Revision
 		}
 	}
 	// delete keys 3,4,5 -> three tombstones in the window.

@@ -72,7 +72,7 @@ func (b *batch) CAS(key []byte, newVal []byte, oldVal []byte, ttl int64) {
 		}
 
 		err = item.Value(func(val []byte) error {
-			if bytes.Compare(oldVal, val) != 0 {
+			if !bytes.Equal(oldVal, val) {
 				return storage.NewErrConflict(idx, key, val)
 			}
 			return nil

@@ -32,10 +32,6 @@ import (
 // an existing key, also returns an optimistic-concurrency guard (the key's
 // current revision) that the atomic txn path can assert at commit time (#4 Tier
 // 2). No guard is returned for range compares or absent keys.
-func (s *RPCServer) evalCompareGuarded(ctx context.Context, cmp *etcdserverpb.Compare) (bool, *backend.TxnGuard, error) {
-	return s.evalCompareGuardedAtRevision(ctx, cmp, 0)
-}
-
 func (s *RPCServer) evalCompareGuardedAtRevision(ctx context.Context, cmp *etcdserverpb.Compare, revision int64) (bool, *backend.TxnGuard, error) {
 	if len(cmp.RangeEnd) > 0 {
 		ok, err := s.evalRangeCompareAtRevision(ctx, cmp, revision)
@@ -98,10 +94,6 @@ func (s *RPCServer) compareSingleKey(cmp *etcdserverpb.Compare, kv *mvccpb.KeyVa
 		// result at its zero value, then applies the requested result enum.
 		return compareOrder(0, cmp.Result), nil
 	}
-}
-
-func (s *RPCServer) evalRangeCompare(ctx context.Context, cmp *etcdserverpb.Compare) (bool, error) {
-	return s.evalRangeCompareAtRevision(ctx, cmp, 0)
 }
 
 func (s *RPCServer) evalRangeCompareAtRevision(ctx context.Context, cmp *etcdserverpb.Compare, revision int64) (bool, error) {

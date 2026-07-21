@@ -11,7 +11,7 @@ WORKERS="${WORKERS:-8}"
 OPS_PER_WORKER="${OPS_PER_WORKER:-25}"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-180}"
 JOB_TIMEOUT_SECONDS="${JOB_TIMEOUT_SECONDS:-300}"
-GO_IMAGE="${GO_IMAGE:-golang:1.26-bookworm}"
+GO_IMAGE="${GO_IMAGE:-golang:1.26.5-bookworm@sha256:1ecb7edf62a0408027bd5729dfd6b1b8766e578e8df93995b225dfd0944eb651}"
 
 need() {
   if ! command -v "$1" >/dev/null 2>&1; then

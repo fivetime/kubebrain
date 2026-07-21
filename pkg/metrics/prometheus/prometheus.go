@@ -154,9 +154,7 @@ func validLabelValue(value string) string {
 
 func (pw *prometheusWrapper) extractLabelNames(labels []metrics.T) (ret []string) {
 	ret = make([]string, len(labels)+len(pw.globalLabelNames))
-	for i, labelName := range pw.globalLabelNames {
-		ret[i] = labelName
-	}
+	copy(ret, pw.globalLabelNames)
 	offset := len(pw.globalLabelNames)
 	for i, label := range labels {
 		ret[i+offset] = label.Name

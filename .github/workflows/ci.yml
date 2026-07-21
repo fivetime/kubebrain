@@ -58,6 +58,12 @@ jobs:
           (cd hack/backup/objectstore && \
             go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...)
 
+      - name: Run static analysis
+        run: |
+          go run honnef.co/go/tools/cmd/staticcheck@v0.7.0 ./...
+          (cd hack/backup/objectstore && \
+            go run honnef.co/go/tools/cmd/staticcheck@v0.7.0 ./...)
+
       - name: Race test critical packages
         run: |
           BACKEND_RACE_TESTS='Test(UpdateWithHugeClientRevisionDoesNotStallPipeline|DeleteWithHugeClientRevisionDoesNotStallPipeline|DeleteRangeCommitConflictDoesNotStallPipeline|UpdateMetadataReadFailureDoesNotStallPipeline|BroadcastEvictsSlowConsumerBeforeNextBatch|StreamDeliversGapFreePrefixToSlowConsumer|BackendWatchHistoryFallback|BackendWatchCatchUpAdvancesFromLastMatchingPrefixEvent|WatchEventOverflowResetsWatchState|CompactDoesNotRegressWatermark|ProcessEventsExitsOnCancelWhenConsumerStopped)$'

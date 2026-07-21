@@ -153,18 +153,6 @@ func (s *periodicProgressState) tick() bool {
 	return send
 }
 
-// syncedRevSnapshot returns a copy of every active watch's delivered
-// watermark, for per-watch progress responses (#39).
-func (w *watcher) syncedRevSnapshot() map[int64]uint64 {
-	w.Lock()
-	defer w.Unlock()
-	m := make(map[int64]uint64, len(w.watches))
-	for id, wt := range w.watches {
-		m[id] = atomic.LoadUint64(&wt.syncedRev)
-	}
-	return m
-}
-
 // progressSyncedRevSnapshot returns only watches whose own delivered watermark
 // has reached the requested start revision. allEligible is false when a
 // stream-wide progress response would be unsafe because any active watch is

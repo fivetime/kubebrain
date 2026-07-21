@@ -642,7 +642,7 @@ func (w *worker) runWithBackoffRetry(ctx context.Context, receiver resultReceive
 
 	if err != nil {
 		// fail after retry, scanErr records the latest scan err
-		if err == wait.ErrWaitTimeout {
+		if wait.Interrupted(err) {
 			err = fmt.Errorf("partition %d reached the max retry time: %d, encounter latest error %v", w.idx, scanBackoffSteps, scanErr)
 		}
 	}
@@ -794,7 +794,7 @@ func (w *worker) info() string {
 }
 
 func (w *worker) isSkippedRawKey(rawKey []byte, rev uint64) bool {
-	if len(w.lastCompactFailedRawKey) > 0 && bytes.Compare(w.lastCompactFailedRawKey, rawKey) == 0 {
+	if len(w.lastCompactFailedRawKey) > 0 && bytes.Equal(w.lastCompactFailedRawKey, rawKey) {
 		klog.V(4).InfoS("compact skip", "rawKey", string(rawKey), "rev", rev)
 		w.metricCli.EmitCounter("compact.skip", 1)
 		return true

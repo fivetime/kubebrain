@@ -1464,11 +1464,6 @@ func stampTxnResponseHeaders(resp *etcdserverpb.TxnResponse, revision int64) {
 	resp.Header = txnHeader(revision)
 }
 
-func (s *RPCServer) txnComparePaths(ctx context.Context, txn *etcdserverpb.TxnRequest) ([]bool, error) {
-	paths, _, err := s.txnComparePathsGuarded(ctx, txn)
-	return paths, err
-}
-
 // txnComparePathsGuarded additionally returns OCC guards for every compare that
 // selected the top-level and recursively selected nested branches. The atomic
 // path submits all of them with the flattened writes in one storage batch.

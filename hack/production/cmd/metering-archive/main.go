@@ -75,14 +75,14 @@ func prometheusClient(caFile, serverName string) (*http.Client, error) {
 	if caFile != "" {
 		contents, err := os.ReadFile(caFile)
 		if err != nil {
-			return nil, fmt.Errorf("read Prometheus CA: %w", err)
+			return nil, fmt.Errorf("read prometheus CA: %w", err)
 		}
 		roots, err := x509.SystemCertPool()
 		if err != nil {
 			roots = x509.NewCertPool()
 		}
 		if !roots.AppendCertsFromPEM(contents) {
-			return nil, errors.New("Prometheus CA file contains no certificates")
+			return nil, errors.New("prometheus CA file contains no certificates")
 		}
 		tlsConfig.RootCAs = roots
 	}
@@ -96,11 +96,11 @@ func readToken(path string) (string, error) {
 	}
 	contents, err := os.ReadFile(path)
 	if err != nil {
-		return "", fmt.Errorf("read Prometheus bearer token: %w", err)
+		return "", fmt.Errorf("read prometheus bearer token: %w", err)
 	}
 	token := strings.TrimSpace(string(contents))
 	if token == "" || strings.ContainsAny(token, "\r\n") {
-		return "", errors.New("Prometheus bearer token is empty or malformed")
+		return "", errors.New("prometheus bearer token is empty or malformed")
 	}
 	return token, nil
 }

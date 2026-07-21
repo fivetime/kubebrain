@@ -84,7 +84,7 @@ func proxyCallOptions(maxRequestBytes uint) []grpc.CallOption {
 		maxRequestBytes = 1572864
 	}
 	return []grpc.CallOption{
-		grpc.FailFast(false),
+		grpc.WaitForReady(true),
 		grpc.MaxCallSendMsgSize(int(maxRequestBytes + 512*1024)),
 		grpc.MaxCallRecvMsgSize(math.MaxInt32),
 	}
@@ -414,7 +414,7 @@ func (e *etcdProxy) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etc
 	if !resp.GetSucceeded() {
 		var respRev int64
 
-		if resp.Responses != nil && len(resp.Responses) == 1 {
+		if len(resp.Responses) == 1 {
 			getResp := (*clientv3.GetResponse)(resp.Responses[0].GetResponseRange())
 			if getResp != nil && getResp.Kvs != nil && len(getResp.Kvs) == 1 {
 				respRev = getResp.Kvs[0].ModRevision

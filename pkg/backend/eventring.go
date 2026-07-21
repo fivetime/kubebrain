@@ -44,12 +44,6 @@ func newWatchEventSlots(capacity int) []*watchEventSlot {
 	return slots
 }
 
-func (s *watchEventSlot) append(event *common.WatchEvent) {
-	s.Lock()
-	defer s.Unlock()
-	s.events = append(s.events, event)
-}
-
 func (s *watchEventSlot) appendAll(events []*common.WatchEvent) {
 	s.Lock()
 	defer s.Unlock()

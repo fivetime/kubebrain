@@ -4,7 +4,6 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"time"
 
@@ -42,7 +41,7 @@ func TLSConfigFromEnv() (*tls.Config, error) {
 		MinVersion:   tls.VersionTLS12,
 	}
 	if caFile != "" {
-		caPEM, err := ioutil.ReadFile(caFile)
+		caPEM, err := os.ReadFile(caFile)
 		if err != nil {
 			return nil, err
 		}

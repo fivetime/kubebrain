@@ -282,7 +282,7 @@ func (a *asyncFifoRetryImpl) overwrite(ctx context.Context, key []byte, prevOpRe
 	revBytes := make([]byte, 8, 9)
 	binary.BigEndian.PutUint64(revBytes, rev)
 
-	if bytes.Compare(val, a.config.Tombstone) == 0 {
+	if bytes.Equal(val, a.config.Tombstone) {
 		// append delete flag after revision bytes
 		revBytes = append(revBytes, 0)
 		prevRevBytes = append(prevRevBytes, 0)
@@ -297,7 +297,7 @@ func (a *asyncFifoRetryImpl) overwrite(ctx context.Context, key []byte, prevOpRe
 	// the op's own revision) so a replayed DELETE resolves the deleted value,
 	// not the tombstone itself.
 	verb := byte(proto.Event_PUT)
-	if bytes.Compare(val, a.config.Tombstone) == 0 {
+	if bytes.Equal(val, a.config.Tombstone) {
 		verb = byte(proto.Event_DELETE)
 	}
 	batch.Put(a.ks.EncodeEventLogKey(rev, key), coder.EncodeEventLogValue(verb, eventPrevRev), 0)

@@ -42,7 +42,7 @@ func NewHandler(
 	requestTimeout time.Duration,
 ) (*Handler, error) {
 	if tokens == nil || dynamicClient == nil {
-		return nil, errors.New("Kubernetes clients are required")
+		return nil, errors.New("kubernetes clients are required")
 	}
 	if namespace == "" || audience == "" {
 		return nil, errors.New("namespace and audience are required")
