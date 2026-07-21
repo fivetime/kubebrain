@@ -35,6 +35,10 @@ func TestCorruptAlarmDifferentialAgainstReferenceEtcd(t *testing.T) {
 		{Name: "activate", Code: codes.OK, AlarmCount: 1},
 		{Name: "get", Code: codes.OK, AlarmCount: 1},
 		{Name: "range", Code: codes.OK},
+		{Name: "empty-txn", Code: codes.OK},
+		{Name: "linearizable-read-txn", Code: codes.OK},
+		{Name: "serializable-read-txn", Code: codes.OK},
+		{Name: "write-in-unchosen-branch", Code: codes.DataLoss, Message: "etcdserver: corrupt cluster"},
 		{Name: "put", Code: codes.DataLoss, Message: "etcdserver: corrupt cluster"},
 		{Name: "delete", Code: codes.DataLoss, Message: "etcdserver: corrupt cluster"},
 		{Name: "txn", Code: codes.DataLoss, Message: "etcdserver: corrupt cluster"},
@@ -162,6 +166,24 @@ func runCorruptAlarmScenario(t *testing.T, endpoint string) []corruptAlarmOutcom
 	record("get", response, err)
 	_, err = kv.Range(ctx, &etcdserverpb.RangeRequest{Key: key})
 	record("range", nil, err)
+	_, err = kv.Txn(ctx, &etcdserverpb.TxnRequest{})
+	record("empty-txn", nil, err)
+	_, err = kv.Txn(ctx, readOnlyTxn(key, false))
+	record("linearizable-read-txn", nil, err)
+	_, err = kv.Txn(ctx, readOnlyTxn(key, true))
+	record("serializable-read-txn", nil, err)
+	_, err = kv.Txn(ctx, &etcdserverpb.TxnRequest{
+		Compare: []*etcdserverpb.Compare{{
+			Key: key, Result: etcdserverpb.Compare_GREATER,
+			Target:      etcdserverpb.Compare_CREATE,
+			TargetUnion: &etcdserverpb.Compare_CreateRevision{CreateRevision: 0},
+		}},
+		Success: readOnlyTxn(key, false).Success,
+		Failure: []*etcdserverpb.RequestOp{{
+			Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{Key: key, Value: []byte("unchosen")}},
+		}},
+	})
+	record("write-in-unchosen-branch", nil, err)
 	_, err = kv.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("value")})
 	record("put", nil, err)
 	_, err = kv.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{Key: key})
@@ -189,4 +211,12 @@ func runCorruptAlarmScenario(t *testing.T, endpoint string) []corruptAlarmOutcom
 	_, err = kv.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("value")})
 	record("put-after-disarm", nil, err)
 	return outcomes
+}
+
+func readOnlyTxn(key []byte, serializable bool) *etcdserverpb.TxnRequest {
+	return &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{{
+		Request: &etcdserverpb.RequestOp_RequestRange{RequestRange: &etcdserverpb.RangeRequest{
+			Key: key, Serializable: serializable,
+		}},
+	}}}
 }

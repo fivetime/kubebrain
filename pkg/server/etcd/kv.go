@@ -456,8 +456,10 @@ func (s *RPCServer) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etc
 		}
 		return response, err
 	}
-	if err := s.rejectCorrupt(ctx); err != nil {
-		return nil, err
+	if !txnIsReadonly(txn) {
+		if err := s.rejectCorrupt(ctx); err != nil {
+			return nil, err
+		}
 	}
 
 	// only leader can accept and handle write request

@@ -273,6 +273,22 @@ func TestCorruptAlarmBlocksEtcdApplierSurfaceOverGRPC(t *testing.T) {
 			}}})
 			return err
 		}},
+		{name: "write in unchosen txn branch", call: func() error {
+			_, err := kv.Txn(ctx, &etcdserverpb.TxnRequest{
+				Compare: []*etcdserverpb.Compare{{
+					Key: []byte("key"), Result: etcdserverpb.Compare_EQUAL,
+					Target:      etcdserverpb.Compare_CREATE,
+					TargetUnion: &etcdserverpb.Compare_CreateRevision{CreateRevision: 0},
+				}},
+				Success: []*etcdserverpb.RequestOp{{
+					Request: &etcdserverpb.RequestOp_RequestRange{RequestRange: &etcdserverpb.RangeRequest{Key: []byte("key")}},
+				}},
+				Failure: []*etcdserverpb.RequestOp{{
+					Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{Key: []byte("key")}},
+				}},
+			})
+			return err
+		}},
 		{name: "compact", call: func() error { _, err := kv.Compact(ctx, &etcdserverpb.CompactionRequest{}); return err }},
 		{name: "lease grant", call: func() error { _, err := lease.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 10}); return err }},
 		{name: "lease revoke", call: func() error { _, err := lease.LeaseRevoke(ctx, &etcdserverpb.LeaseRevokeRequest{ID: 1}); return err }},
@@ -282,6 +298,15 @@ func TestCorruptAlarmBlocksEtcdApplierSurfaceOverGRPC(t *testing.T) {
 	}
 	_, err = kv.Range(ctx, &etcdserverpb.RangeRequest{Key: []byte("key")})
 	require.NoError(t, err)
+	for _, serializable := range []bool{false, true} {
+		response, txnErr := kv.Txn(ctx, &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{{
+			Request: &etcdserverpb.RequestOp_RequestRange{RequestRange: &etcdserverpb.RangeRequest{
+				Key: []byte("key"), Serializable: serializable,
+			}},
+		}}})
+		require.NoError(t, txnErr)
+		require.Len(t, response.Responses, 1)
+	}
 	stream, err := kv.RangeStream(ctx, &etcdserverpb.RangeRequest{Key: []byte("key")})
 	require.NoError(t, err)
 	_, err = stream.Recv()
