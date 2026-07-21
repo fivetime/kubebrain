@@ -8345,6 +8345,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `kube-brain version` 均为 `f2212990b5521a94d51e0246fe9222b3ff71abb8`，运行用户为
   `65532:65532`；三副本已恢复 `--max-watches=10000` 并滚动收敛。
 
+#### A417 LeaseKeepAlive 阻塞接收取消与 gRPC 状态归一化
+
+- 对照 `/root/etcd/server/etcdserver/api/v3rpc/lease.go`，上游 `LeaseKeepAlive` 在独立接收
+  goroutine 外同时等待 `stream.Context().Done()`；KubeBrain 此前直接阻塞于 `Recv()`，handler
+  的取消退出依赖具体 gRPC transport 唤醒接收。现拆分 `leaseKeepAlive` 接收循环，并由公开 RPC
+  handler 仲裁接收结果与 stream context；错误通道容量为 1，取消竞争不会阻塞接收 goroutine
+  收尾。context 退出通过 `status.FromContextError` 转为标准 gRPC `Canceled`，避免 Prometheus
+  将标准库 `context.Canceled` 记为 `Unknown`。
+- 新增可控阻塞 `Recv` 的确定性回归，证明 context 取消不等待 transport 接收返回；同时把过期
+  lease 等待和 follower proxy 取消用例收紧为 `codes.Canceled`。聚焦普通 20 轮、race 5 轮、
+  `pkg/server/etcd` 全包通过。首次真实 follower 指标门禁准确发现 1000 次取消被归类为
+  `Unknown`，完成状态归一化后连续 5 轮通过，共覆盖 1000 次建流、发送和取消，`Canceled`
+  增长且 `Unavailable` 不增长。
+- 显式设置当前 NodePort 后，独立 compat module uncached 全量 117.702 秒通过，root/compat vet
+  与 staticcheck v0.7.0 通过。镜像 `kubebrain:a417-lease-stream-cancel-local` digest 为
+  `sha256:a1d8e8ae831d53914eb99c176a010e0dbb5b0bbafb04867c3568f75a05b67615`，OCI revision 与
+  容器版本为 `b8d216a1b00a78ff59692ad946c0176ddb3f3e16`，运行用户 `65532:65532`；三副本滚动
+  收敛后 Ready、零重启，主 PD/TiKV 3+3 Ready，health/readyz 正常且无 alarm。
+- 本轮还复核了两个候选项但未伪造缺口：raw gRPC Watch `CloseSend` 后 response side 保持存活
+  与 reference etcd 一致；`LeaseCheckpointRequest` 只属于 `InternalRaftRequest`，不在公开
+  `LeaseServer` RPC 面。公开 42 个 RPC 的显式实现/拒绝门禁继续覆盖 API 升级。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
