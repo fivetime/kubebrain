@@ -127,7 +127,7 @@ phase_tools() {
   for p in bulk foload elogprobe qlat; do
     ( cd "$REPO" && go build -o "$HERE/bin/$p" "./hack/scale-lab/probes/$p" )
   done
-  log "tools: built -> $(ls "$HERE/bin" | tr '\n' ' ')"
+  log "tools: built -> $(find "$HERE/bin" -mindepth 1 -maxdepth 1 -printf '%f\n' | LC_ALL=C sort | tr '\n' ' ')"
   cat <<EOF
 
 Run examples:

@@ -38,6 +38,7 @@ CHURN_OBJECTS="${CHURN_OBJECTS:-15}" # configmaps per round
 DO_FAILOVER="${DO_FAILOVER:-true}"   # kill the KubeBrain leader mid-load
 
 K3S_PID=""
+status=0
 trap 'status=$?; if [ -n "$K3S_PID" ] && kill -0 "$K3S_PID" 2>/dev/null; then kill "$K3S_PID" 2>/dev/null || true; wait "$K3S_PID" 2>/dev/null || true; fi; exit "$status"' EXIT
 
 k() { KUBECONFIG="$KUBECONFIG_FILE" kubectl --insecure-skip-tls-verify="$SKIP_TLS" --request-timeout=20s "$@"; }

@@ -31,8 +31,8 @@ t() {
       printf "  \033[31m✗\033[0m %-24s [%s] LIST FAILED\n" "$kind" "$cat"; FAIL=$((FAIL+1)); FAILED+=("$kind"); fi
     return
   fi
-  local out; out=$(echo "$body" | kubectl apply -f - 2>&1)
-  if [[ $? -ne 0 ]]; then
+  local out
+  if ! out=$(echo "$body" | kubectl apply -f - 2>&1); then
     printf "  \033[31m✗\033[0m %-24s [%s] CREATE FAILED: %s\n" "$kind" "$cat" "$(echo "$out"|tail -1|cut -c1-70)"
     FAIL=$((FAIL+1)); FAILED+=("$kind"); return
   fi

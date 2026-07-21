@@ -16,11 +16,12 @@
 export pkg="github.com/kubewharf/kubebrain/cmd/version"
 export version="${KUBEBRAIN_VERSION:-$(git describe --abbrev=0 --tags 2>/dev/null || git rev-parse --abbrev-ref HEAD 2>/dev/null || true)}"
 export sha="${KUBEBRAIN_GIT_SHA:-$(git rev-parse --short HEAD 2>/dev/null || true)}"
-export go_version=$(go env GOVERSION)
-export go_os=$(go env GOOS)
-export go_arch=$(go env GOARCH)
+go_version=$(go env GOVERSION)
+go_os=$(go env GOOS)
+go_arch=$(go env GOARCH)
+export go_version go_os go_arch
 export go_os_arch="$go_os/$go_arch"
-export storage=$1
+export storage="$1"
 export date="${KUBEBRAIN_BUILD_DATE:-$(date -u "+%Y-%m-%dT%H:%M:%SZ")}"
 
 if [[ "${REQUIRE_BUILD_METADATA:-false}" == "true" ]]; then
@@ -34,15 +35,15 @@ if [[ "${REQUIRE_BUILD_METADATA:-false}" == "true" ]]; then
   fi
 fi
 
-echo -e "\033[32m"
-echo -e "build env "
-echo -e "version   \t"$version
-echo -e "sha       \t"$sha
-echo -e "go_version\t"$go_version
-echo -e "go_os     \t"$go_os
-echo -e "go_arch   \t"$go_arch
-echo -e "storage   \t"$storage
-echo -e "\033[37m"
+printf '\033[32m\n'
+printf 'build env\n'
+printf 'version   \t%s\n' "$version"
+printf 'sha       \t%s\n' "$sha"
+printf 'go_version\t%s\n' "$go_version"
+printf 'go_os     \t%s\n' "$go_os"
+printf 'go_arch   \t%s\n' "$go_arch"
+printf 'storage   \t%s\n' "$storage"
+printf '\033[37m\n'
 
 ldflags="-X $pkg.Version=$version -X $pkg.Storage=$storage -X $pkg.GoOsArch=$go_os_arch"
 ldflags=$ldflags" -X $pkg.GoVersion=$go_version -X $pkg.GitSHA=$sha -X $pkg.Date=$date"

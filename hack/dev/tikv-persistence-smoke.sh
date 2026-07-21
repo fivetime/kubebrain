@@ -29,7 +29,8 @@ kind load docker-image "$VERIFY_IMAGE_NAME" --name "$CLUSTER_NAME" >/dev/null
 
 run_verify() {
   local mode="$1"
-  local name="tikv-persistence-${mode}-$(date +%s%N)"
+  local name
+  name="tikv-persistence-${mode}-$(date +%s%N)"
   local phase
   kubectl -n "$VERIFY_NAMESPACE" run "$name" \
     --image="$VERIFY_IMAGE_NAME" \

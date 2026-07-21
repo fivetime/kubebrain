@@ -13,9 +13,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-WORK_DIR="$(cd "$(dirname "${BASH_SOURCE}")/.." && pwd -P)"
-go install github.com/google/addlicense@latest
-echo $WORK_DIR $0
+WORK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+go install github.com/google/addlicense@v1.2.0
+echo "$WORK_DIR" "$0"
 addlicense -c "ByteDance and/or its affiliates" \
   -l "apache" \
-  $WORK_DIR/*
+  "$WORK_DIR"/*

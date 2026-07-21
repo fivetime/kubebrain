@@ -16,7 +16,7 @@ set -euo pipefail
 
 BIN_NAME="kube-brain"
 BIN_DIR="./bin"
-WORK_DIR="$(cd "$(dirname "${BASH_SOURCE}")/.." && pwd -P)"
+WORK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 
 echo "${WORK_DIR}"
 cd "${WORK_DIR}"

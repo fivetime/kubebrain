@@ -46,7 +46,6 @@
 #   IMG              churn pod image (must be cached)         (default rancher/mirrored-pause:3.6)
 set -uo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 K3S_KUBECONFIG="${K3S_KUBECONFIG:-/root/mk.yaml}"
 KBNS="${KBNS:-kubebrain-dev}"
 INFO_NODEPORT="${INFO_NODEPORT:-172.18.0.2:32377}"

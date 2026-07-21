@@ -67,6 +67,7 @@ SMOKE_NS="kubebrain-k3s-smoke-$(date +%s)"
 KEEP_CM="persisted-config"
 WATCH_PID=""
 ROLLOUT_PID=""
+status=0
 trap 'status=$?; if [ -n "$WATCH_PID" ] && kill -0 "$WATCH_PID" 2>/dev/null; then kill "$WATCH_PID" 2>/dev/null || true; wait "$WATCH_PID" 2>/dev/null || true; fi; if [ -n "$ROLLOUT_PID" ] && kill -0 "$ROLLOUT_PID" 2>/dev/null; then wait "$ROLLOUT_PID" 2>/dev/null || true; fi; if [ -n "$K3S_PID" ] && kill -0 "$K3S_PID" 2>/dev/null; then kill "$K3S_PID" 2>/dev/null || true; wait "$K3S_PID" 2>/dev/null || true; fi; rm -rf "$WORK_DIR"; exit "$status"' EXIT
 
 build_verifier_image() {
@@ -82,7 +83,8 @@ EOF
 
 run_tikv_key_verify() {
   local key="$1"
-  local name="tikv-key-exists-$(date +%s%N)"
+  local name
+  name="tikv-key-exists-$(date +%s%N)"
   local phase
   kubectl -n "$VERIFY_NAMESPACE" run "$name" \
     --image="$VERIFY_IMAGE_NAME" \
@@ -117,7 +119,8 @@ run_tikv_key_verify() {
 
 run_tikv_deleted_verify() {
   local key="$1"
-  local name="tikv-key-deleted-$(date +%s%N)"
+  local name
+  name="tikv-key-deleted-$(date +%s%N)"
   local phase
   kubectl -n "$VERIFY_NAMESPACE" run "$name" \
     --image="$VERIFY_IMAGE_NAME" \
@@ -340,7 +343,8 @@ run_k3s_delete_collection() {
 }
 
 run_k3s_namespace_delete() {
-  local ns="kubebrain-k3s-ns-delete-$(date +%s)"
+  local ns
+  ns="kubebrain-k3s-ns-delete-$(date +%s)"
   local label="app=k3s-namespace-delete"
   local count
   local deadline
