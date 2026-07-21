@@ -94,7 +94,11 @@ func (e *stagedTxnExecutor) execute(txn *etcdserverpb.TxnRequest) (*etcdserverpb
 	if !succeeded {
 		ops = txn.Failure
 	}
-	resp := &etcdserverpb.TxnResponse{Succeeded: succeeded, Responses: make([]*etcdserverpb.ResponseOp, 0, len(ops))}
+	resp := &etcdserverpb.TxnResponse{
+		Header:    &etcdserverpb.ResponseHeader{},
+		Succeeded: succeeded,
+		Responses: make([]*etcdserverpb.ResponseOp, 0, len(ops)),
+	}
 	for _, op := range ops {
 		switch {
 		case op.GetRequestRange() != nil:
@@ -125,7 +129,6 @@ func (e *stagedTxnExecutor) execute(txn *etcdserverpb.TxnRequest) (*etcdserverpb
 			return nil, txnKeyNotFoundError()
 		}
 	}
-	resp.Header = txnHeader(e.visibleRevision())
 	return resp, nil
 }
 

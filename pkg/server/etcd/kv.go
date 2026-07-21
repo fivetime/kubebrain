@@ -1403,7 +1403,11 @@ func buildAtomicTxnPlan(txn *etcdserverpb.TxnRequest, cur *txnPathCursor, plan *
 	if !succeeded {
 		ops = txn.Failure
 	}
-	resp := &etcdserverpb.TxnResponse{Succeeded: succeeded, Responses: make([]*etcdserverpb.ResponseOp, 0, len(ops))}
+	resp := &etcdserverpb.TxnResponse{
+		Header:    &etcdserverpb.ResponseHeader{},
+		Succeeded: succeeded,
+		Responses: make([]*etcdserverpb.ResponseOp, 0, len(ops)),
+	}
 	for _, op := range ops {
 		switch {
 		case op.GetRequestPut() != nil:
@@ -1451,11 +1455,6 @@ func buildAtomicTxnPlan(txn *etcdserverpb.TxnRequest, cur *txnPathCursor, plan *
 
 func stampTxnResponseHeaders(resp *etcdserverpb.TxnResponse, revision int64) {
 	resp.Header = txnHeader(revision)
-	for _, op := range resp.Responses {
-		if nested := op.GetResponseTxn(); nested != nil {
-			stampTxnResponseHeaders(nested, revision)
-		}
-	}
 }
 
 func (s *RPCServer) txnComparePaths(ctx context.Context, txn *etcdserverpb.TxnRequest) ([]bool, error) {

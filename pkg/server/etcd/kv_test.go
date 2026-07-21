@@ -2859,7 +2859,8 @@ func TestTxnNestedWriteOnlyUsesSingleRevision(t *testing.T) {
 	require.Len(t, resp.Responses, 2)
 	nested := resp.Responses[1].GetResponseTxn()
 	require.NotNil(t, nested)
-	require.Equal(t, resp.Header.Revision, nested.Header.Revision)
+	require.NotNil(t, nested.Header)
+	require.Zero(t, nested.Header.Revision)
 
 	gotA, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: keyA})
 	require.NoError(t, err)
