@@ -118,6 +118,9 @@ type Backend interface {
 	// DisarmNoSpace removes memberID's NOSPACE alarm and reports whether it was
 	// active. The tenant-wide cap remains while any member alarm exists.
 	DisarmNoSpace(ctx context.Context, memberID uint64) (bool, error)
+	ArmCorrupt(ctx context.Context, memberID uint64) error
+	CorruptAlarms(ctx context.Context) ([]uint64, error)
+	DisarmCorrupt(ctx context.Context, memberID uint64) (bool, error)
 
 	// BeginRangeTxn excludes every logical user-key write until unlock. It is
 	// used only for generic etcd transactions with range compares, because TiKV

@@ -404,6 +404,7 @@ const (
 	healthCheckTimeout   = 5 * time.Second
 	healthNoLeaderReason = "RAFT NO LEADER"
 	healthNoSpaceReason  = "ALARM NOSPACE"
+	healthCorruptReason  = "ALARM CORRUPT"
 )
 
 type healthResponse struct {
@@ -493,18 +494,26 @@ func (s *server) writeLegacyHealthHealthy(w http.ResponseWriter) {
 }
 
 func (s *server) healthAlarmFailureReason(ctx context.Context, excluded map[string]struct{}) string {
-	if _, ok := excluded["NOSPACE"]; ok {
-		return ""
-	}
 	if s.backend == nil {
 		return ""
 	}
-	_, _, noSpace, err := s.backend.QuotaStatus(ctx)
-	if err != nil {
-		return "ALARM ERROR:" + err.Error()
+	if _, ok := excluded["NOSPACE"]; !ok {
+		_, _, noSpace, err := s.backend.QuotaStatus(ctx)
+		if err != nil {
+			return "ALARM ERROR:" + err.Error()
+		}
+		if noSpace {
+			return healthNoSpaceReason
+		}
 	}
-	if noSpace {
-		return healthNoSpaceReason
+	if _, ok := excluded["CORRUPT"]; !ok {
+		alarms, err := s.backend.CorruptAlarms(ctx)
+		if err != nil {
+			return "ALARM ERROR:" + err.Error()
+		}
+		if len(alarms) != 0 {
+			return healthCorruptReason
+		}
 	}
 	return ""
 }

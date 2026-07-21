@@ -34,11 +34,16 @@ func (s *server) addEtcdHealthCheckHandlers(handlers map[string]http.Handler) {
 		}},
 	}
 	readyz := []namedHealthCheck{
-		// KubeBrain has no member-local CORRUPT alarm. TiKV owns replicated
-		// storage integrity, while KubeBrain's hash and GC checks report their
-		// failures directly. This check is therefore the platform equivalent
-		// of "no active CORRUPT alarm".
-		{name: "data_corruption", check: func(context.Context) error { return nil }},
+		{name: "data_corruption", check: func(ctx context.Context) error {
+			alarms, err := s.backend.CorruptAlarms(ctx)
+			if err != nil {
+				return err
+			}
+			if len(alarms) != 0 {
+				return fmt.Errorf("alarm activated: CORRUPT")
+			}
+			return nil
+		}},
 		{name: "serializable_read", check: func(ctx context.Context) error {
 			return s.readHealthCheck(ctx, true)
 		}},

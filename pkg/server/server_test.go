@@ -353,6 +353,42 @@ func TestHTTPHealthMatchesEtcdNoSpaceAlarmSemantics(t *testing.T) {
 		"etcd checks alarms before leader availability")
 }
 
+func TestHTTPHealthAndReadyzExposeCorruptAlarm(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	m := mock.NewMinimalMetrics(ctrl)
+	kv := imemkv.NewKvStorage()
+	b := backend.NewBackend(kv, backend.Config{Prefix: "/registry", Identity: "health-corrupt-test"}, m)
+	defer func() { require.NoError(t, b.(interface{ Close() error }).Close()) }()
+	s := &server{
+		healthServer:   health.NewServer(),
+		leaderElection: &leader.Stub{ElectionInfo: leader.ElectionInfo{IsLeader: true}},
+		backend:        b,
+	}
+	s.healthServer.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
+	require.NoError(t, b.ArmCorrupt(context.Background(), 42))
+
+	for _, target := range []string{"/health", "/health?serializable=true", "/health?exclude=NOSPACE"} {
+		recorder := httptest.NewRecorder()
+		s.httpHealthHandler(recorder, httptest.NewRequest(http.MethodGet, target, nil))
+		require.Equal(t, http.StatusServiceUnavailable, recorder.Code, target)
+		require.JSONEq(t, `{"health":"false","reason":"ALARM CORRUPT"}`, recorder.Body.String(), target)
+	}
+	recorder := httptest.NewRecorder()
+	s.httpHealthHandler(recorder, httptest.NewRequest(http.MethodGet, "/health?exclude=CORRUPT", nil))
+	require.Equal(t, http.StatusOK, recorder.Code)
+
+	handlers := s.GetClientHttpHandlers()
+	recorder = httptest.NewRecorder()
+	handlers["/readyz/data_corruption"].ServeHTTP(recorder,
+		httptest.NewRequest(http.MethodGet, "/readyz/data_corruption?verbose", nil))
+	require.Equal(t, http.StatusServiceUnavailable, recorder.Code)
+	require.Contains(t, recorder.Body.String(), "[-]data_corruption failed: alarm activated: CORRUPT")
+	recorder = httptest.NewRecorder()
+	handlers["/readyz"].ServeHTTP(recorder,
+		httptest.NewRequest(http.MethodGet, "/readyz?exclude=data_corruption", nil))
+	require.Equal(t, http.StatusOK, recorder.Code)
+}
+
 func TestEtcdLivezAndReadyzChecks(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	m := mock.NewMinimalMetrics(ctrl)
