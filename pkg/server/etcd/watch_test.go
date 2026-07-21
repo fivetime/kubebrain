@@ -912,6 +912,9 @@ func TestFollowerWatchCancelPrecedesReadBarrier(t *testing.T) {
 	server.peers = testPeerService{
 		isLeader:     false,
 		proxyEnabled: true,
+		putFn: func(context.Context, *etcdserverpb.PutRequest) (*etcdserverpb.PutResponse, error) {
+			return &etcdserverpb.PutResponse{Header: txnHeader(61)}, nil
+		},
 		syncReadFn: func(context.Context) error {
 			if barrierCalls.Add(1) == 1 {
 				server.backend.SetCurrentRevision(60)
@@ -928,6 +931,14 @@ func TestFollowerWatchCancelPrecedesReadBarrier(t *testing.T) {
 			return proxyResults, nil
 		},
 	}
+	putResponse, err := server.Put(context.Background(), &etcdserverpb.PutRequest{
+		Key:   []byte("/watch/proxied-write"),
+		Value: []byte("value"),
+	})
+	require.NoError(t, err)
+	require.Equal(t, int64(61), putResponse.Header.Revision)
+	require.Equal(t, uint64(61), server.backend.GetCurrentRevision())
+
 	stream := &scriptedWatchServer{
 		fakeWatchServer: &fakeWatchServer{ctx: context.Background()},
 		reqs: []*etcdserverpb.WatchRequest{
@@ -942,7 +953,7 @@ func TestFollowerWatchCancelPrecedesReadBarrier(t *testing.T) {
 			}}},
 		},
 	}
-	err := server.Watch(stream)
+	err = server.Watch(stream)
 	require.Equal(t, codes.Unavailable, status.Code(err))
 	require.Equal(t, int64(2), barrierCalls.Load(), "client cancel must not enter the read barrier")
 	require.Len(t, stream.sent, 2)
@@ -952,7 +963,7 @@ func TestFollowerWatchCancelPrecedesReadBarrier(t *testing.T) {
 	require.True(t, stream.sent[1].Canceled)
 	require.Empty(t, stream.sent[1].CancelReason)
 	require.Equal(t, int64(415), stream.sent[1].WatchId)
-	require.Equal(t, int64(60), stream.sent[1].Header.Revision)
+	require.Equal(t, int64(61), stream.sent[1].Header.Revision)
 	require.Eventually(t, func() bool {
 		select {
 		case <-proxyCanceled:

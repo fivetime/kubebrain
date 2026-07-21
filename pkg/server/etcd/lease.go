@@ -104,7 +104,9 @@ func (m *leaseManager) LeaseGrant(ctx context.Context, req *etcdserverpb.LeaseGr
 			if err != nil {
 				return nil, err
 			}
-			return m.srv.peers.LeaseGrant(proxyCtx, req)
+			response, err := m.srv.peers.LeaseGrant(proxyCtx, req)
+			m.srv.observeForwardedRevision(response.GetHeader(), err)
+			return response, err
 		}
 		return nil, err
 	}
@@ -215,7 +217,9 @@ func (m *leaseManager) LeaseRevoke(ctx context.Context, req *etcdserverpb.LeaseR
 			if err != nil {
 				return nil, err
 			}
-			return m.srv.peers.LeaseRevoke(proxyCtx, req)
+			response, err := m.srv.peers.LeaseRevoke(proxyCtx, req)
+			m.srv.observeForwardedRevision(response.GetHeader(), err)
+			return response, err
 		}
 		return nil, err
 	}
@@ -293,6 +297,7 @@ func (m *leaseManager) leaseKeepAlive(stream etcdserverpb.Lease_LeaseKeepAliveSe
 			if err != nil {
 				return err
 			}
+			m.srv.observeForwardedRevision(resp.GetHeader(), nil)
 			if err := stream.Send(resp); err != nil {
 				return err
 			}
@@ -335,7 +340,9 @@ func (m *leaseManager) LeaseTimeToLive(ctx context.Context, req *etcdserverpb.Le
 			if err != nil {
 				return nil, err
 			}
-			return m.srv.peers.LeaseTimeToLive(proxyCtx, req)
+			response, err := m.srv.peers.LeaseTimeToLive(proxyCtx, req)
+			m.srv.observeForwardedRevision(response.GetHeader(), err)
+			return response, err
 		}
 		return nil, err
 	}
@@ -350,7 +357,9 @@ func (m *leaseManager) LeaseTimeToLive(ctx context.Context, req *etcdserverpb.Le
 			if forwardErr != nil {
 				return nil, forwardErr
 			}
-			return m.srv.peers.LeaseTimeToLive(proxyCtx, req)
+			response, forwardErr := m.srv.peers.LeaseTimeToLive(proxyCtx, req)
+			m.srv.observeForwardedRevision(response.GetHeader(), forwardErr)
+			return response, forwardErr
 		}
 		return nil, err
 	}
@@ -408,7 +417,9 @@ func (m *leaseManager) LeaseLeases(ctx context.Context, req *etcdserverpb.LeaseL
 			if err != nil {
 				return nil, err
 			}
-			return m.srv.peers.LeaseLeases(proxyCtx, req)
+			response, err := m.srv.peers.LeaseLeases(proxyCtx, req)
+			m.srv.observeForwardedRevision(response.GetHeader(), err)
+			return response, err
 		}
 		return nil, err
 	}
@@ -420,7 +431,9 @@ func (m *leaseManager) LeaseLeases(ctx context.Context, req *etcdserverpb.LeaseL
 			if forwardErr != nil {
 				return nil, forwardErr
 			}
-			return m.srv.peers.LeaseLeases(proxyCtx, req)
+			response, forwardErr := m.srv.peers.LeaseLeases(proxyCtx, req)
+			m.srv.observeForwardedRevision(response.GetHeader(), forwardErr)
+			return response, forwardErr
 		}
 		return nil, err
 	}

@@ -68,7 +68,9 @@ func (s *RPCServer) Range(ctx context.Context, r *etcdserverpb.RangeRequest) (*e
 		if err != nil {
 			return nil, err
 		}
-		return s.peers.Range(proxyCtx, r)
+		response, err := s.peers.Range(proxyCtx, r)
+		s.observeForwardedRevision(response.GetHeader(), err)
+		return response, err
 	}
 	if (!r.Serializable || r.Revision > 0) && !durableHistorical {
 		if err := s.peers.SyncReadRevision(ctx); err != nil {
@@ -446,7 +448,9 @@ func (s *RPCServer) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etc
 				if proxyErr != nil {
 					return nil, proxyErr
 				}
-				return s.peers.Txn(proxyCtx, txn)
+				response, proxyErr := s.peers.Txn(proxyCtx, txn)
+				s.observeForwardedRevision(response.GetHeader(), proxyErr)
+				return response, proxyErr
 			}
 			return nil, err
 		}
@@ -475,7 +479,9 @@ func (s *RPCServer) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etc
 			if err != nil {
 				return nil, err
 			}
-			return s.peers.Txn(proxyCtx, txn)
+			response, err := s.peers.Txn(proxyCtx, txn)
+			s.observeForwardedRevision(response.GetHeader(), err)
+			return response, err
 		}
 		return nil, s.notLeaderErr("txn")
 	}
@@ -900,7 +906,9 @@ func (s *RPCServer) Compact(ctx context.Context, r *etcdserverpb.CompactionReque
 			if err != nil {
 				return nil, err
 			}
-			return s.peers.Compact(proxyCtx, r)
+			response, err := s.peers.Compact(proxyCtx, r)
+			s.observeForwardedRevision(response.GetHeader(), err)
+			return response, err
 		}
 		return nil, s.notLeaderErr("compact")
 	}
@@ -1000,7 +1008,9 @@ func (s *RPCServer) Put(ctx context.Context, r *etcdserverpb.PutRequest) (*etcds
 			if err != nil {
 				return nil, err
 			}
-			return s.peers.Put(proxyCtx, r)
+			response, err := s.peers.Put(proxyCtx, r)
+			s.observeForwardedRevision(response.GetHeader(), err)
+			return response, err
 		}
 		return nil, s.notLeaderErr("put")
 	}
@@ -1077,7 +1087,9 @@ func (s *RPCServer) DeleteRange(ctx context.Context, r *etcdserverpb.DeleteRange
 			if err != nil {
 				return nil, err
 			}
-			return s.peers.DeleteRange(proxyCtx, r)
+			response, err := s.peers.DeleteRange(proxyCtx, r)
+			s.observeForwardedRevision(response.GetHeader(), err)
+			return response, err
 		}
 		return nil, s.notLeaderErr("delete range")
 	}
@@ -1892,6 +1904,16 @@ func errClass(err error) string {
 func txnHeader(rev int64) *etcdserverpb.ResponseHeader {
 	return &etcdserverpb.ResponseHeader{
 		Revision: rev,
+	}
+}
+
+// observeForwardedRevision keeps a serving follower's committed watermark at
+// least as fresh as a successful response it returned to the same client. It
+// deliberately does not advance the published watch watermark: event delivery
+// remains responsible for proving that a revision is safe for watch progress.
+func (s *RPCServer) observeForwardedRevision(header *etcdserverpb.ResponseHeader, err error) {
+	if err == nil && header != nil && header.Revision > 0 {
+		s.backend.SetCurrentRevision(uint64(header.Revision))
 	}
 }
 
