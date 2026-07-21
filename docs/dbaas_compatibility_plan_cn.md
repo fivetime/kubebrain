@@ -7761,6 +7761,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   本轮只新增兼容门禁，不修改运行时代码或构建数据面镜像；DoubleBarrier 的 lease/failover
   组合继续作为下一轮 recipe 覆盖。
 
+- **Compatibility A385 clientv3 DoubleBarrier lease recovery（2026-07-21）**：
+  对照 `/root/etcd/tests/integration/clientv3/experimental/recipes/v3_double_barrier_test.go`
+  和 upstream `double_barrier.go`，提交 `a053616` 增加三参与者双端黑盒差分。前两个 Enter
+  必须在 waiter 精确达到 2 后继续阻塞，第三个创建 `/ready` 才释放全部参与者；barrier
+  满员后额外 session 必须得到 `recipes.ErrTooManyClients` 且不能留下 ephemeral waiter。
+  Leave 阶段前两个参与者必须等待第三个，最终三者全部返回且 waiter 清空。
+
+  独立 failover 场景按 create revision 确定性建立最低序 waiter，三者完成 Enter 后只让
+  两个 survivor 执行 Leave，再显式关闭最低序 session 并撤销 lease；两个 survivor 必须
+  由 DELETE watch 唤醒且 waiter 全部清空。测试同时固定明确期望和 reference/KubeBrain
+  结果，真实独立 3 PD/3 TiKV、A379 三副本环境普通 5 轮及 race 5 轮全部通过，每轮约
+  1.6-1.75 秒。嵌套兼容模块与根模块 `go vet ./...`、根模块完整 `go test ./...` 通过；
+  一次性 reference etcd、端口转发、监听端口和 data-dir 均已清理。本轮未修改运行时代码
+  或构建数据面镜像。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
