@@ -8236,6 +8236,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   三个直连 endpoint 后完整 compat 102.029 秒通过。根模块完整测试、root/compat vet 与固定版
   staticcheck 全绿。未发现服务端差异，不重建镜像。
 
+- **Maintenance A411 watch validation-precedence parity（2026-07-21）**：
+  对照 `/root/etcd/server/storage/mvcc/watcher.go:watchStream.Watch`，新增同时携带重复 watch ID
+  与 `key==range_end` 的公开双端组合输入。上游先校验范围，返回
+  `mvcc: watcher range is empty`；KubeBrain 过去先检查已占用 ID，错误返回
+  `mvcc: duplicate watch ID provided on the WatchStream`。现将空/逆序范围校验移到 duplicate-ID
+  检查之前，仍在分配 logical watch quota、watch ID 和 backend subscription 之前失败；同一 stream
+  随后的合法 duplicate、create 和 cancel 行为保持不变。确定性单测同时固定“组合非法先 range、
+  单独重复再 duplicate”的顺序。
+
+  修复前真实双端差分稳定复现，部署修复镜像后连续 10 轮通过；聚焦普通 20 轮、race 10 轮、根模块
+  完整测试、完整 compat 113.419 秒、root/compat vet 与固定版 staticcheck 全绿。生产镜像
+  `kubebrain:a411-watch-validation` 的本地 digest 为
+  `sha256:4117d11834bd7bc77237777c9f80c4a8451bcf2b23ad1fbad09a77383835abac`，OCI revision 与容器内
+  `kube-brain version` 均为 `5bd6f86fbbd10e52b9ccbc6896ecfd9b4213e061`；三副本已滚动收敛。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
