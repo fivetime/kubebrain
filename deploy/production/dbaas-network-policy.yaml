@@ -1,0 +1,171 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kubebrain-data-plane-ingress
+  namespace: kubebrain-system
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: kubebrain
+      app.kubernetes.io/instance: kubebrain
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector: {}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              dbaas.kubebrain.io/client-access: "true"
+      ports:
+        - protocol: TCP
+          port: 3379
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              dbaas.kubebrain.io/monitoring-access: "true"
+      ports:
+        - protocol: TCP
+          port: 3378
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kubebrain-data-plane-egress
+  namespace: kubebrain-system
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: kubebrain
+      app.kubernetes.io/instance: kubebrain
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector: {}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              dbaas.kubebrain.io/instance: kubebrain
+              dbaas.kubebrain.io/dedicated: "true"
+          podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/component
+                operator: In
+                values:
+                  - pd
+                  - tikv
+              - key: app.kubernetes.io/name
+                operator: In
+                values:
+                  - tidb-cluster
+      ports:
+        - protocol: TCP
+          port: 2379
+        - protocol: TCP
+          port: 20160
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: tikv-data-plane-ingress
+  namespace: tidb-cluster
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/component
+        operator: In
+        values:
+          - pd
+          - tikv
+      - key: app.kubernetes.io/instance
+        operator: In
+        values:
+          - kb
+      - key: app.kubernetes.io/name
+        operator: In
+        values:
+          - tidb-cluster
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector: {}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kubebrain-system
+      ports:
+        - protocol: TCP
+          port: 2379
+        - protocol: TCP
+          port: 20160
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: tidb-admin
+      ports:
+        - protocol: TCP
+          port: 2379
+        - protocol: TCP
+          port: 20180
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              dbaas.kubebrain.io/monitoring-access: "true"
+      ports:
+        - protocol: TCP
+          port: 2379
+        - protocol: TCP
+          port: 20180
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: tikv-data-plane-egress
+  namespace: tidb-cluster
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/component
+        operator: In
+        values:
+          - pd
+          - tikv
+      - key: app.kubernetes.io/instance
+        operator: In
+        values:
+          - kb
+      - key: app.kubernetes.io/name
+        operator: In
+        values:
+          - tidb-cluster
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector: {}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53

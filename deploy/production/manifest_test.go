@@ -154,6 +154,120 @@ func TestProductionPriorityClassIsSharedAndNonPreempting(t *testing.T) {
 	require.NotEmpty(t, nestedString(t, priorityClass, "description"))
 }
 
+func TestProductionDataPlaneNetworkPoliciesAreExplicit(t *testing.T) {
+	objects := decodeManifest(t, "dbaas-network-policy.yaml")
+	require.Len(t, objects, 4)
+
+	for _, tc := range []struct {
+		name      string
+		namespace string
+		policy    string
+		rules     string
+	}{
+		{name: "kubebrain-data-plane-ingress", namespace: "kubebrain-system", policy: "Ingress", rules: "ingress"},
+		{name: "kubebrain-data-plane-egress", namespace: "kubebrain-system", policy: "Egress", rules: "egress"},
+		{name: "tikv-data-plane-ingress", namespace: "tidb-cluster", policy: "Ingress", rules: "ingress"},
+		{name: "tikv-data-plane-egress", namespace: "tidb-cluster", policy: "Egress", rules: "egress"},
+	} {
+		policy := objectByKindAndName(t, objects, "NetworkPolicy", tc.name)
+		require.Equal(t, tc.namespace, policy.GetNamespace())
+		policyTypes, found, err := unstructured.NestedStringSlice(policy.Object, "spec", "policyTypes")
+		require.NoError(t, err)
+		require.True(t, found)
+		require.Equal(t, []string{tc.policy}, policyTypes)
+		rules, found, err := unstructured.NestedSlice(policy.Object, "spec", tc.rules)
+		require.NoError(t, err)
+		require.True(t, found)
+		require.NotEmpty(t, rules)
+	}
+
+	kubebrainIngress := objectByKindAndName(t, objects, "NetworkPolicy", "kubebrain-data-plane-ingress")
+	require.Equal(t, "kubebrain", nestedString(t, kubebrainIngress,
+		"spec", "podSelector", "matchLabels", "app.kubernetes.io/instance"))
+	requireNetworkPolicyRule(t, kubebrainIngress, "ingress", "from",
+		"dbaas.kubebrain.io/client-access", "true", []int64{3379})
+	requireNetworkPolicyRule(t, kubebrainIngress, "ingress", "from",
+		"dbaas.kubebrain.io/monitoring-access", "true", []int64{3378})
+
+	kubebrainEgress := objectByKindAndName(t, objects, "NetworkPolicy", "kubebrain-data-plane-egress")
+	requireNetworkPolicyRule(t, kubebrainEgress, "egress", "to",
+		"kubernetes.io/metadata.name", "kube-system", []int64{53, 53})
+	requireNetworkPolicyRule(t, kubebrainEgress, "egress", "to",
+		"dbaas.kubebrain.io/instance", "kubebrain", []int64{2379, 20160})
+
+	storageIngress := objectByKindAndName(t, objects, "NetworkPolicy", "tikv-data-plane-ingress")
+	requireStoragePolicySelector(t, storageIngress)
+	requireNetworkPolicyRule(t, storageIngress, "ingress", "from",
+		"kubernetes.io/metadata.name", "kubebrain-system", []int64{2379, 20160})
+	requireNetworkPolicyRule(t, storageIngress, "ingress", "from",
+		"kubernetes.io/metadata.name", "tidb-admin", []int64{2379, 20180})
+	requireNetworkPolicyRule(t, storageIngress, "ingress", "from",
+		"dbaas.kubebrain.io/monitoring-access", "true", []int64{2379, 20180})
+
+	storageEgress := objectByKindAndName(t, objects, "NetworkPolicy", "tikv-data-plane-egress")
+	requireStoragePolicySelector(t, storageEgress)
+	requireNetworkPolicyRule(t, storageEgress, "egress", "to",
+		"kubernetes.io/metadata.name", "kube-system", []int64{53, 53})
+}
+
+func requireStoragePolicySelector(t *testing.T, policy *unstructured.Unstructured) {
+	t.Helper()
+	expressions, found, err := unstructured.NestedSlice(policy.Object,
+		"spec", "podSelector", "matchExpressions")
+	require.NoError(t, err)
+	require.True(t, found)
+	want := map[string][]string{
+		"app.kubernetes.io/component": {"pd", "tikv"},
+		"app.kubernetes.io/instance":  {"kb"},
+		"app.kubernetes.io/name":      {"tidb-cluster"},
+	}
+	require.Len(t, expressions, len(want))
+	for _, rawExpression := range expressions {
+		expression := rawExpression.(map[string]any)
+		key := expression["key"].(string)
+		require.Equal(t, "In", expression["operator"])
+		values, found, valuesErr := unstructured.NestedStringSlice(expression, "values")
+		require.NoError(t, valuesErr)
+		require.True(t, found)
+		require.Equal(t, want[key], values)
+		delete(want, key)
+	}
+	require.Empty(t, want)
+}
+
+func requireNetworkPolicyRule(t *testing.T, policy *unstructured.Unstructured, direction, peerField,
+	label, value string, wantPorts []int64,
+) {
+	t.Helper()
+	rules, found, err := unstructured.NestedSlice(policy.Object, "spec", direction)
+	require.NoError(t, err)
+	require.True(t, found)
+	for _, rawRule := range rules {
+		rule := rawRule.(map[string]any)
+		peers, _, peerErr := unstructured.NestedSlice(rule, peerField)
+		require.NoError(t, peerErr)
+		for _, rawPeer := range peers {
+			peer := rawPeer.(map[string]any)
+			labels, _, labelErr := unstructured.NestedStringMap(peer,
+				"namespaceSelector", "matchLabels")
+			require.NoError(t, labelErr)
+			if labels[label] != value {
+				continue
+			}
+			ports, _, portErr := unstructured.NestedSlice(rule, "ports")
+			require.NoError(t, portErr)
+			gotPorts := make([]int64, 0, len(ports))
+			for _, rawPort := range ports {
+				port := &unstructured.Unstructured{Object: rawPort.(map[string]any)}
+				gotPorts = append(gotPorts, nestedInt64(t, port, "port"))
+			}
+			require.Equal(t, wantPorts, gotPorts)
+			return
+		}
+	}
+	t.Fatalf("%s policy %q has no %s namespace selector %s=%s", direction, policy.GetName(), peerField, label, value)
+}
+
 func TestProductionNamespacesDeclareDedicatedInstanceBoundaries(t *testing.T) {
 	for _, file := range []string{"kubebrain.yaml", "kubebrain-tls.yaml", "tidb-cluster.yaml"} {
 		namespace := objectByKindAndName(t, decodeManifest(t, file), "Namespace",
