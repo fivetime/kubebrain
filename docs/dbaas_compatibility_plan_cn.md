@@ -7408,6 +7408,38 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   error。三 Pod UID 为 `3e58bae8-bd3b-4b80-9fec-91da0bda666d`、
   `8efd33a0-b450-4b7a-9a80-4c7b357b16a0`、`99149032-7de7-4177-9025-97b826685de4`。
 
+- **Maintenance A370 per-member NOSPACE alarm set（2026-07-21）**：对照
+  `/root/etcd/server/etcdserver/api/v3alarm/alarms.go` 的两层 map 发现，upstream 可为
+  同一 AlarmType 同时保存多个 member ID；KubeBrain 从 A333 延续的单 owner 元数据会让
+  第二次 ACTIVATE 返回首个 owner、GET 丢失第二个成员，并在解除首个成员时错误清空整个
+  tenant alarm。提交 `005fc49` 将同一内部键升级为严格递增的版本化 member 集合：单成员
+  继续使用旧 8 字节编码，多成员使用 tag+有序 uint64，旧 1 字节 marker 和 8 字节 owner
+  均可直接读取。ACTIVATE 以 exact-value CAS 幂等追加请求成员，DEACTIVATE 只移除指定成员；
+  只要集合非空，tenant-global NOSPACE 写入门禁和指标就保持 active。
+
+  不确定提交协调现按目标成员是否存在判断 ACTIVATE 是否完成、是否缺失判断 DEACTIVATE
+  是否完成；并发 CAS 冲突重试，不会覆盖其他成员。Maintenance Alarm GET 按 member ID
+  稳定顺序返回全部 NOSPACE，Status 也按 upstream 形状追加全部 active AlarmMember 字符串。
+  单元/race 覆盖 32 路并发激活、重复操作、逐成员解除、旧格式迁移、非法集合编码和
+  commit-then-uncertain/uncommitted-uncertain。新增 raw gRPC 差分依次验证双成员激活、重复
+  激活、GET 两成员、逐一解除及重复解除；本机 Badger 对 `/root/etcd` 普通 20 轮和 race
+  10 轮全部通过，backend 与 server 聚焦 race、根 `go vet ./...` 通过。
+
+  exact runtime image `kubebrain:a370-member-alarm-set` 从 `005fc49` 干净 Git archive
+  构建，image ID `sha256:bcbb2c82765ffdd634c9f83dcf2a914ac6c0a971b570f304bd401a3b2bf71b36`，
+  OCI version `0.0.0-a370.1`、revision `005fc49d7f77549248121328f7b85f9ff6990963`、
+  Go 1.26.5/linux/amd64、TiKV。在独立 3 PD/3 TiKV、隔离
+  `a370-member-alarm-set-final` keyspace、1 GiB quota 和三 KubeBrain 副本上，真实 TiKV
+  差分连续 20 轮通过。三 Pod UID 为 `f1de6f6e-e439-4e6a-bc8b-2370230db75c`、
+  `e19e6fc2-e38f-4554-8cbe-5deaa63f632b`、`fb2a189c-1a4f-4dea-8173-f176cd068085`，
+  均 Ready、restartCount=0、runtime digest
+  `sha256:0a2977169a8eef5eb528f122a1d0a9b54818c713f55a33f087206f204e2bd4be`，日志无
+  panic/fatal/data race/storage error。全仓测试的本次相关包通过；完整 `go test ./...`
+  受运行中的 reference etcd 占用测试固定端口，以及用户未提交 `go.mod` 将 client 变为
+  3.8.0-alpha.0、既有 Cilium 测试仍固定 3.7.0 两项外部状态阻断。历史 A330/A333 的
+  “任意 member 多告警不支持”限制至此被取代；CORRUPT 仍由 TiKV/PD 完整性信号和 DBaaS
+  管理面处理，不在数据面伪造告警。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
