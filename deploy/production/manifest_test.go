@@ -71,6 +71,7 @@ func TestProductionManifestsProvideStableCompleteMembership(t *testing.T) {
 			require.NoError(t, err)
 			require.True(t, found)
 			require.Contains(t, args, "--advertise-host=$(POD_NAME).kubebrain-peer.kubebrain-system.svc.cluster.local")
+			require.Contains(t, args, "--advertise-client-urls="+tc.scheme+"://kubebrain-client.kubebrain-system.svc:3379")
 			require.Contains(t, args, "--initial-cluster="+expectedInitialCluster(tc.scheme))
 			require.Contains(t, args, "--enable-count-index=true")
 			require.Contains(t, args, "--count-index-max-keys=5000000")

@@ -10,6 +10,13 @@
   平台仍必须注入生产镜像、StorageClass、跨可用区调度、网络策略、证书和监控栈，不能
   不经环境适配直接发布。
 
+`--advertise-host` 是副本间选主/转发身份，不能同时充当 clientv3 Sync/AutoSync 的公开
+地址。生产必须单独设置 `--advertise-client-urls`：仓库基线使用集群内 client Service；
+向集群外提供 DBaaS endpoint 时，平台必须替换为所有目标客户端可解析、可路由的公共
+`http(s)` URL。TLS URL 的主机名必须存在于服务端证书 SAN，并与客户端验证名称一致；
+MemberList 会把该列表交给 clientv3 替换原 endpoint 集合，错误的内部 DNS 会使已成功
+bootstrap 的客户端在下一次 AutoSync 后整体断连。
+
 ## 租户逻辑配额
 
 标准 dedicated 实例必须显式设置 `--quota-backend-bytes`。production 明文和 TLS 基线均

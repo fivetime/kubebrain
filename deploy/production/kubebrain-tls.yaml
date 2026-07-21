@@ -99,6 +99,7 @@ spec:
             - --peer-port=3380
             - --info-port=8080
             - --advertise-host=$(POD_NAME).kubebrain-peer.kubebrain-system.svc.cluster.local
+            - --advertise-client-urls=https://kubebrain-client.kubebrain-system.svc:3379
             - --initial-cluster=kubebrain-0=https://kubebrain-0.kubebrain-peer.kubebrain-system.svc.cluster.local:3380,kubebrain-1=https://kubebrain-1.kubebrain-peer.kubebrain-system.svc.cluster.local:3380,kubebrain-2=https://kubebrain-2.kubebrain-peer.kubebrain-system.svc.cluster.local:3380
             - --pd-addrs=kb-pd.tidb-cluster.svc:2379
             - --compatible-with-etcd=true

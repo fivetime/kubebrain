@@ -86,6 +86,7 @@ type RPCServer struct {
 	// port or TLS, so ClientURLs built from it alone are wrong on both counts.
 	advertiseClientPort  int
 	advertiseClientHTTPS bool
+	advertiseClientURLs  []string
 	staticMembers        []*etcdserverpb.Member
 	clientCertAuth       bool
 	maxTxnOps            int
@@ -272,15 +273,13 @@ func (s *RPCServer) SetAuthConfiguration(authToken string, bcryptCost, tokenTTLS
 	}
 }
 
-// SetAdvertiseClientInfo tells MemberList how to shape ClientURLs: deployments
-// are homogeneous, so every member serves clients on clientPort, with https iff
-// the client port serves TLS. Unset (0) falls back to the legacy identity-based
-// URL (host:peerPort, http) — wrong for TLS/NAT setups but preserved for tests
-// and embedded uses that never call this. Called once during wiring, before
-// serving; not safe for concurrent use with requests.
-func (s *RPCServer) SetAdvertiseClientInfo(clientPort int, https bool) {
+// SetAdvertiseClientInfo tells MemberList how to shape ClientURLs. Explicit
+// URLs take precedence; otherwise deployments derive each URL from the member
+// host, homogeneous clientPort, and TLS mode. Called once before serving.
+func (s *RPCServer) SetAdvertiseClientInfo(clientPort int, https bool, urls ...string) {
 	s.advertiseClientPort = clientPort
 	s.advertiseClientHTTPS = https
+	s.advertiseClientURLs = append([]string(nil), urls...)
 }
 
 // SetStaticMembers installs the DBaaS control-plane supplied KubeBrain service
@@ -289,6 +288,9 @@ func (s *RPCServer) SetStaticMembers(members []*etcdserverpb.Member) {
 	s.staticMembers = make([]*etcdserverpb.Member, len(members))
 	for i := range members {
 		s.staticMembers[i] = proto.Clone(members[i]).(*etcdserverpb.Member)
+		if len(s.advertiseClientURLs) > 0 {
+			s.staticMembers[i].ClientURLs = append([]string(nil), s.advertiseClientURLs...)
+		}
 	}
 }
 

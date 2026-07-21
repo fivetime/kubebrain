@@ -56,6 +56,26 @@ func TestAdvertiseHostFlagBinds(t *testing.T) {
 	require.Equal(t, "10.32.32.101:3380", id)
 }
 
+func TestAdvertiseClientURLsFlagBinds(t *testing.T) {
+	o := NewOptions()
+	fs := pflag.NewFlagSet("t", pflag.ContinueOnError)
+	o.AddFlags(fs)
+	require.NoError(t, fs.Parse([]string{
+		"--advertise-client-urls=https://etcd-a.example.com:2379,https://etcd-b.example.com:2379",
+	}))
+	require.Equal(t, []string{
+		"https://etcd-a.example.com:2379", "https://etcd-b.example.com:2379",
+	}, o.advertiseClientURLs)
+}
+
+func TestValidateRejectsInvalidAdvertiseClientURLs(t *testing.T) {
+	o := NewOptions()
+	o.advertiseClientURLs = []string{"http://etcd.example.com"}
+	err := o.Validate()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "advertise-client-urls")
+}
+
 // A bare IPv6 (no brackets) would be mangled when joined with the peer port
 // (SplitHostPort'd downstream by the etcd proxy). Validate must reject it up
 // front; the bracketed form and IPv4 must pass this check. The advertise-host

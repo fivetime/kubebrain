@@ -25,7 +25,7 @@
 | `endpoint health` | 支持 | 执行线性化 proposal；正常态用于 endpoint 发布门禁；active NOSPACE 时按 etcd 契约返回 unhealthy，Pod readiness 仍可正常 |
 | `endpoint status` | 支持 | 真实身份、leader、revision、term；配置 quota 时返回租户逻辑用量，否则使用兼容 sentinel |
 | `endpoint hashkv` | 支持 | 同一 KubeBrain keyspace/同 revision 可比较；数值不与 bbolt hash 比较 |
-| `member list` | 支持（需配置） | 生产必须通过 `--initial-cluster` 注入全部 KubeBrain 副本 |
+| `member list` | 支持（需配置） | `--initial-cluster` 注入全部 KubeBrain peer 身份；`--advertise-client-urls` 独立注入 clientv3 Sync/AutoSync 可达的公共 client endpoint，不能广告仅服务端可解析的 peer DNS |
 | `alarm list` | 支持 | 返回该 keyspace 持久 sticky NOSPACE 及稳定非零 owner member ID；启动存量超过 quota 时 readiness 前自动恢复/激活；raw ACTIVATE 的非零显式 owner 原样保留，并发 activate/disarm 响应按持久化点线性化；CORRUPT 无对应语义 |
 | `alarm disarm` | 支持 NOSPACE | 可从任一副本解除 list 返回的持久 owner，达到/超过 quota 时也可解除但下一次 Put 会重新激活；错误 owner、重复及并发重复解除为空操作；提交结果不确定时回读精确旧 alarm 判定 |
 | `defrag` | 安全 no-op | 返回成功且不执行 bbolt defrag；TiKV 自身 compaction/GC 由存储平台管理 |

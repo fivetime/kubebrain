@@ -73,7 +73,8 @@ type Config struct {
 	BcryptCost   uint
 	AuthTokenTTL uint
 
-	ClusterMembers []*etcdserverpb.Member
+	ClusterMembers      []*etcdserverpb.Member
+	AdvertiseClientURLs []string
 }
 
 func (c Config) getPeerServiceConfig() service.Config {

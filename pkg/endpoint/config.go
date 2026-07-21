@@ -138,6 +138,10 @@ type Config struct {
 	// ClusterMembers is the control-plane supplied KubeBrain service
 	// membership returned by etcd MemberList.
 	ClusterMembers []*etcdserverpb.Member
+
+	// AdvertiseClientURLs overrides the peer-host-derived MemberList client
+	// endpoints. These URLs must be reachable from the clients using Sync.
+	AdvertiseClientURLs []string
 }
 
 func (c *Config) getServerConfig() server.Config {
@@ -180,6 +184,7 @@ func (c *Config) getServerConfig() server.Config {
 		BcryptCost:          c.BcryptCost,
 		AuthTokenTTL:        c.AuthTokenTTL,
 		ClusterMembers:      c.ClusterMembers,
+		AdvertiseClientURLs: append([]string(nil), c.AdvertiseClientURLs...),
 	}
 }
 

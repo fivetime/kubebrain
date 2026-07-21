@@ -70,7 +70,7 @@ func (s *RPCServer) MemberList(ctx context.Context, req *etcdserverpb.MemberList
 			// replaces the caller's endpoint list with them wholesale, so the
 			// legacy identity-derived URL (http://host:PEER-port) sent TLS
 			// clients to a plaintext port that does not serve KV.
-			ClientURLs: []string{s.clientURLFromAddress(address)},
+			ClientURLs: s.clientURLsFromAddress(address),
 			IsLearner:  false,
 		})
 	}
@@ -88,10 +88,13 @@ func (s *RPCServer) memberListResponse(members []*etcdserverpb.Member) *etcdserv
 }
 
 // ParseInitialCluster parses etcd's name=peerURL comma-separated shape into
-// the KubeBrain service membership exposed by MemberList. Client URLs are
-// derived from the peer hosts because KubeBrain deployments use one client
-// port and TLS mode across replicas.
-func ParseInitialCluster(spec string, clientPort int, clientHTTPS bool) ([]*etcdserverpb.Member, error) {
+// the KubeBrain service membership exposed by MemberList. Explicit advertised
+// client URLs override peer-host derivation for every member.
+func ParseInitialCluster(spec string, clientPort int, clientHTTPS bool, advertiseClientURLs ...string) ([]*etcdserverpb.Member, error) {
+	advertised, err := ValidateAdvertiseClientURLs(advertiseClientURLs)
+	if err != nil {
+		return nil, err
+	}
 	if strings.TrimSpace(spec) == "" {
 		return nil, nil
 	}
@@ -132,13 +135,43 @@ func ParseInitialCluster(spec string, clientPort int, clientHTTPS bool) ([]*etcd
 			return nil, fmt.Errorf("duplicate initial-cluster peer identity %q", identity)
 		}
 		seenNames[name], seenIDs[id] = struct{}{}, struct{}{}
+		clientURLs := advertised
+		if len(clientURLs) == 0 {
+			clientURLs = []string{fmt.Sprintf("%s://%s", scheme, net.JoinHostPort(host, strconv.Itoa(clientPort)))}
+		}
 		members = append(members, &etcdserverpb.Member{
 			ID: id, Name: name, PeerURLs: []string{u.String()},
-			ClientURLs: []string{fmt.Sprintf("%s://%s", scheme, net.JoinHostPort(host, strconv.Itoa(clientPort)))},
+			ClientURLs: append([]string(nil), clientURLs...),
 		})
 	}
 	sort.Slice(members, func(i, j int) bool { return members[i].ID < members[j].ID })
 	return members, nil
+}
+
+// ValidateAdvertiseClientURLs validates and copies client URLs before they are
+// published through MemberList. Clientv3 replaces its endpoint set with these
+// values, so malformed or non-dialable URL shapes must fail startup.
+func ValidateAdvertiseClientURLs(raw []string) ([]string, error) {
+	seen := make(map[string]struct{}, len(raw))
+	urls := make([]string, 0, len(raw))
+	for _, value := range raw {
+		value = strings.TrimSpace(value)
+		u, err := url.Parse(value)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" ||
+			u.User != nil || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
+			return nil, fmt.Errorf("invalid advertised client URL %q", value)
+		}
+		if _, _, err := net.SplitHostPort(u.Host); err != nil {
+			return nil, fmt.Errorf("invalid advertised client URL %q: host and port are required", value)
+		}
+		canonical := strings.TrimSuffix(u.String(), "/")
+		if _, ok := seen[canonical]; ok {
+			return nil, fmt.Errorf("duplicate advertised client URL %q", canonical)
+		}
+		seen[canonical] = struct{}{}
+		urls = append(urls, canonical)
+	}
+	return urls, nil
 }
 
 // MemberAdd adds a member into the cluster.
@@ -189,16 +222,23 @@ func memberURLFromAddress(address string) string {
 // (SetAdvertiseClientInfo). Falls back to the legacy peer-derived URL when the
 // advertise info is unset or the identity does not parse.
 func (s *RPCServer) clientURLFromAddress(address string) string {
+	return s.clientURLsFromAddress(address)[0]
+}
+
+func (s *RPCServer) clientURLsFromAddress(address string) []string {
+	if len(s.advertiseClientURLs) > 0 {
+		return append([]string(nil), s.advertiseClientURLs...)
+	}
 	if s.advertiseClientPort == 0 || strings.Contains(address, "://") {
-		return memberURLFromAddress(address)
+		return []string{memberURLFromAddress(address)}
 	}
 	host, _, err := net.SplitHostPort(address)
 	if err != nil {
-		return memberURLFromAddress(address)
+		return []string{memberURLFromAddress(address)}
 	}
 	scheme := "http"
 	if s.advertiseClientHTTPS {
 		scheme = "https"
 	}
-	return fmt.Sprintf("%s://%s", scheme, net.JoinHostPort(host, strconv.Itoa(s.advertiseClientPort)))
+	return []string{fmt.Sprintf("%s://%s", scheme, net.JoinHostPort(host, strconv.Itoa(s.advertiseClientPort)))}
 }

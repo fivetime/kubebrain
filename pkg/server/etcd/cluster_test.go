@@ -62,6 +62,9 @@ func TestMemberListClientURLUsesAdvertisedClientPortAndScheme(t *testing.T) {
 	require.Equal(t, "https://[2001:db8::1]:3379", server.clientURLFromAddress("[2001:db8::1]:2380"))
 	// Unparseable identity falls back rather than emitting a mangled URL.
 	require.Equal(t, "http://test-peer", server.clientURLFromAddress("test-peer"))
+
+	server.SetAdvertiseClientInfo(3379, true, "https://etcd.example.com:2379")
+	require.Equal(t, []string{"https://etcd.example.com:2379"}, server.clientURLsFromAddress("10.0.0.1:2380"))
 }
 
 func TestParseInitialClusterAndMemberList(t *testing.T) {
@@ -97,6 +100,56 @@ func TestParseInitialClusterAndMemberList(t *testing.T) {
 	require.NoError(t, err)
 	for _, member := range again.Members {
 		require.NotEqual(t, "mutated", member.Name)
+	}
+}
+
+func TestParseInitialClusterUsesAdvertisedClientURLs(t *testing.T) {
+	members, err := ParseInitialCluster(
+		"kb-1=http://10.0.0.1:2380,kb-2=http://10.0.0.2:2380",
+		2379, false, "https://etcd.example.com:2379",
+	)
+	require.NoError(t, err)
+	require.Len(t, members, 2)
+	for _, member := range members {
+		require.Equal(t, []string{"https://etcd.example.com:2379"}, member.ClientURLs)
+	}
+	members[0].ClientURLs[0] = "mutated"
+	require.Equal(t, "https://etcd.example.com:2379", members[1].ClientURLs[0])
+}
+
+func TestStaticMembersUseAdvertisedClientURLs(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	server.SetAdvertiseClientInfo(2379, false, "https://etcd.example.com:2379")
+	server.SetStaticMembers([]*etcdserverpb.Member{{
+		ID: 1, Name: "kb-1", ClientURLs: []string{"http://10.0.0.1:2379"},
+	}})
+
+	response, err := server.MemberList(context.Background(), &etcdserverpb.MemberListRequest{})
+	require.NoError(t, err)
+	require.Equal(t, []string{"https://etcd.example.com:2379"}, response.Members[0].ClientURLs)
+}
+
+func TestValidateAdvertiseClientURLs(t *testing.T) {
+	got, err := ValidateAdvertiseClientURLs([]string{
+		"https://etcd.example.com:2379/", "http://[2001:db8::1]:2379",
+	})
+	require.NoError(t, err)
+	require.Equal(t, []string{
+		"https://etcd.example.com:2379", "http://[2001:db8::1]:2379",
+	}, got)
+
+	for _, urls := range [][]string{
+		{"etcd.example.com:2379"},
+		{"ftp://etcd.example.com:2379"},
+		{"https://etcd.example.com"},
+		{"https://user@etcd.example.com:2379"},
+		{"https://etcd.example.com:2379/v3"},
+		{"https://etcd.example.com:2379?tenant=a"},
+		{"https://etcd.example.com:2379", "https://etcd.example.com:2379/"},
+	} {
+		_, err := ValidateAdvertiseClientURLs(urls)
+		require.Error(t, err, "urls=%v", urls)
 	}
 }
 
