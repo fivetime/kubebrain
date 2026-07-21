@@ -7807,6 +7807,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   两个 gRPC server、端口转发、监听端口和 data-dir 均已清理；本轮未修改运行时代码或
   构建数据面镜像。
 
+- **DBaaS A388 cold physical snapshot capability preflight（2026-07-21）**：
+  重新核对 KubeBrain transactional TiKV 存储边界与 A143 真实恢复证据，修正文档中把
+  TiDB BR full/PITR 写成已完成替代方案的陈旧结论：该路径不包含 KubeBrain transactional
+  keys，BR raw 也不提供跨 CF 原子快照。当前仅 `kubebrain.logical.v2` 通过生产恢复门禁；
+  物理 full snapshot 和日志型 PITR 均未完成。
+
+  新增 `hack/backup/cold-snapshot-preflight.sh` 作为只读、fail-closed 的候选能力预检。
+  调用方必须显式批准 maintenance window，并提供 VolumeSnapshotClass、KubeBrain
+  StatefulSet UID、TidbCluster UID、TiKV cluster ID 和预期 PD/TiKV PVC 数量。脚本要求
+  VolumeSnapshot API 可用、snapshot class 使用非空 driver 且 `deletionPolicy=Retain`，
+  精确核验 3+3 Bound PVC 的 name/UID/PV/storage class/volume mode，并输出规范化
+  `kubebrain.cold-physical-snapshot-preflight.v1` inventory。它不停止流量、不暂停 operator、
+  不创建快照，也不证明恢复。
+
+  专项普通 20 轮与 race 10 轮通过，覆盖有效 inventory、缺失 API、Delete policy、错误
+  KubeBrain/TiDB 身份、未 Bound PVC 和缺少显式批准；`bash -n`、根模块完整
+  `go test ./...` 与 `go vet ./...` 通过。对当前真实 3 PD/3 TiKV kind 集群使用在线 UID 和
+  cluster ID 执行时，因未安装 `snapshot.storage.k8s.io` API 在任何变更前明确失败关闭。
+  因此本轮只建立外部 CSI 依赖和 immutable inventory 契约；下一步仍需在具备 CSI snapshot
+  能力的预生产集群实现全停机 fencing/quiesce、原子多 PVC 快照、隔离恢复和数据面验证
+  executor，不能把本轮记为 `BACKUP_MODE=cold-csi` 或 PITR 已受支持。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
