@@ -43,7 +43,7 @@ Raft、bbolt 和成员管理内部实现，而是对通用 etcd v3 客户端提�
 | Maintenance | Status | 兼容核心语义 | 返回真实服务身份、版本、leader/revision/共享选主 term；配置 quota 时报告租户最新逻辑 key+value 字节，未配置时使用兼容 sentinel；TiKV 物理容量转到实例指标 |
 | Maintenance | Snapshot | 平台替代 | 使用 TiKV BR/PITR；控制面提供备份、恢复和导出任务，不伪造 etcd snapshot |
 | Maintenance | Defragment | 平台替代 | TiKV GC/compaction 管理，不执行 bbolt 碎片整理 |
-| Maintenance | Alarm/DbSize | 兼容 NOSPACE 核心语义 | keyspace 级逻辑容量原子计量、禁用窗口 dirty 标记与重新启用重建、持久/显式 owner、sticky NOSPACE、list/activate/disarm、跨 endpoint 与并发 mutation、启动初始化与 mutation 的不确定提交回读、no-op 与 capped write state 已支持；任意虚构 member 的多告警、CORRUPT 与 bbolt fragmentation 仍为边界 |
+| Maintenance | Alarm/DbSize | 兼容 NOSPACE 核心语义 | keyspace 级逻辑容量原子计量、禁用窗口 dirty 标记与重新启用重建、持久 member 集合（含零值与任意 ID）、sticky NOSPACE、list/activate/disarm、跨 endpoint 与并发 mutation、启动初始化与 mutation 的不确定提交回读、no-op 与 capped write state 已支持；CORRUPT 与 bbolt fragmentation 仍为平台边界 |
 | Maintenance | Hash/HashKV | 兼容核心语义 | 对指定 revision 的租户 MVCC 实际内容做稳定摘要；成员本地诊断不依赖 KubeBrain leader，数值不与 bbolt 内部编码比较 |
 | Maintenance | MoveLeader/Downgrade | 平台替代 | 分别由服务选主和 DBaaS 升级编排处理 |
 | Endpoint | health/livez/readyz | 兼容核心语义 | `/health`、`/livez`、`/readyz` 及分项检查已对齐；`data_corruption`/`non_learner` 使用 TiKV 架构等价语义，`/ready` 与 `/ping` 为平台探针 |
@@ -7439,6 +7439,41 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   3.8.0-alpha.0、既有 Cilium 测试仍固定 3.7.0 两项外部状态阻断。历史 A330/A333 的
   “任意 member 多告警不支持”限制至此被取代；CORRUPT 仍由 TiKV/PD 完整性信号和 DBaaS
   管理面处理，不在数据面伪造告警。
+
+- **Maintenance A371 explicit zero alarm member（2026-07-21）**：继续对照
+  `/root/etcd/server/etcdserver/apply/backend.go:Alarm` 与
+  `api/v3alarm/alarms.go:Activate`，确认手工
+  `Alarm(ACTIVATE, NOSPACE, MemberID=0)` 会把合法零 ID 原样持久化并返回；KubeBrain
+  此前把公开 RPC 的零值替换成 backend identity，导致后续 `DEACTIVATE(0)` 返回成功空
+  列表且告警残留。修复前真实 A370 TiKV endpoint 稳定返回本地 ID `231094427`，与
+  reference 的 activate/list/disarm 均为 `0` 形成完整差异。
+
+  提交 `08cd555` 使 `ArmNoSpace` 保留请求的精确 ID，并只把原始一字节 legacy marker
+  映射为本地稳定 ID；合法八字节零 owner 在读取、集合追加、不确定 disarm 协调中均保持
+  为零。自动超限不依赖公开零值约定，继续由 `activateNoSpace()` 显式传入稳定非零 backend
+  ID。backend/RPC 单元测试分别固定显式零 owner 的 activate/list/disarm 和自动路径身份。
+  新 raw gRPC 双端回归固定零 member 完整生命周期；本机 Badger 的零 member + A370 多成员
+  联合差分普通 20 轮、race 10 轮通过，backend/server 聚焦 race、完整 `go test ./...`
+  与 `go vet ./...` 通过。A370 记录中的全仓失败由当时 reference etcd 占用 endpoint 测试
+  固定端口造成；停止 reference 后完整套件通过，`go.mod` 用户改动本身不是该失败原因。
+
+  提交 `92cd404` 同时修正旧跨副本测试：该测试改用显式 `MemberID=424242` 验证共享持久
+  owner，不再把“省略 member 的手工请求必须返回非零”误写成协议约束。exact runtime image
+  `kubebrain:a371-zero-alarm-member` 从 `08cd555` 干净 Git archive 构建，image ID
+  `sha256:1369401422c2c473be7e50341288823a5a7e761d87def5e6ae05e9ceb224e4a2`，
+  OCI version `0.0.0-a371.1`、revision `08cd555ffafa8505bd434f2838357ff599440460`、
+  Go 1.26.5/linux/amd64、TiKV。在独立 3 PD/3 TiKV、1 GiB quota、隔离
+  `a371-zero-alarm-member-final` keyspace 和三 KubeBrain 副本上，零 member + 多成员联合
+  差分 20 轮、三条 Pod 直连 endpoint 的跨副本 activate/list/disarm 20 轮、完整 capped
+  state 差分 20 轮全部通过。
+
+  三 Pod UID 为 `e099a134-2bb1-4ce5-a90e-63098d9a5a17`、
+  `2da79818-a35e-49f3-a2d3-578b3c22d688`、`08e38805-bea7-4297-bec9-1d46702f459f`，
+  均 Ready、restartCount=0、runtime digest
+  `sha256:14a252e90a0e2cf626942e9c1f55c2225d147b607e2a4e7b80643ce1259f09fb`，日志无
+  panic/fatal/data race/storage error。至此 NOSPACE 支持零值、任意显式 ID 和多 member
+  集合；剩余 Alarm 边界仅为 TiKV/PD 与管理面负责的 CORRUPT，以及不适用于 TiKV 的
+  bbolt fragmentation。
 
 ### P1：通用服务能力
 
