@@ -53,9 +53,9 @@ if [[ -z "$snapshot_driver" || "$snapshot_policy" != "Retain" ]]; then
   exit 1
 fi
 
-tidb_identity="$("$KUBECTL" "${kubectl_args[@]}" -n "$TIDB_NAMESPACE" get tidbcluster "$TIDB_CLUSTER" \
-  -o 'jsonpath={.metadata.uid}{"\t"}{.status.clusterID}')"
-IFS=$'\t' read -r actual_tidb_uid actual_cluster_id <<<"$tidb_identity"
+tidb_json="$("$KUBECTL" "${kubectl_args[@]}" -n "$TIDB_NAMESPACE" get tidbcluster "$TIDB_CLUSTER" -o json)"
+actual_tidb_uid="$(jq -r '.metadata.uid // ""' <<<"$tidb_json")"
+actual_cluster_id="$(jq -r '.status.clusterID // ""' <<<"$tidb_json")"
 if [[ "$actual_tidb_uid" != "$EXPECTED_TIDB_CLUSTER_UID" || "$actual_cluster_id" != "$EXPECTED_TIKV_CLUSTER_ID" ]]; then
   echo "TidbCluster identity mismatch: expected UID/clusterID ${EXPECTED_TIDB_CLUSTER_UID}/${EXPECTED_TIKV_CLUSTER_ID}, got ${actual_tidb_uid:-missing}/${actual_cluster_id:-missing}" >&2
   exit 1
@@ -76,9 +76,12 @@ inventory_filter='[
   | {
       name: .metadata.name,
       uid: .metadata.uid,
+      labels: (.metadata.labels // {}),
       pv: .spec.volumeName,
       storage_class: .spec.storageClassName,
       volume_mode: (.spec.volumeMode // "Filesystem"),
+      access_modes: (.spec.accessModes // []),
+      requested_storage: (.spec.resources.requests.storage // ""),
       phase: .status.phase
     }
 ] | sort_by(.name)'
@@ -86,25 +89,28 @@ pd_inventory="$(jq -c --arg component pd "$inventory_filter" <<<"$pvc_json")"
 tikv_inventory="$(jq -c --arg component tikv "$inventory_filter" <<<"$pvc_json")"
 
 validate_inventory() {
-  local component="$1" expected="$2" inventory="$3"
+  local component="$1" component_label="$2" expected="$3" inventory="$4"
   local count
   count="$(jq 'length' <<<"$inventory")"
   if [[ "$count" != "$expected" ]]; then
     echo "${component} PVC count mismatch: expected ${expected}, got ${count}" >&2
     exit 1
   fi
-  if ! jq -e 'all(.[]; .phase == "Bound" and (.name | length > 0) and (.uid | length > 0) and (.pv | length > 0) and (.storage_class | length > 0)) and
+  if ! jq -e --arg instance "$TIDB_CLUSTER" --arg component "$component_label" \
+    'all(.[]; .phase == "Bound" and (.name | length > 0) and (.uid | length > 0) and (.pv | length > 0) and
+    (.storage_class | length > 0) and (.requested_storage | length > 0) and (.access_modes | length > 0) and
+    .labels["app.kubernetes.io/instance"] == $instance and .labels["app.kubernetes.io/component"] == $component) and
     ([.[].uid] | unique | length) == length and ([.[].pv] | unique | length) == length' <<<"$inventory" >/dev/null; then
-    echo "${component} PVC inventory must be Bound with unique non-empty UID/PV and a storage class" >&2
+    echo "${component} PVC inventory must be Bound with matching operator labels, unique non-empty UID/PV, storage class, access modes and requested storage" >&2
     exit 1
   fi
 }
 
-validate_inventory PD "$EXPECTED_PD_PVCS" "$pd_inventory"
-validate_inventory TiKV "$EXPECTED_TIKV_PVCS" "$tikv_inventory"
+validate_inventory PD pd "$EXPECTED_PD_PVCS" "$pd_inventory"
+validate_inventory TiKV tikv "$EXPECTED_TIKV_PVCS" "$tikv_inventory"
 
 jq -cn \
-  --arg format kubebrain.cold-physical-snapshot-preflight.v1 \
+  --arg format kubebrain.cold-physical-snapshot-preflight.v2 \
   --arg snapshot_class "$VOLUME_SNAPSHOT_CLASS" \
   --arg snapshot_driver "$snapshot_driver" \
   --arg kubebrain_namespace "$KUBEBRAIN_NAMESPACE" \
@@ -114,6 +120,7 @@ jq -cn \
   --arg tidb_cluster "$TIDB_CLUSTER" \
   --arg tidb_cluster_uid "$actual_tidb_uid" \
   --arg tikv_cluster_id "$actual_cluster_id" \
+  --argjson tidbcluster_blueprint "$(jq '{apiVersion,kind,metadata:{name:.metadata.name,namespace:.metadata.namespace},spec}' <<<"$tidb_json")" \
   --argjson pd_pvcs "$pd_inventory" \
   --argjson tikv_pvcs "$tikv_inventory" \
   '{
@@ -121,6 +128,7 @@ jq -cn \
     volume_snapshot_class: {name: $snapshot_class, driver: $snapshot_driver, deletion_policy: "Retain"},
     kubebrain: {namespace: $kubebrain_namespace, statefulset: $kubebrain_statefulset, uid: $kubebrain_statefulset_uid},
     storage: {namespace: $tidb_namespace, tidb_cluster: $tidb_cluster, uid: $tidb_cluster_uid, cluster_id: $tikv_cluster_id},
+    recovery_blueprint: {tidbcluster: $tidbcluster_blueprint},
     pd_pvcs: $pd_pvcs,
     tikv_pvcs: $tikv_pvcs
   }'

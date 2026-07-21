@@ -39,7 +39,8 @@ if [[ "$*" == *"api-resources"* ]]; then
 elif [[ "$*" == *"get volumesnapshotclass"* ]]; then
   printf 'csi.example.test\t%s' "$FAKE_POLICY"
 elif [[ "$*" == *"get tidbcluster"* ]]; then
-  printf '%s' "$FAKE_TIDB_ID"
+  IFS=$'\t' read -r uid cluster_id <<<"$FAKE_TIDB_ID"
+  printf '{"apiVersion":"pingcap.com/v1alpha1","kind":"TidbCluster","metadata":{"name":"kb","namespace":"tidb-cluster","uid":"%s"},"spec":{"version":"v8.5.3","pd":{"replicas":3},"tikv":{"replicas":3}},"status":{"clusterID":"%s"}}' "$uid" "$cluster_id"
 elif [[ "$*" == *"get statefulset"* ]]; then
   printf '%s' "$FAKE_KUBEBRAIN_ID"
 elif [[ "$*" == *"get pvc"* ]]; then
@@ -83,7 +84,7 @@ fi
 				require.NoError(t, err, string(output))
 				var manifest map[string]any
 				require.NoError(t, json.Unmarshal(output, &manifest))
-				require.Equal(t, "kubebrain.cold-physical-snapshot-preflight.v1", manifest["format"])
+				require.Equal(t, "kubebrain.cold-physical-snapshot-preflight.v2", manifest["format"])
 			} else {
 				require.Error(t, err, string(output))
 				require.Contains(t, string(output), tc.wantOutput)
@@ -110,9 +111,14 @@ func coldSnapshotPVCJSON(tikvPhase string) string {
 			}
 			name := component + "-kb-" + component + "-" + string(rune('0'+ordinal))
 			items = append(items, map[string]any{
-				"metadata": map[string]any{"name": name, "uid": "uid-" + name, "labels": map[string]any{"app.kubernetes.io/component": component}},
-				"spec":     map[string]any{"volumeName": "pv-" + name, "storageClassName": "fast", "volumeMode": "Filesystem"},
-				"status":   map[string]any{"phase": phase},
+				"metadata": map[string]any{"name": name, "uid": "uid-" + name, "labels": map[string]any{
+					"app.kubernetes.io/component": component, "app.kubernetes.io/instance": "kb", "app.kubernetes.io/managed-by": "tidb-operator",
+				}},
+				"spec": map[string]any{
+					"volumeName": "pv-" + name, "storageClassName": "fast", "volumeMode": "Filesystem",
+					"accessModes": []string{"ReadWriteOnce"}, "resources": map[string]any{"requests": map[string]any{"storage": "1Gi"}},
+				},
+				"status": map[string]any{"phase": phase},
 			})
 		}
 	}

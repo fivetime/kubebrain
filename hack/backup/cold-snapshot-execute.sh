@@ -18,7 +18,9 @@ fail_input() { echo "$1" >&2; exit 2; }
 command -v jq >/dev/null 2>&1 || fail_input "jq is required"
 
 inventory="$(jq -cS . "$PREFLIGHT_FILE")" || fail_input "PREFLIGHT_FILE is not valid JSON"
-jq -e '.format == "kubebrain.cold-physical-snapshot-preflight.v1"' <<<"$inventory" >/dev/null ||
+jq -e '.format == "kubebrain.cold-physical-snapshot-preflight.v2" and
+  .recovery_blueprint.tidbcluster.apiVersion == "pingcap.com/v1alpha1" and
+  .recovery_blueprint.tidbcluster.kind == "TidbCluster"' <<<"$inventory" >/dev/null ||
   fail_input "unsupported preflight inventory format"
 
 KUBEBRAIN_NAMESPACE="$(jq -r '.kubebrain.namespace' <<<"$inventory")"
@@ -158,15 +160,21 @@ snapshots='[]'
 for snapshot_name in "${snapshot_names[@]}"; do
   kctl -n "$TIDB_NAMESPACE" wait --for=jsonpath='{.status.readyToUse}'=true "volumesnapshot/${snapshot_name}" --timeout="$WAIT_TIMEOUT" >/dev/null
   snapshot_json="$(kctl -n "$TIDB_NAMESPACE" get volumesnapshot "$snapshot_name" -o json)"
-  jq -e '.status.readyToUse == true and (.status.boundVolumeSnapshotContentName | length > 0)' <<<"$snapshot_json" >/dev/null
+  jq -e '.status.readyToUse == true and (.status.boundVolumeSnapshotContentName | length > 0) and
+    (.status.restoreSize | type == "string" and length > 0)' <<<"$snapshot_json" >/dev/null
   content_name="$(jq -r '.status.boundVolumeSnapshotContentName' <<<"$snapshot_json")"
   content_json="$(kctl get volumesnapshotcontent "$content_name" -o json)"
-  jq -e --arg class "$VOLUME_SNAPSHOT_CLASS" --arg snapshot_uid "$(jq -r '.metadata.uid' <<<"$snapshot_json")" \
-    '.spec.deletionPolicy == "Retain" and .spec.volumeSnapshotClassName == $class and
+  jq -e --arg class "$VOLUME_SNAPSHOT_CLASS" --arg driver "$(jq -r '.volume_snapshot_class.driver' <<<"$inventory")" \
+    --arg snapshot_uid "$(jq -r '.metadata.uid' <<<"$snapshot_json")" \
+    '.spec.deletionPolicy == "Retain" and .spec.volumeSnapshotClassName == $class and .spec.driver == $driver and
      .spec.volumeSnapshotRef.uid == $snapshot_uid and (.status.snapshotHandle | length > 0)' <<<"$content_json" >/dev/null
+  source_pvc="${snapshot_name#"${OPERATION_ID}-"}"
+  component="$(jq -r --arg pvc "$source_pvc" 'if any(.pd_pvcs[]; .name == $pvc) then "pd" else "tikv" end' <<<"$inventory")"
   snapshots="$(jq -cn --argjson current "$snapshots" --argjson snapshot "$snapshot_json" --argjson content "$content_json" \
+    --arg source_pvc "$source_pvc" --arg component "$component" \
     '[ $current[], {name:$snapshot.metadata.name,uid:$snapshot.metadata.uid,content:$content.metadata.name,
-      content_uid:$content.metadata.uid,snapshot_handle:$content.status.snapshotHandle,restore_size:$snapshot.status.restoreSize}]')"
+      content_uid:$content.metadata.uid,source_pvc:$source_pvc,component:$component,
+      snapshot_handle:$content.status.snapshotHandle,restore_size:$snapshot.status.restoreSize}]')"
 done
 
 restore_replicas "$TIDB_NAMESPACE" "$pd_name" "$pd_uid" "$pd_replicas"
@@ -179,7 +187,7 @@ restore_replicas "$KUBEBRAIN_NAMESPACE" "$KUBEBRAIN_STATEFULSET" "$kb_uid" "$kb_
 kb_stopped=false
 
 receipt_tmp="${RECEIPT_FILE}.tmp.$$"
-jq -n --arg format kubebrain.cold-physical-snapshot.v1 --arg operation_id "$OPERATION_ID" \
+jq -n --arg format kubebrain.cold-physical-snapshot.v2 --arg operation_id "$OPERATION_ID" \
   --arg created_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --argjson inventory "$inventory" --argjson snapshots "$snapshots" \
   '{format:$format,operation_id:$operation_id,created_at:$created_at,inventory:$inventory,snapshots:$snapshots}' >"$receipt_tmp"
 chmod 600 "$receipt_tmp"

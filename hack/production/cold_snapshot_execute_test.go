@@ -13,12 +13,14 @@ import (
 
 func TestColdSnapshotExecuteAndRollback(t *testing.T) {
 	for _, tc := range []struct {
-		name         string
-		failSnapshot bool
-		wantReceipt  bool
+		name          string
+		failSnapshot  bool
+		contentDriver string
+		wantReceipt   bool
 	}{
 		{name: "success restores service and publishes receipt", wantReceipt: true},
 		{name: "snapshot failure restores service without receipt", failSnapshot: true},
+		{name: "content driver mismatch restores service without receipt", contentDriver: "wrong.csi.test"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -39,6 +41,7 @@ func TestColdSnapshotExecuteAndRollback(t *testing.T) {
 				"FAKE_PVC_JSON="+coldSnapshotPVCJSON("Bound"),
 				"FENCE_SETTLE_SECONDS=0",
 				"FAKE_FAIL_SNAPSHOT="+map[bool]string{true: "true", false: "false"}[tc.failSnapshot],
+				"FAKE_CONTENT_DRIVER="+map[bool]string{true: "csi.example.test", false: tc.contentDriver}[tc.contentDriver == ""],
 			)
 			output, err := command.CombinedOutput()
 			if tc.wantReceipt {
@@ -47,7 +50,7 @@ func TestColdSnapshotExecuteAndRollback(t *testing.T) {
 				require.NoError(t, readErr)
 				var receipt map[string]any
 				require.NoError(t, json.Unmarshal(value, &receipt))
-				require.Equal(t, "kubebrain.cold-physical-snapshot.v1", receipt["format"])
+				require.Equal(t, "kubebrain.cold-physical-snapshot.v2", receipt["format"])
 				require.Len(t, receipt["snapshots"], 6)
 			} else {
 				require.Error(t, err, string(output))
@@ -95,16 +98,24 @@ func coldSnapshotInventory(t *testing.T) []byte {
 		status := item["status"].(map[string]any)
 		items = append(items, map[string]any{
 			"name": metadata["name"], "uid": metadata["uid"], "pv": spec["volumeName"],
-			"storage_class": spec["storageClassName"], "volume_mode": spec["volumeMode"], "phase": status["phase"],
+			"labels":        metadata["labels"],
+			"storage_class": spec["storageClassName"], "volume_mode": spec["volumeMode"],
+			"access_modes": spec["accessModes"], "requested_storage": spec["resources"].(map[string]any)["requests"].(map[string]any)["storage"],
+			"phase": status["phase"],
 		})
 	}
 	value := map[string]any{
-		"format":                "kubebrain.cold-physical-snapshot-preflight.v1",
+		"format":                "kubebrain.cold-physical-snapshot-preflight.v2",
 		"volume_snapshot_class": map[string]any{"name": "retained", "driver": "csi.example.test", "deletion_policy": "Retain"},
 		"kubebrain":             map[string]any{"namespace": "kubebrain-system", "statefulset": "kubebrain", "uid": "uid-kubebrain"},
 		"storage":               map[string]any{"namespace": "tidb-cluster", "tidb_cluster": "kb", "uid": "uid-tidb", "cluster_id": "7662961163671170154"},
-		"pd_pvcs":               items[:3],
-		"tikv_pvcs":             items[3:],
+		"recovery_blueprint": map[string]any{"tidbcluster": map[string]any{
+			"apiVersion": "pingcap.com/v1alpha1", "kind": "TidbCluster",
+			"metadata": map[string]any{"name": "kb", "namespace": "tidb-cluster"},
+			"spec":     map[string]any{"version": "v8.5.3", "pd": map[string]any{"replicas": 3}, "tikv": map[string]any{"replicas": 3}},
+		}},
+		"pd_pvcs":   items[:3],
+		"tikv_pvcs": items[3:],
 	}
 	result, err := json.Marshal(value)
 	require.NoError(t, err)
@@ -119,10 +130,8 @@ if [[ "$args" == *"api-resources"* ]]; then
   printf '%s\n' volumesnapshots.snapshot.storage.k8s.io volumesnapshotclasses.snapshot.storage.k8s.io
 elif [[ "$args" == *"get volumesnapshotclass"* ]]; then
   printf 'csi.example.test\tRetain'
-elif [[ "$args" == *"get tidbcluster"* && "$args" == *"jsonpath"* ]]; then
-  printf 'uid-tidb\t7662961163671170154'
 elif [[ "$args" == *"get tidbcluster"* ]]; then
-  printf '{"metadata":{"uid":"uid-tidb","resourceVersion":"10"},"spec":{}}'
+  printf '{"apiVersion":"pingcap.com/v1alpha1","kind":"TidbCluster","metadata":{"name":"kb","namespace":"tidb-cluster","uid":"uid-tidb","resourceVersion":"10"},"spec":{"version":"v8.5.3","pd":{"replicas":3},"tikv":{"replicas":3}},"status":{"clusterID":"7662961163671170154"}}'
 elif [[ "$args" == *"get statefulset kubebrain"* && "$args" == *"jsonpath"* ]]; then
   printf 'uid-kubebrain'
 elif [[ "$args" == *"get statefulset"* ]]; then
@@ -142,7 +151,7 @@ elif [[ "$args" == *"wait --for=jsonpath={.status.readyToUse}=true"* ]]; then
 elif [[ "$args" == *"get volumesnapshotcontent"* ]]; then
   name="$(sed -n 's/.*get volumesnapshotcontent \([^ ]*\).*/\1/p' <<<"$args")"
   snapshot="${name#content-}"
-  printf '{"metadata":{"name":"%s","uid":"uid-%s"},"spec":{"deletionPolicy":"Retain","volumeSnapshotClassName":"retained","volumeSnapshotRef":{"uid":"uid-%s"}},"status":{"snapshotHandle":"handle-%s"}}' "$name" "$name" "$snapshot" "$name"
+  printf '{"metadata":{"name":"%s","uid":"uid-%s"},"spec":{"deletionPolicy":"Retain","driver":"%s","volumeSnapshotClassName":"retained","volumeSnapshotRef":{"uid":"uid-%s"}},"status":{"snapshotHandle":"handle-%s"}}' "$name" "$name" "$FAKE_CONTENT_DRIVER" "$snapshot" "$name"
 elif [[ "$args" == *"get volumesnapshot"* ]]; then
   name="$(sed -n 's/.*get volumesnapshot \([^ ]*\).*/\1/p' <<<"$args")"
   printf '{"metadata":{"name":"%s","uid":"uid-%s"},"status":{"readyToUse":true,"boundVolumeSnapshotContentName":"content-%s","restoreSize":"1Gi"}}' "$name" "$name" "$name"
