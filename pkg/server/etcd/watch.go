@@ -338,9 +338,10 @@ func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) error {
 
 			w.start(watchCtx, r, uint64(progressStartRevision))
 		} else if cancelRequest := msg.GetCancelRequest(); cancelRequest != nil {
-			if err := w.syncControlRevision(ws.Context()); err != nil {
-				return err
-			}
+			// Match etcd's stream-local cancellation: removing an existing watch
+			// does not require a leader read barrier. The response header uses this
+			// stream's last synchronized control revision (or the local published
+			// revision), so a leader outage cannot turn cancel into Unavailable.
 			s.metricCli.EmitCounter("watch.client.cancel", 1)
 			klog.InfoS("receive watch cancel request", "id", w.id, "watchID", cancelRequest.GetWatchId())
 			w.CancelRequest(msg.GetCancelRequest().WatchId)

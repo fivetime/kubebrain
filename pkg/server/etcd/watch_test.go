@@ -857,6 +857,68 @@ func TestFollowerWatchDuplicateIDPrecedesReadBarrier(t *testing.T) {
 	require.Equal(t, "mvcc: duplicate watch ID provided on the WatchStream", stream.sent[1].CancelReason)
 }
 
+func TestFollowerWatchCancelPrecedesReadBarrier(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	barrierErr := errors.New("leader revision transport failed")
+	var barrierCalls atomic.Int64
+	proxyResults := make(chan etcdproxy.WatchResult)
+	proxyCanceled := make(chan struct{})
+	server.peers = testPeerService{
+		isLeader:     false,
+		proxyEnabled: true,
+		syncReadFn: func(context.Context) error {
+			if barrierCalls.Add(1) == 1 {
+				server.backend.SetCurrentRevision(60)
+				return nil
+			}
+			return barrierErr
+		},
+		watchFn: func(ctx context.Context, _ []byte, _ []byte, _ uint64) (<-chan etcdproxy.WatchResult, error) {
+			go func() {
+				<-ctx.Done()
+				close(proxyCanceled)
+				close(proxyResults)
+			}()
+			return proxyResults, nil
+		},
+	}
+	stream := &scriptedWatchServer{
+		fakeWatchServer: &fakeWatchServer{ctx: context.Background()},
+		reqs: []*etcdserverpb.WatchRequest{
+			{RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{CreateRequest: &etcdserverpb.WatchCreateRequest{
+				Key: []byte("/watch/cancel-local"), WatchId: 415,
+			}}},
+			{RequestUnion: &etcdserverpb.WatchRequest_CancelRequest{CancelRequest: &etcdserverpb.WatchCancelRequest{
+				WatchId: 415,
+			}}},
+			{RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{CreateRequest: &etcdserverpb.WatchCreateRequest{
+				Key: []byte("/watch/requires-fence"), WatchId: 416,
+			}}},
+		},
+	}
+	err := server.Watch(stream)
+	require.Equal(t, codes.Unavailable, status.Code(err))
+	require.Equal(t, int64(2), barrierCalls.Load(), "client cancel must not enter the read barrier")
+	require.Len(t, stream.sent, 2)
+	require.True(t, stream.sent[0].Created)
+	require.False(t, stream.sent[0].Canceled)
+	require.Equal(t, int64(415), stream.sent[0].WatchId)
+	require.True(t, stream.sent[1].Canceled)
+	require.Empty(t, stream.sent[1].CancelReason)
+	require.Equal(t, int64(415), stream.sent[1].WatchId)
+	require.Equal(t, int64(60), stream.sent[1].Header.Revision)
+	require.Eventually(t, func() bool {
+		select {
+		case <-proxyCanceled:
+			return true
+		default:
+			return false
+		}
+	}, time.Second, time.Millisecond)
+}
+
 func TestLeaderFromNowWatchReplaysWriteDuringCreatedResponse(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
