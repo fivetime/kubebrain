@@ -8389,6 +8389,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   边界已有上游 `MaxLeaseTTL` 对齐；上游 gRPC Health 的 `allGRPCServices` 即空字符串，当前
   service-name 注册不存在缺口。未把这些已对齐路径重复包装成修复。
 
+#### A419 Watch fragmentation protobuf 字段升级门禁
+
+- 对照 `/root/etcd/server/etcdserver/api/v3rpc/watch_test.go` 的
+  `TestWatchResponseProtoFieldCount`，补齐 KubeBrain 自有 `sendWatchFragments` 手工字段复制路径
+  的同等结构门禁。当前 `WatchResponse` 的 8 个 protobuf 字段为 Header、WatchId、Created、
+  Canceled、CompactRevision、CancelReason、Fragment 和 Events；未来 API 依赖新增字段时测试会
+  立即失败，要求同步更新分片复制，避免大 Watch response 才触发的静默字段丢失。
+- 现有 fragmentation 测试同时扩展为所有非 Events 字段逐片 wire 语义保真，并继续验证事件
+  不重不漏及仅末片 `Fragment=false`。protobuf message 使用 `proto.Equal` 比较，避免依赖
+  `sizeCache` 等运行时内部状态。聚焦普通 50 轮、race 10 轮及 `pkg/server/etcd` 全包通过。
+- 本轮审计确认当前实现没有运行时字段遗漏，只新增永久 API 升级门禁；生产服务端字节不变，
+  因此不重建与 A418 相同的镜像，运行态继续使用已验证的
+  `kubebrain:a418-watch-cancel-status-local`。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
