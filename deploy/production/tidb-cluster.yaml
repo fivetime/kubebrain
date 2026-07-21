@@ -99,6 +99,7 @@ metadata:
     app.kubernetes.io/component: pd
 spec:
   minAvailable: 2
+  unhealthyPodEvictionPolicy: AlwaysAllow
   selector:
     matchLabels:
       app.kubernetes.io/name: tidb-cluster
@@ -116,6 +117,7 @@ metadata:
     app.kubernetes.io/component: tikv
 spec:
   minAvailable: 2
+  unhealthyPodEvictionPolicy: AlwaysAllow
   selector:
     matchLabels:
       app.kubernetes.io/name: tidb-cluster

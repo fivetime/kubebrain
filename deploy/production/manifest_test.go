@@ -124,6 +124,7 @@ func TestProductionManifestsProvideStableCompleteMembership(t *testing.T) {
 
 			pdb := objectByKindAndName(t, objects, "PodDisruptionBudget", "kubebrain")
 			require.EqualValues(t, 2, nestedInt64(t, pdb, "spec", "minAvailable"))
+			require.Equal(t, "AlwaysAllow", nestedString(t, pdb, "spec", "unhealthyPodEvictionPolicy"))
 			require.Equal(t, "kubebrain", nestedString(t, pdb, "spec", "selector", "matchLabels", "app.kubernetes.io/name"))
 			require.Equal(t, "kubebrain", nestedString(t, pdb, "spec", "selector", "matchLabels", "app.kubernetes.io/instance"))
 			require.Equal(t, "kubebrain", nestedString(t, workload, "spec", "selector", "matchLabels", "app.kubernetes.io/instance"))
@@ -981,6 +982,7 @@ func TestProductionTiDBClusterProvidesDurableHAStorage(t *testing.T) {
 
 			pdb := objectByKindAndName(t, objects, "PodDisruptionBudget", "kb-"+component.name)
 			require.EqualValues(t, 2, nestedInt64(t, pdb, "spec", "minAvailable"))
+			require.Equal(t, "AlwaysAllow", nestedString(t, pdb, "spec", "unhealthyPodEvictionPolicy"))
 			require.Equal(t, component.name,
 				nestedString(t, pdb, "spec", "selector", "matchLabels", "app.kubernetes.io/component"))
 			require.Equal(t, "kb",
