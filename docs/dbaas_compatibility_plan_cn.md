@@ -8200,6 +8200,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `kubebrain:a404-corrupt-expired-ttl`；最终 alarm 为空，health/readyz 全绿，3 KubeBrain、
   3 PD、3 TiKV 均 Ready。
 
+- **Maintenance A408 lease workload isolation gate（2026-07-21）**：
+  对 A407 首轮 lease generation 基线中的单次模糊 RPC 做运行态归因。失败窗口内 leader 未切换，
+  三副本没有 fencing、Unavailable 或健康异常，但日志同时存在 64 个不属于该 generation 历史的旧
+  lease KeepAlive；后续检查确认没有残留测试进程，旧流停止后 lease list 为空。为区分正常续约压力与
+  环境遗留负载，在 64 条并发 client/v3 KeepAlive 流持续期间将 generation 线性化历史连续运行 10 轮，
+  全部通过且没有模糊 RPC；renewal soak 37.459 秒通过并完成清理。因此没有证据支持放宽 A407 的零
+  模糊失败基线，也没有证据要求服务端改动。
+
+  renewal soak 的退出门禁进一步逐个检查 64 个已撤销 lease 的 TimeToLive 必须为 -1，并继续要求所有
+  attached keys 为空，防止成功测试在共享集群留下续约负载。服务端字节与运行镜像不变，继续使用
+  `kubebrain:a404-corrupt-expired-ttl`。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
