@@ -43,7 +43,7 @@ Raft、bbolt 和成员管理内部实现，而是对通用 etcd v3 客户端提�
 | Maintenance | Status | 兼容核心语义 | 返回真实服务身份、版本、leader/revision/共享选主 term；配置 quota 时报告租户最新逻辑 key+value 字节，未配置时使用兼容 sentinel；TiKV 物理容量转到实例指标 |
 | Maintenance | Snapshot | 平台替代 | 使用 TiKV BR/PITR；控制面提供备份、恢复和导出任务，不伪造 etcd snapshot |
 | Maintenance | Defragment | 平台替代 | TiKV GC/compaction 管理，不执行 bbolt 碎片整理 |
-| Maintenance | Alarm/DbSize | 兼容 NOSPACE/CORRUPT 核心语义 | keyspace 级逻辑容量原子计量、sticky NOSPACE、持久 member 集合及跨 endpoint mutation 已支持；CORRUPT 使用 TiKV 内部元数据持久 member 集合，允许 Range 及空/线性/串行只读 Txn 诊断，阻断 Put/Delete/任一分支含写的 Txn/Compact/LeaseGrant/Revoke，并接入 Status、传统 health 和 readyz；bbolt fragmentation 仍为平台边界 |
+| Maintenance | Alarm/DbSize | 兼容 NOSPACE/CORRUPT 核心语义 | keyspace 级逻辑容量原子计量、sticky NOSPACE、持久 member 集合及跨 endpoint mutation 已支持；CORRUPT 使用 TiKV 内部元数据持久 member 集合，允许 Range 及空/线性/串行只读 Txn 诊断，阻断 Put/Delete/任一分支含写的 Txn/Compact/LeaseGrant/Revoke；双告警并存时 CORRUPT 优先，逐项解除后 NOSPACE 独立延续，并接入 Status、传统 health 和 readyz；bbolt fragmentation 仍为平台边界 |
 | Maintenance | Hash/HashKV | 兼容核心语义 | 对指定 revision 的租户 MVCC 实际内容做稳定摘要；成员本地诊断不依赖 KubeBrain leader，数值不与 bbolt 内部编码比较 |
 | Maintenance | MoveLeader/Downgrade | 平台替代 | 分别由服务选主和 DBaaS 升级编排处理 |
 | Endpoint | health/livez/readyz | 兼容核心语义 | `/health`、`/livez`、`/readyz` 及分项检查已对齐；`data_corruption`/`non_learner` 使用 TiKV 架构等价语义，`/ready` 与 `/ping` 为平台探针 |
@@ -8053,6 +8053,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   3PD/3TiKV、三 KubeBrain 副本滚动 Ready。上游 etcd 差分和跨 endpoint 测试通过，完整
   compat 108.321 秒通过；最终 alarm 列表为空，`/health` 与 `/readyz` 全部健康，测试进程及
   port-forward 已清理。
+
+- **Maintenance A400 combined alarm transition gate（2026-07-21）**：
+  对照 `/root/etcd/server/etcdserver/apply/uber_applier.go:restoreAlarms` 的
+  `CorruptApplier -> CappedApplier` 包装顺序，以及 `api/v3alarm/alarms.go` 的幂等
+  activate/deactivate，新增 NOSPACE+CORRUPT 公开差分状态机。矩阵覆盖重复激活 NOSPACE、
+  同 member 双告警、Alarm(GET NONE)、Status 双错误、Range/只读 Txn 诊断、Put/delete-only
+  Txn/LeaseGrant 错误优先级，以及逐项解除。真实上游和 KubeBrain 均证明双告警时 mutation
+  返回 CORRUPT DataLoss；解除 CORRUPT 后 Put/LeaseGrant 返回 NOSPACE ResourceExhausted，
+  delete-only Txn 恢复可用；解除 NOSPACE 后写入恢复。
+
+  三 Pod 交叉用例分别在 Pod 0/1 激活 NOSPACE/CORRUPT，由 Pod 2 列举并观察 DataLoss，再跨
+  Pod 解除并观察错误降级和恢复，证明两个 TiKV 持久集合不是进程本地状态。扩展差分全量运行
+  同时发现既有 RangeStream from-key fixture 会扫描其他并行测试的 ASCII key；测试现迁入
+  `0xff 0xfe` 高位独占前缀，在保留 `RangeEnd={0}` 语义的同时避免跨用例污染，双端连续
+  10 轮通过。提交 `c8e9a6d8c64b45aaa2504a7b50b7772e7b3bb667`；组合差分、三 endpoint、
+  聚焦 race、根模块完整测试、根/compat vet 与 staticcheck 均通过，常规完整 compat
+  109.754 秒通过。最终 alarm 列表为空，health/readyz 健康，3 KubeBrain、3 PD、3 TiKV
+  全部 Ready。因服务端字节未变化，生产运行镜像继续使用已验证的
+  `kubebrain:a399-corrupt-readonly`，未制造无意义制品漂移。
 
 ### P1：通用服务能力
 
