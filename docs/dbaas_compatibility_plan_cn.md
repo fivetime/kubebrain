@@ -7696,6 +7696,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   均收敛，经过临时本地转发的 endpoint health 成功提交线性化 proposal。验证后已停止端口
   转发；本轮无运行时代码变化，不构建新镜像。
 
+- **Compatibility A381 immutable production keyspace identity（2026-07-21）**：
+  审计 A380 发布门禁时发现 image、quota、advertised client URL 和 endpoint health 均可通过，
+  但错误或缺省 `--keyspace` 仍会把实例接入另一租户数据边界。提交 `8647e5a` 要求发布调用方
+  显式提供非空 `EXPECTED_KEYSPACE`，并要求 KubeBrain Pod template 中恰好一个逐字匹配的
+  `--keyspace`；缺失、错误和重复均在健康探测前 fail closed，成功审计记录包含 keyspace。
+  production HTTP/TLS 基线同时从隐式默认空间改为显式 `kubebrain-system`；该值仅供静态清单
+  基线使用，DBaaS 实例化时必须替换为全局唯一且创建后不可变的稳定实例 ID，不能用可能跨
+  集群重复的 namespace 充当全局身份。
+
+  门禁与 manifest 专项测试连续 20 轮通过，覆盖 keyspace 必填输入及参数缺失、错误、重复；
+  完整 `go test ./...` 与 `go vet ./...` 通过。在当前独立 3 PD/3 TiKV、A379 KubeBrain
+  三副本环境真实执行新门禁，精确匹配 `a379-full-differential` keyspace、A379 image、1 GiB
+  quota 和 service advertised URL，StatefulSet 与存储拓扑收敛，endpoint health 成功提交
+  线性化 proposal。验证后已停止临时端口转发；本轮无运行时代码变化，不构建新镜像。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
