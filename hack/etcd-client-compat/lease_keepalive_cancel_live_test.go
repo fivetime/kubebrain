@@ -60,6 +60,10 @@ func TestLeaseKeepAliveFollowerCancellationMetricsLive(t *testing.T) {
 }
 
 func leaseKeepAliveHandledMetric(t *testing.T, metricsURL, code string) float64 {
+	return grpcHandledMetric(t, metricsURL, "etcdserverpb.Lease", "LeaseKeepAlive", code)
+}
+
+func grpcHandledMetric(t *testing.T, metricsURL, service, method, code string) float64 {
 	t.Helper()
 	request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, metricsURL, nil)
 	require.NoError(t, err)
@@ -72,8 +76,8 @@ func leaseKeepAliveHandledMetric(t *testing.T, metricsURL, code string) float64 
 	for scanner.Scan() {
 		line := scanner.Text()
 		if !strings.HasPrefix(line, "grpc_server_handled_total{") ||
-			!strings.Contains(line, `grpc_service="etcdserverpb.Lease"`) ||
-			!strings.Contains(line, `grpc_method="LeaseKeepAlive"`) ||
+			!strings.Contains(line, fmt.Sprintf(`grpc_service="%s"`, service)) ||
+			!strings.Contains(line, fmt.Sprintf(`grpc_method="%s"`, method)) ||
 			!strings.Contains(line, fmt.Sprintf(`grpc_code="%s"`, code)) {
 			continue
 		}

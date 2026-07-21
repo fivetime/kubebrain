@@ -557,7 +557,7 @@ func TestNegativeWatchRevisionPrecedesRangeAndDuplicateWithoutClosingStream(t *t
 			{RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{CreateRequest: &etcdserverpb.WatchCreateRequest{Key: []byte("/watch/next"), WatchId: 71}}},
 		},
 	}
-	require.ErrorIs(t, server.Watch(stream), context.Canceled)
+	require.Equal(t, codes.Canceled, status.Code(server.Watch(stream)))
 	require.GreaterOrEqual(t, len(stream.sent), 3)
 	require.True(t, stream.sent[0].Created)
 	require.False(t, stream.sent[0].Canceled)
@@ -740,7 +740,7 @@ func TestFollowerFromNowWatchUsesSynchronizedRevisionFence(t *testing.T) {
 	}
 	err := server.Watch(stream)
 	cancel()
-	require.ErrorIs(t, err, context.Canceled)
+	require.Equal(t, codes.Canceled, status.Code(err))
 	require.Equal(t, uint64(51), watchedRevision, "from-now follower watch must subscribe at synchronized R+1")
 	require.GreaterOrEqual(t, len(stream.sent), 1)
 	require.Equal(t, int64(50), stream.sent[0].Header.Revision)
@@ -942,7 +942,7 @@ func TestFollowerWatchQuotaRejectionPrecedesReadBarrier(t *testing.T) {
 		}},
 	}
 	err := server.Watch(stream)
-	require.ErrorIs(t, err, context.Canceled)
+	require.Equal(t, codes.Canceled, status.Code(err))
 	require.Zero(t, barrierCalls.Load(), "a locally full watch quota must not enter the read barrier")
 	require.Len(t, stream.sent, 1)
 	require.True(t, stream.sent[0].Created)
@@ -1335,7 +1335,7 @@ func TestWatchProgressRequestNeverReportsBelowStart(t *testing.T) {
 		},
 	}
 
-	if err := server.Watch(stream); err != nil && !errors.Is(err, context.Canceled) {
+	if err := server.Watch(stream); err != nil && status.Code(err) != codes.Canceled {
 		t.Fatalf("watch returned unexpected error: %v", err)
 	}
 
@@ -1708,7 +1708,7 @@ func TestWatchHalfCloseKeepsResponseStreamAlive(t *testing.T) {
 	}, 2*time.Second, time.Millisecond)
 
 	cancel()
-	require.ErrorIs(t, <-done, context.Canceled)
+	require.Equal(t, codes.Canceled, status.Code(<-done))
 	require.Zero(t, server.activeWatches)
 }
 
@@ -1753,7 +1753,7 @@ func TestAuthorizedFollowerWatchForwardsAuthToken(t *testing.T) {
 	}
 
 	cancel()
-	require.ErrorIs(t, <-done, context.Canceled)
+	require.Equal(t, codes.Canceled, status.Code(<-done))
 }
 
 // TestQuietWatchProgressAdvancesWhileOtherKeysWritten is the headline repro of
