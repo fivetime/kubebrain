@@ -7829,6 +7829,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   能力的预生产集群实现全停机 fencing/quiesce、原子多 PVC 快照、隔离恢复和数据面验证
   executor，不能把本轮记为 `BACKUP_MODE=cold-csi` 或 PITR 已受支持。
 
+- **Production A389 reachable Go vulnerability release gate（2026-07-21）**：
+  增加发布工具链的可达漏洞门禁。使用宿主 Go 1.26.0 执行固定版
+  `govulncheck@v1.6.0` 时，真实命中 18 个可达标准库漏洞，覆盖 TLS、x509、HTTP/2、
+  template、URL 和 MIME 路径；这些漏洞均已在 Go 1.26.1-1.26.5 修复。重新核验 Docker
+  build stage digest `sha256:1ecb7edf62a0408027bd5729dfd6b1b8766e578e8df93995b225dfd0944eb651`
+  后确认其实际对应 `golang:1.26.5-bookworm`，
+  因此把 Dockerfile 的可读 tag 从浮动 patch 的 `1.26-bookworm` 改为精确
+  `1.26.5-bookworm`，digest 保持不变，使人读版本、CI `GO_VERSION` 和构建字节一致。
+
+  CI 新增固定 `golang.org/x/vuln/cmd/govulncheck@v1.6.0` 步骤，分别扫描根模块和
+  `hack/backup/objectstore` 独立模块，避免 Go module 边界漏掉生产备份上传代码。使用同一
+  Go 1.26.5 digest 容器复扫，两模块均报告 `No vulnerabilities found`；根模块仅存在一个
+  未调用的依赖模块漏洞，不属于 symbol-level 可达漏洞。该门禁后续会随漏洞数据库更新而
+  fail closed，工具版本升级需作为显式审阅变更。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
