@@ -8463,6 +8463,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   TiKV backend、用户 `65532:65532`。三 KubeBrain 副本 Ready、零重启，主 PD/TiKV 3+3
   Ready，health/readyz 正常且无 alarm。
 
+#### A423 Watch Event PrevKv 过滤字段升级门禁
+
+- 审计 `withoutWatchPrevKvs` 的手工 Event 浅复制路径：同一 backend event 会扇出给同时请求和
+  不请求 PrevKv 的 watcher，因此不能原地清空；使用 `proto.Clone` 又会深复制可能很大的 KV
+  Value，放大 Watch 热路径 CPU 与内存。当前 `mvccpb.Event` 仅有 Type、Kv、PrevKv 三个
+  protobuf 字段，现有浅复制没有字段遗漏；新增三字段结构门禁，未来 etcd API 增加 Event
+  字段时测试立即要求更新复制逻辑，避免仅 `PrevKv=false` watcher 静默丢字段。
+- 既有不修改共享 event 测试扩展为完整约束：PUT/DELETE Type 保真、Kv 指针保持零拷贝、
+  输出 Event 对象与源隔离、nil event 保留、输出 PrevKv 清空且源 PrevKv 不变。聚焦普通
+  100 轮、race 20 轮、`pkg/server/etcd` 全包以及 root 全量测试、vet、staticcheck v0.7.0
+  均通过。
+- 本轮确认当前生产实现无字段遗漏，只新增 API 升级失败快显门禁；服务端字节不变，不重建
+  与 A422 相同的镜像，运行态继续使用已验证的
+  `kubebrain:a422-grpc-context-status-local`。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
