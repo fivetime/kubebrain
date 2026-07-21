@@ -8,6 +8,7 @@ KUBEBRAIN_STATEFULSET="${KUBEBRAIN_STATEFULSET:-kubebrain}"
 EXPECTED_KUBEBRAIN_REPLICAS="${EXPECTED_KUBEBRAIN_REPLICAS:-3}"
 EXPECTED_IMAGE="${EXPECTED_IMAGE:-}"
 EXPECTED_QUOTA_BACKEND_BYTES="${EXPECTED_QUOTA_BACKEND_BYTES:-}"
+EXPECTED_ADVERTISE_CLIENT_URLS="${EXPECTED_ADVERTISE_CLIENT_URLS:-}"
 TIDB_NAMESPACE="${TIDB_NAMESPACE:-tidb-cluster}"
 TIDB_CLUSTER="${TIDB_CLUSTER:-kb}"
 EXPECTED_PD_REPLICAS="${EXPECTED_PD_REPLICAS:-3}"
@@ -29,6 +30,10 @@ if [[ -z "$ENDPOINT" ]]; then
 fi
 if ! [[ "$EXPECTED_QUOTA_BACKEND_BYTES" =~ ^[1-9][0-9]*$ ]]; then
   echo "EXPECTED_QUOTA_BACKEND_BYTES is required and must be a positive integer" >&2
+  exit 2
+fi
+if [[ -z "$EXPECTED_ADVERTISE_CLIENT_URLS" ]]; then
+  echo "EXPECTED_ADVERTISE_CLIENT_URLS is required" >&2
   exit 2
 fi
 for variable in EXPECTED_KUBEBRAIN_REPLICAS EXPECTED_PD_REPLICAS EXPECTED_TIKV_REPLICAS; do
@@ -79,7 +84,7 @@ if ! [[ "$generation" =~ ^[0-9]+$ &&
   exit 1
 fi
 
-quota_args="$("$KUBECTL" "${kubectl_args[@]}" -n "$KUBEBRAIN_NAMESPACE" \
+kubebrain_args="$("$KUBECTL" "${kubectl_args[@]}" -n "$KUBEBRAIN_NAMESPACE" \
   get statefulset "$KUBEBRAIN_STATEFULSET" \
   -o 'go-template={{range .spec.template.spec.containers}}{{if eq .name "kubebrain"}}{{range .args}}{{printf "%s\n" .}}{{end}}{{end}}{{end}}')"
 quota_arg_count=0
@@ -91,7 +96,7 @@ while IFS= read -r arg; do
       quota_arg_mismatch=true
     fi
   fi
-done <<<"$quota_args"
+done <<<"$kubebrain_args"
 if [[ "$quota_arg_count" -ne 1 || "$quota_arg_mismatch" == "true" ]]; then
   echo "KubeBrain quota configuration mismatch: expected exactly --quota-backend-bytes=${EXPECTED_QUOTA_BACKEND_BYTES}" >&2
   printf 'actual quota args:' >&2
@@ -99,7 +104,29 @@ if [[ "$quota_arg_count" -ne 1 || "$quota_arg_mismatch" == "true" ]]; then
     if [[ "$arg" == --quota-backend-bytes=* ]]; then
       printf ' %s' "$arg" >&2
     fi
-  done <<<"$quota_args"
+  done <<<"$kubebrain_args"
+  printf '\n' >&2
+  exit 1
+fi
+
+advertise_arg_count=0
+advertise_arg_mismatch=false
+while IFS= read -r arg; do
+  if [[ "$arg" == --advertise-client-urls=* ]]; then
+    advertise_arg_count=$((advertise_arg_count + 1))
+    if [[ "$arg" != "--advertise-client-urls=${EXPECTED_ADVERTISE_CLIENT_URLS}" ]]; then
+      advertise_arg_mismatch=true
+    fi
+  fi
+done <<<"$kubebrain_args"
+if [[ "$advertise_arg_count" -ne 1 || "$advertise_arg_mismatch" == "true" ]]; then
+  echo "KubeBrain advertised client URL mismatch: expected exactly --advertise-client-urls=${EXPECTED_ADVERTISE_CLIENT_URLS}" >&2
+  printf 'actual advertise client URL args:' >&2
+  while IFS= read -r arg; do
+    if [[ "$arg" == --advertise-client-urls=* ]]; then
+      printf ' %s' "$arg" >&2
+    fi
+  done <<<"$kubebrain_args"
   printf '\n' >&2
   exit 1
 fi
@@ -109,4 +136,4 @@ if ! ETCDCTL_API=3 "$ETCDCTL" --endpoints="$ENDPOINT" endpoint health; then
   exit 1
 fi
 
-echo "KubeBrain instance release gate passed: endpoint=${ENDPOINT} image=${EXPECTED_IMAGE} quota=${EXPECTED_QUOTA_BACKEND_BYTES} replicas=${EXPECTED_KUBEBRAIN_REPLICAS} PD/TiKV=${EXPECTED_PD_REPLICAS}/${EXPECTED_TIKV_REPLICAS}"
+echo "KubeBrain instance release gate passed: endpoint=${ENDPOINT} image=${EXPECTED_IMAGE} quota=${EXPECTED_QUOTA_BACKEND_BYTES} advertise_client_urls=${EXPECTED_ADVERTISE_CLIENT_URLS} replicas=${EXPECTED_KUBEBRAIN_REPLICAS} PD/TiKV=${EXPECTED_PD_REPLICAS}/${EXPECTED_TIKV_REPLICAS}"

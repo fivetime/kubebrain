@@ -15,7 +15,7 @@ func TestValidateInstanceReady(t *testing.T) {
 		name       string
 		image      string
 		kubeStatus string
-		quotaArgs  string
+		kubeArgs   string
 		topology   string
 		healthOK   bool
 		wantOK     bool
@@ -34,7 +34,7 @@ func TestValidateInstanceReady(t *testing.T) {
 			name:       "wrong quota",
 			image:      "registry/kubebrain@sha256:abc",
 			kubeStatus: "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:abc",
-			quotaArgs:  "--port=3379\n--quota-backend-bytes=1073741824",
+			kubeArgs:   "--port=3379\n--quota-backend-bytes=1073741824\n--advertise-client-urls=https://instance.example:2379",
 			topology:   "3\t3",
 			healthOK:   true,
 			wantOutput: "quota configuration mismatch",
@@ -43,10 +43,37 @@ func TestValidateInstanceReady(t *testing.T) {
 			name:       "duplicate quota",
 			image:      "registry/kubebrain@sha256:abc",
 			kubeStatus: "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:abc",
-			quotaArgs:  "--quota-backend-bytes=429496729600\n--quota-backend-bytes=429496729600",
+			kubeArgs:   "--quota-backend-bytes=429496729600\n--quota-backend-bytes=429496729600\n--advertise-client-urls=https://instance.example:2379",
 			topology:   "3\t3",
 			healthOK:   true,
 			wantOutput: "quota configuration mismatch",
+		},
+		{
+			name:       "missing advertised client URL argument",
+			image:      "registry/kubebrain@sha256:abc",
+			kubeStatus: "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:abc",
+			kubeArgs:   "--port=3379\n--quota-backend-bytes=429496729600",
+			topology:   "3\t3",
+			healthOK:   true,
+			wantOutput: "advertised client URL mismatch",
+		},
+		{
+			name:       "wrong advertised client URL",
+			image:      "registry/kubebrain@sha256:abc",
+			kubeStatus: "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:abc",
+			kubeArgs:   "--quota-backend-bytes=429496729600\n--advertise-client-urls=https://internal.example:2379",
+			topology:   "3\t3",
+			healthOK:   true,
+			wantOutput: "advertised client URL mismatch",
+		},
+		{
+			name:       "duplicate advertised client URL argument",
+			image:      "registry/kubebrain@sha256:abc",
+			kubeStatus: "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:abc",
+			kubeArgs:   "--quota-backend-bytes=429496729600\n--advertise-client-urls=https://instance.example:2379\n--advertise-client-urls=https://instance.example:2379",
+			topology:   "3\t3",
+			healthOK:   true,
+			wantOutput: "advertised client URL mismatch",
 		},
 		{
 			name:       "wrong image",
@@ -94,7 +121,7 @@ elif [[ "$*" == *"get statefulset kb-tikv"* && "$*" == *"jsonpath="* ]]; then
 elif [[ "$*" == *"get tidbcluster"* && "$*" == *".spec.pd.replicas"* ]]; then
   printf '%s' "$FAKE_TOPOLOGY"
 elif [[ "$*" == *"get statefulset kubebrain"* && "$*" == *".args"* ]]; then
-  printf '%s' "$FAKE_QUOTA_ARGS"
+  printf '%s' "$FAKE_KUBEBRAIN_ARGS"
 elif [[ "$*" == *"get statefulset kubebrain"* && "$*" == *"jsonpath="* ]]; then
   printf '%s' "$FAKE_KUBEBRAIN_STATUS"
 else
@@ -112,9 +139,9 @@ printf 'unhealthy\n' >&2
 exit 1
 `), 0o755))
 
-			quotaArgs := tc.quotaArgs
-			if quotaArgs == "" {
-				quotaArgs = "--port=3379\n--quota-backend-bytes=429496729600"
+			kubeArgs := tc.kubeArgs
+			if kubeArgs == "" {
+				kubeArgs = "--port=3379\n--quota-backend-bytes=429496729600\n--advertise-client-urls=https://instance.example:2379"
 			}
 			command := exec.Command("bash", "validate-instance-ready.sh")
 			command.Env = append(os.Environ(),
@@ -122,11 +149,12 @@ exit 1
 				"ETCDCTL="+fakeEtcdctl,
 				"EXPECTED_IMAGE="+tc.image,
 				"EXPECTED_QUOTA_BACKEND_BYTES=429496729600",
+				"EXPECTED_ADVERTISE_CLIENT_URLS=https://instance.example:2379",
 				"ENDPOINT=https://instance.example:2379",
 				"TIMEOUT_SECONDS=1",
 				"POLL_INTERVAL_SECONDS=0",
 				"FAKE_KUBEBRAIN_STATUS="+tc.kubeStatus,
-				"FAKE_QUOTA_ARGS="+quotaArgs,
+				"FAKE_KUBEBRAIN_ARGS="+kubeArgs,
 				"FAKE_TOPOLOGY="+tc.topology,
 				"FAKE_HEALTH_OK="+boolString(tc.healthOK),
 			)
@@ -143,7 +171,7 @@ exit 1
 
 func TestValidateInstanceReadyRequiresImmutableInputs(t *testing.T) {
 	command := exec.Command("bash", "validate-instance-ready.sh")
-	command.Env = append(os.Environ(), "EXPECTED_IMAGE=", "ENDPOINT=", "EXPECTED_QUOTA_BACKEND_BYTES=")
+	command.Env = append(os.Environ(), "EXPECTED_IMAGE=", "ENDPOINT=", "EXPECTED_QUOTA_BACKEND_BYTES=", "EXPECTED_ADVERTISE_CLIENT_URLS=")
 	output, err := command.CombinedOutput()
 	require.Error(t, err)
 	require.Contains(t, string(output), "EXPECTED_IMAGE is required")
@@ -153,10 +181,22 @@ func TestValidateInstanceReadyRequiresImmutableInputs(t *testing.T) {
 		"EXPECTED_IMAGE=registry/kubebrain@sha256:abc",
 		"ENDPOINT=https://instance.example:2379",
 		"EXPECTED_QUOTA_BACKEND_BYTES=",
+		"EXPECTED_ADVERTISE_CLIENT_URLS=https://instance.example:2379",
 	)
 	output, err = command.CombinedOutput()
 	require.Error(t, err)
 	require.Contains(t, string(output), "EXPECTED_QUOTA_BACKEND_BYTES is required")
+
+	command = exec.Command("bash", "validate-instance-ready.sh")
+	command.Env = append(os.Environ(),
+		"EXPECTED_IMAGE=registry/kubebrain@sha256:abc",
+		"ENDPOINT=https://instance.example:2379",
+		"EXPECTED_QUOTA_BACKEND_BYTES=429496729600",
+		"EXPECTED_ADVERTISE_CLIENT_URLS=",
+	)
+	output, err = command.CombinedOutput()
+	require.Error(t, err)
+	require.Contains(t, string(output), "EXPECTED_ADVERTISE_CLIENT_URLS is required")
 }
 
 func boolString(value bool) string {

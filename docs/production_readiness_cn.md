@@ -256,6 +256,7 @@ KUBE_CONTEXT=production \
 KUBEBRAIN_NAMESPACE=kubebrain-instance-a \
 EXPECTED_IMAGE=registry.example/kubebrain@sha256:<digest> \
 EXPECTED_QUOTA_BACKEND_BYTES=429496729600 \
+EXPECTED_ADVERTISE_CLIENT_URLS=https://instance-a.example:2379 \
 TIDB_NAMESPACE=kubebrain-storage-a \
 TIDB_CLUSTER=kb \
 EXPECTED_KUBEBRAIN_REPLICAS=3 \
@@ -270,11 +271,12 @@ ETCDCTL_KEY=/run/secrets/client.key \
 
 门禁先要求 TidbCluster `Ready=True` 且 PD/TiKV StatefulSet generation、ready/updated
 replicas 和 revision 全部收敛，再校验期望 PD/TiKV 数量；随后要求 KubeBrain
-StatefulSet observed generation、ready/updated replicas、revision、精确 image 和 Pod
-template 中唯一的 `--quota-backend-bytes` 全部匹配，最后通过官方 `etcdctl endpoint
-health` 提交线性化 proposal。缺少 `EXPECTED_IMAGE`/`EXPECTED_QUOTA_BACKEND_BYTES`/
-`ENDPOINT`、任一状态缺失、旧 revision、错误拓扑、错误镜像、quota 缺失/重复/不匹配或
-endpoint 不健康都会 fail closed。
+StatefulSet observed generation、ready/updated replicas、revision、精确 image，以及 Pod
+template 中唯一的 `--quota-backend-bytes` 和 `--advertise-client-urls` 全部匹配，最后
+通过官方 `etcdctl endpoint health` 提交线性化 proposal。缺少 `EXPECTED_IMAGE`/
+`EXPECTED_QUOTA_BACKEND_BYTES`/`EXPECTED_ADVERTISE_CLIENT_URLS`/`ENDPOINT`、任一状态
+缺失、旧 revision、错误拓扑、错误镜像、quota/client URL 缺失/重复/不匹配或 endpoint
+不健康都会 fail closed。
 
 生产必须使用 image digest；脚本做精确字符串比较，允许本地验证使用不可变测试 tag，
 但不会替控制面判断 tag 是否可变。该门禁可关闭创建/扩缩/升级的“数据面已就绪”阶段，
