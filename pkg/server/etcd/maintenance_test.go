@@ -18,14 +18,19 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
+	"sync"
 	"testing"
 
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
+	"google.golang.org/grpc/test/bufconn"
 
 	"github.com/kubewharf/kubebrain/pkg/backend"
 	"github.com/kubewharf/kubebrain/pkg/metrics"
@@ -191,6 +196,166 @@ func TestMaintenanceBasicDiagnostics(t *testing.T) {
 	defragResp, err := server.Defragment(ctx, &etcdserverpb.DefragmentRequest{})
 	require.NoError(t, err)
 	require.Nil(t, defragResp.Header)
+}
+
+func TestCorruptAlarmBlocksEtcdApplierSurfaceOverGRPC(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterLeaseServer(grpcServer, server)
+	etcdserverpb.RegisterMaintenanceServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+	conn, err := grpc.NewClient("passthrough:///corrupt-alarm",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return listener.Dial() }))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+
+	ctx := context.Background()
+	kv := etcdserverpb.NewKVClient(conn)
+	lease := etcdserverpb.NewLeaseClient(conn)
+	maintenance := etcdserverpb.NewMaintenanceClient(conn)
+	const memberID = uint64(42)
+	activated, err := maintenance.Alarm(ctx, &etcdserverpb.AlarmRequest{
+		Action: etcdserverpb.AlarmRequest_ACTIVATE, Alarm: etcdserverpb.AlarmType_CORRUPT, MemberID: memberID,
+	})
+	require.NoError(t, err)
+	require.Len(t, activated.Alarms, 1)
+	require.Equal(t, memberID, activated.Alarms[0].MemberID)
+	require.Equal(t, etcdserverpb.AlarmType_CORRUPT, activated.Alarms[0].Alarm)
+	_, err = maintenance.Alarm(ctx, &etcdserverpb.AlarmRequest{
+		Action: etcdserverpb.AlarmRequest_ACTIVATE, Alarm: etcdserverpb.AlarmType_CORRUPT, MemberID: 7,
+	})
+	require.NoError(t, err)
+
+	get, err := maintenance.Alarm(ctx, &etcdserverpb.AlarmRequest{Action: etcdserverpb.AlarmRequest_GET})
+	require.NoError(t, err)
+	require.Len(t, get.Alarms, 2)
+	require.Equal(t, uint64(7), get.Alarms[0].MemberID)
+	require.Equal(t, memberID, get.Alarms[1].MemberID)
+	for _, alarm := range get.Alarms {
+		require.Equal(t, etcdserverpb.AlarmType_CORRUPT, alarm.Alarm)
+	}
+	nospace, err := maintenance.Alarm(ctx, &etcdserverpb.AlarmRequest{
+		Action: etcdserverpb.AlarmRequest_GET, Alarm: etcdserverpb.AlarmType_NOSPACE,
+	})
+	require.NoError(t, err)
+	require.Empty(t, nospace.Alarms)
+	statusResp, err := maintenance.Status(ctx, &etcdserverpb.StatusRequest{})
+	require.NoError(t, err)
+	require.Contains(t, statusResp.Errors, activated.Alarms[0].String())
+	require.Contains(t, statusResp.Errors, get.Alarms[0].String())
+	_, err = kv.Put(ctx, &etcdserverpb.PutRequest{})
+	require.Equal(t, codes.InvalidArgument, status.Code(err))
+	_, err = kv.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{})
+	require.Equal(t, codes.InvalidArgument, status.Code(err))
+	_, err = kv.Txn(ctx, &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{{
+		Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{}},
+	}}})
+	require.Equal(t, codes.InvalidArgument, status.Code(err))
+
+	calls := []struct {
+		name string
+		call func() error
+	}{
+		{name: "put", call: func() error { _, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: []byte("key")}); return err }},
+		{name: "delete", call: func() error {
+			_, err := kv.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{Key: []byte("key")})
+			return err
+		}},
+		{name: "txn", call: func() error {
+			_, err := kv.Txn(ctx, &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{{
+				Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{Key: []byte("key")}},
+			}}})
+			return err
+		}},
+		{name: "compact", call: func() error { _, err := kv.Compact(ctx, &etcdserverpb.CompactionRequest{}); return err }},
+		{name: "lease grant", call: func() error { _, err := lease.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 10}); return err }},
+		{name: "lease revoke", call: func() error { _, err := lease.LeaseRevoke(ctx, &etcdserverpb.LeaseRevokeRequest{ID: 1}); return err }},
+	}
+	for _, tc := range calls {
+		t.Run(tc.name, func(t *testing.T) { require.ErrorIs(t, tc.call(), rpctypes.ErrGRPCCorrupt) })
+	}
+	_, err = kv.Range(ctx, &etcdserverpb.RangeRequest{Key: []byte("key")})
+	require.NoError(t, err)
+	stream, err := kv.RangeStream(ctx, &etcdserverpb.RangeRequest{Key: []byte("key")})
+	require.NoError(t, err)
+	_, err = stream.Recv()
+	require.NoError(t, err)
+
+	wrong, err := maintenance.Alarm(ctx, &etcdserverpb.AlarmRequest{
+		Action: etcdserverpb.AlarmRequest_DEACTIVATE, Alarm: etcdserverpb.AlarmType_CORRUPT, MemberID: memberID + 1,
+	})
+	require.NoError(t, err)
+	require.Empty(t, wrong.Alarms)
+	_, err = kv.Put(ctx, &etcdserverpb.PutRequest{Key: []byte("key"), Value: []byte("blocked")})
+	require.ErrorIs(t, err, rpctypes.ErrGRPCCorrupt)
+
+	deactivated, err := maintenance.Alarm(ctx, &etcdserverpb.AlarmRequest{
+		Action: etcdserverpb.AlarmRequest_DEACTIVATE, Alarm: etcdserverpb.AlarmType_CORRUPT, MemberID: memberID,
+	})
+	require.NoError(t, err)
+	require.Len(t, deactivated.Alarms, 1)
+	require.Equal(t, memberID, deactivated.Alarms[0].MemberID)
+	require.Equal(t, etcdserverpb.AlarmType_CORRUPT, deactivated.Alarms[0].Alarm)
+	_, err = kv.Put(ctx, &etcdserverpb.PutRequest{Key: []byte("key"), Value: []byte("value")})
+	require.ErrorIs(t, err, rpctypes.ErrGRPCCorrupt)
+	last, err := maintenance.Alarm(ctx, &etcdserverpb.AlarmRequest{
+		Action: etcdserverpb.AlarmRequest_DEACTIVATE, Alarm: etcdserverpb.AlarmType_CORRUPT, MemberID: 7,
+	})
+	require.NoError(t, err)
+	require.Len(t, last.Alarms, 1)
+	_, err = kv.Put(ctx, &etcdserverpb.PutRequest{Key: []byte("key"), Value: []byte("value")})
+	require.NoError(t, err)
+}
+
+func TestCorruptAlarmMemberSetConcurrentCAS(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	const count = 32
+
+	run := func(call func(uint64) error) {
+		t.Helper()
+		var group sync.WaitGroup
+		errors := make(chan error, count)
+		for id := uint64(1); id <= count; id++ {
+			group.Add(1)
+			go func() {
+				defer group.Done()
+				errors <- call(id)
+			}()
+		}
+		group.Wait()
+		close(errors)
+		for err := range errors {
+			require.NoError(t, err)
+		}
+	}
+	run(func(id uint64) error { return server.backend.ArmCorrupt(ctx, id) })
+	members, err := server.backend.CorruptAlarms(ctx)
+	require.NoError(t, err)
+	require.Len(t, members, count)
+	for index, memberID := range members {
+		require.Equal(t, uint64(index+1), memberID)
+	}
+	run(func(id uint64) error {
+		removed, err := server.backend.DisarmCorrupt(ctx, id)
+		if err != nil {
+			return err
+		}
+		if !removed {
+			return fmt.Errorf("alarm %d was not removed", id)
+		}
+		return nil
+	})
+	members, err = server.backend.CorruptAlarms(ctx)
+	require.NoError(t, err)
+	require.Empty(t, members)
 }
 
 func TestMaintenanceHashHeadersStayPinnedToHashedRevision(t *testing.T) {

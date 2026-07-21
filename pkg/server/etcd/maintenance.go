@@ -91,6 +91,18 @@ func (s *RPCServer) Alarm(ctx context.Context, req *etcdserverpb.AlarmRequest) (
 		if req.GetAlarm() == etcdserverpb.AlarmType_NONE {
 			return response, nil
 		}
+		if req.GetAlarm() == etcdserverpb.AlarmType_CORRUPT {
+			removed, err := s.backend.DisarmCorrupt(ctx, req.GetMemberID())
+			if err != nil {
+				return nil, mapFenceErr(err)
+			}
+			if removed {
+				response.Alarms = []*etcdserverpb.AlarmMember{{
+					MemberID: req.GetMemberID(), Alarm: etcdserverpb.AlarmType_CORRUPT,
+				}}
+			}
+			return response, nil
+		}
 		if req.GetAlarm() != etcdserverpb.AlarmType_NOSPACE {
 			return nil, status.Error(codes.Unimplemented, alarmMutationUnsupportedMessage)
 		}
@@ -111,6 +123,15 @@ func (s *RPCServer) Alarm(ctx context.Context, req *etcdserverpb.AlarmRequest) (
 		}
 		response := &etcdserverpb.AlarmResponse{Header: s.maintenanceHeader()}
 		if req.GetAlarm() == etcdserverpb.AlarmType_NONE {
+			return response, nil
+		}
+		if req.GetAlarm() == etcdserverpb.AlarmType_CORRUPT {
+			if err := s.backend.ArmCorrupt(ctx, req.GetMemberID()); err != nil {
+				return nil, mapFenceErr(err)
+			}
+			response.Alarms = []*etcdserverpb.AlarmMember{{
+				MemberID: req.GetMemberID(), Alarm: etcdserverpb.AlarmType_CORRUPT,
+			}}
 			return response, nil
 		}
 		if req.GetAlarm() != etcdserverpb.AlarmType_NOSPACE {
@@ -146,6 +167,17 @@ func (s *RPCServer) Alarm(ctx context.Context, req *etcdserverpb.AlarmRequest) (
 			response.Alarms = append(response.Alarms, &etcdserverpb.AlarmMember{
 				MemberID: memberID,
 				Alarm:    etcdserverpb.AlarmType_NOSPACE,
+			})
+		}
+	}
+	if req.GetAlarm() == etcdserverpb.AlarmType_NONE || req.GetAlarm() == etcdserverpb.AlarmType_CORRUPT {
+		memberIDs, alarmErr := s.backend.CorruptAlarms(ctx)
+		if alarmErr != nil {
+			return nil, alarmErr
+		}
+		for _, memberID := range memberIDs {
+			response.Alarms = append(response.Alarms, &etcdserverpb.AlarmMember{
+				MemberID: memberID, Alarm: etcdserverpb.AlarmType_CORRUPT,
 			})
 		}
 	}
@@ -211,6 +243,15 @@ func (s *RPCServer) Status(ctx context.Context, _ *etcdserverpb.StatusRequest) (
 	}
 	for _, alarm := range noSpaceAlarms {
 		resp.Errors = append(resp.Errors, alarm.String())
+	}
+	corruptAlarms, err := s.backend.CorruptAlarms(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, memberID := range corruptAlarms {
+		resp.Errors = append(resp.Errors, (&etcdserverpb.AlarmMember{
+			MemberID: memberID, Alarm: etcdserverpb.AlarmType_CORRUPT,
+		}).String())
 	}
 	return resp, nil
 }
@@ -308,6 +349,17 @@ func (s *RPCServer) requireAuthenticated(ctx context.Context, root bool) error {
 	}
 	if root && !caller.isRoot() {
 		return rpctypes.ErrPermissionDenied
+	}
+	return nil
+}
+
+func (s *RPCServer) rejectCorrupt(ctx context.Context) error {
+	alarms, err := s.backend.CorruptAlarms(ctx)
+	if err != nil {
+		return mapFenceErr(err)
+	}
+	if len(alarms) != 0 {
+		return rpctypes.ErrGRPCCorrupt
 	}
 	return nil
 }

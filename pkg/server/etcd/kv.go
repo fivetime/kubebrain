@@ -456,6 +456,9 @@ func (s *RPCServer) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etc
 		}
 		return response, err
 	}
+	if err := s.rejectCorrupt(ctx); err != nil {
+		return nil, err
+	}
 
 	// only leader can accept and handle write request
 	// return error includes current leader, help etcd client send request to right instance
@@ -884,6 +887,9 @@ func (s *RPCServer) Compact(ctx context.Context, r *etcdserverpb.CompactionReque
 	if !caller.isRoot() {
 		return nil, rpctypes.ErrPermissionDenied
 	}
+	if err := s.rejectCorrupt(ctx); err != nil {
+		return nil, err
+	}
 	epoch, leadingFresh := s.peers.EpochAndLeadingFresh()
 	if !leadingFresh {
 		s.metricCli.EmitCounter("write.follower", 1)
@@ -981,6 +987,9 @@ func (s *RPCServer) Put(ctx context.Context, r *etcdserverpb.PutRequest) (*etcds
 		return nil, authErr
 	}
 	ctx = withAuthWriteGuard(ctx, caller)
+	if err := s.rejectCorrupt(ctx); err != nil {
+		return nil, err
+	}
 	epoch, leadingFresh := s.peers.EpochAndLeadingFresh()
 	if !leadingFresh {
 		s.metricCli.EmitCounter("write.follower", 1)
@@ -1055,6 +1064,9 @@ func (s *RPCServer) DeleteRange(ctx context.Context, r *etcdserverpb.DeleteRange
 		}
 	}
 	ctx = withAuthWriteGuard(ctx, caller)
+	if err := s.rejectCorrupt(ctx); err != nil {
+		return nil, err
+	}
 	epoch, leadingFresh := s.peers.EpochAndLeadingFresh()
 	if !leadingFresh {
 		s.metricCli.EmitCounter("write.follower", 1)

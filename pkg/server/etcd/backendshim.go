@@ -17,6 +17,7 @@ package etcd
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -35,6 +36,7 @@ import (
 	"github.com/kubewharf/kubebrain/pkg/backend"
 	"github.com/kubewharf/kubebrain/pkg/metrics"
 	"github.com/kubewharf/kubebrain/pkg/server/service/etcdproxy"
+	"github.com/kubewharf/kubebrain/pkg/storage"
 )
 
 var (
@@ -96,6 +98,9 @@ type BackendShim interface {
 	NoSpaceAlarms(ctx context.Context) ([]uint64, error)
 	NoSpaceAlarm(ctx context.Context) (memberID uint64, active bool, err error)
 	DisarmNoSpace(ctx context.Context, memberID uint64) (bool, error)
+	ArmCorrupt(ctx context.Context, memberID uint64) error
+	CorruptAlarms(ctx context.Context) ([]uint64, error)
+	DisarmCorrupt(ctx context.Context, memberID uint64) (bool, error)
 
 	// BeginRangeTxn excludes logical writes while a range compare and its chosen
 	// branch execute, preventing phantoms under TiKV snapshot isolation.
@@ -246,6 +251,90 @@ func (b *backendShim) NoSpaceAlarm(ctx context.Context) (memberID uint64, active
 
 func (b *backendShim) DisarmNoSpace(ctx context.Context, memberID uint64) (bool, error) {
 	return b.backend.DisarmNoSpace(ctx, memberID)
+}
+
+var corruptAlarmKey = []byte("alarms/corrupt")
+
+func (b *backendShim) ArmCorrupt(ctx context.Context, memberID uint64) error {
+	for {
+		members, raw, exists, err := b.readCorruptAlarms(ctx)
+		if err != nil {
+			return err
+		}
+		index := sort.Search(len(members), func(i int) bool { return members[i] >= memberID })
+		if index < len(members) && members[index] == memberID {
+			return nil
+		}
+		members = append(members, 0)
+		copy(members[index+1:], members[index:])
+		members[index] = memberID
+		value, err := json.Marshal(members)
+		if err != nil {
+			return err
+		}
+		err = b.backend.InternalCAS(ctx, []backend.InternalCASOp{{
+			Key: corruptAlarmKey, Value: value, Expected: raw, ExpectedExists: exists,
+		}})
+		if errors.Is(err, storage.ErrCASFailed) {
+			continue
+		}
+		return err
+	}
+}
+
+func (b *backendShim) CorruptAlarms(ctx context.Context) ([]uint64, error) {
+	members, _, _, err := b.readCorruptAlarms(ctx)
+	return members, err
+}
+
+func (b *backendShim) DisarmCorrupt(ctx context.Context, memberID uint64) (bool, error) {
+	for {
+		members, raw, exists, err := b.readCorruptAlarms(ctx)
+		if err != nil {
+			return false, err
+		}
+		index := sort.Search(len(members), func(i int) bool { return members[i] >= memberID })
+		if index == len(members) || members[index] != memberID {
+			return false, nil
+		}
+		members = append(members[:index], members[index+1:]...)
+		op := backend.InternalCASOp{
+			Key: corruptAlarmKey, Expected: raw, ExpectedExists: exists,
+		}
+		if len(members) == 0 {
+			op.Delete = true
+		} else {
+			op.Value, err = json.Marshal(members)
+			if err != nil {
+				return false, err
+			}
+		}
+		err = b.backend.InternalCAS(ctx, []backend.InternalCASOp{op})
+		if errors.Is(err, storage.ErrCASFailed) {
+			continue
+		}
+		return err == nil, err
+	}
+}
+
+func (b *backendShim) readCorruptAlarms(ctx context.Context) ([]uint64, []byte, bool, error) {
+	raw, err := b.backend.InternalGet(ctx, corruptAlarmKey)
+	if errors.Is(err, storage.ErrKeyNotFound) {
+		return nil, nil, false, nil
+	}
+	if err != nil {
+		return nil, nil, false, err
+	}
+	var members []uint64
+	if err := json.Unmarshal(raw, &members); err != nil {
+		return nil, nil, false, fmt.Errorf("decode corrupt alarm metadata: %w", err)
+	}
+	for i := 1; i < len(members); i++ {
+		if members[i-1] >= members[i] {
+			return nil, nil, false, errors.New("corrupt alarm metadata is not strictly ordered")
+		}
+	}
+	return members, raw, true, nil
 }
 
 func (b *backendShim) GetDurableRevision(ctx context.Context) (uint64, error) {

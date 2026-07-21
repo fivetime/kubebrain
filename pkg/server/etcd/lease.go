@@ -93,6 +93,9 @@ func (m *leaseManager) LeaseGrant(ctx context.Context, req *etcdserverpb.LeaseGr
 	if err != nil {
 		return nil, err
 	}
+	if err := m.srv.rejectCorrupt(ctx); err != nil {
+		return nil, err
+	}
 	epoch, leadingFresh := m.srv.peers.EpochAndLeadingFresh()
 	if !leadingFresh {
 		err := m.requireLeaseLeader("lease grant")
@@ -201,6 +204,9 @@ func (m *leaseManager) LeaseRevoke(ctx context.Context, req *etcdserverpb.LeaseR
 		return nil, err
 	}
 	ctx = withAuthWriteGuard(ctx, caller)
+	if err := m.srv.rejectCorrupt(ctx); err != nil {
+		return nil, err
+	}
 	epoch, leadingFresh := m.srv.peers.EpochAndLeadingFresh()
 	if !leadingFresh {
 		err := m.requireLeaseLeader("lease revoke")
