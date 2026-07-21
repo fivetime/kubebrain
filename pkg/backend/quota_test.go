@@ -845,6 +845,33 @@ func TestQuotaInitializationActivatesNoSpaceForExistingOverage(t *testing.T) {
 	require.True(t, alarm, "an over-quota Put after disarm must restore capped state")
 }
 
+func TestQuotaInitializationRestoresPersistedManualAlarmMetricBelowQuota(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+	store := imemkv.NewKvStorage()
+	t.Cleanup(func() { require.NoError(t, store.Close()) })
+	config := Config{
+		Prefix:                  prefix,
+		Identity:                getStorageIdentity(),
+		EnableEtcdCompatibility: true,
+		QuotaBackendBytes:       100,
+	}
+	initial := NewBackend(store, config, mock.NewMinimalMetrics(ctrl)).(*backend)
+	require.NoError(t, initial.EnsureQuotaInitialized(context.Background()))
+	_, err := initial.ArmNoSpace(context.Background(), 424242)
+	require.NoError(t, err)
+
+	recorder := newRecordCounters()
+	restarted := NewBackend(store, config, recorder).(*backend)
+	require.NoError(t, restarted.EnsureQuotaInitialized(context.Background()))
+	require.Equal(t, float64(1), recorder.gauge("quota.nospace"))
+	usage, quota, active, err := restarted.QuotaStatus(context.Background())
+	require.NoError(t, err)
+	require.Zero(t, usage)
+	require.Equal(t, int64(100), quota)
+	require.True(t, active)
+}
+
 func TestQuotaInitializationReconcilesCommittedUncertainUsage(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	t.Cleanup(ctrl.Finish)
@@ -932,4 +959,89 @@ func TestQuotaInitializationReconcilesCommittedUncertainOverageAlarm(t *testing.
 	require.Equal(t, int64(10), usage)
 	require.Equal(t, int64(5), quota)
 	require.True(t, alarm)
+}
+
+func TestQuotaUsageCommitsAtomicallyWithUncertainUserTransaction(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+	base := imemkv.NewKvStorage()
+	t.Cleanup(func() { require.NoError(t, base.Close()) })
+	store := &commitThenUncertainStorage{
+		KvStorage:               base,
+		failReadsAfterUncertain: 2,
+	}
+	b := NewBackend(store, Config{
+		Prefix:                  prefix,
+		Identity:                getStorageIdentity(),
+		EnableEtcdCompatibility: true,
+		QuotaBackendBytes:       100,
+	}, mock.NewMinimalMetrics(ctrl)).(*backend)
+	b.SetCurrentRevision(uint64(time.Now().UnixNano()))
+	ctx := context.Background()
+	require.NoError(t, b.EnsureQuotaInitialized(ctx))
+
+	left := []byte("quota-uncertain-left")
+	right := []byte("quota-uncertain-right")
+	store.trigger.Store(true)
+	_, revision, err := b.TxnApply(ctx, []TxnWriteOp{
+		{Key: left, Value: []byte("left")},
+		{Key: right, Value: []byte("right")},
+	}, nil)
+	require.ErrorIs(t, err, storage.ErrUncertainResult)
+	require.Eventually(t, func() bool {
+		return b.GetCurrentRevision() >= revision
+	}, 2*time.Second, time.Millisecond)
+
+	usage, quota, alarm, err := b.QuotaStatus(ctx)
+	require.NoError(t, err)
+	require.Equal(t, int64(len(left)+len("left")+len(right)+len("right")), usage)
+	require.Equal(t, int64(100), quota)
+	require.False(t, alarm)
+	leftValue, leftRevision := liveValue(t, b, ctx, left)
+	rightValue, rightRevision := liveValue(t, b, ctx, right)
+	require.Equal(t, "left", leftValue)
+	require.Equal(t, "right", rightValue)
+	require.Equal(t, revision, leftRevision)
+	require.Equal(t, revision, rightRevision)
+}
+
+func TestQuotaUsageRollsBackAtomicallyWithUncommittedUncertainUserTransaction(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+	base := imemkv.NewKvStorage()
+	t.Cleanup(func() { require.NoError(t, base.Close()) })
+	store := &uncommittedUncertainStorage{KvStorage: base}
+	b := NewBackend(store, Config{
+		Prefix:                  prefix,
+		Identity:                getStorageIdentity(),
+		EnableEtcdCompatibility: true,
+		QuotaBackendBytes:       100,
+	}, mock.NewMinimalMetrics(ctrl)).(*backend)
+	b.SetCurrentRevision(uint64(time.Now().UnixNano()))
+	ctx := context.Background()
+	require.NoError(t, b.EnsureQuotaInitialized(ctx))
+
+	left := []byte("quota-uncommitted-left")
+	right := []byte("quota-uncommitted-right")
+	store.trigger.Store(true)
+	_, revision, err := b.TxnApply(ctx, []TxnWriteOp{
+		{Key: left, Value: []byte("left")},
+		{Key: right, Value: []byte("right")},
+	}, nil)
+	require.ErrorIs(t, err, storage.ErrUncertainResult)
+	require.Eventually(t, func() bool {
+		return b.GetCurrentRevision() >= revision
+	}, 2*time.Second, time.Millisecond)
+
+	usage, quota, alarm, err := b.QuotaStatus(ctx)
+	require.NoError(t, err)
+	require.Zero(t, usage)
+	require.Equal(t, int64(100), quota)
+	require.False(t, alarm)
+	leftValue, leftRevision := liveValue(t, b, ctx, left)
+	rightValue, rightRevision := liveValue(t, b, ctx, right)
+	require.Empty(t, leftValue)
+	require.Empty(t, rightValue)
+	require.Zero(t, leftRevision)
+	require.Zero(t, rightRevision)
 }

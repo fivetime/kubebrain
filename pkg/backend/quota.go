@@ -325,8 +325,17 @@ func (b *backend) reconcileQuotaInitialization(
 
 func (b *backend) ensureNoSpaceForUsageLocked(ctx context.Context, usage int64) error {
 	if usage <= b.config.QuotaBackendBytes {
-		b.emitQuotaMetrics(usage, false)
-		return nil
+		_, err := b.kv.Get(ctx, b.ks.EncodeInternalKey(quotaAlarmKey))
+		switch {
+		case err == nil:
+			b.emitQuotaMetrics(usage, true)
+			return nil
+		case errors.Is(err, storage.ErrKeyNotFound):
+			b.emitQuotaMetrics(usage, false)
+			return nil
+		default:
+			return err
+		}
 	}
 	alarmKey := b.ks.EncodeInternalKey(quotaAlarmKey)
 	if _, err := b.kv.Get(ctx, alarmKey); err == nil {

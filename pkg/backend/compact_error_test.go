@@ -37,13 +37,28 @@ import (
 type recordCounters struct {
 	mu sync.Mutex
 	c  map[string]float64
+	g  map[string]float64
 }
 
-func newRecordCounters() *recordCounters { return &recordCounters{c: map[string]float64{}} }
+func newRecordCounters() *recordCounters {
+	return &recordCounters{c: map[string]float64{}, g: map[string]float64{}}
+}
 
-func (r *recordCounters) GetGrpcServerOption() []grpc.ServerOption              { return nil }
-func (r *recordCounters) GetHttpHandlers() map[string]http.Handler              { return nil }
-func (r *recordCounters) EmitGauge(string, interface{}, ...metrics.T) error     { return nil }
+func (r *recordCounters) GetGrpcServerOption() []grpc.ServerOption { return nil }
+func (r *recordCounters) GetHttpHandlers() map[string]http.Handler { return nil }
+func (r *recordCounters) EmitGauge(name string, value interface{}, _ ...metrics.T) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	switch x := value.(type) {
+	case int:
+		r.g[name] = float64(x)
+	case int64:
+		r.g[name] = float64(x)
+	case float64:
+		r.g[name] = x
+	}
+	return nil
+}
 func (r *recordCounters) EmitHistogram(string, interface{}, ...metrics.T) error { return nil }
 func (r *recordCounters) EmitCounter(name string, value interface{}, _ ...metrics.T) error {
 	r.mu.Lock()
@@ -62,6 +77,11 @@ func (r *recordCounters) get(name string) float64 {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.c[name]
+}
+func (r *recordCounters) gauge(name string) float64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.g[name]
 }
 
 // armedFailPartitionsKV fails GetPartitions once armed, so a compaction scan
