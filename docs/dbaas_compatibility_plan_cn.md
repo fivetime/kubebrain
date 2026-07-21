@@ -8251,6 +8251,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `sha256:4117d11834bd7bc77237777c9f80c4a8451bcf2b23ad1fbad09a77383835abac`，OCI revision 与容器内
   `kube-brain version` 均为 `5bd6f86fbbd10e52b9ccbc6896ecfd9b4213e061`；三副本已滚动收敛。
 
+- **Maintenance A412 watch validation-precedence chain gate（2026-07-21）**：
+  继续对照 `/root/etcd/server/etcdserver/api/v3rpc/watch.go` 与
+  `/root/etcd/server/storage/mvcc/watcher.go`，固定 create 请求的完整组合顺序。先占用显式
+  `math.MaxInt64` watch ID，再发送同时具备同一重复 ID、`key==range_end` 和负 start revision 的
+  请求；参考 etcd 与 KubeBrain 都必须优先返回
+  `etcdserver: mvcc: required revision has been compacted`。去掉负 revision 后，同一组合必须返回
+  empty-range；再去掉非法范围后才返回 duplicate-ID。完整 RPCServer 单测同时证明三重非法响应不会
+  关闭 multiplexed stream，后续合法 watch 仍可创建。
+
+  真实双端差分连续 10 轮、确定性普通 20 轮、race 5 轮、根模块完整测试、完整 compat 111.795 秒、
+  root/compat vet 与固定版 staticcheck 全绿。A411 服务端实现已经符合该顺序，本轮只增强回归门禁，
+  运行镜像继续使用 `kubebrain:a411-watch-validation`。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
