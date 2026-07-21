@@ -7844,6 +7844,27 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   未调用的依赖模块漏洞，不属于 symbol-level 可达漏洞。该门禁后续会随漏洞数据库更新而
   fail closed，工具版本升级需作为显式审阅变更。
 
+- **Production A390 Staticcheck gate and dead-code removal（2026-07-21）**：
+  使用 Go 1.26.5 与固定 `honnef.co/go/tools/cmd/staticcheck@v0.7.0` 扫描根模块，首次发现
+  37 项，包括生产计量、quota alarm、txn compare、watch watermark 的无调用旧 helper，
+  已弃用 `ioutil`、Kubernetes backoff 与 gRPC `FailFast` API，以及无效赋值和机械性比较。
+  删除确认无调用方的重构遗留代码，迁移为 `io`/`os`、`wait.Interrupted` 和
+  `grpc.WaitForReady(true)`，其余使用 `bytes.Equal`/`copy` 等等价实现。根模块和独立
+  `hack/backup/objectstore` 模块复扫均为零告警，CI 现对两模块执行固定版 Staticcheck。
+
+  本轮还发现 A389 把 Dockerfile 改为精确 `1.26.5-bookworm` 后，构建契约测试仍硬编码
+  `1.26-bookworm`，会令完整 CI 失败；现已让测试同时固定精确 tag 与完整 digest，并把
+  in-cluster load smoke 的 Go image 一并固定到相同 tag/digest。根模块完整 `go test ./...`、
+  `go vet ./...` 通过；backend、endpoint、全部 server/storage、Prometheus metrics 和全部
+  production 包的 race 测试通过，其中 `pkg/server/etcd` race 运行 245.764 秒。
+
+  构建 `kubebrain:a390-staticcheck` 后在真实独立 3 PD/3 TiKV、三副本 StatefulSet 上完成
+  滚动更新。首次宿主 load loop 因 `kubectl port-forward service` 绑定的 Pod 被替换而断开，
+  rollout 本身成功；随后为三个 Pod 建立独立隧道，三个 endpoint 均可提交 health proposal、
+  MemberList 状态指向同一 leader，并逐一从每个副本写入、从全部三个副本线性读取到精确值。
+  三 Pod 均为新镜像、Ready、零重启，运行版本 `0.0.0-a390.1`、Go 1.26.5、TiKV；临时隧道
+  已关闭。该结果验证 `WaitForReady` 迁移未破坏 follower-to-leader forwarding。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
