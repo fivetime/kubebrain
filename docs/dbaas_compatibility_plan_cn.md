@@ -43,7 +43,7 @@ Raft、bbolt 和成员管理内部实现，而是对通用 etcd v3 客户端提�
 | Maintenance | Status | 兼容核心语义 | 返回真实服务身份、版本、leader/revision/共享选主 term；配置 quota 时报告租户最新逻辑 key+value 字节，未配置时使用兼容 sentinel；TiKV 物理容量转到实例指标 |
 | Maintenance | Snapshot | 平台替代 | 使用 TiKV BR/PITR；控制面提供备份、恢复和导出任务，不伪造 etcd snapshot |
 | Maintenance | Defragment | 平台替代 | TiKV GC/compaction 管理，不执行 bbolt 碎片整理 |
-| Maintenance | Alarm/DbSize | 兼容 NOSPACE 核心语义 | keyspace 级逻辑容量原子计量、禁用窗口 dirty 标记与重新启用重建、持久 member 集合（含零值与任意 ID）、sticky NOSPACE、list/activate/disarm、无配置 quota 的手工 capped state、跨 endpoint 与并发 mutation、启动初始化与 mutation 的不确定提交回读及 no-op 已支持；CORRUPT 与 bbolt fragmentation 仍为平台边界 |
+| Maintenance | Alarm/DbSize | 兼容 NOSPACE/CORRUPT 核心语义 | keyspace 级逻辑容量原子计量、sticky NOSPACE、持久 member 集合及跨 endpoint mutation 已支持；CORRUPT 使用 TiKV 内部元数据持久 member 集合，阻断 Put/Delete/写 Txn/Compact/LeaseGrant/Revoke，并接入 Status、传统 health 和 readyz；bbolt fragmentation 仍为平台边界 |
 | Maintenance | Hash/HashKV | 兼容核心语义 | 对指定 revision 的租户 MVCC 实际内容做稳定摘要；成员本地诊断不依赖 KubeBrain leader，数值不与 bbolt 内部编码比较 |
 | Maintenance | MoveLeader/Downgrade | 平台替代 | 分别由服务选主和 DBaaS 升级编排处理 |
 | Endpoint | health/livez/readyz | 兼容核心语义 | `/health`、`/livez`、`/readyz` 及分项检查已对齐；`data_corruption`/`non_learner` 使用 TiKV 架构等价语义，`/ready` 与 `/ping` 为平台探针 |
@@ -8012,6 +8012,30 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   启用。无 lease 和当前 exporter 生成的见证继续通过；旧租约 artifact 默认仍可用于逻辑恢复，
   但不能充当物理恢复见证。fake-kubectl 回归测试确认拒绝路径只有只读 preflight 调用，不产生
   Patch、snapshot 或 receipt。
+
+- **Maintenance A398 persistent CORRUPT alarm gate（2026-07-21）**：
+  对照 `/root/etcd/server/etcdserver/apply/uber_applier.go`、`apply/corrupt.go`、
+  `apply/uber_applier_test.go:TestUberApplier_Alarm_Corrupt` 及
+  `/root/etcd/server/etcdserver/api/etcdhttp/health.go`，修复 CORRUPT mutation 此前返回
+  Unimplemented 的公开差异。backend 现以单个 TiKV internal key 保存严格递增、无重复的 member-ID
+  集合，activate/deactivate 使用 exact-value CAS 重试，因而不消费用户 revision、不产生 watch event，
+  并在并发不同 owner mutation 时不丢更新。Alarm GET/Status 在全部副本读取同一集合；错误 owner
+  deactivate 返回成功空列表且不解除全局栅栏。
+
+  有效 CORRUPT 集合会在请求验证和鉴权之后、leader proxy 或存储 mutation 之前，对 Put、
+  DeleteRange、含写 Txn、Compact、LeaseGrant 和 LeaseRevoke 返回标准
+  `DataLoss: etcdserver: corrupt cluster`；Range/RangeStream 保持可读。该位置同时固定非法
+  Put/Delete/Txn 仍优先返回 InvalidArgument，避免 admission interceptor 泄露告警状态或改变错误契约。
+  传统 `/health` 返回 503 `ALARM CORRUPT` 并支持 `exclude=CORRUPT`；
+  `/readyz/data_corruption` 返回 `alarm activated: CORRUPT`，聚合 readyz 可按检查名排除。
+
+  新增参考 etcd 差分覆盖 activate/get、读可用、全部 mutation 阻断、错误 owner、disarm 和恢复写，
+  并新增三 endpoint 用例：Pod 0 激活其真实 member ID，Pod 1 读成功且写 DataLoss，Pod 2 列举并解除，
+  Pod 0 恢复写入。32 owner 并发 CAS 在 race 下通过。最终镜像
+  `kubebrain:a398-corrupt-alarm-health`（版本 `0.0.0-a398.3`，revision
+  `fde09307ba9b7bb35b2f0185e2ae0ade9dc0147c`）在独立 3PD/3TiKV、三 KubeBrain 副本滚动 Ready；
+  参考差分、跨 endpoint、完整 compat（109.440 秒）通过，运行时轮询实际观察到 health/readyz
+  告警并在解除后恢复，测试 key、alarm、参考进程和 port-forward 均已清理。
 
 ### P1：通用服务能力
 

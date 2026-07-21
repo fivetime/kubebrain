@@ -1193,12 +1193,15 @@ hack/dev/verify.sh
   副本 revision cache，但不要求 leader read barrier 成功，可在选主和 leader 故障窗口
   用于 endpoint/hash 排障。Status 的 `Errors` 与 etcd 一样先报告 no-leader，再追加
   当前持久 alarm 的 `AlarmMember.String()`；因此 NOSPACE 生效时，每个 KubeBrain
-  副本都会向 `etcdctl endpoint status` 暴露同一 alarm owner，disarm 后同步消失。
-  传统 `/health` 同样先检查 active NOSPACE：生效时返回 503 和
-  `{"health":"false","reason":"ALARM NOSPACE"}`；`exclude=NOSPACE` 可显式跳过，
+  副本都会向 `etcdctl endpoint status` 暴露同一 alarm owner，disarm 后同步消失。CORRUPT
+  同样以 TiKV internal metadata 持久保存 member 集合；非空时 Put/Delete/写 Txn/Compact/
+  LeaseGrant/Revoke 返回标准 DataLoss，Range 仍可用于诊断和恢复。
+  传统 `/health` 先检查 active NOSPACE/CORRUPT：生效时返回 503 和对应
+  `ALARM NOSPACE`/`ALARM CORRUPT` reason；`exclude=NOSPACE` 或 `exclude=CORRUPT` 可显式跳过，
   `serializable=true` 不跳过 alarm。成功与失败响应均使用 upstream 的
   `text/plain; charset=utf-8`；失败响应另带 `X-Content-Type-Options: nosniff`。
-  `/ready`/`readyz` 刻意不因 NOSPACE 摘流，以便客户端继续读取和执行恢复操作。
+  `/ready`/`readyz` 刻意不因 NOSPACE 摘流，以便客户端继续读取和执行恢复操作；CORRUPT
+  会使 `/readyz/data_corruption` 失败，紧急诊断时可显式 `exclude=data_corruption`。
   平台健康检查不能只看 gRPC/HTTP Ready，还必须把非空 Status Errors 或失败的传统
   `/health` 视为需处置状态。
 - `Cluster.MemberList` 兼容视图
