@@ -43,7 +43,7 @@ Raft、bbolt 和成员管理内部实现，而是对通用 etcd v3 客户端提�
 | Maintenance | Status | 兼容核心语义 | 返回真实服务身份、版本、leader/revision/共享选主 term；配置 quota 时报告租户最新逻辑 key+value 字节，未配置时使用兼容 sentinel；TiKV 物理容量转到实例指标 |
 | Maintenance | Snapshot | 平台替代 | 使用 TiKV BR/PITR；控制面提供备份、恢复和导出任务，不伪造 etcd snapshot |
 | Maintenance | Defragment | 平台替代 | TiKV GC/compaction 管理，不执行 bbolt 碎片整理 |
-| Maintenance | Alarm/DbSize | 兼容 NOSPACE/CORRUPT 核心语义 | keyspace 级逻辑容量原子计量、sticky NOSPACE、持久 member 集合及跨 endpoint mutation 已支持；CORRUPT 使用 TiKV 内部元数据持久 member 集合，允许 Range 及空/线性/串行只读 Txn 诊断，阻断 Put/Delete/任一分支含写的 Txn/Compact/LeaseGrant/Revoke；双告警并存时 CORRUPT 优先，逐项解除后 NOSPACE 独立延续；全部 serving replica replacement 后告警、写门禁和 health/readyz 状态仍持续；bbolt fragmentation 仍为平台边界 |
+| Maintenance | Alarm/DbSize | 兼容 NOSPACE/CORRUPT 核心语义 | keyspace 级逻辑容量原子计量、sticky NOSPACE、持久 member 集合及跨 endpoint mutation 已支持；CORRUPT 使用 TiKV 内部元数据持久 member 集合，允许 Range 及空/线性/串行只读 Txn 诊断，阻断 Put/Delete/任一分支含写的 Txn/Compact/LeaseGrant/Revoke；双告警并存时 CORRUPT 优先，逐项解除后 NOSPACE 独立延续；3 KubeBrain、3 PD、3 TiKV 全成员顺序重启后告警、写门禁和 health/readyz 状态仍持续；bbolt fragmentation 仍为平台边界 |
 | Maintenance | Hash/HashKV | 兼容核心语义 | 对指定 revision 的租户 MVCC 实际内容做稳定摘要；成员本地诊断不依赖 KubeBrain leader，数值不与 bbolt 内部编码比较 |
 | Maintenance | MoveLeader/Downgrade | 平台替代 | 分别由服务选主和 DBaaS 升级编排处理 |
 | Endpoint | health/livez/readyz | 兼容核心语义 | `/health`、`/livez`、`/readyz` 及分项检查已对齐；`data_corruption`/`non_learner` 使用 TiKV 架构等价语义，`/ready` 与 `/ping` 为平台探针 |
@@ -8087,6 +8087,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   3 PD、3 TiKV 全部 Ready。该证据证明 KubeBrain serving process 可无状态替换且告警由共享
   TiKV 持久化，不等价于 PD/TiKV 全集群重启或物理恢复验证。服务端字节未变化，运行镜像继续为
   `kubebrain:a399-corrupt-readonly`。
+
+- **Maintenance A402 CORRUPT full data-plane restart persistence（2026-07-21）**：
+  在既有 `TestReplicatedRestartPreservesState` 中加入 CORRUPT 生命周期，使同一 fixture 同时覆盖
+  当前值、tombstone 历史、lease attachment、watch replay、binary key 和持久告警。完成全部
+  fixture 写入后激活 CORRUPT；重启窗口的并发 Range 允许 Canceled/DeadlineExceeded/Unavailable
+  短暂错误但禁止 revision 回退。编排依次替换 3 KubeBrain、3 PD、3 TiKV，并等待每个 Pod Ready
+  及最终 TidbCluster Ready=True。重启后 Alarm GET 必须返回原 owner，raw Put 必须 DataLoss，
+  health 与 data_corruption readyz 必须保持 503；显式 disarm 后再验证历史、lease、watch replay
+  和 revision 单调新写。
+
+  首轮九成员重启已经成功且服务日志返回 DataLoss，但测试用 `status.Code` 直接解析 clientv3 包装
+  错误得到 Unknown；修复为 raw gRPC 断言，并将失败清理升级为有界重试、必须成功的 disarm。
+  修正后普通与 race 全栈门禁分别 59.55 秒、58.73 秒通过，共再完成 18 次 Pod replacement。
+  提交 `b13fa6d68382b6ba5ec8b9ea6deaf8a532b36e19`；随后完整 compat 98.133 秒、根模块
+  完整测试、根/compat vet、staticcheck 及脚本语法检查全部通过。最终 alarm 为空，health/readyz
+  全绿，3 KubeBrain、3 PD、3 TiKV 均 Ready 且本轮 restartCount=0。该证据关闭 A401 的
+  “未覆盖 PD/TiKV 全成员重启”边界，但仍不等价于 VolumeSnapshot/跨集群物理恢复证明。服务端
+  字节未变化，运行镜像继续为 `kubebrain:a399-corrupt-readonly`。
 
 ### P1：通用服务能力
 
