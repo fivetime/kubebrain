@@ -43,7 +43,7 @@ Raft、bbolt 和成员管理内部实现，而是对通用 etcd v3 客户端提�
 | Maintenance | Status | 兼容核心语义 | 返回真实服务身份、版本、leader/revision/共享选主 term；配置 quota 时报告租户最新逻辑 key+value 字节，未配置时使用兼容 sentinel；TiKV 物理容量转到实例指标 |
 | Maintenance | Snapshot | 平台替代 | 使用 TiKV BR/PITR；控制面提供备份、恢复和导出任务，不伪造 etcd snapshot |
 | Maintenance | Defragment | 平台替代 | TiKV GC/compaction 管理，不执行 bbolt 碎片整理 |
-| Maintenance | Alarm/DbSize | 兼容 NOSPACE/CORRUPT 核心语义 | keyspace 级逻辑容量原子计量、sticky NOSPACE、持久 member 集合及跨 endpoint mutation 已支持；CORRUPT 使用 TiKV 内部元数据持久 member 集合，允许 Range 及空/线性/串行只读 Txn 诊断，阻断 Put/Delete/任一分支含写的 Txn/Compact/LeaseGrant/Revoke；双告警并存时 CORRUPT 优先，逐项解除后 NOSPACE 独立延续；3 KubeBrain、3 PD、3 TiKV 全成员顺序重启后告警、写门禁和 health/readyz 状态仍持续；bbolt fragmentation 仍为平台边界 |
+| Maintenance | Alarm/DbSize | 兼容 NOSPACE/CORRUPT 核心语义 | keyspace 级逻辑容量原子计量、sticky NOSPACE、持久 member 集合及跨 endpoint mutation 已支持；CORRUPT 使用 TiKV 内部元数据持久 member 集合，允许 Range 及空/线性/串行只读 Txn 诊断，阻断 Put/Delete/任一分支含写的 Txn/Compact/LeaseGrant/Revoke，并推迟自然租约过期直至 disarm；双告警并存时 CORRUPT 优先，逐项解除后 NOSPACE 独立延续；3 KubeBrain、3 PD、3 TiKV 全成员顺序重启后告警、写门禁和 health/readyz 状态仍持续；bbolt fragmentation 仍为平台边界 |
 | Maintenance | Hash/HashKV | 兼容核心语义 | 对指定 revision 的租户 MVCC 实际内容做稳定摘要；成员本地诊断不依赖 KubeBrain leader，数值不与 bbolt 内部编码比较 |
 | Maintenance | MoveLeader/Downgrade | 平台替代 | 分别由服务选主和 DBaaS 升级编排处理 |
 | Endpoint | health/livez/readyz | 兼容核心语义 | `/health`、`/livez`、`/readyz` 及分项检查已对齐；`data_corruption`/`non_learner` 使用 TiKV 架构等价语义，`/ready` 与 `/ping` 为平台探针 |
@@ -8105,6 +8105,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   全绿，3 KubeBrain、3 PD、3 TiKV 均 Ready 且本轮 restartCount=0。该证据关闭 A401 的
   “未覆盖 PD/TiKV 全成员重启”边界，但仍不等价于 VolumeSnapshot/跨集群物理恢复证明。服务端
   字节未变化，运行镜像继续为 `kubebrain:a399-corrupt-readonly`。
+
+- **Maintenance A403 CORRUPT natural lease expiry parity（2026-07-21）**：
+  对照 `/root/etcd/server/etcdserver/server.go:revokeExpiredLeases`、
+  `v3_server.go:LeaseRevoke` 和 `apply/corrupt.go`，发现上游自然租约过期会经过公开
+  LeaseRevoke 及 CORRUPT applier，告警期间保留 lease 和 attached key；KubeBrain 原实现则由
+  expiry worker 直接删除 TiKV 数据。旧镜像差分实际观察为 KubeBrain
+  `PresentWhileAlarmed=false`、参考 etcd 为 true。expiry worker 现于任何 TiKV mutation 前读取
+  持久 CORRUPT 状态，命中时记录 `lease.expire.corrupt_deferred` 并重新调度；disarm 后正常删除
+  lease 和 attached keys。
+
+  单元测试以已过期 deadline 固定告警前后状态，聚焦普通/race 均通过；公开差分以 TTL=2 验证
+  告警 4 秒后仍保留、解除后最终删除，并在真实上游和 KubeBrain 通过。三副本破坏性门禁进一步
+  证明过期 key 穿越 3 个 KubeBrain Pod replacement 后仍存在，普通与 race 分别 24.83 秒、
+  25.518 秒通过，disarm 后删除；实现提交 `f1402f65cf6f989426472483e68a5df47c1bdcef`，
+  门禁提交 `ab5ed38`。根模块完整测试、根/compat vet 与 staticcheck 均通过，完整 compat
+  86.087 秒通过。
+
+  最终镜像 `kubebrain:a403-corrupt-lease-expiry`（版本 `0.0.0-a403.1`，revision
+  `f1402f65cf6f989426472483e68a5df47c1bdcef`，BuildTime `2026-07-21T08:18:49Z`，本地镜像
+  SHA256 `3628f6308075fb7f194ed160c6acca9f6a2abdd047cbf34e37e3e82478a4900d`）已滚动至三个
+  KubeBrain 副本且全部 Ready；3 PD、3 TiKV 同为 Ready。最终 alarm 列表为空，`/health` 和
+  详细 `/readyz` 全绿，临时参考 etcd 已停止。
 
 ### P1：通用服务能力
 
