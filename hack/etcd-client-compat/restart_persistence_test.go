@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -78,6 +79,29 @@ func TestReplicatedRestartPreservesState(t *testing.T) {
 			binaryStartRevision = put.Header.Revision
 		}
 	}
+	maintenance := etcdserverpb.NewMaintenanceClient(cli.ActiveConnection())
+	statusResponse, err := maintenance.Status(ctx, &etcdserverpb.StatusRequest{})
+	require.NoError(t, err)
+	alarmMemberID := statusResponse.Header.MemberId
+	require.NotZero(t, alarmMemberID)
+	_, err = maintenance.Alarm(ctx, &etcdserverpb.AlarmRequest{
+		Action:   etcdserverpb.AlarmRequest_ACTIVATE,
+		Alarm:    etcdserverpb.AlarmType_CORRUPT,
+		MemberID: alarmMemberID,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.Eventually(t, func() bool {
+			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cleanupCancel()
+			_, cleanupErr := maintenance.Alarm(cleanupCtx, &etcdserverpb.AlarmRequest{
+				Action:   etcdserverpb.AlarmRequest_DEACTIVATE,
+				Alarm:    etcdserverpb.AlarmType_CORRUPT,
+				MemberID: alarmMemberID,
+			})
+			return cleanupErr == nil
+		}, 15*time.Second, 200*time.Millisecond, "CORRUPT cleanup did not complete")
+	})
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cleanupCancel()
@@ -134,6 +158,30 @@ func TestReplicatedRestartPreservesState(t *testing.T) {
 	}
 	require.NoErrorf(t, commandErr, "restart command output:\n%s", strings.TrimSpace(string(output)))
 	t.Logf("restart command output:\n%s", strings.TrimSpace(string(output)))
+
+	alarms, err := maintenance.Alarm(ctx, &etcdserverpb.AlarmRequest{
+		Action: etcdserverpb.AlarmRequest_GET,
+		Alarm:  etcdserverpb.AlarmType_CORRUPT,
+	})
+	require.NoError(t, err)
+	require.Equal(t, []*etcdserverpb.AlarmMember{{
+		MemberID: alarmMemberID, Alarm: etcdserverpb.AlarmType_CORRUPT,
+	}}, alarms.Alarms)
+	rawKV := etcdserverpb.NewKVClient(cli.ActiveConnection())
+	_, err = rawKV.Put(ctx, &etcdserverpb.PutRequest{
+		Key: []byte(durableKey), Value: []byte("blocked-after-restart"),
+	})
+	require.Equal(t, codes.DataLoss, status.Code(err))
+	if infoEndpoint := strings.TrimRight(os.Getenv("KUBEBRAIN_RESTART_INFO_ENDPOINT"), "/"); infoEndpoint != "" {
+		assertCorruptAlarmHTTPState(t, ctx, infoEndpoint)
+	}
+	deactivated, err := maintenance.Alarm(ctx, &etcdserverpb.AlarmRequest{
+		Action:   etcdserverpb.AlarmRequest_DEACTIVATE,
+		Alarm:    etcdserverpb.AlarmType_CORRUPT,
+		MemberID: alarmMemberID,
+	})
+	require.NoError(t, err)
+	require.Equal(t, alarms.Alarms, deactivated.Alarms)
 
 	durable, err := cli.Get(ctx, durableKey)
 	require.NoError(t, err)

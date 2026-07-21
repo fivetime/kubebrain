@@ -7,6 +7,7 @@ KUBEBRAIN_STATEFULSET="${KUBEBRAIN_STATEFULSET:-kubebrain}"
 TIDB_NAMESPACE="${TIDB_NAMESPACE:-tidb-cluster}"
 TIDB_CLUSTER="${TIDB_CLUSTER:-kb}"
 ENDPOINT="${ENDPOINT:-127.0.0.1:3379}"
+INFO_ENDPOINT="${INFO_ENDPOINT:-}"
 TIMEOUT="${TIMEOUT:-240s}"
 
 need() {
@@ -62,6 +63,7 @@ kubectl -n '$TIDB_NAMESPACE' wait \
 (
   cd "$ROOT_DIR/hack/etcd-client-compat"
   KUBEBRAIN_ETCD_ENDPOINT="$ENDPOINT" \
+    KUBEBRAIN_RESTART_INFO_ENDPOINT="$INFO_ENDPOINT" \
     KUBEBRAIN_RESTART_PERSISTENCE_COMMAND="$restart_command" \
     go test . -run '^TestReplicatedRestartPreservesState$' -count=1 -v
 )
