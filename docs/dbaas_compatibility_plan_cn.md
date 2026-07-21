@@ -36,7 +36,7 @@ Raft、bbolt 和成员管理内部实现，而是对通用 etcd v3 客户端提�
 | KV | Compact | 兼容核心语义 | logical/physical、错误、异步 GC 与请求取消后的后台续扫已对齐；继续长时间故障 soak |
 | KV | RangeStream | 兼容核心语义 | etcd 3.7 支持的 CountOnly/Limit/KeysOnly/默认排序已对齐；自定义排序与 revision filter 同 etcd 明确 Unimplemented |
 | Watch | create/cancel/progress/history/prevKV/slow-consumer catch-up | 兼容核心语义；后端溢出无缝追赶，控制响应不阻塞接收循环 | P1：继续数天级断线/慢消费者 soak |
-| Lease | grant/revoke/keepalive/ttl/list | 兼容核心语义 | meta/attachment 已与用户 revision 隔离并原子提交，Grant durable 后才发布，List 按到期时间稳定排序；继续扩大故障、并发和错误差分矩阵 |
+| Lease | grant/revoke/keepalive/ttl/list | 兼容核心语义 | meta/attachment 已与用户 revision 隔离并原子提交，Grant durable 后才发布，List 按到期时间稳定排序；异步 revoke 被阻断时 TTL 与 etcd 一样持续为负；继续扩大故障、并发和错误差分矩阵 |
 | Auth | 用户、角色、权限、token | 兼容核心语义 | 管理 API、key-range RBAC、token 生命周期、Watch/Lease 持续鉴权及多副本故障转移已验证 |
 | Cluster | MemberList | 兼容（需配置） | DBaaS 通过 `--initial-cluster` 注入完整 KubeBrain peer 身份，并用 `--advertise-client-urls` 独立发布所有 clientv3 Sync/AutoSync 调用方可达且匹配 TLS SAN 的 client endpoint；未配置静态成员时仅返回本机与 leader 的降级视图 |
 | Cluster | add/remove/update/promote | 平台替代 | 由 DBaaS 控制面扩缩 KubeBrain、PD、TiKV；RPC 保持明确 Unimplemented |
@@ -8127,6 +8127,31 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   SHA256 `3628f6308075fb7f194ed160c6acca9f6a2abdd047cbf34e37e3e82478a4900d`）已滚动至三个
   KubeBrain 副本且全部 Ready；3 PD、3 TiKV 同为 Ready。最终 alarm 列表为空，`/health` 和
   详细 `/readyz` 全绿，临时参考 etcd 已停止。
+
+- **Maintenance A404 expired lease signed TTL parity（2026-07-21）**：
+  继续对照 `/root/etcd/server/lease/lease.go:Lease.Remaining`、
+  `/root/etcd/server/etcdserver/v3_server.go:leaseTimeToLive` 和 A403 的 CORRUPT revoke
+  延迟路径，发现上游对仍存在但已过期的 lease 直接返回
+  `int64(Remaining().Seconds())`，因而 elapsed whole seconds 为负；KubeBrain 原
+  `remainingTTL` 则把所有负值钳制为 0。扩展公开差分后，旧 A403 实际结果为
+  `PresentWhileAlarmed=true, NegativeTTL=false, DeletedAfterDisarm=true`，参考 etcd 的
+  `NegativeTTL=true`，形成单一可复现差异。实现现保留 Go duration 的有符号向零截断：最后不足
+  一秒仍为 0，超过一秒则返回负值；未知/已删除 lease 继续使用 etcd 的 `TTL=-1` 哨兵。
+
+  单元测试同时固定 live sub-second、expired sub-second、elapsed whole-second 和删除失败保留 lease
+  的响应；聚焦普通/race、根模块完整测试、根/compat vet 与固定版 staticcheck 全部通过。上游差分
+  在新镜像通过；三副本破坏性门禁每轮除持久 alarm、key、health/readyz 外，还要求过期 lease
+  TTL 始终为负，普通和 race 分别 27.40 秒、27.891 秒通过，共完成 6 次 Pod replacement；完整
+  compat 109.753 秒通过。实现与差分提交
+  `7069115fae4f255a2644f97c58df7e3f080cba82`，增强故障门禁提交
+  `31e368aafdfdf2746a2c87d4606e591d764e220c`。
+
+  镜像从实现提交的独立干净 worktree 构建，未包含工作区 `go.mod` 改动：
+  `kubebrain:a404-corrupt-expired-ttl`（版本 `0.0.0-a404.1`，revision
+  `7069115fae4f255a2644f97c58df7e3f080cba82`，BuildTime `2026-07-21T08:37:18Z`，
+  本地镜像 SHA256 `a48facf45a3ac57dbe5a0cf4a4df9875ea34785ac030978f83c83372e607f245`）。
+  三个 KubeBrain Pod 已滚动至该镜像且 Ready、restartCount=0，3 PD、3 TiKV 同为 Ready；最终
+  alarm 为空，`/health` 和详细 `/readyz` 全绿，临时参考 etcd 与构建 worktree 均已清理。
 
 ### P1：通用服务能力
 
