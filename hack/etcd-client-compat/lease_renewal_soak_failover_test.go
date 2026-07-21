@@ -147,6 +147,11 @@ func TestLeaseRenewalSoakAcrossRepeatedLeaderFailover(t *testing.T) {
 		_, err := clients[i%len(clients)].Revoke(cleanupCtx, leases[i].id)
 		require.NoError(t, err)
 	}
+	for i := range leases {
+		response, err := clients[i%len(clients)].TimeToLive(cleanupCtx, leases[i].id)
+		require.NoError(t, err)
+		require.Equal(t, int64(-1), response.TTL, "lease %d remained live after soak cleanup", leases[i].id)
+	}
 	got, err := clients[0].Get(cleanupCtx, prefix, clientv3.WithPrefix())
 	require.NoError(t, err)
 	require.Empty(t, got.Kvs)
