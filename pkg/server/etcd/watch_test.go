@@ -770,6 +770,41 @@ func TestFollowerWatchReadBarrierFailureIsRetryable(t *testing.T) {
 	require.Empty(t, stream.sent, "a watch without a revision fence must not be created")
 }
 
+func TestFollowerWatchLocalRejectionsPrecedeReadBarrier(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	barrierErr := errors.New("leader revision transport failed")
+	var barrierCalls atomic.Int64
+	server.peers = testPeerService{
+		isLeader: false,
+		syncReadFn: func(context.Context) error {
+			barrierCalls.Add(1)
+			return barrierErr
+		},
+	}
+	stream := &scriptedWatchServer{
+		fakeWatchServer: &fakeWatchServer{ctx: context.Background()},
+		reqs: []*etcdserverpb.WatchRequest{
+			{RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{CreateRequest: &etcdserverpb.WatchCreateRequest{
+				Key: []byte("/watch/negative"), StartRevision: -1,
+			}}},
+			{RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{CreateRequest: &etcdserverpb.WatchCreateRequest{
+				Key: []byte("/watch/invalid"), RangeEnd: []byte("/watch/invalid"),
+			}}},
+			{RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{CreateRequest: &etcdserverpb.WatchCreateRequest{
+				Key: []byte("/watch/requires-fence"),
+			}}},
+		},
+	}
+	err := server.Watch(stream)
+	require.Equal(t, codes.Unavailable, status.Code(err))
+	require.Equal(t, int64(1), barrierCalls.Load(), "only the valid create should enter the read barrier")
+	require.Len(t, stream.sent, 2)
+	require.Equal(t, rpctypes.ErrCompacted.Error(), stream.sent[0].CancelReason)
+	require.Equal(t, "mvcc: watcher range is empty", stream.sent[1].CancelReason)
+}
+
 func TestLeaderFromNowWatchReplaysWriteDuringCreatedResponse(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

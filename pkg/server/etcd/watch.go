@@ -273,9 +273,6 @@ func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) error {
 
 		if r := msg.GetCreateRequest(); r != nil {
 			r = normalizeWatchCreateRequest(r)
-			if err := w.syncControlRevision(ws.Context()); err != nil {
-				return err
-			}
 			if r.StartRevision < 0 {
 				// etcd treats a negative start revision as an immediately canceled
 				// create, while keeping the multiplexed stream usable for later watches.
@@ -297,6 +294,20 @@ func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) error {
 					return err
 				}
 				continue
+			}
+			// Upstream rejects invalid ranges locally before entering the watch
+			// stream. A follower must not turn this deterministic control response
+			// into Unavailable merely because its leader read barrier is down.
+			if len(r.RangeEnd) != 0 && bytes.Compare(r.Key, r.RangeEnd) >= 0 {
+				if err := w.SendControlAndWait(canceledWatchCreateResponse(
+					w.responseRevision(), "mvcc: watcher range is empty",
+				)); err != nil {
+					return err
+				}
+				continue
+			}
+			if err := w.syncControlRevision(ws.Context()); err != nil {
+				return err
 			}
 			watchCtx := ws.Context()
 			if !s.peers.IsLeader() && s.peers.EtcdProxyEnabled() {
