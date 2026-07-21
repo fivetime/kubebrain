@@ -50,6 +50,23 @@ func TestProductionManifestsProvideStableCompleteMembership(t *testing.T) {
 			require.NoError(t, err)
 			require.True(t, found)
 			require.NotEmpty(t, requiredAntiAffinity)
+			require.Equal(t, "kubernetes.io/hostname",
+				nestedString(t, &unstructured.Unstructured{Object: requiredAntiAffinity[0].(map[string]any)}, "topologyKey"))
+			preferredAntiAffinity, found, err := unstructured.NestedSlice(
+				workload.Object, "spec", "template", "spec", "affinity", "podAntiAffinity",
+				"preferredDuringSchedulingIgnoredDuringExecution",
+			)
+			require.NoError(t, err)
+			require.True(t, found)
+			require.Len(t, preferredAntiAffinity, 1)
+			zonePreference := &unstructured.Unstructured{Object: preferredAntiAffinity[0].(map[string]any)}
+			require.EqualValues(t, 100, nestedInt64(t, zonePreference, "weight"))
+			require.Equal(t, "topology.kubernetes.io/zone",
+				nestedString(t, zonePreference, "podAffinityTerm", "topologyKey"))
+			require.Equal(t, "kubebrain", nestedString(t, zonePreference,
+				"podAffinityTerm", "labelSelector", "matchLabels", "app.kubernetes.io/name"))
+			require.Equal(t, "kubebrain", nestedString(t, zonePreference,
+				"podAffinityTerm", "labelSelector", "matchLabels", "app.kubernetes.io/instance"))
 
 			containers, found, err := unstructured.NestedSlice(workload.Object, "spec", "template", "spec", "containers")
 			require.NoError(t, err)

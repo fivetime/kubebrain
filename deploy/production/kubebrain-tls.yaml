@@ -77,6 +77,14 @@ spec:
                   app.kubernetes.io/name: kubebrain
                   app.kubernetes.io/instance: kubebrain
               topologyKey: kubernetes.io/hostname
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: kubebrain
+                    app.kubernetes.io/instance: kubebrain
+                topologyKey: topology.kubernetes.io/zone
       containers:
         - name: kubebrain
           image: kubebrain:dev
