@@ -60,6 +60,13 @@ func TestWatchLocalControlResponsesAcrossDirectReplicas(t *testing.T) {
 			require.True(t, created.Created)
 			require.False(t, created.Canceled)
 			require.Equal(t, int64(413), created.WatchId)
+
+			duplicate := send(&etcdserverpb.WatchCreateRequest{Key: []byte("/watch/direct/duplicate"), WatchId: 413})
+			require.True(t, duplicate.Created)
+			require.True(t, duplicate.Canceled)
+			require.Equal(t, int64(-1), duplicate.WatchId)
+			require.Equal(t, "mvcc: duplicate watch ID provided on the WatchStream", duplicate.CancelReason)
+
 			require.NoError(t, stream.Send(&etcdserverpb.WatchRequest{
 				RequestUnion: &etcdserverpb.WatchRequest_CancelRequest{
 					CancelRequest: &etcdserverpb.WatchCancelRequest{WatchId: 413},
