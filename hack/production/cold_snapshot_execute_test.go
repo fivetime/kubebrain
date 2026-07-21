@@ -84,6 +84,38 @@ func TestColdSnapshotExecuteAndRollback(t *testing.T) {
 	}
 }
 
+func TestColdSnapshotExecuteRejectsLegacyLeaseWitnessBeforeMutation(t *testing.T) {
+	dir := t.TempDir()
+	inventoryFile := filepath.Join(dir, "inventory.json")
+	receiptFile := filepath.Join(dir, "receipt.json")
+	witnessFile := filepath.Join(dir, "witness.jsonl")
+	logFile := filepath.Join(dir, "kubectl.log")
+	require.NoError(t, os.WriteFile(inventoryFile, coldSnapshotInventory(t), 0o600))
+	require.NoError(t, os.WriteFile(witnessFile, coldLeasedSemanticWitness(t, "/registry", false), 0o600))
+	fakeKubectl := filepath.Join(dir, "kubectl")
+	require.NoError(t, os.WriteFile(fakeKubectl, []byte(coldSnapshotFakeKubectl), 0o755))
+
+	command := exec.Command("bash", "../backup/cold-snapshot-execute.sh")
+	command.Env = append(os.Environ(),
+		"KUBECTL="+fakeKubectl,
+		"PREFLIGHT_FILE="+inventoryFile,
+		"RECEIPT_FILE="+receiptFile,
+		"OPERATION_ID=op-legacy-witness",
+		"SEMANTIC_WITNESS_FILE="+witnessFile,
+		"EXPECTED_WITNESS_PREFIX=/registry",
+		"FAKE_LOG="+logFile,
+		"FAKE_PVC_JSON="+coldSnapshotPVCJSON("Bound"),
+	)
+	output, err := command.CombinedOutput()
+	require.Error(t, err, string(output))
+	require.Contains(t, string(output), "lacks a valid granted_ttl")
+	require.NoFileExists(t, receiptFile)
+	logValue, readErr := os.ReadFile(logFile)
+	require.NoError(t, readErr)
+	require.NotContains(t, string(logValue), " patch ")
+	require.NotContains(t, string(logValue), "create -f -")
+}
+
 func coldSemanticWitness(t *testing.T, prefix string) []byte {
 	t.Helper()
 	header, err := json.Marshal(map[string]any{
@@ -101,6 +133,36 @@ func coldSemanticWitness(t *testing.T, prefix string) []byte {
 	digest := sha256.Sum256(hashed)
 	footer, err := json.Marshal(map[string]any{
 		"type": "footer", "records": 1, "sha256": fmt.Sprintf("%x", digest[:]),
+	})
+	require.NoError(t, err)
+	return append(hashed, append(footer, '\n')...)
+}
+
+func coldLeasedSemanticWitness(t *testing.T, prefix string, includeGrantedTTL bool) []byte {
+	t.Helper()
+	header, err := json.Marshal(map[string]any{
+		"type": "kubebrain.logical.v2", "prefix": prefix, "revision": 10, "created_at_unix": time.Now().Unix(),
+	})
+	require.NoError(t, err)
+	lease := map[string]any{"type": "lease", "id": 7, "ttl": 30}
+	if includeGrantedTTL {
+		lease["granted_ttl"] = 60
+	}
+	leaseLine, err := json.Marshal(lease)
+	require.NoError(t, err)
+	recordLine, err := json.Marshal(map[string]any{
+		"key":          base64.StdEncoding.EncodeToString([]byte(prefix + "/key")),
+		"value":        base64.StdEncoding.EncodeToString([]byte("value")),
+		"mod_revision": 10, "create_revision": 10, "version": 1, "lease": 7,
+	})
+	require.NoError(t, err)
+	hashed := append(append(append([]byte(nil), header...), '\n'), leaseLine...)
+	hashed = append(hashed, '\n')
+	hashed = append(hashed, recordLine...)
+	hashed = append(hashed, '\n')
+	digest := sha256.Sum256(hashed)
+	footer, err := json.Marshal(map[string]any{
+		"type": "footer", "records": 1, "leases": 1, "sha256": fmt.Sprintf("%x", digest[:]),
 	})
 	require.NoError(t, err)
 	return append(hashed, append(footer, '\n')...)

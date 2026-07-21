@@ -2,13 +2,46 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/kubewharf/kubebrain/hack/backup/internal/backupfile"
+	"github.com/kubewharf/kubebrain/hack/backup/internal/record"
 )
+
+func TestRequireGrantedTTL(t *testing.T) {
+	tests := []struct {
+		name      string
+		lease     *record.Lease
+		wantError string
+	}{
+		{name: "current lease", lease: &record.Lease{ID: 1, TTL: 30, GrantedTTL: 60}},
+		{name: "legacy lease", lease: &record.Lease{ID: 1, TTL: 30}, wantError: "lacks a valid granted_ttl"},
+		{name: "no leases"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "backup.jsonl")
+			writer, err := backupfile.NewAtomicWriter(path, "/registry", 42)
+			require.NoError(t, err)
+			if tc.lease != nil {
+				require.NoError(t, writer.AddLease(*tc.lease))
+			}
+			_, err = writer.Commit()
+			require.NoError(t, err)
+
+			err = requireGrantedTTL(path)
+			if tc.wantError == "" {
+				require.NoError(t, err)
+			} else {
+				require.ErrorContains(t, err, tc.wantError)
+			}
+		})
+	}
+}
 
 func TestValidateCompletion(t *testing.T) {
 	now := time.Unix(2000, 0)

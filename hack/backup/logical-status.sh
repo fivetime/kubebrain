@@ -17,6 +17,7 @@ Environment:
   EXPECTED_PREFIX    require an exact source prefix
   MIN_RECORDS        require at least this many records
   MAX_AGE_SECONDS    require a protected creation timestamp no older than this
+  REQUIRE_GRANTED_TTL require granted TTL on every lease for physical snapshots
 EOF
 }
 
@@ -32,8 +33,10 @@ FIELD="${FIELD:-}"
 EXPECTED_PREFIX="${EXPECTED_PREFIX:-}"
 MIN_RECORDS="${MIN_RECORDS:-}"
 MAX_AGE_SECONDS="${MAX_AGE_SECONDS:-}"
+REQUIRE_GRANTED_TTL="${REQUIRE_GRANTED_TTL:-}"
 
 cd "$ROOT_DIR"
 INPUT="$INPUT" FIELD="$FIELD" EXPECTED_PREFIX="$EXPECTED_PREFIX" \
   MIN_RECORDS="$MIN_RECORDS" MAX_AGE_SECONDS="$MAX_AGE_SECONDS" \
+  REQUIRE_GRANTED_TTL="$REQUIRE_GRANTED_TTL" \
   go run ./hack/backup/cmd/logical-status

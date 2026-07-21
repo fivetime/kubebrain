@@ -46,13 +46,14 @@ export VOLUME_SNAPSHOT_CLASS EXPECTED_PD_PVCS EXPECTED_TIKV_PVCS
 export ALLOW_COLD_PHYSICAL_SNAPSHOT=true KUBECTL
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-fresh_inventory="$($script_dir/cold-snapshot-preflight.sh | jq -cS .)"
+fresh_inventory="$("$script_dir/cold-snapshot-preflight.sh" | jq -cS .)"
 [[ "$fresh_inventory" == "$inventory" ]] || {
   echo "live preflight inventory differs from PREFLIGHT_FILE; refusing mutation" >&2
   exit 1
 }
 witness_status="$(cd "$script_dir/../.." && INPUT="$SEMANTIC_WITNESS_FILE" EXPECTED_PREFIX="$EXPECTED_WITNESS_PREFIX" \
-  MIN_RECORDS=1 MAX_AGE_SECONDS="$WITNESS_MAX_AGE_SECONDS" go run ./hack/backup/cmd/logical-status)"
+  MIN_RECORDS=1 MAX_AGE_SECONDS="$WITNESS_MAX_AGE_SECONDS" REQUIRE_GRANTED_TTL=true \
+  go run ./hack/backup/cmd/logical-status)"
 jq -e '.format == "kubebrain.logical.v2" and (.revision > 0) and (.records > 0) and
   (.sha256 | test("^[0-9a-f]{64}$"))' <<<"$witness_status" >/dev/null || fail_input "semantic witness status is invalid"
 witness_file_sha256="$(sha256sum "$SEMANTIC_WITNESS_FILE" | awk '{print $1}')"

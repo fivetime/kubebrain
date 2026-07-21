@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/kubewharf/kubebrain/hack/backup/internal/backupfile"
+	"github.com/kubewharf/kubebrain/hack/backup/internal/record"
 )
 
 func main() {
@@ -18,6 +19,15 @@ func main() {
 	}
 	if err := validateCompletion(status, time.Now()); err != nil {
 		log.Fatalf("backup completion validation failed: %v", err)
+	}
+	switch os.Getenv("REQUIRE_GRANTED_TTL") {
+	case "", "false":
+	case "true":
+		if err := requireGrantedTTL(os.Getenv("INPUT")); err != nil {
+			log.Fatalf("backup physical lease validation failed: %v", err)
+		}
+	default:
+		log.Fatalf("REQUIRE_GRANTED_TTL must be true or false")
 	}
 	switch os.Getenv("FIELD") {
 	case "format":
@@ -45,6 +55,20 @@ func main() {
 	if err := json.NewEncoder(os.Stdout).Encode(status); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func requireGrantedTTL(path string) error {
+	verified, err := backupfile.OpenVerified(path)
+	if err != nil {
+		return err
+	}
+	defer verified.Close()
+	return verified.Leases(func(lease record.Lease) error {
+		if lease.GrantedTTL <= 0 || lease.GrantedTTL < lease.TTL {
+			return fmt.Errorf("lease %d lacks a valid granted_ttl; re-export with the current logical exporter", lease.ID)
+		}
+		return nil
+	})
 }
 
 func validateCompletion(status backupfile.Status, now time.Time) error {
