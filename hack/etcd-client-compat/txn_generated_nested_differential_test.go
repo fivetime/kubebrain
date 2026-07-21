@@ -110,23 +110,23 @@ func runGeneratedNestedTxnCases(t *testing.T, endpoint, instance string) []gener
 		require.NoError(t, getErr)
 		outcomes = append(outcomes, generatedTxnCase{
 			Succeeded: response.Succeeded,
-			Revision:  response.Header.Revision - baseRev,
-			Responses: normalizeGeneratedTxnResponses(response.Responses, casePrefix, baseRev),
-			Final:     normalizeKVs(final.Kvs, casePrefix, baseRev),
+			Revision:  1,
+			Responses: normalizeGeneratedTxnResponses(response.Responses, casePrefix, baseRev, response.Header.Revision),
+			Final:     normalizeGeneratedKVs(final.Kvs, casePrefix, baseRev, response.Header.Revision),
 		})
 	}
 	return outcomes
 }
 
-func normalizeGeneratedTxnResponses(responses []*etcdserverpb.ResponseOp, prefix string, baseRev int64) []generatedTxnResponse {
+func normalizeGeneratedTxnResponses(responses []*etcdserverpb.ResponseOp, prefix string, baseRev, txnRev int64) []generatedTxnResponse {
 	result := make([]generatedTxnResponse, 0, len(responses))
 	for _, response := range responses {
 		switch {
 		case response.GetResponseRange() != nil:
 			rangeResponse := response.GetResponseRange()
 			result = append(result, generatedTxnResponse{
-				Kind: "range", Revision: normalizeGeneratedRevision(rangeResponse.Header.Revision, baseRev),
-				KVs: normalizeKVs(rangeResponse.Kvs, prefix, baseRev),
+				Kind: "range", Revision: normalizeGeneratedRevision(rangeResponse.Header.Revision, baseRev, txnRev),
+				KVs: normalizeGeneratedKVs(rangeResponse.Kvs, prefix, baseRev, txnRev),
 			})
 		case response.GetResponsePut() != nil:
 			putResponse := response.GetResponsePut()
@@ -135,20 +135,20 @@ func normalizeGeneratedTxnResponses(responses []*etcdserverpb.ResponseOp, prefix
 				previous = append(previous, putResponse.PrevKv)
 			}
 			result = append(result, generatedTxnResponse{
-				Kind: "put", Revision: normalizeGeneratedRevision(putResponse.Header.Revision, baseRev),
-				PrevKVs: normalizeKVs(previous, prefix, baseRev),
+				Kind: "put", Revision: normalizeGeneratedRevision(putResponse.Header.Revision, baseRev, txnRev),
+				PrevKVs: normalizeGeneratedKVs(previous, prefix, baseRev, txnRev),
 			})
 		case response.GetResponseDeleteRange() != nil:
 			deleteResponse := response.GetResponseDeleteRange()
 			result = append(result, generatedTxnResponse{
-				Kind: "delete", Revision: normalizeGeneratedRevision(deleteResponse.Header.Revision, baseRev),
-				Deleted: deleteResponse.Deleted, PrevKVs: normalizeKVs(deleteResponse.PrevKvs, prefix, baseRev),
+				Kind: "delete", Revision: normalizeGeneratedRevision(deleteResponse.Header.Revision, baseRev, txnRev),
+				Deleted: deleteResponse.Deleted, PrevKVs: normalizeGeneratedKVs(deleteResponse.PrevKvs, prefix, baseRev, txnRev),
 			})
 		case response.GetResponseTxn() != nil:
 			txnResponse := response.GetResponseTxn()
 			result = append(result, generatedTxnResponse{
-				Kind: "txn", Revision: normalizeGeneratedRevision(txnResponse.Header.Revision, baseRev), Succeeded: txnResponse.Succeeded,
-				Children: normalizeGeneratedTxnResponses(txnResponse.Responses, prefix, baseRev),
+				Kind: "txn", Revision: normalizeGeneratedRevision(txnResponse.Header.Revision, baseRev, txnRev), Succeeded: txnResponse.Succeeded,
+				Children: normalizeGeneratedTxnResponses(txnResponse.Responses, prefix, baseRev, txnRev),
 			})
 		}
 	}
@@ -160,9 +160,21 @@ func normalizeGeneratedTxnResponses(responses []*etcdserverpb.ResponseOp, prefix
 	return result
 }
 
-func normalizeGeneratedRevision(revision, baseRev int64) int64 {
+func normalizeGeneratedRevision(revision, baseRev, txnRev int64) int64 {
 	if revision == 0 {
 		return 0
 	}
+	if revision == txnRev {
+		return 1
+	}
 	return revision - baseRev
+}
+
+func normalizeGeneratedKVs(kvs []*mvccpb.KeyValue, prefix string, baseRev, txnRev int64) []normalizedKV {
+	result := normalizeKVs(kvs, prefix, baseRev)
+	for i := range result {
+		result[i].CreateRev = normalizeGeneratedRevision(result[i].CreateRev+baseRev, baseRev, txnRev)
+		result[i].ModRev = normalizeGeneratedRevision(result[i].ModRev+baseRev, baseRev, txnRev)
+	}
+	return result
 }
