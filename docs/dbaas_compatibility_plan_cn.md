@@ -7615,6 +7615,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   refresh/initialization error、panic/fatal/data race/storage error/OOM，PD/TiKV 3+3
   Ready。
 
+- **Operations A377 production quota contract（2026-07-21）**：审计发现 production
+  明文/TLS StatefulSet 已部署 quota 指标和四项告警，却没有传
+  `--quota-backend-bytes`，标准 dedicated 实例实际处于 unlimited，NOSPACE 与 usage-high
+  告警没有保护对象。提交 `90b7240` 为两份基线统一增加 400 GiB
+  （429496729600 bytes）logical quota，相对每个 500 GiB TiKV volume 保留容量余量；
+  manifest 测试要求两种传输模式都恰好存在一个完全相同的 quota 参数，防止遗漏、重复
+  或不同值覆盖。
+
+  生产就绪文档同时固定 logical usage 与 TiKV MVCC/Raft/compaction 物理占用的边界，并
+  要求从 unlimited 启用时分两次发布：先让全部副本运行支持共享 dirty tracking、sticky
+  NOSPACE 和有界流式 rebuild 的版本并收敛，再统一增加正 quota；回滚也必须整份 Pod
+  template 收敛，禁止以部分副本移除 quota 绕过门禁。若首次统计已超限，NOSPACE 是预期
+  fail-closed 结果，必须清理数据或提高 quota 后显式 disarm。production manifest 聚焦
+  测试 20 轮、完整 `go test ./...` 与 `go vet ./...` 通过；无运行时代码变化，继续使用
+  A376 exact image，未另建镜像。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
