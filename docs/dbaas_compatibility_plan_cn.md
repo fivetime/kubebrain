@@ -8478,6 +8478,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   与 A422 相同的镜像，运行态继续使用已验证的
   `kubebrain:a422-grpc-context-status-local`。
 
+#### A424 backend watch KeyValue 转换字段升级门禁
+
+- 审计 `watchTranslator.kvToEtcdKv` 及 DELETE tombstone 构造：当前 `mvccpb.KeyValue` 的
+  Key、CreateRevision、ModRevision、Version、Value、Lease 六个 protobuf 字段均已覆盖。
+  CREATE/PUT 使用 inline MVCC metadata 保留 generation 和逐版本 lease，DELETE 的公开 Kv
+  仅保留 Key 与删除 ModRevision，完整被删 generation 则进入 PrevKv，均与 etcd watch
+  语义一致。新增六字段结构门禁，未来 API 增字段时要求同时更新普通转换与 tombstone 路径。
+- 门禁与既有 inline create-revision、PUT previous generation、DELETE tombstone 全字段测试一并
+  普通 100 轮、race 20 轮通过；`pkg/server/etcd` 全包、root 全量测试、vet、staticcheck
+  v0.7.0 均通过。本轮未发现当前运行时字段遗漏，只增加协议升级失败快显测试，因此不重建
+  与 A422 字节相同的生产镜像。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
