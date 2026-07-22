@@ -59,6 +59,7 @@ RUN test -n "$KUBEBRAIN_VERSION" \
     && go build -trimpath -o /src/bin/kubebrain-metering-storage-rollup ./hack/production/cmd/metering-storage-rollup \
     && go build -trimpath -o /src/bin/kubebrain-metering-settlement-publish ./hack/production/cmd/metering-settlement-publish \
     && go build -trimpath -o /src/bin/kubebrain-metering-invoice-finalize ./hack/production/cmd/metering-invoice-finalize \
+    && go build -trimpath -o /src/bin/kubebrain-metering-provider-statement ./hack/production/cmd/metering-provider-statement \
     && go build -trimpath -o /src/bin/kubebrain-metering-provider-reconcile ./hack/production/cmd/metering-provider-reconcile \
     && go build -trimpath -o /src/bin/kubebrain-logical-export ./hack/backup/cmd/logical-export \
     && go build -trimpath -o /src/bin/kubebrain-logical-status ./hack/backup/cmd/logical-status \
@@ -97,6 +98,7 @@ COPY --from=build /src/bin/kubebrain-metering-storage-archive /usr/local/bin/kub
 COPY --from=build /src/bin/kubebrain-metering-storage-rollup /usr/local/bin/kubebrain-metering-storage-rollup
 COPY --from=build /src/bin/kubebrain-metering-settlement-publish /usr/local/bin/kubebrain-metering-settlement-publish
 COPY --from=build /src/bin/kubebrain-metering-invoice-finalize /usr/local/bin/kubebrain-metering-invoice-finalize
+COPY --from=build /src/bin/kubebrain-metering-provider-statement /usr/local/bin/kubebrain-metering-provider-statement
 COPY --from=build /src/bin/kubebrain-metering-provider-reconcile /usr/local/bin/kubebrain-metering-provider-reconcile
 COPY --from=build /src/bin/kubebrain-logical-object /usr/local/bin/kubebrain-logical-object
 COPY --from=build /src/bin/kubebrain-logical-export /usr/local/bin/kubebrain-logical-export

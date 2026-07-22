@@ -8913,7 +8913,8 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
    版本、对象 storage byte-time、对象请求费、v3 charge、approved adjustment/credit
    和 final invoice 已完成；供应商账单周期对账的 provider statement /
    provider reconciliation canonical artifact、跨 account/bucket 分类汇总、Object
-   Lock 读写 receipt 绑定和生产镜像 CLI 入口已建立；继续补供应商账单导入/exporter、税率/
+   Lock 读写 receipt 绑定、normalized CSV 导入/发布和生产镜像 CLI 入口已建立；继续补
+   各云厂商原始账单 exporter、税率/
    折扣、付款/退款、应收账款、法规发票编号、
    外部总账过账与跨账户财务对账，并在具备 Prometheus Operator 的预生产环境补真实
    一小时规则 evaluation 和连续 24 小时 storage sampling 门禁。
@@ -8928,6 +8929,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go vet ./hack/production/... ./deploy/production` 通过。该项关闭周期级供应商账单对账
   的本地制品合同，真实供应商账单导入/exporter、税率/折扣/收付款、外部总账和跨账户财务
   对账仍属 P1。
+- A458 新增 normalized provider statement CSV 导入与发布入口：CSV header 必须精确匹配
+  `provider,provider_account_id,external_invoice_id,external_line_id,category,object_store_id,bucket,amount_micros`，
+  每行先做分类、bucket scope 与金额校验，再按 provider/account/external line/category/object
+  store/bucket 稳定排序并写出 canonical `kubebrain.metering-provider-statement.v1`。发布器在
+  Object Lock 写入前重新读取 canonical JSON，校验 issued_at、retention、digest、bytes 与
+  receipt；`kubebrain-metering-provider-statement` 已进入 Dockerfile build/copy 链路，并可选择
+  只生成 JSON 或生成后直接归档。`go test ./hack/production/... ./deploy/production` 与
+  `go vet ./hack/production/... ./deploy/production` 通过。该项关闭 KubeBrain 侧 normalized
+  供应商账单导入/发布合同；AWS/GCP/Azure 等原始账单 exporter 与税务/财务系统集成仍属 P1。
 
 ### P2：运维兼容和长期验证
 
