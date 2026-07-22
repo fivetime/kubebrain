@@ -8835,11 +8835,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   20 轮、race 10 轮通过。真实 A445 三副本 gate 使用 `ETCDCTL_EXEC_POD=kubebrain-0` 完整通过，
   从同一 client 网络域验证 advertised service URL、MemberList 和 endpoint health，无需临时
   未版本控制的代理脚本。
-- A447 将既有 repeated-leader lease renewal soak 补到规范 A445 运行证据：通过 endpoint status
-  的 leader member ID 与 MemberList 名称在每轮动态选择 leader，8 个 client 的 64 条
+- A447 将既有 repeated-leader lease renewal soak 固化为
+  `hack/dev/lease-renewal-failover-smoke.sh` 并补到规范 A445 运行证据：脚本通过 endpoint status
+  的 leader member ID 与 MemberList 名称在每轮动态选择 leader，只允许删除目标 StatefulSet 的
+  Pod，且先要求 3/3 Ready。8 个 client 的 64 条
   `clientv3.KeepAlive` lease 跨连续 3 次 leader Pod replacement 持续获得有效 TTL 响应；每轮
   都核验所有 attached key/lease ID，结束后逐 lease Revoke、TTL=-1、Leases 列表和前缀均无残留。
-  真实运行 54.934 秒通过，三副本最终 Ready、零容器重启。该加速场景不替代小时级、跨可用区或
+  脚本在真实 A445 集群以可审计退出码 54.031 秒通过，三副本最终 Ready、零容器重启。该加速场景不替代小时级、跨可用区或
   网络分区 soak，但把 A445 的 lease reload/renewal 故障边界固定为可重复现场门禁。
 
 ### P1：通用服务能力
