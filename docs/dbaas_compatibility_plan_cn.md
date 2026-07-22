@@ -9290,6 +9290,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./hack/backup/...`、`go vet ./hack/backup/...`、
   `go test ./hack/production/... ./deploy/production`、
   `go vet ./hack/production/... ./deploy/production` 与 `git diff --check` 通过。
+- A501 修复 JWT auth-token option value 含 `=` 被误拒：`--auth-token=jwt,...`
+  解析现在使用 `SplitN(..., 2)`，只按第一个等号分隔 key/value；文件路径或其他值中合法
+  包含 `=` 时不再被当作 malformed option。缺少 `=`、空 key、重复 option 和 unsupported
+  algorithm 仍 fail closed。回归覆盖 HMAC key 路径中目录名和文件名都含 `=` 的配置；
+  `go test ./pkg/server/etcd -run 'TestJWTProvider|TestJWTManager|TestAuthToken' -count=20`、
+  `go test ./pkg/server/etcd ./pkg/server/service/revision`、
+  `go vet ./pkg/server/etcd ./pkg/server/service/revision`、
+  `go test ./hack/production/... ./deploy/production`、
+  `go vet ./hack/production/... ./deploy/production` 与 `git diff --check` 通过。
 
 ### P2：运维兼容和长期验证
 

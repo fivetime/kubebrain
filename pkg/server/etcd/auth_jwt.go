@@ -60,7 +60,7 @@ func parseAuthTokenProvider(spec string) (*jwtTokenProvider, error) {
 	}
 	opts := make(map[string]string, len(parts)-1)
 	for _, raw := range parts[1:] {
-		pair := strings.Split(raw, "=")
+		pair := strings.SplitN(raw, "=", 2)
 		if len(pair) != 2 || pair[0] == "" {
 			return nil, fmt.Errorf("invalid auth token option %q", raw)
 		}
