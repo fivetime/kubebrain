@@ -199,14 +199,11 @@ func authChangedPassword(password, hashed string, cost int) ([]byte, error) {
 	if password != "" {
 		return bcrypt.GenerateFromPassword([]byte(password), cost)
 	}
-	if hashed != "" {
-		encoded, err := base64.StdEncoding.DecodeString(hashed)
-		if err != nil {
-			return nil, errNoPasswordUser
-		}
-		return encoded, nil
+	encoded, err := base64.StdEncoding.DecodeString(hashed)
+	if err != nil {
+		return nil, errNoPasswordUser
 	}
-	return bcrypt.GenerateFromPassword(nil, cost)
+	return encoded, nil
 }
 
 func (m *authManager) userChangePassword(ctx context.Context, name, password, hashed string) error {

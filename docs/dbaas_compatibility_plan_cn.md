@@ -10067,6 +10067,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   区分；KV/Lease 普通权限检查仍维持 etcd 的不存在用户 permission denied 语义。回归：
   `go test ./pkg/server/etcd -run TestAuthRPCClientCertificateAdminErrorsMatchEtcd -count=1`
   通过。
+- A585 对齐 `UserChangePassword` 空密码语义：
+  对照 `/root/etcd/server/etcdserver/v3_server.go` 与
+  `/root/etcd/server/auth/store.go`，上游 `UserAdd` 会对空明文密码生成 bcrypt hash，
+  但 `UserChangePassword` 只有在新密码非空时才 hash；空明文且空 `HashedPassword`
+  会作为空哈希落库，随后认证返回 `ErrAuthFailed`。KubeBrain 旧的
+  `authChangedPassword` 会把空字符串 hash 成可登录密码，导致 clientv3 空密码变更后
+  行为偏离 etcd。现在密码变更路径只 hash 非空明文，否则直接 base64 decode
+  `HashedPassword`，空哈希保持不可认证；常规非空密码变更仍生成 bcrypt。回归：
+  `go test ./pkg/server/etcd -run TestAuthManagerEmptyPasswordChangeMatchesEtcd -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

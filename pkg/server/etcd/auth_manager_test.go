@@ -185,6 +185,27 @@ func TestAuthManagerPlaintextPasswordOverridesHash(t *testing.T) {
 	require.NoError(t, bcrypt.CompareHashAndPassword(snapshot.Users["alice"].Password, []byte("changed")))
 }
 
+func TestAuthManagerEmptyPasswordChangeMatchesEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	manager := newAuthManager(server.backend)
+	ctx := context.Background()
+	require.NoError(t, manager.userAdd(ctx, &etcdserverpb.AuthUserAddRequest{
+		Name: "root", Password: "secret",
+	}))
+	require.NoError(t, manager.roleAdd(ctx, "root"))
+	require.NoError(t, manager.userGrantRole(ctx, "root", "root"))
+	require.NoError(t, manager.enable(ctx))
+
+	_, err := server.Authenticate(ctx, &etcdserverpb.AuthenticateRequest{Name: "root", Password: "secret"})
+	require.NoError(t, err)
+	require.NoError(t, manager.userChangePassword(ctx, "root", "", ""))
+	_, err = server.Authenticate(ctx, &etcdserverpb.AuthenticateRequest{Name: "root", Password: ""})
+	require.ErrorIs(t, err, rpctypes.ErrAuthFailed)
+	_, err = server.Authenticate(ctx, &etcdserverpb.AuthenticateRequest{Name: "root", Password: "secret"})
+	require.ErrorIs(t, err, rpctypes.ErrAuthFailed)
+}
+
 func TestAuthManagerConcurrentDistinctMutationsHaveNoLostRevision(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
