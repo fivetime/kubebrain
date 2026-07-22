@@ -12,6 +12,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+const operationAuditArtifactSHA256 = "1111111111111111111111111111111111111111111111111111111111111111"
+
 func TestPostRestoreAuditOperationCompletesAndBindsReceipt(t *testing.T) {
 	f := newOperationRunnerFixture(t)
 	f.run(t, true, "")
@@ -22,6 +24,14 @@ func TestPostRestoreAuditOperationCompletesAndBindsReceipt(t *testing.T) {
 	require.Contains(t, log, "--namespace tenant-a-operations --action succeed")
 	require.NotContains(t, log, "--namespace ops --namespace tenant-a-operations")
 	require.NotContains(t, log, "--action retry")
+}
+
+func TestPostRestoreAuditOperationRejectsInvalidReceipt(t *testing.T) {
+	f := newOperationRunnerFixture(t)
+	f.run(t, false, "INVALID_AUDIT_RECEIPT=true", "invalid receipt")
+	log := f.log(t)
+	require.Contains(t, log, "--action retry")
+	require.NotContains(t, log, "--action succeed")
 }
 
 func TestPostRestoreAuditOperationRequeuesFailures(t *testing.T) {
@@ -61,13 +71,17 @@ func newOperationRunnerFixture(t *testing.T) *operationRunnerFixture {
 	dir := t.TempDir()
 	parameters := filepath.Join(dir, "parameters.json")
 	receipt := filepath.Join(dir, "receipt.json")
+	cutoverState := filepath.Join(dir, "cutover.state")
+	require.NoError(t, os.WriteFile(cutoverState, []byte(
+		"HEADER\tkubebrain.restore-cutover.state.v1\tinstance-a\tcutover-1\tns-a\tkubebrain\tsource\ttarget\tuid-service\t"+operationAuditArtifactSHA256+"\t42\t/registry\t/restored\n",
+	), 0o600))
 	require.NoError(t, os.WriteFile(parameters, []byte(fmt.Sprintf(`{
 	  "state_dir":%q,"cutover_state_input":%q,"cutover_receipt_input":%q,
 	  "service_namespace":"ns-a","service_name":"kubebrain","target_instance":"target",
 	  "expected_replicas":2,"public_endpoint":"https://service:2379",
 	  "audit_duration_seconds":1,"audit_interval_seconds":0,"min_samples":1,
 	  "audit_prefix":"/audit","receipt_output":%q
-	}`, filepath.Join(dir, "state"), filepath.Join(dir, "cutover.state"),
+	}`, filepath.Join(dir, "state"), cutoverState,
 		filepath.Join(dir, "cutover.json"), receipt)), 0o600))
 	data, err := os.ReadFile(parameters)
 	require.NoError(t, err)
@@ -90,7 +104,10 @@ fi
 	writeTrafficExecutable(t, audit, `#!/usr/bin/env bash
 set -euo pipefail
 [[ "${AUDIT_FAIL:-false}" != true ]] || exit 7
-printf '{"format":"receipt"}\n' >"$RECEIPT_OUTPUT"
+artifact_sha="`+operationAuditArtifactSHA256+`"
+[[ "${INVALID_AUDIT_RECEIPT:-false}" != true ]] || artifact_sha=abc123
+printf '{"format":"kubebrain.post-restore-audit.receipt.v1","operation_id":"%s","instance":"%s","cutover_operation_id":"cutover-1","service_uid":"uid-service","target_instance":"%s","artifact_sha256":"%s","snapshot_revision":42,"replicas":%s,"duration_seconds":%s,"interval_seconds":%s,"samples":%s,"first_probe_revision":1,"last_probe_revision":2,"topology_unchanged":true,"all_probes_succeeded":true,"completed":true,"started_at_unix":1,"completed_at_unix":2}\n' \
+  "$OPERATION_ID" "$INSTANCE" "$TARGET_INSTANCE" "$artifact_sha" "$EXPECTED_REPLICAS" "$AUDIT_DURATION_SECONDS" "$AUDIT_INTERVAL_SECONDS" "$MIN_SAMPLES" >"$RECEIPT_OUTPUT"
 chmod 600 "$RECEIPT_OUTPUT"
 `)
 	return &operationRunnerFixture{

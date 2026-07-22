@@ -114,6 +114,42 @@ audit_env=(
 [[ -n "$data_context" ]] && audit_env+=("KUBE_CONTEXT=${data_context}")
 [[ -n "$data_kubeconfig" ]] && audit_env+=("KUBECONFIG_PATH=${data_kubeconfig}")
 
+validate_audit_receipt() {
+  local kind format state_instance cutover_operation state_namespace state_service source_instance
+  local state_target state_service_uid artifact_sha snapshot_revision source_prefix target_prefix
+  IFS=$'\t' read -r kind format state_instance cutover_operation state_namespace state_service \
+    source_instance state_target state_service_uid artifact_sha snapshot_revision source_prefix \
+    target_prefix <"$cutover_state"
+  [[ "$kind" == "HEADER" && "$format" == "kubebrain.restore-cutover.state.v1" &&
+    "$state_instance" == "$instance" && "$state_namespace" == "$service_namespace" &&
+    "$state_service" == "$service_name" && "$state_target" == "$target_instance" &&
+    -n "$state_service_uid" && "$artifact_sha" =~ ^[a-f0-9]{64}$ &&
+    "$snapshot_revision" =~ ^[1-9][0-9]*$ ]] || return 1
+  "$JQ" -e --arg operation "$operation_id" --arg instance "$instance" \
+    --arg cutover "$cutover_operation" --arg service_uid "$state_service_uid" \
+    --arg target "$target_instance" --arg artifact_sha "$artifact_sha" \
+    --argjson snapshot "$snapshot_revision" --argjson replicas "$expected_replicas" \
+    --argjson duration "$duration" --argjson interval "$interval" \
+    --argjson min_samples "$min_samples" '
+    select(keys == ["all_probes_succeeded","artifact_sha256","completed","completed_at_unix","cutover_operation_id","duration_seconds","first_probe_revision","format","instance","interval_seconds","last_probe_revision","operation_id","replicas","samples","service_uid","snapshot_revision","started_at_unix","target_instance","topology_unchanged"] and
+    .format == "kubebrain.post-restore-audit.receipt.v1" and
+    .operation_id == $operation and .instance == $instance and
+    .cutover_operation_id == $cutover and .service_uid == $service_uid and
+    .target_instance == $target and
+    (.artifact_sha256 | type == "string" and test("^[a-f0-9]{64}$")) and
+    .artifact_sha256 == $artifact_sha and .snapshot_revision == $snapshot and
+    .replicas == $replicas and .duration_seconds == $duration and
+    .interval_seconds == $interval and .topology_unchanged == true and
+    .all_probes_succeeded == true and .completed == true and
+    (.samples | type == "number" and . >= $min_samples and . == floor) and
+    (.first_probe_revision | type == "number" and . > 0 and . == floor) and
+    (.last_probe_revision | type == "number" and . > 0 and . == floor) and
+    .last_probe_revision >= .first_probe_revision and
+    (.started_at_unix | type == "number" and . > 0 and . == floor) and
+    (.completed_at_unix | type == "number" and . > 0 and . == floor) and
+    .completed_at_unix >= .started_at_unix)' "$receipt_output" >/dev/null
+}
+
 child=0
 heartbeat_pid=0
 cleanup() {
@@ -167,6 +203,12 @@ fi
   echo "post-restore audit completed without its receipt" >&2
   exit 1
 }
+if ! validate_audit_receipt; then
+  run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
+    --message "audit receipt invalid" >/dev/null
+  echo "post-restore audit produced an invalid receipt" >&2
+  exit 1
+fi
 receipt_digest="$(sha256sum "$receipt_output" | cut -d ' ' -f1)"
 run_operationctl --action succeed --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
   --receipt-sha256 "$receipt_digest" --message "post-restore audit completed" >/dev/null

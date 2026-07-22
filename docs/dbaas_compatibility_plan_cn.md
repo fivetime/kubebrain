@@ -9754,6 +9754,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   created_at、records、leases、object bytes、retention 和 remote verification；非法
   receipt 会 requeue，不会标记 operation 成功。回归：
   `go test ./hack/production -run 'TestBackupOperation' -count=10 -timeout=180s` 通过。
+- A553 收紧 PostRestoreAudit operation receipt 成功门禁：
+  `run-post-restore-audit-operation.sh` 旧逻辑同样只检查 `receipt_output` 文件存在，
+  测试 fake 写 `{"format":"receipt"}` 也会提交 succeed。现在 succeed 前读取
+  cutover state header，并要求 `kubebrain.post-restore-audit.receipt.v1` 精确绑定
+  operation_id、instance、cutover_operation_id、service UID、target、artifact SHA、
+  snapshot revision、replicas、duration/interval、minimum samples、probe revisions 和
+  completed/topology/probe 成功布尔字段；非法 receipt 会 requeue。回归：
+  `go test ./hack/production -run 'TestPostRestoreAuditOperation' -count=10 -timeout=120s`
+  通过。
 
 ### P2：运维兼容和长期验证
 
