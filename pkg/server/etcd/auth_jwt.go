@@ -14,6 +14,7 @@ import (
 	"crypto/rsa"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"time"
@@ -27,6 +28,8 @@ const (
 	jwtPublicKey  = "pub-key"
 	jwtPrivateKey = "priv-key"
 	jwtTTL        = "ttl"
+
+	maxJWTKeyBytes int64 = 1 << 20
 )
 
 type jwtTokenProvider struct {
@@ -87,11 +90,7 @@ func parseAuthTokenProvider(spec string) (*jwtTokenProvider, error) {
 		if path == "" {
 			return nil, nil
 		}
-		value, err := os.ReadFile(path)
-		if err != nil {
-			return nil, fmt.Errorf("read JWT %s: %w", option, err)
-		}
-		return value, nil
+		return readJWTKeyOption(path, option)
 	}
 	publicPEM, err := read(jwtPublicKey)
 	if err != nil {
@@ -106,6 +105,22 @@ func parseAuthTokenProvider(spec string) (*jwtTokenProvider, error) {
 		return nil, err
 	}
 	return &jwtTokenProvider{method: method, key: key, ttl: ttl, verifyOnly: verifyOnly}, nil
+}
+
+func readJWTKeyOption(path, option string) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("read JWT %s: %w", option, err)
+	}
+	defer file.Close()
+	value, err := io.ReadAll(io.LimitReader(file, maxJWTKeyBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("read JWT %s: %w", option, err)
+	}
+	if int64(len(value)) > maxJWTKeyBytes {
+		return nil, fmt.Errorf("read JWT %s: key file exceeds %d bytes", option, maxJWTKeyBytes)
+	}
+	return value, nil
 }
 
 func jwtProviderKey(method jwt.SigningMethod, publicPEM, privatePEM []byte) (any, bool, error) {

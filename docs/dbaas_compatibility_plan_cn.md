@@ -9538,6 +9538,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `(cd hack/etcd-client-compat && go test . -run 'TestLeaseBatchRenewalModelRequiresOriginalDeadlineIsolation|TestClientV3LeaseBatchRenewalHistoryIsLinearizable' -count=20)`、
   `(cd hack/etcd-client-compat && go test . -run 'TestLeaseBatchRenewalModelRequiresOriginalDeadlineIsolation|TestClientV3LeaseBatchRenewalHistoryIsLinearizable' -race -count=1)`
   与 `git diff --check` 通过。
+- A530 收紧 JWT auth token provider key 文件启动读取边界：对照
+  `/root/etcd/server/etcdserver/server.go` 中 `auth.NewTokenProvider` 的启动配置路径和
+  `/root/etcd/tests/framework/integration/cluster.go` 的 JWT fixture，KubeBrain 继续支持
+  `jwt,sign-method=...,pub-key=...,priv-key=...,ttl=...` 语法与 HMAC/RSA/PSS/ECDSA/Ed25519
+  行为，但 `pub-key`/`priv-key` 文件现在最多读取 1 MiB。异常大 secret 会在 PEM/JWT
+  解析和服务启动前 fail closed，错误保留 `read JWT <option>` 前缀；正常 PEM 和 HMAC
+  secret 不受影响。回归覆盖 oversized private/public key；
+  `go test ./pkg/server/etcd -run 'TestJWTProvider' -count=20`、
+  `go test ./pkg/server/etcd -run 'TestJWT|TestAuthTokenUsesConfiguredTTL|TestAuthTokenRejectsWhileDisabled' -count=5`、
+  `go test ./pkg/server/etcd -count=1`、`go vet ./pkg/server/etcd` 与
+  `git diff --check` 通过。
 
 ### P2：运维兼容和长期验证
 
