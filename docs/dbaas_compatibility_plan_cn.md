@@ -10216,6 +10216,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   proxy 分支因需要透传 token 保持独立路径。回归：
   `go test ./pkg/server/etcd -run TestAuthRangeReadBarrierPrecedesAuthLikeEtcd -count=1`
   通过。
+- A599 对齐 `Authenticate` 的前置 linearizable read barrier：
+  对照 `/root/etcd/server/etcdserver/v3_server.go` 的 `Authenticate`，上游在
+  `CheckPassword` 和 token assign/retry 之前先执行 `LinearizableReadNotify`；因此
+  leader/read-barrier 故障会优先于错误密码、未知用户或 auth 未启用返回。A295 已保证
+  成功 Auth 响应 header 在返回前同步到 leader revision，但 KubeBrain 旧
+  `Authenticate` 仍先校验密码并签 token，最后才通过 `authRPCHeader` 做 barrier；
+  barrier 故障会被 `ErrAuthFailed`/`ErrAuthNotEnabled` 遮蔽。现在 `Authenticate`
+  入口先执行 `SyncReadRevision` 并保留成功响应的 header barrier；失败关闭使用标准
+  可重试 gRPC status。回归：
+  `go test ./pkg/server/etcd -run TestAuthenticateReadBarrierPrecedesPasswordCheck -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

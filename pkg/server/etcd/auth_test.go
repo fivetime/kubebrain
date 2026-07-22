@@ -16,6 +16,7 @@ package etcd
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -124,6 +125,25 @@ func TestAuthRPCHeaderFailsClosedWhenRevisionBarrierFails(t *testing.T) {
 	response, err := server.AuthStatus(context.Background(), &etcdserverpb.AuthStatusRequest{})
 	require.Nil(t, response)
 	require.Equal(t, codes.Unavailable, status.Code(err))
+}
+
+func TestAuthenticateReadBarrierPrecedesPasswordCheck(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	require.NoError(t, server.auth.userAdd(ctx, &etcdserverpb.AuthUserAddRequest{Name: "root", Password: "secret"}))
+	require.NoError(t, server.auth.roleAdd(ctx, "root"))
+	require.NoError(t, server.auth.userGrantRole(ctx, "root", "root"))
+	require.NoError(t, server.auth.enable(ctx))
+	barrierErr := errors.New("authenticate read barrier failed")
+	server.peers = testPeerService{syncReadFn: func(context.Context) error {
+		return barrierErr
+	}}
+
+	response, err := server.Authenticate(ctx, &etcdserverpb.AuthenticateRequest{Name: "root", Password: "wrong"})
+	require.Nil(t, response)
+	require.Equal(t, codes.Unavailable, status.Code(err))
+	require.Equal(t, barrierErr.Error(), status.Convert(err).Message())
 }
 
 func TestAuthRPCBootstrapAndEnabledSafetyBoundary(t *testing.T) {

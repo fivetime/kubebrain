@@ -82,6 +82,9 @@ func (s *RPCServer) AuthStatus(ctx context.Context, _ *etcdserverpb.AuthStatusRe
 }
 
 func (s *RPCServer) Authenticate(ctx context.Context, request *etcdserverpb.AuthenticateRequest) (*etcdserverpb.AuthenticateResponse, error) {
+	if err := s.peers.SyncReadRevision(ctx); err != nil {
+		return nil, readBarrierStatusErr(err)
+	}
 	token, err := s.tokens.authenticate(ctx, request.Name, request.Password)
 	if err != nil {
 		return nil, err
