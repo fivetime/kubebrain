@@ -50,19 +50,19 @@ func (s *RPCServer) Range(ctx context.Context, r *etcdserverpb.RangeRequest) (*e
 	if err := validateRangeRequest(r); err != nil {
 		return nil, err
 	}
-	caller, authErr := s.authCallerFromContext(ctx)
-	if authErr != nil {
-		return nil, authErr
-	}
-	if authErr = caller.require(r.Key, r.RangeEnd, authpb.READ); authErr != nil {
-		return nil, authErr
-	}
 	// A durable follower snapshot is sufficient only for an explicitly
 	// serializable request. A linearizable historical read still has to observe
 	// the leader's current revision in its response header, even though its KVs
 	// come from the requested older revision.
 	durableHistorical := r.Serializable && r.Revision > 0 && s.followerHasDurableRevision(ctx, uint64(r.Revision))
 	if r.Revision > 0 && !s.peers.IsLeader() && !durableHistorical && s.peers.EtcdProxyEnabled() {
+		caller, authErr := s.authCallerFromContext(ctx)
+		if authErr != nil {
+			return nil, authErr
+		}
+		if authErr = caller.require(r.Key, r.RangeEnd, authpb.READ); authErr != nil {
+			return nil, authErr
+		}
 		s.metricCli.EmitCounter("read.follower.historical_proxy", 1)
 		proxyCtx, err := s.forwardAuthToken(ctx, caller)
 		if err != nil {
@@ -76,6 +76,13 @@ func (s *RPCServer) Range(ctx context.Context, r *etcdserverpb.RangeRequest) (*e
 		if err := s.peers.SyncReadRevision(ctx); err != nil {
 			return &etcdserverpb.RangeResponse{}, readBarrierStatusErr(err)
 		}
+	}
+	caller, authErr := s.authCallerFromContext(ctx)
+	if authErr != nil {
+		return nil, authErr
+	}
+	if authErr = caller.require(r.Key, r.RangeEnd, authpb.READ); authErr != nil {
+		return nil, authErr
 	}
 	if err := s.checkRequestedRevision(ctx, r.Revision); err != nil {
 		return nil, err
@@ -173,18 +180,18 @@ func (s *RPCServer) RangeStream(r *etcdserverpb.RangeRequest, rs etcdserverpb.KV
 		s.metricCli.EmitHistogram("read.range_stream.latency", time.Since(startTime).Seconds())
 		return nil
 	}
+	durableHistorical := r.Serializable && r.Revision > 0 && s.followerHasDurableRevision(ctx, uint64(r.Revision))
+	if (!r.Serializable || r.Revision > 0) && !durableHistorical {
+		if err := s.peers.SyncReadRevision(ctx); err != nil {
+			return readBarrierStatusErr(err)
+		}
+	}
 	caller, err := s.authCallerFromContext(ctx)
 	if err != nil {
 		return err
 	}
 	if err = caller.require(r.Key, r.RangeEnd, authpb.READ); err != nil {
 		return err
-	}
-	durableHistorical := r.Serializable && r.Revision > 0 && s.followerHasDurableRevision(ctx, uint64(r.Revision))
-	if (!r.Serializable || r.Revision > 0) && !durableHistorical {
-		if err := s.peers.SyncReadRevision(ctx); err != nil {
-			return readBarrierStatusErr(err)
-		}
 	}
 	if err := s.checkRequestedRevision(ctx, r.Revision); err != nil {
 		return rangeStreamStatusErr(err)

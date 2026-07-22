@@ -10204,6 +10204,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `ErrUserEmpty`。回归：
   `go test ./pkg/server/etcd -run TestAuthRPCUserGetEmptyNameWithoutIdentityMatchesEtcd -count=1`
   通过。
+- A598 对齐 Range/RangeStream 的 read barrier 与 auth 顺序：
+  对照 `/root/etcd/server/etcdserver/v3_server.go` 的 `Range`、`RangeStream` 与
+  `doSerialize`，上游非 serializable 读会先执行 `LinearizableReadNotify`，随后才通过
+  `doSerialize` 解析 auth info 并检查 key 权限；因此 auth 开启但请求缺失身份时，如果
+  leader read barrier 先失败，客户端会看到可重试的 barrier status，而不是
+  `ErrUserEmpty`。KubeBrain 旧 unary `Range` 和真正的 recursive `RangeStream` 在入口
+  先调用 `authCallerFromContext`，会把 leader/barrier 故障遮蔽成 auth 错误。现在普通
+  Range 和非 fallback RangeStream 在需要线性读栅栏时先同步 revision，再执行 auth；
+  explicit serializable 读仍不触发 barrier，继续返回 `ErrUserEmpty`。历史 follower
+  proxy 分支因需要透传 token 保持独立路径。回归：
+  `go test ./pkg/server/etcd -run TestAuthRangeReadBarrierPrecedesAuthLikeEtcd -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

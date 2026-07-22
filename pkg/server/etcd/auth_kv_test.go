@@ -2,6 +2,7 @@ package etcd
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -10,7 +11,9 @@ import (
 	"go.etcd.io/etcd/api/v3/authpb"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 )
 
 func setupAuthKVUser(t *testing.T, server *RPCServer) context.Context {
@@ -50,6 +53,39 @@ func TestAuthKVUnaryHandlersEnforcePermissions(t *testing.T) {
 	denied, err := server.backend.Get(context.Background(), &etcdserverpb.RangeRequest{Key: []byte("/denied/a")})
 	require.NoError(t, err)
 	require.Empty(t, denied.Kvs, "denied put must not reach storage")
+}
+
+func TestAuthRangeReadBarrierPrecedesAuthLikeEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	setupAuthKVUser(t, server)
+	plain := context.Background()
+	barrierErr := errors.New("leader read barrier failed")
+	var barrierCalls int
+	server.peers = testPeerService{syncReadFn: func(context.Context) error {
+		barrierCalls++
+		return barrierErr
+	}}
+
+	_, err := server.Range(plain, &etcdserverpb.RangeRequest{Key: []byte("/allowed/a")})
+	require.Equal(t, codes.Unavailable, status.Code(err))
+	require.Equal(t, barrierErr.Error(), status.Convert(err).Message())
+	require.Equal(t, 1, barrierCalls)
+
+	_, err = server.Range(plain, &etcdserverpb.RangeRequest{Key: []byte("/allowed/a"), Serializable: true})
+	require.ErrorIs(t, err, rpctypes.ErrUserEmpty)
+	require.Equal(t, 1, barrierCalls)
+
+	stream := &fakeRangeStreamServer{ctx: plain}
+	err = server.RangeStream(&etcdserverpb.RangeRequest{Key: []byte("/allowed/"), RangeEnd: []byte("/allowed0")}, stream)
+	require.Equal(t, codes.Unavailable, status.Code(err))
+	require.Equal(t, barrierErr.Error(), status.Convert(err).Message())
+	require.Equal(t, 2, barrierCalls)
+
+	stream = &fakeRangeStreamServer{ctx: plain}
+	err = server.RangeStream(&etcdserverpb.RangeRequest{Key: []byte("/allowed/"), RangeEnd: []byte("/allowed0"), Serializable: true}, stream)
+	require.ErrorIs(t, err, rpctypes.ErrUserEmpty)
+	require.Equal(t, 2, barrierCalls)
 }
 
 func TestAuthTxnChecksBothBranchesBeforeWriting(t *testing.T) {
