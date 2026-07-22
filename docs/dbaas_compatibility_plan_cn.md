@@ -8789,6 +8789,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `42cae35c-f9e4-4eb9-91d7-9e17fdaea3fe` 完整通过，EndpointSlice 精确引用三枚当前 Pod；临时
   exec 代理已删除，继续使用 A433 数据面镜像。
 
+#### A443 TiKV uncertain commit 与 quorum recovery
+
+- 真实 3 PD/3 TiKV quorum smoke 曾在单 TiKV replacement 时暴露 `TxnLockNotFound` 被透传为
+  gRPC `Unknown`。client-go v2.0.7 不提供该 2PC commit 错误的 typed wrapper；commit outcome
+  可能已经落盘，不能作为确定性失败处理。
+- 提交 `5263a1c` 将含精确 `TxnLockNotFound` 标记的 TiKV commit error 归类为
+  `storage.ErrUncertainResult`，交给已有 event-log durable resolver 判定 committed/not-committed；
+  公共 unary interceptor 将 uncertain result 映射为 etcd `ErrGRPCTimeout`（gRPC `Unavailable`），
+  使 clientv3 以暂态、结果不确定写处理，而不会把可能已提交事务误报为 `Unknown`。quorum smoke
+  还将 Pod Ready 后的 PD region cache/KubeBrain readiness 收敛观察窗口参数化，默认 10 秒。
+- 定向 race 20 轮、普通 root 全量测试、vet、staticcheck v0.7.0 和 diff check 均通过；完整
+  `pkg/server/etcd` race 套件仍受既有 PrevHintCache 大容量测试超时约束，未作为本轮通过证据。
+  从 `5263a1c` 干净 archive 构建的 `kubebrain:a444-uncertain-commit-local` 滚动三副本后，真实
+  PD leader replacement 在故障窗口完成 1006 次操作，TiKV member replacement 完成 1001 次，
+  两者均通过并最终 TidbCluster Ready=True。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
