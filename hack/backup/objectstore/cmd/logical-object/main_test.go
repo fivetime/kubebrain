@@ -37,3 +37,27 @@ func TestParseJSONStringArrayRejectsAmbiguousInputs(t *testing.T) {
 		})
 	}
 }
+
+func TestParseOptionalBoolEnv(t *testing.T) {
+	t.Setenv("OBJECTSTORE_BOOL", "")
+	value, err := parseOptionalBoolEnv("OBJECTSTORE_BOOL")
+	require.NoError(t, err)
+	require.False(t, value)
+
+	t.Setenv("OBJECTSTORE_BOOL", "true")
+	value, err = parseOptionalBoolEnv("OBJECTSTORE_BOOL")
+	require.NoError(t, err)
+	require.True(t, value)
+
+	t.Setenv("OBJECTSTORE_BOOL", "0")
+	value, err = parseOptionalBoolEnv("OBJECTSTORE_BOOL")
+	require.NoError(t, err)
+	require.False(t, value)
+}
+
+func TestParseOptionalBoolEnvRejectsInvalidValue(t *testing.T) {
+	t.Setenv("OBJECTSTORE_BOOL", "truthy")
+	value, err := parseOptionalBoolEnv("OBJECTSTORE_BOOL")
+	require.ErrorContains(t, err, "OBJECTSTORE_BOOL must be a boolean")
+	require.False(t, value)
+}

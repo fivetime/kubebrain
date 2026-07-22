@@ -191,11 +191,26 @@ func newClient(ctx context.Context) (*s3.Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	forcePathStyle := os.Getenv("S3_FORCE_PATH_STYLE") == "true"
+	forcePathStyle, err := parseOptionalBoolEnv("S3_FORCE_PATH_STYLE")
+	if err != nil {
+		return nil, err
+	}
 	return s3.NewFromConfig(cfg, func(options *s3.Options) {
 		options.BaseEndpoint = aws.String(endpoint)
 		options.UsePathStyle = forcePathStyle
 	}), nil
+}
+
+func parseOptionalBoolEnv(name string) (bool, error) {
+	raw := os.Getenv(name)
+	if raw == "" {
+		return false, nil
+	}
+	value, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, fmt.Errorf("%s must be a boolean: %w", name, err)
+	}
+	return value, nil
 }
 
 func int64Env(name string) int64 {

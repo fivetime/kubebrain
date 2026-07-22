@@ -647,6 +647,8 @@ S3 Object Lock；上传角色需要 Put/Get/Head/GetObjectRetention 权限，删
 `RECEIPT_INPUTS_JSON=[]` 只用于生成空 inventory manifest 以证明受管 prefix 无期望
 version，不能用 `null` 代替。`ALLOWED_FORMATS_JSON` 仍必须由 usage 业务层校验为非空、
 排序且唯一的 artifact format allowlist。
+`S3_FORCE_PATH_STYLE` 可留空表示 false；非空时必须是合法布尔值，非法值要让对象存储
+executor fail closed，不能静默降级为 virtual-host/path-style 的另一种访问形态。
 
 ```shell
 retain_until=$(( $(date +%s) + 2592000 ))

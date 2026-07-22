@@ -9275,6 +9275,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   非法值；`go test ./hack/production/cmd/metering-storage-archive -run 'TestParseJSONStringArray|TestParseOptionalBoolEnv' -count=20`、
   `go test ./hack/production/... ./deploy/production`、
   `go vet ./hack/production/... ./deploy/production` 与 `git diff --check` 通过。
+- A499 收紧 logical objectstore executor `S3_FORCE_PATH_STYLE` 解析：`logical-object`
+  现在同样使用 optional bool parser，空值仍表示 false，非空非法值会在创建 S3 client 前
+  返回错误；旧逻辑只比较字符串是否等于 `true`，拼写错误会被静默当 false。回归覆盖空值、
+  `true`、`0` 和非法值；`cd hack/backup/objectstore && go test ./cmd/logical-object -run 'TestParseJSONStringArray|TestParseOptionalBoolEnv' -count=20`、
+  `cd hack/backup/objectstore && go test ./...`、
+  `cd hack/backup/objectstore && go vet ./...`、
+  `go test ./hack/production/... ./deploy/production`、
+  `go vet ./hack/production/... ./deploy/production` 与 `git diff --check` 通过。
 
 ### P2：运维兼容和长期验证
 
