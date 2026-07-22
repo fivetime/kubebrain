@@ -87,6 +87,10 @@ spec:
       automountServiceAccountToken: true
       securityContext:
         runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        fsGroupChangePolicy: OnRootMismatch
         seccompProfile:
           type: RuntimeDefault
       affinity:
@@ -179,6 +183,12 @@ spec:
         - name: tls
           secret:
             secretName: kubebrain-operation-api-tls
+            defaultMode: 0440
+            items:
+              - key: tls.crt
+                path: tls.crt
+              - key: tls.key
+                path: tls.key
 ---
 apiVersion: policy/v1
 kind: PodDisruptionBudget

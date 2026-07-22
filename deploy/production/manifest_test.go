@@ -504,6 +504,15 @@ func TestOperationParameterBrokerOwnsTheOnlyExecutorParameterSecretPermission(t 
 	require.True(t, nestedBool(
 		t, deployment, "spec", "template", "spec", "securityContext", "runAsNonRoot",
 	))
+	require.EqualValues(t, 65532, nestedInt64(t, deployment, "spec", "template", "spec", "securityContext", "runAsUser"))
+	require.EqualValues(t, 65532, nestedInt64(t, deployment, "spec", "template", "spec", "securityContext", "runAsGroup"))
+	require.EqualValues(t, 65532, nestedInt64(t, deployment, "spec", "template", "spec", "securityContext", "fsGroup"))
+	require.Equal(t, "OnRootMismatch",
+		nestedString(t, deployment, "spec", "template", "spec", "securityContext", "fsGroupChangePolicy"))
+	podSpec, found, err := unstructured.NestedMap(deployment.Object, "spec", "template", "spec")
+	require.NoError(t, err)
+	require.True(t, found)
+	pod := &unstructured.Unstructured{Object: podSpec}
 	containers, found, err := unstructured.NestedSlice(
 		deployment.Object, "spec", "template", "spec", "containers",
 	)
@@ -521,6 +530,8 @@ func TestOperationParameterBrokerOwnsTheOnlyExecutorParameterSecretPermission(t 
 	require.Contains(t, args, "--tls-reload-interval=30s")
 	require.Contains(t, args, "--kubernetes-request-timeout=5s")
 	require.True(t, nestedBool(t, container, "securityContext", "readOnlyRootFilesystem"))
+	assertReadOnlyTLSSecretVolume(t, pod, container,
+		"tls", "kubebrain-operation-parameter-broker-tls", "/var/run/kubebrain-parameter-tls")
 
 	role := objectByKindAndName(t, objects, "Role", "kubebrain-operation-parameter-broker")
 	rules, found, err := unstructured.NestedSlice(role.Object, "rules")
@@ -597,6 +608,15 @@ func TestOperationAPIIsFailClosedAndHardened(t *testing.T) {
 	require.EqualValues(t, 1, nestedInt64(t, deployment, "spec", "strategy", "rollingUpdate", "maxSurge"))
 	require.True(t, nestedBool(t, deployment, "spec", "template", "spec", "automountServiceAccountToken"))
 	require.True(t, nestedBool(t, deployment, "spec", "template", "spec", "securityContext", "runAsNonRoot"))
+	require.EqualValues(t, 65532, nestedInt64(t, deployment, "spec", "template", "spec", "securityContext", "runAsUser"))
+	require.EqualValues(t, 65532, nestedInt64(t, deployment, "spec", "template", "spec", "securityContext", "runAsGroup"))
+	require.EqualValues(t, 65532, nestedInt64(t, deployment, "spec", "template", "spec", "securityContext", "fsGroup"))
+	require.Equal(t, "OnRootMismatch",
+		nestedString(t, deployment, "spec", "template", "spec", "securityContext", "fsGroupChangePolicy"))
+	podSpec, found, err := unstructured.NestedMap(deployment.Object, "spec", "template", "spec")
+	require.NoError(t, err)
+	require.True(t, found)
+	pod := &unstructured.Unstructured{Object: podSpec}
 	containers, found, err := unstructured.NestedSlice(deployment.Object, "spec", "template", "spec", "containers")
 	require.NoError(t, err)
 	require.True(t, found)
@@ -613,8 +633,12 @@ func TestOperationAPIIsFailClosedAndHardened(t *testing.T) {
 	require.Contains(t, args, "--oidc-jwks-refresh-backoff=5s")
 	require.Contains(t, args, "--tls-reload-interval=30s")
 	require.Contains(t, args, "--dependency-request-timeout=5s")
+	require.Contains(t, args, "--tls-cert-file=/var/run/kubebrain-api-tls/tls.crt")
+	require.Contains(t, args, "--tls-key-file=/var/run/kubebrain-api-tls/tls.key")
 	require.True(t, nestedBool(t, container, "securityContext", "readOnlyRootFilesystem"))
 	require.False(t, nestedBool(t, container, "securityContext", "allowPrivilegeEscalation"))
+	assertReadOnlyTLSSecretVolume(t, pod, container,
+		"tls", "kubebrain-operation-api-tls", "/var/run/kubebrain-api-tls")
 	require.Equal(t, "/readyz", nestedString(t, container, "readinessProbe", "httpGet", "path"))
 	require.Equal(t, "HTTPS", nestedString(t, container, "readinessProbe", "httpGet", "scheme"))
 	spreads, found, err := unstructured.NestedSlice(
@@ -1574,4 +1598,50 @@ func nestedBool(t *testing.T, object *unstructured.Unstructured, fields ...strin
 	require.NoError(t, err)
 	require.True(t, found)
 	return value
+}
+
+func assertReadOnlyTLSSecretVolume(
+	t *testing.T,
+	pod, container *unstructured.Unstructured,
+	volumeName, secretName, mountPath string,
+) {
+	t.Helper()
+	mounts, found, err := unstructured.NestedSlice(container.Object, "volumeMounts")
+	require.NoError(t, err)
+	require.True(t, found)
+	foundMount := false
+	for _, raw := range mounts {
+		mount := &unstructured.Unstructured{Object: raw.(map[string]any)}
+		if nestedString(t, mount, "name") != volumeName {
+			continue
+		}
+		foundMount = true
+		require.Equal(t, mountPath, nestedString(t, mount, "mountPath"))
+		require.True(t, nestedBool(t, mount, "readOnly"))
+	}
+	require.True(t, foundMount)
+
+	volumes, found, err := unstructured.NestedSlice(pod.Object, "volumes")
+	require.NoError(t, err)
+	require.True(t, found)
+	foundVolume := false
+	for _, raw := range volumes {
+		volume := &unstructured.Unstructured{Object: raw.(map[string]any)}
+		if nestedString(t, volume, "name") != volumeName {
+			continue
+		}
+		foundVolume = true
+		require.Equal(t, secretName, nestedString(t, volume, "secret", "secretName"))
+		require.EqualValues(t, 0440, nestedInt64(t, volume, "secret", "defaultMode"))
+		items, found, err := unstructured.NestedSlice(volume.Object, "secret", "items")
+		require.NoError(t, err)
+		require.True(t, found)
+		pathsByKey := map[string]string{}
+		for _, item := range items {
+			itemObject := &unstructured.Unstructured{Object: item.(map[string]any)}
+			pathsByKey[nestedString(t, itemObject, "key")] = nestedString(t, itemObject, "path")
+		}
+		require.Equal(t, map[string]string{"tls.crt": "tls.crt", "tls.key": "tls.key"}, pathsByKey)
+	}
+	require.True(t, foundVolume)
 }

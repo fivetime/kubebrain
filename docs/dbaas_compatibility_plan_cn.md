@@ -10013,6 +10013,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Secret 只读 mount/fsGroup。回归：
   `go test ./deploy/production -run TestMeteringArchiveCronJobIsFailClosedAndImmutable -count=1`
   通过。
+- A579 固定 operation API/parameter broker TLS Secret mount 契约：
+  TLS 热加载已按 1 MiB 文件上限和 key pair 校验 fail closed，但生产清单的 API/broker
+  TLS Secret volume 仍未固定 `items/defaultMode/fsGroup`；operation API 还只依赖镜像
+  `USER 65532:65532`，没有在 Pod securityContext 中显式声明 UID/GID。现在 API 和 broker
+  都以 `runAsUser/runAsGroup/fsGroup=65532` 运行，TLS Secret 只挂载 `tls.crt`/`tls.key`
+  两个 key，mode 固定为 `0440`，并用共享 manifest helper 校验只读 volumeMount、Secret
+  名和键集合，防止误挂载额外 Secret 内容或镜像 USER 漂移造成凭据读取差异。回归：
+  `go test ./deploy/production -run 'Test(OperationAPIIsFailClosedAndHardened|OperationParameterBrokerOwnsTheOnlyExecutorParameterSecretPermission)' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

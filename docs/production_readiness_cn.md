@@ -1709,7 +1709,8 @@ exact-version receipt。
 
 外部提交入口使用 `deploy/production/kubebrain-operation-api.yaml`。Deployment 默认
 `replicas: 0`，必须先创建 `kubebrain-operation-api-oidc` Secret（`issuer`、`audience`）
-和 `kubebrain-operation-api-tls` TLS Secret，再扩容。API 只提供
+和 `kubebrain-operation-api-tls` TLS Secret（只使用 `tls.crt`/`tls.key` 两个 key，
+以 `0440` 只读 mode 和 `fsGroup=65532` 挂载），再扩容。API 只提供
 `POST /v1/operations`、`GET /v1/operations/{name}` 和不含依赖状态的 `/healthz`；
 必须通过 HTTPS。OIDC token 必须使用 RS256，包含匹配的 issuer/audience、有效 exp、
 sub、DNS label 格式 tenant 及字符串数组 `kubebrain_instances`。tenant 必须与请求一致，
@@ -2103,7 +2104,8 @@ A185 也支持显式 `KUBECONFIG_PATH`。
 `deploy/production/kubebrain-operation-parameter-broker.yaml`，默认零副本。先签发服务端
 证书，SAN 必须包含
 `kubebrain-operation-parameter-broker.kubebrain-operations.svc`，写入 Secret
-`kubebrain-operation-parameter-broker-tls` 的 `tls.crt`/`tls.key`；签发 CA 以 `ca.crt`
+`kubebrain-operation-parameter-broker-tls` 的 `tls.crt`/`tls.key`；Secret 以 `0440`
+只读 mode 和 `fsGroup=65532` 挂载，只接受这两个 key。签发 CA 以 `ca.crt`
 写入 ConfigMap `kubebrain-operation-parameter-broker-ca`。应用
 `kubebrain-operation-worker-admission.yaml` 后扩 broker 到两个副本，并先验证：
 
