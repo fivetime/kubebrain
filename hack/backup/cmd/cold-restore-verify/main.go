@@ -170,7 +170,7 @@ func main() {
 			fatal(fmt.Errorf("witness lease %d lacks granted_ttl; re-export with the current logical exporter", id))
 		}
 	}
-	witnessData, err := os.ReadFile(witnessPath)
+	witnessFileSHA, err := fileDigest(witnessPath)
 	if err != nil {
 		fatal(err)
 	}
@@ -186,7 +186,7 @@ func main() {
 	if err != nil {
 		fatal(err)
 	}
-	snapshotRecord, restore, err := validateReceiptChain(status, witnessData, snapshotData, restoreData)
+	snapshotRecord, restore, err := validateReceiptChain(status, witnessFileSHA, snapshotData, restoreData)
 	if err != nil {
 		fatal(err)
 	}
@@ -248,7 +248,7 @@ func main() {
 		status.Records, status.Leases, status.Revision, putRevision, deleteRevision)
 }
 
-func validateReceiptChain(status backupfile.Status, witnessData, snapshotData, restoreData []byte) (snapshotReceipt, restoreReceipt, error) {
+func validateReceiptChain(status backupfile.Status, witnessFileSHA string, snapshotData, restoreData []byte) (snapshotReceipt, restoreReceipt, error) {
 	var snapshotRecord snapshotReceipt
 	if err := decodeStrictJSON(snapshotData, &snapshotRecord, "snapshot receipt"); err != nil {
 		return snapshotReceipt{}, restoreReceipt{}, err
@@ -263,7 +263,7 @@ func validateReceiptChain(status backupfile.Status, witnessData, snapshotData, r
 		snapshotRecord.Witness.Format != status.Format || snapshotRecord.Witness.Prefix != status.Prefix ||
 		snapshotRecord.Witness.Revision != status.Revision || snapshotRecord.Witness.Records != status.Records ||
 		snapshotRecord.Witness.Leases != status.Leases || snapshotRecord.Witness.SHA256 != status.SHA256 ||
-		snapshotRecord.Witness.FileSHA256 != digest(witnessData) {
+		snapshotRecord.Witness.FileSHA256 != witnessFileSHA {
 		return snapshotReceipt{}, restoreReceipt{}, errors.New("snapshot receipt semantic witness binding mismatch")
 	}
 	var restore restoreReceipt
@@ -319,6 +319,19 @@ func readBoundedJSONFile(path, description string) ([]byte, error) {
 		return nil, fmt.Errorf("%s exceeds %d bytes", description, maxColdRestoreJSONBytes)
 	}
 	return data, nil
+}
+
+func fileDigest(path string) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
 func validateRestoreReceiptInventory(restore restoreReceipt, snapshotRecord snapshotReceipt) error {

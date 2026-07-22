@@ -38,8 +38,18 @@ func TestCompareKVsRequiresPhysicalMetadataIdentity(t *testing.T) {
 	require.ErrorContains(t, compareKVs(expected, nil), "record count")
 }
 
+func TestFileDigest(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "witness.jsonl")
+	data := []byte("immutable-witness\n")
+	require.NoError(t, os.WriteFile(path, data, 0o600))
+	got, err := fileDigest(path)
+	require.NoError(t, err)
+	require.Equal(t, digest(data), got)
+}
+
 func TestValidateReceiptChain(t *testing.T) {
 	witness := []byte("immutable-witness")
+	witnessFileSHA := digest(witness)
 	status := backupfile.Status{Format: backupfile.Format, Prefix: "/registry", Revision: 100, Records: 3, Leases: 1, SHA256: "artifact-sha"}
 	snapshot := snapshotReceipt{Format: "kubebrain.cold-physical-snapshot.v2", OperationID: "operation-a"}
 	snapshot.CreatedAt = "2026-07-21T00:00:00Z"
@@ -70,7 +80,7 @@ func TestValidateReceiptChain(t *testing.T) {
 	snapshot.Witness.Records = status.Records
 	snapshot.Witness.Leases = status.Leases
 	snapshot.Witness.SHA256 = status.SHA256
-	snapshot.Witness.FileSHA256 = digest(witness)
+	snapshot.Witness.FileSHA256 = witnessFileSHA
 	snapshotData, err := json.Marshal(snapshot)
 	require.NoError(t, err)
 	restore := restoreReceipt{Format: "kubebrain.cold-physical-restore.v1", OperationID: snapshot.OperationID, SourceReceiptSHA: digest(snapshotData)}
@@ -97,67 +107,67 @@ func TestValidateReceiptChain(t *testing.T) {
 	restoreData, err := json.Marshal(restore)
 	require.NoError(t, err)
 
-	_, _, err = validateReceiptChain(status, witness, snapshotData, restoreData)
+	_, _, err = validateReceiptChain(status, witnessFileSHA, snapshotData, restoreData)
 	require.NoError(t, err)
 
 	snapshotUnknown := append(append([]byte(nil), snapshotData[:len(snapshotData)-1]...), []byte(`,"unexpected":true}`)...)
-	_, _, err = validateReceiptChain(status, witness, snapshotUnknown, restoreData)
+	_, _, err = validateReceiptChain(status, witnessFileSHA, snapshotUnknown, restoreData)
 	require.ErrorContains(t, err, "unknown field")
 
 	restoreTrailing := append(append([]byte(nil), restoreData...), []byte(`{"trailing":true}`)...)
-	_, _, err = validateReceiptChain(status, witness, snapshotData, restoreTrailing)
+	_, _, err = validateReceiptChain(status, witnessFileSHA, snapshotData, restoreTrailing)
 	require.ErrorContains(t, err, "trailing JSON")
 
-	_, _, err = validateReceiptChain(status, []byte("tampered"), snapshotData, restoreData)
+	_, _, err = validateReceiptChain(status, digest([]byte("tampered")), snapshotData, restoreData)
 	require.ErrorContains(t, err, "witness binding mismatch")
 
 	brokenSnapshot := snapshot
 	brokenSnapshot.CreatedAt = "not-a-time"
 	brokenSnapshotData, err := json.Marshal(brokenSnapshot)
 	require.NoError(t, err)
-	_, _, err = validateReceiptChain(status, witness, brokenSnapshotData, restoreData)
+	_, _, err = validateReceiptChain(status, witnessFileSHA, brokenSnapshotData, restoreData)
 	require.ErrorContains(t, err, "created_at")
 
 	brokenSnapshot = snapshot
 	brokenSnapshot.Inventory.Format = "other"
 	brokenSnapshotData, err = json.Marshal(brokenSnapshot)
 	require.NoError(t, err)
-	_, _, err = validateReceiptChain(status, witness, brokenSnapshotData, restoreData)
+	_, _, err = validateReceiptChain(status, witnessFileSHA, brokenSnapshotData, restoreData)
 	require.ErrorContains(t, err, "inventory format")
 
 	brokenRestore := restore
 	brokenRestore.SourceReceiptSHA = digest([]byte("other"))
 	brokenData, err := json.Marshal(brokenRestore)
 	require.NoError(t, err)
-	_, _, err = validateReceiptChain(status, witness, snapshotData, brokenData)
+	_, _, err = validateReceiptChain(status, witnessFileSHA, snapshotData, brokenData)
 	require.ErrorContains(t, err, "does not bind")
 
 	brokenRestore = restore
 	brokenRestore.RestoreManifest.SHA256 = ""
 	brokenData, err = json.Marshal(brokenRestore)
 	require.NoError(t, err)
-	_, _, err = validateReceiptChain(status, witness, snapshotData, brokenData)
+	_, _, err = validateReceiptChain(status, witnessFileSHA, snapshotData, brokenData)
 	require.ErrorContains(t, err, "canonical restore manifest")
 
 	brokenRestore = cloneRestoreReceipt(restore)
 	brokenRestore.VolumeSnapshotContents[0].SnapshotHandle = "other-handle"
 	brokenData, err = json.Marshal(brokenRestore)
 	require.NoError(t, err)
-	_, _, err = validateReceiptChain(status, witness, snapshotData, brokenData)
+	_, _, err = validateReceiptChain(status, witnessFileSHA, snapshotData, brokenData)
 	require.ErrorContains(t, err, "content inventory")
 
 	brokenRestore = cloneRestoreReceipt(restore)
 	brokenRestore.PVCs[0].Phase = "Pending"
 	brokenData, err = json.Marshal(brokenRestore)
 	require.NoError(t, err)
-	_, _, err = validateReceiptChain(status, witness, snapshotData, brokenData)
+	_, _, err = validateReceiptChain(status, witnessFileSHA, snapshotData, brokenData)
 	require.ErrorContains(t, err, "PVC inventory")
 
 	brokenRestore = restore
 	brokenRestore.Target.ClusterID = "54321"
 	brokenData, err = json.Marshal(brokenRestore)
 	require.NoError(t, err)
-	_, _, err = validateReceiptChain(status, witness, snapshotData, brokenData)
+	_, _, err = validateReceiptChain(status, witnessFileSHA, snapshotData, brokenData)
 	require.ErrorContains(t, err, "target")
 }
 

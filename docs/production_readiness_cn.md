@@ -554,7 +554,7 @@ format、KubeBrain/storage identity、VolumeSnapshotClass、recovery blueprint �
 测试夹具而放宽生产 receipt 契约。snapshot receipt、restore receipt 和 rendered restore
 manifest 均是小型 JSON，读取上限为 4 MiB；超限必须在 schema 解码、manifest 比对或语义
 验证前 fail closed。逻辑 witness 文件可能按实例 keyspace 放大，不适用该小型 JSON 上限，
-仍由 logical backup parser 和 digest 门禁验证完整性。
+仍由 logical backup parser 解析，并以流式 SHA-256 校验整文件 digest。
 
 ```shell
 go run ./hack/backup/cmd/cold-restore-render \

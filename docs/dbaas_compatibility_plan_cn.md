@@ -9572,6 +9572,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./hack/production/internal/tlscertreload ./hack/production/cmd/operation-api ./hack/production/cmd/operation-parameter-broker`、
   `go test ./hack/production/... ./deploy/production`、`go vet ./hack/production/... ./deploy/production`
   与 `git diff --check` 通过。
+- A533 将 cold restore semantic witness 文件绑定改为流式 SHA-256：A516 正确没有给
+  逻辑 witness 套 4 MiB 小型 JSON 上限，因为 witness 会随实例 keyspace 放大；但
+  `cold-restore-verify` 为校验 snapshot receipt 的 `semantic_witness.file_sha256` 仍
+  `os.ReadFile` 整个 witness。现在 verifier 继续通过 `backupfile.OpenVerified`/
+  `loadWitness` 流式解析 witness 内容，并用 `io.Copy` 计算整文件 SHA-256，不再把
+  witness 全量留在内存。receipt chain 语义不变，tampered file SHA 仍 fail closed。
+  回归覆盖 `fileDigest` 与 witness binding mismatch；
+  `(cd hack/backup && go test ./cmd/cold-restore-verify -run 'Test(FileDigest|ValidateReceiptChain)' -count=20)`、
+  `(cd hack/backup && go test ./cmd/cold-restore-render ./cmd/cold-restore-verify)`、
+  `(cd hack/backup && go vet ./cmd/cold-restore-render ./cmd/cold-restore-verify)`、
+  `(cd hack/backup/objectstore && go test ./...)`、`(cd hack/backup/objectstore && go vet ./...)`
+  与 `git diff --check` 通过。
 
 ### P2：运维兼容和长期验证
 
