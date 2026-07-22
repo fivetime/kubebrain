@@ -2615,7 +2615,9 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   尚未观察或 CR Ready=False 都不能提前成功。真实 3 PD/3 TiKV 集群上等待器确认两组
   StatefulSet revision 收敛并立即返回。生产就绪文档同步把 production manifest 定义
   为需平台注入 StorageClass、镜像、跨 AZ、网络、证书和监控的测试基线，并把等待器及
-  后续 endpoint/实际读写检查写入升级门槛。
+  后续 endpoint/实际读写检查写入升级门槛。等待器随后补充本地输入门禁：在调用
+  kubectl 前拒绝非法 `NAMESPACE`/`TIDB_CLUSTER` DNS label，并用回归测试证明坏参数
+  不会触发集群访问。
 - **Watch/Lease A150 require-leader admission（2026-07-18）**：对照
   `/root/etcd/server/etcdserver/api/v3rpc/interceptor.go`，官方 client
   `WithRequireLeader` 通过 incoming metadata

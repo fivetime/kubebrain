@@ -127,7 +127,8 @@ hack/production/wait-tidbcluster-ready.sh
 
 任一条件超时都会返回非零并打印 CR 与两个 StatefulSet 的诊断信息。控制面随后仍应
 执行 KubeBrain endpoint health 和实际 Put/Get/Delete；资源收敛不单独证明数据面语义
-健康。
+健康。等待器会在调用 kubectl 前拒绝非 DNS label 格式的 `NAMESPACE` 与
+`TIDB_CLUSTER`，避免错误发布参数进入集群操作阶段。
 
 ## 生产镜像追踪
 

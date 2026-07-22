@@ -16,6 +16,12 @@ if ! [[ "$POLL_INTERVAL_SECONDS" =~ ^[0-9]+$ ]]; then
   echo "POLL_INTERVAL_SECONDS must be a non-negative integer" >&2
   exit 2
 fi
+for variable in NAMESPACE TIDB_CLUSTER; do
+  if ! [[ "${!variable}" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]]; then
+    echo "${variable} must be a lowercase DNS label of at most 63 characters" >&2
+    exit 2
+  fi
+done
 
 kubectl_args=()
 if [[ -n "$KUBE_CONTEXT" ]]; then

@@ -83,3 +83,46 @@ fi
 		})
 	}
 }
+
+func TestWaitTidbClusterReadyRejectsInvalidResourceNamesBeforeKubectl(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		env        string
+		wantOutput string
+	}{
+		{
+			name:       "namespace",
+			env:        "NAMESPACE=bad_namespace",
+			wantOutput: "NAMESPACE must be a lowercase DNS label",
+		},
+		{
+			name:       "tidb cluster",
+			env:        "TIDB_CLUSTER=BadCluster",
+			wantOutput: "TIDB_CLUSTER must be a lowercase DNS label",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tempDir := t.TempDir()
+			kubectlLog := filepath.Join(tempDir, "kubectl.log")
+			fakeKubectl := filepath.Join(tempDir, "kubectl")
+			require.NoError(t, os.WriteFile(fakeKubectl, []byte(`#!/usr/bin/env bash
+set -euo pipefail
+printf 'called\n' >>"$KUBECTL_LOG"
+exit 99
+`), 0o755))
+
+			command := exec.Command("bash", "wait-tidbcluster-ready.sh")
+			command.Env = append(os.Environ(),
+				"KUBECTL="+fakeKubectl,
+				"KUBECTL_LOG="+kubectlLog,
+				"TIMEOUT_SECONDS=1",
+				"POLL_INTERVAL_SECONDS=0",
+				tc.env,
+			)
+			output, err := command.CombinedOutput()
+			require.Error(t, err, string(output))
+			require.Contains(t, string(output), tc.wantOutput)
+			require.NoFileExists(t, kubectlLog)
+		})
+	}
+}
