@@ -62,11 +62,20 @@ func TestEnvBool(t *testing.T) {
 
 	for _, value := range []string{"true", "TRUE", "1", "yes", " yes "} {
 		require.NoError(t, os.Setenv("ALLOW_OVERWRITE", value))
-		require.True(t, envBool("ALLOW_OVERWRITE"))
+		parsed, err := envBool("ALLOW_OVERWRITE")
+		require.NoError(t, err)
+		require.True(t, parsed)
 	}
 
-	for _, value := range []string{"", "false", "0", "no", "maybe"} {
+	for _, value := range []string{"", "false", "FALSE", "0", "no", " no "} {
 		require.NoError(t, os.Setenv("ALLOW_OVERWRITE", value))
-		require.False(t, envBool("ALLOW_OVERWRITE"))
+		parsed, err := envBool("ALLOW_OVERWRITE")
+		require.NoError(t, err)
+		require.False(t, parsed)
 	}
+
+	require.NoError(t, os.Setenv("ALLOW_OVERWRITE", "maybe"))
+	parsed, err := envBool("ALLOW_OVERWRITE")
+	require.ErrorContains(t, err, "ALLOW_OVERWRITE must be a boolean")
+	require.False(t, parsed)
 }

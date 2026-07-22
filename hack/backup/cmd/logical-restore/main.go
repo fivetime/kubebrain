@@ -28,9 +28,16 @@ func rewriteKey(key []byte, from, to string) []byte {
 	return []byte(to + strings.TrimPrefix(keyText, from))
 }
 
-func envBool(name string) bool {
+func envBool(name string) (bool, error) {
 	value := strings.ToLower(strings.TrimSpace(os.Getenv(name)))
-	return value == "1" || value == "true" || value == "yes"
+	switch value {
+	case "", "0", "false", "no":
+		return false, nil
+	case "1", "true", "yes":
+		return true, nil
+	default:
+		return false, fmt.Errorf("%s must be a boolean", name)
+	}
 }
 
 func validateLeaseReference(rec record.Record, leaseSpecs map[int64]int64) error {
@@ -71,7 +78,10 @@ func main() {
 	input := os.Getenv("INPUT")
 	rewriteFrom := os.Getenv("REWRITE_FROM")
 	rewriteTo := os.Getenv("REWRITE_TO")
-	allowOverwrite := envBool("ALLOW_OVERWRITE")
+	allowOverwrite, err := envBool("ALLOW_OVERWRITE")
+	if err != nil {
+		log.Fatal(err)
+	}
 	batchSize, err := strconv.Atoi(os.Getenv("BATCH_SIZE"))
 	if err != nil || batchSize <= 0 {
 		log.Fatalf("invalid BATCH_SIZE: %q", os.Getenv("BATCH_SIZE"))

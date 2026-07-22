@@ -9283,6 +9283,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `cd hack/backup/objectstore && go vet ./...`、
   `go test ./hack/production/... ./deploy/production`、
   `go vet ./hack/production/... ./deploy/production` 与 `git diff --check` 通过。
+- A500 收紧 logical restore `ALLOW_OVERWRITE` 布尔解析：空值仍表示 false，明确的
+  `true/false/1/0/yes/no` 可用，其他值会在读取 artifact、创建 lease 或写目标 key 前
+  fail closed；旧逻辑把任何非 true/1/yes 值都静默当 false，容易掩盖恢复操作参数拼写错误。
+  回归覆盖大小写、空值、显式 false 和非法值；`go test ./hack/backup/cmd/logical-restore -run 'TestEnvBool|TestValidateBatchSize|TestRollbackCommittedBatches' -count=20`、
+  `go test ./hack/backup/...`、`go vet ./hack/backup/...`、
+  `go test ./hack/production/... ./deploy/production`、
+  `go vet ./hack/production/... ./deploy/production` 与 `git diff --check` 通过。
 
 ### P2：运维兼容和长期验证
 

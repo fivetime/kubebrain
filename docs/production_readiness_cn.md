@@ -1049,6 +1049,8 @@ ENDPOINT=127.0.0.1:3379 hack/backup/lease-restore-smoke.sh
 实例 `--max-txn-ops`，通过 `MAX_TXN_OPS` 告知恢复工具；两者默认都是 128。etcd 对
 Txn 操作数取 compare/success/failure 三组长度的最大值，因此 128 compare + 128 Put
 符合默认上限。
+`ALLOW_OVERWRITE` 可留空表示 false；非空时必须是明确布尔值（`true/false/1/0/yes/no`），
+非法值必须在读取 artifact 和创建 lease 前 fail closed，不能把拼写错误静默解释为非覆盖恢复。
 
 默认非覆盖恢复还记录每个成功批的 key 和响应 revision。后续批失败时按逆序执行
 `ModRevision(key)==batchRevision` 条件删除；并发修改会使整批回滚拒绝，不会误删新数据。
