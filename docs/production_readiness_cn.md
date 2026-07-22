@@ -952,6 +952,14 @@ net paid 超过 invoice total 或 source 漂移都会 fail closed。生产路径
 canonical invoice。发布前会重新校验 canonical JSON、invoice source retention 和上传 receipt。
 该 ledger 是应收账款状态证据，不直接发起收款、退款或催收。
 
+法规发票编号由 `kubebrain.metering-invoice-number-assignment.v1` 固化为本地证据。
+`kubebrain-metering-invoice-number` 从 Object Lock exact-read finalized invoice，绑定 read
+receipt、invoice total、jurisdiction、approved series、positive sequence 和固定
+`series-sequence-12digit.v1` display number。source receipt 与下载字节不一致、assignment
+时间早于 invoice finalized、未来 assignment、retention 不足或 display number 被篡改都会
+fail closed。该 assignment 为外部税务/开票系统 ingest 输入，不替代当地法规校验、发票号段
+审批、作废/红冲流程或开票平台回执。
+
 外部总账系统的 ingest 输入使用 `kubebrain.metering-general-ledger-export.v1`。exporter 从
 Object Lock exact-read finalized invoice、可选 provider reconciliation 和可选 payment ledger，
 生成 canonical、借贷平衡的 journal：invoice 生成 accounts receivable/revenue，provider

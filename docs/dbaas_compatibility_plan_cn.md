@@ -8973,7 +8973,7 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
    Lock 读写 receipt 绑定、normalized CSV 导入/发布和生产镜像 CLI 入口已建立；invoice
    payment/refund/chargeback ledger 与 remaining balance canonical artifact 已建立；外部总账
    ingest 用 balanced journal export artifact 已建立；继续补各云厂商原始账单 exporter、
-   税率/折扣、真实支付渠道、法规发票编号、ERP/GL 实际过账回执与跨账户财务对账，
+   税率/折扣、真实支付渠道、税务/开票系统实际回执、ERP/GL 实际过账回执与跨账户财务对账，
    并在具备 Prometheus Operator 的预生产环境补真实
    一小时规则 evaluation 和连续 24 小时 storage sampling 门禁。
 
@@ -9047,6 +9047,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   分录内容、source allowlist 和借贷总额都合法，重排 line 数组也不能作为 canonical export
   读回通过。新增负例交换两条 line、总额不变但必须失败；`go test ./hack/production/... ./deploy/production`
   与 `go vet ./hack/production/... ./deploy/production` 通过。
+- A470 新增 `kubebrain.metering-invoice-number-assignment.v1` 与
+  `kubebrain-metering-invoice-number`：assigner 从 Object Lock exact-read finalized invoice，
+  校验 read receipt 与下载字节、source retention 和 invoice identity 后，固化 jurisdiction、
+  approved series、positive sequence、`series-sequence-12digit.v1` display number、invoice total
+  与 invoice source。display number 被篡改、source 漂移、assignment 早于 invoice finalized、
+  未来 assignment 或 retention 不足都会 fail closed；Dockerfile build/copy 已包含该 CLI。
+  focused tests 覆盖编号生成/读回、source/display 篡改和 exact-read 后归档；
+  `go test ./hack/production/... ./deploy/production` 与
+  `go vet ./hack/production/... ./deploy/production` 通过。该项建立 KubeBrain 侧法规发票编号
+  assignment 证据合同，不替代当地法规校验、号段审批、作废/红冲流程或开票平台回执。
 
 ### P2：运维兼容和长期验证
 

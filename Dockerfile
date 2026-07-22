@@ -63,6 +63,7 @@ RUN test -n "$KUBEBRAIN_VERSION" \
     && go build -trimpath -o /src/bin/kubebrain-metering-provider-reconcile ./hack/production/cmd/metering-provider-reconcile \
     && go build -trimpath -o /src/bin/kubebrain-metering-payment-ledger ./hack/production/cmd/metering-payment-ledger \
     && go build -trimpath -o /src/bin/kubebrain-metering-ledger-export ./hack/production/cmd/metering-ledger-export \
+    && go build -trimpath -o /src/bin/kubebrain-metering-invoice-number ./hack/production/cmd/metering-invoice-number \
     && go build -trimpath -o /src/bin/kubebrain-logical-export ./hack/backup/cmd/logical-export \
     && go build -trimpath -o /src/bin/kubebrain-logical-status ./hack/backup/cmd/logical-status \
     && go build -trimpath -o /src/bin/kubebrain-logical-verify ./hack/backup/cmd/logical-verify \
@@ -104,6 +105,7 @@ COPY --from=build /src/bin/kubebrain-metering-provider-statement /usr/local/bin/
 COPY --from=build /src/bin/kubebrain-metering-provider-reconcile /usr/local/bin/kubebrain-metering-provider-reconcile
 COPY --from=build /src/bin/kubebrain-metering-payment-ledger /usr/local/bin/kubebrain-metering-payment-ledger
 COPY --from=build /src/bin/kubebrain-metering-ledger-export /usr/local/bin/kubebrain-metering-ledger-export
+COPY --from=build /src/bin/kubebrain-metering-invoice-number /usr/local/bin/kubebrain-metering-invoice-number
 COPY --from=build /src/bin/kubebrain-logical-object /usr/local/bin/kubebrain-logical-object
 COPY --from=build /src/bin/kubebrain-logical-export /usr/local/bin/kubebrain-logical-export
 COPY --from=build /src/bin/kubebrain-logical-status /usr/local/bin/kubebrain-logical-status
