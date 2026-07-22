@@ -9357,6 +9357,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go vet ./pkg/server/service/revision ./pkg/server/etcd`、
   `go test ./hack/production/... ./deploy/production`、
   `go vet ./hack/production/... ./deploy/production` 与 `git diff --check` 通过。
+- A510 收紧 metering sample collector 的 Prometheus response 读取：仍以 1 MiB 为响应预算，
+  但现在读取 `limit+1` 并在超限时 fail closed；旧逻辑 `io.LimitReader` 截断后继续按 JSON
+  解析，超大错误页或响应可能被截断写入错误信息或交给后续解析。回归覆盖 Prometheus
+  返回超过 1 MiB body；`go test ./hack/production/internal/meteringarchive -run 'TestCollector(BuildsCanonicalCompleteSample|RejectsOversizedPrometheusResponse|FailsClosedOnIncompleteDuplicateStaleAndInvalidValues|AcceptsPrometheusResponseExtensions)' -count=20`、
+  `go test ./hack/production/... ./deploy/production`、
+  `go vet ./hack/production/... ./deploy/production` 与 `git diff --check` 通过。
 
 ### P2：运维兼容和长期验证
 

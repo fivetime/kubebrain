@@ -1,6 +1,7 @@
 package meteringarchive
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -206,6 +207,20 @@ func TestCollectorFailsClosedOnIncompleteDuplicateStaleAndInvalidValues(t *testi
 			require.ErrorContains(t, err, test.wantError)
 		})
 	}
+}
+
+func TestCollectorRejectsOversizedPrometheusResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		_, _ = response.Write(bytes.Repeat([]byte("x"), maxPrometheusResponseBytes+1))
+	}))
+	defer server.Close()
+	collector, err := NewCollector(server.URL, server.Client(), "", 5*time.Minute)
+	require.NoError(t, err)
+	_, err = collector.Collect(
+		context.Background(), "instance-a",
+		time.Unix(1_700_000_000, 0), time.Unix(1_700_003_600, 0),
+	)
+	require.ErrorContains(t, err, "prometheus response exceeds")
 }
 
 func TestCollectorAcceptsPrometheusResponseExtensions(t *testing.T) {

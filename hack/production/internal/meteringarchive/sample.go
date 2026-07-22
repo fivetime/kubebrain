@@ -26,6 +26,7 @@ const LegacyFormat = "kubebrain.metering-sample.v1"
 const completenessMetric = "kubebrain_dbaas:metering_hour_complete"
 const objectRequestCompletenessMetric = "kubebrain_dbaas:object_request_hour_complete"
 const objectRequestPeriodEndMetric = "kubebrain_dbaas:object_request_period_end:last"
+const maxPrometheusResponseBytes = 1 << 20
 
 var Metrics = []string{
 	"kubebrain_dbaas:cpu_usage_core_seconds:hour",
@@ -196,7 +197,7 @@ func (c *Collector) queryOne(
 		return MetricValue{}, err
 	}
 	defer response.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+	body, err := readPrometheusResponseBody(response.Body)
 	if err != nil {
 		return MetricValue{}, err
 	}
@@ -252,6 +253,17 @@ func (c *Collector) queryOne(
 		return MetricValue{}, errors.New("prometheus sample timestamp is stale or in the future")
 	}
 	return MetricValue{Name: metric, Value: value, TimestampUnix: timestampUnix}, nil
+}
+
+func readPrometheusResponseBody(body io.Reader) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(body, maxPrometheusResponseBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxPrometheusResponseBytes {
+		return nil, fmt.Errorf("prometheus response exceeds %d bytes", maxPrometheusResponseBytes)
+	}
+	return data, nil
 }
 
 func (s Sample) Validate(maxStaleness time.Duration) error {
