@@ -5,7 +5,6 @@ import (
 	"flag"
 	"log"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/kubewharf/kubebrain/hack/production/internal/operationauditbuilder"
@@ -13,8 +12,11 @@ import (
 	"github.com/kubewharf/kubebrain/hack/production/internal/operationqueue"
 	"github.com/kubewharf/kubebrain/hack/production/operationaudit"
 	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 )
+
+var inClusterConfig = rest.InClusterConfig
 
 func main() {
 	var action, namespace, name, output, receipt, kubeconfig, contextName string
@@ -41,9 +43,7 @@ func main() {
 		log.Fatal("release object-store-id/bucket/object-key/retention-mode/retain-until-unix are required")
 	}
 
-	loading := &clientcmd.ClientConfigLoadingRules{ExplicitPath: kubeconfig}
-	overrides := &clientcmd.ConfigOverrides{CurrentContext: contextName}
-	config, err := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loading, overrides).ClientConfig()
+	config, err := clientConfig(kubeconfig, contextName)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -82,13 +82,19 @@ func main() {
 }
 
 func defaultKubeconfig() string {
-	if value := os.Getenv("KUBECONFIG"); value != "" {
-		return value
+	return os.Getenv("KUBECONFIG")
+}
+
+func clientConfig(kubeconfig, contextName string) (*rest.Config, error) {
+	if kubeconfig == "" {
+		if config, err := inClusterConfig(); err == nil {
+			return config, nil
+		}
 	}
-	if home, err := os.UserHomeDir(); err == nil {
-		return filepath.Join(home, ".kube", "config")
-	}
-	return ""
+	loading := clientcmd.NewDefaultClientConfigLoadingRules()
+	loading.ExplicitPath = kubeconfig
+	overrides := &clientcmd.ConfigOverrides{CurrentContext: contextName}
+	return clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loading, overrides).ClientConfig()
 }
 
 func init() {

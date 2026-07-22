@@ -1941,7 +1941,9 @@ object version 三项 annotation 与已验证归档证据完全一致时确认�
 archiver 身份 capture/release，并确认其他控制器的 finalizer 未被移除；同一证据重试
 不得改变 resourceVersion。手工 `operation-audit --action release` 必须同时传入期望的
 object store ID、bucket、object key、retention mode 与 retain-until，缺少任一项不得释放
-finalizer；内部 release API 也不再提供无 expected scope 的捷径。
+finalizer；内部 release API 也不再提供无 expected scope 的捷径。`operation-audit`
+在未显式提供 kubeconfig 时先使用 Pod ServiceAccount 的 in-cluster 配置，再回落到标准
+kubeconfig 规则，确保生产镜像内的专用身份 smoke 不依赖 home 目录 kubeconfig。
 
 该补偿只处理 Kubernetes coordination Lease；外部系统副作用仍由 Operation fencing 与
 幂等 receipt 约束。
