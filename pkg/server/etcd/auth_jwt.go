@@ -90,7 +90,7 @@ func parseAuthTokenProvider(spec string) (*jwtTokenProvider, error) {
 	ttl := 5 * time.Minute
 	if raw := opts[jwtTTL]; raw != "" {
 		parsed, err := time.ParseDuration(raw)
-		if err != nil || parsed <= 0 {
+		if err != nil {
 			return nil, fmt.Errorf("invalid JWT ttl %q", raw)
 		}
 		ttl = parsed

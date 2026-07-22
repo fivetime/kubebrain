@@ -161,6 +161,24 @@ func TestAuthTokenProviderSimpleOptionsMatchEtcd(t *testing.T) {
 	require.ErrorContains(t, ValidateAuthTokenProvider("simple,foo=bar,foo=baz"), "duplicate auth token option")
 }
 
+func TestJWTProviderNonPositiveTTLMatchesEtcd(t *testing.T) {
+	secret := writeJWTKey(t, "secret", []byte("shared-secret"))
+	for _, ttl := range []string{"0s", "-1s"} {
+		t.Run(ttl, func(t *testing.T) {
+			provider, err := parseAuthTokenProvider("jwt,sign-method=HS256,priv-key=" + secret + ",ttl=" + ttl)
+			require.NoError(t, err)
+			want, err := time.ParseDuration(ttl)
+			require.NoError(t, err)
+			require.Equal(t, want, provider.ttl)
+		})
+	}
+
+	require.ErrorContains(t,
+		ValidateAuthTokenProvider("jwt,sign-method=HS256,priv-key="+secret+",ttl=forever"),
+		"invalid JWT ttl",
+	)
+}
+
 func TestJWTProviderRejectsOversizedKeyFiles(t *testing.T) {
 	oversized := writeJWTKey(t, "oversized", make([]byte, maxJWTKeyBytes+1))
 	require.ErrorContains(t,

@@ -10130,6 +10130,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   使用各自分支，JWT 继续执行 key/TTL 校验。回归：
   `go test ./pkg/server/etcd -run TestAuthTokenProviderSimpleOptionsMatchEtcd -count=1`
   通过。
+- A591 对齐 JWT `ttl` 非正 duration 语义：
+  对照 `/root/etcd/server/auth/options.go` 的 `jwtOptions.ParseWithDefaults`/`Parse`，
+  上游只用 `time.ParseDuration` 校验 `ttl`，因此 `ttl=0s` 和 `ttl=-1s` 都是可启动
+  配置；过期时间会随签发逻辑自然落在当前或过去，而不是在 provider 初始化阶段失败。
+  KubeBrain 旧实现额外拒绝 `parsed <= 0`，导致上游可接受的 JWT provider 配置被
+  endpoint validate 或启动拦截。现在只拒绝无法解析的 duration，保留默认 TTL 和 key
+  校验逻辑。回归：
+  `go test ./pkg/server/etcd -run TestJWTProviderNonPositiveTTLMatchesEtcd -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 
