@@ -193,12 +193,91 @@ state_file="${state_dir}/${operation_id}.state"
 quiesced_file="${state_dir}/${operation_id}.quiesced"
 destroyed_file="${state_dir}/${operation_id}.destroyed"
 
+validate_destroy_state_schema() {
+  awk -F '\t' -v expectedPVCs="$expected_pvcs" '
+    $0 == "" {
+      bad = "empty row"
+      exit 1
+    }
+    $1 == "HEADER" {
+      if (NF != 10) {
+        bad = "HEADER row must have 10 fields"
+        exit 1
+      }
+      header++
+      next
+    }
+    $1 == "RESOURCE" {
+      if (NF != 7 || $2 == "" || $3 == "" || $4 == "" || $5 == "" || $6 == "" || $7 == "") {
+        bad = "RESOURCE row must have apiVersion, resource, kind, namespace, name, and uid"
+        exit 1
+      }
+      resources++
+      next
+    }
+    $1 == "PVC" {
+      if (NF != 8 || $2 != "v1" || $3 != "persistentvolumeclaims" ||
+        $4 != "persistentvolumeclaim" || $5 == "" || $6 == "" ||
+        ($7 != "pd" && $7 != "tikv") || $8 == "") {
+        bad = "PVC row must have canonical identity, component, and namespace"
+        exit 1
+      }
+      pvcs++
+      next
+    }
+    {
+      bad = "unknown row type " $1
+      exit 1
+    }
+    END {
+      if (bad != "") {
+        print bad > "/dev/stderr"
+        exit 1
+      }
+      if (header != 1 || resources != 10 || pvcs != expectedPVCs) {
+        printf("schema counts mismatch: header=%d resources=%d pvcs=%d expectedPVCs=%d\n",
+          header, resources, pvcs, expectedPVCs) > "/dev/stderr"
+        exit 1
+      }
+    }
+  ' "$state_file"
+}
+
+validate_destroy_marker() {
+  local path="$1" format="$2"
+  awk -F '\t' -v format="$format" -v instance="$instance" -v operation="$operation_id" '
+    NR == 1 {
+      if (NF != 3 || $1 != format || $2 != instance || $3 != operation) {
+        bad = "marker row does not match the operation"
+        exit 1
+      }
+      rows++
+      next
+    }
+    {
+      bad = "unexpected extra marker row"
+      exit 1
+    }
+    END {
+      if (bad != "") {
+        print bad > "/dev/stderr"
+        exit 1
+      }
+      if (rows != 1) {
+        print "marker must contain exactly one row" > "/dev/stderr"
+        exit 1
+      }
+    }
+  ' "$path"
+}
+
 destroy_state_backup_sha=""
 destroy_state_backup_revision=""
 read_destroy_state_header() {
   local kind format state_instance state_operation state_kb_namespace state_kb_name
   local state_tidb_namespace state_tidb_cluster state_backup_sha state_backup_revision
   [[ -f "$state_file" ]] || return 1
+  validate_destroy_state_schema || return 1
   IFS=$'\t' read -r kind format state_instance state_operation state_kb_namespace state_kb_name \
     state_tidb_namespace state_tidb_cluster state_backup_sha state_backup_revision <"$state_file" || return 1
   [[ "$kind" == "HEADER" &&
@@ -217,6 +296,8 @@ read_destroy_state_header() {
 
 validate_destroy_receipt() {
   read_destroy_state_header || return 1
+  validate_destroy_marker "$quiesced_file" "kubebrain.destroy.quiesced.v1" || return 1
+  validate_destroy_marker "$destroyed_file" "kubebrain.destroy.resources-absent.v1" || return 1
   "$JQ" -e \
     --arg instance "$instance" \
     --arg operation "$operation_id" \

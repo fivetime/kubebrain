@@ -180,9 +180,88 @@ validate_pvc_rows() {
   fi
 }
 
+validate_state_schema() {
+  awk -F '\t' -v expectedPVCs="$EXPECTED_PVCS" '
+    $0 == "" {
+      bad = "empty row"
+      exit 1
+    }
+    $1 == "HEADER" {
+      if (NF != 10) {
+        bad = "HEADER row must have 10 fields"
+        exit 1
+      }
+      header++
+      next
+    }
+    $1 == "RESOURCE" {
+      if (NF != 7 || $2 == "" || $3 == "" || $4 == "" || $5 == "" || $6 == "" || $7 == "") {
+        bad = "RESOURCE row must have apiVersion, resource, kind, namespace, name, and uid"
+        exit 1
+      }
+      resources++
+      next
+    }
+    $1 == "PVC" {
+      if (NF != 8 || $2 != "v1" || $3 != "persistentvolumeclaims" ||
+        $4 != "persistentvolumeclaim" || $5 == "" || $6 == "" ||
+        ($7 != "pd" && $7 != "tikv") || $8 == "") {
+        bad = "PVC row must have canonical identity, component, and namespace"
+        exit 1
+      }
+      pvcs++
+      next
+    }
+    {
+      bad = "unknown row type " $1
+      exit 1
+    }
+    END {
+      if (bad != "") {
+        print bad > "/dev/stderr"
+        exit 1
+      }
+      if (header != 1 || resources != 10 || pvcs != expectedPVCs) {
+        printf("schema counts mismatch: header=%d resources=%d pvcs=%d expectedPVCs=%d\n",
+          header, resources, pvcs, expectedPVCs) > "/dev/stderr"
+        exit 1
+      }
+    }
+  ' "$state_file" || { echo "destroy state has invalid schema" >&2; exit 1; }
+}
+
+validate_marker() {
+  local path="$1" format="$2" label="$3"
+  awk -F '\t' -v format="$format" -v instance="$INSTANCE" -v operation="$OPERATION_ID" '
+    NR == 1 {
+      if (NF != 3 || $1 != format || $2 != instance || $3 != operation) {
+        bad = "marker row does not match the operation"
+        exit 1
+      }
+      rows++
+      next
+    }
+    {
+      bad = "unexpected extra marker row"
+      exit 1
+    }
+    END {
+      if (bad != "") {
+        print bad > "/dev/stderr"
+        exit 1
+      }
+      if (rows != 1) {
+        print "marker must contain exactly one row" > "/dev/stderr"
+        exit 1
+      }
+    }
+  ' "$path" || { echo "destroy ${label} marker has invalid schema" >&2; exit 1; }
+}
+
 read_header() {
   local kind format state_instance state_operation state_kb_namespace state_kb_name
   local state_tidb_namespace state_tidb_cluster state_backup_sha state_backup_revision
+  validate_state_schema
   IFS=$'\t' read -r kind format state_instance state_operation state_kb_namespace state_kb_name \
     state_tidb_namespace state_tidb_cluster state_backup_sha state_backup_revision <"$state_file"
   if [[ "$kind" != "HEADER" ||
@@ -382,6 +461,7 @@ case "$ACTION" in
     [[ -f "$state_file" ]] || { echo "prepare evidence is missing" >&2; exit 1; }
     [[ -f "$quiesced_file" ]] || { echo "quiesce evidence is missing" >&2; exit 1; }
     read_header
+    validate_marker "$quiesced_file" "kubebrain.destroy.quiesced.v1" "quiesced"
     validate_remaining_resources false
     ensure_quiesced_or_statefulset_absent
     delete_recorded_kind tidbcluster
@@ -406,6 +486,8 @@ case "$ACTION" in
     [[ -f "$quiesced_file" ]] || { echo "quiesce evidence is missing" >&2; exit 1; }
     [[ -f "$destroyed_file" ]] || { echo "destroy evidence is missing" >&2; exit 1; }
     read_header
+    validate_marker "$quiesced_file" "kubebrain.destroy.quiesced.v1" "quiesced"
+    validate_marker "$destroyed_file" "kubebrain.destroy.resources-absent.v1" "destroyed"
     validate_remaining_resources false
     wait_all_absent
     require_jq

@@ -83,6 +83,14 @@ func TestDestroyOperationRejectsInvalidReceipt(t *testing.T) {
 	require.NotContains(t, log, "--action succeed")
 }
 
+func TestDestroyOperationRejectsNonCanonicalStateBeforeSucceed(t *testing.T) {
+	f := newDestroyRunnerFixture(t, true)
+	f.run(t, false, "TAMPER_STATE_BEFORE_RECEIPT=1", "invalid receipt")
+	log := f.log(t)
+	require.Contains(t, log, "--action retry")
+	require.NotContains(t, log, "--action succeed")
+}
+
 func TestDestroyOperationStopsWhenHeartbeatIsFenced(t *testing.T) {
 	f := newDestroyRunnerFixture(t, true)
 	f.run(t, false, "SLEEP_PHASE=prepare", "heartbeat failed")
@@ -143,14 +151,28 @@ if [[ "${FAIL_PHASE:-}" == "$ACTION" ]]; then exit 8; fi
 mkdir -p "$STATE_DIR"
 case "$ACTION" in
   prepare)
-    printf 'HEADER\tkubebrain.destroy.state.v1\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-      "$INSTANCE" "$OPERATION_ID" "$KUBEBRAIN_NAMESPACE" "$KUBEBRAIN_STATEFULSET" \
-      "$TIDB_NAMESPACE" "$TIDB_CLUSTER" "$DESTROY_BACKUP_SHA" "$DESTROY_BACKUP_REVISION" \
-      >"$STATE_DIR/$OPERATION_ID.state"
+    {
+      printf 'HEADER\tkubebrain.destroy.state.v1\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$INSTANCE" "$OPERATION_ID" "$KUBEBRAIN_NAMESPACE" "$KUBEBRAIN_STATEFULSET" \
+        "$TIDB_NAMESPACE" "$TIDB_CLUSTER" "$DESTROY_BACKUP_SHA" "$DESTROY_BACKUP_REVISION"
+      printf 'RESOURCE\tapps/v1\tstatefulsets\tstatefulset\t%s\t%s\tuid-kb-sts\n' "$KUBEBRAIN_NAMESPACE" "$KUBEBRAIN_STATEFULSET"
+      printf 'RESOURCE\tv1\tservices\tservice\t%s\t%s-client\tuid-kb-client\n' "$KUBEBRAIN_NAMESPACE" "$KUBEBRAIN_STATEFULSET"
+      printf 'RESOURCE\tv1\tservices\tservice\t%s\t%s-peer\tuid-kb-peer\n' "$KUBEBRAIN_NAMESPACE" "$KUBEBRAIN_STATEFULSET"
+      printf 'RESOURCE\tpolicy/v1\tpoddisruptionbudgets\tpoddisruptionbudget\t%s\t%s\tuid-kb-pdb\n' "$KUBEBRAIN_NAMESPACE" "$KUBEBRAIN_STATEFULSET"
+      printf 'RESOURCE\tv1\tserviceaccounts\tserviceaccount\t%s\t%s\tuid-kb-sa\n' "$KUBEBRAIN_NAMESPACE" "$KUBEBRAIN_STATEFULSET"
+      printf 'RESOURCE\tpingcap.com/v1alpha1\ttidbclusters\ttidbcluster\t%s\t%s\tuid-tc\n' "$TIDB_NAMESPACE" "$TIDB_CLUSTER"
+      printf 'RESOURCE\tpolicy/v1\tpoddisruptionbudgets\tpoddisruptionbudget\t%s\t%s-pd\tuid-pd-pdb\n' "$TIDB_NAMESPACE" "$TIDB_CLUSTER"
+      printf 'RESOURCE\tv1\tservices\tservice\t%s\t%s-pd-metrics\tuid-pd-service\n' "$TIDB_NAMESPACE" "$TIDB_CLUSTER"
+      printf 'RESOURCE\tpolicy/v1\tpoddisruptionbudgets\tpoddisruptionbudget\t%s\t%s-tikv\tuid-tikv-pdb\n' "$TIDB_NAMESPACE" "$TIDB_CLUSTER"
+      printf 'RESOURCE\tv1\tservices\tservice\t%s\t%s-tikv-metrics\tuid-tikv-service\n' "$TIDB_NAMESPACE" "$TIDB_CLUSTER"
+      printf 'PVC\tv1\tpersistentvolumeclaims\tpersistentvolumeclaim\tpd-kb-pd-0\tuid-pvc-pd\tpd\t%s\n' "$TIDB_NAMESPACE"
+      printf 'PVC\tv1\tpersistentvolumeclaims\tpersistentvolumeclaim\ttikv-kb-tikv-0\tuid-pvc-tikv\ttikv\t%s\n' "$TIDB_NAMESPACE"
+    } >"$STATE_DIR/$OPERATION_ID.state"
     ;;
-  quiesce) printf 'quiesced\n' >"$STATE_DIR/$OPERATION_ID.quiesced" ;;
-  destroy) printf 'destroyed\n' >"$STATE_DIR/$OPERATION_ID.destroyed" ;;
+  quiesce) printf 'kubebrain.destroy.quiesced.v1\t%s\t%s\n' "$INSTANCE" "$OPERATION_ID" >"$STATE_DIR/$OPERATION_ID.quiesced" ;;
+  destroy) printf 'kubebrain.destroy.resources-absent.v1\t%s\t%s\n' "$INSTANCE" "$OPERATION_ID" >"$STATE_DIR/$OPERATION_ID.destroyed" ;;
   complete)
+    [[ -z "${TAMPER_STATE_BEFORE_RECEIPT:-}" ]] || printf 'UNKNOWN\trow\n' >>"$STATE_DIR/$OPERATION_ID.state"
     if [[ -n "${INVALID_RECEIPT:-}" ]]; then
       printf '{"format":"kubebrain.destroy.receipt.v1","backup_sha256":"short"}\n' >"$RECEIPT_OUTPUT"
     else
@@ -200,16 +222,42 @@ func (f *destroyRunnerFixture) publishEvidence(t *testing.T, kind string) {
 	stateDir := filepath.Join(f.dir, "state")
 	require.NoError(t, os.MkdirAll(stateDir, 0o700))
 	statePath := filepath.Join(stateDir, "destroy-1.state")
-	stateContent := fmt.Sprintf("HEADER\tkubebrain.destroy.state.v1\tinstance-a\tdestroy-1\tinstance-a\tkubebrain\tstorage-a\tkb\t%s\t%d\n", destroyLogicalSHA, destroyLogicalRevision)
+	stateContent := destroyRunnerState()
 	if kind == "state" {
 		require.NoError(t, os.WriteFile(statePath, []byte(stateContent), 0o600))
 		return
 	}
 	require.NoError(t, os.WriteFile(statePath, []byte(stateContent), 0o600))
 	if kind == "receipt" {
+		require.NoError(t, os.WriteFile(filepath.Join(stateDir, "destroy-1.quiesced"), []byte("kubebrain.destroy.quiesced.v1\tinstance-a\tdestroy-1\n"), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(stateDir, "destroy-1.destroyed"), []byte("kubebrain.destroy.resources-absent.v1\tinstance-a\tdestroy-1\n"), 0o600))
 		receipt := fmt.Sprintf(`{"backup_revision":%d,"backup_sha256":%q,"completed_at_unix":123,"format":"kubebrain.destroy.receipt.v1","instance":"instance-a","kubebrain_namespace":"instance-a","operation_id":"destroy-1","resources_absent":true,"tidb_cluster":"kb","tidb_namespace":"storage-a"}`+"\n", destroyLogicalRevision, destroyLogicalSHA)
 		require.NoError(t, os.WriteFile(filepath.Join(f.dir, "receipt.json"), []byte(receipt), 0o600))
 		return
 	}
-	require.NoError(t, os.WriteFile(filepath.Join(stateDir, "destroy-1."+kind), []byte("evidence\n"), 0o600))
+	marker := "evidence\n"
+	if kind == "quiesced" {
+		marker = "kubebrain.destroy.quiesced.v1\tinstance-a\tdestroy-1\n"
+	}
+	if kind == "destroyed" {
+		require.NoError(t, os.WriteFile(filepath.Join(stateDir, "destroy-1.quiesced"), []byte("kubebrain.destroy.quiesced.v1\tinstance-a\tdestroy-1\n"), 0o600))
+		marker = "kubebrain.destroy.resources-absent.v1\tinstance-a\tdestroy-1\n"
+	}
+	require.NoError(t, os.WriteFile(filepath.Join(stateDir, "destroy-1."+kind), []byte(marker), 0o600))
+}
+
+func destroyRunnerState() string {
+	return fmt.Sprintf("HEADER\tkubebrain.destroy.state.v1\tinstance-a\tdestroy-1\tinstance-a\tkubebrain\tstorage-a\tkb\t%s\t%d\n", destroyLogicalSHA, destroyLogicalRevision) +
+		"RESOURCE\tapps/v1\tstatefulsets\tstatefulset\tinstance-a\tkubebrain\tuid-kb-sts\n" +
+		"RESOURCE\tv1\tservices\tservice\tinstance-a\tkubebrain-client\tuid-kb-client\n" +
+		"RESOURCE\tv1\tservices\tservice\tinstance-a\tkubebrain-peer\tuid-kb-peer\n" +
+		"RESOURCE\tpolicy/v1\tpoddisruptionbudgets\tpoddisruptionbudget\tinstance-a\tkubebrain\tuid-kb-pdb\n" +
+		"RESOURCE\tv1\tserviceaccounts\tserviceaccount\tinstance-a\tkubebrain\tuid-kb-sa\n" +
+		"RESOURCE\tpingcap.com/v1alpha1\ttidbclusters\ttidbcluster\tstorage-a\tkb\tuid-tc\n" +
+		"RESOURCE\tpolicy/v1\tpoddisruptionbudgets\tpoddisruptionbudget\tstorage-a\tkb-pd\tuid-pd-pdb\n" +
+		"RESOURCE\tv1\tservices\tservice\tstorage-a\tkb-pd-metrics\tuid-pd-service\n" +
+		"RESOURCE\tpolicy/v1\tpoddisruptionbudgets\tpoddisruptionbudget\tstorage-a\tkb-tikv\tuid-tikv-pdb\n" +
+		"RESOURCE\tv1\tservices\tservice\tstorage-a\tkb-tikv-metrics\tuid-tikv-service\n" +
+		"PVC\tv1\tpersistentvolumeclaims\tpersistentvolumeclaim\tpd-kb-pd-0\tuid-pvc-pd\tpd\tstorage-a\n" +
+		"PVC\tv1\tpersistentvolumeclaims\tpersistentvolumeclaim\ttikv-kb-tikv-0\tuid-pvc-tikv\ttikv\tstorage-a\n"
 }

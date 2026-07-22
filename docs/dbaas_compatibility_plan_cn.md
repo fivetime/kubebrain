@@ -9832,6 +9832,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   evidence 会 requeue，不会提交错误 receipt digest。回归：
   `go test ./hack/production -run 'Test(CertificateRotationOperation|ValidateCertificateRotation)' -count=1`
   通过。
+- A561 收紧 Destroy durable state/marker schema：
+  销毁 state 旧路径只复读 header，RESOURCE/PVC 行和 quiesced/destroyed marker 只在部分
+  阶段被隐式消费；未知行、额外列、缺失资源/PVC 证据或伪 marker 可能被 takeover/receipt
+  路径绕过。现在 `destroy-instance.sh` 要求 state 精确包含 1 个 HEADER、10 个
+  RESOURCE 和 `EXPECTED_PVCS` 个 canonical PVC 行，并要求 quiesced/destroyed marker
+  都是绑定 instance/operation 的单行封闭格式；`run-destroy-operation.sh` 在提交 succeed
+  前复用同一 schema。非 canonical evidence 会 fail closed/requeue，不会继续删除或提交
+  错误 receipt digest。回归：
+  `go test ./hack/production -run 'Test(DestroyOperation|DestroyInstance)' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

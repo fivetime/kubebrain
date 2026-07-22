@@ -96,6 +96,39 @@ func TestDestroyInstanceFailsClosed(t *testing.T) {
 			wantOutput: "unrecorded or replaced instance PVC",
 		},
 		{
+			name: "non canonical state",
+			prepare: func(t *testing.T, f *destroyFixture) {
+				f.run(t, "prepare", true, "")
+				statePath := filepath.Join(f.stateDir, "destroy-1.state")
+				require.NoError(t, os.WriteFile(statePath, append(mustRead(t, statePath), []byte("UNKNOWN\trow\n")...), 0o600))
+			},
+			action:     "quiesce",
+			wantOutput: "destroy state has invalid schema",
+		},
+		{
+			name: "non canonical quiesced marker",
+			prepare: func(t *testing.T, f *destroyFixture) {
+				f.run(t, "prepare", true, "")
+				f.run(t, "quiesce", true, "")
+				markerPath := filepath.Join(f.stateDir, "destroy-1.quiesced")
+				require.NoError(t, os.WriteFile(markerPath, append(mustRead(t, markerPath), []byte("UNKNOWN\trow\n")...), 0o600))
+			},
+			action:     "destroy",
+			wantOutput: "destroy quiesced marker has invalid schema",
+		},
+		{
+			name: "non canonical destroyed marker",
+			prepare: func(t *testing.T, f *destroyFixture) {
+				f.run(t, "prepare", true, "")
+				f.run(t, "quiesce", true, "")
+				f.run(t, "destroy", true, "")
+				markerPath := filepath.Join(f.stateDir, "destroy-1.destroyed")
+				require.NoError(t, os.WriteFile(markerPath, append(mustRead(t, markerPath), []byte("UNKNOWN\trow\n")...), 0o600))
+			},
+			action:     "complete",
+			wantOutput: "destroy destroyed marker has invalid schema",
+		},
+		{
 			name:       "backup completion gate failed",
 			action:     "prepare",
 			extraEnv:   "FAKE_BACKUP_FAIL=true",
