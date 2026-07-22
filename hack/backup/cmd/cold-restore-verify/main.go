@@ -31,9 +31,20 @@ type restoreReceipt struct {
 	Format           string `json:"format"`
 	OperationID      string `json:"operation_id"`
 	SourceReceiptSHA string `json:"source_receipt_sha256"`
-	Target           struct {
+	RestoreManifest  struct {
+		Format                 string `json:"format"`
+		SHA256                 string `json:"sha256"`
+		ItemCount              int    `json:"item_count"`
+		VolumeSnapshotContents int    `json:"volume_snapshot_contents"`
+		VolumeSnapshots        int    `json:"volume_snapshots"`
+		PersistentVolumeClaims int    `json:"persistent_volume_claims"`
+		TidbClusters           int    `json:"tidbclusters"`
+	} `json:"restore_manifest"`
+	Target struct {
 		ClusterID string `json:"cluster_id"`
 	} `json:"target"`
+	VolumeSnapshotContents []struct{} `json:"volume_snapshot_contents"`
+	PVCs                   []struct{} `json:"pvcs"`
 }
 
 type snapshotReceipt struct {
@@ -187,6 +198,18 @@ func validateReceiptChain(status backupfile.Status, witnessData, snapshotData, r
 	if restore.Format != "kubebrain.cold-physical-restore.v1" || restore.OperationID == "" || restore.Target.ClusterID == "" ||
 		restore.OperationID != snapshotRecord.OperationID || restore.SourceReceiptSHA != digest(snapshotData) {
 		return snapshotReceipt{}, restoreReceipt{}, errors.New("cold physical restore receipt does not bind the snapshot receipt")
+	}
+	if restore.RestoreManifest.Format != "kubernetes-list.canonical-json.v1" ||
+		!validDigest(restore.RestoreManifest.SHA256) ||
+		restore.RestoreManifest.ItemCount <= 0 ||
+		restore.RestoreManifest.VolumeSnapshotContents <= 0 ||
+		restore.RestoreManifest.VolumeSnapshotContents != restore.RestoreManifest.VolumeSnapshots ||
+		restore.RestoreManifest.VolumeSnapshotContents != restore.RestoreManifest.PersistentVolumeClaims ||
+		restore.RestoreManifest.TidbClusters != 1 ||
+		restore.RestoreManifest.ItemCount != restore.RestoreManifest.VolumeSnapshotContents*3+1 ||
+		len(restore.VolumeSnapshotContents) != restore.RestoreManifest.VolumeSnapshotContents ||
+		len(restore.PVCs) != restore.RestoreManifest.PersistentVolumeClaims {
+		return snapshotReceipt{}, restoreReceipt{}, errors.New("cold physical restore receipt does not bind a canonical restore manifest")
 	}
 	return snapshotRecord, restore, nil
 }
@@ -365,6 +388,14 @@ func equalStrings(left, right []string) bool {
 func digest(data []byte) string {
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
+}
+
+func validDigest(value string) bool {
+	if len(value) != 64 {
+		return false
+	}
+	_, err := hex.DecodeString(value)
+	return err == nil
 }
 
 func writeAtomic(path string, value any) error {

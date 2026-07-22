@@ -8013,6 +8013,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   但不能充当物理恢复见证。fake-kubectl 回归测试确认拒绝路径只有只读 preflight 调用，不产生
   Patch、snapshot 或 receipt。
 
+- **DBaaS A459 cold restore manifest receipt binding（2026-07-22）**：
+  审计 A395/A396 的 cold restore 链路发现 restore receipt 只绑定 snapshot receipt、target identity、
+  PVC 与 VolumeSnapshotContent inventory，未把已审核的 canonical restore manifest digest 写入制品。
+  虽然 executor 在 `kubectl create` 前已经重渲染并比较 manifest，但后续 semantic verifier 只能看到
+  restore receipt，无法强制旧/弱 receipt 证明实际应用的是该 canonical manifest。
+
+  现 `cold-restore-execute.sh` 在解析 `RESTORE_MANIFEST` 后计算 canonical `jq -cS` SHA-256，并把
+  manifest format、item count、VolumeSnapshotContent/VolumeSnapshot/PVC/TidbCluster 计数写入
+  `kubebrain.cold-physical-restore.v1`；`cold-restore-verify` 的 receipt chain 校验要求该 manifest
+  binding 存在、digest 合法、计数满足 `3*N+1`，且与 restore receipt 中实际 PVC/Content inventory
+  数量一致。targeted `TestColdRestoreExecute`、`TestValidateReceiptChain`、完整
+  `go test ./hack/backup/... ./hack/production`、`bash -n` 和
+  `go vet ./hack/backup/... ./hack/production` 均通过。该项增强物理恢复证据链的可审计性，
+  仍不替代真实 CSI 隔离恢复演练，也不关闭 PITR 缺口。
+
 - **Maintenance A398 persistent CORRUPT alarm gate（2026-07-21）**：
   对照 `/root/etcd/server/etcdserver/apply/uber_applier.go`、`apply/corrupt.go`、
   `apply/uber_applier_test.go:TestUberApplier_Alarm_Corrupt` 及

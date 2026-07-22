@@ -53,6 +53,15 @@ func TestValidateReceiptChain(t *testing.T) {
 	require.NoError(t, err)
 	restore := restoreReceipt{Format: "kubebrain.cold-physical-restore.v1", OperationID: snapshot.OperationID, SourceReceiptSHA: digest(snapshotData)}
 	restore.Target.ClusterID = "12345"
+	restore.RestoreManifest.Format = "kubernetes-list.canonical-json.v1"
+	restore.RestoreManifest.SHA256 = digest([]byte("manifest"))
+	restore.RestoreManifest.ItemCount = 4
+	restore.RestoreManifest.VolumeSnapshotContents = 1
+	restore.RestoreManifest.VolumeSnapshots = 1
+	restore.RestoreManifest.PersistentVolumeClaims = 1
+	restore.RestoreManifest.TidbClusters = 1
+	restore.VolumeSnapshotContents = []struct{}{{}}
+	restore.PVCs = []struct{}{{}}
 	restoreData, err := json.Marshal(restore)
 	require.NoError(t, err)
 
@@ -67,6 +76,13 @@ func TestValidateReceiptChain(t *testing.T) {
 	require.NoError(t, err)
 	_, _, err = validateReceiptChain(status, witness, snapshotData, brokenData)
 	require.ErrorContains(t, err, "does not bind")
+
+	brokenRestore = restore
+	brokenRestore.RestoreManifest.SHA256 = ""
+	brokenData, err = json.Marshal(brokenRestore)
+	require.NoError(t, err)
+	_, _, err = validateReceiptChain(status, witness, snapshotData, brokenData)
+	require.ErrorContains(t, err, "canonical restore manifest")
 }
 
 func TestWriteAtomicSemanticReceipt(t *testing.T) {

@@ -28,6 +28,12 @@ receipt="$(jq -cS . "$RECEIPT_FILE")" || fail_input "RECEIPT_FILE is not valid J
 manifest="$(jq -cS . "$RESTORE_MANIFEST")" || fail_input "RESTORE_MANIFEST is not valid JSON"
 jq -e '.format == "kubebrain.cold-physical-snapshot.v2"' <<<"$receipt" >/dev/null || fail_input "unsupported cold snapshot receipt"
 jq -e '.apiVersion == "v1" and .kind == "List" and (.items | type == "array")' <<<"$manifest" >/dev/null || fail_input "restore manifest must be a Kubernetes List"
+restore_manifest_sha256="$(printf '%s' "$manifest" | sha256sum | awk '{print $1}')"
+restore_manifest_item_count="$(jq '.items | length' <<<"$manifest")"
+restore_manifest_vsc_count="$(jq '[.items[] | select(.kind == "VolumeSnapshotContent")] | length' <<<"$manifest")"
+restore_manifest_vs_count="$(jq '[.items[] | select(.kind == "VolumeSnapshot")] | length' <<<"$manifest")"
+restore_manifest_pvc_count="$(jq '[.items[] | select(.kind == "PersistentVolumeClaim")] | length' <<<"$manifest")"
+restore_manifest_tidb_count="$(jq '[.items[] | select(.kind == "TidbCluster")] | length' <<<"$manifest")"
 
 namespace="$(jq -r '.inventory.storage.namespace' <<<"$receipt")"
 tidb_cluster="$(jq -r '.inventory.storage.tidb_cluster' <<<"$receipt")"
@@ -163,11 +169,21 @@ jq -e --arg driver "$expected_driver" 'all(.[]; .driver == $driver and (.uid | l
 receipt_tmp="${RESTORE_RECEIPT_FILE}.tmp.$$"
 jq -n --arg format kubebrain.cold-physical-restore.v1 --arg operation_id "$operation_id" \
   --arg source_receipt_sha256 "$(sha256sum "$RECEIPT_FILE" | awk '{print $1}')" \
+  --arg restore_manifest_sha256 "$restore_manifest_sha256" \
+  --argjson restore_manifest_item_count "$restore_manifest_item_count" \
+  --argjson restore_manifest_vsc_count "$restore_manifest_vsc_count" \
+  --argjson restore_manifest_vs_count "$restore_manifest_vs_count" \
+  --argjson restore_manifest_pvc_count "$restore_manifest_pvc_count" \
+  --argjson restore_manifest_tidb_count "$restore_manifest_tidb_count" \
   --arg target_kube_system_uid "$actual_cluster_uid" --arg target_namespace_uid "$actual_namespace_uid" \
   --arg namespace "$namespace" --arg tidb_cluster "$tidb_cluster" --arg tidb_cluster_uid "$target_tidb_uid" \
   --arg cluster_id "$actual_cluster_id" --arg completed_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --argjson pvcs "$pvcs" \
   --argjson volume_snapshot_contents "$contents" \
   '{format:$format,operation_id:$operation_id,source_receipt_sha256:$source_receipt_sha256,
+    restore_manifest:{format:"kubernetes-list.canonical-json.v1",sha256:$restore_manifest_sha256,
+      item_count:$restore_manifest_item_count,volume_snapshot_contents:$restore_manifest_vsc_count,
+      volume_snapshots:$restore_manifest_vs_count,persistent_volume_claims:$restore_manifest_pvc_count,
+      tidbclusters:$restore_manifest_tidb_count},
     target:{kube_system_uid:$target_kube_system_uid,namespace_uid:$target_namespace_uid,namespace:$namespace,
       tidb_cluster:$tidb_cluster,tidb_cluster_uid:$tidb_cluster_uid,cluster_id:$cluster_id},
     volume_snapshot_contents:$volume_snapshot_contents,pvcs:$pvcs,completed_at:$completed_at}' >"$receipt_tmp"
