@@ -941,10 +941,19 @@ kubebrain-metering-invoice.yaml` 默认每月 2 日 UTC 02:17 运行，ConfigMap
 独立核验后替换。CronJob 使用只读根文件系统、非 root、无 ServiceAccount token 和
 只允许读取 charge/adjustment/plan、写 invoice prefix 的独立 Secret。
 
+外部收款系统的结果通过 normalized payment ledger 固化，而不是修改 invoice。
+`kubebrain.metering-payment-ledger.v1` 绑定 finalized invoice 的 exact-version source、
+invoice total、payment/refund/chargeback 交易、net paid 和 remaining balance。CSV header
+固定为 `processor,external_transaction_id,kind,amount_micros,occurred_at_unix`；交易按
+processor/外部交易 ID 排序且无重复，金额必须为正，未来交易、退款/chargeback 超过已收款、
+付款超过 invoice total 或 source 漂移都会 fail closed。`kubebrain-metering-payment-ledger`
+可生成 canonical ledger，并在 Object Lock 发布前重新校验 canonical JSON、invoice source
+retention 和上传 receipt。该 ledger 是应收账款状态证据，不直接发起收款、退款或催收。
+
 该 invoice 是 KubeBrain 数据面资源结算证据，不是完整税务/收款系统。供应商请求
-分类/exporter 与账单的周期性对账、税率计算、折扣规则、付款、退款、应收账款、发票
-编号法规和外部总账过账仍须由财务
-控制面实现；`tax_correction` 只记录已由外部审批系统算出的微货币调整，不能替代税引擎。
+分类/exporter 与账单的周期性对账、税率计算、折扣规则、真实支付渠道、发票编号法规、
+外部总账过账和跨账户财务对账仍须由财务控制面实现；`tax_correction` 只记录已由外部
+审批系统算出的微货币调整，不能替代税引擎。
 
 TiDB Operator 的 BR full/PITR 不能用于 KubeBrain 数据恢复。真实 S3 full backup 和
 独立 PD/TiKV Restore CR 都成功时，备份前已提交的 KubeBrain key 仍未出现在目标集群；

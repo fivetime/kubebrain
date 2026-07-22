@@ -8970,10 +8970,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
    版本、对象 storage byte-time、对象请求费、v3 charge、approved adjustment/credit
    和 final invoice 已完成；供应商账单周期对账的 provider statement /
    provider reconciliation canonical artifact、跨 account/bucket 分类汇总、Object
-   Lock 读写 receipt 绑定、normalized CSV 导入/发布和生产镜像 CLI 入口已建立；继续补
-   各云厂商原始账单 exporter、税率/
-   折扣、付款/退款、应收账款、法规发票编号、
-   外部总账过账与跨账户财务对账，并在具备 Prometheus Operator 的预生产环境补真实
+   Lock 读写 receipt 绑定、normalized CSV 导入/发布和生产镜像 CLI 入口已建立；invoice
+   payment/refund/chargeback ledger 与 remaining balance canonical artifact 已建立；继续补
+   各云厂商原始账单 exporter、税率/折扣、真实支付渠道、法规发票编号、外部总账过账
+   与跨账户财务对账，并在具备 Prometheus Operator 的预生产环境补真实
    一小时规则 evaluation 和连续 24 小时 storage sampling 门禁。
 
 - A457 新增 `kubebrain.metering-provider-statement.v1` 和
@@ -8995,6 +8995,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   只生成 JSON 或生成后直接归档。`go test ./hack/production/... ./deploy/production` 与
   `go vet ./hack/production/... ./deploy/production` 通过。该项关闭 KubeBrain 侧 normalized
   供应商账单导入/发布合同；AWS/GCP/Azure 等原始账单 exporter 与税务/财务系统集成仍属 P1。
+- A464 新增 `kubebrain.metering-payment-ledger.v1` 和
+  `kubebrain-metering-payment-ledger`：外部收款系统导出的 normalized CSV header 固定为
+  `processor,external_transaction_id,kind,amount_micros,occurred_at_unix`，kind 只允许
+  payment/refund/chargeback，交易按 processor+外部交易 ID 排序且唯一。ledger 绑定 finalized
+  invoice 的 exact-version source、invoice total、交易明细、payments/refunds/chargebacks/net
+  paid 与 remaining balance；未来交易、重复交易、退款/chargeback 超过已收款、付款超过 invoice
+  total 或 invoice source 漂移均 fail closed。publisher 在 Object Lock 写入前重新读取 canonical
+  JSON，核验 invoice source retention 和上传 receipt；Dockerfile build/copy 已包含该 CLI。
+  `go test ./hack/production/... ./deploy/production` 与
+  `go vet ./hack/production/... ./deploy/production` 通过。该项关闭 KubeBrain 侧应收账款状态
+  制品合同，不替代真实支付渠道、税引擎、发票编号法规或外部总账过账。
 
 ### P2：运维兼容和长期验证
 
