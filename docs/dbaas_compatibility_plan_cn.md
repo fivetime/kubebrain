@@ -9201,6 +9201,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   JSON number 精度保留和 trailing JSON；`go test ./hack/production/internal/backupscheduler -run 'Test.*ParameterTemplate|TestReconcileRejectsNull' -count=1`、
   `go test ./hack/production/... ./deploy/production` 与
   `go vet ./hack/production/... ./deploy/production` 通过。
+- A490 收紧 objectstore CLI 环境 JSON 数组解析：`logical-object` 对
+  `RECEIPT_INPUTS_JSON`、`ARTIFACT_FORMATS_JSON` 和 `ALLOWED_FORMATS_JSON` 改用共享
+  strict parser，要求输入是单一 JSON string array，拒绝 `null`、非字符串元素、空字符串
+  和 trailing JSON。空 receipt list 仍可用于生成空 inventory manifest，但不能用 `null`
+  模糊表达；usage allowlist 继续由业务层校验非空、排序、唯一。回归覆盖 canonical array、
+  空数组、null、object、non-string、empty string 和 trailing JSON；`cd hack/backup/objectstore && go test ./...`、
+  `cd hack/backup/objectstore && go vet ./...`、`go test ./hack/production/... ./deploy/production`、
+  `go vet ./hack/production/... ./deploy/production` 与 `git diff --check` 通过。
 
 ### P2：运维兼容和长期验证
 

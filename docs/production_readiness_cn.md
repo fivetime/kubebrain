@@ -637,6 +637,13 @@ S3 Object Lock；上传角色需要 Put/Get/Head/GetObjectRetention 权限，删
 授予 DeleteObjectVersion，且工具不会发送 governance bypass。对象发布使用独立模块
 `hack/backup/objectstore`：
 
+对象存储工具中由控制面注入的 JSON 字符串数组环境变量必须是单一 JSON array，且每个
+元素必须为非空字符串。`RECEIPT_INPUTS_JSON`、`ARTIFACT_FORMATS_JSON` 和
+`ALLOWED_FORMATS_JSON` 均拒绝 `null`、非字符串元素和尾随第二个 JSON 值；空
+`RECEIPT_INPUTS_JSON=[]` 只用于生成空 inventory manifest 以证明受管 prefix 无期望
+version，不能用 `null` 代替。`ALLOWED_FORMATS_JSON` 仍必须由 usage 业务层校验为非空、
+排序且唯一的 artifact format allowlist。
+
 ```shell
 retain_until=$(( $(date +%s) + 2592000 ))
 ACTION=upload \

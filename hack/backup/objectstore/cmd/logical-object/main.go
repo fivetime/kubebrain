@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -23,10 +25,7 @@ func main() {
 	defer cancel()
 	action := os.Getenv("ACTION")
 	if action == "manifest" {
-		var receiptPaths []string
-		if err := json.Unmarshal([]byte(os.Getenv("RECEIPT_INPUTS_JSON")), &receiptPaths); err != nil {
-			log.Fatal("RECEIPT_INPUTS_JSON must be a JSON string array")
-		}
+		receiptPaths := stringArrayEnv("RECEIPT_INPUTS_JSON")
 		status, err := objectstore.BuildInventoryManifest(
 			receiptPaths, os.Getenv("OBJECT_STORE_ID"), os.Getenv("S3_BUCKET"),
 			os.Getenv("INVENTORY_PREFIX"), os.Getenv("INVENTORY_OUTPUT"),
@@ -101,9 +100,7 @@ func main() {
 	case "blob-read":
 		var artifactFormats []string
 		if raw := os.Getenv("ARTIFACT_FORMATS_JSON"); raw != "" {
-			if err := json.Unmarshal([]byte(raw), &artifactFormats); err != nil {
-				log.Fatal("ARTIFACT_FORMATS_JSON must be a JSON string array")
-			}
+			artifactFormats = mustParseJSONStringArray(raw, "ARTIFACT_FORMATS_JSON")
 		}
 		receipt, err := objectstore.ReadBlob(ctx, client, objectstore.BlobReadRequest{
 			Output: os.Getenv("OUTPUT"), ArtifactFormat: os.Getenv("ARTIFACT_FORMAT"),
@@ -127,10 +124,7 @@ func main() {
 		}
 		_ = json.NewEncoder(os.Stdout).Encode(receipt)
 	case "usage":
-		var allowedFormats []string
-		if err := json.Unmarshal([]byte(os.Getenv("ALLOWED_FORMATS_JSON")), &allowedFormats); err != nil {
-			log.Fatal("ALLOWED_FORMATS_JSON must be a JSON string array")
-		}
+		allowedFormats := stringArrayEnv("ALLOWED_FORMATS_JSON")
 		receipt, err := objectstore.MeasureUsage(ctx, client, objectstore.UsageRequest{
 			ObjectStoreID: os.Getenv("OBJECT_STORE_ID"), Bucket: os.Getenv("S3_BUCKET"),
 			Prefix: os.Getenv("USAGE_PREFIX"), AllowedFormats: allowedFormats,
@@ -143,6 +137,39 @@ func main() {
 	default:
 		log.Fatal("ACTION must be upload, delete, archive, blob, blob-read, manifest, inventory, or usage")
 	}
+}
+
+func stringArrayEnv(name string) []string {
+	return mustParseJSONStringArray(os.Getenv(name), name)
+}
+
+func mustParseJSONStringArray(raw, name string) []string {
+	values, err := parseJSONStringArray(raw, name)
+	if err != nil {
+		log.Fatal(err)
+	}
+	return values
+}
+
+func parseJSONStringArray(raw, name string) ([]string, error) {
+	var values []string
+	decoder := json.NewDecoder(strings.NewReader(raw))
+	if err := decoder.Decode(&values); err != nil {
+		return nil, fmt.Errorf("%s must be a JSON string array", name)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return nil, fmt.Errorf("%s must contain a single JSON string array", name)
+	}
+	if values == nil {
+		return nil, fmt.Errorf("%s must be a JSON string array, not null", name)
+	}
+	for index, value := range values {
+		if value == "" {
+			return nil, fmt.Errorf("%s[%d] must be a non-empty string", name, index)
+		}
+	}
+	return values, nil
 }
 
 func newClient(ctx context.Context) (*s3.Client, error) {
