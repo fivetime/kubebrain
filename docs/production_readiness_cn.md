@@ -1628,8 +1628,9 @@ verify 和 complete 都通过公开 Service endpoint 对完整 logical artifact 
 SHA-256，将冻结的 Service/Pod UID 行绑定到完成证据。rollback 使用相同 CAS 从目标切回源，并
 要求 EndpointSlice 精确恢复到冻结的源 Pod UID 集；已 complete 的 operation 禁止回滚，
 已 rollback 的 operation 禁止 complete。所有状态、marker 和 receipt 均为 0600、
-file/directory `fsync` 且不覆盖发布；已有 cutover receipt 复用前必须按严格 JSON
-顶层字段集合、类型和值复核。
+file/directory `fsync` 且不覆盖发布；已有 cutover/verify/rollback marker 复用或被后续
+阶段消费前必须是绑定目标实例或时间戳的单行封闭格式；已有 cutover receipt 复用前必须按
+严格 JSON 顶层字段集合、类型和值复核。
 
 切流完成后使用 `hack/production/audit-restored-instance.sh` 运行持续观察窗口。默认持续
 3600 秒、间隔 60 秒且至少 10 个样本；生产控制面应按实例 SLO 调大窗口。脚本先按严格

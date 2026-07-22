@@ -100,6 +100,33 @@ func TestRestoreTrafficCutoverRejectsNonCanonicalState(t *testing.T) {
 	require.NoFileExists(t, filepath.Join(f.state, "restore-1.cutover"))
 }
 
+func TestRestoreTrafficCutoverRejectsNonCanonicalMarkers(t *testing.T) {
+	t.Run("cutover marker with extra field", func(t *testing.T) {
+		f := newTrafficFixture(t)
+		f.run(t, "prepare", true, "")
+		f.run(t, "cutover", true, "")
+
+		markerPath := filepath.Join(f.state, "restore-1.cutover")
+		require.NoError(t, os.WriteFile(markerPath, []byte("CUTOVER\tkubebrain.restore-cutover.marker.v1\ttarget\t1\textra\n"), 0o600))
+
+		f.run(t, "verify", false, "", "existing restore cutover marker does not match")
+		require.NoFileExists(t, filepath.Join(f.state, "restore-1.verified"))
+	})
+
+	t.Run("verified marker with extra row", func(t *testing.T) {
+		f := newTrafficFixture(t)
+		f.run(t, "prepare", true, "")
+		f.run(t, "cutover", true, "")
+		f.run(t, "verify", true, "")
+
+		markerPath := filepath.Join(f.state, "restore-1.verified")
+		require.NoError(t, os.WriteFile(markerPath, append(mustRead(t, markerPath), []byte("UNKNOWN\trow\n")...), 0o600))
+
+		f.run(t, "complete", false, "", "existing restore cutover marker does not match")
+		require.NoFileExists(t, filepath.Join(f.state, "restore-1.receipt.json"))
+	})
+}
+
 func TestRestoreTrafficCutoverFailsClosed(t *testing.T) {
 	for _, tc := range []struct {
 		name, action, drift, want string

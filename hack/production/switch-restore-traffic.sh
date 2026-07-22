@@ -288,13 +288,53 @@ verify_data() {
     { echo "public endpoint verification does not match prepared restore receipt" >&2; exit 1; }
 }
 
-reuse_marker() {
-  local path="$1" kind="$2" expected_instance="${3:-}" actual_kind format actual_instance
-  [[ -e "$path" ]] || return 1
-  IFS=$'\t' read -r actual_kind format actual_instance _ <"$path"
-  [[ "$actual_kind" == "$kind" && "$format" == "kubebrain.restore-cutover.marker.v1" &&
-    ( -z "$expected_instance" || "$actual_instance" == "$expected_instance" ) ]] ||
+validate_restore_cutover_marker() {
+  local path="$1" kind="$2" expected_instance="${3:-}"
+  awk -F '\t' -v kind="$kind" -v expected="$expected_instance" '
+    NR == 1 {
+      if ($1 != kind || $2 != "kubebrain.restore-cutover.marker.v1") {
+        bad = "marker row does not match the operation"
+        exit 1
+      }
+      if (kind == "VERIFIED") {
+        if (expected != "" || NF != 3 || $3 !~ /^[1-9][0-9]*$/) {
+          bad = "VERIFIED marker row has invalid schema"
+          exit 1
+        }
+      } else if (expected == "" || NF != 4 || $3 != expected || $4 !~ /^[1-9][0-9]*$/) {
+        bad = "phase marker row has invalid schema"
+        exit 1
+      }
+      rows++
+      next
+    }
+    {
+      bad = "unexpected extra marker row"
+      exit 1
+    }
+    END {
+      if (bad != "") {
+        print bad > "/dev/stderr"
+        exit 1
+      }
+      if (rows != 1) {
+        print "marker must contain exactly one row" > "/dev/stderr"
+        exit 1
+      }
+    }
+  ' "$path"
+}
+
+validate_existing_marker() {
+  local path="$1" kind="$2" expected_instance="${3:-}"
+  validate_restore_cutover_marker "$path" "$kind" "$expected_instance" ||
     { echo "existing restore cutover marker does not match the operation" >&2; exit 1; }
+}
+
+reuse_marker() {
+  local path="$1" kind="$2" expected_instance="${3:-}"
+  [[ -e "$path" ]] || return 1
+  validate_existing_marker "$path" "$kind" "$expected_instance"
   return 0
 }
 
@@ -330,6 +370,7 @@ case "$ACTION" in
     [[ -f "$state_file" ]] || { echo "prepare evidence is missing" >&2; exit 1; }
     state_header
     [[ ! -e "$rollback_file" ]] || { echo "operation was rolled back" >&2; exit 1; }
+    [[ ! -e "$cutover_file" ]] || validate_existing_marker "$cutover_file" CUTOVER "$TARGET_INSTANCE"
     assert_pods_unchanged source "$SOURCE_INSTANCE"
     assert_pods_unchanged target "$TARGET_INSTANCE"
     current_selector="$(service_snapshot | cut -f4)"
@@ -343,6 +384,8 @@ case "$ACTION" in
   verify)
     [[ -f "$state_file" && -f "$cutover_file" ]] || { echo "cutover evidence is missing" >&2; exit 1; }
     state_header
+    validate_existing_marker "$cutover_file" CUTOVER "$TARGET_INSTANCE"
+    [[ ! -e "$verified_file" ]] || validate_existing_marker "$verified_file" VERIFIED
     assert_pods_unchanged target "$TARGET_INSTANCE"
     wait_endpoints target "$TARGET_INSTANCE"
     verify_data
@@ -355,6 +398,7 @@ case "$ACTION" in
     [[ -f "$state_file" ]] || { echo "prepare evidence is missing" >&2; exit 1; }
     [[ ! -e "$receipt_file" ]] || { echo "completed cutover cannot be rolled back" >&2; exit 1; }
     state_header
+    [[ ! -e "$rollback_file" ]] || validate_existing_marker "$rollback_file" ROLLBACK "$SOURCE_INSTANCE"
     assert_pods_unchanged source "$SOURCE_INSTANCE"
     current_selector="$(service_snapshot | cut -f4)"
     if [[ "$current_selector" == "$TARGET_INSTANCE" ]]; then patch_selector "$TARGET_INSTANCE" "$SOURCE_INSTANCE"; fi
@@ -369,6 +413,8 @@ case "$ACTION" in
     [[ -f "$state_file" && -f "$cutover_file" && -f "$verified_file" ]] ||
       { echo "cutover verification evidence is missing" >&2; exit 1; }
     state_header
+    validate_existing_marker "$cutover_file" CUTOVER "$TARGET_INSTANCE"
+    validate_existing_marker "$verified_file" VERIFIED
     assert_pods_unchanged target "$TARGET_INSTANCE"
     wait_endpoints target "$TARGET_INSTANCE"
     verify_data

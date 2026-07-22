@@ -9842,6 +9842,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   错误 receipt digest。回归：
   `go test ./hack/production -run 'Test(DestroyOperation|DestroyInstance)' -count=1`
   通过。
+- A562 收紧 RestoreCutover marker schema：
+  恢复切流的 cutover/verified/rollback marker 旧复用路径只读取首行前几列，额外字段、
+  额外行或伪造 verified timestamp 可能在幂等重试和 complete 前被忽略。现在
+  `switch-restore-traffic.sh` 要求 CUTOVER/ROLLBACK marker 精确绑定目标/源 instance 与
+  正整数时间戳，VERIFIED marker 精确包含正整数时间戳，且三类 marker 都必须正好一行；
+  verify/complete 在消费已有 marker 前也复用同一封闭 schema。非 canonical marker 会
+  fail closed，不会继续数据验证或发布 cutover receipt。回归：
+  `go test ./hack/production -run 'TestRestoreTrafficCutover' -count=1` 通过。
 
 ### P2：运维兼容和长期验证
 
