@@ -291,7 +291,7 @@ func runCommand(ctx context.Context, executable string, environment []string) ([
 	command.Env = mergeExecutorEnvironment(os.Environ(), environment)
 	processgroup.Configure(command)
 	command.WaitDelay = 5 * time.Second
-	output, err := command.CombinedOutput()
+	output, err := processgroup.CombinedOutput(command, processgroup.DefaultOutputLimitBytes)
 	if ctx.Err() != nil {
 		return output, ctx.Err()
 	}

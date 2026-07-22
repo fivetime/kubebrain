@@ -660,6 +660,9 @@ version，不能用 `null` 代替。`ALLOWED_FORMATS_JSON` 仍必须由 usage �
 排序且唯一的 artifact format allowlist。
 `S3_FORCE_PATH_STYLE` 可留空表示 false；非空时必须是合法布尔值，非法值要让对象存储
 executor fail closed，不能静默降级为 virtual-host/path-style 的另一种访问形态。
+生产 wrapper 捕获本地对象存储/计量 executor 的 stdout/stderr 时必须使用
+`processgroup.CombinedOutput`，总输出最多 1 MiB；超限会终止进程组并 fail closed，
+只保留截断证据用于错误信息，避免异常子进程通过 `CombinedOutput()` 无界占用内存。
 
 ```shell
 retain_until=$(( $(date +%s) + 2592000 ))

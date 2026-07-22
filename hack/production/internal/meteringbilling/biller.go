@@ -333,7 +333,7 @@ func runCommand(ctx context.Context, executable string, environment []string) ([
 	command.Env = mergeEnvironment(os.Environ(), environment)
 	processgroup.Configure(command)
 	command.WaitDelay = 5 * time.Second
-	return command.CombinedOutput()
+	return processgroup.CombinedOutput(command, processgroup.DefaultOutputLimitBytes)
 }
 
 func mergeEnvironment(base, overrides []string) []string {

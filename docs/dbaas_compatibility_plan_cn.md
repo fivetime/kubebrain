@@ -9464,6 +9464,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./hack/production/internal/meteringarchive -run 'Test(Collector|Sample|BuildRollup|Rollup|Roller|ParseMetering)' -count=20`、
   `go test ./hack/production/internal/meteringarchive`、`go test ./hack/production/... ./deploy/production`、
   `go vet ./hack/production/... ./deploy/production` 与 `git diff --check` 通过。
+- A522 收紧生产子进程 captured output 边界：新增 `processgroup.CombinedOutput`，与
+  `exec.Cmd.CombinedOutput` 一样合并 stdout/stderr，但最多保留 1 MiB；超限会调用
+  `CommandContext`/`processgroup.Configure` 的 cancel，终止 executor 进程组并返回
+  `process output exceeds ...`。operation archiver、core metering archiver、object storage
+  metering archiver 和 metering biller 的本地 executor 调用全部改用该 helper，避免异常
+  子进程通过无界 stdout/stderr 让 wrapper 分配内存。回归覆盖正常合并输出、非零退出错误
+  保留和超限取消；
+  `go test ./hack/production/internal/processgroup -count=20`、
+  `go test ./hack/production/internal/processgroup ./hack/production/internal/operationarchiver ./hack/production/internal/meteringarchive ./hack/production/internal/meteringbilling ./hack/production/internal/meteringstorage`、
+  `go test ./hack/production/... ./deploy/production`、`go vet ./hack/production/... ./deploy/production`
+  与 `git diff --check` 通过。
 
 ### P2：运维兼容和长期验证
 
