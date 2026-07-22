@@ -67,6 +67,8 @@ func TestRenderColdRestoreManifestRejectsIncompleteReceipts(t *testing.T) {
 		message string
 	}{
 		{name: "v1 receipt", mutate: func(r *receipt) { r.Format = "kubebrain.cold-physical-snapshot.v1" }, message: "unsupported receipt"},
+		{name: "invalid created_at", mutate: func(r *receipt) { r.CreatedAt = "not-a-time" }, message: "created_at"},
+		{name: "invalid inventory format", mutate: func(r *receipt) { r.Inventory.Format = "other" }, message: "inventory format"},
 		{name: "renamed target blueprint", mutate: func(r *receipt) {
 			r.Inventory.RecoveryBlueprint.TidbCluster["metadata"].(map[string]any)["name"] = "other"
 		}, message: "identity does not match"},
@@ -105,14 +107,23 @@ func TestDecodeReceiptRejectsUnknownAndTrailingJSON(t *testing.T) {
 }
 
 func validReceipt() receipt {
-	value := receipt{Format: "kubebrain.cold-physical-snapshot.v2", OperationID: "restore-test"}
+	value := receipt{
+		Format: "kubebrain.cold-physical-snapshot.v2", OperationID: "restore-test",
+		CreatedAt: "2026-07-21T00:00:00Z",
+	}
 	value.SemanticWitness.Format = "kubebrain.logical.v2"
 	value.SemanticWitness.Prefix = "/registry"
 	value.SemanticWitness.Revision = 100
 	value.SemanticWitness.Records = 1
 	value.SemanticWitness.SHA256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	value.SemanticWitness.FileSHA256 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	value.Inventory.Format = "kubebrain.cold-physical-snapshot-preflight.v2"
+	value.Inventory.VolumeSnapshotClass.Name = "source-snapshots"
 	value.Inventory.VolumeSnapshotClass.Driver = "csi.example.test"
+	value.Inventory.VolumeSnapshotClass.DeletionPolicy = "Retain"
+	value.Inventory.KubeBrain.Namespace = "kubebrain-system"
+	value.Inventory.KubeBrain.StatefulSet = "kubebrain"
+	value.Inventory.KubeBrain.UID = "uid-kubebrain"
 	value.Inventory.Storage.Namespace = "tidb-cluster"
 	value.Inventory.Storage.TidbCluster = "kb"
 	value.Inventory.Storage.UID = "uid-tidb"

@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/util/validation"
@@ -21,6 +22,7 @@ import (
 type receipt struct {
 	Format          string     `json:"format"`
 	OperationID     string     `json:"operation_id"`
+	CreatedAt       string     `json:"created_at"`
 	Inventory       inventory  `json:"inventory"`
 	Snapshots       []snapshot `json:"snapshots"`
 	SemanticWitness struct {
@@ -28,15 +30,24 @@ type receipt struct {
 		Prefix     string `json:"prefix"`
 		Revision   int64  `json:"revision"`
 		Records    int    `json:"records"`
+		Leases     int    `json:"leases"`
 		SHA256     string `json:"sha256"`
 		FileSHA256 string `json:"file_sha256"`
 	} `json:"semantic_witness"`
 }
 
 type inventory struct {
+	Format              string `json:"format"`
 	VolumeSnapshotClass struct {
-		Driver string `json:"driver"`
+		Name           string `json:"name"`
+		Driver         string `json:"driver"`
+		DeletionPolicy string `json:"deletion_policy"`
 	} `json:"volume_snapshot_class"`
+	KubeBrain struct {
+		Namespace   string `json:"namespace"`
+		StatefulSet string `json:"statefulset"`
+		UID         string `json:"uid"`
+	} `json:"kubebrain"`
 	Storage struct {
 		Namespace   string `json:"namespace"`
 		TidbCluster string `json:"tidb_cluster"`
@@ -53,13 +64,20 @@ type inventory struct {
 type pvc struct {
 	Name             string            `json:"name"`
 	UID              string            `json:"uid"`
+	PV               string            `json:"pv"`
 	Labels           map[string]string `json:"labels"`
 	VolumeMode       string            `json:"volume_mode"`
 	AccessModes      []string          `json:"access_modes"`
+	StorageClass     string            `json:"storage_class"`
 	RequestedStorage string            `json:"requested_storage"`
+	Phase            string            `json:"phase"`
 }
 
 type snapshot struct {
+	Name           string `json:"name"`
+	UID            string `json:"uid"`
+	Content        string `json:"content"`
+	ContentUID     string `json:"content_uid"`
 	SourcePVC      string `json:"source_pvc"`
 	Component      string `json:"component"`
 	SnapshotHandle string `json:"snapshot_handle"`
@@ -166,6 +184,12 @@ func render(r receipt, snapshotClass, storageClass string) (map[string]any, erro
 	}
 	if r.OperationID == "" || r.Inventory.VolumeSnapshotClass.Driver == "" || snapshotClass == "" || storageClass == "" {
 		return nil, errors.New("receipt identity, CSI driver and target classes must be non-empty")
+	}
+	if r.Inventory.Format != "kubebrain.cold-physical-snapshot-preflight.v2" {
+		return nil, errors.New("cold snapshot receipt inventory format is invalid")
+	}
+	if _, err := time.Parse(time.RFC3339, r.CreatedAt); err != nil {
+		return nil, errors.New("cold snapshot receipt created_at is invalid")
 	}
 	if r.SemanticWitness.Format != "kubebrain.logical.v2" || r.SemanticWitness.Prefix == "" ||
 		r.SemanticWitness.Revision <= 0 || r.SemanticWitness.Records <= 0 ||

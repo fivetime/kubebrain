@@ -545,6 +545,14 @@ TiKV、解除 operator pause、KubeBrain 的顺序恢复。任一错误都由退
 
 v2 receipt 可离线渲染隔离恢复清单：
 
+`kubebrain.cold-physical-snapshot.v2` receipt schema 必须与 snapshot executor 的真实输出
+一致：顶层 `created_at` 为 RFC3339 时间，`inventory` 保留完整 preflight inventory
+format、KubeBrain/storage identity、VolumeSnapshotClass、recovery blueprint 和 PVC 字段，
+`snapshots` 保留 source PVC、snapshot/content UID、handle 和 restore size，`semantic_witness`
+包含 records 与 leases。renderer 和后续 restore verify 都使用严格 schema 解码；未知字段、
+尾随 JSON、非法 `created_at` 或 inventory format 漂移都必须 fail closed，不能为了兼容
+测试夹具而放宽生产 receipt 契约。
+
 ```shell
 go run ./hack/backup/cmd/cold-restore-render \
   --receipt cold-snapshot-receipt.json \

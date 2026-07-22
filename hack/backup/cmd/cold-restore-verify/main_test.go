@@ -42,16 +42,28 @@ func TestValidateReceiptChain(t *testing.T) {
 	witness := []byte("immutable-witness")
 	status := backupfile.Status{Format: backupfile.Format, Prefix: "/registry", Revision: 100, Records: 3, Leases: 1, SHA256: "artifact-sha"}
 	snapshot := snapshotReceipt{Format: "kubebrain.cold-physical-snapshot.v2", OperationID: "operation-a"}
+	snapshot.CreatedAt = "2026-07-21T00:00:00Z"
+	snapshot.Inventory.Format = "kubebrain.cold-physical-snapshot-preflight.v2"
+	snapshot.Inventory.VolumeSnapshotClass.Name = "source-snapshots"
 	snapshot.Inventory.VolumeSnapshotClass.Driver = "csi.example.test"
+	snapshot.Inventory.VolumeSnapshotClass.DeletionPolicy = "Retain"
+	snapshot.Inventory.KubeBrain.Namespace = "kubebrain-system"
+	snapshot.Inventory.KubeBrain.StatefulSet = "kubebrain"
+	snapshot.Inventory.KubeBrain.UID = "uid-kubebrain"
 	snapshot.Inventory.Storage.Namespace = "tidb-cluster"
 	snapshot.Inventory.Storage.TidbCluster = "kb"
 	snapshot.Inventory.Storage.UID = "uid-source-tidb"
 	snapshot.Inventory.Storage.ClusterID = "12345"
 	snapshot.Snapshots = append(snapshot.Snapshots, struct {
+		Name           string `json:"name"`
+		UID            string `json:"uid"`
+		Content        string `json:"content"`
+		ContentUID     string `json:"content_uid"`
 		SourcePVC      string `json:"source_pvc"`
 		Component      string `json:"component"`
 		SnapshotHandle string `json:"snapshot_handle"`
-	}{SourcePVC: "pd-kb-pd-0", Component: "pd", SnapshotHandle: "handle-pd-0"})
+		RestoreSize    string `json:"restore_size"`
+	}{SourcePVC: "pd-kb-pd-0", Component: "pd", SnapshotHandle: "handle-pd-0", RestoreSize: "1Gi"})
 	snapshot.Witness.Format = status.Format
 	snapshot.Witness.Prefix = status.Prefix
 	snapshot.Witness.Revision = status.Revision
@@ -99,6 +111,20 @@ func TestValidateReceiptChain(t *testing.T) {
 	_, _, err = validateReceiptChain(status, []byte("tampered"), snapshotData, restoreData)
 	require.ErrorContains(t, err, "witness binding mismatch")
 
+	brokenSnapshot := snapshot
+	brokenSnapshot.CreatedAt = "not-a-time"
+	brokenSnapshotData, err := json.Marshal(brokenSnapshot)
+	require.NoError(t, err)
+	_, _, err = validateReceiptChain(status, witness, brokenSnapshotData, restoreData)
+	require.ErrorContains(t, err, "created_at")
+
+	brokenSnapshot = snapshot
+	brokenSnapshot.Inventory.Format = "other"
+	brokenSnapshotData, err = json.Marshal(brokenSnapshot)
+	require.NoError(t, err)
+	_, _, err = validateReceiptChain(status, witness, brokenSnapshotData, restoreData)
+	require.ErrorContains(t, err, "inventory format")
+
 	brokenRestore := restore
 	brokenRestore.SourceReceiptSHA = digest([]byte("other"))
 	brokenData, err := json.Marshal(brokenRestore)
@@ -143,10 +169,15 @@ func TestValidateRestoreManifestBinding(t *testing.T) {
 	snapshot.Inventory.Storage.UID = "uid-tidb"
 	snapshot.Inventory.Storage.ClusterID = "12345"
 	snapshot.Snapshots = append(snapshot.Snapshots, struct {
+		Name           string `json:"name"`
+		UID            string `json:"uid"`
+		Content        string `json:"content"`
+		ContentUID     string `json:"content_uid"`
 		SourcePVC      string `json:"source_pvc"`
 		Component      string `json:"component"`
 		SnapshotHandle string `json:"snapshot_handle"`
-	}{SourcePVC: "pd-kb-pd-0", Component: "pd", SnapshotHandle: "handle-pd-0"})
+		RestoreSize    string `json:"restore_size"`
+	}{SourcePVC: "pd-kb-pd-0", Component: "pd", SnapshotHandle: "handle-pd-0", RestoreSize: "1Gi"})
 	objectName := restoreManifestObjectName(snapshot.OperationID, "pd-kb-pd-0")
 	restore := restoreReceipt{}
 	restore.RestoreManifest.Format = "kubernetes-list.canonical-json.v1"

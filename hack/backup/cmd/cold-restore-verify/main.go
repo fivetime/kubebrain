@@ -76,10 +76,19 @@ type restoreReceipt struct {
 type snapshotReceipt struct {
 	Format      string `json:"format"`
 	OperationID string `json:"operation_id"`
+	CreatedAt   string `json:"created_at"`
 	Inventory   struct {
+		Format              string `json:"format"`
 		VolumeSnapshotClass struct {
-			Driver string `json:"driver"`
+			Name           string `json:"name"`
+			Driver         string `json:"driver"`
+			DeletionPolicy string `json:"deletion_policy"`
 		} `json:"volume_snapshot_class"`
+		KubeBrain struct {
+			Namespace   string `json:"namespace"`
+			StatefulSet string `json:"statefulset"`
+			UID         string `json:"uid"`
+		} `json:"kubebrain"`
 		Storage struct {
 			Namespace   string `json:"namespace"`
 			TidbCluster string `json:"tidb_cluster"`
@@ -88,9 +97,14 @@ type snapshotReceipt struct {
 		} `json:"storage"`
 	} `json:"inventory"`
 	Snapshots []struct {
+		Name           string `json:"name"`
+		UID            string `json:"uid"`
+		Content        string `json:"content"`
+		ContentUID     string `json:"content_uid"`
 		SourcePVC      string `json:"source_pvc"`
 		Component      string `json:"component"`
 		SnapshotHandle string `json:"snapshot_handle"`
+		RestoreSize    string `json:"restore_size"`
 	} `json:"snapshots"`
 	Witness struct {
 		Format     string `json:"format"`
@@ -236,6 +250,12 @@ func validateReceiptChain(status backupfile.Status, witnessData, snapshotData, r
 	var snapshotRecord snapshotReceipt
 	if err := decodeStrictJSON(snapshotData, &snapshotRecord, "snapshot receipt"); err != nil {
 		return snapshotReceipt{}, restoreReceipt{}, err
+	}
+	if _, err := time.Parse(time.RFC3339, snapshotRecord.CreatedAt); err != nil {
+		return snapshotReceipt{}, restoreReceipt{}, errors.New("snapshot receipt created_at is invalid")
+	}
+	if snapshotRecord.Inventory.Format != "kubebrain.cold-physical-snapshot-preflight.v2" {
+		return snapshotReceipt{}, restoreReceipt{}, errors.New("snapshot receipt inventory format is invalid")
 	}
 	if snapshotRecord.Format != "kubebrain.cold-physical-snapshot.v2" || snapshotRecord.OperationID == "" ||
 		snapshotRecord.Witness.Format != status.Format || snapshotRecord.Witness.Prefix != status.Prefix ||

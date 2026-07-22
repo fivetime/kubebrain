@@ -9397,6 +9397,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `(cd hack/backup/objectstore && go test ./...)`、
   `go vet ./hack/production/... ./deploy/production`、
   `(cd hack/backup/objectstore && go vet ./...)` 与 `git diff --check` 通过。
+- A515 修复 cold restore renderer/verifier 的 strict receipt schema 漂移：真实
+  `cold-snapshot-execute.sh` 生成的 `kubebrain.cold-physical-snapshot.v2` receipt 带顶层
+  `created_at`、完整 preflight inventory、snapshot name/UID/content identity，以及
+  `semantic_witness.leases`；`cold-restore-render` 之前缺这些字段，strict decoder 会把生产
+  snapshot receipt 拒成 unknown field，导致隔离恢复清单无法渲染。现在 renderer 与 restore
+  verifier 都显式接受这些字段，并要求 `created_at` 为 RFC3339、inventory format 为
+  `kubebrain.cold-physical-snapshot-preflight.v2`，继续拒绝真正未知字段和尾随 JSON。回归覆盖
+  invalid `created_at`/inventory format 和 production cold restore execute smoke；
+  `go test ./cmd/cold-restore-render ./cmd/cold-restore-verify -count=1`（在
+  `hack/backup` 模块内）、`go test ./hack/production -run TestColdRestoreExecute -count=1`、
+  `go test ./hack/production/... ./deploy/production`、`(cd hack/backup && go test ./cmd/cold-restore-render ./cmd/cold-restore-verify)`、
+  `go vet ./hack/production/... ./deploy/production`、`(cd hack/backup && go vet ./cmd/cold-restore-render ./cmd/cold-restore-verify)`、
+  与 `git diff --check` 通过。
 
 ### P2：运维兼容和长期验证
 
