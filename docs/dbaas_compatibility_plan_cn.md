@@ -9914,6 +9914,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `ErrUserEmpty`。现在 `MemberList` 先执行非 root auth，再按 `Linearizable` 触发
   `SyncReadRevision`；认证用户仍能看到原始 barrier status。回归：
   `go test ./pkg/server/etcd -run 'TestMemberListLinearizable' -count=1` 通过。
+- A569 收紧 MemberList advertised URL 发布门禁：
+  对照 `/root/etcd/server/etcdserver/api/v3rpc/member.go` 原样返回 member
+  `PeerURLs/ClientURLs`、`/root/etcd/client/v3/client.go` 的 `Client.Sync` 直接把
+  非 learner member 的 `ClientURLs` 作为后续 resolver endpoint，DBaaS release gate
+  不能把重复 URL 静默归一化后放行。旧 `validate-instance-ready.sh` 在编码
+  `EXPECTED_ADVERTISE_CLIENT_URLS` 和运行时 MemberList 时使用 `sort | unique`，
+  会让重复 advertised client URL、重复 runtime client URL 或重复 runtime peer URL
+  看起来与期望集合一致。现在发布门禁在归一化前拒绝期望 advertised URL 的空/重复项，
+  并要求运行时每个 member 的 peer/client URL 数组本身无重复且与声明精确匹配；重复
+  拓扑不会继续进入 endpoint health 阶段。回归：
+  `go test ./hack/production -run 'TestValidateInstanceReady' -count=1` 通过。
 
 ### P2：运维兼容和长期验证
 

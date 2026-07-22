@@ -336,11 +336,17 @@ fi
 # as this release gate; validating only ENDPOINT can publish a cluster that
 # disconnects clients immediately after their first successful MemberList.
 IFS=',' read -r -a advertised_client_urls <<<"$EXPECTED_ADVERTISE_CLIENT_URLS"
+declare -A expected_advertised_client_urls=()
 for advertised_url in "${advertised_client_urls[@]}"; do
   if [[ -z "$advertised_url" ]]; then
     echo "KubeBrain advertised client URL list contains an empty entry" >&2
     exit 1
   fi
+  if [[ -n "${expected_advertised_client_urls[$advertised_url]:-}" ]]; then
+    echo "KubeBrain advertised client URL list contains a duplicate entry: $advertised_url" >&2
+    exit 1
+  fi
+  expected_advertised_client_urls["$advertised_url"]=1
 done
 
 if ! expected_client_urls_json="$(printf '%s\n' "${advertised_client_urls[@]}" | "$JQ" -Rsc 'split("\n")[:-1] | sort | unique')"; then
@@ -409,12 +415,14 @@ if ! printf '%s' "$member_list_json" | "$JQ" -e \
     all(.members[]; (.isLearner // false) == false) and
     ([.members[].ID] | length) == ([.members[].ID] | unique | length) and
     ([.members[].name] | length) == ([.members[].name] | unique | length) and
-    ([.members[] | {name: .name, peerURLs: ((.peerURLs // []) | sort | unique)}] | sort_by(.name)) == $expectedPeerMembers and
+    ([.members[] | {name: .name, peerURLs: ((.peerURLs // []) | sort)}] | sort_by(.name)) == $expectedPeerMembers and
     all(.members[];
       (.ID // 0) != 0 and
       ((.name // "") | length) > 0 and
       ((.peerURLs // []) | length) > 0 and
-      ((.clientURLs // []) | sort | unique) == $expectedClientURLs
+      ((.peerURLs // []) | length) == (((.peerURLs // []) | unique) | length) and
+      ((.clientURLs // []) | length) == (((.clientURLs // []) | unique) | length) and
+      ((.clientURLs // []) | sort) == $expectedClientURLs
     )
   ' >/dev/null; then
   echo "KubeBrain MemberList does not match the expected runtime topology and advertised client URLs" >&2
