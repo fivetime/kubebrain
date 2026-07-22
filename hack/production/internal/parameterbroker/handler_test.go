@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -143,6 +144,31 @@ func TestHandlerFailsClosedForIdentityTypeAudienceAndFencing(t *testing.T) {
 			handler.ServeHTTP(response, request)
 			require.Equal(t, tc.status, response.Code)
 			require.NotContains(t, response.Body.String(), "audit")
+		})
+	}
+}
+
+func TestBearerTokenParsingIsStrictAndCaseInsensitive(t *testing.T) {
+	token, err := bearerToken("bearer projected.jwt")
+	require.NoError(t, err)
+	require.Equal(t, "projected.jwt", token)
+
+	for _, tc := range []struct {
+		name   string
+		header string
+	}{
+		{name: "missing", header: ""},
+		{name: "wrong scheme", header: "Basic projected.jwt"},
+		{name: "empty token", header: "Bearer "},
+		{name: "leading token space", header: "Bearer  projected.jwt"},
+		{name: "trailing token space", header: "Bearer projected.jwt "},
+		{name: "embedded token space", header: "Bearer projected jwt"},
+		{name: "tab separator", header: "Bearer\tprojected.jwt"},
+		{name: "oversized", header: "Bearer " + strings.Repeat("x", maxTokenBytes+1)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := bearerToken(tc.header)
+			require.Error(t, err)
 		})
 	}
 }

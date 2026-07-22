@@ -2114,6 +2114,8 @@ kubectl -n kubebrain-operations auth can-i get secrets \
 结果必须依次为 `no`、`yes`。broker SA 另有且只有 TokenReview create ClusterRole；禁止授予
 Secret list/watch、Operation list/watch/status 或 Lease 权限。projected token audience
 固定为 `kubebrain-operation-parameters`，不能复用默认 Kubernetes API token。broker
+解析 `Authorization` 时对 Bearer scheme 大小写不敏感，但会在 TokenReview 前拒绝空 token、
+含空白的 token 和超过 16 KiB 的 token，不能把畸形 header 静默 trim 成有效凭据。broker
 不可用、CA 错误、token 失效或 worker Lease 过期时 executor 必须 fail closed 并 requeue，
 不得回退为直接读取 Secret。`/v1/parameters` 的 `namespace`、`name`、`owner` 和
 `attempt` 必需 query 参数必须各恰好出现一次；缺失、重复或非正 attempt 都应返回 400，

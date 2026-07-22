@@ -9970,6 +9970,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Operation/Secret。回归：
   `go test ./hack/production/internal/backupscheduler -run 'TestReconcileRejectsPolicySchemaBeforeTemplateRead|TestReconcileIsDeterministicAcrossReplicas' -count=1`
   通过。
+- A574 收紧 parameter broker Bearer header 解析：
+  parameter broker 通过 Kubernetes TokenReview 校验 executor projected token，但旧
+  `bearerToken` 只接受大小写固定的 `"Bearer "` 前缀，同时又对 token 本体执行
+  `TrimSpace`；`Bearer  token`、尾随空白或内部空白 token 可能被静默规范化后继续送审，
+  而小写 `bearer` 反而被拒绝。现在 broker 与 operation API 一致地大小写不敏感解析
+  Bearer scheme，并在 TokenReview 前拒绝空 token、含任何空白的 token 和超过 16 KiB
+  的 token。回归：
+  `go test ./hack/production/internal/parameterbroker -run 'TestBearerTokenParsingIsStrictAndCaseInsensitive|TestHandlerReturnsOnlyCurrentTypeBoundWorkerParameters' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

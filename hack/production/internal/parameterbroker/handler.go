@@ -178,12 +178,15 @@ func (h *Handler) authenticate(request *http.Request, token string) (string, err
 }
 
 func bearerToken(header string) (string, error) {
-	const prefix = "Bearer "
-	if !strings.HasPrefix(header, prefix) {
+	if strings.TrimSpace(header) != header {
+		return "", errors.New("invalid bearer token")
+	}
+	scheme, token, found := strings.Cut(header, " ")
+	if !found || !strings.EqualFold(scheme, "Bearer") {
 		return "", errors.New("bearer token is required")
 	}
-	token := strings.TrimSpace(strings.TrimPrefix(header, prefix))
-	if token == "" || len(token) > maxTokenBytes {
+	if token == "" || len(token) > maxTokenBytes ||
+		strings.TrimSpace(token) != token || strings.ContainsAny(token, " \t\r\n") {
 		return "", errors.New("invalid bearer token")
 	}
 	return token, nil
