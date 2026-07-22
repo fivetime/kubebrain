@@ -963,8 +963,22 @@ func TestQueueRejectsSpecDriftAndInvalidCompletion(t *testing.T) {
 	_, err = queue.Submit(ctx, "invalid-secret-key", invalidSecretKey)
 	require.ErrorContains(t, err, "invalid parameter secret key")
 
+	_, err = queue.Claim(ctx, strings.Repeat("w", maxStatusOwnerLength+1), "", time.Minute)
+	require.ErrorContains(t, err, "status owner")
+
 	claim, err := queue.Claim(ctx, "worker-a", "", time.Minute)
 	require.NoError(t, err)
+	_, err = queue.Heartbeat(ctx, claim.Name, strings.Repeat("w", maxStatusOwnerLength+1), claim.Attempt, time.Minute)
+	require.ErrorContains(t, err, "status owner")
+	_, err = queue.Requeue(ctx, claim.Name, claim.Owner, claim.Attempt, strings.Repeat("m", maxStatusMessageLength+1))
+	require.ErrorContains(t, err, "status message")
+	_, err = queue.Finish(
+		ctx, claim.Name, claim.Owner, claim.Attempt,
+		true, strings.Repeat("a", 64), strings.Repeat("m", maxStatusMessageLength+1),
+	)
+	require.ErrorContains(t, err, "status message")
+	_, err = queue.Finish(ctx, claim.Name, claim.Owner, claim.Attempt, false, strings.Repeat("A", 64), "")
+	require.ErrorContains(t, err, "receipt SHA-256")
 	_, err = queue.Finish(ctx, claim.Name, claim.Owner, claim.Attempt, true, "", "")
 	require.ErrorContains(t, err, "requires a receipt")
 	_, err = queue.Finish(ctx, claim.Name, claim.Owner, claim.Attempt, true, strings.Repeat("A", 64), "")

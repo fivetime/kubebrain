@@ -10295,6 +10295,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   扩展覆盖 mutable tag、空白 digest 引用和大写 digest，且均在调用 kubectl 前 fail
   closed：
   `go test ./hack/production -run TestValidateNetworkPolicy -count=1` 通过。
+- A606 补齐 operation queue status schema 本地门禁：
+  A572 已把 KubeBrainOperation spec 的 CRD 约束下沉到 Go queue 层，但 worker status
+  写入仍依赖 apiserver/CRD 拒绝过长 `status.owner`、过长 `status.message`，且失败
+  operation 可携带非空但非 SHA-256 的 `receiptSHA256`。fake-client、旧 CRD 或直接队列
+  调用可能写入真实生产 CRD 会拒绝的终态/重试状态。现在 `Claim`/`Heartbeat`/`Finish`
+  在写入前拒绝超过 253 字符的 owner，`Requeue`/`Finish` 拒绝超过 4096 字符的 message，
+  `Finish` 对失败路径的非空 receipt 也要求小写 SHA-256 hex；成功路径仍强制 receipt
+  非空。回归：
+  `go test ./hack/production/internal/operationqueue -run 'TestQueueRejectsSpecDriftAndInvalidCompletion|TestQueueLifecycleAndExpiredLeaseFencing|TestQueueRequeueConsumesAttemptAndFiltersType' -count=1`
+  和 `go test ./hack/production/internal/operationqueue -count=1` 通过。
 
 ### P2：运维兼容和长期验证
 

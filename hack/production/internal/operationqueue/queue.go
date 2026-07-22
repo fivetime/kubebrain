@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"time"
+	"unicode/utf8"
 
 	"github.com/kubewharf/kubebrain/hack/production/operationaudit"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -35,6 +36,11 @@ const leaseCleanupTimeout = 5 * time.Second
 
 // MaxOperationAttempts mirrors the KubeBrainOperation CRD's spec.maxAttempts maximum.
 const MaxOperationAttempts = 100
+
+const (
+	maxStatusOwnerLength   = 253
+	maxStatusMessageLength = 4096
+)
 
 const (
 	PhasePending   = "Pending"
@@ -199,6 +205,9 @@ func (q *Queue) Submit(ctx context.Context, name string, spec Spec) (*unstructur
 func (q *Queue) Claim(ctx context.Context, owner, operationType string, lease time.Duration) (*Claim, error) {
 	if owner == "" || lease < time.Second {
 		return nil, errors.New("owner and a lease of at least one second are required")
+	}
+	if err := validateStatusOwner(owner); err != nil {
+		return nil, err
 	}
 	list, err := q.resource.List(ctx, metav1.ListOptions{})
 	if err != nil {
@@ -494,6 +503,9 @@ func (q *Queue) Requeue(
 	attempt int64,
 	message string,
 ) (*unstructured.Unstructured, error) {
+	if err := validateStatusMessage(message); err != nil {
+		return nil, err
+	}
 	object, err := q.resource.Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		return nil, err
@@ -574,6 +586,9 @@ func (q *Queue) Heartbeat(ctx context.Context, name, owner string, attempt int64
 	if lease < time.Second {
 		return nil, errors.New("lease must be at least one second")
 	}
+	if err := validateStatusOwner(owner); err != nil {
+		return nil, err
+	}
 	object, err := q.resource.Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		return nil, err
@@ -644,8 +659,17 @@ func (q *Queue) Finish(
 	succeeded bool,
 	receiptSHA256, message string,
 ) (*unstructured.Unstructured, error) {
-	if succeeded && !isSHA256Hex(receiptSHA256) {
+	if err := validateStatusOwner(owner); err != nil {
+		return nil, err
+	}
+	if err := validateStatusMessage(message); err != nil {
+		return nil, err
+	}
+	if succeeded && receiptSHA256 == "" {
 		return nil, errors.New("successful operation requires a receipt SHA-256 hex digest")
+	}
+	if receiptSHA256 != "" && !isSHA256Hex(receiptSHA256) {
+		return nil, errors.New("operation receipt SHA-256 hex digest must be empty or lowercase")
 	}
 	object, err := q.resource.Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
@@ -930,6 +954,9 @@ func containsString(values []string, wanted string) bool {
 }
 
 func (q *Queue) requireWorker(object *unstructured.Unstructured, owner string, attempt int64) error {
+	if err := validateStatusOwner(owner); err != nil {
+		return err
+	}
 	phase, _, _ := unstructured.NestedString(object.Object, "status", "phase")
 	if phase == PhaseSucceeded || phase == PhaseFailed {
 		return ErrTerminal
@@ -998,6 +1025,20 @@ func isSHA256Hex(value string) bool {
 		}
 	}
 	return true
+}
+
+func validateStatusOwner(owner string) error {
+	if utf8.RuneCountInString(owner) > maxStatusOwnerLength {
+		return fmt.Errorf("operation status owner exceeds %d characters", maxStatusOwnerLength)
+	}
+	return nil
+}
+
+func validateStatusMessage(message string) error {
+	if utf8.RuneCountInString(message) > maxStatusMessageLength {
+		return fmt.Errorf("operation status message exceeds %d characters", maxStatusMessageLength)
+	}
+	return nil
 }
 
 func (q *Queue) acquireInstanceLease(
