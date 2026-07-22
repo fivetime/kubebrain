@@ -9608,6 +9608,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `(cd hack/etcd-client-compat && go test . -run 'Test(ClientV3LeaseRepeatedRenewalHistoryIsLinearizable|LeaseLongRenewalModelExtendsDeadlineAcrossRenewalWindows)' -count=10)`、
   `(cd hack/etcd-client-compat && go test . -run '^$')`、`(cd hack/etcd-client-compat && go vet .)`
   与 `git diff --check` 通过。
+- A536 收紧 operation runner 的 namespace 重绑定：Backup、BackupDeletion、
+  CertificateRotation、Destroy、PostRestoreAudit 和 RestoreCutover runner 在 claim
+  响应携带 `namespace` 时，旧逻辑把新的 `--namespace` 追加到已有 kube args 后面，形成
+  `--namespace ops --namespace tenant-a-operations`。多数 Cobra/pflag 调用会以后者为准，
+  但审计日志、包装器和未来参数解析会看到两个管理 namespace，削弱 takeover/fencing
+  证据的确定性。现在 6 个 runner 都通过 `build_kube_args` 在初始和 namespace 重绑定后
+  重建参数数组，并在 `set -euo pipefail` 下显式 `return 0`；回归让 fake claim 返回
+  tenant namespace，并断言 succeed/heartbeat 等后续调用只有单个 namespace。回归：
+  `go test ./hack/production -run 'Test(BackupOperation|BackupDeletionOperation|CertificateRotationOperation|DestroyOperation|PostRestoreAuditOperation|RestoreCutoverOperation)' -count=1 -timeout=180s`、
+  `go test ./hack/production -run 'Test(BackupOperationCompletesProtectedUpload|BackupDeletionOperationCompletesThreeGatesAndRetries|CertificateRotationOperationCompletesLifecycle|DestroyOperationCompletesLifecycle|PostRestoreAuditOperationCompletesAndBindsReceipt|RestoreCutoverOperationCompletesAllPhases)' -count=3 -timeout=120s`
+  与 `git diff --check` 通过。
 
 ### P2：运维兼容和长期验证
 

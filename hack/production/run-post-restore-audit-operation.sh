@@ -42,9 +42,13 @@ if [[ -n "$OPERATIONCTL" ]]; then
 else
   operationctl=(go run ./hack/production/cmd/operationctl)
 fi
-kube_args=(--namespace "$OPERATION_NAMESPACE")
-[[ -n "$KUBE_CONTEXT" ]] && kube_args+=(--context "$KUBE_CONTEXT")
-[[ -n "$KUBECONFIG_PATH" ]] && kube_args+=(--kubeconfig "$KUBECONFIG_PATH")
+build_kube_args() {
+  kube_args=(--namespace "$OPERATION_NAMESPACE")
+  [[ -n "$KUBE_CONTEXT" ]] && kube_args+=(--context "$KUBE_CONTEXT")
+  [[ -n "$KUBECONFIG_PATH" ]] && kube_args+=(--kubeconfig "$KUBECONFIG_PATH")
+  return 0
+}
+build_kube_args
 
 run_operationctl() {
   if [[ -n "$OPERATIONCTL" ]]; then
@@ -59,7 +63,7 @@ claim="$(run_operationctl --action claim --owner "$WORKER_ID" \
 claimed_namespace="$("$JQ" -r '.namespace // empty' <<<"$claim")"
 if [[ -n "$claimed_namespace" ]]; then
   OPERATION_NAMESPACE="$claimed_namespace"
-  kube_args+=(--namespace "$OPERATION_NAMESPACE")
+  build_kube_args
 fi
 name="$("$JQ" -er '.name' <<<"$claim")"
 operation_id="$("$JQ" -er '.operation_id' <<<"$claim")"

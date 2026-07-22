@@ -22,6 +22,8 @@ func TestBackupDeletionOperationCompletesThreeGatesAndRetries(t *testing.T) {
 	require.Contains(t, log, "object pre\nobject delete\nobject post\n")
 	require.Contains(t, log, "--type BackupDeletion")
 	require.Contains(t, log, "--action succeed")
+	require.Contains(t, log, "--namespace tenant-a-operations --action succeed")
+	require.NotContains(t, log, "--namespace ops --namespace tenant-a-operations")
 	require.NotContains(t, log, "--action retry")
 }
 
@@ -100,7 +102,7 @@ set -euo pipefail
 printf 'operationctl %s\n' "$*" >>"$FAKE_DIR/actions.log"
 if [[ " $* " == *" --action claim "* ]]; then
   digest="${CLAIM_DIGEST:-$PARAMETERS_DIGEST}"
-  printf '{"name":"delete-1","operation_id":"delete-1","instance":"instance-a","parameters_sha256":"%s","attempt":1}\n' "$digest"
+  printf '{"namespace":"tenant-a-operations","name":"delete-1","operation_id":"delete-1","instance":"instance-a","parameters_sha256":"%s","attempt":1}\n' "$digest"
 elif [[ " $* " == *" --action heartbeat "* && "${HEARTBEAT_FAIL:-false}" == true ]]; then
   exit 1
 else

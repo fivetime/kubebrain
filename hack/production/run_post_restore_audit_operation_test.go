@@ -19,6 +19,8 @@ func TestPostRestoreAuditOperationCompletesAndBindsReceipt(t *testing.T) {
 	require.Contains(t, log, "--action claim")
 	require.Contains(t, log, "--action succeed")
 	require.Contains(t, log, "--receipt-sha256")
+	require.Contains(t, log, "--namespace tenant-a-operations --action succeed")
+	require.NotContains(t, log, "--namespace ops --namespace tenant-a-operations")
 	require.NotContains(t, log, "--action retry")
 }
 
@@ -77,7 +79,7 @@ set -euo pipefail
 printf '%s\n' "$*" >>"$FAKE_DIR/operationctl.log"
 if [[ " $* " == *" --action claim "* ]]; then
   digest="${CLAIM_DIGEST:-$PARAMETERS_DIGEST}"
-  printf '{"name":"audit-1","uid":"uid-op","resource_version":"1","operation_id":"audit-1","instance":"instance-a","type":"PostRestoreAudit","parameters_sha256":"%s","owner":"worker-a","attempt":1,"lease_until_unix":999999}\n' "$digest"
+  printf '{"namespace":"tenant-a-operations","name":"audit-1","uid":"uid-op","resource_version":"1","operation_id":"audit-1","instance":"instance-a","type":"PostRestoreAudit","parameters_sha256":"%s","owner":"worker-a","attempt":1,"lease_until_unix":999999}\n' "$digest"
 elif [[ " $* " == *" --action parameters "* ]]; then
   cat "$MANAGED_PARAMETERS"
 else

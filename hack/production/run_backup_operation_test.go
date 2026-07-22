@@ -20,7 +20,8 @@ func TestBackupOperationCompletesProtectedUpload(t *testing.T) {
 	require.Contains(t, log, "status\n")
 	require.Contains(t, log, "object\n")
 	require.Contains(t, log, "--action succeed")
-	require.Contains(t, log, "--namespace ops --namespace tenant-a-operations --action succeed")
+	require.Contains(t, log, "--namespace tenant-a-operations --action succeed")
+	require.NotContains(t, log, "--namespace ops --namespace tenant-a-operations")
 	require.FileExists(t, f.receipt)
 }
 

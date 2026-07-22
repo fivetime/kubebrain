@@ -18,6 +18,8 @@ func TestCertificateRotationOperationCompletesLifecycle(t *testing.T) {
 	log := f.log(t)
 	requireOrdered(t, log, "gate begin", "hook overlap", "gate overlap", "hook final", "gate complete")
 	require.Contains(t, log, "--action succeed")
+	require.Contains(t, log, "--namespace tenant-a-operations --action succeed")
+	require.NotContains(t, log, "--namespace ops --namespace tenant-a-operations")
 }
 
 func TestCertificateRotationOperationRequeuesEveryStepFailure(t *testing.T) {
@@ -118,7 +120,7 @@ set -euo pipefail
 printf 'operationctl %s\n' "$*" >>"$FAKE_DIR/actions.log"
 if [[ " $* " == *" --action claim "* ]]; then
   digest="${CLAIM_DIGEST:-$PARAMETERS_DIGEST}"
-  printf '{"name":"rotation-1","uid":"uid-op","resource_version":"1","operation_id":"rotation-1","instance":"instance-a","type":"CertificateRotation","parameters_sha256":"%s","owner":"worker-a","attempt":1,"lease_until_unix":999999}\n' "$digest"
+  printf '{"namespace":"tenant-a-operations","name":"rotation-1","uid":"uid-op","resource_version":"1","operation_id":"rotation-1","instance":"instance-a","type":"CertificateRotation","parameters_sha256":"%s","owner":"worker-a","attempt":1,"lease_until_unix":999999}\n' "$digest"
 elif [[ " $* " == *" --action heartbeat "* && ( "${HEARTBEAT_FAIL:-false}" == true || -n "${SLEEP_STEP:-}" ) ]]; then
   exit 1
 else

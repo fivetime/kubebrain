@@ -19,6 +19,8 @@ func TestRestoreCutoverOperationCompletesAllPhases(t *testing.T) {
 	requireOrdered(t, log, "phase prepare", "phase cutover", "phase verify", "phase complete")
 	require.NotContains(t, log, "phase rollback")
 	require.Contains(t, log, "--action succeed")
+	require.Contains(t, log, "--namespace tenant-a-operations --action succeed")
+	require.NotContains(t, log, "--namespace ops --namespace tenant-a-operations")
 }
 
 func TestRestoreCutoverOperationRequeuesPrepareFailure(t *testing.T) {
@@ -137,7 +139,7 @@ set -euo pipefail
 printf 'operationctl %s\n' "$*" >>"$FAKE_DIR/actions.log"
 if [[ " $* " == *" --action claim "* ]]; then
   digest="${CLAIM_DIGEST:-$PARAMETERS_DIGEST}"
-  printf '{"name":"cutover-1","uid":"uid-op","resource_version":"1","operation_id":"cutover-1","instance":"instance-a","type":"RestoreCutover","parameters_sha256":"%s","owner":"worker-a","attempt":1,"lease_until_unix":999999}\n' "$digest"
+  printf '{"namespace":"tenant-a-operations","name":"cutover-1","uid":"uid-op","resource_version":"1","operation_id":"cutover-1","instance":"instance-a","type":"RestoreCutover","parameters_sha256":"%s","owner":"worker-a","attempt":1,"lease_until_unix":999999}\n' "$digest"
 elif [[ " $* " == *" --action heartbeat "* && "${HEARTBEAT_FAIL:-true}" == true ]]; then
   exit 1
 else
