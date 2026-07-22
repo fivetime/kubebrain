@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -78,11 +79,14 @@ func (h *Handler) ServeHTTP(response http.ResponseWriter, request *http.Request)
 		http.Error(response, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	name := request.URL.Query().Get("name")
-	namespace := request.URL.Query().Get("namespace")
-	owner := request.URL.Query().Get("owner")
-	attempt, err := strconv.ParseInt(request.URL.Query().Get("attempt"), 10, 64)
+	query := request.URL.Query()
+	name, nameOK := requiredQueryValue(query, "name")
+	namespace, namespaceOK := requiredQueryValue(query, "namespace")
+	owner, ownerOK := requiredQueryValue(query, "owner")
+	rawAttempt, attemptOK := requiredQueryValue(query, "attempt")
+	attempt, err := strconv.ParseInt(rawAttempt, 10, 64)
 	if len(validation.IsDNS1123Label(namespace)) != 0 ||
+		!nameOK || !namespaceOK || !ownerOK || !attemptOK ||
 		name == "" || owner == "" || err != nil || attempt <= 0 {
 		http.Error(response, "namespace, name, owner, and positive attempt are required", http.StatusBadRequest)
 		return
@@ -98,6 +102,14 @@ func (h *Handler) ServeHTTP(response http.ResponseWriter, request *http.Request)
 	response.Header().Set("X-Content-Type-Options", "nosniff")
 	response.WriteHeader(http.StatusOK)
 	_, _ = response.Write(parameters)
+}
+
+func requiredQueryValue(query url.Values, name string) (string, bool) {
+	values, found := query[name]
+	if !found || len(values) != 1 {
+		return "", false
+	}
+	return values[0], true
 }
 
 // Ready verifies every Kubernetes API path required to serve a parameter

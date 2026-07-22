@@ -9316,6 +9316,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./pkg/server/etcd ./pkg/backend`、`go vet ./pkg/server/etcd ./pkg/backend`、
   `go test ./hack/production/... ./deploy/production`、
   `go vet ./hack/production/... ./deploy/production` 与 `git diff --check` 通过。
+- A504 收紧 operation parameter broker 必需 query 参数解析：`/v1/parameters` 的
+  `namespace`、`name`、`owner` 和 `attempt` 必须各恰好出现一次，重复参数不再被
+  `Query().Get` 静默取第一个值。这样 executor 取回动态参数时，代理、审计和服务端不会对
+  ambiguous query 产生不同解释；缺失、重复、非法 namespace 或非正 attempt 均 fail closed。
+  回归覆盖四个必需参数重复同值时返回 400 且不泄露参数内容；`go test ./hack/production/internal/parameterbroker -run 'TestHandler(ReturnsOnlyCurrentTypeBoundWorkerParameters|RejectsAmbiguousRequiredQueryParameters|FailsClosedForIdentityTypeAudienceAndFencing)' -count=20`、
+  `go test ./hack/production/... ./deploy/production`、
+  `go vet ./hack/production/... ./deploy/production` 与 `git diff --check` 通过。
 
 ### P2：运维兼容和长期验证
 

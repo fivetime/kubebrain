@@ -46,6 +46,34 @@ func TestHandlerReturnsOnlyCurrentTypeBoundWorkerParameters(t *testing.T) {
 	require.Equal(t, parameters, response.Body.Bytes())
 }
 
+func TestHandlerRejectsAmbiguousRequiredQueryParameters(t *testing.T) {
+	dynamicClient, claim, _ := claimedOperation(t)
+	handler, err := NewHandler(
+		tokenClient("system:serviceaccount:test:kubebrain-post-restore-audit-executor",
+			[]string{testAudience}, true),
+		dynamicClient, "test", testAudience, time.Second,
+	)
+	require.NoError(t, err)
+
+	base := fmt.Sprintf("/v1/parameters?namespace=test&name=%s&owner=%s&attempt=%d",
+		claim.Name, claim.Owner, claim.Attempt)
+	for _, duplicate := range []string{
+		"namespace=test",
+		"name=" + claim.Name,
+		"owner=" + claim.Owner,
+		fmt.Sprintf("attempt=%d", claim.Attempt),
+	} {
+		t.Run(duplicate, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodGet, base+"&"+duplicate, nil)
+			request.Header.Set("Authorization", "Bearer valid")
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			require.Equal(t, http.StatusBadRequest, response.Code)
+			require.NotContains(t, response.Body.String(), "audit")
+		})
+	}
+}
+
 func TestHandlerFailsClosedForIdentityTypeAudienceAndFencing(t *testing.T) {
 	tests := []struct {
 		name          string

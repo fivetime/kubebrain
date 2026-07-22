@@ -1995,7 +1995,9 @@ kubectl -n kubebrain-operations auth can-i get secrets \
 Secret list/watch、Operation list/watch/status 或 Lease 权限。projected token audience
 固定为 `kubebrain-operation-parameters`，不能复用默认 Kubernetes API token。broker
 不可用、CA 错误、token 失效或 worker Lease 过期时 executor 必须 fail closed 并 requeue，
-不得回退为直接读取 Secret。
+不得回退为直接读取 Secret。`/v1/parameters` 的 `namespace`、`name`、`owner` 和
+`attempt` 必需 query 参数必须各恰好出现一次；缺失、重复或非正 attempt 都应返回 400，
+避免代理、审计日志或客户端对重复参数取值不一致。
 
 broker 的 `/readyz` 不只检查当前 TLS 证书，还会在同一个
 `--kubernetes-request-timeout=5s` 预算内探测 TokenReview create、Operation get 和 Secret
