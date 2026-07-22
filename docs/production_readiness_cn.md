@@ -551,12 +551,13 @@ v2 receipt 可离线渲染隔离恢复清单：
 一致：顶层 `created_at` 为 RFC3339 时间，`inventory` 保留完整 preflight inventory
 format、KubeBrain/storage identity、VolumeSnapshotClass、recovery blueprint 和 PVC 字段，
 `snapshots` 保留 source PVC、snapshot/content UID、handle 和 restore size，`semantic_witness`
-包含 records 与 leases。renderer 和后续 restore verify 都使用严格 schema 解码；未知字段、
-尾随 JSON、非法 `created_at` 或 inventory format 漂移都必须 fail closed，不能为了兼容
-测试夹具而放宽生产 receipt 契约。snapshot receipt、restore receipt 和 rendered restore
-manifest 均是小型 JSON，读取上限为 4 MiB；超限必须在 schema 解码、manifest 比对或语义
-验证前 fail closed。逻辑 witness 文件可能按实例 keyspace 放大，不适用该小型 JSON 上限，
-仍由 logical backup parser 解析，并以流式 SHA-256 校验整文件 digest。
+包含 records、leases 以及小写 hex SHA-256/file SHA-256。renderer 和后续 restore verify
+都使用严格 schema 解码；未知字段、尾随 JSON、非法 `created_at` 或 inventory format
+漂移都必须 fail closed，不能为了兼容测试夹具而放宽生产 receipt 契约。snapshot receipt、
+restore receipt 和 rendered restore manifest 均是小型 JSON，读取上限为 4 MiB；超限必须
+在 schema 解码、manifest 比对或语义验证前 fail closed。逻辑 witness 文件可能按实例
+keyspace 放大，不适用该小型 JSON 上限，仍由 logical backup parser 解析，并以流式
+SHA-256 校验整文件 digest。
 
 ```shell
 go run ./hack/backup/cmd/cold-restore-render \

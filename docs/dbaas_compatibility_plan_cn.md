@@ -9705,6 +9705,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   现在 verifier 只接受小写 `[0-9a-f]{64}`；回归覆盖大写 manifest digest 被拒绝；
   `go test ./hack/backup/cmd/cold-restore-verify -run 'TestValidateReceiptChain|TestValidateRestoreManifestBinding|TestFileDigest' -count=20`
   通过。
+- A547 收紧 cold restore renderer 的 witness digest schema：`cold-restore-render`
+  读取 `kubebrain.cold-physical-snapshot.v2` 时对
+  `semantic_witness.sha256/file_sha256` 仍只检查长度 64，可能接受与 executor/verifier
+  不一致的大写或非 hex 字符串。现在 renderer 也要求小写 `[0-9a-f]{64}`；回归覆盖
+  大写 witness digest 被拒绝；
+  `go test ./hack/backup/cmd/cold-restore-render -run 'TestRenderColdRestoreManifest|TestRenderColdRestoreManifestRejectsIncompleteReceipts|TestDecodeReceiptRejectsUnknownAndTrailingJSON' -count=20`
+  通过。
 
 ### P2：运维兼容和长期验证
 

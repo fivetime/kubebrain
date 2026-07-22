@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -76,6 +77,9 @@ func TestRenderColdRestoreManifestRejectsIncompleteReceipts(t *testing.T) {
 		{name: "v1 receipt", mutate: func(r *receipt) { r.Format = "kubebrain.cold-physical-snapshot.v1" }, message: "unsupported receipt"},
 		{name: "invalid created_at", mutate: func(r *receipt) { r.CreatedAt = "not-a-time" }, message: "created_at"},
 		{name: "invalid inventory format", mutate: func(r *receipt) { r.Inventory.Format = "other" }, message: "inventory format"},
+		{name: "uppercase witness digest", mutate: func(r *receipt) {
+			r.SemanticWitness.SHA256 = strings.ToUpper(r.SemanticWitness.SHA256)
+		}, message: "semantic witness"},
 		{name: "renamed target blueprint", mutate: func(r *receipt) {
 			r.Inventory.RecoveryBlueprint.TidbCluster["metadata"].(map[string]any)["name"] = "other"
 		}, message: "identity does not match"},

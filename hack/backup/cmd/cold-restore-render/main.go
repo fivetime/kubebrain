@@ -211,7 +211,7 @@ func render(r receipt, snapshotClass, storageClass string) (map[string]any, erro
 	}
 	if r.SemanticWitness.Format != "kubebrain.logical.v2" || r.SemanticWitness.Prefix == "" ||
 		r.SemanticWitness.Revision <= 0 || r.SemanticWitness.Records <= 0 ||
-		len(r.SemanticWitness.SHA256) != 64 || len(r.SemanticWitness.FileSHA256) != 64 {
+		!validDigest(r.SemanticWitness.SHA256) || !validDigest(r.SemanticWitness.FileSHA256) {
 		return nil, errors.New("cold snapshot receipt has no complete semantic witness binding")
 	}
 	namespace := r.Inventory.Storage.Namespace
@@ -363,6 +363,21 @@ func restoreObjectName(operation, pvcName string) string {
 		prefix = prefix[:40]
 	}
 	return "kb-restore-" + prefix + "-" + hex.EncodeToString(digest[:6])
+}
+
+func validDigest(value string) bool {
+	if len(value) != 64 {
+		return false
+	}
+	for i := 0; i < len(value); i++ {
+		switch {
+		case value[i] >= '0' && value[i] <= '9':
+		case value[i] >= 'a' && value[i] <= 'f':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func cloneMap(value map[string]any) (map[string]any, error) {
