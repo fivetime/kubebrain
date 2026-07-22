@@ -8848,6 +8848,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   上的 1200 条长 TTL lease promotion-spread 测试与 empty lease Revoke-after-failover 测试均通过，
   总耗时 49.076 秒；前者证明恢复后的到期时间被分散，后者证明已删除的 metadata 不会在 leader reload
   后复活。
+- A449 在真实 A445 集群完成 long-lease checkpoint failover：600 秒 lease 等待至剩余 TTL 不超过
+  285 秒后删除当前 leader，replacement leader 恢复的 TTL 仍不超过 310 秒、GrantedTTL 仍为 600，且
+  attached key 完整可读；测试以可审计退出码在 321.067 秒通过。该结果覆盖五分钟 checkpoint 周期后的
+  恢复语义，排除了 promotion 将 lease 错误重置为完整 grant TTL 的风险。
 
 ### P1：通用服务能力
 
