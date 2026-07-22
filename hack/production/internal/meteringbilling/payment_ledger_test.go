@@ -99,6 +99,30 @@ func TestPaymentLedgerRejectsDuplicateFutureOverRefundAndSourceDrift(t *testing.
 	require.ErrorContains(t, err, "invoice source")
 }
 
+func TestBuildPaymentLedgerFromCSVRejectsOversizedInputAndTooManyTransactions(t *testing.T) {
+	invoice, invoiceSource := paymentLedgerInvoice(t)
+	generated := invoice.FinalizedAtUnix + 3600
+
+	oversized := string(EncodePaymentLedgerCSVHeader()) +
+		strings.Repeat("x", maxMeteringBillingCSVBytes+1)
+	_, err := BuildPaymentLedgerFromCSV(
+		strings.NewReader(oversized), invoice, invoiceSource,
+		PaymentLedgerImportOptions{ID: "payments-july", GeneratedAtUnix: generated},
+	)
+	require.ErrorContains(t, err, "payment ledger CSV exceeds")
+
+	var many strings.Builder
+	many.Write(EncodePaymentLedgerCSVHeader())
+	for i := 0; i <= maxMeteringBillingCSVDataRecords; i++ {
+		fmt.Fprintf(&many, "stripe,txn-%06d,payment,1,%d\n", i, generated-1)
+	}
+	_, err = BuildPaymentLedgerFromCSV(
+		strings.NewReader(many.String()), invoice, invoiceSource,
+		PaymentLedgerImportOptions{ID: "payments-july", GeneratedAtUnix: generated},
+	)
+	require.ErrorContains(t, err, "transactions")
+}
+
 func TestBuildPaymentLedgerFromCSVWithInvoiceStatusRejectsSourceBytesDrift(t *testing.T) {
 	invoice, invoiceSource := paymentLedgerInvoice(t)
 	path := filepath.Join(t.TempDir(), "invoice.json")

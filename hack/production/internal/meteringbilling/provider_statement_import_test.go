@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -65,6 +66,28 @@ func TestBuildProviderStatementFromCSVRejectsUnknownHeaderDuplicateAndUnclassifi
 		"aws,acct-a,invoice,line-001,object_storage,,,10\n"
 	_, err = BuildProviderStatementFromCSV(strings.NewReader(unclassified), options)
 	require.ErrorContains(t, err, "bucket-scoped")
+}
+
+func TestBuildProviderStatementFromCSVRejectsOversizedInputAndTooManyLines(t *testing.T) {
+	start := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	options := ProviderStatementImportOptions{
+		ID: "provider-july", Instance: "instance-a",
+		PeriodStartUnix: start.Unix(), PeriodEndUnix: start.Add(24 * time.Hour).Unix(),
+		Currency: "USD", IssuedAtUnix: start.Add(48 * time.Hour).Unix(),
+	}
+
+	oversized := string(EncodeProviderStatementCSVHeader()) +
+		strings.Repeat("x", maxMeteringBillingCSVBytes+1)
+	_, err := BuildProviderStatementFromCSV(strings.NewReader(oversized), options)
+	require.ErrorContains(t, err, "provider statement CSV exceeds")
+
+	var many strings.Builder
+	many.Write(EncodeProviderStatementCSVHeader())
+	for i := 0; i <= maxMeteringBillingCSVDataRecords; i++ {
+		fmt.Fprintf(&many, "aws,acct-a,invoice,line-%06d,compute,,,1\n", i)
+	}
+	_, err = BuildProviderStatementFromCSV(strings.NewReader(many.String()), options)
+	require.ErrorContains(t, err, "line items")
 }
 
 func TestProviderStatementPublisherValidatesCanonicalStatementAndArchivesExactReceipt(t *testing.T) {

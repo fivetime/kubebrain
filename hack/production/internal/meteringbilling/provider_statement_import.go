@@ -43,27 +43,39 @@ func BuildProviderStatementFromCSV(
 	if reader == nil {
 		return ProviderStatement{}, errors.New("provider statement CSV input is empty")
 	}
-	csvReader := csv.NewReader(reader)
-	csvReader.FieldsPerRecord = -1
-	records, err := csvReader.ReadAll()
-	if err != nil {
-		return ProviderStatement{}, fmt.Errorf("read provider statement CSV: %w", err)
-	}
-	if len(records) < 2 {
+	csvReader, limited := newMeteringBillingCSVReader(reader)
+	header, err := readMeteringBillingCSVRecord(csvReader, limited, "provider statement")
+	if err == io.EOF {
 		return ProviderStatement{}, errors.New("provider statement CSV lacks line items")
 	}
-	if !slices.Equal(records[0], providerStatementCSVHeader) {
+	if err != nil {
+		return ProviderStatement{}, err
+	}
+	firstRecord, err := readMeteringBillingCSVRecord(csvReader, limited, "provider statement")
+	if err == io.EOF {
+		return ProviderStatement{}, errors.New("provider statement CSV lacks line items")
+	}
+	if err != nil {
+		return ProviderStatement{}, err
+	}
+	if !slices.Equal(header, providerStatementCSVHeader) {
 		return ProviderStatement{}, errors.New("provider statement CSV header is unsupported")
 	}
-	lines := make([]ProviderStatementLine, 0, len(records)-1)
+	lines := make([]ProviderStatementLine, 0)
 	var total int64
-	for index, record := range records[1:] {
+	addLine := func(record []string, lineNumber int) error {
+		if len(lines) >= maxMeteringBillingCSVDataRecords {
+			return fmt.Errorf(
+				"provider statement CSV exceeds %d line items",
+				maxMeteringBillingCSVDataRecords,
+			)
+		}
 		if len(record) != len(providerStatementCSVHeader) {
-			return ProviderStatement{}, fmt.Errorf("provider statement CSV line %d is incomplete", index+2)
+			return fmt.Errorf("provider statement CSV line %d is incomplete", lineNumber)
 		}
 		amount, parseErr := strconv.ParseInt(record[7], 10, 64)
 		if parseErr != nil {
-			return ProviderStatement{}, fmt.Errorf("provider statement CSV line %d amount is invalid", index+2)
+			return fmt.Errorf("provider statement CSV line %d amount is invalid", lineNumber)
 		}
 		line := ProviderStatementLine{
 			Provider: record[0], ProviderAccountID: record[1],
@@ -72,14 +84,30 @@ func BuildProviderStatementFromCSV(
 			AmountMicros: amount,
 		}
 		if err := line.validate(); err != nil {
-			return ProviderStatement{}, fmt.Errorf("provider statement CSV line %d: %w", index+2, err)
+			return fmt.Errorf("provider statement CSV line %d: %w", lineNumber, err)
 		}
 		next, ok := addInt64(total, line.AmountMicros)
 		if !ok {
-			return ProviderStatement{}, errors.New("provider statement CSV total overflows int64")
+			return errors.New("provider statement CSV total overflows int64")
 		}
 		total = next
 		lines = append(lines, line)
+		return nil
+	}
+	if err := addLine(firstRecord, 2); err != nil {
+		return ProviderStatement{}, err
+	}
+	for lineNumber := 3; ; lineNumber++ {
+		record, err := readMeteringBillingCSVRecord(csvReader, limited, "provider statement")
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return ProviderStatement{}, err
+		}
+		if err := addLine(record, lineNumber); err != nil {
+			return ProviderStatement{}, err
+		}
 	}
 	sort.Slice(lines, func(i, j int) bool {
 		return providerLineSortKey(lines[i]) < providerLineSortKey(lines[j])

@@ -82,39 +82,67 @@ func BuildPaymentLedgerFromCSV(
 	if err := validateSource(invoiceSource, InvoiceFormat, invoice.ID, invoice.PeriodEndUnix); err != nil {
 		return PaymentLedger{}, fmt.Errorf("invoice source: %w", err)
 	}
-	csvReader := csv.NewReader(reader)
-	csvReader.FieldsPerRecord = -1
-	records, err := csvReader.ReadAll()
-	if err != nil {
-		return PaymentLedger{}, fmt.Errorf("read payment ledger CSV: %w", err)
-	}
-	if len(records) < 2 {
+	csvReader, limited := newMeteringBillingCSVReader(reader)
+	header, err := readMeteringBillingCSVRecord(csvReader, limited, "payment ledger")
+	if err == io.EOF {
 		return PaymentLedger{}, errors.New("payment ledger CSV lacks transactions")
 	}
-	if !slices.Equal(records[0], paymentLedgerCSVHeader) {
+	if err != nil {
+		return PaymentLedger{}, err
+	}
+	firstRecord, err := readMeteringBillingCSVRecord(csvReader, limited, "payment ledger")
+	if err == io.EOF {
+		return PaymentLedger{}, errors.New("payment ledger CSV lacks transactions")
+	}
+	if err != nil {
+		return PaymentLedger{}, err
+	}
+	if !slices.Equal(header, paymentLedgerCSVHeader) {
 		return PaymentLedger{}, errors.New("payment ledger CSV header is unsupported")
 	}
-	entries := make([]PaymentEntry, 0, len(records)-1)
-	for index, record := range records[1:] {
+	entries := make([]PaymentEntry, 0)
+	addEntry := func(record []string, lineNumber int) error {
+		if len(entries) >= maxMeteringBillingCSVDataRecords {
+			return fmt.Errorf(
+				"payment ledger CSV exceeds %d transactions",
+				maxMeteringBillingCSVDataRecords,
+			)
+		}
 		if len(record) != len(paymentLedgerCSVHeader) {
-			return PaymentLedger{}, fmt.Errorf("payment ledger CSV line %d is incomplete", index+2)
+			return fmt.Errorf("payment ledger CSV line %d is incomplete", lineNumber)
 		}
 		amount, parseErr := strconv.ParseInt(record[3], 10, 64)
 		if parseErr != nil {
-			return PaymentLedger{}, fmt.Errorf("payment ledger CSV line %d amount is invalid", index+2)
+			return fmt.Errorf("payment ledger CSV line %d amount is invalid", lineNumber)
 		}
 		occurredAt, parseErr := strconv.ParseInt(record[4], 10, 64)
 		if parseErr != nil {
-			return PaymentLedger{}, fmt.Errorf("payment ledger CSV line %d timestamp is invalid", index+2)
+			return fmt.Errorf("payment ledger CSV line %d timestamp is invalid", lineNumber)
 		}
 		entry := PaymentEntry{
 			Processor: record[0], ExternalTransactionID: record[1], Kind: record[2],
 			AmountMicros: amount, OccurredAtUnix: occurredAt,
 		}
 		if err := entry.validate(options.GeneratedAtUnix); err != nil {
-			return PaymentLedger{}, fmt.Errorf("payment ledger CSV line %d: %w", index+2, err)
+			return fmt.Errorf("payment ledger CSV line %d: %w", lineNumber, err)
 		}
 		entries = append(entries, entry)
+		return nil
+	}
+	if err := addEntry(firstRecord, 2); err != nil {
+		return PaymentLedger{}, err
+	}
+	for lineNumber := 3; ; lineNumber++ {
+		record, err := readMeteringBillingCSVRecord(csvReader, limited, "payment ledger")
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return PaymentLedger{}, err
+		}
+		if err := addEntry(record, lineNumber); err != nil {
+			return PaymentLedger{}, err
+		}
 	}
 	sort.Slice(entries, func(i, j int) bool {
 		return paymentEntrySortKey(entries[i]) < paymentEntrySortKey(entries[j])

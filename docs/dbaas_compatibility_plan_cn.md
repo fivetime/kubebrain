@@ -9363,6 +9363,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   返回超过 1 MiB body；`go test ./hack/production/internal/meteringarchive -run 'TestCollector(BuildsCanonicalCompleteSample|RejectsOversizedPrometheusResponse|FailsClosedOnIncompleteDuplicateStaleAndInvalidValues|AcceptsPrometheusResponseExtensions)' -count=20`、
   `go test ./hack/production/... ./deploy/production`、
   `go vet ./hack/production/... ./deploy/production` 与 `git diff --check` 通过。
+- A511 收紧 metering billing CSV 导入边界：provider statement 和 payment ledger 不再用
+  `csv.ReadAll()` 一次性读取完整外部 CSV，而是通过共享 bounded reader 流式处理，并同时
+  限制输入最多 16 MiB、数据行最多 100,000 条。超限输入会在写出 canonical settlement
+  artifact 或启动 Object Lock 发布前 fail closed，避免异常账单文件让导入进程无界分配内存。
+  回归覆盖 provider/payment 两条路径的 oversized input 与超行数输入；`go test ./hack/production/internal/meteringbilling -run 'TestBuild(ProviderStatement|PaymentLedger)FromCSV|TestPaymentLedgerRejects|TestProviderStatementPublisher' -count=5`、
+  `go test ./hack/production/internal/meteringbilling`、`go test ./hack/production/... ./deploy/production`、
+  `go vet ./hack/production/... ./deploy/production` 与 `git diff --check` 通过。
 
 ### P2：运维兼容和长期验证
 

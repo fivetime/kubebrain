@@ -984,6 +984,8 @@ statement total 和 gross margin。statement source 与 invoice source 的 SHA-2
 匹配本地 canonical artifact；source receipt 与下载字节不一致、retention 不足、账期/币种/
 实例不一致或 source 漂移都会 fail closed。provider statement publisher 发布前也会把已校验
 statement 重写到临时 canonical frozen copy，Object Lock executor 不读取可变原始输入路径。
+normalized provider statement CSV 导入最多接受 16 MiB 输入和 100,000 条数据行；超限会在生成
+canonical settlement artifact 前 fail closed。
 
 外部收款系统的结果通过 normalized payment ledger 固化，而不是修改 invoice。
 `kubebrain.metering-payment-ledger.v1` 绑定 finalized invoice 的 exact-version source、
@@ -996,7 +998,8 @@ net paid 超过 invoice total 或 source 漂移都会 fail closed。生产路径
 canonical invoice。发布前会重新校验 canonical JSON、invoice source retention，把 ledger 重写到
 临时 canonical publish input；publisher 还会再生成自己的 frozen copy 并校验上传 receipt，避免
 用户 output path 被替换后污染 Object Lock。该 ledger 是应收账款状态证据，不直接发起收款、
-退款或催收。
+退款或催收。normalized payment ledger CSV 导入同样最多接受 16 MiB 输入和 100,000 条交易；
+超限不会写出 ledger 或启动 Object Lock 发布。
 
 法规发票编号由 `kubebrain.metering-invoice-number-assignment.v1` 固化为本地证据。
 `kubebrain-metering-invoice-number` 从 Object Lock exact-read finalized invoice，绑定 read
