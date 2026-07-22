@@ -86,7 +86,8 @@ IFS=$'\t' read -r state_kind state_format state_instance cutover_operation state
   "$state_service" == "$SERVICE_NAME" && "$state_target" == "$TARGET_INSTANCE" &&
   -n "$source_instance" && "$source_instance" != "$state_target" &&
   -n "$source_prefix" && -n "$target_prefix" && "$source_prefix" != "$target_prefix" &&
-  -n "$state_service_uid" && -n "$artifact_sha" && "$snapshot_revision" =~ ^[1-9][0-9]*$ ]] ||
+  -n "$state_service_uid" && "$artifact_sha" =~ ^[a-f0-9]{64}$ &&
+  "$snapshot_revision" =~ ^[1-9][0-9]*$ ]] ||
   { echo "cutover state does not match the audit operation" >&2; exit 1; }
 cutover_state_sha="$(sha256sum "$CUTOVER_STATE_INPUT" | cut -d " " -f1)"
 
@@ -101,6 +102,7 @@ cutover_state_sha="$(sha256sum "$CUTOVER_STATE_INPUT" | cut -d " " -f1)"
     .operation_id == $operation and .instance == $instance and
     .service_namespace == $namespace and .service_name == $service and
     .service_uid == $uid and .source_instance == $source and .target_instance == $target and
+    (.artifact_sha256 | type == "string" and test("^[a-f0-9]{64}$")) and
     .artifact_sha256 == $sha and .snapshot_revision == $revision and
     .cutover_state_sha256 == $state_sha and
     (.replicas | type == "number" and . > 0 and . == floor) and
@@ -177,7 +179,9 @@ if [[ -e "$receipt_file" ]]; then
       .format == "kubebrain.post-restore-audit.receipt.v1" and
       .operation_id == $operation and .instance == $instance and
       .cutover_operation_id == $cutover and .service_uid == $uid and
-      .target_instance == $target and .artifact_sha256 == $sha and
+      .target_instance == $target and
+      (.artifact_sha256 | type == "string" and test("^[a-f0-9]{64}$")) and
+      .artifact_sha256 == $sha and
       .snapshot_revision == $snapshot and .replicas == $replicas and
       .duration_seconds == $duration and .interval_seconds == $interval and
       .topology_unchanged == true and .all_probes_succeeded == true and

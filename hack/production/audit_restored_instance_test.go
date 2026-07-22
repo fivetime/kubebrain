@@ -13,6 +13,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+const auditArtifactSHA256 = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+
 func TestPostRestoreAuditPublishesReceiptAndRechecksOnRetry(t *testing.T) {
 	f := newAuditFixture(t)
 	f.run(t, true, "")
@@ -34,13 +36,32 @@ func TestPostRestoreAuditPublishesReceiptAndRechecksOnRetry(t *testing.T) {
 func TestPostRestoreAuditRejectsExistingReceiptWithUnknownFields(t *testing.T) {
 	f := newAuditFixture(t)
 	receiptPath := filepath.Join(f.state, "audit-1.receipt.json")
-	receipt := `{"all_probes_succeeded":true,"artifact_sha256":"abc123","completed":true,"completed_at_unix":2,"cutover_operation_id":"cutover-1","duration_seconds":1,"first_probe_revision":1,"format":"kubebrain.post-restore-audit.receipt.v1","instance":"instance-a","interval_seconds":1,"last_probe_revision":2,"operation_id":"audit-1","replicas":2,"samples":2,"service_uid":"uid-service","snapshot_revision":42,"started_at_unix":1,"target_instance":"target","topology_unchanged":true,"unexpected":true}` + "\n"
+	receipt := `{"all_probes_succeeded":true,"artifact_sha256":"` + auditArtifactSHA256 + `","completed":true,"completed_at_unix":2,"cutover_operation_id":"cutover-1","duration_seconds":1,"first_probe_revision":1,"format":"kubebrain.post-restore-audit.receipt.v1","instance":"instance-a","interval_seconds":1,"last_probe_revision":2,"operation_id":"audit-1","replicas":2,"samples":2,"service_uid":"uid-service","snapshot_revision":42,"started_at_unix":1,"target_instance":"target","topology_unchanged":true,"unexpected":true}` + "\n"
 	require.NoError(t, os.WriteFile(receiptPath, []byte(receipt), 0o600))
 
 	f.run(t, false, "", "existing post-restore audit receipt does not match the operation")
 	data, err := os.ReadFile(receiptPath)
 	require.NoError(t, err)
 	require.Equal(t, receipt, string(data))
+}
+
+func TestPostRestoreAuditRejectsCutoverStateWithInvalidArtifactDigest(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		digest string
+	}{
+		{name: "short", digest: "abc123"},
+		{name: "uppercase", digest: strings.ToUpper(auditArtifactSHA256)},
+		{name: "non-hex", digest: strings.Repeat("g", 64)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newAuditFixture(t)
+			f.replaceCutoverArtifactDigest(t, tc.digest)
+
+			f.run(t, false, "", "cutover state does not match the audit operation")
+			require.NoFileExists(t, filepath.Join(f.state, "audit-1.receipt.json"))
+		})
+	}
 }
 
 func TestPostRestoreAuditFailsClosed(t *testing.T) {
@@ -81,7 +102,7 @@ func newAuditFixture(t *testing.T) *auditFixture {
 	require.NoError(t, os.Mkdir(state, 0o700))
 	cutoverState := filepath.Join(dir, "cutover.state")
 	require.NoError(t, os.WriteFile(cutoverState, []byte(
-		"HEADER\tkubebrain.restore-cutover.state.v1\tinstance-a\tcutover-1\tns-a\tkubebrain\tsource\ttarget\tuid-service\tabc123\t42\t/registry\t/restored\n"+
+		"HEADER\tkubebrain.restore-cutover.state.v1\tinstance-a\tcutover-1\tns-a\tkubebrain\tsource\ttarget\tuid-service\t"+auditArtifactSHA256+"\t42\t/registry\t/restored\n"+
 			"SERVICE\tuid-service\t10\n"+
 			"POD\ttarget\tkb-target-0\tuid-target-0\t0\n"+
 			"POD\ttarget\tkb-target-1\tuid-target-1\t0\n"), 0o600))
@@ -92,11 +113,11 @@ func newAuditFixture(t *testing.T) *auditFixture {
 	require.NoError(t, os.WriteFile(cutoverReceipt, []byte(fmt.Sprintf(`{
 	  "format":"kubebrain.restore-cutover.receipt.v1","operation_id":"cutover-1",
 	  "instance":"instance-a","service_namespace":"ns-a","service_name":"kubebrain",
-	  "service_uid":"uid-service","source_instance":"source","target_instance":"target","artifact_sha256":"abc123",
+	  "service_uid":"uid-service","source_instance":"source","target_instance":"target","artifact_sha256":"%s",
 	  "cutover_state_sha256":"%x",
 	  "snapshot_revision":42,"replicas":2,"pod_uids_unchanged":true,"endpoint_uids_matched":true,
 	  "public_data_verified":true,"completed_at_unix":100
-	}`, stateSHA)), 0o600))
+	}`, auditArtifactSHA256, stateSHA)), 0o600))
 
 	kubectl := filepath.Join(dir, "kubectl")
 	writeTrafficExecutable(t, kubectl, `#!/usr/bin/env bash
@@ -138,6 +159,22 @@ printf '{"format":"kubebrain.etcd-audit-probe.v1","put_revision":%d,"read_revisi
 		"AUDIT_DURATION_SECONDS=1", "AUDIT_INTERVAL_SECONDS=1", "MIN_SAMPLES=2",
 		"KUBECTL=" + kubectl, "PROBE=" + probe, "FAKE_DIR=" + dir,
 	}}
+}
+
+func (f *auditFixture) replaceCutoverArtifactDigest(t *testing.T, digest string) {
+	t.Helper()
+	statePath := filepath.Join(f.dir, "cutover.state")
+	state := strings.Replace(string(mustRead(t, statePath)), auditArtifactSHA256, digest, 1)
+	require.NoError(t, os.WriteFile(statePath, []byte(state), 0o600))
+
+	receiptPath := filepath.Join(f.dir, "cutover.json")
+	var receipt map[string]any
+	require.NoError(t, json.Unmarshal(mustRead(t, receiptPath), &receipt))
+	receipt["artifact_sha256"] = digest
+	receipt["cutover_state_sha256"] = fileDigest(t, statePath)
+	encoded, err := json.Marshal(receipt)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(receiptPath, append(encoded, '\n'), 0o600))
 }
 
 func (f *auditFixture) run(t *testing.T, ok bool, extra string, outputs ...string) {

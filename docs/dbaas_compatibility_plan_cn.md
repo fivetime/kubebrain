@@ -9721,6 +9721,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./hack/production -run 'TestRestoreTrafficCutover' -count=10 -timeout=180s`、
   `go test ./hack/production -run 'Test(RestoreTrafficCutover|RestoreCutoverOperation)' -count=5 -timeout=180s`
   通过。
+- A549 收紧 post-restore audit cutover evidence digest schema：
+  `audit-restored-instance.sh` 读取 `kubebrain.restore-cutover.state.v1` 时仍只要求
+  artifact digest 非空；如果 state 与 `kubebrain.restore-cutover.receipt.v1` 同时携带
+  自洽但非法的短 digest、大写 digest 或非 hex digest，旧逻辑可能继续发布
+  `kubebrain.post-restore-audit.receipt.v1`。现在 audit 入口对 cutover state、cutover
+  receipt 和既有 audit receipt 都要求小写 `[a-f0-9]{64}`；fixture 改用真实 SHA-256
+  形状，并覆盖非法 digest 在生成审计 receipt 前被拒绝。回归：
+  `go test ./hack/production -run 'TestPostRestoreAudit' -count=10 -timeout=180s` 通过。
 
 ### P2：运维兼容和长期验证
 
