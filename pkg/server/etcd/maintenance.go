@@ -347,8 +347,8 @@ func (s *RPCServer) requireAuthenticated(ctx context.Context, root bool) error {
 	if err != nil {
 		return err
 	}
-	if root && !caller.isRoot() {
-		return rpctypes.ErrPermissionDenied
+	if root && caller != nil {
+		return caller.adminError()
 	}
 	return nil
 }

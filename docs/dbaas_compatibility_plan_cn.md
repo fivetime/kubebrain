@@ -10087,6 +10087,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   会签发包含最新 auth revision 的 token。回归：
   `go test ./pkg/server/etcd -run TestAuthTokenAuthenticateRetriesAfterAuthRevisionChange -count=1`
   通过。
+- A587 对齐 root-only maintenance/member RPC 的 client-cert auth 错误码：
+  对照 `/root/etcd/server/etcdserver/api/v3rpc/maintenance.go`、
+  `/root/etcd/server/etcdserver/server.go` 与
+  `/root/etcd/server/auth/store.go`，上游 Status/Alarm GET 等读类只要求存在
+  auth info，但 Defragment/Hash/HashKV/Snapshot/MoveLeader/Downgrade 以及 member
+  mutation 会调用 `IsAdminPermitted`，因此空 CommonName 返回 `ErrUserEmpty`，
+  CommonName 非空但用户不存在返回 `ErrUserNotFound`，非 root 用户返回
+  `ErrPermissionDenied`。KubeBrain 旧的 `requireAuthenticated(root=true)` 只用
+  `isRoot` 布尔值，会把前两类证书身份折叠成 permission denied。现在 root-required
+  分支复用 `adminError`，同时 auth disabled 和读类 RPC 行为保持不变。回归：
+  `go test ./pkg/server/etcd -run 'Test(Maintenance|Member)RootAuthorizationClientCertificateErrorsMatchEtcd' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

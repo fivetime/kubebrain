@@ -334,3 +334,20 @@ func TestMemberAuthorizationMatchesEtcd(t *testing.T) {
 	_, err = server.MemberAdd(rootCtx, &etcdserverpb.MemberAddRequest{})
 	require.Equal(t, codes.Unimplemented, status.Code(err))
 }
+
+func TestMemberRootAuthorizationClientCertificateErrorsMatchEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	setupAuthKVUser(t, server)
+	server.SetClientCertAuth(true)
+	ctx := context.Background()
+
+	_, err := server.MemberAdd(verifiedTLSContext(ctx, ""), &etcdserverpb.MemberAddRequest{})
+	require.ErrorIs(t, err, rpctypes.ErrUserEmpty)
+	_, err = server.MemberAdd(verifiedTLSContext(ctx, "external-cn"), &etcdserverpb.MemberAddRequest{})
+	require.ErrorIs(t, err, rpctypes.ErrUserNotFound)
+	_, err = server.MemberAdd(verifiedTLSContext(ctx, "alice"), &etcdserverpb.MemberAddRequest{})
+	require.ErrorIs(t, err, rpctypes.ErrPermissionDenied)
+	_, err = server.MemberAdd(verifiedTLSContext(ctx, "root"), &etcdserverpb.MemberAddRequest{})
+	require.Equal(t, codes.Unimplemented, status.Code(err))
+}

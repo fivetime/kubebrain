@@ -79,3 +79,20 @@ func TestMaintenanceAuthorizationMatchesEtcd(t *testing.T) {
 	require.Equal(t, codes.Unimplemented, status.Code(err))
 	require.Equal(t, downgradeUnsupportedMessage, status.Convert(err).Message())
 }
+
+func TestMaintenanceRootAuthorizationClientCertificateErrorsMatchEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	setupAuthKVUser(t, server)
+	server.SetClientCertAuth(true)
+	ctx := context.Background()
+
+	_, err := server.Defragment(verifiedTLSContext(ctx, ""), &etcdserverpb.DefragmentRequest{})
+	require.ErrorIs(t, err, rpctypes.ErrUserEmpty)
+	_, err = server.Defragment(verifiedTLSContext(ctx, "external-cn"), &etcdserverpb.DefragmentRequest{})
+	require.ErrorIs(t, err, rpctypes.ErrUserNotFound)
+	_, err = server.Defragment(verifiedTLSContext(ctx, "alice"), &etcdserverpb.DefragmentRequest{})
+	require.ErrorIs(t, err, rpctypes.ErrPermissionDenied)
+	_, err = server.Defragment(verifiedTLSContext(ctx, "root"), &etcdserverpb.DefragmentRequest{})
+	require.NoError(t, err)
+}
