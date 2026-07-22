@@ -42,6 +42,9 @@ func NewArchiveProcessor(
 	if client == nil || executor == "" || objectStoreID == "" || bucket == "" || prefix == "" {
 		return nil, errors.New("operation archive processor configuration is incomplete")
 	}
+	if !validObjectKeyPrefix(prefix) {
+		return nil, errors.New("operation archive object prefix must be a normalized relative key prefix")
+	}
 	if retentionMode != "COMPLIANCE" && retentionMode != "GOVERNANCE" {
 		return nil, errors.New("operation archive retention mode must be COMPLIANCE or GOVERNANCE")
 	}
@@ -55,6 +58,16 @@ func NewArchiveProcessor(
 	}
 	processor.run = processor.runCommand
 	return processor, nil
+}
+
+func validObjectKeyPrefix(prefix string) bool {
+	if prefix == "" || strings.TrimSpace(prefix) != prefix || strings.ContainsAny(prefix, " \t\r\n") {
+		return false
+	}
+	if prefix == "." || prefix == ".." || strings.HasPrefix(prefix, "../") {
+		return false
+	}
+	return path.Clean(prefix) == prefix
 }
 
 func (p *ArchiveProcessor) Process(ctx context.Context, object *unstructured.Unstructured) error {

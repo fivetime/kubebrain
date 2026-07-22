@@ -10342,6 +10342,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   closed。回归：
   `go test ./hack/production/operationaudit ./hack/production/internal/operationauditbuilder -run 'TestOperationAuditRejectsNonterminalAndInvalidReceipt|TestFromOperationBindsImmutableSpecAndTerminalStatus' -count=1`
   通过。
+- A611 收紧 operation audit archive object prefix：
+  operation archiver 归档 key 由 `object-prefix/namespace/uid.json` 组成，但旧配置只把
+  prefix 去掉首尾 `/` 后检查非空；`../audit`、`audit/../other`、重复分隔符或空白前缀
+  会直接进入 Object Lock executor，并被后续 release receipt 视为“请求一致”。现在
+  `NewArchiveProcessor` 要求 prefix 是规范相对 key prefix：无空白、无 `.`/`..` 段、无
+  重复分隔，仍允许现有 `/audit/` 形式标准化为 `audit`。回归：
+  `go test ./hack/production/internal/operationarchiver -run 'TestArchiveProcessor(UsesStableIdentityAndReleasesFinalizer|RejectsUnsafeObjectPrefix)' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

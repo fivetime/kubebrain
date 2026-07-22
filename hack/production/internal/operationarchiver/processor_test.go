@@ -62,6 +62,33 @@ func TestArchiveProcessorUsesStableIdentityAndReleasesFinalizer(t *testing.T) {
 	require.Equal(t, "version-a", updated.GetAnnotations()[operationaudit.VersionAnnotation])
 }
 
+func TestArchiveProcessorRejectsUnsafeObjectPrefix(t *testing.T) {
+	client := fake.NewSimpleDynamicClient(runtime.NewScheme())
+	processor, err := NewArchiveProcessor(
+		client, "/executor", "store-a", "bucket-a", "/audit/", "COMPLIANCE", time.Hour,
+	)
+	require.NoError(t, err)
+	require.Equal(t, "audit", processor.prefix)
+
+	for _, prefix := range []string{
+		".",
+		"..",
+		"../audit",
+		"audit/../other",
+		"audit//tenant",
+		"audit key",
+		"audit\tkey",
+	} {
+		t.Run(prefix, func(t *testing.T) {
+			processor, err := NewArchiveProcessor(
+				client, "/executor", "store-a", "bucket-a", prefix, "COMPLIANCE", time.Hour,
+			)
+			require.Nil(t, processor)
+			require.ErrorContains(t, err, "normalized relative key prefix")
+		})
+	}
+}
+
 func TestArchiveProcessorRejectsExpiredRetentionBeforeExecutor(t *testing.T) {
 	object := terminalOperation()
 	client := fake.NewSimpleDynamicClient(runtime.NewScheme(), object)
