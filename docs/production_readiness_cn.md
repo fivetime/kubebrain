@@ -948,8 +948,9 @@ invoice total、payment/refund/chargeback 交易、net paid 和 remaining balanc
 processor/外部交易 ID 排序且无重复，金额必须为正，未来交易、退款/chargeback 超过已收款、
 net paid 超过 invoice total 或 source 漂移都会 fail closed。生产路径使用
 `kubebrain-metering-payment-ledger` 从 Object Lock exact-read finalized invoice，并以 read receipt
-生成 invoice source；离线模式才接受本地 invoice/source。发布前会重新校验 canonical JSON、
-invoice source retention 和上传 receipt。该 ledger 是应收账款状态证据，不直接发起收款、退款或催收。
+生成 invoice source；离线模式才接受本地 invoice/source，且 source SHA-256/bytes 必须匹配本地
+canonical invoice。发布前会重新校验 canonical JSON、invoice source retention 和上传 receipt。
+该 ledger 是应收账款状态证据，不直接发起收款、退款或催收。
 
 该 invoice 是 KubeBrain 数据面资源结算证据，不是完整税务/收款系统。供应商请求
 分类/exporter 与账单的周期性对账、税率计算、折扣规则、真实支付渠道、发票编号法规、

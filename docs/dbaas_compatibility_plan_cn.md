@@ -9016,6 +9016,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./hack/production/... ./deploy/production` 与
   `go vet ./hack/production/... ./deploy/production` 通过。该项减少手工 source 拼装风险，仍不替代
   真实支付渠道或外部总账过账。
+- A466 收紧 payment ledger 离线演练路径：新增
+  `BuildPaymentLedgerFromCSVWithInvoiceStatus`，要求调用方提供的 invoice source 的 SHA-256 与
+  bytes 精确等于本地 canonical invoice 文件；`kubebrain-metering-payment-ledger --invoice
+  --invoice-source` 也改走该 helper。这样 source JSON 即使格式、artifact ID 和 retention 合法，
+  只要不是这份 invoice 字节的 exact-version source 就会 fail closed。focused negative test 覆盖
+  source digest 漂移；`go test ./hack/production/... ./deploy/production` 与
+  `go vet ./hack/production/... ./deploy/production` 通过。该项把离线恢复/财务演练的证据合同
+  与生产 exact-read 路径对齐。
 
 ### P2：运维兼容和长期验证
 

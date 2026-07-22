@@ -99,6 +99,26 @@ func TestPaymentLedgerRejectsDuplicateFutureOverRefundAndSourceDrift(t *testing.
 	require.ErrorContains(t, err, "invoice source")
 }
 
+func TestBuildPaymentLedgerFromCSVWithInvoiceStatusRejectsSourceBytesDrift(t *testing.T) {
+	invoice, invoiceSource := paymentLedgerInvoice(t)
+	path := filepath.Join(t.TempDir(), "invoice.json")
+	invoiceStatus, err := WriteInvoiceAtomic(path, invoice)
+	require.NoError(t, err)
+	invoiceSource.ArtifactSHA256 = strings.Repeat("b", 64)
+	_, err = BuildPaymentLedgerFromCSVWithInvoiceStatus(
+		strings.NewReader(
+			string(EncodePaymentLedgerCSVHeader())+
+				fmt.Sprintf("stripe,txn-001,payment,10,%d\n", invoice.FinalizedAtUnix+1),
+		),
+		invoiceStatus,
+		invoiceSource,
+		PaymentLedgerImportOptions{
+			ID: "payments-july", GeneratedAtUnix: invoice.FinalizedAtUnix + 2,
+		},
+	)
+	require.ErrorContains(t, err, "invoice bytes")
+}
+
 func TestPaymentLedgerPublisherArchivesExactReceipt(t *testing.T) {
 	invoice, invoiceSource := paymentLedgerInvoice(t)
 	generated := invoice.FinalizedAtUnix + 3600

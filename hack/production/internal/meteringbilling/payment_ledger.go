@@ -141,6 +141,19 @@ func BuildPaymentLedgerFromCSV(
 	return ledger, nil
 }
 
+func BuildPaymentLedgerFromCSVWithInvoiceStatus(
+	reader io.Reader,
+	invoiceStatus SettlementStatus[Invoice],
+	invoiceSource Source,
+	options PaymentLedgerImportOptions,
+) (PaymentLedger, error) {
+	if invoiceSource.ArtifactSHA256 != invoiceStatus.SHA256 ||
+		invoiceSource.ObjectBytes != invoiceStatus.Bytes {
+		return PaymentLedger{}, errors.New("payment ledger invoice source does not match invoice bytes")
+	}
+	return BuildPaymentLedgerFromCSV(reader, invoiceStatus.Value, invoiceSource, options)
+}
+
 func (l PaymentLedger) Validate() error {
 	if l.Format != PaymentLedgerFormat || !versionPattern.MatchString(l.ID) ||
 		!versionPattern.MatchString(l.InvoiceID) ||

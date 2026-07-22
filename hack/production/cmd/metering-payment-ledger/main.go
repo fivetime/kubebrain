@@ -81,9 +81,9 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	ledger, err := meteringbilling.BuildPaymentLedgerFromCSV(
+	ledger, err := meteringbilling.BuildPaymentLedgerFromCSVWithInvoiceStatus(
 		input,
-		invoiceStatus.Value,
+		invoiceStatus,
 		invoiceSource,
 		meteringbilling.PaymentLedgerImportOptions{
 			ID: id, GeneratedAtUnix: generatedAtUnix,
