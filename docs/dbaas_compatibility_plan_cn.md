@@ -9941,6 +9941,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./pkg/server/etcd -run 'Test(ParseInitialCluster|StaticMemberID|MemberList|StatusLeader)' -count=1`、
   `go test ./cmd/option -run 'TestInitialCluster' -count=1` 和
   `go test ./hack/production -run 'TestValidateInstanceReady' -count=1` 通过。
+- A571 固定 HTTP gateway 代理请求身份标记：
+  A24 已禁止带 `grpcgateway-accept` 的 gateway 回环请求借服务端证书 CN 作为终端用户，
+  但该 metadata 过去依赖 grpc-gateway 默认从客户端 HTTP `Accept` 头派生；省略
+  `Accept` 的 JSON 请求在 TLS-only + client-cert-auth 部署里可能失去代理标记，进而
+  回退到本机 gateway mTLS 身份。现在 `newGRPCGatewayMux` 对每个 HTTP request 显式
+  注入内部 `grpcgateway-accept=kubebrain-grpc-gateway` 标记，不改变 JSON wire
+  contract，也不依赖用户 header；现有 auth 层继续按该标记拒绝证书身份回退。回归：
+  `go test ./pkg/endpoint -run 'TestGRPCGatewayUsesGeneratedEtcdJSONContract' -count=1`
+  覆盖无 `Accept` 请求仍携带代理标记。
 
 ### P2：运维兼容和长期验证
 

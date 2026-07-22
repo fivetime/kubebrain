@@ -32,12 +32,14 @@ import (
 	"go.etcd.io/etcd/server/v3/etcdserver/api/v3lock/v3lockpb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/test/bufconn"
 )
 
 type gatewayKVServer struct {
 	etcdserverpb.UnimplementedKVServer
 	request *etcdserverpb.RangeRequest
+	md      metadata.MD
 }
 
 type gatewayLockServer struct {
@@ -160,8 +162,11 @@ func (s *gatewayLockServer) Unlock(_ context.Context, request *v3lockpb.UnlockRe
 	}, nil
 }
 
-func (s *gatewayKVServer) Range(_ context.Context, request *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
+func (s *gatewayKVServer) Range(ctx context.Context, request *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
 	s.request = request
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		s.md = md.Copy()
+	}
 	return &etcdserverpb.RangeResponse{
 		Header: &etcdserverpb.ResponseHeader{ClusterId: 11, MemberId: 12, Revision: 13, RaftTerm: 14},
 		Kvs: []*mvccpb.KeyValue{{
@@ -212,6 +217,8 @@ func TestGRPCGatewayUsesGeneratedEtcdJSONContract(t *testing.T) {
 	require.NotNil(t, kvServer.request)
 	require.Equal(t, []byte("a"), kvServer.request.Key)
 	require.Equal(t, int64(1), kvServer.request.Limit)
+	require.Empty(t, request.Header.Values("Accept"))
+	require.Equal(t, []string{grpcGatewayRequestMarkerValue}, kvServer.md.Get(grpcGatewayRequestMarkerKey))
 
 	request = httptest.NewRequest(http.MethodPost, "/v3/lock/unlock",
 		strings.NewReader(`{"key":"L2xvY2svMDE=","unknown_field":"discarded"}`))

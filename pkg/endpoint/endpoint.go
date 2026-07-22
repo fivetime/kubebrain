@@ -33,6 +33,7 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/keepalive"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/protobuf/encoding/protojson"
 	"k8s.io/klog/v2"
 
@@ -195,6 +196,11 @@ func (e *Endpoint) buildClientHttpServer(ctx context.Context) (exposedServer, *g
 
 type gatewayRegisterFunc func(context.Context, *runtime.ServeMux, *grpc.ClientConn) error
 
+const (
+	grpcGatewayRequestMarkerKey   = "grpcgateway-accept"
+	grpcGatewayRequestMarkerValue = "kubebrain-grpc-gateway"
+)
+
 func (e *Endpoint) buildGRPCGateway(ctx context.Context) (http.Handler, *grpc.ClientConn, error) {
 	target := net.JoinHostPort("127.0.0.1", strconv.Itoa(e.config.Port))
 	dialOptions := []grpc.DialOption{
@@ -235,6 +241,13 @@ func newGRPCGatewayMux(ctx context.Context, conn *grpc.ClientConn) (http.Handler
 				},
 				UnmarshalOptions: protojson.UnmarshalOptions{DiscardUnknown: true},
 			},
+		}),
+		runtime.WithMetadata(func(context.Context, *http.Request) metadata.MD {
+			// grpc-gateway forwards HTTP Accept as grpcgateway-accept only when the
+			// client sends that header. Inject a stable marker so auth never falls
+			// back to the gateway's internal client certificate on headerless HTTP
+			// requests.
+			return metadata.Pairs(grpcGatewayRequestMarkerKey, grpcGatewayRequestMarkerValue)
 		}),
 	)
 	registers := []gatewayRegisterFunc{

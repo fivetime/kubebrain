@@ -1459,7 +1459,8 @@ hack/dev/verify.sh
   Maintenance、Auth、Lock 和 Election generated routes。请求经本机 gRPC 回环，
   仍受数据面认证、admission、metrics、请求大小和并发/速率限制；TLS-only 与
   client-cert-auth 模式
-  会使用服务配置的客户端身份完成内部 mTLS。HTTP token 使用标准
+  会使用服务配置的客户端身份完成内部 mTLS，并对每个 gateway request 显式注入内部
+  代理标记，确保无 `Accept` 头的 HTTP JSON 请求也不能回退借用本机证书 CN。HTTP token 使用标准
   `Authorization: <token>` 或 `Authorization: Bearer <token>`。不需要 JSON API 的
   实例可显式设置 `--enable-grpc-gateway=false` 缩小 HTTP surface，并在发布门禁确认
   `/v3/*` 返回 404、`/health` 仍可用。启用 client-cert-auth 时，Kubernetes 原生
