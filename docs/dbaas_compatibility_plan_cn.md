@@ -10139,6 +10139,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   校验逻辑。回归：
   `go test ./pkg/server/etcd -run TestJWTProviderNonPositiveTTLMatchesEtcd -count=1`
   通过。
+- A592 对齐公共 `UserAdd` 的 `HashedPassword` 忽略语义：
+  对照 `/root/etcd/server/etcdserver/v3_server.go` 的 `UserAdd` 与
+  `/root/etcd/server/auth/store.go` 的 `selectPassword`，上游公共 RPC 在非
+  `NoPassword` 用户添加时总是基于 `Password` 重新生成 bcrypt hash，并覆盖/清空
+  `HashedPassword`；因此仅传畸形 `HashedPassword` 且明文为空会创建空密码用户，
+  不会返回 decode 错误。KubeBrain 旧 `authPassword` 会在 `Password==""` 时尝试
+  解码 `HashedPassword`，把上游可接受的 public request 错误拒绝。现在 `UserAdd`
+  一律 hash public `Password`，`UserChangePassword` 仍保持上游“明文为空才使用
+  `HashedPassword`”语义。回归：
+  `go test ./pkg/server/etcd -run 'TestAuthManager(UserAddIgnoresHashedPasswordLikePublicEtcd|BootstrapErrors)' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

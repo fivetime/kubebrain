@@ -57,17 +57,7 @@ func authPassword(request *etcdserverpb.AuthUserAddRequest, cost int) ([]byte, e
 	if request.Options != nil && request.Options.NoPassword {
 		return nil, nil
 	}
-	if request.Password != "" {
-		return bcrypt.GenerateFromPassword([]byte(request.Password), cost)
-	}
-	if request.HashedPassword != "" {
-		password, err := base64.StdEncoding.DecodeString(request.HashedPassword)
-		if err != nil {
-			return nil, errNoPasswordUser
-		}
-		return password, nil
-	}
-	return bcrypt.GenerateFromPassword(nil, cost)
+	return bcrypt.GenerateFromPassword([]byte(request.Password), cost)
 }
 
 func (m *authManager) userAdd(ctx context.Context, request *etcdserverpb.AuthUserAddRequest) error {

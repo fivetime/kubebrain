@@ -155,27 +155,34 @@ func TestAuthManagerBootstrapErrors(t *testing.T) {
 	ctx := context.Background()
 
 	require.ErrorIs(t, manager.userAdd(ctx, &etcdserverpb.AuthUserAddRequest{}), rpctypes.ErrUserEmpty)
-	require.ErrorIs(t, manager.userAdd(ctx, &etcdserverpb.AuthUserAddRequest{Name: "bad-hash", HashedPassword: "%%%"}), errNoPasswordUser)
 	require.ErrorIs(t, manager.roleAdd(ctx, ""), rpctypes.ErrRoleEmpty)
 	require.ErrorIs(t, manager.userGrantRole(ctx, "missing", "missing"), rpctypes.ErrUserNotFound)
 	require.NoError(t, manager.userAdd(ctx, &etcdserverpb.AuthUserAddRequest{Name: "alice", Password: "pw"}))
 	require.ErrorIs(t, manager.userAdd(ctx, &etcdserverpb.AuthUserAddRequest{Name: "alice", Password: "pw"}), rpctypes.ErrUserAlreadyExist)
 	require.ErrorIs(t, manager.userGrantRole(ctx, "alice", "missing"), rpctypes.ErrRoleNotFound)
+	require.ErrorIs(t, manager.userChangePassword(ctx, "alice", "", "%%%"), errNoPasswordUser)
 	require.NoError(t, manager.roleAdd(ctx, "reader"))
 	require.ErrorIs(t, manager.roleAdd(ctx, "reader"), rpctypes.ErrRoleAlreadyExist)
 	require.NoError(t, manager.userGrantRole(ctx, "alice", "reader"))
 	require.NoError(t, manager.userGrantRole(ctx, "alice", "reader"), "grant role must be idempotent")
 }
 
-func TestAuthManagerPlaintextPasswordOverridesHash(t *testing.T) {
+func TestAuthManagerUserAddIgnoresHashedPasswordLikePublicEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
 	manager := newAuthManager(server.backend)
 	ctx := context.Background()
 	require.NoError(t, manager.userAdd(ctx, &etcdserverpb.AuthUserAddRequest{
-		Name: "alice", Password: "plaintext", HashedPassword: "%%%",
+		Name: "empty", HashedPassword: "%%%",
 	}))
 	snapshot, err := manager.repo.load(ctx)
+	require.NoError(t, err)
+	require.NoError(t, bcrypt.CompareHashAndPassword(snapshot.Users["empty"].Password, nil))
+
+	require.NoError(t, manager.userAdd(ctx, &etcdserverpb.AuthUserAddRequest{
+		Name: "alice", Password: "plaintext", HashedPassword: "%%%",
+	}))
+	snapshot, err = manager.repo.load(ctx)
 	require.NoError(t, err)
 	require.NoError(t, bcrypt.CompareHashAndPassword(snapshot.Users["alice"].Password, []byte("plaintext")))
 
