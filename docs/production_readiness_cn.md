@@ -1461,6 +1461,9 @@ lease 行固定源 ID 和导出时的正数剩余 TTL，尾行记录/lease 总�
 `logical-status.sh`、restore 和 verify 都会先复制并验证完整文件，缺 footer、记录数
 不符、内容篡改或 footer 后附加数据均 fail closed。restore 在任何 etcd 写入前完成
 验证，并按 `BATCH_SIZE` 把 compare 与 Put 放入同一个 Txn，使单批冲突不会部分落盘。
+header、record、lease 和 footer 行均使用严格 JSON schema 解码，拒绝未知字段和同一行内
+拼接的第二个 JSON 值；扩展逻辑备份格式必须先升级 format/schema，不能把额外字段混入
+现有 `kubebrain.logical.v2` 制品。
 恢复为每个源 lease 生成新目标 ID并保留多 key 共享关系。v1 无 lease 制品继续可恢复；
 v1 中记录非零 lease 时因缺少 TTL 元数据会在任何写入前拒绝。没有 manifest/footer 的
 旧 JSONL 无法证明完整性，同样明确拒绝。

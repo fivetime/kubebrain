@@ -9218,6 +9218,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./hack/backup/...`、`go vet ./hack/backup/...`、
   `go test ./hack/production/... ./deploy/production`、`go vet ./hack/production/... ./deploy/production`
   与 `git diff --check` 通过。
+- A492 收紧 logical backup JSONL 行 schema：`backupfile.OpenVerified` 及 verified reader
+  对 header、record、lease 和 footer 行统一使用严格 decoder，拒绝未知字段和同一行内
+  trailing JSON；仅 `type` 探测保留 map 读取，真正消费前仍按对应结构体严格解码。
+  这样 digest 正确但混入额外字段的 logical backup artifact 不会被 restore/status/verify
+  静默接受。回归构造 SHA 匹配但 header/record/lease/footer 含 unknown field 的 JSONL；
+  `go test ./hack/backup/internal/backupfile`、`go test ./hack/backup/...`、
+  `go vet ./hack/backup/...`、`go test ./hack/production/... ./deploy/production`、
+  `go vet ./hack/production/... ./deploy/production` 与 `git diff --check` 通过。
 
 ### P2：运维兼容和长期验证
 

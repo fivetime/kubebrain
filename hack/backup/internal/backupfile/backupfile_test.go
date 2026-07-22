@@ -3,6 +3,7 @@ package backupfile
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -140,6 +141,25 @@ func TestOpenVerifiedRejectsTruncatedAndCorruptBackup(t *testing.T) {
 	}
 }
 
+func TestOpenVerifiedRejectsUnknownJSONFields(t *testing.T) {
+	tests := map[string][]byte{
+		"header": []byte(`{"type":"kubebrain.logical.v2","prefix":"/registry","revision":42,"unexpected":true}
+{"type":"footer","records":0,"leases":0,"sha256":"ignored"}
+`),
+		"record": backupJSONL(t, []byte(`{"key":"L3JlZ2lzdHJ5L2E=","value":"YQ==","mod_revision":40,"create_revision":39,"version":1,"lease":0,"unexpected":true}`), 1, 0, ""),
+		"lease":  backupJSONL(t, []byte(`{"type":"lease","id":123,"ttl":30,"granted_ttl":60,"unexpected":true}`), 0, 1, ""),
+		"footer": backupJSONL(t, nil, 0, 0, `,"unexpected":true`),
+	}
+	for name, contents := range tests {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "unknown.jsonl")
+			require.NoError(t, os.WriteFile(path, contents, 0o600))
+			_, err := OpenVerified(path)
+			require.ErrorContains(t, err, "unknown field")
+		})
+	}
+}
+
 func TestAbortDoesNotReplaceExistingBackup(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "backup.jsonl")
 	require.NoError(t, os.WriteFile(path, []byte("existing"), 0o600))
@@ -178,4 +198,24 @@ func TestOpenVerifiedRejectsManifestMismatchAndDuplicateKeys(t *testing.T) {
 			require.Error(t, err)
 		})
 	}
+}
+
+func backupJSONL(t *testing.T, line []byte, records, leases int, footerExtra string) []byte {
+	t.Helper()
+	header := []byte("{\"type\":\"kubebrain.logical.v2\",\"prefix\":\"/registry\",\"revision\":42}\n")
+	digest := sha256.New()
+	_, err := digest.Write(header)
+	require.NoError(t, err)
+	var body []byte
+	if line != nil {
+		body = append(append([]byte(nil), line...), '\n')
+		_, err = digest.Write(body)
+		require.NoError(t, err)
+	}
+	sum := hex.EncodeToString(digest.Sum(nil))
+	footer := []byte(fmt.Sprintf(
+		"{\"type\":\"footer\",\"records\":%d,\"leases\":%d,\"sha256\":\"%s\"%s}\n",
+		records, leases, sum, footerExtra,
+	))
+	return append(append(header, body...), footer...)
 }

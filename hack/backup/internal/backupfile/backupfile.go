@@ -250,23 +250,21 @@ func (v *Verified) Records(fn func(record.Record) error) error {
 	}
 	for scanner.Scan() {
 		line := scanner.Bytes()
-		var probe struct {
-			Type string `json:"type"`
-		}
-		if err := json.Unmarshal(line, &probe); err != nil {
+		lineType, err := backupLineType(line)
+		if err != nil {
 			return err
 		}
-		if probe.Type == "footer" {
+		if lineType == "footer" {
 			return nil
 		}
-		if probe.Type == "lease" {
+		if lineType == "lease" {
 			continue
 		}
-		if probe.Type != "" {
-			return fmt.Errorf("unexpected backup record type %q", probe.Type)
+		if lineType != "" {
+			return fmt.Errorf("unexpected backup record type %q", lineType)
 		}
 		var rec record.Record
-		if err := json.Unmarshal(line, &rec); err != nil {
+		if err := decodeBackupLine(line, &rec, true); err != nil {
 			return err
 		}
 		if err := fn(rec); err != nil {
@@ -290,18 +288,16 @@ func (v *Verified) Leases(fn func(record.Lease) error) error {
 	}
 	for scanner.Scan() {
 		line := scanner.Bytes()
-		var probe struct {
-			Type string `json:"type"`
-		}
-		if err := json.Unmarshal(line, &probe); err != nil {
+		lineType, err := backupLineType(line)
+		if err != nil {
 			return err
 		}
-		switch probe.Type {
+		switch lineType {
 		case "footer":
 			return nil
 		case "lease":
 			var lease record.Lease
-			if err := json.Unmarshal(line, &lease); err != nil {
+			if err := decodeBackupLine(line, &lease, true); err != nil {
 				return err
 			}
 			if err := fn(lease); err != nil {
@@ -309,7 +305,7 @@ func (v *Verified) Leases(fn func(record.Lease) error) error {
 			}
 		case "":
 		default:
-			return fmt.Errorf("unexpected backup record type %q", probe.Type)
+			return fmt.Errorf("unexpected backup record type %q", lineType)
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -335,7 +331,7 @@ func validate(reader io.Reader) (Status, error) {
 	}
 	headerLine := append([]byte(nil), scanner.Bytes()...)
 	var header Header
-	if err := json.Unmarshal(headerLine, &header); err != nil {
+	if err := decodeBackupLine(headerLine, &header, true); err != nil {
 		return Status{}, fmt.Errorf("invalid backup header: %w", err)
 	}
 	if header.Type != Format && header.Type != LegacyFormat {
@@ -359,14 +355,12 @@ func validate(reader io.Reader) (Status, error) {
 	foundFooter := false
 	for scanner.Scan() {
 		line := append([]byte(nil), scanner.Bytes()...)
-		var probe struct {
-			Type string `json:"type"`
-		}
-		if err := json.Unmarshal(line, &probe); err != nil {
+		lineType, err := backupLineType(line)
+		if err != nil {
 			return Status{}, fmt.Errorf("invalid backup line %d: %w", records+2, err)
 		}
-		if probe.Type == "footer" {
-			if err := json.Unmarshal(line, &footer); err != nil {
+		if lineType == "footer" {
+			if err := decodeBackupLine(line, &footer, true); err != nil {
 				return Status{}, fmt.Errorf("invalid backup footer: %w", err)
 			}
 			foundFooter = true
@@ -375,12 +369,12 @@ func validate(reader io.Reader) (Status, error) {
 			}
 			break
 		}
-		if probe.Type == "lease" {
+		if lineType == "lease" {
 			if header.Type != Format {
 				return Status{}, fmt.Errorf("lease metadata is not supported in backup format %q", header.Type)
 			}
 			var lease record.Lease
-			if err := json.Unmarshal(line, &lease); err != nil {
+			if err := decodeBackupLine(line, &lease, true); err != nil {
 				return Status{}, fmt.Errorf("invalid backup lease %d: %w", leases+1, err)
 			}
 			if lease.ID == 0 || lease.TTL <= 0 || lease.GrantedTTL < 0 || (lease.GrantedTTL > 0 && lease.GrantedTTL < lease.TTL) {
@@ -395,11 +389,11 @@ func validate(reader io.Reader) (Status, error) {
 			leases++
 			continue
 		}
-		if probe.Type != "" {
-			return Status{}, fmt.Errorf("unexpected backup record type %q", probe.Type)
+		if lineType != "" {
+			return Status{}, fmt.Errorf("unexpected backup record type %q", lineType)
 		}
 		var rec record.Record
-		if err := json.Unmarshal(line, &rec); err != nil {
+		if err := decodeBackupLine(line, &rec, true); err != nil {
 			return Status{}, fmt.Errorf("invalid backup record %d: %w", records+1, err)
 		}
 		key, err := base64.StdEncoding.DecodeString(rec.Key)
@@ -451,4 +445,38 @@ func validate(reader io.Reader) (Status, error) {
 		Leases:        leases,
 		SHA256:        actualHash,
 	}, nil
+}
+
+func backupLineType(line []byte) (string, error) {
+	var object map[string]json.RawMessage
+	if err := decodeBackupLine(line, &object, false); err != nil {
+		return "", err
+	}
+	if object == nil {
+		return "", errors.New("backup line is not a JSON object")
+	}
+	raw, exists := object["type"]
+	if !exists {
+		return "", nil
+	}
+	var lineType string
+	if err := json.Unmarshal(raw, &lineType); err != nil {
+		return "", fmt.Errorf("backup line type is invalid: %w", err)
+	}
+	return lineType, nil
+}
+
+func decodeBackupLine(line []byte, target any, disallowUnknown bool) error {
+	decoder := json.NewDecoder(bytes.NewReader(line))
+	if disallowUnknown {
+		decoder.DisallowUnknownFields()
+	}
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return errors.New("backup line contains trailing JSON")
+	}
+	return nil
 }
