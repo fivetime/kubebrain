@@ -305,21 +305,24 @@ func (m *authManager) roleGrantPermission(ctx context.Context, name string, perm
 			return rpctypes.ErrRoleNotFound
 		}
 		updated := proto.Clone(role).(*authpb.Role)
-		newPermission := proto.Clone(permission).(*authpb.Permission)
-		replaced := false
-		for i, existing := range updated.KeyPermission {
-			if bytes.Equal(existing.Key, permission.Key) && bytes.Equal(existing.RangeEnd, permission.RangeEnd) {
-				updated.KeyPermission[i] = newPermission
-				replaced = true
-				break
-			}
-		}
-		if !replaced {
-			updated.KeyPermission = append(updated.KeyPermission, newPermission)
-		}
-		sort.Slice(updated.KeyPermission, func(i, j int) bool {
-			return bytes.Compare(updated.KeyPermission[i].Key, updated.KeyPermission[j].Key) < 0
+		idx := sort.Search(len(updated.KeyPermission), func(i int) bool {
+			return bytes.Compare(updated.KeyPermission[i].Key, permission.Key) >= 0
 		})
+		if idx < len(updated.KeyPermission) &&
+			bytes.Equal(updated.KeyPermission[idx].Key, permission.Key) &&
+			bytes.Equal(updated.KeyPermission[idx].RangeEnd, permission.RangeEnd) {
+			updated.KeyPermission[idx].PermType = permission.PermType
+		} else {
+			newPermission := &authpb.Permission{
+				Key:      append([]byte(nil), permission.Key...),
+				RangeEnd: append([]byte(nil), permission.RangeEnd...),
+				PermType: permission.PermType,
+			}
+			updated.KeyPermission = append(updated.KeyPermission, newPermission)
+			sort.Slice(updated.KeyPermission, func(i, j int) bool {
+				return bytes.Compare(updated.KeyPermission[i].Key, updated.KeyPermission[j].Key) < 0
+			})
+		}
 		_, err := m.repo.mutate(ctx, snapshot.Config, authMutation{
 			Key: authRecordKey(authRolesKey, name), Value: updated, Expected: role, ExpectedExists: true,
 		})

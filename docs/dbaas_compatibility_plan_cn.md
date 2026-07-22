@@ -10162,6 +10162,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   revision 0、旧 revision 和权限；admin/root 语义继续忽略 auth revision。回归：
   `go test ./pkg/server/etcd -run 'TestJWT(EmptyAndZeroClaimsMatchEtcdAuthorization|ManagerUsesAuthRevisionAndRejectsOldToken)' -count=1`
   通过。
+- A594 对齐 `RoleGrantPermission` 同 key 搜索语义：
+  对照 `/root/etcd/server/auth/store.go` 的 `RoleGrantPermission` 与 `permSlice.Less`，
+  上游只按 permission key 排序，并用 `sort.Search` 找第一个 `Key >= request.Key`
+  的条目；当同一 key 已存在多个不同 `RangeEnd` 时，重复 grant 其中非首个 range
+  不会全表精确查找，而会继续追加一个同 range permission。KubeBrain 旧实现遍历全表
+  精确替换，导致 `RoleGet` 在该边界下少返回重复 permission。现在 grant/update
+  逻辑按上游的单点 search 执行；revoke 仍与上游一样删除所有 exact key/range 匹配项。
+  回归：
+  `go test ./pkg/server/etcd -run TestAuthManagerRoleGrantPermissionSameKeySearchMatchesEtcd -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

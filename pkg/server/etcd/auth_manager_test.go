@@ -1,6 +1,7 @@
 package etcd
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"sync"
@@ -118,6 +119,41 @@ func TestAuthManagerUserRolePermissionLifecycle(t *testing.T) {
 	snapshot, err = manager.repo.load(ctx)
 	require.NoError(t, err)
 	require.Nil(t, snapshot.Users["alice"])
+}
+
+func TestAuthManagerRoleGrantPermissionSameKeySearchMatchesEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	manager := newAuthManager(server.backend)
+	ctx := context.Background()
+	require.NoError(t, manager.roleAdd(ctx, "reader"))
+
+	require.NoError(t, manager.roleGrantPermission(ctx, "reader", &authpb.Permission{
+		PermType: authpb.READ, Key: []byte("a"), RangeEnd: []byte("c"),
+	}))
+	require.NoError(t, manager.roleGrantPermission(ctx, "reader", &authpb.Permission{
+		PermType: authpb.WRITE, Key: []byte("a"), RangeEnd: []byte("b"),
+	}))
+	require.NoError(t, manager.roleGrantPermission(ctx, "reader", &authpb.Permission{
+		PermType: authpb.READWRITE, Key: []byte("a"), RangeEnd: []byte("b"),
+	}))
+	snapshot, err := manager.repo.load(ctx)
+	require.NoError(t, err)
+	perms := snapshot.Roles["reader"].KeyPermission
+	require.Len(t, perms, 3)
+	var sameRangeTypes []authpb.Permission_Type
+	for _, perm := range perms {
+		if bytes.Equal(perm.RangeEnd, []byte("b")) {
+			sameRangeTypes = append(sameRangeTypes, perm.PermType)
+		}
+	}
+	require.ElementsMatch(t, []authpb.Permission_Type{authpb.WRITE, authpb.READWRITE}, sameRangeTypes)
+
+	require.NoError(t, manager.roleRevokePermission(ctx, "reader", []byte("a"), []byte("b")))
+	snapshot, err = manager.repo.load(ctx)
+	require.NoError(t, err)
+	require.Len(t, snapshot.Roles["reader"].KeyPermission, 1)
+	require.Equal(t, []byte("c"), snapshot.Roles["reader"].KeyPermission[0].RangeEnd)
 }
 
 func TestAuthManagerProtectsRootWhileEnabled(t *testing.T) {
