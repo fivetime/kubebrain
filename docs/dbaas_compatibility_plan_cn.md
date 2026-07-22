@@ -8673,6 +8673,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   零重启，PD/TiKV 3+3 Ready，endpoint health 正常且 alarm 为空；三个临时 port-forward 已
   停止。本轮只加强 HA 证据，不改变 A433 数据面镜像。
 
+#### A436 运行时 MemberList 发布一致性门禁
+
+- A434 只证明 StatefulSet 的 `--advertise-client-urls` 参数与期望一致且期望地址可达，仍可能在
+  MemberList 构造回归、静态成员缺失或重复时发布：bootstrap 与公共 URL health 都可成功，
+  clientv3 AutoSync 却会收到错误成员集合。真实 A433 MemberList 当前返回同一非零 cluster ID、
+  三个唯一 member ID/name、各自稳定 peer URL，并为每个成员返回声明的 client Service URL。
+- 提交 `e1f8c6b` 在 `validate-instance-ready.sh` 中使用结构化 `jq` 校验运行时 MemberList：
+  cluster ID 非零，成员数精确匹配期望副本数，无 learner，member ID/name 非零非空且唯一，每个
+  member 至少一个 peer URL，并且每个 member 的 client URL 集合与
+  `EXPECTED_ADVERTISE_CLIENT_URLS` 完全一致。MemberList RPC 失败、JSON 无法解析、成员缺失/
+  重复/不完整或 URL 漂移均在逐 URL health 前 fail closed；`JQ` 可由受控工具链覆盖。
+- 集成测试新增真实三成员 JSON 生成器，覆盖单/多 advertised URL 成功，以及运行时错误 URL、
+  重复 member ID、成员缺失和空 peer URL；连同 A434 矩阵普通 20 轮、race 10 轮通过。
+  `bash -n`、root 全量测试、vet、staticcheck v0.7.0 和 diff check 均通过。使用仅存在于 `/tmp`
+  的 etcdctl exec 代理，从 `kubebrain-0` 所在真实客户端网络域完整运行发布门禁：TiDB topology、
+  KubeBrain rollout/image/immutable args、bootstrap health、三成员 MemberList 和 advertised URL
+  health 全部通过。临时代理未进入仓库；本轮不改变 A433 数据面镜像。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
