@@ -1,6 +1,7 @@
 package production_test
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,6 +21,7 @@ func TestValidateInstanceReady(t *testing.T) {
 		healthOK                 bool
 		advertisedURLs           string
 		unreachableAdvertisedURL string
+		memberListJSON           string
 		wantOK                   bool
 		wantOutput               string
 	}{
@@ -191,6 +193,42 @@ func TestValidateInstanceReady(t *testing.T) {
 			advertisedURLs: "https://instance.example:2379,,https://other.example:2379",
 			wantOutput:     "empty entry",
 		},
+		{
+			name:           "runtime MemberList has wrong advertised URL",
+			image:          "registry/kubebrain@sha256:abc",
+			kubeStatus:     "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:abc",
+			topology:       "3\t3",
+			healthOK:       true,
+			memberListJSON: fakeRuntimeMemberListJSON("https://internal.example:2379"),
+			wantOutput:     "MemberList does not match",
+		},
+		{
+			name:           "runtime MemberList repeats member identity",
+			image:          "registry/kubebrain@sha256:abc",
+			kubeStatus:     "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:abc",
+			topology:       "3\t3",
+			healthOK:       true,
+			memberListJSON: `{"header":{"cluster_id":1},"members":[{"ID":11,"name":"kb-0","peerURLs":["p0"],"clientURLs":["https://instance.example:2379"]},{"ID":11,"name":"kb-1","peerURLs":["p1"],"clientURLs":["https://instance.example:2379"]},{"ID":13,"name":"kb-2","peerURLs":["p2"],"clientURLs":["https://instance.example:2379"]}]}`,
+			wantOutput:     "MemberList does not match",
+		},
+		{
+			name:           "runtime MemberList is missing a member",
+			image:          "registry/kubebrain@sha256:abc",
+			kubeStatus:     "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:abc",
+			topology:       "3\t3",
+			healthOK:       true,
+			memberListJSON: `{"header":{"cluster_id":1},"members":[{"ID":11,"name":"kb-0","peerURLs":["p0"],"clientURLs":["https://instance.example:2379"]},{"ID":12,"name":"kb-1","peerURLs":["p1"],"clientURLs":["https://instance.example:2379"]}]}`,
+			wantOutput:     "MemberList does not match",
+		},
+		{
+			name:           "runtime MemberList has an incomplete member",
+			image:          "registry/kubebrain@sha256:abc",
+			kubeStatus:     "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:abc",
+			topology:       "3\t3",
+			healthOK:       true,
+			memberListJSON: `{"header":{"cluster_id":1},"members":[{"ID":11,"name":"kb-0","peerURLs":[],"clientURLs":["https://instance.example:2379"]},{"ID":12,"name":"kb-1","peerURLs":["p1"],"clientURLs":["https://instance.example:2379"]},{"ID":13,"name":"kb-2","peerURLs":["p2"],"clientURLs":["https://instance.example:2379"]}]}`,
+			wantOutput:     "MemberList does not match",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -220,6 +258,10 @@ if [[ -n "$FAKE_UNREACHABLE_ADVERTISED_URL" && "$*" == *"--endpoints=$FAKE_UNREA
   printf 'unreachable\n' >&2
   exit 1
 fi
+if [[ "$*" == *"member list -w json"* ]]; then
+  printf '%s\n' "$FAKE_MEMBER_LIST_JSON"
+  exit 0
+fi
 if [[ "$FAKE_HEALTH_OK" == "true" && "$*" == *"endpoint health"* ]]; then
   printf 'healthy %s\n' "$*"
   exit 0
@@ -235,6 +277,10 @@ exit 1
 			}
 			if kubeArgs == "" {
 				kubeArgs = "--port=3379\n--keyspace=instance-a\n--pd-addrs=kb-pd.storage.svc:2379\n--quota-backend-bytes=429496729600\n--advertise-client-urls=" + advertisedURLs
+			}
+			memberListJSON := tc.memberListJSON
+			if memberListJSON == "" {
+				memberListJSON = fakeRuntimeMemberListJSON(advertisedURLs)
 			}
 			command := exec.Command("bash", "validate-instance-ready.sh")
 			command.Env = append(os.Environ(),
@@ -253,6 +299,7 @@ exit 1
 				"FAKE_TOPOLOGY="+tc.topology,
 				"FAKE_HEALTH_OK="+boolString(tc.healthOK),
 				"FAKE_UNREACHABLE_ADVERTISED_URL="+tc.unreachableAdvertisedURL,
+				"FAKE_MEMBER_LIST_JSON="+memberListJSON,
 			)
 			output, err := command.CombinedOutput()
 			if tc.wantOK {
@@ -263,6 +310,27 @@ exit 1
 			require.Contains(t, strings.TrimSpace(string(output)), tc.wantOutput)
 		})
 	}
+}
+
+func fakeRuntimeMemberListJSON(advertisedURLs string) string {
+	clientURLs := strings.Split(advertisedURLs, ",")
+	members := make([]map[string]any, 3)
+	for index := range members {
+		members[index] = map[string]any{
+			"ID":         index + 11,
+			"name":       "kb-" + string(rune('0'+index)),
+			"peerURLs":   []string{"peer"},
+			"clientURLs": clientURLs,
+		}
+	}
+	encoded, err := json.Marshal(map[string]any{
+		"header":  map[string]any{"cluster_id": 1},
+		"members": members,
+	})
+	if err != nil {
+		panic(err)
+	}
+	return string(encoded)
 }
 
 func TestValidateInstanceReadyRequiresImmutableInputs(t *testing.T) {

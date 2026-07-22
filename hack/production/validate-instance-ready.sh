@@ -20,6 +20,7 @@ TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-900}"
 POLL_INTERVAL_SECONDS="${POLL_INTERVAL_SECONDS:-5}"
 KUBECTL="${KUBECTL:-kubectl}"
 ETCDCTL="${ETCDCTL:-etcdctl}"
+JQ="${JQ:-jq}"
 KUBE_CONTEXT="${KUBE_CONTEXT:-}"
 
 if [[ -z "$EXPECTED_IMAGE" ]]; then
@@ -200,6 +201,36 @@ for advertised_url in "${advertised_client_urls[@]}"; do
     echo "KubeBrain advertised client URL list contains an empty entry" >&2
     exit 1
   fi
+done
+
+if ! expected_client_urls_json="$(printf '%s\n' "${advertised_client_urls[@]}" | "$JQ" -Rsc 'split("\n")[:-1] | sort | unique')"; then
+  echo "failed to encode expected advertised client URLs with jq" >&2
+  exit 1
+fi
+if ! member_list_json="$(ETCDCTL_API=3 "$ETCDCTL" --endpoints="$ENDPOINT" member list -w json)"; then
+  echo "KubeBrain MemberList failed: $ENDPOINT" >&2
+  exit 1
+fi
+if ! printf '%s' "$member_list_json" | "$JQ" -e \
+  --argjson expectedReplicas "$EXPECTED_KUBEBRAIN_REPLICAS" \
+  --argjson expectedClientURLs "$expected_client_urls_json" '
+    (.header.cluster_id // 0) != 0 and
+    ((.members // []) | length) == $expectedReplicas and
+    all(.members[]; (.isLearner // false) == false) and
+    ([.members[].ID] | length) == ([.members[].ID] | unique | length) and
+    ([.members[].name] | length) == ([.members[].name] | unique | length) and
+    all(.members[];
+      (.ID // 0) != 0 and
+      ((.name // "") | length) > 0 and
+      ((.peerURLs // []) | length) > 0 and
+      ((.clientURLs // []) | sort | unique) == $expectedClientURLs
+    )
+  ' >/dev/null; then
+  echo "KubeBrain MemberList does not match the expected runtime topology and advertised client URLs" >&2
+  exit 1
+fi
+
+for advertised_url in "${advertised_client_urls[@]}"; do
   if ! ETCDCTL_API=3 "$ETCDCTL" --endpoints="$advertised_url" endpoint health; then
     echo "KubeBrain advertised client URL is unreachable from the release gate network: $advertised_url" >&2
     exit 1

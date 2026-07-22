@@ -339,11 +339,15 @@ ETCDCTL_KEY=/run/secrets/client.key \
 replicas 和 revision 全部收敛，再校验期望 PD/TiKV 数量；随后要求 KubeBrain
 StatefulSet observed generation、ready/updated replicas、revision、精确 image，以及 Pod
 template 中唯一的 `--keyspace`、`--pd-addrs`、`--quota-backend-bytes` 和 `--advertise-client-urls` 全部匹配，最后
-通过官方 `etcdctl endpoint health` 对 bootstrap `ENDPOINT` 和每个 advertised client URL
-分别提交线性化 proposal。缺少 `EXPECTED_IMAGE`/
+读取运行时 MemberList，要求非零 cluster ID、精确成员数、唯一且非零的 member ID/name、
+每个成员都有 peer URL，且每个成员的 client URL 集合与期望完全相同；最后通过官方
+`etcdctl endpoint health` 对 bootstrap `ENDPOINT` 和每个 advertised client URL 分别提交
+线性化 proposal。缺少 `EXPECTED_IMAGE`/
 `EXPECTED_KEYSPACE`/`EXPECTED_PD_ADDRS`/`EXPECTED_QUOTA_BACKEND_BYTES`/`EXPECTED_ADVERTISE_CLIENT_URLS`/`ENDPOINT`、任一状态
 缺失、旧 revision、错误拓扑、错误镜像、quota/client URL 缺失/重复/不匹配或 endpoint
-不健康、advertised URL 列表含空成员或任一地址从门禁网络不可达都会 fail closed。
+不健康、MemberList 缺失/重复/不完整/与声明不一致、advertised URL 列表含空成员或任一地址
+从门禁网络不可达都会 fail closed。脚本使用可覆盖的 `JQ`（默认 `jq`）结构化解析 JSON，
+不得用文本匹配替代成员身份和 URL 集合检查。
 
 生产必须使用 image digest；脚本做精确字符串比较，允许本地验证使用不可变测试 tag，
 但不会替控制面判断 tag 是否可变。该门禁可关闭创建/扩缩/升级的“数据面已就绪”阶段，
