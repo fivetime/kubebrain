@@ -32,6 +32,7 @@ func TestBrokerParametersUsesTLSBearerAndFencingIdentity(t *testing.T) {
 		require.Equal(t, "worker-a", request.URL.Query().Get("owner"))
 		require.Equal(t, "2", request.URL.Query().Get("attempt"))
 		require.Equal(t, "Bearer projected-token", request.Header.Get("Authorization"))
+		response.Header().Set("Content-Type", "application/json")
 		response.WriteHeader(http.StatusOK)
 		_, _ = response.Write([]byte("{\"bound\":true}\n"))
 	}))
@@ -89,10 +90,35 @@ func TestBrokerParametersRejectsInsecureEndpointAndNonSuccess(t *testing.T) {
 	require.NotContains(t, err.Error(), "denied")
 }
 
+func TestBrokerParametersRejectsNonJSONSuccessResponse(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(
+		response http.ResponseWriter, _ *http.Request,
+	) {
+		response.Header().Set("Content-Type", "text/html")
+		response.WriteHeader(http.StatusOK)
+		_, _ = response.Write([]byte("<html>not parameters</html>"))
+	}))
+	defer server.Close()
+	dir := t.TempDir()
+	tokenPath := filepath.Join(dir, "token")
+	caPath := filepath.Join(dir, "ca.crt")
+	require.NoError(t, os.WriteFile(tokenPath, []byte("token"), 0o600))
+	require.NoError(t, os.WriteFile(caPath, pem.EncodeToMemory(&pem.Block{
+		Type: "CERTIFICATE", Bytes: server.Certificate().Raw,
+	}), 0o600))
+	_, err := brokerParameters(
+		t.Context(), server.URL, tokenPath, caPath,
+		"tenant-a", "backup-1", "worker-a", 1,
+	)
+	require.ErrorContains(t, err, "non-JSON")
+	require.NotContains(t, err.Error(), "not parameters")
+}
+
 func TestBrokerParametersRejectsOversizedResponse(t *testing.T) {
 	server := httptest.NewTLSServer(http.HandlerFunc(func(
 		response http.ResponseWriter, _ *http.Request,
 	) {
+		response.Header().Set("Content-Type", "application/json")
 		response.WriteHeader(http.StatusOK)
 		_, _ = response.Write(bytes.Repeat([]byte("x"), maxBrokerParametersBytes+1))
 	}))

@@ -9342,6 +9342,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   broker 或 HTTP transport 才失败。回归覆盖空白 token 和 oversized token；`go test ./hack/production/cmd/operationctl -run 'TestBrokerParameters|TestDefaultKubeconfig' -count=20`、
   `go test ./hack/production/... ./deploy/production`、
   `go vet ./hack/production/... ./deploy/production` 与 `git diff --check` 通过。
+- A508 收紧 `operationctl --action parameters` 的 broker response media type：HTTP 200
+  现在还必须携带 `Content-Type: application/json`，否则 fail closed 且不把响应 body 写到
+  stdout。旧逻辑只检查 status code，HTML/text 错误页会被当作参数文件输出，再依赖后续
+  digest 校验兜底。回归覆盖 TLS broker 返回 200 `text/html`；`go test ./hack/production/cmd/operationctl -run 'TestBrokerParameters|TestDefaultKubeconfig' -count=20`、
+  `go test ./hack/production/... ./deploy/production`、
+  `go vet ./hack/production/... ./deploy/production` 与 `git diff --check` 通过。
 
 ### P2：运维兼容和长期验证
 

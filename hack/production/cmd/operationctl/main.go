@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"mime"
 	"net/http"
 	"net/url"
 	"os"
@@ -233,6 +234,10 @@ func brokerParameters(
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("parameter broker returned HTTP %d", response.StatusCode)
+	}
+	contentType, _, err := mime.ParseMediaType(response.Header.Get("Content-Type"))
+	if err != nil || contentType != "application/json" {
+		return nil, errors.New("parameter broker returned non-JSON response")
 	}
 	body, err := io.ReadAll(io.LimitReader(response.Body, maxBrokerParametersBytes+1))
 	if err != nil {
