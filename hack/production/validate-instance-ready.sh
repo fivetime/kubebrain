@@ -9,6 +9,7 @@ EXPECTED_KUBEBRAIN_REPLICAS="${EXPECTED_KUBEBRAIN_REPLICAS:-3}"
 EXPECTED_IMAGE="${EXPECTED_IMAGE:-}"
 EXPECTED_KEYSPACE="${EXPECTED_KEYSPACE:-}"
 EXPECTED_PD_ADDRS="${EXPECTED_PD_ADDRS:-}"
+EXPECTED_CLUSTER_ID="${EXPECTED_CLUSTER_ID:-}"
 EXPECTED_INITIAL_CLUSTER="${EXPECTED_INITIAL_CLUSTER:-}"
 EXPECTED_QUOTA_BACKEND_BYTES="${EXPECTED_QUOTA_BACKEND_BYTES:-}"
 EXPECTED_ADVERTISE_CLIENT_URLS="${EXPECTED_ADVERTISE_CLIENT_URLS:-}"
@@ -38,6 +39,10 @@ if [[ -z "$EXPECTED_KEYSPACE" ]]; then
 fi
 if [[ -z "$EXPECTED_PD_ADDRS" ]]; then
   echo "EXPECTED_PD_ADDRS is required" >&2
+  exit 2
+fi
+if ! [[ "$EXPECTED_CLUSTER_ID" =~ ^[1-9][0-9]*$ ]]; then
+  echo "EXPECTED_CLUSTER_ID is required and must be a positive integer" >&2
   exit 2
 fi
 if [[ -z "$EXPECTED_INITIAL_CLUSTER" ]]; then
@@ -74,10 +79,14 @@ if [[ -n "$KUBE_CONTEXT" ]]; then
 fi
 
 tidb_topology="$("$KUBECTL" "${kubectl_args[@]}" -n "$TIDB_NAMESPACE" get tidbcluster "$TIDB_CLUSTER" \
-  -o 'jsonpath={.spec.pd.replicas}{"\t"}{.spec.tikv.replicas}')"
-IFS=$'\t' read -r actual_pd_replicas actual_tikv_replicas <<<"$tidb_topology"
+  -o 'jsonpath={.spec.pd.replicas}{"\t"}{.spec.tikv.replicas}{"\t"}{.status.clusterID}')"
+IFS=$'\t' read -r actual_pd_replicas actual_tikv_replicas actual_cluster_id <<<"$tidb_topology"
 if [[ "$actual_pd_replicas" != "$EXPECTED_PD_REPLICAS" || "$actual_tikv_replicas" != "$EXPECTED_TIKV_REPLICAS" ]]; then
   echo "TidbCluster topology mismatch: expected PD/TiKV ${EXPECTED_PD_REPLICAS}/${EXPECTED_TIKV_REPLICAS}, got ${actual_pd_replicas:-missing}/${actual_tikv_replicas:-missing}" >&2
+  exit 1
+fi
+if [[ "$actual_cluster_id" != "$EXPECTED_CLUSTER_ID" ]]; then
+  echo "TidbCluster storage identity mismatch: expected cluster ID ${EXPECTED_CLUSTER_ID}, got ${actual_cluster_id:-missing}" >&2
   exit 1
 fi
 
@@ -279,6 +288,14 @@ if ! member_list_json="$(ETCDCTL_API=3 "$ETCDCTL" --endpoints="$ENDPOINT" member
   echo "KubeBrain MemberList failed: $ENDPOINT" >&2
   exit 1
 fi
+if ! runtime_cluster_id="$(printf '%s' "$member_list_json" | "$JQ" -er '.header.cluster_id | tostring')"; then
+  echo "KubeBrain MemberList has no valid runtime cluster ID" >&2
+  exit 1
+fi
+if [[ "$runtime_cluster_id" != "$EXPECTED_CLUSTER_ID" ]]; then
+  echo "KubeBrain runtime storage identity mismatch: expected cluster ID ${EXPECTED_CLUSTER_ID}, got ${runtime_cluster_id}" >&2
+  exit 1
+fi
 if ! printf '%s' "$member_list_json" | "$JQ" -e \
   --argjson expectedReplicas "$EXPECTED_KUBEBRAIN_REPLICAS" \
   --argjson expectedClientURLs "$expected_client_urls_json" \
@@ -307,4 +324,4 @@ for advertised_url in "${advertised_client_urls[@]}"; do
   fi
 done
 
-echo "KubeBrain instance release gate passed: endpoint=${ENDPOINT} image=${EXPECTED_IMAGE} keyspace=${EXPECTED_KEYSPACE} pd_addrs=${EXPECTED_PD_ADDRS} initial_cluster=${EXPECTED_INITIAL_CLUSTER} quota=${EXPECTED_QUOTA_BACKEND_BYTES} advertise_client_urls=${EXPECTED_ADVERTISE_CLIENT_URLS} replicas=${EXPECTED_KUBEBRAIN_REPLICAS} PD/TiKV=${EXPECTED_PD_REPLICAS}/${EXPECTED_TIKV_REPLICAS}"
+echo "KubeBrain instance release gate passed: endpoint=${ENDPOINT} image=${EXPECTED_IMAGE} keyspace=${EXPECTED_KEYSPACE} pd_addrs=${EXPECTED_PD_ADDRS} cluster_id=${EXPECTED_CLUSTER_ID} initial_cluster=${EXPECTED_INITIAL_CLUSTER} quota=${EXPECTED_QUOTA_BACKEND_BYTES} advertise_client_urls=${EXPECTED_ADVERTISE_CLIENT_URLS} replicas=${EXPECTED_KUBEBRAIN_REPLICAS} PD/TiKV=${EXPECTED_PD_REPLICAS}/${EXPECTED_TIKV_REPLICAS}"
