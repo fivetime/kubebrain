@@ -9794,6 +9794,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   receipt 会 requeue，不会标记 operation 成功。回归：
   `go test ./hack/production -run 'TestCertificateRotationOperation' -count=10 -timeout=180s`
   通过。
+- A557 收紧 Backup operation succeed 前 receipt 复检：
+  A552 已在 upload workflow 内校验 `kubebrain.object-backup.receipt.v1`，但 child 校验
+  通过后父进程最终只检查 `receipt_output` 仍存在，再提交其 SHA-256；如果本地 receipt
+  在 workflow 校验后、operation succeed 前被替换，旧逻辑可能把错误 digest 写入终态。
+  现在 `run-backup-operation.sh` 在提交 succeed 前再次调用同一 strict
+  `validate_object_receipt`，重新读取 logical artifact status、对象 receipt schema 和
+  字节/retention/identity 绑定；末端复检失败会 requeue。回归用第三次 status 调用篡改
+  receipt，证明不会提交 Succeeded：
+  `go test ./hack/production -run 'TestBackupOperation' -count=10 -timeout=180s`
+  通过。
 
 ### P2：运维兼容和长期验证
 

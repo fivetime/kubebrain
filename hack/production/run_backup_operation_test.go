@@ -35,6 +35,14 @@ func TestBackupOperationRejectsInvalidObjectReceipt(t *testing.T) {
 	require.NotContains(t, log, "--action succeed")
 }
 
+func TestBackupOperationRevalidatesReceiptBeforeSucceed(t *testing.T) {
+	f := newBackupRunnerFixture(t, false)
+	f.run(t, false, "FINAL_TAMPER_RECEIPT=true", "invalid object receipt")
+	log := f.log(t)
+	require.Contains(t, log, "--action retry")
+	require.NotContains(t, log, "--action succeed")
+}
+
 func TestBackupOperationReusesExistingArtifact(t *testing.T) {
 	f := newBackupRunnerFixture(t, true)
 	f.run(t, true, "")
@@ -126,7 +134,15 @@ printf 'artifact\n' >"$OUTPUT"
 set -euo pipefail
 printf 'status\n' >>"$FAKE_DIR/actions.log"
 [[ -f "$INPUT" ]]
+count_file="$FAKE_DIR/status.count"
+count=0
+[[ ! -f "$count_file" ]] || read -r count <"$count_file"
+count=$((count + 1))
+printf '%s\n' "$count" >"$count_file"
 printf '{"format":"kubebrain.logical.v2","prefix":"/registry","revision":42,"created_at_unix":100,"records":2,"leases":1,"sha256":"`+backupArtifactSHA256+`"}\n'
+if [[ "${FINAL_TAMPER_RECEIPT:-false}" == true && "$count" -ge 3 ]]; then
+  printf '{"format":"kubebrain.object-backup.receipt.v1","artifact_sha256":"short"}\n' >"$BACKUP_RECEIPT_OUTPUT"
+fi
 `)
 	objectCommand := filepath.Join(dir, "object")
 	writeTrafficExecutable(t, objectCommand, `#!/usr/bin/env bash
@@ -148,6 +164,7 @@ chmod 600 "$RECEIPT_OUTPUT"
 			"OPERATION_NAMESPACE=ops", "LEASE_SECONDS=6", "OPERATIONCTL=" + operationctl,
 			"EXPORT_COMMAND=" + exportCommand, "STATUS_COMMAND=" + statusCommand,
 			"OBJECT_COMMAND=" + objectCommand, "FAKE_DIR=" + dir, "PARAMETERS_DIGEST=" + digest,
+			"BACKUP_RECEIPT_OUTPUT=" + receipt,
 		},
 	}
 }

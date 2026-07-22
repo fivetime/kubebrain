@@ -221,6 +221,12 @@ fi
   echo "backup workflow completed without its object receipt" >&2
   exit 1
 }
+if ! validate_object_receipt; then
+  run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
+    --message "object backup receipt invalid after workflow" >/dev/null
+  echo "backup workflow completed with an invalid object receipt" >&2
+  exit 1
+fi
 receipt_digest="$(sha256sum "$receipt_output" | cut -d ' ' -f1)"
 run_operationctl --action succeed --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
   --receipt-sha256 "$receipt_digest" --message "protected logical backup completed" >/dev/null
