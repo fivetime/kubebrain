@@ -42,6 +42,16 @@ func TestValidateReceiptChain(t *testing.T) {
 	witness := []byte("immutable-witness")
 	status := backupfile.Status{Format: backupfile.Format, Prefix: "/registry", Revision: 100, Records: 3, Leases: 1, SHA256: "artifact-sha"}
 	snapshot := snapshotReceipt{Format: "kubebrain.cold-physical-snapshot.v2", OperationID: "operation-a"}
+	snapshot.Inventory.VolumeSnapshotClass.Driver = "csi.example.test"
+	snapshot.Inventory.Storage.Namespace = "tidb-cluster"
+	snapshot.Inventory.Storage.TidbCluster = "kb"
+	snapshot.Inventory.Storage.UID = "uid-source-tidb"
+	snapshot.Inventory.Storage.ClusterID = "12345"
+	snapshot.Snapshots = append(snapshot.Snapshots, struct {
+		SourcePVC      string `json:"source_pvc"`
+		Component      string `json:"component"`
+		SnapshotHandle string `json:"snapshot_handle"`
+	}{SourcePVC: "pd-kb-pd-0", Component: "pd", SnapshotHandle: "handle-pd-0"})
 	snapshot.Witness.Format = status.Format
 	snapshot.Witness.Prefix = status.Prefix
 	snapshot.Witness.Revision = status.Revision
@@ -52,6 +62,11 @@ func TestValidateReceiptChain(t *testing.T) {
 	snapshotData, err := json.Marshal(snapshot)
 	require.NoError(t, err)
 	restore := restoreReceipt{Format: "kubebrain.cold-physical-restore.v1", OperationID: snapshot.OperationID, SourceReceiptSHA: digest(snapshotData)}
+	restore.Target.KubeSystemUID = "uid-kube-system"
+	restore.Target.NamespaceUID = "uid-namespace"
+	restore.Target.Namespace = snapshot.Inventory.Storage.Namespace
+	restore.Target.TidbCluster = snapshot.Inventory.Storage.TidbCluster
+	restore.Target.TidbClusterUID = "uid-restored-tidb"
 	restore.Target.ClusterID = "12345"
 	restore.RestoreManifest.Format = "kubernetes-list.canonical-json.v1"
 	restore.RestoreManifest.SHA256 = digest([]byte("manifest"))
@@ -60,8 +75,13 @@ func TestValidateReceiptChain(t *testing.T) {
 	restore.RestoreManifest.VolumeSnapshots = 1
 	restore.RestoreManifest.PersistentVolumeClaims = 1
 	restore.RestoreManifest.TidbClusters = 1
-	restore.VolumeSnapshotContents = []struct{}{{}}
-	restore.PVCs = []struct{}{{}}
+	restore.VolumeSnapshotContents = []restoredVolumeSnapshotContent{{
+		Name: restoreManifestObjectName(snapshot.OperationID, "pd-kb-pd-0"), UID: "uid-content",
+		Driver: "csi.example.test", SnapshotHandle: "handle-pd-0",
+	}}
+	restore.PVCs = []restoredPVC{{
+		Name: "pd-kb-pd-0", UID: "uid-pvc", PV: "pv-pd-kb-pd-0", Phase: "Bound",
+	}}
 	restoreData, err := json.Marshal(restore)
 	require.NoError(t, err)
 
@@ -83,6 +103,27 @@ func TestValidateReceiptChain(t *testing.T) {
 	require.NoError(t, err)
 	_, _, err = validateReceiptChain(status, witness, snapshotData, brokenData)
 	require.ErrorContains(t, err, "canonical restore manifest")
+
+	brokenRestore = cloneRestoreReceipt(restore)
+	brokenRestore.VolumeSnapshotContents[0].SnapshotHandle = "other-handle"
+	brokenData, err = json.Marshal(brokenRestore)
+	require.NoError(t, err)
+	_, _, err = validateReceiptChain(status, witness, snapshotData, brokenData)
+	require.ErrorContains(t, err, "content inventory")
+
+	brokenRestore = cloneRestoreReceipt(restore)
+	brokenRestore.PVCs[0].Phase = "Pending"
+	brokenData, err = json.Marshal(brokenRestore)
+	require.NoError(t, err)
+	_, _, err = validateReceiptChain(status, witness, snapshotData, brokenData)
+	require.ErrorContains(t, err, "PVC inventory")
+
+	brokenRestore = restore
+	brokenRestore.Target.ClusterID = "54321"
+	brokenData, err = json.Marshal(brokenRestore)
+	require.NoError(t, err)
+	_, _, err = validateReceiptChain(status, witness, snapshotData, brokenData)
+	require.ErrorContains(t, err, "target")
 }
 
 func TestValidateRestoreManifestBinding(t *testing.T) {
@@ -203,4 +244,10 @@ func TestEqualStrings(t *testing.T) {
 	require.True(t, equalStrings([]string{"a", "b"}, []string{"a", "b"}))
 	require.False(t, equalStrings([]string{"a"}, []string{"b"}))
 	require.False(t, equalStrings([]string{"a"}, []string{"a", "b"}))
+}
+
+func cloneRestoreReceipt(value restoreReceipt) restoreReceipt {
+	value.VolumeSnapshotContents = append([]restoredVolumeSnapshotContent(nil), value.VolumeSnapshotContents...)
+	value.PVCs = append([]restoredPVC(nil), value.PVCs...)
+	return value
 }

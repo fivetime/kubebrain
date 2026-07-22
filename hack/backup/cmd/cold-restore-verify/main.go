@@ -34,6 +34,20 @@ type restoreManifestSnapshotMapping struct {
 	name      string
 }
 
+type restoredVolumeSnapshotContent struct {
+	Name           string `json:"name"`
+	UID            string `json:"uid"`
+	Driver         string `json:"driver"`
+	SnapshotHandle string `json:"snapshot_handle"`
+}
+
+type restoredPVC struct {
+	Name  string `json:"name"`
+	UID   string `json:"uid"`
+	PV    string `json:"pv"`
+	Phase string `json:"phase"`
+}
+
 type restoreReceipt struct {
 	Format           string `json:"format"`
 	OperationID      string `json:"operation_id"`
@@ -48,10 +62,15 @@ type restoreReceipt struct {
 		TidbClusters           int    `json:"tidbclusters"`
 	} `json:"restore_manifest"`
 	Target struct {
-		ClusterID string `json:"cluster_id"`
+		KubeSystemUID  string `json:"kube_system_uid"`
+		NamespaceUID   string `json:"namespace_uid"`
+		Namespace      string `json:"namespace"`
+		TidbCluster    string `json:"tidb_cluster"`
+		TidbClusterUID string `json:"tidb_cluster_uid"`
+		ClusterID      string `json:"cluster_id"`
 	} `json:"target"`
-	VolumeSnapshotContents []struct{} `json:"volume_snapshot_contents"`
-	PVCs                   []struct{} `json:"pvcs"`
+	VolumeSnapshotContents []restoredVolumeSnapshotContent `json:"volume_snapshot_contents"`
+	PVCs                   []restoredPVC                   `json:"pvcs"`
 }
 
 type snapshotReceipt struct {
@@ -233,6 +252,9 @@ func validateReceiptChain(status backupfile.Status, witnessData, snapshotData, r
 		restore.OperationID != snapshotRecord.OperationID || restore.SourceReceiptSHA != digest(snapshotData) {
 		return snapshotReceipt{}, restoreReceipt{}, errors.New("cold physical restore receipt does not bind the snapshot receipt")
 	}
+	if err := validateRestoreReceiptInventory(restore, snapshotRecord); err != nil {
+		return snapshotReceipt{}, restoreReceipt{}, err
+	}
 	if restore.RestoreManifest.Format != "kubernetes-list.canonical-json.v1" ||
 		!validDigest(restore.RestoreManifest.SHA256) ||
 		restore.RestoreManifest.ItemCount <= 0 ||
@@ -246,6 +268,71 @@ func validateReceiptChain(status backupfile.Status, witnessData, snapshotData, r
 		return snapshotReceipt{}, restoreReceipt{}, errors.New("cold physical restore receipt does not bind a canonical restore manifest")
 	}
 	return snapshotRecord, restore, nil
+}
+
+func validateRestoreReceiptInventory(restore restoreReceipt, snapshotRecord snapshotReceipt) error {
+	if snapshotRecord.Inventory.Storage.Namespace == "" ||
+		snapshotRecord.Inventory.Storage.TidbCluster == "" ||
+		snapshotRecord.Inventory.Storage.ClusterID == "" ||
+		snapshotRecord.Inventory.VolumeSnapshotClass.Driver == "" ||
+		restore.Target.KubeSystemUID == "" || restore.Target.NamespaceUID == "" ||
+		restore.Target.TidbClusterUID == "" ||
+		restore.Target.Namespace != snapshotRecord.Inventory.Storage.Namespace ||
+		restore.Target.TidbCluster != snapshotRecord.Inventory.Storage.TidbCluster ||
+		restore.Target.ClusterID != snapshotRecord.Inventory.Storage.ClusterID {
+		return errors.New("cold physical restore receipt target does not match the snapshot receipt")
+	}
+	expected := make(map[string]string, len(snapshotRecord.Snapshots))
+	expectedPVCs := make(map[string]struct{}, len(snapshotRecord.Snapshots))
+	for _, snapshot := range snapshotRecord.Snapshots {
+		if snapshot.SourcePVC == "" || snapshot.SnapshotHandle == "" {
+			return errors.New("snapshot receipt contains incomplete restored inventory mapping")
+		}
+		if _, exists := expected[snapshot.SnapshotHandle]; exists {
+			return errors.New("snapshot receipt contains duplicate snapshot handle")
+		}
+		expected[snapshot.SnapshotHandle] = restoreManifestObjectName(
+			snapshotRecord.OperationID, snapshot.SourcePVC,
+		)
+		expectedPVCs[snapshot.SourcePVC] = struct{}{}
+	}
+	if len(restore.VolumeSnapshotContents) != len(expected) || len(restore.PVCs) != len(expectedPVCs) {
+		return errors.New("cold physical restore receipt inventory count does not match snapshot receipt")
+	}
+	seenContentNames := map[string]struct{}{}
+	seenHandles := map[string]struct{}{}
+	for _, content := range restore.VolumeSnapshotContents {
+		expectedName, exists := expected[content.SnapshotHandle]
+		if !exists || content.Name != expectedName || content.UID == "" ||
+			content.Driver != snapshotRecord.Inventory.VolumeSnapshotClass.Driver {
+			return errors.New("cold physical restore receipt content inventory does not match snapshot receipt")
+		}
+		if _, duplicate := seenContentNames[content.Name]; duplicate {
+			return errors.New("cold physical restore receipt contains duplicate VolumeSnapshotContent")
+		}
+		if _, duplicate := seenHandles[content.SnapshotHandle]; duplicate {
+			return errors.New("cold physical restore receipt contains duplicate snapshot handle")
+		}
+		seenContentNames[content.Name] = struct{}{}
+		seenHandles[content.SnapshotHandle] = struct{}{}
+	}
+	seenPVCNames := map[string]struct{}{}
+	seenPVs := map[string]struct{}{}
+	for _, pvc := range restore.PVCs {
+		if _, exists := expectedPVCs[pvc.Name]; !exists || pvc.UID == "" || pvc.PV == "" ||
+			pvc.Phase != "Bound" {
+			return errors.New("cold physical restore receipt PVC inventory does not match snapshot receipt")
+		}
+		if _, duplicate := seenPVCNames[pvc.Name]; duplicate {
+			return errors.New("cold physical restore receipt contains duplicate PVC")
+		}
+		if _, duplicate := seenPVs[pvc.PV]; duplicate {
+			return errors.New("cold physical restore receipt contains duplicate PV")
+		}
+		seenPVCNames[pvc.Name] = struct{}{}
+		seenPVs[pvc.PV] = struct{}{}
+	}
+	return nil
 }
 
 func validateRestoreManifestBinding(data []byte, restore restoreReceipt, snapshotRecord snapshotReceipt) error {

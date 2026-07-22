@@ -8048,6 +8048,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   或 TidbCluster 来源身份也会在访问恢复 endpoint 前失败。`go test ./hack/backup/... ./hack/production`、
   `bash -n` 和 `go vet ./hack/backup/... ./hack/production` 通过。该项进一步收紧 cold restore
   语义验证的制品链，仍不关闭真实 CSI 隔离恢复或 PITR 缺口。
+- **DBaaS A462 cold restore actual inventory binding（2026-07-22）**：
+  继续审计发现 restore receipt 中实际恢复后的 VolumeSnapshotContent/PVC inventory 此前只参与
+  数量校验，semantic verifier 未验证这些执行结果是否仍与 snapshot receipt 对应。现 verifier
+  强类型读取 restore target 和实际 inventory，要求目标 namespace/TidbCluster/cluster ID 与
+  snapshot receipt 一致，VolumeSnapshotContent 的 name、driver、snapshotHandle 和 UID 对应
+  source PVC 推导出的恢复对象，PVC 的 name、UID、PV 和 Bound phase 对应 snapshot receipt，
+  并拒绝重复 Content、handle、PVC 或 PV。单元负例覆盖 snapshotHandle 漂移、PVC phase 漂移
+  和 target cluster ID 漂移；`go test ./hack/backup/... ./hack/production`、`bash -n` 和
+  `go vet ./hack/backup/... ./hack/production` 通过。该项把 semantic verify 从“计划制品正确”
+  推进到“执行后 inventory 也绑定”，仍不替代真实 CSI 隔离恢复演练。
 
 - **Maintenance A398 persistent CORRUPT alarm gate（2026-07-21）**：
   对照 `/root/etcd/server/etcdserver/apply/uber_applier.go`、`apply/corrupt.go`、
