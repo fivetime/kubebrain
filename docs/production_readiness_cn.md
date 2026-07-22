@@ -957,10 +957,10 @@ Object Lock exact-read finalized invoice、可选 provider reconciliation 和可
 生成 canonical、借贷平衡的 journal：invoice 生成 accounts receivable/revenue，provider
 allocation 生成 provider cost/accounts payable，payment/refund/chargeback 生成 cash/accounts
 receivable。每条 journal line 绑定来源 artifact format/ID/source line，debit 与 credit 总额必须
-完全相等，且 line source 必须命中 export 顶层绑定的 invoice/provider reconciliation/payment
-ledger source allowlist；任一输入 source 与 invoice source 不一致、read receipt 与下载字节不一致
-或 retention 不足都会 fail closed。该 export 是外部总账过账输入证据，不替代 ERP/GL 的实际
-posting、period close、账号映射审批或反向回执。
+完全相等，line 数组必须按 line ID 递增排序，且 line source 必须命中 export 顶层绑定的
+invoice/provider reconciliation/payment ledger source allowlist；任一输入 source 与 invoice source
+不一致、read receipt 与下载字节不一致或 retention 不足都会 fail closed。该 export 是外部
+总账过账输入证据，不替代 ERP/GL 的实际 posting、period close、账号映射审批或反向回执。
 
 该 invoice 是 KubeBrain 数据面资源结算证据，不是完整税务/收款系统。供应商请求
 分类/exporter 与账单的周期性对账、税率计算、折扣规则、真实支付渠道、发票编号法规、

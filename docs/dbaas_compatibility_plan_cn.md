@@ -9042,6 +9042,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   分录改指向未绑定 artifact。新增负例只篡改 line source ID、总额不变，读回必须失败；
   `go test ./hack/production/... ./deploy/production` 与
   `go vet ./hack/production/... ./deploy/production` 通过。
+- A469 收紧 general ledger export canonical line ordering：`Validate` 现在不仅对 line 副本排序
+  后计算 debit/credit，还要求原始 artifact 的 `lines` 数组已经按 line ID 递增排列。这样即使
+  分录内容、source allowlist 和借贷总额都合法，重排 line 数组也不能作为 canonical export
+  读回通过。新增负例交换两条 line、总额不变但必须失败；`go test ./hack/production/... ./deploy/production`
+  与 `go vet ./hack/production/... ./deploy/production` 通过。
 
 ### P2：运维兼容和长期验证
 

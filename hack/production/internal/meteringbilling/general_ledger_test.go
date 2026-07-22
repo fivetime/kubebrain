@@ -65,6 +65,11 @@ func TestGeneralLedgerExportRejectsMismatchedInputsAndTamperedTotals(t *testing.
 	sourceTamper.Lines[0].SourceID = "other-invoice"
 	require.ErrorContains(t, sourceTamper.Validate(), "source")
 
+	unsorted := export
+	unsorted.Lines = append([]GeneralLedgerLine(nil), export.Lines...)
+	unsorted.Lines[0], unsorted.Lines[1] = unsorted.Lines[1], unsorted.Lines[0]
+	require.ErrorContains(t, unsorted.Validate(), "sorted")
+
 	export.Lines[0].AmountMicros++
 	require.ErrorContains(t, export.Validate(), "balanced")
 }

@@ -197,9 +197,14 @@ func (e GeneralLedgerExport) Validate() error {
 	if e.PaymentLedgerSource != nil {
 		allowedSources[generalLedgerSourceKey(e.PaymentLedgerSource.ArtifactFormat, e.PaymentLedgerSource.ArtifactID)] = struct{}{}
 	}
-	_, debit, credit, err := normalizeGeneralLedgerLines(append([]GeneralLedgerLine(nil), e.Lines...))
+	sortedLines, debit, credit, err := normalizeGeneralLedgerLines(append([]GeneralLedgerLine(nil), e.Lines...))
 	if err != nil {
 		return err
+	}
+	for index := range e.Lines {
+		if e.Lines[index].LineID != sortedLines[index].LineID {
+			return errors.New("general ledger lines are not sorted")
+		}
 	}
 	for _, line := range e.Lines {
 		if _, ok := allowedSources[generalLedgerSourceKey(line.SourceFormat, line.SourceID)]; !ok {
