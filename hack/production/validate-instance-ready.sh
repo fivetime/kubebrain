@@ -9,6 +9,7 @@ EXPECTED_KUBEBRAIN_REPLICAS="${EXPECTED_KUBEBRAIN_REPLICAS:-3}"
 EXPECTED_IMAGE="${EXPECTED_IMAGE:-}"
 EXPECTED_KEYSPACE="${EXPECTED_KEYSPACE:-}"
 EXPECTED_PD_ADDRS="${EXPECTED_PD_ADDRS:-}"
+EXPECTED_INITIAL_CLUSTER="${EXPECTED_INITIAL_CLUSTER:-}"
 EXPECTED_QUOTA_BACKEND_BYTES="${EXPECTED_QUOTA_BACKEND_BYTES:-}"
 EXPECTED_ADVERTISE_CLIENT_URLS="${EXPECTED_ADVERTISE_CLIENT_URLS:-}"
 TIDB_NAMESPACE="${TIDB_NAMESPACE:-tidb-cluster}"
@@ -37,6 +38,10 @@ if [[ -z "$EXPECTED_KEYSPACE" ]]; then
 fi
 if [[ -z "$EXPECTED_PD_ADDRS" ]]; then
   echo "EXPECTED_PD_ADDRS is required" >&2
+  exit 2
+fi
+if [[ -z "$EXPECTED_INITIAL_CLUSTER" ]]; then
+  echo "EXPECTED_INITIAL_CLUSTER is required" >&2
   exit 2
 fi
 if ! [[ "$EXPECTED_QUOTA_BACKEND_BYTES" =~ ^[1-9][0-9]*$ ]]; then
@@ -186,6 +191,28 @@ if [[ "$pd_addrs_arg_count" -ne 1 || "$pd_addrs_arg_mismatch" == "true" ]]; then
   exit 1
 fi
 
+initial_cluster_arg_count=0
+initial_cluster_arg_mismatch=false
+while IFS= read -r arg; do
+  if [[ "$arg" == --initial-cluster=* ]]; then
+    initial_cluster_arg_count=$((initial_cluster_arg_count + 1))
+    if [[ "$arg" != "--initial-cluster=${EXPECTED_INITIAL_CLUSTER}" ]]; then
+      initial_cluster_arg_mismatch=true
+    fi
+  fi
+done <<<"$kubebrain_args"
+if [[ "$initial_cluster_arg_count" -ne 1 || "$initial_cluster_arg_mismatch" == "true" ]]; then
+  echo "KubeBrain initial cluster configuration mismatch: expected exactly --initial-cluster=${EXPECTED_INITIAL_CLUSTER}" >&2
+  printf 'actual initial cluster args:' >&2
+  while IFS= read -r arg; do
+    if [[ "$arg" == --initial-cluster=* ]]; then
+      printf ' %s' "$arg" >&2
+    fi
+  done <<<"$kubebrain_args"
+  printf '\n' >&2
+  exit 1
+fi
+
 if ! ETCDCTL_API=3 "$ETCDCTL" --endpoints="$ENDPOINT" endpoint health; then
   echo "KubeBrain endpoint health failed: $ENDPOINT" >&2
   exit 1
@@ -207,18 +234,61 @@ if ! expected_client_urls_json="$(printf '%s\n' "${advertised_client_urls[@]}" |
   echo "failed to encode expected advertised client URLs with jq" >&2
   exit 1
 fi
+
+expected_peer_members_json='[]'
+declare -A expected_member_names=()
+declare -A expected_peer_urls=()
+IFS=',' read -r -a initial_cluster_entries <<<"$EXPECTED_INITIAL_CLUSTER"
+for entry in "${initial_cluster_entries[@]}"; do
+  if [[ "$entry" != *=* ]]; then
+    echo "EXPECTED_INITIAL_CLUSTER contains an invalid member entry: $entry" >&2
+    exit 2
+  fi
+  member_name="${entry%%=*}"
+  peer_urls_raw="${entry#*=}"
+  if [[ -z "$member_name" || -z "$peer_urls_raw" || -n "${expected_member_names[$member_name]:-}" ]]; then
+    echo "EXPECTED_INITIAL_CLUSTER contains an empty or duplicate member: $entry" >&2
+    exit 2
+  fi
+  expected_member_names["$member_name"]=1
+  IFS=';' read -r -a peer_urls <<<"$peer_urls_raw"
+  for peer_url in "${peer_urls[@]}"; do
+    if [[ -z "$peer_url" || -n "${expected_peer_urls[$peer_url]:-}" ]]; then
+      echo "EXPECTED_INITIAL_CLUSTER contains an empty or duplicate peer URL: $entry" >&2
+      exit 2
+    fi
+    expected_peer_urls["$peer_url"]=1
+  done
+  if ! peer_urls_json="$(printf '%s\n' "${peer_urls[@]}" | "$JQ" -Rsc 'split("\n")[:-1] | sort | unique')"; then
+    echo "failed to encode expected peer URLs with jq" >&2
+    exit 1
+  fi
+  if ! expected_peer_members_json="$(printf '%s' "$expected_peer_members_json" | "$JQ" -c \
+    --arg name "$member_name" --argjson peerURLs "$peer_urls_json" \
+    '. + [{name: $name, peerURLs: $peerURLs}] | sort_by(.name)')"; then
+    echo "failed to encode expected initial cluster topology with jq" >&2
+    exit 1
+  fi
+done
+if [[ "${#initial_cluster_entries[@]}" -ne "$EXPECTED_KUBEBRAIN_REPLICAS" ]]; then
+  echo "EXPECTED_INITIAL_CLUSTER member count does not match EXPECTED_KUBEBRAIN_REPLICAS" >&2
+  exit 2
+fi
+
 if ! member_list_json="$(ETCDCTL_API=3 "$ETCDCTL" --endpoints="$ENDPOINT" member list -w json)"; then
   echo "KubeBrain MemberList failed: $ENDPOINT" >&2
   exit 1
 fi
 if ! printf '%s' "$member_list_json" | "$JQ" -e \
   --argjson expectedReplicas "$EXPECTED_KUBEBRAIN_REPLICAS" \
-  --argjson expectedClientURLs "$expected_client_urls_json" '
+  --argjson expectedClientURLs "$expected_client_urls_json" \
+  --argjson expectedPeerMembers "$expected_peer_members_json" '
     (.header.cluster_id // 0) != 0 and
     ((.members // []) | length) == $expectedReplicas and
     all(.members[]; (.isLearner // false) == false) and
     ([.members[].ID] | length) == ([.members[].ID] | unique | length) and
     ([.members[].name] | length) == ([.members[].name] | unique | length) and
+    ([.members[] | {name: .name, peerURLs: ((.peerURLs // []) | sort | unique)}] | sort_by(.name)) == $expectedPeerMembers and
     all(.members[];
       (.ID // 0) != 0 and
       ((.name // "") | length) > 0 and
@@ -237,4 +307,4 @@ for advertised_url in "${advertised_client_urls[@]}"; do
   fi
 done
 
-echo "KubeBrain instance release gate passed: endpoint=${ENDPOINT} image=${EXPECTED_IMAGE} keyspace=${EXPECTED_KEYSPACE} pd_addrs=${EXPECTED_PD_ADDRS} quota=${EXPECTED_QUOTA_BACKEND_BYTES} advertise_client_urls=${EXPECTED_ADVERTISE_CLIENT_URLS} replicas=${EXPECTED_KUBEBRAIN_REPLICAS} PD/TiKV=${EXPECTED_PD_REPLICAS}/${EXPECTED_TIKV_REPLICAS}"
+echo "KubeBrain instance release gate passed: endpoint=${ENDPOINT} image=${EXPECTED_IMAGE} keyspace=${EXPECTED_KEYSPACE} pd_addrs=${EXPECTED_PD_ADDRS} initial_cluster=${EXPECTED_INITIAL_CLUSTER} quota=${EXPECTED_QUOTA_BACKEND_BYTES} advertise_client_urls=${EXPECTED_ADVERTISE_CLIENT_URLS} replicas=${EXPECTED_KUBEBRAIN_REPLICAS} PD/TiKV=${EXPECTED_PD_REPLICAS}/${EXPECTED_TIKV_REPLICAS}"
