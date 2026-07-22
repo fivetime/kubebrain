@@ -1807,7 +1807,9 @@ object version 三项 annotation 与已验证归档证据完全一致时确认�
 均 fail closed，回读错误与原写错误聚合。生产镜像必须包含
 `kubebrain-operation-audit`，发布 smoke 需以 executor 身份创建合法终态、以专用
 archiver 身份 capture/release，并确认其他控制器的 finalizer 未被移除；同一证据重试
-不得改变 resourceVersion。
+不得改变 resourceVersion。手工 `operation-audit --action release` 必须同时传入期望的
+object store ID、bucket、object key、retention mode 与 retain-until，缺少任一项不得释放
+finalizer。
 
 该补偿只处理 Kubernetes coordination Lease；外部系统副作用仍由 Operation fencing 与
 幂等 receipt 约束。

@@ -112,7 +112,7 @@ func TestArchiveProcessorRejectsReceiptRetentionDriftBeforeRelease(t *testing.T)
 	}
 
 	err = processor.Process(context.Background(), object)
-	require.ErrorContains(t, err, "requested retention")
+	require.ErrorContains(t, err, "expected retention")
 	updated, err := client.Resource(operationqueue.Resource).Namespace("tenant-a").
 		Get(context.Background(), "operation-a", metav1.GetOptions{})
 	require.NoError(t, err)
@@ -151,7 +151,7 @@ func TestArchiveProcessorRejectsReceiptObjectDriftBeforeRelease(t *testing.T) {
 	}
 
 	err = processor.Process(context.Background(), object)
-	require.ErrorContains(t, err, "requested object")
+	require.ErrorContains(t, err, "expected object")
 	updated, err := client.Resource(operationqueue.Resource).Namespace("tenant-a").
 		Get(context.Background(), "operation-a", metav1.GetOptions{})
 	require.NoError(t, err)

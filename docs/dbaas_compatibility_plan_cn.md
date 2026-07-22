@@ -9175,6 +9175,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   回归覆盖 receipt object key drift；`go test ./hack/production/internal/operationarchiver -run 'TestArchiveProcessor' -count=1`、
   `go test ./hack/production/... ./deploy/production` 与
   `go vet ./hack/production/... ./deploy/production` 通过。
+- A486 将 Operation audit release 的 expected Object Lock scope 下沉到共享 release
+  API：`ReleaseWithExpectedReceipt` 会在移除 finalizer 前校验 object store ID、bucket、
+  object key、retention mode 和 retain-until；archiver 改用该 API，手工
+  `operation-audit --action release` 也必须显式传入这些 expected flags。回归覆盖 release
+  expected object drift；`go test ./hack/production/internal/operationauditrelease ./hack/production/internal/operationarchiver -run 'Test.*Release|TestArchiveProcessor' -count=1`、
+  `go test ./hack/production/... ./deploy/production` 与
+  `go vet ./hack/production/... ./deploy/production` 通过。
 
 ### P2：运维兼容和长期验证
 

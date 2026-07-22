@@ -20,6 +20,25 @@ func Release(
 	client dynamic.Interface,
 	namespace, name, artifactPath, receiptPath string,
 ) (*unstructured.Unstructured, error) {
+	return ReleaseWithExpectedReceipt(
+		ctx, client, namespace, name, artifactPath, receiptPath, ExpectedArchiveReceipt{},
+	)
+}
+
+type ExpectedArchiveReceipt struct {
+	ObjectStoreID   string
+	Bucket          string
+	ObjectKey       string
+	RetentionMode   string
+	RetainUntilUnix int64
+}
+
+func ReleaseWithExpectedReceipt(
+	ctx context.Context,
+	client dynamic.Interface,
+	namespace, name, artifactPath, receiptPath string,
+	expected ExpectedArchiveReceipt,
+) (*unstructured.Unstructured, error) {
 	if namespace == "" || name == "" || artifactPath == "" || receiptPath == "" {
 		return nil, errors.New("audit release request is incomplete")
 	}
@@ -33,6 +52,9 @@ func Release(
 	}
 	if !receipt.Matches(artifactStatus) {
 		return nil, errors.New("archive receipt does not match the operation audit artifact")
+	}
+	if err := expected.matches(receipt); err != nil {
+		return nil, err
 	}
 	resource := client.Resource(operationqueue.Resource).Namespace(namespace)
 	object, err := resource.Get(ctx, name, metav1.GetOptions{})
@@ -105,6 +127,26 @@ func Release(
 		return nil, fmt.Errorf("operation changed while releasing audit finalizer: %w", err)
 	}
 	return nil, err
+}
+
+func (e ExpectedArchiveReceipt) matches(receipt operationaudit.ArchiveReceipt) error {
+	if e.ObjectStoreID == "" && e.Bucket == "" && e.ObjectKey == "" &&
+		e.RetentionMode == "" && e.RetainUntilUnix == 0 {
+		return nil
+	}
+	if e.ObjectStoreID == "" || e.Bucket == "" || e.ObjectKey == "" ||
+		(e.RetentionMode != "COMPLIANCE" && e.RetentionMode != "GOVERNANCE") ||
+		e.RetainUntilUnix <= 0 {
+		return errors.New("expected archive receipt scope is incomplete")
+	}
+	if receipt.ObjectStoreID != e.ObjectStoreID || receipt.Bucket != e.Bucket ||
+		receipt.ObjectKey != e.ObjectKey {
+		return errors.New("archive receipt does not match expected object")
+	}
+	if receipt.RetentionMode != e.RetentionMode || receipt.RetainUntilUnix != e.RetainUntilUnix {
+		return errors.New("archive receipt does not match expected retention")
+	}
+	return nil
 }
 
 func contains(values []string, wanted string) bool {

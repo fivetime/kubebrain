@@ -71,6 +71,31 @@ func TestReleaseRejectsReceiptAndCurrentOperationDrift(t *testing.T) {
 	})
 }
 
+func TestReleaseWithExpectedReceiptRejectsScopeDrift(t *testing.T) {
+	object := archivedOperation()
+	client := releaseClient(object)
+	artifactPath, receiptPath, _ := writeReleaseEvidence(t, object)
+
+	_, err := ReleaseWithExpectedReceipt(
+		context.Background(), client, "operations", "backup-1", artifactPath, receiptPath,
+		ExpectedArchiveReceipt{
+			ObjectStoreID: "store-a", Bucket: "audits", ObjectKey: "instance-a/other.json",
+			RetentionMode: "COMPLIANCE", RetainUntilUnix: 200,
+		},
+	)
+	require.ErrorContains(t, err, "expected object")
+
+	result, err := ReleaseWithExpectedReceipt(
+		context.Background(), client, "operations", "backup-1", artifactPath, receiptPath,
+		ExpectedArchiveReceipt{
+			ObjectStoreID: "store-a", Bucket: "audits", ObjectKey: "instance-a/backup-1.json",
+			RetentionMode: "COMPLIANCE", RetainUntilUnix: 200,
+		},
+	)
+	require.NoError(t, err)
+	require.NotContains(t, result.GetFinalizers(), operationaudit.Finalizer)
+}
+
 func TestReleaseReconcilesCommittedUpdateAfterLostResponse(t *testing.T) {
 	object := archivedOperation()
 	client := releaseClient(object)

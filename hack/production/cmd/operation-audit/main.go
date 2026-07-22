@@ -18,6 +18,8 @@ import (
 
 func main() {
 	var action, namespace, name, output, receipt, kubeconfig, contextName string
+	var objectStoreID, bucket, objectKey, retentionMode string
+	var retainUntilUnix int64
 	flag.StringVar(&action, "action", "capture", "capture or release")
 	flag.StringVar(&namespace, "namespace", "kubebrain-operations", "operation namespace")
 	flag.StringVar(&name, "name", "", "terminal operation name")
@@ -25,9 +27,18 @@ func main() {
 	flag.StringVar(&receipt, "receipt", "", "verified Object Lock archive receipt")
 	flag.StringVar(&kubeconfig, "kubeconfig", defaultKubeconfig(), "kubeconfig path")
 	flag.StringVar(&contextName, "context", "", "kubeconfig context")
+	flag.StringVar(&objectStoreID, "object-store-id", "", "expected archive receipt object store ID for release")
+	flag.StringVar(&bucket, "bucket", "", "expected archive receipt bucket for release")
+	flag.StringVar(&objectKey, "object-key", "", "expected archive receipt object key for release")
+	flag.StringVar(&retentionMode, "retention-mode", "", "expected archive receipt retention mode for release")
+	flag.Int64Var(&retainUntilUnix, "retain-until-unix", 0, "expected archive receipt retain-until Unix seconds for release")
 	flag.Parse()
 	if name == "" || output == "" || (action == "release" && receipt == "") {
 		log.Fatal("name/output and release receipt are required")
+	}
+	if action == "release" && (objectStoreID == "" || bucket == "" || objectKey == "" ||
+		retentionMode == "" || retainUntilUnix <= 0) {
+		log.Fatal("release object-store-id/bucket/object-key/retention-mode/retain-until-unix are required")
 	}
 
 	loading := &clientcmd.ClientConfigLoadingRules{ExplicitPath: kubeconfig}
@@ -56,8 +67,12 @@ func main() {
 			log.Fatal(err)
 		}
 	case "release":
-		if _, err := operationauditrelease.Release(
+		if _, err := operationauditrelease.ReleaseWithExpectedReceipt(
 			ctx, client, namespace, name, output, receipt,
+			operationauditrelease.ExpectedArchiveReceipt{
+				ObjectStoreID: objectStoreID, Bucket: bucket, ObjectKey: objectKey,
+				RetentionMode: retentionMode, RetainUntilUnix: retainUntilUnix,
+			},
 		); err != nil {
 			log.Fatal(err)
 		}
