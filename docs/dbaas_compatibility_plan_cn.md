@@ -10031,6 +10031,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   executor 有 hooks volume，其他五类 executor 不会挂载该 Secret。回归：
   `go test ./deploy/production -run TestOperationExecutorsAreTypeIsolatedFailClosedTemplates -count=1`
   通过。
+- A581 固定数据面 client/peer TLS Secret allowlist：
+  A579 收紧了 operation API/broker 的 TLS Secret mount，但核心 `kubebrain-tls.yaml`
+  仍直接挂载整个 `kubebrain-client-tls` 和 `kubebrain-peer-tls` Secret，未固定
+  `defaultMode` 或 `ca.crt/tls.crt/tls.key` item 集合。现在 client/peer TLS volume 都以
+  `0440` 只读 mode 只挂载这三个 key，manifest 测试在 TLS 清单分支同时固定证书参数、
+  client/peer Secret 名、mount path 和 key/path allowlist，防止额外 Secret 内容进入数据面
+  Pod。回归：
+  `go test ./deploy/production -run TestProductionManifestsProvideStableCompleteMembership -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

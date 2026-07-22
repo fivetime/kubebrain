@@ -43,7 +43,13 @@ func TestProductionManifestsProvideStableCompleteMembership(t *testing.T) {
 			require.False(t, nestedBool(t, workload, "spec", "template", "spec", "automountServiceAccountToken"))
 			require.True(t, nestedBool(t, workload, "spec", "template", "spec", "securityContext", "runAsNonRoot"))
 			require.EqualValues(t, 65532, nestedInt64(t, workload, "spec", "template", "spec", "securityContext", "runAsUser"))
+			require.EqualValues(t, 65532, nestedInt64(t, workload, "spec", "template", "spec", "securityContext", "runAsGroup"))
+			require.EqualValues(t, 65532, nestedInt64(t, workload, "spec", "template", "spec", "securityContext", "fsGroup"))
 			require.Equal(t, "RuntimeDefault", nestedString(t, workload, "spec", "template", "spec", "securityContext", "seccompProfile", "type"))
+			podSpec, found, err := unstructured.NestedMap(workload.Object, "spec", "template", "spec")
+			require.NoError(t, err)
+			require.True(t, found)
+			pod := &unstructured.Unstructured{Object: podSpec}
 
 			requiredAntiAffinity, found, err := unstructured.NestedSlice(
 				workload.Object, "spec", "template", "spec", "affinity", "podAntiAffinity",
@@ -112,6 +118,25 @@ func TestProductionManifestsProvideStableCompleteMembership(t *testing.T) {
 			require.Equal(t, "/ready", nestedString(t, containerObject, "readinessProbe", "httpGet", "path"))
 			require.Equal(t, "/ping", nestedString(t, containerObject, "livenessProbe", "httpGet", "path"))
 			require.Equal(t, "/ping", nestedString(t, containerObject, "startupProbe", "httpGet", "path"))
+			if tc.file == "kubebrain-tls.yaml" {
+				require.Contains(t, args, "--cert-file=/etc/kubebrain/client-tls/tls.crt")
+				require.Contains(t, args, "--key-file=/etc/kubebrain/client-tls/tls.key")
+				require.Contains(t, args, "--trusted-ca-file=/etc/kubebrain/client-tls/ca.crt")
+				require.Contains(t, args, "--peer-cert-file=/etc/kubebrain/peer-tls/tls.crt")
+				require.Contains(t, args, "--peer-key-file=/etc/kubebrain/peer-tls/tls.key")
+				require.Contains(t, args, "--peer-trusted-ca-file=/etc/kubebrain/peer-tls/ca.crt")
+				certificateSecretItems := map[string]string{
+					"ca.crt":  "ca.crt",
+					"tls.crt": "tls.crt",
+					"tls.key": "tls.key",
+				}
+				assertReadOnlySecretVolume(t, pod, containerObject,
+					"client-tls", "kubebrain-client-tls", "/etc/kubebrain/client-tls", 0440,
+					certificateSecretItems)
+				assertReadOnlySecretVolume(t, pod, containerObject,
+					"peer-tls", "kubebrain-peer-tls", "/etc/kubebrain/peer-tls", 0440,
+					certificateSecretItems)
+			}
 
 			env, found, err := unstructured.NestedSlice(container, "env")
 			require.NoError(t, err)
@@ -1628,6 +1653,18 @@ func assertReadOnlyTLSSecretVolume(
 	volumeName, secretName, mountPath string,
 ) {
 	t.Helper()
+	assertReadOnlySecretVolume(t, pod, container, volumeName, secretName, mountPath, 0440,
+		map[string]string{"tls.crt": "tls.crt", "tls.key": "tls.key"})
+}
+
+func assertReadOnlySecretVolume(
+	t *testing.T,
+	pod, container *unstructured.Unstructured,
+	volumeName, secretName, mountPath string,
+	defaultMode int64,
+	wantPathsByKey map[string]string,
+) {
+	t.Helper()
 	mounts, found, err := unstructured.NestedSlice(container.Object, "volumeMounts")
 	require.NoError(t, err)
 	require.True(t, found)
@@ -1654,7 +1691,7 @@ func assertReadOnlyTLSSecretVolume(
 		}
 		foundVolume = true
 		require.Equal(t, secretName, nestedString(t, volume, "secret", "secretName"))
-		require.EqualValues(t, 0440, nestedInt64(t, volume, "secret", "defaultMode"))
+		require.EqualValues(t, defaultMode, nestedInt64(t, volume, "secret", "defaultMode"))
 		items, found, err := unstructured.NestedSlice(volume.Object, "secret", "items")
 		require.NoError(t, err)
 		require.True(t, found)
@@ -1663,7 +1700,7 @@ func assertReadOnlyTLSSecretVolume(
 			itemObject := &unstructured.Unstructured{Object: item.(map[string]any)}
 			pathsByKey[nestedString(t, itemObject, "key")] = nestedString(t, itemObject, "path")
 		}
-		require.Equal(t, map[string]string{"tls.crt": "tls.crt", "tls.key": "tls.key"}, pathsByKey)
+		require.Equal(t, wantPathsByKey, pathsByKey)
 	}
 	require.True(t, foundVolume)
 }

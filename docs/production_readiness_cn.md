@@ -370,6 +370,11 @@ member name 聚合后再比对运行时拓扑；最后通过官方
 但不会替控制面判断 tag 是否可变。该门禁可关闭创建/扩缩/升级的“数据面已就绪”阶段，
 不能替代备份、恢复和销毁各自的幂等状态机与回滚证据。
 
+TLS 生产基线使用 `deploy/production/kubebrain-tls.yaml`。`kubebrain-client-tls` 和
+`kubebrain-peer-tls` Secret 只接受 `ca.crt`、`tls.crt`、`tls.key` 三个 key，并以
+`0440` 只读 mode 挂载到对应 client/peer TLS 目录；不得把额外 Secret key 暴露进
+数据面 Pod，也不得依赖 Secret 默认 mode 表达证书权限。
+
 ## 证书轮换完成门禁
 
 client/peer CA rollover 必须按 `begin`、`overlap`、`complete` 三阶段执行
