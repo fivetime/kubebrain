@@ -168,6 +168,16 @@ func TestSettlementRejectsMismatchDuplicateAndTamper(t *testing.T) {
 	require.ErrorContains(t, err, "canonical")
 }
 
+func TestSettlementRejectsOversizedInputs(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "adjustment.json")
+	require.NoError(t, os.WriteFile(path, make([]byte, maxSettlementArtifactBytes+1), 0o600))
+
+	_, err := ReadAdjustment(path)
+	require.ErrorContains(t, err, "metering adjustment exceeds")
+	_, err = DecodeSettlementKind(path)
+	require.ErrorContains(t, err, "settlement artifact exceeds")
+}
+
 func TestInvoicePlanRequiresContinuousDailyCharges(t *testing.T) {
 	start := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
 	plan := validInvoicePlan(start, ChargeFormatV2, nil)

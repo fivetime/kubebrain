@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"math"
-	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -20,6 +19,7 @@ const AdjustmentFormat = "kubebrain.metering-adjustment.v1"
 const InvoicePlanFormat = "kubebrain.metering-invoice-plan.v1"
 const InvoiceFormat = "kubebrain.metering-invoice.v1"
 const BillingApprover = "system:serviceaccount:kubebrain-operations:kubebrain-billing-approver"
+const maxSettlementArtifactBytes = 4 << 20
 
 var approvalIDPattern = regexp.MustCompile(`^[a-z0-9]([-a-z0-9.]{0,126}[a-z0-9])?$`)
 
@@ -383,7 +383,7 @@ func readSettlement[T any](
 	validate func(T) error,
 ) (SettlementStatus[T], error) {
 	var value T
-	data, err := os.ReadFile(path)
+	data, err := readBoundedFile(path, description, maxSettlementArtifactBytes)
 	if err != nil {
 		return SettlementStatus[T]{}, err
 	}

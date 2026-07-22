@@ -311,7 +311,7 @@ func hasDuplicateString(values ...string) bool {
 }
 
 func DecodeSettlementKind(path string) (string, error) {
-	data, err := os.ReadFile(path)
+	data, err := readBoundedFile(path, "settlement artifact", maxSettlementArtifactBytes)
 	if err != nil {
 		return "", err
 	}

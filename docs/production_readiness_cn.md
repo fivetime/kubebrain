@@ -926,6 +926,11 @@ charge 对象键只由 instance 和 period 构成，不含 price version。同�
 后续更正必须使用尚未实现的 adjustment/credit artifact。正常任务和
 `--period-end-unix` 回补共用同一键。charge Secret 应只允许读取 rollup/price prefix
 并写 charge prefix；价格 publisher 使用独立审批身份。
+adjustment、invoice plan 和 finalized invoice 是月度/周期级控制证据，本地读取最多接受
+4 MiB；超限会在 settlement kind sniff、strict schema 解码、canonical 比对或 Object Lock
+发布前 fail closed。provider statement、payment ledger 和 general ledger export 可能随
+交易行数放大，不套用该 4 MiB 控制证据预算，仍由各自 CSV/生成路径和 exact-read digest
+门禁约束。
 
 对象存储保留量不能由 `logical_backup_artifact_bytes:last` 推导；该指标只有最近一次
 备份大小，既不包含仍被保留的旧 version，也不能发现 delete marker 或控制面漏报对象。

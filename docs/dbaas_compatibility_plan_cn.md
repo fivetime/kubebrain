@@ -9517,6 +9517,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./hack/production/internal/meteringbilling -run 'Test(BuildCharge|ChargeRejects|CatalogAndChargeReject|PriceCatalogRejects)' -count=20`、
   `go test ./hack/production/internal/meteringbilling`、`go test ./hack/production/... ./deploy/production`、
   `go vet ./hack/production/... ./deploy/production` 与 `git diff --check` 通过。
+- A528 收紧 settlement 控制证据本地读取边界：adjustment、invoice plan 和 finalized
+  invoice 是周期级控制证据，`readSettlement` 现在最多读取 4 MiB；`DecodeSettlementKind`
+  的 kind sniff 也使用同一有界读取。超限会在 strict schema 解码、canonical 比对、
+  kind 分发或 Object Lock 发布前 fail closed。provider statement、payment ledger 和
+  general ledger export 可能随交易行数放大，不套该 4 MiB 控制证据预算，仍由各自 CSV/
+  生成路径和 exact-read digest 门禁约束。回归覆盖 oversized settlement read 和 kind sniff；
+  `go test ./hack/production/internal/meteringbilling -run 'Test(Settlement|BuildInvoice|InvoicePlan|InvoiceFinalizer)' -count=20`、
+  `go test ./hack/production/internal/meteringbilling`、`go test ./hack/production/... ./deploy/production`、
+  `go vet ./hack/production/... ./deploy/production` 与 `git diff --check` 通过。
 
 ### P2：运维兼容和长期验证
 
