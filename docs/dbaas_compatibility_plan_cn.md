@@ -8858,6 +8858,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
 - A451 在 A449/A450 的 leader replacement 后重新执行完整 in-cluster release gate 并通过：TidbCluster
   为 Ready，3/3 KubeBrain replicas、实例与 Service UID、canonical image、keyspace、PD 地址、cluster ID、
   initial cluster、quota 和 advertised client URL 全部匹配，cluster-local endpoint health 同时通过。
+- A452 在真实 A445 集群重跑 in-cluster clientv3 balancer gate：固定连接 `kubebrain-0` 后替换该
+  Pod，官方 client 自动切换三 endpoint，连续收到 20 个严格递增 Watch event（末 revision
+  `467848433245618202`），线性/可串行读、Txn、Put 与 Delete 均通过且 transient failures 为 0；
+  replacement Ready 且临时 Job/RBAC 由脚本清理。
 
 ### P1：通用服务能力
 
