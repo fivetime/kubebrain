@@ -16,6 +16,14 @@ for variable in OPERATION_NAME ARTIFACT_OUTPUT OBJECT_STORE_ID S3_BUCKET S3_OBJE
     exit 2
   fi
 done
+if [[ "$RETENTION_MODE" != "COMPLIANCE" && "$RETENTION_MODE" != "GOVERNANCE" ]]; then
+  echo "RETENTION_MODE must be COMPLIANCE or GOVERNANCE" >&2
+  exit 2
+fi
+if ! [[ "$RETAIN_UNTIL_UNIX" =~ ^[1-9][0-9]*$ ]]; then
+  echo "RETAIN_UNTIL_UNIX must be a positive Unix timestamp" >&2
+  exit 2
+fi
 
 audit_args=(
   --namespace "$OPERATION_NAMESPACE"
@@ -38,4 +46,6 @@ RECEIPT_OUTPUT="$RECEIPT_OUTPUT" \
   "$ROOT_DIR/hack/backup/logical-object.sh"
 
 (cd "$ROOT_DIR" && go run ./hack/production/cmd/operation-audit \
-  --action release "${audit_args[@]}" --receipt "$RECEIPT_OUTPUT")
+  --action release "${audit_args[@]}" --receipt "$RECEIPT_OUTPUT" \
+  --object-store-id "$OBJECT_STORE_ID" --bucket "$S3_BUCKET" --object-key "$S3_OBJECT_KEY" \
+  --retention-mode "$RETENTION_MODE" --retain-until-unix "$RETAIN_UNTIL_UNIX")

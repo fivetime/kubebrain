@@ -1976,7 +1976,9 @@ kubectl -n kubebrain-operations rollout status deployment/kubebrain-operation-ar
 object store ID、bucket、object key、retention mode 和 retain-until 等于本次请求，
 并在远端下载和 retention 复核后才释放 audit finalizer。若终态
 已晚于完整保留窗口，archiver 会 fail closed，必须按审计事件处置，禁止缩短保留期或手工
-移除 finalizer。中央 archiver Role 只能读取指定 inventory，并 list/get/update Operation
+移除 finalizer。手工 `archive-operation-audit.sh` 也必须把相同 object store ID、bucket、
+object key、retention mode 和 retain-until 透传给 release 步骤，缺少或漂移时不得释放
+finalizer。中央 archiver Role 只能读取指定 inventory，并 list/get/update Operation
 主资源；它不能读取 worker Secret、修改 status、管理 Lease、创建或删除 Operation。
 本地 operation audit artifact 与 archive receipt 均是小型 canonical JSON，读取上限为
 1 MiB；archive executor 使用已通过 canonical/digest/size 校验的 frozen bytes 上传，远端复核
