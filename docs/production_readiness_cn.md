@@ -923,7 +923,8 @@ plan 固定 invoice ID、实例、UTC 账期、币种、按日连续且有序的
 charge/adjustment、同 ID 不同内容或第二份 plan 都不能改变已批准账期。先用
 `kubebrain-metering-settlement-publish --kind=adjustment` 发布所有 approved
 adjustment，再用 `--kind=plan` 发布 plan；publisher 在任何 S3 请求前执行 strict
-schema/canonical、审批时间和保留期校验。
+schema/canonical、审批时间和保留期校验，并把已校验对象重写到临时 canonical frozen copy；
+Object Lock executor 只上传该 frozen copy，避免校验后原始输入路径被替换。
 
 `kubebrain-metering-invoice-finalize` 先读 exact plan，再按 plan 顺序读取每个日
 charge 和 adjustment。它独立复核 receipt 与下载字节 digest、format/ID/instance/

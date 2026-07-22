@@ -9098,6 +9098,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   三类合法 source digest 漂移；`go test ./hack/production/internal/meteringbilling -run
   'Test.*Charge' -count=1`、`go test ./hack/production/... ./deploy/production` 与
   `go vet ./hack/production/... ./deploy/production` 通过。
+- A476 收紧 settlement publisher 的本地输入冻结：`kubebrain-metering-settlement-publish`
+  在 strict/canonical、审批时间和 retention 校验后，将 adjustment/plan 重写到临时 canonical
+  frozen copy，并只把该 frozen path 交给 Object Lock executor；即使原始 `--input` 在 executor
+  调用期间被替换，也不会上传错误字节。新增回归在 executor 回调中篡改原始 plan 文件，确认
+  上传路径不是原始输入且 receipt 仍绑定已校验 canonical bytes；`go test
+  ./hack/production/internal/meteringbilling -run 'TestSettlementPublisher' -count=1`、
+  `go test ./hack/production/... ./deploy/production` 与
+  `go vet ./hack/production/... ./deploy/production` 通过。
 
 ### P2：运维兼容和长期验证
 

@@ -42,8 +42,14 @@ func (p *SettlementPublisher) Publish(ctx context.Context) ([]byte, error) {
 	if p.Run == nil {
 		p.Run = runCommand
 	}
+	dir, err := os.MkdirTemp("", "kubebrain-settlement-publish-*")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(dir)
 	var format, artifactID, instance, objectKey, digest string
 	var objectBytes, periodStart, approvedAt int64
+	frozenInput := path.Join(dir, "settlement.json")
 	switch p.Kind {
 	case "adjustment":
 		if p.AdjustmentPrefix == "" {
@@ -57,6 +63,11 @@ func (p *SettlementPublisher) Publish(ctx context.Context) ([]byte, error) {
 		objectKey = settlementObjectKey(p.AdjustmentPrefix, instance, artifactID)
 		digest, objectBytes, periodStart = status.SHA256, status.Bytes, status.Value.PeriodStartUnix
 		approvedAt = status.Value.Approval.ApprovedAtUnix
+		if frozen, err := WriteAdjustmentAtomic(frozenInput, status.Value); err != nil {
+			return nil, err
+		} else if frozen.SHA256 != digest || frozen.Bytes != objectBytes {
+			return nil, errors.New("frozen adjustment does not match validated input")
+		}
 	case "plan":
 		if p.PlanPrefix == "" {
 			return nil, errors.New("invoice plan prefix is empty")
@@ -69,6 +80,11 @@ func (p *SettlementPublisher) Publish(ctx context.Context) ([]byte, error) {
 		objectKey = settlementObjectKey(p.PlanPrefix, instance, artifactID)
 		digest, objectBytes, periodStart = status.SHA256, status.Bytes, status.Value.PeriodStartUnix
 		approvedAt = status.Value.Approval.ApprovedAtUnix
+		if frozen, err := WriteInvoicePlanAtomic(frozenInput, status.Value); err != nil {
+			return nil, err
+		} else if frozen.SHA256 != digest || frozen.Bytes != objectBytes {
+			return nil, errors.New("frozen invoice plan does not match validated input")
+		}
 	default:
 		return nil, errors.New("settlement publisher kind must be adjustment or plan")
 	}
@@ -80,13 +96,8 @@ func (p *SettlementPublisher) Publish(ctx context.Context) ([]byte, error) {
 	if retainUntil <= nowUnix {
 		return nil, errors.New("settlement artifact retention is not in the future")
 	}
-	dir, err := os.MkdirTemp("", "kubebrain-settlement-publish-*")
-	if err != nil {
-		return nil, err
-	}
-	defer os.RemoveAll(dir)
 	output, err := p.Run(ctx, p.Executor, []string{
-		"ACTION=blob", "INPUT=" + p.Input, "ARTIFACT_FORMAT=" + format,
+		"ACTION=blob", "INPUT=" + frozenInput, "ARTIFACT_FORMAT=" + format,
 		"ARTIFACT_ID=" + artifactID, "INSTANCE=" + instance,
 		"OBJECT_STORE_ID=" + p.ObjectStoreID, "S3_BUCKET=" + p.Bucket,
 		"S3_OBJECT_KEY=" + objectKey, "RETENTION_MODE=" + p.RetentionMode,

@@ -45,6 +45,49 @@ func TestSettlementPublisherValidatesBeforeObjectStore(t *testing.T) {
 	require.Zero(t, calls)
 }
 
+func TestSettlementPublisherUploadsFrozenCanonicalInput(t *testing.T) {
+	start := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	charge, _ := settlementCharge(t, start)
+	plan := validInvoicePlan(start, charge.Format, nil)
+	input := filepath.Join(t.TempDir(), "plan.json")
+	status, err := WriteInvoicePlanAtomic(input, plan)
+	require.NoError(t, err)
+	now := start.Add(48 * time.Hour)
+	retainUntil := start.Add(time.Hour + 7*24*time.Hour).Unix()
+	publisher := &SettlementPublisher{
+		Input: input, Kind: "plan", Executor: "executor", ObjectStoreID: "store",
+		Bucket: "billing", PlanPrefix: "plans", RetentionMode: "COMPLIANCE",
+		RetentionDuration: 7 * 24 * time.Hour, Now: func() time.Time { return now },
+		Run: func(_ context.Context, executable string, environment []string) ([]byte, error) {
+			require.Equal(t, "executor", executable)
+			values := envMap(environment)
+			require.NotEqual(t, input, values["INPUT"])
+			require.NoError(t, os.WriteFile(input, []byte("{}\n"), 0o600))
+			data, err := os.ReadFile(values["INPUT"])
+			require.NoError(t, err)
+			sum := sha256.Sum256(data)
+			receipt := objectReceipt{
+				Format:         "kubebrain.object-immutable-blob.receipt.v1",
+				ArtifactFormat: InvoicePlanFormat, ArtifactID: plan.ID, Instance: "instance-a",
+				ObjectStoreID: "store", Bucket: "billing", ObjectKey: values["S3_OBJECT_KEY"],
+				VersionID: "plan-version", ArtifactSHA256: hex.EncodeToString(sum[:]),
+				ObjectBytes: int64(len(data)), RetentionMode: "COMPLIANCE",
+				RetainUntilUnix: retainUntil, RemoteVerified: true, ArchivedAtUnix: now.Unix(),
+			}
+			return json.Marshal(receipt)
+		},
+	}
+	output, err := publisher.Publish(context.Background())
+	require.NoError(t, err, string(output))
+	require.NotEmpty(t, output)
+	require.Equal(t, int64(3), func() int64 {
+		data, err := os.ReadFile(input)
+		require.NoError(t, err)
+		return int64(len(data))
+	}())
+	require.Equal(t, int64(len(canonicalPlanBytes(t, plan))), status.Bytes)
+}
+
 func TestInvoiceFinalizerReadsExactPlanSourcesAndArchivesDeterministically(t *testing.T) {
 	start := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
 	retainUntil := start.Add(time.Hour + 7*24*time.Hour).Unix()
