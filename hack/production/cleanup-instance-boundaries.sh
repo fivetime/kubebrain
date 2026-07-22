@@ -103,6 +103,57 @@ validate_destroy_receipt() {
     { echo "destroy receipt does not authorize this boundary cleanup" >&2; exit 1; }
 }
 
+validate_state_schema() {
+  awk -F '\t' -v expected_names="$CREDENTIAL_SECRETS" '
+    BEGIN {
+      expectedCount = split(expected_names, expected, ",")
+    }
+    $0 == "" {
+      bad = "empty row"
+      exit 1
+    }
+    NR == 1 {
+      if ($1 != "HEADER" || NF != 10) {
+        bad = "HEADER row must have 10 fields"
+        exit 1
+      }
+      header++
+      next
+    }
+    $1 == "HEADER" {
+      bad = "duplicate HEADER row"
+      exit 1
+    }
+    $1 == "SECRET" {
+      if (NF != 3 || $2 == "" || $3 == "") {
+        bad = "SECRET row must have name and uid"
+        exit 1
+      }
+      secrets++
+      if (secrets > expectedCount || $2 != expected[secrets]) {
+        bad = "SECRET row does not match requested credential order"
+        exit 1
+      }
+      next
+    }
+    {
+      bad = "unknown row type " $1
+      exit 1
+    }
+    END {
+      if (bad != "") {
+        print bad > "/dev/stderr"
+        exit 1
+      }
+      if (header != 1 || secrets != expectedCount) {
+        printf("schema counts mismatch: header=%d secrets=%d expectedSecrets=%d\n",
+          header, secrets, expectedCount) > "/dev/stderr"
+        exit 1
+      }
+    }
+  ' "$state_file" || { echo "boundary cleanup state has invalid schema" >&2; exit 1; }
+}
+
 snapshot_namespace() {
   local name="$1" result uid instance dedicated
   result="$("$KUBECTL" "${kubectl_args[@]}" get namespace "$name" \
@@ -126,6 +177,7 @@ snapshot_secret() {
 read_header() {
   local row format state_instance state_cleanup state_destroy_sha state_kbns state_kbuid
   local state_tidbns state_tidbuid state_credns
+  validate_state_schema
   IFS=$'\t' read -r row format state_instance state_cleanup state_destroy_sha \
     state_kbns state_kbuid state_tidbns state_tidbuid state_credns <"$state_file"
   [[ "$row" == "HEADER" && "$format" == "kubebrain.boundary-cleanup.state.v1" &&

@@ -472,7 +472,10 @@ TidbCluster 名、备份 digest/revision 和完成时间；同输入重试会按
 脚本刻意不删除 namespace、TLS Secret、外部对象存储 artifact、监控规则或控制面账单
 记录：namespace 可能共享，而审计/备份数据必须按独立保留策略处理。平台只有在 receipt
 归档到不可变审计存储并完成外围资源清单对账后，才能删除专属 namespace 和凭据。
-边界清理读取 destroy receipt 时同样要求严格 JSON 顶层字段集合、类型和值匹配。
+边界清理读取 destroy receipt 时同样要求严格 JSON 顶层字段集合、类型和值匹配，并要求
+持久 boundaries state 精确包含 1 个 HEADER 和按 `CREDENTIAL_SECRETS` 顺序排列的全部
+SECRET UID 行；未知行、额外列、缺失凭据行或顺序漂移都 fail closed，不能漏删凭据后
+发布 cleanup receipt。
 
 ## 备份恢复生产边界
 

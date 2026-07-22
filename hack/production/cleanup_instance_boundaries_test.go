@@ -119,6 +119,27 @@ func TestBoundaryCleanupFailsClosed(t *testing.T) {
 			action:     "delete",
 			wantOutput: "does not match request or destroy receipt",
 		},
+		{
+			name: "non canonical state",
+			prepare: func(t *testing.T, f *boundaryCleanupFixture) {
+				f.run(t, "prepare", true, "")
+				statePath := filepath.Join(f.stateDir, "cleanup-1.boundaries")
+				require.NoError(t, os.WriteFile(statePath, append(mustRead(t, statePath), []byte("UNKNOWN\trow\n")...), 0o600))
+			},
+			action:     "delete",
+			wantOutput: "boundary cleanup state has invalid schema",
+		},
+		{
+			name: "missing credential state row",
+			prepare: func(t *testing.T, f *boundaryCleanupFixture) {
+				f.run(t, "prepare", true, "")
+				statePath := filepath.Join(f.stateDir, "cleanup-1.boundaries")
+				state := strings.ReplaceAll(string(mustRead(t, statePath)), "SECRET\tobject-store\tuid-object-store\n", "")
+				require.NoError(t, os.WriteFile(statePath, []byte(state), 0o600))
+			},
+			action:     "complete",
+			wantOutput: "boundary cleanup state has invalid schema",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

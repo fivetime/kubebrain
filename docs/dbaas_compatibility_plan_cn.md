@@ -9858,6 +9858,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   ROLLBACK schema，并在提交 succeed 前要求 CUTOVER 和 VERIFIED marker 都通过同一单行
   封闭 schema。非 canonical marker 会终止为失败，不会提交 operation succeed。回归：
   `go test ./hack/production -run 'TestRestoreCutoverOperation' -count=1` 通过。
+- A564 收紧 boundary cleanup durable state schema：
+  边界清理 state 旧读取路径只消费 HEADER 和已有 SECRET 行，未知行、额外列或缺失某个
+  credential SECRET 行可能被忽略，导致 delete/complete 按残缺 state 漏删凭据并发布
+  cleanup receipt。现在 `cleanup-instance-boundaries.sh` 要求
+  `kubebrain.boundary-cleanup.state.v1` 精确包含 1 个 HEADER 和按
+  `CREDENTIAL_SECRETS` 顺序排列的全部 SECRET name/UID 行；非 canonical state 会
+  fail closed，不会删除资源或发布 cleanup receipt。回归：
+  `go test ./hack/production -run 'TestBoundaryCleanup' -count=1` 通过。
 
 ### P2：运维兼容和长期验证
 
