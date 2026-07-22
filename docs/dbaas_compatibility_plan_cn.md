@@ -8855,6 +8855,9 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
 - A450 在真实 A445 集群动态识别当前 leader 后，于 3 秒 lease 仅剩 1 秒时删除该 Pod；near-expiry
   promotion 测试以可审计退出码在 4.981 秒通过。故障窗口有两次客户端 `DeadlineExceeded`，随后 lease
   与 attached key 均恢复可读并最终自然过期删除，证明 promotion 不会因短暂不可用提前遗失临期 lease。
+- A451 在 A449/A450 的 leader replacement 后重新执行完整 in-cluster release gate 并通过：TidbCluster
+  为 Ready，3/3 KubeBrain replicas、实例与 Service UID、canonical image、keyspace、PD 地址、cluster ID、
+  initial cluster、quota 和 advertised client URL 全部匹配，cluster-local endpoint health 同时通过。
 
 ### P1：通用服务能力
 
