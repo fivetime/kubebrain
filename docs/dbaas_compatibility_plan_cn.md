@@ -8726,6 +8726,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   TidbCluster 与 KubeBrain 两侧身份一致且无精度截断；三 KubeBrain 副本 Ready、零重启，
   endpoint health 正常且 alarm 为空。临时 exec 代理已删除，本轮不改变 A433 数据面镜像。
 
+#### A439 TidbCluster Kubernetes UID 发布 fencing
+
+- A438 绑定 PD cluster ID 后，发布门禁仍无法区分同名 TidbCluster CR 被删除重建的控制面
+  replacement。即使新对象最终连接同一 PD cluster，旧 operation/approval 若继续推进也会越过
+  Kubernetes ownership 边界；仓库的 snapshot/restore/destroy 状态机已经使用 UID fencing，
+  普通实例发布必须采用同一原则。当前受管 `tidb-cluster/kb` UID 为
+  `c690fd02-b7b9-4335-b3e8-acdf2b8e5706`。
+- 提交 `ff15d8d` 新增必填 `EXPECTED_TIDB_CLUSTER_UID`。发布门禁在 topology 收敛后读取
+  TidbCluster metadata UID，必须与实例状态或 operation receipt 中的期望值逐字匹配，再继续
+  PD cluster ID、KubeBrain rollout/MemberList 和 endpoint 检查；同名 CR replacement 因而在
+  数据面发布前 fail closed。成功审计记录同时输出 UID 与 cluster ID，分别证明 Kubernetes
+  resource ownership 和底层 PD storage identity。
+- 集成测试覆盖缺失 UID 与实际 UID 漂移，连同完整 release gate 矩阵普通 20 轮、race 10 轮
+  通过；`bash -n`、root 全量测试、vet、staticcheck v0.7.0 和 diff check 均通过。真实
+  in-cluster 门禁使用上述 UID 和 64 位 cluster ID 完整通过，三 KubeBrain 副本 Ready、零重启，
+  endpoint health 正常且 alarm 为空。临时 exec 代理已删除，本轮继续使用 A433 数据面镜像。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
