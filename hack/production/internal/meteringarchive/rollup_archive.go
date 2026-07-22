@@ -89,6 +89,7 @@ func (r *Roller) Process(ctx context.Context) (Rollup, []byte, error) {
 		artifactID := sampleArtifactID(r.Instance, slotStart, slotEnd)
 		objectKey := sampleObjectKey(r.SamplePrefix, r.Instance, slotStart, slotEnd)
 		outputPath := path.Join(dir, fmt.Sprintf("sample-%03d.json", i))
+		minRetainUntil := slotEnd.Add(r.RetentionDuration).Unix()
 		output, err := r.Run(ctx, r.Executor, []string{
 			"ACTION=blob-read",
 			"OUTPUT=" + outputPath,
@@ -98,7 +99,7 @@ func (r *Roller) Process(ctx context.Context) (Rollup, []byte, error) {
 			"OBJECT_STORE_ID=" + r.ObjectStoreID,
 			"S3_BUCKET=" + r.Bucket,
 			"S3_OBJECT_KEY=" + objectKey,
-			"MIN_RETAIN_UNTIL_UNIX=" + strconv.FormatInt(slotEnd.Add(r.RetentionDuration).Unix(), 10),
+			"MIN_RETAIN_UNTIL_UNIX=" + strconv.FormatInt(minRetainUntil, 10),
 		})
 		if err != nil {
 			return Rollup{}, output, fmt.Errorf(
@@ -107,6 +108,7 @@ func (r *Roller) Process(ctx context.Context) (Rollup, []byte, error) {
 		}
 		receipt, err := parseBlobReadReceipt(
 			output, artifactID, r.Instance, r.ObjectStoreID, r.Bucket, objectKey,
+			minRetainUntil,
 		)
 		if err != nil {
 			return Rollup{}, output, err
@@ -203,6 +205,7 @@ type blobReadReceipt struct {
 func parseBlobReadReceipt(
 	data []byte,
 	artifactID, instance, objectStoreID, bucket, objectKey string,
+	minRetainUntil int64,
 ) (blobReadReceipt, error) {
 	var receipt blobReadReceipt
 	decoder := json.NewDecoder(bytes.NewReader(data))
@@ -223,7 +226,7 @@ func parseBlobReadReceipt(
 		receipt.VersionID == "" || !digestPattern.MatchString(receipt.ArtifactSHA256) ||
 		receipt.ObjectBytes <= 0 ||
 		(receipt.RetentionMode != "COMPLIANCE" && receipt.RetentionMode != "GOVERNANCE") ||
-		receipt.RetainUntilUnix <= 0 || !receipt.RemoteVerified {
+		receipt.RetainUntilUnix < minRetainUntil || !receipt.RemoteVerified {
 		return receipt, errors.New("metering sample read receipt does not match the request")
 	}
 	return receipt, nil

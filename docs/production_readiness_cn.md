@@ -786,7 +786,8 @@ recording rules 对五个源分别计数，缺失时用显式零值保持告警�
 version ID 核对 format allowlist、artifact ID、instance、store、大小、SHA-256 metadata、
 Object Lock mode 和 retain-until，下载后重新计算字节 digest。24 个 canonical sample
 必须按小时连续覆盖完整日期、实例一致、指标顺序固定且每个源保留期达到自身
-`slot_end + retention_duration`；任一小时缺失、重复、损坏或保留不足时不得生成日汇总。
+`slot_end + retention_duration`；Roller 会把该下限传给本地 read receipt parser 二次
+校验。任一小时缺失、重复、损坏或保留不足时不得生成日汇总。
 
 `kubebrain.metering-rollup.v2` 内嵌全部 24 个源的 artifact format、key、version ID、
 digest、大小和 retain-until。v2 CPU core-seconds 与网络 bytes 已是小时 counter

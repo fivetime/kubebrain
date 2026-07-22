@@ -115,6 +115,35 @@ func TestRollerFailsClosedBeforeArchiveOnMissingOrInvalidSlot(t *testing.T) {
 	require.ErrorContains(t, err, "read receipt")
 }
 
+func TestParseMeteringSampleReadReceiptRejectsRetainUntilBelowMinimum(t *testing.T) {
+	artifactID := "instance-a:1784505600:1784509200"
+	objectKey := "metering-samples/instance-a/2026/07/17/00/1784505600-1784509200.json"
+	minRetainUntil := int64(2_006_400_000)
+	receipt := blobReadReceipt{
+		Format:         "kubebrain.object-immutable-blob-read.receipt.v1",
+		ArtifactFormat: FormatV3, ArtifactID: artifactID,
+		Instance: "instance-a", ObjectStoreID: "store-a", Bucket: "metering",
+		ObjectKey: objectKey, VersionID: "sample-version",
+		ArtifactSHA256: strings.Repeat("f", 64), ObjectBytes: 123,
+		RetentionMode: "COMPLIANCE", RetainUntilUnix: minRetainUntil - 1,
+		RemoteVerified: true,
+	}
+	data, err := json.Marshal(receipt)
+	require.NoError(t, err)
+
+	_, err = parseBlobReadReceipt(data, artifactID, "instance-a", "store-a",
+		"metering", objectKey, minRetainUntil)
+	require.ErrorContains(t, err, "does not match")
+
+	receipt.RetainUntilUnix = minRetainUntil
+	data, err = json.Marshal(receipt)
+	require.NoError(t, err)
+	parsed, err := parseBlobReadReceipt(data, artifactID, "instance-a", "store-a",
+		"metering", objectKey, minRetainUntil)
+	require.NoError(t, err)
+	require.Equal(t, minRetainUntil, parsed.RetainUntilUnix)
+}
+
 func TestRollerValidationPinsDailyPeriodAndSeparatePrefixes(t *testing.T) {
 	roller := validRoller(time.Now())
 	require.NoError(t, roller.Validate())
