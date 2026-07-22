@@ -9509,6 +9509,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `os.ReadFile` 逻辑。回归沿用 A525 oversized helper 负例并覆盖各路径成功流；
   `go test ./hack/production/internal/meteringbilling`、`go test ./hack/production/... ./deploy/production`、
   `go vet ./hack/production/... ./deploy/production` 与 `git diff --check` 通过。
+- A527 收紧 metering charge 本地 canonical JSON 读取边界：`ReadCharge` 现在最多读取
+  1 MiB，超限会在 invoice plan/final invoice 的 strict schema 解码、canonical 比对和
+  source 绑定校验前 fail closed。charge artifact 本身是固定 catalog/rollup/source
+  摘要与少量 line item 的小型 canonical JSON；provider/payment/general-ledger 等可能随
+  交易规模放大的 settlement artifact 不套该上限。回归覆盖 oversized charge read；
+  `go test ./hack/production/internal/meteringbilling -run 'Test(BuildCharge|ChargeRejects|CatalogAndChargeReject|PriceCatalogRejects)' -count=20`、
+  `go test ./hack/production/internal/meteringbilling`、`go test ./hack/production/... ./deploy/production`、
+  `go vet ./hack/production/... ./deploy/production` 与 `git diff --check` 通过。
 
 ### P2：运维兼容和长期验证
 

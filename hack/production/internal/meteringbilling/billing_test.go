@@ -100,6 +100,13 @@ func TestPriceCatalogRejectsOversizedInputs(t *testing.T) {
 	require.ErrorContains(t, err, "existing metering price catalog exceeds")
 }
 
+func TestChargeRejectsOversizedInput(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "charge.json")
+	require.NoError(t, os.WriteFile(path, make([]byte, maxMeteringChargeBytes+1), 0o600))
+	_, err := ReadCharge(path)
+	require.ErrorContains(t, err, "metering charge exceeds")
+}
+
 func TestBuildChargeV2IncludesImmutableObjectStorageUsage(t *testing.T) {
 	start := time.Date(2026, 7, 20, 0, 0, 0, 0, time.UTC)
 	rollup := validRollupForPeriod(start)

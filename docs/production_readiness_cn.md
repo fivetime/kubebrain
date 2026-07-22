@@ -913,6 +913,8 @@ closed，不能为了校验 receipt 而无界读取异常大的本地文件。
 同一 source helper 也用于 invoice finalization、invoice number assignment、provider
 reconciliation、payment ledger 和 general ledger export 的 exact-read 输入校验；这些
 路径按各自 read receipt 的大小上限复算 digest 后才构造下游 canonical artifact。
+charge canonical JSON 本地读取最多接受 1 MiB；超限会在 invoice plan/final invoice 的
+schema 解码、canonical 比对和 source 绑定校验前 fail closed。
 `kubebrain.metering-charge.v1` 内嵌 rollup 和 catalog 的 key、version ID、digest、
 bytes、retain-until，逐行记录 quantity 的无指数十进制表示、unit price 和
 `amount_micros`。计算先把 quantity 与 unit price 转为任意精度有理数，再逐行执行

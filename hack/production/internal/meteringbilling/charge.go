@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"math/big"
-	"os"
 	"strconv"
 
 	"github.com/kubewharf/kubebrain/hack/production/internal/meteringarchive"
@@ -20,6 +19,7 @@ const ChargeFormat = "kubebrain.metering-charge.v1"
 const ChargeFormatV2 = "kubebrain.metering-charge.v2"
 const ChargeFormatV3 = "kubebrain.metering-charge.v3"
 const RoundingPolicy = "half_even_to_currency_micro.v1"
+const maxMeteringChargeBytes = 1 << 20
 
 type Source struct {
 	ArtifactFormat  string `json:"artifact_format"`
@@ -426,7 +426,7 @@ func WriteChargeAtomic(path string, charge Charge) (ChargeStatus, error) {
 
 func ReadCharge(path string) (ChargeStatus, error) {
 	var charge Charge
-	data, err := os.ReadFile(path)
+	data, err := readBoundedFile(path, "metering charge", maxMeteringChargeBytes)
 	if err != nil {
 		return ChargeStatus{}, err
 	}
