@@ -27,6 +27,18 @@ func TestBackupDeletionOperationCompletesThreeGatesAndRetries(t *testing.T) {
 	require.NotContains(t, log, "--action retry")
 }
 
+func TestBackupDeletionOperationRejectsExistingReceiptWithUnknownFields(t *testing.T) {
+	f := newBackupDeletionFixture(t)
+	f.run(t, true, "")
+
+	receipt := strings.TrimSpace(string(mustRead(t, f.operationReceipt)))
+	receipt = strings.TrimSuffix(receipt, "}") + `,"unexpected":true}` + "\n"
+	require.NoError(t, os.WriteFile(f.operationReceipt, []byte(receipt), 0o600))
+
+	f.run(t, false, "", "existing backup deletion operation receipt differs")
+	require.Equal(t, receipt, string(mustRead(t, f.operationReceipt)))
+}
+
 func TestBackupDeletionOperationRequeuesEveryGateFailure(t *testing.T) {
 	for _, failure := range []string{"pre", "delete", "post"} {
 		t.Run(failure, func(t *testing.T) {

@@ -251,12 +251,14 @@ pre_inventory_sha="$(sha256sum "$pre_inventory_receipt" | cut -d ' ' -f1)"
 deletion_sha="$(sha256sum "$deletion_receipt" | cut -d ' ' -f1)"
 post_inventory_sha="$(sha256sum "$post_inventory_receipt" | cut -d ' ' -f1)"
 umask 077
-if [[ -e "$operation_receipt" ]]; then
+
+validate_operation_receipt() {
   "$JQ" -e --arg operation "$operation_id" --arg instance "$instance" \
     --arg source "$source_sha" --arg pre_manifest "$pre_manifest_sha" \
     --arg pre_inventory "$pre_inventory_sha" --arg deletion "$deletion_sha" \
     --arg post_manifest "$post_manifest_sha" --arg post_inventory "$post_inventory_sha" \
     --arg key "$object_key" --arg version "$version_id" '
+    keys == ["completed_at_unix","deletion_receipt_sha256","format","instance","object_key","operation_id","post_inventory_receipt_sha256","post_manifest_sha256","pre_inventory_receipt_sha256","pre_manifest_sha256","source_receipt_sha256","version_id"] and
     .format == "kubebrain.backup-deletion-operation.receipt.v1" and
     .operation_id == $operation and .instance == $instance and
     .source_receipt_sha256 == $source and .object_key == $key and .version_id == $version and
@@ -264,8 +266,13 @@ if [[ -e "$operation_receipt" ]]; then
     .pre_inventory_receipt_sha256 == $pre_inventory and
     .deletion_receipt_sha256 == $deletion and
     .post_manifest_sha256 == $post_manifest and
-    .post_inventory_receipt_sha256 == $post_inventory and .completed_at_unix > 0' \
-    "$operation_receipt" >/dev/null ||
+    .post_inventory_receipt_sha256 == $post_inventory and
+    (.completed_at_unix | type == "number" and . > 0 and . == floor)' \
+    "$operation_receipt" >/dev/null
+}
+
+if [[ -e "$operation_receipt" ]]; then
+  validate_operation_receipt ||
     { echo "existing backup deletion operation receipt differs" >&2; exit 1; }
 else
   temporary="$(mktemp "$(dirname "$operation_receipt")/.backup-deletion-receipt.XXXXXX")"
@@ -281,7 +288,7 @@ else
       post_inventory_receipt_sha256:$post_inventory,completed_at_unix:$completed}' >"$temporary"
   sync -f "$temporary"
   if ! ln "$temporary" "$operation_receipt" 2>/dev/null; then
-    cmp -s "$temporary" "$operation_receipt" ||
+    validate_operation_receipt ||
       { echo "existing backup deletion operation receipt differs" >&2; exit 1; }
   fi
   rm -f "$temporary"

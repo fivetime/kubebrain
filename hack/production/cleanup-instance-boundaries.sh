@@ -224,19 +224,25 @@ case "$ACTION" in
     [[ -f "$state_file" ]] || { echo "boundary cleanup state is missing" >&2; exit 1; }
     read_header
     wait_absent
+    secrets_json="$("$JQ" -Rn '[inputs | split("\t") | select(.[0] == "SECRET") | .[1]]' <"$state_file")"
     if [[ -e "$receipt_file" ]]; then
       "$JQ" -e --arg instance "$INSTANCE" --arg cleanup "$CLEANUP_ID" \
         --arg destroy_sha "$(destroy_receipt_sha)" \
-        '.format == "kubebrain.boundary-cleanup.receipt.v1" and
+        --arg kbns "$KUBEBRAIN_NAMESPACE" --arg tidbns "$TIDB_NAMESPACE" \
+        --arg credns "$CREDENTIAL_NAMESPACE" --argjson secrets "$secrets_json" \
+        'keys == ["cleanup_id","completed_at_unix","credential_namespace","credential_secrets","credentials_absent","destroy_receipt_sha256","format","instance","kubebrain_namespace","namespaces_absent","tidb_namespace"] and
+         .format == "kubebrain.boundary-cleanup.receipt.v1" and
          .instance == $instance and .cleanup_id == $cleanup and
          .destroy_receipt_sha256 == $destroy_sha and
-         .namespaces_absent == true and .credentials_absent == true' \
+         .kubebrain_namespace == $kbns and .tidb_namespace == $tidbns and
+         .credential_namespace == $credns and .credential_secrets == $secrets and
+         .namespaces_absent == true and .credentials_absent == true and
+         (.completed_at_unix | type == "number" and . > 0 and . == floor)' \
         "$receipt_file" >/dev/null ||
         { echo "existing boundary cleanup receipt does not match" >&2; exit 1; }
       echo "boundary cleanup completion passed: instance=${INSTANCE} receipt=${receipt_file}"
       exit 0
     fi
-    secrets_json="$("$JQ" -Rn '[inputs | split("\t") | select(.[0] == "SECRET") | .[1]]' <"$state_file")"
     temporary="$(mktemp "${STATE_DIR}/.${CLEANUP_ID}.receipt.XXXXXX")"
     "$JQ" -cnS \
       --arg instance "$INSTANCE" --arg cleanup "$CLEANUP_ID" \

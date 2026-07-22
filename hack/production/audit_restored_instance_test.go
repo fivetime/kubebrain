@@ -31,6 +31,18 @@ func TestPostRestoreAuditPublishesReceiptAndRechecksOnRetry(t *testing.T) {
 	require.GreaterOrEqual(t, len(strings.Split(strings.TrimSpace(string(probes)), "\n")), 3)
 }
 
+func TestPostRestoreAuditRejectsExistingReceiptWithUnknownFields(t *testing.T) {
+	f := newAuditFixture(t)
+	receiptPath := filepath.Join(f.state, "audit-1.receipt.json")
+	receipt := `{"all_probes_succeeded":true,"artifact_sha256":"abc123","completed":true,"completed_at_unix":2,"cutover_operation_id":"cutover-1","duration_seconds":1,"first_probe_revision":1,"format":"kubebrain.post-restore-audit.receipt.v1","instance":"instance-a","interval_seconds":1,"last_probe_revision":2,"operation_id":"audit-1","replicas":2,"samples":2,"service_uid":"uid-service","snapshot_revision":42,"started_at_unix":1,"target_instance":"target","topology_unchanged":true,"unexpected":true}` + "\n"
+	require.NoError(t, os.WriteFile(receiptPath, []byte(receipt), 0o600))
+
+	f.run(t, false, "", "existing post-restore audit receipt does not match the operation")
+	data, err := os.ReadFile(receiptPath)
+	require.NoError(t, err)
+	require.Equal(t, receipt, string(data))
+}
+
 func TestPostRestoreAuditFailsClosed(t *testing.T) {
 	for _, tc := range []struct {
 		name, drift, want string

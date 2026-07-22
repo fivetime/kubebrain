@@ -165,11 +165,27 @@ run_probe() {
 
 if [[ -e "$receipt_file" ]]; then
   "$JQ" -e --arg operation "$OPERATION_ID" --arg instance "$INSTANCE" \
-    --arg cutover "$cutover_operation" --arg uid "$state_service_uid" '
+    --arg cutover "$cutover_operation" --arg uid "$state_service_uid" \
+    --arg target "$TARGET_INSTANCE" --arg sha "$artifact_sha" \
+    --argjson snapshot "$snapshot_revision" --argjson replicas "$EXPECTED_REPLICAS" \
+    --argjson duration "$AUDIT_DURATION_SECONDS" --argjson interval "$AUDIT_INTERVAL_SECONDS" \
+    --argjson min_samples "$MIN_SAMPLES" '
+      keys == ["all_probes_succeeded","artifact_sha256","completed","completed_at_unix","cutover_operation_id","duration_seconds","first_probe_revision","format","instance","interval_seconds","last_probe_revision","operation_id","replicas","samples","service_uid","snapshot_revision","started_at_unix","target_instance","topology_unchanged"] and
       .format == "kubebrain.post-restore-audit.receipt.v1" and
       .operation_id == $operation and .instance == $instance and
       .cutover_operation_id == $cutover and .service_uid == $uid and
-      .completed == true' "$receipt_file" >/dev/null ||
+      .target_instance == $target and .artifact_sha256 == $sha and
+      .snapshot_revision == $snapshot and .replicas == $replicas and
+      .duration_seconds == $duration and .interval_seconds == $interval and
+      .topology_unchanged == true and .all_probes_succeeded == true and
+      .completed == true and
+      (.samples | type == "number" and . >= $min_samples and . == floor) and
+      (.first_probe_revision | type == "number" and . > 0 and . == floor) and
+      (.last_probe_revision | type == "number" and . > 0 and . == floor) and
+      (.last_probe_revision >= .first_probe_revision) and
+      (.started_at_unix | type == "number" and . > 0 and . == floor) and
+      (.completed_at_unix | type == "number" and . > 0 and . == floor) and
+      (.completed_at_unix >= .started_at_unix)' "$receipt_file" >/dev/null ||
     { echo "existing post-restore audit receipt does not match the operation" >&2; exit 1; }
   fence_topology
   run_probe >/dev/null
@@ -199,7 +215,7 @@ done
 completed_at="$(date +%s)"
 
 temporary="$(mktemp "${STATE_DIR}/.${OPERATION_ID}.receipt.XXXXXX")"
-"$JQ" -n --arg format "kubebrain.post-restore-audit.receipt.v1" \
+"$JQ" -cnS --arg format "kubebrain.post-restore-audit.receipt.v1" \
   --arg operation_id "$OPERATION_ID" --arg instance "$INSTANCE" \
   --arg cutover_operation_id "$cutover_operation" --arg service_uid "$state_service_uid" \
   --arg target_instance "$TARGET_INSTANCE" --arg artifact_sha256 "$artifact_sha" \

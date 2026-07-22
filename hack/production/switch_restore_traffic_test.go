@@ -36,6 +36,22 @@ func TestRestoreTrafficCutoverLifecycleAndRollback(t *testing.T) {
 	r.run(t, "complete", false, "", "rolled back operation cannot complete")
 }
 
+func TestRestoreTrafficCutoverRejectsExistingReceiptWithUnknownFields(t *testing.T) {
+	f := newTrafficFixture(t)
+	f.run(t, "prepare", true, "")
+	f.run(t, "cutover", true, "")
+	f.run(t, "verify", true, "")
+
+	receiptPath := filepath.Join(f.state, "restore-1.receipt.json")
+	receipt := `{"artifact_sha256":"abc123","completed_at_unix":1,"cutover_state_sha256":"` + fileDigest(t, filepath.Join(f.state, "restore-1.state")) + `","endpoint_uids_matched":true,"format":"kubebrain.restore-cutover.receipt.v1","instance":"instance-a","operation_id":"restore-1","pod_uids_unchanged":true,"public_data_verified":true,"replicas":2,"service_name":"kubebrain","service_namespace":"instance-a","service_uid":"uid-service","snapshot_revision":42,"source_instance":"source","target_instance":"target","unexpected":true}` + "\n"
+	require.NoError(t, os.WriteFile(receiptPath, []byte(receipt), 0o600))
+
+	f.run(t, "complete", false, "", "existing restore cutover receipt does not match")
+	data, err := os.ReadFile(receiptPath)
+	require.NoError(t, err)
+	require.Equal(t, receipt, string(data))
+}
+
 func TestRestoreTrafficCutoverFailsClosed(t *testing.T) {
 	for _, tc := range []struct {
 		name, action, drift, want string

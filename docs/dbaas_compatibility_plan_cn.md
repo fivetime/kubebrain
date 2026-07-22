@@ -9628,6 +9628,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   shadow receipt 被拒绝且原文件不被覆盖；
   `go test ./hack/production -run 'Test(DestroyInstance|ValidateCertificateRotation)' -count=1 -timeout=120s`
   与 `git diff --check` 通过。
+- A538 收紧剩余生产 operation receipt 复用 schema：cleanup boundary、restore cutover、
+  post-restore audit 和 backup deletion operation 已经使用 `jq`，但旧复用校验只检查核心
+  字段子集，带未知字段或遗漏次要绑定字段的已有 receipt 仍可能通过并进入 Succeeded
+  digest。现在 `cleanup-instance-boundaries.sh`、`switch-restore-traffic.sh`、
+  `audit-restored-instance.sh` 和 `run-backup-deletion-operation.sh` 都要求顶层字段集合、
+  字段类型、时间戳和所有身份/digest/namespace/secret/sample 绑定精确匹配；cutover 与
+  audit receipt 生成也改为 compact sorted JSON。backup deletion 的并发 hard-link
+  冲突不再只做逐字节 `cmp`，而是复用同一 strict schema 校验既有 receipt。回归覆盖
+  四条路径中带未知字段的 existing receipt 被拒绝且原文件不被覆盖；
+  `go test ./hack/production -run 'Test(BoundaryCleanup|PostRestoreAudit|RestoreTrafficCutover|BackupDeletionOperation)' -count=1 -timeout=180s`
+  与 `git diff --check` 通过。
 
 ### P2：运维兼容和长期验证
 

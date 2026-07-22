@@ -735,7 +735,8 @@ version 已不存在”补发/复用 receipt；保留期内提前消失则 fail 
 都必须归档到不可变审计存储。删除 receipt 的 `deleted_at_unix` 固定等于
 `retain_until_unix`，表示该 version 的最早合法删除边界，而不是对象存储无法恢复的物理
 删除时间；每次重试仍以 exact-version Head NotFound 重新证明当前不存在，实际工作流完成
-时间由上层 BackupDeletion operation receipt 记录。这样即使本地删除 receipt 随 Pod
+时间由上层 BackupDeletion operation receipt 记录；已有上层 operation receipt 复用前
+必须按严格 JSON 顶层字段集合、类型和值复核。这样即使本地删除 receipt 随 Pod
 丢失，重建后的 canonical JSON 和 SHA 也保持稳定。bucket 生命周期规则只能作为调度器，
 不能替代该完成证据。`DeleteObject` 返回错误也不等于服务端未提交：工具使用不继承原
 请求取消信号的独立 5 秒预算 Head 指定 version；只有 NotFound 才确认提交并发布 receipt。
@@ -1619,7 +1620,8 @@ verify 和 complete 都通过公开 Service endpoint 对完整 logical artifact 
 SHA-256，将冻结的 Service/Pod UID 行绑定到完成证据。rollback 使用相同 CAS 从目标切回源，并
 要求 EndpointSlice 精确恢复到冻结的源 Pod UID 集；已 complete 的 operation 禁止回滚，
 已 rollback 的 operation 禁止 complete。所有状态、marker 和 receipt 均为 0600、
-file/directory `fsync` 且不覆盖发布。
+file/directory `fsync` 且不覆盖发布；已有 cutover receipt 复用前必须按严格 JSON
+顶层字段集合、类型和值复核。
 
 切流完成后使用 `hack/production/audit-restored-instance.sh` 运行持续观察窗口。默认持续
 3600 秒、间隔 60 秒且至少 10 个样本；生产控制面应按实例 SLO 调大窗口。脚本先核对
@@ -1634,7 +1636,8 @@ lease 限制残留时间。跨样本 revision 必须单调不降，持续时间�
 0600、file/directory `fsync`、不可覆盖 hard-link 发布
 `kubebrain.post-restore-audit.receipt.v1`，记录 cutover operation、artifact/state 身份、
 窗口、样本数及首末 revision。已有 receipt 的重试仍会重新执行一次完整拓扑检查与真实
-数据探针。KubeBrain 网关共享同一 TiKV MVCC 后端，不存在 etcd 各成员独立 backend；
+数据探针，并按严格 JSON 顶层字段集合、类型和值复核原 receipt。KubeBrain 网关共享同一
+TiKV MVCC 后端，不存在 etcd 各成员独立 backend；
 因此不能用成员间 `endpoint hashkv` 代替上述端到端审计。
 
 ### DBaaS 持久操作 API

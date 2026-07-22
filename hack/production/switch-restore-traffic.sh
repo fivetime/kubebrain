@@ -304,19 +304,28 @@ case "$ACTION" in
     verify_data
     if [[ -e "$receipt_file" ]]; then
       "$JQ" -e --arg operation "$OPERATION_ID" --arg instance "$INSTANCE" \
-        --arg uid "$(state_value SERVICE 2)" --arg target "$TARGET_INSTANCE" \
-        --arg sha "$(state_value HEADER 10)" --arg state_sha "$(sha256sum "$state_file" | cut -d " " -f1)" '
+        --arg namespace "$SERVICE_NAMESPACE" --arg service "$SERVICE_NAME" \
+        --arg uid "$(state_value SERVICE 2)" --arg source "$SOURCE_INSTANCE" \
+        --arg target "$TARGET_INSTANCE" \
+        --arg sha "$(state_value HEADER 10)" --arg state_sha "$(sha256sum "$state_file" | cut -d " " -f1)" \
+        --argjson snapshot_revision "$(state_value HEADER 11)" --argjson replicas "$EXPECTED_REPLICAS" '
+          keys == ["artifact_sha256","completed_at_unix","cutover_state_sha256","endpoint_uids_matched","format","instance","operation_id","pod_uids_unchanged","public_data_verified","replicas","service_name","service_namespace","service_uid","snapshot_revision","source_instance","target_instance"] and
           .format == "kubebrain.restore-cutover.receipt.v1" and
           .operation_id == $operation and .instance == $instance and
-          .service_uid == $uid and .target_instance == $target and
-          .artifact_sha256 == $sha and .cutover_state_sha256 == $state_sha and
+          .service_namespace == $namespace and .service_name == $service and
+          .service_uid == $uid and .source_instance == $source and
+          .target_instance == $target and .artifact_sha256 == $sha and
+          .cutover_state_sha256 == $state_sha and
+          .snapshot_revision == $snapshot_revision and .replicas == $replicas and
+          .pod_uids_unchanged == true and
           .endpoint_uids_matched == true and
-          .public_data_verified == true' "$receipt_file" >/dev/null ||
+          .public_data_verified == true and
+          (.completed_at_unix | type == "number" and . > 0 and . == floor)' "$receipt_file" >/dev/null ||
         { echo "existing restore cutover receipt does not match the operation" >&2; exit 1; }
       exit 0
     fi
     temporary="$(mktemp "${STATE_DIR}/.${OPERATION_ID}.receipt.XXXXXX")"
-    "$JQ" -n \
+    "$JQ" -cnS \
       --arg format "kubebrain.restore-cutover.receipt.v1" --arg operation_id "$OPERATION_ID" \
       --arg instance "$INSTANCE" --arg namespace "$SERVICE_NAMESPACE" --arg service "$SERVICE_NAME" \
       --arg service_uid "$(state_value SERVICE 2)" --arg source_instance "$SOURCE_INSTANCE" \

@@ -40,6 +40,21 @@ func TestBoundaryCleanupLifecycleIsRetrySafe(t *testing.T) {
 	}
 }
 
+func TestBoundaryCleanupRejectsExistingReceiptWithUnknownFields(t *testing.T) {
+	f := newBoundaryCleanupFixture(t)
+	f.run(t, "prepare", true, "")
+	f.run(t, "delete", true, "")
+
+	receiptPath := filepath.Join(f.stateDir, "cleanup-1.receipt.json")
+	receipt := `{"cleanup_id":"cleanup-1","completed_at_unix":1,"credential_namespace":"control","credential_secrets":["client-tls","object-store"],"credentials_absent":true,"destroy_receipt_sha256":"` + fileDigest(t, f.receipt) + `","format":"kubebrain.boundary-cleanup.receipt.v1","instance":"instance-a","kubebrain_namespace":"instance-a","namespaces_absent":true,"tidb_namespace":"storage-a","unexpected":true}` + "\n"
+	require.NoError(t, os.WriteFile(receiptPath, []byte(receipt), 0o600))
+
+	f.run(t, "complete", false, "", "existing boundary cleanup receipt does not match")
+	data, err := os.ReadFile(receiptPath)
+	require.NoError(t, err)
+	require.Equal(t, receipt, string(data))
+}
+
 func TestBoundaryCleanupFailsClosed(t *testing.T) {
 	tests := []struct {
 		name       string
