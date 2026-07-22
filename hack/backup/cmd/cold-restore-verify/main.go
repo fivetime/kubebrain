@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -71,6 +72,7 @@ type semanticReceipt struct {
 	WitnessRevision       int64  `json:"witness_revision"`
 	WitnessRecords        int    `json:"witness_records"`
 	WitnessLeases         int    `json:"witness_leases"`
+	RestoreManifestSHA256 string `json:"restore_manifest_sha256"`
 	RestoredClusterID     string `json:"restored_cluster_id"`
 	HistoricalExact       bool   `json:"historical_exact"`
 	CurrentExact          bool   `json:"current_exact"`
@@ -85,10 +87,12 @@ func main() {
 	witnessPath := os.Getenv("WITNESS_FILE")
 	snapshotReceiptPath := os.Getenv("SNAPSHOT_RECEIPT_FILE")
 	restoreReceiptPath := os.Getenv("RESTORE_RECEIPT_FILE")
+	restoreManifestPath := os.Getenv("RESTORE_MANIFEST_FILE")
 	output := os.Getenv("SEMANTIC_RECEIPT_FILE")
 	probePrefix := os.Getenv("VERIFY_PREFIX")
-	if witnessPath == "" || snapshotReceiptPath == "" || restoreReceiptPath == "" || output == "" || probePrefix == "" {
-		fatal(errors.New("WITNESS_FILE, SNAPSHOT_RECEIPT_FILE, RESTORE_RECEIPT_FILE, SEMANTIC_RECEIPT_FILE and VERIFY_PREFIX are required"))
+	if witnessPath == "" || snapshotReceiptPath == "" || restoreReceiptPath == "" ||
+		restoreManifestPath == "" || output == "" || probePrefix == "" {
+		fatal(errors.New("WITNESS_FILE, SNAPSHOT_RECEIPT_FILE, RESTORE_RECEIPT_FILE, RESTORE_MANIFEST_FILE, SEMANTIC_RECEIPT_FILE and VERIFY_PREFIX are required"))
 	}
 	if _, err := os.Stat(output); !errors.Is(err, os.ErrNotExist) {
 		fatal(errors.New("SEMANTIC_RECEIPT_FILE must not already exist"))
@@ -121,8 +125,15 @@ func main() {
 	if err != nil {
 		fatal(err)
 	}
+	restoreManifestData, err := os.ReadFile(restoreManifestPath)
+	if err != nil {
+		fatal(err)
+	}
 	_, restore, err := validateReceiptChain(status, witnessData, snapshotData, restoreData)
 	if err != nil {
+		fatal(err)
+	}
+	if err := validateRestoreManifestBinding(restoreManifestData, restore); err != nil {
 		fatal(err)
 	}
 
@@ -168,7 +179,8 @@ func main() {
 		RestoreReceiptSHA256: digest(restoreData), SnapshotReceiptSHA256: digest(snapshotData),
 		WitnessFormat: status.Format, WitnessSHA256: status.SHA256,
 		WitnessRevision: status.Revision, WitnessRecords: status.Records, WitnessLeases: status.Leases,
-		RestoredClusterID: restore.Target.ClusterID, HistoricalExact: true, CurrentExact: true,
+		RestoreManifestSHA256: restore.RestoreManifest.SHA256,
+		RestoredClusterID:     restore.Target.ClusterID, HistoricalExact: true, CurrentExact: true,
 		LeaseIdentityExact: true, WatchProbeSucceeded: true, ProbePutRevision: putRevision,
 		ProbeDeleteRevision: deleteRevision, VerifiedAtUnix: time.Now().UTC().Unix(),
 	}
@@ -212,6 +224,51 @@ func validateReceiptChain(status backupfile.Status, witnessData, snapshotData, r
 		return snapshotReceipt{}, restoreReceipt{}, errors.New("cold physical restore receipt does not bind a canonical restore manifest")
 	}
 	return snapshotRecord, restore, nil
+}
+
+func validateRestoreManifestBinding(data []byte, restore restoreReceipt) error {
+	var value any
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	if err := decoder.Decode(&value); err != nil {
+		return fmt.Errorf("decode restore manifest: %w", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return errors.New("restore manifest contains trailing JSON")
+	}
+	manifest, ok := value.(map[string]any)
+	if !ok || manifest["apiVersion"] != "v1" || manifest["kind"] != "List" {
+		return errors.New("restore manifest is not a Kubernetes List")
+	}
+	items, ok := manifest["items"].([]any)
+	if !ok {
+		return errors.New("restore manifest items are invalid")
+	}
+	counts := map[string]int{}
+	for _, raw := range items {
+		item, ok := raw.(map[string]any)
+		if !ok {
+			return errors.New("restore manifest contains a non-object item")
+		}
+		kind, ok := item["kind"].(string)
+		if !ok || kind == "" {
+			return errors.New("restore manifest item lacks kind")
+		}
+		counts[kind]++
+	}
+	canonical, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	if digest(canonical) != restore.RestoreManifest.SHA256 ||
+		len(items) != restore.RestoreManifest.ItemCount ||
+		counts["VolumeSnapshotContent"] != restore.RestoreManifest.VolumeSnapshotContents ||
+		counts["VolumeSnapshot"] != restore.RestoreManifest.VolumeSnapshots ||
+		counts["PersistentVolumeClaim"] != restore.RestoreManifest.PersistentVolumeClaims ||
+		counts["TidbCluster"] != restore.RestoreManifest.TidbClusters {
+		return errors.New("restore manifest does not match restore receipt binding")
+	}
+	return nil
 }
 
 func loadWitness(verified *backupfile.Verified) (map[string]expectedKV, map[int64]record.Lease, map[int64][]string, error) {

@@ -16,6 +16,7 @@ Required environment:
   WITNESS_FILE             kubebrain.logical.v2 artifact captured before snapshot
   SNAPSHOT_RECEIPT_FILE    kubebrain.cold-physical-snapshot.v2 receipt
   RESTORE_RECEIPT_FILE     kubebrain.cold-physical-restore.v1 receipt
+  RESTORE_MANIFEST_FILE    canonical restore manifest applied by cold-restore-execute
   SEMANTIC_RECEIPT_FILE    new verification receipt path
   VERIFY_PREFIX            isolated prefix for the leased watch probe
 

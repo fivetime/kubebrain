@@ -8027,6 +8027,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./hack/backup/... ./hack/production`、`bash -n` 和
   `go vet ./hack/backup/... ./hack/production` 均通过。该项增强物理恢复证据链的可审计性，
   仍不替代真实 CSI 隔离恢复演练，也不关闭 PITR 缺口。
+- **DBaaS A460 cold restore semantic manifest verification（2026-07-22）**：
+  在 A459 的 restore receipt manifest binding 之上继续收紧最终语义验证：`cold-restore-verify`
+  现在要求调用方提供 `RESTORE_MANIFEST_FILE`，读取审核过的恢复 manifest，按 Go canonical JSON
+  重新计算 digest，并检查 Kubernetes List、item count、VolumeSnapshotContent/VolumeSnapshot/PVC/
+  TidbCluster 计数全部与 restore receipt 的 `restore_manifest` 字段一致；semantic verify receipt
+  同时记录 `restore_manifest_sha256`。缺失、篡改或资源计数漂移的 manifest 会在访问恢复 endpoint
+  前失败。`go test ./hack/backup/... ./hack/production`、`bash -n` 和
+  `go vet ./hack/backup/... ./hack/production` 通过。该项使 final semantic receipt 能直接追溯到
+  已审核的 manifest digest，仍不声明 cold full restore 或 PITR 已完成。
 
 - **Maintenance A398 persistent CORRUPT alarm gate（2026-07-21）**：
   对照 `/root/etcd/server/etcdserver/apply/uber_applier.go`、`apply/corrupt.go`、

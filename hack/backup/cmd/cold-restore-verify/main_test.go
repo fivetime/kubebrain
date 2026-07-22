@@ -85,6 +85,37 @@ func TestValidateReceiptChain(t *testing.T) {
 	require.ErrorContains(t, err, "canonical restore manifest")
 }
 
+func TestValidateRestoreManifestBinding(t *testing.T) {
+	restore := restoreReceipt{}
+	restore.RestoreManifest.Format = "kubernetes-list.canonical-json.v1"
+	restore.RestoreManifest.ItemCount = 4
+	restore.RestoreManifest.VolumeSnapshotContents = 1
+	restore.RestoreManifest.VolumeSnapshots = 1
+	restore.RestoreManifest.PersistentVolumeClaims = 1
+	restore.RestoreManifest.TidbClusters = 1
+	manifest := map[string]any{
+		"apiVersion": "v1",
+		"kind":       "List",
+		"items": []any{
+			map[string]any{"kind": "VolumeSnapshotContent"},
+			map[string]any{"kind": "VolumeSnapshot"},
+			map[string]any{"kind": "PersistentVolumeClaim"},
+			map[string]any{"kind": "TidbCluster"},
+		},
+	}
+	canonical, err := json.Marshal(manifest)
+	require.NoError(t, err)
+	restore.RestoreManifest.SHA256 = digest(canonical)
+	pretty, err := json.MarshalIndent(manifest, "", "  ")
+	require.NoError(t, err)
+	require.NoError(t, validateRestoreManifestBinding(pretty, restore))
+
+	manifest["items"].([]any)[3] = map[string]any{"kind": "ConfigMap"}
+	tampered, err := json.Marshal(manifest)
+	require.NoError(t, err)
+	require.ErrorContains(t, validateRestoreManifestBinding(tampered, restore), "does not match")
+}
+
 func TestWriteAtomicSemanticReceipt(t *testing.T) {
 	directory := t.TempDir()
 	path := filepath.Join(directory, "receipt.json")
