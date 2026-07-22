@@ -9268,6 +9268,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./pkg/server/etcd ./pkg/backend`、`go vet ./pkg/server/etcd ./pkg/backend`、
   `go test ./hack/production/... ./deploy/production`、
   `go vet ./hack/production/... ./deploy/production` 与 `git diff --check` 通过。
+- A498 收紧 metering storage archive path-style 布尔环境变量：`SOURCE_S3_FORCE_PATH_STYLE`
+  和 `METERING_S3_FORCE_PATH_STYLE` 现在通过共享 optional bool parser 解析，空值仍表示
+  false，非空非法值会让 CLI fail closed；旧逻辑忽略 `strconv.ParseBool` 错误，会把拼写
+  错误静默降级为 false，可能访问错误的 S3 path style。回归覆盖空值、`true`、`0` 和
+  非法值；`go test ./hack/production/cmd/metering-storage-archive -run 'TestParseJSONStringArray|TestParseOptionalBoolEnv' -count=20`、
+  `go test ./hack/production/... ./deploy/production`、
+  `go vet ./hack/production/... ./deploy/production` 与 `git diff --check` 通过。
 
 ### P2：运维兼容和长期验证
 

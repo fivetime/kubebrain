@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"log"
 	"os"
@@ -39,11 +40,17 @@ func main() {
 	sourceEndpoint, sourceRegion = os.Getenv("SOURCE_S3_ENDPOINT"), os.Getenv("SOURCE_AWS_REGION")
 	sourceAccessKey, sourceSecretKey = os.Getenv("SOURCE_AWS_ACCESS_KEY_ID"), os.Getenv("SOURCE_AWS_SECRET_ACCESS_KEY")
 	sourceSessionToken = os.Getenv("SOURCE_AWS_SESSION_TOKEN")
-	sourcePathStyle, _ = strconv.ParseBool(os.Getenv("SOURCE_S3_FORCE_PATH_STYLE"))
+	sourcePathStyle, err := parseOptionalBoolEnv("SOURCE_S3_FORCE_PATH_STYLE")
+	if err != nil {
+		log.Fatal(err)
+	}
 	meteringEndpoint, meteringRegion = os.Getenv("METERING_S3_ENDPOINT"), os.Getenv("METERING_AWS_REGION")
 	meteringAccessKey, meteringSecretKey = os.Getenv("METERING_AWS_ACCESS_KEY_ID"), os.Getenv("METERING_AWS_SECRET_ACCESS_KEY")
 	meteringSessionToken = os.Getenv("METERING_AWS_SESSION_TOKEN")
-	meteringPathStyle, _ = strconv.ParseBool(os.Getenv("METERING_S3_FORCE_PATH_STYLE"))
+	meteringPathStyle, err = parseOptionalBoolEnv("METERING_S3_FORCE_PATH_STYLE")
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	allowedFormats, err := parseJSONStringArray(allowedFormatsJSON)
 	if err != nil {
@@ -102,6 +109,18 @@ func objectStoreEnvironment(endpoint, region, accessKey, secretKey, token string
 		"AWS_SESSION_TOKEN=" + token,
 		"S3_FORCE_PATH_STYLE=" + strconv.FormatBool(pathStyle),
 	}
+}
+
+func parseOptionalBoolEnv(name string) (bool, error) {
+	raw := os.Getenv(name)
+	if raw == "" {
+		return false, nil
+	}
+	value, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, fmt.Errorf("%s must be a boolean: %w", name, err)
+	}
+	return value, nil
 }
 
 func init() {

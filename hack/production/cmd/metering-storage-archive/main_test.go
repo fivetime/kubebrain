@@ -34,3 +34,27 @@ func TestParseJSONStringArrayRejectsNullAndTrailingJSON(t *testing.T) {
 		})
 	}
 }
+
+func TestParseOptionalBoolEnv(t *testing.T) {
+	t.Setenv("METERING_STORAGE_BOOL", "")
+	value, err := parseOptionalBoolEnv("METERING_STORAGE_BOOL")
+	require.NoError(t, err)
+	require.False(t, value)
+
+	t.Setenv("METERING_STORAGE_BOOL", "true")
+	value, err = parseOptionalBoolEnv("METERING_STORAGE_BOOL")
+	require.NoError(t, err)
+	require.True(t, value)
+
+	t.Setenv("METERING_STORAGE_BOOL", "0")
+	value, err = parseOptionalBoolEnv("METERING_STORAGE_BOOL")
+	require.NoError(t, err)
+	require.False(t, value)
+}
+
+func TestParseOptionalBoolEnvRejectsInvalidValue(t *testing.T) {
+	t.Setenv("METERING_STORAGE_BOOL", "definitely")
+	value, err := parseOptionalBoolEnv("METERING_STORAGE_BOOL")
+	require.ErrorContains(t, err, "METERING_STORAGE_BOOL must be a boolean")
+	require.False(t, value)
+}

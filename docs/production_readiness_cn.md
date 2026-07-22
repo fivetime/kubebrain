@@ -892,6 +892,9 @@ digest metadata、COMPLIANCE/GOVERNANCE mode 与 retain-until。总字节使用 
 `kubebrain-metering-storage-archive --allowed-formats-json` 必须是单一 JSON string array，
 拒绝 `null` 和尾随第二个 JSON 值；空数组、重复、未排序或空 format 会在 archiver 配置
 校验中 fail closed。
+`SOURCE_S3_FORCE_PATH_STYLE` 与 `METERING_S3_FORCE_PATH_STYLE` 可留空表示 false；非空时
+必须是合法布尔值，非法值要让 archive CLI fail closed，不能静默降级为 false 后访问错误的
+对象存储路径风格。
 `kubebrain.object-storage-sample.v1` 固定 source store/bucket/prefix、allowlist、version
 数量、总字节、versions digest 和 checked-at，再写入独立计量 Object Lock bucket。
 usage executor 的 stdout 必须与文件 receipt 使用同一 strict JSON schema，不允许未知字段或
