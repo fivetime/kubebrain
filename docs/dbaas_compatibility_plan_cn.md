@@ -9370,6 +9370,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   回归覆盖 provider/payment 两条路径的 oversized input 与超行数输入；`go test ./hack/production/internal/meteringbilling -run 'TestBuild(ProviderStatement|PaymentLedger)FromCSV|TestPaymentLedgerRejects|TestProviderStatementPublisher' -count=5`、
   `go test ./hack/production/internal/meteringbilling`、`go test ./hack/production/... ./deploy/production`、
   `go vet ./hack/production/... ./deploy/production` 与 `git diff --check` 通过。
+- A512 收紧 Operation API 的 OIDC/JWKS media type 校验：discovery 与 JWKS 200 响应现在必须
+  声明 JSON media type，允许 `application/json` 和 `application/jwk-set+json` 等 `+json`
+  类型；`text/html`/`text/plain` 错误页即使 body 恰好是 JSON 也会在读取和解析前 fail
+  closed。回归覆盖 discovery 与 JWKS 分别返回非 JSON Content-Type；
+  `go test ./hack/production/internal/operationapi -run 'TestOIDCAuthenticator|TestHTTPSAPIAuthenticatesOIDCTokenAndSubmitsOperation|TestHandlerDependencyDeadlineReturnsServiceUnavailable' -count=20`、
+  `go test ./hack/production/internal/operationapi`、`go test ./hack/production/... ./deploy/production`、
+  `go vet ./hack/production/... ./deploy/production` 与 `git diff --check` 通过。
 
 ### P2：运维兼容和长期验证
 

@@ -1628,8 +1628,10 @@ immutable `requestedBy`，tenant 同样进入 spec、worker claim 和终态审�
 JWKS 默认缓存 5 分钟；并发 cache miss 合并为单次刷新，unknown `kid` 或刷新失败后
 fail closed 退避 5 秒，避免外部 IdP 故障或伪造 key ID 造成刷新惊群。可用
 `--oidc-jwks-cache-ttl` 和 `--oidc-jwks-refresh-backoff` 调整，但退避期间不会继续信任
-已经过期的 key。完成 Secret 配置后建议扩为 3 副本；清单包含 zone/hostname topology
-spread，PDB `maxUnavailable: 1`。
+已经过期的 key。discovery 与 JWKS 的 HTTP 200 响应必须声明 JSON media type；
+`application/json` 和 `+json` 类型可用，HTML/text 错误页即使 body 是合法 JSON 也会被拒绝。
+完成 Secret 配置后建议扩为 3 副本；清单包含 zone/hostname topology spread，PDB
+`maxUnavailable: 1`。
 跨租户或未授权实例的 submit/get 统一返回 404，避免实例和 operation 枚举。
 
 API 每 30 秒在线重载 `kubebrain-operation-api-tls`。轮换契约与 parameter broker

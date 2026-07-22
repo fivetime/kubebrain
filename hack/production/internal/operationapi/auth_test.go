@@ -27,9 +27,11 @@ type oidcFixture struct {
 func (f *oidcFixture) serve(serverURL string) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/.well-known/openid-configuration", func(response http.ResponseWriter, _ *http.Request) {
+		response.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(response).Encode(discoveryDocument{Issuer: serverURL, JWKSURL: serverURL + "/keys"})
 	})
 	mux.HandleFunc("/keys", func(response http.ResponseWriter, _ *http.Request) {
+		response.Header().Set("Content-Type", "application/jwk-set+json")
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		f.jwksRequests++
@@ -254,6 +256,54 @@ func TestOIDCAuthenticatorBacksOffFailedRefreshAndRecovers(t *testing.T) {
 	fixture.mu.RLock()
 	defer fixture.mu.RUnlock()
 	require.Equal(t, 3, fixture.jwksRequests)
+}
+
+func TestOIDCAuthenticatorRejectsNonJSONDiscoveryAndJWKS(t *testing.T) {
+	t.Run("discovery", func(t *testing.T) {
+		var server *httptest.Server
+		server = httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+			response.Header().Set("Content-Type", "text/html")
+			_ = json.NewEncoder(response).Encode(discoveryDocument{
+				Issuer: server.URL, JWKSURL: server.URL + "/keys",
+			})
+		}))
+		defer server.Close()
+
+		_, err := NewOIDCAuthenticator(context.Background(), OIDCConfig{
+			Issuer: server.URL, Audience: "expected",
+		})
+		require.ErrorContains(t, err, "content type")
+	})
+
+	t.Run("jwks", func(t *testing.T) {
+		key, err := rsa.GenerateKey(rand.Reader, 2048)
+		require.NoError(t, err)
+		var server *httptest.Server
+		server = httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+			switch request.URL.Path {
+			case "/.well-known/openid-configuration":
+				response.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(response).Encode(discoveryDocument{
+					Issuer: server.URL, JWKSURL: server.URL + "/keys",
+				})
+			case "/keys":
+				response.Header().Set("Content-Type", "text/html")
+				_ = json.NewEncoder(response).Encode(jwksDocument{Keys: []jwk{{
+					Kid: "key", Kty: "RSA", Use: "sig", Alg: "RS256",
+					N: base64.RawURLEncoding.EncodeToString(key.N.Bytes()),
+					E: base64.RawURLEncoding.EncodeToString(big.NewInt(int64(key.E)).Bytes()),
+				}}})
+			default:
+				http.NotFound(response, request)
+			}
+		}))
+		defer server.Close()
+
+		_, err = NewOIDCAuthenticator(context.Background(), OIDCConfig{
+			Issuer: server.URL, Audience: "expected",
+		})
+		require.ErrorContains(t, err, "content type")
+	})
 }
 
 func TestOIDCAuthenticatorUnknownKeyBackoffDoesNotBlockKnownKeyRefresh(t *testing.T) {

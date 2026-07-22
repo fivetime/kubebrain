@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"math/big"
+	"mime"
 	"net"
 	"net/http"
 	"net/url"
@@ -145,7 +146,7 @@ func getJSON(ctx context.Context, client *http.Client, endpoint string, target a
 	if err != nil {
 		return err
 	}
-	request.Header.Set("Accept", "application/json")
+	request.Header.Set("Accept", "application/json, application/jwk-set+json")
 	response, err := client.Do(request)
 	if err != nil {
 		return err
@@ -153,6 +154,9 @@ func getJSON(ctx context.Context, client *http.Client, endpoint string, target a
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
 		return fmt.Errorf("unexpected HTTP status %d", response.StatusCode)
+	}
+	if !jsonContentType(response.Header.Get("Content-Type")) {
+		return errors.New("JSON response has unsupported content type")
 	}
 	payload, err := io.ReadAll(io.LimitReader(response.Body, oidcDocumentLimit+1))
 	if err != nil {
@@ -169,6 +173,14 @@ func getJSON(ctx context.Context, client *http.Client, endpoint string, target a
 		return errors.New("JSON response contains trailing data")
 	}
 	return nil
+}
+
+func jsonContentType(header string) bool {
+	contentType, _, err := mime.ParseMediaType(header)
+	if err != nil {
+		return false
+	}
+	return contentType == "application/json" || strings.HasSuffix(contentType, "+json")
 }
 
 func (a *OIDCAuthenticator) refresh(ctx context.Context) error {
