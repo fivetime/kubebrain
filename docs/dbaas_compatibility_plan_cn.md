@@ -10172,6 +10172,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   回归：
   `go test ./pkg/server/etcd -run TestAuthManagerRoleGrantPermissionSameKeySearchMatchesEtcd -count=1`
   通过。
+- A595 对齐 JWT `revision` claim 的 `MapClaims` 数字转换：
+  对照 `/root/etcd/server/auth/jwt.go` 的 `tokenJWT.info`，上游用
+  `jwt.MapClaims` 读取 token claim，并要求 `revision` 的动态类型为 `float64`；
+  因此 JSON 小数 revision 会被接受并在 `uint64(revision)` 时截断，超过 float64
+  精确整数范围的 revision 也按 Go 的 float64 转换结果处理。KubeBrain 旧 verify
+  用结构化 `uint64` 字段解码，错误拒绝 `revision: 1.5`，并保留了上游不会保留的
+  大整数精度。现在 JWT verify 改用 `MapClaims`，保留签名方法、过期时间和当前时间
+  覆盖校验。回归：
+  `go test ./pkg/server/etcd -run TestJWTProviderRevisionFloatCoercionMatchesEtcd -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

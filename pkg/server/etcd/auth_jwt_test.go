@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	jwt "github.com/golang-jwt/jwt/v5"
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
@@ -118,17 +119,30 @@ func TestJWTProviderPublicOnlyAndKeyMismatch(t *testing.T) {
 	require.ErrorContains(t, ValidateAuthTokenProvider(mismatch), "don't match")
 }
 
-func TestJWTProviderPreservesUint64Revision(t *testing.T) {
-	secret := writeJWTKey(t, "secret", []byte("shared-secret"))
+func TestJWTProviderRevisionFloatCoercionMatchesEtcd(t *testing.T) {
+	secretValue := []byte("shared-secret")
+	secret := writeJWTKey(t, "secret", secretValue)
 	provider, err := parseAuthTokenProvider("jwt,sign-method=HS256,priv-key=" + secret)
 	require.NoError(t, err)
 	now := time.Unix(2_000_000_000, 0)
+
 	const revision = uint64(1<<53 + 1)
 	token, err := provider.issue("root", revision, now)
 	require.NoError(t, err)
 	claims, err := provider.verify(token, now)
 	require.NoError(t, err)
-	require.Equal(t, revision, claims.Revision)
+	require.Equal(t, uint64(float64(revision)), claims.Revision)
+
+	fractional := jwt.NewWithClaims(provider.method, jwt.MapClaims{
+		"username": "root",
+		"revision": 1.5,
+		"exp":      now.Add(time.Minute).Unix(),
+	})
+	token, err = fractional.SignedString(secretValue)
+	require.NoError(t, err)
+	claims, err = provider.verify(token, now)
+	require.NoError(t, err)
+	require.Equal(t, uint64(1), claims.Revision)
 }
 
 func TestJWTProviderOptionSyntaxMatchesEtcd(t *testing.T) {
