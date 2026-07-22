@@ -33,6 +33,14 @@ func TestRestoreCutoverOperationRejectsInvalidReceipt(t *testing.T) {
 	require.NotContains(t, log, "--action succeed")
 }
 
+func TestRestoreCutoverOperationRejectsNonCanonicalStateBeforeSucceed(t *testing.T) {
+	f := newCutoverRunnerFixture(t)
+	f.run(t, false, "TAMPER_STATE_BEFORE_RECEIPT=true", "invalid receipt")
+	log := f.log(t)
+	require.Contains(t, log, "--action fail")
+	require.NotContains(t, log, "--action succeed")
+}
+
 func TestRestoreCutoverOperationRequeuesPrepareFailure(t *testing.T) {
 	f := newCutoverRunnerFixture(t)
 	f.run(t, false, "FAIL_PHASE=prepare", "prepare failed and was requeued")
@@ -166,8 +174,15 @@ state_file="$STATE_DIR/$OPERATION_ID.state"
 mkdir -p "$STATE_DIR"
 case "$ACTION" in
   prepare)
-    printf 'HEADER\tkubebrain.restore-cutover.state.v1\t%s\t%s\t%s\t%s\t%s\t%s\tuid-service\t%s\t42\t/registry\t/restored\n' \
-      "$INSTANCE" "$OPERATION_ID" "$SERVICE_NAMESPACE" "$SERVICE_NAME" "$SOURCE_INSTANCE" "$TARGET_INSTANCE" "`+runnerCutoverArtifactSHA256+`" >"$state_file"
+    {
+      printf 'HEADER\tkubebrain.restore-cutover.state.v1\t%s\t%s\t%s\t%s\t%s\t%s\tuid-service\t%s\t42\t/registry\t/restored\n' \
+        "$INSTANCE" "$OPERATION_ID" "$SERVICE_NAMESPACE" "$SERVICE_NAME" "$SOURCE_INSTANCE" "$TARGET_INSTANCE" "`+runnerCutoverArtifactSHA256+`"
+      printf 'SERVICE\tuid-service\t10\n'
+      printf 'POD\tsource\tkb-source-0\tuid-source-0\t0\n'
+      printf 'POD\tsource\tkb-source-1\tuid-source-1\t0\n'
+      printf 'POD\ttarget\tkb-target-0\tuid-target-0\t0\n'
+      printf 'POD\ttarget\tkb-target-1\tuid-target-1\t0\n'
+    } >"$state_file"
     ;;
   cutover)
     printf 'kubebrain.restore-cutover.cutover.v1\t%s\t%s\n' "$INSTANCE" "$OPERATION_ID" >"$STATE_DIR/$OPERATION_ID.cutover"
@@ -175,6 +190,7 @@ case "$ACTION" in
   complete)
     artifact_sha="`+runnerCutoverArtifactSHA256+`"
     [[ "${INVALID_CUTOVER_RECEIPT:-false}" != true ]] || artifact_sha=abc123
+    [[ "${TAMPER_STATE_BEFORE_RECEIPT:-false}" != true ]] || printf 'UNKNOWN\trow\n' >>"$state_file"
     state_sha="$(sha256sum "$state_file" | cut -d ' ' -f1)"
     printf '{"format":"kubebrain.restore-cutover.receipt.v1","operation_id":"%s","instance":"%s","service_namespace":"%s","service_name":"%s","service_uid":"uid-service","source_instance":"%s","target_instance":"%s","artifact_sha256":"%s","cutover_state_sha256":"%s","snapshot_revision":42,"replicas":%s,"pod_uids_unchanged":true,"endpoint_uids_matched":true,"public_data_verified":true,"completed_at_unix":100}\n' \
       "$OPERATION_ID" "$INSTANCE" "$SERVICE_NAMESPACE" "$SERVICE_NAME" "$SOURCE_INSTANCE" "$TARGET_INSTANCE" "$artifact_sha" "$state_sha" "$EXPECTED_REPLICAS" >"$RECEIPT_OUTPUT"
@@ -220,9 +236,7 @@ func (f *cutoverRunnerFixture) publishEvidence(t *testing.T, kind string) {
 	require.NoError(t, os.MkdirAll(stateDir, 0o700))
 	statePath := filepath.Join(stateDir, "cutover-1.state")
 	if kind == "state" || kind == "cutover" || kind == "receipt" {
-		require.NoError(t, os.WriteFile(statePath, []byte(
-			"HEADER\tkubebrain.restore-cutover.state.v1\tinstance-a\tcutover-1\tns-a\tkubebrain\tsource\ttarget\tuid-service\t"+runnerCutoverArtifactSHA256+"\t42\t/registry\t/restored\n",
-		), 0o600))
+		require.NoError(t, os.WriteFile(statePath, []byte(cutoverRunnerState()), 0o600))
 	}
 	if kind == "state" {
 		return
@@ -232,6 +246,15 @@ func (f *cutoverRunnerFixture) publishEvidence(t *testing.T, kind string) {
 		path = filepath.Join(f.dir, "receipt.json")
 	}
 	require.NoError(t, os.WriteFile(path, []byte("evidence\n"), 0o600))
+}
+
+func cutoverRunnerState() string {
+	return "HEADER\tkubebrain.restore-cutover.state.v1\tinstance-a\tcutover-1\tns-a\tkubebrain\tsource\ttarget\tuid-service\t" + runnerCutoverArtifactSHA256 + "\t42\t/registry\t/restored\n" +
+		"SERVICE\tuid-service\t10\n" +
+		"POD\tsource\tkb-source-0\tuid-source-0\t0\n" +
+		"POD\tsource\tkb-source-1\tuid-source-1\t0\n" +
+		"POD\ttarget\tkb-target-0\tuid-target-0\t0\n" +
+		"POD\ttarget\tkb-target-1\tuid-target-1\t0\n"
 }
 
 func requireOrdered(t *testing.T, text string, values ...string) {

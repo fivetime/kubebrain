@@ -78,6 +78,59 @@ atomic_publish() {
   sync -f "$(dirname "$destination")"
 }
 
+validate_cutover_state_schema() {
+  awk -F '\t' -v expected="$EXPECTED_REPLICAS" '
+    $0 == "" {
+      bad = "empty row"
+      exit 1
+    }
+    $1 == "HEADER" {
+      if (NF != 13) {
+        bad = "HEADER row must have 13 fields"
+        exit 1
+      }
+      header++
+      next
+    }
+    $1 == "SERVICE" {
+      if (NF != 3) {
+        bad = "SERVICE row must have 3 fields"
+        exit 1
+      }
+      service++
+      next
+    }
+    $1 == "POD" {
+      if (NF != 5 || ($2 != "source" && $2 != "target")) {
+        bad = "POD row must have role, name, uid, and restart count"
+        exit 1
+      }
+      if ($2 == "source") {
+        sourcePods++
+      } else {
+        targetPods++
+      }
+      next
+    }
+    {
+      bad = "unknown row type " $1
+      exit 1
+    }
+    END {
+      if (bad != "") {
+        print bad > "/dev/stderr"
+        exit 1
+      }
+      if (header != 1 || service != 1 || sourcePods != expected || targetPods != expected) {
+        printf("schema counts mismatch: header=%d service=%d sourcePods=%d targetPods=%d expected=%d\n",
+          header, service, sourcePods, targetPods, expected) > "/dev/stderr"
+        exit 1
+      }
+    }
+  ' "$CUTOVER_STATE_INPUT" || { echo "cutover state has invalid schema" >&2; exit 1; }
+}
+
+validate_cutover_state_schema
 IFS=$'\t' read -r state_kind state_format state_instance cutover_operation state_namespace \
   state_service source_instance state_target state_service_uid artifact_sha snapshot_revision \
   source_prefix target_prefix <"$CUTOVER_STATE_INPUT"

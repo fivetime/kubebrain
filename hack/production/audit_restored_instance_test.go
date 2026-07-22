@@ -71,7 +71,7 @@ func TestPostRestoreAuditFailsClosed(t *testing.T) {
 		{"cutover receipt mismatch", "receipt-drift", "cutover receipt does not match"},
 		{"cutover receipt unknown field", "receipt-unknown", "cutover receipt does not match"},
 		{"source receipt mismatch", "source-receipt-drift", "cutover receipt does not match"},
-		{"cutover state tampered", "state-drift", "cutover receipt does not match"},
+		{"cutover state tampered", "state-drift", "cutover state has invalid schema"},
 		{"equal restore prefixes", "prefix-state-invalid", "cutover state does not match"},
 		{"service UID drift", "service-drift", "Service UID or target selector changed"},
 		{"pod replacement", "pod-drift", "target Pod UID/readiness/restart fence failed"},
@@ -104,6 +104,8 @@ func newAuditFixture(t *testing.T) *auditFixture {
 	require.NoError(t, os.WriteFile(cutoverState, []byte(
 		"HEADER\tkubebrain.restore-cutover.state.v1\tinstance-a\tcutover-1\tns-a\tkubebrain\tsource\ttarget\tuid-service\t"+auditArtifactSHA256+"\t42\t/registry\t/restored\n"+
 			"SERVICE\tuid-service\t10\n"+
+			"POD\tsource\tkb-source-0\tuid-source-0\t0\n"+
+			"POD\tsource\tkb-source-1\tuid-source-1\t0\n"+
 			"POD\ttarget\tkb-target-0\tuid-target-0\t0\n"+
 			"POD\ttarget\tkb-target-1\tuid-target-1\t0\n"), 0o600))
 	cutoverReceipt := filepath.Join(dir, "cutover.json")

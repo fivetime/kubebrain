@@ -9812,6 +9812,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   都会 fail closed，不会提交错误 digest。回归：
   `go test ./hack/production -run 'TestBackupDeletionOperation' -count=5 -timeout=240s`
   通过。
+- A559 收紧 RestoreCutover/PostRestoreAudit durable state schema：
+  恢复切流 state 文件旧读取路径只消费前几个 tab 字段，未知行、空行、额外列或缺失
+  Pod/Service 证据可能被后续 receipt SHA 绑定掩盖。现在
+  `switch-restore-traffic.sh`、`audit-restored-instance.sh` 以及两个 operation
+  runner 的 succeed 前 validator 都要求 `kubebrain.restore-cutover.state.v1` 精确包含
+  1 个 HEADER、1 个 SERVICE、`EXPECTED_REPLICAS` 个 source POD 和 target POD 行，
+  且各行字段数封闭；非 canonical state 会 fail closed，不会切流、发布 audit receipt
+  或提交 operation succeed。回归：
+  `go test ./hack/production -run 'Test(RestoreTrafficCutover|RestoreCutoverOperation|PostRestoreAudit)' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

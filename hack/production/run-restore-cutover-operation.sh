@@ -173,10 +173,64 @@ state_file="${state_dir}/${operation_id}.state"
 cutover_file="${state_dir}/${operation_id}.cutover"
 rollback_file="${state_dir}/${operation_id}.rollback"
 
+validate_cutover_state_schema() {
+  local path="$1"
+  awk -F '\t' -v expected="$expected_replicas" '
+    $0 == "" {
+      bad = "empty row"
+      exit 1
+    }
+    $1 == "HEADER" {
+      if (NF != 13) {
+        bad = "HEADER row must have 13 fields"
+        exit 1
+      }
+      header++
+      next
+    }
+    $1 == "SERVICE" {
+      if (NF != 3) {
+        bad = "SERVICE row must have 3 fields"
+        exit 1
+      }
+      service++
+      next
+    }
+    $1 == "POD" {
+      if (NF != 5 || ($2 != "source" && $2 != "target")) {
+        bad = "POD row must have role, name, uid, and restart count"
+        exit 1
+      }
+      if ($2 == "source") {
+        sourcePods++
+      } else {
+        targetPods++
+      }
+      next
+    }
+    {
+      bad = "unknown row type " $1
+      exit 1
+    }
+    END {
+      if (bad != "") {
+        print bad > "/dev/stderr"
+        exit 1
+      }
+      if (header != 1 || service != 1 || sourcePods != expected || targetPods != expected) {
+        printf("schema counts mismatch: header=%d service=%d sourcePods=%d targetPods=%d expected=%d\n",
+          header, service, sourcePods, targetPods, expected) > "/dev/stderr"
+        exit 1
+      }
+    }
+  ' "$path"
+}
+
 validate_cutover_receipt() {
   local kind format state_instance state_operation state_namespace state_service source_state
   local state_target state_service_uid artifact_sha snapshot_revision source_prefix target_prefix
   local state_sha
+  validate_cutover_state_schema "$state_file" || return 1
   [[ -f "$state_file" ]] || return 1
   IFS=$'\t' read -r kind format state_instance state_operation state_namespace state_service \
     source_state state_target state_service_uid artifact_sha snapshot_revision source_prefix \

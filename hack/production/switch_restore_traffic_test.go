@@ -90,6 +90,16 @@ func TestRestoreTrafficCutoverRejectsRestoreReceiptWithInvalidDigest(t *testing.
 	}
 }
 
+func TestRestoreTrafficCutoverRejectsNonCanonicalState(t *testing.T) {
+	f := newTrafficFixture(t)
+	f.run(t, "prepare", true, "")
+	statePath := filepath.Join(f.state, "restore-1.state")
+	require.NoError(t, os.WriteFile(statePath, append(mustRead(t, statePath), []byte("UNKNOWN\trow\n")...), 0o600))
+
+	f.run(t, "cutover", false, "", "state has invalid schema")
+	require.NoFileExists(t, filepath.Join(f.state, "restore-1.cutover"))
+}
+
 func TestRestoreTrafficCutoverFailsClosed(t *testing.T) {
 	for _, tc := range []struct {
 		name, action, drift, want string

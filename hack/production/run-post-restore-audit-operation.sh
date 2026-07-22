@@ -114,9 +114,62 @@ audit_env=(
 [[ -n "$data_context" ]] && audit_env+=("KUBE_CONTEXT=${data_context}")
 [[ -n "$data_kubeconfig" ]] && audit_env+=("KUBECONFIG_PATH=${data_kubeconfig}")
 
+validate_cutover_state_schema() {
+  awk -F '\t' -v expected="$expected_replicas" '
+    $0 == "" {
+      bad = "empty row"
+      exit 1
+    }
+    $1 == "HEADER" {
+      if (NF != 13) {
+        bad = "HEADER row must have 13 fields"
+        exit 1
+      }
+      header++
+      next
+    }
+    $1 == "SERVICE" {
+      if (NF != 3) {
+        bad = "SERVICE row must have 3 fields"
+        exit 1
+      }
+      service++
+      next
+    }
+    $1 == "POD" {
+      if (NF != 5 || ($2 != "source" && $2 != "target")) {
+        bad = "POD row must have role, name, uid, and restart count"
+        exit 1
+      }
+      if ($2 == "source") {
+        sourcePods++
+      } else {
+        targetPods++
+      }
+      next
+    }
+    {
+      bad = "unknown row type " $1
+      exit 1
+    }
+    END {
+      if (bad != "") {
+        print bad > "/dev/stderr"
+        exit 1
+      }
+      if (header != 1 || service != 1 || sourcePods != expected || targetPods != expected) {
+        printf("schema counts mismatch: header=%d service=%d sourcePods=%d targetPods=%d expected=%d\n",
+          header, service, sourcePods, targetPods, expected) > "/dev/stderr"
+        exit 1
+      }
+    }
+  ' "$cutover_state"
+}
+
 validate_audit_receipt() {
   local kind format state_instance cutover_operation state_namespace state_service source_instance
   local state_target state_service_uid artifact_sha snapshot_revision source_prefix target_prefix
+  validate_cutover_state_schema || return 1
   IFS=$'\t' read -r kind format state_instance cutover_operation state_namespace state_service \
     source_instance state_target state_service_uid artifact_sha snapshot_revision source_prefix \
     target_prefix <"$cutover_state"

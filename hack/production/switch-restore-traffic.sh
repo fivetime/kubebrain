@@ -117,6 +117,58 @@ receipt_fields() {
   ] | @tsv' "$RESTORE_RECEIPT_INPUT"
 }
 
+validate_cutover_state_schema() {
+  awk -F '\t' -v expected="$EXPECTED_REPLICAS" '
+    $0 == "" {
+      bad = "empty row"
+      exit 1
+    }
+    $1 == "HEADER" {
+      if (NF != 13) {
+        bad = "HEADER row must have 13 fields"
+        exit 1
+      }
+      header++
+      next
+    }
+    $1 == "SERVICE" {
+      if (NF != 3) {
+        bad = "SERVICE row must have 3 fields"
+        exit 1
+      }
+      service++
+      next
+    }
+    $1 == "POD" {
+      if (NF != 5 || ($2 != "source" && $2 != "target")) {
+        bad = "POD row must have role, name, uid, and restart count"
+        exit 1
+      }
+      if ($2 == "source") {
+        sourcePods++
+      } else {
+        targetPods++
+      }
+      next
+    }
+    {
+      bad = "unknown row type " $1
+      exit 1
+    }
+    END {
+      if (bad != "") {
+        print bad > "/dev/stderr"
+        exit 1
+      }
+      if (header != 1 || service != 1 || sourcePods != expected || targetPods != expected) {
+        printf("schema counts mismatch: header=%d service=%d sourcePods=%d targetPods=%d expected=%d\n",
+          header, service, sourcePods, targetPods, expected) > "/dev/stderr"
+        exit 1
+      }
+    }
+  ' "$state_file" || { echo "restore cutover state has invalid schema" >&2; exit 1; }
+}
+
 service_snapshot() {
   "$KUBECTL" "${kubectl_args[@]}" -n "$SERVICE_NAMESPACE" get service "$SERVICE_NAME" -o json |
     "$JQ" -er 'select(.spec.selector | length == 2) | [
@@ -143,6 +195,7 @@ pod_snapshot() {
 state_header() {
   local kind format state_instance state_operation namespace service source target service_uid
   local restore_sha restore_revision source_prefix target_prefix
+  validate_cutover_state_schema
   IFS=$'\t' read -r kind format state_instance state_operation namespace service source target service_uid \
     restore_sha restore_revision source_prefix target_prefix <"$state_file"
   [[ "$kind" == "HEADER" && "$format" == "kubebrain.restore-cutover.state.v1" &&

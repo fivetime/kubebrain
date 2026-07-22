@@ -34,6 +34,16 @@ func TestPostRestoreAuditOperationRejectsInvalidReceipt(t *testing.T) {
 	require.NotContains(t, log, "--action succeed")
 }
 
+func TestPostRestoreAuditOperationRejectsNonCanonicalCutoverState(t *testing.T) {
+	f := newOperationRunnerFixture(t)
+	path := filepath.Join(f.dir, "cutover.state")
+	require.NoError(t, os.WriteFile(path, append(mustRead(t, path), []byte("UNKNOWN\trow\n")...), 0o600))
+	f.run(t, false, "", "invalid receipt")
+	log := f.log(t)
+	require.Contains(t, log, "--action retry")
+	require.NotContains(t, log, "--action succeed")
+}
+
 func TestPostRestoreAuditOperationRequeuesFailures(t *testing.T) {
 	f := newOperationRunnerFixture(t)
 	f.run(t, false, "AUDIT_FAIL=true", "failed and was requeued")
@@ -72,9 +82,7 @@ func newOperationRunnerFixture(t *testing.T) *operationRunnerFixture {
 	parameters := filepath.Join(dir, "parameters.json")
 	receipt := filepath.Join(dir, "receipt.json")
 	cutoverState := filepath.Join(dir, "cutover.state")
-	require.NoError(t, os.WriteFile(cutoverState, []byte(
-		"HEADER\tkubebrain.restore-cutover.state.v1\tinstance-a\tcutover-1\tns-a\tkubebrain\tsource\ttarget\tuid-service\t"+operationAuditArtifactSHA256+"\t42\t/registry\t/restored\n",
-	), 0o600))
+	require.NoError(t, os.WriteFile(cutoverState, []byte(operationAuditCutoverState()), 0o600))
 	require.NoError(t, os.WriteFile(parameters, []byte(fmt.Sprintf(`{
 	  "state_dir":%q,"cutover_state_input":%q,"cutover_receipt_input":%q,
 	  "service_namespace":"ns-a","service_name":"kubebrain","target_instance":"target",
@@ -120,6 +128,15 @@ chmod 600 "$RECEIPT_OUTPUT"
 			"MANAGED_PARAMETERS=" + parameters,
 		},
 	}
+}
+
+func operationAuditCutoverState() string {
+	return "HEADER\tkubebrain.restore-cutover.state.v1\tinstance-a\tcutover-1\tns-a\tkubebrain\tsource\ttarget\tuid-service\t" + operationAuditArtifactSHA256 + "\t42\t/registry\t/restored\n" +
+		"SERVICE\tuid-service\t10\n" +
+		"POD\tsource\tkb-source-0\tuid-source-0\t0\n" +
+		"POD\tsource\tkb-source-1\tuid-source-1\t0\n" +
+		"POD\ttarget\tkb-target-0\tuid-target-0\t0\n" +
+		"POD\ttarget\tkb-target-1\tuid-target-1\t0\n"
 }
 
 func (f *operationRunnerFixture) run(t *testing.T, ok bool, extra string, outputs ...string) {
