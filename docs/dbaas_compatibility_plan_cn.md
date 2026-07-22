@@ -10077,6 +10077,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `HashedPassword`，空哈希保持不可认证；常规非空密码变更仍生成 bcrypt。回归：
   `go test ./pkg/server/etcd -run TestAuthManagerEmptyPasswordChangeMatchesEtcd -count=1`
   通过。
+- A586 对齐 `Authenticate` 并发 auth revision 复查：
+  对照 `/root/etcd/server/etcdserver/v3_server.go` 的 `Authenticate`，上游在
+  `CheckPassword` 和 token 写入之间发现 auth revision 变化会重试，避免并发密码变更后
+  仍签出旧凭据。KubeBrain 旧的 `authTokenManager.authenticate` 只基于一次
+  auth snapshot 校验密码并签 token；若校验后发生密码变更或角色变更，可能使用旧
+  revision/generation 签发。现在密码校验成功后重新读取 snapshot：revision/enable
+  状态变化时重试；并发密码变更会让旧密码返回 `ErrAuthFailed`，无关 auth mutation
+  会签发包含最新 auth revision 的 token。回归：
+  `go test ./pkg/server/etcd -run TestAuthTokenAuthenticateRetriesAfterAuthRevisionChange -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

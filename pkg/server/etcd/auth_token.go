@@ -45,6 +45,8 @@ type authTokenManager struct {
 	now       func() time.Time
 	ttl       time.Duration
 	jwt       *jwtTokenProvider
+
+	afterPasswordCheck func()
 }
 
 func (m *authTokenManager) configureProvider(spec string) error {
@@ -120,24 +122,36 @@ func (m *authTokenManager) ensureSigningKey(ctx context.Context) ([]byte, error)
 }
 
 func (m *authTokenManager) authenticate(ctx context.Context, username, password string) (string, error) {
-	snapshot, err := m.snapshots.current(ctx)
-	if err != nil {
-		return "", err
+	for {
+		snapshot, err := m.snapshots.current(ctx)
+		if err != nil {
+			return "", err
+		}
+		if !snapshot.Config.Enabled {
+			return "", rpctypes.ErrAuthNotEnabled
+		}
+		user := snapshot.Users[username]
+		if user == nil {
+			return "", rpctypes.ErrAuthFailed
+		}
+		if user.Options != nil && user.Options.NoPassword {
+			return "", errNoPasswordUser
+		}
+		if bcrypt.CompareHashAndPassword(user.Password, []byte(password)) != nil {
+			return "", rpctypes.ErrAuthFailed
+		}
+		if m.afterPasswordCheck != nil {
+			m.afterPasswordCheck()
+		}
+		latest, err := m.snapshots.current(ctx)
+		if err != nil {
+			return "", err
+		}
+		if latest.Config != snapshot.Config {
+			continue
+		}
+		return m.issue(ctx, latest, username)
 	}
-	if !snapshot.Config.Enabled {
-		return "", rpctypes.ErrAuthNotEnabled
-	}
-	user := snapshot.Users[username]
-	if user == nil {
-		return "", rpctypes.ErrAuthFailed
-	}
-	if user.Options != nil && user.Options.NoPassword {
-		return "", errNoPasswordUser
-	}
-	if bcrypt.CompareHashAndPassword(user.Password, []byte(password)) != nil {
-		return "", rpctypes.ErrAuthFailed
-	}
-	return m.issue(ctx, snapshot, username)
 }
 
 // issue creates a normal signed user token after authenticate has checked the

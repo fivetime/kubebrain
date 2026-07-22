@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -72,6 +73,49 @@ func TestAuthTokenUsesPerUserInvalidation(t *testing.T) {
 	tampered := parts[0] + "." + replacement + parts[1][1:]
 	_, err = tokens.verify(ctx, tampered)
 	require.ErrorIs(t, err, rpctypes.ErrInvalidAuthToken)
+}
+
+func TestAuthTokenAuthenticateRetriesAfterAuthRevisionChange(t *testing.T) {
+	t.Run("password change rejects stale credentials", func(t *testing.T) {
+		server, closeFn := newTestRPCServer(t)
+		defer closeFn()
+		manager, tokens := bootstrapAuthForToken(t, server)
+		ctx := context.Background()
+		var once sync.Once
+		tokens.afterPasswordCheck = func() {
+			once.Do(func() {
+				require.NoError(t, manager.userChangePassword(ctx, "root", "changed", ""))
+			})
+		}
+
+		_, err := tokens.authenticate(ctx, "root", "secret")
+		require.ErrorIs(t, err, rpctypes.ErrAuthFailed)
+		token, err := tokens.authenticate(ctx, "root", "changed")
+		require.NoError(t, err)
+		_, err = tokens.verify(ctx, token)
+		require.NoError(t, err)
+	})
+
+	t.Run("unrelated auth mutation signs latest revision", func(t *testing.T) {
+		server, closeFn := newTestRPCServer(t)
+		defer closeFn()
+		manager, tokens := bootstrapAuthForToken(t, server)
+		ctx := context.Background()
+		var once sync.Once
+		tokens.afterPasswordCheck = func() {
+			once.Do(func() {
+				require.NoError(t, manager.roleAdd(ctx, "reader"))
+			})
+		}
+
+		token, err := tokens.authenticate(ctx, "root", "secret")
+		require.NoError(t, err)
+		claims, err := tokens.verify(ctx, token)
+		require.NoError(t, err)
+		snapshot, err := tokens.snapshots.current(ctx)
+		require.NoError(t, err)
+		require.Equal(t, snapshot.Config.Revision, claims.Revision)
+	})
 }
 
 func TestAuthTokenRejectsSignedUnknownOrTrailingClaims(t *testing.T) {
