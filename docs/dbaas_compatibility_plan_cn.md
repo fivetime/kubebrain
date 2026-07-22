@@ -9745,6 +9745,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   state 复读和既有 destroy receipt 复用都要求小写 `[a-f0-9]{64}`；fixture 改用真实
   SHA-256 形状，并覆盖 logical-status 返回短 digest 时拒绝 prepare。回归：
   `go test ./hack/production -run 'TestDestroyInstance' -count=10 -timeout=120s` 通过。
+- A552 收紧 Backup operation object receipt 成功门禁：
+  `run-backup-operation.sh` 旧逻辑在 `OBJECT_COMMAND` 返回成功后只要求
+  `receipt_output` 文件存在，就把该文件 SHA-256 作为 operation 成功 receipt 提交；
+  测试 fake 甚至只写 `{"format":"kubebrain.object-backup.receipt.v1"}`。现在 succeed 前
+  重新读取本地 logical artifact status，并要求 `kubebrain.object-backup.receipt.v1`
+  精确绑定 instance、backup_id、object store、bucket/key、artifact format/SHA/revision、
+  created_at、records、leases、object bytes、retention 和 remote verification；非法
+  receipt 会 requeue，不会标记 operation 成功。回归：
+  `go test ./hack/production -run 'TestBackupOperation' -count=10 -timeout=180s` 通过。
 
 ### P2：运维兼容和长期验证
 

@@ -12,6 +12,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+const backupArtifactSHA256 = "abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd"
+
 func TestBackupOperationCompletesProtectedUpload(t *testing.T) {
 	f := newBackupRunnerFixture(t, false)
 	f.run(t, true, "")
@@ -23,6 +25,14 @@ func TestBackupOperationCompletesProtectedUpload(t *testing.T) {
 	require.Contains(t, log, "--namespace tenant-a-operations --action succeed")
 	require.NotContains(t, log, "--namespace ops --namespace tenant-a-operations")
 	require.FileExists(t, f.receipt)
+}
+
+func TestBackupOperationRejectsInvalidObjectReceipt(t *testing.T) {
+	f := newBackupRunnerFixture(t, false)
+	f.run(t, false, "INVALID_OBJECT_RECEIPT=true", "invalid object receipt")
+	log := f.log(t)
+	require.Contains(t, log, "--action retry")
+	require.NotContains(t, log, "--action succeed")
 }
 
 func TestBackupOperationReusesExistingArtifact(t *testing.T) {
@@ -116,6 +126,7 @@ printf 'artifact\n' >"$OUTPUT"
 set -euo pipefail
 printf 'status\n' >>"$FAKE_DIR/actions.log"
 [[ -f "$INPUT" ]]
+printf '{"format":"kubebrain.logical.v2","prefix":"/registry","revision":42,"created_at_unix":100,"records":2,"leases":1,"sha256":"`+backupArtifactSHA256+`"}\n'
 `)
 	objectCommand := filepath.Join(dir, "object")
 	writeTrafficExecutable(t, objectCommand, `#!/usr/bin/env bash
@@ -123,7 +134,11 @@ set -euo pipefail
 printf 'object\n' >>"$FAKE_DIR/actions.log"
 [[ "${OBJECT_FAIL:-false}" != true ]] || exit 9
 sleep "${OBJECT_SLEEP:-0}"
-printf '{"format":"kubebrain.object-backup.receipt.v1"}\n' >"$RECEIPT_OUTPUT"
+artifact_sha="`+backupArtifactSHA256+`"
+[[ "${INVALID_OBJECT_RECEIPT:-false}" != true ]] || artifact_sha=abc123
+object_bytes="$(wc -c <"$INPUT" | tr -d ' ')"
+printf '{"format":"kubebrain.object-backup.receipt.v1","instance":"%s","backup_id":"%s","object_store_id":"%s","bucket":"%s","object_key":"%s","version_id":"version-1","artifact_format":"kubebrain.logical.v2","artifact_sha256":"%s","snapshot_revision":42,"created_at_unix":100,"records":2,"leases":1,"object_bytes":%s,"retention_mode":"%s","retain_until_unix":%s,"remote_verified":true,"uploaded_at_unix":1000}\n' \
+  "$INSTANCE" "$BACKUP_ID" "$OBJECT_STORE_ID" "$S3_BUCKET" "$S3_OBJECT_KEY" "$artifact_sha" "$object_bytes" "$RETENTION_MODE" "$RETAIN_UNTIL_UNIX" >"$RECEIPT_OUTPUT"
 chmod 600 "$RECEIPT_OUTPUT"
 `)
 	return &backupRunnerFixture{

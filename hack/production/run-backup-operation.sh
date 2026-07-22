@@ -127,6 +127,45 @@ run_backup() {
     AWS_REGION="$aws_region" RETENTION_MODE="$retention_mode" RETAIN_UNTIL_UNIX="$retain_until" \
     EXPECTED_PREFIX="$prefix" MIN_RECORDS="$min_records" MAX_AGE_SECONDS="$max_age" \
     RECEIPT_OUTPUT="$receipt_output" "$OBJECT_COMMAND" >/dev/null
+  validate_object_receipt ||
+    { echo "backup workflow produced an invalid object receipt" >&2; return 1; }
+}
+
+validate_object_receipt() {
+  local artifact_status status_fields artifact_format artifact_sha snapshot_revision created_at records leases artifact_bytes
+  artifact_status="$(INPUT="$artifact_output" EXPECTED_PREFIX="$prefix" MIN_RECORDS="$min_records" \
+    MAX_AGE_SECONDS="$max_age" "$STATUS_COMMAND")"
+  status_fields="$("$JQ" -er --arg prefix "$prefix" --argjson min_records "$min_records" '
+    select(keys == ["created_at_unix","format","leases","prefix","records","revision","sha256"] and
+    .format == "kubebrain.logical.v2" and .prefix == $prefix and
+    (.sha256 | type == "string" and test("^[a-f0-9]{64}$")) and
+    (.revision | type == "number" and . > 0 and . == floor) and
+    (.created_at_unix | type == "number" and . > 0 and . == floor) and
+    (.records | type == "number" and . >= $min_records and . == floor) and
+    (.leases | type == "number" and . >= 0 and . == floor)) |
+    [.format,.sha256,(.revision|tostring),(.created_at_unix|tostring),(.records|tostring),(.leases|tostring)] | @tsv' \
+    <<<"$artifact_status")"
+  IFS=$'\t' read -r artifact_format artifact_sha snapshot_revision created_at records leases <<<"$status_fields"
+  artifact_bytes="$(wc -c <"$artifact_output" | tr -d ' ')"
+  "$JQ" -e --arg instance "$instance" --arg backup "$backup_id" \
+    --arg store "$object_store_id" --arg bucket "$s3_bucket" --arg key "$s3_object_key" \
+    --arg artifact_format "$artifact_format" --arg artifact_sha "$artifact_sha" \
+    --arg retention "$retention_mode" --argjson revision "$snapshot_revision" \
+    --argjson created "$created_at" --argjson records "$records" --argjson leases "$leases" \
+    --argjson object_bytes "$artifact_bytes" --argjson retain_until "$retain_until" '
+    select(keys == ["artifact_format","artifact_sha256","backup_id","bucket","created_at_unix","format","instance","leases","object_bytes","object_key","object_store_id","records","remote_verified","retain_until_unix","retention_mode","snapshot_revision","uploaded_at_unix","version_id"] and
+    .format == "kubebrain.object-backup.receipt.v1" and
+    .instance == $instance and .backup_id == $backup and .object_store_id == $store and
+    .bucket == $bucket and .object_key == $key and
+    (.version_id | type == "string" and length > 0) and
+    .artifact_format == $artifact_format and
+    (.artifact_sha256 | type == "string" and test("^[a-f0-9]{64}$")) and
+    .artifact_sha256 == $artifact_sha and .snapshot_revision == $revision and
+    .created_at_unix == $created and .records == $records and .leases == $leases and
+    .object_bytes == $object_bytes and .retention_mode == $retention and
+    .retain_until_unix == $retain_until and .remote_verified == true and
+    (.uploaded_at_unix | type == "number" and . > 0 and . == floor) and
+    .retain_until_unix > .uploaded_at_unix)' "$receipt_output" >/dev/null
 }
 
 child=0
