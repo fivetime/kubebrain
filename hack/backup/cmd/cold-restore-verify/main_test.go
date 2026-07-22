@@ -86,6 +86,18 @@ func TestValidateReceiptChain(t *testing.T) {
 }
 
 func TestValidateRestoreManifestBinding(t *testing.T) {
+	snapshot := snapshotReceipt{OperationID: "restore-test"}
+	snapshot.Inventory.VolumeSnapshotClass.Driver = "csi.example.test"
+	snapshot.Inventory.Storage.Namespace = "tidb-cluster"
+	snapshot.Inventory.Storage.TidbCluster = "kb"
+	snapshot.Inventory.Storage.UID = "uid-tidb"
+	snapshot.Inventory.Storage.ClusterID = "12345"
+	snapshot.Snapshots = append(snapshot.Snapshots, struct {
+		SourcePVC      string `json:"source_pvc"`
+		Component      string `json:"component"`
+		SnapshotHandle string `json:"snapshot_handle"`
+	}{SourcePVC: "pd-kb-pd-0", Component: "pd", SnapshotHandle: "handle-pd-0"})
+	objectName := restoreManifestObjectName(snapshot.OperationID, "pd-kb-pd-0")
 	restore := restoreReceipt{}
 	restore.RestoreManifest.Format = "kubernetes-list.canonical-json.v1"
 	restore.RestoreManifest.ItemCount = 4
@@ -97,10 +109,51 @@ func TestValidateRestoreManifestBinding(t *testing.T) {
 		"apiVersion": "v1",
 		"kind":       "List",
 		"items": []any{
-			map[string]any{"kind": "VolumeSnapshotContent"},
-			map[string]any{"kind": "VolumeSnapshot"},
-			map[string]any{"kind": "PersistentVolumeClaim"},
-			map[string]any{"kind": "TidbCluster"},
+			map[string]any{
+				"kind": "VolumeSnapshotContent",
+				"metadata": map[string]any{
+					"name": objectName,
+				},
+				"spec": map[string]any{
+					"deletionPolicy":          "Retain",
+					"driver":                  "csi.example.test",
+					"volumeSnapshotClassName": "target-snapshots",
+					"source":                  map[string]any{"snapshotHandle": "handle-pd-0"},
+					"volumeSnapshotRef": map[string]any{
+						"name": objectName, "namespace": "tidb-cluster",
+					},
+				},
+			},
+			map[string]any{
+				"kind": "VolumeSnapshot",
+				"metadata": map[string]any{
+					"name": objectName, "namespace": "tidb-cluster",
+				},
+				"spec": map[string]any{
+					"source": map[string]any{"volumeSnapshotContentName": objectName},
+				},
+			},
+			map[string]any{
+				"kind": "PersistentVolumeClaim",
+				"metadata": map[string]any{
+					"name": "pd-kb-pd-0", "namespace": "tidb-cluster",
+					"labels": map[string]any{"app.kubernetes.io/component": "pd"},
+				},
+				"spec": map[string]any{
+					"dataSource": map[string]any{"kind": "VolumeSnapshot", "name": objectName},
+				},
+			},
+			map[string]any{
+				"kind": "TidbCluster",
+				"metadata": map[string]any{
+					"name": "kb", "namespace": "tidb-cluster",
+					"annotations": map[string]any{
+						"kubebrain.io/source-cluster-id":      "12345",
+						"kubebrain.io/source-tidbcluster-uid": "uid-tidb",
+					},
+				},
+				"spec": map[string]any{"paused": true},
+			},
 		},
 	}
 	canonical, err := json.Marshal(manifest)
@@ -108,12 +161,32 @@ func TestValidateRestoreManifestBinding(t *testing.T) {
 	restore.RestoreManifest.SHA256 = digest(canonical)
 	pretty, err := json.MarshalIndent(manifest, "", "  ")
 	require.NoError(t, err)
-	require.NoError(t, validateRestoreManifestBinding(pretty, restore))
+	require.NoError(t, validateRestoreManifestBinding(pretty, restore, snapshot))
 
 	manifest["items"].([]any)[3] = map[string]any{"kind": "ConfigMap"}
 	tampered, err := json.Marshal(manifest)
 	require.NoError(t, err)
-	require.ErrorContains(t, validateRestoreManifestBinding(tampered, restore), "does not match")
+	require.ErrorContains(t, validateRestoreManifestBinding(tampered, restore, snapshot), "does not match")
+
+	manifest = map[string]any{}
+	require.NoError(t, json.Unmarshal(canonical, &manifest))
+	vsc := manifest["items"].([]any)[0].(map[string]any)
+	vsc["spec"].(map[string]any)["source"].(map[string]any)["snapshotHandle"] = "other-handle"
+	tampered, err = json.Marshal(manifest)
+	require.NoError(t, err)
+	restore.RestoreManifest.SHA256 = digest(tampered)
+	require.ErrorContains(t, validateRestoreManifestBinding(tampered, restore, snapshot), "VolumeSnapshotContent")
+
+	manifest = map[string]any{}
+	require.NoError(t, json.Unmarshal(canonical, &manifest))
+	items := manifest["items"].([]any)
+	manifest["items"] = append(items, items[0])
+	tampered, err = json.Marshal(manifest)
+	require.NoError(t, err)
+	restore.RestoreManifest.SHA256 = digest(tampered)
+	restore.RestoreManifest.ItemCount = 5
+	restore.RestoreManifest.VolumeSnapshotContents = 2
+	require.ErrorContains(t, validateRestoreManifestBinding(tampered, restore, snapshot), "cover every")
 }
 
 func TestWriteAtomicSemanticReceipt(t *testing.T) {

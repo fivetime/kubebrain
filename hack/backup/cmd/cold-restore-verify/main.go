@@ -28,6 +28,12 @@ type expectedKV struct {
 	version, lease              int64
 }
 
+type restoreManifestSnapshotMapping struct {
+	component string
+	handle    string
+	name      string
+}
+
 type restoreReceipt struct {
 	Format           string `json:"format"`
 	OperationID      string `json:"operation_id"`
@@ -51,7 +57,23 @@ type restoreReceipt struct {
 type snapshotReceipt struct {
 	Format      string `json:"format"`
 	OperationID string `json:"operation_id"`
-	Witness     struct {
+	Inventory   struct {
+		VolumeSnapshotClass struct {
+			Driver string `json:"driver"`
+		} `json:"volume_snapshot_class"`
+		Storage struct {
+			Namespace   string `json:"namespace"`
+			TidbCluster string `json:"tidb_cluster"`
+			UID         string `json:"uid"`
+			ClusterID   string `json:"cluster_id"`
+		} `json:"storage"`
+	} `json:"inventory"`
+	Snapshots []struct {
+		SourcePVC      string `json:"source_pvc"`
+		Component      string `json:"component"`
+		SnapshotHandle string `json:"snapshot_handle"`
+	} `json:"snapshots"`
+	Witness struct {
 		Format     string `json:"format"`
 		Prefix     string `json:"prefix"`
 		Revision   int64  `json:"revision"`
@@ -129,11 +151,11 @@ func main() {
 	if err != nil {
 		fatal(err)
 	}
-	_, restore, err := validateReceiptChain(status, witnessData, snapshotData, restoreData)
+	snapshotRecord, restore, err := validateReceiptChain(status, witnessData, snapshotData, restoreData)
 	if err != nil {
 		fatal(err)
 	}
-	if err := validateRestoreManifestBinding(restoreManifestData, restore); err != nil {
+	if err := validateRestoreManifestBinding(restoreManifestData, restore, snapshotRecord); err != nil {
 		fatal(err)
 	}
 
@@ -226,7 +248,7 @@ func validateReceiptChain(status backupfile.Status, witnessData, snapshotData, r
 	return snapshotRecord, restore, nil
 }
 
-func validateRestoreManifestBinding(data []byte, restore restoreReceipt) error {
+func validateRestoreManifestBinding(data []byte, restore restoreReceipt, snapshotRecord snapshotReceipt) error {
 	var value any
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	if err := decoder.Decode(&value); err != nil {
@@ -268,7 +290,131 @@ func validateRestoreManifestBinding(data []byte, restore restoreReceipt) error {
 		counts["TidbCluster"] != restore.RestoreManifest.TidbClusters {
 		return errors.New("restore manifest does not match restore receipt binding")
 	}
+	return validateRestoreManifestContent(items, snapshotRecord)
+}
+
+func validateRestoreManifestContent(items []any, snapshotRecord snapshotReceipt) error {
+	if snapshotRecord.OperationID == "" || snapshotRecord.Inventory.Storage.Namespace == "" ||
+		snapshotRecord.Inventory.Storage.TidbCluster == "" ||
+		snapshotRecord.Inventory.Storage.UID == "" ||
+		snapshotRecord.Inventory.Storage.ClusterID == "" ||
+		snapshotRecord.Inventory.VolumeSnapshotClass.Driver == "" ||
+		len(snapshotRecord.Snapshots) == 0 {
+		return errors.New("snapshot receipt lacks restore manifest identity")
+	}
+	expected := make(map[string]restoreManifestSnapshotMapping, len(snapshotRecord.Snapshots))
+	for _, snapshot := range snapshotRecord.Snapshots {
+		if snapshot.SourcePVC == "" || snapshot.Component == "" || snapshot.SnapshotHandle == "" {
+			return errors.New("snapshot receipt contains incomplete snapshot mapping")
+		}
+		if _, exists := expected[snapshot.SourcePVC]; exists {
+			return errors.New("snapshot receipt contains duplicate source PVC")
+		}
+		expected[snapshot.SourcePVC] = restoreManifestSnapshotMapping{
+			component: snapshot.Component,
+			handle:    snapshot.SnapshotHandle,
+			name:      restoreManifestObjectName(snapshotRecord.OperationID, snapshot.SourcePVC),
+		}
+	}
+	seenVSC := map[string]struct{}{}
+	seenVS := map[string]struct{}{}
+	seenPVC := map[string]struct{}{}
+	vscItems := 0
+	vsItems := 0
+	pvcItems := 0
+	tidbClusters := 0
+	for _, raw := range items {
+		item, ok := raw.(map[string]any)
+		if !ok {
+			return errors.New("restore manifest contains a non-object item")
+		}
+		kind, _ := item["kind"].(string)
+		metadata, _ := item["metadata"].(map[string]any)
+		spec, _ := item["spec"].(map[string]any)
+		switch kind {
+		case "VolumeSnapshotContent":
+			vscItems++
+			sourcePVC, mapping, err := restoreManifestSourceFromName(metadata, expected)
+			if err != nil {
+				return err
+			}
+			if spec["deletionPolicy"] != "Retain" ||
+				spec["driver"] != snapshotRecord.Inventory.VolumeSnapshotClass.Driver ||
+				nestedString(spec, "source", "snapshotHandle") != mapping.handle ||
+				nestedString(spec, "volumeSnapshotRef", "name") != mapping.name ||
+				nestedString(spec, "volumeSnapshotRef", "namespace") != snapshotRecord.Inventory.Storage.Namespace {
+				return errors.New("restore manifest VolumeSnapshotContent does not match snapshot receipt")
+			}
+			seenVSC[sourcePVC] = struct{}{}
+		case "VolumeSnapshot":
+			vsItems++
+			sourcePVC, mapping, err := restoreManifestSourceFromName(metadata, expected)
+			if err != nil {
+				return err
+			}
+			if metadata["namespace"] != snapshotRecord.Inventory.Storage.Namespace ||
+				nestedString(spec, "source", "volumeSnapshotContentName") != mapping.name {
+				return errors.New("restore manifest VolumeSnapshot does not match snapshot receipt")
+			}
+			seenVS[sourcePVC] = struct{}{}
+		case "PersistentVolumeClaim":
+			pvcItems++
+			name, _ := metadata["name"].(string)
+			mapping, exists := expected[name]
+			if !exists {
+				return errors.New("restore manifest PVC does not match snapshot receipt")
+			}
+			labels, _ := metadata["labels"].(map[string]any)
+			if metadata["namespace"] != snapshotRecord.Inventory.Storage.Namespace ||
+				labels["app.kubernetes.io/component"] != mapping.component ||
+				nestedString(spec, "dataSource", "name") != mapping.name ||
+				nestedString(spec, "dataSource", "kind") != "VolumeSnapshot" {
+				return errors.New("restore manifest PVC does not match snapshot receipt")
+			}
+			seenPVC[name] = struct{}{}
+		case "TidbCluster":
+			tidbClusters++
+			annotations, _ := metadata["annotations"].(map[string]any)
+			if metadata["name"] != snapshotRecord.Inventory.Storage.TidbCluster ||
+				metadata["namespace"] != snapshotRecord.Inventory.Storage.Namespace ||
+				annotations["kubebrain.io/source-cluster-id"] != snapshotRecord.Inventory.Storage.ClusterID ||
+				annotations["kubebrain.io/source-tidbcluster-uid"] != snapshotRecord.Inventory.Storage.UID ||
+				spec["paused"] != true {
+				return errors.New("restore manifest TidbCluster does not match snapshot receipt")
+			}
+		}
+	}
+	if tidbClusters != 1 || vscItems != len(expected) || vsItems != len(expected) ||
+		pvcItems != len(expected) || len(seenVSC) != len(expected) ||
+		len(seenVS) != len(expected) || len(seenPVC) != len(expected) {
+		return errors.New("restore manifest does not cover every snapshot receipt PVC")
+	}
 	return nil
+}
+
+func restoreManifestSourceFromName(metadata map[string]any, expected map[string]restoreManifestSnapshotMapping) (string, restoreManifestSnapshotMapping, error) {
+	name, _ := metadata["name"].(string)
+	for sourcePVC, mapping := range expected {
+		if name == mapping.name {
+			return sourcePVC, mapping, nil
+		}
+	}
+	return "", restoreManifestSnapshotMapping{}, errors.New("restore manifest snapshot object name does not match snapshot receipt")
+}
+
+func nestedString(parent map[string]any, first, second string) string {
+	child, _ := parent[first].(map[string]any)
+	value, _ := child[second].(string)
+	return value
+}
+
+func restoreManifestObjectName(operation, pvcName string) string {
+	sum := sha256.Sum256([]byte(operation + "\x00" + pvcName))
+	prefix := bytes.Trim([]byte(operation), "-")
+	if len(prefix) > 40 {
+		prefix = prefix[:40]
+	}
+	return "kb-restore-" + string(prefix) + "-" + hex.EncodeToString(sum[:6])
 }
 
 func loadWitness(verified *backupfile.Verified) (map[string]expectedKV, map[int64]record.Lease, map[int64][]string, error) {

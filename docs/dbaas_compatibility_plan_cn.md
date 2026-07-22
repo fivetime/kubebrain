@@ -8036,6 +8036,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   前失败。`go test ./hack/backup/... ./hack/production`、`bash -n` 和
   `go vet ./hack/backup/... ./hack/production` 通过。该项使 final semantic receipt 能直接追溯到
   已审核的 manifest digest，仍不声明 cold full restore 或 PITR 已完成。
+- **DBaaS A461 cold restore manifest content binding（2026-07-22）**：
+  继续审计 A460 后发现 semantic verifier 虽已读取 manifest 并核对 digest/计数，但尚未独立验证
+  manifest 内容是否来自 snapshot receipt。现 verifier 会从 snapshot receipt 读取 source PVC、
+  component、snapshot handle、CSI driver、source namespace/TidbCluster UID/cluster ID，并按 renderer
+  的 `operation_id + source_pvc` 命名规则重新推导恢复对象名；随后逐项要求
+  VolumeSnapshotContent 的 retained deletion policy、driver、snapshotHandle 和 snapshot ref，
+  VolumeSnapshot 的 namespace/content ref，PVC 的 source PVC 名、component label 和 dataSource，
+  以及 TidbCluster 的 name/namespace/source annotations/paused=true 全部匹配 snapshot receipt。
+  即使攻击者同步更新 restore receipt 中的 manifest digest，替换 snapshotHandle、PVC component
+  或 TidbCluster 来源身份也会在访问恢复 endpoint 前失败。`go test ./hack/backup/... ./hack/production`、
+  `bash -n` 和 `go vet ./hack/backup/... ./hack/production` 通过。该项进一步收紧 cold restore
+  语义验证的制品链，仍不关闭真实 CSI 隔离恢复或 PITR 缺口。
 
 - **Maintenance A398 persistent CORRUPT alarm gate（2026-07-21）**：
   对照 `/root/etcd/server/etcdserver/apply/uber_applier.go`、`apply/corrupt.go`、
