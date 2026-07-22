@@ -13,6 +13,7 @@ ENDPOINT="${ENDPOINT:-}"
 KUBECTL="${KUBECTL:-kubectl}"
 ETCDCTL="${ETCDCTL:-etcdctl}"
 OPENSSL="${OPENSSL:-openssl}"
+JQ="${JQ:-jq}"
 KUBE_CONTEXT="${KUBE_CONTEXT:-}"
 KUBECONFIG_PATH="${KUBECONFIG_PATH:-}"
 
@@ -160,19 +161,27 @@ atomic_publish() {
   sync -f "$(dirname "$destination")"
 }
 
+require_jq() {
+  command -v "$JQ" >/dev/null || { echo "jq is required" >&2; exit 2; }
+}
+
 validate_existing_receipt() {
   local old_fingerprint="$1" new_fingerprint="$2"
-  [[ "$(wc -l <"$receipt_file" | tr -d ' ')" == "1" ]] &&
-    grep -Fq '"format":"kubebrain.certificate-rotation.receipt.v1"' "$receipt_file" &&
-    grep -Fq "\"instance\":\"${INSTANCE}\"" "$receipt_file" &&
-    grep -Fq "\"rotation_id\":\"${ROTATION_ID}\"" "$receipt_file" &&
-    grep -Fq "\"endpoint\":\"${ENDPOINT}\"" "$receipt_file" &&
-    grep -Fq "\"replicas\":${EXPECTED_REPLICAS}" "$receipt_file" &&
-    grep -Fq "\"old_certificate_sha256\":\"${old_fingerprint}\"" "$receipt_file" &&
-    grep -Fq "\"new_certificate_sha256\":\"${new_fingerprint}\"" "$receipt_file" &&
-    grep -Fq '"pods_unchanged":true' "$receipt_file" &&
-    grep -Fq '"old_certificate_rejected":true' "$receipt_file" &&
-    grep -Eq '"completed_at_unix":[1-9][0-9]*}' "$receipt_file"
+  "$JQ" -e \
+    --arg instance "$INSTANCE" \
+    --arg rotation "$ROTATION_ID" \
+    --arg endpoint "$ENDPOINT" \
+    --arg old "$old_fingerprint" \
+    --arg new "$new_fingerprint" \
+    --argjson replicas "$EXPECTED_REPLICAS" \
+    'keys == ["completed_at_unix","endpoint","format","instance","new_certificate_sha256","old_certificate_rejected","old_certificate_sha256","pods_unchanged","replicas","rotation_id"] and
+     .format == "kubebrain.certificate-rotation.receipt.v1" and
+     .instance == $instance and .rotation_id == $rotation and
+     .endpoint == $endpoint and .replicas == $replicas and
+     .old_certificate_sha256 == $old and .new_certificate_sha256 == $new and
+     .pods_unchanged == true and .old_certificate_rejected == true and
+     (.completed_at_unix | type == "number" and . > 0 and . == floor)' \
+    "$receipt_file" >/dev/null
 }
 
 case "$ACTION" in
@@ -207,6 +216,7 @@ case "$ACTION" in
     read_state_header
     assert_pods_unchanged
     health "$NEW_CACERT" "$NEW_CERT" "$NEW_KEY"
+    require_jq
     if health "$NEW_CACERT" "$OLD_CERT" "$OLD_KEY"; then
       echo "old client certificate is still accepted after CA cutover" >&2
       exit 1
@@ -227,9 +237,19 @@ case "$ACTION" in
     fi
     completed_at="$(date +%s)"
     temporary="$(mktemp "${STATE_DIR}/.${ROTATION_ID}.receipt.XXXXXX")"
-    printf '{"format":"kubebrain.certificate-rotation.receipt.v1","instance":"%s","rotation_id":"%s","endpoint":"%s","replicas":%s,"old_certificate_sha256":"%s","new_certificate_sha256":"%s","pods_unchanged":true,"old_certificate_rejected":true,"completed_at_unix":%s}\n' \
-      "$INSTANCE" "$ROTATION_ID" "$ENDPOINT" "$EXPECTED_REPLICAS" \
-      "$old_fingerprint" "$new_fingerprint" "$completed_at" >"$temporary"
+    "$JQ" -cnS \
+      --arg instance "$INSTANCE" \
+      --arg rotation "$ROTATION_ID" \
+      --arg endpoint "$ENDPOINT" \
+      --arg old "$old_fingerprint" \
+      --arg new "$new_fingerprint" \
+      --argjson replicas "$EXPECTED_REPLICAS" \
+      --argjson completed_at "$completed_at" \
+      '{format:"kubebrain.certificate-rotation.receipt.v1",instance:$instance,
+        rotation_id:$rotation,endpoint:$endpoint,replicas:$replicas,
+        old_certificate_sha256:$old,new_certificate_sha256:$new,
+        pods_unchanged:true,old_certificate_rejected:true,
+        completed_at_unix:$completed_at}' >"$temporary"
     atomic_publish "$temporary" "$receipt_file"
     echo "certificate rotation completion gate passed: instance=${INSTANCE} rotation=${ROTATION_ID} receipt=${receipt_file}"
     ;;

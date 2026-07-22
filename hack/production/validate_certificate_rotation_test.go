@@ -31,6 +31,21 @@ func TestValidateCertificateRotationLifecycle(t *testing.T) {
 	fixture.run(t, "complete", true, "")
 }
 
+func TestValidateCertificateRotationRejectsNestedExistingReceiptFields(t *testing.T) {
+	fixture := newRotationFixture(t)
+	fixture.run(t, "begin", true, "")
+	fixture.run(t, "overlap", true, "")
+
+	receiptPath := filepath.Join(fixture.stateDir, "rotation-1.receipt.json")
+	shadowReceipt := `{"format":"wrong","old_certificate_rejected":false,"shadow":{"format":"kubebrain.certificate-rotation.receipt.v1","instance":"instance-a","rotation_id":"rotation-1","endpoint":"https://instance.example:2379","replicas":3,"old_certificate_sha256":"aa11","new_certificate_sha256":"bb22","pods_unchanged":true,"old_certificate_rejected":true,"completed_at_unix":1}}` + "\n"
+	require.NoError(t, os.WriteFile(receiptPath, []byte(shadowReceipt), 0o600))
+
+	fixture.run(t, "complete", false, "", "existing receipt does not match the completed rotation")
+	data, err := os.ReadFile(receiptPath)
+	require.NoError(t, err)
+	require.Equal(t, shadowReceipt, string(data))
+}
+
 func TestValidateCertificateRotationFailsClosed(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
@@ -130,7 +145,7 @@ case "$file" in
   *) exit 1 ;;
 esac
 `)
-writeExecutable(t, filepath.Join(dir, "etcdctl"), `#!/usr/bin/env bash
+	writeExecutable(t, filepath.Join(dir, "etcdctl"), `#!/usr/bin/env bash
 cert=
 cacert=
 for arg in "$@"; do

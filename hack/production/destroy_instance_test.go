@@ -37,6 +37,22 @@ func TestDestroyInstanceLifecycleIsRetrySafe(t *testing.T) {
 	require.Contains(t, string(deleteLog), "--uid uid-kb-sts")
 }
 
+func TestDestroyInstanceRejectsNestedExistingReceiptFields(t *testing.T) {
+	fixture := newDestroyFixture(t)
+	fixture.run(t, "prepare", true, "")
+	fixture.run(t, "quiesce", true, "")
+	fixture.run(t, "destroy", true, "")
+
+	receiptPath := filepath.Join(fixture.stateDir, "destroy-1.receipt.json")
+	shadowReceipt := `{"format":"wrong","resources_absent":false,"shadow":{"format":"kubebrain.destroy.receipt.v1","instance":"instance-a","operation_id":"destroy-1","kubebrain_namespace":"instance-a","tidb_namespace":"storage-a","tidb_cluster":"kb","backup_sha256":"artifact-sha-256","backup_revision":987654321,"resources_absent":true,"completed_at_unix":1}}` + "\n"
+	require.NoError(t, os.WriteFile(receiptPath, []byte(shadowReceipt), 0o600))
+
+	fixture.run(t, "complete", false, "", "existing destroy receipt does not match the completed operation")
+	data, err := os.ReadFile(receiptPath)
+	require.NoError(t, err)
+	require.Equal(t, shadowReceipt, string(data))
+}
+
 func TestDestroyInstanceFailsClosed(t *testing.T) {
 	for _, tc := range []struct {
 		name       string

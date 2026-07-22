@@ -23,6 +23,7 @@ POLL_INTERVAL_SECONDS="${POLL_INTERVAL_SECONDS:-5}"
 KUBECTL="${KUBECTL:-kubectl}"
 UID_DELETE="${UID_DELETE:-}"
 LOGICAL_STATUS="${LOGICAL_STATUS:-${ROOT_DIR}/hack/backup/logical-status.sh}"
+JQ="${JQ:-jq}"
 KUBE_CONTEXT="${KUBE_CONTEXT:-}"
 KUBECONFIG_PATH="${KUBECONFIG_PATH:-}"
 
@@ -103,6 +104,30 @@ atomic_publish() {
   fi
   rm -f "$temporary"
   sync -f "$(dirname "$destination")"
+}
+
+require_jq() {
+  command -v "$JQ" >/dev/null || { echo "jq is required" >&2; exit 2; }
+}
+
+validate_existing_receipt() {
+  local backup_sha="$1" backup_revision="$2"
+  "$JQ" -e \
+    --arg instance "$INSTANCE" \
+    --arg operation "$OPERATION_ID" \
+    --arg kbns "$KUBEBRAIN_NAMESPACE" \
+    --arg tidbns "$TIDB_NAMESPACE" \
+    --arg tidb "$TIDB_CLUSTER" \
+    --arg backup_sha "$backup_sha" \
+    --argjson backup_revision "$backup_revision" \
+    'keys == ["backup_revision","backup_sha256","completed_at_unix","format","instance","kubebrain_namespace","operation_id","resources_absent","tidb_cluster","tidb_namespace"] and
+     .format == "kubebrain.destroy.receipt.v1" and
+     .instance == $instance and .operation_id == $operation and
+     .kubebrain_namespace == $kbns and .tidb_namespace == $tidbns and
+     .tidb_cluster == $tidb and .backup_sha256 == $backup_sha and
+     .backup_revision == $backup_revision and .resources_absent == true and
+     (.completed_at_unix | type == "number" and . > 0 and . == floor)' \
+    "$receipt_file" >/dev/null
 }
 
 require_confirmation() {
@@ -379,24 +404,25 @@ case "$ACTION" in
     read_header
     validate_remaining_resources false
     wait_all_absent
+    require_jq
     IFS=$'\t' read -r _ _ _ _ _ _ _ _ backup_sha backup_revision <"$state_file"
     completed_at="$(date +%s)"
     temporary="$(mktemp "${STATE_DIR}/.${OPERATION_ID}.receipt.XXXXXX")"
-    printf '{"format":"kubebrain.destroy.receipt.v1","instance":"%s","operation_id":"%s","kubebrain_namespace":"%s","tidb_namespace":"%s","tidb_cluster":"%s","backup_sha256":"%s","backup_revision":%s,"resources_absent":true,"completed_at_unix":%s}\n' \
-      "$INSTANCE" "$OPERATION_ID" "$KUBEBRAIN_NAMESPACE" "$TIDB_NAMESPACE" "$TIDB_CLUSTER" \
-      "$backup_sha" "$backup_revision" "$completed_at" >"$temporary"
+    "$JQ" -cnS \
+      --arg instance "$INSTANCE" \
+      --arg operation "$OPERATION_ID" \
+      --arg kbns "$KUBEBRAIN_NAMESPACE" \
+      --arg tidbns "$TIDB_NAMESPACE" \
+      --arg tidb "$TIDB_CLUSTER" \
+      --arg backup_sha "$backup_sha" \
+      --argjson backup_revision "$backup_revision" \
+      --argjson completed_at "$completed_at" \
+      '{format:"kubebrain.destroy.receipt.v1",instance:$instance,operation_id:$operation,
+        kubebrain_namespace:$kbns,tidb_namespace:$tidbns,tidb_cluster:$tidb,
+        backup_sha256:$backup_sha,backup_revision:$backup_revision,
+        resources_absent:true,completed_at_unix:$completed_at}' >"$temporary"
     if [[ -e "$receipt_file" ]]; then
-      if [[ "$(wc -l <"$receipt_file" | tr -d ' ')" != "1" ]] ||
-        ! grep -Fq '"format":"kubebrain.destroy.receipt.v1"' "$receipt_file" ||
-        ! grep -Fq "\"instance\":\"${INSTANCE}\"" "$receipt_file" ||
-        ! grep -Fq "\"operation_id\":\"${OPERATION_ID}\"" "$receipt_file" ||
-        ! grep -Fq "\"kubebrain_namespace\":\"${KUBEBRAIN_NAMESPACE}\"" "$receipt_file" ||
-        ! grep -Fq "\"tidb_namespace\":\"${TIDB_NAMESPACE}\"" "$receipt_file" ||
-        ! grep -Fq "\"tidb_cluster\":\"${TIDB_CLUSTER}\"" "$receipt_file" ||
-        ! grep -Fq "\"backup_sha256\":\"${backup_sha}\"" "$receipt_file" ||
-        ! grep -Fq "\"backup_revision\":${backup_revision}" "$receipt_file" ||
-        ! grep -Fq '"resources_absent":true' "$receipt_file" ||
-        ! grep -Eq '"completed_at_unix":[1-9][0-9]*}' "$receipt_file"; then
+      if ! validate_existing_receipt "$backup_sha" "$backup_revision"; then
         echo "existing destroy receipt does not match the completed operation" >&2
         rm -f "$temporary"
         exit 1

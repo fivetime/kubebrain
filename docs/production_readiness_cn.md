@@ -408,9 +408,9 @@ client 凭据都能通过 overlap bundle 提交 proposal。`complete` 再次固�
 rotation ID、endpoint、replicas、旧/新证书 SHA-256、完成时间，并明确记录
 `pods_unchanged=true` 和 `old_certificate_rejected=true`。状态与 receipt 使用 0600
 权限、临时文件 `fsync`、不可覆盖 hard-link 和目录同步；同输入重试会重做在线检查并
-复用原 receipt。`STATE_DIR` 和 receipt 必须位于持久、受访问控制的操作记录卷，完成后
-再归档到不可变审计存储。该门禁验证数据面完成条件，不替控制面实现 Secret 发布超时、
-阶段回滚或跨实例任务调度。
+按严格 JSON 顶层字段集合、类型和值复核原 receipt 后复用。`STATE_DIR` 和 receipt
+必须位于持久、受访问控制的操作记录卷，完成后再归档到不可变审计存储。该门禁验证
+数据面完成条件，不替控制面实现 Secret 发布超时、阶段回滚或跨实例任务调度。
 
 ## 实例销毁状态机
 
@@ -466,7 +466,8 @@ KubeBrain StatefulSet 缩到 0，并等待 ready replicas 与实例 Pod 都归�
 不存在，但名称复用立即失败。最终还要求全部固定资源、实例 PVC、PD/TiKV Pod 和
 StatefulSet 均为空。`complete` 重复 absence gate 后原子发布
 `kubebrain.destroy.receipt.v1`，绑定 instance、operation ID、两个 namespace、
-TidbCluster 名、备份 digest/revision 和完成时间；同输入重试复用原 receipt。
+TidbCluster 名、备份 digest/revision 和完成时间；同输入重试会按严格 JSON 顶层字段
+集合、类型和值复核原 receipt 后复用。
 
 脚本刻意不删除 namespace、TLS Secret、外部对象存储 artifact、监控规则或控制面账单
 记录：namespace 可能共享，而审计/备份数据必须按独立保留策略处理。平台只有在 receipt

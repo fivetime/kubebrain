@@ -9619,6 +9619,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./hack/production -run 'Test(BackupOperation|BackupDeletionOperation|CertificateRotationOperation|DestroyOperation|PostRestoreAuditOperation|RestoreCutoverOperation)' -count=1 -timeout=180s`、
   `go test ./hack/production -run 'Test(BackupOperationCompletesProtectedUpload|BackupDeletionOperationCompletesThreeGatesAndRetries|CertificateRotationOperationCompletesLifecycle|DestroyOperationCompletesLifecycle|PostRestoreAuditOperationCompletesAndBindsReceipt|RestoreCutoverOperationCompletesAllPhases)' -count=3 -timeout=120s`
   与 `git diff --check` 通过。
+- A537 收紧 destroy/certificate rotation 幂等 receipt 校验：`destroy-instance.sh`
+  与 `validate-certificate-rotation.sh` 旧逻辑用 `grep`/行数判断已有 receipt 是否可复用，
+  合法 JSON 中的嵌套 shadow 字段也可能包含所有期望文本片段，导致顶层 format 或
+  成功布尔值不匹配的 receipt 被误当成同一完成证据。现在两个脚本在 `complete` 阶段通过
+  `jq` 生成 receipt，并要求已有 receipt 的顶层字段集合、字段类型和字段值全部精确匹配；
+  未知字段、嵌套伪造字段、尾随 JSON 或非正完成时间都会 fail closed。回归覆盖嵌套
+  shadow receipt 被拒绝且原文件不被覆盖；
+  `go test ./hack/production -run 'Test(DestroyInstance|ValidateCertificateRotation)' -count=1 -timeout=120s`
+  与 `git diff --check` 通过。
 
 ### P2：运维兼容和长期验证
 
