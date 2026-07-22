@@ -15,6 +15,7 @@ EXPECTED_QUOTA_BACKEND_BYTES="${EXPECTED_QUOTA_BACKEND_BYTES:-}"
 EXPECTED_ADVERTISE_CLIENT_URLS="${EXPECTED_ADVERTISE_CLIENT_URLS:-}"
 TIDB_NAMESPACE="${TIDB_NAMESPACE:-tidb-cluster}"
 TIDB_CLUSTER="${TIDB_CLUSTER:-kb}"
+EXPECTED_TIDB_CLUSTER_UID="${EXPECTED_TIDB_CLUSTER_UID:-}"
 EXPECTED_PD_REPLICAS="${EXPECTED_PD_REPLICAS:-3}"
 EXPECTED_TIKV_REPLICAS="${EXPECTED_TIKV_REPLICAS:-3}"
 ENDPOINT="${ENDPOINT:-}"
@@ -43,6 +44,10 @@ if [[ -z "$EXPECTED_PD_ADDRS" ]]; then
 fi
 if ! [[ "$EXPECTED_CLUSTER_ID" =~ ^[1-9][0-9]*$ ]]; then
   echo "EXPECTED_CLUSTER_ID is required and must be a positive integer" >&2
+  exit 2
+fi
+if [[ -z "$EXPECTED_TIDB_CLUSTER_UID" ]]; then
+  echo "EXPECTED_TIDB_CLUSTER_UID is required" >&2
   exit 2
 fi
 if [[ -z "$EXPECTED_INITIAL_CLUSTER" ]]; then
@@ -79,10 +84,14 @@ if [[ -n "$KUBE_CONTEXT" ]]; then
 fi
 
 tidb_topology="$("$KUBECTL" "${kubectl_args[@]}" -n "$TIDB_NAMESPACE" get tidbcluster "$TIDB_CLUSTER" \
-  -o 'jsonpath={.spec.pd.replicas}{"\t"}{.spec.tikv.replicas}{"\t"}{.status.clusterID}')"
-IFS=$'\t' read -r actual_pd_replicas actual_tikv_replicas actual_cluster_id <<<"$tidb_topology"
+  -o 'jsonpath={.spec.pd.replicas}{"\t"}{.spec.tikv.replicas}{"\t"}{.status.clusterID}{"\t"}{.metadata.uid}')"
+IFS=$'\t' read -r actual_pd_replicas actual_tikv_replicas actual_cluster_id actual_tidb_cluster_uid <<<"$tidb_topology"
 if [[ "$actual_pd_replicas" != "$EXPECTED_PD_REPLICAS" || "$actual_tikv_replicas" != "$EXPECTED_TIKV_REPLICAS" ]]; then
   echo "TidbCluster topology mismatch: expected PD/TiKV ${EXPECTED_PD_REPLICAS}/${EXPECTED_TIKV_REPLICAS}, got ${actual_pd_replicas:-missing}/${actual_tikv_replicas:-missing}" >&2
+  exit 1
+fi
+if [[ "$actual_tidb_cluster_uid" != "$EXPECTED_TIDB_CLUSTER_UID" ]]; then
+  echo "TidbCluster resource identity mismatch: expected UID ${EXPECTED_TIDB_CLUSTER_UID}, got ${actual_tidb_cluster_uid:-missing}" >&2
   exit 1
 fi
 if [[ "$actual_cluster_id" != "$EXPECTED_CLUSTER_ID" ]]; then
@@ -324,4 +333,4 @@ for advertised_url in "${advertised_client_urls[@]}"; do
   fi
 done
 
-echo "KubeBrain instance release gate passed: endpoint=${ENDPOINT} image=${EXPECTED_IMAGE} keyspace=${EXPECTED_KEYSPACE} pd_addrs=${EXPECTED_PD_ADDRS} cluster_id=${EXPECTED_CLUSTER_ID} initial_cluster=${EXPECTED_INITIAL_CLUSTER} quota=${EXPECTED_QUOTA_BACKEND_BYTES} advertise_client_urls=${EXPECTED_ADVERTISE_CLIENT_URLS} replicas=${EXPECTED_KUBEBRAIN_REPLICAS} PD/TiKV=${EXPECTED_PD_REPLICAS}/${EXPECTED_TIKV_REPLICAS}"
+echo "KubeBrain instance release gate passed: endpoint=${ENDPOINT} image=${EXPECTED_IMAGE} keyspace=${EXPECTED_KEYSPACE} pd_addrs=${EXPECTED_PD_ADDRS} tidb_cluster_uid=${EXPECTED_TIDB_CLUSTER_UID} cluster_id=${EXPECTED_CLUSTER_ID} initial_cluster=${EXPECTED_INITIAL_CLUSTER} quota=${EXPECTED_QUOTA_BACKEND_BYTES} advertise_client_urls=${EXPECTED_ADVERTISE_CLIENT_URLS} replicas=${EXPECTED_KUBEBRAIN_REPLICAS} PD/TiKV=${EXPECTED_PD_REPLICAS}/${EXPECTED_TIKV_REPLICAS}"

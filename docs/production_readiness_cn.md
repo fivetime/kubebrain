@@ -321,6 +321,7 @@ KUBEBRAIN_NAMESPACE=kubebrain-instance-a \
 EXPECTED_IMAGE=registry.example/kubebrain@sha256:<digest> \
 EXPECTED_KEYSPACE=instance-a \
 EXPECTED_PD_ADDRS=kb-pd.kubebrain-storage-a.svc:2379 \
+EXPECTED_TIDB_CLUSTER_UID=<immutable-tidbcluster-uid> \
 EXPECTED_CLUSTER_ID=<immutable-pd-cluster-id> \
 EXPECTED_INITIAL_CLUSTER=kubebrain-0=https://kubebrain-0.kubebrain-peer.kubebrain-system.svc.cluster.local:3380,kubebrain-1=https://kubebrain-1.kubebrain-peer.kubebrain-system.svc.cluster.local:3380,kubebrain-2=https://kubebrain-2.kubebrain-peer.kubebrain-system.svc.cluster.local:3380 \
 EXPECTED_QUOTA_BACKEND_BYTES=429496729600 \
@@ -338,8 +339,9 @@ ETCDCTL_KEY=/run/secrets/client.key \
 ```
 
 门禁先要求 TidbCluster `Ready=True` 且 PD/TiKV StatefulSet generation、ready/updated
-replicas 和 revision 全部收敛，再校验期望 PD/TiKV 数量；TidbCluster status 的非零
-cluster ID 必须与实例创建 receipt 中的 immutable `EXPECTED_CLUSTER_ID` 一致；随后要求 KubeBrain
+replicas 和 revision 全部收敛，再校验期望 PD/TiKV 数量；TidbCluster metadata UID 和 status
+中的非零 cluster ID 必须分别与实例创建 receipt 中的 immutable
+`EXPECTED_TIDB_CLUSTER_UID`/`EXPECTED_CLUSTER_ID` 一致；随后要求 KubeBrain
 StatefulSet observed generation、ready/updated replicas、revision、精确 image，以及 Pod
 template 中唯一的 `--keyspace`、`--pd-addrs`、`--initial-cluster`、`--quota-backend-bytes`
 和 `--advertise-client-urls` 全部匹配，随后
@@ -348,9 +350,9 @@ template 中唯一的 `--keyspace`、`--pd-addrs`、`--initial-cluster`、`--quo
 URL 集合与期望完全相同；最后通过官方
 `etcdctl endpoint health` 对 bootstrap `ENDPOINT` 和每个 advertised client URL 分别提交
 线性化 proposal。缺少 `EXPECTED_IMAGE`/
-`EXPECTED_KEYSPACE`/`EXPECTED_PD_ADDRS`/`EXPECTED_CLUSTER_ID`/`EXPECTED_INITIAL_CLUSTER`/`EXPECTED_QUOTA_BACKEND_BYTES`/`EXPECTED_ADVERTISE_CLIENT_URLS`/`ENDPOINT`、任一状态
+`EXPECTED_KEYSPACE`/`EXPECTED_PD_ADDRS`/`EXPECTED_TIDB_CLUSTER_UID`/`EXPECTED_CLUSTER_ID`/`EXPECTED_INITIAL_CLUSTER`/`EXPECTED_QUOTA_BACKEND_BYTES`/`EXPECTED_ADVERTISE_CLIENT_URLS`/`ENDPOINT`、任一状态
 缺失、旧 revision、错误拓扑、错误镜像、quota/client URL 缺失/重复/不匹配或 endpoint
-不健康、TidbCluster/MemberList cluster ID 漂移、initial cluster 成员/peer URL 为空或重复、MemberList 缺失/重复/不完整/与声明不一致、advertised URL 列表含空成员或任一地址
+不健康、TidbCluster UID 或 TidbCluster/MemberList cluster ID 漂移、initial cluster 成员/peer URL 为空或重复、MemberList 缺失/重复/不完整/与声明不一致、advertised URL 列表含空成员或任一地址
 从门禁网络不可达都会 fail closed。脚本使用可覆盖的 `JQ`（默认 `jq`）结构化解析 JSON，
 不得用文本匹配替代成员身份和 URL 集合检查。
 

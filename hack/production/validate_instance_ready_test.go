@@ -179,6 +179,14 @@ func TestValidateInstanceReady(t *testing.T) {
 			wantOutput: "storage identity mismatch",
 		},
 		{
+			name:       "wrong TidbCluster resource identity",
+			image:      "registry/kubebrain@sha256:abc",
+			kubeStatus: "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:abc",
+			topology:   "3\t3\t1\tuid-other",
+			healthOK:   true,
+			wantOutput: "resource identity mismatch",
+		},
+		{
 			name:       "unhealthy endpoint",
 			image:      "registry/kubebrain@sha256:abc",
 			kubeStatus: "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:abc",
@@ -333,8 +341,11 @@ exit 1
 				advertisedURLs = "https://instance.example:2379"
 			}
 			topology := tc.topology
-			if strings.Count(topology, "\t") == 1 {
-				topology += "\t1"
+			switch strings.Count(topology, "\t") {
+			case 1:
+				topology += "\t1\tuid-tidb"
+			case 2:
+				topology += "\tuid-tidb"
 			}
 			initialCluster := tc.initialCluster
 			if initialCluster == "" {
@@ -355,6 +366,7 @@ exit 1
 				"EXPECTED_KEYSPACE=instance-a",
 				"EXPECTED_PD_ADDRS=kb-pd.storage.svc:2379",
 				"EXPECTED_CLUSTER_ID=1",
+				"EXPECTED_TIDB_CLUSTER_UID=uid-tidb",
 				"EXPECTED_INITIAL_CLUSTER="+initialCluster,
 				"EXPECTED_QUOTA_BACKEND_BYTES=429496729600",
 				"EXPECTED_ADVERTISE_CLIENT_URLS="+advertisedURLs,
@@ -402,7 +414,7 @@ func fakeRuntimeMemberListJSON(advertisedURLs string) string {
 
 func TestValidateInstanceReadyRequiresImmutableInputs(t *testing.T) {
 	command := exec.Command("bash", "validate-instance-ready.sh")
-	command.Env = append(os.Environ(), "EXPECTED_IMAGE=", "ENDPOINT=", "EXPECTED_KEYSPACE=", "EXPECTED_PD_ADDRS=", "EXPECTED_CLUSTER_ID=", "EXPECTED_INITIAL_CLUSTER=", "EXPECTED_QUOTA_BACKEND_BYTES=", "EXPECTED_ADVERTISE_CLIENT_URLS=")
+	command.Env = append(os.Environ(), "EXPECTED_IMAGE=", "ENDPOINT=", "EXPECTED_KEYSPACE=", "EXPECTED_PD_ADDRS=", "EXPECTED_CLUSTER_ID=", "EXPECTED_TIDB_CLUSTER_UID=", "EXPECTED_INITIAL_CLUSTER=", "EXPECTED_QUOTA_BACKEND_BYTES=", "EXPECTED_ADVERTISE_CLIENT_URLS=")
 	output, err := command.CombinedOutput()
 	require.Error(t, err)
 	require.Contains(t, string(output), "EXPECTED_IMAGE is required")
@@ -414,6 +426,7 @@ func TestValidateInstanceReadyRequiresImmutableInputs(t *testing.T) {
 		"EXPECTED_KEYSPACE=instance-a",
 		"EXPECTED_PD_ADDRS=kb-pd.storage.svc:2379",
 		"EXPECTED_CLUSTER_ID=1",
+		"EXPECTED_TIDB_CLUSTER_UID=uid-tidb",
 		"EXPECTED_INITIAL_CLUSTER="+fakeInitialCluster,
 		"EXPECTED_QUOTA_BACKEND_BYTES=",
 		"EXPECTED_ADVERTISE_CLIENT_URLS=https://instance.example:2379",
@@ -429,6 +442,7 @@ func TestValidateInstanceReadyRequiresImmutableInputs(t *testing.T) {
 		"EXPECTED_KEYSPACE=instance-a",
 		"EXPECTED_PD_ADDRS=kb-pd.storage.svc:2379",
 		"EXPECTED_CLUSTER_ID=1",
+		"EXPECTED_TIDB_CLUSTER_UID=uid-tidb",
 		"EXPECTED_INITIAL_CLUSTER="+fakeInitialCluster,
 		"EXPECTED_QUOTA_BACKEND_BYTES=429496729600",
 		"EXPECTED_ADVERTISE_CLIENT_URLS=",
@@ -444,6 +458,7 @@ func TestValidateInstanceReadyRequiresImmutableInputs(t *testing.T) {
 		"EXPECTED_KEYSPACE=",
 		"EXPECTED_PD_ADDRS=kb-pd.storage.svc:2379",
 		"EXPECTED_CLUSTER_ID=1",
+		"EXPECTED_TIDB_CLUSTER_UID=uid-tidb",
 		"EXPECTED_INITIAL_CLUSTER="+fakeInitialCluster,
 		"EXPECTED_QUOTA_BACKEND_BYTES=429496729600",
 		"EXPECTED_ADVERTISE_CLIENT_URLS=https://instance.example:2379",
@@ -459,6 +474,7 @@ func TestValidateInstanceReadyRequiresImmutableInputs(t *testing.T) {
 		"EXPECTED_KEYSPACE=instance-a",
 		"EXPECTED_PD_ADDRS=",
 		"EXPECTED_CLUSTER_ID=1",
+		"EXPECTED_TIDB_CLUSTER_UID=uid-tidb",
 		"EXPECTED_INITIAL_CLUSTER="+fakeInitialCluster,
 		"EXPECTED_QUOTA_BACKEND_BYTES=429496729600",
 		"EXPECTED_ADVERTISE_CLIENT_URLS=https://instance.example:2379",
@@ -474,6 +490,7 @@ func TestValidateInstanceReadyRequiresImmutableInputs(t *testing.T) {
 		"EXPECTED_KEYSPACE=instance-a",
 		"EXPECTED_PD_ADDRS=kb-pd.storage.svc:2379",
 		"EXPECTED_CLUSTER_ID=1",
+		"EXPECTED_TIDB_CLUSTER_UID=uid-tidb",
 		"EXPECTED_INITIAL_CLUSTER=",
 		"EXPECTED_QUOTA_BACKEND_BYTES=429496729600",
 		"EXPECTED_ADVERTISE_CLIENT_URLS=https://instance.example:2379",
@@ -489,6 +506,7 @@ func TestValidateInstanceReadyRequiresImmutableInputs(t *testing.T) {
 		"EXPECTED_KEYSPACE=instance-a",
 		"EXPECTED_PD_ADDRS=kb-pd.storage.svc:2379",
 		"EXPECTED_CLUSTER_ID=",
+		"EXPECTED_TIDB_CLUSTER_UID=uid-tidb",
 		"EXPECTED_INITIAL_CLUSTER="+fakeInitialCluster,
 		"EXPECTED_QUOTA_BACKEND_BYTES=429496729600",
 		"EXPECTED_ADVERTISE_CLIENT_URLS=https://instance.example:2379",
@@ -496,6 +514,22 @@ func TestValidateInstanceReadyRequiresImmutableInputs(t *testing.T) {
 	output, err = command.CombinedOutput()
 	require.Error(t, err)
 	require.Contains(t, string(output), "EXPECTED_CLUSTER_ID is required")
+
+	command = exec.Command("bash", "validate-instance-ready.sh")
+	command.Env = append(os.Environ(),
+		"EXPECTED_IMAGE=registry/kubebrain@sha256:abc",
+		"ENDPOINT=https://instance.example:2379",
+		"EXPECTED_KEYSPACE=instance-a",
+		"EXPECTED_PD_ADDRS=kb-pd.storage.svc:2379",
+		"EXPECTED_CLUSTER_ID=1",
+		"EXPECTED_TIDB_CLUSTER_UID=",
+		"EXPECTED_INITIAL_CLUSTER="+fakeInitialCluster,
+		"EXPECTED_QUOTA_BACKEND_BYTES=429496729600",
+		"EXPECTED_ADVERTISE_CLIENT_URLS=https://instance.example:2379",
+	)
+	output, err = command.CombinedOutput()
+	require.Error(t, err)
+	require.Contains(t, string(output), "EXPECTED_TIDB_CLUSTER_UID is required")
 }
 
 func boolString(value bool) string {
