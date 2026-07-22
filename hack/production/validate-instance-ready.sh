@@ -5,6 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 
 KUBEBRAIN_NAMESPACE="${KUBEBRAIN_NAMESPACE:-kubebrain-system}"
 KUBEBRAIN_STATEFULSET="${KUBEBRAIN_STATEFULSET:-kubebrain}"
+EXPECTED_KUBEBRAIN_STATEFULSET_UID="${EXPECTED_KUBEBRAIN_STATEFULSET_UID:-}"
 EXPECTED_KUBEBRAIN_REPLICAS="${EXPECTED_KUBEBRAIN_REPLICAS:-3}"
 EXPECTED_IMAGE="${EXPECTED_IMAGE:-}"
 EXPECTED_KEYSPACE="${EXPECTED_KEYSPACE:-}"
@@ -28,6 +29,10 @@ KUBE_CONTEXT="${KUBE_CONTEXT:-}"
 
 if [[ -z "$EXPECTED_IMAGE" ]]; then
   echo "EXPECTED_IMAGE is required and must be the exact immutable release image" >&2
+  exit 2
+fi
+if [[ -z "$EXPECTED_KUBEBRAIN_STATEFULSET_UID" ]]; then
+  echo "EXPECTED_KUBEBRAIN_STATEFULSET_UID is required" >&2
   exit 2
 fi
 if [[ -z "$ENDPOINT" ]]; then
@@ -101,8 +106,8 @@ fi
 
 kubebrain_status="$("$KUBECTL" "${kubectl_args[@]}" -n "$KUBEBRAIN_NAMESPACE" \
   get statefulset "$KUBEBRAIN_STATEFULSET" \
-  -o 'jsonpath={.metadata.generation}{"\t"}{.status.observedGeneration}{"\t"}{.spec.replicas}{"\t"}{.status.readyReplicas}{"\t"}{.status.updatedReplicas}{"\t"}{.status.currentRevision}{"\t"}{.status.updateRevision}{"\t"}{.spec.template.spec.containers[?(@.name=="kubebrain")].image}')"
-IFS=$'\t' read -r generation observed desired ready updated current_revision update_revision actual_image <<<"$kubebrain_status"
+  -o 'jsonpath={.metadata.generation}{"\t"}{.status.observedGeneration}{"\t"}{.spec.replicas}{"\t"}{.status.readyReplicas}{"\t"}{.status.updatedReplicas}{"\t"}{.status.currentRevision}{"\t"}{.status.updateRevision}{"\t"}{.spec.template.spec.containers[?(@.name=="kubebrain")].image}{"\t"}{.metadata.uid}')"
+IFS=$'\t' read -r generation observed desired ready updated current_revision update_revision actual_image actual_kubebrain_statefulset_uid <<<"$kubebrain_status"
 if ! [[ "$generation" =~ ^[0-9]+$ &&
   "$observed" =~ ^[0-9]+$ &&
   "$observed" -ge "$generation" &&
@@ -115,6 +120,10 @@ if ! [[ "$generation" =~ ^[0-9]+$ &&
   echo "KubeBrain StatefulSet is not the expected converged release" >&2
   echo "expected replicas/image=${EXPECTED_KUBEBRAIN_REPLICAS}/${EXPECTED_IMAGE}" >&2
   echo "actual generation/observed/desired/ready/updated/currentRevision/updateRevision/image=${generation:-missing}/${observed:-missing}/${desired:-missing}/${ready:-missing}/${updated:-missing}/${current_revision:-missing}/${update_revision:-missing}/${actual_image:-missing}" >&2
+  exit 1
+fi
+if [[ "$actual_kubebrain_statefulset_uid" != "$EXPECTED_KUBEBRAIN_STATEFULSET_UID" ]]; then
+  echo "KubeBrain StatefulSet resource identity mismatch: expected UID ${EXPECTED_KUBEBRAIN_STATEFULSET_UID}, got ${actual_kubebrain_statefulset_uid:-missing}" >&2
   exit 1
 fi
 
@@ -333,4 +342,4 @@ for advertised_url in "${advertised_client_urls[@]}"; do
   fi
 done
 
-echo "KubeBrain instance release gate passed: endpoint=${ENDPOINT} image=${EXPECTED_IMAGE} keyspace=${EXPECTED_KEYSPACE} pd_addrs=${EXPECTED_PD_ADDRS} tidb_cluster_uid=${EXPECTED_TIDB_CLUSTER_UID} cluster_id=${EXPECTED_CLUSTER_ID} initial_cluster=${EXPECTED_INITIAL_CLUSTER} quota=${EXPECTED_QUOTA_BACKEND_BYTES} advertise_client_urls=${EXPECTED_ADVERTISE_CLIENT_URLS} replicas=${EXPECTED_KUBEBRAIN_REPLICAS} PD/TiKV=${EXPECTED_PD_REPLICAS}/${EXPECTED_TIKV_REPLICAS}"
+echo "KubeBrain instance release gate passed: endpoint=${ENDPOINT} image=${EXPECTED_IMAGE} kubebrain_statefulset_uid=${EXPECTED_KUBEBRAIN_STATEFULSET_UID} keyspace=${EXPECTED_KEYSPACE} pd_addrs=${EXPECTED_PD_ADDRS} tidb_cluster_uid=${EXPECTED_TIDB_CLUSTER_UID} cluster_id=${EXPECTED_CLUSTER_ID} initial_cluster=${EXPECTED_INITIAL_CLUSTER} quota=${EXPECTED_QUOTA_BACKEND_BYTES} advertise_client_urls=${EXPECTED_ADVERTISE_CLIENT_URLS} replicas=${EXPECTED_KUBEBRAIN_REPLICAS} PD/TiKV=${EXPECTED_PD_REPLICAS}/${EXPECTED_TIKV_REPLICAS}"

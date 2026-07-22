@@ -163,6 +163,14 @@ func TestValidateInstanceReady(t *testing.T) {
 			wantOutput: "not the expected converged release",
 		},
 		{
+			name:       "wrong KubeBrain StatefulSet resource identity",
+			image:      "registry/kubebrain@sha256:abc",
+			kubeStatus: "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:abc\tuid-other",
+			topology:   "3\t3",
+			healthOK:   true,
+			wantOutput: "StatefulSet resource identity mismatch",
+		},
+		{
 			name:       "wrong storage topology",
 			image:      "registry/kubebrain@sha256:abc",
 			kubeStatus: "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:abc",
@@ -358,11 +366,16 @@ exit 1
 			if memberListJSON == "" {
 				memberListJSON = fakeRuntimeMemberListJSON(advertisedURLs)
 			}
+			kubeStatus := tc.kubeStatus
+			if strings.Count(kubeStatus, "\t") == 7 {
+				kubeStatus += "\tuid-kubebrain"
+			}
 			command := exec.Command("bash", "validate-instance-ready.sh")
 			command.Env = append(os.Environ(),
 				"KUBECTL="+fakeKubectl,
 				"ETCDCTL="+fakeEtcdctl,
 				"EXPECTED_IMAGE="+tc.image,
+				"EXPECTED_KUBEBRAIN_STATEFULSET_UID=uid-kubebrain",
 				"EXPECTED_KEYSPACE=instance-a",
 				"EXPECTED_PD_ADDRS=kb-pd.storage.svc:2379",
 				"EXPECTED_CLUSTER_ID=1",
@@ -373,7 +386,7 @@ exit 1
 				"ENDPOINT=https://instance.example:2379",
 				"TIMEOUT_SECONDS=1",
 				"POLL_INTERVAL_SECONDS=0",
-				"FAKE_KUBEBRAIN_STATUS="+tc.kubeStatus,
+				"FAKE_KUBEBRAIN_STATUS="+kubeStatus,
 				"FAKE_KUBEBRAIN_ARGS="+kubeArgs,
 				"FAKE_TOPOLOGY="+topology,
 				"FAKE_HEALTH_OK="+boolString(tc.healthOK),
@@ -414,7 +427,7 @@ func fakeRuntimeMemberListJSON(advertisedURLs string) string {
 
 func TestValidateInstanceReadyRequiresImmutableInputs(t *testing.T) {
 	command := exec.Command("bash", "validate-instance-ready.sh")
-	command.Env = append(os.Environ(), "EXPECTED_IMAGE=", "ENDPOINT=", "EXPECTED_KEYSPACE=", "EXPECTED_PD_ADDRS=", "EXPECTED_CLUSTER_ID=", "EXPECTED_TIDB_CLUSTER_UID=", "EXPECTED_INITIAL_CLUSTER=", "EXPECTED_QUOTA_BACKEND_BYTES=", "EXPECTED_ADVERTISE_CLIENT_URLS=")
+	command.Env = append(os.Environ(), "EXPECTED_IMAGE=", "EXPECTED_KUBEBRAIN_STATEFULSET_UID=", "ENDPOINT=", "EXPECTED_KEYSPACE=", "EXPECTED_PD_ADDRS=", "EXPECTED_CLUSTER_ID=", "EXPECTED_TIDB_CLUSTER_UID=", "EXPECTED_INITIAL_CLUSTER=", "EXPECTED_QUOTA_BACKEND_BYTES=", "EXPECTED_ADVERTISE_CLIENT_URLS=")
 	output, err := command.CombinedOutput()
 	require.Error(t, err)
 	require.Contains(t, string(output), "EXPECTED_IMAGE is required")
@@ -422,6 +435,7 @@ func TestValidateInstanceReadyRequiresImmutableInputs(t *testing.T) {
 	command = exec.Command("bash", "validate-instance-ready.sh")
 	command.Env = append(os.Environ(),
 		"EXPECTED_IMAGE=registry/kubebrain@sha256:abc",
+		"EXPECTED_KUBEBRAIN_STATEFULSET_UID=uid-kubebrain",
 		"ENDPOINT=https://instance.example:2379",
 		"EXPECTED_KEYSPACE=instance-a",
 		"EXPECTED_PD_ADDRS=kb-pd.storage.svc:2379",
@@ -438,6 +452,7 @@ func TestValidateInstanceReadyRequiresImmutableInputs(t *testing.T) {
 	command = exec.Command("bash", "validate-instance-ready.sh")
 	command.Env = append(os.Environ(),
 		"EXPECTED_IMAGE=registry/kubebrain@sha256:abc",
+		"EXPECTED_KUBEBRAIN_STATEFULSET_UID=uid-kubebrain",
 		"ENDPOINT=https://instance.example:2379",
 		"EXPECTED_KEYSPACE=instance-a",
 		"EXPECTED_PD_ADDRS=kb-pd.storage.svc:2379",
@@ -454,6 +469,7 @@ func TestValidateInstanceReadyRequiresImmutableInputs(t *testing.T) {
 	command = exec.Command("bash", "validate-instance-ready.sh")
 	command.Env = append(os.Environ(),
 		"EXPECTED_IMAGE=registry/kubebrain@sha256:abc",
+		"EXPECTED_KUBEBRAIN_STATEFULSET_UID=uid-kubebrain",
 		"ENDPOINT=https://instance.example:2379",
 		"EXPECTED_KEYSPACE=",
 		"EXPECTED_PD_ADDRS=kb-pd.storage.svc:2379",
@@ -470,6 +486,7 @@ func TestValidateInstanceReadyRequiresImmutableInputs(t *testing.T) {
 	command = exec.Command("bash", "validate-instance-ready.sh")
 	command.Env = append(os.Environ(),
 		"EXPECTED_IMAGE=registry/kubebrain@sha256:abc",
+		"EXPECTED_KUBEBRAIN_STATEFULSET_UID=uid-kubebrain",
 		"ENDPOINT=https://instance.example:2379",
 		"EXPECTED_KEYSPACE=instance-a",
 		"EXPECTED_PD_ADDRS=",
@@ -486,6 +503,7 @@ func TestValidateInstanceReadyRequiresImmutableInputs(t *testing.T) {
 	command = exec.Command("bash", "validate-instance-ready.sh")
 	command.Env = append(os.Environ(),
 		"EXPECTED_IMAGE=registry/kubebrain@sha256:abc",
+		"EXPECTED_KUBEBRAIN_STATEFULSET_UID=uid-kubebrain",
 		"ENDPOINT=https://instance.example:2379",
 		"EXPECTED_KEYSPACE=instance-a",
 		"EXPECTED_PD_ADDRS=kb-pd.storage.svc:2379",
@@ -502,6 +520,7 @@ func TestValidateInstanceReadyRequiresImmutableInputs(t *testing.T) {
 	command = exec.Command("bash", "validate-instance-ready.sh")
 	command.Env = append(os.Environ(),
 		"EXPECTED_IMAGE=registry/kubebrain@sha256:abc",
+		"EXPECTED_KUBEBRAIN_STATEFULSET_UID=uid-kubebrain",
 		"ENDPOINT=https://instance.example:2379",
 		"EXPECTED_KEYSPACE=instance-a",
 		"EXPECTED_PD_ADDRS=kb-pd.storage.svc:2379",
@@ -518,6 +537,7 @@ func TestValidateInstanceReadyRequiresImmutableInputs(t *testing.T) {
 	command = exec.Command("bash", "validate-instance-ready.sh")
 	command.Env = append(os.Environ(),
 		"EXPECTED_IMAGE=registry/kubebrain@sha256:abc",
+		"EXPECTED_KUBEBRAIN_STATEFULSET_UID=uid-kubebrain",
 		"ENDPOINT=https://instance.example:2379",
 		"EXPECTED_KEYSPACE=instance-a",
 		"EXPECTED_PD_ADDRS=kb-pd.storage.svc:2379",
@@ -530,6 +550,23 @@ func TestValidateInstanceReadyRequiresImmutableInputs(t *testing.T) {
 	output, err = command.CombinedOutput()
 	require.Error(t, err)
 	require.Contains(t, string(output), "EXPECTED_TIDB_CLUSTER_UID is required")
+
+	command = exec.Command("bash", "validate-instance-ready.sh")
+	command.Env = append(os.Environ(),
+		"EXPECTED_IMAGE=registry/kubebrain@sha256:abc",
+		"EXPECTED_KUBEBRAIN_STATEFULSET_UID=",
+		"ENDPOINT=https://instance.example:2379",
+		"EXPECTED_KEYSPACE=instance-a",
+		"EXPECTED_PD_ADDRS=kb-pd.storage.svc:2379",
+		"EXPECTED_CLUSTER_ID=1",
+		"EXPECTED_TIDB_CLUSTER_UID=uid-tidb",
+		"EXPECTED_INITIAL_CLUSTER="+fakeInitialCluster,
+		"EXPECTED_QUOTA_BACKEND_BYTES=429496729600",
+		"EXPECTED_ADVERTISE_CLIENT_URLS=https://instance.example:2379",
+	)
+	output, err = command.CombinedOutput()
+	require.Error(t, err)
+	require.Contains(t, string(output), "EXPECTED_KUBEBRAIN_STATEFULSET_UID is required")
 }
 
 func boolString(value bool) string {
