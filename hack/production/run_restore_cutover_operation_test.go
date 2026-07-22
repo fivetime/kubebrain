@@ -12,6 +12,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+const runnerCutoverArtifactSHA256 = "2222222222222222222222222222222222222222222222222222222222222222"
+
 func TestRestoreCutoverOperationCompletesAllPhases(t *testing.T) {
 	f := newCutoverRunnerFixture(t)
 	f.run(t, true, "")
@@ -21,6 +23,14 @@ func TestRestoreCutoverOperationCompletesAllPhases(t *testing.T) {
 	require.Contains(t, log, "--action succeed")
 	require.Contains(t, log, "--namespace tenant-a-operations --action succeed")
 	require.NotContains(t, log, "--namespace ops --namespace tenant-a-operations")
+}
+
+func TestRestoreCutoverOperationRejectsInvalidReceipt(t *testing.T) {
+	f := newCutoverRunnerFixture(t)
+	f.run(t, false, "INVALID_CUTOVER_RECEIPT=true", "invalid receipt")
+	log := f.log(t)
+	require.Contains(t, log, "--action fail")
+	require.NotContains(t, log, "--action succeed")
 }
 
 func TestRestoreCutoverOperationRequeuesPrepareFailure(t *testing.T) {
@@ -152,10 +162,25 @@ set -euo pipefail
 printf 'phase %s\n' "$ACTION" >>"$FAKE_DIR/actions.log"
 if [[ "${SLEEP_PHASE:-}" == "$ACTION" ]]; then sleep 3; fi
 if [[ ",${FAIL_PHASE:-}," == *",$ACTION,"* ]]; then exit 8; fi
-if [[ "$ACTION" == complete ]]; then
-  printf '{"format":"kubebrain.restore-cutover.receipt.v1"}\n' >"$RECEIPT_OUTPUT"
-  chmod 600 "$RECEIPT_OUTPUT"
-fi
+state_file="$STATE_DIR/$OPERATION_ID.state"
+mkdir -p "$STATE_DIR"
+case "$ACTION" in
+  prepare)
+    printf 'HEADER\tkubebrain.restore-cutover.state.v1\t%s\t%s\t%s\t%s\t%s\t%s\tuid-service\t%s\t42\t/registry\t/restored\n' \
+      "$INSTANCE" "$OPERATION_ID" "$SERVICE_NAMESPACE" "$SERVICE_NAME" "$SOURCE_INSTANCE" "$TARGET_INSTANCE" "`+runnerCutoverArtifactSHA256+`" >"$state_file"
+    ;;
+  cutover)
+    printf 'kubebrain.restore-cutover.cutover.v1\t%s\t%s\n' "$INSTANCE" "$OPERATION_ID" >"$STATE_DIR/$OPERATION_ID.cutover"
+    ;;
+  complete)
+    artifact_sha="`+runnerCutoverArtifactSHA256+`"
+    [[ "${INVALID_CUTOVER_RECEIPT:-false}" != true ]] || artifact_sha=abc123
+    state_sha="$(sha256sum "$state_file" | cut -d ' ' -f1)"
+    printf '{"format":"kubebrain.restore-cutover.receipt.v1","operation_id":"%s","instance":"%s","service_namespace":"%s","service_name":"%s","service_uid":"uid-service","source_instance":"%s","target_instance":"%s","artifact_sha256":"%s","cutover_state_sha256":"%s","snapshot_revision":42,"replicas":%s,"pod_uids_unchanged":true,"endpoint_uids_matched":true,"public_data_verified":true,"completed_at_unix":100}\n' \
+      "$OPERATION_ID" "$INSTANCE" "$SERVICE_NAMESPACE" "$SERVICE_NAME" "$SOURCE_INSTANCE" "$TARGET_INSTANCE" "$artifact_sha" "$state_sha" "$EXPECTED_REPLICAS" >"$RECEIPT_OUTPUT"
+    chmod 600 "$RECEIPT_OUTPUT"
+    ;;
+esac
 `)
 	return &cutoverRunnerFixture{
 		dir: dir, parameters: parameters,
@@ -193,6 +218,15 @@ func (f *cutoverRunnerFixture) publishEvidence(t *testing.T, kind string) {
 	t.Helper()
 	stateDir := filepath.Join(f.dir, "state")
 	require.NoError(t, os.MkdirAll(stateDir, 0o700))
+	statePath := filepath.Join(stateDir, "cutover-1.state")
+	if kind == "state" || kind == "cutover" || kind == "receipt" {
+		require.NoError(t, os.WriteFile(statePath, []byte(
+			"HEADER\tkubebrain.restore-cutover.state.v1\tinstance-a\tcutover-1\tns-a\tkubebrain\tsource\ttarget\tuid-service\t"+runnerCutoverArtifactSHA256+"\t42\t/registry\t/restored\n",
+		), 0o600))
+	}
+	if kind == "state" {
+		return
+	}
 	path := filepath.Join(stateDir, "cutover-1."+kind)
 	if kind == "receipt" {
 		path = filepath.Join(f.dir, "receipt.json")

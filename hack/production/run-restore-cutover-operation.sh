@@ -173,6 +173,41 @@ state_file="${state_dir}/${operation_id}.state"
 cutover_file="${state_dir}/${operation_id}.cutover"
 rollback_file="${state_dir}/${operation_id}.rollback"
 
+validate_cutover_receipt() {
+  local kind format state_instance state_operation state_namespace state_service source_state
+  local state_target state_service_uid artifact_sha snapshot_revision source_prefix target_prefix
+  local state_sha
+  [[ -f "$state_file" ]] || return 1
+  IFS=$'\t' read -r kind format state_instance state_operation state_namespace state_service \
+    source_state state_target state_service_uid artifact_sha snapshot_revision source_prefix \
+    target_prefix <"$state_file"
+  [[ "$kind" == "HEADER" && "$format" == "kubebrain.restore-cutover.state.v1" &&
+    "$state_instance" == "$instance" && "$state_operation" == "$operation_id" &&
+    "$state_namespace" == "$service_namespace" && "$state_service" == "$service_name" &&
+    "$source_state" == "$source_instance" && "$state_target" == "$target_instance" &&
+    -n "$state_service_uid" && "$artifact_sha" =~ ^[a-f0-9]{64}$ &&
+    "$snapshot_revision" =~ ^[1-9][0-9]*$ ]] || return 1
+  state_sha="$(sha256sum "$state_file" | cut -d ' ' -f1)"
+  "$JQ" -e --arg operation "$operation_id" --arg instance "$instance" \
+    --arg namespace "$service_namespace" --arg service "$service_name" \
+    --arg uid "$state_service_uid" --arg source "$source_instance" \
+    --arg target "$target_instance" --arg artifact_sha "$artifact_sha" \
+    --arg state_sha "$state_sha" --argjson revision "$snapshot_revision" \
+    --argjson replicas "$expected_replicas" '
+    select(keys == ["artifact_sha256","completed_at_unix","cutover_state_sha256","endpoint_uids_matched","format","instance","operation_id","pod_uids_unchanged","public_data_verified","replicas","service_name","service_namespace","service_uid","snapshot_revision","source_instance","target_instance"] and
+    .format == "kubebrain.restore-cutover.receipt.v1" and
+    .operation_id == $operation and .instance == $instance and
+    .service_namespace == $namespace and .service_name == $service and
+    .service_uid == $uid and .source_instance == $source and .target_instance == $target and
+    (.artifact_sha256 | type == "string" and test("^[a-f0-9]{64}$")) and
+    .artifact_sha256 == $artifact_sha and .snapshot_revision == $revision and
+    .cutover_state_sha256 == $state_sha and .replicas == $replicas and
+    .pod_uids_unchanged == true and .endpoint_uids_matched == true and
+    .public_data_verified == true and
+    (.completed_at_unix | type == "number" and . > 0 and . == floor))' \
+    "$receipt_output" >/dev/null
+}
+
 if [[ -e "$rollback_file" ]]; then
   run_operationctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
     --message "restore cutover was already rolled back" >/dev/null
@@ -244,6 +279,12 @@ fi
   echo "restore cutover completed without its receipt" >&2
   exit 1
 }
+if ! validate_cutover_receipt; then
+  run_operationctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
+    --message "restore cutover receipt invalid after complete" >/dev/null
+  echo "restore cutover produced an invalid receipt" >&2
+  exit 1
+fi
 receipt_digest="$(sha256sum "$receipt_output" | cut -d ' ' -f1)"
 run_operationctl --action succeed --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
   --receipt-sha256 "$receipt_digest" --message "restore traffic cutover completed" >/dev/null

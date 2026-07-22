@@ -9763,6 +9763,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   completed/topology/probe 成功布尔字段；非法 receipt 会 requeue。回归：
   `go test ./hack/production -run 'TestPostRestoreAuditOperation' -count=10 -timeout=120s`
   通过。
+- A554 收紧 RestoreCutover operation receipt 成功门禁：
+  `run-restore-cutover-operation.sh` 旧逻辑在 complete 后只要求 `receipt_output` 存在，
+  测试 fake 只写 restore-cutover format 也会提交 succeed。现在 succeed 前读取 durable
+  `kubebrain.restore-cutover.state.v1`，并要求
+  `kubebrain.restore-cutover.receipt.v1` 精确绑定 operation、instance、service
+  namespace/name/UID、source/target、artifact SHA、snapshot revision、replicas 和
+  cutover state SHA-256，且 Pod/Endpoint/public data 验证字段均为 true；非法 receipt
+  会终止 operation。回归：
+  `go test ./hack/production -run 'TestRestoreCutoverOperation' -count=5 -timeout=240s`
+  通过。
 
 ### P2：运维兼容和长期验证
 
