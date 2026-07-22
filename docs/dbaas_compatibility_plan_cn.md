@@ -10150,6 +10150,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `HashedPassword`”语义。回归：
   `go test ./pkg/server/etcd -run 'TestAuthManager(UserAddIgnoresHashedPasswordLikePublicEtcd|BootstrapErrors)' -count=1`
   通过。
+- A593 对齐 JWT claim 解析与授权错误分层：
+  对照 `/root/etcd/server/auth/jwt.go` 的 `tokenJWT.info`、
+  `/root/etcd/server/auth/store.go` 的 `isOpPermitted` 与
+  `/root/etcd/server/etcdserver/v3_server.go` 的 `doSerialize`，上游 JWT provider
+  只要求 `username` claim 是 string、`revision` claim 存在且可作为数字读取；
+  空用户名或 `revision=0` 不在 token parse 阶段返回 `ErrInvalidAuthToken`，而是由
+  后续 KV/admin 授权分别落到 `ErrPermissionDenied`、`ErrUserEmpty` 或 root admin
+  允许。KubeBrain 旧 verify 直接拒绝空用户名和 0 revision，且 `AuthInfoFromCtx`
+  过早拒绝旧 JWT。现在 JWT verify 只校验 claim 存在，key 权限检查按 etcd 顺序处理
+  revision 0、旧 revision 和权限；admin/root 语义继续忽略 auth revision。回归：
+  `go test ./pkg/server/etcd -run 'TestJWT(EmptyAndZeroClaimsMatchEtcdAuthorization|ManagerUsesAuthRevisionAndRejectsOldToken)' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

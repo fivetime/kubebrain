@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	"google.golang.org/grpc/metadata"
 )
@@ -209,8 +210,38 @@ func TestJWTManagerUsesAuthRevisionAndRejectsOldToken(t *testing.T) {
 	require.Equal(t, "root", caller.username)
 
 	require.NoError(t, manager.roleAdd(context.Background(), "reader"))
-	_, err = server.authCallerFromContext(ctx)
+	_, err = server.Range(ctx, &etcdserverpb.RangeRequest{Key: []byte("revision-check")})
 	require.ErrorIs(t, err, rpctypes.ErrAuthOldRevision)
+}
+
+func TestJWTEmptyAndZeroClaimsMatchEtcdAuthorization(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	_, _ = bootstrapAuthForToken(t, server)
+	secret := writeJWTKey(t, "secret", []byte("shared-secret"))
+	require.NoError(t, server.tokens.configureProvider("jwt,sign-method=HS256,priv-key="+secret))
+	now := time.Unix(2_000_000_000, 0)
+
+	current, err := server.tokens.snapshots.current(context.Background())
+	require.NoError(t, err)
+	emptyUser, err := server.tokens.jwt.issue("", current.Config.Revision, now)
+	require.NoError(t, err)
+	emptyCtx := metadata.NewIncomingContext(context.Background(), metadata.Pairs(rpctypes.TokenFieldNameGRPC, emptyUser))
+	_, err = server.Range(emptyCtx, &etcdserverpb.RangeRequest{Key: []byte("empty-user")})
+	require.ErrorIs(t, err, rpctypes.ErrPermissionDenied)
+	_, err = server.AuthDisable(emptyCtx, &etcdserverpb.AuthDisableRequest{})
+	require.ErrorIs(t, err, rpctypes.ErrUserEmpty)
+
+	rootZero, err := server.tokens.jwt.issue("root", 0, now)
+	require.NoError(t, err)
+	claims, err := server.tokens.jwt.verify(rootZero, now)
+	require.NoError(t, err)
+	require.Equal(t, uint64(0), claims.Revision)
+	zeroCtx := metadata.NewIncomingContext(context.Background(), metadata.Pairs(rpctypes.TokenFieldNameGRPC, rootZero))
+	_, err = server.Range(zeroCtx, &etcdserverpb.RangeRequest{Key: []byte("zero-revision")})
+	require.ErrorIs(t, err, rpctypes.ErrUserEmpty)
+	_, err = server.AuthDisable(zeroCtx, &etcdserverpb.AuthDisableRequest{})
+	require.NoError(t, err)
 }
 
 func TestJWTProviderRejectsMalformedOptionsAndWrongAlgorithm(t *testing.T) {

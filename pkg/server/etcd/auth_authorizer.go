@@ -62,9 +62,6 @@ func (s *RPCServer) authCallerFromContext(ctx context.Context) (*authCaller, err
 	revision := snapshot.Config.Revision
 	if s.tokens.jwt != nil {
 		revision = claims.Revision
-		if revision < snapshot.Config.Revision {
-			return nil, rpctypes.ErrAuthOldRevision
-		}
 	}
 	return &authCaller{
 		username: claims.Username, revision: revision,
@@ -251,6 +248,15 @@ func (c *authCaller) permits(key, rangeEnd []byte, required authpb.Permission_Ty
 }
 
 func (c *authCaller) require(key, rangeEnd []byte, required authpb.Permission_Type) error {
+	if c == nil {
+		return nil
+	}
+	if c.revision == 0 {
+		return rpctypes.ErrUserEmpty
+	}
+	if c.revision < c.snapshot.Config.Revision {
+		return rpctypes.ErrAuthOldRevision
+	}
 	if c.permits(key, rangeEnd, required) {
 		return nil
 	}

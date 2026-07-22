@@ -45,6 +45,12 @@ type jwtProviderClaims struct {
 	jwt.RegisteredClaims
 }
 
+type jwtProviderVerifyClaims struct {
+	Username *string `json:"username"`
+	Revision *uint64 `json:"revision"`
+	jwt.RegisteredClaims
+}
+
 // ValidateAuthTokenProvider validates the exact --auth-token syntax and key
 // material during startup. Unknown JWT options match etcd's warning-only
 // behavior; malformed or duplicate options fail closed.
@@ -260,7 +266,7 @@ func (p *jwtTokenProvider) issue(username string, revision uint64, now time.Time
 }
 
 func (p *jwtTokenProvider) verify(token string, now time.Time) (authTokenClaims, error) {
-	claims := new(jwtProviderClaims)
+	claims := new(jwtProviderVerifyClaims)
 	parsed, err := jwt.ParseWithClaims(token, claims, func(token *jwt.Token) (any, error) {
 		if token.Method.Alg() != p.method.Alg() {
 			return nil, errors.New("invalid signing method")
@@ -270,8 +276,8 @@ func (p *jwtTokenProvider) verify(token string, now time.Time) (authTokenClaims,
 	if err != nil || !parsed.Valid {
 		return authTokenClaims{}, rpctypes.ErrInvalidAuthToken
 	}
-	if claims.Username == "" || claims.Revision == 0 {
+	if claims.Username == nil || claims.Revision == nil {
 		return authTokenClaims{}, rpctypes.ErrInvalidAuthToken
 	}
-	return authTokenClaims{Username: claims.Username, Revision: claims.Revision}, nil
+	return authTokenClaims{Username: *claims.Username, Revision: *claims.Revision}, nil
 }

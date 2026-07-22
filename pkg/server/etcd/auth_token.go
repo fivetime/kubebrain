@@ -244,13 +244,6 @@ func (m *authTokenManager) verify(ctx context.Context, token string) (authTokenC
 		if err != nil {
 			return authTokenClaims{}, err
 		}
-		snapshot, err := m.snapshots.current(ctx)
-		if err != nil {
-			return authTokenClaims{}, err
-		}
-		if !snapshot.Config.Enabled || snapshot.Users[claims.Username] == nil {
-			return authTokenClaims{}, rpctypes.ErrInvalidAuthToken
-		}
 		return claims, nil
 	}
 	parts := strings.Split(token, ".")
