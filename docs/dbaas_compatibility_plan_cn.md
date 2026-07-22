@@ -8775,6 +8775,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   bootstrap/advertised endpoint health 均成功提交线性化 proposal；临时 exec 代理已删除，继续使用
   A433 数据面镜像。
 
+#### A442 client Service 与 EndpointSlice 发布 fencing
+
+- A441 逐 Pod 证明 rollout 已收敛，但 shared advertised client Service 的 selector 或 EndpointSlice
+  仍可能漂移到旧/缺失 Pod；此时 MemberList 与单次 Service health 可能成功，流量却无法覆盖完整
+  数据面副本。
+- 新增必填 `EXPECTED_KUBEBRAIN_CLIENT_SERVICE_UID`，发布门禁将 client Service resource identity
+  与 operation receipt 绑定，并要求该 Service 的全部 EndpointSlice endpoint 都是 ready/serving、
+  非 terminating 的 Pod targetRef，且 targetRef UID 集合与 A441 验证的当前 Pod UID 集合精确相同。
+  Service replacement、旧 endpoint 或缺失副本均 fail closed。
+- 集成测试覆盖旧 endpoint Pod UID；专项普通 10 轮、race 3 轮、root 全量测试、vet、staticcheck
+  v0.7.0 和 diff check 均通过。真实 in-cluster 门禁使用 client Service UID
+  `42cae35c-f9e4-4eb9-91d7-9e17fdaea3fe` 完整通过，EndpointSlice 精确引用三枚当前 Pod；临时
+  exec 代理已删除，继续使用 A433 数据面镜像。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
