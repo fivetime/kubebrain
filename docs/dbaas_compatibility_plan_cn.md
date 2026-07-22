@@ -9597,6 +9597,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go vet ./hack/internal/etcdutil ./hack/backup/cmd/logical-export ./hack/backup/cmd/logical-restore ./hack/backup/cmd/logical-verify ./hack/backup/cmd/prefix-tool ./hack/backup/cmd/cold-restore-verify ./hack/production/cmd/etcd-audit-probe`、
   `go test ./hack/backup/... ./hack/production/cmd/etcd-audit-probe` 与 `git diff --check`
   通过。
+- A535 建立小时级 lease renewal 线性化模型：A529 已覆盖批量 lease 在原 grant
+  deadline 处的 renewed/unrenewed 隔离，但 P2 仍缺一个可表达“多次 renewal 后 deadline
+  必须反复向后滚动”的长周期模型。新增 `leaseLongRenewalModel`，用虚拟 renewal window
+  表达 grant、put、keepalive、time advance、read 和 TTL；模型接受多窗口内持续 keepalive
+  后 key/lease 仍存活，拒绝从原 grant deadline 累计耗尽、以及完整窗口过期后才
+  keepalive 的历史。live 测试在设置 `KUBEBRAIN_ETCD_ENDPOINT` 时用压缩时间跨越多次原始
+  deadline，生成 client/v3 history 并交给 Porcupine 校验。回归：
+  `(cd hack/etcd-client-compat && go test . -run 'TestLeaseLongRenewalModelExtendsDeadlineAcrossRenewalWindows' -count=20)`、
+  `(cd hack/etcd-client-compat && go test . -run 'Test(ClientV3LeaseRepeatedRenewalHistoryIsLinearizable|LeaseLongRenewalModelExtendsDeadlineAcrossRenewalWindows)' -count=10)`、
+  `(cd hack/etcd-client-compat && go test . -run '^$')`、`(cd hack/etcd-client-compat && go vet .)`
+  与 `git diff --check` 通过。
 
 ### P2：运维兼容和长期验证
 
@@ -9606,8 +9617,8 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
    跨可用区故障、磁盘满和长时间 soak。不得用 TiDB BR full/PITR 的成功状态关闭该缺口。
 3. Porcupine 已覆盖无故障 Get/Put/CAS、多键 Txn 原子性、lease lifecycle、
    显式 ID revoke/regrant 代际隔离、watch-backed 自然过期，以及可表达不确定写
-   结果的 KubeBrain Leader/TiKV/PD 故障历史；批量 lease renewal 隔离模型已建立；
-   继续扩展小时级 renewal 模型，并在多 store/多 PD 预生产拓扑上做分区和多点故障注入。
+   结果的 KubeBrain Leader/TiKV/PD 故障历史；批量 lease renewal 隔离模型与小时级
+   renewal window 模型已建立；继续在多 store/多 PD 预生产拓扑上做分区和多点故障注入。
    大规模性能测试不能替代正确性证明。
 
 ## 提交规则
