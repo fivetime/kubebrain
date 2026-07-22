@@ -8691,6 +8691,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   KubeBrain rollout/image/immutable args、bootstrap health、三成员 MemberList 和 advertised URL
   health 全部通过。临时代理未进入仓库；本轮不改变 A433 数据面镜像。
 
+#### A437 不可变 KubeBrain peer 拓扑发布门禁
+
+- A436 已锁定运行时成员数和 client URL，但仅要求 peer URL 非空；错误的
+  `--initial-cluster` name→peer URL 映射、重复 peer 地址或运行时映射漂移仍可能在三个 Pod
+  Ready 且公共 endpoint health 正常时被发布。该拓扑决定选主、follower 转发与成员身份，必须
+  与 keyspace、PD 地址一样作为创建后不可变的实例身份，而不能只靠副本数间接推断。
+- 提交 `d6374f1` 新增必填 `EXPECTED_INITIAL_CLUSTER`。发布脚本要求 KubeBrain container 恰好
+  一个逐字匹配的 `--initial-cluster`，结构化解析逗号分隔 member 与分号分隔 peer URL，拒绝
+  空/重复 member name、空/重复 peer URL，并要求成员数精确匹配期望 KubeBrain 副本数；运行时
+  MemberList 的排序归一化 `{name, peerURLs}` 集合必须与该 immutable 声明完全一致。成功审计
+  记录同时输出 initial cluster，便于控制面追溯扩缩/升级实际绑定的 peer 拓扑。
+- 集成测试覆盖参数缺失/错误、重复 peer URL、运行时错误 peer 映射，以及 A436 的成员/client
+  URL 全矩阵；专项普通 20 轮、race 10 轮通过。`bash -n`、root 全量测试、vet、staticcheck
+  v0.7.0 和 diff check 均通过。使用临时 in-cluster etcdctl exec 代理完整运行真实发布门禁，
+  StatefulSet 的三成员 initial cluster 与 MemberList 三个稳定 Pod peer DNS 精确一致，bootstrap、
+  advertised endpoint health 和 PD/TiKV 3+3 topology 全部通过；临时代理已删除。本轮不改变
+  A433 数据面镜像。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
