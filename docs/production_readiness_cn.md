@@ -956,9 +956,9 @@ canonical invoice。发布前会重新校验 canonical JSON、invoice source ret
 `kubebrain-metering-invoice-number` 从 Object Lock exact-read finalized invoice，绑定 read
 receipt、invoice total、jurisdiction、approved series、positive sequence 和固定
 `series-sequence-12digit.v1` display number。source receipt 与下载字节不一致、assignment
-时间早于 invoice finalized、未来 assignment、retention 不足或 display number 被篡改都会
-fail closed。该 assignment 为外部税务/开票系统 ingest 输入，不替代当地法规校验、发票号段
-审批、作废/红冲流程或开票平台回执。
+时间早于 invoice finalized、未来 assignment、retention 不足、source SHA-256/bytes 与本地
+canonical invoice 不一致或 display number 被篡改都会 fail closed。该 assignment 为外部税务
+开票系统 ingest 输入，不替代当地法规校验、发票号段审批、作废/红冲流程或开票平台回执。
 
 外部总账系统的 ingest 输入使用 `kubebrain.metering-general-ledger-export.v1`。exporter 从
 Object Lock exact-read finalized invoice、可选 provider reconciliation 和可选 payment ledger，

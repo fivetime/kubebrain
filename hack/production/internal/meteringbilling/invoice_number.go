@@ -77,6 +77,18 @@ func BuildInvoiceNumberAssignment(
 	return assignment, nil
 }
 
+func BuildInvoiceNumberAssignmentWithInvoiceStatus(
+	invoiceStatus SettlementStatus[Invoice],
+	invoiceSource Source,
+	options InvoiceNumberAssignmentOptions,
+) (InvoiceNumberAssignment, error) {
+	if invoiceSource.ArtifactSHA256 != invoiceStatus.SHA256 ||
+		invoiceSource.ObjectBytes != invoiceStatus.Bytes {
+		return InvoiceNumberAssignment{}, errors.New("invoice number source does not match invoice bytes")
+	}
+	return BuildInvoiceNumberAssignment(invoiceStatus.Value, invoiceSource, options)
+}
+
 func (a InvoiceNumberAssignment) Validate() error {
 	if a.Format != InvoiceNumberAssignmentFormat ||
 		!versionPattern.MatchString(a.ID) ||
@@ -184,8 +196,8 @@ func (a *InvoiceNumberAssigner) Process(ctx context.Context) (SettlementStatus[I
 	if retainUntil <= now.Unix() || invoiceSource.RetainUntilUnix < retainUntil {
 		return SettlementStatus[InvoiceNumberAssignment]{}, output, errors.New("invoice number evidence retention is insufficient")
 	}
-	assignment, err := BuildInvoiceNumberAssignment(
-		invoice, invoiceSource,
+	assignment, err := BuildInvoiceNumberAssignmentWithInvoiceStatus(
+		invoiceStatus, invoiceSource,
 		InvoiceNumberAssignmentOptions{
 			ID: a.ID, Jurisdiction: a.Jurisdiction, Series: a.Series,
 			Sequence: a.Sequence, AssignedAtUnix: a.AssignedAtUnix,

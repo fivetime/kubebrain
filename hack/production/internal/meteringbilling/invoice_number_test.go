@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -61,6 +62,23 @@ func TestInvoiceNumberAssignmentRejectsSourceAndDisplayTamper(t *testing.T) {
 	require.NoError(t, err)
 	assignment.DisplayNumber = "kb-us-2026-000000000008"
 	require.ErrorContains(t, assignment.Validate(), "incomplete")
+}
+
+func TestBuildInvoiceNumberAssignmentWithInvoiceStatusRejectsSourceBytesDrift(t *testing.T) {
+	invoice, invoiceSource := paymentLedgerInvoice(t)
+	output := filepath.Join(t.TempDir(), "invoice.json")
+	invoiceStatus, err := WriteInvoiceAtomic(output, invoice)
+	require.NoError(t, err)
+	invoiceSource.ArtifactSHA256 = strings.Repeat("b", 64)
+	_, err = BuildInvoiceNumberAssignmentWithInvoiceStatus(
+		invoiceStatus,
+		invoiceSource,
+		InvoiceNumberAssignmentOptions{
+			ID: "invoice-number-july", Jurisdiction: "us-ca", Series: "kb-us-2026",
+			Sequence: 7, AssignedAtUnix: invoice.FinalizedAtUnix + 1,
+		},
+	)
+	require.ErrorContains(t, err, "invoice bytes")
 }
 
 func TestInvoiceNumberAssignerReadsExactInvoiceAndArchivesResult(t *testing.T) {

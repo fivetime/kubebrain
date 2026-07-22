@@ -9057,6 +9057,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./hack/production/... ./deploy/production` 与
   `go vet ./hack/production/... ./deploy/production` 通过。该项建立 KubeBrain 侧法规发票编号
   assignment 证据合同，不替代当地法规校验、号段审批、作废/红冲流程或开票平台回执。
+- A471 收紧 invoice number assignment 的 invoice source 字节绑定：新增
+  `BuildInvoiceNumberAssignmentWithInvoiceStatus`，要求 source SHA-256 与 bytes 精确等于本地
+  canonical invoice status；生产 assigner 也改走该 helper，使 Object Lock exact-read 路径和
+  直接构建路径共享同一 fail-closed 证据合同。新增负例篡改合法 source 的 digest 后必须拒绝
+  生成 assignment，避免内部 API 被错误 exact-version source 复用。`go test
+  ./hack/production/internal/meteringbilling -run 'Test.*InvoiceNumber' -count=1`、
+  `go test ./hack/production/... ./deploy/production` 与
+  `go vet ./hack/production/... ./deploy/production` 通过。
 
 ### P2：运维兼容和长期验证
 
