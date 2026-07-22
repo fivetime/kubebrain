@@ -9648,6 +9648,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   匹配。回归覆盖 pre inventory、deletion 和 post inventory receipt 带未知字段均被拒绝；
   `go test ./hack/production -run 'TestBackupDeletionOperation' -count=1 -timeout=120s`
   与 `git diff --check` 通过。
+- A540 收紧跨 operation 输入 receipt schema：边界清理读取的 destroy receipt、restore
+  cutover 读取的 restore-verification receipt，以及 post-restore audit 读取的 cutover
+  receipt 仍只做字段子集校验；上游 receipt 带 unknown 字段、弱正数类型或缺少真实
+  cutover schema 中的 replicas 时可能继续流入下游证据。现在
+  `cleanup-instance-boundaries.sh`、`switch-restore-traffic.sh` 和
+  `audit-restored-instance.sh` 都要求输入 receipt 的 exact key set、字段类型、正数时间戳
+  和跨操作 identity/digest/prefix 绑定匹配；restore verification receipt 兼容合法的
+  `artifact_created_at_unix,omitempty`。回归覆盖三条路径的上游 receipt unknown field；
+  `go test ./hack/production -run 'Test(BoundaryCleanup|PostRestoreAudit|RestoreTrafficCutover)' -count=1 -timeout=160s`
+  与 `git diff --check` 通过。
 
 ### P2：运维兼容和长期验证
 

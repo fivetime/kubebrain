@@ -92,7 +92,24 @@ atomic_publish() {
 }
 
 receipt_fields() {
-  "$JQ" -er '[
+  "$JQ" -er '
+    select(
+      (keys == ["artifact_format","artifact_leases","artifact_sha256","format","records","snapshot_revision","source_prefix","target_prefix","verified_at_unix","verified_target_leases"] or
+       keys == ["artifact_created_at_unix","artifact_format","artifact_leases","artifact_sha256","format","records","snapshot_revision","source_prefix","target_prefix","verified_at_unix","verified_target_leases"]) and
+      .format == "kubebrain.restore-verification.v1" and
+      (.artifact_format | test("^kubebrain\\.logical\\.v[12]$")) and
+      (.artifact_sha256 | type == "string" and length > 0) and
+      (.snapshot_revision | type == "number" and . > 0 and . == floor) and
+      ((has("artifact_created_at_unix") | not) or
+        (.artifact_created_at_unix | type == "number" and . > 0 and . == floor)) and
+      (.source_prefix | type == "string" and length > 0) and
+      (.target_prefix | type == "string" and length > 0) and
+      .source_prefix != .target_prefix and
+      (.records | type == "number" and . >= 0 and . == floor) and
+      (.artifact_leases | type == "number" and . >= 0 and . == floor) and
+      (.verified_target_leases | type == "number" and . >= 0 and . == floor) and
+      (.verified_at_unix | type == "number" and . > 0 and . == floor)
+    ) | [
     .format, .artifact_format, .artifact_sha256, (.snapshot_revision|tostring),
     .source_prefix, .target_prefix, (.records|tostring),
     (.artifact_leases|tostring), (.verified_target_leases|tostring),

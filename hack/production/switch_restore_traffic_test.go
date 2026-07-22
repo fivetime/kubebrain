@@ -52,6 +52,17 @@ func TestRestoreTrafficCutoverRejectsExistingReceiptWithUnknownFields(t *testing
 	require.Equal(t, receipt, string(data))
 }
 
+func TestRestoreTrafficCutoverRejectsRestoreReceiptWithUnknownFields(t *testing.T) {
+	f := newTrafficFixture(t)
+	path := filepath.Join(f.dir, "restore.json")
+	receipt := strings.TrimSpace(string(mustRead(t, path)))
+	receipt = strings.TrimSuffix(receipt, "}") + `,"unexpected":true}` + "\n"
+	require.NoError(t, os.WriteFile(path, []byte(receipt), 0o600))
+
+	f.run(t, "prepare", false, "", "restore verification receipt is invalid")
+	require.NoFileExists(t, filepath.Join(f.state, "restore-1.state"))
+}
+
 func TestRestoreTrafficCutoverFailsClosed(t *testing.T) {
 	for _, tc := range []struct {
 		name, action, drift, want string

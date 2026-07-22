@@ -472,6 +472,7 @@ TidbCluster 名、备份 digest/revision 和完成时间；同输入重试会按
 脚本刻意不删除 namespace、TLS Secret、外部对象存储 artifact、监控规则或控制面账单
 记录：namespace 可能共享，而审计/备份数据必须按独立保留策略处理。平台只有在 receipt
 归档到不可变审计存储并完成外围资源清单对账后，才能删除专属 namespace 和凭据。
+边界清理读取 destroy receipt 时同样要求严格 JSON 顶层字段集合、类型和值匹配。
 
 ## 备份恢复生产边界
 
@@ -1608,7 +1609,8 @@ receipt 使用同目录临时文件、`fsync`、原子 hard-link 和目录 `fsyn
 
 恢复实例进入业务流量前使用 `hack/production/switch-restore-traffic.sh`。该门禁按
 `prepare -> cutover -> verify -> complete` 执行；失败可在 complete 前执行
-`rollback`。prepare 要求 Service selector 恰好为
+`rollback`。prepare 先按严格 JSON 顶层字段集合、类型和值复核 restore verification
+receipt，再要求 Service selector 恰好为
 `app.kubernetes.io/name=kubebrain` 与源 instance，冻结 Service UID/resourceVersion、
 源和目标全部 Ready Pod 的 name/UID/restart count，以及
 `kubebrain.restore-verification.v1` 的 artifact hash/revision/prefix。cutover 使用
@@ -1626,8 +1628,8 @@ file/directory `fsync` 且不覆盖发布；已有 cutover receipt 复用前必�
 顶层字段集合、类型和值复核。
 
 切流完成后使用 `hack/production/audit-restored-instance.sh` 运行持续观察窗口。默认持续
-3600 秒、间隔 60 秒且至少 10 个样本；生产控制面应按实例 SLO 调大窗口。脚本先核对
-A189 state SHA-256 与 receipt，同时要求 source instance 非空且不同于 target、source/target
+3600 秒、间隔 60 秒且至少 10 个样本；生产控制面应按实例 SLO 调大窗口。脚本先按严格
+JSON 顶层字段集合、类型和值核对 A189 state SHA-256 与 cutover receipt，同时要求 source instance 非空且不同于 target、source/target
 prefix 非空且不同，并把 receipt 的 source instance 精确绑定到冻结 state；再在每个样本前后检查 Service UID/精确 selector、目标
 Pod name/UID/restart/Ready 快照和 EndpointSlice targetRef UID 集。每个样本经公开 endpoint
 执行 60 秒 lease grant、`createRevision=0` 条件 Put、线性 Get（核对 value 与 lease）、

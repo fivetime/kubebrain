@@ -48,6 +48,7 @@ func TestPostRestoreAuditFailsClosed(t *testing.T) {
 		name, drift, want string
 	}{
 		{"cutover receipt mismatch", "receipt-drift", "cutover receipt does not match"},
+		{"cutover receipt unknown field", "receipt-unknown", "cutover receipt does not match"},
 		{"source receipt mismatch", "source-receipt-drift", "cutover receipt does not match"},
 		{"cutover state tampered", "state-drift", "cutover receipt does not match"},
 		{"equal restore prefixes", "prefix-state-invalid", "cutover state does not match"},
@@ -93,7 +94,7 @@ func newAuditFixture(t *testing.T) *auditFixture {
 	  "instance":"instance-a","service_namespace":"ns-a","service_name":"kubebrain",
 	  "service_uid":"uid-service","source_instance":"source","target_instance":"target","artifact_sha256":"abc123",
 	  "cutover_state_sha256":"%x",
-	  "snapshot_revision":42,"pod_uids_unchanged":true,"endpoint_uids_matched":true,
+	  "snapshot_revision":42,"replicas":2,"pod_uids_unchanged":true,"endpoint_uids_matched":true,
 	  "public_data_verified":true,"completed_at_unix":100
 	}`, stateSHA)), 0o600))
 
@@ -148,6 +149,14 @@ func (f *auditFixture) run(t *testing.T, ok bool, extra string, outputs ...strin
 		require.NoError(t, os.WriteFile(path,
 			[]byte(strings.Replace(string(data), `"service_uid":"uid-service"`, `"service_uid":"uid-new"`, 1)),
 			0o600))
+	}
+	if _, err := os.Stat(filepath.Join(f.dir, "receipt-unknown")); err == nil {
+		path := filepath.Join(f.dir, "cutover.json")
+		data, readErr := os.ReadFile(path)
+		require.NoError(t, readErr)
+		receipt := strings.TrimSpace(string(data))
+		receipt = strings.TrimSuffix(receipt, "}") + `,"unexpected":true}` + "\n"
+		require.NoError(t, os.WriteFile(path, []byte(receipt), 0o600))
 	}
 	if _, err := os.Stat(filepath.Join(f.dir, "source-receipt-drift")); err == nil {
 		path := filepath.Join(f.dir, "cutover.json")

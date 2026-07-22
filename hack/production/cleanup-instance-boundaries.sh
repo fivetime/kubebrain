@@ -90,12 +90,15 @@ validate_destroy_receipt() {
     --arg instance "$INSTANCE" \
     --arg kbns "$KUBEBRAIN_NAMESPACE" \
     --arg tidbns "$TIDB_NAMESPACE" \
-    '.format == "kubebrain.destroy.receipt.v1" and
+    'keys == ["backup_revision","backup_sha256","completed_at_unix","format","instance","kubebrain_namespace","operation_id","resources_absent","tidb_cluster","tidb_namespace"] and
+     .format == "kubebrain.destroy.receipt.v1" and
      .instance == $instance and .kubebrain_namespace == $kbns and
      .tidb_namespace == $tidbns and .resources_absent == true and
+     (.tidb_cluster | type == "string" and length > 0) and
      (.operation_id | type == "string" and length > 0) and
      (.backup_sha256 | test("^[a-f0-9]{64}$")) and
-     (.backup_revision | type == "number" and . > 0)' \
+     (.backup_revision | type == "number" and . > 0 and . == floor) and
+     (.completed_at_unix | type == "number" and . > 0 and . == floor)' \
     "$DESTROY_RECEIPT_INPUT" >/dev/null ||
     { echo "destroy receipt does not authorize this boundary cleanup" >&2; exit 1; }
 }

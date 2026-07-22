@@ -96,14 +96,17 @@ cutover_state_sha="$(sha256sum "$CUTOVER_STATE_INPUT" | cut -d " " -f1)"
   --arg target "$TARGET_INSTANCE" --arg sha "$artifact_sha" \
   --arg state_sha "$cutover_state_sha" \
   --argjson revision "$snapshot_revision" '
+    keys == ["artifact_sha256","completed_at_unix","cutover_state_sha256","endpoint_uids_matched","format","instance","operation_id","pod_uids_unchanged","public_data_verified","replicas","service_name","service_namespace","service_uid","snapshot_revision","source_instance","target_instance"] and
     .format == "kubebrain.restore-cutover.receipt.v1" and
     .operation_id == $operation and .instance == $instance and
     .service_namespace == $namespace and .service_name == $service and
     .service_uid == $uid and .source_instance == $source and .target_instance == $target and
     .artifact_sha256 == $sha and .snapshot_revision == $revision and
     .cutover_state_sha256 == $state_sha and
+    (.replicas | type == "number" and . > 0 and . == floor) and
     .pod_uids_unchanged == true and .endpoint_uids_matched == true and
-    .public_data_verified == true and (.completed_at_unix > 0)' \
+    .public_data_verified == true and
+    (.completed_at_unix | type == "number" and . > 0 and . == floor)' \
   "$CUTOVER_RECEIPT_INPUT" >/dev/null ||
   { echo "cutover receipt does not match the frozen state" >&2; exit 1; }
 

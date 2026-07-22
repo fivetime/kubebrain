@@ -77,6 +77,16 @@ func TestBoundaryCleanupFailsClosed(t *testing.T) {
 			wantOutput: "is not a dedicated boundary",
 		},
 		{
+			name: "destroy receipt unknown field",
+			prepare: func(t *testing.T, f *boundaryCleanupFixture) {
+				receipt := strings.TrimSpace(string(mustRead(t, f.receipt)))
+				receipt = strings.TrimSuffix(receipt, "}") + `,"unexpected":true}` + "\n"
+				require.NoError(t, os.WriteFile(f.receipt, []byte(receipt), 0o600))
+			},
+			action:     "prepare",
+			wantOutput: "destroy receipt does not authorize this boundary cleanup",
+		},
+		{
 			name:       "secret is not owned",
 			action:     "prepare",
 			extraEnv:   "FAKE_SECRET_CREDENTIAL=false",
