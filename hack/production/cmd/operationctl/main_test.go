@@ -53,11 +53,20 @@ func TestBrokerParametersUsesTLSBearerAndFencingIdentity(t *testing.T) {
 }
 
 func TestBrokerParametersRejectsInsecureEndpointAndNonSuccess(t *testing.T) {
-	_, err := brokerParameters(
-		t.Context(), "http://parameters.example", "missing", "missing",
-		"tenant-a", "backup-1", "worker-a", 1,
-	)
-	require.ErrorContains(t, err, "HTTPS origin")
+	for _, endpoint := range []string{
+		"http://parameters.example",
+		"https://user@parameters.example",
+		"https://parameters.example?debug=true",
+		"https://parameters.example#fragment",
+	} {
+		t.Run(endpoint, func(t *testing.T) {
+			_, err := brokerParameters(
+				t.Context(), endpoint, "missing", "missing",
+				"tenant-a", "backup-1", "worker-a", 1,
+			)
+			require.ErrorContains(t, err, "HTTPS origin")
+		})
+	}
 
 	server := httptest.NewTLSServer(http.HandlerFunc(func(
 		response http.ResponseWriter, _ *http.Request,
@@ -72,7 +81,7 @@ func TestBrokerParametersRejectsInsecureEndpointAndNonSuccess(t *testing.T) {
 	require.NoError(t, os.WriteFile(caPath, pem.EncodeToMemory(&pem.Block{
 		Type: "CERTIFICATE", Bytes: server.Certificate().Raw,
 	}), 0o600))
-	_, err = brokerParameters(
+	_, err := brokerParameters(
 		t.Context(), server.URL, tokenPath, caPath,
 		"tenant-a", "backup-1", "worker-a", 1,
 	)

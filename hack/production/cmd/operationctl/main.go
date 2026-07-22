@@ -191,7 +191,8 @@ func brokerParameters(
 		return nil, errors.New("broker parameters require name, owner, and positive attempt")
 	}
 	base, err := url.Parse(endpoint)
-	if err != nil || base.Scheme != "https" || base.Host == "" || base.RawQuery != "" {
+	if err != nil || base.Scheme != "https" || base.Host == "" ||
+		base.User != nil || base.RawQuery != "" || base.Fragment != "" {
 		return nil, errors.New("parameters endpoint must be an HTTPS origin")
 	}
 	base.Path = strings.TrimSuffix(base.Path, "/") + "/v1/parameters"

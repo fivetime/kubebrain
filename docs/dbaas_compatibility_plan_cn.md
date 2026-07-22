@@ -9329,6 +9329,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   校验兜底。回归覆盖 TLS broker 返回 `max+1` 字节时 fail closed；`go test ./hack/production/cmd/operationctl -run 'TestBrokerParameters|TestDefaultKubeconfig' -count=20`、
   `go test ./hack/production/... ./deploy/production`、
   `go vet ./hack/production/... ./deploy/production` 与 `git diff --check` 通过。
+- A506 收紧 `operationctl --action parameters` 的 broker endpoint origin 校验：HTTPS
+  endpoint 现在除 scheme/host 外还拒绝 userinfo、query 和 fragment，避免把带凭据或歧义
+  suffix 的 URL 当成 broker origin 后再追加 `/v1/parameters`。回归覆盖 `http://`、
+  `https://user@...`、带 query 与 fragment 的 endpoint 均在读 token/CA 前 fail closed；
+  `go test ./hack/production/cmd/operationctl -run 'TestBrokerParameters|TestDefaultKubeconfig' -count=20`、
+  `go test ./hack/production/... ./deploy/production`、
+  `go vet ./hack/production/... ./deploy/production` 与 `git diff --check` 通过。
 
 ### P2：运维兼容和长期验证
 
