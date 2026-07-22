@@ -8743,6 +8743,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   in-cluster 门禁使用上述 UID 和 64 位 cluster ID 完整通过，三 KubeBrain 副本 Ready、零重启，
   endpoint health 正常且 alarm 为空。临时 exec 代理已删除，本轮继续使用 A433 数据面镜像。
 
+#### A440 KubeBrain StatefulSet Kubernetes UID 发布 fencing
+
+- A439 已锁定存储侧 TidbCluster UID，但同名 KubeBrain StatefulSet 删除重建后，旧的 create/
+  scale/upgrade operation 仍可能误把新对象判定为自己的 rollout 并继续发布。当前受管
+  `kubebrain-dev/kubebrain` UID 为 `817bc005-a4d1-4d57-9aab-de93e0874054`，必须与操作 receipt
+  中记录的资源身份绑定，形成数据面与存储面两侧对称的 Kubernetes ownership fencing。
+- 提交 `8b411cd` 新增必填 `EXPECTED_KUBEBRAIN_STATEFULSET_UID`。发布门禁在读取 StatefulSet
+  rollout 状态时同时读取 metadata UID，要求与 receipt 逐字匹配；同名对象 replacement 即使
+  generation、revision、镜像、参数和副本数全部收敛也会 fail closed。成功审计同时输出
+  KubeBrain StatefulSet UID、TidbCluster UID 和 PD cluster ID。
+- 集成测试覆盖缺失 UID 与实际 UID 漂移，连同完整 release gate 矩阵普通 20 轮、race 10 轮
+  通过；`bash -n`、root 全量测试、vet、staticcheck v0.7.0 和 diff check 均通过。真实
+  in-cluster 门禁使用上述 StatefulSet UID、TidbCluster UID 和 64 位 cluster ID 完整通过，
+  bootstrap 与 advertised endpoint 均成功提交线性化 proposal；三 KubeBrain 副本 Ready、
+  零重启，PD/TiKV 3+3 Ready。临时 exec 代理已删除，本轮继续使用 A433 数据面镜像。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
