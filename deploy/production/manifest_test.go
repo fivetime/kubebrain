@@ -1436,6 +1436,7 @@ func TestMeteringInvoicePinsApprovedPlanAndUsesHardenedIdentity(t *testing.T) {
 	require.Contains(t, string(dockerfile), "kubebrain-metering-settlement-publish")
 	require.Contains(t, string(dockerfile), "kubebrain-metering-invoice-finalize")
 	require.Contains(t, string(dockerfile), "kubebrain-metering-payment-ledger")
+	require.Contains(t, string(dockerfile), "kubebrain-metering-ledger-export")
 }
 
 func expectedInitialCluster(scheme string) string {

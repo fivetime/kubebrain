@@ -8971,9 +8971,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
    和 final invoice 已完成；供应商账单周期对账的 provider statement /
    provider reconciliation canonical artifact、跨 account/bucket 分类汇总、Object
    Lock 读写 receipt 绑定、normalized CSV 导入/发布和生产镜像 CLI 入口已建立；invoice
-   payment/refund/chargeback ledger 与 remaining balance canonical artifact 已建立；继续补
-   各云厂商原始账单 exporter、税率/折扣、真实支付渠道、法规发票编号、外部总账过账
-   与跨账户财务对账，并在具备 Prometheus Operator 的预生产环境补真实
+   payment/refund/chargeback ledger 与 remaining balance canonical artifact 已建立；外部总账
+   ingest 用 balanced journal export artifact 已建立；继续补各云厂商原始账单 exporter、
+   税率/折扣、真实支付渠道、法规发票编号、ERP/GL 实际过账回执与跨账户财务对账，
+   并在具备 Prometheus Operator 的预生产环境补真实
    一小时规则 evaluation 和连续 24 小时 storage sampling 门禁。
 
 - A457 新增 `kubebrain.metering-provider-statement.v1` 和
@@ -9024,6 +9025,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   source digest 漂移；`go test ./hack/production/... ./deploy/production` 与
   `go vet ./hack/production/... ./deploy/production` 通过。该项把离线恢复/财务演练的证据合同
   与生产 exact-read 路径对齐。
+- A467 新增 `kubebrain.metering-general-ledger-export.v1` 与
+  `kubebrain-metering-ledger-export`：exporter 从 Object Lock exact-read finalized invoice、可选
+  provider reconciliation 和可选 payment ledger，校验 read receipt 与下载字节、source retention
+  以及所有输入的 invoice source 一致后，生成 canonical balanced journal。invoice 生成
+  accounts receivable/revenue，provider allocation 生成 provider cost/accounts payable，
+  payment/refund/chargeback 生成 cash/accounts receivable；每条 line 绑定 source format/ID/source
+  line，debit total 必须等于 credit total。publisher 在 archive 前复读 canonical export 并校验
+  Object Lock receipt；Dockerfile build/copy 已包含该 CLI。回归覆盖借贷平衡、输入漂移拒绝、
+  exact-read 三类制品后归档；`go test ./hack/production/... ./deploy/production` 与
+  `go vet ./hack/production/... ./deploy/production` 通过。该项建立 KubeBrain 侧外部总账 ingest
+  证据合同，不替代真实 ERP/GL posting、period close、账号映射审批或反向回执。
 
 ### P2：运维兼容和长期验证
 

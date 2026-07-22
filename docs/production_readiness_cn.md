@@ -952,6 +952,15 @@ net paid 超过 invoice total 或 source 漂移都会 fail closed。生产路径
 canonical invoice。发布前会重新校验 canonical JSON、invoice source retention 和上传 receipt。
 该 ledger 是应收账款状态证据，不直接发起收款、退款或催收。
 
+外部总账系统的 ingest 输入使用 `kubebrain.metering-general-ledger-export.v1`。exporter 从
+Object Lock exact-read finalized invoice、可选 provider reconciliation 和可选 payment ledger，
+生成 canonical、借贷平衡的 journal：invoice 生成 accounts receivable/revenue，provider
+allocation 生成 provider cost/accounts payable，payment/refund/chargeback 生成 cash/accounts
+receivable。每条 journal line 绑定来源 artifact format/ID/source line，debit 与 credit 总额必须
+完全相等；任一输入 source 与 invoice source 不一致、read receipt 与下载字节不一致或 retention
+不足都会 fail closed。该 export 是外部总账过账输入证据，不替代 ERP/GL 的实际 posting、
+period close、账号映射审批或反向回执。
+
 该 invoice 是 KubeBrain 数据面资源结算证据，不是完整税务/收款系统。供应商请求
 分类/exporter 与账单的周期性对账、税率计算、折扣规则、真实支付渠道、发票编号法规、
 外部总账过账和跨账户财务对账仍须由财务控制面实现；`tax_correction` 只记录已由外部
