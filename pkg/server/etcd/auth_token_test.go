@@ -219,6 +219,24 @@ func TestAuthTokenRejectsWhileDisabled(t *testing.T) {
 	require.ErrorIs(t, err, rpctypes.ErrAuthNotEnabled)
 }
 
+func TestAuthTokenEmptyProviderMatchesEtcdNop(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	server.SetAuthConfiguration("", uint(bcrypt.DefaultCost), 300)
+	ctx := context.Background()
+	require.NoError(t, server.auth.userAdd(ctx, &etcdserverpb.AuthUserAddRequest{Name: "root", Password: "secret"}))
+	require.NoError(t, server.auth.roleAdd(ctx, "root"))
+	require.NoError(t, server.auth.userGrantRole(ctx, "root", "root"))
+	require.NoError(t, server.auth.enable(ctx))
+
+	_, err := server.tokens.authenticate(ctx, "root", "wrong")
+	require.ErrorIs(t, err, rpctypes.ErrAuthFailed)
+	_, err = server.tokens.authenticate(ctx, "root", "secret")
+	require.ErrorIs(t, err, rpctypes.ErrAuthFailed)
+	_, err = server.tokens.verify(ctx, "anything")
+	require.ErrorIs(t, err, rpctypes.ErrInvalidAuthToken)
+}
+
 func TestAuthTokenLazilyMigratesLegacyUserGeneration(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

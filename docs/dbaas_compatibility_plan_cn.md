@@ -10109,6 +10109,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   1 MiB 上限仍作为生产 fail-closed 扩展保留。回归：
   `go test ./pkg/server/etcd -run TestJWTProviderOptionSyntaxMatchesEtcd -count=1`
   通过。
+- A589 对齐空 `--auth-token` 的 nop provider 语义：
+  对照 `/root/etcd/server/auth/store.go` 与 `/root/etcd/server/auth/nop.go`，上游
+  `--auth-token=""` 会分解为 token type 空字符串并创建 nop provider；AuthEnable 后
+  即使用户名密码正确，token `assign` 仍返回 `ErrAuthFailed`，且任何 token 验证都失败。
+  KubeBrain 旧的 `parseAuthTokenProvider("")` 把空字符串等同 simple，显式空配置会
+  意外签发可用 simple token。现在 `SetAuthConfiguration("")` 启用 token manager 的
+  nop 模式：仍执行 auth enabled、用户存在、NoPassword 和 bcrypt 检查，但正确密码也
+  返回 `ErrAuthFailed`，verify 固定返回 `ErrInvalidAuthToken`；默认配置仍是显式
+  `simple`，不受影响。回归：
+  `go test ./pkg/server/etcd -run TestAuthTokenEmptyProviderMatchesEtcdNop -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

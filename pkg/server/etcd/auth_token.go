@@ -45,16 +45,23 @@ type authTokenManager struct {
 	now       func() time.Time
 	ttl       time.Duration
 	jwt       *jwtTokenProvider
+	nop       bool
 
 	afterPasswordCheck func()
 }
 
 func (m *authTokenManager) configureProvider(spec string) error {
+	if spec == "" {
+		m.jwt = nil
+		m.nop = true
+		return nil
+	}
 	provider, err := parseAuthTokenProvider(spec)
 	if err != nil {
 		return err
 	}
 	m.jwt = provider
+	m.nop = false
 	return nil
 }
 
@@ -140,6 +147,9 @@ func (m *authTokenManager) authenticate(ctx context.Context, username, password 
 		if bcrypt.CompareHashAndPassword(user.Password, []byte(password)) != nil {
 			return "", rpctypes.ErrAuthFailed
 		}
+		if m.nop {
+			return "", rpctypes.ErrAuthFailed
+		}
 		if m.afterPasswordCheck != nil {
 			m.afterPasswordCheck()
 		}
@@ -158,6 +168,9 @@ func (m *authTokenManager) authenticate(ctx context.Context, username, password 
 // password.
 func (m *authTokenManager) issue(ctx context.Context, snapshot *authSnapshot, username string) (string, error) {
 	if !snapshot.Config.Enabled || snapshot.Users[username] == nil {
+		return "", rpctypes.ErrAuthFailed
+	}
+	if m.nop {
 		return "", rpctypes.ErrAuthFailed
 	}
 	if m.jwt != nil {
@@ -183,6 +196,9 @@ func (m *authTokenManager) issue(ctx context.Context, snapshot *authSnapshot, us
 func (m *authTokenManager) issueCertificate(ctx context.Context, snapshot *authSnapshot, username string) (string, error) {
 	if !snapshot.Config.Enabled || username == "" {
 		return "", rpctypes.ErrUserEmpty
+	}
+	if m.nop {
+		return "", rpctypes.ErrAuthFailed
 	}
 	if m.jwt != nil {
 		return m.jwt.issue(username, snapshot.Config.Revision, m.now())
@@ -220,6 +236,9 @@ func signAuthToken(key, payload []byte) []byte {
 }
 
 func (m *authTokenManager) verify(ctx context.Context, token string) (authTokenClaims, error) {
+	if m.nop {
+		return authTokenClaims{}, rpctypes.ErrInvalidAuthToken
+	}
 	if m.jwt != nil {
 		claims, err := m.jwt.verify(token, m.now())
 		if err != nil {
