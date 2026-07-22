@@ -31,6 +31,7 @@ import (
 	"k8s.io/klog/v2"
 
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
+	gproto "google.golang.org/protobuf/proto"
 
 	"github.com/kubewharf/kubebrain/pkg/backend"
 	"github.com/kubewharf/kubebrain/pkg/metrics"
@@ -287,17 +288,54 @@ func (b *backendShim) InternalCAS(ctx context.Context, ops []backend.InternalCAS
 	return b.backend.InternalCAS(ctx, ops)
 }
 
-func (b *backendShim) Create(ctx context.Context, r *etcdserverpb.PutRequest, includeFailureRange bool) (*etcdserverpb.TxnResponse, error) {
+func (b *backendShim) effectivePutRequest(ctx context.Context, r *etcdserverpb.PutRequest, loadCurrent bool) (*etcdserverpb.PutRequest, *mvccpb.KeyValue, error) {
+	if !loadCurrent && !r.IgnoreLease && !r.IgnoreValue {
+		return r, nil, nil
+	}
+	getResp, err := b.Get(ctx, &etcdserverpb.RangeRequest{Key: r.Key})
+	if err != nil {
+		return nil, nil, err
+	}
+	var current *mvccpb.KeyValue
+	if len(getResp.Kvs) != 0 {
+		current = getResp.Kvs[0]
+	}
+	put, err := effectivePutRequestFromCurrent(r, current)
+	if err != nil {
+		return nil, nil, err
+	}
+	return put, current, nil
+}
+
+func effectivePutRequestFromCurrent(r *etcdserverpb.PutRequest, current *mvccpb.KeyValue) (*etcdserverpb.PutRequest, error) {
+	if !r.IgnoreLease && !r.IgnoreValue {
+		return r, nil
+	}
+	if current == nil {
+		return nil, txnKeyNotFoundError()
+	}
+	put := gproto.Clone(r).(*etcdserverpb.PutRequest)
 	if r.IgnoreLease {
-		return nil, unsupported("ignoreLease")
-	} else if r.IgnoreValue {
-		return nil, unsupported("ignoreValue")
+		put.IgnoreLease = false
+		put.Lease = current.Lease
+	}
+	if r.IgnoreValue {
+		put.IgnoreValue = false
+		put.Value = current.Value
+	}
+	return put, nil
+}
+
+func (b *backendShim) Create(ctx context.Context, r *etcdserverpb.PutRequest, includeFailureRange bool) (*etcdserverpb.TxnResponse, error) {
+	put, _, err := b.effectivePutRequest(ctx, r, false)
+	if err != nil {
+		return nil, err
 	}
 
 	request := &proto.CreateRequest{
-		Key:   r.Key,
-		Value: r.Value,
-		Lease: r.Lease,
+		Key:   put.Key,
+		Value: put.Value,
+		Lease: put.Lease,
 	}
 	response, err := b.backend.Create(ctx, request)
 	if err != nil {
@@ -410,30 +448,23 @@ func (b *backendShim) CompareDelete(ctx context.Context, r *etcdserverpb.DeleteR
 }
 
 func (b *backendShim) Update(ctx context.Context, rev int64, r *etcdserverpb.PutRequest, includeFailureRange bool) (*etcdserverpb.TxnResponse, error) {
-	if r.IgnoreLease {
-		return nil, unsupported("ignoreLease")
-	} else if r.IgnoreValue {
-		return nil, unsupported("ignoreValue")
+	put, current, err := b.effectivePutRequest(ctx, r, r.PrevKv)
+	if err != nil {
+		return nil, err
 	}
 
 	var prevKv *mvccpb.KeyValue
-	if r.PrevKv {
-		getResp, err := b.Get(ctx, &etcdserverpb.RangeRequest{Key: r.Key})
-		if err != nil {
-			return nil, err
-		}
-		if len(getResp.Kvs) > 0 {
-			prevKv = getResp.Kvs[0]
-		}
+	if r.PrevKv && current != nil {
+		prevKv = current
 	}
 
 	request := &proto.UpdateRequest{
 		Kv: &proto.KeyValue{
-			Key:      r.Key,
-			Value:    r.Value,
+			Key:      put.Key,
+			Value:    put.Value,
 			Revision: uint64(rev),
 		},
-		Lease: r.Lease,
+		Lease: put.Lease,
 	}
 	// paas through update method
 	response, err := b.backend.Update(ctx, request)
@@ -480,12 +511,6 @@ func (b *backendShim) Update(ctx context.Context, rev int64, r *etcdserverpb.Put
 }
 
 func (b *backendShim) Put(ctx context.Context, r *etcdserverpb.PutRequest) (*etcdserverpb.PutResponse, error) {
-	if r.IgnoreLease {
-		return nil, unsupported("ignoreLease")
-	} else if r.IgnoreValue {
-		return nil, unsupported("ignoreValue")
-	}
-
 	unlock, err := b.lockMutationKeys(ctx, r.Key)
 	if err != nil {
 		return nil, err
@@ -511,11 +536,19 @@ func (b *backendShim) Put(ctx context.Context, r *etcdserverpb.PutRequest) (*etc
 		if err != nil {
 			return nil, err
 		}
+		var current *mvccpb.KeyValue
+		if getResp.Kv != nil {
+			current = b.kvToEtcdKv(ctx, getResp.Kv)
+		}
+		put, err := effectivePutRequestFromCurrent(r, current)
+		if err != nil {
+			return nil, err
+		}
 		if getResp.Kv == nil {
 			createResp, err := b.backend.Create(ctx, &proto.CreateRequest{
-				Key:   r.Key,
-				Value: r.Value,
-				Lease: r.Lease,
+				Key:   put.Key,
+				Value: put.Value,
+				Lease: put.Lease,
 			})
 			if err != nil {
 				return nil, err
@@ -528,14 +561,14 @@ func (b *backendShim) Put(ctx context.Context, r *etcdserverpb.PutRequest) (*etc
 			continue
 		}
 
-		prevKv = b.kvToEtcdKv(ctx, getResp.Kv)
+		prevKv = current
 		updateResp, err := b.backend.Update(ctx, &proto.UpdateRequest{
 			Kv: &proto.KeyValue{
-				Key:      r.Key,
-				Value:    r.Value,
+				Key:      put.Key,
+				Value:    put.Value,
 				Revision: getResp.Kv.Revision,
 			},
-			Lease: r.Lease,
+			Lease: put.Lease,
 		})
 		if err != nil {
 			return nil, err

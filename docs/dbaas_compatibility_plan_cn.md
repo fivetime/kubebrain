@@ -132,8 +132,8 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   总键数，而 KubeBrain 曾错误返回过滤后 KV 数；已对齐
   `/root/etcd/server/etcdserver/txn/range.go`：过滤只裁剪 `KVs`，保留 MVCC
   range 预先计算的 Count，且没有新增扫描。修复后 Range 与 Txn 双端差分共同
-  连续 10 轮通过。DeleteRange 的大范围/PrevKV 边界、Watch、Lease 和 Compact
-  仍需逐组扩展差分矩阵。
+  连续 10 轮通过。该段保留首轮差分背景；DeleteRange、Watch、Lease 和 Compact
+  的扩展已由后续 P0/A 记录补齐，当前发布判断以本文开头矩阵为准。
 - **DeleteRange 双端差分**：新增
   `TestDeleteRangeDifferentialAgainstReferenceEtcd`，覆盖有效范围删除的单
   revision、PrevKVs 顺序和 create/mod/version、删除前历史快照、删除后当前
@@ -9879,6 +9879,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   shell 非空检查或把错误归到错误参数。现在这些 runner 都在 jq 输出 TSV 前拒绝空必填
   字符串，optional metrics/kube context/kubeconfig 字段继续用哨兵保留位置。回归：
   `go test ./hack/production -run 'Test(BackupOperation|BackupDeletionOperation|RestoreCutoverOperation|CertificateRotationOperation|DestroyOperation)' -count=1`
+  通过。
+- A567 补齐 backendShim 直连 `IgnoreValue/IgnoreLease` 契约：
+  对照 `/root/etcd/server/etcdserver/txn/put.go` 的 `checkAndGetPrevKV/put`、
+  `/root/etcd/server/etcdserver/api/v3rpc/key.go` 的 Put/Txn 校验，以及
+  `/root/etcd/tests/integration/clientv3/kv_test.go` 的 ignore option 集成测试，
+  上游在 key 缺失时返回标准 `InvalidArgument: etcdserver: key not found`，
+  key 存在时从当前 KV 保留 value 或 lease 后再提交 Put。KubeBrain RPCServer 与 staged
+  Txn 已在上层展开这些选项，但 `BackendShim.Create/Update/Put` 直连仍返回
+  `Unimplemented`，给内部调用和未来 fast path 留下旧兼容缺口。现在 shim 通过统一
+  effective Put helper 展开 ignore 选项；`Put` 在同一 mutation key lock 内基于本轮
+  CAS 读取到的当前 KV 保留字段，`Create/Update` 也复用该 helper，并在缺失 key 时返回
+  标准 key-not-found。回归：
+  `go test ./pkg/server/etcd -run 'TestBackendShim(PutExpandsIgnoreOptions|ComparePutsExpandIgnoreOptions|IgnoreOptionsRequireExistingKey)'`
+  以及 `go test ./pkg/server/etcd -run 'Test(PutIgnore|TxnComparePutIgnore|TxnIgnoreOptions|BackendShim)'`
   通过。
 
 ### P2：运维兼容和长期验证
