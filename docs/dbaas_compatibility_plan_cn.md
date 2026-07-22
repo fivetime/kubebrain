@@ -9348,6 +9348,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   digest 校验兜底。回归覆盖 TLS broker 返回 200 `text/html`；`go test ./hack/production/cmd/operationctl -run 'TestBrokerParameters|TestDefaultKubeconfig' -count=20`、
   `go test ./hack/production/... ./deploy/production`、
   `go vet ./hack/production/... ./deploy/production` 与 `git diff --check` 通过。
+- A509 收紧 follower read revision `/status` body 读取：leader `/status` 正常 body 只应是
+  小 JSON，现在 OK 与非 OK 响应都通过 4 KiB 上限读取；OK 响应超限会 fail closed，且错误
+  归类为可重试 leader 状态问题。旧逻辑 `io.ReadAll` 无上限，并会在 malformed/zero revision
+  错误中带全量 body，异常 leader/proxy body 可能拖内存或刷大日志。回归覆盖 OK body 超过
+  上限时不返回 revision 且保持 retryable；`go test ./pkg/server/service/revision -run 'TestFollowerRejectsMalformedOrZeroRevision|TestFollowerRejectsOversizedLeaderStatus|TestRevisionSyncerRejectsResponseAcrossLeader(Change|shipTerm)Change' -count=20`、
+  `go test ./pkg/server/service/revision ./pkg/server/etcd`、
+  `go vet ./pkg/server/service/revision ./pkg/server/etcd`、
+  `go test ./hack/production/... ./deploy/production`、
+  `go vet ./hack/production/... ./deploy/production` 与 `git diff --check` 通过。
 
 ### P2：运维兼容和长期验证
 

@@ -1291,7 +1291,7 @@ follower proxy 成为本地 leader 时必须同时关闭 forwarding client 并�
 
 prefix watch catch-up 还修复了一个边界：当 watch cache 中混有其他 prefix 的更高 revision 时，后续 live watch 起点应从最后一个已发送的匹配 prefix 事件之后继续，而不是从全局 newest revision 之后继续，避免跳过本 prefix 事件。
 
-该路径后来又暴露出 follower 通过 HTTP `/status` 向旧 leader 同步 read revision 时会把超时直接返回给 kube-apiserver；当前 revision sync 已改为使用请求 context、对 leader 未选出/连接拒绝/超时/旧 leader 返回非 OK 等 rollout 窗口错误做短周期重试，并在 leader 地址变化后使用新 leader 继续同步。follower 只接受严格的单个 leader status JSON，未知字段、拼接 JSON 或零 revision 都不能推进本地 read revision，避免代理/LB 异常 body 被静默采纳。follower watch proxy 也已改为在 leader 变化或可重试连接错误时内部重连，并从最后已发送 revision 的下一位继续 watch，避免主动把 KubeBrain leader 切换暴露为 watch channel 关闭。
+该路径后来又暴露出 follower 通过 HTTP `/status` 向旧 leader 同步 read revision 时会把超时直接返回给 kube-apiserver；当前 revision sync 已改为使用请求 context、对 leader 未选出/连接拒绝/超时/旧 leader 返回非 OK 等 rollout 窗口错误做短周期重试，并在 leader 地址变化后使用新 leader 继续同步。follower 只接受严格的单个 leader status JSON，未知字段、拼接 JSON、零 revision 或超过 4 KiB 的 body 都不能推进本地 read revision，避免代理/LB 异常 body 被静默采纳、拖内存或刷大日志。follower watch proxy 也已改为在 leader 变化或可重试连接错误时内部重连，并从最后已发送 revision 的下一位继续 watch，避免主动把 KubeBrain leader 切换暴露为 watch channel 关闭。
 
 可选 standalone kube-apiserver 滚动升级 smoke：
 

@@ -59,6 +59,8 @@ var (
 	errLeaderChanged       = errors.New("leader changed while fetching revision")
 )
 
+const maxLeaderStatusBytes = 4 << 10
+
 type revisionSyncer struct {
 	// inject
 	leaderElection leader.LeaderElection
@@ -300,7 +302,8 @@ func retryableLeaderRevisionErr(err error) bool {
 		// initialized); retry within the elapsed budget rather than failing the
 		// read immediately (#42).
 		strings.Contains(msg, "unmarshal status from leader") ||
-		strings.Contains(msg, "returned zero revision")
+		strings.Contains(msg, "returned zero revision") ||
+		strings.Contains(msg, "leader status response exceeds")
 }
 
 func possibleSchemaMismatch(err error) bool {
@@ -382,11 +385,11 @@ func (r *revisionSyncer) getRevisionFromLeader(ctx context.Context) (uint64, err
 		r.metricCli.EmitCounter("follower.get.revision.failed", 1, metrics.Tag("leader", leaderAddress))
 		//return 0, errors.Wrapf(err, "status code from leader %s is %d", leaderAddress, response.StatusCode)
 
-		msg, _ := io.ReadAll(response.Body)
+		msg, _ := readLeaderStatusBody(response.Body)
 		return 0, fmt.Errorf("status code from leader %s is %d, msg is %s", leaderAddress, response.StatusCode, msg)
 	}
 
-	responseBody, err := io.ReadAll(response.Body)
+	responseBody, err := readLeaderStatusBody(response.Body)
 	if err != nil {
 		return 0, err
 	}
@@ -423,6 +426,17 @@ func (r *revisionSyncer) getRevisionFromLeader(ctx context.Context) (uint64, err
 	}
 	r.metricCli.EmitGauge("follower.get.revision", revision.Revision, metrics.Tag("leader", leaderAddress))
 	return revision.Revision, nil
+}
+
+func readLeaderStatusBody(body io.Reader) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(body, maxLeaderStatusBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxLeaderStatusBytes {
+		return nil, fmt.Errorf("leader status response exceeds %d bytes", maxLeaderStatusBytes)
+	}
+	return data, nil
 }
 
 func decodeLeaderRevision(data []byte) (*LeaderRevision, error) {

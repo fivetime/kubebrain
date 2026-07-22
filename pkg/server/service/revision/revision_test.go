@@ -590,6 +590,25 @@ func TestFollowerRejectsMalformedOrZeroRevision(t *testing.T) {
 	})
 }
 
+func TestFollowerRejectsOversizedLeaderStatus(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	mockMetrics := mock.NewMinimalMetrics(ctrl)
+	body := strings.Repeat("x", maxLeaderStatusBytes+1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+	addr := strings.TrimPrefix(srv.URL, "http://")
+	le := &leader.Stub{ElectionInfo: leader.ElectionInfo{IsLeader: false, LeaderAddress: addr}}
+	rs := NewRevisionSyncer(&backendStub{currentRev: 42}, mockMetrics, le, nil).(*revisionSyncer)
+	defer rs.Close()
+
+	_, err := rs.getRevisionFromLeader(context.Background())
+	require.ErrorContains(t, err, "leader status response exceeds")
+	require.True(t, retryableLeaderRevisionErr(err))
+}
+
 // TestReadIndexMidFlightReaderGetsFreshFetch pins #43: a reader that arrives while
 // a leader-revision fetch is already in flight must be served by a NEW fetch that
 // starts after it arrived (fresh read index), not by the in-flight one. The
