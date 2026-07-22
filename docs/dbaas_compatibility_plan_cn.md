@@ -9234,6 +9234,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   canonical/empty/null/object/trailing；`go test ./hack/production/internal/namespaceinventory ./hack/production/cmd/metering-storage-archive`、
   `go test ./hack/production/... ./deploy/production`、`go vet ./hack/production/... ./deploy/production`
   与 `git diff --check` 通过。
+- A494 收紧 follower read revision `/status` 响应解析：follower 从 leader 拉取 read
+  revision 时改用 `DisallowUnknownFields`，并拒绝 trailing JSON；未知字段、拼接 JSON、
+  malformed body 或零 revision 都不会推进本地 read revision。这样代理/LB 错误页、半截
+  响应或合同外 status body 不会被静默采纳为可服务的 read fence。回归覆盖 malformed、
+  empty object、zero、unknown field 和 trailing JSON；`go test ./pkg/server/service/revision -run 'TestFollowerRejectsMalformedOrZeroRevision|TestRevisionSyncerRejectsResponseAcrossLeaderChange|TestRevisionSyncerRejectsResponseAcrossLeadershipTermChange' -count=20`、
+  `go test ./pkg/server/service/revision ./pkg/server/etcd`、
+  `go vet ./pkg/server/service/revision ./pkg/server/etcd`、
+  `go test ./hack/production/... ./deploy/production`、
+  `go vet ./hack/production/... ./deploy/production` 与 `git diff --check` 通过。
 
 ### P2：运维兼容和长期验证
 

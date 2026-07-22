@@ -15,6 +15,7 @@
 package revision
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -390,8 +391,8 @@ func (r *revisionSyncer) getRevisionFromLeader(ctx context.Context) (uint64, err
 		return 0, err
 	}
 
-	revision := &LeaderRevision{}
-	if err := json.Unmarshal(responseBody, revision); err != nil {
+	revision, err := decodeLeaderRevision(responseBody)
+	if err != nil {
 		// A malformed body (LB/proxy error page, truncated response, wrong
 		// content) must NOT be swallowed: the old code ignored this error and
 		// returned (0, nil), so the follower set its read revision to 0 and served
@@ -422,6 +423,20 @@ func (r *revisionSyncer) getRevisionFromLeader(ctx context.Context) (uint64, err
 	}
 	r.metricCli.EmitGauge("follower.get.revision", revision.Revision, metrics.Tag("leader", leaderAddress))
 	return revision.Revision, nil
+}
+
+func decodeLeaderRevision(data []byte) (*LeaderRevision, error) {
+	revision := &LeaderRevision{}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(revision); err != nil {
+		return nil, err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return nil, errors.New("leader status contains trailing JSON")
+	}
+	return revision, nil
 }
 
 var (

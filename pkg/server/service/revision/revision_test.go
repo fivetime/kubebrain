@@ -546,6 +546,8 @@ func TestFollowerRejectsMalformedOrZeroRevision(t *testing.T) {
 		{"malformed_non_json", "<html>502 Bad Gateway</html>"},
 		{"empty_json_object", "{}"},
 		{"explicit_zero_revision", `{"Revision":0}`},
+		{"unknown_field", `{"Revision":1000,"unexpected":true}`},
+		{"trailing_json", `{"Revision":1000}{"Revision":2000}`},
 	}
 	for _, c := range bad {
 		t.Run(c.name, func(t *testing.T) {
