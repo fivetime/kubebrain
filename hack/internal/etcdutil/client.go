@@ -4,13 +4,17 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
+	"io"
 	"os"
 	"time"
 
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
-const defaultTimeout = 10 * time.Minute
+const (
+	defaultTimeout    = 10 * time.Minute
+	maxEnvTLSPEMBytes = 1 << 20
+)
 
 func EnvFirst(names ...string) string {
 	for _, name := range names {
@@ -32,7 +36,7 @@ func TLSConfigFromEnv() (*tls.Config, error) {
 		return nil, fmt.Errorf("client TLS requires both CERT/ETCDCTL_CERT and KEY/ETCDCTL_KEY")
 	}
 
-	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	cert, err := loadEnvKeyPair(certFile, keyFile)
 	if err != nil {
 		return nil, err
 	}
@@ -41,7 +45,7 @@ func TLSConfigFromEnv() (*tls.Config, error) {
 		MinVersion:   tls.VersionTLS12,
 	}
 	if caFile != "" {
-		caPEM, err := os.ReadFile(caFile)
+		caPEM, err := readEnvTLSFile(caFile)
 		if err != nil {
 			return nil, err
 		}
@@ -52,6 +56,34 @@ func TLSConfigFromEnv() (*tls.Config, error) {
 		cfg.RootCAs = pool
 	}
 	return cfg, nil
+}
+
+func loadEnvKeyPair(certFile, keyFile string) (tls.Certificate, error) {
+	certPEM, err := readEnvTLSFile(certFile)
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+	keyPEM, err := readEnvTLSFile(keyFile)
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+	return tls.X509KeyPair(certPEM, keyPEM)
+}
+
+func readEnvTLSFile(path string) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, maxEnvTLSPEMBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maxEnvTLSPEMBytes {
+		return nil, fmt.Errorf("TLS PEM file %s exceeds %d bytes", path, maxEnvTLSPEMBytes)
+	}
+	return data, nil
 }
 
 func NewClientFromEnv() (*clientv3.Client, error) {

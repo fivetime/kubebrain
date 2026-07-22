@@ -9584,6 +9584,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `(cd hack/backup && go vet ./cmd/cold-restore-render ./cmd/cold-restore-verify)`、
   `(cd hack/backup/objectstore && go test ./...)`、`(cd hack/backup/objectstore && go vet ./...)`
   与 `git diff --check` 通过。
+- A534 收紧生产审计/备份 etcd 客户端 TLS 输入边界：`hack/internal/etcdutil` 被
+  logical backup/export/restore/verify、cold restore verify、prefix-tool 与
+  `hack/production/cmd/etcd-audit-probe` 共用，但其 `TLSConfigFromEnv` 仍通过
+  `tls.LoadX509KeyPair` 和 `os.ReadFile` 无界读取 `CERT`/`KEY`/`CACERT` 等环境变量
+  指向的 PEM 文件。现在 cert、key、CA bundle 都先按 1 MiB 上限读取，再调用
+  `tls.X509KeyPair` 或构造 RootCAs；异常大的 Secret/ConfigMap 投影会在解析前 fail
+  closed。回归覆盖 oversized cert/key/CA；
+  `go test ./hack/internal/etcdutil -run 'Test(TLSConfigFromEnv|TimeoutFromEnv)' -count=20`、
+  `go test ./hack/internal/etcdutil -run 'TestTLSConfigFromEnvRejectsOversizedPEMFiles' -race -count=1`、
+  `go test ./hack/internal/etcdutil ./hack/backup/cmd/logical-export ./hack/backup/cmd/logical-restore ./hack/backup/cmd/logical-verify ./hack/backup/cmd/prefix-tool ./hack/backup/cmd/cold-restore-verify ./hack/production/cmd/etcd-audit-probe`、
+  `go vet ./hack/internal/etcdutil ./hack/backup/cmd/logical-export ./hack/backup/cmd/logical-restore ./hack/backup/cmd/logical-verify ./hack/backup/cmd/prefix-tool ./hack/backup/cmd/cold-restore-verify ./hack/production/cmd/etcd-audit-probe`、
+  `go test ./hack/backup/... ./hack/production/cmd/etcd-audit-probe` 与 `git diff --check`
+  通过。
 
 ### P2：运维兼容和长期验证
 
