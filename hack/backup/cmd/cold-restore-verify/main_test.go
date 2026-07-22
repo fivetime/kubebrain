@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/kubewharf/kubebrain/hack/backup/internal/backupfile"
@@ -144,6 +145,13 @@ func TestValidateReceiptChain(t *testing.T) {
 
 	brokenRestore = restore
 	brokenRestore.RestoreManifest.SHA256 = ""
+	brokenData, err = json.Marshal(brokenRestore)
+	require.NoError(t, err)
+	_, _, err = validateReceiptChain(status, witnessFileSHA, snapshotData, brokenData)
+	require.ErrorContains(t, err, "canonical restore manifest")
+
+	brokenRestore = restore
+	brokenRestore.RestoreManifest.SHA256 = strings.ToUpper(restore.RestoreManifest.SHA256)
 	brokenData, err = json.Marshal(brokenRestore)
 	require.NoError(t, err)
 	_, _, err = validateReceiptChain(status, witnessFileSHA, snapshotData, brokenData)

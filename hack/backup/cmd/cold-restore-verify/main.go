@@ -748,8 +748,15 @@ func validDigest(value string) bool {
 	if len(value) != 64 {
 		return false
 	}
-	_, err := hex.DecodeString(value)
-	return err == nil
+	for i := 0; i < len(value); i++ {
+		switch {
+		case value[i] >= '0' && value[i] <= '9':
+		case value[i] >= 'a' && value[i] <= 'f':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func writeAtomic(path string, value any) error {

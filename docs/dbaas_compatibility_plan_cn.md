@@ -9699,6 +9699,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   回归覆盖 backup、deletion、audit、blob 和 blob-read receipt 的大写 digest 被拒绝；
   `(cd hack/backup/objectstore && go test ./internal/objectstore -run 'Test(ReceiptsRejectNonLowercaseArtifactDigest|WriteReceiptAtomicIsIdempotentAndNonOverwriting|ReceiptReadersRejectAmbiguousJSON|DeletionReceiptRequiresDeterministicRetentionBoundary|Upload|Delete)' -count=20)`
   通过。
+- A546 收紧 cold restore verifier 的 manifest digest schema：`cold-restore-verify`
+  的 `validDigest` 仍使用 `hex.DecodeString`，会接受 restore receipt 中大写的
+  `restore_manifest.sha256`，与 executor `sha256sum` 输出和其他 receipt schema 不一致。
+  现在 verifier 只接受小写 `[0-9a-f]{64}`；回归覆盖大写 manifest digest 被拒绝；
+  `go test ./hack/backup/cmd/cold-restore-verify -run 'TestValidateReceiptChain|TestValidateRestoreManifestBinding|TestFileDigest' -count=20`
+  通过。
 
 ### P2：运维兼容和长期验证
 

@@ -620,8 +620,9 @@ ETCDCTL_CACERT=<ca> ETCDCTL_CERT=<client-cert> ETCDCTL_KEY=<client-key> \
 
 门禁先校验 witness→snapshot receipt→restore receipt 的双 SHA-256 链，再分别在 witness revision
 与当前 revision 全量分页读取 prefix，要求 key/value/create revision/mod revision/version/lease ID
-及记录数完全一致。每个 lease 必须保留原 ID、granted TTL 和精确 attached key 集合且当前 TTL
-为正。最后以 CreatedNotify watch 建立探针，执行附 lease 的 Put、线性读、Delete、两次精确 watch
+及记录数完全一致。restore receipt 中的 manifest digest 只接受小写 hex SHA-256，不能用大小写宽松
+的等价字符串绕过 schema。每个 lease 必须保留原 ID、granted TTL 和精确 attached key 集合且当前
+TTL 为正。最后以 CreatedNotify watch 建立探针，执行附 lease 的 Put、线性读、Delete、两次精确 watch
 event 和 Revoke；成功才原子发布 `kubebrain.cold-physical-semantic-verify.v1`。这仍不能替代真实
 CSI restore 演练，但它是物理恢复完成门禁，而不是普通 endpoint health 检查。
 语义门禁读取 snapshot/restore receipt 链时同样使用严格单 JSON 值解析，拒绝未知字段和
