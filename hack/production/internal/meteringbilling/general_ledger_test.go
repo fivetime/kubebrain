@@ -45,6 +45,52 @@ func TestBuildGeneralLedgerExportBalancesInvoiceProviderAndPayments(t *testing.T
 	require.Equal(t, status, read)
 }
 
+func TestBuildGeneralLedgerExportWithStatusesRejectsSourceBytesDrift(t *testing.T) {
+	invoice, invoiceSource, reconciliation, reconciliationSource, ledger, ledgerSource := generalLedgerInputs(t)
+	dir := t.TempDir()
+	invoiceStatus, err := WriteInvoiceAtomic(filepath.Join(dir, "invoice.json"), invoice)
+	require.NoError(t, err)
+	reconciliationStatus, err := WriteProviderReconciliationAtomic(
+		filepath.Join(dir, "provider-reconciliation.json"), reconciliation,
+	)
+	require.NoError(t, err)
+	ledgerStatus, err := WritePaymentLedgerAtomic(filepath.Join(dir, "payment-ledger.json"), ledger)
+	require.NoError(t, err)
+	options := GeneralLedgerExportOptions{
+		ID:             "ledger-july",
+		ExportedAtUnix: ledger.GeneratedAtUnix + 3600,
+	}
+	_, err = BuildGeneralLedgerExportWithStatuses(
+		invoiceStatus, invoiceSource, &reconciliationStatus, &reconciliationSource,
+		&ledgerStatus, &ledgerSource, options,
+	)
+	require.NoError(t, err)
+
+	badInvoiceSource := invoiceSource
+	badInvoiceSource.ArtifactSHA256 = strings.Repeat("b", 64)
+	_, err = BuildGeneralLedgerExportWithStatuses(
+		invoiceStatus, badInvoiceSource, &reconciliationStatus, &reconciliationSource,
+		&ledgerStatus, &ledgerSource, options,
+	)
+	require.ErrorContains(t, err, "invoice bytes")
+
+	badReconciliationSource := reconciliationSource
+	badReconciliationSource.ArtifactSHA256 = strings.Repeat("b", 64)
+	_, err = BuildGeneralLedgerExportWithStatuses(
+		invoiceStatus, invoiceSource, &reconciliationStatus, &badReconciliationSource,
+		&ledgerStatus, &ledgerSource, options,
+	)
+	require.ErrorContains(t, err, "provider reconciliation source")
+
+	badLedgerSource := ledgerSource
+	badLedgerSource.ArtifactSHA256 = strings.Repeat("b", 64)
+	_, err = BuildGeneralLedgerExportWithStatuses(
+		invoiceStatus, invoiceSource, &reconciliationStatus, &reconciliationSource,
+		&ledgerStatus, &badLedgerSource, options,
+	)
+	require.ErrorContains(t, err, "payment ledger source")
+}
+
 func TestGeneralLedgerExportRejectsMismatchedInputsAndTamperedTotals(t *testing.T) {
 	invoice, invoiceSource, reconciliation, reconciliationSource, ledger, ledgerSource := generalLedgerInputs(t)
 	badLedger := ledger

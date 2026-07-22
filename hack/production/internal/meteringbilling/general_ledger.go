@@ -162,6 +162,49 @@ func BuildGeneralLedgerExport(
 	return export, nil
 }
 
+func BuildGeneralLedgerExportWithStatuses(
+	invoiceStatus SettlementStatus[Invoice],
+	invoiceSource Source,
+	reconciliationStatus *SettlementStatus[ProviderReconciliation],
+	reconciliationSource *Source,
+	paymentLedgerStatus *SettlementStatus[PaymentLedger],
+	paymentLedgerSource *Source,
+	options GeneralLedgerExportOptions,
+) (GeneralLedgerExport, error) {
+	if invoiceSource.ArtifactSHA256 != invoiceStatus.SHA256 ||
+		invoiceSource.ObjectBytes != invoiceStatus.Bytes {
+		return GeneralLedgerExport{}, errors.New("general ledger invoice source does not match invoice bytes")
+	}
+	var reconciliation *ProviderReconciliation
+	if reconciliationStatus != nil || reconciliationSource != nil {
+		if reconciliationStatus == nil || reconciliationSource == nil {
+			return GeneralLedgerExport{}, errors.New("general ledger provider reconciliation input is incomplete")
+		}
+		if reconciliationSource.ArtifactSHA256 != reconciliationStatus.SHA256 ||
+			reconciliationSource.ObjectBytes != reconciliationStatus.Bytes {
+			return GeneralLedgerExport{}, errors.New("general ledger provider reconciliation source does not match artifact bytes")
+		}
+		value := reconciliationStatus.Value
+		reconciliation = &value
+	}
+	var paymentLedger *PaymentLedger
+	if paymentLedgerStatus != nil || paymentLedgerSource != nil {
+		if paymentLedgerStatus == nil || paymentLedgerSource == nil {
+			return GeneralLedgerExport{}, errors.New("general ledger payment ledger input is incomplete")
+		}
+		if paymentLedgerSource.ArtifactSHA256 != paymentLedgerStatus.SHA256 ||
+			paymentLedgerSource.ObjectBytes != paymentLedgerStatus.Bytes {
+			return GeneralLedgerExport{}, errors.New("general ledger payment ledger source does not match artifact bytes")
+		}
+		value := paymentLedgerStatus.Value
+		paymentLedger = &value
+	}
+	return BuildGeneralLedgerExport(
+		invoiceStatus.Value, invoiceSource, reconciliation, reconciliationSource,
+		paymentLedger, paymentLedgerSource, options,
+	)
+}
+
 func (e GeneralLedgerExport) Validate() error {
 	if e.Format != GeneralLedgerExportFormat || !versionPattern.MatchString(e.ID) ||
 		!versionPattern.MatchString(e.Instance) || !versionPattern.MatchString(e.InvoiceID) ||
@@ -308,7 +351,7 @@ func (g *GeneralLedgerExporter) Process(ctx context.Context) (SettlementStatus[G
 	if retainUntil <= now.Unix() || invoiceSource.RetainUntilUnix < retainUntil {
 		return SettlementStatus[GeneralLedgerExport]{}, output, errors.New("general ledger invoice evidence retention is insufficient")
 	}
-	var reconciliation *ProviderReconciliation
+	var reconciliationStatus *SettlementStatus[ProviderReconciliation]
 	var reconciliationSource *Source
 	if g.ProviderReconciliationID != "" {
 		key := settlementObjectKey(g.ProviderReconciliationPrefix, g.Instance, g.ProviderReconciliationID)
@@ -321,12 +364,11 @@ func (g *GeneralLedgerExporter) Process(ctx context.Context) (SettlementStatus[G
 		if readErr != nil {
 			return SettlementStatus[GeneralLedgerExport]{}, readOutput, readErr
 		}
-		value := status.Value
-		reconciliation = &value
+		reconciliationStatus = &status
 		reconciliationSource = &source
 		output = append(output, readOutput...)
 	}
-	var paymentLedger *PaymentLedger
+	var paymentLedgerStatus *SettlementStatus[PaymentLedger]
 	var paymentLedgerSource *Source
 	if g.PaymentLedgerID != "" {
 		key := settlementObjectKey(g.PaymentPrefix, g.Instance, g.PaymentLedgerID)
@@ -339,14 +381,13 @@ func (g *GeneralLedgerExporter) Process(ctx context.Context) (SettlementStatus[G
 		if readErr != nil {
 			return SettlementStatus[GeneralLedgerExport]{}, readOutput, readErr
 		}
-		value := status.Value
-		paymentLedger = &value
+		paymentLedgerStatus = &status
 		paymentLedgerSource = &source
 		output = append(output, readOutput...)
 	}
-	export, err := BuildGeneralLedgerExport(
-		invoice, invoiceSource, reconciliation, reconciliationSource,
-		paymentLedger, paymentLedgerSource,
+	export, err := BuildGeneralLedgerExportWithStatuses(
+		invoiceStatus, invoiceSource, reconciliationStatus, reconciliationSource,
+		paymentLedgerStatus, paymentLedgerSource,
 		GeneralLedgerExportOptions{ID: g.ID, ExportedAtUnix: g.ExportedAtUnix},
 	)
 	if err != nil {

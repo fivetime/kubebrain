@@ -9065,6 +9065,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   ./hack/production/internal/meteringbilling -run 'Test.*InvoiceNumber' -count=1`、
   `go test ./hack/production/... ./deploy/production` 与
   `go vet ./hack/production/... ./deploy/production` 通过。
+- A472 收紧 general ledger export 的输入 source 字节绑定：新增
+  `BuildGeneralLedgerExportWithStatuses`，要求 invoice、可选 provider reconciliation、可选
+  payment ledger 的 source SHA-256/bytes 均精确等于对应本地 canonical artifact status；生产
+  exporter 改走该 helper，继续在 Object Lock read receipt 校验之外保留直接构建路径的
+  fail-closed 门禁。新增回归覆盖 invoice/reconciliation/payment 三类合法 source digest 漂移；
+  `go test ./hack/production/internal/meteringbilling -run 'Test.*GeneralLedger' -count=1`、
+  `go test ./hack/production/... ./deploy/production` 与
+  `go vet ./hack/production/... ./deploy/production` 通过。
 
 ### P2：运维兼容和长期验证
 
