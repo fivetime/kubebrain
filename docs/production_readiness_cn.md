@@ -1667,7 +1667,10 @@ worker RBAC 只允许 get/list/watch operation 及 get/update/patch status，不
 delete、修改 spec 或读取 Secret；submit 权限只应授予管理面 API 身份。六类 executor
 分别使用同名 ServiceAccount，`kubebrain-operation-worker-type` AdmissionPolicy 将 status
 更新用户与 `spec.type` 绑定，跨类型 SA 不能 claim、heartbeat 或提交终态。成功状态必须记录不可变操作
-receipt 的 SHA-256。`hack/production/run-post-restore-audit-operation.sh` 已把 A190 接入：
+receipt 的 SHA-256。审批只能由
+`system:serviceaccount:kubebrain-operations:kubebrain-operation-approver` 写入；AdmissionPolicy
+和 Go 队列层都拒绝非专用 approver，避免生成不可 claim 的审批证据。
+`hack/production/run-post-restore-audit-operation.sh` 已把 A190 接入：
 只 claim PostRestoreAudit，核对参数 JSON 摘要，在子审计运行期间续租；heartbeat 失败会
 终止本地进程，审计失败 requeue，成功才将 receipt 摘要写入 Succeeded。
 

@@ -9675,6 +9675,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   非 hex parameters digest 和大写 receipt digest；
   `go test ./hack/production/internal/operationqueue -run 'TestQueueRejectsSpecDriftAndInvalidCompletion|TestQueueLifecycleAndExpiredLeaseFencing|TestFinishStatusReconciliationOutlivesCanceledParent' -count=20`
   通过。
+- A543 收紧 operation approval 本地身份校验：admission policy 要求只有
+  `system:serviceaccount:kubebrain-operations:kubebrain-operation-approver` 能写入
+  approval annotations，且 Claim 只承认该 identity；但 `Queue.Approve` 旧逻辑允许
+  调用方传入任意非空 `approvedBy`，在 fake-client/旧集群路径可能写入不可 claim 的
+  不可变审批证据。现在 Approve 入口直接拒绝非专用 approver identity，并继续要求
+  approval ID 为 DNS-compatible；回归覆盖非专用 approver 被拒绝；
+  `go test ./hack/production/internal/operationqueue -run 'TestQueue(RequiresApprovalForHighRiskOperations|DoesNotTreatForgedApprovalAsApproved|ApprovalIsPendingOnlyAndIdempotent|RejectsApprovalForLowRiskOrInvalidDecision)|TestApprove(ReconcilesCommittedUpdateAfterLostResponse|ReportsWriteAndReconciliationFailures|RejectsReplacementUIDAfterFailedUpdate)' -count=20`
+  通过。
 
 ### P2：运维兼容和长期验证
 

@@ -1234,6 +1234,8 @@ func TestQueueRejectsApprovalForLowRiskOrInvalidDecision(t *testing.T) {
 	require.NoError(t, err)
 	_, err = queue.Approve(ctx, "destroy", operationaudit.ApproverUsername, "INVALID_ID")
 	require.ErrorContains(t, err, "DNS-compatible")
+	_, err = queue.Approve(ctx, "destroy", "system:serviceaccount:test:approver", "change-123")
+	require.ErrorContains(t, err, "dedicated approver")
 }
 
 func TestDeleteReconcilesCommittedUIDFencedDelete(t *testing.T) {

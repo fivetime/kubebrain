@@ -771,8 +771,14 @@ func (q *Queue) Approve(
 	ctx context.Context,
 	name, approvedBy, approvalID string,
 ) (*unstructured.Unstructured, error) {
-	if approvedBy == "" || len(approvalID) > 128 || len(validation.IsDNS1123Subdomain(approvalID)) != 0 {
-		return nil, errors.New("approver and a DNS-compatible approval ID are required")
+	if approvedBy != operationaudit.ApproverUsername {
+		return nil, fmt.Errorf(
+			"operation approval requires the dedicated approver identity %q",
+			operationaudit.ApproverUsername,
+		)
+	}
+	if len(approvalID) > 128 || len(validation.IsDNS1123Subdomain(approvalID)) != 0 {
+		return nil, errors.New("a DNS-compatible approval ID is required")
 	}
 	object, err := q.resource.Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
