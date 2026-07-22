@@ -727,6 +727,12 @@ version 已不存在”补发/复用 receipt；保留期内提前消失则 fail 
 version 仍可读或 Head 本身失败时，同时保留原删除错误和检查错误并 fail closed，不盲目
 重发其他 version 的删除。
 
+`kubebrain-logical-object` 读取本地 canonical JSON 证据时也必须有资源边界：backup/
+deletion/audit/blob/usage/inventory receipt、inventory manifest 以及 inventory manifest
+builder 的 receipt header sniff 都最多接受 1 MiB。超限文件在 JSON 解码、unknown-field/
+trailing/canonical 校验或幂等恢复前 fail closed。通用 immutable blob artifact 的业务
+payload 上限仍是 16 MiB；它不扩大这些小型 JSON 证据文件的预算。
+
 `deploy/production/monitoring.yaml` 还以 1 分钟周期生成实例级计量序列：
 
 - `kubebrain_dbaas:cpu_usage_cores:sum`；
@@ -1895,6 +1901,9 @@ object store ID、bucket、object key、retention mode 和 retain-until 等于�
 已晚于完整保留窗口，archiver 会 fail closed，必须按审计事件处置，禁止缩短保留期或手工
 移除 finalizer。中央 archiver Role 只能读取指定 inventory，并 list/get/update Operation
 主资源；它不能读取 worker Secret、修改 status、管理 Lease、创建或删除 Operation。
+本地 operation audit artifact 与 archive receipt 均是小型 canonical JSON，读取上限为
+1 MiB；archive executor 使用已通过 canonical/digest/size 校验的 frozen bytes 上传，远端复核
+阶段重新有界读取本地 artifact 以检测 TOCTOU 替换，不能退回无界 `os.ReadFile`。
 
 跨进程恢复不得用当前重试时间重新生成 archive receipt。上传成功或
 `If-None-Match: *` 冲突恢复取得 version ID 后，executor 必须 Head 精确 version，重新核对

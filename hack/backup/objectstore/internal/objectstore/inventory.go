@@ -69,7 +69,7 @@ type InventoryReceipt struct {
 }
 
 func InspectInventoryManifest(path string) (InventoryManifestStatus, error) {
-	data, err := os.ReadFile(path)
+	data, err := readBoundedObjectStoreJSONFile(path, "inventory manifest")
 	if err != nil {
 		return InventoryManifestStatus{}, err
 	}
@@ -134,7 +134,7 @@ func BuildInventoryManifest(
 		if path == "" {
 			return InventoryManifestStatus{}, errors.New("inventory receipt path is empty")
 		}
-		data, err := os.ReadFile(path)
+		data, err := readBoundedObjectStoreJSONFile(path, "inventory receipt")
 		if err != nil {
 			return InventoryManifestStatus{}, err
 		}
@@ -364,7 +364,7 @@ func (r InventoryReceipt) Validate() error {
 
 func ReadInventoryReceipt(path string) (InventoryReceipt, error) {
 	var receipt InventoryReceipt
-	data, err := os.ReadFile(path)
+	data, err := readBoundedObjectStoreJSONFile(path, "inventory receipt")
 	if err != nil {
 		return receipt, err
 	}

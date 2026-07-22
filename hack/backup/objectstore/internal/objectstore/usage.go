@@ -196,7 +196,7 @@ func (r UsageReceipt) Validate() error {
 
 func ReadUsageReceipt(path string) (UsageReceipt, error) {
 	var receipt UsageReceipt
-	data, err := os.ReadFile(path)
+	data, err := readBoundedObjectStoreJSONFile(path, "object usage receipt")
 	if err != nil {
 		return receipt, err
 	}

@@ -74,6 +74,68 @@ func TestReceiptReadersRejectAmbiguousJSON(t *testing.T) {
 	}
 }
 
+func TestObjectStoreJSONReadersRejectOversizedInput(t *testing.T) {
+	tests := []struct {
+		name string
+		read func(string) error
+		want string
+	}{
+		{
+			name: "backup receipt",
+			read: func(path string) error { _, err := ReadReceipt(path); return err },
+			want: "object backup receipt exceeds",
+		},
+		{
+			name: "deletion receipt",
+			read: func(path string) error { _, err := ReadDeletionReceipt(path); return err },
+			want: "object backup deletion receipt exceeds",
+		},
+		{
+			name: "audit receipt",
+			read: func(path string) error { _, err := ReadAuditReceipt(path); return err },
+			want: "object operation audit receipt exceeds",
+		},
+		{
+			name: "blob receipt",
+			read: func(path string) error { _, err := ReadBlobReceipt(path); return err },
+			want: "object immutable blob receipt exceeds",
+		},
+		{
+			name: "usage receipt",
+			read: func(path string) error { _, err := ReadUsageReceipt(path); return err },
+			want: "object usage receipt exceeds",
+		},
+		{
+			name: "inventory manifest",
+			read: func(path string) error { _, err := InspectInventoryManifest(path); return err },
+			want: "inventory manifest exceeds",
+		},
+		{
+			name: "inventory receipt",
+			read: func(path string) error { _, err := ReadInventoryReceipt(path); return err },
+			want: "inventory receipt exceeds",
+		},
+		{
+			name: "inventory receipt header",
+			read: func(path string) error {
+				_, err := BuildInventoryManifest(
+					[]string{path}, "store-a", "bucket-a", "audits/",
+					filepath.Join(t.TempDir(), "manifest.json"),
+				)
+				return err
+			},
+			want: "inventory receipt exceeds",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "input.json")
+			require.NoError(t, os.WriteFile(path, make([]byte, maxObjectStoreJSONBytes+1), 0o600))
+			require.ErrorContains(t, tc.read(path), tc.want)
+		})
+	}
+}
+
 func completeDeletionReceipt() DeletionReceipt {
 	source := completeReceipt()
 	return DeletionReceipt{

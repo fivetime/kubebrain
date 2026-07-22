@@ -15,10 +15,11 @@ func TestOperationAuditArtifactIsCanonicalAndNonOverwriting(t *testing.T) {
 	require.NoError(t, WriteAtomic(path, artifact))
 	require.NoError(t, WriteAtomic(path, artifact))
 
-	status, err := Inspect(path)
+	status, data, err := InspectBytes(path)
 	require.NoError(t, err)
 	require.Equal(t, artifact, status.Artifact)
 	require.Len(t, status.SHA256, 64)
+	require.Len(t, data, int(status.Bytes))
 	info, err := os.Stat(path)
 	require.NoError(t, err)
 	require.Equal(t, os.FileMode(0o600), info.Mode().Perm())
@@ -26,6 +27,19 @@ func TestOperationAuditArtifactIsCanonicalAndNonOverwriting(t *testing.T) {
 	changed := artifact
 	changed.Message = "changed"
 	require.ErrorContains(t, WriteAtomic(path, changed), "refusing to overwrite")
+}
+
+func TestOperationAuditReadersRejectOversizedJSON(t *testing.T) {
+	dir := t.TempDir()
+	artifactPath := filepath.Join(dir, "audit.json")
+	require.NoError(t, os.WriteFile(artifactPath, make([]byte, maxOperationAuditJSONBytes+1), 0o600))
+	_, err := Inspect(artifactPath)
+	require.ErrorContains(t, err, "operation audit artifact exceeds")
+
+	receiptPath := filepath.Join(dir, "receipt.json")
+	require.NoError(t, os.WriteFile(receiptPath, make([]byte, maxOperationAuditJSONBytes+1), 0o600))
+	_, _, err = InspectArchiveReceipt(receiptPath)
+	require.ErrorContains(t, err, "operation audit receipt exceeds")
 }
 
 func TestOperationAuditRejectsNonterminalAndInvalidReceipt(t *testing.T) {

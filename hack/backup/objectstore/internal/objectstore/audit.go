@@ -38,7 +38,7 @@ func ArchiveAudit(ctx context.Context, client S3API, request AuditRequest) (Audi
 	if err != nil {
 		return AuditReceipt{}, err
 	}
-	status, err := operationaudit.Inspect(request.Input)
+	status, body, err := operationaudit.InspectBytes(request.Input)
 	if err != nil {
 		return AuditReceipt{}, fmt.Errorf("validate operation audit artifact: %w", err)
 	}
@@ -67,10 +67,6 @@ func ArchiveAudit(ctx context.Context, client S3API, request AuditRequest) (Audi
 		}
 		return existing, nil
 	} else if !errors.Is(err, os.ErrNotExist) {
-		return AuditReceipt{}, err
-	}
-	body, err := os.ReadFile(request.Input)
-	if err != nil {
 		return AuditReceipt{}, err
 	}
 	frozenSum := sha256.Sum256(body)
@@ -180,7 +176,7 @@ func verifyAuditRemote(
 	if fmt.Sprintf("%x", sum[:]) != expected.SHA256 {
 		return errors.New("remote operation audit digest differs")
 	}
-	local, err := os.ReadFile(request.Input)
+	_, local, err := operationaudit.InspectBytes(request.Input)
 	if err != nil {
 		return err
 	}

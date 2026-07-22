@@ -138,6 +138,21 @@ func TestArchiveAuditRejectsUncommittedResponseError(t *testing.T) {
 	require.ErrorIs(t, statErr, os.ErrNotExist)
 }
 
+func TestArchiveAuditRejectsOversizedArtifactBeforeS3(t *testing.T) {
+	now := time.Unix(2_000_000_000, 0).UTC()
+	input := filepath.Join(t.TempDir(), "audit.json")
+	require.NoError(t, os.WriteFile(input, make([]byte, maxObjectStoreJSONBytes+1), 0o600))
+	client := &fakeS3{}
+	_, err := ArchiveAudit(context.Background(), client, AuditRequest{
+		Input: input, ObjectStoreID: "store-a", Bucket: "audits",
+		ObjectKey: "instance-a/operation-1.json", RetentionMode: "COMPLIANCE",
+		RetainUntilUnix: now.Add(time.Hour).Unix(),
+		ReceiptOutput:   filepath.Join(t.TempDir(), "receipt.json"), Now: now,
+	})
+	require.ErrorContains(t, err, "operation audit artifact exceeds")
+	require.Zero(t, client.putCalls)
+}
+
 func writeAuditArtifact(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "audit.json")

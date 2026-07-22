@@ -16,6 +16,7 @@ const DeletionReceiptFormat = "kubebrain.object-backup-deletion.receipt.v1"
 const AuditReceiptFormat = "kubebrain.object-operation-audit.receipt.v1"
 const BlobReceiptFormat = "kubebrain.object-immutable-blob.receipt.v1"
 const BlobReadReceiptFormat = "kubebrain.object-immutable-blob-read.receipt.v1"
+const maxObjectStoreJSONBytes = 1 << 20
 
 type Receipt struct {
 	Format           string `json:"format"`
@@ -120,7 +121,7 @@ func (r Receipt) Validate() error {
 
 func ReadReceipt(path string) (Receipt, error) {
 	var receipt Receipt
-	data, err := os.ReadFile(path)
+	data, err := readBoundedObjectStoreJSONFile(path, "object backup receipt")
 	if err != nil {
 		return receipt, err
 	}
@@ -145,7 +146,7 @@ func (r DeletionReceipt) Validate() error {
 
 func ReadDeletionReceipt(path string) (DeletionReceipt, error) {
 	var receipt DeletionReceipt
-	data, err := os.ReadFile(path)
+	data, err := readBoundedObjectStoreJSONFile(path, "object backup deletion receipt")
 	if err != nil {
 		return receipt, err
 	}
@@ -183,7 +184,7 @@ func validHexSHA256(value string) bool {
 
 func ReadAuditReceipt(path string) (AuditReceipt, error) {
 	var receipt AuditReceipt
-	data, err := os.ReadFile(path)
+	data, err := readBoundedObjectStoreJSONFile(path, "object operation audit receipt")
 	if err != nil {
 		return receipt, err
 	}
@@ -209,7 +210,7 @@ func (r BlobReceipt) Validate() error {
 
 func ReadBlobReceipt(path string) (BlobReceipt, error) {
 	var receipt BlobReceipt
-	data, err := os.ReadFile(path)
+	data, err := readBoundedObjectStoreJSONFile(path, "object immutable blob receipt")
 	if err != nil {
 		return receipt, err
 	}
@@ -252,6 +253,22 @@ func decodeCanonicalReceipt(data []byte, destination any, description string) er
 		return fmt.Errorf("%s is not canonical", description)
 	}
 	return nil
+}
+
+func readBoundedObjectStoreJSONFile(path, description string) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, maxObjectStoreJSONBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxObjectStoreJSONBytes {
+		return nil, fmt.Errorf("%s exceeds %d bytes", description, maxObjectStoreJSONBytes)
+	}
+	return data, nil
 }
 
 func WriteReceiptAtomic(path string, receipt Receipt) error {

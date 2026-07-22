@@ -9383,6 +9383,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   body；`go test ./hack/production/internal/meteringarchive -run 'TestCollector(BuildsCanonicalCompleteSample|RejectsNonJSONPrometheusSuccessResponse|RejectsOversizedPrometheusResponse|FailsClosedOnIncompleteDuplicateStaleAndInvalidValues|AcceptsPrometheusResponseExtensions)|TestCollectorV3' -count=20`、
   `go test ./hack/production/internal/meteringarchive`、`go test ./hack/production/... ./deploy/production`、
   `go vet ./hack/production/... ./deploy/production` 与 `git diff --check` 通过。
+- A514 收紧 operation audit 与 objectstore 本地 canonical JSON 读取边界：operation audit
+  artifact/archive receipt、backup/deletion/audit/blob/usage/inventory receipt、inventory
+  manifest 以及 inventory manifest builder 的 receipt header sniff 现在最多接受 1 MiB，
+  超限时在 JSON 解码、canonical 校验、Object Lock 上传或 finalizer release 前 fail closed。
+  `ArchiveAudit` 改为上传 `operationaudit.InspectBytes` 返回的已验证 frozen bytes，远端复核
+  阶段也重新有界读取本地 artifact，避免旧 `os.ReadFile` 路径在 TOCTOU 或异常大文件下
+  无界分配。回归覆盖 oversized artifact 在触发 S3 前失败、operationaudit reader 和
+  objectstore JSON reader 的 oversized 输入；
+  `go test ./hack/production/operationaudit -run 'TestOperationAudit' -count=20`、
+  `(cd hack/backup/objectstore && go test ./internal/objectstore -run 'TestArchiveAudit|TestObjectStoreJSONReaders|TestReceiptReaders|TestInventoryManifest|TestBuildInventoryManifest|TestMeasureUsage|TestUsageReceipt|TestArchiveBlob' -count=20)`、
+  `go test ./hack/production/... ./deploy/production`、
+  `(cd hack/backup/objectstore && go test ./...)`、
+  `go vet ./hack/production/... ./deploy/production`、
+  `(cd hack/backup/objectstore && go vet ./...)` 与 `git diff --check` 通过。
 
 ### P2：运维兼容和长期验证
 

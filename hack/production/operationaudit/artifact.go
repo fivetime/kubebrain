@@ -17,6 +17,7 @@ const Format = "kubebrain.operation-audit.v1"
 const ArchiveReceiptFormat = "kubebrain.object-operation-audit.receipt.v1"
 const Finalizer = "dbaas.kubebrain.io/operation-audit"
 const ApproverUsername = "system:serviceaccount:kubebrain-operations:kubebrain-operation-approver"
+const maxOperationAuditJSONBytes = 1 << 20
 
 const (
 	ReceiptSHAAnnotation  = "dbaas.kubebrain.io/audit-receipt-sha256"
@@ -136,7 +137,7 @@ func (r ArchiveReceipt) Validate() error {
 }
 
 func InspectArchiveReceipt(path string) (ArchiveReceipt, string, error) {
-	data, err := os.ReadFile(path)
+	data, err := readBoundedJSONFile(path, "operation audit receipt")
 	if err != nil {
 		return ArchiveReceipt{}, "", err
 	}
@@ -188,7 +189,7 @@ func WriteAtomic(path string, artifact Artifact) error {
 		return err
 	}
 	data = append(data, '\n')
-	if existing, err := os.ReadFile(path); err == nil {
+	if existing, err := readBoundedJSONFile(path, "existing operation audit artifact"); err == nil {
 		if bytes.Equal(existing, data) {
 			return nil
 		}
@@ -230,36 +231,57 @@ func WriteAtomic(path string, artifact Artifact) error {
 }
 
 func Inspect(path string) (Status, error) {
-	data, err := os.ReadFile(path)
+	status, _, err := InspectBytes(path)
+	return status, err
+}
+
+func InspectBytes(path string) (Status, []byte, error) {
+	data, err := readBoundedJSONFile(path, "operation audit artifact")
 	if err != nil {
-		return Status{}, err
+		return Status{}, nil, err
 	}
 	var artifact Artifact
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&artifact); err != nil {
-		return Status{}, fmt.Errorf("decode operation audit artifact: %w", err)
+		return Status{}, nil, fmt.Errorf("decode operation audit artifact: %w", err)
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); err != io.EOF {
 		if err == nil {
-			return Status{}, errors.New("operation audit artifact contains trailing JSON")
+			return Status{}, nil, errors.New("operation audit artifact contains trailing JSON")
 		}
-		return Status{}, fmt.Errorf("decode trailing operation audit data: %w", err)
+		return Status{}, nil, fmt.Errorf("decode trailing operation audit data: %w", err)
 	}
 	canonical, err := json.Marshal(artifact)
 	if err != nil {
-		return Status{}, err
+		return Status{}, nil, err
 	}
 	canonical = append(canonical, '\n')
 	if !bytes.Equal(data, canonical) {
-		return Status{}, errors.New("operation audit artifact is not canonical")
+		return Status{}, nil, errors.New("operation audit artifact is not canonical")
 	}
 	if err := artifact.Validate(); err != nil {
-		return Status{}, err
+		return Status{}, nil, err
 	}
 	sum := sha256.Sum256(data)
 	return Status{
 		Artifact: artifact, SHA256: hex.EncodeToString(sum[:]), Bytes: int64(len(data)),
-	}, nil
+	}, data, nil
+}
+
+func readBoundedJSONFile(path, description string) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, maxOperationAuditJSONBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxOperationAuditJSONBytes {
+		return nil, fmt.Errorf("%s exceeds %d bytes", description, maxOperationAuditJSONBytes)
+	}
+	return data, nil
 }
