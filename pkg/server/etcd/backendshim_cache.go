@@ -83,6 +83,16 @@ const revKeyCacheMaxBytes = 64 << 20 // 64 MiB per generation
 // many tiny entries.
 const cacheEntryOverhead = 48
 
+// maxCacheMapInitialCapacity keeps a configuration or test with a very large
+// entry bound from allocating that many map buckets before the byte bound has
+// admitted a single entry. Maps still grow up to cap as needed; this only
+// limits eager allocation for the current generation and its rotations.
+const maxCacheMapInitialCapacity = 8192
+
+func newRevCacheMap(capacity int) map[string]revCacheEntry {
+	return make(map[string]revCacheEntry, min(capacity, maxCacheMapInitialCapacity))
+}
+
 // revKeyCache is a tiny bounded cache keyed by (key,revision). The metadata and
 // previous value of a specific key version are IMMUTABLE, so entries never go
 // stale — the only concern is bounding memory, handled by rotating two
@@ -104,7 +114,7 @@ type revCacheEntry struct {
 }
 
 func newRevKeyCache(capacity int, maxBytes int64) *revKeyCache {
-	return &revKeyCache{cap: capacity, maxBytes: maxBytes, cur: make(map[string]revCacheEntry, capacity), prev: map[string]revCacheEntry{}}
+	return &revKeyCache{cap: capacity, maxBytes: maxBytes, cur: newRevCacheMap(capacity), prev: map[string]revCacheEntry{}}
 }
 
 func (c *revKeyCache) get(k string) (interface{}, bool) {
@@ -145,7 +155,7 @@ func (c *revKeyCache) setCurLocked(k string, e revCacheEntry) {
 
 func (c *revKeyCache) rotateLocked() {
 	c.prev = c.cur
-	c.cur = make(map[string]revCacheEntry, c.cap)
+	c.cur = newRevCacheMap(c.cap)
 	c.curBytes = 0
 }
 
@@ -212,8 +222,12 @@ type prevHintCache struct {
 	prev     map[string]prevHintEntry
 }
 
+func newPrevHintMap(capacity int) map[string]prevHintEntry {
+	return make(map[string]prevHintEntry, min(capacity, maxCacheMapInitialCapacity))
+}
+
 func newPrevHintCache(capacity int, maxBytes int64) *prevHintCache {
-	return &prevHintCache{cap: capacity, maxBytes: maxBytes, cur: make(map[string]prevHintEntry, capacity), prev: map[string]prevHintEntry{}}
+	return &prevHintCache{cap: capacity, maxBytes: maxBytes, cur: newPrevHintMap(capacity), prev: map[string]prevHintEntry{}}
 }
 
 func hintEntryBytes(key string, e prevHintEntry) int64 {
@@ -243,7 +257,7 @@ func (c *prevHintCache) setCurLocked(key string, e prevHintEntry) {
 
 func (c *prevHintCache) rotateLocked() {
 	c.prev = c.cur
-	c.cur = make(map[string]prevHintEntry, c.cap)
+	c.cur = newPrevHintMap(c.cap)
 	c.curBytes = 0
 }
 

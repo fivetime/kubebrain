@@ -8799,8 +8799,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   公共 unary interceptor 将 uncertain result 映射为 etcd `ErrGRPCTimeout`（gRPC `Unavailable`），
   使 clientv3 以暂态、结果不确定写处理，而不会把可能已提交事务误报为 `Unknown`。quorum smoke
   还将 Pod Ready 后的 PD region cache/KubeBrain readiness 收敛观察窗口参数化，默认 10 秒。
-- 定向 race 20 轮、普通 root 全量测试、vet、staticcheck v0.7.0 和 diff check 均通过；完整
-  `pkg/server/etcd` race 套件仍受既有 PrevHintCache 大容量测试超时约束，未作为本轮通过证据。
+- A444 修复 PrevHint/revision cache 的 eager map 预分配：代际 map 的初始容量限制为 8192，
+  逻辑上的 entry cap 与 byte cap 不变，map 仍按实际工作集扩张。此前字节边界测试用百万 entry
+  cap 来证明 byte rotation，会在构造和每次 rotation 分配百万 buckets，race instrumentation 下
+  使完整套件超时；修复后同一测试只为实际保留的少量大对象分配 buckets。
+- 定向 byte-bound race 20 轮，以及完整 `go test -race ./pkg/server/etcd -count=1` 均通过，后者
+  耗时 223.685 秒；普通 root 全量测试、vet、staticcheck v0.7.0 和 diff check 也均通过。
   从 `5263a1c` 干净 archive 构建的 `kubebrain:a444-uncertain-commit-local` 滚动三副本后，真实
   PD leader replacement 在故障窗口完成 1006 次操作，TiKV member replacement 完成 1001 次，
   两者均通过并最终 TidbCluster Ready=True。
