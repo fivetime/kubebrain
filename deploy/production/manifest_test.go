@@ -742,6 +742,11 @@ func TestOperationSubmitterApproverAndAuditAdmissionFenceHighRiskChanges(t *test
 		`request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-operation-approver"`)
 	require.Contains(t, approvalExpression, `object.status.phase == "Pending"`)
 	require.Contains(t, approvalExpression, `approval-id"].matches("^[a-z0-9]`)
+	for _, operationType := range []string{"BackupDeletion", "RestoreCutover", "CertificateRotation", "Destroy"} {
+		require.Contains(t, approvalExpression, `"`+operationType+`"`)
+	}
+	require.NotContains(t, approvalExpression, `"Backup"`)
+	require.NotContains(t, approvalExpression, `"PostRestoreAudit"`)
 	require.Contains(t,
 		expressionsByMessage["operation approval evidence is immutable"],
 		`object.metadata.annotations["dbaas.kubebrain.io/approved-by"] == oldObject.metadata.annotations["dbaas.kubebrain.io/approved-by"]`)

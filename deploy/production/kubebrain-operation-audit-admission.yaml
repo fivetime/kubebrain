@@ -24,9 +24,38 @@ spec:
       message: new operations require the audit archive finalizer
     - expression: 'request.operation != "CREATE" || !has(object.metadata.annotations) || (!("dbaas.kubebrain.io/approved-by" in object.metadata.annotations) && !("dbaas.kubebrain.io/approval-id" in object.metadata.annotations))'
       message: operations cannot be created pre-approved
-    - expression: 'request.operation != "UPDATE" || !has(object.metadata.annotations) || !("dbaas.kubebrain.io/approved-by" in object.metadata.annotations) || (has(oldObject.metadata.annotations) && "dbaas.kubebrain.io/approved-by" in oldObject.metadata.annotations && "dbaas.kubebrain.io/approval-id" in oldObject.metadata.annotations && object.metadata.annotations["dbaas.kubebrain.io/approved-by"] == oldObject.metadata.annotations["dbaas.kubebrain.io/approved-by"] && object.metadata.annotations["dbaas.kubebrain.io/approval-id"] == oldObject.metadata.annotations["dbaas.kubebrain.io/approval-id"]) || (("dbaas.kubebrain.io/approval-id" in object.metadata.annotations) && object.metadata.annotations["dbaas.kubebrain.io/approved-by"] == request.userInfo.username && object.metadata.annotations["dbaas.kubebrain.io/approval-id"].matches("^[a-z0-9]([-a-z0-9.]{0,126}[a-z0-9])?$") && request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-operation-approver" && (!has(object.status) || !has(object.status.phase) || object.status.phase == "Pending"))'
+    - expression: |
+        request.operation != "UPDATE" ||
+        !has(object.metadata.annotations) ||
+        (!("dbaas.kubebrain.io/approved-by" in object.metadata.annotations) &&
+          !("dbaas.kubebrain.io/approval-id" in object.metadata.annotations)) ||
+        (has(oldObject.metadata.annotations) &&
+          "dbaas.kubebrain.io/approved-by" in oldObject.metadata.annotations &&
+          "dbaas.kubebrain.io/approval-id" in oldObject.metadata.annotations &&
+          "dbaas.kubebrain.io/approved-by" in object.metadata.annotations &&
+          "dbaas.kubebrain.io/approval-id" in object.metadata.annotations &&
+          object.metadata.annotations["dbaas.kubebrain.io/approved-by"] == oldObject.metadata.annotations["dbaas.kubebrain.io/approved-by"] &&
+          object.metadata.annotations["dbaas.kubebrain.io/approval-id"] == oldObject.metadata.annotations["dbaas.kubebrain.io/approval-id"]) ||
+        ("dbaas.kubebrain.io/approved-by" in object.metadata.annotations &&
+          "dbaas.kubebrain.io/approval-id" in object.metadata.annotations &&
+          object.metadata.annotations["dbaas.kubebrain.io/approved-by"] == request.userInfo.username &&
+          object.metadata.annotations["dbaas.kubebrain.io/approval-id"].matches("^[a-z0-9]([-a-z0-9.]{0,126}[a-z0-9])?$") &&
+          object.spec.type in ["BackupDeletion", "RestoreCutover", "CertificateRotation", "Destroy"] &&
+          request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-operation-approver" &&
+          (!has(object.status) || !has(object.status.phase) || object.status.phase == "Pending"))
       message: operation approval requires the dedicated approver identity, approval ID, and pending phase
-    - expression: 'request.operation != "UPDATE" || !has(oldObject.metadata.annotations) || !("dbaas.kubebrain.io/approved-by" in oldObject.metadata.annotations) || (has(object.metadata.annotations) && "dbaas.kubebrain.io/approved-by" in object.metadata.annotations && "dbaas.kubebrain.io/approval-id" in object.metadata.annotations && object.metadata.annotations["dbaas.kubebrain.io/approved-by"] == oldObject.metadata.annotations["dbaas.kubebrain.io/approved-by"] && object.metadata.annotations["dbaas.kubebrain.io/approval-id"] == oldObject.metadata.annotations["dbaas.kubebrain.io/approval-id"])'
+    - expression: |
+        request.operation != "UPDATE" ||
+        !has(oldObject.metadata.annotations) ||
+        (!("dbaas.kubebrain.io/approved-by" in oldObject.metadata.annotations) &&
+          !("dbaas.kubebrain.io/approval-id" in oldObject.metadata.annotations)) ||
+        (has(object.metadata.annotations) &&
+          "dbaas.kubebrain.io/approved-by" in oldObject.metadata.annotations &&
+          "dbaas.kubebrain.io/approval-id" in oldObject.metadata.annotations &&
+          "dbaas.kubebrain.io/approved-by" in object.metadata.annotations &&
+          "dbaas.kubebrain.io/approval-id" in object.metadata.annotations &&
+          object.metadata.annotations["dbaas.kubebrain.io/approved-by"] == oldObject.metadata.annotations["dbaas.kubebrain.io/approved-by"] &&
+          object.metadata.annotations["dbaas.kubebrain.io/approval-id"] == oldObject.metadata.annotations["dbaas.kubebrain.io/approval-id"])
       message: operation approval evidence is immutable
     - expression: 'request.operation != "UPDATE" || !has(oldObject.metadata.finalizers) || !oldObject.metadata.finalizers.exists(f, f == "dbaas.kubebrain.io/operation-audit") || (has(object.metadata.finalizers) && object.metadata.finalizers.exists(f, f == "dbaas.kubebrain.io/operation-audit")) || (request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-operation-archiver" && object.status.phase in ["Succeeded", "Failed"] && has(object.metadata.annotations) && "dbaas.kubebrain.io/audit-receipt-sha256" in object.metadata.annotations && object.metadata.annotations["dbaas.kubebrain.io/audit-receipt-sha256"].matches("^[a-f0-9]{64}$") && "dbaas.kubebrain.io/audit-artifact-sha256" in object.metadata.annotations && object.metadata.annotations["dbaas.kubebrain.io/audit-artifact-sha256"].matches("^[a-f0-9]{64}$") && "dbaas.kubebrain.io/audit-version-id" in object.metadata.annotations && size(object.metadata.annotations["dbaas.kubebrain.io/audit-version-id"]) > 0)'
       message: removing the audit finalizer requires terminal archive evidence

@@ -260,6 +260,11 @@ func TestOperationAuditAdmissionRequiresFinalizerAndReleaseEvidence(t *testing.T
 	require.Contains(t, policy.Spec.Validations[1].Expression, operationaudit.ApprovedByAnnotation)
 	require.Contains(t, policy.Spec.Validations[2].Expression, "request.userInfo.username")
 	require.Contains(t, policy.Spec.Validations[2].Expression, "kubebrain-operation-approver")
+	for _, operationType := range []string{"BackupDeletion", "RestoreCutover", "CertificateRotation", "Destroy"} {
+		require.Contains(t, policy.Spec.Validations[2].Expression, operationType)
+	}
+	require.NotContains(t, policy.Spec.Validations[2].Expression, `"Backup"`)
+	require.NotContains(t, policy.Spec.Validations[2].Expression, `"PostRestoreAudit"`)
 	require.Contains(t, policy.Spec.Validations[3].Expression, operationaudit.ApprovalIDAnnotation)
 	require.Contains(t, policy.Spec.Validations[4].Expression, "request.userInfo.username")
 	require.Contains(t, policy.Spec.Validations[4].Expression, "kubebrain-operation-archiver")

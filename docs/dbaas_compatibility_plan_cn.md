@@ -10264,6 +10264,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   和
   `go test ./hack/production -run TestOperationAuditAdmissionRequiresFinalizerAndReleaseEvidence -count=1`
   通过。
+- A603 收紧 Operation approval admission 的类型与成对证据：
+  A602 继续审计同一 `ValidatingAdmissionPolicy` 时发现，旧 approval 表达式只以
+  `approved-by` 作为触发条件：只写 `approval-id` 的 update 会通过 admission，之后
+  `Queue.Approve` 会因已有半截证据拒绝正常审批；专用 approver 也可以给 `Backup` 或
+  `PostRestoreAudit` 这类低风险 operation 写入完整 approval annotations，worker 会继续
+  执行，但终态 `operationaudit.Artifact.Validate` 又会拒绝低风险类型携带 approval，
+  导致审计归档/finalizer release fail closed 卡住。现在 admission 只允许两枚
+  annotations 成对出现；首次写入必须同时满足专用 approver 身份、DNS-compatible
+  approval ID、Pending phase，以及高风险类型白名单
+  `BackupDeletion/RestoreCutover/CertificateRotation/Destroy`。既有 approval 证据仍只能
+  完全原样保留。回归：
+  `go test ./deploy/production -run TestOperationSubmitterApproverAndAuditAdmissionFenceHighRiskChanges -count=1`、
+  `go test ./hack/production -run TestOperationAuditAdmissionRequiresFinalizerAndReleaseEvidence -count=1`
+  和
+  `kubectl apply --dry-run=client -f deploy/production/kubebrain-operation-audit-admission.yaml`
+  通过。
 
 ### P2：运维兼容和长期验证
 
