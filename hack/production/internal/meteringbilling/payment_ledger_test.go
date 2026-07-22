@@ -154,6 +154,8 @@ func TestPaymentLedgerPublisherArchivesExactReceipt(t *testing.T) {
 		require.Equal(t, "billing", values["S3_BUCKET"])
 		require.Equal(t, "COMPLIANCE", values["RETENTION_MODE"])
 		require.Equal(t, fmt.Sprintf("%d", retainUntil), values["RETAIN_UNTIL_UNIX"])
+		require.NotEqual(t, path, values["INPUT"])
+		require.NoError(t, os.WriteFile(path, []byte("{}\n"), 0o600))
 		data, err := os.ReadFile(values["INPUT"])
 		require.NoError(t, err)
 		sum := sha256.Sum256(data)

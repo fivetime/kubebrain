@@ -9106,6 +9106,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   ./hack/production/internal/meteringbilling -run 'TestSettlementPublisher' -count=1`、
   `go test ./hack/production/... ./deploy/production` 与
   `go vet ./hack/production/... ./deploy/production` 通过。
+- A477 收紧本地输入型 financial publisher 的上传冻结：price catalog、provider statement 和
+  payment ledger publisher 均在 canonical/retention/source 校验后重写临时 canonical frozen copy，
+  并只把 frozen path 交给 Object Lock executor，避免原始 `--input` 在 executor 调用期间被替换后
+  污染不可变对象。现有 publisher 回归扩展为在 executor 回调中篡改原始输入，再读取 frozen
+  input 生成 receipt，覆盖三类 artifact；`go test ./hack/production/internal/meteringbilling -run
+  'TestPublisher|TestProviderStatementPublisher|TestPaymentLedgerPublisher' -count=1`、
+  `go test ./hack/production/... ./deploy/production` 与
+  `go vet ./hack/production/... ./deploy/production` 通过。
 
 ### P2：运维兼容和长期验证
 

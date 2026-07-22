@@ -38,12 +38,17 @@ func TestPublisherValidatesBeforeStableObjectLockUpload(t *testing.T) {
 			validCatalog().EffectiveEndUnix+int64(7*365*24*time.Hour/time.Second),
 			retainUntil,
 		)
+		require.NotEqual(t, catalogPath, values["INPUT"])
+		require.NoError(t, os.WriteFile(catalogPath, []byte("{}\n"), 0o600))
+		data, err := os.ReadFile(values["INPUT"])
+		require.NoError(t, err)
+		sum := sha256.Sum256(data)
 		return json.Marshal(map[string]any{
 			"format":          "kubebrain.object-immutable-blob.receipt.v1",
 			"artifact_format": CatalogFormat, "artifact_id": "price-2026-07",
 			"instance": "global", "object_store_id": "store-a", "bucket": "metering",
 			"object_key": values["S3_OBJECT_KEY"], "version_id": "catalog-version",
-			"artifact_sha256": status.SHA256, "object_bytes": status.Bytes,
+			"artifact_sha256": hex.EncodeToString(sum[:]), "object_bytes": int64(len(data)),
 			"retention_mode": "COMPLIANCE", "retain_until_unix": retainUntil,
 			"remote_verified": true, "archived_at_unix": now.Unix(),
 		})
@@ -54,8 +59,7 @@ func TestPublisherValidatesBeforeStableObjectLockUpload(t *testing.T) {
 
 	data, err := os.ReadFile(catalogPath)
 	require.NoError(t, err)
-	sum := sha256.Sum256(data)
-	require.Equal(t, status.SHA256, hex.EncodeToString(sum[:]))
+	require.Equal(t, []byte("{}\n"), data)
 }
 
 func TestPublisherRejectsNonCanonicalCatalogBeforeExecutor(t *testing.T) {

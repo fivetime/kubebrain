@@ -841,7 +841,8 @@ S3_FORCE_PATH_STYLE=false \
     --retention-duration=61320h
 ```
 
-publisher 在任何 S3 请求前执行 strict/canonical schema 校验；对象键固定为
+publisher 在任何 S3 请求前执行 strict/canonical schema 校验，并把已校验目录重写到临时
+canonical frozen copy；Object Lock executor 只上传该 frozen copy。对象键固定为
 `metering-prices/<scope>/<version>.json`，artifact ID 固定为 version，retain-until
 固定为 `effective_end + retention_duration`。同 version 内容、有效期、价格或保留期
 不同都会与既有对象冲突，禁止覆盖。只有 publisher receipt 已独立核验后，才把
@@ -950,7 +951,8 @@ provider statement 行必须按 provider、account、外部 invoice/line、categ
 finalized invoice，聚合跨 account/bucket 成本分类，并计算 customer invoice total、provider
 statement total 和 gross margin。statement source 与 invoice source 的 SHA-256/bytes 必须分别
 匹配本地 canonical artifact；source receipt 与下载字节不一致、retention 不足、账期/币种/
-实例不一致或 source 漂移都会 fail closed。
+实例不一致或 source 漂移都会 fail closed。provider statement publisher 发布前也会把已校验
+statement 重写到临时 canonical frozen copy，Object Lock executor 不读取可变原始输入路径。
 
 外部收款系统的结果通过 normalized payment ledger 固化，而不是修改 invoice。
 `kubebrain.metering-payment-ledger.v1` 绑定 finalized invoice 的 exact-version source、
@@ -960,8 +962,9 @@ processor/外部交易 ID 排序且无重复，金额必须为正，未来交易
 net paid 超过 invoice total 或 source 漂移都会 fail closed。生产路径使用
 `kubebrain-metering-payment-ledger` 从 Object Lock exact-read finalized invoice，并以 read receipt
 生成 invoice source；离线模式才接受本地 invoice/source，且 source SHA-256/bytes 必须匹配本地
-canonical invoice。发布前会重新校验 canonical JSON、invoice source retention 和上传 receipt。
-该 ledger 是应收账款状态证据，不直接发起收款、退款或催收。
+canonical invoice。发布前会重新校验 canonical JSON、invoice source retention，把 ledger 重写到
+临时 canonical frozen copy，并校验上传 receipt。该 ledger 是应收账款状态证据，不直接发起
+收款、退款或催收。
 
 法规发票编号由 `kubebrain.metering-invoice-number-assignment.v1` 固化为本地证据。
 `kubebrain-metering-invoice-number` 从 Object Lock exact-read finalized invoice，绑定 read

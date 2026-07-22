@@ -140,9 +140,15 @@ func (p *ProviderStatementPublisher) Publish(ctx context.Context) (SettlementSta
 		return SettlementStatus[ProviderStatement]{}, nil, err
 	}
 	defer os.RemoveAll(dir)
+	frozenInput := path.Join(dir, "provider-statement.json")
+	if frozen, err := WriteProviderStatementAtomic(frozenInput, status.Value); err != nil {
+		return SettlementStatus[ProviderStatement]{}, nil, err
+	} else if frozen.SHA256 != status.SHA256 || frozen.Bytes != status.Bytes {
+		return SettlementStatus[ProviderStatement]{}, nil, errors.New("frozen provider statement does not match validated input")
+	}
 	objectKey := settlementObjectKey(p.ProviderPrefix, status.Value.Instance, status.Value.ID)
 	output, err := p.Run(ctx, p.Executor, []string{
-		"ACTION=blob", "INPUT=" + p.Input,
+		"ACTION=blob", "INPUT=" + frozenInput,
 		"ARTIFACT_FORMAT=" + ProviderStatementFormat,
 		"ARTIFACT_ID=" + status.Value.ID, "INSTANCE=" + status.Value.Instance,
 		"OBJECT_STORE_ID=" + p.ObjectStoreID, "S3_BUCKET=" + p.Bucket,

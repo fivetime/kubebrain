@@ -447,9 +447,15 @@ func (p *PaymentLedgerPublisher) Publish(ctx context.Context) (SettlementStatus[
 		return SettlementStatus[PaymentLedger]{}, nil, err
 	}
 	defer os.RemoveAll(dir)
+	frozenInput := path.Join(dir, "payment-ledger.json")
+	if frozen, err := WritePaymentLedgerAtomic(frozenInput, status.Value); err != nil {
+		return SettlementStatus[PaymentLedger]{}, nil, err
+	} else if frozen.SHA256 != status.SHA256 || frozen.Bytes != status.Bytes {
+		return SettlementStatus[PaymentLedger]{}, nil, errors.New("frozen payment ledger does not match validated input")
+	}
 	objectKey := settlementObjectKey(p.PaymentPrefix, status.Value.Instance, status.Value.ID)
 	output, err := p.Run(ctx, p.Executor, []string{
-		"ACTION=blob", "INPUT=" + p.Input,
+		"ACTION=blob", "INPUT=" + frozenInput,
 		"ARTIFACT_FORMAT=" + PaymentLedgerFormat,
 		"ARTIFACT_ID=" + status.Value.ID, "INSTANCE=" + status.Value.Instance,
 		"OBJECT_STORE_ID=" + p.ObjectStoreID, "S3_BUCKET=" + p.Bucket,

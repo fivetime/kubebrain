@@ -92,6 +92,8 @@ func TestProviderStatementPublisherValidatesCanonicalStatementAndArchivesExactRe
 		require.Equal(t, "billing", values["S3_BUCKET"])
 		require.Equal(t, "COMPLIANCE", values["RETENTION_MODE"])
 		require.Equal(t, strconvFormatInt(retainUntil), values["RETAIN_UNTIL_UNIX"])
+		require.NotEqual(t, statementPath, values["INPUT"])
+		require.NoError(t, os.WriteFile(statementPath, []byte("{}\n"), 0o600))
 		data, err := os.ReadFile(values["INPUT"])
 		require.NoError(t, err)
 		sum := sha256.Sum256(data)

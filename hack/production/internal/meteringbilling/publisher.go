@@ -52,10 +52,16 @@ func (p *Publisher) Publish(ctx context.Context) (CatalogStatus, []byte, error) 
 		return CatalogStatus{}, nil, err
 	}
 	defer os.RemoveAll(dir)
+	frozenInput := path.Join(dir, "catalog.json")
+	if frozen, err := WriteCatalogAtomic(frozenInput, status.Catalog); err != nil {
+		return CatalogStatus{}, nil, err
+	} else if frozen.SHA256 != status.SHA256 || frozen.Bytes != status.Bytes {
+		return CatalogStatus{}, nil, errors.New("frozen price catalog does not match validated input")
+	}
 	objectKey := path.Join(p.PricePrefix, p.PriceScope, status.Catalog.Version+".json")
 	output, err := p.Run(ctx, p.Executor, []string{
 		"ACTION=blob",
-		"INPUT=" + p.Input,
+		"INPUT=" + frozenInput,
 		"ARTIFACT_FORMAT=" + status.Catalog.Format,
 		"ARTIFACT_ID=" + status.Catalog.Version,
 		"INSTANCE=" + p.PriceScope,
