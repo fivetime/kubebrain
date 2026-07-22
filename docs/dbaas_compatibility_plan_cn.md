@@ -9162,6 +9162,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   retention mode drift；`go test ./hack/production/internal/meteringbilling -run 'Test.*Receipt|TestPublisher' -count=1`、
   `go test ./hack/production/... ./deploy/production` 与
   `go vet ./hack/production/... ./deploy/production` 通过。
+- A484 收紧 Operation audit archiver 的 retention receipt 绑定：Object Lock executor
+  返回后，archiver 在 release audit finalizer 前重新读取 canonical archive receipt，并要求
+  receipt 的 retention mode 与 retain-until 精确等于本次请求。这样合法但非请求策略的
+  Operation audit receipt 不会释放 finalizer。回归覆盖 receipt retention mode drift；
+  `go test ./hack/production/internal/operationarchiver -run 'TestArchiveProcessor' -count=1`、
+  `go test ./hack/production/... ./deploy/production` 与
+  `go vet ./hack/production/... ./deploy/production` 通过。
 
 ### P2：运维兼容和长期验证
 

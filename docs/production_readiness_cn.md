@@ -1838,7 +1838,9 @@ kubectl -n kubebrain-operations rollout status deployment/kubebrain-operation-ar
 `operation-audit/<namespace>/<operation-uid>.json`；保留截止时间固定从
 `status.completedAtUnix` 加 Deployment 的 `--retention-duration` 计算，不随重试时间
 滑动。多副本可安全竞争同一对象：Object Lock executor 只接受同 body/metadata/retention
-的 exact-version 恢复，并在远端下载和 retention 复核后才释放 audit finalizer。若终态
+的 exact-version 恢复；archiver 在释放 audit finalizer 前还会独立检查 receipt 回显的
+retention mode 和 retain-until 等于本次请求，并在远端下载和 retention 复核后才释放
+audit finalizer。若终态
 已晚于完整保留窗口，archiver 会 fail closed，必须按审计事件处置，禁止缩短保留期或手工
 移除 finalizer。中央 archiver Role 只能读取指定 inventory，并 list/get/update Operation
 主资源；它不能读取 worker Secret、修改 status、管理 Lease、创建或删除 Operation。

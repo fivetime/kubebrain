@@ -90,6 +90,13 @@ func (p *ArchiveProcessor) Process(ctx context.Context, object *unstructured.Uns
 	if err := p.run(ctx, p.executor, environment); err != nil {
 		return err
 	}
+	receipt, _, err := operationaudit.InspectArchiveReceipt(receiptPath)
+	if err != nil {
+		return err
+	}
+	if receipt.RetentionMode != p.retentionMode || receipt.RetainUntilUnix != retainUntil {
+		return errors.New("operation audit archive receipt does not match requested retention")
+	}
 	_, err = operationauditrelease.Release(
 		ctx, p.client, artifact.Namespace, artifact.Name, artifactPath, receiptPath,
 	)
