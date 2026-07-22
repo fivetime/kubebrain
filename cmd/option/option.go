@@ -17,7 +17,6 @@ package option
 import (
 	"context"
 	"fmt"
-	"hash/crc32"
 	"math"
 	"net"
 	"sort"
@@ -25,6 +24,7 @@ import (
 	"time"
 
 	"github.com/spf13/pflag"
+	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"golang.org/x/crypto/bcrypt"
 	"k8s.io/klog/v2"
 
@@ -291,15 +291,7 @@ func (o *KubeBrainOption) Validate() error {
 		if err != nil {
 			return err
 		}
-		localID := uint64(crc32.ChecksumIEEE([]byte(identity)))
-		found := false
-		for _, member := range members {
-			if member.ID == localID {
-				found = true
-				break
-			}
-		}
-		if !found {
+		if !initialClusterContainsPeerIdentity(members, identity) {
 			return fmt.Errorf("--initial-cluster does not contain this replica identity %q", identity)
 		}
 	}
@@ -343,6 +335,18 @@ func (o *KubeBrainOption) Validate() error {
 	}
 
 	return o.storageConfig.validate()
+}
+
+func initialClusterContainsPeerIdentity(members []*etcdserverpb.Member, identity string) bool {
+	for _, member := range members {
+		for _, peerURL := range member.PeerURLs {
+			peerIdentity, err := etcdserver.PeerIdentityFromURL(peerURL)
+			if err == nil && peerIdentity == identity {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // buildIdentity computes this replica's advertised identity (host:peerPort).

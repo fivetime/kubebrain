@@ -365,8 +365,8 @@ for entry in "${initial_cluster_entries[@]}"; do
   fi
   member_name="${entry%%=*}"
   peer_urls_raw="${entry#*=}"
-  if [[ -z "$member_name" || -z "$peer_urls_raw" || -n "${expected_member_names[$member_name]:-}" ]]; then
-    echo "EXPECTED_INITIAL_CLUSTER contains an empty or duplicate member: $entry" >&2
+  if [[ -z "$member_name" || -z "$peer_urls_raw" ]]; then
+    echo "EXPECTED_INITIAL_CLUSTER contains an empty member or peer URL list: $entry" >&2
     exit 2
   fi
   expected_member_names["$member_name"]=1
@@ -377,19 +377,24 @@ for entry in "${initial_cluster_entries[@]}"; do
       exit 2
     fi
     expected_peer_urls["$peer_url"]=1
+    if ! expected_peer_members_json="$(printf '%s' "$expected_peer_members_json" | "$JQ" -c \
+      --arg name "$member_name" --arg peerURL "$peer_url" '
+        if any(.[]; .name == $name) then
+          map(if .name == $name then .peerURLs += [$peerURL] else . end)
+        else
+          . + [{name: $name, peerURLs: [$peerURL]}]
+        end
+      ')"; then
+      echo "failed to encode expected initial cluster topology with jq" >&2
+      exit 1
+    fi
   done
-  if ! peer_urls_json="$(printf '%s\n' "${peer_urls[@]}" | "$JQ" -Rsc 'split("\n")[:-1] | sort | unique')"; then
-    echo "failed to encode expected peer URLs with jq" >&2
-    exit 1
-  fi
-  if ! expected_peer_members_json="$(printf '%s' "$expected_peer_members_json" | "$JQ" -c \
-    --arg name "$member_name" --argjson peerURLs "$peer_urls_json" \
-    '. + [{name: $name, peerURLs: $peerURLs}] | sort_by(.name)')"; then
-    echo "failed to encode expected initial cluster topology with jq" >&2
-    exit 1
-  fi
 done
-if [[ "${#initial_cluster_entries[@]}" -ne "$EXPECTED_KUBEBRAIN_REPLICAS" ]]; then
+if ! expected_peer_members_json="$(printf '%s' "$expected_peer_members_json" | "$JQ" -c 'map(.peerURLs |= sort) | sort_by(.name)')"; then
+  echo "failed to canonicalize expected initial cluster topology with jq" >&2
+  exit 1
+fi
+if [[ "${#expected_member_names[@]}" -ne "$EXPECTED_KUBEBRAIN_REPLICAS" ]]; then
   echo "EXPECTED_INITIAL_CLUSTER member count does not match EXPECTED_KUBEBRAIN_REPLICAS" >&2
   exit 2
 fi

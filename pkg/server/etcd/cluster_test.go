@@ -103,6 +103,76 @@ func TestParseInitialClusterAndMemberList(t *testing.T) {
 	}
 }
 
+func TestParseInitialClusterAggregatesRepeatedMemberPeerURLs(t *testing.T) {
+	members, err := ParseInitialCluster(
+		"mem1=http://10.0.0.1:2380,mem1=http://128.193.4.20:2380,mem2=http://10.0.0.2:2380",
+		2379, true,
+	)
+	require.NoError(t, err)
+	require.Len(t, members, 2)
+
+	var mem1 *etcdserverpb.Member
+	for _, member := range members {
+		if member.Name == "mem1" {
+			mem1 = member
+			break
+		}
+	}
+	require.NotNil(t, mem1)
+	require.Equal(t, []string{
+		"http://10.0.0.1:2380",
+		"http://128.193.4.20:2380",
+	}, mem1.PeerURLs)
+	require.Equal(t, []string{
+		"https://10.0.0.1:2379",
+		"https://128.193.4.20:2379",
+	}, mem1.ClientURLs)
+
+	reordered, err := ParseInitialCluster(
+		"mem1=http://128.193.4.20:2380,mem1=http://10.0.0.1:2380,mem2=http://10.0.0.2:2380",
+		2379, true,
+	)
+	require.NoError(t, err)
+	for _, member := range reordered {
+		if member.Name == "mem1" {
+			require.Equal(t, mem1.ID, member.ID)
+			return
+		}
+	}
+	t.Fatal("reordered mem1 is missing")
+}
+
+func TestStaticMemberIDMatchesAnyPeerIdentity(t *testing.T) {
+	members, err := ParseInitialCluster(
+		"kb-1=http://10.0.0.1:2380,kb-1=http://128.193.4.20:2380",
+		2379, false,
+	)
+	require.NoError(t, err)
+	require.Len(t, members, 1)
+
+	server := &RPCServer{staticMembers: members}
+	require.Equal(t, members[0].ID, server.memberIDForPeerIdentity("10.0.0.1:2380"))
+	require.Equal(t, members[0].ID, server.memberIDForPeerIdentity("128.193.4.20:2380"))
+	require.Equal(t, server.memberIDFromAddress("10.0.0.3:2380"), server.memberIDForPeerIdentity("10.0.0.3:2380"))
+}
+
+func TestStatusLeaderMatchesStaticMemberPeerIdentity(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	members, err := ParseInitialCluster(
+		"kb-1=http://10.0.0.1:2380,kb-1=http://128.193.4.20:2380",
+		2379, false,
+	)
+	require.NoError(t, err)
+	server.SetStaticMembers(members)
+	server.peers = testPeerService{isLeader: true, leaderInfo: "128.193.4.20:2380"}
+
+	status, err := server.Status(context.Background(), &etcdserverpb.StatusRequest{})
+	require.NoError(t, err)
+	require.Equal(t, members[0].ID, status.Leader)
+}
+
 func TestParseInitialClusterUsesAdvertisedClientURLs(t *testing.T) {
 	members, err := ParseInitialCluster(
 		"kb-1=http://10.0.0.1:2380,kb-2=http://10.0.0.2:2380",
@@ -159,7 +229,7 @@ func TestParseInitialClusterRejectsInvalidConfiguration(t *testing.T) {
 		"a=10.0.0.1:2380",
 		"a=http://10.0.0.1",
 		"a=http://10.0.0.1:2380/path",
-		"a=http://10.0.0.1:2380,a=http://10.0.0.2:2380",
+		"a=http://10.0.0.1:2380,a=http://10.0.0.1:2380",
 		"a=http://10.0.0.1:2380,b=http://10.0.0.1:2380",
 	} {
 		_, err := ParseInitialCluster(spec, 2379, false)

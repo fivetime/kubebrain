@@ -17,7 +17,6 @@ package etcd
 import (
 	"context"
 	"errors"
-	"hash/crc32"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -287,7 +286,7 @@ func (s *rateLimitedServerStream) RecvMsg(message any) error {
 }
 
 func (s *RPCServer) localMemberID() uint64 {
-	return uint64(crc32.ChecksumIEEE([]byte(s.backend.GetResourceLock().Identity())))
+	return s.memberIDForPeerIdentity(s.backend.GetResourceLock().Identity())
 }
 
 func stampHeader(reply any, clusterID, memberID, raftTerm uint64) {

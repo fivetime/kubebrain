@@ -57,7 +57,7 @@ func (s *RPCServer) MemberList(ctx context.Context, req *etcdserverpb.MemberList
 		if !election.IsLeaderKnown(address) {
 			continue
 		}
-		id := s.memberIDFromAddress(address)
+		id := s.memberIDForPeerIdentity(address)
 		if _, ok := seen[id]; ok {
 			continue
 		}
@@ -81,7 +81,7 @@ func (s *RPCServer) memberListResponse(members []*etcdserverpb.Member) *etcdserv
 	return &etcdserverpb.MemberListResponse{
 		Header: &etcdserverpb.ResponseHeader{
 			ClusterId: s.backend.ClusterID(),
-			MemberId:  s.memberIDFromAddress(s.backend.GetResourceLock().Identity()),
+			MemberId:  s.memberIDForPeerIdentity(s.backend.GetResourceLock().Identity()),
 		},
 		Members: members,
 	}
@@ -105,47 +105,99 @@ func ParseInitialCluster(spec string, clientPort int, clientHTTPS bool, advertis
 	if clientHTTPS {
 		scheme = "https"
 	}
-	seenNames := map[string]struct{}{}
-	seenIDs := map[uint64]struct{}{}
+	seenPeerIdentities := map[string]struct{}{}
+	memberIndexes := map[string]int{}
 	members := make([]*etcdserverpb.Member, 0)
 	for _, entry := range strings.Split(spec, ",") {
-		parts := strings.SplitN(strings.TrimSpace(entry), "=", 2)
-		if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" || strings.TrimSpace(parts[1]) == "" {
+		name, rawURL, err := parseInitialClusterEntry(entry)
+		if err != nil {
 			return nil, fmt.Errorf("invalid initial-cluster entry %q: want name=http[s]://host:peerPort", entry)
 		}
-		name, rawURL := strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
-		if _, exists := seenNames[name]; exists {
-			return nil, fmt.Errorf("duplicate initial-cluster member name %q", name)
+		peerURL, identity, err := parseInitialClusterPeerURL(name, rawURL)
+		if err != nil {
+			return nil, err
 		}
-		u, err := url.Parse(rawURL)
-		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
-			return nil, fmt.Errorf("invalid peer URL %q for member %q", rawURL, name)
-		}
-		host, port, err := net.SplitHostPort(u.Host)
-		if err != nil || host == "" || port == "" {
-			return nil, fmt.Errorf("invalid peer URL %q for member %q: host and port are required", rawURL, name)
-		}
-		peerPort, err := strconv.Atoi(port)
-		if err != nil || peerPort <= 0 || peerPort > 65535 {
-			return nil, fmt.Errorf("invalid peer URL %q for member %q: invalid port", rawURL, name)
-		}
-		identity := net.JoinHostPort(host, port)
-		id := uint64(crc32.ChecksumIEEE([]byte(identity)))
-		if _, exists := seenIDs[id]; exists {
+		if _, exists := seenPeerIdentities[identity]; exists {
 			return nil, fmt.Errorf("duplicate initial-cluster peer identity %q", identity)
 		}
-		seenNames[name], seenIDs[id] = struct{}{}, struct{}{}
-		clientURLs := advertised
-		if len(clientURLs) == 0 {
-			clientURLs = []string{fmt.Sprintf("%s://%s", scheme, net.JoinHostPort(host, strconv.Itoa(clientPort)))}
+		seenPeerIdentities[identity] = struct{}{}
+		memberIndex, exists := memberIndexes[name]
+		if !exists {
+			memberIndex = len(members)
+			memberIndexes[name] = memberIndex
+			members = append(members, &etcdserverpb.Member{
+				Name:       name,
+				ClientURLs: append([]string(nil), advertised...),
+			})
 		}
-		members = append(members, &etcdserverpb.Member{
-			ID: id, Name: name, PeerURLs: []string{u.String()},
-			ClientURLs: append([]string(nil), clientURLs...),
-		})
+		members[memberIndex].PeerURLs = append(members[memberIndex].PeerURLs, peerURL)
+		if len(advertised) == 0 {
+			host, _, _ := net.SplitHostPort(identity)
+			members[memberIndex].ClientURLs = append(members[memberIndex].ClientURLs,
+				fmt.Sprintf("%s://%s", scheme, net.JoinHostPort(host, strconv.Itoa(clientPort))))
+		}
+	}
+	seenMemberIDs := map[uint64]struct{}{}
+	for _, member := range members {
+		sort.Strings(member.PeerURLs)
+		identity, err := PeerIdentityFromURL(member.PeerURLs[0])
+		if err != nil {
+			return nil, err
+		}
+		member.ID = uint64(crc32.ChecksumIEEE([]byte(identity)))
+		if _, exists := seenMemberIDs[member.ID]; exists {
+			return nil, fmt.Errorf("duplicate initial-cluster member ID %d", member.ID)
+		}
+		seenMemberIDs[member.ID] = struct{}{}
+		if len(advertised) == 0 {
+			member.ClientURLs = uniqueSortedStrings(member.ClientURLs)
+		}
 	}
 	sort.Slice(members, func(i, j int) bool { return members[i].ID < members[j].ID })
 	return members, nil
+}
+
+func parseInitialClusterEntry(entry string) (name, rawURL string, err error) {
+	parts := strings.SplitN(strings.TrimSpace(entry), "=", 2)
+	if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" || strings.TrimSpace(parts[1]) == "" {
+		return "", "", fmt.Errorf("invalid initial-cluster entry %q", entry)
+	}
+	return strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1]), nil
+}
+
+func parseInitialClusterPeerURL(name, rawURL string) (peerURL, identity string, err error) {
+	u, err := url.Parse(rawURL)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
+		return "", "", fmt.Errorf("invalid peer URL %q for member %q", rawURL, name)
+	}
+	host, port, err := net.SplitHostPort(u.Host)
+	if err != nil || host == "" || port == "" {
+		return "", "", fmt.Errorf("invalid peer URL %q for member %q: host and port are required", rawURL, name)
+	}
+	peerPort, err := strconv.Atoi(port)
+	if err != nil || peerPort <= 0 || peerPort > 65535 {
+		return "", "", fmt.Errorf("invalid peer URL %q for member %q: invalid port", rawURL, name)
+	}
+	return u.String(), net.JoinHostPort(host, port), nil
+}
+
+func PeerIdentityFromURL(rawURL string) (string, error) {
+	_, identity, err := parseInitialClusterPeerURL("member", rawURL)
+	return identity, err
+}
+
+func uniqueSortedStrings(values []string) []string {
+	sort.Strings(values)
+	result := values[:0]
+	var previous string
+	for _, value := range values {
+		if value == previous {
+			continue
+		}
+		result = append(result, value)
+		previous = value
+	}
+	return result
 }
 
 // ValidateAdvertiseClientURLs validates and copies client URLs before they are
@@ -172,6 +224,21 @@ func ValidateAdvertiseClientURLs(raw []string) ([]string, error) {
 		urls = append(urls, canonical)
 	}
 	return urls, nil
+}
+
+func (s *RPCServer) memberIDForPeerIdentity(address string) uint64 {
+	if !election.IsLeaderKnown(address) {
+		return 0
+	}
+	for _, member := range s.staticMembers {
+		for _, peerURL := range member.PeerURLs {
+			_, identity, err := parseInitialClusterPeerURL(member.Name, peerURL)
+			if err == nil && identity == address {
+				return member.ID
+			}
+		}
+	}
+	return s.memberIDFromAddress(address)
 }
 
 // MemberAdd adds a member into the cluster.

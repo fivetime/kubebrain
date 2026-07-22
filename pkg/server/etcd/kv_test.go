@@ -44,6 +44,7 @@ type testPeerService struct {
 	hasLeaderFn      func() bool
 	epochFn          func() (uint64, bool)
 	noLeader         bool
+	leaderInfo       string
 	syncReadFn       func(context.Context) error
 	leadershipTermFn func(context.Context) (uint64, error)
 	currentTermFn    func() uint64
@@ -77,6 +78,9 @@ func (testPeerService) RefreshLeaderInfo(context.Context) error { return nil }
 func (s testPeerService) GetLeaderInfo() string {
 	if s.noLeader {
 		return ""
+	}
+	if s.leaderInfo != "" {
+		return s.leaderInfo
 	}
 	return "test-peer"
 }

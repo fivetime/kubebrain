@@ -355,7 +355,9 @@ controller StatefulSet name/UID 与 receipt 精确一致；随后校验 Pod temp
 Pod targetRef UID 集合与当前 Pod 集合完全相同；随后
 读取运行时 MemberList，要求 cluster ID 与同一 immutable storage identity 精确一致、精确成员数、唯一且非零的 member ID/name、
 每个成员的 name/peer URL 映射与 immutable initial cluster 完全相同且无重复，且每个成员的
-client URL 集合无重复并与期望完全相同；最后通过官方
+client URL 集合无重复并与期望完全相同；`EXPECTED_INITIAL_CLUSTER` 遵循 etcd
+`initial-cluster` 语义，同一 member name 可重复出现以声明多个 peer URL，门禁会先按
+member name 聚合后再比对运行时拓扑；最后通过官方
 `etcdctl endpoint health` 对 bootstrap `ENDPOINT` 和每个 advertised client URL 分别提交
 线性化 proposal。缺少 `EXPECTED_IMAGE`/
 `EXPECTED_KUBEBRAIN_STATEFULSET_UID`/`EXPECTED_KUBEBRAIN_CLIENT_SERVICE_UID`/`EXPECTED_KEYSPACE`/`EXPECTED_PD_ADDRS`/`EXPECTED_TIDB_CLUSTER_UID`/`EXPECTED_CLUSTER_ID`/`EXPECTED_INITIAL_CLUSTER`/`EXPECTED_QUOTA_BACKEND_BYTES`/`EXPECTED_ADVERTISE_CLIENT_URLS`/`ENDPOINT`、任一状态

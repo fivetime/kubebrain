@@ -9925,6 +9925,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   并要求运行时每个 member 的 peer/client URL 数组本身无重复且与声明精确匹配；重复
   拓扑不会继续进入 endpoint health 阶段。回归：
   `go test ./hack/production -run 'TestValidateInstanceReady' -count=1` 通过。
+- A570 支持 etcd repeated-name initial-cluster peer URL 语义：
+  对照 `/root/etcd/client/pkg/types/urlsmap.go` 的 `NewURLsMap` 和
+  `/root/etcd/client/pkg/types/urlsmap_test.go`，上游允许
+  `mem1=urlA,mem1=urlB` 聚合同一 member 的多个 peer URL。KubeBrain 旧
+  `ParseInitialCluster` 把重复 member name 直接拒绝，且本机 identity 校验、
+  MemberList header 与 Status leader 都按单个 `host:port` CRC32 判定；合法
+  multi-peer 配置无法启动或会产生与静态 MemberList 不一致的 member ID。现在
+  `ParseInitialCluster` 按 member name 聚合 peer URLs，排序后稳定生成 member
+  ID；显式 advertised client URL 保持调用方顺序，派生 client URL 去重排序；
+  option 校验逐 peer URL 查找本机 identity，MemberList header 和 Status leader
+  也通过静态 member peer URL 反查 ID。`validate-instance-ready.sh` 同步按 etcd
+  repeated-name 语义聚合 `EXPECTED_INITIAL_CLUSTER`，再与运行时 MemberList 精确比对。
+  回归：
+  `go test ./pkg/server/etcd -run 'Test(ParseInitialCluster|StaticMemberID|MemberList|StatusLeader)' -count=1`、
+  `go test ./cmd/option -run 'TestInitialCluster' -count=1` 和
+  `go test ./hack/production -run 'TestValidateInstanceReady' -count=1` 通过。
 
 ### P2：运维兼容和长期验证
 

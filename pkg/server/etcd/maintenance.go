@@ -214,7 +214,7 @@ func (s *RPCServer) Status(ctx context.Context, _ *etcdserverpb.StatusRequest) (
 	if quota == 0 {
 		quota = defaultEtcdBackendQuota
 	}
-	leader := s.memberIDFromAddress(s.peers.GetLeaderInfo())
+	leader := s.memberIDForPeerIdentity(s.peers.GetLeaderInfo())
 	term, err := s.responseRaftTerm(ctx)
 	if err != nil {
 		return nil, err

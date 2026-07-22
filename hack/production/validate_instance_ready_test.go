@@ -383,6 +383,17 @@ func TestValidateInstanceReady(t *testing.T) {
 			wantOutput:     "initial cluster configuration mismatch",
 		},
 		{
+			name:           "repeated initial cluster member peer URLs",
+			image:          "registry/kubebrain@sha256:abc",
+			kubeStatus:     "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:abc",
+			topology:       "3\t3",
+			healthOK:       true,
+			initialCluster: "kb-0=peer-0a,kb-0=peer-0b,kb-1=peer-1,kb-2=peer-2",
+			memberListJSON: `{"header":{"cluster_id":1},"members":[{"ID":11,"name":"kb-0","peerURLs":["peer-0a","peer-0b"],"clientURLs":["https://instance.example:2379"]},{"ID":12,"name":"kb-1","peerURLs":["peer-1"],"clientURLs":["https://instance.example:2379"]},{"ID":13,"name":"kb-2","peerURLs":["peer-2"],"clientURLs":["https://instance.example:2379"]}]}`,
+			wantOK:         true,
+			wantOutput:     "release gate passed",
+		},
+		{
 			name:           "duplicate initial cluster peer URL",
 			image:          "registry/kubebrain@sha256:abc",
 			kubeStatus:     "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:abc",
