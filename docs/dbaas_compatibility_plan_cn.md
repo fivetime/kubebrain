@@ -10022,6 +10022,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   名和键集合，防止误挂载额外 Secret 内容或镜像 USER 漂移造成凭据读取差异。回归：
   `go test ./deploy/production -run 'Test(OperationAPIIsFailClosedAndHardened|OperationParameterBrokerOwnsTheOnlyExecutorParameterSecretPermission)' -count=1`
   通过。
+- A580 固定 certificate rotation hook Secret allowlist：
+  证书轮换 executor 通过 `kubebrain-certificate-rotation-executor-hooks` Secret 注入
+  `publish-overlap` 和 `publish-final` 两个受审计 hook，但旧 volume 没有 `items`
+  allowlist，Secret 中任何额外 key 都会以同样可执行权限出现在 hook 目录；`defaultMode: 365`
+  也让八进制意图不直观。现在清单显式写 `defaultMode: 0555`，并只挂载
+  `publish-overlap`/`publish-final` 两个 key；manifest 回归确保只有 certificate rotation
+  executor 有 hooks volume，其他五类 executor 不会挂载该 Secret。回归：
+  `go test ./deploy/production -run TestOperationExecutorsAreTypeIsolatedFailClosedTemplates -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

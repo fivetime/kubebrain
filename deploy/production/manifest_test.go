@@ -460,7 +460,7 @@ func TestOperationExecutorsAreTypeIsolatedFailClosedTemplates(t *testing.T) {
 		)
 		require.NoError(t, err)
 		require.True(t, found)
-		var workspace, parameterToken, parameterCA *unstructured.Unstructured
+		var workspace, parameterToken, parameterCA, hooks *unstructured.Unstructured
 		for _, raw := range volumes {
 			volume := &unstructured.Unstructured{Object: raw.(map[string]any)}
 			switch nestedString(t, volume, "name") {
@@ -470,6 +470,8 @@ func TestOperationExecutorsAreTypeIsolatedFailClosedTemplates(t *testing.T) {
 				parameterToken = volume
 			case "parameter-ca":
 				parameterCA = volume
+			case "hooks":
+				hooks = volume
 			}
 		}
 		require.NotNil(t, workspace)
@@ -489,6 +491,26 @@ func TestOperationExecutorsAreTypeIsolatedFailClosedTemplates(t *testing.T) {
 		))
 		require.Equal(t, "kubebrain-operation-parameter-broker-ca",
 			nestedString(t, parameterCA, "configMap", "name"))
+		if name == "kubebrain-certificate-rotation-executor" {
+			require.NotNil(t, hooks)
+			require.Equal(t, "kubebrain-certificate-rotation-executor-hooks",
+				nestedString(t, hooks, "secret", "secretName"))
+			require.EqualValues(t, 0555, nestedInt64(t, hooks, "secret", "defaultMode"))
+			items, found, err := unstructured.NestedSlice(hooks.Object, "secret", "items")
+			require.NoError(t, err)
+			require.True(t, found)
+			pathsByKey := map[string]string{}
+			for _, item := range items {
+				itemObject := &unstructured.Unstructured{Object: item.(map[string]any)}
+				pathsByKey[nestedString(t, itemObject, "key")] = nestedString(t, itemObject, "path")
+			}
+			require.Equal(t, map[string]string{
+				"publish-overlap": "publish-overlap",
+				"publish-final":   "publish-final",
+			}, pathsByKey)
+		} else {
+			require.Nil(t, hooks)
+		}
 	}
 }
 

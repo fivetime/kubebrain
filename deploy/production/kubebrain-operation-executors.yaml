@@ -416,7 +416,12 @@ spec:
         - name: hooks
           secret:
             secretName: kubebrain-certificate-rotation-executor-hooks
-            defaultMode: 365
+            defaultMode: 0555
+            items:
+              - key: publish-overlap
+                path: publish-overlap
+              - key: publish-final
+                path: publish-final
         - {name: parameter-token, projected: {sources: [{serviceAccountToken: {path: token, audience: kubebrain-operation-parameters, expirationSeconds: 3600}}]}}
         - {name: parameter-ca, configMap: {name: kubebrain-operation-parameter-broker-ca, items: [{key: ca.crt, path: ca.crt}]}}
 ---

@@ -2153,7 +2153,8 @@ Pod UID，更新 Secret 后在 30 秒加 probe 容差内验证 endpoint 呈现�
 `deploy/production/kubebrain-operation-executors.yaml`，默认全部为零副本。启用任意一类
 之前必须创建同名 `*-executor-env` Secret 和 `*-executor-workspace` PVC；证书轮换还必须
 创建 `kubebrain-certificate-rotation-executor-hooks` Secret，键
-`publish-overlap`、`publish-final` 必须是可执行、幂等且受发布流程审计的程序。生产 PVC
+`publish-overlap`、`publish-final` 必须是可执行、幂等且受发布流程审计的程序；清单只以
+`0555` mode 挂载这两个 key，不得把额外 Secret key 暴露到 hook 目录。生产 PVC
 必须支持 RWX 和 `runAsUser/fsGroup=65532`；两个副本会竞争同一队列并依赖 Lease/attempt
 fencing，RWO 卷或节点本地卷不能满足跨节点接管。参数里的 artifact、state、receipt 路径
 必须位于 `/var/lib/kubebrain-operation`，临时文件才可放 `/tmp`。
