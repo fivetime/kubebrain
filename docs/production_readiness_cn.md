@@ -319,6 +319,7 @@ tombstone 与历史值、lease/附属 key、watch 历史回放，以及新写入
 KUBE_CONTEXT=production \
 KUBEBRAIN_NAMESPACE=kubebrain-instance-a \
 EXPECTED_KUBEBRAIN_STATEFULSET_UID=<immutable-kubebrain-statefulset-uid> \
+EXPECTED_KUBEBRAIN_CLIENT_SERVICE_UID=<immutable-kubebrain-client-service-uid> \
 EXPECTED_IMAGE=registry.example/kubebrain@sha256:<digest> \
 EXPECTED_KEYSPACE=instance-a \
 EXPECTED_PD_ADDRS=kb-pd.kubebrain-storage-a.svc:2379 \
@@ -349,14 +350,16 @@ ordinal Pod 集合全部为 Running/Ready、非终止、带有当前 controller 
 controller StatefulSet name/UID 与 receipt 精确一致；随后校验 Pod template 中唯一的
 `--keyspace`、`--pd-addrs`、`--initial-cluster`、`--quota-backend-bytes`
 和 `--advertise-client-urls` 全部匹配，随后
+要求 client Service metadata UID 与 receipt 一致，且其 EndpointSlice 的 ready/serving/non-terminating
+Pod targetRef UID 集合与当前 Pod 集合完全相同；随后
 读取运行时 MemberList，要求 cluster ID 与同一 immutable storage identity 精确一致、精确成员数、唯一且非零的 member ID/name、
 每个成员的 name/peer URL 映射与 immutable initial cluster 完全相同，且每个成员的 client
 URL 集合与期望完全相同；最后通过官方
 `etcdctl endpoint health` 对 bootstrap `ENDPOINT` 和每个 advertised client URL 分别提交
 线性化 proposal。缺少 `EXPECTED_IMAGE`/
-`EXPECTED_KUBEBRAIN_STATEFULSET_UID`/`EXPECTED_KEYSPACE`/`EXPECTED_PD_ADDRS`/`EXPECTED_TIDB_CLUSTER_UID`/`EXPECTED_CLUSTER_ID`/`EXPECTED_INITIAL_CLUSTER`/`EXPECTED_QUOTA_BACKEND_BYTES`/`EXPECTED_ADVERTISE_CLIENT_URLS`/`ENDPOINT`、任一状态
+`EXPECTED_KUBEBRAIN_STATEFULSET_UID`/`EXPECTED_KUBEBRAIN_CLIENT_SERVICE_UID`/`EXPECTED_KEYSPACE`/`EXPECTED_PD_ADDRS`/`EXPECTED_TIDB_CLUSTER_UID`/`EXPECTED_CLUSTER_ID`/`EXPECTED_INITIAL_CLUSTER`/`EXPECTED_QUOTA_BACKEND_BYTES`/`EXPECTED_ADVERTISE_CLIENT_URLS`/`ENDPOINT`、任一状态
 缺失、旧 revision、错误拓扑、错误镜像、Pod owner/revision/Ready/终止状态漂移、quota/client URL 缺失/重复/不匹配或 endpoint
-不健康、KubeBrain StatefulSet/TidbCluster UID 或 TidbCluster/MemberList cluster ID 漂移、initial cluster 成员/peer URL 为空或重复、MemberList 缺失/重复/不完整/与声明不一致、advertised URL 列表含空成员或任一地址
+不健康、KubeBrain StatefulSet/client Service/TidbCluster UID 或 TidbCluster/MemberList cluster ID 漂移、EndpointSlice Pod 集合漂移、initial cluster 成员/peer URL 为空或重复、MemberList 缺失/重复/不完整/与声明不一致、advertised URL 列表含空成员或任一地址
 从门禁网络不可达都会 fail closed。脚本使用可覆盖的 `JQ`（默认 `jq`）结构化解析 JSON，
 不得用文本匹配替代成员身份和 URL 集合检查。
 

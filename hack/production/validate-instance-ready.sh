@@ -5,7 +5,9 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 
 KUBEBRAIN_NAMESPACE="${KUBEBRAIN_NAMESPACE:-kubebrain-system}"
 KUBEBRAIN_STATEFULSET="${KUBEBRAIN_STATEFULSET:-kubebrain}"
+KUBEBRAIN_CLIENT_SERVICE="${KUBEBRAIN_CLIENT_SERVICE:-$KUBEBRAIN_STATEFULSET}"
 EXPECTED_KUBEBRAIN_STATEFULSET_UID="${EXPECTED_KUBEBRAIN_STATEFULSET_UID:-}"
+EXPECTED_KUBEBRAIN_CLIENT_SERVICE_UID="${EXPECTED_KUBEBRAIN_CLIENT_SERVICE_UID:-}"
 EXPECTED_KUBEBRAIN_REPLICAS="${EXPECTED_KUBEBRAIN_REPLICAS:-3}"
 EXPECTED_IMAGE="${EXPECTED_IMAGE:-}"
 EXPECTED_KEYSPACE="${EXPECTED_KEYSPACE:-}"
@@ -65,6 +67,10 @@ if ! [[ "$EXPECTED_QUOTA_BACKEND_BYTES" =~ ^[1-9][0-9]*$ ]]; then
 fi
 if [[ -z "$EXPECTED_ADVERTISE_CLIENT_URLS" ]]; then
   echo "EXPECTED_ADVERTISE_CLIENT_URLS is required" >&2
+  exit 2
+fi
+if [[ -z "$EXPECTED_KUBEBRAIN_CLIENT_SERVICE_UID" ]]; then
+  echo "EXPECTED_KUBEBRAIN_CLIENT_SERVICE_UID is required" >&2
   exit 2
 fi
 for variable in EXPECTED_KUBEBRAIN_REPLICAS EXPECTED_PD_REPLICAS EXPECTED_TIKV_REPLICAS; do
@@ -156,6 +162,31 @@ if ! printf '%s' "$kubebrain_pods_json" | "$JQ" -e \
     )
   ' >/dev/null; then
   echo "KubeBrain Pod set does not match the expected StatefulSet ownership and converged release" >&2
+  exit 1
+fi
+if ! expected_pod_uids_json="$(printf '%s' "$kubebrain_pods_json" | "$JQ" -ce '[.items[].metadata.uid] | sort')"; then
+  echo "failed to extract KubeBrain Pod resource identities" >&2
+  exit 1
+fi
+actual_service_uid="$("$KUBECTL" "${kubectl_args[@]}" -n "$KUBEBRAIN_NAMESPACE" get service "$KUBEBRAIN_CLIENT_SERVICE" -o 'jsonpath={.metadata.uid}')"
+if [[ "$actual_service_uid" != "$EXPECTED_KUBEBRAIN_CLIENT_SERVICE_UID" ]]; then
+  echo "KubeBrain client Service resource identity mismatch: expected UID ${EXPECTED_KUBEBRAIN_CLIENT_SERVICE_UID}, got ${actual_service_uid:-missing}" >&2
+  exit 1
+fi
+if ! endpoint_slices_json="$("$KUBECTL" "${kubectl_args[@]}" -n "$KUBEBRAIN_NAMESPACE" \
+  get endpointslice -l "kubernetes.io/service-name=${KUBEBRAIN_CLIENT_SERVICE}" -o json)"; then
+  echo "failed to list KubeBrain client Service EndpointSlices" >&2
+  exit 1
+fi
+if ! printf '%s' "$endpoint_slices_json" | "$JQ" -e --argjson expectedPodUIDs "$expected_pod_uids_json" '
+  ([.items[]?.endpoints[]?] | length) == ($expectedPodUIDs | length) and
+  all(.items[]?.endpoints[]?;
+    .conditions.ready == true and .conditions.serving == true and (.conditions.terminating // false) == false and
+    .targetRef.kind == "Pod" and ((.targetRef.uid // "") | length) > 0
+  ) and
+  ([.items[]?.endpoints[]?.targetRef.uid] | sort) == $expectedPodUIDs
+' >/dev/null; then
+  echo "KubeBrain client Service EndpointSlices do not match the expected ready Pod identities" >&2
   exit 1
 fi
 
@@ -374,4 +405,4 @@ for advertised_url in "${advertised_client_urls[@]}"; do
   fi
 done
 
-echo "KubeBrain instance release gate passed: endpoint=${ENDPOINT} image=${EXPECTED_IMAGE} kubebrain_statefulset_uid=${EXPECTED_KUBEBRAIN_STATEFULSET_UID} keyspace=${EXPECTED_KEYSPACE} pd_addrs=${EXPECTED_PD_ADDRS} tidb_cluster_uid=${EXPECTED_TIDB_CLUSTER_UID} cluster_id=${EXPECTED_CLUSTER_ID} initial_cluster=${EXPECTED_INITIAL_CLUSTER} quota=${EXPECTED_QUOTA_BACKEND_BYTES} advertise_client_urls=${EXPECTED_ADVERTISE_CLIENT_URLS} replicas=${EXPECTED_KUBEBRAIN_REPLICAS} PD/TiKV=${EXPECTED_PD_REPLICAS}/${EXPECTED_TIKV_REPLICAS}"
+echo "KubeBrain instance release gate passed: endpoint=${ENDPOINT} image=${EXPECTED_IMAGE} kubebrain_statefulset_uid=${EXPECTED_KUBEBRAIN_STATEFULSET_UID} kubebrain_client_service_uid=${EXPECTED_KUBEBRAIN_CLIENT_SERVICE_UID} keyspace=${EXPECTED_KEYSPACE} pd_addrs=${EXPECTED_PD_ADDRS} tidb_cluster_uid=${EXPECTED_TIDB_CLUSTER_UID} cluster_id=${EXPECTED_CLUSTER_ID} initial_cluster=${EXPECTED_INITIAL_CLUSTER} quota=${EXPECTED_QUOTA_BACKEND_BYTES} advertise_client_urls=${EXPECTED_ADVERTISE_CLIENT_URLS} replicas=${EXPECTED_KUBEBRAIN_REPLICAS} PD/TiKV=${EXPECTED_PD_REPLICAS}/${EXPECTED_TIKV_REPLICAS}"

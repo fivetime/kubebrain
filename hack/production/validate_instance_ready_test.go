@@ -25,6 +25,7 @@ func TestValidateInstanceReady(t *testing.T) {
 		unreachableAdvertisedURL string
 		memberListJSON           string
 		podsJSON                 string
+		endpointSlicesJSON       string
 		initialCluster           string
 		wantOK                   bool
 		wantOutput               string
@@ -208,6 +209,17 @@ func TestValidateInstanceReady(t *testing.T) {
 			wantOutput: "Pod set does not match",
 		},
 		{
+			name:       "client Service has stale endpoint Pod identity",
+			image:      "registry/kubebrain@sha256:abc",
+			kubeStatus: "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:abc",
+			topology:   "3\t3",
+			healthOK:   true,
+			endpointSlicesJSON: fakeEndpointSlicesJSON([]string{
+				"uid-kubebrain-0", "uid-kubebrain-1", "uid-old",
+			}, true),
+			wantOutput: "EndpointSlices do not match",
+		},
+		{
 			name:       "wrong storage topology",
 			image:      "registry/kubebrain@sha256:abc",
 			kubeStatus: "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:abc",
@@ -357,6 +369,10 @@ elif [[ "$*" == *"get statefulset kubebrain"* && "$*" == *".args"* ]]; then
   printf '%s' "$FAKE_KUBEBRAIN_ARGS"
 elif [[ "$*" == *"get statefulset kubebrain"* && "$*" == *"jsonpath="* ]]; then
   printf '%s' "$FAKE_KUBEBRAIN_STATUS"
+elif [[ "$*" == *"get service kubebrain"* && "$*" == *"jsonpath="* ]]; then
+  printf 'uid-client-service'
+elif [[ "$*" == *"get endpointslice"* && "$*" == *"kubernetes.io/service-name=kubebrain"* ]]; then
+  printf '%s' "$FAKE_ENDPOINT_SLICES_JSON"
 elif [[ "$*" == *"get pods"* && "$*" == *"app.kubernetes.io/name=kubebrain"* ]]; then
   printf '%s' "$FAKE_KUBEBRAIN_PODS_JSON"
 else
@@ -409,6 +425,10 @@ exit 1
 			if podsJSON == "" {
 				podsJSON = fakeKubeBrainPodsJSON("uid-kubebrain", "kb-new", tc.image, true, false)
 			}
+			endpointSlicesJSON := tc.endpointSlicesJSON
+			if endpointSlicesJSON == "" {
+				endpointSlicesJSON = fakeEndpointSlicesJSON([]string{"uid-kubebrain-0", "uid-kubebrain-1", "uid-kubebrain-2"}, true)
+			}
 			kubeStatus := tc.kubeStatus
 			if strings.Count(kubeStatus, "\t") == 7 {
 				kubeStatus += "\tuid-kubebrain"
@@ -419,6 +439,7 @@ exit 1
 				"ETCDCTL="+fakeEtcdctl,
 				"EXPECTED_IMAGE="+tc.image,
 				"EXPECTED_KUBEBRAIN_STATEFULSET_UID=uid-kubebrain",
+				"EXPECTED_KUBEBRAIN_CLIENT_SERVICE_UID=uid-client-service",
 				"EXPECTED_KEYSPACE=instance-a",
 				"EXPECTED_PD_ADDRS=kb-pd.storage.svc:2379",
 				"EXPECTED_CLUSTER_ID=1",
@@ -432,6 +453,7 @@ exit 1
 				"FAKE_KUBEBRAIN_STATUS="+kubeStatus,
 				"FAKE_KUBEBRAIN_ARGS="+kubeArgs,
 				"FAKE_KUBEBRAIN_PODS_JSON="+podsJSON,
+				"FAKE_ENDPOINT_SLICES_JSON="+endpointSlicesJSON,
 				"FAKE_TOPOLOGY="+topology,
 				"FAKE_HEALTH_OK="+boolString(tc.healthOK),
 				"FAKE_UNREACHABLE_ADVERTISED_URL="+tc.unreachableAdvertisedURL,
@@ -453,6 +475,7 @@ func fakeKubeBrainPodsJSON(ownerUID, revision, image string, ready, terminating 
 	for index := range items {
 		metadata := map[string]any{
 			"name":   "kubebrain-" + string(rune('0'+index)),
+			"uid":    "uid-kubebrain-" + string(rune('0'+index)),
 			"labels": map[string]any{"controller-revision-hash": revision},
 			"ownerReferences": []map[string]any{{
 				"apiVersion": "apps/v1", "kind": "StatefulSet", "name": "kubebrain",
@@ -476,6 +499,21 @@ func fakeKubeBrainPodsJSON(ownerUID, revision, image string, ready, terminating 
 		}
 	}
 	encoded, err := json.Marshal(map[string]any{"items": items})
+	if err != nil {
+		panic(err)
+	}
+	return string(encoded)
+}
+
+func fakeEndpointSlicesJSON(podUIDs []string, ready bool) string {
+	endpoints := make([]map[string]any, len(podUIDs))
+	for index, podUID := range podUIDs {
+		endpoints[index] = map[string]any{
+			"conditions": map[string]any{"ready": ready, "serving": ready, "terminating": false},
+			"targetRef":  map[string]any{"kind": "Pod", "uid": podUID},
+		}
+	}
+	encoded, err := json.Marshal(map[string]any{"items": []map[string]any{{"endpoints": endpoints}}})
 	if err != nil {
 		panic(err)
 	}
