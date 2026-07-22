@@ -9526,6 +9526,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./hack/production/internal/meteringbilling -run 'Test(Settlement|BuildInvoice|InvoicePlan|InvoiceFinalizer)' -count=20`、
   `go test ./hack/production/internal/meteringbilling`、`go test ./hack/production/... ./deploy/production`、
   `go vet ./hack/production/... ./deploy/production` 与 `git diff --check` 通过。
+- A529 扩展 client/v3 批量 lease renewal Porcupine 模型：对照
+  `/root/etcd/tests/common/lease_test.go` 的 `TestLeaseGrantAndList`、
+  `TestLeaseGrantTimeToLiveExpired` 和 `TestLeaseGrantKeepAliveOnce`，新增
+  `TestClientV3LeaseBatchRenewalHistoryIsLinearizable`。该黑盒历史同时创建 6 个短
+  TTL lease，只对偶数 lease 持续 `KeepAliveOnce`，通过 watch 记录奇数 lease 的自然
+  删除，并最终验证 `TimeToLive(WithAttachedKeys)`、`Get` 和 `Leases` 只保留被续约
+  集合。配套 `TestLeaseBatchRenewalModelRequiresOriginalDeadlineIsolation` 明确拒绝
+  两类反例：已续约 lease 被原始 deadline 删除、未续约 lease 过期后仍能读到旧 key。
+  无端点时 live 历史按既有 client/v3 兼容测试约定跳过；模型单测和编译门禁通过；
+  `(cd hack/etcd-client-compat && go test . -run 'TestLeaseBatchRenewalModelRequiresOriginalDeadlineIsolation|TestClientV3LeaseBatchRenewalHistoryIsLinearizable' -count=20)`、
+  `(cd hack/etcd-client-compat && go test . -run 'TestLeaseBatchRenewalModelRequiresOriginalDeadlineIsolation|TestClientV3LeaseBatchRenewalHistoryIsLinearizable' -race -count=1)`
+  与 `git diff --check` 通过。
 
 ### P2：运维兼容和长期验证
 
@@ -9535,8 +9547,8 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
    跨可用区故障、磁盘满和长时间 soak。不得用 TiDB BR full/PITR 的成功状态关闭该缺口。
 3. Porcupine 已覆盖无故障 Get/Put/CAS、多键 Txn 原子性、lease lifecycle、
    显式 ID revoke/regrant 代际隔离、watch-backed 自然过期，以及可表达不确定写
-   结果的 KubeBrain Leader/TiKV/PD 故障历史；继续扩展批量 lease/长时间 renewal
-   模型，并在多 store/多 PD 预生产拓扑上做分区和多点故障注入。
+   结果的 KubeBrain Leader/TiKV/PD 故障历史；批量 lease renewal 隔离模型已建立；
+   继续扩展小时级 renewal 模型，并在多 store/多 PD 预生产拓扑上做分区和多点故障注入。
    大规模性能测试不能替代正确性证明。
 
 ## 提交规则
