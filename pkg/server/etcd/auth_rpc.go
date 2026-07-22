@@ -74,6 +74,21 @@ func (s *RPCServer) AuthStatus(ctx context.Context, _ *etcdserverpb.AuthStatusRe
 	if err != nil {
 		return nil, err
 	}
+	if snapshot.Config.Enabled {
+		if credential, ok := authCredentialFromContext(ctx); ok {
+			token, err := authTokenFromCredential(credential)
+			if err != nil {
+				return nil, err
+			}
+			if _, err = s.tokens.verify(ctx, token); err != nil {
+				return nil, err
+			}
+			snapshot, err = s.tokens.snapshots.current(ctx)
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
 	header, err := s.authRPCHeader(ctx)
 	if err != nil {
 		return nil, err

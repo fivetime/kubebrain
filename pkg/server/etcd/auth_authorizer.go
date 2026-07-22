@@ -34,18 +34,14 @@ func (s *RPCServer) authCallerFromContext(ctx context.Context) (*authCaller, err
 	if !snapshot.Config.Enabled {
 		return nil, nil
 	}
-	values := metadata.ValueFromIncomingContext(ctx, rpctypes.TokenFieldNameGRPC)
-	if len(values) == 0 {
-		values = metadata.ValueFromIncomingContext(ctx, rpctypes.TokenFieldNameSwagger)
-	}
-	if len(values) == 0 {
+	credential, ok := authCredentialFromContext(ctx)
+	if !ok {
 		return s.authCallerFromTLS(ctx, snapshot)
 	}
-	credential := values[0]
-	if credential == "" {
-		return nil, rpctypes.ErrInvalidAuthToken
+	token, err := authTokenFromCredential(credential)
+	if err != nil {
+		return nil, err
 	}
-	token := strings.TrimPrefix(credential, "Bearer ")
 	claims, err := s.tokens.verify(ctx, token)
 	if err != nil {
 		return nil, err
@@ -67,6 +63,24 @@ func (s *RPCServer) authCallerFromContext(ctx context.Context) (*authCaller, err
 		username: claims.Username, revision: revision,
 		snapshot: snapshot, forwardToken: credential,
 	}, nil
+}
+
+func authCredentialFromContext(ctx context.Context) (string, bool) {
+	values := metadata.ValueFromIncomingContext(ctx, rpctypes.TokenFieldNameGRPC)
+	if len(values) == 0 {
+		values = metadata.ValueFromIncomingContext(ctx, rpctypes.TokenFieldNameSwagger)
+	}
+	if len(values) == 0 {
+		return "", false
+	}
+	return values[0], true
+}
+
+func authTokenFromCredential(credential string) (string, error) {
+	if credential == "" {
+		return "", rpctypes.ErrInvalidAuthToken
+	}
+	return strings.TrimPrefix(credential, "Bearer "), nil
 }
 
 func (s *RPCServer) authCallerFromTLS(ctx context.Context, snapshot *authSnapshot) (*authCaller, error) {

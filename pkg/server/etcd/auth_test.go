@@ -146,6 +146,29 @@ func TestAuthenticateReadBarrierPrecedesPasswordCheck(t *testing.T) {
 	require.Equal(t, barrierErr.Error(), status.Convert(err).Message())
 }
 
+func TestAuthStatusRejectsInvalidTokenWhenEnabled(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	plain := context.Background()
+	setupAuthKVUser(t, server)
+
+	response, err := server.AuthStatus(plain, &etcdserverpb.AuthStatusRequest{})
+	require.NoError(t, err)
+	require.True(t, response.Enabled)
+
+	badCtx := metadata.NewIncomingContext(plain, metadata.Pairs(rpctypes.TokenFieldNameGRPC, "not-a-valid-token"))
+	response, err = server.AuthStatus(badCtx, &etcdserverpb.AuthStatusRequest{})
+	require.Nil(t, response)
+	require.ErrorIs(t, err, rpctypes.ErrInvalidAuthToken)
+
+	goodAuth, err := server.Authenticate(plain, &etcdserverpb.AuthenticateRequest{Name: "root", Password: "root-secret"})
+	require.NoError(t, err)
+	goodCtx := metadata.NewIncomingContext(plain, metadata.Pairs(rpctypes.TokenFieldNameGRPC, goodAuth.Token))
+	response, err = server.AuthStatus(goodCtx, &etcdserverpb.AuthStatusRequest{})
+	require.NoError(t, err)
+	require.True(t, response.Enabled)
+}
+
 func TestAuthRPCBootstrapAndEnabledSafetyBoundary(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

@@ -10227,6 +10227,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   可重试 gRPC status。回归：
   `go test ./pkg/server/etcd -run TestAuthenticateReadBarrierPrecedesPasswordCheck -count=1`
   通过。
+- A600 对齐 `AuthStatus` 的 optional auth token 解析：
+  对照 `/root/etcd/server/etcdserver/v3_server.go` 的 `processInternalRaftRequestOnce`
+  和 `/root/etcd/server/auth/store.go` 的 `AuthInfoFromCtx`，上游 `AuthStatus` 不要求
+  登录身份；auth 开启且请求没有 token/client-cert 时仍允许返回状态。但如果请求显式
+  携带了 token metadata，入口会解析 token，坏 token 返回 `ErrInvalidAuthToken`，
+  不会被 `AuthStatus` 静默忽略。KubeBrain 旧 `AuthStatus` 只读取 auth snapshot 并填
+  header，导致坏 token 下仍成功。现在 token metadata 提取逻辑与普通 auth caller
+  共用：无 token 允许，空/坏 token 拒绝，合法 token 允许。回归：
+  `go test ./pkg/server/etcd -run TestAuthStatusRejectsInvalidTokenWhenEnabled -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 
