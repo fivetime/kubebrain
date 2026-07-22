@@ -218,6 +218,10 @@ func (c *Collector) queryOne(
 	if err := decoder.Decode(&envelope); err != nil {
 		return MetricValue{}, fmt.Errorf("decode prometheus response: %w", err)
 	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return MetricValue{}, errors.New("prometheus response contains trailing JSON")
+	}
 	if envelope.Status != "success" || envelope.Data.ResultType != "vector" {
 		return MetricValue{}, fmt.Errorf("prometheus query failed: %s", envelope.Error)
 	}

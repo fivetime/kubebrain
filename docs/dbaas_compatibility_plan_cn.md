@@ -9189,6 +9189,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./hack/production/internal/meteringstorage -run 'TestArchiverRejectsUsage|TestArchiverMeasures' -count=1`、
   `go test ./hack/production/... ./deploy/production` 与
   `go vet ./hack/production/... ./deploy/production` 通过。
+- A488 收紧 resource metering Prometheus response trailing JSON 校验：collector 保留
+  Prometheus 顶层扩展字段兼容，但第一次 decode 后会拒绝响应体中拼接第二个 JSON 值。
+  这样合法 vector 后追加的额外 JSON 不会被忽略。回归覆盖 trailing JSON；
+  `go test ./hack/production/internal/meteringarchive -run 'TestCollector' -count=1`、
+  `go test ./hack/production/... ./deploy/production` 与
+  `go vet ./hack/production/... ./deploy/production` 通过。
 
 ### P2：运维兼容和长期验证
 

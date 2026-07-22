@@ -182,6 +182,14 @@ func TestCollectorFailsClosedOnIncompleteDuplicateStaleAndInvalidValues(t *testi
 			},
 			wantError: "different dbaas_instance",
 		},
+		{
+			name: "trailing json",
+			handler: func(t *testing.T, response http.ResponseWriter, _ *http.Request) {
+				writePrometheusVector(t, response, "instance-a", 1_700_003_590, "1")
+				fmt.Fprint(response, `{"status":"success"}`)
+			},
+			wantError: "trailing JSON",
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
