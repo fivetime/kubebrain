@@ -9226,6 +9226,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./hack/backup/internal/backupfile`、`go test ./hack/backup/...`、
   `go vet ./hack/backup/...`、`go test ./hack/production/... ./deploy/production`、
   `go vet ./hack/production/... ./deploy/production` 与 `git diff --check` 通过。
+- A493 收紧 production JSON array 参数解析：动态 namespace inventory 的
+  `namespaces.json` 和 `kubebrain-metering-storage-archive --allowed-formats-json`
+  都改为单一 JSON string array parser，拒绝 `null` 与 trailing JSON；namespace
+  allowlist 继续统一校验非空、DNS、去重和 256 项上限，storage allowlist 继续由
+  archiver 校验非空、排序、唯一。回归覆盖 namespace null/trailing，以及 storage
+  canonical/empty/null/object/trailing；`go test ./hack/production/internal/namespaceinventory ./hack/production/cmd/metering-storage-archive`、
+  `go test ./hack/production/... ./deploy/production`、`go vet ./hack/production/... ./deploy/production`
+  与 `git diff --check` 通过。
 
 ### P2：运维兼容和长期验证
 

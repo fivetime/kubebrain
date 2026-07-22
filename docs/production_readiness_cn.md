@@ -889,6 +889,9 @@ digest metadata、COMPLIANCE/GOVERNANCE mode 与 retain-until。总字节使用 
 
 小时 CronJob 在整点后第 27 分钟运行，10 分钟 finalization delay 只决定选择最近已经
 结束的小时；实际 checked-at 允许位于 slot end 后 45 分钟内，以覆盖调度和重试。
+`kubebrain-metering-storage-archive --allowed-formats-json` 必须是单一 JSON string array，
+拒绝 `null` 和尾随第二个 JSON 值；空数组、重复、未排序或空 format 会在 archiver 配置
+校验中 fail closed。
 `kubebrain.object-storage-sample.v1` 固定 source store/bucket/prefix、allowlist、version
 数量、总字节、versions digest 和 checked-at，再写入独立计量 Object Lock bucket。
 usage executor 的 stdout 必须与文件 receipt 使用同一 strict JSON schema，不允许未知字段或
@@ -1685,7 +1688,7 @@ immutable Secret，并再次校验 SHA-256；手工参数文件模式继续保�
 一个 scheduler Deployment 从 `kubebrain-operations/kubebrain-backup-scheduler-inventory`
 ConfigMap 的 `namespaces.json` 读取严格 JSON namespace allowlist，并在每轮 reconcile
 重新读取，因此更新无需重启 Deployment。allowlist 最多 256 项，拒绝空数组、空值、重复项、非法 DNS
-label 和非字符串数组；ConfigMap 缺失、key 缺失或 JSON 非法时整轮 fail closed，不沿用
+label、`null`、非字符串数组和尾随 JSON；ConfigMap 缺失、key 缺失或 JSON 非法时整轮 fail closed，不沿用
 进程内旧值，也不会自动扫描所有 namespace。backup parameter template 必须是 JSON object，
 解析时保留 JSON number 精度并拒绝 trailing JSON；`null` 或拼接模板不会创建 Operation。
 scheduler ServiceAccount 只能 `get` 这个

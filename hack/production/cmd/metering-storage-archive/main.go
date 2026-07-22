@@ -3,10 +3,13 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
+	"io"
 	"log"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/kubewharf/kubebrain/hack/production/internal/meteringstorage"
@@ -42,9 +45,9 @@ func main() {
 	meteringSessionToken = os.Getenv("METERING_AWS_SESSION_TOKEN")
 	meteringPathStyle, _ = strconv.ParseBool(os.Getenv("METERING_S3_FORCE_PATH_STYLE"))
 
-	var allowedFormats []string
-	if err := json.Unmarshal([]byte(allowedFormatsJSON), &allowedFormats); err != nil {
-		log.Fatal("allowed-formats-json must be a JSON string array")
+	allowedFormats, err := parseJSONStringArray(allowedFormatsJSON)
+	if err != nil {
+		log.Fatalf("allowed-formats-json must be a JSON string array: %v", err)
 	}
 	if instance == "" || sourceStore == "" || sourceBucket == "" || sourcePrefix == "" ||
 		meteringStore == "" || meteringBucket == "" || timeout <= 0 ||
@@ -74,6 +77,22 @@ func main() {
 	if _, err := os.Stdout.Write(output); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func parseJSONStringArray(raw string) ([]string, error) {
+	var values []string
+	decoder := json.NewDecoder(strings.NewReader(raw))
+	if err := decoder.Decode(&values); err != nil {
+		return nil, err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return nil, errors.New("contains trailing JSON")
+	}
+	if values == nil {
+		return nil, errors.New("must not be null")
+	}
+	return values, nil
 }
 
 func objectStoreEnvironment(endpoint, region, accessKey, secretKey, token string, pathStyle bool) []string {

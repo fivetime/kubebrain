@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"sort"
+	"strings"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -40,8 +42,8 @@ func Load(
 	if !found || !foundKey {
 		return nil, fmt.Errorf("namespace inventory is missing data key %q", key)
 	}
-	var namespaces []string
-	if err := json.Unmarshal([]byte(raw), &namespaces); err != nil {
+	namespaces, err := parseJSONStringArray(raw)
+	if err != nil {
 		return nil, fmt.Errorf("decode namespace inventory: %w", err)
 	}
 	namespaces, err = Validate(namespaces)
@@ -50,6 +52,22 @@ func Load(
 	}
 	sort.Strings(namespaces)
 	return namespaces, nil
+}
+
+func parseJSONStringArray(raw string) ([]string, error) {
+	var values []string
+	decoder := json.NewDecoder(strings.NewReader(raw))
+	if err := decoder.Decode(&values); err != nil {
+		return nil, err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return nil, errors.New("contains trailing JSON")
+	}
+	if values == nil {
+		return nil, errors.New("must be a JSON string array, not null")
+	}
+	return values, nil
 }
 
 func Validate(namespaces []string) ([]string, error) {

@@ -31,8 +31,9 @@ func TestLoadFailsClosedForUnsafeInventory(t *testing.T) {
 	tooManyRaw, err := json.Marshal(tooMany)
 	require.NoError(t, err)
 	for _, raw := range []string{
-		`[]`, `[""]`, `["tenant-a","tenant-a"]`, `["Tenant_A"]`,
+		`[]`, `null`, `[""]`, `["tenant-a","tenant-a"]`, `["Tenant_A"]`,
 		`{"namespace":"tenant-a"}`, `not-json`, string(tooManyRaw),
+		`["tenant-a"] {"trailing":true}`,
 	} {
 		t.Run(raw, func(t *testing.T) {
 			_, err := Load(
