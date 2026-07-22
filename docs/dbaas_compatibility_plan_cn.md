@@ -9804,6 +9804,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   receipt，证明不会提交 Succeeded：
   `go test ./hack/production -run 'TestBackupOperation' -count=10 -timeout=180s`
   通过。
+- A558 收紧 BackupDeletion operation succeed 前 final receipt 复检：
+  `run-backup-deletion-operation.sh` 已会在 existing receipt 或 hard-link 冲突路径调用
+  `validate_operation_receipt`，但新生成 operation receipt 后直接计算 SHA-256 并提交
+  succeed。现在在 `sha256sum` 前再次复用同一 strict validator，确认 final receipt 仍精确
+  绑定 source/pre/post/deletion receipts 和 manifest SHA-256；任何本地替换或 schema 漂移
+  都会 fail closed，不会提交错误 digest。回归：
+  `go test ./hack/production -run 'TestBackupDeletionOperation' -count=5 -timeout=240s`
+  通过。
 
 ### P2：运维兼容和长期验证
 

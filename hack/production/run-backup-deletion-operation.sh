@@ -312,6 +312,8 @@ else
   rm -f "$temporary"
   sync -f "$(dirname "$operation_receipt")"
 fi
+validate_operation_receipt ||
+  { echo "backup deletion operation receipt is invalid" >&2; exit 1; }
 receipt_digest="$(sha256sum "$operation_receipt" | cut -d ' ' -f1)"
 run_operationctl --action succeed --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
   --receipt-sha256 "$receipt_digest" --message "exact backup version lifecycle completed" >/dev/null
