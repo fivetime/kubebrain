@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -99,6 +100,22 @@ func TestBillerFailsBeforeChargeOnMissingCatalogAndRejectsFuturePeriod(t *testin
 	biller.PeriodEnd = time.Date(2026, 7, 21, 0, 0, 0, 0, time.UTC)
 	_, _, err = biller.Process(context.Background())
 	require.ErrorContains(t, err, "not eligible")
+}
+
+func TestBillerReadImmutableRejectsOversizedDownloadedArtifact(t *testing.T) {
+	biller := validBiller(time.Date(2026, 7, 20, 1, 17, 0, 0, time.UTC))
+	biller.Run = func(_ context.Context, _ string, environment []string) ([]byte, error) {
+		values := envMap(environment)
+		require.NoError(t, os.WriteFile(values["OUTPUT"], []byte("xx"), 0o600))
+		return readReceiptJSON(t, values, strings.Repeat("a", 64), 1)
+	}
+	output := filepath.Join(t.TempDir(), "downloaded.json")
+	_, _, err := biller.readImmutable(
+		context.Background(), CatalogFormat, "price-2026-07", "instance-a",
+		"prices/global/price-2026-07.json", output,
+		time.Date(2033, 7, 20, 0, 0, 0, 0, time.UTC).Unix(),
+	)
+	require.ErrorContains(t, err, "downloaded immutable artifact exceeds")
 }
 
 func TestBillerV2RequiresExactStorageRollup(t *testing.T) {

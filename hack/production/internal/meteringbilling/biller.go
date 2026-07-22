@@ -247,21 +247,31 @@ func (b *Biller) readImmutable(
 	if err != nil {
 		return Source{}, output, err
 	}
-	data, err := os.ReadFile(outputPath)
+	source, err := sourceFromDownloadedArtifact(
+		outputPath, receipt, "immutable read receipt does not match downloaded bytes",
+	)
 	if err != nil {
 		return Source{}, output, err
+	}
+	return source, output, nil
+}
+
+func sourceFromDownloadedArtifact(outputPath string, receipt objectReceipt, mismatchError string) (Source, error) {
+	data, err := readBoundedFile(outputPath, "downloaded immutable artifact", receipt.ObjectBytes)
+	if err != nil {
+		return Source{}, err
 	}
 	sum := sha256.Sum256(data)
 	if int64(len(data)) != receipt.ObjectBytes ||
 		hex.EncodeToString(sum[:]) != receipt.ArtifactSHA256 {
-		return Source{}, output, errors.New("immutable read receipt does not match downloaded bytes")
+		return Source{}, errors.New(mismatchError)
 	}
 	return Source{
 		ArtifactFormat: receipt.ArtifactFormat, ArtifactID: receipt.ArtifactID,
 		ObjectKey: receipt.ObjectKey, VersionID: receipt.VersionID,
 		ArtifactSHA256: receipt.ArtifactSHA256, ObjectBytes: receipt.ObjectBytes,
 		RetainUntilUnix: receipt.RetainUntilUnix,
-	}, output, nil
+	}, nil
 }
 
 type objectReceipt struct {

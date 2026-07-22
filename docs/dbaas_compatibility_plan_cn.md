@@ -9492,6 +9492,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./hack/production/cmd/metering-payment-ledger -run TestReadSource -count=20`、
   `go test ./hack/production/cmd/metering-payment-ledger`、`go test ./hack/production/... ./deploy/production`、
   `go vet ./hack/production/... ./deploy/production` 与 `git diff --check` 通过。
+- A525 收紧 metering Biller exact-read 本地 artifact 校验边界：Biller 读取 Object Lock
+  exact-read 下载到本地的 rollup、price catalog 和 object storage rollup 时，现在只按
+  blob-read receipt 的 `object_bytes + 1` 有界读取并复算 digest；超限会在 charge 构造前
+  fail closed，不再为了校验 receipt 而 `os.ReadFile` 无界读取异常大的本地文件。新增
+  `sourceFromDownloadedArtifact` helper，后续 provider/payment/general-ledger exact-read 路径可
+  继续复用。回归覆盖 oversized downloaded artifact；
+  `go test ./hack/production/internal/meteringbilling -run 'TestBiller' -count=20`、
+  `go test ./hack/production/internal/meteringbilling`、`go test ./hack/production/... ./deploy/production`、
+  `go vet ./hack/production/... ./deploy/production` 与 `git diff --check` 通过。
 
 ### P2：运维兼容和长期验证
 
