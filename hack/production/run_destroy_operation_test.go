@@ -11,6 +11,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+const (
+	destroyLogicalSHA      = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	destroyLogicalRevision = 101
+)
+
 func TestDestroyOperationCompletesLifecycle(t *testing.T) {
 	f := newDestroyRunnerFixture(t, true)
 	f.run(t, true, "")
@@ -68,6 +73,14 @@ func TestDestroyOperationRejectsConfirmationAndBackupDrift(t *testing.T) {
 	f.run(t, false, "", "backup bytes")
 	require.Contains(t, f.log(t), "--action retry")
 	require.NotContains(t, f.log(t), "phase prepare")
+}
+
+func TestDestroyOperationRejectsInvalidReceipt(t *testing.T) {
+	f := newDestroyRunnerFixture(t, true)
+	f.run(t, false, "INVALID_RECEIPT=1", "invalid receipt")
+	log := f.log(t)
+	require.Contains(t, log, "--action retry")
+	require.NotContains(t, log, "--action succeed")
 }
 
 func TestDestroyOperationStopsWhenHeartbeatIsFenced(t *testing.T) {
@@ -129,10 +142,23 @@ if [[ "${SLEEP_PHASE:-}" == "$ACTION" ]]; then sleep 1; fi
 if [[ "${FAIL_PHASE:-}" == "$ACTION" ]]; then exit 8; fi
 mkdir -p "$STATE_DIR"
 case "$ACTION" in
-  prepare) printf 'state\n' >"$STATE_DIR/$OPERATION_ID.state" ;;
+  prepare)
+    printf 'HEADER\tkubebrain.destroy.state.v1\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$INSTANCE" "$OPERATION_ID" "$KUBEBRAIN_NAMESPACE" "$KUBEBRAIN_STATEFULSET" \
+      "$TIDB_NAMESPACE" "$TIDB_CLUSTER" "$DESTROY_BACKUP_SHA" "$DESTROY_BACKUP_REVISION" \
+      >"$STATE_DIR/$OPERATION_ID.state"
+    ;;
   quiesce) printf 'quiesced\n' >"$STATE_DIR/$OPERATION_ID.quiesced" ;;
   destroy) printf 'destroyed\n' >"$STATE_DIR/$OPERATION_ID.destroyed" ;;
-  complete) printf '{"format":"receipt"}\n' >"$RECEIPT_OUTPUT" ;;
+  complete)
+    if [[ -n "${INVALID_RECEIPT:-}" ]]; then
+      printf '{"format":"kubebrain.destroy.receipt.v1","backup_sha256":"short"}\n' >"$RECEIPT_OUTPUT"
+    else
+      printf '{"backup_revision":%s,"backup_sha256":"%s","completed_at_unix":123,"format":"kubebrain.destroy.receipt.v1","instance":"%s","kubebrain_namespace":"%s","operation_id":"%s","resources_absent":true,"tidb_cluster":"%s","tidb_namespace":"%s"}\n' \
+        "$DESTROY_BACKUP_REVISION" "$DESTROY_BACKUP_SHA" "$INSTANCE" "$KUBEBRAIN_NAMESPACE" \
+        "$OPERATION_ID" "$TIDB_CLUSTER" "$TIDB_NAMESPACE" >"$RECEIPT_OUTPUT"
+    fi
+    ;;
 esac
 `)
 	return &destroyRunnerFixture{
@@ -142,6 +168,7 @@ esac
 			"OPERATION_NAMESPACE=ops", "LEASE_SECONDS=6", "HEARTBEAT_INTERVAL_SECONDS=0.02",
 			"OPERATIONCTL=" + operationctl, "DESTROY_COMMAND=" + destroy,
 			"FAKE_DIR=" + dir, "PARAMETERS_DIGEST=" + digest,
+			"DESTROY_BACKUP_SHA=" + destroyLogicalSHA, fmt.Sprintf("DESTROY_BACKUP_REVISION=%d", destroyLogicalRevision),
 		},
 	}
 }
@@ -172,9 +199,17 @@ func (f *destroyRunnerFixture) publishEvidence(t *testing.T, kind string) {
 	t.Helper()
 	stateDir := filepath.Join(f.dir, "state")
 	require.NoError(t, os.MkdirAll(stateDir, 0o700))
-	path := filepath.Join(stateDir, "destroy-1."+kind)
-	if kind == "receipt" {
-		path = filepath.Join(f.dir, "receipt.json")
+	statePath := filepath.Join(stateDir, "destroy-1.state")
+	stateContent := fmt.Sprintf("HEADER\tkubebrain.destroy.state.v1\tinstance-a\tdestroy-1\tinstance-a\tkubebrain\tstorage-a\tkb\t%s\t%d\n", destroyLogicalSHA, destroyLogicalRevision)
+	if kind == "state" {
+		require.NoError(t, os.WriteFile(statePath, []byte(stateContent), 0o600))
+		return
 	}
-	require.NoError(t, os.WriteFile(path, []byte("evidence\n"), 0o600))
+	require.NoError(t, os.WriteFile(statePath, []byte(stateContent), 0o600))
+	if kind == "receipt" {
+		receipt := fmt.Sprintf(`{"backup_revision":%d,"backup_sha256":%q,"completed_at_unix":123,"format":"kubebrain.destroy.receipt.v1","instance":"instance-a","kubebrain_namespace":"instance-a","operation_id":"destroy-1","resources_absent":true,"tidb_cluster":"kb","tidb_namespace":"storage-a"}`+"\n", destroyLogicalRevision, destroyLogicalSHA)
+		require.NoError(t, os.WriteFile(filepath.Join(f.dir, "receipt.json"), []byte(receipt), 0o600))
+		return
+	}
+	require.NoError(t, os.WriteFile(filepath.Join(stateDir, "destroy-1."+kind), []byte("evidence\n"), 0o600))
 }

@@ -9773,6 +9773,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   会终止 operation。回归：
   `go test ./hack/production -run 'TestRestoreCutoverOperation' -count=5 -timeout=240s`
   通过。
+- A555 收紧 Destroy operation receipt 成功门禁：
+  `run-destroy-operation.sh` 旧逻辑在 complete 后只要求 `receipt_output` 存在，测试 fake
+  也只写 `{"format":"receipt"}` 就会提交 succeed。现在 succeed 前读取 durable
+  `kubebrain.destroy.state.v1`，确认 state header 绑定 operation、instance、
+  KubeBrain namespace/statefulset 和 TiDB namespace/cluster，再要求
+  `kubebrain.destroy.receipt.v1` 精确绑定 operation、instance、KubeBrain namespace、
+  TiDB namespace/cluster、prepare 阶段冻结的 logical backup SHA/revision、
+  `resources_absent=true` 和正整数完成时间；
+  非法 receipt 会 requeue，不会标记 operation 成功。回归：
+  `go test ./hack/production -run 'TestDestroyOperation' -count=10 -timeout=180s`
+  通过。
 
 ### P2：运维兼容和长期验证
 

@@ -192,6 +192,51 @@ run_phase() {
 state_file="${state_dir}/${operation_id}.state"
 quiesced_file="${state_dir}/${operation_id}.quiesced"
 destroyed_file="${state_dir}/${operation_id}.destroyed"
+
+destroy_state_backup_sha=""
+destroy_state_backup_revision=""
+read_destroy_state_header() {
+  local kind format state_instance state_operation state_kb_namespace state_kb_name
+  local state_tidb_namespace state_tidb_cluster state_backup_sha state_backup_revision
+  [[ -f "$state_file" ]] || return 1
+  IFS=$'\t' read -r kind format state_instance state_operation state_kb_namespace state_kb_name \
+    state_tidb_namespace state_tidb_cluster state_backup_sha state_backup_revision <"$state_file" || return 1
+  [[ "$kind" == "HEADER" &&
+    "$format" == "kubebrain.destroy.state.v1" &&
+    "$state_instance" == "$instance" &&
+    "$state_operation" == "$operation_id" &&
+    "$state_kb_namespace" == "$kubebrain_namespace" &&
+    "$state_kb_name" == "$kubebrain_statefulset" &&
+    "$state_tidb_namespace" == "$tidb_namespace" &&
+    "$state_tidb_cluster" == "$tidb_cluster" &&
+    "$state_backup_sha" =~ ^[a-f0-9]{64}$ &&
+    "$state_backup_revision" =~ ^[1-9][0-9]*$ ]] || return 1
+  destroy_state_backup_sha="$state_backup_sha"
+  destroy_state_backup_revision="$state_backup_revision"
+}
+
+validate_destroy_receipt() {
+  read_destroy_state_header || return 1
+  "$JQ" -e \
+    --arg instance "$instance" \
+    --arg operation "$operation_id" \
+    --arg kbns "$kubebrain_namespace" \
+    --arg tidbns "$tidb_namespace" \
+    --arg tidb "$tidb_cluster" \
+    --arg backup_sha "$destroy_state_backup_sha" \
+    --argjson backup_revision "$destroy_state_backup_revision" \
+    'keys == ["backup_revision","backup_sha256","completed_at_unix","format","instance","kubebrain_namespace","operation_id","resources_absent","tidb_cluster","tidb_namespace"] and
+     .format == "kubebrain.destroy.receipt.v1" and
+     .instance == $instance and .operation_id == $operation and
+     .kubebrain_namespace == $kbns and .tidb_namespace == $tidbns and
+     .tidb_cluster == $tidb and
+     (.backup_sha256 | type == "string" and test("^[a-f0-9]{64}$")) and
+     .backup_sha256 == $backup_sha and
+     .backup_revision == $backup_revision and .resources_absent == true and
+     (.completed_at_unix | type == "number" and . > 0 and . == floor)' \
+    "$receipt_output" >/dev/null
+}
+
 if [[ -e "$receipt_output" ]]; then
   phases=(complete)
 elif [[ -e "$destroyed_file" ]]; then
@@ -225,6 +270,12 @@ done
   echo "instance destruction completed without its receipt" >&2
   exit 1
 }
+if ! validate_destroy_receipt; then
+  run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
+    --message "destroy receipt invalid" >/dev/null
+  echo "instance destruction produced an invalid receipt" >&2
+  exit 1
+fi
 receipt_digest="$(sha256sum "$receipt_output" | cut -d ' ' -f1)"
 run_operationctl --action succeed --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
   --receipt-sha256 "$receipt_digest" --message "instance destruction completed" >/dev/null
