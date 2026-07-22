@@ -21,6 +21,7 @@ func TestWatchLocalControlResponsesAcrossDirectReplicas(t *testing.T) {
 	}
 	endpoints := strings.Split(rawEndpoints, ",")
 	require.GreaterOrEqual(t, len(endpoints), 3)
+	requireDistinctDirectReplicaTopology(t, endpoints)
 
 	for _, rawEndpoint := range endpoints {
 		endpoint := strings.TrimSpace(rawEndpoint)

@@ -19,6 +19,7 @@ func TestLeaseReadAndRevokeAcrossDirectReplicas(t *testing.T) {
 	}
 	endpoints := strings.Split(rawEndpoints, ",")
 	require.GreaterOrEqual(t, len(endpoints), 3)
+	requireDistinctDirectReplicaTopology(t, endpoints)
 
 	service, err := clientv3.New(clientv3.Config{
 		Endpoints:   []string{compatEndpoint()},
