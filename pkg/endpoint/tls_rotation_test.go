@@ -120,6 +120,14 @@ func writeRotationCRL(t *testing.T, path string, ca rotationCA, serials ...*big.
 	require.NoError(t, os.WriteFile(path, contents, 0o600))
 }
 
+func writeOversizedRotationFile(t *testing.T, path string, limit int64) {
+	t.Helper()
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	require.NoError(t, err)
+	require.NoError(t, file.Truncate(limit+1))
+	require.NoError(t, file.Close())
+}
+
 func leafCertificate(t *testing.T, certPath, keyPath string) (tls.Certificate, *x509.Certificate) {
 	t.Helper()
 	certificate, err := tls.LoadX509KeyPair(certPath, keyPath)
@@ -150,6 +158,103 @@ func TestServerCertificateReloadedForEveryHandshake(t *testing.T) {
 	require.NoError(t, os.WriteFile(certPath, []byte("invalid"), 0o600))
 	_, err := config.getServerTLSConfig().GetCertificate(nil)
 	require.ErrorContains(t, err, "can not reload key pair")
+}
+
+func TestSecurityConfigRejectsOversizedMountedTLSFiles(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(t *testing.T, security *SecurityConfig, certPath, keyPath, caPath, crlPath string)
+		want   string
+	}{
+		{
+			name: "serving cert",
+			mutate: func(t *testing.T, _ *SecurityConfig, certPath, _, _, _ string) {
+				writeOversizedRotationFile(t, certPath, maxTLSPEMBytes)
+			},
+			want: "can not load key pair",
+		},
+		{
+			name: "serving key",
+			mutate: func(t *testing.T, _ *SecurityConfig, _, keyPath, _, _ string) {
+				writeOversizedRotationFile(t, keyPath, maxTLSPEMBytes)
+			},
+			want: "can not load key pair",
+		},
+		{
+			name: "outbound client cert",
+			mutate: func(t *testing.T, security *SecurityConfig, _, _, _, _ string) {
+				ca := newRotationCA(t)
+				dir := t.TempDir()
+				clientCertPath, clientKeyPath := writeRotationCertificate(t, dir, "client", ca, 951, "rotation.test")
+				security.ClientCertFile, security.ClientKeyFile = clientCertPath, clientKeyPath
+				writeOversizedRotationFile(t, clientCertPath, maxTLSPEMBytes)
+			},
+			want: "can not load client key pair",
+		},
+		{
+			name: "trusted CA",
+			mutate: func(t *testing.T, _ *SecurityConfig, _, _, caPath, _ string) {
+				writeOversizedRotationFile(t, caPath, maxTLSPEMBytes)
+			},
+			want: "can not load ca cert",
+		},
+		{
+			name: "revocation list",
+			mutate: func(t *testing.T, _ *SecurityConfig, _, _, _, crlPath string) {
+				writeOversizedRotationFile(t, crlPath, maxTLSCRLBytes)
+			},
+			want: "certificate revocation list",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ca := newRotationCA(t)
+			dir := t.TempDir()
+			certPath, keyPath := writeRotationCertificate(t, dir, "server", ca, 950, "rotation.test")
+			caPath, crlPath := filepath.Join(dir, "ca.crt"), filepath.Join(dir, "revoked.crl")
+			writeRotationCA(t, caPath, ca)
+			writeRotationCRL(t, crlPath, ca)
+			security := &SecurityConfig{
+				CertFile: certPath, KeyFile: keyPath, CA: caPath, CRL: crlPath,
+				ServerName: "rotation.test", ClientAuth: true,
+			}
+			tt.mutate(t, security, certPath, keyPath, caPath, crlPath)
+			err := security.validate()
+			require.ErrorContains(t, err, tt.want)
+			require.ErrorContains(t, err, "exceeds")
+		})
+	}
+}
+
+func TestTLSReloadRejectsOversizedRotatedFiles(t *testing.T) {
+	ca := newRotationCA(t)
+	dir := t.TempDir()
+	certPath, keyPath := writeRotationCertificate(t, dir, "server", ca, 960, "rotation.test")
+	caPath, crlPath := filepath.Join(dir, "ca.crt"), filepath.Join(dir, "revoked.crl")
+	writeRotationCA(t, caPath, ca)
+	writeRotationCRL(t, crlPath, ca)
+	security := &SecurityConfig{
+		CertFile: certPath, KeyFile: keyPath, CA: caPath, CRL: crlPath,
+		ServerName: "rotation.test", ClientAuth: true,
+	}
+	require.NoError(t, security.validate())
+
+	writeOversizedRotationFile(t, certPath, maxTLSPEMBytes)
+	_, err := security.getServerTLSConfig().GetCertificate(nil)
+	require.ErrorContains(t, err, "can not reload key pair")
+	require.ErrorContains(t, err, "exceeds")
+
+	writeRotationCertificate(t, dir, "server", ca, 961, "rotation.test")
+	writeOversizedRotationFile(t, caPath, maxTLSPEMBytes)
+	_, err = security.getServerTLSConfig().GetConfigForClient(nil)
+	require.ErrorContains(t, err, "can not reload CA cert")
+	require.ErrorContains(t, err, "exceeds")
+
+	writeRotationCA(t, caPath, ca)
+	writeOversizedRotationFile(t, crlPath, maxTLSCRLBytes)
+	_, err = loadRevocationList(crlPath)
+	require.ErrorContains(t, err, "certificate revocation list")
+	require.ErrorContains(t, err, "exceeds")
 }
 
 func TestClientCertificateReloadedForEveryHandshake(t *testing.T) {

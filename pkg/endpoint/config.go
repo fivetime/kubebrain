@@ -18,6 +18,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"strconv"
@@ -33,7 +34,11 @@ import (
 	etcdserver "github.com/kubewharf/kubebrain/pkg/server/etcd"
 )
 
-const grpcOverheadBytes = 512 * 1024
+const (
+	grpcOverheadBytes = 512 * 1024
+	maxTLSPEMBytes    = 1 << 20
+	maxTLSCRLBytes    = 16 << 20
+)
 
 type secureMode int
 
@@ -353,7 +358,7 @@ func parseCipherSuites(names []string) ([]uint16, error) {
 }
 
 func loadRevocationList(path string) (*x509.RevocationList, error) {
-	contents, err := os.ReadFile(path)
+	contents, err := readBoundedEndpointFile(path, maxTLSCRLBytes)
 	if err != nil {
 		return nil, errors.Wrap(err, "can not reload certificate revocation list")
 	}
@@ -362,6 +367,34 @@ func loadRevocationList(path string) (*x509.RevocationList, error) {
 		return nil, errors.Wrap(err, "can not parse certificate revocation list")
 	}
 	return list, nil
+}
+
+func readBoundedEndpointFile(path string, limit int64) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	contents, err := io.ReadAll(io.LimitReader(file, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(contents)) > limit {
+		return nil, fmt.Errorf("%s exceeds %d bytes", path, limit)
+	}
+	return contents, nil
+}
+
+func loadX509KeyPairBounded(certFile, keyFile string) (tls.Certificate, error) {
+	certPEMBlock, err := readBoundedEndpointFile(certFile, maxTLSPEMBytes)
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+	keyPEMBlock, err := readBoundedEndpointFile(keyFile, maxTLSPEMBytes)
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+	return tls.X509KeyPair(certPEMBlock, keyPEMBlock)
 }
 
 func checkRevocationList(path string, certificates []*x509.Certificate) error {
@@ -497,7 +530,7 @@ func (sc *SecurityConfig) init() (err error) {
 		// Validate the initial key pair before accepting traffic. Runtime TLS
 		// configs deliberately keep Certificates empty so every handshake invokes
 		// the reload callbacks, matching etcd's mounted-secret rotation behavior.
-		_, err := tls.LoadX509KeyPair(sc.CertFile, sc.KeyFile)
+		_, err := loadX509KeyPairBounded(sc.CertFile, sc.KeyFile)
 		if err != nil {
 			klog.ErrorS(err, "can not load key pair", "cert", sc.CertFile, "key", sc.KeyFile)
 			sc.err = errors.Wrapf(err, "can not load key pair")
@@ -507,13 +540,13 @@ func (sc *SecurityConfig) init() (err error) {
 		clientCertFile, clientKeyFile := sc.ClientCertFile, sc.ClientKeyFile
 		if clientCertFile == "" {
 			clientCertFile, clientKeyFile = sc.CertFile, sc.KeyFile
-		} else if _, err := tls.LoadX509KeyPair(clientCertFile, clientKeyFile); err != nil {
+		} else if _, err := loadX509KeyPairBounded(clientCertFile, clientKeyFile); err != nil {
 			klog.ErrorS(err, "can not load client key pair", "cert", clientCertFile, "key", clientKeyFile)
 			sc.err = errors.Wrap(err, "can not load client key pair")
 			return
 		}
 		loadCertificate := func(certFile, keyFile string) (*tls.Certificate, error) {
-			cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+			cert, err := loadX509KeyPairBounded(certFile, keyFile)
 			if err != nil {
 				klog.ErrorS(err, "can not reload key pair", "cert", certFile, "key", keyFile)
 				return nil, errors.Wrap(err, "can not reload key pair")
@@ -521,7 +554,7 @@ func (sc *SecurityConfig) init() (err error) {
 			return &cert, nil
 		}
 		loadCertPool := func() (*x509.CertPool, error) {
-			caFileBytes, err := os.ReadFile(sc.CA)
+			caFileBytes, err := readBoundedEndpointFile(sc.CA, maxTLSPEMBytes)
 			if err != nil {
 				return nil, errors.Wrap(err, "can not reload CA cert")
 			}

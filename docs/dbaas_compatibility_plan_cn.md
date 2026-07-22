@@ -9549,6 +9549,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./pkg/server/etcd -run 'TestJWT|TestAuthTokenUsesConfiguredTTL|TestAuthTokenRejectsWhileDisabled' -count=5`、
   `go test ./pkg/server/etcd -count=1`、`go vet ./pkg/server/etcd` 与
   `git diff --check` 通过。
+- A531 收紧 endpoint TLS mounted secret 动态重载读取边界：对照
+  `/root/etcd/tests/framework/integration/cluster.go` 中通过 `GetCertificate` 触发
+  `--cert-file/--key-file/--trusted-ca-file` 动态加载的 TLS 路径，KubeBrain 仍保持每次
+  握手重载 cert/key/CA/CRL 的轮换语义，但显式用 bounded read 后再调用
+  `tls.X509KeyPair`/x509 解析。cert/key/CA PEM 最多 1 MiB，CRL 最多 16 MiB；启动校验
+  和后续握手 reload 都会在 oversized mounted secret/configmap 前 fail closed，避免异常
+  文件在 TLS 握手路径无界分配。回归覆盖 oversized serving cert/key、distinct outbound
+  client cert、trusted CA、CRL，以及轮换后 oversized cert/CA/CRL；
+  `go test ./pkg/endpoint -run 'Test(SecurityConfigRejectsOversizedMountedTLSFiles|TLSReloadRejectsOversizedRotatedFiles|ServerCertificateReloadedForEveryHandshake|InboundClientCATrustPoolRotation|CertificateRevocationListReloadedForEveryHandshake)' -count=10`、
+  `go test ./pkg/endpoint -run 'Test(SecurityConfigRejectsOversizedMountedTLSFiles|TLSReloadRejectsOversizedRotatedFiles)' -race -count=1`、
+  `go test ./pkg/endpoint -count=1`、`go vet ./pkg/endpoint` 与 `git diff --check`
+  通过。
 
 ### P2：运维兼容和长期验证
 
