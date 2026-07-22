@@ -979,8 +979,10 @@ func TestQueueRejectsSpecDriftAndInvalidCompletion(t *testing.T) {
 		true, strings.Repeat("a", 64), strings.Repeat("m", maxStatusMessageLength+1),
 	)
 	require.ErrorContains(t, err, "status message")
+	_, err = queue.Finish(ctx, claim.Name, claim.Owner, claim.Attempt, false, strings.Repeat("a", 64), "")
+	require.ErrorContains(t, err, "failed operation cannot carry")
 	_, err = queue.Finish(ctx, claim.Name, claim.Owner, claim.Attempt, false, strings.Repeat("A", 64), "")
-	require.ErrorContains(t, err, "receipt SHA-256")
+	require.ErrorContains(t, err, "failed operation cannot carry")
 	_, err = queue.Finish(ctx, claim.Name, claim.Owner, claim.Attempt, true, "", "")
 	require.ErrorContains(t, err, "requires a receipt")
 	_, err = queue.Finish(ctx, claim.Name, claim.Owner, claim.Attempt, true, strings.Repeat("A", 64), "")

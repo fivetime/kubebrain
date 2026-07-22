@@ -666,6 +666,9 @@ func (q *Queue) Finish(
 	if err := validateStatusMessage(message); err != nil {
 		return nil, err
 	}
+	if !succeeded && receiptSHA256 != "" {
+		return nil, errors.New("failed operation cannot carry a receipt SHA-256")
+	}
 	if succeeded && receiptSHA256 == "" {
 		return nil, errors.New("successful operation requires a receipt SHA-256 hex digest")
 	}

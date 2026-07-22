@@ -10324,6 +10324,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   closed，且不创建 Operation。回归：
   `go test ./hack/production/internal/backupscheduler -run 'TestReconcileRejectsPreexistingParameterSecretWithWrongOwner|TestReconcileIsDeterministicAcrossReplicas|TestReconcileRejectsPolicySchemaBeforeTemplateRead' -count=1`
   通过。
+- A609 对齐 failed operation 的审计 receipt 契约：
+  A606 仅按 KubeBrainOperation CRD 的 `receiptSHA256` 字段格式收紧 queue 终态写入，
+  但 `operationaudit.Artifact.Validate` 和 object archive receipt 明确要求 Failed
+  operation 不携带 execution receipt。旧 `Queue.Finish(succeeded=false, receipt!=empty)`
+  可写出 CRD 字段格式合法、但后续审计 artifact 校验必然失败的终态，导致 operation
+  finalizer 无法释放。现在失败终态一律拒绝非空 receipt；成功终态仍要求小写 SHA-256
+  receipt。回归：
+  `go test ./hack/production/internal/operationqueue ./hack/production/internal/operationauditbuilder ./hack/production/operationaudit -run 'TestQueueRejectsSpecDriftAndInvalidCompletion|TestAudit|TestFromOperation|TestArtifact' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 
