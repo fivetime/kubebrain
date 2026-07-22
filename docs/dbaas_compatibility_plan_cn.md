@@ -9323,6 +9323,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   回归覆盖四个必需参数重复同值时返回 400 且不泄露参数内容；`go test ./hack/production/internal/parameterbroker -run 'TestHandler(ReturnsOnlyCurrentTypeBoundWorkerParameters|RejectsAmbiguousRequiredQueryParameters|FailsClosedForIdentityTypeAudienceAndFencing)' -count=20`、
   `go test ./hack/production/... ./deploy/production`、
   `go vet ./hack/production/... ./deploy/production` 与 `git diff --check` 通过。
+- A505 修复 `operationctl --action parameters` 对 broker 超大响应的截断成功：客户端仍只允许
+  最多 4 MiB 参数响应，但现在读取 `limit+1` 字节并在超限时直接返回错误；旧逻辑用
+  `io.LimitReader` 读 4 MiB 后无超限检测，会把截断参数写到 stdout，再依赖 executor digest
+  校验兜底。回归覆盖 TLS broker 返回 `max+1` 字节时 fail closed；`go test ./hack/production/cmd/operationctl -run 'TestBrokerParameters|TestDefaultKubeconfig' -count=20`、
+  `go test ./hack/production/... ./deploy/production`、
+  `go vet ./hack/production/... ./deploy/production` 与 `git diff --check` 通过。
 
 ### P2：运维兼容和长期验证
 

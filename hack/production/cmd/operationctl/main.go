@@ -26,6 +26,8 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 )
 
+const maxBrokerParametersBytes = 4 << 20
+
 func main() {
 	var action, namespace, name, operationID, tenant, requestedBy, instance, operationType, parametersSHA string
 	var parametersSecret, parametersKey string
@@ -227,12 +229,15 @@ func brokerParameters(
 		return nil, fmt.Errorf("parameter broker request: %w", err)
 	}
 	defer response.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(response.Body, 4<<20))
+	if response.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("parameter broker returned HTTP %d", response.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(response.Body, maxBrokerParametersBytes+1))
 	if err != nil {
 		return nil, err
 	}
-	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("parameter broker returned HTTP %d", response.StatusCode)
+	if len(body) > maxBrokerParametersBytes {
+		return nil, fmt.Errorf("parameter broker response exceeds %d bytes", maxBrokerParametersBytes)
 	}
 	return body, nil
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
@@ -77,6 +78,28 @@ func TestBrokerParametersRejectsInsecureEndpointAndNonSuccess(t *testing.T) {
 	)
 	require.ErrorContains(t, err, "HTTP 403")
 	require.NotContains(t, err.Error(), "denied")
+}
+
+func TestBrokerParametersRejectsOversizedResponse(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(
+		response http.ResponseWriter, _ *http.Request,
+	) {
+		response.WriteHeader(http.StatusOK)
+		_, _ = response.Write(bytes.Repeat([]byte("x"), maxBrokerParametersBytes+1))
+	}))
+	defer server.Close()
+	dir := t.TempDir()
+	tokenPath := filepath.Join(dir, "token")
+	caPath := filepath.Join(dir, "ca.crt")
+	require.NoError(t, os.WriteFile(tokenPath, []byte("token"), 0o600))
+	require.NoError(t, os.WriteFile(caPath, pem.EncodeToMemory(&pem.Block{
+		Type: "CERTIFICATE", Bytes: server.Certificate().Raw,
+	}), 0o600))
+	_, err := brokerParameters(
+		t.Context(), server.URL, tokenPath, caPath,
+		"tenant-a", "backup-1", "worker-a", 1,
+	)
+	require.ErrorContains(t, err, "response exceeds")
 }
 
 func TestClientConfigFallsBackToStandardLocalKubeconfig(t *testing.T) {
