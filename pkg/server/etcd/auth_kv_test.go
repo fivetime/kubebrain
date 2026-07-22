@@ -88,6 +88,87 @@ func TestAuthRangeReadBarrierPrecedesAuthLikeEtcd(t *testing.T) {
 	require.Equal(t, 2, barrierCalls)
 }
 
+func TestAuthKVFutureJWTRevisionAllowsWritesButNotSerializedReads(t *testing.T) {
+	now := time.Unix(2_000_000_000, 0)
+	for _, tc := range []struct {
+		name string
+		call func(context.Context, *RPCServer) error
+		key  []byte
+		want []byte
+	}{
+		{
+			name: "put",
+			key:  []byte("/allowed/future-put"),
+			want: []byte("value"),
+			call: func(ctx context.Context, server *RPCServer) error {
+				_, err := server.Put(ctx, &etcdserverpb.PutRequest{
+					Key: []byte("/allowed/future-put"), Value: []byte("value"),
+				})
+				return err
+			},
+		},
+		{
+			name: "delete range",
+			key:  []byte("/allowed/future-delete"),
+			call: func(ctx context.Context, server *RPCServer) error {
+				_, err := server.Put(ctx, &etcdserverpb.PutRequest{
+					Key: []byte("/allowed/future-delete"), Value: []byte("before"),
+				})
+				require.NoError(t, err)
+				_, err = server.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{
+					Key: []byte("/allowed/future-delete"),
+				})
+				return err
+			},
+		},
+		{
+			name: "txn write",
+			key:  []byte("/allowed/future-txn"),
+			want: []byte("value"),
+			call: func(ctx context.Context, server *RPCServer) error {
+				_, err := server.Txn(ctx, &etcdserverpb.TxnRequest{
+					Success: []*etcdserverpb.RequestOp{{Request: &etcdserverpb.RequestOp_RequestPut{
+						RequestPut: &etcdserverpb.PutRequest{
+							Key: []byte("/allowed/future-txn"), Value: []byte("value"),
+						},
+					}}},
+				})
+				return err
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server, closeFn := newTestRPCServer(t)
+			defer closeFn()
+			server.tokens.now = func() time.Time { return now }
+			secret := writeJWTKey(t, "secret", []byte("shared-secret"))
+			require.NoError(t, server.tokens.configureProvider(
+				"jwt,sign-method=HS256,priv-key="+secret,
+			))
+			setupAuthKVUser(t, server)
+			snapshot, err := server.tokens.snapshots.current(context.Background())
+			require.NoError(t, err)
+			token, err := server.tokens.jwt.issue("alice", snapshot.Config.Revision+100, now)
+			require.NoError(t, err)
+			ctx := metadata.NewIncomingContext(
+				context.Background(), metadata.Pairs(rpctypes.TokenFieldNameGRPC, token),
+			)
+
+			require.NoError(t, tc.call(ctx, server))
+			stored, err := server.backend.Get(context.Background(), &etcdserverpb.RangeRequest{Key: tc.key})
+			require.NoError(t, err)
+			if tc.want == nil {
+				require.Empty(t, stored.Kvs)
+			} else {
+				require.Len(t, stored.Kvs, 1)
+				require.Equal(t, tc.want, stored.Kvs[0].Value)
+			}
+			_, err = server.Range(ctx, &etcdserverpb.RangeRequest{Key: []byte("/allowed/read-back"), Serializable: true})
+			require.ErrorIs(t, err, rpctypes.ErrAuthOldRevision)
+		})
+	}
+}
+
 func TestAuthTxnChecksBothBranchesBeforeWriting(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

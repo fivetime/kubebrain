@@ -10237,6 +10237,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   共用：无 token 允许，空/坏 token 拒绝，合法 token 允许。回归：
   `go test ./pkg/server/etcd -run TestAuthStatusRejectsInvalidTokenWhenEnabled -count=1`
   通过。
+- A601 固化 KV 写路径 future JWT revision 语义：
+  对照 `/root/etcd/server/auth/store.go` 的 `isOpPermitted` 与
+  `/root/etcd/server/etcdserver/v3_server.go` 的 serialized-read 复查，上游 key
+  写授权只拒绝小于当前 auth revision 的旧 token；携带 future auth revision 的合法
+  JWT 可以通过 `Put`、`DeleteRange` 和写 `Txn`。但 serialized `Range` 在读取完成后
+  会比较 token revision 与当前 auth store revision，不相等则返回 `ErrAuthOldRevision`。
+  KubeBrain 当前写路径通过 `caller.require` 和 request-local `withAuthWriteGuard`
+  已保持该行为；本次新增 KV 回归测试同时覆盖 future JWT 的三类写成功和读拒绝，防止
+  后续把写路径误改成 exact revision fence。回归：
+  `go test ./pkg/server/etcd -run TestAuthKVFutureJWTRevisionAllowsWritesButNotSerializedReads -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 
