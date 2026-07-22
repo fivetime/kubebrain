@@ -9987,6 +9987,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   内任何空白，再执行 JWT parse/issuer/audience/claim 校验。回归：
   `go test ./hack/production/internal/operationapi -run 'TestOIDCAuthenticator(RejectsMalformedBearerHeader|ValidatesIdentityAndRefreshesUnknownKey|FailsClosed)' -count=1`
   通过。
+- A576 收紧 `operationctl --action parameters` projected token 文件解析：
+  A574/A575 已让 broker 和外部 API 拒绝畸形 Bearer header，但 `operationctl` 客户端读
+  broker projected token 文件时仍用 `TrimSpace`；包含内部换行、前后空格或内部空格的文件
+  可能被拼进 Authorization 后才由 HTTP transport/broker 拒绝。现在客户端只容忍文件末尾
+  CR/LF，token 本体为空、含任何空白或超过 16 KiB 都在读 CA/发请求前 fail closed。回归：
+  `go test ./hack/production/cmd/operationctl -run 'TestBrokerParameters(UsesTLSBearerAndFencingIdentity|RejectsInvalidTokenFile)' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

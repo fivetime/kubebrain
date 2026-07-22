@@ -2122,7 +2122,7 @@ Secret list/watch、Operation list/watch/status 或 Lease 权限。projected tok
 `attempt` 必需 query 参数必须各恰好出现一次；缺失、重复或非正 attempt 都应返回 400，
 避免代理、审计日志或客户端对重复参数取值不一致。`operationctl --action parameters`
 只接受不含 userinfo、query 或 fragment 的 HTTPS broker origin；从 broker 读取的响应超过
-4 MiB、`Content-Type` 不是 `application/json`，projected token 为空/超过 16 KiB，或 broker
+4 MiB、`Content-Type` 不是 `application/json`，projected token 为空、包含空白或超过 16 KiB，或 broker
 CA bundle 超过 1 MiB 时必须 fail closed，不能把 `LimitReader` 截断结果或 HTML 错误页写成
 参数文件再依赖后续 digest 校验兜底，也不能构造超大 Authorization header 或无界读取错误
 CA 文件。broker 未显式传入 kubeconfig 时先使用 Pod ServiceAccount 的 in-cluster 配置；

@@ -143,8 +143,12 @@ func TestBrokerParametersRejectsInvalidTokenFile(t *testing.T) {
 		token []byte
 		want  string
 	}{
-		{name: "empty", token: []byte(" \n"), want: "empty or too large"},
+		{name: "empty", token: []byte("\n"), want: "empty or too large"},
 		{name: "oversized", token: bytes.Repeat([]byte("x"), maxBrokerTokenBytes+2), want: "token exceeds"},
+		{name: "leading space", token: []byte(" token\n"), want: "malformed"},
+		{name: "trailing space", token: []byte("token \n"), want: "malformed"},
+		{name: "embedded space", token: []byte("projected token\n"), want: "malformed"},
+		{name: "embedded newline", token: []byte("projected\ntoken\n"), want: "malformed"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			tokenPath := filepath.Join(dir, tc.name+".token")

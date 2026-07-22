@@ -281,9 +281,12 @@ func readBrokerToken(path string) (string, error) {
 	if len(data) > maxBrokerTokenBytes+1 {
 		return "", fmt.Errorf("token exceeds %d bytes", maxBrokerTokenBytes)
 	}
-	token := strings.TrimSpace(string(data))
+	token := strings.TrimRight(string(data), "\r\n")
 	if token == "" || len(token) > maxBrokerTokenBytes {
 		return "", errors.New("token is empty or too large")
+	}
+	if strings.TrimSpace(token) != token || strings.ContainsAny(token, " \t\r\n") {
+		return "", errors.New("token is malformed")
 	}
 	return token, nil
 }
