@@ -31,6 +31,8 @@ const maxBrokerParametersBytes = 4 << 20
 const maxBrokerTokenBytes = 16 << 10
 const maxBrokerCABytes = 1 << 20
 
+var inClusterConfig = rest.InClusterConfig
+
 func main() {
 	var action, namespace, name, operationID, tenant, requestedBy, instance, operationType, parametersSHA string
 	var parametersSecret, parametersKey string
@@ -170,7 +172,7 @@ func defaultKubeconfig() string {
 
 func clientConfig(kubeconfig, contextName string) (*rest.Config, error) {
 	if kubeconfig == "" {
-		if config, err := rest.InClusterConfig(); err == nil {
+		if config, err := inClusterConfig(); err == nil {
 			return config, nil
 		}
 	}

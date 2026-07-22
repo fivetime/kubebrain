@@ -17,6 +17,8 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 )
 
+var inClusterConfig = rest.InClusterConfig
+
 func main() {
 	var namespace, namespacesText, inventoryName, inventoryNamespace, inventoryKey string
 	var requester, kubeconfig, contextName string
@@ -117,7 +119,7 @@ func parseNamespaces(single, multiple string) ([]string, error) {
 
 func clientConfig(kubeconfig, contextName string) (*rest.Config, error) {
 	if kubeconfig == "" {
-		if config, err := rest.InClusterConfig(); err == nil {
+		if config, err := inClusterConfig(); err == nil {
 			return config, nil
 		}
 	}

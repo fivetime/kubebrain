@@ -1803,6 +1803,8 @@ ConfigMap 的 `namespaces.json` 读取严格 JSON namespace allowlist，并在�
 label、`null`、非字符串数组和尾随 JSON；ConfigMap 缺失、key 缺失或 JSON 非法时整轮 fail closed，不沿用
 进程内旧值，也不会自动扫描所有 namespace。backup parameter template 必须是 JSON object，
 解析时保留 JSON number 精度并拒绝 trailing JSON；`null` 或拼接模板不会创建 Operation。
+scheduler 未显式传入 kubeconfig 时先使用 Pod ServiceAccount 的 in-cluster 配置，显式
+kubeconfig 会跳过 in-cluster 探测，避免本地运维身份和生产 Pod 身份混用。
 scheduler ServiceAccount 只能 `get` 这个
 resourceName，不能 list/watch 或读取其他 ConfigMap。清单中的 ClusterRole 本身不授予
 权限，默认 RoleBinding 只绑定 `kubebrain-operations`。每增加一个 namespace，必须先在
@@ -1880,8 +1882,8 @@ OPERATION_NAMESPACE_INVENTORY_KEY=namespaces.json
 ```
 
 容器内未设置 `KUBECONFIG_PATH` 时，operationctl 使用 Pod ServiceAccount 的 in-cluster
-config；本地运维执行才回退 client-go 标准 kubeconfig 搜索。不得把管理员 kubeconfig
-挂入 worker Pod。
+config；显式 kubeconfig 会跳过 in-cluster 探测，本地运维执行才回退 client-go 标准
+kubeconfig 搜索。不得把管理员 kubeconfig 挂入 worker Pod。
 
 跨 namespace claim 先比较各队列同类型 Operation 的最近启动时间，优先处理最久未被
 服务的 namespace；进入目标 namespace 后继续复用原有实例 Lease、attempt 和
@@ -1987,6 +1989,8 @@ finalizer。中央 archiver Role 只能读取指定 inventory，并 list/get/upd
 本地 operation audit artifact 与 archive receipt 均是小型 canonical JSON，读取上限为
 1 MiB；archive executor 使用已通过 canonical/digest/size 校验的 frozen bytes 上传，远端复核
 阶段重新有界读取本地 artifact 以检测 TOCTOU 替换，不能退回无界 `os.ReadFile`。
+archiver 未显式传入 kubeconfig 时同样先使用 Pod ServiceAccount 的 in-cluster 配置；
+显式 kubeconfig 会跳过 in-cluster 探测，发布 smoke 必须覆盖这两种配置加载分支。
 
 跨进程恢复不得用当前重试时间重新生成 archive receipt。上传成功或
 `If-None-Match: *` 冲突恢复取得 version ID 后，executor 必须 Head 精确 version，重新核对

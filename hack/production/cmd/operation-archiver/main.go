@@ -16,6 +16,8 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 )
 
+var inClusterConfig = rest.InClusterConfig
+
 func main() {
 	var inventoryName, inventoryNamespace, inventoryKey string
 	var executor, objectStoreID, bucket, prefix, retentionMode string
@@ -105,7 +107,7 @@ func main() {
 
 func clientConfig(kubeconfig, contextName string) (*rest.Config, error) {
 	if kubeconfig == "" {
-		if config, err := rest.InClusterConfig(); err == nil {
+		if config, err := inClusterConfig(); err == nil {
 			return config, nil
 		}
 	}
