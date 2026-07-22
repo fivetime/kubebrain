@@ -10057,6 +10057,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   且首值为空仍 fail closed。回归：
   `go test ./pkg/server/etcd -run TestAuthCallerUsesFirstRepeatedMetadataToken -count=1`
   通过。
+- A584 对齐 client-cert auth 管理 RPC 错误码：
+  对照 `/root/etcd/server/auth/store.go` 的 `IsAdminPermitted` 与
+  `/root/etcd/server/etcdserver/apply/auth.go` 的 `UserGet`/`RoleGet` 分支，上游在
+  client certificate CommonName 为空时返回 `ErrUserEmpty`，CommonName 非空但 auth store
+  中没有对应用户时返回 `ErrUserNotFound`；KubeBrain 旧的 `isRoot` 布尔检查会把这些
+  admin/self/role guard 统一折叠成 `ErrPermissionDenied`。现在 auth 管理 RPC 使用
+  `adminError` 保留 etcd 的空用户、旧修订、用户不存在和非 root permission denied
+  区分；KV/Lease 普通权限检查仍维持 etcd 的不存在用户 permission denied 语义。回归：
+  `go test ./pkg/server/etcd -run TestAuthRPCClientCertificateAdminErrorsMatchEtcd -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

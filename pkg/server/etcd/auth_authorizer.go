@@ -149,16 +149,36 @@ func (c *authCaller) isRoot() bool {
 	if c == nil {
 		return true
 	}
+	return c.hasRole("root")
+}
+
+func (c *authCaller) hasRole(roleName string) bool {
+	if c == nil {
+		return false
+	}
 	user := c.snapshot.Users[c.username]
 	if user == nil {
 		return false
 	}
 	for _, role := range user.Roles {
-		if role == "root" {
+		if role == roleName {
 			return true
 		}
 	}
 	return false
+}
+
+func (c *authCaller) adminError() error {
+	if c == nil || c.username == "" {
+		return rpctypes.ErrUserEmpty
+	}
+	if c.snapshot.Users[c.username] == nil {
+		return rpctypes.ErrUserNotFound
+	}
+	if c.hasRole("root") {
+		return nil
+	}
+	return rpctypes.ErrPermissionDenied
 }
 
 type authInterval struct {

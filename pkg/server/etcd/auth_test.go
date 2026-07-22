@@ -197,3 +197,40 @@ func TestAuthRPCEnabledAdminAndSelfRules(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, roles.Roles, "operator")
 }
+
+func TestAuthRPCClientCertificateAdminErrorsMatchEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	setupAuthKVUser(t, server)
+	server.SetClientCertAuth(true)
+	ctx := context.Background()
+
+	emptyCN := verifiedTLSContext(ctx, "")
+	_, err := server.UserList(emptyCN, &etcdserverpb.AuthUserListRequest{})
+	require.ErrorIs(t, err, rpctypes.ErrUserEmpty)
+	_, err = server.UserGet(emptyCN, &etcdserverpb.AuthUserGetRequest{Name: "alice"})
+	require.ErrorIs(t, err, rpctypes.ErrUserEmpty)
+	_, err = server.RoleGet(emptyCN, &etcdserverpb.AuthRoleGetRequest{Role: "allowed"})
+	require.ErrorIs(t, err, rpctypes.ErrUserEmpty)
+	_, err = server.AuthDisable(emptyCN, &etcdserverpb.AuthDisableRequest{})
+	require.ErrorIs(t, err, rpctypes.ErrUserEmpty)
+
+	unknownCN := verifiedTLSContext(ctx, "external-cn")
+	_, err = server.UserList(unknownCN, &etcdserverpb.AuthUserListRequest{})
+	require.ErrorIs(t, err, rpctypes.ErrUserNotFound)
+	_, err = server.UserGet(unknownCN, &etcdserverpb.AuthUserGetRequest{Name: "alice"})
+	require.ErrorIs(t, err, rpctypes.ErrUserNotFound)
+	_, err = server.UserGet(unknownCN, &etcdserverpb.AuthUserGetRequest{Name: "external-cn"})
+	require.ErrorIs(t, err, rpctypes.ErrUserNotFound)
+	_, err = server.RoleGet(unknownCN, &etcdserverpb.AuthRoleGetRequest{Role: "allowed"})
+	require.ErrorIs(t, err, rpctypes.ErrUserNotFound)
+
+	aliceCN := verifiedTLSContext(ctx, "alice")
+	self, err := server.UserGet(aliceCN, &etcdserverpb.AuthUserGetRequest{Name: "alice"})
+	require.NoError(t, err)
+	require.Contains(t, self.Roles, "allowed")
+	_, err = server.RoleGet(aliceCN, &etcdserverpb.AuthRoleGetRequest{Role: "allowed"})
+	require.NoError(t, err)
+	_, err = server.UserList(aliceCN, &etcdserverpb.AuthUserListRequest{})
+	require.ErrorIs(t, err, rpctypes.ErrPermissionDenied)
+}

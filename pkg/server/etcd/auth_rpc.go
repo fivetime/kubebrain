@@ -62,8 +62,8 @@ func (s *RPCServer) authAdminSnapshot(ctx context.Context) (*authSnapshot, error
 	if err != nil {
 		return nil, err
 	}
-	if !caller.isRoot() {
-		return nil, rpctypes.ErrPermissionDenied
+	if err := caller.adminError(); err != nil {
+		return nil, err
 	}
 	return caller.snapshot, nil
 }
@@ -116,8 +116,9 @@ func (s *RPCServer) UserGet(ctx context.Context, request *etcdserverpb.AuthUserG
 		if callerErr != nil {
 			return nil, callerErr
 		}
-		if !caller.isRoot() && caller.username != request.Name {
-			return nil, rpctypes.ErrPermissionDenied
+		adminErr := caller.adminError()
+		if adminErr != nil && caller.username != request.Name {
+			return nil, adminErr
 		}
 		snapshot = caller.snapshot
 	}
@@ -224,14 +225,9 @@ func (s *RPCServer) RoleGet(ctx context.Context, request *etcdserverpb.AuthRoleG
 		if callerErr != nil {
 			return nil, callerErr
 		}
-		allowed := caller.isRoot()
-		if user := caller.snapshot.Users[caller.username]; user != nil {
-			for _, role := range user.Roles {
-				allowed = allowed || role == request.Role
-			}
-		}
-		if !allowed {
-			return nil, rpctypes.ErrPermissionDenied
+		adminErr := caller.adminError()
+		if adminErr != nil && !caller.hasRole(request.Role) {
+			return nil, adminErr
 		}
 		snapshot = caller.snapshot
 	}
