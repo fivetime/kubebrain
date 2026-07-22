@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 NAMESPACE="${NAMESPACE:-kubebrain-dev}"
 STATEFULSET="${STATEFULSET:-kubebrain}"
-ENDPOINT="${ENDPOINT:-127.0.0.1:3379}"
+ENDPOINT="${ENDPOINT:-${KUBEBRAIN_ETCD_ENDPOINT:-127.0.0.1:3379}}"
 TIMEOUT="${TIMEOUT:-240s}"
 
 need() {

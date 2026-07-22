@@ -8843,6 +8843,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   都核验所有 attached key/lease ID，结束后逐 lease Revoke、TTL=-1、Leases 列表和前缀均无残留。
   脚本在真实 A445 集群以可审计退出码 54.031 秒通过，三副本最终 Ready、零容器重启。该加速场景不替代小时级、跨可用区或
   网络分区 soak，但把 A445 的 lease reload/renewal 故障边界固定为可重复现场门禁。
+- A448 扩展同一 leader-delete helper 的 endpoint 契约：未显式设定 `ENDPOINT` 时继承
+  `KUBEBRAIN_ETCD_ENDPOINT`，使 compat failover command 不会危险地回退到本地默认地址。真实 A445
+  上的 1200 条长 TTL lease promotion-spread 测试与 empty lease Revoke-after-failover 测试均通过，
+  总耗时 49.076 秒；前者证明恢复后的到期时间被分散，后者证明已删除的 metadata 不会在 leader reload
+  后复活。
 
 ### P1：通用服务能力
 
