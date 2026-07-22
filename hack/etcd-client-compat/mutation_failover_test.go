@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -122,10 +123,26 @@ func isMutationFailoverAmbiguous(err error) bool {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return true
 	}
+	// clientv3 maps recognized server errors to rpctypes.EtcdError. It exposes
+	// Code() but intentionally does not implement gRPCStatus(), so status.Code
+	// would report Unknown for etcd's retryable timeout contract.
+	var etcdError interface{ Code() codes.Code }
+	if errors.As(err, &etcdError) {
+		switch etcdError.Code() {
+		case codes.Canceled, codes.DeadlineExceeded, codes.Unavailable:
+			return true
+		}
+	}
 	switch status.Code(err) {
 	case codes.Canceled, codes.DeadlineExceeded, codes.Unavailable:
 		return true
 	default:
 		return false
 	}
+}
+
+func TestMutationFailoverAmbiguousClassifiesClientv3EtcdTimeout(t *testing.T) {
+	require.True(t, isMutationFailoverAmbiguous(rpctypes.ErrTimeout))
+	require.True(t, isMutationFailoverAmbiguous(fmt.Errorf("wrapped: %w", rpctypes.ErrTimeoutDueToLeaderFail)))
+	require.False(t, isMutationFailoverAmbiguous(rpctypes.ErrLeaseNotFound))
 }

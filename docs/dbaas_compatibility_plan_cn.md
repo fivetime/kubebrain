@@ -8816,9 +8816,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   UID-fenced release gate 验证 StatefulSet/Service/EndpointSlice 精确身份、3 PD/3 TiKV、
   MemberList、advertised client URL 与线性化 proposal；随后真实 PD leader replacement 完成 952
   次操作、TiKV member replacement 完成 1096 次操作，均通过且 TidbCluster 最终 Ready=True。
-  该本地验证镜像由已验证 A444 runtime 加静态构建的服务端二进制组成；legacy Docker builder 在
-  本机的完整镜像导出阶段停滞，因此正式发布仍须由标准 CI/buildkit 的完整 Dockerfile 构建产生，
-  不把本地组合镜像当作可发布供应链制品。
+- A445 的初次规范镜像 quorum smoke 暴露测试端假阴性：clientv3 将已知 etcd timeout 转成
+  `rpctypes.EtcdError`，其只有 `Code()` 而不实现 gRPC `GRPCStatus()`，原 smoke 仅用
+  `status.Code`，错误把 `etcdserver: request timed out` 判为致命。`isMutationFailoverAmbiguous`
+  现先通过 `errors.As` 读取该官方 `Code()` 契约，再检查 gRPC status；普通 50 轮、race 20 轮
+  固定 `ErrTimeout`、wrapped leader-fail timeout 与 non-transient lease-not-found 的边界。
+- 完整 Dockerfile 已从同一干净 archive 成功构建规范镜像
+  `kubebrain:a445-canonical-local`（image ID
+  `sha256:581bb43e44027cf0ae078cbf23b1f2a2363ae26eb06002b4ab62b77e0c1d7ae7`，Git SHA
+  `c8937254185a7fb6b608da26eada5765a01bc071`，Go 1.26.5）。该镜像滚动三副本并通过集群内
+  UID-fenced release gate；修复 smoke 后 PD leader replacement 完成 1133 次操作、TiKV member
+  replacement 完成 1140 次操作，均通过且最终 Ready=True。指定真实 NodePort 的完整 compat
+  module 为 119.633 秒通过，兼容模块 vet/staticcheck v0.7.0 同时通过。
 
 ### P1：通用服务能力
 
