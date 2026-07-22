@@ -26,6 +26,9 @@ TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-900}"
 POLL_INTERVAL_SECONDS="${POLL_INTERVAL_SECONDS:-5}"
 KUBECTL="${KUBECTL:-kubectl}"
 ETCDCTL="${ETCDCTL:-etcdctl}"
+ETCDCTL_EXEC_POD="${ETCDCTL_EXEC_POD:-}"
+ETCDCTL_EXEC_NAMESPACE="${ETCDCTL_EXEC_NAMESPACE:-$KUBEBRAIN_NAMESPACE}"
+ETCDCTL_EXEC_CONTAINER="${ETCDCTL_EXEC_CONTAINER:-}"
 JQ="${JQ:-jq}"
 KUBE_CONTEXT="${KUBE_CONTEXT:-}"
 
@@ -73,6 +76,10 @@ if [[ -z "$EXPECTED_KUBEBRAIN_CLIENT_SERVICE_UID" ]]; then
   echo "EXPECTED_KUBEBRAIN_CLIENT_SERVICE_UID is required" >&2
   exit 2
 fi
+if [[ -n "$ETCDCTL_EXEC_CONTAINER" && -z "$ETCDCTL_EXEC_POD" ]]; then
+  echo "ETCDCTL_EXEC_CONTAINER requires ETCDCTL_EXEC_POD" >&2
+  exit 2
+fi
 for variable in EXPECTED_KUBEBRAIN_REPLICAS EXPECTED_PD_REPLICAS EXPECTED_TIKV_REPLICAS; do
   value="${!variable}"
   if ! [[ "$value" =~ ^[1-9][0-9]*$ ]]; then
@@ -93,6 +100,22 @@ kubectl_args=()
 if [[ -n "$KUBE_CONTEXT" ]]; then
   kubectl_args+=(--context "$KUBE_CONTEXT")
 fi
+
+# Advertised client URLs are often cluster-local DNS names. Run etcdctl in an
+# explicitly selected Pod when the release runner cannot resolve that network,
+# while keeping direct execution as the default for external client endpoints.
+run_etcdctl() {
+  if [[ -z "$ETCDCTL_EXEC_POD" ]]; then
+    "$ETCDCTL" "$@"
+    return
+  fi
+  local exec_args=("$KUBECTL" "${kubectl_args[@]}" -n "$ETCDCTL_EXEC_NAMESPACE" exec "$ETCDCTL_EXEC_POD")
+  if [[ -n "$ETCDCTL_EXEC_CONTAINER" ]]; then
+    exec_args+=(-c "$ETCDCTL_EXEC_CONTAINER")
+  fi
+  exec_args+=(-- "$ETCDCTL")
+  "${exec_args[@]}" "$@"
+}
 
 tidb_topology="$("$KUBECTL" "${kubectl_args[@]}" -n "$TIDB_NAMESPACE" get tidbcluster "$TIDB_CLUSTER" \
   -o 'jsonpath={.spec.pd.replicas}{"\t"}{.spec.tikv.replicas}{"\t"}{.status.clusterID}{"\t"}{.metadata.uid}')"
@@ -303,7 +326,7 @@ if [[ "$initial_cluster_arg_count" -ne 1 || "$initial_cluster_arg_mismatch" == "
   exit 1
 fi
 
-if ! ETCDCTL_API=3 "$ETCDCTL" --endpoints="$ENDPOINT" endpoint health; then
+if ! ETCDCTL_API=3 run_etcdctl --endpoints="$ENDPOINT" endpoint health; then
   echo "KubeBrain endpoint health failed: $ENDPOINT" >&2
   exit 1
 fi
@@ -365,7 +388,7 @@ if [[ "${#initial_cluster_entries[@]}" -ne "$EXPECTED_KUBEBRAIN_REPLICAS" ]]; th
   exit 2
 fi
 
-if ! member_list_json="$(ETCDCTL_API=3 "$ETCDCTL" --endpoints="$ENDPOINT" member list -w json)"; then
+if ! member_list_json="$(ETCDCTL_API=3 run_etcdctl --endpoints="$ENDPOINT" member list -w json)"; then
   echo "KubeBrain MemberList failed: $ENDPOINT" >&2
   exit 1
 fi
@@ -399,7 +422,7 @@ if ! printf '%s' "$member_list_json" | "$JQ" -e \
 fi
 
 for advertised_url in "${advertised_client_urls[@]}"; do
-  if ! ETCDCTL_API=3 "$ETCDCTL" --endpoints="$advertised_url" endpoint health; then
+  if ! ETCDCTL_API=3 run_etcdctl --endpoints="$advertised_url" endpoint health; then
     echo "KubeBrain advertised client URL is unreachable from the release gate network: $advertised_url" >&2
     exit 1
   fi

@@ -27,6 +27,8 @@ func TestValidateInstanceReady(t *testing.T) {
 		podsJSON                 string
 		endpointSlicesJSON       string
 		initialCluster           string
+		etcdctlExecPod           string
+		wantExec                 bool
 		wantOK                   bool
 		wantOutput               string
 	}{
@@ -38,6 +40,17 @@ func TestValidateInstanceReady(t *testing.T) {
 			healthOK:   true,
 			wantOK:     true,
 			wantOutput: "release gate passed",
+		},
+		{
+			name:           "runs etcdctl from selected cluster Pod",
+			image:          "registry/kubebrain@sha256:abc",
+			kubeStatus:     "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:abc",
+			topology:       "3\t3",
+			healthOK:       true,
+			etcdctlExecPod: "release-gate-runner",
+			wantExec:       true,
+			wantOK:         true,
+			wantOutput:     "release gate passed",
 		},
 		{
 			name:           "multiple reachable advertised client URLs",
@@ -357,7 +370,14 @@ func TestValidateInstanceReady(t *testing.T) {
 			fakeKubectl := filepath.Join(dir, "kubectl")
 			require.NoError(t, os.WriteFile(fakeKubectl, []byte(`#!/usr/bin/env bash
 set -euo pipefail
-if [[ "$*" == *"get tidbcluster"* && "$*" == *".status.conditions"* ]]; then
+if [[ "$*" == *" exec "* ]]; then
+  printf '%s\n' "$*" >>"${FAKE_EXEC_LOG:?}"
+  while [[ "$1" != "--" ]]; do
+    shift
+  done
+  shift
+  exec "$@"
+elif [[ "$*" == *"get tidbcluster"* && "$*" == *".status.conditions"* ]]; then
   printf 'True'
 elif [[ "$*" == *"get statefulset kb-pd"* && "$*" == *"jsonpath="* ]]; then
   printf '5\t5\t3\t3\t3\tpd-new\tpd-new'
@@ -459,6 +479,13 @@ exit 1
 				"FAKE_UNREACHABLE_ADVERTISED_URL="+tc.unreachableAdvertisedURL,
 				"FAKE_MEMBER_LIST_JSON="+memberListJSON,
 			)
+			execLog := filepath.Join(dir, "etcdctl-exec.log")
+			if tc.etcdctlExecPod != "" {
+				command.Env = append(command.Env,
+					"ETCDCTL_EXEC_POD="+tc.etcdctlExecPod,
+					"FAKE_EXEC_LOG="+execLog,
+				)
+			}
 			output, err := command.CombinedOutput()
 			if tc.wantOK {
 				require.NoError(t, err, string(output))
@@ -466,6 +493,11 @@ exit 1
 				require.Error(t, err, string(output))
 			}
 			require.Contains(t, strings.TrimSpace(string(output)), tc.wantOutput)
+			if tc.wantExec {
+				executions, readErr := os.ReadFile(execLog)
+				require.NoError(t, readErr)
+				require.Contains(t, string(executions), "exec "+tc.etcdctlExecPod+" -- "+fakeEtcdctl)
+			}
 		})
 	}
 }

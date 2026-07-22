@@ -8828,6 +8828,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   UID-fenced release gate；修复 smoke 后 PD leader replacement 完成 1133 次操作、TiKV member
   replacement 完成 1140 次操作，均通过且最终 Ready=True。指定真实 NodePort 的完整 compat
   module 为 119.633 秒通过，兼容模块 vet/staticcheck v0.7.0 同时通过。
+- A446 将 release gate 的 cluster-local advertised URL 验证纳入正式契约：可选
+  `ETCDCTL_EXEC_POD`（以及 namespace/container）通过指定 Pod 执行 endpoint health 与
+  MemberList，直接宿主 `ETCDCTL` 路径仍为默认。参数以 argv 传递，Pod 执行不注入已废弃的
+  `ETCDCTL_API` 环境变量。fake kubectl 门禁固定 exec pod、`--` 分隔和 etcdctl 参数透传；普通
+  20 轮、race 10 轮通过。真实 A445 三副本 gate 使用 `ETCDCTL_EXEC_POD=kubebrain-0` 完整通过，
+  从同一 client 网络域验证 advertised service URL、MemberList 和 endpoint health，无需临时
+  未版本控制的代理脚本。
 
 ### P1：通用服务能力
 
