@@ -87,6 +87,15 @@ func TestValidateReceiptChain(t *testing.T) {
 
 	_, _, err = validateReceiptChain(status, witness, snapshotData, restoreData)
 	require.NoError(t, err)
+
+	snapshotUnknown := append(append([]byte(nil), snapshotData[:len(snapshotData)-1]...), []byte(`,"unexpected":true}`)...)
+	_, _, err = validateReceiptChain(status, witness, snapshotUnknown, restoreData)
+	require.ErrorContains(t, err, "unknown field")
+
+	restoreTrailing := append(append([]byte(nil), restoreData...), []byte(`{"trailing":true}`)...)
+	_, _, err = validateReceiptChain(status, witness, snapshotData, restoreTrailing)
+	require.ErrorContains(t, err, "trailing JSON")
+
 	_, _, err = validateReceiptChain(status, []byte("tampered"), snapshotData, restoreData)
 	require.ErrorContains(t, err, "witness binding mismatch")
 

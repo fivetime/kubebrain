@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -86,6 +87,21 @@ func TestRenderColdRestoreManifestRejectsIncompleteReceipts(t *testing.T) {
 			require.ErrorContains(t, err, tc.message)
 		})
 	}
+}
+
+func TestDecodeReceiptRejectsUnknownAndTrailingJSON(t *testing.T) {
+	data, err := json.Marshal(validReceipt())
+	require.NoError(t, err)
+	_, err = decodeReceipt(data)
+	require.NoError(t, err)
+
+	withUnknown := append(append([]byte(nil), data[:len(data)-1]...), []byte(`,"unexpected":true}`)...)
+	_, err = decodeReceipt(withUnknown)
+	require.ErrorContains(t, err, "unknown field")
+
+	withTrailing := append(append([]byte(nil), data...), []byte(`{"trailing":true}`)...)
+	_, err = decodeReceipt(withTrailing)
+	require.ErrorContains(t, err, "trailing JSON")
 }
 
 func validReceipt() receipt {

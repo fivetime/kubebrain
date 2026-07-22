@@ -561,6 +561,8 @@ TidbCluster。PD 数据包含原 member identity 和 peer/client URL，因此 na
 StatefulSet/PVC 名不能改；目标必须是与源数据面网络隔离、但使用相同名字的独立 Kubernetes
 集群。renderer 不访问目标集群，也不验证 snapshot handle 可导入、PVC 已 Bound、恢复后的
 TiKV cluster ID 或 KubeBrain 数据语义；这些仍须由后续 restore executor 和真实 CSI 演练门禁。
+renderer 读取 `kubebrain.cold-physical-snapshot.v2` receipt 时必须拒绝未知字段和尾随第二个
+JSON 值，不能把恢复证据合同之外的字段静默忽略后继续渲染清单。
 
 隔离目标的候选恢复 executor 必须显式绑定两个 Kubernetes UID，不能隐式使用当前 context：
 
@@ -609,6 +611,8 @@ ETCDCTL_CACERT=<ca> ETCDCTL_CERT=<client-cert> ETCDCTL_KEY=<client-key> \
 为正。最后以 CreatedNotify watch 建立探针，执行附 lease 的 Put、线性读、Delete、两次精确 watch
 event 和 Revoke；成功才原子发布 `kubebrain.cold-physical-semantic-verify.v1`。这仍不能替代真实
 CSI restore 演练，但它是物理恢复完成门禁，而不是普通 endpoint health 检查。
+语义门禁读取 snapshot/restore receipt 链时同样使用严格单 JSON 值解析，拒绝未知字段和
+尾随 JSON；restore manifest 则继续以 canonical digest、资源计数和逐资源 identity 绑定证明内容。
 
 生产备份 Job 必须设置 `METRICS_OUTPUT`，将成功结果写入 node-exporter 或等价
 Prometheus textfile collector 的共享目录；`BACKUP_INSTANCE` 必须与实例名一致，

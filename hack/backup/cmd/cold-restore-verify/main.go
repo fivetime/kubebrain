@@ -234,8 +234,8 @@ func main() {
 
 func validateReceiptChain(status backupfile.Status, witnessData, snapshotData, restoreData []byte) (snapshotReceipt, restoreReceipt, error) {
 	var snapshotRecord snapshotReceipt
-	if err := json.Unmarshal(snapshotData, &snapshotRecord); err != nil {
-		return snapshotReceipt{}, restoreReceipt{}, fmt.Errorf("decode snapshot receipt: %w", err)
+	if err := decodeStrictJSON(snapshotData, &snapshotRecord, "snapshot receipt"); err != nil {
+		return snapshotReceipt{}, restoreReceipt{}, err
 	}
 	if snapshotRecord.Format != "kubebrain.cold-physical-snapshot.v2" || snapshotRecord.OperationID == "" ||
 		snapshotRecord.Witness.Format != status.Format || snapshotRecord.Witness.Prefix != status.Prefix ||
@@ -245,8 +245,8 @@ func validateReceiptChain(status backupfile.Status, witnessData, snapshotData, r
 		return snapshotReceipt{}, restoreReceipt{}, errors.New("snapshot receipt semantic witness binding mismatch")
 	}
 	var restore restoreReceipt
-	if err := json.Unmarshal(restoreData, &restore); err != nil {
-		return snapshotReceipt{}, restoreReceipt{}, fmt.Errorf("decode restore receipt: %w", err)
+	if err := decodeStrictJSON(restoreData, &restore, "restore receipt"); err != nil {
+		return snapshotReceipt{}, restoreReceipt{}, err
 	}
 	if restore.Format != "kubebrain.cold-physical-restore.v1" || restore.OperationID == "" || restore.Target.ClusterID == "" ||
 		restore.OperationID != snapshotRecord.OperationID || restore.SourceReceiptSHA != digest(snapshotData) {
@@ -268,6 +268,19 @@ func validateReceiptChain(status backupfile.Status, witnessData, snapshotData, r
 		return snapshotReceipt{}, restoreReceipt{}, errors.New("cold physical restore receipt does not bind a canonical restore manifest")
 	}
 	return snapshotRecord, restore, nil
+}
+
+func decodeStrictJSON(data []byte, target any, description string) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return fmt.Errorf("decode %s: %w", description, err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return fmt.Errorf("%s contains trailing JSON", description)
+	}
+	return nil
 }
 
 func validateRestoreReceiptInventory(restore restoreReceipt, snapshotRecord snapshotReceipt) error {

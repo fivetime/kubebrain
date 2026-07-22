@@ -1,12 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -83,9 +85,9 @@ func main() {
 	if err != nil {
 		fatal(err)
 	}
-	var value receipt
-	if err := json.Unmarshal(data, &value); err != nil {
-		fatal(fmt.Errorf("decode receipt: %w", err))
+	value, err := decodeReceipt(data)
+	if err != nil {
+		fatal(err)
 	}
 	manifest, err := render(value, *snapshotClass, *storageClass)
 	if err != nil {
@@ -142,6 +144,20 @@ func writeAtomic(path string, data []byte) (returnErr error) {
 func fatal(err error) {
 	fmt.Fprintln(os.Stderr, err)
 	os.Exit(1)
+}
+
+func decodeReceipt(data []byte) (receipt, error) {
+	var value receipt
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&value); err != nil {
+		return receipt{}, fmt.Errorf("decode receipt: %w", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return receipt{}, errors.New("receipt contains trailing JSON")
+	}
+	return value, nil
 }
 
 func render(r receipt, snapshotClass, storageClass string) (map[string]any, error) {

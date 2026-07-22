@@ -9209,6 +9209,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   空数组、null、object、non-string、empty string 和 trailing JSON；`cd hack/backup/objectstore && go test ./...`、
   `cd hack/backup/objectstore && go vet ./...`、`go test ./hack/production/... ./deploy/production`、
   `go vet ./hack/production/... ./deploy/production` 与 `git diff --check` 通过。
+- A491 收紧 cold physical restore receipt 解析：`cold-restore-render` 读取
+  `kubebrain.cold-physical-snapshot.v2` receipt 时改用 `DisallowUnknownFields` 并拒绝
+  trailing JSON；`cold-restore-verify` 的 snapshot/restore receipt chain 同样改为严格单
+  JSON 值解析。这样恢复证据合同之外的未知字段或拼接 JSON 不会被 `json.Unmarshal`
+  静默忽略后继续渲染清单或发布 semantic verify receipt。回归覆盖 renderer unknown/
+  trailing，以及 verifier snapshot unknown、restore trailing；`go test ./hack/backup/cmd/cold-restore-render ./hack/backup/cmd/cold-restore-verify`、
+  `go test ./hack/backup/...`、`go vet ./hack/backup/...`、
+  `go test ./hack/production/... ./deploy/production`、`go vet ./hack/production/... ./deploy/production`
+  与 `git diff --check` 通过。
 
 ### P2：运维兼容和长期验证
 
