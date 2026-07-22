@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"unicode/utf8"
 )
 
 const Format = "kubebrain.operation-audit.v1"
@@ -18,6 +19,8 @@ const ArchiveReceiptFormat = "kubebrain.object-operation-audit.receipt.v1"
 const Finalizer = "dbaas.kubebrain.io/operation-audit"
 const ApproverUsername = "system:serviceaccount:kubebrain-operations:kubebrain-operation-approver"
 const maxOperationAuditJSONBytes = 1 << 20
+const maxOperationOwnerLength = 253
+const maxOperationMessageLength = 4096
 
 const (
 	ReceiptSHAAnnotation  = "dbaas.kubebrain.io/audit-receipt-sha256"
@@ -91,6 +94,8 @@ func (a Artifact) Validate() error {
 		!validSHA256(a.ParametersSHA256) || a.MaxAttempts <= 0 ||
 		(a.Phase != "Succeeded" && a.Phase != "Failed") ||
 		a.Owner == "" || a.Attempt <= 0 || a.Attempt > a.MaxAttempts ||
+		utf8.RuneCountInString(a.Owner) > maxOperationOwnerLength ||
+		utf8.RuneCountInString(a.Message) > maxOperationMessageLength ||
 		a.ObservedGeneration <= 0 || a.ObservedGeneration > a.Generation || a.StartedAtUnix <= 0 ||
 		a.CompletedAtUnix < a.StartedAtUnix {
 		return errors.New("terminal operation audit artifact is incomplete")

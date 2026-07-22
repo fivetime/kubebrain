@@ -10333,6 +10333,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   receipt。回归：
   `go test ./hack/production/internal/operationqueue ./hack/production/internal/operationauditbuilder ./hack/production/operationaudit -run 'TestQueueRejectsSpecDriftAndInvalidCompletion|TestAudit|TestFromOperation|TestArtifact' -count=1`
   通过。
+- A610 补齐 operation audit artifact 的 status 长度门禁：
+  A606 已让 queue 层拒绝超过 CRD 上限的 `status.owner` 与 `status.message`，但
+  `operationaudit.Artifact.Validate` 仍只检查 owner 非空和基础终态字段。旧 CRD、
+  fake-client 或直接对象若携带超长 owner/message，archiver 会生成生产 CRD 不会接受的
+  audit artifact，扩大不可变对象大小并污染审计链。现在 artifact validator 同步拒绝
+  owner 超过 253 字符、message 超过 4096 字符；builder 因复用 validator 自动 fail
+  closed。回归：
+  `go test ./hack/production/operationaudit ./hack/production/internal/operationauditbuilder -run 'TestOperationAuditRejectsNonterminalAndInvalidReceipt|TestFromOperationBindsImmutableSpecAndTerminalStatus' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

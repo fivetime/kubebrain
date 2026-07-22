@@ -66,6 +66,14 @@ func TestOperationAuditRejectsNonterminalAndInvalidReceipt(t *testing.T) {
 	artifact = terminalArtifact()
 	artifact.ReceiptSHA256 = strings.Repeat("B", 64)
 	require.ErrorContains(t, artifact.Validate(), "requires a receipt")
+
+	artifact = terminalArtifact()
+	artifact.Owner = strings.Repeat("w", maxOperationOwnerLength+1)
+	require.ErrorContains(t, artifact.Validate(), "incomplete")
+
+	artifact = terminalArtifact()
+	artifact.Message = strings.Repeat("m", maxOperationMessageLength+1)
+	require.ErrorContains(t, artifact.Validate(), "incomplete")
 }
 
 func TestArchiveReceiptRejectsUppercaseDigest(t *testing.T) {
