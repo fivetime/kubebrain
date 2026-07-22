@@ -8803,8 +8803,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   逻辑上的 entry cap 与 byte cap 不变，map 仍按实际工作集扩张。此前字节边界测试用百万 entry
   cap 来证明 byte rotation，会在构造和每次 rotation 分配百万 buckets，race instrumentation 下
   使完整套件超时；修复后同一测试只为实际保留的少量大对象分配 buckets。
+- 同时修复旧代际命中提升绕过双边界的问题：提升前使用与写入一致的 rotation 判定，避免高命中
+  工作集在无新写入时持续把 live generation 推过 entry/byte 上限。两类 cache 的容量为 1 回归
+  固定提升后 live generation 仍只有一个条目，且被轮转出的条目仍可读取。
 - 定向 byte-bound race 20 轮，以及完整 `go test -race ./pkg/server/etcd -count=1` 均通过，后者
-  耗时 223.685 秒；普通 root 全量测试、vet、staticcheck v0.7.0 和 diff check 也均通过。
+  在两次独立运行中耗时 223.685 秒和 224.046 秒；普通 root 全量测试、vet、staticcheck v0.7.0
+  和 diff check 也均通过。
   从 `5263a1c` 干净 archive 构建的 `kubebrain:a444-uncertain-commit-local` 滚动三副本后，真实
   PD leader replacement 在故障窗口完成 1006 次操作，TiKV member replacement 完成 1001 次，
   两者均通过并最终 TidbCluster Ready=True。

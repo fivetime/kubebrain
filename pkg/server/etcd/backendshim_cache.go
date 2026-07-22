@@ -124,6 +124,7 @@ func (c *revKeyCache) get(k string) (interface{}, bool) {
 		return e.v, true
 	}
 	if e, ok := c.prev[k]; ok {
+		c.rotateForEntryLocked(int64(len(k)) + e.size + cacheEntryOverhead)
 		c.setCurLocked(k, e) // promote so it survives the next rotation
 		return e.v, true
 	}
@@ -139,10 +140,14 @@ func (c *revKeyCache) put(k string, v interface{}, size int64) {
 	// Rotate when either bound is hit. The len>0 guard lets a single oversized
 	// entry still be stored (in an otherwise-empty generation) instead of
 	// rotating forever.
+	c.rotateForEntryLocked(entryBytes)
+	c.setCurLocked(k, revCacheEntry{v: v, size: size})
+}
+
+func (c *revKeyCache) rotateForEntryLocked(entryBytes int64) {
 	if len(c.cur) >= c.cap || (c.curBytes+entryBytes > c.maxBytes && len(c.cur) > 0) {
 		c.rotateLocked()
 	}
-	c.setCurLocked(k, revCacheEntry{v: v, size: size})
 }
 
 func (c *revKeyCache) setCurLocked(k string, e revCacheEntry) {
@@ -241,6 +246,7 @@ func (c *prevHintCache) get(key string) (prevHintEntry, bool) {
 		return e, true
 	}
 	if e, ok := c.prev[key]; ok {
+		c.rotateForEntryLocked(hintEntryBytes(key, e))
 		c.setCurLocked(key, e) // promote so it survives the next rotation
 		return e, true
 	}
@@ -261,6 +267,12 @@ func (c *prevHintCache) rotateLocked() {
 	c.curBytes = 0
 }
 
+func (c *prevHintCache) rotateForEntryLocked(entryBytes int64) {
+	if len(c.cur) >= c.cap || (c.curBytes+entryBytes > c.maxBytes && len(c.cur) > 0) {
+		c.rotateLocked()
+	}
+}
+
 // note records a converted event, keeping only the highest revision per key.
 func (c *prevHintCache) note(key string, rev uint64, kv *mvccpb.KeyValue, tombstone bool) {
 	c.mu.Lock()
@@ -277,9 +289,7 @@ func (c *prevHintCache) note(key string, rev uint64, kv *mvccpb.KeyValue, tombst
 	e := prevHintEntry{rev: rev, kv: kv, tombstone: tombstone}
 	// Rotate when either bound is hit (entry count or accumulated bytes); the
 	// len>0 guard lets a single oversized hint still be stored.
-	if len(c.cur) >= c.cap || (c.curBytes+hintEntryBytes(key, e) > c.maxBytes && len(c.cur) > 0) {
-		c.rotateLocked()
-	}
+	c.rotateForEntryLocked(hintEntryBytes(key, e))
 	c.setCurLocked(key, e)
 }
 

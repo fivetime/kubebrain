@@ -149,3 +149,35 @@ func TestRevKeyCacheByteBoundRotates(t *testing.T) {
 	_, okNew := c.get("k-00199")
 	require.True(t, okNew, "most recent entry must be retained")
 }
+
+// TestCachePromotionRespectsGenerationBounds pins that a hit from the previous
+// generation cannot grow the live generation past either cache's entry bound.
+// Hot reads after a rotation are as common as writes in watch fanout, so they
+// must use the same rotation rule as insertion.
+func TestCachePromotionRespectsGenerationBounds(t *testing.T) {
+	revCache := newRevKeyCache(1, 1<<40)
+	revCache.put("old", "old-value", 0)
+	revCache.put("new", "new-value", 0) // rotate old into prev
+	v, ok := revCache.get("old")
+	require.True(t, ok)
+	assert.Equal(t, "old-value", v)
+	revCache.mu.Lock()
+	assert.Len(t, revCache.cur, 1)
+	assert.Contains(t, revCache.cur, "old")
+	revCache.mu.Unlock()
+	_, ok = revCache.get("new")
+	require.True(t, ok, "the displaced current generation must remain readable")
+
+	hintCache := newPrevHintCache(1, 1<<40)
+	hintCache.note("old", 1, &mvccpb.KeyValue{ModRevision: 1}, false)
+	hintCache.note("new", 2, &mvccpb.KeyValue{ModRevision: 2}, false) // rotate old into prev
+	e, ok := hintCache.get("old")
+	require.True(t, ok)
+	assert.Equal(t, uint64(1), e.rev)
+	hintCache.mu.Lock()
+	assert.Len(t, hintCache.cur, 1)
+	assert.Contains(t, hintCache.cur, "old")
+	hintCache.mu.Unlock()
+	_, ok = hintCache.get("new")
+	require.True(t, ok, "the displaced current generation must remain readable")
+}
