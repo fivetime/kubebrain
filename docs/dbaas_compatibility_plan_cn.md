@@ -8852,6 +8852,9 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   285 秒后删除当前 leader，replacement leader 恢复的 TTL 仍不超过 310 秒、GrantedTTL 仍为 600，且
   attached key 完整可读；测试以可审计退出码在 321.067 秒通过。该结果覆盖五分钟 checkpoint 周期后的
   恢复语义，排除了 promotion 将 lease 错误重置为完整 grant TTL 的风险。
+- A450 在真实 A445 集群动态识别当前 leader 后，于 3 秒 lease 仅剩 1 秒时删除该 Pod；near-expiry
+  promotion 测试以可审计退出码在 4.981 秒通过。故障窗口有两次客户端 `DeadlineExceeded`，随后 lease
+  与 attached key 均恢复可读并最终自然过期删除，证明 promotion 不会因短暂不可用提前遗失临期 lease。
 
 ### P1：通用服务能力
 
