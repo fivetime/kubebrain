@@ -68,6 +68,21 @@ func TestBackupDeletionOperationRejectsDriftAndInvalidEvidence(t *testing.T) {
 		f.run(t, false, "INVALID_DELETE_RECEIPT=true", "deletion receipt is invalid")
 		require.NotContains(t, f.log(t), "--action succeed")
 	})
+	t.Run("pre inventory receipt unknown field", func(t *testing.T) {
+		f := newBackupDeletionFixture(t)
+		f.run(t, false, "EXTRA_PRE_RECEIPT=true", "pre-delete inventory receipt is invalid")
+		require.NotContains(t, f.log(t), "--action succeed")
+	})
+	t.Run("deletion receipt unknown field", func(t *testing.T) {
+		f := newBackupDeletionFixture(t)
+		f.run(t, false, "EXTRA_DELETE_RECEIPT=true", "backup deletion receipt is invalid")
+		require.NotContains(t, f.log(t), "--action succeed")
+	})
+	t.Run("post inventory receipt unknown field", func(t *testing.T) {
+		f := newBackupDeletionFixture(t)
+		f.run(t, false, "EXTRA_POST_RECEIPT=true", "post-delete inventory receipt is invalid")
+		require.NotContains(t, f.log(t), "--action succeed")
+	})
 	t.Run("post manifest still contains version", func(t *testing.T) {
 		f := newBackupDeletionFixture(t)
 		require.NoError(t, os.WriteFile(f.postManifest, mustRead(t, f.preManifest), 0o600))
@@ -137,15 +152,21 @@ printf 'object %s\n' "$stage" >>"$FAKE_DIR/actions.log"
 sleep "${OBJECT_SLEEP:-0}"
 case "$stage" in
   pre)
-    printf '{"format":"kubebrain.object-inventory.receipt.v1","object_store_id":"store-a","bucket":"backups","prefix":"instance-a/","manifest_sha256":"%s","expected_versions":1,"remote_versions":1,"delete_markers":0,"all_matched":true,"checked_at_unix":1}\n' "$PRE_SHA" >"$RECEIPT_OUTPUT"
+    extra=
+    [[ "${EXTRA_PRE_RECEIPT:-false}" != true ]] || extra=',"unexpected":true'
+    printf '{"format":"kubebrain.object-inventory.receipt.v1","object_store_id":"store-a","bucket":"backups","prefix":"instance-a/","manifest_sha256":"%s","expected_versions":1,"remote_versions":1,"delete_markers":0,"all_matched":true,"checked_at_unix":1%s}\n' "$PRE_SHA" "$extra" >"$RECEIPT_OUTPUT"
     ;;
   post)
-    printf '{"format":"kubebrain.object-inventory.receipt.v1","object_store_id":"store-a","bucket":"backups","prefix":"instance-a/","manifest_sha256":"%s","expected_versions":0,"remote_versions":0,"delete_markers":0,"all_matched":true,"checked_at_unix":1}\n' "$POST_SHA" >"$RECEIPT_OUTPUT"
+    extra=
+    [[ "${EXTRA_POST_RECEIPT:-false}" != true ]] || extra=',"unexpected":true'
+    printf '{"format":"kubebrain.object-inventory.receipt.v1","object_store_id":"store-a","bucket":"backups","prefix":"instance-a/","manifest_sha256":"%s","expected_versions":0,"remote_versions":0,"delete_markers":0,"all_matched":true,"checked_at_unix":1%s}\n' "$POST_SHA" "$extra" >"$RECEIPT_OUTPUT"
     ;;
   delete)
     artifact=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
     [[ "${INVALID_DELETE_RECEIPT:-false}" != true ]] || artifact=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-    printf '{"format":"kubebrain.object-backup-deletion.receipt.v1","instance":"instance-a","backup_id":"backup-1","object_store_id":"store-a","bucket":"backups","object_key":"instance-a/backup-1.jsonl","version_id":"version-1","artifact_sha256":"%s","retention_mode":"COMPLIANCE","retain_until_unix":2,"version_absent":true,"deleted_at_unix":2}\n' "$artifact" >"$DELETE_RECEIPT_OUTPUT"
+    extra=
+    [[ "${EXTRA_DELETE_RECEIPT:-false}" != true ]] || extra=',"unexpected":true'
+    printf '{"format":"kubebrain.object-backup-deletion.receipt.v1","instance":"instance-a","backup_id":"backup-1","object_store_id":"store-a","bucket":"backups","object_key":"instance-a/backup-1.jsonl","version_id":"version-1","artifact_sha256":"%s","retention_mode":"COMPLIANCE","retain_until_unix":2,"version_absent":true,"deleted_at_unix":2%s}\n' "$artifact" "$extra" >"$DELETE_RECEIPT_OUTPUT"
     ;;
 esac
 `)

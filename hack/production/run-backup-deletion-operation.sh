@@ -124,12 +124,22 @@ done
 
 source_fields="$("$JQ" -er --arg instance "$instance" --arg backup "$backup_id" \
   --arg store "$object_store_id" '
-  select(.format == "kubebrain.object-backup.receipt.v1" and
+  select(keys == ["artifact_format","artifact_sha256","backup_id","bucket","created_at_unix","format","instance","leases","object_bytes","object_key","object_store_id","records","remote_verified","retain_until_unix","retention_mode","snapshot_revision","uploaded_at_unix","version_id"] and
+    .format == "kubebrain.object-backup.receipt.v1" and
     .instance == $instance and .backup_id == $backup and .object_store_id == $store and
     (.bucket|length > 0) and (.object_key|length > 0) and (.version_id|length > 0) and
-    (.artifact_sha256|test("^[a-f0-9]{64}$"))) |
-  [.bucket,.object_key,.version_id,.artifact_sha256] | @tsv' "$source_receipt")"
-IFS=$'\t' read -r bucket object_key version_id artifact_sha <<<"$source_fields"
+    (.artifact_sha256|test("^[a-f0-9]{64}$")) and
+    (.snapshot_revision | type == "number" and . > 0 and . == floor) and
+    (.created_at_unix | type == "number" and . > 0 and . == floor) and
+    (.records | type == "number" and . >= 0 and . == floor) and
+    (.leases | type == "number" and . >= 0 and . == floor) and
+    (.object_bytes | type == "number" and . > 0 and . == floor) and
+    (.retention_mode == "COMPLIANCE" or .retention_mode == "GOVERNANCE") and
+    (.retain_until_unix | type == "number" and . > 0 and . == floor) and
+    .remote_verified == true and
+    (.uploaded_at_unix | type == "number" and . > 0 and . == floor)) |
+  [.bucket,.object_key,.version_id,.artifact_sha256,.retention_mode,(.retain_until_unix|tostring)] | @tsv' "$source_receipt")"
+IFS=$'\t' read -r bucket object_key version_id artifact_sha retention_mode retain_until <<<"$source_fields"
 
 manifest_gate() {
   local manifest="$1" manifest_sha="$2" mode="$3"
@@ -221,30 +231,38 @@ for receipt in "$pre_inventory_receipt" "$deletion_receipt" "$post_inventory_rec
     exit 1
   }
 done
-"$JQ" -e --arg store "$object_store_id" --arg bucket "$bucket" \
-  --arg manifest "$pre_manifest_sha" '
-  .format == "kubebrain.object-inventory.receipt.v1" and
-  .object_store_id == $store and .bucket == $bucket and .manifest_sha256 == $manifest and
-  .expected_versions >= 1 and .remote_versions == .expected_versions and
-  .delete_markers == 0 and .all_matched == true and .checked_at_unix > 0' \
-  "$pre_inventory_receipt" >/dev/null ||
+
+validate_inventory_receipt() {
+  local path="$1" manifest_sha="$2" min_versions="$3"
+  "$JQ" -e --arg store "$object_store_id" --arg bucket "$bucket" \
+    --arg manifest "$manifest_sha" --argjson min_versions "$min_versions" '
+    keys == ["all_matched","bucket","checked_at_unix","delete_markers","expected_versions","format","manifest_sha256","object_store_id","prefix","remote_versions"] and
+    .format == "kubebrain.object-inventory.receipt.v1" and
+    .object_store_id == $store and .bucket == $bucket and
+    (.prefix | type == "string" and length > 0) and
+    .manifest_sha256 == $manifest and
+    (.expected_versions | type == "number" and . >= $min_versions and . == floor) and
+    .remote_versions == .expected_versions and .delete_markers == 0 and
+    .all_matched == true and
+    (.checked_at_unix | type == "number" and . > 0 and . == floor)' \
+    "$path" >/dev/null
+}
+
+validate_inventory_receipt "$pre_inventory_receipt" "$pre_manifest_sha" 1 ||
   { echo "pre-delete inventory receipt is invalid" >&2; exit 1; }
-"$JQ" -e --arg store "$object_store_id" --arg bucket "$bucket" \
-  --arg manifest "$post_manifest_sha" '
-  .format == "kubebrain.object-inventory.receipt.v1" and
-  .object_store_id == $store and .bucket == $bucket and .manifest_sha256 == $manifest and
-  .expected_versions >= 0 and .remote_versions == .expected_versions and
-  .delete_markers == 0 and .all_matched == true and .checked_at_unix > 0' \
-  "$post_inventory_receipt" >/dev/null ||
+validate_inventory_receipt "$post_inventory_receipt" "$post_manifest_sha" 0 ||
   { echo "post-delete inventory receipt is invalid" >&2; exit 1; }
 "$JQ" -e --arg instance "$instance" --arg backup "$backup_id" \
   --arg store "$object_store_id" --arg bucket "$bucket" --arg key "$object_key" \
-  --arg version "$version_id" --arg artifact "$artifact_sha" '
+  --arg version "$version_id" --arg artifact "$artifact_sha" \
+  --arg retention "$retention_mode" --argjson retain_until "$retain_until" '
+  keys == ["artifact_sha256","backup_id","bucket","deleted_at_unix","format","instance","object_key","object_store_id","retain_until_unix","retention_mode","version_absent","version_id"] and
   .format == "kubebrain.object-backup-deletion.receipt.v1" and
   .instance == $instance and .backup_id == $backup and .object_store_id == $store and
   .bucket == $bucket and .object_key == $key and .version_id == $version and
   .artifact_sha256 == $artifact and .version_absent == true and
-  .retain_until_unix > 0 and .deleted_at_unix == .retain_until_unix' \
+  .retention_mode == $retention and .retain_until_unix == $retain_until and
+  .deleted_at_unix == .retain_until_unix' \
   "$deletion_receipt" >/dev/null ||
   { echo "backup deletion receipt is invalid" >&2; exit 1; }
 pre_inventory_sha="$(sha256sum "$pre_inventory_receipt" | cut -d ' ' -f1)"

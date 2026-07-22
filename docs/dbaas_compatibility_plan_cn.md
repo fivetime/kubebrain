@@ -9639,6 +9639,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   四条路径中带未知字段的 existing receipt 被拒绝且原文件不被覆盖；
   `go test ./hack/production -run 'Test(BoundaryCleanup|PostRestoreAudit|RestoreTrafficCutover|BackupDeletionOperation)' -count=1 -timeout=180s`
   与 `git diff --check` 通过。
+- A539 收紧 BackupDeletion runner 输入 receipt schema：A538 关闭了最终 operation
+  receipt 复用问题，但 `run-backup-deletion-operation.sh` 对 source backup receipt、
+  pre/post inventory receipt 和 deletion receipt 仍只校验字段子集；带未知字段、弱
+  时间戳类型或 retention mode 漂移的输入证据可能进入最终 operation digest。现在 runner
+  要求 source receipt、inventory receipts 和 deletion receipt 的顶层字段集合、数值类型、
+  retention mode/retain-until、manifest SHA、exact version 身份和 absence 证明全部精确
+  匹配。回归覆盖 pre inventory、deletion 和 post inventory receipt 带未知字段均被拒绝；
+  `go test ./hack/production -run 'TestBackupDeletionOperation' -count=1 -timeout=120s`
+  与 `git diff --check` 通过。
 
 ### P2：运维兼容和长期验证
 
