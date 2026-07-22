@@ -9431,6 +9431,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./hack/production/cmd/metering-archive -run 'Test(ReadToken|PrometheusClient)' -count=20`、
   `go test ./hack/production/cmd/metering-archive`、`go test ./hack/production/... ./deploy/production`、
   `go vet ./hack/production/... ./deploy/production` 与 `git diff --check` 通过。
+- A518 收紧 `operationctl --action parameters` 的 broker CA 文件读取边界：parameter
+  broker token、endpoint、response size 和 response media type 已在 A505-A508 收紧，但
+  `--parameters-ca-file` 仍直接 `os.ReadFile`。现在 CA bundle 最多读取 1 MiB，超限会在
+  x509 pool 初始化和 broker HTTP 请求前 fail closed。回归覆盖 valid token + oversized CA；
+  `go test ./hack/production/cmd/operationctl -run 'TestBrokerParameters|TestDefaultKubeconfig' -count=20`、
+  `go test ./hack/production/cmd/operationctl`、`go test ./hack/production/... ./deploy/production`、
+  `go vet ./hack/production/... ./deploy/production` 与 `git diff --check` 通过。
 
 ### P2：运维兼容和长期验证
 

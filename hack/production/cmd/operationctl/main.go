@@ -29,6 +29,7 @@ import (
 
 const maxBrokerParametersBytes = 4 << 20
 const maxBrokerTokenBytes = 16 << 10
+const maxBrokerCABytes = 1 << 20
 
 func main() {
 	var action, namespace, name, operationID, tenant, requestedBy, instance, operationType, parametersSHA string
@@ -208,7 +209,7 @@ func brokerParameters(
 	if err != nil {
 		return nil, fmt.Errorf("read parameter broker token: %w", err)
 	}
-	ca, err := os.ReadFile(caFile)
+	ca, err := readBrokerCA(caFile)
 	if err != nil {
 		return nil, fmt.Errorf("read parameter broker CA: %w", err)
 	}
@@ -247,6 +248,22 @@ func brokerParameters(
 		return nil, fmt.Errorf("parameter broker response exceeds %d bytes", maxBrokerParametersBytes)
 	}
 	return body, nil
+}
+
+func readBrokerCA(path string) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, maxBrokerCABytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxBrokerCABytes {
+		return nil, fmt.Errorf("CA exceeds %d bytes", maxBrokerCABytes)
+	}
+	return data, nil
 }
 
 func readBrokerToken(path string) (string, error) {

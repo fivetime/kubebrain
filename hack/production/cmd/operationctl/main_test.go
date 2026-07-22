@@ -159,6 +159,19 @@ func TestBrokerParametersRejectsInvalidTokenFile(t *testing.T) {
 	}
 }
 
+func TestBrokerParametersRejectsOversizedCAFile(t *testing.T) {
+	dir := t.TempDir()
+	tokenPath := filepath.Join(dir, "token")
+	caPath := filepath.Join(dir, "ca.crt")
+	require.NoError(t, os.WriteFile(tokenPath, []byte("token"), 0o600))
+	require.NoError(t, os.WriteFile(caPath, bytes.Repeat([]byte("x"), maxBrokerCABytes+1), 0o600))
+	_, err := brokerParameters(
+		t.Context(), "https://parameters.example", tokenPath, caPath,
+		"tenant-a", "backup-1", "worker-a", 1,
+	)
+	require.ErrorContains(t, err, "CA exceeds")
+}
+
 func TestClientConfigFallsBackToStandardLocalKubeconfig(t *testing.T) {
 	t.Setenv("KUBERNETES_SERVICE_HOST", "")
 	t.Setenv("KUBERNETES_SERVICE_PORT", "")
