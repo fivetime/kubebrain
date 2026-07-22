@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -14,6 +15,11 @@ import (
 	"time"
 
 	"github.com/kubewharf/kubebrain/hack/production/internal/meteringarchive"
+)
+
+const (
+	maxPrometheusCABytes          = 1 << 20
+	maxPrometheusBearerTokenBytes = 16 << 10
 )
 
 func main() {
@@ -73,7 +79,7 @@ func prometheusClient(caFile, serverName string) (*http.Client, error) {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12, ServerName: serverName}
 	if caFile != "" {
-		contents, err := os.ReadFile(caFile)
+		contents, err := readBoundedFile(caFile, "prometheus CA", maxPrometheusCABytes)
 		if err != nil {
 			return nil, fmt.Errorf("read prometheus CA: %w", err)
 		}
@@ -94,7 +100,7 @@ func readToken(path string) (string, error) {
 	if path == "" {
 		return "", nil
 	}
-	contents, err := os.ReadFile(path)
+	contents, err := readBoundedFile(path, "prometheus bearer token", maxPrometheusBearerTokenBytes)
 	if err != nil {
 		return "", fmt.Errorf("read prometheus bearer token: %w", err)
 	}
@@ -103,6 +109,22 @@ func readToken(path string) (string, error) {
 		return "", errors.New("prometheus bearer token is empty or malformed")
 	}
 	return token, nil
+}
+
+func readBoundedFile(path, description string, limit int64) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	contents, err := io.ReadAll(io.LimitReader(file, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(contents)) > limit {
+		return nil, fmt.Errorf("%s exceeds %d bytes", description, limit)
+	}
+	return contents, nil
 }
 
 func init() {

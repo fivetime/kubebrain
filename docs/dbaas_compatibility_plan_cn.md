@@ -9423,6 +9423,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go vet ./hack/production/... ./deploy/production`、
   `(cd hack/backup && go vet ./cmd/cold-restore-render ./cmd/cold-restore-verify)` 与
   `git diff --check` 通过。
+- A517 收紧 `kubebrain-metering-archive` 的 Prometheus credential 文件读取边界：
+  `--prometheus-ca-file` 现在最多读取 1 MiB，`--prometheus-bearer-token-file` 最多读取
+  16 KiB，超限时在 TLS 初始化、collector 创建和 HTTP 请求前 fail closed。旧逻辑直接
+  `os.ReadFile`，异常 Secret/ConfigMap 投影可能造成无界本地分配或构造超大
+  Authorization header。回归覆盖 oversized token 与 oversized CA；
+  `go test ./hack/production/cmd/metering-archive -run 'Test(ReadToken|PrometheusClient)' -count=20`、
+  `go test ./hack/production/cmd/metering-archive`、`go test ./hack/production/... ./deploy/production`、
+  `go vet ./hack/production/... ./deploy/production` 与 `git diff --check` 通过。
 
 ### P2：运维兼容和长期验证
 

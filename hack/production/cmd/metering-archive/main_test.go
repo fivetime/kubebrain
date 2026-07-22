@@ -18,6 +18,10 @@ func TestReadToken(t *testing.T) {
 	require.NoError(t, os.WriteFile(path, []byte("bad\ntoken"), 0o600))
 	_, err = readToken(path)
 	require.ErrorContains(t, err, "malformed")
+
+	require.NoError(t, os.WriteFile(path, make([]byte, maxPrometheusBearerTokenBytes+1), 0o600))
+	_, err = readToken(path)
+	require.ErrorContains(t, err, "exceeds")
 }
 
 func TestPrometheusClientRejectsInvalidCA(t *testing.T) {
@@ -25,6 +29,10 @@ func TestPrometheusClientRejectsInvalidCA(t *testing.T) {
 	require.NoError(t, os.WriteFile(path, []byte("not a certificate"), 0o600))
 	_, err := prometheusClient(path, "prometheus.internal")
 	require.ErrorContains(t, err, "contains no certificates")
+
+	require.NoError(t, os.WriteFile(path, make([]byte, maxPrometheusCABytes+1), 0o600))
+	_, err = prometheusClient(path, "prometheus.internal")
+	require.ErrorContains(t, err, "exceeds")
 
 	client, err := prometheusClient("", "")
 	require.NoError(t, err)
