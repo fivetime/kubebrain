@@ -8759,6 +8759,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   bootstrap 与 advertised endpoint 均成功提交线性化 proposal；三 KubeBrain 副本 Ready、
   零重启，PD/TiKV 3+3 Ready。临时 exec 代理已删除，本轮继续使用 A433 数据面镜像。
 
+#### A441 逐 Pod rollout 与 ownership 发布证据
+
+- A440 将 release operation 与 StatefulSet UID 绑定，但 StatefulSet 的聚合 ready/updated 状态
+  不能单独证明实际 serving Pod 都来自该对象的当前 ControllerRevision：旧 owner Pod、旧 revision
+  Pod、terminating Pod 或非 Ready Pod 在标签/状态异常窗口内仍可能让旧 operation 越过发布阶段。
+- 在 `8b411cd` 之后，发布门禁进一步结构化读取稳定应用标签选择的 Pod 集合，要求名称精确覆盖
+  `${StatefulSet}-0..N-1`；每个 Pod 必须为 Running/Ready、无 deletion timestamp、带当前
+  StatefulSet update revision、唯一的目标 KubeBrain 镜像，并有唯一的 apps/v1 StatefulSet
+  controller owner 指向 immutable `EXPECTED_KUBEBRAIN_STATEFULSET_UID`。任一 Pod 与聚合状态
+  分歧均 fail closed。
+- 集成测试覆盖旧 StatefulSet owner、旧 controller revision、terminating 与非 Ready Pod；专项普通
+  20 轮、race 10 轮，root 全量测试、vet、staticcheck v0.7.0 和 diff check 均通过。真实
+  in-cluster 门禁验证三 Pod 的 owner UID、`kubebrain-bc6b9b5df` revision、镜像与 Ready 状态，
+  bootstrap/advertised endpoint health 均成功提交线性化 proposal；临时 exec 代理已删除，继续使用
+  A433 数据面镜像。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
