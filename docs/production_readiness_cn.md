@@ -910,6 +910,9 @@ version。两个对象都必须单 version、无 delete marker、format/ID/store
 Biller 对 blob-read 下载到本地的 rollup、catalog 和 object storage rollup 做二次 digest
 校验时，只按 read receipt 的 `object_bytes + 1` 有界读取；超限会在 charge 构造前 fail
 closed，不能为了校验 receipt 而无界读取异常大的本地文件。
+同一 source helper 也用于 invoice finalization、invoice number assignment、provider
+reconciliation、payment ledger 和 general ledger export 的 exact-read 输入校验；这些
+路径按各自 read receipt 的大小上限复算 digest 后才构造下游 canonical artifact。
 `kubebrain.metering-charge.v1` 内嵌 rollup 和 catalog 的 key、version ID、digest、
 bytes、retain-until，逐行记录 quantity 的无指数十进制表示、unit price 和
 `amount_micros`。计算先把 quantity 与 unit price 转为任意精度有理数，再逐行执行

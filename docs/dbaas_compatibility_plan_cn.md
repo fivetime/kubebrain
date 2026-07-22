@@ -9501,6 +9501,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./hack/production/internal/meteringbilling -run 'TestBiller' -count=20`、
   `go test ./hack/production/internal/meteringbilling`、`go test ./hack/production/... ./deploy/production`、
   `go vet ./hack/production/... ./deploy/production` 与 `git diff --check` 通过。
+- A526 复用 Biller 的 bounded exact-read source helper 覆盖剩余 billing source 路径：
+  invoice finalizer、invoice number assignment、provider reconciliation、payment ledger 和
+  general ledger export 现在都通过 `sourceFromDownloadedArtifact` 按 read receipt 的
+  `object_bytes + 1` 有界读取本地下载文件并复算 digest；异常大文件会在构造下游
+  canonical artifact 前 fail closed。这样 billing exact-read 输入校验不再分散保留多份
+  `os.ReadFile` 逻辑。回归沿用 A525 oversized helper 负例并覆盖各路径成功流；
+  `go test ./hack/production/internal/meteringbilling`、`go test ./hack/production/... ./deploy/production`、
+  `go vet ./hack/production/... ./deploy/production` 与 `git diff --check` 通过。
 
 ### P2：运维兼容和长期验证
 

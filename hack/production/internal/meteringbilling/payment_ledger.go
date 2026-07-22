@@ -3,9 +3,7 @@ package meteringbilling
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"encoding/csv"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -432,21 +430,13 @@ func (p *PaymentLedgerProcessor) readImmutable(
 	if err != nil {
 		return Source{}, output, err
 	}
-	data, err := os.ReadFile(outputPath)
+	source, err := sourceFromDownloadedArtifact(
+		outputPath, receipt, "payment ledger invoice receipt does not match downloaded bytes",
+	)
 	if err != nil {
 		return Source{}, output, err
 	}
-	sum := sha256.Sum256(data)
-	if int64(len(data)) != receipt.ObjectBytes ||
-		hex.EncodeToString(sum[:]) != receipt.ArtifactSHA256 {
-		return Source{}, output, errors.New("payment ledger invoice receipt does not match downloaded bytes")
-	}
-	return Source{
-		ArtifactFormat: receipt.ArtifactFormat, ArtifactID: receipt.ArtifactID,
-		ObjectKey: receipt.ObjectKey, VersionID: receipt.VersionID,
-		ArtifactSHA256: receipt.ArtifactSHA256, ObjectBytes: receipt.ObjectBytes,
-		RetainUntilUnix: receipt.RetainUntilUnix,
-	}, output, nil
+	return source, output, nil
 }
 
 func (p *PaymentLedgerPublisher) Publish(ctx context.Context) (SettlementStatus[PaymentLedger], []byte, error) {
