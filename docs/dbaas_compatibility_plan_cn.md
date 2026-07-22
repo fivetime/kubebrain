@@ -10193,6 +10193,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   和并发 auth mutation 仍按 etcd 错误返回。回归：
   `go test ./pkg/server/etcd -run TestAuthLeaseFutureJWTRevisionMatchesEtcd -count=1`
   通过。
+- A597 对齐 `UserGet` 空用户名缺失身份错误码：
+  对照 `/root/etcd/server/etcdserver/v3_server.go` 的 `AuthInfoFromCtx` 与
+  `/root/etcd/server/etcdserver/apply/auth.go` 的 `UserGet`，上游 auth 开启且请求没有
+  token/client-cert 时会把 auth info 留空；`UserGet(Name="")` 命中 self-exception
+  分支，随后由 auth store 查询空用户名并返回 `ErrUserNotFound`，而不是在 RPC
+  入口提前返回 `ErrUserEmpty`。KubeBrain 旧 `authCallerFromContext` 在缺失身份时
+  直接报 `ErrUserEmpty`，导致该空用户名边界错误码不一致。现在仅对
+  `UserGet(Name="")` 保留上游 fallthrough；普通未认证 `UserGet("alice")` 仍返回
+  `ErrUserEmpty`。回归：
+  `go test ./pkg/server/etcd -run TestAuthRPCUserGetEmptyNameWithoutIdentityMatchesEtcd -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

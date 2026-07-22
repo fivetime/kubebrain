@@ -2,6 +2,7 @@ package etcd
 
 import (
 	"context"
+	"errors"
 
 	"go.etcd.io/etcd/api/v3/authpb"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
@@ -114,7 +115,10 @@ func (s *RPCServer) UserGet(ctx context.Context, request *etcdserverpb.AuthUserG
 	if snapshot.Config.Enabled {
 		caller, callerErr := s.authCallerFromContext(ctx)
 		if callerErr != nil {
-			return nil, callerErr
+			if !errors.Is(callerErr, rpctypes.ErrUserEmpty) || request.Name != "" {
+				return nil, callerErr
+			}
+			caller = &authCaller{snapshot: snapshot}
 		}
 		adminErr := caller.adminError()
 		if adminErr != nil && caller.username != request.Name {

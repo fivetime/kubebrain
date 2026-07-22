@@ -198,6 +198,18 @@ func TestAuthRPCEnabledAdminAndSelfRules(t *testing.T) {
 	require.Contains(t, roles.Roles, "operator")
 }
 
+func TestAuthRPCUserGetEmptyNameWithoutIdentityMatchesEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	setupAuthKVUser(t, server)
+	plain := context.Background()
+
+	_, err := server.UserGet(plain, &etcdserverpb.AuthUserGetRequest{Name: "alice"})
+	require.ErrorIs(t, err, rpctypes.ErrUserEmpty)
+	_, err = server.UserGet(plain, &etcdserverpb.AuthUserGetRequest{Name: ""})
+	require.ErrorIs(t, err, rpctypes.ErrUserNotFound)
+}
+
 func TestAuthRPCClientCertificateAdminErrorsMatchEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
