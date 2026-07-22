@@ -50,6 +50,7 @@ type auditAdmissionManifest struct {
 				APIVersions []string `yaml:"apiVersions"`
 				Operations  []string `yaml:"operations"`
 				Resources   []string `yaml:"resources"`
+				Scope       string   `yaml:"scope"`
 			} `yaml:"resourceRules"`
 		} `yaml:"matchConstraints"`
 		Validations []struct {
@@ -253,12 +254,15 @@ func TestOperationAuditAdmissionRequiresFinalizerAndReleaseEvidence(t *testing.T
 	require.Equal(t, []string{"v1alpha1"}, rule.APIVersions)
 	require.Equal(t, []string{"CREATE", "UPDATE"}, rule.Operations)
 	require.Equal(t, []string{"kubebrainoperations"}, rule.Resources)
+	require.Equal(t, "Namespaced", rule.Scope)
 	require.Len(t, policy.Spec.Validations, 5)
 	require.Contains(t, policy.Spec.Validations[0].Expression, operationaudit.Finalizer)
 	require.Contains(t, policy.Spec.Validations[1].Expression, operationaudit.ApprovedByAnnotation)
 	require.Contains(t, policy.Spec.Validations[2].Expression, "request.userInfo.username")
 	require.Contains(t, policy.Spec.Validations[2].Expression, "kubebrain-operation-approver")
 	require.Contains(t, policy.Spec.Validations[3].Expression, operationaudit.ApprovalIDAnnotation)
+	require.Contains(t, policy.Spec.Validations[4].Expression, "request.userInfo.username")
+	require.Contains(t, policy.Spec.Validations[4].Expression, "kubebrain-operation-archiver")
 	require.Contains(t, policy.Spec.Validations[4].Expression, operationaudit.ReceiptSHAAnnotation)
 	require.Contains(t, policy.Spec.Validations[4].Expression, operationaudit.ArtifactSHAAnnotation)
 	require.Contains(t, policy.Spec.Validations[4].Expression, operationaudit.VersionAnnotation)

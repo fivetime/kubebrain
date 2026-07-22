@@ -650,6 +650,121 @@ func TestOperationWorkerAdmissionBindsStatusUpdatesToExecutorType(t *testing.T) 
 	require.Equal(t, []string{"Deny"}, actions)
 }
 
+func TestOperationSubmitterApproverAndAuditAdmissionFenceHighRiskChanges(t *testing.T) {
+	for _, tc := range []struct {
+		file           string
+		name           string
+		verbs          []any
+		forbiddenVerbs []any
+	}{
+		{
+			file: "kubebrain-operation-submitter-rbac.yaml", name: "kubebrain-operation-submitter",
+			verbs: []any{"create", "get", "list", "watch"}, forbiddenVerbs: []any{"update", "patch", "delete"},
+		},
+		{
+			file: "kubebrain-operation-approver-rbac.yaml", name: "kubebrain-operation-approver",
+			verbs: []any{"get", "list", "watch", "update"}, forbiddenVerbs: []any{"create", "patch", "delete"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			objects := decodeManifest(t, tc.file)
+			account := objectByKindAndName(t, objects, "ServiceAccount", tc.name)
+			require.Equal(t, "kubebrain-operations", account.GetNamespace())
+			require.False(t, nestedBool(t, account, "automountServiceAccountToken"))
+			role := objectByKindAndName(t, objects, "Role", tc.name)
+			require.Equal(t, "kubebrain-operations", role.GetNamespace())
+			rules, found, err := unstructured.NestedSlice(role.Object, "rules")
+			require.NoError(t, err)
+			require.True(t, found)
+			require.Len(t, rules, 1)
+			rule := rules[0].(map[string]any)
+			require.Equal(t, []any{"dbaas.kubebrain.io"}, rule["apiGroups"].([]any))
+			require.Equal(t, []any{"kubebrainoperations"}, rule["resources"].([]any))
+			require.Equal(t, tc.verbs, rule["verbs"].([]any))
+			for _, verb := range tc.forbiddenVerbs {
+				require.NotContains(t, rule["verbs"].([]any), verb)
+			}
+			require.NotContains(t, rule["resources"].([]any), "kubebrainoperations/status")
+			require.NotContains(t, rule["resources"].([]any), "secrets")
+			require.NotContains(t, rule["resources"].([]any), "leases")
+
+			binding := objectByKindAndName(t, objects, "RoleBinding", tc.name)
+			require.Equal(t, "kubebrain-operations", binding.GetNamespace())
+			subjects, found, err := unstructured.NestedSlice(binding.Object, "subjects")
+			require.NoError(t, err)
+			require.True(t, found)
+			require.Len(t, subjects, 1)
+			subject := &unstructured.Unstructured{Object: subjects[0].(map[string]any)}
+			require.Equal(t, "ServiceAccount", nestedString(t, subject, "kind"))
+			require.Equal(t, tc.name, nestedString(t, subject, "name"))
+			require.Equal(t, "kubebrain-operations", nestedString(t, subject, "namespace"))
+			require.Equal(t, "Role", nestedString(t, binding, "roleRef", "kind"))
+			require.Equal(t, tc.name, nestedString(t, binding, "roleRef", "name"))
+		})
+	}
+
+	objects := decodeManifest(t, "kubebrain-operation-audit-admission.yaml")
+	policy := objectByKindAndName(t, objects, "ValidatingAdmissionPolicy", "kubebrain-operation-audit")
+	require.Equal(t, "kubebrain-operation-audit",
+		nestedString(t, policy, "metadata", "labels", "app.kubernetes.io/name"))
+	require.Equal(t, "kubebrain", nestedString(t, policy, "metadata", "labels", "app.kubernetes.io/part-of"))
+	require.Equal(t, "Fail", nestedString(t, policy, "spec", "failurePolicy"))
+	resourceRules, found, err := unstructured.NestedSlice(
+		policy.Object, "spec", "matchConstraints", "resourceRules",
+	)
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Len(t, resourceRules, 1)
+	resourceRule := &unstructured.Unstructured{Object: resourceRules[0].(map[string]any)}
+	require.Equal(t, []string{"dbaas.kubebrain.io"}, nestedStringSlice(t, resourceRule, "apiGroups"))
+	require.Equal(t, []string{"v1alpha1"}, nestedStringSlice(t, resourceRule, "apiVersions"))
+	require.Equal(t, []string{"CREATE", "UPDATE"}, nestedStringSlice(t, resourceRule, "operations"))
+	require.Equal(t, []string{"kubebrainoperations"}, nestedStringSlice(t, resourceRule, "resources"))
+	require.Equal(t, "Namespaced", nestedString(t, resourceRule, "scope"))
+
+	validations, found, err := unstructured.NestedSlice(policy.Object, "spec", "validations")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Len(t, validations, 5)
+	expressionsByMessage := map[string]string{}
+	for _, raw := range validations {
+		validation := raw.(map[string]any)
+		expressionsByMessage[validation["message"].(string)] = validation["expression"].(string)
+	}
+	require.Contains(t,
+		expressionsByMessage["new operations require the audit archive finalizer"],
+		`"dbaas.kubebrain.io/operation-audit"`)
+	require.Contains(t,
+		expressionsByMessage["operations cannot be created pre-approved"],
+		`"dbaas.kubebrain.io/approved-by"`)
+	approvalExpression := expressionsByMessage["operation approval requires the dedicated approver identity, approval ID, and pending phase"]
+	require.Contains(t, approvalExpression,
+		`request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-operation-approver"`)
+	require.Contains(t, approvalExpression, `object.status.phase == "Pending"`)
+	require.Contains(t, approvalExpression, `approval-id"].matches("^[a-z0-9]`)
+	require.Contains(t,
+		expressionsByMessage["operation approval evidence is immutable"],
+		`object.metadata.annotations["dbaas.kubebrain.io/approved-by"] == oldObject.metadata.annotations["dbaas.kubebrain.io/approved-by"]`)
+	releaseExpression := expressionsByMessage["removing the audit finalizer requires terminal archive evidence"]
+	require.Contains(t, releaseExpression,
+		`request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-operation-archiver"`)
+	require.Contains(t, releaseExpression, `object.status.phase in ["Succeeded", "Failed"]`)
+	require.Contains(t, releaseExpression, `"dbaas.kubebrain.io/audit-receipt-sha256"`)
+	require.Contains(t, releaseExpression, `"dbaas.kubebrain.io/audit-artifact-sha256"`)
+	require.Contains(t, releaseExpression, `"dbaas.kubebrain.io/audit-version-id"`)
+
+	binding := objectByKindAndName(t, objects, "ValidatingAdmissionPolicyBinding", "kubebrain-operation-audit")
+	require.Equal(t, "kubebrain-operation-audit",
+		nestedString(t, binding, "metadata", "labels", "app.kubernetes.io/name"))
+	require.Equal(t, "kubebrain-operation-audit", nestedString(t, binding, "spec", "policyName"))
+	actions, found, err := unstructured.NestedStringSlice(
+		binding.Object, "spec", "validationActions",
+	)
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, []string{"Deny"}, actions)
+}
+
 func TestOperationAPIIsFailClosedAndHardened(t *testing.T) {
 	objects := decodeManifest(t, "kubebrain-operation-api.yaml")
 	deployment := objectByKindAndName(t, objects, "Deployment", "kubebrain-operation-api")

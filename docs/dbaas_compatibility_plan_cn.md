@@ -10248,6 +10248,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   后续把写路径误改成 exact revision fence。回归：
   `go test ./pkg/server/etcd -run TestAuthKVFutureJWTRevisionAllowsWritesButNotSerializedReads -count=1`
   通过。
+- A602 收紧高风险 Operation 审计 finalizer release 身份：
+  `kubebrain-operation-audit` ValidatingAdmissionPolicy 现在显式只匹配 Namespaced
+  `kubebrainoperations`，并在移除 `dbaas.kubebrain.io/operation-audit` finalizer
+  的分支要求请求者为
+  `system:serviceaccount:kubebrain-operations:kubebrain-operation-archiver`。修复前，
+  任意持有主资源 `update` 的身份（例如专用 approver 或被 namespace 绑定的维护身份）
+  在对象终态后只要提交形状合法的 archive annotations，就可能绕过
+  `operationauditrelease` 的本地 artifact/receipt exact-version 复核而释放审计
+  finalizer。生产清单同时补齐 policy/binding 标签和 resource scope；`deploy/production`
+  新增测试固定 submitter/approver 的精确 RBAC、Fail/Deny admission、approver-only
+  approval 与 archiver-only release，`hack/production` 的 manifest 测试同步固定
+  Namespaced scope 与 archiver 身份。回归：
+  `go test ./deploy/production -run TestOperationSubmitterApproverAndAuditAdmissionFenceHighRiskChanges -count=1`
+  和
+  `go test ./hack/production -run TestOperationAuditAdmissionRequiresFinalizerAndReleaseEvidence -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 
