@@ -213,9 +213,15 @@ func (a *InvoiceNumberAssigner) Process(ctx context.Context) (SettlementStatus[I
 	if !a.Publish {
 		return status, output, nil
 	}
+	archiveInput := path.Join(dir, "invoice-number.archive.json")
+	if frozen, err := WriteInvoiceNumberAssignmentAtomic(archiveInput, assignment); err != nil {
+		return SettlementStatus[InvoiceNumberAssignment]{}, output, err
+	} else if frozen.SHA256 != status.SHA256 || frozen.Bytes != status.Bytes {
+		return SettlementStatus[InvoiceNumberAssignment]{}, output, errors.New("frozen invoice number assignment does not match output")
+	}
 	objectKey := settlementObjectKey(a.NumberPrefix, a.Instance, a.ID)
 	archiveOutput, err := a.Run(ctx, a.Executor, []string{
-		"ACTION=blob", "INPUT=" + a.Output,
+		"ACTION=blob", "INPUT=" + archiveInput,
 		"ARTIFACT_FORMAT=" + InvoiceNumberAssignmentFormat,
 		"ARTIFACT_ID=" + a.ID, "INSTANCE=" + a.Instance,
 		"OBJECT_STORE_ID=" + a.ObjectStoreID, "S3_BUCKET=" + a.Bucket,

@@ -400,9 +400,15 @@ func (g *GeneralLedgerExporter) Process(ctx context.Context) (SettlementStatus[G
 	if !g.Publish {
 		return status, output, nil
 	}
+	archiveInput := path.Join(dir, "general-ledger.archive.json")
+	if frozen, err := WriteGeneralLedgerExportAtomic(archiveInput, export); err != nil {
+		return SettlementStatus[GeneralLedgerExport]{}, output, err
+	} else if frozen.SHA256 != status.SHA256 || frozen.Bytes != status.Bytes {
+		return SettlementStatus[GeneralLedgerExport]{}, output, errors.New("frozen general ledger export does not match output")
+	}
 	ledgerKey := settlementObjectKey(g.LedgerPrefix, g.Instance, g.ID)
 	archiveOutput, err := g.Run(ctx, g.Executor, []string{
-		"ACTION=blob", "INPUT=" + g.Output,
+		"ACTION=blob", "INPUT=" + archiveInput,
 		"ARTIFACT_FORMAT=" + GeneralLedgerExportFormat,
 		"ARTIFACT_ID=" + g.ID, "INSTANCE=" + g.Instance,
 		"OBJECT_STORE_ID=" + g.ObjectStoreID, "S3_BUCKET=" + g.Bucket,

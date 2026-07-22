@@ -137,6 +137,7 @@ func TestGeneralLedgerExporterReadsExactArtifactsAndArchivesResult(t *testing.T)
 		reconciliationSource.ObjectKey: reconciliationSource,
 		ledgerSource.ObjectKey:         ledgerSource,
 	}
+	outputPath := filepath.Join(t.TempDir(), "ledger.json")
 	var archived []byte
 	run := func(_ context.Context, executable string, environment []string) ([]byte, error) {
 		require.Equal(t, "executor", executable)
@@ -149,6 +150,8 @@ func TestGeneralLedgerExporterReadsExactArtifactsAndArchivesResult(t *testing.T)
 		case "blob":
 			require.Equal(t, GeneralLedgerExportFormat, values["ARTIFACT_FORMAT"])
 			require.Equal(t, "ledgers/instance-a/ledger-july.json", values["S3_OBJECT_KEY"])
+			require.NotEqual(t, outputPath, values["INPUT"])
+			require.NoError(t, os.WriteFile(outputPath, []byte("{}\n"), 0o600))
 			data, err := os.ReadFile(values["INPUT"])
 			require.NoError(t, err)
 			archived = append([]byte(nil), data...)
@@ -168,7 +171,6 @@ func TestGeneralLedgerExporterReadsExactArtifactsAndArchivesResult(t *testing.T)
 		}
 		return nil, nil
 	}
-	outputPath := filepath.Join(t.TempDir(), "ledger.json")
 	exporter := &GeneralLedgerExporter{
 		Output: outputPath, ID: "ledger-july", Instance: "instance-a",
 		InvoiceID: invoice.ID, ProviderReconciliationID: reconciliation.ID,
@@ -183,7 +185,12 @@ func TestGeneralLedgerExporterReadsExactArtifactsAndArchivesResult(t *testing.T)
 	status, _, err := exporter.Process(context.Background())
 	require.NoError(t, err)
 	require.NotEmpty(t, archived)
-	read, err := ReadGeneralLedgerExport(outputPath)
+	data, err := os.ReadFile(outputPath)
+	require.NoError(t, err)
+	require.Equal(t, []byte("{}\n"), data)
+	archivedPath := filepath.Join(t.TempDir(), "archived-ledger.json")
+	require.NoError(t, os.WriteFile(archivedPath, archived, 0o600))
+	read, err := ReadGeneralLedgerExport(archivedPath)
 	require.NoError(t, err)
 	require.Equal(t, status, read)
 }

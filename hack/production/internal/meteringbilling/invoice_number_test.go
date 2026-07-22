@@ -86,6 +86,7 @@ func TestInvoiceNumberAssignerReadsExactInvoiceAndArchivesResult(t *testing.T) {
 	assignedAt := invoice.FinalizedAtUnix + 3600
 	retainUntil := time.Unix(invoice.PeriodStartUnix, 0).Add(time.Hour + 7*24*time.Hour).Unix()
 	invoiceBytes := canonicalInvoiceBytes(t, invoice)
+	outputPath := filepath.Join(t.TempDir(), "invoice-number.json")
 	var archived []byte
 	run := func(_ context.Context, executable string, environment []string) ([]byte, error) {
 		require.Equal(t, "executor", executable)
@@ -99,6 +100,8 @@ func TestInvoiceNumberAssignerReadsExactInvoiceAndArchivesResult(t *testing.T) {
 		case "blob":
 			require.Equal(t, InvoiceNumberAssignmentFormat, values["ARTIFACT_FORMAT"])
 			require.Equal(t, "invoice-numbers/instance-a/invoice-number-july.json", values["S3_OBJECT_KEY"])
+			require.NotEqual(t, outputPath, values["INPUT"])
+			require.NoError(t, os.WriteFile(outputPath, []byte("{}\n"), 0o600))
 			data, err := os.ReadFile(values["INPUT"])
 			require.NoError(t, err)
 			archived = append([]byte(nil), data...)
@@ -119,7 +122,6 @@ func TestInvoiceNumberAssignerReadsExactInvoiceAndArchivesResult(t *testing.T) {
 		}
 		return nil, nil
 	}
-	outputPath := filepath.Join(t.TempDir(), "invoice-number.json")
 	assigner := &InvoiceNumberAssigner{
 		Output: outputPath, ID: "invoice-number-july", Instance: "instance-a",
 		InvoiceID: invoice.ID, Jurisdiction: "us-ca", Series: "kb-us-2026", Sequence: 7,
@@ -132,7 +134,13 @@ func TestInvoiceNumberAssignerReadsExactInvoiceAndArchivesResult(t *testing.T) {
 	status, _, err := assigner.Process(context.Background())
 	require.NoError(t, err)
 	require.NotEmpty(t, archived)
-	read, err := ReadInvoiceNumberAssignment(outputPath)
+	require.FileExists(t, outputPath)
+	data, err := os.ReadFile(outputPath)
+	require.NoError(t, err)
+	require.Equal(t, []byte("{}\n"), data)
+	archivedPath := filepath.Join(t.TempDir(), "archived-invoice-number.json")
+	require.NoError(t, os.WriteFile(archivedPath, archived, 0o600))
+	read, err := ReadInvoiceNumberAssignment(archivedPath)
 	require.NoError(t, err)
 	require.Equal(t, status, read)
 }

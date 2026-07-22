@@ -9114,6 +9114,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   'TestPublisher|TestProviderStatementPublisher|TestPaymentLedgerPublisher' -count=1`、
   `go test ./hack/production/... ./deploy/production` 与
   `go vet ./hack/production/... ./deploy/production` 通过。
+- A478 收紧生成型 financial archive 的输出冻结：`kubebrain-metering-invoice-number` 和
+  `kubebrain-metering-ledger-export` 在写入用户 output 后，会再把同一 assignment/export 重写到
+  临时 canonical frozen archive copy，并只把该 frozen path 交给 Object Lock executor。这样用户
+  output path 即使在 executor 调用期间被替换，也不会上传错误字节；receipt 仍绑定写出时的
+  canonical status。回归在 executor 回调中篡改 output path，再从 frozen input 生成 receipt，覆盖
+  invoice number assignment 与 general ledger export；`go test
+  ./hack/production/internal/meteringbilling -run 'Test.*InvoiceNumber|Test.*GeneralLedger' -count=1`、
+  `go test ./hack/production/... ./deploy/production` 与
+  `go vet ./hack/production/... ./deploy/production` 通过。
 
 ### P2：运维兼容和长期验证
 
