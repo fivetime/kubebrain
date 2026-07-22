@@ -92,7 +92,8 @@ parameters="$("$JQ" -er '[
   (.timeout_seconds|tostring), (.poll_interval_seconds|tostring),
   (if (.data_kube_context // "") == "" then "-" else .data_kube_context end),
   (if (.data_kubeconfig_path // "") == "" then "-" else .data_kubeconfig_path end)
-] | select(length == 14) | @tsv' "$PARAMETERS_INPUT")"
+] | select(length == 14 and (.[0:12] | all(. != null and . != ""))) | @tsv' "$PARAMETERS_INPUT")" ||
+  { echo "cutover parameters contain an empty required field" >&2; exit 2; }
 IFS=$'\t' read -r state_dir restore_receipt backup_input service_namespace service_name \
   source_instance target_instance expected_replicas public_endpoint receipt_output timeout_seconds \
   poll_seconds data_context data_kubeconfig <<<"$parameters"

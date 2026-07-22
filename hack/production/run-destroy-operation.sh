@@ -95,7 +95,8 @@ parameters="$("$JQ" -er '[
   (.timeout_seconds|tostring), (.poll_interval_seconds|tostring),
   (if (.data_kube_context // "") == "" then "-" else .data_kube_context end),
   (if (.data_kubeconfig_path // "") == "" then "-" else .data_kubeconfig_path end)
-] | select(length == 17) | @tsv' "$PARAMETERS_INPUT")"
+] | select(length == 17 and (.[0:15] | all(. != null and . != ""))) | @tsv' "$PARAMETERS_INPUT")" ||
+  { echo "destroy parameters contain an empty required field" >&2; exit 2; }
 IFS=$'\t' read -r state_dir backup_input backup_file_sha backup_prefix backup_max_age \
   backup_min_records confirmation receipt_output kubebrain_namespace kubebrain_statefulset \
   tidb_namespace tidb_cluster expected_pvcs timeout_seconds poll_seconds data_context \

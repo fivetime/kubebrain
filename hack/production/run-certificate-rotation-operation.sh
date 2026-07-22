@@ -106,7 +106,8 @@ parameters="$("$JQ" -er '[
   .overlap_cacert_sha256,
   (if (.data_kube_context // "") == "" then "-" else .data_kube_context end),
   (if (.data_kubeconfig_path // "") == "" then "-" else .data_kubeconfig_path end)
-] | select(length == 22) | @tsv' "$PARAMETERS_INPUT")"
+] | select(length == 22 and (.[0:20] | all(. != null and . != ""))) | @tsv' "$PARAMETERS_INPUT")" ||
+  { echo "rotation parameters contain an empty required field" >&2; exit 2; }
 IFS=$'\t' read -r state_dir endpoint old_ca old_cert old_key new_ca new_cert new_key \
   overlap_ca receipt_output kubebrain_namespace pod_selector expected_replicas \
   old_ca_sha old_cert_sha old_key_sha new_ca_sha new_cert_sha new_key_sha overlap_ca_sha \

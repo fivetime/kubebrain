@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -73,6 +74,22 @@ func TestDestroyOperationRejectsConfirmationAndBackupDrift(t *testing.T) {
 	f.run(t, false, "", "backup bytes")
 	require.Contains(t, f.log(t), "--action retry")
 	require.NotContains(t, f.log(t), "phase prepare")
+}
+
+func TestDestroyOperationRejectsEmptyRequiredParameters(t *testing.T) {
+	f := newDestroyRunnerFixture(t, true)
+	parameters := strings.ReplaceAll(
+		string(mustRead(t, f.parameters)),
+		`"backup_prefix":"/registry"`,
+		`"backup_prefix":""`,
+	)
+	require.NoError(t, os.WriteFile(f.parameters, []byte(parameters), 0o600))
+
+	f.run(t, false, "CLAIM_DIGEST="+fileDigest(t, f.parameters), "empty required field")
+	log := f.log(t)
+	require.NotContains(t, log, "phase ")
+	require.NotContains(t, log, "--action retry")
+	require.NotContains(t, log, "--action succeed")
 }
 
 func TestDestroyOperationRejectsInvalidReceipt(t *testing.T) {

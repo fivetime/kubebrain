@@ -93,7 +93,8 @@ parameters="$("$JQ" -er '[
   .s3_bucket, .s3_object_key, (.s3_force_path_style|tostring), .aws_region,
   .retention_mode, (.retain_until_unix|tostring), (.min_records|tostring),
   (.max_age_seconds|tostring), .receipt_output
-] | select(length == 17) | @tsv' "$PARAMETERS_INPUT")"
+] | select(length == 17 and ((.[0:4] + .[5:17]) | all(. != null and . != ""))) | @tsv' "$PARAMETERS_INPUT")" ||
+  { echo "backup parameters contain an empty required field" >&2; exit 2; }
 IFS=$'\t' read -r endpoint prefix artifact_output batch_size metrics_output backup_id \
   object_store_id s3_endpoint s3_bucket s3_object_key force_path_style aws_region \
   retention_mode retain_until min_records max_age receipt_output <<<"$parameters"

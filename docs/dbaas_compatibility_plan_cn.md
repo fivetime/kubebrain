@@ -9873,6 +9873,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   使错误落到错误参数上。现在 runner 在 jq 输出 TSV 前拒绝所有空必填字符串，并用 `-`
   哨兵保留可选 kube context/path 的字段位置。回归：
   `go test ./hack/production -run 'TestPostRestoreAuditOperation' -count=1` 通过。
+- A566 收紧其余 shell operation runner 参数 TSV 边界：
+  Backup、BackupDeletion、RestoreCutover、CertificateRotation 和 Destroy runner 同样在
+  `jq @tsv` 后用 Bash whitespace IFS 读取参数；空必填字段可能造成字段左移，绕过原本的
+  shell 非空检查或把错误归到错误参数。现在这些 runner 都在 jq 输出 TSV 前拒绝空必填
+  字符串，optional metrics/kube context/kubeconfig 字段继续用哨兵保留位置。回归：
+  `go test ./hack/production -run 'Test(BackupOperation|BackupDeletionOperation|RestoreCutoverOperation|CertificateRotationOperation|DestroyOperation)' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

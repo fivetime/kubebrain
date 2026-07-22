@@ -57,6 +57,21 @@ func TestBackupDeletionOperationRejectsDriftAndInvalidEvidence(t *testing.T) {
 		f.run(t, false, "CLAIM_DIGEST="+strings.Repeat("f", 64), "parameters digest")
 		require.Contains(t, f.log(t), "--action retry")
 	})
+	t.Run("empty required parameter", func(t *testing.T) {
+		f := newBackupDeletionFixture(t)
+		parameters := strings.ReplaceAll(
+			string(mustRead(t, f.parameters)),
+			`"s3_endpoint":"https://s3.example"`,
+			`"s3_endpoint":""`,
+		)
+		require.NoError(t, os.WriteFile(f.parameters, []byte(parameters), 0o600))
+
+		f.run(t, false, "", "empty required field")
+		log := f.log(t)
+		require.NotContains(t, log, "object ")
+		require.NotContains(t, log, "--action retry")
+		require.NotContains(t, log, "--action succeed")
+	})
 	t.Run("manifest bytes", func(t *testing.T) {
 		f := newBackupDeletionFixture(t)
 		require.NoError(t, os.WriteFile(f.preManifest, append(mustRead(t, f.preManifest), '\n'), 0o600))

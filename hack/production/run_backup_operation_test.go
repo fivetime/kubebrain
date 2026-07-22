@@ -65,6 +65,22 @@ func TestBackupOperationRejectsParameterDrift(t *testing.T) {
 	require.Contains(t, f.log(t), "--action retry")
 }
 
+func TestBackupOperationRejectsEmptyRequiredParameters(t *testing.T) {
+	f := newBackupRunnerFixture(t, false)
+	parameters := strings.ReplaceAll(
+		string(mustRead(t, f.parameters)),
+		`"endpoint":"https://etcd:2379"`,
+		`"endpoint":""`,
+	)
+	require.NoError(t, os.WriteFile(f.parameters, []byte(parameters), 0o600))
+
+	f.run(t, false, "CLAIM_DIGEST="+fileDigest(t, f.parameters), "empty required field")
+	log := f.log(t)
+	require.NotContains(t, log, "export\n")
+	require.NotContains(t, log, "--action retry")
+	require.NotContains(t, log, "--action succeed")
+}
+
 func TestBackupOperationLoadsManagedParameters(t *testing.T) {
 	f := newBackupRunnerFixture(t, false)
 	f.env = append(f.env, "MANAGED_PARAMETERS="+f.parameters, "PARAMETERS_INPUT=")

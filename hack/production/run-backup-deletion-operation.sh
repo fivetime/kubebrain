@@ -96,7 +96,8 @@ parameters="$("$JQ" -er '[
   .pre_manifest_input, .pre_manifest_sha256, .pre_inventory_receipt_output,
   .deletion_receipt_output, .post_manifest_input, .post_manifest_sha256,
   .post_inventory_receipt_output, .operation_receipt_output
-] | select(length == 15) | @tsv' "$PARAMETERS_INPUT")"
+] | select(length == 15 and all(. != null and . != "")) | @tsv' "$PARAMETERS_INPUT")" ||
+  { echo "backup deletion parameters contain an empty required field" >&2; exit 2; }
 IFS=$'\t' read -r backup_id object_store_id s3_endpoint force_path_style aws_region \
   source_receipt source_sha pre_manifest pre_manifest_sha pre_inventory_receipt \
   deletion_receipt post_manifest post_manifest_sha post_inventory_receipt \
