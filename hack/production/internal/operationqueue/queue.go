@@ -32,6 +32,7 @@ var SecretResource = schema.GroupVersionResource{Group: "", Version: "v1", Resou
 
 const microTimeFormat = "2006-01-02T15:04:05.000000Z07:00"
 const leaseCleanupTimeout = 5 * time.Second
+const maxOperationAttempts = 100
 
 const (
 	PhasePending   = "Pending"
@@ -107,8 +108,17 @@ func (q *Queue) Submit(ctx context.Context, name string, spec Spec) (*unstructur
 	if spec.OperationID == "" || spec.Instance == "" || spec.Type == "" || spec.MaxAttempts <= 0 {
 		return nil, errors.New("operation spec is incomplete")
 	}
+	if !validOperationIdentifier(spec.OperationID) {
+		return nil, errors.New("invalid operation ID")
+	}
+	if !ValidInstanceName(spec.Instance) {
+		return nil, errors.New("invalid operation instance")
+	}
 	if !isSupportedOperationType(spec.Type) {
 		return nil, fmt.Errorf("unsupported operation type: %s", spec.Type)
+	}
+	if spec.MaxAttempts > maxOperationAttempts {
+		return nil, fmt.Errorf("operation maxAttempts cannot exceed %d", maxOperationAttempts)
 	}
 	if !isSHA256Hex(spec.ParametersSHA256) {
 		return nil, errors.New("operation spec requires a lowercase SHA-256 parameters digest")
@@ -123,6 +133,14 @@ func (q *Queue) Submit(ctx context.Context, name string, spec Spec) (*unstructur
 	}
 	if (spec.ParametersSecret == "") != (spec.ParametersKey == "") {
 		return nil, errors.New("parameter secret name and key must be specified together")
+	}
+	if spec.ParametersSecret != "" {
+		if errs := validation.IsDNS1123Subdomain(spec.ParametersSecret); len(errs) > 0 {
+			return nil, fmt.Errorf("invalid parameter secret name: %s", errs[0])
+		}
+		if !validParameterSecretKey(spec.ParametersKey) {
+			return nil, errors.New("invalid parameter secret key")
+		}
 	}
 	specObject := map[string]any{
 		"operationID":      spec.OperationID,
@@ -416,6 +434,47 @@ func isSupportedOperationType(operationType string) bool {
 	default:
 		return false
 	}
+}
+
+// ValidInstanceName mirrors the KubeBrainOperation CRD's spec.instance schema.
+func ValidInstanceName(instance string) bool {
+	return validOperationIdentifier(instance)
+}
+
+func validOperationIdentifier(value string) bool {
+	if len(value) == 0 || len(value) > 128 || !isOperationIdentifierFirst(value[0]) {
+		return false
+	}
+	for i := 1; i < len(value); i++ {
+		if !isOperationIdentifierChar(value[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func isOperationIdentifierFirst(value byte) bool {
+	return (value >= 'A' && value <= 'Z') ||
+		(value >= 'a' && value <= 'z') ||
+		(value >= '0' && value <= '9')
+}
+
+func isOperationIdentifierChar(value byte) bool {
+	return isOperationIdentifierFirst(value) ||
+		value == '.' || value == '_' || value == '-'
+}
+
+func validParameterSecretKey(key string) bool {
+	if len(key) == 0 || len(key) > 253 {
+		return false
+	}
+	for i := 0; i < len(key); i++ {
+		value := key[i]
+		if !isOperationIdentifierChar(value) {
+			return false
+		}
+	}
+	return true
 }
 
 func isApproved(object *unstructured.Unstructured) bool {

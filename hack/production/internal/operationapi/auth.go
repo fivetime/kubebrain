@@ -19,6 +19,7 @@ import (
 	"time"
 
 	jwt "github.com/golang-jwt/jwt/v5"
+	"github.com/kubewharf/kubebrain/hack/production/internal/operationqueue"
 	"k8s.io/apimachinery/pkg/util/validation"
 )
 
@@ -322,14 +323,14 @@ func (a *OIDCAuthenticator) Authenticate(ctx context.Context, authorization stri
 	case []any:
 		for _, value := range values {
 			instance, ok := value.(string)
-			if !ok || instance == "" {
+			if !ok || !validOIDCInstanceClaim(instance) {
 				return Principal{}, errors.New("OIDC instance claims are invalid")
 			}
 			instances[instance] = struct{}{}
 		}
 	case []string:
 		for _, instance := range values {
-			if instance == "" {
+			if !validOIDCInstanceClaim(instance) {
 				return Principal{}, errors.New("OIDC instance claims are invalid")
 			}
 			instances[instance] = struct{}{}
@@ -341,4 +342,8 @@ func (a *OIDCAuthenticator) Authenticate(ctx context.Context, authorization stri
 		return Principal{}, errors.New("OIDC instance claims are empty")
 	}
 	return Principal{Subject: subject, Tenant: tenant, Instances: instances}, nil
+}
+
+func validOIDCInstanceClaim(instance string) bool {
+	return instance == "*" || operationqueue.ValidInstanceName(instance)
 }

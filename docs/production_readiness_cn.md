@@ -1667,8 +1667,9 @@ TiKV MVCC 后端，不存在 etcd 各成员独立 backend；
 tenant/requestedBy、instance、操作类型、完整参数文件 SHA-256 和 maxAttempts，并由
 CEL 保证创建后不可变。当前类型覆盖 Backup、BackupDeletion、RestoreCutover、
 PostRestoreAudit、CertificateRotation 和 Destroy。Go 队列层也会在 submit 时拒绝
-CRD enum 外的 type，并要求参数 digest 为小写 hex SHA-256；成功 finish 同样要求
-receipt digest 为小写 hex SHA-256，不能只依赖 apiserver admission 才发现错误。
+CRD enum 外的 type，要求 operation ID/instance/maxAttempts/参数 Secret 引用满足
+CRD schema，并要求参数 digest 为小写 hex SHA-256；成功 finish 同样要求 receipt
+digest 为小写 hex SHA-256，不能只依赖 apiserver admission 才发现错误。
 所有 shell operation runner 在把参数 JSON 转成 TSV 环境变量前，必须先拒绝空必填字段；
 可选 kube context/path 或 metrics output 使用哨兵占位，避免 Bash whitespace IFS 把中间空
 字段左移并误绑定后续参数。
@@ -1710,7 +1711,8 @@ exact-version receipt。
 `POST /v1/operations`、`GET /v1/operations/{name}` 和不含依赖状态的 `/healthz`；
 必须通过 HTTPS。OIDC token 必须使用 RS256，包含匹配的 issuer/audience、有效 exp、
 sub、DNS label 格式 tenant 及字符串数组 `kubebrain_instances`。tenant 必须与请求一致，
-instance 必须在数组中（受信任的控制面 token 可显式使用 `*`）。提交时 sub 固化为
+instance 必须在数组中；数组元素只接受 `*` 或 CRD `spec.instance` 同格式标识符
+（受信任的控制面 token 可显式使用 `*`）。提交时 sub 固化为
 immutable `requestedBy`，tenant 同样进入 spec、worker claim 和终态审计 artifact。
 参数 Secret 只能引用受信控制面预置的 `params-<tenant>-*` 对象，且 key 固定为
 `parameters.json`；API ServiceAccount 不具备 Secret 读取或写入权限。

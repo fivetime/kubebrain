@@ -98,6 +98,10 @@ func TestOIDCAuthenticatorValidatesIdentityAndRefreshesUnknownKey(t *testing.T) 
 	require.Equal(t, "tenant-a", principal.Tenant)
 	require.True(t, principal.Allows("instance-a"))
 	require.False(t, principal.Allows("instance-b"))
+	wildcard := signOIDCToken(t, first, "first", server.URL, "kubebrain-management", "tenant-a", []string{"*"})
+	principal, err = authenticator.Authenticate(context.Background(), "Bearer "+wildcard)
+	require.NoError(t, err)
+	require.True(t, principal.Allows("instance-with-crd-format_1.2"))
 
 	fixture.mu.Lock()
 	fixture.keys = map[string]*rsa.PrivateKey{"second": second}
@@ -134,6 +138,8 @@ func TestOIDCAuthenticatorFailsClosed(t *testing.T) {
 		{name: "invalid tenant", audience: "expected", tenant: "Tenant_A", instances: []string{"instance-a"}},
 		{name: "missing instances", audience: "expected", tenant: "tenant-a"},
 		{name: "mixed instance types", audience: "expected", tenant: "tenant-a", instances: []any{"instance-a", 3}},
+		{name: "invalid instance claim", audience: "expected", tenant: "tenant-a", instances: []string{".invalid"}},
+		{name: "too long instance claim", audience: "expected", tenant: "tenant-a", instances: []string{string(make([]byte, 129))}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

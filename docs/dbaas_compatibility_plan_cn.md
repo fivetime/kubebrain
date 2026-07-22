@@ -9950,6 +9950,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   contract，也不依赖用户 header；现有 auth 层继续按该标记拒绝证书身份回退。回归：
   `go test ./pkg/endpoint -run 'TestGRPCGatewayUsesGeneratedEtcdJSONContract' -count=1`
   覆盖无 `Accept` 请求仍携带代理标记。
+- A572 补齐 operation queue 与 OIDC claim 本地 schema 校验：
+  A542 已把 operation type、parameters digest 和成功 receipt digest 从 CRD admission
+  下沉到 Go 队列层，但 `Queue.Submit` 仍未镜像 CRD 对 operation ID、instance、
+  `maxAttempts` 和参数 Secret 引用的约束；fake-client、旧集群或直接队列调用可能接受
+  真实 apiserver 会拒绝的对象。现在 Go 层按 CRD schema 拒绝非法 operation ID/
+  instance、超过 100 的 attempts、非法 Secret name/key；OIDC `kubebrain_instances`
+  claim 同步只接受 `*` 或 CRD instance 标识符，避免异常 claim 值进入授权集合。回归：
+  `go test ./hack/production/internal/operationqueue ./hack/production/internal/operationapi -run 'TestQueueRejectsSpecDriftAndInvalidCompletion|TestOIDCAuthenticator' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

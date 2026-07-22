@@ -910,6 +910,22 @@ func TestQueueRejectsSpecDriftAndInvalidCompletion(t *testing.T) {
 	_, err = queue.Submit(ctx, "backup-1", requesterDrift)
 	require.ErrorContains(t, err, "different immutable spec")
 
+	invalidOperationID := spec
+	invalidOperationID.OperationID = "-invalid"
+	_, err = queue.Submit(ctx, "invalid-operation-id", invalidOperationID)
+	require.ErrorContains(t, err, "invalid operation ID")
+
+	validCRDIdentifiers := spec
+	validCRDIdentifiers.OperationID = "Operation_1.2"
+	validCRDIdentifiers.Instance = "Instance_1.2"
+	_, err = queue.Submit(ctx, "valid-identifiers", validCRDIdentifiers)
+	require.NoError(t, err)
+
+	invalidInstance := spec
+	invalidInstance.Instance = ".invalid"
+	_, err = queue.Submit(ctx, "invalid-instance", invalidInstance)
+	require.ErrorContains(t, err, "invalid operation instance")
+
 	invalidTenant := spec
 	invalidTenant.Tenant = "Invalid_Tenant"
 	_, err = queue.Submit(ctx, "invalid-tenant", invalidTenant)
@@ -926,6 +942,26 @@ func TestQueueRejectsSpecDriftAndInvalidCompletion(t *testing.T) {
 	invalidDigest.ParametersSHA256 = strings.Repeat("g", 64)
 	_, err = queue.Submit(ctx, "invalid-digest", invalidDigest)
 	require.ErrorContains(t, err, "parameters digest")
+
+	tooManyAttempts := spec
+	tooManyAttempts.OperationID = "too-many-attempts"
+	tooManyAttempts.MaxAttempts = 101
+	_, err = queue.Submit(ctx, "too-many-attempts", tooManyAttempts)
+	require.ErrorContains(t, err, "maxAttempts")
+
+	invalidSecret := spec
+	invalidSecret.OperationID = "invalid-secret"
+	invalidSecret.ParametersSecret = "Invalid_Secret"
+	invalidSecret.ParametersKey = "parameters.json"
+	_, err = queue.Submit(ctx, "invalid-secret", invalidSecret)
+	require.ErrorContains(t, err, "invalid parameter secret name")
+
+	invalidSecretKey := spec
+	invalidSecretKey.OperationID = "invalid-secret-key"
+	invalidSecretKey.ParametersSecret = "valid-secret"
+	invalidSecretKey.ParametersKey = "parameters/json"
+	_, err = queue.Submit(ctx, "invalid-secret-key", invalidSecretKey)
+	require.ErrorContains(t, err, "invalid parameter secret key")
 
 	claim, err := queue.Claim(ctx, "worker-a", "", time.Minute)
 	require.NoError(t, err)
