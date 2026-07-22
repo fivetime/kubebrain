@@ -101,6 +101,18 @@ func (w *watcher) responseRevision() uint64 {
 	return rev
 }
 
+// clientCancelResponseRevision reports the latest committed revision. Unlike a
+// created or progress response, a canceled watch is terminal and cannot cause
+// a client to skip an undelivered event, so etcd exposes the current revision
+// even while the watch publication pipeline is catching up.
+func (w *watcher) clientCancelResponseRevision() uint64 {
+	rev := w.backend.GetCurrentRevision()
+	if control := atomic.LoadUint64(&w.controlRev); control > rev {
+		rev = control
+	}
+	return rev
+}
+
 func (w *watcher) syncControlRevision(ctx context.Context) error {
 	revision := w.backend.GetPublishedRevision()
 	if !w.grpcServer.peers.IsLeader() {
@@ -360,9 +372,9 @@ func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) (err error) {
 			w.start(watchCtx, r, uint64(progressStartRevision), quotaReserved)
 		} else if cancelRequest := msg.GetCancelRequest(); cancelRequest != nil {
 			// Match etcd's stream-local cancellation: removing an existing watch
-			// does not require a leader read barrier. The response header uses this
-			// stream's last synchronized control revision (or the local published
-			// revision), so a leader outage cannot turn cancel into Unavailable.
+			// does not require a leader read barrier. Its terminal response reports
+			// the local current revision, so a just-committed write is visible even
+			// when event publication has not caught up.
 			s.metricCli.EmitCounter("watch.client.cancel", 1)
 			klog.InfoS("receive watch cancel request", "id", w.id, "watchID", cancelRequest.GetWatchId())
 			w.CancelRequest(msg.GetCancelRequest().WatchId)
@@ -654,7 +666,7 @@ func (w *watcher) cancel(id int64, err error, compact, clientRequest bool) {
 	}
 	header := &etcdserverpb.ResponseHeader{}
 	if clientRequest {
-		header = txnHeader(int64(w.responseRevision()))
+		header = txnHeader(int64(w.clientCancelResponseRevision()))
 	}
 	serr := w.SendControl(&etcdserverpb.WatchResponse{
 		Header:          header,

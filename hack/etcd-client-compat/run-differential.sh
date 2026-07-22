@@ -11,6 +11,12 @@ REFERENCE_PEER_URL="${REFERENCE_PEER_URL:-http://127.0.0.1:12380}"
 TEST_TIMEOUT="${TEST_TIMEOUT:-20m}"
 ADVERTISED_ENDPOINT_TIMEOUT="${ADVERTISED_ENDPOINT_TIMEOUT:-5s}"
 KUBEBRAIN_EXPECTED_MEMBER_COUNT="${KUBEBRAIN_EXPECTED_MEMBER_COUNT-3}"
+KUBECTL="${KUBECTL:-kubectl}"
+ETCDCTL_EXEC_POD="${ETCDCTL_EXEC_POD:-}"
+ETCDCTL_EXEC_NAMESPACE="${ETCDCTL_EXEC_NAMESPACE:-kubebrain-dev}"
+ETCDCTL_EXEC_CONTAINER="${ETCDCTL_EXEC_CONTAINER:-}"
+ETCDCTL_EXEC_BIN="${ETCDCTL_EXEC_BIN:-etcdctl}"
+KUBE_CONTEXT="${KUBE_CONTEXT:-}"
 
 need() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -22,6 +28,9 @@ need() {
 need curl
 need go
 need jq
+if [[ -n "$ETCDCTL_EXEC_POD" ]]; then
+  need "$KUBECTL"
+fi
 
 if [ -z "$KUBEBRAIN_ENDPOINT" ]; then
   echo "set KUBEBRAIN_ETCD_ENDPOINT to the KubeBrain endpoint under test" >&2
@@ -32,6 +41,10 @@ if [ "$ALLOW_DESTRUCTIVE_DIFFERENTIAL" != true ]; then
   echo "use a disposable KubeBrain instance and set ALLOW_DESTRUCTIVE_DIFFERENTIAL=true" >&2
   exit 1
 fi
+if [[ -n "$ETCDCTL_EXEC_CONTAINER" && -z "$ETCDCTL_EXEC_POD" ]]; then
+  echo "ETCDCTL_EXEC_CONTAINER requires ETCDCTL_EXEC_POD" >&2
+  exit 2
+fi
 if [ ! -x "$REFERENCE_ETCD_BIN" ]; then
   echo "reference etcd binary is not executable: $REFERENCE_ETCD_BIN" >&2
   exit 1
@@ -40,6 +53,23 @@ if [ ! -x "$ETCDCTL_BIN" ]; then
   echo "etcdctl binary is not executable: $ETCDCTL_BIN" >&2
   exit 1
 fi
+
+run_advertised_etcdctl() {
+  if [[ -z "$ETCDCTL_EXEC_POD" ]]; then
+    "$ETCDCTL_BIN" "$@"
+    return
+  fi
+  local kubectl_args=("$KUBECTL")
+  if [[ -n "$KUBE_CONTEXT" ]]; then
+    kubectl_args+=(--context "$KUBE_CONTEXT")
+  fi
+  kubectl_args+=(-n "$ETCDCTL_EXEC_NAMESPACE" exec "$ETCDCTL_EXEC_POD")
+  if [[ -n "$ETCDCTL_EXEC_CONTAINER" ]]; then
+    kubectl_args+=(-c "$ETCDCTL_EXEC_CONTAINER")
+  fi
+  kubectl_args+=(-- "$ETCDCTL_EXEC_BIN")
+  "${kubectl_args[@]}" "$@"
+}
 if curl --fail --silent --max-time 1 "${REFERENCE_CLIENT_URL}/health" >/dev/null 2>&1; then
   echo "reference client URL is already in use: $REFERENCE_CLIENT_URL" >&2
   exit 1
@@ -63,7 +93,7 @@ if [ "${#advertised_client_urls[@]}" -eq 0 ]; then
   exit 1
 fi
 for advertised_client_url in "${advertised_client_urls[@]}"; do
-  if ! ETCDCTL_API=3 "$ETCDCTL_BIN" \
+  if ! ETCDCTL_API=3 run_advertised_etcdctl \
     --command-timeout="$ADVERTISED_ENDPOINT_TIMEOUT" \
     --endpoints="$advertised_client_url" endpoint health >/dev/null; then
     echo "KubeBrain advertised client URL is unreachable from the differential runner: $advertised_client_url" >&2

@@ -414,6 +414,26 @@ func TestWatchRequestedIDDuplicateAndUnknownCancelMatchEtcd(t *testing.T) {
 	require.Empty(t, stream.sent[3].CancelReason)
 }
 
+func TestClientWatchCancelHeaderUsesCurrentRevisionBeforeEventsPublish(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	server.backend.SetCurrentRevision(71)
+	backend := &futureProgressBackend{BackendShim: server.backend}
+	backend.published.Store(70)
+	stream := &fakeWatchServer{ctx: context.Background()}
+	w := &watcher{
+		backend: backend, watchServer: stream, grpcServer: server,
+		watches: map[int64]*watch{9: {cancel: func() {}}}, metricCli: server.metricCli,
+	}
+
+	w.CancelRequest(9)
+	require.Len(t, stream.sent, 1)
+	require.True(t, stream.sent[0].Canceled)
+	require.Empty(t, stream.sent[0].CancelReason)
+	require.Equal(t, int64(71), stream.sent[0].Header.Revision)
+}
+
 func TestLogicalWatchAdmissionMultiplexCancelAndDisconnect(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
