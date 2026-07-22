@@ -9073,6 +9073,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./hack/production/internal/meteringbilling -run 'Test.*GeneralLedger' -count=1`、
   `go test ./hack/production/... ./deploy/production` 与
   `go vet ./hack/production/... ./deploy/production` 通过。
+- A473 收紧 provider reconciliation 的 upstream source 字节绑定：新增
+  `BuildProviderReconciliationWithStatuses`，要求 provider statement source 与 finalized invoice
+  source 的 SHA-256/bytes 分别精确等于本地 canonical statement/invoice status；生产
+  `kubebrain-metering-provider-reconcile` 路径改走该 helper，在 Object Lock read receipt
+  校验之外也保护直接构建入口。新增回归覆盖 provider statement source digest 漂移和 invoice
+  source digest 漂移；`go test ./hack/production/internal/meteringbilling -run
+  'Test.*ProviderReconciliation|Test.*ProviderReconciler' -count=1`、`go test
+  ./hack/production/... ./deploy/production` 与
+  `go vet ./hack/production/... ./deploy/production` 通过。
 
 ### P2：运维兼容和长期验证
 

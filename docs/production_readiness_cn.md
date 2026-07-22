@@ -941,6 +941,14 @@ kubebrain-metering-invoice.yaml` 默认每月 2 日 UTC 02:17 运行，ConfigMap
 独立核验后替换。CronJob 使用只读根文件系统、非 root、无 ServiceAccount token 和
 只允许读取 charge/adjustment/plan、写 invoice prefix 的独立 Secret。
 
+供应商账单对账使用 `kubebrain.metering-provider-reconciliation.v1` 固化周期级成本证据。
+provider statement 行必须按 provider、account、外部 invoice/line、category、object store
+和 bucket 排序且逐行合计；reconciliation 从 Object Lock exact-read provider statement 与
+finalized invoice，聚合跨 account/bucket 成本分类，并计算 customer invoice total、provider
+statement total 和 gross margin。statement source 与 invoice source 的 SHA-256/bytes 必须分别
+匹配本地 canonical artifact；source receipt 与下载字节不一致、retention 不足、账期/币种/
+实例不一致或 source 漂移都会 fail closed。
+
 外部收款系统的结果通过 normalized payment ledger 固化，而不是修改 invoice。
 `kubebrain.metering-payment-ledger.v1` 绑定 finalized invoice 的 exact-version source、
 invoice total、payment/refund/chargeback 交易、net paid 和 remaining balance。CSV header

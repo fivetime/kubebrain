@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -57,6 +58,58 @@ func TestBuildProviderReconciliationAggregatesCrossAccountProviderCosts(t *testi
 	read, err := ReadProviderReconciliation(output)
 	require.NoError(t, err)
 	require.Equal(t, status, read)
+}
+
+func TestBuildProviderReconciliationWithStatusesRejectsSourceBytesDrift(t *testing.T) {
+	start := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	charge, chargeSource := settlementCharge(t, start)
+	plan := validInvoicePlan(start, charge.Format, nil)
+	invoice, err := BuildInvoice(
+		plan, settlementSource(InvoicePlanFormat, plan.ID, "plans/invoice-july.json"),
+		[]Charge{charge}, []Source{chargeSource}, nil, nil,
+		plan.Approval.ApprovedAtUnix+1,
+	)
+	require.NoError(t, err)
+	statement := validProviderStatement(start)
+	dir := t.TempDir()
+	statementStatus, err := WriteProviderStatementAtomic(
+		filepath.Join(dir, "provider-statement.json"), statement,
+	)
+	require.NoError(t, err)
+	invoiceStatus, err := WriteInvoiceAtomic(filepath.Join(dir, "invoice.json"), invoice)
+	require.NoError(t, err)
+	retainUntil := start.Add(7 * 24 * time.Hour).Unix()
+	statementSource := Source{
+		ArtifactFormat: ProviderStatementFormat, ArtifactID: statement.ID,
+		ObjectKey: "providers/instance-a/provider-july.json", VersionID: "provider-version",
+		ArtifactSHA256: statementStatus.SHA256, ObjectBytes: statementStatus.Bytes,
+		RetainUntilUnix: retainUntil,
+	}
+	invoiceSource := Source{
+		ArtifactFormat: InvoiceFormat, ArtifactID: invoice.ID,
+		ObjectKey: "invoices/instance-a/invoice-july.json", VersionID: "invoice-version",
+		ArtifactSHA256: invoiceStatus.SHA256, ObjectBytes: invoiceStatus.Bytes,
+		RetainUntilUnix: retainUntil,
+	}
+	reconciledAt := start.Add(72 * time.Hour).Unix()
+	_, err = BuildProviderReconciliationWithStatuses(
+		"reconcile-july", statementStatus, statementSource, invoiceStatus, invoiceSource, reconciledAt,
+	)
+	require.NoError(t, err)
+
+	badStatementSource := statementSource
+	badStatementSource.ArtifactSHA256 = strings.Repeat("b", 64)
+	_, err = BuildProviderReconciliationWithStatuses(
+		"reconcile-july", statementStatus, badStatementSource, invoiceStatus, invoiceSource, reconciledAt,
+	)
+	require.ErrorContains(t, err, "statement bytes")
+
+	badInvoiceSource := invoiceSource
+	badInvoiceSource.ArtifactSHA256 = strings.Repeat("b", 64)
+	_, err = BuildProviderReconciliationWithStatuses(
+		"reconcile-july", statementStatus, statementSource, invoiceStatus, badInvoiceSource, reconciledAt,
+	)
+	require.ErrorContains(t, err, "invoice bytes")
 }
 
 func TestProviderStatementRejectsUnsortedIncompleteAndTamperedCosts(t *testing.T) {

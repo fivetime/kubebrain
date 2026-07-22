@@ -216,6 +216,28 @@ func BuildProviderReconciliation(
 	return result, nil
 }
 
+func BuildProviderReconciliationWithStatuses(
+	id string,
+	statementStatus SettlementStatus[ProviderStatement],
+	statementSource Source,
+	invoiceStatus SettlementStatus[Invoice],
+	invoiceSource Source,
+	reconciledAtUnix int64,
+) (ProviderReconciliation, error) {
+	if statementSource.ArtifactSHA256 != statementStatus.SHA256 ||
+		statementSource.ObjectBytes != statementStatus.Bytes {
+		return ProviderReconciliation{}, errors.New("provider reconciliation statement source does not match statement bytes")
+	}
+	if invoiceSource.ArtifactSHA256 != invoiceStatus.SHA256 ||
+		invoiceSource.ObjectBytes != invoiceStatus.Bytes {
+		return ProviderReconciliation{}, errors.New("provider reconciliation invoice source does not match invoice bytes")
+	}
+	return BuildProviderReconciliation(
+		id, statementStatus.Value, statementSource,
+		invoiceStatus.Value, invoiceSource, reconciledAtUnix,
+	)
+}
+
 func (r ProviderReconciliation) Validate() error {
 	if r.Format != ProviderReconciliationFormat ||
 		!versionPattern.MatchString(r.ID) || !versionPattern.MatchString(r.Instance) ||
@@ -377,8 +399,8 @@ func (r *ProviderReconciler) Process(ctx context.Context) (ProviderReconciliatio
 		retainUntil <= now.Unix() {
 		return ProviderReconciliation{}, output, errors.New("provider reconciliation evidence retention is insufficient")
 	}
-	reconciliation, err := BuildProviderReconciliation(
-		r.ReconciliationID, statement, statementSource, invoice, invoiceSource, now.Unix(),
+	reconciliation, err := BuildProviderReconciliationWithStatuses(
+		r.ReconciliationID, statementStatus, statementSource, invoiceStatus, invoiceSource, now.Unix(),
 	)
 	if err != nil {
 		return ProviderReconciliation{}, output, err
