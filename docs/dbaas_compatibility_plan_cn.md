@@ -8634,6 +8634,26 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   运行版本 `0.0.0-a433.1`、Go 1.26.5、TiKV backend、用户 `65532:65532`。三 KubeBrain
   副本 Ready、零重启，主 PD/TiKV 3+3 Ready。
 
+#### A434 advertised client URL 真实可达性发布门禁
+
+- 在 A433 镜像上清理旧 restart-persistence 测试遗留的 `[fe,ff)` 高位键后，以全新 reference
+  etcd 串行重跑全部普通 Differential 测试。342.004 秒内 binary KV、Alarm、Compact、Delete、
+  Hash/HashKV、Lease/leasing、mirror、Namespace/Naming、Put、Range/RangeStream、recipes、STM、
+  Txn 和 Watch 均通过；唯一失败仍是 authenticated AutoSync 将宿主 runner 的 bootstrap
+  NodePort 替换为集群内 Service DNS 后无法解析。该失败不是协议差异，但证明仅校验 bootstrap
+  `ENDPOINT` 和 advertised URL 配置字符串不足以关闭生产发布门禁。
+- 提交 `316c6d6` 扩展 `validate-instance-ready.sh`：在原有 immutable image/keyspace/PD/quota/
+  advertised args、拓扑收敛和 bootstrap health 检查后，按逗号解析
+  `EXPECTED_ADVERTISE_CLIENT_URLS`，从发布门禁所在的真实客户端网络域逐一执行官方
+  `etcdctl endpoint health`。空成员或任一替换地址不可达均 fail closed，避免 clientv3
+  Sync/AutoSync 在首次 MemberList 后整体断连；多 URL 必须全部通过，不能只探测第一项。
+- 专项测试覆盖单/多 URL 成功、第二个 URL 不可达、空成员及既有配置/拓扑/health 失败，普通
+  20 轮、race 10 轮通过；`bash -n`、root 全量测试、vet、staticcheck v0.7.0 和 diff check
+  均通过。当前集群内客户端网络域直接访问
+  `http://kubebrain.kubebrain-dev.svc:3379` 成功提交线性化 proposal；宿主 NodePort health
+  同样正常且 alarm 为空，三 KubeBrain 副本 Ready、零重启，主 PD/TiKV 3+3 Ready。
+  本轮只加强发布门禁与运行手册，继续使用 A433 数据面镜像。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
