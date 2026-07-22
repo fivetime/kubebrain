@@ -1285,6 +1285,8 @@ follower proxy 成为本地 leader 时必须同时关闭 forwarding client 并�
 另一副本接任后恢复原进程；原 Pod UID 和 restartCount 必须不变，日志必须出现
 `stopped leading`、同进程重试以及到 successor 的 `conn to new leader`，所有副本
 `/ready` 最终返回 200。
+共享 leader-election record 是选主安全状态，读取时必须使用严格 JSON：未知字段或尾随
+拼接 JSON 应 fail closed，不能让坏 metadata 退化为看似合法的旧字段记录。
 
 prefix watch catch-up 还修复了一个边界：当 watch cache 中混有其他 prefix 的更高 revision 时，后续 live watch 起点应从最后一个已发送的匹配 prefix 事件之后继续，而不是从全局 newest revision 之后继续，避免跳过本 prefix 事件。
 

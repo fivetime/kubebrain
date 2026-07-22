@@ -9299,6 +9299,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go vet ./pkg/server/etcd ./pkg/server/service/revision`、
   `go test ./hack/production/... ./deploy/production`、
   `go vet ./hack/production/... ./deploy/production` 与 `git diff --check` 通过。
+- A502 收紧共享 leader election record 解析：`resourceLock.Get` 读取 TiKV 中的
+  election metadata 时改用 strict JSON decoder，拒绝未知字段和尾随拼接 JSON；坏选主
+  metadata 会阻止本轮锁记录读取，而不是被标准 `json.Unmarshal` 静默降级为已知字段子集。
+  回归直接注入 unknown-field 与 trailing JSON 的 election record；`go test ./pkg/backend/election -run TestResourceLockRejectsMalformedElectionMetadata -count=30`、
+  `go test ./pkg/backend/election ./pkg/server/service/leader`、
+  `go test ./pkg/backend -run 'TestBackend/.*/resource_lock|TestBackend/.*/resource_lock_release_after_renew' -count=1`、
+  `go vet ./pkg/backend/election ./pkg/server/service/leader`、
+  `go test ./hack/production/... ./deploy/production`、
+  `go vet ./hack/production/... ./deploy/production` 与 `git diff --check` 通过。
 
 ### P2：运维兼容和长期验证
 

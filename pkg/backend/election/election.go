@@ -15,9 +15,11 @@
 package election
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"sync"
 	"time"
 
@@ -118,8 +120,8 @@ func (r *resourceLock) getRecord(parent context.Context) (err error) {
 		}
 		return err
 	}
-	var record resourcelock.LeaderElectionRecord
-	if err := json.Unmarshal(val, &record); err != nil {
+	record, err := decodeLeaderElectionRecord(val)
+	if err != nil {
 		return err
 	}
 	r.mu.Lock()
@@ -127,6 +129,20 @@ func (r *resourceLock) getRecord(parent context.Context) (err error) {
 	r.record = record
 	r.mu.Unlock()
 	return nil
+}
+
+func decodeLeaderElectionRecord(raw []byte) (resourcelock.LeaderElectionRecord, error) {
+	var record resourcelock.LeaderElectionRecord
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&record); err != nil {
+		return resourcelock.LeaderElectionRecord{}, err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return resourcelock.LeaderElectionRecord{}, errors.New("leader election record contains trailing JSON")
+	}
+	return record, nil
 }
 
 func (r *resourceLock) getTso(parent context.Context) (err error) {
