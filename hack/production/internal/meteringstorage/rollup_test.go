@@ -1,6 +1,7 @@
 package meteringstorage
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -23,6 +24,22 @@ func TestBuildStorageRollupIntegratesTwentyFourSnapshots(t *testing.T) {
 	second, err := WriteRollupAtomic(path, rollup)
 	require.NoError(t, err)
 	require.Equal(t, first, second)
+}
+
+func TestStorageRollupRejectsOversizedInputs(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "rollup.json")
+	require.NoError(t, os.WriteFile(path, make([]byte, maxMeteringStorageJSONBytes+1), 0o600))
+	_, err := ReadRollup(path)
+	require.ErrorContains(t, err, "object storage rollup exceeds")
+
+	start := time.Unix(1_784_505_600, 0).UTC().Truncate(24 * time.Hour)
+	rollup, err := BuildRollup("instance-a", start, start.Add(24*time.Hour), validRollupInputs(start))
+	require.NoError(t, err)
+	output := filepath.Join(dir, "existing.json")
+	require.NoError(t, os.WriteFile(output, make([]byte, maxMeteringStorageJSONBytes+1), 0o600))
+	_, err = WriteRollupAtomic(output, rollup)
+	require.ErrorContains(t, err, "existing object storage rollup exceeds")
 }
 
 func TestBuildStorageRollupFailsClosed(t *testing.T) {

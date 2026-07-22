@@ -16,6 +16,7 @@ import (
 const SnapshotFormat = "kubebrain.object-storage-sample.v1"
 const UsageReceiptFormat = "kubebrain.object-usage.receipt.v1"
 const maxSnapshotFinalizationDelay = int64(45 * 60)
+const maxMeteringStorageJSONBytes = 1 << 20
 
 var identifierPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`)
 var digestPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -98,7 +99,7 @@ func (s Snapshot) Validate() error {
 
 func ReadSnapshot(path string) (SnapshotStatus, error) {
 	var snapshot Snapshot
-	data, err := os.ReadFile(path)
+	data, err := readBoundedFile(path, "object storage sample", maxMeteringStorageJSONBytes)
 	if err != nil {
 		return SnapshotStatus{}, err
 	}
@@ -140,7 +141,7 @@ func WriteSnapshotAtomic(path string, snapshot Snapshot) (SnapshotStatus, error)
 		return SnapshotStatus{}, err
 	}
 	data = append(data, '\n')
-	if existing, err := os.ReadFile(path); err == nil {
+	if existing, err := readBoundedFile(path, "existing object storage sample", int64(len(data))); err == nil {
 		if bytes.Equal(existing, data) {
 			return ReadSnapshot(path)
 		}
@@ -182,4 +183,20 @@ func WriteSnapshotAtomic(path string, snapshot Snapshot) (SnapshotStatus, error)
 		return SnapshotStatus{}, err
 	}
 	return ReadSnapshot(path)
+}
+
+func readBoundedFile(path, description string, limit int64) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("%s exceeds %d bytes", description, limit)
+	}
+	return data, nil
 }

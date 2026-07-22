@@ -3,8 +3,6 @@ package meteringstorage
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -109,13 +107,7 @@ func (r *Roller) Process(ctx context.Context) (Rollup, []byte, error) {
 				"object storage sample %d exceeds configured finalization window", i,
 			)
 		}
-		artifact, err := os.ReadFile(outputPath)
-		if err != nil {
-			return Rollup{}, output, err
-		}
-		sum := sha256.Sum256(artifact)
-		if int64(len(artifact)) != receipt.ObjectBytes ||
-			hex.EncodeToString(sum[:]) != receipt.ArtifactSHA256 {
+		if status.Bytes != receipt.ObjectBytes || status.SHA256 != receipt.ArtifactSHA256 {
 			return Rollup{}, output, errors.New("object storage sample receipt does not match bytes")
 		}
 		inputs = append(inputs, VerifiedSnapshot{

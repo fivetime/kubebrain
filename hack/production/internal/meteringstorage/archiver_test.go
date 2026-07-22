@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -113,6 +114,13 @@ func TestArchiverRejectsUsageReceiptMismatchBeforeArchive(t *testing.T) {
 	_, _, err := validArchiver(now, run).Process(context.Background())
 	require.ErrorContains(t, err, "stdout")
 	require.Zero(t, archiveCalls)
+}
+
+func TestUsageReceiptRejectsOversizedInput(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.json")
+	require.NoError(t, os.WriteFile(path, make([]byte, maxMeteringStorageJSONBytes+1), 0o600))
+	_, err := readUsageReceipt(path)
+	require.ErrorContains(t, err, "object usage receipt exceeds")
 }
 
 func TestArchiverRejectsUsageStdoutUnknownFieldBeforeArchive(t *testing.T) {

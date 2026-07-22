@@ -9446,6 +9446,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   oversized existing output；`go test ./hack/production/internal/meteringbilling -run 'TestCatalogAndChargeReject|TestPriceCatalogRejects|TestBuildCharge|TestPublisher' -count=20`、
   `go test ./hack/production/internal/meteringbilling`、`go test ./hack/production/... ./deploy/production`、
   `go vet ./hack/production/... ./deploy/production` 与 `git diff --check` 通过。
+- A520 收紧 object storage metering 小型 JSON 本地读取边界：object usage receipt、hourly
+  sample 和 daily rollup 现在最多读取 1 MiB，超限会在 strict schema 解码、canonical
+  比对、日汇总构造或 Object Lock 归档前 fail closed。sample/rollup atomic writer 比较
+  已有文件时也只读取目标 canonical 长度加 1 字节；Roller 改用 `ReadSnapshot` 已验证的
+  bytes/digest 与 blob-read receipt 比对，不再为了校验 receipt 第二次无界读取 sample
+  文件。回归覆盖 oversized usage receipt、sample、rollup 和 oversized existing output；
+  `go test ./hack/production/internal/meteringstorage -run 'Test(Snapshot|StorageRollup|UsageReceipt|Archiver|ValidateObjectStorage|ParseObjectStorage)' -count=20`、
+  `go test ./hack/production/internal/meteringstorage`、`go test ./hack/production/... ./deploy/production`、
+  `go vet ./hack/production/... ./deploy/production` 与 `git diff --check` 通过。
 
 ### P2：运维兼容和长期验证
 

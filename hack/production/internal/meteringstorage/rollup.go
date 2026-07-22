@@ -138,7 +138,7 @@ func WriteRollupAtomic(path string, rollup Rollup) (RollupStatus, error) {
 		return RollupStatus{}, err
 	}
 	data = append(data, '\n')
-	if existing, err := os.ReadFile(path); err == nil {
+	if existing, err := readBoundedFile(path, "existing object storage rollup", int64(len(data))); err == nil {
 		if bytes.Equal(existing, data) {
 			return ReadRollup(path)
 		}
@@ -184,7 +184,7 @@ func WriteRollupAtomic(path string, rollup Rollup) (RollupStatus, error) {
 
 func ReadRollup(path string) (RollupStatus, error) {
 	var rollup Rollup
-	data, err := os.ReadFile(path)
+	data, err := readBoundedFile(path, "object storage rollup", maxMeteringStorageJSONBytes)
 	if err != nil {
 		return RollupStatus{}, err
 	}

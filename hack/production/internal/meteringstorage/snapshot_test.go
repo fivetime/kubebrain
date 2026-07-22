@@ -25,6 +25,19 @@ func TestSnapshotCanonicalRoundTrip(t *testing.T) {
 	require.ErrorContains(t, err, "canonical")
 }
 
+func TestSnapshotRejectsOversizedInputs(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sample.json")
+	require.NoError(t, os.WriteFile(path, make([]byte, maxMeteringStorageJSONBytes+1), 0o600))
+	_, err := ReadSnapshot(path)
+	require.ErrorContains(t, err, "object storage sample exceeds")
+
+	output := filepath.Join(dir, "existing.json")
+	require.NoError(t, os.WriteFile(output, make([]byte, maxMeteringStorageJSONBytes+1), 0o600))
+	_, err = WriteSnapshotAtomic(output, validSnapshot())
+	require.ErrorContains(t, err, "existing object storage sample exceeds")
+}
+
 func TestSnapshotRejectsInvalidEvidenceAndSlot(t *testing.T) {
 	snapshot := validSnapshot()
 	snapshot.DeleteMarkers = 1

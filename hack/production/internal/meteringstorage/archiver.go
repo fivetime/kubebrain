@@ -163,7 +163,7 @@ func (a *Archiver) Process(ctx context.Context) (Snapshot, []byte, error) {
 
 func readUsageReceipt(path string) (UsageReceipt, error) {
 	var receipt UsageReceipt
-	data, err := os.ReadFile(path)
+	data, err := readBoundedFile(path, "object usage receipt", maxMeteringStorageJSONBytes)
 	if err != nil {
 		return receipt, err
 	}

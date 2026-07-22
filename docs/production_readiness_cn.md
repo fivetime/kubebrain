@@ -780,6 +780,11 @@ artifact。Prometheus HTTP 200 response 必须声明 JSON media type；兼容性
 但超过 1 MiB、响应体中拼接第二个 JSON 值或 HTML/text 成功页都会被拒绝。
 v1/v2 仅用于读取历史对象。artifact ID、对象键和 JSON 字节均由实例与
 槽位确定，重试同一槽位不得生成新内容或第二个对象版本。
+本地 object usage receipt、sample 和 rollup 都是小型 canonical JSON，读取最多接受
+1 MiB；超限会在 schema 解码、canonical 比对、日汇总构造或 Object Lock 归档前
+fail closed。sample/rollup 原子写入在比较已存在文件时只读取目标 canonical 长度加
+1 字节；Roller 使用 `ReadSnapshot` 已验证的 bytes/digest 与 blob-read receipt 比对，
+不再为了二次校验 receipt 而重新无界读取 sample 文件。
 
 归档器通过 `kubebrain-logical-object` 的通用 `ACTION=blob` 路径执行条件上传，要求
 bucket 已启用 versioning 和 Object Lock。上传固定使用 SHA-256 checksum、
