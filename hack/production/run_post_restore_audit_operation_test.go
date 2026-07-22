@@ -58,6 +58,21 @@ func TestPostRestoreAuditOperationRejectsParameterDrift(t *testing.T) {
 	require.Contains(t, f.log(t), "--action retry")
 }
 
+func TestPostRestoreAuditOperationRejectsEmptyRequiredParameters(t *testing.T) {
+	f := newOperationRunnerFixture(t)
+	parameters := strings.ReplaceAll(
+		string(mustRead(t, f.parameters)),
+		`"public_endpoint":"https://service:2379"`,
+		`"public_endpoint":""`,
+	)
+	require.NoError(t, os.WriteFile(f.parameters, []byte(parameters), 0o600))
+
+	f.run(t, false, "CLAIM_DIGEST="+fileDigest(t, f.parameters), "empty required field")
+	log := f.log(t)
+	require.NotContains(t, log, "--action retry")
+	require.NotContains(t, log, "--action succeed")
+}
+
 func TestPostRestoreAuditOperationLoadsManagedParameters(t *testing.T) {
 	f := newOperationRunnerFixture(t)
 	env := make([]string, 0, len(f.env))

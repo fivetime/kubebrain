@@ -92,15 +92,23 @@ parameters="$("$JQ" -er '[
   (.expected_replicas|tostring), .public_endpoint,
   (.audit_duration_seconds|tostring), (.audit_interval_seconds|tostring),
   (.min_samples|tostring), .audit_prefix, .receipt_output,
-  (.kube_context // ""), (.kubeconfig_path // "")
-] | select(length == 15 and all(. != null and . != "" or . == "")) | @tsv' "$PARAMETERS_INPUT")"
+  (if (.kube_context // "") == "" then "-" else .kube_context end),
+  (if (.kubeconfig_path // "") == "" then "-" else .kubeconfig_path end)
+] | select(length == 15 and (.[0:13] | all(. != null and . != ""))) | @tsv' "$PARAMETERS_INPUT")" ||
+  { echo "audit parameters contain an empty required field" >&2; exit 2; }
 IFS=$'\t' read -r state_dir cutover_state cutover_receipt service_namespace service_name \
   target_instance expected_replicas public_endpoint duration interval min_samples audit_prefix \
   receipt_output data_context data_kubeconfig <<<"$parameters"
+[[ "$data_context" == "-" ]] && data_context=""
+[[ "$data_kubeconfig" == "-" ]] && data_kubeconfig=""
 for value in "$expected_replicas" "$duration" "$min_samples"; do
   [[ "$value" =~ ^[1-9][0-9]*$ ]] || { echo "audit parameters contain an invalid positive integer" >&2; exit 2; }
 done
 [[ "$interval" =~ ^[0-9]+$ ]] || { echo "audit interval must be a non-negative integer" >&2; exit 2; }
+for value in "$state_dir" "$cutover_state" "$cutover_receipt" "$service_namespace" \
+  "$service_name" "$target_instance" "$public_endpoint" "$audit_prefix" "$receipt_output"; do
+  [[ -n "$value" ]] || { echo "audit parameters contain an empty required field" >&2; exit 2; }
+done
 
 audit_env=(
   "OPERATION_ID=${operation_id}" "INSTANCE=${instance}" "STATE_DIR=${state_dir}"

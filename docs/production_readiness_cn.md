@@ -1682,7 +1682,9 @@ operation audit artifact 与 archive receipt 的 digest 校验同样只接受小
 保持离线审计证据与 CRD schema 一致。
 `hack/production/run-post-restore-audit-operation.sh` 已把 A190 接入：
 只 claim PostRestoreAudit，核对参数 JSON 摘要，在子审计运行期间续租；heartbeat 失败会
-终止本地进程，审计失败 requeue，成功才将 receipt 摘要写入 Succeeded。
+终止本地进程，审计失败 requeue，成功才将 receipt 摘要写入 Succeeded。runner 会先拒绝
+空的 state/receipt 路径、Service 身份、target instance、public endpoint、audit prefix
+和 receipt output，不能把缺失必填参数传给子审计脚本后再依赖下游失败。
 
 `kubebrain-operation-worker` 把每次 executor 放入独立进程组。Pod SIGTERM、supervisor
 context 取消或 heartbeat 触发的脚本退出必须终止 shell 及仍在同组的全部后代，避免备份、

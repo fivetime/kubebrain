@@ -9866,6 +9866,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `CREDENTIAL_SECRETS` 顺序排列的全部 SECRET name/UID 行；非 canonical state 会
   fail closed，不会删除资源或发布 cleanup receipt。回归：
   `go test ./hack/production -run 'TestBoundaryCleanup' -count=1` 通过。
+- A565 收紧 PostRestoreAudit runner 参数非空门禁：
+  `run-post-restore-audit-operation.sh` 的参数解析表达式实际只排除 `null`，会让空
+  state/receipt 路径、Service 身份、target instance、public endpoint、audit prefix 或
+  receipt output 进入子审计脚本；同时 TSV 交给 Bash whitespace IFS 后会让中间空字段左移，
+  使错误落到错误参数上。现在 runner 在 jq 输出 TSV 前拒绝所有空必填字符串，并用 `-`
+  哨兵保留可选 kube context/path 的字段位置。回归：
+  `go test ./hack/production -run 'TestPostRestoreAuditOperation' -count=1` 通过。
 
 ### P2：运维兼容和长期验证
 
