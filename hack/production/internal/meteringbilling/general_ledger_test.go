@@ -60,6 +60,11 @@ func TestGeneralLedgerExportRejectsMismatchedInputsAndTamperedTotals(t *testing.
 		GeneralLedgerExportOptions{ID: "ledger-july", ExportedAtUnix: ledger.GeneratedAtUnix + 3600},
 	)
 	require.NoError(t, err)
+	sourceTamper := export
+	sourceTamper.Lines = append([]GeneralLedgerLine(nil), export.Lines...)
+	sourceTamper.Lines[0].SourceID = "other-invoice"
+	require.ErrorContains(t, sourceTamper.Validate(), "source")
+
 	export.Lines[0].AmountMicros++
 	require.ErrorContains(t, export.Validate(), "balanced")
 }

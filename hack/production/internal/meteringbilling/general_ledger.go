@@ -188,9 +188,23 @@ func (e GeneralLedgerExport) Validate() error {
 			return fmt.Errorf("payment ledger source: %w", err)
 		}
 	}
+	allowedSources := map[string]struct{}{
+		generalLedgerSourceKey(e.InvoiceSource.ArtifactFormat, e.InvoiceSource.ArtifactID): {},
+	}
+	if e.ProviderReconciliationSource != nil {
+		allowedSources[generalLedgerSourceKey(e.ProviderReconciliationSource.ArtifactFormat, e.ProviderReconciliationSource.ArtifactID)] = struct{}{}
+	}
+	if e.PaymentLedgerSource != nil {
+		allowedSources[generalLedgerSourceKey(e.PaymentLedgerSource.ArtifactFormat, e.PaymentLedgerSource.ArtifactID)] = struct{}{}
+	}
 	_, debit, credit, err := normalizeGeneralLedgerLines(append([]GeneralLedgerLine(nil), e.Lines...))
 	if err != nil {
 		return err
+	}
+	for _, line := range e.Lines {
+		if _, ok := allowedSources[generalLedgerSourceKey(line.SourceFormat, line.SourceID)]; !ok {
+			return errors.New("general ledger line source is not bound by the export")
+		}
 	}
 	if debit != e.DebitTotalMicros || credit != e.CreditTotalMicros {
 		return errors.New("general ledger export totals do not match lines")
@@ -477,4 +491,8 @@ func normalizeGeneralLedgerLines(lines []GeneralLedgerLine) ([]GeneralLedgerLine
 func generalLedgerLineID(prefix string, parts ...string) string {
 	sum := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
 	return prefix + "-" + hex.EncodeToString(sum[:6])
+}
+
+func generalLedgerSourceKey(format, id string) string {
+	return format + "\x00" + id
 }

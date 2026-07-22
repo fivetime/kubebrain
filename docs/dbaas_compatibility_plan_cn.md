@@ -9036,6 +9036,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   exact-read 三类制品后归档；`go test ./hack/production/... ./deploy/production` 与
   `go vet ./hack/production/... ./deploy/production` 通过。该项建立 KubeBrain 侧外部总账 ingest
   证据合同，不替代真实 ERP/GL posting、period close、账号映射审批或反向回执。
+- A468 收紧 general ledger export 读回校验：`GeneralLedgerExport.Validate` 现在构造顶层
+  invoice/provider reconciliation/payment ledger source allowlist，并要求每条 journal line 的
+  source format/ID 必须命中该 allowlist。这样攻击者即使保持 debit/credit 平衡，也不能把某条
+  分录改指向未绑定 artifact。新增负例只篡改 line source ID、总额不变，读回必须失败；
+  `go test ./hack/production/... ./deploy/production` 与
+  `go vet ./hack/production/... ./deploy/production` 通过。
 
 ### P2：运维兼容和长期验证
 
