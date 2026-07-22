@@ -9308,6 +9308,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go vet ./pkg/backend/election ./pkg/server/service/leader`、
   `go test ./hack/production/... ./deploy/production`、
   `go vet ./hack/production/... ./deploy/production` 与 `git diff --check` 通过。
+- A503 收紧 lease meta record reload 解析：`loadLeaseRecords` 读取 legacy
+  user-MVCC `leases/<id>` 与 internal lease metadata 时改用 strict JSON decoder，拒绝
+  未知字段和尾随拼接 JSON；坏 lease meta 会让 reload fail closed，而不是被宽松
+  `json.Unmarshal` 静默降级后重建错误的内存 lease 状态。回归覆盖 legacy/internal 两条路径的
+  unknown-field 与 trailing JSON，并继续覆盖坏 attachment value；`go test ./pkg/server/etcd -run 'TestLoadLeaseRecordsRejects(MalformedLeaseMetadata|InvalidAttachmentMetadata)|TestLegacyLeaseRecordMigratesToAttachments|TestLeaseRevokeReclaimsLegacyAndInternalAttachments|TestLeaseCheckpointBoundsReloadAndRenewClearsIt' -count=20`、
+  `go test ./pkg/server/etcd ./pkg/backend`、`go vet ./pkg/server/etcd ./pkg/backend`、
+  `go test ./hack/production/... ./deploy/production`、
+  `go vet ./hack/production/... ./deploy/production` 与 `git diff --check` 通过。
 
 ### P2：运维兼容和长期验证
 

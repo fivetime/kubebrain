@@ -85,6 +85,20 @@ type leaseRecord struct {
 	LegacyStorage    bool     `json:"-"`
 }
 
+func decodeLeaseRecord(raw []byte) (leaseRecord, error) {
+	var record leaseRecord
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&record); err != nil {
+		return leaseRecord{}, err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return leaseRecord{}, errors.New("lease metadata contains trailing JSON")
+	}
+	return record, nil
+}
+
 func (m *leaseManager) LeaseGrant(ctx context.Context, req *etcdserverpb.LeaseGrantRequest) (*etcdserverpb.LeaseGrantResponse, error) {
 	m.srv.metricCli.EmitCounter("lease.grant", 1)
 	ctx, cancel := withUnaryRequestTimeout(ctx)
@@ -1323,17 +1337,17 @@ func (m *leaseManager) loadLeaseRecords(ctx context.Context) ([]leaseRecord, map
 	// record wins when both layouts contain the same lease ID.
 	recordByID := make(map[int64]leaseRecord, len(resp.Kvs)+len(internalRecords))
 	for _, kv := range resp.Kvs {
-		var record leaseRecord
-		if err := json.Unmarshal(kv.Value, &record); err != nil {
-			return nil, nil, err
+		record, err := decodeLeaseRecord(kv.Value)
+		if err != nil {
+			return nil, nil, fmt.Errorf("decode legacy lease metadata for key %q: %w", string(kv.Key), err)
 		}
 		record.LegacyStorage = true
 		recordByID[record.ID] = record
 	}
 	for _, value := range internalRecords {
-		var record leaseRecord
-		if err := json.Unmarshal(value, &record); err != nil {
-			return nil, nil, err
+		record, err := decodeLeaseRecord(value)
+		if err != nil {
+			return nil, nil, fmt.Errorf("decode lease metadata: %w", err)
 		}
 		recordByID[record.ID] = record
 	}

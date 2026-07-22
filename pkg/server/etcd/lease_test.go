@@ -796,6 +796,81 @@ func TestLoadLeaseRecordsRejectsInvalidAttachmentMetadata(t *testing.T) {
 	}
 }
 
+func TestLoadLeaseRecordsRejectsMalformedLeaseMetadata(t *testing.T) {
+	tests := []struct {
+		name  string
+		raw   func(*testing.T, int64) []byte
+		write func(context.Context, *RPCServer, int64, []byte) error
+		want  string
+	}{
+		{
+			name: "legacy_user_mvcc_unknown_field",
+			raw:  leaseRecordWithUnknownField,
+			write: func(ctx context.Context, server *RPCServer, id int64, raw []byte) error {
+				_, err := server.backend.Put(ctx, &etcdserverpb.PutRequest{Key: leaseStorageKey(id), Value: raw})
+				return err
+			},
+			want: "decode legacy lease metadata",
+		},
+		{
+			name: "legacy_user_mvcc_trailing_json",
+			raw:  leaseRecordWithTrailingJSON,
+			write: func(ctx context.Context, server *RPCServer, id int64, raw []byte) error {
+				_, err := server.backend.Put(ctx, &etcdserverpb.PutRequest{Key: leaseStorageKey(id), Value: raw})
+				return err
+			},
+			want: "lease metadata contains trailing JSON",
+		},
+		{
+			name: "internal_unknown_field",
+			raw:  leaseRecordWithUnknownField,
+			write: func(ctx context.Context, server *RPCServer, id int64, raw []byte) error {
+				return server.backend.InternalPut(ctx, leaseStorageKey(id), raw)
+			},
+			want: "decode lease metadata",
+		},
+		{
+			name: "internal_trailing_json",
+			raw:  leaseRecordWithTrailingJSON,
+			write: func(ctx context.Context, server *RPCServer, id int64, raw []byte) error {
+				return server.backend.InternalPut(ctx, leaseStorageKey(id), raw)
+			},
+			want: "lease metadata contains trailing JSON",
+		},
+	}
+	for index, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server, closeFn := newTestRPCServer(t)
+			defer closeFn()
+			ctx := context.Background()
+			id := int64(7100 + index)
+			require.NoError(t, test.write(ctx, server, id, test.raw(t, id)))
+
+			_, _, err := server.loadLeaseRecords(ctx)
+			require.ErrorContains(t, err, test.want)
+		})
+	}
+}
+
+func leaseRecordWithUnknownField(t *testing.T, id int64) []byte {
+	t.Helper()
+	base := canonicalLeaseRecord(t, id)
+	out := append([]byte(nil), base[:len(base)-1]...)
+	return append(out, []byte(`,"unexpected":true}`)...)
+}
+
+func leaseRecordWithTrailingJSON(t *testing.T, id int64) []byte {
+	t.Helper()
+	return append(canonicalLeaseRecord(t, id), []byte(` {}`)...)
+}
+
+func canonicalLeaseRecord(t *testing.T, id int64) []byte {
+	t.Helper()
+	raw, err := json.Marshal(leaseRecord{ID: id, TTL: 30})
+	require.NoError(t, err)
+	return raw
+}
+
 func TestLeaseGrantPublishesOnlyAfterMetadataCommit(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

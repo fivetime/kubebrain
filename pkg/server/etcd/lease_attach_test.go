@@ -318,9 +318,7 @@ func jsonMarshalLeaseRecord(id, ttl int64, keys []string) ([]byte, error) {
 }
 
 func jsonUnmarshalLeaseRecord(data []byte) (leaseRecord, error) {
-	var r leaseRecord
-	err := json.Unmarshal(data, &r)
-	return r, err
+	return decodeLeaseRecord(data)
 }
 
 // failDeleteShim wraps a BackendShim and fails Delete for one specific key.
