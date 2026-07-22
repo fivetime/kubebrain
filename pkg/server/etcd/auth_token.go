@@ -1,6 +1,7 @@
 package etcd
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/rand"
@@ -8,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"io"
 	"strings"
 	"time"
 
@@ -237,9 +239,9 @@ func (m *authTokenManager) verify(ctx context.Context, token string) (authTokenC
 	if !hmac.Equal(signature, signAuthToken(key, payload)) {
 		return authTokenClaims{}, rpctypes.ErrInvalidAuthToken
 	}
-	var claims authTokenClaims
 	now := m.now()
-	if err := json.Unmarshal(payload, &claims); err != nil || claims.Username == "" || claims.Revision == 0 ||
+	claims, err := decodeAuthTokenClaims(payload)
+	if err != nil || claims.Username == "" || claims.Revision == 0 ||
 		claims.IssuedAt > now.Add(authTokenClockSkew).Unix() || claims.Expires <= now.Unix() || claims.Expires <= claims.IssuedAt {
 		return authTokenClaims{}, rpctypes.ErrInvalidAuthToken
 	}
@@ -271,6 +273,20 @@ func (m *authTokenManager) verify(ctx context.Context, token string) (authTokenC
 	currentGeneration := snapshot.TokenGenerations[claims.Username]
 	if err != nil || currentGeneration == nil || !hmac.Equal(generation, currentGeneration.Password) {
 		return authTokenClaims{}, rpctypes.ErrInvalidAuthToken
+	}
+	return claims, nil
+}
+
+func decodeAuthTokenClaims(payload []byte) (authTokenClaims, error) {
+	var claims authTokenClaims
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&claims); err != nil {
+		return authTokenClaims{}, err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return authTokenClaims{}, errors.New("auth token claims contain trailing JSON")
 	}
 	return claims, nil
 }

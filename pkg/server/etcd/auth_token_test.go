@@ -2,6 +2,7 @@ package etcd
 
 import (
 	"context"
+	"encoding/base64"
 	"strings"
 	"testing"
 	"time"
@@ -71,6 +72,39 @@ func TestAuthTokenUsesPerUserInvalidation(t *testing.T) {
 	tampered := parts[0] + "." + replacement + parts[1][1:]
 	_, err = tokens.verify(ctx, tampered)
 	require.ErrorIs(t, err, rpctypes.ErrInvalidAuthToken)
+}
+
+func TestAuthTokenRejectsSignedUnknownOrTrailingClaims(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	_, tokens := bootstrapAuthForToken(t, server)
+	ctx := context.Background()
+	token, err := tokens.authenticate(ctx, "root", "secret")
+	require.NoError(t, err)
+
+	parts := strings.Split(token, ".")
+	require.Len(t, parts, 2)
+	payload, err := base64.RawURLEncoding.DecodeString(parts[0])
+	require.NoError(t, err)
+	require.NotEmpty(t, payload)
+	require.Equal(t, byte('}'), payload[len(payload)-1])
+
+	unknownPayload := append([]byte{}, payload[:len(payload)-1]...)
+	unknownPayload = append(unknownPayload, []byte(`,"x":true}`)...)
+	_, err = tokens.verify(ctx, signedAuthTokenForPayload(t, server, unknownPayload))
+	require.ErrorIs(t, err, rpctypes.ErrInvalidAuthToken)
+
+	trailingPayload := append(append([]byte{}, payload...), []byte(`{"u":"root"}`)...)
+	_, err = tokens.verify(ctx, signedAuthTokenForPayload(t, server, trailingPayload))
+	require.ErrorIs(t, err, rpctypes.ErrInvalidAuthToken)
+}
+
+func signedAuthTokenForPayload(t *testing.T, server *RPCServer, payload []byte) string {
+	t.Helper()
+	key, err := server.backend.InternalGet(context.Background(), authTokenSigningKey)
+	require.NoError(t, err)
+	signature := signAuthToken(key, payload)
+	return base64.RawURLEncoding.EncodeToString(payload) + "." + base64.RawURLEncoding.EncodeToString(signature)
 }
 
 func TestAuthTokenVerificationFailsClosedWithoutSigningKey(t *testing.T) {

@@ -1400,7 +1400,9 @@ hack/dev/verify.sh
 - `Auth` 已实现 etcd 兼容的用户、角色、key-range 权限和 token 生命周期，并覆盖
   Watch/Lease 持续鉴权及多副本故障转移；生产启用流程见 Auth 设计与兼容性计划。
   HTTP Lock/Election dedicated service 同样必须使用调用者 token 校验其生成队列键所在
-  prefix；撤销权限应立即影响已签发 token，改密应使旧 token 失效。其 upstream 错误契约
+  prefix；撤销权限应立即影响已签发 token，改密应使旧 token 失效。simple token 的
+  HMAC 只证明 payload 未被外部篡改，验证端仍必须拒绝 claims 中的未知字段和 trailing
+  JSON，避免合同外 token 形状在滚动升级或代理路径中被静默接受。其 upstream 错误契约
   特殊：HTTP 500、gRPC code 2(Unknown)，消息仍为 permission denied/invalid auth token。
   Election Observe/底层 Watch 则只在创建时鉴权：follower 转发必须携带 caller token，但
   已建立流不能因后续撤权或改密被追溯关闭；新建的无权限流按 upstream 返回 HTTP 200 空体。

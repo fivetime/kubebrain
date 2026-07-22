@@ -9243,6 +9243,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go vet ./pkg/server/service/revision ./pkg/server/etcd`、
   `go test ./hack/production/... ./deploy/production`、
   `go vet ./hack/production/... ./deploy/production` 与 `git diff --check` 通过。
+- A495 收紧 simple auth token claims 解析：HMAC 验签后的 payload 现在仍会用
+  `DisallowUnknownFields` 解码，并拒绝 trailing JSON；签名正确但包含合同外字段或拼接
+  JSON 的 token 会返回 `ErrInvalidAuthToken`。这样签名只能证明 payload 来自当前 signing
+  key，不能让未知 claims 在验证端静默穿透。回归构造重新签名的 unknown-field 和 trailing
+  payload；`go test ./pkg/server/etcd -run 'TestAuthToken' -count=20`、
+  `go test ./pkg/server/etcd ./pkg/server/service/revision`、
+  `go vet ./pkg/server/etcd ./pkg/server/service/revision`、
+  `go test ./hack/production/... ./deploy/production`、
+  `go vet ./hack/production/... ./deploy/production` 与 `git diff --check` 通过。
 
 ### P2：运维兼容和长期验证
 
