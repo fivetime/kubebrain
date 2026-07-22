@@ -90,7 +90,11 @@ func proxyCallOptions(maxRequestBytes uint) []grpc.CallOption {
 	}
 }
 
-const proxyReadyWaitTimeout = 2 * time.Second
+// A TiKV store replacement can temporarily make the elected KubeBrain leader's
+// health endpoint NOT_SERVING while PD repairs the client path. Keep a bounded
+// retry window that is long enough for that normal quorum-recovery interval;
+// WithTimeout still honors an earlier RPC deadline from the caller.
+const proxyReadyWaitTimeout = 5 * time.Second
 
 // NewEtcdProxy return an ETCD proxy for forward request to leader.
 // The election identity is the leader's peer endpoint. That listener registers
