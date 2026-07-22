@@ -104,6 +104,32 @@ func TestReconcileRejectsNonUniqueOutputTemplate(t *testing.T) {
 	require.ErrorContains(t, err, "s3_object_key must contain {operation_id}")
 }
 
+func TestReconcileRejectsNullParameterTemplateWithoutCreatingOperation(t *testing.T) {
+	client := fakeClient()
+	createTemplateRawIn(t, client, "test", []byte("null"))
+	createPolicy(t, client, false)
+	count, err := New(client, "test").WithClock(func() time.Time {
+		return time.Unix(1_700_003_000, 0)
+	}).Reconcile(context.Background())
+	require.Zero(t, count)
+	require.ErrorContains(t, err, "JSON object")
+	operations, listErr := client.Resource(operationqueue.Resource).Namespace("test").
+		List(context.Background(), metav1.ListOptions{})
+	require.NoError(t, listErr)
+	require.Empty(t, operations.Items)
+}
+
+func TestDecodeParameterTemplatePreservesNumbersAndRejectsTrailingJSON(t *testing.T) {
+	parameters, err := decodeParameterTemplate([]byte(`{"batch_size":9007199254740993}`))
+	require.NoError(t, err)
+	value, ok := parameters["batch_size"].(json.Number)
+	require.True(t, ok)
+	require.Equal(t, "9007199254740993", value.String())
+
+	_, err = decodeParameterTemplate([]byte(`{"batch_size":1}{"extra":true}`))
+	require.ErrorContains(t, err, "trailing JSON")
+}
+
 func TestReconcileAcrossNamespacesKeepsQueuesAndSecretsIsolated(t *testing.T) {
 	client := fakeClient()
 	for _, namespace := range []string{"tenant-a", "tenant-b"} {
@@ -319,7 +345,17 @@ func createTemplateIn(
 	t.Helper()
 	raw, err := json.Marshal(template)
 	require.NoError(t, err)
-	_, err = client.Resource(operationqueue.SecretResource).Namespace(namespace).Create(
+	createTemplateRawIn(t, client, namespace, raw)
+}
+
+func createTemplateRawIn(
+	t *testing.T,
+	client *dynamicfake.FakeDynamicClient,
+	namespace string,
+	raw []byte,
+) {
+	t.Helper()
+	_, err := client.Resource(operationqueue.SecretResource).Namespace(namespace).Create(
 		context.Background(),
 		&unstructured.Unstructured{Object: map[string]any{
 			"apiVersion": "v1", "kind": "Secret",

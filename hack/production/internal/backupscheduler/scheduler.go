@@ -1,12 +1,14 @@
 package backupscheduler
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"sort"
 	"strings"
 	"sync"
@@ -269,8 +271,8 @@ func (s *Scheduler) renderParameters(
 	if err != nil {
 		return nil, errors.New("parameter template Secret contains invalid base64 data")
 	}
-	var parameters map[string]any
-	if err := json.Unmarshal(raw, &parameters); err != nil {
+	parameters, err := decodeParameterTemplate(raw)
+	if err != nil {
 		return nil, fmt.Errorf("decode parameter template: %w", err)
 	}
 	parameters["backup_id"] = operationID
@@ -288,6 +290,27 @@ func (s *Scheduler) renderParameters(
 		return nil, err
 	}
 	return append(rendered, '\n'), nil
+}
+
+func decodeParameterTemplate(raw []byte) (map[string]any, error) {
+	var parameters map[string]any
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	if err := decoder.Decode(&parameters); err != nil {
+		return nil, err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != nil {
+		if !errors.Is(err, io.EOF) {
+			return nil, fmt.Errorf("decode trailing parameter template data: %w", err)
+		}
+	} else {
+		return nil, errors.New("parameter template contains trailing JSON")
+	}
+	if parameters == nil {
+		return nil, errors.New("parameter template must be a JSON object")
+	}
+	return parameters, nil
 }
 
 func (s *Scheduler) ensureParametersSecret(

@@ -1672,7 +1672,9 @@ immutable Secret，并再次校验 SHA-256；手工参数文件模式继续保�
 ConfigMap 的 `namespaces.json` 读取严格 JSON namespace allowlist，并在每轮 reconcile
 重新读取，因此更新无需重启 Deployment。allowlist 最多 256 项，拒绝空数组、空值、重复项、非法 DNS
 label 和非字符串数组；ConfigMap 缺失、key 缺失或 JSON 非法时整轮 fail closed，不沿用
-进程内旧值，也不会自动扫描所有 namespace。scheduler ServiceAccount 只能 `get` 这个
+进程内旧值，也不会自动扫描所有 namespace。backup parameter template 必须是 JSON object，
+解析时保留 JSON number 精度并拒绝 trailing JSON；`null` 或拼接模板不会创建 Operation。
+scheduler ServiceAccount 只能 `get` 这个
 resourceName，不能 list/watch 或读取其他 ConfigMap。清单中的 ClusterRole 本身不授予
 权限，默认 RoleBinding 只绑定 `kubebrain-operations`。每增加一个 namespace，必须先在
 该 namespace 创建 RoleBinding：

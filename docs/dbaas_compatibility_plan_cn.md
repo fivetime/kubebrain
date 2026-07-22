@@ -9195,6 +9195,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./hack/production/internal/meteringarchive -run 'TestCollector' -count=1`、
   `go test ./hack/production/... ./deploy/production` 与
   `go vet ./hack/production/... ./deploy/production` 通过。
+- A489 收紧 backup scheduler parameter template 解析：模板 Secret 现在用 `UseNumber`
+  decode，要求顶层为 JSON object 并拒绝 trailing JSON；`null` 模板会 fail closed 且不会
+  创建 Operation，大整数模板字段不会经过 float64 重新编码。回归覆盖 null template、
+  JSON number 精度保留和 trailing JSON；`go test ./hack/production/internal/backupscheduler -run 'Test.*ParameterTemplate|TestReconcileRejectsNull' -count=1`、
+  `go test ./hack/production/... ./deploy/production` 与
+  `go vet ./hack/production/... ./deploy/production` 通过。
 
 ### P2：运维兼容和长期验证
 
