@@ -10099,6 +10099,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   分支复用 `adminError`，同时 auth disabled 和读类 RPC 行为保持不变。回归：
   `go test ./pkg/server/etcd -run 'Test(Maintenance|Member)RootAuthorizationClientCertificateErrorsMatchEtcd' -count=1`
   通过。
+- A588 对齐 JWT auth-token option 分解：
+  对照 `/root/etcd/server/auth/store.go` 的 `decomposeOpts`，上游使用
+  `strings.Split(option, "=")`，因此 option value 内多余 `=` 会被判为
+  `ErrInvalidAuthOpts`；空 option key 不是分解错误，而是进入 JWT provider 后作为未知
+  option warning-only 忽略。KubeBrain 旧 parser 用 `SplitN` 并拒绝空 key，导致
+  `priv-key=/path/with=equals` 被错误接受、`=ignored` 被错误拒绝。现在分解规则与
+  上游一致：多等号 option fail closed，空 key 由未知 option 路径忽略；JWT key 文件
+  1 MiB 上限仍作为生产 fail-closed 扩展保留。回归：
+  `go test ./pkg/server/etcd -run TestJWTProviderOptionSyntaxMatchesEtcd -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

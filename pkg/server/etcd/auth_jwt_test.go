@@ -130,13 +130,19 @@ func TestJWTProviderPreservesUint64Revision(t *testing.T) {
 	require.Equal(t, revision, claims.Revision)
 }
 
-func TestJWTProviderOptionValueMayContainEquals(t *testing.T) {
+func TestJWTProviderOptionSyntaxMatchesEtcd(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "jwt=keys")
 	require.NoError(t, os.Mkdir(dir, 0o700))
 	secret := filepath.Join(dir, "hmac=secret")
 	require.NoError(t, os.WriteFile(secret, []byte("shared-secret"), 0o600))
 
-	provider, err := parseAuthTokenProvider("jwt,sign-method=HS256,priv-key=" + secret)
+	require.ErrorContains(t,
+		ValidateAuthTokenProvider("jwt,sign-method=HS256,priv-key="+secret),
+		"invalid auth token option",
+	)
+
+	plainSecret := writeJWTKey(t, "secret", []byte("shared-secret"))
+	provider, err := parseAuthTokenProvider("jwt,=ignored,sign-method=HS256,priv-key=" + plainSecret)
 	require.NoError(t, err)
 	token, err := provider.issue("root", 1, time.Unix(2_000_000_000, 0))
 	require.NoError(t, err)
