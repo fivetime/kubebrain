@@ -153,6 +153,103 @@ func TestPaymentLedgerPublisherArchivesExactReceipt(t *testing.T) {
 	require.Equal(t, status, published)
 }
 
+func TestPaymentLedgerProcessorReadsExactInvoiceAndArchivesLedger(t *testing.T) {
+	invoice, invoiceSource := paymentLedgerInvoice(t)
+	generated := invoice.FinalizedAtUnix + 3600
+	retainUntil := time.Unix(invoice.PeriodStartUnix, 0).Add(time.Hour + 7*24*time.Hour).Unix()
+	inputPath := filepath.Join(t.TempDir(), "payments.csv")
+	require.NoError(t, os.WriteFile(inputPath, []byte(
+		string(EncodePaymentLedgerCSVHeader())+
+			fmt.Sprintf("stripe,txn-001,payment,%d,%d\n", invoice.TotalMicros, generated-1),
+	), 0o600))
+	outputPath := filepath.Join(t.TempDir(), "payment-ledger.json")
+	invoiceBytes := canonicalInvoiceBytes(t, invoice)
+	objects := map[string][]byte{invoiceSource.ObjectKey: invoiceBytes}
+	sources := map[string]Source{invoiceSource.ObjectKey: invoiceSource}
+	var archived []byte
+	run := func(_ context.Context, executable string, environment []string) ([]byte, error) {
+		require.Equal(t, "executor", executable)
+		values := envMap(environment)
+		switch values["ACTION"] {
+		case "blob-read":
+			require.Equal(t, InvoiceFormat, values["ARTIFACT_FORMAT"])
+			require.Equal(t, "invoices/instance-a/invoice-july.json", values["S3_OBJECT_KEY"])
+			key := values["S3_OBJECT_KEY"]
+			require.NoError(t, os.WriteFile(values["OUTPUT"], objects[key], 0o600))
+			return settlementReadReceipt(t, sources[key], values), nil
+		case "blob":
+			require.Equal(t, PaymentLedgerFormat, values["ARTIFACT_FORMAT"])
+			require.Equal(t, "payments/instance-a/payments-july.json", values["S3_OBJECT_KEY"])
+			data, err := os.ReadFile(values["INPUT"])
+			require.NoError(t, err)
+			archived = append([]byte(nil), data...)
+			sum := sha256.Sum256(data)
+			receipt := objectReceipt{
+				Format:         "kubebrain.object-immutable-blob.receipt.v1",
+				ArtifactFormat: PaymentLedgerFormat, ArtifactID: "payments-july",
+				Instance: "instance-a", ObjectStoreID: "store", Bucket: "billing",
+				ObjectKey: values["S3_OBJECT_KEY"], VersionID: "payment-ledger-version",
+				ArtifactSHA256: hex.EncodeToString(sum[:]), ObjectBytes: int64(len(data)),
+				RetentionMode: "COMPLIANCE", RetainUntilUnix: retainUntil,
+				RemoteVerified: true, ArchivedAtUnix: generated + 3600,
+			}
+			return json.Marshal(receipt)
+		default:
+			t.Fatalf("unexpected action %q", values["ACTION"])
+		}
+		return nil, nil
+	}
+	processor := &PaymentLedgerProcessor{
+		InputCSV: inputPath, Output: outputPath, ID: "payments-july",
+		GeneratedAtUnix: generated, Instance: "instance-a", InvoiceID: invoice.ID,
+		Executor: "executor", ObjectStoreID: "store", Bucket: "billing",
+		InvoicePrefix: "invoices", PaymentPrefix: "payments", RetentionMode: "COMPLIANCE",
+		RetentionDuration: 7 * 24 * time.Hour, Publish: true,
+		Now: func() time.Time { return time.Unix(generated+3600, 0).UTC() }, Run: run,
+	}
+	status, _, err := processor.Process(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, invoiceSource, status.Value.InvoiceSource)
+	require.NotEmpty(t, archived)
+	read, err := ReadPaymentLedger(outputPath)
+	require.NoError(t, err)
+	require.Equal(t, status, read)
+}
+
+func TestPaymentLedgerProcessorFailsBeforeArchiveOnInvoiceReceiptMismatch(t *testing.T) {
+	invoice, invoiceSource := paymentLedgerInvoice(t)
+	generated := invoice.FinalizedAtUnix + 3600
+	inputPath := filepath.Join(t.TempDir(), "payments.csv")
+	require.NoError(t, os.WriteFile(inputPath, []byte(
+		string(EncodePaymentLedgerCSVHeader())+
+			fmt.Sprintf("stripe,txn-001,payment,%d,%d\n", invoice.TotalMicros, generated-1),
+	), 0o600))
+	outputPath := filepath.Join(t.TempDir(), "payment-ledger.json")
+	invoiceBytes := canonicalInvoiceBytes(t, invoice)
+	badSource := invoiceSource
+	badSource.ObjectBytes++
+	calls := 0
+	processor := &PaymentLedgerProcessor{
+		InputCSV: inputPath, Output: outputPath, ID: "payments-july",
+		GeneratedAtUnix: generated, Instance: "instance-a", InvoiceID: invoice.ID,
+		Executor: "executor", ObjectStoreID: "store", Bucket: "billing",
+		InvoicePrefix: "invoices", PaymentPrefix: "payments", RetentionMode: "COMPLIANCE",
+		RetentionDuration: 7 * 24 * time.Hour, Publish: true,
+		Now: func() time.Time { return time.Unix(generated+3600, 0).UTC() },
+		Run: func(_ context.Context, _ string, environment []string) ([]byte, error) {
+			values := envMap(environment)
+			calls++
+			require.Equal(t, "blob-read", values["ACTION"])
+			require.NoError(t, os.WriteFile(values["OUTPUT"], invoiceBytes, 0o600))
+			return settlementReadReceipt(t, badSource, values), nil
+		},
+	}
+	_, _, err := processor.Process(context.Background())
+	require.ErrorContains(t, err, "receipt")
+	require.Equal(t, 1, calls)
+	require.NoFileExists(t, outputPath)
+}
+
 func paymentLedgerInvoice(t *testing.T) (Invoice, Source) {
 	t.Helper()
 	start := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)

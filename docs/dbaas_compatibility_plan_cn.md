@@ -9000,12 +9000,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `processor,external_transaction_id,kind,amount_micros,occurred_at_unix`，kind 只允许
   payment/refund/chargeback，交易按 processor+外部交易 ID 排序且唯一。ledger 绑定 finalized
   invoice 的 exact-version source、invoice total、交易明细、payments/refunds/chargebacks/net
-  paid 与 remaining balance；未来交易、重复交易、退款/chargeback 超过已收款、付款超过 invoice
-  total 或 invoice source 漂移均 fail closed。publisher 在 Object Lock 写入前重新读取 canonical
+  paid 与 remaining balance；未来交易、重复交易、退款/chargeback 超过已收款、net paid 超过
+  invoice total 或 invoice source 漂移均 fail closed。publisher 在 Object Lock 写入前重新读取 canonical
   JSON，核验 invoice source retention 和上传 receipt；Dockerfile build/copy 已包含该 CLI。
   `go test ./hack/production/... ./deploy/production` 与
   `go vet ./hack/production/... ./deploy/production` 通过。该项关闭 KubeBrain 侧应收账款状态
   制品合同，不替代真实支付渠道、税引擎、发票编号法规或外部总账过账。
+- A465 将 payment ledger 生产路径从“调用方提供 invoice/source JSON”收紧为 exact-version
+  invoice read：`kubebrain-metering-payment-ledger` 在未显式提供离线 `--invoice/--invoice-source`
+  时，会按 instance/invoice ID 从 Object Lock 读取 finalized invoice，校验 read receipt 与下载
+  字节 digest/bytes，再把该 receipt 转成 ledger 内的 invoice source。processor 同时要求 invoice
+  source 至少保留到 ledger retention 边界，并在 archive 前复读 canonical ledger；read receipt
+  与下载字节不一致时不会写 ledger，也不会发布 Object Lock artifact。回归覆盖 exact-read 后归档
+  和 receipt/bytes 漂移 fail-closed；文档也将约束表述修正为 net paid 不得超过 invoice total。
+  `go test ./hack/production/... ./deploy/production` 与
+  `go vet ./hack/production/... ./deploy/production` 通过。该项减少手工 source 拼装风险，仍不替代
+  真实支付渠道或外部总账过账。
 
 ### P2：运维兼容和长期验证
 

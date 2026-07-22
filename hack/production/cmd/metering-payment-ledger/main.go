@@ -15,8 +15,8 @@ import (
 )
 
 func main() {
-	var inputCSV, invoicePath, invoiceSourcePath, output, id string
-	var executor, objectStoreID, bucket, paymentPrefix, retentionMode string
+	var inputCSV, invoicePath, invoiceSourcePath, output, id, instance, invoiceID string
+	var executor, objectStoreID, bucket, invoicePrefix, paymentPrefix, retentionMode string
 	var generatedAtUnix int64
 	var retentionDuration, timeout time.Duration
 	var publish bool
@@ -26,18 +26,47 @@ func main() {
 	flag.StringVar(&output, "output", "", "canonical payment ledger JSON output")
 	flag.StringVar(&id, "id", "", "immutable payment ledger ID")
 	flag.Int64Var(&generatedAtUnix, "generated-at-unix", 0, "payment ledger generation timestamp")
+	flag.StringVar(&instance, "instance", "", "stable DBaaS instance identifier for exact invoice read")
+	flag.StringVar(&invoiceID, "invoice-id", "", "immutable finalized invoice ID for exact invoice read")
 	flag.BoolVar(&publish, "publish", false, "archive the generated ledger through Object Lock")
 	flag.StringVar(&executor, "object-executor", "/usr/local/bin/kubebrain-logical-object", "Object Lock executor")
 	flag.StringVar(&objectStoreID, "object-store-id", "", "stable object store identifier")
 	flag.StringVar(&bucket, "bucket", "", "Object Lock bucket")
+	flag.StringVar(&invoicePrefix, "invoice-prefix", "metering-invoices", "immutable final invoice prefix")
 	flag.StringVar(&paymentPrefix, "payment-prefix", "metering-payment-ledgers", "immutable payment ledger prefix")
 	flag.StringVar(&retentionMode, "retention-mode", "COMPLIANCE", "COMPLIANCE or GOVERNANCE")
 	flag.DurationVar(&retentionDuration, "retention-duration", 7*365*24*time.Hour, "payment ledger evidence retention")
 	flag.DurationVar(&timeout, "timeout", 20*time.Minute, "overall import and optional archive deadline")
 	flag.Parse()
-	if inputCSV == "" || invoicePath == "" || invoiceSourcePath == "" || output == "" ||
-		id == "" || generatedAtUnix <= 0 || timeout <= 0 {
-		log.Fatal("input-csv, invoice, invoice-source, output, id, generated-at-unix, and a positive timeout are required")
+	if inputCSV == "" || output == "" || id == "" || generatedAtUnix <= 0 || timeout <= 0 {
+		log.Fatal("input-csv, output, id, generated-at-unix, and a positive timeout are required")
+	}
+	if (invoicePath == "") != (invoiceSourcePath == "") {
+		log.Fatal("invoice and invoice-source must be provided together for offline mode")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	if invoicePath == "" {
+		if instance == "" || invoiceID == "" || objectStoreID == "" || bucket == "" {
+			log.Fatal("instance, invoice-id, object-store-id, and bucket are required when invoice/invoice-source are omitted")
+		}
+		processor := &meteringbilling.PaymentLedgerProcessor{
+			InputCSV: inputCSV, Output: output, ID: id, GeneratedAtUnix: generatedAtUnix,
+			Instance: instance, InvoiceID: invoiceID, Executor: executor,
+			ObjectStoreID: objectStoreID, Bucket: bucket, InvoicePrefix: invoicePrefix,
+			PaymentPrefix: paymentPrefix, RetentionMode: retentionMode,
+			RetentionDuration: retentionDuration, Publish: publish,
+		}
+		_, archiveOutput, err := processor.Process(ctx)
+		if err != nil {
+			log.Fatal(err)
+		}
+		if publish {
+			if _, err := os.Stdout.Write(archiveOutput); err != nil {
+				log.Fatal(err)
+			}
+		}
+		return
 	}
 	input, err := os.Open(inputCSV)
 	if err != nil {
@@ -77,8 +106,6 @@ func main() {
 		PaymentPrefix: paymentPrefix, RetentionMode: retentionMode,
 		RetentionDuration: retentionDuration,
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
 	_, archiveOutput, err := publisher.Publish(ctx)
 	if err != nil {
 		log.Fatal(err)

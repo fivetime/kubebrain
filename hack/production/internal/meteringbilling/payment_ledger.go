@@ -3,7 +3,9 @@ package meteringbilling
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/csv"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -252,6 +254,152 @@ type PaymentLedgerPublisher struct {
 	RetentionDuration time.Duration
 	Now               func() time.Time
 	Run               CommandRunner
+}
+
+type PaymentLedgerProcessor struct {
+	InputCSV          string
+	Output            string
+	ID                string
+	GeneratedAtUnix   int64
+	Instance          string
+	InvoiceID         string
+	Executor          string
+	ObjectStoreID     string
+	Bucket            string
+	InvoicePrefix     string
+	PaymentPrefix     string
+	RetentionMode     string
+	RetentionDuration time.Duration
+	Publish           bool
+	Now               func() time.Time
+	Run               CommandRunner
+}
+
+func (p *PaymentLedgerProcessor) Validate() error {
+	p.InvoicePrefix = strings.Trim(p.InvoicePrefix, "/")
+	p.PaymentPrefix = strings.Trim(p.PaymentPrefix, "/")
+	if p.InputCSV == "" || p.Output == "" || !versionPattern.MatchString(p.ID) ||
+		p.GeneratedAtUnix <= 0 || !versionPattern.MatchString(p.Instance) ||
+		!versionPattern.MatchString(p.InvoiceID) || p.Executor == "" ||
+		p.ObjectStoreID == "" || p.Bucket == "" || p.InvoicePrefix == "" ||
+		p.RetentionDuration <= 24*time.Hour ||
+		(p.Publish && p.PaymentPrefix == "") ||
+		(p.RetentionMode != "COMPLIANCE" && p.RetentionMode != "GOVERNANCE") {
+		return errors.New("payment ledger processor configuration is incomplete")
+	}
+	if p.Now == nil {
+		p.Now = time.Now
+	}
+	if p.Run == nil {
+		p.Run = runCommand
+	}
+	return nil
+}
+
+func (p *PaymentLedgerProcessor) Process(ctx context.Context) (SettlementStatus[PaymentLedger], []byte, error) {
+	if err := p.Validate(); err != nil {
+		return SettlementStatus[PaymentLedger]{}, nil, err
+	}
+	now := p.Now().UTC()
+	if p.GeneratedAtUnix > now.Unix() {
+		return SettlementStatus[PaymentLedger]{}, nil, errors.New("payment ledger timestamp is in the future")
+	}
+	dir, err := os.MkdirTemp("", "kubebrain-payment-ledger-*")
+	if err != nil {
+		return SettlementStatus[PaymentLedger]{}, nil, err
+	}
+	defer os.RemoveAll(dir)
+	invoiceKey := settlementObjectKey(p.InvoicePrefix, p.Instance, p.InvoiceID)
+	invoicePath := path.Join(dir, "invoice.json")
+	invoiceSource, output, err := p.readImmutable(
+		ctx, InvoiceFormat, p.InvoiceID, invoiceKey, invoicePath, 1,
+	)
+	if err != nil {
+		return SettlementStatus[PaymentLedger]{}, output, fmt.Errorf("read invoice: %w", err)
+	}
+	invoiceStatus, err := ReadInvoice(invoicePath)
+	if err != nil {
+		return SettlementStatus[PaymentLedger]{}, output, err
+	}
+	invoice := invoiceStatus.Value
+	if invoice.ID != p.InvoiceID || invoice.Instance != p.Instance {
+		return SettlementStatus[PaymentLedger]{}, output, errors.New("invoice identity does not match request")
+	}
+	retainUntil := time.Unix(invoice.PeriodStartUnix, 0).
+		Add(time.Hour).Add(p.RetentionDuration).Unix()
+	if invoiceSource.RetainUntilUnix < retainUntil || retainUntil <= now.Unix() {
+		return SettlementStatus[PaymentLedger]{}, output, errors.New("payment ledger invoice evidence retention is insufficient")
+	}
+	input, err := os.Open(p.InputCSV)
+	if err != nil {
+		return SettlementStatus[PaymentLedger]{}, output, err
+	}
+	defer input.Close()
+	ledger, err := BuildPaymentLedgerFromCSV(
+		input,
+		invoice,
+		invoiceSource,
+		PaymentLedgerImportOptions{ID: p.ID, GeneratedAtUnix: p.GeneratedAtUnix},
+	)
+	if err != nil {
+		return SettlementStatus[PaymentLedger]{}, output, err
+	}
+	status, err := WritePaymentLedgerAtomic(p.Output, ledger)
+	if err != nil {
+		return SettlementStatus[PaymentLedger]{}, output, err
+	}
+	if !p.Publish {
+		return status, output, nil
+	}
+	publisher := &PaymentLedgerPublisher{
+		Input: p.Output, Executor: p.Executor, ObjectStoreID: p.ObjectStoreID,
+		Bucket: p.Bucket, PaymentPrefix: p.PaymentPrefix, RetentionMode: p.RetentionMode,
+		RetentionDuration: p.RetentionDuration, Now: p.Now, Run: p.Run,
+	}
+	published, archiveOutput, err := publisher.Publish(ctx)
+	if err != nil {
+		return SettlementStatus[PaymentLedger]{}, archiveOutput, err
+	}
+	return published, archiveOutput, nil
+}
+
+func (p *PaymentLedgerProcessor) readImmutable(
+	ctx context.Context,
+	format, artifactID, objectKey, outputPath string,
+	minRetainUntil int64,
+) (Source, []byte, error) {
+	output, err := p.Run(ctx, p.Executor, []string{
+		"ACTION=blob-read", "OUTPUT=" + outputPath, "ARTIFACT_FORMAT=" + format,
+		"ARTIFACT_ID=" + artifactID, "INSTANCE=" + p.Instance,
+		"OBJECT_STORE_ID=" + p.ObjectStoreID, "S3_BUCKET=" + p.Bucket,
+		"S3_OBJECT_KEY=" + objectKey,
+		"MIN_RETAIN_UNTIL_UNIX=" + strconv.FormatInt(minRetainUntil, 10),
+	})
+	if err != nil {
+		return Source{}, output, fmt.Errorf("%w: %s", err, strings.TrimSpace(string(output)))
+	}
+	receipt, err := parseBlobReceipt(
+		output, format, artifactID, p.Instance, p.ObjectStoreID, p.Bucket,
+		objectKey, minRetainUntil, "", 0,
+	)
+	if err != nil {
+		return Source{}, output, err
+	}
+	data, err := os.ReadFile(outputPath)
+	if err != nil {
+		return Source{}, output, err
+	}
+	sum := sha256.Sum256(data)
+	if int64(len(data)) != receipt.ObjectBytes ||
+		hex.EncodeToString(sum[:]) != receipt.ArtifactSHA256 {
+		return Source{}, output, errors.New("payment ledger invoice receipt does not match downloaded bytes")
+	}
+	return Source{
+		ArtifactFormat: receipt.ArtifactFormat, ArtifactID: receipt.ArtifactID,
+		ObjectKey: receipt.ObjectKey, VersionID: receipt.VersionID,
+		ArtifactSHA256: receipt.ArtifactSHA256, ObjectBytes: receipt.ObjectBytes,
+		RetainUntilUnix: receipt.RetainUntilUnix,
+	}, output, nil
 }
 
 func (p *PaymentLedgerPublisher) Publish(ctx context.Context) (SettlementStatus[PaymentLedger], []byte, error) {
