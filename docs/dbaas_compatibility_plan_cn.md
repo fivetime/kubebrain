@@ -9959,6 +9959,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   claim 同步只接受 `*` 或 CRD instance 标识符，避免异常 claim 值进入授权集合。回归：
   `go test ./hack/production/internal/operationqueue ./hack/production/internal/operationapi -run 'TestQueueRejectsSpecDriftAndInvalidCompletion|TestOIDCAuthenticator' -count=1`
   通过。
+- A573 补齐 backup scheduler 本地 BackupPolicy schema 预检：
+  A572 让 operation queue 在 Submit 时兜底拒绝非法 instance/maxAttempts 等字段，但
+  backup scheduler 在读取参数模板和创建 immutable 参数 Secret 前仍只检查 policy
+  instance 非空、retention 正数和 template 引用非空；fake-client 或旧集群路径可能把
+  真实 BackupPolicy CRD 会拒绝的对象推进到模板读取、Secret 创建或 Submit 错误阶段。
+  现在 scheduler 在 reconcile policy 起点按 BackupPolicy CRD schema 本地拒绝非法
+  tenant、instance、interval/retention 上下限、`maxAttempts>100` 以及 template Secret
+  name/key；回归证明无模板 Secret 时坏 policy 仍先被 schema 预检拒绝且不创建
+  Operation/Secret。回归：
+  `go test ./hack/production/internal/backupscheduler -run 'TestReconcileRejectsPolicySchemaBeforeTemplateRead|TestReconcileIsDeterministicAcrossReplicas' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

@@ -32,7 +32,9 @@ var SecretResource = schema.GroupVersionResource{Group: "", Version: "v1", Resou
 
 const microTimeFormat = "2006-01-02T15:04:05.000000Z07:00"
 const leaseCleanupTimeout = 5 * time.Second
-const maxOperationAttempts = 100
+
+// MaxOperationAttempts mirrors the KubeBrainOperation CRD's spec.maxAttempts maximum.
+const MaxOperationAttempts = 100
 
 const (
 	PhasePending   = "Pending"
@@ -117,8 +119,8 @@ func (q *Queue) Submit(ctx context.Context, name string, spec Spec) (*unstructur
 	if !isSupportedOperationType(spec.Type) {
 		return nil, fmt.Errorf("unsupported operation type: %s", spec.Type)
 	}
-	if spec.MaxAttempts > maxOperationAttempts {
-		return nil, fmt.Errorf("operation maxAttempts cannot exceed %d", maxOperationAttempts)
+	if spec.MaxAttempts > MaxOperationAttempts {
+		return nil, fmt.Errorf("operation maxAttempts cannot exceed %d", MaxOperationAttempts)
 	}
 	if !isSHA256Hex(spec.ParametersSHA256) {
 		return nil, errors.New("operation spec requires a lowercase SHA-256 parameters digest")
@@ -138,7 +140,7 @@ func (q *Queue) Submit(ctx context.Context, name string, spec Spec) (*unstructur
 		if errs := validation.IsDNS1123Subdomain(spec.ParametersSecret); len(errs) > 0 {
 			return nil, fmt.Errorf("invalid parameter secret name: %s", errs[0])
 		}
-		if !validParameterSecretKey(spec.ParametersKey) {
+		if !ValidParameterSecretKey(spec.ParametersKey) {
 			return nil, errors.New("invalid parameter secret key")
 		}
 	}
@@ -464,7 +466,8 @@ func isOperationIdentifierChar(value byte) bool {
 		value == '.' || value == '_' || value == '-'
 }
 
-func validParameterSecretKey(key string) bool {
+// ValidParameterSecretKey mirrors the KubeBrainOperation CRD's parameter key schema.
+func ValidParameterSecretKey(key string) bool {
 	if len(key) == 0 || len(key) > 253 {
 		return false
 	}

@@ -32,6 +32,10 @@ const parametersKey = "parameters.json"
 const DefaultRequester = "kubebrain-backup-scheduler"
 const DefaultInventoryKey = namespaceinventory.DefaultKey
 const DefaultMaxPolicies = 256
+const minBackupIntervalSeconds int64 = 300
+const maxBackupIntervalSeconds int64 = 2_592_000
+const minBackupRetentionSeconds int64 = 3_600
+const maxBackupRetentionSeconds int64 = 315_360_000
 
 type policyCandidate struct {
 	namespace string
@@ -216,9 +220,13 @@ func (s *Scheduler) reconcilePolicy(
 	templateKey, _, _ := unstructured.NestedString(
 		policy.Object, "spec", "parametersTemplateSecretRef", "key",
 	)
-	if len(validation.IsDNS1123Label(tenant)) != 0 || instance == "" ||
-		interval < 300 || retention <= 0 || maxAttempts <= 0 ||
-		templateName == "" || templateKey == "" {
+	if len(validation.IsDNS1123Label(tenant)) != 0 ||
+		!operationqueue.ValidInstanceName(instance) ||
+		interval < minBackupIntervalSeconds || interval > maxBackupIntervalSeconds ||
+		retention < minBackupRetentionSeconds || retention > maxBackupRetentionSeconds ||
+		maxAttempts <= 0 || maxAttempts > operationqueue.MaxOperationAttempts ||
+		len(validation.IsDNS1123Subdomain(templateName)) != 0 ||
+		!operationqueue.ValidParameterSecretKey(templateKey) {
 		return false, errors.New("policy spec is incomplete")
 	}
 	now := s.now().UTC()

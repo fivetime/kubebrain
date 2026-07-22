@@ -119,6 +119,68 @@ func TestReconcileRejectsNullParameterTemplateWithoutCreatingOperation(t *testin
 	require.Empty(t, operations.Items)
 }
 
+func TestReconcileRejectsPolicySchemaBeforeTemplateRead(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*testing.T, *unstructured.Unstructured)
+	}{
+		{name: "tenant", mutate: func(t *testing.T, policy *unstructured.Unstructured) {
+			require.NoError(t, unstructured.SetNestedField(policy.Object, "Tenant_A", "spec", "tenant"))
+		}},
+		{name: "instance", mutate: func(t *testing.T, policy *unstructured.Unstructured) {
+			require.NoError(t, unstructured.SetNestedField(policy.Object, ".invalid", "spec", "instance"))
+		}},
+		{name: "interval", mutate: func(t *testing.T, policy *unstructured.Unstructured) {
+			require.NoError(t, unstructured.SetNestedField(policy.Object, int64(2_592_001), "spec", "intervalSeconds"))
+		}},
+		{name: "retention", mutate: func(t *testing.T, policy *unstructured.Unstructured) {
+			require.NoError(t, unstructured.SetNestedField(policy.Object, int64(3_599), "spec", "retentionSeconds"))
+		}},
+		{name: "max attempts", mutate: func(t *testing.T, policy *unstructured.Unstructured) {
+			require.NoError(t, unstructured.SetNestedField(policy.Object, int64(101), "spec", "maxAttempts"))
+		}},
+		{name: "template name", mutate: func(t *testing.T, policy *unstructured.Unstructured) {
+			require.NoError(t, unstructured.SetNestedField(
+				policy.Object, "Invalid_Secret", "spec", "parametersTemplateSecretRef", "name",
+			))
+		}},
+		{name: "template key", mutate: func(t *testing.T, policy *unstructured.Unstructured) {
+			require.NoError(t, unstructured.SetNestedField(
+				policy.Object, "parameters/json", "spec", "parametersTemplateSecretRef", "key",
+			))
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			client := fakeClient()
+			createPolicy(t, client, false)
+			policy, err := client.Resource(PolicyResource).Namespace("test").Get(
+				context.Background(), "daily", metav1.GetOptions{},
+			)
+			require.NoError(t, err)
+			tc.mutate(t, policy)
+			_, err = client.Resource(PolicyResource).Namespace("test").Update(
+				context.Background(), policy, metav1.UpdateOptions{},
+			)
+			require.NoError(t, err)
+
+			count, err := New(client, "test").WithClock(func() time.Time {
+				return time.Unix(1_700_003_000, 0)
+			}).Reconcile(context.Background())
+			require.Zero(t, count)
+			require.ErrorContains(t, err, "policy spec is incomplete")
+			operations, listErr := client.Resource(operationqueue.Resource).Namespace("test").
+				List(context.Background(), metav1.ListOptions{})
+			require.NoError(t, listErr)
+			require.Empty(t, operations.Items)
+			secrets, listErr := client.Resource(operationqueue.SecretResource).Namespace("test").
+				List(context.Background(), metav1.ListOptions{})
+			require.NoError(t, listErr)
+			require.Empty(t, secrets.Items)
+		})
+	}
+}
+
 func TestDecodeParameterTemplatePreservesNumbersAndRejectsTrailingJSON(t *testing.T) {
 	parameters, err := decodeParameterTemplate([]byte(`{"batch_size":9007199254740993}`))
 	require.NoError(t, err)

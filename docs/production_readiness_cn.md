@@ -1846,7 +1846,9 @@ kubectl -n kubebrain-operations patch configmap kubebrain-backup-scheduler-inven
 
 目标 namespace 还必须部署 operation worker 及其 namespaced RBAC。策略、模板 Secret、
 生成的 immutable Secret 和 Operation 始终留在同一 namespace；一个 namespace 失败只会
-产生带 `namespace/policy` 的聚合错误，不阻止其他 namespace 提交。策略 tenant 与
+产生带 `namespace/policy` 的聚合错误，不阻止其他 namespace 提交。scheduler 会在读取
+模板 Secret 和创建参数 Secret 前按 BackupPolicy CRD schema 本地拒绝非法 tenant、
+instance、interval、retention、maxAttempts 和 template Secret 引用。策略 tenant 与
 scheduler ServiceAccount 身份会进入 immutable Operation spec 和终态审计。Deployment
 包含 zone/hostname topology spread，PDB 最多允许 1 个副本不可用。
 
