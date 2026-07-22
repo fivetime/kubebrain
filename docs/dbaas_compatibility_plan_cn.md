@@ -9187,6 +9187,8 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   随后补齐 `archive-operation-audit.sh` 的 release 参数透传，并在脚本入口拒绝非法
   retention mode/retain-until；脚本级 fake `go` 回归固定 capture、archive、release
   三段调用都绑定同一 expected receipt scope。
+  内部 release API 同步移除无 expected scope 的包装入口，`ReleaseWithExpectedReceipt`
+  现在对空 scope 直接 fail closed，避免后续生产调用方绕过 Object Lock 目的地绑定。
 - A487 收紧 object storage usage stdout JSON 解析：sample archiver 读取 file receipt 后，
   stdout 也改用 `DisallowUnknownFields` 和 trailing JSON 拒绝，再逐字段比较两份 receipt。
   这样 stdout 额外未知字段不会被 `json.Unmarshal` 忽略后误判为匹配，也不会触发后续

@@ -15,16 +15,6 @@ import (
 	"k8s.io/client-go/dynamic"
 )
 
-func Release(
-	ctx context.Context,
-	client dynamic.Interface,
-	namespace, name, artifactPath, receiptPath string,
-) (*unstructured.Unstructured, error) {
-	return ReleaseWithExpectedReceipt(
-		ctx, client, namespace, name, artifactPath, receiptPath, ExpectedArchiveReceipt{},
-	)
-}
-
 type ExpectedArchiveReceipt struct {
 	ObjectStoreID   string
 	Bucket          string
@@ -130,10 +120,6 @@ func ReleaseWithExpectedReceipt(
 }
 
 func (e ExpectedArchiveReceipt) matches(receipt operationaudit.ArchiveReceipt) error {
-	if e.ObjectStoreID == "" && e.Bucket == "" && e.ObjectKey == "" &&
-		e.RetentionMode == "" && e.RetainUntilUnix == 0 {
-		return nil
-	}
 	if e.ObjectStoreID == "" || e.Bucket == "" || e.ObjectKey == "" ||
 		(e.RetentionMode != "COMPLIANCE" && e.RetentionMode != "GOVERNANCE") ||
 		e.RetainUntilUnix <= 0 {

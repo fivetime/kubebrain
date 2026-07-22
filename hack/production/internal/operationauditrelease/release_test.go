@@ -29,7 +29,7 @@ func TestReleaseVerifiesArchiveAndRemovesOnlyAuditFinalizer(t *testing.T) {
 		}, object,
 	)
 	artifactPath, receiptPath, receiptSHA := writeReleaseEvidence(t, object)
-	result, err := Release(
+	result, err := releaseWithExpected(
 		context.Background(), client, "operations", "backup-1", artifactPath, receiptPath,
 	)
 	require.NoError(t, err)
@@ -38,7 +38,7 @@ func TestReleaseVerifiesArchiveAndRemovesOnlyAuditFinalizer(t *testing.T) {
 	require.NotEmpty(t, result.GetAnnotations()[operationaudit.ArtifactSHAAnnotation])
 	require.Equal(t, "version-1", result.GetAnnotations()[operationaudit.VersionAnnotation])
 
-	retried, err := Release(
+	retried, err := releaseWithExpected(
 		context.Background(), client, "operations", "backup-1", artifactPath, receiptPath,
 	)
 	require.NoError(t, err)
@@ -56,14 +56,14 @@ func TestReleaseRejectsReceiptAndCurrentOperationDrift(t *testing.T) {
 		require.NoError(t, json.Unmarshal(data, &receipt))
 		receipt.OperationUID = "other"
 		writeCanonicalJSON(t, receiptPath, receipt)
-		_, err = Release(context.Background(), client, "operations", "backup-1", artifactPath, receiptPath)
+		_, err = releaseWithExpected(context.Background(), client, "operations", "backup-1", artifactPath, receiptPath)
 		require.ErrorContains(t, err, "does not match")
 	})
 	t.Run("terminal operation", func(t *testing.T) {
 		object := archivedOperation()
 		artifactPath, receiptPath, _ := writeReleaseEvidence(t, object)
 		require.NoError(t, unstructured.SetNestedField(object.Object, "changed", "status", "message"))
-		_, err := Release(
+		_, err := releaseWithExpected(
 			context.Background(), releaseClient(object), "operations", "backup-1",
 			artifactPath, receiptPath,
 		)
@@ -77,6 +77,12 @@ func TestReleaseWithExpectedReceiptRejectsScopeDrift(t *testing.T) {
 	artifactPath, receiptPath, _ := writeReleaseEvidence(t, object)
 
 	_, err := ReleaseWithExpectedReceipt(
+		context.Background(), client, "operations", "backup-1", artifactPath, receiptPath,
+		ExpectedArchiveReceipt{},
+	)
+	require.ErrorContains(t, err, "scope is incomplete")
+
+	_, err = ReleaseWithExpectedReceipt(
 		context.Background(), client, "operations", "backup-1", artifactPath, receiptPath,
 		ExpectedArchiveReceipt{
 			ObjectStoreID: "store-a", Bucket: "audits", ObjectKey: "instance-a/other.json",
@@ -110,7 +116,7 @@ func TestReleaseReconcilesCommittedUpdateAfterLostResponse(t *testing.T) {
 		return true, nil, errors.New("release response lost after commit")
 	})
 
-	result, err := Release(
+	result, err := releaseWithExpected(
 		context.Background(), client, "operations", "backup-1", artifactPath, receiptPath,
 	)
 	require.NoError(t, err)
@@ -135,7 +141,7 @@ func TestReleaseReconciliationOutlivesCanceledParent(t *testing.T) {
 		return true, nil, ctx.Err()
 	})
 
-	result, err := Release(
+	result, err := releaseWithExpected(
 		ctx, client, "operations", "backup-1", artifactPath, receiptPath,
 	)
 	require.NoError(t, err)
@@ -160,7 +166,7 @@ func TestReleaseRejectsReplacementUIDAfterFailedUpdate(t *testing.T) {
 		return true, nil, errors.New("release response lost after replacement")
 	})
 
-	result, err := Release(
+	result, err := releaseWithExpected(
 		context.Background(), client, "operations", "backup-1", artifactPath, receiptPath,
 	)
 	require.Nil(t, result)
@@ -187,7 +193,7 @@ func TestReleaseReportsWriteAndInspectionFailures(t *testing.T) {
 		return true, nil, errors.New("release write unavailable")
 	})
 
-	result, err := Release(
+	result, err := releaseWithExpected(
 		context.Background(), client, "operations", "backup-1", artifactPath, receiptPath,
 	)
 	require.Nil(t, result)
@@ -200,6 +206,20 @@ func releaseClient(object *unstructured.Unstructured) *dynamicfake.FakeDynamicCl
 		runtime.NewScheme(), map[schema.GroupVersionResource]string{
 			operationqueue.Resource: "KubeBrainOperationList",
 		}, object,
+	)
+}
+
+func releaseWithExpected(
+	ctx context.Context,
+	client *dynamicfake.FakeDynamicClient,
+	namespace, name, artifactPath, receiptPath string,
+) (*unstructured.Unstructured, error) {
+	return ReleaseWithExpectedReceipt(
+		ctx, client, namespace, name, artifactPath, receiptPath,
+		ExpectedArchiveReceipt{
+			ObjectStoreID: "store-a", Bucket: "audits", ObjectKey: "instance-a/backup-1.json",
+			RetentionMode: "COMPLIANCE", RetainUntilUnix: 200,
+		},
 	)
 }
 

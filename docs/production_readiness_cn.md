@@ -1941,7 +1941,7 @@ object version 三项 annotation 与已验证归档证据完全一致时确认�
 archiver 身份 capture/release，并确认其他控制器的 finalizer 未被移除；同一证据重试
 不得改变 resourceVersion。手工 `operation-audit --action release` 必须同时传入期望的
 object store ID、bucket、object key、retention mode 与 retain-until，缺少任一项不得释放
-finalizer。
+finalizer；内部 release API 也不再提供无 expected scope 的捷径。
 
 该补偿只处理 Kubernetes coordination Lease；外部系统副作用仍由 Operation fencing 与
 幂等 receipt 约束。
