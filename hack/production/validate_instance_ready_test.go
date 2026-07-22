@@ -24,6 +24,7 @@ func TestValidateInstanceReady(t *testing.T) {
 		advertisedURLs           string
 		unreachableAdvertisedURL string
 		memberListJSON           string
+		podsJSON                 string
 		initialCluster           string
 		wantOK                   bool
 		wantOutput               string
@@ -169,6 +170,42 @@ func TestValidateInstanceReady(t *testing.T) {
 			topology:   "3\t3",
 			healthOK:   true,
 			wantOutput: "StatefulSet resource identity mismatch",
+		},
+		{
+			name:       "Pod has stale StatefulSet owner",
+			image:      "registry/kubebrain@sha256:abc",
+			kubeStatus: "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:abc",
+			topology:   "3\t3",
+			healthOK:   true,
+			podsJSON:   fakeKubeBrainPodsJSON("uid-old", "kb-new", "registry/kubebrain@sha256:abc", true, false),
+			wantOutput: "Pod set does not match",
+		},
+		{
+			name:       "Pod has stale controller revision",
+			image:      "registry/kubebrain@sha256:abc",
+			kubeStatus: "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:abc",
+			topology:   "3\t3",
+			healthOK:   true,
+			podsJSON:   fakeKubeBrainPodsJSON("uid-kubebrain", "kb-old", "registry/kubebrain@sha256:abc", true, false),
+			wantOutput: "Pod set does not match",
+		},
+		{
+			name:       "Pod is terminating",
+			image:      "registry/kubebrain@sha256:abc",
+			kubeStatus: "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:abc",
+			topology:   "3\t3",
+			healthOK:   true,
+			podsJSON:   fakeKubeBrainPodsJSON("uid-kubebrain", "kb-new", "registry/kubebrain@sha256:abc", true, true),
+			wantOutput: "Pod set does not match",
+		},
+		{
+			name:       "Pod is not Ready",
+			image:      "registry/kubebrain@sha256:abc",
+			kubeStatus: "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:abc",
+			topology:   "3\t3",
+			healthOK:   true,
+			podsJSON:   fakeKubeBrainPodsJSON("uid-kubebrain", "kb-new", "registry/kubebrain@sha256:abc", false, false),
+			wantOutput: "Pod set does not match",
 		},
 		{
 			name:       "wrong storage topology",
@@ -320,6 +357,8 @@ elif [[ "$*" == *"get statefulset kubebrain"* && "$*" == *".args"* ]]; then
   printf '%s' "$FAKE_KUBEBRAIN_ARGS"
 elif [[ "$*" == *"get statefulset kubebrain"* && "$*" == *"jsonpath="* ]]; then
   printf '%s' "$FAKE_KUBEBRAIN_STATUS"
+elif [[ "$*" == *"get pods"* && "$*" == *"app.kubernetes.io/name=kubebrain"* ]]; then
+  printf '%s' "$FAKE_KUBEBRAIN_PODS_JSON"
 else
   printf 'diagnostic output\n'
 fi
@@ -366,6 +405,10 @@ exit 1
 			if memberListJSON == "" {
 				memberListJSON = fakeRuntimeMemberListJSON(advertisedURLs)
 			}
+			podsJSON := tc.podsJSON
+			if podsJSON == "" {
+				podsJSON = fakeKubeBrainPodsJSON("uid-kubebrain", "kb-new", tc.image, true, false)
+			}
 			kubeStatus := tc.kubeStatus
 			if strings.Count(kubeStatus, "\t") == 7 {
 				kubeStatus += "\tuid-kubebrain"
@@ -388,6 +431,7 @@ exit 1
 				"POLL_INTERVAL_SECONDS=0",
 				"FAKE_KUBEBRAIN_STATUS="+kubeStatus,
 				"FAKE_KUBEBRAIN_ARGS="+kubeArgs,
+				"FAKE_KUBEBRAIN_PODS_JSON="+podsJSON,
 				"FAKE_TOPOLOGY="+topology,
 				"FAKE_HEALTH_OK="+boolString(tc.healthOK),
 				"FAKE_UNREACHABLE_ADVERTISED_URL="+tc.unreachableAdvertisedURL,
@@ -402,6 +446,40 @@ exit 1
 			require.Contains(t, strings.TrimSpace(string(output)), tc.wantOutput)
 		})
 	}
+}
+
+func fakeKubeBrainPodsJSON(ownerUID, revision, image string, ready, terminating bool) string {
+	items := make([]map[string]any, 3)
+	for index := range items {
+		metadata := map[string]any{
+			"name":   "kubebrain-" + string(rune('0'+index)),
+			"labels": map[string]any{"controller-revision-hash": revision},
+			"ownerReferences": []map[string]any{{
+				"apiVersion": "apps/v1", "kind": "StatefulSet", "name": "kubebrain",
+				"uid": ownerUID, "controller": true,
+			}},
+		}
+		if terminating && index == 0 {
+			metadata["deletionTimestamp"] = "2026-07-22T00:00:00Z"
+		}
+		readyStatus := "True"
+		if !ready && index == 0 {
+			readyStatus = "False"
+		}
+		items[index] = map[string]any{
+			"metadata": metadata,
+			"spec":     map[string]any{"containers": []map[string]any{{"name": "kubebrain", "image": image}}},
+			"status": map[string]any{
+				"phase":      "Running",
+				"conditions": []map[string]any{{"type": "Ready", "status": readyStatus}},
+			},
+		}
+	}
+	encoded, err := json.Marshal(map[string]any{"items": items})
+	if err != nil {
+		panic(err)
+	}
+	return string(encoded)
 }
 
 func fakeRuntimeMemberListJSON(advertisedURLs string) string {

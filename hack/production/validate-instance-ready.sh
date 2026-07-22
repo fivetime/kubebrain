@@ -127,6 +127,38 @@ if [[ "$actual_kubebrain_statefulset_uid" != "$EXPECTED_KUBEBRAIN_STATEFULSET_UI
   exit 1
 fi
 
+expected_pod_names_json='[]'
+for ((ordinal = 0; ordinal < EXPECTED_KUBEBRAIN_REPLICAS; ordinal++)); do
+  expected_pod_names_json="$(printf '%s' "$expected_pod_names_json" | "$JQ" -c \
+    --arg name "${KUBEBRAIN_STATEFULSET}-${ordinal}" '. + [$name]')"
+done
+if ! kubebrain_pods_json="$("$KUBECTL" "${kubectl_args[@]}" -n "$KUBEBRAIN_NAMESPACE" \
+  get pods -l "app.kubernetes.io/name=${KUBEBRAIN_STATEFULSET}" -o json)"; then
+  echo "failed to list KubeBrain Pods for release verification" >&2
+  exit 1
+fi
+if ! printf '%s' "$kubebrain_pods_json" | "$JQ" -e \
+  --arg statefulSet "$KUBEBRAIN_STATEFULSET" \
+  --arg statefulSetUID "$EXPECTED_KUBEBRAIN_STATEFULSET_UID" \
+  --arg revision "$update_revision" \
+  --arg image "$EXPECTED_IMAGE" \
+  --argjson expectedPodNames "$expected_pod_names_json" '
+    (([.items[].metadata.name] | sort) == ($expectedPodNames | sort)) and
+    all(.items[];
+      .metadata.deletionTimestamp == null and
+      .status.phase == "Running" and
+      ([.status.conditions[]? | select(.type == "Ready" and .status == "True")] | length) == 1 and
+      .metadata.labels["controller-revision-hash"] == $revision and
+      ([.metadata.ownerReferences[]? |
+        select(.controller == true and .apiVersion == "apps/v1" and .kind == "StatefulSet" and
+          .name == $statefulSet and .uid == $statefulSetUID)] | length) == 1 and
+      ([.spec.containers[]? | select(.name == "kubebrain" and .image == $image)] | length) == 1
+    )
+  ' >/dev/null; then
+  echo "KubeBrain Pod set does not match the expected StatefulSet ownership and converged release" >&2
+  exit 1
+fi
+
 kubebrain_args="$("$KUBECTL" "${kubectl_args[@]}" -n "$KUBEBRAIN_NAMESPACE" \
   get statefulset "$KUBEBRAIN_STATEFULSET" \
   -o 'go-template={{range .spec.template.spec.containers}}{{if eq .name "kubebrain"}}{{range .args}}{{printf "%s\n" .}}{{end}}{{end}}{{end}}')"
