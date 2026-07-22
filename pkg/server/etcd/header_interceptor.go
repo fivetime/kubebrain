@@ -392,6 +392,11 @@ func authGRPCError(err error) error {
 		return rpctypes.ErrGRPCAuthOldRevision
 	case errors.Is(err, storage.ErrUnavailable):
 		return status.Error(codes.Unavailable, err.Error())
+	case errors.Is(err, storage.ErrUncertainResult):
+		// The storage commit may already be durable. Return etcd's timeout
+		// contract so clients treat it as a retryable, outcome-unknown write;
+		// the backend resolves the event-log markers asynchronously.
+		return rpctypes.ErrGRPCTimeout
 	default:
 		return err
 	}

@@ -17,6 +17,7 @@ package tikv
 import (
 	"bytes"
 	"context"
+	"strings"
 
 	"github.com/pkg/errors"
 	tikverr "github.com/tikv/client-go/v2/error"
@@ -137,13 +138,24 @@ func (b *batch) Commit(ctx context.Context) (err error) {
 			return storage.ErrCASFailed
 		}
 
-		for _, uncertainErr := range uncertainErrList {
-			if errors.Is(err, uncertainErr) {
-				err = storage.NewErrUncertainResult(err)
-			}
+		if isUncertainCommitError(err) {
+			err = storage.NewErrUncertainResult(err)
 		}
 	}
 	return
+}
+
+func isUncertainCommitError(err error) bool {
+	for _, uncertainErr := range uncertainErrList {
+		if errors.Is(err, uncertainErr) {
+			return true
+		}
+	}
+	// client-go v2.0.7 does not expose a typed wrapper for TiKV's
+	// kvrpcpb.TxnLockNotFound. During 2PC commit it means the primary lock was
+	// lost while the outcome may already have been applied, so it must follow
+	// the same durable-resolution path as ErrResultUndetermined.
+	return strings.Contains(err.Error(), "TxnLockNotFound")
 }
 
 // todo: add other errors

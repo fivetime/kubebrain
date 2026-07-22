@@ -6,6 +6,12 @@ TIDB_NAMESPACE="${TIDB_NAMESPACE:-tidb-cluster}"
 TIDB_CLUSTER="${TIDB_CLUSTER:-kb}"
 ENDPOINT="${ENDPOINT:-127.0.0.1:3379}"
 TIMEOUT="${TIMEOUT:-180s}"
+RECOVERY_SETTLE_SECONDS="${RECOVERY_SETTLE_SECONDS:-10}"
+
+if ! [[ "$RECOVERY_SETTLE_SECONDS" =~ ^[0-9]+$ ]]; then
+  echo "RECOVERY_SETTLE_SECONDS must be a non-negative integer" >&2
+  exit 1
+fi
 
 need() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -47,13 +53,13 @@ wait_backend_ready
 run_quorum_test "PD leader failover" \
   "pod=\$(kubectl -n '$TIDB_NAMESPACE' get tidbcluster '$TIDB_CLUSTER' -o jsonpath='{.status.pd.leader.name}'); \
 kubectl -n '$TIDB_NAMESPACE' delete pod \"\$pod\" --wait=true; \
-kubectl -n '$TIDB_NAMESPACE' wait --for=condition=Ready \"pod/\$pod\" --timeout='$TIMEOUT'; sleep 2"
+kubectl -n '$TIDB_NAMESPACE' wait --for=condition=Ready \"pod/\$pod\" --timeout='$TIMEOUT'; sleep $RECOVERY_SETTLE_SECONDS"
 
 tikv_pod="$(kubectl -n "$TIDB_NAMESPACE" get pods \
   -l "app.kubernetes.io/instance=${TIDB_CLUSTER},app.kubernetes.io/component=tikv" \
   -o jsonpath='{.items[0].metadata.name}')"
 run_quorum_test "TiKV member failover" \
   "kubectl -n '$TIDB_NAMESPACE' delete pod '$tikv_pod' --wait=true; \
-kubectl -n '$TIDB_NAMESPACE' wait --for=condition=Ready 'pod/$tikv_pod' --timeout='$TIMEOUT'; sleep 2"
+kubectl -n '$TIDB_NAMESPACE' wait --for=condition=Ready 'pod/$tikv_pod' --timeout='$TIMEOUT'; sleep $RECOVERY_SETTLE_SECONDS"
 
 echo "Backend quorum fault smoke completed"

@@ -40,3 +40,9 @@ func TestBatchCommitWithFailedBeginReturnsErrorNotPanic(t *testing.T) {
 		require.ErrorIs(t, err, beginErr)
 	})
 }
+
+func TestUncertainCommitErrorClassifiesTxnLockNotFound(t *testing.T) {
+	require.True(t, isUncertainCommitError(errors.New("TxnLockNotFound")))
+	require.True(t, isUncertainCommitError(errors.New("commit failed: TxnLockNotFound { start_ts: 1 }")))
+	require.False(t, isUncertainCommitError(errors.New("transaction lock conflict")))
+}

@@ -1,6 +1,7 @@
 package etcd
 
 import (
+	"context"
 	"fmt"
 	"testing"
 
@@ -23,6 +24,7 @@ func TestAuthGRPCErrorMapsPublicStatusCodes(t *testing.T) {
 		{rpctypes.ErrAuthNotEnabled, codes.FailedPrecondition},
 		{rpctypes.ErrRootUserNotExist, codes.FailedPrecondition},
 		{fmt.Errorf("tso: %w", storage.ErrUnavailable), codes.Unavailable},
+		{storage.NewErrUncertainResult(context.DeadlineExceeded), codes.Unavailable},
 	}
 	for _, test := range tests {
 		require.Equal(t, test.code, status.Code(authGRPCError(test.err)))
