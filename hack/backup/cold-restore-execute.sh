@@ -34,6 +34,9 @@ restore_manifest_vsc_count="$(jq '[.items[] | select(.kind == "VolumeSnapshotCon
 restore_manifest_vs_count="$(jq '[.items[] | select(.kind == "VolumeSnapshot")] | length' <<<"$manifest")"
 restore_manifest_pvc_count="$(jq '[.items[] | select(.kind == "PersistentVolumeClaim")] | length' <<<"$manifest")"
 restore_manifest_tidb_count="$(jq '[.items[] | select(.kind == "TidbCluster")] | length' <<<"$manifest")"
+expected_restored_pvc_names="$(jq -c '[.items[] | select(.kind == "PersistentVolumeClaim") | .metadata.name] | sort' <<<"$manifest")"
+expected_restored_contents="$(jq -c '[.items[] | select(.kind == "VolumeSnapshotContent") |
+  {name:.metadata.name,driver:.spec.driver,snapshot_handle:.spec.source.snapshotHandle}] | sort_by(.name)' <<<"$manifest")"
 
 namespace="$(jq -r '.inventory.storage.namespace' <<<"$receipt")"
 tidb_cluster="$(jq -r '.inventory.storage.tidb_cluster' <<<"$receipt")"
@@ -159,12 +162,21 @@ IFS=$'\t' read -r final_tidb_uid actual_cluster_id ready_status <<<"$restored_id
 }
 
 pvcs="$(kctl -n "$namespace" get pvc -l "kubebrain.io/operation-id=${operation_id}" -o json | jq -c '[.items[] | {name:.metadata.name,uid:.metadata.uid,pv:.spec.volumeName,phase:.status.phase}] | sort_by(.name)')"
-[[ "$(jq 'length' <<<"$pvcs")" == "$(jq '[.items[] | select(.kind == "PersistentVolumeClaim")] | length' <<<"$manifest")" ]] || { echo "restored PVC inventory count mismatch" >&2; exit 1; }
-jq -e 'all(.[]; .phase == "Bound" and (.uid | length > 0) and (.pv | length > 0))' <<<"$pvcs" >/dev/null
+jq -e --argjson expected "$expected_restored_pvc_names" '
+  length == ($expected | length) and
+  ([.[].name] == $expected) and
+  all(.[]; .phase == "Bound" and (.uid | length > 0) and (.pv | length > 0)) and
+  ([.[].uid] | unique | length) == length and
+  ([.[].pv] | unique | length) == length
+' <<<"$pvcs" >/dev/null || { echo "restored PVC inventory does not match restore manifest" >&2; exit 1; }
 contents="$(kctl get volumesnapshotcontent -l "kubebrain.io/operation-id=${operation_id}" -o json | jq -c '[.items[] | {name:.metadata.name,uid:.metadata.uid,driver:.spec.driver,snapshot_handle:.spec.source.snapshotHandle}] | sort_by(.name)')"
-[[ "$(jq 'length' <<<"$contents")" == "$(jq '[.items[] | select(.kind == "VolumeSnapshotContent")] | length' <<<"$manifest")" ]] || { echo "restored VolumeSnapshotContent inventory count mismatch" >&2; exit 1; }
-jq -e --arg driver "$expected_driver" 'all(.[]; .driver == $driver and (.uid | length > 0) and (.snapshot_handle | length > 0)) and
-  ([.[].snapshot_handle] | unique | length) == length' <<<"$contents" >/dev/null
+jq -e --argjson expected "$expected_restored_contents" '
+  length == ($expected | length) and
+  (map({name,driver,snapshot_handle}) == $expected) and
+  all(.[]; (.uid | length > 0)) and
+  ([.[].uid] | unique | length) == length and
+  ([.[].snapshot_handle] | unique | length) == length
+' <<<"$contents" >/dev/null || { echo "restored VolumeSnapshotContent inventory does not match restore manifest" >&2; exit 1; }
 
 receipt_tmp="${RESTORE_RECEIPT_FILE}.tmp.$$"
 jq -n --arg format kubebrain.cold-physical-restore.v1 --arg operation_id "$operation_id" \

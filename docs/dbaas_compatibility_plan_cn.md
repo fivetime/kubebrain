@@ -8058,6 +8058,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   和 target cluster ID 漂移；`go test ./hack/backup/... ./hack/production`、`bash -n` 和
   `go vet ./hack/backup/... ./hack/production` 通过。该项把 semantic verify 从“计划制品正确”
   推进到“执行后 inventory 也绑定”，仍不替代真实 CSI 隔离恢复演练。
+- **DBaaS A463 cold restore executor inventory gate（2026-07-22）**：
+  A462 继续向前审计发现 restore executor 发布 `kubebrain.cold-physical-restore.v1` 前只校验
+  实际 PVC/VolumeSnapshotContent 数量与基础字段，若目标集群返回同 operation label 的错误
+  Content name、snapshotHandle 或 PVC phase，可能先发布弱 receipt，再依赖最终 semantic verifier
+  拒绝。现 executor 从已审核 manifest 生成期望 inventory，在 receipt 发布前要求实际
+  VolumeSnapshotContent 的 name/driver/snapshotHandle 精确一致且 UID/handle 唯一，PVC 的 name
+  精确一致、UID/PV 非空唯一且 phase 为 Bound；任一漂移都会在未发布 receipt 时触发已有
+  unpause 后 emergency fence。fake-kubectl 回归改用 renderer 真实对象名，并新增 Content handle
+  漂移与 PVC phase 漂移负例；`go test ./hack/backup/... ./hack/production`、`bash -n` 和
+  `go vet ./hack/backup/... ./hack/production` 通过。该项把 inventory 绑定从最终验证前移到
+  executor 发布边界，仍不替代真实 CSI 隔离恢复演练。
 
 - **Maintenance A398 persistent CORRUPT alarm gate（2026-07-21）**：
   对照 `/root/etcd/server/etcdserver/apply/uber_applier.go`、`apply/corrupt.go`、

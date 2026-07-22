@@ -1,6 +1,8 @@
 package production_test
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -18,13 +20,18 @@ func TestColdRestoreExecute(t *testing.T) {
 		existing      bool
 		tampered      bool
 		wrongCluster  bool
+		wrongContent  bool
+		wrongPVC      bool
 		wantReceipt   bool
 		wantEmergency bool
+		wantError     string
 	}{
 		{name: "restores storage and publishes receipt", wantReceipt: true},
-		{name: "existing target fails before create", existing: true},
-		{name: "tampered manifest fails before target access", tampered: true},
-		{name: "cluster identity mismatch fences storage", wrongCluster: true, wantEmergency: true},
+		{name: "existing target fails before create", existing: true, wantError: "target resource already exists"},
+		{name: "tampered manifest fails before target access", tampered: true, wantError: "differs from the canonical rendering"},
+		{name: "cluster identity mismatch fences storage", wrongCluster: true, wantEmergency: true, wantError: "identity/readiness mismatch"},
+		{name: "content inventory drift fences storage", wrongContent: true, wantEmergency: true, wantError: "restored VolumeSnapshotContent inventory does not match restore manifest"},
+		{name: "PVC inventory drift fences storage", wrongPVC: true, wantEmergency: true, wantError: "restored PVC inventory does not match restore manifest"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -65,8 +72,8 @@ func TestColdRestoreExecute(t *testing.T) {
 				"FAKE_LOG="+logPath,
 				"FAKE_EXISTING="+strconv.FormatBool(tc.existing),
 				"FAKE_CLUSTER_ID="+map[bool]string{true: "99999", false: "12345"}[tc.wrongCluster],
-				"FAKE_PVC_JSON="+coldRestorePVCResult(t),
-				"FAKE_CONTENT_JSON="+coldRestoreContentResult(t),
+				"FAKE_PVC_JSON="+coldRestorePVCResult(t, tc.wrongPVC),
+				"FAKE_CONTENT_JSON="+coldRestoreContentResult(t, tc.wrongContent),
 			)
 			output, err := command.CombinedOutput()
 			if tc.wantReceipt {
@@ -90,6 +97,9 @@ func TestColdRestoreExecute(t *testing.T) {
 			} else {
 				require.Error(t, err, string(output))
 				require.NoFileExists(t, restoreReceiptPath)
+				if tc.wantError != "" {
+					require.Contains(t, string(output), tc.wantError)
+				}
 			}
 
 			logValue, readErr := os.ReadFile(logPath)
@@ -101,17 +111,11 @@ func TestColdRestoreExecute(t *testing.T) {
 			log := string(logValue)
 			if tc.existing || tc.tampered {
 				require.NotContains(t, log, "create -f")
-				if tc.existing {
-					require.Contains(t, string(output), "target resource already exists")
-				} else {
-					require.Contains(t, string(output), "differs from the canonical rendering")
-				}
 			} else {
 				require.Contains(t, log, "create -f "+manifestPath)
 				requireOrder(t, log, "create -f", "patch tidbcluster kb --type=json", "wait --for=condition=Ready", "rollout status statefulset/kb-pd", "rollout status statefulset/kb-tikv")
 			}
 			if tc.wantEmergency {
-				require.Contains(t, string(output), "identity/readiness mismatch")
 				requireOrder(t, log, "wait --for=condition=Ready", "patch tidbcluster kb --type=json", "patch statefulset kb-tikv --type=json", "patch statefulset kb-pd --type=json")
 			}
 		})
@@ -145,7 +149,7 @@ func coldRestoreSnapshotReceipt(t *testing.T) []byte {
 	return value
 }
 
-func coldRestorePVCResult(t *testing.T) string {
+func coldRestorePVCResult(t *testing.T, wrongPhase bool) string {
 	t.Helper()
 	var inventory map[string]any
 	require.NoError(t, json.Unmarshal(coldSnapshotInventory(t), &inventory))
@@ -153,9 +157,13 @@ func coldRestorePVCResult(t *testing.T) string {
 	items := make([]map[string]any, 0, len(volumes))
 	for _, raw := range volumes {
 		name := raw.(map[string]any)["name"].(string)
+		phase := "Bound"
+		if wrongPhase && len(items) == 0 {
+			phase = "Pending"
+		}
 		items = append(items, map[string]any{
 			"metadata": map[string]any{"name": name, "uid": "target-uid-" + name},
-			"spec":     map[string]any{"volumeName": "target-pv-" + name}, "status": map[string]any{"phase": "Bound"},
+			"spec":     map[string]any{"volumeName": "target-pv-" + name}, "status": map[string]any{"phase": phase},
 		})
 	}
 	value, err := json.Marshal(map[string]any{"items": items})
@@ -163,22 +171,36 @@ func coldRestorePVCResult(t *testing.T) string {
 	return string(value)
 }
 
-func coldRestoreContentResult(t *testing.T) string {
+func coldRestoreContentResult(t *testing.T, wrongHandle bool) string {
 	t.Helper()
 	var value map[string]any
 	require.NoError(t, json.Unmarshal(coldRestoreSnapshotReceipt(t), &value))
+	operationID := value["operation_id"].(string)
 	items := make([]map[string]any, 0, 6)
 	for _, raw := range value["snapshots"].([]any) {
 		snapshot := raw.(map[string]any)
 		name := snapshot["source_pvc"].(string)
+		handle := snapshot["snapshot_handle"].(string)
+		if wrongHandle && len(items) == 0 {
+			handle = "wrong-" + handle
+		}
 		items = append(items, map[string]any{
-			"metadata": map[string]any{"name": "content-" + name, "uid": "target-content-uid-" + name},
-			"spec":     map[string]any{"driver": "csi.example.test", "source": map[string]any{"snapshotHandle": snapshot["snapshot_handle"]}},
+			"metadata": map[string]any{"name": coldRestoreObjectName(operationID, name), "uid": "target-content-uid-" + name},
+			"spec":     map[string]any{"driver": "csi.example.test", "source": map[string]any{"snapshotHandle": handle}},
 		})
 	}
 	encoded, err := json.Marshal(map[string]any{"items": items})
 	require.NoError(t, err)
 	return string(encoded)
+}
+
+func coldRestoreObjectName(operation, pvcName string) string {
+	sum := sha256.Sum256([]byte(operation + "\x00" + pvcName))
+	prefix := strings.Trim(operation, "-")
+	if len(prefix) > 40 {
+		prefix = prefix[:40]
+	}
+	return "kb-restore-" + prefix + "-" + hex.EncodeToString(sum[:6])
 }
 
 const coldRestoreFakeKubectl = `#!/usr/bin/env bash

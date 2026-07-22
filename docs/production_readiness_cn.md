@@ -585,8 +585,10 @@ TiKV、PD 顺序用 StatefulSet UID/resourceVersion 条件 Patch 缩至零，保
 
 成功时原子发布 `kubebrain.cold-physical-restore.v1`，绑定源 receipt SHA-256、目标 cluster/
 namespace UID、新 TidbCluster UID/cluster ID、VSC UID/driver/handle 和 PVC UID/PV。该 receipt 只
-证明存储层恢复与身份一致；必须继续在隔离目标部署受审 KubeBrain release，并执行固定 revision、
-key/value、lease TTL/attachment、watch continuity 和写后读验证，才能将这次恢复记为可用演练。
+能在实际 VSC name/driver/handle 与已审核 manifest 完全一致、PVC name/UID/PV/Bound phase 与
+manifest 完全一致且 UID/PV/handle 无重复时发布。它只证明存储层恢复与身份一致；必须继续在
+隔离目标部署受审 KubeBrain release，并执行固定 revision、key/value、lease TTL/attachment、
+watch continuity 和写后读验证，才能将这次恢复记为可用演练。
 
 部署受审 KubeBrain release 并指向恢复后的 PD 后，运行物理语义门禁：
 
