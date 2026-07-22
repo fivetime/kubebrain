@@ -117,6 +117,20 @@ func (s *RPCServer) ensureAuthRevision(ctx context.Context, caller *authCaller) 
 	return nil
 }
 
+func (s *RPCServer) ensureAuthStoreRevisionUnchanged(ctx context.Context, caller *authCaller) error {
+	if caller == nil {
+		return nil
+	}
+	snapshot, err := s.tokens.snapshots.current(ctx)
+	if err != nil {
+		return err
+	}
+	if caller.snapshot.Config.Revision != snapshot.Config.Revision {
+		return rpctypes.ErrAuthOldRevision
+	}
+	return nil
+}
+
 func withAuthWriteGuard(ctx context.Context, caller *authCaller) context.Context {
 	if caller == nil {
 		return ctx

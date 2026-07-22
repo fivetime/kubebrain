@@ -83,6 +83,36 @@ func TestAuthLeaseRequiresCallerAndProtectsBoundKeys(t *testing.T) {
 	require.ErrorIs(t, err, rpctypes.ErrPermissionDenied, "one inaccessible attached key denies the all-leases listing like etcd")
 }
 
+func TestAuthLeaseFutureJWTRevisionMatchesEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	plain := context.Background()
+	lease, err := server.LeaseGrant(plain, &etcdserverpb.LeaseGrantRequest{TTL: 60})
+	require.NoError(t, err)
+	_, err = server.Put(plain, &etcdserverpb.PutRequest{
+		Key: []byte("/allowed/leased"), Value: []byte("value"), Lease: lease.ID,
+	})
+	require.NoError(t, err)
+	setupAuthKVUser(t, server)
+	secret := writeJWTKey(t, "secret", []byte("shared-secret"))
+	require.NoError(t, server.tokens.configureProvider("jwt,sign-method=HS256,priv-key="+secret))
+	now := time.Unix(2_000_000_000, 0)
+	server.tokens.now = func() time.Time { return now }
+	snapshot, err := server.tokens.snapshots.current(plain)
+	require.NoError(t, err)
+	token, err := server.tokens.jwt.issue("alice", snapshot.Config.Revision+10, now)
+	require.NoError(t, err)
+	ctx := metadata.NewIncomingContext(plain, metadata.Pairs(rpctypes.TokenFieldNameGRPC, token))
+
+	ttl, err := server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: lease.ID, Keys: true})
+	require.NoError(t, err)
+	require.Equal(t, [][]byte{[]byte("/allowed/leased")}, ttl.Keys)
+	leases, err := server.LeaseLeases(ctx, &etcdserverpb.LeaseLeasesRequest{})
+	require.NoError(t, err)
+	require.Len(t, leases.Leases, 1)
+	require.Equal(t, lease.ID, leases.Leases[0].ID)
+}
+
 func TestAuthLeaseReadsUseOneAuthorizedKeySnapshot(t *testing.T) {
 	tests := []struct {
 		name string

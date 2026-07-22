@@ -10182,6 +10182,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   覆盖校验。回归：
   `go test ./pkg/server/etcd -run TestJWTProviderRevisionFloatCoercionMatchesEtcd -count=1`
   通过。
+- A596 对齐 Lease read 的 future JWT revision 后置检查：
+  对照 `/root/etcd/server/etcdserver/v3_server.go` 的 `checkLeaseTimeToLive` 与
+  `checkLeaseLeases`，上游 lease TTL(Keys=true)/Leases 的 key 授权先由
+  `IsRangePermitted` 拒绝旧 revision；授权完成后的复查比较的是 auth store 是否在请求
+  期间变化，而不是 token revision 是否等于当前 revision。因此携带 future auth revision
+  的合法 JWT 会通过 lease key 读取。KubeBrain 旧 `authorizeLeaseKeys` 复用
+  `ensureAuthRevision`，把 future JWT 误判为 `ErrAuthOldRevision`。现在 lease key
+  授权后只比较进入请求时的 auth snapshot revision 与最新 revision；旧 token、权限不足
+  和并发 auth mutation 仍按 etcd 错误返回。回归：
+  `go test ./pkg/server/etcd -run TestAuthLeaseFutureJWTRevisionMatchesEtcd -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

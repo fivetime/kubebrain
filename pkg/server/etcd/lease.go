@@ -492,7 +492,7 @@ func (m *leaseManager) authorizeLeaseKeys(ctx context.Context, caller *authCalle
 			return err
 		}
 	}
-	return m.srv.ensureAuthRevision(ctx, caller)
+	return m.srv.ensureAuthStoreRevisionUnchanged(ctx, caller)
 }
 
 func (m *leaseManager) ensureLeaseExists(id int64) error {
