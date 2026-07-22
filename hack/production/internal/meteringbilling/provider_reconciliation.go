@@ -430,6 +430,7 @@ func (r *ProviderReconciler) Process(ctx context.Context) (ProviderReconciliatio
 	if _, err := parseBlobReceipt(
 		output, ProviderReconciliationFormat, r.ReconciliationID, r.Instance,
 		r.ObjectStoreID, r.Bucket, reconciliationKey, retainUntil, status.SHA256, status.Bytes,
+		r.RetentionMode,
 	); err != nil {
 		return ProviderReconciliation{}, output, err
 	}
@@ -453,7 +454,7 @@ func (r *ProviderReconciler) readImmutable(
 	}
 	receipt, err := parseBlobReceipt(
 		output, format, artifactID, r.Instance, r.ObjectStoreID, r.Bucket,
-		objectKey, minRetainUntil, "", 0,
+		objectKey, minRetainUntil, "", 0, "",
 	)
 	if err != nil {
 		return Source{}, output, err

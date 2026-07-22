@@ -214,6 +214,7 @@ func (b *Biller) Process(ctx context.Context) (Charge, []byte, error) {
 	if _, err := parseBlobReceipt(
 		output, charge.Format, chargeArtifactID, b.Instance, b.ObjectStoreID,
 		b.Bucket, chargeKey, retainUntil, status.SHA256, status.Bytes,
+		b.RetentionMode,
 	); err != nil {
 		return Charge{}, output, err
 	}
@@ -241,7 +242,7 @@ func (b *Biller) readImmutable(
 	}
 	receipt, err := parseBlobReceipt(
 		output, format, artifactID, objectInstance, b.ObjectStoreID,
-		b.Bucket, objectKey, minRetainUntil, "", 0,
+		b.Bucket, objectKey, minRetainUntil, "", 0, "",
 	)
 	if err != nil {
 		return Source{}, output, err
@@ -286,6 +287,7 @@ func parseBlobReceipt(
 	minRetainUntil int64,
 	expectedSHA string,
 	expectedBytes int64,
+	expectedRetentionMode string,
 ) (objectReceipt, error) {
 	var receipt objectReceipt
 	decoder := json.NewDecoder(bytes.NewReader(data))
@@ -309,6 +311,9 @@ func parseBlobReceipt(
 		(receipt.RetentionMode != "COMPLIANCE" && receipt.RetentionMode != "GOVERNANCE") ||
 		receipt.RetainUntilUnix < minRetainUntil || !receipt.RemoteVerified {
 		return receipt, errors.New("immutable object receipt does not match request")
+	}
+	if expectedRetentionMode != "" && receipt.RetentionMode != expectedRetentionMode {
+		return receipt, errors.New("immutable object receipt does not match requested retention mode")
 	}
 	if expectedSHA != "" &&
 		(receipt.ArtifactSHA256 != expectedSHA || receipt.ObjectBytes != expectedBytes ||

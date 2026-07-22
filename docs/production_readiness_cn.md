@@ -932,6 +932,8 @@ charge/adjustment、同 ID 不同内容或第二份 plan 都不能改变已批�
 adjustment，再用 `--kind=plan` 发布 plan；publisher 在任何 S3 请求前执行 strict
 schema/canonical、审批时间和保留期校验，并把已校验对象重写到临时 canonical frozen copy；
 Object Lock executor 只上传该 frozen copy，避免校验后原始输入路径被替换。
+所有 billing 写入型 Object Lock receipt 都必须精确回显本次请求的 retention mode、
+retain-until、digest 和 bytes；合法但非请求模式的 COMPLIANCE/GOVERNANCE receipt 会被拒绝。
 
 `kubebrain-metering-invoice-finalize` 先读 exact plan，再按 plan 顺序读取每个日
 charge 和 adjustment。它独立复核 receipt 与下载字节 digest、format/ID/instance/

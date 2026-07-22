@@ -399,7 +399,7 @@ func (p *PaymentLedgerProcessor) readImmutable(
 	}
 	receipt, err := parseBlobReceipt(
 		output, format, artifactID, p.Instance, p.ObjectStoreID, p.Bucket,
-		objectKey, minRetainUntil, "", 0,
+		objectKey, minRetainUntil, "", 0, "",
 	)
 	if err != nil {
 		return Source{}, output, err
@@ -478,6 +478,7 @@ func (p *PaymentLedgerPublisher) Publish(ctx context.Context) (SettlementStatus[
 	if _, err := parseBlobReceipt(
 		output, PaymentLedgerFormat, status.Value.ID, status.Value.Instance,
 		p.ObjectStoreID, p.Bucket, objectKey, retainUntil, status.SHA256, status.Bytes,
+		p.RetentionMode,
 	); err != nil {
 		return SettlementStatus[PaymentLedger]{}, output, err
 	}

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -60,6 +61,30 @@ func TestPublisherValidatesBeforeStableObjectLockUpload(t *testing.T) {
 	data, err := os.ReadFile(catalogPath)
 	require.NoError(t, err)
 	require.Equal(t, []byte("{}\n"), data)
+}
+
+func TestParseImmutableArchiveReceiptRejectsRetentionModeDrift(t *testing.T) {
+	receipt := objectReceipt{
+		Format:         "kubebrain.object-immutable-blob.receipt.v1",
+		ArtifactFormat: CatalogFormat, ArtifactID: "price-2026-07",
+		Instance: "global", ObjectStoreID: "store-a", Bucket: "metering",
+		ObjectKey: "prices/global/price-2026-07.json", VersionID: "catalog-version",
+		ArtifactSHA256: strings.Repeat("a", 64), ObjectBytes: 123,
+		RetentionMode: "GOVERNANCE", RetainUntilUnix: 2_000_000_000,
+		RemoteVerified: true, ArchivedAtUnix: 1_900_000_000,
+	}
+	data, err := json.Marshal(receipt)
+	require.NoError(t, err)
+
+	_, err = parseBlobReceipt(data, CatalogFormat, "price-2026-07", "global",
+		"store-a", "metering", "prices/global/price-2026-07.json",
+		2_000_000_000, receipt.ArtifactSHA256, receipt.ObjectBytes, "COMPLIANCE")
+	require.ErrorContains(t, err, "retention mode")
+
+	_, err = parseBlobReceipt(data, CatalogFormat, "price-2026-07", "global",
+		"store-a", "metering", "prices/global/price-2026-07.json",
+		2_000_000_000, receipt.ArtifactSHA256, receipt.ObjectBytes, "GOVERNANCE")
+	require.NoError(t, err)
 }
 
 func TestPublisherRejectsNonCanonicalCatalogBeforeExecutor(t *testing.T) {

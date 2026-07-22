@@ -165,6 +165,7 @@ func (p *ProviderStatementPublisher) Publish(ctx context.Context) (SettlementSta
 	if _, err := parseBlobReceipt(
 		output, ProviderStatementFormat, status.Value.ID, status.Value.Instance,
 		p.ObjectStoreID, p.Bucket, objectKey, retainUntil, status.SHA256, status.Bytes,
+		p.RetentionMode,
 	); err != nil {
 		return SettlementStatus[ProviderStatement]{}, output, err
 	}

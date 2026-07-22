@@ -81,6 +81,7 @@ func (p *Publisher) Publish(ctx context.Context) (CatalogStatus, []byte, error) 
 	if _, err := parseBlobReceipt(
 		output, status.Catalog.Format, status.Catalog.Version, p.PriceScope, p.ObjectStoreID,
 		p.Bucket, objectKey, retainUntil.Unix(), status.SHA256, status.Bytes,
+		p.RetentionMode,
 	); err != nil {
 		return CatalogStatus{}, output, err
 	}

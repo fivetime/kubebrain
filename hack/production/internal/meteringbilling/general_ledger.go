@@ -425,6 +425,7 @@ func (g *GeneralLedgerExporter) Process(ctx context.Context) (SettlementStatus[G
 	if _, err := parseBlobReceipt(
 		archiveOutput, GeneralLedgerExportFormat, g.ID, g.Instance,
 		g.ObjectStoreID, g.Bucket, ledgerKey, retainUntil, status.SHA256, status.Bytes,
+		g.RetentionMode,
 	); err != nil {
 		return SettlementStatus[GeneralLedgerExport]{}, archiveOutput, err
 	}
@@ -448,7 +449,7 @@ func (g *GeneralLedgerExporter) readImmutable(
 	}
 	receipt, err := parseBlobReceipt(
 		output, format, artifactID, g.Instance, g.ObjectStoreID, g.Bucket,
-		objectKey, minRetainUntil, "", 0,
+		objectKey, minRetainUntil, "", 0, "",
 	)
 	if err != nil {
 		return Source{}, output, err

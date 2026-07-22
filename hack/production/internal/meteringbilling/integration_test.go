@@ -222,6 +222,7 @@ func TestMeteringSettlementAgainstObjectLockStore(t *testing.T) {
 	chargeReceipt, err := parseBlobReceipt(
 		chargeOutput, ChargeFormatV2, artifactID, "instance-a", "a315-minio",
 		bucket, chargeKey, retainUntil, chargeStatus.SHA256, chargeStatus.Bytes,
+		"COMPLIANCE",
 	)
 	require.NoError(t, err)
 	chargeSource := Source{

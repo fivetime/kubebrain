@@ -112,7 +112,7 @@ func (p *SettlementPublisher) Publish(ctx context.Context) ([]byte, error) {
 	}
 	if _, err := parseBlobReceipt(
 		output, format, artifactID, instance, p.ObjectStoreID, p.Bucket, objectKey,
-		retainUntil, digest, objectBytes,
+		retainUntil, digest, objectBytes, p.RetentionMode,
 	); err != nil {
 		return output, err
 	}
@@ -263,7 +263,7 @@ func (f *InvoiceFinalizer) Process(ctx context.Context) (Invoice, []byte, error)
 	}
 	if _, err := parseBlobReceipt(
 		output, InvoiceFormat, f.PlanID, f.Instance, f.ObjectStoreID, f.Bucket,
-		invoiceKey, retainUntil, status.SHA256, status.Bytes,
+		invoiceKey, retainUntil, status.SHA256, status.Bytes, f.RetentionMode,
 	); err != nil {
 		return Invoice{}, output, err
 	}
@@ -287,7 +287,7 @@ func (f *InvoiceFinalizer) readImmutable(
 	}
 	receipt, err := parseBlobReceipt(
 		output, format, artifactID, f.Instance, f.ObjectStoreID, f.Bucket,
-		objectKey, minRetainUntil, "", 0,
+		objectKey, minRetainUntil, "", 0, "",
 	)
 	if err != nil {
 		return Source{}, output, err

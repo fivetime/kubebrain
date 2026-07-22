@@ -238,6 +238,7 @@ func (a *InvoiceNumberAssigner) Process(ctx context.Context) (SettlementStatus[I
 	if _, err := parseBlobReceipt(
 		archiveOutput, InvoiceNumberAssignmentFormat, a.ID, a.Instance,
 		a.ObjectStoreID, a.Bucket, objectKey, retainUntil, status.SHA256, status.Bytes,
+		a.RetentionMode,
 	); err != nil {
 		return SettlementStatus[InvoiceNumberAssignment]{}, archiveOutput, err
 	}
@@ -261,7 +262,7 @@ func (a *InvoiceNumberAssigner) readImmutable(
 	}
 	receipt, err := parseBlobReceipt(
 		output, format, artifactID, a.Instance, a.ObjectStoreID, a.Bucket,
-		objectKey, minRetainUntil, "", 0,
+		objectKey, minRetainUntil, "", 0, "",
 	)
 	if err != nil {
 		return Source{}, output, err

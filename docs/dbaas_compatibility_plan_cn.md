@@ -9154,6 +9154,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   read receipt；`go test ./hack/production/internal/meteringarchive -run 'Test.*ReadReceipt|TestRoller' -count=1`、
   `go test ./hack/production/... ./deploy/production` 与
   `go vet ./hack/production/... ./deploy/production` 通过。
+- A483 收紧 billing Object Lock 写入 receipt 的 retention mode 绑定：共享
+  `parseBlobReceipt` 新增可选 expected retention mode，所有 price/charge/settlement/
+  invoice/provider/payment/ledger 写入型 publisher 都传入本次请求的 `RETENTION_MODE`，
+  read receipt 仍按合法 mode 与 min retain 校验。这样返回合法但非请求策略的
+  COMPLIANCE/GOVERNANCE archive receipt 会 fail closed。回归覆盖 immutable archive receipt
+  retention mode drift；`go test ./hack/production/internal/meteringbilling -run 'Test.*Receipt|TestPublisher' -count=1`、
+  `go test ./hack/production/... ./deploy/production` 与
+  `go vet ./hack/production/... ./deploy/production` 通过。
 
 ### P2：运维兼容和长期验证
 
