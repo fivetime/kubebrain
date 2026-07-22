@@ -8862,6 +8862,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Pod，官方 client 自动切换三 endpoint，连续收到 20 个严格递增 Watch event（末 revision
   `467848433245618202`），线性/可串行读、Txn、Put 与 Delete 均通过且 transient failures 为 0；
   replacement Ready 且临时 Job/RBAC 由脚本清理。
+- A455 用 `/root/etcd` 临时 reference 实例重跑 destructive differential，发现 `math.MaxInt64`
+  Watch 在写入后由客户端取消时，KubeBrain 的 cancel header 仍取 event-published watermark，而
+  reference etcd 已返回 committed revision。现 client cancel 保持无 read barrier，但取 current revision；
+  确定性 published=70/current=71 回归、完整 etcd server 普通测试、race（235.673 秒）、vet 与
+  Staticcheck 均通过。干净 `dc23b47` archive 构建的 A455 镜像在真实 TiKV/PD 集群滚动到 3/3 后，
+  四类 Watch revision boundary 的 reference differential 在 1.447 秒完全通过，完整 release gate
+  亦通过。差分 runner 同时支持从指定 Pod 检查 cluster-local MemberList URL，并将宿主 reference
+  `ETCDCTL_BIN` 与 Pod 内 `ETCDCTL_EXEC_BIN` 分离；host NodePort client 的 AutoSync 仍必须配置对
+  该网络域可达的 `--advertise-client-urls`，不能把开发集群内 Service URL 当作外部发布地址。
 
 ### P1：通用服务能力
 
