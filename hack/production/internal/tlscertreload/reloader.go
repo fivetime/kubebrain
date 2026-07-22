@@ -5,9 +5,13 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
+	"io"
+	"os"
 	"sync/atomic"
 	"time"
 )
+
+const maxTLSCertificateFileBytes int64 = 1 << 20
 
 type Reloader struct {
 	certFile string
@@ -27,7 +31,7 @@ func New(certFile, keyFile string) (*Reloader, error) {
 }
 
 func (r *Reloader) Reload() error {
-	certificate, err := tls.LoadX509KeyPair(r.certFile, r.keyFile)
+	certificate, err := loadX509KeyPairBounded(r.certFile, r.keyFile)
 	if err != nil {
 		return fmt.Errorf("load TLS certificate: %w", err)
 	}
@@ -44,6 +48,34 @@ func (r *Reloader) Reload() error {
 	certificate.Leaf = leaf
 	r.current.Store(&certificate)
 	return nil
+}
+
+func loadX509KeyPairBounded(certFile, keyFile string) (tls.Certificate, error) {
+	certPEMBlock, err := readBoundedCertificateFile(certFile)
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+	keyPEMBlock, err := readBoundedCertificateFile(keyFile)
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+	return tls.X509KeyPair(certPEMBlock, keyPEMBlock)
+}
+
+func readBoundedCertificateFile(path string) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, maxTLSCertificateFileBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maxTLSCertificateFileBytes {
+		return nil, fmt.Errorf("%s exceeds %d bytes", path, maxTLSCertificateFileBytes)
+	}
+	return data, nil
 }
 
 func (r *Reloader) GetCertificate(*tls.ClientHelloInfo) (*tls.Certificate, error) {

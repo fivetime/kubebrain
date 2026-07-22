@@ -9561,6 +9561,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./pkg/endpoint -run 'Test(SecurityConfigRejectsOversizedMountedTLSFiles|TLSReloadRejectsOversizedRotatedFiles)' -race -count=1`、
   `go test ./pkg/endpoint -count=1`、`go vet ./pkg/endpoint` 与 `git diff --check`
   通过。
+- A532 收紧 production operation HTTPS 证书重载读取边界：A270/A271 已让 parameter
+  broker 与 operation API 在线重载 Kubernetes TLS Secret，但共用的
+  `hack/production/internal/tlscertreload` 仍通过 `tls.LoadX509KeyPair` 无界读取
+  `--tls-cert-file/--tls-key-file`。现在该 helper 与 endpoint TLS 路径一致，先分别按
+  1 MiB 上限读取 cert/key，再调用 `tls.X509KeyPair`；oversized 轮换会 fail closed 并继续
+  保留上一份有效证书，不会污染 readiness 或 HTTPS serving。回归覆盖 oversized cert/key
+  后 current serial 不变；
+  `go test ./hack/production/internal/tlscertreload -count=20`、
+  `go test ./hack/production/internal/tlscertreload ./hack/production/cmd/operation-api ./hack/production/cmd/operation-parameter-broker`、
+  `go test ./hack/production/... ./deploy/production`、`go vet ./hack/production/... ./deploy/production`
+  与 `git diff --check` 通过。
 
 ### P2：运维兼容和长期验证
 

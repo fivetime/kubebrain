@@ -55,6 +55,23 @@ func TestReloaderRotatesCertificateAndRetainsLastValidPair(t *testing.T) {
 	require.Equal(t, int64(2), peerSerial(t, listener.Addr().String()))
 }
 
+func TestReloaderRejectsOversizedCertificateFilesAndRetainsLastValidPair(t *testing.T) {
+	certFile := filepath.Join(t.TempDir(), "tls.crt")
+	keyFile := filepath.Join(filepath.Dir(certFile), "tls.key")
+	writeCertificate(t, certFile, keyFile, 1)
+	reloader, err := New(certFile, keyFile)
+	require.NoError(t, err)
+
+	writeOversizedCertificateFile(t, certFile)
+	require.ErrorContains(t, reloader.Reload(), "exceeds")
+	require.Equal(t, int64(1), currentSerial(t, reloader))
+
+	writeCertificate(t, certFile, keyFile, 2)
+	writeOversizedCertificateFile(t, keyFile)
+	require.ErrorContains(t, reloader.Reload(), "exceeds")
+	require.Equal(t, int64(1), currentSerial(t, reloader))
+}
+
 func TestReloaderRunReloadsAndReportsInvalidUpdates(t *testing.T) {
 	certFile := filepath.Join(t.TempDir(), "tls.crt")
 	keyFile := filepath.Join(filepath.Dir(certFile), "tls.key")
@@ -109,6 +126,15 @@ func TestReloaderRejectsInvalidConfigurationAndInterval(t *testing.T) {
 	require.Error(t, reloader.ValidAt(time.Now().Add(2*time.Hour)))
 }
 
+func currentSerial(t *testing.T, reloader *Reloader) int64 {
+	t.Helper()
+	certificate, err := reloader.GetCertificate(nil)
+	require.NoError(t, err)
+	leaf, err := x509.ParseCertificate(certificate.Certificate[0])
+	require.NoError(t, err)
+	return leaf.SerialNumber.Int64()
+}
+
 func peerSerial(t *testing.T, address string) int64 {
 	t.Helper()
 	connection, err := tls.Dial("tcp", address, &tls.Config{
@@ -119,6 +145,14 @@ func peerSerial(t *testing.T, address string) int64 {
 	defer connection.Close()
 	require.Len(t, connection.ConnectionState().PeerCertificates, 1)
 	return connection.ConnectionState().PeerCertificates[0].SerialNumber.Int64()
+}
+
+func writeOversizedCertificateFile(t *testing.T, path string) {
+	t.Helper()
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	require.NoError(t, err)
+	require.NoError(t, file.Truncate(maxTLSCertificateFileBytes+1))
+	require.NoError(t, file.Close())
 }
 
 func writeCertificate(t *testing.T, certFile, keyFile string, serial int64) {
