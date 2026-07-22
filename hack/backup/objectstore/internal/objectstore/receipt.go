@@ -2,7 +2,6 @@ package objectstore
 
 import (
 	"bytes"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -110,7 +109,7 @@ type BlobReadReceipt struct {
 func (r Receipt) Validate() error {
 	if r.Format != ReceiptFormat || r.Instance == "" || r.BackupID == "" || r.ObjectStoreID == "" ||
 		r.Bucket == "" || r.ObjectKey == "" || r.VersionID == "" ||
-		r.ArtifactFormat == "" || r.ArtifactSHA256 == "" || r.SnapshotRevision <= 0 ||
+		r.ArtifactFormat == "" || !validHexSHA256(r.ArtifactSHA256) || r.SnapshotRevision <= 0 ||
 		r.CreatedAtUnix <= 0 || r.Records < 0 || r.Leases < 0 || r.ObjectBytes <= 0 ||
 		(r.RetentionMode != "COMPLIANCE" && r.RetentionMode != "GOVERNANCE") ||
 		r.RetainUntilUnix <= r.UploadedAtUnix || !r.RemoteVerified || r.UploadedAtUnix <= 0 {
@@ -136,7 +135,7 @@ func ReadReceipt(path string) (Receipt, error) {
 
 func (r DeletionReceipt) Validate() error {
 	if r.Format != DeletionReceiptFormat || r.Instance == "" || r.BackupID == "" || r.ObjectStoreID == "" ||
-		r.Bucket == "" || r.ObjectKey == "" || r.VersionID == "" || r.ArtifactSHA256 == "" ||
+		r.Bucket == "" || r.ObjectKey == "" || r.VersionID == "" || !validHexSHA256(r.ArtifactSHA256) ||
 		(r.RetentionMode != "COMPLIANCE" && r.RetentionMode != "GOVERNANCE") ||
 		r.RetainUntilUnix <= 0 || !r.VersionAbsent || r.DeletedAtUnix != r.RetainUntilUnix {
 		return errors.New("object backup deletion receipt is incomplete")
@@ -178,8 +177,15 @@ func validHexSHA256(value string) bool {
 	if len(value) != 64 {
 		return false
 	}
-	_, err := hex.DecodeString(value)
-	return err == nil
+	for i := 0; i < len(value); i++ {
+		switch {
+		case value[i] >= '0' && value[i] <= '9':
+		case value[i] >= 'a' && value[i] <= 'f':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func ReadAuditReceipt(path string) (AuditReceipt, error) {

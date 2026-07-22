@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -485,7 +486,7 @@ func completeReceipt() Receipt {
 		Format: ReceiptFormat, Instance: "instance-a", BackupID: "backup-1",
 		ObjectStoreID: "store-a",
 		Bucket:        "backups", ObjectKey: "instance-a/backup-1.jsonl", VersionID: "version-1",
-		ArtifactFormat: backupfile.Format, ArtifactSHA256: "sha", SnapshotRevision: 1,
+		ArtifactFormat: backupfile.Format, ArtifactSHA256: strings.Repeat("a", 64), SnapshotRevision: 1,
 		CreatedAtUnix: 1, Records: 1, ObjectBytes: 1,
 		RetentionMode: "COMPLIANCE", RetainUntilUnix: 2_000_000_000,
 		RemoteVerified: true, UploadedAtUnix: 1_999_999_000,

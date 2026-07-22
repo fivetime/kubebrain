@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -153,6 +154,28 @@ func TestDeletionReceiptRequiresDeterministicRetentionBoundary(t *testing.T) {
 	require.ErrorContains(t, receipt.Validate(), "incomplete")
 }
 
+func TestReceiptsRejectNonLowercaseArtifactDigest(t *testing.T) {
+	backup := completeReceipt()
+	backup.ArtifactSHA256 = strings.Repeat("A", 64)
+	require.ErrorContains(t, backup.Validate(), "incomplete")
+
+	deletion := completeDeletionReceipt()
+	deletion.ArtifactSHA256 = strings.Repeat("B", 64)
+	require.ErrorContains(t, deletion.Validate(), "incomplete")
+
+	audit := completeAuditReceipt()
+	audit.ExecutionReceiptSHA256 = strings.Repeat("C", 64)
+	require.ErrorContains(t, audit.Validate(), "incomplete")
+
+	blob := completeBlobReceipt()
+	blob.ArtifactSHA256 = strings.Repeat("D", 64)
+	require.ErrorContains(t, blob.Validate(), "incomplete")
+
+	read := completeBlobReadReceipt()
+	read.ArtifactSHA256 = strings.Repeat("E", 64)
+	require.ErrorContains(t, read.Validate(), "incomplete")
+}
+
 func completeAuditReceipt() AuditReceipt {
 	return AuditReceipt{
 		Format: AuditReceiptFormat, OperationID: "operation-1", OperationUID: "uid-1",
@@ -162,5 +185,26 @@ func completeAuditReceipt() AuditReceipt {
 		VersionID: "version-audit", ArtifactSHA256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
 		ObjectBytes: 1, RetentionMode: "COMPLIANCE", RetainUntilUnix: 20,
 		RemoteVerified: true, ArchivedAtUnix: 10,
+	}
+}
+
+func completeBlobReceipt() BlobReceipt {
+	return BlobReceipt{
+		Format: BlobReceiptFormat, ArtifactFormat: "sample.v1", ArtifactID: "sample-1",
+		Instance: "instance-a", ObjectStoreID: "store-a", Bucket: "backups",
+		ObjectKey: "blobs/sample-1.json", VersionID: "version-blob",
+		ArtifactSHA256: strings.Repeat("a", 64), ObjectBytes: 1,
+		RetentionMode: "COMPLIANCE", RetainUntilUnix: 20, RemoteVerified: true,
+		ArchivedAtUnix: 10,
+	}
+}
+
+func completeBlobReadReceipt() BlobReadReceipt {
+	return BlobReadReceipt{
+		Format: BlobReadReceiptFormat, ArtifactFormat: "sample.v1", ArtifactID: "sample-1",
+		Instance: "instance-a", ObjectStoreID: "store-a", Bucket: "backups",
+		ObjectKey: "blobs/sample-1.json", VersionID: "version-blob",
+		ArtifactSHA256: strings.Repeat("a", 64), ObjectBytes: 1,
+		RetentionMode: "COMPLIANCE", RetainUntilUnix: 20, RemoteVerified: true,
 	}
 }

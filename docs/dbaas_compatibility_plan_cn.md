@@ -9691,6 +9691,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   大写 digest 和 archive receipt artifact digest 被拒绝；
   `go test ./hack/production/operationaudit ./hack/production/internal/operationauditbuilder ./hack/production/internal/operationauditrelease -run 'Test(OperationAudit|ArchiveReceipt|FromOperation|Release)' -count=20`
   通过。
+- A545 收紧 objectstore receipt digest schema：`hack/backup/objectstore/internal/objectstore`
+  的 `validHexSHA256` 同样通过 `hex.DecodeString`，会接受大写 hex；backup receipt 和
+  deletion receipt 还只要求 `artifact_sha256` 非空，测试 fixture 甚至使用 `"sha"`。
+  现在 backup/deletion/audit/blob/read/inventory/usage 共用的小型 receipt 校验都只接受
+  小写 `[0-9a-f]{64}`，backup/deletion receipt 也要求 artifact digest 为真实 SHA-256。
+  回归覆盖 backup、deletion、audit、blob 和 blob-read receipt 的大写 digest 被拒绝；
+  `(cd hack/backup/objectstore && go test ./internal/objectstore -run 'Test(ReceiptsRejectNonLowercaseArtifactDigest|WriteReceiptAtomicIsIdempotentAndNonOverwriting|ReceiptReadersRejectAmbiguousJSON|DeletionReceiptRequiresDeterministicRetentionBoundary|Upload|Delete)' -count=20)`
+  通过。
 
 ### P2：运维兼容和长期验证
 
