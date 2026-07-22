@@ -8709,6 +8709,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   advertised endpoint health 和 PD/TiKV 3+3 topology 全部通过；临时代理已删除。本轮不改变
   A433 数据面镜像。
 
+#### A438 不可变 TiKV/PD cluster identity 发布门禁
+
+- A382 已锁定 `--pd-addrs` 字符串，但稳定 Service DNS 仍可能被错误重指向另一套 PD/TiKV；
+  keyspace、参数、Pod readiness 和 endpoint health 均可能继续通过，实例却已进入错误存储故障
+  域。TiKV backend 的 response cluster ID 来自 PD `GetClusterID`，当前 TidbCluster status、PD
+  API 和 KubeBrain Status/MemberList 均报告 `7662961163671170154`，可作为实例创建 receipt
+  中独立于 DNS 的 immutable storage identity。
+- 提交 `0b5f0df` 新增必填正整数 `EXPECTED_CLUSTER_ID`。发布门禁首先要求 TidbCluster
+  `.status.clusterID` 精确匹配，再要求 KubeBrain 运行时 MemberList header 的 cluster ID 精确
+  匹配；任一缺失或漂移均 fail closed。比较通过 `jq -r ... | tostring` 后做字符串等值，不把
+  64 位 ID 转成 shell/JSON 浮点，避免超过 2^53 后精度丢失。成功审计记录同时输出 cluster ID。
+- 集成测试覆盖缺失输入、TidbCluster cluster ID 错误和 KubeBrain runtime cluster ID 错误，
+  连同现有发布矩阵普通 20 轮、race 10 轮通过。`bash -n`、root 全量测试、vet、staticcheck
+  v0.7.0 和 diff check 均通过。真实 in-cluster 完整门禁使用上述 64 位 ID 成功，证明
+  TidbCluster 与 KubeBrain 两侧身份一致且无精度截断；三 KubeBrain 副本 Ready、零重启，
+  endpoint health 正常且 alarm 为空。临时 exec 代理已删除，本轮不改变 A433 数据面镜像。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
