@@ -9131,6 +9131,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   ./hack/production/internal/meteringbilling -run 'TestPaymentLedgerProcessor' -count=1`、
   `go test ./hack/production/... ./deploy/production` 与
   `go vet ./hack/production/... ./deploy/production` 通过。
+- A480 收紧 object storage metering sample/rollup archive receipt 校验：sample archive
+  receipt 必须精确等于请求 retention mode，rollup archive receipt 新增 trailing JSON
+  拒绝并精确绑定请求 retention mode。这样 Object Lock executor 返回合法但非本次请求策略的
+  COMPLIANCE/GOVERNANCE receipt，或在 rollup receipt 后拼接额外 JSON，都会 fail closed。
+  回归覆盖 sample retention mode drift、rollup retention mode drift 和 rollup trailing JSON；
+  `go test ./hack/production/internal/meteringstorage -run 'Test.*ArchiveReceipt' -count=1`、
+  `go test ./hack/production/... ./deploy/production` 与
+  `go vet ./hack/production/... ./deploy/production` 通过。
 
 ### P2：运维兼容和长期验证
 

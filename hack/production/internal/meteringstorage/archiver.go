@@ -155,7 +155,7 @@ func (a *Archiver) Process(ctx context.Context) (Snapshot, []byte, error) {
 	}
 	if err := validateBlobReceipt(
 		output, artifactID, a.Instance, a.MeteringObjectStoreID, a.MeteringBucket,
-		objectKey, retainUntil, status,
+		objectKey, a.RetentionMode, retainUntil, status,
 	); err != nil {
 		return Snapshot{}, output, err
 	}
@@ -214,6 +214,7 @@ func equalStrings(left, right []string) bool {
 func validateBlobReceipt(
 	data []byte,
 	artifactID, instance, objectStoreID, bucket, objectKey string,
+	retentionMode string,
 	retainUntil int64,
 	status SnapshotStatus,
 ) error {
@@ -247,7 +248,7 @@ func validateBlobReceipt(
 		receipt.Instance != instance || receipt.ObjectStoreID != objectStoreID ||
 		receipt.Bucket != bucket || receipt.ObjectKey != objectKey || receipt.VersionID == "" ||
 		receipt.ArtifactSHA256 != status.SHA256 || receipt.ObjectBytes != status.Bytes ||
-		(receipt.RetentionMode != "COMPLIANCE" && receipt.RetentionMode != "GOVERNANCE") ||
+		receipt.RetentionMode != retentionMode ||
 		receipt.RetainUntilUnix != retainUntil || !receipt.RemoteVerified ||
 		receipt.ArchivedAtUnix <= 0 || receipt.ArchivedAtUnix >= retainUntil {
 		return errors.New("object storage sample archive receipt does not match artifact")

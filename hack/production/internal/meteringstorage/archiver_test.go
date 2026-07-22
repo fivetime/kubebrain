@@ -67,6 +67,33 @@ func TestArchiverMeasuresBeforeArchivingAndIsDeterministic(t *testing.T) {
 	require.Equal(t, int64(303), first.TotalObjectBytes)
 }
 
+func TestValidateObjectStorageSampleArchiveReceiptRejectsRetentionModeDrift(t *testing.T) {
+	status := SnapshotStatus{SHA256: strings.Repeat("c", 64), Bytes: 123}
+	artifactID := "instance-a:1784505600:1784509200"
+	objectKey := "metering-storage-samples/instance-a/2026/07/17/00/1784505600-1784509200.json"
+	retainUntil := int64(2_006_400_000)
+	receipt := blobReceipt{
+		Format: "kubebrain.object-immutable-blob.receipt.v1", ArtifactFormat: SnapshotFormat,
+		ArtifactID: artifactID, Instance: "instance-a", ObjectStoreID: "metering-store",
+		Bucket: "metering", ObjectKey: objectKey, VersionID: "version-1",
+		ArtifactSHA256: status.SHA256, ObjectBytes: status.Bytes,
+		RetentionMode: "GOVERNANCE", RetainUntilUnix: retainUntil,
+		RemoteVerified: true, ArchivedAtUnix: 1_784_510_820,
+	}
+	data, err := json.Marshal(receipt)
+	require.NoError(t, err)
+
+	err = validateBlobReceipt(data, artifactID, "instance-a", "metering-store",
+		"metering", objectKey, "COMPLIANCE", retainUntil, status)
+	require.ErrorContains(t, err, "does not match artifact")
+
+	receipt.RetentionMode = "COMPLIANCE"
+	data, err = json.Marshal(receipt)
+	require.NoError(t, err)
+	require.NoError(t, validateBlobReceipt(data, artifactID, "instance-a", "metering-store",
+		"metering", objectKey, "COMPLIANCE", retainUntil, status))
+}
+
 func TestArchiverRejectsUsageReceiptMismatchBeforeArchive(t *testing.T) {
 	now := time.Unix(1_784_509_800, 0).UTC()
 	archiveCalls := 0

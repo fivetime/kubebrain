@@ -158,26 +158,30 @@ func (r *Roller) Process(ctx context.Context) (Rollup, []byte, error) {
 		)
 	}
 	if err := validateRollupBlobReceipt(output, artifactID, r.Instance,
-		r.ObjectStoreID, r.Bucket, objectKey, retainUntil, status); err != nil {
+		r.ObjectStoreID, r.Bucket, objectKey, r.RetentionMode, retainUntil, status); err != nil {
 		return Rollup{}, output, err
 	}
 	return rollup, output, nil
 }
 
 func validateRollupBlobReceipt(data []byte, artifactID, instance, store, bucket, key string,
-	retainUntil int64, status RollupStatus) error {
+	retentionMode string, retainUntil int64, status RollupStatus) error {
 	var receipt blobReceipt
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&receipt); err != nil {
 		return err
 	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return errors.New("object storage rollup archive receipt contains trailing JSON")
+	}
 	if receipt.Format != "kubebrain.object-immutable-blob.receipt.v1" ||
 		receipt.ArtifactFormat != RollupFormat || receipt.ArtifactID != artifactID ||
 		receipt.Instance != instance || receipt.ObjectStoreID != store ||
 		receipt.Bucket != bucket || receipt.ObjectKey != key || receipt.VersionID == "" ||
 		receipt.ArtifactSHA256 != status.SHA256 || receipt.ObjectBytes != status.Bytes ||
-		receipt.RetainUntilUnix != retainUntil || !receipt.RemoteVerified ||
+		receipt.RetentionMode != retentionMode || receipt.RetainUntilUnix != retainUntil || !receipt.RemoteVerified ||
 		receipt.ArchivedAtUnix <= 0 || receipt.ArchivedAtUnix >= retainUntil {
 		return errors.New("object storage rollup archive receipt does not match artifact")
 	}

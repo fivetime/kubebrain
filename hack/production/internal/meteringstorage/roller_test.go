@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"os"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -77,4 +78,36 @@ func TestStorageRollerReadsEveryExactSnapshotBeforeArchive(t *testing.T) {
 	require.Equal(t, 24, readCalls)
 	require.Equal(t, 1, archiveCalls)
 	require.Equal(t, int64(24*303*3600), rollup.ObjectStorageByteSeconds)
+}
+
+func TestValidateObjectStorageRollupArchiveReceiptRejectsRetentionModeAndTrailingJSON(t *testing.T) {
+	status := RollupStatus{SHA256: strings.Repeat("d", 64), Bytes: 456}
+	artifactID := "instance-a:1784505600:1784592000"
+	objectKey := "metering-storage-rollups/instance-a/2026/07/17/1784505600-1784592000.json"
+	retainUntil := int64(2_006_400_000)
+	receipt := blobReceipt{
+		Format: "kubebrain.object-immutable-blob.receipt.v1", ArtifactFormat: RollupFormat,
+		ArtifactID: artifactID, Instance: "instance-a", ObjectStoreID: "metering-store",
+		Bucket: "metering", ObjectKey: objectKey, VersionID: "rollup-version",
+		ArtifactSHA256: status.SHA256, ObjectBytes: status.Bytes,
+		RetentionMode: "GOVERNANCE", RetainUntilUnix: retainUntil,
+		RemoteVerified: true, ArchivedAtUnix: 1_784_592_000,
+	}
+	data, err := json.Marshal(receipt)
+	require.NoError(t, err)
+
+	err = validateRollupBlobReceipt(data, artifactID, "instance-a", "metering-store",
+		"metering", objectKey, "COMPLIANCE", retainUntil, status)
+	require.ErrorContains(t, err, "does not match artifact")
+
+	receipt.RetentionMode = "COMPLIANCE"
+	data, err = json.Marshal(receipt)
+	require.NoError(t, err)
+	require.NoError(t, validateRollupBlobReceipt(data, artifactID, "instance-a",
+		"metering-store", "metering", objectKey, "COMPLIANCE", retainUntil, status))
+
+	data = append(data, []byte(`{"trailing":true}`)...)
+	err = validateRollupBlobReceipt(data, artifactID, "instance-a", "metering-store",
+		"metering", objectKey, "COMPLIANCE", retainUntil, status)
+	require.ErrorContains(t, err, "trailing JSON")
 }

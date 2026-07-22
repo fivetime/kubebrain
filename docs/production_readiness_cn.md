@@ -881,6 +881,9 @@ digest metadata、COMPLIANCE/GOVERNANCE mode 与 retain-until。总字节使用 
 source 凭据只能 List/Head/GetRetention 实例 prefix，evidence 凭据只能写/读
 `metering-storage-samples` 与 `metering-storage-rollups`；二进制通过两套显式前缀环境
 变量启动子执行器，禁止让 source 写权限或 evidence 凭据访问备份内容。
+sample 与 rollup 归档 receipt 必须精确回显本次请求的 retention mode、绝对
+retain-until、version ID、digest 和 bytes；receipt parser 使用 unknown/trailing JSON
+拒绝，避免把合法但错误策略的 Object Lock 写入误当作计量证据。
 
 每日 UTC 00:57 的 Roller 只读取前一 UTC 日 24 个 exact snapshot；任一缺槽、时间窗
 超限、scope/allowlist 变化、digest/bytes/retention 不匹配都会 fail closed。
