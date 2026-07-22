@@ -75,3 +75,33 @@ func TestFromOperationBindsHighRiskApproval(t *testing.T) {
 	_, err = FromOperation(object)
 	require.ErrorContains(t, err, "approval evidence")
 }
+
+func TestFromOperationRejectsUnsafeIdentityMetadata(t *testing.T) {
+	object := operationForAuditBuilder()
+	object.SetUID("uid/1")
+
+	_, err := FromOperation(object)
+	require.ErrorContains(t, err, "incomplete")
+}
+
+func operationForAuditBuilder() *unstructured.Unstructured {
+	return &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "dbaas.kubebrain.io/v1alpha1",
+		"kind":       "KubeBrainOperation",
+		"metadata": map[string]any{
+			"name": "backup-1", "namespace": "operations",
+			"uid": "uid-1", "generation": int64(1),
+		},
+		"spec": map[string]any{
+			"operationID": "backup-1", "tenant": "tenant-a", "requestedBy": "user-123",
+			"instance": "instance-a", "type": "Backup",
+			"parametersSHA256": strings.Repeat("a", 64), "maxAttempts": int64(3),
+		},
+		"status": map[string]any{
+			"phase": "Succeeded", "owner": "worker-a", "attempt": int64(1),
+			"observedGeneration": int64(1), "startedAtUnix": int64(100),
+			"startedAtUnixNano": int64(100_000_000_001), "completedAtUnix": int64(101),
+			"receiptSHA256": strings.Repeat("b", 64), "message": "done",
+		},
+	}}
+}

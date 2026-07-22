@@ -92,7 +92,8 @@ func (a Artifact) Validate() error {
 	operationTypeValid := a.Type == "Backup" || a.Type == "BackupDeletion" || a.Type == "RestoreCutover" ||
 		a.Type == "PostRestoreAudit" || a.Type == "CertificateRotation" || a.Type == "Destroy"
 	if a.Format != Format || a.APIVersion != "dbaas.kubebrain.io/v1alpha1" ||
-		a.Namespace == "" || a.Name == "" || a.UID == "" || a.Generation <= 0 ||
+		!validAuditIdentityValue(a.Namespace) || !validAuditIdentityValue(a.Name) ||
+		!validAuditIdentityValue(a.UID) || a.Generation <= 0 ||
 		a.OperationID == "" || a.Instance == "" || !operationTypeValid ||
 		!validSHA256(a.ParametersSHA256) || a.MaxAttempts <= 0 ||
 		(a.Phase != "Succeeded" && a.Phase != "Failed") ||
@@ -119,6 +120,12 @@ func (a Artifact) Validate() error {
 		return errors.New("low-risk operation audit cannot carry approval evidence")
 	}
 	return nil
+}
+
+func validAuditIdentityValue(value string) bool {
+	return validReceiptScopeValue(value) &&
+		!strings.Contains(value, "/") &&
+		value != "." && value != ".."
 }
 
 func validSHA256(value string) bool {

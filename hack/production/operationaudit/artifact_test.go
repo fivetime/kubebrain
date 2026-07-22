@@ -76,6 +76,56 @@ func TestOperationAuditRejectsNonterminalAndInvalidReceipt(t *testing.T) {
 	require.ErrorContains(t, artifact.Validate(), "incomplete")
 }
 
+func TestOperationAuditRejectsUnsafeIdentityFields(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*Artifact)
+	}{
+		{
+			name: "namespace_parent_segment",
+			mutate: func(artifact *Artifact) {
+				artifact.Namespace = "../operations"
+			},
+		},
+		{
+			name: "namespace_unicode_space",
+			mutate: func(artifact *Artifact) {
+				artifact.Namespace = "operations\u00a0a"
+			},
+		},
+		{
+			name: "name_slash",
+			mutate: func(artifact *Artifact) {
+				artifact.Name = "backup/1"
+			},
+		},
+		{
+			name: "name_dot",
+			mutate: func(artifact *Artifact) {
+				artifact.Name = "."
+			},
+		},
+		{
+			name: "uid_control_byte",
+			mutate: func(artifact *Artifact) {
+				artifact.UID = "uid-1\x00"
+			},
+		},
+		{
+			name: "uid_invalid_utf8",
+			mutate: func(artifact *Artifact) {
+				artifact.UID = string([]byte{'u', 0xff})
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			artifact := terminalArtifact()
+			tc.mutate(&artifact)
+			require.ErrorContains(t, artifact.Validate(), "incomplete")
+		})
+	}
+}
+
 func TestArchiveReceiptRejectsUppercaseDigest(t *testing.T) {
 	artifact := terminalArtifact()
 	receipt := validArchiveReceipt(artifact)

@@ -10387,6 +10387,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   生成对象归档请求。回归：
   `go test ./hack/production/internal/operationarchiver -run 'TestArchiveProcessorRejectsUnsafeOperationIdentityBeforeExecutor|TestArchiveProcessorUsesStableIdentityAndReleasesFinalizer' -count=1`
   通过。
+- A616 将 operation audit artifact 身份字段门禁上移：
+  A615 在 archiver 调 executor 前阻断异常 namespace/name/UID，但不可变 audit
+  artifact 自身仍会接受这些字段，只要非空即可。旧对象、fake-client、离线 artifact
+  writer 或手工审计文件仍可能写出带 `/`、`.`、`..`、空白、控制字符或无效 UTF-8 的
+  operation 身份，后续 release/归档链路再 fail closed，审计制品本身已经被污染。
+  现在 `operationaudit.Artifact.Validate` 要求 namespace、name、UID 都是单段
+  key-safe 身份；`operationauditbuilder.FromOperation` 自动复用该门禁，archiver
+  的 executor-before-fail 断言也调整为更早的 artifact validator 失败。回归：
+  `go test ./hack/production/operationaudit ./hack/production/internal/operationauditbuilder ./hack/production/internal/operationarchiver -run 'TestOperationAuditRejectsUnsafeIdentityFields|TestFromOperationRejectsUnsafeIdentityMetadata|TestArchiveProcessorRejectsUnsafeOperationIdentityBeforeExecutor|TestArchiveProcessorUsesStableIdentityAndReleasesFinalizer' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

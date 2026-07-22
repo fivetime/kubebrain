@@ -169,7 +169,7 @@ func TestArchiveProcessorRejectsUnsafeOperationIdentityBeforeExecutor(t *testing
 			}
 
 			err = processor.Process(context.Background(), object)
-			require.ErrorContains(t, err, "key-safe metadata")
+			require.ErrorContains(t, err, "incomplete")
 			require.False(t, called)
 		})
 	}
