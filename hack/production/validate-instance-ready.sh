@@ -190,4 +190,20 @@ if ! ETCDCTL_API=3 "$ETCDCTL" --endpoints="$ENDPOINT" endpoint health; then
   exit 1
 fi
 
+# clientv3 Sync/AutoSync replaces its bootstrap endpoints with these URLs.
+# Prove every replacement endpoint from the same network and credential context
+# as this release gate; validating only ENDPOINT can publish a cluster that
+# disconnects clients immediately after their first successful MemberList.
+IFS=',' read -r -a advertised_client_urls <<<"$EXPECTED_ADVERTISE_CLIENT_URLS"
+for advertised_url in "${advertised_client_urls[@]}"; do
+  if [[ -z "$advertised_url" ]]; then
+    echo "KubeBrain advertised client URL list contains an empty entry" >&2
+    exit 1
+  fi
+  if ! ETCDCTL_API=3 "$ETCDCTL" --endpoints="$advertised_url" endpoint health; then
+    echo "KubeBrain advertised client URL is unreachable from the release gate network: $advertised_url" >&2
+    exit 1
+  fi
+done
+
 echo "KubeBrain instance release gate passed: endpoint=${ENDPOINT} image=${EXPECTED_IMAGE} keyspace=${EXPECTED_KEYSPACE} pd_addrs=${EXPECTED_PD_ADDRS} quota=${EXPECTED_QUOTA_BACKEND_BYTES} advertise_client_urls=${EXPECTED_ADVERTISE_CLIENT_URLS} replicas=${EXPECTED_KUBEBRAIN_REPLICAS} PD/TiKV=${EXPECTED_PD_REPLICAS}/${EXPECTED_TIKV_REPLICAS}"

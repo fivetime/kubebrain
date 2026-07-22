@@ -69,7 +69,9 @@ KubeBrain/PD/TiKV 均不可达。任何失败都返回非零，trap 清理所有
 向集群外提供 DBaaS endpoint 时，平台必须替换为所有目标客户端可解析、可路由的公共
 `http(s)` URL。TLS URL 的主机名必须存在于服务端证书 SAN，并与客户端验证名称一致；
 MemberList 会把该列表交给 clientv3 替换原 endpoint 集合，错误的内部 DNS 会使已成功
-bootstrap 的客户端在下一次 AutoSync 后整体断连。
+bootstrap 的客户端在下一次 AutoSync 后整体断连。实例发布门禁必须从目标客户端所在的
+网络域运行；它会逐一探测逗号分隔的 advertised URL，不能从仅能访问 bootstrap endpoint
+但无法解析最终地址的控制面网络执行后仍宣称发布成功。
 
 每个实例必须使用全局唯一且创建后不可变的 `--keyspace`。production 基线中的
 `kubebrain-system` 仅是清单默认值；DBaaS 控制面实例化清单时必须替换为稳定实例 ID，并
@@ -337,10 +339,11 @@ ETCDCTL_KEY=/run/secrets/client.key \
 replicas 和 revision 全部收敛，再校验期望 PD/TiKV 数量；随后要求 KubeBrain
 StatefulSet observed generation、ready/updated replicas、revision、精确 image，以及 Pod
 template 中唯一的 `--keyspace`、`--pd-addrs`、`--quota-backend-bytes` 和 `--advertise-client-urls` 全部匹配，最后
-通过官方 `etcdctl endpoint health` 提交线性化 proposal。缺少 `EXPECTED_IMAGE`/
+通过官方 `etcdctl endpoint health` 对 bootstrap `ENDPOINT` 和每个 advertised client URL
+分别提交线性化 proposal。缺少 `EXPECTED_IMAGE`/
 `EXPECTED_KEYSPACE`/`EXPECTED_PD_ADDRS`/`EXPECTED_QUOTA_BACKEND_BYTES`/`EXPECTED_ADVERTISE_CLIENT_URLS`/`ENDPOINT`、任一状态
 缺失、旧 revision、错误拓扑、错误镜像、quota/client URL 缺失/重复/不匹配或 endpoint
-不健康都会 fail closed。
+不健康、advertised URL 列表含空成员或任一地址从门禁网络不可达都会 fail closed。
 
 生产必须使用 image digest；脚本做精确字符串比较，允许本地验证使用不可变测试 tag，
 但不会替控制面判断 tag 是否可变。该门禁可关闭创建/扩缩/升级的“数据面已就绪”阶段，

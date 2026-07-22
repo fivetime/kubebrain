@@ -12,14 +12,16 @@ import (
 
 func TestValidateInstanceReady(t *testing.T) {
 	for _, tc := range []struct {
-		name       string
-		image      string
-		kubeStatus string
-		kubeArgs   string
-		topology   string
-		healthOK   bool
-		wantOK     bool
-		wantOutput string
+		name                     string
+		image                    string
+		kubeStatus               string
+		kubeArgs                 string
+		topology                 string
+		healthOK                 bool
+		advertisedURLs           string
+		unreachableAdvertisedURL string
+		wantOK                   bool
+		wantOutput               string
 	}{
 		{
 			name:       "converged release",
@@ -29,6 +31,16 @@ func TestValidateInstanceReady(t *testing.T) {
 			healthOK:   true,
 			wantOK:     true,
 			wantOutput: "release gate passed",
+		},
+		{
+			name:           "multiple reachable advertised client URLs",
+			image:          "registry/kubebrain@sha256:abc",
+			kubeStatus:     "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:abc",
+			topology:       "3\t3",
+			healthOK:       true,
+			advertisedURLs: "https://instance-a.example:2379,https://instance-b.example:2379",
+			wantOK:         true,
+			wantOutput:     "--endpoints=https://instance-b.example:2379",
 		},
 		{
 			name:       "wrong quota",
@@ -160,6 +172,25 @@ func TestValidateInstanceReady(t *testing.T) {
 			topology:   "3\t3",
 			wantOutput: "endpoint health failed",
 		},
+		{
+			name:                     "unreachable advertised client URL",
+			image:                    "registry/kubebrain@sha256:abc",
+			kubeStatus:               "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:abc",
+			topology:                 "3\t3",
+			healthOK:                 true,
+			advertisedURLs:           "https://instance.example:2379,https://unreachable.example:2379",
+			unreachableAdvertisedURL: "https://unreachable.example:2379",
+			wantOutput:               "advertised client URL is unreachable",
+		},
+		{
+			name:           "empty advertised client URL entry",
+			image:          "registry/kubebrain@sha256:abc",
+			kubeStatus:     "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:abc",
+			topology:       "3\t3",
+			healthOK:       true,
+			advertisedURLs: "https://instance.example:2379,,https://other.example:2379",
+			wantOutput:     "empty entry",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -185,8 +216,12 @@ fi
 			fakeEtcdctl := filepath.Join(dir, "etcdctl")
 			require.NoError(t, os.WriteFile(fakeEtcdctl, []byte(`#!/usr/bin/env bash
 set -euo pipefail
+if [[ -n "$FAKE_UNREACHABLE_ADVERTISED_URL" && "$*" == *"--endpoints=$FAKE_UNREACHABLE_ADVERTISED_URL"* ]]; then
+  printf 'unreachable\n' >&2
+  exit 1
+fi
 if [[ "$FAKE_HEALTH_OK" == "true" && "$*" == *"endpoint health"* ]]; then
-  printf 'healthy\n'
+  printf 'healthy %s\n' "$*"
   exit 0
 fi
 printf 'unhealthy\n' >&2
@@ -194,8 +229,12 @@ exit 1
 `), 0o755))
 
 			kubeArgs := tc.kubeArgs
+			advertisedURLs := tc.advertisedURLs
+			if advertisedURLs == "" {
+				advertisedURLs = "https://instance.example:2379"
+			}
 			if kubeArgs == "" {
-				kubeArgs = "--port=3379\n--keyspace=instance-a\n--pd-addrs=kb-pd.storage.svc:2379\n--quota-backend-bytes=429496729600\n--advertise-client-urls=https://instance.example:2379"
+				kubeArgs = "--port=3379\n--keyspace=instance-a\n--pd-addrs=kb-pd.storage.svc:2379\n--quota-backend-bytes=429496729600\n--advertise-client-urls=" + advertisedURLs
 			}
 			command := exec.Command("bash", "validate-instance-ready.sh")
 			command.Env = append(os.Environ(),
@@ -205,7 +244,7 @@ exit 1
 				"EXPECTED_KEYSPACE=instance-a",
 				"EXPECTED_PD_ADDRS=kb-pd.storage.svc:2379",
 				"EXPECTED_QUOTA_BACKEND_BYTES=429496729600",
-				"EXPECTED_ADVERTISE_CLIENT_URLS=https://instance.example:2379",
+				"EXPECTED_ADVERTISE_CLIENT_URLS="+advertisedURLs,
 				"ENDPOINT=https://instance.example:2379",
 				"TIMEOUT_SECONDS=1",
 				"POLL_INTERVAL_SECONDS=0",
@@ -213,6 +252,7 @@ exit 1
 				"FAKE_KUBEBRAIN_ARGS="+kubeArgs,
 				"FAKE_TOPOLOGY="+tc.topology,
 				"FAKE_HEALTH_OK="+boolString(tc.healthOK),
+				"FAKE_UNREACHABLE_ADVERTISED_URL="+tc.unreachableAdvertisedURL,
 			)
 			output, err := command.CombinedOutput()
 			if tc.wantOK {
