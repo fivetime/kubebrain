@@ -11,6 +11,7 @@ import (
 )
 
 func TestClientConfigPrefersInClusterWhenKubeconfigIsEmpty(t *testing.T) {
+	t.Setenv("KUBECONFIG", writeKubeconfig(t, "https://ambient.example.invalid"))
 	original := inClusterConfig
 	t.Cleanup(func() { inClusterConfig = original })
 	inClusterConfig = func() (*rest.Config, error) {
@@ -31,13 +32,36 @@ func TestClientConfigSkipsInClusterWhenExplicitKubeconfigIsProvided(t *testing.T
 		return nil, errors.New("in-cluster should not be used")
 	}
 
+	kubeconfig := writeKubeconfig(t, "https://api.example.invalid")
+
+	config, err := clientConfig(kubeconfig, "")
+	require.NoError(t, err)
+	require.False(t, called)
+	require.Equal(t, "https://api.example.invalid", config.Host)
+}
+
+func TestClientConfigFallsBackToStandardLocalKubeconfigOutsideCluster(t *testing.T) {
+	t.Setenv("KUBECONFIG", writeKubeconfig(t, "https://local.example.invalid"))
+	original := inClusterConfig
+	t.Cleanup(func() { inClusterConfig = original })
+	inClusterConfig = func() (*rest.Config, error) {
+		return nil, errors.New("not running in a Kubernetes pod")
+	}
+
+	config, err := clientConfig("", "")
+	require.NoError(t, err)
+	require.Equal(t, "https://local.example.invalid", config.Host)
+}
+
+func writeKubeconfig(t *testing.T, server string) string {
+	t.Helper()
 	kubeconfig := filepath.Join(t.TempDir(), "config")
 	require.NoError(t, os.WriteFile(kubeconfig, []byte(`apiVersion: v1
 kind: Config
 clusters:
 - name: test
   cluster:
-    server: https://api.example.invalid
+    server: `+server+`
 contexts:
 - name: test
   context:
@@ -49,9 +73,5 @@ users:
   user:
     token: token
 `), 0o600))
-
-	config, err := clientConfig(kubeconfig, "")
-	require.NoError(t, err)
-	require.False(t, called)
-	require.Equal(t, "https://api.example.invalid", config.Host)
+	return kubeconfig
 }

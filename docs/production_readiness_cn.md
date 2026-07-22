@@ -465,7 +465,8 @@ KubeBrain StatefulSet 缩到 0，并等待 ready replicas 与实例 Pod 都归�
 删除由 `hack/production/cmd/uid-delete` 直接发送 Kubernetes
 `DeleteOptions.preconditions.uid` 与 foreground propagation；中断重试允许资源已经
 不存在，但名称复用立即失败。该工具在未显式提供 kubeconfig 时优先使用 Pod
-ServiceAccount 的 in-cluster 配置，销毁 worker 不依赖 home 目录 kubeconfig。最终还
+ServiceAccount 的 in-cluster 配置；环境变量 `KUBECONFIG` 只能在 in-cluster 不可用后作为
+本地回退输入，销毁 worker 不依赖 home 目录 kubeconfig。最终还
 要求全部固定资源、实例 PVC、PD/TiKV Pod 和
 StatefulSet 均为空。`complete` 重复 absence gate 后原子发布
 `kubebrain.destroy.receipt.v1`，绑定 instance、operation ID、两个 namespace、
@@ -1806,7 +1807,8 @@ label、`null`、非字符串数组和尾随 JSON；ConfigMap 缺失、key 缺�
 进程内旧值，也不会自动扫描所有 namespace。backup parameter template 必须是 JSON object，
 解析时保留 JSON number 精度并拒绝 trailing JSON；`null` 或拼接模板不会创建 Operation。
 scheduler 未显式传入 kubeconfig 时先使用 Pod ServiceAccount 的 in-cluster 配置，显式
-kubeconfig 会跳过 in-cluster 探测，避免本地运维身份和生产 Pod 身份混用。
+kubeconfig 会跳过 in-cluster 探测；环境变量 `KUBECONFIG` 只能在 Pod 外本地回退时生效，
+避免本地运维身份和生产 Pod 身份混用。
 scheduler ServiceAccount 只能 `get` 这个
 resourceName，不能 list/watch 或读取其他 ConfigMap。清单中的 ClusterRole 本身不授予
 权限，默认 RoleBinding 只绑定 `kubebrain-operations`。每增加一个 namespace，必须先在
@@ -1996,7 +1998,8 @@ finalizer。中央 archiver Role 只能读取指定 inventory，并 list/get/upd
 1 MiB；archive executor 使用已通过 canonical/digest/size 校验的 frozen bytes 上传，远端复核
 阶段重新有界读取本地 artifact 以检测 TOCTOU 替换，不能退回无界 `os.ReadFile`。
 archiver 未显式传入 kubeconfig 时同样先使用 Pod ServiceAccount 的 in-cluster 配置；
-显式 kubeconfig 会跳过 in-cluster 探测，发布 smoke 必须覆盖这两种配置加载分支。
+显式 kubeconfig 会跳过 in-cluster 探测；环境变量 `KUBECONFIG` 只能在 Pod 外本地回退时
+生效，发布 smoke 必须覆盖这两种配置加载分支。
 
 跨进程恢复不得用当前重试时间重新生成 archive receipt。上传成功或
 `If-None-Match: *` 冲突恢复取得 version ID 后，executor 必须 Head 精确 version，重新核对
