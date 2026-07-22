@@ -104,8 +104,8 @@ func readToken(path string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("read prometheus bearer token: %w", err)
 	}
-	token := strings.TrimSpace(string(contents))
-	if token == "" || strings.ContainsAny(token, "\r\n") {
+	token := strings.TrimRight(string(contents), "\r\n")
+	if token == "" || strings.TrimSpace(token) != token || strings.ContainsAny(token, " \t\r\n") {
 		return "", errors.New("prometheus bearer token is empty or malformed")
 	}
 	return token, nil

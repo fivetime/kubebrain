@@ -9994,6 +9994,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   CR/LF，token 本体为空、含任何空白或超过 16 KiB 都在读 CA/发请求前 fail closed。回归：
   `go test ./hack/production/cmd/operationctl -run 'TestBrokerParameters(UsesTLSBearerAndFencingIdentity|RejectsInvalidTokenFile)' -count=1`
   通过。
+- A577 收紧 Prometheus bearer token 文件解析：
+  metering archive 通过 `--prometheus-bearer-token-file` 读取跨网络 Prometheus token，
+  旧实现同样对整文件执行 `TrimSpace` 并只拒绝 CR/LF；前后空格会被静默吞掉，内部空格或
+  tab 会被拼进 Authorization 后才由 HTTP transport 或 Prometheus 拒绝。现在只容忍文件
+  末尾 CR/LF，token 本体为空、含任何空白或超过 16 KiB 都在创建 collector 和发起 HTTP
+  请求前 fail closed。回归：
+  `go test ./hack/production/cmd/metering-archive -run TestReadToken -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

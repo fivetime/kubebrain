@@ -15,9 +15,17 @@ func TestReadToken(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "projected-token", token)
 
-	require.NoError(t, os.WriteFile(path, []byte("bad\ntoken"), 0o600))
-	_, err = readToken(path)
-	require.ErrorContains(t, err, "malformed")
+	for _, contents := range [][]byte{
+		[]byte("bad\ntoken"),
+		[]byte(" projected-token"),
+		[]byte("projected-token "),
+		[]byte("projected token"),
+		[]byte("projected\ttoken"),
+	} {
+		require.NoError(t, os.WriteFile(path, contents, 0o600))
+		_, err = readToken(path)
+		require.ErrorContains(t, err, "malformed")
+	}
 
 	require.NoError(t, os.WriteFile(path, make([]byte, maxPrometheusBearerTokenBytes+1), 0o600))
 	_, err = readToken(path)
