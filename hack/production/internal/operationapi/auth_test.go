@@ -161,6 +161,38 @@ func TestOIDCAuthenticatorFailsClosed(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestOIDCAuthenticatorRejectsMalformedBearerHeader(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+	fixture := &oidcFixture{keys: map[string]*rsa.PrivateKey{"key": key}}
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		fixture.serve(server.URL).ServeHTTP(response, request)
+	}))
+	defer server.Close()
+	authenticator, err := NewOIDCAuthenticator(context.Background(), OIDCConfig{
+		Issuer: server.URL, Audience: "expected",
+	})
+	require.NoError(t, err)
+	token := signOIDCToken(t, key, "key", server.URL, "expected", "tenant-a", []string{"instance-a"})
+
+	for _, tc := range []struct {
+		name   string
+		header string
+	}{
+		{name: "leading header space", header: " Bearer " + token},
+		{name: "extra token separator", header: "Bearer  " + token},
+		{name: "trailing token space", header: "Bearer " + token + " "},
+		{name: "embedded token space", header: "Bearer " + token + " extra"},
+		{name: "tab separator", header: "Bearer\t" + token},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := authenticator.Authenticate(context.Background(), tc.header)
+			require.Error(t, err)
+		})
+	}
+}
+
 func TestOIDCAuthenticatorRejectsExpiredCacheWhenRefreshFails(t *testing.T) {
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	require.NoError(t, err)

@@ -290,12 +290,12 @@ func (a *OIDCAuthenticator) key(ctx context.Context, kid string) (*rsa.PublicKey
 }
 
 func (a *OIDCAuthenticator) Authenticate(ctx context.Context, authorization string) (Principal, error) {
-	scheme, tokenText, found := strings.Cut(strings.TrimSpace(authorization), " ")
-	if !found || !strings.EqualFold(scheme, "Bearer") || strings.TrimSpace(tokenText) == "" {
-		return Principal{}, errors.New("bearer token is required")
+	tokenText, err := bearerToken(authorization)
+	if err != nil {
+		return Principal{}, err
 	}
 	claims := jwt.MapClaims{}
-	parsed, err := jwt.ParseWithClaims(strings.TrimSpace(tokenText), claims, func(token *jwt.Token) (any, error) {
+	parsed, err := jwt.ParseWithClaims(tokenText, claims, func(token *jwt.Token) (any, error) {
 		if token.Method != jwt.SigningMethodRS256 {
 			return nil, errors.New("OIDC token must use RS256")
 		}
@@ -342,6 +342,20 @@ func (a *OIDCAuthenticator) Authenticate(ctx context.Context, authorization stri
 		return Principal{}, errors.New("OIDC instance claims are empty")
 	}
 	return Principal{Subject: subject, Tenant: tenant, Instances: instances}, nil
+}
+
+func bearerToken(authorization string) (string, error) {
+	if strings.TrimSpace(authorization) != authorization {
+		return "", errors.New("bearer token is invalid")
+	}
+	scheme, tokenText, found := strings.Cut(authorization, " ")
+	if !found || !strings.EqualFold(scheme, "Bearer") {
+		return "", errors.New("bearer token is required")
+	}
+	if tokenText == "" || strings.TrimSpace(tokenText) != tokenText || strings.ContainsAny(tokenText, " \t\r\n") {
+		return "", errors.New("bearer token is invalid")
+	}
+	return tokenText, nil
 }
 
 func validOIDCInstanceClaim(instance string) bool {

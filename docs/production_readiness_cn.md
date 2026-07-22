@@ -1712,7 +1712,8 @@ exact-version receipt。
 必须通过 HTTPS。OIDC token 必须使用 RS256，包含匹配的 issuer/audience、有效 exp、
 sub、DNS label 格式 tenant 及字符串数组 `kubebrain_instances`。tenant 必须与请求一致，
 instance 必须在数组中；数组元素只接受 `*` 或 CRD `spec.instance` 同格式标识符
-（受信任的控制面 token 可显式使用 `*`）。提交时 sub 固化为
+（受信任的控制面 token 可显式使用 `*`）。Bearer header 的 scheme 大小写不敏感，
+但 token 本体不得为空或包含任何空白，不能通过 trim 畸形 header 后继续验签。提交时 sub 固化为
 immutable `requestedBy`，tenant 同样进入 spec、worker claim 和终态审计 artifact。
 参数 Secret 只能引用受信控制面预置的 `params-<tenant>-*` 对象，且 key 固定为
 `parameters.json`；API ServiceAccount 不具备 Secret 读取或写入权限。

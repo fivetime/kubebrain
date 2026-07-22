@@ -9979,6 +9979,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   的 token。回归：
   `go test ./hack/production/internal/parameterbroker -run 'TestBearerTokenParsingIsStrictAndCaseInsensitive|TestHandlerReturnsOnlyCurrentTypeBoundWorkerParameters' -count=1`
   通过。
+- A575 收紧 operation API OIDC Bearer header 解析：
+  外部 operation API 的 OIDC 鉴权已使用 `EqualFold` 接受大小写不敏感的 Bearer scheme，
+  但旧实现对整个 Authorization header 和 token 本体都执行 `TrimSpace`；
+  `Bearer  <valid-jwt>`、尾随空白或前导空白 header 会被规范化成合法 JWT 后继续验签。
+  现在 OIDC API 与 parameter broker 一样先拒绝 header 前后空白、空 token 和 token
+  内任何空白，再执行 JWT parse/issuer/audience/claim 校验。回归：
+  `go test ./hack/production/internal/operationapi -run 'TestOIDCAuthenticator(RejectsMalformedBearerHeader|ValidatesIdentityAndRefreshesUnknownKey|FailsClosed)' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 
