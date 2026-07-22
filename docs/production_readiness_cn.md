@@ -1650,8 +1650,10 @@ TiKV MVCC 后端，不存在 etcd 各成员独立 backend；
 使用 `deploy/production/kubebrain-operation-worker-rbac.yaml`。namespaced
 `KubeBrainOperation.dbaas.kubebrain.io/v1alpha1` spec 包含稳定 operation ID、可选
 tenant/requestedBy、instance、操作类型、完整参数文件 SHA-256 和 maxAttempts，并由
-CEL 保证创建后不可变。当前类型
-覆盖 Backup、RestoreCutover、PostRestoreAudit、CertificateRotation 和 Destroy。
+CEL 保证创建后不可变。当前类型覆盖 Backup、BackupDeletion、RestoreCutover、
+PostRestoreAudit、CertificateRotation 和 Destroy。Go 队列层也会在 submit 时拒绝
+CRD enum 外的 type，并要求参数 digest 为小写 hex SHA-256；成功 finish 同样要求
+receipt digest 为小写 hex SHA-256，不能只依赖 apiserver admission 才发现错误。
 
 `hack/production/cmd/operationctl` 提供 submit、claim、heartbeat、retry、succeed、fail
 和 get。claim 按创建时间稳定排序，通过 status resourceVersion CAS 从 Pending 或租约

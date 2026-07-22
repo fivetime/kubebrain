@@ -9666,6 +9666,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./pkg/util ./pkg/endpoint ./pkg/backend ./pkg/server/etcd ./pkg/server/service/etcdproxy`
   与 `go vet ./pkg/util ./pkg/endpoint ./pkg/backend ./pkg/server/etcd ./pkg/server/service/etcdproxy`
   通过。
+- A542 收紧 operation queue 本地准入校验：`KubeBrainOperation` CRD 已用 CEL/OpenAPI
+  约束 operation type、parameters SHA-256 和成功 receipt SHA-256，但
+  `hack/production/internal/operationqueue` 的 fake-client/旧集群路径仍只检查 digest
+  长度和非空 type。现在 `Queue.Submit` 在 Go 层拒绝 CRD enum 外的 operation type，
+  并要求 parameters digest 为小写 hex SHA-256；`Queue.Finish` 对成功 receipt digest
+  使用同一小写 hex 校验，不再只接受任意 64 字符串。回归覆盖 unsupported type、
+  非 hex parameters digest 和大写 receipt digest；
+  `go test ./hack/production/internal/operationqueue -run 'TestQueueRejectsSpecDriftAndInvalidCompletion|TestQueueLifecycleAndExpiredLeaseFencing|TestFinishStatusReconciliationOutlivesCanceledParent' -count=20`
+  通过。
 
 ### P2：运维兼容和长期验证
 

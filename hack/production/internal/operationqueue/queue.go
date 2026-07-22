@@ -104,9 +104,14 @@ func (q *Queue) Submit(ctx context.Context, name string, spec Spec) (*unstructur
 	if errs := validation.IsDNS1123Subdomain(name); len(errs) > 0 {
 		return nil, fmt.Errorf("invalid operation name: %s", errs[0])
 	}
-	if spec.OperationID == "" || spec.Instance == "" || spec.Type == "" ||
-		len(spec.ParametersSHA256) != 64 || spec.MaxAttempts <= 0 {
+	if spec.OperationID == "" || spec.Instance == "" || spec.Type == "" || spec.MaxAttempts <= 0 {
 		return nil, errors.New("operation spec is incomplete")
+	}
+	if !isSupportedOperationType(spec.Type) {
+		return nil, fmt.Errorf("unsupported operation type: %s", spec.Type)
+	}
+	if !isSHA256Hex(spec.ParametersSHA256) {
+		return nil, errors.New("operation spec requires a lowercase SHA-256 parameters digest")
 	}
 	if spec.Tenant != "" {
 		if errs := validation.IsDNS1123Label(spec.Tenant); len(errs) > 0 {
@@ -404,6 +409,15 @@ func requiresApproval(operationType string) bool {
 	}
 }
 
+func isSupportedOperationType(operationType string) bool {
+	switch operationType {
+	case "Backup", "BackupDeletion", "RestoreCutover", "PostRestoreAudit", "CertificateRotation", "Destroy":
+		return true
+	default:
+		return false
+	}
+}
+
 func isApproved(object *unstructured.Unstructured) bool {
 	annotations := object.GetAnnotations()
 	approvedBy := annotations[operationaudit.ApprovedByAnnotation]
@@ -568,8 +582,8 @@ func (q *Queue) Finish(
 	succeeded bool,
 	receiptSHA256, message string,
 ) (*unstructured.Unstructured, error) {
-	if succeeded && len(receiptSHA256) != 64 {
-		return nil, errors.New("successful operation requires a receipt SHA-256")
+	if succeeded && !isSHA256Hex(receiptSHA256) {
+		return nil, errors.New("successful operation requires a receipt SHA-256 hex digest")
 	}
 	object, err := q.resource.Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
@@ -901,6 +915,21 @@ func specMatches(object *unstructured.Unstructured, spec Spec) bool {
 		operationType == spec.Type && digest == spec.ParametersSHA256 &&
 		maxAttempts == spec.MaxAttempts && secret == spec.ParametersSecret &&
 		key == spec.ParametersKey
+}
+
+func isSHA256Hex(value string) bool {
+	if len(value) != sha256.Size*2 {
+		return false
+	}
+	for i := 0; i < len(value); i++ {
+		switch {
+		case value[i] >= '0' && value[i] <= '9':
+		case value[i] >= 'a' && value[i] <= 'f':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func (q *Queue) acquireInstanceLease(

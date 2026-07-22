@@ -915,10 +915,24 @@ func TestQueueRejectsSpecDriftAndInvalidCompletion(t *testing.T) {
 	_, err = queue.Submit(ctx, "invalid-tenant", invalidTenant)
 	require.ErrorContains(t, err, "invalid operation tenant")
 
+	invalidType := spec
+	invalidType.OperationID = "invalid-type"
+	invalidType.Type = "Unsupported"
+	_, err = queue.Submit(ctx, "invalid-type", invalidType)
+	require.ErrorContains(t, err, "unsupported operation type")
+
+	invalidDigest := spec
+	invalidDigest.OperationID = "invalid-digest"
+	invalidDigest.ParametersSHA256 = strings.Repeat("g", 64)
+	_, err = queue.Submit(ctx, "invalid-digest", invalidDigest)
+	require.ErrorContains(t, err, "parameters digest")
+
 	claim, err := queue.Claim(ctx, "worker-a", "", time.Minute)
 	require.NoError(t, err)
 	_, err = queue.Finish(ctx, claim.Name, claim.Owner, claim.Attempt, true, "", "")
 	require.ErrorContains(t, err, "requires a receipt")
+	_, err = queue.Finish(ctx, claim.Name, claim.Owner, claim.Attempt, true, strings.Repeat("A", 64), "")
+	require.ErrorContains(t, err, "receipt SHA-256 hex digest")
 }
 
 func TestQueueLoadsDigestBoundImmutableParameters(t *testing.T) {
