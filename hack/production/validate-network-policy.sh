@@ -31,7 +31,7 @@ if ! [[ "$PROBE_ID" =~ ^[a-z0-9]([-a-z0-9]{0,28}[a-z0-9])?$ ]]; then
   echo "PROBE_ID must be a lowercase DNS label of at most 30 characters" >&2
   exit 2
 fi
-if ! [[ "$PROBE_IMAGE" =~ @sha256:[a-f0-9]{64}$ ]]; then
+if ! [[ "$PROBE_IMAGE" =~ ^[^[:space:]@]+@sha256:[a-f0-9]{64}$ ]]; then
   echo "PROBE_IMAGE must use an immutable sha256 digest" >&2
   exit 2
 fi

@@ -10288,6 +10288,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   非 64 位小写 hex digest 和带空白的引用；后续仍保留 StatefulSet/Pod 精确字符串比较，
   因而同时证明 digest 形式与实际 rollout 收敛。回归：
   `go test ./hack/production -run TestValidateInstanceReady -count=1` 通过。
+- A605 收紧 NetworkPolicy release gate 的探针镜像引用：
+  A430 已要求 `PROBE_IMAGE` 使用 digest，但 `validate-network-policy.sh` 的旧正则只锚定
+  `@sha256:<64hex>` 后缀，仍会接受包含空白前缀的畸形引用。现在与 A604 的实例 release
+  gate 统一为完整引用校验：无空白、单个 `@sha256:` 分隔、64 位小写 hex digest。回归
+  扩展覆盖 mutable tag、空白 digest 引用和大写 digest，且均在调用 kubectl 前 fail
+  closed：
+  `go test ./hack/production -run TestValidateNetworkPolicy -count=1` 通过。
 
 ### P2：运维兼容和长期验证
 

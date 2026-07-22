@@ -99,24 +99,36 @@ exit 0
 }
 
 func TestValidateNetworkPolicyRejectsMutableProbeImageBeforeKubectl(t *testing.T) {
-	dir := t.TempDir()
-	logPath := filepath.Join(dir, "kubectl.log")
-	fakeKubectl := filepath.Join(dir, "kubectl")
-	require.NoError(t, os.WriteFile(fakeKubectl, []byte("#!/usr/bin/env bash\nprintf called >>\"$FAKE_LOG\"\n"), 0o755))
+	for _, probeImage := range []string{
+		"registry.example/probe:latest",
+		"registry.example/probe @sha256:" + strings.Repeat("a", 64),
+		"registry.example/probe@sha256:" + strings.Repeat("A", 64),
+	} {
+		t.Run(probeImage, func(t *testing.T) {
+			dir := t.TempDir()
+			logPath := filepath.Join(dir, "kubectl.log")
+			fakeKubectl := filepath.Join(dir, "kubectl")
+			require.NoError(t, os.WriteFile(
+				fakeKubectl,
+				[]byte("#!/usr/bin/env bash\nprintf called >>\"$FAKE_LOG\"\n"),
+				0o755,
+			))
 
-	command := exec.Command("bash", "validate-network-policy.sh")
-	command.Env = append(os.Environ(),
-		"KUBECTL="+fakeKubectl,
-		"PROBE_ID=probe1",
-		"PROBE_IMAGE=registry.example/probe:latest",
-		"CLIENT_NAMESPACE=client-ns",
-		"MONITORING_NAMESPACE=monitor-ns",
-		"DENIED_NAMESPACE=denied-ns",
-		"FAKE_LOG="+logPath,
-	)
-	output, err := command.CombinedOutput()
-	require.Error(t, err)
-	require.Contains(t, string(output), "immutable sha256 digest")
-	_, statErr := os.Stat(logPath)
-	require.ErrorIs(t, statErr, os.ErrNotExist)
+			command := exec.Command("bash", "validate-network-policy.sh")
+			command.Env = append(os.Environ(),
+				"KUBECTL="+fakeKubectl,
+				"PROBE_ID=probe1",
+				"PROBE_IMAGE="+probeImage,
+				"CLIENT_NAMESPACE=client-ns",
+				"MONITORING_NAMESPACE=monitor-ns",
+				"DENIED_NAMESPACE=denied-ns",
+				"FAKE_LOG="+logPath,
+			)
+			output, err := command.CombinedOutput()
+			require.Error(t, err)
+			require.Contains(t, string(output), "immutable sha256 digest")
+			_, statErr := os.Stat(logPath)
+			require.ErrorIs(t, statErr, os.ErrNotExist)
+		})
+	}
 }
