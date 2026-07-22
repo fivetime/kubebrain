@@ -83,9 +83,14 @@ if [[ -n "$KUBECONFIG_PATH" ]]; then
 fi
 
 fingerprint() {
-  "$OPENSSL" x509 -in "$1" -noout -fingerprint -sha256 |
+  local value
+  value="$("$OPENSSL" x509 -in "$1" -noout -fingerprint -sha256 |
     sed 's/^sha256 Fingerprint=//I; s/://g' |
-    tr '[:upper:]' '[:lower:]'
+    tr '[:upper:]' '[:lower:]')" ||
+    { echo "failed to read certificate SHA-256 fingerprint: ${1}" >&2; exit 2; }
+  [[ "$value" =~ ^[a-f0-9]{64}$ ]] ||
+    { echo "certificate SHA-256 fingerprint is invalid: ${1}" >&2; exit 2; }
+  printf '%s\n' "$value"
 }
 
 health() {
@@ -120,14 +125,17 @@ validate_snapshot() {
 }
 
 read_state_header() {
+  local expected_old_fingerprint expected_new_fingerprint
+  expected_old_fingerprint="$(fingerprint "$OLD_CERT")"
+  expected_new_fingerprint="$(fingerprint "$NEW_CERT")"
   IFS=$'\t' read -r state_version state_instance state_rotation state_endpoint \
     state_old_fingerprint state_new_fingerprint <"$state_file"
   if [[ "$state_version" != "kubebrain.certificate-rotation.state.v1" ||
     "$state_instance" != "$INSTANCE" ||
     "$state_rotation" != "$ROTATION_ID" ||
     "$state_endpoint" != "$ENDPOINT" ||
-    "$state_old_fingerprint" != "$(fingerprint "$OLD_CERT")" ||
-    "$state_new_fingerprint" != "$(fingerprint "$NEW_CERT")" ]]; then
+    "$state_old_fingerprint" != "$expected_old_fingerprint" ||
+    "$state_new_fingerprint" != "$expected_new_fingerprint" ]]; then
     echo "rotation state does not match the requested operation" >&2
     exit 1
   fi
@@ -178,6 +186,8 @@ validate_existing_receipt() {
      .format == "kubebrain.certificate-rotation.receipt.v1" and
      .instance == $instance and .rotation_id == $rotation and
      .endpoint == $endpoint and .replicas == $replicas and
+     (.old_certificate_sha256 | type == "string" and test("^[a-f0-9]{64}$")) and
+     (.new_certificate_sha256 | type == "string" and test("^[a-f0-9]{64}$")) and
      .old_certificate_sha256 == $old and .new_certificate_sha256 == $new and
      .pods_unchanged == true and .old_certificate_rejected == true and
      (.completed_at_unix | type == "number" and . > 0 and . == floor)' \
@@ -189,10 +199,12 @@ case "$ACTION" in
     snapshot="$(pod_snapshot)"
     validate_snapshot "$snapshot"
     health "$OLD_CACERT" "$OLD_CERT" "$OLD_KEY"
+    old_fingerprint="$(fingerprint "$OLD_CERT")"
+    new_fingerprint="$(fingerprint "$NEW_CERT")"
     temporary="$(mktemp "${STATE_DIR}/.${ROTATION_ID}.state.XXXXXX")"
     printf 'kubebrain.certificate-rotation.state.v1\t%s\t%s\t%s\t%s\t%s\n%s\n' \
-      "$INSTANCE" "$ROTATION_ID" "$ENDPOINT" \
-      "$(fingerprint "$OLD_CERT")" "$(fingerprint "$NEW_CERT")" "$snapshot" >"$temporary"
+      "$INSTANCE" "$ROTATION_ID" "$ENDPOINT" "$old_fingerprint" "$new_fingerprint" \
+      "$snapshot" >"$temporary"
     atomic_publish "$temporary" "$state_file"
     echo "certificate rotation begin gate passed: instance=${INSTANCE} rotation=${ROTATION_ID}"
     ;;

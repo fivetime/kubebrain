@@ -9729,6 +9729,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   receipt 和既有 audit receipt 都要求小写 `[a-f0-9]{64}`；fixture 改用真实 SHA-256
   形状，并覆盖非法 digest 在生成审计 receipt 前被拒绝。回归：
   `go test ./hack/production -run 'TestPostRestoreAudit' -count=10 -timeout=180s` 通过。
+- A550 收紧 certificate rotation fingerprint schema：`validate-certificate-rotation.sh`
+  通过 `openssl x509 -fingerprint -sha256` 读取旧/新客户端证书指纹后直接写入
+  state/receipt，旧逻辑未验证输出是否为真实 SHA-256 形状，测试夹具也使用 `aa11/bb22`
+  短值。现在 fingerprint helper 本身要求小写 `[a-f0-9]{64}`，既有
+  `kubebrain.certificate-rotation.receipt.v1` 复用校验也要求旧/新证书指纹字段满足同一
+  schema；fixture 改用真实 SHA-256 形状，并覆盖 openssl 返回短指纹时 begin gate
+  失败且不生成 receipt。回归：
+  `go test ./hack/production -run 'TestValidateCertificateRotation' -count=10 -timeout=120s`
+  通过。
 
 ### P2：运维兼容和长期验证
 

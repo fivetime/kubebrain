@@ -11,6 +11,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+const (
+	oldCertificateFingerprintSHA256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	newCertificateFingerprintSHA256 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+)
+
 func TestValidateCertificateRotationLifecycle(t *testing.T) {
 	fixture := newRotationFixture(t)
 	fixture.run(t, "begin", true, "")
@@ -58,6 +63,12 @@ func TestValidateCertificateRotationFailsClosed(t *testing.T) {
 			name:       "overlap before begin",
 			action:     "overlap",
 			wantOutput: "begin evidence is missing",
+		},
+		{
+			name:       "invalid old certificate fingerprint",
+			action:     "begin",
+			env:        "FAKE_SHORT_FINGERPRINT=true",
+			wantOutput: "certificate SHA-256 fingerprint is invalid",
 		},
 		{
 			name: "new credential rejected during overlap",
@@ -140,8 +151,11 @@ while (($#)); do
   if [[ "$1" == "-in" ]]; then file="$2"; shift 2; else shift; fi
 done
 case "$file" in
-  *old-cert) printf 'sha256 Fingerprint=AA:11\n' ;;
-  *new-cert) printf 'sha256 Fingerprint=BB:22\n' ;;
+  *old-cert)
+    [[ "${FAKE_SHORT_FINGERPRINT:-false}" != true ]] || { printf 'sha256 Fingerprint=AA:11\n'; exit 0; }
+    printf 'sha256 Fingerprint=`+oldCertificateFingerprintSHA256+`\n'
+    ;;
+  *new-cert) printf 'sha256 Fingerprint=`+newCertificateFingerprintSHA256+`\n' ;;
   *) exit 1 ;;
 esac
 `)
