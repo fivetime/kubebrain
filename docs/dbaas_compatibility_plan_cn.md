@@ -8871,6 +8871,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   亦通过。差分 runner 同时支持从指定 Pod 检查 cluster-local MemberList URL，并将宿主 reference
   `ETCDCTL_BIN` 与 Pod 内 `ETCDCTL_EXEC_BIN` 分离；host NodePort client 的 AutoSync 仍必须配置对
   该网络域可达的 `--advertise-client-urls`，不能把开发集群内 Service URL 当作外部发布地址。
+- A456 将专用 destructive differential 实例的 advertised client URL 调整为宿主机和 Pod 均可达的
+  `http://172.18.0.2:30079`，保持 A455 镜像与 StatefulSet/Service/TidbCluster UID 不变。完整
+  `run-differential.sh` 在 309.082 秒以退出码 0 通过；此前受网络域不匹配影响的 authenticated
+  AutoSync 已通过，Watch revision boundary 的 latest-zero、historical-current、future-next 和
+  maximum 在 reference etcd 与 KubeBrain 两侧也全部通过。随后完整 release gate 再次确认 3/3
+  KubeBrain、3/3 PD/TiKV、镜像、keyspace、PD 地址、cluster ID、initial cluster、quota 与 advertised
+  URL 均匹配，宿主机及 Pod 内使用同一 NodePort 的 endpoint health 均成功。该结果把 A455 的定向
+  Watch 修复证据提升为当前生产拓扑下的全量差分与部署门禁证据；被显式跳过且要求独立实例的 quota、
+  compaction、auth mirror 等场景仍由各自专用门禁覆盖。
 
 ### P1：通用服务能力
 
