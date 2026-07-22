@@ -80,6 +80,19 @@ func TestCollectorBuildsCanonicalCompleteSample(t *testing.T) {
 	require.ErrorContains(t, err, "not canonical")
 }
 
+func TestSampleRejectsOversizedInputs(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sample.json")
+	require.NoError(t, os.WriteFile(path, make([]byte, maxMeteringArchiveJSONBytes+1), 0o600))
+	_, err := ReadSample(path, 5*time.Minute)
+	require.ErrorContains(t, err, "metering sample exceeds")
+
+	output := filepath.Join(dir, "existing.json")
+	require.NoError(t, os.WriteFile(output, make([]byte, maxMeteringArchiveJSONBytes+1), 0o600))
+	_, err = WriteAtomic(output, validSample(), 5*time.Minute)
+	require.ErrorContains(t, err, "existing metering artifact exceeds")
+}
+
 func TestCollectorV3RequiresAndArchivesExactObjectRequestCounts(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		query := request.URL.Query().Get("query")

@@ -3,8 +3,6 @@ package meteringarchive
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -113,23 +111,17 @@ func (r *Roller) Process(ctx context.Context) (Rollup, []byte, error) {
 		if err != nil {
 			return Rollup{}, output, err
 		}
-		sample, err := ReadSample(outputPath, r.MaxStaleness)
+		status, err := ReadSampleStatus(outputPath, r.MaxStaleness)
 		if err != nil {
 			return Rollup{}, output, fmt.Errorf("validate metering sample %d: %w", i, err)
 		}
-		artifact, err := os.ReadFile(outputPath)
-		if err != nil {
-			return Rollup{}, output, err
-		}
-		sum := sha256.Sum256(artifact)
-		if int64(len(artifact)) != receipt.ObjectBytes ||
-			hex.EncodeToString(sum[:]) != receipt.ArtifactSHA256 {
+		if status.Bytes != receipt.ObjectBytes || status.SHA256 != receipt.ArtifactSHA256 {
 			return Rollup{}, output, errors.New("metering sample read receipt does not match downloaded bytes")
 		}
 		inputs = append(inputs, VerifiedSample{
-			Sample: sample,
+			Sample: status.Sample,
 			Source: SampleSource{
-				SlotStartUnix: sample.SlotStartUnix, SlotEndUnix: sample.SlotEndUnix,
+				SlotStartUnix: status.Sample.SlotStartUnix, SlotEndUnix: status.Sample.SlotEndUnix,
 				ArtifactFormat: receipt.ArtifactFormat,
 				ObjectKey:      objectKey, VersionID: receipt.VersionID,
 				ArtifactSHA256: receipt.ArtifactSHA256, ObjectBytes: receipt.ObjectBytes,

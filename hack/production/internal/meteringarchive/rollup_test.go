@@ -38,6 +38,24 @@ func TestBuildRollupIntegratesCompleteOrderedSlots(t *testing.T) {
 	require.Equal(t, status, retried)
 }
 
+func TestRollupRejectsOversizedInputs(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "rollup.json")
+	require.NoError(t, os.WriteFile(path, make([]byte, maxMeteringArchiveJSONBytes+1), 0o600))
+	_, err := ReadRollup(path)
+	require.ErrorContains(t, err, "metering rollup exceeds")
+
+	start := time.Unix(1_700_006_400, 0).UTC()
+	rollup, err := BuildRollup(
+		"instance-a", start, start.Add(24*time.Hour), time.Hour, 5*time.Minute, rollupInputs(start, 24),
+	)
+	require.NoError(t, err)
+	output := filepath.Join(dir, "existing.json")
+	require.NoError(t, os.WriteFile(output, make([]byte, maxMeteringArchiveJSONBytes+1), 0o600))
+	_, err = WriteRollupAtomic(output, rollup)
+	require.ErrorContains(t, err, "existing metering rollup exceeds")
+}
+
 func TestBuildRollupRejectsMissingDuplicateAndMismatchedSources(t *testing.T) {
 	start := time.Unix(1_700_006_400, 0).UTC()
 	tests := []struct {

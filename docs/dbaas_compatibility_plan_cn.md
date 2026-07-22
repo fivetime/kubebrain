@@ -9455,6 +9455,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./hack/production/internal/meteringstorage -run 'Test(Snapshot|StorageRollup|UsageReceipt|Archiver|ValidateObjectStorage|ParseObjectStorage)' -count=20`、
   `go test ./hack/production/internal/meteringstorage`、`go test ./hack/production/... ./deploy/production`、
   `go vet ./hack/production/... ./deploy/production` 与 `git diff --check` 通过。
+- A521 收紧 core metering sample/rollup 本地 JSON 读取边界：metering sample 和 daily
+  rollup 现在最多读取 1 MiB，超限会在 strict schema 解码、canonical 比对、日汇总构造
+  或 Object Lock executor 启动前 fail closed。sample/rollup atomic writer 比较已有文件
+  时也只读取目标 canonical 长度加 1 字节；Roller 改用 `ReadSampleStatus` 已验证的
+  bytes/digest 与 blob-read receipt 比对，不再为了校验 receipt 第二次无界读取 sample
+  文件。回归覆盖 oversized sample、rollup 和 oversized existing output；
+  `go test ./hack/production/internal/meteringarchive -run 'Test(Collector|Sample|BuildRollup|Rollup|Roller|ParseMetering)' -count=20`、
+  `go test ./hack/production/internal/meteringarchive`、`go test ./hack/production/... ./deploy/production`、
+  `go vet ./hack/production/... ./deploy/production` 与 `git diff --check` 通过。
 
 ### P2：运维兼容和长期验证
 

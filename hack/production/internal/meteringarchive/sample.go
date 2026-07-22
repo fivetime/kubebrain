@@ -29,6 +29,7 @@ const completenessMetric = "kubebrain_dbaas:metering_hour_complete"
 const objectRequestCompletenessMetric = "kubebrain_dbaas:object_request_hour_complete"
 const objectRequestPeriodEndMetric = "kubebrain_dbaas:object_request_period_end:last"
 const maxPrometheusResponseBytes = 1 << 20
+const maxMeteringArchiveJSONBytes = 1 << 20
 
 var Metrics = []string{
 	"kubebrain_dbaas:cpu_usage_core_seconds:hour",
@@ -326,7 +327,7 @@ func WriteAtomic(path string, sample Sample, maxStaleness time.Duration) (Status
 	data = append(data, '\n')
 	sum := sha256.Sum256(data)
 	status := Status{Sample: sample, SHA256: hex.EncodeToString(sum[:]), Bytes: int64(len(data))}
-	if existing, err := os.ReadFile(path); err == nil {
+	if existing, err := readBoundedFile(path, "existing metering artifact", int64(len(data))); err == nil {
 		if bytes.Equal(existing, data) {
 			return status, nil
 		}
@@ -371,34 +372,61 @@ func WriteAtomic(path string, sample Sample, maxStaleness time.Duration) (Status
 }
 
 func ReadSample(path string, maxStaleness time.Duration) (Sample, error) {
-	var sample Sample
-	data, err := os.ReadFile(path)
+	status, err := ReadSampleStatus(path, maxStaleness)
 	if err != nil {
-		return sample, err
+		return Sample{}, err
+	}
+	return status.Sample, nil
+}
+
+func ReadSampleStatus(path string, maxStaleness time.Duration) (Status, error) {
+	var sample Sample
+	data, err := readBoundedFile(path, "metering sample", maxMeteringArchiveJSONBytes)
+	if err != nil {
+		return Status{}, err
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&sample); err != nil {
-		return sample, fmt.Errorf("decode metering sample: %w", err)
+		return Status{}, fmt.Errorf("decode metering sample: %w", err)
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); err != io.EOF {
-		return sample, errors.New("metering sample contains trailing JSON")
+		return Status{}, errors.New("metering sample contains trailing JSON")
 	}
 	if err := sample.Validate(maxStaleness); err != nil {
-		return sample, err
+		return Status{}, err
 	}
 	canonical, err := json.Marshal(sample)
 	if err != nil {
-		return sample, err
+		return Status{}, err
 	}
 	canonical = append(canonical, '\n')
 	if !bytes.Equal(data, canonical) {
-		return sample, errors.New("metering sample is not canonical")
+		return Status{}, errors.New("metering sample is not canonical")
 	}
-	return sample, nil
+	sum := sha256.Sum256(data)
+	return Status{
+		Sample: sample, SHA256: hex.EncodeToString(sum[:]), Bytes: int64(len(data)),
+	}, nil
 }
 
 func joinURLPath(base, suffix string) string {
 	return string(bytes.TrimRight([]byte(base), "/")) + suffix
+}
+
+func readBoundedFile(path, description string, limit int64) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("%s exceeds %d bytes", description, limit)
+	}
+	return data, nil
 }

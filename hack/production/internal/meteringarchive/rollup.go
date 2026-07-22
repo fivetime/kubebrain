@@ -276,7 +276,7 @@ func WriteRollupAtomic(path string, rollup Rollup) (RollupStatus, error) {
 	status := RollupStatus{
 		Rollup: rollup, SHA256: hex.EncodeToString(sum[:]), Bytes: int64(len(data)),
 	}
-	if existing, err := os.ReadFile(path); err == nil {
+	if existing, err := readBoundedFile(path, "existing metering rollup", int64(len(data))); err == nil {
 		if bytes.Equal(existing, data) {
 			return status, nil
 		}
@@ -330,7 +330,7 @@ func ReadRollup(path string) (Rollup, error) {
 
 func ReadRollupStatus(path string) (RollupStatus, error) {
 	var rollup Rollup
-	data, err := os.ReadFile(path)
+	data, err := readBoundedFile(path, "metering rollup", maxMeteringArchiveJSONBytes)
 	if err != nil {
 		return RollupStatus{}, err
 	}

@@ -819,6 +819,11 @@ recording rules 对五个源分别计数，缺失时用显式零值保持告警�
 `object_request_period_end_unix`；归档器要求该值精确等于 artifact `slot_end`。
 缺类、重复、非整数、超出 `2^53`、陈旧、未来或错窗都会 fail closed。v1/v2 sample
 继续严格可读，已有不可变对象不重写。
+本地 metering sample 和 rollup 都是小型 canonical JSON，读取最多接受 1 MiB；超限会在
+schema 解码、canonical 比对、日汇总构造或 Object Lock executor 启动前 fail closed。
+sample/rollup 原子写入在比较已存在文件时只读取目标 canonical 长度加 1 字节；Roller
+使用 `ReadSampleStatus` 已验证的 bytes/digest 与 blob-read receipt 比对，不再为了二次
+校验 receipt 而重新无界读取 sample 文件。
 
 `deploy/production/kubebrain-metering-rollup.yaml` 每日 UTC 00:47 处理前一完整 UTC 日，
 且只从不可变小时对象读取，不重新查询 Prometheus。每个对象键由实例和 slot 确定；
