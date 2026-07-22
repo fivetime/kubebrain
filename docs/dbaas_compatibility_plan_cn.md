@@ -9484,6 +9484,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `(cd hack/backup/objectstore && go test ./...)`、`go test ./hack/production/... ./deploy/production`、
   `(cd hack/backup/objectstore && go vet ./...)`、`go vet ./hack/production/... ./deploy/production`
   与 `git diff --check` 通过。
+- A524 收紧 payment ledger 离线 invoice source 本地 JSON 读取边界：`kubebrain-metering-payment-ledger`
+  的离线 `--invoice-source` 是小型 source binding JSON，现在最多读取 1 MiB；超限会在 strict
+  schema 解码、invoice/source SHA/bytes 绑定校验和 ledger 写出前 fail closed。生产 exact-read
+  路径仍由 Object Lock read receipt 生成 source，不受该离线文件预算影响。回归覆盖 oversized
+  invoice source；
+  `go test ./hack/production/cmd/metering-payment-ledger -run TestReadSource -count=20`、
+  `go test ./hack/production/cmd/metering-payment-ledger`、`go test ./hack/production/... ./deploy/production`、
+  `go vet ./hack/production/... ./deploy/production` 与 `git diff --check` 通过。
 
 ### P2：运维兼容和长期验证
 

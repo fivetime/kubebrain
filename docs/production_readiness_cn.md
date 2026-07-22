@@ -1034,7 +1034,9 @@ processor/外部交易 ID 排序且无重复，金额必须为正，未来交易
 net paid 超过 invoice total 或 source 漂移都会 fail closed。生产路径使用
 `kubebrain-metering-payment-ledger` 从 Object Lock exact-read finalized invoice，并以 read receipt
 生成 invoice source；离线模式才接受本地 invoice/source，且 source SHA-256/bytes 必须匹配本地
-canonical invoice。发布前会重新校验 canonical JSON、invoice source retention，把 ledger 重写到
+canonical invoice。离线 invoice source 是小型 source binding JSON，本地读取最多接受 1 MiB；
+超限会在 schema 解码、invoice/source 绑定校验和 ledger 写出前 fail closed。发布前会重新校验
+canonical JSON、invoice source retention，把 ledger 重写到
 临时 canonical publish input；publisher 还会再生成自己的 frozen copy 并校验上传 receipt，避免
 用户 output path 被替换后污染 Object Lock。该 ledger 是应收账款状态证据，不直接发起收款、
 退款或催收。normalized payment ledger CSV 导入同样最多接受 16 MiB 输入和 100,000 条交易；

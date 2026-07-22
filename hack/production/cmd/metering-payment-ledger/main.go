@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"log"
 	"os"
@@ -13,6 +14,8 @@ import (
 
 	"github.com/kubewharf/kubebrain/hack/production/internal/meteringbilling"
 )
+
+const maxInvoiceSourceBytes = 1 << 20
 
 func main() {
 	var inputCSV, invoicePath, invoiceSourcePath, output, id, instance, invoiceID string
@@ -116,7 +119,7 @@ func main() {
 }
 
 func readSource(path string) (meteringbilling.Source, error) {
-	data, err := os.ReadFile(path)
+	data, err := readBoundedFile(path, "invoice source", maxInvoiceSourceBytes)
 	if err != nil {
 		return meteringbilling.Source{}, err
 	}
@@ -131,6 +134,22 @@ func readSource(path string) (meteringbilling.Source, error) {
 		return meteringbilling.Source{}, errors.New("invoice source contains trailing JSON")
 	}
 	return source, nil
+}
+
+func readBoundedFile(path, description string, limit int64) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("%s exceeds %d bytes", description, limit)
+	}
+	return data, nil
 }
 
 func init() {
