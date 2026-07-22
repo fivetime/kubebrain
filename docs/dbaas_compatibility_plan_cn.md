@@ -10314,6 +10314,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   不变。回归：
   `go test ./hack/production/internal/operationqueue ./hack/production/internal/operationapi -run 'TestQueueRejectsSpecDriftAndInvalidCompletion|TestHandlerReturnsBadRequestForQueueSchemaValidation' -count=1`
   通过。
+- A608 固化 backup scheduler 参数 Secret owner fence：
+  backup scheduler 生成的参数 Secret 已是 immutable 并做内容 digest 复核，但
+  `ensureParametersSecret` 在遇到同名已存在 Secret 时只检查内容，不检查 controller
+  ownerReference。旧 BackupPolicy 删除后重建、旧 CRD/fake-client 路径或手工预置同名
+  Secret 时，调度器可能引用不属于当前 policy UID 的 immutable Secret，破坏参数制品
+  的 provenance 和 GC 边界。现在已存在参数 Secret 必须只有一个 controller owner，且
+  APIVersion/Kind/Name/UID 精确指向当前 KubeBrainBackupPolicy；owner 不匹配时 fail
+  closed，且不创建 Operation。回归：
+  `go test ./hack/production/internal/backupscheduler -run 'TestReconcileRejectsPreexistingParameterSecretWithWrongOwner|TestReconcileIsDeterministicAcrossReplicas|TestReconcileRejectsPolicySchemaBeforeTemplateRead' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

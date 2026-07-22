@@ -365,12 +365,32 @@ func (s *Scheduler) ensureParametersSecret(
 	if getErr != nil {
 		return getErr
 	}
+	if !parameterSecretOwnedByPolicy(existing, policy) {
+		return errors.New("existing parameter Secret has different immutable ownership")
+	}
 	actual, _, _ := unstructured.NestedString(existing.Object, "data", parametersKey)
 	isImmutable, _, _ := unstructured.NestedBool(existing.Object, "immutable")
 	if !isImmutable || actual != base64.StdEncoding.EncodeToString(parameters) {
 		return errors.New("existing parameter Secret has different immutable content")
 	}
 	return nil
+}
+
+func parameterSecretOwnedByPolicy(
+	secret *unstructured.Unstructured,
+	policy *unstructured.Unstructured,
+) bool {
+	owners := secret.GetOwnerReferences()
+	if len(owners) != 1 {
+		return false
+	}
+	owner := owners[0]
+	return owner.APIVersion == policy.GetAPIVersion() &&
+		owner.Kind == policy.GetKind() &&
+		owner.Name == policy.GetName() &&
+		owner.UID == policy.GetUID() &&
+		owner.Controller != nil &&
+		*owner.Controller
 }
 
 func NextDelay(now time.Time, interval time.Duration) time.Duration {

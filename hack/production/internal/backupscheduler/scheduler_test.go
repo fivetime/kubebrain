@@ -181,6 +181,56 @@ func TestReconcileRejectsPolicySchemaBeforeTemplateRead(t *testing.T) {
 	}
 }
 
+func TestReconcileRejectsPreexistingParameterSecretWithWrongOwner(t *testing.T) {
+	client := fakeClient()
+	ctx := context.Background()
+	createTemplate(t, client, validTemplate())
+	createPolicy(t, client, false)
+	scheduler := New(client, "test").WithClock(func() time.Time {
+		return time.Unix(1_700_003_000, 0).UTC()
+	})
+	policy, err := client.Resource(PolicyResource).Namespace("test").
+		Get(ctx, "daily", metav1.GetOptions{})
+	require.NoError(t, err)
+	const operationID = "backup-daily-1700002800"
+	parameters, err := scheduler.renderParameters(
+		ctx, "test", "daily-template", "parameters.json",
+		operationID, 1_700_002_800, 86_400,
+	)
+	require.NoError(t, err)
+	_, err = client.Resource(operationqueue.SecretResource).Namespace("test").Create(
+		ctx,
+		&unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "v1",
+			"kind":       "Secret",
+			"metadata": map[string]any{
+				"name": "params-" + operationID,
+				"ownerReferences": []any{map[string]any{
+					"apiVersion": policy.GetAPIVersion(),
+					"kind":       policy.GetKind(),
+					"name":       policy.GetName(),
+					"uid":        "replacement-policy-uid",
+					"controller": true,
+				}},
+			},
+			"immutable": true,
+			"data": map[string]any{
+				parametersKey: base64.StdEncoding.EncodeToString(parameters),
+			},
+		}},
+		metav1.CreateOptions{},
+	)
+	require.NoError(t, err)
+
+	count, err := scheduler.Reconcile(ctx)
+	require.Zero(t, count)
+	require.ErrorContains(t, err, "different immutable ownership")
+	operations, listErr := client.Resource(operationqueue.Resource).Namespace("test").
+		List(ctx, metav1.ListOptions{})
+	require.NoError(t, listErr)
+	require.Empty(t, operations.Items)
+}
+
 func TestDecodeParameterTemplatePreservesNumbersAndRejectsTrailingJSON(t *testing.T) {
 	parameters, err := decodeParameterTemplate([]byte(`{"batch_size":9007199254740993}`))
 	require.NoError(t, err)
