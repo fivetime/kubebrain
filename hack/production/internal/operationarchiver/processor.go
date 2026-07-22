@@ -94,6 +94,10 @@ func (p *ArchiveProcessor) Process(ctx context.Context, object *unstructured.Uns
 	if err != nil {
 		return err
 	}
+	if receipt.ObjectStoreID != p.objectStoreID || receipt.Bucket != p.bucket ||
+		receipt.ObjectKey != objectKey {
+		return errors.New("operation audit archive receipt does not match requested object")
+	}
 	if receipt.RetentionMode != p.retentionMode || receipt.RetainUntilUnix != retainUntil {
 		return errors.New("operation audit archive receipt does not match requested retention")
 	}

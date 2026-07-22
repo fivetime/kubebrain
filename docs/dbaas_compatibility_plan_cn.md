@@ -9169,6 +9169,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./hack/production/internal/operationarchiver -run 'TestArchiveProcessor' -count=1`、
   `go test ./hack/production/... ./deploy/production` 与
   `go vet ./hack/production/... ./deploy/production` 通过。
+- A485 收紧 Operation audit archiver 的归档目的地绑定：release audit finalizer 前，
+  archiver 现在还要求 archive receipt 的 object store ID、bucket 和 object key 精确等于
+  本次请求。这样 artifact identity 正确但指向错误 bucket/key 的 receipt 不会释放 finalizer。
+  回归覆盖 receipt object key drift；`go test ./hack/production/internal/operationarchiver -run 'TestArchiveProcessor' -count=1`、
+  `go test ./hack/production/... ./deploy/production` 与
+  `go vet ./hack/production/... ./deploy/production` 通过。
 
 ### P2：运维兼容和长期验证
 

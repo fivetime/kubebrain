@@ -119,6 +119,45 @@ func TestArchiveProcessorRejectsReceiptRetentionDriftBeforeRelease(t *testing.T)
 	require.Contains(t, updated.GetFinalizers(), operationaudit.Finalizer)
 }
 
+func TestArchiveProcessorRejectsReceiptObjectDriftBeforeRelease(t *testing.T) {
+	object := terminalOperation()
+	client := fake.NewSimpleDynamicClientWithCustomListKinds(
+		runtime.NewScheme(),
+		map[schema.GroupVersionResource]string{operationqueue.Resource: "KubeBrainOperationList"},
+		object,
+	)
+	processor, err := NewArchiveProcessor(
+		client, "/executor", "store-a", "audit-bucket", "audit", "COMPLIANCE", 24*time.Hour,
+	)
+	require.NoError(t, err)
+	processor.now = func() time.Time { return time.Unix(110, 0) }
+	processor.run = func(_ context.Context, _ string, environment []string) error {
+		values := envMap(environment)
+		status, err := operationaudit.Inspect(values["INPUT"])
+		require.NoError(t, err)
+		retainUntil, err := strconv.ParseInt(values["RETAIN_UNTIL_UNIX"], 10, 64)
+		require.NoError(t, err)
+		receipt := operationaudit.ArchiveReceipt{
+			Format:      operationaudit.ArchiveReceiptFormat,
+			OperationID: status.Artifact.OperationID, OperationUID: status.Artifact.UID,
+			Instance: status.Artifact.Instance, OperationType: status.Artifact.Type,
+			Phase: status.Artifact.Phase, ExecutionReceiptSHA256: status.Artifact.ReceiptSHA256,
+			ObjectStoreID: "store-a", Bucket: "audit-bucket", ObjectKey: "audit/tenant-a/other.json",
+			VersionID: "version-a", ArtifactSHA256: status.SHA256, ObjectBytes: status.Bytes,
+			RetentionMode: "COMPLIANCE", RetainUntilUnix: retainUntil,
+			RemoteVerified: true, ArchivedAtUnix: 110,
+		}
+		return os.WriteFile(values["RECEIPT_OUTPUT"], mustCanonicalReceipt(t, receipt), 0o600)
+	}
+
+	err = processor.Process(context.Background(), object)
+	require.ErrorContains(t, err, "requested object")
+	updated, err := client.Resource(operationqueue.Resource).Namespace("tenant-a").
+		Get(context.Background(), "operation-a", metav1.GetOptions{})
+	require.NoError(t, err)
+	require.Contains(t, updated.GetFinalizers(), operationaudit.Finalizer)
+}
+
 func TestArchiveProcessorPropagatesReconcileCancellationToExecutor(t *testing.T) {
 	object := terminalOperation()
 	client := fake.NewSimpleDynamicClient(runtime.NewScheme(), object)
