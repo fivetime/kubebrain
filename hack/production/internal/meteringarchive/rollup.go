@@ -321,29 +321,40 @@ func WriteRollupAtomic(path string, rollup Rollup) (RollupStatus, error) {
 }
 
 func ReadRollup(path string) (Rollup, error) {
+	status, err := ReadRollupStatus(path)
+	if err != nil {
+		return Rollup{}, err
+	}
+	return status.Rollup, nil
+}
+
+func ReadRollupStatus(path string) (RollupStatus, error) {
 	var rollup Rollup
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return rollup, err
+		return RollupStatus{}, err
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&rollup); err != nil {
-		return rollup, fmt.Errorf("decode metering rollup: %w", err)
+		return RollupStatus{}, fmt.Errorf("decode metering rollup: %w", err)
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); err != io.EOF {
-		return rollup, errors.New("metering rollup contains trailing JSON")
+		return RollupStatus{}, errors.New("metering rollup contains trailing JSON")
 	}
 	if err := rollup.Validate(); err != nil {
-		return rollup, err
+		return RollupStatus{}, err
 	}
 	canonical, err := json.Marshal(rollup)
 	if err != nil {
-		return rollup, err
+		return RollupStatus{}, err
 	}
 	if !bytes.Equal(data, append(canonical, '\n')) {
-		return rollup, errors.New("metering rollup is not canonical")
+		return RollupStatus{}, errors.New("metering rollup is not canonical")
 	}
-	return rollup, nil
+	sum := sha256.Sum256(data)
+	return RollupStatus{
+		Rollup: rollup, SHA256: hex.EncodeToString(sum[:]), Bytes: int64(len(data)),
+	}, nil
 }

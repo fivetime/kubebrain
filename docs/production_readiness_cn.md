@@ -904,9 +904,10 @@ list/read/delete 四类 `requests`，最后是 `object_storage_byte_seconds`。B
 ConfigMap 固定 v3 format 时才读取 exact v3 resource rollup、storage rollup 和 v3
 catalog，并生成 11 行 `kubebrain.metering-charge.v3`。charge 自身再次要求四项请求
 quantity 为 `0..2^53` 的十进制整数，金额仍采用逐行精确有理数乘法和 half-even 到
-微货币。生产模板默认 v3；启用前必须部署经财务批准的供应商分类 exporter、积累完整
-24 小时 v3 sample，并发布覆盖该账期的 approved v3 catalog。invoice plan/finalizer
-接受 v1/v2/v3 charge exact version，历史 invoice 不重写。
+微货币。resource rollup、storage rollup 和 catalog source 的 SHA-256/bytes 必须分别匹配本地
+canonical artifact status。生产模板默认 v3；启用前必须部署经财务批准的供应商分类
+exporter、积累完整 24 小时 v3 sample，并发布覆盖该账期的 approved v3 catalog。invoice
+plan/finalizer 接受 v1/v2/v3 charge exact version，历史 invoice 不重写。
 
 账单纠错不得覆盖既有 charge。`kubebrain.metering-adjustment.v1` 使用非零 signed
 `amount_micros`：正数是补收，负数是 credit；reason 只允许 `billing_error`、

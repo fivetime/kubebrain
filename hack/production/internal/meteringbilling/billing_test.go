@@ -152,6 +152,69 @@ func TestBuildChargeV3PricesExactObjectRequests(t *testing.T) {
 	require.ErrorContains(t, err, "requires metering rollup v3")
 }
 
+func TestBuildChargeV3WithStatusesRejectsSourceBytesDrift(t *testing.T) {
+	start := time.Date(2026, 7, 20, 0, 0, 0, 0, time.UTC)
+	rollup := validRollupV3ForPeriod(start)
+	storage := validStorageRollup(start)
+	catalog := validCatalogV3ForPeriod()
+	dir := t.TempDir()
+	rollupStatus, err := meteringarchive.WriteRollupAtomic(
+		filepath.Join(dir, "resource-rollup.json"), rollup,
+	)
+	require.NoError(t, err)
+	storageStatus, err := meteringstorage.WriteRollupAtomic(
+		filepath.Join(dir, "storage-rollup.json"), storage,
+	)
+	require.NoError(t, err)
+	catalogStatus, err := WriteCatalogAtomic(filepath.Join(dir, "catalog.json"), catalog)
+	require.NoError(t, err)
+	artifactID := periodArtifactIDUnix(rollup.Instance, rollup.PeriodStartUnix, rollup.PeriodEndUnix)
+	retainUntil := time.Date(2035, 1, 1, 0, 0, 0, 0, time.UTC).Unix()
+	rollupSource := Source{
+		ArtifactFormat: rollup.Format, ArtifactID: artifactID,
+		ObjectKey: "rollups/instance-a/2026/07/20/day.json", VersionID: "rollup-version",
+		ArtifactSHA256: rollupStatus.SHA256, ObjectBytes: rollupStatus.Bytes,
+		RetainUntilUnix: retainUntil,
+	}
+	storageSource := Source{
+		ArtifactFormat: storage.Format, ArtifactID: artifactID,
+		ObjectKey: "storage-rollups/instance-a/2026/07/20/day.json", VersionID: "storage-version",
+		ArtifactSHA256: storageStatus.SHA256, ObjectBytes: storageStatus.Bytes,
+		RetainUntilUnix: retainUntil,
+	}
+	catalogSource := Source{
+		ArtifactFormat: catalog.Format, ArtifactID: catalog.Version,
+		ObjectKey: "prices/global/price-requests-2026-07.json", VersionID: "catalog-version",
+		ArtifactSHA256: catalogStatus.SHA256, ObjectBytes: catalogStatus.Bytes,
+		RetainUntilUnix: retainUntil,
+	}
+	_, err = BuildChargeV3WithStatuses(
+		rollupStatus, rollupSource, storageStatus, storageSource, catalogStatus, catalogSource,
+	)
+	require.NoError(t, err)
+
+	badRollupSource := rollupSource
+	badRollupSource.ArtifactSHA256 = strings.Repeat("b", 64)
+	_, err = BuildChargeV3WithStatuses(
+		rollupStatus, badRollupSource, storageStatus, storageSource, catalogStatus, catalogSource,
+	)
+	require.ErrorContains(t, err, "rollup source")
+
+	badStorageSource := storageSource
+	badStorageSource.ArtifactSHA256 = strings.Repeat("b", 64)
+	_, err = BuildChargeV3WithStatuses(
+		rollupStatus, rollupSource, storageStatus, badStorageSource, catalogStatus, catalogSource,
+	)
+	require.ErrorContains(t, err, "storage rollup source")
+
+	badCatalogSource := catalogSource
+	badCatalogSource.ArtifactSHA256 = strings.Repeat("b", 64)
+	_, err = BuildChargeV3WithStatuses(
+		rollupStatus, rollupSource, storageStatus, storageSource, catalogStatus, badCatalogSource,
+	)
+	require.ErrorContains(t, err, "catalog source")
+}
+
 func validCatalog() Catalog {
 	rates := make([]Rate, len(pricedQuantities))
 	prices := []string{"0.0000005", "0.0000005", "0.000001", "0.000001", "0.000001", "0.000001"}

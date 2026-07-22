@@ -9090,6 +9090,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./hack/production/internal/meteringbilling -run 'Test.*Invoice' -count=1`、
   `go test ./hack/production/... ./deploy/production` 与
   `go vet ./hack/production/... ./deploy/production` 通过。
+- A475 收紧 metering charge 的 upstream source 字节绑定：resource rollup 新增
+  `ReadRollupStatus`，charge builder 新增 `BuildChargeWithStatuses`、`BuildChargeV2WithStatuses`
+  和 `BuildChargeV3WithStatuses`，要求 resource rollup、可选 storage rollup 与 catalog source
+  的 SHA-256/bytes 分别精确等于本地 canonical artifact status；生产
+  `kubebrain-metering-charge` 路径改走这些 helper。新增 v3 回归覆盖 resource/storage/catalog
+  三类合法 source digest 漂移；`go test ./hack/production/internal/meteringbilling -run
+  'Test.*Charge' -count=1`、`go test ./hack/production/... ./deploy/production` 与
+  `go vet ./hack/production/... ./deploy/production` 通过。
 
 ### P2：运维兼容和长期验证
 

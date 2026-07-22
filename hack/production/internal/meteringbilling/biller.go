@@ -122,10 +122,11 @@ func (b *Biller) Process(ctx context.Context) (Charge, []byte, error) {
 	if err != nil {
 		return Charge{}, output, fmt.Errorf("read metering rollup: %w", err)
 	}
-	rollup, err := meteringarchive.ReadRollup(rollupPath)
+	rollupStatus, err := meteringarchive.ReadRollupStatus(rollupPath)
 	if err != nil {
 		return Charge{}, output, err
 	}
+	rollup := rollupStatus.Rollup
 	if rollup.Instance != b.Instance || rollup.PeriodStartUnix != periodStart.Unix() ||
 		rollup.PeriodEndUnix != periodEnd.Unix() {
 		return Charge{}, output, errors.New("metering rollup does not match the charge period")
@@ -164,18 +165,18 @@ func (b *Biller) Process(ctx context.Context) (Charge, []byte, error) {
 			return Charge{}, storageOutput, readErr
 		}
 		if catalogStatus.Catalog.Format == CatalogFormatV3 {
-			charge, err = BuildChargeV3(
-				rollup, rollupSource, storageStatus.Rollup, storageSource,
-				catalogStatus.Catalog, catalogSource,
+			charge, err = BuildChargeV3WithStatuses(
+				rollupStatus, rollupSource, storageStatus, storageSource,
+				catalogStatus, catalogSource,
 			)
 		} else {
-			charge, err = BuildChargeV2(
-				rollup, rollupSource, storageStatus.Rollup, storageSource,
-				catalogStatus.Catalog, catalogSource,
+			charge, err = BuildChargeV2WithStatuses(
+				rollupStatus, rollupSource, storageStatus, storageSource,
+				catalogStatus, catalogSource,
 			)
 		}
 	} else {
-		charge, err = BuildCharge(rollup, rollupSource, catalogStatus.Catalog, catalogSource)
+		charge, err = BuildChargeWithStatuses(rollupStatus, rollupSource, catalogStatus, catalogSource)
 	}
 	if err != nil {
 		return Charge{}, output, err

@@ -95,6 +95,87 @@ func BuildChargeV3(
 	)
 }
 
+func BuildChargeWithStatuses(
+	rollupStatus meteringarchive.RollupStatus,
+	rollupSource Source,
+	catalogStatus CatalogStatus,
+	catalogSource Source,
+) (Charge, error) {
+	if err := requireSourceStatus("rollup", rollupSource, rollupStatus.SHA256, rollupStatus.Bytes); err != nil {
+		return Charge{}, err
+	}
+	if err := requireSourceStatus("catalog", catalogSource, catalogStatus.SHA256, catalogStatus.Bytes); err != nil {
+		return Charge{}, err
+	}
+	return BuildCharge(rollupStatus.Rollup, rollupSource, catalogStatus.Catalog, catalogSource)
+}
+
+func BuildChargeV2WithStatuses(
+	rollupStatus meteringarchive.RollupStatus,
+	rollupSource Source,
+	storageRollupStatus meteringstorage.RollupStatus,
+	storageRollupSource Source,
+	catalogStatus CatalogStatus,
+	catalogSource Source,
+) (Charge, error) {
+	if err := requireChargeInputsWithStorage(
+		rollupStatus, rollupSource, storageRollupStatus, storageRollupSource,
+		catalogStatus, catalogSource,
+	); err != nil {
+		return Charge{}, err
+	}
+	return BuildChargeV2(
+		rollupStatus.Rollup, rollupSource, storageRollupStatus.Rollup, storageRollupSource,
+		catalogStatus.Catalog, catalogSource,
+	)
+}
+
+func BuildChargeV3WithStatuses(
+	rollupStatus meteringarchive.RollupStatus,
+	rollupSource Source,
+	storageRollupStatus meteringstorage.RollupStatus,
+	storageRollupSource Source,
+	catalogStatus CatalogStatus,
+	catalogSource Source,
+) (Charge, error) {
+	if err := requireChargeInputsWithStorage(
+		rollupStatus, rollupSource, storageRollupStatus, storageRollupSource,
+		catalogStatus, catalogSource,
+	); err != nil {
+		return Charge{}, err
+	}
+	return BuildChargeV3(
+		rollupStatus.Rollup, rollupSource, storageRollupStatus.Rollup, storageRollupSource,
+		catalogStatus.Catalog, catalogSource,
+	)
+}
+
+func requireChargeInputsWithStorage(
+	rollupStatus meteringarchive.RollupStatus,
+	rollupSource Source,
+	storageRollupStatus meteringstorage.RollupStatus,
+	storageRollupSource Source,
+	catalogStatus CatalogStatus,
+	catalogSource Source,
+) error {
+	if err := requireSourceStatus("rollup", rollupSource, rollupStatus.SHA256, rollupStatus.Bytes); err != nil {
+		return err
+	}
+	if err := requireSourceStatus(
+		"storage rollup", storageRollupSource, storageRollupStatus.SHA256, storageRollupStatus.Bytes,
+	); err != nil {
+		return err
+	}
+	return requireSourceStatus("catalog", catalogSource, catalogStatus.SHA256, catalogStatus.Bytes)
+}
+
+func requireSourceStatus(description string, source Source, sha256 string, bytes int64) error {
+	if source.ArtifactSHA256 != sha256 || source.ObjectBytes != bytes {
+		return fmt.Errorf("%s source does not match artifact bytes", description)
+	}
+	return nil
+}
+
 func buildCharge(
 	rollup meteringarchive.Rollup,
 	rollupSource Source,
