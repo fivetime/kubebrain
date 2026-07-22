@@ -223,6 +223,28 @@ func TestMemberListLinearizablePreservesBarrierStatus(t *testing.T) {
 	}
 }
 
+func TestMemberListLinearizableAuthenticatesBeforeReadBarrier(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	aliceCtx := setupAuthKVUser(t, server)
+
+	var calls atomic.Int32
+	barrierErr := errors.New("read barrier must not run for unauthenticated requests")
+	server.peers = testPeerService{syncReadFn: func(context.Context) error {
+		calls.Add(1)
+		return barrierErr
+	}}
+
+	_, err := server.MemberList(context.Background(), &etcdserverpb.MemberListRequest{Linearizable: true})
+	require.ErrorIs(t, err, rpctypes.ErrUserEmpty)
+	require.Zero(t, calls.Load())
+
+	_, err = server.MemberList(aliceCtx, &etcdserverpb.MemberListRequest{Linearizable: true})
+	require.Equal(t, codes.Unavailable, status.Code(err))
+	require.Equal(t, barrierErr.Error(), status.Convert(err).Message())
+	require.EqualValues(t, 1, calls.Load())
+}
+
 func TestMemberAuthorizationMatchesEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

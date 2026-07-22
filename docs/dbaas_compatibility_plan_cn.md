@@ -9906,6 +9906,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./pkg/server/etcd -run 'TestBackendShim(PutExpandsIgnoreOptions|ComparePutsExpandIgnoreOptions|IgnoreOptionsRequireExistingKey)'`
   以及 `go test ./pkg/server/etcd -run 'Test(PutIgnore|TxnComparePutIgnore|TxnIgnoreOptions|BackendShim)'`
   通过。
+- A568 修复 linearizable MemberList 的 auth/barrier 顺序：
+  对照上游 etcd gRPC auth 在 handler 前完成、`/root/etcd/server/etcdserver/api/v3rpc/member.go`
+  只在已放行请求里执行 `MemberList` 的顺序，KubeBrain 旧实现会在
+  `MemberList(linearizable=true)` 中先执行 read barrier 再检查 token；未认证请求在无
+  leader、barrier 超时或 RBAC 故障时可能返回 barrier 错误，而不是 etcd 兼容的
+  `ErrUserEmpty`。现在 `MemberList` 先执行非 root auth，再按 `Linearizable` 触发
+  `SyncReadRevision`；认证用户仍能看到原始 barrier status。回归：
+  `go test ./pkg/server/etcd -run 'TestMemberListLinearizable' -count=1` 通过。
 
 ### P2：运维兼容和长期验证
 
