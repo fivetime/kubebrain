@@ -9850,6 +9850,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   verify/complete 在消费已有 marker 前也复用同一封闭 schema。非 canonical marker 会
   fail closed，不会继续数据验证或发布 cutover receipt。回归：
   `go test ./hack/production -run 'TestRestoreTrafficCutover' -count=1` 通过。
+- A563 收紧 RestoreCutover operation runner marker 绑定：
+  worker takeover 和 succeed 门禁此前只用 `.cutover/.rollback` 文件存在性选择恢复阶段，
+  final receipt validator 也只绑定 state/receipt；若本地 evidence 被替换成非 canonical
+  marker，runner 层可能与 A562 子脚本门禁不一致。现在
+  `run-restore-cutover-operation.sh` 在 rollback marker 触发终态失败前先校验其
+  ROLLBACK schema，并在提交 succeed 前要求 CUTOVER 和 VERIFIED marker 都通过同一单行
+  封闭 schema。非 canonical marker 会终止为失败，不会提交 operation succeed。回归：
+  `go test ./hack/production -run 'TestRestoreCutoverOperation' -count=1` 通过。
 
 ### P2：运维兼容和长期验证
 

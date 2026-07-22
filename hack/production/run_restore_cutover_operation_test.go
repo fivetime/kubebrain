@@ -41,6 +41,23 @@ func TestRestoreCutoverOperationRejectsNonCanonicalStateBeforeSucceed(t *testing
 	require.NotContains(t, log, "--action succeed")
 }
 
+func TestRestoreCutoverOperationRejectsNonCanonicalMarkersBeforeSucceed(t *testing.T) {
+	for _, tc := range []struct {
+		name, env string
+	}{
+		{name: "cutover marker", env: "TAMPER_CUTOVER_MARKER_BEFORE_RECEIPT=true"},
+		{name: "verified marker", env: "TAMPER_VERIFIED_MARKER_BEFORE_RECEIPT=true"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newCutoverRunnerFixture(t)
+			f.run(t, false, tc.env, "invalid receipt")
+			log := f.log(t)
+			require.Contains(t, log, "--action fail")
+			require.NotContains(t, log, "--action succeed")
+		})
+	}
+}
+
 func TestRestoreCutoverOperationRequeuesPrepareFailure(t *testing.T) {
 	f := newCutoverRunnerFixture(t)
 	f.run(t, false, "FAIL_PHASE=prepare", "prepare failed and was requeued")
@@ -130,6 +147,20 @@ func TestRestoreCutoverOperationTurnsExistingRollbackIntoTerminalFailure(t *test
 	require.NotContains(t, log, "phase prepare")
 }
 
+func TestRestoreCutoverOperationRejectsInvalidRollbackEvidence(t *testing.T) {
+	f := newCutoverRunnerFixture(t)
+	f.publishEvidence(t, "rollback")
+	require.NoError(t, os.WriteFile(
+		filepath.Join(f.dir, "state", "cutover-1.rollback"),
+		[]byte("ROLLBACK\tkubebrain.restore-cutover.marker.v1\tsource\t100\textra\n"),
+		0o600,
+	))
+	f.run(t, false, "", "rollback marker invalid")
+	log := f.log(t)
+	require.Contains(t, log, "--action fail")
+	require.NotContains(t, log, "phase prepare")
+}
+
 type cutoverRunnerFixture struct {
 	dir, parameters string
 	env             []string
@@ -185,12 +216,17 @@ case "$ACTION" in
     } >"$state_file"
     ;;
   cutover)
-    printf 'kubebrain.restore-cutover.cutover.v1\t%s\t%s\n' "$INSTANCE" "$OPERATION_ID" >"$STATE_DIR/$OPERATION_ID.cutover"
+    printf 'CUTOVER\tkubebrain.restore-cutover.marker.v1\t%s\t100\n' "$TARGET_INSTANCE" >"$STATE_DIR/$OPERATION_ID.cutover"
+    ;;
+  verify)
+    printf 'VERIFIED\tkubebrain.restore-cutover.marker.v1\t100\n' >"$STATE_DIR/$OPERATION_ID.verified"
     ;;
   complete)
     artifact_sha="`+runnerCutoverArtifactSHA256+`"
     [[ "${INVALID_CUTOVER_RECEIPT:-false}" != true ]] || artifact_sha=abc123
     [[ "${TAMPER_STATE_BEFORE_RECEIPT:-false}" != true ]] || printf 'UNKNOWN\trow\n' >>"$state_file"
+    [[ "${TAMPER_CUTOVER_MARKER_BEFORE_RECEIPT:-false}" != true ]] || printf 'UNKNOWN\trow\n' >>"$STATE_DIR/$OPERATION_ID.cutover"
+    [[ "${TAMPER_VERIFIED_MARKER_BEFORE_RECEIPT:-false}" != true ]] || printf 'UNKNOWN\trow\n' >>"$STATE_DIR/$OPERATION_ID.verified"
     state_sha="$(sha256sum "$state_file" | cut -d ' ' -f1)"
     printf '{"format":"kubebrain.restore-cutover.receipt.v1","operation_id":"%s","instance":"%s","service_namespace":"%s","service_name":"%s","service_uid":"uid-service","source_instance":"%s","target_instance":"%s","artifact_sha256":"%s","cutover_state_sha256":"%s","snapshot_revision":42,"replicas":%s,"pod_uids_unchanged":true,"endpoint_uids_matched":true,"public_data_verified":true,"completed_at_unix":100}\n' \
       "$OPERATION_ID" "$INSTANCE" "$SERVICE_NAMESPACE" "$SERVICE_NAME" "$SOURCE_INSTANCE" "$TARGET_INSTANCE" "$artifact_sha" "$state_sha" "$EXPECTED_REPLICAS" >"$RECEIPT_OUTPUT"
@@ -241,11 +277,28 @@ func (f *cutoverRunnerFixture) publishEvidence(t *testing.T, kind string) {
 	if kind == "state" {
 		return
 	}
-	path := filepath.Join(stateDir, "cutover-1."+kind)
-	if kind == "receipt" {
-		path = filepath.Join(f.dir, "receipt.json")
+	if kind == "rollback" {
+		require.NoError(t, os.WriteFile(
+			filepath.Join(stateDir, "cutover-1.rollback"),
+			[]byte("ROLLBACK\tkubebrain.restore-cutover.marker.v1\tsource\t100\n"),
+			0o600,
+		))
+		return
 	}
-	require.NoError(t, os.WriteFile(path, []byte("evidence\n"), 0o600))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(stateDir, "cutover-1.cutover"),
+		[]byte("CUTOVER\tkubebrain.restore-cutover.marker.v1\ttarget\t100\n"),
+		0o600,
+	))
+	if kind == "cutover" {
+		return
+	}
+	require.NoError(t, os.WriteFile(
+		filepath.Join(stateDir, "cutover-1.verified"),
+		[]byte("VERIFIED\tkubebrain.restore-cutover.marker.v1\t100\n"),
+		0o600,
+	))
+	require.NoError(t, os.WriteFile(filepath.Join(f.dir, "receipt.json"), []byte(cutoverRunnerReceipt()), 0o600))
 }
 
 func cutoverRunnerState() string {
@@ -255,6 +308,11 @@ func cutoverRunnerState() string {
 		"POD\tsource\tkb-source-1\tuid-source-1\t0\n" +
 		"POD\ttarget\tkb-target-0\tuid-target-0\t0\n" +
 		"POD\ttarget\tkb-target-1\tuid-target-1\t0\n"
+}
+
+func cutoverRunnerReceipt() string {
+	stateSHA := fmt.Sprintf("%x", sha256.Sum256([]byte(cutoverRunnerState())))
+	return fmt.Sprintf(`{"format":"kubebrain.restore-cutover.receipt.v1","operation_id":"cutover-1","instance":"instance-a","service_namespace":"ns-a","service_name":"kubebrain","service_uid":"uid-service","source_instance":"source","target_instance":"target","artifact_sha256":"%s","cutover_state_sha256":"%s","snapshot_revision":42,"replicas":2,"pod_uids_unchanged":true,"endpoint_uids_matched":true,"public_data_verified":true,"completed_at_unix":100}`+"\n", runnerCutoverArtifactSHA256, stateSHA)
 }
 
 func requireOrdered(t *testing.T, text string, values ...string) {

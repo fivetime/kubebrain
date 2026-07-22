@@ -2037,7 +2037,9 @@ complete 驱动，每阶段独立续租。prepare 失败可 retry；从 cutover 
 
 worker 接管时依据 A189 持久证据恢复：只有 state 从 cutover 继续，有 cutover marker 从
 verify 继续，已有 receipt 则重做 complete 在线复检后提交；rollback marker 直接记 Failed。
-heartbeat fencing 时旧 worker 终止子进程且不再回滚或提交，由新 owner/attempt 接管。
+cutover、verified 和 rollback marker 在接管判定或最终提交 succeed 前都必须通过 A189
+单行封闭 schema 校验，不能仅凭文件存在推进 operation。heartbeat fencing 时旧 worker
+终止子进程且不再回滚或提交，由新 owner/attempt 接管。
 A189 rollback 允许仅凭 prepare state 运行：这覆盖 Service JSON Patch 已提交、但等待
 EndpointSlice 失败而尚未生成 cutover marker 的窗口；rollback 仍用 UID/resourceVersion
 CAS 并要求源 Pod UID 集恢复。

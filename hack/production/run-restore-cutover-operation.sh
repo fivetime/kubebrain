@@ -171,6 +171,7 @@ run_phase() {
 
 state_file="${state_dir}/${operation_id}.state"
 cutover_file="${state_dir}/${operation_id}.cutover"
+verified_file="${state_dir}/${operation_id}.verified"
 rollback_file="${state_dir}/${operation_id}.rollback"
 
 validate_cutover_state_schema() {
@@ -226,11 +227,50 @@ validate_cutover_state_schema() {
   ' "$path"
 }
 
+validate_restore_cutover_marker() {
+  local path="$1" kind="$2" expected_instance="${3:-}"
+  awk -F '\t' -v kind="$kind" -v expected="$expected_instance" '
+    NR == 1 {
+      if ($1 != kind || $2 != "kubebrain.restore-cutover.marker.v1") {
+        bad = "marker row does not match the operation"
+        exit 1
+      }
+      if (kind == "VERIFIED") {
+        if (expected != "" || NF != 3 || $3 !~ /^[1-9][0-9]*$/) {
+          bad = "VERIFIED marker row has invalid schema"
+          exit 1
+        }
+      } else if (expected == "" || NF != 4 || $3 != expected || $4 !~ /^[1-9][0-9]*$/) {
+        bad = "phase marker row has invalid schema"
+        exit 1
+      }
+      rows++
+      next
+    }
+    {
+      bad = "unexpected extra marker row"
+      exit 1
+    }
+    END {
+      if (bad != "") {
+        print bad > "/dev/stderr"
+        exit 1
+      }
+      if (rows != 1) {
+        print "marker must contain exactly one row" > "/dev/stderr"
+        exit 1
+      }
+    }
+  ' "$path"
+}
+
 validate_cutover_receipt() {
   local kind format state_instance state_operation state_namespace state_service source_state
   local state_target state_service_uid artifact_sha snapshot_revision source_prefix target_prefix
   local state_sha
   validate_cutover_state_schema "$state_file" || return 1
+  validate_restore_cutover_marker "$cutover_file" CUTOVER "$target_instance" || return 1
+  validate_restore_cutover_marker "$verified_file" VERIFIED || return 1
   [[ -f "$state_file" ]] || return 1
   IFS=$'\t' read -r kind format state_instance state_operation state_namespace state_service \
     source_state state_target state_service_uid artifact_sha snapshot_revision source_prefix \
@@ -263,6 +303,12 @@ validate_cutover_receipt() {
 }
 
 if [[ -e "$rollback_file" ]]; then
+  if ! validate_restore_cutover_marker "$rollback_file" ROLLBACK "$source_instance"; then
+    run_operationctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
+      --message "restore cutover rollback marker invalid" >/dev/null
+    echo "restore cutover rollback marker invalid" >&2
+    exit 1
+  fi
   run_operationctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
     --message "restore cutover was already rolled back" >/dev/null
   echo "restore cutover was already rolled back" >&2
