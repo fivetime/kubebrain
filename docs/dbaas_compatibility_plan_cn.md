@@ -10377,6 +10377,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   规范相对 key 前缀。回归：
   `go test ./hack/production/internal/operationarchiver -run 'TestArchiveProcessorRejectsUnsafe(ObjectPrefix|ObjectScope)|TestArchiveProcessorUsesStableIdentityAndReleasesFinalizer' -count=1`
   通过。
+- A615 收紧 operation audit archiver 的归档对象身份来源：
+  archiver 的 object key 由 `prefix/namespace/uid.json` 拼出，但
+  `operationaudit.Artifact.Validate` 只要求 namespace/name/UID 非空。生产 apiserver
+  会约束这些元数据，旧对象、fake-client 路径或手工构造的 operation 仍可能携带 `/`、
+  `.`、`..`、空白或控制字符，导致 `path.Join` 清理后生成非预期归档 key，或在 release
+  阶段用异常 name 访问 operation。现在 `ArchiveProcessor.Process` 在调用外部 executor
+  前要求 namespace、name、UID 都是单段 key-safe 元数据；不符合时 fail fast，且不会
+  生成对象归档请求。回归：
+  `go test ./hack/production/internal/operationarchiver -run 'TestArchiveProcessorRejectsUnsafeOperationIdentityBeforeExecutor|TestArchiveProcessorUsesStableIdentityAndReleasesFinalizer' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

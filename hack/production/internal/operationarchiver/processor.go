@@ -84,6 +84,12 @@ func validArchiveScopeValue(value string) bool {
 	}) == -1
 }
 
+func validOperationIdentitySegment(value string) bool {
+	return validArchiveScopeValue(value) &&
+		!strings.Contains(value, "/") &&
+		value != "." && value != ".."
+}
+
 func (p *ArchiveProcessor) Process(ctx context.Context, object *unstructured.Unstructured) error {
 	artifact, err := operationauditbuilder.FromOperation(object)
 	if err != nil {
@@ -102,6 +108,11 @@ func (p *ArchiveProcessor) Process(ctx context.Context, object *unstructured.Uns
 	receiptPath := path.Join(dir, "receipt.json")
 	if err := operationaudit.WriteAtomic(artifactPath, artifact); err != nil {
 		return err
+	}
+	if !validOperationIdentitySegment(artifact.Namespace) ||
+		!validOperationIdentitySegment(artifact.Name) ||
+		!validOperationIdentitySegment(artifact.UID) {
+		return errors.New("operation archive identity must use normalized key-safe metadata")
 	}
 	objectKey := path.Join(p.prefix, artifact.Namespace, artifact.UID+".json")
 	environment := []string{

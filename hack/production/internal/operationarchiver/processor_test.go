@@ -117,6 +117,64 @@ func TestArchiveProcessorRejectsUnsafeObjectScope(t *testing.T) {
 	}
 }
 
+func TestArchiveProcessorRejectsUnsafeOperationIdentityBeforeExecutor(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*unstructured.Unstructured)
+	}{
+		{
+			name: "namespace_parent_segment",
+			mutate: func(object *unstructured.Unstructured) {
+				object.SetNamespace("../tenant-a")
+			},
+		},
+		{
+			name: "name_slash",
+			mutate: func(object *unstructured.Unstructured) {
+				object.SetName("operation/a")
+			},
+		},
+		{
+			name: "name_dot",
+			mutate: func(object *unstructured.Unstructured) {
+				object.SetName(".")
+			},
+		},
+		{
+			name: "uid_slash",
+			mutate: func(object *unstructured.Unstructured) {
+				object.SetUID(types.UID("uid/a"))
+			},
+		},
+		{
+			name: "uid_control_byte",
+			mutate: func(object *unstructured.Unstructured) {
+				object.SetUID(types.UID("uid-a\x00"))
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			object := terminalOperation()
+			tc.mutate(object)
+			processor, err := NewArchiveProcessor(
+				fake.NewSimpleDynamicClient(runtime.NewScheme(), object),
+				"/executor", "store-a", "bucket", "audit", "COMPLIANCE", 24*time.Hour,
+			)
+			require.NoError(t, err)
+			processor.now = func() time.Time { return time.Unix(110, 0) }
+			called := false
+			processor.run = func(context.Context, string, []string) error {
+				called = true
+				return nil
+			}
+
+			err = processor.Process(context.Background(), object)
+			require.ErrorContains(t, err, "key-safe metadata")
+			require.False(t, called)
+		})
+	}
+}
+
 func TestArchiveProcessorRejectsExpiredRetentionBeforeExecutor(t *testing.T) {
 	object := terminalOperation()
 	client := fake.NewSimpleDynamicClient(runtime.NewScheme(), object)
