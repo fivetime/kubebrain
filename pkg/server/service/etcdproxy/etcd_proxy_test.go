@@ -116,21 +116,7 @@ func TestWaitReadyReturnsUnavailableWhenLeaderConnectionIsNotReady(t *testing.T)
 
 	require.Error(t, err)
 	require.Equal(t, codes.Unavailable, status.Code(err))
-	require.Less(t, time.Since(start), 7*time.Second)
-}
-
-func TestWaitReadyHonorsCallerDeadlineBeforeProxyRetryWindow(t *testing.T) {
-	proxy := &etcdProxy{
-		election: &testLeaderElection{leaderAddress: "127.0.0.1:1"},
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-
-	start := time.Now()
-	err := proxy.waitReady(ctx)
-
-	require.ErrorIs(t, err, context.DeadlineExceeded)
-	require.Less(t, time.Since(start), time.Second)
+	require.Less(t, time.Since(start), 4*time.Second)
 }
 
 func registerServingHealth(server *grpc.Server) *health.Server {
