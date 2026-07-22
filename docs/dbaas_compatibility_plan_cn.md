@@ -9377,6 +9377,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./hack/production/internal/operationapi -run 'TestOIDCAuthenticator|TestHTTPSAPIAuthenticatesOIDCTokenAndSubmitsOperation|TestHandlerDependencyDeadlineReturnsServiceUnavailable' -count=20`、
   `go test ./hack/production/internal/operationapi`、`go test ./hack/production/... ./deploy/production`、
   `go vet ./hack/production/... ./deploy/production` 与 `git diff --check` 通过。
+- A513 收紧 metering sample collector 的 Prometheus success media type：非 200 诊断 body
+  仍按 A510 的 1 MiB 上限读取，但 HTTP 200 响应现在必须声明 JSON media type；`text/html`
+  错误页即使 body 恰好是 Prometheus JSON 也不会进入计量解析。回归覆盖 200 `text/html`
+  body；`go test ./hack/production/internal/meteringarchive -run 'TestCollector(BuildsCanonicalCompleteSample|RejectsNonJSONPrometheusSuccessResponse|RejectsOversizedPrometheusResponse|FailsClosedOnIncompleteDuplicateStaleAndInvalidValues|AcceptsPrometheusResponseExtensions)|TestCollectorV3' -count=20`、
+  `go test ./hack/production/internal/meteringarchive`、`go test ./hack/production/... ./deploy/production`、
+  `go vet ./hack/production/... ./deploy/production` 与 `git diff --check` 通过。
 
 ### P2：运维兼容和长期验证
 

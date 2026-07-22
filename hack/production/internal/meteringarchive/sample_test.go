@@ -156,6 +156,7 @@ func TestCollectorFailsClosedOnIncompleteDuplicateStaleAndInvalidValues(t *testi
 		{
 			name: "duplicate",
 			handler: func(t *testing.T, response http.ResponseWriter, _ *http.Request) {
+				response.Header().Set("Content-Type", "application/json")
 				fmt.Fprint(response, `{"status":"success","data":{"resultType":"vector","result":[`+
 					`{"metric":{"dbaas_instance":"instance-a"},"value":[1700003590,"1"]},`+
 					`{"metric":{"dbaas_instance":"instance-a"},"value":[1700003590,"1"]}]}}`)
@@ -209,6 +210,22 @@ func TestCollectorFailsClosedOnIncompleteDuplicateStaleAndInvalidValues(t *testi
 	}
 }
 
+func TestCollectorRejectsNonJSONPrometheusSuccessResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		response.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(response, `{"status":"success","data":{"resultType":"vector","result":[`+
+			`{"metric":{"dbaas_instance":"instance-a"},"value":[1700003590,"1"]}]}}`)
+	}))
+	defer server.Close()
+	collector, err := NewCollector(server.URL, server.Client(), "", 5*time.Minute)
+	require.NoError(t, err)
+	_, err = collector.Collect(
+		context.Background(), "instance-a",
+		time.Unix(1_700_000_000, 0), time.Unix(1_700_003_600, 0),
+	)
+	require.ErrorContains(t, err, "non-JSON response")
+}
+
 func TestCollectorRejectsOversizedPrometheusResponse(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
 		_, _ = response.Write(bytes.Repeat([]byte("x"), maxPrometheusResponseBytes+1))
@@ -225,6 +242,7 @@ func TestCollectorRejectsOversizedPrometheusResponse(t *testing.T) {
 
 func TestCollectorAcceptsPrometheusResponseExtensions(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		response.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(response, `{"status":"success","warnings":["partial metadata"],`+
 			`"data":{"resultType":"vector","result":[{"metric":{"__name__":"recording_rule",`+
 			`"dbaas_instance":"instance-a"},"value":[1700003590,"1"]}]}}`)
@@ -289,6 +307,7 @@ func writePrometheusVector(
 	value string,
 ) {
 	t.Helper()
+	response.Header().Set("Content-Type", "application/json")
 	require.NoError(t, json.NewEncoder(response).Encode(map[string]any{
 		"status": "success",
 		"data": map[string]any{

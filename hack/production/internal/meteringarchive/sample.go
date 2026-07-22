@@ -10,12 +10,14 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"mime"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -204,6 +206,9 @@ func (c *Collector) queryOne(
 	if response.StatusCode != http.StatusOK {
 		return MetricValue{}, fmt.Errorf("prometheus returned HTTP %d: %s", response.StatusCode, string(body))
 	}
+	if !prometheusJSONContentType(response.Header.Get("Content-Type")) {
+		return MetricValue{}, errors.New("prometheus returned non-JSON response")
+	}
 	var envelope struct {
 		Status string `json:"status"`
 		Data   struct {
@@ -264,6 +269,14 @@ func readPrometheusResponseBody(body io.Reader) ([]byte, error) {
 		return nil, fmt.Errorf("prometheus response exceeds %d bytes", maxPrometheusResponseBytes)
 	}
 	return data, nil
+}
+
+func prometheusJSONContentType(header string) bool {
+	contentType, _, err := mime.ParseMediaType(header)
+	if err != nil {
+		return false
+	}
+	return contentType == "application/json" || strings.HasSuffix(contentType, "+json")
 }
 
 func (s Sample) Validate(maxStaleness time.Duration) error {
