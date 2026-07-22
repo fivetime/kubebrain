@@ -10002,6 +10002,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   请求前 fail closed。回归：
   `go test ./hack/production/cmd/metering-archive -run TestReadToken -count=1`
   通过。
+- A578 收紧 metering archive 生产清单的 Prometheus 凭据基线：
+  A517/A577 已让二进制支持 CA/token 文件边界，但 `kubebrain-metering-archive` CronJob
+  仍默认使用集群内明文 `http://prometheus-operated...`，且未挂载 bearer token/CA；直接套用
+  production 清单会绕过文档要求的 HTTPS、server name 和 token 鉴权。现在清单改用
+  `https://prometheus-operated.kubebrain-system.svc.cluster.local:9090`，挂载
+  `kubebrain-metering-archive-prometheus` Secret 的 `ca.crt`/`token`，并显式传入
+  `--prometheus-ca-file`、`--prometheus-bearer-token-file` 和
+  `--prometheus-server-name`；manifest 回归禁止 `--prometheus-url=http://` 回退，并固定
+  Secret 只读 mount/fsGroup。回归：
+  `go test ./deploy/production -run TestMeteringArchiveCronJobIsFailClosedAndImmutable -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

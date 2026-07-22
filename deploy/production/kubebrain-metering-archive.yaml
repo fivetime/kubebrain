@@ -30,6 +30,8 @@ spec:
             runAsNonRoot: true
             runAsUser: 65532
             runAsGroup: 65532
+            fsGroup: 65532
+            fsGroupChangePolicy: OnRootMismatch
             seccompProfile:
               type: RuntimeDefault
           containers:
@@ -75,7 +77,10 @@ spec:
                       name: kubebrain-metering-archive-object-store
                       key: bucket
               args:
-                - --prometheus-url=http://prometheus-operated.kubebrain-system.svc.cluster.local:9090
+                - --prometheus-url=https://prometheus-operated.kubebrain-system.svc.cluster.local:9090
+                - --prometheus-ca-file=/var/run/secrets/kubebrain-prometheus/ca.crt
+                - --prometheus-bearer-token-file=/var/run/secrets/kubebrain-prometheus/token
+                - --prometheus-server-name=prometheus-operated.kubebrain-system.svc.cluster.local
                 - --instance=kubebrain
                 - --object-store-id=$(OBJECT_STORE_ID)
                 - --bucket=$(S3_BUCKET)
@@ -102,7 +107,19 @@ spec:
               volumeMounts:
                 - name: tmp
                   mountPath: /tmp
+                - name: prometheus-credentials
+                  mountPath: /var/run/secrets/kubebrain-prometheus
+                  readOnly: true
           volumes:
             - name: tmp
               emptyDir:
                 sizeLimit: 32Mi
+            - name: prometheus-credentials
+              secret:
+                secretName: kubebrain-metering-archive-prometheus
+                defaultMode: 0440
+                items:
+                  - key: ca.crt
+                    path: ca.crt
+                  - key: token
+                    path: token

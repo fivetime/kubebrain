@@ -1188,6 +1188,15 @@ func TestMeteringArchiveCronJobIsFailClosedAndImmutable(t *testing.T) {
 	require.EqualValues(t, 900, nestedInt64(t, job, "spec", "jobTemplate", "spec", "activeDeadlineSeconds"))
 	require.False(t, nestedBool(t, job,
 		"spec", "jobTemplate", "spec", "template", "spec", "automountServiceAccountToken"))
+	podSpec, found, err := unstructured.NestedMap(
+		job.Object, "spec", "jobTemplate", "spec", "template", "spec",
+	)
+	require.NoError(t, err)
+	require.True(t, found)
+	pod := &unstructured.Unstructured{Object: podSpec}
+	require.EqualValues(t, 65532, nestedInt64(t, pod, "securityContext", "fsGroup"))
+	require.Equal(t, "OnRootMismatch",
+		nestedString(t, pod, "securityContext", "fsGroupChangePolicy"))
 
 	containers, found, err := unstructured.NestedSlice(
 		job.Object, "spec", "jobTemplate", "spec", "template", "spec", "containers",
@@ -1203,7 +1212,15 @@ func TestMeteringArchiveCronJobIsFailClosedAndImmutable(t *testing.T) {
 	args, found, err := unstructured.NestedStringSlice(container.Object, "args")
 	require.NoError(t, err)
 	require.True(t, found)
+	for _, arg := range args {
+		require.False(t, strings.HasPrefix(arg, "--prometheus-url=http://"),
+			"metering archive must not use plaintext Prometheus: %s", arg)
+	}
 	for _, expected := range []string{
+		"--prometheus-url=https://prometheus-operated.kubebrain-system.svc.cluster.local:9090",
+		"--prometheus-ca-file=/var/run/secrets/kubebrain-prometheus/ca.crt",
+		"--prometheus-bearer-token-file=/var/run/secrets/kubebrain-prometheus/token",
+		"--prometheus-server-name=prometheus-operated.kubebrain-system.svc.cluster.local",
 		"--instance=kubebrain",
 		"--retention-mode=COMPLIANCE",
 		"--retention-duration=61320h",
@@ -1215,6 +1232,47 @@ func TestMeteringArchiveCronJobIsFailClosedAndImmutable(t *testing.T) {
 	}
 	require.True(t, nestedBool(t, container, "securityContext", "readOnlyRootFilesystem"))
 	require.False(t, nestedBool(t, container, "securityContext", "allowPrivilegeEscalation"))
+	mounts, found, err := unstructured.NestedSlice(container.Object, "volumeMounts")
+	require.NoError(t, err)
+	require.True(t, found)
+	foundPrometheusCredentialsMount := false
+	for _, raw := range mounts {
+		mount := &unstructured.Unstructured{Object: raw.(map[string]any)}
+		if nestedString(t, mount, "name") != "prometheus-credentials" {
+			continue
+		}
+		foundPrometheusCredentialsMount = true
+		require.Equal(t, "/var/run/secrets/kubebrain-prometheus",
+			nestedString(t, mount, "mountPath"))
+		require.True(t, nestedBool(t, mount, "readOnly"))
+	}
+	require.True(t, foundPrometheusCredentialsMount)
+
+	volumes, found, err := unstructured.NestedSlice(
+		job.Object, "spec", "jobTemplate", "spec", "template", "spec", "volumes",
+	)
+	require.NoError(t, err)
+	require.True(t, found)
+	foundPrometheusCredentialsVolume := false
+	for _, raw := range volumes {
+		volume := &unstructured.Unstructured{Object: raw.(map[string]any)}
+		if nestedString(t, volume, "name") != "prometheus-credentials" {
+			continue
+		}
+		foundPrometheusCredentialsVolume = true
+		require.Equal(t, "kubebrain-metering-archive-prometheus",
+			nestedString(t, volume, "secret", "secretName"))
+		require.EqualValues(t, 0440, nestedInt64(t, volume, "secret", "defaultMode"))
+		items, found, err := unstructured.NestedSlice(volume.Object, "secret", "items")
+		require.NoError(t, err)
+		require.True(t, found)
+		require.Len(t, items, 2)
+		require.Equal(t, "ca.crt", nestedString(t,
+			&unstructured.Unstructured{Object: items[0].(map[string]any)}, "key"))
+		require.Equal(t, "token", nestedString(t,
+			&unstructured.Unstructured{Object: items[1].(map[string]any)}, "key"))
+	}
+	require.True(t, foundPrometheusCredentialsVolume)
 	env, found, err := unstructured.NestedSlice(container.Object, "env")
 	require.NoError(t, err)
 	require.True(t, found)

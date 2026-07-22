@@ -818,8 +818,10 @@ version、逐字节核对 artifact，并读取远端 retention。只有全部验
 无 version ID、保留策略漂移或收据不匹配都会 fail closed。生产模板默认保留 7 年，
 使用独立对象存储 Secret、禁止 ServiceAccount token、只读根文件系统和非 root 身份；
 多实例部署必须同步替换 `--instance`、对象前缀、recording-rule 标签与选择器，并为每个
-实例保留唯一归档职责。Prometheus 跨网络访问时必须配置 HTTPS、CA、server name 和
-bearer token 参数，不能沿用模板中的集群内明文地址。Prometheus CA bundle 文件最多
+实例保留唯一归档职责。生产基线使用 HTTPS 访问 Prometheus，并要求控制面先创建
+`kubebrain-metering-archive-prometheus` Secret，包含 `ca.crt` 和 `token` 两个 key；
+CronJob 会把它以只读文件挂载到 `/var/run/secrets/kubebrain-prometheus`，同时显式传入
+CA、server name 和 bearer token 参数。Prometheus CA bundle 文件最多
 接受 1 MiB，bearer token 文件最多接受 16 KiB；空 token、包含任何空白的 token 或超限文件
 都必须在创建 collector 和发起 HTTP 请求前 fail closed，不能构造异常大的 Authorization
 header 或把错误 CA 文件交给 TLS 初始化继续处理。
