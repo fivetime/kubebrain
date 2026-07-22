@@ -10280,6 +10280,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   和
   `kubectl apply --dry-run=client -f deploy/production/kubebrain-operation-audit-admission.yaml`
   通过。
+- A604 收紧实例 release gate 的镜像不可变性：
+  `hack/production/validate-instance-ready.sh` 原先只要求 `EXPECTED_IMAGE` 非空，并在
+  StatefulSet/Pod 上做精确字符串相等；如果发布系统错误传入 `kubebrain:dev` 或任意可变
+  tag，且集群也运行该 tag，release gate 会通过，违背生产文档中“必须使用
+  `registry/...@sha256:<digest>`”的约束。现在入口直接拒绝缺少 `@sha256:` 的镜像、
+  非 64 位小写 hex digest 和带空白的引用；后续仍保留 StatefulSet/Pod 精确字符串比较，
+  因而同时证明 digest 形式与实际 rollout 收敛。回归：
+  `go test ./hack/production -run TestValidateInstanceReady -count=1` 通过。
 
 ### P2：运维兼容和长期验证
 

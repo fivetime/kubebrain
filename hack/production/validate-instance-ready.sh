@@ -36,6 +36,10 @@ if [[ -z "$EXPECTED_IMAGE" ]]; then
   echo "EXPECTED_IMAGE is required and must be the exact immutable release image" >&2
   exit 2
 fi
+if ! [[ "$EXPECTED_IMAGE" =~ ^[^[:space:]@]+@sha256:[a-f0-9]{64}$ ]]; then
+  echo "EXPECTED_IMAGE must be an immutable image reference with @sha256:<64 lowercase hex digest>" >&2
+  exit 2
+fi
 if [[ -z "$EXPECTED_KUBEBRAIN_STATEFULSET_UID" ]]; then
   echo "EXPECTED_KUBEBRAIN_STATEFULSET_UID is required" >&2
   exit 2
