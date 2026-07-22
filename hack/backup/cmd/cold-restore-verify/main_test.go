@@ -280,6 +280,13 @@ func TestWriteAtomicSemanticReceipt(t *testing.T) {
 	require.Error(t, writeAtomic(filepath.Join(directory, "missing", "receipt.json"), semanticReceipt{}))
 }
 
+func TestReadBoundedJSONFileRejectsOversizedInput(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "restore.json")
+	require.NoError(t, os.WriteFile(path, make([]byte, maxColdRestoreJSONBytes+1), 0o600))
+	_, err := readBoundedJSONFile(path, "restore receipt")
+	require.ErrorContains(t, err, "restore receipt exceeds")
+}
+
 func TestEqualStrings(t *testing.T) {
 	require.True(t, equalStrings([]string{"a", "b"}, []string{"a", "b"}))
 	require.False(t, equalStrings([]string{"a"}, []string{"b"}))

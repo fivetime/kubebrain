@@ -9410,6 +9410,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./hack/production/... ./deploy/production`、`(cd hack/backup && go test ./cmd/cold-restore-render ./cmd/cold-restore-verify)`、
   `go vet ./hack/production/... ./deploy/production`、`(cd hack/backup && go vet ./cmd/cold-restore-render ./cmd/cold-restore-verify)`、
   与 `git diff --check` 通过。
+- A516 收紧 cold restore 小型 JSON 输入读取边界：`cold-restore-render` 的 snapshot
+  receipt，以及 `cold-restore-verify` 的 snapshot receipt、restore receipt 和 rendered
+  restore manifest 现在最多读取 4 MiB+1 并在超过 4 MiB 时 fail closed，避免异常本地
+  JSON 证据在 strict schema 解码、manifest canonical 比对或语义验证前无界分配。逻辑
+  witness 文件可能随实例 keyspace 放大，本次不套用小型 JSON 上限，仍由 backupfile parser
+  和 digest 门禁验证。回归覆盖 renderer/verifier bounded reader 的 oversized 输入；
+  `go test ./cmd/cold-restore-render ./cmd/cold-restore-verify -run 'Test(ReadBoundedJSONFile|RenderColdRestoreManifest|DecodeReceipt|ValidateReceiptChain|ValidateRestoreManifestBinding)' -count=20`（在
+  `hack/backup` 模块内）、`go test ./cmd/cold-restore-render ./cmd/cold-restore-verify`、
+  `go test ./hack/production -run TestColdRestoreExecute -count=5`、
+  `go test ./hack/production/... ./deploy/production`、
+  `go vet ./hack/production/... ./deploy/production`、
+  `(cd hack/backup && go vet ./cmd/cold-restore-render ./cmd/cold-restore-verify)` 与
+  `git diff --check` 通过。
 
 ### P2：运维兼容和长期验证
 

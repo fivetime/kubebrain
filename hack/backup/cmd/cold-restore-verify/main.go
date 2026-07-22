@@ -22,6 +22,8 @@ import (
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
+const maxColdRestoreJSONBytes = 4 << 20
+
 type expectedKV struct {
 	key, value                  []byte
 	createRevision, modRevision int64
@@ -172,15 +174,15 @@ func main() {
 	if err != nil {
 		fatal(err)
 	}
-	snapshotData, err := os.ReadFile(snapshotReceiptPath)
+	snapshotData, err := readBoundedJSONFile(snapshotReceiptPath, "snapshot receipt")
 	if err != nil {
 		fatal(err)
 	}
-	restoreData, err := os.ReadFile(restoreReceiptPath)
+	restoreData, err := readBoundedJSONFile(restoreReceiptPath, "restore receipt")
 	if err != nil {
 		fatal(err)
 	}
-	restoreManifestData, err := os.ReadFile(restoreManifestPath)
+	restoreManifestData, err := readBoundedJSONFile(restoreManifestPath, "restore manifest")
 	if err != nil {
 		fatal(err)
 	}
@@ -301,6 +303,22 @@ func decodeStrictJSON(data []byte, target any, description string) error {
 		return fmt.Errorf("%s contains trailing JSON", description)
 	}
 	return nil
+}
+
+func readBoundedJSONFile(path, description string) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, maxColdRestoreJSONBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxColdRestoreJSONBytes {
+		return nil, fmt.Errorf("%s exceeds %d bytes", description, maxColdRestoreJSONBytes)
+	}
+	return data, nil
 }
 
 func validateRestoreReceiptInventory(restore restoreReceipt, snapshotRecord snapshotReceipt) error {

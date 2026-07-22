@@ -60,6 +60,13 @@ func TestWriteAtomic(t *testing.T) {
 	require.Empty(t, matches)
 }
 
+func TestReadBoundedJSONFileRejectsOversizedInput(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "receipt.json")
+	require.NoError(t, os.WriteFile(path, make([]byte, maxColdRestoreJSONBytes+1), 0o600))
+	_, err := readBoundedJSONFile(path, "cold snapshot receipt")
+	require.ErrorContains(t, err, "cold snapshot receipt exceeds")
+}
+
 func TestRenderColdRestoreManifestRejectsIncompleteReceipts(t *testing.T) {
 	for _, tc := range []struct {
 		name    string

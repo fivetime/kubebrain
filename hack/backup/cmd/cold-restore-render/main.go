@@ -19,6 +19,8 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation"
 )
 
+const maxColdRestoreJSONBytes = 4 << 20
+
 type receipt struct {
 	Format          string     `json:"format"`
 	OperationID     string     `json:"operation_id"`
@@ -99,7 +101,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "output must not already exist")
 		os.Exit(2)
 	}
-	data, err := os.ReadFile(*receiptPath)
+	data, err := readBoundedJSONFile(*receiptPath, "cold snapshot receipt")
 	if err != nil {
 		fatal(err)
 	}
@@ -162,6 +164,22 @@ func writeAtomic(path string, data []byte) (returnErr error) {
 func fatal(err error) {
 	fmt.Fprintln(os.Stderr, err)
 	os.Exit(1)
+}
+
+func readBoundedJSONFile(path, description string) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, maxColdRestoreJSONBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxColdRestoreJSONBytes {
+		return nil, fmt.Errorf("%s exceeds %d bytes", description, maxColdRestoreJSONBytes)
+	}
+	return data, nil
 }
 
 func decodeReceipt(data []byte) (receipt, error) {
