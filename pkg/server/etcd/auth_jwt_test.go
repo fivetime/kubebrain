@@ -150,6 +150,17 @@ func TestJWTProviderOptionSyntaxMatchesEtcd(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestAuthTokenProviderSimpleOptionsMatchEtcd(t *testing.T) {
+	provider, err := parseAuthTokenProvider("simple,foo=bar,=ignored")
+	require.NoError(t, err)
+	require.Nil(t, provider)
+	require.NoError(t, ValidateAuthTokenProvider("simple,foo=bar"))
+
+	require.ErrorContains(t, ValidateAuthTokenProvider("simple,foo"), "invalid auth token option")
+	require.ErrorContains(t, ValidateAuthTokenProvider("simple,foo=bar=baz"), "invalid auth token option")
+	require.ErrorContains(t, ValidateAuthTokenProvider("simple,foo=bar,foo=baz"), "duplicate auth token option")
+}
+
 func TestJWTProviderRejectsOversizedKeyFiles(t *testing.T) {
 	oversized := writeJWTKey(t, "oversized", make([]byte, maxJWTKeyBytes+1))
 	require.ErrorContains(t,

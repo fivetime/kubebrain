@@ -10120,6 +10120,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `simple`，不受影响。回归：
   `go test ./pkg/server/etcd -run TestAuthTokenEmptyProviderMatchesEtcdNop -count=1`
   通过。
+- A590 对齐 simple auth-token option 分解：
+  对照 `/root/etcd/server/auth/store.go` 的 `decomposeOpts` 与 `NewTokenProvider`，
+  上游会先校验所有 `key=value` option 的形状和重复 key，再按 token type 分派；
+  `simple,foo=bar` 或 `simple,=ignored` 因此会被接受并忽略，而
+  `simple,foo`、`simple,foo=bar=baz`、重复 key 仍是无效配置。KubeBrain 旧实现只把
+  精确 `simple` 当 simple provider，导致合法的上游兼容配置在 endpoint validate 或
+  启动时失败。现在 auth-token parser 先执行通用分解，再让 `simple` 和空 provider
+  使用各自分支，JWT 继续执行 key/TTL 校验。回归：
+  `go test ./pkg/server/etcd -run TestAuthTokenProviderSimpleOptionsMatchEtcd -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

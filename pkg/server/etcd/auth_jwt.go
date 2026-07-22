@@ -53,24 +53,34 @@ func ValidateAuthTokenProvider(spec string) error {
 	return err
 }
 
-func parseAuthTokenProvider(spec string) (*jwtTokenProvider, error) {
-	if spec == "" || spec == "simple" {
-		return nil, nil
-	}
+func decomposeAuthTokenProvider(spec string) (string, map[string]string, error) {
 	parts := strings.Split(spec, ",")
-	if len(parts) == 0 || parts[0] != "jwt" {
-		return nil, fmt.Errorf("auth token provider %q is unsupported", spec)
-	}
+	tokenType := parts[0]
 	opts := make(map[string]string, len(parts)-1)
 	for _, raw := range parts[1:] {
 		pair := strings.Split(raw, "=")
 		if len(pair) != 2 {
-			return nil, fmt.Errorf("invalid auth token option %q", raw)
+			return "", nil, fmt.Errorf("invalid auth token option %q", raw)
 		}
 		if _, duplicate := opts[pair[0]]; duplicate {
-			return nil, fmt.Errorf("duplicate auth token option %q", pair[0])
+			return "", nil, fmt.Errorf("duplicate auth token option %q", pair[0])
 		}
 		opts[pair[0]] = pair[1]
+	}
+	return tokenType, opts, nil
+}
+
+func parseAuthTokenProvider(spec string) (*jwtTokenProvider, error) {
+	tokenType, opts, err := decomposeAuthTokenProvider(spec)
+	if err != nil {
+		return nil, err
+	}
+	switch tokenType {
+	case "", "simple":
+		return nil, nil
+	case "jwt":
+	default:
+		return nil, fmt.Errorf("auth token provider %q is unsupported", spec)
 	}
 
 	method := jwt.GetSigningMethod(opts[jwtSignMethod])
