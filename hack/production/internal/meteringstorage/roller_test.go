@@ -111,3 +111,32 @@ func TestValidateObjectStorageRollupArchiveReceiptRejectsRetentionModeAndTrailin
 		"metering", objectKey, "COMPLIANCE", retainUntil, status)
 	require.ErrorContains(t, err, "trailing JSON")
 }
+
+func TestParseObjectStorageSampleReadReceiptRejectsRetainUntilBelowMinimum(t *testing.T) {
+	artifactID := "instance-a:1784505600:1784509200"
+	objectKey := "metering-storage-samples/instance-a/2026/07/17/00/1784505600-1784509200.json"
+	minRetainUntil := int64(2_006_400_000)
+	receipt := blobReadReceipt{
+		Format:         "kubebrain.object-immutable-blob-read.receipt.v1",
+		ArtifactFormat: SnapshotFormat, ArtifactID: artifactID,
+		Instance: "instance-a", ObjectStoreID: "metering-store", Bucket: "metering",
+		ObjectKey: objectKey, VersionID: "sample-version",
+		ArtifactSHA256: strings.Repeat("e", 64), ObjectBytes: 123,
+		RetentionMode: "COMPLIANCE", RetainUntilUnix: minRetainUntil - 1,
+		RemoteVerified: true,
+	}
+	data, err := json.Marshal(receipt)
+	require.NoError(t, err)
+
+	_, err = parseBlobReadReceipt(data, SnapshotFormat, artifactID, "instance-a",
+		"metering-store", "metering", objectKey, minRetainUntil)
+	require.ErrorContains(t, err, "does not match request")
+
+	receipt.RetainUntilUnix = minRetainUntil
+	data, err = json.Marshal(receipt)
+	require.NoError(t, err)
+	parsed, err := parseBlobReadReceipt(data, SnapshotFormat, artifactID, "instance-a",
+		"metering-store", "metering", objectKey, minRetainUntil)
+	require.NoError(t, err)
+	require.Equal(t, minRetainUntil, parsed.RetainUntilUnix)
+}

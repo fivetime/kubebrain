@@ -9139,6 +9139,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./hack/production/internal/meteringstorage -run 'Test.*ArchiveReceipt' -count=1`、
   `go test ./hack/production/... ./deploy/production` 与
   `go vet ./hack/production/... ./deploy/production` 通过。
+- A481 收紧 object storage metering rollup 的 sample read receipt 保留窗口：Roller 现在把
+  每小时 `MIN_RETAIN_UNTIL_UNIX` 作为本地 parser 输入，并拒绝 retain-until 早于
+  `slot_end + retention_duration` 的 sample read receipt。这样 executor 返回的 sample 即使
+  digest/bytes 匹配且覆盖当天 period，只要保留窗口低于配置证据保留期，也不会进入
+  rollup source evidence。回归覆盖 retain-until 低于下限的 read receipt；
+  `go test ./hack/production/internal/meteringstorage -run 'Test.*ReadReceipt|Test.*Rollup' -count=1`、
+  `go test ./hack/production/... ./deploy/production` 与
+  `go vet ./hack/production/... ./deploy/production` 通过。
 
 ### P2：运维兼容和长期验证
 

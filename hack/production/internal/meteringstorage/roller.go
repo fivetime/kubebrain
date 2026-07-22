@@ -81,12 +81,13 @@ func (r *Roller) Process(ctx context.Context) (Rollup, []byte, error) {
 		artifactID := periodArtifactID(r.Instance, slotStart, slotEnd)
 		objectKey := snapshotObjectKey(r.SnapshotPrefix, r.Instance, slotStart, slotEnd)
 		outputPath := path.Join(dir, fmt.Sprintf("sample-%02d.json", i))
+		minRetainUntil := slotEnd.Add(r.RetentionDuration).Unix()
 		output, err := r.Run(ctx, r.Executor, []string{
 			"ACTION=blob-read", "OUTPUT=" + outputPath,
 			"ARTIFACT_FORMAT=" + SnapshotFormat, "ARTIFACT_ID=" + artifactID,
 			"INSTANCE=" + r.Instance, "OBJECT_STORE_ID=" + r.ObjectStoreID,
 			"S3_BUCKET=" + r.Bucket, "S3_OBJECT_KEY=" + objectKey,
-			"MIN_RETAIN_UNTIL_UNIX=" + strconv.FormatInt(slotEnd.Add(r.RetentionDuration).Unix(), 10),
+			"MIN_RETAIN_UNTIL_UNIX=" + strconv.FormatInt(minRetainUntil, 10),
 		})
 		if err != nil {
 			return Rollup{}, output, fmt.Errorf(
@@ -94,7 +95,7 @@ func (r *Roller) Process(ctx context.Context) (Rollup, []byte, error) {
 			)
 		}
 		receipt, err := parseBlobReadReceipt(output, SnapshotFormat, artifactID, r.Instance,
-			r.ObjectStoreID, r.Bucket, objectKey)
+			r.ObjectStoreID, r.Bucket, objectKey, minRetainUntil)
 		if err != nil {
 			return Rollup{}, output, err
 		}
@@ -204,7 +205,11 @@ type blobReadReceipt struct {
 	RemoteVerified  bool   `json:"remote_verified"`
 }
 
-func parseBlobReadReceipt(data []byte, format, artifactID, instance, store, bucket, key string) (blobReadReceipt, error) {
+func parseBlobReadReceipt(
+	data []byte,
+	format, artifactID, instance, store, bucket, key string,
+	minRetainUntil int64,
+) (blobReadReceipt, error) {
 	var receipt blobReadReceipt
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
@@ -221,7 +226,7 @@ func parseBlobReadReceipt(data []byte, format, artifactID, instance, store, buck
 		receipt.Bucket != bucket || receipt.ObjectKey != key || receipt.VersionID == "" ||
 		!digestPattern.MatchString(receipt.ArtifactSHA256) || receipt.ObjectBytes <= 0 ||
 		(receipt.RetentionMode != "COMPLIANCE" && receipt.RetentionMode != "GOVERNANCE") ||
-		receipt.RetainUntilUnix <= 0 || !receipt.RemoteVerified {
+		receipt.RetainUntilUnix < minRetainUntil || !receipt.RemoteVerified {
 		return receipt, errors.New("object storage sample read receipt does not match request")
 	}
 	return receipt, nil

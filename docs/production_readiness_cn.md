@@ -887,6 +887,8 @@ retain-until、version ID、digest 和 bytes；receipt parser 使用 unknown/tra
 
 每日 UTC 00:57 的 Roller 只读取前一 UTC 日 24 个 exact snapshot；任一缺槽、时间窗
 超限、scope/allowlist 变化、digest/bytes/retention 不匹配都会 fail closed。
+sample read receipt 的 retain-until 必须不早于该小时 slot end 加配置保留期，不能只
+覆盖当天 rollup period。这样低保留窗口的 sample 不会进入日汇总 source evidence。
 `kubebrain.object-storage-rollup.v1` 采用明确的离散计费策略：
 `object_storage_byte_seconds = sum(hour_end_total_object_bytes * 3600)`。它不是对象创建/
 删除事件的连续时间积分；产品价格必须按该小时末持有量语义审批。历史时点无法从当前
