@@ -80,6 +80,16 @@ func TestValidateCertificateRotationFailsClosed(t *testing.T) {
 			wantOutput: "unhealthy",
 		},
 		{
+			name: "non canonical state before overlap",
+			prepare: func(t *testing.T, f *rotationFixture) {
+				f.run(t, "begin", true, "")
+				statePath := filepath.Join(f.stateDir, "rotation-1.state")
+				require.NoError(t, os.WriteFile(statePath, append(mustRead(t, statePath), []byte("UNKNOWN\trow\n")...), 0o600))
+			},
+			action:     "overlap",
+			wantOutput: "rotation state has invalid schema",
+		},
+		{
 			name: "pod replaced before completion",
 			prepare: func(t *testing.T, f *rotationFixture) {
 				f.run(t, "begin", true, "")
@@ -88,6 +98,17 @@ func TestValidateCertificateRotationFailsClosed(t *testing.T) {
 			action:     "complete",
 			env:        "FAKE_PODS=kubebrain-0\\tuid-0\\t0\\ttrue\\nkubebrain-1\\tuid-replaced\\t0\\ttrue\\nkubebrain-2\\tuid-2\\t0\\ttrue",
 			wantOutput: "Pods were replaced",
+		},
+		{
+			name: "non canonical overlap marker before completion",
+			prepare: func(t *testing.T, f *rotationFixture) {
+				f.run(t, "begin", true, "")
+				f.run(t, "overlap", true, "")
+				overlapPath := filepath.Join(f.stateDir, "rotation-1.overlap")
+				require.NoError(t, os.WriteFile(overlapPath, append(mustRead(t, overlapPath), []byte("UNKNOWN\trow\n")...), 0o600))
+			},
+			action:     "complete",
+			wantOutput: "rotation overlap marker has invalid schema",
 		},
 		{
 			name: "old credential remains accepted",

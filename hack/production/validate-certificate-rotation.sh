@@ -124,10 +124,75 @@ validate_snapshot() {
   exit 1
 }
 
+validate_state_schema() {
+  awk -F '\t' -v expected="$EXPECTED_REPLICAS" '
+    NR == 1 {
+      if (NF != 6 || $1 != "kubebrain.certificate-rotation.state.v1") {
+        bad = "HEADER row must have 6 fields"
+        exit 1
+      }
+      header++
+      next
+    }
+    $0 == "" {
+      bad = "empty Pod row"
+      exit 1
+    }
+    {
+      if (NF != 4 || $1 == "" || $2 == "" || $3 !~ /^[0-9]+$/ || $4 != "true") {
+        bad = "Pod row must have name, uid, restart count, and ready=true"
+        exit 1
+      }
+      pods++
+    }
+    END {
+      if (bad != "") {
+        print bad > "/dev/stderr"
+        exit 1
+      }
+      if (header != 1 || pods != expected) {
+        printf("schema counts mismatch: header=%d pods=%d expected=%d\n",
+          header, pods, expected) > "/dev/stderr"
+        exit 1
+      }
+    }
+  ' "$state_file" || { echo "rotation state has invalid schema" >&2; exit 1; }
+}
+
+validate_overlap_marker() {
+  awk -F '\t' -v instance="$INSTANCE" -v rotation="$ROTATION_ID" '
+    NR == 1 {
+      if (NF != 3 ||
+        $1 != "kubebrain.certificate-rotation.overlap.v1" ||
+        $2 != instance || $3 != rotation) {
+        bad = "overlap marker row does not match the operation"
+        exit 1
+      }
+      rows++
+      next
+    }
+    {
+      bad = "unexpected extra overlap marker row"
+      exit 1
+    }
+    END {
+      if (bad != "") {
+        print bad > "/dev/stderr"
+        exit 1
+      }
+      if (rows != 1) {
+        print "overlap marker must contain exactly one row" > "/dev/stderr"
+        exit 1
+      }
+    }
+  ' "$overlap_file" || { echo "rotation overlap marker has invalid schema" >&2; exit 1; }
+}
+
 read_state_header() {
   local expected_old_fingerprint expected_new_fingerprint
   expected_old_fingerprint="$(fingerprint "$OLD_CERT")"
   expected_new_fingerprint="$(fingerprint "$NEW_CERT")"
+  validate_state_schema
   IFS=$'\t' read -r state_version state_instance state_rotation state_endpoint \
     state_old_fingerprint state_new_fingerprint <"$state_file"
   if [[ "$state_version" != "kubebrain.certificate-rotation.state.v1" ||
@@ -226,6 +291,7 @@ case "$ACTION" in
     [[ -f "$state_file" ]] || { echo "begin evidence is missing" >&2; exit 1; }
     [[ -f "$overlap_file" ]] || { echo "overlap evidence is missing" >&2; exit 1; }
     read_state_header
+    validate_overlap_marker
     assert_pods_unchanged
     health "$NEW_CACERT" "$NEW_CERT" "$NEW_KEY"
     require_jq

@@ -202,11 +202,76 @@ run_gate() {
 state_file="${state_dir}/${rotation_id}.state"
 overlap_file="${state_dir}/${rotation_id}.overlap"
 
+validate_rotation_state_schema() {
+  awk -F '\t' -v expected="$expected_replicas" '
+    NR == 1 {
+      if (NF != 6 || $1 != "kubebrain.certificate-rotation.state.v1") {
+        bad = "HEADER row must have 6 fields"
+        exit 1
+      }
+      header++
+      next
+    }
+    $0 == "" {
+      bad = "empty Pod row"
+      exit 1
+    }
+    {
+      if (NF != 4 || $1 == "" || $2 == "" || $3 !~ /^[0-9]+$/ || $4 != "true") {
+        bad = "Pod row must have name, uid, restart count, and ready=true"
+        exit 1
+      }
+      pods++
+    }
+    END {
+      if (bad != "") {
+        print bad > "/dev/stderr"
+        exit 1
+      }
+      if (header != 1 || pods != expected) {
+        printf("schema counts mismatch: header=%d pods=%d expected=%d\n",
+          header, pods, expected) > "/dev/stderr"
+        exit 1
+      }
+    }
+  ' "$state_file"
+}
+
+validate_rotation_overlap_marker() {
+  awk -F '\t' -v instance="$instance" -v rotation="$rotation_id" '
+    NR == 1 {
+      if (NF != 3 ||
+        $1 != "kubebrain.certificate-rotation.overlap.v1" ||
+        $2 != instance || $3 != rotation) {
+        bad = "overlap marker row does not match the operation"
+        exit 1
+      }
+      rows++
+      next
+    }
+    {
+      bad = "unexpected extra overlap marker row"
+      exit 1
+    }
+    END {
+      if (bad != "") {
+        print bad > "/dev/stderr"
+        exit 1
+      }
+      if (rows != 1) {
+        print "overlap marker must contain exactly one row" > "/dev/stderr"
+        exit 1
+      }
+    }
+  ' "$overlap_file"
+}
+
 rotation_state_old_fingerprint=""
 rotation_state_new_fingerprint=""
 read_rotation_state_header() {
   local format state_instance state_rotation state_endpoint old_fingerprint new_fingerprint
   [[ -f "$state_file" ]] || return 1
+  validate_rotation_state_schema || return 1
   IFS=$'\t' read -r format state_instance state_rotation state_endpoint old_fingerprint new_fingerprint <"$state_file" || return 1
   [[ "$format" == "kubebrain.certificate-rotation.state.v1" &&
     "$state_instance" == "$instance" &&
@@ -216,15 +281,6 @@ read_rotation_state_header() {
     "$new_fingerprint" =~ ^[a-f0-9]{64}$ ]] || return 1
   rotation_state_old_fingerprint="$old_fingerprint"
   rotation_state_new_fingerprint="$new_fingerprint"
-}
-
-validate_rotation_overlap_marker() {
-  local format marker_instance marker_rotation
-  [[ -f "$overlap_file" ]] || return 1
-  IFS=$'\t' read -r format marker_instance marker_rotation <"$overlap_file" || return 1
-  [[ "$format" == "kubebrain.certificate-rotation.overlap.v1" &&
-    "$marker_instance" == "$instance" &&
-    "$marker_rotation" == "$rotation_id" ]]
 }
 
 validate_rotation_receipt() {

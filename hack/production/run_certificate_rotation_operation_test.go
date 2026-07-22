@@ -83,6 +83,14 @@ func TestCertificateRotationOperationRejectsInvalidReceipt(t *testing.T) {
 	require.NotContains(t, log, "--action succeed")
 }
 
+func TestCertificateRotationOperationRejectsNonCanonicalStateBeforeSucceed(t *testing.T) {
+	f := newRotationRunnerFixture(t)
+	f.run(t, false, "TAMPER_STATE_BEFORE_RECEIPT=1", "invalid receipt")
+	log := f.log(t)
+	require.Contains(t, log, "--action retry")
+	require.NotContains(t, log, "--action succeed")
+}
+
 func TestCertificateRotationOperationStopsWhenHeartbeatIsFenced(t *testing.T) {
 	f := newRotationRunnerFixture(t)
 	f.run(t, false, "SLEEP_STEP=begin", "heartbeat failed")
@@ -149,15 +157,20 @@ if [[ "${FAIL_STEP:-}" == "$ACTION" ]]; then exit 8; fi
 mkdir -p "$STATE_DIR"
 case "$ACTION" in
   begin)
-    printf 'kubebrain.certificate-rotation.state.v1\t%s\t%s\t%s\t%s\t%s\npod-a\tuid-a\n' \
-      "$INSTANCE" "$ROTATION_ID" "$ENDPOINT" "$ROTATION_OLD_FINGERPRINT" "$ROTATION_NEW_FINGERPRINT" \
-      >"$STATE_DIR/$ROTATION_ID.state"
+    {
+      printf 'kubebrain.certificate-rotation.state.v1\t%s\t%s\t%s\t%s\t%s\n' \
+        "$INSTANCE" "$ROTATION_ID" "$ENDPOINT" "$ROTATION_OLD_FINGERPRINT" "$ROTATION_NEW_FINGERPRINT"
+      printf 'pod-a\tuid-a\t0\ttrue\n'
+      printf 'pod-b\tuid-b\t0\ttrue\n'
+      printf 'pod-c\tuid-c\t0\ttrue\n'
+    } >"$STATE_DIR/$ROTATION_ID.state"
     ;;
   overlap)
     printf 'kubebrain.certificate-rotation.overlap.v1\t%s\t%s\n' \
       "$INSTANCE" "$ROTATION_ID" >"$STATE_DIR/$ROTATION_ID.overlap"
     ;;
   complete)
+    [[ -z "${TAMPER_STATE_BEFORE_RECEIPT:-}" ]] || printf 'UNKNOWN\trow\n' >>"$STATE_DIR/$ROTATION_ID.state"
     if [[ -n "${INVALID_RECEIPT:-}" ]]; then
       printf '{"format":"kubebrain.certificate-rotation.receipt.v1","old_certificate_sha256":"short"}\n' >"$RECEIPT_OUTPUT"
     else
@@ -219,7 +232,7 @@ func (f *rotationRunnerFixture) publishEvidence(t *testing.T, kind string) {
 	stateDir := filepath.Join(f.dir, "state")
 	require.NoError(t, os.MkdirAll(stateDir, 0o700))
 	statePath := filepath.Join(stateDir, "rotation-1.state")
-	state := fmt.Sprintf("kubebrain.certificate-rotation.state.v1\tinstance-a\trotation-1\thttps://instance.example:2379\t%s\t%s\npod-a\tuid-a\n", rotationOldFingerprint, rotationNewFingerprint)
+	state := rotationStateEvidence()
 	if kind == "state" {
 		require.NoError(t, os.WriteFile(statePath, []byte(state), 0o600))
 		return
@@ -237,4 +250,11 @@ func (f *rotationRunnerFixture) publishEvidence(t *testing.T, kind string) {
 		return
 	}
 	require.NoError(t, os.WriteFile(filepath.Join(stateDir, "rotation-1."+kind), []byte("evidence\n"), 0o600))
+}
+
+func rotationStateEvidence() string {
+	return fmt.Sprintf("kubebrain.certificate-rotation.state.v1\tinstance-a\trotation-1\thttps://instance.example:2379\t%s\t%s\n", rotationOldFingerprint, rotationNewFingerprint) +
+		"pod-a\tuid-a\t0\ttrue\n" +
+		"pod-b\tuid-b\t0\ttrue\n" +
+		"pod-c\tuid-c\t0\ttrue\n"
 }

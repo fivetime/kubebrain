@@ -9822,6 +9822,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   或提交 operation succeed。回归：
   `go test ./hack/production -run 'Test(RestoreTrafficCutover|RestoreCutoverOperation|PostRestoreAudit)' -count=1`
   通过。
+- A560 收紧 CertificateRotation durable state/marker schema：
+  证书轮换 state 旧读取路径只校验 header 字段，operation runner 的 receipt 复检也没有确认
+  Pod 快照行数/字段和 overlap marker 的单行封闭格式。现在
+  `validate-certificate-rotation.sh` 在 overlap/complete 前要求
+  `kubebrain.certificate-rotation.state.v1` 精确包含 header 与
+  `EXPECTED_REPLICAS` 个 name/UID/restart/ready Pod 行，并要求 overlap marker 正好一行；
+  `run-certificate-rotation-operation.sh` 在提交 succeed 前复用同一封闭 schema，非 canonical
+  evidence 会 requeue，不会提交错误 receipt digest。回归：
+  `go test ./hack/production -run 'Test(CertificateRotationOperation|ValidateCertificateRotation)' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 
