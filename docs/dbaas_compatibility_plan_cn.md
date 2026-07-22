@@ -9683,6 +9683,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   approval ID 为 DNS-compatible；回归覆盖非专用 approver 被拒绝；
   `go test ./hack/production/internal/operationqueue -run 'TestQueue(RequiresApprovalForHighRiskOperations|DoesNotTreatForgedApprovalAsApproved|ApprovalIsPendingOnlyAndIdempotent|RejectsApprovalForLowRiskOrInvalidDecision)|TestApprove(ReconcilesCommittedUpdateAfterLostResponse|ReportsWriteAndReconciliationFailures|RejectsReplacementUIDAfterFailedUpdate)' -count=20`
   通过。
+- A544 统一 operation audit digest 为小写 hex：operation queue 与 CRD 都要求
+  parameters/receipt SHA-256 为小写 hex，但 `operationaudit.validSHA256` 旧实现通过
+  `hex.DecodeString` 校验，仍接受大写 hex。现在 operation audit artifact 与 object
+  archive receipt 的 digest 校验都逐字节要求 `[0-9a-f]`，避免 fake-client、离线归档或
+  旧集群路径生成与 CRD schema 不一致的审计证据。回归覆盖 artifact parameters/receipt
+  大写 digest 和 archive receipt artifact digest 被拒绝；
+  `go test ./hack/production/operationaudit ./hack/production/internal/operationauditbuilder ./hack/production/internal/operationauditrelease -run 'Test(OperationAudit|ArchiveReceipt|FromOperation|Release)' -count=20`
+  通过。
 
 ### P2：运维兼容和长期验证
 

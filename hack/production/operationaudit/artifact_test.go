@@ -58,6 +58,28 @@ func TestOperationAuditRejectsNonterminalAndInvalidReceipt(t *testing.T) {
 	require.NoError(t, artifact.Validate())
 	artifact.ObservedGeneration = 3
 	require.ErrorContains(t, artifact.Validate(), "incomplete")
+
+	artifact = terminalArtifact()
+	artifact.ParametersSHA256 = strings.Repeat("A", 64)
+	require.ErrorContains(t, artifact.Validate(), "incomplete")
+
+	artifact = terminalArtifact()
+	artifact.ReceiptSHA256 = strings.Repeat("B", 64)
+	require.ErrorContains(t, artifact.Validate(), "requires a receipt")
+}
+
+func TestArchiveReceiptRejectsUppercaseDigest(t *testing.T) {
+	artifact := terminalArtifact()
+	receipt := ArchiveReceipt{
+		Format: ArchiveReceiptFormat, OperationID: artifact.OperationID, OperationUID: artifact.UID,
+		Instance: artifact.Instance, OperationType: artifact.Type, Phase: artifact.Phase,
+		ExecutionReceiptSHA256: artifact.ReceiptSHA256, ObjectStoreID: "store-a",
+		Bucket: "bucket-a", ObjectKey: "audit/backup-1.json", VersionID: "version-1",
+		ArtifactSHA256: strings.Repeat("C", 64), ObjectBytes: 1,
+		RetentionMode: "COMPLIANCE", RetainUntilUnix: 200, RemoteVerified: true,
+		ArchivedAtUnix: 100,
+	}
+	require.ErrorContains(t, receipt.Validate(), "incomplete")
 }
 
 func TestOperationAuditAcceptsBackupDeletion(t *testing.T) {

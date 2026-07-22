@@ -1670,6 +1670,8 @@ delete、修改 spec 或读取 Secret；submit 权限只应授予管理面 API �
 receipt 的 SHA-256。审批只能由
 `system:serviceaccount:kubebrain-operations:kubebrain-operation-approver` 写入；AdmissionPolicy
 和 Go 队列层都拒绝非专用 approver，避免生成不可 claim 的审批证据。
+operation audit artifact 与 archive receipt 的 digest 校验同样只接受小写 hex SHA-256，
+保持离线审计证据与 CRD schema 一致。
 `hack/production/run-post-restore-audit-operation.sh` 已把 A190 接入：
 只 claim PostRestoreAudit，核对参数 JSON 摘要，在子审计运行期间续租；heartbeat 失败会
 终止本地进程，审计失败 requeue，成功才将 receipt 摘要写入 Succeeded。
