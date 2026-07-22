@@ -78,15 +78,8 @@ func TestOperationAuditRejectsNonterminalAndInvalidReceipt(t *testing.T) {
 
 func TestArchiveReceiptRejectsUppercaseDigest(t *testing.T) {
 	artifact := terminalArtifact()
-	receipt := ArchiveReceipt{
-		Format: ArchiveReceiptFormat, OperationID: artifact.OperationID, OperationUID: artifact.UID,
-		Instance: artifact.Instance, OperationType: artifact.Type, Phase: artifact.Phase,
-		ExecutionReceiptSHA256: artifact.ReceiptSHA256, ObjectStoreID: "store-a",
-		Bucket: "bucket-a", ObjectKey: "audit/backup-1.json", VersionID: "version-1",
-		ArtifactSHA256: strings.Repeat("C", 64), ObjectBytes: 1,
-		RetentionMode: "COMPLIANCE", RetainUntilUnix: 200, RemoteVerified: true,
-		ArchivedAtUnix: 100,
-	}
+	receipt := validArchiveReceipt(artifact)
+	receipt.ArtifactSHA256 = strings.Repeat("C", 64)
 	require.ErrorContains(t, receipt.Validate(), "incomplete")
 }
 
@@ -100,15 +93,47 @@ func TestArchiveReceiptRejectsUnsafeObjectKey(t *testing.T) {
 		"audit/backup 1.json",
 	} {
 		t.Run(objectKey, func(t *testing.T) {
-			receipt := ArchiveReceipt{
-				Format: ArchiveReceiptFormat, OperationID: artifact.OperationID, OperationUID: artifact.UID,
-				Instance: artifact.Instance, OperationType: artifact.Type, Phase: artifact.Phase,
-				ExecutionReceiptSHA256: artifact.ReceiptSHA256, ObjectStoreID: "store-a",
-				Bucket: "bucket-a", ObjectKey: objectKey, VersionID: "version-1",
-				ArtifactSHA256: strings.Repeat("c", 64), ObjectBytes: 1,
-				RetentionMode: "COMPLIANCE", RetainUntilUnix: 200, RemoteVerified: true,
-				ArchivedAtUnix: 100,
-			}
+			receipt := validArchiveReceipt(artifact)
+			receipt.ObjectKey = objectKey
+			require.ErrorContains(t, receipt.Validate(), "incomplete")
+		})
+	}
+}
+
+func TestArchiveReceiptRejectsUnsafeScopeFields(t *testing.T) {
+	artifact := terminalArtifact()
+	for _, tc := range []struct {
+		name   string
+		mutate func(*ArchiveReceipt)
+	}{
+		{
+			name: "object_store_id_with_leading_space",
+			mutate: func(receipt *ArchiveReceipt) {
+				receipt.ObjectStoreID = " store-a"
+			},
+		},
+		{
+			name: "object_store_id_with_control_byte",
+			mutate: func(receipt *ArchiveReceipt) {
+				receipt.ObjectStoreID = "store-a\x00"
+			},
+		},
+		{
+			name: "bucket_with_internal_tab",
+			mutate: func(receipt *ArchiveReceipt) {
+				receipt.Bucket = "bucket\ta"
+			},
+		},
+		{
+			name: "version_id_with_trailing_newline",
+			mutate: func(receipt *ArchiveReceipt) {
+				receipt.VersionID = "version-1\n"
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			receipt := validArchiveReceipt(artifact)
+			tc.mutate(&receipt)
 			require.ErrorContains(t, receipt.Validate(), "incomplete")
 		})
 	}
@@ -142,6 +167,18 @@ func TestOperationAuditRejectsApprovalOnLowRiskType(t *testing.T) {
 	artifact.ApprovedBy = ApproverUsername
 	artifact.ApprovalID = "change-123"
 	require.ErrorContains(t, artifact.Validate(), "cannot carry approval")
+}
+
+func validArchiveReceipt(artifact Artifact) ArchiveReceipt {
+	return ArchiveReceipt{
+		Format: ArchiveReceiptFormat, OperationID: artifact.OperationID, OperationUID: artifact.UID,
+		Instance: artifact.Instance, OperationType: artifact.Type, Phase: artifact.Phase,
+		ExecutionReceiptSHA256: artifact.ReceiptSHA256, ObjectStoreID: "store-a",
+		Bucket: "bucket-a", ObjectKey: "audit/backup-1.json", VersionID: "version-1",
+		ArtifactSHA256: strings.Repeat("c", 64), ObjectBytes: 1,
+		RetentionMode: "COMPLIANCE", RetainUntilUnix: 200, RemoteVerified: true,
+		ArchivedAtUnix: 100,
+	}
 }
 
 func terminalArtifact() Artifact {

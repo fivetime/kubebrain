@@ -10359,6 +10359,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `InspectArchiveReceipt` 自动 fail closed。回归：
   `go test ./hack/production/operationaudit ./hack/production/internal/operationauditrelease ./hack/production/internal/operationarchiver -run 'TestArchiveReceiptRejectsUnsafeObjectKey|TestArchiveReceiptRejectsUppercaseDigest|TestReleaseVerifiesArchiveAndRemovesOnlyAuditFinalizer|TestArchiveProcessorUsesStableIdentityAndReleasesFinalizer' -count=1`
   通过。
+- A613 收紧 operation audit archive receipt 作用域字段：
+  A612 已让 `object_key` 拒绝非规范相对路径，但同一 receipt 的
+  `object_store_id`、`bucket`、`version_id` 仍只校验非空。旧工具、手工 release
+  或被替换的 executor 可能把带空白/控制字符的对象存储作用域写入不可变审计注解，
+  造成肉眼审计、离线比对或注解消费端看到的 scope 与真实对象定位不一致。现在这些
+  scope 字段必须是有效 UTF-8、非空且不含任意空白/控制字符；`object_key` 也复用
+  同一基础字符门禁后再做相对 key 规范化校验。回归：
+  `go test ./hack/production/operationaudit -run 'TestArchiveReceiptRejectsUnsafe(ObjectKey|ScopeFields)|TestArchiveReceiptRejectsUppercaseDigest' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -141,8 +142,9 @@ func (r ArchiveReceipt) Validate() error {
 		(r.Phase != "Succeeded" && r.Phase != "Failed") ||
 		(r.Phase == "Succeeded" && !validSHA256(r.ExecutionReceiptSHA256)) ||
 		(r.Phase == "Failed" && r.ExecutionReceiptSHA256 != "") ||
-		r.ObjectStoreID == "" || r.Bucket == "" || r.ObjectKey == "" || r.VersionID == "" ||
+		!validReceiptScopeValue(r.ObjectStoreID) || !validReceiptScopeValue(r.Bucket) ||
 		!validRelativeObjectKey(r.ObjectKey) ||
+		!validReceiptScopeValue(r.VersionID) ||
 		!validSHA256(r.ArtifactSHA256) || r.ObjectBytes <= 0 ||
 		(r.RetentionMode != "COMPLIANCE" && r.RetentionMode != "GOVERNANCE") ||
 		r.RetainUntilUnix <= r.ArchivedAtUnix || !r.RemoteVerified || r.ArchivedAtUnix <= 0 {
@@ -152,13 +154,22 @@ func (r ArchiveReceipt) Validate() error {
 }
 
 func validRelativeObjectKey(key string) bool {
-	if key == "" || strings.TrimSpace(key) != key || strings.ContainsAny(key, " \t\r\n") {
+	if !validReceiptScopeValue(key) {
 		return false
 	}
 	if strings.HasPrefix(key, "/") || key == "." || key == ".." || strings.HasPrefix(key, "../") {
 		return false
 	}
 	return path.Clean(key) == key
+}
+
+func validReceiptScopeValue(value string) bool {
+	if value == "" || !utf8.ValidString(value) {
+		return false
+	}
+	return strings.IndexFunc(value, func(r rune) bool {
+		return unicode.IsSpace(r) || unicode.IsControl(r)
+	}) == -1
 }
 
 func InspectArchiveReceipt(path string) (ArchiveReceipt, string, error) {
