@@ -20,6 +20,7 @@ const CatalogFormatV3 = "kubebrain.metering-price-catalog.v3"
 const MeasurementPolicy = "kubebrain.metering-rollup.v2"
 const MeasurementPolicyV2 = "kubebrain.metering-rollup.v2+object-storage-rollup.v1"
 const MeasurementPolicyV3 = "kubebrain.metering-rollup.v3+object-storage-rollup.v1"
+const maxPriceCatalogBytes = 1 << 20
 
 var versionPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`)
 var currencyPattern = regexp.MustCompile(`^[A-Z]{3}$`)
@@ -122,7 +123,7 @@ func catalogDefinitions(format string) ([]struct {
 
 func ReadCatalog(path string) (CatalogStatus, error) {
 	var catalog Catalog
-	data, err := os.ReadFile(path)
+	data, err := readBoundedFile(path, "metering price catalog", maxPriceCatalogBytes)
 	if err != nil {
 		return CatalogStatus{}, err
 	}
@@ -171,7 +172,7 @@ func WriteCatalogAtomic(path string, catalog Catalog) (CatalogStatus, error) {
 }
 
 func writeCanonicalAtomic(path string, data []byte, description string) error {
-	if existing, err := os.ReadFile(path); err == nil {
+	if existing, err := readBoundedFile(path, "existing "+description, int64(len(data))); err == nil {
 		if bytes.Equal(existing, data) {
 			return nil
 		}
@@ -210,4 +211,20 @@ func writeCanonicalAtomic(path string, data []byte, description string) error {
 	}
 	defer directory.Close()
 	return directory.Sync()
+}
+
+func readBoundedFile(path, description string, limit int64) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("%s exceeds %d bytes", description, limit)
+	}
+	return data, nil
 }

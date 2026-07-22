@@ -884,6 +884,10 @@ canonical frozen copy；Object Lock executor 只上传该 frozen copy。对象�
 不同都会与既有对象冲突，禁止覆盖。只有 publisher receipt 已独立核验后，才把
 `deploy/production/kubebrain-metering-charge.yaml` 的
 `replace-with-approved-version` 替换为该 version；占位值不得直接上线。
+approved price catalog 是小型 canonical JSON，本地读取最多接受 1 MiB；超限会在 schema
+解码、canonical 比对和 Object Lock executor 启动前 fail closed。所有 billing canonical
+artifact 原子写入在比较已存在文件时也只读取目标 canonical 长度加 1 字节，避免为了判断
+幂等而无界读取错误的大文件。
 
 charge CronJob 每日 UTC 01:17 读取前一日 exact rollup 和 ConfigMap 固定的 exact price
 version。两个对象都必须单 version、无 delete marker、format/ID/store/digest/retention

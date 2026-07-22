@@ -9438,6 +9438,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./hack/production/cmd/operationctl -run 'TestBrokerParameters|TestDefaultKubeconfig' -count=20`、
   `go test ./hack/production/cmd/operationctl`、`go test ./hack/production/... ./deploy/production`、
   `go vet ./hack/production/... ./deploy/production` 与 `git diff --check` 通过。
+- A519 收紧 metering price catalog 本地 JSON 读取边界：approved price catalog 现在最多
+  读取 1 MiB，超限会在 strict schema 解码、canonical 比对和 price publisher Object Lock
+  executor 启动前 fail closed。`writeCanonicalAtomic` 比较已有文件时也只读取目标 canonical
+  长度加 1 字节，避免为了判断幂等而无界读取错误的大文件，同时不把 provider/payment 等
+  可能较大的 settlement artifact 强行套 1 MiB 上限。回归覆盖 oversized catalog read 和
+  oversized existing output；`go test ./hack/production/internal/meteringbilling -run 'TestCatalogAndChargeReject|TestPriceCatalogRejects|TestBuildCharge|TestPublisher' -count=20`、
+  `go test ./hack/production/internal/meteringbilling`、`go test ./hack/production/... ./deploy/production`、
+  `go vet ./hack/production/... ./deploy/production` 与 `git diff --check` 通过。
 
 ### P2：运维兼容和长期验证
 

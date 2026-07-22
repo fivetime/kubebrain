@@ -87,6 +87,19 @@ func TestCatalogAndChargeRejectNonCanonicalOrMutatedArtifacts(t *testing.T) {
 	require.ErrorContains(t, charge.Validate(), "total")
 }
 
+func TestPriceCatalogRejectsOversizedInputs(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "catalog.json")
+	require.NoError(t, os.WriteFile(path, make([]byte, maxPriceCatalogBytes+1), 0o600))
+	_, err := ReadCatalog(path)
+	require.ErrorContains(t, err, "metering price catalog exceeds")
+
+	output := filepath.Join(dir, "existing.json")
+	require.NoError(t, os.WriteFile(output, make([]byte, maxPriceCatalogBytes+1), 0o600))
+	_, err = WriteCatalogAtomic(output, validCatalog())
+	require.ErrorContains(t, err, "existing metering price catalog exceeds")
+}
+
 func TestBuildChargeV2IncludesImmutableObjectStorageUsage(t *testing.T) {
 	start := time.Date(2026, 7, 20, 0, 0, 0, 0, time.UTC)
 	rollup := validRollupForPeriod(start)
