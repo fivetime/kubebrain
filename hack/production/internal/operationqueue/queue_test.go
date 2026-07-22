@@ -935,6 +935,7 @@ func TestQueueRejectsSpecDriftAndInvalidCompletion(t *testing.T) {
 	invalidType.OperationID = "invalid-type"
 	invalidType.Type = "Unsupported"
 	_, err = queue.Submit(ctx, "invalid-type", invalidType)
+	require.ErrorIs(t, err, ErrInvalidSpec)
 	require.ErrorContains(t, err, "unsupported operation type")
 
 	invalidDigest := spec
@@ -961,6 +962,7 @@ func TestQueueRejectsSpecDriftAndInvalidCompletion(t *testing.T) {
 	invalidSecretKey.ParametersSecret = "valid-secret"
 	invalidSecretKey.ParametersKey = "parameters/json"
 	_, err = queue.Submit(ctx, "invalid-secret-key", invalidSecretKey)
+	require.ErrorIs(t, err, ErrInvalidSpec)
 	require.ErrorContains(t, err, "invalid parameter secret key")
 
 	_, err = queue.Claim(ctx, strings.Repeat("w", maxStatusOwnerLength+1), "", time.Minute)

@@ -174,7 +174,8 @@ func (h *Handler) submit(response http.ResponseWriter, request *http.Request) {
 			writeJSON(response, http.StatusServiceUnavailable, errorResponse{Error: "operation dependency unavailable"})
 		case apierrors.IsConflict(err), strings.Contains(err.Error(), "different immutable spec"):
 			writeJSON(response, http.StatusConflict, errorResponse{Error: "operation conflicts with an existing request"})
-		case apierrors.IsInvalid(err), strings.Contains(err.Error(), "invalid operation"),
+		case errors.Is(err, operationqueue.ErrInvalidSpec), apierrors.IsInvalid(err),
+			strings.Contains(err.Error(), "invalid operation"),
 			strings.Contains(err.Error(), "operation spec is incomplete"),
 			strings.Contains(err.Error(), "specified together"):
 			writeJSON(response, http.StatusBadRequest, errorResponse{Error: "operation request is invalid"})

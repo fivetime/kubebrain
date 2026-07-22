@@ -54,6 +54,7 @@ var (
 	ErrFenced       = errors.New("operation worker is fenced")
 	ErrTerminal     = errors.New("operation is terminal")
 	ErrInstanceBusy = errors.New("operation instance is busy")
+	ErrInvalidSpec  = errors.New("invalid operation spec")
 )
 
 type Spec struct {
@@ -111,43 +112,43 @@ func (q *Queue) WithClock(now func() time.Time) *Queue {
 
 func (q *Queue) Submit(ctx context.Context, name string, spec Spec) (*unstructured.Unstructured, error) {
 	if errs := validation.IsDNS1123Subdomain(name); len(errs) > 0 {
-		return nil, fmt.Errorf("invalid operation name: %s", errs[0])
+		return nil, invalidSpecError("invalid operation name: %s", errs[0])
 	}
 	if spec.OperationID == "" || spec.Instance == "" || spec.Type == "" || spec.MaxAttempts <= 0 {
-		return nil, errors.New("operation spec is incomplete")
+		return nil, invalidSpecError("operation spec is incomplete")
 	}
 	if !validOperationIdentifier(spec.OperationID) {
-		return nil, errors.New("invalid operation ID")
+		return nil, invalidSpecError("invalid operation ID")
 	}
 	if !ValidInstanceName(spec.Instance) {
-		return nil, errors.New("invalid operation instance")
+		return nil, invalidSpecError("invalid operation instance")
 	}
 	if !isSupportedOperationType(spec.Type) {
-		return nil, fmt.Errorf("unsupported operation type: %s", spec.Type)
+		return nil, invalidSpecError("unsupported operation type: %s", spec.Type)
 	}
 	if spec.MaxAttempts > MaxOperationAttempts {
-		return nil, fmt.Errorf("operation maxAttempts cannot exceed %d", MaxOperationAttempts)
+		return nil, invalidSpecError("operation maxAttempts cannot exceed %d", MaxOperationAttempts)
 	}
 	if !isSHA256Hex(spec.ParametersSHA256) {
-		return nil, errors.New("operation spec requires a lowercase SHA-256 parameters digest")
+		return nil, invalidSpecError("operation spec requires a lowercase SHA-256 parameters digest")
 	}
 	if spec.Tenant != "" {
 		if errs := validation.IsDNS1123Label(spec.Tenant); len(errs) > 0 {
-			return nil, fmt.Errorf("invalid operation tenant: %s", errs[0])
+			return nil, invalidSpecError("invalid operation tenant: %s", errs[0])
 		}
 	}
 	if len(spec.RequestedBy) > 253 {
-		return nil, errors.New("operation requester exceeds 253 characters")
+		return nil, invalidSpecError("operation requester exceeds 253 characters")
 	}
 	if (spec.ParametersSecret == "") != (spec.ParametersKey == "") {
-		return nil, errors.New("parameter secret name and key must be specified together")
+		return nil, invalidSpecError("parameter secret name and key must be specified together")
 	}
 	if spec.ParametersSecret != "" {
 		if errs := validation.IsDNS1123Subdomain(spec.ParametersSecret); len(errs) > 0 {
-			return nil, fmt.Errorf("invalid parameter secret name: %s", errs[0])
+			return nil, invalidSpecError("invalid parameter secret name: %s", errs[0])
 		}
 		if !ValidParameterSecretKey(spec.ParametersKey) {
-			return nil, errors.New("invalid parameter secret key")
+			return nil, invalidSpecError("invalid parameter secret key")
 		}
 	}
 	specObject := map[string]any{
@@ -1039,6 +1040,10 @@ func validateStatusMessage(message string) error {
 		return fmt.Errorf("operation status message exceeds %d characters", maxStatusMessageLength)
 	}
 	return nil
+}
+
+func invalidSpecError(format string, args ...any) error {
+	return fmt.Errorf("%w: %s", ErrInvalidSpec, fmt.Sprintf(format, args...))
 }
 
 func (q *Queue) acquireInstanceLease(

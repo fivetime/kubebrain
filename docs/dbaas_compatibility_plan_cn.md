@@ -10305,6 +10305,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   非空。回归：
   `go test ./hack/production/internal/operationqueue -run 'TestQueueRejectsSpecDriftAndInvalidCompletion|TestQueueLifecycleAndExpiredLeaseFencing|TestQueueRequeueConsumesAttemptAndFiltersType' -count=1`
   和 `go test ./hack/production/internal/operationqueue -count=1` 通过。
+- A607 固化 operation API 的本地 schema 错误分类：
+  A572/A606 让 `Queue.Submit` 在本地拒绝 CRD schema drift，但 operation API 仍用少量
+  错误字符串判断 400/500；例如外部请求传入 unsupported operation type 时，真实 queue
+  返回普通错误，handler 会把客户端 schema 错误误报为 500。现在 queue 暴露
+  `ErrInvalidSpec` sentinel，所有 Submit 前置 schema 拒绝都包装该错误；operation API
+  通过 `errors.Is` 统一返回 `400 operation request is invalid`，依赖故障和冲突语义
+  不变。回归：
+  `go test ./hack/production/internal/operationqueue ./hack/production/internal/operationapi -run 'TestQueueRejectsSpecDriftAndInvalidCompletion|TestHandlerReturnsBadRequestForQueueSchemaValidation' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

@@ -16,7 +16,9 @@ import (
 	"github.com/stretchr/testify/require"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	dynamicfake "k8s.io/client-go/dynamic/fake"
 )
 
 type staticAuthenticator struct {
@@ -194,6 +196,34 @@ func TestHandlerRejectsUnboundParameterSecret(t *testing.T) {
 		require.Equal(t, http.StatusBadRequest, response.Code)
 	}
 	require.Empty(t, store.objects)
+}
+
+func TestHandlerReturnsBadRequestForQueueSchemaValidation(t *testing.T) {
+	client := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(
+		runtime.NewScheme(), map[schema.GroupVersionResource]string{
+			operationqueue.Resource:       "KubeBrainOperationList",
+			operationqueue.LeaseResource:  "LeaseList",
+			operationqueue.SecretResource: "SecretList",
+		},
+	)
+	handler, err := NewHandler(
+		staticAuthenticator{principal: authorizedPrincipal()},
+		operationqueue.New(client, "test"),
+		time.Second,
+	)
+	require.NoError(t, err)
+	body := `{
+		"name":"unsupported-1","operation_id":"unsupported-1","tenant":"tenant-a",
+		"instance":"instance-a","type":"Unsupported",
+		"parameters_sha256":"` + strings.Repeat("a", 64) + `","max_attempts":3
+	}`
+	request := httptest.NewRequest(http.MethodPost, "/v1/operations", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "Bearer token")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	require.Equal(t, http.StatusBadRequest, response.Code)
 }
 
 func TestHandlerHealthDoesNotRequireIdentity(t *testing.T) {
