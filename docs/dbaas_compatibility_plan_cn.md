@@ -8812,6 +8812,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   从 `5263a1c` 干净 archive 构建的 `kubebrain:a444-uncertain-commit-local` 滚动三副本后，真实
   PD leader replacement 在故障窗口完成 1006 次操作，TiKV member replacement 完成 1001 次，
   两者均通过并最终 TidbCluster Ready=True。
+- `c893725` 的静态 TiKV 二进制以 `kubebrain:a445-cache-bounds-local` 滚动三副本后，集群内
+  UID-fenced release gate 验证 StatefulSet/Service/EndpointSlice 精确身份、3 PD/3 TiKV、
+  MemberList、advertised client URL 与线性化 proposal；随后真实 PD leader replacement 完成 952
+  次操作、TiKV member replacement 完成 1096 次操作，均通过且 TidbCluster 最终 Ready=True。
+  该本地验证镜像由已验证 A444 runtime 加静态构建的服务端二进制组成；legacy Docker builder 在
+  本机的完整镜像导出阶段停滞，因此正式发布仍须由标准 CI/buildkit 的完整 Dockerfile 构建产生，
+  不把本地组合镜像当作可发布供应链制品。
 
 ### P1：通用服务能力
 
