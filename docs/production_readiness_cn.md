@@ -2163,6 +2163,10 @@ Pod UID，更新 Secret 后在 30 秒加 probe 容差内验证 endpoint 呈现�
 必须支持 RWX 和 `runAsUser/fsGroup=65532`；两个副本会竞争同一队列并依赖 Lease/attempt
 fencing，RWO 卷或节点本地卷不能满足跨节点接管。参数里的 artifact、state、receipt 路径
 必须位于 `/var/lib/kubebrain-operation`，临时文件才可放 `/tmp`。
+executor 访问 parameter broker 的 projected ServiceAccount token 固定挂载为
+`/var/run/secrets/kubebrain-parameter/token`，audience 为
+`kubebrain-operation-parameters`，expiration 为 3600 秒，文件 mode 为 `0440`；不得复用
+默认 Kubernetes API token 或放宽为 Secret 默认权限。
 
 Secret 只保存该类型所需 endpoint、对象存储或 Kubernetes context 配置，不得放集群管理员
 kubeconfig，也不得把私钥写入 Operation parameters。长驻 Pod 不设置 `PARAMETERS_INPUT`：

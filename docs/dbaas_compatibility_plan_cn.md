@@ -10040,6 +10040,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Pod。回归：
   `go test ./deploy/production -run TestProductionManifestsProvideStableCompleteMembership -count=1`
   通过。
+- A582 固定 operation executor projected broker token 权限：
+  六类 executor 访问 parameter broker 的 projected ServiceAccount token 已使用专用 audience
+  和 3600 秒过期时间，但旧 projected volume 未固定 `defaultMode`，会依赖 Kubernetes 默认
+  文件权限。现在所有 executor 模板都把 `parameter-token` projected volume mode 固定为
+  `0440`，manifest 回归同时校验 token path、audience、expirationSeconds 和 mode，确保
+  executor 只使用专用 broker token，且不回退到默认 API token 或更宽文件权限。回归：
+  `go test ./deploy/production -run TestOperationExecutorsAreTypeIsolatedFailClosedTemplates -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

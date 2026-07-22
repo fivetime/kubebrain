@@ -509,11 +509,14 @@ func TestOperationExecutorsAreTypeIsolatedFailClosedTemplates(t *testing.T) {
 		)
 		require.NoError(t, err)
 		require.True(t, found)
+		require.EqualValues(t, 0440, nestedInt64(t, parameterToken, "projected", "defaultMode"))
 		require.Len(t, sources, 1)
-		require.Equal(t, "kubebrain-operation-parameters", nestedString(
-			t, &unstructured.Unstructured{Object: sources[0].(map[string]any)},
-			"serviceAccountToken", "audience",
-		))
+		tokenSource := &unstructured.Unstructured{Object: sources[0].(map[string]any)}
+		require.Equal(t, "token", nestedString(t, tokenSource, "serviceAccountToken", "path"))
+		require.Equal(t, "kubebrain-operation-parameters",
+			nestedString(t, tokenSource, "serviceAccountToken", "audience"))
+		require.EqualValues(t, 3600,
+			nestedInt64(t, tokenSource, "serviceAccountToken", "expirationSeconds"))
 		require.Equal(t, "kubebrain-operation-parameter-broker-ca",
 			nestedString(t, parameterCA, "configMap", "name"))
 		if name == "kubebrain-certificate-rotation-executor" {

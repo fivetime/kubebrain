@@ -132,6 +132,7 @@ spec:
           emptyDir: {sizeLimit: 256Mi}
         - name: parameter-token
           projected:
+            defaultMode: 0440
             sources:
               - serviceAccountToken: {path: token, audience: kubebrain-operation-parameters, expirationSeconds: 3600}
         - name: parameter-ca
@@ -204,7 +205,7 @@ spec:
             claimName: kubebrain-backup-deletion-executor-workspace
         - name: tmp
           emptyDir: {sizeLimit: 256Mi}
-        - {name: parameter-token, projected: {sources: [{serviceAccountToken: {path: token, audience: kubebrain-operation-parameters, expirationSeconds: 3600}}]}}
+        - {name: parameter-token, projected: {defaultMode: 0440, sources: [{serviceAccountToken: {path: token, audience: kubebrain-operation-parameters, expirationSeconds: 3600}}]}}
         - {name: parameter-ca, configMap: {name: kubebrain-operation-parameter-broker-ca, items: [{key: ca.crt, path: ca.crt}]}}
 ---
 apiVersion: apps/v1
@@ -273,7 +274,7 @@ spec:
             claimName: kubebrain-restore-cutover-executor-workspace
         - name: tmp
           emptyDir: {sizeLimit: 256Mi}
-        - {name: parameter-token, projected: {sources: [{serviceAccountToken: {path: token, audience: kubebrain-operation-parameters, expirationSeconds: 3600}}]}}
+        - {name: parameter-token, projected: {defaultMode: 0440, sources: [{serviceAccountToken: {path: token, audience: kubebrain-operation-parameters, expirationSeconds: 3600}}]}}
         - {name: parameter-ca, configMap: {name: kubebrain-operation-parameter-broker-ca, items: [{key: ca.crt, path: ca.crt}]}}
 ---
 apiVersion: apps/v1
@@ -342,7 +343,7 @@ spec:
             claimName: kubebrain-post-restore-audit-executor-workspace
         - name: tmp
           emptyDir: {sizeLimit: 256Mi}
-        - {name: parameter-token, projected: {sources: [{serviceAccountToken: {path: token, audience: kubebrain-operation-parameters, expirationSeconds: 3600}}]}}
+        - {name: parameter-token, projected: {defaultMode: 0440, sources: [{serviceAccountToken: {path: token, audience: kubebrain-operation-parameters, expirationSeconds: 3600}}]}}
         - {name: parameter-ca, configMap: {name: kubebrain-operation-parameter-broker-ca, items: [{key: ca.crt, path: ca.crt}]}}
 ---
 apiVersion: apps/v1
@@ -422,7 +423,7 @@ spec:
                 path: publish-overlap
               - key: publish-final
                 path: publish-final
-        - {name: parameter-token, projected: {sources: [{serviceAccountToken: {path: token, audience: kubebrain-operation-parameters, expirationSeconds: 3600}}]}}
+        - {name: parameter-token, projected: {defaultMode: 0440, sources: [{serviceAccountToken: {path: token, audience: kubebrain-operation-parameters, expirationSeconds: 3600}}]}}
         - {name: parameter-ca, configMap: {name: kubebrain-operation-parameter-broker-ca, items: [{key: ca.crt, path: ca.crt}]}}
 ---
 apiVersion: apps/v1
@@ -492,5 +493,5 @@ spec:
             claimName: kubebrain-destroy-executor-workspace
         - name: tmp
           emptyDir: {sizeLimit: 256Mi}
-        - {name: parameter-token, projected: {sources: [{serviceAccountToken: {path: token, audience: kubebrain-operation-parameters, expirationSeconds: 3600}}]}}
+        - {name: parameter-token, projected: {defaultMode: 0440, sources: [{serviceAccountToken: {path: token, audience: kubebrain-operation-parameters, expirationSeconds: 3600}}]}}
         - {name: parameter-ca, configMap: {name: kubebrain-operation-parameter-broker-ca, items: [{key: ca.crt, path: ca.crt}]}}
