@@ -927,11 +927,12 @@ schema/canonical、审批时间和保留期校验。
 `kubebrain-metering-invoice-finalize` 先读 exact plan，再按 plan 顺序读取每个日
 charge 和 adjustment。它独立复核 receipt 与下载字节 digest、format/ID/instance/
 period/currency/retention，要求 adjustment 的 charge source 与该日实际 charge
-receipt 完全相同，并要求 adjustment 的 invoice ID 等于 plan ID。subtotal 和 signed
-adjustment total 都使用 int64 溢出保护；最终 total 不允许为负，负余额必须进入下一
-账期 credit 流程。`kubebrain.metering-invoice.v1` 固化 plan、全部 charge 和 adjustment
-exact-version source、分项金额与三个合计。finalized-at 固定为 plan 批准时间，使崩溃
-重试逐字节确定；invoice key 只由实例和 plan ID 构成，禁止覆盖。
+receipt 完全相同，并要求 adjustment 的 invoice ID 等于 plan ID。plan、charge、adjustment
+source 的 SHA-256/bytes 必须分别匹配本地 canonical artifact status；subtotal 和 signed
+adjustment total 都使用 int64 溢出保护；最终 total 不允许为负，负余额必须进入下一账期
+credit 流程。`kubebrain.metering-invoice.v1` 固化 plan、全部 charge 和 adjustment exact-version
+source、分项金额与三个合计。finalized-at 固定为 plan 批准时间，使崩溃重试逐字节确定；
+invoice key 只由实例和 plan ID 构成，禁止覆盖。
 
 所有 settlement 对象的 retain-until 取账期首日第一个小时 source 的
 `period_start + 1h + retention_duration`，invoice 不得比其最早 charge source 活得

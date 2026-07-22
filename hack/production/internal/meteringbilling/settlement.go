@@ -242,6 +242,45 @@ func BuildInvoice(
 	return invoice, nil
 }
 
+func BuildInvoiceWithStatuses(
+	planStatus SettlementStatus[InvoicePlan],
+	planSource Source,
+	chargeStatuses []ChargeStatus,
+	chargeSources []Source,
+	adjustmentStatuses []SettlementStatus[Adjustment],
+	adjustmentSources []Source,
+	finalizedAtUnix int64,
+) (Invoice, error) {
+	if planSource.ArtifactSHA256 != planStatus.SHA256 ||
+		planSource.ObjectBytes != planStatus.Bytes {
+		return Invoice{}, errors.New("metering invoice plan source does not match plan bytes")
+	}
+	if len(chargeStatuses) != len(chargeSources) ||
+		len(adjustmentStatuses) != len(adjustmentSources) {
+		return Invoice{}, errors.New("metering invoice status inputs are incomplete")
+	}
+	charges := make([]Charge, len(chargeStatuses))
+	for index, status := range chargeStatuses {
+		if chargeSources[index].ArtifactSHA256 != status.SHA256 ||
+			chargeSources[index].ObjectBytes != status.Bytes {
+			return Invoice{}, errors.New("metering invoice charge source does not match charge bytes")
+		}
+		charges[index] = status.Charge
+	}
+	adjustments := make([]Adjustment, len(adjustmentStatuses))
+	for index, status := range adjustmentStatuses {
+		if adjustmentSources[index].ArtifactSHA256 != status.SHA256 ||
+			adjustmentSources[index].ObjectBytes != status.Bytes {
+			return Invoice{}, errors.New("metering invoice adjustment source does not match adjustment bytes")
+		}
+		adjustments[index] = status.Value
+	}
+	return BuildInvoice(
+		planStatus.Value, planSource, charges, chargeSources,
+		adjustments, adjustmentSources, finalizedAtUnix,
+	)
+}
+
 func (i Invoice) Validate() error {
 	if i.Format != InvoiceFormat || !versionPattern.MatchString(i.ID) ||
 		!versionPattern.MatchString(i.Instance) || i.PeriodStartUnix <= 0 ||

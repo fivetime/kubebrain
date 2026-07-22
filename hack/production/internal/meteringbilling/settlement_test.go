@@ -41,6 +41,74 @@ func TestBuildInvoiceBindsChargesAdjustmentsAndApproval(t *testing.T) {
 	require.Equal(t, first, second)
 }
 
+func TestBuildInvoiceWithStatusesRejectsSourceBytesDrift(t *testing.T) {
+	start := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	charge, _ := settlementCharge(t, start)
+	dir := t.TempDir()
+	chargeStatus, err := WriteChargeAtomic(filepath.Join(dir, "charge.json"), charge)
+	require.NoError(t, err)
+	retainUntil := time.Date(2035, 1, 1, 0, 0, 0, 0, time.UTC).Unix()
+	chargeSource := Source{
+		ArtifactFormat: charge.Format,
+		ArtifactID: periodArtifactIDUnix(
+			charge.Instance, charge.PeriodStartUnix, charge.PeriodEndUnix,
+		),
+		ObjectKey: "charges/instance-a/2026/07/01/day.json", VersionID: "charge-version",
+		ArtifactSHA256: chargeStatus.SHA256, ObjectBytes: chargeStatus.Bytes,
+		RetainUntilUnix: retainUntil,
+	}
+	adjustment := validAdjustment(start, chargeSource)
+	adjustmentStatus, err := WriteAdjustmentAtomic(
+		filepath.Join(dir, "adjustment.json"), adjustment,
+	)
+	require.NoError(t, err)
+	adjustmentSource := Source{
+		ArtifactFormat: AdjustmentFormat, ArtifactID: adjustment.ID,
+		ObjectKey: "adjustments/instance-a/credit-001.json", VersionID: "adjustment-version",
+		ArtifactSHA256: adjustmentStatus.SHA256, ObjectBytes: adjustmentStatus.Bytes,
+		RetainUntilUnix: retainUntil,
+	}
+	plan := validInvoicePlan(start, charge.Format, []string{adjustment.ID})
+	planStatus, err := WriteInvoicePlanAtomic(filepath.Join(dir, "plan.json"), plan)
+	require.NoError(t, err)
+	planSource := Source{
+		ArtifactFormat: InvoicePlanFormat, ArtifactID: plan.ID,
+		ObjectKey: "plans/instance-a/invoice-july.json", VersionID: "plan-version",
+		ArtifactSHA256: planStatus.SHA256, ObjectBytes: planStatus.Bytes,
+		RetainUntilUnix: retainUntil,
+	}
+	finalizedAt := plan.Approval.ApprovedAtUnix + 1
+	_, err = BuildInvoiceWithStatuses(
+		planStatus, planSource, []ChargeStatus{chargeStatus}, []Source{chargeSource},
+		[]SettlementStatus[Adjustment]{adjustmentStatus}, []Source{adjustmentSource}, finalizedAt,
+	)
+	require.NoError(t, err)
+
+	badPlanSource := planSource
+	badPlanSource.ArtifactSHA256 = strings.Repeat("b", 64)
+	_, err = BuildInvoiceWithStatuses(
+		planStatus, badPlanSource, []ChargeStatus{chargeStatus}, []Source{chargeSource},
+		[]SettlementStatus[Adjustment]{adjustmentStatus}, []Source{adjustmentSource}, finalizedAt,
+	)
+	require.ErrorContains(t, err, "plan bytes")
+
+	badChargeSource := chargeSource
+	badChargeSource.ArtifactSHA256 = strings.Repeat("b", 64)
+	_, err = BuildInvoiceWithStatuses(
+		planStatus, planSource, []ChargeStatus{chargeStatus}, []Source{badChargeSource},
+		[]SettlementStatus[Adjustment]{adjustmentStatus}, []Source{adjustmentSource}, finalizedAt,
+	)
+	require.ErrorContains(t, err, "charge bytes")
+
+	badAdjustmentSource := adjustmentSource
+	badAdjustmentSource.ArtifactSHA256 = strings.Repeat("b", 64)
+	_, err = BuildInvoiceWithStatuses(
+		planStatus, planSource, []ChargeStatus{chargeStatus}, []Source{chargeSource},
+		[]SettlementStatus[Adjustment]{adjustmentStatus}, []Source{badAdjustmentSource}, finalizedAt,
+	)
+	require.ErrorContains(t, err, "adjustment bytes")
+}
+
 func TestSettlementRejectsMismatchDuplicateAndTamper(t *testing.T) {
 	start := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
 	charge, chargeSource := settlementCharge(t, start)

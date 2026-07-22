@@ -9082,6 +9082,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   'Test.*ProviderReconciliation|Test.*ProviderReconciler' -count=1`、`go test
   ./hack/production/... ./deploy/production` 与
   `go vet ./hack/production/... ./deploy/production` 通过。
+- A474 收紧 finalized invoice 的 upstream source 字节绑定：新增 `BuildInvoiceWithStatuses`，
+  要求 invoice plan、每个 charge、每个 adjustment 的 source SHA-256/bytes 分别精确等于
+  对应本地 canonical artifact status；生产 `kubebrain-metering-invoice-finalize` 路径改走该
+  helper，继续保留 plan 顺序、adjustment charge-source、signed adjustment total 与非负总额
+  校验。新增回归覆盖 plan/charge/adjustment 三类合法 source digest 漂移；
+  `go test ./hack/production/internal/meteringbilling -run 'Test.*Invoice' -count=1`、
+  `go test ./hack/production/... ./deploy/production` 与
+  `go vet ./hack/production/... ./deploy/production` 通过。
 
 ### P2：运维兼容和长期验证
 

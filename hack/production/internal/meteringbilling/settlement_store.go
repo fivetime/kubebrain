@@ -180,7 +180,7 @@ func (f *InvoiceFinalizer) Process(ctx context.Context) (Invoice, []byte, error)
 	if retainUntil <= f.Now().UTC().Unix() || planSource.RetainUntilUnix < retainUntil {
 		return Invoice{}, output, errors.New("invoice evidence retention is insufficient")
 	}
-	charges := make([]Charge, len(plan.Charges))
+	chargeStatuses := make([]ChargeStatus, len(plan.Charges))
 	chargeSources := make([]Source, len(plan.Charges))
 	for index, planned := range plan.Charges {
 		artifactID := periodArtifactIDUnix(
@@ -202,9 +202,9 @@ func (f *InvoiceFinalizer) Process(ctx context.Context) (Invoice, []byte, error)
 		if readErr != nil {
 			return Invoice{}, readOutput, readErr
 		}
-		charges[index], chargeSources[index] = status.Charge, source
+		chargeStatuses[index], chargeSources[index] = status, source
 	}
-	adjustments := make([]Adjustment, len(plan.AdjustmentIDs))
+	adjustmentStatuses := make([]SettlementStatus[Adjustment], len(plan.AdjustmentIDs))
 	adjustmentSources := make([]Source, len(plan.AdjustmentIDs))
 	for index, id := range plan.AdjustmentIDs {
 		key := settlementObjectKey(f.AdjustmentPrefix, plan.Instance, id)
@@ -221,10 +221,10 @@ func (f *InvoiceFinalizer) Process(ctx context.Context) (Invoice, []byte, error)
 		if readErr != nil {
 			return Invoice{}, readOutput, readErr
 		}
-		adjustments[index], adjustmentSources[index] = status.Value, source
+		adjustmentStatuses[index], adjustmentSources[index] = status, source
 	}
-	invoice, err := BuildInvoice(
-		plan, planSource, charges, chargeSources, adjustments, adjustmentSources,
+	invoice, err := BuildInvoiceWithStatuses(
+		planStatus, planSource, chargeStatuses, chargeSources, adjustmentStatuses, adjustmentSources,
 		plan.Approval.ApprovedAtUnix,
 	)
 	if err != nil {
