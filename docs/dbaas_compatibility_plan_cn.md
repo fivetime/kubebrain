@@ -9252,6 +9252,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go vet ./pkg/server/etcd ./pkg/server/service/revision`、
   `go test ./hack/production/... ./deploy/production`、
   `go vet ./hack/production/... ./deploy/production` 与 `git diff --check` 通过。
+- A496 收紧 CORRUPT alarm member metadata 解析：TiKV internal key `alarms/corrupt`
+  现在只接受单一 JSON `[]uint64`，拒绝 `null`、非数组和 trailing JSON；既有严格递增校验
+  继续拒绝重复或降序 member ID。坏 metadata 会让 `CorruptAlarms`/Maintenance health
+  读取失败，而不是被解释成空集合后误清除 CORRUPT 状态。回归直接注入 null/object/
+  trailing/duplicate/descending metadata；`go test ./pkg/server/etcd -run 'TestCorruptAlarm(MemberSetConcurrentCAS|MetadataRejectsInvalidJSON|BlocksEtcdApplierSurfaceOverGRPC)' -count=20`、
+  `go test ./pkg/backend ./pkg/server/etcd`、`go vet ./pkg/backend ./pkg/server/etcd`、
+  `go test ./hack/production/... ./deploy/production`、
+  `go vet ./hack/production/... ./deploy/production` 与 `git diff --check` 通过。
 
 ### P2：运维兼容和长期验证
 

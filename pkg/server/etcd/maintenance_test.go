@@ -383,6 +383,31 @@ func TestCorruptAlarmMemberSetConcurrentCAS(t *testing.T) {
 	require.Empty(t, members)
 }
 
+func TestCorruptAlarmMetadataRejectsInvalidJSON(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+	}{
+		{name: "null", raw: "null"},
+		{name: "object", raw: `{"members":[1]}`},
+		{name: "trailing", raw: `[1]{"members":[2]}`},
+		{name: "duplicate", raw: `[1,1]`},
+		{name: "descending", raw: `[2,1]`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server, closeFn := newTestRPCServer(t)
+			defer closeFn()
+			ctx := context.Background()
+			require.NoError(t, server.backend.InternalCAS(ctx, []backend.InternalCASOp{{
+				Key: []byte("alarms/corrupt"), Value: []byte(test.raw),
+			}}))
+			_, err := server.backend.CorruptAlarms(ctx)
+			require.Error(t, err)
+		})
+	}
+}
+
 func TestMaintenanceHashHeadersStayPinnedToHashedRevision(t *testing.T) {
 	tests := []struct {
 		name string

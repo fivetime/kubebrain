@@ -1345,7 +1345,9 @@ hack/dev/verify.sh
   当前持久 alarm 的 `AlarmMember.String()`；因此 NOSPACE 生效时，每个 KubeBrain
   副本都会向 `etcdctl endpoint status` 暴露同一 alarm owner，disarm 后同步消失。CORRUPT
   同样以 TiKV internal metadata 持久保存 member 集合；非空时 Put/Delete/写 Txn/Compact/
-  LeaseGrant/Revoke 返回标准 DataLoss，Range 仍可用于诊断和恢复。
+  LeaseGrant/Revoke 返回标准 DataLoss，Range 仍可用于诊断和恢复。CORRUPT member metadata
+  只接受严格单 JSON array；`null`、拼接 JSON、非数组或非严格递增集合会让 alarm 读取失败，
+  不能被当作空集合自动清除。
   传统 `/health` 先检查 active NOSPACE/CORRUPT：生效时返回 503 和对应
   `ALARM NOSPACE`/`ALARM CORRUPT` reason；`exclude=NOSPACE` 或 `exclude=CORRUPT` 可显式跳过，
   `serializable=true` 不跳过 alarm。成功与失败响应均使用 upstream 的

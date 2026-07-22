@@ -1,10 +1,12 @@
 package backend
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"sort"
 
 	"github.com/kubewharf/kubebrain/pkg/storage"
@@ -80,8 +82,8 @@ func (b *backend) readCorruptAlarms(ctx context.Context) ([]uint64, []byte, bool
 	if err != nil {
 		return nil, nil, false, err
 	}
-	var members []uint64
-	if err := json.Unmarshal(raw, &members); err != nil {
+	members, err := decodeCorruptAlarmMembers(raw)
+	if err != nil {
 		return nil, nil, false, fmt.Errorf("decode corrupt alarm metadata: %w", err)
 	}
 	for i := 1; i < len(members); i++ {
@@ -90,4 +92,20 @@ func (b *backend) readCorruptAlarms(ctx context.Context) ([]uint64, []byte, bool
 		}
 	}
 	return members, raw, true, nil
+}
+
+func decodeCorruptAlarmMembers(raw []byte) ([]uint64, error) {
+	var members []uint64
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	if err := decoder.Decode(&members); err != nil {
+		return nil, err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return nil, errors.New("corrupt alarm metadata contains trailing JSON")
+	}
+	if members == nil {
+		return nil, errors.New("corrupt alarm metadata must be a JSON array")
+	}
+	return members, nil
 }
