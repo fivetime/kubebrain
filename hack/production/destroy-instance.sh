@@ -124,7 +124,9 @@ validate_existing_receipt() {
      .format == "kubebrain.destroy.receipt.v1" and
      .instance == $instance and .operation_id == $operation and
      .kubebrain_namespace == $kbns and .tidb_namespace == $tidbns and
-     .tidb_cluster == $tidb and .backup_sha256 == $backup_sha and
+     .tidb_cluster == $tidb and
+     (.backup_sha256 | type == "string" and test("^[a-f0-9]{64}$")) and
+     .backup_sha256 == $backup_sha and
      .backup_revision == $backup_revision and .resources_absent == true and
      (.completed_at_unix | type == "number" and . > 0 and . == floor)' \
     "$receipt_file" >/dev/null
@@ -191,7 +193,7 @@ read_header() {
     "$state_kb_name" != "$KUBEBRAIN_STATEFULSET" ||
     "$state_tidb_namespace" != "$TIDB_NAMESPACE" ||
     "$state_tidb_cluster" != "$TIDB_CLUSTER" ||
-    -z "$state_backup_sha" ||
+    ! "$state_backup_sha" =~ ^[a-f0-9]{64}$ ||
     ! "$state_backup_revision" =~ ^[1-9][0-9]*$ ]]; then
     echo "destroy state does not match the requested instance operation" >&2
     exit 1
@@ -326,6 +328,8 @@ case "$ACTION" in
     backup_sha="$(INPUT="$BACKUP_INPUT" FIELD=sha256 EXPECTED_PREFIX="$BACKUP_PREFIX" \
       MIN_RECORDS="$BACKUP_MIN_RECORDS" MAX_AGE_SECONDS="$BACKUP_MAX_AGE_SECONDS" \
       "$LOGICAL_STATUS")"
+    [[ "$backup_sha" =~ ^[a-f0-9]{64}$ ]] ||
+      { echo "logical backup SHA-256 is invalid" >&2; exit 1; }
     backup_revision="$(INPUT="$BACKUP_INPUT" FIELD=revision EXPECTED_PREFIX="$BACKUP_PREFIX" \
       MIN_RECORDS="$BACKUP_MIN_RECORDS" MAX_AGE_SECONDS="$BACKUP_MAX_AGE_SECONDS" \
       "$LOGICAL_STATUS")"

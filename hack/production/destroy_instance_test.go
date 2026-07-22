@@ -11,6 +11,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+const destroyBackupSHA256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
 func TestDestroyInstanceLifecycleIsRetrySafe(t *testing.T) {
 	fixture := newDestroyFixture(t)
 	fixture.run(t, "prepare", true, "")
@@ -27,7 +29,7 @@ func TestDestroyInstanceLifecycleIsRetrySafe(t *testing.T) {
 	require.NoError(t, json.Unmarshal(data, &receipt))
 	require.Equal(t, "kubebrain.destroy.receipt.v1", receipt["format"])
 	require.Equal(t, true, receipt["resources_absent"])
-	require.Equal(t, "artifact-sha-256", receipt["backup_sha256"])
+	require.Equal(t, destroyBackupSHA256, receipt["backup_sha256"])
 	require.Equal(t, float64(987654321), receipt["backup_revision"])
 
 	deleteLog, err := os.ReadFile(filepath.Join(fixture.dir, "uid-delete.log"))
@@ -44,7 +46,7 @@ func TestDestroyInstanceRejectsNestedExistingReceiptFields(t *testing.T) {
 	fixture.run(t, "destroy", true, "")
 
 	receiptPath := filepath.Join(fixture.stateDir, "destroy-1.receipt.json")
-	shadowReceipt := `{"format":"wrong","resources_absent":false,"shadow":{"format":"kubebrain.destroy.receipt.v1","instance":"instance-a","operation_id":"destroy-1","kubebrain_namespace":"instance-a","tidb_namespace":"storage-a","tidb_cluster":"kb","backup_sha256":"artifact-sha-256","backup_revision":987654321,"resources_absent":true,"completed_at_unix":1}}` + "\n"
+	shadowReceipt := `{"format":"wrong","resources_absent":false,"shadow":{"format":"kubebrain.destroy.receipt.v1","instance":"instance-a","operation_id":"destroy-1","kubebrain_namespace":"instance-a","tidb_namespace":"storage-a","tidb_cluster":"kb","backup_sha256":"` + destroyBackupSHA256 + `","backup_revision":987654321,"resources_absent":true,"completed_at_unix":1}}` + "\n"
 	require.NoError(t, os.WriteFile(receiptPath, []byte(shadowReceipt), 0o600))
 
 	fixture.run(t, "complete", false, "", "existing destroy receipt does not match the completed operation")
@@ -100,6 +102,12 @@ func TestDestroyInstanceFailsClosed(t *testing.T) {
 			wantOutput: "backup rejected",
 		},
 		{
+			name:       "backup digest is invalid",
+			action:     "prepare",
+			extraEnv:   "FAKE_BACKUP_SHA=abc123",
+			wantOutput: "logical backup SHA-256 is invalid",
+		},
+		{
 			name: "storage workload residue blocks completion",
 			prepare: func(t *testing.T, f *destroyFixture) {
 				f.run(t, "prepare", true, "")
@@ -143,7 +151,7 @@ if [[ "${FAKE_BACKUP_FAIL:-false}" == true ]]; then
   exit 1
 fi
 case "$FIELD" in
-  sha256) echo artifact-sha-256 ;;
+  sha256) echo "${FAKE_BACKUP_SHA:-`+destroyBackupSHA256+`}" ;;
   revision) echo 987654321 ;;
   *) exit 1 ;;
 esac

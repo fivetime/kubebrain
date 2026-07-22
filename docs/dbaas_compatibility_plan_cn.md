@@ -9738,6 +9738,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   失败且不生成 receipt。回归：
   `go test ./hack/production -run 'TestValidateCertificateRotation' -count=10 -timeout=120s`
   通过。
+- A551 收紧 destroy logical backup digest schema：`destroy-instance.sh` 通过
+  `logical-status FIELD=sha256` 读取逻辑备份摘要后直接写入
+  `kubebrain.destroy.state.v1` 与 `kubebrain.destroy.receipt.v1`，旧逻辑只要求 state
+  里的 backup digest 非空，测试夹具也返回 `artifact-sha-256`。现在 prepare 阶段、
+  state 复读和既有 destroy receipt 复用都要求小写 `[a-f0-9]{64}`；fixture 改用真实
+  SHA-256 形状，并覆盖 logical-status 返回短 digest 时拒绝 prepare。回归：
+  `go test ./hack/production -run 'TestDestroyInstance' -count=10 -timeout=120s` 通过。
 
 ### P2：运维兼容和长期验证
 
