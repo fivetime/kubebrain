@@ -108,9 +108,8 @@ func (a *Archiver) Process(ctx context.Context) (Snapshot, []byte, error) {
 	if err != nil {
 		return Snapshot{}, output, err
 	}
-	var stdout UsageReceipt
-	if err := json.Unmarshal(bytes.TrimSpace(output), &stdout); err != nil ||
-		!usageReceiptsEqual(stdout, usage) {
+	stdout, err := readUsageReceiptOutput(output)
+	if err != nil || !usageReceiptsEqual(stdout, usage) {
 		return Snapshot{}, output, errors.New("object storage usage stdout does not match receipt")
 	}
 	if usage.ObjectStoreID != a.SourceObjectStoreID || usage.Bucket != a.SourceBucket ||
@@ -191,6 +190,20 @@ func readUsageReceipt(path string) (UsageReceipt, error) {
 	canonical = append(canonical, '\n')
 	if !bytes.Equal(data, canonical) {
 		return receipt, errors.New("object usage receipt is not canonical")
+	}
+	return receipt, nil
+}
+
+func readUsageReceiptOutput(data []byte) (UsageReceipt, error) {
+	var receipt UsageReceipt
+	decoder := json.NewDecoder(bytes.NewReader(bytes.TrimSpace(data)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&receipt); err != nil {
+		return receipt, fmt.Errorf("decode object storage usage stdout: %w", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return receipt, errors.New("object storage usage stdout contains trailing JSON")
 	}
 	return receipt, nil
 }

@@ -879,6 +879,8 @@ digest metadata、COMPLIANCE/GOVERNANCE mode 与 retain-until。总字节使用 
 结束的小时；实际 checked-at 允许位于 slot end 后 45 分钟内，以覆盖调度和重试。
 `kubebrain.object-storage-sample.v1` 固定 source store/bucket/prefix、allowlist、version
 数量、总字节、versions digest 和 checked-at，再写入独立计量 Object Lock bucket。
+usage executor 的 stdout 必须与文件 receipt 使用同一 strict JSON schema，不允许未知字段或
+trailing JSON；两份内容逐字段相等后才会进入 sample 构建。
 source 凭据只能 List/Head/GetRetention 实例 prefix，evidence 凭据只能写/读
 `metering-storage-samples` 与 `metering-storage-rollups`；二进制通过两套显式前缀环境
 变量启动子执行器，禁止让 source 写权限或 evidence 凭据访问备份内容。

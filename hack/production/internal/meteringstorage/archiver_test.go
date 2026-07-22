@@ -115,6 +115,30 @@ func TestArchiverRejectsUsageReceiptMismatchBeforeArchive(t *testing.T) {
 	require.Zero(t, archiveCalls)
 }
 
+func TestArchiverRejectsUsageStdoutUnknownFieldBeforeArchive(t *testing.T) {
+	now := time.Unix(1_784_509_800, 0).UTC()
+	archiveCalls := 0
+	run := func(_ context.Context, _ string, environment []string) ([]byte, error) {
+		values := environmentValues(environment)
+		if values["ACTION"] == "blob" {
+			archiveCalls++
+			return nil, nil
+		}
+		receipt := validUsageReceipt()
+		receipt.CheckedAtUnix = now.Unix()
+		data, err := json.Marshal(receipt)
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(values["RECEIPT_OUTPUT"], append(data, '\n'), 0o600))
+		var stdout map[string]any
+		require.NoError(t, json.Unmarshal(data, &stdout))
+		stdout["extra"] = true
+		return json.Marshal(stdout)
+	}
+	_, _, err := validArchiver(now, run).Process(context.Background())
+	require.ErrorContains(t, err, "stdout")
+	require.Zero(t, archiveCalls)
+}
+
 func validArchiver(now time.Time, run CommandRunner) *Archiver {
 	return &Archiver{
 		Instance: "instance-a", Executor: "executor",

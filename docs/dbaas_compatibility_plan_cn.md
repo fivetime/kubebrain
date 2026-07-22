@@ -9182,6 +9182,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   expected object drift；`go test ./hack/production/internal/operationauditrelease ./hack/production/internal/operationarchiver -run 'Test.*Release|TestArchiveProcessor' -count=1`、
   `go test ./hack/production/... ./deploy/production` 与
   `go vet ./hack/production/... ./deploy/production` 通过。
+- A487 收紧 object storage usage stdout JSON 解析：sample archiver 读取 file receipt 后，
+  stdout 也改用 `DisallowUnknownFields` 和 trailing JSON 拒绝，再逐字段比较两份 receipt。
+  这样 stdout 额外未知字段不会被 `json.Unmarshal` 忽略后误判为匹配，也不会触发后续
+  archive。回归覆盖 usage stdout unknown field 且 archive 未调用；
+  `go test ./hack/production/internal/meteringstorage -run 'TestArchiverRejectsUsage|TestArchiverMeasures' -count=1`、
+  `go test ./hack/production/... ./deploy/production` 与
+  `go vet ./hack/production/... ./deploy/production` 通过。
 
 ### P2：运维兼容和长期验证
 
