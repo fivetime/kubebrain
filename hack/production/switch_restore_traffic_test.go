@@ -11,6 +11,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+const restoreArtifactSHA256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
 func TestRestoreTrafficCutoverLifecycleAndRollback(t *testing.T) {
 	f := newTrafficFixture(t)
 	f.run(t, "prepare", true, "")
@@ -43,7 +45,7 @@ func TestRestoreTrafficCutoverRejectsExistingReceiptWithUnknownFields(t *testing
 	f.run(t, "verify", true, "")
 
 	receiptPath := filepath.Join(f.state, "restore-1.receipt.json")
-	receipt := `{"artifact_sha256":"abc123","completed_at_unix":1,"cutover_state_sha256":"` + fileDigest(t, filepath.Join(f.state, "restore-1.state")) + `","endpoint_uids_matched":true,"format":"kubebrain.restore-cutover.receipt.v1","instance":"instance-a","operation_id":"restore-1","pod_uids_unchanged":true,"public_data_verified":true,"replicas":2,"service_name":"kubebrain","service_namespace":"instance-a","service_uid":"uid-service","snapshot_revision":42,"source_instance":"source","target_instance":"target","unexpected":true}` + "\n"
+	receipt := `{"artifact_sha256":"` + restoreArtifactSHA256 + `","completed_at_unix":1,"cutover_state_sha256":"` + fileDigest(t, filepath.Join(f.state, "restore-1.state")) + `","endpoint_uids_matched":true,"format":"kubebrain.restore-cutover.receipt.v1","instance":"instance-a","operation_id":"restore-1","pod_uids_unchanged":true,"public_data_verified":true,"replicas":2,"service_name":"kubebrain","service_namespace":"instance-a","service_uid":"uid-service","snapshot_revision":42,"source_instance":"source","target_instance":"target","unexpected":true}` + "\n"
 	require.NoError(t, os.WriteFile(receiptPath, []byte(receipt), 0o600))
 
 	f.run(t, "complete", false, "", "existing restore cutover receipt does not match")
@@ -61,6 +63,31 @@ func TestRestoreTrafficCutoverRejectsRestoreReceiptWithUnknownFields(t *testing.
 
 	f.run(t, "prepare", false, "", "restore verification receipt is invalid")
 	require.NoFileExists(t, filepath.Join(f.state, "restore-1.state"))
+}
+
+func TestRestoreTrafficCutoverRejectsRestoreReceiptWithInvalidDigest(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		digest string
+	}{
+		{name: "short", digest: "abc123"},
+		{name: "uppercase", digest: strings.ToUpper(restoreArtifactSHA256)},
+		{name: "non-hex", digest: strings.Repeat("g", 64)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newTrafficFixture(t)
+			path := filepath.Join(f.dir, "restore.json")
+			receipt := strings.ReplaceAll(
+				strings.TrimSpace(string(mustRead(t, path))),
+				restoreArtifactSHA256,
+				tc.digest,
+			) + "\n"
+			require.NoError(t, os.WriteFile(path, []byte(receipt), 0o600))
+
+			f.run(t, "prepare", false, "", "restore verification receipt is invalid")
+			require.NoFileExists(t, filepath.Join(f.state, "restore-1.state"))
+		})
+	}
 }
 
 func TestRestoreTrafficCutoverFailsClosed(t *testing.T) {
@@ -121,7 +148,7 @@ func newTrafficFixture(t *testing.T) *trafficFixture {
 	restoreReceipt := filepath.Join(dir, "restore.json")
 	require.NoError(t, os.WriteFile(restoreReceipt, []byte(`{
 	  "format":"kubebrain.restore-verification.v1","artifact_format":"kubebrain.logical.v2",
-	  "artifact_sha256":"abc123","snapshot_revision":42,"source_prefix":"/registry",
+	  "artifact_sha256":"`+restoreArtifactSHA256+`","snapshot_revision":42,"source_prefix":"/registry",
 	  "target_prefix":"/restored","records":2,"artifact_leases":1,
 	  "verified_target_leases":1,"verified_at_unix":100
 	}`), 0o600))
@@ -178,7 +205,7 @@ exit 1
 set -euo pipefail
 [[ ! -f "$FAKE_DIR/verify-fail" ]] || { echo verification failed >&2; exit 1; }
 cat >"$RECEIPT_OUTPUT" <<EOF
-{"format":"kubebrain.restore-verification.v1","artifact_format":"kubebrain.logical.v2","artifact_sha256":"abc123","snapshot_revision":42,"source_prefix":"/registry","target_prefix":"/restored","records":2,"artifact_leases":1,"verified_target_leases":1,"verified_at_unix":200}
+{"format":"kubebrain.restore-verification.v1","artifact_format":"kubebrain.logical.v2","artifact_sha256":"`+restoreArtifactSHA256+`","snapshot_revision":42,"source_prefix":"/registry","target_prefix":"/restored","records":2,"artifact_leases":1,"verified_target_leases":1,"verified_at_unix":200}
 EOF
 chmod 600 "$RECEIPT_OUTPUT"
 `)

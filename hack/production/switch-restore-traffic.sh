@@ -98,7 +98,7 @@ receipt_fields() {
        keys == ["artifact_created_at_unix","artifact_format","artifact_leases","artifact_sha256","format","records","snapshot_revision","source_prefix","target_prefix","verified_at_unix","verified_target_leases"]) and
       .format == "kubebrain.restore-verification.v1" and
       (.artifact_format | test("^kubebrain\\.logical\\.v[12]$")) and
-      (.artifact_sha256 | type == "string" and length > 0) and
+      (.artifact_sha256 | type == "string" and test("^[a-f0-9]{64}$")) and
       (.snapshot_revision | type == "number" and . > 0 and . == floor) and
       ((has("artifact_created_at_unix") | not) or
         (.artifact_created_at_unix | type == "number" and . > 0 and . == floor)) and
@@ -253,7 +253,7 @@ case "$ACTION" in
     IFS=$'\t' read -r format artifact_format sha revision source_prefix target_prefix records \
       artifact_leases target_leases verified_at <<<"$receipt"
     [[ "$format" == "kubebrain.restore-verification.v1" &&
-      "$artifact_format" =~ ^kubebrain\.logical\.v[12]$ && "$sha" =~ ^[0-9A-Za-z._-]+$ &&
+      "$artifact_format" =~ ^kubebrain\.logical\.v[12]$ && "$sha" =~ ^[a-f0-9]{64}$ &&
       "$revision" =~ ^[1-9][0-9]*$ && "$records" =~ ^[0-9]+$ &&
       "$artifact_leases" =~ ^[0-9]+$ && "$target_leases" =~ ^[0-9]+$ &&
       "$verified_at" =~ ^[1-9][0-9]*$ ]] ||

@@ -9712,6 +9712,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   大写 witness digest 被拒绝；
   `go test ./hack/backup/cmd/cold-restore-render -run 'TestRenderColdRestoreManifest|TestRenderColdRestoreManifestRejectsIncompleteReceipts|TestDecodeReceiptRejectsUnknownAndTrailingJSON' -count=20`
   通过。
+- A548 收紧 restore cutover 输入 receipt digest schema：`switch-restore-traffic.sh`
+  读取 `kubebrain.restore-verification.v1` 时仍只要求 `artifact_sha256` 为非空字符串，
+  可能把短 digest、大写 hex 或非 hex 字符串写入 cutover state 与最终
+  `kubebrain.restore-cutover.receipt.v1`。现在 prepare 阶段和 receipt parser 都要求
+  小写 `[a-f0-9]{64}`；fixture 改用真实 SHA-256 形状，并覆盖短 digest、大写 digest
+  和非 hex digest 被拒绝且不生成 state。回归：
+  `go test ./hack/production -run 'TestRestoreTrafficCutover' -count=10 -timeout=180s`、
+  `go test ./hack/production -run 'Test(RestoreTrafficCutover|RestoreCutoverOperation)' -count=5 -timeout=180s`
+  通过。
 
 ### P2：运维兼容和长期验证
 
