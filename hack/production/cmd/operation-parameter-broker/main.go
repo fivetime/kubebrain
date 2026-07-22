@@ -7,7 +7,6 @@ import (
 	"flag"
 	"log"
 	"net/http"
-	"os"
 	"os/signal"
 	"syscall"
 	"time"
@@ -19,6 +18,8 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 )
+
+var inClusterConfig = rest.InClusterConfig
 
 func main() {
 	var address, namespace, audience, certFile, keyFile, kubeconfig string
@@ -117,8 +118,11 @@ func kubernetesConfig(kubeconfig string) (*rest.Config, error) {
 	if kubeconfig != "" {
 		return clientcmd.BuildConfigFromFlags("", kubeconfig)
 	}
-	if value := os.Getenv("KUBECONFIG"); value != "" {
-		return clientcmd.BuildConfigFromFlags("", value)
+	if config, err := inClusterConfig(); err == nil {
+		return config, nil
 	}
-	return rest.InClusterConfig()
+	loading := clientcmd.NewDefaultClientConfigLoadingRules()
+	return clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
+		loading, &clientcmd.ConfigOverrides{},
+	).ClientConfig()
 }

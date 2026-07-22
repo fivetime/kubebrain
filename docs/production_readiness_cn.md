@@ -1737,7 +1737,9 @@ Operation `get/create`，验证外部 GET 与 readiness 按 `404/204 -> 503/503 
 验证器通过 OIDC discovery 获取 JWKS，未知 kid 会触发刷新；缓存过期且刷新失败时拒绝
 token，不继续信任可能已撤下的旧 key。除 loopback 测试外 issuer/JWKS 必须使用 HTTPS。
 API ServiceAccount 仅有 namespaced operation `create/get`，没有 list/watch、status、
-Secret、Lease、update 或 delete 权限。启用示例：
+Secret、Lease、update 或 delete 权限。API 未显式传入 kubeconfig 时先使用 Pod
+ServiceAccount 的 in-cluster 配置；仅在非集群本地执行且 in-cluster 不可用时才回落
+标准 kubeconfig 规则。启用示例：
 
 ```shell
 kubectl -n kubebrain-operations create secret generic kubebrain-operation-api-oidc \
@@ -2106,7 +2108,8 @@ Secret list/watch、Operation list/watch/status 或 Lease 权限。projected tok
 4 MiB、`Content-Type` 不是 `application/json`，projected token 为空/超过 16 KiB，或 broker
 CA bundle 超过 1 MiB 时必须 fail closed，不能把 `LimitReader` 截断结果或 HTML 错误页写成
 参数文件再依赖后续 digest 校验兜底，也不能构造超大 Authorization header 或无界读取错误
-CA 文件。
+CA 文件。broker 未显式传入 kubeconfig 时先使用 Pod ServiceAccount 的 in-cluster 配置；
+仅在非集群本地执行且 in-cluster 不可用时才回落标准 kubeconfig 规则。
 
 broker 的 `/readyz` 不只检查当前 TLS 证书，还会在同一个
 `--kubernetes-request-timeout=5s` 预算内探测 TokenReview create、Operation get 和 Secret
