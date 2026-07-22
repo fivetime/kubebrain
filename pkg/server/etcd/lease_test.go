@@ -761,6 +761,41 @@ func TestAutomaticLeaseIDStaysPositiveAfterMaxExplicitIDReload(t *testing.T) {
 		"automatic IDs wrap within the positive int64 range and skip zero")
 }
 
+func TestLoadLeaseRecordsRejectsInvalidAttachmentMetadata(t *testing.T) {
+	tests := []struct {
+		name  string
+		write func(context.Context, *RPCServer) error
+	}{
+		{
+			name: "legacy_user_mvcc_attachment",
+			write: func(ctx context.Context, server *RPCServer) error {
+				_, err := server.backend.Put(ctx, &etcdserverpb.PutRequest{
+					Key:   leaseAttachKey("/lease/bad-legacy"),
+					Value: []byte("not-an-id"),
+				})
+				return err
+			},
+		},
+		{
+			name: "internal_attachment",
+			write: func(ctx context.Context, server *RPCServer) error {
+				return server.backend.InternalPut(ctx, leaseAttachKey("/lease/bad-internal"), []byte("not-an-id"))
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server, closeFn := newTestRPCServer(t)
+			defer closeFn()
+			ctx := context.Background()
+			require.NoError(t, test.write(ctx, server))
+
+			_, _, err := server.loadLeaseRecords(ctx)
+			require.ErrorContains(t, err, "decode lease attachment")
+		})
+	}
+}
+
 func TestLeaseGrantPublishesOnlyAfterMetadataCommit(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

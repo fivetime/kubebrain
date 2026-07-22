@@ -1353,9 +1353,9 @@ func (m *leaseManager) loadLeaseRecords(ctx context.Context) ([]leaseRecord, map
 	attachments := make(map[string]int64, len(aresp.Kvs))
 	for _, kv := range aresp.Kvs {
 		userKey := string(kv.Key[len(leaseAttachPrefix):])
-		id, perr := strconv.ParseInt(string(kv.Value), 10, 64)
+		id, perr := parseLeaseAttachmentRecord(userKey, kv.Value)
 		if perr != nil {
-			continue
+			return nil, nil, perr
 		}
 		attachments[userKey] = id
 	}
@@ -1365,12 +1365,21 @@ func (m *leaseManager) loadLeaseRecords(ctx context.Context) ([]leaseRecord, map
 	}
 	for key, value := range internalAttachments {
 		userKey := key[len(leaseAttachPrefix):]
-		id, perr := strconv.ParseInt(string(value), 10, 64)
-		if perr == nil {
-			attachments[userKey] = id
+		id, perr := parseLeaseAttachmentRecord(userKey, value)
+		if perr != nil {
+			return nil, nil, perr
 		}
+		attachments[userKey] = id
 	}
 	return records, attachments, nil
+}
+
+func parseLeaseAttachmentRecord(userKey string, value []byte) (int64, error) {
+	id, err := strconv.ParseInt(string(value), 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("decode lease attachment for key %q: %w", userKey, err)
+	}
+	return id, nil
 }
 
 // migrateLegacyLeases rewrites pre-#17 leases (meta records that still carried an

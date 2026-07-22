@@ -1189,6 +1189,11 @@ RUN_LEASE_FAULT_SMOKE=true hack/dev/verify.sh
 
 当前本地已通过默认 10 lease 故障 smoke，以及 TTL=8、25 lease 的 Pod 删除故障 smoke；最近一次在最新 KubeBrain 镜像上通过默认 10 lease、TTL=6 的 Pod 删除故障验证，最终收到 10 个 PUT 和 10 个 DELETE 事件并确认 key 清空。此前 TTL=8、25 lease 验证在 pod 删除期间出现一次 client EOF 重试，最终仍收到全部 DELETE 事件并确认 key 清空。
 
+换主或重启时 `ReloadLeases` 必须从持久 lease meta 和 per-key attachment 重新构建内存索引；
+legacy user-MVCC attachment 与 internal attachment 的 value 都必须是合法 lease ID。任何非法
+attachment metadata 都应让 reload fail closed，不能静默跳过，否则该 key 会在新 leader 上丢失
+lease 绑定并绕过后续过期/Revoke 删除。
+
 可选 watch 扇出 soak：
 
 ```shell

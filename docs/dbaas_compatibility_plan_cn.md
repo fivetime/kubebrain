@@ -9260,6 +9260,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./pkg/backend ./pkg/server/etcd`、`go vet ./pkg/backend ./pkg/server/etcd`、
   `go test ./hack/production/... ./deploy/production`、
   `go vet ./hack/production/... ./deploy/production` 与 `git diff --check` 通过。
+- A497 修复 lease attachment reload 静默丢绑定：`loadLeaseRecords` 读取 legacy
+  user-MVCC `leasekeys/<key>` 和新 internal attachment 时，遇到非 int64 lease ID
+  现在直接返回错误；旧逻辑 `continue` 或只在 parse 成功时覆盖，会让坏 metadata 在换主/
+  重启后被静默跳过，导致 key 在内存索引中丢失 lease 绑定并绕过过期/Revoke 删除。
+  回归直接注入 legacy 与 internal 两类坏 attachment value；`go test ./pkg/server/etcd -run 'TestLoadLeaseRecordsRejectsInvalidAttachmentMetadata|TestReloadLeasesAdoptsLeasesGrantedAfterSnapshot|TestLeaseRevokeReclaimsLegacyAndInternalAttachments|TestLeaseCheckpointBoundsReloadAndRenewClearsIt' -count=20`、
+  `go test ./pkg/server/etcd ./pkg/backend`、`go vet ./pkg/server/etcd ./pkg/backend`、
+  `go test ./hack/production/... ./deploy/production`、
+  `go vet ./hack/production/... ./deploy/production` 与 `git diff --check` 通过。
 
 ### P2：运维兼容和长期验证
 
