@@ -8911,10 +8911,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
    指标已暴露，单实例资源/容量/网络/备份 recording rules 和 fail-closed 缺测标记已
    建立，不可变小时采样、counter-based 小时窗口、确定性跨日积分、不可变资源价格
    版本、对象 storage byte-time、对象请求费、v3 charge、approved adjustment/credit
-   和 final invoice 已完成；继续补供应商分类 exporter/供应商账单周期对账、税率/
+   和 final invoice 已完成；供应商账单周期对账的 provider statement /
+   provider reconciliation canonical artifact、跨 account/bucket 分类汇总、Object
+   Lock 读写 receipt 绑定和生产镜像 CLI 入口已建立；继续补供应商账单导入/exporter、税率/
    折扣、付款/退款、应收账款、法规发票编号、
    外部总账过账与跨账户财务对账，并在具备 Prometheus Operator 的预生产环境补真实
    一小时规则 evaluation 和连续 24 小时 storage sampling 门禁。
+
+- A457 新增 `kubebrain.metering-provider-statement.v1` 和
+  `kubebrain.metering-provider-reconciliation.v1`：供应商 statement 必须按 provider、
+  account、外部 invoice/line、分类、object store 和 bucket 排序且逐行合计；reconciliation
+  绑定 final invoice 与 provider statement 的不可变 Object Lock read receipt，聚合跨
+  account/bucket 成本分类并计算 customer invoice total、provider statement total 与
+  gross margin。`kubebrain-metering-provider-reconcile` 已进入 Dockerfile build/copy 链路；
+  `go test ./hack/production/... ./deploy/production` 与
+  `go vet ./hack/production/... ./deploy/production` 通过。该项关闭周期级供应商账单对账
+  的本地制品合同，真实供应商账单导入/exporter、税率/折扣/收付款、外部总账和跨账户财务
+  对账仍属 P1。
 
 ### P2：运维兼容和长期验证
 
