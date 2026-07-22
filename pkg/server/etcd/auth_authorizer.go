@@ -41,10 +41,11 @@ func (s *RPCServer) authCallerFromContext(ctx context.Context) (*authCaller, err
 	if len(values) == 0 {
 		return s.authCallerFromTLS(ctx, snapshot)
 	}
-	if len(values) != 1 || values[0] == "" {
+	credential := values[0]
+	if credential == "" {
 		return nil, rpctypes.ErrInvalidAuthToken
 	}
-	token := strings.TrimPrefix(values[0], "Bearer ")
+	token := strings.TrimPrefix(credential, "Bearer ")
 	claims, err := s.tokens.verify(ctx, token)
 	if err != nil {
 		return nil, err
@@ -67,7 +68,7 @@ func (s *RPCServer) authCallerFromContext(ctx context.Context) (*authCaller, err
 	}
 	return &authCaller{
 		username: claims.Username, revision: revision,
-		snapshot: snapshot, forwardToken: values[0],
+		snapshot: snapshot, forwardToken: credential,
 	}, nil
 }
 

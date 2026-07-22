@@ -131,6 +131,32 @@ func TestAuthCallerAcceptsBearerPrefixedToken(t *testing.T) {
 	require.ErrorIs(t, err, rpctypes.ErrInvalidAuthToken)
 }
 
+func TestAuthCallerUsesFirstRepeatedMetadataToken(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	aliceCtx := setupAuthKVUser(t, server)
+	tokens := metadata.ValueFromIncomingContext(aliceCtx, rpctypes.TokenFieldNameGRPC)
+	require.Len(t, tokens, 1)
+	token := tokens[0]
+
+	for _, field := range []string{rpctypes.TokenFieldNameGRPC, rpctypes.TokenFieldNameSwagger} {
+		incoming := metadata.NewIncomingContext(
+			ctx, metadata.Pairs(field, token, field, "invalid.second.token"),
+		)
+		caller, err := server.authCallerFromContext(incoming)
+		require.NoError(t, err)
+		require.Equal(t, "alice", caller.username)
+		require.Equal(t, token, caller.forwardToken)
+	}
+
+	incoming := metadata.NewIncomingContext(
+		ctx, metadata.Pairs(rpctypes.TokenFieldNameGRPC, "", rpctypes.TokenFieldNameGRPC, token),
+	)
+	_, err := server.authCallerFromContext(incoming)
+	require.ErrorIs(t, err, rpctypes.ErrInvalidAuthToken)
+}
+
 func TestAuthCallerFailsClosedAndDisabledBypasses(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

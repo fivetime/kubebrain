@@ -10048,6 +10048,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   executor 只使用专用 broker token，且不回退到默认 API token 或更宽文件权限。回归：
   `go test ./deploy/production -run TestOperationExecutorsAreTypeIsolatedFailClosedTemplates -count=1`
   通过。
+- A583 对齐 etcd 重复 auth metadata 首值语义：
+  对照 `/root/etcd/server/auth/store.go` 的 `AuthInfoFromCtx`，上游从
+  `token`/`authorization` metadata 中取第一个值并只对该值去除精确 `Bearer ` 前缀；
+  KubeBrain 旧实现遇到同名 metadata 多值会直接返回 `ErrInvalidAuthToken`，让代理重复
+  注入 header 或客户端重复设置 per-RPC credential 时偏离 etcd。现在
+  `authCallerFromContext` 与上游一致使用首个 credential、保留原始首值转发给 leader，
+  且首值为空仍 fail closed。回归：
+  `go test ./pkg/server/etcd -run TestAuthCallerUsesFirstRepeatedMetadataToken -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 
