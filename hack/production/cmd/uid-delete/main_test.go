@@ -3,8 +3,11 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -72,6 +75,52 @@ func TestDeleteWithUIDSupportsClusterScopedResources(t *testing.T) {
 	require.NoError(t, deleteWithUID(
 		context.Background(), client, "v1", "namespaces", "", "instance-a", "uid-ns",
 	))
+}
+
+func TestClientConfigPrefersInClusterWhenKubeconfigIsEmpty(t *testing.T) {
+	original := inClusterConfig
+	t.Cleanup(func() { inClusterConfig = original })
+	inClusterConfig = func() (*rest.Config, error) {
+		return &rest.Config{Host: "https://kubernetes.default.svc"}, nil
+	}
+
+	config, err := clientConfig("", "")
+	require.NoError(t, err)
+	require.Equal(t, "https://kubernetes.default.svc", config.Host)
+}
+
+func TestClientConfigSkipsInClusterWhenExplicitKubeconfigIsProvided(t *testing.T) {
+	original := inClusterConfig
+	t.Cleanup(func() { inClusterConfig = original })
+	called := false
+	inClusterConfig = func() (*rest.Config, error) {
+		called = true
+		return nil, errors.New("in-cluster should not be used")
+	}
+
+	kubeconfig := filepath.Join(t.TempDir(), "config")
+	require.NoError(t, os.WriteFile(kubeconfig, []byte(`apiVersion: v1
+kind: Config
+clusters:
+- name: test
+  cluster:
+    server: https://api.example.invalid
+contexts:
+- name: test
+  context:
+    cluster: test
+    user: test
+current-context: test
+users:
+- name: test
+  user:
+    token: token
+`), 0o600))
+
+	config, err := clientConfig(kubeconfig, "")
+	require.NoError(t, err)
+	require.False(t, called)
+	require.Equal(t, "https://api.example.invalid", config.Host)
 }
 
 func testRESTConfig(server string) *rest.Config {

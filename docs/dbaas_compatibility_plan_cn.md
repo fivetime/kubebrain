@@ -4199,7 +4199,9 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
 
   `hack/production/cmd/uid-delete` 使用 dynamic client 发送
   `DeleteOptions.preconditions.uid` 和 foreground propagation，关闭 `kubectl delete
-  NAME` 在 get/delete 间名称复用的竞态。状态、阶段 marker 和 receipt 均不可覆盖、
+  NAME` 在 get/delete 间名称复用的竞态。`uid-delete` 现在在空 kubeconfig 时优先使用
+  in-cluster ServiceAccount，再回落到标准 kubeconfig；回归覆盖 in-cluster 优先和显式
+  kubeconfig 不触发 in-cluster。状态、阶段 marker 和 receipt 均不可覆盖、
   file/directory fsync；中断重试接受 NotFound，但同名新 UID、额外匹配 PVC、存储
   workload residue 或 evidence 冲突均 fail closed。mock 测试覆盖完整生命周期和
   prepare/destroy/complete 重试、阶段越级、错误确认、备份失败、StatefulSet UID 漂移、

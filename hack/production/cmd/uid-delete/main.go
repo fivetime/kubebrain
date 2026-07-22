@@ -18,6 +18,8 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 )
 
+var inClusterConfig = rest.InClusterConfig
+
 func main() {
 	var (
 		apiVersion  string
@@ -50,12 +52,7 @@ func main() {
 		log.Fatalf("parse API version: %v", err)
 	}
 
-	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
-	if kubeconfig != "" {
-		loadingRules.ExplicitPath = kubeconfig
-	}
-	overrides := &clientcmd.ConfigOverrides{CurrentContext: kubeContext}
-	config, err := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loadingRules, overrides).ClientConfig()
+	config, err := clientConfig(kubeconfig, kubeContext)
 	if err != nil {
 		log.Fatalf("load Kubernetes client config: %v", err)
 	}
@@ -83,6 +80,20 @@ func main() {
 
 func dynamicClient(config *rest.Config) (dynamic.Interface, error) {
 	return dynamic.NewForConfig(config)
+}
+
+func clientConfig(kubeconfig, kubeContext string) (*rest.Config, error) {
+	if kubeconfig == "" {
+		if config, err := inClusterConfig(); err == nil {
+			return config, nil
+		}
+	}
+	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
+	if kubeconfig != "" {
+		loadingRules.ExplicitPath = kubeconfig
+	}
+	overrides := &clientcmd.ConfigOverrides{CurrentContext: kubeContext}
+	return clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loadingRules, overrides).ClientConfig()
 }
 
 func deleteWithUID(
