@@ -364,8 +364,14 @@ func (p *PaymentLedgerProcessor) Process(ctx context.Context) (SettlementStatus[
 	if !p.Publish {
 		return status, output, nil
 	}
+	publisherInput := path.Join(dir, "payment-ledger.publish.json")
+	if frozen, err := WritePaymentLedgerAtomic(publisherInput, ledger); err != nil {
+		return SettlementStatus[PaymentLedger]{}, output, err
+	} else if frozen.SHA256 != status.SHA256 || frozen.Bytes != status.Bytes {
+		return SettlementStatus[PaymentLedger]{}, output, errors.New("frozen payment ledger publish input does not match output")
+	}
 	publisher := &PaymentLedgerPublisher{
-		Input: p.Output, Executor: p.Executor, ObjectStoreID: p.ObjectStoreID,
+		Input: publisherInput, Executor: p.Executor, ObjectStoreID: p.ObjectStoreID,
 		Bucket: p.Bucket, PaymentPrefix: p.PaymentPrefix, RetentionMode: p.RetentionMode,
 		RetentionDuration: p.RetentionDuration, Now: p.Now, Run: p.Run,
 	}

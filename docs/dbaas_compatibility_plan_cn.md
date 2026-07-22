@@ -9123,6 +9123,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   ./hack/production/internal/meteringbilling -run 'Test.*InvoiceNumber|Test.*GeneralLedger' -count=1`、
   `go test ./hack/production/... ./deploy/production` 与
   `go vet ./hack/production/... ./deploy/production` 通过。
+- A479 收紧 payment ledger processor 到 publisher 之间的 output path 冻结：processor 写出用户
+  output 后，会再写内部 canonical `payment-ledger.publish.json`，并把该 frozen input 传给
+  publisher；publisher 继续生成自己的 frozen upload copy。这样用户 output path 即使在 archive
+  executor 调用期间被替换，也不会影响 Object Lock 上传。回归在 processor archive 回调中篡改
+  output path，再从 archived bytes 读回 ledger；`go test
+  ./hack/production/internal/meteringbilling -run 'TestPaymentLedgerProcessor' -count=1`、
+  `go test ./hack/production/... ./deploy/production` 与
+  `go vet ./hack/production/... ./deploy/production` 通过。
 
 ### P2：运维兼容和长期验证
 
