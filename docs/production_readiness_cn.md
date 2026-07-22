@@ -1884,8 +1884,10 @@ OPERATION_NAMESPACE_INVENTORY_KEY=namespaces.json
 ```
 
 容器内未设置 `KUBECONFIG_PATH` 时，operationctl 使用 Pod ServiceAccount 的 in-cluster
-config；显式 kubeconfig 会跳过 in-cluster 探测，本地运维执行才回退 client-go 标准
-kubeconfig 搜索。不得把管理员 kubeconfig 挂入 worker Pod。
+config；只有脚本传入 `KUBECONFIG_PATH` 或命令行 `--kubeconfig` 才视为显式
+kubeconfig 并跳过 in-cluster 探测。环境变量 `KUBECONFIG` 不得预先抢占 Pod 身份；
+本地运维执行在 in-cluster 不可用后才回退 client-go 标准 kubeconfig 搜索。不得把管理员
+kubeconfig 挂入 worker Pod。
 
 跨 namespace claim 先比较各队列同类型 Operation 的最近启动时间，优先处理最久未被
 服务的 namespace；进入目标 namespace 后继续复用原有实例 Lease、attempt 和
@@ -1948,8 +1950,10 @@ archiver 身份 capture/release，并确认其他控制器的 finalizer 未被�
 不得改变 resourceVersion。手工 `operation-audit --action release` 必须同时传入期望的
 object store ID、bucket、object key、retention mode 与 retain-until，缺少任一项不得释放
 finalizer；内部 release API 也不再提供无 expected scope 的捷径。`operation-audit`
-在未显式提供 kubeconfig 时先使用 Pod ServiceAccount 的 in-cluster 配置，再回落到标准
-kubeconfig 规则，确保生产镜像内的专用身份 smoke 不依赖 home 目录 kubeconfig。
+在未通过 `--kubeconfig` 显式提供 kubeconfig 时先使用 Pod ServiceAccount 的 in-cluster
+配置，再回落到标准 kubeconfig 规则；环境变量 `KUBECONFIG` 只属于该本地回退路径，
+不能预先绕过 Pod 身份探测，确保生产镜像内的专用身份 smoke 不依赖 home 目录
+kubeconfig。
 
 该补偿只处理 Kubernetes coordination Lease；外部系统副作用仍由 Operation fencing 与
 幂等 receipt 约束。

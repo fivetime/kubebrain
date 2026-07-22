@@ -167,7 +167,7 @@ func main() {
 }
 
 func defaultKubeconfig() string {
-	return os.Getenv("KUBECONFIG")
+	return ""
 }
 
 func clientConfig(kubeconfig, contextName string) (*rest.Config, error) {
