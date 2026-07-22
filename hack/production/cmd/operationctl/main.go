@@ -27,6 +27,7 @@ import (
 )
 
 const maxBrokerParametersBytes = 4 << 20
+const maxBrokerTokenBytes = 16 << 10
 
 func main() {
 	var action, namespace, name, operationID, tenant, requestedBy, instance, operationType, parametersSHA string
@@ -202,7 +203,7 @@ func brokerParameters(
 	query.Set("owner", owner)
 	query.Set("attempt", strconv.FormatInt(attempt, 10))
 	base.RawQuery = query.Encode()
-	token, err := os.ReadFile(tokenFile)
+	token, err := readBrokerToken(tokenFile)
 	if err != nil {
 		return nil, fmt.Errorf("read parameter broker token: %w", err)
 	}
@@ -218,7 +219,7 @@ func brokerParameters(
 	if err != nil {
 		return nil, err
 	}
-	request.Header.Set("Authorization", "Bearer "+strings.TrimSpace(string(token)))
+	request.Header.Set("Authorization", "Bearer "+token)
 	client := &http.Client{
 		Timeout: 15 * time.Second,
 		Transport: &http.Transport{TLSClientConfig: &tls.Config{
@@ -241,4 +242,24 @@ func brokerParameters(
 		return nil, fmt.Errorf("parameter broker response exceeds %d bytes", maxBrokerParametersBytes)
 	}
 	return body, nil
+}
+
+func readBrokerToken(path string) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, maxBrokerTokenBytes+2))
+	if err != nil {
+		return "", err
+	}
+	if len(data) > maxBrokerTokenBytes+1 {
+		return "", fmt.Errorf("token exceeds %d bytes", maxBrokerTokenBytes)
+	}
+	token := strings.TrimSpace(string(data))
+	if token == "" || len(token) > maxBrokerTokenBytes {
+		return "", errors.New("token is empty or too large")
+	}
+	return token, nil
 }

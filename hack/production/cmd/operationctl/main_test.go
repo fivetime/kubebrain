@@ -111,6 +111,28 @@ func TestBrokerParametersRejectsOversizedResponse(t *testing.T) {
 	require.ErrorContains(t, err, "response exceeds")
 }
 
+func TestBrokerParametersRejectsInvalidTokenFile(t *testing.T) {
+	dir := t.TempDir()
+	for _, tc := range []struct {
+		name  string
+		token []byte
+		want  string
+	}{
+		{name: "empty", token: []byte(" \n"), want: "empty or too large"},
+		{name: "oversized", token: bytes.Repeat([]byte("x"), maxBrokerTokenBytes+2), want: "token exceeds"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tokenPath := filepath.Join(dir, tc.name+".token")
+			require.NoError(t, os.WriteFile(tokenPath, tc.token, 0o600))
+			_, err := brokerParameters(
+				t.Context(), "https://parameters.example", tokenPath, filepath.Join(dir, "missing-ca.crt"),
+				"tenant-a", "backup-1", "worker-a", 1,
+			)
+			require.ErrorContains(t, err, tc.want)
+		})
+	}
+}
+
 func TestClientConfigFallsBackToStandardLocalKubeconfig(t *testing.T) {
 	t.Setenv("KUBERNETES_SERVICE_HOST", "")
 	t.Setenv("KUBERNETES_SERVICE_PORT", "")

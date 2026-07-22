@@ -9336,6 +9336,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./hack/production/cmd/operationctl -run 'TestBrokerParameters|TestDefaultKubeconfig' -count=20`、
   `go test ./hack/production/... ./deploy/production`、
   `go vet ./hack/production/... ./deploy/production` 与 `git diff --check` 通过。
+- A507 收紧 `operationctl --action parameters` 的 projected token 读取：客户端现在最多读取
+  `16KiB+1` token 文件内容，空 token 或超过 16 KiB 的 token 会在读 CA/发请求前 fail
+  closed；旧逻辑 `os.ReadFile` 无本地上限，可能构造超大 Authorization header，直到
+  broker 或 HTTP transport 才失败。回归覆盖空白 token 和 oversized token；`go test ./hack/production/cmd/operationctl -run 'TestBrokerParameters|TestDefaultKubeconfig' -count=20`、
+  `go test ./hack/production/... ./deploy/production`、
+  `go vet ./hack/production/... ./deploy/production` 与 `git diff --check` 通过。
 
 ### P2：运维兼容和长期验证
 
