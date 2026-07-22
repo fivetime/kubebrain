@@ -9,8 +9,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"unicode/utf8"
 )
 
@@ -140,12 +142,23 @@ func (r ArchiveReceipt) Validate() error {
 		(r.Phase == "Succeeded" && !validSHA256(r.ExecutionReceiptSHA256)) ||
 		(r.Phase == "Failed" && r.ExecutionReceiptSHA256 != "") ||
 		r.ObjectStoreID == "" || r.Bucket == "" || r.ObjectKey == "" || r.VersionID == "" ||
+		!validRelativeObjectKey(r.ObjectKey) ||
 		!validSHA256(r.ArtifactSHA256) || r.ObjectBytes <= 0 ||
 		(r.RetentionMode != "COMPLIANCE" && r.RetentionMode != "GOVERNANCE") ||
 		r.RetainUntilUnix <= r.ArchivedAtUnix || !r.RemoteVerified || r.ArchivedAtUnix <= 0 {
 		return errors.New("object operation audit receipt is incomplete")
 	}
 	return nil
+}
+
+func validRelativeObjectKey(key string) bool {
+	if key == "" || strings.TrimSpace(key) != key || strings.ContainsAny(key, " \t\r\n") {
+		return false
+	}
+	if strings.HasPrefix(key, "/") || key == "." || key == ".." || strings.HasPrefix(key, "../") {
+		return false
+	}
+	return path.Clean(key) == key
 }
 
 func InspectArchiveReceipt(path string) (ArchiveReceipt, string, error) {

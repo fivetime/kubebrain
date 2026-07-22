@@ -10350,6 +10350,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   重复分隔，仍允许现有 `/audit/` 形式标准化为 `audit`。回归：
   `go test ./hack/production/internal/operationarchiver -run 'TestArchiveProcessor(UsesStableIdentityAndReleasesFinalizer|RejectsUnsafeObjectPrefix)' -count=1`
   通过。
+- A612 收紧 operation audit archive receipt object key：
+  A611 约束了 archiver 请求端生成的 key，但 `operationaudit.ArchiveReceipt.Validate`
+  仍只要求 receipt 的 `object_key` 非空。旧工具、手工 release 或被替换的 executor
+  只要让 release 端 expected key 与 receipt 一致，就可能把绝对路径、路径穿越、重复
+  分隔符或空白 object key 写入不可变审计注解。现在 archive receipt 本身也拒绝非规范
+  相对 object key；operationauditrelease 和 operationarchiver 因复用
+  `InspectArchiveReceipt` 自动 fail closed。回归：
+  `go test ./hack/production/operationaudit ./hack/production/internal/operationauditrelease ./hack/production/internal/operationarchiver -run 'TestArchiveReceiptRejectsUnsafeObjectKey|TestArchiveReceiptRejectsUppercaseDigest|TestReleaseVerifiesArchiveAndRemovesOnlyAuditFinalizer|TestArchiveProcessorUsesStableIdentityAndReleasesFinalizer' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

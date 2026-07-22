@@ -90,6 +90,30 @@ func TestArchiveReceiptRejectsUppercaseDigest(t *testing.T) {
 	require.ErrorContains(t, receipt.Validate(), "incomplete")
 }
 
+func TestArchiveReceiptRejectsUnsafeObjectKey(t *testing.T) {
+	artifact := terminalArtifact()
+	for _, objectKey := range []string{
+		"/audit/backup-1.json",
+		"../audit/backup-1.json",
+		"audit/../backup-1.json",
+		"audit//backup-1.json",
+		"audit/backup 1.json",
+	} {
+		t.Run(objectKey, func(t *testing.T) {
+			receipt := ArchiveReceipt{
+				Format: ArchiveReceiptFormat, OperationID: artifact.OperationID, OperationUID: artifact.UID,
+				Instance: artifact.Instance, OperationType: artifact.Type, Phase: artifact.Phase,
+				ExecutionReceiptSHA256: artifact.ReceiptSHA256, ObjectStoreID: "store-a",
+				Bucket: "bucket-a", ObjectKey: objectKey, VersionID: "version-1",
+				ArtifactSHA256: strings.Repeat("c", 64), ObjectBytes: 1,
+				RetentionMode: "COMPLIANCE", RetainUntilUnix: 200, RemoteVerified: true,
+				ArchivedAtUnix: 100,
+			}
+			require.ErrorContains(t, receipt.Validate(), "incomplete")
+		})
+	}
+}
+
 func TestOperationAuditAcceptsBackupDeletion(t *testing.T) {
 	artifact := terminalArtifact()
 	artifact.Type = "BackupDeletion"
