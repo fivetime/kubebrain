@@ -8654,6 +8654,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   同样正常且 alarm 为空，三 KubeBrain 副本 Ready、零重启，主 PD/TiKV 3+3 Ready。
   本轮只加强发布门禁与运行手册，继续使用 A433 数据面镜像。
 
+#### A435 直连三副本拓扑证据与连续 leader replacement
+
+- 通过三个 Pod 独立 port-forward 直连 A433 的三 KubeBrain 副本，Watch 本地控制测试在每个
+  member 上均通过 negative revision、empty range、显式 watch ID、duplicate ID 和 client
+  cancel；Lease 测试证明每个直连 member 均能读取 live lease/attached key/list，并在统一
+  revoke 后观察 key 与 lease 消失。随后连续执行三类真实故障：删除当前 leader 时 follower
+  连续完成 current/historical serializable Range 与 serializable Txn；再次删除新 leader 后
+  detached/rebound/revoked lease attachment 恢复正确；第三次 leader replacement 时 TTL=1 的
+  near-expiry lease 先恢复为存活状态，最终按期限删除 key。全部通过。
+- 审计发现 `KUBEBRAIN_DIRECT_ENDPOINTS` 原先只要求三个字符串，同一负载均衡地址重复三次也可
+  伪造“跨副本”通过。提交 `039b628` 新增共享 Status 拓扑前置校验：至少三个响应必须具有非零
+  cluster/member/leader identity、相同 cluster ID、相同 leader ID、互不重复的 member ID，且
+  leader 必须属于被测集合。Watch 与 Lease 直连测试均在业务断言前执行该校验。
+- 纯函数测试覆盖有效拓扑、数量不足、nil/zero identity、cluster/leader 分歧、重复 member 和
+  集合外 leader，race 20 轮通过。加入真实 NodePort 的兼容模块全量 103.011 秒、模块 vet 和
+  staticcheck v0.7.0 均通过。故障后 kubebrain-1/2 均以新 Pod 恢复，三 KubeBrain 副本 Ready、
+  零重启，PD/TiKV 3+3 Ready，endpoint health 正常且 alarm 为空；三个临时 port-forward 已
+  停止。本轮只加强 HA 证据，不改变 A433 数据面镜像。
+
 ### P1：通用服务能力
 
 1. 继续扩大 Auth 差分、token/证书轮换和长连接故障验证；管理 API、key-range
