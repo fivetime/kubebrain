@@ -745,7 +745,9 @@ version 仍可读或 Head 本身失败时，同时保留原删除错误和检查
 deletion/audit/blob/usage/inventory receipt、inventory manifest 以及 inventory manifest
 builder 的 receipt header sniff 都最多接受 1 MiB。超限文件在 JSON 解码、unknown-field/
 trailing/canonical 校验或幂等恢复前 fail closed。通用 immutable blob artifact 的业务
-payload 上限仍是 16 MiB；它不扩大这些小型 JSON 证据文件的预算。
+payload 上限仍是 16 MiB；它不扩大这些小型 JSON 证据文件的预算。`blob-read` 写本地
+output 时，若目标文件已存在，只读取受远端 metadata/digest 保护的期望对象大小加 1 字节；
+超限会 fail closed，不为判断幂等而无界读取错误的大文件。
 
 `deploy/production/monitoring.yaml` 还以 1 分钟周期生成实例级计量序列：
 

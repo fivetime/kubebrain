@@ -9475,6 +9475,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./hack/production/internal/processgroup ./hack/production/internal/operationarchiver ./hack/production/internal/meteringarchive ./hack/production/internal/meteringbilling ./hack/production/internal/meteringstorage`、
   `go test ./hack/production/... ./deploy/production`、`go vet ./hack/production/... ./deploy/production`
   与 `git diff --check` 通过。
+- A523 收紧 objectstore immutable blob 本地 output 幂等比较边界：`blob-read` 下载远端 exact
+  version 后，本地 output 若已存在，现在只读取远端 metadata/digest 已验证的期望对象大小加
+  1 字节；超过该大小会 fail closed，而不是为了判断是否可幂等复用而 `os.ReadFile` 无界读取
+  错误的大文件。artifact payload 的业务上限仍为 16 MiB，小型 receipt/manifest 仍沿用 1 MiB
+  JSON 预算。回归覆盖 oversized existing output；
+  `(cd hack/backup/objectstore && go test ./internal/objectstore -run 'Test(ReadBlob|ArchiveBlob)' -count=20)`、
+  `(cd hack/backup/objectstore && go test ./...)`、`go test ./hack/production/... ./deploy/production`、
+  `(cd hack/backup/objectstore && go vet ./...)`、`go vet ./hack/production/... ./deploy/production`
+  与 `git diff --check` 通过。
 
 ### P2：运维兼容和长期验证
 

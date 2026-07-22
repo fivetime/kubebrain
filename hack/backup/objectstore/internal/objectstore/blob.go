@@ -292,7 +292,7 @@ func blobReadFormats(request BlobReadRequest) (map[string]bool, error) {
 }
 
 func writeBlobOutputAtomic(path string, body []byte) error {
-	if existing, err := os.ReadFile(path); err == nil {
+	if existing, err := readBoundedFile(path, "existing immutable blob output", int64(len(body))); err == nil {
 		if bytes.Equal(existing, body) {
 			return nil
 		}
@@ -331,6 +331,22 @@ func writeBlobOutputAtomic(path string, body []byte) error {
 	}
 	defer directory.Close()
 	return directory.Sync()
+}
+
+func readBoundedFile(path, description string, limit int64) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("%s exceeds %d bytes", description, limit)
+	}
+	return data, nil
 }
 
 func readBoundedBlob(path string) ([]byte, error) {

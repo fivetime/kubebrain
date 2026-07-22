@@ -145,7 +145,7 @@ func TestReadBlobRequiresOneProtectedExactVersion(t *testing.T) {
 		Key: aws.String("samples/slot-100.json"), VersionId: aws.String("version-1"),
 		Size: aws.Int64(int64(len(body))),
 	}}}
-	client.listOutputs = []*s3.ListObjectVersionsOutput{page, page, page, page}
+	client.listOutputs = []*s3.ListObjectVersionsOutput{page, page, page, page, page}
 	output := filepath.Join(t.TempDir(), "download.json")
 	request := BlobReadRequest{
 		Output: output, ArtifactFormat: "sample.v1", ArtifactID: "slot-100",
@@ -174,6 +174,10 @@ func TestReadBlobRequiresOneProtectedExactVersion(t *testing.T) {
 	require.NoError(t, os.WriteFile(output, []byte("conflict"), 0o600))
 	_, err = ReadBlob(context.Background(), client, request)
 	require.ErrorContains(t, err, "refusing to overwrite")
+
+	require.NoError(t, os.WriteFile(output, make([]byte, len(body)+1), 0o600))
+	_, err = ReadBlob(context.Background(), client, request)
+	require.ErrorContains(t, err, "existing immutable blob output exceeds")
 }
 
 func TestReadBlobFailsClosedOnVersionRetentionAndContentDrift(t *testing.T) {
