@@ -15,6 +15,7 @@
 package util
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -26,6 +27,21 @@ import (
 
 	"github.com/stretchr/testify/assert"
 )
+
+func TestGetLocalIPsReturnsInterfaceError(t *testing.T) {
+	want := errors.New("interfaces unavailable")
+	original := netInterfaces
+	netInterfaces = func() ([]net.Interface, error) {
+		return nil, want
+	}
+	defer func() {
+		netInterfaces = original
+	}()
+
+	ips, err := getLocalIPs()
+	assert.ErrorIs(t, err, want)
+	assert.Empty(t, ips)
+}
 
 func TestGetHost(t *testing.T) {
 

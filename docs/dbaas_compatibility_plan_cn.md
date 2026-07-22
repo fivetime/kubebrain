@@ -9658,6 +9658,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `artifact_created_at_unix,omitempty`。回归覆盖三条路径的上游 receipt unknown field；
   `go test ./hack/production -run 'Test(BoundaryCleanup|PostRestoreAudit|RestoreTrafficCutover)' -count=1 -timeout=160s`
   与 `git diff --check` 通过。
+- A541 修复本地地址枚举失败 panic：`pkg/util.GetHost` 调用的 `getLocalIPs` 已声明返回
+  error，但 `net.Interfaces()` 失败时旧逻辑直接 `panic`，会绕过调用方已有的错误日志和
+  空 host fail-closed 路径。现在接口枚举错误按 error 返回；新增测试通过注入失败的
+  interface provider 覆盖该路径。回归：
+  `go test ./pkg/util -run 'Test(GetLocalIPsReturnsInterfaceError|GetHost)' -count=20`、
+  `go test ./pkg/util ./pkg/endpoint ./pkg/backend ./pkg/server/etcd ./pkg/server/service/etcdproxy`
+  与 `go vet ./pkg/util ./pkg/endpoint ./pkg/backend ./pkg/server/etcd ./pkg/server/service/etcdproxy`
+  通过。
 
 ### P2：运维兼容和长期验证
 

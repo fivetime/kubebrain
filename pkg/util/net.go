@@ -27,6 +27,7 @@ import (
 var (
 	onceInitPrivateIPBlocks sync.Once
 	privateIPBlocks         []*net.IPNet
+	netInterfaces           = net.Interfaces
 )
 
 func getPrivateIPBlocks() []*net.IPNet {
@@ -139,9 +140,9 @@ func (i ip) valid() bool {
 }
 
 func getLocalIPs() (ret []ip, err error) {
-	inters, err := net.Interfaces()
+	inters, err := netInterfaces()
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
 
 	for _, inter := range inters {
