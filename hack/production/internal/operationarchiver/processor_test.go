@@ -70,21 +70,49 @@ func TestArchiveProcessorRejectsUnsafeObjectPrefix(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "audit", processor.prefix)
 
-	for _, prefix := range []string{
-		".",
-		"..",
-		"../audit",
-		"audit/../other",
-		"audit//tenant",
-		"audit key",
-		"audit\tkey",
+	for _, tc := range []struct {
+		name   string
+		prefix string
+	}{
+		{name: "dot", prefix: "."},
+		{name: "dot_dot", prefix: ".."},
+		{name: "parent_prefix", prefix: "../audit"},
+		{name: "parent_segment", prefix: "audit/../other"},
+		{name: "duplicate_separator", prefix: "audit//tenant"},
+		{name: "ascii_space", prefix: "audit key"},
+		{name: "ascii_tab", prefix: "audit\tkey"},
+		{name: "unicode_space", prefix: "audit\u00a0key"},
+		{name: "control_byte", prefix: "audit\x00key"},
 	} {
-		t.Run(prefix, func(t *testing.T) {
+		t.Run(tc.name, func(t *testing.T) {
 			processor, err := NewArchiveProcessor(
-				client, "/executor", "store-a", "bucket-a", prefix, "COMPLIANCE", time.Hour,
+				client, "/executor", "store-a", "bucket-a", tc.prefix, "COMPLIANCE", time.Hour,
 			)
 			require.Nil(t, processor)
 			require.ErrorContains(t, err, "normalized relative key prefix")
+		})
+	}
+}
+
+func TestArchiveProcessorRejectsUnsafeObjectScope(t *testing.T) {
+	client := fake.NewSimpleDynamicClient(runtime.NewScheme())
+	for _, tc := range []struct {
+		name          string
+		objectStoreID string
+		bucket        string
+	}{
+		{name: "object_store_id_leading_space", objectStoreID: " store-a", bucket: "bucket-a"},
+		{name: "object_store_id_control_byte", objectStoreID: "store-a\x00", bucket: "bucket-a"},
+		{name: "bucket_internal_tab", objectStoreID: "store-a", bucket: "bucket\ta"},
+		{name: "bucket_unicode_space", objectStoreID: "store-a", bucket: "bucket\u00a0a"},
+		{name: "bucket_invalid_utf8", objectStoreID: "store-a", bucket: string([]byte{'b', 0xff})},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			processor, err := NewArchiveProcessor(
+				client, "/executor", tc.objectStoreID, tc.bucket, "audit", "COMPLIANCE", time.Hour,
+			)
+			require.Nil(t, processor)
+			require.ErrorContains(t, err, "object scope")
 		})
 	}
 }

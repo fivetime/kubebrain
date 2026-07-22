@@ -10368,6 +10368,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   同一基础字符门禁后再做相对 key 规范化校验。回归：
   `go test ./hack/production/operationaudit -run 'TestArchiveReceiptRejectsUnsafe(ObjectKey|ScopeFields)|TestArchiveReceiptRejectsUppercaseDigest' -count=1`
   通过。
+- A614 收紧 operation audit archiver 配置端对象作用域：
+  A613 让 archive receipt 端 fail closed，但 `NewArchiveProcessor` 仍只要求
+  `objectStoreID`、`bucket` 非空，且 prefix 的空白检查未覆盖 Unicode 空白/控制字符。
+  错误配置会先进入外部 Object Lock executor 的环境变量，再依赖 receipt 校验阻断
+  finalizer release，扩大排障面。现在 archiver 入口要求 object store ID、bucket
+  和 object prefix 都是有效 UTF-8、非空且不含任意空白/控制字符；prefix 仍额外要求
+  规范相对 key 前缀。回归：
+  `go test ./hack/production/internal/operationarchiver -run 'TestArchiveProcessorRejectsUnsafe(ObjectPrefix|ObjectScope)|TestArchiveProcessorUsesStableIdentityAndReleasesFinalizer' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

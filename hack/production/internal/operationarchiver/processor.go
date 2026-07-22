@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/kubewharf/kubebrain/hack/production/internal/operationauditbuilder"
 	"github.com/kubewharf/kubebrain/hack/production/internal/operationauditrelease"
@@ -42,6 +44,9 @@ func NewArchiveProcessor(
 	if client == nil || executor == "" || objectStoreID == "" || bucket == "" || prefix == "" {
 		return nil, errors.New("operation archive processor configuration is incomplete")
 	}
+	if !validArchiveScopeValue(objectStoreID) || !validArchiveScopeValue(bucket) {
+		return nil, errors.New("operation archive object scope must not contain whitespace or control characters")
+	}
 	if !validObjectKeyPrefix(prefix) {
 		return nil, errors.New("operation archive object prefix must be a normalized relative key prefix")
 	}
@@ -61,13 +66,22 @@ func NewArchiveProcessor(
 }
 
 func validObjectKeyPrefix(prefix string) bool {
-	if prefix == "" || strings.TrimSpace(prefix) != prefix || strings.ContainsAny(prefix, " \t\r\n") {
+	if !validArchiveScopeValue(prefix) {
 		return false
 	}
 	if prefix == "." || prefix == ".." || strings.HasPrefix(prefix, "../") {
 		return false
 	}
 	return path.Clean(prefix) == prefix
+}
+
+func validArchiveScopeValue(value string) bool {
+	if value == "" || !utf8.ValidString(value) {
+		return false
+	}
+	return strings.IndexFunc(value, func(r rune) bool {
+		return unicode.IsSpace(r) || unicode.IsControl(r)
+	}) == -1
 }
 
 func (p *ArchiveProcessor) Process(ctx context.Context, object *unstructured.Unstructured) error {
