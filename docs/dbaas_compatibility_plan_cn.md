@@ -9784,6 +9784,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   非法 receipt 会 requeue，不会标记 operation 成功。回归：
   `go test ./hack/production -run 'TestDestroyOperation' -count=10 -timeout=180s`
   通过。
+- A556 收紧 CertificateRotation operation receipt 成功门禁：
+  `run-certificate-rotation-operation.sh` 旧逻辑在 complete 后只要求 `receipt_output`
+  存在，测试 fake 写 `{"format":"receipt"}` 也会提交 succeed。现在 succeed 前读取
+  durable `kubebrain.certificate-rotation.state.v1` 和 overlap marker，确认 operation、
+  instance、endpoint 以及旧/新证书 fingerprint schema，再要求
+  `kubebrain.certificate-rotation.receipt.v1` 精确绑定 endpoint、replicas、旧/新证书
+  SHA-256、`pods_unchanged=true`、`old_certificate_rejected=true` 和正整数完成时间；非法
+  receipt 会 requeue，不会标记 operation 成功。回归：
+  `go test ./hack/production -run 'TestCertificateRotationOperation' -count=10 -timeout=180s`
+  通过。
 
 ### P2：运维兼容和长期验证
 

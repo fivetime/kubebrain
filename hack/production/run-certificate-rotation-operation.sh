@@ -201,6 +201,54 @@ run_gate() {
 
 state_file="${state_dir}/${rotation_id}.state"
 overlap_file="${state_dir}/${rotation_id}.overlap"
+
+rotation_state_old_fingerprint=""
+rotation_state_new_fingerprint=""
+read_rotation_state_header() {
+  local format state_instance state_rotation state_endpoint old_fingerprint new_fingerprint
+  [[ -f "$state_file" ]] || return 1
+  IFS=$'\t' read -r format state_instance state_rotation state_endpoint old_fingerprint new_fingerprint <"$state_file" || return 1
+  [[ "$format" == "kubebrain.certificate-rotation.state.v1" &&
+    "$state_instance" == "$instance" &&
+    "$state_rotation" == "$rotation_id" &&
+    "$state_endpoint" == "$endpoint" &&
+    "$old_fingerprint" =~ ^[a-f0-9]{64}$ &&
+    "$new_fingerprint" =~ ^[a-f0-9]{64}$ ]] || return 1
+  rotation_state_old_fingerprint="$old_fingerprint"
+  rotation_state_new_fingerprint="$new_fingerprint"
+}
+
+validate_rotation_overlap_marker() {
+  local format marker_instance marker_rotation
+  [[ -f "$overlap_file" ]] || return 1
+  IFS=$'\t' read -r format marker_instance marker_rotation <"$overlap_file" || return 1
+  [[ "$format" == "kubebrain.certificate-rotation.overlap.v1" &&
+    "$marker_instance" == "$instance" &&
+    "$marker_rotation" == "$rotation_id" ]]
+}
+
+validate_rotation_receipt() {
+  read_rotation_state_header || return 1
+  validate_rotation_overlap_marker || return 1
+  "$JQ" -e \
+    --arg instance "$instance" \
+    --arg rotation "$rotation_id" \
+    --arg endpoint "$endpoint" \
+    --arg old "$rotation_state_old_fingerprint" \
+    --arg new "$rotation_state_new_fingerprint" \
+    --argjson replicas "$expected_replicas" \
+    'keys == ["completed_at_unix","endpoint","format","instance","new_certificate_sha256","old_certificate_rejected","old_certificate_sha256","pods_unchanged","replicas","rotation_id"] and
+     .format == "kubebrain.certificate-rotation.receipt.v1" and
+     .instance == $instance and .rotation_id == $rotation and
+     .endpoint == $endpoint and .replicas == $replicas and
+     (.old_certificate_sha256 | type == "string" and test("^[a-f0-9]{64}$")) and
+     (.new_certificate_sha256 | type == "string" and test("^[a-f0-9]{64}$")) and
+     .old_certificate_sha256 == $old and .new_certificate_sha256 == $new and
+     .pods_unchanged == true and .old_certificate_rejected == true and
+     (.completed_at_unix | type == "number" and . > 0 and . == floor)' \
+    "$receipt_output" >/dev/null
+}
+
 if [[ -e "$receipt_output" ]]; then
   steps=(complete)
 elif [[ -e "$overlap_file" ]]; then
@@ -252,6 +300,12 @@ done
   echo "certificate rotation completed without its receipt" >&2
   exit 1
 }
+if ! validate_rotation_receipt; then
+  run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
+    --message "certificate rotation receipt invalid" >/dev/null
+  echo "certificate rotation produced an invalid receipt" >&2
+  exit 1
+fi
 receipt_digest="$(sha256sum "$receipt_output" | cut -d ' ' -f1)"
 run_operationctl --action succeed --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
   --receipt-sha256 "$receipt_digest" --message "certificate rotation completed" >/dev/null

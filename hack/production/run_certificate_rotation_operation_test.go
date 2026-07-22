@@ -12,6 +12,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+const (
+	rotationOldFingerprint = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	rotationNewFingerprint = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+)
+
 func TestCertificateRotationOperationCompletesLifecycle(t *testing.T) {
 	f := newRotationRunnerFixture(t)
 	f.run(t, true, "")
@@ -68,6 +73,14 @@ func TestCertificateRotationOperationRejectsCredentialAndParameterDrift(t *testi
 	f = newRotationRunnerFixture(t)
 	f.run(t, false, "CLAIM_DIGEST="+strings.Repeat("f", 64), "parameters digest")
 	require.Contains(t, f.log(t), "--action retry")
+}
+
+func TestCertificateRotationOperationRejectsInvalidReceipt(t *testing.T) {
+	f := newRotationRunnerFixture(t)
+	f.run(t, false, "INVALID_RECEIPT=1", "invalid receipt")
+	log := f.log(t)
+	require.Contains(t, log, "--action retry")
+	require.NotContains(t, log, "--action succeed")
 }
 
 func TestCertificateRotationOperationStopsWhenHeartbeatIsFenced(t *testing.T) {
@@ -135,9 +148,24 @@ if [[ "${SLEEP_STEP:-}" == "$ACTION" ]]; then sleep 1; fi
 if [[ "${FAIL_STEP:-}" == "$ACTION" ]]; then exit 8; fi
 mkdir -p "$STATE_DIR"
 case "$ACTION" in
-  begin) printf 'state\n' >"$STATE_DIR/$ROTATION_ID.state" ;;
-  overlap) printf 'overlap\n' >"$STATE_DIR/$ROTATION_ID.overlap" ;;
-  complete) printf '{"format":"receipt"}\n' >"$RECEIPT_OUTPUT" ;;
+  begin)
+    printf 'kubebrain.certificate-rotation.state.v1\t%s\t%s\t%s\t%s\t%s\npod-a\tuid-a\n' \
+      "$INSTANCE" "$ROTATION_ID" "$ENDPOINT" "$ROTATION_OLD_FINGERPRINT" "$ROTATION_NEW_FINGERPRINT" \
+      >"$STATE_DIR/$ROTATION_ID.state"
+    ;;
+  overlap)
+    printf 'kubebrain.certificate-rotation.overlap.v1\t%s\t%s\n' \
+      "$INSTANCE" "$ROTATION_ID" >"$STATE_DIR/$ROTATION_ID.overlap"
+    ;;
+  complete)
+    if [[ -n "${INVALID_RECEIPT:-}" ]]; then
+      printf '{"format":"kubebrain.certificate-rotation.receipt.v1","old_certificate_sha256":"short"}\n' >"$RECEIPT_OUTPUT"
+    else
+      printf '{"completed_at_unix":123,"endpoint":"%s","format":"kubebrain.certificate-rotation.receipt.v1","instance":"%s","new_certificate_sha256":"%s","old_certificate_rejected":true,"old_certificate_sha256":"%s","pods_unchanged":true,"replicas":%s,"rotation_id":"%s"}\n' \
+        "$ENDPOINT" "$INSTANCE" "$ROTATION_NEW_FINGERPRINT" "$ROTATION_OLD_FINGERPRINT" \
+        "$EXPECTED_REPLICAS" "$ROTATION_ID" >"$RECEIPT_OUTPUT"
+    fi
+    ;;
 esac
 `)
 	overlapHook := filepath.Join(dir, "publish-overlap")
@@ -158,6 +186,8 @@ printf 'hook final\n' >>"$FAKE_DIR/actions.log"
 			"OPERATIONCTL=" + operationctl, "ROTATION_COMMAND=" + gate,
 			"PUBLISH_OVERLAP_COMMAND=" + overlapHook, "PUBLISH_FINAL_COMMAND=" + finalHook,
 			"FAKE_DIR=" + dir, "PARAMETERS_DIGEST=" + digest,
+			"ROTATION_OLD_FINGERPRINT=" + rotationOldFingerprint,
+			"ROTATION_NEW_FINGERPRINT=" + rotationNewFingerprint,
 		},
 	}
 }
@@ -188,9 +218,23 @@ func (f *rotationRunnerFixture) publishEvidence(t *testing.T, kind string) {
 	t.Helper()
 	stateDir := filepath.Join(f.dir, "state")
 	require.NoError(t, os.MkdirAll(stateDir, 0o700))
-	path := filepath.Join(stateDir, "rotation-1."+kind)
-	if kind == "receipt" {
-		path = filepath.Join(f.dir, "receipt.json")
+	statePath := filepath.Join(stateDir, "rotation-1.state")
+	state := fmt.Sprintf("kubebrain.certificate-rotation.state.v1\tinstance-a\trotation-1\thttps://instance.example:2379\t%s\t%s\npod-a\tuid-a\n", rotationOldFingerprint, rotationNewFingerprint)
+	if kind == "state" {
+		require.NoError(t, os.WriteFile(statePath, []byte(state), 0o600))
+		return
 	}
-	require.NoError(t, os.WriteFile(path, []byte("evidence\n"), 0o600))
+	require.NoError(t, os.WriteFile(statePath, []byte(state), 0o600))
+	overlapPath := filepath.Join(stateDir, "rotation-1.overlap")
+	if kind == "overlap" {
+		require.NoError(t, os.WriteFile(overlapPath, []byte("kubebrain.certificate-rotation.overlap.v1\tinstance-a\trotation-1\n"), 0o600))
+		return
+	}
+	if kind == "receipt" {
+		require.NoError(t, os.WriteFile(overlapPath, []byte("kubebrain.certificate-rotation.overlap.v1\tinstance-a\trotation-1\n"), 0o600))
+		receipt := fmt.Sprintf(`{"completed_at_unix":123,"endpoint":"https://instance.example:2379","format":"kubebrain.certificate-rotation.receipt.v1","instance":"instance-a","new_certificate_sha256":%q,"old_certificate_rejected":true,"old_certificate_sha256":%q,"pods_unchanged":true,"replicas":3,"rotation_id":"rotation-1"}`+"\n", rotationNewFingerprint, rotationOldFingerprint)
+		require.NoError(t, os.WriteFile(filepath.Join(f.dir, "receipt.json"), []byte(receipt), 0o600))
+		return
+	}
+	require.NoError(t, os.WriteFile(filepath.Join(stateDir, "rotation-1."+kind), []byte("evidence\n"), 0o600))
 }
