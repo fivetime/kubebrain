@@ -10493,6 +10493,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   回归：
   `go test ./hack/production/operationaudit -run 'TestArchiveReceiptRejectsImpossibleObjectBytes|TestOperationAuditReadersRejectOversizedJSON' -count=1`
   通过。
+- A627 收紧 operation audit archive receipt 的时间因果校验：
+  release finalizer 路径已经同时读取 terminal audit artifact 和 archive receipt，但旧逻辑
+  只检查 digest/object/retention 绑定，没有要求 `archived_at_unix` 不早于
+  `completed_at_unix`。被替换或手工暂存的 receipt 可以声明“operation 完成前已归档”
+  且仍移除 audit finalizer，破坏不可变审计时间线。现在
+  `ReleaseWithExpectedReceipt` 在释放 finalizer 前拒绝早于终态完成时间的归档 receipt；
+  retry/idempotent 路径继续要求注解与同一 receipt/artifact/version 精确匹配。回归：
+  `go test ./hack/production/internal/operationauditrelease -run 'TestReleaseRejectsReceiptAndCurrentOperationDrift' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

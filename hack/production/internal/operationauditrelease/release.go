@@ -43,6 +43,9 @@ func ReleaseWithExpectedReceipt(
 	if !receipt.Matches(artifactStatus) {
 		return nil, errors.New("archive receipt does not match the operation audit artifact")
 	}
+	if receipt.ArchivedAtUnix < artifactStatus.Artifact.CompletedAtUnix {
+		return nil, errors.New("archive receipt predates terminal operation completion")
+	}
 	if err := expected.matches(receipt); err != nil {
 		return nil, err
 	}

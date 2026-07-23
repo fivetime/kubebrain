@@ -60,6 +60,23 @@ func TestReleaseRejectsReceiptAndCurrentOperationDrift(t *testing.T) {
 		_, err = releaseWithExpected(context.Background(), client, "operations", "backup-1", artifactPath, receiptPath)
 		require.ErrorContains(t, err, "does not match")
 	})
+	t.Run("receipt archived before completion", func(t *testing.T) {
+		object := archivedOperation()
+		client := releaseClient(object)
+		artifactPath, receiptPath, _ := writeReleaseEvidence(t, object)
+		data, err := os.ReadFile(receiptPath)
+		require.NoError(t, err)
+		var receipt operationaudit.ArchiveReceipt
+		require.NoError(t, json.Unmarshal(data, &receipt))
+		receipt.ArchivedAtUnix = 100
+		writeCanonicalJSON(t, receiptPath, receipt)
+		_, err = releaseWithExpected(context.Background(), client, "operations", "backup-1", artifactPath, receiptPath)
+		require.ErrorContains(t, err, "predates terminal operation completion")
+		current, getErr := client.Resource(operationqueue.Resource).Namespace("operations").
+			Get(context.Background(), "backup-1", metav1.GetOptions{})
+		require.NoError(t, getErr)
+		require.Contains(t, current.GetFinalizers(), operationaudit.Finalizer)
+	})
 	t.Run("terminal operation", func(t *testing.T) {
 		object := archivedOperation()
 		artifactPath, receiptPath, _ := writeReleaseEvidence(t, object)
