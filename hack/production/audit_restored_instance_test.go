@@ -33,6 +33,19 @@ func TestPostRestoreAuditPublishesReceiptAndRechecksOnRetry(t *testing.T) {
 	require.GreaterOrEqual(t, len(strings.Split(strings.TrimSpace(string(probes)), "\n")), 3)
 }
 
+func TestPostRestoreAuditTreatsConcurrentReceiptPublishAsIdempotent(t *testing.T) {
+	f := newAuditFixture(t)
+	f.run(t, true, "PUBLISH_RECEIPT_DURING_PROBE=true")
+
+	data, err := os.ReadFile(filepath.Join(f.state, "audit-1.receipt.json"))
+	require.NoError(t, err)
+	var receipt map[string]any
+	require.NoError(t, json.Unmarshal(data, &receipt))
+	require.Equal(t, float64(1), receipt["started_at_unix"])
+	require.Equal(t, float64(2), receipt["completed_at_unix"])
+	require.Equal(t, float64(2), receipt["samples"])
+}
+
 func TestPostRestoreAuditRejectsExistingReceiptWithUnknownFields(t *testing.T) {
 	f := newAuditFixture(t)
 	receiptPath := filepath.Join(f.state, "audit-1.receipt.json")
@@ -150,6 +163,11 @@ set -euo pipefail
 printf 'x\n' >>"$FAKE_DIR/probes"
 if [[ -f "$FAKE_DIR/probe-invalid" ]]; then echo '{}'; exit 0; fi
 count=$(wc -l <"$FAKE_DIR/probes")
+if [[ "${PUBLISH_RECEIPT_DURING_PROBE:-false}" == true && ! -f "$STATE_DIR/$OPERATION_ID.receipt.json" ]]; then
+  printf '{"all_probes_succeeded":true,"artifact_sha256":"`+auditArtifactSHA256+`","completed":true,"completed_at_unix":2,"cutover_operation_id":"cutover-1","duration_seconds":%s,"first_probe_revision":1,"format":"kubebrain.post-restore-audit.receipt.v1","instance":"%s","interval_seconds":%s,"last_probe_revision":2,"operation_id":"%s","replicas":%s,"samples":2,"service_uid":"uid-service","snapshot_revision":42,"started_at_unix":1,"target_instance":"%s","topology_unchanged":true}\n' \
+    "$AUDIT_DURATION_SECONDS" "$INSTANCE" "$AUDIT_INTERVAL_SECONDS" "$OPERATION_ID" "$EXPECTED_REPLICAS" "$TARGET_INSTANCE" >"$STATE_DIR/$OPERATION_ID.receipt.json"
+  chmod 600 "$STATE_DIR/$OPERATION_ID.receipt.json"
+fi
 if [[ -f "$FAKE_DIR/probe-backwards" ]]; then count=$((100-count)); fi
 printf '{"format":"kubebrain.etcd-audit-probe.v1","put_revision":%d,"read_revision":%d,"delete_revision":%d,"lease_ttl":60}\n' "$count" "$count" "$count"
 `)

@@ -70,6 +70,10 @@ atomic_publish() {
   local temporary="$1" destination="$2"
   sync -f "$temporary"
   if ! ln "$temporary" "$destination" 2>/dev/null; then
+    if validate_existing_audit_receipt; then
+      rm -f "$temporary"
+      return
+    fi
     rm -f "$temporary"
     echo "refusing to overwrite existing post-restore audit receipt: ${destination}" >&2
     exit 1
@@ -221,7 +225,7 @@ run_probe() {
   "$JQ" -r '.delete_revision' <<<"$output"
 }
 
-if [[ -e "$receipt_file" ]]; then
+validate_existing_audit_receipt() {
   "$JQ" -e --arg operation "$OPERATION_ID" --arg instance "$INSTANCE" \
     --arg cutover "$cutover_operation" --arg uid "$state_service_uid" \
     --arg target "$TARGET_INSTANCE" --arg sha "$artifact_sha" \
@@ -245,7 +249,11 @@ if [[ -e "$receipt_file" ]]; then
       (.last_probe_revision >= .first_probe_revision) and
       (.started_at_unix | type == "number" and . > 0 and . == floor) and
       (.completed_at_unix | type == "number" and . > 0 and . == floor) and
-      (.completed_at_unix >= .started_at_unix)' "$receipt_file" >/dev/null ||
+      (.completed_at_unix >= .started_at_unix)' "$receipt_file" >/dev/null
+}
+
+if [[ -e "$receipt_file" ]]; then
+  validate_existing_audit_receipt ||
     { echo "existing post-restore audit receipt does not match the operation" >&2; exit 1; }
   fence_topology
   run_probe >/dev/null

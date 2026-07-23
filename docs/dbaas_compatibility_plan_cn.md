@@ -10677,6 +10677,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   长度，超过 `maxObjectStoreJSONBytes` 时目标路径保持不存在。回归：
   `go test ./internal/objectstore -run 'TestObjectStoreJSONWritersRejectOversizedNewOutputBeforeLink|TestObjectStoreJSONReadersRejectOversizedInput|TestWriteReceiptAtomicIsIdempotentAndNonOverwriting' -count=1`
   在 `hack/backup/objectstore` 模块内通过。
+- A646 让 post-restore audit receipt 发布竞争幂等：
+  A190 的 `audit-restored-instance.sh` 已能在重试已有 receipt 时重新执行在线拓扑和事务探针，
+  但两个 worker 若同时完成完整审计，后完成者在预检查之后、硬链接发布之前遇到另一个
+  worker 抢先发布的同一操作 receipt，会直接把 `EEXIST` 当覆盖冲突失败。现在最终发布
+  遇到硬链接冲突时复用同一套 exact key set、digest、拓扑、探针 revision 与时间因果
+  校验；只有现有 receipt 严格绑定当前 audit operation 才视为幂等成功，漂移或 unknown
+  field 仍 fail closed。回归：
+  `go test ./hack/production -run 'TestPostRestoreAuditTreatsConcurrentReceiptPublishAsIdempotent|TestPostRestoreAuditPublishesReceiptAndRechecksOnRetry|TestPostRestoreAuditRejectsExistingReceiptWithUnknownFields' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 
