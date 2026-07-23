@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/kubewharf/kubebrain/hack/production/internal/meteringarchive"
+	"github.com/kubewharf/kubebrain/hack/production/internal/processgroup"
 )
 
 func main() {
@@ -32,6 +33,9 @@ func main() {
 
 	if instance == "" || objectStoreID == "" || bucket == "" || timeout <= 0 {
 		log.Fatal("instance, object-store-id, bucket, and a positive timeout are required")
+	}
+	if err := processgroup.ValidateExecutable(executor); err != nil {
+		log.Fatal(err)
 	}
 	roller := &meteringarchive.Roller{
 		Instance: instance, Executor: executor, ObjectStoreID: objectStoreID, Bucket: bucket,

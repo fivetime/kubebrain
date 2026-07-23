@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/kubewharf/kubebrain/hack/production/internal/meteringbilling"
+	"github.com/kubewharf/kubebrain/hack/production/internal/processgroup"
 )
 
 func main() {
@@ -31,6 +32,9 @@ func main() {
 	if instance == "" || providerStatementID == "" || invoiceID == "" ||
 		reconciliationID == "" || objectStoreID == "" || bucket == "" || timeout <= 0 {
 		log.Fatal("instance, provider-statement-id, invoice-id, reconciliation-id, object-store-id, bucket, and a positive timeout are required")
+	}
+	if err := processgroup.ValidateExecutable(executor); err != nil {
+		log.Fatal(err)
 	}
 	reconciler := &meteringbilling.ProviderReconciler{
 		Instance: instance, ProviderStatementID: providerStatementID, InvoiceID: invoiceID,

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/kubewharf/kubebrain/hack/production/internal/meteringbilling"
+	"github.com/kubewharf/kubebrain/hack/production/internal/processgroup"
 )
 
 const maxInvoiceSourceBytes = 1 << 20
@@ -46,6 +47,11 @@ func main() {
 	}
 	if (invoicePath == "") != (invoiceSourcePath == "") {
 		log.Fatal("invoice and invoice-source must be provided together for offline mode")
+	}
+	if invoicePath == "" || publish {
+		if err := processgroup.ValidateExecutable(executor); err != nil {
+			log.Fatal(err)
+		}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()

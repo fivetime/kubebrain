@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/kubewharf/kubebrain/hack/production/internal/meteringbilling"
+	"github.com/kubewharf/kubebrain/hack/production/internal/processgroup"
 )
 
 func main() {
@@ -38,6 +39,14 @@ func main() {
 		timeout <= 0 {
 		log.Fatal("input-csv, output, id, instance, valid period, issued-at-unix, and a positive timeout are required")
 	}
+	if publish {
+		if objectStoreID == "" || bucket == "" {
+			log.Fatal("object-store-id and bucket are required when publish is enabled")
+		}
+		if err := processgroup.ValidateExecutable(executor); err != nil {
+			log.Fatal(err)
+		}
+	}
 	input, err := os.Open(inputCSV)
 	if err != nil {
 		log.Fatal(err)
@@ -58,9 +67,6 @@ func main() {
 	}
 	if !publish {
 		return
-	}
-	if objectStoreID == "" || bucket == "" {
-		log.Fatal("object-store-id and bucket are required when publish is enabled")
 	}
 	publisher := &meteringbilling.ProviderStatementPublisher{
 		Input: output, Executor: executor, ObjectStoreID: objectStoreID, Bucket: bucket,

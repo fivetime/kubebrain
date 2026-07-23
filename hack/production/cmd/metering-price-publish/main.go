@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/kubewharf/kubebrain/hack/production/internal/meteringbilling"
+	"github.com/kubewharf/kubebrain/hack/production/internal/processgroup"
 )
 
 func main() {
@@ -25,6 +26,9 @@ func main() {
 	flag.Parse()
 	if input == "" || objectStoreID == "" || bucket == "" || timeout <= 0 {
 		log.Fatal("input, object-store-id, bucket, and a positive timeout are required")
+	}
+	if err := processgroup.ValidateExecutable(executor); err != nil {
+		log.Fatal(err)
 	}
 	publisher := &meteringbilling.Publisher{
 		Input: input, PriceScope: priceScope, Executor: executor,

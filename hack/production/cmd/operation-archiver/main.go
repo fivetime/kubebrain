@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/kubewharf/kubebrain/hack/production/internal/operationarchiver"
+	"github.com/kubewharf/kubebrain/hack/production/internal/processgroup"
 	"github.com/kubewharf/kubebrain/hack/production/internal/reconcilebudget"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
@@ -55,6 +56,9 @@ func main() {
 	}
 	if archiveTimeout <= 0 || archiveTimeout > reconcileTimeout {
 		log.Fatal("archive-timeout must be positive and no greater than reconcile-timeout")
+	}
+	if err := processgroup.ValidateExecutable(executor); err != nil {
+		log.Fatal(err)
 	}
 	config, err := clientConfig(kubeconfig, contextName)
 	if err != nil {

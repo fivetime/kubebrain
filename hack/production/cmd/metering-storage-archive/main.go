@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/kubewharf/kubebrain/hack/production/internal/meteringstorage"
+	"github.com/kubewharf/kubebrain/hack/production/internal/processgroup"
 )
 
 func main() {
@@ -61,6 +62,9 @@ func main() {
 		sourceEndpoint == "" || sourceRegion == "" || sourceAccessKey == "" || sourceSecretKey == "" ||
 		meteringEndpoint == "" || meteringRegion == "" || meteringAccessKey == "" || meteringSecretKey == "" {
 		log.Fatal("instance, source and metering object store settings, and a positive timeout are required")
+	}
+	if err := processgroup.ValidateExecutable(executor); err != nil {
+		log.Fatal(err)
 	}
 	archiver := &meteringstorage.Archiver{
 		Instance: instance, Executor: executor,

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -42,6 +43,38 @@ func TestCombinedOutputPreservesExitError(t *testing.T) {
 	}
 	if !strings.Contains(string(output), "failure detail") {
 		t.Fatalf("CombinedOutput output = %q, want failure detail", string(output))
+	}
+}
+
+func TestValidateExecutable(t *testing.T) {
+	dir := t.TempDir()
+	ok := filepath.Join(dir, "ok")
+	if err := os.WriteFile(ok, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateExecutable(ok); err != nil {
+		t.Fatalf("ValidateExecutable returned error: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		path string
+	}{
+		{name: "relative", path: "relative"},
+		{name: "missing", path: filepath.Join(dir, "missing")},
+		{name: "directory", path: dir},
+		{name: "not executable", path: filepath.Join(dir, "not-executable")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.name == "not executable" {
+				if err := os.WriteFile(tc.path, []byte("#!/bin/sh\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := ValidateExecutable(tc.path); err == nil {
+				t.Fatal("ValidateExecutable returned nil, want error")
+			}
+		})
 	}
 }
 

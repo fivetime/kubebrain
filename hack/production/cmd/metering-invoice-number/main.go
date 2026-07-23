@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/kubewharf/kubebrain/hack/production/internal/meteringbilling"
+	"github.com/kubewharf/kubebrain/hack/production/internal/processgroup"
 )
 
 func main() {
@@ -38,6 +39,9 @@ func main() {
 		jurisdiction == "" || series == "" || sequence <= 0 ||
 		assignedAtUnix <= 0 || objectStoreID == "" || bucket == "" || timeout <= 0 {
 		log.Fatal("output, id, instance, invoice-id, jurisdiction, series, sequence, assigned-at-unix, object-store-id, bucket, and a positive timeout are required")
+	}
+	if err := processgroup.ValidateExecutable(executor); err != nil {
+		log.Fatal(err)
 	}
 	assigner := &meteringbilling.InvoiceNumberAssigner{
 		Output: output, ID: id, Instance: instance, InvoiceID: invoiceID,

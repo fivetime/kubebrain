@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/kubewharf/kubebrain/hack/production/internal/meteringbilling"
+	"github.com/kubewharf/kubebrain/hack/production/internal/processgroup"
 )
 
 func main() {
@@ -29,6 +30,9 @@ func main() {
 	flag.Parse()
 	if instance == "" || planID == "" || objectStoreID == "" || bucket == "" || timeout <= 0 {
 		log.Fatal("instance, plan-id, object-store-id, bucket, and a positive timeout are required")
+	}
+	if err := processgroup.ValidateExecutable(executor); err != nil {
+		log.Fatal(err)
 	}
 	finalizer := &meteringbilling.InvoiceFinalizer{
 		Instance: instance, PlanID: planID, Executor: executor,

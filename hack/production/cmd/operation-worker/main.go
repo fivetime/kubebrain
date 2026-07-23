@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"path/filepath"
 	"syscall"
 	"time"
 
@@ -24,18 +23,11 @@ func main() {
 	flag.DurationVar(&failureDelay, "failure-delay", 15*time.Second, "delay after a failed executor run")
 	flag.BoolVar(&once, "once", false, "run the executor once and return its status")
 	flag.Parse()
-	if executable == "" || !filepath.IsAbs(executable) {
-		log.Fatal("executable must be an absolute path")
-	}
 	if idleDelay < time.Second || failureDelay < time.Second {
 		log.Fatal("idle-delay and failure-delay must be at least 1s")
 	}
-	info, err := os.Stat(executable)
-	if err != nil {
+	if err := processgroup.ValidateExecutable(executable); err != nil {
 		log.Fatal(err)
-	}
-	if info.IsDir() || info.Mode()&0o111 == 0 {
-		log.Fatal("executor must be an executable file")
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

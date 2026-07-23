@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/kubewharf/kubebrain/hack/production/internal/meteringbilling"
+	"github.com/kubewharf/kubebrain/hack/production/internal/processgroup"
 )
 
 func main() {
@@ -39,6 +40,9 @@ func main() {
 	if output == "" || id == "" || instance == "" || invoiceID == "" ||
 		exportedAtUnix <= 0 || objectStoreID == "" || bucket == "" || timeout <= 0 {
 		log.Fatal("output, id, instance, invoice-id, exported-at-unix, object-store-id, bucket, and a positive timeout are required")
+	}
+	if err := processgroup.ValidateExecutable(executor); err != nil {
+		log.Fatal(err)
 	}
 	exporter := &meteringbilling.GeneralLedgerExporter{
 		Output: output, ID: id, Instance: instance, InvoiceID: invoiceID,

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/kubewharf/kubebrain/hack/production/internal/meteringarchive"
+	"github.com/kubewharf/kubebrain/hack/production/internal/processgroup"
 )
 
 const (
@@ -45,6 +46,9 @@ func main() {
 
 	if prometheusURL == "" || instance == "" || objectStoreID == "" || bucket == "" || timeout <= 0 {
 		log.Fatal("prometheus-url, instance, object-store-id, bucket, and a positive timeout are required")
+	}
+	if err := processgroup.ValidateExecutable(executor); err != nil {
+		log.Fatal(err)
 	}
 	client, err := prometheusClient(caFile, serverName)
 	if err != nil {

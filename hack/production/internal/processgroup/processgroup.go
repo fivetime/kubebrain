@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sync"
 	"syscall"
 )
@@ -26,6 +27,20 @@ func Configure(command *exec.Cmd) {
 		}
 		return err
 	}
+}
+
+func ValidateExecutable(path string) error {
+	if path == "" || !filepath.IsAbs(path) {
+		return errors.New("executor must be an absolute path")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("stat executor: %w", err)
+	}
+	if info.IsDir() || info.Mode()&0o111 == 0 {
+		return errors.New("executor must be an executable file")
+	}
+	return nil
 }
 
 // CombinedOutput is like exec.Cmd.CombinedOutput, but it bounds captured
