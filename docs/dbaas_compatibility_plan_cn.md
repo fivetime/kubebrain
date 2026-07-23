@@ -11210,6 +11210,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Operation 只产生 Operation GET，不产生 Secret GET：
   `go test ./hack/production/internal/operationqueue -run 'TestQueueRejectsMalformedParameterReferenceBeforeSecretAPI|TestQueueLoadsDigestBoundImmutableParameters|TestQueueOnlyLoadsParametersForCurrentTypeBoundWorker' -count=1`
   通过。
+- A702 下沉 operation parameter broker identity namespace 校验：
+  CLI 已在 client 初始化前校验 `--namespace`，但 `parameterbroker.NewHandler` 作为库入口
+  只要求 namespace 非空；未来调用方直接传入 `ops.ns` 时，Ready 会用非法 namespace
+  探测 Operation/Secret API。现在 NewHandler 在构造期要求 identity namespace 为
+  Kubernetes DNS label，错误标记为 `invalid parameter broker namespace`。fake client
+  回归确认非法 namespace 构造失败且 dynamic/token clients 都没有 API action：
+  `go test ./hack/production/internal/parameterbroker ./hack/production/cmd/operation-parameter-broker -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

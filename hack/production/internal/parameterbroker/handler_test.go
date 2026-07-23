@@ -272,6 +272,16 @@ func TestNewHandlerRequiresPositiveDependencyTimeout(t *testing.T) {
 	require.ErrorContains(t, err, "timeout must be positive")
 }
 
+func TestNewHandlerRejectsInvalidNamespaceBeforeAPI(t *testing.T) {
+	tokens := kubernetesfake.NewSimpleClientset()
+	dynamicClient := fake.NewSimpleDynamicClient(runtime.NewScheme())
+	handler, err := NewHandler(tokens, dynamicClient, "ops.ns", testAudience, time.Second)
+	require.Nil(t, handler)
+	require.ErrorContains(t, err, "invalid parameter broker namespace ops.ns")
+	require.Empty(t, dynamicClient.Actions())
+	require.Empty(t, tokens.Actions())
+}
+
 func claimedOperation(t *testing.T) (*fake.FakeDynamicClient, *operationqueue.Claim, []byte) {
 	t.Helper()
 	client := fake.NewSimpleDynamicClientWithCustomListKinds(

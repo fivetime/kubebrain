@@ -48,6 +48,9 @@ func NewHandler(
 	if namespace == "" || audience == "" {
 		return nil, errors.New("namespace and audience are required")
 	}
+	if problems := validation.IsDNS1123Label(namespace); len(problems) != 0 {
+		return nil, errors.New("invalid parameter broker namespace " + namespace + ": " + problems[0])
+	}
 	if requestTimeout <= 0 {
 		return nil, errors.New("request timeout must be positive")
 	}
