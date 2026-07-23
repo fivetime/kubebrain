@@ -17,14 +17,18 @@ import (
 
 func TestColdSnapshotExecuteAndRollback(t *testing.T) {
 	for _, tc := range []struct {
-		name          string
-		failSnapshot  bool
-		contentDriver string
-		wantReceipt   bool
+		name                string
+		failSnapshot        bool
+		contentDriver       string
+		precreateReceipt    bool
+		wantReceipt         bool
+		wantExistingReceipt bool
+		wantError           string
 	}{
 		{name: "success restores service and publishes receipt", wantReceipt: true},
 		{name: "snapshot failure restores service without receipt", failSnapshot: true},
 		{name: "content driver mismatch restores service without receipt", contentDriver: "wrong.csi.test"},
+		{name: "concurrent receipt publish is non overwriting", precreateReceipt: true, wantExistingReceipt: true, wantError: "cold snapshot receipt already exists"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -50,6 +54,7 @@ func TestColdSnapshotExecuteAndRollback(t *testing.T) {
 				"FENCE_SETTLE_SECONDS=0",
 				"FAKE_FAIL_SNAPSHOT="+map[bool]string{true: "true", false: "false"}[tc.failSnapshot],
 				"FAKE_CONTENT_DRIVER="+map[bool]string{true: "csi.example.test", false: tc.contentDriver}[tc.contentDriver == ""],
+				"PRECREATE_COLD_SNAPSHOT_RECEIPT_DURING_CONTENT="+map[bool]string{true: "true", false: "false"}[tc.precreateReceipt],
 			)
 			output, err := command.CombinedOutput()
 			if tc.wantReceipt {
@@ -63,8 +68,15 @@ func TestColdSnapshotExecuteAndRollback(t *testing.T) {
 				require.Equal(t, "kubebrain.logical.v2", receipt["semantic_witness"].(map[string]any)["format"])
 			} else {
 				require.Error(t, err, string(output))
-				require.NoFileExists(t, receiptFile)
+				if tc.wantExistingReceipt {
+					require.Equal(t, `{"format":"preexisting"}`+"\n", string(mustRead(t, receiptFile)))
+				} else {
+					require.NoFileExists(t, receiptFile)
+				}
 				require.Contains(t, string(output), "service restoration was attempted")
+				if tc.wantError != "" {
+					require.Contains(t, string(output), tc.wantError)
+				}
 			}
 
 			logValue, readErr := os.ReadFile(logFile)
@@ -82,6 +94,60 @@ func TestColdSnapshotExecuteAndRollback(t *testing.T) {
 			)
 		})
 	}
+}
+
+func TestColdSnapshotExecuteRejectsWitnessDriftBeforeMutation(t *testing.T) {
+	dir := t.TempDir()
+	inventoryFile := filepath.Join(dir, "inventory.json")
+	receiptFile := filepath.Join(dir, "receipt.json")
+	witnessFile := filepath.Join(dir, "witness.jsonl")
+	tamperedWitnessFile := filepath.Join(dir, "tampered-witness.jsonl")
+	logFile := filepath.Join(dir, "kubectl.log")
+	require.NoError(t, os.WriteFile(inventoryFile, coldSnapshotInventory(t), 0o600))
+	require.NoError(t, os.WriteFile(witnessFile, coldSemanticWitness(t, "/registry"), 0o600))
+	require.NoError(t, os.WriteFile(tamperedWitnessFile, coldLeasedSemanticWitness(t, "/registry", true), 0o600))
+	fakeKubectl := filepath.Join(dir, "kubectl")
+	require.NoError(t, os.WriteFile(fakeKubectl, []byte(coldSnapshotFakeKubectl), 0o755))
+	realSHA, err := exec.LookPath("sha256sum")
+	require.NoError(t, err)
+	writeTrafficExecutable(t, filepath.Join(dir, "sha256sum"), `#!/usr/bin/env bash
+set -euo pipefail
+"$REAL_SHA256SUM" "$@"
+if [[ "${TAMPER_WITNESS_AFTER_SHA256:-false}" == true &&
+  "$#" -ge 1 && "$1" == "$SEMANTIC_WITNESS_FILE" &&
+  ! -f "$FAKE_LOG.witness-tampered-after-sha256" ]]; then
+  cp "$TAMPERED_WITNESS_FILE" "$SEMANTIC_WITNESS_FILE"
+  chmod 600 "$SEMANTIC_WITNESS_FILE"
+  touch "$FAKE_LOG.witness-tampered-after-sha256"
+fi
+`)
+
+	command := exec.Command("bash", "../backup/cold-snapshot-execute.sh")
+	command.Env = append(os.Environ(),
+		"PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"REAL_SHA256SUM="+realSHA,
+		"KUBECTL="+fakeKubectl,
+		"PREFLIGHT_FILE="+inventoryFile,
+		"RECEIPT_FILE="+receiptFile,
+		"OPERATION_ID=op-witness-drift",
+		"SEMANTIC_WITNESS_FILE="+witnessFile,
+		"TAMPERED_WITNESS_FILE="+tamperedWitnessFile,
+		"TAMPER_WITNESS_AFTER_SHA256=true",
+		"EXPECTED_WITNESS_PREFIX=/registry",
+		"FAKE_LOG="+logFile,
+		"FAKE_PVC_JSON="+coldSnapshotPVCJSON("Bound"),
+		"FENCE_SETTLE_SECONDS=0",
+		"FAKE_FAIL_SNAPSHOT=false",
+		"FAKE_CONTENT_DRIVER=csi.example.test",
+	)
+	output, err := command.CombinedOutput()
+	require.Error(t, err, string(output))
+	require.Contains(t, string(output), "semantic witness file changed after validation")
+	require.NoFileExists(t, receiptFile)
+	logValue, readErr := os.ReadFile(logFile)
+	require.NoError(t, readErr)
+	require.NotContains(t, string(logValue), " patch ")
+	require.NotContains(t, string(logValue), "create -f -")
 }
 
 func TestColdSnapshotExecuteRejectsLegacyLeaseWitnessBeforeMutation(t *testing.T) {
@@ -242,6 +308,12 @@ elif [[ "$args" == *"create -f -"* ]]; then
 elif [[ "$args" == *"wait --for=jsonpath={.status.readyToUse}=true"* ]]; then
   [[ "$FAKE_FAIL_SNAPSHOT" != true ]] || exit 1
 elif [[ "$args" == *"get volumesnapshotcontent"* ]]; then
+  if [[ "${PRECREATE_COLD_SNAPSHOT_RECEIPT_DURING_CONTENT:-false}" == true &&
+    ! -f "${FAKE_LOG}.cold-snapshot-receipt-precreated" ]]; then
+    printf '{"format":"preexisting"}\n' >"$RECEIPT_FILE"
+    chmod 600 "$RECEIPT_FILE"
+    touch "${FAKE_LOG}.cold-snapshot-receipt-precreated"
+  fi
   name="$(sed -n 's/.*get volumesnapshotcontent \([^ ]*\).*/\1/p' <<<"$args")"
   snapshot="${name#content-}"
   printf '{"metadata":{"name":"%s","uid":"uid-%s"},"spec":{"deletionPolicy":"Retain","driver":"%s","volumeSnapshotClassName":"retained","volumeSnapshotRef":{"uid":"uid-%s"}},"status":{"snapshotHandle":"handle-%s"}}' "$name" "$name" "$FAKE_CONTENT_DRIVER" "$snapshot" "$name"

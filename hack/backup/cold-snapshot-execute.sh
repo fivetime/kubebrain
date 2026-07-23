@@ -51,12 +51,18 @@ fresh_inventory="$("$script_dir/cold-snapshot-preflight.sh" | jq -cS .)"
   echo "live preflight inventory differs from PREFLIGHT_FILE; refusing mutation" >&2
   exit 1
 }
+witness_file_sha256="$(sha256sum "$SEMANTIC_WITNESS_FILE" | awk '{print $1}')"
+[[ "$witness_file_sha256" =~ ^[a-f0-9]{64}$ ]] || fail_input "semantic witness file digest is invalid"
 witness_status="$(cd "$script_dir/../.." && INPUT="$SEMANTIC_WITNESS_FILE" EXPECTED_PREFIX="$EXPECTED_WITNESS_PREFIX" \
   MIN_RECORDS=1 MAX_AGE_SECONDS="$WITNESS_MAX_AGE_SECONDS" REQUIRE_GRANTED_TTL=true \
   go run ./hack/backup/cmd/logical-status)"
 jq -e '.format == "kubebrain.logical.v2" and (.revision > 0) and (.records > 0) and
   (.sha256 | test("^[0-9a-f]{64}$"))' <<<"$witness_status" >/dev/null || fail_input "semantic witness status is invalid"
-witness_file_sha256="$(sha256sum "$SEMANTIC_WITNESS_FILE" | awk '{print $1}')"
+verify_witness_file() {
+  [[ "$(sha256sum "$SEMANTIC_WITNESS_FILE" | awk '{print $1}')" == "$witness_file_sha256" ]] ||
+    { echo "semantic witness file changed after validation" >&2; exit 1; }
+}
+verify_witness_file
 
 kubectl_args=()
 [[ -z "${KUBE_CONTEXT:-}" ]] || kubectl_args+=(--context "$KUBE_CONTEXT")
@@ -199,6 +205,7 @@ paused=false
 restore_replicas "$KUBEBRAIN_NAMESPACE" "$KUBEBRAIN_STATEFULSET" "$kb_uid" "$kb_replicas"
 kb_stopped=false
 
+verify_witness_file
 receipt_tmp="${RECEIPT_FILE}.tmp.$$"
 jq -n --arg format kubebrain.cold-physical-snapshot.v2 --arg operation_id "$OPERATION_ID" \
   --arg created_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg witness_file_sha256 "$witness_file_sha256" \
@@ -207,6 +214,11 @@ jq -n --arg format kubebrain.cold-physical-snapshot.v2 --arg operation_id "$OPER
     semantic_witness:($semantic_witness + {file_sha256:$witness_file_sha256})}' >"$receipt_tmp"
 chmod 600 "$receipt_tmp"
 sync -f "$receipt_tmp"
-mv "$receipt_tmp" "$RECEIPT_FILE"
+if ! ln "$receipt_tmp" "$RECEIPT_FILE" 2>/dev/null; then
+  rm -f "$receipt_tmp"
+  echo "cold snapshot receipt already exists" >&2
+  exit 1
+fi
+rm -f "$receipt_tmp"
 sync -f "$(dirname "$RECEIPT_FILE")"
 completed=true

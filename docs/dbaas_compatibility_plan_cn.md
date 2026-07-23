@@ -10793,6 +10793,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   并通过 hard-link 发布 restore receipt，已存在时 fail closed 且不覆盖。回归：
   `go test ./hack/production -run 'TestColdRestoreExecute' -count=1`
   通过。
+- A657 收紧 cold physical snapshot witness/receipt 证据稳定性：
+  `cold-snapshot-execute.sh` 会先用 `logical-status` 校验 semantic witness，再把 witness
+  文件 SHA 写入 `kubebrain.cold-physical-snapshot.v2` receipt；旧逻辑在 status 和
+  `sha256sum` 之间存在本地替换窗口，可能让 receipt 中的 logical witness 状态来自旧
+  bytes、`file_sha256` 来自新 bytes。同时最终 receipt 仍用 `mv` 发布，若并发进程在
+  开头 `! -e` 检查后创建同名 receipt，会被覆盖。现在 executor 在 logical-status 前捕获
+  witness 文件 SHA，status 后和 receipt 发布前都复检未漂移，并通过 hard-link 发布 snapshot
+  receipt，已存在时 fail closed 且不覆盖。回归：
+  `go test ./hack/production -run 'TestColdSnapshotExecute' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 
