@@ -35,6 +35,22 @@ EOF
 [[ "$LEASE_SECONDS" =~ ^[1-9][0-9]*$ && "$LEASE_SECONDS" -ge 6 ]] ||
   { echo "LEASE_SECONDS must be an integer of at least 6" >&2; exit 2; }
 command -v "$JQ" >/dev/null || { echo "jq is required" >&2; exit 2; }
+command -v sha256sum >/dev/null || { echo "sha256sum is required" >&2; exit 2; }
+
+managed_parameters=""
+parameter_capture_dir="$(mktemp -d)"
+cleanup_parameter_capture() {
+  rm -rf "$parameter_capture_dir"
+  [[ -z "$managed_parameters" ]] || rm -f "$managed_parameters"
+}
+trap cleanup_parameter_capture EXIT
+
+file_sha256() {
+  local digest
+  digest="$(sha256sum "$1" | cut -d ' ' -f1)" || return 1
+  [[ "$digest" =~ ^[a-f0-9]{64}$ ]] || return 1
+  printf '%s' "$digest"
+}
 
 operationctl=()
 if [[ -n "$OPERATIONCTL" ]]; then
@@ -70,21 +86,32 @@ operation_id="$("$JQ" -er '.operation_id' <<<"$claim")"
 instance="$("$JQ" -er '.instance' <<<"$claim")"
 attempt="$("$JQ" -er '.attempt | select(. > 0)' <<<"$claim")"
 expected_digest="$("$JQ" -er '.parameters_sha256 | select(test("^[a-f0-9]{64}$"))' <<<"$claim")"
-managed_parameters=""
 if [[ -z "$PARAMETERS_INPUT" ]]; then
-  managed_parameters="$(mktemp)"
+  managed_parameters="${parameter_capture_dir}/managed-parameters.json"
   PARAMETERS_INPUT="$managed_parameters"
-  trap 'rm -f "$managed_parameters"' EXIT
   run_operationctl --action parameters --name "$name" --owner "$WORKER_ID" \
     --attempt "$attempt" >"$PARAMETERS_INPUT"
 fi
-actual_digest="$(sha256sum "$PARAMETERS_INPUT" | cut -d ' ' -f1)"
+actual_digest="$(file_sha256 "$PARAMETERS_INPUT")" || actual_digest=""
 if [[ "$actual_digest" != "$expected_digest" ]]; then
   run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
     --message "parameters digest mismatch" >/dev/null
   echo "claimed operation parameters digest does not match PARAMETERS_INPUT" >&2
   exit 1
 fi
+frozen_parameters="${parameter_capture_dir}/parameters.json"
+cp -- "$PARAMETERS_INPUT" "$frozen_parameters" ||
+  { echo "capture operation parameters failed" >&2; exit 2; }
+chmod 600 "$frozen_parameters"
+captured_digest="$(file_sha256 "$frozen_parameters")" || captured_digest=""
+current_digest="$(file_sha256 "$PARAMETERS_INPUT")" || current_digest=""
+if [[ "$captured_digest" != "$expected_digest" || "$current_digest" != "$expected_digest" ]]; then
+  run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
+    --message "parameters digest mismatch" >/dev/null
+  echo "claimed operation parameters digest does not match PARAMETERS_INPUT" >&2
+  exit 1
+fi
+PARAMETERS_INPUT="$frozen_parameters"
 
 parameters="$("$JQ" -er '[
   .state_dir, .cutover_state_input, .cutover_receipt_input,
@@ -288,6 +315,7 @@ validated_audit_receipt_digest() {
 child=0
 heartbeat_pid=0
 cleanup() {
+  rm -rf "$parameter_capture_dir"
   [[ -z "$managed_parameters" ]] || rm -f "$managed_parameters"
   if [[ "$child" -gt 0 ]] && kill -0 "$child" 2>/dev/null; then
     kill "$child" 2>/dev/null || true
@@ -352,4 +380,5 @@ if ! receipt_digest="$(validated_audit_receipt_digest)"; then
 fi
 run_operationctl --action succeed --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
   --receipt-sha256 "$receipt_digest" --message "post-restore audit completed" >/dev/null
+cleanup
 trap - EXIT INT TERM

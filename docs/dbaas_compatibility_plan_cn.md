@@ -10982,6 +10982,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   后续 phase env 构造只读冻结副本；捕获漂移会 retry，且不会进入 prepare。回归：
   `go test ./hack/production -run 'TestRestoreCutoverOperation' -count=1`
   通过。
+- A677 冻结 PostRestoreAudit operation runner 的参数输入：
+  `run-post-restore-audit-operation.sh` 旧逻辑在 claimed SHA 比对后继续从原始
+  `PARAMETERS_INPUT` 解析 cutover evidence、service identity、probe endpoint 和 audit
+  receipt 输出；若参数在 digest 后被替换，runner 可能审核未被 operation claim 绑定的
+  cutover 链。现在 runner 捕获参数到私有 0600 副本，要求源路径与副本在捕获窗口内都等于
+  claimed SHA，后续 audit env 构造只读冻结副本；捕获漂移走 retry 且不写 audit receipt。
+  回归：`go test ./hack/production -run 'TestPostRestoreAuditOperation' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

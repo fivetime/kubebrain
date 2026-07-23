@@ -100,6 +100,15 @@ func TestPostRestoreAuditOperationRejectsParameterDrift(t *testing.T) {
 	require.Contains(t, f.log(t), "--action retry")
 }
 
+func TestPostRestoreAuditOperationRejectsParametersTamperedDuringDigest(t *testing.T) {
+	f := newOperationRunnerFixture(t)
+	f.run(t, false, "TAMPER_PARAMETERS_DURING_SHA256=true", "parameters digest")
+	log := f.log(t)
+	require.Contains(t, log, "--action retry")
+	require.NotContains(t, log, "--action succeed")
+	require.NoFileExists(t, filepath.Join(f.dir, "receipt.json"))
+}
+
 func TestPostRestoreAuditOperationRejectsEmptyRequiredParameters(t *testing.T) {
 	f := newOperationRunnerFixture(t)
 	parameters := strings.ReplaceAll(
@@ -186,6 +195,7 @@ chmod 600 "$RECEIPT_OUTPUT"
 		"OPERATIONCTL=" + operationctl, "AUDIT_COMMAND=" + audit,
 		"FAKE_DIR=" + dir, "PARAMETERS_DIGEST=" + digest,
 		"MANAGED_PARAMETERS=" + parameters,
+		"RUNNER_PARAMETERS_INPUT=" + parameters,
 	}
 	env = append(env, receiptDigestTamperEnv(t, dir, receipt)...)
 	return &operationRunnerFixture{
