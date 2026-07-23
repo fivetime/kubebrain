@@ -323,6 +323,16 @@ func TestArchiveReceiptRejectsUppercaseDigest(t *testing.T) {
 	require.ErrorContains(t, receipt.Validate(), "incomplete")
 }
 
+func TestArchiveReceiptRejectsImpossibleObjectBytes(t *testing.T) {
+	artifact := terminalArtifact()
+	receipt := validArchiveReceipt(artifact)
+	receipt.ObjectBytes = maxOperationAuditJSONBytes
+	require.NoError(t, receipt.Validate())
+
+	receipt.ObjectBytes = maxOperationAuditJSONBytes + 1
+	require.ErrorContains(t, receipt.Validate(), "incomplete")
+}
+
 func TestArchiveReceiptRejectsUnsafeObjectKey(t *testing.T) {
 	artifact := terminalArtifact()
 	for _, objectKey := range []string{

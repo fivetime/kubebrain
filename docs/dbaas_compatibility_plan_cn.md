@@ -10484,6 +10484,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `operationauditbuilder.FromOperation` 自动继承该门禁。回归：
   `go test ./hack/production/operationaudit ./hack/production/internal/operationauditbuilder -run 'TestOperationAuditRejectsNonterminalAndInvalidReceipt|TestFromOperationRejectsMaxAttemptsBeyondCRDLimit|TestFromOperationBindsImmutableSpecAndTerminalStatus' -count=1`
   通过。
+- A626 对齐 operation audit archive receipt 的对象大小上限：
+  operation audit artifact/receipt 本地读取均最多接受 1 MiB，但 archive receipt
+  schema 只要求 `object_bytes > 0`。离线或暂存 receipt 因而可以声明超过 reader
+  上限、生产归档链实际不可能接受的 object size；虽然 release exact-match 会在绑定
+  artifact status 时发现差异，独立 receipt 校验仍应提前 fail closed。现在
+  `ArchiveReceipt.Validate` 同步拒绝 `object_bytes > 1 MiB`，保留等于上限的边界值。
+  回归：
+  `go test ./hack/production/operationaudit -run 'TestArchiveReceiptRejectsImpossibleObjectBytes|TestOperationAuditReadersRejectOversizedJSON' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

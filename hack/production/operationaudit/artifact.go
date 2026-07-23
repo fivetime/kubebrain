@@ -198,6 +198,7 @@ func (r ArchiveReceipt) Validate() error {
 		!validRelativeObjectKey(r.ObjectKey) ||
 		!validReceiptScopeValue(r.VersionID) ||
 		!validSHA256(r.ArtifactSHA256) || r.ObjectBytes <= 0 ||
+		r.ObjectBytes > maxOperationAuditJSONBytes ||
 		(r.RetentionMode != "COMPLIANCE" && r.RetentionMode != "GOVERNANCE") ||
 		r.RetainUntilUnix <= r.ArchivedAtUnix || !r.RemoteVerified || r.ArchivedAtUnix <= 0 {
 		return errors.New("object operation audit receipt is incomplete")
