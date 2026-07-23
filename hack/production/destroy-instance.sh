@@ -98,6 +98,11 @@ atomic_publish() {
       rm -f "$temporary"
       return
     fi
+    if [[ "$destination" == "$receipt_file" && -n "${backup_sha:-}" && -n "${backup_revision:-}" ]] &&
+      validate_existing_receipt "$backup_sha" "$backup_revision"; then
+      rm -f "$temporary"
+      return
+    fi
     echo "refusing to overwrite existing destroy evidence: ${destination}" >&2
     rm -f "$temporary"
     exit 1

@@ -10697,6 +10697,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   字节级幂等，receipt unknown field 或漂移仍 fail closed。回归：
   `go test ./hack/production -run 'TestRestoreTrafficCutoverTreatsConcurrentReceiptPublishAsIdempotent|TestRestoreTrafficCutoverLifecycleAndRollback|TestRestoreTrafficCutoverRejectsExistingReceiptWithUnknownFields' -count=1`
   通过。
+- A648 让 instance destroy receipt 发布竞争幂等：
+  `destroy-instance.sh` 的 complete 阶段会在 quiesce/destroy marker、UID fence、
+  PVC/TiDB/KubeBrain residue 全部复核后发布 `kubebrain.destroy.receipt.v1`。旧逻辑与
+  A647 类似：生成 receipt 前若未看到终态文件，但另一个 worker 在硬链接前抢先发布
+  同一操作的有效 receipt，当前 worker 会因 `completed_at_unix` 不同把 `EEXIST`
+  当作覆盖冲突。现在 `atomic_publish` 仅在目标是 destroy receipt，且当前 complete
+  已从冻结 state 绑定 backup SHA/revision 时，复用既有 exact key set 校验；existing
+  receipt 必须匹配 instance、operation、namespace、TiDB cluster、backup SHA/revision
+  和 `resources_absent=true` 才视为幂等成功。state/quiesced/destroyed 证据仍保持
+  字节级幂等，receipt 漂移或嵌套伪造字段仍 fail closed。回归：
+  `go test ./hack/production -run 'TestDestroyInstanceTreatsConcurrentReceiptPublishAsIdempotent|TestDestroyInstanceLifecycleIsRetrySafe|TestDestroyInstanceRejectsNestedExistingReceiptFields' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

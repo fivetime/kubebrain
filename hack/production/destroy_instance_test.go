@@ -39,6 +39,22 @@ func TestDestroyInstanceLifecycleIsRetrySafe(t *testing.T) {
 	require.Contains(t, string(deleteLog), "--uid uid-kb-sts")
 }
 
+func TestDestroyInstanceTreatsConcurrentReceiptPublishAsIdempotent(t *testing.T) {
+	fixture := newDestroyFixture(t)
+	fixture.run(t, "prepare", true, "")
+	fixture.run(t, "quiesce", true, "")
+	fixture.run(t, "destroy", true, "")
+	fixture.run(t, "complete", true, "PUBLISH_DESTROY_RECEIPT_DURING_JQ=true")
+
+	data, err := os.ReadFile(filepath.Join(fixture.stateDir, "destroy-1.receipt.json"))
+	require.NoError(t, err)
+	var receipt map[string]any
+	require.NoError(t, json.Unmarshal(data, &receipt))
+	require.Equal(t, "kubebrain.destroy.receipt.v1", receipt["format"])
+	require.Equal(t, float64(1), receipt["completed_at_unix"])
+	require.Equal(t, destroyBackupSHA256, receipt["backup_sha256"])
+}
+
 func TestDestroyInstanceRejectsNestedExistingReceiptFields(t *testing.T) {
 	fixture := newDestroyFixture(t)
 	fixture.run(t, "prepare", true, "")
@@ -285,6 +301,21 @@ kind="${resource%s}"
 [[ -n "$uid" ]]
 touch "$FAKE_RESOURCE_DIR/deleted-$kind-$name"
 `)
+	realJQ, err := exec.LookPath("jq")
+	require.NoError(t, err)
+	jq := filepath.Join(dir, "jq-wrapper")
+	writeDestroyExecutable(t, jq, `#!/usr/bin/env bash
+set -euo pipefail
+"$REAL_JQ" "$@"
+if [[ "${PUBLISH_DESTROY_RECEIPT_DURING_JQ:-false}" == true &&
+  " $* " == *" -cnS "* && " $* " == *"kubebrain.destroy.receipt.v1"* &&
+  ! -f "$STATE_DIR/$OPERATION_ID.receipt.json" ]]; then
+  IFS=$'\t' read -r _ _ _ _ _ _ _ _ backup_sha backup_revision <"$STATE_DIR/$OPERATION_ID.state"
+  printf '{"backup_revision":%s,"backup_sha256":"%s","completed_at_unix":1,"format":"kubebrain.destroy.receipt.v1","instance":"%s","kubebrain_namespace":"%s","operation_id":"%s","resources_absent":true,"tidb_cluster":"%s","tidb_namespace":"%s"}\n' \
+    "$backup_revision" "$backup_sha" "$INSTANCE" "$KUBEBRAIN_NAMESPACE" "$OPERATION_ID" "$TIDB_CLUSTER" "$TIDB_NAMESPACE" >"$STATE_DIR/$OPERATION_ID.receipt.json"
+  chmod 600 "$STATE_DIR/$OPERATION_ID.receipt.json"
+fi
+`)
 
 	return &destroyFixture{
 		dir:      dir,
@@ -306,6 +337,8 @@ touch "$FAKE_RESOURCE_DIR/deleted-$kind-$name"
 			"LOGICAL_STATUS=" + logicalStatus,
 			"FAKE_RESOURCE_DIR=" + dir,
 			"CONFIRM_DESTROY=destroy:instance-a:destroy-1",
+			"JQ=" + jq,
+			"REAL_JQ=" + realJQ,
 		},
 	}
 }
