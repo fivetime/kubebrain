@@ -47,6 +47,23 @@ func TestSnapshotRejectsInvalidEvidenceAndSlot(t *testing.T) {
 	require.Error(t, snapshot.Validate())
 }
 
+func TestSnapshotRejectsImpossibleVersionByteTotals(t *testing.T) {
+	snapshot := validSnapshot()
+	snapshot.RemoteVersions = 0
+	snapshot.TotalObjectBytes = 1
+	require.ErrorContains(t, snapshot.Validate(), "inconsistent")
+
+	snapshot = validSnapshot()
+	snapshot.RemoteVersions = 1
+	snapshot.TotalObjectBytes = 0
+	require.ErrorContains(t, snapshot.Validate(), "inconsistent")
+
+	snapshot = validSnapshot()
+	snapshot.RemoteVersions = 0
+	snapshot.TotalObjectBytes = 0
+	require.NoError(t, snapshot.Validate())
+}
+
 func validSnapshot() Snapshot {
 	return Snapshot{
 		Format: SnapshotFormat, Instance: "instance-a",

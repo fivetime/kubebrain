@@ -10573,6 +10573,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   保留等于 16 MiB 的合法边界，与实际 upload/read 上限一致。回归：
   `(cd hack/backup/objectstore && go test ./internal/objectstore -run 'TestImmutableBlobReceiptsRejectImpossibleObjectBytes|TestArchiveBlobRejectsEmptyOversizedAndNonCanonicalReceipt|TestReadBlobRequiresOneProtectedExactVersion|TestReceiptsRejectNonLowercaseArtifactDigest' -count=1)`
   通过。
+- A635 收紧 object usage 版本数与字节数一致性：
+  `MeasureUsage` 对每个远端版本都要求 `object_bytes > 0`，因此合法 usage receipt 只能是
+  `remote_versions == 0 && total_object_bytes == 0`，或二者同时为正。旧
+  `UsageReceipt.Validate` 只拒绝负数，生产 `Snapshot.Validate` 也只拒绝“0 个版本但非 0
+  字节”的一侧；手工暂存或替换 executor 可写出“有版本但总字节为 0”的不可生成计量证据，
+  进入后续 storage sample/rollup。现在 objectstore usage receipt 与生产 storage sample
+  都要求版本数和总字节数同为零或同为正。回归：
+  `(cd hack/backup/objectstore && go test ./internal/objectstore -run 'TestUsageReceiptRejectsImpossibleVersionByteTotals|TestMeasureUsageVerifiesAndTotalsEveryVersion|TestUsageReceiptRejectsTamperAndNonCanonicalJSON' -count=1)`；
+  `go test ./hack/production/internal/meteringstorage -run 'TestSnapshot(RejectsImpossibleVersionByteTotals|RejectsInvalidEvidenceAndSlot|CanonicalRoundTrip)|TestArchiverRejectsUsageReceiptMismatchBeforeArchive' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

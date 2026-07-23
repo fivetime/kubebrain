@@ -91,8 +91,8 @@ func (s Snapshot) Validate() error {
 			return errors.New("object storage sample formats are not canonical")
 		}
 	}
-	if s.RemoteVersions == 0 && s.TotalObjectBytes != 0 {
-		return errors.New("empty object storage sample has non-zero bytes")
+	if (s.RemoteVersions == 0) != (s.TotalObjectBytes == 0) {
+		return errors.New("object storage sample version and byte counts are inconsistent")
 	}
 	return nil
 }

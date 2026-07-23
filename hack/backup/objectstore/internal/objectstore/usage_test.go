@@ -123,3 +123,26 @@ func TestUsageReceiptRejectsTamperAndNonCanonicalJSON(t *testing.T) {
 	_, err = ReadUsageReceipt(path)
 	require.Error(t, err)
 }
+
+func TestUsageReceiptRejectsImpossibleVersionByteTotals(t *testing.T) {
+	fixture := newInventoryFixture(t)
+	path := filepath.Join(t.TempDir(), "usage.json")
+	receipt, err := MeasureUsage(context.Background(), fixture.client, UsageRequest{
+		ObjectStoreID: "store-a", Bucket: "bucket-a", Prefix: "audits/",
+		AllowedFormats: []string{operationaudit.Format}, ReceiptOutput: path,
+		Now: time.Unix(2_000_000_000, 0),
+	})
+	require.NoError(t, err)
+
+	receipt.RemoteVersions = 0
+	receipt.TotalObjectBytes = 1
+	require.ErrorContains(t, receipt.Validate(), "inconsistent")
+
+	receipt.RemoteVersions = 1
+	receipt.TotalObjectBytes = 0
+	require.ErrorContains(t, receipt.Validate(), "inconsistent")
+
+	receipt.RemoteVersions = 0
+	receipt.TotalObjectBytes = 0
+	require.NoError(t, receipt.Validate())
+}

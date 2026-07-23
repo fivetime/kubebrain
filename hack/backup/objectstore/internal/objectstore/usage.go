@@ -184,6 +184,9 @@ func (r UsageReceipt) Validate() error {
 		!validHexSHA256(r.VersionsSHA256) || r.CheckedAtUnix <= 0 {
 		return errors.New("object usage receipt is incomplete")
 	}
+	if (r.RemoteVersions == 0) != (r.TotalObjectBytes == 0) {
+		return errors.New("object usage receipt version and byte counts are inconsistent")
+	}
 	previous := ""
 	for _, format := range r.AllowedFormats {
 		if format == "" || (previous != "" && format <= previous) {
