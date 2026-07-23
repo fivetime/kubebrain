@@ -75,6 +75,7 @@ type Status struct {
 }
 
 var approvalIDPattern = regexp.MustCompile(`^[a-z0-9]([-a-z0-9.]{0,126}[a-z0-9])?$`)
+var dns1123SubdomainPattern = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`)
 var operationIdentifierPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 var tenantPattern = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
 
@@ -100,8 +101,8 @@ type ArchiveReceipt struct {
 
 func (a Artifact) Validate() error {
 	if a.Format != Format || a.APIVersion != "dbaas.kubebrain.io/v1alpha1" ||
-		!validAuditIdentityValue(a.Namespace, maxOperationNamespaceLength) ||
-		!validAuditIdentityValue(a.Name, maxOperationNameLength) ||
+		!validKubernetesNamespace(a.Namespace) ||
+		!validKubernetesName(a.Name) ||
 		!validAuditIdentityValue(a.UID, maxOperationUIDLength) || a.Generation <= 0 ||
 		!validOperationIdentifier(a.OperationID, maxOperationIDLength) ||
 		!validOptionalTenant(a.Tenant) ||
@@ -147,6 +148,18 @@ func validAuditIdentityValue(value string, maxRunes int) bool {
 		utf8.RuneCountInString(value) <= maxRunes &&
 		!strings.Contains(value, "/") &&
 		value != "." && value != ".."
+}
+
+func validKubernetesNamespace(value string) bool {
+	return len(value) <= maxOperationNamespaceLength &&
+		utf8.ValidString(value) &&
+		tenantPattern.MatchString(value)
+}
+
+func validKubernetesName(value string) bool {
+	return len(value) <= maxOperationNameLength &&
+		utf8.ValidString(value) &&
+		dns1123SubdomainPattern.MatchString(value)
 }
 
 func validOperationIdentifier(value string, maxLength int) bool {

@@ -102,6 +102,30 @@ func TestFromOperationRejectsUnsafeIdentityMetadata(t *testing.T) {
 		mutate func(*unstructured.Unstructured)
 	}{
 		{
+			name: "namespace_uppercase",
+			mutate: func(object *unstructured.Unstructured) {
+				object.SetNamespace("Operations")
+			},
+		},
+		{
+			name: "namespace_dot",
+			mutate: func(object *unstructured.Unstructured) {
+				object.SetNamespace("tenant.a")
+			},
+		},
+		{
+			name: "name_colon",
+			mutate: func(object *unstructured.Unstructured) {
+				object.SetName("backup:1")
+			},
+		},
+		{
+			name: "name_uppercase",
+			mutate: func(object *unstructured.Unstructured) {
+				object.SetName("Backup-1")
+			},
+		},
+		{
 			name: "uid_slash",
 			mutate: func(object *unstructured.Unstructured) {
 				object.SetUID("uid/1")

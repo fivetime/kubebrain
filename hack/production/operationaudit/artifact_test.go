@@ -119,9 +119,33 @@ func TestOperationAuditRejectsUnsafeIdentityFields(t *testing.T) {
 			},
 		},
 		{
+			name: "namespace_uppercase",
+			mutate: func(artifact *Artifact) {
+				artifact.Namespace = "Operations"
+			},
+		},
+		{
+			name: "namespace_dot",
+			mutate: func(artifact *Artifact) {
+				artifact.Namespace = "tenant.a"
+			},
+		},
+		{
 			name: "namespace_too_long",
 			mutate: func(artifact *Artifact) {
 				artifact.Namespace = strings.Repeat("n", maxOperationNamespaceLength+1)
+			},
+		},
+		{
+			name: "name_uppercase",
+			mutate: func(artifact *Artifact) {
+				artifact.Name = "Backup-1"
+			},
+		},
+		{
+			name: "name_colon",
+			mutate: func(artifact *Artifact) {
+				artifact.Name = "backup:1"
 			},
 		},
 		{

@@ -10533,6 +10533,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   证据的 key-safe 规则处理。回归：
   `go test ./hack/production/operationaudit ./hack/production/internal/operationauditbuilder -run 'TestOperationAuditRejectsUnsafeIdentityFields|TestArchiveReceiptRejectsUnsafeOperationIdentity|TestFromOperationRejectsUnsafeIdentityMetadata' -count=1`
   通过。
+- A631 对齐 operation audit artifact 的 Kubernetes metadata 形状：
+  A630 收紧了 `spec.operationID`/`spec.instance`，但 artifact 的 `namespace`/`name`
+  仍只做 key-safe 校验。真实 apiserver 要求 namespace 是 DNS label、Operation
+  metadata.name 是 DNS subdomain；旧对象、旧 CRD 或 fake-client 路径仍可把
+  `Operations`、`tenant.a` 或 `backup:1` 写入 terminal audit artifact，并让离线
+  证据描述生产 API 不可能接受的对象。现在 artifact validator 对 namespace/name
+  分别执行 Kubernetes metadata 形状校验，`operationauditbuilder.FromOperation`
+  自动继承该 fail-closed 行为；UID 仍按已有 key-safe evidence 规则处理。回归：
+  `go test ./hack/production/operationaudit ./hack/production/internal/operationauditbuilder -run 'TestOperationAuditRejectsUnsafeIdentityFields|TestFromOperationRejectsUnsafeIdentityMetadata' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 
