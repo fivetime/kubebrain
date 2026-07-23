@@ -113,6 +113,15 @@ func TestRestoreCutoverOperationRejectsParameterDrift(t *testing.T) {
 	require.Contains(t, f.log(t), "--action retry")
 }
 
+func TestRestoreCutoverOperationRejectsParametersTamperedDuringDigest(t *testing.T) {
+	f := newCutoverRunnerFixture(t)
+	f.run(t, false, "TAMPER_PARAMETERS_DURING_SHA256=true", "parameters digest")
+	log := f.log(t)
+	require.Contains(t, log, "--action retry")
+	require.NotContains(t, log, "phase prepare")
+	require.NotContains(t, log, "--action succeed")
+}
+
 func TestRestoreCutoverOperationRejectsEmptyRequiredParameters(t *testing.T) {
 	f := newCutoverRunnerFixture(t)
 	parameters := strings.ReplaceAll(
@@ -275,6 +284,7 @@ esac
 		"WORKER_ID=worker-a", "PARAMETERS_INPUT=" + parameters,
 		"OPERATION_NAMESPACE=ops", "LEASE_SECONDS=6", "OPERATIONCTL=" + operationctl,
 		"CUTOVER_COMMAND=" + cutover, "FAKE_DIR=" + dir, "PARAMETERS_DIGEST=" + digest,
+		"RUNNER_PARAMETERS_INPUT=" + parameters,
 	}
 	env = append(env, receiptDigestTamperEnv(t, dir, receipt)...)
 	return &cutoverRunnerFixture{

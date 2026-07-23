@@ -10974,6 +10974,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   参数捕获漂移走 retry，且不会进入 prepare/quiesce/destroy/complete phase。回归：
   `go test ./hack/production -run 'TestDestroyOperation' -count=1`
   通过。
+- A676 冻结 RestoreCutover operation runner 的参数输入：
+  `run-restore-cutover-operation.sh` 旧逻辑在 claim 参数 SHA 校验后继续从原始路径解析
+  restore receipt、backup artifact、service selector 与 cutover state/receipt 输出位置；若
+  参数文件在 digest 后被替换，runner 可能对未绑定的流量目标执行 prepare/cutover。现在
+  runner 将参数捕获到私有 0600 副本，要求源路径和副本在捕获窗口内都等于 claimed SHA，
+  后续 phase env 构造只读冻结副本；捕获漂移会 retry，且不会进入 prepare。回归：
+  `go test ./hack/production -run 'TestRestoreCutoverOperation' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 
