@@ -10999,6 +10999,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   capture 都只由冻结参数驱动；捕获漂移会 retry，且不会进入 object workflow。回归：
   `go test ./hack/production -run 'TestBackupDeletionOperation' -count=1`
   通过。
+- A679 冻结 CertificateRotation operation runner 的参数输入：
+  A667 已冻结 credential 文件并重写 step 参数，但 runner 在 claimed parameter digest 通过后
+  仍从原始 `PARAMETERS_INPUT` 解析 credential 路径、endpoint 与输出 receipt；若参数文件在
+  digest 后被替换，后续 credential 捕获和 gate/hook 参数可能来自未被 claim 绑定的 JSON。
+  现在 runner 先把参数捕获到私有 0600 副本，要求源路径与副本在捕获窗口内都等于 claimed
+  SHA，再从冻结副本解析 credential 并生成 step 专用参数副本；捕获漂移走 retry，且不进入
+  begin gate。回归：
+  `go test ./hack/production -run 'TestCertificateRotationOperation' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

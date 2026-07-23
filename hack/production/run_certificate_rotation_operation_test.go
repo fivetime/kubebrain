@@ -84,6 +84,15 @@ func TestCertificateRotationOperationRejectsCredentialTamperedDuringCapture(t *t
 	require.NotContains(t, log, "--action succeed")
 }
 
+func TestCertificateRotationOperationRejectsParametersTamperedDuringDigest(t *testing.T) {
+	f := newRotationRunnerFixture(t)
+	f.run(t, false, "TAMPER_PARAMETERS_DURING_SHA256=true", "parameters digest")
+	log := f.log(t)
+	require.Contains(t, log, "--action retry")
+	require.NotContains(t, log, "gate begin")
+	require.NotContains(t, log, "--action succeed")
+}
+
 func TestCertificateRotationOperationPassesFrozenParametersToSteps(t *testing.T) {
 	f := newRotationRunnerFixture(t)
 	f.run(t, true, "ASSERT_FROZEN_PARAMETERS=true")
@@ -266,6 +275,7 @@ printf 'hook final\n' >>"$FAKE_DIR/actions.log"
 		"PUBLISH_OVERLAP_COMMAND=" + overlapHook, "PUBLISH_FINAL_COMMAND=" + finalHook,
 		"FAKE_DIR=" + dir, "PARAMETERS_DIGEST=" + digest,
 		"RUNNER_CREDENTIAL_INPUT=" + filepath.Join(dir, "old-cert"),
+		"RUNNER_PARAMETERS_INPUT=" + parameters,
 		"ROTATION_OLD_FINGERPRINT=" + rotationOldFingerprint,
 		"ROTATION_NEW_FINGERPRINT=" + rotationNewFingerprint,
 	}

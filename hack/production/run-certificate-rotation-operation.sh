@@ -43,6 +43,7 @@ EOF
 [[ "$LEASE_SECONDS" =~ ^[1-9][0-9]*$ && "$LEASE_SECONDS" -ge 6 ]] ||
   { echo "LEASE_SECONDS must be an integer of at least 6" >&2; exit 2; }
 command -v "$JQ" >/dev/null || { echo "jq is required" >&2; exit 2; }
+command -v sha256sum >/dev/null || { echo "sha256sum is required" >&2; exit 2; }
 
 heartbeat_interval="${HEARTBEAT_INTERVAL_SECONDS:-$((LEASE_SECONDS / 3))}"
 [[ "$heartbeat_interval" =~ ^([0-9]+([.][0-9]+)?|[.][0-9]+)$ && "$heartbeat_interval" != 0 ]] ||
@@ -82,7 +83,7 @@ instance="$("$JQ" -er '.instance' <<<"$claim")"
 attempt="$("$JQ" -er '.attempt | select(. > 0)' <<<"$claim")"
 expected_digest="$("$JQ" -er '.parameters_sha256 | select(test("^[a-f0-9]{64}$"))' <<<"$claim")"
 managed_parameters=""
-managed_credentials_dir=""
+managed_credentials_dir="$(mktemp -d)"
 managed_rotation_parameters=""
 cleanup_managed_inputs() {
   [[ -z "$managed_parameters" ]] || rm -f "$managed_parameters"
@@ -90,19 +91,39 @@ cleanup_managed_inputs() {
   [[ -z "$managed_credentials_dir" ]] || rm -rf "$managed_credentials_dir"
 }
 trap cleanup_managed_inputs EXIT INT TERM
+file_sha256() {
+  local digest
+  digest="$(sha256sum "$1" | cut -d ' ' -f1)" || return 1
+  [[ "$digest" =~ ^[a-f0-9]{64}$ ]] || return 1
+  printf '%s' "$digest"
+}
+
 if [[ -z "$PARAMETERS_INPUT" ]]; then
-  managed_parameters="$(mktemp)"
+  managed_parameters="${managed_credentials_dir}/managed-parameters.json"
   PARAMETERS_INPUT="$managed_parameters"
   run_operationctl --action parameters --name "$name" --owner "$WORKER_ID" \
     --attempt "$attempt" >"$PARAMETERS_INPUT"
 fi
-actual_digest="$(sha256sum "$PARAMETERS_INPUT" | cut -d ' ' -f1)"
+actual_digest="$(file_sha256 "$PARAMETERS_INPUT")" || actual_digest=""
 if [[ "$actual_digest" != "$expected_digest" ]]; then
   run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
     --message "parameters digest mismatch" >/dev/null
   echo "claimed operation parameters digest does not match PARAMETERS_INPUT" >&2
   exit 1
 fi
+frozen_parameters="${managed_credentials_dir}/parameters.json"
+cp -- "$PARAMETERS_INPUT" "$frozen_parameters" ||
+  { echo "capture operation parameters failed" >&2; exit 2; }
+chmod 600 "$frozen_parameters"
+captured_digest="$(file_sha256 "$frozen_parameters")" || captured_digest=""
+current_digest="$(file_sha256 "$PARAMETERS_INPUT")" || current_digest=""
+if [[ "$captured_digest" != "$expected_digest" || "$current_digest" != "$expected_digest" ]]; then
+  run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
+    --message "parameters digest mismatch" >/dev/null
+  echo "claimed operation parameters digest does not match PARAMETERS_INPUT" >&2
+  exit 1
+fi
+PARAMETERS_INPUT="$frozen_parameters"
 
 parameters="$("$JQ" -er '[
   .state_dir, .endpoint, .old_cacert, .old_cert, .old_key,
@@ -132,7 +153,7 @@ for index in "${!credential_files[@]}"; do
   expected="${expected_hashes[$index]}"
   [[ "$expected" =~ ^[a-f0-9]{64}$ ]] ||
     { echo "rotation credential SHA-256 is invalid" >&2; exit 2; }
-  actual="$(sha256sum "${credential_files[$index]}" | cut -d ' ' -f1)"
+  actual="$(file_sha256 "${credential_files[$index]}")" || actual=""
   if [[ "$actual" != "$expected" ]]; then
     run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
       --message "rotation credential content digest mismatch" >/dev/null
@@ -140,16 +161,15 @@ for index in "${!credential_files[@]}"; do
     exit 1
   fi
 done
-managed_credentials_dir="$(mktemp -d)"
-managed_rotation_parameters="$(mktemp)"
+managed_rotation_parameters="${managed_credentials_dir}/rotation-parameters.json"
 
 freeze_credential() {
   local source="$1" expected="$2" name="$3" destination captured current
   destination="${managed_credentials_dir}/${name}"
-  cp "$source" "$destination"
+  cp -- "$source" "$destination"
   chmod 600 "$destination"
-  captured="$(sha256sum "$destination" | cut -d ' ' -f1)" || return 1
-  current="$(sha256sum "$source" | cut -d ' ' -f1)" || return 1
+  captured="$(file_sha256 "$destination")" || return 1
+  current="$(file_sha256 "$source")" || return 1
   [[ "$captured" == "$expected" && "$current" == "$expected" ]] || return 1
   printf '%s\n' "$destination"
 }
