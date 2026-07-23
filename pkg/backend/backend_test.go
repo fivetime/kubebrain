@@ -327,7 +327,8 @@ func encodeRevisionKey(userKey []byte) (internalKey []byte) {
 // clear list all key-value pairs with given prefix and delete them to reset data set in storage
 func clear(ast *assert.Assertions, st storage.KvStorage, prefix string) {
 	// remove key with given prefix in storage
-	iter, err := st.Iter(context.Background(), encodeRevisionKey([]byte(prefix)), encodeRevisionKey(PrefixEnd([]byte(prefix))), 0, 0)
+	ctx := context.Background()
+	iter, err := openClearIterWithRetry(ctx, st, prefix)
 	ast.NoError(err)
 	if err != nil {
 		// ast.NoError records the failure but does NOT stop execution; walking on
@@ -335,7 +336,9 @@ func clear(ast *assert.Assertions, st storage.KvStorage, prefix string) {
 		// storage error (seen in CI when its TiKV threw "region unavailable").
 		return
 	}
-	ctx := context.Background()
+	defer func() {
+		ast.NoError(iter.Close())
+	}()
 	for {
 		err = iter.Next(ctx)
 		if err != nil {
@@ -348,6 +351,36 @@ func clear(ast *assert.Assertions, st storage.KvStorage, prefix string) {
 		err = batch.Commit(ctx)
 		ast.NoError(err)
 	}
+}
+
+func openClearIterWithRetry(ctx context.Context, st storage.KvStorage, prefix string) (storage.Iter, error) {
+	start := encodeRevisionKey([]byte(prefix))
+	end := encodeRevisionKey(PrefixEnd([]byte(prefix)))
+	var err error
+	for attempt := 0; attempt < 20; attempt++ {
+		var iter storage.Iter
+		iter, err = st.Iter(ctx, start, end, 0, 0)
+		if err == nil {
+			return iter, nil
+		}
+		if !retryableTestClearError(err) {
+			return nil, err
+		}
+		delay := time.Duration(attempt+1) * 10 * time.Millisecond
+		if delay > 200*time.Millisecond {
+			delay = 200 * time.Millisecond
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(delay):
+		}
+	}
+	return nil, err
+}
+
+func retryableTestClearError(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "region unavailable")
 }
 
 func getEnd(prefix []byte) (end []byte) {

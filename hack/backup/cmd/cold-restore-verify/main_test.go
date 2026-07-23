@@ -331,6 +331,33 @@ func TestReadBoundedJSONFileRejectsOversizedInput(t *testing.T) {
 	require.ErrorContains(t, err, "restore receipt exceeds")
 }
 
+func TestReadStableBoundedJSONFileRejectsDriftDuringCapture(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "restore.json")
+	require.NoError(t, os.WriteFile(path, []byte(`{"format":"initial"}`), 0o600))
+	afterStableJSONReadForTest = func(description string) {
+		if description == "restore receipt" {
+			require.NoError(t, os.WriteFile(path, []byte(`{"format":"drifted"}`), 0o600))
+		}
+	}
+	t.Cleanup(func() {
+		afterStableJSONReadForTest = func(string) {}
+	})
+
+	_, _, err := readStableBoundedJSONFile(path, "restore receipt")
+	require.ErrorContains(t, err, "restore receipt changed during capture")
+}
+
+func TestVerifyBoundedJSONFileDigestRejectsDriftAfterValidation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "manifest.json")
+	data := []byte(`{"kind":"List","items":[]}`)
+	require.NoError(t, os.WriteFile(path, data, 0o600))
+	_, sha, err := readStableBoundedJSONFile(path, "restore manifest")
+	require.NoError(t, err)
+
+	require.NoError(t, os.WriteFile(path, []byte(`{"kind":"List","items":[{}]}`), 0o600))
+	require.ErrorContains(t, verifyBoundedJSONFileDigest(path, sha, "restore manifest"), "restore manifest changed after validation")
+}
+
 func TestEqualStrings(t *testing.T) {
 	require.True(t, equalStrings([]string{"a", "b"}, []string{"a", "b"}))
 	require.False(t, equalStrings([]string{"a"}, []string{"b"}))

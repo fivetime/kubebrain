@@ -25,6 +25,7 @@ import (
 const maxColdRestoreJSONBytes = 4 << 20
 
 var afterWitnessDigestForTest = func() {}
+var afterStableJSONReadForTest = func(string) {}
 
 type expectedKV struct {
 	key, value                  []byte
@@ -172,15 +173,15 @@ func main() {
 			fatal(fmt.Errorf("witness lease %d lacks granted_ttl; re-export with the current logical exporter", id))
 		}
 	}
-	snapshotData, err := readBoundedJSONFile(snapshotReceiptPath, "snapshot receipt")
+	snapshotData, snapshotReceiptSHA, err := readStableBoundedJSONFile(snapshotReceiptPath, "snapshot receipt")
 	if err != nil {
 		fatal(err)
 	}
-	restoreData, err := readBoundedJSONFile(restoreReceiptPath, "restore receipt")
+	restoreData, restoreReceiptSHA, err := readStableBoundedJSONFile(restoreReceiptPath, "restore receipt")
 	if err != nil {
 		fatal(err)
 	}
-	restoreManifestData, err := readBoundedJSONFile(restoreManifestPath, "restore manifest")
+	restoreManifestData, restoreManifestSHA, err := readStableBoundedJSONFile(restoreManifestPath, "restore manifest")
 	if err != nil {
 		fatal(err)
 	}
@@ -226,6 +227,15 @@ func main() {
 	}
 	putRevision, deleteRevision, err := runWatchProbe(ctx, cli, probePrefix)
 	if err != nil {
+		fatal(err)
+	}
+	if err := verifyBoundedJSONFileDigest(snapshotReceiptPath, snapshotReceiptSHA, "snapshot receipt"); err != nil {
+		fatal(err)
+	}
+	if err := verifyBoundedJSONFileDigest(restoreReceiptPath, restoreReceiptSHA, "restore receipt"); err != nil {
+		fatal(err)
+	}
+	if err := verifyBoundedJSONFileDigest(restoreManifestPath, restoreManifestSHA, "restore manifest"); err != nil {
 		fatal(err)
 	}
 	if err := verifyFileDigest(witnessPath, witnessFileSHA, "witness file"); err != nil {
@@ -320,6 +330,34 @@ func readBoundedJSONFile(path, description string) ([]byte, error) {
 		return nil, fmt.Errorf("%s exceeds %d bytes", description, maxColdRestoreJSONBytes)
 	}
 	return data, nil
+}
+
+func readStableBoundedJSONFile(path, description string) ([]byte, string, error) {
+	data, err := readBoundedJSONFile(path, description)
+	if err != nil {
+		return nil, "", err
+	}
+	sha := digest(data)
+	afterStableJSONReadForTest(description)
+	confirm, err := readBoundedJSONFile(path, description)
+	if err != nil {
+		return nil, "", err
+	}
+	if !bytes.Equal(confirm, data) || digest(confirm) != sha {
+		return nil, "", fmt.Errorf("%s changed during capture", description)
+	}
+	return data, sha, nil
+}
+
+func verifyBoundedJSONFileDigest(path, expected, description string) error {
+	data, err := readBoundedJSONFile(path, description)
+	if err != nil {
+		return err
+	}
+	if digest(data) != expected {
+		return fmt.Errorf("%s changed after validation", description)
+	}
+	return nil
 }
 
 func openStableWitness(path string) (*backupfile.Verified, string, error) {
