@@ -29,6 +29,31 @@ spec:
     - expression: |
         request.operation != "UPDATE" ||
         !has(object.metadata.annotations) ||
+        ((!("dbaas.kubebrain.io/audit-receipt-sha256" in object.metadata.annotations) ||
+            (has(oldObject.metadata.annotations) &&
+              "dbaas.kubebrain.io/audit-receipt-sha256" in oldObject.metadata.annotations)) &&
+          (!("dbaas.kubebrain.io/audit-artifact-sha256" in object.metadata.annotations) ||
+            (has(oldObject.metadata.annotations) &&
+              "dbaas.kubebrain.io/audit-artifact-sha256" in oldObject.metadata.annotations)) &&
+          (!("dbaas.kubebrain.io/audit-version-id" in object.metadata.annotations) ||
+            (has(oldObject.metadata.annotations) &&
+              "dbaas.kubebrain.io/audit-version-id" in oldObject.metadata.annotations))) ||
+        (request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-operation-archiver" &&
+          has(oldObject.metadata.finalizers) &&
+          oldObject.metadata.finalizers.exists(f, f == "dbaas.kubebrain.io/operation-audit") &&
+          (!has(object.metadata.finalizers) ||
+            !object.metadata.finalizers.exists(f, f == "dbaas.kubebrain.io/operation-audit")) &&
+          object.status.phase in ["Succeeded", "Failed"] &&
+          "dbaas.kubebrain.io/audit-receipt-sha256" in object.metadata.annotations &&
+          object.metadata.annotations["dbaas.kubebrain.io/audit-receipt-sha256"].matches("^[a-f0-9]{64}$") &&
+          "dbaas.kubebrain.io/audit-artifact-sha256" in object.metadata.annotations &&
+          object.metadata.annotations["dbaas.kubebrain.io/audit-artifact-sha256"].matches("^[a-f0-9]{64}$") &&
+          "dbaas.kubebrain.io/audit-version-id" in object.metadata.annotations &&
+          size(object.metadata.annotations["dbaas.kubebrain.io/audit-version-id"]) > 0)
+      message: operation audit archive evidence can only be introduced by archiver release
+    - expression: |
+        request.operation != "UPDATE" ||
+        !has(object.metadata.annotations) ||
         (!("dbaas.kubebrain.io/approved-by" in object.metadata.annotations) &&
           !("dbaas.kubebrain.io/approval-id" in object.metadata.annotations)) ||
         (has(oldObject.metadata.annotations) &&

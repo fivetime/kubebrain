@@ -725,7 +725,7 @@ func TestOperationSubmitterApproverAndAuditAdmissionFenceHighRiskChanges(t *test
 	validations, found, err := unstructured.NestedSlice(policy.Object, "spec", "validations")
 	require.NoError(t, err)
 	require.True(t, found)
-	require.Len(t, validations, 7)
+	require.Len(t, validations, 8)
 	expressionsByMessage := map[string]string{}
 	for _, raw := range validations {
 		validation := raw.(map[string]any)
@@ -741,6 +741,20 @@ func TestOperationSubmitterApproverAndAuditAdmissionFenceHighRiskChanges(t *test
 	require.Contains(t, preArchivedExpression, `"dbaas.kubebrain.io/audit-receipt-sha256"`)
 	require.Contains(t, preArchivedExpression, `"dbaas.kubebrain.io/audit-artifact-sha256"`)
 	require.Contains(t, preArchivedExpression, `"dbaas.kubebrain.io/audit-version-id"`)
+	introduceArchiveExpression := expressionsByMessage["operation audit archive evidence can only be introduced by archiver release"]
+	require.Contains(t, introduceArchiveExpression,
+		`request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-operation-archiver"`)
+	require.Contains(t, introduceArchiveExpression,
+		`oldObject.metadata.finalizers.exists(f, f == "dbaas.kubebrain.io/operation-audit")`)
+	require.Contains(t, introduceArchiveExpression,
+		`!object.metadata.finalizers.exists(f, f == "dbaas.kubebrain.io/operation-audit")`)
+	require.Contains(t, introduceArchiveExpression, `object.status.phase in ["Succeeded", "Failed"]`)
+	require.Contains(t, introduceArchiveExpression,
+		`object.metadata.annotations["dbaas.kubebrain.io/audit-receipt-sha256"].matches("^[a-f0-9]{64}$")`)
+	require.Contains(t, introduceArchiveExpression,
+		`object.metadata.annotations["dbaas.kubebrain.io/audit-artifact-sha256"].matches("^[a-f0-9]{64}$")`)
+	require.Contains(t, introduceArchiveExpression,
+		`size(object.metadata.annotations["dbaas.kubebrain.io/audit-version-id"]) > 0`)
 	approvalExpression := expressionsByMessage["operation approval requires the dedicated approver identity, approval ID, and pending phase"]
 	require.Contains(t, approvalExpression,
 		`request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-operation-approver"`)

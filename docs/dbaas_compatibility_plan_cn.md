@@ -10435,6 +10435,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   finalizer 时能写入真实证据。回归：
   `go test ./deploy/production ./hack/production -run 'TestOperationSubmitterApproverAndAuditAdmissionFenceHighRiskChanges|TestOperationAuditAdmissionRequiresFinalizerAndReleaseEvidence' -count=1`
   通过。
+- A621 禁止 UPDATE 阶段提前引入 archive evidence：
+  A620 关闭了 CREATE 预置 archive evidence，但普通 UPDATE 仍可在不释放 audit
+  finalizer 的情况下新增 `audit-receipt-sha256`、`audit-artifact-sha256` 或
+  `audit-version-id`。这类伪证据会被 A619 的不可变规则锁住，导致真实 archiver release
+  因证据冲突失败。现在 admission 新增独立门禁：UPDATE 只能保留已有 archive evidence，
+  不能新增；唯一新增路径是 `kubebrain-operation-archiver` 在 Succeeded/Failed 终态移除
+  `dbaas.kubebrain.io/operation-audit` finalizer，并同时提交格式正确的三枚 archive
+  evidence。回归：
+  `go test ./deploy/production ./hack/production -run 'TestOperationSubmitterApproverAndAuditAdmissionFenceHighRiskChanges|TestOperationAuditAdmissionRequiresFinalizerAndReleaseEvidence' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 
