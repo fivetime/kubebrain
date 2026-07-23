@@ -35,9 +35,20 @@ if ! [[ "$PROBE_IMAGE" =~ ^[^[:space:]@]+@sha256:[a-f0-9]{64}$ ]]; then
   echo "PROBE_IMAGE must use an immutable sha256 digest" >&2
   exit 2
 fi
-for variable in CLIENT_NAMESPACE MONITORING_NAMESPACE DENIED_NAMESPACE KUBEBRAIN_NAMESPACE TIDB_NAMESPACE KUBEBRAIN_POD; do
-  if ! [[ "${!variable}" =~ ^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$ ]]; then
-    echo "${variable} is not a valid Kubernetes name" >&2
+for variable in CLIENT_NAMESPACE MONITORING_NAMESPACE DENIED_NAMESPACE KUBEBRAIN_NAMESPACE TIDB_NAMESPACE; do
+  if ! [[ "${!variable}" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]]; then
+    echo "${variable} must be a lowercase DNS label of at most 63 characters" >&2
+    exit 2
+  fi
+done
+if ! [[ "$KUBEBRAIN_POD" =~ ^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$ ]]; then
+  echo "KUBEBRAIN_POD is not a valid Kubernetes name" >&2
+  exit 2
+fi
+IFS='.' read -r -a pod_segments <<<"$KUBEBRAIN_POD"
+for segment in "${pod_segments[@]}"; do
+  if ! [[ "$segment" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]]; then
+    echo "KUBEBRAIN_POD is not a valid Kubernetes name" >&2
     exit 2
   fi
 done

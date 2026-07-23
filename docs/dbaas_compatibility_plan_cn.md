@@ -11111,6 +11111,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `tikverr.ErrTiKVStaleCommand` 纳入 `isUncertainCommitError`，由现有 async retry
   重新解析最终状态。回归：`go test ./pkg/storage/tikv -run TestUncertainCommitError -count=1`
   通过。
+- A691 收紧 NetworkPolicy release gate 的 namespace 输入：
+  `validate-network-policy.sh` 旧校验把 namespace 与 Pod/host 共用同一个允许 `.` 的
+  Kubernetes 名称正则；但 namespace 只能是 DNS label，非法 `client.ns` 会进入后续
+  `kubectl get namespace`/`run pod` 阶段才失败，放大生产发布门禁的误配窗口。现在
+  `CLIENT_NAMESPACE`、`MONITORING_NAMESPACE`、`DENIED_NAMESPACE`、`KUBEBRAIN_NAMESPACE`
+  和 `TIDB_NAMESPACE` 都在首个 Kubernetes 调用前按小写 63 字符 DNS label 拒绝；
+  `KUBEBRAIN_POD` 仍按 DNS subdomain 逐段校验，保留合法 Pod 名兼容。回归：
+  `go test ./hack/production -run TestValidateNetworkPolicy -count=1` 通过。
 
 ### P2：运维兼容和长期验证
 

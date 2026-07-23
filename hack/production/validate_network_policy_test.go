@@ -132,3 +132,46 @@ func TestValidateNetworkPolicyRejectsMutableProbeImageBeforeKubectl(t *testing.T
 		})
 	}
 }
+
+func TestValidateNetworkPolicyRejectsInvalidNamespaceBeforeKubectl(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		variable string
+		value    string
+	}{
+		{name: "client namespace contains dot", variable: "CLIENT_NAMESPACE", value: "client.ns"},
+		{name: "monitoring namespace too long", variable: "MONITORING_NAMESPACE", value: strings.Repeat("a", 64)},
+		{name: "denied namespace uppercase", variable: "DENIED_NAMESPACE", value: "Denied"},
+		{name: "kubebrain namespace contains dot", variable: "KUBEBRAIN_NAMESPACE", value: "kubebrain.system"},
+		{name: "tidb namespace contains dot", variable: "TIDB_NAMESPACE", value: "tidb.cluster"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			logPath := filepath.Join(dir, "kubectl.log")
+			fakeKubectl := filepath.Join(dir, "kubectl")
+			require.NoError(t, os.WriteFile(
+				fakeKubectl,
+				[]byte("#!/usr/bin/env bash\nprintf called >>\"$FAKE_LOG\"\n"),
+				0o755,
+			))
+
+			env := append(os.Environ(),
+				"KUBECTL="+fakeKubectl,
+				"PROBE_ID=probe1",
+				"PROBE_IMAGE=registry.example/probe@sha256:"+strings.Repeat("a", 64),
+				"CLIENT_NAMESPACE=client-ns",
+				"MONITORING_NAMESPACE=monitor-ns",
+				"DENIED_NAMESPACE=denied-ns",
+				"FAKE_LOG="+logPath,
+			)
+			env = append(env, tc.variable+"="+tc.value)
+			command := exec.Command("bash", "validate-network-policy.sh")
+			command.Env = env
+			output, err := command.CombinedOutput()
+			require.Error(t, err)
+			require.Contains(t, string(output), tc.variable+" must be a lowercase DNS label")
+			_, statErr := os.Stat(logPath)
+			require.ErrorIs(t, statErr, os.ErrNotExist)
+		})
+	}
+}

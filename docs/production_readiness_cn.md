@@ -44,9 +44,10 @@ NetworkPolicy，并从允许的 client namespace 验证 3379 和业务读写、�
 验证 3378/2379/20180、验证 DNS 与三副本 leader/raft 正常；同时从未标记 namespace 对这些
 端口执行带超时的拒绝探针。任一允许路径失败或拒绝路径成功都必须阻止发布。
 
-策略安装且三类探针 namespace 已准备后，运行可执行门禁；`PROBE_IMAGE` 必须是包含
-`bash`、`timeout`、`sleep` 的不可变 digest（生产 KubeBrain 镜像满足该契约），`PROBE_ID`
-必须对本次发布唯一：
+策略安装且三类探针 namespace 已准备后，运行可执行门禁；所有 namespace 参数必须是
+Kubernetes DNS label（小写、最多 63 字符、不能含 `.`），避免把非法对象名推进到
+`kubectl` 调用阶段。`PROBE_IMAGE` 必须是包含 `bash`、`timeout`、`sleep` 的不可变 digest
+（生产 KubeBrain 镜像满足该契约），`PROBE_ID` 必须对本次发布唯一：
 
 ```shell
 KUBE_CONTEXT=production \
