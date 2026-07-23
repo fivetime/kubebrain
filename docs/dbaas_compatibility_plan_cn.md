@@ -10782,6 +10782,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   object workflow 前失败，不提交 succeed。回归：
   `go test ./hack/production -run 'TestBackupDeletionOperationRejectsSourceReceiptTamperedDuringParse' -count=1`
   通过。
+- A656 收紧 cold physical restore 本地证据稳定性：
+  A459-A463 已让 `cold-restore-execute.sh` 绑定 restore manifest、target identity 和实际
+  PVC/VolumeSnapshotContent inventory，但脚本仍从调用方提供的 `RECEIPT_FILE` 与
+  `RESTORE_MANIFEST` 路径多次读取；若 snapshot receipt 在 validation 后被替换，最终
+  restore receipt 可能记录另一份文件的 SHA；若 restore manifest 路径在 canonical compare
+  后被替换，`kubectl create -f` 可能应用未绑定内容；若 `RESTORE_RECEIPT_FILE` 在开头
+  `! -e` 检查后由并发进程创建，旧 `mv` 会覆盖既有证据。现在 cold restore executor
+  捕获并复检 source snapshot receipt SHA，从私有 canonical manifest 副本执行 create，
+  并通过 hard-link 发布 restore receipt，已存在时 fail closed 且不覆盖。回归：
+  `go test ./hack/production -run 'TestColdRestoreExecute' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

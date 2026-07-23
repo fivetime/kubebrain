@@ -16,22 +16,30 @@ import (
 
 func TestColdRestoreExecute(t *testing.T) {
 	for _, tc := range []struct {
-		name          string
-		existing      bool
-		tampered      bool
-		wrongCluster  bool
-		wrongContent  bool
-		wrongPVC      bool
-		wantReceipt   bool
-		wantEmergency bool
-		wantError     string
+		name                          string
+		existing                      bool
+		tampered                      bool
+		sourceReceiptDrift            bool
+		restoreManifestPathDrift      bool
+		precreateRestoreReceipt       bool
+		wrongCluster                  bool
+		wrongContent                  bool
+		wrongPVC                      bool
+		wantReceipt                   bool
+		wantPreexistingRestoreReceipt bool
+		wantEmergency                 bool
+		wantCreate                    bool
+		wantError                     string
 	}{
-		{name: "restores storage and publishes receipt", wantReceipt: true},
+		{name: "restores storage and publishes receipt", wantReceipt: true, wantCreate: true},
 		{name: "existing target fails before create", existing: true, wantError: "target resource already exists"},
 		{name: "tampered manifest fails before target access", tampered: true, wantError: "differs from the canonical rendering"},
-		{name: "cluster identity mismatch fences storage", wrongCluster: true, wantEmergency: true, wantError: "identity/readiness mismatch"},
-		{name: "content inventory drift fences storage", wrongContent: true, wantEmergency: true, wantError: "restored VolumeSnapshotContent inventory does not match restore manifest"},
-		{name: "PVC inventory drift fences storage", wrongPVC: true, wantEmergency: true, wantError: "restored PVC inventory does not match restore manifest"},
+		{name: "source receipt drift fails before create", sourceReceiptDrift: true, wantError: "cold snapshot receipt changed after validation"},
+		{name: "manifest path drift still applies validated manifest", restoreManifestPathDrift: true, wantReceipt: true, wantCreate: true},
+		{name: "concurrent restore receipt publish is non overwriting", precreateRestoreReceipt: true, wantPreexistingRestoreReceipt: true, wantEmergency: true, wantCreate: true, wantError: "restore receipt already exists"},
+		{name: "cluster identity mismatch fences storage", wrongCluster: true, wantEmergency: true, wantCreate: true, wantError: "identity/readiness mismatch"},
+		{name: "content inventory drift fences storage", wrongContent: true, wantEmergency: true, wantCreate: true, wantError: "restored VolumeSnapshotContent inventory does not match restore manifest"},
+		{name: "PVC inventory drift fences storage", wrongPVC: true, wantEmergency: true, wantCreate: true, wantError: "restored PVC inventory does not match restore manifest"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -40,21 +48,17 @@ func TestColdRestoreExecute(t *testing.T) {
 			restoreReceiptPath := filepath.Join(dir, "restore-receipt.json")
 			logPath := filepath.Join(dir, "kubectl.log")
 			require.NoError(t, os.WriteFile(receiptPath, coldRestoreSnapshotReceipt(t), 0o600))
+			tamperedReceiptPath := filepath.Join(dir, "tampered-snapshot.json")
+			require.NoError(t, os.WriteFile(tamperedReceiptPath, coldRestoreTamperedSnapshotReceipt(t), 0o600))
 			render := exec.Command("go", "run", "../backup/cmd/cold-restore-render",
 				"--receipt", receiptPath, "--target-snapshot-class", "target-snapshots",
 				"--target-storage-class", "target-storage", "--output", manifestPath, "--confirm-isolated-target")
 			renderOutput, err := render.CombinedOutput()
 			require.NoError(t, err, string(renderOutput))
+			tamperedManifestPath := filepath.Join(dir, "tampered-restore.json")
+			require.NoError(t, os.WriteFile(tamperedManifestPath, coldRestoreTamperedManifest(t, manifestPath), 0o600))
 			if tc.tampered {
-				data, readErr := os.ReadFile(manifestPath)
-				require.NoError(t, readErr)
-				var manifest map[string]any
-				require.NoError(t, json.Unmarshal(data, &manifest))
-				items := manifest["items"].([]any)
-				items[len(items)-1].(map[string]any)["spec"].(map[string]any)["version"] = "tampered"
-				data, readErr = json.Marshal(manifest)
-				require.NoError(t, readErr)
-				require.NoError(t, os.WriteFile(manifestPath, data, 0o600))
+				require.NoError(t, os.WriteFile(manifestPath, mustRead(t, tamperedManifestPath), 0o600))
 			}
 
 			fakeKubectl := filepath.Join(dir, "kubectl")
@@ -74,6 +78,11 @@ func TestColdRestoreExecute(t *testing.T) {
 				"FAKE_CLUSTER_ID="+map[bool]string{true: "99999", false: "12345"}[tc.wrongCluster],
 				"FAKE_PVC_JSON="+coldRestorePVCResult(t, tc.wrongPVC),
 				"FAKE_CONTENT_JSON="+coldRestoreContentResult(t, tc.wrongContent),
+				"TAMPER_SOURCE_RECEIPT_DURING_KUBECTL="+strconv.FormatBool(tc.sourceReceiptDrift),
+				"TAMPERED_RECEIPT_FILE="+tamperedReceiptPath,
+				"TAMPER_RESTORE_MANIFEST_DURING_KUBECTL="+strconv.FormatBool(tc.restoreManifestPathDrift),
+				"TAMPERED_RESTORE_MANIFEST="+tamperedManifestPath,
+				"PRECREATE_RESTORE_RECEIPT_DURING_INVENTORY="+strconv.FormatBool(tc.precreateRestoreReceipt),
 			)
 			output, err := command.CombinedOutput()
 			if tc.wantReceipt {
@@ -83,6 +92,7 @@ func TestColdRestoreExecute(t *testing.T) {
 				var receipt map[string]any
 				require.NoError(t, json.Unmarshal(value, &receipt))
 				require.Equal(t, "kubebrain.cold-physical-restore.v1", receipt["format"])
+				require.Equal(t, fileDigest(t, receiptPath), receipt["source_receipt_sha256"])
 				require.Equal(t, "12345", receipt["target"].(map[string]any)["cluster_id"])
 				restoreManifest := receipt["restore_manifest"].(map[string]any)
 				require.Equal(t, "kubernetes-list.canonical-json.v1", restoreManifest["format"])
@@ -96,7 +106,11 @@ func TestColdRestoreExecute(t *testing.T) {
 				require.Len(t, receipt["volume_snapshot_contents"], 6)
 			} else {
 				require.Error(t, err, string(output))
-				require.NoFileExists(t, restoreReceiptPath)
+				if tc.wantPreexistingRestoreReceipt {
+					require.Equal(t, `{"format":"preexisting"}`+"\n", string(mustRead(t, restoreReceiptPath)))
+				} else {
+					require.NoFileExists(t, restoreReceiptPath)
+				}
 				if tc.wantError != "" {
 					require.Contains(t, string(output), tc.wantError)
 				}
@@ -109,10 +123,11 @@ func TestColdRestoreExecute(t *testing.T) {
 				require.NoError(t, readErr)
 			}
 			log := string(logValue)
-			if tc.existing || tc.tampered {
+			if !tc.wantCreate {
 				require.NotContains(t, log, "create -f")
 			} else {
-				require.Contains(t, log, "create -f "+manifestPath)
+				require.Contains(t, log, "create -f ")
+				require.NotContains(t, log, "tampered restore manifest path was used")
 				requireOrder(t, log, "create -f", "patch tidbcluster kb --type=json", "wait --for=condition=Ready", "rollout status statefulset/kb-pd", "rollout status statefulset/kb-tikv")
 			}
 			if tc.wantEmergency {
@@ -145,6 +160,27 @@ func coldRestoreSnapshotReceipt(t *testing.T) []byte {
 			"sha256": strings.Repeat("a", 64), "file_sha256": strings.Repeat("b", 64),
 		},
 	})
+	require.NoError(t, err)
+	return value
+}
+
+func coldRestoreTamperedSnapshotReceipt(t *testing.T) []byte {
+	t.Helper()
+	var receipt map[string]any
+	require.NoError(t, json.Unmarshal(coldRestoreSnapshotReceipt(t), &receipt))
+	receipt["operation_id"] = "restore-test-drift"
+	value, err := json.Marshal(receipt)
+	require.NoError(t, err)
+	return value
+}
+
+func coldRestoreTamperedManifest(t *testing.T, path string) []byte {
+	t.Helper()
+	var manifest map[string]any
+	require.NoError(t, json.Unmarshal(mustRead(t, path), &manifest))
+	items := manifest["items"].([]any)
+	items[len(items)-1].(map[string]any)["spec"].(map[string]any)["version"] = "tampered"
+	value, err := json.Marshal(manifest)
 	require.NoError(t, err)
 	return value
 }
@@ -207,6 +243,29 @@ const coldRestoreFakeKubectl = `#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >>"$FAKE_LOG"
 args="$*"
+maybe_tamper_inputs() {
+  if [[ "${TAMPER_SOURCE_RECEIPT_DURING_KUBECTL:-false}" == true &&
+    ! -f "${FAKE_LOG}.source-receipt-tampered" ]]; then
+    cp "$TAMPERED_RECEIPT_FILE" "$RECEIPT_FILE"
+    chmod 600 "$RECEIPT_FILE"
+    touch "${FAKE_LOG}.source-receipt-tampered"
+  fi
+  if [[ "${TAMPER_RESTORE_MANIFEST_DURING_KUBECTL:-false}" == true &&
+    ! -f "${FAKE_LOG}.restore-manifest-tampered" ]]; then
+    cp "$TAMPERED_RESTORE_MANIFEST" "$RESTORE_MANIFEST"
+    chmod 600 "$RESTORE_MANIFEST"
+    touch "${FAKE_LOG}.restore-manifest-tampered"
+  fi
+}
+maybe_precreate_restore_receipt() {
+  if [[ "${PRECREATE_RESTORE_RECEIPT_DURING_INVENTORY:-false}" == true &&
+    ! -f "${FAKE_LOG}.restore-receipt-precreated" ]]; then
+    printf '{"format":"preexisting"}\n' >"$RESTORE_RECEIPT_FILE"
+    chmod 600 "$RESTORE_RECEIPT_FILE"
+    touch "${FAKE_LOG}.restore-receipt-precreated"
+  fi
+}
+maybe_tamper_inputs
 if [[ "$args" == *"get namespace kube-system"* ]]; then
   printf 'uid-kube-system-target'
 elif [[ "$args" == *"get namespace tidb-cluster"* ]]; then
@@ -222,6 +281,12 @@ elif [[ "$args" == *"get storageclass"* ]]; then
 elif [[ "$args" == *"--ignore-not-found"* ]]; then
   if [[ "$FAKE_EXISTING" == true && "$args" == *"get tidbcluster kb"* ]]; then printf 'tidbcluster.pingcap.com/kb'; fi
 elif [[ "$args" == *"create -f"* ]]; then
+  create_path="$(sed -n 's/.*create -f \([^ ]*\).*/\1/p' <<<"$args")"
+  if [[ "${TAMPER_RESTORE_MANIFEST_DURING_KUBECTL:-false}" == true &&
+    "$create_path" == "$RESTORE_MANIFEST" ]]; then
+    echo "tampered restore manifest path was used" >&2
+    exit 1
+  fi
   :
 elif [[ "$args" == *"wait --for=jsonpath="* || "$args" == *"wait --for=condition=Ready"* || "$args" == *"rollout status"* ]]; then
   :
@@ -237,6 +302,7 @@ elif [[ "$args" == *"patch tidbcluster"* || "$args" == *"patch statefulset"* ]];
 elif [[ "$args" == *"get pvc -l kubebrain.io/operation-id=restore-test"* ]]; then
   printf '%s' "$FAKE_PVC_JSON"
 elif [[ "$args" == *"get volumesnapshotcontent -l kubebrain.io/operation-id=restore-test"* ]]; then
+  maybe_precreate_restore_receipt
   printf '%s' "$FAKE_CONTENT_JSON"
 else
   echo "unsupported fake kubectl call: $args" >&2

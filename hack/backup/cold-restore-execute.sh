@@ -25,6 +25,8 @@ command -v jq >/dev/null 2>&1 || fail_input "jq is required"
 command -v sha256sum >/dev/null 2>&1 || fail_input "sha256sum is required"
 
 receipt="$(jq -cS . "$RECEIPT_FILE")" || fail_input "RECEIPT_FILE is not valid JSON"
+source_receipt_sha256="$(sha256sum "$RECEIPT_FILE" | awk '{print $1}')"
+[[ "$source_receipt_sha256" =~ ^[a-f0-9]{64}$ ]] || fail_input "cold snapshot receipt digest is invalid"
 manifest="$(jq -cS . "$RESTORE_MANIFEST")" || fail_input "RESTORE_MANIFEST is not valid JSON"
 jq -e '.format == "kubebrain.cold-physical-snapshot.v2"' <<<"$receipt" >/dev/null || fail_input "unsupported cold snapshot receipt"
 jq -e '.apiVersion == "v1" and .kind == "List" and (.items | type == "array")' <<<"$manifest" >/dev/null || fail_input "restore manifest must be a Kubernetes List"
@@ -50,6 +52,9 @@ storage_class="$(jq -r '[.items[] | select(.kind == "PersistentVolumeClaim") | .
 
 render_dir="$(mktemp -d)"
 rendered="${render_dir}/manifest.json"
+applied_manifest="${render_dir}/applied-manifest.json"
+printf '%s\n' "$manifest" >"$applied_manifest"
+chmod 600 "$applied_manifest"
 cleanup_rendered() { rm -rf "$render_dir"; }
 trap cleanup_rendered EXIT
 (cd "$ROOT_DIR" && go run ./hack/backup/cmd/cold-restore-render \
@@ -60,11 +65,17 @@ trap cleanup_rendered EXIT
   --confirm-isolated-target)
 [[ "$(jq -cS . "$rendered")" == "$manifest" ]] || { echo "RESTORE_MANIFEST differs from the canonical rendering of RECEIPT_FILE" >&2; exit 1; }
 
+verify_source_receipt() {
+  [[ "$(sha256sum "$RECEIPT_FILE" | awk '{print $1}')" == "$source_receipt_sha256" ]] ||
+    { echo "cold snapshot receipt changed after validation" >&2; exit 1; }
+}
+
 kctl() { "$KUBECTL" --context "$KUBE_CONTEXT" "$@"; }
 actual_cluster_uid="$(kctl get namespace kube-system -o jsonpath='{.metadata.uid}')"
 [[ "$actual_cluster_uid" == "$EXPECTED_TARGET_KUBE_SYSTEM_UID" ]] || { echo "target kube-system UID mismatch" >&2; exit 1; }
 actual_namespace_uid="$(kctl get namespace "$namespace" -o jsonpath='{.metadata.uid}')"
 [[ "$actual_namespace_uid" == "$EXPECTED_TARGET_NAMESPACE_UID" ]] || { echo "target namespace UID mismatch" >&2; exit 1; }
+verify_source_receipt
 
 snapshot_resources="$(kctl api-resources --api-group=snapshot.storage.k8s.io -o name 2>/dev/null || true)"
 grep -qx 'volumesnapshots.snapshot.storage.k8s.io' <<<"$snapshot_resources" &&
@@ -102,14 +113,13 @@ while IFS=$'\t' read -r kind name; do
   esac
 done < <(jq -r '.items[] | select(.kind == "VolumeSnapshotContent" or .kind == "VolumeSnapshot" or .kind == "PersistentVolumeClaim") | [.kind,.metadata.name] | @tsv' <<<"$manifest")
 
-rm -rf "$render_dir"
-trap - EXIT
 unpaused=false
 completed=false
 target_tidb_uid=""
 emergency_stop() {
   local status=$?
   trap - EXIT INT TERM
+  rm -rf "$render_dir"
   if [[ "$completed" != true && "$unpaused" == true && -n "$target_tidb_uid" ]]; then
     current="$(kctl -n "$namespace" get tidbcluster "$tidb_cluster" -o json 2>/dev/null || true)"
     if [[ -n "$current" ]] && [[ "$(jq -r '.metadata.uid // ""' <<<"$current")" == "$target_tidb_uid" ]]; then
@@ -135,7 +145,8 @@ emergency_stop() {
 }
 trap emergency_stop EXIT INT TERM
 
-kctl create -f "$RESTORE_MANIFEST" >/dev/null
+kctl create -f "$applied_manifest" >/dev/null
+rm -rf "$render_dir"
 while IFS= read -r name; do
   kctl -n "$namespace" wait --for=jsonpath='{.status.readyToUse}'=true "volumesnapshot/${name}" --timeout="$WAIT_TIMEOUT" >/dev/null
 done < <(jq -r '.items[] | select(.kind == "VolumeSnapshot") | .metadata.name' <<<"$manifest")
@@ -178,9 +189,10 @@ jq -e --argjson expected "$expected_restored_contents" '
   ([.[].snapshot_handle] | unique | length) == length
 ' <<<"$contents" >/dev/null || { echo "restored VolumeSnapshotContent inventory does not match restore manifest" >&2; exit 1; }
 
+verify_source_receipt
 receipt_tmp="${RESTORE_RECEIPT_FILE}.tmp.$$"
 jq -n --arg format kubebrain.cold-physical-restore.v1 --arg operation_id "$operation_id" \
-  --arg source_receipt_sha256 "$(sha256sum "$RECEIPT_FILE" | awk '{print $1}')" \
+  --arg source_receipt_sha256 "$source_receipt_sha256" \
   --arg restore_manifest_sha256 "$restore_manifest_sha256" \
   --argjson restore_manifest_item_count "$restore_manifest_item_count" \
   --argjson restore_manifest_vsc_count "$restore_manifest_vsc_count" \
@@ -201,6 +213,11 @@ jq -n --arg format kubebrain.cold-physical-restore.v1 --arg operation_id "$opera
     volume_snapshot_contents:$volume_snapshot_contents,pvcs:$pvcs,completed_at:$completed_at}' >"$receipt_tmp"
 chmod 600 "$receipt_tmp"
 sync -f "$receipt_tmp"
-mv "$receipt_tmp" "$RESTORE_RECEIPT_FILE"
+if ! ln "$receipt_tmp" "$RESTORE_RECEIPT_FILE" 2>/dev/null; then
+  rm -f "$receipt_tmp"
+  echo "restore receipt already exists" >&2
+  exit 1
+fi
+rm -f "$receipt_tmp"
 sync -f "$(dirname "$RESTORE_RECEIPT_FILE")"
 completed=true
