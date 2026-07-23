@@ -211,6 +211,15 @@ validate_audit_receipt() {
     .completed_at_unix >= .started_at_unix)' "$receipt_output" >/dev/null
 }
 
+validated_audit_receipt_digest() {
+  local digest
+  validate_audit_receipt || return 1
+  digest="$(sha256sum "$receipt_output" | cut -d ' ' -f1)" || return 1
+  [[ "$digest" =~ ^[a-f0-9]{64}$ ]] || return 1
+  validate_audit_receipt || return 1
+  printf '%s\n' "$digest"
+}
+
 child=0
 heartbeat_pid=0
 cleanup() {
@@ -270,7 +279,12 @@ if ! validate_audit_receipt; then
   echo "post-restore audit produced an invalid receipt" >&2
   exit 1
 fi
-receipt_digest="$(sha256sum "$receipt_output" | cut -d ' ' -f1)"
+if ! receipt_digest="$(validated_audit_receipt_digest)"; then
+  run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
+    --message "audit receipt invalid" >/dev/null
+  echo "post-restore audit produced an invalid receipt" >&2
+  exit 1
+fi
 run_operationctl --action succeed --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
   --receipt-sha256 "$receipt_digest" --message "post-restore audit completed" >/dev/null
 trap - EXIT INT TERM

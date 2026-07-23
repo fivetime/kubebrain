@@ -34,6 +34,14 @@ func TestPostRestoreAuditOperationRejectsInvalidReceipt(t *testing.T) {
 	require.NotContains(t, log, "--action succeed")
 }
 
+func TestPostRestoreAuditOperationRejectsReceiptTamperedDuringDigest(t *testing.T) {
+	f := newOperationRunnerFixture(t)
+	f.run(t, false, "TAMPER_RECEIPT_DURING_SHA256=true", "invalid receipt")
+	log := f.log(t)
+	require.Contains(t, log, "--action retry")
+	require.NotContains(t, log, "--action succeed")
+}
+
 func TestPostRestoreAuditOperationRejectsNonCanonicalCutoverState(t *testing.T) {
 	f := newOperationRunnerFixture(t)
 	path := filepath.Join(f.dir, "cutover.state")
@@ -133,15 +141,17 @@ printf '{"format":"kubebrain.post-restore-audit.receipt.v1","operation_id":"%s",
   "$OPERATION_ID" "$INSTANCE" "$TARGET_INSTANCE" "$artifact_sha" "$EXPECTED_REPLICAS" "$AUDIT_DURATION_SECONDS" "$AUDIT_INTERVAL_SECONDS" "$MIN_SAMPLES" >"$RECEIPT_OUTPUT"
 chmod 600 "$RECEIPT_OUTPUT"
 `)
+	env := []string{
+		"WORKER_ID=worker-a", "PARAMETERS_INPUT=" + parameters,
+		"OPERATION_NAMESPACE=ops", "LEASE_SECONDS=6",
+		"OPERATIONCTL=" + operationctl, "AUDIT_COMMAND=" + audit,
+		"FAKE_DIR=" + dir, "PARAMETERS_DIGEST=" + digest,
+		"MANAGED_PARAMETERS=" + parameters,
+	}
+	env = append(env, receiptDigestTamperEnv(t, dir, receipt)...)
 	return &operationRunnerFixture{
 		dir: dir, parameters: parameters,
-		env: []string{
-			"WORKER_ID=worker-a", "PARAMETERS_INPUT=" + parameters,
-			"OPERATION_NAMESPACE=ops", "LEASE_SECONDS=6",
-			"OPERATIONCTL=" + operationctl, "AUDIT_COMMAND=" + audit,
-			"FAKE_DIR=" + dir, "PARAMETERS_DIGEST=" + digest,
-			"MANAGED_PARAMETERS=" + parameters,
-		},
+		env: env,
 	}
 }
 

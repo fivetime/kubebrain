@@ -100,6 +100,14 @@ func TestDestroyOperationRejectsInvalidReceipt(t *testing.T) {
 	require.NotContains(t, log, "--action succeed")
 }
 
+func TestDestroyOperationRejectsReceiptTamperedDuringDigest(t *testing.T) {
+	f := newDestroyRunnerFixture(t, true)
+	f.run(t, false, "TAMPER_RECEIPT_DURING_SHA256=true", "invalid receipt")
+	log := f.log(t)
+	require.Contains(t, log, "--action retry")
+	require.NotContains(t, log, "--action succeed")
+}
+
 func TestDestroyOperationRejectsNonCanonicalStateBeforeSucceed(t *testing.T) {
 	f := newDestroyRunnerFixture(t, true)
 	f.run(t, false, "TAMPER_STATE_BEFORE_RECEIPT=1", "invalid receipt")
@@ -200,15 +208,17 @@ case "$ACTION" in
     ;;
 esac
 `)
+	env := []string{
+		"WORKER_ID=worker-a", "PARAMETERS_INPUT=" + parameters,
+		"OPERATION_NAMESPACE=ops", "LEASE_SECONDS=6", "HEARTBEAT_INTERVAL_SECONDS=0.02",
+		"OPERATIONCTL=" + operationctl, "DESTROY_COMMAND=" + destroy,
+		"FAKE_DIR=" + dir, "PARAMETERS_DIGEST=" + digest,
+		"DESTROY_BACKUP_SHA=" + destroyLogicalSHA, fmt.Sprintf("DESTROY_BACKUP_REVISION=%d", destroyLogicalRevision),
+	}
+	env = append(env, receiptDigestTamperEnv(t, dir, receipt)...)
 	return &destroyRunnerFixture{
 		dir: dir, parameters: parameters,
-		env: []string{
-			"WORKER_ID=worker-a", "PARAMETERS_INPUT=" + parameters,
-			"OPERATION_NAMESPACE=ops", "LEASE_SECONDS=6", "HEARTBEAT_INTERVAL_SECONDS=0.02",
-			"OPERATIONCTL=" + operationctl, "DESTROY_COMMAND=" + destroy,
-			"FAKE_DIR=" + dir, "PARAMETERS_DIGEST=" + digest,
-			"DESTROY_BACKUP_SHA=" + destroyLogicalSHA, fmt.Sprintf("DESTROY_BACKUP_REVISION=%d", destroyLogicalRevision),
-		},
+		env: env,
 	}
 }
 

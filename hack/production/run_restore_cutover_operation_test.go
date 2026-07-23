@@ -33,6 +33,14 @@ func TestRestoreCutoverOperationRejectsInvalidReceipt(t *testing.T) {
 	require.NotContains(t, log, "--action succeed")
 }
 
+func TestRestoreCutoverOperationRejectsReceiptTamperedDuringDigest(t *testing.T) {
+	f := newCutoverRunnerFixture(t)
+	f.run(t, false, "TAMPER_RECEIPT_DURING_SHA256=true", "invalid receipt")
+	log := f.log(t)
+	require.Contains(t, log, "--action fail")
+	require.NotContains(t, log, "--action succeed")
+}
+
 func TestRestoreCutoverOperationRejectsNonCanonicalStateBeforeSucceed(t *testing.T) {
 	f := newCutoverRunnerFixture(t)
 	f.run(t, false, "TAMPER_STATE_BEFORE_RECEIPT=true", "invalid receipt")
@@ -250,13 +258,15 @@ case "$ACTION" in
     ;;
 esac
 `)
+	env := []string{
+		"WORKER_ID=worker-a", "PARAMETERS_INPUT=" + parameters,
+		"OPERATION_NAMESPACE=ops", "LEASE_SECONDS=6", "OPERATIONCTL=" + operationctl,
+		"CUTOVER_COMMAND=" + cutover, "FAKE_DIR=" + dir, "PARAMETERS_DIGEST=" + digest,
+	}
+	env = append(env, receiptDigestTamperEnv(t, dir, receipt)...)
 	return &cutoverRunnerFixture{
 		dir: dir, parameters: parameters,
-		env: []string{
-			"WORKER_ID=worker-a", "PARAMETERS_INPUT=" + parameters,
-			"OPERATION_NAMESPACE=ops", "LEASE_SECONDS=6", "OPERATIONCTL=" + operationctl,
-			"CUTOVER_COMMAND=" + cutover, "FAKE_DIR=" + dir, "PARAMETERS_DIGEST=" + digest,
-		},
+		env: env,
 	}
 }
 

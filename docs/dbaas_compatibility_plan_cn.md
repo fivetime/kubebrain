@@ -10744,6 +10744,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   冲突分支都会清理 0600 临时文件并同步目录。回归：
   `go test ./hack/production -run 'TestBackupDeletionOperation' -count=1`
   通过。
+- A652 收紧 operation runner receipt digest 提交前复检：
+  Destroy、CertificateRotation、RestoreCutover 和 PostRestoreAudit runner 都会在子状态机
+  完成后用 strict validator 复核 receipt，再把 `sha256sum` 写入 Operation 终态；旧逻辑
+  在 validator 与 `sha256sum` 之间仍有本地 TOCTOU 窗口，异常替换可能让 queue 记录未验证
+  字节的 digest。现在四个 runner 都通过 `validated_*_receipt_digest` helper 执行
+  validate→hash→validate，第二次复检失败时沿用原来的 retry/fail 语义且不提交 succeed。
+  回归用 `sha256sum` wrapper 在最终 digest 读取瞬间替换 receipt，覆盖四类 runner：
+  `go test ./hack/production -run 'Test(DestroyOperation|CertificateRotationOperation|RestoreCutoverOperation|PostRestoreAuditOperation)RejectsReceiptTamperedDuringDigest' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

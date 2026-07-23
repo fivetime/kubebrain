@@ -100,6 +100,14 @@ func TestCertificateRotationOperationRejectsInvalidReceipt(t *testing.T) {
 	require.NotContains(t, log, "--action succeed")
 }
 
+func TestCertificateRotationOperationRejectsReceiptTamperedDuringDigest(t *testing.T) {
+	f := newRotationRunnerFixture(t)
+	f.run(t, false, "TAMPER_RECEIPT_DURING_SHA256=true", "invalid receipt")
+	log := f.log(t)
+	require.Contains(t, log, "--action retry")
+	require.NotContains(t, log, "--action succeed")
+}
+
 func TestCertificateRotationOperationRejectsNonCanonicalStateBeforeSucceed(t *testing.T) {
 	f := newRotationRunnerFixture(t)
 	f.run(t, false, "TAMPER_STATE_BEFORE_RECEIPT=1", "invalid receipt")
@@ -208,17 +216,19 @@ printf 'hook overlap\n' >>"$FAKE_DIR/actions.log"
 printf 'hook final\n' >>"$FAKE_DIR/actions.log"
 [[ "${FAIL_STEP:-}" != publish-final ]]
 `)
+	env := []string{
+		"WORKER_ID=worker-a", "PARAMETERS_INPUT=" + parameters,
+		"OPERATION_NAMESPACE=ops", "LEASE_SECONDS=6", "HEARTBEAT_INTERVAL_SECONDS=0.02",
+		"OPERATIONCTL=" + operationctl, "ROTATION_COMMAND=" + gate,
+		"PUBLISH_OVERLAP_COMMAND=" + overlapHook, "PUBLISH_FINAL_COMMAND=" + finalHook,
+		"FAKE_DIR=" + dir, "PARAMETERS_DIGEST=" + digest,
+		"ROTATION_OLD_FINGERPRINT=" + rotationOldFingerprint,
+		"ROTATION_NEW_FINGERPRINT=" + rotationNewFingerprint,
+	}
+	env = append(env, receiptDigestTamperEnv(t, dir, receipt)...)
 	return &rotationRunnerFixture{
 		dir: dir, parameters: parameters,
-		env: []string{
-			"WORKER_ID=worker-a", "PARAMETERS_INPUT=" + parameters,
-			"OPERATION_NAMESPACE=ops", "LEASE_SECONDS=6", "HEARTBEAT_INTERVAL_SECONDS=0.02",
-			"OPERATIONCTL=" + operationctl, "ROTATION_COMMAND=" + gate,
-			"PUBLISH_OVERLAP_COMMAND=" + overlapHook, "PUBLISH_FINAL_COMMAND=" + finalHook,
-			"FAKE_DIR=" + dir, "PARAMETERS_DIGEST=" + digest,
-			"ROTATION_OLD_FINGERPRINT=" + rotationOldFingerprint,
-			"ROTATION_NEW_FINGERPRINT=" + rotationNewFingerprint,
-		},
+		env: env,
 	}
 }
 

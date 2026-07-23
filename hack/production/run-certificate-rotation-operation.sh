@@ -306,6 +306,15 @@ validate_rotation_receipt() {
     "$receipt_output" >/dev/null
 }
 
+validated_rotation_receipt_digest() {
+  local digest
+  validate_rotation_receipt || return 1
+  digest="$(sha256sum "$receipt_output" | cut -d ' ' -f1)" || return 1
+  [[ "$digest" =~ ^[a-f0-9]{64}$ ]] || return 1
+  validate_rotation_receipt || return 1
+  printf '%s\n' "$digest"
+}
+
 if [[ -e "$receipt_output" ]]; then
   steps=(complete)
 elif [[ -e "$overlap_file" ]]; then
@@ -363,7 +372,12 @@ if ! validate_rotation_receipt; then
   echo "certificate rotation produced an invalid receipt" >&2
   exit 1
 fi
-receipt_digest="$(sha256sum "$receipt_output" | cut -d ' ' -f1)"
+if ! receipt_digest="$(validated_rotation_receipt_digest)"; then
+  run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
+    --message "certificate rotation receipt invalid" >/dev/null
+  echo "certificate rotation produced an invalid receipt" >&2
+  exit 1
+fi
 run_operationctl --action succeed --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
   --receipt-sha256 "$receipt_digest" --message "certificate rotation completed" >/dev/null
 trap - EXIT INT TERM
