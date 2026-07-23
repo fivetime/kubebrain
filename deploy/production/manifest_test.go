@@ -340,6 +340,24 @@ func TestOperationCRDAndWorkerRBACFencePersistentTasks(t *testing.T) {
 		t, version, "schema", "openAPIV3Schema", "properties", "spec",
 		"properties", "requestedBy", "maxLength",
 	))
+	controlFreePattern := `^[^\x00-\x1F\x7F-\x9F]*$`
+	require.Equal(t, controlFreePattern, nestedString(
+		t, version, "schema", "openAPIV3Schema", "properties", "spec",
+		"properties", "requestedBy", "pattern",
+	))
+	require.Equal(t, controlFreePattern, nestedString(
+		t, version, "schema", "openAPIV3Schema", "properties", "status",
+		"properties", "owner", "pattern",
+	))
+	require.Equal(t, controlFreePattern, nestedString(
+		t, version, "schema", "openAPIV3Schema", "properties", "status",
+		"properties", "message", "pattern",
+	))
+	controlFree, err := regexp.Compile(controlFreePattern)
+	require.NoError(t, err)
+	require.True(t, controlFree.MatchString("user@example.com completed"))
+	require.False(t, controlFree.MatchString("user\nexample"))
+	require.False(t, controlFree.MatchString("user\u0085example"))
 	_, found, err = unstructured.NestedMap(version.Object, "subresources", "status")
 	require.NoError(t, err)
 	require.True(t, found)

@@ -10502,6 +10502,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   retry/idempotent 路径继续要求注解与同一 receipt/artifact/version 精确匹配。回归：
   `go test ./hack/production/internal/operationauditrelease -run 'TestReleaseRejectsReceiptAndCurrentOperationDrift' -count=1`
   通过。
+- A628 将 operation audit 文本控制字符门禁同步到生产 CRD：
+  A622/A623 已让 audit artifact、queue 和 API 拒绝 `requestedBy`、`owner`、`message`
+  中的控制字符，但生产 KubeBrainOperation CRD 仍只限制这些字段长度。直接写 CRD、
+  旧 admission 或 fake-client 路径仍可能创建未来 artifact validator 必然拒绝的终态对象，
+  让 audit finalizer 长期保留。现在 CRD schema 对 `spec.requestedBy`、
+  `status.owner` 和 `status.message` 增加 C0/C1 control-free pattern，提前对齐
+  不可变审计 artifact 的字符串契约。回归：
+  `go test ./deploy/production -run 'TestOperationCRDAndWorkerRBACFencePersistentTasks' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

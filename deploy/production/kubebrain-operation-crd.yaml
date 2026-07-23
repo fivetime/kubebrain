@@ -84,6 +84,7 @@ spec:
                   type: string
                   minLength: 1
                   maxLength: 253
+                  pattern: '^[^\x00-\x1F\x7F-\x9F]*$'
                 instance:
                   type: string
                   minLength: 1
@@ -135,6 +136,7 @@ spec:
                 owner:
                   type: string
                   maxLength: 253
+                  pattern: '^[^\x00-\x1F\x7F-\x9F]*$'
                 attempt:
                   type: integer
                   format: int64
@@ -165,3 +167,4 @@ spec:
                 message:
                   type: string
                   maxLength: 4096
+                  pattern: '^[^\x00-\x1F\x7F-\x9F]*$'
