@@ -117,6 +117,19 @@ func TestDestroyOperationRejectsReceiptTamperedDuringDigest(t *testing.T) {
 	require.NotContains(t, log, "--action succeed")
 }
 
+func TestDestroyOperationRejectsValidReceiptChangedAfterDigest(t *testing.T) {
+	f := newDestroyRunnerFixture(t, true)
+	tamperedReceipt := filepath.Join(f.dir, "valid-tampered-receipt.json")
+	receipt := fmt.Sprintf(`{"backup_revision":%d,"backup_sha256":%q,"completed_at_unix":124,"format":"kubebrain.destroy.receipt.v1","instance":"instance-a","kubebrain_namespace":"instance-a","operation_id":"destroy-1","resources_absent":true,"tidb_cluster":"kb","tidb_namespace":"storage-a"}`+"\n", destroyLogicalRevision, destroyLogicalSHA)
+	require.NoError(t, os.WriteFile(tamperedReceipt, []byte(receipt), 0o600))
+	f.env = withReceiptAfterSHA256Tamper(f.env, tamperedReceipt)
+
+	f.run(t, false, "", "invalid receipt")
+	log := f.log(t)
+	require.Contains(t, log, "--action retry")
+	require.NotContains(t, log, "--action succeed")
+}
+
 func TestDestroyOperationRejectsNonCanonicalStateBeforeSucceed(t *testing.T) {
 	f := newDestroyRunnerFixture(t, true)
 	f.run(t, false, "TAMPER_STATE_BEFORE_RECEIPT=1", "invalid receipt")

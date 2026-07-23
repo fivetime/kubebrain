@@ -269,20 +269,24 @@ validate_deletion_receipt() {
 }
 
 validated_inventory_receipt_digest() {
-  local path="$1" manifest_sha="$2" min_versions="$3" digest
+  local path="$1" manifest_sha="$2" min_versions="$3" digest current_digest
   validate_inventory_receipt "$path" "$manifest_sha" "$min_versions" || return 1
   digest="$(sha256sum "$path" | cut -d ' ' -f1)" || return 1
   [[ "$digest" =~ ^[a-f0-9]{64}$ ]] || return 1
   validate_inventory_receipt "$path" "$manifest_sha" "$min_versions" || return 1
+  current_digest="$(sha256sum "$path" | cut -d ' ' -f1)" || return 1
+  [[ "$current_digest" == "$digest" ]] || return 1
   printf '%s\n' "$digest"
 }
 
 validated_deletion_receipt_digest() {
-  local digest
+  local digest current_digest
   validate_deletion_receipt || return 1
   digest="$(sha256sum "$deletion_receipt" | cut -d ' ' -f1)" || return 1
   [[ "$digest" =~ ^[a-f0-9]{64}$ ]] || return 1
   validate_deletion_receipt || return 1
+  current_digest="$(sha256sum "$deletion_receipt" | cut -d ' ' -f1)" || return 1
+  [[ "$current_digest" == "$digest" ]] || return 1
   printf '%s\n' "$digest"
 }
 
@@ -320,11 +324,13 @@ validate_operation_receipt() {
 }
 
 validated_operation_receipt_digest() {
-  local digest
+  local digest current_digest
   validate_operation_receipt || return 1
   digest="$(sha256sum "$operation_receipt" | cut -d ' ' -f1)" || return 1
   [[ "$digest" =~ ^[a-f0-9]{64}$ ]] || return 1
   validate_operation_receipt || return 1
+  current_digest="$(sha256sum "$operation_receipt" | cut -d ' ' -f1)" || return 1
+  [[ "$current_digest" == "$digest" ]] || return 1
   printf '%s\n' "$digest"
 }
 

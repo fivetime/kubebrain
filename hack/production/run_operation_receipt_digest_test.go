@@ -40,6 +40,15 @@ if [[ "${TAMPER_RECEIPT_DURING_SHA256:-false}" == true &&
   chmod 600 "$RUNNER_RECEIPT_OUTPUT"
   touch "$FAKE_DIR/receipt-tampered-during-sha256"
 fi
+if [[ "${TAMPER_RECEIPT_AFTER_SHA256:-false}" == true &&
+  "$#" -ge 1 && "$1" == "$RUNNER_RECEIPT_OUTPUT" &&
+  ! -f "$FAKE_DIR/receipt-tampered-after-sha256" ]]; then
+  "$REAL_SHA256SUM" "$@"
+  cp "$TAMPERED_VALID_RECEIPT_SOURCE" "$RUNNER_RECEIPT_OUTPUT"
+  chmod 600 "$RUNNER_RECEIPT_OUTPUT"
+  touch "$FAKE_DIR/receipt-tampered-after-sha256"
+  exit 0
+fi
 exec "$REAL_SHA256SUM" "$@"
 `)
 	return []string{
@@ -48,4 +57,11 @@ exec "$REAL_SHA256SUM" "$@"
 		"RUNNER_RECEIPT_OUTPUT=" + receiptPath,
 		"TAMPERED_RECEIPT_SOURCE=" + tamperedReceipt,
 	}
+}
+
+func withReceiptAfterSHA256Tamper(env []string, validReceiptPath string) []string {
+	return append(env,
+		"TAMPER_RECEIPT_AFTER_SHA256=true",
+		"TAMPERED_VALID_RECEIPT_SOURCE="+validReceiptPath,
+	)
 }

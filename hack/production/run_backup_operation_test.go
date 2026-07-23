@@ -51,6 +51,22 @@ func TestBackupOperationRejectsReceiptTamperedDuringDigest(t *testing.T) {
 	require.NotContains(t, log, "--action succeed")
 }
 
+func TestBackupOperationRejectsValidReceiptChangedAfterDigest(t *testing.T) {
+	f := newBackupRunnerFixture(t, true)
+	artifact := filepath.Join(f.dir, "artifact.jsonl")
+	tamperedReceipt := filepath.Join(f.dir, "valid-tampered-receipt.json")
+	require.NoError(t, os.WriteFile(tamperedReceipt, []byte(fmt.Sprintf(
+		`{"format":"kubebrain.object-backup.receipt.v1","instance":"instance-a","backup_id":"backup-1","object_store_id":"store-a","bucket":"backups","object_key":"instance-a/backup-1.jsonl","version_id":"version-1","artifact_file_sha256":"%s","artifact_format":"kubebrain.logical.v2","artifact_sha256":"%s","snapshot_revision":42,"created_at_unix":100,"records":2,"leases":1,"object_bytes":%d,"retention_mode":"COMPLIANCE","retain_until_unix":2000000000,"remote_verified":true,"uploaded_at_unix":1001}`+"\n",
+		fileDigest(t, artifact), backupArtifactSHA256, len(mustRead(t, artifact)),
+	)), 0o600))
+	f.env = withReceiptAfterSHA256Tamper(f.env, tamperedReceipt)
+
+	f.run(t, false, "", "invalid object receipt")
+	log := f.log(t)
+	require.Contains(t, log, "--action retry")
+	require.NotContains(t, log, "--action succeed")
+}
+
 func TestBackupOperationReusesExistingArtifact(t *testing.T) {
 	f := newBackupRunnerFixture(t, true)
 	f.run(t, true, "")

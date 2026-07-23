@@ -41,6 +41,19 @@ func TestRestoreCutoverOperationRejectsReceiptTamperedDuringDigest(t *testing.T)
 	require.NotContains(t, log, "--action succeed")
 }
 
+func TestRestoreCutoverOperationRejectsValidReceiptChangedAfterDigest(t *testing.T) {
+	f := newCutoverRunnerFixture(t)
+	tamperedReceipt := filepath.Join(f.dir, "valid-tampered-receipt.json")
+	receipt := strings.Replace(cutoverRunnerReceipt(), `"completed_at_unix":100`, `"completed_at_unix":101`, 1)
+	require.NoError(t, os.WriteFile(tamperedReceipt, []byte(receipt), 0o600))
+	f.env = withReceiptAfterSHA256Tamper(f.env, tamperedReceipt)
+
+	f.run(t, false, "", "invalid receipt")
+	log := f.log(t)
+	require.Contains(t, log, "--action fail")
+	require.NotContains(t, log, "--action succeed")
+}
+
 func TestRestoreCutoverOperationRejectsNonCanonicalStateBeforeSucceed(t *testing.T) {
 	f := newCutoverRunnerFixture(t)
 	f.run(t, false, "TAMPER_STATE_BEFORE_RECEIPT=true", "invalid receipt")

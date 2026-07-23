@@ -10906,6 +10906,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   后续 health、fingerprint 与 receipt 复用全部只读冻结副本；捕获漂移时 fail closed。回归：
   `go test ./hack/production -run 'TestValidateCertificateRotation|TestCertificateRotationOperation' -count=1`
   通过。
+- A669 收紧 operation runner 的 receipt digest 稳定性：
+  Backup、Destroy、RestoreCutover、PostRestoreAudit、CertificateRotation 与
+  BackupDeletion runner 在提交 succeed 前都会先 validate receipt、计算 SHA，再复检
+  receipt 语义；旧逻辑没有要求复检后的文件 bytes 仍等于即将提交的 digest，若本地 receipt
+  在 hash 后被替换成另一个语义仍合法但 bytes 不同的 JSON，operation 状态可能记录 stale
+  receipt SHA。现在相关 `validated_*_receipt_digest` helper 都执行
+  validate → hash → validate → hash → compare，任何 digest 窗口漂移都会 fail closed；
+  BackupDeletion 的 pre inventory、deletion、post inventory 子 receipt 也使用同样稳定性
+  fence。回归：
+  `go test ./hack/production -run 'TestBackupOperation|TestDestroyOperation|TestRestoreCutoverOperation|TestPostRestoreAuditOperation|TestCertificateRotationOperation|TestBackupDeletionOperation' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

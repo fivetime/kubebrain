@@ -335,11 +335,13 @@ validate_destroy_receipt() {
 }
 
 validated_destroy_receipt_digest() {
-  local digest
+  local digest current_digest
   validate_destroy_receipt || return 1
   digest="$(sha256sum "$receipt_output" | cut -d ' ' -f1)" || return 1
   [[ "$digest" =~ ^[a-f0-9]{64}$ ]] || return 1
   validate_destroy_receipt || return 1
+  current_digest="$(sha256sum "$receipt_output" | cut -d ' ' -f1)" || return 1
+  [[ "$current_digest" == "$digest" ]] || return 1
   printf '%s\n' "$digest"
 }
 

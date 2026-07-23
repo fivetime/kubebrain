@@ -42,6 +42,23 @@ func TestPostRestoreAuditOperationRejectsReceiptTamperedDuringDigest(t *testing.
 	require.NotContains(t, log, "--action succeed")
 }
 
+func TestPostRestoreAuditOperationRejectsValidReceiptChangedAfterDigest(t *testing.T) {
+	f := newOperationRunnerFixture(t)
+	tamperedReceipt := filepath.Join(f.dir, "valid-tampered-receipt.json")
+	receipt := fmt.Sprintf(`{"format":"kubebrain.post-restore-audit.receipt.v1","operation_id":"audit-1","instance":"instance-a","cutover_operation_id":"cutover-1","service_uid":"uid-service","target_instance":"target","artifact_sha256":"%s","cutover_state_sha256":"%s","cutover_receipt_sha256":"%s","snapshot_revision":42,"replicas":2,"duration_seconds":1,"interval_seconds":0,"samples":1,"first_probe_revision":1,"last_probe_revision":2,"topology_unchanged":true,"all_probes_succeeded":true,"completed":true,"started_at_unix":1,"completed_at_unix":3}`+"\n",
+		operationAuditArtifactSHA256,
+		fileDigest(t, filepath.Join(f.dir, "cutover.state")),
+		fileDigest(t, filepath.Join(f.dir, "cutover.json")),
+	)
+	require.NoError(t, os.WriteFile(tamperedReceipt, []byte(receipt), 0o600))
+	f.env = withReceiptAfterSHA256Tamper(f.env, tamperedReceipt)
+
+	f.run(t, false, "", "invalid receipt")
+	log := f.log(t)
+	require.Contains(t, log, "--action retry")
+	require.NotContains(t, log, "--action succeed")
+}
+
 func TestPostRestoreAuditOperationRejectsNonCanonicalCutoverState(t *testing.T) {
 	f := newOperationRunnerFixture(t)
 	path := filepath.Join(f.dir, "cutover.state")

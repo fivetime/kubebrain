@@ -56,6 +56,24 @@ func TestBackupDeletionOperationRejectsReceiptTamperedDuringDigest(t *testing.T)
 	require.NotContains(t, f.log(t), "--action succeed")
 }
 
+func TestBackupDeletionOperationRejectsValidOperationReceiptChangedAfterDigest(t *testing.T) {
+	f := newBackupDeletionFixture(t)
+	f.run(t, true, "")
+
+	var receipt map[string]any
+	require.NoError(t, json.Unmarshal(mustRead(t, f.operationReceipt), &receipt))
+	receipt["completed_at_unix"] = 999999
+	data, err := json.Marshal(receipt)
+	require.NoError(t, err)
+	tamperedReceipt := filepath.Join(f.dir, "valid-tampered-operation-receipt.json")
+	require.NoError(t, os.WriteFile(tamperedReceipt, append(data, '\n'), 0o600))
+	f.env = withReceiptAfterSHA256Tamper(f.env, tamperedReceipt)
+	require.NoError(t, os.Remove(filepath.Join(f.dir, "actions.log")))
+
+	f.run(t, false, "", "operation receipt is invalid")
+	require.NotContains(t, f.log(t), "--action succeed")
+}
+
 func TestBackupDeletionOperationRejectsEvidenceTamperedDuringDigest(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -87,6 +105,70 @@ func TestBackupDeletionOperationRejectsEvidenceTamperedDuringDigest(t *testing.T
 		t.Run(tc.name, func(t *testing.T) {
 			f := newBackupDeletionFixture(t)
 			f.run(t, false, "TAMPER_RECEIPT_DURING_SHA256=true\nRUNNER_RECEIPT_OUTPUT="+tc.path(f), tc.want)
+			require.NotContains(t, f.log(t), "--action succeed")
+		})
+	}
+}
+
+func TestBackupDeletionOperationRejectsValidEvidenceReceiptChangedAfterDigest(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		path   func(*backupDeletionFixture) string
+		source func(*testing.T, *backupDeletionFixture) string
+		want   string
+	}{
+		{
+			name: "pre inventory",
+			path: func(f *backupDeletionFixture) string {
+				return f.preInventoryReceipt
+			},
+			source: func(t *testing.T, f *backupDeletionFixture) string {
+				t.Helper()
+				path := filepath.Join(f.dir, "valid-pre-inventory.json")
+				require.NoError(t, os.WriteFile(path, []byte(fmt.Sprintf(
+					` {"format":"kubebrain.object-inventory.receipt.v1","object_store_id":"store-a","bucket":"backups","prefix":"instance-a/","manifest_sha256":"%s","expected_versions":1,"remote_versions":1,"delete_markers":0,"all_matched":true,"checked_at_unix":1}`+"\n",
+					fileDigest(t, f.preManifest),
+				)), 0o600))
+				return path
+			},
+			want: "pre-delete inventory receipt is invalid",
+		},
+		{
+			name: "deletion",
+			path: func(f *backupDeletionFixture) string {
+				return f.deletionReceipt
+			},
+			source: func(t *testing.T, f *backupDeletionFixture) string {
+				t.Helper()
+				path := filepath.Join(f.dir, "valid-deletion.json")
+				require.NoError(t, os.WriteFile(path, []byte(` {"format":"kubebrain.object-backup-deletion.receipt.v1","instance":"instance-a","backup_id":"backup-1","object_store_id":"store-a","bucket":"backups","object_key":"instance-a/backup-1.jsonl","version_id":"version-1","artifact_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","retention_mode":"COMPLIANCE","retain_until_unix":2,"version_absent":true,"deleted_at_unix":2}`+"\n"), 0o600))
+				return path
+			},
+			want: "backup deletion receipt is invalid",
+		},
+		{
+			name: "post inventory",
+			path: func(f *backupDeletionFixture) string {
+				return f.postInventoryReceipt
+			},
+			source: func(t *testing.T, f *backupDeletionFixture) string {
+				t.Helper()
+				path := filepath.Join(f.dir, "valid-post-inventory.json")
+				require.NoError(t, os.WriteFile(path, []byte(fmt.Sprintf(
+					` {"format":"kubebrain.object-inventory.receipt.v1","object_store_id":"store-a","bucket":"backups","prefix":"instance-a/","manifest_sha256":"%s","expected_versions":0,"remote_versions":0,"delete_markers":0,"all_matched":true,"checked_at_unix":1}`+"\n",
+					fileDigest(t, f.postManifest),
+				)), 0o600))
+				return path
+			},
+			want: "post-delete inventory receipt is invalid",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newBackupDeletionFixture(t)
+			f.run(t, false, fmt.Sprintf(
+				"TAMPER_RECEIPT_AFTER_SHA256=true\nRUNNER_RECEIPT_OUTPUT=%s\nTAMPERED_VALID_RECEIPT_SOURCE=%s",
+				tc.path(f), tc.source(t, f),
+			), tc.want)
 			require.NotContains(t, f.log(t), "--action succeed")
 		})
 	}

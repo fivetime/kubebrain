@@ -123,6 +123,19 @@ func TestCertificateRotationOperationRejectsReceiptTamperedDuringDigest(t *testi
 	require.NotContains(t, log, "--action succeed")
 }
 
+func TestCertificateRotationOperationRejectsValidReceiptChangedAfterDigest(t *testing.T) {
+	f := newRotationRunnerFixture(t)
+	tamperedReceipt := filepath.Join(f.dir, "valid-tampered-receipt.json")
+	receipt := fmt.Sprintf(`{"completed_at_unix":124,"endpoint":"https://instance.example:2379","format":"kubebrain.certificate-rotation.receipt.v1","instance":"instance-a","new_certificate_sha256":%q,"old_certificate_rejected":true,"old_certificate_sha256":%q,"pods_unchanged":true,"replicas":3,"rotation_id":"rotation-1"}`+"\n", rotationNewFingerprint, rotationOldFingerprint)
+	require.NoError(t, os.WriteFile(tamperedReceipt, []byte(receipt), 0o600))
+	f.env = withReceiptAfterSHA256Tamper(f.env, tamperedReceipt)
+
+	f.run(t, false, "", "invalid receipt")
+	log := f.log(t)
+	require.Contains(t, log, "--action retry")
+	require.NotContains(t, log, "--action succeed")
+}
+
 func TestCertificateRotationOperationRejectsNonCanonicalStateBeforeSucceed(t *testing.T) {
 	f := newRotationRunnerFixture(t)
 	f.run(t, false, "TAMPER_STATE_BEFORE_RECEIPT=1", "invalid receipt")
