@@ -161,6 +161,18 @@ func TestOperationAuditRejectsUnsafeIdentityFields(t *testing.T) {
 			},
 		},
 		{
+			name: "operation_id_colon",
+			mutate: func(artifact *Artifact) {
+				artifact.OperationID = "backup:1"
+			},
+		},
+		{
+			name: "operation_id_unicode",
+			mutate: func(artifact *Artifact) {
+				artifact.OperationID = "backup-é"
+			},
+		},
+		{
 			name: "operation_id_too_long",
 			mutate: func(artifact *Artifact) {
 				artifact.OperationID = strings.Repeat("o", maxOperationIDLength+1)
@@ -170,6 +182,12 @@ func TestOperationAuditRejectsUnsafeIdentityFields(t *testing.T) {
 			name: "instance_control_byte",
 			mutate: func(artifact *Artifact) {
 				artifact.Instance = "instance-a\x00"
+			},
+		},
+		{
+			name: "instance_at_sign",
+			mutate: func(artifact *Artifact) {
+				artifact.Instance = "instance@a"
 			},
 		},
 		{
@@ -272,6 +290,12 @@ func TestArchiveReceiptRejectsUnsafeOperationIdentity(t *testing.T) {
 			},
 		},
 		{
+			name: "operation_id_colon",
+			mutate: func(receipt *ArchiveReceipt) {
+				receipt.OperationID = "backup:1"
+			},
+		},
+		{
 			name: "operation_id_too_long",
 			mutate: func(receipt *ArchiveReceipt) {
 				receipt.OperationID = strings.Repeat("o", maxOperationIDLength+1)
@@ -293,6 +317,12 @@ func TestArchiveReceiptRejectsUnsafeOperationIdentity(t *testing.T) {
 			name: "instance_unicode_space",
 			mutate: func(receipt *ArchiveReceipt) {
 				receipt.Instance = "instance\u00a0a"
+			},
+		},
+		{
+			name: "instance_at_sign",
+			mutate: func(receipt *ArchiveReceipt) {
+				receipt.Instance = "instance@a"
 			},
 		},
 		{

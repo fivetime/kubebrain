@@ -75,6 +75,7 @@ type Status struct {
 }
 
 var approvalIDPattern = regexp.MustCompile(`^[a-z0-9]([-a-z0-9.]{0,126}[a-z0-9])?$`)
+var operationIdentifierPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 var tenantPattern = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
 
 type ArchiveReceipt struct {
@@ -102,10 +103,10 @@ func (a Artifact) Validate() error {
 		!validAuditIdentityValue(a.Namespace, maxOperationNamespaceLength) ||
 		!validAuditIdentityValue(a.Name, maxOperationNameLength) ||
 		!validAuditIdentityValue(a.UID, maxOperationUIDLength) || a.Generation <= 0 ||
-		!validAuditIdentityValue(a.OperationID, maxOperationIDLength) ||
+		!validOperationIdentifier(a.OperationID, maxOperationIDLength) ||
 		!validOptionalTenant(a.Tenant) ||
 		!validOptionalAuditText(a.RequestedBy, maxOperationRequesterLength) ||
-		!validAuditIdentityValue(a.Instance, maxOperationInstanceLength) ||
+		!validOperationIdentifier(a.Instance, maxOperationInstanceLength) ||
 		!validOperationType(a.Type) ||
 		!validSHA256(a.ParametersSHA256) || a.MaxAttempts <= 0 ||
 		a.MaxAttempts > maxOperationAttempts ||
@@ -148,6 +149,12 @@ func validAuditIdentityValue(value string, maxRunes int) bool {
 		value != "." && value != ".."
 }
 
+func validOperationIdentifier(value string, maxLength int) bool {
+	return len(value) <= maxLength &&
+		utf8.ValidString(value) &&
+		operationIdentifierPattern.MatchString(value)
+}
+
 func validOptionalTenant(value string) bool {
 	return value == "" ||
 		(utf8.ValidString(value) &&
@@ -187,9 +194,9 @@ func validSHA256(value string) bool {
 
 func (r ArchiveReceipt) Validate() error {
 	if r.Format != ArchiveReceiptFormat ||
-		!validAuditIdentityValue(r.OperationID, maxOperationIDLength) ||
+		!validOperationIdentifier(r.OperationID, maxOperationIDLength) ||
 		!validAuditIdentityValue(r.OperationUID, maxOperationUIDLength) ||
-		!validAuditIdentityValue(r.Instance, maxOperationInstanceLength) ||
+		!validOperationIdentifier(r.Instance, maxOperationInstanceLength) ||
 		!validOperationType(r.OperationType) ||
 		(r.Phase != "Succeeded" && r.Phase != "Failed") ||
 		(r.Phase == "Succeeded" && !validSHA256(r.ExecutionReceiptSHA256)) ||

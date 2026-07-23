@@ -108,9 +108,27 @@ func TestFromOperationRejectsUnsafeIdentityMetadata(t *testing.T) {
 			},
 		},
 		{
+			name: "operation_id_colon",
+			mutate: func(object *unstructured.Unstructured) {
+				_ = unstructured.SetNestedField(object.Object, "backup:1", "spec", "operationID")
+			},
+		},
+		{
+			name: "operation_id_unicode",
+			mutate: func(object *unstructured.Unstructured) {
+				_ = unstructured.SetNestedField(object.Object, "backup-é", "spec", "operationID")
+			},
+		},
+		{
 			name: "instance_slash",
 			mutate: func(object *unstructured.Unstructured) {
 				_ = unstructured.SetNestedField(object.Object, "instance/a", "spec", "instance")
+			},
+		},
+		{
+			name: "instance_at_sign",
+			mutate: func(object *unstructured.Unstructured) {
+				_ = unstructured.SetNestedField(object.Object, "instance@a", "spec", "instance")
 			},
 		},
 	} {

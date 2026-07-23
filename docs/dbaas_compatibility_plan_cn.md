@@ -10522,6 +10522,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   终态显式清空 receipt，避免“尝试次数耗尽”本身生成不可归档对象。回归：
   `go test ./hack/production/internal/operationqueue ./deploy/production -run 'TestQueue(StopsAfterMaximumAttempts|MarksRequeuedExhaustionWithAuditCompleteStatus)|TestOperationCRDAndWorkerRBACFencePersistentTasks' -count=1`
   通过。
+- A630 对齐 operation audit 的 CRD 标识符字符集：
+  `Queue.Submit` 与生产 CRD 已要求 `spec.operationID`/`spec.instance` 满足
+  `^[A-Za-z0-9][A-Za-z0-9._-]*$`，但 `operationaudit.Artifact.Validate` 与 archive
+  receipt 仍只排除空白、控制字符、`/` 和 `.`/`..`，会接受 `backup:1`、
+  `instance@a` 或非 ASCII 等真实 CRD 不会接受的标识符。旧对象、旧 CRD、fake-client
+  或被替换的 executor 可以把这类标识符写入不可变 audit artifact/receipt，并让离线证据
+  与生产 API 契约分叉。现在 artifact 与 archive receipt 对 operation ID 和 instance
+  复用 CRD/queue 的 ASCII 标识符形状；namespace/name/UID 仍按 Kubernetes metadata
+  证据的 key-safe 规则处理。回归：
+  `go test ./hack/production/operationaudit ./hack/production/internal/operationauditbuilder -run 'TestOperationAuditRejectsUnsafeIdentityFields|TestArchiveReceiptRejectsUnsafeOperationIdentity|TestFromOperationRejectsUnsafeIdentityMetadata' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 
