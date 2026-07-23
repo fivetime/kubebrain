@@ -10965,6 +10965,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   原有 retry 路径，不进入 export/object workflow。回归：
   `go test ./hack/production -run 'TestBackupOperation' -count=1`
   通过。
+- A675 冻结 Destroy operation runner 的参数输入：
+  `run-destroy-operation.sh` 旧逻辑在 claimed parameter digest 通过后继续从原始
+  `PARAMETERS_INPUT` 解析 backup path、confirmation token、namespace 与 state/receipt 路径；
+  若参数文件在 digest 后被替换，runner 可能对未被 claim 绑定的实例或 artifact 执行 destroy
+  phase。现在 runner 使用私有目录捕获参数副本，要求源路径和副本在捕获窗口内都等于
+  claimed SHA，后续 JSON 解析只读冻结副本；原有 backup artifact 副本也迁入同一私有目录。
+  参数捕获漂移走 retry，且不会进入 prepare/quiesce/destroy/complete phase。回归：
+  `go test ./hack/production -run 'TestDestroyOperation' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

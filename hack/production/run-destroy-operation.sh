@@ -35,9 +35,23 @@ EOF
 [[ "$LEASE_SECONDS" =~ ^[1-9][0-9]*$ && "$LEASE_SECONDS" -ge 6 ]] ||
   { echo "LEASE_SECONDS must be an integer of at least 6" >&2; exit 2; }
 command -v "$JQ" >/dev/null || { echo "jq is required" >&2; exit 2; }
+command -v sha256sum >/dev/null || { echo "sha256sum is required" >&2; exit 2; }
 heartbeat_interval="${HEARTBEAT_INTERVAL_SECONDS:-$((LEASE_SECONDS / 3))}"
 [[ "$heartbeat_interval" =~ ^([0-9]+([.][0-9]+)?|[.][0-9]+)$ && "$heartbeat_interval" != 0 ]] ||
   { echo "HEARTBEAT_INTERVAL_SECONDS must be positive" >&2; exit 2; }
+
+managed_parameters=""
+managed_backup=""
+capture_dir="$(mktemp -d)"
+cleanup_capture_dir() { rm -rf "$capture_dir"; }
+trap cleanup_capture_dir EXIT
+
+file_sha256() {
+  local digest
+  digest="$(sha256sum "$1" | cut -d ' ' -f1)" || return 1
+  [[ "$digest" =~ ^[a-f0-9]{64}$ ]] || return 1
+  printf '%s' "$digest"
+}
 
 operationctl=()
 if [[ -n "$OPERATIONCTL" ]]; then
@@ -71,22 +85,32 @@ operation_id="$("$JQ" -er '.operation_id' <<<"$claim")"
 instance="$("$JQ" -er '.instance' <<<"$claim")"
 attempt="$("$JQ" -er '.attempt | select(. > 0)' <<<"$claim")"
 expected_digest="$("$JQ" -er '.parameters_sha256 | select(test("^[a-f0-9]{64}$"))' <<<"$claim")"
-managed_parameters=""
-managed_backup=""
 if [[ -z "$PARAMETERS_INPUT" ]]; then
-  managed_parameters="$(mktemp)"
+  managed_parameters="${capture_dir}/managed-parameters.json"
   PARAMETERS_INPUT="$managed_parameters"
-  trap 'rm -f "$managed_parameters"' EXIT
   run_operationctl --action parameters --name "$name" --owner "$WORKER_ID" \
     --attempt "$attempt" >"$PARAMETERS_INPUT"
 fi
-actual_digest="$(sha256sum "$PARAMETERS_INPUT" | cut -d ' ' -f1)"
+actual_digest="$(file_sha256 "$PARAMETERS_INPUT")" || actual_digest=""
 if [[ "$actual_digest" != "$expected_digest" ]]; then
   run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
     --message "parameters digest mismatch" >/dev/null
   echo "claimed operation parameters digest does not match PARAMETERS_INPUT" >&2
   exit 1
 fi
+frozen_parameters="${capture_dir}/parameters.json"
+cp -- "$PARAMETERS_INPUT" "$frozen_parameters" ||
+  { echo "capture operation parameters failed" >&2; exit 2; }
+chmod 600 "$frozen_parameters"
+captured_digest="$(file_sha256 "$frozen_parameters")" || captured_digest=""
+current_digest="$(file_sha256 "$PARAMETERS_INPUT")" || current_digest=""
+if [[ "$captured_digest" != "$expected_digest" || "$current_digest" != "$expected_digest" ]]; then
+  run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
+    --message "parameters digest mismatch" >/dev/null
+  echo "claimed operation parameters digest does not match PARAMETERS_INPUT" >&2
+  exit 1
+fi
+PARAMETERS_INPUT="$frozen_parameters"
 
 parameters="$("$JQ" -er '[
   .state_dir, .backup_input, .backup_file_sha256, .backup_prefix,
@@ -115,19 +139,18 @@ done
 [[ -f "$backup_input" ]] || { echo "destroy backup input does not exist" >&2; exit 2; }
 [[ "$backup_file_sha" =~ ^[a-f0-9]{64}$ ]] ||
   { echo "backup_file_sha256 is invalid" >&2; exit 2; }
-actual_backup_sha="$(sha256sum "$backup_input" | cut -d ' ' -f1)"
+actual_backup_sha="$(file_sha256 "$backup_input")" || actual_backup_sha=""
 if [[ "$actual_backup_sha" != "$backup_file_sha" ]]; then
   run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
     --message "destroy backup file digest mismatch" >/dev/null
   echo "destroy backup bytes do not match the immutable parameter digest" >&2
   exit 1
 fi
-managed_backup="$(mktemp)"
-trap 'rm -f "${managed_parameters:-}" "${managed_backup:-}"' EXIT
-cp "$backup_input" "$managed_backup"
+managed_backup="${capture_dir}/backup.jsonl"
+cp -- "$backup_input" "$managed_backup"
 chmod 600 "$managed_backup"
-captured_backup_sha="$(sha256sum "$managed_backup" | cut -d ' ' -f1)"
-current_backup_sha="$(sha256sum "$backup_input" | cut -d ' ' -f1)"
+captured_backup_sha="$(file_sha256 "$managed_backup")" || captured_backup_sha=""
+current_backup_sha="$(file_sha256 "$backup_input")" || current_backup_sha=""
 if [[ "$captured_backup_sha" != "$backup_file_sha" || "$current_backup_sha" != "$backup_file_sha" ]]; then
   run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
     --message "destroy backup file changed during capture" >/dev/null
@@ -160,6 +183,7 @@ child=0
 heartbeat_pid=0
 fenced=false
 cleanup() {
+  rm -rf "$capture_dir"
   [[ -z "$managed_parameters" ]] || rm -f "$managed_parameters"
   [[ -z "$managed_backup" ]] || rm -f "$managed_backup"
   if [[ "$child" -gt 0 ]] && kill -0 "$child" 2>/dev/null; then
@@ -392,4 +416,5 @@ if ! receipt_digest="$(validated_destroy_receipt_digest)"; then
 fi
 run_operationctl --action succeed --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
   --receipt-sha256 "$receipt_digest" --message "instance destruction completed" >/dev/null
+cleanup
 trap - EXIT INT TERM
