@@ -71,6 +71,18 @@ func TestDestroyInstanceRejectsNestedExistingReceiptFields(t *testing.T) {
 	require.Equal(t, shadowReceipt, string(data))
 }
 
+func TestDestroyInstanceRejectsBackupDriftDuringCapture(t *testing.T) {
+	fixture := newDestroyFixture(t)
+	fixture.run(t, "prepare", false, "TAMPER_BACKUP_DURING_SHA256=true",
+		"logical backup changed while being captured")
+	require.NoFileExists(t, filepath.Join(fixture.stateDir, "destroy-1.state"))
+}
+
+func TestDestroyInstancePassesFrozenBackupToStatus(t *testing.T) {
+	fixture := newDestroyFixture(t)
+	fixture.run(t, "prepare", true, "ASSERT_FROZEN_BACKUP_INPUT=true")
+}
+
 func TestDestroyInstanceFailsClosed(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
@@ -207,6 +219,10 @@ if [[ "${FAKE_BACKUP_FAIL:-false}" == true ]]; then
   exit 1
 fi
 if [[ -z "${FIELD:-}" ]]; then
+  if [[ "${ASSERT_FROZEN_BACKUP_INPUT:-false}" == true ]]; then
+    [[ "$INPUT" != "$DESTROY_BACKUP_SOURCE" ]] || { echo backup input was not frozen >&2; exit 1; }
+    cmp -s "$INPUT" "$DESTROY_BACKUP_SOURCE" || { echo frozen backup input content mismatch >&2; exit 1; }
+  fi
   printf '{"created_at_unix":1,"format":"kubebrain.logical.v2","leases":0,"prefix":"%s","records":2,"revision":987654321,"sha256":"%s"}\n' "${EXPECTED_PREFIX:-/registry}" "${FAKE_BACKUP_SHA:-`+destroyBackupSHA256+`}"
   if [[ "${TAMPER_BACKUP_DURING_STATUS:-false}" == true && ! -f "$FAKE_RESOURCE_DIR/backup-tampered-during-status" ]]; then
     printf 'changed\n' >>"$INPUT"
@@ -219,6 +235,19 @@ case "$FIELD" in
   revision) echo 987654321 ;;
   *) exit 1 ;;
 esac
+`)
+	realSHA256Sum, err := exec.LookPath("sha256sum")
+	require.NoError(t, err)
+	sha256sum := filepath.Join(dir, "sha256sum")
+	writeDestroyExecutable(t, sha256sum, `#!/usr/bin/env bash
+set -euo pipefail
+"$REAL_SHA256SUM" "$@"
+if [[ "$#" -ge 1 && "$1" == "$DESTROY_BACKUP_SOURCE" &&
+  "${TAMPER_BACKUP_DURING_SHA256:-false}" == true &&
+  ! -f "$FAKE_RESOURCE_DIR/backup-sha256-tampered" ]]; then
+  touch "$FAKE_RESOURCE_DIR/backup-sha256-tampered"
+  printf 'changed\n' >>"$DESTROY_BACKUP_SOURCE"
+fi
 `)
 	kubectl := filepath.Join(dir, "kubectl")
 	writeDestroyExecutable(t, kubectl, `#!/usr/bin/env bash
@@ -352,6 +381,9 @@ fi
 			"LOGICAL_STATUS=" + logicalStatus,
 			"FAKE_RESOURCE_DIR=" + dir,
 			"CONFIRM_DESTROY=destroy:instance-a:destroy-1",
+			"PATH=" + dir + string(os.PathListSeparator) + os.Getenv("PATH"),
+			"REAL_SHA256SUM=" + realSHA256Sum,
+			"DESTROY_BACKUP_SOURCE=" + backup,
 			"JQ=" + jq,
 			"REAL_JQ=" + realJQ,
 		},

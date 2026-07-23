@@ -73,6 +73,7 @@ for variable in BACKUP_MIN_RECORDS EXPECTED_PVCS POLL_INTERVAL_SECONDS; do
     exit 2
   fi
 done
+command -v sha256sum >/dev/null || { echo "sha256sum is required" >&2; exit 2; }
 
 umask 077
 mkdir -p "$STATE_DIR"
@@ -89,6 +90,11 @@ fi
 if [[ -n "$KUBECONFIG_PATH" ]]; then
   kubectl_args+=(--kubeconfig "$KUBECONFIG_PATH")
 fi
+backup_input_capture_dir=""
+cleanup_backup_input_capture() {
+  [[ -z "$backup_input_capture_dir" ]] || rm -rf "$backup_input_capture_dir"
+}
+trap cleanup_backup_input_capture EXIT INT TERM
 
 atomic_publish() {
   local temporary="$1" destination="$2"
@@ -126,6 +132,19 @@ require_backup_file_digest() {
   local path="$1" expected="$2" actual
   actual="$(backup_file_digest "$path")" || return 1
   [[ "$actual" == "$expected" ]]
+}
+
+freeze_backup_input() {
+  local source="$1" destination source_digest captured_digest current_digest
+  backup_input_capture_dir="$(mktemp -d)"
+  source_digest="$(backup_file_digest "$source")" || return 1
+  destination="${backup_input_capture_dir}/backup.jsonl"
+  cp -- "$source" "$destination" || return 1
+  chmod 600 "$destination"
+  captured_digest="$(backup_file_digest "$destination")" || return 1
+  current_digest="$(backup_file_digest "$source")" || return 1
+  [[ "$captured_digest" == "$source_digest" && "$current_digest" == "$source_digest" ]] || return 1
+  printf '%s\n' "$destination"
 }
 
 validate_existing_receipt() {
@@ -422,6 +441,9 @@ case "$ACTION" in
   prepare)
     [[ -n "$BACKUP_INPUT" ]] || { echo "BACKUP_INPUT is required for prepare" >&2; exit 2; }
     [[ -f "$BACKUP_INPUT" ]] || { echo "BACKUP_INPUT does not exist: ${BACKUP_INPUT}" >&2; exit 2; }
+    BACKUP_INPUT="$(freeze_backup_input "$BACKUP_INPUT")" ||
+      { echo "logical backup changed while being captured" >&2; exit 1; }
+    export BACKUP_INPUT
     require_jq
     backup_file_sha="$(backup_file_digest "$BACKUP_INPUT")" ||
       { echo "logical backup file SHA-256 is invalid" >&2; exit 1; }

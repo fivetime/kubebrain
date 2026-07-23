@@ -11026,6 +11026,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   并只把冻结 backup path 传给 logical verify；捕获漂移 fail closed 且不写 phase marker。
   回归：`go test ./hack/production -run 'TestRestoreTrafficCutover' -count=1`
   通过。
+- A682 冻结 DestroyInstance 直接执行脚本的备份输入：
+  A675 已让 destroy operation runner 复制 claimed backup artifact，但 `destroy-instance.sh`
+  的直接 prepare 入口仍在原始 `BACKUP_INPUT` 路径上做 file digest、logical-status 和最终
+  digest 复核；若备份路径在初始 digest 后漂移，prepare 可能基于未被捕获窗口绑定的
+  backup evidence 记录 destroy state。现在 direct script 在 prepare 开始先把 backup
+  捕获到私有 0600 副本，要求源文件在捕获前后与副本 digest 一致，并只把冻结路径传给
+  logical-status；捕获漂移 fail closed 且不写 destroy state。回归：
+  `go test ./hack/production -run 'TestDestroyInstance' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 
