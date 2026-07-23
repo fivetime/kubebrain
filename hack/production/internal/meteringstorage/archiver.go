@@ -176,12 +176,8 @@ func readUsageReceipt(path string) (UsageReceipt, error) {
 	if err := decoder.Decode(&trailing); err != io.EOF {
 		return receipt, errors.New("object usage receipt contains trailing JSON")
 	}
-	if receipt.Format != UsageReceiptFormat ||
-		receipt.ObjectStoreID == "" || receipt.Bucket == "" || receipt.Prefix == "" ||
-		len(receipt.AllowedFormats) == 0 || receipt.RemoteVersions < 0 ||
-		receipt.DeleteMarkers != 0 || receipt.TotalObjectBytes < 0 ||
-		!digestPattern.MatchString(receipt.VersionsSHA256) || receipt.CheckedAtUnix <= 0 {
-		return receipt, errors.New("object usage receipt is incomplete")
+	if err := receipt.Validate(); err != nil {
+		return receipt, err
 	}
 	canonical, err := json.Marshal(receipt)
 	if err != nil {
@@ -204,6 +200,9 @@ func readUsageReceiptOutput(data []byte) (UsageReceipt, error) {
 	var trailing any
 	if err := decoder.Decode(&trailing); err != io.EOF {
 		return receipt, errors.New("object storage usage stdout contains trailing JSON")
+	}
+	if err := receipt.Validate(); err != nil {
+		return receipt, err
 	}
 	return receipt, nil
 }

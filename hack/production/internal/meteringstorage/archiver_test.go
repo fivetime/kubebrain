@@ -123,6 +123,79 @@ func TestUsageReceiptRejectsOversizedInput(t *testing.T) {
 	require.ErrorContains(t, err, "object usage receipt exceeds")
 }
 
+func TestUsageReceiptReadersUseSnapshotSchema(t *testing.T) {
+	valid := validUsageReceipt()
+	valid.CheckedAtUnix = 1_784_509_201
+	data, err := json.Marshal(valid)
+	require.NoError(t, err)
+	path := filepath.Join(t.TempDir(), "usage.json")
+	require.NoError(t, os.WriteFile(path, append(data, '\n'), 0o600))
+	read, err := readUsageReceipt(path)
+	require.NoError(t, err)
+	require.Equal(t, valid, read)
+	stdout, err := readUsageReceiptOutput(data)
+	require.NoError(t, err)
+	require.Equal(t, valid, stdout)
+
+	tests := []struct {
+		name   string
+		mutate func(*UsageReceipt)
+		want   string
+	}{
+		{
+			name: "inconsistent version bytes",
+			mutate: func(receipt *UsageReceipt) {
+				receipt.RemoteVersions = 1
+				receipt.TotalObjectBytes = 0
+			},
+			want: "inconsistent",
+		},
+		{
+			name: "empty digest drift",
+			mutate: func(receipt *UsageReceipt) {
+				receipt.RemoteVersions = 0
+				receipt.TotalObjectBytes = 0
+				receipt.VersionsSHA256 = strings.Repeat("b", 64)
+			},
+			want: "invalid versions digest",
+		},
+		{
+			name: "unsorted formats",
+			mutate: func(receipt *UsageReceipt) {
+				receipt.AllowedFormats = []string{"z", "a"}
+			},
+			want: "formats",
+		},
+		{
+			name: "too many formats",
+			mutate: func(receipt *UsageReceipt) {
+				formats := make([]string, 17)
+				for i := range formats {
+					formats[i] = "format-" + strconv.Itoa(100+i)
+				}
+				receipt.AllowedFormats = formats
+			},
+			want: "incomplete",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			receipt := validUsageReceipt()
+			receipt.CheckedAtUnix = 1_784_509_201
+			test.mutate(&receipt)
+			data, err := json.Marshal(receipt)
+			require.NoError(t, err)
+			path := filepath.Join(t.TempDir(), "usage.json")
+			require.NoError(t, os.WriteFile(path, append(data, '\n'), 0o600))
+
+			_, err = readUsageReceipt(path)
+			require.ErrorContains(t, err, test.want)
+			_, err = readUsageReceiptOutput(data)
+			require.ErrorContains(t, err, test.want)
+		})
+	}
+}
+
 func TestArchiverRejectsUsageStdoutUnknownFieldBeforeArchive(t *testing.T) {
 	now := time.Unix(1_784_509_800, 0).UTC()
 	archiveCalls := 0

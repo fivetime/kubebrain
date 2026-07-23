@@ -10603,6 +10603,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   byte-seconds。回归：
   `go test ./hack/production/internal/meteringstorage -run 'TestStorageRollupRejectsFractionalSlotByteSeconds|TestBuildStorageRollupIntegratesTwentyFourSnapshots|TestBuildStorageRollupFailsClosed' -count=1`
   通过。
+- A638 统一 production usage receipt reader 与 snapshot schema：
+  A635/A636 已收紧 `Snapshot.Validate`，但 `meteringstorage.readUsageReceipt` 仍保留旧的
+  宽松内联校验，stdout parser 甚至只解 JSON 不校验 schema。非法 usage receipt 最终会在
+  `BuildSnapshot` 处 fail closed，但本地 reader/stdout 入口会先接受不可由 objectstore
+  生成的证据，扩大排障面并增加未来调用方绕过 BuildSnapshot 的风险。现在
+  `UsageReceipt.Validate` 成为 production meteringstorage 内部唯一 usage receipt schema，
+  文件 reader、stdout parser 与 `BuildSnapshot` 都复用它，覆盖格式列表、版本/字节一致性
+  和空清单 digest。回归：
+  `go test ./hack/production/internal/meteringstorage -run 'TestUsageReceiptReadersUseSnapshotSchema|TestArchiverRejectsUsageReceiptMismatchBeforeArchive|TestArchiverMeasuresBeforeArchivingAndIsDeterministic' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

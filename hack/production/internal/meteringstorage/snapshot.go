@@ -60,6 +60,28 @@ type UsageReceipt struct {
 	CheckedAtUnix    int64    `json:"checked_at_unix"`
 }
 
+func (r UsageReceipt) Validate() error {
+	if r.Format != UsageReceiptFormat ||
+		r.ObjectStoreID == "" || r.Bucket == "" || r.Prefix == "" ||
+		len(r.AllowedFormats) == 0 || len(r.AllowedFormats) > 16 ||
+		r.RemoteVersions < 0 || r.DeleteMarkers != 0 || r.TotalObjectBytes < 0 ||
+		!digestPattern.MatchString(r.VersionsSHA256) || r.CheckedAtUnix <= 0 {
+		return errors.New("object usage receipt is incomplete")
+	}
+	for i, format := range r.AllowedFormats {
+		if format == "" || (i > 0 && format <= r.AllowedFormats[i-1]) {
+			return errors.New("object usage receipt formats are not canonical")
+		}
+	}
+	if (r.RemoteVersions == 0) != (r.TotalObjectBytes == 0) {
+		return errors.New("object usage receipt version and byte counts are inconsistent")
+	}
+	if r.RemoteVersions == 0 && r.VersionsSHA256 != emptyUsageVersionsSHA256 {
+		return errors.New("empty object usage receipt has invalid versions digest")
+	}
+	return nil
+}
+
 func BuildSnapshot(instance string, slotStart, slotEnd int64, usage UsageReceipt) (Snapshot, error) {
 	snapshot := Snapshot{
 		Format: SnapshotFormat, Instance: instance, SlotStartUnix: slotStart, SlotEndUnix: slotEnd,
@@ -69,8 +91,8 @@ func BuildSnapshot(instance string, slotStart, slotEnd int64, usage UsageReceipt
 		TotalObjectBytes: usage.TotalObjectBytes, VersionsSHA256: usage.VersionsSHA256,
 		CheckedAtUnix: usage.CheckedAtUnix,
 	}
-	if usage.Format != UsageReceiptFormat {
-		return Snapshot{}, errors.New("object usage receipt format is invalid")
+	if err := usage.Validate(); err != nil {
+		return Snapshot{}, err
 	}
 	if err := snapshot.Validate(); err != nil {
 		return Snapshot{}, err
