@@ -20,6 +20,8 @@ import (
 
 const maxImmutableBlobBytes = 16 << 20
 
+var linkBlobOutput = os.Link
+
 type BlobRequest struct {
 	Input           string
 	ArtifactFormat  string
@@ -322,7 +324,17 @@ func writeBlobOutputAtomic(path string, body []byte) error {
 	if err := temp.Close(); err != nil {
 		return err
 	}
-	if err := os.Link(tempName, path); err != nil {
+	if err := linkBlobOutput(tempName, path); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			existing, readErr := readBoundedFile(path, "existing immutable blob output", int64(len(body)))
+			if readErr == nil && bytes.Equal(existing, body) {
+				return nil
+			}
+			if readErr != nil {
+				return readErr
+			}
+			return fmt.Errorf("refusing to overwrite immutable blob output %q", path)
+		}
 		return err
 	}
 	directory, err := os.Open(dir)

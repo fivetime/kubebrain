@@ -10659,6 +10659,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `EEXIST` 视为成功，内容漂移仍拒绝覆盖。回归：
   `go test ./hack/production/operationaudit -run 'TestOperationAuditArtifactWriterTreatsConcurrentIdenticalLinkAsIdempotent|TestOperationAuditArtifactIsCanonicalAndNonOverwriting' -count=1`
   通过。
+- A644 让 immutable blob read output writer 在并发同内容 link 时幂等：
+  A642/A643 对齐了生产 metering、billing 与 audit 的本地 artifact writer，但 Object Lock
+  executor 的 `writeBlobOutputAtomic` 仍在预读后、`os.Link` 前遇到同内容输出被并发创建时
+  返回 `EEXIST`。`ReadBlob` 会把 exact-version immutable blob 下载到本地，供 sample、
+  rollup、charge 和 operation release 校验；并发补偿或重试同一 exact version 时，已存在
+  相同 bytes 应视为成功。现在 immutable blob output writer 在 `EEXIST` 时 bounded read
+  目标文件，内容一致则成功，漂移仍拒绝覆盖。回归：
+  `go test ./internal/objectstore -run 'TestReadBlobOutputWriterTreatsConcurrentIdenticalLinkAsIdempotent|TestReadBlobRequiresOneProtectedExactVersion|TestArchiveBlobRejectsEmptyOversizedAndNonCanonicalReceipt' -count=1`
+  在 `hack/backup/objectstore` 模块内通过。
 
 ### P2：运维兼容和长期验证
 

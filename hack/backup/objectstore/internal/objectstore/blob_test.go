@@ -180,6 +180,24 @@ func TestReadBlobRequiresOneProtectedExactVersion(t *testing.T) {
 	require.ErrorContains(t, err, "existing immutable blob output exceeds")
 }
 
+func TestReadBlobOutputWriterTreatsConcurrentIdenticalLinkAsIdempotent(t *testing.T) {
+	body := []byte("{\"format\":\"sample.v1\"}\n")
+	output := filepath.Join(t.TempDir(), "download.json")
+	originalLink := linkBlobOutput
+	t.Cleanup(func() {
+		linkBlobOutput = originalLink
+	})
+	linkBlobOutput = func(_, path string) error {
+		require.NoError(t, os.WriteFile(path, body, 0o600))
+		return os.ErrExist
+	}
+
+	require.NoError(t, writeBlobOutputAtomic(output, body))
+	got, err := os.ReadFile(output)
+	require.NoError(t, err)
+	require.Equal(t, body, got)
+}
+
 func TestReadBlobFailsClosedOnVersionRetentionAndContentDrift(t *testing.T) {
 	now := time.Unix(2_000_000_000, 0).UTC()
 	newFixture := func(t *testing.T) (*fakeS3, BlobReadRequest) {
