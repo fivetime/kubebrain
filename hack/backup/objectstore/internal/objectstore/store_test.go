@@ -111,6 +111,29 @@ func TestUploadAndRetentionDeleteLifecycle(t *testing.T) {
 	require.Equal(t, receipt.RetainUntilUnix, restartedDeletion.DeletedAtUnix)
 }
 
+func TestUploadUsesFrozenArtifactWhenSourceChangesBeforePut(t *testing.T) {
+	artifact := writeArtifact(t)
+	original, err := os.ReadFile(artifact)
+	require.NoError(t, err)
+	now := time.Unix(2_000_000_000, 0)
+	client := &fakeS3{
+		beforePut: func() {
+			require.NoError(t, os.WriteFile(artifact, []byte("changed\n"), 0o600))
+		},
+	}
+
+	receipt, err := Upload(context.Background(), client, UploadRequest{
+		Input: artifact, Instance: "instance-a", BackupID: "backup-1",
+		ObjectStoreID: "store-a", Bucket: "backups", ObjectKey: "instance-a/backup-1.jsonl",
+		RetentionMode: "COMPLIANCE", RetainUntilUnix: now.Add(time.Minute).Unix(),
+		ExpectedPrefix: "/registry", MinRecords: 1, MaxAgeSeconds: 1_000_000_000,
+		ReceiptOutput: filepath.Join(t.TempDir(), "receipt.json"), Now: now,
+	})
+	require.NoError(t, err)
+	require.Equal(t, original, client.body)
+	require.True(t, receipt.RemoteVerified)
+}
+
 func TestUploadRefusesConflictingObject(t *testing.T) {
 	artifact := writeArtifact(t)
 	now := time.Unix(2_000_000_000, 0)
@@ -353,6 +376,7 @@ type fakeS3 struct {
 	putErr                    error
 	putWithoutCommit          bool
 	putCancel                 context.CancelFunc
+	beforePut                 func()
 }
 
 func (f *fakeS3) PutObject(_ context.Context, input *s3.PutObjectInput, _ ...func(*s3.Options)) (*s3.PutObjectOutput, error) {
@@ -360,6 +384,9 @@ func (f *fakeS3) PutObject(_ context.Context, input *s3.PutObjectInput, _ ...fun
 	f.lastPut = input
 	if f.versionID != "" {
 		return nil, &smithy.GenericAPIError{Code: "PreconditionFailed", Message: "already exists"}
+	}
+	if f.beforePut != nil {
+		f.beforePut()
 	}
 	body, err := io.ReadAll(input.Body)
 	if err != nil {

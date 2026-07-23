@@ -55,11 +55,14 @@ func Upload(ctx context.Context, client S3API, request UploadRequest) (Receipt, 
 	if err != nil {
 		return Receipt{}, err
 	}
-	status, err := backupfile.Inspect(request.Input)
+	artifact, err := backupfile.OpenVerified(request.Input)
 	if err != nil {
 		return Receipt{}, fmt.Errorf("validate local artifact: %w", err)
 	}
-	info, err := os.Stat(request.Input)
+	defer artifact.Close()
+	status := artifact.Status()
+	frozenInput := artifact.Path()
+	info, err := os.Stat(frozenInput)
 	if err != nil {
 		return Receipt{}, err
 	}
@@ -74,12 +77,12 @@ func Upload(ctx context.Context, client S3API, request UploadRequest) (Receipt, 
 	if !retainUntil.After(now) {
 		return Receipt{}, errors.New("retain-until timestamp must be in the future")
 	}
-	file, err := os.Open(request.Input)
+	file, err := os.Open(frozenInput)
 	if err != nil {
 		return Receipt{}, err
 	}
 	defer file.Close()
-	checksum, artifactFileSHA256, err := fileSHA256(request.Input)
+	checksum, artifactFileSHA256, err := fileSHA256(frozenInput)
 	if err != nil {
 		return Receipt{}, err
 	}

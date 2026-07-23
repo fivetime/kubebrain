@@ -243,6 +243,10 @@ func (v *Verified) Status() Status {
 	return v.status
 }
 
+func (v *Verified) Path() string {
+	return v.path
+}
+
 func (v *Verified) Records(fn func(record.Record) error) error {
 	if _, err := v.file.Seek(0, io.SeekStart); err != nil {
 		return err

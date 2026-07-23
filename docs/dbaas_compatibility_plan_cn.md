@@ -11035,6 +11035,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   logical-status；捕获漂移 fail closed 且不写 destroy state。回归：
   `go test ./hack/production -run 'TestDestroyInstance' -count=1`
   通过。
+- A683 冻结 objectstore upload 的本地 artifact 输入：
+  `objectstore.Upload` 旧逻辑先 inspect 原始 `INPUT`，再 stat/open 原路径，并用另一次
+  path hash 生成 metadata/checksum；若本地 artifact 在 inspect、hash、PutObject 之间
+  漂移，可能不会发布 receipt，但已经把不匹配对象写入带 Object Lock 的远端版本。现在
+  Upload 复用 `backupfile.OpenVerified` 的私有副本：先复制并验证 local artifact，再只从
+  frozen path 计算 size、file SHA、S3 checksum 和 PutObject body；原始输入在 PutObject
+  前被替换也不会污染远端对象。回归：
+  `(cd hack/backup/objectstore && go test ./internal/objectstore -run 'TestUpload' -count=1)`
+  通过。
 
 ### P2：运维兼容和长期验证
 
