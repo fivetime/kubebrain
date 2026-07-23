@@ -27,8 +27,8 @@ func main() {
 	if prefix == "" {
 		prefix = "/__kubebrain/audit"
 	}
-	if !strings.HasPrefix(prefix, "/") || strings.ContainsAny(prefix, "\n\r\t") {
-		log.Fatal("AUDIT_PREFIX must be an absolute key prefix without control characters")
+	if err := validateAuditPrefix(prefix); err != nil {
+		log.Fatal(err)
 	}
 	nonce := make([]byte, 24)
 	if _, err := rand.Read(nonce); err != nil {
@@ -119,4 +119,15 @@ func main() {
 	if err := encoder.Encode(output); err != nil {
 		log.Fatal(fmt.Errorf("encode audit result: %w", err))
 	}
+}
+
+func validateAuditPrefix(prefix string) error {
+	if prefix == "" || !strings.HasPrefix(prefix, "/") || strings.ContainsAny(prefix, "\x00\n\r\t") {
+		return fmt.Errorf("AUDIT_PREFIX must be an absolute key prefix without control characters")
+	}
+	trimmed := strings.TrimRight(prefix, "/")
+	if trimmed == "" || trimmed == "/registry" || strings.HasPrefix(trimmed+"/", "/registry/") {
+		return fmt.Errorf("AUDIT_PREFIX must not target root or Kubernetes /registry data")
+	}
+	return nil
 }

@@ -139,6 +139,25 @@ for value in "$state_dir" "$cutover_state" "$cutover_receipt" "$service_namespac
   "$service_name" "$target_instance" "$public_endpoint" "$audit_prefix" "$receipt_output"; do
   [[ -n "$value" ]] || { echo "audit parameters contain an empty required field" >&2; exit 2; }
 done
+
+validate_audit_prefix() {
+  local prefix="$1" trimmed
+  if [[ -z "$prefix" || "$prefix" != /* ||
+    "$prefix" == *$'\n'* || "$prefix" == *$'\r'* || "$prefix" == *$'\t'* ]]; then
+    echo "audit prefix must be an absolute key prefix without control characters" >&2
+    exit 2
+  fi
+  trimmed="$prefix"
+  while [[ "$trimmed" == */ && "$trimmed" != "/" ]]; do
+    trimmed="${trimmed%/}"
+  done
+  if [[ "$trimmed" == "/" || "$trimmed" == "/registry" || "$trimmed" == /registry/* ]]; then
+    echo "audit prefix must not target root or Kubernetes /registry data" >&2
+    exit 2
+  fi
+}
+validate_audit_prefix "$audit_prefix"
+
 for digest in "$cutover_state_sha" "$cutover_receipt_sha"; do
   [[ "$digest" =~ ^[a-f0-9]{64}$ ]] ||
     { echo "audit evidence digest is invalid" >&2; exit 2; }

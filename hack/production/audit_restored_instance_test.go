@@ -147,6 +147,25 @@ func TestPostRestoreAuditFailsClosed(t *testing.T) {
 	}
 }
 
+func TestPostRestoreAuditRejectsUnsafeAuditPrefix(t *testing.T) {
+	for _, tc := range []struct {
+		name, prefix, want string
+	}{
+		{name: "relative", prefix: "relative", want: "absolute key prefix"},
+		{name: "root", prefix: "/", want: "must not target"},
+		{name: "registry", prefix: "/registry", want: "must not target"},
+		{name: "registry child", prefix: "/registry/pods", want: "must not target"},
+		{name: "control", prefix: "/__kubebrain/audit\nprobe", want: "control characters"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newAuditFixture(t)
+			f.run(t, false, "AUDIT_PREFIX="+tc.prefix, tc.want)
+			require.NoFileExists(t, filepath.Join(f.state, "audit-1.receipt.json"))
+			require.NoFileExists(t, filepath.Join(f.dir, "probes"))
+		})
+	}
+}
+
 type auditFixture struct {
 	dir, state string
 	env        []string

@@ -2,6 +2,7 @@ package production_test
 
 import (
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -217,6 +218,26 @@ func TestPostRestoreAuditOperationLoadsManagedParameters(t *testing.T) {
 	require.Contains(t, f.log(t), "--action parameters")
 }
 
+func TestPostRestoreAuditOperationRejectsUnsafeAuditPrefix(t *testing.T) {
+	for _, tc := range []struct {
+		name, prefix, want string
+	}{
+		{name: "relative", prefix: "relative", want: "absolute key prefix"},
+		{name: "root", prefix: "/", want: "must not target"},
+		{name: "registry", prefix: "/registry", want: "must not target"},
+		{name: "registry child", prefix: "/registry/pods", want: "must not target"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newOperationRunnerFixture(t)
+			f.replaceAuditPrefix(t, tc.prefix)
+			f.run(t, false, "CLAIM_DIGEST="+fileDigest(t, f.parameters), tc.want)
+			require.NotContains(t, f.log(t), "--action retry")
+			require.NotContains(t, f.log(t), "--action succeed")
+			require.NoFileExists(t, filepath.Join(f.dir, "audit.log"))
+		})
+	}
+}
+
 type operationRunnerFixture struct {
 	dir, parameters, cutoverState, cutoverReceipt, cutoverStateSHA, cutoverReceiptSHA string
 	env                                                                               []string
@@ -312,6 +333,16 @@ func operationAuditCutoverState() string {
 func operationAuditCutoverReceipt() string {
 	stateSHA := fmt.Sprintf("%x", sha256.Sum256([]byte(operationAuditCutoverState())))
 	return fmt.Sprintf(`{"format":"kubebrain.restore-cutover.receipt.v1","operation_id":"cutover-1","instance":"instance-a","service_namespace":"ns-a","service_name":"kubebrain","service_uid":"uid-service","source_instance":"source","target_instance":"target","artifact_sha256":"%s","cutover_state_sha256":"%s","snapshot_revision":42,"replicas":2,"pod_uids_unchanged":true,"endpoint_uids_matched":true,"public_data_verified":true,"completed_at_unix":100}`+"\n", operationAuditArtifactSHA256, stateSHA)
+}
+
+func (f *operationRunnerFixture) replaceAuditPrefix(t *testing.T, prefix string) {
+	t.Helper()
+	var parameters map[string]any
+	require.NoError(t, json.Unmarshal(mustRead(t, f.parameters), &parameters))
+	parameters["audit_prefix"] = prefix
+	encoded, err := json.Marshal(parameters)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(f.parameters, append(encoded, '\n'), 0o600))
 }
 
 func (f *operationRunnerFixture) run(t *testing.T, ok bool, extra string, outputs ...string) {

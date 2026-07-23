@@ -55,6 +55,25 @@ for variable in EXPECTED_REPLICAS AUDIT_DURATION_SECONDS MIN_SAMPLES; do
 done
 [[ "$AUDIT_INTERVAL_SECONDS" =~ ^[0-9]+$ ]] ||
   { echo "AUDIT_INTERVAL_SECONDS must be a non-negative integer" >&2; exit 2; }
+
+validate_audit_prefix() {
+  local prefix="$1" trimmed
+  if [[ -z "$prefix" || "$prefix" != /* ||
+    "$prefix" == *$'\n'* || "$prefix" == *$'\r'* || "$prefix" == *$'\t'* ]]; then
+    echo "AUDIT_PREFIX must be an absolute key prefix without control characters" >&2
+    exit 2
+  fi
+  trimmed="$prefix"
+  while [[ "$trimmed" == */ && "$trimmed" != "/" ]]; do
+    trimmed="${trimmed%/}"
+  done
+  if [[ "$trimmed" == "/" || "$trimmed" == "/registry" || "$trimmed" == /registry/* ]]; then
+    echo "AUDIT_PREFIX must not target root or Kubernetes /registry data" >&2
+    exit 2
+  fi
+}
+validate_audit_prefix "$AUDIT_PREFIX"
+
 [[ -f "$CUTOVER_STATE_INPUT" && -f "$CUTOVER_RECEIPT_INPUT" ]] ||
   { echo "cutover state and receipt inputs must exist" >&2; exit 2; }
 command -v "$JQ" >/dev/null || { echo "jq is required" >&2; exit 2; }
