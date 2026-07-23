@@ -16,6 +16,7 @@ package endpoint
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -49,6 +50,48 @@ func getAuthPath(filename string) string {
 	return filepath.Join("../util/auth/testdata", filename)
 }
 
+func reserveEndpointTestPorts(t *testing.T) (int, int) {
+	t.Helper()
+	clientListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if !assert.NoError(t, err) {
+		t.FailNow()
+	}
+	defer clientListener.Close()
+	peerListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if !assert.NoError(t, err) {
+		t.FailNow()
+	}
+	defer peerListener.Close()
+	return clientListener.Addr().(*net.TCPAddr).Port, peerListener.Addr().(*net.TCPAddr).Port
+}
+
+func waitForEndpointHealth(t *testing.T, client *http.Client, url string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	var last string
+	for time.Now().Before(deadline) {
+		resp, err := client.Get(url)
+		if err != nil {
+			last = err.Error()
+			time.Sleep(50 * time.Millisecond)
+			continue
+		}
+		body, readErr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if readErr != nil {
+			last = readErr.Error()
+			time.Sleep(50 * time.Millisecond)
+			continue
+		}
+		if string(body) == server.HealthResponse {
+			return
+		}
+		last = string(body)
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("endpoint %s did not become healthy: %s", url, last)
+}
+
 func TestRunEndpoint(t *testing.T) {
 	if raceDetectorEnabled {
 		// This trips a known data race INSIDE vendored github.com/soheilhy/cmux
@@ -58,9 +101,10 @@ func TestRunEndpoint(t *testing.T) {
 		t.Skip("skipping under -race: vendored cmux data race, not KubeBrain code")
 	}
 	ast := assert.New(t)
+	clientPort, peerPort := reserveEndpointTestPorts(t)
 	conf := Config{
-		Port:     2379,
-		PeerPort: 2380,
+		Port:     clientPort,
+		PeerPort: peerPort,
 		ClientSecurityConfig: &SecurityConfig{
 			CertFile:      getAuthPath("server.crt"),
 			KeyFile:       getAuthPath("server.key"),
@@ -82,37 +126,35 @@ func TestRunEndpoint(t *testing.T) {
 	mockMetrics := mockmetrics.NewMinimalMetrics(mockCtrl)
 	backendConf := backend.Config{
 		Prefix:   "/test",
-		Identity: "127.0.0.1:2380",
+		Identity: net.JoinHostPort("127.0.0.1", fmt.Sprintf("%d", peerPort)),
 	}
 	testBackend := backend.NewBackend(newBadgerStorage(t, ast), backendConf, mockMetrics)
 	ep := NewEndpoint(testBackend, mockMetrics, &conf)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	eg, _ := errgroup.WithContext(context.Background())
 	eg.Go(func() error {
 		return ep.Run(ctx)
 	})
+	defer func() {
+		cancel()
+		ast.NoError(eg.Wait())
+	}()
 
-	// wait for endpoint running
-	time.Sleep(3 * time.Second)
-	http.DefaultTransport.(*http.Transport).TLSClientConfig = conf.PeerSecurityConfig.getClientTLSConfig()
+	client := &http.Client{
+		Timeout: 1 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: conf.PeerSecurityConfig.getClientTLSConfig(),
+		},
+	}
 	urls := []string{
-		"http://127.0.0.1:2379/health",
-		"https://127.0.0.1:2379/health",
+		fmt.Sprintf("http://127.0.0.1:%d/health", clientPort),
+		fmt.Sprintf("https://127.0.0.1:%d/health", clientPort),
 	}
 	for _, url := range urls {
 		t.Logf("testing url %s", url)
-		resp, err := http.Get(url)
-		ast.NoError(err)
-		bs, err := io.ReadAll(resp.Body)
-		ast.NoError(err)
-		ast.Equal(server.HealthResponse, string(bs))
-		resp.Body.Close()
+		waitForEndpointHealth(t, client, url)
 	}
-
-	cancel()
-	ast.NoError(eg.Wait())
 }
 
 func TestRunEndpointBindFailureStopsBackgroundWorkBeforeBackendClose(t *testing.T) {
