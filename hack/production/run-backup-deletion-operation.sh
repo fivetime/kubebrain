@@ -140,6 +140,8 @@ source_fields="$("$JQ" -er --arg instance "$instance" --arg backup "$backup_id" 
     .remote_verified == true and
     (.uploaded_at_unix | type == "number" and . > 0 and . == floor)) |
   [.bucket,.object_key,.version_id,.artifact_sha256,.retention_mode,(.retain_until_unix|tostring)] | @tsv' "$source_receipt")"
+[[ "$(sha256sum "$source_receipt" | cut -d ' ' -f1)" == "$source_sha" ]] ||
+  { echo "backup deletion evidence digest mismatch" >&2; exit 1; }
 IFS=$'\t' read -r bucket object_key version_id artifact_sha retention_mode retain_until <<<"$source_fields"
 
 manifest_gate() {

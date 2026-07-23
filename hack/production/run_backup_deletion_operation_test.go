@@ -92,6 +92,14 @@ func TestBackupDeletionOperationRejectsEvidenceTamperedDuringDigest(t *testing.T
 	}
 }
 
+func TestBackupDeletionOperationRejectsSourceReceiptTamperedDuringParse(t *testing.T) {
+	f := newBackupDeletionFixture(t)
+	f.run(t, false, "TAMPER_SOURCE_RECEIPT_DURING_JQ=true", "evidence digest mismatch")
+	log := f.log(t)
+	require.NotContains(t, log, "object ")
+	require.NotContains(t, log, "--action succeed")
+}
+
 func TestBackupDeletionOperationRejectsExistingReceiptWithUnknownFields(t *testing.T) {
 	f := newBackupDeletionFixture(t)
 	f.run(t, true, "")
@@ -206,6 +214,9 @@ func newBackupDeletionFixture(t *testing.T) *backupDeletionFixture {
 `), 0o600))
 	require.NoError(t, os.WriteFile(f.postManifest, []byte(`{"format":"kubebrain.object-inventory-manifest.v1","object_store_id":"store-a","bucket":"backups","prefix":"instance-a/","entries":[]}
 `), 0o600))
+	tamperedSourceReceipt := filepath.Join(dir, "tampered-source.json")
+	require.NoError(t, os.WriteFile(tamperedSourceReceipt, []byte(`{"format":"kubebrain.object-backup.receipt.v1","instance":"instance-a","backup_id":"backup-1","object_store_id":"store-a","bucket":"backups","object_key":"instance-a/backup-1.jsonl","version_id":"version-1","artifact_format":"kubebrain.logical.v2","artifact_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","snapshot_revision":1,"created_at_unix":1,"records":2,"leases":0,"object_bytes":1,"retention_mode":"COMPLIANCE","retain_until_unix":2,"remote_verified":true,"uploaded_at_unix":1}
+`), 0o600))
 	f.rewriteParameters(t)
 
 	operationctl := filepath.Join(dir, "operationctl")
@@ -260,6 +271,15 @@ esac
 	jq := filepath.Join(dir, "jq-wrapper")
 	writeTrafficExecutable(t, jq, `#!/usr/bin/env bash
 set -euo pipefail
+if [[ "${TAMPER_SOURCE_RECEIPT_DURING_JQ:-false}" == true && "$#" -ge 1 ]]; then
+  last_arg="${@: -1}"
+  if [[ "$last_arg" == "$SOURCE_RECEIPT_INPUT" &&
+    ! -f "$FAKE_DIR/source-receipt-tampered-during-jq" ]]; then
+    cp "$TAMPERED_SOURCE_RECEIPT" "$SOURCE_RECEIPT_INPUT"
+    chmod 600 "$SOURCE_RECEIPT_INPUT"
+    touch "$FAKE_DIR/source-receipt-tampered-during-jq"
+  fi
+fi
 "$REAL_JQ" "$@"
 mode="${PUBLISH_BACKUP_DELETION_OPERATION_RECEIPT_DURING_JQ:-}"
 if [[ -n "$mode" && "$mode" != false &&
@@ -288,6 +308,8 @@ fi
 		"PRE_INVENTORY_RECEIPT=" + f.preInventoryReceipt, "DELETION_RECEIPT=" + f.deletionReceipt,
 		"POST_INVENTORY_RECEIPT=" + f.postInventoryReceipt,
 		"OPERATION_RECEIPT_OUTPUT=" + f.operationReceipt,
+		"SOURCE_RECEIPT_INPUT=" + f.sourceReceipt,
+		"TAMPERED_SOURCE_RECEIPT=" + tamperedSourceReceipt,
 		"BACKUP_DELETION_OPERATION_ID=delete-1", "BACKUP_DELETION_INSTANCE=instance-a",
 		"BACKUP_DELETION_OBJECT_KEY=instance-a/backup-1.jsonl",
 		"BACKUP_DELETION_VERSION_ID=version-1",

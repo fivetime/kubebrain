@@ -10773,6 +10773,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   沿用原有错误文案且不提交 succeed。回归：
   `go test ./hack/production -run 'TestBackupDeletionOperationRejectsEvidenceTamperedDuringDigest' -count=1`
   通过。
+- A655 收紧 backup deletion source receipt 解析后 digest fence：
+  BackupDeletion 参数会携带 source object backup receipt 的 SHA，runner 在开头已做一次
+  digest 比对，但随后用 jq 解析 bucket/object/version 时没有再次确认本地 source receipt
+  仍是同一份 bytes；若文件在参数 digest 校验后、source fields 解析前被替换成 schema
+  合法但 digest 不同的 receipt，后续删除证据会出现 source SHA 与实际解析输入不一致。
+  现在 source fields 提取后立即重算 source receipt SHA 并与参数 digest 比对，漂移时在
+  object workflow 前失败，不提交 succeed。回归：
+  `go test ./hack/production -run 'TestBackupDeletionOperationRejectsSourceReceiptTamperedDuringParse' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 
