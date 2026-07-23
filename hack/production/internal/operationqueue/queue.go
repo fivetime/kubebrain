@@ -1077,6 +1077,9 @@ func (q *Queue) Delete(ctx context.Context, name string, uid types.UID) error {
 	if err := validateOperationName(name); err != nil {
 		return err
 	}
+	if uid == "" {
+		return errors.New("operation UID precondition is required")
+	}
 	policy := metav1.DeletePropagationForeground
 	err := q.resource.Delete(ctx, name, metav1.DeleteOptions{
 		Preconditions:     &metav1.Preconditions{UID: &uid},

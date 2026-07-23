@@ -11187,6 +11187,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   fake dynamic client 回归覆盖 requeue/heartbeat/finish/parameters-for-worker 的非法 worker
   identity，证明返回错误且 `client.Actions()` 为空：
   `go test ./hack/production/internal/operationqueue -count=1` 通过。
+- A699 前置 operation queue UID delete precondition 校验：
+  UID delete CLI 已要求 `--uid` 非空，但 `operationqueue.Delete` 作为库入口仍会把空
+  `types.UID` 放入 delete precondition 并发给 Kubernetes API；未来库调用方绕过 CLI 时，
+  空 UID fencing 证据要等 API 层才失败。现在 Delete 在任何 API action 前要求非空 UID
+  precondition；fake dynamic client 回归确认空 UID 返回错误且 `client.Actions()` 为空：
+  `go test ./hack/production/internal/operationqueue -count=1` 通过。
 
 ### P2：运维兼容和长期验证
 

@@ -348,6 +348,13 @@ func TestQueueRejectsInvalidWorkerIdentityBeforeAPI(t *testing.T) {
 	}
 }
 
+func TestQueueDeleteRejectsEmptyUIDBeforeAPI(t *testing.T) {
+	client := fakeQueueClient()
+	err := New(client, "test").Delete(context.Background(), "backup-1", "")
+	require.ErrorContains(t, err, "UID precondition")
+	require.Empty(t, client.Actions(), "empty delete UID precondition must fail before Kubernetes API actions")
+}
+
 func TestClaimAcrossNamespacesPrioritizesLeastRecentlyServedQueue(t *testing.T) {
 	client := fakeQueueClient()
 	ctx := context.Background()
