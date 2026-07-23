@@ -9,6 +9,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/kubewharf/kubebrain/hack/production/internal/namespaceinventory"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -46,6 +47,11 @@ func main() {
 	}
 	if timeout <= 0 {
 		log.Fatal("--timeout must be positive")
+	}
+	if namespace != "" {
+		if err := namespaceinventory.ValidateOne(namespace); err != nil {
+			log.Fatal("--namespace: ", err)
+		}
 	}
 	groupVersion, err := schema.ParseGroupVersion(apiVersion)
 	if err != nil {

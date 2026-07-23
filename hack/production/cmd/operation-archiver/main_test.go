@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -21,6 +22,19 @@ func TestClientConfigPrefersInClusterWhenKubeconfigIsEmpty(t *testing.T) {
 	config, err := clientConfig("", "")
 	require.NoError(t, err)
 	require.Equal(t, "https://kubernetes.default.svc", config.Host)
+}
+
+func TestMainRejectsInvalidInventoryNamespaceBeforeKubeconfig(t *testing.T) {
+	command := exec.Command("go", "run", ".",
+		"--namespace-inventory-configmap", "inventory",
+		"--namespace-inventory-namespace", "ops.ns",
+		"--object-store-id", "store-a",
+		"--bucket", "audit-bucket",
+		"--once",
+	)
+	output, err := command.CombinedOutput()
+	require.Error(t, err)
+	require.Contains(t, string(output), "invalid namespace ops.ns")
 }
 
 func TestClientConfigSkipsInClusterWhenExplicitKubeconfigIsProvided(t *testing.T) {

@@ -1921,6 +1921,9 @@ parameters、heartbeat、retry/fail/succeed 全部固定到该 namespace，禁�
 所有 shell executor、runner 和手工审计/销毁/切流入口都会在首次
 `kubectl`/`operationctl` 调用前按 Kubernetes DNS label 校验 namespace 参数，拒绝带 `.`
 或超长/大写值，避免非法对象名进入后续状态机。claim 返回的 namespace 也会重新校验。
+直接运行的 Go 管理面 CLI 同样在 kubeconfig/client 初始化前校验 `--namespace` 或
+`--namespace-inventory-namespace`，包括 operationctl、Operation API、parameter broker、
+operation archiver、operation audit、backup scheduler 和 UID delete。
 inventory 无效时 claim 在读取任何 Operation 前 fail closed。中央 worker Role 只能
 `get` 指定 inventory ConfigMap；各目标 namespace 的 Operation/Secret/Lease 权限仍来自
 逐 namespace RoleBinding。

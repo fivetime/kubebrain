@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/kubewharf/kubebrain/hack/production/internal/namespaceinventory"
 	"github.com/kubewharf/kubebrain/hack/production/internal/operationapi"
 	"github.com/kubewharf/kubebrain/hack/production/internal/operationqueue"
 	"github.com/kubewharf/kubebrain/hack/production/internal/tlscertreload"
@@ -42,6 +43,9 @@ func main() {
 	flag.Parse()
 	if certFile == "" || keyFile == "" {
 		log.Fatal("--tls-cert-file and --tls-key-file are required")
+	}
+	if err := namespaceinventory.ValidateOne(namespace); err != nil {
+		log.Fatal("--namespace: ", err)
 	}
 	certificate, err := tlscertreload.New(certFile, keyFile)
 	if err != nil {

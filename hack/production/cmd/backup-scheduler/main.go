@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/kubewharf/kubebrain/hack/production/internal/backupscheduler"
+	"github.com/kubewharf/kubebrain/hack/production/internal/namespaceinventory"
 	"github.com/kubewharf/kubebrain/hack/production/internal/reconcilebudget"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
@@ -56,6 +57,19 @@ func main() {
 		log.Fatal("--namespace-inventory-configmap and --namespaces are mutually exclusive")
 	}
 
+	var staticNamespaces []string
+	if inventoryName != "" {
+		if err := namespaceinventory.ValidateOne(inventoryNamespace); err != nil {
+			log.Fatal("--namespace-inventory-namespace: ", err)
+		}
+	} else {
+		var err error
+		staticNamespaces, err = parseNamespaces(namespace, namespacesText)
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+
 	config, err := clientConfig(kubeconfig, contextName)
 	if err != nil {
 		log.Fatal(err)
@@ -70,11 +84,7 @@ func main() {
 			client, inventoryNamespace, inventoryName, inventoryKey,
 		)
 	} else {
-		namespaces, err := parseNamespaces(namespace, namespacesText)
-		if err != nil {
-			log.Fatal(err)
-		}
-		scheduler = backupscheduler.NewForNamespaces(client, namespaces)
+		scheduler = backupscheduler.NewForNamespaces(client, staticNamespaces)
 	}
 	scheduler.WithRequester(requester)
 	if err := scheduler.SetMaxPolicies(maxPolicies); err != nil {

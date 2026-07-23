@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -19,6 +20,29 @@ func TestDefaultKubeconfigIgnoresAmbientEnvironment(t *testing.T) {
 	t.Setenv("KUBECONFIG", "/ambient/config")
 	require.Empty(t, defaultKubeconfig(),
 		"ambient KUBECONFIG must not preempt ServiceAccount in-cluster configuration")
+}
+
+func TestMainRejectsInvalidNamespaceBeforeKubeconfig(t *testing.T) {
+	command := exec.Command("go", "run", ".",
+		"--namespace", "ops.ns",
+		"--action", "get",
+		"--name", "backup-1",
+	)
+	output, err := command.CombinedOutput()
+	require.Error(t, err)
+	require.Contains(t, string(output), "invalid namespace ops.ns")
+
+	command = exec.Command("go", "run", ".",
+		"--namespace", "ops",
+		"--namespace-inventory-configmap", "inventory",
+		"--namespace-inventory-namespace", "ops.ns",
+		"--action", "claim",
+		"--owner", "worker-a",
+		"--type", "Backup",
+	)
+	output, err = command.CombinedOutput()
+	require.Error(t, err)
+	require.Contains(t, string(output), "invalid namespace ops.ns")
 }
 
 func TestBrokerParametersUsesTLSBearerAndFencingIdentity(t *testing.T) {

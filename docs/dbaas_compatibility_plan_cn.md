@@ -11129,6 +11129,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   证明非法 namespace 不会触发任何外部调用：
   `go test ./hack/production -run TestProductionShellEntrypointsRejectInvalidNamespacesBeforeExternalCalls -count=1`
   通过。
+- A693 收紧 Go 管理面 CLI 的 namespace 输入：
+  A692 关闭 shell wrapper 后，直接执行的 Go 二进制仍可能接受非法 `--namespace` 或
+  `--namespace-inventory-namespace`，随后在 kubeconfig/client 初始化或 Kubernetes API 调用中
+  才失败。现在 `namespaceinventory.ValidateOne` 成为单 namespace DNS label 校验入口；
+  operationctl、Operation API、parameter broker、operation archiver、operation audit、
+  backup scheduler 和 UID delete 都在加载 kubeconfig 前 fail fast。backup scheduler 也把
+  静态 `--namespace`/`--namespaces` allowlist 解析前移到 client 初始化前。命令级回归用
+  `go run .` 证明非法 namespace 不会进入 kubeconfig 路径：
+  `go test ./hack/production/internal/namespaceinventory ./hack/production/cmd/backup-scheduler ./hack/production/cmd/operationctl ./hack/production/cmd/uid-delete ./hack/production/cmd/operation-api ./hack/production/cmd/operation-parameter-broker ./hack/production/cmd/operation-archiver ./hack/production/cmd/operation-audit -run 'TestValidateOneRequiresDNSLabelNamespace|TestMainRejectsInvalid|TestParseNamespacesRejectsUnsafeAllowlist' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -44,6 +45,19 @@ func TestDeleteOptionsUIDPreconditionShape(t *testing.T) {
 	require.Equal(t, "uid-123", string(*options.Preconditions.UID))
 	require.NotNil(t, options.PropagationPolicy)
 	require.Equal(t, metav1.DeletePropagationForeground, *options.PropagationPolicy)
+}
+
+func TestMainRejectsInvalidNamespaceBeforeKubeconfig(t *testing.T) {
+	command := exec.Command("go", "run", ".",
+		"--api-version", "v1",
+		"--resource", "pods",
+		"--namespace", "tenant.a",
+		"--name", "kubebrain",
+		"--uid", "uid-1",
+	)
+	output, err := command.CombinedOutput()
+	require.Error(t, err)
+	require.Contains(t, string(output), "invalid namespace tenant.a")
 }
 
 func TestDeleteWithUIDReturnsPreconditionConflict(t *testing.T) {

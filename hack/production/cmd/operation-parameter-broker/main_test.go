@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
@@ -28,6 +29,17 @@ type fakeReadyDependency struct {
 
 func (d fakeReadyDependency) Ready(context.Context) error {
 	return d.err
+}
+
+func TestMainRejectsInvalidNamespaceBeforeKubeconfig(t *testing.T) {
+	command := exec.Command("go", "run", ".",
+		"--namespace", "ops.ns",
+		"--tls-cert-file", "cert.pem",
+		"--tls-key-file", "key.pem",
+	)
+	output, err := command.CombinedOutput()
+	require.Error(t, err)
+	require.Contains(t, string(output), "invalid namespace ops.ns")
 }
 
 func TestReadyzHandlerSetsNoStoreHeaders(t *testing.T) {

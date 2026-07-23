@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -41,6 +42,15 @@ func TestLoadFailsClosedForUnsafeInventory(t *testing.T) {
 				"control", "inventory", DefaultKey,
 			)
 			require.Error(t, err)
+		})
+	}
+}
+
+func TestValidateOneRequiresDNSLabelNamespace(t *testing.T) {
+	require.NoError(t, ValidateOne("tenant-a"))
+	for _, namespace := range []string{"", "tenant.a", "Tenant-A", "-tenant", "tenant-", strings.Repeat("a", 64)} {
+		t.Run(namespace, func(t *testing.T) {
+			require.Error(t, ValidateOne(namespace))
 		})
 	}
 }

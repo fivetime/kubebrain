@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -15,6 +16,17 @@ func TestDefaultKubeconfigIgnoresAmbientEnvironment(t *testing.T) {
 	t.Setenv("KUBECONFIG", "/ambient/config")
 	require.Empty(t, defaultKubeconfig(),
 		"ambient KUBECONFIG must not preempt ServiceAccount in-cluster configuration")
+}
+
+func TestMainRejectsInvalidNamespaceBeforeKubeconfig(t *testing.T) {
+	command := exec.Command("go", "run", ".",
+		"--namespace", "ops.ns",
+		"--name", "backup-1",
+		"--output", filepath.Join(t.TempDir(), "artifact.json"),
+	)
+	output, err := command.CombinedOutput()
+	require.Error(t, err)
+	require.Contains(t, string(output), "invalid namespace ops.ns")
 }
 
 func TestClientConfigPrefersInClusterWhenKubeconfigIsEmpty(t *testing.T) {

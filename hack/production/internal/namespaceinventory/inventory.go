@@ -70,6 +70,16 @@ func parseJSONStringArray(raw string) ([]string, error) {
 	return values, nil
 }
 
+func ValidateOne(namespace string) error {
+	if namespace == "" {
+		return errors.New("namespace must not be empty")
+	}
+	if problems := validation.IsDNS1123Label(namespace); len(problems) != 0 {
+		return errors.New("invalid namespace " + namespace + ": " + problems[0])
+	}
+	return nil
+}
+
 func Validate(namespaces []string) ([]string, error) {
 	if len(namespaces) == 0 {
 		return nil, errors.New("namespace allowlist must not be empty")
@@ -80,11 +90,11 @@ func Validate(namespaces []string) ([]string, error) {
 	result := make([]string, 0, len(namespaces))
 	seen := make(map[string]struct{}, len(namespaces))
 	for _, namespace := range namespaces {
-		if namespace == "" {
-			return nil, errors.New("namespace allowlist contains an empty value")
-		}
-		if problems := validation.IsDNS1123Label(namespace); len(problems) != 0 {
-			return nil, errors.New("invalid namespace " + namespace + ": " + problems[0])
+		if err := ValidateOne(namespace); err != nil {
+			if namespace == "" {
+				return nil, errors.New("namespace allowlist contains an empty value")
+			}
+			return nil, err
 		}
 		if _, duplicate := seen[namespace]; duplicate {
 			return nil, errors.New("namespace allowlist contains duplicate " + namespace)

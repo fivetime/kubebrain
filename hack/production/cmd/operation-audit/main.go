@@ -6,6 +6,7 @@ import (
 	"log"
 	"time"
 
+	"github.com/kubewharf/kubebrain/hack/production/internal/namespaceinventory"
 	"github.com/kubewharf/kubebrain/hack/production/internal/operationauditbuilder"
 	"github.com/kubewharf/kubebrain/hack/production/internal/operationauditrelease"
 	"github.com/kubewharf/kubebrain/hack/production/internal/operationqueue"
@@ -36,6 +37,9 @@ func main() {
 	flag.Parse()
 	if name == "" || output == "" || (action == "release" && receipt == "") {
 		log.Fatal("name/output and release receipt are required")
+	}
+	if err := namespaceinventory.ValidateOne(namespace); err != nil {
+		log.Fatal("--namespace: ", err)
 	}
 	if action == "release" && (objectStoreID == "" || bucket == "" || objectKey == "" ||
 		retentionMode == "" || retainUntilUnix <= 0) {

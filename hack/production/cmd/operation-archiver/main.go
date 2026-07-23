@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/kubewharf/kubebrain/hack/production/internal/namespaceinventory"
 	"github.com/kubewharf/kubebrain/hack/production/internal/operationarchiver"
 	"github.com/kubewharf/kubebrain/hack/production/internal/processgroup"
 	"github.com/kubewharf/kubebrain/hack/production/internal/reconcilebudget"
@@ -47,6 +48,9 @@ func main() {
 	flag.Parse()
 	if inventoryName == "" || objectStoreID == "" || bucket == "" {
 		log.Fatal("namespace-inventory-configmap, object-store-id, and bucket are required")
+	}
+	if err := namespaceinventory.ValidateOne(inventoryNamespace); err != nil {
+		log.Fatal("--namespace-inventory-namespace: ", err)
 	}
 	if pollInterval < 10*time.Second {
 		log.Fatal("poll-interval must be at least 10s")

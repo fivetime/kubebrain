@@ -84,6 +84,15 @@ func main() {
 	flag.StringVar(&contextName, "context", "", "kubeconfig context")
 	flag.Parse()
 
+	if err := namespaceinventory.ValidateOne(namespace); err != nil {
+		log.Fatal("--namespace: ", err)
+	}
+	if inventoryName != "" {
+		if err := namespaceinventory.ValidateOne(inventoryNamespace); err != nil {
+			log.Fatal("--namespace-inventory-namespace: ", err)
+		}
+	}
+
 	config, err := clientConfig(kubeconfig, contextName)
 	if err != nil {
 		log.Fatal(err)
