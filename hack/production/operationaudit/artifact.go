@@ -22,6 +22,13 @@ const ArchiveReceiptFormat = "kubebrain.object-operation-audit.receipt.v1"
 const Finalizer = "dbaas.kubebrain.io/operation-audit"
 const ApproverUsername = "system:serviceaccount:kubebrain-operations:kubebrain-operation-approver"
 const maxOperationAuditJSONBytes = 1 << 20
+const maxOperationIDLength = 128
+const maxOperationInstanceLength = 128
+const maxOperationNamespaceLength = 63
+const maxOperationNameLength = 253
+const maxOperationUIDLength = 253
+const maxOperationTenantLength = 63
+const maxOperationRequesterLength = 253
 const maxOperationOwnerLength = 253
 const maxOperationMessageLength = 4096
 
@@ -67,6 +74,7 @@ type Status struct {
 }
 
 var approvalIDPattern = regexp.MustCompile(`^[a-z0-9]([-a-z0-9.]{0,126}[a-z0-9])?$`)
+var tenantPattern = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
 
 type ArchiveReceipt struct {
 	Format                 string `json:"format"`
@@ -90,15 +98,19 @@ type ArchiveReceipt struct {
 
 func (a Artifact) Validate() error {
 	if a.Format != Format || a.APIVersion != "dbaas.kubebrain.io/v1alpha1" ||
-		!validAuditIdentityValue(a.Namespace) || !validAuditIdentityValue(a.Name) ||
-		!validAuditIdentityValue(a.UID) || a.Generation <= 0 ||
-		!validAuditIdentityValue(a.OperationID) || !validAuditIdentityValue(a.Instance) ||
+		!validAuditIdentityValue(a.Namespace, maxOperationNamespaceLength) ||
+		!validAuditIdentityValue(a.Name, maxOperationNameLength) ||
+		!validAuditIdentityValue(a.UID, maxOperationUIDLength) || a.Generation <= 0 ||
+		!validAuditIdentityValue(a.OperationID, maxOperationIDLength) ||
+		!validOptionalTenant(a.Tenant) ||
+		!validOptionalAuditText(a.RequestedBy, maxOperationRequesterLength) ||
+		!validAuditIdentityValue(a.Instance, maxOperationInstanceLength) ||
 		!validOperationType(a.Type) ||
 		!validSHA256(a.ParametersSHA256) || a.MaxAttempts <= 0 ||
 		(a.Phase != "Succeeded" && a.Phase != "Failed") ||
-		a.Owner == "" || a.Attempt <= 0 || a.Attempt > a.MaxAttempts ||
-		utf8.RuneCountInString(a.Owner) > maxOperationOwnerLength ||
-		utf8.RuneCountInString(a.Message) > maxOperationMessageLength ||
+		!validRequiredAuditText(a.Owner, maxOperationOwnerLength) ||
+		a.Attempt <= 0 || a.Attempt > a.MaxAttempts ||
+		!validOptionalAuditText(a.Message, maxOperationMessageLength) ||
 		a.ObservedGeneration <= 0 || a.ObservedGeneration > a.Generation || a.StartedAtUnix <= 0 ||
 		a.CompletedAtUnix < a.StartedAtUnix {
 		return errors.New("terminal operation audit artifact is incomplete")
@@ -126,10 +138,28 @@ func validOperationType(value string) bool {
 		value == "PostRestoreAudit" || value == "CertificateRotation" || value == "Destroy"
 }
 
-func validAuditIdentityValue(value string) bool {
+func validAuditIdentityValue(value string, maxRunes int) bool {
 	return validReceiptScopeValue(value) &&
+		utf8.RuneCountInString(value) <= maxRunes &&
 		!strings.Contains(value, "/") &&
 		value != "." && value != ".."
+}
+
+func validOptionalTenant(value string) bool {
+	return value == "" ||
+		(utf8.ValidString(value) &&
+			utf8.RuneCountInString(value) <= maxOperationTenantLength &&
+			tenantPattern.MatchString(value))
+}
+
+func validRequiredAuditText(value string, maxRunes int) bool {
+	return value != "" && validOptionalAuditText(value, maxRunes)
+}
+
+func validOptionalAuditText(value string, maxRunes int) bool {
+	return utf8.ValidString(value) &&
+		utf8.RuneCountInString(value) <= maxRunes &&
+		strings.IndexFunc(value, unicode.IsControl) == -1
 }
 
 func validSHA256(value string) bool {
@@ -149,8 +179,10 @@ func validSHA256(value string) bool {
 
 func (r ArchiveReceipt) Validate() error {
 	if r.Format != ArchiveReceiptFormat ||
-		!validAuditIdentityValue(r.OperationID) || !validAuditIdentityValue(r.OperationUID) ||
-		!validAuditIdentityValue(r.Instance) || !validOperationType(r.OperationType) ||
+		!validAuditIdentityValue(r.OperationID, maxOperationIDLength) ||
+		!validAuditIdentityValue(r.OperationUID, maxOperationUIDLength) ||
+		!validAuditIdentityValue(r.Instance, maxOperationInstanceLength) ||
+		!validOperationType(r.OperationType) ||
 		(r.Phase != "Succeeded" && r.Phase != "Failed") ||
 		(r.Phase == "Succeeded" && !validSHA256(r.ExecutionReceiptSHA256)) ||
 		(r.Phase == "Failed" && r.ExecutionReceiptSHA256 != "") ||

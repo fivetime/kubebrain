@@ -94,6 +94,12 @@ func TestOperationAuditRejectsUnsafeIdentityFields(t *testing.T) {
 			},
 		},
 		{
+			name: "namespace_too_long",
+			mutate: func(artifact *Artifact) {
+				artifact.Namespace = strings.Repeat("n", maxOperationNamespaceLength+1)
+			},
+		},
+		{
 			name: "name_slash",
 			mutate: func(artifact *Artifact) {
 				artifact.Name = "backup/1"
@@ -118,15 +124,105 @@ func TestOperationAuditRejectsUnsafeIdentityFields(t *testing.T) {
 			},
 		},
 		{
+			name: "uid_too_long",
+			mutate: func(artifact *Artifact) {
+				artifact.UID = strings.Repeat("u", maxOperationUIDLength+1)
+			},
+		},
+		{
 			name: "operation_id_slash",
 			mutate: func(artifact *Artifact) {
 				artifact.OperationID = "backup/1"
 			},
 		},
 		{
+			name: "operation_id_too_long",
+			mutate: func(artifact *Artifact) {
+				artifact.OperationID = strings.Repeat("o", maxOperationIDLength+1)
+			},
+		},
+		{
 			name: "instance_control_byte",
 			mutate: func(artifact *Artifact) {
 				artifact.Instance = "instance-a\x00"
+			},
+		},
+		{
+			name: "instance_too_long",
+			mutate: func(artifact *Artifact) {
+				artifact.Instance = strings.Repeat("i", maxOperationInstanceLength+1)
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			artifact := terminalArtifact()
+			tc.mutate(&artifact)
+			require.ErrorContains(t, artifact.Validate(), "incomplete")
+		})
+	}
+}
+
+func TestOperationAuditRejectsUnsafeDisplayFields(t *testing.T) {
+	artifact := terminalArtifact()
+	artifact.Message = "done after retry"
+	require.NoError(t, artifact.Validate())
+
+	for _, tc := range []struct {
+		name   string
+		mutate func(*Artifact)
+	}{
+		{
+			name: "tenant_invalid_pattern",
+			mutate: func(artifact *Artifact) {
+				artifact.Tenant = "Tenant_A"
+			},
+		},
+		{
+			name: "tenant_too_long",
+			mutate: func(artifact *Artifact) {
+				artifact.Tenant = strings.Repeat("t", maxOperationTenantLength+1)
+			},
+		},
+		{
+			name: "requester_too_long",
+			mutate: func(artifact *Artifact) {
+				artifact.RequestedBy = strings.Repeat("r", maxOperationRequesterLength+1)
+			},
+		},
+		{
+			name: "requester_control_byte",
+			mutate: func(artifact *Artifact) {
+				artifact.RequestedBy = "user\x00"
+			},
+		},
+		{
+			name: "requester_invalid_utf8",
+			mutate: func(artifact *Artifact) {
+				artifact.RequestedBy = string([]byte{'u', 0xff})
+			},
+		},
+		{
+			name: "owner_control_byte",
+			mutate: func(artifact *Artifact) {
+				artifact.Owner = "worker\x00"
+			},
+		},
+		{
+			name: "owner_invalid_utf8",
+			mutate: func(artifact *Artifact) {
+				artifact.Owner = string([]byte{'w', 0xff})
+			},
+		},
+		{
+			name: "message_control_byte",
+			mutate: func(artifact *Artifact) {
+				artifact.Message = "done\nnext"
+			},
+		},
+		{
+			name: "message_invalid_utf8",
+			mutate: func(artifact *Artifact) {
+				artifact.Message = string([]byte{'m', 0xff})
 			},
 		},
 	} {
@@ -151,15 +247,33 @@ func TestArchiveReceiptRejectsUnsafeOperationIdentity(t *testing.T) {
 			},
 		},
 		{
+			name: "operation_id_too_long",
+			mutate: func(receipt *ArchiveReceipt) {
+				receipt.OperationID = strings.Repeat("o", maxOperationIDLength+1)
+			},
+		},
+		{
 			name: "operation_uid_control_byte",
 			mutate: func(receipt *ArchiveReceipt) {
 				receipt.OperationUID = "uid-1\x00"
 			},
 		},
 		{
+			name: "operation_uid_too_long",
+			mutate: func(receipt *ArchiveReceipt) {
+				receipt.OperationUID = strings.Repeat("u", maxOperationUIDLength+1)
+			},
+		},
+		{
 			name: "instance_unicode_space",
 			mutate: func(receipt *ArchiveReceipt) {
 				receipt.Instance = "instance\u00a0a"
+			},
+		},
+		{
+			name: "instance_too_long",
+			mutate: func(receipt *ArchiveReceipt) {
+				receipt.Instance = strings.Repeat("i", maxOperationInstanceLength+1)
 			},
 		},
 		{

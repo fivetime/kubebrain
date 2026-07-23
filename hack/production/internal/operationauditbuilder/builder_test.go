@@ -104,6 +104,56 @@ func TestFromOperationRejectsUnsafeIdentityMetadata(t *testing.T) {
 	}
 }
 
+func TestFromOperationRejectsUnsafeAuditDisplayFields(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*unstructured.Unstructured)
+	}{
+		{
+			name: "tenant_invalid_pattern",
+			mutate: func(object *unstructured.Unstructured) {
+				_ = unstructured.SetNestedField(object.Object, "Tenant_A", "spec", "tenant")
+			},
+		},
+		{
+			name: "requester_control_byte",
+			mutate: func(object *unstructured.Unstructured) {
+				_ = unstructured.SetNestedField(object.Object, "user\x00", "spec", "requestedBy")
+			},
+		},
+		{
+			name: "requester_too_long",
+			mutate: func(object *unstructured.Unstructured) {
+				_ = unstructured.SetNestedField(
+					object.Object, strings.Repeat("r", 254), "spec", "requestedBy",
+				)
+			},
+		},
+		{
+			name: "owner_invalid_utf8",
+			mutate: func(object *unstructured.Unstructured) {
+				_ = unstructured.SetNestedField(
+					object.Object, string([]byte{'w', 0xff}), "status", "owner",
+				)
+			},
+		},
+		{
+			name: "message_control_byte",
+			mutate: func(object *unstructured.Unstructured) {
+				_ = unstructured.SetNestedField(object.Object, "done\nnext", "status", "message")
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			object := operationForAuditBuilder()
+			tc.mutate(object)
+
+			_, err := FromOperation(object)
+			require.ErrorContains(t, err, "incomplete")
+		})
+	}
+}
+
 func operationForAuditBuilder() *unstructured.Unstructured {
 	return &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "dbaas.kubebrain.io/v1alpha1",

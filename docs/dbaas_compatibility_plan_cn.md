@@ -10445,6 +10445,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   evidence。回归：
   `go test ./deploy/production ./hack/production -run 'TestOperationSubmitterApproverAndAuditAdmissionFenceHighRiskChanges|TestOperationAuditAdmissionRequiresFinalizerAndReleaseEvidence' -count=1`
   通过。
+- A622 收紧 operation audit canonical 字符串边界：
+  A616/A617 已让 audit artifact 和 archive receipt 拒绝路径穿越、空白/控制字符等
+  key-safe 身份问题，但 identity 长度仍未对齐 KubeBrainOperation CRD，上游旧对象或
+  fake-client 路径可携带超长 namespace/name/UID、operation ID 或 instance 进入
+  canonical artifact/receipt；同时 `tenant`、`requestedBy`、`owner`、`message` 这些
+  审计可读字段没有拒绝无效 UTF-8 或控制字符，`encoding/json` 会把坏 UTF-8 替换成
+  U+FFFD，污染离线审计证据。现在 artifact validator 对 metadata/spec identity 增加
+  CRD 对齐的长度上限，tenant 复用 DNS label 形状，requester/owner/message 要求有效
+  UTF-8 且无控制字符；receipt 的 operation identity 也同步继承长度边界。
+  `operationauditbuilder.FromOperation` 因复用 validator 自动 fail closed。回归：
+  `go test ./hack/production/operationaudit ./hack/production/internal/operationauditbuilder -run 'TestOperationAuditRejects(NonterminalAndInvalidReceipt|UnsafeIdentityFields|UnsafeDisplayFields)|TestArchiveReceiptRejectsUnsafeOperationIdentity|TestFromOperation(RejectsUnsafeIdentityMetadata|RejectsUnsafeAuditDisplayFields|BindsImmutableSpecAndTerminalStatus)' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 
