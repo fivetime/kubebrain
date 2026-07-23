@@ -1930,7 +1930,9 @@ kubeconfig/client 初始化前校验 inventory ConfigMap 名称和 key，防止�
 CLI 校验。底层 operation queue 的公开方法也会在任何 Kubernetes API 操作前校验 queue
 namespace、operation name 和 worker fencing identity，跨 namespace claim 会先校验完整
 allowlist 与非空 operation type filter，再开始检查任一 namespace；UID-fenced 删除在 API
-delete 前要求非空 UID precondition。
+delete 前要求非空 UID precondition。Operation spec 中的 managed parameter Secret 引用会在
+读取 Secret 前重新校验 Secret 名称、key 和参数 digest，避免旧对象或 fake-client 路径把
+不可由 Submit 生成的引用带入 Secret API。
 inventory 无效时 claim 在读取任何 Operation 前 fail closed。中央 worker Role 只能
 `get` 指定 inventory ConfigMap；各目标 namespace 的 Operation/Secret/Lease 权限仍来自
 逐 namespace RoleBinding。

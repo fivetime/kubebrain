@@ -1346,6 +1346,65 @@ func TestQueueLoadsDigestBoundImmutableParameters(t *testing.T) {
 	require.ErrorContains(t, err, "must be immutable")
 }
 
+func TestQueueRejectsMalformedParameterReferenceBeforeSecretAPI(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		secretName string
+		key        string
+		digest     string
+		message    string
+	}{
+		{
+			name:       "secret_name",
+			secretName: "Invalid_Secret",
+			key:        "parameters.json",
+			digest:     strings.Repeat("a", 64),
+			message:    "invalid parameter secret name",
+		},
+		{
+			name:       "secret_key",
+			secretName: "valid-secret",
+			key:        "parameters/json",
+			digest:     strings.Repeat("a", 64),
+			message:    "invalid parameter secret key",
+		},
+		{
+			name:       "digest",
+			secretName: "valid-secret",
+			key:        "parameters.json",
+			digest:     strings.Repeat("g", 64),
+			message:    "parameters digest",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			client := fakeQueueClient()
+			queue := New(client, "test")
+			_, err := queue.resource.Create(context.Background(), &unstructured.Unstructured{Object: map[string]any{
+				"apiVersion": Resource.Group + "/" + Resource.Version,
+				"kind":       "KubeBrainOperation",
+				"metadata":   map[string]any{"name": "backup-1"},
+				"spec": map[string]any{
+					"operationID": "operation-1",
+					"instance":    "instance-a",
+					"type":        "Backup",
+					"parametersSecretRef": map[string]any{
+						"name": test.secretName,
+						"key":  test.key,
+					},
+					"parametersSHA256": test.digest,
+				},
+			}}, metav1.CreateOptions{})
+			require.NoError(t, err)
+			client.ClearActions()
+
+			_, err = queue.Parameters(context.Background(), "backup-1")
+			require.ErrorContains(t, err, test.message)
+			require.Len(t, client.Actions(), 1)
+			require.Equal(t, Resource.Resource, client.Actions()[0].GetResource().Resource)
+		})
+	}
+}
+
 func TestQueueOnlyLoadsParametersForCurrentTypeBoundWorker(t *testing.T) {
 	now := time.Unix(1_000, 0).UTC()
 	queue := newFakeQueue().WithClock(func() time.Time { return now })

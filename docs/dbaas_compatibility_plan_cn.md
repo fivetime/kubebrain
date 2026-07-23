@@ -11200,6 +11200,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `lastStarted` 也复用同一规则；fake dynamic client 回归确认单 namespace claim 和
   cross-namespace claim 的 `Unsupported` filter 都返回错误且 `client.Actions()` 为空：
   `go test ./hack/production/internal/operationqueue -count=1` 通过。
+- A701 前置 operation parameter Secret 引用校验：
+  Submit 会校验 `parametersSecretRef.name`、`key` 和 `parametersSHA256`，但
+  `Queue.Parameters`/`ParametersForWorker` 从既有 Operation 对象读取引用后会直接 GET
+  Secret；旧 CRD、恢复对象或 fake-client 路径若带入 `Invalid_Secret`、`parameters/json`
+  或非 SHA-256 digest，会先触发 Secret API 或读取不可能由 Submit 生成的证据。现在
+  `parameters()` 在 Secret GET 前重新校验 Secret 名称为 DNS subdomain、key 符合
+  CRD 参数 key 规则、digest 为 lowercase SHA-256。fake dynamic client 回归确认 malformed
+  Operation 只产生 Operation GET，不产生 Secret GET：
+  `go test ./hack/production/internal/operationqueue -run 'TestQueueRejectsMalformedParameterReferenceBeforeSecretAPI|TestQueueLoadsDigestBoundImmutableParameters|TestQueueOnlyLoadsParametersForCurrentTypeBoundWorker' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

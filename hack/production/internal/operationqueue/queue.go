@@ -995,6 +995,15 @@ func (q *Queue) parameters(
 	if secretName == "" || key == "" {
 		return nil, errors.New("operation does not reference managed parameters")
 	}
+	if errs := validation.IsDNS1123Subdomain(secretName); len(errs) > 0 {
+		return nil, fmt.Errorf("invalid parameter secret name: %s", errs[0])
+	}
+	if !ValidParameterSecretKey(key) {
+		return nil, errors.New("invalid parameter secret key")
+	}
+	if !isSHA256Hex(expected) {
+		return nil, errors.New("operation parameters digest is invalid")
+	}
 	secret, err := q.secrets.Get(ctx, secretName, metav1.GetOptions{})
 	if err != nil {
 		return nil, err
