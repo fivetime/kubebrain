@@ -41,6 +41,7 @@ command -v sha256sum >/dev/null || { echo "sha256sum is required" >&2; exit 2; }
 
 managed_parameters=""
 parameter_capture_dir="$(mktemp -d)"
+managed_artifact="${parameter_capture_dir}/artifact.jsonl"
 cleanup_parameter_capture() {
   rm -rf "$parameter_capture_dir"
   [[ -z "$managed_parameters" ]] || rm -f "$managed_parameters"
@@ -142,26 +143,44 @@ done
 [[ "$backup_id" == "$operation_id" ]] ||
   { echo "backup_id must equal the claimed operation ID" >&2; exit 2; }
 
+freeze_artifact_output() {
+  local source="$1" destination="$2" source_before captured source_after
+  [[ -f "$source" ]] || { echo "backup artifact does not exist" >&2; return 1; }
+  source_before="$(file_sha256 "$source")" ||
+    { echo "backup artifact digest is invalid" >&2; return 1; }
+  cp -- "$source" "$destination" || { echo "capture backup artifact failed" >&2; return 1; }
+  chmod 600 "$destination"
+  captured="$(file_sha256 "$destination")" ||
+    { echo "backup artifact digest is invalid" >&2; return 1; }
+  source_after="$(file_sha256 "$source")" ||
+    { echo "backup artifact digest is invalid" >&2; return 1; }
+  [[ "$captured" == "$source_before" && "$source_after" == "$source_before" ]] ||
+    { echo "backup artifact changed while being captured" >&2; return 1; }
+}
+
 run_backup() {
   if [[ ! -e "$artifact_output" ]]; then
     ENDPOINT="$endpoint" PREFIX="$prefix" OUTPUT="$artifact_output" BATCH_SIZE="$batch_size" \
       METRICS_OUTPUT="$metrics_output" BACKUP_INSTANCE="$instance" "$EXPORT_COMMAND"
   fi
-  INPUT="$artifact_output" EXPECTED_PREFIX="$prefix" MIN_RECORDS="$min_records" \
+  freeze_artifact_output "$artifact_output" "$managed_artifact" || return 1
+  INPUT="$managed_artifact" EXPECTED_PREFIX="$prefix" MIN_RECORDS="$min_records" \
     MAX_AGE_SECONDS="$max_age" "$STATUS_COMMAND" >/dev/null
-  ACTION=upload INPUT="$artifact_output" INSTANCE="$instance" BACKUP_ID="$backup_id" \
+  ACTION=upload INPUT="$managed_artifact" INSTANCE="$instance" BACKUP_ID="$backup_id" \
     OBJECT_STORE_ID="$object_store_id" S3_ENDPOINT="$s3_endpoint" S3_BUCKET="$s3_bucket" \
     S3_OBJECT_KEY="$s3_object_key" S3_FORCE_PATH_STYLE="$force_path_style" \
     AWS_REGION="$aws_region" RETENTION_MODE="$retention_mode" RETAIN_UNTIL_UNIX="$retain_until" \
     EXPECTED_PREFIX="$prefix" MIN_RECORDS="$min_records" MAX_AGE_SECONDS="$max_age" \
     RECEIPT_OUTPUT="$receipt_output" "$OBJECT_COMMAND" >/dev/null
-  validate_object_receipt ||
+  validate_object_receipt "$managed_artifact" ||
     { echo "backup workflow produced an invalid object receipt" >&2; return 1; }
 }
 
 validate_object_receipt() {
+  local artifact_path="${1:-$managed_artifact}"
   local artifact_status status_fields artifact_format artifact_sha snapshot_revision created_at records leases artifact_bytes artifact_file_sha
-  artifact_status="$(INPUT="$artifact_output" EXPECTED_PREFIX="$prefix" MIN_RECORDS="$min_records" \
+  [[ -f "$artifact_path" ]] || return 1
+  artifact_status="$(INPUT="$artifact_path" EXPECTED_PREFIX="$prefix" MIN_RECORDS="$min_records" \
     MAX_AGE_SECONDS="$max_age" "$STATUS_COMMAND")"
   status_fields="$("$JQ" -er --arg prefix "$prefix" --argjson min_records "$min_records" '
     select(keys == ["created_at_unix","format","leases","prefix","records","revision","sha256"] and
@@ -174,8 +193,8 @@ validate_object_receipt() {
     [.format,.sha256,(.revision|tostring),(.created_at_unix|tostring),(.records|tostring),(.leases|tostring)] | @tsv' \
     <<<"$artifact_status")"
   IFS=$'\t' read -r artifact_format artifact_sha snapshot_revision created_at records leases <<<"$status_fields"
-  artifact_bytes="$(wc -c <"$artifact_output" | tr -d ' ')"
-  artifact_file_sha="$(sha256sum "$artifact_output" | cut -d ' ' -f1)"
+  artifact_bytes="$(wc -c <"$artifact_path" | tr -d ' ')"
+  artifact_file_sha="$(sha256sum "$artifact_path" | cut -d ' ' -f1)"
   [[ "$artifact_file_sha" =~ ^[a-f0-9]{64}$ ]] || return 1
   "$JQ" -e --arg instance "$instance" --arg backup "$backup_id" \
     --arg store "$object_store_id" --arg bucket "$s3_bucket" --arg key "$s3_object_key" \
@@ -202,10 +221,10 @@ validate_object_receipt() {
 
 validated_object_receipt_digest() {
   local digest current_digest
-  validate_object_receipt || return 1
+  validate_object_receipt "$managed_artifact" || return 1
   digest="$(sha256sum "$receipt_output" | cut -d ' ' -f1)" || return 1
   [[ "$digest" =~ ^[a-f0-9]{64}$ ]] || return 1
-  validate_object_receipt || return 1
+  validate_object_receipt "$managed_artifact" || return 1
   current_digest="$(sha256sum "$receipt_output" | cut -d ' ' -f1)" || return 1
   [[ "$current_digest" == "$digest" ]] || return 1
   printf '%s\n' "$digest"
@@ -265,7 +284,7 @@ fi
   echo "backup workflow completed without its object receipt" >&2
   exit 1
 }
-if ! validate_object_receipt; then
+if ! validate_object_receipt "$managed_artifact"; then
   run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
     --message "object backup receipt invalid after workflow" >/dev/null
   echo "backup workflow completed with an invalid object receipt" >&2

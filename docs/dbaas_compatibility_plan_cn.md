@@ -11083,6 +11083,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   artifact 捕获到私有 0600 副本，archive 和 release 都只读该副本；Object Lock receipt
   生成后同样捕获到私有副本再传给 release。捕获窗口漂移 fail closed，且不会进入后续阶段。
   回归：`go test ./hack/production -run 'TestArchiveOperationAudit' -count=1` 通过。
+- A688 冻结 Backup operation runner 的导出 artifact：
+  A683 已让 Object Lock upload 在模块内部冻结 `INPUT`，但 `run-backup-operation.sh` 仍在
+  logical export、status、upload 和最终 receipt 校验之间反复读取用户参数里的
+  `artifact_output` 路径；若该路径在 upload 前后漂移，远端对象可能已经正确写入但 runner
+  后续校验改读另一份本地 artifact，导致 operation 无法收敛或 receipt 绑定混乱。现在 runner
+  在 export/复用既有 artifact 后立即把 artifact 捕获到私有 0600 副本，status、upload 和
+  succeed 前 receipt 校验全部只读该副本；原始 artifact path 后续漂移不会影响已冻结
+  workflow，捕获窗口漂移会 retry 且不会进入 upload。回归：
+  `go test ./hack/production -run 'TestBackupOperation' -count=1` 通过。
 
 ### P2：运维兼容和长期验证
 

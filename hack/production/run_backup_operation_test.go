@@ -27,6 +27,19 @@ func TestBackupOperationCompletesProtectedUpload(t *testing.T) {
 	require.FileExists(t, f.receipt)
 }
 
+func TestBackupOperationPassesFrozenArtifactToStatusAndObject(t *testing.T) {
+	f := newBackupRunnerFixture(t, false)
+	f.run(t, true, "ASSERT_FROZEN_ARTIFACT=true")
+	log := f.log(t)
+	require.NotContains(t, log, f.artifact)
+}
+
+func TestBackupOperationIgnoresOriginalArtifactDriftAfterCapture(t *testing.T) {
+	f := newBackupRunnerFixture(t, false)
+	f.run(t, true, "TAMPER_ORIGINAL_ARTIFACT_BEFORE_OBJECT=true")
+	require.Contains(t, f.log(t), "--action succeed")
+}
+
 func TestBackupOperationRejectsInvalidObjectReceipt(t *testing.T) {
 	f := newBackupRunnerFixture(t, false)
 	f.run(t, false, "INVALID_OBJECT_RECEIPT=true", "invalid object receipt")
@@ -99,6 +112,16 @@ func TestBackupOperationRejectsParametersTamperedDuringDigest(t *testing.T) {
 	require.NotContains(t, log, "--action succeed")
 }
 
+func TestBackupOperationRejectsArtifactTamperedDuringCapture(t *testing.T) {
+	f := newBackupRunnerFixture(t, false)
+	f.run(t, false, "TAMPER_BACKUP_DURING_SHA256=true", "backup artifact changed")
+	log := f.log(t)
+	require.Contains(t, log, "--action retry")
+	require.NotContains(t, log, "status\n")
+	require.NotContains(t, log, "object\n")
+	require.NotContains(t, log, "--action succeed")
+}
+
 func TestBackupOperationRejectsEmptyRequiredParameters(t *testing.T) {
 	f := newBackupRunnerFixture(t, false)
 	parameters := strings.ReplaceAll(
@@ -132,8 +155,8 @@ func TestBackupOperationStopsWhenHeartbeatIsFenced(t *testing.T) {
 }
 
 type backupRunnerFixture struct {
-	dir, parameters, receipt string
-	env                      []string
+	dir, parameters, artifact, receipt string
+	env                                []string
 }
 
 func newBackupRunnerFixture(t *testing.T, existingArtifact bool) *backupRunnerFixture {
@@ -183,6 +206,12 @@ printf 'artifact\n' >"$OUTPUT"
 	writeTrafficExecutable(t, statusCommand, `#!/usr/bin/env bash
 set -euo pipefail
 printf 'status\n' >>"$FAKE_DIR/actions.log"
+if [[ "${ASSERT_FROZEN_ARTIFACT:-false}" == true ]]; then
+  [[ "$INPUT" != "$ORIGINAL_ARTIFACT_OUTPUT" ]] ||
+    { echo "status input was not frozen" >&2; exit 9; }
+  [[ -f "$INPUT" ]] || { echo "frozen status input is missing" >&2; exit 9; }
+fi
+printf 'status input %s\n' "$INPUT" >>"$FAKE_DIR/actions.log"
 [[ -f "$INPUT" ]]
 count_file="$FAKE_DIR/status.count"
 count=0
@@ -198,8 +227,15 @@ fi
 	writeTrafficExecutable(t, objectCommand, `#!/usr/bin/env bash
 set -euo pipefail
 printf 'object\n' >>"$FAKE_DIR/actions.log"
+if [[ "${ASSERT_FROZEN_ARTIFACT:-false}" == true ]]; then
+  [[ "$INPUT" != "$ORIGINAL_ARTIFACT_OUTPUT" ]] ||
+    { echo "object input was not frozen" >&2; exit 9; }
+  [[ -f "$INPUT" ]] || { echo "frozen object input is missing" >&2; exit 9; }
+fi
+printf 'object input %s\n' "$INPUT" >>"$FAKE_DIR/actions.log"
 [[ "${OBJECT_FAIL:-false}" != true ]] || exit 9
 sleep "${OBJECT_SLEEP:-0}"
+[[ "${TAMPER_ORIGINAL_ARTIFACT_BEFORE_OBJECT:-false}" != true ]] || printf 'changed\n' >"$ORIGINAL_ARTIFACT_OUTPUT"
 artifact_sha="`+backupArtifactSHA256+`"
 [[ "${INVALID_OBJECT_RECEIPT:-false}" != true ]] || artifact_sha=abc123
 object_bytes="$(wc -c <"$INPUT" | tr -d ' ')"
@@ -215,10 +251,12 @@ chmod 600 "$RECEIPT_OUTPUT"
 		"OBJECT_COMMAND=" + objectCommand, "FAKE_DIR=" + dir, "PARAMETERS_DIGEST=" + digest,
 		"BACKUP_RECEIPT_OUTPUT=" + receipt,
 		"RUNNER_PARAMETERS_INPUT=" + parameters,
+		"RUNNER_BACKUP_INPUT=" + artifact,
+		"ORIGINAL_ARTIFACT_OUTPUT=" + artifact,
 	}
 	env = append(env, receiptDigestTamperEnv(t, dir, receipt)...)
 	return &backupRunnerFixture{
-		dir: dir, parameters: parameters, receipt: receipt,
+		dir: dir, parameters: parameters, artifact: artifact, receipt: receipt,
 		env: env,
 	}
 }
