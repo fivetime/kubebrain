@@ -11074,6 +11074,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   retry，且不会启动 audit。回归：
   `go test ./hack/production -run 'TestPostRestoreAuditOperation' -count=1`
   通过。
+- A687 冻结手工 operation audit archive 的 release 输入：
+  `archive-operation-audit.sh` 会先把终态 Operation capture 到 `ARTIFACT_OUTPUT`，再调用
+  Object Lock archive，最后用 `operation-audit --action release` 移除 audit finalizer；旧脚本
+  archive 与 release 都继续读取用户传入的 artifact/receipt 输出路径。若这些路径在 capture、
+  Object Lock receipt 生成或 release 前后漂移，可能让 release 消费与实际 archive 子流程
+  不同的本地 bytes，造成已上传版本无法复用或 release 失败。现在脚本在 capture 后把
+  artifact 捕获到私有 0600 副本，archive 和 release 都只读该副本；Object Lock receipt
+  生成后同样捕获到私有副本再传给 release。捕获窗口漂移 fail closed，且不会进入后续阶段。
+  回归：`go test ./hack/production -run 'TestArchiveOperationAudit' -count=1` 通过。
 
 ### P2：运维兼容和长期验证
 
