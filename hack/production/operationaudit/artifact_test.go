@@ -117,11 +117,62 @@ func TestOperationAuditRejectsUnsafeIdentityFields(t *testing.T) {
 				artifact.UID = string([]byte{'u', 0xff})
 			},
 		},
+		{
+			name: "operation_id_slash",
+			mutate: func(artifact *Artifact) {
+				artifact.OperationID = "backup/1"
+			},
+		},
+		{
+			name: "instance_control_byte",
+			mutate: func(artifact *Artifact) {
+				artifact.Instance = "instance-a\x00"
+			},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			artifact := terminalArtifact()
 			tc.mutate(&artifact)
 			require.ErrorContains(t, artifact.Validate(), "incomplete")
+		})
+	}
+}
+
+func TestArchiveReceiptRejectsUnsafeOperationIdentity(t *testing.T) {
+	artifact := terminalArtifact()
+	for _, tc := range []struct {
+		name   string
+		mutate func(*ArchiveReceipt)
+	}{
+		{
+			name: "operation_id_slash",
+			mutate: func(receipt *ArchiveReceipt) {
+				receipt.OperationID = "backup/1"
+			},
+		},
+		{
+			name: "operation_uid_control_byte",
+			mutate: func(receipt *ArchiveReceipt) {
+				receipt.OperationUID = "uid-1\x00"
+			},
+		},
+		{
+			name: "instance_unicode_space",
+			mutate: func(receipt *ArchiveReceipt) {
+				receipt.Instance = "instance\u00a0a"
+			},
+		},
+		{
+			name: "operation_type_unknown",
+			mutate: func(receipt *ArchiveReceipt) {
+				receipt.OperationType = "Backup/Deletion"
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			receipt := validArchiveReceipt(artifact)
+			tc.mutate(&receipt)
+			require.ErrorContains(t, receipt.Validate(), "incomplete")
 		})
 	}
 }

@@ -10397,6 +10397,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   的 executor-before-fail 断言也调整为更早的 artifact validator 失败。回归：
   `go test ./hack/production/operationaudit ./hack/production/internal/operationauditbuilder ./hack/production/internal/operationarchiver -run 'TestOperationAuditRejectsUnsafeIdentityFields|TestFromOperationRejectsUnsafeIdentityMetadata|TestArchiveProcessorRejectsUnsafeOperationIdentityBeforeExecutor|TestArchiveProcessorUsesStableIdentityAndReleasesFinalizer' -count=1`
   通过。
+- A617 对齐 operation audit archive receipt 的 operation identity/type 门禁：
+  A616 已让 audit artifact 拒绝异常 namespace/name/UID，但 artifact 的
+  `operation_id`、`instance` 以及 archive receipt 的 `operation_id`、`operation_uid`、
+  `instance`、`operation_type` 仍存在只校验非空或任意字符串的路径。旧 executor、
+  手工 release 或离线校验工具可能生成单独看似合法、但包含路径分隔、空白、控制字符
+  或未知 operation type 的 receipt，等到与 artifact 比对时才失败。现在 artifact 与
+  receipt 共用单段 key-safe identity 校验，operation type 也共用白名单。回归：
+  `go test ./hack/production/operationaudit ./hack/production/internal/operationauditbuilder ./hack/production/internal/operationauditrelease ./hack/production/internal/operationarchiver -run 'TestOperationAuditRejectsUnsafeIdentityFields|TestArchiveReceiptRejectsUnsafeOperationIdentity|TestFromOperationRejectsUnsafeIdentityMetadata|TestReleaseVerifiesArchiveAndRemovesOnlyAuditFinalizer|TestArchiveProcessorUsesStableIdentityAndReleasesFinalizer' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

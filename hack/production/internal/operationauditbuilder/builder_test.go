@@ -77,11 +77,31 @@ func TestFromOperationBindsHighRiskApproval(t *testing.T) {
 }
 
 func TestFromOperationRejectsUnsafeIdentityMetadata(t *testing.T) {
-	object := operationForAuditBuilder()
-	object.SetUID("uid/1")
+	for _, tc := range []struct {
+		name   string
+		mutate func(*unstructured.Unstructured)
+	}{
+		{
+			name: "uid_slash",
+			mutate: func(object *unstructured.Unstructured) {
+				object.SetUID("uid/1")
+			},
+		},
+		{
+			name: "instance_slash",
+			mutate: func(object *unstructured.Unstructured) {
+				_ = unstructured.SetNestedField(object.Object, "instance/a", "spec", "instance")
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			object := operationForAuditBuilder()
+			tc.mutate(object)
 
-	_, err := FromOperation(object)
-	require.ErrorContains(t, err, "incomplete")
+			_, err := FromOperation(object)
+			require.ErrorContains(t, err, "incomplete")
+		})
+	}
 }
 
 func operationForAuditBuilder() *unstructured.Unstructured {

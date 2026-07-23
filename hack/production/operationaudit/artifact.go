@@ -89,12 +89,11 @@ type ArchiveReceipt struct {
 }
 
 func (a Artifact) Validate() error {
-	operationTypeValid := a.Type == "Backup" || a.Type == "BackupDeletion" || a.Type == "RestoreCutover" ||
-		a.Type == "PostRestoreAudit" || a.Type == "CertificateRotation" || a.Type == "Destroy"
 	if a.Format != Format || a.APIVersion != "dbaas.kubebrain.io/v1alpha1" ||
 		!validAuditIdentityValue(a.Namespace) || !validAuditIdentityValue(a.Name) ||
 		!validAuditIdentityValue(a.UID) || a.Generation <= 0 ||
-		a.OperationID == "" || a.Instance == "" || !operationTypeValid ||
+		!validAuditIdentityValue(a.OperationID) || !validAuditIdentityValue(a.Instance) ||
+		!validOperationType(a.Type) ||
 		!validSHA256(a.ParametersSHA256) || a.MaxAttempts <= 0 ||
 		(a.Phase != "Succeeded" && a.Phase != "Failed") ||
 		a.Owner == "" || a.Attempt <= 0 || a.Attempt > a.MaxAttempts ||
@@ -122,6 +121,11 @@ func (a Artifact) Validate() error {
 	return nil
 }
 
+func validOperationType(value string) bool {
+	return value == "Backup" || value == "BackupDeletion" || value == "RestoreCutover" ||
+		value == "PostRestoreAudit" || value == "CertificateRotation" || value == "Destroy"
+}
+
 func validAuditIdentityValue(value string) bool {
 	return validReceiptScopeValue(value) &&
 		!strings.Contains(value, "/") &&
@@ -144,8 +148,9 @@ func validSHA256(value string) bool {
 }
 
 func (r ArchiveReceipt) Validate() error {
-	if r.Format != ArchiveReceiptFormat || r.OperationID == "" || r.OperationUID == "" ||
-		r.Instance == "" || r.OperationType == "" ||
+	if r.Format != ArchiveReceiptFormat ||
+		!validAuditIdentityValue(r.OperationID) || !validAuditIdentityValue(r.OperationUID) ||
+		!validAuditIdentityValue(r.Instance) || !validOperationType(r.OperationType) ||
 		(r.Phase != "Succeeded" && r.Phase != "Failed") ||
 		(r.Phase == "Succeeded" && !validSHA256(r.ExecutionReceiptSHA256)) ||
 		(r.Phase == "Failed" && r.ExecutionReceiptSHA256 != "") ||
