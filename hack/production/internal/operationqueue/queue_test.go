@@ -177,6 +177,88 @@ func TestClaimAcrossNamespacesRejectsInvalidNamespaceBeforeAPI(t *testing.T) {
 	require.Empty(t, client.Actions(), "invalid namespace allowlist must fail before queue inspection")
 }
 
+func TestQueueRejectsInvalidOperationNameBeforeAPI(t *testing.T) {
+	ctx := context.Background()
+	for _, test := range []struct {
+		name string
+		call func(context.Context, *Queue) error
+	}{
+		{
+			name: "submit",
+			call: func(ctx context.Context, queue *Queue) error {
+				_, err := queue.Submit(ctx, "backup/1", validSpec())
+				return err
+			},
+		},
+		{
+			name: "requeue",
+			call: func(ctx context.Context, queue *Queue) error {
+				_, err := queue.Requeue(ctx, "backup/1", "worker-a", 1, "")
+				return err
+			},
+		},
+		{
+			name: "heartbeat",
+			call: func(ctx context.Context, queue *Queue) error {
+				_, err := queue.Heartbeat(ctx, "backup/1", "worker-a", 1, time.Minute)
+				return err
+			},
+		},
+		{
+			name: "finish",
+			call: func(ctx context.Context, queue *Queue) error {
+				_, err := queue.Finish(
+					ctx, "backup/1", "worker-a", 1, true, strings.Repeat("a", 64), "",
+				)
+				return err
+			},
+		},
+		{
+			name: "get",
+			call: func(ctx context.Context, queue *Queue) error {
+				_, err := queue.Get(ctx, "backup/1")
+				return err
+			},
+		},
+		{
+			name: "parameters",
+			call: func(ctx context.Context, queue *Queue) error {
+				_, err := queue.Parameters(ctx, "backup/1")
+				return err
+			},
+		},
+		{
+			name: "parameters_for_worker",
+			call: func(ctx context.Context, queue *Queue) error {
+				_, err := queue.ParametersForWorker(ctx, "backup/1", "PostRestoreAudit", "worker-a", 1)
+				return err
+			},
+		},
+		{
+			name: "approve",
+			call: func(ctx context.Context, queue *Queue) error {
+				_, err := queue.Approve(
+					ctx, "backup/1", operationaudit.ApproverUsername, "approval-1",
+				)
+				return err
+			},
+		},
+		{
+			name: "delete",
+			call: func(ctx context.Context, queue *Queue) error {
+				return queue.Delete(ctx, "backup/1", types.UID("uid-1"))
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			client := fakeQueueClient()
+			err := test.call(ctx, New(client, "test"))
+			require.ErrorContains(t, err, "invalid operation name")
+			require.Empty(t, client.Actions(), "invalid operation name must fail before Kubernetes API actions")
+		})
+	}
+}
+
 func TestClaimAcrossNamespacesPrioritizesLeastRecentlyServedQueue(t *testing.T) {
 	client := fakeQueueClient()
 	ctx := context.Background()

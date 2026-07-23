@@ -11169,6 +11169,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Requeue、Heartbeat、Finish、Get、Parameters、ParametersForWorker、Approve、Delete 和
   cross-namespace claim，证明非法 namespace 返回错误且 `client.Actions()` 为空：
   `go test ./hack/production/internal/operationqueue -count=1` 通过。
+- A697 下沉 operation queue operation name 校验：
+  Submit 已校验 operation resource name，但 Requeue、Heartbeat、Finish、Get、Parameters、
+  ParametersForWorker、Approve 和 Delete 会直接把调用方传入的 name 交给 dynamic client；
+  未来库调用方传入 `backup/1` 时会进入 Kubernetes API path 层才失败。现在 operation
+  queue 复用统一 `validateOperationName`，所有按 name 访问 Operation 的公开入口都会在
+  API action 前拒绝非 DNS-subdomain 名称；Submit 继续把该错误归类为 `ErrInvalidSpec`。
+  fake dynamic client 回归覆盖全部 name-based 方法，证明非法 name 返回错误且
+  `client.Actions()` 为空：
+  `go test ./hack/production/internal/operationqueue -count=1` 通过。
 
 ### P2：运维兼容和长期验证
 
