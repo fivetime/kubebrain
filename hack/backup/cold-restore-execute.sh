@@ -24,9 +24,18 @@ fail_input() { echo "$1" >&2; exit 2; }
 command -v jq >/dev/null 2>&1 || fail_input "jq is required"
 command -v sha256sum >/dev/null 2>&1 || fail_input "sha256sum is required"
 
-receipt="$(jq -cS . "$RECEIPT_FILE")" || fail_input "RECEIPT_FILE is not valid JSON"
-source_receipt_sha256="$(sha256sum "$RECEIPT_FILE" | awk '{print $1}')"
+render_dir="$(mktemp -d)"
+cleanup_rendered() { rm -rf "$render_dir"; }
+trap cleanup_rendered EXIT
+
+source_receipt_copy="${render_dir}/source-receipt.json"
+cp -- "$RECEIPT_FILE" "$source_receipt_copy" || fail_input "capture cold snapshot receipt failed"
+chmod 600 "$source_receipt_copy"
+source_receipt_sha256="$(sha256sum "$source_receipt_copy" | awk '{print $1}')"
 [[ "$source_receipt_sha256" =~ ^[a-f0-9]{64}$ ]] || fail_input "cold snapshot receipt digest is invalid"
+[[ "$(sha256sum "$RECEIPT_FILE" | awk '{print $1}')" == "$source_receipt_sha256" ]] ||
+  fail_input "cold snapshot receipt changed during capture"
+receipt="$(jq -cS . "$source_receipt_copy")" || fail_input "RECEIPT_FILE is not valid JSON"
 manifest="$(jq -cS . "$RESTORE_MANIFEST")" || fail_input "RESTORE_MANIFEST is not valid JSON"
 jq -e '.format == "kubebrain.cold-physical-snapshot.v2"' <<<"$receipt" >/dev/null || fail_input "unsupported cold snapshot receipt"
 jq -e '.apiVersion == "v1" and .kind == "List" and (.items | type == "array")' <<<"$manifest" >/dev/null || fail_input "restore manifest must be a Kubernetes List"
@@ -50,15 +59,12 @@ storage_class="$(jq -r '[.items[] | select(.kind == "PersistentVolumeClaim") | .
 [[ -n "$namespace" && -n "$tidb_cluster" && "$expected_cluster_id" =~ ^[1-9][0-9]*$ && -n "$operation_id" && -n "$expected_driver" ]] || fail_input "cold snapshot receipt identity is incomplete"
 [[ -n "$snapshot_class" && -n "$storage_class" ]] || fail_input "restore manifest must use exactly one snapshot class and one storage class"
 
-render_dir="$(mktemp -d)"
 rendered="${render_dir}/manifest.json"
 applied_manifest="${render_dir}/applied-manifest.json"
 printf '%s\n' "$manifest" >"$applied_manifest"
 chmod 600 "$applied_manifest"
-cleanup_rendered() { rm -rf "$render_dir"; }
-trap cleanup_rendered EXIT
 (cd "$ROOT_DIR" && go run ./hack/backup/cmd/cold-restore-render \
-  --receipt "$RECEIPT_FILE" \
+  --receipt "$source_receipt_copy" \
   --target-snapshot-class "$snapshot_class" \
   --target-storage-class "$storage_class" \
   --output "$rendered" \

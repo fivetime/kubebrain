@@ -16,25 +16,27 @@ import (
 
 func TestColdRestoreExecute(t *testing.T) {
 	for _, tc := range []struct {
-		name                          string
-		existing                      bool
-		tampered                      bool
-		sourceReceiptDrift            bool
-		restoreManifestPathDrift      bool
-		precreateRestoreReceipt       bool
-		wrongCluster                  bool
-		wrongContent                  bool
-		wrongPVC                      bool
-		wantReceipt                   bool
-		wantPreexistingRestoreReceipt bool
-		wantEmergency                 bool
-		wantCreate                    bool
-		wantError                     string
+		name                           string
+		existing                       bool
+		tampered                       bool
+		sourceReceiptDrift             bool
+		sourceReceiptDriftDuringRender bool
+		restoreManifestPathDrift       bool
+		precreateRestoreReceipt        bool
+		wrongCluster                   bool
+		wrongContent                   bool
+		wrongPVC                       bool
+		wantReceipt                    bool
+		wantPreexistingRestoreReceipt  bool
+		wantEmergency                  bool
+		wantCreate                     bool
+		wantError                      string
 	}{
 		{name: "restores storage and publishes receipt", wantReceipt: true, wantCreate: true},
 		{name: "existing target fails before create", existing: true, wantError: "target resource already exists"},
 		{name: "tampered manifest fails before target access", tampered: true, wantError: "differs from the canonical rendering"},
 		{name: "source receipt drift fails before create", sourceReceiptDrift: true, wantError: "cold snapshot receipt changed after validation"},
+		{name: "source receipt drift during render uses captured receipt", sourceReceiptDriftDuringRender: true, wantError: "cold snapshot receipt changed after validation"},
 		{name: "manifest path drift still applies validated manifest", restoreManifestPathDrift: true, wantReceipt: true, wantCreate: true},
 		{name: "concurrent restore receipt publish is non overwriting", precreateRestoreReceipt: true, wantPreexistingRestoreReceipt: true, wantEmergency: true, wantCreate: true, wantError: "restore receipt already exists"},
 		{name: "cluster identity mismatch fences storage", wrongCluster: true, wantEmergency: true, wantCreate: true, wantError: "identity/readiness mismatch"},
@@ -63,8 +65,14 @@ func TestColdRestoreExecute(t *testing.T) {
 
 			fakeKubectl := filepath.Join(dir, "kubectl")
 			require.NoError(t, os.WriteFile(fakeKubectl, []byte(coldRestoreFakeKubectl), 0o755))
+			realGo, err := exec.LookPath("go")
+			require.NoError(t, err)
+			fakeGo := filepath.Join(dir, "go")
+			require.NoError(t, os.WriteFile(fakeGo, []byte(coldRestoreFakeGo), 0o755))
 			command := exec.Command("bash", "../backup/cold-restore-execute.sh")
 			command.Env = append(os.Environ(),
+				"PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"),
+				"REAL_GO="+realGo,
 				"KUBECTL="+fakeKubectl,
 				"KUBE_CONTEXT=isolated-target",
 				"RECEIPT_FILE="+receiptPath,
@@ -79,6 +87,7 @@ func TestColdRestoreExecute(t *testing.T) {
 				"FAKE_PVC_JSON="+coldRestorePVCResult(t, tc.wrongPVC),
 				"FAKE_CONTENT_JSON="+coldRestoreContentResult(t, tc.wrongContent),
 				"TAMPER_SOURCE_RECEIPT_DURING_KUBECTL="+strconv.FormatBool(tc.sourceReceiptDrift),
+				"TAMPER_SOURCE_RECEIPT_DURING_RENDER="+strconv.FormatBool(tc.sourceReceiptDriftDuringRender),
 				"TAMPERED_RECEIPT_FILE="+tamperedReceiptPath,
 				"TAMPER_RESTORE_MANIFEST_DURING_KUBECTL="+strconv.FormatBool(tc.restoreManifestPathDrift),
 				"TAMPERED_RESTORE_MANIFEST="+tamperedManifestPath,
@@ -132,6 +141,9 @@ func TestColdRestoreExecute(t *testing.T) {
 			}
 			if tc.wantEmergency {
 				requireOrder(t, log, "wait --for=condition=Ready", "patch tidbcluster kb --type=json", "patch statefulset kb-tikv --type=json", "patch statefulset kb-pd --type=json")
+			}
+			if tc.sourceReceiptDriftDuringRender {
+				require.FileExists(t, logPath+".source-receipt-render-tampered")
 			}
 		})
 	}
@@ -308,4 +320,16 @@ else
   echo "unsupported fake kubectl call: $args" >&2
   exit 1
 fi
+`
+
+const coldRestoreFakeGo = `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${TAMPER_SOURCE_RECEIPT_DURING_RENDER:-false}" == true &&
+  "$*" == *"hack/backup/cmd/cold-restore-render"* &&
+  ! -f "${FAKE_LOG}.source-receipt-render-tampered" ]]; then
+  cp "$TAMPERED_RECEIPT_FILE" "$RECEIPT_FILE"
+  chmod 600 "$RECEIPT_FILE"
+  touch "${FAKE_LOG}.source-receipt-render-tampered"
+fi
+exec "$REAL_GO" "$@"
 `

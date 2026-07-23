@@ -10820,6 +10820,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   executor 后续消费被竞态替换的本地 manifest。回归：
   `go test ./hack/backup/cmd/cold-restore-render -run 'TestWriteAtomic' -count=20`
   通过。
+- A660 冻结 cold restore executor 的 renderer 输入 receipt：
+  A656 已让 `cold-restore-execute.sh` 复检调用方 `RECEIPT_FILE` 的 SHA，但 canonical
+  renderer 仍直接从该路径重读 snapshot receipt；若本地 receipt 在初始解析后、renderer
+  调用前被替换，executor 可能把旧 receipt 变量、新 receipt 渲染结果和最终 digest 混用。
+  现在 executor 先把 source snapshot receipt 捕获到私有 0600 副本，所有本地解析和
+  `cold-restore-render` 复算都只读该副本；调用方路径仍在捕获后、变更前和签收前做
+  digest 复检，漂移时 fail closed。回归：
+  `go test ./hack/production -run 'TestColdRestoreExecute' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 
