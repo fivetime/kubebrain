@@ -10709,6 +10709,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   字节级幂等，receipt 漂移或嵌套伪造字段仍 fail closed。回归：
   `go test ./hack/production -run 'TestDestroyInstanceTreatsConcurrentReceiptPublishAsIdempotent|TestDestroyInstanceLifecycleIsRetrySafe|TestDestroyInstanceRejectsNestedExistingReceiptFields' -count=1`
   通过。
+- A649 让 certificate rotation receipt 发布竞争幂等：
+  `validate-certificate-rotation.sh` 的 complete 阶段在确认新凭据健康、旧凭据被拒绝、
+  Pod UID/readiness/restart 未漂移后发布 `kubebrain.certificate-rotation.receipt.v1`。
+  旧逻辑只在生成 receipt 前检查已有终态文件；若另一个 worker 在检查后、硬链接前
+  发布同一 rotation 的有效 receipt，当前 worker 会因时间戳不同把 `EEXIST` 当覆盖
+  冲突。现在 `atomic_publish` 仅在目标是 rotation receipt，且 complete 已绑定
+  old/new certificate SHA-256 fingerprint 时复用 exact key set 校验；existing receipt
+  必须匹配 instance、rotation、endpoint、replica 数、old/new fingerprint、
+  `pods_unchanged=true` 和 `old_certificate_rejected=true` 才视为幂等成功。
+  begin/overlap 证据仍保持字节级幂等，receipt 漂移或嵌套伪造字段仍 fail closed。回归：
+  `go test ./hack/production -run 'TestValidateCertificateRotationTreatsConcurrentReceiptPublishAsIdempotent|TestValidateCertificateRotationLifecycle|TestValidateCertificateRotationRejectsNestedExistingReceiptFields' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

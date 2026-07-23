@@ -226,6 +226,11 @@ atomic_publish() {
       rm -f "$temporary"
       return
     fi
+    if [[ "$destination" == "$receipt_file" && -n "${old_fingerprint:-}" && -n "${new_fingerprint:-}" ]] &&
+      validate_existing_receipt "$old_fingerprint" "$new_fingerprint"; then
+      rm -f "$temporary"
+      return
+    fi
     echo "refusing to overwrite existing evidence: ${destination}" >&2
     rm -f "$temporary"
     exit 1

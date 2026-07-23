@@ -36,6 +36,22 @@ func TestValidateCertificateRotationLifecycle(t *testing.T) {
 	fixture.run(t, "complete", true, "")
 }
 
+func TestValidateCertificateRotationTreatsConcurrentReceiptPublishAsIdempotent(t *testing.T) {
+	fixture := newRotationFixture(t)
+	fixture.run(t, "begin", true, "")
+	fixture.run(t, "overlap", true, "")
+	fixture.run(t, "complete", true, "PUBLISH_ROTATION_RECEIPT_DURING_JQ=true")
+
+	data, err := os.ReadFile(filepath.Join(fixture.stateDir, "rotation-1.receipt.json"))
+	require.NoError(t, err)
+	var receipt map[string]any
+	require.NoError(t, json.Unmarshal(data, &receipt))
+	require.Equal(t, "kubebrain.certificate-rotation.receipt.v1", receipt["format"])
+	require.Equal(t, float64(1), receipt["completed_at_unix"])
+	require.Equal(t, oldCertificateFingerprintSHA256, receipt["old_certificate_sha256"])
+	require.Equal(t, newCertificateFingerprintSHA256, receipt["new_certificate_sha256"])
+}
+
 func TestValidateCertificateRotationRejectsNestedExistingReceiptFields(t *testing.T) {
 	fixture := newRotationFixture(t)
 	fixture.run(t, "begin", true, "")
@@ -203,6 +219,21 @@ if [[ "$cert" == *new-cert && -f "${FAKE_STATE_DIR}/fail-new" ]]; then
 fi
 echo healthy
 `)
+	realJQ, err := exec.LookPath("jq")
+	require.NoError(t, err)
+	jq := filepath.Join(dir, "jq-wrapper")
+	writeExecutable(t, jq, `#!/usr/bin/env bash
+set -euo pipefail
+"$REAL_JQ" "$@"
+if [[ "${PUBLISH_ROTATION_RECEIPT_DURING_JQ:-false}" == true &&
+  " $* " == *" -cnS "* && " $* " == *"kubebrain.certificate-rotation.receipt.v1"* &&
+  ! -f "$STATE_DIR/$ROTATION_ID.receipt.json" ]]; then
+  IFS=$'\t' read -r _ _ _ endpoint old_fingerprint new_fingerprint <"$STATE_DIR/$ROTATION_ID.state"
+  printf '{"completed_at_unix":1,"endpoint":"%s","format":"kubebrain.certificate-rotation.receipt.v1","instance":"%s","new_certificate_sha256":"%s","old_certificate_rejected":true,"old_certificate_sha256":"%s","pods_unchanged":true,"replicas":%s,"rotation_id":"%s"}\n' \
+    "$endpoint" "$INSTANCE" "$new_fingerprint" "$old_fingerprint" "${EXPECTED_REPLICAS:-3}" "$ROTATION_ID" >"$STATE_DIR/$ROTATION_ID.receipt.json"
+  chmod 600 "$STATE_DIR/$ROTATION_ID.receipt.json"
+fi
+`)
 	return &rotationFixture{
 		dir:      dir,
 		stateDir: stateDir,
@@ -222,6 +253,8 @@ echo healthy
 			"NEW_KEY=" + filepath.Join(dir, "new-key"),
 			"OVERLAP_CACERT=" + filepath.Join(dir, "overlap-ca"),
 			"FAKE_STATE_DIR=" + stateDir,
+			"JQ=" + jq,
+			"REAL_JQ=" + realJQ,
 		},
 	}
 }
