@@ -24,6 +24,29 @@ fail_input() { echo "$1" >&2; exit 2; }
 command -v jq >/dev/null 2>&1 || fail_input "jq is required"
 command -v sha256sum >/dev/null 2>&1 || fail_input "sha256sum is required"
 
+input_dir="$(mktemp -d)"
+cleanup_inputs() { rm -rf "$input_dir"; }
+trap cleanup_inputs EXIT
+
+file_sha256() {
+  local digest
+  digest="$(sha256sum "$1" | awk '{print $1}')" || return 1
+  [[ "$digest" =~ ^[a-f0-9]{64}$ ]] || return 1
+  printf '%s' "$digest"
+}
+
+freeze_input() {
+  local source="$1" destination="$2" label="$3" source_before captured source_after
+  source_before="$(file_sha256 "$source")" || fail_input "$label digest is invalid"
+  cp -- "$source" "$destination" || fail_input "capture $label failed"
+  chmod 600 "$destination"
+  captured="$(file_sha256 "$destination")" || fail_input "$label digest is invalid"
+  source_after="$(file_sha256 "$source")" || fail_input "$label digest is invalid"
+  [[ "$source_before" == "$captured" && "$source_after" == "$captured" ]] ||
+    fail_input "$label changed during capture"
+  printf '%s' "$captured"
+}
+
 inventory="$(jq -cS . "$PREFLIGHT_FILE")" || fail_input "PREFLIGHT_FILE is not valid JSON"
 jq -e '.format == "kubebrain.cold-physical-snapshot-preflight.v2" and
   .recovery_blueprint.tidbcluster.apiVersion == "pingcap.com/v1alpha1" and
@@ -51,15 +74,17 @@ fresh_inventory="$("$script_dir/cold-snapshot-preflight.sh" | jq -cS .)"
   echo "live preflight inventory differs from PREFLIGHT_FILE; refusing mutation" >&2
   exit 1
 }
-witness_file_sha256="$(sha256sum "$SEMANTIC_WITNESS_FILE" | awk '{print $1}')"
-[[ "$witness_file_sha256" =~ ^[a-f0-9]{64}$ ]] || fail_input "semantic witness file digest is invalid"
-witness_status="$(cd "$script_dir/../.." && INPUT="$SEMANTIC_WITNESS_FILE" EXPECTED_PREFIX="$EXPECTED_WITNESS_PREFIX" \
+witness_file_copy="${input_dir}/semantic-witness.jsonl"
+witness_file_sha256="$(freeze_input "$SEMANTIC_WITNESS_FILE" "$witness_file_copy" "semantic witness file")"
+witness_status="$(cd "$script_dir/../.." && INPUT="$witness_file_copy" EXPECTED_PREFIX="$EXPECTED_WITNESS_PREFIX" \
   MIN_RECORDS=1 MAX_AGE_SECONDS="$WITNESS_MAX_AGE_SECONDS" REQUIRE_GRANTED_TTL=true \
   go run ./hack/backup/cmd/logical-status)"
 jq -e '.format == "kubebrain.logical.v2" and (.revision > 0) and (.records > 0) and
   (.sha256 | test("^[0-9a-f]{64}$"))' <<<"$witness_status" >/dev/null || fail_input "semantic witness status is invalid"
 verify_witness_file() {
-  [[ "$(sha256sum "$SEMANTIC_WITNESS_FILE" | awk '{print $1}')" == "$witness_file_sha256" ]] ||
+  local current
+  current="$(file_sha256 "$witness_file_copy")" || { echo "semantic witness file changed after validation" >&2; exit 1; }
+  [[ "$current" == "$witness_file_sha256" ]] ||
     { echo "semantic witness file changed after validation" >&2; exit 1; }
 }
 verify_witness_file
@@ -125,6 +150,7 @@ clear_pause() {
 cleanup() {
   local status=$?
   trap - EXIT INT TERM
+  rm -rf "$input_dir"
   if [[ "$pd_stopped" == true ]]; then restore_replicas "$TIDB_NAMESPACE" "$pd_name" "$pd_uid" "$pd_replicas" || status=1; fi
   if [[ "$tikv_stopped" == true ]]; then restore_replicas "$TIDB_NAMESPACE" "$tikv_name" "$tikv_uid" "$tikv_replicas" || status=1; fi
   if [[ "$paused" == true ]]; then clear_pause || status=1; fi

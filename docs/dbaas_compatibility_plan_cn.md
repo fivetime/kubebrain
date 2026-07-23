@@ -10947,6 +10947,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   仍不影响已验证 manifest 的 apply。回归：
   `go test ./hack/production -run 'TestColdRestoreExecute' -count=1`
   通过。
+- A673 冻结 cold snapshot executor 的 semantic witness 输入：
+  A657 已在 `logical-status` 前后复检 witness 文件 SHA，但 status 仍直接读取调用方
+  `SEMANTIC_WITNESS_FILE` 路径；本地文件若在 status 读取窗口中被短暂替换再恢复，snapshot
+  receipt 可能把 witness status 与另一组 bytes 的文件 digest 混用。现在 executor 会把
+  semantic witness 捕获到私有 0600 副本，要求源路径与副本在捕获前后一致，`logical-status`
+  和最终 receipt 发布前复检都只读冻结副本；捕获窗口漂移会在任何存储变更前失败，捕获后的
+  原路径漂移不再影响已验证 witness。回归：
+  `go test ./hack/production -run 'TestColdSnapshotExecute' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

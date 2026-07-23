@@ -21,11 +21,13 @@ func TestColdSnapshotExecuteAndRollback(t *testing.T) {
 		failSnapshot        bool
 		contentDriver       string
 		precreateReceipt    bool
+		witnessPathDrift    bool
 		wantReceipt         bool
 		wantExistingReceipt bool
 		wantError           string
 	}{
 		{name: "success restores service and publishes receipt", wantReceipt: true},
+		{name: "witness path drift after capture still publishes receipt", witnessPathDrift: true, wantReceipt: true},
 		{name: "snapshot failure restores service without receipt", failSnapshot: true},
 		{name: "content driver mismatch restores service without receipt", contentDriver: "wrong.csi.test"},
 		{name: "concurrent receipt publish is non overwriting", precreateReceipt: true, wantExistingReceipt: true, wantError: "cold snapshot receipt already exists"},
@@ -35,19 +37,28 @@ func TestColdSnapshotExecuteAndRollback(t *testing.T) {
 			inventoryFile := filepath.Join(dir, "inventory.json")
 			receiptFile := filepath.Join(dir, "receipt.json")
 			witnessFile := filepath.Join(dir, "witness.jsonl")
+			tamperedWitnessFile := filepath.Join(dir, "tampered-witness.jsonl")
 			logFile := filepath.Join(dir, "kubectl.log")
 			require.NoError(t, os.WriteFile(inventoryFile, coldSnapshotInventory(t), 0o600))
 			require.NoError(t, os.WriteFile(witnessFile, coldSemanticWitness(t, "/registry"), 0o600))
+			require.NoError(t, os.WriteFile(tamperedWitnessFile, coldLeasedSemanticWitness(t, "/registry", true), 0o600))
 			fakeKubectl := filepath.Join(dir, "kubectl")
 			require.NoError(t, os.WriteFile(fakeKubectl, []byte(coldSnapshotFakeKubectl), 0o755))
+			realGo, err := exec.LookPath("go")
+			require.NoError(t, err)
+			writeTrafficExecutable(t, filepath.Join(dir, "go"), coldSnapshotFakeGo)
 
 			command := exec.Command("bash", "../backup/cold-snapshot-execute.sh")
 			command.Env = append(os.Environ(),
+				"PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"),
+				"REAL_GO="+realGo,
 				"KUBECTL="+fakeKubectl,
 				"PREFLIGHT_FILE="+inventoryFile,
 				"RECEIPT_FILE="+receiptFile,
 				"OPERATION_ID=op-20260721",
 				"SEMANTIC_WITNESS_FILE="+witnessFile,
+				"TAMPERED_WITNESS_FILE="+tamperedWitnessFile,
+				"TAMPER_WITNESS_AFTER_STATUS="+map[bool]string{true: "true", false: "false"}[tc.witnessPathDrift],
 				"EXPECTED_WITNESS_PREFIX=/registry",
 				"FAKE_LOG="+logFile,
 				"FAKE_PVC_JSON="+coldSnapshotPVCJSON("Bound"),
@@ -142,7 +153,7 @@ fi
 	)
 	output, err := command.CombinedOutput()
 	require.Error(t, err, string(output))
-	require.Contains(t, string(output), "semantic witness file changed after validation")
+	require.Contains(t, string(output), "semantic witness file changed during capture")
 	require.NoFileExists(t, receiptFile)
 	logValue, readErr := os.ReadFile(logFile)
 	require.NoError(t, readErr)
@@ -326,4 +337,19 @@ else
   echo "unsupported fake kubectl call: $args" >&2
   exit 1
 fi
+`
+
+const coldSnapshotFakeGo = `#!/usr/bin/env bash
+set -euo pipefail
+status=0
+"$REAL_GO" "$@" || status=$?
+if [[ "$status" -eq 0 &&
+  "${TAMPER_WITNESS_AFTER_STATUS:-false}" == true &&
+  "$*" == *"hack/backup/cmd/logical-status"* &&
+  ! -f "$FAKE_LOG.witness-tampered-after-status" ]]; then
+  cp "$TAMPERED_WITNESS_FILE" "$SEMANTIC_WITNESS_FILE"
+  chmod 600 "$SEMANTIC_WITNESS_FILE"
+  touch "$FAKE_LOG.witness-tampered-after-status"
+fi
+exit "$status"
 `
