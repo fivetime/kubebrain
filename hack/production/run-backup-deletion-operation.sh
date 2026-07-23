@@ -125,10 +125,12 @@ done
 
 source_fields="$("$JQ" -er --arg instance "$instance" --arg backup "$backup_id" \
   --arg store "$object_store_id" '
-  select(keys == ["artifact_format","artifact_sha256","backup_id","bucket","created_at_unix","format","instance","leases","object_bytes","object_key","object_store_id","records","remote_verified","retain_until_unix","retention_mode","snapshot_revision","uploaded_at_unix","version_id"] and
+  select((keys == ["artifact_format","artifact_sha256","backup_id","bucket","created_at_unix","format","instance","leases","object_bytes","object_key","object_store_id","records","remote_verified","retain_until_unix","retention_mode","snapshot_revision","uploaded_at_unix","version_id"] or
+    keys == ["artifact_file_sha256","artifact_format","artifact_sha256","backup_id","bucket","created_at_unix","format","instance","leases","object_bytes","object_key","object_store_id","records","remote_verified","retain_until_unix","retention_mode","snapshot_revision","uploaded_at_unix","version_id"]) and
     .format == "kubebrain.object-backup.receipt.v1" and
     .instance == $instance and .backup_id == $backup and .object_store_id == $store and
     (.bucket|length > 0) and (.object_key|length > 0) and (.version_id|length > 0) and
+    ((has("artifact_file_sha256") | not) or (.artifact_file_sha256|test("^[a-f0-9]{64}$"))) and
     (.artifact_sha256|test("^[a-f0-9]{64}$")) and
     (.snapshot_revision | type == "number" and . > 0 and . == floor) and
     (.created_at_unix | type == "number" and . > 0 and . == floor) and

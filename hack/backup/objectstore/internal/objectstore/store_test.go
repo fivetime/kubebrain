@@ -44,6 +44,10 @@ func TestUploadAndRetentionDeleteLifecycle(t *testing.T) {
 	require.Equal(t, types.ChecksumAlgorithmSha256, client.lastPut.ChecksumAlgorithm)
 	require.Equal(t, types.ObjectLockModeCompliance, client.lastPut.ObjectLockMode)
 	require.NotEmpty(t, aws.ToString(client.lastPut.ChecksumSHA256))
+	_, artifactFileSHA256, err := fileSHA256(artifact)
+	require.NoError(t, err)
+	require.Equal(t, artifactFileSHA256, receipt.ArtifactFileSHA256)
+	require.Equal(t, artifactFileSHA256, client.metadata["kubebrain-artifact-file-sha256"])
 
 	// A retry sees the conditional-write conflict, verifies the existing version,
 	// downloads it again, and reuses the immutable receipt.
@@ -486,7 +490,8 @@ func completeReceipt() Receipt {
 		Format: ReceiptFormat, Instance: "instance-a", BackupID: "backup-1",
 		ObjectStoreID: "store-a",
 		Bucket:        "backups", ObjectKey: "instance-a/backup-1.jsonl", VersionID: "version-1",
-		ArtifactFormat: backupfile.Format, ArtifactSHA256: strings.Repeat("a", 64), SnapshotRevision: 1,
+		ArtifactFileSHA256: strings.Repeat("b", 64),
+		ArtifactFormat:     backupfile.Format, ArtifactSHA256: strings.Repeat("a", 64), SnapshotRevision: 1,
 		CreatedAtUnix: 1, Records: 1, ObjectBytes: 1,
 		RetentionMode: "COMPLIANCE", RetainUntilUnix: 2_000_000_000,
 		RemoteVerified: true, UploadedAtUnix: 1_999_999_000,

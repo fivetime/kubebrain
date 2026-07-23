@@ -79,21 +79,21 @@ func Upload(ctx context.Context, client S3API, request UploadRequest) (Receipt, 
 		return Receipt{}, err
 	}
 	defer file.Close()
-	checksum, err := fileSHA256(request.Input)
+	checksum, artifactFileSHA256, err := fileSHA256(request.Input)
 	if err != nil {
 		return Receipt{}, err
 	}
-	metadata := artifactMetadata(request, status, info.Size(), retainUntil)
+	metadata := artifactMetadata(request, status, artifactFileSHA256, info.Size(), retainUntil)
 	if _, err := os.Stat(request.ReceiptOutput); err == nil {
 		existing, readErr := ReadReceipt(request.ReceiptOutput)
 		if readErr != nil {
 			return Receipt{}, readErr
 		}
-		if err := validateReceiptRequest(existing, request, status, info.Size()); err != nil {
+		if err := validateReceiptRequest(existing, request, status, artifactFileSHA256, info.Size()); err != nil {
 			return Receipt{}, err
 		}
 		if _, err := verifyRemote(
-			ctx, client, request.Bucket, request.ObjectKey, existing.VersionID, status, info.Size(),
+			ctx, client, request.Bucket, request.ObjectKey, existing.VersionID, status, artifactFileSHA256, info.Size(),
 		); err != nil {
 			return Receipt{}, err
 		}
@@ -163,7 +163,7 @@ func Upload(ctx context.Context, client S3API, request UploadRequest) (Receipt, 
 	}
 
 	verified, err := verifyRemote(
-		verificationCtx, client, request.Bucket, request.ObjectKey, versionID, status, info.Size(),
+		verificationCtx, client, request.Bucket, request.ObjectKey, versionID, status, artifactFileSHA256, info.Size(),
 	)
 	if err != nil {
 		return Receipt{}, err
@@ -175,7 +175,7 @@ func Upload(ctx context.Context, client S3API, request UploadRequest) (Receipt, 
 		Format: ReceiptFormat, Instance: request.Instance, BackupID: request.BackupID,
 		ObjectStoreID: request.ObjectStoreID,
 		Bucket:        request.Bucket, ObjectKey: request.ObjectKey, VersionID: versionID,
-		ArtifactFormat: status.Format, ArtifactSHA256: status.SHA256,
+		ArtifactFileSHA256: artifactFileSHA256, ArtifactFormat: status.Format, ArtifactSHA256: status.SHA256,
 		SnapshotRevision: status.Revision, CreatedAtUnix: status.CreatedAtUnix,
 		Records: status.Records, Leases: status.Leases, ObjectBytes: info.Size(),
 		RetentionMode: request.RetentionMode, RetainUntilUnix: retainUntil.Unix(),
@@ -214,11 +214,13 @@ func validateReceiptRequest(
 	receipt Receipt,
 	request UploadRequest,
 	status backupfile.Status,
+	artifactFileSHA256 string,
 	size int64,
 ) error {
 	if receipt.Instance != request.Instance || receipt.BackupID != request.BackupID ||
 		receipt.ObjectStoreID != request.ObjectStoreID ||
 		receipt.Bucket != request.Bucket || receipt.ObjectKey != request.ObjectKey ||
+		(receipt.ArtifactFileSHA256 != "" && receipt.ArtifactFileSHA256 != artifactFileSHA256) ||
 		receipt.ArtifactFormat != status.Format || receipt.ArtifactSHA256 != status.SHA256 ||
 		receipt.SnapshotRevision != status.Revision || receipt.CreatedAtUnix != status.CreatedAtUnix ||
 		receipt.Records != status.Records || receipt.Leases != status.Leases ||
@@ -374,6 +376,7 @@ func verifyRemote(
 	client S3API,
 	bucket, key, versionID string,
 	expected backupfile.Status,
+	expectedFileSHA256 string,
 	expectedSize int64,
 ) (bool, error) {
 	output, err := client.GetObject(ctx, &s3.GetObjectInput{
@@ -403,6 +406,13 @@ func verifyRemote(
 	if written != expectedSize {
 		return false, fmt.Errorf("remote object size mismatch: expected %d, got %d", expectedSize, written)
 	}
+	_, actualFileSHA256, err := fileSHA256(tempName)
+	if err != nil {
+		return false, err
+	}
+	if expectedFileSHA256 != "" && actualFileSHA256 != expectedFileSHA256 {
+		return false, fmt.Errorf("remote object file SHA-256 mismatch: expected %s, got %s", expectedFileSHA256, actualFileSHA256)
+	}
 	actual, err := backupfile.Inspect(filepath.Clean(tempName))
 	if err != nil {
 		return false, fmt.Errorf("validate downloaded artifact: %w", err)
@@ -413,19 +423,26 @@ func verifyRemote(
 	return true, nil
 }
 
-func artifactMetadata(request UploadRequest, status backupfile.Status, size int64, retainUntil time.Time) map[string]string {
+func artifactMetadata(
+	request UploadRequest,
+	status backupfile.Status,
+	artifactFileSHA256 string,
+	size int64,
+	retainUntil time.Time,
+) map[string]string {
 	return map[string]string{
-		"kubebrain-format":            status.Format,
-		"kubebrain-instance":          request.Instance,
-		"kubebrain-backup-id":         request.BackupID,
-		"kubebrain-object-store-id":   request.ObjectStoreID,
-		"kubebrain-artifact-sha256":   status.SHA256,
-		"kubebrain-snapshot-revision": strconv.FormatInt(status.Revision, 10),
-		"kubebrain-created-at-unix":   strconv.FormatInt(status.CreatedAtUnix, 10),
-		"kubebrain-records":           strconv.Itoa(status.Records),
-		"kubebrain-leases":            strconv.Itoa(status.Leases),
-		"kubebrain-object-bytes":      strconv.FormatInt(size, 10),
-		"kubebrain-retain-until-unix": strconv.FormatInt(retainUntil.Unix(), 10),
+		"kubebrain-format":               status.Format,
+		"kubebrain-instance":             request.Instance,
+		"kubebrain-backup-id":            request.BackupID,
+		"kubebrain-object-store-id":      request.ObjectStoreID,
+		"kubebrain-artifact-file-sha256": artifactFileSHA256,
+		"kubebrain-artifact-sha256":      status.SHA256,
+		"kubebrain-snapshot-revision":    strconv.FormatInt(status.Revision, 10),
+		"kubebrain-created-at-unix":      strconv.FormatInt(status.CreatedAtUnix, 10),
+		"kubebrain-records":              strconv.Itoa(status.Records),
+		"kubebrain-leases":               strconv.Itoa(status.Leases),
+		"kubebrain-object-bytes":         strconv.FormatInt(size, 10),
+		"kubebrain-retain-until-unix":    strconv.FormatInt(retainUntil.Unix(), 10),
 	}
 }
 
@@ -474,17 +491,18 @@ func objectWriteReconciliationContext(parent context.Context) (context.Context, 
 	return context.WithTimeout(context.WithoutCancel(parent), objectWriteReconciliationTimeout)
 }
 
-func fileSHA256(path string) (string, error) {
+func fileSHA256(path string) (string, string, error) {
 	file, err := os.Open(path)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	defer file.Close()
 	hash := sha256.New()
 	if _, err := io.Copy(hash, file); err != nil {
-		return "", err
+		return "", "", err
 	}
-	return base64.StdEncoding.EncodeToString(hash.Sum(nil)), nil
+	sum := hash.Sum(nil)
+	return base64.StdEncoding.EncodeToString(sum), fmt.Sprintf("%x", sum), nil
 }
 
 func objectLockMode(raw string) (types.ObjectLockMode, error) {

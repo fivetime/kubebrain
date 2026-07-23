@@ -177,8 +177,9 @@ sleep "${OBJECT_SLEEP:-0}"
 artifact_sha="`+backupArtifactSHA256+`"
 [[ "${INVALID_OBJECT_RECEIPT:-false}" != true ]] || artifact_sha=abc123
 object_bytes="$(wc -c <"$INPUT" | tr -d ' ')"
-printf '{"format":"kubebrain.object-backup.receipt.v1","instance":"%s","backup_id":"%s","object_store_id":"%s","bucket":"%s","object_key":"%s","version_id":"version-1","artifact_format":"kubebrain.logical.v2","artifact_sha256":"%s","snapshot_revision":42,"created_at_unix":100,"records":2,"leases":1,"object_bytes":%s,"retention_mode":"%s","retain_until_unix":%s,"remote_verified":true,"uploaded_at_unix":1000}\n' \
-  "$INSTANCE" "$BACKUP_ID" "$OBJECT_STORE_ID" "$S3_BUCKET" "$S3_OBJECT_KEY" "$artifact_sha" "$object_bytes" "$RETENTION_MODE" "$RETAIN_UNTIL_UNIX" >"$RECEIPT_OUTPUT"
+artifact_file_sha="$(sha256sum "$INPUT" | cut -d ' ' -f1)"
+printf '{"format":"kubebrain.object-backup.receipt.v1","instance":"%s","backup_id":"%s","object_store_id":"%s","bucket":"%s","object_key":"%s","version_id":"version-1","artifact_file_sha256":"%s","artifact_format":"kubebrain.logical.v2","artifact_sha256":"%s","snapshot_revision":42,"created_at_unix":100,"records":2,"leases":1,"object_bytes":%s,"retention_mode":"%s","retain_until_unix":%s,"remote_verified":true,"uploaded_at_unix":1000}\n' \
+  "$INSTANCE" "$BACKUP_ID" "$OBJECT_STORE_ID" "$S3_BUCKET" "$S3_OBJECT_KEY" "$artifact_file_sha" "$artifact_sha" "$object_bytes" "$RETENTION_MODE" "$RETAIN_UNTIL_UNIX" >"$RECEIPT_OUTPUT"
 chmod 600 "$RECEIPT_OUTPUT"
 `)
 	env := []string{

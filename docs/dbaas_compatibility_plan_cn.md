@@ -10837,6 +10837,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `OUTPUT` 改为私有临时目录内尚不存在的路径，继续兼容新建制品语义。回归：
   `go test ./hack/backup/internal/backupfile -run 'Test(AtomicWriterAndVerifiedReader|CommitDoesNotOverwriteExistingBackup|AbortDoesNotReplaceExistingBackup)' -count=20`
   通过，且 `bash -n` 覆盖 logical-export 与相关 smoke 脚本。
+- A662 为 Object Lock backup receipt 增加 whole-file SHA 绑定：
+  `kubebrain.object-backup.receipt.v1` 旧 receipt 只记录 logical backup 的 footer SHA、
+  object bytes 和远端 version；S3 `ChecksumSHA256` 已覆盖 exact JSONL bytes，但该
+  whole-file digest 没写入本地 receipt/metadata，后续 runner 只能用 logical status 与
+  size 复核。现在 upload workflow 计算并写入 `artifact_file_sha256`，S3 metadata 与
+  远端下载复核也要求该 digest 匹配；`run-backup-operation.sh` succeed 前要求新 receipt
+  的 `artifact_file_sha256` 等于当前 artifact whole-file SHA。读取旧 backup receipt 仍
+  允许缺失该字段，避免历史受保护版本失去删除/审计路径；backup deletion source parser
+  同时接受旧/新 key set。回归：
+  `(cd hack/backup/objectstore && go test ./internal/objectstore -count=1)` 与
+  `go test ./hack/production -run 'TestBackupOperation|TestBackupDeletionOperation' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

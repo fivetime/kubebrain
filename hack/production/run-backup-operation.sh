@@ -133,7 +133,7 @@ run_backup() {
 }
 
 validate_object_receipt() {
-  local artifact_status status_fields artifact_format artifact_sha snapshot_revision created_at records leases artifact_bytes
+  local artifact_status status_fields artifact_format artifact_sha snapshot_revision created_at records leases artifact_bytes artifact_file_sha
   artifact_status="$(INPUT="$artifact_output" EXPECTED_PREFIX="$prefix" MIN_RECORDS="$min_records" \
     MAX_AGE_SECONDS="$max_age" "$STATUS_COMMAND")"
   status_fields="$("$JQ" -er --arg prefix "$prefix" --argjson min_records "$min_records" '
@@ -148,17 +148,21 @@ validate_object_receipt() {
     <<<"$artifact_status")"
   IFS=$'\t' read -r artifact_format artifact_sha snapshot_revision created_at records leases <<<"$status_fields"
   artifact_bytes="$(wc -c <"$artifact_output" | tr -d ' ')"
+  artifact_file_sha="$(sha256sum "$artifact_output" | cut -d ' ' -f1)"
+  [[ "$artifact_file_sha" =~ ^[a-f0-9]{64}$ ]] || return 1
   "$JQ" -e --arg instance "$instance" --arg backup "$backup_id" \
     --arg store "$object_store_id" --arg bucket "$s3_bucket" --arg key "$s3_object_key" \
+    --arg artifact_file_sha "$artifact_file_sha" \
     --arg artifact_format "$artifact_format" --arg artifact_sha "$artifact_sha" \
     --arg retention "$retention_mode" --argjson revision "$snapshot_revision" \
     --argjson created "$created_at" --argjson records "$records" --argjson leases "$leases" \
     --argjson object_bytes "$artifact_bytes" --argjson retain_until "$retain_until" '
-    select(keys == ["artifact_format","artifact_sha256","backup_id","bucket","created_at_unix","format","instance","leases","object_bytes","object_key","object_store_id","records","remote_verified","retain_until_unix","retention_mode","snapshot_revision","uploaded_at_unix","version_id"] and
+    select(keys == ["artifact_file_sha256","artifact_format","artifact_sha256","backup_id","bucket","created_at_unix","format","instance","leases","object_bytes","object_key","object_store_id","records","remote_verified","retain_until_unix","retention_mode","snapshot_revision","uploaded_at_unix","version_id"] and
     .format == "kubebrain.object-backup.receipt.v1" and
     .instance == $instance and .backup_id == $backup and .object_store_id == $store and
     .bucket == $bucket and .object_key == $key and
     (.version_id | type == "string" and length > 0) and
+    .artifact_file_sha256 == $artifact_file_sha and
     .artifact_format == $artifact_format and
     (.artifact_sha256 | type == "string" and test("^[a-f0-9]{64}$")) and
     .artifact_sha256 == $artifact_sha and .snapshot_revision == $revision and

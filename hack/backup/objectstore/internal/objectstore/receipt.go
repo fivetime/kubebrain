@@ -20,24 +20,25 @@ const BlobReadReceiptFormat = "kubebrain.object-immutable-blob-read.receipt.v1"
 const maxObjectStoreJSONBytes = 1 << 20
 
 type Receipt struct {
-	Format           string `json:"format"`
-	Instance         string `json:"instance"`
-	BackupID         string `json:"backup_id"`
-	ObjectStoreID    string `json:"object_store_id"`
-	Bucket           string `json:"bucket"`
-	ObjectKey        string `json:"object_key"`
-	VersionID        string `json:"version_id"`
-	ArtifactFormat   string `json:"artifact_format"`
-	ArtifactSHA256   string `json:"artifact_sha256"`
-	SnapshotRevision int64  `json:"snapshot_revision"`
-	CreatedAtUnix    int64  `json:"created_at_unix"`
-	Records          int    `json:"records"`
-	Leases           int    `json:"leases"`
-	ObjectBytes      int64  `json:"object_bytes"`
-	RetentionMode    string `json:"retention_mode"`
-	RetainUntilUnix  int64  `json:"retain_until_unix"`
-	RemoteVerified   bool   `json:"remote_verified"`
-	UploadedAtUnix   int64  `json:"uploaded_at_unix"`
+	Format             string `json:"format"`
+	Instance           string `json:"instance"`
+	BackupID           string `json:"backup_id"`
+	ObjectStoreID      string `json:"object_store_id"`
+	Bucket             string `json:"bucket"`
+	ObjectKey          string `json:"object_key"`
+	VersionID          string `json:"version_id"`
+	ArtifactFileSHA256 string `json:"artifact_file_sha256,omitempty"`
+	ArtifactFormat     string `json:"artifact_format"`
+	ArtifactSHA256     string `json:"artifact_sha256"`
+	SnapshotRevision   int64  `json:"snapshot_revision"`
+	CreatedAtUnix      int64  `json:"created_at_unix"`
+	Records            int    `json:"records"`
+	Leases             int    `json:"leases"`
+	ObjectBytes        int64  `json:"object_bytes"`
+	RetentionMode      string `json:"retention_mode"`
+	RetainUntilUnix    int64  `json:"retain_until_unix"`
+	RemoteVerified     bool   `json:"remote_verified"`
+	UploadedAtUnix     int64  `json:"uploaded_at_unix"`
 }
 
 type DeletionReceipt struct {
@@ -111,6 +112,7 @@ type BlobReadReceipt struct {
 func (r Receipt) Validate() error {
 	if r.Format != ReceiptFormat || r.Instance == "" || r.BackupID == "" || r.ObjectStoreID == "" ||
 		r.Bucket == "" || r.ObjectKey == "" || r.VersionID == "" ||
+		(r.ArtifactFileSHA256 != "" && !validHexSHA256(r.ArtifactFileSHA256)) ||
 		r.ArtifactFormat == "" || !validHexSHA256(r.ArtifactSHA256) || r.SnapshotRevision <= 0 ||
 		r.CreatedAtUnix <= 0 || r.Records < 0 || r.Leases < 0 || r.ObjectBytes <= 0 ||
 		(r.RetentionMode != "COMPLIANCE" && r.RetentionMode != "GOVERNANCE") ||

@@ -75,6 +75,20 @@ func TestReceiptReadersRejectAmbiguousJSON(t *testing.T) {
 	}
 }
 
+func TestReadReceiptAcceptsLegacyBackupReceiptWithoutFileDigest(t *testing.T) {
+	receipt := completeReceipt()
+	receipt.ArtifactFileSHA256 = ""
+	data, err := json.Marshal(receipt)
+	require.NoError(t, err)
+	data = append(data, '\n')
+
+	path := filepath.Join(t.TempDir(), "receipt.json")
+	require.NoError(t, os.WriteFile(path, data, 0o600))
+	read, err := ReadReceipt(path)
+	require.NoError(t, err)
+	require.Empty(t, read.ArtifactFileSHA256)
+}
+
 func TestObjectStoreJSONReadersRejectOversizedInput(t *testing.T) {
 	tests := []struct {
 		name string
@@ -242,21 +256,24 @@ func TestReceiptsRejectNonLowercaseArtifactDigest(t *testing.T) {
 	backup := completeReceipt()
 	backup.ArtifactSHA256 = strings.Repeat("A", 64)
 	require.ErrorContains(t, backup.Validate(), "incomplete")
+	backup = completeReceipt()
+	backup.ArtifactFileSHA256 = strings.Repeat("B", 64)
+	require.ErrorContains(t, backup.Validate(), "incomplete")
 
 	deletion := completeDeletionReceipt()
-	deletion.ArtifactSHA256 = strings.Repeat("B", 64)
+	deletion.ArtifactSHA256 = strings.Repeat("C", 64)
 	require.ErrorContains(t, deletion.Validate(), "incomplete")
 
 	audit := completeAuditReceipt()
-	audit.ExecutionReceiptSHA256 = strings.Repeat("C", 64)
+	audit.ExecutionReceiptSHA256 = strings.Repeat("D", 64)
 	require.ErrorContains(t, audit.Validate(), "incomplete")
 
 	blob := completeBlobReceipt()
-	blob.ArtifactSHA256 = strings.Repeat("D", 64)
+	blob.ArtifactSHA256 = strings.Repeat("E", 64)
 	require.ErrorContains(t, blob.Validate(), "incomplete")
 
 	read := completeBlobReadReceipt()
-	read.ArtifactSHA256 = strings.Repeat("E", 64)
+	read.ArtifactSHA256 = strings.Repeat("F", 64)
 	require.ErrorContains(t, read.Validate(), "incomplete")
 }
 
