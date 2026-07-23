@@ -725,7 +725,7 @@ func TestOperationSubmitterApproverAndAuditAdmissionFenceHighRiskChanges(t *test
 	validations, found, err := unstructured.NestedSlice(policy.Object, "spec", "validations")
 	require.NoError(t, err)
 	require.True(t, found)
-	require.Len(t, validations, 5)
+	require.Len(t, validations, 6)
 	expressionsByMessage := map[string]string{}
 	for _, raw := range validations {
 		validation := raw.(map[string]any)
@@ -750,6 +750,13 @@ func TestOperationSubmitterApproverAndAuditAdmissionFenceHighRiskChanges(t *test
 	require.Contains(t,
 		expressionsByMessage["operation approval evidence is immutable"],
 		`object.metadata.annotations["dbaas.kubebrain.io/approved-by"] == oldObject.metadata.annotations["dbaas.kubebrain.io/approved-by"]`)
+	archiveImmutableExpression := expressionsByMessage["operation audit archive evidence is immutable"]
+	require.Contains(t, archiveImmutableExpression,
+		`object.metadata.annotations["dbaas.kubebrain.io/audit-receipt-sha256"] == oldObject.metadata.annotations["dbaas.kubebrain.io/audit-receipt-sha256"]`)
+	require.Contains(t, archiveImmutableExpression,
+		`object.metadata.annotations["dbaas.kubebrain.io/audit-artifact-sha256"] == oldObject.metadata.annotations["dbaas.kubebrain.io/audit-artifact-sha256"]`)
+	require.Contains(t, archiveImmutableExpression,
+		`object.metadata.annotations["dbaas.kubebrain.io/audit-version-id"] == oldObject.metadata.annotations["dbaas.kubebrain.io/audit-version-id"]`)
 	releaseExpression := expressionsByMessage["removing the audit finalizer requires terminal archive evidence"]
 	require.Contains(t, releaseExpression,
 		`request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-operation-archiver"`)

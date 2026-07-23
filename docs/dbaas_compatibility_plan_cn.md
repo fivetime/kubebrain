@@ -10415,6 +10415,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   三枚 archive 注解在 finalizer release 更新中保持完全相同。回归：
   `go test ./hack/production/internal/operationauditrelease ./deploy/production ./hack/production -run 'TestReleaseRejectsConflictingArchiveAnnotations|TestOperationSubmitterApproverAndAuditAdmissionFenceHighRiskChanges|TestOperationAuditAdmissionRequiresFinalizerAndReleaseEvidence' -count=1`
   通过。
+- A619 持续保护 operation audit archive evidence 注解：
+  A618 保护了 finalizer release 当次更新，但生产 admission 没有像 approval evidence
+  一样对 archive evidence 做独立不可变校验。audit finalizer 已释放后，仍拥有
+  `kubebrainoperations` update 权限的控制器或手工修复流程可能删除或改写
+  `audit-receipt-sha256`、`audit-artifact-sha256`、`audit-version-id`，破坏 CR 上的
+  Object Lock 定位证据。现在 admission 增加独立规则：旧对象上任一 archive evidence
+  注解存在时，后续 UPDATE 必须保留该注解且值完全相同；finalizer release 规则仍保留
+  terminal/archiver 身份和格式校验。回归：
+  `go test ./deploy/production ./hack/production -run 'TestOperationSubmitterApproverAndAuditAdmissionFenceHighRiskChanges|TestOperationAuditAdmissionRequiresFinalizerAndReleaseEvidence' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

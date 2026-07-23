@@ -255,7 +255,7 @@ func TestOperationAuditAdmissionRequiresFinalizerAndReleaseEvidence(t *testing.T
 	require.Equal(t, []string{"CREATE", "UPDATE"}, rule.Operations)
 	require.Equal(t, []string{"kubebrainoperations"}, rule.Resources)
 	require.Equal(t, "Namespaced", rule.Scope)
-	require.Len(t, policy.Spec.Validations, 5)
+	require.Len(t, policy.Spec.Validations, 6)
 	require.Contains(t, policy.Spec.Validations[0].Expression, operationaudit.Finalizer)
 	require.Contains(t, policy.Spec.Validations[1].Expression, operationaudit.ApprovedByAnnotation)
 	require.Contains(t, policy.Spec.Validations[2].Expression, "request.userInfo.username")
@@ -266,8 +266,7 @@ func TestOperationAuditAdmissionRequiresFinalizerAndReleaseEvidence(t *testing.T
 	require.NotContains(t, policy.Spec.Validations[2].Expression, `"Backup"`)
 	require.NotContains(t, policy.Spec.Validations[2].Expression, `"PostRestoreAudit"`)
 	require.Contains(t, policy.Spec.Validations[3].Expression, operationaudit.ApprovalIDAnnotation)
-	require.Contains(t, policy.Spec.Validations[4].Expression, "request.userInfo.username")
-	require.Contains(t, policy.Spec.Validations[4].Expression, "kubebrain-operation-archiver")
+	require.Equal(t, "operation audit archive evidence is immutable", policy.Spec.Validations[4].Message)
 	require.Contains(t, policy.Spec.Validations[4].Expression, operationaudit.ReceiptSHAAnnotation)
 	require.Contains(t, policy.Spec.Validations[4].Expression, operationaudit.ArtifactSHAAnnotation)
 	require.Contains(t, policy.Spec.Validations[4].Expression, operationaudit.VersionAnnotation)
@@ -276,6 +275,17 @@ func TestOperationAuditAdmissionRequiresFinalizerAndReleaseEvidence(t *testing.T
 	require.Contains(t, policy.Spec.Validations[4].Expression,
 		`object.metadata.annotations["`+operationaudit.ArtifactSHAAnnotation+`"] == oldObject.metadata.annotations["`+operationaudit.ArtifactSHAAnnotation+`"]`)
 	require.Contains(t, policy.Spec.Validations[4].Expression,
+		`object.metadata.annotations["`+operationaudit.VersionAnnotation+`"] == oldObject.metadata.annotations["`+operationaudit.VersionAnnotation+`"]`)
+	require.Contains(t, policy.Spec.Validations[5].Expression, "request.userInfo.username")
+	require.Contains(t, policy.Spec.Validations[5].Expression, "kubebrain-operation-archiver")
+	require.Contains(t, policy.Spec.Validations[5].Expression, operationaudit.ReceiptSHAAnnotation)
+	require.Contains(t, policy.Spec.Validations[5].Expression, operationaudit.ArtifactSHAAnnotation)
+	require.Contains(t, policy.Spec.Validations[5].Expression, operationaudit.VersionAnnotation)
+	require.Contains(t, policy.Spec.Validations[5].Expression,
+		`object.metadata.annotations["`+operationaudit.ReceiptSHAAnnotation+`"] == oldObject.metadata.annotations["`+operationaudit.ReceiptSHAAnnotation+`"]`)
+	require.Contains(t, policy.Spec.Validations[5].Expression,
+		`object.metadata.annotations["`+operationaudit.ArtifactSHAAnnotation+`"] == oldObject.metadata.annotations["`+operationaudit.ArtifactSHAAnnotation+`"]`)
+	require.Contains(t, policy.Spec.Validations[5].Expression,
 		`object.metadata.annotations["`+operationaudit.VersionAnnotation+`"] == oldObject.metadata.annotations["`+operationaudit.VersionAnnotation+`"]`)
 
 	var binding auditAdmissionManifest
