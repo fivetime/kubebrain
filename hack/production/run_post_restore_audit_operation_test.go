@@ -52,6 +52,23 @@ func TestPostRestoreAuditOperationRejectsNonCanonicalCutoverState(t *testing.T) 
 	require.NotContains(t, log, "--action succeed")
 }
 
+func TestPostRestoreAuditOperationRejectsCutoverEvidenceDriftAfterAudit(t *testing.T) {
+	for _, tc := range []struct {
+		name, env string
+	}{
+		{name: "state", env: "TAMPER_CUTOVER_STATE_AFTER_AUDIT=true"},
+		{name: "receipt", env: "TAMPER_CUTOVER_RECEIPT_AFTER_AUDIT=true"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newOperationRunnerFixture(t)
+			f.run(t, false, tc.env, "invalid receipt")
+			log := f.log(t)
+			require.Contains(t, log, "--action retry")
+			require.NotContains(t, log, "--action succeed")
+		})
+	}
+}
+
 func TestPostRestoreAuditOperationRequeuesFailures(t *testing.T) {
 	f := newOperationRunnerFixture(t)
 	f.run(t, false, "AUDIT_FAIL=true", "failed and was requeued")
@@ -105,15 +122,16 @@ func newOperationRunnerFixture(t *testing.T) *operationRunnerFixture {
 	parameters := filepath.Join(dir, "parameters.json")
 	receipt := filepath.Join(dir, "receipt.json")
 	cutoverState := filepath.Join(dir, "cutover.state")
+	cutoverReceipt := filepath.Join(dir, "cutover.json")
 	require.NoError(t, os.WriteFile(cutoverState, []byte(operationAuditCutoverState()), 0o600))
+	require.NoError(t, os.WriteFile(cutoverReceipt, []byte(operationAuditCutoverReceipt()), 0o600))
 	require.NoError(t, os.WriteFile(parameters, []byte(fmt.Sprintf(`{
 	  "state_dir":%q,"cutover_state_input":%q,"cutover_receipt_input":%q,
 	  "service_namespace":"ns-a","service_name":"kubebrain","target_instance":"target",
 	  "expected_replicas":2,"public_endpoint":"https://service:2379",
 	  "audit_duration_seconds":1,"audit_interval_seconds":0,"min_samples":1,
 	  "audit_prefix":"/audit","receipt_output":%q
-	}`, filepath.Join(dir, "state"), cutoverState,
-		filepath.Join(dir, "cutover.json"), receipt)), 0o600))
+	}`, filepath.Join(dir, "state"), cutoverState, cutoverReceipt, receipt)), 0o600))
 	data, err := os.ReadFile(parameters)
 	require.NoError(t, err)
 	digest := fmt.Sprintf("%x", sha256.Sum256(data))
@@ -137,9 +155,13 @@ set -euo pipefail
 [[ "${AUDIT_FAIL:-false}" != true ]] || exit 7
 artifact_sha="`+operationAuditArtifactSHA256+`"
 [[ "${INVALID_AUDIT_RECEIPT:-false}" != true ]] || artifact_sha=abc123
-printf '{"format":"kubebrain.post-restore-audit.receipt.v1","operation_id":"%s","instance":"%s","cutover_operation_id":"cutover-1","service_uid":"uid-service","target_instance":"%s","artifact_sha256":"%s","snapshot_revision":42,"replicas":%s,"duration_seconds":%s,"interval_seconds":%s,"samples":%s,"first_probe_revision":1,"last_probe_revision":2,"topology_unchanged":true,"all_probes_succeeded":true,"completed":true,"started_at_unix":1,"completed_at_unix":2}\n' \
-  "$OPERATION_ID" "$INSTANCE" "$TARGET_INSTANCE" "$artifact_sha" "$EXPECTED_REPLICAS" "$AUDIT_DURATION_SECONDS" "$AUDIT_INTERVAL_SECONDS" "$MIN_SAMPLES" >"$RECEIPT_OUTPUT"
+cutover_state_sha="$(sha256sum "$CUTOVER_STATE_INPUT" | cut -d ' ' -f1)"
+cutover_receipt_sha="$(sha256sum "$CUTOVER_RECEIPT_INPUT" | cut -d ' ' -f1)"
+printf '{"format":"kubebrain.post-restore-audit.receipt.v1","operation_id":"%s","instance":"%s","cutover_operation_id":"cutover-1","service_uid":"uid-service","target_instance":"%s","artifact_sha256":"%s","cutover_state_sha256":"%s","cutover_receipt_sha256":"%s","snapshot_revision":42,"replicas":%s,"duration_seconds":%s,"interval_seconds":%s,"samples":%s,"first_probe_revision":1,"last_probe_revision":2,"topology_unchanged":true,"all_probes_succeeded":true,"completed":true,"started_at_unix":1,"completed_at_unix":2}\n' \
+  "$OPERATION_ID" "$INSTANCE" "$TARGET_INSTANCE" "$artifact_sha" "$cutover_state_sha" "$cutover_receipt_sha" "$EXPECTED_REPLICAS" "$AUDIT_DURATION_SECONDS" "$AUDIT_INTERVAL_SECONDS" "$MIN_SAMPLES" >"$RECEIPT_OUTPUT"
 chmod 600 "$RECEIPT_OUTPUT"
+[[ "${TAMPER_CUTOVER_STATE_AFTER_AUDIT:-false}" != true ]] || printf 'UNKNOWN\trow\n' >>"$CUTOVER_STATE_INPUT"
+[[ "${TAMPER_CUTOVER_RECEIPT_AFTER_AUDIT:-false}" != true ]] || printf ' ' >>"$CUTOVER_RECEIPT_INPUT"
 `)
 	env := []string{
 		"WORKER_ID=worker-a", "PARAMETERS_INPUT=" + parameters,
@@ -162,6 +184,11 @@ func operationAuditCutoverState() string {
 		"POD\tsource\tkb-source-1\tuid-source-1\t0\n" +
 		"POD\ttarget\tkb-target-0\tuid-target-0\t0\n" +
 		"POD\ttarget\tkb-target-1\tuid-target-1\t0\n"
+}
+
+func operationAuditCutoverReceipt() string {
+	stateSHA := fmt.Sprintf("%x", sha256.Sum256([]byte(operationAuditCutoverState())))
+	return fmt.Sprintf(`{"format":"kubebrain.restore-cutover.receipt.v1","operation_id":"cutover-1","instance":"instance-a","service_namespace":"ns-a","service_name":"kubebrain","service_uid":"uid-service","source_instance":"source","target_instance":"target","artifact_sha256":"%s","cutover_state_sha256":"%s","snapshot_revision":42,"replicas":2,"pod_uids_unchanged":true,"endpoint_uids_matched":true,"public_data_verified":true,"completed_at_unix":100}`+"\n", operationAuditArtifactSHA256, stateSHA)
 }
 
 func (f *operationRunnerFixture) run(t *testing.T, ok bool, extra string, outputs ...string) {

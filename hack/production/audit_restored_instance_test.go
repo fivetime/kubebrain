@@ -27,6 +27,8 @@ func TestPostRestoreAuditPublishesReceiptAndRechecksOnRetry(t *testing.T) {
 	require.Equal(t, "kubebrain.post-restore-audit.receipt.v1", receipt["format"])
 	require.Equal(t, true, receipt["topology_unchanged"])
 	require.GreaterOrEqual(t, receipt["samples"].(float64), float64(2))
+	require.Equal(t, fileDigest(t, filepath.Join(f.dir, "cutover.state")), receipt["cutover_state_sha256"])
+	require.Equal(t, fileDigest(t, filepath.Join(f.dir, "cutover.json")), receipt["cutover_receipt_sha256"])
 
 	probes, err := os.ReadFile(filepath.Join(f.dir, "probes"))
 	require.NoError(t, err)
@@ -44,6 +46,27 @@ func TestPostRestoreAuditTreatsConcurrentReceiptPublishAsIdempotent(t *testing.T
 	require.Equal(t, float64(1), receipt["started_at_unix"])
 	require.Equal(t, float64(2), receipt["completed_at_unix"])
 	require.Equal(t, float64(2), receipt["samples"])
+}
+
+func TestPostRestoreAuditRejectsCutoverEvidenceDriftDuringReceiptPublish(t *testing.T) {
+	for _, tc := range []struct {
+		name, env, want string
+	}{
+		{
+			name: "state", env: "TAMPER_CUTOVER_STATE_DURING_AUDIT_RECEIPT_JQ=true",
+			want: "cutover state changed",
+		},
+		{
+			name: "receipt", env: "TAMPER_CUTOVER_RECEIPT_DURING_AUDIT_RECEIPT_JQ=true",
+			want: "cutover receipt changed",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newAuditFixture(t)
+			f.run(t, false, tc.env, tc.want)
+			require.NoFileExists(t, filepath.Join(f.state, "audit-1.receipt.json"))
+		})
+	}
 }
 
 func TestPostRestoreAuditRejectsExistingReceiptWithUnknownFields(t *testing.T) {
@@ -164,12 +187,27 @@ printf 'x\n' >>"$FAKE_DIR/probes"
 if [[ -f "$FAKE_DIR/probe-invalid" ]]; then echo '{}'; exit 0; fi
 count=$(wc -l <"$FAKE_DIR/probes")
 if [[ "${PUBLISH_RECEIPT_DURING_PROBE:-false}" == true && ! -f "$STATE_DIR/$OPERATION_ID.receipt.json" ]]; then
-  printf '{"all_probes_succeeded":true,"artifact_sha256":"`+auditArtifactSHA256+`","completed":true,"completed_at_unix":2,"cutover_operation_id":"cutover-1","duration_seconds":%s,"first_probe_revision":1,"format":"kubebrain.post-restore-audit.receipt.v1","instance":"%s","interval_seconds":%s,"last_probe_revision":2,"operation_id":"%s","replicas":%s,"samples":2,"service_uid":"uid-service","snapshot_revision":42,"started_at_unix":1,"target_instance":"%s","topology_unchanged":true}\n' \
-    "$AUDIT_DURATION_SECONDS" "$INSTANCE" "$AUDIT_INTERVAL_SECONDS" "$OPERATION_ID" "$EXPECTED_REPLICAS" "$TARGET_INSTANCE" >"$STATE_DIR/$OPERATION_ID.receipt.json"
+  cutover_state_sha="$(sha256sum "$CUTOVER_STATE_INPUT" | cut -d ' ' -f1)"
+  cutover_receipt_sha="$(sha256sum "$CUTOVER_RECEIPT_INPUT" | cut -d ' ' -f1)"
+  printf '{"all_probes_succeeded":true,"artifact_sha256":"`+auditArtifactSHA256+`","completed":true,"completed_at_unix":2,"cutover_operation_id":"cutover-1","cutover_receipt_sha256":"%s","cutover_state_sha256":"%s","duration_seconds":%s,"first_probe_revision":1,"format":"kubebrain.post-restore-audit.receipt.v1","instance":"%s","interval_seconds":%s,"last_probe_revision":2,"operation_id":"%s","replicas":%s,"samples":2,"service_uid":"uid-service","snapshot_revision":42,"started_at_unix":1,"target_instance":"%s","topology_unchanged":true}\n' \
+    "$cutover_receipt_sha" "$cutover_state_sha" "$AUDIT_DURATION_SECONDS" "$INSTANCE" "$AUDIT_INTERVAL_SECONDS" "$OPERATION_ID" "$EXPECTED_REPLICAS" "$TARGET_INSTANCE" >"$STATE_DIR/$OPERATION_ID.receipt.json"
   chmod 600 "$STATE_DIR/$OPERATION_ID.receipt.json"
 fi
 if [[ -f "$FAKE_DIR/probe-backwards" ]]; then count=$((100-count)); fi
 printf '{"format":"kubebrain.etcd-audit-probe.v1","put_revision":%d,"read_revision":%d,"delete_revision":%d,"lease_ttl":60}\n' "$count" "$count" "$count"
+`)
+	realJQ, err := exec.LookPath("jq")
+	require.NoError(t, err)
+	jq := filepath.Join(dir, "jq-wrapper")
+	writeTrafficExecutable(t, jq, `#!/usr/bin/env bash
+set -euo pipefail
+"$REAL_JQ" "$@"
+if [[ " $* " == *" -cnS "* && " $* " == *" kubebrain.post-restore-audit.receipt.v1 "* ]]; then
+  [[ "${TAMPER_CUTOVER_STATE_DURING_AUDIT_RECEIPT_JQ:-false}" != true ]] ||
+    printf 'UNKNOWN\trow\n' >>"$CUTOVER_STATE_INPUT"
+  [[ "${TAMPER_CUTOVER_RECEIPT_DURING_AUDIT_RECEIPT_JQ:-false}" != true ]] ||
+    printf ' ' >>"$CUTOVER_RECEIPT_INPUT"
+fi
 `)
 	return &auditFixture{dir: dir, state: state, env: []string{
 		"OPERATION_ID=audit-1", "INSTANCE=instance-a", "STATE_DIR=" + state,
@@ -178,6 +216,7 @@ printf '{"format":"kubebrain.etcd-audit-probe.v1","put_revision":%d,"read_revisi
 		"EXPECTED_REPLICAS=2", "PUBLIC_ENDPOINT=https://service:2379",
 		"AUDIT_DURATION_SECONDS=1", "AUDIT_INTERVAL_SECONDS=1", "MIN_SAMPLES=2",
 		"KUBECTL=" + kubectl, "PROBE=" + probe, "FAKE_DIR=" + dir,
+		"JQ=" + jq, "REAL_JQ=" + realJQ,
 	}}
 }
 

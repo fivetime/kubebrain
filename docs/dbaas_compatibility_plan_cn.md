@@ -10859,6 +10859,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   复用也先冻结 state digest，再读取字段并复检未漂移。回归：
   `go test ./hack/production -run 'TestRestoreTrafficCutover|TestRestoreCutoverOperation' -count=1`
   通过。
+- A664 为 post-restore audit receipt 绑定 cutover 源证据 bytes：
+  `kubebrain.post-restore-audit.receipt.v1` 旧 receipt 只记录 cutover operation、service
+  UID、artifact SHA 与 revision 等语义字段，未写入审计实际消费的
+  `kubebrain.restore-cutover.state.v1` 和 `kubebrain.restore-cutover.receipt.v1` 的
+  whole-file digest；runner 最终提交 succeed 时也只能重新从当前本地文件解析语义字段。
+  现在审计 executor 对 cutover state/receipt 都执行 validate→hash→validate，并在长时间
+  probe 结束、receipt JSON 生成后和并发 receipt 复用前复检未漂移；新 audit receipt 写入
+  `cutover_state_sha256` 与 `cutover_receipt_sha256`，外层 operation runner 也校验这两个
+  digest 后才提交 receipt SHA。旧 audit receipt 仍按 legacy key set 接受。回归：
+  `go test ./hack/production -run 'TestPostRestoreAudit|TestPostRestoreAuditOperation' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

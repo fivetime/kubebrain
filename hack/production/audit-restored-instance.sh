@@ -131,13 +131,83 @@ validate_cutover_state_schema() {
         exit 1
       }
     }
-  ' "$CUTOVER_STATE_INPUT" || { echo "cutover state has invalid schema" >&2; exit 1; }
+  ' "$CUTOVER_STATE_INPUT"
 }
 
-validate_cutover_state_schema
+validated_cutover_state_digest() {
+  local first second
+  validate_cutover_state_schema || return 1
+  first="$(sha256sum "$CUTOVER_STATE_INPUT" | cut -d " " -f1)" || return 1
+  [[ "$first" =~ ^[a-f0-9]{64}$ ]] || return 1
+  validate_cutover_state_schema || return 1
+  second="$(sha256sum "$CUTOVER_STATE_INPUT" | cut -d " " -f1)" || return 1
+  [[ "$second" == "$first" ]] || return 1
+  printf '%s\n' "$first"
+}
+
+cutover_state_digest_matches() {
+  local expected="$1" actual
+  actual="$(validated_cutover_state_digest)" || return 1
+  [[ "$actual" == "$expected" ]]
+}
+
+require_cutover_state_digest() {
+  local expected="$1"
+  cutover_state_digest_matches "$expected" ||
+    { echo "cutover state changed during post-restore audit" >&2; exit 1; }
+}
+
+validate_cutover_receipt() {
+  "$JQ" -e --arg operation "$cutover_operation" --arg instance "$INSTANCE" \
+    --arg namespace "$SERVICE_NAMESPACE" --arg service "$SERVICE_NAME" \
+    --arg uid "$state_service_uid" --arg source "$source_instance" \
+    --arg target "$TARGET_INSTANCE" --arg sha "$artifact_sha" \
+    --arg state_sha "$cutover_state_sha" \
+    --argjson revision "$snapshot_revision" '
+      keys == ["artifact_sha256","completed_at_unix","cutover_state_sha256","endpoint_uids_matched","format","instance","operation_id","pod_uids_unchanged","public_data_verified","replicas","service_name","service_namespace","service_uid","snapshot_revision","source_instance","target_instance"] and
+      .format == "kubebrain.restore-cutover.receipt.v1" and
+      .operation_id == $operation and .instance == $instance and
+      .service_namespace == $namespace and .service_name == $service and
+      .service_uid == $uid and .source_instance == $source and .target_instance == $target and
+      (.artifact_sha256 | type == "string" and test("^[a-f0-9]{64}$")) and
+      .artifact_sha256 == $sha and .snapshot_revision == $revision and
+      .cutover_state_sha256 == $state_sha and
+      (.replicas | type == "number" and . > 0 and . == floor) and
+      .pod_uids_unchanged == true and .endpoint_uids_matched == true and
+      .public_data_verified == true and
+      (.completed_at_unix | type == "number" and . > 0 and . == floor)' \
+    "$CUTOVER_RECEIPT_INPUT" >/dev/null
+}
+
+validated_cutover_receipt_digest() {
+  local first second
+  validate_cutover_receipt || return 1
+  first="$(sha256sum "$CUTOVER_RECEIPT_INPUT" | cut -d " " -f1)" || return 1
+  [[ "$first" =~ ^[a-f0-9]{64}$ ]] || return 1
+  validate_cutover_receipt || return 1
+  second="$(sha256sum "$CUTOVER_RECEIPT_INPUT" | cut -d " " -f1)" || return 1
+  [[ "$second" == "$first" ]] || return 1
+  printf '%s\n' "$first"
+}
+
+cutover_receipt_digest_matches() {
+  local expected="$1" actual
+  actual="$(validated_cutover_receipt_digest)" || return 1
+  [[ "$actual" == "$expected" ]]
+}
+
+require_cutover_receipt_digest() {
+  local expected="$1"
+  cutover_receipt_digest_matches "$expected" ||
+    { echo "cutover receipt changed during post-restore audit" >&2; exit 1; }
+}
+
+cutover_state_sha="$(validated_cutover_state_digest)" ||
+  { echo "cutover state has invalid schema" >&2; exit 1; }
 IFS=$'\t' read -r state_kind state_format state_instance cutover_operation state_namespace \
   state_service source_instance state_target state_service_uid artifact_sha snapshot_revision \
   source_prefix target_prefix <"$CUTOVER_STATE_INPUT"
+require_cutover_state_digest "$cutover_state_sha"
 [[ "$state_kind" == "HEADER" && "$state_format" == "kubebrain.restore-cutover.state.v1" &&
   "$state_instance" == "$INSTANCE" && "$state_namespace" == "$SERVICE_NAMESPACE" &&
   "$state_service" == "$SERVICE_NAME" && "$state_target" == "$TARGET_INSTANCE" &&
@@ -146,34 +216,16 @@ IFS=$'\t' read -r state_kind state_format state_instance cutover_operation state
   -n "$state_service_uid" && "$artifact_sha" =~ ^[a-f0-9]{64}$ &&
   "$snapshot_revision" =~ ^[1-9][0-9]*$ ]] ||
   { echo "cutover state does not match the audit operation" >&2; exit 1; }
-cutover_state_sha="$(sha256sum "$CUTOVER_STATE_INPUT" | cut -d " " -f1)"
-
-"$JQ" -e --arg operation "$cutover_operation" --arg instance "$INSTANCE" \
-  --arg namespace "$SERVICE_NAMESPACE" --arg service "$SERVICE_NAME" \
-  --arg uid "$state_service_uid" --arg source "$source_instance" \
-  --arg target "$TARGET_INSTANCE" --arg sha "$artifact_sha" \
-  --arg state_sha "$cutover_state_sha" \
-  --argjson revision "$snapshot_revision" '
-    keys == ["artifact_sha256","completed_at_unix","cutover_state_sha256","endpoint_uids_matched","format","instance","operation_id","pod_uids_unchanged","public_data_verified","replicas","service_name","service_namespace","service_uid","snapshot_revision","source_instance","target_instance"] and
-    .format == "kubebrain.restore-cutover.receipt.v1" and
-    .operation_id == $operation and .instance == $instance and
-    .service_namespace == $namespace and .service_name == $service and
-    .service_uid == $uid and .source_instance == $source and .target_instance == $target and
-    (.artifact_sha256 | type == "string" and test("^[a-f0-9]{64}$")) and
-    .artifact_sha256 == $sha and .snapshot_revision == $revision and
-    .cutover_state_sha256 == $state_sha and
-    (.replicas | type == "number" and . > 0 and . == floor) and
-    .pod_uids_unchanged == true and .endpoint_uids_matched == true and
-    .public_data_verified == true and
-    (.completed_at_unix | type == "number" and . > 0 and . == floor)' \
-  "$CUTOVER_RECEIPT_INPUT" >/dev/null ||
+cutover_receipt_sha="$(validated_cutover_receipt_digest)" ||
   { echo "cutover receipt does not match the frozen state" >&2; exit 1; }
+require_cutover_state_digest "$cutover_state_sha"
 
 expected_pods="$(awk -F '\t' '$1 == "POD" && $2 == "target" {print $3 "\t" $4 "\t" $5}' \
   "$CUTOVER_STATE_INPUT")"
 [[ "$(sed '/^$/d' <<<"$expected_pods" | wc -l | tr -d ' ')" == "$EXPECTED_REPLICAS" ]] ||
   { echo "cutover state target Pod count does not match EXPECTED_REPLICAS" >&2; exit 1; }
 expected_uids="$(cut -f2 <<<"$expected_pods" | LC_ALL=C sort)"
+require_cutover_state_digest "$cutover_state_sha"
 
 fence_topology() {
   local service current_pods endpoint_uids
@@ -226,17 +278,23 @@ run_probe() {
 }
 
 validate_existing_audit_receipt() {
+  cutover_state_digest_matches "$cutover_state_sha" || return 1
+  cutover_receipt_digest_matches "$cutover_receipt_sha" || return 1
   "$JQ" -e --arg operation "$OPERATION_ID" --arg instance "$INSTANCE" \
     --arg cutover "$cutover_operation" --arg uid "$state_service_uid" \
     --arg target "$TARGET_INSTANCE" --arg sha "$artifact_sha" \
+    --arg cutover_state_sha "$cutover_state_sha" --arg cutover_receipt_sha "$cutover_receipt_sha" \
     --argjson snapshot "$snapshot_revision" --argjson replicas "$EXPECTED_REPLICAS" \
     --argjson duration "$AUDIT_DURATION_SECONDS" --argjson interval "$AUDIT_INTERVAL_SECONDS" \
     --argjson min_samples "$MIN_SAMPLES" '
-      keys == ["all_probes_succeeded","artifact_sha256","completed","completed_at_unix","cutover_operation_id","duration_seconds","first_probe_revision","format","instance","interval_seconds","last_probe_revision","operation_id","replicas","samples","service_uid","snapshot_revision","started_at_unix","target_instance","topology_unchanged"] and
+      (keys == ["all_probes_succeeded","artifact_sha256","completed","completed_at_unix","cutover_operation_id","duration_seconds","first_probe_revision","format","instance","interval_seconds","last_probe_revision","operation_id","replicas","samples","service_uid","snapshot_revision","started_at_unix","target_instance","topology_unchanged"] or
+       keys == ["all_probes_succeeded","artifact_sha256","completed","completed_at_unix","cutover_operation_id","cutover_receipt_sha256","cutover_state_sha256","duration_seconds","first_probe_revision","format","instance","interval_seconds","last_probe_revision","operation_id","replicas","samples","service_uid","snapshot_revision","started_at_unix","target_instance","topology_unchanged"]) and
       .format == "kubebrain.post-restore-audit.receipt.v1" and
       .operation_id == $operation and .instance == $instance and
       .cutover_operation_id == $cutover and .service_uid == $uid and
       .target_instance == $target and
+      ((has("cutover_state_sha256") | not) or .cutover_state_sha256 == $cutover_state_sha) and
+      ((has("cutover_receipt_sha256") | not) or .cutover_receipt_sha256 == $cutover_receipt_sha) and
       (.artifact_sha256 | type == "string" and test("^[a-f0-9]{64}$")) and
       .artifact_sha256 == $sha and
       .snapshot_revision == $snapshot and .replicas == $replicas and
@@ -281,12 +339,15 @@ while true; do
   sleep "$AUDIT_INTERVAL_SECONDS"
 done
 completed_at="$(date +%s)"
+require_cutover_state_digest "$cutover_state_sha"
+require_cutover_receipt_digest "$cutover_receipt_sha"
 
 temporary="$(mktemp "${STATE_DIR}/.${OPERATION_ID}.receipt.XXXXXX")"
 "$JQ" -cnS --arg format "kubebrain.post-restore-audit.receipt.v1" \
   --arg operation_id "$OPERATION_ID" --arg instance "$INSTANCE" \
   --arg cutover_operation_id "$cutover_operation" --arg service_uid "$state_service_uid" \
   --arg target_instance "$TARGET_INSTANCE" --arg artifact_sha256 "$artifact_sha" \
+  --arg cutover_state_sha256 "$cutover_state_sha" --arg cutover_receipt_sha256 "$cutover_receipt_sha" \
   --argjson snapshot_revision "$snapshot_revision" --argjson replicas "$EXPECTED_REPLICAS" \
   --argjson duration_seconds "$AUDIT_DURATION_SECONDS" --argjson interval_seconds "$AUDIT_INTERVAL_SECONDS" \
   --argjson samples "$samples" --argjson first_revision "$first_revision" \
@@ -294,10 +355,13 @@ temporary="$(mktemp "${STATE_DIR}/.${OPERATION_ID}.receipt.XXXXXX")"
   --argjson completed_at_unix "$completed_at" \
   '{format:$format,operation_id:$operation_id,instance:$instance,
     cutover_operation_id:$cutover_operation_id,service_uid:$service_uid,
+    cutover_state_sha256:$cutover_state_sha256,cutover_receipt_sha256:$cutover_receipt_sha256,
     target_instance:$target_instance,artifact_sha256:$artifact_sha256,
     snapshot_revision:$snapshot_revision,replicas:$replicas,
     duration_seconds:$duration_seconds,interval_seconds:$interval_seconds,samples:$samples,
     first_probe_revision:$first_revision,last_probe_revision:$last_revision,
     topology_unchanged:true,all_probes_succeeded:true,completed:true,
     started_at_unix:$started_at_unix,completed_at_unix:$completed_at_unix}' >"$temporary"
+require_cutover_state_digest "$cutover_state_sha"
+require_cutover_receipt_digest "$cutover_receipt_sha"
 atomic_publish "$temporary" "$receipt_file"
