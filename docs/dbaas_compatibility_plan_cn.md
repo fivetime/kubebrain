@@ -10623,6 +10623,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   失败时目标路径保持不存在。回归：
   `go test ./hack/production/internal/meteringstorage -run 'TestSnapshotWriterRejectsOversizedNewOutputBeforeLink|TestStorageRollupWriterRejectsOversizedNewOutputBeforeLink|TestSnapshotRejectsOversizedInputs|TestStorageRollupRejectsOversizedInputs' -count=1`
   通过。
+- A640 对齐 resource metering writer 的新输出大小边界：
+  A521 已为 resource metering sample/rollup reader 设置 1 MiB 上限，但 writer 仍只在
+  目标路径已存在且 oversized 时 fail closed。`meteringarchive.Rollup` 的 source object key
+  来自对象执行器证据，直接调用 writer 可构造 schema 合法但超大 key 的 rollup，使新文件
+  link 后再被 `ReadRollup` 拒绝。现在 `WriteAtomic` 与 `WriteRollupAtomic` 在生成 canonical
+  JSON 后先检查 `maxMeteringArchiveJSONBytes`，再创建临时文件；回归覆盖 oversized 新 rollup
+  失败后目标路径不存在。回归：
+  `go test ./hack/production/internal/meteringarchive -run 'TestRollupWriterRejectsOversizedNewOutputBeforeLink|TestRollupRejectsOversizedInputs|TestSampleRejectsOversizedInputs' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

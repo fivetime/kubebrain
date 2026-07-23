@@ -3,6 +3,7 @@ package meteringarchive
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -54,6 +55,21 @@ func TestRollupRejectsOversizedInputs(t *testing.T) {
 	require.NoError(t, os.WriteFile(output, make([]byte, maxMeteringArchiveJSONBytes+1), 0o600))
 	_, err = WriteRollupAtomic(output, rollup)
 	require.ErrorContains(t, err, "existing metering rollup exceeds")
+}
+
+func TestRollupWriterRejectsOversizedNewOutputBeforeLink(t *testing.T) {
+	start := time.Unix(1_700_006_400, 0).UTC()
+	rollup, err := BuildRollup(
+		"instance-a", start, start.Add(24*time.Hour), time.Hour, 5*time.Minute, rollupInputs(start, 24),
+	)
+	require.NoError(t, err)
+	rollup.Sources[0].ObjectKey = strings.Repeat("s", maxMeteringArchiveJSONBytes)
+	output := filepath.Join(t.TempDir(), "rollup.json")
+
+	_, err = WriteRollupAtomic(output, rollup)
+	require.ErrorContains(t, err, "metering rollup exceeds")
+	_, statErr := os.Stat(output)
+	require.ErrorIs(t, statErr, os.ErrNotExist)
 }
 
 func TestBuildRollupRejectsMissingDuplicateAndMismatchedSources(t *testing.T) {

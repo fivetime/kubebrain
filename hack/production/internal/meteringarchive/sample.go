@@ -325,6 +325,9 @@ func WriteAtomic(path string, sample Sample, maxStaleness time.Duration) (Status
 		return Status{}, err
 	}
 	data = append(data, '\n')
+	if err := ensureMeteringArchiveJSONWithinLimit(data, "metering artifact"); err != nil {
+		return Status{}, err
+	}
 	sum := sha256.Sum256(data)
 	status := Status{Sample: sample, SHA256: hex.EncodeToString(sum[:]), Bytes: int64(len(data))}
 	if existing, err := readBoundedFile(path, "existing metering artifact", int64(len(data))); err == nil {
@@ -413,6 +416,13 @@ func ReadSampleStatus(path string, maxStaleness time.Duration) (Status, error) {
 
 func joinURLPath(base, suffix string) string {
 	return string(bytes.TrimRight([]byte(base), "/")) + suffix
+}
+
+func ensureMeteringArchiveJSONWithinLimit(data []byte, description string) error {
+	if int64(len(data)) > maxMeteringArchiveJSONBytes {
+		return fmt.Errorf("%s exceeds %d bytes", description, maxMeteringArchiveJSONBytes)
+	}
+	return nil
 }
 
 func readBoundedFile(path, description string, limit int64) ([]byte, error) {

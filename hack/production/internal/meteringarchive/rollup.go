@@ -272,6 +272,9 @@ func WriteRollupAtomic(path string, rollup Rollup) (RollupStatus, error) {
 		return RollupStatus{}, err
 	}
 	data = append(data, '\n')
+	if err := ensureMeteringArchiveJSONWithinLimit(data, "metering rollup"); err != nil {
+		return RollupStatus{}, err
+	}
 	sum := sha256.Sum256(data)
 	status := RollupStatus{
 		Rollup: rollup, SHA256: hex.EncodeToString(sum[:]), Bytes: int64(len(data)),
