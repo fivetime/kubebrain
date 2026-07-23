@@ -364,6 +364,28 @@ func TestEqualStrings(t *testing.T) {
 	require.False(t, equalStrings([]string{"a"}, []string{"a", "b"}))
 }
 
+func TestValidateProbePrefix(t *testing.T) {
+	require.NoError(t, validateProbePrefix("/__kubebrain/cold-restore-verify/instance-a"))
+	require.NoError(t, validateProbePrefix("/tmp/cold-restore-verify"))
+
+	for _, tc := range []struct {
+		name    string
+		prefix  string
+		message string
+	}{
+		{name: "empty", prefix: "", message: "absolute key prefix"},
+		{name: "relative", prefix: "relative", message: "absolute key prefix"},
+		{name: "root", prefix: "/", message: "must not target"},
+		{name: "registry", prefix: "/registry", message: "must not target"},
+		{name: "registry child", prefix: "/registry/pods", message: "must not target"},
+		{name: "control", prefix: "/__kubebrain/cold\nrestore", message: "control characters"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			require.ErrorContains(t, validateProbePrefix(tc.prefix), tc.message)
+		})
+	}
+}
+
 func cloneRestoreReceipt(value restoreReceipt) restoreReceipt {
 	value.VolumeSnapshotContents = append([]restoredVolumeSnapshotContent(nil), value.VolumeSnapshotContents...)
 	value.PVCs = append([]restoredPVC(nil), value.PVCs...)

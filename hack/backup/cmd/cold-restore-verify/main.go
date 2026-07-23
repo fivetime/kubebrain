@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -13,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/kubewharf/kubebrain/hack/backup/internal/backupfile"
@@ -153,6 +155,9 @@ func main() {
 	if witnessPath == "" || snapshotReceiptPath == "" || restoreReceiptPath == "" ||
 		restoreManifestPath == "" || output == "" || probePrefix == "" {
 		fatal(errors.New("WITNESS_FILE, SNAPSHOT_RECEIPT_FILE, RESTORE_RECEIPT_FILE, RESTORE_MANIFEST_FILE, SEMANTIC_RECEIPT_FILE and VERIFY_PREFIX are required"))
+	}
+	if err := validateProbePrefix(probePrefix); err != nil {
+		fatal(err)
 	}
 	if _, err := os.Stat(output); !errors.Is(err, os.ErrNotExist) {
 		fatal(errors.New("SEMANTIC_RECEIPT_FILE must not already exist"))
@@ -736,7 +741,12 @@ func verifyLeases(ctx context.Context, cli *clientv3.Client, leases map[int64]re
 }
 
 func runWatchProbe(ctx context.Context, cli *clientv3.Client, prefix string) (int64, int64, error) {
-	key := fmt.Sprintf("%s/%d", bytes.TrimRight([]byte(prefix), "/"), time.Now().UTC().UnixNano())
+	token, err := randomHex(24)
+	if err != nil {
+		return 0, 0, fmt.Errorf("generate watch probe nonce: %w", err)
+	}
+	key := strings.TrimRight(prefix, "/") + "/" + token
+	value := "cold-restore-semantic-probe:" + token
 	watch := cli.Watch(ctx, key, clientv3.WithCreatedNotify())
 	created, ok := <-watch
 	if !ok || created.Err() != nil || !created.Created {
@@ -755,20 +765,33 @@ func runWatchProbe(ctx context.Context, cli *clientv3.Client, prefix string) (in
 		defer cancel()
 		_, _ = cli.Revoke(cleanupCtx, lease.ID)
 	}()
-	put, err := cli.Put(ctx, key, "cold-restore-semantic-probe", clientv3.WithLease(lease.ID))
-	if err != nil || put.Header == nil || put.Header.Revision <= 0 {
-		return 0, 0, fmt.Errorf("put watch probe: %w", err)
+	put, err := cli.Txn(ctx).
+		If(clientv3.Compare(clientv3.CreateRevision(key), "=", 0)).
+		Then(clientv3.OpPut(key, value, clientv3.WithLease(lease.ID))).
+		Commit()
+	if err != nil {
+		return 0, 0, fmt.Errorf("conditionally create watch probe: %w", err)
+	}
+	if !put.Succeeded || put.Header == nil || put.Header.Revision <= 0 {
+		return 0, 0, errors.New("watch probe key unexpectedly existed or put returned no revision")
 	}
 	if err := expectWatchEvent(watch, mvccpb.PUT, []byte(key), put.Header.Revision); err != nil {
 		return 0, 0, err
 	}
 	read, err := cli.Get(ctx, key)
-	if err != nil || len(read.Kvs) != 1 || read.Kvs[0].Lease != int64(lease.ID) {
+	if err != nil || len(read.Kvs) != 1 || string(read.Kvs[0].Value) != value || read.Kvs[0].Lease != int64(lease.ID) {
 		return 0, 0, errors.New("linearizable probe read mismatch")
 	}
-	deleted, err := cli.Delete(ctx, key)
-	if err != nil || deleted.Header == nil || deleted.Deleted != 1 {
-		return 0, 0, fmt.Errorf("delete watch probe: %w", err)
+	deleted, err := cli.Txn(ctx).
+		If(clientv3.Compare(clientv3.Value(key), "=", value)).
+		Then(clientv3.OpDelete(key)).
+		Commit()
+	if err != nil {
+		return 0, 0, fmt.Errorf("conditionally delete watch probe: %w", err)
+	}
+	if !deleted.Succeeded || deleted.Header == nil || len(deleted.Responses) != 1 ||
+		deleted.Responses[0].GetResponseDeleteRange().Deleted != 1 {
+		return 0, 0, errors.New("watch probe delete compare failed or deleted the wrong key count")
 	}
 	if err := expectWatchEvent(watch, mvccpb.DELETE, []byte(key), deleted.Header.Revision); err != nil {
 		return 0, 0, err
@@ -778,6 +801,25 @@ func runWatchProbe(ctx context.Context, cli *clientv3.Client, prefix string) (in
 	}
 	revoked = true
 	return put.Header.Revision, deleted.Header.Revision, nil
+}
+
+func validateProbePrefix(prefix string) error {
+	if prefix == "" || !strings.HasPrefix(prefix, "/") || strings.ContainsAny(prefix, "\x00\n\r\t") {
+		return errors.New("VERIFY_PREFIX must be an absolute key prefix without control characters")
+	}
+	trimmed := strings.TrimRight(prefix, "/")
+	if trimmed == "" || trimmed == "/registry" || strings.HasPrefix(trimmed+"/", "/registry/") {
+		return errors.New("VERIFY_PREFIX must not target Kubernetes /registry data")
+	}
+	return nil
+}
+
+func randomHex(bytesCount int) (string, error) {
+	token := make([]byte, bytesCount)
+	if _, err := rand.Read(token); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(token), nil
 }
 
 func expectWatchEvent(watch clientv3.WatchChan, eventType mvccpb.Event_EventType, key []byte, revision int64) error {
