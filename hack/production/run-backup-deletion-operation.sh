@@ -290,6 +290,23 @@ validate_operation_receipt() {
     "$operation_receipt" >/dev/null
 }
 
+publish_operation_receipt() {
+  local temporary="$1"
+  sync -f "$temporary"
+  if ! ln "$temporary" "$operation_receipt" 2>/dev/null; then
+    if validate_operation_receipt; then
+      rm -f "$temporary"
+      sync -f "$(dirname "$operation_receipt")"
+      return
+    fi
+    rm -f "$temporary"
+    echo "existing backup deletion operation receipt differs" >&2
+    exit 1
+  fi
+  rm -f "$temporary"
+  sync -f "$(dirname "$operation_receipt")"
+}
+
 if [[ -e "$operation_receipt" ]]; then
   validate_operation_receipt ||
     { echo "existing backup deletion operation receipt differs" >&2; exit 1; }
@@ -305,13 +322,7 @@ else
       pre_manifest_sha256:$pre_manifest,pre_inventory_receipt_sha256:$pre_inventory,
       deletion_receipt_sha256:$deletion,post_manifest_sha256:$post_manifest,
       post_inventory_receipt_sha256:$post_inventory,completed_at_unix:$completed}' >"$temporary"
-  sync -f "$temporary"
-  if ! ln "$temporary" "$operation_receipt" 2>/dev/null; then
-    validate_operation_receipt ||
-      { echo "existing backup deletion operation receipt differs" >&2; exit 1; }
-  fi
-  rm -f "$temporary"
-  sync -f "$(dirname "$operation_receipt")"
+  publish_operation_receipt "$temporary"
 fi
 validate_operation_receipt ||
   { echo "backup deletion operation receipt is invalid" >&2; exit 1; }

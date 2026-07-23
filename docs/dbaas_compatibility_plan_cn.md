@@ -10733,6 +10733,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   幂等，receipt unknown field 或漂移仍 fail closed。回归：
   `go test ./hack/production -run 'TestBoundaryCleanupTreatsConcurrentReceiptPublishAsIdempotent|TestBoundaryCleanupLifecycleIsRetrySafe|TestBoundaryCleanupRejectsExistingReceiptWithUnknownFields' -count=1`
   通过。
+- A651 补齐 backup deletion operation receipt 发布竞争回归：
+  `run-backup-deletion-operation.sh` 的 workflow-level
+  `kubebrain.backup-deletion-operation.receipt.v1` 已在 existing receipt 和 hard-link
+  冲突路径复用 strict `validate_operation_receipt`，但旧测试只覆盖已有 receipt 漂移，
+  没有固定“生成新 receipt 后、link 前被另一个 worker 发布”的窗口；同时冲突 receipt
+  漂移时手写发布块会在退出前留下 `.backup-deletion-receipt.*` 临时文件。现在发布逻辑
+  收敛到 `publish_operation_receipt` helper：并发等价 receipt 通过同一 exact key set
+  和 source/pre/deletion/post SHA 绑定校验后幂等成功，漂移继续 fail closed，所有 link
+  冲突分支都会清理 0600 临时文件并同步目录。回归：
+  `go test ./hack/production -run 'TestBackupDeletionOperation' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

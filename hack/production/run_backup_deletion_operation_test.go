@@ -2,6 +2,7 @@ package production_test
 
 import (
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -25,6 +26,28 @@ func TestBackupDeletionOperationCompletesThreeGatesAndRetries(t *testing.T) {
 	require.Contains(t, log, "--namespace tenant-a-operations --action succeed")
 	require.NotContains(t, log, "--namespace ops --namespace tenant-a-operations")
 	require.NotContains(t, log, "--action retry")
+}
+
+func TestBackupDeletionOperationTreatsConcurrentReceiptPublishAsIdempotent(t *testing.T) {
+	f := newBackupDeletionFixture(t)
+	f.run(t, true, "PUBLISH_BACKUP_DELETION_OPERATION_RECEIPT_DURING_JQ=valid")
+
+	var receipt map[string]any
+	require.NoError(t, json.Unmarshal(mustRead(t, f.operationReceipt), &receipt))
+	require.Equal(t, "kubebrain.backup-deletion-operation.receipt.v1", receipt["format"])
+	require.Equal(t, float64(1), receipt["completed_at_unix"])
+	require.Empty(t, f.temporaryReceiptFiles(t))
+	require.Contains(t, f.log(t), "--action succeed")
+	require.NotContains(t, f.log(t), "--action retry")
+}
+
+func TestBackupDeletionOperationCleansTemporaryReceiptWhenConcurrentReceiptDrifts(t *testing.T) {
+	f := newBackupDeletionFixture(t)
+	f.run(t, false, "PUBLISH_BACKUP_DELETION_OPERATION_RECEIPT_DURING_JQ=drift", "existing backup deletion operation receipt differs")
+
+	require.Empty(t, f.temporaryReceiptFiles(t))
+	require.FileExists(t, f.operationReceipt)
+	require.NotContains(t, f.log(t), "--action succeed")
 }
 
 func TestBackupDeletionOperationRejectsExistingReceiptWithUnknownFields(t *testing.T) {
@@ -115,20 +138,25 @@ func TestBackupDeletionOperationStopsWhenHeartbeatIsFenced(t *testing.T) {
 }
 
 type backupDeletionFixture struct {
-	dir, parameters, sourceReceipt, preManifest, postManifest, operationReceipt string
-	env                                                                         []string
+	dir, parameters, sourceReceipt, preManifest, postManifest  string
+	preInventoryReceipt, deletionReceipt, postInventoryReceipt string
+	operationReceipt                                           string
+	env                                                        []string
 }
 
 func newBackupDeletionFixture(t *testing.T) *backupDeletionFixture {
 	t.Helper()
 	dir := t.TempDir()
 	f := &backupDeletionFixture{
-		dir:              dir,
-		parameters:       filepath.Join(dir, "parameters.json"),
-		sourceReceipt:    filepath.Join(dir, "source.json"),
-		preManifest:      filepath.Join(dir, "pre-manifest.json"),
-		postManifest:     filepath.Join(dir, "post-manifest.json"),
-		operationReceipt: filepath.Join(dir, "operation-receipt.json"),
+		dir:                  dir,
+		parameters:           filepath.Join(dir, "parameters.json"),
+		sourceReceipt:        filepath.Join(dir, "source.json"),
+		preManifest:          filepath.Join(dir, "pre-manifest.json"),
+		postManifest:         filepath.Join(dir, "post-manifest.json"),
+		preInventoryReceipt:  filepath.Join(dir, "pre-inventory.json"),
+		deletionReceipt:      filepath.Join(dir, "deletion.json"),
+		postInventoryReceipt: filepath.Join(dir, "post-inventory.json"),
+		operationReceipt:     filepath.Join(dir, "operation-receipt.json"),
 	}
 	require.NoError(t, os.WriteFile(f.sourceReceipt, []byte(`{"format":"kubebrain.object-backup.receipt.v1","instance":"instance-a","backup_id":"backup-1","object_store_id":"store-a","bucket":"backups","object_key":"instance-a/backup-1.jsonl","version_id":"version-1","artifact_format":"kubebrain.logical.v2","artifact_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","snapshot_revision":1,"created_at_unix":1,"records":1,"leases":0,"object_bytes":1,"retention_mode":"COMPLIANCE","retain_until_unix":2,"remote_verified":true,"uploaded_at_unix":1}
 `), 0o600))
@@ -185,11 +213,42 @@ case "$stage" in
     ;;
 esac
 `)
+	realJQ, err := exec.LookPath("jq")
+	require.NoError(t, err)
+	jq := filepath.Join(dir, "jq-wrapper")
+	writeTrafficExecutable(t, jq, `#!/usr/bin/env bash
+set -euo pipefail
+"$REAL_JQ" "$@"
+mode="${PUBLISH_BACKUP_DELETION_OPERATION_RECEIPT_DURING_JQ:-}"
+if [[ -n "$mode" && "$mode" != false &&
+  " $* " == *" -cnS "* && " $* " == *"kubebrain.backup-deletion-operation.receipt.v1"* &&
+  ! -f "$OPERATION_RECEIPT_OUTPUT" ]]; then
+  object_key="$BACKUP_DELETION_OBJECT_KEY"
+  if [[ "$mode" == drift ]]; then
+    object_key="${object_key}.drift"
+  fi
+  pre_inventory_sha="$(sha256sum "$PRE_INVENTORY_RECEIPT" | cut -d ' ' -f1)"
+  deletion_sha="$(sha256sum "$DELETION_RECEIPT" | cut -d ' ' -f1)"
+  post_inventory_sha="$(sha256sum "$POST_INVENTORY_RECEIPT" | cut -d ' ' -f1)"
+  printf '{"completed_at_unix":1,"deletion_receipt_sha256":"%s","format":"kubebrain.backup-deletion-operation.receipt.v1","instance":"%s","object_key":"%s","operation_id":"%s","post_inventory_receipt_sha256":"%s","post_manifest_sha256":"%s","pre_inventory_receipt_sha256":"%s","pre_manifest_sha256":"%s","source_receipt_sha256":"%s","version_id":"%s"}\n' \
+    "$deletion_sha" "$BACKUP_DELETION_INSTANCE" "$object_key" "$BACKUP_DELETION_OPERATION_ID" \
+    "$post_inventory_sha" "$POST_SHA" "$pre_inventory_sha" "$PRE_SHA" "$SOURCE_SHA" \
+    "$BACKUP_DELETION_VERSION_ID" >"$OPERATION_RECEIPT_OUTPUT"
+  chmod 600 "$OPERATION_RECEIPT_OUTPUT"
+fi
+`)
 	f.env = []string{
 		"WORKER_ID=worker-a", "PARAMETERS_INPUT=" + f.parameters,
 		"OPERATION_NAMESPACE=ops", "LEASE_SECONDS=6", "OPERATIONCTL=" + operationctl,
 		"OBJECT_COMMAND=" + object, "FAKE_DIR=" + dir, "PRE_MANIFEST=" + f.preManifest,
 		"PRE_SHA=" + fileDigest(t, f.preManifest), "POST_SHA=" + fileDigest(t, f.postManifest),
+		"SOURCE_SHA=" + fileDigest(t, f.sourceReceipt), "JQ=" + jq, "REAL_JQ=" + realJQ,
+		"PRE_INVENTORY_RECEIPT=" + f.preInventoryReceipt, "DELETION_RECEIPT=" + f.deletionReceipt,
+		"POST_INVENTORY_RECEIPT=" + f.postInventoryReceipt,
+		"OPERATION_RECEIPT_OUTPUT=" + f.operationReceipt,
+		"BACKUP_DELETION_OPERATION_ID=delete-1", "BACKUP_DELETION_INSTANCE=instance-a",
+		"BACKUP_DELETION_OBJECT_KEY=instance-a/backup-1.jsonl",
+		"BACKUP_DELETION_VERSION_ID=version-1",
 	}
 	return f
 }
@@ -205,8 +264,8 @@ func (f *backupDeletionFixture) rewriteParameters(t *testing.T) {
   "post_manifest_input":%q,"post_manifest_sha256":"%s",
   "post_inventory_receipt_output":%q,"operation_receipt_output":%q
 }`, f.sourceReceipt, fileDigest(t, f.sourceReceipt), f.preManifest, fileDigest(t, f.preManifest),
-		filepath.Join(f.dir, "pre-inventory.json"), filepath.Join(f.dir, "deletion.json"),
-		f.postManifest, fileDigest(t, f.postManifest), filepath.Join(f.dir, "post-inventory.json"),
+		f.preInventoryReceipt, f.deletionReceipt,
+		f.postManifest, fileDigest(t, f.postManifest), f.postInventoryReceipt,
 		f.operationReceipt)
 	require.NoError(t, os.WriteFile(f.parameters, []byte(content), 0o600))
 }
@@ -236,6 +295,13 @@ func (f *backupDeletionFixture) run(t *testing.T, ok bool, extra string, outputs
 func (f *backupDeletionFixture) log(t *testing.T) string {
 	t.Helper()
 	return string(mustRead(t, filepath.Join(f.dir, "actions.log")))
+}
+
+func (f *backupDeletionFixture) temporaryReceiptFiles(t *testing.T) []string {
+	t.Helper()
+	matches, err := filepath.Glob(filepath.Join(f.dir, ".backup-deletion-receipt.*"))
+	require.NoError(t, err)
+	return matches
 }
 
 func fileDigest(t *testing.T, path string) string {
