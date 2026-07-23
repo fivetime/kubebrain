@@ -10686,6 +10686,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   field 仍 fail closed。回归：
   `go test ./hack/production -run 'TestPostRestoreAuditTreatsConcurrentReceiptPublishAsIdempotent|TestPostRestoreAuditPublishesReceiptAndRechecksOnRetry|TestPostRestoreAuditRejectsExistingReceiptWithUnknownFields' -count=1`
   通过。
+- A647 让 restore cutover receipt 发布竞争幂等：
+  `switch-restore-traffic.sh` 的 complete 阶段会在切流、EndpointSlice 和 public data
+  复核后发布 `kubebrain.restore-cutover.receipt.v1`。旧逻辑只在生成 receipt 前检查
+  已有终态文件；若另一个 worker 在检查之后、硬链接发布之前抢先写入同一操作的有效
+  receipt，当前 worker 会因为 `completed_at_unix` 不同而把 `EEXIST` 当作覆盖冲突。
+  现在 receipt 校验被抽成共享 helper，最终 `atomic_publish` 仅在目标是 cutover receipt
+  且 existing receipt 严格绑定 operation、Service UID、state digest、source/target、
+  snapshot revision、replica 数和三项成功标志时视为幂等成功；state/marker 仍保留
+  字节级幂等，receipt unknown field 或漂移仍 fail closed。回归：
+  `go test ./hack/production -run 'TestRestoreTrafficCutoverTreatsConcurrentReceiptPublishAsIdempotent|TestRestoreTrafficCutoverLifecycleAndRollback|TestRestoreTrafficCutoverRejectsExistingReceiptWithUnknownFields' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 
