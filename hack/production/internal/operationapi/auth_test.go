@@ -9,6 +9,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -185,6 +186,7 @@ func TestOIDCAuthenticatorRejectsMalformedBearerHeader(t *testing.T) {
 		{name: "trailing token space", header: "Bearer " + token + " "},
 		{name: "embedded token space", header: "Bearer " + token + " extra"},
 		{name: "tab separator", header: "Bearer\t" + token},
+		{name: "oversized token", header: "Bearer " + strings.Repeat("x", maxBearerTokenBytes+1)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := authenticator.Authenticate(context.Background(), tc.header)

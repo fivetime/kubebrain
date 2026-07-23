@@ -23,7 +23,10 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation"
 )
 
-const oidcDocumentLimit = 1 << 20
+const (
+	oidcDocumentLimit   = 1 << 20
+	maxBearerTokenBytes = 16 << 10
+)
 
 var ErrOIDCUnavailable = errors.New("OIDC provider unavailable")
 
@@ -352,7 +355,8 @@ func bearerToken(authorization string) (string, error) {
 	if !found || !strings.EqualFold(scheme, "Bearer") {
 		return "", errors.New("bearer token is required")
 	}
-	if tokenText == "" || strings.TrimSpace(tokenText) != tokenText || strings.ContainsAny(tokenText, " \t\r\n") {
+	if tokenText == "" || len(tokenText) > maxBearerTokenBytes ||
+		strings.TrimSpace(tokenText) != tokenText || strings.ContainsAny(tokenText, " \t\r\n") {
 		return "", errors.New("bearer token is invalid")
 	}
 	return tokenText, nil
