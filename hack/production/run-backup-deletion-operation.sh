@@ -34,6 +34,8 @@ EOF
   { echo "PARAMETERS_INPUT must exist when provided" >&2; exit 2; }
 [[ "$LEASE_SECONDS" =~ ^[1-9][0-9]*$ && "$LEASE_SECONDS" -ge 6 ]] ||
   { echo "LEASE_SECONDS must be an integer of at least 6" >&2; exit 2; }
+[[ "$OPERATION_NAMESPACE" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] ||
+  { echo "OPERATION_NAMESPACE must be a lowercase DNS label of at most 63 characters" >&2; exit 2; }
 command -v "$JQ" >/dev/null || { echo "jq is required" >&2; exit 2; }
 command -v sha256sum >/dev/null || { echo "sha256sum is required" >&2; exit 2; }
 
@@ -62,6 +64,8 @@ claim="$(run_operationctl --action claim --owner "$WORKER_ID" \
   --type BackupDeletion --lease "${LEASE_SECONDS}s")"
 claimed_namespace="$("$JQ" -r '.namespace // empty' <<<"$claim")"
 if [[ -n "$claimed_namespace" ]]; then
+  [[ "$claimed_namespace" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] ||
+    { echo "OPERATION_NAMESPACE must be a lowercase DNS label of at most 63 characters" >&2; exit 2; }
   OPERATION_NAMESPACE="$claimed_namespace"
   build_kube_args
 fi

@@ -32,6 +32,10 @@ for variable in CLEANUP_ID INSTANCE KUBEBRAIN_NAMESPACE TIDB_NAMESPACE CREDENTIA
   [[ "${!variable}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] ||
     { echo "${variable} contains unsupported characters" >&2; exit 2; }
 done
+for variable in KUBEBRAIN_NAMESPACE TIDB_NAMESPACE CREDENTIAL_NAMESPACE; do
+  [[ "${!variable}" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] ||
+    { echo "${variable} must be a lowercase DNS label of at most 63 characters" >&2; exit 2; }
+done
 [[ "$KUBEBRAIN_NAMESPACE" != "$TIDB_NAMESPACE" ]] ||
   { echo "KUBEBRAIN_NAMESPACE and TIDB_NAMESPACE must be distinct" >&2; exit 2; }
 [[ "$CREDENTIAL_NAMESPACE" != "$KUBEBRAIN_NAMESPACE" &&

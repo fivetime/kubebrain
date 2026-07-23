@@ -36,6 +36,8 @@ EOF
   { echo "WORKER_ID contains unsupported characters" >&2; exit 2; }
 [[ -z "$PARAMETERS_INPUT" || -f "$PARAMETERS_INPUT" ]] ||
   { echo "PARAMETERS_INPUT must exist when provided" >&2; exit 2; }
+[[ "$OPERATION_NAMESPACE" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] ||
+  { echo "OPERATION_NAMESPACE must be a lowercase DNS label of at most 63 characters" >&2; exit 2; }
 [[ -n "$PUBLISH_OVERLAP_COMMAND" && -x "$PUBLISH_OVERLAP_COMMAND" ]] ||
   { echo "PUBLISH_OVERLAP_COMMAND is required and must be executable" >&2; exit 2; }
 [[ -n "$PUBLISH_FINAL_COMMAND" && -x "$PUBLISH_FINAL_COMMAND" ]] ||
@@ -74,6 +76,8 @@ claim="$(run_operationctl --action claim --owner "$WORKER_ID" \
   --type CertificateRotation --lease "${LEASE_SECONDS}s")"
 claimed_namespace="$("$JQ" -r '.namespace // empty' <<<"$claim")"
 if [[ -n "$claimed_namespace" ]]; then
+  [[ "$claimed_namespace" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] ||
+    { echo "OPERATION_NAMESPACE must be a lowercase DNS label of at most 63 characters" >&2; exit 2; }
   OPERATION_NAMESPACE="$claimed_namespace"
   build_kube_args
 fi

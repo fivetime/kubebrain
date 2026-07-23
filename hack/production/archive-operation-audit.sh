@@ -16,6 +16,10 @@ for variable in OPERATION_NAME ARTIFACT_OUTPUT OBJECT_STORE_ID S3_BUCKET S3_OBJE
     exit 2
   fi
 done
+if [[ ! "$OPERATION_NAMESPACE" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]]; then
+  echo "OPERATION_NAMESPACE must be a lowercase DNS label of at most 63 characters" >&2
+  exit 2
+fi
 if [[ "$RETENTION_MODE" != "COMPLIANCE" && "$RETENTION_MODE" != "GOVERNANCE" ]]; then
   echo "RETENTION_MODE must be COMPLIANCE or GOVERNANCE" >&2
   exit 2

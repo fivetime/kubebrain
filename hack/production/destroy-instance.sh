@@ -61,6 +61,12 @@ for variable in OPERATION_ID INSTANCE KUBEBRAIN_NAMESPACE KUBEBRAIN_STATEFULSET 
     exit 2
   fi
 done
+for variable in KUBEBRAIN_NAMESPACE TIDB_NAMESPACE; do
+  if [[ ! "${!variable}" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]]; then
+    echo "${variable} must be a lowercase DNS label of at most 63 characters" >&2
+    exit 2
+  fi
+done
 for variable in BACKUP_MAX_AGE_SECONDS TIMEOUT_SECONDS; do
   if ! [[ "${!variable}" =~ ^[1-9][0-9]*$ ]]; then
     echo "${variable} must be a positive integer" >&2

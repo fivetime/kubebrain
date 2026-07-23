@@ -1918,6 +1918,9 @@ kubeconfig 挂入 worker Pod。
 服务的 namespace；进入目标 namespace 后继续复用原有实例 Lease、attempt 和
 resourceVersion fencing。claim response 固化 `namespace`，六类 executor 脚本随后把
 parameters、heartbeat、retry/fail/succeed 全部固定到该 namespace，禁止跨队列续租或提交。
+所有 shell executor、runner 和手工审计/销毁/切流入口都会在首次
+`kubectl`/`operationctl` 调用前按 Kubernetes DNS label 校验 namespace 参数，拒绝带 `.`
+或超长/大写值，避免非法对象名进入后续状态机。claim 返回的 namespace 也会重新校验。
 inventory 无效时 claim 在读取任何 Operation 前 fail closed。中央 worker Role 只能
 `get` 指定 inventory ConfigMap；各目标 namespace 的 Operation/Secret/Lease 权限仍来自
 逐 namespace RoleBinding。

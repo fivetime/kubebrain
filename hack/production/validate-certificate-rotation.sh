@@ -53,6 +53,10 @@ if [[ ! "$INSTANCE" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]]; then
   echo "INSTANCE must contain only letters, digits, dot, underscore, and hyphen" >&2
   exit 2
 fi
+if [[ ! "$KUBEBRAIN_NAMESPACE" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]]; then
+  echo "KUBEBRAIN_NAMESPACE must be a lowercase DNS label of at most 63 characters" >&2
+  exit 2
+fi
 if [[ "$ENDPOINT" == *[$'\t\r\n\"\\']* ]]; then
   echo "ENDPOINT must not contain control characters, quotes, or backslashes" >&2
   exit 2

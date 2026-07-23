@@ -54,6 +54,8 @@ for variable in OPERATION_ID INSTANCE SERVICE_NAMESPACE SERVICE_NAME SOURCE_INST
   [[ "${!variable}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] ||
     { echo "${variable} contains unsupported characters" >&2; exit 2; }
 done
+[[ "$SERVICE_NAMESPACE" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] ||
+  { echo "SERVICE_NAMESPACE must be a lowercase DNS label of at most 63 characters" >&2; exit 2; }
 [[ "$SOURCE_INSTANCE" != "$TARGET_INSTANCE" ]] ||
   { echo "SOURCE_INSTANCE and TARGET_INSTANCE must differ" >&2; exit 2; }
 for variable in EXPECTED_REPLICAS TIMEOUT_SECONDS; do

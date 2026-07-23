@@ -11119,6 +11119,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   和 `TIDB_NAMESPACE` 都在首个 Kubernetes 调用前按小写 63 字符 DNS label 拒绝；
   `KUBEBRAIN_POD` 仍按 DNS subdomain 逐段校验，保留合法 Pod 名兼容。回归：
   `go test ./hack/production -run TestValidateNetworkPolicy -count=1` 通过。
+- A692 收紧 operation shell 入口的 namespace 输入：
+  A691 后继续审计直接 executor 与 runner，发现销毁、边界清理、恢复切流、恢复后审计、
+  证书轮换、operation audit 归档以及六类 operation runner 仍可能把带 `.` 的 namespace
+  传给 `kubectl` 或 `operationctl`，直到 Kubernetes API 报错才失败。现在这些入口的
+  `KUBEBRAIN_NAMESPACE`、`TIDB_NAMESPACE`、`CREDENTIAL_NAMESPACE`、`SERVICE_NAMESPACE`
+  和 `OPERATION_NAMESPACE` 都在首次外部命令前按 DNS label 拒绝，runner 对 claim response
+  中固化的 namespace 也会重新校验。集中回归使用 fake `kubectl`/`operationctl`/`go`，
+  证明非法 namespace 不会触发任何外部调用：
+  `go test ./hack/production -run TestProductionShellEntrypointsRejectInvalidNamespacesBeforeExternalCalls -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 
