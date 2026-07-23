@@ -11092,6 +11092,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   succeed 前 receipt 校验全部只读该副本；原始 artifact path 后续漂移不会影响已冻结
   workflow，捕获窗口漂移会 retry 且不会进入 upload。回归：
   `go test ./hack/production -run 'TestBackupOperation' -count=1` 通过。
+- A689 冻结 BackupDeletion operation runner 的生成 receipt：
+  A671/A678 已冻结 source receipt 与 inventory manifest 输入，但
+  `run-backup-deletion-operation.sh` 在 Object Lock inventory/delete/post-inventory workflow
+  生成三份子 receipt 后，仍从用户参数里的输出路径读取并计算最终 operation receipt。若这些
+  输出路径在 workflow 完成后漂移，删除已经发生但 runner 可能用另一份本地 receipt 校验或
+  合成最终 receipt。现在 workflow 完成后立即把 pre inventory、deletion、post inventory
+  三份 receipt 捕获到私有 0600 副本，后续 schema 校验、SHA 计算和 operation receipt 合成
+  全部只读副本；捕获窗口漂移 fail closed。回归：
+  `go test ./hack/production -run 'TestBackupDeletionOperation' -count=1` 通过。
 
 ### P2：运维兼容和长期验证
 

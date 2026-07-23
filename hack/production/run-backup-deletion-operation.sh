@@ -294,6 +294,35 @@ for receipt in "$pre_inventory_receipt" "$deletion_receipt" "$post_inventory_rec
   }
 done
 
+freeze_generated_receipt() {
+  local source="$1" destination="$2" label="$3" source_digest captured_digest current_digest
+  source_digest="$(file_sha256 "$source")" ||
+    { echo "${label} digest is invalid" >&2; return 1; }
+  cp -- "$source" "$destination" || { echo "capture ${label} failed" >&2; return 1; }
+  chmod 600 "$destination"
+  captured_digest="$(file_sha256 "$destination")" ||
+    { echo "${label} digest is invalid" >&2; return 1; }
+  current_digest="$(file_sha256 "$source")" ||
+    { echo "${label} digest is invalid" >&2; return 1; }
+  [[ "$captured_digest" == "$source_digest" && "$current_digest" == "$source_digest" ]] ||
+    { echo "${label} changed while being captured" >&2; return 1; }
+  printf '%s\n' "$destination"
+}
+
+capture_generated_receipt() {
+  local variable="$1" source="$2" name="$3" label="$4" frozen
+  frozen="$(freeze_generated_receipt "$source" "${managed_evidence_dir}/${name}" "$label")" ||
+    exit 1
+  printf -v "$variable" '%s' "$frozen"
+}
+
+capture_generated_receipt pre_inventory_receipt "$pre_inventory_receipt" \
+  pre-inventory-receipt.json "pre-delete inventory receipt"
+capture_generated_receipt deletion_receipt "$deletion_receipt" \
+  deletion-receipt.json "backup deletion receipt"
+capture_generated_receipt post_inventory_receipt "$post_inventory_receipt" \
+  post-inventory-receipt.json "post-delete inventory receipt"
+
 validate_inventory_receipt() {
   local path="$1" manifest_sha="$2" min_versions="$3"
   "$JQ" -e --arg store "$object_store_id" --arg bucket "$bucket" \

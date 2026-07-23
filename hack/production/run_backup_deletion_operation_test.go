@@ -131,7 +131,7 @@ func TestBackupDeletionOperationRejectsValidEvidenceReceiptChangedAfterDigest(t 
 				)), 0o600))
 				return path
 			},
-			want: "pre-delete inventory receipt is invalid",
+			want: "pre-delete inventory receipt changed while being captured",
 		},
 		{
 			name: "deletion",
@@ -144,7 +144,7 @@ func TestBackupDeletionOperationRejectsValidEvidenceReceiptChangedAfterDigest(t 
 				require.NoError(t, os.WriteFile(path, []byte(` {"format":"kubebrain.object-backup-deletion.receipt.v1","instance":"instance-a","backup_id":"backup-1","object_store_id":"store-a","bucket":"backups","object_key":"instance-a/backup-1.jsonl","version_id":"version-1","artifact_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","retention_mode":"COMPLIANCE","retain_until_unix":2,"version_absent":true,"deleted_at_unix":2}`+"\n"), 0o600))
 				return path
 			},
-			want: "backup deletion receipt is invalid",
+			want: "backup deletion receipt changed while being captured",
 		},
 		{
 			name: "post inventory",
@@ -160,7 +160,7 @@ func TestBackupDeletionOperationRejectsValidEvidenceReceiptChangedAfterDigest(t 
 				)), 0o600))
 				return path
 			},
-			want: "post-delete inventory receipt is invalid",
+			want: "post-delete inventory receipt changed while being captured",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
