@@ -38,6 +38,17 @@ func TestSnapshotRejectsOversizedInputs(t *testing.T) {
 	require.ErrorContains(t, err, "existing object storage sample exceeds")
 }
 
+func TestSnapshotWriterRejectsOversizedNewOutputBeforeLink(t *testing.T) {
+	snapshot := validSnapshot()
+	snapshot.Prefix = strings.Repeat("p", maxMeteringStorageJSONBytes)
+	path := filepath.Join(t.TempDir(), "sample.json")
+
+	_, err := WriteSnapshotAtomic(path, snapshot)
+	require.ErrorContains(t, err, "object storage sample exceeds")
+	_, statErr := os.Stat(path)
+	require.ErrorIs(t, statErr, os.ErrNotExist)
+}
+
 func TestSnapshotRejectsInvalidEvidenceAndSlot(t *testing.T) {
 	snapshot := validSnapshot()
 	snapshot.DeleteMarkers = 1

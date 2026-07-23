@@ -42,6 +42,19 @@ func TestStorageRollupRejectsOversizedInputs(t *testing.T) {
 	require.ErrorContains(t, err, "existing object storage rollup exceeds")
 }
 
+func TestStorageRollupWriterRejectsOversizedNewOutputBeforeLink(t *testing.T) {
+	start := time.Unix(1_784_505_600, 0).UTC().Truncate(24 * time.Hour)
+	rollup, err := BuildRollup("instance-a", start, start.Add(24*time.Hour), validRollupInputs(start))
+	require.NoError(t, err)
+	rollup.Sources[0].ObjectKey = strings.Repeat("s", maxMeteringStorageJSONBytes)
+	path := filepath.Join(t.TempDir(), "rollup.json")
+
+	_, err = WriteRollupAtomic(path, rollup)
+	require.ErrorContains(t, err, "object storage rollup exceeds")
+	_, statErr := os.Stat(path)
+	require.ErrorIs(t, statErr, os.ErrNotExist)
+}
+
 func TestStorageRollupRejectsFractionalSlotByteSeconds(t *testing.T) {
 	start := time.Unix(1_784_505_600, 0).UTC().Truncate(24 * time.Hour)
 	rollup, err := BuildRollup("instance-a", start, start.Add(24*time.Hour), validRollupInputs(start))

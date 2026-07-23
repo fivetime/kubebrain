@@ -10613,6 +10613,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   和空清单 digest。回归：
   `go test ./hack/production/internal/meteringstorage -run 'TestUsageReceiptReadersUseSnapshotSchema|TestArchiverRejectsUsageReceiptMismatchBeforeArchive|TestArchiverMeasuresBeforeArchivingAndIsDeterministic' -count=1`
   通过。
+- A639 对齐 object storage metering writer 的新输出大小边界：
+  A520 已让 object usage receipt、hourly storage sample 和 daily storage rollup 的 reader
+  拒绝超过 1 MiB 的本地 JSON，writer 也会在比较 oversized 既有文件时 fail closed；但
+  `WriteSnapshotAtomic`/`WriteRollupAtomic` 在写入新 artifact 前没有检查 marshal 后的
+  canonical JSON 大小。直接调用 writer 可构造 schema 合法但字符串字段超大的 sample/rollup，
+  让 writer 先 link 出一份随后 `ReadSnapshot`/`ReadRollup` 读不回来的 oversized 文件。
+  现在两个 writer 在创建临时文件前先拒绝超过 `maxMeteringStorageJSONBytes` 的新输出，
+  失败时目标路径保持不存在。回归：
+  `go test ./hack/production/internal/meteringstorage -run 'TestSnapshotWriterRejectsOversizedNewOutputBeforeLink|TestStorageRollupWriterRejectsOversizedNewOutputBeforeLink|TestSnapshotRejectsOversizedInputs|TestStorageRollupRejectsOversizedInputs' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

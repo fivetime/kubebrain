@@ -138,6 +138,9 @@ func WriteRollupAtomic(path string, rollup Rollup) (RollupStatus, error) {
 		return RollupStatus{}, err
 	}
 	data = append(data, '\n')
+	if err := ensureMeteringStorageJSONWithinLimit(data, "object storage rollup"); err != nil {
+		return RollupStatus{}, err
+	}
 	if existing, err := readBoundedFile(path, "existing object storage rollup", int64(len(data))); err == nil {
 		if bytes.Equal(existing, data) {
 			return ReadRollup(path)

@@ -170,6 +170,9 @@ func WriteSnapshotAtomic(path string, snapshot Snapshot) (SnapshotStatus, error)
 		return SnapshotStatus{}, err
 	}
 	data = append(data, '\n')
+	if err := ensureMeteringStorageJSONWithinLimit(data, "object storage sample"); err != nil {
+		return SnapshotStatus{}, err
+	}
 	if existing, err := readBoundedFile(path, "existing object storage sample", int64(len(data))); err == nil {
 		if bytes.Equal(existing, data) {
 			return ReadSnapshot(path)
@@ -212,6 +215,13 @@ func WriteSnapshotAtomic(path string, snapshot Snapshot) (SnapshotStatus, error)
 		return SnapshotStatus{}, err
 	}
 	return ReadSnapshot(path)
+}
+
+func ensureMeteringStorageJSONWithinLimit(data []byte, description string) error {
+	if int64(len(data)) > maxMeteringStorageJSONBytes {
+		return fmt.Errorf("%s exceeds %d bytes", description, maxMeteringStorageJSONBytes)
+	}
+	return nil
 }
 
 func readBoundedFile(path, description string, limit int64) ([]byte, error) {
