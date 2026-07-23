@@ -11139,6 +11139,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go run .` 证明非法 namespace 不会进入 kubeconfig 路径：
   `go test ./hack/production/internal/namespaceinventory ./hack/production/cmd/backup-scheduler ./hack/production/cmd/operationctl ./hack/production/cmd/uid-delete ./hack/production/cmd/operation-api ./hack/production/cmd/operation-parameter-broker ./hack/production/cmd/operation-archiver ./hack/production/cmd/operation-audit -run 'TestValidateOneRequiresDNSLabelNamespace|TestMainRejectsInvalid|TestParseNamespacesRejectsUnsafeAllowlist' -count=1`
   通过。
+- A694 下沉 namespace inventory reader 的 namespace 校验：
+  A693 在 CLI 层前置校验 `--namespace-inventory-namespace`，但 `namespaceinventory.Load`
+  自身仍会直接向传入 namespace 发起 ConfigMap GET；未来库调用方若绕过 CLI，非法
+  `control.ns` 会再次等到 Kubernetes API 层失败。现在 Load 在任何 API action 前调用
+  `ValidateOne`，并把错误标记为 `inventory namespace`。fake dynamic client 回归确认
+  非法 namespace 返回错误且 `client.Actions()` 为空：
+  `go test ./hack/production/internal/namespaceinventory -count=1` 通过。
 
 ### P2：运维兼容和长期验证
 

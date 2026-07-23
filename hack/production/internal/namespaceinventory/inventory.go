@@ -26,6 +26,9 @@ func Load(
 	client dynamic.Interface,
 	namespace, name, key string,
 ) ([]string, error) {
+	if err := ValidateOne(namespace); err != nil {
+		return nil, fmt.Errorf("inventory namespace: %w", err)
+	}
 	if key == "" {
 		key = DefaultKey
 	}

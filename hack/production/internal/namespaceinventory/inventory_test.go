@@ -55,6 +55,13 @@ func TestValidateOneRequiresDNSLabelNamespace(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsInvalidInventoryNamespaceBeforeAPI(t *testing.T) {
+	client := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme())
+	_, err := Load(context.Background(), client, "control.ns", "inventory", DefaultKey)
+	require.ErrorContains(t, err, "inventory namespace")
+	require.Empty(t, client.Actions(), "invalid inventory namespace must fail before Kubernetes API reads")
+}
+
 func inventoryClient(t *testing.T, raw string) *dynamicfake.FakeDynamicClient {
 	t.Helper()
 	client := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(
