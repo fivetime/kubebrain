@@ -134,6 +134,19 @@ func validateOperationName(name string) error {
 	return nil
 }
 
+func validateWorkerIdentity(owner string, attempt int64) error {
+	if owner == "" {
+		return errors.New("operation worker owner is required")
+	}
+	if err := validateStatusOwner(owner); err != nil {
+		return err
+	}
+	if attempt <= 0 {
+		return errors.New("operation worker attempt must be positive")
+	}
+	return nil
+}
+
 func (q *Queue) Submit(ctx context.Context, name string, spec Spec) (*unstructured.Unstructured, error) {
 	if err := q.validateNamespace(); err != nil {
 		return nil, err
@@ -594,6 +607,9 @@ func (q *Queue) Requeue(
 	if err := validateOperationName(name); err != nil {
 		return nil, err
 	}
+	if err := validateWorkerIdentity(owner, attempt); err != nil {
+		return nil, err
+	}
 	if err := validateStatusMessage(message); err != nil {
 		return nil, err
 	}
@@ -680,11 +696,11 @@ func (q *Queue) Heartbeat(ctx context.Context, name, owner string, attempt int64
 	if err := validateOperationName(name); err != nil {
 		return nil, err
 	}
+	if err := validateWorkerIdentity(owner, attempt); err != nil {
+		return nil, err
+	}
 	if lease < time.Second {
 		return nil, errors.New("lease must be at least one second")
-	}
-	if err := validateStatusOwner(owner); err != nil {
-		return nil, err
 	}
 	object, err := q.resource.Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
@@ -762,7 +778,7 @@ func (q *Queue) Finish(
 	if err := validateOperationName(name); err != nil {
 		return nil, err
 	}
-	if err := validateStatusOwner(owner); err != nil {
+	if err := validateWorkerIdentity(owner, attempt); err != nil {
 		return nil, err
 	}
 	if err := validateStatusMessage(message); err != nil {
@@ -930,6 +946,12 @@ func (q *Queue) ParametersForWorker(
 		return nil, err
 	}
 	if err := validateOperationName(name); err != nil {
+		return nil, err
+	}
+	if !isSupportedOperationType(operationType) {
+		return nil, fmt.Errorf("unsupported operation type: %s", operationType)
+	}
+	if err := validateWorkerIdentity(owner, attempt); err != nil {
 		return nil, err
 	}
 	object, err := q.resource.Get(ctx, name, metav1.GetOptions{})

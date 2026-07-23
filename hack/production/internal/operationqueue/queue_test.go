@@ -259,6 +259,95 @@ func TestQueueRejectsInvalidOperationNameBeforeAPI(t *testing.T) {
 	}
 }
 
+func TestQueueRejectsInvalidWorkerIdentityBeforeAPI(t *testing.T) {
+	ctx := context.Background()
+	for _, test := range []struct {
+		name    string
+		call    func(context.Context, *Queue) error
+		message string
+	}{
+		{
+			name: "requeue_empty_owner",
+			call: func(ctx context.Context, queue *Queue) error {
+				_, err := queue.Requeue(ctx, "backup-1", "", 1, "")
+				return err
+			},
+			message: "owner is required",
+		},
+		{
+			name: "requeue_zero_attempt",
+			call: func(ctx context.Context, queue *Queue) error {
+				_, err := queue.Requeue(ctx, "backup-1", "worker-a", 0, "")
+				return err
+			},
+			message: "attempt must be positive",
+		},
+		{
+			name: "heartbeat_invalid_owner",
+			call: func(ctx context.Context, queue *Queue) error {
+				_, err := queue.Heartbeat(ctx, "backup-1", "worker\ncontrol", 1, time.Minute)
+				return err
+			},
+			message: "control characters",
+		},
+		{
+			name: "heartbeat_zero_attempt",
+			call: func(ctx context.Context, queue *Queue) error {
+				_, err := queue.Heartbeat(ctx, "backup-1", "worker-a", 0, time.Minute)
+				return err
+			},
+			message: "attempt must be positive",
+		},
+		{
+			name: "finish_empty_owner",
+			call: func(ctx context.Context, queue *Queue) error {
+				_, err := queue.Finish(ctx, "backup-1", "", 1, true, strings.Repeat("a", 64), "")
+				return err
+			},
+			message: "owner is required",
+		},
+		{
+			name: "finish_zero_attempt",
+			call: func(ctx context.Context, queue *Queue) error {
+				_, err := queue.Finish(ctx, "backup-1", "worker-a", 0, true, strings.Repeat("a", 64), "")
+				return err
+			},
+			message: "attempt must be positive",
+		},
+		{
+			name: "parameters_for_worker_empty_owner",
+			call: func(ctx context.Context, queue *Queue) error {
+				_, err := queue.ParametersForWorker(ctx, "backup-1", "PostRestoreAudit", "", 1)
+				return err
+			},
+			message: "owner is required",
+		},
+		{
+			name: "parameters_for_worker_zero_attempt",
+			call: func(ctx context.Context, queue *Queue) error {
+				_, err := queue.ParametersForWorker(ctx, "backup-1", "PostRestoreAudit", "worker-a", 0)
+				return err
+			},
+			message: "attempt must be positive",
+		},
+		{
+			name: "parameters_for_worker_unsupported_type",
+			call: func(ctx context.Context, queue *Queue) error {
+				_, err := queue.ParametersForWorker(ctx, "backup-1", "Unsupported", "worker-a", 1)
+				return err
+			},
+			message: "unsupported operation type",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			client := fakeQueueClient()
+			err := test.call(ctx, New(client, "test"))
+			require.ErrorContains(t, err, test.message)
+			require.Empty(t, client.Actions(), "invalid worker identity must fail before Kubernetes API actions")
+		})
+	}
+}
+
 func TestClaimAcrossNamespacesPrioritizesLeastRecentlyServedQueue(t *testing.T) {
 	client := fakeQueueClient()
 	ctx := context.Background()

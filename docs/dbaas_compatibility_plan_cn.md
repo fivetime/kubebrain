@@ -11178,6 +11178,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   fake dynamic client 回归覆盖全部 name-based 方法，证明非法 name 返回错误且
   `client.Actions()` 为空：
   `go test ./hack/production/internal/operationqueue -count=1` 通过。
+- A698 前置 operation queue worker fencing identity 校验：
+  Requeue、Heartbeat、Finish 和 ParametersForWorker 虽会在对象读取后通过
+  `requireWorker`/状态比较拒绝错误 owner 或 attempt，但空 owner、非正 attempt、带控制字符的
+  owner，以及 ParametersForWorker 的不支持 operation type 仍可能先触发 Operation GET。
+  现在 `validateWorkerIdentity` 在这些公开入口的 API action 前统一校验 owner 非空、audit
+  text 规则和 positive attempt；ParametersForWorker 还会先拒绝不支持的 operation type。
+  fake dynamic client 回归覆盖 requeue/heartbeat/finish/parameters-for-worker 的非法 worker
+  identity，证明返回错误且 `client.Actions()` 为空：
+  `go test ./hack/production/internal/operationqueue -count=1` 通过。
 
 ### P2：运维兼容和长期验证
 
