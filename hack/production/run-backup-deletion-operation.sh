@@ -148,7 +148,7 @@ freeze_evidence() {
   source_digest="$(file_sha256 "$source")" || return 1
   [[ "$source_digest" == "$expected" ]] || return 2
   destination="${managed_evidence_dir}/${name}"
-  cp "$source" "$destination"
+  cp -- "$source" "$destination"
   chmod 600 "$destination"
   captured_digest="$(file_sha256 "$destination")" || return 1
   current_digest="$(file_sha256 "$source")" || return 1

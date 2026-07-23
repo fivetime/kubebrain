@@ -34,6 +34,7 @@ type shutdownOrderKV struct {
 	gcEntered               chan struct{}
 	gcExited                chan struct{}
 	gcOnce                  sync.Once
+	gcExitedOnce            sync.Once
 	closeCalls              atomic.Int64
 	closedBeforeWorkersExit atomic.Bool
 }
@@ -41,7 +42,7 @@ type shutdownOrderKV struct {
 func (s *shutdownOrderKV) GC(ctx context.Context, _ time.Duration) (uint64, error) {
 	s.gcOnce.Do(func() { close(s.gcEntered) })
 	<-ctx.Done()
-	close(s.gcExited)
+	s.gcExitedOnce.Do(func() { close(s.gcExited) })
 	return 0, ctx.Err()
 }
 
@@ -67,7 +68,7 @@ func TestBackendCloseStopsWorkersBeforeStorage(t *testing.T) {
 		Prefix:                  prefix,
 		Identity:                "shutdown-test",
 		EnableEtcdCompatibility: true,
-		StorageGCLifetime:       time.Millisecond,
+		StorageGCLifetime:       100 * time.Millisecond,
 	}, metrics).(*backend)
 
 	watchCtx, cancelWatch := context.WithCancel(context.Background())

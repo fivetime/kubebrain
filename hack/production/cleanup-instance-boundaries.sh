@@ -80,7 +80,7 @@ freeze_destroy_receipt_input() {
   local source="$1" destination source_digest captured_digest current_digest
   source_digest="$(file_sha256 "$source")" || return 1
   destination="${destroy_receipt_tmp_dir}/destroy-receipt.json"
-  cp "$source" "$destination"
+  cp -- "$source" "$destination"
   chmod 600 "$destination"
   captured_digest="$(file_sha256 "$destination")" || return 1
   current_digest="$(file_sha256 "$source")" || return 1

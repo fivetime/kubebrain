@@ -103,7 +103,7 @@ freeze_credential() {
   local source="$1" name="$2" destination source_digest captured_digest current_digest
   source_digest="$(credential_file_digest "$source")" || return 1
   destination="${credential_tmp_dir}/${name}"
-  cp "$source" "$destination"
+  cp -- "$source" "$destination"
   chmod 600 "$destination"
   captured_digest="$(credential_file_digest "$destination")" || return 1
   current_digest="$(credential_file_digest "$source")" || return 1
