@@ -10879,6 +10879,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   私有副本传给 destroy executor；捕获窗口内漂移会 retry，且不会进入 prepare。回归：
   `go test ./hack/production -run 'TestDestroyOperation' -count=1`
   通过。
+- A666 收紧 direct destroy executor 的 backup 状态读取：
+  A665 保护了 operation runner 路径，但直接执行 `destroy-instance.sh prepare` 时，旧逻辑
+  仍分别调用 `logical-status FIELD=sha256` 与 `FIELD=revision`，本地 backup 若在两次读取
+  之间被替换，`kubebrain.destroy.state.v1` 可能混入不同 backup 的 SHA 与 revision。现在
+  prepare 只读取一次 canonical logical status JSON，严格校验 schema 后提取 SHA/revision，
+  并在 logical-status 前后、state 发布前复核 `BACKUP_INPUT` whole-file SHA 未漂移；漂移
+  时 fail closed，不发布 prepare evidence。回归：
+  `go test ./hack/production -run 'TestDestroyInstance|TestDestroyOperation' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

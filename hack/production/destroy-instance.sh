@@ -115,6 +115,19 @@ require_jq() {
   command -v "$JQ" >/dev/null || { echo "jq is required" >&2; exit 2; }
 }
 
+backup_file_digest() {
+  local path="$1" digest
+  digest="$(sha256sum "$path" | cut -d ' ' -f1)" || return 1
+  [[ "$digest" =~ ^[a-f0-9]{64}$ ]] || return 1
+  printf '%s\n' "$digest"
+}
+
+require_backup_file_digest() {
+  local path="$1" expected="$2" actual
+  actual="$(backup_file_digest "$path")" || return 1
+  [[ "$actual" == "$expected" ]]
+}
+
 validate_existing_receipt() {
   local backup_sha="$1" backup_revision="$2"
   "$JQ" -e \
@@ -409,14 +422,25 @@ case "$ACTION" in
   prepare)
     [[ -n "$BACKUP_INPUT" ]] || { echo "BACKUP_INPUT is required for prepare" >&2; exit 2; }
     [[ -f "$BACKUP_INPUT" ]] || { echo "BACKUP_INPUT does not exist: ${BACKUP_INPUT}" >&2; exit 2; }
-    backup_sha="$(INPUT="$BACKUP_INPUT" FIELD=sha256 EXPECTED_PREFIX="$BACKUP_PREFIX" \
+    require_jq
+    backup_file_sha="$(backup_file_digest "$BACKUP_INPUT")" ||
+      { echo "logical backup file SHA-256 is invalid" >&2; exit 1; }
+    backup_status="$(INPUT="$BACKUP_INPUT" EXPECTED_PREFIX="$BACKUP_PREFIX" \
       MIN_RECORDS="$BACKUP_MIN_RECORDS" MAX_AGE_SECONDS="$BACKUP_MAX_AGE_SECONDS" \
       "$LOGICAL_STATUS")"
-    [[ "$backup_sha" =~ ^[a-f0-9]{64}$ ]] ||
-      { echo "logical backup SHA-256 is invalid" >&2; exit 1; }
-    backup_revision="$(INPUT="$BACKUP_INPUT" FIELD=revision EXPECTED_PREFIX="$BACKUP_PREFIX" \
-      MIN_RECORDS="$BACKUP_MIN_RECORDS" MAX_AGE_SECONDS="$BACKUP_MAX_AGE_SECONDS" \
-      "$LOGICAL_STATUS")"
+    status_fields="$("$JQ" -er '
+      select(keys == ["created_at_unix","format","leases","prefix","records","revision","sha256"] and
+        (.format | test("^kubebrain\\.logical\\.v[12]$")) and
+        (.sha256 | type == "string" and test("^[a-f0-9]{64}$")) and
+        (.revision | type == "number" and . > 0 and . == floor) and
+        (.created_at_unix | type == "number" and . > 0 and . == floor) and
+        (.records | type == "number" and . >= 0 and . == floor) and
+        (.leases | type == "number" and . >= 0 and . == floor)) |
+      [.sha256, (.revision|tostring)] | @tsv' <<<"$backup_status")" ||
+      { echo "logical backup status is invalid" >&2; exit 1; }
+    IFS=$'\t' read -r backup_sha backup_revision <<<"$status_fields"
+    require_backup_file_digest "$BACKUP_INPUT" "$backup_file_sha" ||
+      { echo "logical backup changed during destroy prepare" >&2; exit 1; }
     temporary="$(mktemp "${STATE_DIR}/.${OPERATION_ID}.state.XXXXXX")"
     printf 'HEADER\tkubebrain.destroy.state.v1\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
       "$INSTANCE" "$OPERATION_ID" "$KUBEBRAIN_NAMESPACE" "$KUBEBRAIN_STATEFULSET" \
@@ -445,6 +469,8 @@ case "$ACTION" in
       printf 'PVC\tv1\tpersistentvolumeclaims\tpersistentvolumeclaim\t%s\t%s\t%s\t%s\n' \
         "$pvc_name" "$pvc_uid" "$component" "$TIDB_NAMESPACE" >>"$temporary"
     done <<<"$pvcs"
+    require_backup_file_digest "$BACKUP_INPUT" "$backup_file_sha" ||
+      { echo "logical backup changed during destroy prepare" >&2; exit 1; }
     atomic_publish "$temporary" "$state_file"
     echo "instance destruction prepare passed: instance=${INSTANCE} operation=${OPERATION_ID} backup_revision=${backup_revision}"
     ;;

@@ -154,7 +154,13 @@ func TestDestroyInstanceFailsClosed(t *testing.T) {
 			name:       "backup digest is invalid",
 			action:     "prepare",
 			extraEnv:   "FAKE_BACKUP_SHA=abc123",
-			wantOutput: "logical backup SHA-256 is invalid",
+			wantOutput: "logical backup status is invalid",
+		},
+		{
+			name:       "backup changed during status",
+			action:     "prepare",
+			extraEnv:   "TAMPER_BACKUP_DURING_STATUS=true",
+			wantOutput: "logical backup changed during destroy prepare",
 		},
 		{
 			name: "storage workload residue blocks completion",
@@ -195,9 +201,18 @@ func newDestroyFixture(t *testing.T) *destroyFixture {
 
 	logicalStatus := filepath.Join(dir, "logical-status")
 	writeDestroyExecutable(t, logicalStatus, `#!/usr/bin/env bash
+set -euo pipefail
 if [[ "${FAKE_BACKUP_FAIL:-false}" == true ]]; then
   echo "backup rejected" >&2
   exit 1
+fi
+if [[ -z "${FIELD:-}" ]]; then
+  printf '{"created_at_unix":1,"format":"kubebrain.logical.v2","leases":0,"prefix":"%s","records":2,"revision":987654321,"sha256":"%s"}\n' "${EXPECTED_PREFIX:-/registry}" "${FAKE_BACKUP_SHA:-`+destroyBackupSHA256+`}"
+  if [[ "${TAMPER_BACKUP_DURING_STATUS:-false}" == true && ! -f "$FAKE_RESOURCE_DIR/backup-tampered-during-status" ]]; then
+    printf 'changed\n' >>"$INPUT"
+    touch "$FAKE_RESOURCE_DIR/backup-tampered-during-status"
+  fi
+  exit 0
 fi
 case "$FIELD" in
   sha256) echo "${FAKE_BACKUP_SHA:-`+destroyBackupSHA256+`}" ;;
