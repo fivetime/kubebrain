@@ -238,7 +238,7 @@ func WriteUsageReceiptAtomic(path string, receipt UsageReceipt) error {
 	if err := receipt.Validate(); err != nil {
 		return err
 	}
-	return writeJSONAtomic(path, receipt, func(path string) (any, error) {
+	return writeJSONAtomic(path, receipt, "object usage receipt", func(path string) (any, error) {
 		return ReadUsageReceipt(path)
 	})
 }

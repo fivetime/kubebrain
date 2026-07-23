@@ -190,7 +190,7 @@ func BuildInventoryManifest(
 	if err := manifest.Validate(); err != nil {
 		return InventoryManifestStatus{}, err
 	}
-	if err := writeJSONAtomic(output, manifest, func(path string) (any, error) {
+	if err := writeJSONAtomic(output, manifest, "inventory manifest", func(path string) (any, error) {
 		status, err := InspectInventoryManifest(path)
 		return status.Manifest, err
 	}); err != nil {
@@ -395,7 +395,7 @@ func WriteInventoryReceiptAtomic(path string, receipt InventoryReceipt) error {
 	if err := receipt.Validate(); err != nil {
 		return err
 	}
-	return writeJSONAtomic(path, receipt, func(path string) (any, error) {
+	return writeJSONAtomic(path, receipt, "inventory receipt", func(path string) (any, error) {
 		return ReadInventoryReceipt(path)
 	})
 }

@@ -290,6 +290,9 @@ func WriteReceiptAtomic(path string, receipt Receipt) error {
 		return err
 	}
 	data = append(data, '\n')
+	if err := validateObjectStoreJSONSize("object backup receipt", data); err != nil {
+		return err
+	}
 	dir := filepath.Dir(path)
 	temp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
 	if err != nil {
@@ -334,7 +337,7 @@ func WriteDeletionReceiptAtomic(path string, receipt DeletionReceipt) error {
 	if err := receipt.Validate(); err != nil {
 		return err
 	}
-	return writeJSONAtomic(path, receipt, func(path string) (any, error) {
+	return writeJSONAtomic(path, receipt, "object backup deletion receipt", func(path string) (any, error) {
 		return ReadDeletionReceipt(path)
 	})
 }
@@ -343,7 +346,7 @@ func WriteAuditReceiptAtomic(path string, receipt AuditReceipt) error {
 	if err := receipt.Validate(); err != nil {
 		return err
 	}
-	return writeJSONAtomic(path, receipt, func(path string) (any, error) {
+	return writeJSONAtomic(path, receipt, "object operation audit receipt", func(path string) (any, error) {
 		return ReadAuditReceipt(path)
 	})
 }
@@ -352,12 +355,12 @@ func WriteBlobReceiptAtomic(path string, receipt BlobReceipt) error {
 	if err := receipt.Validate(); err != nil {
 		return err
 	}
-	return writeJSONAtomic(path, receipt, func(path string) (any, error) {
+	return writeJSONAtomic(path, receipt, "object immutable blob receipt", func(path string) (any, error) {
 		return ReadBlobReceipt(path)
 	})
 }
 
-func writeJSONAtomic(path string, value any, readExisting func(string) (any, error)) error {
+func writeJSONAtomic(path string, value any, description string, readExisting func(string) (any, error)) error {
 	if path == "" {
 		return errors.New("receipt output path is empty")
 	}
@@ -366,6 +369,9 @@ func writeJSONAtomic(path string, value any, readExisting func(string) (any, err
 		return err
 	}
 	data = append(data, '\n')
+	if err := validateObjectStoreJSONSize(description, data); err != nil {
+		return err
+	}
 	dir := filepath.Dir(path)
 	temp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
 	if err != nil {
@@ -408,4 +414,11 @@ func writeJSONAtomic(path string, value any, readExisting func(string) (any, err
 	}
 	defer directory.Close()
 	return directory.Sync()
+}
+
+func validateObjectStoreJSONSize(description string, data []byte) error {
+	if len(data) > maxObjectStoreJSONBytes {
+		return fmt.Errorf("%s exceeds %d bytes", description, maxObjectStoreJSONBytes)
+	}
+	return nil
 }

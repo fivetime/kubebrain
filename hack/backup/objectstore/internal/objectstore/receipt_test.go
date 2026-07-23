@@ -137,6 +137,90 @@ func TestObjectStoreJSONReadersRejectOversizedInput(t *testing.T) {
 	}
 }
 
+func TestObjectStoreJSONWritersRejectOversizedNewOutputBeforeLink(t *testing.T) {
+	huge := strings.Repeat("p", maxObjectStoreJSONBytes)
+	tests := []struct {
+		name  string
+		write func(string) error
+		want  string
+	}{
+		{
+			name: "backup receipt",
+			write: func(path string) error {
+				receipt := completeReceipt()
+				receipt.ObjectKey = huge
+				return WriteReceiptAtomic(path, receipt)
+			},
+			want: "object backup receipt exceeds",
+		},
+		{
+			name: "deletion receipt",
+			write: func(path string) error {
+				receipt := completeDeletionReceipt()
+				receipt.ObjectKey = huge
+				return WriteDeletionReceiptAtomic(path, receipt)
+			},
+			want: "object backup deletion receipt exceeds",
+		},
+		{
+			name: "audit receipt",
+			write: func(path string) error {
+				receipt := completeAuditReceipt()
+				receipt.ObjectKey = huge
+				return WriteAuditReceiptAtomic(path, receipt)
+			},
+			want: "object operation audit receipt exceeds",
+		},
+		{
+			name: "blob receipt",
+			write: func(path string) error {
+				receipt := completeBlobReceipt()
+				receipt.ObjectKey = huge
+				return WriteBlobReceiptAtomic(path, receipt)
+			},
+			want: "object immutable blob receipt exceeds",
+		},
+		{
+			name: "usage receipt",
+			write: func(path string) error {
+				return WriteUsageReceiptAtomic(path, UsageReceipt{
+					Format: UsageReceiptFormat, ObjectStoreID: "store-a", Bucket: "backups",
+					Prefix: huge, AllowedFormats: []string{"sample.v1"},
+					VersionsSHA256: emptyUsageVersionsSHA256, CheckedAtUnix: 1,
+				})
+			},
+			want: "object usage receipt exceeds",
+		},
+		{
+			name: "inventory manifest",
+			write: func(path string) error {
+				_, err := BuildInventoryManifest(nil, "store-a", "backups", huge, path)
+				return err
+			},
+			want: "inventory manifest exceeds",
+		},
+		{
+			name: "inventory receipt",
+			write: func(path string) error {
+				return WriteInventoryReceiptAtomic(path, InventoryReceipt{
+					Format: InventoryReceiptFormat, ObjectStoreID: "store-a", Bucket: "backups",
+					Prefix: huge, ManifestSHA256: strings.Repeat("a", 64),
+					AllMatched: true, CheckedAtUnix: 1,
+				})
+			},
+			want: "inventory receipt exceeds",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "output.json")
+			require.ErrorContains(t, tc.write(path), tc.want)
+			_, err := os.Stat(path)
+			require.ErrorIs(t, err, os.ErrNotExist)
+		})
+	}
+}
+
 func completeDeletionReceipt() DeletionReceipt {
 	source := completeReceipt()
 	return DeletionReceipt{

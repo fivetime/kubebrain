@@ -10668,6 +10668,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   目标文件，内容一致则成功，漂移仍拒绝覆盖。回归：
   `go test ./internal/objectstore -run 'TestReadBlobOutputWriterTreatsConcurrentIdenticalLinkAsIdempotent|TestReadBlobRequiresOneProtectedExactVersion|TestArchiveBlobRejectsEmptyOversizedAndNonCanonicalReceipt' -count=1`
   在 `hack/backup/objectstore` 模块内通过。
+- A645 对齐 Object Lock JSON writer 的新输出大小边界：
+  objectstore 模块的 receipt、usage receipt、inventory manifest/receipt reader 已统一拒绝超过
+  1 MiB 的本地 JSON，但 `WriteReceiptAtomic` 和共享 `writeJSONAtomic` 旧实现只在目标文件
+  已存在且 oversized 时 fail closed；直接调用 writer 可用超长 object key/prefix 构造 schema
+  合法但超过 reader 上限的新 JSON，link 后留下无法读回、无法幂等复用的证据文件。现在
+  backup/deletion/audit/blob/usage/inventory writer 都在创建临时文件前检查 canonical JSON
+  长度，超过 `maxObjectStoreJSONBytes` 时目标路径保持不存在。回归：
+  `go test ./internal/objectstore -run 'TestObjectStoreJSONWritersRejectOversizedNewOutputBeforeLink|TestObjectStoreJSONReadersRejectOversizedInput|TestWriteReceiptAtomicIsIdempotentAndNonOverwriting' -count=1`
+  在 `hack/backup/objectstore` 模块内通过。
 
 ### P2：运维兼容和长期验证
 
