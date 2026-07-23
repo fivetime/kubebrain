@@ -10813,6 +10813,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   目标已存在时 fail closed。回归：
   `go test ./hack/backup/cmd/cold-restore-verify -run 'Test(OpenStableWitnessRejectsDriftDuringValidation|WriteAtomicSemanticReceipt|ValidateReceiptChain|ValidateRestoreManifestBinding|FileDigest)' -count=1`
   通过。
+- A659 收紧 cold restore renderer manifest 输出发布：
+  `cold-restore-render` 入口要求 `--output` 不存在，但 writer 旧实现使用 rename；若并发
+  进程在入口检查后创建同名 restore manifest，最终发布会覆盖既有文件。现在 renderer
+  用 hard-link 发布新 manifest，目标已存在时返回 `EEXIST` 并保留原文件，避免 restore
+  executor 后续消费被竞态替换的本地 manifest。回归：
+  `go test ./hack/backup/cmd/cold-restore-render -run 'TestWriteAtomic' -count=20`
+  通过。
 
 ### P2：运维兼容和长期验证
 

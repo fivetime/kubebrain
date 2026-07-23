@@ -150,7 +150,10 @@ func writeAtomic(path string, data []byte) (returnErr error) {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	if err := os.Rename(tmpName, path); err != nil {
+	if err := os.Link(tmpName, path); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return fmt.Errorf("restore manifest output already exists %q: %w", path, os.ErrExist)
+		}
 		return err
 	}
 	dir, err := os.Open(directory)

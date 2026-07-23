@@ -61,6 +61,23 @@ func TestWriteAtomic(t *testing.T) {
 	require.Empty(t, matches)
 }
 
+func TestWriteAtomicDoesNotOverwriteExistingManifest(t *testing.T) {
+	directory := t.TempDir()
+	path := filepath.Join(directory, "restore.json")
+	require.NoError(t, os.WriteFile(path, []byte("existing\n"), 0o600))
+
+	err := writeAtomic(path, []byte("new\n"))
+	require.ErrorIs(t, err, os.ErrExist)
+	require.ErrorContains(t, err, "restore manifest output already exists")
+
+	value, readErr := os.ReadFile(path)
+	require.NoError(t, readErr)
+	require.Equal(t, "existing\n", string(value))
+	matches, globErr := filepath.Glob(filepath.Join(directory, ".cold-restore-*.tmp"))
+	require.NoError(t, globErr)
+	require.Empty(t, matches)
+}
+
 func TestReadBoundedJSONFileRejectsOversizedInput(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "receipt.json")
 	require.NoError(t, os.WriteFile(path, make([]byte, maxColdRestoreJSONBytes+1), 0o600))
