@@ -55,11 +55,68 @@ func TestValidateOneRequiresDNSLabelNamespace(t *testing.T) {
 	}
 }
 
+func TestValidateConfigMapNameRequiresDNSSubdomain(t *testing.T) {
+	require.NoError(t, ValidateConfigMapName("tenant-a.inventory"))
+	for _, name := range []string{"", "Tenant-A", "-inventory", "inventory-", "inventory/name", strings.Repeat("a", 254)} {
+		t.Run(name, func(t *testing.T) {
+			require.Error(t, ValidateConfigMapName(name))
+		})
+	}
+}
+
+func TestValidateDataKeyRequiresConfigMapKey(t *testing.T) {
+	for _, key := range []string{"namespaces.json", "NAMESPACES_JSON", "namespaces-json"} {
+		t.Run(key, func(t *testing.T) {
+			require.NoError(t, ValidateDataKey(key))
+		})
+	}
+	for _, key := range []string{"", "namespaces/json", "../namespaces.json", "namespaces json", strings.Repeat("a", 254)} {
+		t.Run(key, func(t *testing.T) {
+			require.Error(t, ValidateDataKey(key))
+		})
+	}
+}
+
+func TestValidateSourceDefaultsEmptyDataKey(t *testing.T) {
+	key, err := ValidateSource("control", "inventory", "")
+	require.NoError(t, err)
+	require.Equal(t, DefaultKey, key)
+}
+
 func TestLoadRejectsInvalidInventoryNamespaceBeforeAPI(t *testing.T) {
 	client := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme())
 	_, err := Load(context.Background(), client, "control.ns", "inventory", DefaultKey)
 	require.ErrorContains(t, err, "inventory namespace")
 	require.Empty(t, client.Actions(), "invalid inventory namespace must fail before Kubernetes API reads")
+}
+
+func TestLoadRejectsInvalidConfigMapIdentityBeforeAPI(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		configName string
+		key        string
+		message    string
+	}{
+		{
+			name:       "configmap_name",
+			configName: "inventory/name",
+			key:        DefaultKey,
+			message:    "inventory configmap",
+		},
+		{
+			name:       "data_key",
+			configName: "inventory",
+			key:        "namespaces/json",
+			message:    "inventory data key",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			client := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme())
+			_, err := Load(context.Background(), client, "control", test.configName, test.key)
+			require.ErrorContains(t, err, test.message)
+			require.Empty(t, client.Actions(), "invalid inventory identity must fail before Kubernetes API reads")
+		})
+	}
 }
 
 func inventoryClient(t *testing.T, raw string) *dynamicfake.FakeDynamicClient {

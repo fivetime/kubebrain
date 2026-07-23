@@ -43,6 +43,29 @@ func TestMainRejectsInvalidNamespaceBeforeKubeconfig(t *testing.T) {
 	output, err = command.CombinedOutput()
 	require.Error(t, err)
 	require.Contains(t, string(output), "invalid namespace ops.ns")
+
+	command = exec.Command("go", "run", ".",
+		"--namespace", "ops",
+		"--namespace-inventory-configmap", "inventory/name",
+		"--action", "claim",
+		"--owner", "worker-a",
+		"--type", "Backup",
+	)
+	output, err = command.CombinedOutput()
+	require.Error(t, err)
+	require.Contains(t, string(output), "inventory configmap")
+
+	command = exec.Command("go", "run", ".",
+		"--namespace", "ops",
+		"--namespace-inventory-configmap", "inventory",
+		"--namespace-inventory-key", "namespaces/json",
+		"--action", "claim",
+		"--owner", "worker-a",
+		"--type", "Backup",
+	)
+	output, err = command.CombinedOutput()
+	require.Error(t, err)
+	require.Contains(t, string(output), "inventory data key")
 }
 
 func TestBrokerParametersUsesTLSBearerAndFencingIdentity(t *testing.T) {

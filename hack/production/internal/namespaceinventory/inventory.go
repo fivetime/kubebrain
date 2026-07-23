@@ -26,11 +26,9 @@ func Load(
 	client dynamic.Interface,
 	namespace, name, key string,
 ) ([]string, error) {
-	if err := ValidateOne(namespace); err != nil {
-		return nil, fmt.Errorf("inventory namespace: %w", err)
-	}
-	if key == "" {
-		key = DefaultKey
+	var err error
+	if key, err = ValidateSource(namespace, name, key); err != nil {
+		return nil, err
 	}
 	inventory, err := client.Resource(ConfigMapResource).Namespace(namespace).
 		Get(ctx, name, metav1.GetOptions{})
@@ -79,6 +77,42 @@ func ValidateOne(namespace string) error {
 	}
 	if problems := validation.IsDNS1123Label(namespace); len(problems) != 0 {
 		return errors.New("invalid namespace " + namespace + ": " + problems[0])
+	}
+	return nil
+}
+
+func ValidateSource(namespace, name, key string) (string, error) {
+	if err := ValidateOne(namespace); err != nil {
+		return "", fmt.Errorf("inventory namespace: %w", err)
+	}
+	if err := ValidateConfigMapName(name); err != nil {
+		return "", fmt.Errorf("inventory configmap: %w", err)
+	}
+	if key == "" {
+		key = DefaultKey
+	}
+	if err := ValidateDataKey(key); err != nil {
+		return "", fmt.Errorf("inventory data key: %w", err)
+	}
+	return key, nil
+}
+
+func ValidateConfigMapName(name string) error {
+	if name == "" {
+		return errors.New("ConfigMap name must not be empty")
+	}
+	if problems := validation.IsDNS1123Subdomain(name); len(problems) != 0 {
+		return errors.New("invalid ConfigMap name " + name + ": " + problems[0])
+	}
+	return nil
+}
+
+func ValidateDataKey(key string) error {
+	if key == "" {
+		return errors.New("data key must not be empty")
+	}
+	if problems := validation.IsConfigMapKey(key); len(problems) != 0 {
+		return errors.New("invalid data key " + key + ": " + problems[0])
 	}
 	return nil
 }

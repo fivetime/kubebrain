@@ -46,6 +46,12 @@ func New(
 	if client == nil || processor == nil || inventoryNamespace == "" || inventoryName == "" {
 		return nil, errors.New("operation archiver configuration is incomplete")
 	}
+	var err error
+	if inventoryKey, err = namespaceinventory.ValidateSource(
+		inventoryNamespace, inventoryName, inventoryKey,
+	); err != nil {
+		return nil, err
+	}
 	if maxBatch <= 0 {
 		return nil, errors.New("operation archiver max batch must be positive")
 	}

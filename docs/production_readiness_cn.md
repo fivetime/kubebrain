@@ -1925,7 +1925,9 @@ parameters、heartbeat、retry/fail/succeed 全部固定到该 namespace，禁�
 `--namespace-inventory-namespace`，包括 operationctl、Operation API、parameter broker、
 operation archiver、operation audit、backup scheduler 和 UID delete。底层 namespace
 inventory reader 也会在任何 Kubernetes API 读取前校验承载 ConfigMap 的 namespace，
-防止未来库调用方绕过 CLI 校验。
+ConfigMap 名称和 data key；operationctl、backup scheduler 和 operation archiver 也在
+kubeconfig/client 初始化前校验 inventory ConfigMap 名称和 key，防止未来库调用方绕过
+CLI 校验。
 inventory 无效时 claim 在读取任何 Operation 前 fail closed。中央 worker Role 只能
 `get` 指定 inventory ConfigMap；各目标 namespace 的 Operation/Secret/Lease 权限仍来自
 逐 namespace RoleBinding。

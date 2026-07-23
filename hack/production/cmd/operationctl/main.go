@@ -88,8 +88,11 @@ func main() {
 		log.Fatal("--namespace: ", err)
 	}
 	if inventoryName != "" {
-		if err := namespaceinventory.ValidateOne(inventoryNamespace); err != nil {
-			log.Fatal("--namespace-inventory-namespace: ", err)
+		var err error
+		if inventoryKey, err = namespaceinventory.ValidateSource(
+			inventoryNamespace, inventoryName, inventoryKey,
+		); err != nil {
+			log.Fatal("--namespace-inventory: ", err)
 		}
 	}
 

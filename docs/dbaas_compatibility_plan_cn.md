@@ -11146,6 +11146,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `ValidateOne`，并把错误标记为 `inventory namespace`。fake dynamic client 回归确认
   非法 namespace 返回错误且 `client.Actions()` 为空：
   `go test ./hack/production/internal/namespaceinventory -count=1` 通过。
+- A695 下沉 namespace inventory ConfigMap identity 校验：
+  A694 已前置校验承载 namespace，但 `namespaceinventory.Load` 仍直接使用调用方传入的
+  ConfigMap 名称和 data key。非法 `inventory/name` 或 `namespaces/json` 会进入
+  Kubernetes API GET、缺 key 阶段或 client 初始化后才失败。现在 `ValidateSource` 统一
+  校验承载 namespace、ConfigMap 名称和 data key；Load 在 API action 前调用它，
+  operationctl、backup scheduler 和 operation archiver 在 kubeconfig/client 初始化前调用它，
+  operation archiver controller 构造期也会拒绝非法 source。错误分别标记为
+  `inventory configmap` 与 `inventory data key`；fake dynamic client 回归确认两类非法
+  identity 都不会产生 Kubernetes API action。回归：
+  `go test ./hack/production/internal/namespaceinventory ./hack/production/internal/operationarchiver -count=1`
+  和
+  `go test ./hack/production/cmd/backup-scheduler ./hack/production/cmd/operationctl ./hack/production/cmd/operation-archiver -run 'TestMainRejectsInvalid|TestParseNamespacesRejectsUnsafeAllowlist' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

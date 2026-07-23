@@ -49,8 +49,11 @@ func main() {
 	if inventoryName == "" || objectStoreID == "" || bucket == "" {
 		log.Fatal("namespace-inventory-configmap, object-store-id, and bucket are required")
 	}
-	if err := namespaceinventory.ValidateOne(inventoryNamespace); err != nil {
-		log.Fatal("--namespace-inventory-namespace: ", err)
+	var err error
+	if inventoryKey, err = namespaceinventory.ValidateSource(
+		inventoryNamespace, inventoryName, inventoryKey,
+	); err != nil {
+		log.Fatal("--namespace-inventory: ", err)
 	}
 	if pollInterval < 10*time.Second {
 		log.Fatal("poll-interval must be at least 10s")

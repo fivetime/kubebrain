@@ -147,6 +147,46 @@ func TestArchiveTimeoutRejectsInvalidConfiguration(t *testing.T) {
 	require.ErrorContains(t, err, "timeout must be positive")
 }
 
+func TestControllerRejectsInvalidInventorySource(t *testing.T) {
+	client := fakeClient(t)
+	processor := &recordingProcessor{}
+	for _, test := range []struct {
+		name               string
+		inventoryNamespace string
+		inventoryName      string
+		inventoryKey       string
+		message            string
+	}{
+		{
+			name:               "namespace",
+			inventoryNamespace: "control.ns",
+			inventoryName:      "inventory",
+			message:            "inventory namespace",
+		},
+		{
+			name:               "configmap",
+			inventoryNamespace: "control",
+			inventoryName:      "inventory/name",
+			message:            "inventory configmap",
+		},
+		{
+			name:               "data_key",
+			inventoryNamespace: "control",
+			inventoryName:      "inventory",
+			inventoryKey:       "namespaces/json",
+			message:            "inventory data key",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := New(
+				client, processor,
+				test.inventoryNamespace, test.inventoryName, test.inventoryKey, 10,
+			)
+			require.ErrorContains(t, err, test.message)
+		})
+	}
+}
+
 func TestControllerFailsClosedBeforeListingOnInvalidInventory(t *testing.T) {
 	badInventory := inventory("tenant-a")
 	require.NoError(t, unstructured.SetNestedField(

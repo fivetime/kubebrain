@@ -35,6 +35,27 @@ func TestMainRejectsInvalidInventoryNamespaceBeforeKubeconfig(t *testing.T) {
 	output, err := command.CombinedOutput()
 	require.Error(t, err)
 	require.Contains(t, string(output), "invalid namespace ops.ns")
+
+	command = exec.Command("go", "run", ".",
+		"--namespace-inventory-configmap", "inventory/name",
+		"--object-store-id", "store-a",
+		"--bucket", "audit-bucket",
+		"--once",
+	)
+	output, err = command.CombinedOutput()
+	require.Error(t, err)
+	require.Contains(t, string(output), "inventory configmap")
+
+	command = exec.Command("go", "run", ".",
+		"--namespace-inventory-configmap", "inventory",
+		"--namespace-inventory-key", "namespaces/json",
+		"--object-store-id", "store-a",
+		"--bucket", "audit-bucket",
+		"--once",
+	)
+	output, err = command.CombinedOutput()
+	require.Error(t, err)
+	require.Contains(t, string(output), "inventory data key")
 }
 
 func TestClientConfigSkipsInClusterWhenExplicitKubeconfigIsProvided(t *testing.T) {
