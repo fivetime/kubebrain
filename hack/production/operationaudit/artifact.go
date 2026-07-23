@@ -29,6 +29,7 @@ const maxOperationNameLength = 253
 const maxOperationUIDLength = 253
 const maxOperationTenantLength = 63
 const maxOperationRequesterLength = 253
+const maxOperationAttempts = 100
 const maxOperationOwnerLength = 253
 const maxOperationMessageLength = 4096
 
@@ -107,6 +108,7 @@ func (a Artifact) Validate() error {
 		!validAuditIdentityValue(a.Instance, maxOperationInstanceLength) ||
 		!validOperationType(a.Type) ||
 		!validSHA256(a.ParametersSHA256) || a.MaxAttempts <= 0 ||
+		a.MaxAttempts > maxOperationAttempts ||
 		(a.Phase != "Succeeded" && a.Phase != "Failed") ||
 		!validRequiredAuditText(a.Owner, maxOperationOwnerLength) ||
 		a.Attempt <= 0 || a.Attempt > a.MaxAttempts ||

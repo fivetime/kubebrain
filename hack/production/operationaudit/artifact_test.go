@@ -64,6 +64,10 @@ func TestOperationAuditRejectsNonterminalAndInvalidReceipt(t *testing.T) {
 	require.ErrorContains(t, artifact.Validate(), "incomplete")
 
 	artifact = terminalArtifact()
+	artifact.MaxAttempts = maxOperationAttempts + 1
+	require.ErrorContains(t, artifact.Validate(), "incomplete")
+
+	artifact = terminalArtifact()
 	artifact.ReceiptSHA256 = strings.Repeat("B", 64)
 	require.ErrorContains(t, artifact.Validate(), "requires a receipt")
 

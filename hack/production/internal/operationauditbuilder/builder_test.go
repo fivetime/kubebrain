@@ -52,6 +52,16 @@ func TestFromOperationRejectsInconsistentStartedAtUnixNano(t *testing.T) {
 	require.ErrorContains(t, err, "incomplete")
 }
 
+func TestFromOperationRejectsMaxAttemptsBeyondCRDLimit(t *testing.T) {
+	object := operationForAuditBuilder()
+	require.NoError(t, unstructured.SetNestedField(
+		object.Object, int64(101), "spec", "maxAttempts",
+	))
+
+	_, err := FromOperation(object)
+	require.ErrorContains(t, err, "incomplete")
+}
+
 func TestFromOperationBindsHighRiskApproval(t *testing.T) {
 	object := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "dbaas.kubebrain.io/v1alpha1",

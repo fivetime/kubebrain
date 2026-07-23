@@ -10476,6 +10476,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   秒内。`operationauditbuilder.FromOperation` 因复用 validator 自动 fail closed。回归：
   `go test ./hack/production/operationaudit ./hack/production/internal/operationauditbuilder -run 'TestOperationAuditRejects(NonterminalAndInvalidReceipt|InconsistentStartedAtUnixNano)|TestFromOperation(BindsImmutableSpecAndTerminalStatus|RejectsInconsistentStartedAtUnixNano)' -count=1`
   通过。
+- A625 对齐 operation audit maxAttempts 上限：
+  `Queue.Submit` 已按 KubeBrainOperation CRD 拒绝 `spec.maxAttempts > 100`，但
+  `operationaudit.Artifact.Validate` 只要求 `max_attempts > 0`。旧对象、旧 CRD 或
+  fake-client 路径仍可生成生产 CRD 不会接受的 terminal audit artifact，并把异常 attempt
+  预算写入不可变审计链。现在 artifact validator 同步拒绝超过 100 的 max attempts；
+  `operationauditbuilder.FromOperation` 自动继承该门禁。回归：
+  `go test ./hack/production/operationaudit ./hack/production/internal/operationauditbuilder -run 'TestOperationAuditRejectsNonterminalAndInvalidReceipt|TestFromOperationRejectsMaxAttemptsBeyondCRDLimit|TestFromOperationBindsImmutableSpecAndTerminalStatus' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 
