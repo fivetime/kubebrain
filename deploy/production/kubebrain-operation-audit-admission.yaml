@@ -24,6 +24,8 @@ spec:
       message: new operations require the audit archive finalizer
     - expression: 'request.operation != "CREATE" || !has(object.metadata.annotations) || (!("dbaas.kubebrain.io/approved-by" in object.metadata.annotations) && !("dbaas.kubebrain.io/approval-id" in object.metadata.annotations))'
       message: operations cannot be created pre-approved
+    - expression: 'request.operation != "CREATE" || !has(object.metadata.annotations) || (!("dbaas.kubebrain.io/audit-receipt-sha256" in object.metadata.annotations) && !("dbaas.kubebrain.io/audit-artifact-sha256" in object.metadata.annotations) && !("dbaas.kubebrain.io/audit-version-id" in object.metadata.annotations))'
+      message: operations cannot be created pre-archived
     - expression: |
         request.operation != "UPDATE" ||
         !has(object.metadata.annotations) ||

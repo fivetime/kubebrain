@@ -725,7 +725,7 @@ func TestOperationSubmitterApproverAndAuditAdmissionFenceHighRiskChanges(t *test
 	validations, found, err := unstructured.NestedSlice(policy.Object, "spec", "validations")
 	require.NoError(t, err)
 	require.True(t, found)
-	require.Len(t, validations, 6)
+	require.Len(t, validations, 7)
 	expressionsByMessage := map[string]string{}
 	for _, raw := range validations {
 		validation := raw.(map[string]any)
@@ -737,6 +737,10 @@ func TestOperationSubmitterApproverAndAuditAdmissionFenceHighRiskChanges(t *test
 	require.Contains(t,
 		expressionsByMessage["operations cannot be created pre-approved"],
 		`"dbaas.kubebrain.io/approved-by"`)
+	preArchivedExpression := expressionsByMessage["operations cannot be created pre-archived"]
+	require.Contains(t, preArchivedExpression, `"dbaas.kubebrain.io/audit-receipt-sha256"`)
+	require.Contains(t, preArchivedExpression, `"dbaas.kubebrain.io/audit-artifact-sha256"`)
+	require.Contains(t, preArchivedExpression, `"dbaas.kubebrain.io/audit-version-id"`)
 	approvalExpression := expressionsByMessage["operation approval requires the dedicated approver identity, approval ID, and pending phase"]
 	require.Contains(t, approvalExpression,
 		`request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-operation-approver"`)

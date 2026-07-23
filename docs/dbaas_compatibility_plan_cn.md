@@ -10425,6 +10425,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   terminal/archiver 身份和格式校验。回归：
   `go test ./deploy/production ./hack/production -run 'TestOperationSubmitterApproverAndAuditAdmissionFenceHighRiskChanges|TestOperationAuditAdmissionRequiresFinalizerAndReleaseEvidence' -count=1`
   通过。
+- A620 禁止 Operation 创建时预置 archive evidence：
+  A619 让旧对象上的 archive evidence 注解持续不可变，但 CREATE 阶段仍只禁止预置
+  approval evidence，不禁止提交者在新 Operation 上携带 `audit-receipt-sha256`、
+  `audit-artifact-sha256` 或 `audit-version-id`。这些伪证据一旦创建就会被 A619
+  锁住，后续真实 Object Lock 归档 release 因注解冲突 fail closed，造成可避免的
+  终态阻塞。现在 admission 新增 `operations cannot be created pre-archived` 规则：
+  新 Operation 不得携带任一 archive evidence 注解；只有 archiver 在终态 release
+  finalizer 时能写入真实证据。回归：
+  `go test ./deploy/production ./hack/production -run 'TestOperationSubmitterApproverAndAuditAdmissionFenceHighRiskChanges|TestOperationAuditAdmissionRequiresFinalizerAndReleaseEvidence' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 
