@@ -1,14 +1,59 @@
 package main
 
 import (
+	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"k8s.io/client-go/rest"
 )
+
+type fakeReadyCertificate struct {
+	err error
+}
+
+func (c fakeReadyCertificate) ValidAt(time.Time) error {
+	return c.err
+}
+
+type fakeReadyDependency struct {
+	err error
+}
+
+func (d fakeReadyDependency) Ready(context.Context) error {
+	return d.err
+}
+
+func TestReadyzHandlerSetsNoStoreHeaders(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		certErr       error
+		dependencyErr error
+		status        int
+	}{
+		{name: "ready", status: http.StatusNoContent},
+		{name: "certificate not ready", certErr: errors.New("expired"), status: http.StatusServiceUnavailable},
+		{name: "dependency not ready", dependencyErr: errors.New("unavailable"), status: http.StatusServiceUnavailable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			response := httptest.NewRecorder()
+			readyzHandler(
+				fakeReadyCertificate{err: tc.certErr},
+				fakeReadyDependency{err: tc.dependencyErr},
+			)(response, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+
+			require.Equal(t, tc.status, response.Code)
+			require.Equal(t, "no-store", response.Header().Get("Cache-Control"))
+			require.Equal(t, "nosniff", response.Header().Get("X-Content-Type-Options"))
+		})
+	}
+}
 
 func TestKubernetesConfigPrefersInClusterWhenKubeconfigIsEmpty(t *testing.T) {
 	t.Setenv("KUBECONFIG", writeKubeconfig(t, "https://api.example.invalid"))

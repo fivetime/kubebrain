@@ -79,18 +79,7 @@ func main() {
 		log.Fatal(err)
 	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/readyz", func(response http.ResponseWriter, request *http.Request) {
-		if err := certificate.ValidAt(time.Now()); err != nil {
-			http.Error(response, "TLS certificate is not ready", http.StatusServiceUnavailable)
-			return
-		}
-		if err := handler.Ready(request.Context()); err != nil {
-			log.Printf("readiness Operation API probe failed: %v", err)
-			http.Error(response, "Kubernetes Operation API is not ready", http.StatusServiceUnavailable)
-			return
-		}
-		response.WriteHeader(http.StatusNoContent)
-	})
+	mux.HandleFunc("/readyz", readyzHandler(certificate, handler))
 	mux.Handle("/", handler)
 	server := &http.Server{
 		Addr: address, Handler: mux,
@@ -123,6 +112,31 @@ func main() {
 			log.Printf("graceful shutdown failed: %v", err)
 			_ = server.Close()
 		}
+	}
+}
+
+type readyCertificate interface {
+	ValidAt(time.Time) error
+}
+
+type readyDependency interface {
+	Ready(context.Context) error
+}
+
+func readyzHandler(certificate readyCertificate, dependency readyDependency) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Cache-Control", "no-store")
+		response.Header().Set("X-Content-Type-Options", "nosniff")
+		if err := certificate.ValidAt(time.Now()); err != nil {
+			http.Error(response, "TLS certificate is not ready", http.StatusServiceUnavailable)
+			return
+		}
+		if err := dependency.Ready(request.Context()); err != nil {
+			log.Printf("readiness Operation API probe failed: %v", err)
+			http.Error(response, "Kubernetes Operation API is not ready", http.StatusServiceUnavailable)
+			return
+		}
+		response.WriteHeader(http.StatusNoContent)
 	}
 }
 
