@@ -72,6 +72,7 @@ instance="$("$JQ" -er '.instance' <<<"$claim")"
 attempt="$("$JQ" -er '.attempt | select(. > 0)' <<<"$claim")"
 expected_digest="$("$JQ" -er '.parameters_sha256 | select(test("^[a-f0-9]{64}$"))' <<<"$claim")"
 managed_parameters=""
+managed_backup=""
 if [[ -z "$PARAMETERS_INPUT" ]]; then
   managed_parameters="$(mktemp)"
   PARAMETERS_INPUT="$managed_parameters"
@@ -121,6 +122,19 @@ if [[ "$actual_backup_sha" != "$backup_file_sha" ]]; then
   echo "destroy backup bytes do not match the immutable parameter digest" >&2
   exit 1
 fi
+managed_backup="$(mktemp)"
+trap 'rm -f "${managed_parameters:-}" "${managed_backup:-}"' EXIT
+cp "$backup_input" "$managed_backup"
+chmod 600 "$managed_backup"
+captured_backup_sha="$(sha256sum "$managed_backup" | cut -d ' ' -f1)"
+current_backup_sha="$(sha256sum "$backup_input" | cut -d ' ' -f1)"
+if [[ "$captured_backup_sha" != "$backup_file_sha" || "$current_backup_sha" != "$backup_file_sha" ]]; then
+  run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
+    --message "destroy backup file changed during capture" >/dev/null
+  echo "destroy backup bytes changed while being captured" >&2
+  exit 1
+fi
+backup_input="$managed_backup"
 expected_confirmation="destroy:${instance}:${operation_id}"
 if [[ "$confirmation" != "$expected_confirmation" ]]; then
   run_operationctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
@@ -147,6 +161,7 @@ heartbeat_pid=0
 fenced=false
 cleanup() {
   [[ -z "$managed_parameters" ]] || rm -f "$managed_parameters"
+  [[ -z "$managed_backup" ]] || rm -f "$managed_backup"
   if [[ "$child" -gt 0 ]] && kill -0 "$child" 2>/dev/null; then
     kill "$child" 2>/dev/null || true
     wait "$child" 2>/dev/null || true

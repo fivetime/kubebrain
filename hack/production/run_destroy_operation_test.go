@@ -76,6 +76,15 @@ func TestDestroyOperationRejectsConfirmationAndBackupDrift(t *testing.T) {
 	require.NotContains(t, f.log(t), "phase prepare")
 }
 
+func TestDestroyOperationRejectsBackupTamperedDuringCapture(t *testing.T) {
+	f := newDestroyRunnerFixture(t, true)
+	f.run(t, false, "TAMPER_BACKUP_DURING_SHA256=true", "backup bytes changed")
+	log := f.log(t)
+	require.Contains(t, log, "--action retry")
+	require.NotContains(t, log, "phase prepare")
+	require.NotContains(t, log, "--action succeed")
+}
+
 func TestDestroyOperationRejectsEmptyRequiredParameters(t *testing.T) {
 	f := newDestroyRunnerFixture(t, true)
 	parameters := strings.ReplaceAll(
@@ -213,6 +222,7 @@ esac
 		"OPERATION_NAMESPACE=ops", "LEASE_SECONDS=6", "HEARTBEAT_INTERVAL_SECONDS=0.02",
 		"OPERATIONCTL=" + operationctl, "DESTROY_COMMAND=" + destroy,
 		"FAKE_DIR=" + dir, "PARAMETERS_DIGEST=" + digest,
+		"RUNNER_BACKUP_INPUT=" + backup,
 		"DESTROY_BACKUP_SHA=" + destroyLogicalSHA, fmt.Sprintf("DESTROY_BACKUP_REVISION=%d", destroyLogicalRevision),
 	}
 	env = append(env, receiptDigestTamperEnv(t, dir, receipt)...)

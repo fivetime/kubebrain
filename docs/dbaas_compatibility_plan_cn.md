@@ -10870,6 +10870,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   digest 后才提交 receipt SHA。旧 audit receipt 仍按 legacy key set 接受。回归：
   `go test ./hack/production -run 'TestPostRestoreAudit|TestPostRestoreAuditOperation' -count=1`
   通过。
+- A665 冻结 Destroy operation 的 backup 输入 bytes：
+  `run-destroy-operation.sh` 旧逻辑只在参数解析后计算一次 `backup_file_sha256`，随后把
+  调用方提供的 `BACKUP_INPUT` 路径传给 `destroy-instance.sh`；若本地 backup 文件在这次
+  digest 校验后、prepare 读取前被替换，破坏性 quiesce/destroy 阶段可能基于未绑定的
+  backup 输入继续推进。现在 runner 在参数 digest 通过后立即把 backup 捕获到私有临时
+  副本，要求副本和调用方路径的 whole-file SHA 都仍等于参数 `backup_file_sha256`，并只把
+  私有副本传给 destroy executor；捕获窗口内漂移会 retry，且不会进入 prepare。回归：
+  `go test ./hack/production -run 'TestDestroyOperation' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

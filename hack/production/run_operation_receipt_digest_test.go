@@ -17,6 +17,14 @@ func receiptDigestTamperEnv(t *testing.T, dir, receiptPath string) []string {
 	require.NoError(t, os.WriteFile(tamperedReceipt, []byte(`{"format":"tampered"}`+"\n"), 0o600))
 	writeTrafficExecutable(t, filepath.Join(dir, "sha256sum"), `#!/usr/bin/env bash
 set -euo pipefail
+if [[ "${TAMPER_BACKUP_DURING_SHA256:-false}" == true &&
+  "$#" -ge 1 && "$1" == "${RUNNER_BACKUP_INPUT:-}" &&
+  ! -f "$FAKE_DIR/backup-tampered-during-sha256" ]]; then
+  "$REAL_SHA256SUM" "$@"
+  printf 'changed\n' >"$RUNNER_BACKUP_INPUT"
+  touch "$FAKE_DIR/backup-tampered-during-sha256"
+  exit 0
+fi
 if [[ "${TAMPER_RECEIPT_DURING_SHA256:-false}" == true &&
   "$#" -ge 1 && "$1" == "$RUNNER_RECEIPT_OUTPUT" &&
   ! -f "$FAKE_DIR/receipt-tampered-during-sha256" ]]; then
