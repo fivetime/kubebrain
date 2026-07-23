@@ -67,6 +67,10 @@ for variable in OLD_CACERT OLD_CERT OLD_KEY NEW_CACERT NEW_CERT NEW_KEY; do
     exit 2
   fi
 done
+if [[ -n "${OVERLAP_CACERT:-}" && ! -f "$OVERLAP_CACERT" ]]; then
+  echo "OVERLAP_CACERT does not exist: ${OVERLAP_CACERT}" >&2
+  exit 2
+fi
 
 umask 077
 mkdir -p "$STATE_DIR"
@@ -80,6 +84,49 @@ if [[ -n "$KUBE_CONTEXT" ]]; then
 fi
 if [[ -n "$KUBECONFIG_PATH" ]]; then
   kubectl_args+=(--kubeconfig "$KUBECONFIG_PATH")
+fi
+
+credential_tmp_dir=""
+cleanup_rotation_credentials() {
+  [[ -z "$credential_tmp_dir" ]] || rm -rf "$credential_tmp_dir"
+}
+trap cleanup_rotation_credentials EXIT INT TERM
+
+credential_file_digest() {
+  local path="$1" digest
+  digest="$(sha256sum "$path" | cut -d ' ' -f1)" || return 1
+  [[ "$digest" =~ ^[a-f0-9]{64}$ ]] || return 1
+  printf '%s\n' "$digest"
+}
+
+freeze_credential() {
+  local source="$1" name="$2" destination source_digest captured_digest current_digest
+  source_digest="$(credential_file_digest "$source")" || return 1
+  destination="${credential_tmp_dir}/${name}"
+  cp "$source" "$destination"
+  chmod 600 "$destination"
+  captured_digest="$(credential_file_digest "$destination")" || return 1
+  current_digest="$(credential_file_digest "$source")" || return 1
+  [[ "$captured_digest" == "$source_digest" && "$current_digest" == "$source_digest" ]] || return 1
+  printf '%s\n' "$destination"
+}
+
+credential_tmp_dir="$(mktemp -d)"
+OLD_CACERT="$(freeze_credential "$OLD_CACERT" old-ca)" ||
+  { echo "OLD_CACERT changed while being captured" >&2; exit 1; }
+OLD_CERT="$(freeze_credential "$OLD_CERT" old-cert)" ||
+  { echo "OLD_CERT changed while being captured" >&2; exit 1; }
+OLD_KEY="$(freeze_credential "$OLD_KEY" old-key)" ||
+  { echo "OLD_KEY changed while being captured" >&2; exit 1; }
+NEW_CACERT="$(freeze_credential "$NEW_CACERT" new-ca)" ||
+  { echo "NEW_CACERT changed while being captured" >&2; exit 1; }
+NEW_CERT="$(freeze_credential "$NEW_CERT" new-cert)" ||
+  { echo "NEW_CERT changed while being captured" >&2; exit 1; }
+NEW_KEY="$(freeze_credential "$NEW_KEY" new-key)" ||
+  { echo "NEW_KEY changed while being captured" >&2; exit 1; }
+if [[ -n "${OVERLAP_CACERT:-}" ]]; then
+  OVERLAP_CACERT="$(freeze_credential "$OVERLAP_CACERT" overlap-ca)" ||
+    { echo "OVERLAP_CACERT changed while being captured" >&2; exit 1; }
 fi
 
 fingerprint() {

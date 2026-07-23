@@ -10897,6 +10897,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   hook 都只接收该内部参数文件。捕获窗口漂移会 retry，且不会进入 begin gate。回归：
   `go test ./hack/production -run 'TestCertificateRotationOperation' -count=1`
   通过。
+- A668 冻结 direct certificate rotation validator 的 credential 输入：
+  A667 覆盖了 operation runner，但手工/恢复执行 `validate-certificate-rotation.sh` 时，
+  begin/overlap/complete 仍会直接从调用方提供的 OLD/NEW/OVERLAP credential 路径执行
+  health 与 fingerprint 读取；本地文件若在 fingerprint/health/receipt 发布窗口被替换，
+  durable state 或完成 receipt 可能绑定不同输入。现在 validator 每次 invocation 会把所需
+  credential 捕获到私有临时目录，要求源路径和副本的 whole-file SHA 在捕获窗口内一致，
+  后续 health、fingerprint 与 receipt 复用全部只读冻结副本；捕获漂移时 fail closed。回归：
+  `go test ./hack/production -run 'TestValidateCertificateRotation|TestCertificateRotationOperation' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

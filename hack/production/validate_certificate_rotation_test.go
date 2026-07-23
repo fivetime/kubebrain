@@ -87,6 +87,12 @@ func TestValidateCertificateRotationFailsClosed(t *testing.T) {
 			wantOutput: "certificate SHA-256 fingerprint is invalid",
 		},
 		{
+			name:       "credential changed during capture",
+			action:     "begin",
+			env:        "TAMPER_ROTATION_CREDENTIAL_DURING_SHA256=true",
+			wantOutput: "OLD_CERT changed while being captured",
+		},
+		{
 			name: "new credential rejected during overlap",
 			prepare: func(t *testing.T, f *rotationFixture) {
 				f.run(t, "begin", true, "")
@@ -219,6 +225,20 @@ if [[ "$cert" == *new-cert && -f "${FAKE_STATE_DIR}/fail-new" ]]; then
 fi
 echo healthy
 `)
+	realSHA, err := exec.LookPath("sha256sum")
+	require.NoError(t, err)
+	writeExecutable(t, filepath.Join(dir, "sha256sum"), `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${TAMPER_ROTATION_CREDENTIAL_DURING_SHA256:-false}" == true &&
+  "$#" -ge 1 && "$1" == "$ROTATION_CREDENTIAL_INPUT" &&
+  ! -f "$FAKE_STATE_DIR/rotation-credential-tampered-during-sha256" ]]; then
+  "$REAL_SHA256SUM" "$@"
+  printf 'changed\n' >"$ROTATION_CREDENTIAL_INPUT"
+  touch "$FAKE_STATE_DIR/rotation-credential-tampered-during-sha256"
+  exit 0
+fi
+exec "$REAL_SHA256SUM" "$@"
+`)
 	realJQ, err := exec.LookPath("jq")
 	require.NoError(t, err)
 	jq := filepath.Join(dir, "jq-wrapper")
@@ -253,6 +273,9 @@ fi
 			"NEW_KEY=" + filepath.Join(dir, "new-key"),
 			"OVERLAP_CACERT=" + filepath.Join(dir, "overlap-ca"),
 			"FAKE_STATE_DIR=" + stateDir,
+			"PATH=" + dir + string(os.PathListSeparator) + os.Getenv("PATH"),
+			"REAL_SHA256SUM=" + realSHA,
+			"ROTATION_CREDENTIAL_INPUT=" + filepath.Join(dir, "old-cert"),
 			"JQ=" + jq,
 			"REAL_JQ=" + realJQ,
 		},
