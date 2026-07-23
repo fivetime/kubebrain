@@ -28,15 +28,31 @@ render_dir="$(mktemp -d)"
 cleanup_rendered() { rm -rf "$render_dir"; }
 trap cleanup_rendered EXIT
 
+file_sha256() {
+  local digest
+  digest="$(sha256sum "$1" | awk '{print $1}')" || return 1
+  [[ "$digest" =~ ^[a-f0-9]{64}$ ]] || return 1
+  printf '%s' "$digest"
+}
+
+freeze_input() {
+  local source="$1" destination="$2" label="$3" source_before captured source_after
+  source_before="$(file_sha256 "$source")" || fail_input "$label digest is invalid"
+  cp -- "$source" "$destination" || fail_input "capture $label failed"
+  chmod 600 "$destination"
+  captured="$(file_sha256 "$destination")" || fail_input "$label digest is invalid"
+  source_after="$(file_sha256 "$source")" || fail_input "$label digest is invalid"
+  [[ "$source_before" == "$captured" && "$source_after" == "$captured" ]] ||
+    fail_input "$label changed during capture"
+  printf '%s' "$captured"
+}
+
 source_receipt_copy="${render_dir}/source-receipt.json"
-cp -- "$RECEIPT_FILE" "$source_receipt_copy" || fail_input "capture cold snapshot receipt failed"
-chmod 600 "$source_receipt_copy"
-source_receipt_sha256="$(sha256sum "$source_receipt_copy" | awk '{print $1}')"
-[[ "$source_receipt_sha256" =~ ^[a-f0-9]{64}$ ]] || fail_input "cold snapshot receipt digest is invalid"
-[[ "$(sha256sum "$RECEIPT_FILE" | awk '{print $1}')" == "$source_receipt_sha256" ]] ||
-  fail_input "cold snapshot receipt changed during capture"
+restore_manifest_copy="${render_dir}/restore-manifest.json"
+source_receipt_sha256="$(freeze_input "$RECEIPT_FILE" "$source_receipt_copy" "cold snapshot receipt")"
+freeze_input "$RESTORE_MANIFEST" "$restore_manifest_copy" "restore manifest" >/dev/null
 receipt="$(jq -cS . "$source_receipt_copy")" || fail_input "RECEIPT_FILE is not valid JSON"
-manifest="$(jq -cS . "$RESTORE_MANIFEST")" || fail_input "RESTORE_MANIFEST is not valid JSON"
+manifest="$(jq -cS . "$restore_manifest_copy")" || fail_input "RESTORE_MANIFEST is not valid JSON"
 jq -e '.format == "kubebrain.cold-physical-snapshot.v2"' <<<"$receipt" >/dev/null || fail_input "unsupported cold snapshot receipt"
 jq -e '.apiVersion == "v1" and .kind == "List" and (.items | type == "array")' <<<"$manifest" >/dev/null || fail_input "restore manifest must be a Kubernetes List"
 restore_manifest_sha256="$(printf '%s' "$manifest" | sha256sum | awk '{print $1}')"
@@ -72,7 +88,9 @@ chmod 600 "$applied_manifest"
 [[ "$(jq -cS . "$rendered")" == "$manifest" ]] || { echo "RESTORE_MANIFEST differs from the canonical rendering of RECEIPT_FILE" >&2; exit 1; }
 
 verify_source_receipt() {
-  [[ "$(sha256sum "$RECEIPT_FILE" | awk '{print $1}')" == "$source_receipt_sha256" ]] ||
+  local current
+  current="$(file_sha256 "$RECEIPT_FILE")" || { echo "cold snapshot receipt changed after validation" >&2; exit 1; }
+  [[ "$current" == "$source_receipt_sha256" ]] ||
     { echo "cold snapshot receipt changed after validation" >&2; exit 1; }
 }
 

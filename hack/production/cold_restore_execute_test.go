@@ -21,6 +21,7 @@ func TestColdRestoreExecute(t *testing.T) {
 		tampered                       bool
 		sourceReceiptDrift             bool
 		sourceReceiptDriftDuringRender bool
+		restoreManifestDriftDuringHash bool
 		restoreManifestPathDrift       bool
 		precreateRestoreReceipt        bool
 		wrongCluster                   bool
@@ -37,6 +38,7 @@ func TestColdRestoreExecute(t *testing.T) {
 		{name: "tampered manifest fails before target access", tampered: true, wantError: "differs from the canonical rendering"},
 		{name: "source receipt drift fails before create", sourceReceiptDrift: true, wantError: "cold snapshot receipt changed after validation"},
 		{name: "source receipt drift during render uses captured receipt", sourceReceiptDriftDuringRender: true, wantError: "cold snapshot receipt changed after validation"},
+		{name: "restore manifest drift during capture fails before target access", restoreManifestDriftDuringHash: true, wantError: "restore manifest changed during capture"},
 		{name: "manifest path drift still applies validated manifest", restoreManifestPathDrift: true, wantReceipt: true, wantCreate: true},
 		{name: "concurrent restore receipt publish is non overwriting", precreateRestoreReceipt: true, wantPreexistingRestoreReceipt: true, wantEmergency: true, wantCreate: true, wantError: "restore receipt already exists"},
 		{name: "cluster identity mismatch fences storage", wrongCluster: true, wantEmergency: true, wantCreate: true, wantError: "identity/readiness mismatch"},
@@ -69,10 +71,15 @@ func TestColdRestoreExecute(t *testing.T) {
 			require.NoError(t, err)
 			fakeGo := filepath.Join(dir, "go")
 			require.NoError(t, os.WriteFile(fakeGo, []byte(coldRestoreFakeGo), 0o755))
+			realSHA, err := exec.LookPath("sha256sum")
+			require.NoError(t, err)
+			fakeSHA := filepath.Join(dir, "sha256sum")
+			require.NoError(t, os.WriteFile(fakeSHA, []byte(coldRestoreFakeSHA256Sum), 0o755))
 			command := exec.Command("bash", "../backup/cold-restore-execute.sh")
 			command.Env = append(os.Environ(),
 				"PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"),
 				"REAL_GO="+realGo,
+				"REAL_SHA256SUM="+realSHA,
 				"KUBECTL="+fakeKubectl,
 				"KUBE_CONTEXT=isolated-target",
 				"RECEIPT_FILE="+receiptPath,
@@ -89,6 +96,7 @@ func TestColdRestoreExecute(t *testing.T) {
 				"TAMPER_SOURCE_RECEIPT_DURING_KUBECTL="+strconv.FormatBool(tc.sourceReceiptDrift),
 				"TAMPER_SOURCE_RECEIPT_DURING_RENDER="+strconv.FormatBool(tc.sourceReceiptDriftDuringRender),
 				"TAMPERED_RECEIPT_FILE="+tamperedReceiptPath,
+				"TAMPER_RESTORE_MANIFEST_DURING_SHA256="+strconv.FormatBool(tc.restoreManifestDriftDuringHash),
 				"TAMPER_RESTORE_MANIFEST_DURING_KUBECTL="+strconv.FormatBool(tc.restoreManifestPathDrift),
 				"TAMPERED_RESTORE_MANIFEST="+tamperedManifestPath,
 				"PRECREATE_RESTORE_RECEIPT_DURING_INVENTORY="+strconv.FormatBool(tc.precreateRestoreReceipt),
@@ -126,7 +134,7 @@ func TestColdRestoreExecute(t *testing.T) {
 			}
 
 			logValue, readErr := os.ReadFile(logPath)
-			if tc.tampered && os.IsNotExist(readErr) {
+			if (tc.tampered || tc.restoreManifestDriftDuringHash) && os.IsNotExist(readErr) {
 				logValue = nil
 			} else {
 				require.NoError(t, readErr)
@@ -332,4 +340,16 @@ if [[ "${TAMPER_SOURCE_RECEIPT_DURING_RENDER:-false}" == true &&
   touch "${FAKE_LOG}.source-receipt-render-tampered"
 fi
 exec "$REAL_GO" "$@"
+`
+
+const coldRestoreFakeSHA256Sum = `#!/usr/bin/env bash
+set -euo pipefail
+"$REAL_SHA256SUM" "$@"
+if [[ "${TAMPER_RESTORE_MANIFEST_DURING_SHA256:-false}" == true &&
+  "$#" -ge 1 && "$1" == "$RESTORE_MANIFEST" &&
+  ! -f "${FAKE_LOG}.restore-manifest-sha256-tampered" ]]; then
+  cp "$TAMPERED_RESTORE_MANIFEST" "$RESTORE_MANIFEST"
+  chmod 600 "$RESTORE_MANIFEST"
+  touch "${FAKE_LOG}.restore-manifest-sha256-tampered"
+fi
 `

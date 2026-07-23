@@ -10937,6 +10937,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   source receipt 漂移不再影响 workflow。回归：
   `go test ./hack/production -run 'TestBackupDeletionOperation' -count=1`
   通过。
+- A672 冻结 cold restore executor 的 restore manifest 输入：
+  A656/A660 已让 cold restore executor 从私有副本消费 snapshot receipt 和 canonical
+  applied manifest，但 `RESTORE_MANIFEST` 在最初 `jq -cS` 前仍直接来自调用方路径；若本地
+  manifest 在 hash/copy 窗口被替换，executor 可能把 source path 的可追溯性与实际 apply
+  内容混淆。现在 executor 会先把 restore manifest 捕获到私有 0600 副本，并要求源路径
+  digest 在捕获前后与副本一致；后续解析、canonical renderer 比对和 `kubectl create`
+  全部只读冻结副本。捕获窗口漂移会在 target access 前 fail closed，捕获后的原路径漂移
+  仍不影响已验证 manifest 的 apply。回归：
+  `go test ./hack/production -run 'TestColdRestoreExecute' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 
