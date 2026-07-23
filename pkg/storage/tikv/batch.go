@@ -171,4 +171,8 @@ var uncertainErrList = []error{
 	// retry queue re-resolves it, rather than treating it as a definite failure
 	// (which risks reporting Succeeded=false for data that was actually written).
 	tikverr.ErrResultUndetermined,
+	// TiKV's region layer documents StaleCommand as a request sent to a stale
+	// leader whose term changed: once the request has entered commit processing,
+	// the client cannot prove whether the write became durable.
+	tikverr.ErrTiKVStaleCommand,
 }

@@ -11101,6 +11101,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   三份 receipt 捕获到私有 0600 副本，后续 schema 校验、SHA 计算和 operation receipt 合成
   全部只读副本；捕获窗口漂移 fail closed。回归：
   `go test ./hack/production -run 'TestBackupDeletionOperation' -count=1` 通过。
+- A690 将 TiKV `StaleCommand` 提交错误归入不确定结果：
+  对照 `github.com/tikv/client-go/v2@v2.0.7/internal/locate/region_request.go`
+  中对 stale command 的注释，若请求进入提交阶段后发到旧 leader，客户端不能证明
+  写是否已经持久化。此前 `pkg/storage/tikv/batch.go` 只把 deadline/cancel、
+  server timeout、unknown、`ErrResultUndetermined` 和 `TxnLockNotFound` 映射为
+  `storage.ErrUncertainResult`；若 `ErrTiKVStaleCommand` 逃逸到 `Commit`，上层会把它当
+  确定失败，绕过 backend 的异步不确定写修复队列。现在将 wrapped/unwrapped
+  `tikverr.ErrTiKVStaleCommand` 纳入 `isUncertainCommitError`，由现有 async retry
+  重新解析最终状态。回归：`go test ./pkg/storage/tikv -run TestUncertainCommitError -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

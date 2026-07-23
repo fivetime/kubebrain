@@ -17,9 +17,11 @@ package tikv
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	tikverr "github.com/tikv/client-go/v2/error"
 )
 
 // TestBatchCommitWithFailedBeginReturnsErrorNotPanic reproduces the crash where
@@ -45,4 +47,9 @@ func TestUncertainCommitErrorClassifiesTxnLockNotFound(t *testing.T) {
 	require.True(t, isUncertainCommitError(errors.New("TxnLockNotFound")))
 	require.True(t, isUncertainCommitError(errors.New("commit failed: TxnLockNotFound { start_ts: 1 }")))
 	require.False(t, isUncertainCommitError(errors.New("transaction lock conflict")))
+}
+
+func TestUncertainCommitErrorClassifiesStaleCommand(t *testing.T) {
+	require.True(t, isUncertainCommitError(tikverr.ErrTiKVStaleCommand))
+	require.True(t, isUncertainCommitError(fmt.Errorf("commit primary key: %w", tikverr.ErrTiKVStaleCommand)))
 }
