@@ -25,6 +25,14 @@ func TestRestoreCutoverOperationCompletesAllPhases(t *testing.T) {
 	require.NotContains(t, log, "--namespace ops --namespace tenant-a-operations")
 }
 
+func TestRestoreCutoverOperationPassesFrozenEvidenceToPhases(t *testing.T) {
+	f := newCutoverRunnerFixture(t)
+	f.run(t, true, "ASSERT_FROZEN_INPUTS=true")
+	log := f.log(t)
+	require.NotContains(t, log, f.restoreReceipt)
+	require.NotContains(t, log, f.backup)
+}
+
 func TestRestoreCutoverOperationRejectsInvalidReceipt(t *testing.T) {
 	f := newCutoverRunnerFixture(t)
 	f.run(t, false, "INVALID_CUTOVER_RECEIPT=true", "invalid receipt")
@@ -122,6 +130,67 @@ func TestRestoreCutoverOperationRejectsParametersTamperedDuringDigest(t *testing
 	require.NotContains(t, log, "--action succeed")
 }
 
+func TestRestoreCutoverOperationRejectsEvidenceDrift(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		path    func(*cutoverRunnerFixture) string
+		message string
+	}{
+		{
+			name: "restore receipt",
+			path: func(f *cutoverRunnerFixture) string {
+				return f.restoreReceipt
+			},
+			message: "restore receipt bytes do not match",
+		},
+		{
+			name: "backup input",
+			path: func(f *cutoverRunnerFixture) string {
+				return f.backup
+			},
+			message: "backup input bytes do not match",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newCutoverRunnerFixture(t)
+			require.NoError(t, os.WriteFile(tc.path(f), []byte("changed\n"), 0o600))
+			f.run(t, false, "", tc.message)
+			log := f.log(t)
+			require.Contains(t, log, "--action retry")
+			require.NotContains(t, log, "phase prepare")
+			require.NotContains(t, log, "--action succeed")
+		})
+	}
+}
+
+func TestRestoreCutoverOperationRejectsEvidenceTamperedDuringCapture(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		env     string
+		message string
+	}{
+		{
+			name:    "restore receipt",
+			env:     "TAMPER_EVIDENCE_DURING_SHA256=true",
+			message: "restore receipt bytes changed",
+		},
+		{
+			name:    "backup input",
+			env:     "TAMPER_BACKUP_DURING_SHA256=true",
+			message: "backup input bytes changed",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newCutoverRunnerFixture(t)
+			f.run(t, false, tc.env, tc.message)
+			log := f.log(t)
+			require.Contains(t, log, "--action retry")
+			require.NotContains(t, log, "phase prepare")
+			require.NotContains(t, log, "--action succeed")
+		})
+	}
+}
+
 func TestRestoreCutoverOperationRejectsEmptyRequiredParameters(t *testing.T) {
 	f := newCutoverRunnerFixture(t)
 	parameters := strings.ReplaceAll(
@@ -208,22 +277,32 @@ func TestRestoreCutoverOperationRejectsInvalidRollbackEvidence(t *testing.T) {
 }
 
 type cutoverRunnerFixture struct {
-	dir, parameters string
-	env             []string
+	dir, parameters, restoreReceipt, backup string
+	env                                     []string
 }
 
 func newCutoverRunnerFixture(t *testing.T) *cutoverRunnerFixture {
 	t.Helper()
 	dir := t.TempDir()
 	parameters := filepath.Join(dir, "parameters.json")
+	restoreReceipt := filepath.Join(dir, "restore.json")
+	backup := filepath.Join(dir, "backup.jsonl")
 	receipt := filepath.Join(dir, "receipt.json")
+	require.NoError(t, os.WriteFile(restoreReceipt, []byte(fmt.Sprintf(`{
+	  "format":"kubebrain.restore-verification.v1","artifact_format":"kubebrain.logical.v2",
+	  "artifact_sha256":"%s","snapshot_revision":42,"source_prefix":"/registry",
+	  "target_prefix":"/restored","records":2,"artifact_leases":1,
+	  "verified_target_leases":1,"verified_at_unix":200
+	}`+"\n", restoreArtifactSHA256)), 0o600))
+	require.NoError(t, os.WriteFile(backup, []byte("backup\n"), 0o600))
 	require.NoError(t, os.WriteFile(parameters, []byte(fmt.Sprintf(`{
-	  "state_dir":%q,"restore_receipt_input":%q,"backup_input":%q,
+	  "state_dir":%q,"restore_receipt_input":%q,"restore_receipt_sha256":%q,
+	  "backup_input":%q,"backup_file_sha256":%q,
 	  "service_namespace":"ns-a","service_name":"kubebrain","source_instance":"source",
 	  "target_instance":"target","expected_replicas":2,"public_endpoint":"https://service:2379",
 	  "receipt_output":%q,"timeout_seconds":30,"poll_interval_seconds":0
-	}`, filepath.Join(dir, "state"), filepath.Join(dir, "restore.json"),
-		filepath.Join(dir, "backup.jsonl"), receipt)), 0o600))
+	}`, filepath.Join(dir, "state"), restoreReceipt, fileDigest(t, restoreReceipt),
+		backup, fileDigest(t, backup), receipt)), 0o600))
 	data, err := os.ReadFile(parameters)
 	require.NoError(t, err)
 	digest := fmt.Sprintf("%x", sha256.Sum256(data))
@@ -245,6 +324,16 @@ fi
 	writeTrafficExecutable(t, cutover, `#!/usr/bin/env bash
 set -euo pipefail
 printf 'phase %s\n' "$ACTION" >>"$FAKE_DIR/actions.log"
+if [[ "${ASSERT_FROZEN_INPUTS:-false}" == true ]]; then
+  [[ "$RESTORE_RECEIPT_INPUT" != "$ORIGINAL_RESTORE_RECEIPT_INPUT" ]] ||
+    { echo "restore receipt input was not frozen" >&2; exit 9; }
+  [[ "$BACKUP_INPUT" != "$ORIGINAL_BACKUP_INPUT" ]] ||
+    { echo "backup input was not frozen" >&2; exit 9; }
+  [[ -f "$RESTORE_RECEIPT_INPUT" && -f "$BACKUP_INPUT" ]] ||
+    { echo "frozen input missing" >&2; exit 9; }
+fi
+printf 'restore input %s\n' "$RESTORE_RECEIPT_INPUT" >>"$FAKE_DIR/actions.log"
+printf 'backup input %s\n' "$BACKUP_INPUT" >>"$FAKE_DIR/actions.log"
 if [[ "${SLEEP_PHASE:-}" == "$ACTION" ]]; then sleep 3; fi
 if [[ ",${FAIL_PHASE:-}," == *",$ACTION,"* ]]; then exit 8; fi
 state_file="$STATE_DIR/$OPERATION_ID.state"
@@ -285,10 +374,14 @@ esac
 		"OPERATION_NAMESPACE=ops", "LEASE_SECONDS=6", "OPERATIONCTL=" + operationctl,
 		"CUTOVER_COMMAND=" + cutover, "FAKE_DIR=" + dir, "PARAMETERS_DIGEST=" + digest,
 		"RUNNER_PARAMETERS_INPUT=" + parameters,
+		"RUNNER_BACKUP_INPUT=" + backup,
+		"RUNNER_EVIDENCE_INPUT=" + restoreReceipt,
+		"ORIGINAL_RESTORE_RECEIPT_INPUT=" + restoreReceipt,
+		"ORIGINAL_BACKUP_INPUT=" + backup,
 	}
 	env = append(env, receiptDigestTamperEnv(t, dir, receipt)...)
 	return &cutoverRunnerFixture{
-		dir: dir, parameters: parameters,
+		dir: dir, parameters: parameters, restoreReceipt: restoreReceipt, backup: backup,
 		env: env,
 	}
 }

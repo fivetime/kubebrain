@@ -11052,6 +11052,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   被替换也不会影响已验证远端对象和 receipt。回归：
   `(cd hack/backup/objectstore && go test ./internal/objectstore -run 'TestArchiveAudit' -count=1)`
   通过。
+- A685 绑定 RestoreCutover operation 的外部 evidence SHA：
+  A676 已冻结 RestoreCutover runner 的参数 JSON，A681 已让直接执行脚本冻结
+  restore receipt 与 backup 输入，但 operation 参数本身仍只携带路径，未声明这些输入的
+  whole-file digest；若 claim 参数已冻结后本地 evidence 路径被替换为另一份格式合法内容，
+  runner 只能让子状态机基于替换后的 bytes 推进。现在
+  `run-restore-cutover-operation.sh` 要求参数包含 `restore_receipt_sha256` 与
+  `backup_file_sha256`，先按参数 SHA 捕获两份 evidence 到私有 0600 副本，并只把冻结路径
+  传给 cutover 子状态机；源路径 digest 不匹配或捕获窗口漂移都会 retry，且不会进入
+  prepare。回归：
+  `go test ./hack/production -run 'TestRestoreCutoverOperation' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 
