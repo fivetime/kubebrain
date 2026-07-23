@@ -220,6 +220,20 @@ func TestAuditReceiptUsesOperationAuditArchiveSchema(t *testing.T) {
 	}
 }
 
+func TestImmutableBlobReceiptsRejectImpossibleObjectBytes(t *testing.T) {
+	archive := completeBlobReceipt()
+	archive.ObjectBytes = maxImmutableBlobBytes
+	require.NoError(t, archive.Validate())
+	archive.ObjectBytes = maxImmutableBlobBytes + 1
+	require.ErrorContains(t, archive.Validate(), "incomplete")
+
+	read := completeBlobReadReceipt()
+	read.ObjectBytes = maxImmutableBlobBytes
+	require.NoError(t, read.Validate())
+	read.ObjectBytes = maxImmutableBlobBytes + 1
+	require.ErrorContains(t, read.Validate(), "incomplete")
+}
+
 func completeAuditReceipt() AuditReceipt {
 	return AuditReceipt{
 		Format: AuditReceiptFormat, OperationID: "operation-1", OperationUID: "uid-1",

@@ -10564,6 +10564,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   artifact 的 receipt 契约完全一致。回归：
   `(cd hack/backup/objectstore && go test ./internal/objectstore -run 'TestAuditReceiptUsesOperationAuditArchiveSchema|TestReceiptsRejectNonLowercaseArtifactDigest|TestReceiptReadersRejectAmbiguousJSON|TestArchiveAuditUploadsVerifiesAndRetriesExactVersion|TestBuildInventoryManifest' -count=1)`
   通过。
+- A634 对齐 immutable blob receipt 对象大小边界：
+  `ArchiveBlob` 本地上传最多接受 16 MiB，`ReadBlob` 也拒绝远端对象超过同一上限，
+  但 `BlobReceipt.Validate` 和 `BlobReadReceipt.Validate` 仍只要求 `object_bytes > 0`。
+  手工暂存、离线读取或替换 executor 因而可以写出生产 executor 不可能合法生成的 oversized
+  immutable blob receipt，再把异常 size 传给后续 billing/metering 读回路径。现在 archive
+  与 read 两类 immutable blob receipt validator 都拒绝 `object_bytes > maxImmutableBlobBytes`，
+  保留等于 16 MiB 的合法边界，与实际 upload/read 上限一致。回归：
+  `(cd hack/backup/objectstore && go test ./internal/objectstore -run 'TestImmutableBlobReceiptsRejectImpossibleObjectBytes|TestArchiveBlobRejectsEmptyOversizedAndNonCanonicalReceipt|TestReadBlobRequiresOneProtectedExactVersion|TestReceiptsRejectNonLowercaseArtifactDigest' -count=1)`
+  通过。
 
 ### P2：运维兼容和长期验证
 

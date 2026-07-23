@@ -206,6 +206,7 @@ func (r BlobReceipt) Validate() error {
 	if r.Format != BlobReceiptFormat || r.ArtifactFormat == "" || r.ArtifactID == "" ||
 		r.Instance == "" || r.ObjectStoreID == "" || r.Bucket == "" || r.ObjectKey == "" ||
 		r.VersionID == "" || !validHexSHA256(r.ArtifactSHA256) || r.ObjectBytes <= 0 ||
+		r.ObjectBytes > maxImmutableBlobBytes ||
 		(r.RetentionMode != "COMPLIANCE" && r.RetentionMode != "GOVERNANCE") ||
 		r.RetainUntilUnix <= r.ArchivedAtUnix || !r.RemoteVerified || r.ArchivedAtUnix <= 0 {
 		return errors.New("object immutable blob receipt is incomplete")
@@ -232,6 +233,7 @@ func (r BlobReadReceipt) Validate() error {
 	if r.Format != BlobReadReceiptFormat || r.ArtifactFormat == "" || r.ArtifactID == "" ||
 		r.Instance == "" || r.ObjectStoreID == "" || r.Bucket == "" || r.ObjectKey == "" ||
 		r.VersionID == "" || !validHexSHA256(r.ArtifactSHA256) || r.ObjectBytes <= 0 ||
+		r.ObjectBytes > maxImmutableBlobBytes ||
 		(r.RetentionMode != "COMPLIANCE" && r.RetentionMode != "GOVERNANCE") ||
 		r.RetainUntilUnix <= 0 || !r.RemoteVerified {
 		return errors.New("object immutable blob read receipt is incomplete")
