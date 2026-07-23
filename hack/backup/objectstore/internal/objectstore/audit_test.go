@@ -48,6 +48,29 @@ func TestArchiveAuditUploadsVerifiesAndRetriesExactVersion(t *testing.T) {
 	require.Equal(t, 2, client.putCalls)
 }
 
+func TestArchiveAuditUsesFrozenArtifactWhenSourceChangesBeforeVerify(t *testing.T) {
+	input := writeAuditArtifact(t)
+	original, err := os.ReadFile(input)
+	require.NoError(t, err)
+	now := time.Unix(2_000_000_000, 0).UTC()
+	client := &fakeS3{
+		beforePut: func() {
+			require.NoError(t, os.WriteFile(input, []byte("{}\n"), 0o600))
+		},
+	}
+	request := AuditRequest{
+		Input: input, ObjectStoreID: "store-a", Bucket: "audits",
+		ObjectKey: "instance-a/operation-1.json", RetentionMode: "COMPLIANCE",
+		RetainUntilUnix: now.Add(time.Hour).Unix(),
+		ReceiptOutput:   filepath.Join(t.TempDir(), "receipt.json"), Now: now,
+	}
+
+	receipt, err := ArchiveAudit(context.Background(), client, request)
+	require.NoError(t, err)
+	require.Equal(t, original, client.body)
+	require.True(t, receipt.RemoteVerified)
+}
+
 func TestArchiveAuditRejectsConflictCorruptionAndRetentionDrift(t *testing.T) {
 	now := time.Unix(2_000_000_000, 0).UTC()
 	newRequest := func(t *testing.T) AuditRequest {

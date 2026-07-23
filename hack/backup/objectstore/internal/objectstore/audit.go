@@ -59,7 +59,7 @@ func ArchiveAudit(ctx context.Context, client S3API, request AuditRequest) (Audi
 		if !auditReceiptMatches(existing, request, status) {
 			return AuditReceipt{}, errors.New("existing audit receipt does not match the archive request")
 		}
-		if err := verifyAuditRemote(ctx, client, request, existing.VersionID, status); err != nil {
+		if err := verifyAuditRemote(ctx, client, request, existing.VersionID, status, body); err != nil {
 			return AuditReceipt{}, err
 		}
 		if err := validateAuditRetention(ctx, client, request, existing.VersionID, retainUntil); err != nil {
@@ -128,7 +128,7 @@ func ArchiveAudit(ctx context.Context, client S3API, request AuditRequest) (Audi
 	if err != nil {
 		return AuditReceipt{}, err
 	}
-	if err := verifyAuditRemote(verificationCtx, client, request, versionID, status); err != nil {
+	if err := verifyAuditRemote(verificationCtx, client, request, versionID, status, body); err != nil {
 		return AuditReceipt{}, err
 	}
 	if err := validateAuditRetention(verificationCtx, client, request, versionID, retainUntil); err != nil {
@@ -156,6 +156,7 @@ func verifyAuditRemote(
 	request AuditRequest,
 	versionID string,
 	expected operationaudit.Status,
+	expectedBody []byte,
 ) error {
 	output, err := client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(request.Bucket), Key: aws.String(request.ObjectKey),
@@ -176,11 +177,7 @@ func verifyAuditRemote(
 	if fmt.Sprintf("%x", sum[:]) != expected.SHA256 {
 		return errors.New("remote operation audit digest differs")
 	}
-	_, local, err := operationaudit.InspectBytes(request.Input)
-	if err != nil {
-		return err
-	}
-	if !bytes.Equal(body, local) {
+	if !bytes.Equal(body, expectedBody) {
 		return errors.New("remote operation audit bytes differ")
 	}
 	return nil

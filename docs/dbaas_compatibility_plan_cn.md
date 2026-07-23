@@ -11044,6 +11044,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   前被替换也不会污染远端对象。回归：
   `(cd hack/backup/objectstore && go test ./internal/objectstore -run 'TestUpload' -count=1)`
   通过。
+- A684 冻结 objectstore audit archive 的远端验证输入：
+  A522 已让 `ArchiveAudit` 上传 `operationaudit.InspectBytes` 返回的 frozen bytes，但
+  `verifyAuditRemote` 在远端下载后又重新读取原始 `request.Input` 做 byte compare；若原始
+  audit artifact 在 PutObject 后漂移，可能远端对象正确但 receipt 不发布，留下难以复用的
+  Object Lock 版本。现在远端验证只比较最初捕获的 frozen audit bytes，原始输入在上传前后
+  被替换也不会影响已验证远端对象和 receipt。回归：
+  `(cd hack/backup/objectstore && go test ./internal/objectstore -run 'TestArchiveAudit' -count=1)`
+  通过。
 
 ### P2：运维兼容和长期验证
 
