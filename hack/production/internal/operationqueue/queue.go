@@ -268,10 +268,9 @@ func (q *Queue) Claim(ctx context.Context, owner, operationType string, lease ti
 			continue
 		}
 		if (phase == "" || phase == PhasePending) && attempt >= maxAttempts {
-			exhausted := candidate.DeepCopy()
-			_ = unstructured.SetNestedField(exhausted.Object, PhaseFailed, "status", "phase")
-			_ = unstructured.SetNestedField(exhausted.Object, now, "status", "completedAtUnix")
-			_ = unstructured.SetNestedField(exhausted.Object, "maximum attempts exhausted", "status", "message")
+			exhausted := q.exhaustedFailureStatus(
+				candidate, owner, "maximum attempts exhausted", nowTime,
+			)
 			_, updateErr := q.resource.UpdateStatus(ctx, exhausted, metav1.UpdateOptions{})
 			if apierrors.IsConflict(updateErr) {
 				lastConflict = updateErr
@@ -283,11 +282,9 @@ func (q *Queue) Claim(ctx context.Context, owner, operationType string, lease ti
 			continue
 		}
 		if phase == PhaseRunning && leaseUntil < now && attempt >= maxAttempts {
-			exhausted := candidate.DeepCopy()
-			_ = unstructured.SetNestedField(exhausted.Object, PhaseFailed, "status", "phase")
-			_ = unstructured.SetNestedField(exhausted.Object, int64(0), "status", "leaseUntilUnix")
-			_ = unstructured.SetNestedField(exhausted.Object, now, "status", "completedAtUnix")
-			_ = unstructured.SetNestedField(exhausted.Object, "maximum attempts exhausted", "status", "message")
+			exhausted := q.exhaustedFailureStatus(
+				candidate, owner, "maximum attempts exhausted", nowTime,
+			)
 			_, updateErr := q.resource.UpdateStatus(ctx, exhausted, metav1.UpdateOptions{})
 			if apierrors.IsConflict(updateErr) {
 				lastConflict = updateErr
@@ -345,6 +342,55 @@ func (q *Queue) Claim(ctx context.Context, owner, operationType string, lease ti
 		return nil, fmt.Errorf("%w: claim conflicts exhausted: %v", ErrNoOperation, lastConflict)
 	}
 	return nil, ErrNoOperation
+}
+
+func (q *Queue) exhaustedFailureStatus(
+	candidate *unstructured.Unstructured,
+	owner, message string,
+	nowTime time.Time,
+) *unstructured.Unstructured {
+	exhausted := candidate.DeepCopy()
+	now := nowTime.Unix()
+	currentOwner, _, _ := unstructured.NestedString(exhausted.Object, "status", "owner")
+	startedByCurrentOwner := currentOwner != ""
+	if currentOwner == "" {
+		_ = unstructured.SetNestedField(exhausted.Object, owner, "status", "owner")
+	}
+	attempt, _, _ := unstructured.NestedInt64(exhausted.Object, "status", "attempt")
+	if attempt <= 0 {
+		maxAttempts, _, _ := unstructured.NestedInt64(exhausted.Object, "spec", "maxAttempts")
+		if maxAttempts > 0 {
+			_ = unstructured.SetNestedField(exhausted.Object, maxAttempts, "status", "attempt")
+		}
+	}
+	observedGeneration, _, _ := unstructured.NestedInt64(
+		exhausted.Object, "status", "observedGeneration",
+	)
+	if observedGeneration <= 0 {
+		_ = unstructured.SetNestedField(
+			exhausted.Object, exhausted.GetGeneration(), "status", "observedGeneration",
+		)
+	}
+	startedAt, _, _ := unstructured.NestedInt64(exhausted.Object, "status", "startedAtUnix")
+	startedAtNano, foundNano, _ := unstructured.NestedInt64(
+		exhausted.Object, "status", "startedAtUnixNano",
+	)
+	if !startedByCurrentOwner || startedAt <= 0 || startedAt > now {
+		_ = unstructured.SetNestedField(exhausted.Object, now, "status", "startedAtUnix")
+		_ = unstructured.SetNestedField(
+			exhausted.Object, nowTime.UnixNano(), "status", "startedAtUnixNano",
+		)
+	} else if foundNano && startedAtNano > 0 && startedAtNano/int64(time.Second) != startedAt {
+		_ = unstructured.SetNestedField(
+			exhausted.Object, startedAt*int64(time.Second), "status", "startedAtUnixNano",
+		)
+	}
+	_ = unstructured.SetNestedField(exhausted.Object, PhaseFailed, "status", "phase")
+	_ = unstructured.SetNestedField(exhausted.Object, int64(0), "status", "leaseUntilUnix")
+	_ = unstructured.SetNestedField(exhausted.Object, now, "status", "completedAtUnix")
+	_ = unstructured.SetNestedField(exhausted.Object, "", "status", "receiptSHA256")
+	_ = unstructured.SetNestedField(exhausted.Object, message, "status", "message")
+	return exhausted
 }
 
 type namespaceQueue struct {

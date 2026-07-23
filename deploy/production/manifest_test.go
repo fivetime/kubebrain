@@ -366,6 +366,21 @@ func TestOperationCRDAndWorkerRBACFencePersistentTasks(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, found)
 	require.GreaterOrEqual(t, len(validations), 7)
+	crdExpressionsByMessage := map[string]string{}
+	for _, raw := range validations {
+		validation := raw.(map[string]any)
+		crdExpressionsByMessage[validation["message"].(string)] = validation["rule"].(string)
+	}
+	terminalAuditExpression := crdExpressionsByMessage["terminal operations require audit status identity and timing"]
+	require.Contains(t, terminalAuditExpression, `self.status.owner != ""`)
+	require.Contains(t, terminalAuditExpression, `self.status.attempt > 0`)
+	require.Contains(t, terminalAuditExpression, `self.status.observedGeneration > 0`)
+	require.Contains(t, terminalAuditExpression, `self.status.completedAtUnix >= self.status.startedAtUnix`)
+	failedReceiptExpression := crdExpressionsByMessage["failed operations cannot carry a receipt SHA-256"]
+	require.Contains(t, failedReceiptExpression, `self.status.phase != "Failed"`)
+	require.Contains(t, failedReceiptExpression, `self.status.receiptSHA256 == ""`)
+	nanoExpression := crdExpressionsByMessage["startedAtUnixNano must match startedAtUnix"]
+	require.Contains(t, nanoExpression, `self.status.startedAtUnixNano / 1000000000 == self.status.startedAtUnix`)
 
 	objects := decodeManifest(t, "kubebrain-operation-worker-rbac.yaml")
 	account := objectByKindAndName(t, objects, "ServiceAccount", "kubebrain-operation-worker")

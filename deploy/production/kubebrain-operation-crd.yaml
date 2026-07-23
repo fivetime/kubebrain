@@ -53,8 +53,14 @@ spec:
               message: pending operations cannot retain an owner or lease
             - rule: '!has(self.status) || !has(self.status.phase) || !(self.status.phase in ["Succeeded", "Failed"]) || (self.status.leaseUntilUnix == 0 && self.status.completedAtUnix > 0)'
               message: terminal operations require completion time and no lease
+            - rule: '!has(self.status) || !has(self.status.phase) || !(self.status.phase in ["Succeeded", "Failed"]) || (self.status.owner != "" && self.status.attempt > 0 && self.status.observedGeneration > 0 && self.status.startedAtUnix > 0 && self.status.completedAtUnix >= self.status.startedAtUnix)'
+              message: terminal operations require audit status identity and timing
             - rule: '!has(self.status) || !has(self.status.phase) || self.status.phase != "Succeeded" || size(self.status.receiptSHA256) == 64'
               message: succeeded operations require a receipt SHA-256
+            - rule: '!has(self.status) || !has(self.status.phase) || self.status.phase != "Failed" || !has(self.status.receiptSHA256) || self.status.receiptSHA256 == ""'
+              message: failed operations cannot carry a receipt SHA-256
+            - rule: '!has(self.status) || !has(self.status.startedAtUnixNano) || self.status.startedAtUnixNano == 0 || (has(self.status.startedAtUnix) && self.status.startedAtUnix > 0 && self.status.startedAtUnixNano / 1000000000 == self.status.startedAtUnix)'
+              message: startedAtUnixNano must match startedAtUnix
           required:
             - spec
           properties:

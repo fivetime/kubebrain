@@ -1108,6 +1108,85 @@ func TestQueueStopsAfterMaximumAttempts(t *testing.T) {
 	phase, _, err := unstructured.NestedString(exhausted.Object, "status", "phase")
 	require.NoError(t, err)
 	require.Equal(t, PhaseFailed, phase)
+	owner, _, err := unstructured.NestedString(exhausted.Object, "status", "owner")
+	require.NoError(t, err)
+	require.Equal(t, "worker-b", owner)
+	attempt, _, err := unstructured.NestedInt64(exhausted.Object, "status", "attempt")
+	require.NoError(t, err)
+	require.Equal(t, int64(2), attempt)
+	observedGeneration, _, err := unstructured.NestedInt64(
+		exhausted.Object, "status", "observedGeneration",
+	)
+	require.NoError(t, err)
+	require.Equal(t, exhausted.GetGeneration(), observedGeneration)
+	startedAtUnix, _, err := unstructured.NestedInt64(
+		exhausted.Object, "status", "startedAtUnix",
+	)
+	require.NoError(t, err)
+	completedAtUnix, _, err := unstructured.NestedInt64(
+		exhausted.Object, "status", "completedAtUnix",
+	)
+	require.NoError(t, err)
+	require.Greater(t, startedAtUnix, int64(0))
+	require.GreaterOrEqual(t, completedAtUnix, startedAtUnix)
+	require.Equal(t, int64(1_002), startedAtUnix)
+	require.Equal(t, int64(1_004), completedAtUnix)
+	receiptSHA256, _, err := unstructured.NestedString(
+		exhausted.Object, "status", "receiptSHA256",
+	)
+	require.NoError(t, err)
+	require.Empty(t, receiptSHA256)
+}
+
+func TestQueueMarksRequeuedExhaustionWithAuditCompleteStatus(t *testing.T) {
+	now := time.Unix(2_000, 0).UTC()
+	queue := newFakeQueue().WithClock(func() time.Time { return now })
+	ctx := context.Background()
+	spec := validSpec()
+	spec.MaxAttempts = 1
+	_, err := queue.Submit(ctx, "backup-1", spec)
+	require.NoError(t, err)
+	claim, err := queue.Claim(ctx, "worker-a", "", time.Second)
+	require.NoError(t, err)
+	_, err = queue.Requeue(ctx, claim.Name, claim.Owner, claim.Attempt, "transient")
+	require.NoError(t, err)
+
+	now = now.Add(2 * time.Second)
+	_, err = queue.Claim(ctx, "worker-b", "", time.Second)
+	require.ErrorIs(t, err, ErrNoOperation)
+	exhausted, err := queue.Get(ctx, "backup-1")
+	require.NoError(t, err)
+	phase, _, err := unstructured.NestedString(exhausted.Object, "status", "phase")
+	require.NoError(t, err)
+	require.Equal(t, PhaseFailed, phase)
+	owner, _, err := unstructured.NestedString(exhausted.Object, "status", "owner")
+	require.NoError(t, err)
+	require.Equal(t, "worker-b", owner)
+	attempt, _, err := unstructured.NestedInt64(exhausted.Object, "status", "attempt")
+	require.NoError(t, err)
+	require.Equal(t, int64(1), attempt)
+	observedGeneration, _, err := unstructured.NestedInt64(
+		exhausted.Object, "status", "observedGeneration",
+	)
+	require.NoError(t, err)
+	require.Equal(t, exhausted.GetGeneration(), observedGeneration)
+	startedAtUnix, _, err := unstructured.NestedInt64(
+		exhausted.Object, "status", "startedAtUnix",
+	)
+	require.NoError(t, err)
+	completedAtUnix, _, err := unstructured.NestedInt64(
+		exhausted.Object, "status", "completedAtUnix",
+	)
+	require.NoError(t, err)
+	require.Greater(t, startedAtUnix, int64(0))
+	require.GreaterOrEqual(t, completedAtUnix, startedAtUnix)
+	require.Equal(t, int64(2_002), startedAtUnix)
+	require.Equal(t, int64(2_002), completedAtUnix)
+	receiptSHA256, _, err := unstructured.NestedString(
+		exhausted.Object, "status", "receiptSHA256",
+	)
+	require.NoError(t, err)
+	require.Empty(t, receiptSHA256)
 }
 
 func TestQueueRequeueConsumesAttemptAndFiltersType(t *testing.T) {

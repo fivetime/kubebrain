@@ -10511,6 +10511,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   不可变审计 artifact 的字符串契约。回归：
   `go test ./deploy/production -run 'TestOperationCRDAndWorkerRBACFencePersistentTasks' -count=1`
   通过。
+- A629 对齐 Operation 终态 CRD 与 audit artifact 必需字段：
+  CRD 旧规则只要求 terminal phase 有 `completedAtUnix` 且无 lease，并只对 Succeeded
+  要求 receipt 长度。直接 status update、旧 CRD 或 fake-client 路径仍可创建缺少
+  `owner`/`attempt`/`observedGeneration`/`startedAtUnix`、`completedAtUnix` 早于
+  `startedAtUnix`、Failed 携带 receipt，或 `startedAtUnixNano` 与秒级 start
+  不一致的终态对象；这些对象都会在 `operationauditbuilder.FromOperation` 阶段失败，
+  导致 audit finalizer 无法释放。现在生产 CRD 用 CEL 同步拒绝这些终态漂移；同时
+  queue 的 maxAttempts exhaustion 路径会补齐 audit-complete failed status，Failed
+  终态显式清空 receipt，避免“尝试次数耗尽”本身生成不可归档对象。回归：
+  `go test ./hack/production/internal/operationqueue ./deploy/production -run 'TestQueue(StopsAfterMaximumAttempts|MarksRequeuedExhaustionWithAuditCompleteStatus)|TestOperationCRDAndWorkerRBACFencePersistentTasks' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 
