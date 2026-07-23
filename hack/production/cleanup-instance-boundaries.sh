@@ -71,6 +71,11 @@ atomic_publish() {
       rm -f "$temporary"
       return
     fi
+    if [[ "$destination" == "$receipt_file" && -n "${secrets_json:-}" ]] &&
+      validate_existing_cleanup_receipt; then
+      rm -f "$temporary"
+      return
+    fi
     rm -f "$temporary"
     echo "refusing to overwrite boundary cleanup evidence: ${destination}" >&2
     exit 1
@@ -81,6 +86,22 @@ atomic_publish() {
 
 destroy_receipt_sha() {
   sha256sum "$DESTROY_RECEIPT_INPUT" | awk '{print $1}'
+}
+
+validate_existing_cleanup_receipt() {
+  "$JQ" -e --arg instance "$INSTANCE" --arg cleanup "$CLEANUP_ID" \
+    --arg destroy_sha "$(destroy_receipt_sha)" \
+    --arg kbns "$KUBEBRAIN_NAMESPACE" --arg tidbns "$TIDB_NAMESPACE" \
+    --arg credns "$CREDENTIAL_NAMESPACE" --argjson secrets "$secrets_json" \
+    'keys == ["cleanup_id","completed_at_unix","credential_namespace","credential_secrets","credentials_absent","destroy_receipt_sha256","format","instance","kubebrain_namespace","namespaces_absent","tidb_namespace"] and
+     .format == "kubebrain.boundary-cleanup.receipt.v1" and
+     .instance == $instance and .cleanup_id == $cleanup and
+     .destroy_receipt_sha256 == $destroy_sha and
+     .kubebrain_namespace == $kbns and .tidb_namespace == $tidbns and
+     .credential_namespace == $credns and .credential_secrets == $secrets and
+     .namespaces_absent == true and .credentials_absent == true and
+     (.completed_at_unix | type == "number" and . > 0 and . == floor)' \
+    "$receipt_file" >/dev/null
 }
 
 validate_destroy_receipt() {
@@ -281,19 +302,7 @@ case "$ACTION" in
     wait_absent
     secrets_json="$("$JQ" -Rn '[inputs | split("\t") | select(.[0] == "SECRET") | .[1]]' <"$state_file")"
     if [[ -e "$receipt_file" ]]; then
-      "$JQ" -e --arg instance "$INSTANCE" --arg cleanup "$CLEANUP_ID" \
-        --arg destroy_sha "$(destroy_receipt_sha)" \
-        --arg kbns "$KUBEBRAIN_NAMESPACE" --arg tidbns "$TIDB_NAMESPACE" \
-        --arg credns "$CREDENTIAL_NAMESPACE" --argjson secrets "$secrets_json" \
-        'keys == ["cleanup_id","completed_at_unix","credential_namespace","credential_secrets","credentials_absent","destroy_receipt_sha256","format","instance","kubebrain_namespace","namespaces_absent","tidb_namespace"] and
-         .format == "kubebrain.boundary-cleanup.receipt.v1" and
-         .instance == $instance and .cleanup_id == $cleanup and
-         .destroy_receipt_sha256 == $destroy_sha and
-         .kubebrain_namespace == $kbns and .tidb_namespace == $tidbns and
-         .credential_namespace == $credns and .credential_secrets == $secrets and
-         .namespaces_absent == true and .credentials_absent == true and
-         (.completed_at_unix | type == "number" and . > 0 and . == floor)' \
-        "$receipt_file" >/dev/null ||
+      validate_existing_cleanup_receipt ||
         { echo "existing boundary cleanup receipt does not match" >&2; exit 1; }
       echo "boundary cleanup completion passed: instance=${INSTANCE} receipt=${receipt_file}"
       exit 0

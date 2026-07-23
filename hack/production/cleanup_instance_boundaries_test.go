@@ -40,6 +40,21 @@ func TestBoundaryCleanupLifecycleIsRetrySafe(t *testing.T) {
 	}
 }
 
+func TestBoundaryCleanupTreatsConcurrentReceiptPublishAsIdempotent(t *testing.T) {
+	f := newBoundaryCleanupFixture(t)
+	f.run(t, "prepare", true, "")
+	f.run(t, "delete", true, "")
+	f.run(t, "complete", true, "PUBLISH_CLEANUP_RECEIPT_DURING_JQ=true")
+
+	data, err := os.ReadFile(filepath.Join(f.stateDir, "cleanup-1.receipt.json"))
+	require.NoError(t, err)
+	var receipt map[string]any
+	require.NoError(t, json.Unmarshal(data, &receipt))
+	require.Equal(t, "kubebrain.boundary-cleanup.receipt.v1", receipt["format"])
+	require.Equal(t, float64(1), receipt["completed_at_unix"])
+	require.Equal(t, []any{"client-tls", "object-store"}, receipt["credential_secrets"])
+}
+
 func TestBoundaryCleanupRejectsExistingReceiptWithUnknownFields(t *testing.T) {
 	f := newBoundaryCleanupFixture(t)
 	f.run(t, "prepare", true, "")
@@ -234,6 +249,23 @@ kind="${resource%s}"
 [[ "$resource" == namespaces ]] && kind=namespace
 touch "$FAKE_RESOURCE_DIR/deleted-$kind-$name"
 `)
+	realJQ, err := exec.LookPath("jq")
+	require.NoError(t, err)
+	jq := filepath.Join(dir, "jq-wrapper")
+	writeDestroyExecutable(t, jq, `#!/usr/bin/env bash
+set -euo pipefail
+"$REAL_JQ" "$@"
+if [[ "${PUBLISH_CLEANUP_RECEIPT_DURING_JQ:-false}" == true &&
+  " $* " == *" -cnS "* && " $* " == *"kubebrain.boundary-cleanup.receipt.v1"* &&
+  ! -f "$STATE_DIR/$CLEANUP_ID.receipt.json" ]]; then
+  state_path="$STATE_DIR/$CLEANUP_ID.boundaries"
+  destroy_sha="$(sha256sum "$DESTROY_RECEIPT_INPUT" | cut -d ' ' -f1)"
+  secrets="$("$REAL_JQ" -Rn '[inputs | split("\t") | select(.[0] == "SECRET") | .[1]]' <"$state_path")"
+  printf '{"cleanup_id":"%s","completed_at_unix":1,"credential_namespace":"%s","credential_secrets":%s,"credentials_absent":true,"destroy_receipt_sha256":"%s","format":"kubebrain.boundary-cleanup.receipt.v1","instance":"%s","kubebrain_namespace":"%s","namespaces_absent":true,"tidb_namespace":"%s"}\n' \
+    "$CLEANUP_ID" "$CREDENTIAL_NAMESPACE" "$secrets" "$destroy_sha" "$INSTANCE" "$KUBEBRAIN_NAMESPACE" "$TIDB_NAMESPACE" >"$STATE_DIR/$CLEANUP_ID.receipt.json"
+  chmod 600 "$STATE_DIR/$CLEANUP_ID.receipt.json"
+fi
+`)
 
 	return &boundaryCleanupFixture{
 		dir:      dir,
@@ -254,6 +286,8 @@ touch "$FAKE_RESOURCE_DIR/deleted-$kind-$name"
 			"FAKE_RESOURCE_DIR=" + dir,
 			"TIMEOUT_SECONDS=2",
 			"POLL_INTERVAL_SECONDS=0",
+			"JQ=" + jq,
+			"REAL_JQ=" + realJQ,
 		},
 	}
 }

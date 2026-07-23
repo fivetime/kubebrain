@@ -10721,6 +10721,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   begin/overlap 证据仍保持字节级幂等，receipt 漂移或嵌套伪造字段仍 fail closed。回归：
   `go test ./hack/production -run 'TestValidateCertificateRotationTreatsConcurrentReceiptPublishAsIdempotent|TestValidateCertificateRotationLifecycle|TestValidateCertificateRotationRejectsNestedExistingReceiptFields' -count=1`
   通过。
+- A650 让 boundary cleanup receipt 发布竞争幂等：
+  `cleanup-instance-boundaries.sh` 的 complete 阶段在 destroy receipt、冻结 namespace/secret
+  UID fence 和资源 absent 全部复核后发布 `kubebrain.boundary-cleanup.receipt.v1`。旧逻辑
+  与 A648/A649 相同，只在生成前检查已有终态文件；若另一个 worker 在 hard-link 前
+  发布同一 cleanup 的有效 receipt，当前 worker 会因 `completed_at_unix` 不同误判覆盖。
+  现在 receipt 校验被抽成共享 helper，`atomic_publish` 仅在目标是 cleanup receipt 且
+  complete 已从冻结 state 构造 `credential_secrets` JSON 时复用 exact key set 校验；
+  existing receipt 必须匹配 cleanup ID、destroy receipt SHA、三个 namespace 字段、
+  credential secret 列表以及 absent 标志才视为幂等成功。boundary state 仍保持字节级
+  幂等，receipt unknown field 或漂移仍 fail closed。回归：
+  `go test ./hack/production -run 'TestBoundaryCleanupTreatsConcurrentReceiptPublishAsIdempotent|TestBoundaryCleanupLifecycleIsRetrySafe|TestBoundaryCleanupRejectsExistingReceiptWithUnknownFields' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 
