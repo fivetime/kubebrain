@@ -75,6 +75,21 @@ func TestCertificateRotationOperationRejectsCredentialAndParameterDrift(t *testi
 	require.Contains(t, f.log(t), "--action retry")
 }
 
+func TestCertificateRotationOperationRejectsCredentialTamperedDuringCapture(t *testing.T) {
+	f := newRotationRunnerFixture(t)
+	f.run(t, false, "TAMPER_CREDENTIAL_DURING_SHA256=true", "credential changed")
+	log := f.log(t)
+	require.Contains(t, log, "--action retry")
+	require.NotContains(t, log, "gate begin")
+	require.NotContains(t, log, "--action succeed")
+}
+
+func TestCertificateRotationOperationPassesFrozenParametersToSteps(t *testing.T) {
+	f := newRotationRunnerFixture(t)
+	f.run(t, true, "ASSERT_FROZEN_PARAMETERS=true")
+	require.Contains(t, f.log(t), "--action succeed")
+}
+
 func TestCertificateRotationOperationRejectsEmptyRequiredParameters(t *testing.T) {
 	f := newRotationRunnerFixture(t)
 	parameters := strings.ReplaceAll(
@@ -176,6 +191,11 @@ fi
 	gate := filepath.Join(dir, "gate")
 	writeTrafficExecutable(t, gate, `#!/usr/bin/env bash
 set -euo pipefail
+if [[ "${ASSERT_FROZEN_PARAMETERS:-false}" == true ]] &&
+  grep -Fq "\"old_cert\":\"$FAKE_DIR/old-cert\"" "$PARAMETERS_INPUT"; then
+  echo "gate received unfrozen parameters" >&2
+  exit 9
+fi
 printf 'gate %s\n' "$ACTION" >>"$FAKE_DIR/actions.log"
 if [[ "${SLEEP_STEP:-}" == "$ACTION" ]]; then sleep 1; fi
 if [[ "${FAIL_STEP:-}" == "$ACTION" ]]; then exit 8; fi
@@ -208,11 +228,21 @@ esac
 `)
 	overlapHook := filepath.Join(dir, "publish-overlap")
 	writeTrafficExecutable(t, overlapHook, `#!/usr/bin/env bash
+if [[ "${ASSERT_FROZEN_PARAMETERS:-false}" == true ]] &&
+  grep -Fq "\"old_cert\":\"$FAKE_DIR/old-cert\"" "$PARAMETERS_INPUT"; then
+  echo "overlap hook received unfrozen parameters" >&2
+  exit 9
+fi
 printf 'hook overlap\n' >>"$FAKE_DIR/actions.log"
 [[ "${FAIL_STEP:-}" != publish-overlap ]]
 `)
 	finalHook := filepath.Join(dir, "publish-final")
 	writeTrafficExecutable(t, finalHook, `#!/usr/bin/env bash
+if [[ "${ASSERT_FROZEN_PARAMETERS:-false}" == true ]] &&
+  grep -Fq "\"old_cert\":\"$FAKE_DIR/old-cert\"" "$PARAMETERS_INPUT"; then
+  echo "final hook received unfrozen parameters" >&2
+  exit 9
+fi
 printf 'hook final\n' >>"$FAKE_DIR/actions.log"
 [[ "${FAIL_STEP:-}" != publish-final ]]
 `)
@@ -222,6 +252,7 @@ printf 'hook final\n' >>"$FAKE_DIR/actions.log"
 		"OPERATIONCTL=" + operationctl, "ROTATION_COMMAND=" + gate,
 		"PUBLISH_OVERLAP_COMMAND=" + overlapHook, "PUBLISH_FINAL_COMMAND=" + finalHook,
 		"FAKE_DIR=" + dir, "PARAMETERS_DIGEST=" + digest,
+		"RUNNER_CREDENTIAL_INPUT=" + filepath.Join(dir, "old-cert"),
 		"ROTATION_OLD_FINGERPRINT=" + rotationOldFingerprint,
 		"ROTATION_NEW_FINGERPRINT=" + rotationNewFingerprint,
 	}

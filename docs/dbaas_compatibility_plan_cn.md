@@ -10888,6 +10888,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   时 fail closed，不发布 prepare evidence。回归：
   `go test ./hack/production -run 'TestDestroyInstance|TestDestroyOperation' -count=1`
   通过。
+- A667 冻结 CertificateRotation operation 的 credential 输入：
+  `run-certificate-rotation-operation.sh` 旧逻辑只逐个校验 old/new/overlap CA、cert、key
+  的参数 SHA，随后 gate 与 publish hook 仍通过原始 `PARAMETERS_INPUT` 或原始 credential
+  路径消费本地文件；若校验后文件被替换，证书轮转可能发布未绑定 bytes。现在 runner 在
+  参数 digest 通过后把 7 个 credential 捕获到私有临时目录，要求副本和调用方源路径 digest
+  都仍等于参数 SHA，并生成内部参数副本把 credential 路径改写为冻结文件；gate 和 publish
+  hook 都只接收该内部参数文件。捕获窗口漂移会 retry，且不会进入 begin gate。回归：
+  `go test ./hack/production -run 'TestCertificateRotationOperation' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

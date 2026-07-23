@@ -82,10 +82,17 @@ instance="$("$JQ" -er '.instance' <<<"$claim")"
 attempt="$("$JQ" -er '.attempt | select(. > 0)' <<<"$claim")"
 expected_digest="$("$JQ" -er '.parameters_sha256 | select(test("^[a-f0-9]{64}$"))' <<<"$claim")"
 managed_parameters=""
+managed_credentials_dir=""
+managed_rotation_parameters=""
+cleanup_managed_inputs() {
+  [[ -z "$managed_parameters" ]] || rm -f "$managed_parameters"
+  [[ -z "$managed_rotation_parameters" ]] || rm -f "$managed_rotation_parameters"
+  [[ -z "$managed_credentials_dir" ]] || rm -rf "$managed_credentials_dir"
+}
+trap cleanup_managed_inputs EXIT INT TERM
 if [[ -z "$PARAMETERS_INPUT" ]]; then
   managed_parameters="$(mktemp)"
   PARAMETERS_INPUT="$managed_parameters"
-  trap 'rm -f "$managed_parameters"' EXIT
   run_operationctl --action parameters --name "$name" --owner "$WORKER_ID" \
     --attempt "$attempt" >"$PARAMETERS_INPUT"
 fi
@@ -133,6 +140,43 @@ for index in "${!credential_files[@]}"; do
     exit 1
   fi
 done
+managed_credentials_dir="$(mktemp -d)"
+managed_rotation_parameters="$(mktemp)"
+
+freeze_credential() {
+  local source="$1" expected="$2" name="$3" destination captured current
+  destination="${managed_credentials_dir}/${name}"
+  cp "$source" "$destination"
+  chmod 600 "$destination"
+  captured="$(sha256sum "$destination" | cut -d ' ' -f1)" || return 1
+  current="$(sha256sum "$source" | cut -d ' ' -f1)" || return 1
+  [[ "$captured" == "$expected" && "$current" == "$expected" ]] || return 1
+  printf '%s\n' "$destination"
+}
+
+old_ca="$(freeze_credential "$old_ca" "$old_ca_sha" old-cacert)" ||
+  { run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "rotation credential changed during capture" >/dev/null; echo "rotation credential changed while being captured" >&2; exit 1; }
+old_cert="$(freeze_credential "$old_cert" "$old_cert_sha" old-cert)" ||
+  { run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "rotation credential changed during capture" >/dev/null; echo "rotation credential changed while being captured" >&2; exit 1; }
+old_key="$(freeze_credential "$old_key" "$old_key_sha" old-key)" ||
+  { run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "rotation credential changed during capture" >/dev/null; echo "rotation credential changed while being captured" >&2; exit 1; }
+new_ca="$(freeze_credential "$new_ca" "$new_ca_sha" new-cacert)" ||
+  { run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "rotation credential changed during capture" >/dev/null; echo "rotation credential changed while being captured" >&2; exit 1; }
+new_cert="$(freeze_credential "$new_cert" "$new_cert_sha" new-cert)" ||
+  { run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "rotation credential changed during capture" >/dev/null; echo "rotation credential changed while being captured" >&2; exit 1; }
+new_key="$(freeze_credential "$new_key" "$new_key_sha" new-key)" ||
+  { run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "rotation credential changed during capture" >/dev/null; echo "rotation credential changed while being captured" >&2; exit 1; }
+overlap_ca="$(freeze_credential "$overlap_ca" "$overlap_ca_sha" overlap-cacert)" ||
+  { run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "rotation credential changed during capture" >/dev/null; echo "rotation credential changed while being captured" >&2; exit 1; }
+
+"$JQ" -cS \
+  --arg old_ca "$old_ca" --arg old_cert "$old_cert" --arg old_key "$old_key" \
+  --arg new_ca "$new_ca" --arg new_cert "$new_cert" --arg new_key "$new_key" \
+  --arg overlap_ca "$overlap_ca" '
+  .old_cacert = $old_ca | .old_cert = $old_cert | .old_key = $old_key |
+  .new_cacert = $new_ca | .new_cert = $new_cert | .new_key = $new_key |
+  .overlap_cacert = $overlap_ca' "$PARAMETERS_INPUT" >"$managed_rotation_parameters"
+PARAMETERS_INPUT="$managed_rotation_parameters"
 
 rotation_env=(
   "ROTATION_ID=${rotation_id}" "INSTANCE=${instance}" "STATE_DIR=${state_dir}"
@@ -149,7 +193,7 @@ child=0
 heartbeat_pid=0
 fenced=false
 cleanup() {
-  [[ -z "$managed_parameters" ]] || rm -f "$managed_parameters"
+  cleanup_managed_inputs
   if [[ "$child" -gt 0 ]] && kill -0 "$child" 2>/dev/null; then
     kill "$child" 2>/dev/null || true
     wait "$child" 2>/dev/null || true
@@ -380,4 +424,5 @@ if ! receipt_digest="$(validated_rotation_receipt_digest)"; then
 fi
 run_operationctl --action succeed --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
   --receipt-sha256 "$receipt_digest" --message "certificate rotation completed" >/dev/null
+cleanup_managed_inputs
 trap - EXIT INT TERM
