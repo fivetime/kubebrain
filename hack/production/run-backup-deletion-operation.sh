@@ -35,6 +35,7 @@ EOF
 [[ "$LEASE_SECONDS" =~ ^[1-9][0-9]*$ && "$LEASE_SECONDS" -ge 6 ]] ||
   { echo "LEASE_SECONDS must be an integer of at least 6" >&2; exit 2; }
 command -v "$JQ" >/dev/null || { echo "jq is required" >&2; exit 2; }
+command -v sha256sum >/dev/null || { echo "sha256sum is required" >&2; exit 2; }
 
 operationctl=()
 if [[ -n "$OPERATIONCTL" ]]; then
@@ -70,9 +71,9 @@ instance="$("$JQ" -er '.instance' <<<"$claim")"
 attempt="$("$JQ" -er '.attempt | select(. > 0)' <<<"$claim")"
 expected_digest="$("$JQ" -er '.parameters_sha256 | select(test("^[a-f0-9]{64}$"))' <<<"$claim")"
 managed_parameters=""
-managed_evidence_dir=""
+managed_evidence_dir="$(mktemp -d)"
 if [[ -z "$PARAMETERS_INPUT" ]]; then
-  managed_parameters="$(mktemp)"
+  managed_parameters="${managed_evidence_dir}/managed-parameters.json"
   PARAMETERS_INPUT="$managed_parameters"
 fi
 cleanup_inputs() {
@@ -80,17 +81,37 @@ cleanup_inputs() {
   [[ -z "$managed_evidence_dir" ]] || rm -rf "$managed_evidence_dir"
 }
 trap cleanup_inputs EXIT
+file_sha256() {
+  local path="$1" digest
+  digest="$(sha256sum "$path" | cut -d ' ' -f1)" || return 1
+  [[ "$digest" =~ ^[a-f0-9]{64}$ ]] || return 1
+  printf '%s\n' "$digest"
+}
+
 if [[ -n "$managed_parameters" ]]; then
   run_operationctl --action parameters --name "$name" --owner "$WORKER_ID" \
     --attempt "$attempt" >"$PARAMETERS_INPUT"
 fi
-actual_digest="$(sha256sum "$PARAMETERS_INPUT" | cut -d ' ' -f1)"
+actual_digest="$(file_sha256 "$PARAMETERS_INPUT")" || actual_digest=""
 if [[ "$actual_digest" != "$expected_digest" ]]; then
   run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
     --message "parameters digest mismatch" >/dev/null
   echo "claimed operation parameters digest does not match PARAMETERS_INPUT" >&2
   exit 1
 fi
+frozen_parameters="${managed_evidence_dir}/parameters.json"
+cp -- "$PARAMETERS_INPUT" "$frozen_parameters" ||
+  { echo "capture operation parameters failed" >&2; exit 2; }
+chmod 600 "$frozen_parameters"
+captured_digest="$(file_sha256 "$frozen_parameters")" || captured_digest=""
+current_digest="$(file_sha256 "$PARAMETERS_INPUT")" || current_digest=""
+if [[ "$captured_digest" != "$expected_digest" || "$current_digest" != "$expected_digest" ]]; then
+  run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
+    --message "parameters digest mismatch" >/dev/null
+  echo "claimed operation parameters digest does not match PARAMETERS_INPUT" >&2
+  exit 1
+fi
+PARAMETERS_INPUT="$frozen_parameters"
 
 parameters="$("$JQ" -er '[
   .backup_id, .object_store_id, .s3_endpoint, .s3_force_path_style,
@@ -120,13 +141,6 @@ done
 for path in "$source_receipt" "$pre_manifest" "$post_manifest"; do
   [[ -f "$path" ]] || { echo "backup deletion evidence is missing: ${path}" >&2; exit 1; }
 done
-
-file_sha256() {
-  local path="$1" digest
-  digest="$(sha256sum "$path" | cut -d ' ' -f1)" || return 1
-  [[ "$digest" =~ ^[a-f0-9]{64}$ ]] || return 1
-  printf '%s\n' "$digest"
-}
 
 freeze_evidence() {
   local source="$1" expected="$2" name="$3" destination source_digest captured_digest current_digest
@@ -162,7 +176,6 @@ capture_evidence() {
   esac
 }
 
-managed_evidence_dir="$(mktemp -d)"
 capture_evidence source_receipt "$source_receipt" "$source_sha" source-receipt.json
 capture_evidence pre_manifest "$pre_manifest" "$pre_manifest_sha" pre-manifest.json
 capture_evidence post_manifest "$post_manifest" "$post_manifest_sha" post-manifest.json
@@ -418,4 +431,5 @@ if ! receipt_digest="$(validated_operation_receipt_digest)"; then
 fi
 run_operationctl --action succeed --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
   --receipt-sha256 "$receipt_digest" --message "exact backup version lifecycle completed" >/dev/null
+cleanup
 trap - EXIT INT TERM

@@ -10990,6 +10990,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   claimed SHA，后续 audit env 构造只读冻结副本；捕获漂移走 retry 且不写 audit receipt。
   回归：`go test ./hack/production -run 'TestPostRestoreAuditOperation' -count=1`
   通过。
+- A678 冻结 BackupDeletion operation runner 的参数输入：
+  A671 已冻结 source receipt/pre manifest/post manifest 三份 evidence，但
+  `run-backup-deletion-operation.sh` 仍在 claimed parameter digest 通过后从原始
+  `PARAMETERS_INPUT` 解析这些 evidence 路径和输出 receipt 路径；若参数文件在 digest 后被
+  替换，runner 可能删除未被 claim 绑定的对象版本。现在 runner 复用 evidence 私有目录捕获
+  参数副本，要求源路径与副本在捕获窗口内都等于 claimed SHA，后续参数解析和 evidence
+  capture 都只由冻结参数驱动；捕获漂移会 retry，且不会进入 object workflow。回归：
+  `go test ./hack/production -run 'TestBackupDeletionOperation' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

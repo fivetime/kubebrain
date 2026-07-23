@@ -249,6 +249,14 @@ func TestBackupDeletionOperationRejectsDriftAndInvalidEvidence(t *testing.T) {
 		f.run(t, false, "CLAIM_DIGEST="+strings.Repeat("f", 64), "parameters digest")
 		require.Contains(t, f.log(t), "--action retry")
 	})
+	t.Run("parameters tampered during digest", func(t *testing.T) {
+		f := newBackupDeletionFixture(t)
+		f.run(t, false, "TAMPER_PARAMETERS_DURING_SHA256=true", "parameters digest")
+		log := f.log(t)
+		require.Contains(t, log, "--action retry")
+		require.NotContains(t, log, "object ")
+		require.NotContains(t, log, "--action succeed")
+	})
 	t.Run("empty required parameter", func(t *testing.T) {
 		f := newBackupDeletionFixture(t)
 		parameters := strings.ReplaceAll(
@@ -432,6 +440,7 @@ fi
 		"BACKUP_DELETION_OPERATION_ID=delete-1", "BACKUP_DELETION_INSTANCE=instance-a",
 		"BACKUP_DELETION_OBJECT_KEY=instance-a/backup-1.jsonl",
 		"BACKUP_DELETION_VERSION_ID=version-1",
+		"RUNNER_PARAMETERS_INPUT=" + f.parameters,
 	}
 	f.env = append(f.env, receiptDigestTamperEnv(t, dir, f.operationReceipt)...)
 	return f
