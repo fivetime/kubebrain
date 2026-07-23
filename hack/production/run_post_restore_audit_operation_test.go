@@ -26,6 +26,14 @@ func TestPostRestoreAuditOperationCompletesAndBindsReceipt(t *testing.T) {
 	require.NotContains(t, log, "--action retry")
 }
 
+func TestPostRestoreAuditOperationPassesFrozenEvidenceToAudit(t *testing.T) {
+	f := newOperationRunnerFixture(t)
+	f.run(t, true, "ASSERT_FROZEN_INPUTS=true")
+	log := f.auditLog(t)
+	require.NotContains(t, log, f.cutoverState)
+	require.NotContains(t, log, f.cutoverReceipt)
+}
+
 func TestPostRestoreAuditOperationRejectsInvalidReceipt(t *testing.T) {
 	f := newOperationRunnerFixture(t)
 	f.run(t, false, "INVALID_AUDIT_RECEIPT=true", "invalid receipt")
@@ -63,7 +71,13 @@ func TestPostRestoreAuditOperationRejectsNonCanonicalCutoverState(t *testing.T) 
 	f := newOperationRunnerFixture(t)
 	path := filepath.Join(f.dir, "cutover.state")
 	require.NoError(t, os.WriteFile(path, append(mustRead(t, path), []byte("UNKNOWN\trow\n")...), 0o600))
-	f.run(t, false, "", "invalid receipt")
+	parameters := strings.ReplaceAll(
+		string(mustRead(t, f.parameters)),
+		f.cutoverStateSHA,
+		fileDigest(t, path),
+	)
+	require.NoError(t, os.WriteFile(f.parameters, []byte(parameters), 0o600))
+	f.run(t, false, "CLAIM_DIGEST="+fileDigest(t, f.parameters), "invalid receipt")
 	log := f.log(t)
 	require.Contains(t, log, "--action retry")
 	require.NotContains(t, log, "--action succeed")
@@ -82,6 +96,72 @@ func TestPostRestoreAuditOperationRejectsCutoverEvidenceDriftAfterAudit(t *testi
 			log := f.log(t)
 			require.Contains(t, log, "--action retry")
 			require.NotContains(t, log, "--action succeed")
+		})
+	}
+}
+
+func TestPostRestoreAuditOperationRejectsCutoverEvidenceDrift(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		path    func(*operationRunnerFixture) string
+		message string
+	}{
+		{
+			name: "state",
+			path: func(f *operationRunnerFixture) string {
+				return f.cutoverState
+			},
+			message: "cutover state bytes do not match",
+		},
+		{
+			name: "receipt",
+			path: func(f *operationRunnerFixture) string {
+				return f.cutoverReceipt
+			},
+			message: "cutover receipt bytes do not match",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newOperationRunnerFixture(t)
+			require.NoError(t, os.WriteFile(tc.path(f), []byte("changed\n"), 0o600))
+			f.run(t, false, "", tc.message)
+			log := f.log(t)
+			require.Contains(t, log, "--action retry")
+			require.NotContains(t, log, "--action succeed")
+			require.NoFileExists(t, filepath.Join(f.dir, "audit.log"))
+		})
+	}
+}
+
+func TestPostRestoreAuditOperationRejectsCutoverEvidenceTamperedDuringCapture(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		path    func(*operationRunnerFixture) string
+		message string
+	}{
+		{
+			name: "state",
+			path: func(f *operationRunnerFixture) string {
+				return f.cutoverState
+			},
+			message: "cutover state bytes changed",
+		},
+		{
+			name: "receipt",
+			path: func(f *operationRunnerFixture) string {
+				return f.cutoverReceipt
+			},
+			message: "cutover receipt bytes changed",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newOperationRunnerFixture(t)
+			f.env = append(f.env, "RUNNER_EVIDENCE_INPUT="+tc.path(f))
+			f.run(t, false, "TAMPER_EVIDENCE_DURING_SHA256=true", tc.message)
+			log := f.log(t)
+			require.Contains(t, log, "--action retry")
+			require.NotContains(t, log, "--action succeed")
+			require.NoFileExists(t, filepath.Join(f.dir, "audit.log"))
 		})
 	}
 }
@@ -138,8 +218,8 @@ func TestPostRestoreAuditOperationLoadsManagedParameters(t *testing.T) {
 }
 
 type operationRunnerFixture struct {
-	dir, parameters string
-	env             []string
+	dir, parameters, cutoverState, cutoverReceipt, cutoverStateSHA, cutoverReceiptSHA string
+	env                                                                               []string
 }
 
 func newOperationRunnerFixture(t *testing.T) *operationRunnerFixture {
@@ -151,13 +231,17 @@ func newOperationRunnerFixture(t *testing.T) *operationRunnerFixture {
 	cutoverReceipt := filepath.Join(dir, "cutover.json")
 	require.NoError(t, os.WriteFile(cutoverState, []byte(operationAuditCutoverState()), 0o600))
 	require.NoError(t, os.WriteFile(cutoverReceipt, []byte(operationAuditCutoverReceipt()), 0o600))
+	cutoverStateSHA := fileDigest(t, cutoverState)
+	cutoverReceiptSHA := fileDigest(t, cutoverReceipt)
 	require.NoError(t, os.WriteFile(parameters, []byte(fmt.Sprintf(`{
-	  "state_dir":%q,"cutover_state_input":%q,"cutover_receipt_input":%q,
+	  "state_dir":%q,"cutover_state_input":%q,"cutover_state_sha256":%q,
+	  "cutover_receipt_input":%q,"cutover_receipt_sha256":%q,
 	  "service_namespace":"ns-a","service_name":"kubebrain","target_instance":"target",
 	  "expected_replicas":2,"public_endpoint":"https://service:2379",
 	  "audit_duration_seconds":1,"audit_interval_seconds":0,"min_samples":1,
 	  "audit_prefix":"/audit","receipt_output":%q
-	}`, filepath.Join(dir, "state"), cutoverState, cutoverReceipt, receipt)), 0o600))
+	}`, filepath.Join(dir, "state"), cutoverState, cutoverStateSHA,
+		cutoverReceipt, cutoverReceiptSHA, receipt)), 0o600))
 	data, err := os.ReadFile(parameters)
 	require.NoError(t, err)
 	digest := fmt.Sprintf("%x", sha256.Sum256(data))
@@ -178,6 +262,15 @@ fi
 	audit := filepath.Join(dir, "audit")
 	writeTrafficExecutable(t, audit, `#!/usr/bin/env bash
 set -euo pipefail
+printf 'audit inputs %s %s\n' "$CUTOVER_STATE_INPUT" "$CUTOVER_RECEIPT_INPUT" >>"$FAKE_DIR/audit.log"
+if [[ "${ASSERT_FROZEN_INPUTS:-false}" == true ]]; then
+  [[ "$CUTOVER_STATE_INPUT" != "$ORIGINAL_CUTOVER_STATE_INPUT" ]] ||
+    { echo "cutover state input was not frozen" >&2; exit 9; }
+  [[ "$CUTOVER_RECEIPT_INPUT" != "$ORIGINAL_CUTOVER_RECEIPT_INPUT" ]] ||
+    { echo "cutover receipt input was not frozen" >&2; exit 9; }
+  [[ -f "$CUTOVER_STATE_INPUT" && -f "$CUTOVER_RECEIPT_INPUT" ]] ||
+    { echo "frozen cutover evidence missing" >&2; exit 9; }
+fi
 [[ "${AUDIT_FAIL:-false}" != true ]] || exit 7
 artifact_sha="`+operationAuditArtifactSHA256+`"
 [[ "${INVALID_AUDIT_RECEIPT:-false}" != true ]] || artifact_sha=abc123
@@ -196,10 +289,13 @@ chmod 600 "$RECEIPT_OUTPUT"
 		"FAKE_DIR=" + dir, "PARAMETERS_DIGEST=" + digest,
 		"MANAGED_PARAMETERS=" + parameters,
 		"RUNNER_PARAMETERS_INPUT=" + parameters,
+		"ORIGINAL_CUTOVER_STATE_INPUT=" + cutoverState,
+		"ORIGINAL_CUTOVER_RECEIPT_INPUT=" + cutoverReceipt,
 	}
 	env = append(env, receiptDigestTamperEnv(t, dir, receipt)...)
 	return &operationRunnerFixture{
-		dir: dir, parameters: parameters,
+		dir: dir, parameters: parameters, cutoverState: cutoverState, cutoverReceipt: cutoverReceipt,
+		cutoverStateSHA: cutoverStateSHA, cutoverReceiptSHA: cutoverReceiptSHA,
 		env: env,
 	}
 }
@@ -236,6 +332,13 @@ func (f *operationRunnerFixture) run(t *testing.T, ok bool, extra string, output
 func (f *operationRunnerFixture) log(t *testing.T) string {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join(f.dir, "operationctl.log"))
+	require.NoError(t, err)
+	return string(data)
+}
+
+func (f *operationRunnerFixture) auditLog(t *testing.T) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(f.dir, "audit.log"))
 	require.NoError(t, err)
 	return string(data)
 }

@@ -114,16 +114,18 @@ fi
 PARAMETERS_INPUT="$frozen_parameters"
 
 parameters="$("$JQ" -er '[
-  .state_dir, .cutover_state_input, .cutover_receipt_input,
+  .state_dir, .cutover_state_input, .cutover_state_sha256,
+  .cutover_receipt_input, .cutover_receipt_sha256,
   .service_namespace, .service_name, .target_instance,
   (.expected_replicas|tostring), .public_endpoint,
   (.audit_duration_seconds|tostring), (.audit_interval_seconds|tostring),
   (.min_samples|tostring), .audit_prefix, .receipt_output,
   (if (.kube_context // "") == "" then "-" else .kube_context end),
   (if (.kubeconfig_path // "") == "" then "-" else .kubeconfig_path end)
-] | select(length == 15 and (.[0:13] | all(. != null and . != ""))) | @tsv' "$PARAMETERS_INPUT")" ||
+] | select(length == 17 and (.[0:15] | all(. != null and . != ""))) | @tsv' "$PARAMETERS_INPUT")" ||
   { echo "audit parameters contain an empty required field" >&2; exit 2; }
-IFS=$'\t' read -r state_dir cutover_state cutover_receipt service_namespace service_name \
+IFS=$'\t' read -r state_dir cutover_state cutover_state_sha cutover_receipt cutover_receipt_sha \
+  service_namespace service_name \
   target_instance expected_replicas public_endpoint duration interval min_samples audit_prefix \
   receipt_output data_context data_kubeconfig <<<"$parameters"
 [[ "$data_context" == "-" ]] && data_context=""
@@ -136,6 +138,56 @@ for value in "$state_dir" "$cutover_state" "$cutover_receipt" "$service_namespac
   "$service_name" "$target_instance" "$public_endpoint" "$audit_prefix" "$receipt_output"; do
   [[ -n "$value" ]] || { echo "audit parameters contain an empty required field" >&2; exit 2; }
 done
+for digest in "$cutover_state_sha" "$cutover_receipt_sha"; do
+  [[ "$digest" =~ ^[a-f0-9]{64}$ ]] ||
+    { echo "audit evidence digest is invalid" >&2; exit 2; }
+done
+for path in "$cutover_state" "$cutover_receipt"; do
+  [[ -f "$path" ]] || { echo "audit evidence is missing: ${path}" >&2; exit 2; }
+done
+
+freeze_evidence() {
+  local source="$1" expected="$2" evidence_name="$3" destination source_digest captured_digest current_digest
+  source_digest="$(file_sha256 "$source")" || return 1
+  [[ "$source_digest" == "$expected" ]] || return 2
+  destination="${parameter_capture_dir}/${evidence_name}"
+  cp -- "$source" "$destination" || return 1
+  chmod 600 "$destination"
+  captured_digest="$(file_sha256 "$destination")" || return 1
+  current_digest="$(file_sha256 "$source")" || return 1
+  [[ "$captured_digest" == "$expected" && "$current_digest" == "$expected" ]] || return 1
+  printf '%s\n' "$destination"
+}
+
+capture_evidence() {
+  local variable="$1" source="$2" expected="$3" evidence_name="$4" label="$5" frozen rc
+  set +e
+  frozen="$(freeze_evidence "$source" "$expected" "$evidence_name")"
+  rc=$?
+  set -e
+  case "$rc" in
+    0)
+      printf -v "$variable" '%s' "$frozen"
+      ;;
+    2)
+      run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
+        --message "post-restore audit ${label} digest mismatch" >/dev/null
+      echo "post-restore audit ${label} bytes do not match the immutable parameter digest" >&2
+      exit 1
+      ;;
+    *)
+      run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
+        --message "post-restore audit ${label} changed during capture" >/dev/null
+      echo "post-restore audit ${label} bytes changed while being captured" >&2
+      exit 1
+      ;;
+  esac
+}
+
+capture_evidence cutover_state "$cutover_state" "$cutover_state_sha" \
+  cutover.state "cutover state"
+capture_evidence cutover_receipt "$cutover_receipt" "$cutover_receipt_sha" \
+  cutover.json "cutover receipt"
 
 audit_env=(
   "OPERATION_ID=${operation_id}" "INSTANCE=${instance}" "STATE_DIR=${state_dir}"

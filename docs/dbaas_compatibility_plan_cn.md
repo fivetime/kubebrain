@@ -11063,6 +11063,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   prepare。回归：
   `go test ./hack/production -run 'TestRestoreCutoverOperation' -count=1`
   通过。
+- A686 绑定 PostRestoreAudit operation 的 cutover evidence SHA：
+  A677 已冻结 PostRestoreAudit runner 的参数 JSON，A680 已让直接执行脚本冻结
+  `CUTOVER_STATE_INPUT` 与 `CUTOVER_RECEIPT_INPUT`，但 operation 参数仍未声明这两份
+  cutover evidence 的 whole-file digest；claim 后若本地路径被替换，audit 子状态机可能
+  基于未被 operation 参数绑定的 cutover 链生成审计 receipt。现在
+  `run-post-restore-audit-operation.sh` 要求参数包含 `cutover_state_sha256` 与
+  `cutover_receipt_sha256`，先按参数 SHA 捕获 state/receipt 到私有 0600 副本，并只把冻结
+  路径传给 audit 子状态机和最终 receipt 校验；源路径 digest 不匹配或捕获窗口漂移都会
+  retry，且不会启动 audit。回归：
+  `go test ./hack/production -run 'TestPostRestoreAuditOperation' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 
