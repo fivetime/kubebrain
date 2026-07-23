@@ -102,6 +102,12 @@ func TestBoundaryCleanupFailsClosed(t *testing.T) {
 			wantOutput: "destroy receipt does not authorize this boundary cleanup",
 		},
 		{
+			name:       "destroy receipt changed during capture",
+			action:     "prepare",
+			extraEnv:   "TAMPER_DESTROY_RECEIPT_DURING_SHA256=true",
+			wantOutput: "destroy receipt changed while being captured",
+		},
+		{
 			name:       "secret is not owned",
 			action:     "prepare",
 			extraEnv:   "FAKE_SECRET_CREDENTIAL=false",
@@ -249,6 +255,20 @@ kind="${resource%s}"
 [[ "$resource" == namespaces ]] && kind=namespace
 touch "$FAKE_RESOURCE_DIR/deleted-$kind-$name"
 `)
+	realSHA, err := exec.LookPath("sha256sum")
+	require.NoError(t, err)
+	writeDestroyExecutable(t, filepath.Join(dir, "sha256sum"), `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${TAMPER_DESTROY_RECEIPT_DURING_SHA256:-false}" == true &&
+  "$#" -ge 1 && "$1" == "$BOUNDARY_CLEANUP_DESTROY_RECEIPT_INPUT" &&
+  ! -f "$FAKE_RESOURCE_DIR/destroy-receipt-tampered-during-sha256" ]]; then
+  "$REAL_SHA256SUM" "$@"
+  printf 'changed\n' >"$BOUNDARY_CLEANUP_DESTROY_RECEIPT_INPUT"
+  touch "$FAKE_RESOURCE_DIR/destroy-receipt-tampered-during-sha256"
+  exit 0
+fi
+exec "$REAL_SHA256SUM" "$@"
+`)
 	realJQ, err := exec.LookPath("jq")
 	require.NoError(t, err)
 	jq := filepath.Join(dir, "jq-wrapper")
@@ -288,6 +308,9 @@ fi
 			"POLL_INTERVAL_SECONDS=0",
 			"JQ=" + jq,
 			"REAL_JQ=" + realJQ,
+			"PATH=" + dir + string(os.PathListSeparator) + os.Getenv("PATH"),
+			"REAL_SHA256SUM=" + realSHA,
+			"BOUNDARY_CLEANUP_DESTROY_RECEIPT_INPUT=" + receipt,
 		},
 	}
 }

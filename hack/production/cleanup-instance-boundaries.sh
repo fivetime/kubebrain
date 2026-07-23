@@ -63,6 +63,37 @@ kubectl_args=()
 [[ -n "$KUBE_CONTEXT" ]] && kubectl_args+=(--context "$KUBE_CONTEXT")
 [[ -n "$KUBECONFIG_PATH" ]] && kubectl_args+=(--kubeconfig "$KUBECONFIG_PATH")
 
+destroy_receipt_tmp_dir=""
+cleanup_destroy_receipt_input() {
+  [[ -z "$destroy_receipt_tmp_dir" ]] || rm -rf "$destroy_receipt_tmp_dir"
+}
+trap cleanup_destroy_receipt_input EXIT INT TERM
+
+file_sha256() {
+  local path="$1" digest
+  digest="$(sha256sum "$path" | cut -d ' ' -f1)" || return 1
+  [[ "$digest" =~ ^[a-f0-9]{64}$ ]] || return 1
+  printf '%s\n' "$digest"
+}
+
+freeze_destroy_receipt_input() {
+  local source="$1" destination source_digest captured_digest current_digest
+  source_digest="$(file_sha256 "$source")" || return 1
+  destination="${destroy_receipt_tmp_dir}/destroy-receipt.json"
+  cp "$source" "$destination"
+  chmod 600 "$destination"
+  captured_digest="$(file_sha256 "$destination")" || return 1
+  current_digest="$(file_sha256 "$source")" || return 1
+  [[ "$captured_digest" == "$source_digest" && "$current_digest" == "$source_digest" ]] || return 1
+  printf '%s\n' "$destination"
+}
+
+[[ -f "$DESTROY_RECEIPT_INPUT" ]] ||
+  { echo "destroy receipt does not exist" >&2; exit 1; }
+destroy_receipt_tmp_dir="$(mktemp -d)"
+DESTROY_RECEIPT_INPUT="$(freeze_destroy_receipt_input "$DESTROY_RECEIPT_INPUT")" ||
+  { echo "destroy receipt changed while being captured" >&2; exit 1; }
+
 atomic_publish() {
   local temporary="$1" destination="$2"
   sync -f "$temporary"
@@ -85,7 +116,7 @@ atomic_publish() {
 }
 
 destroy_receipt_sha() {
-  sha256sum "$DESTROY_RECEIPT_INPUT" | awk '{print $1}'
+  file_sha256 "$DESTROY_RECEIPT_INPUT"
 }
 
 validate_existing_cleanup_receipt() {

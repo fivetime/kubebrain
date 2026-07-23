@@ -10917,6 +10917,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   fence。回归：
   `go test ./hack/production -run 'TestBackupOperation|TestDestroyOperation|TestRestoreCutoverOperation|TestPostRestoreAuditOperation|TestCertificateRotationOperation|TestBackupDeletionOperation' -count=1`
   通过。
+- A670 冻结 boundary cleanup 的 destroy receipt 授权输入：
+  `cleanup-instance-boundaries.sh` 会用 destroy receipt 授权删除实例数据命名空间与外部
+  credential secret，旧逻辑在每次 action 中反复从调用方路径读取
+  `DESTROY_RECEIPT_INPUT`；若 destroy receipt 在 validate/state/header/receipt 窗口被替换，
+  cleanup state 可能绑定不同授权 bytes，甚至在 delete 后才因 receipt 漂移导致 complete
+  无法收敛。现在脚本入口会把 destroy receipt 捕获到私有临时副本，要求源路径和副本的
+  whole-file SHA 在捕获窗口内一致，后续授权校验、state header 与 completion receipt 全部
+  使用冻结副本；捕获漂移时 fail closed。回归：
+  `go test ./hack/production -run 'TestBoundaryCleanup' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 
