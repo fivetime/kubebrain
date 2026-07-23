@@ -10927,6 +10927,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   使用冻结副本；捕获漂移时 fail closed。回归：
   `go test ./hack/production -run 'TestBoundaryCleanup' -count=1`
   通过。
+- A671 冻结 BackupDeletion runner 的源 evidence 输入：
+  `run-backup-deletion-operation.sh` 旧逻辑只在参数解析后对 source backup receipt、pre
+  manifest 与 post manifest 各做一次 SHA 对比，随后 inventory/delete gate 继续读取调用方
+  路径；若这些本地 evidence 在参数 digest 校验后被替换，删除 workflow 可能消费未被参数
+  SHA 绑定的对象版本或 inventory 集合。现在 runner 会把三份 evidence 按参数 SHA 捕获到
+  私有临时目录，要求源路径与副本在捕获窗口内都等于参数 digest，后续 source receipt parse、
+  manifest gate 和 object workflow 全部使用冻结副本；捕获漂移 fail closed，捕获后的原始
+  source receipt 漂移不再影响 workflow。回归：
+  `go test ./hack/production -run 'TestBackupDeletionOperation' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

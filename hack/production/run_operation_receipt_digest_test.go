@@ -33,6 +33,14 @@ if [[ "${TAMPER_CREDENTIAL_DURING_SHA256:-false}" == true &&
   touch "$FAKE_DIR/credential-tampered-during-sha256"
   exit 0
 fi
+if [[ "${TAMPER_EVIDENCE_DURING_SHA256:-false}" == true &&
+  "$#" -ge 1 && "$1" == "${RUNNER_EVIDENCE_INPUT:-}" &&
+  ! -f "$FAKE_DIR/evidence-tampered-during-sha256" ]]; then
+  "$REAL_SHA256SUM" "$@"
+  printf 'changed\n' >"$RUNNER_EVIDENCE_INPUT"
+  touch "$FAKE_DIR/evidence-tampered-during-sha256"
+  exit 0
+fi
 if [[ "${TAMPER_RECEIPT_DURING_SHA256:-false}" == true &&
   "$#" -ge 1 && "$1" == "$RUNNER_RECEIPT_OUTPUT" &&
   ! -f "$FAKE_DIR/receipt-tampered-during-sha256" ]]; then

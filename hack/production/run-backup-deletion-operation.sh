@@ -70,14 +70,16 @@ instance="$("$JQ" -er '.instance' <<<"$claim")"
 attempt="$("$JQ" -er '.attempt | select(. > 0)' <<<"$claim")"
 expected_digest="$("$JQ" -er '.parameters_sha256 | select(test("^[a-f0-9]{64}$"))' <<<"$claim")"
 managed_parameters=""
+managed_evidence_dir=""
 if [[ -z "$PARAMETERS_INPUT" ]]; then
   managed_parameters="$(mktemp)"
   PARAMETERS_INPUT="$managed_parameters"
 fi
-cleanup_parameters() {
+cleanup_inputs() {
   [[ -z "$managed_parameters" ]] || rm -f "$managed_parameters"
+  [[ -z "$managed_evidence_dir" ]] || rm -rf "$managed_evidence_dir"
 }
-trap cleanup_parameters EXIT
+trap cleanup_inputs EXIT
 if [[ -n "$managed_parameters" ]]; then
   run_operationctl --action parameters --name "$name" --owner "$WORKER_ID" \
     --attempt "$attempt" >"$PARAMETERS_INPUT"
@@ -118,10 +120,52 @@ done
 for path in "$source_receipt" "$pre_manifest" "$post_manifest"; do
   [[ -f "$path" ]] || { echo "backup deletion evidence is missing: ${path}" >&2; exit 1; }
 done
-[[ "$(sha256sum "$source_receipt" | cut -d ' ' -f1)" == "$source_sha" &&
-  "$(sha256sum "$pre_manifest" | cut -d ' ' -f1)" == "$pre_manifest_sha" &&
-  "$(sha256sum "$post_manifest" | cut -d ' ' -f1)" == "$post_manifest_sha" ]] ||
-  { echo "backup deletion evidence digest mismatch" >&2; exit 1; }
+
+file_sha256() {
+  local path="$1" digest
+  digest="$(sha256sum "$path" | cut -d ' ' -f1)" || return 1
+  [[ "$digest" =~ ^[a-f0-9]{64}$ ]] || return 1
+  printf '%s\n' "$digest"
+}
+
+freeze_evidence() {
+  local source="$1" expected="$2" name="$3" destination source_digest captured_digest current_digest
+  source_digest="$(file_sha256 "$source")" || return 1
+  [[ "$source_digest" == "$expected" ]] || return 2
+  destination="${managed_evidence_dir}/${name}"
+  cp "$source" "$destination"
+  chmod 600 "$destination"
+  captured_digest="$(file_sha256 "$destination")" || return 1
+  current_digest="$(file_sha256 "$source")" || return 1
+  [[ "$captured_digest" == "$expected" && "$current_digest" == "$expected" ]] || return 1
+  printf '%s\n' "$destination"
+}
+
+capture_evidence() {
+  local variable="$1" source="$2" expected="$3" name="$4" frozen rc
+  set +e
+  frozen="$(freeze_evidence "$source" "$expected" "$name")"
+  rc=$?
+  set -e
+  case "$rc" in
+    0)
+      printf -v "$variable" '%s' "$frozen"
+      ;;
+    2)
+      echo "backup deletion evidence digest mismatch" >&2
+      exit 1
+      ;;
+    *)
+      echo "backup deletion evidence changed while being captured" >&2
+      exit 1
+      ;;
+  esac
+}
+
+managed_evidence_dir="$(mktemp -d)"
+capture_evidence source_receipt "$source_receipt" "$source_sha" source-receipt.json
+capture_evidence pre_manifest "$pre_manifest" "$pre_manifest_sha" pre-manifest.json
+capture_evidence post_manifest "$post_manifest" "$post_manifest_sha" post-manifest.json
 
 source_fields="$("$JQ" -er --arg instance "$instance" --arg backup "$backup_id" \
   --arg store "$object_store_id" '
@@ -142,7 +186,7 @@ source_fields="$("$JQ" -er --arg instance "$instance" --arg backup "$backup_id" 
     .remote_verified == true and
     (.uploaded_at_unix | type == "number" and . > 0 and . == floor)) |
   [.bucket,.object_key,.version_id,.artifact_sha256,.retention_mode,(.retain_until_unix|tostring)] | @tsv' "$source_receipt")"
-[[ "$(sha256sum "$source_receipt" | cut -d ' ' -f1)" == "$source_sha" ]] ||
+[[ "$(file_sha256 "$source_receipt")" == "$source_sha" ]] ||
   { echo "backup deletion evidence digest mismatch" >&2; exit 1; }
 IFS=$'\t' read -r bucket object_key version_id artifact_sha retention_mode retain_until <<<"$source_fields"
 
@@ -160,7 +204,7 @@ manifest_gate() {
        ([.entries[] | select(.object_key == $key and .version_id == $version)] | length) == 0
      end)' "$manifest" >/dev/null ||
     { echo "${mode} inventory manifest does not match the exact backup version" >&2; return 1; }
-  [[ "$(sha256sum "$manifest" | cut -d ' ' -f1)" == "$manifest_sha" ]]
+  [[ "$(file_sha256 "$manifest")" == "$manifest_sha" ]]
 }
 manifest_gate "$pre_manifest" "$pre_manifest_sha" present
 manifest_gate "$post_manifest" "$post_manifest_sha" absent
@@ -183,7 +227,7 @@ run_workflow() {
 child=0
 heartbeat_pid=0
 cleanup() {
-  cleanup_parameters
+  cleanup_inputs
   if [[ "$child" -gt 0 ]] && kill -0 "$child" 2>/dev/null; then
     kill "$child" 2>/dev/null || true
     wait "$child" 2>/dev/null || true

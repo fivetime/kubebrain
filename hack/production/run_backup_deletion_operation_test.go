@@ -174,12 +174,49 @@ func TestBackupDeletionOperationRejectsValidEvidenceReceiptChangedAfterDigest(t 
 	}
 }
 
-func TestBackupDeletionOperationRejectsSourceReceiptTamperedDuringParse(t *testing.T) {
+func TestBackupDeletionOperationUsesFrozenSourceReceiptWhenOriginalDriftsDuringParse(t *testing.T) {
 	f := newBackupDeletionFixture(t)
-	f.run(t, false, "TAMPER_SOURCE_RECEIPT_DURING_JQ=true", "evidence digest mismatch")
+	f.run(t, true, "TAMPER_SOURCE_RECEIPT_DURING_JQ=true")
 	log := f.log(t)
-	require.NotContains(t, log, "object ")
-	require.NotContains(t, log, "--action succeed")
+	require.Contains(t, log, "object pre\nobject delete\nobject post\n")
+	require.Contains(t, log, "--action succeed")
+}
+
+func TestBackupDeletionOperationRejectsEvidenceTamperedDuringCapture(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		path func(*backupDeletionFixture) string
+	}{
+		{
+			name: "source receipt",
+			path: func(f *backupDeletionFixture) string {
+				return f.sourceReceipt
+			},
+		},
+		{
+			name: "pre manifest",
+			path: func(f *backupDeletionFixture) string {
+				return f.preManifest
+			},
+		},
+		{
+			name: "post manifest",
+			path: func(f *backupDeletionFixture) string {
+				return f.postManifest
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newBackupDeletionFixture(t)
+			f.run(t, false, fmt.Sprintf(
+				"TAMPER_EVIDENCE_DURING_SHA256=true\nRUNNER_EVIDENCE_INPUT=%s",
+				tc.path(f),
+			), "evidence changed while being captured")
+			log := f.log(t)
+			require.NotContains(t, log, "object ")
+			require.NotContains(t, log, "--action succeed")
+		})
+	}
 }
 
 func TestBackupDeletionOperationRejectsExistingReceiptWithUnknownFields(t *testing.T) {
@@ -318,7 +355,7 @@ fi
 	writeTrafficExecutable(t, object, `#!/usr/bin/env bash
 set -euo pipefail
 stage=
-if [[ "$ACTION" == inventory && "$INVENTORY_INPUT" == "$PRE_MANIFEST" ]]; then
+if [[ "$ACTION" == inventory && "$RECEIPT_OUTPUT" == "$PRE_INVENTORY_RECEIPT" ]]; then
   stage=pre
 elif [[ "$ACTION" == inventory ]]; then
   stage=post
@@ -355,7 +392,7 @@ esac
 set -euo pipefail
 if [[ "${TAMPER_SOURCE_RECEIPT_DURING_JQ:-false}" == true && "$#" -ge 1 ]]; then
   last_arg="${@: -1}"
-  if [[ "$last_arg" == "$SOURCE_RECEIPT_INPUT" &&
+  if [[ -f "$last_arg" && "$last_arg" != "$PARAMETERS_INPUT" &&
     ! -f "$FAKE_DIR/source-receipt-tampered-during-jq" ]]; then
     cp "$TAMPERED_SOURCE_RECEIPT" "$SOURCE_RECEIPT_INPUT"
     chmod 600 "$SOURCE_RECEIPT_INPUT"
