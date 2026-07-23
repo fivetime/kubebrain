@@ -41,6 +41,14 @@ if [[ "${TAMPER_EVIDENCE_DURING_SHA256:-false}" == true &&
   touch "$FAKE_DIR/evidence-tampered-during-sha256"
   exit 0
 fi
+if [[ "${TAMPER_PARAMETERS_DURING_SHA256:-false}" == true &&
+  "$#" -ge 1 && "$1" == "${RUNNER_PARAMETERS_INPUT:-}" &&
+  ! -f "$FAKE_DIR/parameters-tampered-during-sha256" ]]; then
+  "$REAL_SHA256SUM" "$@"
+  printf 'changed\n' >"$RUNNER_PARAMETERS_INPUT"
+  touch "$FAKE_DIR/parameters-tampered-during-sha256"
+  exit 0
+fi
 if [[ "${TAMPER_RECEIPT_DURING_SHA256:-false}" == true &&
   "$#" -ge 1 && "$1" == "$RUNNER_RECEIPT_OUTPUT" &&
   ! -f "$FAKE_DIR/receipt-tampered-during-sha256" ]]; then

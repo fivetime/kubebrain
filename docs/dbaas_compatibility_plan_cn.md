@@ -10956,6 +10956,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   原路径漂移不再影响已验证 witness。回归：
   `go test ./hack/production -run 'TestColdSnapshotExecute' -count=1`
   通过。
+- A674 冻结 Backup operation runner 的参数输入：
+  `run-backup-operation.sh` 旧逻辑在 claim 返回 `parameters_sha256` 后只对
+  `PARAMETERS_INPUT` 做一次 digest 比对，随后继续从原始路径解析 endpoint、artifact、
+  Object Lock 目标和 receipt 输出路径；本地参数文件若在 digest 读取后被替换，runner 可能
+  消费未被 operation claim 绑定的参数。现在 runner 会把参数文件复制到私有临时目录，要求
+  原路径与副本在捕获窗口内都等于 claimed SHA，后续字段解析只读冻结副本；捕获漂移会走
+  原有 retry 路径，不进入 export/object workflow。回归：
+  `go test ./hack/production -run 'TestBackupOperation' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

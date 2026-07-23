@@ -89,6 +89,16 @@ func TestBackupOperationRejectsParameterDrift(t *testing.T) {
 	require.Contains(t, f.log(t), "--action retry")
 }
 
+func TestBackupOperationRejectsParametersTamperedDuringDigest(t *testing.T) {
+	f := newBackupRunnerFixture(t, false)
+	f.run(t, false, "TAMPER_PARAMETERS_DURING_SHA256=true", "parameters digest")
+	log := f.log(t)
+	require.Contains(t, log, "--action retry")
+	require.NotContains(t, log, "export\n")
+	require.NotContains(t, log, "object\n")
+	require.NotContains(t, log, "--action succeed")
+}
+
 func TestBackupOperationRejectsEmptyRequiredParameters(t *testing.T) {
 	f := newBackupRunnerFixture(t, false)
 	parameters := strings.ReplaceAll(
@@ -204,6 +214,7 @@ chmod 600 "$RECEIPT_OUTPUT"
 		"EXPORT_COMMAND=" + exportCommand, "STATUS_COMMAND=" + statusCommand,
 		"OBJECT_COMMAND=" + objectCommand, "FAKE_DIR=" + dir, "PARAMETERS_DIGEST=" + digest,
 		"BACKUP_RECEIPT_OUTPUT=" + receipt,
+		"RUNNER_PARAMETERS_INPUT=" + parameters,
 	}
 	env = append(env, receiptDigestTamperEnv(t, dir, receipt)...)
 	return &backupRunnerFixture{
