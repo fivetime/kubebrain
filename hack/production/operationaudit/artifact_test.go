@@ -76,6 +76,27 @@ func TestOperationAuditRejectsNonterminalAndInvalidReceipt(t *testing.T) {
 	require.ErrorContains(t, artifact.Validate(), "incomplete")
 }
 
+func TestOperationAuditRejectsInconsistentStartedAtUnixNano(t *testing.T) {
+	artifact := terminalArtifact()
+	artifact.StartedAtUnixNano = 0
+	require.NoError(t, artifact.Validate())
+
+	for _, tc := range []struct {
+		name string
+		nano int64
+	}{
+		{name: "negative", nano: -1},
+		{name: "previous_second", nano: 99_999_999_999},
+		{name: "next_second", nano: 101_000_000_000},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			artifact := terminalArtifact()
+			artifact.StartedAtUnixNano = tc.nano
+			require.ErrorContains(t, artifact.Validate(), "incomplete")
+		})
+	}
+}
+
 func TestOperationAuditRejectsUnsafeIdentityFields(t *testing.T) {
 	for _, tc := range []struct {
 		name   string

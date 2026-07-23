@@ -112,6 +112,7 @@ func (a Artifact) Validate() error {
 		a.Attempt <= 0 || a.Attempt > a.MaxAttempts ||
 		!validOptionalAuditText(a.Message, maxOperationMessageLength) ||
 		a.ObservedGeneration <= 0 || a.ObservedGeneration > a.Generation || a.StartedAtUnix <= 0 ||
+		!validStartedAtUnixNano(a.StartedAtUnix, a.StartedAtUnixNano) ||
 		a.CompletedAtUnix < a.StartedAtUnix {
 		return errors.New("terminal operation audit artifact is incomplete")
 	}
@@ -160,6 +161,11 @@ func validOptionalAuditText(value string, maxRunes int) bool {
 	return utf8.ValidString(value) &&
 		utf8.RuneCountInString(value) <= maxRunes &&
 		strings.IndexFunc(value, unicode.IsControl) == -1
+}
+
+func validStartedAtUnixNano(startedAtUnix, startedAtUnixNano int64) bool {
+	return startedAtUnixNano == 0 ||
+		(startedAtUnixNano > 0 && startedAtUnixNano/1_000_000_000 == startedAtUnix)
 }
 
 func validSHA256(value string) bool {

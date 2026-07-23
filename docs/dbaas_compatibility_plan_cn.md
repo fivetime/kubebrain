@@ -10467,6 +10467,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   请求返回 400，且不创建 Operation。回归：
   `go test ./hack/production/internal/operationqueue ./hack/production/internal/operationapi ./hack/production/operationaudit ./hack/production/internal/operationauditbuilder -run 'TestQueueRejectsSpecDriftAndInvalidCompletion|TestHandlerReturnsBadRequestForQueueSchemaValidation|TestOperationAuditRejectsUnsafeDisplayFields|TestFromOperationRejectsUnsafeAuditDisplayFields' -count=1`
   通过。
+- A624 收紧 operation audit startedAtUnixNano 一致性：
+  queue 正常 claim 会同时写入秒级 `startedAtUnix` 和纳秒级 `startedAtUnixNano`，但
+  A622 前后的 artifact validator 只检查秒级 start/complete 关系。旧对象、旧 CRD 或
+  fake-client 路径可以把负数、前一秒或后一秒的 `startedAtUnixNano` 写入 canonical
+  audit artifact；离线排序和排障会看到与秒级字段矛盾的开始时间。现在
+  `startedAtUnixNano` 保持可选兼容；一旦存在，必须为正且落在 `startedAtUnix` 对应的
+  秒内。`operationauditbuilder.FromOperation` 因复用 validator 自动 fail closed。回归：
+  `go test ./hack/production/operationaudit ./hack/production/internal/operationauditbuilder -run 'TestOperationAuditRejects(NonterminalAndInvalidReceipt|InconsistentStartedAtUnixNano)|TestFromOperation(BindsImmutableSpecAndTerminalStatus|RejectsInconsistentStartedAtUnixNano)' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

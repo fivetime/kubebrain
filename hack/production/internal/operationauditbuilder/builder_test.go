@@ -42,6 +42,16 @@ func TestFromOperationBindsImmutableSpecAndTerminalStatus(t *testing.T) {
 	require.ErrorContains(t, err, "incomplete")
 }
 
+func TestFromOperationRejectsInconsistentStartedAtUnixNano(t *testing.T) {
+	object := operationForAuditBuilder()
+	require.NoError(t, unstructured.SetNestedField(
+		object.Object, int64(101_000_000_000), "status", "startedAtUnixNano",
+	))
+
+	_, err := FromOperation(object)
+	require.ErrorContains(t, err, "incomplete")
+}
+
 func TestFromOperationBindsHighRiskApproval(t *testing.T) {
 	object := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "dbaas.kubebrain.io/v1alpha1",
