@@ -10650,6 +10650,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   link 返回 `EEXIST` 时重新读取目标文件，内容一致则成功，不一致仍拒绝覆盖。回归：
   `go test ./hack/production/internal/meteringstorage ./hack/production/internal/meteringarchive ./hack/production/internal/meteringbilling -run 'TestSnapshotWriterTreatsConcurrentIdenticalLinkAsIdempotent|TestSampleWriterTreatsConcurrentIdenticalLinkAsIdempotent|TestCanonicalWriterTreatsConcurrentIdenticalLinkAsIdempotent' -count=1`
   通过。
+- A643 让 operation audit artifact writer 在并发同内容 link 时幂等：
+  operation audit archiver 也会把 terminal CRD status 先冻结成本地 canonical artifact，再交给
+  Object Lock executor。普通重复调用已有幂等测试，但旧 `operationaudit.WriteAtomic` 在预读
+  目标文件后、`os.Link` 前若遇到另一个同内容 writer 抢先完成 link，会直接返回 `EEXIST`，
+  让可重试 archiver/补偿任务误判失败并延迟 audit finalizer 释放。现在 audit artifact writer
+  与 A642 的 metering/billing 本地 writer、Object Lock receipt writer 一致：同内容
+  `EEXIST` 视为成功，内容漂移仍拒绝覆盖。回归：
+  `go test ./hack/production/operationaudit -run 'TestOperationAuditArtifactWriterTreatsConcurrentIdenticalLinkAsIdempotent|TestOperationAuditArtifactIsCanonicalAndNonOverwriting' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

@@ -1,6 +1,7 @@
 package operationaudit
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,6 +28,26 @@ func TestOperationAuditArtifactIsCanonicalAndNonOverwriting(t *testing.T) {
 	changed := artifact
 	changed.Message = "changed"
 	require.ErrorContains(t, WriteAtomic(path, changed), "refusing to overwrite")
+}
+
+func TestOperationAuditArtifactWriterTreatsConcurrentIdenticalLinkAsIdempotent(t *testing.T) {
+	artifact := terminalArtifact()
+	data, err := json.Marshal(artifact)
+	require.NoError(t, err)
+	data = append(data, '\n')
+	originalLink := linkOperationAuditFile
+	t.Cleanup(func() { linkOperationAuditFile = originalLink })
+	linkOperationAuditFile = func(_, path string) error {
+		require.NoError(t, os.WriteFile(path, data, 0o600))
+		return os.ErrExist
+	}
+
+	path := filepath.Join(t.TempDir(), "audit.json")
+	require.NoError(t, WriteAtomic(path, artifact))
+	status, _, err := InspectBytes(path)
+	require.NoError(t, err)
+	require.Equal(t, artifact, status.Artifact)
+	require.Equal(t, int64(len(data)), status.Bytes)
 }
 
 func TestOperationAuditReadersRejectOversizedJSON(t *testing.T) {

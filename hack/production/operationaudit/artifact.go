@@ -85,6 +85,7 @@ var approvalIDPattern = regexp.MustCompile(`^[a-z0-9]([-a-z0-9.]{0,126}[a-z0-9])
 var dns1123SubdomainPattern = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`)
 var operationIdentifierPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 var tenantPattern = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
+var linkOperationAuditFile = os.Link
 
 type ArchiveReceipt struct {
 	Format                 string `json:"format"`
@@ -338,7 +339,17 @@ func WriteAtomic(path string, artifact Artifact) error {
 	if err := temp.Close(); err != nil {
 		return err
 	}
-	if err := os.Link(tempName, path); err != nil {
+	if err := linkOperationAuditFile(tempName, path); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			if existing, readErr := readBoundedJSONFile(path, "existing operation audit artifact"); readErr == nil {
+				if bytes.Equal(existing, data) {
+					return nil
+				}
+				return fmt.Errorf("refusing to overwrite existing audit artifact %q", path)
+			} else {
+				return readErr
+			}
+		}
 		return err
 	}
 	directory, err := os.Open(dir)
