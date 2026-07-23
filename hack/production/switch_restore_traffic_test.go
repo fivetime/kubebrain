@@ -54,6 +54,16 @@ func TestRestoreTrafficCutoverTreatsConcurrentReceiptPublishAsIdempotent(t *test
 	require.Equal(t, float64(1), receipt["completed_at_unix"])
 }
 
+func TestRestoreTrafficCutoverRejectsStateDriftDuringReceiptPublish(t *testing.T) {
+	f := newTrafficFixture(t)
+	f.run(t, "prepare", true, "")
+	f.run(t, "cutover", true, "")
+	f.run(t, "verify", true, "")
+	f.run(t, "complete", false, "TAMPER_CUTOVER_STATE_DURING_RECEIPT_JQ=true", "state changed")
+
+	require.NoFileExists(t, filepath.Join(f.state, "restore-1.receipt.json"))
+}
+
 func TestRestoreTrafficCutoverRejectsExistingReceiptWithUnknownFields(t *testing.T) {
 	f := newTrafficFixture(t)
 	f.run(t, "prepare", true, "")
@@ -268,6 +278,10 @@ chmod 600 "$RECEIPT_OUTPUT"
 	writeTrafficExecutable(t, jq, `#!/usr/bin/env bash
 set -euo pipefail
 "$REAL_JQ" "$@"
+if [[ "${TAMPER_CUTOVER_STATE_DURING_RECEIPT_JQ:-false}" == true &&
+  " $* " == *" -cnS "* && " $* " == *" kubebrain.restore-cutover.receipt.v1 "* ]]; then
+  printf 'UNKNOWN\trow\n' >>"$STATE_DIR/$OPERATION_ID.state"
+fi
 if [[ "${PUBLISH_CUTOVER_RECEIPT_DURING_JQ:-false}" == true &&
   " $* " == *" -cnS "* && " $* " == *" kubebrain.restore-cutover.receipt.v1 "* &&
   ! -f "$STATE_DIR/$OPERATION_ID.receipt.json" ]]; then

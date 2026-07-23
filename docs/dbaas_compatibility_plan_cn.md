@@ -10849,6 +10849,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `(cd hack/backup/objectstore && go test ./internal/objectstore -count=1)` 与
   `go test ./hack/production -run 'TestBackupOperation|TestBackupDeletionOperation' -count=1`
   通过。
+- A663 收紧 restore cutover state 与最终 receipt 的 digest fence：
+  `switch-restore-traffic.sh` 在 complete 阶段会多次读取 prepare 生成的
+  `kubebrain.restore-cutover.state.v1`，旧逻辑在 schema/pod/EndpointSlice/数据复核后
+  再独立读取 state 字段和 `sha256sum` 生成 `kubebrain.restore-cutover.receipt.v1`；
+  若本地 state 在最终 receipt JSON 生成窗口被替换或追加，脚本可能发布与前序切流验证
+  输入不一致的完成 receipt。现在 state schema validator 可组合返回，cutover/verify/
+  rollback/complete 在发布 marker 或 receipt 前后都绑定同一个 state SHA；existing receipt
+  复用也先冻结 state digest，再读取字段并复检未漂移。回归：
+  `go test ./hack/production -run 'TestRestoreTrafficCutover|TestRestoreCutoverOperation' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

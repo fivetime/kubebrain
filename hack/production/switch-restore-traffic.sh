@@ -83,7 +83,7 @@ atomic_publish() {
       rm -f "$temporary"
       return
     fi
-    if [[ "$destination" == "$receipt_file" ]] && validate_existing_cutover_receipt; then
+    if [[ "$destination" == "$receipt_file" ]] && validate_existing_cutover_receipt "${state_sha:-}"; then
       rm -f "$temporary"
       return
     fi
@@ -170,7 +170,35 @@ validate_cutover_state_schema() {
         exit 1
       }
     }
-  ' "$state_file" || { echo "restore cutover state has invalid schema" >&2; exit 1; }
+  ' "$state_file"
+}
+
+require_cutover_state_schema() {
+  validate_cutover_state_schema ||
+    { echo "restore cutover state has invalid schema" >&2; exit 1; }
+}
+
+validated_cutover_state_digest() {
+  local first second
+  validate_cutover_state_schema || return 1
+  first="$(sha256sum "$state_file" | cut -d ' ' -f1)" || return 1
+  [[ "$first" =~ ^[a-f0-9]{64}$ ]] || return 1
+  validate_cutover_state_schema || return 1
+  second="$(sha256sum "$state_file" | cut -d ' ' -f1)" || return 1
+  [[ "$second" == "$first" ]] || return 1
+  printf '%s\n' "$first"
+}
+
+cutover_state_digest_matches() {
+  local expected="$1" actual
+  actual="$(validated_cutover_state_digest)" || return 1
+  [[ "$actual" == "$expected" ]]
+}
+
+require_cutover_state_digest() {
+  local expected="$1"
+  cutover_state_digest_matches "$expected" ||
+    { echo "restore cutover state changed during operation" >&2; exit 1; }
 }
 
 service_snapshot() {
@@ -199,7 +227,7 @@ pod_snapshot() {
 state_header() {
   local kind format state_instance state_operation namespace service source target service_uid
   local restore_sha restore_revision source_prefix target_prefix
-  validate_cutover_state_schema
+  require_cutover_state_schema
   IFS=$'\t' read -r kind format state_instance state_operation namespace service source target service_uid \
     restore_sha restore_revision source_prefix target_prefix <"$state_file"
   [[ "$kind" == "HEADER" && "$format" == "kubebrain.restore-cutover.state.v1" &&
@@ -343,12 +371,19 @@ reuse_marker() {
 }
 
 validate_existing_cutover_receipt() {
+  local expected_state_sha="${1:-}" state_sha service_uid artifact_sha snapshot_revision
+  state_sha="$(validated_cutover_state_digest)" || return 1
+  [[ -z "$expected_state_sha" || "$state_sha" == "$expected_state_sha" ]] || return 1
+  service_uid="$(state_value SERVICE 2)"
+  artifact_sha="$(state_value HEADER 10)"
+  snapshot_revision="$(state_value HEADER 11)"
+  cutover_state_digest_matches "$state_sha" || return 1
   "$JQ" -e --arg operation "$OPERATION_ID" --arg instance "$INSTANCE" \
     --arg namespace "$SERVICE_NAMESPACE" --arg service "$SERVICE_NAME" \
-    --arg uid "$(state_value SERVICE 2)" --arg source "$SOURCE_INSTANCE" \
+    --arg uid "$service_uid" --arg source "$SOURCE_INSTANCE" \
     --arg target "$TARGET_INSTANCE" \
-    --arg sha "$(state_value HEADER 10)" --arg state_sha "$(sha256sum "$state_file" | cut -d " " -f1)" \
-    --argjson snapshot_revision "$(state_value HEADER 11)" --argjson replicas "$EXPECTED_REPLICAS" '
+    --arg sha "$artifact_sha" --arg state_sha "$state_sha" \
+    --argjson snapshot_revision "$snapshot_revision" --argjson replicas "$EXPECTED_REPLICAS" '
       keys == ["artifact_sha256","completed_at_unix","cutover_state_sha256","endpoint_uids_matched","format","instance","operation_id","pod_uids_unchanged","public_data_verified","replicas","service_name","service_namespace","service_uid","snapshot_revision","source_instance","target_instance"] and
       .format == "kubebrain.restore-cutover.receipt.v1" and
       .operation_id == $operation and .instance == $instance and
@@ -394,6 +429,8 @@ case "$ACTION" in
   cutover)
     [[ -f "$state_file" ]] || { echo "prepare evidence is missing" >&2; exit 1; }
     state_header
+    state_sha="$(validated_cutover_state_digest)" ||
+      { echo "restore cutover state has invalid schema" >&2; exit 1; }
     [[ ! -e "$rollback_file" ]] || { echo "operation was rolled back" >&2; exit 1; }
     [[ ! -e "$cutover_file" ]] || validate_existing_marker "$cutover_file" CUTOVER "$TARGET_INSTANCE"
     assert_pods_unchanged source "$SOURCE_INSTANCE"
@@ -402,6 +439,7 @@ case "$ACTION" in
     if [[ "$current_selector" == "$SOURCE_INSTANCE" ]]; then patch_selector "$SOURCE_INSTANCE" "$TARGET_INSTANCE"; fi
     wait_endpoints target "$TARGET_INSTANCE"
     reuse_marker "$cutover_file" CUTOVER "$TARGET_INSTANCE" && exit 0
+    require_cutover_state_digest "$state_sha"
     temporary="$(mktemp "${STATE_DIR}/.${OPERATION_ID}.cutover.XXXXXX")"
     printf 'CUTOVER\tkubebrain.restore-cutover.marker.v1\t%s\t%s\n' "$TARGET_INSTANCE" "$(date +%s)" >"$temporary"
     atomic_publish "$temporary" "$cutover_file"
@@ -409,12 +447,15 @@ case "$ACTION" in
   verify)
     [[ -f "$state_file" && -f "$cutover_file" ]] || { echo "cutover evidence is missing" >&2; exit 1; }
     state_header
+    state_sha="$(validated_cutover_state_digest)" ||
+      { echo "restore cutover state has invalid schema" >&2; exit 1; }
     validate_existing_marker "$cutover_file" CUTOVER "$TARGET_INSTANCE"
     [[ ! -e "$verified_file" ]] || validate_existing_marker "$verified_file" VERIFIED
     assert_pods_unchanged target "$TARGET_INSTANCE"
     wait_endpoints target "$TARGET_INSTANCE"
     verify_data
     reuse_marker "$verified_file" VERIFIED && exit 0
+    require_cutover_state_digest "$state_sha"
     temporary="$(mktemp "${STATE_DIR}/.${OPERATION_ID}.verified.XXXXXX")"
     printf 'VERIFIED\tkubebrain.restore-cutover.marker.v1\t%s\n' "$(date +%s)" >"$temporary"
     atomic_publish "$temporary" "$verified_file"
@@ -423,12 +464,15 @@ case "$ACTION" in
     [[ -f "$state_file" ]] || { echo "prepare evidence is missing" >&2; exit 1; }
     [[ ! -e "$receipt_file" ]] || { echo "completed cutover cannot be rolled back" >&2; exit 1; }
     state_header
+    state_sha="$(validated_cutover_state_digest)" ||
+      { echo "restore cutover state has invalid schema" >&2; exit 1; }
     [[ ! -e "$rollback_file" ]] || validate_existing_marker "$rollback_file" ROLLBACK "$SOURCE_INSTANCE"
     assert_pods_unchanged source "$SOURCE_INSTANCE"
     current_selector="$(service_snapshot | cut -f4)"
     if [[ "$current_selector" == "$TARGET_INSTANCE" ]]; then patch_selector "$TARGET_INSTANCE" "$SOURCE_INSTANCE"; fi
     wait_endpoints source "$SOURCE_INSTANCE"
     reuse_marker "$rollback_file" ROLLBACK "$SOURCE_INSTANCE" && exit 0
+    require_cutover_state_digest "$state_sha"
     temporary="$(mktemp "${STATE_DIR}/.${OPERATION_ID}.rollback.XXXXXX")"
     printf 'ROLLBACK\tkubebrain.restore-cutover.marker.v1\t%s\t%s\n' "$SOURCE_INSTANCE" "$(date +%s)" >"$temporary"
     atomic_publish "$temporary" "$rollback_file"
@@ -438,24 +482,31 @@ case "$ACTION" in
     [[ -f "$state_file" && -f "$cutover_file" && -f "$verified_file" ]] ||
       { echo "cutover verification evidence is missing" >&2; exit 1; }
     state_header
+    state_sha="$(validated_cutover_state_digest)" ||
+      { echo "restore cutover state has invalid schema" >&2; exit 1; }
     validate_existing_marker "$cutover_file" CUTOVER "$TARGET_INSTANCE"
     validate_existing_marker "$verified_file" VERIFIED
     assert_pods_unchanged target "$TARGET_INSTANCE"
     wait_endpoints target "$TARGET_INSTANCE"
     verify_data
+    require_cutover_state_digest "$state_sha"
     if [[ -e "$receipt_file" ]]; then
-      validate_existing_cutover_receipt ||
+      validate_existing_cutover_receipt "$state_sha" ||
         { echo "existing restore cutover receipt does not match the operation" >&2; exit 1; }
       exit 0
     fi
+    service_uid="$(state_value SERVICE 2)"
+    artifact_sha="$(state_value HEADER 10)"
+    snapshot_revision="$(state_value HEADER 11)"
+    require_cutover_state_digest "$state_sha"
     temporary="$(mktemp "${STATE_DIR}/.${OPERATION_ID}.receipt.XXXXXX")"
     "$JQ" -cnS \
       --arg format "kubebrain.restore-cutover.receipt.v1" --arg operation_id "$OPERATION_ID" \
       --arg instance "$INSTANCE" --arg namespace "$SERVICE_NAMESPACE" --arg service "$SERVICE_NAME" \
-      --arg service_uid "$(state_value SERVICE 2)" --arg source_instance "$SOURCE_INSTANCE" \
-      --arg target_instance "$TARGET_INSTANCE" --arg artifact_sha256 "$(state_value HEADER 10)" \
-      --arg cutover_state_sha256 "$(sha256sum "$state_file" | cut -d " " -f1)" \
-      --argjson snapshot_revision "$(state_value HEADER 11)" --argjson replicas "$EXPECTED_REPLICAS" \
+      --arg service_uid "$service_uid" --arg source_instance "$SOURCE_INSTANCE" \
+      --arg target_instance "$TARGET_INSTANCE" --arg artifact_sha256 "$artifact_sha" \
+      --arg cutover_state_sha256 "$state_sha" \
+      --argjson snapshot_revision "$snapshot_revision" --argjson replicas "$EXPECTED_REPLICAS" \
       --argjson completed_at_unix "$(date +%s)" \
       '{format:$format,operation_id:$operation_id,instance:$instance,service_namespace:$namespace,
         service_name:$service,service_uid:$service_uid,source_instance:$source_instance,
@@ -463,6 +514,7 @@ case "$ACTION" in
         cutover_state_sha256:$cutover_state_sha256,
         snapshot_revision:$snapshot_revision,replicas:$replicas,pod_uids_unchanged:true,
         endpoint_uids_matched:true,public_data_verified:true,completed_at_unix:$completed_at_unix}' >"$temporary"
+    require_cutover_state_digest "$state_sha"
     atomic_publish "$temporary" "$receipt_file"
     ;;
 esac
