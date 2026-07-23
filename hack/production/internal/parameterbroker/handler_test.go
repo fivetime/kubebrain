@@ -43,7 +43,7 @@ func TestHandlerReturnsOnlyCurrentTypeBoundWorkerParameters(t *testing.T) {
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	require.Equal(t, http.StatusOK, response.Code)
-	require.Equal(t, "no-store", response.Header().Get("Cache-Control"))
+	requireNoStoreHeaders(t, response)
 	require.Equal(t, parameters, response.Body.Bytes())
 }
 
@@ -70,6 +70,7 @@ func TestHandlerRejectsAmbiguousRequiredQueryParameters(t *testing.T) {
 			response := httptest.NewRecorder()
 			handler.ServeHTTP(response, request)
 			require.Equal(t, http.StatusBadRequest, response.Code)
+			requireNoStoreHeaders(t, response)
 			require.NotContains(t, response.Body.String(), "audit")
 		})
 	}
@@ -143,7 +144,32 @@ func TestHandlerFailsClosedForIdentityTypeAudienceAndFencing(t *testing.T) {
 			response := httptest.NewRecorder()
 			handler.ServeHTTP(response, request)
 			require.Equal(t, tc.status, response.Code)
+			requireNoStoreHeaders(t, response)
 			require.NotContains(t, response.Body.String(), "audit")
+		})
+	}
+}
+
+func TestHandlerSetsNoStoreHeadersOnHealthAndNotFound(t *testing.T) {
+	handler, err := NewHandler(
+		tokenClient("", nil, false),
+		fake.NewSimpleDynamicClient(runtime.NewScheme()), "test", testAudience, time.Second,
+	)
+	require.NoError(t, err)
+	for _, tc := range []struct {
+		method string
+		path   string
+		status int
+	}{
+		{method: http.MethodGet, path: "/healthz", status: http.StatusNoContent},
+		{method: http.MethodPost, path: "/v1/parameters", status: http.StatusNotFound},
+		{method: http.MethodGet, path: "/missing", status: http.StatusNotFound},
+	} {
+		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, httptest.NewRequest(tc.method, tc.path, nil))
+			require.Equal(t, tc.status, response.Code)
+			requireNoStoreHeaders(t, response)
 		})
 	}
 }
@@ -294,4 +320,10 @@ func tokenClient(
 		}}, nil
 	})
 	return client
+}
+
+func requireNoStoreHeaders(t *testing.T, response *httptest.ResponseRecorder) {
+	t.Helper()
+	require.Equal(t, "no-store", response.Header().Get("Cache-Control"))
+	require.Equal(t, "nosniff", response.Header().Get("X-Content-Type-Options"))
 }

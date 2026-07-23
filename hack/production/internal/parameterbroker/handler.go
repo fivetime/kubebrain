@@ -58,6 +58,8 @@ func NewHandler(
 }
 
 func (h *Handler) ServeHTTP(response http.ResponseWriter, request *http.Request) {
+	response.Header().Set("Cache-Control", "no-store")
+	response.Header().Set("X-Content-Type-Options", "nosniff")
 	if request.Method == http.MethodGet && request.URL.Path == "/healthz" {
 		response.WriteHeader(http.StatusNoContent)
 		return
@@ -98,8 +100,6 @@ func (h *Handler) ServeHTTP(response http.ResponseWriter, request *http.Request)
 		return
 	}
 	response.Header().Set("Content-Type", "application/json")
-	response.Header().Set("Cache-Control", "no-store")
-	response.Header().Set("X-Content-Type-Options", "nosniff")
 	response.WriteHeader(http.StatusOK)
 	_, _ = response.Write(parameters)
 }
