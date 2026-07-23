@@ -10543,6 +10543,27 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   自动继承该 fail-closed 行为；UID 仍按已有 key-safe evidence 规则处理。回归：
   `go test ./hack/production/operationaudit ./hack/production/internal/operationauditbuilder -run 'TestOperationAuditRejectsUnsafeIdentityFields|TestFromOperationRejectsUnsafeIdentityMetadata' -count=1`
   通过。
+- A632 收紧 operation audit receipt 匹配 helper：
+  `operationaudit.ArchiveReceipt.Matches` 是公开 helper，但旧实现只做字段等值比较；
+  调用方若绕过 `Inspect`/`InspectArchiveReceipt`，全零 receipt 与全零 status 也会返回
+  matched。当前 release 路径已经先执行 Inspect，不受影响，但公开 API 不应允许未来路径
+  误把未验证证据当作已绑定的 Object Lock receipt。现在 `Matches` 先要求 archive receipt、
+  terminal artifact、artifact SHA-256 和 artifact size 都满足同一 schema，再比较 operation
+  identity、phase、execution receipt、artifact digest 和字节数；非法 receipt/status 以及
+  合法但字段漂移的 receipt 均返回 false。回归：
+  `go test ./hack/production/operationaudit ./hack/production/internal/operationauditrelease -run 'TestArchiveReceiptMatchesRequiresValidatedEvidence|TestReleaseRejectsReceiptAndCurrentOperationDrift|TestReleaseVerifiesArchiveAndRemovesOnlyAuditFinalizer' -count=1`
+  通过。
+- A633 统一 Object Lock executor 的 operation audit receipt schema：
+  A632 关闭了 release 侧匹配 helper 的未验证输入问题，但
+  `hack/backup/objectstore/internal/objectstore.AuditReceipt.Validate` 仍保留较旧的宽松
+  schema，只检查 operation identity 非空、scope 非空和 digest 形状。直接调用或替换的
+  Object Lock executor 可能先写出 `backup:1`、`Backup/Deletion`、带空白 scope、
+  路径穿越 object key 或超过 audit reader 上限的 receipt，随后 release 端再 fail closed，
+  已经扩大了外部对象写入和排障面。现在 executor 写入/读取 audit receipt 时直接复用
+  `operationaudit.ArchiveReceipt.Validate`，与 release、offline inspect 和 operation audit
+  artifact 的 receipt 契约完全一致。回归：
+  `(cd hack/backup/objectstore && go test ./internal/objectstore -run 'TestAuditReceiptUsesOperationAuditArchiveSchema|TestReceiptsRejectNonLowercaseArtifactDigest|TestReceiptReadersRejectAmbiguousJSON|TestArchiveAuditUploadsVerifiesAndRetriesExactVersion|TestBuildInventoryManifest' -count=1)`
+  通过。
 
 ### P2：运维兼容和长期验证
 

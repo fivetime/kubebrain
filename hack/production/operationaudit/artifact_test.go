@@ -443,6 +443,38 @@ func TestArchiveReceiptRejectsUnsafeScopeFields(t *testing.T) {
 	}
 }
 
+func TestArchiveReceiptMatchesRequiresValidatedEvidence(t *testing.T) {
+	artifact := terminalArtifact()
+	receipt := validArchiveReceipt(artifact)
+	status := Status{
+		Artifact: artifact,
+		SHA256:   receipt.ArtifactSHA256,
+		Bytes:    receipt.ObjectBytes,
+	}
+	require.True(t, receipt.Matches(status))
+	require.False(t, (ArchiveReceipt{}).Matches(Status{}))
+
+	invalidReceipt := receipt
+	invalidReceipt.Format = "wrong"
+	require.False(t, invalidReceipt.Matches(status))
+
+	invalidStatus := status
+	invalidStatus.Artifact.Phase = "Running"
+	require.False(t, receipt.Matches(invalidStatus))
+
+	invalidStatus = status
+	invalidStatus.SHA256 = strings.Repeat("A", 64)
+	require.False(t, receipt.Matches(invalidStatus))
+
+	invalidStatus = status
+	invalidStatus.Bytes = 0
+	require.False(t, receipt.Matches(invalidStatus))
+
+	mismatchedReceipt := receipt
+	mismatchedReceipt.OperationUID = "uid-2"
+	require.False(t, mismatchedReceipt.Matches(status))
+}
+
 func TestOperationAuditAcceptsBackupDeletion(t *testing.T) {
 	artifact := terminalArtifact()
 	artifact.Type = "BackupDeletion"

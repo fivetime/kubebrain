@@ -176,6 +176,50 @@ func TestReceiptsRejectNonLowercaseArtifactDigest(t *testing.T) {
 	require.ErrorContains(t, read.Validate(), "incomplete")
 }
 
+func TestAuditReceiptUsesOperationAuditArchiveSchema(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*AuditReceipt)
+	}{
+		{
+			name: "operation_id_with_colon",
+			mutate: func(receipt *AuditReceipt) {
+				receipt.OperationID = "operation:1"
+			},
+		},
+		{
+			name: "unknown_operation_type",
+			mutate: func(receipt *AuditReceipt) {
+				receipt.OperationType = "Backup/Deletion"
+			},
+		},
+		{
+			name: "object_store_with_space",
+			mutate: func(receipt *AuditReceipt) {
+				receipt.ObjectStoreID = "store a"
+			},
+		},
+		{
+			name: "relative_object_key_parent",
+			mutate: func(receipt *AuditReceipt) {
+				receipt.ObjectKey = "../audit/operation-1.json"
+			},
+		},
+		{
+			name: "oversized_artifact_bytes",
+			mutate: func(receipt *AuditReceipt) {
+				receipt.ObjectBytes = maxObjectStoreJSONBytes + 1
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			receipt := completeAuditReceipt()
+			tc.mutate(&receipt)
+			require.ErrorContains(t, receipt.Validate(), "incomplete")
+		})
+	}
+}
+
 func completeAuditReceipt() AuditReceipt {
 	return AuditReceipt{
 		Format: AuditReceiptFormat, OperationID: "operation-1", OperationUID: "uid-1",

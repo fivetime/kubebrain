@@ -74,6 +74,13 @@ type Status struct {
 	Bytes    int64
 }
 
+func (s Status) valid() bool {
+	return s.Artifact.Validate() == nil &&
+		validSHA256(s.SHA256) &&
+		s.Bytes > 0 &&
+		s.Bytes <= maxOperationAuditJSONBytes
+}
+
 var approvalIDPattern = regexp.MustCompile(`^[a-z0-9]([-a-z0-9.]{0,126}[a-z0-9])?$`)
 var dns1123SubdomainPattern = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`)
 var operationIdentifierPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
@@ -279,6 +286,9 @@ func InspectArchiveReceipt(path string) (ArchiveReceipt, string, error) {
 }
 
 func (r ArchiveReceipt) Matches(status Status) bool {
+	if r.Validate() != nil || !status.valid() {
+		return false
+	}
 	artifact := status.Artifact
 	return r.OperationID == artifact.OperationID && r.OperationUID == artifact.UID &&
 		r.Instance == artifact.Instance && r.OperationType == artifact.Type &&

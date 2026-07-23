@@ -8,6 +8,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+
+	"github.com/kubewharf/kubebrain/hack/production/operationaudit"
 )
 
 const ReceiptFormat = "kubebrain.object-backup.receipt.v1"
@@ -159,18 +161,15 @@ func ReadDeletionReceipt(path string) (DeletionReceipt, error) {
 }
 
 func (r AuditReceipt) Validate() error {
-	if r.Format != AuditReceiptFormat || r.OperationID == "" || r.OperationUID == "" ||
-		r.Instance == "" || r.OperationType == "" ||
-		(r.Phase != "Succeeded" && r.Phase != "Failed") ||
-		(r.Phase == "Succeeded" && !validHexSHA256(r.ExecutionReceiptSHA256)) ||
-		(r.Phase == "Failed" && r.ExecutionReceiptSHA256 != "") ||
-		r.ObjectStoreID == "" || r.Bucket == "" || r.ObjectKey == "" || r.VersionID == "" ||
-		!validHexSHA256(r.ArtifactSHA256) || r.ObjectBytes <= 0 ||
-		(r.RetentionMode != "COMPLIANCE" && r.RetentionMode != "GOVERNANCE") ||
-		r.RetainUntilUnix <= r.ArchivedAtUnix || !r.RemoteVerified || r.ArchivedAtUnix <= 0 {
-		return errors.New("object operation audit receipt is incomplete")
-	}
-	return nil
+	return operationaudit.ArchiveReceipt{
+		Format: r.Format, OperationID: r.OperationID, OperationUID: r.OperationUID,
+		Instance: r.Instance, OperationType: r.OperationType, Phase: r.Phase,
+		ExecutionReceiptSHA256: r.ExecutionReceiptSHA256, ObjectStoreID: r.ObjectStoreID,
+		Bucket: r.Bucket, ObjectKey: r.ObjectKey, VersionID: r.VersionID,
+		ArtifactSHA256: r.ArtifactSHA256, ObjectBytes: r.ObjectBytes,
+		RetentionMode: r.RetentionMode, RetainUntilUnix: r.RetainUntilUnix,
+		RemoteVerified: r.RemoteVerified, ArchivedAtUnix: r.ArchivedAtUnix,
+	}.Validate()
 }
 
 func validHexSHA256(value string) bool {
