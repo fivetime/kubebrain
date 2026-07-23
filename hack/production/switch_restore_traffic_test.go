@@ -64,6 +64,31 @@ func TestRestoreTrafficCutoverRejectsStateDriftDuringReceiptPublish(t *testing.T
 	require.NoFileExists(t, filepath.Join(f.state, "restore-1.receipt.json"))
 }
 
+func TestRestoreTrafficCutoverRejectsInputDriftDuringCapture(t *testing.T) {
+	t.Run("restore receipt", func(t *testing.T) {
+		f := newTrafficFixture(t)
+		f.run(t, "prepare", false, "TAMPER_RESTORE_RECEIPT_DURING_SHA256=true",
+			"restore verification receipt changed while being captured")
+		require.NoFileExists(t, filepath.Join(f.state, "restore-1.state"))
+	})
+
+	t.Run("backup", func(t *testing.T) {
+		f := newTrafficFixture(t)
+		f.run(t, "prepare", true, "")
+		f.run(t, "cutover", true, "")
+		f.run(t, "verify", false, "TAMPER_BACKUP_INPUT_DURING_SHA256=true",
+			"backup input changed while being captured")
+		require.NoFileExists(t, filepath.Join(f.state, "restore-1.verified"))
+	})
+}
+
+func TestRestoreTrafficCutoverPassesFrozenBackupToVerify(t *testing.T) {
+	f := newTrafficFixture(t)
+	f.run(t, "prepare", true, "")
+	f.run(t, "cutover", true, "")
+	f.run(t, "verify", true, "ASSERT_FROZEN_BACKUP_INPUT=true")
+}
+
 func TestRestoreTrafficCutoverRejectsExistingReceiptWithUnknownFields(t *testing.T) {
 	f := newTrafficFixture(t)
 	f.run(t, "prepare", true, "")
@@ -267,10 +292,33 @@ exit 1
 	writeTrafficExecutable(t, verify, `#!/usr/bin/env bash
 set -euo pipefail
 [[ ! -f "$FAKE_DIR/verify-fail" ]] || { echo verification failed >&2; exit 1; }
+if [[ "${ASSERT_FROZEN_BACKUP_INPUT:-false}" == true ]]; then
+  [[ "$INPUT" != "$TRAFFIC_BACKUP_SOURCE" ]] || { echo backup input was not frozen >&2; exit 1; }
+  cmp -s "$INPUT" "$TRAFFIC_BACKUP_SOURCE" || { echo frozen backup input content mismatch >&2; exit 1; }
+fi
 cat >"$RECEIPT_OUTPUT" <<EOF
 {"format":"kubebrain.restore-verification.v1","artifact_format":"kubebrain.logical.v2","artifact_sha256":"`+restoreArtifactSHA256+`","snapshot_revision":42,"source_prefix":"/registry","target_prefix":"/restored","records":2,"artifact_leases":1,"verified_target_leases":1,"verified_at_unix":200}
 EOF
 chmod 600 "$RECEIPT_OUTPUT"
+`)
+	realSHA256Sum, err := exec.LookPath("sha256sum")
+	require.NoError(t, err)
+	sha256sum := filepath.Join(dir, "sha256sum")
+	writeTrafficExecutable(t, sha256sum, `#!/usr/bin/env bash
+set -euo pipefail
+"$REAL_SHA256SUM" "$@"
+if [[ "$#" -ge 1 && "$1" == "$TRAFFIC_RESTORE_RECEIPT_SOURCE" &&
+  "${TAMPER_RESTORE_RECEIPT_DURING_SHA256:-false}" == true &&
+  ! -f "$FAKE_DIR/restore-receipt-sha256-tampered" ]]; then
+  touch "$FAKE_DIR/restore-receipt-sha256-tampered"
+  printf ' ' >>"$TRAFFIC_RESTORE_RECEIPT_SOURCE"
+fi
+if [[ "$#" -ge 1 && "$1" == "$TRAFFIC_BACKUP_SOURCE" &&
+  "${TAMPER_BACKUP_INPUT_DURING_SHA256:-false}" == true &&
+  ! -f "$FAKE_DIR/backup-sha256-tampered" ]]; then
+  touch "$FAKE_DIR/backup-sha256-tampered"
+  printf 'changed\n' >>"$TRAFFIC_BACKUP_SOURCE"
+fi
 `)
 	realJQ, err := exec.LookPath("jq")
 	require.NoError(t, err)
@@ -302,6 +350,10 @@ fi
 		"SOURCE_INSTANCE=source", "TARGET_INSTANCE=target", "EXPECTED_REPLICAS=2",
 		"PUBLIC_ENDPOINT=https://service:2379", "TIMEOUT_SECONDS=1", "POLL_INTERVAL_SECONDS=0",
 		"KUBECTL=" + kubectl, "LOGICAL_VERIFY=" + verify, "FAKE_DIR=" + dir,
+		"PATH=" + dir + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"REAL_SHA256SUM=" + realSHA256Sum,
+		"TRAFFIC_RESTORE_RECEIPT_SOURCE=" + restoreReceipt,
+		"TRAFFIC_BACKUP_SOURCE=" + backup,
 		"JQ=" + jq, "REAL_JQ=" + realJQ,
 	}}
 }

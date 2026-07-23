@@ -11017,6 +11017,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   捕获漂移会 fail closed 且不发布 audit receipt。回归：
   `go test ./hack/production -run 'TestPostRestoreAudit' -count=1`
   通过。
+- A681 冻结 RestoreTrafficCutover 直接执行脚本的外部输入：
+  A676 已冻结 cutover operation runner 参数，但 `switch-restore-traffic.sh` 的 prepare/
+  verify/complete 阶段仍从原始 `RESTORE_RECEIPT_INPUT` 和 `BACKUP_INPUT` 读取 restore
+  verification receipt 与 logical backup；若这些路径在初始校验后漂移，cutover 可能基于
+  未被捕获窗口绑定的 restore evidence 或验证数据继续推进。现在脚本按 action 需要捕获
+  restore receipt 与 backup 到私有 0600 副本，要求源文件在捕获前后与副本 digest 一致，
+  并只把冻结 backup path 传给 logical verify；捕获漂移 fail closed 且不写 phase marker。
+  回归：`go test ./hack/production -run 'TestRestoreTrafficCutover' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 
