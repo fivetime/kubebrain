@@ -171,7 +171,17 @@ func WriteRollupAtomic(path string, rollup Rollup) (RollupStatus, error) {
 	if err := temp.Close(); err != nil {
 		return RollupStatus{}, err
 	}
-	if err := os.Link(tempName, path); err != nil {
+	if err := linkMeteringStorageFile(tempName, path); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			if existing, readErr := readBoundedFile(path, "existing object storage rollup", int64(len(data))); readErr == nil {
+				if bytes.Equal(existing, data) {
+					return ReadRollup(path)
+				}
+				return RollupStatus{}, fmt.Errorf("refusing to overwrite object storage rollup %q", path)
+			} else {
+				return RollupStatus{}, readErr
+			}
+		}
 		return RollupStatus{}, err
 	}
 	directory, err := os.Open(dir)

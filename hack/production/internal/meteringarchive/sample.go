@@ -61,6 +61,7 @@ var LegacyMetrics = []string{
 }
 
 var instancePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`)
+var linkMeteringArchiveFile = os.Link
 
 type MetricValue struct {
 	Name          string  `json:"name"`
@@ -360,7 +361,17 @@ func WriteAtomic(path string, sample Sample, maxStaleness time.Duration) (Status
 	if err := temp.Close(); err != nil {
 		return Status{}, err
 	}
-	if err := os.Link(tempName, path); err != nil {
+	if err := linkMeteringArchiveFile(tempName, path); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			if existing, readErr := readBoundedFile(path, "existing metering artifact", int64(len(data))); readErr == nil {
+				if bytes.Equal(existing, data) {
+					return status, nil
+				}
+				return Status{}, fmt.Errorf("refusing to overwrite existing metering artifact %q", path)
+			} else {
+				return Status{}, readErr
+			}
+		}
 		return Status{}, err
 	}
 	directory, err := os.Open(dir)

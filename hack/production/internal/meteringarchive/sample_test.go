@@ -80,6 +80,22 @@ func TestCollectorBuildsCanonicalCompleteSample(t *testing.T) {
 	require.ErrorContains(t, err, "not canonical")
 }
 
+func TestSampleWriterTreatsConcurrentIdenticalLinkAsIdempotent(t *testing.T) {
+	sample := validSample()
+	data := append(mustJSON(t, sample), '\n')
+	originalLink := linkMeteringArchiveFile
+	t.Cleanup(func() { linkMeteringArchiveFile = originalLink })
+	linkMeteringArchiveFile = func(_, path string) error {
+		require.NoError(t, os.WriteFile(path, data, 0o600))
+		return os.ErrExist
+	}
+
+	status, err := WriteAtomic(filepath.Join(t.TempDir(), "sample.json"), sample, 5*time.Minute)
+	require.NoError(t, err)
+	require.Equal(t, int64(len(data)), status.Bytes)
+	require.Equal(t, sample, status.Sample)
+}
+
 func TestSampleRejectsOversizedInputs(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "sample.json")

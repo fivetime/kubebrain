@@ -10641,6 +10641,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   fail-closed 行为。回归：
   `go test ./hack/production/internal/meteringbilling -run 'TestChargeWriterRejectsOversizedNewOutputBeforeLink|TestChargeRejectsOversizedInput|TestPriceCatalogRejectsOversizedInputs|TestSettlementRejectsOversizedInputs' -count=1`
   通过。
+- A642 让本地 metering/billing artifact writer 在并发同内容 link 时幂等：
+  生产 CronJob、补偿任务或手工重跑可能并发生成同一个 hourly sample、daily rollup、price
+  catalog、charge 或 settlement artifact。旧 writer 在创建临时文件前会先读取目标文件；
+  若另一个同内容 writer 恰好在预读之后、`os.Link` 之前完成 link，当前 writer 会直接返回
+  `EEXIST`，而不是复用已存在的 canonical artifact。Object Lock receipt writer 已把同内容
+  `EEXIST` 视为幂等成功，metering/storage/resource/billing 本地 writer 现在也对齐该语义：
+  link 返回 `EEXIST` 时重新读取目标文件，内容一致则成功，不一致仍拒绝覆盖。回归：
+  `go test ./hack/production/internal/meteringstorage ./hack/production/internal/meteringarchive ./hack/production/internal/meteringbilling -run 'TestSnapshotWriterTreatsConcurrentIdenticalLinkAsIdempotent|TestSampleWriterTreatsConcurrentIdenticalLinkAsIdempotent|TestCanonicalWriterTreatsConcurrentIdenticalLinkAsIdempotent' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

@@ -20,6 +20,7 @@ const maxMeteringStorageJSONBytes = 1 << 20
 
 var identifierPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`)
 var digestPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
+var linkMeteringStorageFile = os.Link
 var emptyUsageVersionsSHA256 = func() string {
 	sum := sha256.Sum256([]byte("[]\n"))
 	return hex.EncodeToString(sum[:])
@@ -203,7 +204,17 @@ func WriteSnapshotAtomic(path string, snapshot Snapshot) (SnapshotStatus, error)
 	if err := temp.Close(); err != nil {
 		return SnapshotStatus{}, err
 	}
-	if err := os.Link(tempName, path); err != nil {
+	if err := linkMeteringStorageFile(tempName, path); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			if existing, readErr := readBoundedFile(path, "existing object storage sample", int64(len(data))); readErr == nil {
+				if bytes.Equal(existing, data) {
+					return ReadSnapshot(path)
+				}
+				return SnapshotStatus{}, fmt.Errorf("refusing to overwrite object storage sample %q", path)
+			} else {
+				return SnapshotStatus{}, readErr
+			}
+		}
 		return SnapshotStatus{}, err
 	}
 	directory, err := os.Open(dir)

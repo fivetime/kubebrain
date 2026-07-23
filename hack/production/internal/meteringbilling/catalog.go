@@ -26,6 +26,7 @@ var versionPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`)
 var currencyPattern = regexp.MustCompile(`^[A-Z]{3}$`)
 var decimalPattern = regexp.MustCompile(`^(0|[1-9][0-9]*)(\.[0-9]{0,17}[1-9])?$`)
 var digestPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
+var linkCanonicalFile = os.Link
 
 type Rate struct {
 	Name      string `json:"name"`
@@ -205,7 +206,17 @@ func writeCanonicalAtomic(path string, data []byte, description string, limit in
 	if err := temp.Close(); err != nil {
 		return err
 	}
-	if err := os.Link(tempName, path); err != nil {
+	if err := linkCanonicalFile(tempName, path); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			if existing, readErr := readBoundedFile(path, "existing "+description, int64(len(data))); readErr == nil {
+				if bytes.Equal(existing, data) {
+					return nil
+				}
+				return fmt.Errorf("refusing to overwrite existing %s %q", description, path)
+			} else {
+				return readErr
+			}
+		}
 		return err
 	}
 	directory, err := os.Open(dir)

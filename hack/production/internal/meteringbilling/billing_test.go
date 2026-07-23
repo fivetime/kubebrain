@@ -1,6 +1,7 @@
 package meteringbilling
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -85,6 +86,24 @@ func TestCatalogAndChargeRejectNonCanonicalOrMutatedArtifacts(t *testing.T) {
 	require.NoError(t, err)
 	charge.TotalMicros++
 	require.ErrorContains(t, charge.Validate(), "total")
+}
+
+func TestCanonicalWriterTreatsConcurrentIdenticalLinkAsIdempotent(t *testing.T) {
+	catalog := validCatalog()
+	data, err := json.Marshal(catalog)
+	require.NoError(t, err)
+	data = append(data, '\n')
+	originalLink := linkCanonicalFile
+	t.Cleanup(func() { linkCanonicalFile = originalLink })
+	linkCanonicalFile = func(_, path string) error {
+		require.NoError(t, os.WriteFile(path, data, 0o600))
+		return os.ErrExist
+	}
+
+	status, err := WriteCatalogAtomic(filepath.Join(t.TempDir(), "catalog.json"), catalog)
+	require.NoError(t, err)
+	require.Equal(t, int64(len(data)), status.Bytes)
+	require.Equal(t, catalog, status.Catalog)
 }
 
 func TestPriceCatalogRejectsOversizedInputs(t *testing.T) {

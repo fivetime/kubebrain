@@ -1,6 +1,7 @@
 package meteringstorage
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -23,6 +24,24 @@ func TestSnapshotCanonicalRoundTrip(t *testing.T) {
 	require.NoError(t, os.WriteFile(path, append([]byte(" "), data...), 0o600))
 	_, err = ReadSnapshot(path)
 	require.ErrorContains(t, err, "canonical")
+}
+
+func TestSnapshotWriterTreatsConcurrentIdenticalLinkAsIdempotent(t *testing.T) {
+	snapshot := validSnapshot()
+	data, err := json.Marshal(snapshot)
+	require.NoError(t, err)
+	data = append(data, '\n')
+	originalLink := linkMeteringStorageFile
+	t.Cleanup(func() { linkMeteringStorageFile = originalLink })
+	linkMeteringStorageFile = func(_, path string) error {
+		require.NoError(t, os.WriteFile(path, data, 0o600))
+		return os.ErrExist
+	}
+
+	status, err := WriteSnapshotAtomic(filepath.Join(t.TempDir(), "sample.json"), snapshot)
+	require.NoError(t, err)
+	require.Equal(t, int64(len(data)), status.Bytes)
+	require.Equal(t, snapshot, status.Snapshot)
 }
 
 func TestSnapshotRejectsOversizedInputs(t *testing.T) {
