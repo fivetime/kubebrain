@@ -70,6 +70,11 @@ func ReleaseWithExpectedReceipt(
 		}
 		return nil, errors.New("operation audit finalizer is missing without matching archive annotations")
 	}
+	if err := rejectConflictingArchiveAnnotations(
+		annotations, receiptSHA, artifactStatus.SHA256, receipt.VersionID,
+	); err != nil {
+		return nil, err
+	}
 	updated := object.DeepCopy()
 	updatedAnnotations := make(map[string]string, len(annotations)+3)
 	for key, value := range annotations {
@@ -117,6 +122,28 @@ func ReleaseWithExpectedReceipt(
 		return nil, fmt.Errorf("operation changed while releasing audit finalizer: %w", err)
 	}
 	return nil, err
+}
+
+func rejectConflictingArchiveAnnotations(
+	annotations map[string]string,
+	receiptSHA, artifactSHA, versionID string,
+) error {
+	for _, expected := range []struct {
+		key   string
+		value string
+	}{
+		{key: operationaudit.ReceiptSHAAnnotation, value: receiptSHA},
+		{key: operationaudit.ArtifactSHAAnnotation, value: artifactSHA},
+		{key: operationaudit.VersionAnnotation, value: versionID},
+	} {
+		if current, exists := annotations[expected.key]; exists && current != expected.value {
+			return fmt.Errorf(
+				"operation audit archive annotation %q conflicts with release evidence",
+				expected.key,
+			)
+		}
+	}
+	return nil
 }
 
 func (e ExpectedArchiveReceipt) matches(receipt operationaudit.ArchiveReceipt) error {

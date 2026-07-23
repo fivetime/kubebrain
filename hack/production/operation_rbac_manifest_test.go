@@ -271,6 +271,12 @@ func TestOperationAuditAdmissionRequiresFinalizerAndReleaseEvidence(t *testing.T
 	require.Contains(t, policy.Spec.Validations[4].Expression, operationaudit.ReceiptSHAAnnotation)
 	require.Contains(t, policy.Spec.Validations[4].Expression, operationaudit.ArtifactSHAAnnotation)
 	require.Contains(t, policy.Spec.Validations[4].Expression, operationaudit.VersionAnnotation)
+	require.Contains(t, policy.Spec.Validations[4].Expression,
+		`object.metadata.annotations["`+operationaudit.ReceiptSHAAnnotation+`"] == oldObject.metadata.annotations["`+operationaudit.ReceiptSHAAnnotation+`"]`)
+	require.Contains(t, policy.Spec.Validations[4].Expression,
+		`object.metadata.annotations["`+operationaudit.ArtifactSHAAnnotation+`"] == oldObject.metadata.annotations["`+operationaudit.ArtifactSHAAnnotation+`"]`)
+	require.Contains(t, policy.Spec.Validations[4].Expression,
+		`object.metadata.annotations["`+operationaudit.VersionAnnotation+`"] == oldObject.metadata.annotations["`+operationaudit.VersionAnnotation+`"]`)
 
 	var binding auditAdmissionManifest
 	require.NoError(t, decoder.Decode(&binding))

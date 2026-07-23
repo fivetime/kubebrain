@@ -57,7 +57,30 @@ spec:
           object.metadata.annotations["dbaas.kubebrain.io/approved-by"] == oldObject.metadata.annotations["dbaas.kubebrain.io/approved-by"] &&
           object.metadata.annotations["dbaas.kubebrain.io/approval-id"] == oldObject.metadata.annotations["dbaas.kubebrain.io/approval-id"])
       message: operation approval evidence is immutable
-    - expression: 'request.operation != "UPDATE" || !has(oldObject.metadata.finalizers) || !oldObject.metadata.finalizers.exists(f, f == "dbaas.kubebrain.io/operation-audit") || (has(object.metadata.finalizers) && object.metadata.finalizers.exists(f, f == "dbaas.kubebrain.io/operation-audit")) || (request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-operation-archiver" && object.status.phase in ["Succeeded", "Failed"] && has(object.metadata.annotations) && "dbaas.kubebrain.io/audit-receipt-sha256" in object.metadata.annotations && object.metadata.annotations["dbaas.kubebrain.io/audit-receipt-sha256"].matches("^[a-f0-9]{64}$") && "dbaas.kubebrain.io/audit-artifact-sha256" in object.metadata.annotations && object.metadata.annotations["dbaas.kubebrain.io/audit-artifact-sha256"].matches("^[a-f0-9]{64}$") && "dbaas.kubebrain.io/audit-version-id" in object.metadata.annotations && size(object.metadata.annotations["dbaas.kubebrain.io/audit-version-id"]) > 0)'
+    - expression: |
+        request.operation != "UPDATE" ||
+        !has(oldObject.metadata.finalizers) ||
+        !oldObject.metadata.finalizers.exists(f, f == "dbaas.kubebrain.io/operation-audit") ||
+        (has(object.metadata.finalizers) &&
+          object.metadata.finalizers.exists(f, f == "dbaas.kubebrain.io/operation-audit")) ||
+        (request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-operation-archiver" &&
+          object.status.phase in ["Succeeded", "Failed"] &&
+          has(object.metadata.annotations) &&
+          "dbaas.kubebrain.io/audit-receipt-sha256" in object.metadata.annotations &&
+          object.metadata.annotations["dbaas.kubebrain.io/audit-receipt-sha256"].matches("^[a-f0-9]{64}$") &&
+          (!has(oldObject.metadata.annotations) ||
+            !("dbaas.kubebrain.io/audit-receipt-sha256" in oldObject.metadata.annotations) ||
+            object.metadata.annotations["dbaas.kubebrain.io/audit-receipt-sha256"] == oldObject.metadata.annotations["dbaas.kubebrain.io/audit-receipt-sha256"]) &&
+          "dbaas.kubebrain.io/audit-artifact-sha256" in object.metadata.annotations &&
+          object.metadata.annotations["dbaas.kubebrain.io/audit-artifact-sha256"].matches("^[a-f0-9]{64}$") &&
+          (!has(oldObject.metadata.annotations) ||
+            !("dbaas.kubebrain.io/audit-artifact-sha256" in oldObject.metadata.annotations) ||
+            object.metadata.annotations["dbaas.kubebrain.io/audit-artifact-sha256"] == oldObject.metadata.annotations["dbaas.kubebrain.io/audit-artifact-sha256"]) &&
+          "dbaas.kubebrain.io/audit-version-id" in object.metadata.annotations &&
+          size(object.metadata.annotations["dbaas.kubebrain.io/audit-version-id"]) > 0 &&
+          (!has(oldObject.metadata.annotations) ||
+            !("dbaas.kubebrain.io/audit-version-id" in oldObject.metadata.annotations) ||
+            object.metadata.annotations["dbaas.kubebrain.io/audit-version-id"] == oldObject.metadata.annotations["dbaas.kubebrain.io/audit-version-id"]))
       message: removing the audit finalizer requires terminal archive evidence
 ---
 apiVersion: admissionregistration.k8s.io/v1

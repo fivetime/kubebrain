@@ -13,6 +13,7 @@ import (
 	"github.com/kubewharf/kubebrain/hack/production/internal/operationqueue"
 	"github.com/kubewharf/kubebrain/hack/production/operationaudit"
 	"github.com/stretchr/testify/require"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -100,6 +101,35 @@ func TestReleaseWithExpectedReceiptRejectsScopeDrift(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.NotContains(t, result.GetFinalizers(), operationaudit.Finalizer)
+}
+
+func TestReleaseRejectsConflictingArchiveAnnotations(t *testing.T) {
+	object := archivedOperation()
+	object.SetAnnotations(map[string]string{
+		operationaudit.ReceiptSHAAnnotation: strings.Repeat("0", 64),
+	})
+	client := releaseClient(object)
+	artifactPath, receiptPath, _ := writeReleaseEvidence(t, object)
+	updated := false
+	client.PrependReactor("update", operationqueue.Resource.Resource, func(
+		clientgotesting.Action,
+	) (bool, runtime.Object, error) {
+		updated = true
+		return false, nil, nil
+	})
+
+	result, err := releaseWithExpected(
+		context.Background(), client, "operations", "backup-1", artifactPath, receiptPath,
+	)
+	require.Nil(t, result)
+	require.ErrorContains(t, err, "archive annotation")
+	require.False(t, updated)
+	current, getErr := client.Resource(operationqueue.Resource).Namespace("operations").
+		Get(context.Background(), "backup-1", metav1.GetOptions{})
+	require.NoError(t, getErr)
+	require.Contains(t, current.GetFinalizers(), operationaudit.Finalizer)
+	require.Equal(t, strings.Repeat("0", 64),
+		current.GetAnnotations()[operationaudit.ReceiptSHAAnnotation])
 }
 
 func TestReleaseReconcilesCommittedUpdateAfterLostResponse(t *testing.T) {

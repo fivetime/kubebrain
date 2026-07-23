@@ -10406,6 +10406,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   receipt 共用单段 key-safe identity 校验，operation type 也共用白名单。回归：
   `go test ./hack/production/operationaudit ./hack/production/internal/operationauditbuilder ./hack/production/internal/operationauditrelease ./hack/production/internal/operationarchiver -run 'TestOperationAuditRejectsUnsafeIdentityFields|TestArchiveReceiptRejectsUnsafeOperationIdentity|TestFromOperationRejectsUnsafeIdentityMetadata|TestReleaseVerifiesArchiveAndRemovesOnlyAuditFinalizer|TestArchiveProcessorUsesStableIdentityAndReleasesFinalizer' -count=1`
   通过。
+- A618 保护 operation audit archive 注解不可覆盖：
+  `ReleaseWithExpectedReceipt` 在 audit finalizer 仍存在时会直接写入 receipt SHA、
+  artifact SHA 和 version ID 注解；如果旧对象已带同名但不同值的注解，旧逻辑会覆盖，
+  与不可变审计链语义冲突。生产 admission 也只要求移除 finalizer 时携带格式正确的三枚
+  注解，没有要求已有 archive 注解等值保留。现在 release 代码在发现冲突注解时 fail
+  closed 且不发 Update；`kubebrain-operation-audit-admission` 同步要求旧对象上已有的
+  三枚 archive 注解在 finalizer release 更新中保持完全相同。回归：
+  `go test ./hack/production/internal/operationauditrelease ./deploy/production ./hack/production -run 'TestReleaseRejectsConflictingArchiveAnnotations|TestOperationSubmitterApproverAndAuditAdmissionFenceHighRiskChanges|TestOperationAuditAdmissionRequiresFinalizerAndReleaseEvidence' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

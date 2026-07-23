@@ -757,6 +757,12 @@ func TestOperationSubmitterApproverAndAuditAdmissionFenceHighRiskChanges(t *test
 	require.Contains(t, releaseExpression, `"dbaas.kubebrain.io/audit-receipt-sha256"`)
 	require.Contains(t, releaseExpression, `"dbaas.kubebrain.io/audit-artifact-sha256"`)
 	require.Contains(t, releaseExpression, `"dbaas.kubebrain.io/audit-version-id"`)
+	require.Contains(t, releaseExpression,
+		`object.metadata.annotations["dbaas.kubebrain.io/audit-receipt-sha256"] == oldObject.metadata.annotations["dbaas.kubebrain.io/audit-receipt-sha256"]`)
+	require.Contains(t, releaseExpression,
+		`object.metadata.annotations["dbaas.kubebrain.io/audit-artifact-sha256"] == oldObject.metadata.annotations["dbaas.kubebrain.io/audit-artifact-sha256"]`)
+	require.Contains(t, releaseExpression,
+		`object.metadata.annotations["dbaas.kubebrain.io/audit-version-id"] == oldObject.metadata.annotations["dbaas.kubebrain.io/audit-version-id"]`)
 
 	binding := objectByKindAndName(t, objects, "ValidatingAdmissionPolicyBinding", "kubebrain-operation-audit")
 	require.Equal(t, "kubebrain-operation-audit",
