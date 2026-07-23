@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/kubewharf/kubebrain/hack/production/operationaudit"
@@ -38,6 +40,7 @@ const leaseCleanupTimeout = 5 * time.Second
 const MaxOperationAttempts = 100
 
 const (
+	maxRequesterLength     = 253
 	maxStatusOwnerLength   = 253
 	maxStatusMessageLength = 4096
 )
@@ -137,8 +140,8 @@ func (q *Queue) Submit(ctx context.Context, name string, spec Spec) (*unstructur
 			return nil, invalidSpecError("invalid operation tenant: %s", errs[0])
 		}
 	}
-	if len(spec.RequestedBy) > 253 {
-		return nil, invalidSpecError("operation requester exceeds 253 characters")
+	if err := validateOptionalAuditText(spec.RequestedBy, maxRequesterLength); err != nil {
+		return nil, invalidSpecError("invalid operation requester: %s", err)
 	}
 	if (spec.ParametersSecret == "") != (spec.ParametersKey == "") {
 		return nil, invalidSpecError("parameter secret name and key must be specified together")
@@ -1032,15 +1035,28 @@ func isSHA256Hex(value string) bool {
 }
 
 func validateStatusOwner(owner string) error {
-	if utf8.RuneCountInString(owner) > maxStatusOwnerLength {
-		return fmt.Errorf("operation status owner exceeds %d characters", maxStatusOwnerLength)
+	if err := validateOptionalAuditText(owner, maxStatusOwnerLength); err != nil {
+		return fmt.Errorf("operation status owner is invalid: %w", err)
 	}
 	return nil
 }
 
 func validateStatusMessage(message string) error {
-	if utf8.RuneCountInString(message) > maxStatusMessageLength {
-		return fmt.Errorf("operation status message exceeds %d characters", maxStatusMessageLength)
+	if err := validateOptionalAuditText(message, maxStatusMessageLength); err != nil {
+		return fmt.Errorf("operation status message is invalid: %w", err)
+	}
+	return nil
+}
+
+func validateOptionalAuditText(value string, maxRunes int) error {
+	if !utf8.ValidString(value) {
+		return errors.New("must be valid UTF-8")
+	}
+	if utf8.RuneCountInString(value) > maxRunes {
+		return fmt.Errorf("exceeds %d characters", maxRunes)
+	}
+	if strings.IndexFunc(value, unicode.IsControl) != -1 {
+		return errors.New("must not contain control characters")
 	}
 	return nil
 }

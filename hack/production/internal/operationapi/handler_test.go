@@ -224,6 +224,29 @@ func TestHandlerReturnsBadRequestForQueueSchemaValidation(t *testing.T) {
 	handler.ServeHTTP(response, request)
 
 	require.Equal(t, http.StatusBadRequest, response.Code)
+
+	badPrincipal := authorizedPrincipal()
+	badPrincipal.Subject = "user\ncontrol"
+	handler, err = NewHandler(
+		staticAuthenticator{principal: badPrincipal},
+		operationqueue.New(client, "test"),
+		time.Second,
+	)
+	require.NoError(t, err)
+	body = `{
+		"name":"unsafe-requester","operation_id":"unsafe-requester","tenant":"tenant-a",
+		"instance":"instance-a","type":"Backup",
+		"parameters_sha256":"` + strings.Repeat("a", 64) + `","max_attempts":3
+	}`
+	request = httptest.NewRequest(http.MethodPost, "/v1/operations", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "Bearer token")
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	require.Equal(t, http.StatusBadRequest, response.Code)
+	_, err = operationqueue.New(client, "test").Get(context.Background(), "unsafe-requester")
+	require.True(t, apierrors.IsNotFound(err))
 }
 
 func TestHandlerHealthDoesNotRequireIdentity(t *testing.T) {

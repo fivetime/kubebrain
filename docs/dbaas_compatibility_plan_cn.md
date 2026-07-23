@@ -10457,6 +10457,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `operationauditbuilder.FromOperation` 因复用 validator 自动 fail closed。回归：
   `go test ./hack/production/operationaudit ./hack/production/internal/operationauditbuilder -run 'TestOperationAuditRejects(NonterminalAndInvalidReceipt|UnsafeIdentityFields|UnsafeDisplayFields)|TestArchiveReceiptRejectsUnsafeOperationIdentity|TestFromOperation(RejectsUnsafeIdentityMetadata|RejectsUnsafeAuditDisplayFields|BindsImmutableSpecAndTerminalStatus)' -count=1`
   通过。
+- A623 将 operation audit 字符串边界前移到 queue/API 写入端：
+  A622 让归档端拒绝异常 requester/owner/message，但 `Queue.Submit` 仍可能接受认证主体
+  `requestedBy` 中的控制字符或无效 UTF-8，`Claim`/`Heartbeat`/`Requeue`/`Finish`
+  也只检查 owner/message 长度。这样正常 queue 写入就可能创建未来
+  `operationauditbuilder.FromOperation` 必然拒绝的终态对象，导致 audit finalizer 无法释放。
+  现在 queue 对 requester、status owner 和 status message 统一执行有效 UTF-8、rune
+  长度上限和无控制字符校验；operation API 通过既有 `ErrInvalidSpec` 分类把坏认证主体
+  请求返回 400，且不创建 Operation。回归：
+  `go test ./hack/production/internal/operationqueue ./hack/production/internal/operationapi ./hack/production/operationaudit ./hack/production/internal/operationauditbuilder -run 'TestQueueRejectsSpecDriftAndInvalidCompletion|TestHandlerReturnsBadRequestForQueueSchemaValidation|TestOperationAuditRejectsUnsafeDisplayFields|TestFromOperationRejectsUnsafeAuditDisplayFields' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

@@ -909,6 +909,18 @@ func TestQueueRejectsSpecDriftAndInvalidCompletion(t *testing.T) {
 	requesterDrift.RequestedBy = "user-456"
 	_, err = queue.Submit(ctx, "backup-1", requesterDrift)
 	require.ErrorContains(t, err, "different immutable spec")
+	requesterControl := spec
+	requesterControl.OperationID = "requester-control"
+	requesterControl.RequestedBy = "user\n123"
+	_, err = queue.Submit(ctx, "requester-control", requesterControl)
+	require.ErrorIs(t, err, ErrInvalidSpec)
+	require.ErrorContains(t, err, "operation requester")
+	requesterInvalidUTF8 := spec
+	requesterInvalidUTF8.OperationID = "requester-invalid-utf8"
+	requesterInvalidUTF8.RequestedBy = string([]byte{'u', 0xff})
+	_, err = queue.Submit(ctx, "requester-invalid-utf8", requesterInvalidUTF8)
+	require.ErrorIs(t, err, ErrInvalidSpec)
+	require.ErrorContains(t, err, "valid UTF-8")
 
 	invalidOperationID := spec
 	invalidOperationID.OperationID = "-invalid"
@@ -967,18 +979,31 @@ func TestQueueRejectsSpecDriftAndInvalidCompletion(t *testing.T) {
 
 	_, err = queue.Claim(ctx, strings.Repeat("w", maxStatusOwnerLength+1), "", time.Minute)
 	require.ErrorContains(t, err, "status owner")
+	_, err = queue.Claim(ctx, "worker\ncontrol", "", time.Minute)
+	require.ErrorContains(t, err, "control characters")
+	_, err = queue.Claim(ctx, string([]byte{'w', 0xff}), "", time.Minute)
+	require.ErrorContains(t, err, "valid UTF-8")
 
 	claim, err := queue.Claim(ctx, "worker-a", "", time.Minute)
 	require.NoError(t, err)
 	_, err = queue.Heartbeat(ctx, claim.Name, strings.Repeat("w", maxStatusOwnerLength+1), claim.Attempt, time.Minute)
 	require.ErrorContains(t, err, "status owner")
+	_, err = queue.Heartbeat(ctx, claim.Name, "worker\ncontrol", claim.Attempt, time.Minute)
+	require.ErrorContains(t, err, "control characters")
 	_, err = queue.Requeue(ctx, claim.Name, claim.Owner, claim.Attempt, strings.Repeat("m", maxStatusMessageLength+1))
 	require.ErrorContains(t, err, "status message")
+	_, err = queue.Requeue(ctx, claim.Name, claim.Owner, claim.Attempt, "retry\nlater")
+	require.ErrorContains(t, err, "control characters")
 	_, err = queue.Finish(
 		ctx, claim.Name, claim.Owner, claim.Attempt,
 		true, strings.Repeat("a", 64), strings.Repeat("m", maxStatusMessageLength+1),
 	)
 	require.ErrorContains(t, err, "status message")
+	_, err = queue.Finish(
+		ctx, claim.Name, claim.Owner, claim.Attempt,
+		true, strings.Repeat("a", 64), string([]byte{'m', 0xff}),
+	)
+	require.ErrorContains(t, err, "valid UTF-8")
 	_, err = queue.Finish(ctx, claim.Name, claim.Owner, claim.Attempt, false, strings.Repeat("a", 64), "")
 	require.ErrorContains(t, err, "failed operation cannot carry")
 	_, err = queue.Finish(ctx, claim.Name, claim.Owner, claim.Attempt, false, strings.Repeat("A", 64), "")
