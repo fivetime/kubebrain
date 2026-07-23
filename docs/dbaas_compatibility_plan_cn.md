@@ -11159,6 +11159,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   和
   `go test ./hack/production/cmd/backup-scheduler ./hack/production/cmd/operationctl ./hack/production/cmd/operation-archiver -run 'TestMainRejectsInvalid|TestParseNamespacesRejectsUnsafeAllowlist' -count=1`
   通过。
+- A696 下沉 operation queue namespace 校验：
+  A693/A695 关闭了 CLI 与 inventory reader 的 namespace 输入面，但
+  `operationqueue.New(client, namespace)` 仍是无错误构造函数；未来库调用方若直接传入
+  `tenant.a`，Submit/Claim/Get/Parameters/Approve/Delete 等公开方法会带非法 namespace
+  进入 Kubernetes API action。现在 Queue 的所有会触发 API 的公开入口都会先校验 queue
+  namespace 为 DNS label，`ClaimAcrossNamespaces` 也会先校验完整 allowlist，再检查任何
+  namespace 的 last-started watermark。fake dynamic client 回归覆盖 Submit、Claim、
+  Requeue、Heartbeat、Finish、Get、Parameters、ParametersForWorker、Approve、Delete 和
+  cross-namespace claim，证明非法 namespace 返回错误且 `client.Actions()` 为空：
+  `go test ./hack/production/internal/operationqueue -count=1` 通过。
 
 ### P2：运维兼容和长期验证
 

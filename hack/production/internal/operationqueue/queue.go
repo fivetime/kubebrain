@@ -113,7 +113,24 @@ func (q *Queue) WithClock(now func() time.Time) *Queue {
 	return q
 }
 
+func (q *Queue) validateNamespace() error {
+	return validateQueueNamespace(q.namespace)
+}
+
+func validateQueueNamespace(namespace string) error {
+	if namespace == "" {
+		return errors.New("operation queue namespace must not be empty")
+	}
+	if problems := validation.IsDNS1123Label(namespace); len(problems) != 0 {
+		return errors.New("invalid operation queue namespace " + namespace + ": " + problems[0])
+	}
+	return nil
+}
+
 func (q *Queue) Submit(ctx context.Context, name string, spec Spec) (*unstructured.Unstructured, error) {
+	if err := q.validateNamespace(); err != nil {
+		return nil, err
+	}
 	if errs := validation.IsDNS1123Subdomain(name); len(errs) > 0 {
 		return nil, invalidSpecError("invalid operation name: %s", errs[0])
 	}
@@ -207,6 +224,9 @@ func (q *Queue) Submit(ctx context.Context, name string, spec Spec) (*unstructur
 }
 
 func (q *Queue) Claim(ctx context.Context, owner, operationType string, lease time.Duration) (*Claim, error) {
+	if err := q.validateNamespace(); err != nil {
+		return nil, err
+	}
 	if owner == "" || lease < time.Second {
 		return nil, errors.New("owner and a lease of at least one second are required")
 	}
@@ -409,6 +429,11 @@ func ClaimAcrossNamespaces(
 	owner, operationType string,
 	lease time.Duration,
 ) (*Claim, error) {
+	for _, namespace := range namespaces {
+		if err := validateQueueNamespace(namespace); err != nil {
+			return nil, err
+		}
+	}
 	queues := make([]namespaceQueue, 0, len(namespaces))
 	var inspectErrs []error
 	for _, namespace := range namespaces {
@@ -453,6 +478,9 @@ func ClaimAcrossNamespaces(
 }
 
 func (q *Queue) lastStarted(ctx context.Context, operationType string) (int64, error) {
+	if err := q.validateNamespace(); err != nil {
+		return 0, err
+	}
 	list, err := q.resource.List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return 0, err
@@ -553,6 +581,9 @@ func (q *Queue) Requeue(
 	attempt int64,
 	message string,
 ) (*unstructured.Unstructured, error) {
+	if err := q.validateNamespace(); err != nil {
+		return nil, err
+	}
 	if err := validateStatusMessage(message); err != nil {
 		return nil, err
 	}
@@ -633,6 +664,9 @@ func (q *Queue) Requeue(
 }
 
 func (q *Queue) Heartbeat(ctx context.Context, name, owner string, attempt int64, lease time.Duration) (*Claim, error) {
+	if err := q.validateNamespace(); err != nil {
+		return nil, err
+	}
 	if lease < time.Second {
 		return nil, errors.New("lease must be at least one second")
 	}
@@ -709,6 +743,9 @@ func (q *Queue) Finish(
 	succeeded bool,
 	receiptSHA256, message string,
 ) (*unstructured.Unstructured, error) {
+	if err := q.validateNamespace(); err != nil {
+		return nil, err
+	}
 	if err := validateStatusOwner(owner); err != nil {
 		return nil, err
 	}
@@ -847,10 +884,16 @@ func (q *Queue) reconcileFailedStatusTransition(
 }
 
 func (q *Queue) Get(ctx context.Context, name string) (*unstructured.Unstructured, error) {
+	if err := q.validateNamespace(); err != nil {
+		return nil, err
+	}
 	return q.resource.Get(ctx, name, metav1.GetOptions{})
 }
 
 func (q *Queue) Parameters(ctx context.Context, name string) ([]byte, error) {
+	if err := q.validateNamespace(); err != nil {
+		return nil, err
+	}
 	object, err := q.resource.Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		return nil, err
@@ -861,6 +904,9 @@ func (q *Queue) Parameters(ctx context.Context, name string) ([]byte, error) {
 func (q *Queue) ParametersForWorker(
 	ctx context.Context, name, operationType, owner string, attempt int64,
 ) ([]byte, error) {
+	if err := q.validateNamespace(); err != nil {
+		return nil, err
+	}
 	object, err := q.resource.Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		return nil, err
@@ -910,6 +956,9 @@ func (q *Queue) Approve(
 	ctx context.Context,
 	name, approvedBy, approvalID string,
 ) (*unstructured.Unstructured, error) {
+	if err := q.validateNamespace(); err != nil {
+		return nil, err
+	}
 	if approvedBy != operationaudit.ApproverUsername {
 		return nil, fmt.Errorf(
 			"operation approval requires the dedicated approver identity %q",
@@ -972,6 +1021,9 @@ func (q *Queue) Approve(
 }
 
 func (q *Queue) Delete(ctx context.Context, name string, uid types.UID) error {
+	if err := q.validateNamespace(); err != nil {
+		return err
+	}
 	policy := metav1.DeletePropagationForeground
 	err := q.resource.Delete(ctx, name, metav1.DeleteOptions{
 		Preconditions:     &metav1.Preconditions{UID: &uid},
