@@ -50,6 +50,12 @@ func TestBackupDeletionOperationCleansTemporaryReceiptWhenConcurrentReceiptDrift
 	require.NotContains(t, f.log(t), "--action succeed")
 }
 
+func TestBackupDeletionOperationRejectsReceiptTamperedDuringDigest(t *testing.T) {
+	f := newBackupDeletionFixture(t)
+	f.run(t, false, "TAMPER_RECEIPT_DURING_SHA256=true", "operation receipt is invalid")
+	require.NotContains(t, f.log(t), "--action succeed")
+}
+
 func TestBackupDeletionOperationRejectsExistingReceiptWithUnknownFields(t *testing.T) {
 	f := newBackupDeletionFixture(t)
 	f.run(t, true, "")
@@ -250,6 +256,7 @@ fi
 		"BACKUP_DELETION_OBJECT_KEY=instance-a/backup-1.jsonl",
 		"BACKUP_DELETION_VERSION_ID=version-1",
 	}
+	f.env = append(f.env, receiptDigestTamperEnv(t, dir, f.operationReceipt)...)
 	return f
 }
 

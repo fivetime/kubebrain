@@ -43,6 +43,14 @@ func TestBackupOperationRevalidatesReceiptBeforeSucceed(t *testing.T) {
 	require.NotContains(t, log, "--action succeed")
 }
 
+func TestBackupOperationRejectsReceiptTamperedDuringDigest(t *testing.T) {
+	f := newBackupRunnerFixture(t, false)
+	f.run(t, false, "TAMPER_RECEIPT_DURING_SHA256=true", "invalid object receipt")
+	log := f.log(t)
+	require.Contains(t, log, "--action retry")
+	require.NotContains(t, log, "--action succeed")
+}
+
 func TestBackupOperationReusesExistingArtifact(t *testing.T) {
 	f := newBackupRunnerFixture(t, true)
 	f.run(t, true, "")
@@ -173,15 +181,17 @@ printf '{"format":"kubebrain.object-backup.receipt.v1","instance":"%s","backup_i
   "$INSTANCE" "$BACKUP_ID" "$OBJECT_STORE_ID" "$S3_BUCKET" "$S3_OBJECT_KEY" "$artifact_sha" "$object_bytes" "$RETENTION_MODE" "$RETAIN_UNTIL_UNIX" >"$RECEIPT_OUTPUT"
 chmod 600 "$RECEIPT_OUTPUT"
 `)
+	env := []string{
+		"WORKER_ID=worker-a", "PARAMETERS_INPUT=" + parameters,
+		"OPERATION_NAMESPACE=ops", "LEASE_SECONDS=6", "OPERATIONCTL=" + operationctl,
+		"EXPORT_COMMAND=" + exportCommand, "STATUS_COMMAND=" + statusCommand,
+		"OBJECT_COMMAND=" + objectCommand, "FAKE_DIR=" + dir, "PARAMETERS_DIGEST=" + digest,
+		"BACKUP_RECEIPT_OUTPUT=" + receipt,
+	}
+	env = append(env, receiptDigestTamperEnv(t, dir, receipt)...)
 	return &backupRunnerFixture{
 		dir: dir, parameters: parameters, receipt: receipt,
-		env: []string{
-			"WORKER_ID=worker-a", "PARAMETERS_INPUT=" + parameters,
-			"OPERATION_NAMESPACE=ops", "LEASE_SECONDS=6", "OPERATIONCTL=" + operationctl,
-			"EXPORT_COMMAND=" + exportCommand, "STATUS_COMMAND=" + statusCommand,
-			"OBJECT_COMMAND=" + objectCommand, "FAKE_DIR=" + dir, "PARAMETERS_DIGEST=" + digest,
-			"BACKUP_RECEIPT_OUTPUT=" + receipt,
-		},
+		env: env,
 	}
 }
 

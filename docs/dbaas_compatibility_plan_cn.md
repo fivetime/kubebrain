@@ -10753,6 +10753,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   回归用 `sha256sum` wrapper 在最终 digest 读取瞬间替换 receipt，覆盖四类 runner：
   `go test ./hack/production -run 'Test(DestroyOperation|CertificateRotationOperation|RestoreCutoverOperation|PostRestoreAuditOperation)RejectsReceiptTamperedDuringDigest' -count=1`
   通过。
+- A653 补齐 backup/backup-deletion runner receipt digest 提交前复检：
+  A652 已覆盖 Destroy、CertificateRotation、RestoreCutover 和 PostRestoreAudit，但 Backup
+  与 BackupDeletion runner 仍在 strict receipt validator 通过后直接计算 `sha256sum`
+  并提交 Operation 终态。若本地 object receipt 或 workflow-level backup deletion receipt
+  在 validator 与 digest 读取之间被替换，queue 仍可能记录未验证字节的 SHA。现在
+  `run-backup-operation.sh` 与 `run-backup-deletion-operation.sh` 也改为
+  validate→hash→validate；第二次复检失败时保持原有 retry/失败语义，不提交 succeed。
+  回归：
+  `go test ./hack/production -run 'Test(BackupOperation|BackupDeletionOperation)RejectsReceiptTamperedDuringDigest' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

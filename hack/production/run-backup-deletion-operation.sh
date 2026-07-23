@@ -290,6 +290,15 @@ validate_operation_receipt() {
     "$operation_receipt" >/dev/null
 }
 
+validated_operation_receipt_digest() {
+  local digest
+  validate_operation_receipt || return 1
+  digest="$(sha256sum "$operation_receipt" | cut -d ' ' -f1)" || return 1
+  [[ "$digest" =~ ^[a-f0-9]{64}$ ]] || return 1
+  validate_operation_receipt || return 1
+  printf '%s\n' "$digest"
+}
+
 publish_operation_receipt() {
   local temporary="$1"
   sync -f "$temporary"
@@ -324,9 +333,10 @@ else
       post_inventory_receipt_sha256:$post_inventory,completed_at_unix:$completed}' >"$temporary"
   publish_operation_receipt "$temporary"
 fi
-validate_operation_receipt ||
-  { echo "backup deletion operation receipt is invalid" >&2; exit 1; }
-receipt_digest="$(sha256sum "$operation_receipt" | cut -d ' ' -f1)"
+if ! receipt_digest="$(validated_operation_receipt_digest)"; then
+  echo "backup deletion operation receipt is invalid" >&2
+  exit 1
+fi
 run_operationctl --action succeed --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
   --receipt-sha256 "$receipt_digest" --message "exact backup version lifecycle completed" >/dev/null
 trap - EXIT INT TERM
