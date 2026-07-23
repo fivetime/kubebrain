@@ -10594,6 +10594,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `(cd hack/backup/objectstore && go test ./internal/objectstore -run 'TestMeasureUsageVerifiesAndTotalsEveryVersion|TestMeasureUsageUsesCanonicalEmptyVersionsDigest|TestUsageReceiptRejectsImpossibleVersionByteTotals' -count=1)`；
   `go test ./hack/production/internal/meteringstorage -run 'TestSnapshotRejectsImpossibleVersionByteTotals|TestSnapshotCanonicalRoundTrip' -count=1`
   通过。
+- A637 拒绝 object storage rollup 的非整小时 byte-seconds：
+  `BuildRollup` 只会把 24 个小时样本的 `total_object_bytes` 分别乘以 3600 后求和，因此
+  合法 `object_storage_byte_seconds` 必须是 3600 的整数倍，0 用量仍然合法。旧
+  `Rollup.Validate` 只拒绝负数，手工暂存或替换 rollup executor 可写出 `... + 1` 这类
+  不可由 hourly sample 生成的 fractional-hour 计量量，并在后续 archive/settlement
+  中被当作完整日聚合读取。现在 rollup validator 与写入路径都拒绝非 3600 倍数的
+  byte-seconds。回归：
+  `go test ./hack/production/internal/meteringstorage -run 'TestStorageRollupRejectsFractionalSlotByteSeconds|TestBuildStorageRollupIntegratesTwentyFourSnapshots|TestBuildStorageRollupFailsClosed' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

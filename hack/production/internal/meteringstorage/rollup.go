@@ -111,7 +111,7 @@ func (r Rollup) Validate() error {
 		r.PeriodStartUnix%86400 != 0 || r.SlotSeconds != 3600 || !r.Complete ||
 		r.ObjectStoreID == "" || r.Bucket == "" || r.Prefix == "" ||
 		!formatsSortedUnique(r.AllowedFormats) || len(r.Sources) != 24 ||
-		r.ObjectStorageByteSeconds < 0 {
+		r.ObjectStorageByteSeconds < 0 || r.ObjectStorageByteSeconds%3600 != 0 {
 		return errors.New("object storage rollup is incomplete")
 	}
 	for i, source := range r.Sources {

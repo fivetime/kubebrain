@@ -42,6 +42,17 @@ func TestStorageRollupRejectsOversizedInputs(t *testing.T) {
 	require.ErrorContains(t, err, "existing object storage rollup exceeds")
 }
 
+func TestStorageRollupRejectsFractionalSlotByteSeconds(t *testing.T) {
+	start := time.Unix(1_784_505_600, 0).UTC().Truncate(24 * time.Hour)
+	rollup, err := BuildRollup("instance-a", start, start.Add(24*time.Hour), validRollupInputs(start))
+	require.NoError(t, err)
+
+	rollup.ObjectStorageByteSeconds++
+	require.ErrorContains(t, rollup.Validate(), "incomplete")
+	_, err = WriteRollupAtomic(filepath.Join(t.TempDir(), "rollup.json"), rollup)
+	require.ErrorContains(t, err, "incomplete")
+}
+
 func TestBuildStorageRollupFailsClosed(t *testing.T) {
 	start := time.Unix(1_784_505_600, 0).UTC().Truncate(24 * time.Hour)
 	tests := []struct {
