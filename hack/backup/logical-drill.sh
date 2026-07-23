@@ -15,7 +15,7 @@ Environment:
   ENDPOINT           etcd endpoint, default 127.0.0.1:3379
   PREFIX             key prefix to export, default /registry
   RESTORE_PREFIX     isolated restore prefix, default /kubebrain-restore-drill-<time>-<pid>
-  OUTPUT             backup JSONL path, default temporary file
+  OUTPUT             backup JSONL path, default new temporary file
   BATCH_SIZE         export page size, default 1000
   REQUIRE_RECORDS    fail if export is empty, default true
   KEEP_BACKUP        keep OUTPUT, default false
@@ -37,7 +37,12 @@ esac
 ENDPOINT="${ENDPOINT:-127.0.0.1:3379}"
 PREFIX="${PREFIX:-/registry}"
 RESTORE_PREFIX="${RESTORE_PREFIX:-/kubebrain-restore-drill-$(date +%s)-$$}"
-OUTPUT="${OUTPUT:-$(mktemp -t kubebrain-logical-drill.XXXXXX.jsonl)}"
+if [[ -z "${OUTPUT:-}" ]]; then
+  OUTPUT_DIR="$(mktemp -d -t kubebrain-logical-drill.XXXXXX)"
+  OUTPUT="${OUTPUT_DIR}/backup.jsonl"
+else
+  OUTPUT_DIR=""
+fi
 BATCH_SIZE="${BATCH_SIZE:-1000}"
 REQUIRE_RECORDS="${REQUIRE_RECORDS:-true}"
 KEEP_BACKUP="${KEEP_BACKUP:-false}"
@@ -60,6 +65,7 @@ fi
 cleanup() {
   if [ "$KEEP_BACKUP" != "true" ]; then
     rm -f "$OUTPUT"
+    [[ -z "$OUTPUT_DIR" ]] || rm -rf "$OUTPUT_DIR"
   fi
 }
 trap cleanup EXIT

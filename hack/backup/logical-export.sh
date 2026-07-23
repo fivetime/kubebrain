@@ -12,7 +12,7 @@ Exports a KubeBrain/etcd prefix as JSON lines.
 Environment:
   ENDPOINT           etcd endpoint, default 127.0.0.1:3379
   PREFIX             key prefix to export, default /registry
-  OUTPUT             output JSONL path, default kubebrain-logical-backup.jsonl
+  OUTPUT             new output JSONL path, default kubebrain-logical-backup.jsonl
   BATCH_SIZE         range page size, default 1000
   TIMEOUT            request timeout as Go duration, default 10m
   ETCDCTL_CACERT     CA cert for TLS/mTLS endpoint
@@ -22,7 +22,8 @@ Environment:
   BACKUP_INSTANCE    metrics instance label, default kubebrain
 
 The export fixes all pages at the first Range response revision and publishes
-the versioned, checksummed backup atomically.
+the versioned, checksummed backup atomically without overwriting an existing
+output.
 EOF
 }
 

@@ -31,7 +31,8 @@ ENDPOINT="${ENDPOINT:-127.0.0.1:3379}"
 PREFIX="${PREFIX:-/registry/backup-lease-$(date +%s)-$$}"
 RESTORE_PREFIX="${RESTORE_PREFIX:-/kubebrain-lease-restore-$(date +%s)-$$}"
 LEASE_TTL="${LEASE_TTL:-120}"
-OUTPUT="$(mktemp -t kubebrain-lease-backup.XXXXXX.jsonl)"
+OUTPUT_DIR="$(mktemp -d -t kubebrain-lease-backup.XXXXXX)"
+OUTPUT="${OUTPUT_DIR}/backup.jsonl"
 
 run_tool() {
   local action="$1"
@@ -51,6 +52,7 @@ cleanup() {
       go run ./hack/backup/cmd/prefix-tool >/dev/null 2>&1
   ) || true
   rm -f "$OUTPUT"
+  rm -rf "$OUTPUT_DIR"
 }
 trap cleanup EXIT
 

@@ -173,6 +173,25 @@ func TestAbortDoesNotReplaceExistingBackup(t *testing.T) {
 	require.Equal(t, "existing", string(contents))
 }
 
+func TestCommitDoesNotOverwriteExistingBackup(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "backup.jsonl")
+	require.NoError(t, os.WriteFile(path, []byte("existing\n"), 0o600))
+	writer, err := NewAtomicWriter(path, "/registry", 1)
+	require.NoError(t, err)
+	require.NoError(t, writer.Add(record.Record{Key: "L3JlZ2lzdHJ5L2E="}))
+
+	_, err = writer.Commit()
+	require.ErrorIs(t, err, os.ErrExist)
+	require.ErrorContains(t, err, "backup output already exists")
+	contents, readErr := os.ReadFile(path)
+	require.NoError(t, readErr)
+	require.Equal(t, "existing\n", string(contents))
+	matches, globErr := filepath.Glob(filepath.Join(dir, ".backup.jsonl.tmp-*"))
+	require.NoError(t, globErr)
+	require.Empty(t, matches)
+}
+
 func TestOpenVerifiedRejectsManifestMismatchAndDuplicateKeys(t *testing.T) {
 	tests := map[string][]record.Record{
 		"outside prefix": {

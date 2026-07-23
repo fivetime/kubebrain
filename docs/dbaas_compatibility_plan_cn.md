@@ -10829,6 +10829,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   digest 复检，漂移时 fail closed。回归：
   `go test ./hack/production -run 'TestColdRestoreExecute' -count=1`
   通过。
+- A661 收紧 logical backup JSONL 制品非覆盖发布：
+  `backupfile.AtomicWriter` 旧实现通过 rename 提交 `OUTPUT`，生产 backup runner 虽在调用
+  exporter 前检查 artifact path 不存在，但并发进程可在检查后创建同名文件并被 exporter
+  覆盖；直接运行 `logical-export.sh` 也会覆盖默认输出。现在 logical backup 主制品通过
+  hard-link 发布，目标已存在时返回 `EEXIST` 并保留原文件；相关 smoke 脚本的默认
+  `OUTPUT` 改为私有临时目录内尚不存在的路径，继续兼容新建制品语义。回归：
+  `go test ./hack/backup/internal/backupfile -run 'Test(AtomicWriterAndVerifiedReader|CommitDoesNotOverwriteExistingBackup|AbortDoesNotReplaceExistingBackup)' -count=20`
+  通过，且 `bash -n` 覆盖 logical-export 与相关 smoke 脚本。
 
 ### P2：运维兼容和长期验证
 

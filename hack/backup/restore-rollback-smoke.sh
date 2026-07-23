@@ -28,7 +28,8 @@ esac
 ENDPOINT="${ENDPOINT:-127.0.0.1:3379}"
 PREFIX="${PREFIX:-/registry/backup-rollback-$(date +%s)-$$}"
 RESTORE_PREFIX="${RESTORE_PREFIX:-/kubebrain-rollback-$(date +%s)-$$}"
-OUTPUT="$(mktemp -t kubebrain-rollback.XXXXXX.jsonl)"
+OUTPUT_DIR="$(mktemp -d -t kubebrain-rollback.XXXXXX)"
+OUTPUT="${OUTPUT_DIR}/backup.jsonl"
 RESTORE_LOG="$(mktemp -t kubebrain-rollback.XXXXXX.log)"
 
 run_tool() {
@@ -46,6 +47,7 @@ cleanup() {
   run_tool delete "$PREFIX" >/dev/null 2>&1 || true
   run_tool delete "$RESTORE_PREFIX" >/dev/null 2>&1 || true
   rm -f "$OUTPUT" "$RESTORE_LOG"
+  rm -rf "$OUTPUT_DIR"
 }
 trap cleanup EXIT
 

@@ -16,7 +16,7 @@ Environment:
   ENDPOINT           etcd endpoint, default 127.0.0.1:3379
   PREFIX             source prefix, default /registry/backup-verify-smoke-<time>
   RESTORE_PREFIX     restore prefix, default PREFIX-restore
-  OUTPUT             backup JSONL path, default temporary file
+  OUTPUT             backup JSONL path, default new temporary file
   VERIFY_LOG         verify log path, default temporary file
   TIMEOUT            request timeout as Go duration, default 10m
   ETCDCTL_CACERT     CA cert for TLS/mTLS endpoint
@@ -35,7 +35,12 @@ esac
 ENDPOINT="${ENDPOINT:-127.0.0.1:3379}"
 PREFIX="${PREFIX:-/registry/backup-verify-smoke-$(date +%s)}"
 RESTORE_PREFIX="${RESTORE_PREFIX:-${PREFIX}-restore}"
-OUTPUT="${OUTPUT:-$(mktemp -t kubebrain-verify-content.XXXXXX.jsonl)}"
+if [[ -z "${OUTPUT:-}" ]]; then
+  OUTPUT_DIR="$(mktemp -d -t kubebrain-verify-content.XXXXXX)"
+  OUTPUT="${OUTPUT_DIR}/backup.jsonl"
+else
+  OUTPUT_DIR=""
+fi
 VERIFY_LOG="${VERIFY_LOG:-$(mktemp -t kubebrain-verify-content.XXXXXX.log)}"
 
 need() {
@@ -49,6 +54,7 @@ need go
 
 cleanup() {
   rm -f "$OUTPUT"
+  [[ -z "$OUTPUT_DIR" ]] || rm -rf "$OUTPUT_DIR"
   rm -f "$VERIFY_LOG"
   run_prefix_tool delete "$PREFIX" >/dev/null 2>&1 || true
   run_prefix_tool delete "$RESTORE_PREFIX" >/dev/null 2>&1 || true

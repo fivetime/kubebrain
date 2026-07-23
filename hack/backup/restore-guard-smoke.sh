@@ -14,7 +14,7 @@ Environment:
   ENDPOINT           etcd endpoint, default 127.0.0.1:3379
   PREFIX             temporary prefix, default /registry/backup-guard-smoke-<time>
   RESTORE_PREFIX     isolated target prefix, default /registry-restore<PREFIX>
-  OUTPUT             backup JSONL path, default temporary file
+  OUTPUT             backup JSONL path, default new temporary file
   RESTORE_LOG        restore log path, default temporary file
   TIMEOUT            request timeout as Go duration, default 10m
   ETCDCTL_CACERT     CA cert for TLS/mTLS endpoint
@@ -33,7 +33,12 @@ esac
 ENDPOINT="${ENDPOINT:-127.0.0.1:3379}"
 PREFIX="${PREFIX:-/registry/backup-guard-smoke-$(date +%s)}"
 RESTORE_PREFIX="${RESTORE_PREFIX:-/registry-restore${PREFIX}}"
-OUTPUT="${OUTPUT:-$(mktemp -t kubebrain-restore-guard.XXXXXX.jsonl)}"
+if [[ -z "${OUTPUT:-}" ]]; then
+  OUTPUT_DIR="$(mktemp -d -t kubebrain-restore-guard.XXXXXX)"
+  OUTPUT="${OUTPUT_DIR}/backup.jsonl"
+else
+  OUTPUT_DIR=""
+fi
 RESTORE_LOG="${RESTORE_LOG:-$(mktemp -t kubebrain-restore-guard.XXXXXX.log)}"
 
 need() {
@@ -52,6 +57,7 @@ fi
 
 cleanup() {
   rm -f "$OUTPUT"
+  [[ -z "$OUTPUT_DIR" ]] || rm -rf "$OUTPUT_DIR"
   rm -f "$RESTORE_LOG"
   run_prefix_tool delete "$PREFIX" >/dev/null 2>&1 || true
   run_prefix_tool delete "$RESTORE_PREFIX" >/dev/null 2>&1 || true

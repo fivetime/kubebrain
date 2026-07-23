@@ -133,8 +133,12 @@ func (w *AtomicWriter) Commit() (Status, error) {
 		return Status{}, err
 	}
 	w.closed = true
-	if err := os.Rename(w.temp.Name(), w.output); err != nil {
-		os.Remove(w.temp.Name())
+	tempName := w.temp.Name()
+	defer os.Remove(tempName)
+	if err := os.Link(tempName, w.output); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return Status{}, fmt.Errorf("backup output already exists %q: %w", w.output, os.ErrExist)
+		}
 		return Status{}, err
 	}
 	dir, err := os.Open(filepath.Dir(w.output))

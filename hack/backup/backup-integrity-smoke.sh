@@ -14,7 +14,7 @@ Environment:
   ENDPOINT           etcd endpoint, default 127.0.0.1:3379
   PREFIX             source prefix, default /registry/backup-integrity-<time>
   RESTORE_PREFIX     target prefix, default PREFIX-restore
-  OUTPUT             complete backup path, default temporary file
+  OUTPUT             complete backup path, default new temporary file
   CORRUPT_OUTPUT     truncated backup path, default temporary file
   RESTORE_LOG        expected restore failure log, default temporary file
   TIMEOUT            request timeout as Go duration, default 10m
@@ -31,7 +31,12 @@ esac
 ENDPOINT="${ENDPOINT:-127.0.0.1:3379}"
 PREFIX="${PREFIX:-/registry/backup-integrity-$(date +%s)-$$}"
 RESTORE_PREFIX="${RESTORE_PREFIX:-${PREFIX}-restore}"
-OUTPUT="${OUTPUT:-$(mktemp -t kubebrain-backup-integrity.XXXXXX.jsonl)}"
+if [[ -z "${OUTPUT:-}" ]]; then
+  OUTPUT_DIR="$(mktemp -d -t kubebrain-backup-integrity.XXXXXX)"
+  OUTPUT="${OUTPUT_DIR}/backup.jsonl"
+else
+  OUTPUT_DIR=""
+fi
 CORRUPT_OUTPUT="${CORRUPT_OUTPUT:-$(mktemp -t kubebrain-backup-integrity-corrupt.XXXXXX.jsonl)}"
 RESTORE_LOG="${RESTORE_LOG:-$(mktemp -t kubebrain-backup-integrity.XXXXXX.log)}"
 
@@ -44,6 +49,7 @@ cleanup() {
       go run ./hack/backup/cmd/prefix-tool >/dev/null
   )
   rm -f "$OUTPUT" "$CORRUPT_OUTPUT" "$RESTORE_LOG"
+  [[ -z "$OUTPUT_DIR" ]] || rm -rf "$OUTPUT_DIR"
 }
 trap cleanup EXIT
 
