@@ -11008,6 +11008,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   begin gate。回归：
   `go test ./hack/production -run 'TestCertificateRotationOperation' -count=1`
   通过。
+- A680 冻结 PostRestoreAudit 直接执行脚本的 cutover evidence 输入：
+  A677 已冻结 operation runner 的参数 JSON，但 `audit-restored-instance.sh` 仍在原始
+  `CUTOVER_STATE_INPUT`/`CUTOVER_RECEIPT_INPUT` 路径上做 schema、JQ 校验和最终 digest
+  复核；若输入路径在初始校验后漂移，审计过程可能读取未被捕获窗口绑定的 cutover
+  evidence。现在脚本在任何解析前把 cutover state 与 cutover receipt 捕获到私有 0600
+  副本，要求源文件在捕获前后与副本 digest 一致，并只把冻结路径传给后续 probe/JQ；
+  捕获漂移会 fail closed 且不发布 audit receipt。回归：
+  `go test ./hack/production -run 'TestPostRestoreAudit' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

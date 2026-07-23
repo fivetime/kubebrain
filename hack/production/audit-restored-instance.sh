@@ -58,6 +58,7 @@ done
 [[ -f "$CUTOVER_STATE_INPUT" && -f "$CUTOVER_RECEIPT_INPUT" ]] ||
   { echo "cutover state and receipt inputs must exist" >&2; exit 2; }
 command -v "$JQ" >/dev/null || { echo "jq is required" >&2; exit 2; }
+command -v sha256sum >/dev/null || { echo "sha256sum is required" >&2; exit 2; }
 
 umask 077
 mkdir -p "$STATE_DIR"
@@ -65,6 +66,36 @@ receipt_file="${RECEIPT_OUTPUT:-${STATE_DIR}/${OPERATION_ID}.receipt.json}"
 kubectl_args=()
 [[ -n "$KUBE_CONTEXT" ]] && kubectl_args+=(--context "$KUBE_CONTEXT")
 [[ -n "$KUBECONFIG_PATH" ]] && kubectl_args+=(--kubeconfig "$KUBECONFIG_PATH")
+
+input_capture_dir="$(mktemp -d)"
+cleanup_input_capture() {
+  rm -rf "$input_capture_dir"
+}
+trap cleanup_input_capture EXIT INT TERM
+
+file_sha256() {
+  local path="$1" digest
+  digest="$(sha256sum "$path" | cut -d " " -f1)" || return 1
+  [[ "$digest" =~ ^[a-f0-9]{64}$ ]] || return 1
+  printf '%s\n' "$digest"
+}
+
+freeze_input() {
+  local source="$1" destination="$2" label="$3" source_before captured source_after
+  source_before="$(file_sha256 "$source")" || { echo "${label} digest is invalid" >&2; exit 1; }
+  cp -- "$source" "$destination" || { echo "capture ${label} failed" >&2; exit 1; }
+  chmod 600 "$destination"
+  captured="$(file_sha256 "$destination")" || { echo "${label} digest is invalid" >&2; exit 1; }
+  source_after="$(file_sha256 "$source")" || { echo "${label} digest is invalid" >&2; exit 1; }
+  [[ "$captured" == "$source_before" && "$source_after" == "$source_before" ]] ||
+    { echo "${label} changed while being captured" >&2; exit 1; }
+}
+
+freeze_input "$CUTOVER_STATE_INPUT" "${input_capture_dir}/cutover.state" "cutover state"
+CUTOVER_STATE_INPUT="${input_capture_dir}/cutover.state"
+freeze_input "$CUTOVER_RECEIPT_INPUT" "${input_capture_dir}/cutover.receipt.json" "cutover receipt"
+CUTOVER_RECEIPT_INPUT="${input_capture_dir}/cutover.receipt.json"
+export CUTOVER_STATE_INPUT CUTOVER_RECEIPT_INPUT
 
 atomic_publish() {
   local temporary="$1" destination="$2"
@@ -137,10 +168,9 @@ validate_cutover_state_schema() {
 validated_cutover_state_digest() {
   local first second
   validate_cutover_state_schema || return 1
-  first="$(sha256sum "$CUTOVER_STATE_INPUT" | cut -d " " -f1)" || return 1
-  [[ "$first" =~ ^[a-f0-9]{64}$ ]] || return 1
+  first="$(file_sha256 "$CUTOVER_STATE_INPUT")" || return 1
   validate_cutover_state_schema || return 1
-  second="$(sha256sum "$CUTOVER_STATE_INPUT" | cut -d " " -f1)" || return 1
+  second="$(file_sha256 "$CUTOVER_STATE_INPUT")" || return 1
   [[ "$second" == "$first" ]] || return 1
   printf '%s\n' "$first"
 }
@@ -182,10 +212,9 @@ validate_cutover_receipt() {
 validated_cutover_receipt_digest() {
   local first second
   validate_cutover_receipt || return 1
-  first="$(sha256sum "$CUTOVER_RECEIPT_INPUT" | cut -d " " -f1)" || return 1
-  [[ "$first" =~ ^[a-f0-9]{64}$ ]] || return 1
+  first="$(file_sha256 "$CUTOVER_RECEIPT_INPUT")" || return 1
   validate_cutover_receipt || return 1
-  second="$(sha256sum "$CUTOVER_RECEIPT_INPUT" | cut -d " " -f1)" || return 1
+  second="$(file_sha256 "$CUTOVER_RECEIPT_INPUT")" || return 1
   [[ "$second" == "$first" ]] || return 1
   printf '%s\n' "$first"
 }

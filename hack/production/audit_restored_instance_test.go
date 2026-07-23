@@ -69,6 +69,27 @@ func TestPostRestoreAuditRejectsCutoverEvidenceDriftDuringReceiptPublish(t *test
 	}
 }
 
+func TestPostRestoreAuditRejectsCutoverEvidenceDriftDuringCapture(t *testing.T) {
+	for _, tc := range []struct {
+		name, env, want string
+	}{
+		{
+			name: "state", env: "TAMPER_CUTOVER_STATE_DURING_SHA256=true",
+			want: "cutover state changed while being captured",
+		},
+		{
+			name: "receipt", env: "TAMPER_CUTOVER_RECEIPT_DURING_SHA256=true",
+			want: "cutover receipt changed while being captured",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newAuditFixture(t)
+			f.run(t, false, tc.env, tc.want)
+			require.NoFileExists(t, filepath.Join(f.state, "audit-1.receipt.json"))
+		})
+	}
+}
+
 func TestPostRestoreAuditRejectsExistingReceiptWithUnknownFields(t *testing.T) {
 	f := newAuditFixture(t)
 	receiptPath := filepath.Join(f.state, "audit-1.receipt.json")
@@ -196,6 +217,25 @@ fi
 if [[ -f "$FAKE_DIR/probe-backwards" ]]; then count=$((100-count)); fi
 printf '{"format":"kubebrain.etcd-audit-probe.v1","put_revision":%d,"read_revision":%d,"delete_revision":%d,"lease_ttl":60}\n' "$count" "$count" "$count"
 `)
+	realSHA256Sum, err := exec.LookPath("sha256sum")
+	require.NoError(t, err)
+	sha256sum := filepath.Join(dir, "sha256sum")
+	writeTrafficExecutable(t, sha256sum, `#!/usr/bin/env bash
+set -euo pipefail
+"$REAL_SHA256SUM" "$@"
+if [[ "$#" -ge 1 && "$1" == "$AUDIT_CUTOVER_STATE_SOURCE" &&
+  "${TAMPER_CUTOVER_STATE_DURING_SHA256:-false}" == true &&
+  ! -f "$FAKE_DIR/state-sha256-tampered" ]]; then
+  touch "$FAKE_DIR/state-sha256-tampered"
+  printf 'UNKNOWN\trow\n' >>"$AUDIT_CUTOVER_STATE_SOURCE"
+fi
+if [[ "$#" -ge 1 && "$1" == "$AUDIT_CUTOVER_RECEIPT_SOURCE" &&
+  "${TAMPER_CUTOVER_RECEIPT_DURING_SHA256:-false}" == true &&
+  ! -f "$FAKE_DIR/receipt-sha256-tampered" ]]; then
+  touch "$FAKE_DIR/receipt-sha256-tampered"
+  printf ' ' >>"$AUDIT_CUTOVER_RECEIPT_SOURCE"
+fi
+`)
 	realJQ, err := exec.LookPath("jq")
 	require.NoError(t, err)
 	jq := filepath.Join(dir, "jq-wrapper")
@@ -216,6 +256,10 @@ fi
 		"EXPECTED_REPLICAS=2", "PUBLIC_ENDPOINT=https://service:2379",
 		"AUDIT_DURATION_SECONDS=1", "AUDIT_INTERVAL_SECONDS=1", "MIN_SAMPLES=2",
 		"KUBECTL=" + kubectl, "PROBE=" + probe, "FAKE_DIR=" + dir,
+		"PATH=" + dir + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"REAL_SHA256SUM=" + realSHA256Sum,
+		"AUDIT_CUTOVER_STATE_SOURCE=" + cutoverState,
+		"AUDIT_CUTOVER_RECEIPT_SOURCE=" + cutoverReceipt,
 		"JQ=" + jq, "REAL_JQ=" + realJQ,
 	}}
 }
