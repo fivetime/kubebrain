@@ -249,26 +249,51 @@ validate_inventory_receipt() {
     "$path" >/dev/null
 }
 
-validate_inventory_receipt "$pre_inventory_receipt" "$pre_manifest_sha" 1 ||
-  { echo "pre-delete inventory receipt is invalid" >&2; exit 1; }
-validate_inventory_receipt "$post_inventory_receipt" "$post_manifest_sha" 0 ||
-  { echo "post-delete inventory receipt is invalid" >&2; exit 1; }
-"$JQ" -e --arg instance "$instance" --arg backup "$backup_id" \
-  --arg store "$object_store_id" --arg bucket "$bucket" --arg key "$object_key" \
-  --arg version "$version_id" --arg artifact "$artifact_sha" \
-  --arg retention "$retention_mode" --argjson retain_until "$retain_until" '
-  keys == ["artifact_sha256","backup_id","bucket","deleted_at_unix","format","instance","object_key","object_store_id","retain_until_unix","retention_mode","version_absent","version_id"] and
-  .format == "kubebrain.object-backup-deletion.receipt.v1" and
-  .instance == $instance and .backup_id == $backup and .object_store_id == $store and
-  .bucket == $bucket and .object_key == $key and .version_id == $version and
-  .artifact_sha256 == $artifact and .version_absent == true and
-  .retention_mode == $retention and .retain_until_unix == $retain_until and
-  .deleted_at_unix == .retain_until_unix' \
-  "$deletion_receipt" >/dev/null ||
-  { echo "backup deletion receipt is invalid" >&2; exit 1; }
-pre_inventory_sha="$(sha256sum "$pre_inventory_receipt" | cut -d ' ' -f1)"
-deletion_sha="$(sha256sum "$deletion_receipt" | cut -d ' ' -f1)"
-post_inventory_sha="$(sha256sum "$post_inventory_receipt" | cut -d ' ' -f1)"
+validate_deletion_receipt() {
+  "$JQ" -e --arg instance "$instance" --arg backup "$backup_id" \
+    --arg store "$object_store_id" --arg bucket "$bucket" --arg key "$object_key" \
+    --arg version "$version_id" --arg artifact "$artifact_sha" \
+    --arg retention "$retention_mode" --argjson retain_until "$retain_until" '
+    keys == ["artifact_sha256","backup_id","bucket","deleted_at_unix","format","instance","object_key","object_store_id","retain_until_unix","retention_mode","version_absent","version_id"] and
+    .format == "kubebrain.object-backup-deletion.receipt.v1" and
+    .instance == $instance and .backup_id == $backup and .object_store_id == $store and
+    .bucket == $bucket and .object_key == $key and .version_id == $version and
+    .artifact_sha256 == $artifact and .version_absent == true and
+    .retention_mode == $retention and .retain_until_unix == $retain_until and
+    .deleted_at_unix == .retain_until_unix' \
+    "$deletion_receipt" >/dev/null
+}
+
+validated_inventory_receipt_digest() {
+  local path="$1" manifest_sha="$2" min_versions="$3" digest
+  validate_inventory_receipt "$path" "$manifest_sha" "$min_versions" || return 1
+  digest="$(sha256sum "$path" | cut -d ' ' -f1)" || return 1
+  [[ "$digest" =~ ^[a-f0-9]{64}$ ]] || return 1
+  validate_inventory_receipt "$path" "$manifest_sha" "$min_versions" || return 1
+  printf '%s\n' "$digest"
+}
+
+validated_deletion_receipt_digest() {
+  local digest
+  validate_deletion_receipt || return 1
+  digest="$(sha256sum "$deletion_receipt" | cut -d ' ' -f1)" || return 1
+  [[ "$digest" =~ ^[a-f0-9]{64}$ ]] || return 1
+  validate_deletion_receipt || return 1
+  printf '%s\n' "$digest"
+}
+
+if ! pre_inventory_sha="$(validated_inventory_receipt_digest "$pre_inventory_receipt" "$pre_manifest_sha" 1)"; then
+  echo "pre-delete inventory receipt is invalid" >&2
+  exit 1
+fi
+if ! deletion_sha="$(validated_deletion_receipt_digest)"; then
+  echo "backup deletion receipt is invalid" >&2
+  exit 1
+fi
+if ! post_inventory_sha="$(validated_inventory_receipt_digest "$post_inventory_receipt" "$post_manifest_sha" 0)"; then
+  echo "post-delete inventory receipt is invalid" >&2
+  exit 1
+fi
 umask 077
 
 validate_operation_receipt() {

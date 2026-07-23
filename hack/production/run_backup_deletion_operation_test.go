@@ -56,6 +56,42 @@ func TestBackupDeletionOperationRejectsReceiptTamperedDuringDigest(t *testing.T)
 	require.NotContains(t, f.log(t), "--action succeed")
 }
 
+func TestBackupDeletionOperationRejectsEvidenceTamperedDuringDigest(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		path func(*backupDeletionFixture) string
+		want string
+	}{
+		{
+			name: "pre inventory",
+			path: func(f *backupDeletionFixture) string {
+				return f.preInventoryReceipt
+			},
+			want: "pre-delete inventory receipt is invalid",
+		},
+		{
+			name: "deletion",
+			path: func(f *backupDeletionFixture) string {
+				return f.deletionReceipt
+			},
+			want: "backup deletion receipt is invalid",
+		},
+		{
+			name: "post inventory",
+			path: func(f *backupDeletionFixture) string {
+				return f.postInventoryReceipt
+			},
+			want: "post-delete inventory receipt is invalid",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newBackupDeletionFixture(t)
+			f.run(t, false, "TAMPER_RECEIPT_DURING_SHA256=true\nRUNNER_RECEIPT_OUTPUT="+tc.path(f), tc.want)
+			require.NotContains(t, f.log(t), "--action succeed")
+		})
+	}
+}
+
 func TestBackupDeletionOperationRejectsExistingReceiptWithUnknownFields(t *testing.T) {
 	f := newBackupDeletionFixture(t)
 	f.run(t, true, "")

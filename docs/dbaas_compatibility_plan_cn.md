@@ -10763,6 +10763,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   回归：
   `go test ./hack/production -run 'Test(BackupOperation|BackupDeletionOperation)RejectsReceiptTamperedDuringDigest' -count=1`
   通过。
+- A654 收紧 backup deletion 子证据 receipt digest 汇总复检：
+  A653 关闭了 workflow-level operation receipt 的最终 digest 窗口，但
+  `run-backup-deletion-operation.sh` 还会把 pre-inventory、delete、post-inventory 三个
+  子 receipt 的 SHA 写入 `kubebrain.backup-deletion-operation.receipt.v1`；旧逻辑在子
+  receipt strict validator 通过后直接读取 `sha256sum`，本地文件若在读取瞬间被替换，
+  operation receipt 会绑定未验证的子证据 digest。现在三类子 receipt 都通过
+  validate→hash→validate 汇总，删除 receipt 的 schema 校验也抽成共享 helper，复检失败
+  沿用原有错误文案且不提交 succeed。回归：
+  `go test ./hack/production -run 'TestBackupDeletionOperationRejectsEvidenceTamperedDuringDigest' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 
