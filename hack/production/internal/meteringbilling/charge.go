@@ -415,7 +415,7 @@ func WriteChargeAtomic(path string, charge Charge) (ChargeStatus, error) {
 		return ChargeStatus{}, err
 	}
 	data = append(data, '\n')
-	if err := writeCanonicalAtomic(path, data, "metering charge"); err != nil {
+	if err := writeCanonicalAtomic(path, data, "metering charge", maxMeteringChargeBytes); err != nil {
 		return ChargeStatus{}, err
 	}
 	sum := sha256.Sum256(data)

@@ -10632,6 +10632,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   失败后目标路径不存在。回归：
   `go test ./hack/production/internal/meteringarchive -run 'TestRollupWriterRejectsOversizedNewOutputBeforeLink|TestRollupRejectsOversizedInputs|TestSampleRejectsOversizedInputs' -count=1`
   通过。
+- A641 对齐 metering billing writer 的新输出大小边界：
+  price catalog、charge 与 settlement artifact reader 分别有 1 MiB/1 MiB/4 MiB 本地 JSON
+  上限，但共享 `writeCanonicalAtomic` 旧实现只检查 oversized 既有文件；直接调用
+  `WriteChargeAtomic` 可通过超长 source object key 构造 schema 合法但超过 reader 上限的新
+  charge，并在 link 后留下不可读 artifact。现在 shared writer helper 先按调用方传入的
+  reader 上限拒绝新输出，再创建临时文件；catalog、charge 和 settlement writer 都继承该
+  fail-closed 行为。回归：
+  `go test ./hack/production/internal/meteringbilling -run 'TestChargeWriterRejectsOversizedNewOutputBeforeLink|TestChargeRejectsOversizedInput|TestPriceCatalogRejectsOversizedInputs|TestSettlementRejectsOversizedInputs' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

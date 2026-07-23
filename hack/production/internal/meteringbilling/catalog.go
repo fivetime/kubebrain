@@ -165,13 +165,16 @@ func WriteCatalogAtomic(path string, catalog Catalog) (CatalogStatus, error) {
 		return CatalogStatus{}, err
 	}
 	data = append(data, '\n')
-	if err := writeCanonicalAtomic(path, data, "metering price catalog"); err != nil {
+	if err := writeCanonicalAtomic(path, data, "metering price catalog", maxPriceCatalogBytes); err != nil {
 		return CatalogStatus{}, err
 	}
 	return ReadCatalog(path)
 }
 
-func writeCanonicalAtomic(path string, data []byte, description string) error {
+func writeCanonicalAtomic(path string, data []byte, description string, limit int64) error {
+	if int64(len(data)) > limit {
+		return fmt.Errorf("%s exceeds %d bytes", description, limit)
+	}
 	if existing, err := readBoundedFile(path, "existing "+description, int64(len(data))); err == nil {
 		if bytes.Equal(existing, data) {
 			return nil

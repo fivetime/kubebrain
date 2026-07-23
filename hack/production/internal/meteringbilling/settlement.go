@@ -430,7 +430,7 @@ func writeSettlement[T any](
 		return SettlementStatus[T]{}, err
 	}
 	data = append(data, '\n')
-	if err := writeCanonicalAtomic(path, data, description); err != nil {
+	if err := writeCanonicalAtomic(path, data, description, maxSettlementArtifactBytes); err != nil {
 		return SettlementStatus[T]{}, err
 	}
 	return read(path)

@@ -107,6 +107,22 @@ func TestChargeRejectsOversizedInput(t *testing.T) {
 	require.ErrorContains(t, err, "metering charge exceeds")
 }
 
+func TestChargeWriterRejectsOversizedNewOutputBeforeLink(t *testing.T) {
+	charge, err := BuildCharge(
+		validRollup(),
+		validSource(meteringarchive.RollupFormat, "instance-a:1700000000:1700086400", "rollup"),
+		validCatalog(), validSource(CatalogFormat, "price-2026-07", "catalog"),
+	)
+	require.NoError(t, err)
+	charge.RollupSource.ObjectKey = strings.Repeat("s", maxMeteringChargeBytes)
+	path := filepath.Join(t.TempDir(), "charge.json")
+
+	_, err = WriteChargeAtomic(path, charge)
+	require.ErrorContains(t, err, "metering charge exceeds")
+	_, statErr := os.Stat(path)
+	require.ErrorIs(t, statErr, os.ErrNotExist)
+}
+
 func TestBuildChargeV2IncludesImmutableObjectStorageUsage(t *testing.T) {
 	start := time.Date(2026, 7, 20, 0, 0, 0, 0, time.UTC)
 	rollup := validRollupForPeriod(start)
