@@ -21,6 +21,11 @@ import (
 
 const UsageReceiptFormat = "kubebrain.object-usage.receipt.v1"
 
+var emptyUsageVersionsSHA256 = func() string {
+	sum := sha256.Sum256([]byte("[]\n"))
+	return hex.EncodeToString(sum[:])
+}()
+
 type UsageRequest struct {
 	ObjectStoreID  string
 	Bucket         string
@@ -186,6 +191,9 @@ func (r UsageReceipt) Validate() error {
 	}
 	if (r.RemoteVersions == 0) != (r.TotalObjectBytes == 0) {
 		return errors.New("object usage receipt version and byte counts are inconsistent")
+	}
+	if r.RemoteVersions == 0 && r.VersionsSHA256 != emptyUsageVersionsSHA256 {
+		return errors.New("empty object usage receipt has invalid versions digest")
 	}
 	previous := ""
 	for _, format := range r.AllowedFormats {

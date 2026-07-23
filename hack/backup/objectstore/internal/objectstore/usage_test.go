@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/kubewharf/kubebrain/hack/production/operationaudit"
 	"github.com/stretchr/testify/require"
@@ -34,6 +35,26 @@ func TestMeasureUsageVerifiesAndTotalsEveryVersion(t *testing.T) {
 	repeated, err := MeasureUsage(context.Background(), fixture.client, request)
 	require.NoError(t, err)
 	require.Equal(t, receipt, repeated)
+	persisted, err := ReadUsageReceipt(request.ReceiptOutput)
+	require.NoError(t, err)
+	require.Equal(t, receipt, persisted)
+}
+
+func TestMeasureUsageUsesCanonicalEmptyVersionsDigest(t *testing.T) {
+	fixture := newInventoryFixture(t)
+	fixture.client.listOutputs = []*s3.ListObjectVersionsOutput{{}}
+	request := UsageRequest{
+		ObjectStoreID: "store-a", Bucket: "bucket-a", Prefix: "audits/",
+		AllowedFormats: []string{operationaudit.Format},
+		ReceiptOutput:  filepath.Join(t.TempDir(), "empty-usage.json"),
+		Now:            time.Unix(2_000_000_000, 0),
+	}
+	receipt, err := MeasureUsage(context.Background(), fixture.client, request)
+	require.NoError(t, err)
+	require.Equal(t, 0, receipt.RemoteVersions)
+	require.Equal(t, int64(0), receipt.TotalObjectBytes)
+	require.Equal(t, emptyUsageVersionsSHA256, receipt.VersionsSHA256)
+
 	persisted, err := ReadUsageReceipt(request.ReceiptOutput)
 	require.NoError(t, err)
 	require.Equal(t, receipt, persisted)
@@ -144,5 +165,9 @@ func TestUsageReceiptRejectsImpossibleVersionByteTotals(t *testing.T) {
 
 	receipt.RemoteVersions = 0
 	receipt.TotalObjectBytes = 0
+	receipt.VersionsSHA256 = strings.Repeat("d", 64)
+	require.ErrorContains(t, receipt.Validate(), "invalid versions digest")
+
+	receipt.VersionsSHA256 = emptyUsageVersionsSHA256
 	require.NoError(t, receipt.Validate())
 }

@@ -20,6 +20,10 @@ const maxMeteringStorageJSONBytes = 1 << 20
 
 var identifierPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`)
 var digestPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
+var emptyUsageVersionsSHA256 = func() string {
+	sum := sha256.Sum256([]byte("[]\n"))
+	return hex.EncodeToString(sum[:])
+}()
 
 type Snapshot struct {
 	Format           string   `json:"format"`
@@ -93,6 +97,9 @@ func (s Snapshot) Validate() error {
 	}
 	if (s.RemoteVersions == 0) != (s.TotalObjectBytes == 0) {
 		return errors.New("object storage sample version and byte counts are inconsistent")
+	}
+	if s.RemoteVersions == 0 && s.VersionsSHA256 != emptyUsageVersionsSHA256 {
+		return errors.New("empty object storage sample has invalid versions digest")
 	}
 	return nil
 }

@@ -10583,6 +10583,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `(cd hack/backup/objectstore && go test ./internal/objectstore -run 'TestUsageReceiptRejectsImpossibleVersionByteTotals|TestMeasureUsageVerifiesAndTotalsEveryVersion|TestUsageReceiptRejectsTamperAndNonCanonicalJSON' -count=1)`；
   `go test ./hack/production/internal/meteringstorage -run 'TestSnapshot(RejectsImpossibleVersionByteTotals|RejectsInvalidEvidenceAndSlot|CanonicalRoundTrip)|TestArchiverRejectsUsageReceiptMismatchBeforeArchive' -count=1`
   通过。
+- A636 固定空 object usage 的版本清单 digest：
+  A635 让 usage receipt/storage sample 的版本数和总字节数同为零或同为正，但空 usage
+  仍可携带任意小写 64 位 `versions_sha256`。真实 `MeasureUsage` 对空版本列表的
+  canonical 输入固定为 `[]\n`，digest 唯一；手工暂存或替换 executor 可伪造空计量证据，
+  并让后续 sample/rollup 无法区分空清单来源。现在 objectstore usage receipt 与生产
+  storage sample 在 `remote_versions == 0` 时都要求 `versions_sha256 == sha256("[]\n")`；
+  非空 usage 继续只校验 digest 形状，因为 standalone validator 无法从 receipt 内部重算
+  版本列表。回归：
+  `(cd hack/backup/objectstore && go test ./internal/objectstore -run 'TestMeasureUsageVerifiesAndTotalsEveryVersion|TestMeasureUsageUsesCanonicalEmptyVersionsDigest|TestUsageReceiptRejectsImpossibleVersionByteTotals' -count=1)`；
+  `go test ./hack/production/internal/meteringstorage -run 'TestSnapshotRejectsImpossibleVersionByteTotals|TestSnapshotCanonicalRoundTrip' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

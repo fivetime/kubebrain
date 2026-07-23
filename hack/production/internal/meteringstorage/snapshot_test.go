@@ -61,6 +61,10 @@ func TestSnapshotRejectsImpossibleVersionByteTotals(t *testing.T) {
 	snapshot = validSnapshot()
 	snapshot.RemoteVersions = 0
 	snapshot.TotalObjectBytes = 0
+	snapshot.VersionsSHA256 = strings.Repeat("b", 64)
+	require.ErrorContains(t, snapshot.Validate(), "invalid versions digest")
+
+	snapshot.VersionsSHA256 = emptyUsageVersionsSHA256
 	require.NoError(t, snapshot.Validate())
 }
 
