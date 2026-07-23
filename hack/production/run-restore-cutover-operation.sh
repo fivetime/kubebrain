@@ -254,6 +254,7 @@ state_file="${state_dir}/${operation_id}.state"
 cutover_file="${state_dir}/${operation_id}.cutover"
 verified_file="${state_dir}/${operation_id}.verified"
 rollback_file="${state_dir}/${operation_id}.rollback"
+receipt_input="$receipt_output"
 
 validate_cutover_state_schema() {
   local path="$1"
@@ -380,18 +381,31 @@ validate_cutover_receipt() {
     .pod_uids_unchanged == true and .endpoint_uids_matched == true and
     .public_data_verified == true and
     (.completed_at_unix | type == "number" and . > 0 and . == floor))' \
-    "$receipt_output" >/dev/null
+    "$receipt_input" >/dev/null
 }
 
 validated_cutover_receipt_digest() {
   local digest current_digest
   validate_cutover_receipt || return 1
-  digest="$(sha256sum "$receipt_output" | cut -d ' ' -f1)" || return 1
+  digest="$(sha256sum "$receipt_input" | cut -d ' ' -f1)" || return 1
   [[ "$digest" =~ ^[a-f0-9]{64}$ ]] || return 1
   validate_cutover_receipt || return 1
-  current_digest="$(sha256sum "$receipt_output" | cut -d ' ' -f1)" || return 1
+  current_digest="$(sha256sum "$receipt_input" | cut -d ' ' -f1)" || return 1
   [[ "$current_digest" == "$digest" ]] || return 1
   printf '%s\n' "$digest"
+}
+
+freeze_cutover_receipt() {
+  local frozen_receipt source_digest captured_digest current_digest
+  frozen_receipt="${parameter_capture_dir}/cutover-receipt.json"
+  source_digest="$(file_sha256 "$receipt_output")" || return 1
+  cp -- "$receipt_output" "$frozen_receipt" || return 1
+  chmod 600 "$frozen_receipt"
+  captured_digest="$(file_sha256 "$frozen_receipt")" || return 1
+  current_digest="$(file_sha256 "$receipt_output")" || return 1
+  [[ "$captured_digest" == "$source_digest" && "$current_digest" == "$source_digest" ]] ||
+    return 1
+  receipt_input="$frozen_receipt"
 }
 
 if [[ -e "$rollback_file" ]]; then
@@ -471,6 +485,12 @@ fi
   echo "restore cutover completed without its receipt" >&2
   exit 1
 }
+if ! freeze_cutover_receipt; then
+  run_operationctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
+    --message "restore cutover receipt invalid after complete" >/dev/null
+  echo "restore cutover produced an invalid receipt" >&2
+  exit 1
+fi
 if ! validate_cutover_receipt; then
   run_operationctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
     --message "restore cutover receipt invalid after complete" >/dev/null

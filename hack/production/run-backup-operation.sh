@@ -126,6 +126,7 @@ parameters="$("$JQ" -er '[
 IFS=$'\t' read -r endpoint prefix artifact_output batch_size metrics_output backup_id \
   object_store_id s3_endpoint s3_bucket s3_object_key force_path_style aws_region \
   retention_mode retain_until min_records max_age receipt_output <<<"$parameters"
+receipt_input="$receipt_output"
 [[ "$metrics_output" == "-" ]] && metrics_output=""
 for value in "$batch_size" "$retain_until" "$max_age"; do
   [[ "$value" =~ ^[1-9][0-9]*$ ]] || { echo "backup parameters contain an invalid positive integer" >&2; exit 2; }
@@ -216,18 +217,31 @@ validate_object_receipt() {
     .object_bytes == $object_bytes and .retention_mode == $retention and
     .retain_until_unix == $retain_until and .remote_verified == true and
     (.uploaded_at_unix | type == "number" and . > 0 and . == floor) and
-    .retain_until_unix > .uploaded_at_unix)' "$receipt_output" >/dev/null
+    .retain_until_unix > .uploaded_at_unix)' "$receipt_input" >/dev/null
 }
 
 validated_object_receipt_digest() {
   local digest current_digest
   validate_object_receipt "$managed_artifact" || return 1
-  digest="$(sha256sum "$receipt_output" | cut -d ' ' -f1)" || return 1
+  digest="$(sha256sum "$receipt_input" | cut -d ' ' -f1)" || return 1
   [[ "$digest" =~ ^[a-f0-9]{64}$ ]] || return 1
   validate_object_receipt "$managed_artifact" || return 1
-  current_digest="$(sha256sum "$receipt_output" | cut -d ' ' -f1)" || return 1
+  current_digest="$(sha256sum "$receipt_input" | cut -d ' ' -f1)" || return 1
   [[ "$current_digest" == "$digest" ]] || return 1
   printf '%s\n' "$digest"
+}
+
+freeze_object_receipt() {
+  local frozen_receipt source_digest captured_digest current_digest
+  frozen_receipt="${parameter_capture_dir}/object-receipt.json"
+  source_digest="$(file_sha256 "$receipt_output")" || return 1
+  cp -- "$receipt_output" "$frozen_receipt" || return 1
+  chmod 600 "$frozen_receipt"
+  captured_digest="$(file_sha256 "$frozen_receipt")" || return 1
+  current_digest="$(file_sha256 "$receipt_output")" || return 1
+  [[ "$captured_digest" == "$source_digest" && "$current_digest" == "$source_digest" ]] ||
+    return 1
+  receipt_input="$frozen_receipt"
 }
 
 child=0
@@ -284,6 +298,12 @@ fi
   echo "backup workflow completed without its object receipt" >&2
   exit 1
 }
+if ! freeze_object_receipt; then
+  run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
+    --message "object backup receipt invalid after workflow" >/dev/null
+  echo "backup workflow completed with an invalid object receipt" >&2
+  exit 1
+fi
 if ! validate_object_receipt "$managed_artifact"; then
   run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
     --message "object backup receipt invalid after workflow" >/dev/null

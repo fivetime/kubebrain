@@ -1698,6 +1698,12 @@ receipt 的 SHA-256。审批只能由
 和 Go 队列层都拒绝非专用 approver，避免生成不可 claim 的审批证据。
 operation audit artifact 与 archive receipt 的 digest 校验同样只接受小写 hex SHA-256，
 保持离线审计证据与 CRD schema 一致。
+六类 executor 在子流程或本地发布最终 operation receipt 后，都会先把 receipt 捕获到
+worker 私有临时目录中的 0600 冻结副本，并确认捕获前、冻结副本和捕获后的原路径
+SHA-256 完全一致；后续 strict schema 校验、稳定 digest 复算和 Operation Succeeded
+提交只使用冻结副本。本地共享卷上的原始 receipt 路径仍作为接管和外部归档交接点，但
+捕获窗口内发生漂移必须 fail closed，捕获后的原路径变化不得改变本次提交的 receipt
+SHA。
 `hack/production/run-post-restore-audit-operation.sh` 已把 A190 接入：
 只 claim PostRestoreAudit，核对参数 JSON 摘要，在子审计运行期间续租；heartbeat 失败会
 终止本地进程，审计失败 requeue，成功才将 receipt 摘要写入 Succeeded。runner 会先拒绝

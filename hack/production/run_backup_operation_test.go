@@ -48,12 +48,11 @@ func TestBackupOperationRejectsInvalidObjectReceipt(t *testing.T) {
 	require.NotContains(t, log, "--action succeed")
 }
 
-func TestBackupOperationRevalidatesReceiptBeforeSucceed(t *testing.T) {
+func TestBackupOperationIgnoresOriginalReceiptDriftAfterCapture(t *testing.T) {
 	f := newBackupRunnerFixture(t, false)
-	f.run(t, false, "FINAL_TAMPER_RECEIPT=true", "invalid object receipt")
+	f.run(t, true, "FINAL_TAMPER_RECEIPT=true")
 	log := f.log(t)
-	require.Contains(t, log, "--action retry")
-	require.NotContains(t, log, "--action succeed")
+	require.Contains(t, log, "--action succeed")
 }
 
 func TestBackupOperationRejectsReceiptTamperedDuringDigest(t *testing.T) {

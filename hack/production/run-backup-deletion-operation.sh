@@ -125,6 +125,7 @@ IFS=$'\t' read -r backup_id object_store_id s3_endpoint force_path_style aws_reg
   source_receipt source_sha pre_manifest pre_manifest_sha pre_inventory_receipt \
   deletion_receipt post_manifest post_manifest_sha post_inventory_receipt \
   operation_receipt <<<"$parameters"
+operation_receipt_input="$operation_receipt"
 [[ "$backup_id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] ||
   { echo "backup_id contains unsupported characters" >&2; exit 2; }
 [[ "$force_path_style" == true || "$force_path_style" == false ]] ||
@@ -406,18 +407,31 @@ validate_operation_receipt() {
     .post_manifest_sha256 == $post_manifest and
     .post_inventory_receipt_sha256 == $post_inventory and
     (.completed_at_unix | type == "number" and . > 0 and . == floor)' \
-    "$operation_receipt" >/dev/null
+    "$operation_receipt_input" >/dev/null
 }
 
 validated_operation_receipt_digest() {
   local digest current_digest
   validate_operation_receipt || return 1
-  digest="$(sha256sum "$operation_receipt" | cut -d ' ' -f1)" || return 1
+  digest="$(sha256sum "$operation_receipt_input" | cut -d ' ' -f1)" || return 1
   [[ "$digest" =~ ^[a-f0-9]{64}$ ]] || return 1
   validate_operation_receipt || return 1
-  current_digest="$(sha256sum "$operation_receipt" | cut -d ' ' -f1)" || return 1
+  current_digest="$(sha256sum "$operation_receipt_input" | cut -d ' ' -f1)" || return 1
   [[ "$current_digest" == "$digest" ]] || return 1
   printf '%s\n' "$digest"
+}
+
+freeze_operation_receipt() {
+  local frozen_receipt source_digest captured_digest current_digest
+  frozen_receipt="${managed_evidence_dir}/operation-receipt.json"
+  source_digest="$(file_sha256 "$operation_receipt")" || return 1
+  cp -- "$operation_receipt" "$frozen_receipt" || return 1
+  chmod 600 "$frozen_receipt"
+  captured_digest="$(file_sha256 "$frozen_receipt")" || return 1
+  current_digest="$(file_sha256 "$operation_receipt")" || return 1
+  [[ "$captured_digest" == "$source_digest" && "$current_digest" == "$source_digest" ]] ||
+    return 1
+  operation_receipt_input="$frozen_receipt"
 }
 
 publish_operation_receipt() {
@@ -453,6 +467,10 @@ else
       deletion_receipt_sha256:$deletion,post_manifest_sha256:$post_manifest,
       post_inventory_receipt_sha256:$post_inventory,completed_at_unix:$completed}' >"$temporary"
   publish_operation_receipt "$temporary"
+fi
+if ! freeze_operation_receipt; then
+  echo "backup deletion operation receipt is invalid" >&2
+  exit 1
 fi
 if ! receipt_digest="$(validated_operation_receipt_digest)"; then
   echo "backup deletion operation receipt is invalid" >&2

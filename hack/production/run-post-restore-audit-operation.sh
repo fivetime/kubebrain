@@ -128,6 +128,7 @@ IFS=$'\t' read -r state_dir cutover_state cutover_state_sha cutover_receipt cuto
   service_namespace service_name \
   target_instance expected_replicas public_endpoint duration interval min_samples audit_prefix \
   receipt_output data_context data_kubeconfig <<<"$parameters"
+receipt_input="$receipt_output"
 [[ "$data_context" == "-" ]] && data_context=""
 [[ "$data_kubeconfig" == "-" ]] && data_kubeconfig=""
 for value in "$expected_replicas" "$duration" "$min_samples"; do
@@ -350,18 +351,31 @@ validate_audit_receipt() {
     .last_probe_revision >= .first_probe_revision and
     (.started_at_unix | type == "number" and . > 0 and . == floor) and
     (.completed_at_unix | type == "number" and . > 0 and . == floor) and
-    .completed_at_unix >= .started_at_unix)' "$receipt_output" >/dev/null
+    .completed_at_unix >= .started_at_unix)' "$receipt_input" >/dev/null
 }
 
 validated_audit_receipt_digest() {
   local digest current_digest
   validate_audit_receipt || return 1
-  digest="$(sha256sum "$receipt_output" | cut -d ' ' -f1)" || return 1
+  digest="$(sha256sum "$receipt_input" | cut -d ' ' -f1)" || return 1
   [[ "$digest" =~ ^[a-f0-9]{64}$ ]] || return 1
   validate_audit_receipt || return 1
-  current_digest="$(sha256sum "$receipt_output" | cut -d ' ' -f1)" || return 1
+  current_digest="$(sha256sum "$receipt_input" | cut -d ' ' -f1)" || return 1
   [[ "$current_digest" == "$digest" ]] || return 1
   printf '%s\n' "$digest"
+}
+
+freeze_audit_receipt() {
+  local frozen_receipt source_digest captured_digest current_digest
+  frozen_receipt="${parameter_capture_dir}/audit-receipt.json"
+  source_digest="$(file_sha256 "$receipt_output")" || return 1
+  cp -- "$receipt_output" "$frozen_receipt" || return 1
+  chmod 600 "$frozen_receipt"
+  captured_digest="$(file_sha256 "$frozen_receipt")" || return 1
+  current_digest="$(file_sha256 "$receipt_output")" || return 1
+  [[ "$captured_digest" == "$source_digest" && "$current_digest" == "$source_digest" ]] ||
+    return 1
+  receipt_input="$frozen_receipt"
 }
 
 child=0
@@ -418,6 +432,12 @@ fi
   echo "post-restore audit completed without its receipt" >&2
   exit 1
 }
+if ! freeze_audit_receipt; then
+  run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
+    --message "audit receipt invalid" >/dev/null
+  echo "post-restore audit produced an invalid receipt" >&2
+  exit 1
+fi
 if ! validate_audit_receipt; then
   run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
     --message "audit receipt invalid" >/dev/null

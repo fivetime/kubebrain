@@ -232,6 +232,7 @@ run_phase() {
 state_file="${state_dir}/${operation_id}.state"
 quiesced_file="${state_dir}/${operation_id}.quiesced"
 destroyed_file="${state_dir}/${operation_id}.destroyed"
+receipt_input="$receipt_output"
 
 validate_destroy_state_schema() {
   awk -F '\t' -v expectedPVCs="$expected_pvcs" '
@@ -355,18 +356,31 @@ validate_destroy_receipt() {
      .backup_sha256 == $backup_sha and
      .backup_revision == $backup_revision and .resources_absent == true and
      (.completed_at_unix | type == "number" and . > 0 and . == floor)' \
-    "$receipt_output" >/dev/null
+    "$receipt_input" >/dev/null
 }
 
 validated_destroy_receipt_digest() {
   local digest current_digest
   validate_destroy_receipt || return 1
-  digest="$(sha256sum "$receipt_output" | cut -d ' ' -f1)" || return 1
+  digest="$(sha256sum "$receipt_input" | cut -d ' ' -f1)" || return 1
   [[ "$digest" =~ ^[a-f0-9]{64}$ ]] || return 1
   validate_destroy_receipt || return 1
-  current_digest="$(sha256sum "$receipt_output" | cut -d ' ' -f1)" || return 1
+  current_digest="$(sha256sum "$receipt_input" | cut -d ' ' -f1)" || return 1
   [[ "$current_digest" == "$digest" ]] || return 1
   printf '%s\n' "$digest"
+}
+
+freeze_destroy_receipt() {
+  local frozen_receipt source_digest captured_digest current_digest
+  frozen_receipt="${capture_dir}/destroy-receipt.json"
+  source_digest="$(file_sha256 "$receipt_output")" || return 1
+  cp -- "$receipt_output" "$frozen_receipt" || return 1
+  chmod 600 "$frozen_receipt"
+  captured_digest="$(file_sha256 "$frozen_receipt")" || return 1
+  current_digest="$(file_sha256 "$receipt_output")" || return 1
+  [[ "$captured_digest" == "$source_digest" && "$current_digest" == "$source_digest" ]] ||
+    return 1
+  receipt_input="$frozen_receipt"
 }
 
 if [[ -e "$receipt_output" ]]; then
@@ -402,6 +416,12 @@ done
   echo "instance destruction completed without its receipt" >&2
   exit 1
 }
+if ! freeze_destroy_receipt; then
+  run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
+    --message "destroy receipt invalid" >/dev/null
+  echo "instance destruction produced an invalid receipt" >&2
+  exit 1
+fi
 if ! validate_destroy_receipt; then
   run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
     --message "destroy receipt invalid" >/dev/null

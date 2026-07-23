@@ -140,6 +140,7 @@ IFS=$'\t' read -r state_dir endpoint old_ca old_cert old_key new_ca new_cert new
   overlap_ca receipt_output kubebrain_namespace pod_selector expected_replicas \
   old_ca_sha old_cert_sha old_key_sha new_ca_sha new_cert_sha new_key_sha overlap_ca_sha \
   data_context data_kubeconfig <<<"$parameters"
+receipt_input="$receipt_output"
 [[ "$data_context" == "-" ]] && data_context=""
 [[ "$data_kubeconfig" == "-" ]] && data_kubeconfig=""
 [[ "$expected_replicas" =~ ^[1-9][0-9]*$ ]] ||
@@ -367,18 +368,31 @@ validate_rotation_receipt() {
      .old_certificate_sha256 == $old and .new_certificate_sha256 == $new and
      .pods_unchanged == true and .old_certificate_rejected == true and
      (.completed_at_unix | type == "number" and . > 0 and . == floor)' \
-    "$receipt_output" >/dev/null
+    "$receipt_input" >/dev/null
 }
 
 validated_rotation_receipt_digest() {
   local digest current_digest
   validate_rotation_receipt || return 1
-  digest="$(sha256sum "$receipt_output" | cut -d ' ' -f1)" || return 1
+  digest="$(sha256sum "$receipt_input" | cut -d ' ' -f1)" || return 1
   [[ "$digest" =~ ^[a-f0-9]{64}$ ]] || return 1
   validate_rotation_receipt || return 1
-  current_digest="$(sha256sum "$receipt_output" | cut -d ' ' -f1)" || return 1
+  current_digest="$(sha256sum "$receipt_input" | cut -d ' ' -f1)" || return 1
   [[ "$current_digest" == "$digest" ]] || return 1
   printf '%s\n' "$digest"
+}
+
+freeze_rotation_receipt() {
+  local frozen_receipt source_digest captured_digest current_digest
+  frozen_receipt="${managed_credentials_dir}/rotation-receipt.json"
+  source_digest="$(file_sha256 "$receipt_output")" || return 1
+  cp -- "$receipt_output" "$frozen_receipt" || return 1
+  chmod 600 "$frozen_receipt"
+  captured_digest="$(file_sha256 "$frozen_receipt")" || return 1
+  current_digest="$(file_sha256 "$receipt_output")" || return 1
+  [[ "$captured_digest" == "$source_digest" && "$current_digest" == "$source_digest" ]] ||
+    return 1
+  receipt_input="$frozen_receipt"
 }
 
 if [[ -e "$receipt_output" ]]; then
@@ -432,6 +446,12 @@ done
   echo "certificate rotation completed without its receipt" >&2
   exit 1
 }
+if ! freeze_rotation_receipt; then
+  run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
+    --message "certificate rotation receipt invalid" >/dev/null
+  echo "certificate rotation produced an invalid receipt" >&2
+  exit 1
+fi
 if ! validate_rotation_receipt; then
   run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
     --message "certificate rotation receipt invalid" >/dev/null
