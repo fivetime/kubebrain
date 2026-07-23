@@ -11193,6 +11193,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   空 UID fencing 证据要等 API 层才失败。现在 Delete 在任何 API action 前要求非空 UID
   precondition；fake dynamic client 回归确认空 UID 返回错误且 `client.Actions()` 为空：
   `go test ./hack/production/internal/operationqueue -count=1` 通过。
+- A700 前置 operation queue claim type filter 校验：
+  Claim 与 ClaimAcrossNamespaces 的 `operationType` 过滤器允许空字符串表示任意类型，但非空
+  不支持值此前会先触发 Operation List/last-started inspection，随后自然找不到工作。现在
+  `validateOperationTypeFilter` 在任何 queue listing 前拒绝不支持的非空 operation type，
+  `lastStarted` 也复用同一规则；fake dynamic client 回归确认单 namespace claim 和
+  cross-namespace claim 的 `Unsupported` filter 都返回错误且 `client.Actions()` 为空：
+  `go test ./hack/production/internal/operationqueue -count=1` 通过。
 
 ### P2：运维兼容和长期验证
 

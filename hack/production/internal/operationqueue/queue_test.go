@@ -177,6 +177,27 @@ func TestClaimAcrossNamespacesRejectsInvalidNamespaceBeforeAPI(t *testing.T) {
 	require.Empty(t, client.Actions(), "invalid namespace allowlist must fail before queue inspection")
 }
 
+func TestQueueRejectsUnsupportedClaimTypeBeforeAPI(t *testing.T) {
+	client := fakeQueueClient()
+	claim, err := New(client, "test").Claim(
+		context.Background(), "worker-a", "Unsupported", time.Minute,
+	)
+	require.Nil(t, claim)
+	require.ErrorContains(t, err, "unsupported operation type")
+	require.Empty(t, client.Actions(), "unsupported claim type must fail before queue listing")
+}
+
+func TestClaimAcrossNamespacesRejectsUnsupportedTypeBeforeAPI(t *testing.T) {
+	client := fakeQueueClient()
+	claim, err := ClaimAcrossNamespaces(
+		context.Background(), client, []string{"tenant-a", "tenant-b"},
+		"worker-a", "Unsupported", time.Minute,
+	)
+	require.Nil(t, claim)
+	require.ErrorContains(t, err, "unsupported operation type")
+	require.Empty(t, client.Actions(), "unsupported claim type must fail before queue inspection")
+}
+
 func TestQueueRejectsInvalidOperationNameBeforeAPI(t *testing.T) {
 	ctx := context.Background()
 	for _, test := range []struct {

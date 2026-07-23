@@ -147,6 +147,13 @@ func validateWorkerIdentity(owner string, attempt int64) error {
 	return nil
 }
 
+func validateOperationTypeFilter(operationType string) error {
+	if operationType != "" && !isSupportedOperationType(operationType) {
+		return fmt.Errorf("unsupported operation type: %s", operationType)
+	}
+	return nil
+}
+
 func (q *Queue) Submit(ctx context.Context, name string, spec Spec) (*unstructured.Unstructured, error) {
 	if err := q.validateNamespace(); err != nil {
 		return nil, err
@@ -245,6 +252,9 @@ func (q *Queue) Submit(ctx context.Context, name string, spec Spec) (*unstructur
 
 func (q *Queue) Claim(ctx context.Context, owner, operationType string, lease time.Duration) (*Claim, error) {
 	if err := q.validateNamespace(); err != nil {
+		return nil, err
+	}
+	if err := validateOperationTypeFilter(operationType); err != nil {
 		return nil, err
 	}
 	if owner == "" || lease < time.Second {
@@ -449,6 +459,9 @@ func ClaimAcrossNamespaces(
 	owner, operationType string,
 	lease time.Duration,
 ) (*Claim, error) {
+	if err := validateOperationTypeFilter(operationType); err != nil {
+		return nil, err
+	}
 	for _, namespace := range namespaces {
 		if err := validateQueueNamespace(namespace); err != nil {
 			return nil, err
@@ -499,6 +512,9 @@ func ClaimAcrossNamespaces(
 
 func (q *Queue) lastStarted(ctx context.Context, operationType string) (int64, error) {
 	if err := q.validateNamespace(); err != nil {
+		return 0, err
+	}
+	if err := validateOperationTypeFilter(operationType); err != nil {
 		return 0, err
 	}
 	list, err := q.resource.List(ctx, metav1.ListOptions{})
