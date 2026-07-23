@@ -10803,6 +10803,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   receipt，已存在时 fail closed 且不覆盖。回归：
   `go test ./hack/production -run 'TestColdSnapshotExecute' -count=1`
   通过。
+- A658 收紧 cold restore verifier witness/semantic receipt 证据稳定性：
+  `cold-restore-verify` 通过 `backupfile.OpenVerified` 解析 semantic witness，再单独重读
+  `WITNESS_FILE` 计算 `semantic_witness.file_sha256` 的绑定；若本地 witness 在验证和
+  digest 之间被替换，semantic verify receipt 可能把已验证状态与另一份文件 SHA 混用。
+  同时 `SEMANTIC_RECEIPT_FILE` 虽在入口要求不存在，最终 writer 仍用 rename 发布，并发
+  创建同名文件时会覆盖。现在 verifier 执行 digest→OpenVerified→digest 复检，并在最终
+  receipt 发布前再次确认 witness 未漂移；semantic receipt 也通过 hard-link 非覆盖发布，
+  目标已存在时 fail closed。回归：
+  `go test ./hack/backup/cmd/cold-restore-verify -run 'Test(OpenStableWitnessRejectsDriftDuringValidation|WriteAtomicSemanticReceipt|ValidateReceiptChain|ValidateRestoreManifestBinding|FileDigest)' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

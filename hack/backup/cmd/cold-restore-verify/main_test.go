@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -8,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/kubewharf/kubebrain/hack/backup/internal/backupfile"
+	"github.com/kubewharf/kubebrain/hack/backup/internal/record"
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	"google.golang.org/protobuf/proto"
@@ -46,6 +48,24 @@ func TestFileDigest(t *testing.T) {
 	got, err := fileDigest(path)
 	require.NoError(t, err)
 	require.Equal(t, digest(data), got)
+}
+
+func TestOpenStableWitnessRejectsDriftDuringValidation(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "witness.jsonl")
+	drift := filepath.Join(dir, "witness-drift.jsonl")
+	writeVerifiedWitness(t, path, "/registry", 100)
+	writeVerifiedWitness(t, drift, "/registry", 101)
+	afterWitnessDigestForTest = func() {
+		require.NoError(t, os.WriteFile(path, mustRead(t, drift), 0o600))
+	}
+	t.Cleanup(func() {
+		afterWitnessDigestForTest = func() {}
+	})
+
+	verified, _, err := openStableWitness(path)
+	require.Nil(t, verified)
+	require.ErrorContains(t, err, "witness file changed after validation")
 }
 
 func TestValidateReceiptChain(t *testing.T) {
@@ -295,7 +315,13 @@ func TestWriteAtomicSemanticReceipt(t *testing.T) {
 	info, err := os.Stat(path)
 	require.NoError(t, err)
 	require.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	original, err := os.ReadFile(path)
+	require.NoError(t, err)
 	require.Error(t, writeAtomic(filepath.Join(directory, "missing", "receipt.json"), semanticReceipt{}))
+	require.ErrorContains(t, writeAtomic(path, semanticReceipt{Format: "other"}), "already exists")
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	require.Equal(t, original, data)
 }
 
 func TestReadBoundedJSONFileRejectsOversizedInput(t *testing.T) {
@@ -315,4 +341,27 @@ func cloneRestoreReceipt(value restoreReceipt) restoreReceipt {
 	value.VolumeSnapshotContents = append([]restoredVolumeSnapshotContent(nil), value.VolumeSnapshotContents...)
 	value.PVCs = append([]restoredPVC(nil), value.PVCs...)
 	return value
+}
+
+func writeVerifiedWitness(t *testing.T, path, prefix string, revision int64) {
+	t.Helper()
+	writer, err := backupfile.NewAtomicWriter(path, prefix, revision)
+	require.NoError(t, err)
+	require.NoError(t, writer.Add(record.Record{
+		Key: base64Value(prefix + "/key"), Value: base64Value("value"),
+		CreateRevision: revision, ModRevision: revision, Version: 1,
+	}))
+	_, err = writer.Commit()
+	require.NoError(t, err)
+}
+
+func base64Value(value string) string {
+	return base64.StdEncoding.EncodeToString([]byte(value))
+}
+
+func mustRead(t *testing.T, path string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	return data
 }

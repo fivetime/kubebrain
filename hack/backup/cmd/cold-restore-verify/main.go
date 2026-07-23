@@ -24,6 +24,8 @@ import (
 
 const maxColdRestoreJSONBytes = 4 << 20
 
+var afterWitnessDigestForTest = func() {}
+
 type expectedKV struct {
 	key, value                  []byte
 	createRevision, modRevision int64
@@ -155,7 +157,7 @@ func main() {
 		fatal(errors.New("SEMANTIC_RECEIPT_FILE must not already exist"))
 	}
 
-	verified, err := backupfile.OpenVerified(witnessPath)
+	verified, witnessFileSHA, err := openStableWitness(witnessPath)
 	if err != nil {
 		fatal(fmt.Errorf("verify witness artifact: %w", err))
 	}
@@ -169,10 +171,6 @@ func main() {
 		if lease.GrantedTTL <= 0 {
 			fatal(fmt.Errorf("witness lease %d lacks granted_ttl; re-export with the current logical exporter", id))
 		}
-	}
-	witnessFileSHA, err := fileDigest(witnessPath)
-	if err != nil {
-		fatal(err)
 	}
 	snapshotData, err := readBoundedJSONFile(snapshotReceiptPath, "snapshot receipt")
 	if err != nil {
@@ -228,6 +226,9 @@ func main() {
 	}
 	putRevision, deleteRevision, err := runWatchProbe(ctx, cli, probePrefix)
 	if err != nil {
+		fatal(err)
+	}
+	if err := verifyFileDigest(witnessPath, witnessFileSHA, "witness file"); err != nil {
 		fatal(err)
 	}
 
@@ -321,6 +322,23 @@ func readBoundedJSONFile(path, description string) ([]byte, error) {
 	return data, nil
 }
 
+func openStableWitness(path string) (*backupfile.Verified, string, error) {
+	witnessFileSHA, err := fileDigest(path)
+	if err != nil {
+		return nil, "", err
+	}
+	afterWitnessDigestForTest()
+	verified, err := backupfile.OpenVerified(path)
+	if err != nil {
+		return nil, "", err
+	}
+	if err := verifyFileDigest(path, witnessFileSHA, "witness file"); err != nil {
+		verified.Close()
+		return nil, "", err
+	}
+	return verified, witnessFileSHA, nil
+}
+
 func fileDigest(path string) (string, error) {
 	file, err := os.Open(path)
 	if err != nil {
@@ -332,6 +350,17 @@ func fileDigest(path string) (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+func verifyFileDigest(path, expected, description string) error {
+	actual, err := fileDigest(path)
+	if err != nil {
+		return err
+	}
+	if actual != expected {
+		return fmt.Errorf("%s changed after validation", description)
+	}
+	return nil
 }
 
 func validateRestoreReceiptInventory(restore restoreReceipt, snapshotRecord snapshotReceipt) error {
@@ -782,7 +811,10 @@ func writeAtomic(path string, value any) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	if err := os.Rename(tmpName, path); err != nil {
+	if err := os.Link(tmpName, path); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return errors.New("semantic receipt already exists")
+		}
 		return err
 	}
 	dir, err := os.Open(directory)
