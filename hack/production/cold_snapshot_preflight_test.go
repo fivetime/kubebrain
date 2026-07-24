@@ -3,7 +3,6 @@ package production_test
 import (
 	"encoding/json"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -65,21 +64,20 @@ fi
 			if pvcJSON == "" {
 				pvcJSON = coldSnapshotPVCJSON("Bound")
 			}
-			command := exec.Command("bash", "../backup/cold-snapshot-preflight.sh")
-			command.Env = append(os.Environ(),
-				"KUBECTL="+fakeKubectl,
+			env := []string{
+				"KUBECTL=" + fakeKubectl,
 				"ALLOW_COLD_PHYSICAL_SNAPSHOT=true",
 				"VOLUME_SNAPSHOT_CLASS=retained",
 				"EXPECTED_KUBEBRAIN_STATEFULSET_UID=uid-kubebrain",
 				"EXPECTED_TIDB_CLUSTER_UID=uid-tidb",
 				"EXPECTED_TIKV_CLUSTER_ID=7662961163671170154",
-				"FAKE_RESOURCES="+tc.resources,
-				"FAKE_POLICY="+policy,
-				"FAKE_TIDB_ID="+tidbID,
-				"FAKE_KUBEBRAIN_ID="+kubebrainID,
-				"FAKE_PVC_JSON="+pvcJSON,
-			)
-			output, err := command.CombinedOutput()
+				"FAKE_RESOURCES=" + tc.resources,
+				"FAKE_POLICY=" + policy,
+				"FAKE_TIDB_ID=" + tidbID,
+				"FAKE_KUBEBRAIN_ID=" + kubebrainID,
+				"FAKE_PVC_JSON=" + pvcJSON,
+			}
+			output, err := runColdSnapshotPreflight(t, env)
 			if tc.wantOK {
 				require.NoError(t, err, string(output))
 				var manifest map[string]any
@@ -94,11 +92,15 @@ fi
 }
 
 func TestColdSnapshotPreflightRequiresExplicitApproval(t *testing.T) {
-	command := exec.Command("bash", "../backup/cold-snapshot-preflight.sh")
-	command.Env = append(os.Environ(), "ALLOW_COLD_PHYSICAL_SNAPSHOT=false")
-	output, err := command.CombinedOutput()
+	env := []string{"ALLOW_COLD_PHYSICAL_SNAPSHOT=false"}
+	output, err := runColdSnapshotPreflight(t, env)
 	require.Error(t, err)
 	require.Contains(t, string(output), "ALLOW_COLD_PHYSICAL_SNAPSHOT=true")
+}
+
+func runColdSnapshotPreflight(t *testing.T, env []string) ([]byte, error) {
+	t.Helper()
+	return runProductionScriptCommand(t, "../backup/cold-snapshot-preflight.sh", env)
 }
 
 func coldSnapshotPVCJSON(tikvPhase string) string {

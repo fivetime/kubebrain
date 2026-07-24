@@ -107,3 +107,22 @@ func TestProductionShellEntrypointNamespaceTestsUseBoundedCommandHelper(t *testi
 	require.Contains(t, text, `runProductionScriptCommand(t, tc.script, env)`)
 	require.NotContains(t, text, `exec.Command("bash", tc.script)`)
 }
+
+func TestColdBackupScriptTestsUseBoundedCommandHelper(t *testing.T) {
+	for _, tc := range []struct {
+		testFile string
+		script   string
+		helper   string
+	}{
+		{testFile: "cold_snapshot_preflight_test.go", script: "../backup/cold-snapshot-preflight.sh", helper: "runColdSnapshotPreflight"},
+		{testFile: "cold_snapshot_execute_test.go", script: "../backup/cold-snapshot-execute.sh", helper: "runColdSnapshotExecute"},
+	} {
+		t.Run(tc.testFile, func(t *testing.T) {
+			data, err := os.ReadFile(filepath.Join(".", tc.testFile))
+			require.NoError(t, err)
+			text := string(data)
+			require.Contains(t, text, tc.helper+`(t, env)`)
+			require.NotContains(t, text, `exec.Command("bash", "`+tc.script+`")`)
+		})
+	}
+}

@@ -48,26 +48,25 @@ func TestColdSnapshotExecuteAndRollback(t *testing.T) {
 			require.NoError(t, err)
 			writeTrafficExecutable(t, filepath.Join(dir, "go"), coldSnapshotFakeGo)
 
-			command := exec.Command("bash", "../backup/cold-snapshot-execute.sh")
-			command.Env = append(os.Environ(),
-				"PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"),
-				"REAL_GO="+realGo,
-				"KUBECTL="+fakeKubectl,
-				"PREFLIGHT_FILE="+inventoryFile,
-				"RECEIPT_FILE="+receiptFile,
+			env := []string{
+				"PATH=" + dir + string(os.PathListSeparator) + os.Getenv("PATH"),
+				"REAL_GO=" + realGo,
+				"KUBECTL=" + fakeKubectl,
+				"PREFLIGHT_FILE=" + inventoryFile,
+				"RECEIPT_FILE=" + receiptFile,
 				"OPERATION_ID=op-20260721",
-				"SEMANTIC_WITNESS_FILE="+witnessFile,
-				"TAMPERED_WITNESS_FILE="+tamperedWitnessFile,
-				"TAMPER_WITNESS_AFTER_STATUS="+map[bool]string{true: "true", false: "false"}[tc.witnessPathDrift],
+				"SEMANTIC_WITNESS_FILE=" + witnessFile,
+				"TAMPERED_WITNESS_FILE=" + tamperedWitnessFile,
+				"TAMPER_WITNESS_AFTER_STATUS=" + map[bool]string{true: "true", false: "false"}[tc.witnessPathDrift],
 				"EXPECTED_WITNESS_PREFIX=/registry",
-				"FAKE_LOG="+logFile,
-				"FAKE_PVC_JSON="+coldSnapshotPVCJSON("Bound"),
+				"FAKE_LOG=" + logFile,
+				"FAKE_PVC_JSON=" + coldSnapshotPVCJSON("Bound"),
 				"FENCE_SETTLE_SECONDS=0",
-				"FAKE_FAIL_SNAPSHOT="+map[bool]string{true: "true", false: "false"}[tc.failSnapshot],
-				"FAKE_CONTENT_DRIVER="+map[bool]string{true: "csi.example.test", false: tc.contentDriver}[tc.contentDriver == ""],
-				"PRECREATE_COLD_SNAPSHOT_RECEIPT_DURING_CONTENT="+map[bool]string{true: "true", false: "false"}[tc.precreateReceipt],
-			)
-			output, err := command.CombinedOutput()
+				"FAKE_FAIL_SNAPSHOT=" + map[bool]string{true: "true", false: "false"}[tc.failSnapshot],
+				"FAKE_CONTENT_DRIVER=" + map[bool]string{true: "csi.example.test", false: tc.contentDriver}[tc.contentDriver == ""],
+				"PRECREATE_COLD_SNAPSHOT_RECEIPT_DURING_CONTENT=" + map[bool]string{true: "true", false: "false"}[tc.precreateReceipt],
+			}
+			output, err := runColdSnapshotExecute(t, env)
 			if tc.wantReceipt {
 				require.NoError(t, err, string(output))
 				value, readErr := os.ReadFile(receiptFile)
@@ -133,25 +132,24 @@ if [[ "${TAMPER_WITNESS_AFTER_SHA256:-false}" == true &&
 fi
 `)
 
-	command := exec.Command("bash", "../backup/cold-snapshot-execute.sh")
-	command.Env = append(os.Environ(),
-		"PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"),
-		"REAL_SHA256SUM="+realSHA,
-		"KUBECTL="+fakeKubectl,
-		"PREFLIGHT_FILE="+inventoryFile,
-		"RECEIPT_FILE="+receiptFile,
+	env := []string{
+		"PATH=" + dir + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"REAL_SHA256SUM=" + realSHA,
+		"KUBECTL=" + fakeKubectl,
+		"PREFLIGHT_FILE=" + inventoryFile,
+		"RECEIPT_FILE=" + receiptFile,
 		"OPERATION_ID=op-witness-drift",
-		"SEMANTIC_WITNESS_FILE="+witnessFile,
-		"TAMPERED_WITNESS_FILE="+tamperedWitnessFile,
+		"SEMANTIC_WITNESS_FILE=" + witnessFile,
+		"TAMPERED_WITNESS_FILE=" + tamperedWitnessFile,
 		"TAMPER_WITNESS_AFTER_SHA256=true",
 		"EXPECTED_WITNESS_PREFIX=/registry",
-		"FAKE_LOG="+logFile,
-		"FAKE_PVC_JSON="+coldSnapshotPVCJSON("Bound"),
+		"FAKE_LOG=" + logFile,
+		"FAKE_PVC_JSON=" + coldSnapshotPVCJSON("Bound"),
 		"FENCE_SETTLE_SECONDS=0",
 		"FAKE_FAIL_SNAPSHOT=false",
 		"FAKE_CONTENT_DRIVER=csi.example.test",
-	)
-	output, err := command.CombinedOutput()
+	}
+	output, err := runColdSnapshotExecute(t, env)
 	require.Error(t, err, string(output))
 	require.Contains(t, string(output), "semantic witness file changed during capture")
 	require.NoFileExists(t, receiptFile)
@@ -172,18 +170,17 @@ func TestColdSnapshotExecuteRejectsLegacyLeaseWitnessBeforeMutation(t *testing.T
 	fakeKubectl := filepath.Join(dir, "kubectl")
 	require.NoError(t, os.WriteFile(fakeKubectl, []byte(coldSnapshotFakeKubectl), 0o755))
 
-	command := exec.Command("bash", "../backup/cold-snapshot-execute.sh")
-	command.Env = append(os.Environ(),
-		"KUBECTL="+fakeKubectl,
-		"PREFLIGHT_FILE="+inventoryFile,
-		"RECEIPT_FILE="+receiptFile,
+	env := []string{
+		"KUBECTL=" + fakeKubectl,
+		"PREFLIGHT_FILE=" + inventoryFile,
+		"RECEIPT_FILE=" + receiptFile,
 		"OPERATION_ID=op-legacy-witness",
-		"SEMANTIC_WITNESS_FILE="+witnessFile,
+		"SEMANTIC_WITNESS_FILE=" + witnessFile,
 		"EXPECTED_WITNESS_PREFIX=/registry",
-		"FAKE_LOG="+logFile,
-		"FAKE_PVC_JSON="+coldSnapshotPVCJSON("Bound"),
-	)
-	output, err := command.CombinedOutput()
+		"FAKE_LOG=" + logFile,
+		"FAKE_PVC_JSON=" + coldSnapshotPVCJSON("Bound"),
+	}
+	output, err := runColdSnapshotExecute(t, env)
 	require.Error(t, err, string(output))
 	require.Contains(t, string(output), "lacks a valid granted_ttl")
 	require.NoFileExists(t, receiptFile)
@@ -191,6 +188,11 @@ func TestColdSnapshotExecuteRejectsLegacyLeaseWitnessBeforeMutation(t *testing.T
 	require.NoError(t, readErr)
 	require.NotContains(t, string(logValue), " patch ")
 	require.NotContains(t, string(logValue), "create -f -")
+}
+
+func runColdSnapshotExecute(t *testing.T, env []string) ([]byte, error) {
+	t.Helper()
+	return runProductionScriptCommand(t, "../backup/cold-snapshot-execute.sh", env)
 }
 
 func coldSemanticWitness(t *testing.T, prefix string) []byte {

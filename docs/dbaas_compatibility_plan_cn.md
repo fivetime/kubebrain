@@ -12036,6 +12036,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./hack/production -run 'Test(ArchiveOperationAudit|ProductionLifecycleScript)' -count=1 -v`、
   `go test ./hack/production -count=1 -timeout=12m`、`git diff --check`、`go vet ./...` 和
   `go test ./... -count=1 -p 1` 均通过。
+- A777 给 cold snapshot preflight/execute 脚本测试补 bounded helper：
+  `cold-snapshot-preflight.sh` 和 `cold-snapshot-execute.sh` 是物理冷快照路径的关键前置/执行门禁，
+  但测试仍直接 `exec.Command("bash", "../backup/...").CombinedOutput()`。这些 fixture 会调用 fake
+  `kubectl`、`go`、`sha256sum`，并覆盖 witness drift、snapshot failure、content driver mismatch 和
+  receipt 竞态；任一 wrapper 悬挂都会把冷备门禁失败推迟到外层 timeout。现在 preflight/execute
+  测试分别通过 `runColdSnapshotPreflight` 和 `runColdSnapshotExecute` 进入
+  `runProductionScriptCommand`，获得 30 秒 context、进程组 kill 和 bounded output；新增 cold backup
+  静态门禁覆盖这两个测试文件，禁止回退到裸 bash exec。
+  `go test ./hack/production -run 'Test(ColdSnapshot|ColdBackupScript)' -count=1 -v`、
+  `go test ./hack/production -count=1 -timeout=12m`、`git diff --check`、`go vet ./...` 和
+  `go test ./... -count=1 -p 1` 均通过。
 
 ### P2：运维兼容和长期验证
 
