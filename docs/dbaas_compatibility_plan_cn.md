@@ -11802,6 +11802,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./cmd/option -run TestTransportLimitValidationRejectsInvalidStartupFlags -count=1 -v`、
   `go test ./cmd/option -count=1`、`go vet ./...` 和
   `go test ./... -count=1 -p 1` 均通过。
+- A755 拒绝负数 storage GC lifetime：
+  `--storage-gc-lifetime` 的生产语义是 TiKV MVCC history retention，`0` 才是显式 disable；
+  但 backend `runStorageGC()` 对 `lifetime <= 0` 直接返回。此前负数 duration 会通过
+  `Validate()`，最终等同于静默关闭 bare PD+TiKV 集群上的 GC safepoint 推进，长期运行后
+  CAS 覆盖 key 的 TiKV MVCC 版本会持续累积。现在 `KubeBrainOption.Validate()` 明确拒绝
+  `--storage-gc-lifetime < 0`，`TestTransportLimitValidationRejectsInvalidStartupFlags`
+  增加 negative storage gc lifetime 回归，只有 `0` 保留为显式关闭语义。
+  `go test ./cmd/option -run TestTransportLimitValidationRejectsInvalidStartupFlags -count=1 -v`、
+  `go test ./cmd/option -count=1`、`go vet ./...` 和
+  `go test ./... -count=1 -p 1` 均通过。
 
 ### P2：运维兼容和长期验证
 

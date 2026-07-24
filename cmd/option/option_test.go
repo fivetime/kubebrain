@@ -343,6 +343,11 @@ func TestTransportLimitValidationRejectsInvalidStartupFlags(t *testing.T) {
 			want: "--quota-backend-bytes must be non-negative",
 		},
 		{
+			name: "negative storage gc lifetime",
+			args: []string{"--storage-gc-lifetime=-1s"},
+			want: "--storage-gc-lifetime must be non-negative",
+		},
+		{
 			name: "negative count index key cap",
 			args: []string{"--count-index-max-keys=-1"},
 			want: "--count-index-max-keys must be non-negative",
