@@ -311,6 +311,9 @@ func (o *KubeBrainOption) Validate() error {
 	if o.countIndexMaxKeys < 0 {
 		return fmt.Errorf("--count-index-max-keys must be non-negative")
 	}
+	if o.enableCountIndex && !o.epsConf.EnableEtcdCompatibility {
+		return fmt.Errorf("--enable-count-index requires --compatible-with-etcd=true")
+	}
 
 	const watchProgressNotifyIntervalMax = 2500 * time.Millisecond
 	if o.watchProgressNotifyInterval > watchProgressNotifyIntervalMax {

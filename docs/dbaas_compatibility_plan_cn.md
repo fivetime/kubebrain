@@ -11792,6 +11792,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./cmd/option -run TestTransportLimitValidationRejectsInvalidStartupFlags -count=1 -v`、
   `go test ./cmd/option -count=1`、`go vet ./...` 和
   `go test ./... -count=1 -p 1` 均通过。
+- A754 拒绝 count-index 与 etcd compatibility 的矛盾配置：
+  `--enable-count-index` 的 flag 语义声明 requires `--compatible-with-etcd`，而 backend 实际
+  只有在 `EnableCountIndex && EnableEtcdCompatibility` 同时为 true 时才创建 count index。
+  此前若用户或控制面传入 `--enable-count-index=true --compatible-with-etcd=false`，实例会
+  启动成功但索引实际关闭，导致大规模 Count 继续回退扫描且配置状态误导运维。现在
+  `KubeBrainOption.Validate()` 明确拒绝该组合，`TestTransportLimitValidationRejectsInvalidStartupFlags`
+  增加 count index without etcd compatibility 回归，确保生产参数矛盾在启动阶段失败。
+  `go test ./cmd/option -run TestTransportLimitValidationRejectsInvalidStartupFlags -count=1 -v`、
+  `go test ./cmd/option -count=1`、`go vet ./...` 和
+  `go test ./... -count=1 -p 1` 均通过。
 
 ### P2：运维兼容和长期验证
 

@@ -347,6 +347,11 @@ func TestTransportLimitValidationRejectsInvalidStartupFlags(t *testing.T) {
 			args: []string{"--count-index-max-keys=-1"},
 			want: "--count-index-max-keys must be non-negative",
 		},
+		{
+			name: "count index without etcd compatibility",
+			args: []string{"--enable-count-index=true", "--compatible-with-etcd=false"},
+			want: "--enable-count-index requires --compatible-with-etcd=true",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			o := NewOptions()
