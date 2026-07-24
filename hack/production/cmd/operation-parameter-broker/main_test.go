@@ -31,6 +31,24 @@ func (d fakeReadyDependency) Ready(context.Context) error {
 	return d.err
 }
 
+type countingReadyCertificate struct {
+	calls int
+}
+
+func (c *countingReadyCertificate) ValidAt(time.Time) error {
+	c.calls++
+	return nil
+}
+
+type countingReadyDependency struct {
+	calls int
+}
+
+func (d *countingReadyDependency) Ready(context.Context) error {
+	d.calls++
+	return nil
+}
+
 func TestMainRejectsInvalidNamespaceBeforeKubeconfig(t *testing.T) {
 	command := exec.Command("go", "run", ".",
 		"--namespace", "ops.ns",
@@ -65,6 +83,22 @@ func TestReadyzHandlerSetsNoStoreHeaders(t *testing.T) {
 			require.Equal(t, "nosniff", response.Header().Get("X-Content-Type-Options"))
 		})
 	}
+}
+
+func TestReadyzHandlerRejectsNonGETBeforeDependencyChecks(t *testing.T) {
+	certificate := &countingReadyCertificate{}
+	dependency := &countingReadyDependency{}
+	response := httptest.NewRecorder()
+	readyzHandler(certificate, dependency)(
+		response, httptest.NewRequest(http.MethodPost, "/readyz", nil),
+	)
+
+	require.Equal(t, http.StatusMethodNotAllowed, response.Code)
+	require.Equal(t, http.MethodGet, response.Header().Get("Allow"))
+	require.Equal(t, "no-store", response.Header().Get("Cache-Control"))
+	require.Equal(t, "nosniff", response.Header().Get("X-Content-Type-Options"))
+	require.Zero(t, certificate.calls)
+	require.Zero(t, dependency.calls)
 }
 
 func TestKubernetesConfigPrefersInClusterWhenKubeconfigIsEmpty(t *testing.T) {

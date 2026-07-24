@@ -131,6 +131,11 @@ func readyzHandler(certificate readyCertificate, dependency readyDependency) htt
 	return func(response http.ResponseWriter, request *http.Request) {
 		response.Header().Set("Cache-Control", "no-store")
 		response.Header().Set("X-Content-Type-Options", "nosniff")
+		if request.Method != http.MethodGet {
+			response.Header().Set("Allow", http.MethodGet)
+			http.Error(response, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
 		if err := certificate.ValidAt(time.Now()); err != nil {
 			http.Error(response, "TLS certificate is not ready", http.StatusServiceUnavailable)
 			return

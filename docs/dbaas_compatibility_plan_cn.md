@@ -11302,6 +11302,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   malformed name 返回 400 且没有调用 authenticator 或 Operation store：
   `go test ./hack/production/internal/operationapi ./hack/production/internal/operationqueue ./hack/production/cmd/operation-api -count=1`
   通过。
+- A712 前置 readiness method 校验：
+  operation API 与 parameter broker 的 `/readyz` 是生产 Service 接流门禁，但 main-level
+  handler 原先不区分 HTTP method；非 GET 请求也会执行 TLS 证书检查和 Kubernetes/OIDC
+  依赖探测。现在两个 `/readyz` 都只接受 GET，其他 method 在任何证书或依赖检查前返回
+  405 并设置 `Allow: GET`。回归使用计数 certificate/dependency fake 确认 POST `/readyz`
+  不触发探测：
+  `go test ./hack/production/cmd/operation-api ./hack/production/cmd/operation-parameter-broker -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

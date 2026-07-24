@@ -1753,9 +1753,10 @@ API 每 30 秒在线重载 `kubebrain-operation-api-tls`。轮换契约与 param
 后必须逐 Pod 验证新 serial、UID 不变和零重启。更换签发 CA 时，外部负载均衡器、调用方
 和探针必须先进入旧/新 CA 双信任窗口，再更新 API 叶证书，最后撤旧 CA。
 
-`/readyz` 还会在 `--dependency-request-timeout=5s` 内 GET 一个固定不存在的 Operation，
-只接受带精确探测名称的 NotFound；CRD 路由缺失、RBAC、transport、timeout 或 API 过载
-均返回 503 并摘流。OIDC/JWKS 和业务 Operation 请求使用相同 deadline：JWKS provider
+`/readyz` 只接受 GET，其他 method 在证书或依赖探测前返回 405。GET `/readyz` 还会在
+`--dependency-request-timeout=5s` 内 GET 一个固定不存在的 Operation，只接受带精确探测
+名称的 NotFound；CRD 路由缺失、RBAC、transport、timeout 或 API 过载均返回 503 并摘流。
+OIDC/JWKS 和业务 Operation 请求使用相同 deadline：JWKS provider
 不可用或刷新失败、Kubernetes Forbidden/Unauthorized/timeout/503/429 返回可重试 503，
 真正的无效 token、签名、issuer/audience/claim 或 unknown kid 仍返回 401。`/healthz`
 不访问 OIDC 或 Kubernetes，保持 liveness 语义。上线应临时撤销并恢复 API Role 的
@@ -2178,9 +2179,10 @@ CA bundle 超过 1 MiB 时必须 fail closed，不能把 `LimitReader` 截断结
 CA 文件。broker 未显式传入 kubeconfig 时先使用 Pod ServiceAccount 的 in-cluster 配置；
 仅在非集群本地执行且 in-cluster 不可用时才回落标准 kubeconfig 规则。
 
-broker 的 `/readyz` 不只检查当前 TLS 证书，还会在同一个
-`--kubernetes-request-timeout=5s` 预算内探测 TokenReview create、Operation get 和 Secret
-get 三条实际服务路径。探测使用固定不存在的对象名和无效 token，不读取业务 Secret；
+broker 的 `/readyz` 只接受 GET，其他 method 在证书或依赖探测前返回 405。GET `/readyz`
+不只检查当前 TLS 证书，还会在同一个 `--kubernetes-request-timeout=5s` 预算内探测
+TokenReview create、Operation get 和 Secret get 三条实际服务路径。探测使用固定不存在的
+对象名和无效 token，不读取业务 Secret；
 NotFound/未认证结果表示 API 路径可用，transport、discovery、超时或 RBAC 错误均返回 503
 并把 Pod 摘出 Service。`/healthz` 仍只表示进程存活，不能作为接流条件。业务参数请求也
 使用相同 deadline，Kubernetes API 故障时不得让 handler 无界堆积。上线后应临时撤销并
