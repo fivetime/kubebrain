@@ -11812,6 +11812,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./cmd/option -run TestTransportLimitValidationRejectsInvalidStartupFlags -count=1 -v`、
   `go test ./cmd/option -count=1`、`go vet ./...` 和
   `go test ./... -count=1 -p 1` 均通过。
+- A756 固定运行门禁中的 storage GC lifetime 默认依赖：
+  production manifest 依赖程序默认 `storage-gc-lifetime=10m`，通用 YAML 不显式传
+  `--storage-gc-lifetime`。启动校验已拒绝负数，但运行门禁此前不会发现人工 patch
+  把 Pod template 改成 `--storage-gc-lifetime=0` 或其它值，导致 bare PD+TiKV 集群上的
+  GC safepoint 策略与生产基线不一致。现在 `validate-instance-ready.sh` 新增 optional
+  `EXPECTED_STORAGE_GC_LIFETIME`：默认空值要求不出现该 flag，非空时要求精确匹配；测试覆盖
+  unexpected `--storage-gc-lifetime=0` 和显式 override baseline。这样 production release
+  gate 能保护“依赖内置 10m 默认值”的运行态事实。
+  `go test ./hack/production -run TestValidateInstanceReady -count=1 -v`、
+  `bash -n hack/production/validate-instance-ready.sh`、`go test ./hack/production -count=1`、
+  `go vet ./...` 和 `go test ./... -count=1 -p 1` 均通过。
 
 ### P2：运维兼容和长期验证
 

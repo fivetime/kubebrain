@@ -622,6 +622,28 @@ func TestValidateInstanceReady(t *testing.T) {
 			wantOutput: "storage metrics enablement configuration mismatch",
 		},
 		{
+			name:       "unexpected storage gc lifetime",
+			image:      "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus: "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeArgs:   fakeKubeBrainArgs("https://instance.example:2379", fakeInitialCluster) + "\n--storage-gc-lifetime=0",
+			topology:   "3\t3",
+			healthOK:   true,
+			wantOutput: "storage GC lifetime configuration mismatch",
+		},
+		{
+			name:       "storage gc lifetime override baseline",
+			image:      "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus: "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeArgs:   fakeKubeBrainArgs("https://instance.example:2379", fakeInitialCluster) + "\n--storage-gc-lifetime=10m",
+			topology:   "3\t3",
+			healthOK:   true,
+			extraEnv: []string{
+				"EXPECTED_STORAGE_GC_LIFETIME=10m",
+			},
+			wantOK:     true,
+			wantOutput: "release gate passed",
+		},
+		{
 			name:       "wrong transaction operation limit",
 			image:      "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 			kubeStatus: "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
