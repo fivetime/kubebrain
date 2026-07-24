@@ -173,7 +173,7 @@ func TestDedicatedLockServicePreservesCallerAuthentication(t *testing.T) {
 	require.NoError(t, err)
 }
 
-func TestDedicatedElectionObserveUnauthenticatedReturnsEmptyStream(t *testing.T) {
+func TestDedicatedElectionObserveAuthFailuresReturnEmptyStream(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer func() {
 		_ = server.concurrencyClient.Close()
@@ -186,18 +186,49 @@ func TestDedicatedElectionObserveUnauthenticatedReturnsEmptyStream(t *testing.T)
 	}))
 	require.NoError(t, server.auth.roleAdd(ctx, "root"))
 	require.NoError(t, server.auth.userGrantRole(ctx, "root", "root"))
+	require.NoError(t, server.auth.userAdd(ctx, &etcdserverpb.AuthUserAddRequest{
+		Name: "limited", Password: "secret",
+	}))
+	require.NoError(t, server.auth.roleAdd(ctx, "limited"))
+	require.NoError(t, server.auth.userGrantRole(ctx, "limited", "limited"))
 	require.NoError(t, server.auth.enable(ctx))
+	limited, err := server.Authenticate(ctx, &etcdserverpb.AuthenticateRequest{
+		Name: "limited", Password: "secret",
+	})
+	require.NoError(t, err)
 
 	electionServer := newElectionServer(server.concurrencyClient)
-	observeCtx, cancel := context.WithTimeout(ctx, time.Second)
-	defer cancel()
-	stream := &fakeElectionObserveServer{ctx: observeCtx}
-	err := electionServer.Observe(
-		&v3electionpb.LeaderRequest{Name: []byte("/a719/auth-election")},
-		stream,
-	)
-	require.NoError(t, err)
-	require.Zero(t, stream.sent)
+	tests := []struct {
+		name string
+		ctx  context.Context
+	}{
+		{name: "missing token", ctx: ctx},
+		{
+			name: "invalid token",
+			ctx: metadata.NewIncomingContext(ctx, metadata.Pairs(
+				rpctypes.TokenFieldNameGRPC, "invalid-token",
+			)),
+		},
+		{
+			name: "permission denied",
+			ctx: metadata.NewIncomingContext(ctx, metadata.Pairs(
+				rpctypes.TokenFieldNameGRPC, limited.Token,
+			)),
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			observeCtx, cancel := context.WithTimeout(test.ctx, time.Second)
+			defer cancel()
+			stream := &fakeElectionObserveServer{ctx: observeCtx}
+			err := electionServer.Observe(
+				&v3electionpb.LeaderRequest{Name: []byte("/a721/auth-election/" + test.name)},
+				stream,
+			)
+			require.NoError(t, err)
+			require.Zero(t, stream.sent)
+		})
+	}
 }
 
 func TestDedicatedConcurrencyServiceErrorsMatchEtcd(t *testing.T) {

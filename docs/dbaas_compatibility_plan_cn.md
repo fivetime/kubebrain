@@ -11373,10 +11373,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   错误归一化。实际对照 A366 的 upstream HTTP 差分可知，`Election.Observe` 通过
   client/v3 concurrency recipe 暴露 Watch，创建时 auth/watch 失败表现为成功结束的空流，
   而不是 Lock/Campaign 这类 unary 的 gRPC `Unknown`。现在新增
-  `TestDedicatedElectionObserveUnauthenticatedReturnsEmptyStream`：启用 auth 后用无 token
-  context 创建 Observe，断言 wrapper 返回 nil 且未发送任何 leader response，防止未来把
+  `TestDedicatedElectionObserveAuthFailuresReturnEmptyStream` 的 missing-token 子用例：
+  启用 auth 后用无 token context 创建 Observe，断言 wrapper 返回 nil 且未发送任何
+  leader response，防止未来把
   `Observe` 误归一化成普通 concurrency auth error，或反向发送未授权 leader。
-  `go test ./pkg/server/etcd -run TestDedicatedElectionObserveUnauthenticatedReturnsEmptyStream -count=1`
+  `go test ./pkg/server/etcd -run TestDedicatedElectionObserveAuthFailuresReturnEmptyStream -count=1`
   通过。
 - A720 固定 STM Serializable 多 key snapshot 差分：
   A205 已覆盖 STM 新建、abort、删除冲突 retry、`SerializableSnapshot` 和并发转账守恒，
@@ -11392,6 +11393,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   未设置 `REFERENCE_ETCD_ENDPOINT`/`KUBEBRAIN_ETCD_ENDPOINT` 时前者按预期跳过。
   直接 `go test . -count=1` 会默认连接 `127.0.0.1:3379` 的 live KubeBrain 端点；
   本地无该端点时因 connection refused 被中断，不作为本轮语义失败。
+- A721 固定 Election Observe auth 失败空流兼容行为：
+  A719 已固定无 token Observe 建流失败不能变成 unary `Unknown`，但同一 Watch 创建边界的
+  invalid token 和 valid token 但无 READ 权限尚未被 runtime 回归显式覆盖。现在把
+  `TestDedicatedElectionObserveAuthFailuresReturnEmptyStream` 扩为 table test，新增
+  gRPC metadata 携带 `invalid-token` 以及无权限用户 token 的子用例；启用 auth 后，wrapper
+  仍必须返回 nil、不发送任何 leader response，避免错误 token 或权限不足既被误归一化为
+  Lock/Campaign 风格错误，也不能泄漏 leader。
+  `go test ./pkg/server/etcd -run TestDedicatedElectionObserveAuthFailuresReturnEmptyStream -count=1 -v`
+  三个子用例均通过。
 
 ### P2：运维兼容和长期验证
 
