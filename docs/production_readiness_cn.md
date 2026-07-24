@@ -1483,8 +1483,10 @@ hack/dev/verify.sh
   service descriptor，确保新增公开 RPC 都有显式实现或显式拒绝分类；generated
   HTTP gateway 的注册 service 列表也必须固定为同一公开集合，避免 `/v3/*`
   surface 在升级或重构中漏注册或无审查扩大。protobuf 字段升级门禁应同时覆盖
-  Lock/Election request、response 和 nested `LeaderKey`，防止新增字段绕过 wrapper、
-  gateway、鉴权或错误归一化审计。core KV Range/Put/DeleteRange/Txn/Compaction、
+  core KV/Watch/Lease/Txn、Cluster、Maintenance、Auth、Auth 持久化 `authpb.User`/
+  `Role`/`Permission`，以及 Lock/Election request、response 和 nested `LeaderKey`，
+  防止新增字段绕过 wrapper、gateway、鉴权、持久化恢复或错误归一化审计。core KV
+  Range/Put/DeleteRange/Txn/Compaction、
   Cluster、Maintenance、Auth 与
   Lock/Election generated JSON gateway unary 路径还必须证明 `Authorization` 头会以
   etcd 兼容 metadata 进入后端 gRPC service，同时保留

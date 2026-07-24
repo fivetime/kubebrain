@@ -4,12 +4,34 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"go.etcd.io/etcd/api/v3/authpb"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/server/v3/etcdserver/api/v3election/v3electionpb"
 	"go.etcd.io/etcd/server/v3/etcdserver/api/v3lock/v3lockpb"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
+
+type protoFieldCoverageCase struct {
+	name   string
+	msg    proto.Message
+	fields map[string]protoreflect.FieldNumber
+}
+
+func requireProtoFieldCoverage(t *testing.T, cases []protoFieldCoverageCase, message string) {
+	t.Helper()
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			descriptor := tc.msg.ProtoReflect().Descriptor()
+			actual := make(map[string]protoreflect.FieldNumber, descriptor.Fields().Len())
+			for i := 0; i < descriptor.Fields().Len(); i++ {
+				field := descriptor.Fields().Get(i)
+				actual[string(field.Name())] = field.Number()
+			}
+			require.Equal(t, tc.fields, actual, message)
+		})
+	}
+}
 
 func TestCoreRequestProtoFieldCoverage(t *testing.T) {
 	for _, tc := range []struct {
@@ -104,6 +126,169 @@ func TestCoreRequestProtoFieldCoverage(t *testing.T) {
 	}
 }
 
+func TestClusterProtoFieldCoverage(t *testing.T) {
+	requireProtoFieldCoverage(t, []protoFieldCoverageCase{
+		{
+			name: "Member", msg: &etcdserverpb.Member{},
+			fields: map[string]protoreflect.FieldNumber{
+				"ID": 1, "name": 2, "peerURLs": 3, "clientURLs": 4, "isLearner": 5,
+			},
+		},
+		{
+			name:   "MemberAddRequest",
+			msg:    &etcdserverpb.MemberAddRequest{},
+			fields: map[string]protoreflect.FieldNumber{"peerURLs": 1, "isLearner": 2},
+		},
+		{
+			name:   "MemberAddResponse",
+			msg:    &etcdserverpb.MemberAddResponse{},
+			fields: map[string]protoreflect.FieldNumber{"header": 1, "member": 2, "members": 3},
+		},
+		{
+			name:   "MemberRemoveRequest",
+			msg:    &etcdserverpb.MemberRemoveRequest{},
+			fields: map[string]protoreflect.FieldNumber{"ID": 1},
+		},
+		{
+			name:   "MemberRemoveResponse",
+			msg:    &etcdserverpb.MemberRemoveResponse{},
+			fields: map[string]protoreflect.FieldNumber{"header": 1, "members": 2},
+		},
+		{
+			name:   "MemberUpdateRequest",
+			msg:    &etcdserverpb.MemberUpdateRequest{},
+			fields: map[string]protoreflect.FieldNumber{"ID": 1, "peerURLs": 2},
+		},
+		{
+			name:   "MemberUpdateResponse",
+			msg:    &etcdserverpb.MemberUpdateResponse{},
+			fields: map[string]protoreflect.FieldNumber{"header": 1, "members": 2},
+		},
+		{
+			name:   "MemberListRequest",
+			msg:    &etcdserverpb.MemberListRequest{},
+			fields: map[string]protoreflect.FieldNumber{"linearizable": 1},
+		},
+		{
+			name:   "MemberListResponse",
+			msg:    &etcdserverpb.MemberListResponse{},
+			fields: map[string]protoreflect.FieldNumber{"header": 1, "members": 2},
+		},
+		{
+			name:   "MemberPromoteRequest",
+			msg:    &etcdserverpb.MemberPromoteRequest{},
+			fields: map[string]protoreflect.FieldNumber{"ID": 1},
+		},
+		{
+			name:   "MemberPromoteResponse",
+			msg:    &etcdserverpb.MemberPromoteResponse{},
+			fields: map[string]protoreflect.FieldNumber{"header": 1, "members": 2},
+		},
+	}, "etcd Cluster API fields changed; audit MemberList compatibility, DBaaS-owned member mutation rejections, gateway JSON behavior, and advertised client URL release gates before updating this guard")
+}
+
+func TestMaintenanceProtoFieldCoverage(t *testing.T) {
+	requireProtoFieldCoverage(t, []protoFieldCoverageCase{
+		{
+			name:   "StatusRequest",
+			msg:    &etcdserverpb.StatusRequest{},
+			fields: map[string]protoreflect.FieldNumber{},
+		},
+		{
+			name: "StatusResponse", msg: &etcdserverpb.StatusResponse{},
+			fields: map[string]protoreflect.FieldNumber{
+				"header": 1, "version": 2, "dbSize": 3, "leader": 4, "raftIndex": 5,
+				"raftTerm": 6, "raftAppliedIndex": 7, "errors": 8, "dbSizeInUse": 9,
+				"isLearner": 10, "storageVersion": 11, "dbSizeQuota": 12, "downgradeInfo": 13,
+			},
+		},
+		{
+			name:   "DowngradeInfo",
+			msg:    &etcdserverpb.DowngradeInfo{},
+			fields: map[string]protoreflect.FieldNumber{"enabled": 1, "targetVersion": 2},
+		},
+		{
+			name: "AlarmRequest", msg: &etcdserverpb.AlarmRequest{},
+			fields: map[string]protoreflect.FieldNumber{
+				"action": 1, "memberID": 2, "alarm": 3,
+			},
+		},
+		{
+			name: "AlarmMember", msg: &etcdserverpb.AlarmMember{},
+			fields: map[string]protoreflect.FieldNumber{
+				"memberID": 1, "alarm": 2,
+			},
+		},
+		{
+			name:   "AlarmResponse",
+			msg:    &etcdserverpb.AlarmResponse{},
+			fields: map[string]protoreflect.FieldNumber{"header": 1, "alarms": 2},
+		},
+		{
+			name:   "DefragmentRequest",
+			msg:    &etcdserverpb.DefragmentRequest{},
+			fields: map[string]protoreflect.FieldNumber{},
+		},
+		{
+			name:   "DefragmentResponse",
+			msg:    &etcdserverpb.DefragmentResponse{},
+			fields: map[string]protoreflect.FieldNumber{"header": 1},
+		},
+		{
+			name:   "HashRequest",
+			msg:    &etcdserverpb.HashRequest{},
+			fields: map[string]protoreflect.FieldNumber{},
+		},
+		{
+			name:   "HashResponse",
+			msg:    &etcdserverpb.HashResponse{},
+			fields: map[string]protoreflect.FieldNumber{"header": 1, "hash": 2},
+		},
+		{
+			name:   "HashKVRequest",
+			msg:    &etcdserverpb.HashKVRequest{},
+			fields: map[string]protoreflect.FieldNumber{"revision": 1},
+		},
+		{
+			name: "HashKVResponse", msg: &etcdserverpb.HashKVResponse{},
+			fields: map[string]protoreflect.FieldNumber{
+				"header": 1, "hash": 2, "compact_revision": 3, "hash_revision": 4,
+			},
+		},
+		{
+			name:   "SnapshotRequest",
+			msg:    &etcdserverpb.SnapshotRequest{},
+			fields: map[string]protoreflect.FieldNumber{},
+		},
+		{
+			name: "SnapshotResponse", msg: &etcdserverpb.SnapshotResponse{},
+			fields: map[string]protoreflect.FieldNumber{
+				"header": 1, "remaining_bytes": 2, "blob": 3, "version": 4,
+			},
+		},
+		{
+			name:   "MoveLeaderRequest",
+			msg:    &etcdserverpb.MoveLeaderRequest{},
+			fields: map[string]protoreflect.FieldNumber{"targetID": 1},
+		},
+		{
+			name:   "MoveLeaderResponse",
+			msg:    &etcdserverpb.MoveLeaderResponse{},
+			fields: map[string]protoreflect.FieldNumber{"header": 1},
+		},
+		{
+			name:   "DowngradeRequest",
+			msg:    &etcdserverpb.DowngradeRequest{},
+			fields: map[string]protoreflect.FieldNumber{"action": 1, "version": 2},
+		},
+		{
+			name:   "DowngradeResponse",
+			msg:    &etcdserverpb.DowngradeResponse{},
+			fields: map[string]protoreflect.FieldNumber{"header": 1, "version": 2},
+		},
+	}, "etcd Maintenance API fields changed; audit Status, Alarm, Hash/HashKV, platform replacement rejections, gateway JSON behavior, and monitoring contracts before updating this guard")
+}
+
 func TestConcurrencyProtoFieldCoverage(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -174,6 +359,208 @@ func TestConcurrencyProtoFieldCoverage(t *testing.T) {
 				"etcd concurrency API fields changed; audit Lock/Election wrappers, gateway JSON behavior, authorization, and error normalization before updating this guard")
 		})
 	}
+}
+
+func TestAuthProtoFieldCoverage(t *testing.T) {
+	requireProtoFieldCoverage(t, []protoFieldCoverageCase{
+		{
+			name:   "AuthEnableRequest",
+			msg:    &etcdserverpb.AuthEnableRequest{},
+			fields: map[string]protoreflect.FieldNumber{},
+		},
+		{
+			name:   "AuthDisableRequest",
+			msg:    &etcdserverpb.AuthDisableRequest{},
+			fields: map[string]protoreflect.FieldNumber{},
+		},
+		{
+			name:   "AuthStatusRequest",
+			msg:    &etcdserverpb.AuthStatusRequest{},
+			fields: map[string]protoreflect.FieldNumber{},
+		},
+		{
+			name:   "AuthenticateRequest",
+			msg:    &etcdserverpb.AuthenticateRequest{},
+			fields: map[string]protoreflect.FieldNumber{"name": 1, "password": 2},
+		},
+		{
+			name: "AuthUserAddRequest", msg: &etcdserverpb.AuthUserAddRequest{},
+			fields: map[string]protoreflect.FieldNumber{
+				"name": 1, "password": 2, "options": 3, "hashedPassword": 4,
+			},
+		},
+		{
+			name:   "UserAddOptions",
+			msg:    &authpb.UserAddOptions{},
+			fields: map[string]protoreflect.FieldNumber{"no_password": 1},
+		},
+		{
+			name: "User", msg: &authpb.User{},
+			fields: map[string]protoreflect.FieldNumber{
+				"name": 1, "password": 2, "roles": 3, "options": 4,
+			},
+		},
+		{
+			name:   "AuthUserGetRequest",
+			msg:    &etcdserverpb.AuthUserGetRequest{},
+			fields: map[string]protoreflect.FieldNumber{"name": 1},
+		},
+		{
+			name:   "AuthUserDeleteRequest",
+			msg:    &etcdserverpb.AuthUserDeleteRequest{},
+			fields: map[string]protoreflect.FieldNumber{"name": 1},
+		},
+		{
+			name: "AuthUserChangePasswordRequest", msg: &etcdserverpb.AuthUserChangePasswordRequest{},
+			fields: map[string]protoreflect.FieldNumber{
+				"name": 1, "password": 2, "hashedPassword": 3,
+			},
+		},
+		{
+			name:   "AuthUserGrantRoleRequest",
+			msg:    &etcdserverpb.AuthUserGrantRoleRequest{},
+			fields: map[string]protoreflect.FieldNumber{"user": 1, "role": 2},
+		},
+		{
+			name:   "AuthUserRevokeRoleRequest",
+			msg:    &etcdserverpb.AuthUserRevokeRoleRequest{},
+			fields: map[string]protoreflect.FieldNumber{"name": 1, "role": 2},
+		},
+		{
+			name:   "AuthRoleAddRequest",
+			msg:    &etcdserverpb.AuthRoleAddRequest{},
+			fields: map[string]protoreflect.FieldNumber{"name": 1},
+		},
+		{
+			name:   "AuthRoleGetRequest",
+			msg:    &etcdserverpb.AuthRoleGetRequest{},
+			fields: map[string]protoreflect.FieldNumber{"role": 1},
+		},
+		{
+			name:   "AuthUserListRequest",
+			msg:    &etcdserverpb.AuthUserListRequest{},
+			fields: map[string]protoreflect.FieldNumber{},
+		},
+		{
+			name:   "AuthRoleListRequest",
+			msg:    &etcdserverpb.AuthRoleListRequest{},
+			fields: map[string]protoreflect.FieldNumber{},
+		},
+		{
+			name:   "AuthRoleDeleteRequest",
+			msg:    &etcdserverpb.AuthRoleDeleteRequest{},
+			fields: map[string]protoreflect.FieldNumber{"role": 1},
+		},
+		{
+			name:   "AuthRoleGrantPermissionRequest",
+			msg:    &etcdserverpb.AuthRoleGrantPermissionRequest{},
+			fields: map[string]protoreflect.FieldNumber{"name": 1, "perm": 2},
+		},
+		{
+			name: "Permission", msg: &authpb.Permission{},
+			fields: map[string]protoreflect.FieldNumber{
+				"permType": 1, "key": 2, "range_end": 3,
+			},
+		},
+		{
+			name:   "Role",
+			msg:    &authpb.Role{},
+			fields: map[string]protoreflect.FieldNumber{"name": 1, "keyPermission": 2},
+		},
+		{
+			name: "AuthRoleRevokePermissionRequest", msg: &etcdserverpb.AuthRoleRevokePermissionRequest{},
+			fields: map[string]protoreflect.FieldNumber{
+				"role": 1, "key": 2, "range_end": 3,
+			},
+		},
+		{
+			name:   "AuthEnableResponse",
+			msg:    &etcdserverpb.AuthEnableResponse{},
+			fields: map[string]protoreflect.FieldNumber{"header": 1},
+		},
+		{
+			name:   "AuthDisableResponse",
+			msg:    &etcdserverpb.AuthDisableResponse{},
+			fields: map[string]protoreflect.FieldNumber{"header": 1},
+		},
+		{
+			name: "AuthStatusResponse", msg: &etcdserverpb.AuthStatusResponse{},
+			fields: map[string]protoreflect.FieldNumber{
+				"header": 1, "enabled": 2, "authRevision": 3,
+			},
+		},
+		{
+			name: "AuthenticateResponse", msg: &etcdserverpb.AuthenticateResponse{},
+			fields: map[string]protoreflect.FieldNumber{
+				"header": 1, "token": 2,
+			},
+		},
+		{
+			name:   "AuthUserAddResponse",
+			msg:    &etcdserverpb.AuthUserAddResponse{},
+			fields: map[string]protoreflect.FieldNumber{"header": 1},
+		},
+		{
+			name:   "AuthUserGetResponse",
+			msg:    &etcdserverpb.AuthUserGetResponse{},
+			fields: map[string]protoreflect.FieldNumber{"header": 1, "roles": 2},
+		},
+		{
+			name:   "AuthUserDeleteResponse",
+			msg:    &etcdserverpb.AuthUserDeleteResponse{},
+			fields: map[string]protoreflect.FieldNumber{"header": 1},
+		},
+		{
+			name:   "AuthUserChangePasswordResponse",
+			msg:    &etcdserverpb.AuthUserChangePasswordResponse{},
+			fields: map[string]protoreflect.FieldNumber{"header": 1},
+		},
+		{
+			name:   "AuthUserGrantRoleResponse",
+			msg:    &etcdserverpb.AuthUserGrantRoleResponse{},
+			fields: map[string]protoreflect.FieldNumber{"header": 1},
+		},
+		{
+			name:   "AuthUserRevokeRoleResponse",
+			msg:    &etcdserverpb.AuthUserRevokeRoleResponse{},
+			fields: map[string]protoreflect.FieldNumber{"header": 1},
+		},
+		{
+			name:   "AuthRoleAddResponse",
+			msg:    &etcdserverpb.AuthRoleAddResponse{},
+			fields: map[string]protoreflect.FieldNumber{"header": 1},
+		},
+		{
+			name:   "AuthRoleGetResponse",
+			msg:    &etcdserverpb.AuthRoleGetResponse{},
+			fields: map[string]protoreflect.FieldNumber{"header": 1, "perm": 2},
+		},
+		{
+			name:   "AuthRoleListResponse",
+			msg:    &etcdserverpb.AuthRoleListResponse{},
+			fields: map[string]protoreflect.FieldNumber{"header": 1, "roles": 2},
+		},
+		{
+			name:   "AuthUserListResponse",
+			msg:    &etcdserverpb.AuthUserListResponse{},
+			fields: map[string]protoreflect.FieldNumber{"header": 1, "users": 2},
+		},
+		{
+			name:   "AuthRoleDeleteResponse",
+			msg:    &etcdserverpb.AuthRoleDeleteResponse{},
+			fields: map[string]protoreflect.FieldNumber{"header": 1},
+		},
+		{
+			name:   "AuthRoleGrantPermissionResponse",
+			msg:    &etcdserverpb.AuthRoleGrantPermissionResponse{},
+			fields: map[string]protoreflect.FieldNumber{"header": 1},
+		},
+		{
+			name:   "AuthRoleRevokePermissionResponse",
+			msg:    &etcdserverpb.AuthRoleRevokePermissionResponse{},
+			fields: map[string]protoreflect.FieldNumber{"header": 1},
+		},
+	}, "etcd Auth API fields changed; audit auth management RPCs, persisted authpb records, token lifecycle, key-range authorization, and gateway JSON behavior before updating this guard")
 }
 
 func TestCoreResponseProtoFieldCoverage(t *testing.T) {

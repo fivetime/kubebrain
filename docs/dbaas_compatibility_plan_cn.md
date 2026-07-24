@@ -11580,6 +11580,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   generated route 均被本地 endpoint 测试实际调用。
   `go test ./pkg/endpoint -run TestGRPCGatewayUsesGeneratedEtcdJSONContract -count=1 -v`
   通过。
+- A738 补齐 Cluster/Maintenance/Auth proto 字段升级门禁：
+  A431/A432/A715 已固定 core KV/Watch/Lease/Txn 与 Lock/Election protobuf 字段，但
+  Cluster、Maintenance、Auth 以及 Auth 持久化 `authpb.User`/`Role`/`Permission` 仍只靠
+  行为测试间接覆盖。现在新增 `TestClusterProtoFieldCoverage`、
+  `TestMaintenanceProtoFieldCoverage` 和 `TestAuthProtoFieldCoverage`，固定 Member/Status/
+  Alarm/Hash/Snapshot/MoveLeader/Downgrade、完整 Auth 管理面 request/response、
+  `UserAddOptions`、`Permission`、`User` 与 `Role` 的 proto name 和 wire number。未来
+  etcd API 升级若新增、删除、改名或重编号这些字段，必须重新审计 MemberList、
+  平台替代拒绝、gateway JSON、Auth 持久化恢复、token lifecycle 和 key-range 鉴权后才能
+  更新门禁。
+  `go test ./pkg/server/etcd -run 'Test(Cluster|Maintenance|Auth)ProtoFieldCoverage' -count=1 -v`
+  通过。
 
 ### P2：运维兼容和长期验证
 
