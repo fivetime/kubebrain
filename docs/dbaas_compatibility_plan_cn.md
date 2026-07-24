@@ -11501,6 +11501,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   丢弃这些已公开的 etcd HTTP 路径。
   `go test ./pkg/endpoint -run TestGRPCGatewayUsesGeneratedEtcdJSONContract -count=1 -v`
   通过。
+- A731 固定 core KV write HTTP gateway contract：
+  endpoint 的 generated gateway 门禁此前只调用 `/v3/kv/range`，尚未证明 kube-apiserver
+  等 HTTP caller 使用的 Put、DeleteRange、Txn 与 Compaction 写面能保留请求字段、身份
+  和 etcd JSON 外观。现在扩展 fake KV server 并逐条调用 `/v3/kv/put`、
+  `/v3/kv/deleterange`、`/v3/kv/txn` 和 `/v3/kv/compaction`：验证 bytes/base64、
+  lease ID、range end、`prev_kv`、physical compaction、unknown-field discard，以及
+  Txn compare enum/version 和 nested `request_put` oneof 解码；每条 route 都必须收到
+  gateway marker 与独立 `Authorization` metadata。响应固定 `prev_kv`、`prev_kvs`、
+  deleted count、Txn `response_put` oneof、proto-name 字段和 int64/uint64 字符串编码，
+  对齐 `/root/etcd/api/etcdserverpb/gw/rpc.pb.gw.go` 当前 generated contract。
+  `go test ./pkg/endpoint -run TestGRPCGatewayUsesGeneratedEtcdJSONContract -count=1 -v`
+  通过。
 
 ### P2：运维兼容和长期验证
 

@@ -39,8 +39,16 @@ import (
 
 type gatewayKVServer struct {
 	etcdserverpb.UnimplementedKVServer
-	request *etcdserverpb.RangeRequest
-	md      metadata.MD
+	request            *etcdserverpb.RangeRequest
+	putRequest         *etcdserverpb.PutRequest
+	deleteRangeRequest *etcdserverpb.DeleteRangeRequest
+	txnRequest         *etcdserverpb.TxnRequest
+	compactRequest     *etcdserverpb.CompactionRequest
+	md                 metadata.MD
+	putMD              metadata.MD
+	deleteRangeMD      metadata.MD
+	txnMD              metadata.MD
+	compactMD          metadata.MD
 }
 
 type gatewayClusterServer struct {
@@ -283,6 +291,68 @@ func (s *gatewayKVServer) Range(ctx context.Context, request *etcdserverpb.Range
 	}, nil
 }
 
+func (s *gatewayKVServer) Put(ctx context.Context, request *etcdserverpb.PutRequest) (*etcdserverpb.PutResponse, error) {
+	s.putRequest = request
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		s.putMD = md.Copy()
+	}
+	return &etcdserverpb.PutResponse{
+		Header: &etcdserverpb.ResponseHeader{ClusterId: 111, MemberId: 112, Revision: 113, RaftTerm: 114},
+		PrevKv: &mvccpb.KeyValue{
+			Key:            request.Key,
+			CreateRevision: 101,
+			ModRevision:    102,
+			Version:        103,
+			Value:          []byte("old-value"),
+			Lease:          104,
+		},
+	}, nil
+}
+
+func (s *gatewayKVServer) DeleteRange(ctx context.Context, request *etcdserverpb.DeleteRangeRequest) (*etcdserverpb.DeleteRangeResponse, error) {
+	s.deleteRangeRequest = request
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		s.deleteRangeMD = md.Copy()
+	}
+	return &etcdserverpb.DeleteRangeResponse{
+		Header:  &etcdserverpb.ResponseHeader{ClusterId: 115, MemberId: 116, Revision: 117, RaftTerm: 118},
+		Deleted: 2,
+		PrevKvs: []*mvccpb.KeyValue{{
+			Key:         request.Key,
+			ModRevision: 119,
+			Value:       []byte("deleted-value"),
+		}},
+	}, nil
+}
+
+func (s *gatewayKVServer) Txn(ctx context.Context, request *etcdserverpb.TxnRequest) (*etcdserverpb.TxnResponse, error) {
+	s.txnRequest = request
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		s.txnMD = md.Copy()
+	}
+	return &etcdserverpb.TxnResponse{
+		Header:    &etcdserverpb.ResponseHeader{ClusterId: 120, MemberId: 121, Revision: 122, RaftTerm: 123},
+		Succeeded: true,
+		Responses: []*etcdserverpb.ResponseOp{{
+			Response: &etcdserverpb.ResponseOp_ResponsePut{
+				ResponsePut: &etcdserverpb.PutResponse{
+					Header: &etcdserverpb.ResponseHeader{Revision: 122},
+				},
+			},
+		}},
+	}, nil
+}
+
+func (s *gatewayKVServer) Compact(ctx context.Context, request *etcdserverpb.CompactionRequest) (*etcdserverpb.CompactionResponse, error) {
+	s.compactRequest = request
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		s.compactMD = md.Copy()
+	}
+	return &etcdserverpb.CompactionResponse{
+		Header: &etcdserverpb.ResponseHeader{ClusterId: 124, MemberId: 125, Revision: 126, RaftTerm: 127},
+	}, nil
+}
+
 func (s *gatewayClusterServer) MemberList(ctx context.Context, request *etcdserverpb.MemberListRequest) (*etcdserverpb.MemberListResponse, error) {
 	s.request = request
 	if md, ok := metadata.FromIncomingContext(ctx); ok {
@@ -420,6 +490,89 @@ func TestGRPCGatewayUsesGeneratedEtcdJSONContract(t *testing.T) {
 		require.Equal(t, []string{token}, md.Get(rpctypes.TokenFieldNameSwagger))
 	}
 
+	assertUnaryContract("/v3/kv/put",
+		`{"key":"cHV0LWtleQ==","value":"bmV3LXZhbHVl","lease":"101","prev_kv":true,"unknown_field":"discarded"}`,
+		"Bearer kv-put-token", `{
+			"header":{"cluster_id":"111","member_id":"112","revision":"113","raft_term":"114"},
+			"prev_kv":{
+				"key":"cHV0LWtleQ==",
+				"create_revision":"101",
+				"mod_revision":"102",
+				"version":"103",
+				"value":"b2xkLXZhbHVl",
+				"lease":"104"
+			}
+		}`,
+		func() bool {
+			return kvServer.putRequest != nil &&
+				string(kvServer.putRequest.Key) == "put-key" &&
+				string(kvServer.putRequest.Value) == "new-value" &&
+				kvServer.putRequest.Lease == 101 &&
+				kvServer.putRequest.PrevKv
+		}, &kvServer.putMD)
+	assertUnaryContract("/v3/kv/deleterange",
+		`{"key":"ZGVsZXRlLWE=","range_end":"ZGVsZXRlLXo=","prev_kv":true,"unknown_field":"discarded"}`,
+		"Bearer kv-delete-token", `{
+			"header":{"cluster_id":"115","member_id":"116","revision":"117","raft_term":"118"},
+			"deleted":"2",
+			"prev_kvs":[{
+				"key":"ZGVsZXRlLWE=",
+				"mod_revision":"119",
+				"value":"ZGVsZXRlZC12YWx1ZQ=="
+			}]
+		}`,
+		func() bool {
+			return kvServer.deleteRangeRequest != nil &&
+				string(kvServer.deleteRangeRequest.Key) == "delete-a" &&
+				string(kvServer.deleteRangeRequest.RangeEnd) == "delete-z" &&
+				kvServer.deleteRangeRequest.PrevKv
+		}, &kvServer.deleteRangeMD)
+	assertUnaryContract("/v3/kv/txn", `{
+			"compare":[{
+				"key":"dHhuLWtleQ==",
+				"target":"VERSION",
+				"result":"EQUAL",
+				"version":"1",
+				"unknown_field":"discarded"
+			}],
+			"success":[{
+				"request_put":{"key":"dHhuLWtleQ==","value":"dHhuLXZhbHVl"}
+			}],
+			"unknown_field":"discarded"
+		}`,
+		"Bearer kv-txn-token", `{
+			"header":{"cluster_id":"120","member_id":"121","revision":"122","raft_term":"123"},
+			"succeeded":true,
+			"responses":[{
+				"response_put":{"header":{"revision":"122"}}
+			}]
+		}`,
+		func() bool {
+			if kvServer.txnRequest == nil ||
+				len(kvServer.txnRequest.Compare) != 1 ||
+				len(kvServer.txnRequest.Success) != 1 {
+				return false
+			}
+			compare := kvServer.txnRequest.Compare[0]
+			put := kvServer.txnRequest.Success[0].GetRequestPut()
+			return string(compare.Key) == "txn-key" &&
+				compare.Target == etcdserverpb.Compare_VERSION &&
+				compare.Result == etcdserverpb.Compare_EQUAL &&
+				compare.GetVersion() == 1 &&
+				put != nil &&
+				string(put.Key) == "txn-key" &&
+				string(put.Value) == "txn-value"
+		}, &kvServer.txnMD)
+	assertUnaryContract("/v3/kv/compaction",
+		`{"revision":"108","physical":true,"unknown_field":"discarded"}`,
+		"Bearer kv-compact-token", `{
+			"header":{"cluster_id":"124","member_id":"125","revision":"126","raft_term":"127"}
+		}`,
+		func() bool {
+			return kvServer.compactRequest != nil &&
+				kvServer.compactRequest.Revision == 108 &&
+				kvServer.compactRequest.Physical
+		}, &kvServer.compactMD)
 	assertUnaryContract("/v3/cluster/member/list", `{}`, "Bearer cluster-token", `{
 		"header":{"cluster_id":"51","member_id":"52","revision":"53","raft_term":"54"},
 		"members":[{
