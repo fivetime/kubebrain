@@ -24,6 +24,10 @@ func fakeKubeBrainArgs(advertisedURLs, initialCluster string) string {
 		"--enable-count-index=true\n" +
 		"--count-index-max-keys=5000000\n" +
 		"--enable-storage-metrics=true\n" +
+		"--max-txn-ops=128\n" +
+		"--max-request-bytes=1572864\n" +
+		"--max-concurrent-streams=4294967295\n" +
+		"--max-requests-inflight=1024\n" +
 		"--max-request-rate=2000\n" +
 		"--request-rate-burst=4000\n" +
 		"--max-delete-range-keys=1024\n" +
@@ -490,6 +494,42 @@ func TestValidateInstanceReady(t *testing.T) {
 			topology:   "3\t3",
 			healthOK:   true,
 			wantOutput: "storage metrics enablement configuration mismatch",
+		},
+		{
+			name:       "wrong transaction operation limit",
+			image:      "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus: "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeArgs:   strings.ReplaceAll(fakeKubeBrainArgs("https://instance.example:2379", fakeInitialCluster), "--max-txn-ops=128", "--max-txn-ops=64"),
+			topology:   "3\t3",
+			healthOK:   true,
+			wantOutput: "transaction operation limit configuration mismatch",
+		},
+		{
+			name:       "missing request byte limit",
+			image:      "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus: "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeArgs:   strings.ReplaceAll(fakeKubeBrainArgs("https://instance.example:2379", fakeInitialCluster), "\n--max-request-bytes=1572864", ""),
+			topology:   "3\t3",
+			healthOK:   true,
+			wantOutput: "request byte limit configuration mismatch",
+		},
+		{
+			name:       "duplicate concurrent stream limit",
+			image:      "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus: "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeArgs:   fakeKubeBrainArgs("https://instance.example:2379", fakeInitialCluster) + "\n--max-concurrent-streams=4294967295",
+			topology:   "3\t3",
+			healthOK:   true,
+			wantOutput: "concurrent stream limit configuration mismatch",
+		},
+		{
+			name:       "wrong inflight request limit",
+			image:      "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus: "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeArgs:   strings.ReplaceAll(fakeKubeBrainArgs("https://instance.example:2379", fakeInitialCluster), "--max-requests-inflight=1024", "--max-requests-inflight=256"),
+			topology:   "3\t3",
+			healthOK:   true,
+			wantOutput: "inflight request limit configuration mismatch",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

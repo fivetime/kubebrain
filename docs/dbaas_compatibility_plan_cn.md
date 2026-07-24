@@ -11693,6 +11693,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./hack/production -run TestValidateInstanceReady -count=1 -v`、
   `bash -n hack/production/validate-instance-ready.sh`、`go test ./hack/production -count=1`、
   `go vet ./...` 和 `go test ./... -count=1 -p 1` 均通过。
+- A747 固定实例发布门禁中的公开请求边界一致性：
+  production 明文/TLS 基线固定 `--max-txn-ops=128`、`--max-request-bytes=1572864`、
+  `--max-concurrent-streams=4294967295` 和 `--max-requests-inflight=1024`，但运行门禁此前
+  只覆盖 quota、advertise、compat/index/metrics 与 admission rate/watch/delete-range。
+  控制面或人工 patch 若调小 transaction operation、request byte、HTTP/2 stream 或进程级
+  inflight limit，可能在大对象、批量 Txn、watch/lease 流量或过载测试中制造与生产基线
+  不一致的行为。现在脚本新增 `EXPECTED_MAX_TXN_OPS`、
+  `EXPECTED_MAX_REQUEST_BYTES`、`EXPECTED_MAX_CONCURRENT_STREAMS` 和
+  `EXPECTED_MAX_REQUESTS_INFLIGHT`（默认对齐 production baseline，可按实例规格覆盖），并
+  要求 Pod template 对应 flag 各出现一次且值完全匹配。`TestValidateInstanceReady` 扩展
+  wrong/missing/duplicate 回归，覆盖 transaction operation limit、request byte limit、
+  concurrent stream limit 和 inflight request limit 漂移。
+  `go test ./hack/production -run TestValidateInstanceReady -count=1 -v`、
+  `bash -n hack/production/validate-instance-ready.sh`、`go test ./hack/production -count=1`、
+  `go vet ./...`、`go test ./pkg/backend -count=1 -timeout=15m -v` 和
+  `go test ./... -count=1 -p 1` 均通过。
 
 ### P2：运维兼容和长期验证
 

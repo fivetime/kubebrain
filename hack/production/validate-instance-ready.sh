@@ -20,6 +20,10 @@ EXPECTED_COMPATIBLE_WITH_ETCD="${EXPECTED_COMPATIBLE_WITH_ETCD:-true}"
 EXPECTED_ENABLE_COUNT_INDEX="${EXPECTED_ENABLE_COUNT_INDEX:-true}"
 EXPECTED_COUNT_INDEX_MAX_KEYS="${EXPECTED_COUNT_INDEX_MAX_KEYS:-5000000}"
 EXPECTED_ENABLE_STORAGE_METRICS="${EXPECTED_ENABLE_STORAGE_METRICS:-true}"
+EXPECTED_MAX_TXN_OPS="${EXPECTED_MAX_TXN_OPS:-128}"
+EXPECTED_MAX_REQUEST_BYTES="${EXPECTED_MAX_REQUEST_BYTES:-1572864}"
+EXPECTED_MAX_CONCURRENT_STREAMS="${EXPECTED_MAX_CONCURRENT_STREAMS:-4294967295}"
+EXPECTED_MAX_REQUESTS_INFLIGHT="${EXPECTED_MAX_REQUESTS_INFLIGHT:-1024}"
 EXPECTED_MAX_REQUEST_RATE="${EXPECTED_MAX_REQUEST_RATE:-2000}"
 EXPECTED_REQUEST_RATE_BURST="${EXPECTED_REQUEST_RATE_BURST:-4000}"
 EXPECTED_MAX_DELETE_RANGE_KEYS="${EXPECTED_MAX_DELETE_RANGE_KEYS:-1024}"
@@ -84,7 +88,7 @@ if [[ -z "$EXPECTED_ADVERTISE_CLIENT_URLS" ]]; then
   echo "EXPECTED_ADVERTISE_CLIENT_URLS is required" >&2
   exit 2
 fi
-for variable in EXPECTED_COUNT_INDEX_MAX_KEYS EXPECTED_MAX_REQUEST_RATE EXPECTED_REQUEST_RATE_BURST EXPECTED_MAX_DELETE_RANGE_KEYS EXPECTED_MAX_WATCHES; do
+for variable in EXPECTED_COUNT_INDEX_MAX_KEYS EXPECTED_MAX_TXN_OPS EXPECTED_MAX_REQUEST_BYTES EXPECTED_MAX_CONCURRENT_STREAMS EXPECTED_MAX_REQUESTS_INFLIGHT EXPECTED_MAX_REQUEST_RATE EXPECTED_REQUEST_RATE_BURST EXPECTED_MAX_DELETE_RANGE_KEYS EXPECTED_MAX_WATCHES; do
   value="${!variable}"
   if ! [[ "$value" =~ ^[0-9]+$ ]]; then
     echo "${variable} must be a non-negative integer" >&2
@@ -389,6 +393,10 @@ check_exact_kubebrain_arg "compatible-with-etcd" "$EXPECTED_COMPATIBLE_WITH_ETCD
 check_exact_kubebrain_arg "enable-count-index" "$EXPECTED_ENABLE_COUNT_INDEX" "count index enablement"
 check_exact_kubebrain_arg "count-index-max-keys" "$EXPECTED_COUNT_INDEX_MAX_KEYS" "count index key cap"
 check_exact_kubebrain_arg "enable-storage-metrics" "$EXPECTED_ENABLE_STORAGE_METRICS" "storage metrics enablement"
+check_exact_kubebrain_arg "max-txn-ops" "$EXPECTED_MAX_TXN_OPS" "transaction operation limit"
+check_exact_kubebrain_arg "max-request-bytes" "$EXPECTED_MAX_REQUEST_BYTES" "request byte limit"
+check_exact_kubebrain_arg "max-concurrent-streams" "$EXPECTED_MAX_CONCURRENT_STREAMS" "concurrent stream limit"
+check_exact_kubebrain_arg "max-requests-inflight" "$EXPECTED_MAX_REQUESTS_INFLIGHT" "inflight request limit"
 
 if ! ETCDCTL_API=3 run_etcdctl --endpoints="$ENDPOINT" endpoint health; then
   echo "KubeBrain endpoint health failed: $ENDPOINT" >&2
