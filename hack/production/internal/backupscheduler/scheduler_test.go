@@ -409,6 +409,16 @@ func TestSetMaxPoliciesRejectsInvalidLimit(t *testing.T) {
 	require.ErrorContains(t, New(nil, "test").SetMaxPolicies(0), "must be positive")
 }
 
+func TestReconcileRejectsInvalidRequesterBeforePolicyAccess(t *testing.T) {
+	client := fakeClient()
+	count, err := New(client, "test").
+		WithRequester("scheduler\nidentity").
+		Reconcile(context.Background())
+	require.Zero(t, count)
+	require.ErrorContains(t, err, "invalid operation requester")
+	require.Empty(t, client.Actions())
+}
+
 func TestDynamicNamespaceInventoryAppliesWithoutSchedulerRestart(t *testing.T) {
 	client := fakeClient()
 	for _, namespace := range []string{"tenant-a", "tenant-b"} {

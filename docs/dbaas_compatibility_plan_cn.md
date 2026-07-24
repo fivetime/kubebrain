@@ -11268,6 +11268,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Secret API action 均为空：
   `go test ./hack/production/internal/parameterbroker ./hack/production/cmd/operation-parameter-broker -count=1`
   通过。
+- A708 前置 backup scheduler requester 校验：
+  scheduler 的 `WithRequester` 值会写入 immutable Operation spec 与终态审计。旧路径只在
+  `operationqueue.Submit` 阶段校验 requestedBy，库调用方若传入控制字符或非 UTF-8 requester，
+  scheduler 可能已经渲染参数、创建 immutable 参数 Secret，然后才被 queue 拒绝。现在
+  operation queue 导出同一 requestedBy audit text 校验，scheduler 每轮 reconcile 在读取
+  namespace inventory 或 list policy 前先校验 requester。fake dynamic client 回归确认非法
+  requester 返回错误且没有任何 Kubernetes API action：
+  `go test ./hack/production/internal/backupscheduler ./hack/production/internal/operationqueue ./hack/production/cmd/backup-scheduler -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

@@ -102,6 +102,9 @@ func (s *Scheduler) SetMaxPolicies(maxPolicies int) error {
 }
 
 func (s *Scheduler) Reconcile(ctx context.Context) (int, error) {
+	if err := operationqueue.ValidateRequester(s.requester); err != nil {
+		return 0, err
+	}
 	namespaces, err := s.namespaces(ctx)
 	if err != nil {
 		return 0, err

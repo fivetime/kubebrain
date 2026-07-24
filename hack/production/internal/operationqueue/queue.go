@@ -184,8 +184,8 @@ func (q *Queue) Submit(ctx context.Context, name string, spec Spec) (*unstructur
 			return nil, invalidSpecError("invalid operation tenant: %s", errs[0])
 		}
 	}
-	if err := validateOptionalAuditText(spec.RequestedBy, maxRequesterLength); err != nil {
-		return nil, invalidSpecError("invalid operation requester: %s", err)
+	if err := ValidateRequester(spec.RequestedBy); err != nil {
+		return nil, invalidSpecError("%s", err)
 	}
 	if (spec.ParametersSecret == "") != (spec.ParametersKey == "") {
 		return nil, invalidSpecError("parameter secret name and key must be specified together")
@@ -601,6 +601,14 @@ func ValidParameterSecretKey(key string) bool {
 		}
 	}
 	return true
+}
+
+// ValidateRequester validates the KubeBrainOperation spec.requestedBy audit text.
+func ValidateRequester(requester string) error {
+	if err := validateOptionalAuditText(requester, maxRequesterLength); err != nil {
+		return fmt.Errorf("invalid operation requester: %w", err)
+	}
+	return nil
 }
 
 func isApproved(object *unstructured.Unstructured) bool {
