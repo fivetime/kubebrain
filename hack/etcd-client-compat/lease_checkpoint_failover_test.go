@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -46,9 +45,9 @@ func TestLongLeaseFailoverUsesRemainingTTLCheckpoint(t *testing.T) {
 		return ttlErr == nil && ttl.TTL > 0 && ttl.TTL <= 285
 	}, 330*time.Second, time.Second)
 
-	output, err := exec.CommandContext(ctx, "bash", "-c", failoverCommand).CombinedOutput()
+	output, err := runCompatShellCommandContext(t, ctx, failoverCommand)
 	require.NoErrorf(t, err, "failover command: %s", strings.TrimSpace(string(output)))
-	output, err = waitForKubeBrainRollout(ctx, namespace)
+	output, err = waitForKubeBrainRollout(t, ctx, namespace)
 	require.NoErrorf(t, err, "wait for KubeBrain recovery: %s", strings.TrimSpace(string(output)))
 
 	var recovered *clientv3.LeaseTimeToLiveResponse

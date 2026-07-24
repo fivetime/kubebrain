@@ -88,7 +88,7 @@ func TestMaxLeaseIDFailoverKeepsAutomaticIDsPositive(t *testing.T) {
 
 	output, err := exec.CommandContext(ctx, "kubectl", "-n", namespace, "delete", "pod", pod, "--wait=false").CombinedOutput()
 	require.NoErrorf(t, err, "delete leader pod: %s", strings.TrimSpace(string(output)))
-	output, err = waitForKubeBrainRollout(ctx, namespace)
+	output, err = waitForKubeBrainRollout(t, ctx, namespace)
 	require.NoErrorf(t, err, "wait for KubeBrain recovery: %s", strings.TrimSpace(string(output)))
 
 	ttl, err := cli.TimeToLive(ctx, clientv3.LeaseID(math.MaxInt64), clientv3.WithAttachedKeys())

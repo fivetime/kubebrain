@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -109,9 +108,9 @@ func TestLeaseRenewalSoakAcrossRepeatedLeaderFailover(t *testing.T) {
 		"every lease must receive an initial keepalive response")
 
 	for cycle := 1; cycle <= failoverCycles; cycle++ {
-		output, err := exec.CommandContext(ctx, "bash", "-c", failoverCommand).CombinedOutput()
+		output, err := runCompatShellCommandContext(t, ctx, failoverCommand)
 		require.NoErrorf(t, err, "failover cycle %d command: %s", cycle, strings.TrimSpace(string(output)))
-		output, err = waitForKubeBrainRollout(ctx, namespace)
+		output, err = waitForKubeBrainRollout(t, ctx, namespace)
 		require.NoErrorf(t, err, "failover cycle %d recovery: %s", cycle, strings.TrimSpace(string(output)))
 
 		baseline := make([]int64, len(leases))

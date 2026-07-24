@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -93,7 +92,7 @@ func TestMutationCoordinatorRecoversAfterBackendFailover(t *testing.T) {
 	}
 	close(start)
 	time.Sleep(200 * time.Millisecond)
-	output, err := exec.CommandContext(ctx, "bash", "-c", failoverCommand).CombinedOutput()
+	output, err := runCompatShellCommandContext(t, ctx, failoverCommand)
 	if err != nil {
 		errCh <- fmt.Errorf("failover command: %w: %s", err, strings.TrimSpace(string(output)))
 	}

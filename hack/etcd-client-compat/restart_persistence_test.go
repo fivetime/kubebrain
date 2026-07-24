@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 	"sync"
 	"testing"
@@ -148,7 +147,7 @@ func TestReplicatedRestartPreservesState(t *testing.T) {
 		}
 	}()
 
-	output, commandErr := exec.CommandContext(ctx, "bash", "-c", restartCommand).CombinedOutput()
+	output, commandErr := runCompatShellCommandContext(t, ctx, restartCommand)
 	close(stop)
 	wg.Wait()
 	select {

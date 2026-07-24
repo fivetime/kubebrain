@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 	"sync"
 	"testing"
@@ -93,9 +92,9 @@ func TestLeaseFailoverSpreadsRecoveredExpiryPileup(t *testing.T) {
 		}
 	})
 
-	output, err := exec.CommandContext(ctx, "bash", "-c", failoverCommand).CombinedOutput()
+	output, err := runCompatShellCommandContext(t, ctx, failoverCommand)
 	require.NoErrorf(t, err, "failover command: %s", strings.TrimSpace(string(output)))
-	output, err = waitForKubeBrainRollout(ctx, namespace)
+	output, err = waitForKubeBrainRollout(t, ctx, namespace)
 	require.NoErrorf(t, err, "wait for KubeBrain recovery: %s", strings.TrimSpace(string(output)))
 
 	require.Eventually(t, func() bool {
@@ -154,9 +153,9 @@ func TestEmptyLeaseRevokeRemainsDeletedAfterFailover(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, int64(-1), ttl.TTL)
 
-	output, err := exec.CommandContext(ctx, "bash", "-c", failoverCommand).CombinedOutput()
+	output, err := runCompatShellCommandContext(t, ctx, failoverCommand)
 	require.NoErrorf(t, err, "failover command: %s", strings.TrimSpace(string(output)))
-	output, err = waitForKubeBrainRollout(ctx, namespace)
+	output, err = waitForKubeBrainRollout(t, ctx, namespace)
 	require.NoErrorf(t, err, "wait for KubeBrain recovery: %s", strings.TrimSpace(string(output)))
 
 	require.Eventually(t, func() bool {

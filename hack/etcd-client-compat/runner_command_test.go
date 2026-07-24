@@ -28,14 +28,29 @@ func runCompatScriptCommand(t *testing.T, script string, env []string) ([]byte, 
 	ctx, cancel := context.WithTimeout(context.Background(), compatScriptCommandTimeout)
 	defer cancel()
 
-	command := exec.CommandContext(ctx, "bash", script)
-	configureCompatProcessGroup(command)
-	command.Env = append(os.Environ(), env...)
-	output, err := compatCombinedOutput(command, compatScriptOutputLimitBytes)
+	output, err := runCompatCommandContext(t, ctx, "bash", []string{script}, env)
 	if ctx.Err() == context.DeadlineExceeded {
 		require.Failf(t, "compat script timed out", "script=%s timeout=%s output:\n%s", script, compatScriptCommandTimeout, string(output))
 	}
 	return output, err
+}
+
+func runCompatShellCommandContext(t *testing.T, ctx context.Context, command string) ([]byte, error) {
+	t.Helper()
+	return runCompatCommandContext(t, ctx, "bash", []string{"-c", command}, nil)
+}
+
+func runCompatKubectlContext(t *testing.T, ctx context.Context, args ...string) ([]byte, error) {
+	t.Helper()
+	return runCompatCommandContext(t, ctx, "kubectl", args, nil)
+}
+
+func runCompatCommandContext(t *testing.T, ctx context.Context, commandName string, args []string, env []string) ([]byte, error) {
+	t.Helper()
+	command := exec.CommandContext(ctx, commandName, args...)
+	configureCompatProcessGroup(command)
+	command.Env = append(os.Environ(), env...)
+	return compatCombinedOutput(command, compatScriptOutputLimitBytes)
 }
 
 func configureCompatProcessGroup(command *exec.Cmd) {
@@ -115,4 +130,32 @@ func (o *compatBoundedOutput) exceeded() bool {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	return o.over
+}
+
+func TestCompatFailoverCommandsUseBoundedHelpers(t *testing.T) {
+	for _, testFile := range []string{
+		"backend_quorum_failover_test.go",
+		"http_gateway_concurrency_zero_lease_failover_test.go",
+		"lease_checkpoint_failover_test.go",
+		"lease_expiry_spread_failover_test.go",
+		"lease_read_failover_test.go",
+		"lease_renewal_soak_failover_test.go",
+		"mutation_failover_test.go",
+		"restart_persistence_test.go",
+	} {
+		t.Run(testFile, func(t *testing.T) {
+			data, err := os.ReadFile(testFile)
+			require.NoError(t, err)
+			text := string(data)
+			require.Contains(t, text, "runCompatShellCommandContext(t, ctx,")
+			require.NotContains(t, text, `exec.CommandContext(ctx, "bash", "-c"`)
+		})
+	}
+
+	helper, err := os.ReadFile("failover_helpers_test.go")
+	require.NoError(t, err)
+	helperText := string(helper)
+	require.Contains(t, helperText, "runCompatKubectlContext(")
+	require.NotContains(t, helperText, `exec.CommandContext(`)
+	require.NotContains(t, helperText, ".CombinedOutput()")
 }

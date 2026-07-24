@@ -12070,6 +12070,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./hack/production -run 'TestProductionCmdGoRunTestsUseBoundedCommandHelper' -count=1 -v`、
   `go test ./hack/production -count=1 -timeout=12m`、`git diff --check`、`go vet ./...` 和
   `go test ./... -count=1 -p 1` 均通过。
+- A780 给 compat failover shell/rollout 命令补 bounded helper：
+  `hack/etcd-client-compat` 中多条 opt-in failover 测试已使用业务 ctx 限时，但仍直接
+  `exec.CommandContext(ctx, "bash", "-c", failoverCommand).CombinedOutput()`，rollout helper 也直接
+  `kubectl ... CombinedOutput()`；若用户提供的 failover shell 留下子进程或输出失控，测试诊断仍不受控。
+  现在 compat 本地 helper 增加 `runCompatCommandContext`、`runCompatShellCommandContext` 和
+  `runCompatKubectlContext`，继续使用调用方长 ctx，同时给子进程组 kill 和 1MiB output 上限；
+  lease checkpoint、lease read、lease expiry spread、lease renewal soak、HTTP gateway zero-lease
+  failover、backend quorum、mutation failover 和 restart persistence 测试统一切到 helper；rollout
+  helper 也走 bounded kubectl，覆盖这些 failover 测试以及 concurrency recipe、lease ID extremes
+  等复用该 helper 的恢复等待路径。新增静态门禁覆盖这些 opt-in 文件，禁止回退到裸 `bash -c`/kubectl。
+  `cd hack/etcd-client-compat && go test -run 'Test(CompatFailoverCommandsUseBoundedHelpers|DifferentialRunner)' -count=1 -v`、
+  `git diff --check`、`go vet ./...` 和 `go test ./... -count=1 -p 1` 均通过。
 
 ### P2：运维兼容和长期验证
 

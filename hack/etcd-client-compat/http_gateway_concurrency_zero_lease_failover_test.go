@@ -9,7 +9,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
 	"strconv"
 	"strings"
 	"testing"
@@ -110,12 +109,12 @@ func runHTTPGatewayZeroLeaseExpiryAcrossLeaderFailover(
 			"implicit session leases must count down before failover cycle %d", cycle)
 
 		failoverStarted := time.Now()
-		output, failoverErr := exec.CommandContext(ctx, "bash", "-c", failoverCommand).CombinedOutput()
+		output, failoverErr := runCompatShellCommandContext(t, ctx, failoverCommand)
 		require.NoErrorf(t, failoverErr, "delete current leader in cycle %d: %s",
 			cycle, strings.TrimSpace(string(output)))
 		t.Logf("leader replacement cycle %d completed in %s: %s",
 			cycle, time.Since(failoverStarted), strings.TrimSpace(string(output)))
-		output, failoverErr = waitForKubeBrainRollout(ctx, namespace)
+		output, failoverErr = waitForKubeBrainRollout(t, ctx, namespace)
 		require.NoErrorf(t, failoverErr, "wait for replacement replica in cycle %d: %s",
 			cycle, strings.TrimSpace(string(output)))
 

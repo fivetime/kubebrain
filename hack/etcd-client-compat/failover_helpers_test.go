@@ -3,17 +3,18 @@ package compat
 import (
 	"context"
 	"os"
-	"os/exec"
+	"testing"
 )
 
-func waitForKubeBrainRollout(ctx context.Context, namespace string) ([]byte, error) {
+func waitForKubeBrainRollout(t *testing.T, ctx context.Context, namespace string) ([]byte, error) {
+	t.Helper()
 	workload := os.Getenv("KUBEBRAIN_FAILOVER_WORKLOAD")
 	if workload == "" {
 		workload = "statefulset/kubebrain"
 	}
-	return exec.CommandContext(
-		ctx,
-		"kubectl", "-n", namespace,
+	return runCompatKubectlContext(
+		t, ctx,
+		"-n", namespace,
 		"rollout", "status", workload, "--timeout=75s",
-	).CombinedOutput()
+	)
 }

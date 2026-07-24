@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -107,7 +106,7 @@ func TestBackendQuorumFailoverKeepsServing(t *testing.T) {
 
 	time.Sleep(500 * time.Millisecond)
 	active.Store(true)
-	output, err := exec.CommandContext(ctx, "bash", "-c", failoverCommand).CombinedOutput()
+	output, err := runCompatShellCommandContext(t, ctx, failoverCommand)
 	active.Store(false)
 	close(stop)
 	if err != nil {
