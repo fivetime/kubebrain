@@ -136,6 +136,42 @@ func TestTransportPolicyDefaultsMatchEtcd(t *testing.T) {
 	require.True(t, o.epsConf.EnableGRPCGateway)
 }
 
+func TestProductionCriticalDefaultsStayPinned(t *testing.T) {
+	o := NewOptions()
+
+	require.Equal(t, 2379, o.epsConf.Port)
+	require.Equal(t, 2380, o.epsConf.PeerPort)
+	require.True(t, o.epsConf.EnableEtcdCompatibility)
+	require.True(t, o.epsConf.EnableGRPCGateway)
+	require.False(t, o.epsConf.EnablePprof)
+	require.False(t, o.EnableStorageMetrics)
+
+	require.Equal(t, uint(128), o.epsConf.MaxTxnOps)
+	require.Equal(t, uint(1572864), o.epsConf.MaxRequestBytes)
+	require.Zero(t, o.epsConf.GRPCMaxConnectionAge)
+	require.Equal(t, 5*time.Minute, o.epsConf.GRPCMaxConnectionAgeGrace)
+	require.Equal(t, "TLS1.2", o.epsConf.TLSMinVersion)
+	require.Empty(t, o.epsConf.TLSMaxVersion)
+	require.Empty(t, o.epsConf.CipherSuites)
+
+	require.Equal(t, 8*time.Second, o.epsConf.LeaseDuration)
+	require.Equal(t, 5*time.Second, o.epsConf.RenewDeadline)
+	require.Equal(t, time.Second, o.epsConf.RetryPeriod)
+
+	require.Equal(t, "/kubebrain-internal", o.Prefix)
+	require.Equal(t, "default", o.ClusterName)
+	require.Empty(t, o.Keyspace)
+	require.Equal(t, 200*1000, o.watchCacheSize)
+	require.Equal(t, 10*1000, o.watchFanoutBuffer)
+	require.Equal(t, 10*time.Minute, o.storageGCLifetime)
+	require.False(t, o.enableCountIndex)
+	require.Equal(t, 5*1000*1000, o.countIndexMaxKeys)
+	require.Zero(t, o.quotaBackendBytes)
+	require.Zero(t, o.autoCompactionRetention)
+	require.Equal(t, uint64(4096), o.historyScanRevBucket)
+	require.Equal(t, time.Second, o.watchProgressNotifyInterval)
+}
+
 // TestWatchProgressNotifyIntervalValidation locks the k8s-1.37-review guard:
 // kube-apiserver blocks consistent reads on watch progress for only 3s before
 // falling back to a full storage LIST, so an interval at/above that cliff must

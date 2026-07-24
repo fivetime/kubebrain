@@ -11765,6 +11765,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `bash -n hack/production/validate-instance-ready.sh`、`go test ./deploy/production -count=1`、
   `go test ./hack/production -count=1`、`go vet ./...` 和
   `go test ./... -count=1 -p 1` 均通过。
+- A752 固定启动默认值中的生产敏感面：
+  对照 `/root/etcd/server/embed/config.go` 中的默认配置（如
+  `EnableGRPCGateway=true`、`EnablePprof=false`、`MaxTxnOps=128`、
+  `MaxRequestBytes=1572864`、`MaxConcurrentStreams=math.MaxUint32`、
+  keepalive/auth/TLS min version 等）后，KubeBrain 仍有一批只在
+  `NewOptions()` 中隐式承诺的 DBaaS 生产默认值：`--compatible-with-etcd` 默认开启、
+  leader election 8s/5s/1s、内部协调前缀、watch cache/fanout、TiKV GC lifetime、
+  count-index opt-in 与默认 cap、quota/auto-compaction 默认关闭、history scan bucket 和
+  watch progress cadence。此前 `TestTransportPolicyDefaultsMatchEtcd` 只覆盖传输/auth 子集，
+  manifest exact gate 也只能保护 production YAML 中显式写出的参数，无法阻止启动默认值被
+  无意修改后影响 dev/测试/控制面生成实例。现在新增
+  `TestProductionCriticalDefaultsStayPinned`，把上述 etcd 对齐项和 KubeBrain
+  生产敏感默认项集中固定，要求默认值漂移必须显式更新测试与兼容性计划。
+  `go test ./cmd/option -run 'Test(TransportPolicyDefaultsMatchEtcd|ProductionCriticalDefaultsStayPinned|WatchProgressNotifyIntervalValidation)' -count=1 -v`、
+  `go test ./cmd/option -count=1`、`go vet ./...` 和
+  `go test ./... -count=1 -p 1` 均通过。
 
 ### P2：运维兼容和长期验证
 
