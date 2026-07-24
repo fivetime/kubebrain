@@ -11877,6 +11877,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./hack/production -run TestValidateInstanceReady -count=1 -v`、
   `bash -n hack/production/validate-instance-ready.sh`、`go test ./hack/production -count=1`、
   `go vet ./...` 和 `go test ./... -count=1 -p 1` 均通过。
+- A762 防止 production args 新增后漏掉 runtime release gate：
+  A761 后当前 `kubebrain.yaml` / `kubebrain-tls.yaml` 中 KubeBrain StatefulSet 的显式 args
+  已全部被 `validate-instance-ready.sh` 检查，但这个关系此前靠人工评审维持。现在
+  `deploy/production` 新增静态测试，从 `expectedProductionKubeBrainArgs()` 枚举生产启动
+  参数名，并解析 release gate 中 `check_exact_kubebrain_arg` /
+  `check_optional_kubebrain_arg` 以及自定义精确检查；任何未来新增 manifest arg 却没有运行
+  门禁覆盖都会让 manifest 测试失败。这样 production manifest exact args 与 runtime
+  validation coverage 的耦合变成可回归的代码约束。
+  `go test ./deploy/production -run TestProductionKubeBrainArgsAreCoveredByRuntimeReleaseGate -count=1 -v`、
+  `go test ./deploy/production -count=1`、`go vet ./...` 和
+  `go test ./... -count=1 -p 1` 均通过。
 
 ### P2：运维兼容和长期验证
 

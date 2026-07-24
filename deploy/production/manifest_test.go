@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"testing"
 
@@ -220,6 +221,38 @@ func expectedProductionKubeBrainArgs(scheme string) []string {
 	}
 	args = append(args, "--v=2")
 	return args
+}
+
+func TestProductionKubeBrainArgsAreCoveredByRuntimeReleaseGate(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "hack", "production", "validate-instance-ready.sh"))
+	require.NoError(t, err)
+	coveredArgs := runtimeReleaseGateKubeBrainArgs(string(data))
+
+	for _, scheme := range []string{"http", "https"} {
+		t.Run(scheme, func(t *testing.T) {
+			var missing []string
+			for _, arg := range expectedProductionKubeBrainArgs(scheme) {
+				name, _, ok := strings.Cut(strings.TrimPrefix(arg, "--"), "=")
+				require.True(t, ok, "production KubeBrain arg must be --name=value: %s", arg)
+				if !coveredArgs[name] {
+					missing = append(missing, name)
+				}
+			}
+			sort.Strings(missing)
+			require.Empty(t, missing, "production KubeBrain args must be checked by hack/production/validate-instance-ready.sh")
+		})
+	}
+}
+
+func runtimeReleaseGateKubeBrainArgs(script string) map[string]bool {
+	covered := map[string]bool{}
+	for _, match := range regexp.MustCompile(`check_(?:exact|optional)_kubebrain_arg "([^"]+)"`).FindAllStringSubmatch(script, -1) {
+		covered[match[1]] = true
+	}
+	for _, match := range regexp.MustCompile(`--([A-Za-z0-9-]+)=\$\{?EXPECTED_[A-Z0-9_]+`).FindAllStringSubmatch(script, -1) {
+		covered[match[1]] = true
+	}
+	return covered
 }
 
 func TestProductionPriorityClassIsSharedAndNonPreempting(t *testing.T) {
