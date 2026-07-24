@@ -1,6 +1,7 @@
 package production_test
 
 import (
+	"context"
 	"crypto/sha256"
 	"fmt"
 	"os"
@@ -8,11 +9,14 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/kubewharf/kubebrain/hack/production/internal/processgroup"
 	"github.com/stretchr/testify/require"
 )
 
 const runnerCutoverArtifactSHA256 = "2222222222222222222222222222222222222222222222222222222222222222"
+const cutoverRunnerCommandTimeout = 30 * time.Second
 
 func TestRestoreCutoverOperationCompletesAllPhases(t *testing.T) {
 	f := newCutoverRunnerFixture(t)
@@ -388,9 +392,15 @@ esac
 
 func (f *cutoverRunnerFixture) run(t *testing.T, ok bool, extra string, outputs ...string) {
 	t.Helper()
-	cmd := exec.Command("bash", "run-restore-cutover-operation.sh")
+	ctx, cancel := context.WithTimeout(context.Background(), cutoverRunnerCommandTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "bash", "run-restore-cutover-operation.sh")
+	processgroup.Configure(cmd)
 	cmd.Env = append(os.Environ(), append(f.env, extra)...)
-	out, err := cmd.CombinedOutput()
+	out, err := processgroup.CombinedOutput(cmd, processgroup.DefaultOutputLimitBytes)
+	if ctx.Err() == context.DeadlineExceeded {
+		require.Failf(t, "restore cutover runner timed out", "timeout=%s output:\n%s", cutoverRunnerCommandTimeout, string(out))
+	}
 	if ok {
 		require.NoError(t, err, string(out))
 	} else {

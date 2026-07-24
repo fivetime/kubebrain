@@ -573,16 +573,24 @@ func (b *backend) startWorker(run func(context.Context)) bool {
 	return true
 }
 
+func (b *backend) stopWorkers() {
+	b.workerMu.Lock()
+	if b.workerClosed {
+		b.workerMu.Unlock()
+		return
+	}
+	b.workerClosed = true
+	b.workerCancel()
+	b.workerMu.Unlock()
+	b.workerWG.Wait()
+}
+
 // Close stops every backend-owned worker before closing the shared-storage
 // client. It is idempotent so Endpoint cleanup and construction-error cleanup
 // can safely converge on the same owner.
 func (b *backend) Close() error {
 	b.closeOnce.Do(func() {
-		b.workerMu.Lock()
-		b.workerClosed = true
-		b.workerCancel()
-		b.workerMu.Unlock()
-		b.workerWG.Wait()
+		b.stopWorkers()
 		b.closeErr = b.kv.Close()
 	})
 	return b.closeErr

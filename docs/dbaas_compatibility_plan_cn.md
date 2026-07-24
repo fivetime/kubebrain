@@ -11899,6 +11899,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./deploy/production -run 'Test(RuntimeReleaseGateDefaultsMatchProductionKubeBrainArgs|ProductionKubeBrainArgsAreCoveredByRuntimeReleaseGate)' -count=1 -v`、
   `go test ./deploy/production -count=1`、`go vet ./...` 和
   `go test ./... -count=1 -p 1` 均通过。
+- A765 收紧 backend resource lock 测试的等待边界：
+  全仓库验证两次在 `pkg/backend` 触发 10 分钟超时；SIGQUIT dump 显示
+  `testBackendResourceLock` 的 `cancel_b` 子测试卡在裸 `wg.Wait()`，同时 B elector
+  仍在 client-go `acquire` 循环。测试里的 `resourceLockTestWrapper.WaitForUsed` 只使用
+  `sync.Cond.Signal`，若 Get/Update 发生在 Wait 之前会丢信号；leader callback 等待也没有
+  timeout，失败时只能等 Go test 全局超时。现在 wrapper 记录 used 次数并 Broadcast，所有
+  leader callback 等待都通过 bounded helper fail fast；测试 suite cleanup 也先取消测试
+  context、停止 backend worker，再清理/关闭 storage，避免后台 worker 与 storage close 交错。
+  `go test ./pkg/backend -run '^TestBackend$/.*?/resource_lock$' -count=10 -timeout=5m`、
+  `go test ./pkg/backend -count=1`、`go test ./deploy/production -count=1`、
+  `git diff --check`、`go vet ./...` 和 `go test ./... -count=1 -p 1` 均通过。
+- A766 给 restore cutover runner 测试补进程组超时边界：
+  全仓库验证中 `hack/production` 曾卡在 `TestRestoreCutoverOperationRejectsInvalidRollbackEvidence`
+  的 `CombinedOutput()`，测试进程在等待 `run-restore-cutover-operation.sh` 的子命令退出时没有
+  自身 deadline，也没有进程组级清理。虽然该分支单独运行可快速通过，但 release 验证不能依赖
+  Go test 的 10 分钟全局超时来发现 shell fixture 偶发悬挂。现在 cutover runner 夹具改用
+  `exec.CommandContext`、已有 `internal/processgroup.Configure` 和 bounded `CombinedOutput`；
+  每次脚本执行 30 秒内必须返回，超时时杀掉整个进程组并输出已捕获日志。
+  `go test ./hack/production -run '^TestRestoreCutoverOperationRejectsInvalidRollbackEvidence$' -count=5 -timeout=1m`、
+  `go test ./hack/production -run '^TestRestoreCutoverOperation' -count=1 -timeout=2m`、
+  `go test ./hack/production -count=1 -timeout=12m`、`git diff --check`、`go vet ./...` 和
+  `go test ./... -count=1 -p 1` 均通过。
 
 ### P2：运维兼容和长期验证
 

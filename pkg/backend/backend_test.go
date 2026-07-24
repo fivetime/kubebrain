@@ -159,13 +159,20 @@ func newTestSuites(t *testing.T, st storageType) (s suite, close func()) {
 		ctx:     ctx,
 	}
 	close = func() {
+		cancel()
+		stopBackendWorkersForTest(backend)
 		ctrl.Finish()
 		clear(ast, s.kv, prefix)
 		err := kv.Close()
 		ast.NoError(err)
-		cancel()
 	}
 	return s, close
+}
+
+func stopBackendWorkersForTest(b Backend) {
+	if concrete, ok := b.(*backend); ok {
+		concrete.stopWorkers()
+	}
 }
 
 func getStorageIdentity() string {
@@ -1200,6 +1207,7 @@ type resourceLockTestWrapper struct {
 	resourcelock.Interface
 	sync.Locker
 	*sync.Cond
+	used int
 }
 
 func newResourceLockTestWrapper(itf resourcelock.Interface) *resourceLockTestWrapper {
@@ -1214,28 +1222,61 @@ func newResourceLockTestWrapper(itf resourcelock.Interface) *resourceLockTestWra
 
 func (rtw *resourceLockTestWrapper) Create(ctx context.Context, ler resourcelock.LeaderElectionRecord) error {
 	err := rtw.Interface.Create(ctx, ler)
-	rtw.Signal()
+	rtw.markUsed()
 	return err
 }
 
 func (rtw *resourceLockTestWrapper) Update(ctx context.Context, ler resourcelock.LeaderElectionRecord) error {
 	err := rtw.Interface.Update(ctx, ler)
-	rtw.Signal()
+	rtw.markUsed()
 	return err
 }
 
 func (rtw *resourceLockTestWrapper) Get(ctx context.Context) (*resourcelock.LeaderElectionRecord, []byte, error) {
 	ler, raw, err := rtw.Interface.Get(ctx)
 	fmt.Println(ler, err)
-	rtw.Signal()
+	rtw.markUsed()
 	return ler, raw, err
 }
 
-func (rtw *resourceLockTestWrapper) WaitForUsed(atLeaseTimes int) {
+func (rtw *resourceLockTestWrapper) markUsed() {
+	rtw.Lock()
+	rtw.used++
+	rtw.Broadcast()
+	rtw.Unlock()
+}
+
+func (rtw *resourceLockTestWrapper) WaitForUsed(t *testing.T, atLeastTimes int) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	timer := time.AfterFunc(timeout, func() {
+		rtw.Lock()
+		rtw.Broadcast()
+		rtw.Unlock()
+	})
+	defer timer.Stop()
+
 	rtw.Lock()
 	defer rtw.Unlock()
-	for i := 0; i < atLeaseTimes; i++ {
+	for rtw.used < atLeastTimes {
+		if !time.Now().Before(deadline) {
+			t.Fatalf("resource lock used %d times, want at least %d", rtw.used, atLeastTimes)
+		}
 		rtw.Wait()
+	}
+}
+
+func waitForWaitGroup(t *testing.T, wg *sync.WaitGroup, waitFor time.Duration, msg string) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		wg.Wait()
+	}()
+	select {
+	case <-done:
+	case <-time.After(waitFor):
+		t.Fatal(msg)
 	}
 }
 
@@ -1255,6 +1296,7 @@ func testBackendResourceLock(t *testing.T, targetStorage storageType) {
 		Prefix:   prefix,
 		Identity: getStorageIdentity(),
 	}, suiteA.metrics)
+	defer stopBackendWorkersForTest(backendB)
 
 	ast := assert.New(t)
 
@@ -1293,13 +1335,15 @@ func testBackendResourceLock(t *testing.T, targetStorage storageType) {
 
 	ctxA, cancelA := context.WithCancel(suiteA.ctx)
 	ctxB, cancelB := context.WithCancel(context.Background())
+	defer cancelA()
+	defer cancelB()
 
 	t.Run("acquire_a", func(t *testing.T) {
 		ast := assert.New(t)
 		wg.Add(1)
 		go leA.Run(ctxA)
 
-		wg.Wait()
+		waitForWaitGroup(t, &wg, timeout, "leader A did not start within timeout")
 		ast.Equal(int64(1), atomic.LoadInt64(&startLeadingCounter))
 		ast.Equal(int64(0), atomic.LoadInt64(&stopLeadingCounter))
 	})
@@ -1310,7 +1354,7 @@ func testBackendResourceLock(t *testing.T, targetStorage storageType) {
 		go leB.Run(ctxB)
 
 		// ensure signal is called more than twice to ensure Create and Update could be called
-		rlB.WaitForUsed(2)
+		rlB.WaitForUsed(t, 2)
 		ast.Equal(int64(1), atomic.LoadInt64(&startLeadingCounter))
 		ast.Equal(int64(0), atomic.LoadInt64(&stopLeadingCounter))
 	})
@@ -1320,7 +1364,7 @@ func testBackendResourceLock(t *testing.T, targetStorage storageType) {
 		wg.Add(2)
 		cancelA()
 
-		wg.Wait()
+		waitForWaitGroup(t, &wg, timeout, "leader A did not stop and leader B did not start within timeout")
 		ast.Equal(int64(2), atomic.LoadInt64(&startLeadingCounter))
 		ast.Equal(int64(1), atomic.LoadInt64(&stopLeadingCounter))
 	})
@@ -1330,7 +1374,7 @@ func testBackendResourceLock(t *testing.T, targetStorage storageType) {
 		wg.Add(1)
 		cancelB()
 
-		wg.Wait()
+		waitForWaitGroup(t, &wg, timeout, "leader B did not stop within timeout")
 		ast.Equal(int64(2), atomic.LoadInt64(&startLeadingCounter))
 		ast.Equal(int64(2), atomic.LoadInt64(&stopLeadingCounter))
 	})
