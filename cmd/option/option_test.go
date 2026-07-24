@@ -15,6 +15,8 @@
 package option
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -220,6 +222,50 @@ func TestKeyspaceValidationRejectsInvalidTenantNames(t *testing.T) {
 			o := newValid()
 			o.Keyspace = keyspace
 			require.ErrorContains(t, o.Validate(), "invalid keyspace")
+		})
+	}
+}
+
+func TestAuthTokenValidationRejectsInvalidStartupProviders(t *testing.T) {
+	newWithAuthToken := func(authToken string) *KubeBrainOption {
+		o := NewOptions()
+		fs := pflag.NewFlagSet("test", pflag.ContinueOnError)
+		o.AddFlags(fs)
+		require.NoError(t, fs.Parse([]string{"--pd-addrs=127.0.0.1:2379", "--auth-token=" + authToken}))
+		return o
+	}
+
+	secretPath := filepath.Join(t.TempDir(), "jwt-hmac-secret")
+	require.NoError(t, os.WriteFile(secretPath, []byte("shared-secret"), 0o600))
+	validJWT := "jwt,sign-method=HS256,priv-key=" + secretPath
+
+	for _, tc := range []struct {
+		name      string
+		authToken string
+	}{
+		{name: "empty nop provider", authToken: ""},
+		{name: "simple default", authToken: "simple"},
+		{name: "simple ignores empty option key", authToken: "simple,=ignored"},
+		{name: "jwt hs256", authToken: validJWT},
+	} {
+		t.Run("valid/"+tc.name, func(t *testing.T) {
+			require.NoError(t, newWithAuthToken(tc.authToken).Validate())
+		})
+	}
+
+	for _, tc := range []struct {
+		name      string
+		authToken string
+		want      string
+	}{
+		{name: "unsupported provider", authToken: "bearer", want: "unsupported"},
+		{name: "malformed option", authToken: "simple,foo", want: "invalid auth token option"},
+		{name: "multi equals option", authToken: "simple,foo=bar=baz", want: "invalid auth token option"},
+		{name: "duplicate option", authToken: "simple,foo=bar,foo=baz", want: "duplicate auth token option"},
+		{name: "jwt missing signing method", authToken: "jwt,pub-key=/tmp/public.pem", want: "invalid auth signature method"},
+	} {
+		t.Run("invalid/"+tc.name, func(t *testing.T) {
+			require.ErrorContains(t, newWithAuthToken(tc.authToken).Validate(), tc.want)
 		})
 	}
 }

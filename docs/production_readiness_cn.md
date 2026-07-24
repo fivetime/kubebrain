@@ -1550,8 +1550,9 @@ hack/dev/verify.sh
   不再注入故障并等待 TTL=-1。这样可区分合法的逐轮 promotion 与进程残留的持续 keepalive。
 - `Auth` 已实现 etcd 兼容的用户、角色、key-range 权限和 token 生命周期，并覆盖
   Watch/Lease 持续鉴权及多副本故障转移；生产启用流程见 Auth 设计与兼容性计划。
-  `--auth-token=jwt,...` 的 option 只按第一个 `=` 分隔 key/value，key 文件路径可合法包含
-  `=`；缺少 `=`、空 key 或重复 option 仍必须 fail closed。
+  `--auth-token=jwt,...` 的 option 与 upstream 一样按每个 option 内的所有 `=` 分解；
+  value 中额外 `=`、缺少 `=` 或重复 option 必须 fail closed，空 key 作为未知 option
+  忽略。
   HTTP Lock/Election dedicated service 同样必须使用调用者 token 校验其生成队列键所在
   prefix；撤销权限应立即影响已签发 token，改密应使旧 token 失效。simple token 的
   HMAC 只证明 payload 未被外部篡改，验证端仍必须拒绝 claims 中的未知字段和 trailing

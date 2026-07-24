@@ -11626,6 +11626,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./cmd/option -run 'Test(KeyspaceValidationRejectsInvalidTenantNames|SkippedPrefixValidationUsesUserKeyspaceAndRejectsOverlaps)' -count=1 -v`、
   `go test ./cmd/option -count=1`、`go vet ./...` 和 `go test ./... -count=1 -p 1`
   均通过。
+- A742 固定 auth-token 启动参数校验边界：
+  `RPCServer.SetAuthConfiguration` 对非法 token provider 保持 fail-loud，前提是
+  `endpoint.Config.Validate` 和 CLI option validation 必须先拒绝误配置。endpoint 层已有
+  provider validation 测试，但 `cmd/option` 此前只验证 flag 绑定，未直接覆盖
+  `--auth-token` 作为启动参数的 fail-closed 边界。现在新增
+  `TestAuthTokenValidationRejectsInvalidStartupProviders`，通过真实 flag parse 覆盖空 nop
+  provider、`simple`、上游兼容的空 option key 忽略、有效 HS256 JWT，以及 unsupported
+  provider、缺少 `=`、多 `=`、重复 option、JWT 缺签名方法的拒绝。生产发布若生成错误
+  auth provider spec，会在普通 option validation 阶段失败，而不是进入 token manager
+  初始化 panic 路径。
+  `go test ./cmd/option -run 'Test(AuthTokenValidationRejectsInvalidStartupProviders|KeyspaceValidationRejectsInvalidTenantNames)' -count=1 -v`、
+  `go test ./cmd/option -count=1`、`go vet ./...` 和 `go test ./... -count=1 -p 1`
+  均通过。
 
 ### P2：运维兼容和长期验证
 
