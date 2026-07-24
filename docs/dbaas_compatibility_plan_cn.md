@@ -12082,6 +12082,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   等复用该 helper 的恢复等待路径。新增静态门禁覆盖这些 opt-in 文件，禁止回退到裸 `bash -c`/kubectl。
   `cd hack/etcd-client-compat && go test -run 'Test(CompatFailoverCommandsUseBoundedHelpers|DifferentialRunner)' -count=1 -v`、
   `git diff --check`、`go vet ./...` 和 `go test ./... -count=1 -p 1` 均通过。
+- A781 给 compat Kubernetes 重启/故障注入测试补 bounded kubectl：
+  admission quota、watch quota、ordering wrapper、corrupt alarm、lease ID extremes、concurrency
+  recipe、serializable read、linearizability 和 auth HA 测试仍在各自文件里直接执行
+  `kubectl delete/get/rollout` 或自定义 auth failover shell；这些路径虽然有测试 ctx，但没有统一的
+  子进程组 kill 和输出上限，`kubectl get` 轮询也会绕过 bounded helper。现在 compat runner 抽出
+  不依赖 `testing.T` 的 `runCompatCommand`，`kubectlPodFieldNoFail` 也走同一 bounded runner；
+  上述 Pod delete、rollout restart/status 和 auth 自定义 failover shell 统一切到
+  `runCompatKubectlContext`/`runCompatShellCommandContext`。新增静态门禁覆盖这些 opt-in Kubernetes
+  重启测试，禁止回退到裸 `exec.CommandContext`、`CombinedOutput()` 或 `Output()`。
+  `cd hack/etcd-client-compat && go test -run 'Test(CompatFailoverCommandsUseBoundedHelpers|CompatKubernetesRestartCommandsUseBoundedHelpers|DifferentialRunner)' -count=1 -v`、
+  `git diff --check`、`go vet ./...` 和 `go test ./... -count=1 -p 1` 均通过。
 
 ### P2：运维兼容和长期验证
 

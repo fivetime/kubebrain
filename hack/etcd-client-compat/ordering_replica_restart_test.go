@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -73,7 +72,7 @@ func TestOrderingWrapperSurvivesReplicaRestart(t *testing.T) {
 	oldUID := kubectlPodField(t, kubeContext, namespace, victimPod, "{.metadata.uid}")
 	deleteArgs := kubectlContextArgs(kubeContext,
 		"-n", namespace, "delete", "pod", victimPod, "--wait=true", "--timeout=60s")
-	output, err := exec.CommandContext(ctx, "kubectl", deleteArgs...).CombinedOutput()
+	output, err := runCompatKubectlContext(t, ctx, deleteArgs...)
 	require.NoError(t, err, string(output))
 
 	var latestRevision int64
@@ -168,7 +167,7 @@ func kubectlPodFieldNoFail(kubeContext, namespace, pod, jsonPath string) string 
 		"-n", namespace, "get", "pod", pod, "-o", "jsonpath="+jsonPath)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	output, err := exec.CommandContext(ctx, "kubectl", args...).Output()
+	output, err := runCompatCommand(ctx, "kubectl", args, nil)
 	if err != nil {
 		return ""
 	}

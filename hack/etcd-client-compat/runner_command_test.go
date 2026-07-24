@@ -47,6 +47,10 @@ func runCompatKubectlContext(t *testing.T, ctx context.Context, args ...string) 
 
 func runCompatCommandContext(t *testing.T, ctx context.Context, commandName string, args []string, env []string) ([]byte, error) {
 	t.Helper()
+	return runCompatCommand(ctx, commandName, args, env)
+}
+
+func runCompatCommand(ctx context.Context, commandName string, args []string, env []string) ([]byte, error) {
 	command := exec.CommandContext(ctx, commandName, args...)
 	configureCompatProcessGroup(command)
 	command.Env = append(os.Environ(), env...)
@@ -158,4 +162,28 @@ func TestCompatFailoverCommandsUseBoundedHelpers(t *testing.T) {
 	require.Contains(t, helperText, "runCompatKubectlContext(")
 	require.NotContains(t, helperText, `exec.CommandContext(`)
 	require.NotContains(t, helperText, ".CombinedOutput()")
+}
+
+func TestCompatKubernetesRestartCommandsUseBoundedHelpers(t *testing.T) {
+	for _, testFile := range []string{
+		"admission_replica_restart_test.go",
+		"auth_ha_test.go",
+		"concurrency_recipes_test.go",
+		"corrupt_alarm_restart_test.go",
+		"lease_id_extremes_test.go",
+		"linearizability_test.go",
+		"ordering_replica_restart_test.go",
+		"serializable_read_differential_test.go",
+		"watch_quota_test.go",
+	} {
+		t.Run(testFile, func(t *testing.T) {
+			data, err := os.ReadFile(testFile)
+			require.NoError(t, err)
+			text := string(data)
+			require.NotContains(t, text, `exec.CommandContext(`)
+			require.NotContains(t, text, ".CombinedOutput()")
+			require.NotContains(t, text, ".Output()")
+			require.Contains(t, text, "runCompat")
+		})
+	}
 }

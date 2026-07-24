@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"math"
 	"os"
-	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -86,7 +85,7 @@ func TestMaxLeaseIDFailoverKeepsAutomaticIDsPositive(t *testing.T) {
 	_, err = cli.Put(ctx, key, "survivor", clientv3.WithLease(clientv3.LeaseID(math.MaxInt64)))
 	require.NoError(t, err)
 
-	output, err := exec.CommandContext(ctx, "kubectl", "-n", namespace, "delete", "pod", pod, "--wait=false").CombinedOutput()
+	output, err := runCompatKubectlContext(t, ctx, "-n", namespace, "delete", "pod", pod, "--wait=false")
 	require.NoErrorf(t, err, "delete leader pod: %s", strings.TrimSpace(string(output)))
 	output, err = waitForKubeBrainRollout(t, ctx, namespace)
 	require.NoErrorf(t, err, "wait for KubeBrain recovery: %s", strings.TrimSpace(string(output)))

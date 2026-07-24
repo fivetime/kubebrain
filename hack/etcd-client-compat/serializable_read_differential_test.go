@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"testing"
 	"time"
 
@@ -64,7 +63,7 @@ func TestSerializableRangeSurvivesKubeBrainLeaderDeletion(t *testing.T) {
 			len(txn.Responses[0].GetResponseRange().Kvs) == 1
 	}, 5*time.Second, 20*time.Millisecond)
 
-	output, err := exec.CommandContext(ctx, "kubectl", "-n", namespace, "delete", "pod", leaderPod, "--wait=false").CombinedOutput()
+	output, err := runCompatKubectlContext(t, ctx, "-n", namespace, "delete", "pod", leaderPod, "--wait=false")
 	require.NoErrorf(t, err, "delete leader: %s", output)
 	for i := 0; i < 30; i++ {
 		opCtx, opCancel := context.WithTimeout(ctx, 750*time.Millisecond)

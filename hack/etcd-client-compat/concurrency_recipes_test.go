@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -186,7 +185,7 @@ func TestConcurrencySessionSurvivesKubeBrainFailover(t *testing.T) {
 	require.NoError(t, mutex.Lock(ctx))
 	require.NoError(t, election.Campaign(ctx, "survivor"))
 
-	output, err := exec.CommandContext(ctx, "kubectl", "-n", namespace, "delete", "pod", pod, "--wait=false").CombinedOutput()
+	output, err := runCompatKubectlContext(t, ctx, "-n", namespace, "delete", "pod", pod, "--wait=false")
 	require.NoErrorf(t, err, "delete leader pod: %s", strings.TrimSpace(string(output)))
 	output, err = waitForKubeBrainRollout(t, ctx, namespace)
 	require.NoErrorf(t, err, "wait for KubeBrain recovery: %s", strings.TrimSpace(string(output)))

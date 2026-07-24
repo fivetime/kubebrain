@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -288,7 +287,7 @@ func startLinearizabilityPodDeletion(ctx context.Context, clock *atomic.Int64, p
 		if namespace == "" {
 			namespace = "kubebrain-dev"
 		}
-		output, err := exec.CommandContext(ctx, "kubectl", "-n", namespace, "delete", "pod", pod, "--wait=false").CombinedOutput()
+		output, err := runCompatCommand(ctx, "kubectl", []string{"-n", namespace, "delete", "pod", pod, "--wait=false"}, nil)
 		if err != nil {
 			errCh <- fmt.Errorf("delete failover pod: %w: %s", err, output)
 		}

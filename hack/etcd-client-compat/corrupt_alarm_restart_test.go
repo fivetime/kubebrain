@@ -5,7 +5,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -78,7 +77,7 @@ func TestCorruptAlarmSurvivesAllReplicaReplacements(t *testing.T) {
 		oldUID := kubectlPodField(t, kubeContext, namespace, pod, "{.metadata.uid}")
 		deleteArgs := kubectlContextArgs(kubeContext,
 			"-n", namespace, "delete", "pod", pod, "--wait=true", "--timeout=90s")
-		output, deleteErr := exec.CommandContext(ctx, "kubectl", deleteArgs...).CombinedOutput()
+		output, deleteErr := runCompatKubectlContext(t, ctx, deleteArgs...)
 		require.NoErrorf(t, deleteErr, "replace %s: %s", pod, strings.TrimSpace(string(output)))
 
 		var newUID string

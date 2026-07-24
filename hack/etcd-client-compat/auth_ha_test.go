@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 	"sync"
 	"testing"
@@ -62,8 +61,7 @@ func TestAuthTokenSurvivesLeaderFailover(t *testing.T) {
 	authenticated, err := issuer.Authenticate(ctx, "root", "root-secret")
 	require.NoError(t, err)
 
-	command := authHAFailoverCommand(ctx, failoverCommand, namespace, leaderPod)
-	output, err := command.CombinedOutput()
+	output, err := runAuthHAFailoverCommand(t, ctx, failoverCommand, namespace, leaderPod)
 	require.NoError(t, err, string(output))
 
 	for _, endpoint := range endpoints {
@@ -88,11 +86,12 @@ func TestAuthTokenSurvivesLeaderFailover(t *testing.T) {
 	}
 }
 
-func authHAFailoverCommand(ctx context.Context, command, namespace, leaderPod string) *exec.Cmd {
+func runAuthHAFailoverCommand(t *testing.T, ctx context.Context, command, namespace, leaderPod string) ([]byte, error) {
+	t.Helper()
 	if command != "" {
-		return exec.CommandContext(ctx, "sh", "-c", command)
+		return runCompatShellCommandContext(t, ctx, command)
 	}
-	return exec.CommandContext(ctx, "kubectl", "-n", namespace, "delete", "pod", leaderPod, "--wait=false")
+	return runCompatKubectlContext(t, ctx, "-n", namespace, "delete", "pod", leaderPod, "--wait=false")
 }
 
 func TestAuthTokenSurvivesEnabledRollout(t *testing.T) {
@@ -107,11 +106,9 @@ func TestAuthTokenSurvivesEnabledRollout(t *testing.T) {
 	authenticated, err := issuer.Authenticate(ctx, "root", "root-secret")
 	require.NoError(t, err)
 
-	command := exec.CommandContext(ctx, "kubectl", "-n", namespace, "rollout", "restart", "deployment/kubebrain-auth-ha")
-	output, err := command.CombinedOutput()
+	output, err := runCompatKubectlContext(t, ctx, "-n", namespace, "rollout", "restart", "deployment/kubebrain-auth-ha")
 	require.NoError(t, err, string(output))
-	command = exec.CommandContext(ctx, "kubectl", "-n", namespace, "rollout", "status", "deployment/kubebrain-auth-ha", "--timeout=75s")
-	output, err = command.CombinedOutput()
+	output, err = runCompatKubectlContext(t, ctx, "-n", namespace, "rollout", "status", "deployment/kubebrain-auth-ha", "--timeout=75s")
 	require.NoError(t, err, string(output))
 
 	client, err := clientv3.New(clientv3.Config{
@@ -182,8 +179,7 @@ func TestConcurrentAuthMutationsSurviveLeaderFailover(t *testing.T) {
 	}
 	ready.Wait()
 	close(start)
-	command := authHAFailoverCommand(ctx, failoverCommand, namespace, leaderPod)
-	output, err := command.CombinedOutput()
+	output, err := runAuthHAFailoverCommand(t, ctx, failoverCommand, namespace, leaderPod)
 	require.NoError(t, err, string(output))
 	done.Wait()
 	for _, operationErr := range errs {

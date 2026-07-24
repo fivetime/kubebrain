@@ -4,7 +4,6 @@ import (
 	"context"
 	"net"
 	"os"
-	"os/exec"
 	"testing"
 	"time"
 
@@ -114,7 +113,7 @@ func TestLogicalWatchQuotaResetsAfterDisconnectAndReplicaRestart(t *testing.T) {
 	oldUID := kubectlPodField(t, kubeContext, namespace, victimPod, "{.metadata.uid}")
 	deleteArgs := kubectlContextArgs(kubeContext,
 		"-n", namespace, "delete", "pod", victimPod, "--wait=true", "--timeout=60s")
-	output, err := exec.CommandContext(ctx, "kubectl", deleteArgs...).CombinedOutput()
+	output, err := runCompatKubectlContext(t, ctx, deleteArgs...)
 	require.NoError(t, err, string(output))
 
 	streamErr := make(chan error, 1)
