@@ -11835,6 +11835,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./hack/production -run TestValidateInstanceReady -count=1 -v`、
   `bash -n hack/production/validate-instance-ready.sh`、`go test ./hack/production -count=1`、
   `go vet ./...` 和 `go test ./... -count=1 -p 1` 均通过。
+- A758 固定运行门禁中的 watch cache/fanout 默认容量：
+  production manifest 不显式传 `--watch-cache-size` 和 `--watch-fanout-buffer`，依赖
+  `NewOptions()` 默认 `200000` / `10000`。此前 release gate 不会发现 Pod template 被
+  patch 成很小的 ring cache 或 per-watcher fanout buffer，可能让慢 watcher 更频繁进入
+  ring catch-up/relist 路径，放大大规模 watch 风险。现在 `validate-instance-ready.sh`
+  新增 optional `EXPECTED_WATCH_CACHE_SIZE` 和 `EXPECTED_WATCH_FANOUT_BUFFER`：默认空值
+  要求不出现对应 flag，非空时要求精确匹配；测试覆盖 unexpected watch cache/fanout
+  覆盖和显式 baseline override。
+  `go test ./hack/production -run TestValidateInstanceReady -count=1 -v`、
+  `bash -n hack/production/validate-instance-ready.sh`、`go test ./hack/production -count=1`、
+  `go vet ./...` 和 `go test ./... -count=1 -p 1` 均通过。
 
 ### P2：运维兼容和长期验证
 
