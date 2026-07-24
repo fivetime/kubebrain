@@ -11457,6 +11457,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   response 形状保持不变。
   `go test ./pkg/endpoint -run TestGRPCGatewayUsesGeneratedEtcdJSONContract -count=1 -v`
   通过。
+- A727 固定 Cluster/Maintenance/Auth HTTP gateway token metadata：
+  A726 固定了 core KV，A723-A725 覆盖 dedicated concurrency 与 streaming gateway，
+  但 Cluster、Maintenance 和 Auth 的 generated unary HTTP JSON route 仍缺少本地 endpoint
+  token 透传门禁。现在继续扩展 `TestGRPCGatewayUsesGeneratedEtcdJSONContract`：注册 fake
+  Cluster、Maintenance 与 Auth server，分别向 `/v3/cluster/member/list`、
+  `/v3/maintenance/status` 和 `/v3/auth/status` 发送
+  `Authorization: Bearer ...`，断言后端同时收到
+  `grpcgateway-accept=kubebrain-grpc-gateway` marker 和 etcd 兼容 `authorization`
+  metadata，避免这些非 KV core service 在 gateway/header matcher 重构后丢失 HTTP caller
+  身份。
+  `go test ./pkg/endpoint -run TestGRPCGatewayUsesGeneratedEtcdJSONContract -count=1 -v`
+  通过。
 
 ### P2：运维兼容和长期验证
 

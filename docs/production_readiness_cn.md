@@ -1484,8 +1484,9 @@ hack/dev/verify.sh
   HTTP gateway 的注册 service 列表也必须固定为同一公开集合，避免 `/v3/*`
   surface 在升级或重构中漏注册或无审查扩大。protobuf 字段升级门禁应同时覆盖
   Lock/Election request、response 和 nested `LeaderKey`，防止新增字段绕过 wrapper、
-  gateway、鉴权或错误归一化审计。core KV 与 Lock/Election generated JSON gateway 路径
-  还必须证明 `Authorization` 头会以 etcd 兼容 metadata 进入后端 gRPC service，同时保留
+  gateway、鉴权或错误归一化审计。core KV、Cluster、Maintenance、Auth 与
+  Lock/Election generated JSON gateway unary 路径还必须证明 `Authorization` 头会以
+  etcd 兼容 metadata 进入后端 gRPC service，同时保留
   gateway marker，避免 HTTP 认证路径丢 token 或回退借用内部客户端证书身份。
   Lock/Election 使用 upstream client/v3 concurrency recipe 及现有 KV/Lease/Watch
   后端；生产必须验证 lease-backed Lock 竞争接棒和 Election campaign/proclaim/resign，

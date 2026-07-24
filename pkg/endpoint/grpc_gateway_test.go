@@ -43,6 +43,24 @@ type gatewayKVServer struct {
 	md      metadata.MD
 }
 
+type gatewayClusterServer struct {
+	etcdserverpb.UnimplementedClusterServer
+	request *etcdserverpb.MemberListRequest
+	md      metadata.MD
+}
+
+type gatewayMaintenanceServer struct {
+	etcdserverpb.UnimplementedMaintenanceServer
+	request *etcdserverpb.StatusRequest
+	md      metadata.MD
+}
+
+type gatewayAuthServer struct {
+	etcdserverpb.UnimplementedAuthServer
+	request *etcdserverpb.AuthStatusRequest
+	md      metadata.MD
+}
+
 type gatewayLockServer struct {
 	v3lockpb.UnimplementedLockServer
 	request *v3lockpb.UnlockRequest
@@ -209,6 +227,44 @@ func (s *gatewayKVServer) Range(ctx context.Context, request *etcdserverpb.Range
 	}, nil
 }
 
+func (s *gatewayClusterServer) MemberList(ctx context.Context, request *etcdserverpb.MemberListRequest) (*etcdserverpb.MemberListResponse, error) {
+	s.request = request
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		s.md = md.Copy()
+	}
+	return &etcdserverpb.MemberListResponse{
+		Header: &etcdserverpb.ResponseHeader{ClusterId: 51, MemberId: 52, Revision: 53, RaftTerm: 54},
+		Members: []*etcdserverpb.Member{{
+			ID:         55,
+			Name:       "member-one",
+			ClientURLs: []string{"http://127.0.0.1:2379"},
+		}},
+	}, nil
+}
+
+func (s *gatewayMaintenanceServer) Status(ctx context.Context, request *etcdserverpb.StatusRequest) (*etcdserverpb.StatusResponse, error) {
+	s.request = request
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		s.md = md.Copy()
+	}
+	return &etcdserverpb.StatusResponse{
+		Header:  &etcdserverpb.ResponseHeader{ClusterId: 61, MemberId: 62, Revision: 63, RaftTerm: 64},
+		Version: "3.7.0",
+	}, nil
+}
+
+func (s *gatewayAuthServer) AuthStatus(ctx context.Context, request *etcdserverpb.AuthStatusRequest) (*etcdserverpb.AuthStatusResponse, error) {
+	s.request = request
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		s.md = md.Copy()
+	}
+	return &etcdserverpb.AuthStatusResponse{
+		Header:       &etcdserverpb.ResponseHeader{ClusterId: 71, MemberId: 72, Revision: 73, RaftTerm: 74},
+		Enabled:      true,
+		AuthRevision: 75,
+	}, nil
+}
+
 func TestGRPCGatewaySurfaceIsExplicit(t *testing.T) {
 	services := make([]string, 0, len(grpcGatewayRegistrations))
 	for _, registration := range grpcGatewayRegistrations {
@@ -233,9 +289,15 @@ func TestGRPCGatewayUsesGeneratedEtcdJSONContract(t *testing.T) {
 	listener := bufconn.Listen(1024 * 1024)
 	grpcServer := grpc.NewServer()
 	kvServer := &gatewayKVServer{}
+	clusterServer := &gatewayClusterServer{}
+	maintenanceServer := &gatewayMaintenanceServer{}
+	authServer := &gatewayAuthServer{}
 	lockServer := &gatewayLockServer{}
 	electionServer := &gatewayElectionServer{}
 	etcdserverpb.RegisterKVServer(grpcServer, kvServer)
+	etcdserverpb.RegisterClusterServer(grpcServer, clusterServer)
+	etcdserverpb.RegisterMaintenanceServer(grpcServer, maintenanceServer)
+	etcdserverpb.RegisterAuthServer(grpcServer, authServer)
 	v3lockpb.RegisterLockServer(grpcServer, lockServer)
 	v3electionpb.RegisterElectionServer(grpcServer, electionServer)
 	go func() { _ = grpcServer.Serve(listener) }()
@@ -272,6 +334,26 @@ func TestGRPCGatewayUsesGeneratedEtcdJSONContract(t *testing.T) {
 	require.Empty(t, request.Header.Values("Accept"))
 	require.Equal(t, []string{grpcGatewayRequestMarkerValue}, kvServer.md.Get(grpcGatewayRequestMarkerKey))
 	require.Equal(t, []string{"Bearer kv-token"}, kvServer.md.Get(rpctypes.TokenFieldNameSwagger))
+
+	assertUnaryMetadata := func(path, token string, requestSeen func() bool, md *metadata.MD) {
+		t.Helper()
+		request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{}`))
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("Authorization", token)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+		require.True(t, requestSeen(), path)
+		require.Equal(t, []string{grpcGatewayRequestMarkerValue}, md.Get(grpcGatewayRequestMarkerKey))
+		require.Equal(t, []string{token}, md.Get(rpctypes.TokenFieldNameSwagger))
+	}
+
+	assertUnaryMetadata("/v3/cluster/member/list", "Bearer cluster-token",
+		func() bool { return clusterServer.request != nil }, &clusterServer.md)
+	assertUnaryMetadata("/v3/maintenance/status", "Bearer maintenance-token",
+		func() bool { return maintenanceServer.request != nil }, &maintenanceServer.md)
+	assertUnaryMetadata("/v3/auth/status", "Bearer auth-token",
+		func() bool { return authServer.request != nil }, &authServer.md)
 
 	request = httptest.NewRequest(http.MethodPost, "/v3/lock/unlock",
 		strings.NewReader(`{"key":"L2xvY2svMDE=","unknown_field":"discarded"}`))
