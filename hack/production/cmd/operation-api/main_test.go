@@ -6,11 +6,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/kubewharf/kubebrain/hack/production/internal/testcommand"
 	"github.com/stretchr/testify/require"
 	"k8s.io/client-go/rest"
 )
@@ -50,12 +50,11 @@ func (d *countingReadyDependency) Ready(context.Context) error {
 }
 
 func TestMainRejectsInvalidNamespaceBeforeKubeconfig(t *testing.T) {
-	command := exec.Command("go", "run", ".",
+	output, err := testcommand.GoRun(t, ".",
 		"--namespace", "ops.ns",
 		"--tls-cert-file", "cert.pem",
 		"--tls-key-file", "key.pem",
 	)
-	output, err := command.CombinedOutput()
 	require.Error(t, err)
 	require.Contains(t, string(output), "invalid namespace ops.ns")
 }

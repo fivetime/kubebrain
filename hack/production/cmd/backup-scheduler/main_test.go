@@ -3,10 +3,10 @@ package main
 import (
 	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"testing"
 
+	"github.com/kubewharf/kubebrain/hack/production/internal/testcommand"
 	"github.com/stretchr/testify/require"
 	"k8s.io/client-go/rest"
 )
@@ -29,34 +29,30 @@ func TestParseNamespacesRejectsUnsafeAllowlist(t *testing.T) {
 }
 
 func TestMainRejectsInvalidNamespaceBeforeKubeconfig(t *testing.T) {
-	command := exec.Command("go", "run", ".", "--namespace", "tenant.a", "--once")
-	output, err := command.CombinedOutput()
+	output, err := testcommand.GoRun(t, ".", "--namespace", "tenant.a", "--once")
 	require.Error(t, err)
 	require.Contains(t, string(output), "invalid namespace tenant.a")
 
-	command = exec.Command("go", "run", ".",
+	output, err = testcommand.GoRun(t, ".",
 		"--namespace-inventory-configmap", "inventory",
 		"--namespace-inventory-namespace", "ops.ns",
 		"--once",
 	)
-	output, err = command.CombinedOutput()
 	require.Error(t, err)
 	require.Contains(t, string(output), "invalid namespace ops.ns")
 
-	command = exec.Command("go", "run", ".",
+	output, err = testcommand.GoRun(t, ".",
 		"--namespace-inventory-configmap", "inventory/name",
 		"--once",
 	)
-	output, err = command.CombinedOutput()
 	require.Error(t, err)
 	require.Contains(t, string(output), "inventory configmap")
 
-	command = exec.Command("go", "run", ".",
+	output, err = testcommand.GoRun(t, ".",
 		"--namespace-inventory-configmap", "inventory",
 		"--namespace-inventory-key", "namespaces/json",
 		"--once",
 	)
-	output, err = command.CombinedOutput()
 	require.Error(t, err)
 	require.Contains(t, string(output), "inventory data key")
 }

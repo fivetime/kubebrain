@@ -7,10 +7,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"testing"
 
+	"github.com/kubewharf/kubebrain/hack/production/internal/testcommand"
 	"github.com/stretchr/testify/require"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -48,14 +48,13 @@ func TestDeleteOptionsUIDPreconditionShape(t *testing.T) {
 }
 
 func TestMainRejectsInvalidNamespaceBeforeKubeconfig(t *testing.T) {
-	command := exec.Command("go", "run", ".",
+	output, err := testcommand.GoRun(t, ".",
 		"--api-version", "v1",
 		"--resource", "pods",
 		"--namespace", "tenant.a",
 		"--name", "kubebrain",
 		"--uid", "uid-1",
 	)
-	output, err := command.CombinedOutput()
 	require.Error(t, err)
 	require.Contains(t, string(output), "invalid namespace tenant.a")
 }

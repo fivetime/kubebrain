@@ -3,10 +3,10 @@ package main
 import (
 	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"testing"
 
+	"github.com/kubewharf/kubebrain/hack/production/internal/testcommand"
 	"github.com/stretchr/testify/require"
 	"k8s.io/client-go/rest"
 )
@@ -19,12 +19,11 @@ func TestDefaultKubeconfigIgnoresAmbientEnvironment(t *testing.T) {
 }
 
 func TestMainRejectsInvalidNamespaceBeforeKubeconfig(t *testing.T) {
-	command := exec.Command("go", "run", ".",
+	output, err := testcommand.GoRun(t, ".",
 		"--namespace", "ops.ns",
 		"--name", "backup-1",
 		"--output", filepath.Join(t.TempDir(), "artifact.json"),
 	)
-	output, err := command.CombinedOutput()
 	require.Error(t, err)
 	require.Contains(t, string(output), "invalid namespace ops.ns")
 }

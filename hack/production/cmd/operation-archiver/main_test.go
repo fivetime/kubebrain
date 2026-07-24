@@ -3,10 +3,10 @@ package main
 import (
 	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"testing"
 
+	"github.com/kubewharf/kubebrain/hack/production/internal/testcommand"
 	"github.com/stretchr/testify/require"
 	"k8s.io/client-go/rest"
 )
@@ -25,35 +25,32 @@ func TestClientConfigPrefersInClusterWhenKubeconfigIsEmpty(t *testing.T) {
 }
 
 func TestMainRejectsInvalidInventoryNamespaceBeforeKubeconfig(t *testing.T) {
-	command := exec.Command("go", "run", ".",
+	output, err := testcommand.GoRun(t, ".",
 		"--namespace-inventory-configmap", "inventory",
 		"--namespace-inventory-namespace", "ops.ns",
 		"--object-store-id", "store-a",
 		"--bucket", "audit-bucket",
 		"--once",
 	)
-	output, err := command.CombinedOutput()
 	require.Error(t, err)
 	require.Contains(t, string(output), "invalid namespace ops.ns")
 
-	command = exec.Command("go", "run", ".",
+	output, err = testcommand.GoRun(t, ".",
 		"--namespace-inventory-configmap", "inventory/name",
 		"--object-store-id", "store-a",
 		"--bucket", "audit-bucket",
 		"--once",
 	)
-	output, err = command.CombinedOutput()
 	require.Error(t, err)
 	require.Contains(t, string(output), "inventory configmap")
 
-	command = exec.Command("go", "run", ".",
+	output, err = testcommand.GoRun(t, ".",
 		"--namespace-inventory-configmap", "inventory",
 		"--namespace-inventory-key", "namespaces/json",
 		"--object-store-id", "store-a",
 		"--bucket", "audit-bucket",
 		"--once",
 	)
-	output, err = command.CombinedOutput()
 	require.Error(t, err)
 	require.Contains(t, string(output), "inventory data key")
 }

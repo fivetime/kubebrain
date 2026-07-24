@@ -132,3 +132,24 @@ func TestColdBackupScriptTestsUseBoundedCommandHelper(t *testing.T) {
 		})
 	}
 }
+
+func TestProductionCmdGoRunTestsUseBoundedCommandHelper(t *testing.T) {
+	for _, testFile := range []string{
+		filepath.Join("cmd", "backup-scheduler", "main_test.go"),
+		filepath.Join("cmd", "operation-api", "main_test.go"),
+		filepath.Join("cmd", "operation-archiver", "main_test.go"),
+		filepath.Join("cmd", "operation-audit", "main_test.go"),
+		filepath.Join("cmd", "operation-parameter-broker", "main_test.go"),
+		filepath.Join("cmd", "operationctl", "main_test.go"),
+		filepath.Join("cmd", "uid-delete", "main_test.go"),
+	} {
+		t.Run(testFile, func(t *testing.T) {
+			data, err := os.ReadFile(testFile)
+			require.NoError(t, err)
+			text := string(data)
+			require.Contains(t, text, `testcommand.GoRun(t, "."`)
+			require.NotContains(t, text, `exec.Command("go", "run"`)
+			require.NotContains(t, text, `.CombinedOutput()`)
+		})
+	}
+}

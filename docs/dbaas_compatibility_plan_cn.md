@@ -12058,6 +12058,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./hack/production -run 'Test(ColdRestore|ColdBackupScript)' -count=1 -v`、
   `go test ./hack/production -count=1 -timeout=12m`、`git diff --check`、`go vet ./...` 和
   `go test ./... -count=1 -p 1` 均通过。
+- A779 给 production cmd `go run` 黑盒测试补 bounded helper：
+  `backup-scheduler`、`operation-api`、`operation-archiver`、`operation-audit`、
+  `operation-parameter-broker`、`operationctl` 和 `uid-delete` 的 CLI fail-fast 测试仍直接
+  `exec.Command("go", "run", ".").CombinedOutput()`；如果 `go run` 编译、初始化或 kubeconfig
+  前置校验路径悬挂，会把生产 CLI 门禁失败推迟到外层 timeout。现在新增
+  `hack/production/internal/testcommand`，复用 `processgroup.Configure` 与 bounded output，为 cmd
+  测试提供 30 秒 `testcommand.GoRun`；上述 cmd 黑盒测试统一切到 helper，并新增静态门禁要求这些
+  文件继续使用 helper、禁止裸 `go run` 和裸 `CombinedOutput()`。
+  `go test ./hack/production/internal/testcommand ./hack/production/cmd/...`、
+  `go test ./hack/production -run 'TestProductionCmdGoRunTestsUseBoundedCommandHelper' -count=1 -v`、
+  `go test ./hack/production -count=1 -timeout=12m`、`git diff --check`、`go vet ./...` 和
+  `go test ./... -count=1 -p 1` 均通过。
 
 ### P2：运维兼容和长期验证
 
