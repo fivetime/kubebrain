@@ -11350,6 +11350,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   full-method allowlist，测试固定当前 7 个 generated full-method constants，并确认同前缀
   unknown method 不命中。`go test ./pkg/server/etcd -run TestDedicatedConcurrencyMethodClassification -count=1`
   通过。
+- A717 固定 OIDC malformed Bearer 本地拒绝顺序：
+  operation API 已经要求畸形提交或查询不能消耗 OIDC/JWKS，但 OIDC authenticator
+  只测试了 malformed Bearer header 会被拒绝，未断言该拒绝发生在 JWT 解析和 JWKS
+  lookup 前。现在 `TestOIDCAuthenticatorRejectsMalformedBearerHeader` 将 JWKS cache
+  设为已过期并让后续 JWKS endpoint fail closed，逐一验证 header 前后空白、双空格、
+  token 尾随/内嵌空白、tab separator 和超限 token 都不会增加 JWKS 请求计数，防止
+  未来重构把廉价本地拒绝变成外部 IdP refresh 消耗。
+  `go test ./hack/production/internal/operationapi -run TestOIDCAuthenticatorRejectsMalformedBearerHeader -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

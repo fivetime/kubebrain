@@ -172,10 +172,15 @@ func TestOIDCAuthenticatorRejectsMalformedBearerHeader(t *testing.T) {
 	}))
 	defer server.Close()
 	authenticator, err := NewOIDCAuthenticator(context.Background(), OIDCConfig{
-		Issuer: server.URL, Audience: "expected",
+		Issuer: server.URL, Audience: "expected", CacheTTL: time.Nanosecond,
 	})
 	require.NoError(t, err)
 	token := signOIDCToken(t, key, "key", server.URL, "expected", "tenant-a", []string{"instance-a"})
+	time.Sleep(time.Millisecond)
+	fixture.mu.Lock()
+	initialJWKSRequests := fixture.jwksRequests
+	fixture.fail = true
+	fixture.mu.Unlock()
 
 	for _, tc := range []struct {
 		name   string
@@ -191,6 +196,10 @@ func TestOIDCAuthenticatorRejectsMalformedBearerHeader(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := authenticator.Authenticate(context.Background(), tc.header)
 			require.Error(t, err)
+			fixture.mu.RLock()
+			defer fixture.mu.RUnlock()
+			require.Equal(t, initialJWKSRequests, fixture.jwksRequests,
+				"malformed bearer headers must fail before JWKS refresh")
 		})
 	}
 }
