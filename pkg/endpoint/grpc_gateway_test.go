@@ -28,6 +28,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/mvccpb"
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	"go.etcd.io/etcd/server/v3/etcdserver/api/v3election/v3electionpb"
 	"go.etcd.io/etcd/server/v3/etcdserver/api/v3lock/v3lockpb"
 	"google.golang.org/grpc"
@@ -45,6 +46,7 @@ type gatewayKVServer struct {
 type gatewayLockServer struct {
 	v3lockpb.UnimplementedLockServer
 	request *v3lockpb.UnlockRequest
+	md      metadata.MD
 }
 
 type gatewayWatchServer struct {
@@ -85,7 +87,9 @@ func (s *gatewayWatchServer) Watch(stream etcdserverpb.Watch_WatchServer) error 
 
 type gatewayElectionServer struct {
 	v3electionpb.UnimplementedElectionServer
-	next <-chan struct{}
+	request *v3electionpb.LeaderRequest
+	md      metadata.MD
+	next    <-chan struct{}
 }
 
 type gatewayLeaseServer struct {
@@ -155,8 +159,22 @@ func (s *gatewayElectionServer) Observe(request *v3electionpb.LeaderRequest, str
 	})
 }
 
-func (s *gatewayLockServer) Unlock(_ context.Context, request *v3lockpb.UnlockRequest) (*v3lockpb.UnlockResponse, error) {
+func (s *gatewayElectionServer) Leader(ctx context.Context, request *v3electionpb.LeaderRequest) (*v3electionpb.LeaderResponse, error) {
 	s.request = request
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		s.md = md.Copy()
+	}
+	return &v3electionpb.LeaderResponse{
+		Header: &etcdserverpb.ResponseHeader{ClusterId: 31, MemberId: 32, Revision: 33, RaftTerm: 34},
+		Kv:     &mvccpb.KeyValue{Key: request.Name, Value: []byte("leader"), ModRevision: 33},
+	}, nil
+}
+
+func (s *gatewayLockServer) Unlock(ctx context.Context, request *v3lockpb.UnlockRequest) (*v3lockpb.UnlockResponse, error) {
+	s.request = request
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		s.md = md.Copy()
+	}
 	return &v3lockpb.UnlockResponse{
 		Header: &etcdserverpb.ResponseHeader{ClusterId: 21, MemberId: 22, Revision: 23, RaftTerm: 24},
 	}, nil
@@ -205,8 +223,10 @@ func TestGRPCGatewayUsesGeneratedEtcdJSONContract(t *testing.T) {
 	grpcServer := grpc.NewServer()
 	kvServer := &gatewayKVServer{}
 	lockServer := &gatewayLockServer{}
+	electionServer := &gatewayElectionServer{}
 	etcdserverpb.RegisterKVServer(grpcServer, kvServer)
 	v3lockpb.RegisterLockServer(grpcServer, lockServer)
+	v3electionpb.RegisterElectionServer(grpcServer, electionServer)
 	go func() { _ = grpcServer.Serve(listener) }()
 	t.Cleanup(grpcServer.Stop)
 
@@ -243,6 +263,7 @@ func TestGRPCGatewayUsesGeneratedEtcdJSONContract(t *testing.T) {
 	request = httptest.NewRequest(http.MethodPost, "/v3/lock/unlock",
 		strings.NewReader(`{"key":"L2xvY2svMDE=","unknown_field":"discarded"}`))
 	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "Bearer lock-token")
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 
@@ -252,6 +273,25 @@ func TestGRPCGatewayUsesGeneratedEtcdJSONContract(t *testing.T) {
 	}`, response.Body.String())
 	require.NotNil(t, lockServer.request)
 	require.Equal(t, []byte("/lock/01"), lockServer.request.Key)
+	require.Equal(t, []string{grpcGatewayRequestMarkerValue}, lockServer.md.Get(grpcGatewayRequestMarkerKey))
+	require.Equal(t, []string{"Bearer lock-token"}, lockServer.md.Get(rpctypes.TokenFieldNameSwagger))
+
+	request = httptest.NewRequest(http.MethodPost, "/v3/election/leader",
+		strings.NewReader(`{"name":"ZWxlY3Rpb24="}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "Bearer election-token")
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	require.Equal(t, http.StatusOK, response.Code)
+	require.JSONEq(t, `{
+		"header":{"cluster_id":"31","member_id":"32","revision":"33","raft_term":"34"},
+		"kv":{"key":"ZWxlY3Rpb24=","mod_revision":"33","value":"bGVhZGVy"}
+	}`, response.Body.String())
+	require.NotNil(t, electionServer.request)
+	require.Equal(t, []byte("election"), electionServer.request.Name)
+	require.Equal(t, []string{grpcGatewayRequestMarkerValue}, electionServer.md.Get(grpcGatewayRequestMarkerKey))
+	require.Equal(t, []string{"Bearer election-token"}, electionServer.md.Get(rpctypes.TokenFieldNameSwagger))
 }
 
 func TestGRPCGatewayStreamsWatchAndElectionResponses(t *testing.T) {

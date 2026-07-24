@@ -11412,6 +11412,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   读取 lock key 与 leader key，确认失败的 Unlock/Resign 没有产生副作用。
   `go test ./pkg/server/etcd -run 'TestDedicatedConcurrencyUnaryAuthFailuresReturnUnknown|TestDedicatedElectionObserveAuthFailuresReturnEmptyStream' -count=1 -v`
   通过。
+- A723 固定 Lock/Election HTTP gateway token metadata：
+  A714 已固定 generated HTTP gateway service surface，A721/A722 固定了后端
+  Lock/Election auth 失败外观，但 endpoint 单测只确认 KV 请求带 gateway marker，
+  Lock route 只验证 JSON 编解码，未证明 `Authorization` 会继续传给 dedicated
+  concurrency gRPC service。现在扩展 `TestGRPCGatewayUsesGeneratedEtcdJSONContract`：
+  fake Lock server 和 Election server 均记录 incoming metadata，分别通过
+  `/v3/lock/unlock` 和 `/v3/election/leader` 发送 `Authorization: Bearer ...`，
+  断言后端同时收到 `grpcgateway-accept=kubebrain-grpc-gateway` marker 和
+  etcd 兼容 `authorization` metadata，防止未来 gateway annotator/header matcher
+  重构造成 HTTP token 丢失或 client-cert-auth 模式回退借用内部证书身份。
+  `go test ./pkg/endpoint -run TestGRPCGatewayUsesGeneratedEtcdJSONContract -count=1 -v`
+  通过。
 
 ### P2：运维兼容和长期验证
 
