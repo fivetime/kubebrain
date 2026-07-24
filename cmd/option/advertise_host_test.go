@@ -76,6 +76,35 @@ func TestValidateRejectsInvalidAdvertiseClientURLs(t *testing.T) {
 	require.Contains(t, err.Error(), "advertise-client-urls")
 }
 
+func TestInitialClusterValidationRequiresAdvertisedPeerIdentity(t *testing.T) {
+	newFromFlags := func(args ...string) *KubeBrainOption {
+		o := NewOptions()
+		fs := pflag.NewFlagSet("t", pflag.ContinueOnError)
+		o.AddFlags(fs)
+		base := []string{"--pd-addrs=127.0.0.1:2379", "--peer-port=3380"}
+		require.NoError(t, fs.Parse(append(base, args...)))
+		return o
+	}
+
+	validIPv4 := newFromFlags(
+		"--advertise-host=10.0.0.1",
+		"--initial-cluster=kb-1=http://10.0.0.1:3380,kb-2=http://10.0.0.2:3380",
+	)
+	require.NoError(t, validIPv4.Validate())
+
+	validIPv6 := newFromFlags(
+		"--advertise-host=[2001:db8::1]",
+		"--initial-cluster=kb-1=http://[2001:db8::1]:3380,kb-2=http://10.0.0.2:3380",
+	)
+	require.NoError(t, validIPv6.Validate())
+
+	missingSelf := newFromFlags(
+		"--advertise-host=10.0.0.3",
+		"--initial-cluster=kb-1=http://10.0.0.1:3380,kb-2=http://10.0.0.2:3380",
+	)
+	require.ErrorContains(t, missingSelf.Validate(), `--initial-cluster does not contain this replica identity "10.0.0.3:3380"`)
+}
+
 // A bare IPv6 (no brackets) would be mangled when joined with the peer port
 // (SplitHostPort'd downstream by the etcd proxy). Validate must reject it up
 // front; the bracketed form and IPv4 must pass this check. The advertise-host

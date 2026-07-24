@@ -11651,6 +11651,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./cmd/option -run 'TestTransportLimitValidationRejectsInvalidStartupFlags' -count=1 -v`、
   `go test ./cmd/option -count=1`、`go vet ./...` 和 `go test ./... -count=1 -p 1`
   均通过。
+- A744 固定 initial-cluster 必须包含当前副本 identity：
+  MemberList/AutoSync 的静态成员视图依赖 DBaaS 控制面给所有副本下发相同完整
+  `--initial-cluster`，同时每个 Pod 的 `--advertise-host` 与 `--peer-port` 必须能在该
+  集合中找到自身 peer identity；否则该副本会用一个不包含自己的成员视图启动，后续
+  clientv3 Sync/AutoSync 可能丢 endpoint 或发布错误 TLS identity。`KubeBrainOption.Validate`
+  已有该检查，但 option 测试此前只覆盖 advertise-host 绑定和 URL 形状。现在新增
+  `TestInitialClusterValidationRequiresAdvertisedPeerIdentity`，通过真实 flag parse 覆盖
+  IPv4 与 bracketed IPv6 正例，以及 `--initial-cluster` 遗漏当前
+  `"advertise-host:peer-port"` 时的明确拒绝。
+  `go test ./cmd/option -run 'TestInitialClusterValidationRequiresAdvertisedPeerIdentity' -count=1 -v`、
+  `go test ./cmd/option -count=1`、`go vet ./...` 和 `go test ./... -count=1 -p 1`
+  均通过。
 
 ### P2：运维兼容和长期验证
 
