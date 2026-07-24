@@ -11513,6 +11513,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   对齐 `/root/etcd/api/etcdserverpb/gw/rpc.pb.gw.go` 当前 generated contract。
   `go test ./pkg/endpoint -run TestGRPCGatewayUsesGeneratedEtcdJSONContract -count=1 -v`
   通过。
+- A732 固定 Auth 管理面 HTTP gateway contract：
+  A727/A728 只覆盖 `/v3/auth/status`，尚未证明 generated gateway 能正确承载登录凭据、
+  nested user options 和 role permission。现在扩展 fake Auth server 并调用
+  `/v3/auth/authenticate`、`/v3/auth/user/add` 与 `/v3/auth/role/grant`：固定
+  name/password、`options.no_password`、READWRITE `permType` enum、base64 key/range_end
+  与 nested unknown-field discard；每条 route 都必须收到 gateway marker 和独立
+  `Authorization` metadata。响应固定 Authenticate token 和三类 response header 的
+  proto-name/int64 JSON 编码，对齐
+  `/root/etcd/api/etcdserverpb/gw/rpc.pb.gw.go` 的 Auth generated contract。
+  `go test ./pkg/endpoint -run TestGRPCGatewayUsesGeneratedEtcdJSONContract -count=1 -v`
+  通过。
 
 ### P2：运维兼容和长期验证
 

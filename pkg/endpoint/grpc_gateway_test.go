@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"go.etcd.io/etcd/api/v3/authpb"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
@@ -65,8 +66,14 @@ type gatewayMaintenanceServer struct {
 
 type gatewayAuthServer struct {
 	etcdserverpb.UnimplementedAuthServer
-	request *etcdserverpb.AuthStatusRequest
-	md      metadata.MD
+	request                    *etcdserverpb.AuthStatusRequest
+	authenticateRequest        *etcdserverpb.AuthenticateRequest
+	userAddRequest             *etcdserverpb.AuthUserAddRequest
+	roleGrantPermissionRequest *etcdserverpb.AuthRoleGrantPermissionRequest
+	md                         metadata.MD
+	authenticateMD             metadata.MD
+	userAddMD                  metadata.MD
+	roleGrantPermissionMD      metadata.MD
 }
 
 type gatewayLockServer struct {
@@ -403,6 +410,37 @@ func (s *gatewayAuthServer) AuthStatus(ctx context.Context, request *etcdserverp
 	}, nil
 }
 
+func (s *gatewayAuthServer) Authenticate(ctx context.Context, request *etcdserverpb.AuthenticateRequest) (*etcdserverpb.AuthenticateResponse, error) {
+	s.authenticateRequest = request
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		s.authenticateMD = md.Copy()
+	}
+	return &etcdserverpb.AuthenticateResponse{
+		Header: &etcdserverpb.ResponseHeader{ClusterId: 131, MemberId: 132, Revision: 133, RaftTerm: 134},
+		Token:  "issued-token",
+	}, nil
+}
+
+func (s *gatewayAuthServer) UserAdd(ctx context.Context, request *etcdserverpb.AuthUserAddRequest) (*etcdserverpb.AuthUserAddResponse, error) {
+	s.userAddRequest = request
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		s.userAddMD = md.Copy()
+	}
+	return &etcdserverpb.AuthUserAddResponse{
+		Header: &etcdserverpb.ResponseHeader{ClusterId: 135, MemberId: 136, Revision: 137, RaftTerm: 138},
+	}, nil
+}
+
+func (s *gatewayAuthServer) RoleGrantPermission(ctx context.Context, request *etcdserverpb.AuthRoleGrantPermissionRequest) (*etcdserverpb.AuthRoleGrantPermissionResponse, error) {
+	s.roleGrantPermissionRequest = request
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		s.roleGrantPermissionMD = md.Copy()
+	}
+	return &etcdserverpb.AuthRoleGrantPermissionResponse{
+		Header: &etcdserverpb.ResponseHeader{ClusterId: 139, MemberId: 140, Revision: 141, RaftTerm: 142},
+	}, nil
+}
+
 func TestGRPCGatewaySurfaceIsExplicit(t *testing.T) {
 	services := make([]string, 0, len(grpcGatewayRegistrations))
 	for _, registration := range grpcGatewayRegistrations {
@@ -605,6 +643,44 @@ func TestGRPCGatewayUsesGeneratedEtcdJSONContract(t *testing.T) {
 		"authRevision":"75"
 	}`,
 		func() bool { return authServer.request != nil }, &authServer.md)
+	assertUnaryContract("/v3/auth/authenticate",
+		`{"name":"gateway-user","password":"gateway-password","unknown_field":"discarded"}`,
+		"Bearer auth-bootstrap-token", `{
+			"header":{"cluster_id":"131","member_id":"132","revision":"133","raft_term":"134"},
+			"token":"issued-token"
+		}`,
+		func() bool {
+			return authServer.authenticateRequest != nil &&
+				authServer.authenticateRequest.Name == "gateway-user" &&
+				authServer.authenticateRequest.Password == "gateway-password"
+		}, &authServer.authenticateMD)
+	assertUnaryContract("/v3/auth/user/add",
+		`{"name":"service-user","options":{"no_password":true,"unknown_field":"discarded"},"unknown_field":"discarded"}`,
+		"Bearer auth-user-token", `{
+			"header":{"cluster_id":"135","member_id":"136","revision":"137","raft_term":"138"}
+		}`,
+		func() bool {
+			return authServer.userAddRequest != nil &&
+				authServer.userAddRequest.Name == "service-user" &&
+				authServer.userAddRequest.Options != nil &&
+				authServer.userAddRequest.Options.NoPassword
+		}, &authServer.userAddMD)
+	assertUnaryContract("/v3/auth/role/grant",
+		`{"name":"writer","perm":{"permType":"READWRITE","key":"L3JlZ2lzdHJ5Lw==","range_end":"L3JlZ2lzdHJ5MA==","unknown_field":"discarded"},"unknown_field":"discarded"}`,
+		"Bearer auth-role-token", `{
+			"header":{"cluster_id":"139","member_id":"140","revision":"141","raft_term":"142"}
+		}`,
+		func() bool {
+			if authServer.roleGrantPermissionRequest == nil ||
+				authServer.roleGrantPermissionRequest.Perm == nil {
+				return false
+			}
+			permission := authServer.roleGrantPermissionRequest.Perm
+			return authServer.roleGrantPermissionRequest.Name == "writer" &&
+				permission.PermType == authpb.READWRITE &&
+				string(permission.Key) == "/registry/" &&
+				string(permission.RangeEnd) == "/registry0"
+		}, &authServer.roleGrantPermissionMD)
 	assertUnaryContract("/v3/lease/grant", `{"TTL":"300","ID":"101","unknown_field":"discarded"}`,
 		"Bearer lease-grant-token", `{
 			"header":{"cluster_id":"81","member_id":"82","revision":"83","raft_term":"84"},

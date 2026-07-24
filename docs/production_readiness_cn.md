@@ -1492,6 +1492,7 @@ hack/dev/verify.sh
   grant/revoke/time-to-live/list（包括 generated `/v3/kv/lease/*` compatibility aliases）与
   KV 写面、Lease 与非 KV core unary route 还必须固定请求解码、proto-name JSON 响应
   字段和 int64/uint64 字符串编码；Txn 必须覆盖 nested compare/request/response oneof，
+  Auth 管理面必须覆盖登录 token、nested user options、permission enum 和 bytes key range，
   不能只验证 HTTP 200 或 metadata。
   Lock/Election 使用 upstream client/v3 concurrency recipe 及现有 KV/Lease/Watch
   后端；生产必须验证 lease-backed Lock 竞争接棒和 Election campaign/proclaim/resign，
