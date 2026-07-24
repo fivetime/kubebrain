@@ -11677,6 +11677,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./hack/production -run TestValidateInstanceReady -count=1 -v`、
   `bash -n hack/production/validate-instance-ready.sh`、`go test ./hack/production -count=1`、
   `go vet ./...` 和 `go test ./... -count=1 -p 1` 均通过。
+- A746 固定实例发布门禁中的生产基线开关一致性：
+  production 明文/TLS 基线还要求 `--compatible-with-etcd=true`、
+  `--enable-count-index=true`、`--count-index-max-keys=5000000` 和
+  `--enable-storage-metrics=true`。manifest 测试已经固定这些参数，但运行集群的
+  `validate-instance-ready.sh` 仍可能在人工 patch 或控制面生成漂移后放行：例如 follower
+  写转发/完整 etcd 兼容被关闭，或者 count-index/存储指标被关闭导致大规模 List/count
+  回退与运维告警失明。现在脚本新增
+  `EXPECTED_COMPATIBLE_WITH_ETCD`、`EXPECTED_ENABLE_COUNT_INDEX`、
+  `EXPECTED_COUNT_INDEX_MAX_KEYS` 和 `EXPECTED_ENABLE_STORAGE_METRICS`（默认对齐
+  production baseline，可按实例规格覆盖），并要求 Pod template 中对应 flag 各出现一次且值
+  完全匹配。`TestValidateInstanceReady` 扩展 missing/wrong/duplicate 回归，覆盖 etcd
+  compatibility、count-index enablement、count-index key cap 和 storage metrics enablement
+  漂移。
+  `go test ./hack/production -run TestValidateInstanceReady -count=1 -v`、
+  `bash -n hack/production/validate-instance-ready.sh`、`go test ./hack/production -count=1`、
+  `go vet ./...` 和 `go test ./... -count=1 -p 1` 均通过。
 
 ### P2：运维兼容和长期验证
 

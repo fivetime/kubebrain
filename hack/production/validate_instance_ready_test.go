@@ -20,6 +20,10 @@ func fakeKubeBrainArgs(advertisedURLs, initialCluster string) string {
 		"--quota-backend-bytes=429496729600\n" +
 		"--advertise-client-urls=" + advertisedURLs + "\n" +
 		"--initial-cluster=" + initialCluster + "\n" +
+		"--compatible-with-etcd=true\n" +
+		"--enable-count-index=true\n" +
+		"--count-index-max-keys=5000000\n" +
+		"--enable-storage-metrics=true\n" +
 		"--max-request-rate=2000\n" +
 		"--request-rate-burst=4000\n" +
 		"--max-delete-range-keys=1024\n" +
@@ -450,6 +454,42 @@ func TestValidateInstanceReady(t *testing.T) {
 			topology:   "3\t3",
 			healthOK:   true,
 			wantOutput: "max watches configuration mismatch",
+		},
+		{
+			name:       "missing etcd compatibility",
+			image:      "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus: "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeArgs:   strings.ReplaceAll(fakeKubeBrainArgs("https://instance.example:2379", fakeInitialCluster), "\n--compatible-with-etcd=true", ""),
+			topology:   "3\t3",
+			healthOK:   true,
+			wantOutput: "etcd compatibility configuration mismatch",
+		},
+		{
+			name:       "disabled count index",
+			image:      "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus: "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeArgs:   strings.ReplaceAll(fakeKubeBrainArgs("https://instance.example:2379", fakeInitialCluster), "--enable-count-index=true", "--enable-count-index=false"),
+			topology:   "3\t3",
+			healthOK:   true,
+			wantOutput: "count index enablement configuration mismatch",
+		},
+		{
+			name:       "wrong count index key cap",
+			image:      "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus: "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeArgs:   strings.ReplaceAll(fakeKubeBrainArgs("https://instance.example:2379", fakeInitialCluster), "--count-index-max-keys=5000000", "--count-index-max-keys=1000000"),
+			topology:   "3\t3",
+			healthOK:   true,
+			wantOutput: "count index key cap configuration mismatch",
+		},
+		{
+			name:       "duplicate storage metrics enablement",
+			image:      "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus: "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeArgs:   fakeKubeBrainArgs("https://instance.example:2379", fakeInitialCluster) + "\n--enable-storage-metrics=true",
+			topology:   "3\t3",
+			healthOK:   true,
+			wantOutput: "storage metrics enablement configuration mismatch",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

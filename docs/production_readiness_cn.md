@@ -330,6 +330,10 @@ EXPECTED_CLUSTER_ID=<immutable-pd-cluster-id> \
 EXPECTED_INITIAL_CLUSTER=kubebrain-0=https://kubebrain-0.kubebrain-peer.kubebrain-system.svc.cluster.local:3380,kubebrain-1=https://kubebrain-1.kubebrain-peer.kubebrain-system.svc.cluster.local:3380,kubebrain-2=https://kubebrain-2.kubebrain-peer.kubebrain-system.svc.cluster.local:3380 \
 EXPECTED_QUOTA_BACKEND_BYTES=429496729600 \
 EXPECTED_ADVERTISE_CLIENT_URLS=https://instance-a.example:2379 \
+EXPECTED_COMPATIBLE_WITH_ETCD=true \
+EXPECTED_ENABLE_COUNT_INDEX=true \
+EXPECTED_COUNT_INDEX_MAX_KEYS=5000000 \
+EXPECTED_ENABLE_STORAGE_METRICS=true \
 EXPECTED_MAX_REQUEST_RATE=2000 \
 EXPECTED_REQUEST_RATE_BURST=4000 \
 EXPECTED_MAX_DELETE_RANGE_KEYS=1024 \
@@ -355,7 +359,8 @@ StatefulSet metadata UID 与 operation receipt 中的 `EXPECTED_KUBEBRAIN_STATEF
 ordinal Pod 集合全部为 Running/Ready、非终止、带有当前 controller revision、唯一的目标镜像，且
 controller StatefulSet name/UID 与 receipt 精确一致；随后校验 Pod template 中唯一的
 `--keyspace`、`--pd-addrs`、`--initial-cluster`、`--quota-backend-bytes`
-、`--advertise-client-urls`、请求速率/突发、范围删除上限和 watch 上限全部匹配，随后
+、`--advertise-client-urls`、etcd 兼容开关、count-index 开关与 key cap、存储指标开关、
+请求速率/突发、范围删除上限和 watch 上限全部匹配，随后
 要求 client Service metadata UID 与 receipt 一致，且其 EndpointSlice 的 ready/serving/non-terminating
 Pod targetRef UID 集合与当前 Pod 集合完全相同；随后
 读取运行时 MemberList，要求 cluster ID 与同一 immutable storage identity 精确一致、精确成员数、唯一且非零的 member ID/name、
@@ -366,7 +371,7 @@ member name 聚合后再比对运行时拓扑；最后通过官方
 `etcdctl endpoint health` 对 bootstrap `ENDPOINT` 和每个 advertised client URL 分别提交
 线性化 proposal。缺少 `EXPECTED_IMAGE`/
 `EXPECTED_KUBEBRAIN_STATEFULSET_UID`/`EXPECTED_KUBEBRAIN_CLIENT_SERVICE_UID`/`EXPECTED_KEYSPACE`/`EXPECTED_PD_ADDRS`/`EXPECTED_TIDB_CLUSTER_UID`/`EXPECTED_CLUSTER_ID`/`EXPECTED_INITIAL_CLUSTER`/`EXPECTED_QUOTA_BACKEND_BYTES`/`EXPECTED_ADVERTISE_CLIENT_URLS`/`ENDPOINT`、任一状态
-缺失、旧 revision、错误拓扑、错误镜像、Pod owner/revision/Ready/终止状态漂移、quota/client URL/限流/watch/delete-range 上限缺失/重复/不匹配或 endpoint
+缺失、旧 revision、错误拓扑、错误镜像、Pod owner/revision/Ready/终止状态漂移、quota/client URL/兼容开关/count-index/存储指标/限流/watch/delete-range 上限缺失/重复/不匹配或 endpoint
 不健康、KubeBrain StatefulSet/client Service/TidbCluster UID 或 TidbCluster/MemberList cluster ID 漂移、EndpointSlice Pod 集合漂移、initial cluster 成员/peer URL 为空或重复、MemberList 缺失/重复/不完整/与声明不一致、advertised URL 列表含空/重复成员或任一地址
 从门禁网络不可达都会 fail closed。脚本使用可覆盖的 `JQ`（默认 `jq`）结构化解析 JSON，
 不得用文本匹配替代成员身份和 URL 集合检查。

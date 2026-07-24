@@ -16,6 +16,10 @@ EXPECTED_CLUSTER_ID="${EXPECTED_CLUSTER_ID:-}"
 EXPECTED_INITIAL_CLUSTER="${EXPECTED_INITIAL_CLUSTER:-}"
 EXPECTED_QUOTA_BACKEND_BYTES="${EXPECTED_QUOTA_BACKEND_BYTES:-}"
 EXPECTED_ADVERTISE_CLIENT_URLS="${EXPECTED_ADVERTISE_CLIENT_URLS:-}"
+EXPECTED_COMPATIBLE_WITH_ETCD="${EXPECTED_COMPATIBLE_WITH_ETCD:-true}"
+EXPECTED_ENABLE_COUNT_INDEX="${EXPECTED_ENABLE_COUNT_INDEX:-true}"
+EXPECTED_COUNT_INDEX_MAX_KEYS="${EXPECTED_COUNT_INDEX_MAX_KEYS:-5000000}"
+EXPECTED_ENABLE_STORAGE_METRICS="${EXPECTED_ENABLE_STORAGE_METRICS:-true}"
 EXPECTED_MAX_REQUEST_RATE="${EXPECTED_MAX_REQUEST_RATE:-2000}"
 EXPECTED_REQUEST_RATE_BURST="${EXPECTED_REQUEST_RATE_BURST:-4000}"
 EXPECTED_MAX_DELETE_RANGE_KEYS="${EXPECTED_MAX_DELETE_RANGE_KEYS:-1024}"
@@ -80,10 +84,17 @@ if [[ -z "$EXPECTED_ADVERTISE_CLIENT_URLS" ]]; then
   echo "EXPECTED_ADVERTISE_CLIENT_URLS is required" >&2
   exit 2
 fi
-for variable in EXPECTED_MAX_REQUEST_RATE EXPECTED_REQUEST_RATE_BURST EXPECTED_MAX_DELETE_RANGE_KEYS EXPECTED_MAX_WATCHES; do
+for variable in EXPECTED_COUNT_INDEX_MAX_KEYS EXPECTED_MAX_REQUEST_RATE EXPECTED_REQUEST_RATE_BURST EXPECTED_MAX_DELETE_RANGE_KEYS EXPECTED_MAX_WATCHES; do
   value="${!variable}"
   if ! [[ "$value" =~ ^[0-9]+$ ]]; then
     echo "${variable} must be a non-negative integer" >&2
+    exit 2
+  fi
+done
+for variable in EXPECTED_COMPATIBLE_WITH_ETCD EXPECTED_ENABLE_COUNT_INDEX EXPECTED_ENABLE_STORAGE_METRICS; do
+  value="${!variable}"
+  if [[ "$value" != "true" && "$value" != "false" ]]; then
+    echo "${variable} must be true or false" >&2
     exit 2
   fi
 done
@@ -374,6 +385,10 @@ check_exact_kubebrain_arg "max-request-rate" "$EXPECTED_MAX_REQUEST_RATE" "max r
 check_exact_kubebrain_arg "request-rate-burst" "$EXPECTED_REQUEST_RATE_BURST" "request rate burst"
 check_exact_kubebrain_arg "max-delete-range-keys" "$EXPECTED_MAX_DELETE_RANGE_KEYS" "max delete range keys"
 check_exact_kubebrain_arg "max-watches" "$EXPECTED_MAX_WATCHES" "max watches"
+check_exact_kubebrain_arg "compatible-with-etcd" "$EXPECTED_COMPATIBLE_WITH_ETCD" "etcd compatibility"
+check_exact_kubebrain_arg "enable-count-index" "$EXPECTED_ENABLE_COUNT_INDEX" "count index enablement"
+check_exact_kubebrain_arg "count-index-max-keys" "$EXPECTED_COUNT_INDEX_MAX_KEYS" "count index key cap"
+check_exact_kubebrain_arg "enable-storage-metrics" "$EXPECTED_ENABLE_STORAGE_METRICS" "storage metrics enablement"
 
 if ! ETCDCTL_API=3 run_etcdctl --endpoints="$ENDPOINT" endpoint health; then
   echo "KubeBrain endpoint health failed: $ENDPOINT" >&2
