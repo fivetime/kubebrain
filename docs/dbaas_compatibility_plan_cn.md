@@ -11983,6 +11983,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./hack/production -run 'Test(ValidateInstanceReady|ReleaseGateScript)' -count=1 -v`、
   `go test ./hack/production -count=1 -timeout=12m`、`git diff --check`、`go vet ./...` 和
   `go test ./... -count=1 -p 1` 均通过。
+- A772 给 etcd-client differential runner 测试补 bounded helper：
+  `hack/etcd-client-compat` 是独立 Go module，`run-differential.sh` 的预检测试仍直接
+  `exec.Command("bash", "run-differential.sh").CombinedOutput()`；若 fake `etcdctl`/`kubectl`
+  或 reference etcd 启动路径悬挂，compat 发布门禁会等到外层超时才失败。现在该 nested module
+  增加本地 `runDifferentialScript`/`runCompatScriptCommand` helper，使用 30 秒
+  `CommandContext`、独立进程组 kill 和 1MiB captured output 上限；三个 differential runner
+  预检用例统一走 helper，并增加静态测试禁止回退到裸 bash exec。为避免 nested module 引入父
+  module 依赖，本轮不复用 `hack/production/internal/processgroup`，而是在 compat 测试包内保留
+  同等测试夹具逻辑。
+  `cd hack/etcd-client-compat && go test -run 'TestDifferentialRunner' -count=1 -v`、
+  `git diff --check`、`go vet ./...` 和 `go test ./... -count=1 -p 1` 均通过。
 
 ### P2：运维兼容和长期验证
 

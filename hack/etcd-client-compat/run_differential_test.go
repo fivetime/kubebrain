@@ -2,7 +2,6 @@ package compat
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -29,15 +28,14 @@ exit 1
 	fakeCurl := filepath.Join(dir, "curl")
 	require.NoError(t, os.WriteFile(fakeCurl, []byte("#!/usr/bin/env bash\nexit 1\n"), 0o755))
 
-	command := exec.Command("bash", "run-differential.sh")
-	command.Env = append(os.Environ(),
-		"PATH="+dir+":"+os.Getenv("PATH"),
+	env := []string{
+		"PATH=" + dir + ":" + os.Getenv("PATH"),
 		"KUBEBRAIN_ETCD_ENDPOINT=127.0.0.1:22379",
 		"ALLOW_DESTRUCTIVE_DIFFERENTIAL=true",
 		"REFERENCE_ETCD_BIN=/bin/true",
-		"ETCDCTL_BIN="+fakeEtcdctl,
-	)
-	output, err := command.CombinedOutput()
+		"ETCDCTL_BIN=" + fakeEtcdctl,
+	}
+	output, err := runDifferentialScript(t, env)
 	require.Error(t, err)
 	require.Contains(t, string(output), "advertised client URL is unreachable")
 	require.Contains(t, string(output), "http://internal.invalid:3379")
@@ -60,15 +58,14 @@ exit 1
 	fakeCurl := filepath.Join(dir, "curl")
 	require.NoError(t, os.WriteFile(fakeCurl, []byte("#!/usr/bin/env bash\nexit 1\n"), 0o755))
 
-	command := exec.Command("bash", "run-differential.sh")
-	command.Env = append(os.Environ(),
-		"PATH="+dir+":"+os.Getenv("PATH"),
+	env := []string{
+		"PATH=" + dir + ":" + os.Getenv("PATH"),
 		"KUBEBRAIN_ETCD_ENDPOINT=127.0.0.1:22379",
 		"ALLOW_DESTRUCTIVE_DIFFERENTIAL=true",
 		"REFERENCE_ETCD_BIN=/bin/true",
-		"ETCDCTL_BIN="+fakeEtcdctl,
-	)
-	output, err := command.CombinedOutput()
+		"ETCDCTL_BIN=" + fakeEtcdctl,
+	}
+	output, err := runDifferentialScript(t, env)
 	require.Error(t, err)
 	require.Contains(t, string(output), "returned no advertised client URLs")
 }
@@ -99,21 +96,20 @@ exec "$@"
 	fakeCurl := filepath.Join(dir, "curl")
 	require.NoError(t, os.WriteFile(fakeCurl, []byte("#!/usr/bin/env bash\nexit 1\n"), 0o755))
 
-	command := exec.Command("bash", "run-differential.sh")
-	command.Env = append(os.Environ(),
-		"PATH="+dir+":"+os.Getenv("PATH"),
+	env := []string{
+		"PATH=" + dir + ":" + os.Getenv("PATH"),
 		"KUBEBRAIN_ETCD_ENDPOINT=127.0.0.1:22379",
 		"ALLOW_DESTRUCTIVE_DIFFERENTIAL=true",
 		"REFERENCE_ETCD_BIN=/bin/true",
-		"ETCDCTL_BIN="+fakeEtcdctl,
-		"KUBECTL="+fakeKubectl,
-		"KUBECTL_LOG="+kubectlLog,
+		"ETCDCTL_BIN=" + fakeEtcdctl,
+		"KUBECTL=" + fakeKubectl,
+		"KUBECTL_LOG=" + kubectlLog,
 		"ETCDCTL_EXEC_POD=kubebrain-0",
 		"ETCDCTL_EXEC_NAMESPACE=kubebrain-dev",
 		"ETCDCTL_EXEC_CONTAINER=kubebrain",
-		"ETCDCTL_EXEC_BIN="+fakeEtcdctl,
-	)
-	output, err := command.CombinedOutput()
+		"ETCDCTL_EXEC_BIN=" + fakeEtcdctl,
+	}
+	output, err := runDifferentialScript(t, env)
 	require.Error(t, err)
 	require.NotContains(t, string(output), "advertised client URL is unreachable")
 	require.Contains(t, string(output), "reference etcd exited before becoming healthy")
@@ -121,4 +117,14 @@ exec "$@"
 	require.NoError(t, readErr)
 	require.Contains(t, string(log), "-n kubebrain-dev exec kubebrain-0 -c kubebrain -- "+fakeEtcdctl)
 	require.Contains(t, string(log), "--endpoints=http://internal.invalid:3379 endpoint health")
+}
+
+func TestDifferentialRunnerTestsUseBoundedScriptHelper(t *testing.T) {
+	text, err := os.ReadFile("run_differential_test.go")
+	require.NoError(t, err)
+	forbiddenCommand := `exec.Command("bash", "` + `run-differential.sh")`
+	forbiddenCombinedOutput := "." + "CombinedOutput()"
+	require.Contains(t, string(text), "runDifferentialScript(t, env)")
+	require.NotContains(t, string(text), forbiddenCommand)
+	require.NotContains(t, string(text), forbiddenCombinedOutput)
 }
