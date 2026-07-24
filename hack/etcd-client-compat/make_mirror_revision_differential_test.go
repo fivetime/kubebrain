@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -139,17 +138,15 @@ func runMakeMirrorRevisionScenario(
 
 	commandCtx, commandCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer commandCancel()
-	command := exec.CommandContext(
-		commandCtx,
-		etcdctl,
-		"--endpoints="+sourceEndpoint,
+	makeMirrorArgs := []string{
+		"--endpoints=" + sourceEndpoint,
 		"make-mirror",
-		"--prefix="+compactedSourcePrefix,
-		"--dest-prefix="+compactedDestinationPrefix,
+		"--prefix=" + compactedSourcePrefix,
+		"--dest-prefix=" + compactedDestinationPrefix,
 		fmt.Sprintf("--rev=%d", compacted.Header.Revision),
 		destinationEndpoint,
-	)
-	output, commandErr := command.CombinedOutput()
+	}
+	output, commandErr := runCompatCommandContext(t, commandCtx, etcdctl, makeMirrorArgs, nil)
 	require.Error(t, commandErr, "make-mirror unexpectedly accepted compacted revision")
 	require.NotErrorIs(t, commandCtx.Err(), context.DeadlineExceeded, "make-mirror hung at compacted revision")
 	compactedMessageCanonical := strings.Contains(

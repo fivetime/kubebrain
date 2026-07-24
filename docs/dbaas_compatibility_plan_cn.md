@@ -12093,6 +12093,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   重启测试，禁止回退到裸 `exec.CommandContext`、`CombinedOutput()` 或 `Output()`。
   `cd hack/etcd-client-compat && go test -run 'Test(CompatFailoverCommandsUseBoundedHelpers|CompatKubernetesRestartCommandsUseBoundedHelpers|DifferentialRunner)' -count=1 -v`、
   `git diff --check`、`go vet ./...` 和 `go test ./... -count=1 -p 1` 均通过。
+- A782 给 compat make-mirror 差分命令补 bounded 启停：
+  `make_mirror_revision_differential_test.go` 的 compacted revision 负例仍直接
+  `exec.CommandContext(...).CombinedOutput()`，而长驻 `etcdctl make-mirror` helper 也只依赖
+  `CommandContext` 的默认取消；若 etcdctl 或其子进程输出过量、挂起或留下子进程，差分门禁会拖到
+  外层 timeout。现在 compat runner 增加 `startCompatCommand`，长驻 make-mirror 启动使用统一进程组
+  kill；compacted revision 负例改用 `runCompatCommandContext`，继承 1MiB 输出上限和调用方 10 秒
+  ctx。新增静态门禁覆盖 auth/basic/revision 三类 make-mirror 差分，禁止回退到裸
+  `exec.CommandContext` 或 `CombinedOutput()`。
+  `cd hack/etcd-client-compat && go test -run 'Test(CompatMakeMirrorCommandsUseBoundedHelpers|CompatKubernetesRestartCommandsUseBoundedHelpers|CompatFailoverCommandsUseBoundedHelpers|DifferentialRunner)' -count=1 -v`、
+  `git diff --check`、`go vet ./...` 和 `go test ./... -count=1 -p 1` 均通过。
 
 ### P2：运维兼容和长期验证
 

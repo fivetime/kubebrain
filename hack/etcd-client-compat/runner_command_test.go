@@ -57,6 +57,28 @@ func runCompatCommand(ctx context.Context, commandName string, args []string, en
 	return compatCombinedOutput(command, compatScriptOutputLimitBytes)
 }
 
+func startCompatCommand(t *testing.T, commandName string, args ...string) func() {
+	t.Helper()
+	processCtx, cancel := context.WithCancel(context.Background())
+	command := exec.CommandContext(processCtx, commandName, args...)
+	configureCompatProcessGroup(command)
+	require.NoError(t, command.Start())
+	processDone := make(chan struct{})
+	go func() {
+		_ = command.Wait()
+		close(processDone)
+	}()
+	var once sync.Once
+	stop := func() {
+		once.Do(func() {
+			cancel()
+			<-processDone
+		})
+	}
+	t.Cleanup(stop)
+	return stop
+}
+
 func configureCompatProcessGroup(command *exec.Cmd) {
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	command.Cancel = func() error {
@@ -186,4 +208,28 @@ func TestCompatKubernetesRestartCommandsUseBoundedHelpers(t *testing.T) {
 			require.Contains(t, text, "runCompat")
 		})
 	}
+}
+
+func TestCompatMakeMirrorCommandsUseBoundedHelpers(t *testing.T) {
+	for _, testFile := range []string{
+		"make_mirror_auth_differential_test.go",
+		"make_mirror_differential_test.go",
+		"make_mirror_revision_differential_test.go",
+	} {
+		t.Run(testFile, func(t *testing.T) {
+			data, err := os.ReadFile(testFile)
+			require.NoError(t, err)
+			text := string(data)
+			require.NotContains(t, text, `exec.CommandContext(`)
+			require.NotContains(t, text, ".CombinedOutput()")
+		})
+	}
+
+	revision, err := os.ReadFile("make_mirror_revision_differential_test.go")
+	require.NoError(t, err)
+	require.Contains(t, string(revision), "runCompatCommandContext(t, commandCtx, etcdctl,")
+
+	mirror, err := os.ReadFile("make_mirror_differential_test.go")
+	require.NoError(t, err)
+	require.Contains(t, string(mirror), "startCompatCommand(t, commandName, args...)")
 }

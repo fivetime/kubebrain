@@ -4,10 +4,8 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"sort"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -207,23 +205,7 @@ func startMakeMirror(t *testing.T, etcdctl, sourceEndpoint, destinationEndpoint,
 
 func startMirrorCommand(t *testing.T, commandName string, args ...string) func() {
 	t.Helper()
-	processCtx, cancel := context.WithCancel(context.Background())
-	command := exec.CommandContext(processCtx, commandName, args...)
-	require.NoError(t, command.Start())
-	processDone := make(chan struct{})
-	go func() {
-		_ = command.Wait()
-		close(processDone)
-	}()
-	var once sync.Once
-	stop := func() {
-		once.Do(func() {
-			cancel()
-			<-processDone
-		})
-	}
-	t.Cleanup(stop)
-	return stop
+	return startCompatCommand(t, commandName, args...)
 }
 
 func mirrorValues(kvs []*mvccpb.KeyValue, prefix string) string {
