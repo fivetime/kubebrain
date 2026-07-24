@@ -9,9 +9,11 @@ import (
 	"path/filepath"
 	"sync"
 	"syscall"
+	"time"
 )
 
 const DefaultOutputLimitBytes = 1 << 20
+const DefaultWaitDelay = 5 * time.Second
 
 // Configure makes cancellation terminate the command and all descendants that
 // remain in its process group.

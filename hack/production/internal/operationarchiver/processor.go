@@ -142,7 +142,7 @@ func (p *ArchiveProcessor) runCommand(ctx context.Context, executable string, en
 	command := exec.CommandContext(ctx, executable)
 	command.Env = mergeEnvironment(os.Environ(), environment)
 	processgroup.Configure(command)
-	command.WaitDelay = 5 * time.Second
+	command.WaitDelay = processgroup.DefaultWaitDelay
 	output, err := processgroup.CombinedOutput(command, processgroup.DefaultOutputLimitBytes)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {

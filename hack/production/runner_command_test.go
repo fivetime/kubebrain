@@ -12,7 +12,6 @@ import (
 )
 
 const productionScriptCommandTimeout = 30 * time.Second
-const productionCommandWaitDelay = 5 * time.Second
 
 func runProductionScriptCommand(t *testing.T, script string, env []string) ([]byte, error) {
 	t.Helper()
@@ -26,7 +25,7 @@ func runProductionCommand(t *testing.T, commandName string, args []string, env [
 
 	command := exec.CommandContext(ctx, commandName, args...)
 	processgroup.Configure(command)
-	command.WaitDelay = productionCommandWaitDelay
+	command.WaitDelay = processgroup.DefaultWaitDelay
 	command.Env = append(os.Environ(), env...)
 	output, err := processgroup.CombinedOutput(command, processgroup.DefaultOutputLimitBytes)
 	if ctx.Err() == context.DeadlineExceeded {

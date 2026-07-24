@@ -12,7 +12,6 @@ import (
 )
 
 const defaultTimeout = 30 * time.Second
-const defaultWaitDelay = 5 * time.Second
 
 func GoRun(t *testing.T, args ...string) ([]byte, error) {
 	t.Helper()
@@ -26,7 +25,7 @@ func Run(t *testing.T, commandName string, args []string, env []string) ([]byte,
 
 	command := exec.CommandContext(ctx, commandName, args...)
 	processgroup.Configure(command)
-	command.WaitDelay = defaultWaitDelay
+	command.WaitDelay = processgroup.DefaultWaitDelay
 	command.Env = append(os.Environ(), env...)
 	output, err := processgroup.CombinedOutput(command, processgroup.DefaultOutputLimitBytes)
 	if ctx.Err() == context.DeadlineExceeded {

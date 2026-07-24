@@ -12133,6 +12133,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./hack/production/cmd/operation-worker -count=1 -v`、
   `go test ./hack/production -run 'TestProduction(OperationWorkerStreamsExecutorWithProcessGroup|RuntimeExecutorCommandsUseProcessGroupAndBoundedOutput|TestCommandHelpersUseWaitDelay)' -count=1 -v`、
   `git diff --check`、`go vet ./...` 和 `go test ./... -count=1 -p 1` 均通过。
+- A786 集中 production executor `WaitDelay` 默认值：
+  A783-A785 已让 runtime wrapper、operation-worker 和测试 helper 都有 5 秒 wait delay，但该值
+  分散在多个 package，后续调参或重构容易出现某条 executor 路径漂移。现在
+  `internal/processgroup` 暴露 `DefaultWaitDelay`，archive/metering/operation archiver、
+  operation-worker、production script test helper 和 cmd `go run` test helper 均改为引用同一默认值。
+  `processgroup` 单测固定默认值为 5 秒，production 静态门禁要求所有生产 executor wrapper 和测试
+  helper 继续使用 `processgroup.DefaultWaitDelay`。
+  `go test ./hack/production/internal/processgroup ./hack/production/cmd/operation-worker ./hack/production/internal/testcommand -count=1 -v`、
+  `go test ./hack/production -run 'TestProduction(OperationWorkerStreamsExecutorWithProcessGroup|RuntimeExecutorCommandsUseProcessGroupAndBoundedOutput|TestCommandHelpersUseWaitDelay)' -count=1 -v`、
+  `git diff --check`、`go vet ./...` 和 `go test ./... -count=1 -p 1` 均通过。
 
 ### P2：运维兼容和长期验证
 

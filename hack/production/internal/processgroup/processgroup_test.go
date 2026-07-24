@@ -8,7 +8,14 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestDefaultWaitDelayBoundsExecutorTeardown(t *testing.T) {
+	if DefaultWaitDelay != 5*time.Second {
+		t.Fatalf("DefaultWaitDelay = %s, want 5s", DefaultWaitDelay)
+	}
+}
 
 func TestCombinedOutputCapturesStdoutAndStderr(t *testing.T) {
 	command := processgroupHelperCommand("mixed")

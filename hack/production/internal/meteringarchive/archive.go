@@ -168,7 +168,7 @@ func runCommand(ctx context.Context, executable string, environment []string) ([
 	command := exec.CommandContext(ctx, executable)
 	command.Env = mergeEnvironment(os.Environ(), environment)
 	processgroup.Configure(command)
-	command.WaitDelay = 5 * time.Second
+	command.WaitDelay = processgroup.DefaultWaitDelay
 	return processgroup.CombinedOutput(command, processgroup.DefaultOutputLimitBytes)
 }
 
