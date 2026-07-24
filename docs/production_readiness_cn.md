@@ -1479,7 +1479,9 @@ hack/dev/verify.sh
   发布门禁还必须让静态 API surface 测试同时覆盖 core etcd 服务与 Lock/Election
   service descriptor，确保新增公开 RPC 都有显式实现或显式拒绝分类；generated
   HTTP gateway 的注册 service 列表也必须固定为同一公开集合，避免 `/v3/*`
-  surface 在升级或重构中漏注册或无审查扩大。
+  surface 在升级或重构中漏注册或无审查扩大。protobuf 字段升级门禁应同时覆盖
+  Lock/Election request、response 和 nested `LeaderKey`，防止新增字段绕过 wrapper、
+  gateway、鉴权或错误归一化审计。
   Lock/Election 使用 upstream client/v3 concurrency recipe 及现有 KV/Lease/Watch
   后端；生产必须验证 lease-backed Lock 竞争接棒和 Election campaign/proclaim/resign，
   还必须在 blocked waiter 已写入队列键后取消 HTTP request，确认 context 传播、等待键

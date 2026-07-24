@@ -11329,6 +11329,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   防止未来升级或重构时漏注册已承诺的 Lock/Election route，或无审查地扩大
   `/v3/*` surface。`go test ./pkg/endpoint -run TestGRPCGatewaySurfaceIsExplicit -count=1`
   通过。
+- A715 补齐 Lock/Election protobuf 字段升级门禁：
+  A431/A432 已固定 core KV/Watch/Lease/Txn 请求和响应字段，但 dedicated
+  Lock/Election API 的 request、response 与 nested `LeaderKey` 仍未纳入字段
+  descriptor 审计。未来 etcd 升级若给 Lock、Unlock、Campaign、Proclaim、
+  Leader/Observe 或 Resign 增删、改名、重编号字段，KubeBrain 需要同步审计
+  concurrency wrapper、generated JSON gateway、auth keyspace 检查和 upstream
+  `Unknown` 错误归一化，而不是让新字段静默透传或被 discard。现在新增
+  `TestConcurrencyProtoFieldCoverage`，固定 13 个 concurrency protobuf message 的字段名与
+  wire number。`go test ./pkg/server/etcd -run TestConcurrencyProtoFieldCoverage -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

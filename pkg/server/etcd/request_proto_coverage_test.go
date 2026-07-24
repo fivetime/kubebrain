@@ -5,6 +5,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
+	"go.etcd.io/etcd/server/v3/etcdserver/api/v3election/v3electionpb"
+	"go.etcd.io/etcd/server/v3/etcdserver/api/v3lock/v3lockpb"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
@@ -98,6 +100,78 @@ func TestCoreRequestProtoFieldCoverage(t *testing.T) {
 			}
 			require.Equal(t, tc.fields, actual,
 				"etcd API request fields changed; audit validation, authorization, execution, Txn nesting, and forwarding before updating this guard")
+		})
+	}
+}
+
+func TestConcurrencyProtoFieldCoverage(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		msg    proto.Message
+		fields map[string]protoreflect.FieldNumber
+	}{
+		{
+			name: "LockRequest", msg: &v3lockpb.LockRequest{},
+			fields: map[string]protoreflect.FieldNumber{"name": 1, "lease": 2},
+		},
+		{
+			name: "LockResponse", msg: &v3lockpb.LockResponse{},
+			fields: map[string]protoreflect.FieldNumber{"header": 1, "key": 2},
+		},
+		{
+			name: "UnlockRequest", msg: &v3lockpb.UnlockRequest{},
+			fields: map[string]protoreflect.FieldNumber{"key": 1},
+		},
+		{
+			name: "UnlockResponse", msg: &v3lockpb.UnlockResponse{},
+			fields: map[string]protoreflect.FieldNumber{"header": 1},
+		},
+		{
+			name: "CampaignRequest", msg: &v3electionpb.CampaignRequest{},
+			fields: map[string]protoreflect.FieldNumber{"name": 1, "lease": 2, "value": 3},
+		},
+		{
+			name: "CampaignResponse", msg: &v3electionpb.CampaignResponse{},
+			fields: map[string]protoreflect.FieldNumber{"header": 1, "leader": 2},
+		},
+		{
+			name: "LeaderKey", msg: &v3electionpb.LeaderKey{},
+			fields: map[string]protoreflect.FieldNumber{"name": 1, "key": 2, "rev": 3, "lease": 4},
+		},
+		{
+			name: "LeaderRequest", msg: &v3electionpb.LeaderRequest{},
+			fields: map[string]protoreflect.FieldNumber{"name": 1},
+		},
+		{
+			name: "LeaderResponse", msg: &v3electionpb.LeaderResponse{},
+			fields: map[string]protoreflect.FieldNumber{"header": 1, "kv": 2},
+		},
+		{
+			name: "ResignRequest", msg: &v3electionpb.ResignRequest{},
+			fields: map[string]protoreflect.FieldNumber{"leader": 1},
+		},
+		{
+			name: "ResignResponse", msg: &v3electionpb.ResignResponse{},
+			fields: map[string]protoreflect.FieldNumber{"header": 1},
+		},
+		{
+			name: "ProclaimRequest", msg: &v3electionpb.ProclaimRequest{},
+			fields: map[string]protoreflect.FieldNumber{"leader": 1, "value": 2},
+		},
+		{
+			name: "ProclaimResponse", msg: &v3electionpb.ProclaimResponse{},
+			fields: map[string]protoreflect.FieldNumber{"header": 1},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			descriptor := tc.msg.ProtoReflect().Descriptor()
+			actual := make(map[string]protoreflect.FieldNumber, descriptor.Fields().Len())
+			for i := 0; i < descriptor.Fields().Len(); i++ {
+				field := descriptor.Fields().Get(i)
+				actual[string(field.Name())] = field.Number()
+			}
+			require.Equal(t, tc.fields, actual,
+				"etcd concurrency API fields changed; audit Lock/Election wrappers, gateway JSON behavior, authorization, and error normalization before updating this guard")
 		})
 	}
 }
