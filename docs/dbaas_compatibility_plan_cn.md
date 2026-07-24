@@ -11286,6 +11286,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   TokenReview、Operation 或 Secret API action：
   `go test ./hack/production/internal/parameterbroker ./hack/production/internal/operationqueue ./hack/production/cmd/operation-parameter-broker -count=1`
   通过。
+- A710 前置 operation API submit body 校验：
+  外部 operation API 的 `POST /v1/operations` 原先先执行 OIDC/JWKS 认证，再拒绝错误
+  `Content-Type`、unknown field、trailing JSON 或超限 body；明显畸形提交仍会消耗
+  认证依赖。现在 submit handler 在认证前完成 JSON media type、64 KiB body 上限、
+  unknown-field 和单对象 trailing 校验；回归使用计数 authenticator 确认 malformed submit
+  返回 400/415 且没有调用 authenticator 或 Operation store：
+  `go test ./hack/production/internal/operationapi ./hack/production/cmd/operation-api -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

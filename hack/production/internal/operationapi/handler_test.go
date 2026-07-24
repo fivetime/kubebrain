@@ -30,6 +30,17 @@ func (a staticAuthenticator) Authenticate(context.Context, string) (Principal, e
 	return a.principal, a.err
 }
 
+type countingAuthenticator struct {
+	principal Principal
+	err       error
+	calls     int
+}
+
+func (a *countingAuthenticator) Authenticate(context.Context, string) (Principal, error) {
+	a.calls++
+	return a.principal, a.err
+}
+
 type memoryOperationStore struct {
 	objects map[string]*unstructured.Unstructured
 	spec    operationqueue.Spec
@@ -173,6 +184,41 @@ func TestHandlerFailsClosedOnAuthenticationAndMalformedInput(t *testing.T) {
 	response = httptest.NewRecorder()
 	allowed.ServeHTTP(response, request)
 	require.Equal(t, http.StatusUnsupportedMediaType, response.Code)
+}
+
+func TestHandlerRejectsMalformedSubmitBeforeAuthentication(t *testing.T) {
+	validBody := `{
+		"name":"backup-1","operation_id":"backup-1","tenant":"tenant-a",
+		"instance":"instance-a","type":"Backup",
+		"parameters_sha256":"` + strings.Repeat("a", 64) + `","max_attempts":3
+	}`
+	for _, tc := range []struct {
+		name        string
+		contentType string
+		body        string
+		status      int
+	}{
+		{name: "unsupported content type", contentType: "text/plain", body: validBody, status: http.StatusUnsupportedMediaType},
+		{name: "unknown field", contentType: "application/json", body: `{"unknown":true}`, status: http.StatusBadRequest},
+		{name: "trailing object", contentType: "application/json", body: validBody + `{}`, status: http.StatusBadRequest},
+		{name: "oversized body", contentType: "application/json", body: strings.Repeat(" ", requestBodyLimit+1), status: http.StatusBadRequest},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			authenticator := &countingAuthenticator{principal: authorizedPrincipal()}
+			store := &memoryOperationStore{objects: make(map[string]*unstructured.Unstructured)}
+			handler, err := NewHandler(authenticator, store, time.Second)
+			require.NoError(t, err)
+			request := httptest.NewRequest(http.MethodPost, "/v1/operations", strings.NewReader(tc.body))
+			request.Header.Set("Content-Type", tc.contentType)
+			request.Header.Set("Authorization", "Bearer token")
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+
+			require.Equal(t, tc.status, response.Code)
+			require.Zero(t, authenticator.calls)
+			require.Empty(t, store.objects)
+		})
+	}
 }
 
 func TestHandlerRejectsUnboundParameterSecret(t *testing.T) {

@@ -133,25 +133,12 @@ func (h *Handler) principal(response http.ResponseWriter, request *http.Request)
 }
 
 func (h *Handler) submit(response http.ResponseWriter, request *http.Request) {
-	principal, ok := h.principal(response, request)
+	input, ok := decodeSubmitRequest(response, request)
 	if !ok {
 		return
 	}
-	contentType, _, err := mime.ParseMediaType(request.Header.Get("Content-Type"))
-	if err != nil || contentType != "application/json" {
-		writeJSON(response, http.StatusUnsupportedMediaType, errorResponse{Error: "content type must be application/json"})
-		return
-	}
-	body := http.MaxBytesReader(response, request.Body, requestBodyLimit)
-	decoder := json.NewDecoder(body)
-	decoder.DisallowUnknownFields()
-	var input submitRequest
-	if err := decoder.Decode(&input); err != nil {
-		writeJSON(response, http.StatusBadRequest, errorResponse{Error: "invalid request body"})
-		return
-	}
-	if decoder.Decode(&struct{}{}) != io.EOF {
-		writeJSON(response, http.StatusBadRequest, errorResponse{Error: "request body must contain one JSON object"})
+	principal, ok := h.principal(response, request)
+	if !ok {
 		return
 	}
 	if input.Tenant != principal.Tenant || !principal.Allows(input.Instance) {
@@ -185,6 +172,27 @@ func (h *Handler) submit(response http.ResponseWriter, request *http.Request) {
 		return
 	}
 	writeJSON(response, http.StatusAccepted, summarizeOperation(object))
+}
+
+func decodeSubmitRequest(response http.ResponseWriter, request *http.Request) (submitRequest, bool) {
+	contentType, _, err := mime.ParseMediaType(request.Header.Get("Content-Type"))
+	if err != nil || contentType != "application/json" {
+		writeJSON(response, http.StatusUnsupportedMediaType, errorResponse{Error: "content type must be application/json"})
+		return submitRequest{}, false
+	}
+	body := http.MaxBytesReader(response, request.Body, requestBodyLimit)
+	decoder := json.NewDecoder(body)
+	decoder.DisallowUnknownFields()
+	var input submitRequest
+	if err := decoder.Decode(&input); err != nil {
+		writeJSON(response, http.StatusBadRequest, errorResponse{Error: "invalid request body"})
+		return submitRequest{}, false
+	}
+	if decoder.Decode(&struct{}{}) != io.EOF {
+		writeJSON(response, http.StatusBadRequest, errorResponse{Error: "request body must contain one JSON object"})
+		return submitRequest{}, false
+	}
+	return input, true
 }
 
 func authorizedParametersSecret(input submitRequest, tenant string) bool {

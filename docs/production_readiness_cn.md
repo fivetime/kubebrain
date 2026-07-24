@@ -1732,6 +1732,8 @@ instance 必须在数组中；数组元素只接受 `*` 或 CRD `spec.instance` 
 （受信任的控制面 token 可显式使用 `*`）。Bearer header 的 scheme 大小写不敏感，
 但 token 本体不得为空或包含任何空白，不能通过 trim 畸形 header 后继续验签。提交时 sub 固化为
 immutable `requestedBy`，tenant 同样进入 spec、worker claim 和终态审计 artifact。
+`POST /v1/operations` 在 OIDC 验签前先拒绝非 `application/json`、超过 64 KiB、
+unknown field 或 trailing JSON 的请求体，畸形提交不能消耗 OIDC/JWKS 或 Operation API。
 参数 Secret 只能引用受信控制面预置的 `params-<tenant>-*` 对象，且 key 固定为
 `parameters.json`；API ServiceAccount 不具备 Secret 读取或写入权限。
 JWKS 默认缓存 5 分钟；并发 cache miss 合并为单次刷新，unknown `kid` 或刷新失败后
