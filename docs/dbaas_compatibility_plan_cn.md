@@ -11228,6 +11228,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   label。fake dynamic client 回归确认非法 allowlist 返回错误且没有任何 API action：
   `go test ./hack/production/internal/backupscheduler ./hack/production/cmd/backup-scheduler -count=1`
   通过。
+- A704 前置 audit finalizer release identity 校验：
+  operation-audit CLI 已在 client 初始化前校验 `--namespace`，capture 路径也通过
+  operation queue 的 `Get` 继承 operation name 校验；但
+  `operationauditrelease.ReleaseWithExpectedReceipt` 作为库入口在读取 artifact/receipt 后才
+  用 namespace/name 发起 Operation GET。未来调用方直接传入 `ops.ns` 或 `backup/1` 时，
+  错误会等到证据文件解析或 Kubernetes API 阶段才暴露。现在 release 在本地证据读取前校验
+  namespace 为 Kubernetes DNS label、Operation name 为 DNS subdomain。fake dynamic client
+  回归使用不存在的证据路径，确认非法 identity 返回错误且没有任何 API action：
+  `go test ./hack/production/internal/operationauditrelease ./hack/production/cmd/operation-audit -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

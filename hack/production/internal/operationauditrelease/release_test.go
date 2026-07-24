@@ -120,6 +120,29 @@ func TestReleaseWithExpectedReceiptRejectsScopeDrift(t *testing.T) {
 	require.NotContains(t, result.GetFinalizers(), operationaudit.Finalizer)
 }
 
+func TestReleaseRejectsUnsafeOperationIdentityBeforeEvidenceAndAPI(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		namespace string
+		operation string
+		message   string
+	}{
+		{name: "namespace", namespace: "ops.ns", operation: "backup-1", message: "invalid namespace ops.ns"},
+		{name: "operation name", namespace: "operations", operation: "backup/1", message: "invalid audit release operation name backup/1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := releaseClient(archivedOperation())
+			result, err := releaseWithExpected(
+				context.Background(), client, tc.namespace, tc.operation,
+				"/does/not/read/artifact.json", "/does/not/read/receipt.json",
+			)
+			require.Nil(t, result)
+			require.ErrorContains(t, err, tc.message)
+			require.Empty(t, client.Actions())
+		})
+	}
+}
+
 func TestReleaseRejectsConflictingArchiveAnnotations(t *testing.T) {
 	object := archivedOperation()
 	object.SetAnnotations(map[string]string{

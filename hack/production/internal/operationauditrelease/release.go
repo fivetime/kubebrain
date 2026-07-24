@@ -6,12 +6,14 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/kubewharf/kubebrain/hack/production/internal/namespaceinventory"
 	"github.com/kubewharf/kubebrain/hack/production/internal/operationauditbuilder"
 	"github.com/kubewharf/kubebrain/hack/production/internal/operationqueue"
 	"github.com/kubewharf/kubebrain/hack/production/operationaudit"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/dynamic"
 )
 
@@ -31,6 +33,12 @@ func ReleaseWithExpectedReceipt(
 ) (*unstructured.Unstructured, error) {
 	if namespace == "" || name == "" || artifactPath == "" || receiptPath == "" {
 		return nil, errors.New("audit release request is incomplete")
+	}
+	if err := namespaceinventory.ValidateOne(namespace); err != nil {
+		return nil, fmt.Errorf("audit release namespace: %w", err)
+	}
+	if problems := validation.IsDNS1123Subdomain(name); len(problems) != 0 {
+		return nil, errors.New("invalid audit release operation name " + name + ": " + problems[0])
 	}
 	artifactStatus, err := operationaudit.Inspect(artifactPath)
 	if err != nil {

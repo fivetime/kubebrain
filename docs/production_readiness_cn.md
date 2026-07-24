@@ -1935,7 +1935,9 @@ delete 前要求非空 UID precondition。Operation spec 中的 managed paramete
 不可由 Submit 生成的引用带入 Secret API。operation parameter broker handler 构造期也会
 校验自身 identity namespace，避免 Ready probe 使用非法 namespace。backup scheduler 的
 静态 namespace allowlist 在每轮 reconcile 的首个 policy list 前重新校验，空、重复或非法
-namespace 会让整轮 fail closed，且不会产生 Kubernetes API action。
+namespace 会让整轮 fail closed，且不会产生 Kubernetes API action。audit finalizer release
+在读取本地 artifact/receipt 和触发 Operation GET 前校验 release namespace 与 Operation
+name，非法终态身份不会进入证据解析或 Kubernetes API。
 inventory 无效时 claim 在读取任何 Operation 前 fail closed。中央 worker Role 只能
 `get` 指定 inventory ConfigMap；各目标 namespace 的 Operation/Secret/Lease 权限仍来自
 逐 namespace RoleBinding。
