@@ -1497,7 +1497,8 @@ hack/dev/verify.sh
   `Authorization` 与 gateway marker 都到达后端 gRPC stream，不能只验证 unary route。
   仍需预生产长时故障与慢消费者 soak，不得据此声明长期流稳定性。LeaseKeepAlive HTTP
   双向流还覆盖同一有限 body 内多条 JSON 请求、逐请求响应、未知 lease 的 TTL=0 零值省略
-  以及 body EOF 后正常结束；发布门禁应保留多消息形状，不能只验证单次 grant/keepalive。
+  以及 body EOF 后正常结束；其 gateway 路径同样必须证明 `Authorization` 与 gateway
+  marker 到达后端 stream，发布门禁应保留多消息形状，不能只验证单次 grant/keepalive。
   专用 Lock/Election convenience API 的不存在 lease、空 unlock key、缺失 leader 和
   无当前 leader 错误在当前 upstream 中均为 gRPC Unknown/HTTP 500；不得擅自按底层
   KV/Lease API “规范化”为 400/404，发布门禁需比较精确 code 和 message。

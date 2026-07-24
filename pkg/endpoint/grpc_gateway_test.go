@@ -98,6 +98,7 @@ type gatewayElectionServer struct {
 
 type gatewayLeaseServer struct {
 	etcdserverpb.UnimplementedLeaseServer
+	md metadata.MD
 }
 
 type gatewayBlockingLockServer struct {
@@ -127,6 +128,9 @@ func (s *gatewayBlockingElectionServer) Campaign(ctx context.Context, _ *v3elect
 }
 
 func (s *gatewayLeaseServer) LeaseKeepAlive(stream etcdserverpb.Lease_LeaseKeepAliveServer) error {
+	if md, ok := metadata.FromIncomingContext(stream.Context()); ok {
+		s.md = md.Copy()
+	}
 	for {
 		request, err := stream.Recv()
 		if err == io.EOF {
@@ -307,9 +311,10 @@ func TestGRPCGatewayStreamsWatchAndElectionResponses(t *testing.T) {
 	watchNext := make(chan struct{})
 	electionNext := make(chan struct{})
 	watchServer := &gatewayWatchServer{next: watchNext}
+	leaseServer := &gatewayLeaseServer{}
 	electionServer := &gatewayElectionServer{next: electionNext}
 	etcdserverpb.RegisterWatchServer(grpcServer, watchServer)
-	etcdserverpb.RegisterLeaseServer(grpcServer, &gatewayLeaseServer{})
+	etcdserverpb.RegisterLeaseServer(grpcServer, leaseServer)
 	v3electionpb.RegisterElectionServer(grpcServer, electionServer)
 	go func() { _ = grpcServer.Serve(listener) }()
 	t.Cleanup(grpcServer.Stop)
@@ -367,6 +372,7 @@ func TestGRPCGatewayStreamsWatchAndElectionResponses(t *testing.T) {
 		strings.NewReader("{\"ID\":\"1\"}\n{\"ID\":\"2\"}\n"))
 	require.NoError(t, err)
 	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "Bearer lease-token")
 	response, err := http.DefaultClient.Do(request)
 	require.NoError(t, err)
 	defer response.Body.Close()
@@ -382,6 +388,8 @@ func TestGRPCGatewayStreamsWatchAndElectionResponses(t *testing.T) {
 	require.JSONEq(t, `{"result":{"header":{"revision":"52"},"ID":"2","TTL":"12"}}`, line)
 	_, err = reader.ReadString('\n')
 	require.ErrorIs(t, err, io.EOF)
+	require.Equal(t, []string{grpcGatewayRequestMarkerValue}, leaseServer.md.Get(grpcGatewayRequestMarkerKey))
+	require.Equal(t, []string{"Bearer lease-token"}, leaseServer.md.Get(rpctypes.TokenFieldNameSwagger))
 }
 
 func TestGRPCGatewayPropagatesConcurrencyRequestCancellation(t *testing.T) {

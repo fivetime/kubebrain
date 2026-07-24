@@ -11436,6 +11436,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   metadata，且原有 chunked NDJSON 响应形状保持不变。
   `go test ./pkg/endpoint -run TestGRPCGatewayStreamsWatchAndElectionResponses -count=1 -v`
   通过。
+- A725 固定 LeaseKeepAlive streaming gateway token metadata：
+  A724 覆盖 Watch 与 Election Observe streaming gateway，但 `/v3/lease/keepalive` 是另一条
+  双向流式 HTTP JSON route，且后端 LeaseKeepAlive 会对每条 keepalive 请求重新鉴权。
+  若建流 metadata 丢失，后续消息会被当成匿名或可能在 client-cert-auth 模式触发内部证书
+  回退。现在同样扩展 `TestGRPCGatewayStreamsWatchAndElectionResponses`：fake Lease server
+  记录 stream context metadata，HTTP 请求体发送两条 keepalive JSON 消息并携带
+  `Authorization: Bearer lease-token`，断言后端收到 gateway marker 与 etcd 兼容
+  `authorization` metadata，同时保留两条逐请求响应和 EOF 结束形状。
+  `go test ./pkg/endpoint -run TestGRPCGatewayStreamsWatchAndElectionResponses -count=1 -v`
+  通过。
 
 ### P2：运维兼容和长期验证
 
