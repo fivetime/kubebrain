@@ -116,7 +116,15 @@ type gatewayElectionServer struct {
 
 type gatewayLeaseServer struct {
 	etcdserverpb.UnimplementedLeaseServer
-	md metadata.MD
+	grantRequest      *etcdserverpb.LeaseGrantRequest
+	revokeRequest     *etcdserverpb.LeaseRevokeRequest
+	timeToLiveRequest *etcdserverpb.LeaseTimeToLiveRequest
+	leasesRequest     *etcdserverpb.LeaseLeasesRequest
+	grantMD           metadata.MD
+	revokeMD          metadata.MD
+	timeToLiveMD      metadata.MD
+	leasesMD          metadata.MD
+	md                metadata.MD
 }
 
 type gatewayBlockingLockServer struct {
@@ -165,6 +173,54 @@ func (s *gatewayLeaseServer) LeaseKeepAlive(stream etcdserverpb.Lease_LeaseKeepA
 			return err
 		}
 	}
+}
+
+func (s *gatewayLeaseServer) LeaseGrant(ctx context.Context, request *etcdserverpb.LeaseGrantRequest) (*etcdserverpb.LeaseGrantResponse, error) {
+	s.grantRequest = request
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		s.grantMD = md.Copy()
+	}
+	return &etcdserverpb.LeaseGrantResponse{
+		Header: &etcdserverpb.ResponseHeader{ClusterId: 81, MemberId: 82, Revision: 83, RaftTerm: 84},
+		ID:     request.ID,
+		TTL:    request.TTL,
+		Error:  "lease warning",
+	}, nil
+}
+
+func (s *gatewayLeaseServer) LeaseRevoke(ctx context.Context, request *etcdserverpb.LeaseRevokeRequest) (*etcdserverpb.LeaseRevokeResponse, error) {
+	s.revokeRequest = request
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		s.revokeMD = md.Copy()
+	}
+	return &etcdserverpb.LeaseRevokeResponse{
+		Header: &etcdserverpb.ResponseHeader{ClusterId: 85, MemberId: 86, Revision: 87, RaftTerm: 88},
+	}, nil
+}
+
+func (s *gatewayLeaseServer) LeaseTimeToLive(ctx context.Context, request *etcdserverpb.LeaseTimeToLiveRequest) (*etcdserverpb.LeaseTimeToLiveResponse, error) {
+	s.timeToLiveRequest = request
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		s.timeToLiveMD = md.Copy()
+	}
+	return &etcdserverpb.LeaseTimeToLiveResponse{
+		Header:     &etcdserverpb.ResponseHeader{ClusterId: 89, MemberId: 90, Revision: 91, RaftTerm: 92},
+		ID:         request.ID,
+		TTL:        93,
+		GrantedTTL: 94,
+		Keys:       [][]byte{[]byte("lease-key")},
+	}, nil
+}
+
+func (s *gatewayLeaseServer) LeaseLeases(ctx context.Context, request *etcdserverpb.LeaseLeasesRequest) (*etcdserverpb.LeaseLeasesResponse, error) {
+	s.leasesRequest = request
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		s.leasesMD = md.Copy()
+	}
+	return &etcdserverpb.LeaseLeasesResponse{
+		Header: &etcdserverpb.ResponseHeader{ClusterId: 95, MemberId: 96, Revision: 97, RaftTerm: 98},
+		Leases: []*etcdserverpb.LeaseStatus{{ID: 99}, {ID: 100}},
+	}, nil
 }
 
 func (s *gatewayElectionServer) Observe(request *v3electionpb.LeaderRequest, stream v3electionpb.Election_ObserveServer) error {
@@ -304,12 +360,14 @@ func TestGRPCGatewayUsesGeneratedEtcdJSONContract(t *testing.T) {
 	clusterServer := &gatewayClusterServer{}
 	maintenanceServer := &gatewayMaintenanceServer{}
 	authServer := &gatewayAuthServer{}
+	leaseServer := &gatewayLeaseServer{}
 	lockServer := &gatewayLockServer{}
 	electionServer := &gatewayElectionServer{}
 	etcdserverpb.RegisterKVServer(grpcServer, kvServer)
 	etcdserverpb.RegisterClusterServer(grpcServer, clusterServer)
 	etcdserverpb.RegisterMaintenanceServer(grpcServer, maintenanceServer)
 	etcdserverpb.RegisterAuthServer(grpcServer, authServer)
+	etcdserverpb.RegisterLeaseServer(grpcServer, leaseServer)
 	v3lockpb.RegisterLockServer(grpcServer, lockServer)
 	v3electionpb.RegisterElectionServer(grpcServer, electionServer)
 	go func() { _ = grpcServer.Serve(listener) }()
@@ -347,9 +405,9 @@ func TestGRPCGatewayUsesGeneratedEtcdJSONContract(t *testing.T) {
 	require.Equal(t, []string{grpcGatewayRequestMarkerValue}, kvServer.md.Get(grpcGatewayRequestMarkerKey))
 	require.Equal(t, []string{"Bearer kv-token"}, kvServer.md.Get(rpctypes.TokenFieldNameSwagger))
 
-	assertUnaryContract := func(path, token, expectedJSON string, requestSeen func() bool, md *metadata.MD) {
+	assertUnaryContract := func(path, body, token, expectedJSON string, requestSeen func() bool, md *metadata.MD) {
 		t.Helper()
-		request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{}`))
+		request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
 		request.Header.Set("Content-Type", "application/json")
 		request.Header.Set("Authorization", token)
 		response := httptest.NewRecorder()
@@ -362,7 +420,7 @@ func TestGRPCGatewayUsesGeneratedEtcdJSONContract(t *testing.T) {
 		require.Equal(t, []string{token}, md.Get(rpctypes.TokenFieldNameSwagger))
 	}
 
-	assertUnaryContract("/v3/cluster/member/list", "Bearer cluster-token", `{
+	assertUnaryContract("/v3/cluster/member/list", `{}`, "Bearer cluster-token", `{
 		"header":{"cluster_id":"51","member_id":"52","revision":"53","raft_term":"54"},
 		"members":[{
 			"ID":"55",
@@ -373,7 +431,7 @@ func TestGRPCGatewayUsesGeneratedEtcdJSONContract(t *testing.T) {
 		}]
 	}`,
 		func() bool { return clusterServer.request != nil }, &clusterServer.md)
-	assertUnaryContract("/v3/maintenance/status", "Bearer maintenance-token", `{
+	assertUnaryContract("/v3/maintenance/status", `{}`, "Bearer maintenance-token", `{
 		"header":{"cluster_id":"61","member_id":"62","revision":"63","raft_term":"64"},
 		"version":"3.7.0",
 		"dbSize":"600",
@@ -388,12 +446,50 @@ func TestGRPCGatewayUsesGeneratedEtcdJSONContract(t *testing.T) {
 		"dbSizeQuota":"70"
 	}`,
 		func() bool { return maintenanceServer.request != nil }, &maintenanceServer.md)
-	assertUnaryContract("/v3/auth/status", "Bearer auth-token", `{
+	assertUnaryContract("/v3/auth/status", `{}`, "Bearer auth-token", `{
 		"header":{"cluster_id":"71","member_id":"72","revision":"73","raft_term":"74"},
 		"enabled":true,
 		"authRevision":"75"
 	}`,
 		func() bool { return authServer.request != nil }, &authServer.md)
+	assertUnaryContract("/v3/lease/grant", `{"TTL":"300","ID":"101","unknown_field":"discarded"}`,
+		"Bearer lease-grant-token", `{
+			"header":{"cluster_id":"81","member_id":"82","revision":"83","raft_term":"84"},
+			"ID":"101",
+			"TTL":"300",
+			"error":"lease warning"
+		}`,
+		func() bool {
+			return leaseServer.grantRequest != nil &&
+				leaseServer.grantRequest.TTL == 300 &&
+				leaseServer.grantRequest.ID == 101
+		}, &leaseServer.grantMD)
+	assertUnaryContract("/v3/lease/revoke", `{"ID":"102","unknown_field":"discarded"}`,
+		"Bearer lease-revoke-token", `{
+			"header":{"cluster_id":"85","member_id":"86","revision":"87","raft_term":"88"}
+		}`,
+		func() bool {
+			return leaseServer.revokeRequest != nil && leaseServer.revokeRequest.ID == 102
+		}, &leaseServer.revokeMD)
+	assertUnaryContract("/v3/lease/timetolive", `{"ID":"103","keys":true,"unknown_field":"discarded"}`,
+		"Bearer lease-ttl-token", `{
+			"header":{"cluster_id":"89","member_id":"90","revision":"91","raft_term":"92"},
+			"ID":"103",
+			"TTL":"93",
+			"grantedTTL":"94",
+			"keys":["bGVhc2Uta2V5"]
+		}`,
+		func() bool {
+			return leaseServer.timeToLiveRequest != nil &&
+				leaseServer.timeToLiveRequest.ID == 103 &&
+				leaseServer.timeToLiveRequest.Keys
+		}, &leaseServer.timeToLiveMD)
+	assertUnaryContract("/v3/lease/leases", `{"unknown_field":"discarded"}`,
+		"Bearer lease-list-token", `{
+			"header":{"cluster_id":"95","member_id":"96","revision":"97","raft_term":"98"},
+			"leases":[{"ID":"99"},{"ID":"100"}]
+		}`,
+		func() bool { return leaseServer.leasesRequest != nil }, &leaseServer.leasesMD)
 
 	request = httptest.NewRequest(http.MethodPost, "/v3/lock/unlock",
 		strings.NewReader(`{"key":"L2xvY2svMDE=","unknown_field":"discarded"}`))

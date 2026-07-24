@@ -11480,6 +11480,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `EmitUnpopulated=false` 和 int64/uint64 字符串编码语义，不能退化为只看 route 200。
   `go test ./pkg/endpoint -run TestGRPCGatewayUsesGeneratedEtcdJSONContract -count=1 -v`
   通过。
+- A729 固定 Lease unary HTTP gateway contract：
+  A725 只覆盖 `/v3/lease/keepalive` 双向流的 token metadata 和逐消息响应，LeaseGrant、
+  LeaseRevoke、LeaseTimeToLive 与 LeaseLeases 的 generated unary route 仍没有本地契约
+  门禁。现在注册同一个 fake Lease server，并逐条调用 `/v3/lease/grant`、
+  `/v3/lease/revoke`、`/v3/lease/timetolive` 和 `/v3/lease/leases`：固定 `TTL`、`ID`、
+  `keys` 请求解码及 unknown-field discard，断言每个 method 都收到 gateway marker 和各自
+  `Authorization` metadata，同时固定 response header、`ID`/`TTL`/`grantedTTL`、
+  base64 keys 与 lease list 的 proto-name JSON 形状及 int64 字符串编码。这样 Lease
+  gateway 不再只有 streaming 路径受保护。
+  `go test ./pkg/endpoint -run TestGRPCGatewayUsesGeneratedEtcdJSONContract -count=1 -v`
+  通过。
 
 ### P2：运维兼容和长期验证
 
