@@ -11616,6 +11616,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./pkg/endpoint -run 'TestGRPCGateway(Surface|RouteSurface)IsExplicit' -count=1 -v`、
   `go test ./pkg/endpoint -count=1`、`go vet ./...` 和 `go test ./... -count=1 -p 1`
   均通过。
+- A741 固定 keyspace 启动参数校验边界：
+  后端 `NewBackend` 遇到非法 keyspace 会 fail-loud，防止静默回退到 legacy tenant 后跨实例读写；
+  因此生产启动必须在 option validation 阶段先拒绝非法 `--keyspace`。`coder.NewKeyspace` 已固定
+  编码正则和隔离性，但 CLI option 层此前只被 skipped-prefix 测试间接经过。现在新增
+  `TestKeyspaceValidationRejectsInvalidTenantNames`，直接覆盖 legacy 空 keyspace、普通合法名、
+  64 字符上限，以及大写、首尾 `-`、下划线和 65 字符超限拒绝。这样 DBaaS 控制面或人工发布
+  若生成非法租户名，会得到普通 validation error，而不是进入 backend 构造路径。
+  `go test ./cmd/option -run 'Test(KeyspaceValidationRejectsInvalidTenantNames|SkippedPrefixValidationUsesUserKeyspaceAndRejectsOverlaps)' -count=1 -v`、
+  `go test ./cmd/option -count=1`、`go vet ./...` 和 `go test ./... -count=1 -p 1`
+  均通过。
 
 ### P2：运维兼容和长期验证
 

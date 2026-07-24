@@ -15,6 +15,7 @@
 package option
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -193,6 +194,32 @@ func TestSkippedPrefixValidationUsesUserKeyspaceAndRejectsOverlaps(t *testing.T)
 			o := newValid()
 			o.SkippedPrefixes = prefixes
 			require.Error(t, o.Validate())
+		})
+	}
+}
+
+func TestKeyspaceValidationRejectsInvalidTenantNames(t *testing.T) {
+	newValid := func() *KubeBrainOption {
+		o := NewOptions()
+		fs := pflag.NewFlagSet("test", pflag.ContinueOnError)
+		o.AddFlags(fs)
+		require.NoError(t, fs.Parse([]string{"--pd-addrs=127.0.0.1:2379"}))
+		return o
+	}
+
+	for _, keyspace := range []string{"", "a", "tenant-a", "tenant-1", strings.Repeat("a", 64)} {
+		t.Run("valid/"+keyspace, func(t *testing.T) {
+			o := newValid()
+			o.Keyspace = keyspace
+			require.NoError(t, o.Validate())
+		})
+	}
+
+	for _, keyspace := range []string{"Tenant", "-tenant", "tenant-", "tenant_a", strings.Repeat("a", 65)} {
+		t.Run("invalid/"+keyspace, func(t *testing.T) {
+			o := newValid()
+			o.Keyspace = keyspace
+			require.ErrorContains(t, o.Validate(), "invalid keyspace")
 		})
 	}
 }
