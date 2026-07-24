@@ -472,7 +472,9 @@ KubeBrain StatefulSet 缩到 0，并等待 ready replicas 与实例 Pod 都归�
 `destroy` 再次核对所有仍存在资源的 UID，并拒绝任何新出现或同名换 UID 的实例 PVC。
 删除由 `hack/production/cmd/uid-delete` 直接发送 Kubernetes
 `DeleteOptions.preconditions.uid` 与 foreground propagation；中断重试允许资源已经
-不存在，但名称复用立即失败。该工具在未显式提供 kubeconfig 时优先使用 Pod
+不存在，但名称复用立即失败。该工具在构造 dynamic client 请求前校验 apiVersion、resource
+path segment、可选 namespace、resource name 和非空 UID precondition，非法 path 片段不会
+进入 Kubernetes REST URL。该工具在未显式提供 kubeconfig 时优先使用 Pod
 ServiceAccount 的 in-cluster 配置；环境变量 `KUBECONFIG` 只能在 in-cluster 不可用后作为
 本地回退输入，销毁 worker 不依赖 home 目录 kubeconfig。最终还
 要求全部固定资源、实例 PVC、PD/TiKV Pod 和

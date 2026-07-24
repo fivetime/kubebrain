@@ -60,6 +60,57 @@ func TestMainRejectsInvalidNamespaceBeforeKubeconfig(t *testing.T) {
 	require.Contains(t, string(output), "invalid namespace tenant.a")
 }
 
+func TestDeleteWithUIDRejectsUnsafeRequestBeforeAPI(t *testing.T) {
+	called := false
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		called = true
+	}))
+	defer server.Close()
+
+	client, err := dynamicClient(testRESTConfig(server.URL))
+	require.NoError(t, err)
+	for _, tc := range []struct {
+		name       string
+		apiVersion string
+		resource   string
+		namespace  string
+		objectName string
+		uid        string
+		message    string
+	}{
+		{
+			name: "resource", apiVersion: "v1", resource: "pods/status",
+			namespace: "tenant-a", objectName: "pod-a", uid: "uid-1",
+			message: "invalid resource pods/status",
+		},
+		{
+			name: "namespace", apiVersion: "v1", resource: "pods",
+			namespace: "tenant.a", objectName: "pod-a", uid: "uid-1",
+			message: "invalid namespace tenant.a",
+		},
+		{
+			name: "name", apiVersion: "v1", resource: "pods",
+			namespace: "tenant-a", objectName: "pod/a", uid: "uid-1",
+			message: "invalid resource name pod/a",
+		},
+		{
+			name: "uid", apiVersion: "v1", resource: "pods",
+			namespace: "tenant-a", objectName: "pod-a",
+			message: "UID precondition is required",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			called = false
+			err := deleteWithUID(
+				context.Background(), client,
+				tc.apiVersion, tc.resource, tc.namespace, tc.objectName, tc.uid,
+			)
+			require.ErrorContains(t, err, tc.message)
+			require.False(t, called)
+		})
+	}
+}
+
 func TestDeleteWithUIDReturnsPreconditionConflict(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

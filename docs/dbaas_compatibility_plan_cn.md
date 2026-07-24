@@ -11238,6 +11238,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   回归使用不存在的证据路径，确认非法 identity 返回错误且没有任何 API action：
   `go test ./hack/production/internal/operationauditrelease ./hack/production/cmd/operation-audit -count=1`
   通过。
+- A705 前置 UID-fenced delete request identity 校验：
+  A187/A693 让销毁流程使用 `uid-delete` 并在 CLI 层校验 namespace，但 `deleteWithUID`
+  库函数仍会把调用方传入的 resource、name 和空 UID 直接交给 dynamic client；非法
+  `pods/status`、`pod/a` 或空 UID 要等 REST path/body 阶段才失败。现在主函数和
+  `deleteWithUID` 复用 `validateDeleteRequest`：apiVersion 必须可解析且 group/version 符合
+  Kubernetes DNS 形状，resource 必须是 DNS label，namespace 若存在必须是 DNS label，
+  resource name 必须是 DNS subdomain，UID precondition 必须非空。HTTP fake server 回归确认
+  非法 resource/namespace/name/UID 都返回本地错误且不会发出 DELETE：
+  `go test ./hack/production/cmd/uid-delete -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

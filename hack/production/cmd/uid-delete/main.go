@@ -14,6 +14,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -42,20 +43,12 @@ func main() {
 	flag.DurationVar(&timeout, "timeout", 30*time.Second, "API request timeout")
 	flag.Parse()
 
-	if apiVersion == "" || resource == "" || name == "" || uid == "" {
-		log.Fatal("--api-version, --resource, --name, and --uid are required")
-	}
 	if timeout <= 0 {
 		log.Fatal("--timeout must be positive")
 	}
-	if namespace != "" {
-		if err := namespaceinventory.ValidateOne(namespace); err != nil {
-			log.Fatal("--namespace: ", err)
-		}
-	}
-	groupVersion, err := schema.ParseGroupVersion(apiVersion)
+	groupVersion, err := validateDeleteRequest(apiVersion, resource, namespace, name, uid)
 	if err != nil {
-		log.Fatalf("parse API version: %v", err)
+		log.Fatal(err)
 	}
 
 	config, err := clientConfig(kubeconfig, kubeContext)
@@ -107,9 +100,9 @@ func deleteWithUID(
 	client dynamic.Interface,
 	apiVersion, resource, namespace, name, uid string,
 ) error {
-	groupVersion, err := schema.ParseGroupVersion(apiVersion)
+	groupVersion, err := validateDeleteRequest(apiVersion, resource, namespace, name, uid)
 	if err != nil {
-		return fmt.Errorf("parse API version: %w", err)
+		return err
 	}
 	propagation := metav1.DeletePropagationForeground
 	expectedUID := types.UID(uid)
@@ -128,6 +121,41 @@ func deleteWithUID(
 			Preconditions:     &metav1.Preconditions{UID: &expectedUID},
 		},
 	)
+}
+
+func validateDeleteRequest(
+	apiVersion, resource, namespace, name, uid string,
+) (schema.GroupVersion, error) {
+	if apiVersion == "" || resource == "" || name == "" {
+		return schema.GroupVersion{}, errors.New("--api-version, --resource, and --name are required")
+	}
+	if uid == "" {
+		return schema.GroupVersion{}, errors.New("UID precondition is required")
+	}
+	groupVersion, err := schema.ParseGroupVersion(apiVersion)
+	if err != nil {
+		return schema.GroupVersion{}, fmt.Errorf("parse API version: %w", err)
+	}
+	if groupVersion.Group != "" {
+		if problems := validation.IsDNS1123Subdomain(groupVersion.Group); len(problems) != 0 {
+			return schema.GroupVersion{}, errors.New("invalid API group " + groupVersion.Group + ": " + problems[0])
+		}
+	}
+	if problems := validation.IsDNS1123Label(groupVersion.Version); len(problems) != 0 {
+		return schema.GroupVersion{}, errors.New("invalid API version " + groupVersion.Version + ": " + problems[0])
+	}
+	if problems := validation.IsDNS1123Label(resource); len(problems) != 0 {
+		return schema.GroupVersion{}, errors.New("invalid resource " + resource + ": " + problems[0])
+	}
+	if namespace != "" {
+		if err := namespaceinventory.ValidateOne(namespace); err != nil {
+			return schema.GroupVersion{}, err
+		}
+	}
+	if problems := validation.IsDNS1123Subdomain(name); len(problems) != 0 {
+		return schema.GroupVersion{}, errors.New("invalid resource name " + name + ": " + problems[0])
+	}
+	return groupVersion, nil
 }
 
 func init() {
