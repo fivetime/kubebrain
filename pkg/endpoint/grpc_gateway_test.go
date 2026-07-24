@@ -255,6 +255,7 @@ func TestGRPCGatewayUsesGeneratedEtcdJSONContract(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/v3/kv/range",
 		strings.NewReader(`{"key":"YQ==","limit":"1","unknown_field":"discarded"}`))
 	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "Bearer kv-token")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 
@@ -270,6 +271,7 @@ func TestGRPCGatewayUsesGeneratedEtcdJSONContract(t *testing.T) {
 	require.Equal(t, int64(1), kvServer.request.Limit)
 	require.Empty(t, request.Header.Values("Accept"))
 	require.Equal(t, []string{grpcGatewayRequestMarkerValue}, kvServer.md.Get(grpcGatewayRequestMarkerKey))
+	require.Equal(t, []string{"Bearer kv-token"}, kvServer.md.Get(rpctypes.TokenFieldNameSwagger))
 
 	request = httptest.NewRequest(http.MethodPost, "/v3/lock/unlock",
 		strings.NewReader(`{"key":"L2xvY2svMDE=","unknown_field":"discarded"}`))

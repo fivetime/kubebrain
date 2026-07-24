@@ -11446,6 +11446,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `authorization` metadata，同时保留两条逐请求响应和 EOF 结束形状。
   `go test ./pkg/endpoint -run TestGRPCGatewayStreamsWatchAndElectionResponses -count=1 -v`
   通过。
+- A726 固定 core KV HTTP gateway token metadata：
+  A723-A725 已覆盖 dedicated concurrency unary、Watch/Observe streaming 与 LeaseKeepAlive
+  streaming gateway 的 token 透传，但 core KV 的本地 endpoint 单测仍只断言
+  `grpcgateway-accept` marker，未固定普通 `/v3/kv/range` 的 `Authorization` 透传。
+  这条路径是 kube-apiserver 和 etcd client HTTP JSON 的基础认证入口。现在扩展
+  `TestGRPCGatewayUsesGeneratedEtcdJSONContract`：`/v3/kv/range` 请求携带
+  `Authorization: Bearer kv-token`，fake KV server 断言后端同时收到 gateway marker 与
+  etcd 兼容 `authorization` metadata，且原有 JSON unknown-field discard、base64 key 和
+  response 形状保持不变。
+  `go test ./pkg/endpoint -run TestGRPCGatewayUsesGeneratedEtcdJSONContract -count=1 -v`
+  通过。
 
 ### P2：运维兼容和长期验证
 
