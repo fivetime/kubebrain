@@ -11973,6 +11973,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./hack/production -run 'Test(ValidateNetworkPolicy|WaitTidbClusterReady|ReleaseGateScript)' -count=1 -v`、
   `go test ./hack/production -count=1 -timeout=12m`、`git diff --check`、`go vet ./...` 和
   `go test ./... -count=1 -p 1` 均通过。
+- A771 给 validate-instance-ready 核心 release gate 测试补 bounded helper：
+  `validate-instance-ready.sh` 是生产发布前最宽的运行态门禁，但测试里仍直接构造 bash
+  `CombinedOutput()`；其中 required-input 用例还重复散落十余段命令构造。现在该测试通过
+  `runValidateInstanceReady` 统一进入 `runProductionScriptCommand`，获得 30 秒 context、进程组
+  kill 和 bounded output；required-input 用例改为表驱动，保持同一错误消息覆盖。静态门禁同步
+  要求 `validate_instance_ready_test.go` 使用 helper，并禁止直接
+  `exec.Command("bash", "validate-instance-ready.sh")`。
+  `go test ./hack/production -run 'Test(ValidateInstanceReady|ReleaseGateScript)' -count=1 -v`、
+  `go test ./hack/production -count=1 -timeout=12m`、`git diff --check`、`go vet ./...` 和
+  `go test ./... -count=1 -p 1` 均通过。
 
 ### P2：运维兼容和长期验证
 

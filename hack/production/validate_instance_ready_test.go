@@ -3,7 +3,6 @@ package production_test
 import (
 	"encoding/json"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -960,20 +959,19 @@ exit 1
 			if strings.Count(kubeStatus, "\t") == 7 {
 				kubeStatus += "\tuid-kubebrain"
 			}
-			command := exec.Command("bash", "validate-instance-ready.sh")
-			command.Env = append(os.Environ(),
-				"KUBECTL="+fakeKubectl,
-				"ETCDCTL="+fakeEtcdctl,
-				"EXPECTED_IMAGE="+tc.image,
+			env := []string{
+				"KUBECTL=" + fakeKubectl,
+				"ETCDCTL=" + fakeEtcdctl,
+				"EXPECTED_IMAGE=" + tc.image,
 				"EXPECTED_KUBEBRAIN_STATEFULSET_UID=uid-kubebrain",
 				"EXPECTED_KUBEBRAIN_CLIENT_SERVICE_UID=uid-client-service",
 				"EXPECTED_KEYSPACE=instance-a",
 				"EXPECTED_PD_ADDRS=kb-pd.storage.svc:2379",
 				"EXPECTED_CLUSTER_ID=1",
 				"EXPECTED_TIDB_CLUSTER_UID=uid-tidb",
-				"EXPECTED_INITIAL_CLUSTER="+initialCluster,
+				"EXPECTED_INITIAL_CLUSTER=" + initialCluster,
 				"EXPECTED_QUOTA_BACKEND_BYTES=429496729600",
-				"EXPECTED_ADVERTISE_CLIENT_URLS="+advertisedURLs,
+				"EXPECTED_ADVERTISE_CLIENT_URLS=" + advertisedURLs,
 				"EXPECTED_MAX_REQUEST_RATE=2000",
 				"EXPECTED_REQUEST_RATE_BURST=4000",
 				"EXPECTED_MAX_DELETE_RANGE_KEYS=1024",
@@ -981,24 +979,24 @@ exit 1
 				"ENDPOINT=https://instance.example:2379",
 				"TIMEOUT_SECONDS=1",
 				"POLL_INTERVAL_SECONDS=0",
-				"FAKE_KUBEBRAIN_STATUS="+kubeStatus,
-				"FAKE_KUBEBRAIN_ARGS="+kubeArgs,
-				"FAKE_KUBEBRAIN_PODS_JSON="+podsJSON,
-				"FAKE_ENDPOINT_SLICES_JSON="+endpointSlicesJSON,
-				"FAKE_TOPOLOGY="+topology,
-				"FAKE_HEALTH_OK="+boolString(tc.healthOK),
-				"FAKE_UNREACHABLE_ADVERTISED_URL="+tc.unreachableAdvertisedURL,
-				"FAKE_MEMBER_LIST_JSON="+memberListJSON,
-			)
-			command.Env = append(command.Env, tc.extraEnv...)
+				"FAKE_KUBEBRAIN_STATUS=" + kubeStatus,
+				"FAKE_KUBEBRAIN_ARGS=" + kubeArgs,
+				"FAKE_KUBEBRAIN_PODS_JSON=" + podsJSON,
+				"FAKE_ENDPOINT_SLICES_JSON=" + endpointSlicesJSON,
+				"FAKE_TOPOLOGY=" + topology,
+				"FAKE_HEALTH_OK=" + boolString(tc.healthOK),
+				"FAKE_UNREACHABLE_ADVERTISED_URL=" + tc.unreachableAdvertisedURL,
+				"FAKE_MEMBER_LIST_JSON=" + memberListJSON,
+			}
+			env = append(env, tc.extraEnv...)
 			execLog := filepath.Join(dir, "etcdctl-exec.log")
 			if tc.etcdctlExecPod != "" {
-				command.Env = append(command.Env,
+				env = append(env,
 					"ETCDCTL_EXEC_POD="+tc.etcdctlExecPod,
 					"FAKE_EXEC_LOG="+execLog,
 				)
 			}
-			output, err := command.CombinedOutput()
+			output, err := runValidateInstanceReady(t, env)
 			if tc.wantOK {
 				require.NoError(t, err, string(output))
 			} else {
@@ -1086,164 +1084,58 @@ func fakeRuntimeMemberListJSON(advertisedURLs string) string {
 }
 
 func TestValidateInstanceReadyRequiresImmutableInputs(t *testing.T) {
-	command := exec.Command("bash", "validate-instance-ready.sh")
-	command.Env = append(os.Environ(), "EXPECTED_IMAGE=", "EXPECTED_KUBEBRAIN_STATEFULSET_UID=", "ENDPOINT=", "EXPECTED_KEYSPACE=", "EXPECTED_PD_ADDRS=", "EXPECTED_CLUSTER_ID=", "EXPECTED_TIDB_CLUSTER_UID=", "EXPECTED_INITIAL_CLUSTER=", "EXPECTED_QUOTA_BACKEND_BYTES=", "EXPECTED_ADVERTISE_CLIENT_URLS=")
-	output, err := command.CombinedOutput()
-	require.Error(t, err)
-	require.Contains(t, string(output), "EXPECTED_IMAGE is required")
+	baseEnv := func() []string {
+		return []string{
+			"EXPECTED_IMAGE=registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			"EXPECTED_KUBEBRAIN_STATEFULSET_UID=uid-kubebrain",
+			"ENDPOINT=https://instance.example:2379",
+			"EXPECTED_KEYSPACE=instance-a",
+			"EXPECTED_PD_ADDRS=kb-pd.storage.svc:2379",
+			"EXPECTED_CLUSTER_ID=1",
+			"EXPECTED_TIDB_CLUSTER_UID=uid-tidb",
+			"EXPECTED_INITIAL_CLUSTER=" + fakeInitialCluster,
+			"EXPECTED_QUOTA_BACKEND_BYTES=429496729600",
+			"EXPECTED_ADVERTISE_CLIENT_URLS=https://instance.example:2379",
+		}
+	}
+	replace := func(env []string, name, value string) []string {
+		prefix := name + "="
+		for index, item := range env {
+			if strings.HasPrefix(item, prefix) {
+				env[index] = prefix + value
+				return env
+			}
+		}
+		return append(env, prefix+value)
+	}
+	for _, tc := range []struct {
+		name  string
+		key   string
+		value string
+		want  string
+	}{
+		{name: "image required", key: "EXPECTED_IMAGE", want: "EXPECTED_IMAGE is required"},
+		{name: "immutable image", key: "EXPECTED_IMAGE", value: "kubebrain:dev", want: "EXPECTED_IMAGE must be an immutable image reference"},
+		{name: "quota required", key: "EXPECTED_QUOTA_BACKEND_BYTES", want: "EXPECTED_QUOTA_BACKEND_BYTES is required"},
+		{name: "advertise client urls required", key: "EXPECTED_ADVERTISE_CLIENT_URLS", want: "EXPECTED_ADVERTISE_CLIENT_URLS is required"},
+		{name: "keyspace required", key: "EXPECTED_KEYSPACE", want: "EXPECTED_KEYSPACE is required"},
+		{name: "pd addrs required", key: "EXPECTED_PD_ADDRS", want: "EXPECTED_PD_ADDRS is required"},
+		{name: "initial cluster required", key: "EXPECTED_INITIAL_CLUSTER", want: "EXPECTED_INITIAL_CLUSTER is required"},
+		{name: "cluster id required", key: "EXPECTED_CLUSTER_ID", want: "EXPECTED_CLUSTER_ID is required"},
+		{name: "tidb cluster uid required", key: "EXPECTED_TIDB_CLUSTER_UID", want: "EXPECTED_TIDB_CLUSTER_UID is required"},
+		{name: "kubebrain statefulset uid required", key: "EXPECTED_KUBEBRAIN_STATEFULSET_UID", want: "EXPECTED_KUBEBRAIN_STATEFULSET_UID is required"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			output, err := runValidateInstanceReady(t, replace(baseEnv(), tc.key, tc.value))
+			require.Error(t, err)
+			require.Contains(t, string(output), tc.want)
+		})
+	}
+}
 
-	command = exec.Command("bash", "validate-instance-ready.sh")
-	command.Env = append(os.Environ(),
-		"EXPECTED_IMAGE=kubebrain:dev",
-		"EXPECTED_KUBEBRAIN_STATEFULSET_UID=uid-kubebrain",
-		"ENDPOINT=https://instance.example:2379",
-		"EXPECTED_KEYSPACE=instance-a",
-		"EXPECTED_PD_ADDRS=kb-pd.storage.svc:2379",
-		"EXPECTED_CLUSTER_ID=1",
-		"EXPECTED_TIDB_CLUSTER_UID=uid-tidb",
-		"EXPECTED_INITIAL_CLUSTER="+fakeInitialCluster,
-		"EXPECTED_QUOTA_BACKEND_BYTES=429496729600",
-		"EXPECTED_ADVERTISE_CLIENT_URLS=https://instance.example:2379",
-	)
-	output, err = command.CombinedOutput()
-	require.Error(t, err)
-	require.Contains(t, string(output), "EXPECTED_IMAGE must be an immutable image reference")
-
-	command = exec.Command("bash", "validate-instance-ready.sh")
-	command.Env = append(os.Environ(),
-		"EXPECTED_IMAGE=registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-		"EXPECTED_KUBEBRAIN_STATEFULSET_UID=uid-kubebrain",
-		"ENDPOINT=https://instance.example:2379",
-		"EXPECTED_KEYSPACE=instance-a",
-		"EXPECTED_PD_ADDRS=kb-pd.storage.svc:2379",
-		"EXPECTED_CLUSTER_ID=1",
-		"EXPECTED_TIDB_CLUSTER_UID=uid-tidb",
-		"EXPECTED_INITIAL_CLUSTER="+fakeInitialCluster,
-		"EXPECTED_QUOTA_BACKEND_BYTES=",
-		"EXPECTED_ADVERTISE_CLIENT_URLS=https://instance.example:2379",
-	)
-	output, err = command.CombinedOutput()
-	require.Error(t, err)
-	require.Contains(t, string(output), "EXPECTED_QUOTA_BACKEND_BYTES is required")
-
-	command = exec.Command("bash", "validate-instance-ready.sh")
-	command.Env = append(os.Environ(),
-		"EXPECTED_IMAGE=registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-		"EXPECTED_KUBEBRAIN_STATEFULSET_UID=uid-kubebrain",
-		"ENDPOINT=https://instance.example:2379",
-		"EXPECTED_KEYSPACE=instance-a",
-		"EXPECTED_PD_ADDRS=kb-pd.storage.svc:2379",
-		"EXPECTED_CLUSTER_ID=1",
-		"EXPECTED_TIDB_CLUSTER_UID=uid-tidb",
-		"EXPECTED_INITIAL_CLUSTER="+fakeInitialCluster,
-		"EXPECTED_QUOTA_BACKEND_BYTES=429496729600",
-		"EXPECTED_ADVERTISE_CLIENT_URLS=",
-	)
-	output, err = command.CombinedOutput()
-	require.Error(t, err)
-	require.Contains(t, string(output), "EXPECTED_ADVERTISE_CLIENT_URLS is required")
-
-	command = exec.Command("bash", "validate-instance-ready.sh")
-	command.Env = append(os.Environ(),
-		"EXPECTED_IMAGE=registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-		"EXPECTED_KUBEBRAIN_STATEFULSET_UID=uid-kubebrain",
-		"ENDPOINT=https://instance.example:2379",
-		"EXPECTED_KEYSPACE=",
-		"EXPECTED_PD_ADDRS=kb-pd.storage.svc:2379",
-		"EXPECTED_CLUSTER_ID=1",
-		"EXPECTED_TIDB_CLUSTER_UID=uid-tidb",
-		"EXPECTED_INITIAL_CLUSTER="+fakeInitialCluster,
-		"EXPECTED_QUOTA_BACKEND_BYTES=429496729600",
-		"EXPECTED_ADVERTISE_CLIENT_URLS=https://instance.example:2379",
-	)
-	output, err = command.CombinedOutput()
-	require.Error(t, err)
-	require.Contains(t, string(output), "EXPECTED_KEYSPACE is required")
-
-	command = exec.Command("bash", "validate-instance-ready.sh")
-	command.Env = append(os.Environ(),
-		"EXPECTED_IMAGE=registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-		"EXPECTED_KUBEBRAIN_STATEFULSET_UID=uid-kubebrain",
-		"ENDPOINT=https://instance.example:2379",
-		"EXPECTED_KEYSPACE=instance-a",
-		"EXPECTED_PD_ADDRS=",
-		"EXPECTED_CLUSTER_ID=1",
-		"EXPECTED_TIDB_CLUSTER_UID=uid-tidb",
-		"EXPECTED_INITIAL_CLUSTER="+fakeInitialCluster,
-		"EXPECTED_QUOTA_BACKEND_BYTES=429496729600",
-		"EXPECTED_ADVERTISE_CLIENT_URLS=https://instance.example:2379",
-	)
-	output, err = command.CombinedOutput()
-	require.Error(t, err)
-	require.Contains(t, string(output), "EXPECTED_PD_ADDRS is required")
-
-	command = exec.Command("bash", "validate-instance-ready.sh")
-	command.Env = append(os.Environ(),
-		"EXPECTED_IMAGE=registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-		"EXPECTED_KUBEBRAIN_STATEFULSET_UID=uid-kubebrain",
-		"ENDPOINT=https://instance.example:2379",
-		"EXPECTED_KEYSPACE=instance-a",
-		"EXPECTED_PD_ADDRS=kb-pd.storage.svc:2379",
-		"EXPECTED_CLUSTER_ID=1",
-		"EXPECTED_TIDB_CLUSTER_UID=uid-tidb",
-		"EXPECTED_INITIAL_CLUSTER=",
-		"EXPECTED_QUOTA_BACKEND_BYTES=429496729600",
-		"EXPECTED_ADVERTISE_CLIENT_URLS=https://instance.example:2379",
-	)
-	output, err = command.CombinedOutput()
-	require.Error(t, err)
-	require.Contains(t, string(output), "EXPECTED_INITIAL_CLUSTER is required")
-
-	command = exec.Command("bash", "validate-instance-ready.sh")
-	command.Env = append(os.Environ(),
-		"EXPECTED_IMAGE=registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-		"EXPECTED_KUBEBRAIN_STATEFULSET_UID=uid-kubebrain",
-		"ENDPOINT=https://instance.example:2379",
-		"EXPECTED_KEYSPACE=instance-a",
-		"EXPECTED_PD_ADDRS=kb-pd.storage.svc:2379",
-		"EXPECTED_CLUSTER_ID=",
-		"EXPECTED_TIDB_CLUSTER_UID=uid-tidb",
-		"EXPECTED_INITIAL_CLUSTER="+fakeInitialCluster,
-		"EXPECTED_QUOTA_BACKEND_BYTES=429496729600",
-		"EXPECTED_ADVERTISE_CLIENT_URLS=https://instance.example:2379",
-	)
-	output, err = command.CombinedOutput()
-	require.Error(t, err)
-	require.Contains(t, string(output), "EXPECTED_CLUSTER_ID is required")
-
-	command = exec.Command("bash", "validate-instance-ready.sh")
-	command.Env = append(os.Environ(),
-		"EXPECTED_IMAGE=registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-		"EXPECTED_KUBEBRAIN_STATEFULSET_UID=uid-kubebrain",
-		"ENDPOINT=https://instance.example:2379",
-		"EXPECTED_KEYSPACE=instance-a",
-		"EXPECTED_PD_ADDRS=kb-pd.storage.svc:2379",
-		"EXPECTED_CLUSTER_ID=1",
-		"EXPECTED_TIDB_CLUSTER_UID=",
-		"EXPECTED_INITIAL_CLUSTER="+fakeInitialCluster,
-		"EXPECTED_QUOTA_BACKEND_BYTES=429496729600",
-		"EXPECTED_ADVERTISE_CLIENT_URLS=https://instance.example:2379",
-	)
-	output, err = command.CombinedOutput()
-	require.Error(t, err)
-	require.Contains(t, string(output), "EXPECTED_TIDB_CLUSTER_UID is required")
-
-	command = exec.Command("bash", "validate-instance-ready.sh")
-	command.Env = append(os.Environ(),
-		"EXPECTED_IMAGE=registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-		"EXPECTED_KUBEBRAIN_STATEFULSET_UID=",
-		"ENDPOINT=https://instance.example:2379",
-		"EXPECTED_KEYSPACE=instance-a",
-		"EXPECTED_PD_ADDRS=kb-pd.storage.svc:2379",
-		"EXPECTED_CLUSTER_ID=1",
-		"EXPECTED_TIDB_CLUSTER_UID=uid-tidb",
-		"EXPECTED_INITIAL_CLUSTER="+fakeInitialCluster,
-		"EXPECTED_QUOTA_BACKEND_BYTES=429496729600",
-		"EXPECTED_ADVERTISE_CLIENT_URLS=https://instance.example:2379",
-	)
-	output, err = command.CombinedOutput()
-	require.Error(t, err)
-	require.Contains(t, string(output), "EXPECTED_KUBEBRAIN_STATEFULSET_UID is required")
+func runValidateInstanceReady(t *testing.T, env []string) ([]byte, error) {
+	t.Helper()
+	return runProductionScriptCommand(t, "validate-instance-ready.sh", env)
 }
 
 func boolString(value bool) string {
