@@ -181,6 +181,44 @@ func TestReconcileRejectsPolicySchemaBeforeTemplateRead(t *testing.T) {
 	}
 }
 
+func TestReconcileRejectsPolicyMetadataBeforeTemplateRead(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(*testing.T, *dynamicfake.FakeDynamicClient)
+	}{
+		{name: "name", setup: func(t *testing.T, client *dynamicfake.FakeDynamicClient) {
+			createPolicyNamedIn(t, client, "test", "daily/1", false)
+		}},
+		{name: "uid", setup: func(t *testing.T, client *dynamicfake.FakeDynamicClient) {
+			createPolicy(t, client, false)
+			policy, err := client.Resource(PolicyResource).Namespace("test").Get(
+				context.Background(), "daily", metav1.GetOptions{},
+			)
+			require.NoError(t, err)
+			policy.SetUID("")
+			_, err = client.Resource(PolicyResource).Namespace("test").Update(
+				context.Background(), policy, metav1.UpdateOptions{},
+			)
+			require.NoError(t, err)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := fakeClient()
+			tc.setup(t, client)
+			client.ClearActions()
+
+			count, err := New(client, "test").WithClock(func() time.Time {
+				return time.Unix(1_700_003_000, 0)
+			}).Reconcile(context.Background())
+			require.Zero(t, count)
+			require.ErrorContains(t, err, "policy metadata is incomplete")
+			require.Len(t, client.Actions(), 1)
+			require.Equal(t, "list", client.Actions()[0].GetVerb())
+			require.Equal(t, PolicyResource.Resource, client.Actions()[0].GetResource().Resource)
+		})
+	}
+}
+
 func TestReconcileRejectsPreexistingParameterSecretWithWrongOwner(t *testing.T) {
 	client := fakeClient()
 	ctx := context.Background()

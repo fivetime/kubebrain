@@ -11248,6 +11248,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   非法 resource/namespace/name/UID 都返回本地错误且不会发出 DELETE：
   `go test ./hack/production/cmd/uid-delete -count=1`
   通过。
+- A706 前置 BackupPolicy metadata identity 校验：
+  A573 已让 backup scheduler 在读取参数模板前校验 policy spec，但 metadata.name/uid 仍依赖
+  apiserver 正常填充。未来 fake-client、恢复对象或旧对象若缺 UID，scheduler 会创建 owner
+  fence 为空的 immutable 参数 Secret；若 name 不符合 Kubernetes resource name，又会参与
+  Operation ID 与 Secret 名称生成。现在 `reconcilePolicy` 在读取模板 Secret 前要求
+  BackupPolicy name 为 DNS subdomain、UID 非空。fake dynamic client 回归确认 malformed
+  metadata 的 reconcile 只产生 policy list，不读取模板 Secret、不创建参数 Secret 或
+  Operation：
+  `go test ./hack/production/internal/backupscheduler ./hack/production/cmd/backup-scheduler -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

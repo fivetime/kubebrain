@@ -205,6 +205,9 @@ func (s *Scheduler) reconcilePolicy(
 	namespace string,
 	policy *unstructured.Unstructured,
 ) (bool, error) {
+	if len(validation.IsDNS1123Subdomain(policy.GetName())) != 0 || policy.GetUID() == "" {
+		return false, errors.New("policy metadata is incomplete")
+	}
 	suspended, _, _ := unstructured.NestedBool(policy.Object, "spec", "suspend")
 	if suspended {
 		return false, nil

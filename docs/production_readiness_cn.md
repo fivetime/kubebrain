@@ -1822,6 +1822,9 @@ spec:
 Secret 和同一个 operation。已有同名资源内容不同会 fail closed。worker 未设置
 `PARAMETERS_INPUT` 时通过 `operationctl --action parameters` 读取 operation 绑定的
 immutable Secret，并再次校验 SHA-256；手工参数文件模式继续保留。
+每个 BackupPolicy 的 metadata.name 必须是 Kubernetes DNS subdomain，metadata.uid 必须存在；
+scheduler 在读取参数模板 Secret 或创建 immutable 参数 Secret 前拒绝 malformed 既有对象，
+避免生成无法追溯 ownerReference 的备份参数或 Operation。
 
 一个 scheduler Deployment 从 `kubebrain-operations/kubebrain-backup-scheduler-inventory`
 ConfigMap 的 `namespaces.json` 读取严格 JSON namespace allowlist，并在每轮 reconcile
