@@ -153,3 +153,34 @@ func TestProductionCmdGoRunTestsUseBoundedCommandHelper(t *testing.T) {
 		})
 	}
 }
+
+func TestProductionRuntimeExecutorCommandsUseProcessGroupAndBoundedOutput(t *testing.T) {
+	for _, sourceFile := range []string{
+		filepath.Join("internal", "meteringarchive", "archive.go"),
+		filepath.Join("internal", "meteringbilling", "biller.go"),
+		filepath.Join("internal", "meteringstorage", "archiver.go"),
+		filepath.Join("internal", "operationarchiver", "processor.go"),
+	} {
+		t.Run(sourceFile, func(t *testing.T) {
+			data, err := os.ReadFile(sourceFile)
+			require.NoError(t, err)
+			text := string(data)
+			require.Contains(t, text, "processgroup.Configure(command)")
+			require.Contains(t, text, "command.WaitDelay = 5 * time.Second")
+			require.Contains(t, text, "processgroup.CombinedOutput(command, processgroup.DefaultOutputLimitBytes)")
+			require.NotContains(t, text, ".CombinedOutput()")
+		})
+	}
+}
+
+func TestProductionOperationWorkerStreamsExecutorWithProcessGroup(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("cmd", "operation-worker", "main.go"))
+	require.NoError(t, err)
+	text := string(data)
+	require.Contains(t, text, "processgroup.ValidateExecutable(executable)")
+	require.Contains(t, text, "processgroup.Configure(command)")
+	require.Contains(t, text, "command.Stdin = os.Stdin")
+	require.Contains(t, text, "command.Stdout = os.Stdout")
+	require.Contains(t, text, "command.Stderr = os.Stderr")
+	require.NotContains(t, text, "processgroup.CombinedOutput(")
+}

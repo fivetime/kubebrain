@@ -12103,6 +12103,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `exec.CommandContext` 或 `CombinedOutput()`。
   `cd hack/etcd-client-compat && go test -run 'Test(CompatMakeMirrorCommandsUseBoundedHelpers|CompatKubernetesRestartCommandsUseBoundedHelpers|CompatFailoverCommandsUseBoundedHelpers|DifferentialRunner)' -count=1 -v`、
   `git diff --check`、`go vet ./...` 和 `go test ./... -count=1 -p 1` 均通过。
+- A783 给 production runtime executor 命令边界补静态门禁：
+  operation/metering 运行时 executor wrapper 已使用 `processgroup.Configure`、`WaitDelay` 和
+  `processgroup.CombinedOutput`，operation-worker 也以流式 stdout/stderr 透传方式运行 executor；
+  但这些生产路径缺少与测试 fixture 同级的静态门禁，未来重构可能回退到裸 `CombinedOutput()`、
+  去掉进程组 kill，或错误地把 operation-worker 改成 bounded capture 导致长日志作业被截断。
+  现在 `operation_runner_static_test.go` 固定 archive/metering/operation archiver 的 executor
+  wrapper 必须继续配置进程组、5 秒 `WaitDelay` 和 1MiB bounded output；同时固定
+  operation-worker 必须保留 executable 校验、进程组配置和 stdin/stdout/stderr 流式透传，且不得切到
+  `processgroup.CombinedOutput`。
+  `go test ./hack/production -run 'TestProduction(RuntimeExecutorCommandsUseProcessGroupAndBoundedOutput|OperationWorkerStreamsExecutorWithProcessGroup|CmdGoRunTestsUseBoundedCommandHelper)' -count=1 -v`、
+  `git diff --check`、`go vet ./...` 和 `go test ./... -count=1 -p 1` 均通过。
 
 ### P2：运维兼容和长期验证
 
