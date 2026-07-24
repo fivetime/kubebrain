@@ -1476,6 +1476,8 @@ hack/dev/verify.sh
   `/v3/*` 返回 404、`/health` 仍可用。启用 client-cert-auth 时，Kubernetes 原生
   HTTPS probe 无法携带客户端证书；生产 Pod 应继续用不暴露数据的 info 端口
   `/ping`/`/ready` 探针，不能把无证书访问 client `/health` 当作进程故障。
+  发布门禁还必须让静态 API surface 测试同时覆盖 core etcd 服务与 Lock/Election
+  service descriptor，确保新增公开 RPC 都有显式实现或显式拒绝分类。
   Lock/Election 使用 upstream client/v3 concurrency recipe 及现有 KV/Lease/Watch
   后端；生产必须验证 lease-backed Lock 竞争接棒和 Election campaign/proclaim/resign，
   还必须在 blocked waiter 已写入队列键后取消 HTTP request，确认 context 传播、等待键

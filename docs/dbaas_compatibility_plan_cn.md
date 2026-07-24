@@ -11310,6 +11310,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   不触发探测：
   `go test ./hack/production/cmd/operation-api ./hack/production/cmd/operation-parameter-broker -count=1`
   通过。
+- A713 扩展 Lock/Election API surface 静态门禁：
+  KubeBrain 已把 dedicated Lock/Election gRPC 与 JSON gateway 作为兼容核心服务暴露，
+  但 `TestEtcdAPISurfaceIsExplicit` 原先只枚举 KV、Watch、Lease、Cluster、
+  Maintenance 和 Auth。若未来 etcd API 依赖新增 Lock/Election RPC，运行时可能只因
+  `Unimplemented*Server` 嵌入而出现 accidental surface。现在静态门禁同时枚举
+  `v3lockpb.Lock_ServiceDesc` 与 `v3electionpb.Election_ServiceDesc`，并要求
+  `lockServer`/`electionServer` 为每个公开方法提供显式 wrapper；Unimplemented
+  status 分类也纳入这两个 owner，防止已承诺支持的 concurrency RPC 被静默降级。
+  `go test ./pkg/server/etcd -run TestEtcdAPISurface -count=1` 通过。
 
 ### P2：运维兼容和长期验证
 

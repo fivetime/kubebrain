@@ -24,11 +24,13 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
+	"go.etcd.io/etcd/server/v3/etcdserver/api/v3election/v3electionpb"
+	"go.etcd.io/etcd/server/v3/etcdserver/api/v3lock/v3lockpb"
 	"google.golang.org/grpc"
 )
 
 // TestEtcdAPISurfaceIsExplicit prevents an API dependency upgrade from making a
-// new RPC appear to be served only because RPCServer embeds grpc's forward-
+// new RPC appear to be served only because a server embeds grpc's forward-
 // compatibility shims. Every public etcd RPC must be implemented or explicitly
 // rejected by KubeBrain so its product classification cannot be accidental.
 func TestEtcdAPISurfaceIsExplicit(t *testing.T) {
@@ -43,6 +45,8 @@ func TestEtcdAPISurfaceIsExplicit(t *testing.T) {
 		{desc: etcdserverpb.Cluster_ServiceDesc, owner: "RPCServer"},
 		{desc: etcdserverpb.Maintenance_ServiceDesc, owner: "RPCServer"},
 		{desc: etcdserverpb.Auth_ServiceDesc, owner: "RPCServer"},
+		{desc: v3lockpb.Lock_ServiceDesc, owner: "lockServer"},
+		{desc: v3electionpb.Election_ServiceDesc, owner: "electionServer"},
 	}
 
 	total := 0
@@ -62,7 +66,7 @@ func TestEtcdAPISurfaceIsExplicit(t *testing.T) {
 			}
 		})
 	}
-	require.Equal(t, 42, total, "review and classify every public RPC when the etcd API surface changes")
+	require.Equal(t, 49, total, "review and classify every public RPC when the etcd API surface changes")
 }
 
 // TestEtcdAPISurfaceUnimplementedClassification prevents a supported RPC from
@@ -101,7 +105,7 @@ func publicRPCMethodsReturningUnimplemented(t *testing.T) []string {
 				continue
 			}
 			owner := receiverTypeName(function.Recv.List[0].Type)
-			if owner != "RPCServer" && owner != "leaseManager" {
+			if !apiSurfaceReceiverOwner(owner) {
 				continue
 			}
 			ast.Inspect(function.Body, func(node ast.Node) bool {
@@ -123,6 +127,15 @@ func publicRPCMethodsReturningUnimplemented(t *testing.T) []string {
 	}
 	sort.Strings(result)
 	return result
+}
+
+func apiSurfaceReceiverOwner(owner string) bool {
+	switch owner {
+	case "RPCServer", "leaseManager", "lockServer", "electionServer":
+		return true
+	default:
+		return false
+	}
 }
 
 func productionReceiverMethods(t *testing.T) map[string]map[string]struct{} {
