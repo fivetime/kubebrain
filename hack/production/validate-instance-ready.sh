@@ -49,6 +49,8 @@ EXPECTED_CLIENT_CERT_AUTH="${EXPECTED_CLIENT_CERT_AUTH:-}"
 EXPECTED_PEER_CERT_FILE="${EXPECTED_PEER_CERT_FILE:-}"
 EXPECTED_PEER_KEY_FILE="${EXPECTED_PEER_KEY_FILE:-}"
 EXPECTED_PEER_TRUSTED_CA_FILE="${EXPECTED_PEER_TRUSTED_CA_FILE:-}"
+EXPECTED_PEER_TLS_SERVER_NAME="${EXPECTED_PEER_TLS_SERVER_NAME:-}"
+EXPECTED_PEER_CLIENT_CERT_AUTH="${EXPECTED_PEER_CLIENT_CERT_AUTH:-}"
 TIDB_NAMESPACE="${TIDB_NAMESPACE:-tidb-cluster}"
 TIDB_CLUSTER="${TIDB_CLUSTER:-kb}"
 EXPECTED_TIDB_CLUSTER_UID="${EXPECTED_TIDB_CLUSTER_UID:-}"
@@ -132,6 +134,10 @@ for variable in EXPECTED_COMPATIBLE_WITH_ETCD EXPECTED_ENABLE_COUNT_INDEX EXPECT
 done
 if [[ -n "$EXPECTED_CLIENT_CERT_AUTH" && "$EXPECTED_CLIENT_CERT_AUTH" != "true" && "$EXPECTED_CLIENT_CERT_AUTH" != "false" ]]; then
   echo "EXPECTED_CLIENT_CERT_AUTH must be empty, true, or false" >&2
+  exit 2
+fi
+if [[ -n "$EXPECTED_PEER_CLIENT_CERT_AUTH" && "$EXPECTED_PEER_CLIENT_CERT_AUTH" != "true" && "$EXPECTED_PEER_CLIENT_CERT_AUTH" != "false" ]]; then
+  echo "EXPECTED_PEER_CLIENT_CERT_AUTH must be empty, true, or false" >&2
   exit 2
 fi
 if [[ -z "$EXPECTED_KUBEBRAIN_CLIENT_SERVICE_UID" ]]; then
@@ -486,6 +492,8 @@ check_optional_kubebrain_arg "client-cert-auth" "$EXPECTED_CLIENT_CERT_AUTH" "cl
 check_optional_kubebrain_arg "peer-cert-file" "$EXPECTED_PEER_CERT_FILE" "peer TLS cert file"
 check_optional_kubebrain_arg "peer-key-file" "$EXPECTED_PEER_KEY_FILE" "peer TLS key file"
 check_optional_kubebrain_arg "peer-trusted-ca-file" "$EXPECTED_PEER_TRUSTED_CA_FILE" "peer TLS CA file"
+check_optional_kubebrain_arg "peer-tls-server-name" "$EXPECTED_PEER_TLS_SERVER_NAME" "peer TLS server name"
+check_optional_kubebrain_arg "peer-client-cert-auth" "$EXPECTED_PEER_CLIENT_CERT_AUTH" "peer client certificate auth"
 
 if ! ETCDCTL_API=3 run_etcdctl --endpoints="$ENDPOINT" endpoint health; then
   echo "KubeBrain endpoint health failed: $ENDPOINT" >&2

@@ -95,6 +95,7 @@ func TestProductionManifestsProvideStableCompleteMembership(t *testing.T) {
 			args, found, err := unstructured.NestedStringSlice(container, "args")
 			require.NoError(t, err)
 			require.True(t, found)
+			require.Equal(t, expectedProductionKubeBrainArgs(tc.scheme), args)
 			require.Contains(t, args, "--advertise-host=$(POD_NAME).kubebrain-peer.kubebrain-system.svc.cluster.local")
 			require.Contains(t, args, "--advertise-client-urls="+tc.scheme+"://kubebrain-client.kubebrain-system.svc:3379")
 			require.Contains(t, args, "--keyspace=kubebrain-system")
@@ -168,6 +169,57 @@ func TestProductionManifestsProvideStableCompleteMembership(t *testing.T) {
 			require.NotEqual(t, "None", clusterIP)
 		})
 	}
+}
+
+func expectedProductionKubeBrainArgs(scheme string) []string {
+	args := []string{
+		"--port=3379",
+		"--peer-port=3380",
+		"--info-port=8080",
+		"--advertise-host=$(POD_NAME).kubebrain-peer.kubebrain-system.svc.cluster.local",
+		"--advertise-client-urls=" + scheme + "://kubebrain-client.kubebrain-system.svc:3379",
+		"--initial-cluster=" + expectedInitialCluster(scheme),
+		"--pd-addrs=kb-pd.tidb-cluster.svc:2379",
+		"--keyspace=kubebrain-system",
+		"--compatible-with-etcd=true",
+		"--enable-count-index=true",
+		"--count-index-max-keys=5000000",
+		"--enable-storage-metrics=true",
+		"--quota-backend-bytes=429496729600",
+		"--max-txn-ops=128",
+		"--max-request-bytes=1572864",
+		"--max-concurrent-streams=4294967295",
+		"--max-requests-inflight=1024",
+		"--max-request-rate=2000",
+		"--request-rate-burst=4000",
+		"--max-delete-range-keys=1024",
+		"--max-watches=10000",
+		"--grpc-keepalive-min-time=5s",
+		"--grpc-keepalive-interval=2h",
+		"--grpc-keepalive-timeout=20s",
+		"--auth-token=simple",
+		"--bcrypt-cost=10",
+		"--auth-token-ttl=300",
+	}
+	if scheme == "https" {
+		args = append(args,
+			"--grpc-max-connection-age=1h",
+			"--grpc-max-connection-age-grace=5m",
+			"--tls-min-version=TLS1.2",
+			"--cert-file=/etc/kubebrain/client-tls/tls.crt",
+			"--key-file=/etc/kubebrain/client-tls/tls.key",
+			"--trusted-ca-file=/etc/kubebrain/client-tls/ca.crt",
+			"--tls-server-name=kubebrain-client.kubebrain-system.svc",
+			"--client-cert-auth=true",
+			"--peer-cert-file=/etc/kubebrain/peer-tls/tls.crt",
+			"--peer-key-file=/etc/kubebrain/peer-tls/tls.key",
+			"--peer-trusted-ca-file=/etc/kubebrain/peer-tls/ca.crt",
+			"--peer-tls-server-name=kubebrain-peer.kubebrain-system.svc.cluster.local",
+			"--peer-client-cert-auth=true",
+		)
+	}
+	args = append(args, "--v=2")
+	return args
 }
 
 func TestProductionPriorityClassIsSharedAndNonPreempting(t *testing.T) {

@@ -54,7 +54,9 @@ func fakeTLSKubeBrainArgs(advertisedURLs, initialCluster string) string {
 		"--client-cert-auth=true\n" +
 		"--peer-cert-file=/etc/kubebrain/peer-tls/tls.crt\n" +
 		"--peer-key-file=/etc/kubebrain/peer-tls/tls.key\n" +
-		"--peer-trusted-ca-file=/etc/kubebrain/peer-tls/ca.crt"
+		"--peer-trusted-ca-file=/etc/kubebrain/peer-tls/ca.crt\n" +
+		"--peer-tls-server-name=kubebrain-peer.kubebrain-system.svc.cluster.local\n" +
+		"--peer-client-cert-auth=true"
 }
 
 func expectedTLSGateEnv() []string {
@@ -70,6 +72,8 @@ func expectedTLSGateEnv() []string {
 		"EXPECTED_PEER_CERT_FILE=/etc/kubebrain/peer-tls/tls.crt",
 		"EXPECTED_PEER_KEY_FILE=/etc/kubebrain/peer-tls/tls.key",
 		"EXPECTED_PEER_TRUSTED_CA_FILE=/etc/kubebrain/peer-tls/ca.crt",
+		"EXPECTED_PEER_TLS_SERVER_NAME=kubebrain-peer.kubebrain-system.svc.cluster.local",
+		"EXPECTED_PEER_CLIENT_CERT_AUTH=true",
 	}
 }
 
@@ -726,6 +730,26 @@ func TestValidateInstanceReady(t *testing.T) {
 			healthOK:   true,
 			extraEnv:   expectedTLSGateEnv(),
 			wantOutput: "peer TLS CA file configuration mismatch",
+		},
+		{
+			name:       "missing expected peer tls server name",
+			image:      "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus: "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeArgs:   strings.ReplaceAll(fakeTLSKubeBrainArgs("https://instance.example:2379", fakeInitialCluster), "\n--peer-tls-server-name=kubebrain-peer.kubebrain-system.svc.cluster.local", ""),
+			topology:   "3\t3",
+			healthOK:   true,
+			extraEnv:   expectedTLSGateEnv(),
+			wantOutput: "peer TLS server name configuration mismatch",
+		},
+		{
+			name:       "wrong peer client certificate auth",
+			image:      "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus: "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeArgs:   strings.ReplaceAll(fakeTLSKubeBrainArgs("https://instance.example:2379", fakeInitialCluster), "--peer-client-cert-auth=true", "--peer-client-cert-auth=false"),
+			topology:   "3\t3",
+			healthOK:   true,
+			extraEnv:   expectedTLSGateEnv(),
+			wantOutput: "peer client certificate auth configuration mismatch",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -11752,6 +11752,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./hack/production -run TestValidateInstanceReady -count=1 -v`、
   `bash -n hack/production/validate-instance-ready.sh`、`go test ./hack/production -count=1`、
   `go vet ./...` 和 `go test ./... -count=1 -p 1` 均通过。
+- A751 固定 production manifest 的完整 KubeBrain args surface：
+  运行门禁已经逐步固定 Pod template 中的关键参数，但 `deploy/production/manifest_test.go`
+  仍主要用 `Contains` 检查单项参数，不能一次性拒绝重复、额外或顺序漂移的 args。现在
+  `TestProductionManifestsProvideStableCompleteMembership` 对明文/TLS manifest 的 KubeBrain
+  container args 使用完整有序列表校验，声明态在部署前即能发现生产参数 surface 变化。该
+  exact gate 直接暴露出 TLS manifest 还包含 `--peer-tls-server-name` 和
+  `--peer-client-cert-auth=true`，而 A749 运行门禁尚未绑定这两个 peer TLS 参数；本轮同步新增
+  `EXPECTED_PEER_TLS_SERVER_NAME` 和 `EXPECTED_PEER_CLIENT_CERT_AUTH`，并补充 missing/wrong 回归。
+  `go test ./deploy/production -run TestProductionManifestsProvideStableCompleteMembership -count=1 -v`、
+  `go test ./hack/production -run TestValidateInstanceReady -count=1 -v`、
+  `bash -n hack/production/validate-instance-ready.sh`、`go test ./deploy/production -count=1`、
+  `go test ./hack/production -count=1`、`go vet ./...` 和
+  `go test ./... -count=1 -p 1` 均通过。
 
 ### P2：运维兼容和长期验证
 
