@@ -1499,6 +1499,11 @@ hack/dev/verify.sh
   已支持的 Maintenance Status/Alarm/Defragment/Hash/HashKV 同样必须固定 Alarm enum、
   member ID、hash 与 compact/hash revision 的 generated JSON 编码；不得用这些成功门禁
   暗示 Snapshot、MoveLeader、Downgrade 或 Cluster member mutation 已受支持。
+  Cluster MemberAdd/Remove/Update/Promote 与 Maintenance Snapshot/MoveLeader/Downgrade
+  的 generated HTTP 路由必须保留显式拒绝门禁：请求字段和调用者 metadata 仍应到达
+  后端，随后以 gRPC Unimplemented/HTTP 501 返回；unary 使用直接 `{code,message}`
+  错误对象，server-streaming Snapshot 使用 `{"error":{...}}` envelope。不得退化为 404，
+  也不得因 generated route 存在而绕过 DBaaS 控制面误开放管理能力。
   Lock/Election 的七条 generated 路径 `/v3/lock/lock`、`unlock`、
   `/v3/election/campaign`、`leader`、`observe`、`proclaim`、`resign` 必须全部有端到端
   门禁；其中 Lock/Campaign/Proclaim/Resign 的成功路径还要固定 bytes/base64、

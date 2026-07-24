@@ -11568,6 +11568,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   cancellation 门禁。
   `go test ./pkg/endpoint -run 'TestGRPCGatewayUsesGeneratedEtcdJSONContract|TestGRPCGatewayStreamsWatchAndElectionResponses|TestGRPCGatewayPropagatesRequestCancellation' -count=1`
   通过。
+- A737 完成 unsupported management generated HTTP gateway 门禁：
+  路径差集审计发现 upstream core gateway 的 44 条 `/v3/*` route 中，Cluster
+  MemberAdd/Remove/Update/Promote 与 Maintenance Snapshot/MoveLeader/Downgrade 七条
+  尚未被 endpoint 测试实际调用。它们由 TiKV/PD 或 DBaaS 控制面承担，数据面不能误报
+  成功，但也不能静默退化为 404。现在逐条固定 peerURLs、learner、member/target uint64
+  ID、downgrade enum/version、unknown-field discard、gateway marker 与独立
+  `Authorization` metadata，并要求 gRPC Unimplemented 映射 HTTP 501；unary 错误保持
+  直接 `{code,message}`，server-streaming Snapshot 保持 `{"error":{...}}` envelope。
+  路径集合复核确认 `/root/etcd/api/etcdserverpb/gw/rpc.pb.gw.go` 当前全部 44 条 core
+  generated route 均被本地 endpoint 测试实际调用。
+  `go test ./pkg/endpoint -run TestGRPCGatewayUsesGeneratedEtcdJSONContract -count=1 -v`
+  通过。
 
 ### P2：运维兼容和长期验证
 

@@ -33,8 +33,10 @@ import (
 	"go.etcd.io/etcd/server/v3/etcdserver/api/v3election/v3electionpb"
 	"go.etcd.io/etcd/server/v3/etcdserver/api/v3lock/v3lockpb"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 )
 
@@ -54,8 +56,16 @@ type gatewayKVServer struct {
 
 type gatewayClusterServer struct {
 	etcdserverpb.UnimplementedClusterServer
-	request *etcdserverpb.MemberListRequest
-	md      metadata.MD
+	request              *etcdserverpb.MemberListRequest
+	memberAddRequest     *etcdserverpb.MemberAddRequest
+	memberRemoveRequest  *etcdserverpb.MemberRemoveRequest
+	memberUpdateRequest  *etcdserverpb.MemberUpdateRequest
+	memberPromoteRequest *etcdserverpb.MemberPromoteRequest
+	md                   metadata.MD
+	memberAddMD          metadata.MD
+	memberRemoveMD       metadata.MD
+	memberUpdateMD       metadata.MD
+	memberPromoteMD      metadata.MD
 }
 
 type gatewayMaintenanceServer struct {
@@ -65,11 +75,17 @@ type gatewayMaintenanceServer struct {
 	defragmentRequest *etcdserverpb.DefragmentRequest
 	hashRequest       *etcdserverpb.HashRequest
 	hashKVRequest     *etcdserverpb.HashKVRequest
+	snapshotRequest   *etcdserverpb.SnapshotRequest
+	moveLeaderRequest *etcdserverpb.MoveLeaderRequest
+	downgradeRequest  *etcdserverpb.DowngradeRequest
 	md                metadata.MD
 	alarmMD           metadata.MD
 	defragmentMD      metadata.MD
 	hashMD            metadata.MD
 	hashKVMD          metadata.MD
+	snapshotMD        metadata.MD
+	moveLeaderMD      metadata.MD
+	downgradeMD       metadata.MD
 }
 
 type gatewayAuthServer struct {
@@ -467,6 +483,38 @@ func (s *gatewayClusterServer) MemberList(ctx context.Context, request *etcdserv
 	}, nil
 }
 
+func (s *gatewayClusterServer) MemberAdd(ctx context.Context, request *etcdserverpb.MemberAddRequest) (*etcdserverpb.MemberAddResponse, error) {
+	s.memberAddRequest = request
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		s.memberAddMD = md.Copy()
+	}
+	return nil, status.Error(codes.Unimplemented, "member add is managed by the DBaaS control plane")
+}
+
+func (s *gatewayClusterServer) MemberRemove(ctx context.Context, request *etcdserverpb.MemberRemoveRequest) (*etcdserverpb.MemberRemoveResponse, error) {
+	s.memberRemoveRequest = request
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		s.memberRemoveMD = md.Copy()
+	}
+	return nil, status.Error(codes.Unimplemented, "member remove is managed by the DBaaS control plane")
+}
+
+func (s *gatewayClusterServer) MemberUpdate(ctx context.Context, request *etcdserverpb.MemberUpdateRequest) (*etcdserverpb.MemberUpdateResponse, error) {
+	s.memberUpdateRequest = request
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		s.memberUpdateMD = md.Copy()
+	}
+	return nil, status.Error(codes.Unimplemented, "member update is managed by the DBaaS control plane")
+}
+
+func (s *gatewayClusterServer) MemberPromote(ctx context.Context, request *etcdserverpb.MemberPromoteRequest) (*etcdserverpb.MemberPromoteResponse, error) {
+	s.memberPromoteRequest = request
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		s.memberPromoteMD = md.Copy()
+	}
+	return nil, status.Error(codes.Unimplemented, "member promote is managed by the DBaaS control plane")
+}
+
 func (s *gatewayMaintenanceServer) Status(ctx context.Context, request *etcdserverpb.StatusRequest) (*etcdserverpb.StatusResponse, error) {
 	s.request = request
 	if md, ok := metadata.FromIncomingContext(ctx); ok {
@@ -534,6 +582,30 @@ func (s *gatewayMaintenanceServer) HashKV(ctx context.Context, request *etcdserv
 		CompactRevision: 229,
 		HashRevision:    request.Revision,
 	}, nil
+}
+
+func (s *gatewayMaintenanceServer) Snapshot(request *etcdserverpb.SnapshotRequest, stream etcdserverpb.Maintenance_SnapshotServer) error {
+	s.snapshotRequest = request
+	if md, ok := metadata.FromIncomingContext(stream.Context()); ok {
+		s.snapshotMD = md.Copy()
+	}
+	return status.Error(codes.Unimplemented, "snapshot is managed by the DBaaS control plane")
+}
+
+func (s *gatewayMaintenanceServer) MoveLeader(ctx context.Context, request *etcdserverpb.MoveLeaderRequest) (*etcdserverpb.MoveLeaderResponse, error) {
+	s.moveLeaderRequest = request
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		s.moveLeaderMD = md.Copy()
+	}
+	return nil, status.Error(codes.Unimplemented, "leadership transfer is managed by the DBaaS control plane")
+}
+
+func (s *gatewayMaintenanceServer) Downgrade(ctx context.Context, request *etcdserverpb.DowngradeRequest) (*etcdserverpb.DowngradeResponse, error) {
+	s.downgradeRequest = request
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		s.downgradeMD = md.Copy()
+	}
+	return nil, status.Error(codes.Unimplemented, "downgrade is managed by the DBaaS control plane")
 }
 
 func (s *gatewayAuthServer) AuthStatus(ctx context.Context, request *etcdserverpb.AuthStatusRequest) (*etcdserverpb.AuthStatusResponse, error) {
@@ -803,6 +875,24 @@ func TestGRPCGatewayUsesGeneratedEtcdJSONContract(t *testing.T) {
 		require.Equal(t, []string{grpcGatewayRequestMarkerValue}, md.Get(grpcGatewayRequestMarkerKey))
 		require.Equal(t, []string{token}, md.Get(rpctypes.TokenFieldNameSwagger))
 	}
+	assertUnsupportedContract := func(path, body, token, message string, streaming bool, requestSeen func() bool, md *metadata.MD) {
+		t.Helper()
+		request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("Authorization", token)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		require.Equal(t, http.StatusNotImplemented, response.Code, response.Body.String())
+		require.Equal(t, "application/json", response.Header().Get("Content-Type"))
+		expectedJSON := `{"code":12,"message":"` + message + `"}`
+		if streaming {
+			expectedJSON = `{"error":` + expectedJSON + `}`
+		}
+		require.JSONEq(t, expectedJSON, response.Body.String())
+		require.True(t, requestSeen(), path)
+		require.Equal(t, []string{grpcGatewayRequestMarkerValue}, md.Get(grpcGatewayRequestMarkerKey))
+		require.Equal(t, []string{token}, md.Get(rpctypes.TokenFieldNameSwagger))
+	}
 
 	assertUnaryContract("/v3/kv/put",
 		`{"key":"cHV0LWtleQ==","value":"bmV3LXZhbHVl","lease":"101","prev_kv":true,"unknown_field":"discarded"}`,
@@ -950,6 +1040,64 @@ func TestGRPCGatewayUsesGeneratedEtcdJSONContract(t *testing.T) {
 			return maintenanceServer.hashKVRequest != nil &&
 				maintenanceServer.hashKVRequest.Revision == 231
 		}, &maintenanceServer.hashKVMD)
+	assertUnsupportedContract("/v3/cluster/member/add",
+		`{"peerURLs":["http://member-2:2380"],"isLearner":true,"unknown_field":"discarded"}`,
+		"Bearer member-add-token", "member add is managed by the DBaaS control plane",
+		false,
+		func() bool {
+			return clusterServer.memberAddRequest != nil &&
+				len(clusterServer.memberAddRequest.PeerURLs) == 1 &&
+				clusterServer.memberAddRequest.PeerURLs[0] == "http://member-2:2380" &&
+				clusterServer.memberAddRequest.IsLearner
+		}, &clusterServer.memberAddMD)
+	assertUnsupportedContract("/v3/cluster/member/remove",
+		`{"ID":"260","unknown_field":"discarded"}`,
+		"Bearer member-remove-token", "member remove is managed by the DBaaS control plane",
+		false,
+		func() bool {
+			return clusterServer.memberRemoveRequest != nil &&
+				clusterServer.memberRemoveRequest.ID == 260
+		}, &clusterServer.memberRemoveMD)
+	assertUnsupportedContract("/v3/cluster/member/update",
+		`{"ID":"261","peerURLs":["http://member-2:12380"],"unknown_field":"discarded"}`,
+		"Bearer member-update-token", "member update is managed by the DBaaS control plane",
+		false,
+		func() bool {
+			return clusterServer.memberUpdateRequest != nil &&
+				clusterServer.memberUpdateRequest.ID == 261 &&
+				len(clusterServer.memberUpdateRequest.PeerURLs) == 1 &&
+				clusterServer.memberUpdateRequest.PeerURLs[0] == "http://member-2:12380"
+		}, &clusterServer.memberUpdateMD)
+	assertUnsupportedContract("/v3/cluster/member/promote",
+		`{"ID":"262","unknown_field":"discarded"}`,
+		"Bearer member-promote-token", "member promote is managed by the DBaaS control plane",
+		false,
+		func() bool {
+			return clusterServer.memberPromoteRequest != nil &&
+				clusterServer.memberPromoteRequest.ID == 262
+		}, &clusterServer.memberPromoteMD)
+	assertUnsupportedContract("/v3/maintenance/snapshot",
+		`{"unknown_field":"discarded"}`,
+		"Bearer maintenance-snapshot-token", "snapshot is managed by the DBaaS control plane",
+		true,
+		func() bool { return maintenanceServer.snapshotRequest != nil }, &maintenanceServer.snapshotMD)
+	assertUnsupportedContract("/v3/maintenance/transfer-leadership",
+		`{"targetID":"263","unknown_field":"discarded"}`,
+		"Bearer maintenance-move-leader-token", "leadership transfer is managed by the DBaaS control plane",
+		false,
+		func() bool {
+			return maintenanceServer.moveLeaderRequest != nil &&
+				maintenanceServer.moveLeaderRequest.TargetID == 263
+		}, &maintenanceServer.moveLeaderMD)
+	assertUnsupportedContract("/v3/maintenance/downgrade",
+		`{"action":"ENABLE","version":"3.6","unknown_field":"discarded"}`,
+		"Bearer maintenance-downgrade-token", "downgrade is managed by the DBaaS control plane",
+		false,
+		func() bool {
+			return maintenanceServer.downgradeRequest != nil &&
+				maintenanceServer.downgradeRequest.Action == etcdserverpb.DowngradeRequest_ENABLE &&
+				maintenanceServer.downgradeRequest.Version == "3.6"
+		}, &maintenanceServer.downgradeMD)
 	assertUnaryContract("/v3/auth/status", `{}`, "Bearer auth-token", `{
 		"header":{"cluster_id":"71","member_id":"72","revision":"73","raft_term":"74"},
 		"enabled":true,
