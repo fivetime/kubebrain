@@ -21,10 +21,12 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/authpb"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
@@ -807,6 +809,132 @@ func TestGRPCGatewaySurfaceIsExplicit(t *testing.T) {
 		v3lockpb.Lock_ServiceDesc.ServiceName,
 		v3electionpb.Election_ServiceDesc.ServiceName,
 	}, services, "review and classify every generated HTTP gateway service when the public surface changes")
+}
+
+func TestGRPCGatewayRouteSurfaceIsExplicit(t *testing.T) {
+	listener := bufconn.Listen(1024 * 1024)
+	grpcServer := grpc.NewServer()
+	watchNext := make(chan struct{})
+	close(watchNext)
+	electionNext := make(chan struct{})
+	close(electionNext)
+	etcdserverpb.RegisterKVServer(grpcServer, &gatewayKVServer{})
+	etcdserverpb.RegisterClusterServer(grpcServer, &gatewayClusterServer{})
+	etcdserverpb.RegisterMaintenanceServer(grpcServer, &gatewayMaintenanceServer{})
+	etcdserverpb.RegisterAuthServer(grpcServer, &gatewayAuthServer{})
+	etcdserverpb.RegisterLeaseServer(grpcServer, &gatewayLeaseServer{})
+	etcdserverpb.RegisterWatchServer(grpcServer, &gatewayWatchServer{next: watchNext})
+	v3lockpb.RegisterLockServer(grpcServer, &gatewayLockServer{})
+	v3electionpb.RegisterElectionServer(grpcServer, &gatewayElectionServer{next: electionNext})
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///bufnet",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return listener.Dial() }),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+
+	handler, err := newGRPCGatewayMux(context.Background(), conn)
+	require.NoError(t, err)
+	mux, ok := handler.(*runtime.ServeMux)
+	require.True(t, ok, "newGRPCGatewayMux must return the generated gateway ServeMux")
+
+	expectedRoutes := []string{
+		"/v3/auth/authenticate",
+		"/v3/auth/disable",
+		"/v3/auth/enable",
+		"/v3/auth/role/add",
+		"/v3/auth/role/delete",
+		"/v3/auth/role/get",
+		"/v3/auth/role/grant",
+		"/v3/auth/role/list",
+		"/v3/auth/role/revoke",
+		"/v3/auth/status",
+		"/v3/auth/user/add",
+		"/v3/auth/user/changepw",
+		"/v3/auth/user/delete",
+		"/v3/auth/user/get",
+		"/v3/auth/user/grant",
+		"/v3/auth/user/list",
+		"/v3/auth/user/revoke",
+		"/v3/cluster/member/add",
+		"/v3/cluster/member/list",
+		"/v3/cluster/member/promote",
+		"/v3/cluster/member/remove",
+		"/v3/cluster/member/update",
+		"/v3/election/campaign",
+		"/v3/election/leader",
+		"/v3/election/observe",
+		"/v3/election/proclaim",
+		"/v3/election/resign",
+		"/v3/kv/compaction",
+		"/v3/kv/deleterange",
+		"/v3/kv/lease/leases",
+		"/v3/kv/lease/revoke",
+		"/v3/kv/lease/timetolive",
+		"/v3/kv/put",
+		"/v3/kv/range",
+		"/v3/kv/txn",
+		"/v3/lease/grant",
+		"/v3/lease/keepalive",
+		"/v3/lease/leases",
+		"/v3/lease/revoke",
+		"/v3/lease/timetolive",
+		"/v3/lock/lock",
+		"/v3/lock/unlock",
+		"/v3/maintenance/alarm",
+		"/v3/maintenance/defragment",
+		"/v3/maintenance/downgrade",
+		"/v3/maintenance/hash",
+		"/v3/maintenance/hashkv",
+		"/v3/maintenance/snapshot",
+		"/v3/maintenance/status",
+		"/v3/maintenance/transfer-leadership",
+		"/v3/watch",
+	}
+	require.Equal(t, len(expectedRoutes), registeredGatewayPOSTRouteCount(t, mux),
+		"review and classify every generated HTTP gateway route when the public surface changes")
+	for _, route := range expectedRoutes {
+		t.Run(route, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodPost, route, strings.NewReader(gatewayRouteProbeBody(route)))
+			request.Header.Set("Content-Type", "application/json")
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			require.NotEqual(t, http.StatusNotFound, response.Code, "expected generated route to be registered")
+			require.NotEqual(t, http.StatusMethodNotAllowed, response.Code, "expected generated route to accept POST")
+		})
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/v3/unclassified/generated-route", strings.NewReader("{"))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	require.Equal(t, http.StatusNotFound, response.Code)
+}
+
+func registeredGatewayPOSTRouteCount(t *testing.T, mux *runtime.ServeMux) int {
+	t.Helper()
+	handlersField := reflect.ValueOf(mux).Elem().FieldByName("handlers")
+	require.True(t, handlersField.IsValid(), "grpc-gateway ServeMux handlers field changed")
+	require.Equal(t, reflect.Map, handlersField.Kind())
+	postHandlers := handlersField.MapIndex(reflect.ValueOf(http.MethodPost))
+	require.True(t, postHandlers.IsValid(), "generated gateway registered no POST handlers")
+	return postHandlers.Len()
+}
+
+func gatewayRouteProbeBody(route string) string {
+	switch route {
+	case "/v3/election/observe":
+		return `{"name":"YQ=="}`
+	case "/v3/lease/keepalive":
+		return `{"ID":"1"}`
+	case "/v3/watch":
+		return `{"create_request":{"key":"YQ=="}}`
+	default:
+		return "{"
+	}
 }
 
 func TestGRPCGatewayUsesGeneratedEtcdJSONContract(t *testing.T) {

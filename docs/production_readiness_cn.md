@@ -1482,7 +1482,8 @@ hack/dev/verify.sh
   发布门禁还必须让静态 API surface 测试同时覆盖 core etcd 服务与 Lock/Election
   service descriptor，确保新增公开 RPC 都有显式实现或显式拒绝分类；generated
   HTTP gateway 的注册 service 列表也必须固定为同一公开集合，避免 `/v3/*`
-  surface 在升级或重构中漏注册或无审查扩大。protobuf 字段升级门禁应以字段名和 wire
+  surface 在升级或重构中漏注册或无审查扩大；当前 51 条 generated POST route 必须逐条命中
+  且未知 `/v3/*` route 保持 404。protobuf 字段升级门禁应以字段名和 wire
   number 精确覆盖 core KV/Watch/Lease/Txn、`RangeStreamResponse`、MVCC
   `KeyValue`/`Event`、Cluster、Maintenance、Auth、Auth 持久化 `authpb.User`/
   `Role`/`Permission`，以及 Lock/Election request、response 和 nested `LeaderKey`，

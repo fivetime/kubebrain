@@ -11604,6 +11604,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./pkg/server/etcd -run 'Test(CoreResponse|MVCC)ProtoFieldCoverage|TestSplitRangeStreamResponsePreservesAllFields|TestWithoutWatchPrevKvsDoesNotMutateSharedEvents|TestSendWatchFragmentsMatchesEtcdFlags|TestWatchPutEventKeepsInlineCreateRevisionWhenPrevKvMissing' -count=1 -v`、
   `go test ./pkg/server/etcd -count=1`、`go vet ./...` 和
   `go test ./... -count=1 -p 1` 均通过。
+- A740 固定 generated HTTP gateway route surface：
+  A727-A737 已逐条验证当前 KV、Watch、Lease、Cluster、Maintenance、Auth、Lock 和 Election
+  generated gateway 的 JSON/metadata 行为，但 route surface 只固定 service 注册集合，若 upstream
+  generated gateway 在已注册 service 内新增 POST path，人工合同测试可能不会立即暴露未审计路径。
+  现在新增 `TestGRPCGatewayRouteSurfaceIsExplicit`：用 bufconn 注册现有 fake services，经
+  `newGRPCGatewayMux` 读取实际 `runtime.ServeMux` 的 POST handler 数量，并逐条探测当前 51 条
+  `/v3/*` generated route 必须命中、未知 `/v3/unclassified/generated-route` 必须保持 404。未来
+  gateway 生成代码新增、删除或改名 route 时，必须先分类为支持、显式拒绝或不暴露，并补齐
+  JSON、auth metadata、stream/cancellation 或 Unimplemented contract 后才能更新门禁。
+  `go test ./pkg/endpoint -run 'TestGRPCGateway(Surface|RouteSurface)IsExplicit' -count=1 -v`、
+  `go test ./pkg/endpoint -count=1`、`go vet ./...` 和 `go test ./... -count=1 -p 1`
+  均通过。
 
 ### P2：运维兼容和长期验证
 
