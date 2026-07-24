@@ -11524,6 +11524,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `/root/etcd/api/etcdserverpb/gw/rpc.pb.gw.go` 的 Auth generated contract。
   `go test ./pkg/endpoint -run TestGRPCGatewayUsesGeneratedEtcdJSONContract -count=1 -v`
   通过。
+- A733 固定 Auth user lifecycle HTTP gateway contract：
+  A732 覆盖 Authenticate、UserAdd 与 RoleGrantPermission，但 UserGet、UserList、
+  UserDelete、UserChangePassword、UserGrantRole 和 UserRevokeRole 六条公开 generated
+  route 仍未实际调用。现在逐条调用 `/v3/auth/user/get`、`list`、`delete`、
+  `changepw`、`grant` 和 `revoke`，固定 repeated roles/users 响应、password 与
+  `hashedPassword`、GrantRole 的 `user` 字段、RevokeRole 的 `name` 字段以及
+  unknown-field discard。每条 route 都必须收到 gateway marker 和独立
+  `Authorization` metadata，并保留 response header 的 proto-name/int64 JSON 编码，
+  防止 Auth 用户管理面在 generated gateway 升级后出现字段错配或身份丢失。
+  `go test ./pkg/endpoint -run TestGRPCGatewayUsesGeneratedEtcdJSONContract -count=1 -v`
+  通过。
 
 ### P2：运维兼容和长期验证
 
