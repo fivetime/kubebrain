@@ -11663,6 +11663,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./cmd/option -run 'TestInitialClusterValidationRequiresAdvertisedPeerIdentity' -count=1 -v`、
   `go test ./cmd/option -count=1`、`go vet ./...` 和 `go test ./... -count=1 -p 1`
   均通过。
+- A745 固定实例发布门禁中的 admission 参数一致性：
+  production 明文/TLS 基线已经固定 `--max-request-rate=2000`、
+  `--request-rate-burst=4000`、`--max-delete-range-keys=1024` 和
+  `--max-watches=10000`，但 `validate-instance-ready.sh` 此前只校验 quota、keyspace、
+  PD、advertise client URL 和 initial-cluster。这样控制面或人工 patch 可能在发布后
+  漏掉限流、范围删除事务上限或 watch 上限，仍被门禁误判为 ready。现在脚本新增
+  `EXPECTED_MAX_REQUEST_RATE`、`EXPECTED_REQUEST_RATE_BURST`、
+  `EXPECTED_MAX_DELETE_RANGE_KEYS` 和 `EXPECTED_MAX_WATCHES`（默认对齐 production
+  baseline，可按实例规格覆盖），并要求 Pod template 中对应 flag 各出现一次且值完全匹配。
+  `TestValidateInstanceReady` 扩展 wrong/missing/duplicate 回归，覆盖 max request rate、
+  request-rate burst、max delete range keys 和 max watches 漂移。
+  `go test ./hack/production -run TestValidateInstanceReady -count=1 -v`、
+  `bash -n hack/production/validate-instance-ready.sh`、`go test ./hack/production -count=1`、
+  `go vet ./...` 和 `go test ./... -count=1 -p 1` 均通过。
 
 ### P2：运维兼容和长期验证
 

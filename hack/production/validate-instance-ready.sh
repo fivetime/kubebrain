@@ -16,6 +16,10 @@ EXPECTED_CLUSTER_ID="${EXPECTED_CLUSTER_ID:-}"
 EXPECTED_INITIAL_CLUSTER="${EXPECTED_INITIAL_CLUSTER:-}"
 EXPECTED_QUOTA_BACKEND_BYTES="${EXPECTED_QUOTA_BACKEND_BYTES:-}"
 EXPECTED_ADVERTISE_CLIENT_URLS="${EXPECTED_ADVERTISE_CLIENT_URLS:-}"
+EXPECTED_MAX_REQUEST_RATE="${EXPECTED_MAX_REQUEST_RATE:-2000}"
+EXPECTED_REQUEST_RATE_BURST="${EXPECTED_REQUEST_RATE_BURST:-4000}"
+EXPECTED_MAX_DELETE_RANGE_KEYS="${EXPECTED_MAX_DELETE_RANGE_KEYS:-1024}"
+EXPECTED_MAX_WATCHES="${EXPECTED_MAX_WATCHES:-10000}"
 TIDB_NAMESPACE="${TIDB_NAMESPACE:-tidb-cluster}"
 TIDB_CLUSTER="${TIDB_CLUSTER:-kb}"
 EXPECTED_TIDB_CLUSTER_UID="${EXPECTED_TIDB_CLUSTER_UID:-}"
@@ -76,6 +80,13 @@ if [[ -z "$EXPECTED_ADVERTISE_CLIENT_URLS" ]]; then
   echo "EXPECTED_ADVERTISE_CLIENT_URLS is required" >&2
   exit 2
 fi
+for variable in EXPECTED_MAX_REQUEST_RATE EXPECTED_REQUEST_RATE_BURST EXPECTED_MAX_DELETE_RANGE_KEYS EXPECTED_MAX_WATCHES; do
+  value="${!variable}"
+  if ! [[ "$value" =~ ^[0-9]+$ ]]; then
+    echo "${variable} must be a non-negative integer" >&2
+    exit 2
+  fi
+done
 if [[ -z "$EXPECTED_KUBEBRAIN_CLIENT_SERVICE_UID" ]]; then
   echo "EXPECTED_KUBEBRAIN_CLIENT_SERVICE_UID is required" >&2
   exit 2
@@ -220,6 +231,35 @@ fi
 kubebrain_args="$("$KUBECTL" "${kubectl_args[@]}" -n "$KUBEBRAIN_NAMESPACE" \
   get statefulset "$KUBEBRAIN_STATEFULSET" \
   -o 'go-template={{range .spec.template.spec.containers}}{{if eq .name "kubebrain"}}{{range .args}}{{printf "%s\n" .}}{{end}}{{end}}{{end}}')"
+
+check_exact_kubebrain_arg() {
+  local flag="$1"
+  local expected="$2"
+  local label="$3"
+  local count=0
+  local mismatch=false
+  local arg
+  while IFS= read -r arg; do
+    if [[ "$arg" == "--${flag}="* ]]; then
+      count=$((count + 1))
+      if [[ "$arg" != "--${flag}=${expected}" ]]; then
+        mismatch=true
+      fi
+    fi
+  done <<<"$kubebrain_args"
+  if [[ "$count" -ne 1 || "$mismatch" == "true" ]]; then
+    echo "KubeBrain ${label} configuration mismatch: expected exactly --${flag}=${expected}" >&2
+    printf 'actual %s args:' "$label" >&2
+    while IFS= read -r arg; do
+      if [[ "$arg" == "--${flag}="* ]]; then
+        printf ' %s' "$arg" >&2
+      fi
+    done <<<"$kubebrain_args"
+    printf '\n' >&2
+    exit 1
+  fi
+}
+
 quota_arg_count=0
 quota_arg_mismatch=false
 while IFS= read -r arg; do
@@ -329,6 +369,11 @@ if [[ "$initial_cluster_arg_count" -ne 1 || "$initial_cluster_arg_mismatch" == "
   printf '\n' >&2
   exit 1
 fi
+
+check_exact_kubebrain_arg "max-request-rate" "$EXPECTED_MAX_REQUEST_RATE" "max request rate"
+check_exact_kubebrain_arg "request-rate-burst" "$EXPECTED_REQUEST_RATE_BURST" "request rate burst"
+check_exact_kubebrain_arg "max-delete-range-keys" "$EXPECTED_MAX_DELETE_RANGE_KEYS" "max delete range keys"
+check_exact_kubebrain_arg "max-watches" "$EXPECTED_MAX_WATCHES" "max watches"
 
 if ! ETCDCTL_API=3 run_etcdctl --endpoints="$ENDPOINT" endpoint health; then
   echo "KubeBrain endpoint health failed: $ENDPOINT" >&2

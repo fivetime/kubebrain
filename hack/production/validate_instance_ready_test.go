@@ -13,6 +13,19 @@ import (
 
 const fakeInitialCluster = "kb-0=peer-0,kb-1=peer-1,kb-2=peer-2"
 
+func fakeKubeBrainArgs(advertisedURLs, initialCluster string) string {
+	return "--port=3379\n" +
+		"--keyspace=instance-a\n" +
+		"--pd-addrs=kb-pd.storage.svc:2379\n" +
+		"--quota-backend-bytes=429496729600\n" +
+		"--advertise-client-urls=" + advertisedURLs + "\n" +
+		"--initial-cluster=" + initialCluster + "\n" +
+		"--max-request-rate=2000\n" +
+		"--request-rate-burst=4000\n" +
+		"--max-delete-range-keys=1024\n" +
+		"--max-watches=10000"
+}
+
 func TestValidateInstanceReady(t *testing.T) {
 	for _, tc := range []struct {
 		name                     string
@@ -402,6 +415,42 @@ func TestValidateInstanceReady(t *testing.T) {
 			initialCluster: "kb-0=peer-0,kb-1=peer-0,kb-2=peer-2",
 			wantOutput:     "duplicate peer URL",
 		},
+		{
+			name:       "wrong max request rate",
+			image:      "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus: "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeArgs:   strings.ReplaceAll(fakeKubeBrainArgs("https://instance.example:2379", fakeInitialCluster), "--max-request-rate=2000", "--max-request-rate=100"),
+			topology:   "3\t3",
+			healthOK:   true,
+			wantOutput: "max request rate configuration mismatch",
+		},
+		{
+			name:       "missing request rate burst",
+			image:      "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus: "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeArgs:   strings.ReplaceAll(fakeKubeBrainArgs("https://instance.example:2379", fakeInitialCluster), "\n--request-rate-burst=4000", ""),
+			topology:   "3\t3",
+			healthOK:   true,
+			wantOutput: "request rate burst configuration mismatch",
+		},
+		{
+			name:       "duplicate max delete range keys",
+			image:      "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus: "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeArgs:   fakeKubeBrainArgs("https://instance.example:2379", fakeInitialCluster) + "\n--max-delete-range-keys=1024",
+			topology:   "3\t3",
+			healthOK:   true,
+			wantOutput: "max delete range keys configuration mismatch",
+		},
+		{
+			name:       "wrong max watches",
+			image:      "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus: "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeArgs:   strings.ReplaceAll(fakeKubeBrainArgs("https://instance.example:2379", fakeInitialCluster), "--max-watches=10000", "--max-watches=1000"),
+			topology:   "3\t3",
+			healthOK:   true,
+			wantOutput: "max watches configuration mismatch",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -473,7 +522,7 @@ exit 1
 				initialCluster = fakeInitialCluster
 			}
 			if kubeArgs == "" {
-				kubeArgs = "--port=3379\n--keyspace=instance-a\n--pd-addrs=kb-pd.storage.svc:2379\n--quota-backend-bytes=429496729600\n--advertise-client-urls=" + advertisedURLs + "\n--initial-cluster=" + initialCluster
+				kubeArgs = fakeKubeBrainArgs(advertisedURLs, initialCluster)
 			}
 			memberListJSON := tc.memberListJSON
 			if memberListJSON == "" {
@@ -505,6 +554,10 @@ exit 1
 				"EXPECTED_INITIAL_CLUSTER="+initialCluster,
 				"EXPECTED_QUOTA_BACKEND_BYTES=429496729600",
 				"EXPECTED_ADVERTISE_CLIENT_URLS="+advertisedURLs,
+				"EXPECTED_MAX_REQUEST_RATE=2000",
+				"EXPECTED_REQUEST_RATE_BURST=4000",
+				"EXPECTED_MAX_DELETE_RANGE_KEYS=1024",
+				"EXPECTED_MAX_WATCHES=10000",
 				"ENDPOINT=https://instance.example:2379",
 				"TIMEOUT_SECONDS=1",
 				"POLL_INTERVAL_SECONDS=0",
