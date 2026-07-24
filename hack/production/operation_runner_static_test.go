@@ -77,3 +77,29 @@ func TestReleaseGateScriptTestsUseBoundedCommandHelper(t *testing.T) {
 		})
 	}
 }
+
+func TestProductionLifecycleScriptTestsUseBoundedCommandHelper(t *testing.T) {
+	for _, tc := range []struct {
+		testFile string
+		script   string
+		helper   string
+	}{
+		{testFile: "destroy_instance_test.go", script: "destroy-instance.sh", helper: "runDestroyInstance"},
+	} {
+		t.Run(tc.testFile, func(t *testing.T) {
+			data, err := os.ReadFile(filepath.Join(".", tc.testFile))
+			require.NoError(t, err)
+			text := string(data)
+			require.Contains(t, text, tc.helper+`(t, env)`)
+			require.NotContains(t, text, `exec.Command("bash", "`+tc.script+`")`)
+		})
+	}
+}
+
+func TestProductionShellEntrypointNamespaceTestsUseBoundedCommandHelper(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join(".", "namespace_validation_test.go"))
+	require.NoError(t, err)
+	text := string(data)
+	require.Contains(t, text, `runProductionScriptCommand(t, tc.script, env)`)
+	require.NotContains(t, text, `exec.Command("bash", tc.script)`)
+}

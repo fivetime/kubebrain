@@ -12004,6 +12004,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./hack/production -run 'Test(ValidateCertificateRotation|ReleaseGateScript)' -count=1 -v`、
   `go test ./hack/production -count=1 -timeout=12m`、`git diff --check`、`go vet ./...` 和
   `go test ./... -count=1 -p 1` 均通过。
+- A774 给 destroy/namespace 生产脚本测试补 bounded helper：
+  `destroy-instance.sh` 生命周期测试和 namespace 入口前置校验覆盖销毁、清理、cutover、restore audit、
+  certificate rotation、operation audit 及 operation runner 的 fail-closed 路径，但测试仍直接
+  `exec.Command("bash", ...).CombinedOutput()`。这些测试的职责是在任何外部调用前拒绝危险 namespace
+  或销毁证据漂移；如果 fake `kubectl`、`uid-delete`、`logical-status` 或脚本分支悬挂，就会把生产
+  门禁失败隐藏到 Go test 外层 timeout。现在 destroy fixture 通过 `runDestroyInstance` 进入
+  `runProductionScriptCommand`，namespace 矩阵也统一用同一 helper 执行 `tc.script`；新增静态测试要求
+  destroy/namespace 测试继续使用 bounded helper，并禁止回退到裸 bash exec。
+  `go test ./hack/production -run 'Test(DestroyInstance|ProductionShellEntrypoints|ProductionLifecycleScript|ProductionShellEntrypointNamespace)' -count=1 -v`、
+  `go test ./hack/production -count=1 -timeout=12m`、`git diff --check`、`go vet ./...` 和
+  `go test ./... -count=1 -p 1` 均通过。
 
 ### P2：运维兼容和长期验证
 

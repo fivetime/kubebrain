@@ -2,7 +2,6 @@ package production_test
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -133,9 +132,9 @@ printf 'called go %s\n' "$*" >>"$EXTERNAL_LOG"
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			require.NoError(t, os.RemoveAll(externalLog))
-			command := exec.Command("bash", tc.script)
-			command.Env = append(os.Environ(), append(baseEnv, tc.env...)...)
-			output, err := command.CombinedOutput()
+			env := append([]string{}, baseEnv...)
+			env = append(env, tc.env...)
+			output, err := runProductionScriptCommand(t, tc.script, env)
 			require.Error(t, err, string(output))
 			require.Contains(t, string(output), tc.wantOutput)
 			require.NoFileExists(t, externalLog)

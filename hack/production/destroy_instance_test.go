@@ -392,9 +392,12 @@ fi
 
 func (f *destroyFixture) run(t *testing.T, action string, wantOK bool, extraEnv string, outputs ...string) string {
 	t.Helper()
-	command := exec.Command("bash", "destroy-instance.sh")
-	command.Env = append(os.Environ(), append(f.env, "ACTION="+action, extraEnv)...)
-	output, err := command.CombinedOutput()
+	env := append([]string{}, f.env...)
+	env = append(env, "ACTION="+action)
+	if extraEnv != "" {
+		env = append(env, extraEnv)
+	}
+	output, err := runDestroyInstance(t, env)
 	if wantOK {
 		require.NoError(t, err, string(output))
 	} else {
@@ -404,6 +407,11 @@ func (f *destroyFixture) run(t *testing.T, action string, wantOK bool, extraEnv 
 		require.Contains(t, strings.TrimSpace(string(output)), expected)
 	}
 	return string(output)
+}
+
+func runDestroyInstance(t *testing.T, env []string) ([]byte, error) {
+	t.Helper()
+	return runProductionScriptCommand(t, "destroy-instance.sh", env)
 }
 
 func writeDestroyExecutable(t *testing.T, path, contents string) {
