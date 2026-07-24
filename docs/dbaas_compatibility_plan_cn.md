@@ -11953,6 +11953,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./hack/production -run 'Test(BackupOperation|BackupDeletionOperation|PostRestoreAuditOperation|RestoreCutoverOperation|DestroyOperation|CertificateRotationOperation)' -count=1 -timeout=4m`、
   `go test ./hack/production -count=1 -timeout=12m`、`git diff --check`、`go vet ./...` 和
   `go test ./... -count=1 -p 1` 均通过。
+- A769 固定 operation runner 测试基础设施门禁：
+  A767/A768 依赖所有 operation runner 脚本和测试夹具维持同一约束，但此前没有静态门禁防止后续
+  runner 回退到固定 `LEASE_SECONDS/3` 或裸 `exec.Command(...).CombinedOutput()`。现在
+  `hack/production` 新增静态测试，逐个读取 backup、backup deletion、certificate rotation、
+  destroy、post-restore audit 和 restore cutover runner 脚本，要求存在
+  `HEARTBEAT_INTERVAL_SECONDS` 默认值、正数校验和 override 赋值，并禁止旧的裸
+  `heartbeat_interval=$((LEASE_SECONDS / 3))`；同时读取对应 Go 测试文件，要求通过
+  `runProductionRunnerCommand` 执行并禁止直接 `exec.Command("bash", script)`。
+  `go test ./hack/production -run 'TestOperationRunner' -count=1 -v`、`go test ./hack/production -count=1 -timeout=12m`、
+  `git diff --check`、`go vet ./...` 和 `go test ./... -count=1 -p 1` 均通过。
 
 ### P2：运维兼容和长期验证
 
