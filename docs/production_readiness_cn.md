@@ -1526,7 +1526,9 @@ hack/dev/verify.sh
   JSON，避免合同外 token 形状在滚动升级或代理路径中被静默接受。其 upstream 错误契约
   特殊：HTTP 500、gRPC code 2(Unknown)，消息仍为 permission denied/invalid auth token。
   该特殊分类必须只匹配当前 Lock/Election service descriptor 中的精确 full method，不得用
-  service-name prefix 接受合同外方法。
+  service-name prefix 接受合同外方法；发布门禁需逐个覆盖 Lock、Unlock、Campaign、
+  Proclaim、Leader 和 Resign 的无 token、invalid token 与 permission denied 行为，并确认
+  失败的 Unlock/Resign 不会删除已有 lock/election key。
   Election Observe/底层 Watch 则只在创建时鉴权：follower 转发必须携带 caller token，但
   已建立流不能因后续撤权或改密被追溯关闭；新建的无 token、invalid token 或无 READ 权限流
   按 upstream 返回 HTTP 200 空体，gRPC wrapper 表现为成功结束且不发送 leader 响应，不能

@@ -11402,6 +11402,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Lock/Campaign 风格错误，也不能泄漏 leader。
   `go test ./pkg/server/etcd -run TestDedicatedElectionObserveAuthFailuresReturnEmptyStream -count=1 -v`
   三个子用例均通过。
+- A722 固定 dedicated concurrency unary auth 失败运行时外观：
+  A716 已用 service descriptor 精确固定 Lock/Election method 分类，但运行时只覆盖了
+  Lock 的无 token 归一化；Unlock、Campaign、Proclaim、Leader、Resign 在 missing token、
+  invalid token 和 valid token 但无权限时仍缺少逐 method 门禁。现在新增
+  `TestDedicatedConcurrencyUnaryAuthFailuresReturnUnknown`：用 root token 建立一个 lock 和
+  election leader，再用匿名、无效 token 和无权限用户分别调用 6 个 unary method，要求
+  gRPC code 均为 `Unknown` 且 message 精确等于 upstream auth 错误；最后用 root token
+  读取 lock key 与 leader key，确认失败的 Unlock/Resign 没有产生副作用。
+  `go test ./pkg/server/etcd -run 'TestDedicatedConcurrencyUnaryAuthFailuresReturnUnknown|TestDedicatedElectionObserveAuthFailuresReturnEmptyStream' -count=1 -v`
+  通过。
 
 ### P2：运维兼容和长期验证
 

@@ -44,6 +44,45 @@ func (s *fakeElectionObserveServer) Send(*v3electionpb.LeaderResponse) error {
 	return nil
 }
 
+type dedicatedConcurrencyAuthContexts struct {
+	anonymous context.Context
+	root      context.Context
+	limited   context.Context
+}
+
+func setupDedicatedConcurrencyAuth(t *testing.T, server *RPCServer) dedicatedConcurrencyAuthContexts {
+	t.Helper()
+	ctx := context.Background()
+	require.NoError(t, server.auth.userAdd(ctx, &etcdserverpb.AuthUserAddRequest{
+		Name: "root", Password: "secret",
+	}))
+	require.NoError(t, server.auth.roleAdd(ctx, "root"))
+	require.NoError(t, server.auth.userGrantRole(ctx, "root", "root"))
+	require.NoError(t, server.auth.userAdd(ctx, &etcdserverpb.AuthUserAddRequest{
+		Name: "limited", Password: "secret",
+	}))
+	require.NoError(t, server.auth.roleAdd(ctx, "limited"))
+	require.NoError(t, server.auth.userGrantRole(ctx, "limited", "limited"))
+	require.NoError(t, server.auth.enable(ctx))
+	root, err := server.Authenticate(ctx, &etcdserverpb.AuthenticateRequest{
+		Name: "root", Password: "secret",
+	})
+	require.NoError(t, err)
+	limited, err := server.Authenticate(ctx, &etcdserverpb.AuthenticateRequest{
+		Name: "limited", Password: "secret",
+	})
+	require.NoError(t, err)
+	return dedicatedConcurrencyAuthContexts{
+		anonymous: ctx,
+		root: metadata.NewIncomingContext(ctx, metadata.Pairs(
+			rpctypes.TokenFieldNameGRPC, root.Token,
+		)),
+		limited: metadata.NewIncomingContext(ctx, metadata.Pairs(
+			rpctypes.TokenFieldNameGRPC, limited.Token,
+		)),
+	}
+}
+
 func TestDedicatedLockAndElectionServicesUseKubeBrainBackend(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer func() {
@@ -180,41 +219,21 @@ func TestDedicatedElectionObserveAuthFailuresReturnEmptyStream(t *testing.T) {
 		closeFn()
 	}()
 
-	ctx := context.Background()
-	require.NoError(t, server.auth.userAdd(ctx, &etcdserverpb.AuthUserAddRequest{
-		Name: "root", Password: "secret",
-	}))
-	require.NoError(t, server.auth.roleAdd(ctx, "root"))
-	require.NoError(t, server.auth.userGrantRole(ctx, "root", "root"))
-	require.NoError(t, server.auth.userAdd(ctx, &etcdserverpb.AuthUserAddRequest{
-		Name: "limited", Password: "secret",
-	}))
-	require.NoError(t, server.auth.roleAdd(ctx, "limited"))
-	require.NoError(t, server.auth.userGrantRole(ctx, "limited", "limited"))
-	require.NoError(t, server.auth.enable(ctx))
-	limited, err := server.Authenticate(ctx, &etcdserverpb.AuthenticateRequest{
-		Name: "limited", Password: "secret",
-	})
-	require.NoError(t, err)
+	auth := setupDedicatedConcurrencyAuth(t, server)
 
 	electionServer := newElectionServer(server.concurrencyClient)
 	tests := []struct {
 		name string
 		ctx  context.Context
 	}{
-		{name: "missing token", ctx: ctx},
+		{name: "missing token", ctx: auth.anonymous},
 		{
 			name: "invalid token",
-			ctx: metadata.NewIncomingContext(ctx, metadata.Pairs(
+			ctx: metadata.NewIncomingContext(auth.anonymous, metadata.Pairs(
 				rpctypes.TokenFieldNameGRPC, "invalid-token",
 			)),
 		},
-		{
-			name: "permission denied",
-			ctx: metadata.NewIncomingContext(ctx, metadata.Pairs(
-				rpctypes.TokenFieldNameGRPC, limited.Token,
-			)),
-		},
+		{name: "permission denied", ctx: auth.limited},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -229,6 +248,131 @@ func TestDedicatedElectionObserveAuthFailuresReturnEmptyStream(t *testing.T) {
 			require.Zero(t, stream.sent)
 		})
 	}
+}
+
+func TestDedicatedConcurrencyUnaryAuthFailuresReturnUnknown(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer func() {
+		_ = server.concurrencyClient.Close()
+		closeFn()
+	}()
+
+	auth := setupDedicatedConcurrencyAuth(t, server)
+	lockServer := newLockServer(server.concurrencyClient)
+	electionServer := newElectionServer(server.concurrencyClient)
+	key := func(suffix string) []byte {
+		return []byte("/a722/concurrency-auth" + suffix)
+	}
+	locked, err := lockServer.Lock(auth.root, &v3lockpb.LockRequest{
+		Name: key("/lock"),
+	})
+	require.NoError(t, err)
+	campaign, err := electionServer.Campaign(auth.root, &v3electionpb.CampaignRequest{
+		Name:  key("/election"),
+		Value: []byte("leader"),
+	})
+	require.NoError(t, err)
+
+	authFailures := []struct {
+		name    string
+		ctx     context.Context
+		message string
+	}{
+		{
+			name:    "missing token",
+			ctx:     auth.anonymous,
+			message: status.Convert(rpctypes.ErrUserEmpty).Message(),
+		},
+		{
+			name: "invalid token",
+			ctx: metadata.NewIncomingContext(auth.anonymous, metadata.Pairs(
+				rpctypes.TokenFieldNameGRPC, "invalid-token",
+			)),
+			message: status.Convert(rpctypes.ErrInvalidAuthToken).Message(),
+		},
+		{
+			name:    "permission denied",
+			ctx:     auth.limited,
+			message: status.Convert(rpctypes.ErrPermissionDenied).Message(),
+		},
+	}
+	calls := []struct {
+		name string
+		call func(context.Context) error
+	}{
+		{
+			name: "lock",
+			call: func(ctx context.Context) error {
+				_, lockErr := lockServer.Lock(ctx, &v3lockpb.LockRequest{
+					Name: key("/blocked-lock"),
+				})
+				return lockErr
+			},
+		},
+		{
+			name: "unlock",
+			call: func(ctx context.Context) error {
+				_, unlockErr := lockServer.Unlock(ctx, &v3lockpb.UnlockRequest{Key: locked.Key})
+				return unlockErr
+			},
+		},
+		{
+			name: "campaign",
+			call: func(ctx context.Context) error {
+				_, campaignErr := electionServer.Campaign(ctx, &v3electionpb.CampaignRequest{
+					Name:  key("/blocked-election"),
+					Value: []byte("blocked"),
+				})
+				return campaignErr
+			},
+		},
+		{
+			name: "proclaim",
+			call: func(ctx context.Context) error {
+				_, proclaimErr := electionServer.Proclaim(ctx, &v3electionpb.ProclaimRequest{
+					Leader: campaign.Leader,
+					Value:  []byte("blocked"),
+				})
+				return proclaimErr
+			},
+		},
+		{
+			name: "leader",
+			call: func(ctx context.Context) error {
+				_, leaderErr := electionServer.Leader(ctx, &v3electionpb.LeaderRequest{
+					Name: key("/election"),
+				})
+				return leaderErr
+			},
+		},
+		{
+			name: "resign",
+			call: func(ctx context.Context) error {
+				_, resignErr := electionServer.Resign(ctx, &v3electionpb.ResignRequest{
+					Leader: campaign.Leader,
+				})
+				return resignErr
+			},
+		},
+	}
+	for _, call := range calls {
+		t.Run(call.name, func(t *testing.T) {
+			for _, authFailure := range authFailures {
+				t.Run(authFailure.name, func(t *testing.T) {
+					err := call.call(authFailure.ctx)
+					require.Equal(t, codes.Unknown, status.Code(err))
+					require.Equal(t, authFailure.message, status.Convert(err).Message())
+				})
+			}
+		})
+	}
+
+	lockKV, err := server.Range(auth.root, &etcdserverpb.RangeRequest{Key: locked.Key})
+	require.NoError(t, err)
+	require.Len(t, lockKV.Kvs, 1)
+	leaderKV, err := server.Range(auth.root, &etcdserverpb.RangeRequest{Key: campaign.Leader.Key})
+	require.NoError(t, err)
+	require.Len(t, leaderKV.Kvs, 1)
 }
 
 func TestDedicatedConcurrencyServiceErrorsMatchEtcd(t *testing.T) {
