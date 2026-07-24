@@ -184,3 +184,18 @@ func TestProductionOperationWorkerStreamsExecutorWithProcessGroup(t *testing.T) 
 	require.Contains(t, text, "command.Stderr = os.Stderr")
 	require.NotContains(t, text, "processgroup.CombinedOutput(")
 }
+
+func TestProductionTestCommandHelpersUseWaitDelay(t *testing.T) {
+	for _, sourceFile := range []string{
+		"runner_command_test.go",
+		filepath.Join("internal", "testcommand", "command.go"),
+	} {
+		t.Run(sourceFile, func(t *testing.T) {
+			data, err := os.ReadFile(sourceFile)
+			require.NoError(t, err)
+			text := string(data)
+			require.Contains(t, text, "command.WaitDelay =")
+			require.Contains(t, text, "5 * time.Second")
+		})
+	}
+}

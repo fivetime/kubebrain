@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -17,6 +18,7 @@ import (
 
 const compatScriptCommandTimeout = 30 * time.Second
 const compatScriptOutputLimitBytes = 1 << 20
+const compatCommandWaitDelay = 5 * time.Second
 
 func runDifferentialScript(t *testing.T, env []string) ([]byte, error) {
 	t.Helper()
@@ -53,6 +55,7 @@ func runCompatCommandContext(t *testing.T, ctx context.Context, commandName stri
 func runCompatCommand(ctx context.Context, commandName string, args []string, env []string) ([]byte, error) {
 	command := exec.CommandContext(ctx, commandName, args...)
 	configureCompatProcessGroup(command)
+	command.WaitDelay = compatCommandWaitDelay
 	command.Env = append(os.Environ(), env...)
 	return compatCombinedOutput(command, compatScriptOutputLimitBytes)
 }
@@ -62,6 +65,7 @@ func startCompatCommand(t *testing.T, commandName string, args ...string) func()
 	processCtx, cancel := context.WithCancel(context.Background())
 	command := exec.CommandContext(processCtx, commandName, args...)
 	configureCompatProcessGroup(command)
+	command.WaitDelay = compatCommandWaitDelay
 	require.NoError(t, command.Start())
 	processDone := make(chan struct{})
 	go func() {
@@ -232,4 +236,12 @@ func TestCompatMakeMirrorCommandsUseBoundedHelpers(t *testing.T) {
 	mirror, err := os.ReadFile("make_mirror_differential_test.go")
 	require.NoError(t, err)
 	require.Contains(t, string(mirror), "startCompatCommand(t, commandName, args...)")
+}
+
+func TestCompatCommandHelpersUseWaitDelay(t *testing.T) {
+	data, err := os.ReadFile("runner_command_test.go")
+	require.NoError(t, err)
+	text := string(data)
+	require.Contains(t, text, "const compatCommandWaitDelay = 5 * time.Second")
+	require.GreaterOrEqual(t, strings.Count(text, "command.WaitDelay = compatCommandWaitDelay"), 2)
 }

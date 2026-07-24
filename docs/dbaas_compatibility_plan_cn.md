@@ -12114,6 +12114,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `processgroup.CombinedOutput`。
   `go test ./hack/production -run 'TestProduction(RuntimeExecutorCommandsUseProcessGroupAndBoundedOutput|OperationWorkerStreamsExecutorWithProcessGroup|CmdGoRunTestsUseBoundedCommandHelper)' -count=1 -v`、
   `git diff --check`、`go vet ./...` 和 `go test ./... -count=1 -p 1` 均通过。
+- A784 给 production/compat 测试命令 helper 补 `WaitDelay`：
+  A779-A782 已把测试 fixture 的外部命令统一到进程组 kill 和 bounded output，但 production
+  `runProductionCommand`、`internal/testcommand.Run` 以及 compat `runCompatCommand`/`startCompatCommand`
+  仍未设置 `exec.Cmd.WaitDelay`；如果取消后仍有管道或子进程退出异常，测试可能继续等待外层
+  timeout 才暴露。现在这三类 helper 统一设置 5 秒 `WaitDelay`，保留原有 30 秒业务超时、1MiB
+  output 上限和调用方 ctx。新增静态门禁要求 production 测试命令 helper 继续设置 wait delay；
+  compat runner 自检要求短命令和长驻命令两个创建点都使用 `compatCommandWaitDelay`。
+  `go test ./hack/production ./hack/production/internal/testcommand -run 'TestProduction(TestCommandHelpersUseWaitDelay|RuntimeExecutorCommandsUseProcessGroupAndBoundedOutput|OperationWorkerStreamsExecutorWithProcessGroup|CmdGoRunTestsUseBoundedCommandHelper)' -count=1 -v`、
+  `cd hack/etcd-client-compat && go test -run 'Test(CompatCommandHelpersUseWaitDelay|CompatMakeMirrorCommandsUseBoundedHelpers|CompatKubernetesRestartCommandsUseBoundedHelpers|CompatFailoverCommandsUseBoundedHelpers|DifferentialRunner)' -count=1 -v`、
+  `git diff --check`、`go vet ./...` 和 `go test ./... -count=1 -p 1` 均通过。
 
 ### P2：运维兼容和长期验证
 
