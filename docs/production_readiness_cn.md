@@ -2161,7 +2161,9 @@ Secret list/watch、Operation list/watch/status 或 Lease 权限。projected tok
 不可用、CA 错误、token 失效或 worker Lease 过期时 executor 必须 fail closed 并 requeue，
 不得回退为直接读取 Secret。`/v1/parameters` 的 `namespace`、`name`、`owner` 和
 `attempt` 必需 query 参数必须各恰好出现一次；缺失、重复或非正 attempt 都应返回 400，
-避免代理、审计日志或客户端对重复参数取值不一致。`operationctl --action parameters`
+`namespace` 必须是 DNS label，`name` 必须是 DNS subdomain。query identity 形状校验发生在
+TokenReview 前，畸形请求不能消耗认证、Operation 或 Secret API；该边界同时避免代理、审计
+日志或客户端对重复参数取值不一致。`operationctl --action parameters`
 只接受不含 userinfo、query 或 fragment 的 HTTPS broker origin；从 broker 读取的响应超过
 4 MiB、`Content-Type` 不是 `application/json`，projected token 为空、包含空白或超过 16 KiB，或 broker
 CA bundle 超过 1 MiB 时必须 fail closed，不能把 `LimitReader` 截断结果或 HTML 错误页写成

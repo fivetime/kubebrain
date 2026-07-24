@@ -76,6 +76,38 @@ func TestHandlerRejectsAmbiguousRequiredQueryParameters(t *testing.T) {
 	}
 }
 
+func TestHandlerRejectsMalformedQueryBeforeAuthenticationAndOperationAPI(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		query string
+	}{
+		{name: "namespace", query: "namespace=ops.ns&name=audit-1&owner=audit-worker&attempt=1"},
+		{name: "name", query: "namespace=test&name=audit/1&owner=audit-worker&attempt=1"},
+		{name: "attempt", query: "namespace=test&name=audit-1&owner=audit-worker&attempt=0"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dynamicClient, _, _ := claimedOperation(t)
+			tokens := tokenClient(
+				"system:serviceaccount:test:kubebrain-post-restore-audit-executor",
+				[]string{testAudience}, true,
+			)
+			handler, err := NewHandler(tokens, dynamicClient, "test", testAudience, time.Second)
+			require.NoError(t, err)
+			dynamicClient.ClearActions()
+			tokens.ClearActions()
+
+			request := httptest.NewRequest(http.MethodGet, "/v1/parameters?"+tc.query, nil)
+			request.Header.Set("Authorization", "Bearer valid")
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			require.Equal(t, http.StatusBadRequest, response.Code)
+			require.Empty(t, tokens.Actions())
+			require.Empty(t, dynamicClient.Actions())
+			requireNoStoreHeaders(t, response)
+		})
+	}
+}
+
 func TestHandlerFailsClosedForIdentityTypeAudienceAndFencing(t *testing.T) {
 	tests := []struct {
 		name          string

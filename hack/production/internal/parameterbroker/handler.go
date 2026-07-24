@@ -38,6 +38,13 @@ type Handler struct {
 	requestTimeout    time.Duration
 }
 
+type parameterRequestIdentity struct {
+	namespace string
+	name      string
+	owner     string
+	attempt   int64
+}
+
 func NewHandler(
 	tokens kubernetes.Interface, dynamicClient dynamic.Interface, namespace, audience string,
 	requestTimeout time.Duration,
@@ -79,25 +86,18 @@ func (h *Handler) ServeHTTP(response http.ResponseWriter, request *http.Request)
 		http.Error(response, "unauthorized", http.StatusUnauthorized)
 		return
 	}
+	identity, err := parameterIdentityFromQuery(request.URL.Query())
+	if err != nil {
+		http.Error(response, "namespace, name, owner, and positive attempt are required", http.StatusBadRequest)
+		return
+	}
 	operationType, err := h.authenticate(request, token)
 	if err != nil {
 		http.Error(response, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	query := request.URL.Query()
-	name, nameOK := requiredQueryValue(query, "name")
-	namespace, namespaceOK := requiredQueryValue(query, "namespace")
-	owner, ownerOK := requiredQueryValue(query, "owner")
-	rawAttempt, attemptOK := requiredQueryValue(query, "attempt")
-	attempt, err := strconv.ParseInt(rawAttempt, 10, 64)
-	if len(validation.IsDNS1123Label(namespace)) != 0 ||
-		!nameOK || !namespaceOK || !ownerOK || !attemptOK ||
-		name == "" || owner == "" || err != nil || attempt <= 0 {
-		http.Error(response, "namespace, name, owner, and positive attempt are required", http.StatusBadRequest)
-		return
-	}
-	parameters, err := operationqueue.New(h.dynamic, namespace).
-		ParametersForWorker(request.Context(), name, operationType, owner, attempt)
+	parameters, err := operationqueue.New(h.dynamic, identity.namespace).
+		ParametersForWorker(request.Context(), identity.name, operationType, identity.owner, identity.attempt)
 	if err != nil {
 		http.Error(response, "parameters unavailable", http.StatusForbidden)
 		return
@@ -105,6 +105,26 @@ func (h *Handler) ServeHTTP(response http.ResponseWriter, request *http.Request)
 	response.Header().Set("Content-Type", "application/json")
 	response.WriteHeader(http.StatusOK)
 	_, _ = response.Write(parameters)
+}
+
+func parameterIdentityFromQuery(query url.Values) (parameterRequestIdentity, error) {
+	name, nameOK := requiredQueryValue(query, "name")
+	namespace, namespaceOK := requiredQueryValue(query, "namespace")
+	owner, ownerOK := requiredQueryValue(query, "owner")
+	rawAttempt, attemptOK := requiredQueryValue(query, "attempt")
+	attempt, err := strconv.ParseInt(rawAttempt, 10, 64)
+	if len(validation.IsDNS1123Label(namespace)) != 0 ||
+		len(validation.IsDNS1123Subdomain(name)) != 0 ||
+		!nameOK || !namespaceOK || !ownerOK || !attemptOK ||
+		name == "" || owner == "" || err != nil || attempt <= 0 {
+		return parameterRequestIdentity{}, errors.New("parameter request identity is invalid")
+	}
+	return parameterRequestIdentity{
+		namespace: namespace,
+		name:      name,
+		owner:     owner,
+		attempt:   attempt,
+	}, nil
 }
 
 func requiredQueryValue(query url.Values, name string) (string, bool) {

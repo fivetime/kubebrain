@@ -11258,6 +11258,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Operation：
   `go test ./hack/production/internal/backupscheduler ./hack/production/cmd/backup-scheduler -count=1`
   通过。
+- A707 前置 parameter broker query identity 校验：
+  parameter broker 已严格解析 Bearer header，但旧请求路径会先执行 TokenReview，再校验
+  `namespace/name/owner/attempt` query。malformed `ops.ns`、`audit/1` 或非正 attempt 虽最终
+  返回 400，却会消耗认证 API，且 operation name 形状要等 operation queue 读取前才兜底。
+  现在 handler 在 TokenReview 前解析并校验 query identity：四个必需参数必须各恰好出现一次，
+  namespace 为 DNS label，name 为 DNS subdomain，owner 非空，attempt 为正整数。fake
+  Kubernetes/dynamic client 回归确认 malformed query 返回 400 且 TokenReview、Operation、
+  Secret API action 均为空：
+  `go test ./hack/production/internal/parameterbroker ./hack/production/cmd/operation-parameter-broker -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 
