@@ -1499,6 +1499,12 @@ hack/dev/verify.sh
   已支持的 Maintenance Status/Alarm/Defragment/Hash/HashKV 同样必须固定 Alarm enum、
   member ID、hash 与 compact/hash revision 的 generated JSON 编码；不得用这些成功门禁
   暗示 Snapshot、MoveLeader、Downgrade 或 Cluster member mutation 已受支持。
+  Lock/Election 的七条 generated 路径 `/v3/lock/lock`、`unlock`、
+  `/v3/election/campaign`、`leader`、`observe`、`proclaim`、`resign` 必须全部有端到端
+  门禁；其中 Lock/Campaign/Proclaim/Resign 的成功路径还要固定 bytes/base64、
+  nested `LeaderKey`、lease/revision 的 int64 字符串编码、unknown-field discard、
+  gateway marker 和各请求独立的 `Authorization` metadata，不能用阻塞请求取消测试
+  替代成功 JSON contract。
   Lock/Election 使用 upstream client/v3 concurrency recipe 及现有 KV/Lease/Watch
   后端；生产必须验证 lease-backed Lock 竞争接棒和 Election campaign/proclaim/resign，
   还必须在 blocked waiter 已写入队列键后取消 HTTP request，确认 context 传播、等待键

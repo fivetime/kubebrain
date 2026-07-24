@@ -112,8 +112,10 @@ type gatewayAuthServer struct {
 
 type gatewayLockServer struct {
 	v3lockpb.UnimplementedLockServer
-	request *v3lockpb.UnlockRequest
-	md      metadata.MD
+	lockRequest   *v3lockpb.LockRequest
+	unlockRequest *v3lockpb.UnlockRequest
+	lockMD        metadata.MD
+	unlockMD      metadata.MD
 }
 
 type gatewayWatchServer struct {
@@ -158,9 +160,16 @@ func (s *gatewayWatchServer) Watch(stream etcdserverpb.Watch_WatchServer) error 
 
 type gatewayElectionServer struct {
 	v3electionpb.UnimplementedElectionServer
-	request *v3electionpb.LeaderRequest
-	md      metadata.MD
-	next    <-chan struct{}
+	campaignRequest *v3electionpb.CampaignRequest
+	leaderRequest   *v3electionpb.LeaderRequest
+	proclaimRequest *v3electionpb.ProclaimRequest
+	resignRequest   *v3electionpb.ResignRequest
+	campaignMD      metadata.MD
+	leaderMD        metadata.MD
+	observeMD       metadata.MD
+	proclaimMD      metadata.MD
+	resignMD        metadata.MD
+	next            <-chan struct{}
 }
 
 type gatewayLeaseServer struct {
@@ -274,7 +283,7 @@ func (s *gatewayLeaseServer) LeaseLeases(ctx context.Context, request *etcdserve
 
 func (s *gatewayElectionServer) Observe(request *v3electionpb.LeaderRequest, stream v3electionpb.Election_ObserveServer) error {
 	if md, ok := metadata.FromIncomingContext(stream.Context()); ok {
-		s.md = md.Copy()
+		s.observeMD = md.Copy()
 	}
 	if err := stream.Send(&v3electionpb.LeaderResponse{
 		Header: &etcdserverpb.ResponseHeader{Revision: 41},
@@ -294,9 +303,9 @@ func (s *gatewayElectionServer) Observe(request *v3electionpb.LeaderRequest, str
 }
 
 func (s *gatewayElectionServer) Leader(ctx context.Context, request *v3electionpb.LeaderRequest) (*v3electionpb.LeaderResponse, error) {
-	s.request = request
+	s.leaderRequest = request
 	if md, ok := metadata.FromIncomingContext(ctx); ok {
-		s.md = md.Copy()
+		s.leaderMD = md.Copy()
 	}
 	return &v3electionpb.LeaderResponse{
 		Header: &etcdserverpb.ResponseHeader{ClusterId: 31, MemberId: 32, Revision: 33, RaftTerm: 34},
@@ -304,10 +313,57 @@ func (s *gatewayElectionServer) Leader(ctx context.Context, request *v3electionp
 	}, nil
 }
 
-func (s *gatewayLockServer) Unlock(ctx context.Context, request *v3lockpb.UnlockRequest) (*v3lockpb.UnlockResponse, error) {
-	s.request = request
+func (s *gatewayElectionServer) Campaign(ctx context.Context, request *v3electionpb.CampaignRequest) (*v3electionpb.CampaignResponse, error) {
+	s.campaignRequest = request
 	if md, ok := metadata.FromIncomingContext(ctx); ok {
-		s.md = md.Copy()
+		s.campaignMD = md.Copy()
+	}
+	return &v3electionpb.CampaignResponse{
+		Header: &etcdserverpb.ResponseHeader{ClusterId: 241, MemberId: 242, Revision: 243, RaftTerm: 244},
+		Leader: &v3electionpb.LeaderKey{
+			Name:  request.Name,
+			Key:   []byte("/election/leader-key"),
+			Rev:   245,
+			Lease: request.Lease,
+		},
+	}, nil
+}
+
+func (s *gatewayElectionServer) Proclaim(ctx context.Context, request *v3electionpb.ProclaimRequest) (*v3electionpb.ProclaimResponse, error) {
+	s.proclaimRequest = request
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		s.proclaimMD = md.Copy()
+	}
+	return &v3electionpb.ProclaimResponse{
+		Header: &etcdserverpb.ResponseHeader{ClusterId: 246, MemberId: 247, Revision: 248, RaftTerm: 249},
+	}, nil
+}
+
+func (s *gatewayElectionServer) Resign(ctx context.Context, request *v3electionpb.ResignRequest) (*v3electionpb.ResignResponse, error) {
+	s.resignRequest = request
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		s.resignMD = md.Copy()
+	}
+	return &v3electionpb.ResignResponse{
+		Header: &etcdserverpb.ResponseHeader{ClusterId: 250, MemberId: 251, Revision: 252, RaftTerm: 253},
+	}, nil
+}
+
+func (s *gatewayLockServer) Lock(ctx context.Context, request *v3lockpb.LockRequest) (*v3lockpb.LockResponse, error) {
+	s.lockRequest = request
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		s.lockMD = md.Copy()
+	}
+	return &v3lockpb.LockResponse{
+		Header: &etcdserverpb.ResponseHeader{ClusterId: 254, MemberId: 255, Revision: 256, RaftTerm: 257},
+		Key:    []byte("/locks/owner-key"),
+	}, nil
+}
+
+func (s *gatewayLockServer) Unlock(ctx context.Context, request *v3lockpb.UnlockRequest) (*v3lockpb.UnlockResponse, error) {
+	s.unlockRequest = request
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		s.unlockMD = md.Copy()
 	}
 	return &v3lockpb.UnlockResponse{
 		Header: &etcdserverpb.ResponseHeader{ClusterId: 21, MemberId: 22, Revision: 23, RaftTerm: 24},
@@ -1120,6 +1176,62 @@ func TestGRPCGatewayUsesGeneratedEtcdJSONContract(t *testing.T) {
 		}`,
 		func() bool { return leaseServer.leasesRequest != nil }, &leaseServer.leasesMD)
 
+	assertUnaryContract("/v3/lock/lock",
+		`{"name":"bG9jay1uYW1l","lease":"258","unknown_field":"discarded"}`,
+		"Bearer lock-acquire-token", `{
+			"header":{"cluster_id":"254","member_id":"255","revision":"256","raft_term":"257"},
+			"key":"L2xvY2tzL293bmVyLWtleQ=="
+		}`,
+		func() bool {
+			return lockServer.lockRequest != nil &&
+				string(lockServer.lockRequest.Name) == "lock-name" &&
+				lockServer.lockRequest.Lease == 258
+		}, &lockServer.lockMD)
+	assertUnaryContract("/v3/election/campaign",
+		`{"name":"ZWxlY3Rpb24tbmFtZQ==","lease":"259","value":"bGVhZGVyLXZhbHVl","unknown_field":"discarded"}`,
+		"Bearer campaign-token", `{
+			"header":{"cluster_id":"241","member_id":"242","revision":"243","raft_term":"244"},
+			"leader":{
+				"name":"ZWxlY3Rpb24tbmFtZQ==",
+				"key":"L2VsZWN0aW9uL2xlYWRlci1rZXk=",
+				"rev":"245",
+				"lease":"259"
+			}
+		}`,
+		func() bool {
+			return electionServer.campaignRequest != nil &&
+				string(electionServer.campaignRequest.Name) == "election-name" &&
+				electionServer.campaignRequest.Lease == 259 &&
+				string(electionServer.campaignRequest.Value) == "leader-value"
+		}, &electionServer.campaignMD)
+	assertUnaryContract("/v3/election/proclaim",
+		`{"leader":{"name":"ZWxlY3Rpb24tbmFtZQ==","key":"L2VsZWN0aW9uL2xlYWRlci1rZXk=","rev":"245","lease":"259","unknown_field":"discarded"},"value":"bmV3LXZhbHVl","unknown_field":"discarded"}`,
+		"Bearer proclaim-token", `{
+			"header":{"cluster_id":"246","member_id":"247","revision":"248","raft_term":"249"}
+		}`,
+		func() bool {
+			request := electionServer.proclaimRequest
+			return request != nil && request.Leader != nil &&
+				string(request.Leader.Name) == "election-name" &&
+				string(request.Leader.Key) == "/election/leader-key" &&
+				request.Leader.Rev == 245 &&
+				request.Leader.Lease == 259 &&
+				string(request.Value) == "new-value"
+		}, &electionServer.proclaimMD)
+	assertUnaryContract("/v3/election/resign",
+		`{"leader":{"name":"ZWxlY3Rpb24tbmFtZQ==","key":"L2VsZWN0aW9uL2xlYWRlci1rZXk=","rev":"245","lease":"259","unknown_field":"discarded"},"unknown_field":"discarded"}`,
+		"Bearer resign-token", `{
+			"header":{"cluster_id":"250","member_id":"251","revision":"252","raft_term":"253"}
+		}`,
+		func() bool {
+			request := electionServer.resignRequest
+			return request != nil && request.Leader != nil &&
+				string(request.Leader.Name) == "election-name" &&
+				string(request.Leader.Key) == "/election/leader-key" &&
+				request.Leader.Rev == 245 &&
+				request.Leader.Lease == 259
+		}, &electionServer.resignMD)
+
 	request = httptest.NewRequest(http.MethodPost, "/v3/lock/unlock",
 		strings.NewReader(`{"key":"L2xvY2svMDE=","unknown_field":"discarded"}`))
 	request.Header.Set("Content-Type", "application/json")
@@ -1131,10 +1243,10 @@ func TestGRPCGatewayUsesGeneratedEtcdJSONContract(t *testing.T) {
 	require.JSONEq(t, `{
 		"header":{"cluster_id":"21","member_id":"22","revision":"23","raft_term":"24"}
 	}`, response.Body.String())
-	require.NotNil(t, lockServer.request)
-	require.Equal(t, []byte("/lock/01"), lockServer.request.Key)
-	require.Equal(t, []string{grpcGatewayRequestMarkerValue}, lockServer.md.Get(grpcGatewayRequestMarkerKey))
-	require.Equal(t, []string{"Bearer lock-token"}, lockServer.md.Get(rpctypes.TokenFieldNameSwagger))
+	require.NotNil(t, lockServer.unlockRequest)
+	require.Equal(t, []byte("/lock/01"), lockServer.unlockRequest.Key)
+	require.Equal(t, []string{grpcGatewayRequestMarkerValue}, lockServer.unlockMD.Get(grpcGatewayRequestMarkerKey))
+	require.Equal(t, []string{"Bearer lock-token"}, lockServer.unlockMD.Get(rpctypes.TokenFieldNameSwagger))
 
 	request = httptest.NewRequest(http.MethodPost, "/v3/election/leader",
 		strings.NewReader(`{"name":"ZWxlY3Rpb24="}`))
@@ -1148,10 +1260,10 @@ func TestGRPCGatewayUsesGeneratedEtcdJSONContract(t *testing.T) {
 		"header":{"cluster_id":"31","member_id":"32","revision":"33","raft_term":"34"},
 		"kv":{"key":"ZWxlY3Rpb24=","mod_revision":"33","value":"bGVhZGVy"}
 	}`, response.Body.String())
-	require.NotNil(t, electionServer.request)
-	require.Equal(t, []byte("election"), electionServer.request.Name)
-	require.Equal(t, []string{grpcGatewayRequestMarkerValue}, electionServer.md.Get(grpcGatewayRequestMarkerKey))
-	require.Equal(t, []string{"Bearer election-token"}, electionServer.md.Get(rpctypes.TokenFieldNameSwagger))
+	require.NotNil(t, electionServer.leaderRequest)
+	require.Equal(t, []byte("election"), electionServer.leaderRequest.Name)
+	require.Equal(t, []string{grpcGatewayRequestMarkerValue}, electionServer.leaderMD.Get(grpcGatewayRequestMarkerKey))
+	require.Equal(t, []string{"Bearer election-token"}, electionServer.leaderMD.Get(rpctypes.TokenFieldNameSwagger))
 }
 
 func TestGRPCGatewayStreamsWatchAndElectionResponses(t *testing.T) {
@@ -1214,8 +1326,8 @@ func TestGRPCGatewayStreamsWatchAndElectionResponses(t *testing.T) {
 		electionNext)
 	require.Equal(t, []string{grpcGatewayRequestMarkerValue}, watchServer.md.Get(grpcGatewayRequestMarkerKey))
 	require.Equal(t, []string{"Bearer watch-token"}, watchServer.md.Get(rpctypes.TokenFieldNameSwagger))
-	require.Equal(t, []string{grpcGatewayRequestMarkerValue}, electionServer.md.Get(grpcGatewayRequestMarkerKey))
-	require.Equal(t, []string{"Bearer observe-token"}, electionServer.md.Get(rpctypes.TokenFieldNameSwagger))
+	require.Equal(t, []string{grpcGatewayRequestMarkerValue}, electionServer.observeMD.Get(grpcGatewayRequestMarkerKey))
+	require.Equal(t, []string{"Bearer observe-token"}, electionServer.observeMD.Get(rpctypes.TokenFieldNameSwagger))
 
 	request, err := http.NewRequest(http.MethodPost, httpServer.URL+"/v3/lease/keepalive",
 		strings.NewReader("{\"ID\":\"1\"}\n{\"ID\":\"2\"}\n"))

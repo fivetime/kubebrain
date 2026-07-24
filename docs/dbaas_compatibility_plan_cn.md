@@ -11557,6 +11557,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Unimplemented，由 TiKV/PD 或 DBaaS 控制面承担，不能因 generated route 存在而误报支持。
   `go test ./pkg/endpoint -run TestGRPCGatewayUsesGeneratedEtcdJSONContract -count=1 -v`
   通过。
+- A736 完成 Lock/Election generated HTTP gateway surface 门禁：
+  既有测试已覆盖 Unlock、Leader、Observe 和 Lock/Campaign 的请求取消，但后两者没有
+  成功 JSON contract，Proclaim/Resign 也未被实际调用。现在补齐 `/v3/lock/lock`、
+  `/v3/election/campaign`、`proclaim` 和 `resign` 的成功路径，固定 bytes/base64、
+  nested `LeaderKey`、lease/revision 的 int64 字符串编码、unknown-field discard、
+  response header，以及 gateway marker 和各 route 独立的 `Authorization` metadata。
+  路径集合审计确认 upstream generated gateway 当前两条 `/v3/lock/*` 与五条
+  `/v3/election/*` 路径均有本地端到端门禁，同时保留 blocked Lock/Campaign 的 context
+  cancellation 门禁。
+  `go test ./pkg/endpoint -run 'TestGRPCGatewayUsesGeneratedEtcdJSONContract|TestGRPCGatewayStreamsWatchAndElectionResponses|TestGRPCGatewayPropagatesRequestCancellation' -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 
