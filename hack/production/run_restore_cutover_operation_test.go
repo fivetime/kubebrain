@@ -375,7 +375,7 @@ esac
 `)
 	env := []string{
 		"WORKER_ID=worker-a", "PARAMETERS_INPUT=" + parameters,
-		"OPERATION_NAMESPACE=ops", "LEASE_SECONDS=6", "OPERATIONCTL=" + operationctl,
+		"OPERATION_NAMESPACE=ops", "LEASE_SECONDS=6", "HEARTBEAT_INTERVAL_SECONDS=1", "OPERATIONCTL=" + operationctl,
 		"CUTOVER_COMMAND=" + cutover, "FAKE_DIR=" + dir, "PARAMETERS_DIGEST=" + digest,
 		"RUNNER_PARAMETERS_INPUT=" + parameters,
 		"RUNNER_BACKUP_INPUT=" + backup,

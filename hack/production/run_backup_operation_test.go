@@ -245,7 +245,7 @@ chmod 600 "$RECEIPT_OUTPUT"
 `)
 	env := []string{
 		"WORKER_ID=worker-a", "PARAMETERS_INPUT=" + parameters,
-		"OPERATION_NAMESPACE=ops", "LEASE_SECONDS=6", "OPERATIONCTL=" + operationctl,
+		"OPERATION_NAMESPACE=ops", "LEASE_SECONDS=6", "HEARTBEAT_INTERVAL_SECONDS=1", "OPERATIONCTL=" + operationctl,
 		"EXPORT_COMMAND=" + exportCommand, "STATUS_COMMAND=" + statusCommand,
 		"OBJECT_COMMAND=" + objectCommand, "FAKE_DIR=" + dir, "PARAMETERS_DIGEST=" + digest,
 		"BACKUP_RECEIPT_OUTPUT=" + receipt,

@@ -428,7 +428,7 @@ fi
 `)
 	f.env = []string{
 		"WORKER_ID=worker-a", "PARAMETERS_INPUT=" + f.parameters,
-		"OPERATION_NAMESPACE=ops", "LEASE_SECONDS=6", "OPERATIONCTL=" + operationctl,
+		"OPERATION_NAMESPACE=ops", "LEASE_SECONDS=6", "HEARTBEAT_INTERVAL_SECONDS=1", "OPERATIONCTL=" + operationctl,
 		"OBJECT_COMMAND=" + object, "FAKE_DIR=" + dir, "PRE_MANIFEST=" + f.preManifest,
 		"PRE_SHA=" + fileDigest(t, f.preManifest), "POST_SHA=" + fileDigest(t, f.postManifest),
 		"SOURCE_SHA=" + fileDigest(t, f.sourceReceipt), "JQ=" + jq, "REAL_JQ=" + realJQ,

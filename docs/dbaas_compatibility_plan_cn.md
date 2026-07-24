@@ -11932,6 +11932,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./hack/production -run '^TestRestoreCutoverOperation' -count=1 -timeout=2m`、
   `go test ./hack/production -count=1 -timeout=12m`、`git diff --check`、`go vet ./...` 和
   `go test ./... -count=1 -p 1` 均通过。
+- A767 统一 operation runner heartbeat interval 配置：
+  `run-destroy-operation.sh` 与 `run-certificate-rotation-operation.sh` 已支持
+  `HEARTBEAT_INTERVAL_SECONDS`，但 backup、backup deletion、post-restore audit 和 restore
+  cutover runner 仍把 heartbeat 固定为 `LEASE_SECONDS/3`。这会让测试夹具的最小等待和生产调优
+  能力不一致，也会把 release gate 的慢路径隐藏在 Go test 全局 timeout 里。现在四个 runner
+  均支持同一 `HEARTBEAT_INTERVAL_SECONDS` 正数校验，默认值仍为 `LEASE_SECONDS/3`；对应测试夹具
+  显式传入 1 秒 heartbeat，持续覆盖该配置并缩短负向/fencing 用例等待。
+  `bash -n hack/production/run-backup-operation.sh hack/production/run-backup-deletion-operation.sh hack/production/run-post-restore-audit-operation.sh hack/production/run-restore-cutover-operation.sh`、
+  `go test ./hack/production -run 'Test(BackupOperation|BackupDeletionOperation|PostRestoreAuditOperation|RestoreCutoverOperation)' -count=1 -timeout=4m`、
+  `go test ./hack/production -count=1 -timeout=12m`、`git diff --check`、`go vet ./...` 和
+  `go test ./... -count=1 -p 1` 均通过。
 
 ### P2：运维兼容和长期验证
 

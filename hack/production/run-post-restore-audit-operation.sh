@@ -7,6 +7,7 @@ WORKER_ID="${WORKER_ID:-}"
 PARAMETERS_INPUT="${PARAMETERS_INPUT:-}"
 OPERATION_NAMESPACE="${OPERATION_NAMESPACE:-kubebrain-system}"
 LEASE_SECONDS="${LEASE_SECONDS:-120}"
+HEARTBEAT_INTERVAL_SECONDS="${HEARTBEAT_INTERVAL_SECONDS:-}"
 OPERATIONCTL="${OPERATIONCTL:-}"
 AUDIT_COMMAND="${AUDIT_COMMAND:-${ROOT_DIR}/hack/production/audit-restored-instance.sh}"
 KUBE_CONTEXT="${KUBE_CONTEXT:-}"
@@ -36,6 +37,9 @@ EOF
   { echo "LEASE_SECONDS must be an integer of at least 6" >&2; exit 2; }
 [[ "$OPERATION_NAMESPACE" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] ||
   { echo "OPERATION_NAMESPACE must be a lowercase DNS label of at most 63 characters" >&2; exit 2; }
+heartbeat_interval="${HEARTBEAT_INTERVAL_SECONDS:-$((LEASE_SECONDS / 3))}"
+[[ "$heartbeat_interval" =~ ^([0-9]+([.][0-9]+)?|[.][0-9]+)$ && "$heartbeat_interval" != 0 ]] ||
+  { echo "HEARTBEAT_INTERVAL_SECONDS must be positive" >&2; exit 2; }
 command -v "$JQ" >/dev/null || { echo "jq is required" >&2; exit 2; }
 command -v sha256sum >/dev/null || { echo "sha256sum is required" >&2; exit 2; }
 
@@ -418,7 +422,6 @@ cleanup() {
 trap cleanup EXIT INT TERM
 env "${audit_env[@]}" "$AUDIT_COMMAND" &
 child=$!
-heartbeat_interval=$((LEASE_SECONDS / 3))
 (
   while true; do
     sleep "$heartbeat_interval"
