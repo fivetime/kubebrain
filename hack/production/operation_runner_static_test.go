@@ -84,6 +84,7 @@ func TestProductionLifecycleScriptTestsUseBoundedCommandHelper(t *testing.T) {
 		script   string
 		helper   string
 	}{
+		{testFile: "archive_operation_audit_test.go", script: "archive-operation-audit.sh", helper: "runArchiveOperationAudit"},
 		{testFile: "cleanup_instance_boundaries_test.go", script: "cleanup-instance-boundaries.sh", helper: "runBoundaryCleanup"},
 		{testFile: "destroy_instance_test.go", script: "destroy-instance.sh", helper: "runDestroyInstance"},
 		{testFile: "switch_restore_traffic_test.go", script: "switch-restore-traffic.sh", helper: "runSwitchRestoreTraffic"},

@@ -43,21 +43,20 @@ elif [[ "$*" == *"./cmd/logical-object"* ]]; then
 fi
 `), 0o755))
 
-	command := exec.Command("bash", "archive-operation-audit.sh")
-	command.Env = append(os.Environ(),
-		"PATH="+dir+":"+os.Getenv("PATH"),
-		"FAKE_GO_LOG="+logPath,
+	env := []string{
+		"PATH=" + dir + ":" + os.Getenv("PATH"),
+		"FAKE_GO_LOG=" + logPath,
 		"OPERATION_NAMESPACE=ops",
 		"OPERATION_NAME=backup-1",
-		"ARTIFACT_OUTPUT="+artifactPath,
+		"ARTIFACT_OUTPUT=" + artifactPath,
 		"OBJECT_STORE_ID=store-a",
 		"S3_BUCKET=audit-bucket",
 		"S3_OBJECT_KEY=operation-audit/ops/uid-a.json",
 		"RETENTION_MODE=COMPLIANCE",
 		"RETAIN_UNTIL_UNIX=1900000000",
-		"RECEIPT_OUTPUT="+receiptPath,
-	)
-	output, err := command.CombinedOutput()
+		"RECEIPT_OUTPUT=" + receiptPath,
+	}
+	output, err := runArchiveOperationAudit(t, env)
 	require.NoError(t, err, string(output))
 
 	log := mustReadText(t, logPath)
@@ -104,21 +103,20 @@ exit 99
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_ = os.Remove(logPath)
-			command := exec.Command("bash", "archive-operation-audit.sh")
-			command.Env = append(os.Environ(),
-				"PATH="+dir+":"+os.Getenv("PATH"),
-				"FAKE_GO_LOG="+logPath,
+			env := []string{
+				"PATH=" + dir + ":" + os.Getenv("PATH"),
+				"FAKE_GO_LOG=" + logPath,
 				"OPERATION_NAME=backup-1",
-				"ARTIFACT_OUTPUT="+filepath.Join(dir, "artifact-"+tc.name+".json"),
+				"ARTIFACT_OUTPUT=" + filepath.Join(dir, "artifact-"+tc.name+".json"),
 				"OBJECT_STORE_ID=store-a",
 				"S3_BUCKET=audit-bucket",
 				"S3_OBJECT_KEY=operation-audit/ops/uid-a.json",
 				"RETENTION_MODE=COMPLIANCE",
 				"RETAIN_UNTIL_UNIX=1900000000",
-				"RECEIPT_OUTPUT="+filepath.Join(dir, "receipt-"+tc.name+".json"),
+				"RECEIPT_OUTPUT=" + filepath.Join(dir, "receipt-"+tc.name+".json"),
 				tc.env,
-			)
-			output, err := command.CombinedOutput()
+			}
+			output, err := runArchiveOperationAudit(t, env)
 			require.Error(t, err, string(output))
 			require.Contains(t, string(output), tc.wantOutput)
 			require.NoFileExists(t, logPath)
@@ -195,30 +193,34 @@ fi
 exec "$REAL_SHA256SUM" "$@"
 `), 0o755))
 
-			command := exec.Command("bash", "archive-operation-audit.sh")
-			command.Env = append(os.Environ(),
-				"PATH="+dir+":"+os.Getenv("PATH"),
-				"FAKE_DIR="+dir,
-				"FAKE_GO_LOG="+logPath,
-				"REAL_SHA256SUM="+realSHA,
+			env := []string{
+				"PATH=" + dir + ":" + os.Getenv("PATH"),
+				"FAKE_DIR=" + dir,
+				"FAKE_GO_LOG=" + logPath,
+				"REAL_SHA256SUM=" + realSHA,
 				"OPERATION_NAMESPACE=ops",
 				"OPERATION_NAME=backup-1",
-				"ARTIFACT_OUTPUT="+artifactPath,
+				"ARTIFACT_OUTPUT=" + artifactPath,
 				"OBJECT_STORE_ID=store-a",
 				"S3_BUCKET=audit-bucket",
 				"S3_OBJECT_KEY=operation-audit/ops/uid-a.json",
 				"RETENTION_MODE=COMPLIANCE",
 				"RETAIN_UNTIL_UNIX=1900000000",
-				"RECEIPT_OUTPUT="+receiptPath,
+				"RECEIPT_OUTPUT=" + receiptPath,
 				tc.env,
-			)
-			output, err := command.CombinedOutput()
+			}
+			output, err := runArchiveOperationAudit(t, env)
 			require.Error(t, err, string(output))
 			require.Contains(t, string(output), tc.wantOutput)
 			log := mustReadText(t, logPath)
 			require.NotContains(t, log, tc.wantLog)
 		})
 	}
+}
+
+func runArchiveOperationAudit(t *testing.T, env []string) ([]byte, error) {
+	t.Helper()
+	return runProductionScriptCommand(t, "archive-operation-audit.sh", env)
 }
 
 func mustReadText(t *testing.T, path string) string {

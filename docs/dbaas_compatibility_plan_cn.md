@@ -12026,6 +12026,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./hack/production -run 'Test(BoundaryCleanup|RestoreTraffic|PostRestoreAudit|ProductionLifecycleScript)' -count=1 -v`、
   `go test ./hack/production -count=1 -timeout=12m`、`git diff --check`、`go vet ./...` 和
   `go test ./... -count=1 -p 1` 均通过。
+- A776 给 operation audit archive 脚本测试补 bounded helper：
+  `archive-operation-audit.sh` 会先 capture operation audit，再写对象存储归档并 release receipt；
+  测试里三条路径仍直接 `exec.Command("bash", "archive-operation-audit.sh").CombinedOutput()`。
+  如果 fake `go`、`logical-object` 或 tamper `sha256sum` wrapper 悬挂，归档门禁只会在外层 timeout
+  暴露。现在测试统一构造 env slice 并通过 `runArchiveOperationAudit` 进入
+  `runProductionScriptCommand`，获得 30 秒 context、进程组 kill 与 bounded output；生命周期静态门禁
+  同步覆盖该文件，禁止回退到裸 bash exec。
+  `go test ./hack/production -run 'Test(ArchiveOperationAudit|ProductionLifecycleScript)' -count=1 -v`、
+  `go test ./hack/production -count=1 -timeout=12m`、`git diff --check`、`go vet ./...` 和
+  `go test ./... -count=1 -p 1` 均通过。
 
 ### P2：运维兼容和长期验证
 
