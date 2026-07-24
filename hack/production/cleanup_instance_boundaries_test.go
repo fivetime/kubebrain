@@ -317,12 +317,12 @@ fi
 
 func (f *boundaryCleanupFixture) run(t *testing.T, action string, success bool, extraEnv string, outputs ...string) {
 	t.Helper()
-	cmd := exec.Command("bash", "cleanup-instance-boundaries.sh")
-	cmd.Env = append(os.Environ(), append(f.env, "ACTION="+action)...)
+	env := append([]string{}, f.env...)
+	env = append(env, "ACTION="+action)
 	if extraEnv != "" {
-		cmd.Env = append(cmd.Env, extraEnv)
+		env = append(env, extraEnv)
 	}
-	output, err := cmd.CombinedOutput()
+	output, err := runBoundaryCleanup(t, env)
 	if success {
 		require.NoError(t, err, "%s", output)
 	} else {
@@ -331,6 +331,11 @@ func (f *boundaryCleanupFixture) run(t *testing.T, action string, success bool, 
 	for _, expected := range outputs {
 		require.Contains(t, string(output), expected)
 	}
+}
+
+func runBoundaryCleanup(t *testing.T, env []string) ([]byte, error) {
+	t.Helper()
+	return runProductionScriptCommand(t, "cleanup-instance-boundaries.sh", env)
 }
 
 func mustRead(t *testing.T, path string) []byte {

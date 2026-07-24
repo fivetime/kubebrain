@@ -360,9 +360,12 @@ fi
 
 func (f *trafficFixture) run(t *testing.T, action string, ok bool, extra string, outputs ...string) {
 	t.Helper()
-	cmd := exec.Command("bash", "switch-restore-traffic.sh")
-	cmd.Env = append(os.Environ(), append(f.env, "ACTION="+action, extra)...)
-	out, err := cmd.CombinedOutput()
+	env := append([]string{}, f.env...)
+	env = append(env, "ACTION="+action)
+	if extra != "" {
+		env = append(env, extra)
+	}
+	out, err := runSwitchRestoreTraffic(t, env)
 	if ok {
 		require.NoError(t, err, string(out))
 	} else {
@@ -371,6 +374,11 @@ func (f *trafficFixture) run(t *testing.T, action string, ok bool, extra string,
 	for _, wanted := range outputs {
 		require.Contains(t, strings.ToLower(string(out)), strings.ToLower(wanted))
 	}
+}
+
+func runSwitchRestoreTraffic(t *testing.T, env []string) ([]byte, error) {
+	t.Helper()
+	return runProductionScriptCommand(t, "switch-restore-traffic.sh", env)
 }
 
 func writeTrafficExecutable(t *testing.T, path, content string) {

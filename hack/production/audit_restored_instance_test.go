@@ -339,9 +339,11 @@ func (f *auditFixture) run(t *testing.T, ok bool, extra string, outputs ...strin
 			[]byte(strings.Replace(string(data), "/registry\t/restored", "/same\t/same", 1)),
 			0o600))
 	}
-	cmd := exec.Command("bash", "audit-restored-instance.sh")
-	cmd.Env = append(os.Environ(), append(f.env, extra)...)
-	out, err := cmd.CombinedOutput()
+	env := append([]string{}, f.env...)
+	if extra != "" {
+		env = append(env, extra)
+	}
+	out, err := runAuditRestoredInstance(t, env)
 	if ok {
 		require.NoError(t, err, string(out))
 	} else {
@@ -350,4 +352,9 @@ func (f *auditFixture) run(t *testing.T, ok bool, extra string, outputs ...strin
 	for _, wanted := range outputs {
 		require.Contains(t, string(out), wanted)
 	}
+}
+
+func runAuditRestoredInstance(t *testing.T, env []string) ([]byte, error) {
+	t.Helper()
+	return runProductionScriptCommand(t, "audit-restored-instance.sh", env)
 }

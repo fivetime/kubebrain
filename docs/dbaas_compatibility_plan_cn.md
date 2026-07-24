@@ -12015,6 +12015,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./hack/production -run 'Test(DestroyInstance|ProductionShellEntrypoints|ProductionLifecycleScript|ProductionShellEntrypointNamespace)' -count=1 -v`、
   `go test ./hack/production -count=1 -timeout=12m`、`git diff --check`、`go vet ./...` 和
   `go test ./... -count=1 -p 1` 均通过。
+- A775 给 cleanup/cutover/post-restore audit 脚本测试补 bounded helper：
+  恢复链路的 `cleanup-instance-boundaries.sh`、`switch-restore-traffic.sh` 和
+  `audit-restored-instance.sh` 测试仍直接运行 bash `CombinedOutput()`；这些 fixture 会调用 fake
+  `kubectl`、`uid-delete`、`logical-verify`、audit probe、`sha256sum` 和 `jq`，任一证据漂移或 wrapper
+  悬挂都会把生产恢复门禁失败推迟到外层 timeout。现在三组 fixture 分别通过
+  `runBoundaryCleanup`、`runSwitchRestoreTraffic` 和 `runAuditRestoredInstance` 进入统一
+  `runProductionScriptCommand`，获得 30 秒 context、进程组 kill 与 bounded output；生命周期静态门禁
+  同步覆盖 cleanup/destroy/cutover/audit 四类脚本测试，禁止回退到裸 bash exec。
+  `go test ./hack/production -run 'Test(BoundaryCleanup|RestoreTraffic|PostRestoreAudit|ProductionLifecycleScript)' -count=1 -v`、
+  `go test ./hack/production -count=1 -timeout=12m`、`git diff --check`、`go vet ./...` 和
+  `go test ./... -count=1 -p 1` 均通过。
 
 ### P2：运维兼容和长期验证
 

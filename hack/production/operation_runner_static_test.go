@@ -84,7 +84,10 @@ func TestProductionLifecycleScriptTestsUseBoundedCommandHelper(t *testing.T) {
 		script   string
 		helper   string
 	}{
+		{testFile: "cleanup_instance_boundaries_test.go", script: "cleanup-instance-boundaries.sh", helper: "runBoundaryCleanup"},
 		{testFile: "destroy_instance_test.go", script: "destroy-instance.sh", helper: "runDestroyInstance"},
+		{testFile: "switch_restore_traffic_test.go", script: "switch-restore-traffic.sh", helper: "runSwitchRestoreTraffic"},
+		{testFile: "audit_restored_instance_test.go", script: "audit-restored-instance.sh", helper: "runAuditRestoredInstance"},
 	} {
 		t.Run(tc.testFile, func(t *testing.T) {
 			data, err := os.ReadFile(filepath.Join(".", tc.testFile))
