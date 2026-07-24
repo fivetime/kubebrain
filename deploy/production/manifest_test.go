@@ -261,6 +261,36 @@ func TestRuntimeReleaseGateDefaultsMatchProductionKubeBrainArgs(t *testing.T) {
 	}
 }
 
+func TestRuntimeReleaseGateTLSOnlyArgsUseOptionalEnv(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "hack", "production", "validate-instance-ready.sh"))
+	require.NoError(t, err)
+	script := string(data)
+	defaults := runtimeReleaseGateEnvDefaults(script)
+	exactArgEnvs := runtimeReleaseGateExactArgEnvs(script)
+	optionalArgEnvs := runtimeReleaseGateOptionalArgEnvs(script)
+	plainArgs := productionKubeBrainArgValues("http")
+	tlsArgs := productionKubeBrainArgValues("https")
+
+	var tlsOnlyArgs []string
+	for name := range tlsArgs {
+		if _, ok := plainArgs[name]; !ok {
+			tlsOnlyArgs = append(tlsOnlyArgs, name)
+		}
+	}
+	sort.Strings(tlsOnlyArgs)
+	require.NotEmpty(t, tlsOnlyArgs, "TLS production manifest must have TLS-only KubeBrain args")
+
+	for _, name := range tlsOnlyArgs {
+		_, exact := exactArgEnvs[name]
+		require.False(t, exact, "TLS-only production arg --%s must not be required by the non-TLS release gate baseline", name)
+		variable, ok := optionalArgEnvs[name]
+		require.True(t, ok, "TLS-only production arg --%s must be guarded by an optional release gate env", name)
+		defaultValue, ok := defaults[variable]
+		require.True(t, ok, "TLS-only production arg --%s must use a defaulted %s", name, variable)
+		require.Empty(t, defaultValue, "TLS-only production arg --%s must default to absent unless TLS baseline env is supplied", name)
+	}
+}
+
 func runtimeReleaseGateKubeBrainArgs(script string) map[string]bool {
 	covered := map[string]bool{}
 	for _, match := range regexp.MustCompile(`check_(?:exact|optional)_kubebrain_arg "([^"]+)"`).FindAllStringSubmatch(script, -1) {
@@ -288,6 +318,14 @@ func runtimeReleaseGateExactArgEnvs(script string) map[string]string {
 		exactArgEnvs[match[1]] = match[2]
 	}
 	return exactArgEnvs
+}
+
+func runtimeReleaseGateOptionalArgEnvs(script string) map[string]string {
+	optionalArgEnvs := map[string]string{}
+	for _, match := range regexp.MustCompile(`check_optional_kubebrain_arg "([^"]+)" "\$([A-Z0-9_]+)"`).FindAllStringSubmatch(script, -1) {
+		optionalArgEnvs[match[1]] = match[2]
+	}
+	return optionalArgEnvs
 }
 
 func productionKubeBrainArgValues(scheme string) map[string]string {

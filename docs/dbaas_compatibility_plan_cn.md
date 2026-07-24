@@ -11899,6 +11899,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./deploy/production -run 'Test(RuntimeReleaseGateDefaultsMatchProductionKubeBrainArgs|ProductionKubeBrainArgsAreCoveredByRuntimeReleaseGate)' -count=1 -v`、
   `go test ./deploy/production -count=1`、`go vet ./...` 和
   `go test ./... -count=1 -p 1` 均通过。
+- A764 固定 TLS-only production args 的 runtime gate env 形态：
+  TLS manifest 中的 `--grpc-max-connection-age*`、client/peer cert、CA、server name 和
+  client-cert-auth 参数不应成为非 TLS baseline 的强制默认值；它们必须由 TLS release gate
+  调用显式传入对应 `EXPECTED_*` env。现在 `deploy/production` 新增静态测试，从
+  `expectedProductionKubeBrainArgs("https")` 减去明文 args 得出 TLS-only 参数集合，再解析
+  `validate-instance-ready.sh`，要求这些参数全部通过 `check_optional_kubebrain_arg` 绑定到空默认
+  env，且不得出现在 `check_exact_kubebrain_arg` 中。这样 TLS baseline 与非 TLS baseline 的
+  runtime gate 边界不会因为脚本重构而漂移。
+  `go test ./deploy/production -run 'TestRuntimeReleaseGateTLSOnlyArgsUseOptionalEnv' -count=1 -v`、
+  `go test ./deploy/production -count=1`、`go vet ./...` 和
+  `go test ./... -count=1 -p 1` 均通过。
 - A765 收紧 backend resource lock 测试的等待边界：
   全仓库验证两次在 `pkg/backend` 触发 10 分钟超时；SIGQUIT dump 显示
   `testBackendResourceLock` 的 `cancel_b` 子测试卡在裸 `wg.Wait()`，同时 B elector
