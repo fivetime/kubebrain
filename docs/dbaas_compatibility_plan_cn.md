@@ -11424,6 +11424,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   重构造成 HTTP token 丢失或 client-cert-auth 模式回退借用内部证书身份。
   `go test ./pkg/endpoint -run TestGRPCGatewayUsesGeneratedEtcdJSONContract -count=1 -v`
   通过。
+- A724 固定 Watch/Observe streaming gateway token metadata：
+  A723 覆盖了 generated HTTP gateway 的 Lock/Election unary token 透传，但 Watch 和
+  Election Observe 是长流，认证只发生在建流阶段；若 streaming handler/header matcher
+  重构丢掉 `Authorization`，服务端会把合法 HTTP caller 误判为匿名，或在 client-cert-auth
+  模式下试图借用 gateway 内部证书。现在扩展
+  `TestGRPCGatewayStreamsWatchAndElectionResponses`：fake Watch server 与 fake Election
+  Observe server 在 stream context 上记录 incoming metadata，`/v3/watch` 和
+  `/v3/election/observe` 均发送 `Authorization: Bearer ...`，断言后端同时收到
+  `grpcgateway-accept=kubebrain-grpc-gateway` marker 和 etcd 兼容 `authorization`
+  metadata，且原有 chunked NDJSON 响应形状保持不变。
+  `go test ./pkg/endpoint -run TestGRPCGatewayStreamsWatchAndElectionResponses -count=1 -v`
+  通过。
 
 ### P2：运维兼容和长期验证
 

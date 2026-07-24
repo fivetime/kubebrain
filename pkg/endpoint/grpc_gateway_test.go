@@ -51,10 +51,14 @@ type gatewayLockServer struct {
 
 type gatewayWatchServer struct {
 	etcdserverpb.UnimplementedWatchServer
+	md   metadata.MD
 	next <-chan struct{}
 }
 
 func (s *gatewayWatchServer) Watch(stream etcdserverpb.Watch_WatchServer) error {
+	if md, ok := metadata.FromIncomingContext(stream.Context()); ok {
+		s.md = md.Copy()
+	}
 	request, err := stream.Recv()
 	if err != nil {
 		return err
@@ -142,6 +146,9 @@ func (s *gatewayLeaseServer) LeaseKeepAlive(stream etcdserverpb.Lease_LeaseKeepA
 }
 
 func (s *gatewayElectionServer) Observe(request *v3electionpb.LeaderRequest, stream v3electionpb.Election_ObserveServer) error {
+	if md, ok := metadata.FromIncomingContext(stream.Context()); ok {
+		s.md = md.Copy()
+	}
 	if err := stream.Send(&v3electionpb.LeaderResponse{
 		Header: &etcdserverpb.ResponseHeader{Revision: 41},
 		Kv:     &mvccpb.KeyValue{Key: request.Name, Value: []byte("leader-one"), ModRevision: 41},
@@ -299,9 +306,11 @@ func TestGRPCGatewayStreamsWatchAndElectionResponses(t *testing.T) {
 	grpcServer := grpc.NewServer()
 	watchNext := make(chan struct{})
 	electionNext := make(chan struct{})
-	etcdserverpb.RegisterWatchServer(grpcServer, &gatewayWatchServer{next: watchNext})
+	watchServer := &gatewayWatchServer{next: watchNext}
+	electionServer := &gatewayElectionServer{next: electionNext}
+	etcdserverpb.RegisterWatchServer(grpcServer, watchServer)
 	etcdserverpb.RegisterLeaseServer(grpcServer, &gatewayLeaseServer{})
-	v3electionpb.RegisterElectionServer(grpcServer, &gatewayElectionServer{next: electionNext})
+	v3electionpb.RegisterElectionServer(grpcServer, electionServer)
 	go func() { _ = grpcServer.Serve(listener) }()
 	t.Cleanup(grpcServer.Stop)
 
@@ -316,11 +325,12 @@ func TestGRPCGatewayStreamsWatchAndElectionResponses(t *testing.T) {
 	httpServer := httptest.NewServer(handler)
 	t.Cleanup(httpServer.Close)
 
-	assertStream := func(path, body, first, second string, release chan struct{}) {
+	assertStream := func(path, body, token, first, second string, release chan struct{}) {
 		t.Helper()
 		request, err := http.NewRequest(http.MethodPost, httpServer.URL+path, strings.NewReader(body))
 		require.NoError(t, err)
 		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("Authorization", token)
 		response, err := http.DefaultClient.Do(request)
 		require.NoError(t, err)
 		defer response.Body.Close()
@@ -339,13 +349,19 @@ func TestGRPCGatewayStreamsWatchAndElectionResponses(t *testing.T) {
 	}
 
 	assertStream("/v3/watch", `{"create_request":{"key":"d2F0Y2gta2V5"}}`,
+		"Bearer watch-token",
 		`{"result":{"header":{"revision":"31"},"watch_id":"7","created":true}}`,
 		`{"result":{"header":{"revision":"32"},"watch_id":"7","events":[{"kv":{"key":"d2F0Y2gta2V5","mod_revision":"32","value":"d2F0Y2gtdmFsdWU="}}]}}`,
 		watchNext)
 	assertStream("/v3/election/observe", `{"name":"ZWxlY3Rpb24="}`,
+		"Bearer observe-token",
 		`{"result":{"header":{"revision":"41"},"kv":{"key":"ZWxlY3Rpb24=","mod_revision":"41","value":"bGVhZGVyLW9uZQ=="}}}`,
 		`{"result":{"header":{"revision":"42"},"kv":{"key":"ZWxlY3Rpb24=","mod_revision":"42","value":"bGVhZGVyLXR3bw=="}}}`,
 		electionNext)
+	require.Equal(t, []string{grpcGatewayRequestMarkerValue}, watchServer.md.Get(grpcGatewayRequestMarkerKey))
+	require.Equal(t, []string{"Bearer watch-token"}, watchServer.md.Get(rpctypes.TokenFieldNameSwagger))
+	require.Equal(t, []string{grpcGatewayRequestMarkerValue}, electionServer.md.Get(grpcGatewayRequestMarkerKey))
+	require.Equal(t, []string{"Bearer observe-token"}, electionServer.md.Get(rpctypes.TokenFieldNameSwagger))
 
 	request, err := http.NewRequest(http.MethodPost, httpServer.URL+"/v3/lease/keepalive",
 		strings.NewReader("{\"ID\":\"1\"}\n{\"ID\":\"2\"}\n"))
