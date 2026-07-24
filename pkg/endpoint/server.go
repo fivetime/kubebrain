@@ -144,9 +144,18 @@ func addCORSHeaders(w http.ResponseWriter, origin string) {
 	w.Header().Add("Access-Control-Allow-Headers", "accept, content-type, authorization")
 }
 
+const (
+	httpReadHeaderTimeout = 5 * time.Second
+	httpIdleTimeout       = 2 * time.Minute
+	httpMaxHeaderBytes    = 32 << 10
+)
+
 func newHttpServer(handler http.Handler) exposedServer {
 	svr := &http.Server{
-		Handler: handler,
+		Handler:           handler,
+		ReadHeaderTimeout: httpReadHeaderTimeout,
+		IdleTimeout:       httpIdleTimeout,
+		MaxHeaderBytes:    httpMaxHeaderBytes,
 	}
 	return &httpServer{
 		svr: svr,

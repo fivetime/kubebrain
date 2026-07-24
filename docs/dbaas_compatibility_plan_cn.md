@@ -11359,6 +11359,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   未来重构把廉价本地拒绝变成外部 IdP refresh 消耗。
   `go test ./hack/production/internal/operationapi -run TestOIDCAuthenticatorRejectsMalformedBearerHeader -count=1`
   通过。
+- A718 硬化 endpoint HTTP header admission：
+  endpoint 的 client HTTP gateway、client health 和 info/metrics HTTP server 共享
+  `newHttpServer`，此前没有设置 header 读取 deadline 或 header 大小上限；长连接或
+  超大 header 可长期占用 HTTP/1 连接资源。现在统一设置
+  `ReadHeaderTimeout=5s`、`IdleTimeout=2m` 和 `MaxHeaderBytes=32KiB`。为了不破坏
+  Watch、Lease keepalive 等 generated JSON gateway 的合法长响应流，仍不设置全局
+  `ReadTimeout`/`WriteTimeout`。新增 `TestNewHttpServerBoundsHeaderAdmission`
+  固定该边界。`go test ./pkg/endpoint -run TestNewHttpServerBoundsHeaderAdmission -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

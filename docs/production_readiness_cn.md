@@ -1476,6 +1476,9 @@ hack/dev/verify.sh
   `/v3/*` 返回 404、`/health` 仍可用。启用 client-cert-auth 时，Kubernetes 原生
   HTTPS probe 无法携带客户端证书；生产 Pod 应继续用不暴露数据的 info 端口
   `/ping`/`/ready` 探针，不能把无证书访问 client `/health` 当作进程故障。
+  endpoint HTTP/1 server 必须限制 header admission：`ReadHeaderTimeout=5s`、
+  `IdleTimeout=2m`、`MaxHeaderBytes=32KiB`；不要设置全局 `ReadTimeout` 或
+  `WriteTimeout`，以免截断 Watch/Lease gateway 的合法长流。
   发布门禁还必须让静态 API surface 测试同时覆盖 core etcd 服务与 Lock/Election
   service descriptor，确保新增公开 RPC 都有显式实现或显式拒绝分类；generated
   HTTP gateway 的注册 service 列表也必须固定为同一公开集合，避免 `/v3/*`

@@ -62,3 +62,15 @@ func TestSecureServerCloseNormalizesAndReturnsErrors(t *testing.T) {
 
 	require.ErrorIs(t, server.close(), unexpected)
 }
+
+func TestNewHttpServerBoundsHeaderAdmission(t *testing.T) {
+	exposed := newHttpServer(http.NotFoundHandler())
+	server, ok := exposed.(*httpServer)
+	require.True(t, ok)
+
+	require.Equal(t, httpReadHeaderTimeout, server.svr.ReadHeaderTimeout)
+	require.Equal(t, httpIdleTimeout, server.svr.IdleTimeout)
+	require.Equal(t, httpMaxHeaderBytes, server.svr.MaxHeaderBytes)
+	require.Zero(t, server.svr.ReadTimeout)
+	require.Zero(t, server.svr.WriteTimeout)
+}
