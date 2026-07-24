@@ -11368,6 +11368,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `ReadTimeout`/`WriteTimeout`。新增 `TestNewHttpServerBoundsHeaderAdmission`
   固定该边界。`go test ./pkg/endpoint -run TestNewHttpServerBoundsHeaderAdmission -count=1`
   通过。
+- A719 固定 Election Observe 无认证空流兼容行为：
+  A716 精确固定了 Lock/Election method 分类，但 runtime 回归仍只覆盖 Lock 的无 token
+  错误归一化。实际对照 A366 的 upstream HTTP 差分可知，`Election.Observe` 通过
+  client/v3 concurrency recipe 暴露 Watch，创建时 auth/watch 失败表现为成功结束的空流，
+  而不是 Lock/Campaign 这类 unary 的 gRPC `Unknown`。现在新增
+  `TestDedicatedElectionObserveUnauthenticatedReturnsEmptyStream`：启用 auth 后用无 token
+  context 创建 Observe，断言 wrapper 返回 nil 且未发送任何 leader response，防止未来把
+  `Observe` 误归一化成普通 concurrency auth error，或反向发送未授权 leader。
+  `go test ./pkg/server/etcd -run TestDedicatedElectionObserveUnauthenticatedReturnsEmptyStream -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

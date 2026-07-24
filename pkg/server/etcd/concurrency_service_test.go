@@ -29,6 +29,21 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+type fakeElectionObserveServer struct {
+	v3electionpb.Election_ObserveServer
+	ctx  context.Context
+	sent int
+}
+
+func (s fakeElectionObserveServer) Context() context.Context {
+	return s.ctx
+}
+
+func (s *fakeElectionObserveServer) Send(*v3electionpb.LeaderResponse) error {
+	s.sent++
+	return nil
+}
+
 func TestDedicatedLockAndElectionServicesUseKubeBrainBackend(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer func() {
@@ -156,6 +171,33 @@ func TestDedicatedLockServicePreservesCallerAuthentication(t *testing.T) {
 	require.NoError(t, err)
 	_, err = lockServer.Unlock(rootCtx, &v3lockpb.UnlockRequest{Key: locked.Key})
 	require.NoError(t, err)
+}
+
+func TestDedicatedElectionObserveUnauthenticatedReturnsEmptyStream(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer func() {
+		_ = server.concurrencyClient.Close()
+		closeFn()
+	}()
+
+	ctx := context.Background()
+	require.NoError(t, server.auth.userAdd(ctx, &etcdserverpb.AuthUserAddRequest{
+		Name: "root", Password: "secret",
+	}))
+	require.NoError(t, server.auth.roleAdd(ctx, "root"))
+	require.NoError(t, server.auth.userGrantRole(ctx, "root", "root"))
+	require.NoError(t, server.auth.enable(ctx))
+
+	electionServer := newElectionServer(server.concurrencyClient)
+	observeCtx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	stream := &fakeElectionObserveServer{ctx: observeCtx}
+	err := electionServer.Observe(
+		&v3electionpb.LeaderRequest{Name: []byte("/a719/auth-election")},
+		stream,
+	)
+	require.NoError(t, err)
+	require.Zero(t, stream.sent)
 }
 
 func TestDedicatedConcurrencyServiceErrorsMatchEtcd(t *testing.T) {

@@ -1522,7 +1522,9 @@ hack/dev/verify.sh
   该特殊分类必须只匹配当前 Lock/Election service descriptor 中的精确 full method，不得用
   service-name prefix 接受合同外方法。
   Election Observe/底层 Watch 则只在创建时鉴权：follower 转发必须携带 caller token，但
-  已建立流不能因后续撤权或改密被追溯关闭；新建的无权限流按 upstream 返回 HTTP 200 空体。
+  已建立流不能因后续撤权或改密被追溯关闭；新建的无权限流按 upstream 返回 HTTP 200 空体，
+  gRPC wrapper 表现为成功结束且不发送 leader 响应，不能误改成普通 Lock/Campaign
+  `Unknown` 错误。
   follower 对 leader 的内部连接就绪检查必须使用 peer `grpc.health.v1.Health/Check` 并要求
   `SERVING`，不得用未认证的 Maintenance RPC，也不得为探测签发或配置内部 root token。
   clientv3 AutoSync 可在 Auth 开启时由普通用户执行，但其结果会完全替换当前 endpoint；所有
