@@ -284,9 +284,12 @@ fi
 
 func (f *rotationFixture) run(t *testing.T, action string, wantOK bool, extraEnv string, outputs ...string) string {
 	t.Helper()
-	command := exec.Command("bash", "validate-certificate-rotation.sh")
-	command.Env = append(os.Environ(), append(f.env, "ACTION="+action, extraEnv)...)
-	output, err := command.CombinedOutput()
+	env := append([]string{}, f.env...)
+	env = append(env, "ACTION="+action)
+	if extraEnv != "" {
+		env = append(env, extraEnv)
+	}
+	output, err := runValidateCertificateRotation(t, env)
 	if wantOK {
 		require.NoError(t, err, string(output))
 	} else {
@@ -296,6 +299,11 @@ func (f *rotationFixture) run(t *testing.T, action string, wantOK bool, extraEnv
 		require.Contains(t, strings.TrimSpace(string(output)), expected)
 	}
 	return string(output)
+}
+
+func runValidateCertificateRotation(t *testing.T, env []string) ([]byte, error) {
+	t.Helper()
+	return runProductionScriptCommand(t, "validate-certificate-rotation.sh", env)
 }
 
 func writeExecutable(t *testing.T, path, contents string) {

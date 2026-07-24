@@ -58,15 +58,19 @@ func TestReleaseGateScriptTestsUseBoundedCommandHelper(t *testing.T) {
 	}{
 		{testFile: "validate_network_policy_test.go", script: "validate-network-policy.sh"},
 		{testFile: "validate_instance_ready_test.go", script: "validate-instance-ready.sh"},
+		{testFile: "validate_certificate_rotation_test.go", script: "validate-certificate-rotation.sh"},
 		{testFile: "wait_tidbcluster_ready_test.go", script: "wait-tidbcluster-ready.sh"},
 	} {
 		t.Run(tc.testFile, func(t *testing.T) {
 			data, err := os.ReadFile(filepath.Join(".", tc.testFile))
 			require.NoError(t, err)
 			text := string(data)
-			if tc.script == "validate-instance-ready.sh" {
+			switch tc.script {
+			case "validate-instance-ready.sh":
 				require.Contains(t, text, `runValidateInstanceReady(t, env)`)
-			} else {
+			case "validate-certificate-rotation.sh":
+				require.Contains(t, text, `runValidateCertificateRotation(t, env)`)
+			default:
 				require.Contains(t, text, `runProductionScriptCommand(t, "`+tc.script+`", env)`)
 			}
 			require.NotContains(t, text, `exec.Command("bash", "`+tc.script+`")`)

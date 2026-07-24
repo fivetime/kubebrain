@@ -11994,6 +11994,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   同等测试夹具逻辑。
   `cd hack/etcd-client-compat && go test -run 'TestDifferentialRunner' -count=1 -v`、
   `git diff --check`、`go vet ./...` 和 `go test ./... -count=1 -p 1` 均通过。
+- A773 给 certificate-rotation release gate 测试补 bounded helper：
+  `validate-certificate-rotation.sh` 负责证书轮换 begin/overlap/complete 三阶段证据校验，但
+  测试 fixture 仍直接 `exec.Command("bash", "validate-certificate-rotation.sh").CombinedOutput()`。
+  这些用例依赖 fake `kubectl`、`etcdctl`、`openssl`、`sha256sum` 和 `jq`，任一 wrapper 悬挂都会
+  让发布验证等到 Go test 外层 timeout。现在 fixture 的 `run()` 只负责构造 env，实际执行统一进入
+  `runValidateCertificateRotation`/`runProductionScriptCommand`，获得 30 秒 context、进程组 kill
+  和 bounded output；release gate 静态测试同步要求该文件使用 helper，并禁止回退到直接 bash exec。
+  `go test ./hack/production -run 'Test(ValidateCertificateRotation|ReleaseGateScript)' -count=1 -v`、
+  `go test ./hack/production -count=1 -timeout=12m`、`git diff --check`、`go vet ./...` 和
+  `go test ./... -count=1 -p 1` 均通过。
 
 ### P2：运维兼容和长期验证
 
