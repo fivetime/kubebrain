@@ -11867,6 +11867,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./hack/production -run TestValidateInstanceReady -count=1 -v`、
   `bash -n hack/production/validate-instance-ready.sh`、`go test ./hack/production -count=1`、
   `go vet ./...` 和 `go test ./... -count=1 -p 1` 均通过。
+- A761 固定运行门禁中的日志 verbosity：
+  production manifest 的完整 args surface 以 `--v=2` 作为默认运行日志等级，静态 manifest
+  测试已经固定该项；但运行集群的 release gate 此前不会发现 Pod template 被人工 patch 成
+  `--v=4`、删除 `--v` 或重复传入 `--v`。现在 `validate-instance-ready.sh` 新增
+  `EXPECTED_LOG_VERBOSITY`（默认 2）并要求 `--v=<expected>` 恰好出现一次；测试覆盖 wrong
+  log verbosity。这样 release gate 的 runtime args surface 与 production manifest exact args
+  再少一个漂移缺口。
+  `go test ./hack/production -run TestValidateInstanceReady -count=1 -v`、
+  `bash -n hack/production/validate-instance-ready.sh`、`go test ./hack/production -count=1`、
+  `go vet ./...` 和 `go test ./... -count=1 -p 1` 均通过。
 
 ### P2：运维兼容和长期验证
 

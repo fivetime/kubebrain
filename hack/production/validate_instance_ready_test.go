@@ -39,7 +39,8 @@ func fakeKubeBrainArgs(advertisedURLs, initialCluster string) string {
 		"--grpc-keepalive-timeout=20s\n" +
 		"--auth-token=simple\n" +
 		"--bcrypt-cost=10\n" +
-		"--auth-token-ttl=300"
+		"--auth-token-ttl=300\n" +
+		"--v=2"
 }
 
 func fakeTLSKubeBrainArgs(advertisedURLs, initialCluster string) string {
@@ -811,6 +812,15 @@ func TestValidateInstanceReady(t *testing.T) {
 			topology:   "3\t3",
 			healthOK:   true,
 			wantOutput: "auth token TTL configuration mismatch",
+		},
+		{
+			name:       "wrong log verbosity",
+			image:      "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus: "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeArgs:   strings.ReplaceAll(fakeKubeBrainArgs("https://instance.example:2379", fakeInitialCluster), "--v=2", "--v=4"),
+			topology:   "3\t3",
+			healthOK:   true,
+			wantOutput: "log verbosity configuration mismatch",
 		},
 		{
 			name:       "unexpected tls min version",
