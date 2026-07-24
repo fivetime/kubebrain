@@ -11823,6 +11823,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./hack/production -run TestValidateInstanceReady -count=1 -v`、
   `bash -n hack/production/validate-instance-ready.sh`、`go test ./hack/production -count=1`、
   `go vet ./...` 和 `go test ./... -count=1 -p 1` 均通过。
+- A757 固定运行门禁中的 watch progress cadence 默认依赖：
+  production manifest 同样依赖程序默认 `watch-progress-notify-interval=1s`，不显式传
+  `--watch-progress-notify-interval`。启动校验已拒绝 `>=2.5s` 的 kube-apiserver
+  ConsistentListFromCache 悬崖配置，但仍允许 `2s`、`100ms` 等合法却偏离生产基线的覆盖。
+  这些覆盖会改变 quiet watch progress marker cadence，进而改变一致读收敛延迟与 marker
+  流量。现在 `validate-instance-ready.sh` 新增 optional
+  `EXPECTED_WATCH_PROGRESS_NOTIFY_INTERVAL`：默认空值要求不出现该 flag，非空时要求精确匹配；
+  测试覆盖 unexpected `--watch-progress-notify-interval=2s` 和显式 `1s` override baseline。
+  运行门禁因此能保护“依赖内置 1s 默认值”的生产事实。
+  `go test ./hack/production -run TestValidateInstanceReady -count=1 -v`、
+  `bash -n hack/production/validate-instance-ready.sh`、`go test ./hack/production -count=1`、
+  `go vet ./...` 和 `go test ./... -count=1 -p 1` 均通过。
 
 ### P2：运维兼容和长期验证
 

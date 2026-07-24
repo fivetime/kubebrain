@@ -644,6 +644,28 @@ func TestValidateInstanceReady(t *testing.T) {
 			wantOutput: "release gate passed",
 		},
 		{
+			name:       "unexpected watch progress notify interval",
+			image:      "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus: "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeArgs:   fakeKubeBrainArgs("https://instance.example:2379", fakeInitialCluster) + "\n--watch-progress-notify-interval=2s",
+			topology:   "3\t3",
+			healthOK:   true,
+			wantOutput: "watch progress notify interval configuration mismatch",
+		},
+		{
+			name:       "watch progress notify interval override baseline",
+			image:      "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus: "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeArgs:   fakeKubeBrainArgs("https://instance.example:2379", fakeInitialCluster) + "\n--watch-progress-notify-interval=1s",
+			topology:   "3\t3",
+			healthOK:   true,
+			extraEnv: []string{
+				"EXPECTED_WATCH_PROGRESS_NOTIFY_INTERVAL=1s",
+			},
+			wantOK:     true,
+			wantOutput: "release gate passed",
+		},
+		{
 			name:       "wrong transaction operation limit",
 			image:      "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 			kubeStatus: "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
