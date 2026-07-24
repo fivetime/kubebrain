@@ -60,8 +60,16 @@ type gatewayClusterServer struct {
 
 type gatewayMaintenanceServer struct {
 	etcdserverpb.UnimplementedMaintenanceServer
-	request *etcdserverpb.StatusRequest
-	md      metadata.MD
+	request           *etcdserverpb.StatusRequest
+	alarmRequest      *etcdserverpb.AlarmRequest
+	defragmentRequest *etcdserverpb.DefragmentRequest
+	hashRequest       *etcdserverpb.HashRequest
+	hashKVRequest     *etcdserverpb.HashKVRequest
+	md                metadata.MD
+	alarmMD           metadata.MD
+	defragmentMD      metadata.MD
+	hashMD            metadata.MD
+	hashKVMD          metadata.MD
 }
 
 type gatewayAuthServer struct {
@@ -421,6 +429,54 @@ func (s *gatewayMaintenanceServer) Status(ctx context.Context, request *etcdserv
 		IsLearner:        true,
 		StorageVersion:   "3.7.0",
 		DbSizeQuota:      70,
+	}, nil
+}
+
+func (s *gatewayMaintenanceServer) Alarm(ctx context.Context, request *etcdserverpb.AlarmRequest) (*etcdserverpb.AlarmResponse, error) {
+	s.alarmRequest = request
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		s.alarmMD = md.Copy()
+	}
+	return &etcdserverpb.AlarmResponse{
+		Header: &etcdserverpb.ResponseHeader{ClusterId: 211, MemberId: 212, Revision: 213, RaftTerm: 214},
+		Alarms: []*etcdserverpb.AlarmMember{{
+			MemberID: request.MemberID,
+			Alarm:    request.Alarm,
+		}},
+	}, nil
+}
+
+func (s *gatewayMaintenanceServer) Defragment(ctx context.Context, request *etcdserverpb.DefragmentRequest) (*etcdserverpb.DefragmentResponse, error) {
+	s.defragmentRequest = request
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		s.defragmentMD = md.Copy()
+	}
+	return &etcdserverpb.DefragmentResponse{
+		Header: &etcdserverpb.ResponseHeader{ClusterId: 215, MemberId: 216, Revision: 217, RaftTerm: 218},
+	}, nil
+}
+
+func (s *gatewayMaintenanceServer) Hash(ctx context.Context, request *etcdserverpb.HashRequest) (*etcdserverpb.HashResponse, error) {
+	s.hashRequest = request
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		s.hashMD = md.Copy()
+	}
+	return &etcdserverpb.HashResponse{
+		Header: &etcdserverpb.ResponseHeader{ClusterId: 219, MemberId: 220, Revision: 221, RaftTerm: 222},
+		Hash:   223,
+	}, nil
+}
+
+func (s *gatewayMaintenanceServer) HashKV(ctx context.Context, request *etcdserverpb.HashKVRequest) (*etcdserverpb.HashKVResponse, error) {
+	s.hashKVRequest = request
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		s.hashKVMD = md.Copy()
+	}
+	return &etcdserverpb.HashKVResponse{
+		Header:          &etcdserverpb.ResponseHeader{ClusterId: 224, MemberId: 225, Revision: 226, RaftTerm: 227},
+		Hash:            228,
+		CompactRevision: 229,
+		HashRevision:    request.Revision,
 	}, nil
 }
 
@@ -801,6 +857,43 @@ func TestGRPCGatewayUsesGeneratedEtcdJSONContract(t *testing.T) {
 		"dbSizeQuota":"70"
 	}`,
 		func() bool { return maintenanceServer.request != nil }, &maintenanceServer.md)
+	assertUnaryContract("/v3/maintenance/alarm",
+		`{"action":"GET","memberID":"230","alarm":"NOSPACE","unknown_field":"discarded"}`,
+		"Bearer maintenance-alarm-token", `{
+			"header":{"cluster_id":"211","member_id":"212","revision":"213","raft_term":"214"},
+			"alarms":[{"memberID":"230","alarm":"NOSPACE"}]
+		}`,
+		func() bool {
+			return maintenanceServer.alarmRequest != nil &&
+				maintenanceServer.alarmRequest.Action == etcdserverpb.AlarmRequest_GET &&
+				maintenanceServer.alarmRequest.MemberID == 230 &&
+				maintenanceServer.alarmRequest.Alarm == etcdserverpb.AlarmType_NOSPACE
+		}, &maintenanceServer.alarmMD)
+	assertUnaryContract("/v3/maintenance/defragment",
+		`{"unknown_field":"discarded"}`,
+		"Bearer maintenance-defragment-token", `{
+			"header":{"cluster_id":"215","member_id":"216","revision":"217","raft_term":"218"}
+		}`,
+		func() bool { return maintenanceServer.defragmentRequest != nil }, &maintenanceServer.defragmentMD)
+	assertUnaryContract("/v3/maintenance/hash",
+		`{"unknown_field":"discarded"}`,
+		"Bearer maintenance-hash-token", `{
+			"header":{"cluster_id":"219","member_id":"220","revision":"221","raft_term":"222"},
+			"hash":223
+		}`,
+		func() bool { return maintenanceServer.hashRequest != nil }, &maintenanceServer.hashMD)
+	assertUnaryContract("/v3/maintenance/hashkv",
+		`{"revision":"231","unknown_field":"discarded"}`,
+		"Bearer maintenance-hashkv-token", `{
+			"header":{"cluster_id":"224","member_id":"225","revision":"226","raft_term":"227"},
+			"hash":228,
+			"compact_revision":"229",
+			"hash_revision":"231"
+		}`,
+		func() bool {
+			return maintenanceServer.hashKVRequest != nil &&
+				maintenanceServer.hashKVRequest.Revision == 231
+		}, &maintenanceServer.hashKVMD)
 	assertUnaryContract("/v3/auth/status", `{}`, "Bearer auth-token", `{
 		"header":{"cluster_id":"71","member_id":"72","revision":"73","raft_term":"74"},
 		"enabled":true,

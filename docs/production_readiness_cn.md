@@ -1496,6 +1496,9 @@ hack/dev/verify.sh
   以及 user get/list/delete/password/role lifecycle 中不同的 name/user/hashedPassword 字段，
   auth enable/disable 和完整 role lifecycle；发布前必须确认 upstream generated Auth 的
   17 条公开路径全部有本地端到端门禁，不能只验证 HTTP 200 或 metadata。
+  已支持的 Maintenance Status/Alarm/Defragment/Hash/HashKV 同样必须固定 Alarm enum、
+  member ID、hash 与 compact/hash revision 的 generated JSON 编码；不得用这些成功门禁
+  暗示 Snapshot、MoveLeader、Downgrade 或 Cluster member mutation 已受支持。
   Lock/Election 使用 upstream client/v3 concurrency recipe 及现有 KV/Lease/Watch
   后端；生产必须验证 lease-backed Lock 竞争接棒和 Election campaign/proclaim/resign，
   还必须在 blocked waiter 已写入队列键后取消 HTTP request，确认 context 传播、等待键

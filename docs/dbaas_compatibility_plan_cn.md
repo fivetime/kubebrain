@@ -11546,6 +11546,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   与 `grpc_gateway_test.go` 实际调用集合完全一致，Auth HTTP surface 不再有未门禁路径。
   `go test ./pkg/endpoint -run TestGRPCGatewayUsesGeneratedEtcdJSONContract -count=1 -v`
   通过。
+- A735 固定已支持 Maintenance HTTP gateway contract：
+  gateway 此前只调用 Maintenance Status；实际已实现的 Alarm、Defragment、Hash 与
+  HashKV 仍缺端到端 JSON/metadata 门禁。现在逐条调用 `/v3/maintenance/alarm`、
+  `defragment`、`hash` 和 `hashkv`，固定 Alarm GET/NOSPACE enum、uint64 memberID、
+  Hash 的 uint32 普通数字，以及 HashKV request revision、`compact_revision`、
+  `hash_revision` 的 int64 字符串编码；每条 route 都验证 unknown-field discard、
+  gateway marker 和独立 `Authorization` metadata。该覆盖只针对已实现诊断面：
+  Snapshot、MoveLeader、Downgrade 和 Cluster member mutation 仍按 A407 明确返回
+  Unimplemented，由 TiKV/PD 或 DBaaS 控制面承担，不能因 generated route 存在而误报支持。
+  `go test ./pkg/endpoint -run TestGRPCGatewayUsesGeneratedEtcdJSONContract -count=1 -v`
+  通过。
 
 ### P2：运维兼容和长期验证
 
