@@ -11846,6 +11846,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./hack/production -run TestValidateInstanceReady -count=1 -v`、
   `bash -n hack/production/validate-instance-ready.sh`、`go test ./hack/production -count=1`、
   `go vet ./...` 和 `go test ./... -count=1 -p 1` 均通过。
+- A759 拒绝负数 watch cache/fanout 容量：
+  `--watch-cache-size` 和 `--watch-fanout-buffer` 是生产 watch 稳定性参数；此前它们是
+  `int` flag，传入负数会通过 `Validate()`，随后 `Config.complete()` / `WatcherHub`
+  把 `<=0` 静默退回默认容量。这会把错误配置伪装成可用默认值，release gate 只能保护
+  production Pod template，不能保护其它启动路径。现在 `KubeBrainOption.Validate()` 明确拒绝
+  `--watch-cache-size < 0` 和 `--watch-fanout-buffer < 0`，保留 `0` 作为兼容的默认回退语义；
+  `TestTransportLimitValidationRejectsInvalidStartupFlags` 增加两个负数回归。
+  `go test ./cmd/option -run TestTransportLimitValidationRejectsInvalidStartupFlags -count=1 -v`、
+  `go test ./cmd/option -count=1`、`go vet ./...` 和
+  `go test ./... -count=1 -p 1` 均通过。
 
 ### P2：运维兼容和长期验证
 

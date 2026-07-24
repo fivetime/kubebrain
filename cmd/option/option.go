@@ -311,6 +311,12 @@ func (o *KubeBrainOption) Validate() error {
 	if o.storageGCLifetime < 0 {
 		return fmt.Errorf("--storage-gc-lifetime must be non-negative")
 	}
+	if o.watchCacheSize < 0 {
+		return fmt.Errorf("--watch-cache-size must be non-negative")
+	}
+	if o.watchFanoutBuffer < 0 {
+		return fmt.Errorf("--watch-fanout-buffer must be non-negative")
+	}
 	if o.countIndexMaxKeys < 0 {
 		return fmt.Errorf("--count-index-max-keys must be non-negative")
 	}

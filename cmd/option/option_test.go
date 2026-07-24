@@ -348,6 +348,16 @@ func TestTransportLimitValidationRejectsInvalidStartupFlags(t *testing.T) {
 			want: "--storage-gc-lifetime must be non-negative",
 		},
 		{
+			name: "negative watch cache size",
+			args: []string{"--watch-cache-size=-1"},
+			want: "--watch-cache-size must be non-negative",
+		},
+		{
+			name: "negative watch fanout buffer",
+			args: []string{"--watch-fanout-buffer=-1"},
+			want: "--watch-fanout-buffer must be non-negative",
+		},
+		{
 			name: "negative count index key cap",
 			args: []string{"--count-index-max-keys=-1"},
 			want: "--count-index-max-keys must be non-negative",
