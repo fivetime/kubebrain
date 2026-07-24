@@ -1488,8 +1488,9 @@ hack/dev/verify.sh
   Lock/Election generated JSON gateway unary 路径还必须证明 `Authorization` 头会以
   etcd 兼容 metadata 进入后端 gRPC service，同时保留
   gateway marker，避免 HTTP 认证路径丢 token 或回退借用内部客户端证书身份；Lease
-  grant/revoke/time-to-live/list 与非 KV core unary route 还必须固定请求解码、proto-name
-  JSON 响应字段和 int64/uint64 字符串编码，不能只验证 HTTP 200 或 metadata。
+  grant/revoke/time-to-live/list（包括 generated `/v3/kv/lease/*` compatibility aliases）与
+  非 KV core unary route 还必须固定请求解码、proto-name JSON 响应字段和
+  int64/uint64 字符串编码，不能只验证 HTTP 200 或 metadata。
   Lock/Election 使用 upstream client/v3 concurrency recipe 及现有 KV/Lease/Watch
   后端；生产必须验证 lease-backed Lock 竞争接棒和 Election campaign/proclaim/resign，
   还必须在 blocked waiter 已写入队列键后取消 HTTP request，确认 context 传播、等待键

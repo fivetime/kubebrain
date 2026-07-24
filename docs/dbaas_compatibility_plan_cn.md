@@ -11491,6 +11491,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   gateway 不再只有 streaming 路径受保护。
   `go test ./pkg/endpoint -run TestGRPCGatewayUsesGeneratedEtcdJSONContract -count=1 -v`
   通过。
+- A730 固定 Lease legacy HTTP gateway aliases：
+  generated etcd gateway 除 canonical `/v3/lease/*` 外，还保留
+  `/v3/kv/lease/revoke`、`/v3/kv/lease/timetolive` 和 `/v3/kv/lease/leases` 三条
+  compatibility alias；A729 尚未实际调用这些 route。现在用不同 lease ID 和 token
+  逐条请求 alias，要求它们分别到达同一个 LeaseRevoke、LeaseTimeToLive 和 LeaseLeases
+  RPC，保留 unknown-field discard、gateway marker、`Authorization` metadata 以及与
+  canonical route 相同的 proto-name JSON response。升级 generated gateway 时不得静默
+  丢弃这些已公开的 etcd HTTP 路径。
+  `go test ./pkg/endpoint -run TestGRPCGatewayUsesGeneratedEtcdJSONContract -count=1 -v`
+  通过。
 
 ### P2：运维兼容和长期验证
 

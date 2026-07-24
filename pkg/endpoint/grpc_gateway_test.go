@@ -490,6 +490,32 @@ func TestGRPCGatewayUsesGeneratedEtcdJSONContract(t *testing.T) {
 			"leases":[{"ID":"99"},{"ID":"100"}]
 		}`,
 		func() bool { return leaseServer.leasesRequest != nil }, &leaseServer.leasesMD)
+	assertUnaryContract("/v3/kv/lease/revoke", `{"ID":"104","unknown_field":"discarded"}`,
+		"Bearer lease-revoke-alias-token", `{
+			"header":{"cluster_id":"85","member_id":"86","revision":"87","raft_term":"88"}
+		}`,
+		func() bool {
+			return leaseServer.revokeRequest != nil && leaseServer.revokeRequest.ID == 104
+		}, &leaseServer.revokeMD)
+	assertUnaryContract("/v3/kv/lease/timetolive", `{"ID":"105","keys":true,"unknown_field":"discarded"}`,
+		"Bearer lease-ttl-alias-token", `{
+			"header":{"cluster_id":"89","member_id":"90","revision":"91","raft_term":"92"},
+			"ID":"105",
+			"TTL":"93",
+			"grantedTTL":"94",
+			"keys":["bGVhc2Uta2V5"]
+		}`,
+		func() bool {
+			return leaseServer.timeToLiveRequest != nil &&
+				leaseServer.timeToLiveRequest.ID == 105 &&
+				leaseServer.timeToLiveRequest.Keys
+		}, &leaseServer.timeToLiveMD)
+	assertUnaryContract("/v3/kv/lease/leases", `{"unknown_field":"discarded"}`,
+		"Bearer lease-list-alias-token", `{
+			"header":{"cluster_id":"95","member_id":"96","revision":"97","raft_term":"98"},
+			"leases":[{"ID":"99"},{"ID":"100"}]
+		}`,
+		func() bool { return leaseServer.leasesRequest != nil }, &leaseServer.leasesMD)
 
 	request = httptest.NewRequest(http.MethodPost, "/v3/lock/unlock",
 		strings.NewReader(`{"key":"L2xvY2svMDE=","unknown_field":"discarded"}`))
