@@ -11725,6 +11725,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./hack/production -run TestValidateInstanceReady -count=1 -v`、
   `bash -n hack/production/validate-instance-ready.sh`、`go test ./hack/production -count=1`、
   `go vet ./...` 和 `go test ./... -count=1 -p 1` 均通过。
+- A749 固定实例发布门禁中的 TLS/证书轮换基线一致性：
+  TLS production baseline 还固定 `--grpc-max-connection-age=1h`、
+  `--grpc-max-connection-age-grace=5m`、`--tls-min-version=TLS1.2`、
+  client/peer `cert/key/trusted-ca`、`--tls-server-name` 和 `--client-cert-auth=true`。这些
+  参数此前只由 TLS manifest 测试覆盖，运行集群的 release gate 无法发现 TLS args 缺失、
+  错误路径、错误 CA、错误 server name，或明文基线被意外注入 TLS flag。现在脚本新增
+  optional exact gate：对应 `EXPECTED_*` 为空时要求 Pod template 不出现该 flag，非空时要求
+  各出现一次且值完全匹配；同时把裸布尔 flag（例如 `--compatible-with-etcd`）视作出现但
+  不匹配，避免绕过 `--flag=value` 精确检查。`TestValidateInstanceReady` 扩展 TLS 正例、
+  unexpected/missing/wrong TLS 回归和 naked bool flag 回归，覆盖 TLS min version、client cert、
+  peer CA 与 etcd compatibility flag shape 漂移。
+  `go test ./hack/production -run TestValidateInstanceReady -count=1 -v`、
+  `bash -n hack/production/validate-instance-ready.sh`、`go test ./hack/production -count=1`、
+  `go vet ./...` 和 `go test ./... -count=1 -p 1` 均通过。
 
 ### P2：运维兼容和长期验证
 

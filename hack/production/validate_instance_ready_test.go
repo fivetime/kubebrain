@@ -40,6 +40,37 @@ func fakeKubeBrainArgs(advertisedURLs, initialCluster string) string {
 		"--auth-token-ttl=300"
 }
 
+func fakeTLSKubeBrainArgs(advertisedURLs, initialCluster string) string {
+	return fakeKubeBrainArgs(advertisedURLs, initialCluster) + "\n" +
+		"--grpc-max-connection-age=1h\n" +
+		"--grpc-max-connection-age-grace=5m\n" +
+		"--tls-min-version=TLS1.2\n" +
+		"--cert-file=/etc/kubebrain/client-tls/tls.crt\n" +
+		"--key-file=/etc/kubebrain/client-tls/tls.key\n" +
+		"--trusted-ca-file=/etc/kubebrain/client-tls/ca.crt\n" +
+		"--tls-server-name=kubebrain-client.kubebrain-system.svc\n" +
+		"--client-cert-auth=true\n" +
+		"--peer-cert-file=/etc/kubebrain/peer-tls/tls.crt\n" +
+		"--peer-key-file=/etc/kubebrain/peer-tls/tls.key\n" +
+		"--peer-trusted-ca-file=/etc/kubebrain/peer-tls/ca.crt"
+}
+
+func expectedTLSGateEnv() []string {
+	return []string{
+		"EXPECTED_GRPC_MAX_CONNECTION_AGE=1h",
+		"EXPECTED_GRPC_MAX_CONNECTION_AGE_GRACE=5m",
+		"EXPECTED_TLS_MIN_VERSION=TLS1.2",
+		"EXPECTED_CERT_FILE=/etc/kubebrain/client-tls/tls.crt",
+		"EXPECTED_KEY_FILE=/etc/kubebrain/client-tls/tls.key",
+		"EXPECTED_TRUSTED_CA_FILE=/etc/kubebrain/client-tls/ca.crt",
+		"EXPECTED_TLS_SERVER_NAME=kubebrain-client.kubebrain-system.svc",
+		"EXPECTED_CLIENT_CERT_AUTH=true",
+		"EXPECTED_PEER_CERT_FILE=/etc/kubebrain/peer-tls/tls.crt",
+		"EXPECTED_PEER_KEY_FILE=/etc/kubebrain/peer-tls/tls.key",
+		"EXPECTED_PEER_TRUSTED_CA_FILE=/etc/kubebrain/peer-tls/ca.crt",
+	}
+}
+
 func TestValidateInstanceReady(t *testing.T) {
 	for _, tc := range []struct {
 		name                     string
@@ -54,6 +85,7 @@ func TestValidateInstanceReady(t *testing.T) {
 		podsJSON                 string
 		endpointSlicesJSON       string
 		initialCluster           string
+		extraEnv                 []string
 		etcdctlExecPod           string
 		wantExec                 bool
 		wantOK                   bool
@@ -65,6 +97,17 @@ func TestValidateInstanceReady(t *testing.T) {
 			kubeStatus: "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 			topology:   "3\t3",
 			healthOK:   true,
+			wantOK:     true,
+			wantOutput: "release gate passed",
+		},
+		{
+			name:       "tls release baseline",
+			image:      "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus: "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeArgs:   fakeTLSKubeBrainArgs("https://instance.example:2379", fakeInitialCluster),
+			topology:   "3\t3",
+			healthOK:   true,
+			extraEnv:   expectedTLSGateEnv(),
 			wantOK:     true,
 			wantOutput: "release gate passed",
 		},
@@ -475,6 +518,15 @@ func TestValidateInstanceReady(t *testing.T) {
 			wantOutput: "etcd compatibility configuration mismatch",
 		},
 		{
+			name:       "naked etcd compatibility flag",
+			image:      "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus: "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeArgs:   strings.ReplaceAll(fakeKubeBrainArgs("https://instance.example:2379", fakeInitialCluster), "--compatible-with-etcd=true", "--compatible-with-etcd"),
+			topology:   "3\t3",
+			healthOK:   true,
+			wantOutput: "etcd compatibility configuration mismatch",
+		},
+		{
 			name:       "disabled count index",
 			image:      "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 			kubeStatus: "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -581,6 +633,35 @@ func TestValidateInstanceReady(t *testing.T) {
 			topology:   "3\t3",
 			healthOK:   true,
 			wantOutput: "auth token TTL configuration mismatch",
+		},
+		{
+			name:       "unexpected tls min version",
+			image:      "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus: "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeArgs:   fakeKubeBrainArgs("https://instance.example:2379", fakeInitialCluster) + "\n--tls-min-version=TLS1.2",
+			topology:   "3\t3",
+			healthOK:   true,
+			wantOutput: "TLS min version configuration mismatch",
+		},
+		{
+			name:       "missing expected client tls cert file",
+			image:      "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus: "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeArgs:   strings.ReplaceAll(fakeTLSKubeBrainArgs("https://instance.example:2379", fakeInitialCluster), "\n--cert-file=/etc/kubebrain/client-tls/tls.crt", ""),
+			topology:   "3\t3",
+			healthOK:   true,
+			extraEnv:   expectedTLSGateEnv(),
+			wantOutput: "client TLS cert file configuration mismatch",
+		},
+		{
+			name:       "wrong peer tls ca file",
+			image:      "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus: "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeArgs:   strings.ReplaceAll(fakeTLSKubeBrainArgs("https://instance.example:2379", fakeInitialCluster), "--peer-trusted-ca-file=/etc/kubebrain/peer-tls/ca.crt", "--peer-trusted-ca-file=/etc/kubebrain/peer-tls/wrong-ca.crt"),
+			topology:   "3\t3",
+			healthOK:   true,
+			extraEnv:   expectedTLSGateEnv(),
+			wantOutput: "peer TLS CA file configuration mismatch",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -701,6 +782,7 @@ exit 1
 				"FAKE_UNREACHABLE_ADVERTISED_URL="+tc.unreachableAdvertisedURL,
 				"FAKE_MEMBER_LIST_JSON="+memberListJSON,
 			)
+			command.Env = append(command.Env, tc.extraEnv...)
 			execLog := filepath.Join(dir, "etcdctl-exec.log")
 			if tc.etcdctlExecPod != "" {
 				command.Env = append(command.Env,

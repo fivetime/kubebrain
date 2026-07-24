@@ -34,6 +34,17 @@ EXPECTED_GRPC_KEEPALIVE_TIMEOUT="${EXPECTED_GRPC_KEEPALIVE_TIMEOUT:-20s}"
 EXPECTED_AUTH_TOKEN="${EXPECTED_AUTH_TOKEN:-simple}"
 EXPECTED_BCRYPT_COST="${EXPECTED_BCRYPT_COST:-10}"
 EXPECTED_AUTH_TOKEN_TTL="${EXPECTED_AUTH_TOKEN_TTL:-300}"
+EXPECTED_GRPC_MAX_CONNECTION_AGE="${EXPECTED_GRPC_MAX_CONNECTION_AGE:-}"
+EXPECTED_GRPC_MAX_CONNECTION_AGE_GRACE="${EXPECTED_GRPC_MAX_CONNECTION_AGE_GRACE:-}"
+EXPECTED_TLS_MIN_VERSION="${EXPECTED_TLS_MIN_VERSION:-}"
+EXPECTED_CERT_FILE="${EXPECTED_CERT_FILE:-}"
+EXPECTED_KEY_FILE="${EXPECTED_KEY_FILE:-}"
+EXPECTED_TRUSTED_CA_FILE="${EXPECTED_TRUSTED_CA_FILE:-}"
+EXPECTED_TLS_SERVER_NAME="${EXPECTED_TLS_SERVER_NAME:-}"
+EXPECTED_CLIENT_CERT_AUTH="${EXPECTED_CLIENT_CERT_AUTH:-}"
+EXPECTED_PEER_CERT_FILE="${EXPECTED_PEER_CERT_FILE:-}"
+EXPECTED_PEER_KEY_FILE="${EXPECTED_PEER_KEY_FILE:-}"
+EXPECTED_PEER_TRUSTED_CA_FILE="${EXPECTED_PEER_TRUSTED_CA_FILE:-}"
 TIDB_NAMESPACE="${TIDB_NAMESPACE:-tidb-cluster}"
 TIDB_CLUSTER="${TIDB_CLUSTER:-kb}"
 EXPECTED_TIDB_CLUSTER_UID="${EXPECTED_TIDB_CLUSTER_UID:-}"
@@ -115,6 +126,10 @@ for variable in EXPECTED_COMPATIBLE_WITH_ETCD EXPECTED_ENABLE_COUNT_INDEX EXPECT
     exit 2
   fi
 done
+if [[ -n "$EXPECTED_CLIENT_CERT_AUTH" && "$EXPECTED_CLIENT_CERT_AUTH" != "true" && "$EXPECTED_CLIENT_CERT_AUTH" != "false" ]]; then
+  echo "EXPECTED_CLIENT_CERT_AUTH must be empty, true, or false" >&2
+  exit 2
+fi
 if [[ -z "$EXPECTED_KUBEBRAIN_CLIENT_SERVICE_UID" ]]; then
   echo "EXPECTED_KUBEBRAIN_CLIENT_SERVICE_UID is required" >&2
   exit 2
@@ -268,7 +283,7 @@ check_exact_kubebrain_arg() {
   local mismatch=false
   local arg
   while IFS= read -r arg; do
-    if [[ "$arg" == "--${flag}="* ]]; then
+    if [[ "$arg" == "--${flag}" || "$arg" == "--${flag}="* ]]; then
       count=$((count + 1))
       if [[ "$arg" != "--${flag}=${expected}" ]]; then
         mismatch=true
@@ -279,13 +294,49 @@ check_exact_kubebrain_arg() {
     echo "KubeBrain ${label} configuration mismatch: expected exactly --${flag}=${expected}" >&2
     printf 'actual %s args:' "$label" >&2
     while IFS= read -r arg; do
-      if [[ "$arg" == "--${flag}="* ]]; then
+      if [[ "$arg" == "--${flag}" || "$arg" == "--${flag}="* ]]; then
         printf ' %s' "$arg" >&2
       fi
     done <<<"$kubebrain_args"
     printf '\n' >&2
     exit 1
   fi
+}
+
+check_optional_kubebrain_arg() {
+  local flag="$1"
+  local expected="$2"
+  local label="$3"
+  local count=0
+  local mismatch=false
+  local arg
+  while IFS= read -r arg; do
+    if [[ "$arg" == "--${flag}" || "$arg" == "--${flag}="* ]]; then
+      count=$((count + 1))
+      if [[ -z "$expected" || "$arg" != "--${flag}=${expected}" ]]; then
+        mismatch=true
+      fi
+    fi
+  done <<<"$kubebrain_args"
+  if [[ -z "$expected" ]]; then
+    if [[ "$count" -ne 0 ]]; then
+      echo "KubeBrain ${label} configuration mismatch: expected no --${flag}" >&2
+    else
+      return 0
+    fi
+  elif [[ "$count" -ne 1 || "$mismatch" == "true" ]]; then
+    echo "KubeBrain ${label} configuration mismatch: expected exactly --${flag}=${expected}" >&2
+  else
+    return 0
+  fi
+  printf 'actual %s args:' "$label" >&2
+  while IFS= read -r arg; do
+    if [[ "$arg" == "--${flag}" || "$arg" == "--${flag}="* ]]; then
+      printf ' %s' "$arg" >&2
+    fi
+  done <<<"$kubebrain_args"
+  printf '\n' >&2
+  exit 1
 }
 
 quota_arg_count=0
@@ -416,6 +467,17 @@ check_exact_kubebrain_arg "grpc-keepalive-timeout" "$EXPECTED_GRPC_KEEPALIVE_TIM
 check_exact_kubebrain_arg "auth-token" "$EXPECTED_AUTH_TOKEN" "auth token provider"
 check_exact_kubebrain_arg "bcrypt-cost" "$EXPECTED_BCRYPT_COST" "bcrypt cost"
 check_exact_kubebrain_arg "auth-token-ttl" "$EXPECTED_AUTH_TOKEN_TTL" "auth token TTL"
+check_optional_kubebrain_arg "grpc-max-connection-age" "$EXPECTED_GRPC_MAX_CONNECTION_AGE" "gRPC max connection age"
+check_optional_kubebrain_arg "grpc-max-connection-age-grace" "$EXPECTED_GRPC_MAX_CONNECTION_AGE_GRACE" "gRPC max connection age grace"
+check_optional_kubebrain_arg "tls-min-version" "$EXPECTED_TLS_MIN_VERSION" "TLS min version"
+check_optional_kubebrain_arg "cert-file" "$EXPECTED_CERT_FILE" "client TLS cert file"
+check_optional_kubebrain_arg "key-file" "$EXPECTED_KEY_FILE" "client TLS key file"
+check_optional_kubebrain_arg "trusted-ca-file" "$EXPECTED_TRUSTED_CA_FILE" "client TLS CA file"
+check_optional_kubebrain_arg "tls-server-name" "$EXPECTED_TLS_SERVER_NAME" "client TLS server name"
+check_optional_kubebrain_arg "client-cert-auth" "$EXPECTED_CLIENT_CERT_AUTH" "client certificate auth"
+check_optional_kubebrain_arg "peer-cert-file" "$EXPECTED_PEER_CERT_FILE" "peer TLS cert file"
+check_optional_kubebrain_arg "peer-key-file" "$EXPECTED_PEER_KEY_FILE" "peer TLS key file"
+check_optional_kubebrain_arg "peer-trusted-ca-file" "$EXPECTED_PEER_TRUSTED_CA_FILE" "peer TLS CA file"
 
 if ! ETCDCTL_API=3 run_etcdctl --endpoints="$ENDPOINT" endpoint health; then
   echo "KubeBrain endpoint health failed: $ENDPOINT" >&2

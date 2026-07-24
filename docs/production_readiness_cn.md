@@ -348,6 +348,17 @@ EXPECTED_GRPC_KEEPALIVE_TIMEOUT=20s \
 EXPECTED_AUTH_TOKEN=simple \
 EXPECTED_BCRYPT_COST=10 \
 EXPECTED_AUTH_TOKEN_TTL=300 \
+EXPECTED_GRPC_MAX_CONNECTION_AGE=1h \
+EXPECTED_GRPC_MAX_CONNECTION_AGE_GRACE=5m \
+EXPECTED_TLS_MIN_VERSION=TLS1.2 \
+EXPECTED_CERT_FILE=/etc/kubebrain/client-tls/tls.crt \
+EXPECTED_KEY_FILE=/etc/kubebrain/client-tls/tls.key \
+EXPECTED_TRUSTED_CA_FILE=/etc/kubebrain/client-tls/ca.crt \
+EXPECTED_TLS_SERVER_NAME=kubebrain-client.kubebrain-system.svc \
+EXPECTED_CLIENT_CERT_AUTH=true \
+EXPECTED_PEER_CERT_FILE=/etc/kubebrain/peer-tls/tls.crt \
+EXPECTED_PEER_KEY_FILE=/etc/kubebrain/peer-tls/tls.key \
+EXPECTED_PEER_TRUSTED_CA_FILE=/etc/kubebrain/peer-tls/ca.crt \
 TIDB_NAMESPACE=kubebrain-storage-a \
 TIDB_CLUSTER=kb \
 EXPECTED_KUBEBRAIN_REPLICAS=3 \
@@ -371,7 +382,8 @@ controller StatefulSet name/UID 与 receipt 精确一致；随后校验 Pod temp
 `--keyspace`、`--pd-addrs`、`--initial-cluster`、`--quota-backend-bytes`
 、`--advertise-client-urls`、etcd 兼容开关、count-index 开关与 key cap、存储指标开关、
 txn operation/request byte/concurrent stream/inflight request 边界、请求速率/突发、
-范围删除上限、watch 上限、gRPC keepalive 和 auth token provider/bcrypt/TTL 全部匹配，随后
+范围删除上限、watch 上限、gRPC keepalive、auth token provider/bcrypt/TTL，以及启用 TLS
+时的 connection age、client/peer 证书、CA、server name 与 client cert auth 全部匹配，随后
 要求 client Service metadata UID 与 receipt 一致，且其 EndpointSlice 的 ready/serving/non-terminating
 Pod targetRef UID 集合与当前 Pod 集合完全相同；随后
 读取运行时 MemberList，要求 cluster ID 与同一 immutable storage identity 精确一致、精确成员数、唯一且非零的 member ID/name、
@@ -382,7 +394,7 @@ member name 聚合后再比对运行时拓扑；最后通过官方
 `etcdctl endpoint health` 对 bootstrap `ENDPOINT` 和每个 advertised client URL 分别提交
 线性化 proposal。缺少 `EXPECTED_IMAGE`/
 `EXPECTED_KUBEBRAIN_STATEFULSET_UID`/`EXPECTED_KUBEBRAIN_CLIENT_SERVICE_UID`/`EXPECTED_KEYSPACE`/`EXPECTED_PD_ADDRS`/`EXPECTED_TIDB_CLUSTER_UID`/`EXPECTED_CLUSTER_ID`/`EXPECTED_INITIAL_CLUSTER`/`EXPECTED_QUOTA_BACKEND_BYTES`/`EXPECTED_ADVERTISE_CLIENT_URLS`/`ENDPOINT`、任一状态
-缺失、旧 revision、错误拓扑、错误镜像、Pod owner/revision/Ready/终止状态漂移、quota/client URL/兼容开关/count-index/存储指标/txn/request size/stream/inflight/限流/watch/delete-range/keepalive/auth 上限或基线缺失/重复/不匹配或 endpoint
+缺失、旧 revision、错误拓扑、错误镜像、Pod owner/revision/Ready/终止状态漂移、quota/client URL/兼容开关/count-index/存储指标/txn/request size/stream/inflight/限流/watch/delete-range/keepalive/auth/TLS 上限或基线缺失/重复/不匹配，未期望 TLS 时出现 TLS args，或 endpoint
 不健康、KubeBrain StatefulSet/client Service/TidbCluster UID 或 TidbCluster/MemberList cluster ID 漂移、EndpointSlice Pod 集合漂移、initial cluster 成员/peer URL 为空或重复、MemberList 缺失/重复/不完整/与声明不一致、advertised URL 列表含空/重复成员或任一地址
 从门禁网络不可达都会 fail closed。脚本使用可覆盖的 `JQ`（默认 `jq`）结构化解析 JSON，
 不得用文本匹配替代成员身份和 URL 集合检查。
