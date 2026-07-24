@@ -15,6 +15,8 @@ const fakeInitialCluster = "kb-0=peer-0,kb-1=peer-1,kb-2=peer-2"
 
 func fakeKubeBrainArgs(advertisedURLs, initialCluster string) string {
 	return "--port=3379\n" +
+		"--peer-port=3380\n" +
+		"--info-port=8080\n" +
 		"--keyspace=instance-a\n" +
 		"--pd-addrs=kb-pd.storage.svc:2379\n" +
 		"--quota-backend-bytes=429496729600\n" +
@@ -471,6 +473,68 @@ func TestValidateInstanceReady(t *testing.T) {
 			healthOK:       true,
 			initialCluster: "kb-0=peer-0,kb-1=peer-0,kb-2=peer-2",
 			wantOutput:     "duplicate peer URL",
+		},
+		{
+			name:       "wrong client listener port",
+			image:      "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus: "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeArgs:   strings.ReplaceAll(fakeKubeBrainArgs("https://instance.example:2379", fakeInitialCluster), "--port=3379", "--port=12379"),
+			topology:   "3\t3",
+			healthOK:   true,
+			wantOutput: "client listener port configuration mismatch",
+		},
+		{
+			name:       "missing peer listener port",
+			image:      "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus: "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeArgs:   strings.ReplaceAll(fakeKubeBrainArgs("https://instance.example:2379", fakeInitialCluster), "\n--peer-port=3380", ""),
+			topology:   "3\t3",
+			healthOK:   true,
+			wantOutput: "peer listener port configuration mismatch",
+		},
+		{
+			name:       "duplicate info listener port",
+			image:      "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus: "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeArgs:   fakeKubeBrainArgs("https://instance.example:2379", fakeInitialCluster) + "\n--info-port=8080",
+			topology:   "3\t3",
+			healthOK:   true,
+			wantOutput: "info listener port configuration mismatch",
+		},
+		{
+			name:       "advertise host baseline",
+			image:      "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus: "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeArgs: fakeKubeBrainArgs("https://instance.example:2379", fakeInitialCluster) +
+				"\n--advertise-host=$(POD_NAME).kubebrain-peer.kubebrain-system.svc.cluster.local",
+			topology: "3\t3",
+			healthOK: true,
+			extraEnv: []string{
+				"EXPECTED_ADVERTISE_HOST=$(POD_NAME).kubebrain-peer.kubebrain-system.svc.cluster.local",
+			},
+			wantOK:     true,
+			wantOutput: "release gate passed",
+		},
+		{
+			name:       "wrong advertise host",
+			image:      "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus: "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeArgs:   fakeKubeBrainArgs("https://instance.example:2379", fakeInitialCluster) + "\n--advertise-host=wrong-peer.example",
+			topology:   "3\t3",
+			healthOK:   true,
+			extraEnv: []string{
+				"EXPECTED_ADVERTISE_HOST=$(POD_NAME).kubebrain-peer.kubebrain-system.svc.cluster.local",
+			},
+			wantOutput: "advertise host configuration mismatch",
+		},
+		{
+			name:       "unexpected advertise host",
+			image:      "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus: "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeArgs:   fakeKubeBrainArgs("https://instance.example:2379", fakeInitialCluster) + "\n--advertise-host=unexpected.example",
+			topology:   "3\t3",
+			healthOK:   true,
+			wantOutput: "advertise host configuration mismatch",
 		},
 		{
 			name:       "wrong max request rate",

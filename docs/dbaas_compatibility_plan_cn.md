@@ -11739,6 +11739,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./hack/production -run TestValidateInstanceReady -count=1 -v`、
   `bash -n hack/production/validate-instance-ready.sh`、`go test ./hack/production -count=1`、
   `go vet ./...` 和 `go test ./... -count=1 -p 1` 均通过。
+- A750 固定实例发布门禁中的 listener/advertise-host 基线一致性：
+  production manifest 固定 `--port=3379`、`--peer-port=3380`、`--info-port=8080` 和
+  `--advertise-host=$(POD_NAME).kubebrain-peer.kubebrain-system.svc.cluster.local`。运行门禁此前
+  通过 health、MemberList 和 initial-cluster 间接验证连通性，但不能在 Pod template 层直接发现
+  client/peer/info 监听端口漂移、重复端口参数，或 advertise-host 被人工 patch 到错误 peer
+  identity。现在脚本新增 `EXPECTED_PORT`、`EXPECTED_PEER_PORT`、`EXPECTED_INFO_PORT`（默认
+  对齐 production baseline）和 optional `EXPECTED_ADVERTISE_HOST`，并要求端口 flag 各出现
+  一次且值完全匹配；`EXPECTED_ADVERTISE_HOST` 为空时拒绝出现 `--advertise-host`，非空时
+  要求精确匹配。`TestValidateInstanceReady` 扩展 wrong/missing/duplicate listener port、
+  advertise-host 正例、wrong advertise-host 和 unexpected advertise-host 回归。
+  `go test ./hack/production -run TestValidateInstanceReady -count=1 -v`、
+  `bash -n hack/production/validate-instance-ready.sh`、`go test ./hack/production -count=1`、
+  `go vet ./...` 和 `go test ./... -count=1 -p 1` 均通过。
 
 ### P2：运维兼容和长期验证
 
