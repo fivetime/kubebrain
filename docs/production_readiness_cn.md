@@ -1516,6 +1516,8 @@ hack/dev/verify.sh
   HMAC 只证明 payload 未被外部篡改，验证端仍必须拒绝 claims 中的未知字段和 trailing
   JSON，避免合同外 token 形状在滚动升级或代理路径中被静默接受。其 upstream 错误契约
   特殊：HTTP 500、gRPC code 2(Unknown)，消息仍为 permission denied/invalid auth token。
+  该特殊分类必须只匹配当前 Lock/Election service descriptor 中的精确 full method，不得用
+  service-name prefix 接受合同外方法。
   Election Observe/底层 Watch 则只在创建时鉴权：follower 转发必须携带 caller token，但
   已建立流不能因后续撤权或改密被追溯关闭；新建的无权限流按 upstream 返回 HTTP 200 空体。
   follower 对 leader 的内部连接就绪检查必须使用 peer `grpc.health.v1.Health/Check` 并要求

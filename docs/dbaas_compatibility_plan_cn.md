@@ -11339,6 +11339,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `TestConcurrencyProtoFieldCoverage`，固定 13 个 concurrency protobuf message 的字段名与
   wire number。`go test ./pkg/server/etcd -run TestConcurrencyProtoFieldCoverage -count=1`
   通过。
+- A716 精确固定 dedicated concurrency method 分类：
+  dedicated Lock/Election 需要保留 upstream 当前的 auth/error 外观，即匿名、
+  permission denied 和 invalid token 等错误在该 service 边界归一化为 gRPC
+  `Unknown`，而不是走 core etcd 的 `ErrGRPC*` 映射。旧分类使用
+  `/v3lockpb.Lock/` 与 `/v3electionpb.Election/` prefix，测试也只抽样覆盖
+  Lock、Unlock、Campaign 和 Observe，未显式固定 Proclaim、Leader、Resign，
+  且同前缀的虚构方法也会被误判为 dedicated concurrency。现在运行时从
+  `v3lockpb.Lock_ServiceDesc` 与 `v3electionpb.Election_ServiceDesc` 构建精确
+  full-method allowlist，测试固定当前 7 个 generated full-method constants，并确认同前缀
+  unknown method 不命中。`go test ./pkg/server/etcd -run TestDedicatedConcurrencyMethodClassification -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

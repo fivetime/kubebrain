@@ -17,12 +17,13 @@ package etcd
 import (
 	"context"
 	"errors"
-	"strings"
 	"time"
 	"unicode/utf8"
 
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
+	"go.etcd.io/etcd/server/v3/etcdserver/api/v3election/v3electionpb"
+	"go.etcd.io/etcd/server/v3/etcdserver/api/v3lock/v3lockpb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -348,9 +349,27 @@ func (s *RPCServer) stampStream(srv any, ss grpc.ServerStream, info *grpc.Stream
 	return authGRPCError(err)
 }
 
+var dedicatedConcurrencyMethods = grpcServiceFullMethods(
+	v3lockpb.Lock_ServiceDesc,
+	v3electionpb.Election_ServiceDesc,
+)
+
 func isDedicatedConcurrencyMethod(method string) bool {
-	return strings.HasPrefix(method, "/v3lockpb.Lock/") ||
-		strings.HasPrefix(method, "/v3electionpb.Election/")
+	_, ok := dedicatedConcurrencyMethods[method]
+	return ok
+}
+
+func grpcServiceFullMethods(services ...grpc.ServiceDesc) map[string]struct{} {
+	methods := make(map[string]struct{})
+	for _, service := range services {
+		for _, method := range service.Methods {
+			methods["/"+service.ServiceName+"/"+method.MethodName] = struct{}{}
+		}
+		for _, stream := range service.Streams {
+			methods["/"+service.ServiceName+"/"+stream.StreamName] = struct{}{}
+		}
+	}
+	return methods
 }
 
 func authGRPCError(err error) error {
