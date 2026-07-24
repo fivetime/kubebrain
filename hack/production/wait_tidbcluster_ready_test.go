@@ -2,7 +2,6 @@ package production_test
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -64,16 +63,15 @@ else
 fi
 `), 0o755))
 
-			command := exec.Command("bash", "wait-tidbcluster-ready.sh")
-			command.Env = append(os.Environ(),
-				"KUBECTL="+fakeKubectl,
+			env := []string{
+				"KUBECTL=" + fakeKubectl,
 				"TIMEOUT_SECONDS=1",
 				"POLL_INTERVAL_SECONDS=0",
-				"FAKE_READY="+tc.ready,
-				"FAKE_PD_STATUS="+tc.pdStatus,
-				"FAKE_TIKV_STATUS="+tc.tikvStatus,
-			)
-			output, err := command.CombinedOutput()
+				"FAKE_READY=" + tc.ready,
+				"FAKE_PD_STATUS=" + tc.pdStatus,
+				"FAKE_TIKV_STATUS=" + tc.tikvStatus,
+			}
+			output, err := runProductionScriptCommand(t, "wait-tidbcluster-ready.sh", env)
 			if tc.wantOK {
 				require.NoError(t, err, string(output))
 			} else {
@@ -111,15 +109,14 @@ printf 'called\n' >>"$KUBECTL_LOG"
 exit 99
 `), 0o755))
 
-			command := exec.Command("bash", "wait-tidbcluster-ready.sh")
-			command.Env = append(os.Environ(),
-				"KUBECTL="+fakeKubectl,
-				"KUBECTL_LOG="+kubectlLog,
+			env := []string{
+				"KUBECTL=" + fakeKubectl,
+				"KUBECTL_LOG=" + kubectlLog,
 				"TIMEOUT_SECONDS=1",
 				"POLL_INTERVAL_SECONDS=0",
 				tc.env,
-			)
-			output, err := command.CombinedOutput()
+			}
+			output, err := runProductionScriptCommand(t, "wait-tidbcluster-ready.sh", env)
 			require.Error(t, err, string(output))
 			require.Contains(t, string(output), tc.wantOutput)
 			require.NoFileExists(t, kubectlLog)

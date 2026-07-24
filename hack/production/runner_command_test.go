@@ -11,11 +11,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-const productionRunnerCommandTimeout = 30 * time.Second
+const productionScriptCommandTimeout = 30 * time.Second
 
-func runProductionRunnerCommand(t *testing.T, script string, env []string) ([]byte, error) {
+func runProductionScriptCommand(t *testing.T, script string, env []string) ([]byte, error) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), productionRunnerCommandTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), productionScriptCommandTimeout)
 	defer cancel()
 
 	command := exec.CommandContext(ctx, "bash", script)
@@ -23,7 +23,12 @@ func runProductionRunnerCommand(t *testing.T, script string, env []string) ([]by
 	command.Env = append(os.Environ(), env...)
 	output, err := processgroup.CombinedOutput(command, processgroup.DefaultOutputLimitBytes)
 	if ctx.Err() == context.DeadlineExceeded {
-		require.Failf(t, "production runner timed out", "script=%s timeout=%s output:\n%s", script, productionRunnerCommandTimeout, string(output))
+		require.Failf(t, "production script timed out", "script=%s timeout=%s output:\n%s", script, productionScriptCommandTimeout, string(output))
 	}
 	return output, err
+}
+
+func runProductionRunnerCommand(t *testing.T, script string, env []string) ([]byte, error) {
+	t.Helper()
+	return runProductionScriptCommand(t, script, env)
 }

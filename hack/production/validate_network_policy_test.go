@@ -2,7 +2,6 @@ package production_test
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -64,19 +63,18 @@ fi
 exit 0
 `), 0o755))
 
-			command := exec.Command("bash", "validate-network-policy.sh")
-			command.Env = append(os.Environ(),
-				"KUBECTL="+fakeKubectl,
+			env := []string{
+				"KUBECTL=" + fakeKubectl,
 				"KUBE_CONTEXT=production",
 				"PROBE_ID=probe1",
-				"PROBE_IMAGE=registry.example/probe@sha256:"+strings.Repeat("a", 64),
+				"PROBE_IMAGE=registry.example/probe@sha256:" + strings.Repeat("a", 64),
 				"CLIENT_NAMESPACE=client-ns",
 				"MONITORING_NAMESPACE=monitor-ns",
 				"DENIED_NAMESPACE=denied-ns",
-				"FAKE_MODE="+tc.mode,
-				"FAKE_LOG="+logPath,
-			)
-			output, err := command.CombinedOutput()
+				"FAKE_MODE=" + tc.mode,
+				"FAKE_LOG=" + logPath,
+			}
+			output, err := runProductionScriptCommand(t, "validate-network-policy.sh", env)
 			if tc.wantOK {
 				require.NoError(t, err, string(output))
 			} else {
@@ -114,17 +112,16 @@ func TestValidateNetworkPolicyRejectsMutableProbeImageBeforeKubectl(t *testing.T
 				0o755,
 			))
 
-			command := exec.Command("bash", "validate-network-policy.sh")
-			command.Env = append(os.Environ(),
-				"KUBECTL="+fakeKubectl,
+			env := []string{
+				"KUBECTL=" + fakeKubectl,
 				"PROBE_ID=probe1",
-				"PROBE_IMAGE="+probeImage,
+				"PROBE_IMAGE=" + probeImage,
 				"CLIENT_NAMESPACE=client-ns",
 				"MONITORING_NAMESPACE=monitor-ns",
 				"DENIED_NAMESPACE=denied-ns",
-				"FAKE_LOG="+logPath,
-			)
-			output, err := command.CombinedOutput()
+				"FAKE_LOG=" + logPath,
+			}
+			output, err := runProductionScriptCommand(t, "validate-network-policy.sh", env)
 			require.Error(t, err)
 			require.Contains(t, string(output), "immutable sha256 digest")
 			_, statErr := os.Stat(logPath)
@@ -155,19 +152,17 @@ func TestValidateNetworkPolicyRejectsInvalidNamespaceBeforeKubectl(t *testing.T)
 				0o755,
 			))
 
-			env := append(os.Environ(),
-				"KUBECTL="+fakeKubectl,
+			env := []string{
+				"KUBECTL=" + fakeKubectl,
 				"PROBE_ID=probe1",
-				"PROBE_IMAGE=registry.example/probe@sha256:"+strings.Repeat("a", 64),
+				"PROBE_IMAGE=registry.example/probe@sha256:" + strings.Repeat("a", 64),
 				"CLIENT_NAMESPACE=client-ns",
 				"MONITORING_NAMESPACE=monitor-ns",
 				"DENIED_NAMESPACE=denied-ns",
-				"FAKE_LOG="+logPath,
-			)
+				"FAKE_LOG=" + logPath,
+			}
 			env = append(env, tc.variable+"="+tc.value)
-			command := exec.Command("bash", "validate-network-policy.sh")
-			command.Env = env
-			output, err := command.CombinedOutput()
+			output, err := runProductionScriptCommand(t, "validate-network-policy.sh", env)
 			require.Error(t, err)
 			require.Contains(t, string(output), tc.variable+" must be a lowercase DNS label")
 			_, statErr := os.Stat(logPath)

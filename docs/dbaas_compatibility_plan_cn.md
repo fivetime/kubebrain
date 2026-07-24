@@ -11963,6 +11963,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `runProductionRunnerCommand` 执行并禁止直接 `exec.Command("bash", script)`。
   `go test ./hack/production -run 'TestOperationRunner' -count=1 -v`、`go test ./hack/production -count=1 -timeout=12m`、
   `git diff --check`、`go vet ./...` 和 `go test ./... -count=1 -p 1` 均通过。
+- A770 给 release/wait shell gate 测试补 bounded helper：
+  A768 覆盖了 operation runner，但 `validate-network-policy.sh` 和 `wait-tidbcluster-ready.sh`
+  的测试仍直接 `exec.Command("bash", ...).CombinedOutput()`；前者曾在临时 6 分钟包级 timeout
+  的 SIGQUIT 栈中出现，说明 release gate 测试自身也需要可诊断的进程边界。现在
+  `runner_command_test.go` 抽出通用 `runProductionScriptCommand`，保留 operation runner wrapper，
+  并把 network policy 与 TiDB rollout wait 测试切到同一 30 秒 context、进程组 kill 和 bounded
+  output。静态门禁同时要求这两类测试继续使用 helper，并禁止回退到直接 bash exec。
+  `go test ./hack/production -run 'Test(ValidateNetworkPolicy|WaitTidbClusterReady|ReleaseGateScript)' -count=1 -v`、
+  `go test ./hack/production -count=1 -timeout=12m`、`git diff --check`、`go vet ./...` 和
+  `go test ./... -count=1 -p 1` 均通过。
 
 ### P2：运维兼容和长期验证
 
