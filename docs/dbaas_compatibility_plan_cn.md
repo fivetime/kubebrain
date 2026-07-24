@@ -11856,6 +11856,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./cmd/option -run TestTransportLimitValidationRejectsInvalidStartupFlags -count=1 -v`、
   `go test ./cmd/option -count=1`、`go vet ./...` 和
   `go test ./... -count=1 -p 1` 均通过。
+- A760 固定运行门禁中的 compaction safety-net 和 history-scan bucket 默认依赖：
+  production manifest 不显式传 `--auto-compaction-retention-revisions`（默认 0，关闭安全网）
+  和 `--watch-history-scan-rev-bucket`（默认 4096）。前者一旦被 patch 成过小正数，会在
+  apiserver compaction 断链时过早推进 compact watermark；后者被改小会削弱 HA-apiserver
+  watch 重连时的历史扫描合并效果。现在 `validate-instance-ready.sh` 新增 optional
+  `EXPECTED_AUTO_COMPACTION_RETENTION_REVISIONS` 和 `EXPECTED_WATCH_HISTORY_SCAN_REV_BUCKET`：
+  默认空值要求不出现对应 flag，非空时要求精确匹配；测试覆盖 unexpected override 和
+  显式 baseline override。
+  `go test ./hack/production -run TestValidateInstanceReady -count=1 -v`、
+  `bash -n hack/production/validate-instance-ready.sh`、`go test ./hack/production -count=1`、
+  `go vet ./...` 和 `go test ./... -count=1 -p 1` 均通过。
 
 ### P2：运维兼容和长期验证
 
