@@ -269,6 +269,26 @@ func TestReconcileAcrossNamespacesKeepsQueuesAndSecretsIsolated(t *testing.T) {
 	}
 }
 
+func TestStaticNamespaceAllowlistFailsClosedBeforePolicyAccess(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		namespaces []string
+		wantError  string
+	}{
+		{name: "empty", namespaces: nil, wantError: "namespace allowlist must not be empty"},
+		{name: "invalid", namespaces: []string{"tenant.a"}, wantError: "invalid namespace tenant.a"},
+		{name: "duplicate", namespaces: []string{"tenant-a", "tenant-a"}, wantError: "duplicate tenant-a"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := fakeClient()
+			count, err := NewForNamespaces(client, tc.namespaces).Reconcile(context.Background())
+			require.Zero(t, count)
+			require.ErrorContains(t, err, tc.wantError)
+			require.Empty(t, client.Actions())
+		})
+	}
+}
+
 func TestReconcileAcrossNamespacesIsolatesPolicyFailure(t *testing.T) {
 	client := fakeClient()
 	createTemplateIn(t, client, "tenant-a", validTemplate())

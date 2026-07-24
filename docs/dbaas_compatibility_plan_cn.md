@@ -11218,6 +11218,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   回归确认非法 namespace 构造失败且 dynamic/token clients 都没有 API action：
   `go test ./hack/production/internal/parameterbroker ./hack/production/cmd/operation-parameter-broker -count=1`
   通过。
+- A703 下沉 backup scheduler 静态 namespace allowlist 校验：
+  A693 已让 backup scheduler CLI 在 client 初始化前校验 `--namespace`/`--namespaces`，
+  A264 已让动态 inventory 在 policy list 前 fail closed；但库入口
+  `backupscheduler.NewForNamespaces` 仍会原样保存静态 allowlist，未来调用方直接传入
+  `tenant.a`、空列表或重复 namespace 时，会进入 policy list 或产生静默空轮次。现在
+  scheduler 在每轮 reconcile 的首个 Kubernetes API action 前复用
+  `namespaceinventory.Validate`，静态 allowlist 必须非空、无重复且全部为 Kubernetes DNS
+  label。fake dynamic client 回归确认非法 allowlist 返回错误且没有任何 API action：
+  `go test ./hack/production/internal/backupscheduler ./hack/production/cmd/backup-scheduler -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

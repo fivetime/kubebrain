@@ -189,7 +189,7 @@ func candidateKey(candidate policyCandidate) string {
 
 func (s *Scheduler) namespaces(ctx context.Context) ([]string, error) {
 	if s.inventoryName == "" {
-		return append([]string(nil), s.staticNamespaces...), nil
+		return namespaceinventory.Validate(s.staticNamespaces)
 	}
 	return namespaceinventory.Load(
 		ctx, s.client, s.inventoryNamespace, s.inventoryName, s.inventoryKey,
