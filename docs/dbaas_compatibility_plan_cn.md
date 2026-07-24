@@ -12124,6 +12124,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./hack/production ./hack/production/internal/testcommand -run 'TestProduction(TestCommandHelpersUseWaitDelay|RuntimeExecutorCommandsUseProcessGroupAndBoundedOutput|OperationWorkerStreamsExecutorWithProcessGroup|CmdGoRunTestsUseBoundedCommandHelper)' -count=1 -v`、
   `cd hack/etcd-client-compat && go test -run 'Test(CompatCommandHelpersUseWaitDelay|CompatMakeMirrorCommandsUseBoundedHelpers|CompatKubernetesRestartCommandsUseBoundedHelpers|CompatFailoverCommandsUseBoundedHelpers|DifferentialRunner)' -count=1 -v`、
   `git diff --check`、`go vet ./...` 和 `go test ./... -count=1 -p 1` 均通过。
+- A785 给 operation-worker runtime executor 补 `WaitDelay`：
+  A278 已让 operation-worker 使用 process group kill，A783 也固定其 stdin/stdout/stderr 流式透传，
+  但 runtime `run` 本身仍没有 `exec.Cmd.WaitDelay`；若 Pod 终止时 executor 或后代退出异常，
+  worker 可能等待到底层 `CommandContext`/`Run` 的默认行为完成。现在 worker 为 executor 设置
+  5 秒 `executorWaitDelay`，仍保留流式日志和进程组 kill；静态门禁同步要求该常量与
+  `command.WaitDelay = executorWaitDelay` 保持存在。
+  `go test ./hack/production/cmd/operation-worker -count=1 -v`、
+  `go test ./hack/production -run 'TestProduction(OperationWorkerStreamsExecutorWithProcessGroup|RuntimeExecutorCommandsUseProcessGroupAndBoundedOutput|TestCommandHelpersUseWaitDelay)' -count=1 -v`、
+  `git diff --check`、`go vet ./...` 和 `go test ./... -count=1 -p 1` 均通过。
 
 ### P2：运维兼容和长期验证
 

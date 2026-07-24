@@ -14,6 +14,8 @@ import (
 	"github.com/kubewharf/kubebrain/hack/production/internal/processgroup"
 )
 
+const executorWaitDelay = 5 * time.Second
+
 func main() {
 	var executable string
 	var idleDelay, failureDelay time.Duration
@@ -59,6 +61,7 @@ func main() {
 func run(ctx context.Context, executable string) error {
 	command := exec.CommandContext(ctx, executable)
 	processgroup.Configure(command)
+	command.WaitDelay = executorWaitDelay
 	command.Stdin = os.Stdin
 	command.Stdout = os.Stdout
 	command.Stderr = os.Stderr
