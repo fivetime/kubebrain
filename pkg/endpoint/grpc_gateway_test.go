@@ -66,26 +66,40 @@ type gatewayMaintenanceServer struct {
 
 type gatewayAuthServer struct {
 	etcdserverpb.UnimplementedAuthServer
-	request                    *etcdserverpb.AuthStatusRequest
-	authenticateRequest        *etcdserverpb.AuthenticateRequest
-	userAddRequest             *etcdserverpb.AuthUserAddRequest
-	userGetRequest             *etcdserverpb.AuthUserGetRequest
-	userListRequest            *etcdserverpb.AuthUserListRequest
-	userDeleteRequest          *etcdserverpb.AuthUserDeleteRequest
-	userChangePasswordRequest  *etcdserverpb.AuthUserChangePasswordRequest
-	userGrantRoleRequest       *etcdserverpb.AuthUserGrantRoleRequest
-	userRevokeRoleRequest      *etcdserverpb.AuthUserRevokeRoleRequest
-	roleGrantPermissionRequest *etcdserverpb.AuthRoleGrantPermissionRequest
-	md                         metadata.MD
-	authenticateMD             metadata.MD
-	userAddMD                  metadata.MD
-	userGetMD                  metadata.MD
-	userListMD                 metadata.MD
-	userDeleteMD               metadata.MD
-	userChangePasswordMD       metadata.MD
-	userGrantRoleMD            metadata.MD
-	userRevokeRoleMD           metadata.MD
-	roleGrantPermissionMD      metadata.MD
+	request                     *etcdserverpb.AuthStatusRequest
+	enableRequest               *etcdserverpb.AuthEnableRequest
+	disableRequest              *etcdserverpb.AuthDisableRequest
+	authenticateRequest         *etcdserverpb.AuthenticateRequest
+	userAddRequest              *etcdserverpb.AuthUserAddRequest
+	userGetRequest              *etcdserverpb.AuthUserGetRequest
+	userListRequest             *etcdserverpb.AuthUserListRequest
+	userDeleteRequest           *etcdserverpb.AuthUserDeleteRequest
+	userChangePasswordRequest   *etcdserverpb.AuthUserChangePasswordRequest
+	userGrantRoleRequest        *etcdserverpb.AuthUserGrantRoleRequest
+	userRevokeRoleRequest       *etcdserverpb.AuthUserRevokeRoleRequest
+	roleAddRequest              *etcdserverpb.AuthRoleAddRequest
+	roleGetRequest              *etcdserverpb.AuthRoleGetRequest
+	roleListRequest             *etcdserverpb.AuthRoleListRequest
+	roleDeleteRequest           *etcdserverpb.AuthRoleDeleteRequest
+	roleGrantPermissionRequest  *etcdserverpb.AuthRoleGrantPermissionRequest
+	roleRevokePermissionRequest *etcdserverpb.AuthRoleRevokePermissionRequest
+	md                          metadata.MD
+	enableMD                    metadata.MD
+	disableMD                   metadata.MD
+	authenticateMD              metadata.MD
+	userAddMD                   metadata.MD
+	userGetMD                   metadata.MD
+	userListMD                  metadata.MD
+	userDeleteMD                metadata.MD
+	userChangePasswordMD        metadata.MD
+	userGrantRoleMD             metadata.MD
+	userRevokeRoleMD            metadata.MD
+	roleAddMD                   metadata.MD
+	roleGetMD                   metadata.MD
+	roleListMD                  metadata.MD
+	roleDeleteMD                metadata.MD
+	roleGrantPermissionMD       metadata.MD
+	roleRevokePermissionMD      metadata.MD
 }
 
 type gatewayLockServer struct {
@@ -422,6 +436,26 @@ func (s *gatewayAuthServer) AuthStatus(ctx context.Context, request *etcdserverp
 	}, nil
 }
 
+func (s *gatewayAuthServer) AuthEnable(ctx context.Context, request *etcdserverpb.AuthEnableRequest) (*etcdserverpb.AuthEnableResponse, error) {
+	s.enableRequest = request
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		s.enableMD = md.Copy()
+	}
+	return &etcdserverpb.AuthEnableResponse{
+		Header: &etcdserverpb.ResponseHeader{ClusterId: 181, MemberId: 182, Revision: 183, RaftTerm: 184},
+	}, nil
+}
+
+func (s *gatewayAuthServer) AuthDisable(ctx context.Context, request *etcdserverpb.AuthDisableRequest) (*etcdserverpb.AuthDisableResponse, error) {
+	s.disableRequest = request
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		s.disableMD = md.Copy()
+	}
+	return &etcdserverpb.AuthDisableResponse{
+		Header: &etcdserverpb.ResponseHeader{ClusterId: 185, MemberId: 186, Revision: 187, RaftTerm: 188},
+	}, nil
+}
+
 func (s *gatewayAuthServer) Authenticate(ctx context.Context, request *etcdserverpb.AuthenticateRequest) (*etcdserverpb.AuthenticateResponse, error) {
 	s.authenticateRequest = request
 	if md, ok := metadata.FromIncomingContext(ctx); ok {
@@ -505,6 +539,52 @@ func (s *gatewayAuthServer) UserRevokeRole(ctx context.Context, request *etcdser
 	}, nil
 }
 
+func (s *gatewayAuthServer) RoleAdd(ctx context.Context, request *etcdserverpb.AuthRoleAddRequest) (*etcdserverpb.AuthRoleAddResponse, error) {
+	s.roleAddRequest = request
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		s.roleAddMD = md.Copy()
+	}
+	return &etcdserverpb.AuthRoleAddResponse{
+		Header: &etcdserverpb.ResponseHeader{ClusterId: 189, MemberId: 190, Revision: 191, RaftTerm: 192},
+	}, nil
+}
+
+func (s *gatewayAuthServer) RoleGet(ctx context.Context, request *etcdserverpb.AuthRoleGetRequest) (*etcdserverpb.AuthRoleGetResponse, error) {
+	s.roleGetRequest = request
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		s.roleGetMD = md.Copy()
+	}
+	return &etcdserverpb.AuthRoleGetResponse{
+		Header: &etcdserverpb.ResponseHeader{ClusterId: 193, MemberId: 194, Revision: 195, RaftTerm: 196},
+		Perm: []*authpb.Permission{{
+			PermType: authpb.WRITE,
+			Key:      []byte("/registry/"),
+			RangeEnd: []byte("/registry0"),
+		}},
+	}, nil
+}
+
+func (s *gatewayAuthServer) RoleList(ctx context.Context, request *etcdserverpb.AuthRoleListRequest) (*etcdserverpb.AuthRoleListResponse, error) {
+	s.roleListRequest = request
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		s.roleListMD = md.Copy()
+	}
+	return &etcdserverpb.AuthRoleListResponse{
+		Header: &etcdserverpb.ResponseHeader{ClusterId: 197, MemberId: 198, Revision: 199, RaftTerm: 200},
+		Roles:  []string{"reader", "writer"},
+	}, nil
+}
+
+func (s *gatewayAuthServer) RoleDelete(ctx context.Context, request *etcdserverpb.AuthRoleDeleteRequest) (*etcdserverpb.AuthRoleDeleteResponse, error) {
+	s.roleDeleteRequest = request
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		s.roleDeleteMD = md.Copy()
+	}
+	return &etcdserverpb.AuthRoleDeleteResponse{
+		Header: &etcdserverpb.ResponseHeader{ClusterId: 201, MemberId: 202, Revision: 203, RaftTerm: 204},
+	}, nil
+}
+
 func (s *gatewayAuthServer) RoleGrantPermission(ctx context.Context, request *etcdserverpb.AuthRoleGrantPermissionRequest) (*etcdserverpb.AuthRoleGrantPermissionResponse, error) {
 	s.roleGrantPermissionRequest = request
 	if md, ok := metadata.FromIncomingContext(ctx); ok {
@@ -512,6 +592,16 @@ func (s *gatewayAuthServer) RoleGrantPermission(ctx context.Context, request *et
 	}
 	return &etcdserverpb.AuthRoleGrantPermissionResponse{
 		Header: &etcdserverpb.ResponseHeader{ClusterId: 139, MemberId: 140, Revision: 141, RaftTerm: 142},
+	}, nil
+}
+
+func (s *gatewayAuthServer) RoleRevokePermission(ctx context.Context, request *etcdserverpb.AuthRoleRevokePermissionRequest) (*etcdserverpb.AuthRoleRevokePermissionResponse, error) {
+	s.roleRevokePermissionRequest = request
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		s.roleRevokePermissionMD = md.Copy()
+	}
+	return &etcdserverpb.AuthRoleRevokePermissionResponse{
+		Header: &etcdserverpb.ResponseHeader{ClusterId: 205, MemberId: 206, Revision: 207, RaftTerm: 208},
 	}, nil
 }
 
@@ -717,6 +807,16 @@ func TestGRPCGatewayUsesGeneratedEtcdJSONContract(t *testing.T) {
 		"authRevision":"75"
 	}`,
 		func() bool { return authServer.request != nil }, &authServer.md)
+	assertUnaryContract("/v3/auth/enable", `{"unknown_field":"discarded"}`,
+		"Bearer auth-enable-token", `{
+			"header":{"cluster_id":"181","member_id":"182","revision":"183","raft_term":"184"}
+		}`,
+		func() bool { return authServer.enableRequest != nil }, &authServer.enableMD)
+	assertUnaryContract("/v3/auth/disable", `{"unknown_field":"discarded"}`,
+		"Bearer auth-disable-token", `{
+			"header":{"cluster_id":"185","member_id":"186","revision":"187","raft_term":"188"}
+		}`,
+		func() bool { return authServer.disableRequest != nil }, &authServer.disableMD)
 	assertUnaryContract("/v3/auth/authenticate",
 		`{"name":"gateway-user","password":"gateway-password","unknown_field":"discarded"}`,
 		"Bearer auth-bootstrap-token", `{
@@ -796,6 +896,45 @@ func TestGRPCGatewayUsesGeneratedEtcdJSONContract(t *testing.T) {
 				authServer.userRevokeRoleRequest.Name == "service-user" &&
 				authServer.userRevokeRoleRequest.Role == "reader"
 		}, &authServer.userRevokeRoleMD)
+	assertUnaryContract("/v3/auth/role/add",
+		`{"name":"auditor","unknown_field":"discarded"}`,
+		"Bearer auth-role-add-token", `{
+			"header":{"cluster_id":"189","member_id":"190","revision":"191","raft_term":"192"}
+		}`,
+		func() bool {
+			return authServer.roleAddRequest != nil &&
+				authServer.roleAddRequest.Name == "auditor"
+		}, &authServer.roleAddMD)
+	assertUnaryContract("/v3/auth/role/get",
+		`{"role":"writer","unknown_field":"discarded"}`,
+		"Bearer auth-role-get-token", `{
+			"header":{"cluster_id":"193","member_id":"194","revision":"195","raft_term":"196"},
+			"perm":[{
+				"permType":"WRITE",
+				"key":"L3JlZ2lzdHJ5Lw==",
+				"range_end":"L3JlZ2lzdHJ5MA=="
+			}]
+		}`,
+		func() bool {
+			return authServer.roleGetRequest != nil &&
+				authServer.roleGetRequest.Role == "writer"
+		}, &authServer.roleGetMD)
+	assertUnaryContract("/v3/auth/role/list",
+		`{"unknown_field":"discarded"}`,
+		"Bearer auth-role-list-token", `{
+			"header":{"cluster_id":"197","member_id":"198","revision":"199","raft_term":"200"},
+			"roles":["reader","writer"]
+		}`,
+		func() bool { return authServer.roleListRequest != nil }, &authServer.roleListMD)
+	assertUnaryContract("/v3/auth/role/delete",
+		`{"role":"obsolete-role","unknown_field":"discarded"}`,
+		"Bearer auth-role-delete-token", `{
+			"header":{"cluster_id":"201","member_id":"202","revision":"203","raft_term":"204"}
+		}`,
+		func() bool {
+			return authServer.roleDeleteRequest != nil &&
+				authServer.roleDeleteRequest.Role == "obsolete-role"
+		}, &authServer.roleDeleteMD)
 	assertUnaryContract("/v3/auth/role/grant",
 		`{"name":"writer","perm":{"permType":"READWRITE","key":"L3JlZ2lzdHJ5Lw==","range_end":"L3JlZ2lzdHJ5MA==","unknown_field":"discarded"},"unknown_field":"discarded"}`,
 		"Bearer auth-role-token", `{
@@ -812,6 +951,17 @@ func TestGRPCGatewayUsesGeneratedEtcdJSONContract(t *testing.T) {
 				string(permission.Key) == "/registry/" &&
 				string(permission.RangeEnd) == "/registry0"
 		}, &authServer.roleGrantPermissionMD)
+	assertUnaryContract("/v3/auth/role/revoke",
+		`{"role":"writer","key":"L3JlZ2lzdHJ5Lw==","range_end":"L3JlZ2lzdHJ5MA==","unknown_field":"discarded"}`,
+		"Bearer auth-role-revoke-token", `{
+			"header":{"cluster_id":"205","member_id":"206","revision":"207","raft_term":"208"}
+		}`,
+		func() bool {
+			return authServer.roleRevokePermissionRequest != nil &&
+				authServer.roleRevokePermissionRequest.Role == "writer" &&
+				string(authServer.roleRevokePermissionRequest.Key) == "/registry/" &&
+				string(authServer.roleRevokePermissionRequest.RangeEnd) == "/registry0"
+		}, &authServer.roleRevokePermissionMD)
 	assertUnaryContract("/v3/lease/grant", `{"TTL":"300","ID":"101","unknown_field":"discarded"}`,
 		"Bearer lease-grant-token", `{
 			"header":{"cluster_id":"81","member_id":"82","revision":"83","raft_term":"84"},

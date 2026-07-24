@@ -11535,6 +11535,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   防止 Auth 用户管理面在 generated gateway 升级后出现字段错配或身份丢失。
   `go test ./pkg/endpoint -run TestGRPCGatewayUsesGeneratedEtcdJSONContract -count=1 -v`
   通过。
+- A734 完成 Auth generated HTTP gateway surface 门禁：
+  A732/A733 后仍缺 AuthEnable、AuthDisable、RoleAdd、RoleGet、RoleList、RoleDelete 与
+  RoleRevokePermission。现在逐条调用 `/v3/auth/enable`、`disable`、`role/add`、`get`、
+  `list`、`delete` 和 `revoke`，固定空请求 unknown-field discard、role 的 name/role
+  字段差异、repeated role list、nested WRITE permission 的 `permType` 与 base64
+  key/range_end，以及各 route 的 gateway marker、独立 `Authorization` metadata 和
+  response header JSON。路径集合审计确认
+  `/root/etcd/api/etcdserverpb/gw/rpc.pb.gw.go` 当前 17 条 `/v3/auth/*` generated route
+  与 `grpc_gateway_test.go` 实际调用集合完全一致，Auth HTTP surface 不再有未门禁路径。
+  `go test ./pkg/endpoint -run TestGRPCGatewayUsesGeneratedEtcdJSONContract -count=1 -v`
+  通过。
 
 ### P2：运维兼容和长期验证
 
