@@ -237,7 +237,9 @@ func (s *gatewayClusterServer) MemberList(ctx context.Context, request *etcdserv
 		Members: []*etcdserverpb.Member{{
 			ID:         55,
 			Name:       "member-one",
+			PeerURLs:   []string{"http://127.0.0.1:2380"},
 			ClientURLs: []string{"http://127.0.0.1:2379"},
+			IsLearner:  true,
 		}},
 	}, nil
 }
@@ -248,8 +250,18 @@ func (s *gatewayMaintenanceServer) Status(ctx context.Context, request *etcdserv
 		s.md = md.Copy()
 	}
 	return &etcdserverpb.StatusResponse{
-		Header:  &etcdserverpb.ResponseHeader{ClusterId: 61, MemberId: 62, Revision: 63, RaftTerm: 64},
-		Version: "3.7.0",
+		Header:           &etcdserverpb.ResponseHeader{ClusterId: 61, MemberId: 62, Revision: 63, RaftTerm: 64},
+		Version:          "3.7.0",
+		DbSize:           600,
+		Leader:           65,
+		RaftIndex:        66,
+		RaftTerm:         67,
+		RaftAppliedIndex: 68,
+		Errors:           []string{"alarm active"},
+		DbSizeInUse:      69,
+		IsLearner:        true,
+		StorageVersion:   "3.7.0",
+		DbSizeQuota:      70,
 	}, nil
 }
 
@@ -335,7 +347,7 @@ func TestGRPCGatewayUsesGeneratedEtcdJSONContract(t *testing.T) {
 	require.Equal(t, []string{grpcGatewayRequestMarkerValue}, kvServer.md.Get(grpcGatewayRequestMarkerKey))
 	require.Equal(t, []string{"Bearer kv-token"}, kvServer.md.Get(rpctypes.TokenFieldNameSwagger))
 
-	assertUnaryMetadata := func(path, token string, requestSeen func() bool, md *metadata.MD) {
+	assertUnaryContract := func(path, token, expectedJSON string, requestSeen func() bool, md *metadata.MD) {
 		t.Helper()
 		request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{}`))
 		request.Header.Set("Content-Type", "application/json")
@@ -343,16 +355,44 @@ func TestGRPCGatewayUsesGeneratedEtcdJSONContract(t *testing.T) {
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, request)
 		require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+		require.Equal(t, "application/json", response.Header().Get("Content-Type"))
+		require.JSONEq(t, expectedJSON, response.Body.String())
 		require.True(t, requestSeen(), path)
 		require.Equal(t, []string{grpcGatewayRequestMarkerValue}, md.Get(grpcGatewayRequestMarkerKey))
 		require.Equal(t, []string{token}, md.Get(rpctypes.TokenFieldNameSwagger))
 	}
 
-	assertUnaryMetadata("/v3/cluster/member/list", "Bearer cluster-token",
+	assertUnaryContract("/v3/cluster/member/list", "Bearer cluster-token", `{
+		"header":{"cluster_id":"51","member_id":"52","revision":"53","raft_term":"54"},
+		"members":[{
+			"ID":"55",
+			"name":"member-one",
+			"peerURLs":["http://127.0.0.1:2380"],
+			"clientURLs":["http://127.0.0.1:2379"],
+			"isLearner":true
+		}]
+	}`,
 		func() bool { return clusterServer.request != nil }, &clusterServer.md)
-	assertUnaryMetadata("/v3/maintenance/status", "Bearer maintenance-token",
+	assertUnaryContract("/v3/maintenance/status", "Bearer maintenance-token", `{
+		"header":{"cluster_id":"61","member_id":"62","revision":"63","raft_term":"64"},
+		"version":"3.7.0",
+		"dbSize":"600",
+		"leader":"65",
+		"raftIndex":"66",
+		"raftTerm":"67",
+		"raftAppliedIndex":"68",
+		"errors":["alarm active"],
+		"dbSizeInUse":"69",
+		"isLearner":true,
+		"storageVersion":"3.7.0",
+		"dbSizeQuota":"70"
+	}`,
 		func() bool { return maintenanceServer.request != nil }, &maintenanceServer.md)
-	assertUnaryMetadata("/v3/auth/status", "Bearer auth-token",
+	assertUnaryContract("/v3/auth/status", "Bearer auth-token", `{
+		"header":{"cluster_id":"71","member_id":"72","revision":"73","raft_term":"74"},
+		"enabled":true,
+		"authRevision":"75"
+	}`,
 		func() bool { return authServer.request != nil }, &authServer.md)
 
 	request = httptest.NewRequest(http.MethodPost, "/v3/lock/unlock",

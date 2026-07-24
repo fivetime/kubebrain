@@ -11469,6 +11469,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   身份。
   `go test ./pkg/endpoint -run TestGRPCGatewayUsesGeneratedEtcdJSONContract -count=1 -v`
   通过。
+- A728 固定非 KV core HTTP gateway JSON contract：
+  A727 对 Cluster、Maintenance 和 Auth route 只验证了请求到达、metadata 和 HTTP 200，
+  尚未固定 generated JSON response 的字段名与 protobuf 标量编码；未来若 gateway
+  marshaler 切换为 camelCase、emit-zero 或普通数字，会破坏 etcd HTTP JSON caller。
+  现在让 fake Cluster MemberList 覆盖 member `ID`、`peerURLs`、`clientURLs` 和
+  `isLearner`，fake Maintenance Status 覆盖 `dbSize`、`leader`、`raftIndex`、
+  `raftAppliedIndex`、`dbSizeInUse`、`storageVersion` 与 `dbSizeQuota`，并固定 AuthStatus
+  的 `enabled`/`authRevision` JSON body。该门禁保留 `UseProtoNames=true`、
+  `EmitUnpopulated=false` 和 int64/uint64 字符串编码语义，不能退化为只看 route 200。
+  `go test ./pkg/endpoint -run TestGRPCGatewayUsesGeneratedEtcdJSONContract -count=1 -v`
+  通过。
 
 ### P2：运维兼容和长期验证
 
