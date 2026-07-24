@@ -308,6 +308,9 @@ func (o *KubeBrainOption) Validate() error {
 	if o.quotaBackendBytes < 0 {
 		return fmt.Errorf("--quota-backend-bytes must be non-negative")
 	}
+	if o.countIndexMaxKeys < 0 {
+		return fmt.Errorf("--count-index-max-keys must be non-negative")
+	}
 
 	const watchProgressNotifyIntervalMax = 2500 * time.Millisecond
 	if o.watchProgressNotifyInterval > watchProgressNotifyIntervalMax {

@@ -342,6 +342,11 @@ func TestTransportLimitValidationRejectsInvalidStartupFlags(t *testing.T) {
 			args: []string{"--quota-backend-bytes=-1"},
 			want: "--quota-backend-bytes must be non-negative",
 		},
+		{
+			name: "negative count index key cap",
+			args: []string{"--count-index-max-keys=-1"},
+			want: "--count-index-max-keys must be non-negative",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			o := NewOptions()

@@ -11781,6 +11781,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./cmd/option -run 'Test(TransportPolicyDefaultsMatchEtcd|ProductionCriticalDefaultsStayPinned|WatchProgressNotifyIntervalValidation)' -count=1 -v`、
   `go test ./cmd/option -count=1`、`go vet ./...` 和
   `go test ./... -count=1 -p 1` 均通过。
+- A753 拒绝负数 count-index key cap：
+  `--count-index-max-keys` 的语义是 cap tracked keys，`0 = unlimited`；但该 flag 是
+  `int`，此前传入负数会通过 `Validate()` 并进入 `countindex.New(maxKeys)`。由于
+  `TreeIndex.checkOverflowLocked()` 只在 `maxKeys > 0` 时触发 overflow，负数实际会被静默
+  当成 unlimited，绕过 DBaaS 对 count-index 内存上限的生产意图。现在
+  `KubeBrainOption.Validate()` 明确拒绝 `--count-index-max-keys < 0`，
+  `TestTransportLimitValidationRejectsInvalidStartupFlags` 增加 negative count index key cap
+  回归，错误配置在启动阶段失败而不是带着无上限索引运行。
+  `go test ./cmd/option -run TestTransportLimitValidationRejectsInvalidStartupFlags -count=1 -v`、
+  `go test ./cmd/option -count=1`、`go vet ./...` 和
+  `go test ./... -count=1 -p 1` 均通过。
 
 ### P2：运维兼容和长期验证
 
