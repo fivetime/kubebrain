@@ -24,6 +24,7 @@ type stmDifferentialResult struct {
 	DeleteRetryValue    string
 	SnapshotAttempts    int
 	SnapshotVersion     int64
+	SerializableReads   int
 }
 
 type crossKeyTxnResult struct {
@@ -243,6 +244,50 @@ func runSTMDeterministicScenario(t *testing.T, endpoint, instance string) stmDif
 	require.NoError(t, err)
 	require.Len(t, snapshotResponse.Kvs, 1)
 
+	serializePrefix := prefix + "serialize/"
+	serializeKeys := make([]string, 5)
+	for index := range serializeKeys {
+		serializeKeys[index] = fmt.Sprintf("%s%d", serializePrefix, index)
+		_, err = cli.Put(ctx, serializeKeys[index], "0")
+		require.NoError(t, err)
+	}
+	updates := make(chan struct{})
+	updateErrs := make(chan error, 1)
+	go func() {
+		defer close(updates)
+		for generation := 1; generation <= 5; generation++ {
+			ops := make([]clientv3.Op, 0, len(serializeKeys))
+			for _, key := range serializeKeys {
+				ops = append(ops, clientv3.OpPut(key, fmt.Sprint(generation)))
+			}
+			if _, txnErr := cli.Txn(ctx).Then(ops...).Commit(); txnErr != nil {
+				updateErrs <- txnErr
+				return
+			}
+			updates <- struct{}{}
+		}
+		updateErrs <- nil
+	}()
+	serializableReads := 0
+	for range updates {
+		_, err = concurrency.NewSTM(
+			cli,
+			func(stm concurrency.STM) error {
+				first := stm.Get(serializeKeys[0])
+				for _, key := range serializeKeys[1:] {
+					if value := stm.Get(key); value != first {
+						return fmt.Errorf("serializable STM observed split batch: first=%q key=%q value=%q", first, key, value)
+					}
+				}
+				return nil
+			},
+			concurrency.WithIsolation(concurrency.Serializable),
+		)
+		require.NoError(t, err)
+		serializableReads++
+	}
+	require.NoError(t, <-updateErrs)
+
 	return stmDifferentialResult{
 		NewValue:            string(newResponse.Kvs[0].Value),
 		NewVersion:          newResponse.Kvs[0].Version,
@@ -252,6 +297,7 @@ func runSTMDeterministicScenario(t *testing.T, endpoint, instance string) stmDif
 		DeleteRetryValue:    string(retryResponse.Kvs[0].Value),
 		SnapshotAttempts:    snapshotAttempts,
 		SnapshotVersion:     snapshotResponse.Kvs[0].Version,
+		SerializableReads:   serializableReads,
 	}
 }
 

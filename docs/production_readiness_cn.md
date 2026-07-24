@@ -1502,6 +1502,12 @@ hack/dev/verify.sh
   session lease 并立即 Orphan keepalive。Unlock/Resign 只删除键、不撤销自动 lease；
   Campaign response 暴露 lease，Lock response 不暴露，后者需从返回 key 的 KV metadata
   反查或等待自然到期。容量与泄漏监控应计入这类短时 orphan lease。
+  STM 发布门禁必须覆盖 upstream `TestSTMSerialize` 的核心契约：`Serializable`
+  STM 第一次读确定本次 transaction attempt 的 base revision，同一回调内随后读取的
+  多个 key 必须来自同一个全批次 snapshot；不得让每个 key 的 serializable Range
+  分别落到不同 revision。兼容差分在 `hack/etcd-client-compat` 独立 Go module 内运行，
+  需要显式设置 `REFERENCE_ETCD_ENDPOINT` 和目标 `KUBEBRAIN_ETCD_ENDPOINT`；根模块
+  `go test ./...` 不会覆盖该 module。
   发布验证还必须让未 Unlock/Resign 的自动 lease 自然过期，确认内部 keepalive 已停止、
   lease TTL 最终为 -1 且键自动删除。到期前最后一秒 TTL=0 在 JSON 中会省略 `TTL`
   字段但仍保留 `grantedTTL=60`，不能将该瞬间误判为 lease 已不存在。

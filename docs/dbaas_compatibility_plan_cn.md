@@ -11378,6 +11378,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `Observe` 误归一化成普通 concurrency auth error，或反向发送未授权 leader。
   `go test ./pkg/server/etcd -run TestDedicatedElectionObserveUnauthenticatedReturnsEmptyStream -count=1`
   通过。
+- A720 固定 STM Serializable 多 key snapshot 差分：
+  A205 已覆盖 STM 新建、abort、删除冲突 retry、`SerializableSnapshot` 和并发转账守恒，
+  但尚未对照 `/root/etcd/tests/integration/v3_stm_test.go:TestSTMSerialize`
+  固定 `concurrency.Serializable` 的多 key 读集合语义。现在扩展
+  `runSTMDeterministicScenario`：先用单个 Txn 分 5 代批量更新 5 个 key，再在每代更新后
+  用官方 `client/v3/concurrency.NewSTM` 和 `WithIsolation(concurrency.Serializable)`
+  读取全部 key，要求同一 STM 回调内所有 value 完全一致，防止实现把每个 key 的
+  serializable Range 分别读到不同 revision。差分结果只比较稳定的读取次数，具体 generation
+  不参与比较，避免调度差异导致假阳性。
+  `go test . -run TestSTMDifferentialAgainstReferenceEtcd -count=1` 与
+  `go test . -run '^$' -count=1` 在 `hack/etcd-client-compat` 独立 module 内通过；
+  未设置 `REFERENCE_ETCD_ENDPOINT`/`KUBEBRAIN_ETCD_ENDPOINT` 时前者按预期跳过。
+  直接 `go test . -count=1` 会默认连接 `127.0.0.1:3379` 的 live KubeBrain 端点；
+  本地无该端点时因 connection refused 被中断，不作为本轮语义失败。
 
 ### P2：运维兼容和长期验证
 
