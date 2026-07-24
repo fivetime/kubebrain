@@ -116,7 +116,10 @@ func parameterIdentityFromQuery(query url.Values) (parameterRequestIdentity, err
 	if len(validation.IsDNS1123Label(namespace)) != 0 ||
 		len(validation.IsDNS1123Subdomain(name)) != 0 ||
 		!nameOK || !namespaceOK || !ownerOK || !attemptOK ||
-		name == "" || owner == "" || err != nil || attempt <= 0 {
+		name == "" || err != nil {
+		return parameterRequestIdentity{}, errors.New("parameter request identity is invalid")
+	}
+	if err := operationqueue.ValidateWorkerIdentity(owner, attempt); err != nil {
 		return parameterRequestIdentity{}, errors.New("parameter request identity is invalid")
 	}
 	return parameterRequestIdentity{

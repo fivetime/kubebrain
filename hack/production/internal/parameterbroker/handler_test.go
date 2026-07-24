@@ -83,6 +83,7 @@ func TestHandlerRejectsMalformedQueryBeforeAuthenticationAndOperationAPI(t *test
 	}{
 		{name: "namespace", query: "namespace=ops.ns&name=audit-1&owner=audit-worker&attempt=1"},
 		{name: "name", query: "namespace=test&name=audit/1&owner=audit-worker&attempt=1"},
+		{name: "owner", query: "namespace=test&name=audit-1&owner=audit%0Aworker&attempt=1"},
 		{name: "attempt", query: "namespace=test&name=audit-1&owner=audit-worker&attempt=0"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

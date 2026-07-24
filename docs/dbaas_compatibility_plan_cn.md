@@ -11277,6 +11277,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   requester 返回错误且没有任何 Kubernetes API action：
   `go test ./hack/production/internal/backupscheduler ./hack/production/internal/operationqueue ./hack/production/cmd/backup-scheduler -count=1`
   通过。
+- A709 前置 parameter broker worker owner 校验：
+  A707 已把 parameter broker 的 namespace/name/attempt query 校验前移到 TokenReview 前，但
+  owner 仍只检查非空；带控制字符、非 UTF-8 或超长 owner 的请求仍会消耗 TokenReview，随后才
+  由 operation queue 的 ParametersForWorker 拒绝。现在 operation queue 导出统一 worker
+  identity 校验，broker query 解析在 TokenReview 前同时校验 owner audit text 与 positive
+  attempt。fake Kubernetes/dynamic client 回归确认 malformed owner 返回 400 且没有
+  TokenReview、Operation 或 Secret API action：
+  `go test ./hack/production/internal/parameterbroker ./hack/production/internal/operationqueue ./hack/production/cmd/operation-parameter-broker -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

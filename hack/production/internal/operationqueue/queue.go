@@ -134,7 +134,8 @@ func validateOperationName(name string) error {
 	return nil
 }
 
-func validateWorkerIdentity(owner string, attempt int64) error {
+// ValidateWorkerIdentity validates operation status owner and attempt fencing input.
+func ValidateWorkerIdentity(owner string, attempt int64) error {
 	if owner == "" {
 		return errors.New("operation worker owner is required")
 	}
@@ -631,7 +632,7 @@ func (q *Queue) Requeue(
 	if err := validateOperationName(name); err != nil {
 		return nil, err
 	}
-	if err := validateWorkerIdentity(owner, attempt); err != nil {
+	if err := ValidateWorkerIdentity(owner, attempt); err != nil {
 		return nil, err
 	}
 	if err := validateStatusMessage(message); err != nil {
@@ -720,7 +721,7 @@ func (q *Queue) Heartbeat(ctx context.Context, name, owner string, attempt int64
 	if err := validateOperationName(name); err != nil {
 		return nil, err
 	}
-	if err := validateWorkerIdentity(owner, attempt); err != nil {
+	if err := ValidateWorkerIdentity(owner, attempt); err != nil {
 		return nil, err
 	}
 	if lease < time.Second {
@@ -802,7 +803,7 @@ func (q *Queue) Finish(
 	if err := validateOperationName(name); err != nil {
 		return nil, err
 	}
-	if err := validateWorkerIdentity(owner, attempt); err != nil {
+	if err := ValidateWorkerIdentity(owner, attempt); err != nil {
 		return nil, err
 	}
 	if err := validateStatusMessage(message); err != nil {
@@ -975,7 +976,7 @@ func (q *Queue) ParametersForWorker(
 	if !isSupportedOperationType(operationType) {
 		return nil, fmt.Errorf("unsupported operation type: %s", operationType)
 	}
-	if err := validateWorkerIdentity(owner, attempt); err != nil {
+	if err := ValidateWorkerIdentity(owner, attempt); err != nil {
 		return nil, err
 	}
 	object, err := q.resource.Get(ctx, name, metav1.GetOptions{})
