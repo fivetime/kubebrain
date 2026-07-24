@@ -4,7 +4,6 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -257,9 +256,11 @@ esac
 
 func (f *destroyRunnerFixture) run(t *testing.T, ok bool, extra string, outputs ...string) {
 	t.Helper()
-	cmd := exec.Command("bash", "run-destroy-operation.sh")
-	cmd.Env = append(os.Environ(), append(f.env, extra)...)
-	out, err := cmd.CombinedOutput()
+	env := append([]string{}, f.env...)
+	if extra != "" {
+		env = append(env, extra)
+	}
+	out, err := runProductionRunnerCommand(t, "run-destroy-operation.sh", env)
 	if ok {
 		require.NoError(t, err, string(out))
 	} else {

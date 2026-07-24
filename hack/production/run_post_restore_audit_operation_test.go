@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -347,9 +346,11 @@ func (f *operationRunnerFixture) replaceAuditPrefix(t *testing.T, prefix string)
 
 func (f *operationRunnerFixture) run(t *testing.T, ok bool, extra string, outputs ...string) {
 	t.Helper()
-	cmd := exec.Command("bash", "run-post-restore-audit-operation.sh")
-	cmd.Env = append(os.Environ(), append(f.env, extra)...)
-	out, err := cmd.CombinedOutput()
+	env := append([]string{}, f.env...)
+	if extra != "" {
+		env = append(env, extra)
+	}
+	out, err := runProductionRunnerCommand(t, "run-post-restore-audit-operation.sh", env)
 	if ok {
 		require.NoError(t, err, string(out))
 	} else {

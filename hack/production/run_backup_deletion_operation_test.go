@@ -472,9 +472,7 @@ func (f *backupDeletionFixture) run(t *testing.T, ok bool, extra string, outputs
 			env = append(env, item)
 		}
 	}
-	cmd := exec.Command("bash", "run-backup-deletion-operation.sh")
-	cmd.Env = append(os.Environ(), env...)
-	out, err := cmd.CombinedOutput()
+	out, err := runProductionRunnerCommand(t, "run-backup-deletion-operation.sh", env)
 	if ok {
 		require.NoError(t, err, string(out))
 	} else {

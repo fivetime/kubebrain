@@ -11943,6 +11943,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./hack/production -run 'Test(BackupOperation|BackupDeletionOperation|PostRestoreAuditOperation|RestoreCutoverOperation)' -count=1 -timeout=4m`、
   `go test ./hack/production -count=1 -timeout=12m`、`git diff --check`、`go vet ./...` 和
   `go test ./... -count=1 -p 1` 均通过。
+- A768 统一 operation runner 测试的进程组 deadline：
+  A766 只给 restore cutover 夹具补了 `CommandContext` 和进程组清理，backup、backup deletion、
+  post-restore audit、destroy 与 certificate rotation 仍直接 `CombinedOutput()`。这些 shell
+  fixture 若留下后台子进程，release 验证仍会等到 Go test 全局 timeout 才暴露。现在
+  `hack/production` 新增共享 `runProductionRunnerCommand` 测试 helper，所有 operation runner
+  `run()` 方法都通过 30 秒 context、`internal/processgroup.Configure` 和 bounded output 执行；
+  超时时会杀掉整组子进程并输出已捕获日志。backup deletion 保留多行 `extra` env 拆分语义。
+  `go test ./hack/production -run 'Test(BackupOperation|BackupDeletionOperation|PostRestoreAuditOperation|RestoreCutoverOperation|DestroyOperation|CertificateRotationOperation)' -count=1 -timeout=4m`、
+  `go test ./hack/production -count=1 -timeout=12m`、`git diff --check`、`go vet ./...` 和
+  `go test ./... -count=1 -p 1` 均通过。
 
 ### P2：运维兼容和长期验证
 

@@ -4,7 +4,6 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -288,9 +287,11 @@ printf 'hook final\n' >>"$FAKE_DIR/actions.log"
 
 func (f *rotationRunnerFixture) run(t *testing.T, ok bool, extra string, outputs ...string) {
 	t.Helper()
-	cmd := exec.Command("bash", "run-certificate-rotation-operation.sh")
-	cmd.Env = append(os.Environ(), append(f.env, extra)...)
-	out, err := cmd.CombinedOutput()
+	env := append([]string{}, f.env...)
+	if extra != "" {
+		env = append(env, extra)
+	}
+	out, err := runProductionRunnerCommand(t, "run-certificate-rotation-operation.sh", env)
 	if ok {
 		require.NoError(t, err, string(out))
 	} else {

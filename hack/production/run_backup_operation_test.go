@@ -4,7 +4,6 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -262,9 +261,11 @@ chmod 600 "$RECEIPT_OUTPUT"
 
 func (f *backupRunnerFixture) run(t *testing.T, ok bool, extra string, outputs ...string) {
 	t.Helper()
-	cmd := exec.Command("bash", "run-backup-operation.sh")
-	cmd.Env = append(os.Environ(), append(f.env, extra)...)
-	out, err := cmd.CombinedOutput()
+	env := append([]string{}, f.env...)
+	if extra != "" {
+		env = append(env, extra)
+	}
+	out, err := runProductionRunnerCommand(t, "run-backup-operation.sh", env)
 	if ok {
 		require.NoError(t, err, string(out))
 	} else {
