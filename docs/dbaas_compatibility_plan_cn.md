@@ -11888,6 +11888,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./deploy/production -run TestProductionKubeBrainArgsAreCoveredByRuntimeReleaseGate -count=1 -v`、
   `go test ./deploy/production -count=1`、`go vet ./...` 和
   `go test ./... -count=1 -p 1` 均通过。
+- A763 固定 runtime release gate 默认值与 production args 的一致性：
+  A762 只保证每个 production arg 都有运行门禁覆盖，但仍可能出现门禁默认
+  `EXPECTED_MAX_WATCHES=5000`、YAML 仍为 `--max-watches=10000` 这类双边各自通过测试的漂移。
+  现在 `deploy/production` 进一步解析 `validate-instance-ready.sh` 中所有
+  `check_exact_kubebrain_arg` 对应的 `EXPECTED_*` 默认值，并与
+  `expectedProductionKubeBrainArgs("http")` 的显式值逐项比较；动态实例参数继续要求外部传入，
+  TLS optional 参数继续由 TLS runtime baseline 测试提供 env。这样 production YAML 和运行
+  release gate 的默认策略不会再各自独立漂移。
+  `go test ./deploy/production -run 'Test(RuntimeReleaseGateDefaultsMatchProductionKubeBrainArgs|ProductionKubeBrainArgsAreCoveredByRuntimeReleaseGate)' -count=1 -v`、
+  `go test ./deploy/production -count=1`、`go vet ./...` 和
+  `go test ./... -count=1 -p 1` 均通过。
 
 ### P2：运维兼容和长期验证
 

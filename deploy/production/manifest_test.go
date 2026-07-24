@@ -244,6 +244,23 @@ func TestProductionKubeBrainArgsAreCoveredByRuntimeReleaseGate(t *testing.T) {
 	}
 }
 
+func TestRuntimeReleaseGateDefaultsMatchProductionKubeBrainArgs(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "hack", "production", "validate-instance-ready.sh"))
+	require.NoError(t, err)
+	script := string(data)
+	defaults := runtimeReleaseGateEnvDefaults(script)
+	exactArgEnvs := runtimeReleaseGateExactArgEnvs(script)
+	productionArgs := productionKubeBrainArgValues("http")
+
+	for name, variable := range exactArgEnvs {
+		expected, ok := productionArgs[name]
+		require.True(t, ok, "runtime release gate exact arg %q must be present in production KubeBrain args", name)
+		actual, ok := defaults[variable]
+		require.True(t, ok, "runtime release gate exact arg %q must use a defaulted %s", name, variable)
+		require.Equal(t, expected, actual, "runtime release gate default for --%s must match production manifest", name)
+	}
+}
+
 func runtimeReleaseGateKubeBrainArgs(script string) map[string]bool {
 	covered := map[string]bool{}
 	for _, match := range regexp.MustCompile(`check_(?:exact|optional)_kubebrain_arg "([^"]+)"`).FindAllStringSubmatch(script, -1) {
@@ -253,6 +270,35 @@ func runtimeReleaseGateKubeBrainArgs(script string) map[string]bool {
 		covered[match[1]] = true
 	}
 	return covered
+}
+
+func runtimeReleaseGateEnvDefaults(script string) map[string]string {
+	defaults := map[string]string{}
+	for _, match := range regexp.MustCompile(`(?m)^([A-Z0-9_]+)="\$\{([A-Z0-9_]+):-(.*)\}"$`).FindAllStringSubmatch(script, -1) {
+		if match[1] == match[2] {
+			defaults[match[1]] = match[3]
+		}
+	}
+	return defaults
+}
+
+func runtimeReleaseGateExactArgEnvs(script string) map[string]string {
+	exactArgEnvs := map[string]string{}
+	for _, match := range regexp.MustCompile(`check_exact_kubebrain_arg "([^"]+)" "\$([A-Z0-9_]+)"`).FindAllStringSubmatch(script, -1) {
+		exactArgEnvs[match[1]] = match[2]
+	}
+	return exactArgEnvs
+}
+
+func productionKubeBrainArgValues(scheme string) map[string]string {
+	values := map[string]string{}
+	for _, arg := range expectedProductionKubeBrainArgs(scheme) {
+		name, value, ok := strings.Cut(strings.TrimPrefix(arg, "--"), "=")
+		if ok {
+			values[name] = value
+		}
+	}
+	return values
 }
 
 func TestProductionPriorityClassIsSharedAndNonPreempting(t *testing.T) {
