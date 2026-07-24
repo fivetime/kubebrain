@@ -269,3 +269,51 @@ func TestAuthTokenValidationRejectsInvalidStartupProviders(t *testing.T) {
 		})
 	}
 }
+
+func TestTransportLimitValidationRejectsInvalidStartupFlags(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{
+			name: "rate without burst",
+			args: []string{"--max-request-rate=100"},
+			want: "must both be zero or both be positive",
+		},
+		{
+			name: "burst without rate",
+			args: []string{"--request-rate-burst=100"},
+			want: "must both be zero or both be positive",
+		},
+		{
+			name: "negative connection age",
+			args: []string{"--grpc-max-connection-age=-1s"},
+			want: "grpc max connection age must not be negative",
+		},
+		{
+			name: "negative connection age grace",
+			args: []string{"--grpc-max-connection-age-grace=-1s"},
+			want: "grpc max connection age grace must not be negative",
+		},
+		{
+			name: "age without positive grace",
+			args: []string{"--grpc-max-connection-age=1h", "--grpc-max-connection-age-grace=0"},
+			want: "grpc max connection age grace must be positive",
+		},
+		{
+			name: "negative backend quota",
+			args: []string{"--quota-backend-bytes=-1"},
+			want: "--quota-backend-bytes must be non-negative",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			o := NewOptions()
+			fs := pflag.NewFlagSet("test", pflag.ContinueOnError)
+			o.AddFlags(fs)
+			args := append([]string{"--pd-addrs=127.0.0.1:2379"}, tc.args...)
+			require.NoError(t, fs.Parse(args))
+			require.ErrorContains(t, o.Validate(), tc.want)
+		})
+	}
+}

@@ -241,7 +241,7 @@ EOF
 | `--max-delete-range-keys`               | 一个原子 `DeleteRange` 最多删除的 key 数；默认 `0` 保持 etcd 不限数量的行为，生产参考值 `1024` 用于约束 TiKV 单事务大小。服务只扫描 `limit+1` 个 key 即前置拒绝，返回标准 `ResourceExhausted: too many requests`，不分配 revision、不产生部分删除；所有副本必须一致 |
 | `--max-watches`                          | 每个 KubeBrain 进程的逻辑 Watch 总数（同一 gRPC stream 内的 multiplexed Watch 也逐个计数）；默认 `0` 不限制，生产建议按内存与 Watch 建立/事件延迟压测设置（参考清单为 `10000`）。超限 create 返回 created+canceled response 及 `etcdserver: too many requests`，原 stream 保持可用 |
 | `--grpc-keepalive-*`                     | client ping 最小间隔默认 `5s`；server ping interval/timeout 默认 `2h/20s`，对应项设 `0` 可禁用 |
-| `--auth-token` / `--auth-token-ttl`      | 当前仅支持 `simple`（默认），token TTL 默认 `300s`；`jwt,...` 会启动失败而非静默降级 |
+| `--auth-token` / `--auth-token-ttl`      | 支持 `simple`（默认）和 etcd 兼容的 `jwt,...` token provider，token TTL 默认 `300s`；非法 provider 配置会启动失败而非静默降级 |
 | `--bcrypt-cost`                          | 明文密码 bcrypt cost，默认 `10`；超出 bcrypt 允许范围时与 etcd 一样回退默认值 |
 | `--cluster-name`                         | **仅用作监控指标的 `cluster` 标签**（默认 `default`），不参与数据隔离 |
 | `--keyspace`                             | **共享存储集群上的租户隔离**(2026-07-15 起,#76):非空时([a-z0-9-],≤64)所有键族(对象/事件日志/内部元数据/协调键)都从它派生独立 magic,不同 keyspace 的集群在同一套 TiKV 上**互相不可见、GC 互不误伤**(如给 Cilium kvstore 单独跑一套 KubeBrain)。空(默认)=原单租户键空间,存量部署零迁移。**同一集群的所有副本必须一致**;对已有数据的集群改 keyspace = 数据"消失"(还在,但在旧租户空间里) |

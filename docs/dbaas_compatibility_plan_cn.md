@@ -11639,6 +11639,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./cmd/option -run 'Test(AuthTokenValidationRejectsInvalidStartupProviders|KeyspaceValidationRejectsInvalidTenantNames)' -count=1 -v`、
   `go test ./cmd/option -count=1`、`go vet ./...` 和 `go test ./... -count=1 -p 1`
   均通过。
+- A743 固定传输/限流启动参数校验边界：
+  生产限流和连接老化参数必须在启动前 fail closed，不能让半配置限流、负 duration、
+  启用 connection age 但没有 positive grace，或负 backend quota 进入运行期。endpoint
+  config 层已有直接测试，但 CLI option 层此前未覆盖这些 flag 组合。现在新增
+  `TestTransportLimitValidationRejectsInvalidStartupFlags`，通过真实 flag parse 覆盖
+  `--max-request-rate`/`--request-rate-burst` 必须成对启停、`--grpc-max-connection-age`
+  与 grace 不得为负、启用 age 时 grace 必须为正，以及 `--quota-backend-bytes` 不得为负。
+  同步修正 `docs/podman-deploy-cn.md` 中过期的 `--auth-token` 描述：当前支持 `simple`
+  与 etcd 兼容 `jwt,...`，非法 provider 启动失败而非静默降级。
+  `go test ./cmd/option -run 'TestTransportLimitValidationRejectsInvalidStartupFlags' -count=1 -v`、
+  `go test ./cmd/option -count=1`、`go vet ./...` 和 `go test ./... -count=1 -p 1`
+  均通过。
 
 ### P2：运维兼容和长期验证
 
