@@ -54,10 +54,7 @@ func TestColdRestoreExecute(t *testing.T) {
 			require.NoError(t, os.WriteFile(receiptPath, coldRestoreSnapshotReceipt(t), 0o600))
 			tamperedReceiptPath := filepath.Join(dir, "tampered-snapshot.json")
 			require.NoError(t, os.WriteFile(tamperedReceiptPath, coldRestoreTamperedSnapshotReceipt(t), 0o600))
-			render := exec.Command("go", "run", "../backup/cmd/cold-restore-render",
-				"--receipt", receiptPath, "--target-snapshot-class", "target-snapshots",
-				"--target-storage-class", "target-storage", "--output", manifestPath, "--confirm-isolated-target")
-			renderOutput, err := render.CombinedOutput()
+			renderOutput, err := runColdRestoreRender(t, receiptPath, manifestPath)
 			require.NoError(t, err, string(renderOutput))
 			tamperedManifestPath := filepath.Join(dir, "tampered-restore.json")
 			require.NoError(t, os.WriteFile(tamperedManifestPath, coldRestoreTamperedManifest(t, manifestPath), 0o600))
@@ -75,33 +72,32 @@ func TestColdRestoreExecute(t *testing.T) {
 			require.NoError(t, err)
 			fakeSHA := filepath.Join(dir, "sha256sum")
 			require.NoError(t, os.WriteFile(fakeSHA, []byte(coldRestoreFakeSHA256Sum), 0o755))
-			command := exec.Command("bash", "../backup/cold-restore-execute.sh")
-			command.Env = append(os.Environ(),
-				"PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"),
-				"REAL_GO="+realGo,
-				"REAL_SHA256SUM="+realSHA,
-				"KUBECTL="+fakeKubectl,
+			env := []string{
+				"PATH=" + dir + string(os.PathListSeparator) + os.Getenv("PATH"),
+				"REAL_GO=" + realGo,
+				"REAL_SHA256SUM=" + realSHA,
+				"KUBECTL=" + fakeKubectl,
 				"KUBE_CONTEXT=isolated-target",
-				"RECEIPT_FILE="+receiptPath,
-				"RESTORE_MANIFEST="+manifestPath,
-				"RESTORE_RECEIPT_FILE="+restoreReceiptPath,
+				"RECEIPT_FILE=" + receiptPath,
+				"RESTORE_MANIFEST=" + manifestPath,
+				"RESTORE_RECEIPT_FILE=" + restoreReceiptPath,
 				"EXPECTED_TARGET_KUBE_SYSTEM_UID=uid-kube-system-target",
 				"EXPECTED_TARGET_NAMESPACE_UID=uid-target-namespace",
 				"ALLOW_COLD_PHYSICAL_RESTORE=true",
-				"FAKE_LOG="+logPath,
-				"FAKE_EXISTING="+strconv.FormatBool(tc.existing),
-				"FAKE_CLUSTER_ID="+map[bool]string{true: "99999", false: "12345"}[tc.wrongCluster],
-				"FAKE_PVC_JSON="+coldRestorePVCResult(t, tc.wrongPVC),
-				"FAKE_CONTENT_JSON="+coldRestoreContentResult(t, tc.wrongContent),
-				"TAMPER_SOURCE_RECEIPT_DURING_KUBECTL="+strconv.FormatBool(tc.sourceReceiptDrift),
-				"TAMPER_SOURCE_RECEIPT_DURING_RENDER="+strconv.FormatBool(tc.sourceReceiptDriftDuringRender),
-				"TAMPERED_RECEIPT_FILE="+tamperedReceiptPath,
-				"TAMPER_RESTORE_MANIFEST_DURING_SHA256="+strconv.FormatBool(tc.restoreManifestDriftDuringHash),
-				"TAMPER_RESTORE_MANIFEST_DURING_KUBECTL="+strconv.FormatBool(tc.restoreManifestPathDrift),
-				"TAMPERED_RESTORE_MANIFEST="+tamperedManifestPath,
-				"PRECREATE_RESTORE_RECEIPT_DURING_INVENTORY="+strconv.FormatBool(tc.precreateRestoreReceipt),
-			)
-			output, err := command.CombinedOutput()
+				"FAKE_LOG=" + logPath,
+				"FAKE_EXISTING=" + strconv.FormatBool(tc.existing),
+				"FAKE_CLUSTER_ID=" + map[bool]string{true: "99999", false: "12345"}[tc.wrongCluster],
+				"FAKE_PVC_JSON=" + coldRestorePVCResult(t, tc.wrongPVC),
+				"FAKE_CONTENT_JSON=" + coldRestoreContentResult(t, tc.wrongContent),
+				"TAMPER_SOURCE_RECEIPT_DURING_KUBECTL=" + strconv.FormatBool(tc.sourceReceiptDrift),
+				"TAMPER_SOURCE_RECEIPT_DURING_RENDER=" + strconv.FormatBool(tc.sourceReceiptDriftDuringRender),
+				"TAMPERED_RECEIPT_FILE=" + tamperedReceiptPath,
+				"TAMPER_RESTORE_MANIFEST_DURING_SHA256=" + strconv.FormatBool(tc.restoreManifestDriftDuringHash),
+				"TAMPER_RESTORE_MANIFEST_DURING_KUBECTL=" + strconv.FormatBool(tc.restoreManifestPathDrift),
+				"TAMPERED_RESTORE_MANIFEST=" + tamperedManifestPath,
+				"PRECREATE_RESTORE_RECEIPT_DURING_INVENTORY=" + strconv.FormatBool(tc.precreateRestoreReceipt),
+			}
+			output, err := runColdRestoreExecute(t, env)
 			if tc.wantReceipt {
 				require.NoError(t, err, string(output))
 				value, readErr := os.ReadFile(restoreReceiptPath)
@@ -155,6 +151,23 @@ func TestColdRestoreExecute(t *testing.T) {
 			}
 		})
 	}
+}
+
+func runColdRestoreRender(t *testing.T, receiptPath, manifestPath string) ([]byte, error) {
+	t.Helper()
+	return runProductionCommand(t, "go", []string{
+		"run", "../backup/cmd/cold-restore-render",
+		"--receipt", receiptPath,
+		"--target-snapshot-class", "target-snapshots",
+		"--target-storage-class", "target-storage",
+		"--output", manifestPath,
+		"--confirm-isolated-target",
+	}, nil)
+}
+
+func runColdRestoreExecute(t *testing.T, env []string) ([]byte, error) {
+	t.Helper()
+	return runProductionScriptCommand(t, "../backup/cold-restore-execute.sh", env)
 }
 
 func coldRestoreSnapshotReceipt(t *testing.T) []byte {

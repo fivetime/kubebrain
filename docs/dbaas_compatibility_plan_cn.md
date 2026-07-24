@@ -12047,6 +12047,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./hack/production -run 'Test(ColdSnapshot|ColdBackupScript)' -count=1 -v`、
   `go test ./hack/production -count=1 -timeout=12m`、`git diff --check`、`go vet ./...` 和
   `go test ./... -count=1 -p 1` 均通过。
+- A778 给 cold restore execute 测试补 bounded command helper：
+  `cold-restore-execute.sh` 测试除直接 bash `CombinedOutput()` 外，还直接 `go run`
+  `cold-restore-render` 生成恢复 manifest；任一 render、fake `kubectl`、fake `go` 或 tamper
+  `sha256sum` 分支悬挂，都会拖到外层 timeout。现在 `runner_command_test.go` 抽出通用
+  `runProductionCommand`，保留 `runProductionScriptCommand` 作为 bash wrapper，并让 cold restore
+  测试通过 `runColdRestoreRender`/`runColdRestoreExecute` 获得同一 30 秒 context、进程组 kill 和
+  bounded output。cold backup 静态门禁同步覆盖 restore execute 文件，禁止 bash exec 和 render
+  `go run` 回退到裸 `CombinedOutput()`。
+  `go test ./hack/production -run 'Test(ColdRestore|ColdBackupScript)' -count=1 -v`、
+  `go test ./hack/production -count=1 -timeout=12m`、`git diff --check`、`go vet ./...` 和
+  `go test ./... -count=1 -p 1` 均通过。
 
 ### P2：运维兼容和长期验证
 

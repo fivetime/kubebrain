@@ -15,15 +15,20 @@ const productionScriptCommandTimeout = 30 * time.Second
 
 func runProductionScriptCommand(t *testing.T, script string, env []string) ([]byte, error) {
 	t.Helper()
+	return runProductionCommand(t, "bash", []string{script}, env)
+}
+
+func runProductionCommand(t *testing.T, commandName string, args []string, env []string) ([]byte, error) {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), productionScriptCommandTimeout)
 	defer cancel()
 
-	command := exec.CommandContext(ctx, "bash", script)
+	command := exec.CommandContext(ctx, commandName, args...)
 	processgroup.Configure(command)
 	command.Env = append(os.Environ(), env...)
 	output, err := processgroup.CombinedOutput(command, processgroup.DefaultOutputLimitBytes)
 	if ctx.Err() == context.DeadlineExceeded {
-		require.Failf(t, "production script timed out", "script=%s timeout=%s output:\n%s", script, productionScriptCommandTimeout, string(output))
+		require.Failf(t, "production command timed out", "command=%s args=%q timeout=%s output:\n%s", commandName, args, productionScriptCommandTimeout, string(output))
 	}
 	return output, err
 }
