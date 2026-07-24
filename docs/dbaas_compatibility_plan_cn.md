@@ -11319,6 +11319,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `lockServer`/`electionServer` 为每个公开方法提供显式 wrapper；Unimplemented
   status 分类也纳入这两个 owner，防止已承诺支持的 concurrency RPC 被静默降级。
   `go test ./pkg/server/etcd -run TestEtcdAPISurface -count=1` 通过。
+- A714 固定 generated HTTP gateway service surface：
+  A713 锁住了 gRPC service descriptor 与 production receiver 的关系，但 endpoint
+  的 generated JSON gateway 注册列表仍是 `newGRPCGatewayMux` 内部匿名函数 slice，
+  缺少可直接审查的 surface 门禁。现在 gateway 注册表提升为带 service descriptor
+  name 的 `grpcGatewayRegistrations`，运行时仍按原顺序注册 KV、Watch、Lease、
+  Cluster、Maintenance、Auth、Lock、Election；注册失败错误会带具体 service name。
+  新增 `TestGRPCGatewaySurfaceIsExplicit` 固定这 8 个公开 HTTP JSON service，
+  防止未来升级或重构时漏注册已承诺的 Lock/Election route，或无审查地扩大
+  `/v3/*` surface。`go test ./pkg/endpoint -run TestGRPCGatewaySurfaceIsExplicit -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

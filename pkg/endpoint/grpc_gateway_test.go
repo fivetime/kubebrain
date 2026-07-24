@@ -180,6 +180,26 @@ func (s *gatewayKVServer) Range(ctx context.Context, request *etcdserverpb.Range
 	}, nil
 }
 
+func TestGRPCGatewaySurfaceIsExplicit(t *testing.T) {
+	services := make([]string, 0, len(grpcGatewayRegistrations))
+	for _, registration := range grpcGatewayRegistrations {
+		require.NotEmpty(t, registration.service)
+		require.NotNil(t, registration.register)
+		services = append(services, registration.service)
+	}
+
+	require.Equal(t, []string{
+		etcdserverpb.KV_ServiceDesc.ServiceName,
+		etcdserverpb.Watch_ServiceDesc.ServiceName,
+		etcdserverpb.Lease_ServiceDesc.ServiceName,
+		etcdserverpb.Cluster_ServiceDesc.ServiceName,
+		etcdserverpb.Maintenance_ServiceDesc.ServiceName,
+		etcdserverpb.Auth_ServiceDesc.ServiceName,
+		v3lockpb.Lock_ServiceDesc.ServiceName,
+		v3electionpb.Election_ServiceDesc.ServiceName,
+	}, services, "review and classify every generated HTTP gateway service when the public surface changes")
+}
+
 func TestGRPCGatewayUsesGeneratedEtcdJSONContract(t *testing.T) {
 	listener := bufconn.Listen(1024 * 1024)
 	grpcServer := grpc.NewServer()

@@ -37,8 +37,11 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 	"k8s.io/klog/v2"
 
+	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	etcdservergw "go.etcd.io/etcd/api/v3/etcdserverpb/gw"
+	"go.etcd.io/etcd/server/v3/etcdserver/api/v3election/v3electionpb"
 	v3electiongw "go.etcd.io/etcd/server/v3/etcdserver/api/v3election/v3electionpb/gw"
+	"go.etcd.io/etcd/server/v3/etcdserver/api/v3lock/v3lockpb"
 	v3lockgw "go.etcd.io/etcd/server/v3/etcdserver/api/v3lock/v3lockpb/gw"
 
 	"github.com/kubewharf/kubebrain/pkg/backend"
@@ -196,6 +199,22 @@ func (e *Endpoint) buildClientHttpServer(ctx context.Context) (exposedServer, *g
 
 type gatewayRegisterFunc func(context.Context, *runtime.ServeMux, *grpc.ClientConn) error
 
+type gatewayRegistration struct {
+	service  string
+	register gatewayRegisterFunc
+}
+
+var grpcGatewayRegistrations = []gatewayRegistration{
+	{service: etcdserverpb.KV_ServiceDesc.ServiceName, register: etcdservergw.RegisterKVHandler},
+	{service: etcdserverpb.Watch_ServiceDesc.ServiceName, register: etcdservergw.RegisterWatchHandler},
+	{service: etcdserverpb.Lease_ServiceDesc.ServiceName, register: etcdservergw.RegisterLeaseHandler},
+	{service: etcdserverpb.Cluster_ServiceDesc.ServiceName, register: etcdservergw.RegisterClusterHandler},
+	{service: etcdserverpb.Maintenance_ServiceDesc.ServiceName, register: etcdservergw.RegisterMaintenanceHandler},
+	{service: etcdserverpb.Auth_ServiceDesc.ServiceName, register: etcdservergw.RegisterAuthHandler},
+	{service: v3lockpb.Lock_ServiceDesc.ServiceName, register: v3lockgw.RegisterLockHandler},
+	{service: v3electionpb.Election_ServiceDesc.ServiceName, register: v3electiongw.RegisterElectionHandler},
+}
+
 const (
 	grpcGatewayRequestMarkerKey   = "grpcgateway-accept"
 	grpcGatewayRequestMarkerValue = "kubebrain-grpc-gateway"
@@ -250,19 +269,9 @@ func newGRPCGatewayMux(ctx context.Context, conn *grpc.ClientConn) (http.Handler
 			return metadata.Pairs(grpcGatewayRequestMarkerKey, grpcGatewayRequestMarkerValue)
 		}),
 	)
-	registers := []gatewayRegisterFunc{
-		etcdservergw.RegisterKVHandler,
-		etcdservergw.RegisterWatchHandler,
-		etcdservergw.RegisterLeaseHandler,
-		etcdservergw.RegisterClusterHandler,
-		etcdservergw.RegisterMaintenanceHandler,
-		etcdservergw.RegisterAuthHandler,
-		v3lockgw.RegisterLockHandler,
-		v3electiongw.RegisterElectionHandler,
-	}
-	for _, register := range registers {
-		if err := register(ctx, mux, conn); err != nil {
-			return nil, fmt.Errorf("register gRPC gateway handler: %w", err)
+	for _, registration := range grpcGatewayRegistrations {
+		if err := registration.register(ctx, mux, conn); err != nil {
+			return nil, fmt.Errorf("register %s gRPC gateway handler: %w", registration.service, err)
 		}
 	}
 	return mux, nil
