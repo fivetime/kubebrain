@@ -28,6 +28,12 @@ EXPECTED_MAX_REQUEST_RATE="${EXPECTED_MAX_REQUEST_RATE:-2000}"
 EXPECTED_REQUEST_RATE_BURST="${EXPECTED_REQUEST_RATE_BURST:-4000}"
 EXPECTED_MAX_DELETE_RANGE_KEYS="${EXPECTED_MAX_DELETE_RANGE_KEYS:-1024}"
 EXPECTED_MAX_WATCHES="${EXPECTED_MAX_WATCHES:-10000}"
+EXPECTED_GRPC_KEEPALIVE_MIN_TIME="${EXPECTED_GRPC_KEEPALIVE_MIN_TIME:-5s}"
+EXPECTED_GRPC_KEEPALIVE_INTERVAL="${EXPECTED_GRPC_KEEPALIVE_INTERVAL:-2h}"
+EXPECTED_GRPC_KEEPALIVE_TIMEOUT="${EXPECTED_GRPC_KEEPALIVE_TIMEOUT:-20s}"
+EXPECTED_AUTH_TOKEN="${EXPECTED_AUTH_TOKEN:-simple}"
+EXPECTED_BCRYPT_COST="${EXPECTED_BCRYPT_COST:-10}"
+EXPECTED_AUTH_TOKEN_TTL="${EXPECTED_AUTH_TOKEN_TTL:-300}"
 TIDB_NAMESPACE="${TIDB_NAMESPACE:-tidb-cluster}"
 TIDB_CLUSTER="${TIDB_CLUSTER:-kb}"
 EXPECTED_TIDB_CLUSTER_UID="${EXPECTED_TIDB_CLUSTER_UID:-}"
@@ -88,10 +94,17 @@ if [[ -z "$EXPECTED_ADVERTISE_CLIENT_URLS" ]]; then
   echo "EXPECTED_ADVERTISE_CLIENT_URLS is required" >&2
   exit 2
 fi
-for variable in EXPECTED_COUNT_INDEX_MAX_KEYS EXPECTED_MAX_TXN_OPS EXPECTED_MAX_REQUEST_BYTES EXPECTED_MAX_CONCURRENT_STREAMS EXPECTED_MAX_REQUESTS_INFLIGHT EXPECTED_MAX_REQUEST_RATE EXPECTED_REQUEST_RATE_BURST EXPECTED_MAX_DELETE_RANGE_KEYS EXPECTED_MAX_WATCHES; do
+for variable in EXPECTED_COUNT_INDEX_MAX_KEYS EXPECTED_MAX_TXN_OPS EXPECTED_MAX_REQUEST_BYTES EXPECTED_MAX_CONCURRENT_STREAMS EXPECTED_MAX_REQUESTS_INFLIGHT EXPECTED_MAX_REQUEST_RATE EXPECTED_REQUEST_RATE_BURST EXPECTED_MAX_DELETE_RANGE_KEYS EXPECTED_MAX_WATCHES EXPECTED_BCRYPT_COST EXPECTED_AUTH_TOKEN_TTL; do
   value="${!variable}"
   if ! [[ "$value" =~ ^[0-9]+$ ]]; then
     echo "${variable} must be a non-negative integer" >&2
+    exit 2
+  fi
+done
+for variable in EXPECTED_GRPC_KEEPALIVE_MIN_TIME EXPECTED_GRPC_KEEPALIVE_INTERVAL EXPECTED_GRPC_KEEPALIVE_TIMEOUT EXPECTED_AUTH_TOKEN; do
+  value="${!variable}"
+  if [[ -z "$value" ]]; then
+    echo "${variable} must be non-empty" >&2
     exit 2
   fi
 done
@@ -397,6 +410,12 @@ check_exact_kubebrain_arg "max-txn-ops" "$EXPECTED_MAX_TXN_OPS" "transaction ope
 check_exact_kubebrain_arg "max-request-bytes" "$EXPECTED_MAX_REQUEST_BYTES" "request byte limit"
 check_exact_kubebrain_arg "max-concurrent-streams" "$EXPECTED_MAX_CONCURRENT_STREAMS" "concurrent stream limit"
 check_exact_kubebrain_arg "max-requests-inflight" "$EXPECTED_MAX_REQUESTS_INFLIGHT" "inflight request limit"
+check_exact_kubebrain_arg "grpc-keepalive-min-time" "$EXPECTED_GRPC_KEEPALIVE_MIN_TIME" "gRPC keepalive min time"
+check_exact_kubebrain_arg "grpc-keepalive-interval" "$EXPECTED_GRPC_KEEPALIVE_INTERVAL" "gRPC keepalive interval"
+check_exact_kubebrain_arg "grpc-keepalive-timeout" "$EXPECTED_GRPC_KEEPALIVE_TIMEOUT" "gRPC keepalive timeout"
+check_exact_kubebrain_arg "auth-token" "$EXPECTED_AUTH_TOKEN" "auth token provider"
+check_exact_kubebrain_arg "bcrypt-cost" "$EXPECTED_BCRYPT_COST" "bcrypt cost"
+check_exact_kubebrain_arg "auth-token-ttl" "$EXPECTED_AUTH_TOKEN_TTL" "auth token TTL"
 
 if ! ETCDCTL_API=3 run_etcdctl --endpoints="$ENDPOINT" endpoint health; then
   echo "KubeBrain endpoint health failed: $ENDPOINT" >&2

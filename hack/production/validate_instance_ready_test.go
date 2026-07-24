@@ -31,7 +31,13 @@ func fakeKubeBrainArgs(advertisedURLs, initialCluster string) string {
 		"--max-request-rate=2000\n" +
 		"--request-rate-burst=4000\n" +
 		"--max-delete-range-keys=1024\n" +
-		"--max-watches=10000"
+		"--max-watches=10000\n" +
+		"--grpc-keepalive-min-time=5s\n" +
+		"--grpc-keepalive-interval=2h\n" +
+		"--grpc-keepalive-timeout=20s\n" +
+		"--auth-token=simple\n" +
+		"--bcrypt-cost=10\n" +
+		"--auth-token-ttl=300"
 }
 
 func TestValidateInstanceReady(t *testing.T) {
@@ -530,6 +536,51 @@ func TestValidateInstanceReady(t *testing.T) {
 			topology:   "3\t3",
 			healthOK:   true,
 			wantOutput: "inflight request limit configuration mismatch",
+		},
+		{
+			name:       "wrong grpc keepalive min time",
+			image:      "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus: "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeArgs:   strings.ReplaceAll(fakeKubeBrainArgs("https://instance.example:2379", fakeInitialCluster), "--grpc-keepalive-min-time=5s", "--grpc-keepalive-min-time=1s"),
+			topology:   "3\t3",
+			healthOK:   true,
+			wantOutput: "gRPC keepalive min time configuration mismatch",
+		},
+		{
+			name:       "missing grpc keepalive interval",
+			image:      "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus: "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeArgs:   strings.ReplaceAll(fakeKubeBrainArgs("https://instance.example:2379", fakeInitialCluster), "\n--grpc-keepalive-interval=2h", ""),
+			topology:   "3\t3",
+			healthOK:   true,
+			wantOutput: "gRPC keepalive interval configuration mismatch",
+		},
+		{
+			name:       "duplicate auth token provider",
+			image:      "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus: "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeArgs:   fakeKubeBrainArgs("https://instance.example:2379", fakeInitialCluster) + "\n--auth-token=simple",
+			topology:   "3\t3",
+			healthOK:   true,
+			wantOutput: "auth token provider configuration mismatch",
+		},
+		{
+			name:       "wrong bcrypt cost",
+			image:      "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus: "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeArgs:   strings.ReplaceAll(fakeKubeBrainArgs("https://instance.example:2379", fakeInitialCluster), "--bcrypt-cost=10", "--bcrypt-cost=4"),
+			topology:   "3\t3",
+			healthOK:   true,
+			wantOutput: "bcrypt cost configuration mismatch",
+		},
+		{
+			name:       "missing auth token ttl",
+			image:      "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus: "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeArgs:   strings.ReplaceAll(fakeKubeBrainArgs("https://instance.example:2379", fakeInitialCluster), "\n--auth-token-ttl=300", ""),
+			topology:   "3\t3",
+			healthOK:   true,
+			wantOutput: "auth token TTL configuration mismatch",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

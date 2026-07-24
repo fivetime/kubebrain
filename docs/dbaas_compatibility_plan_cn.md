@@ -11709,6 +11709,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `bash -n hack/production/validate-instance-ready.sh`、`go test ./hack/production -count=1`、
   `go vet ./...`、`go test ./pkg/backend -count=1 -timeout=15m -v` 和
   `go test ./... -count=1 -p 1` 均通过。
+- A748 固定实例发布门禁中的 keepalive/auth 基线一致性：
+  production 明文/TLS 基线固定 `--grpc-keepalive-min-time=5s`、
+  `--grpc-keepalive-interval=2h`、`--grpc-keepalive-timeout=20s`、
+  `--auth-token=simple`、`--bcrypt-cost=10` 和 `--auth-token-ttl=300`，但运行门禁此前
+  不会发现控制面或人工 patch 造成的 keepalive、token provider、bcrypt cost 或 token TTL
+  漂移。keepalive 漂移会改变长连接/流式 watch 的连接生命周期，auth 漂移会改变 token
+  兼容性、过期窗口或密码哈希成本。现在脚本新增
+  `EXPECTED_GRPC_KEEPALIVE_MIN_TIME`、`EXPECTED_GRPC_KEEPALIVE_INTERVAL`、
+  `EXPECTED_GRPC_KEEPALIVE_TIMEOUT`、`EXPECTED_AUTH_TOKEN`、`EXPECTED_BCRYPT_COST` 和
+  `EXPECTED_AUTH_TOKEN_TTL`（默认对齐 production baseline，可按实例规格覆盖），并要求
+  Pod template 对应 flag 各出现一次且值完全匹配。`TestValidateInstanceReady` 扩展
+  wrong/missing/duplicate 回归，覆盖 gRPC keepalive min time/interval、auth token provider、
+  bcrypt cost 和 auth token TTL 漂移。
+  `go test ./hack/production -run TestValidateInstanceReady -count=1 -v`、
+  `bash -n hack/production/validate-instance-ready.sh`、`go test ./hack/production -count=1`、
+  `go vet ./...` 和 `go test ./... -count=1 -p 1` 均通过。
 
 ### P2：运维兼容和长期验证
 
