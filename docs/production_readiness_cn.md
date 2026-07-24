@@ -1482,10 +1482,12 @@ hack/dev/verify.sh
   发布门禁还必须让静态 API surface 测试同时覆盖 core etcd 服务与 Lock/Election
   service descriptor，确保新增公开 RPC 都有显式实现或显式拒绝分类；generated
   HTTP gateway 的注册 service 列表也必须固定为同一公开集合，避免 `/v3/*`
-  surface 在升级或重构中漏注册或无审查扩大。protobuf 字段升级门禁应同时覆盖
-  core KV/Watch/Lease/Txn、Cluster、Maintenance、Auth、Auth 持久化 `authpb.User`/
+  surface 在升级或重构中漏注册或无审查扩大。protobuf 字段升级门禁应以字段名和 wire
+  number 精确覆盖 core KV/Watch/Lease/Txn、`RangeStreamResponse`、MVCC
+  `KeyValue`/`Event`、Cluster、Maintenance、Auth、Auth 持久化 `authpb.User`/
   `Role`/`Permission`，以及 Lock/Election request、response 和 nested `LeaderKey`，
-  防止新增字段绕过 wrapper、gateway、鉴权、持久化恢复或错误归一化审计。core KV
+  防止新增字段绕过 wrapper、gateway、鉴权、持久化恢复、watch/rangestream 分片或错误
+  归一化审计。core KV
   Range/Put/DeleteRange/Txn/Compaction、
   Cluster、Maintenance、Auth 与
   Lock/Election generated JSON gateway unary 路径还必须证明 `Authorization` 头会以

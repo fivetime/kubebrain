@@ -16,7 +16,6 @@ package etcd
 
 import (
 	"context"
-	"reflect"
 	"testing"
 
 	"github.com/golang/mock/gomock"
@@ -29,20 +28,6 @@ import (
 	"github.com/kubewharf/kubebrain/pkg/metrics/mock"
 	memkv "github.com/kubewharf/kubebrain/pkg/storage/memkv"
 )
-
-func TestKeyValueProtoFieldCount(t *testing.T) {
-	const expectedKeyValueProtoFields = 6
-
-	fields := 0
-	typ := reflect.TypeOf(mvccpb.KeyValue{})
-	for i := 0; i < typ.NumField(); i++ {
-		if typ.Field(i).Tag.Get("protobuf") != "" {
-			fields++
-		}
-	}
-	require.Equal(t, expectedKeyValueProtoFields, fields,
-		"update kvToEtcdKv and delete-event tombstones when KeyValue gains a protobuf field")
-}
 
 // TestWatchPutEventKeepsInlineCreateRevisionWhenPrevKvMissing pins #52: a PUT
 // (update) watch event must keep the create_revision carried inline in its value

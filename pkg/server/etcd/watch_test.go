@@ -18,7 +18,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"reflect"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -307,20 +306,6 @@ func TestWithoutWatchPrevKvsDoesNotMutateSharedEvents(t *testing.T) {
 	require.Nil(t, withoutPrev[2].PrevKv)
 	require.NotNil(t, events[0].PrevKv, "source event is shared with PrevKv watchers")
 	require.NotNil(t, events[2].PrevKv, "source event is shared with PrevKv watchers")
-}
-
-func TestEventProtoFieldCount(t *testing.T) {
-	const expectedEventProtoFields = 3
-
-	fields := 0
-	typ := reflect.TypeOf(mvccpb.Event{})
-	for i := 0; i < typ.NumField(); i++ {
-		if typ.Field(i).Tag.Get("protobuf") != "" {
-			fields++
-		}
-	}
-	require.Equal(t, expectedEventProtoFields, fields,
-		"update withoutWatchPrevKvs when Event gains a protobuf field")
 }
 
 func TestNormalizeWatchCreateRequestMatchesEtcd(t *testing.T) {
@@ -647,20 +632,6 @@ func TestSendWatchFragmentsMatchesEtcdFlags(t *testing.T) {
 		}
 	}
 	require.Equal(t, [][]byte{[]byte("a"), []byte("b"), []byte("c")}, keys)
-}
-
-func TestWatchResponseProtoFieldCount(t *testing.T) {
-	const expectedWatchResponseProtoFields = 8
-
-	fields := 0
-	typ := reflect.TypeOf(etcdserverpb.WatchResponse{})
-	for i := 0; i < typ.NumField(); i++ {
-		if typ.Field(i).Tag.Get("protobuf") != "" {
-			fields++
-		}
-	}
-	require.Equal(t, expectedWatchResponseProtoFields, fields,
-		"update sendWatchFragments when WatchResponse gains a protobuf field")
 }
 
 func TestWatchFragmentLimitUsesConfiguredRequestBytesWithEtcdOverhead(t *testing.T) {

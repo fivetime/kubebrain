@@ -18,7 +18,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"reflect"
 	"testing"
 	"time"
 
@@ -512,28 +511,6 @@ func TestSplitRangeStreamResponsePreservesAllFields(t *testing.T) {
 		proto.Merge(merged, chunk.RangeResponse)
 	}
 	require.True(t, proto.Equal(response, merged), "merged chunks must equal the source response")
-}
-
-func TestRangeStreamResponseProtoFieldCounts(t *testing.T) {
-	for _, test := range []struct {
-		name     string
-		typ      reflect.Type
-		expected int
-	}{
-		{name: "RangeResponse", typ: reflect.TypeOf(etcdserverpb.RangeResponse{}), expected: 4},
-		{name: "RangeStreamResponse", typ: reflect.TypeOf(etcdserverpb.RangeStreamResponse{}), expected: 1},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			fields := 0
-			for i := 0; i < test.typ.NumField(); i++ {
-				if test.typ.Field(i).Tag.Get("protobuf") != "" {
-					fields++
-				}
-			}
-			require.Equal(t, test.expected, fields,
-				"update splitRangeStreamResponse when %s gains a protobuf field", test.name)
-		})
-	}
 }
 
 func TestRangeStreamLargeValueExceedingMessageTargetStillProgresses(t *testing.T) {

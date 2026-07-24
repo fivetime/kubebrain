@@ -6,6 +6,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/authpb"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
+	"go.etcd.io/etcd/api/v3/mvccpb"
 	"go.etcd.io/etcd/server/v3/etcdserver/api/v3election/v3electionpb"
 	"go.etcd.io/etcd/server/v3/etcdserver/api/v3lock/v3lockpb"
 	"google.golang.org/protobuf/proto"
@@ -580,6 +581,10 @@ func TestCoreResponseProtoFieldCoverage(t *testing.T) {
 			fields: map[string]protoreflect.FieldNumber{"header": 1, "kvs": 2, "more": 3, "count": 4},
 		},
 		{
+			name: "RangeStreamResponse", msg: &etcdserverpb.RangeStreamResponse{},
+			fields: map[string]protoreflect.FieldNumber{"range_response": 1},
+		},
+		{
 			name: "PutResponse", msg: &etcdserverpb.PutResponse{},
 			fields: map[string]protoreflect.FieldNumber{"header": 1, "prev_kv": 2},
 		},
@@ -646,4 +651,22 @@ func TestCoreResponseProtoFieldCoverage(t *testing.T) {
 				"etcd API response fields changed; audit every constructor, merge, fragmentation, Txn nesting, and forwarding path before updating this guard")
 		})
 	}
+}
+
+func TestMVCCProtoFieldCoverage(t *testing.T) {
+	requireProtoFieldCoverage(t, []protoFieldCoverageCase{
+		{
+			name: "KeyValue", msg: &mvccpb.KeyValue{},
+			fields: map[string]protoreflect.FieldNumber{
+				"key": 1, "create_revision": 2, "mod_revision": 3,
+				"version": 4, "value": 5, "lease": 6,
+			},
+		},
+		{
+			name: "Event", msg: &mvccpb.Event{},
+			fields: map[string]protoreflect.FieldNumber{
+				"type": 1, "kv": 2, "prev_kv": 3,
+			},
+		},
+	}, "etcd MVCC API fields changed; audit KeyValue conversion, delete tombstones, watch PrevKv filtering, Range/RangeStream responses, and fragmentation before updating this guard")
 }

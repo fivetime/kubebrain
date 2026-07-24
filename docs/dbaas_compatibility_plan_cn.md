@@ -11592,6 +11592,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   更新门禁。
   `go test ./pkg/server/etcd -run 'Test(Cluster|Maintenance|Auth)ProtoFieldCoverage' -count=1 -v`
   通过。
+- A739 强化 Watch/RangeStream/MVCC proto 字段升级门禁：
+  A419/A420/A423/A424 已为 `sendWatchFragments`、`splitRangeStreamResponse`、
+  `withoutWatchPrevKvs` 和 `watchTranslator.kvToEtcdKv` 增加字段数量级门禁，但字段计数不能发现
+  proto name 改名或 wire number 重编号。现在移除分散的 `reflect` 计数测试，将
+  `RangeStreamResponse` 纳入 `TestCoreResponseProtoFieldCoverage`，并新增
+  `TestMVCCProtoFieldCoverage` 固定 `mvccpb.KeyValue` 与 `mvccpb.Event` 的字段名和 wire
+  number。未来 etcd API 升级若变更这些字段，必须重新审计 Range/RangeStream 响应、
+  RangeStream 二次拆分、Watch fragmentation、PrevKv 过滤、KeyValue 转换和 DELETE tombstone
+  后才能更新门禁。
+  `go test ./pkg/server/etcd -run 'Test(CoreResponse|MVCC)ProtoFieldCoverage|TestSplitRangeStreamResponsePreservesAllFields|TestWithoutWatchPrevKvsDoesNotMutateSharedEvents|TestSendWatchFragmentsMatchesEtcdFlags|TestWatchPutEventKeepsInlineCreateRevisionWhenPrevKvMissing' -count=1 -v`、
+  `go test ./pkg/server/etcd -count=1`、`go vet ./...` 和
+  `go test ./... -count=1 -p 1` 均通过。
 
 ### P2：运维兼容和长期验证
 
