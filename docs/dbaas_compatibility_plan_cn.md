@@ -11294,6 +11294,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   返回 400/415 且没有调用 authenticator 或 Operation store：
   `go test ./hack/production/internal/operationapi ./hack/production/cmd/operation-api -count=1`
   通过。
+- A711 前置 operation API operation name 校验：
+  A697 已让 operation queue 的 name-based 库入口在 Kubernetes API 前拒绝非法 Operation
+  name，但外部 operation API 的 GET path name 和 submit body name 仍会先消耗 OIDC/JWKS，
+  再由 queue 层兜底。现在 operation queue 导出统一 operation name 校验，API handler 在
+  认证前拒绝非法 `POST` body name 与 `GET /v1/operations/{name}` path name。回归确认
+  malformed name 返回 400 且没有调用 authenticator 或 Operation store：
+  `go test ./hack/production/internal/operationapi ./hack/production/internal/operationqueue ./hack/production/cmd/operation-api -count=1`
+  通过。
 
 ### P2：运维兼容和长期验证
 

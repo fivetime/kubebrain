@@ -137,6 +137,9 @@ func (h *Handler) submit(response http.ResponseWriter, request *http.Request) {
 	if !ok {
 		return
 	}
+	if !validateRequestOperationName(response, input.Name) {
+		return
+	}
 	principal, ok := h.principal(response, request)
 	if !ok {
 		return
@@ -205,11 +208,15 @@ func authorizedParametersSecret(input submitRequest, tenant string) bool {
 }
 
 func (h *Handler) get(response http.ResponseWriter, request *http.Request) {
+	name := request.PathValue("name")
+	if !validateRequestOperationName(response, name) {
+		return
+	}
 	principal, ok := h.principal(response, request)
 	if !ok {
 		return
 	}
-	object, err := h.store.Get(request.Context(), request.PathValue("name"))
+	object, err := h.store.Get(request.Context(), name)
 	if err != nil {
 		if dependencyContextError(err) {
 			writeJSON(response, http.StatusServiceUnavailable, errorResponse{Error: "operation dependency unavailable"})
@@ -227,6 +234,14 @@ func (h *Handler) get(response http.ResponseWriter, request *http.Request) {
 		return
 	}
 	writeJSON(response, http.StatusOK, summarizeOperation(object))
+}
+
+func validateRequestOperationName(response http.ResponseWriter, name string) bool {
+	if err := operationqueue.ValidateOperationName(name); err != nil {
+		writeJSON(response, http.StatusBadRequest, errorResponse{Error: "operation name is invalid"})
+		return false
+	}
+	return true
 }
 
 func dependencyContextError(err error) bool {

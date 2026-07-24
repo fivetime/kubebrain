@@ -44,6 +44,7 @@ func (a *countingAuthenticator) Authenticate(context.Context, string) (Principal
 type memoryOperationStore struct {
 	objects map[string]*unstructured.Unstructured
 	spec    operationqueue.Spec
+	gets    int
 	getErr  error
 }
 
@@ -62,6 +63,7 @@ func (s *memoryOperationStore) Submit(
 }
 
 func (s *memoryOperationStore) Get(_ context.Context, name string) (*unstructured.Unstructured, error) {
+	s.gets++
 	if s.getErr != nil {
 		return nil, s.getErr
 	}
@@ -202,6 +204,7 @@ func TestHandlerRejectsMalformedSubmitBeforeAuthentication(t *testing.T) {
 		{name: "unknown field", contentType: "application/json", body: `{"unknown":true}`, status: http.StatusBadRequest},
 		{name: "trailing object", contentType: "application/json", body: validBody + `{}`, status: http.StatusBadRequest},
 		{name: "oversized body", contentType: "application/json", body: strings.Repeat(" ", requestBodyLimit+1), status: http.StatusBadRequest},
+		{name: "invalid operation name", contentType: "application/json", body: strings.Replace(validBody, `"backup-1"`, `"backup_1"`, 1), status: http.StatusBadRequest},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			authenticator := &countingAuthenticator{principal: authorizedPrincipal()}
@@ -217,8 +220,24 @@ func TestHandlerRejectsMalformedSubmitBeforeAuthentication(t *testing.T) {
 			require.Equal(t, tc.status, response.Code)
 			require.Zero(t, authenticator.calls)
 			require.Empty(t, store.objects)
+			require.Zero(t, store.gets)
 		})
 	}
+}
+
+func TestHandlerRejectsMalformedGetNameBeforeAuthentication(t *testing.T) {
+	authenticator := &countingAuthenticator{principal: authorizedPrincipal()}
+	store := &memoryOperationStore{objects: make(map[string]*unstructured.Unstructured)}
+	handler, err := NewHandler(authenticator, store, time.Second)
+	require.NoError(t, err)
+	request := httptest.NewRequest(http.MethodGet, "/v1/operations/backup_1", nil)
+	request.Header.Set("Authorization", "Bearer token")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	require.Equal(t, http.StatusBadRequest, response.Code)
+	require.Zero(t, authenticator.calls)
+	require.Zero(t, store.gets)
 }
 
 func TestHandlerRejectsUnboundParameterSecret(t *testing.T) {

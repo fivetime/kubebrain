@@ -127,7 +127,8 @@ func validateQueueNamespace(namespace string) error {
 	return nil
 }
 
-func validateOperationName(name string) error {
+// ValidateOperationName validates a KubeBrainOperation resource name.
+func ValidateOperationName(name string) error {
 	if errs := validation.IsDNS1123Subdomain(name); len(errs) > 0 {
 		return fmt.Errorf("invalid operation name: %s", errs[0])
 	}
@@ -159,7 +160,7 @@ func (q *Queue) Submit(ctx context.Context, name string, spec Spec) (*unstructur
 	if err := q.validateNamespace(); err != nil {
 		return nil, err
 	}
-	if err := validateOperationName(name); err != nil {
+	if err := ValidateOperationName(name); err != nil {
 		return nil, invalidSpecError("%s", err)
 	}
 	if spec.OperationID == "" || spec.Instance == "" || spec.Type == "" || spec.MaxAttempts <= 0 {
@@ -629,7 +630,7 @@ func (q *Queue) Requeue(
 	if err := q.validateNamespace(); err != nil {
 		return nil, err
 	}
-	if err := validateOperationName(name); err != nil {
+	if err := ValidateOperationName(name); err != nil {
 		return nil, err
 	}
 	if err := ValidateWorkerIdentity(owner, attempt); err != nil {
@@ -718,7 +719,7 @@ func (q *Queue) Heartbeat(ctx context.Context, name, owner string, attempt int64
 	if err := q.validateNamespace(); err != nil {
 		return nil, err
 	}
-	if err := validateOperationName(name); err != nil {
+	if err := ValidateOperationName(name); err != nil {
 		return nil, err
 	}
 	if err := ValidateWorkerIdentity(owner, attempt); err != nil {
@@ -800,7 +801,7 @@ func (q *Queue) Finish(
 	if err := q.validateNamespace(); err != nil {
 		return nil, err
 	}
-	if err := validateOperationName(name); err != nil {
+	if err := ValidateOperationName(name); err != nil {
 		return nil, err
 	}
 	if err := ValidateWorkerIdentity(owner, attempt); err != nil {
@@ -944,7 +945,7 @@ func (q *Queue) Get(ctx context.Context, name string) (*unstructured.Unstructure
 	if err := q.validateNamespace(); err != nil {
 		return nil, err
 	}
-	if err := validateOperationName(name); err != nil {
+	if err := ValidateOperationName(name); err != nil {
 		return nil, err
 	}
 	return q.resource.Get(ctx, name, metav1.GetOptions{})
@@ -954,7 +955,7 @@ func (q *Queue) Parameters(ctx context.Context, name string) ([]byte, error) {
 	if err := q.validateNamespace(); err != nil {
 		return nil, err
 	}
-	if err := validateOperationName(name); err != nil {
+	if err := ValidateOperationName(name); err != nil {
 		return nil, err
 	}
 	object, err := q.resource.Get(ctx, name, metav1.GetOptions{})
@@ -970,7 +971,7 @@ func (q *Queue) ParametersForWorker(
 	if err := q.validateNamespace(); err != nil {
 		return nil, err
 	}
-	if err := validateOperationName(name); err != nil {
+	if err := ValidateOperationName(name); err != nil {
 		return nil, err
 	}
 	if !isSupportedOperationType(operationType) {
@@ -1040,7 +1041,7 @@ func (q *Queue) Approve(
 	if err := q.validateNamespace(); err != nil {
 		return nil, err
 	}
-	if err := validateOperationName(name); err != nil {
+	if err := ValidateOperationName(name); err != nil {
 		return nil, err
 	}
 	if approvedBy != operationaudit.ApproverUsername {
@@ -1108,7 +1109,7 @@ func (q *Queue) Delete(ctx context.Context, name string, uid types.UID) error {
 	if err := q.validateNamespace(); err != nil {
 		return err
 	}
-	if err := validateOperationName(name); err != nil {
+	if err := ValidateOperationName(name); err != nil {
 		return err
 	}
 	if uid == "" {
