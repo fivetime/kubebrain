@@ -203,6 +203,7 @@ type gatewayLeaseServer struct {
 	revokeRequest     *etcdserverpb.LeaseRevokeRequest
 	timeToLiveRequest *etcdserverpb.LeaseTimeToLiveRequest
 	leasesRequest     *etcdserverpb.LeaseLeasesRequest
+	zeroKeepAliveIDs  map[int64]bool
 	grantMD           metadata.MD
 	revokeMD          metadata.MD
 	timeToLiveMD      metadata.MD
@@ -248,10 +249,14 @@ func (s *gatewayLeaseServer) LeaseKeepAlive(stream etcdserverpb.Lease_LeaseKeepA
 		if err != nil {
 			return err
 		}
+		ttl := request.ID + 10
+		if s.zeroKeepAliveIDs[request.ID] {
+			ttl = 0
+		}
 		if err := stream.Send(&etcdserverpb.LeaseKeepAliveResponse{
 			Header: &etcdserverpb.ResponseHeader{Revision: request.ID + 50},
 			ID:     request.ID,
-			TTL:    request.ID + 10,
+			TTL:    ttl,
 		}); err != nil {
 			return err
 		}
@@ -1682,7 +1687,7 @@ func TestGRPCGatewayStreamsWatchAndElectionResponses(t *testing.T) {
 	watchNext := make(chan struct{})
 	electionNext := make(chan struct{})
 	watchServer := &gatewayWatchServer{next: watchNext}
-	leaseServer := &gatewayLeaseServer{}
+	leaseServer := &gatewayLeaseServer{zeroKeepAliveIDs: map[int64]bool{2: true}}
 	electionServer := &gatewayElectionServer{next: electionNext}
 	etcdserverpb.RegisterWatchServer(grpcServer, watchServer)
 	etcdserverpb.RegisterLeaseServer(grpcServer, leaseServer)
@@ -1756,7 +1761,7 @@ func TestGRPCGatewayStreamsWatchAndElectionResponses(t *testing.T) {
 	require.JSONEq(t, `{"result":{"header":{"revision":"51"},"ID":"1","TTL":"11"}}`, line)
 	line, err = reader.ReadString('\n')
 	require.NoError(t, err)
-	require.JSONEq(t, `{"result":{"header":{"revision":"52"},"ID":"2","TTL":"12"}}`, line)
+	require.JSONEq(t, `{"result":{"header":{"revision":"52"},"ID":"2"}}`, line)
 	_, err = reader.ReadString('\n')
 	require.ErrorIs(t, err, io.EOF)
 	require.Equal(t, []string{grpcGatewayRequestMarkerValue}, leaseServer.md.Get(grpcGatewayRequestMarkerKey))

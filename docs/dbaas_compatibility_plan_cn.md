@@ -13815,6 +13815,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   在真实 KubeBrain backend 上先确认等待者入队，再取消 context 并等待 prefix key count
   回落，随后释放 owner 并验证 successor 可立即获得 lock/leader，防止 dedicated
   concurrency wrapper、watch wait 或 lease cleanup 路径遗留幽灵 waiter。
+- A973 固定 LeaseKeepAlive HTTP gateway streaming 的未知租约 JSON 帧：
+  `http_gateway_stream` differential 证明 `/v3/lease/keepalive` 对未知 lease 仍要发送带
+  `ID` 的 stream result，但 TTL 为 0 时 generated gateway JSON 必须省略 `TTL` 字段，并在
+  请求体 EOF 后正常结束响应流。本轮扩展 `TestGRPCGatewayStreamsWatchAndElectionResponses`，
+  让 fake LeaseKeepAlive 对第二个 ID 返回 TTL=0，断言 HTTP chunked JSON 帧只含
+  header/ID 且最终读取到 `io.EOF`，防止 gateway/protojson 选项升级后把未知租约错误编码为
+  `"TTL":"0"`、丢失 ID 或保持流挂起。
 
 ### P2：运维兼容和长期验证
 
