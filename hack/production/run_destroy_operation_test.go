@@ -97,8 +97,8 @@ func TestDestroyOperationRejectsEmptyRequiredParameters(t *testing.T) {
 	f := newDestroyRunnerFixture(t, true)
 	parameters := strings.ReplaceAll(
 		string(mustRead(t, f.parameters)),
-		`"backup_prefix":"/registry"`,
-		`"backup_prefix":""`,
+		`"kubebrain_namespace":"instance-a"`,
+		`"kubebrain_namespace":""`,
 	)
 	require.NoError(t, os.WriteFile(f.parameters, []byte(parameters), 0o600))
 
@@ -107,6 +107,35 @@ func TestDestroyOperationRejectsEmptyRequiredParameters(t *testing.T) {
 	require.NotContains(t, log, "phase ")
 	require.NotContains(t, log, "--action retry")
 	require.NotContains(t, log, "--action succeed")
+}
+
+func TestDestroyOperationRejectsInvalidBackupPrefix(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		prefix string
+	}{
+		{name: "empty", prefix: ""},
+		{name: "relative", prefix: "registry"},
+		{name: "control character", prefix: "/registry\tshadow"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newDestroyRunnerFixture(t, true)
+			parameters := strings.Replace(
+				string(mustRead(t, f.parameters)),
+				`"backup_prefix":"/registry"`,
+				fmt.Sprintf(`"backup_prefix":%q`, tc.prefix),
+				1,
+			)
+			require.NoError(t, os.WriteFile(f.parameters, []byte(parameters), 0o600))
+
+			f.run(t, false, "CLAIM_DIGEST="+fileDigest(t, f.parameters),
+				"destroy backup_prefix must be an absolute key prefix without control characters")
+			log := f.log(t)
+			require.NotContains(t, log, "phase ")
+			require.NotContains(t, log, "--action retry")
+			require.NotContains(t, log, "--action succeed")
+		})
+	}
 }
 
 func TestDestroyOperationRejectsInvalidReceipt(t *testing.T) {

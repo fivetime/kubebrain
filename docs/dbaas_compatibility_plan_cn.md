@@ -12691,6 +12691,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   ./hack/production -run TestRestoreTrafficCutoverRejectsRestoreReceiptWithInvalidPrefixes -count=1 -v`、
   `go test ./hack/production -run TestRestoreTrafficCutover -count=1 -v`、相关脚本 ShellCheck
   和 `git diff --check` 通过。
+- A843 收紧 Destroy runner 的备份 prefix 参数：
+  `run-destroy-operation.sh` 原先把 `backup_prefix` 作为非空字符串交给销毁前
+  `logical-status`，相对 prefix 或 JSON 控制字符会在下游才失败或被 `@tsv` 转义。现在
+  runner 在冻结参数后基于原始 JSON 拒绝非绝对 key prefix 以及换行、回车、tab，并在
+  Bash 变量展开后做二次守卫；回归覆盖空 prefix、相对 prefix 和带 tab prefix，确认不会进入任何
+  destroy phase，也不会把参数错误 requeue。`go test ./hack/production -run
+  TestDestroyOperationRejectsInvalidBackupPrefix -count=1 -v`、`go test ./hack/production -run
+  TestDestroyOperation -count=1 -v`、相关脚本 ShellCheck 和 `git diff --check` 通过。
 
 ### P2：运维兼容和长期验证
 

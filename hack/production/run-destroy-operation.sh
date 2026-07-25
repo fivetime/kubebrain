@@ -116,6 +116,25 @@ if [[ "$captured_digest" != "$expected_digest" || "$current_digest" != "$expecte
 fi
 PARAMETERS_INPUT="$frozen_parameters"
 
+validate_backup_prefix_json() {
+  "$JQ" -e '
+    .backup_prefix | type == "string" and length > 0 and startswith("/") and
+    ((contains("\n") or contains("\r") or contains("\t")) | not)' \
+    "$PARAMETERS_INPUT" >/dev/null
+}
+
+validate_backup_prefix() {
+  local value="$1"
+  if [[ -z "$value" || "$value" != /* ||
+    "$value" == *$'\n'* || "$value" == *$'\r'* || "$value" == *$'\t'* ]]; then
+    echo "destroy backup_prefix must be an absolute key prefix without control characters" >&2
+    exit 2
+  fi
+}
+
+validate_backup_prefix_json ||
+  { echo "destroy backup_prefix must be an absolute key prefix without control characters" >&2; exit 2; }
+
 parameters="$("$JQ" -er '[
   .state_dir, .backup_input, .backup_file_sha256, .backup_prefix,
   (.backup_max_age_seconds|tostring), (.backup_min_records|tostring),
@@ -140,6 +159,7 @@ for value in "$backup_min_records" "$expected_pvcs" "$poll_seconds"; do
   [[ "$value" =~ ^[0-9]+$ ]] ||
     { echo "destroy parameters contain an invalid non-negative integer" >&2; exit 2; }
 done
+validate_backup_prefix "$backup_prefix"
 [[ -f "$backup_input" ]] || { echo "destroy backup input does not exist" >&2; exit 2; }
 [[ "$backup_file_sha" =~ ^[a-f0-9]{64}$ ]] ||
   { echo "backup_file_sha256 is invalid" >&2; exit 2; }

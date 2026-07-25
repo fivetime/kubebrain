@@ -515,7 +515,8 @@ env "${common_env[@]}" ACTION=complete CONFIRM_DESTROY="$confirm" \
 
 `prepare` 先通过 `logical-status` 完整校验 `kubebrain.logical.v2` artifact 的 prefix、
 最少记录数、受 SHA-256 保护的创建时间和最大年龄，再记录 artifact digest/revision；
-随后固定 KubeBrain StatefulSet、client/peer Service、PDB、ServiceAccount、
+`BACKUP_PREFIX` 必须是绝对 key prefix 且不能包含换行、回车或 tab。随后固定 KubeBrain
+StatefulSet、client/peer Service、PDB、ServiceAccount、
 TidbCluster、PD/TiKV PDB/metrics Service 及每块 PD/TiKV PVC 的 UID。PVC 数量必须精确
 等于 `EXPECTED_PVCS`，component 只能是 `pd` 或 `tikv`。
 
