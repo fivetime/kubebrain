@@ -172,6 +172,43 @@ func TestPeerMembersHandlerRejectsBadRequests(t *testing.T) {
 	}
 }
 
+func TestPeerDowngradeEnabledHandlerReturnsFalse(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	rec := httptest.NewRecorder()
+	server.GetPeerHttpHandlers()["/downgrade/enabled"].ServeHTTP(rec,
+		httptest.NewRequest(http.MethodGet, "/downgrade/enabled", nil))
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, "text/plain", rec.Header().Get("Content-Type"))
+	require.Equal(t, strconv.FormatUint(server.backend.ClusterID(), 16), rec.Header().Get(etcdClusterIDHeader))
+	require.Equal(t, "false", rec.Body.String())
+}
+
+func TestPeerDowngradeEnabledHandlerRejectsBadRequests(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	tests := []struct {
+		name       string
+		method     string
+		target     string
+		wantStatus int
+		wantBody   string
+	}{
+		{name: "wrong method", method: http.MethodPost, target: "/downgrade/enabled", wantStatus: http.StatusMethodNotAllowed, wantBody: "Method Not Allowed"},
+		{name: "wrong path", method: http.MethodGet, target: "/downgrade/enabled/extra", wantStatus: http.StatusBadRequest, wantBody: "bad path"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			server.peerDowngradeEnabledHandler(rec, httptest.NewRequest(tt.method, tt.target, nil))
+			require.Equal(t, tt.wantStatus, rec.Code)
+			require.Contains(t, rec.Body.String(), tt.wantBody)
+		})
+	}
+}
+
 func TestParseInitialClusterAggregatesRepeatedMemberPeerURLs(t *testing.T) {
 	members, err := ParseInitialCluster(
 		"mem1=http://10.0.0.1:2380,mem1=http://128.193.4.20:2380,mem2=http://10.0.0.2:2380",

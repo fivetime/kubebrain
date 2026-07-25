@@ -45,7 +45,7 @@ Raft、bbolt 和成员管理内部实现，而是对通用 etcd v3 客户端提�
 | Maintenance | Defragment | 平台替代 | TiKV GC/compaction 管理，不执行 bbolt 碎片整理 |
 | Maintenance | Alarm/DbSize | 兼容 NOSPACE/CORRUPT 核心语义 | keyspace 级逻辑容量原子计量、sticky NOSPACE、持久 member 集合及跨 endpoint mutation 已支持；NOSPACE 阻断增长写与 LeaseGrant，但允许 LeaseRevoke、自然过期和既有 lease KeepAlive，以保留空间自愈路径；CORRUPT 使用 TiKV 内部元数据持久 member 集合，允许 Range 及空/线性/串行只读 Txn 诊断，阻断 Put/Delete/任一分支含写的 Txn/Compact/LeaseGrant/Revoke，并推迟自然租约过期直至 disarm；未过期 lease 仍可 KeepAlive，已过期 KeepAlive 等待 revoke 并在 disarm 后返回 TTL=0；双告警并存时 CORRUPT 优先，逐项解除后 NOSPACE 独立延续；3 KubeBrain、3 PD、3 TiKV 全成员顺序重启后告警、写门禁和 health/readyz 状态仍持续；bbolt fragmentation 仍为平台边界 |
 | Maintenance | Hash/HashKV | 兼容核心语义 | 对指定 revision 的租户 MVCC 实际内容做稳定摘要；成员本地诊断不依赖 KubeBrain leader；peer `/members/hashkv` 支持 etcd corruption checker 的 JSON/cluster-ID/error 语义；数值不与 bbolt 内部编码比较 |
-| Maintenance | MoveLeader/Downgrade | 平台替代 | 分别由服务选主和 DBaaS 升级编排处理 |
+| Maintenance | MoveLeader/Downgrade | 平台替代 | 分别由服务选主和 DBaaS 升级编排处理；peer `/downgrade/enabled` 稳定返回 `false`，用于兼容 etcd peer 版本诊断 |
 | Endpoint | health/livez/readyz | 兼容核心语义 | `/health`、`/livez`、`/readyz` 及分项检查已对齐；`data_corruption`/`non_learner` 使用 TiKV 架构等价语义，`/ready` 与 `/ping` 为平台探针 |
 | Endpoint | v3 JSON/HTTP gateway | 兼容核心服务 | 默认启用 KV、Watch、Lease、Cluster、Maintenance、Auth、Lock、Election generated gateway；经本机 gRPC 回环保留 admission、auth、metrics、限流和 TLS 语义，可用 `--enable-grpc-gateway=false` 关闭 |
 | Concurrency | Lock/Election/STM recipes | 兼容核心语义 | 官方 `client/v3/concurrency` Mutex/Election/session/STM、orphan session lease 自然过期接棒、STM 冲突重试/守恒争用及真实 Leader 故障转移已通过；继续长时间 soak |
@@ -272,6 +272,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   快照，但不走 client auth 或 linearizable barrier；返回字段为 etcd peer JSON 的
   `id`、`peerURLs`、`name`、`clientURLs`、`isLearner`，并设置小写 hex ClusterID header。
   成员 add/remove/update/promote 仍由 DBaaS 控制面负责，RPC/HTTP mutation 不因此宣称支持。
+- **Maintenance peer downgrade status（2026-07-25）**：对照
+  `/root/etcd/server/etcdserver/server.go:DowngradeEnabledHandler` 和
+  `cluster_util.go:getDowngradeEnabled`，etcd peer 间会读取 `/downgrade/enabled` 判定版本
+  兼容窗口。KubeBrain 不执行 etcd in-place downgrade，缺省 404 会让直接检查 peer URL 的
+  诊断工具误判为不可达或未知。现在 peer HTTP 注册 `GET /downgrade/enabled`，带
+  `X-Etcd-Cluster-ID`，`Content-Type: text/plain`，body 固定为 `false`。公开
+  Downgrade RPC 仍保持 DBaaS rollout/rollback 平台替代的 Unimplemented 契约。
 - **ClusterId 稳定性（2026-07-16）**：`MemberList` 不再把当前 leader 地址的
   CRC 当作 ClusterId，改为与所有其他 RPC 一致地使用 backend 从 PD/TiKV
   cluster identity 和 keyspace 派生的稳定 ID，避免换主时客户端把同一实例误判

@@ -34,8 +34,9 @@ const etcdClusterIDHeader = "X-Etcd-Cluster-ID"
 // GetPeerHttpHandlers returns etcd-compatible peer HTTP handlers.
 func (s *RPCServer) GetPeerHttpHandlers() map[string]http.Handler {
 	return map[string]http.Handler{
-		"/members":     http.HandlerFunc(s.peerMembersHandler),
-		PeerHashKVPath: http.HandlerFunc(s.peerHashKVHandler),
+		"/downgrade/enabled": http.HandlerFunc(s.peerDowngradeEnabledHandler),
+		"/members":           http.HandlerFunc(s.peerMembersHandler),
+		PeerHashKVPath:       http.HandlerFunc(s.peerHashKVHandler),
 	}
 }
 
@@ -75,6 +76,21 @@ func (s *RPCServer) peerMembersHandler(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
+}
+
+func (s *RPCServer) peerDowngradeEnabledHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if r.URL.Path != "/downgrade/enabled" {
+		http.Error(w, "bad path", http.StatusBadRequest)
+		return
+	}
+	w.Header().Set(etcdClusterIDHeader, strconv.FormatUint(s.backend.ClusterID(), 16))
+	w.Header().Set("Content-Type", "text/plain")
+	_, _ = w.Write([]byte("false"))
 }
 
 func (s *RPCServer) peerHashKVHandler(w http.ResponseWriter, r *http.Request) {
