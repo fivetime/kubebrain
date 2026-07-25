@@ -12554,6 +12554,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `RUN_ETCD_CLIENT_DIFFERENTIAL=tru RUN_GO_TEST=false RUN_BASIC_SMOKE=false RUN_HA_SMOKE=false RUN_APISERVER_SMOKE=false RUN_TLS_SMOKE=false hack/dev/verify.sh`、
   `ALLOW_DESTRUCTIVE_DIFFERENTIAL=maybe hack/etcd-client-compat/run-differential.sh`
   以及 compat runner 回归通过。
+- A828 收紧 apiserver watch soak 重连开关：
+  `ALLOW_WATCH_RESTARTS` 是 standalone 和 in-cluster apiserver watch soak 的本地 0/1 开关，
+  rollout smoke 会显式传 `1` 来模拟可重连客户端；普通 soak 默认 `0`，watch 意外退出即失败。
+  此前拼错值会被当作 `0`，让 rollout 场景变成不允许重连，或者让直接执行时诊断不明确。
+  现在两个 watch soak 入口在 docker/kubectl/curl 或 in-cluster bootstrap 前校验该变量，只接受
+  `0`/`1` 并以退出码 2 拒绝其他值。回归覆盖：
+  `bash -n hack/dev/apiserver-watch-soak.sh`、
+  `bash -n hack/dev/incluster-apiserver-watch-soak.sh`、
+  `ALLOW_WATCH_RESTARTS=2 hack/dev/apiserver-watch-soak.sh` 与
+  `ALLOW_WATCH_RESTARTS=true hack/dev/incluster-apiserver-watch-soak.sh`
+  通过。
 
 ### P2：运维兼容和长期验证
 

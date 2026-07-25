@@ -483,7 +483,7 @@ hack/dev/apiserver-watch-soak.sh
 hack/dev/apiserver-rollout-smoke.sh
 ```
 
-该脚本默认创建 12 个 ConfigMap、每个对象 patch 6 次，并在 watch 建立后重启 KubeBrain。因为本地 dev 环境通过 kind NodePort 暴露 `127.0.0.1:3379`，rollout 时命中正在退出 Pod 的连接可能被重置；脚本会在该场景下允许外层 watch 客户端重连，但仍要求全部 `MODIFIED` 事件和最终对象状态通过。普通 `apiserver-watch-soak.sh` 和 k3s soak 默认仍保持严格连续 watch；需要模拟可重连客户端时可以显式设置 `ALLOW_WATCH_RESTARTS=1`。
+该脚本默认创建 12 个 ConfigMap、每个对象 patch 6 次，并在 watch 建立后重启 KubeBrain。因为本地 dev 环境通过 kind NodePort 暴露 `127.0.0.1:3379`，rollout 时命中正在退出 Pod 的连接可能被重置；脚本会在该场景下允许外层 watch 客户端重连，但仍要求全部 `MODIFIED` 事件和最终对象状态通过。普通 `apiserver-watch-soak.sh` 和 k3s soak 默认仍保持严格连续 watch；需要模拟可重连客户端时可以显式设置 `ALLOW_WATCH_RESTARTS=1`，该开关只接受 `0` 或 `1`。
 
 经集群内 kube-apiserver Pod 的对象生命周期 smoke 可以单独运行：
 

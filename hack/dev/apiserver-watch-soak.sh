@@ -32,6 +32,20 @@ need() {
   fi
 }
 
+validate_zero_one_flag() {
+  local name="$1"
+  local value="${!name}"
+  case "$value" in
+    0|1) ;;
+    *)
+      echo "${name} must be 0 or 1, got ${value}" >&2
+      exit 2
+      ;;
+  esac
+}
+
+validate_zero_one_flag ALLOW_WATCH_RESTARTS
+
 cleanup() {
   if [ -n "${watch_pid:-}" ] && kill -0 "$watch_pid" >/dev/null 2>&1; then
     kill "$watch_pid" >/dev/null 2>&1 || true

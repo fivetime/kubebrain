@@ -16,6 +16,20 @@ work_dir="${ROOT_DIR}/.dev/incluster-apiserver-watch-soak"
 kubeconfig_file="${work_dir}/kubeconfig"
 watch_file="${work_dir}/configmap-watch.jsonl"
 
+validate_zero_one_flag() {
+  local name="$1"
+  local value="${!name}"
+  case "$value" in
+    0|1) ;;
+    *)
+      echo "${name} must be 0 or 1, got ${value}" >&2
+      exit 2
+      ;;
+  esac
+}
+
+validate_zero_one_flag ALLOW_WATCH_RESTARTS
+
 mkdir -p "$work_dir"
 
 cleanup() {
