@@ -13272,6 +13272,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   语义。`go test ./hack/production/internal/meteringarchive -run
   'TestNewCollectorRejectsUnsafePrometheusURL|TestCollectorBuildsCanonicalCompleteSample' -count=1 -v`
   通过。
+- A891 收紧 object storage metering archive S3 endpoint 字符边界：
+  A880/A887 已要求对象存储计量 archive CLI 在启动 source/metering object executor 前
+  拒绝危险 S3 endpoint，但 `validateObjectStoreEndpoint` 仍只用
+  `strings.ContainsAny("\t\r\n\"\\")`，漏掉 DEL 和其它控制字符。现在
+  `SOURCE_S3_ENDPOINT` 与 `METERING_S3_ENDPOINT` 在 archive CLI 入口统一拒绝全部控制字符、
+  DEL、引号和反斜杠；回归新增两个变量的 DEL endpoint 用例。`go test
+  ./hack/production/cmd/metering-storage-archive -run TestValidateObjectStoreEndpoint -count=1 -v`
+  通过。
 
 ### P2：运维兼容和长期验证
 

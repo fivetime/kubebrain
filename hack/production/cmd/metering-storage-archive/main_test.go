@@ -69,6 +69,7 @@ func TestValidateObjectStoreEndpointRejectsUnsafeIdentity(t *testing.T) {
 		endpoint string
 	}{
 		{name: "control character", endpoint: "https://s3.example\nother"},
+		{name: "DEL", endpoint: "https://s3.example\x7fother"},
 		{name: "quote", endpoint: `https://s3.example"other`},
 		{name: "backslash", endpoint: `https://s3.example\other`},
 	} {

@@ -122,10 +122,16 @@ func objectStoreEnvironment(endpoint, region, accessKey, secretKey, token string
 }
 
 func validateObjectStoreEndpoint(name, value string) error {
-	if strings.ContainsAny(value, "\t\r\n\"\\") {
+	if containsUnsafeObjectStoreEndpointChar(value) {
 		return fmt.Errorf("%s contains unsupported characters", name)
 	}
 	return nil
+}
+
+func containsUnsafeObjectStoreEndpointChar(value string) bool {
+	return strings.IndexFunc(value, func(r rune) bool {
+		return r < 0x20 || r == 0x7f || r == '"' || r == '\\'
+	}) >= 0
 }
 
 func parseOptionalBoolEnv(name string) (bool, error) {
