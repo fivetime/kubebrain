@@ -12490,6 +12490,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `RUN_GO_TEST=false RUN_BASIC_SMOKE=false RUN_HA_SMOKE=false RUN_APISERVER_SMOKE=false RUN_TLS_SMOKE=false hack/dev/verify.sh`、
   `RUN_GO_TEST=tru RUN_BASIC_SMOKE=false RUN_HA_SMOKE=false RUN_APISERVER_SMOKE=false RUN_TLS_SMOKE=false hack/dev/verify.sh`
   通过。
+- A822 拒绝未知 RUN_* verify 开关：
+  A821 只校验已知 flag 的取值，但拼错变量名如 `RUN_LESE_FAULT_SMOKE=true` 仍不会进入
+  已知列表，脚本会按默认 false 跳过目标门禁。现在 `hack/dev/verify.sh` 将全部合法
+  `RUN_*` 名称集中到 `RUN_FLAGS`，启动时扫描环境变量中以 `RUN_` 开头的名称；任何未知
+  名称都直接退出 2 并打印变量名。这样发布命令中的 typo 不会被误认为“已验证”。
+  `bash -n hack/dev/verify.sh`、
+  `RUN_GO_TEST=false RUN_BASIC_SMOKE=false RUN_HA_SMOKE=false RUN_APISERVER_SMOKE=false RUN_TLS_SMOKE=false hack/dev/verify.sh`、
+  `RUN_UNKNOWN_SMOKE=true RUN_GO_TEST=false RUN_BASIC_SMOKE=false RUN_HA_SMOKE=false RUN_APISERVER_SMOKE=false RUN_TLS_SMOKE=false hack/dev/verify.sh`
+  通过。
 
 ### P2：运维兼容和长期验证
 
