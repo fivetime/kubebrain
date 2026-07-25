@@ -61,6 +61,15 @@ extract_kube_apiserver() {
 validate_bool_flag RUN_APISERVER_SMOKE
 validate_bool_flag RUN_APISERVER_WATCH_SOAK
 
+apiserver_images=()
+for image in $APISERVER_IMAGES; do
+  apiserver_images+=("$image")
+done
+if [ "${#apiserver_images[@]}" -eq 0 ]; then
+  echo "APISERVER_IMAGES must contain at least one kube-apiserver image" >&2
+  exit 2
+fi
+
 need docker
 need kubectl
 need curl
@@ -69,7 +78,7 @@ cd "$ROOT_DIR"
 mkdir -p "$WORK_DIR/bin"
 
 idx=0
-for image in $APISERVER_IMAGES; do
+for image in "${apiserver_images[@]}"; do
   name="$(safe_name "$image")"
   bin="${WORK_DIR}/bin/${name}/kube-apiserver"
   smoke_port=$((BASE_SECURE_PORT + idx * 2))

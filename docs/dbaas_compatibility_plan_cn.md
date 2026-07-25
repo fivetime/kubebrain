@@ -12565,6 +12565,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `ALLOW_WATCH_RESTARTS=2 hack/dev/apiserver-watch-soak.sh` 与
   `ALLOW_WATCH_RESTARTS=true hack/dev/incluster-apiserver-watch-soak.sh`
   通过。
+- A829 拒绝空版本矩阵：
+  `apiserver-version-matrix.sh` 和 `k8s-version-matrix.sh` 依赖空白分隔的镜像列表；若调用者把
+  `APISERVER_IMAGES` 或 `KIND_NODE_IMAGES` 误设成只有空白，旧脚本会执行零个矩阵项后仍打印
+  completed。现在两个脚本在 docker/kind/kubectl 依赖检查前解析矩阵项并要求至少一个镜像，
+  否则退出 2；循环本身也复用解析后的数组，避免检查与执行的 split 语义漂移。
+  `bash -n hack/dev/apiserver-version-matrix.sh`、`bash -n hack/dev/k8s-version-matrix.sh`、
+  `APISERVER_IMAGES='   ' hack/dev/apiserver-version-matrix.sh` 与
+  `KIND_NODE_IMAGES='   ' hack/dev/k8s-version-matrix.sh`
+  通过。
 
 ### P2：运维兼容和长期验证
 

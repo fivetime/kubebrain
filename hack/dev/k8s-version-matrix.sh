@@ -39,6 +39,15 @@ validate_bool_flag RUN_BACKUP_DRILL
 validate_bool_flag RUN_FAULT_SMOKE
 validate_bool_flag RUN_WATCH_SOAK
 
+node_images=()
+for node_image in $KIND_NODE_IMAGES; do
+  node_images+=("$node_image")
+done
+if [ "${#node_images[@]}" -eq 0 ]; then
+  echo "KIND_NODE_IMAGES must contain at least one kind node image" >&2
+  exit 2
+fi
+
 need kind
 need docker
 need kubectl
@@ -47,7 +56,7 @@ need go
 
 cd "$ROOT_DIR"
 
-for node_image in $KIND_NODE_IMAGES; do
+for node_image in "${node_images[@]}"; do
   suffix="$(cluster_suffix "$node_image")"
   cluster_name="${BASE_CLUSTER_NAME}-${suffix}"
 
