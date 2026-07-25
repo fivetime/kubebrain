@@ -3690,29 +3690,86 @@ func TestTxnUnknownCompareEnumsMatchEtcdFallthrough(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
 
-	key := []byte("/registry/generic-txn/unknown-compare")
 	tests := []struct {
-		name      string
-		target    etcdserverpb.Compare_CompareTarget
-		result    etcdserverpb.Compare_CompareResult
-		succeeded bool
+		name         string
+		target       etcdserverpb.Compare_CompareTarget
+		result       etcdserverpb.Compare_CompareResult
+		compareValue []byte
+		succeeded    bool
+		value        []byte
 	}{
-		{name: "unknown result", target: etcdserverpb.Compare_MOD, result: 99, succeeded: true},
-		{name: "unknown target equal", target: 99, result: etcdserverpb.Compare_EQUAL, succeeded: true},
-		{name: "unknown target not equal", target: 99, result: etcdserverpb.Compare_NOT_EQUAL, succeeded: false},
+		{
+			name:      "unknown-result",
+			target:    etcdserverpb.Compare_MOD,
+			result:    99,
+			succeeded: true,
+			value:     []byte("success"),
+		},
+		{
+			name:      "unknown-target-equal",
+			target:    99,
+			result:    etcdserverpb.Compare_EQUAL,
+			succeeded: true,
+			value:     []byte("success"),
+		},
+		{
+			name:      "unknown-target-not-equal",
+			target:    99,
+			result:    etcdserverpb.Compare_NOT_EQUAL,
+			succeeded: false,
+			value:     []byte("failure"),
+		},
+		{
+			name:      "absent-value-equal-empty",
+			target:    etcdserverpb.Compare_VALUE,
+			result:    etcdserverpb.Compare_EQUAL,
+			succeeded: false,
+			value:     []byte("failure"),
+		},
+		{
+			name:         "absent-value-not-equal",
+			target:       etcdserverpb.Compare_VALUE,
+			result:       etcdserverpb.Compare_NOT_EQUAL,
+			compareValue: []byte("value"),
+			succeeded:    false,
+			value:        []byte("failure"),
+		},
+		{
+			name:      "absent-value-unknown-result",
+			target:    etcdserverpb.Compare_VALUE,
+			result:    99,
+			succeeded: false,
+			value:     []byte("failure"),
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			key := []byte("/registry/generic-txn/unknown-compare/" + tt.name)
+			compare := &etcdserverpb.Compare{
+				Key:         key,
+				Target:      tt.target,
+				Result:      tt.result,
+				TargetUnion: &etcdserverpb.Compare_ModRevision{ModRevision: 0},
+			}
+			if tt.target == etcdserverpb.Compare_VALUE {
+				compare.TargetUnion = &etcdserverpb.Compare_Value{Value: tt.compareValue}
+			}
 			resp, err := server.Txn(context.Background(), &etcdserverpb.TxnRequest{
-				Compare: []*etcdserverpb.Compare{{
-					Key:         key,
-					Target:      tt.target,
-					Result:      tt.result,
-					TargetUnion: &etcdserverpb.Compare_ModRevision{ModRevision: 0},
-				}},
+				Compare: []*etcdserverpb.Compare{compare},
+				Success: []*etcdserverpb.RequestOp{{Request: &etcdserverpb.RequestOp_RequestPut{
+					RequestPut: &etcdserverpb.PutRequest{Key: key, Value: []byte("success")},
+				}}},
+				Failure: []*etcdserverpb.RequestOp{{Request: &etcdserverpb.RequestOp_RequestPut{
+					RequestPut: &etcdserverpb.PutRequest{Key: key, Value: []byte("failure")},
+				}}},
 			})
 			require.NoError(t, err)
 			require.Equal(t, tt.succeeded, resp.Succeeded)
+
+			rangeResp, err := server.Range(context.Background(), &etcdserverpb.RangeRequest{Key: key})
+			require.NoError(t, err)
+			require.Len(t, rangeResp.Kvs, 1)
+			require.Equal(t, tt.value, rangeResp.Kvs[0].Value)
 		})
 	}
 }

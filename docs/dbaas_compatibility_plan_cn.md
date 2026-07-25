@@ -13515,6 +13515,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `ID=0` 的自动分配必须返回非零 ID。本轮新增本地服务层回归，固定最大 TTL 的
   Grant/TimeToLive `GrantedTTL`，以及自动 ID 的非零和 TTL 回显，补齐此前只覆盖
   small TTL clamp、duplicate ID 和 over-max 错误的本地边界。
+- A928 固定 Txn compare enum 的实际分支执行结果：
+  `txn_compare_enum` reference differential 不只比较 `Succeeded`，还会在 success/failure
+  branch 写入 marker 来确认未知 compare result、未知 target，以及 absent VALUE compare
+  的实际执行分支。本轮加强本地 raw RPC 回归，固定 unknown result 和 unknown target
+  的 fallthrough 行为，并把 absent value 的 equal-empty、not-equal、unknown-result
+  三个边界都落到 failure branch，防止后续只保留布尔结果而让 Txn branch side effect
+  与 etcd 漂移。
 
 ### P2：运维兼容和长期验证
 
