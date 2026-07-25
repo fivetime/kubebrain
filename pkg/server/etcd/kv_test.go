@@ -465,6 +465,53 @@ func TestSerializableRangeBypassesLeaderRevisionSync(t *testing.T) {
 	require.Equal(t, syncErr.Error(), status.Convert(err).Message())
 }
 
+func TestSerializableRangeAndTxnHeadersMatchCurrentRevision(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+
+	key := []byte("/registry/serializable/header")
+	first, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("v1")})
+	require.NoError(t, err)
+	second, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("v2")})
+	require.NoError(t, err)
+
+	current, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: key, Serializable: true})
+	require.NoError(t, err)
+	require.Equal(t, second.Header.Revision, current.Header.Revision)
+	require.Len(t, current.Kvs, 1)
+	require.Equal(t, []byte("v2"), current.Kvs[0].Value)
+
+	historical, err := server.Range(ctx, &etcdserverpb.RangeRequest{
+		Key: key, Revision: first.Header.Revision, Serializable: true,
+	})
+	require.NoError(t, err)
+	require.Equal(t, second.Header.Revision, historical.Header.Revision)
+	require.Len(t, historical.Kvs, 1)
+	require.Equal(t, []byte("v1"), historical.Kvs[0].Value)
+
+	txn, err := server.Txn(ctx, &etcdserverpb.TxnRequest{
+		Compare: []*etcdserverpb.Compare{{
+			Key: key, Target: etcdserverpb.Compare_VERSION, Result: etcdserverpb.Compare_GREATER,
+			TargetUnion: &etcdserverpb.Compare_Version{Version: 0},
+		}},
+		Success: []*etcdserverpb.RequestOp{{Request: &etcdserverpb.RequestOp_RequestRange{
+			RequestRange: &etcdserverpb.RangeRequest{Key: key, Serializable: true},
+		}}},
+		Failure: []*etcdserverpb.RequestOp{{Request: &etcdserverpb.RequestOp_RequestRange{
+			RequestRange: &etcdserverpb.RangeRequest{Key: key, Serializable: true},
+		}}},
+	})
+	require.NoError(t, err)
+	require.True(t, txn.Succeeded)
+	require.Equal(t, second.Header.Revision, txn.Header.Revision)
+	txnRange := txn.Responses[0].GetResponseRange()
+	require.NotNil(t, txnRange)
+	require.Equal(t, second.Header.Revision, txnRange.Header.Revision)
+	require.Len(t, txnRange.Kvs, 1)
+	require.Equal(t, []byte("v2"), txnRange.Kvs[0].Value)
+}
+
 func TestPutIgnoreLeasePreservesExistingLease(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

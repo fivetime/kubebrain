@@ -13613,6 +13613,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   KeysOnly 必须清空 value。本轮扩展本地 Range 回归，固定三阶段 Count/More/key/value
   组合，防止 MVCC tombstone 过滤、limit lookahead 或重建 key 排序改动导致 Kubernetes
   分页 list 漏项。
+- A943 固定 serializable Range/Txn 的 current header 语义：
+  `serializable_read` reference differential 证明当前 serializable Range 读到最新值，
+  historical serializable Range 读到旧值，但两者 response header 都停在当前 revision；
+  read-only Txn 中的 serializable Range 同样返回当前 header 并选中正确分支。本轮新增
+  本地 KV 回归，固定 current/historical/Txn 三个 header+value 组合，防止 follower
+  fast path 或历史读优化把 header 错写成 requested revision，影响客户端 revision
+  cache 和 relist 判断。
 
 ### P2：运维兼容和长期验证
 
