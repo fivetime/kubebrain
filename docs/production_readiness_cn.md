@@ -72,7 +72,9 @@ KubeBrain/PD/TiKV 均不可达。任何失败都返回非零，trap 清理所有
 MemberList 会把该列表交给 clientv3 替换原 endpoint 集合，错误的内部 DNS 会使已成功
 bootstrap 的客户端在下一次 AutoSync 后整体断连。实例发布门禁必须从目标客户端所在的
 网络域运行；它会逐一探测逗号分隔的 advertised URL，不能从仅能访问 bootstrap endpoint
-但无法解析最终地址的控制面网络执行后仍宣称发布成功。
+但无法解析最终地址的控制面网络执行后仍宣称发布成功。数据面启动时会拒绝
+`--initial-cluster` peer URL 和 `--advertise-client-urls` 中的控制字符、DEL、引号和
+反斜杠，避免畸形成员地址进入 MemberList 后再由 clientv3 Sync/AutoSync 扩散。
 
 每个实例必须使用全局唯一且创建后不可变的 `--keyspace`。production 基线中的
 `kubebrain-system` 仅是清单默认值；DBaaS 控制面实例化清单时必须替换为稳定实例 ID，并

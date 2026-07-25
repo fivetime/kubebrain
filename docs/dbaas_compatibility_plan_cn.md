@@ -13144,6 +13144,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   'TestBrokerParametersRejectsInsecureEndpointAndNonSuccess|TestBrokerParametersUsesTLSBearerAndFencingIdentity'
   -count=1 -v`、`go test ./hack/production/cmd/operationctl -count=1` 和
   `go vet ./hack/production/cmd/operationctl` 通过。
+- A882 收紧 Cluster 成员发布 URL 字符边界：
+  对照 A881 的启动前 fail closed 原则继续审计 `pkg/server/etcd/cluster.go`，发现
+  `--initial-cluster` peer URL 和 `--advertise-client-urls` 只依赖
+  `net/url.Parse`、scheme/host/path/query/fragment 与端口检查；带引号或反斜杠的 host
+  可能在成员拓扑解析后才以不可拨号地址进入 MemberList，随后被 clientv3 Sync/AutoSync
+  扩散给已 bootstrap 的客户端。现在 Cluster URL 入口统一拒绝控制字符、DEL、引号和
+  反斜杠；peer URL 在生成静态成员前失败，advertised client URL 在发布给 MemberList
+  前失败。回归覆盖换行、tab、引号和反斜杠的 peer/client URL，并保留 canonical URL
+  去尾斜杠、IPv6、重复 URL 与 repeated-name initial-cluster 语义。
 
 ### P2：运维兼容和长期验证
 

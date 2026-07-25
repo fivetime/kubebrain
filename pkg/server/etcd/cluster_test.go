@@ -223,6 +223,23 @@ func TestValidateAdvertiseClientURLs(t *testing.T) {
 	}
 }
 
+func TestValidateAdvertiseClientURLsRejectsUnsafeCharacters(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		urls []string
+	}{
+		{name: "newline", urls: []string{"https://etcd.example.com\n:2379"}},
+		{name: "tab", urls: []string{"https://etcd.example.com\t:2379"}},
+		{name: "quote", urls: []string{"https://etcd.example.com\":2379"}},
+		{name: "backslash", urls: []string{"https://etcd.example.com\\:2379"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ValidateAdvertiseClientURLs(tc.urls)
+			require.ErrorContains(t, err, "unsupported characters")
+		})
+	}
+}
+
 func TestParseInitialClusterRejectsInvalidConfiguration(t *testing.T) {
 	for _, spec := range []string{
 		"missing-url",
@@ -234,6 +251,23 @@ func TestParseInitialClusterRejectsInvalidConfiguration(t *testing.T) {
 	} {
 		_, err := ParseInitialCluster(spec, 2379, false)
 		require.Error(t, err, "spec %q", spec)
+	}
+}
+
+func TestParseInitialClusterRejectsUnsafePeerURLCharacters(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		spec string
+	}{
+		{name: "newline", spec: "a=http://10.0.0.1\n:2380"},
+		{name: "tab", spec: "a=http://10.0.0.1\t:2380"},
+		{name: "quote", spec: "a=http://10.0.0.1\":2380"},
+		{name: "backslash", spec: "a=http://10.0.0.1\\:2380"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ParseInitialCluster(tc.spec, 2379, false)
+			require.ErrorContains(t, err, "unsupported characters")
+		})
 	}
 }
 

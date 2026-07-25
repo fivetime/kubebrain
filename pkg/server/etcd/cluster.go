@@ -166,6 +166,9 @@ func parseInitialClusterEntry(entry string) (name, rawURL string, err error) {
 }
 
 func parseInitialClusterPeerURL(name, rawURL string) (peerURL, identity string, err error) {
+	if containsUnsafeClusterURLChar(rawURL) {
+		return "", "", fmt.Errorf("invalid peer URL %q for member %q: unsupported characters", rawURL, name)
+	}
 	u, err := url.Parse(rawURL)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
 		return "", "", fmt.Errorf("invalid peer URL %q for member %q", rawURL, name)
@@ -208,6 +211,9 @@ func ValidateAdvertiseClientURLs(raw []string) ([]string, error) {
 	urls := make([]string, 0, len(raw))
 	for _, value := range raw {
 		value = strings.TrimSpace(value)
+		if containsUnsafeClusterURLChar(value) {
+			return nil, fmt.Errorf("invalid advertised client URL %q: unsupported characters", value)
+		}
 		u, err := url.Parse(value)
 		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" ||
 			u.User != nil || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
@@ -224,6 +230,15 @@ func ValidateAdvertiseClientURLs(raw []string) ([]string, error) {
 		urls = append(urls, canonical)
 	}
 	return urls, nil
+}
+
+func containsUnsafeClusterURLChar(value string) bool {
+	for _, r := range value {
+		if r < 0x20 || r == 0x7f || r == '"' || r == '\\' {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *RPCServer) memberIDForPeerIdentity(address string) uint64 {
