@@ -129,6 +129,29 @@ func TestHandlerSubmitsImmutableTenantIdentityAndReturnsSanitizedObject(t *testi
 	require.Equal(t, "no-store", response.Header().Get("Cache-Control"))
 }
 
+func TestHandlerSubmitsLengthBoundParameterSecret(t *testing.T) {
+	store := &memoryOperationStore{objects: make(map[string]*unstructured.Unstructured)}
+	handler, err := NewHandler(staticAuthenticator{principal: authorizedPrincipal()}, store, time.Second)
+	require.NoError(t, err)
+	secretName := authorizedParameterSecretPrefix("tenant-a") + "backup"
+	body := `{
+		"name":"backup-1","operation_id":"backup-1","tenant":"tenant-a",
+		"instance":"instance-a","type":"Backup",
+		"parameters_secret":"` + secretName + `","parameters_key":"parameters.json",
+		"parameters_sha256":"` + strings.Repeat("a", 64) + `","max_attempts":3
+	}`
+	request := httptest.NewRequest(http.MethodPost, "/v1/operations", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "Bearer token")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	require.Equal(t, http.StatusAccepted, response.Code)
+	require.Equal(t, secretName, store.spec.ParametersSecret)
+	require.Equal(t, "parameters.json", store.spec.ParametersKey)
+	require.NotContains(t, response.Body.String(), "parameters_secret")
+}
+
 func TestHandlerPreventsCrossTenantAndCrossInstanceEnumeration(t *testing.T) {
 	store := &memoryOperationStore{objects: map[string]*unstructured.Unstructured{
 		"other": operationObject("other", operationqueue.Spec{
@@ -245,6 +268,7 @@ func TestHandlerRejectsUnboundParameterSecret(t *testing.T) {
 	handler, err := NewHandler(staticAuthenticator{principal: authorizedPrincipal()}, store, time.Second)
 	require.NoError(t, err)
 	for _, fields := range []string{
+		`"parameters_secret":"params-tenant-a-backup","parameters_key":"parameters.json",`,
 		`"parameters_secret":"params-tenant-b-backup","parameters_key":"parameters.json",`,
 		`"parameters_secret":"params-tenant-a-backup","parameters_key":"token",`,
 		`"parameters_secret":"params-tenant-a-Invalid","parameters_key":"parameters.json",`,
@@ -261,6 +285,28 @@ func TestHandlerRejectsUnboundParameterSecret(t *testing.T) {
 		handler.ServeHTTP(response, request)
 		require.Equal(t, http.StatusBadRequest, response.Code)
 	}
+	require.Empty(t, store.objects)
+}
+
+func TestHandlerRejectsTenantPrefixCollisionParameterSecret(t *testing.T) {
+	principal := authorizedPrincipal()
+	principal.Tenant = "tenant"
+	store := &memoryOperationStore{objects: make(map[string]*unstructured.Unstructured)}
+	handler, err := NewHandler(staticAuthenticator{principal: principal}, store, time.Second)
+	require.NoError(t, err)
+	body := `{
+		"name":"backup-1","operation_id":"backup-1","tenant":"tenant",
+		"instance":"instance-a","type":"Backup",
+		"parameters_secret":"` + authorizedParameterSecretPrefix("tenant-a") + `backup","parameters_key":"parameters.json",
+		"parameters_sha256":"` + strings.Repeat("a", 64) + `","max_attempts":3
+	}`
+	request := httptest.NewRequest(http.MethodPost, "/v1/operations", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "Bearer token")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	require.Equal(t, http.StatusBadRequest, response.Code)
 	require.Empty(t, store.objects)
 }
 

@@ -1830,8 +1830,9 @@ unknown field 或 trailing JSON 的请求体；提交 body 的 `name` 和
 `GET /v1/operations/{name}` 的 path name 必须是 Kubernetes DNS subdomain。畸形提交或
 查询不能消耗 OIDC/JWKS 或 Operation API；畸形 Bearer header 也必须在本地拒绝，即使
 JWKS cache 已过期也不能触发 JWKS refresh。
-参数 Secret 只能引用受信控制面预置的 `params-<tenant>-*` 对象，且 key 固定为
-`parameters.json`；API ServiceAccount 不具备 Secret 读取或写入权限。
+参数 Secret 只能引用受信控制面预置的 `params-l<tenant字节长度>-<tenant>-*` 对象
+（例如 `tenant-a` 使用 `params-l8-tenant-a-*`），且 key 固定为 `parameters.json`；
+API ServiceAccount 不具备 Secret 读取或写入权限。
 JWKS 默认缓存 5 分钟；并发 cache miss 合并为单次刷新，unknown `kid` 或刷新失败后
 fail closed 退避 5 秒，避免外部 IdP 故障或伪造 key ID 造成刷新惊群。可用
 `--oidc-jwks-cache-ttl` 和 `--oidc-jwks-refresh-backoff` 调整，但退避期间不会继续信任

@@ -4491,8 +4491,8 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   issuer、audience、exp、sub、DNS tenant 和显式 instance claim；未知 kid 刷新 JWKS，
   缓存过期且刷新失败时 fail closed，非 loopback issuer/JWKS 禁止明文 HTTP。POST submit
   与 GET operation 都要求 token tenant 和 instance 授权，越权统一 404 防枚举；请求体
-  限 64 KiB、拒绝未知 JSON 字段，响应不暴露参数 Secret 引用；参数引用仅允许
-  `params-<tenant>-*` / `parameters.json`。ServiceAccount 仅拥有 namespaced operation
+  限 64 KiB、拒绝未知 JSON 字段，响应不暴露参数 Secret 引用；A807 后参数引用仅允许
+  `params-l<tenant字节长度>-<tenant>-*` / `parameters.json`。ServiceAccount 仅拥有 namespaced operation
   create/get，不能 list、watch、读取 Secret、修改 status 或删除。
   Deployment 在 OIDC/TLS Secret 配置前保持 replicas=0 fail closed。
 
@@ -12320,6 +12320,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   正确但额外携带 `token` key 的 Secret。
   `go test ./hack/production/internal/operationqueue -run 'TestQueue(LoadsDigestBoundImmutableParameters|RejectsParameterSecretWithExtraData|RejectsMalformedParameterReferenceBeforeSecretAPI|OnlyLoadsParametersForCurrentTypeBoundWorker)' -count=1 -v`
   和 `go test ./hack/production/internal/operationqueue -count=1` 均通过。
+- A807 消除 Operation API 参数 Secret 租户前缀碰撞：
+  外部 submit API 旧规则允许 `params-<tenant>-*`，但 tenant 是 DNS label，可包含连字符；
+  因此 `tenant` 会把 `params-tenant-a-*` 误判为自己的参数 Secret 前缀，和 `tenant-a`
+  形成名称碰撞。现在 API 只接受长度绑定前缀
+  `params-l<tenant字节长度>-<tenant>-*`，例如 `tenant-a` 只能使用
+  `params-l8-tenant-a-*`，并继续要求 key 固定为 `parameters.json`。回归覆盖新格式可提交、
+  旧 `params-<tenant>-*` 被拒绝，以及 `tenant` 不能引用 `tenant-a` 的长度绑定前缀。
+  `go test ./hack/production/internal/operationapi -run 'TestHandler(SubmitsLengthBoundParameterSecret|RejectsUnboundParameterSecret|RejectsTenantPrefixCollisionParameterSecret|SubmitsImmutableTenantIdentityAndReturnsSanitizedObject)' -count=1 -v`
+  和 `go test ./hack/production/internal/operationapi -count=1` 均通过。
 
 ### P2：运维兼容和长期验证
 

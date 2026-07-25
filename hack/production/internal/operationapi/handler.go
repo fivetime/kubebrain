@@ -7,6 +7,7 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -204,8 +205,12 @@ func authorizedParametersSecret(input submitRequest, tenant string) bool {
 	}
 	return input.ParametersSecret != "" &&
 		input.ParametersKey == "parameters.json" &&
-		strings.HasPrefix(input.ParametersSecret, "params-"+tenant+"-") &&
+		strings.HasPrefix(input.ParametersSecret, authorizedParameterSecretPrefix(tenant)) &&
 		operationqueue.ValidParameterSecretName(input.ParametersSecret)
+}
+
+func authorizedParameterSecretPrefix(tenant string) string {
+	return "params-l" + strconv.Itoa(len(tenant)) + "-" + tenant + "-"
 }
 
 func (h *Handler) get(response http.ResponseWriter, request *http.Request) {
