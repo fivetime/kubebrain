@@ -12762,6 +12762,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   'TestBackupDeletionOperationRejectsDriftAndInvalidEvidence/source_receipt_unsafe_object_identity' -count=1 -v`、
   `go test ./hack/production -run TestBackupDeletionOperation -count=1 -v`、相关脚本
   ShellCheck 和 `git diff --check` 通过。
+- A851 前移 BackupDeletion runner 的 object store 参数校验：
+  A850 已校验 source receipt 的 bucket/object key/version，但 operation 参数中的
+  `object_store_id` 仍只要求非空；若参数、source receipt 和 pre/post manifest 一起携带空白或
+  控制字符，runner 会进入 inventory/delete 子流程后才由对象工具或 receipt gate 失败，表现为
+  可重试工作流错误。现在 runner 在冻结参数后、TSV 展开前用原始 JSON 要求
+  `object_store_id` 是安全 scope，并在 Bash 展开后二次守卫；非法 scope 直接退出，不进入
+  object workflow，也不 retry/succeed。回归构造参数、source receipt 与 manifest 全部使用
+  含空白 store ID 的一致污染场景。`go test ./hack/production -run
+  'TestBackupDeletionOperationRejectsDriftAndInvalidEvidence/object_store_parameter_unsafe_scope' -count=1 -v`、
+  `go test ./hack/production -run TestBackupDeletionOperation -count=1 -v`、`go vet
+  ./hack/production`、`go test ./hack/production -count=1 -timeout=12m`、相关脚本 ShellCheck 和
+  `git diff --check` 通过。
 
 ### P2：运维兼容和长期验证
 

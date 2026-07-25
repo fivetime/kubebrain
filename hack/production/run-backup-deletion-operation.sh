@@ -121,6 +121,21 @@ if [[ "$captured_digest" != "$expected_digest" || "$current_digest" != "$expecte
 fi
 PARAMETERS_INPUT="$frozen_parameters"
 
+validate_object_store_identity_json() {
+  "$JQ" -e '
+    .object_store_id | type == "string" and length > 0 and (test("\\s") | not)' \
+    "$PARAMETERS_INPUT" >/dev/null
+}
+
+validate_object_store_identity() {
+  local value="$1"
+  [[ -n "$value" && ! "$value" =~ [[:space:]] ]] ||
+    { echo "backup deletion object store identity must use a safe scope" >&2; exit 2; }
+}
+
+validate_object_store_identity_json ||
+  { echo "backup deletion object store identity must use a safe scope" >&2; exit 2; }
+
 parameters="$("$JQ" -er '[
   .backup_id, .object_store_id, .s3_endpoint, .s3_force_path_style,
   .aws_region, .source_receipt_input, .source_receipt_sha256,
@@ -143,6 +158,7 @@ for value in "$object_store_id" "$s3_endpoint" "$aws_region" "$source_receipt" \
   "$post_inventory_receipt" "$operation_receipt"; do
   [[ -n "$value" ]] || { echo "backup deletion parameters contain an empty required field" >&2; exit 2; }
 done
+validate_object_store_identity "$object_store_id"
 for digest in "$source_sha" "$pre_manifest_sha" "$post_manifest_sha"; do
   [[ "$digest" =~ ^[a-f0-9]{64}$ ]] ||
     { echo "backup deletion evidence digest is invalid" >&2; exit 2; }

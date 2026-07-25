@@ -300,6 +300,31 @@ func TestBackupDeletionOperationRejectsDriftAndInvalidEvidence(t *testing.T) {
 		require.NotContains(t, log, "--action retry")
 		require.NotContains(t, log, "--action succeed")
 	})
+	t.Run("object store parameter unsafe scope", func(t *testing.T) {
+		f := newBackupDeletionFixture(t)
+		for _, path := range []string{f.sourceReceipt, f.preManifest, f.postManifest} {
+			updated := strings.ReplaceAll(
+				string(mustRead(t, path)),
+				`"object_store_id":"store-a"`,
+				`"object_store_id":"store a"`,
+			)
+			require.NoError(t, os.WriteFile(path, []byte(updated), 0o600))
+		}
+		f.rewriteParameters(t)
+		parameters := strings.Replace(
+			string(mustRead(t, f.parameters)),
+			`"object_store_id":"store-a"`,
+			`"object_store_id":"store a"`,
+			1,
+		)
+		require.NoError(t, os.WriteFile(f.parameters, []byte(parameters), 0o600))
+
+		f.run(t, false, "", "backup deletion object store identity must use a safe scope")
+		log := f.log(t)
+		require.NotContains(t, log, "object ")
+		require.NotContains(t, log, "--action retry")
+		require.NotContains(t, log, "--action succeed")
+	})
 	t.Run("pre inventory receipt unknown field", func(t *testing.T) {
 		f := newBackupDeletionFixture(t)
 		f.run(t, false, "EXTRA_PRE_RECEIPT=true", "pre-delete inventory receipt is invalid")
