@@ -12631,6 +12631,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `NODE_NAME='bad node' hack/dev/version-info.sh`、同一 pinned ShellCheck 镜像检查
   `hack/dev/common.sh hack/dev/up.sh hack/dev/down.sh hack/dev/version-info.sh` 和
   `git diff --check` 通过。
+- A836 让 Kubernetes version matrix 与 dev stack 输入规则一致：
+  `hack/dev/k8s-version-matrix.sh` 现在 source `hack/dev/common.sh`，在 docker/kind/kubectl
+  依赖检查前校验 base `CLUSTER_NAME`、`IMAGE_NAME` 和每个 `KIND_NODE_IMAGES` 条目。由于矩阵
+  会把 node image 转成临时 kind cluster suffix，脚本会按 shared `validate_name_token` 的长度
+  上限截断 suffix，并再次校验最终 cluster name，避免 digest 形式的 node image 生成超长名称后
+  才在 `up.sh`/`down.sh` 中失败。共享 image reference 校验也收紧为必须以字母或数字开头。
+  `bash -n hack/dev/common.sh hack/dev/k8s-version-matrix.sh`、非法 `CLUSTER_NAME='bad name'`、
+  非法 `IMAGE_NAME='bad image'`、非法 `KIND_NODE_IMAGES='@bad'`、同一 pinned ShellCheck 镜像检查
+  `hack/dev/common.sh hack/dev/k8s-version-matrix.sh` 和 `git diff --check` 通过。
 
 ### P2：运维兼容和长期验证
 

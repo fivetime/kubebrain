@@ -2,6 +2,9 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
+# shellcheck source=hack/dev/common.sh
+source "${ROOT_DIR}/hack/dev/common.sh"
+
 BASE_CLUSTER_NAME="${CLUSTER_NAME:-kubebrain-dev-matrix}"
 IMAGE_NAME="${IMAGE_NAME:-kubebrain:dev}"
 KIND_NODE_IMAGES="${KIND_NODE_IMAGES:-kindest/node:v1.36.1}"
@@ -47,6 +50,16 @@ if [ "${#node_images[@]}" -eq 0 ]; then
   echo "KIND_NODE_IMAGES must contain at least one kind node image" >&2
   exit 2
 fi
+validate_name_token BASE_CLUSTER_NAME
+validate_image_reference IMAGE_NAME
+max_suffix_length=$((128 - ${#BASE_CLUSTER_NAME} - 1))
+if [ "$max_suffix_length" -lt 1 ]; then
+  echo "CLUSTER_NAME must leave room for a matrix image suffix" >&2
+  exit 2
+fi
+for node_image in "${node_images[@]}"; do
+  validate_image_reference_value KIND_NODE_IMAGE "$node_image"
+done
 
 need kind
 need docker
@@ -58,7 +71,9 @@ cd "$ROOT_DIR"
 
 for node_image in "${node_images[@]}"; do
   suffix="$(cluster_suffix "$node_image")"
+  suffix="${suffix:0:$max_suffix_length}"
   cluster_name="${BASE_CLUSTER_NAME}-${suffix}"
+  validate_name_token cluster_name
 
   echo
   echo "==> Kubernetes matrix entry: ${node_image}"

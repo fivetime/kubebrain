@@ -11,8 +11,13 @@ validate_name_token() {
 
 validate_image_reference() {
   local name="$1"
-  local value="${!name}"
-  if [[ ! "$value" =~ ^[A-Za-z0-9._:@/-]+$ ]]; then
+  validate_image_reference_value "$name" "${!name}"
+}
+
+validate_image_reference_value() {
+  local name="$1"
+  local value="$2"
+  if [[ ! "$value" =~ ^[A-Za-z0-9][A-Za-z0-9._:@/-]*$ ]]; then
     echo "${name} must be a non-empty image reference without whitespace or shell metacharacters" >&2
     exit 2
   fi
