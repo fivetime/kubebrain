@@ -12273,6 +12273,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   错误代理路径当作参数 broker 基址。现在 `brokerParameters` 只接受空 path 或根 path，
   请求路径固定为 `/v1/parameters`，并在读 projected token/CA 前 fail closed。
   回归覆盖带 path endpoint。
+- A802 拒绝 backup scheduler 参数模板中的凭据字段：
+  production 文档要求 S3 access key/secret、session token 和 etcd TLS 凭据只通过
+  worker Secret/env 注入，不进入 Operation parameters；但 scheduler 旧路径只校验模板
+  是 JSON object、输出路径含 `{operation_id}`，会把未知字段原样写入 immutable parameters
+  Secret。现在参数模板渲染后、创建 Secret 前会拒绝 credential-like 顶层字段，包括
+  `access_key`、`secret`、`token`、`password`、`private_key` 和 cert/TLS/key 常见别名；
+  合法的 `s3_object_key` 不受影响。回归覆盖 S3 access key/secret/session token 与
+  etcd/client TLS 字段，确认不会创建 Operation 或 generated params Secret。
+  `go test ./hack/production/internal/backupscheduler -run 'TestReconcile(IsDeterministicAcrossReplicas|RejectsCredentialFieldsInParameterTemplate|RejectsNullParameterTemplateWithoutCreatingOperation|RejectsPolicySchemaBeforeTemplateRead)' -count=1 -v`
+  和 `go test ./hack/production/internal/backupscheduler -count=1` 均通过。
 
 ### P2：运维兼容和长期验证
 

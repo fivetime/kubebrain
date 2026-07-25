@@ -119,6 +119,40 @@ func TestReconcileRejectsNullParameterTemplateWithoutCreatingOperation(t *testin
 	require.Empty(t, operations.Items)
 }
 
+func TestReconcileRejectsCredentialFieldsInParameterTemplate(t *testing.T) {
+	for _, field := range []string{
+		"aws_secret_access_key",
+		"AWS_ACCESS_KEY_ID",
+		"aws-session-token",
+		"etcdctl_key",
+		"client_certificate",
+	} {
+		t.Run(field, func(t *testing.T) {
+			client := fakeClient()
+			template := validTemplate()
+			template[field] = "credential"
+			createTemplate(t, client, template)
+			createPolicy(t, client, false)
+
+			count, err := New(client, "test").WithClock(func() time.Time {
+				return time.Unix(1_700_003_000, 0)
+			}).Reconcile(context.Background())
+			require.Zero(t, count)
+			require.ErrorContains(t, err, "credential field")
+			operations, listErr := client.Resource(operationqueue.Resource).Namespace("test").
+				List(context.Background(), metav1.ListOptions{})
+			require.NoError(t, listErr)
+			require.Empty(t, operations.Items)
+			secrets, listErr := client.Resource(operationqueue.SecretResource).Namespace("test").
+				List(context.Background(), metav1.ListOptions{})
+			require.NoError(t, listErr)
+			for _, secret := range secrets.Items {
+				require.NotRegexp(t, "^params-", secret.GetName())
+			}
+		})
+	}
+}
+
 func TestReconcileRejectsPolicySchemaBeforeTemplateRead(t *testing.T) {
 	tests := []struct {
 		name   string

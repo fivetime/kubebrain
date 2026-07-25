@@ -289,6 +289,9 @@ func (s *Scheduler) renderParameters(
 	if err != nil {
 		return nil, fmt.Errorf("decode parameter template: %w", err)
 	}
+	if err := rejectCredentialParameterFields(parameters); err != nil {
+		return nil, err
+	}
 	parameters["backup_id"] = operationID
 	parameters["retain_until_unix"] = slot + retention
 	for _, field := range []string{"artifact_output", "receipt_output", "s3_object_key"} {
@@ -325,6 +328,40 @@ func decodeParameterTemplate(raw []byte) (map[string]any, error) {
 		return nil, errors.New("parameter template must be a JSON object")
 	}
 	return parameters, nil
+}
+
+func rejectCredentialParameterFields(parameters map[string]any) error {
+	var blocked []string
+	for field := range parameters {
+		if credentialParameterField(field) {
+			blocked = append(blocked, field)
+		}
+	}
+	if len(blocked) == 0 {
+		return nil
+	}
+	sort.Strings(blocked)
+	return fmt.Errorf("parameter template contains credential field %q", blocked[0])
+}
+
+func credentialParameterField(field string) bool {
+	normalized := strings.ToLower(strings.ReplaceAll(field, "-", "_"))
+	if strings.Contains(normalized, "access_key") ||
+		strings.Contains(normalized, "cert") ||
+		strings.Contains(normalized, "password") ||
+		strings.Contains(normalized, "private_key") ||
+		strings.Contains(normalized, "secret") ||
+		strings.Contains(normalized, "token") {
+		return true
+	}
+	switch normalized {
+	case "ca_cert", "cacert", "client_cert", "client_key",
+		"etcdctl_cacert", "etcdctl_cert", "etcdctl_key",
+		"tls_cert", "tls_crt", "tls_key":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Scheduler) ensureParametersSecret(
