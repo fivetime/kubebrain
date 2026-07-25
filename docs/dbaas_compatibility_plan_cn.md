@@ -13181,7 +13181,7 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `https://broker.example"other` 这类带引号的 host，客户端随后才读取 token/CA 或在
   request/dial 阶段失败。现在 `brokerParameters` 在 URL 解析前拒绝控制字符、DEL、引号
   和反斜杠，保证畸形 broker origin 在读取 projected token/CA 前 fail closed。回归覆盖
-  换行、tab、引号和反斜杠 endpoint，并保留 TLS Bearer/fencing 成功路径。
+  换行、tab、DEL、引号和反斜杠 endpoint，并保留 TLS Bearer/fencing 成功路径。
   `go test ./hack/production/cmd/operationctl -run
   'TestBrokerParametersRejectsInsecureEndpointAndNonSuccess|TestBrokerParametersUsesTLSBearerAndFencingIdentity'
   -count=1 -v`、`go test ./hack/production/cmd/operationctl -count=1` 和

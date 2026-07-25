@@ -116,6 +116,7 @@ func TestBrokerParametersRejectsInsecureEndpointAndNonSuccess(t *testing.T) {
 	for _, endpoint := range []string{
 		"https://parameters.example\nother",
 		"https://parameters.example\tother",
+		"https://parameters.example\x7fother",
 		`https://parameters.example"other`,
 		`https://parameters.example\other`,
 	} {
