@@ -1599,7 +1599,10 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
 - `Maintenance.Status`、`Hash`、`HashKV`、`Alarm`、`Defragment`；其中
   Status/Hash/HashKV 与 etcd 一样是成员本地诊断；Hash/HashKV 在 leader 可达时尽力刷新
   副本 revision cache，但不要求 leader read barrier 成功，可在选主和 leader 故障窗口
-  用于 endpoint/hash 排障。Status 的 `Errors` 与 etcd 一样先报告 no-leader，再追加
+  用于 endpoint/hash 排障。peer 端口同时暴露 etcd corruption checker 使用的
+  `/members/hashkv`，支持 JSON `HashKVRequest`、`X-Etcd-Cluster-ID` 防串集群检查以及
+  compact/future revision 错误映射；该入口属于副本内部诊断面，生产 NetworkPolicy
+  仍必须只允许 KubeBrain 副本互通。Status 的 `Errors` 与 etcd 一样先报告 no-leader，再追加
   当前持久 alarm 的 `AlarmMember.String()`；因此 NOSPACE 生效时，每个 KubeBrain
   副本都会向 `etcdctl endpoint status` 暴露同一 alarm owner，disarm 后同步消失。CORRUPT
   同样以 TiKV internal metadata 持久保存 member 集合；非空时 Put/Delete/写 Txn/Compact/

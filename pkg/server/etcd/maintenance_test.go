@@ -15,10 +15,16 @@
 package etcd
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
+	"strconv"
 	"sync"
 	"testing"
 
@@ -196,6 +202,145 @@ func TestMaintenanceBasicDiagnostics(t *testing.T) {
 	defragResp, err := server.Defragment(ctx, &etcdserverpb.DefragmentRequest{})
 	require.NoError(t, err)
 	require.Nil(t, defragResp.Header)
+}
+
+func TestPeerHashKVHandler(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	ctx := context.Background()
+	put, err := server.Put(ctx, &etcdserverpb.PutRequest{
+		Key:   []byte("/registry/maintenance/peer-hash"),
+		Value: []byte("value"),
+	})
+	require.NoError(t, err)
+
+	body, err := json.Marshal(&etcdserverpb.HashKVRequest{Revision: put.Header.Revision})
+	require.NoError(t, err)
+	req := httptest.NewRequest(http.MethodGet, PeerHashKVPath, bytes.NewReader(body))
+	req.Header.Set(etcdClusterIDHeader, strconv.FormatUint(server.backend.ClusterID(), 16))
+	rec := httptest.NewRecorder()
+
+	server.GetPeerHttpHandlers()[PeerHashKVPath].ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, strconv.FormatUint(server.backend.ClusterID(), 16), rec.Header().Get(etcdClusterIDHeader))
+	require.Equal(t, "application/json", rec.Header().Get("Content-Type"))
+	var resp etcdserverpb.HashKVResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	require.Equal(t, put.Header.Revision, resp.HashRevision)
+	require.Equal(t, put.Header.Revision, resp.Header.Revision)
+	require.NotZero(t, resp.Hash)
+}
+
+func TestPeerHashKVHandlerRejectsBadPeerRequests(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	tests := []struct {
+		name       string
+		method     string
+		target     string
+		body       io.Reader
+		clusterID  string
+		wantStatus int
+		wantBody   string
+	}{
+		{
+			name:       "wrong method",
+			method:     http.MethodPost,
+			target:     PeerHashKVPath,
+			body:       bytes.NewReader([]byte(`{}`)),
+			wantStatus: http.StatusMethodNotAllowed,
+			wantBody:   "Method Not Allowed",
+		},
+		{
+			name:       "wrong path",
+			method:     http.MethodGet,
+			target:     "/members/hashkv/extra",
+			body:       bytes.NewReader([]byte(`{}`)),
+			wantStatus: http.StatusBadRequest,
+			wantBody:   "bad path",
+		},
+		{
+			name:       "cluster mismatch",
+			method:     http.MethodGet,
+			target:     PeerHashKVPath,
+			body:       bytes.NewReader([]byte(`{}`)),
+			clusterID:  "deadbeef",
+			wantStatus: http.StatusPreconditionFailed,
+			wantBody:   "cluster ID mismatch",
+		},
+		{
+			name:       "bad json",
+			method:     http.MethodGet,
+			target:     PeerHashKVPath,
+			body:       bytes.NewReader([]byte(`{`)),
+			wantStatus: http.StatusBadRequest,
+			wantBody:   "error unmarshalling request",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(tt.method, tt.target, tt.body)
+			if tt.clusterID != "" {
+				req.Header.Set(etcdClusterIDHeader, tt.clusterID)
+			}
+			rec := httptest.NewRecorder()
+
+			server.peerHashKVHandler(rec, req)
+
+			require.Equal(t, tt.wantStatus, rec.Code)
+			require.Contains(t, rec.Body.String(), tt.wantBody)
+		})
+	}
+}
+
+func TestPeerHashKVHandlerMapsRevisionErrors(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	ctx := context.Background()
+	first, err := server.Put(ctx, &etcdserverpb.PutRequest{
+		Key: []byte("/registry/maintenance/peer-hash-errors"), Value: []byte("v1"),
+	})
+	require.NoError(t, err)
+	second, err := server.Put(ctx, &etcdserverpb.PutRequest{
+		Key: []byte("/registry/maintenance/peer-hash-errors"), Value: []byte("v2"),
+	})
+	require.NoError(t, err)
+	_, err = server.backend.CompactAsync(ctx, uint64(second.Header.Revision))
+	require.NoError(t, err)
+
+	tests := []struct {
+		name     string
+		revision int64
+		wantBody string
+	}{
+		{
+			name:     "compacted",
+			revision: first.Header.Revision,
+			wantBody: "mvcc: required revision has been compacted",
+		},
+		{
+			name:     "future",
+			revision: second.Header.Revision + 100,
+			wantBody: "mvcc: required revision is a future revision",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body, err := json.Marshal(&etcdserverpb.HashKVRequest{Revision: tt.revision})
+			require.NoError(t, err)
+			req := httptest.NewRequest(http.MethodGet, PeerHashKVPath, bytes.NewReader(body))
+			rec := httptest.NewRecorder()
+
+			server.peerHashKVHandler(rec, req)
+
+			require.Equal(t, http.StatusBadRequest, rec.Code)
+			require.Contains(t, rec.Body.String(), tt.wantBody)
+		})
+	}
 }
 
 func TestCorruptAlarmBlocksEtcdApplierSurfaceOverGRPC(t *testing.T) {
