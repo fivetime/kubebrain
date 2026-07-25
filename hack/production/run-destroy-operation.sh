@@ -38,6 +38,14 @@ EOF
   { echo "OPERATION_NAMESPACE must be a lowercase DNS label of at most 63 characters" >&2; exit 2; }
 command -v "$JQ" >/dev/null || { echo "jq is required" >&2; exit 2; }
 command -v sha256sum >/dev/null || { echo "sha256sum is required" >&2; exit 2; }
+require_executable_file() {
+  local name="$1"
+  local path="$2"
+  [[ -f "$path" && -x "$path" ]] ||
+    { echo "${name} is required and must be an executable file" >&2; exit 2; }
+}
+[[ -z "$OPERATIONCTL" ]] || require_executable_file OPERATIONCTL "$OPERATIONCTL"
+require_executable_file DESTROY_COMMAND "$DESTROY_COMMAND"
 heartbeat_interval="${HEARTBEAT_INTERVAL_SECONDS:-$((LEASE_SECONDS / 3))}"
 [[ "$heartbeat_interval" =~ ^([0-9]+([.][0-9]+)?|[.][0-9]+)$ && "$heartbeat_interval" != 0 ]] ||
   { echo "HEARTBEAT_INTERVAL_SECONDS must be positive" >&2; exit 2; }

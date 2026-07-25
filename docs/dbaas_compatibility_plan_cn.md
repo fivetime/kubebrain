@@ -13018,6 +13018,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   ./hack/production/internal/meteringarchive ./hack/production/internal/meteringstorage`、
   `go test ./hack/production/... ./deploy/production -count=1`（根 production 包 328.967 秒）、
   `go vet ./hack/production/... ./deploy/production` 和 `git diff --check` 通过。
+- A876 前移 shell operation runner 的可替换子命令校验：
+  Go runtime executor CLI 已通过 `processgroup.ValidateExecutable` 校验绝对可执行文件，但
+  shell operation runner 的 `EXPORT_COMMAND`、`STATUS_COMMAND`、`OBJECT_COMMAND`、
+  `AUDIT_COMMAND`、`CUTOVER_COMMAND`、`ROTATION_COMMAND`、`DESTROY_COMMAND` 和显式
+  `OPERATIONCTL` 只在对应步骤执行时才由 shell 报错；确定性的本地配置错误可能先 claim
+  operation、读取参数、创建临时 artifact 或被误分类为可重试 workflow 失败。现在六类
+  runner 在 claim 前要求显式可替换命令是存在且有执行位的文件，证书轮换 publish hook
+  也统一要求普通可执行文件。回归覆盖六类 runner 的非法子命令，确认不调用 fake
+  `operationctl`。`go test ./hack/production -run
+  TestOperationRunnersRejectInvalidSubcommandBeforeClaim -count=1 -v`、`go test
+  ./hack/production -run
+  'Test(OperationRunnersRejectInvalidSubcommandBeforeClaim|CertificateRotationOperation|BackupOperation|BackupDeletionOperation|RestoreCutoverOperation|PostRestoreAuditOperation|DestroyOperation)'
+  -count=1`（164.896 秒）、`go test ./hack/production -count=1 -timeout=12m`
+  （328.197 秒）、`go vet ./hack/production`、`bash -n
+  hack/production/run-backup-operation.sh hack/production/run-backup-deletion-operation.sh
+  hack/production/run-restore-cutover-operation.sh
+  hack/production/run-post-restore-audit-operation.sh
+  hack/production/run-certificate-rotation-operation.sh hack/production/run-destroy-operation.sh`
+  和 `git diff --check` 通过。
 - A855 前移 PostRestoreAudit runner 的 Service/target 身份校验：
   `audit-restored-instance.sh` 会拒绝非法 operation/instance、Service namespace/name 和
   target instance，但 `run-post-restore-audit-operation.sh` 原先只在子审计前独立校验

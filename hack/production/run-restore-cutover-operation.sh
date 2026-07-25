@@ -42,6 +42,14 @@ heartbeat_interval="${HEARTBEAT_INTERVAL_SECONDS:-$((LEASE_SECONDS / 3))}"
   { echo "HEARTBEAT_INTERVAL_SECONDS must be positive" >&2; exit 2; }
 command -v "$JQ" >/dev/null || { echo "jq is required" >&2; exit 2; }
 command -v sha256sum >/dev/null || { echo "sha256sum is required" >&2; exit 2; }
+require_executable_file() {
+  local name="$1"
+  local path="$2"
+  [[ -f "$path" && -x "$path" ]] ||
+    { echo "${name} is required and must be an executable file" >&2; exit 2; }
+}
+[[ -z "$OPERATIONCTL" ]] || require_executable_file OPERATIONCTL "$OPERATIONCTL"
+require_executable_file CUTOVER_COMMAND "$CUTOVER_COMMAND"
 
 managed_parameters=""
 parameter_capture_dir="$(mktemp -d)"
