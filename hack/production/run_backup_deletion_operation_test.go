@@ -377,6 +377,26 @@ func TestBackupDeletionOperationStopsWhenHeartbeatIsFenced(t *testing.T) {
 	require.NotContains(t, f.log(t), "--action retry")
 }
 
+func TestBackupDeletionOperationRejectsInvalidClaimIdentityBeforeWorkflow(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		env  string
+	}{
+		{name: "operation id", env: "CLAIM_OPERATION_ID=delete/1"},
+		{name: "instance", env: "CLAIM_INSTANCE=instance/a"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newBackupDeletionFixture(t)
+			f.run(t, false, tc.env, "backup deletion claim identity contains unsupported characters")
+			log := f.log(t)
+			require.NotContains(t, log, "object ")
+			require.NotContains(t, log, "--action retry")
+			require.NotContains(t, log, "--action succeed")
+			require.NoFileExists(t, f.operationReceipt)
+		})
+	}
+}
+
 type backupDeletionFixture struct {
 	dir, parameters, sourceReceipt, preManifest, postManifest  string
 	preInventoryReceipt, deletionReceipt, postInventoryReceipt string
@@ -415,7 +435,9 @@ set -euo pipefail
 printf 'operationctl %s\n' "$*" >>"$FAKE_DIR/actions.log"
 if [[ " $* " == *" --action claim "* ]]; then
   digest="${CLAIM_DIGEST:-$PARAMETERS_DIGEST}"
-  printf '{"namespace":"tenant-a-operations","name":"delete-1","operation_id":"delete-1","instance":"instance-a","parameters_sha256":"%s","attempt":1}\n' "$digest"
+  operation_id="${CLAIM_OPERATION_ID:-delete-1}"
+  instance="${CLAIM_INSTANCE:-instance-a}"
+  printf '{"namespace":"tenant-a-operations","name":"delete-1","operation_id":"%s","instance":"%s","parameters_sha256":"%s","attempt":1}\n' "$operation_id" "$instance" "$digest"
 elif [[ " $* " == *" --action heartbeat "* && "${HEARTBEAT_FAIL:-false}" == true ]]; then
   exit 1
 else

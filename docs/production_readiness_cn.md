@@ -793,6 +793,9 @@ request object identity，避免远端已经写入后才因 receipt schema 失�
 `hack/production/run-backup-operation.sh` 在调用 export/status/object 子命令前还会校验
 claim 返回的 operation ID 和 instance 身份；二者必须匹配受控资源标识格式。非法 claim
 身份不会启动逻辑导出、artifact status 或对象上传，也不会被误记录为可重试备份失败。
+`hack/production/run-backup-deletion-operation.sh` 对 BackupDeletion claim 使用同一身份
+边界；非法 operation ID 或 instance 不会进入 inventory/delete 对象工作流，也不会发布
+operation deletion receipt。
 
 本地 receipt 丢失后的跨进程恢复还必须 Head 精确 version，复核 version ID、metadata、
 size，并用远端 `LastModified` 固化 `uploaded_at_unix`；不得使用当前重试时间。缺失或

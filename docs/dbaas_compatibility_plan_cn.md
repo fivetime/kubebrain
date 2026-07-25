@@ -12844,6 +12844,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go vet ./hack/production`、`go test ./hack/production -count=1 -timeout=12m`
   （318.901 秒）、`bash -n hack/production/run-backup-operation.sh` 和
   `git diff --check` 通过；当前环境未安装 `shellcheck`，未运行 ShellCheck。
+- A857 前移 BackupDeletion runner 的 claim 身份校验：
+  BackupDeletion runner 同样信任 claim 返回的 `operation_id` 和 `instance`，并把它们用于
+  exact-version 删除确认、source/deletion/operation receipt 绑定和最终 operation receipt；
+  非法 claim 身份可能在参数与 source evidence 一致漂移时进入 inventory/delete 对象工作流。
+  现在 runner 在 claim 解析后立即要求 operation ID 与 instance 匹配受控资源标识格式，
+  非法时不进入 object workflow，也不 retry/succeed。回归覆盖非法 operation ID 和非法
+  instance。`go test ./hack/production -run
+  'TestBackupDeletionOperation(RejectsInvalidClaimIdentityBeforeWorkflow|RejectsDriftAndInvalidEvidence)'
+  -count=1 -v`、`go test ./hack/production -run TestBackupDeletionOperation -count=1
+  -v`、`go vet ./hack/production`、`go test ./hack/production -count=1 -timeout=12m`
+  （317.895 秒）、`bash -n hack/production/run-backup-deletion-operation.sh` 和
+  `git diff --check` 通过；当前环境未安装 `shellcheck`，未运行 ShellCheck。
 
 ### P2：运维兼容和长期验证
 
