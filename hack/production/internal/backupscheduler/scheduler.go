@@ -29,6 +29,8 @@ var PolicyResource = schema.GroupVersionResource{
 }
 
 const parametersKey = "parameters.json"
+const policyAPIVersion = "dbaas.kubebrain.io/v1alpha1"
+const policyKind = "KubeBrainBackupPolicy"
 const DefaultRequester = "kubebrain-backup-scheduler"
 const DefaultInventoryKey = namespaceinventory.DefaultKey
 const DefaultMaxPolicies = 256
@@ -208,7 +210,10 @@ func (s *Scheduler) reconcilePolicy(
 	namespace string,
 	policy *unstructured.Unstructured,
 ) (bool, error) {
-	if len(validation.IsDNS1123Subdomain(policy.GetName())) != 0 || policy.GetUID() == "" {
+	if policy.GetAPIVersion() != policyAPIVersion ||
+		policy.GetKind() != policyKind ||
+		len(validation.IsDNS1123Subdomain(policy.GetName())) != 0 ||
+		policy.GetUID() == "" {
 		return false, errors.New("policy metadata is incomplete")
 	}
 	suspended, _, _ := unstructured.NestedBool(policy.Object, "spec", "suspend")

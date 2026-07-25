@@ -12283,6 +12283,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   etcd/client TLS 字段，确认不会创建 Operation 或 generated params Secret。
   `go test ./hack/production/internal/backupscheduler -run 'TestReconcile(IsDeterministicAcrossReplicas|RejectsCredentialFieldsInParameterTemplate|RejectsNullParameterTemplateWithoutCreatingOperation|RejectsPolicySchemaBeforeTemplateRead)' -count=1 -v`
   和 `go test ./hack/production/internal/backupscheduler -count=1` 均通过。
+- A803 前置 BackupPolicy ownerReference type meta 校验：
+  A706 已要求 BackupPolicy name 和 UID 存在，但 scheduler 创建 generated params Secret 时
+  还会把 Policy `apiVersion/kind` 写入 ownerReference；fake-client、恢复对象或旧对象若
+  带空/错误 type meta，可能生成无法被当前 BackupPolicy 精确追溯的参数 Secret。现在
+  `reconcilePolicy` 在读取模板 Secret 前要求 `dbaas.kubebrain.io/v1alpha1` 与
+  `KubeBrainBackupPolicy` 精确匹配。回归覆盖 apiVersion/kind/name/UID 漂移，确认只发生
+  policy list，不读取模板或创建 Secret。
+  `go test ./hack/production/internal/backupscheduler -run 'TestReconcileRejectsPolicyMetadataBeforeTemplateRead|TestReconcileIsDeterministicAcrossReplicas' -count=1 -v`
+  和 `go test ./hack/production/internal/backupscheduler -count=1` 均通过。
 
 ### P2：运维兼容和长期验证
 

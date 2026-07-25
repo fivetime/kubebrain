@@ -220,6 +220,30 @@ func TestReconcileRejectsPolicyMetadataBeforeTemplateRead(t *testing.T) {
 		name  string
 		setup func(*testing.T, *dynamicfake.FakeDynamicClient)
 	}{
+		{name: "api version", setup: func(t *testing.T, client *dynamicfake.FakeDynamicClient) {
+			createPolicy(t, client, false)
+			policy, err := client.Resource(PolicyResource).Namespace("test").Get(
+				context.Background(), "daily", metav1.GetOptions{},
+			)
+			require.NoError(t, err)
+			policy.SetAPIVersion("dbaas.kubebrain.io/v1beta1")
+			_, err = client.Resource(PolicyResource).Namespace("test").Update(
+				context.Background(), policy, metav1.UpdateOptions{},
+			)
+			require.NoError(t, err)
+		}},
+		{name: "kind", setup: func(t *testing.T, client *dynamicfake.FakeDynamicClient) {
+			createPolicy(t, client, false)
+			policy, err := client.Resource(PolicyResource).Namespace("test").Get(
+				context.Background(), "daily", metav1.GetOptions{},
+			)
+			require.NoError(t, err)
+			policy.SetKind("BackupPolicy")
+			_, err = client.Resource(PolicyResource).Namespace("test").Update(
+				context.Background(), policy, metav1.UpdateOptions{},
+			)
+			require.NoError(t, err)
+		}},
 		{name: "name", setup: func(t *testing.T, client *dynamicfake.FakeDynamicClient) {
 			createPolicyNamedIn(t, client, "test", "daily/1", false)
 		}},
