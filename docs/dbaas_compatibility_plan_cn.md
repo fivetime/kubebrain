@@ -12788,6 +12788,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   ./hack/production`、`go test ./hack/production -count=1 -timeout=12m`（314.244 秒）、
   `bash -n hack/production/run-backup-deletion-operation.sh`、相关脚本 ShellCheck 和
   `git diff --check` 通过。
+- A853 前移 CertificateRotation runner 的数据面身份校验：
+  `validate-certificate-rotation.sh` 已拒绝非法 KubeBrain namespace 和含控制字符、
+  引号或反斜杠的 endpoint，但 `run-certificate-rotation-operation.sh` 原先把该边界
+  委托给可替换的 `ROTATION_COMMAND`；自定义子命令可能在确定性参数错误下启动轮换或
+  发布 hook。现在 runner 对冻结参数先做 JSON 类型/值校验，再对 TSV 解析结果重复校验，
+  要求 namespace 是 lowercase DNS label，并拒绝 endpoint 中的危险字符。回归分别注入
+  `invalid_namespace` 和转义换行 endpoint，确认不进入 begin gate、overlap/final hook，
+  也不 retry/succeed。`go test ./hack/production -run
+  TestCertificateRotationOperationRejectsInvalidIdentityBeforeSteps -count=1 -v`、
+  `go test ./hack/production -run TestCertificateRotationOperation -count=1 -v`、
+  `go vet ./hack/production`、`go test ./hack/production -count=1 -timeout=12m`
+  （315.500 秒）、`bash -n hack/production/run-certificate-rotation-operation.sh` 和
+  `git diff --check` 通过；当前环境未安装 `shellcheck`，未重新运行 ShellCheck。
 
 ### P2：运维兼容和长期验证
 

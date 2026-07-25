@@ -115,6 +115,49 @@ func TestCertificateRotationOperationRejectsEmptyRequiredParameters(t *testing.T
 	require.NotContains(t, log, "--action succeed")
 }
 
+func TestCertificateRotationOperationRejectsInvalidIdentityBeforeSteps(t *testing.T) {
+	tests := []struct {
+		name string
+		from string
+		to   string
+	}{
+		{
+			name: "namespace",
+			from: `"kubebrain_namespace":"instance-a"`,
+			to:   `"kubebrain_namespace":"invalid_namespace"`,
+		},
+		{
+			name: "endpoint control character",
+			from: `"endpoint":"https://instance.example:2379"`,
+			to:   `"endpoint":"https://instance.example:2379\nother"`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			f := newRotationRunnerFixture(t)
+			parameters := strings.Replace(
+				string(mustRead(t, f.parameters)),
+				test.from,
+				test.to,
+				1,
+			)
+			require.NoError(t, os.WriteFile(f.parameters, []byte(parameters), 0o600))
+
+			f.run(
+				t,
+				false,
+				"CLAIM_DIGEST="+fileDigest(t, f.parameters),
+				"namespace or endpoint identity is invalid",
+			)
+			log := f.log(t)
+			require.NotContains(t, log, "gate ")
+			require.NotContains(t, log, "hook ")
+			require.NotContains(t, log, "--action retry")
+			require.NotContains(t, log, "--action succeed")
+		})
+	}
+}
+
 func TestCertificateRotationOperationRejectsInvalidReceipt(t *testing.T) {
 	f := newRotationRunnerFixture(t)
 	f.run(t, false, "INVALID_RECEIPT=1", "invalid receipt")

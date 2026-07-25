@@ -2335,7 +2335,9 @@ CAS 并要求源 Pod UID 集恢复。
 参数同时绑定旧/新/overlap CA、client cert/key 路径及每个文件的 SHA-256，executor 在
 任何发布前重新计算内容摘要，防止固定路径被替换。服务端 Secret 发布不由 CR 提供命令；
 worker 镜像配置受控、可执行且必须幂等的 `PUBLISH_OVERLAP_COMMAND` 与
-`PUBLISH_FINAL_COMMAND`。hook 只接收固定 operation/instance/参数文件环境。
+`PUBLISH_FINAL_COMMAND`。hook 只接收固定 operation/instance/参数文件环境。runner
+还会在任何 gate 或 hook 前独立校验数据面 namespace 是 DNS label，且 endpoint 不含
+控制字符、引号或反斜杠；该边界不依赖可替换的 rotation 子命令自行实现。
 
 完整顺序为 begin gate、发布双 CA、overlap gate、发布仅新 CA/叶证书、complete gate。
 state-only 接管从双 CA 发布继续，overlap marker 从最终发布继续，已有 receipt 则重做

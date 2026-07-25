@@ -129,6 +129,20 @@ if [[ "$captured_digest" != "$expected_digest" || "$current_digest" != "$expecte
 fi
 PARAMETERS_INPUT="$frozen_parameters"
 
+validate_rotation_identity_json() {
+  "$JQ" -e '
+    (.kubebrain_namespace |
+      type == "string" and
+      test("^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$")) and
+    (.endpoint |
+      type == "string" and
+      ((test("[\\t\\r\\n\"\\\\]")) | not))' \
+    "$PARAMETERS_INPUT" >/dev/null
+}
+
+validate_rotation_identity_json ||
+  { echo "rotation namespace or endpoint identity is invalid" >&2; exit 2; }
+
 parameters="$("$JQ" -er '[
   .state_dir, .endpoint, .old_cacert, .old_cert, .old_key,
   .new_cacert, .new_cert, .new_key, .overlap_cacert, .receipt_output,
@@ -147,6 +161,10 @@ IFS=$'\t' read -r state_dir endpoint old_ca old_cert old_key new_ca new_cert new
 receipt_input="$receipt_output"
 [[ "$data_context" == "-" ]] && data_context=""
 [[ "$data_kubeconfig" == "-" ]] && data_kubeconfig=""
+[[ "$kubebrain_namespace" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] ||
+  { echo "rotation namespace or endpoint identity is invalid" >&2; exit 2; }
+[[ "$endpoint" != *[$'\t\r\n"\\']* ]] ||
+  { echo "rotation namespace or endpoint identity is invalid" >&2; exit 2; }
 [[ "$expected_replicas" =~ ^[1-9][0-9]*$ ]] ||
   { echo "expected_replicas must be a positive integer" >&2; exit 2; }
 for file in "$old_ca" "$old_cert" "$old_key" "$new_ca" "$new_cert" "$new_key" "$overlap_ca"; do
