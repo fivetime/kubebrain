@@ -13490,6 +13490,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   本地 watcher 回归，直接注入同一 batch 的 PUT/DELETE 事件并固定输出 event type
   顺序和 header revision，防止后续 filter 解析把未知 enum 当成拒绝请求或让重复
   filter 改变 watch 流语义。
+- A924 固定 invalid Watch control message 后的流存活语义：
+  `watch_control` reference differential 先发送空 union、空 create、空 cancel、空
+  progress，再发送合法 create；etcd 会静默忽略无效 control message，后续 create
+  仍正常返回 created response。本轮加强本地 scripted Watch 回归，固定只产生一条
+  watch id 404 的 created/non-canceled 响应、cancel reason 为空且 header 存在，防止
+  receive-loop 后续把无效 control message 当成终止流或错误响应。
 
 ### P2：运维兼容和长期验证
 

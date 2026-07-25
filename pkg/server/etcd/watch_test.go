@@ -1444,6 +1444,8 @@ func TestWatchIgnoresInvalidControlMessagesAndKeepsStreamAlive(t *testing.T) {
 	require.Equal(t, int64(404), stream.sent[0].WatchId)
 	require.True(t, stream.sent[0].Created)
 	require.False(t, stream.sent[0].Canceled)
+	require.Empty(t, stream.sent[0].CancelReason)
+	require.NotNil(t, stream.sent[0].Header)
 }
 
 // scriptedWatchServer replays a fixed sequence of WatchRequests, then reports
