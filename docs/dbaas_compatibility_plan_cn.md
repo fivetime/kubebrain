@@ -12191,6 +12191,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `MaxHeaderBytes`、TLS 1.2 下限以及动态证书回调。
   `go test ./hack/production/cmd/operation-api ./hack/production/cmd/operation-parameter-broker -run TestNewHTTPServerUsesHardenedTLSAndTimeouts -count=1 -v`、
   `git diff --check`、`go vet ./...` 和 `go test ./... -count=1 -p 1` 均通过。
+- A792 收紧 operation API 的 loopback OIDC 例外：
+  OIDC issuer/JWKS 默认必须是 HTTPS；为本地测试保留的 HTTP 例外只允许 loopback。
+  旧检查只比较 issuer 与 JWKS 的 hostname，因此 `http://127.0.0.1:issuer` 可指向
+  `http://127.0.0.1:other-port/keys`，把本地另一个进程纳入信任发现链。现在 loopback
+  HTTP 模式要求 issuer 与 JWKS 使用完全相同的 `host:port` origin；新增不同端口 JWKS
+  回归，拒绝发生在 JWKS 拉取前。
+  `go test ./hack/production/internal/operationapi -run TestOIDCAuthenticatorRejectsLoopbackHTTPJWKSOnDifferentPort -count=1 -v`、
+  `git diff --check`、`go vet ./...` 和 `go test ./... -count=1 -p 1` 均通过。
 
 ### P2：运维兼容和长期验证
 

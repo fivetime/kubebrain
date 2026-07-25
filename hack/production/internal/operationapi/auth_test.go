@@ -7,8 +7,10 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -387,4 +389,24 @@ func TestOIDCAuthenticatorRejectsInsecureRemoteIssuer(t *testing.T) {
 		Issuer: "http://example.com", Audience: "audience",
 	})
 	require.ErrorContains(t, err, "HTTPS")
+}
+
+func TestOIDCAuthenticatorRejectsLoopbackHTTPJWKSOnDifferentPort(t *testing.T) {
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		issuerURL, err := url.Parse(server.URL)
+		require.NoError(t, err)
+		response.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(response).Encode(discoveryDocument{
+			Issuer:  server.URL,
+			JWKSURL: "http://" + net.JoinHostPort(issuerURL.Hostname(), "1") + "/keys",
+		})
+	}))
+	defer server.Close()
+
+	_, err := NewOIDCAuthenticator(context.Background(), OIDCConfig{
+		Issuer: server.URL, Audience: "audience",
+	})
+	require.ErrorContains(t, err, "same")
+	require.ErrorContains(t, err, "origin")
 }
