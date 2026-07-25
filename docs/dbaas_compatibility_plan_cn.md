@@ -12610,6 +12610,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   追踪文档中的要求变成发布硬门禁；`git diff --check` 与
   `go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7 .github/workflows/docker-image.yml`
   通过。
+- A834 让 dev stack 入口在动集群前拒绝非法输入：
+  `hack/dev/up.sh` 原先直接把 `CLUSTER_NAME`、`IMAGE_NAME`、`KIND_NODE_IMAGE`、
+  `TIDB_OPERATOR_VERSION` 和 `KUBEBRAIN_REPLICAS` 送入 kind/docker/helm/kubectl；workflow 或
+  手工输入拼错时可能先构建镜像或创建部分集群资源才失败。现在脚本在依赖检查前校验：
+  cluster 名只允许常见 kind/docker 安全字符并限制长度，镜像引用必须非空且无空白或 shell
+  元字符，TiDB Operator 版本必须是 tag-like token，KubeBrain 副本数必须是正整数。
+  `bash -n hack/dev/up.sh`、非法 `KUBEBRAIN_REPLICAS=0`、`KUBEBRAIN_REPLICAS=three`、
+  `CLUSTER_NAME='bad name'`、`IMAGE_NAME='bad image'`、`KIND_NODE_IMAGE='bad image'` 和
+  `TIDB_OPERATOR_VERSION='../v1.6.5'` 均在依赖/集群操作前退出 2；
+  `docker run --rm -v "$PWD:/mnt" -w /mnt koalaman/shellcheck:v0.11.0@sha256:61862eba1fcf09a484ebcc6feea46f1782532571a34ed51fedf90dd25f925a8d --severity=warning hack/dev/up.sh`
+  与 `git diff --check` 通过。
 
 ### P2：运维兼容和长期验证
 

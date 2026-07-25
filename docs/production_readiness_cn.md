@@ -265,6 +265,11 @@ hack/dev/down.sh
 KIND_NODE_IMAGE=kindest/node:v1.36.1 KUBEBRAIN_REPLICAS=3 hack/dev/up.sh
 ```
 
+`hack/dev/up.sh` 在依赖检查、镜像构建和任何集群操作前校验 `CLUSTER_NAME`、`IMAGE_NAME`、
+`KIND_NODE_IMAGE`、`TIDB_OPERATOR_VERSION` 和 `KUBEBRAIN_REPLICAS`。副本数必须是正整数；
+镜像、版本和 kind cluster 名不能包含空白或 shell 元字符，避免 integration workflow
+输入或手工环境变量拼写错误延迟到 docker/kubectl 阶段才失败。
+
 本地批量验证多个 Kubernetes server 版本：
 
 ```shell

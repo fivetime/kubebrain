@@ -8,12 +8,56 @@ KIND_NODE_IMAGE="${KIND_NODE_IMAGE:-}"
 TIDB_OPERATOR_VERSION="${TIDB_OPERATOR_VERSION:-v1.6.5}"
 KUBEBRAIN_REPLICAS="${KUBEBRAIN_REPLICAS:-1}"
 
+validate_name_token() {
+  local name="$1"
+  local value="${!name}"
+  if [[ ! "$value" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]]; then
+    echo "${name} must contain only letters, digits, dot, underscore, or dash, start with a letter or digit, and be at most 128 characters" >&2
+    exit 2
+  fi
+}
+
+validate_image_reference() {
+  local name="$1"
+  local value="${!name}"
+  if [[ ! "$value" =~ ^[A-Za-z0-9._:@/-]+$ ]]; then
+    echo "${name} must be a non-empty image reference without whitespace or shell metacharacters" >&2
+    exit 2
+  fi
+}
+
+validate_positive_integer() {
+  local name="$1"
+  local value="${!name}"
+  if [[ ! "$value" =~ ^[1-9][0-9]*$ ]]; then
+    echo "${name} must be a positive integer" >&2
+    exit 2
+  fi
+}
+
+validate_version_token() {
+  local name="$1"
+  local value="${!name}"
+  if [[ ! "$value" =~ ^[A-Za-z0-9._+-]+$ ]]; then
+    echo "${name} must be a tag-like version without whitespace or path separators" >&2
+    exit 2
+  fi
+}
+
 need() {
   if ! command -v "$1" >/dev/null 2>&1; then
     echo "missing required command: $1" >&2
     exit 1
   fi
 }
+
+validate_name_token CLUSTER_NAME
+validate_image_reference IMAGE_NAME
+if [ -n "$KIND_NODE_IMAGE" ]; then
+  validate_image_reference KIND_NODE_IMAGE
+fi
+validate_version_token TIDB_OPERATOR_VERSION
+validate_positive_integer KUBEBRAIN_REPLICAS
 
 need docker
 need kind
