@@ -12521,6 +12521,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `bash -n hack/dev/tls-smoke.sh`、`bash -n hack/dev/k3s-datastore-smoke.sh`、
   `bash -n hack/dev/k3s-load-smoke.sh`、`bash -n hack/dev/incluster-apiserver-smoke.sh`、
   `bash -n hack/backup/logical-drill.sh` 以及各入口的非法布尔值早期退出用例通过。
+- A825 修正顶层 verify 对 TLS 子门禁 RUN flag 的 pass-through：
+  A822 的未知 `RUN_*` 拒绝能防 typo，但也会把 `tls-smoke.sh` 自己支持的
+  `RUN_AUTH_CERT_SMOKE`、`RUN_AUTH_TTL_ONLY` 和 `RUN_CERT_ROTATION_SMOKE` 误判为未知，
+  导致调用者无法通过统一 `verify.sh` 入口定制证书认证、token TTL 或证书轮换子门禁。
+  现在这三个 TLS 子开关纳入顶层已知列表并执行同样的精确 `true`/`false` 校验；合法值可透传给
+  `tls-smoke.sh`，非法值仍在进入任何依赖或集群操作前退出 2。
+  `bash -n hack/dev/verify.sh`、
+  `RUN_AUTH_TTL_ONLY=true RUN_GO_TEST=false RUN_BASIC_SMOKE=false RUN_HA_SMOKE=false RUN_APISERVER_SMOKE=false RUN_TLS_SMOKE=false hack/dev/verify.sh`、
+  `RUN_AUTH_TTL_ONLY=maybe RUN_GO_TEST=false RUN_BASIC_SMOKE=false RUN_HA_SMOKE=false RUN_APISERVER_SMOKE=false RUN_TLS_SMOKE=false hack/dev/verify.sh` 与
+  `RUN_UNKNOWN_SMOKE=true RUN_GO_TEST=false RUN_BASIC_SMOKE=false RUN_HA_SMOKE=false RUN_APISERVER_SMOKE=false RUN_TLS_SMOKE=false hack/dev/verify.sh`
+  通过。
 
 ### P2：运维兼容和长期验证
 

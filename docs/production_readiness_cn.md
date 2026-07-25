@@ -1479,9 +1479,10 @@ hack/dev/verify.sh
 ```
 
 发布脚本中的布尔开关必须精确写成 `true` 或 `false`。`verify.sh` 会拒绝未知或非法
-`RUN_*`，版本矩阵、TLS smoke、k3s datastore/load smoke、in-cluster apiserver smoke
-以及 logical backup drill 也会在依赖检查和任何集群/备份操作前拒绝自身本地布尔开关的
-非法值，避免拼写错误把关键门禁静默跳过。
+`RUN_*`，并允许 TLS smoke 的 `RUN_AUTH_CERT_SMOKE`、`RUN_AUTH_TTL_ONLY` 和
+`RUN_CERT_ROTATION_SMOKE` 作为合法透传子开关；版本矩阵、TLS smoke、k3s datastore/load
+smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖检查和任何
+集群/备份操作前拒绝自身本地布尔开关的非法值，避免拼写错误把关键门禁静默跳过。
 
 预生产环境还应增加：
 
