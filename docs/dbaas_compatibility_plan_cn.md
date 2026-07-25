@@ -12511,6 +12511,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `RUN_APISERVER_SMOKE=tru hack/dev/apiserver-version-matrix.sh` 与
   `RUN_FAULT_SMOKE=maybe hack/dev/k8s-version-matrix.sh`
   通过。
+- A824 收紧嵌套 smoke/backup drill 的本地布尔开关校验：
+  顶层 `verify.sh` 和版本矩阵脚本已经 fail closed，但 `tls-smoke`、k3s datastore/load
+  smoke、in-cluster apiserver smoke 以及 logical backup drill 还有各自的本地布尔开关；
+  拼错这些变量会跳过证书认证、备份 drill、k3s soak/delete collection/namespace delete、
+  failover 或清理步骤，造成发布门禁假阳性或演练残留。现在上述脚本在依赖检查、证书生成、
+  k3s/kubectl/docker 操作和备份导出前校验自身声明的布尔变量，只接受精确 `true`/`false`
+  并以退出码 2 拒绝非法值。
+  `bash -n hack/dev/tls-smoke.sh`、`bash -n hack/dev/k3s-datastore-smoke.sh`、
+  `bash -n hack/dev/k3s-load-smoke.sh`、`bash -n hack/dev/incluster-apiserver-smoke.sh`、
+  `bash -n hack/backup/logical-drill.sh` 以及各入口的非法布尔值早期退出用例通过。
 
 ### P2：运维兼容和长期验证
 

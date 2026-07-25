@@ -55,6 +55,22 @@ need() {
   fi
 }
 
+validate_bool_flag() {
+  local name="$1"
+  local value="${!name}"
+  case "$value" in
+    true|false) ;;
+    *)
+      echo "${name} must be true or false, got ${value}" >&2
+      exit 2
+      ;;
+  esac
+}
+
+validate_bool_flag REQUIRE_RECORDS
+validate_bool_flag KEEP_BACKUP
+validate_bool_flag KEEP_RESTORE
+
 need go
 
 if [[ "$RESTORE_PREFIX" == "$PREFIX"* ]] || [[ "$PREFIX" == "$RESTORE_PREFIX"* ]]; then

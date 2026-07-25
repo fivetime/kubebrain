@@ -24,6 +24,20 @@ need() {
   fi
 }
 
+validate_bool_flag() {
+  local name="$1"
+  local value="${!name}"
+  case "$value" in
+    true|false) ;;
+    *)
+      echo "${name} must be true or false, got ${value}" >&2
+      exit 2
+      ;;
+  esac
+}
+
+validate_bool_flag APISERVER_ONLY
+
 cleanup() {
   if [ -n "${pf_pid:-}" ] && kill -0 "$pf_pid" >/dev/null 2>&1; then
     kill "$pf_pid" >/dev/null 2>&1 || true

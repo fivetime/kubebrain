@@ -49,6 +49,22 @@ kb() { kubectl -n "$KUBEBRAIN_NAMESPACE" "$@"; }
 log() { echo "[k3s-load-smoke] $*"; }
 fail() { echo "[k3s-load-smoke] FAIL: $*" >&2; exit 1; }
 
+validate_bool_flag() {
+  local name="$1"
+  local value="${!name}"
+  case "$value" in
+    true|false) ;;
+    *)
+      echo "${name} must be true or false, got ${value}" >&2
+      exit 2
+      ;;
+  esac
+}
+
+validate_bool_flag SKIP_TLS
+validate_bool_flag CLEAN_K3S_DATASTORE
+validate_bool_flag DO_FAILOVER
+
 clean_datastore() {
   [ "$CLEAN_K3S_DATASTORE" = "true" ] || return 0
   log "clearing stale k3s data from KubeBrain (/bootstrap + /registry per-prefix)"

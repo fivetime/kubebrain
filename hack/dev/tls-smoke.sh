@@ -28,6 +28,24 @@ need() {
   fi
 }
 
+validate_bool_flag() {
+  local name="$1"
+  local value="${!name}"
+  case "$value" in
+    true|false) ;;
+    *)
+      echo "${name} must be true or false, got ${value}" >&2
+      exit 2
+      ;;
+  esac
+}
+
+validate_bool_flag RUN_APISERVER_SMOKE
+validate_bool_flag RUN_BACKUP_DRILL
+validate_bool_flag RUN_AUTH_CERT_SMOKE
+validate_bool_flag RUN_AUTH_TTL_ONLY
+validate_bool_flag RUN_CERT_ROTATION_SMOKE
+
 need kubectl
 need openssl
 need go

@@ -53,6 +53,27 @@ need() {
   fi
 }
 
+validate_bool_flag() {
+  local name="$1"
+  local value="${!name}"
+  case "$value" in
+    true|false) ;;
+    *)
+      echo "${name} must be true or false, got ${value}" >&2
+      exit 2
+      ;;
+  esac
+}
+
+validate_bool_flag RESTART_KUBEBRAIN
+validate_bool_flag CLEAN_K3S_DATASTORE
+validate_bool_flag CLEAN_K3S_REGISTRY
+validate_bool_flag K3S_KUBECTL_INSECURE_SKIP_TLS_VERIFY
+validate_bool_flag K3S_SOAK
+validate_bool_flag SOAK_RESTART_KUBEBRAIN
+validate_bool_flag K3S_DELETE_COLLECTION
+validate_bool_flag K3S_NAMESPACE_DELETE
+
 need "$K3S_BIN"
 need kubectl
 need docker
