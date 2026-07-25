@@ -16,6 +16,8 @@ package etcd
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net"
 	"testing"
 	"time"
@@ -23,6 +25,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
+	"go.etcd.io/etcd/client/v3/concurrency"
 	recipe "go.etcd.io/etcd/client/v3/experimental/recipes"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -113,5 +116,126 @@ func TestClientExperimentalRecipesBarrierAndQueues(t *testing.T) {
 		got, dequeueErr := priority.Dequeue()
 		require.NoError(t, dequeueErr)
 		require.Equal(t, want, got)
+	}
+}
+
+func TestClientExperimentalLockRecipesOrderingAndSessionCleanup(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterWatchServer(grpcServer, server)
+	etcdserverpb.RegisterLeaseServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+	newSession := func() *concurrency.Session {
+		session, sessionErr := concurrency.NewSession(client, concurrency.WithTTL(10))
+		require.NoError(t, sessionErr)
+		return session
+	}
+
+	rwName := "/a969/lock-recipes/rw"
+	readerOneSession, readerTwoSession := newSession(), newSession()
+	writerSession, lateReaderSession := newSession(), newSession()
+	t.Cleanup(readerOneSession.Orphan)
+	t.Cleanup(readerTwoSession.Orphan)
+	t.Cleanup(writerSession.Orphan)
+	t.Cleanup(lateReaderSession.Orphan)
+	readerOne := recipe.NewRWMutex(readerOneSession, rwName)
+	readerTwo := recipe.NewRWMutex(readerTwoSession, rwName)
+	writer := recipe.NewRWMutex(writerSession, rwName)
+	lateReader := recipe.NewRWMutex(lateReaderSession, rwName)
+	require.NoError(t, readerOne.RLock())
+	require.NoError(t, readerTwo.RLock())
+	require.Equal(t, 2, recipePrefixCount(ctx, client, rwName+"/read"))
+
+	writerResult := make(chan error, 1)
+	go func() { writerResult <- writer.Lock() }()
+	require.Eventually(t, func() bool {
+		return recipePrefixCount(ctx, client, rwName+"/write") == 1
+	}, 5*time.Second, 20*time.Millisecond)
+	time.Sleep(100 * time.Millisecond)
+	require.Empty(t, writerResult, "writer must wait for earlier readers")
+
+	lateReaderResult := make(chan error, 1)
+	go func() { lateReaderResult <- lateReader.RLock() }()
+	require.Eventually(t, func() bool {
+		return recipePrefixCount(ctx, client, rwName+"/read") == 3
+	}, 5*time.Second, 20*time.Millisecond)
+	time.Sleep(100 * time.Millisecond)
+	require.Empty(t, lateReaderResult, "late reader must wait behind queued writer")
+
+	require.NoError(t, readerOne.RUnlock())
+	require.NoError(t, readerTwo.RUnlock())
+	require.NoError(t, waitRecipeResult(ctx, writerResult, "writer acquisition"))
+	require.Empty(t, lateReaderResult, "writer must acquire before the late reader")
+	require.NoError(t, writer.Unlock())
+	require.NoError(t, waitRecipeResult(ctx, lateReaderResult, "late reader acquisition"))
+	require.NoError(t, lateReader.RUnlock())
+	require.Equal(t, 0, recipePrefixCount(ctx, client, rwName+"/"))
+
+	mutexName := "/a969/lock-recipes/mutex"
+	ownerSession, victimSession, successorSession := newSession(), newSession(), newSession()
+	t.Cleanup(ownerSession.Orphan)
+	t.Cleanup(successorSession.Orphan)
+	owner := concurrency.NewMutex(ownerSession, mutexName)
+	victim := concurrency.NewMutex(victimSession, mutexName)
+	successor := concurrency.NewMutex(successorSession, mutexName)
+	require.NoError(t, owner.Lock(ctx))
+	victimResult := make(chan error, 1)
+	go func() { victimResult <- victim.Lock(ctx) }()
+	require.Eventually(t, func() bool {
+		return recipePrefixCount(ctx, client, mutexName) == 2
+	}, 5*time.Second, 20*time.Millisecond)
+	successorResult := make(chan error, 1)
+	go func() { successorResult <- successor.Lock(ctx) }()
+	require.Eventually(t, func() bool {
+		return recipePrefixCount(ctx, client, mutexName) == 3
+	}, 5*time.Second, 20*time.Millisecond)
+	require.NoError(t, victimSession.Close())
+	require.Eventually(t, func() bool {
+		return recipePrefixCount(ctx, client, mutexName) == 2
+	}, 5*time.Second, 20*time.Millisecond)
+	time.Sleep(100 * time.Millisecond)
+	require.Empty(t, successorResult, "successor must wait while owner still holds the mutex")
+	require.NoError(t, owner.Unlock(ctx))
+	require.NoError(t, waitRecipeResult(ctx, successorResult, "successor acquisition"))
+	require.NoError(t, successor.Unlock(ctx))
+	require.Equal(t, 0, recipePrefixCount(ctx, client, mutexName))
+	victimErr := waitRecipeResult(ctx, victimResult, "victim cleanup")
+	require.True(t, victimErr == nil || errors.Is(victimErr, concurrency.ErrSessionExpired), victimErr)
+}
+
+func recipePrefixCount(ctx context.Context, client *clientv3.Client, prefix string) int {
+	response, err := client.Get(ctx, prefix, clientv3.WithPrefix())
+	if err != nil {
+		return -1
+	}
+	return len(response.Kvs)
+}
+
+func waitRecipeResult(ctx context.Context, result <-chan error, phase string) error {
+	select {
+	case err := <-result:
+		return err
+	case <-ctx.Done():
+		return fmt.Errorf("%s did not complete: %w", phase, ctx.Err())
 	}
 }

@@ -13788,6 +13788,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   FIFO。本轮新增 bufconn clientv3 回归，注册真实 KV/Watch gRPC 服务并直接运行
   `experimental/recipes`，防止 Range end 计算、watch 唤醒或 Txn revision 变化破坏上层
   recipe 可观察契约。
+- A969 固定 clientv3 lock recipes 的排队与 session 清理语义：
+  `lock_recipe` differential 证明 `experimental/recipes.RWMutex` 允许多个 reader 重叠、
+  writer 必须等待早期 reader、晚到 reader 必须排在 writer 后，且 `concurrency.Mutex`
+  中间等待者 session 关闭后继任者不能越过当前 owner。本轮新增 bufconn clientv3 回归，
+  注册真实 KV/Watch/Lease gRPC 服务，直接运行 RWMutex 与 Mutex recipe，固定 waiter key
+  数、获取顺序、session close 后的等待者清理和最终 keyspace 清空，防止 watch delete
+  唤醒、CreateRevision 排序或 lease revoke 组合语义回退。
 
 ### P2：运维兼容和长期验证
 
