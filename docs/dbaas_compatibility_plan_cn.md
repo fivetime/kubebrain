@@ -13411,6 +13411,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `WithFromKey()` 会变成非空物理前缀，可见并删除该 namespace 下全部 key。新增本地 raw
   gRPC 等价回归，防止把 empty-key 校验错误地套到已经加 namespace prefix 的 from-key
   Range/DeleteRange 请求上。
+- A912 固定 namespace from-key 前缀后继边界：
+  上游 `client/v3/namespace.prefixInterval` 会把逻辑 `WithFromKey()` 的 `{0}` range end
+  转换成物理 namespace 前缀的字典序后继，而不是删除整个物理 keyspace 后缀。新增本地
+  raw gRPC 回归用 `/tenant/` 与相邻 `/tenant0/outside` 固定 Range/DeleteRange 边界：
+  namespace 全量删除必须只返回并删除三条 tenant key，且保留相邻 tenant0 key，防止后续
+  prefix/from-key 处理把 namespace delete-all 放宽成 `{0}`。
 
 ### P2：运维兼容和长期验证
 

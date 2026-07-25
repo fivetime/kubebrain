@@ -1841,6 +1841,63 @@ func TestNamespacedEmptyKeyFromKeyDeleteMatchesEtcd(t *testing.T) {
 	require.Empty(t, remaining.Kvs)
 }
 
+func TestNamespacedFromKeyPrefixEndPreservesAdjacentKeys(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	ctx := context.Background()
+	prefix := []byte("/registry/namespace-prefix/tenant/")
+	prefixEnd := []byte("/registry/namespace-prefix/tenant0")
+	adjacentKey := []byte("/registry/namespace-prefix/tenant0/outside")
+	for _, suffix := range []byte{'a', 'b', 'c'} {
+		_, err := server.Put(ctx, &etcdserverpb.PutRequest{
+			Key:   append(append([]byte{}, prefix...), suffix),
+			Value: []byte{'v', suffix},
+		})
+		require.NoError(t, err)
+	}
+	_, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: adjacentKey, Value: []byte("outside")})
+	require.NoError(t, err)
+
+	visible, err := server.Range(ctx, &etcdserverpb.RangeRequest{
+		Key:      prefix,
+		RangeEnd: prefixEnd,
+	})
+	require.NoError(t, err)
+	require.Equal(t, int64(3), visible.Count)
+	require.Len(t, visible.Kvs, 3)
+	require.Equal(t, [][]byte{
+		append(append([]byte{}, prefix...), 'a'),
+		append(append([]byte{}, prefix...), 'b'),
+		append(append([]byte{}, prefix...), 'c'),
+	}, [][]byte{visible.Kvs[0].Key, visible.Kvs[1].Key, visible.Kvs[2].Key})
+
+	deleted, err := server.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{
+		Key:      prefix,
+		RangeEnd: prefixEnd,
+		PrevKv:   true,
+	})
+	require.NoError(t, err)
+	require.Equal(t, int64(3), deleted.Deleted)
+	require.Len(t, deleted.PrevKvs, 3)
+	require.Equal(t, [][]byte{
+		append(append([]byte{}, prefix...), 'a'),
+		append(append([]byte{}, prefix...), 'b'),
+		append(append([]byte{}, prefix...), 'c'),
+	}, [][]byte{deleted.PrevKvs[0].Key, deleted.PrevKvs[1].Key, deleted.PrevKvs[2].Key})
+
+	remainingNamespace, err := server.Range(ctx, &etcdserverpb.RangeRequest{
+		Key:      prefix,
+		RangeEnd: prefixEnd,
+	})
+	require.NoError(t, err)
+	require.Empty(t, remainingNamespace.Kvs)
+	adjacent, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: adjacentKey})
+	require.NoError(t, err)
+	require.Len(t, adjacent.Kvs, 1)
+	require.Equal(t, []byte("outside"), adjacent.Kvs[0].Value)
+}
+
 func TestDeleteRangeDeletesRange(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
