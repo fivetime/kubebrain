@@ -5,6 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 ENDPOINT="${ENDPOINT:-127.0.0.1:3379}"
 IMAGE_NAME="${IMAGE_NAME:-kubebrain:dev}"
 RUN_GO_TEST="${RUN_GO_TEST:-true}"
+RUN_GO_VET="${RUN_GO_VET:-$RUN_GO_TEST}"
 RUN_BASIC_SMOKE="${RUN_BASIC_SMOKE:-true}"
 RUN_ETCD_CLIENT_COMPAT="${RUN_ETCD_CLIENT_COMPAT:-false}"
 RUN_ETCD_CLIENT_DIFFERENTIAL="${RUN_ETCD_CLIENT_DIFFERENTIAL:-false}"
@@ -46,6 +47,7 @@ RUN_APISERVER_VERSION_MATRIX="${RUN_APISERVER_VERSION_MATRIX:-false}"
 RUN_K8S_VERSION_MATRIX="${RUN_K8S_VERSION_MATRIX:-false}"
 RUN_FLAGS=(
   RUN_GO_TEST
+  RUN_GO_VET
   RUN_BASIC_SMOKE
   RUN_ETCD_CLIENT_COMPAT
   RUN_ETCD_CLIENT_DIFFERENTIAL
@@ -143,6 +145,11 @@ cd "$ROOT_DIR"
 if [ "$RUN_GO_TEST" = "true" ]; then
   need go
   run_step "go test ./..." go test ./...
+fi
+
+if [ "$RUN_GO_VET" = "true" ]; then
+  need go
+  run_step "go vet ./..." go vet ./...
 fi
 
 if [ "$RUN_BASIC_SMOKE" = "true" ]; then

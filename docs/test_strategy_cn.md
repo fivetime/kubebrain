@@ -54,7 +54,7 @@ KubeBrain 的目标不是"内部函数看起来对"，而是**"对 Kubernetes �
 
 ```
 改代码
-  → go build ./... && go test ./pkg/...            # 编译 + 内部单测（含 -race）
+  → go build ./... && go vet ./... && go test ./pkg/... # 编译 + 静态检查 + 内部单测（含 -race）
   → hack/dev/up.sh 从宿主 git 注入版本、提交 SHA 和 UTC build date 后执行 docker build
   → kind load docker-image kubebrain:dev --name kubebrain-dev
   → kubectl -n kubebrain-dev rollout restart deploy/kubebrain

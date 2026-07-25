@@ -297,7 +297,7 @@ IMAGE_NAME=kubebrain:dev \
 hack/dev/verify.sh
 ```
 
-`hack/dev/verify.sh` 默认覆盖单元测试、基础 etcd client smoke、3 副本 HA smoke、独立 kube-apiserver 对象生命周期 smoke，以及 3 副本 mTLS 部署下的 TLS HA smoke。TLS HA smoke 会同时验证 etcd client mTLS、standalone kube-apiserver mTLS，以及逐个删除 Pod 后的 mTLS client smoke。
+`hack/dev/verify.sh` 默认覆盖单元测试、`go vet ./...`、基础 etcd client smoke、3 副本 HA smoke、独立 kube-apiserver 对象生命周期 smoke，以及 3 副本 mTLS 部署下的 TLS HA smoke。`RUN_GO_VET` 默认跟随 `RUN_GO_TEST`；需要跳过单测但仍保留 vet 时可显式设置 `RUN_GO_TEST=false RUN_GO_VET=true`。TLS HA smoke 会同时验证 etcd client mTLS、standalone kube-apiserver mTLS，以及逐个删除 Pod 后的 mTLS client smoke。
 
 全副本滚动重启持久性验证默认不运行，因为它会依次删除当前开发环境中的 3 个
 KubeBrain、3 个 PD 和 3 个 TiKV Pod。该路径要求精确的 3/3/3 拓扑，并在每次删除后

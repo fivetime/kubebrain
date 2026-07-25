@@ -12592,6 +12592,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   直接 `go test ./hack/etcd-client-compat/...` 绕过 runner 的 destructive/reference opt-in
   防护。`go vet ./...`、`cd hack/etcd-client-compat && go vet ./...` 和 `git diff --check`
   通过。
+- A832 将 `go vet` 纳入统一本地 verify：
+  `hack/dev/verify.sh` 新增 `RUN_GO_VET`，默认继承 `RUN_GO_TEST`，因此默认发布前本地门禁会与 CI
+  一样执行根模块 `go vet ./...`；已有 smoke-only 命令把 `RUN_GO_TEST=false` 时不会额外触发 vet，
+  需要跳过单测但保留 vet 时可显式设置 `RUN_GO_VET=true`。`RUN_GO_VET` 进入未知/非法 `RUN_*`
+  校验矩阵，拼错或传入非 `true/false` 值会在任何集群操作前退出 2。`bash -n hack/dev/verify.sh`、
+  `RUN_GO_TEST=false RUN_BASIC_SMOKE=false RUN_HA_SMOKE=false RUN_APISERVER_SMOKE=false RUN_TLS_SMOKE=false hack/dev/verify.sh`、
+  `RUN_GO_TEST=false RUN_GO_VET=true RUN_BASIC_SMOKE=false RUN_HA_SMOKE=false RUN_APISERVER_SMOKE=false RUN_TLS_SMOKE=false hack/dev/verify.sh`、
+  `RUN_GO_TEST=false RUN_GO_VET=maybe RUN_BASIC_SMOKE=false RUN_HA_SMOKE=false RUN_APISERVER_SMOKE=false RUN_TLS_SMOKE=false hack/dev/verify.sh`
+  和 `git diff --check` 通过。
 
 ### P2：运维兼容和长期验证
 
