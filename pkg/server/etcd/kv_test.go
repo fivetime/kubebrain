@@ -3724,6 +3724,49 @@ func TestTxnRangeSeesPriorWritesButNotLaterWrites(t *testing.T) {
 	require.Equal(t, resp.Header.Revision, final.Kvs[1].ModRevision)
 }
 
+func TestTxnRangeCreateRevisionFiltersApplyToStagedView(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	ctx := context.Background()
+	prefix := []byte("/registry/generic-txn/create-filter/")
+	end := []byte("/registry/generic-txn/create-filter0")
+	keyA := append(append([]byte(nil), prefix...), 'a')
+	keyB := append(append([]byte(nil), prefix...), 'b')
+
+	seed, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: keyA, Value: []byte("old")})
+	require.NoError(t, err)
+	txnRevision := seed.Header.Revision + 1
+
+	resp, err := server.Txn(ctx, &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+		{Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{
+			Key: keyB, Value: []byte("new"),
+		}}},
+		{Request: &etcdserverpb.RequestOp_RequestRange{RequestRange: &etcdserverpb.RangeRequest{
+			Key: prefix, RangeEnd: end, MinCreateRevision: txnRevision,
+		}}},
+		{Request: &etcdserverpb.RequestOp_RequestRange{RequestRange: &etcdserverpb.RangeRequest{
+			Key: prefix, RangeEnd: end, MaxCreateRevision: seed.Header.Revision,
+		}}},
+	}})
+	require.NoError(t, err)
+	require.Equal(t, txnRevision, resp.Header.Revision)
+	require.Len(t, resp.Responses, 3)
+
+	newOnly := resp.Responses[1].GetResponseRange()
+	require.Equal(t, int64(2), newOnly.Count)
+	require.False(t, newOnly.More)
+	require.Equal(t, [][]byte{keyB}, [][]byte{newOnly.Kvs[0].Key})
+	require.Equal(t, txnRevision, newOnly.Kvs[0].CreateRevision)
+	require.Equal(t, txnRevision, newOnly.Kvs[0].ModRevision)
+
+	oldOnly := resp.Responses[2].GetResponseRange()
+	require.Equal(t, int64(2), oldOnly.Count)
+	require.False(t, oldOnly.More)
+	require.Equal(t, [][]byte{keyA}, [][]byte{oldOnly.Kvs[0].Key})
+	require.Equal(t, seed.Header.Revision, oldOnly.Kvs[0].CreateRevision)
+}
+
 func TestTxnOverlappingDeleteRangesUseStagedViewAndOneRevision(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

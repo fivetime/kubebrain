@@ -13701,6 +13701,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   alarm 后 `Errors` 必须清空。本轮新增本地 maintenance 服务层回归，固定 member
   424242 的 activate/status/deactivate/status 链路，防止 quota 自动告警路径之外的
   手动 alarm 在 Status 汇总中漏报、或解除后残留错误。
+- A956 固定 Txn staged view 的 CreateRevision filter：
+  `range_matrix` reference differential 覆盖 Min/MaxCreateRevision、CountOnly、Limit
+  与当前/历史 revision 的组合，证明 revision filter 只过滤返回的 Kvs，`Count` 仍保持
+  原始 key range 的匹配数。本轮新增本地 Txn 回归，先在事务内 Put 新 key，再分别用
+  `MinCreateRevision=txnRevision` 和 `MaxCreateRevision=seedRevision` 读取同一前缀，
+  固定 staged 新 key 与事务前旧 key 的过滤结果，防止 Txn staged range 漏用 create
+  metadata 或把 Count 误算成过滤后数量。
 
 ### P2：运维兼容和长期验证
 
