@@ -12875,6 +12875,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go vet ./hack/production`、`go test ./hack/production -count=1 -timeout=12m`
   （320.370 秒）、`bash -n hack/production/run-post-restore-audit-operation.sh` 和
   `git diff --check` 通过；当前环境未安装 `shellcheck`，未运行 ShellCheck。
+- A864 收紧直接 PostRestoreAudit 脚本的 public endpoint 字符边界：
+  A863 已前移 operation runner 的 endpoint 校验，但直接运行 `audit-restored-instance.sh`
+  时仍只要求 `PUBLIC_ENDPOINT` 非空，可能把含换行、tab、引号或反斜杠的 endpoint 传给
+  公开探针。现在 direct audit 入口在任何 Kubernetes/probe 操作前拒绝危险 endpoint 字符；
+  回归覆盖换行、引号和反斜杠 endpoint，确认不生成 probe 证据或审计 receipt。`go test
+  ./hack/production -run 'TestPostRestoreAuditRejects(UnsafePublicEndpoint|UnsafeAuditPrefix)' -count=1 -v`、
+  `go test ./hack/production -run TestPostRestoreAudit -count=1 -v`、`go vet
+  ./hack/production`、`go test ./hack/production -count=1 -timeout=12m`（319.960 秒）、
+  `bash -n hack/production/audit-restored-instance.sh` 和
+  `git diff --check` 通过；当前环境未安装 `shellcheck`，未运行 ShellCheck。
 - A855 前移 PostRestoreAudit runner 的 Service/target 身份校验：
   `audit-restored-instance.sh` 会拒绝非法 operation/instance、Service namespace/name 和
   target instance，但 `run-post-restore-audit-operation.sh` 原先只在子审计前独立校验

@@ -166,6 +166,24 @@ func TestPostRestoreAuditRejectsUnsafeAuditPrefix(t *testing.T) {
 	}
 }
 
+func TestPostRestoreAuditRejectsUnsafePublicEndpoint(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		endpoint string
+	}{
+		{name: "control character", endpoint: "https://service:2379\nother"},
+		{name: "quote", endpoint: `https://service:2379"other`},
+		{name: "backslash", endpoint: `https://service:2379\other`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newAuditFixture(t)
+			f.run(t, false, "PUBLIC_ENDPOINT="+tc.endpoint, "PUBLIC_ENDPOINT contains unsupported characters")
+			require.NoFileExists(t, filepath.Join(f.state, "audit-1.receipt.json"))
+			require.NoFileExists(t, filepath.Join(f.dir, "probes"))
+		})
+	}
+}
+
 type auditFixture struct {
 	dir, state string
 	env        []string
