@@ -12952,6 +12952,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （327.854 秒）、`bash -n
   hack/production/run-backup-deletion-operation.sh` 和 `git diff --check` 通过；当前环境未安装
   `shellcheck`，未运行 ShellCheck。
+- A871 收紧 logical object wrapper 的 S3 endpoint 字符边界：
+  A870 已在 BackupDeletion runner 层拒绝危险 S3 endpoint，但直接运行
+  `logical-object.sh` 时仍会把含换行、tab、引号或反斜杠的 `S3_ENDPOINT` 交给 Go object
+  命令和 AWS SDK 配置。现在 direct object wrapper 在启动 Go command 前要求非空 endpoint
+  并拒绝危险字符；回归覆盖换行、引号和反斜杠 endpoint，确认不发布 receipt。`go test
+  ./hack/production -run TestLogicalObjectWrapperRejectsUnsafeS3Endpoint -count=1 -v`、
+  `go test ./hack/production -count=1 -timeout=12m`（329.939 秒）、`bash -n
+  hack/backup/logical-object.sh`、`go vet ./hack/production` 和 `git diff --check` 通过；
+  当前环境未安装 `shellcheck`，未运行 ShellCheck。
 - A855 前移 PostRestoreAudit runner 的 Service/target 身份校验：
   `audit-restored-instance.sh` 会拒绝非法 operation/instance、Service namespace/name 和
   target instance，但 `run-post-restore-audit-operation.sh` 原先只在子审计前独立校验

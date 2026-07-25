@@ -71,3 +71,36 @@ func TestColdRestoreVerifyWrapperRejectsUnsafeEndpoint(t *testing.T) {
 		})
 	}
 }
+
+func TestLogicalObjectWrapperRejectsUnsafeS3Endpoint(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		endpoint string
+	}{
+		{name: "control character", endpoint: "https://s3.example\nother"},
+		{name: "quote", endpoint: `https://s3.example"other`},
+		{name: "backslash", endpoint: `https://s3.example\other`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			receipt := filepath.Join(dir, "receipt.json")
+			env := []string{
+				"S3_ENDPOINT=" + tc.endpoint,
+				"ACTION=usage",
+				"OBJECT_STORE_ID=store-a",
+				"S3_BUCKET=backups",
+				"AWS_REGION=us-east-1",
+				"AWS_ACCESS_KEY_ID=access",
+				"AWS_SECRET_ACCESS_KEY=secret",
+				"USAGE_PREFIX=instance-a/",
+				"ALLOWED_FORMATS_JSON=[]",
+				"RECEIPT_OUTPUT=" + receipt,
+			}
+
+			out, err := runProductionScriptCommand(t, "../backup/logical-object.sh", env)
+			require.Error(t, err, string(out))
+			require.Contains(t, string(out), "S3_ENDPOINT contains unsupported characters")
+			require.NoFileExists(t, receipt)
+		})
+	}
+}

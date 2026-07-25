@@ -54,5 +54,15 @@ case "${1:-}" in
     ;;
 esac
 
+S3_ENDPOINT="${S3_ENDPOINT:-}"
+if [[ -z "$S3_ENDPOINT" ]]; then
+  echo "S3_ENDPOINT is required" >&2
+  exit 2
+fi
+if [[ "$S3_ENDPOINT" == *[$'\t\r\n"\\']* ]]; then
+  echo "S3_ENDPOINT contains unsupported characters" >&2
+  exit 2
+fi
+
 cd "$ROOT_DIR/hack/backup/objectstore"
 go run ./cmd/logical-object

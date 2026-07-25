@@ -827,6 +827,9 @@ DELETE_CONFIRM=delete:instance-a:backup-20260718 \
   hack/backup/logical-object.sh
 ```
 
+`logical-object.sh` 直接入口会在启动 Go object 命令前拒绝缺失或含控制字符、引号、反斜杠的
+`S3_ENDPOINT`，保持 direct object 工具与 Backup/BackupDeletion runner 的 endpoint 边界一致。
+
 删除前重新核对 exact version 的大小、artifact digest 和远端 retention；retain-until
 未到直接失败，到期后仅删除 receipt 指定的 version，并以 Head 确认该 version 不可读后
 发布 `kubebrain.object-backup-deletion.receipt.v1`。删除后崩溃重试可根据“到期且精确
