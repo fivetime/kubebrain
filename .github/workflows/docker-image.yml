@@ -106,6 +106,28 @@ jobs:
             "$RUNNER_TEMP/manifest.json")" -eq 2
           docker buildx imagetools inspect "$reference"
 
+      - name: Verify runtime image metadata
+        run: |
+          reference="${{ steps.vars.outputs.image }}@${{ steps.build.outputs.digest }}"
+          docker pull --platform linux/amd64 "$reference"
+          version_output="$(docker run --rm --platform linux/amd64 \
+            --entrypoint /usr/local/bin/kube-brain "$reference" version)"
+          printf '%s\n' "$version_output"
+          printf '%s\n' "$version_output" | grep -F -- "Version:" | grep -F -- "${{ steps.vars.outputs.version }}"
+          printf '%s\n' "$version_output" | grep -F -- "Storage:" | grep -F -- "tikv"
+          printf '%s\n' "$version_output" | grep -F -- "Git SHA:" | grep -F -- "${{ steps.vars.outputs.revision }}"
+          printf '%s\n' "$version_output" | grep -F -- "BuildTime:" | grep -F -- "${{ steps.vars.outputs.created }}"
+          labels_json="$(docker image inspect "$reference" --format '{{json .Config.Labels}}')"
+          jq -e \
+            --arg version "${{ steps.vars.outputs.version }}" \
+            --arg revision "${{ steps.vars.outputs.revision }}" \
+            --arg created "${{ steps.vars.outputs.created }}" \
+            '.["org.opencontainers.image.version"] == $version and
+             .["org.opencontainers.image.revision"] == $revision and
+             .["org.opencontainers.image.created"] == $created' \
+            <<<"$labels_json"
+          test "$(docker image inspect "$reference" --format '{{.Config.User}}')" = "65532:65532"
+
       - name: Promote verified image to latest
         run: |
           reference="${{ steps.vars.outputs.image }}@${{ steps.build.outputs.digest }}"

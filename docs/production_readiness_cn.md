@@ -148,7 +148,9 @@ docker build \
 `KUBEBRAIN_GIT_SHA` 必须是 40 位十六进制完整 commit ID。构建结果同时把三个值写入
 `kube-brain version` 和 OCI `org.opencontainers.image.version/revision/created`
 labels；发布门槛必须比较两处值，并确认 revision 对应 CI checkout，而不是仅检查镜像
-tag。
+tag。`.github/workflows/docker-image.yml` 会在推送 digest 后拉取 `linux/amd64` 子镜像，
+实际执行 `kube-brain version` 并核对 version/storage/revision/build time，再检查 OCI
+labels 和最终镜像 `USER=65532:65532`，全部通过后才把该 digest promoted 为 `latest`。
 
 构建上下文必须使用仓库根目录的 `.dockerignore`。`.git`、`.dev`、`bin`、IDE 配置、
 本地 output/coverage 和根级临时二进制不得发送给 Docker daemon；这些目录可能包含

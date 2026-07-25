@@ -12601,6 +12601,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `RUN_GO_TEST=false RUN_GO_VET=true RUN_BASIC_SMOKE=false RUN_HA_SMOKE=false RUN_APISERVER_SMOKE=false RUN_TLS_SMOKE=false hack/dev/verify.sh`、
   `RUN_GO_TEST=false RUN_GO_VET=maybe RUN_BASIC_SMOKE=false RUN_HA_SMOKE=false RUN_APISERVER_SMOKE=false RUN_TLS_SMOKE=false hack/dev/verify.sh`
   和 `git diff --check` 通过。
+- A833 在镜像发布 workflow 中核验运行时元数据：
+  `docker-image.yml` 原先只验证 pushed digest 的多架构索引和 latest promotion，没有实际运行最终
+  镜像核对 `kube-brain version` 与 OCI labels。现在 workflow 在 promotion 前拉取刚推送的
+  `linux/amd64` 子镜像，执行 `/usr/local/bin/kube-brain version`，校验 version、`Storage=tikv`、
+  40 位 revision 和 build time 与 CI 计算值一致，再用 `docker image inspect` 核对
+  `org.opencontainers.image.version/revision/created` 以及最终 `USER=65532:65532`。这把生产镜像
+  追踪文档中的要求变成发布硬门禁；`git diff --check` 与
+  `go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7 .github/workflows/docker-image.yml`
+  通过。
 
 ### P2：运维兼容和长期验证
 
