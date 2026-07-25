@@ -12,7 +12,6 @@ import (
 	"os"
 	"sort"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -59,8 +58,9 @@ type usageIdentity struct {
 }
 
 func MeasureUsage(ctx context.Context, client S3API, request UsageRequest) (UsageReceipt, error) {
-	request.Prefix = strings.TrimSpace(request.Prefix)
 	if request.ObjectStoreID == "" || request.Bucket == "" || request.Prefix == "" ||
+		!validObjectScopeValue(request.ObjectStoreID) || !validObjectScopeValue(request.Bucket) ||
+		!validRelativeObjectPrefix(request.Prefix) ||
 		request.ReceiptOutput == "" || len(request.AllowedFormats) == 0 ||
 		len(request.AllowedFormats) > 16 {
 		return UsageReceipt{}, errors.New("object usage request is incomplete")
@@ -68,7 +68,7 @@ func MeasureUsage(ctx context.Context, client S3API, request UsageRequest) (Usag
 	allowed := make(map[string]struct{}, len(request.AllowedFormats))
 	previous := ""
 	for _, format := range request.AllowedFormats {
-		if format == "" || (previous != "" && format <= previous) {
+		if format == "" || !validObjectScopeValue(format) || (previous != "" && format <= previous) {
 			return UsageReceipt{}, errors.New("allowed formats must be non-empty, unique, and sorted")
 		}
 		allowed[format] = struct{}{}
@@ -184,6 +184,8 @@ func equalStrings(left, right []string) bool {
 
 func (r UsageReceipt) Validate() error {
 	if r.Format != UsageReceiptFormat || r.ObjectStoreID == "" || r.Bucket == "" ||
+		!validObjectScopeValue(r.ObjectStoreID) || !validObjectScopeValue(r.Bucket) ||
+		!validRelativeObjectPrefix(r.Prefix) ||
 		r.Prefix == "" || len(r.AllowedFormats) == 0 || len(r.AllowedFormats) > 16 ||
 		r.RemoteVersions < 0 || r.DeleteMarkers != 0 || r.TotalObjectBytes < 0 ||
 		!validHexSHA256(r.VersionsSHA256) || r.CheckedAtUnix <= 0 {
@@ -197,7 +199,7 @@ func (r UsageReceipt) Validate() error {
 	}
 	previous := ""
 	for _, format := range r.AllowedFormats {
-		if format == "" || (previous != "" && format <= previous) {
+		if format == "" || !validObjectScopeValue(format) || (previous != "" && format <= previous) {
 			return errors.New("object usage receipt formats are invalid")
 		}
 		previous = format

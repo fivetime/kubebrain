@@ -295,7 +295,8 @@ func listAllVersions(
 		}
 		for _, version := range output.Versions {
 			key, versionID := aws.ToString(version.Key), aws.ToString(version.VersionId)
-			if key == "" || versionID == "" || !strings.HasPrefix(key, prefix) {
+			if key == "" || versionID == "" || !strings.HasPrefix(key, prefix) ||
+				!validRelativeObjectKey(key) || !validObjectScopeValue(versionID) {
 				return nil, nil, errors.New("object version listing contains invalid identity")
 			}
 			identity := key + "\x00" + versionID

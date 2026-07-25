@@ -1024,9 +1024,11 @@ adjustment、invoice plan 和 finalized invoice 是月度/周期级控制证据�
 备份大小，既不包含仍被保留的旧 version，也不能发现 delete marker 或控制面漏报对象。
 `deploy/production/kubebrain-metering-storage.yaml` 因此每小时直接扫描实例专属 source
 prefix。`ACTION=usage` 使用 `ListObjectVersions` 的 key/version 双 marker 完整分页，
-拒绝任意 delete marker、重复/无 ID version 和未前进分页；随后对每个 exact version
-执行 Head 和 GetObjectRetention，核对 allowlist format、account ID、bytes、artifact
-digest metadata、COMPLIANCE/GOVERNANCE mode 与 retain-until。总字节使用 int64
+请求里的 store/bucket/prefix 必须是规范化对象 scope/prefix，不能通过 trim 悄悄改写；
+远端返回的 key 必须是规范化相对 key 且位于 prefix 下，version ID 不能包含空白或控制
+字符。usage 拒绝任意 delete marker、重复/无 ID version 和未前进分页；随后对每个 exact
+version 执行 Head 和 GetObjectRetention，核对 allowlist format、account ID、bytes、
+artifact digest metadata、COMPLIANCE/GOVERNANCE mode 与 retain-until。总字节使用 int64
 溢出保护，排序后的完整 version identity/evidence 计算 `versions_sha256`。prefix
 必须只属于一个 DBaaS 实例；共享 prefix 会把其他实例费用计入本实例，不能上线。
 

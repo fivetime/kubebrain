@@ -104,6 +104,27 @@ func TestMeasureUsageFailsClosedWithoutReceipt(t *testing.T) {
 			},
 			want: "sorted",
 		},
+		{
+			name: "remote key unclean",
+			mutate: func(f *inventoryFixture, _ *UsageRequest) {
+				f.client.listOutputs[0].Versions[0].Key = aws.String("audits//a.json")
+			},
+			want: "invalid identity",
+		},
+		{
+			name: "request prefix whitespace",
+			mutate: func(_ *inventoryFixture, request *UsageRequest) {
+				request.Prefix = " audits/"
+			},
+			want: "incomplete",
+		},
+		{
+			name: "allowed format control byte",
+			mutate: func(_ *inventoryFixture, request *UsageRequest) {
+				request.AllowedFormats = []string{"kubebrain\tlogical.v2"}
+			},
+			want: "allowed formats",
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -170,4 +191,54 @@ func TestUsageReceiptRejectsImpossibleVersionByteTotals(t *testing.T) {
 
 	receipt.VersionsSHA256 = emptyUsageVersionsSHA256
 	require.NoError(t, receipt.Validate())
+}
+
+func TestUsageReceiptRejectsUnsafeObjectIdentity(t *testing.T) {
+	receipt := UsageReceipt{
+		Format: UsageReceiptFormat, ObjectStoreID: "store-a", Bucket: "bucket-a",
+		Prefix: "audits/", AllowedFormats: []string{operationaudit.Format},
+		VersionsSHA256: emptyUsageVersionsSHA256, CheckedAtUnix: 1,
+	}
+	require.NoError(t, receipt.Validate())
+
+	for _, tc := range []struct {
+		name   string
+		mutate func(*UsageReceipt)
+		want   string
+	}{
+		{
+			name: "object store control byte",
+			mutate: func(receipt *UsageReceipt) {
+				receipt.ObjectStoreID = "store\t-a"
+			},
+			want: "incomplete",
+		},
+		{
+			name: "bucket whitespace",
+			mutate: func(receipt *UsageReceipt) {
+				receipt.Bucket = "bucket a"
+			},
+			want: "incomplete",
+		},
+		{
+			name: "prefix parent",
+			mutate: func(receipt *UsageReceipt) {
+				receipt.Prefix = "../audits/"
+			},
+			want: "incomplete",
+		},
+		{
+			name: "format control byte",
+			mutate: func(receipt *UsageReceipt) {
+				receipt.AllowedFormats = []string{"kubebrain\tlogical.v2"}
+			},
+			want: "formats",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mutated := receipt
+			tc.mutate(&mutated)
+			require.ErrorContains(t, mutated.Validate(), tc.want)
+		})
+	}
 }

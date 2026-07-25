@@ -12726,6 +12726,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   路径穿越/非规范、entry key 路径穿越/非规范和 version tab。`cd hack/backup/objectstore &&
   go test ./... -count=1`、`cd hack/backup/objectstore && go vet ./...` 和 `git diff --check`
   通过。
+- A847 收紧对象 usage 计量的 request/remote/receipt identity：
+  `MeasureUsage` 原先会 `TrimSpace` 请求 prefix，可能把危险输入静默改成另一个计量范围；
+  usage receipt 也只要求 store/bucket/prefix 非空，远端 list 返回的 key/version 只检查
+  非空和 prefix。现在 usage request/receipt 复用对象 scope/prefix 校验，allowlist format
+  不能含空白/控制字符，远端 version key 必须是规范化相对 key 且仍位于 prefix 下，version
+  ID 也必须是安全 scope 值。回归覆盖 request prefix 空白、远端非规范 key、allowlist
+  控制字符、receipt store/bucket/prefix/format 污染。`cd hack/backup/objectstore && go test
+  ./... -count=1`、`cd hack/backup/objectstore && go vet ./...` 和 `git diff --check` 通过。
 
 ### P2：运维兼容和长期验证
 
