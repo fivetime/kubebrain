@@ -13423,6 +13423,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `Internal`，消息为 `header key "client-api-version" contains value with non-printable ASCII characters`。
   既有本地测试只覆盖 admission helper，本轮新增 bufconn gRPC 回归，防止拦截器或
   server option 重排后改变客户端实际可见错误。
+- A914 固定 RangeStream validation 错误优先级：
+  `rangestream_validation` reference differential 证明 RangeStream 的 empty key、非法
+  sort enum 仍按普通 Range 返回 `InvalidArgument`，而合法 enum 但不支持的 custom sort
+  和 revision filter 返回 `Unimplemented`；custom sort 与 filter 同时存在时 custom sort
+  错误优先。本轮扩展本地 RangeStream unsupported-shape 矩阵，防止 3.7 流式 Range
+  校验路径把协议非法请求误报为平台未实现。
 
 ### P2：运维兼容和长期验证
 

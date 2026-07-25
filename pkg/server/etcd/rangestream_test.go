@@ -323,16 +323,37 @@ func TestRangeStreamRejectsUnsupportedShapes(t *testing.T) {
 	cases := []struct {
 		name    string
 		req     *etcdserverpb.RangeRequest
+		code    codes.Code
 		message string
 	}{
 		{
+			name:    "emptyKey",
+			req:     &etcdserverpb.RangeRequest{},
+			code:    codes.InvalidArgument,
+			message: "etcdserver: key is not provided",
+		},
+		{
+			name:    "invalidSortOrder",
+			req:     &etcdserverpb.RangeRequest{Key: []byte("/a"), SortOrder: etcdserverpb.RangeRequest_SortOrder(99)},
+			code:    codes.InvalidArgument,
+			message: "etcdserver: invalid sort option",
+		},
+		{
+			name:    "invalidSortTarget",
+			req:     &etcdserverpb.RangeRequest{Key: []byte("/a"), SortTarget: etcdserverpb.RangeRequest_SortTarget(99)},
+			code:    codes.InvalidArgument,
+			message: "etcdserver: invalid sort option",
+		},
+		{
 			name:    "modRevisionFilter",
 			req:     &etcdserverpb.RangeRequest{Key: []byte("/a"), RangeEnd: []byte("/b"), MinModRevision: 5},
+			code:    codes.Unimplemented,
 			message: "RangeStream does not support revision filters",
 		},
 		{
 			name:    "sortOrder",
 			req:     &etcdserverpb.RangeRequest{Key: []byte("/a"), RangeEnd: []byte("/b"), SortOrder: etcdserverpb.RangeRequest_DESCEND, SortTarget: etcdserverpb.RangeRequest_KEY},
+			code:    codes.Unimplemented,
 			message: "RangeStream does not support custom sort orders",
 		},
 		{
@@ -342,6 +363,7 @@ func TestRangeStreamRejectsUnsupportedShapes(t *testing.T) {
 				SortOrder: etcdserverpb.RangeRequest_DESCEND, SortTarget: etcdserverpb.RangeRequest_KEY,
 				MinModRevision: 5,
 			},
+			code:    codes.Unimplemented,
 			message: "RangeStream does not support custom sort orders",
 		},
 	}
@@ -350,7 +372,7 @@ func TestRangeStreamRejectsUnsupportedShapes(t *testing.T) {
 			rs := &fakeRangeStreamServer{ctx: ctx}
 			err := server.RangeStream(c.req, rs)
 			require.Error(t, err)
-			require.Equal(t, codes.Unimplemented, status.Code(err))
+			require.Equal(t, c.code, status.Code(err))
 			require.Equal(t, c.message, status.Convert(err).Message())
 			require.Empty(t, rs.sent, "no chunks on a rejected request")
 		})
