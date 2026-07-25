@@ -43,12 +43,16 @@ func (s *RPCServer) MemberList(ctx context.Context, req *etcdserverpb.MemberList
 			return nil, readBarrierStatusErr(err)
 		}
 	}
+	return s.memberListResponse(s.membersSnapshot()), nil
+}
+
+func (s *RPCServer) membersSnapshot() []*etcdserverpb.Member {
 	if len(s.staticMembers) > 0 {
 		members := make([]*etcdserverpb.Member, len(s.staticMembers))
 		for i := range s.staticMembers {
 			members[i] = proto.Clone(s.staticMembers[i]).(*etcdserverpb.Member)
 		}
-		return s.memberListResponse(members), nil
+		return members
 	}
 	addresses := []string{s.backend.GetResourceLock().Identity(), s.peers.GetLeaderInfo()}
 	members := make([]*etcdserverpb.Member, 0, len(addresses))
@@ -74,7 +78,7 @@ func (s *RPCServer) MemberList(ctx context.Context, req *etcdserverpb.MemberList
 			IsLearner:  false,
 		})
 	}
-	return s.memberListResponse(members), nil
+	return members
 }
 
 func (s *RPCServer) memberListResponse(members []*etcdserverpb.Member) *etcdserverpb.MemberListResponse {

@@ -34,7 +34,46 @@ const etcdClusterIDHeader = "X-Etcd-Cluster-ID"
 // GetPeerHttpHandlers returns etcd-compatible peer HTTP handlers.
 func (s *RPCServer) GetPeerHttpHandlers() map[string]http.Handler {
 	return map[string]http.Handler{
+		"/members":     http.HandlerFunc(s.peerMembersHandler),
 		PeerHashKVPath: http.HandlerFunc(s.peerHashKVHandler),
+	}
+}
+
+type peerHTTPMember struct {
+	ID         uint64   `json:"id"`
+	PeerURLs   []string `json:"peerURLs"`
+	IsLearner  bool     `json:"isLearner,omitempty"`
+	Name       string   `json:"name,omitempty"`
+	ClientURLs []string `json:"clientURLs,omitempty"`
+}
+
+func (s *RPCServer) peerMembersHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if r.URL.Path != "/members" {
+		http.Error(w, "bad path", http.StatusBadRequest)
+		return
+	}
+	clusterID := strconv.FormatUint(s.backend.ClusterID(), 16)
+	w.Header().Set(etcdClusterIDHeader, clusterID)
+
+	members := s.membersSnapshot()
+	resp := make([]peerHTTPMember, 0, len(members))
+	for _, member := range members {
+		resp = append(resp, peerHTTPMember{
+			ID:         member.ID,
+			PeerURLs:   append([]string(nil), member.PeerURLs...),
+			IsLearner:  member.IsLearner,
+			Name:       member.Name,
+			ClientURLs: append([]string(nil), member.ClientURLs...),
+		})
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
 }
 

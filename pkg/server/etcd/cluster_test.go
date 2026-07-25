@@ -16,8 +16,12 @@ package etcd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"sort"
+	"strconv"
 	"sync/atomic"
 	"testing"
 
@@ -100,6 +104,71 @@ func TestParseInitialClusterAndMemberList(t *testing.T) {
 	require.NoError(t, err)
 	for _, member := range again.Members {
 		require.NotEqual(t, "mutated", member.Name)
+	}
+}
+
+func TestPeerMembersHandlerReturnsEtcdPeerJSON(t *testing.T) {
+	members, err := ParseInitialCluster(
+		"kb-2=http://10.0.0.2:2380,kb-1=http://10.0.0.1:2380",
+		2379, true,
+	)
+	require.NoError(t, err)
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	server.SetStaticMembers(members)
+
+	rec := httptest.NewRecorder()
+	server.GetPeerHttpHandlers()["/members"].ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/members", nil))
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, "application/json", rec.Header().Get("Content-Type"))
+	require.Equal(t, strconv.FormatUint(server.backend.ClusterID(), 16), rec.Header().Get(etcdClusterIDHeader))
+	var got []struct {
+		ID         uint64   `json:"id"`
+		PeerURLs   []string `json:"peerURLs"`
+		IsLearner  bool     `json:"isLearner"`
+		Name       string   `json:"name"`
+		ClientURLs []string `json:"clientURLs"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	require.Len(t, got, 2)
+	sort.Slice(got, func(i, j int) bool { return got[i].Name < got[j].Name })
+	wantIDs := make(map[string]uint64, len(members))
+	for _, member := range members {
+		wantIDs[member.Name] = member.ID
+	}
+	require.Equal(t, "kb-1", got[0].Name)
+	require.Equal(t, wantIDs["kb-1"], got[0].ID)
+	require.Equal(t, []string{"http://10.0.0.1:2380"}, got[0].PeerURLs)
+	require.Equal(t, []string{"https://10.0.0.1:2379"}, got[0].ClientURLs)
+	require.False(t, got[0].IsLearner)
+
+	var raw []map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &raw))
+	require.Contains(t, raw[0], "id")
+	require.NotContains(t, raw[0], "ID")
+}
+
+func TestPeerMembersHandlerRejectsBadRequests(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	tests := []struct {
+		name       string
+		method     string
+		target     string
+		wantStatus int
+		wantBody   string
+	}{
+		{name: "wrong method", method: http.MethodPost, target: "/members", wantStatus: http.StatusMethodNotAllowed, wantBody: "Method Not Allowed"},
+		{name: "wrong path", method: http.MethodGet, target: "/members/extra", wantStatus: http.StatusBadRequest, wantBody: "bad path"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			server.peerMembersHandler(rec, httptest.NewRequest(tt.method, tt.target, nil))
+			require.Equal(t, tt.wantStatus, rec.Code)
+			require.Contains(t, rec.Body.String(), tt.wantBody)
+		})
 	}
 }
 
