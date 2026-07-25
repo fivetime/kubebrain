@@ -1276,6 +1276,31 @@ func TestWatchEventToEtcdEventRemainsUpdateWhenPrevKvUnavailable(t *testing.T) {
 	require.Equal(t, event.Kv.ModRevision-1, event.Kv.CreateRevision)
 }
 
+func TestWatchIgnoresInvalidControlMessagesAndKeepsStreamAlive(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	stream := &scriptedWatchServer{
+		fakeWatchServer: &fakeWatchServer{ctx: context.Background()},
+		reqs: []*etcdserverpb.WatchRequest{
+			{},
+			{RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{}},
+			{RequestUnion: &etcdserverpb.WatchRequest_CancelRequest{}},
+			{RequestUnion: &etcdserverpb.WatchRequest_ProgressRequest{}},
+			{RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{
+				CreateRequest: &etcdserverpb.WatchCreateRequest{Key: []byte("/watch/after-invalid-control"), WatchId: 404},
+			}},
+		},
+	}
+
+	err := server.Watch(stream)
+	require.Equal(t, codes.Canceled, status.Code(err))
+	require.Len(t, stream.sent, 1)
+	require.Equal(t, int64(404), stream.sent[0].WatchId)
+	require.True(t, stream.sent[0].Created)
+	require.False(t, stream.sent[0].Canceled)
+}
+
 // scriptedWatchServer replays a fixed sequence of WatchRequests, then reports
 // context.Canceled so RPCServer.Watch's receive loop exits deterministically.
 type scriptedWatchServer struct {
