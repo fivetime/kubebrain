@@ -12866,6 +12866,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   -v`、`go vet ./hack/production`、`go test ./hack/production -count=1 -timeout=12m`
   （316.047 秒）、`bash -n hack/production/run-post-restore-audit-operation.sh` 和
   `git diff --check` 通过；当前环境未安装 `shellcheck`，未运行 ShellCheck。
+- A861 前移 PostRestoreAudit runner 的 claim 身份校验：
+  PostRestoreAudit runner 旧逻辑会在启动 audit 子命令前校验 `operation_id` 和 `instance`，
+  但校验发生在参数获取、冻结、audit prefix preflight 和证据捕获之后；其它高风险 runner
+  已统一在 claim 解析后立即拒绝非法身份。现在 runner 在 claim 后立即要求 operation ID
+  与 instance 匹配受控资源标识格式，非法时不启动 audit 子命令，也不 retry/succeed。回归
+  覆盖非法 operation ID 和非法 instance。`go test ./hack/production -run
+  'TestPostRestoreAuditOperationRejects(InvalidClaimIdentityBeforeAudit|InvalidIdentityBeforeAudit|EmptyRequiredParameters|UnsafeAuditPrefix)'
+  -count=1 -v`、`go test ./hack/production -run TestPostRestoreAuditOperation -count=1
+  -v`、`go vet ./hack/production`、`go test ./hack/production -count=1 -timeout=12m`
+  （318.803 秒）、`bash -n hack/production/run-post-restore-audit-operation.sh` 和
+  `git diff --check` 通过；当前环境未安装 `shellcheck`，未运行 ShellCheck。
 - A856 前移 Backup runner 的 claim 身份校验：
   `run-backup-operation.sh` 旧逻辑信任 operation claim 返回的 `operation_id` 和 `instance`，
   只在参数解析后要求 `backup_id` 等于 claimed operation ID；若 claim/参数同时漂移成
