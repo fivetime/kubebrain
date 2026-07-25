@@ -78,6 +78,7 @@ func runCompareMatrixScenario(t *testing.T, endpoint, instance string) []compare
 	emptyPrefix := prefix + "empty/"
 	emptyKey := []byte(emptyPrefix)
 	emptyEnd := []byte(clientv3.GetPrefixRangeEnd(emptyPrefix))
+	emptyFromKey := []byte(prefix + "z")
 	tests := []struct {
 		name    string
 		compare *etcdserverpb.Compare
@@ -112,6 +113,8 @@ func runCompareMatrixScenario(t *testing.T, endpoint, instance string) []compare
 		{"multi-lease-not-equal-zero", intCompare([]byte(prefix), rangeEnd, etcdserverpb.Compare_LEASE, etcdserverpb.Compare_NOT_EQUAL, 0)},
 		{"from-key-version-greater-zero", intCompare(keyB, []byte{0}, etcdserverpb.Compare_VERSION, etcdserverpb.Compare_GREATER, 0)},
 		{"from-key-value-equal-different", valueCompare(keyB, []byte{0}, etcdserverpb.Compare_EQUAL, "different")},
+		{"from-key-empty-version-equal-zero", intCompare(emptyFromKey, []byte{0}, etcdserverpb.Compare_VERSION, etcdserverpb.Compare_EQUAL, 0)},
+		{"from-key-empty-value-not-equal", valueCompare(emptyFromKey, []byte{0}, etcdserverpb.Compare_NOT_EQUAL, "anything")},
 	}
 
 	outcomes := make([]compareMatrixOutcome, 0, len(tests))

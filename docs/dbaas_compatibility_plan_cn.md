@@ -13341,6 +13341,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   TestTxnRangeCompareFromKeySentinelMatchesEtcd -count=1 -v` 通过；`cd hack/etcd-client-compat &&
   go test . -run TestTxnCompareMatrixDifferentialAgainstReferenceEtcd -count=1 -v` 编译通过，
   未设置 `REFERENCE_ETCD_ENDPOINT` 时按预期 skip。
+- A900 固定 range compare from-key 空集合：
+  上游 `applyCompare` 对 from-key sentinel 同样先走 `mkGteRange`，当 `[key, ∞)` 没有任何
+  KV 时，非 VALUE compare 使用空 `KeyValue` 的零值，VALUE compare 无论 result 都失败。
+  新增本地回归覆盖 from-key 起点超过现有 key 后 VERSION == 0 选中 Success、VALUE
+  NOT_EQUAL 仍选中 Failure；reference etcd compare matrix 同步加入
+  `from-key-empty-version-equal-zero` 与 `from-key-empty-value-not-equal`，避免把 from-key
+  空结果误当作普通 absent point 或客户端前缀空结果。
 
 ### P2：运维兼容和长期验证
 

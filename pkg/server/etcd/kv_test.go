@@ -3907,6 +3907,47 @@ func TestTxnRangeCompareFromKeySentinelMatchesEtcd(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, resp.Succeeded)
 	require.Len(t, resp.Responses[0].GetResponseRange().Kvs, 3)
+
+	resp, err = server.Txn(ctx, &etcdserverpb.TxnRequest{
+		Compare: []*etcdserverpb.Compare{{
+			Key:         []byte(prefix + "z"),
+			RangeEnd:    []byte{0},
+			Target:      etcdserverpb.Compare_VERSION,
+			Result:      etcdserverpb.Compare_EQUAL,
+			TargetUnion: &etcdserverpb.Compare_Version{Version: 0},
+		}},
+		Success: []*etcdserverpb.RequestOp{{Request: &etcdserverpb.RequestOp_RequestPut{
+			RequestPut: &etcdserverpb.PutRequest{Key: []byte(prefix + "empty-version-ok"), Value: []byte("ok")},
+		}}},
+		Failure: []*etcdserverpb.RequestOp{{Request: &etcdserverpb.RequestOp_RequestPut{
+			RequestPut: &etcdserverpb.PutRequest{Key: []byte(prefix + "empty-version-fail"), Value: []byte("bad")},
+		}}},
+	})
+	require.NoError(t, err)
+	require.True(t, resp.Succeeded)
+
+	marker, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: []byte(prefix + "empty-version-ok")})
+	require.NoError(t, err)
+	require.Len(t, marker.Kvs, 1)
+
+	resp, err = server.Txn(ctx, &etcdserverpb.TxnRequest{
+		Compare: []*etcdserverpb.Compare{{
+			Key:         []byte(prefix + "z"),
+			RangeEnd:    []byte{0},
+			Target:      etcdserverpb.Compare_VALUE,
+			Result:      etcdserverpb.Compare_NOT_EQUAL,
+			TargetUnion: &etcdserverpb.Compare_Value{Value: []byte("anything")},
+		}},
+		Success: []*etcdserverpb.RequestOp{{Request: &etcdserverpb.RequestOp_RequestPut{
+			RequestPut: &etcdserverpb.PutRequest{Key: []byte(prefix + "empty-value-bad"), Value: []byte("bad")},
+		}}},
+		Failure: []*etcdserverpb.RequestOp{{Request: &etcdserverpb.RequestOp_RequestRange{
+			RequestRange: &etcdserverpb.RangeRequest{Key: []byte(prefix + "empty-value-bad")},
+		}}},
+	})
+	require.NoError(t, err)
+	require.False(t, resp.Succeeded)
+	require.Empty(t, resp.Responses[0].GetResponseRange().Kvs)
 }
 
 func TestTxnRangeCompareValueFailsForEmptyRange(t *testing.T) {
