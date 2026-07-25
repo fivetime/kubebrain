@@ -13742,6 +13742,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `Access-Control-Allow-*` headers，GET 仍返回 etcd 版本 JSON 且带 `Access-Control-Allow-Origin:*`；
   这固定 kubeadm ExternalEtcd HTTP preflight 在独立 info 端口上的行为，防止后续调整
   handler map 时只保留 client 端口兼容。
+- A962 扩展 Watch 混合 PrevKV stream 的多轮隔离回归：
+  `watch_mixed_prevkv_streams` reference differential 用多个 watcher 反复更新同一 key，
+  证明带 `PrevKv` 的流每轮都看到上一版本，而不带 `PrevKv` 的流不能因为共享事件对象而
+  泄漏 `PrevKv`。既有本地回归已覆盖单次更新，本轮扩展为 `v0->v1->v2->v3` 三轮更新，
+  逐轮检查 current/previous value，防止 watch event 复用、过滤或批量分发优化在后续
+  事件中重新污染 mixed streams。
 
 ### P2：运维兼容和长期验证
 

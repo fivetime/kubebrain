@@ -359,20 +359,24 @@ func TestWatchMixedPrevKVStreamsKeepEventsIsolated(t *testing.T) {
 	requireWatchCreated(t, withPrev, 1)
 	requireWatchCreated(t, withoutPrev, 2)
 
-	_, err = kv.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("v1")})
-	require.NoError(t, err)
+	previous := []byte("v0")
+	for _, current := range [][]byte{[]byte("v1"), []byte("v2"), []byte("v3")} {
+		_, err = kv.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: current})
+		require.NoError(t, err)
 
-	withPrevEvent := requireSingleWatchEvent(t, withPrev, 1)
-	require.Equal(t, key, withPrevEvent.Kv.Key)
-	require.Equal(t, []byte("v1"), withPrevEvent.Kv.Value)
-	require.NotNil(t, withPrevEvent.PrevKv)
-	require.Equal(t, key, withPrevEvent.PrevKv.Key)
-	require.Equal(t, []byte("v0"), withPrevEvent.PrevKv.Value)
+		withPrevEvent := requireSingleWatchEvent(t, withPrev, 1)
+		require.Equal(t, key, withPrevEvent.Kv.Key)
+		require.Equal(t, current, withPrevEvent.Kv.Value)
+		require.NotNil(t, withPrevEvent.PrevKv)
+		require.Equal(t, key, withPrevEvent.PrevKv.Key)
+		require.Equal(t, previous, withPrevEvent.PrevKv.Value)
 
-	withoutPrevEvent := requireSingleWatchEvent(t, withoutPrev, 2)
-	require.Equal(t, key, withoutPrevEvent.Kv.Key)
-	require.Equal(t, []byte("v1"), withoutPrevEvent.Kv.Value)
-	require.Nil(t, withoutPrevEvent.PrevKv)
+		withoutPrevEvent := requireSingleWatchEvent(t, withoutPrev, 2)
+		require.Equal(t, key, withoutPrevEvent.Kv.Key)
+		require.Equal(t, current, withoutPrevEvent.Kv.Value)
+		require.Nil(t, withoutPrevEvent.PrevKv)
+		previous = current
+	}
 }
 
 func requireWatchCreated(t *testing.T, stream etcdserverpb.Watch_WatchClient, watchID int64) {
