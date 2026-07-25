@@ -7,7 +7,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
+	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/kubewharf/kubebrain/hack/production/operationaudit"
 )
@@ -112,6 +116,8 @@ type BlobReadReceipt struct {
 func (r Receipt) Validate() error {
 	if r.Format != ReceiptFormat || r.Instance == "" || r.BackupID == "" || r.ObjectStoreID == "" ||
 		r.Bucket == "" || r.ObjectKey == "" || r.VersionID == "" ||
+		!validObjectScopeValue(r.ObjectStoreID) || !validObjectScopeValue(r.Bucket) ||
+		!validRelativeObjectKey(r.ObjectKey) || !validObjectScopeValue(r.VersionID) ||
 		(r.ArtifactFileSHA256 != "" && !validHexSHA256(r.ArtifactFileSHA256)) ||
 		r.ArtifactFormat == "" || !validHexSHA256(r.ArtifactSHA256) || r.SnapshotRevision <= 0 ||
 		r.CreatedAtUnix <= 0 || r.Records < 0 || r.Leases < 0 || r.ObjectBytes <= 0 ||
@@ -140,6 +146,8 @@ func ReadReceipt(path string) (Receipt, error) {
 func (r DeletionReceipt) Validate() error {
 	if r.Format != DeletionReceiptFormat || r.Instance == "" || r.BackupID == "" || r.ObjectStoreID == "" ||
 		r.Bucket == "" || r.ObjectKey == "" || r.VersionID == "" || !validHexSHA256(r.ArtifactSHA256) ||
+		!validObjectScopeValue(r.ObjectStoreID) || !validObjectScopeValue(r.Bucket) ||
+		!validRelativeObjectKey(r.ObjectKey) || !validObjectScopeValue(r.VersionID) ||
 		(r.RetentionMode != "COMPLIANCE" && r.RetentionMode != "GOVERNANCE") ||
 		r.RetainUntilUnix <= 0 || !r.VersionAbsent || r.DeletedAtUnix != r.RetainUntilUnix {
 		return errors.New("object backup deletion receipt is incomplete")
@@ -189,6 +197,25 @@ func validHexSHA256(value string) bool {
 	return true
 }
 
+func validObjectScopeValue(value string) bool {
+	if value == "" || !utf8.ValidString(value) {
+		return false
+	}
+	return strings.IndexFunc(value, func(r rune) bool {
+		return unicode.IsSpace(r) || unicode.IsControl(r)
+	}) == -1
+}
+
+func validRelativeObjectKey(value string) bool {
+	if !validObjectScopeValue(value) || strings.HasPrefix(value, "/") {
+		return false
+	}
+	if value == "." || value == ".." || strings.HasPrefix(value, "../") {
+		return false
+	}
+	return path.Clean(value) == value
+}
+
 func ReadAuditReceipt(path string) (AuditReceipt, error) {
 	var receipt AuditReceipt
 	data, err := readBoundedObjectStoreJSONFile(path, "object operation audit receipt")
@@ -208,6 +235,8 @@ func (r BlobReceipt) Validate() error {
 	if r.Format != BlobReceiptFormat || r.ArtifactFormat == "" || r.ArtifactID == "" ||
 		r.Instance == "" || r.ObjectStoreID == "" || r.Bucket == "" || r.ObjectKey == "" ||
 		r.VersionID == "" || !validHexSHA256(r.ArtifactSHA256) || r.ObjectBytes <= 0 ||
+		!validObjectScopeValue(r.ObjectStoreID) || !validObjectScopeValue(r.Bucket) ||
+		!validRelativeObjectKey(r.ObjectKey) || !validObjectScopeValue(r.VersionID) ||
 		r.ObjectBytes > maxImmutableBlobBytes ||
 		(r.RetentionMode != "COMPLIANCE" && r.RetentionMode != "GOVERNANCE") ||
 		r.RetainUntilUnix <= r.ArchivedAtUnix || !r.RemoteVerified || r.ArchivedAtUnix <= 0 {
@@ -235,6 +264,8 @@ func (r BlobReadReceipt) Validate() error {
 	if r.Format != BlobReadReceiptFormat || r.ArtifactFormat == "" || r.ArtifactID == "" ||
 		r.Instance == "" || r.ObjectStoreID == "" || r.Bucket == "" || r.ObjectKey == "" ||
 		r.VersionID == "" || !validHexSHA256(r.ArtifactSHA256) || r.ObjectBytes <= 0 ||
+		!validObjectScopeValue(r.ObjectStoreID) || !validObjectScopeValue(r.Bucket) ||
+		!validRelativeObjectKey(r.ObjectKey) || !validObjectScopeValue(r.VersionID) ||
 		r.ObjectBytes > maxImmutableBlobBytes ||
 		(r.RetentionMode != "COMPLIANCE" && r.RetentionMode != "GOVERNANCE") ||
 		r.RetainUntilUnix <= 0 || !r.RemoteVerified {

@@ -12709,6 +12709,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   -run TestRestoreCutoverOperationRejectsInvalidIdentityParameters -count=1 -v`、`go test
   ./hack/production -run TestRestoreCutoverOperation -count=1 -v`、相关脚本 ShellCheck 和
   `git diff --check` 通过。
+- A845 收紧对象存储 receipt 的 bucket/key/version 身份：
+  `objectstore.Receipt`、`DeletionReceipt`、`BlobReceipt` 和 `BlobReadReceipt` 原先只要求
+  object store ID、bucket、object key 和 version ID 非空；带空白/控制字符的 scope 或
+  `../`、绝对路径、非规范化 object key 会进入后续归档/删除/读取证据。现在共享校验要求
+  scope 字段无空白/控制字符且 UTF-8 合法，object key 必须是规范化相对路径；回归覆盖
+  bucket 空白、object key 路径穿越、绝对 object key、version tab 和 invalid UTF-8 store。
+  `cd hack/backup/objectstore && go test ./internal/objectstore -count=1`、`cd
+  hack/backup/objectstore && go test ./... -count=1` 和 `git diff --check` 通过。
 
 ### P2：运维兼容和长期验证
 

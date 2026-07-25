@@ -778,7 +778,9 @@ backup ID、object store ID、bucket/key/version、artifact format/digest/revisi
 记录数/lease 数、对象字节数和保留策略。已有 receipt 的重试会重新下载该精确 version
 并复核 retention，不会产生新 version 或移动保留期限。
 objectstore 所有小型 receipt/manifest digest 校验只接受小写 hex SHA-256；backup/deletion
-receipt 的 `artifact_sha256` 也必须是真实 64 位 digest，不能只是非空字符串。
+receipt 的 `artifact_sha256` 也必须是真实 64 位 digest，不能只是非空字符串。对象存储
+scope 字段（object store ID、bucket、version ID）不能包含空白或控制字符；object key
+必须是规范化相对路径，拒绝绝对路径、`.`/`..` 和路径清理后会改变的形式。
 
 本地 receipt 丢失后的跨进程恢复还必须 Head 精确 version，复核 version ID、metadata、
 size，并用远端 `LastModified` 固化 `uploaded_at_unix`；不得使用当前重试时间。缺失或

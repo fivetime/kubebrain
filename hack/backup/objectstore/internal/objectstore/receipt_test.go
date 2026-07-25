@@ -277,6 +277,58 @@ func TestReceiptsRejectNonLowercaseArtifactDigest(t *testing.T) {
 	require.ErrorContains(t, read.Validate(), "incomplete")
 }
 
+func TestObjectReceiptsRejectUnsafeObjectIdentity(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		validate func() error
+	}{
+		{
+			name: "backup bucket whitespace",
+			validate: func() error {
+				receipt := completeReceipt()
+				receipt.Bucket = "backup bucket"
+				return receipt.Validate()
+			},
+		},
+		{
+			name: "backup object key parent",
+			validate: func() error {
+				receipt := completeReceipt()
+				receipt.ObjectKey = "../backup.jsonl"
+				return receipt.Validate()
+			},
+		},
+		{
+			name: "deletion absolute object key",
+			validate: func() error {
+				receipt := completeDeletionReceipt()
+				receipt.ObjectKey = "/instance-a/backup-1.jsonl"
+				return receipt.Validate()
+			},
+		},
+		{
+			name: "blob version control byte",
+			validate: func() error {
+				receipt := completeBlobReceipt()
+				receipt.VersionID = "version\tblob"
+				return receipt.Validate()
+			},
+		},
+		{
+			name: "blob read invalid utf8 store",
+			validate: func() error {
+				receipt := completeBlobReadReceipt()
+				receipt.ObjectStoreID = string([]byte{'s', 0xff})
+				return receipt.Validate()
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			require.ErrorContains(t, tc.validate(), "incomplete")
+		})
+	}
+}
+
 func TestAuditReceiptUsesOperationAuditArchiveSchema(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
