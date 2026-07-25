@@ -12266,6 +12266,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   响应 body。回归覆盖非 JSON、trailing JSON、`null` 和 array。
   `go test ./hack/production/cmd/operationctl -run 'TestBrokerParameters|TestDefaultKubeconfig' -count=1 -v`
   和 `go test ./hack/production/cmd/operationctl -count=1` 均通过。
+- A801 补齐 operationctl broker endpoint origin 校验：
+  A506 已拒绝非 HTTPS、userinfo、query 和 fragment，但仍允许
+  `https://broker.example/base` 这类带 path 的 endpoint，随后拼接成
+  `/base/v1/parameters`；这与 production 文档要求的 broker origin 不一致，也可能把
+  错误代理路径当作参数 broker 基址。现在 `brokerParameters` 只接受空 path 或根 path，
+  请求路径固定为 `/v1/parameters`，并在读 projected token/CA 前 fail closed。
+  回归覆盖带 path endpoint。
 
 ### P2：运维兼容和长期验证
 

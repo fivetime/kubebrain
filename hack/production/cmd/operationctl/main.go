@@ -210,10 +210,11 @@ func brokerParameters(
 	}
 	base, err := url.Parse(endpoint)
 	if err != nil || base.Scheme != "https" || base.Host == "" ||
-		base.User != nil || base.RawQuery != "" || base.Fragment != "" {
+		base.User != nil || (base.Path != "" && base.Path != "/") ||
+		base.RawQuery != "" || base.Fragment != "" {
 		return nil, errors.New("parameters endpoint must be an HTTPS origin")
 	}
-	base.Path = strings.TrimSuffix(base.Path, "/") + "/v1/parameters"
+	base.Path = "/v1/parameters"
 	query := base.Query()
 	query.Set("namespace", namespace)
 	query.Set("name", name)
