@@ -342,7 +342,7 @@ func (s *server) GetClientHttpHandlers() map[string]http.Handler {
 		"/version": http.HandlerFunc(s.versionHandler),
 	}
 	s.addEtcdHealthCheckHandlers(handlers)
-	return handlers
+	return withEtcdCORSHandlers(handlers)
 }
 
 // GetPeerHttpHandlers implements Server interface
@@ -374,7 +374,30 @@ func (s *server) GetInfoHttpHandlers() map[string]http.Handler {
 		"/version": http.HandlerFunc(s.versionHandler),
 	}
 	s.addEtcdHealthCheckHandlers(handlers)
-	return handlers
+	return withEtcdCORSHandlers(handlers)
+}
+
+func withEtcdCORSHandlers(handlers map[string]http.Handler) map[string]http.Handler {
+	wrapped := make(map[string]http.Handler, len(handlers))
+	for path, handler := range handlers {
+		wrapped[path] = etcdCORSHandler{handler: handler}
+	}
+	return wrapped
+}
+
+type etcdCORSHandler struct {
+	handler http.Handler
+}
+
+func (h etcdCORSHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	w.Header().Add("Access-Control-Allow-Methods", "POST, GET, OPTIONS, PUT, DELETE")
+	w.Header().Add("Access-Control-Allow-Origin", "*")
+	w.Header().Add("Access-Control-Allow-Headers", "accept, content-type, authorization")
+	if req.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	h.handler.ServeHTTP(w, req)
 }
 
 func (s *server) electionHandler(w http.ResponseWriter, req *http.Request) {

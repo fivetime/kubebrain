@@ -304,6 +304,36 @@ func TestHTTPHealthChecksLeaderAndBackend(t *testing.T) {
 	require.JSONEq(t, HealthResponse, recorder.Body.String())
 }
 
+func TestClientHTTPHandlersExposeEtcdCORSOptions(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	m := mock.NewMinimalMetrics(ctrl)
+	kv := &healthStorage{KvStorage: imemkv.NewKvStorage()}
+	b := backend.NewBackend(kv, backend.Config{Prefix: "/registry", Identity: "test"}, m)
+	defer func() { require.NoError(t, b.(interface{ Close() error }).Close()) }()
+	s := &server{
+		healthServer:   health.NewServer(),
+		leaderElection: &leader.Stub{},
+		backend:        b,
+	}
+	s.healthServer.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
+
+	healthHandler := s.GetClientHttpHandlers()["/health"]
+	require.NotNil(t, healthHandler)
+	options := httptest.NewRecorder()
+	healthHandler.ServeHTTP(options, httptest.NewRequest(http.MethodOptions, "/health", nil))
+	require.Equal(t, http.StatusOK, options.Code)
+	require.Empty(t, options.Body.String())
+	require.Equal(t, "POST, GET, OPTIONS, PUT, DELETE", options.Header().Get("Access-Control-Allow-Methods"))
+	require.Equal(t, "*", options.Header().Get("Access-Control-Allow-Origin"))
+	require.Equal(t, "accept, content-type, authorization", options.Header().Get("Access-Control-Allow-Headers"))
+
+	get := httptest.NewRecorder()
+	healthHandler.ServeHTTP(get, httptest.NewRequest(http.MethodGet, "/health?serializable=true", nil))
+	require.Equal(t, http.StatusOK, get.Code)
+	require.JSONEq(t, HealthResponse, get.Body.String())
+	require.Equal(t, "*", get.Header().Get("Access-Control-Allow-Origin"))
+}
+
 func TestHTTPHealthMatchesEtcdNoSpaceAlarmSemantics(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	m := mock.NewMinimalMetrics(ctrl)

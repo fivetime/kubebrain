@@ -13715,6 +13715,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   revision，再分别调用普通和 linearizable MemberList，并确认 linearizable 路径确实经过
   read barrier，同时两次响应的 header revision 均为 0，防止把 Range/Status header
   语义误套到 membership API 上。
+- A958 对齐 client HTTP handlers 的 etcd CORS/OPTIONS 包装：
+  `http_health_alarm` reference differential 覆盖 `/health` 的 OPTIONS 响应与
+  `Access-Control-Allow-*` headers；这些行为来自 etcd embed 层的 CORS wrapper，而不是
+  `/health` 业务 handler 本身。本轮在 KubeBrain client/info HTTP handler map 出口增加
+  等价包装，OPTIONS 直接返回 200，并在 GET 响应上附带允许方法、origin 和 headers；
+  新增本地 server 回归固定 `/health` OPTIONS 与 GET 的 header，防止 kubeadm、探针或
+  网关客户端依赖的 HTTP preflight 行为和 etcd 漂移。
 
 ### P2：运维兼容和长期验证
 
