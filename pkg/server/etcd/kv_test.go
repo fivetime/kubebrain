@@ -674,6 +674,53 @@ func TestRangeKeysOnlyLimitedCurrentAndHistoricalRevisions(t *testing.T) {
 		[]string{"00", "01", "03", "04", "05", "06", "07", "08", "09", "10", "11"}, 11, false)
 }
 
+func TestRangeKeysOnlyLimitAcrossTombstonesAndRecreateMatchesEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	ctx := context.Background()
+	prefix := "/registry/pods/tombstone-limit/"
+	end := []byte("/registry/pods/tombstone-limit0")
+	var beforeDeletes int64
+	for _, suffix := range []string{"a", "b", "c", "d"} {
+		resp, err := server.Put(ctx, &etcdserverpb.PutRequest{
+			Key: []byte(prefix + suffix), Value: []byte("value-" + suffix),
+		})
+		require.NoError(t, err)
+		beforeDeletes = resp.Header.Revision
+	}
+	_, err := server.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{Key: []byte(prefix + "b")})
+	require.NoError(t, err)
+	deleted, err := server.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{Key: []byte(prefix + "d")})
+	require.NoError(t, err)
+	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: []byte(prefix + "c"), Value: []byte("updated-c")})
+	require.NoError(t, err)
+	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: []byte(prefix + "b"), Value: []byte("recreated-b")})
+	require.NoError(t, err)
+	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: []byte(prefix + "e"), Value: []byte("value-e")})
+	require.NoError(t, err)
+
+	assertPage := func(name string, revision, limit int64, wantSuffixes []string, wantCount int64, wantMore bool) {
+		t.Helper()
+		resp, rangeErr := server.Range(ctx, &etcdserverpb.RangeRequest{
+			Key: []byte(prefix), RangeEnd: end, Revision: revision,
+			Limit: limit, KeysOnly: true,
+		})
+		require.NoError(t, rangeErr, name)
+		require.Equal(t, wantCount, resp.Count, name)
+		require.Equal(t, wantMore, resp.More, name)
+		require.Len(t, resp.Kvs, len(wantSuffixes), name)
+		for i, suffix := range wantSuffixes {
+			require.Equal(t, []byte(prefix+suffix), resp.Kvs[i].Key, name)
+			require.Empty(t, resp.Kvs[i].Value, name)
+		}
+	}
+
+	assertPage("before-deletes", beforeDeletes, 2, []string{"a", "b"}, 4, true)
+	assertPage("after-deletes", deleted.Header.Revision, 1, []string{"a"}, 2, true)
+	assertPage("after-recreate", 0, 2, []string{"a", "b"}, 4, true)
+}
+
 func TestRangeCountOnlyTakesPrecedenceOverKeysOnly(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

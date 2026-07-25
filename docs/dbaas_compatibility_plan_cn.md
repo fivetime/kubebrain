@@ -13606,6 +13606,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   lease 绑定，revoke leaseA 不得删除 key，revoke leaseB 才删除。本轮新增本地 KV
   服务层回归，固定这条端到端链路，防止 ignore option 与 lease attachment 索引在
   Txn atomic/staged 路径中分叉。
+- A942 固定 Range KeysOnly+Limit 跨 tombstone/recreate 的分页语义：
+  `range_tombstone_limit` reference differential 证明历史 revision 在删除前要返回
+  前两项并 `Count=4/More=true`，删除 b/d 后同一前缀在删除 revision 只剩 a/c 且
+  `Limit=1` 时仍 `More=true`，后续 recreate b/current read 又恢复 a/b 的第一页；
+  KeysOnly 必须清空 value。本轮扩展本地 Range 回归，固定三阶段 Count/More/key/value
+  组合，防止 MVCC tombstone 过滤、limit lookahead 或重建 key 排序改动导致 Kubernetes
+  分页 list 漏项。
 
 ### P2：运维兼容和长期验证
 
