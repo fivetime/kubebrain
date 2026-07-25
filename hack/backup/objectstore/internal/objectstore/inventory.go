@@ -100,14 +100,16 @@ func InspectInventoryManifest(path string) (InventoryManifestStatus, error) {
 
 func (m InventoryManifest) Validate() error {
 	if m.Format != InventoryManifestFormat || m.ObjectStoreID == "" || m.Bucket == "" ||
-		m.Prefix == "" {
+		m.Prefix == "" || !validObjectScopeValue(m.ObjectStoreID) ||
+		!validObjectScopeValue(m.Bucket) || !validRelativeObjectPrefix(m.Prefix) {
 		return errors.New("inventory manifest is incomplete")
 	}
 	previous := ""
 	for _, entry := range m.Entries {
 		if (entry.ArtifactFormat != backupfile.Format && entry.ArtifactFormat != operationaudit.Format) ||
 			entry.ObjectKey == "" || !strings.HasPrefix(entry.ObjectKey, m.Prefix) ||
-			entry.VersionID == "" || !validHexSHA256(entry.ArtifactSHA256) ||
+			!validRelativeObjectKey(entry.ObjectKey) || entry.VersionID == "" ||
+			!validObjectScopeValue(entry.VersionID) || !validHexSHA256(entry.ArtifactSHA256) ||
 			entry.ObjectBytes <= 0 ||
 			(entry.RetentionMode != "COMPLIANCE" && entry.RetentionMode != "GOVERNANCE") ||
 			entry.RetainUntilUnix <= 0 {
@@ -354,7 +356,9 @@ func verifyInventoryEntry(
 
 func (r InventoryReceipt) Validate() error {
 	if r.Format != InventoryReceiptFormat || r.ObjectStoreID == "" || r.Bucket == "" ||
-		r.Prefix == "" || !validHexSHA256(r.ManifestSHA256) ||
+		r.Prefix == "" || !validObjectScopeValue(r.ObjectStoreID) ||
+		!validObjectScopeValue(r.Bucket) || !validRelativeObjectPrefix(r.Prefix) ||
+		!validHexSHA256(r.ManifestSHA256) ||
 		r.ExpectedVersions < 0 || r.RemoteVersions != r.ExpectedVersions ||
 		r.DeleteMarkers != 0 || !r.AllMatched || r.CheckedAtUnix <= 0 {
 		return errors.New("object inventory receipt is incomplete")

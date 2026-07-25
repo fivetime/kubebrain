@@ -216,6 +216,17 @@ func validRelativeObjectKey(value string) bool {
 	return path.Clean(value) == value
 }
 
+func validRelativeObjectPrefix(value string) bool {
+	if !validObjectScopeValue(value) || strings.HasPrefix(value, "/") {
+		return false
+	}
+	trimmed := strings.TrimSuffix(value, "/")
+	if trimmed == "" || trimmed == "." || trimmed == ".." || strings.HasPrefix(trimmed, "../") {
+		return false
+	}
+	return path.Clean(trimmed) == trimmed
+}
+
 func ReadAuditReceipt(path string) (AuditReceipt, error) {
 	var receipt AuditReceipt
 	data, err := readBoundedObjectStoreJSONFile(path, "object operation audit receipt")

@@ -12717,6 +12717,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   bucket 空白、object key 路径穿越、绝对 object key、version tab 和 invalid UTF-8 store。
   `cd hack/backup/objectstore && go test ./internal/objectstore -count=1`、`cd
   hack/backup/objectstore && go test ./... -count=1` 和 `git diff --check` 通过。
+- A846 收紧对象 inventory manifest/receipt 的对象身份：
+  `InventoryManifest` 与 `InventoryReceipt` 原先同样只要求 object store ID、bucket、prefix
+  和 entry key/version 非空，可能让危险 prefix 或 entry identity 进入 exact-version
+  对账。现在 manifest/receipt 复用 object scope 校验，manifest prefix 必须是规范化相对
+  prefix（允许尾随 `/`），每个 entry object key 必须是规范化相对 key 且位于 prefix 下，
+  version ID 不能包含空白/控制字符。回归覆盖 object store 控制字符、bucket 空白、prefix
+  路径穿越/非规范、entry key 路径穿越/非规范和 version tab。`cd hack/backup/objectstore &&
+  go test ./... -count=1`、`cd hack/backup/objectstore && go vet ./...` 和 `git diff --check`
+  通过。
 
 ### P2：运维兼容和长期验证
 

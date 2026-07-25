@@ -134,6 +134,100 @@ func TestInventoryManifestRequiresCanonicalSortedUniqueEntries(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestInventoryManifestRejectsUnsafeObjectIdentity(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*InventoryManifest)
+		want   string
+	}{
+		{
+			name: "object store control byte",
+			mutate: func(manifest *InventoryManifest) {
+				manifest.ObjectStoreID = "store\t-a"
+			},
+			want: "incomplete",
+		},
+		{
+			name: "bucket whitespace",
+			mutate: func(manifest *InventoryManifest) {
+				manifest.Bucket = "bucket a"
+			},
+			want: "incomplete",
+		},
+		{
+			name: "prefix parent",
+			mutate: func(manifest *InventoryManifest) {
+				manifest.Prefix = "../audits/"
+			},
+			want: "incomplete",
+		},
+		{
+			name: "entry key parent",
+			mutate: func(manifest *InventoryManifest) {
+				manifest.Entries[0].ObjectKey = "../audits/a.json"
+			},
+			want: "invalid entry",
+		},
+		{
+			name: "entry key unclean",
+			mutate: func(manifest *InventoryManifest) {
+				manifest.Entries[0].ObjectKey = "audits//a.json"
+			},
+			want: "invalid entry",
+		},
+		{
+			name: "entry version control byte",
+			mutate: func(manifest *InventoryManifest) {
+				manifest.Entries[0].VersionID = "v\t1"
+			},
+			want: "invalid entry",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			manifest := newInventoryFixture(t).manifest
+			tc.mutate(&manifest)
+			require.ErrorContains(t, manifest.Validate(), tc.want)
+		})
+	}
+}
+
+func TestInventoryReceiptRejectsUnsafeObjectIdentity(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*InventoryReceipt)
+	}{
+		{
+			name: "object store invalid utf8",
+			mutate: func(receipt *InventoryReceipt) {
+				receipt.ObjectStoreID = string([]byte{'s', 0xff})
+			},
+		},
+		{
+			name: "bucket whitespace",
+			mutate: func(receipt *InventoryReceipt) {
+				receipt.Bucket = "bucket a"
+			},
+		},
+		{
+			name: "prefix unclean",
+			mutate: func(receipt *InventoryReceipt) {
+				receipt.Prefix = "audits//"
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			receipt := InventoryReceipt{
+				Format: InventoryReceiptFormat, ObjectStoreID: "store-a",
+				Bucket: "bucket-a", Prefix: "audits/",
+				ManifestSHA256: strings.Repeat("a", 64),
+				AllMatched:     true, CheckedAtUnix: 1,
+			}
+			tc.mutate(&receipt)
+			require.ErrorContains(t, receipt.Validate(), "incomplete")
+		})
+	}
+}
+
 func TestBuildInventoryManifestSortsReceiptsAndRejectsDuplicates(t *testing.T) {
 	dir := t.TempDir()
 	writeAuditReceipt := func(name, key, version, digest string) string {
