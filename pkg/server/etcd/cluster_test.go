@@ -209,6 +209,44 @@ func TestPeerDowngradeEnabledHandlerRejectsBadRequests(t *testing.T) {
 	}
 }
 
+func TestPeerMemberPromoteHandlerReturnsPlatformBoundary(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	rec := httptest.NewRecorder()
+	server.GetPeerHttpHandlers()["/members/promote/"].ServeHTTP(rec,
+		httptest.NewRequest(http.MethodPost, "/members/promote/123", nil))
+
+	require.Equal(t, http.StatusNotImplemented, rec.Code)
+	require.Equal(t, strconv.FormatUint(server.backend.ClusterID(), 16), rec.Header().Get(etcdClusterIDHeader))
+	require.Contains(t, rec.Body.String(), memberMutationUnsupportedMessage)
+}
+
+func TestPeerMemberPromoteHandlerRejectsBadRequests(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	tests := []struct {
+		name       string
+		method     string
+		target     string
+		wantStatus int
+		wantBody   string
+	}{
+		{name: "wrong method", method: http.MethodGet, target: "/members/promote/123", wantStatus: http.StatusMethodNotAllowed, wantBody: "Method Not Allowed"},
+		{name: "wrong path", method: http.MethodPost, target: "/members/promote", wantStatus: http.StatusBadRequest, wantBody: "bad path"},
+		{name: "missing id", method: http.MethodPost, target: "/members/promote/", wantStatus: http.StatusNotFound, wantBody: "member  not found in cluster"},
+		{name: "bad id", method: http.MethodPost, target: "/members/promote/not-a-number", wantStatus: http.StatusNotFound, wantBody: "member not-a-number not found in cluster"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			server.peerMemberPromoteHandler(rec, httptest.NewRequest(tt.method, tt.target, nil))
+			require.Equal(t, tt.wantStatus, rec.Code)
+			require.Contains(t, rec.Body.String(), tt.wantBody)
+		})
+	}
+}
+
 func TestParseInitialClusterAggregatesRepeatedMemberPeerURLs(t *testing.T) {
 	members, err := ParseInitialCluster(
 		"mem1=http://10.0.0.1:2380,mem1=http://128.193.4.20:2380,mem2=http://10.0.0.2:2380",

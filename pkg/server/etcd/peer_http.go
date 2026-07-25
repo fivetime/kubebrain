@@ -17,9 +17,11 @@ package etcd
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 
@@ -36,6 +38,7 @@ func (s *RPCServer) GetPeerHttpHandlers() map[string]http.Handler {
 	return map[string]http.Handler{
 		"/downgrade/enabled": http.HandlerFunc(s.peerDowngradeEnabledHandler),
 		"/members":           http.HandlerFunc(s.peerMembersHandler),
+		"/members/promote/":  http.HandlerFunc(s.peerMemberPromoteHandler),
 		PeerHashKVPath:       http.HandlerFunc(s.peerHashKVHandler),
 	}
 }
@@ -91,6 +94,26 @@ func (s *RPCServer) peerDowngradeEnabledHandler(w http.ResponseWriter, r *http.R
 	w.Header().Set(etcdClusterIDHeader, strconv.FormatUint(s.backend.ClusterID(), 16))
 	w.Header().Set("Content-Type", "text/plain")
 	_, _ = w.Write([]byte("false"))
+}
+
+func (s *RPCServer) peerMemberPromoteHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	const prefix = "/members/promote/"
+	w.Header().Set(etcdClusterIDHeader, strconv.FormatUint(s.backend.ClusterID(), 16))
+	if !strings.HasPrefix(r.URL.Path, prefix) {
+		http.Error(w, "bad path", http.StatusBadRequest)
+		return
+	}
+	id := strings.TrimPrefix(r.URL.Path, prefix)
+	if _, err := strconv.ParseUint(id, 10, 64); err != nil {
+		http.Error(w, fmt.Sprintf("member %s not found in cluster", id), http.StatusNotFound)
+		return
+	}
+	http.Error(w, memberMutationUnsupportedMessage, http.StatusNotImplemented)
 }
 
 func (s *RPCServer) peerHashKVHandler(w http.ResponseWriter, r *http.Request) {

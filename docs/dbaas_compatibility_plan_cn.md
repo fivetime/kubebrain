@@ -39,7 +39,7 @@ Raft、bbolt 和成员管理内部实现，而是对通用 etcd v3 客户端提�
 | Lease | grant/revoke/keepalive/ttl/list | 兼容核心语义 | meta/attachment 已与用户 revision 隔离并原子提交，Grant durable 后才发布，List 按到期时间稳定排序；异步 revoke 被阻断时 TTL 与 etcd 一样持续为负；继续扩大故障、并发和错误差分矩阵 |
 | Auth | 用户、角色、权限、token | 兼容核心语义 | 管理 API、key-range RBAC、token 生命周期、Watch/Lease 持续鉴权及多副本故障转移已验证 |
 | Cluster | MemberList | 兼容（需配置） | DBaaS 通过 `--initial-cluster` 注入完整 KubeBrain peer 身份，并用 `--advertise-client-urls` 独立发布所有 clientv3 Sync/AutoSync 调用方可达且匹配 TLS SAN 的 client endpoint；peer `/members` 返回同一成员快照的 etcd peer JSON；未配置静态成员时仅返回本机与 leader 的降级视图 |
-| Cluster | add/remove/update/promote | 平台替代 | 由 DBaaS 控制面扩缩 KubeBrain、PD、TiKV；RPC 保持明确 Unimplemented |
+| Cluster | add/remove/update/promote | 平台替代 | 由 DBaaS 控制面扩缩 KubeBrain、PD、TiKV；RPC 保持明确 Unimplemented；peer `/members/promote/{id}` 返回 501 和同一平台替代说明 |
 | Maintenance | Status | 兼容核心语义 | 返回真实服务身份、版本、leader/revision/共享选主 term；配置 quota 时报告租户最新逻辑 key+value 字节，未配置时使用兼容 sentinel；TiKV 物理容量转到实例指标 |
 | Maintenance | Snapshot | 平台替代 | 使用 TiKV BR/PITR；控制面提供备份、恢复和导出任务，不伪造 etcd snapshot |
 | Maintenance | Defragment | 平台替代 | TiKV GC/compaction 管理，不执行 bbolt 碎片整理 |
@@ -276,6 +276,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   快照，但不走 client auth 或 linearizable barrier；返回字段为 etcd peer JSON 的
   `id`、`peerURLs`、`name`、`clientURLs`、`isLearner`，并设置小写 hex ClusterID header。
   成员 add/remove/update/promote 仍由 DBaaS 控制面负责，RPC/HTTP mutation 不因此宣称支持。
+- **Cluster peer member promote boundary（2026-07-25）**：上游 peer handler 同时注册
+  `/members/promote/` 前缀并把请求转为 learner promote。KubeBrain 没有 etcd Raft
+  learner 角色，成员变更属于 DBaaS 控制面；旧 404 对诊断工具不够明确。现在 peer
+  `/members/promote/{id}` 保留 etcd 的 POST-only、bad path 和非法 id 形状，合法数字 id
+  返回 HTTP 501 以及 `memberMutationUnsupportedMessage`，并带 `X-Etcd-Cluster-ID`；
+  不执行任何成员状态修改。
 - **Maintenance peer downgrade status（2026-07-25）**：对照
   `/root/etcd/server/etcdserver/server.go:DowngradeEnabledHandler` 和
   `cluster_util.go:getDowngradeEnabled`，etcd peer 间会读取 `/downgrade/enabled` 判定版本

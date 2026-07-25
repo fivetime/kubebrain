@@ -1602,7 +1602,8 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   用于 endpoint/hash 排障。peer 端口同时暴露 etcd corruption checker 使用的
   `/members/hashkv`，支持 JSON `HashKVRequest`、`X-Etcd-Cluster-ID` 防串集群检查以及
   compact/future revision 错误映射，并在 hash 前尽力刷新 revision cache；该入口属于
-  副本内部诊断面。client/info/peer 端口的 `/version` 返回 etcd 3.7 形状：
+  副本内部诊断面。成员 promote 的 peer HTTP 形状存在但返回 501，仍由 DBaaS 控制面处理
+  扩缩与 reconfigure。client/info/peer 端口的 `/version` 返回 etcd 3.7 形状：
   `etcdserver=3.7.0`、`etcdcluster=3.7`、`storage=3.7.0`。peer 端口也和 etcd 一样返回 `/version`、`/members` 和
   `/downgrade/enabled=false`，便于直接检查 peer URL 的工具得到明确诊断而不是 404；
   生产 NetworkPolicy 仍必须只允许 KubeBrain 副本互通。Status 的 `Errors` 与 etcd 一样先报告 no-leader，再追加
