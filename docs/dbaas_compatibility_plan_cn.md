@@ -13417,6 +13417,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   raw gRPC 回归用 `/tenant/` 与相邻 `/tenant0/outside` 固定 Range/DeleteRange 边界：
   namespace 全量删除必须只返回并删除三条 tenant key，且保留相邻 tenant0 key，防止后续
   prefix/from-key 处理把 namespace delete-all 放宽成 `{0}`。
+- A913 固定 client-api-version metadata wire-level 契约：
+  `client_api_version` reference differential 证明缺失或合法 `client-api-version: 3.7.0`
+  header 的 KV Range 必须成功，而非法 UTF-8 header 会在 gRPC metadata 层返回
+  `Internal`，消息为 `header key "client-api-version" contains value with non-printable ASCII characters`。
+  既有本地测试只覆盖 admission helper，本轮新增 bufconn gRPC 回归，防止拦截器或
+  server option 重排后改变客户端实际可见错误。
 
 ### P2：运维兼容和长期验证
 

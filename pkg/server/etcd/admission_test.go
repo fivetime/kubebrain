@@ -339,6 +339,57 @@ func TestClientAPIVersionMetadataValidation(t *testing.T) {
 	}
 }
 
+func TestClientAPIVersionMetadataOverGRPCMatchesEtcd(t *testing.T) {
+	rpc, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	listener := bufconn.Listen(1 << 20)
+	server := grpc.NewServer(rpc.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(server, rpc)
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(server.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///client-api-version",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	client := etcdserverpb.NewKVClient(conn)
+
+	tests := []struct {
+		name        string
+		value       *string
+		wantCode    codes.Code
+		wantMessage string
+	}{
+		{name: "missing", wantCode: codes.OK},
+		{name: "valid", value: ptr("3.7.0"), wantCode: codes.OK},
+		{
+			name:        "invalid UTF-8",
+			value:       ptr(string([]byte{0xff})),
+			wantCode:    codes.Internal,
+			wantMessage: `header key "client-api-version" contains value with non-printable ASCII characters`,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			if tc.value != nil {
+				ctx = metadata.NewOutgoingContext(ctx, metadata.Pairs(
+					rpctypes.MetadataClientAPIVersionKey, *tc.value,
+				))
+			}
+			_, err := client.Range(ctx, &etcdserverpb.RangeRequest{Key: []byte("/registry/client-api-version")})
+			require.Equal(t, tc.wantCode, status.Code(err))
+			if tc.wantMessage != "" {
+				require.Equal(t, tc.wantMessage, status.Convert(err).Message())
+			}
+		})
+	}
+}
+
 func TestPeerClientAPIVersionMetadataRejectsUnaryAndStream(t *testing.T) {
 	rpc, closeFn := newTestRPCServer(t)
 	defer closeFn()
