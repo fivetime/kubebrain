@@ -13354,6 +13354,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   顺序应先返回 future revision。新增本地回归固定这两个错误外观；既有
   `TestTxnExecutionValidationOrderDifferentialAgainstReferenceEtcd` 继续用 reference etcd
   黑盒差分覆盖同一顺序矩阵。
+- A902 固定 compare-delete ranged delete 的 generic 路由：
+  `backendShim.CompareDelete` 仅支持 point delete fast path，不能接手带 `RangeEnd` 的
+  DeleteRange；ranged delete 必须走 generic txn/staged path，才能保留 DeleteRange、
+  PrevKv 和租约解绑语义。新增本地 trap backend 回归：point MOD compare 成功后执行
+  ranged DeleteRange，确认未调用 CompareDelete fast path，且按 etcd 语义删除并返回三个
+  PrevKv。
 
 ### P2：运维兼容和长期验证
 

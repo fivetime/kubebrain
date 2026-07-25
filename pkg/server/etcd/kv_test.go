@@ -59,6 +59,21 @@ type testPeerService struct {
 	txnFn            func(context.Context, *etcdserverpb.TxnRequest) (*etcdserverpb.TxnResponse, error)
 }
 
+type compareDeleteTrapBackendShim struct {
+	BackendShim
+	called bool
+}
+
+func (b *compareDeleteTrapBackendShim) CompareDelete(
+	context.Context,
+	*etcdserverpb.DeleteRangeRequest,
+	int64,
+	bool,
+) (*etcdserverpb.TxnResponse, error) {
+	b.called = true
+	return nil, errors.New("CompareDelete fast path must not handle ranged delete")
+}
+
 func (s testPeerService) SyncReadRevision(ctx context.Context) error {
 	if s.syncReadFn != nil {
 		return s.syncReadFn(ctx)
@@ -2491,6 +2506,50 @@ func TestTxnCompareDeleteWithPrevKV(t *testing.T) {
 	require.Len(t, del.PrevKvs, 1)
 	require.Equal(t, []byte("v1"), del.PrevKvs[0].Value)
 	require.Equal(t, putResp.Header.Revision, del.PrevKvs[0].ModRevision)
+}
+
+func TestTxnCompareDeleteRangeBypassesCompareDeleteFastPath(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	trap := &compareDeleteTrapBackendShim{BackendShim: server.backend}
+	server.backend = trap
+
+	ctx := context.Background()
+	prefix := "/registry/generic-txn/delete-range-fast-path/"
+	guardKey := []byte(prefix + "0guard")
+	end := []byte("/registry/generic-txn/delete-range-fast-path0")
+	guard, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: guardKey, Value: []byte("guard")})
+	require.NoError(t, err)
+	for _, suffix := range []string{"a", "b", "c"} {
+		_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: []byte(prefix + suffix), Value: []byte("v-" + suffix)})
+		require.NoError(t, err)
+	}
+
+	resp, err := server.Txn(ctx, &etcdserverpb.TxnRequest{
+		Compare: []*etcdserverpb.Compare{{
+			Key:         guardKey,
+			Target:      etcdserverpb.Compare_MOD,
+			Result:      etcdserverpb.Compare_EQUAL,
+			TargetUnion: &etcdserverpb.Compare_ModRevision{ModRevision: guard.Header.Revision},
+		}},
+		Success: []*etcdserverpb.RequestOp{{
+			Request: &etcdserverpb.RequestOp_RequestDeleteRange{
+				RequestDeleteRange: &etcdserverpb.DeleteRangeRequest{
+					Key: []byte(prefix + "a"), RangeEnd: end, PrevKv: true,
+				},
+			},
+		}},
+	})
+	require.NoError(t, err)
+	require.False(t, trap.called)
+	require.True(t, resp.Succeeded)
+	require.Len(t, resp.Responses, 1)
+	deleteResp := resp.Responses[0].GetResponseDeleteRange()
+	require.NotNil(t, deleteResp)
+	require.Equal(t, int64(3), deleteResp.Deleted)
+	require.Len(t, deleteResp.PrevKvs, 3)
+	require.Equal(t, []byte(prefix+"a"), deleteResp.PrevKvs[0].Key)
+	require.Equal(t, []byte(prefix+"c"), deleteResp.PrevKvs[2].Key)
 }
 
 func TestTxnCompareDeleteWithFailureRange(t *testing.T) {
