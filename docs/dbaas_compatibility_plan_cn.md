@@ -13528,6 +13528,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   key。本轮新增本地服务层回归，用顺序化的最小 case 固定同一外部契约：旧 lease revoke
   后 Range 仍返回 `lease-b` 且 `Lease=leaseB`，`LeaseTimeToLive(leaseA)` 为 `-1`，
   最后 revoke lease B 清空 key，防止 attachment 删除路径把已重绑的生产写误删。
+- A930 固定 signed lease ID 的读侧边界：
+  `lease_signed_id` reference differential 证明 `-1`、`math.MinInt64`、`math.MaxInt64`
+  都是合法显式 lease ID；Grant 不推进 header revision，TimeToLive 必须回显 ID、
+  live TTL/GrantedTTL、按 `Keys` flag 省略或返回 attached key，LeaseLeases 必须列出
+  live ID；revoke 后再次 TimeToLive 返回同 ID、`TTL=-1`、`GrantedTTL=0` 且 keys 为空。
+  本轮新增本地服务层矩阵，补齐此前 keepalive/revoke signed-ID 之外的 TTL/List/read
+  contract，防止 signed int64 ID 在读路径被当成哨兵或 unsigned 值处理。
 
 ### P2：运维兼容和长期验证
 

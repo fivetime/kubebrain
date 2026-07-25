@@ -543,6 +543,76 @@ func TestLeaseKeepAliveAndRevokeSignedIDBoundariesMatchEtcd(t *testing.T) {
 	require.Equal(t, "etcdserver: requested lease not found", status.Convert(err).Message())
 }
 
+func TestLeaseSignedIDReadBoundariesMatchEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+
+	for _, id := range []int64{-1, math.MinInt64, math.MaxInt64} {
+		t.Run(leaseTestName(id), func(t *testing.T) {
+			key := []byte("/registry/leases/signed-read/" + leaseTestName(id))
+			before, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: key})
+			require.NoError(t, err)
+			grant, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{ID: id, TTL: 300})
+			require.NoError(t, err)
+			require.Equal(t, id, grant.ID)
+			require.Equal(t, before.Header.Revision, grant.Header.Revision)
+			_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("value"), Lease: id})
+			require.NoError(t, err)
+
+			withoutKeys, err := server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: id})
+			require.NoError(t, err)
+			require.Equal(t, id, withoutKeys.ID)
+			require.Positive(t, withoutKeys.TTL)
+			require.LessOrEqual(t, withoutKeys.TTL, int64(300))
+			require.Equal(t, int64(300), withoutKeys.GrantedTTL)
+			require.Empty(t, withoutKeys.Keys)
+
+			withKeys, err := server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: id, Keys: true})
+			require.NoError(t, err)
+			require.Equal(t, id, withKeys.ID)
+			require.Positive(t, withKeys.TTL)
+			require.LessOrEqual(t, withKeys.TTL, int64(300))
+			require.Equal(t, int64(300), withKeys.GrantedTTL)
+			require.ElementsMatch(t, [][]byte{key}, withKeys.Keys)
+
+			list, err := server.LeaseLeases(ctx, &etcdserverpb.LeaseLeasesRequest{})
+			require.NoError(t, err)
+			require.Contains(t, leaseIDsFromList(list), id)
+
+			_, err = server.LeaseRevoke(ctx, &etcdserverpb.LeaseRevokeRequest{ID: id})
+			require.NoError(t, err)
+			unknown, err := server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: id, Keys: true})
+			require.NoError(t, err)
+			require.Equal(t, id, unknown.ID)
+			require.Equal(t, int64(-1), unknown.TTL)
+			require.Zero(t, unknown.GrantedTTL)
+			require.Empty(t, unknown.Keys)
+		})
+	}
+}
+
+func leaseTestName(id int64) string {
+	switch id {
+	case -1:
+		return "negative-one"
+	case math.MinInt64:
+		return "minimum"
+	case math.MaxInt64:
+		return "maximum"
+	default:
+		return "custom"
+	}
+}
+
+func leaseIDsFromList(resp *etcdserverpb.LeaseLeasesResponse) []int64 {
+	ids := make([]int64, 0, len(resp.Leases))
+	for _, lease := range resp.Leases {
+		ids = append(ids, lease.ID)
+	}
+	return ids
+}
+
 func TestLeaseKeepAliveCannotResurrectExpiredLease(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
