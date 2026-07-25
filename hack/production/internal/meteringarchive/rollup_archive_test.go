@@ -163,6 +163,26 @@ func TestRollerValidationPinsDailyPeriodAndSeparatePrefixes(t *testing.T) {
 	require.ErrorContains(t, err, "not eligible")
 }
 
+func TestRollerValidationRejectsUnsafeObjectIdentity(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		mutate func(*Roller)
+	}{
+		{name: "object store control", mutate: func(r *Roller) { r.ObjectStoreID = "store-a\nother" }},
+		{name: "bucket unicode whitespace", mutate: func(r *Roller) { r.Bucket = "metering\u00a0bucket" }},
+		{name: "sample prefix parent", mutate: func(r *Roller) { r.SamplePrefix = "../samples" }},
+		{name: "sample prefix unclean", mutate: func(r *Roller) { r.SamplePrefix = "samples//hourly" }},
+		{name: "rollup prefix unclean", mutate: func(r *Roller) { r.RollupPrefix = "rollups//daily" }},
+		{name: "rollup prefix parent", mutate: func(r *Roller) { r.RollupPrefix = "rollups/../other" }},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			roller := validRoller(time.Now())
+			tt.mutate(roller)
+			require.ErrorContains(t, roller.Validate(), "object identity")
+		})
+	}
+}
+
 func validRoller(now time.Time) *Roller {
 	return &Roller{
 		Instance: "instance-a", Executor: "/executor", ObjectStoreID: "store-a",

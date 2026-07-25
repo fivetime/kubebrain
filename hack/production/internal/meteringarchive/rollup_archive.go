@@ -44,6 +44,10 @@ func (r *Roller) Validate() error {
 		r.FinalizationDelay < 0 || r.MaxStaleness <= 0 {
 		return errors.New("metering roller configuration is incomplete")
 	}
+	if !validObjectScopeValue(r.ObjectStoreID) || !validObjectScopeValue(r.Bucket) ||
+		!validRelativeObjectPrefix(r.SamplePrefix) || !validRelativeObjectPrefix(r.RollupPrefix) {
+		return errors.New("metering roller object identity is invalid")
+	}
 	if r.RetentionDuration <= r.FinalizationDelay+r.PeriodDuration {
 		return errors.New("metering retention must exceed the period and finalization delay")
 	}

@@ -950,6 +950,9 @@ prefix 必须是规范化相对对象前缀，不能包含空段、`.` 或 `..`�
 
 `deploy/production/kubebrain-metering-rollup.yaml` 每日 UTC 00:47 处理前一完整 UTC 日，
 且只从不可变小时对象读取，不重新查询 Prometheus。每个对象键由实例和 slot 确定；
+Roller 在启动 read/archive Object Lock executor 前必须同样校验 object store、bucket、
+sample prefix 和 rollup prefix 的对象身份边界，拒绝空白/控制字符、Unicode 空白、
+路径穿越、重复分隔符和非规范相对前缀。
 `ACTION=blob-read` 先枚举 exact key，要求恰好一个 version 且无 delete marker，再按
 version ID 核对 format allowlist、artifact ID、instance、store、大小、SHA-256 metadata、
 Object Lock mode 和 retain-until，下载后重新计算字节 digest。24 个 canonical sample

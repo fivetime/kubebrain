@@ -13109,6 +13109,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   invoice number 路径，确认非法身份不调用 executor。`go test
   ./hack/production/internal/meteringbilling -run 'TestBillingObject' -count=1 -v`
   和 `go test ./hack/production/internal/meteringbilling -count=1` 通过。
+- A879 前移 metering rollup 对象身份校验：
+  A873-A875 保护了小时 sample archive 与 storage archive，但
+  `meteringarchive.Roller` 的日汇总路径仍只要求 object store、bucket、sample prefix
+  和 rollup prefix 非空且两 prefix 不相等；非法 scope 或非规范 prefix 会先进入
+  `ACTION=blob-read/blob` executor。现在 Roller 复用 archive 的对象身份门禁，启动
+  executor 前拒绝空白/控制字符、Unicode 空白、路径穿越、重复分隔符和非规范相对前缀。
+  回归覆盖 store 控制字符、bucket Unicode 空白、sample/rollup prefix 的 parent 和
+  unclean 路径。`go test ./hack/production/internal/meteringarchive -run
+  'TestRollerValidationRejectsUnsafeObjectIdentity|TestRollerValidationPinsDailyPeriodAndSeparatePrefixes'
+  -count=1 -v`、`go test ./hack/production/internal/meteringarchive
+  ./hack/production/cmd/metering-archive ./hack/production/cmd/metering-rollup -count=1`
+  和对应 `go vet` 通过。
 
 ### P2：运维兼容和长期验证
 
