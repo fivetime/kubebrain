@@ -1285,6 +1285,18 @@ RUN_FAULT_SMOKE=true hack/dev/verify.sh
 
 当前 dev 故障注入会删除 KubeBrain、PD、TiKV Pod 并等待恢复后重新运行基础 smoke。
 
+可选后端 quorum fault smoke：
+
+```shell
+RUN_BACKEND_QUORUM_FAULT_SMOKE=true hack/dev/verify.sh
+```
+
+该门禁要求 3 副本 PD 和 3 副本 TiKV，先等待 TidbCluster Ready，再分别删除当前 PD leader
+和一个 TiKV member Pod。每个故障窗口内运行
+`TestBackendQuorumFailoverKeepsServing`，要求持续完成 KV/lease/MemberList/linearized
+proposal 操作，瞬态后端窗口只能表现为可重试错误；每轮故障后必须重新等待 TidbCluster
+Ready 并留出 settle 窗口，避免只验证 Pod Ready 而漏掉 region/PD client routing 恢复。
+
 三副本 StatefulSet 还必须验证官方 clientv3 自身的 endpoint balancer，而不只验证 Service：
 
 ```shell

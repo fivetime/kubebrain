@@ -12448,6 +12448,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `bash -n hack/dev/verify.sh` 与
   `bash -n hack/dev/lease-renewal-failover-smoke.sh`
   通过。
+- A818 将 backend quorum fault smoke 纳入统一 verify 入口：
+  A140/A445 已用 `hack/dev/backend-quorum-fault-smoke.sh` 覆盖 3 PD/3 TiKV 下的
+  当前 PD leader replacement 与 TiKV member replacement，故障窗口内持续执行
+  `TestBackendQuorumFailoverKeepsServing`，并要求 KV/lease/MemberList/linearized
+  proposal 只暴露可重试瞬态错误且最终恢复。但该脚本同样未接入
+  `hack/dev/verify.sh`，发布执行容易只跑 KubeBrain Pod fault smoke 而漏掉后端 quorum
+  故障。现在新增
+  `RUN_BACKEND_QUORUM_FAULT_SMOKE=true hack/dev/verify.sh`，保持默认关闭，并在生产清单中
+  固定 3/3 PD/TiKV、TidbCluster Ready、PD leader/TiKV member 两轮 replacement、每轮恢复后
+  等待 Ready 和 settle 窗口的验收条件。
+  `bash -n hack/dev/verify.sh` 与
+  `bash -n hack/dev/backend-quorum-fault-smoke.sh`
+  通过。
 
 ### P2：运维兼容和长期验证
 
