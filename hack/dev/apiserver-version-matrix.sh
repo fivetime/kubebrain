@@ -2,6 +2,9 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
+# shellcheck source=hack/dev/common.sh
+source "${ROOT_DIR}/hack/dev/common.sh"
+
 CLUSTER_NAME="${CLUSTER_NAME:-kubebrain-dev}"
 ENDPOINT="${ENDPOINT:-http://127.0.0.1:3379}"
 APISERVER_IMAGES="${APISERVER_IMAGES:-${KIND_NODE_IMAGES:-registry.k8s.io/kube-apiserver:v1.36.1}}"
@@ -60,6 +63,11 @@ extract_kube_apiserver() {
 
 validate_bool_flag RUN_APISERVER_SMOKE
 validate_bool_flag RUN_APISERVER_WATCH_SOAK
+validate_name_token CLUSTER_NAME
+validate_positive_integer BASE_SECURE_PORT
+validate_positive_integer OBJECTS
+validate_positive_integer UPDATES
+validate_positive_integer WATCH_TIMEOUT_SECONDS
 
 apiserver_images=()
 for image in $APISERVER_IMAGES; do
@@ -69,6 +77,9 @@ if [ "${#apiserver_images[@]}" -eq 0 ]; then
   echo "APISERVER_IMAGES must contain at least one kube-apiserver image" >&2
   exit 2
 fi
+for image in "${apiserver_images[@]}"; do
+  validate_image_reference_value APISERVER_IMAGE "$image"
+done
 
 need docker
 need kubectl

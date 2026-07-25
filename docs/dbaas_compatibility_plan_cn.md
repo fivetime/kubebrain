@@ -12640,6 +12640,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `bash -n hack/dev/common.sh hack/dev/k8s-version-matrix.sh`、非法 `CLUSTER_NAME='bad name'`、
   非法 `IMAGE_NAME='bad image'`、非法 `KIND_NODE_IMAGES='@bad'`、同一 pinned ShellCheck 镜像检查
   `hack/dev/common.sh hack/dev/k8s-version-matrix.sh` 和 `git diff --check` 通过。
+- A837 让 kube-apiserver version matrix 在依赖检查前拒绝非法矩阵输入：
+  `hack/dev/apiserver-version-matrix.sh` 现在 source `hack/dev/common.sh`，先校验 `CLUSTER_NAME`、
+  `BASE_SECURE_PORT`、`OBJECTS`、`UPDATES`、`WATCH_TIMEOUT_SECONDS` 和每个 `APISERVER_IMAGES`
+  条目，再检查 docker/kubectl/curl。这样端口算术、watch soak 规模和 kube-apiserver 镜像名
+  的拼写错误不会延迟到拉镜像或启动 apiserver 后才失败。`bash -n hack/dev/common.sh
+  hack/dev/apiserver-version-matrix.sh`、非法 `CLUSTER_NAME='bad name'`、非法
+  `BASE_SECURE_PORT=port`、非法 `OBJECTS=0`、非法 `APISERVER_IMAGES='@bad'`、同一 pinned
+  ShellCheck 镜像检查 `hack/dev/common.sh hack/dev/apiserver-version-matrix.sh` 和
+  `git diff --check` 通过。
 
 ### P2：运维兼容和长期验证
 
