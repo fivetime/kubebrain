@@ -941,6 +941,9 @@ schema 解码、canonical 比对、日汇总构造或 Object Lock executor 启�
 sample/rollup 原子写入在比较已存在文件时只读取目标 canonical 长度加 1 字节；Roller
 使用 `ReadSampleStatus` 已验证的 bytes/digest 与 blob-read receipt 比对，不再为了二次
 校验 receipt 而重新无界读取 sample 文件。
+`kubebrain-metering-archive --prometheus-url` 必须是不含 userinfo、query、fragment、
+控制字符、引号或反斜杠的 HTTP/HTTPS base URL；Prometheus 凭据只通过 bearer token
+文件、CA 文件和可选 TLS server name 注入，不能嵌入 URL。
 
 `deploy/production/kubebrain-metering-rollup.yaml` 每日 UTC 00:47 处理前一完整 UTC 日，
 且只从不可变小时对象读取，不重新查询 Prometheus。每个对象键由实例和 slot 确定；

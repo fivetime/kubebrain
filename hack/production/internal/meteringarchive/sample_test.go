@@ -80,6 +80,25 @@ func TestCollectorBuildsCanonicalCompleteSample(t *testing.T) {
 	require.ErrorContains(t, err, "not canonical")
 }
 
+func TestNewCollectorRejectsUnsafePrometheusURL(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{name: "control character", raw: "https://prometheus.example\nother", want: "unsupported characters"},
+		{name: "quote", raw: `https://prometheus.example"other`, want: "unsupported characters"},
+		{name: "backslash", raw: `https://prometheus.example\other`, want: "unsupported characters"},
+		{name: "credentials", raw: "https://user:pass@prometheus.example", want: "credentials"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			collector, err := NewCollector(tc.raw, http.DefaultClient, "", 5*time.Minute)
+			require.ErrorContains(t, err, tc.want)
+			require.Nil(t, collector)
+		})
+	}
+}
+
 func TestSampleWriterTreatsConcurrentIdenticalLinkAsIdempotent(t *testing.T) {
 	sample := validSample()
 	data := append(mustJSON(t, sample), '\n')

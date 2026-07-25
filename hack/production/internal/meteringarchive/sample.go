@@ -95,9 +95,15 @@ type Collector struct {
 }
 
 func NewCollector(rawURL string, client *http.Client, bearerToken string, maxStaleness time.Duration) (*Collector, error) {
+	if strings.ContainsAny(rawURL, "\t\r\n\"\\") {
+		return nil, errors.New("prometheus URL contains unsupported characters")
+	}
 	base, err := url.Parse(rawURL)
 	if err != nil || (base.Scheme != "http" && base.Scheme != "https") || base.Host == "" {
 		return nil, errors.New("prometheus URL must be an absolute http or https URL")
+	}
+	if base.User != nil {
+		return nil, errors.New("prometheus URL cannot contain credentials")
 	}
 	if base.RawQuery != "" || base.Fragment != "" {
 		return nil, errors.New("prometheus URL cannot contain a query or fragment")

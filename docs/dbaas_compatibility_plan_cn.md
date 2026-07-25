@@ -12986,6 +12986,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./hack/production/... ./deploy/production`（根 production 包 325.507 秒）、
   `go vet ./hack/production/cmd/metering-storage-archive`、`go vet ./hack/production/...
   ./deploy/production` 和 `git diff --check` 通过。
+- A874 收紧 metering archive 的 Prometheus URL 身份边界：
+  `kubebrain-metering-archive` 已用 bearer token 文件、CA 文件和 TLS server name 显式注入
+  Prometheus 凭据，但 `meteringarchive.NewCollector` 仍允许 `https://user:pass@host`
+  这类带 userinfo 的 base URL，并且没有在 URL admission 中统一拒绝换行、tab、引号和
+  反斜杠。现在 collector 在构造查询 URL 前拒绝危险字符和 userinfo；query/fragment
+  原有拒绝语义保持不变。回归覆盖换行、引号、反斜杠和 credentials URL。`go test
+  ./hack/production/internal/meteringarchive -run
+  'TestNewCollectorRejectsUnsafePrometheusURL|TestCollectorBuildsCanonicalCompleteSample' -count=20`、
+  `go test ./hack/production/cmd/metering-archive -run 'Test(ReadToken|PrometheusClient)'
+  -count=20`、`go test ./hack/production/internal/meteringarchive
+  ./hack/production/cmd/metering-archive -count=1`、`go vet
+  ./hack/production/internal/meteringarchive ./hack/production/cmd/metering-archive` 和
+  `go test ./hack/production/... ./deploy/production -count=1`（根 production 包 325.602 秒）、
+  `go vet ./hack/production/... ./deploy/production`、`git diff --check` 通过。
 - A855 前移 PostRestoreAudit runner 的 Service/target 身份校验：
   `audit-restored-instance.sh` 会拒绝非法 operation/instance、Service namespace/name 和
   target instance，但 `run-post-restore-audit-operation.sh` 原先只在子审计前独立校验
