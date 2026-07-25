@@ -13121,6 +13121,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   -count=1 -v`、`go test ./hack/production/internal/meteringarchive
   ./hack/production/cmd/metering-archive ./hack/production/cmd/metering-rollup -count=1`
   和对应 `go vet` 通过。
+- A880 前移 object storage daily rollup 对象身份校验：
+  A879 保护了 resource metering 日汇总，但 `meteringstorage.Roller` 的对象存储日汇总
+  同样会用 metering store/bucket、snapshot prefix 和 rollup prefix 读取 hourly sample
+  并写入 daily rollup；旧 Validate 只做非空和两 prefix 不相等。现在 storage Roller
+  在启动 blob-read/blob executor 前复用 storage archiver 的对象 scope/prefix 规则，
+  拒绝空白/控制字符、Unicode 空白、路径穿越、重复分隔符和非规范相对前缀。回归覆盖
+  store、bucket、snapshot prefix、rollup prefix 的非法输入，并确认正常 exact snapshot
+  读取归档流程不变。`go test ./hack/production/internal/meteringstorage -run
+  'TestStorageRollerValidationRejectsUnsafeObjectIdentity|TestStorageRollerReadsEveryExactSnapshotBeforeArchive'
+  -count=1 -v`、`go test ./hack/production/internal/meteringstorage
+  ./hack/production/cmd/metering-storage-archive ./hack/production/cmd/metering-storage-rollup
+  -count=1` 和对应 `go vet` 通过。
 
 ### P2：运维兼容和长期验证
 

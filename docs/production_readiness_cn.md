@@ -1076,6 +1076,9 @@ artifact digest metadata、COMPLIANCE/GOVERNANCE mode 与 retain-until。总字�
 source/metering 两套 store、bucket、source prefix、snapshot prefix 和 allowed formats
 都会在 usage scan 或 sample archive executor 启动前按对象 scope/prefix 规则校验；非法
 值不能等到下游 object 工具或 receipt gate 才失败。
+daily storage roller 读取 hourly sample、写入 rollup 前也必须校验 metering store/bucket、
+snapshot prefix 和 rollup prefix 的同一对象身份边界，避免非法 prefix 先进入
+blob-read/blob executor。
 `SOURCE_S3_FORCE_PATH_STYLE` 与 `METERING_S3_FORCE_PATH_STYLE` 可留空表示 false；非空时
 必须是合法布尔值，非法值要让 archive CLI fail closed，不能静默降级为 false 后访问错误的
 对象存储路径风格。

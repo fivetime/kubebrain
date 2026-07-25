@@ -41,6 +41,10 @@ func (r *Roller) Validate() error {
 		r.SampleFinalizationDelay <= 0 || r.SampleFinalizationDelay >= time.Hour {
 		return errors.New("object storage roller configuration is incomplete")
 	}
+	if !validObjectScopeValue(r.ObjectStoreID) || !validObjectScopeValue(r.Bucket) ||
+		!validRelativeObjectPrefix(r.SnapshotPrefix) || !validRelativeObjectPrefix(r.RollupPrefix) {
+		return errors.New("object storage roller object identity is invalid")
+	}
 	if r.Now == nil {
 		r.Now = time.Now
 	}

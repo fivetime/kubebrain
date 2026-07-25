@@ -140,3 +140,34 @@ func TestParseObjectStorageSampleReadReceiptRejectsRetainUntilBelowMinimum(t *te
 	require.NoError(t, err)
 	require.Equal(t, minRetainUntil, parsed.RetainUntilUnix)
 }
+
+func TestStorageRollerValidationRejectsUnsafeObjectIdentity(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		mutate func(*Roller)
+	}{
+		{name: "object store control", mutate: func(r *Roller) { r.ObjectStoreID = "store\nbad" }},
+		{name: "bucket unicode whitespace", mutate: func(r *Roller) { r.Bucket = "metering\u00a0bucket" }},
+		{name: "snapshot prefix parent", mutate: func(r *Roller) { r.SnapshotPrefix = "../samples" }},
+		{name: "snapshot prefix unclean", mutate: func(r *Roller) { r.SnapshotPrefix = "samples//hourly" }},
+		{name: "rollup prefix unclean", mutate: func(r *Roller) { r.RollupPrefix = "rollups//daily" }},
+		{name: "rollup prefix parent", mutate: func(r *Roller) { r.RollupPrefix = "rollups/../other" }},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			roller := validStorageRoller(time.Now())
+			tt.mutate(roller)
+			require.ErrorContains(t, roller.Validate(), "object identity")
+		})
+	}
+}
+
+func validStorageRoller(now time.Time) *Roller {
+	return &Roller{
+		Instance: "instance-a", Executor: "executor", ObjectStoreID: "metering-store",
+		Bucket: "metering", SnapshotPrefix: "metering-storage-samples",
+		RollupPrefix: "metering-storage-rollups", RetentionMode: "COMPLIANCE",
+		RetentionDuration: 7 * 365 * 24 * time.Hour, FinalizationDelay: 45 * time.Minute,
+		SampleFinalizationDelay: 10 * time.Minute,
+		Now:                     func() time.Time { return now },
+	}
+}
