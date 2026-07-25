@@ -194,6 +194,22 @@ func TestQueueRejectsMalformedClaimCandidatesBeforeLease(t *testing.T) {
 		want   string
 	}{
 		{
+			name: "type metadata drift",
+			mutate: func(t *testing.T, object *unstructured.Unstructured) {
+				t.Helper()
+				object.SetKind("Operation")
+			},
+			want: "type metadata",
+		},
+		{
+			name: "missing audit finalizer",
+			mutate: func(t *testing.T, object *unstructured.Unstructured) {
+				t.Helper()
+				object.SetFinalizers(nil)
+			},
+			want: "audit finalizer",
+		},
+		{
 			name: "invalid digest",
 			mutate: func(t *testing.T, object *unstructured.Unstructured) {
 				t.Helper()
@@ -244,7 +260,7 @@ func TestQueueRejectsMalformedClaimCandidatesBeforeLease(t *testing.T) {
 			leases, err := queue.leases.List(ctx, metav1.ListOptions{})
 			require.NoError(t, err)
 			require.Empty(t, leases.Items)
-			current, err := queue.Get(ctx, "backup-1")
+			current, err := queue.resource.Get(ctx, "backup-1", metav1.GetOptions{})
 			require.NoError(t, err)
 			phase, _, err := unstructured.NestedString(current.Object, "status", "phase")
 			require.NoError(t, err)
@@ -1277,6 +1293,122 @@ func TestSubmitRejectsCommittedObjectWithTypeMetadataDrift(t *testing.T) {
 	}
 }
 
+func TestQueueGetRejectsStoredOperationDrift(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		mutate func(*testing.T, *unstructured.Unstructured)
+		want   string
+	}{
+		{
+			name: "api version",
+			mutate: func(t *testing.T, object *unstructured.Unstructured) {
+				t.Helper()
+				object.SetAPIVersion("dbaas.kubebrain.io/v1beta1")
+			},
+			want: "type metadata",
+		},
+		{
+			name: "kind",
+			mutate: func(t *testing.T, object *unstructured.Unstructured) {
+				t.Helper()
+				object.SetKind("Operation")
+			},
+			want: "type metadata",
+		},
+		{
+			name: "missing finalizer",
+			mutate: func(t *testing.T, object *unstructured.Unstructured) {
+				t.Helper()
+				object.SetFinalizers(nil)
+			},
+			want: "audit finalizer",
+		},
+		{
+			name: "invalid spec",
+			mutate: func(t *testing.T, object *unstructured.Unstructured) {
+				t.Helper()
+				require.NoError(t, unstructured.SetNestedField(
+					object.Object, strings.Repeat("g", 64), "spec", "parametersSHA256",
+				))
+			},
+			want: "parameters digest",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			queue := newFakeQueue()
+			ctx := context.Background()
+			created, err := queue.Submit(ctx, "backup-1", validSpec())
+			require.NoError(t, err)
+			drifted := created.DeepCopy()
+			test.mutate(t, drifted)
+			_, err = queue.resource.Update(ctx, drifted, metav1.UpdateOptions{})
+			require.NoError(t, err)
+
+			actual, err := queue.Get(ctx, "backup-1")
+			require.Nil(t, actual)
+			require.ErrorIs(t, err, ErrInvalidSpec)
+			require.ErrorContains(t, err, test.want)
+		})
+	}
+}
+
+func TestQueueGetAllowsArchivedTerminalOperationWithoutFinalizer(t *testing.T) {
+	queue := newFakeQueue()
+	ctx := context.Background()
+	_, err := queue.Submit(ctx, "backup-1", validSpec())
+	require.NoError(t, err)
+	claim, err := queue.Claim(ctx, "worker-a", "", time.Minute)
+	require.NoError(t, err)
+	completed, err := queue.Finish(
+		ctx, claim.Name, claim.Owner, claim.Attempt, true, strings.Repeat("b", 64), "archived",
+	)
+	require.NoError(t, err)
+	completed.SetFinalizers(nil)
+	_, err = queue.resource.Update(ctx, completed, metav1.UpdateOptions{})
+	require.NoError(t, err)
+
+	actual, err := queue.Get(ctx, "backup-1")
+	require.NoError(t, err)
+	require.Empty(t, actual.GetFinalizers())
+	phase, _, err := unstructured.NestedString(actual.Object, "status", "phase")
+	require.NoError(t, err)
+	require.Equal(t, PhaseSucceeded, phase)
+}
+
+func TestQueueParametersRejectsOperationDriftBeforeSecretAPI(t *testing.T) {
+	client := fakeQueueClient()
+	queue := New(client, "test")
+	ctx := context.Background()
+	parameters := []byte("{\"backup_id\":\"backup-1\"}\n")
+	spec := validSpec()
+	spec.ParametersSHA256 = fmt.Sprintf("%x", sha256.Sum256(parameters))
+	spec.ParametersSecret = "backup-1-parameters"
+	spec.ParametersKey = "parameters.json"
+	_, err := queue.secrets.Create(ctx, &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "v1", "kind": "Secret",
+		"metadata":  map[string]any{"name": spec.ParametersSecret},
+		"immutable": true,
+		"data": map[string]any{
+			spec.ParametersKey: base64.StdEncoding.EncodeToString(parameters),
+		},
+	}}, metav1.CreateOptions{})
+	require.NoError(t, err)
+	created, err := queue.Submit(ctx, "backup-1", spec)
+	require.NoError(t, err)
+	drifted := created.DeepCopy()
+	drifted.SetKind("Operation")
+	_, err = queue.resource.Update(ctx, drifted, metav1.UpdateOptions{})
+	require.NoError(t, err)
+	client.ClearActions()
+
+	actual, err := queue.Parameters(ctx, "backup-1")
+	require.Nil(t, actual)
+	require.ErrorIs(t, err, ErrInvalidSpec)
+	require.ErrorContains(t, err, "type metadata")
+	require.Len(t, client.Actions(), 1)
+	require.Equal(t, Resource.Resource, client.Actions()[0].GetResource().Resource)
+}
+
 func TestQueueRejectsSpecDriftAndInvalidCompletion(t *testing.T) {
 	queue := newFakeQueue()
 	ctx := context.Background()
@@ -1495,16 +1627,20 @@ func TestQueueRejectsMalformedParameterReferenceBeforeSecretAPI(t *testing.T) {
 			_, err := queue.resource.Create(context.Background(), &unstructured.Unstructured{Object: map[string]any{
 				"apiVersion": Resource.Group + "/" + Resource.Version,
 				"kind":       "KubeBrainOperation",
-				"metadata":   map[string]any{"name": "backup-1"},
+				"metadata": map[string]any{
+					"name":       "backup-1",
+					"finalizers": []any{operationaudit.Finalizer},
+				},
 				"spec": map[string]any{
-					"operationID": "operation-1",
-					"instance":    "instance-a",
-					"type":        "Backup",
+					"operationID":      "operation-1",
+					"instance":         "instance-a",
+					"type":             "Backup",
+					"parametersSHA256": test.digest,
+					"maxAttempts":      int64(3),
 					"parametersSecretRef": map[string]any{
 						"name": test.secretName,
 						"key":  test.key,
 					},
-					"parametersSHA256": test.digest,
 				},
 			}}, metav1.CreateOptions{})
 			require.NoError(t, err)
@@ -2025,8 +2161,16 @@ func operationForDelete(name string, uid types.UID) *unstructured.Unstructured {
 		"apiVersion": Resource.Group + "/" + Resource.Version,
 		"kind":       "KubeBrainOperation",
 		"metadata":   map[string]any{"name": name},
+		"spec": map[string]any{
+			"operationID":      name,
+			"instance":         "instance-a",
+			"type":             "Backup",
+			"parametersSHA256": strings.Repeat("a", 64),
+			"maxAttempts":      int64(3),
+		},
 	}}
 	object.SetUID(uid)
+	object.SetFinalizers([]string{operationaudit.Finalizer})
 	return object
 }
 

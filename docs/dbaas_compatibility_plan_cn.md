@@ -12329,6 +12329,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   旧 `params-<tenant>-*` 被拒绝，以及 `tenant` 不能引用 `tenant-a` 的长度绑定前缀。
   `go test ./hack/production/internal/operationapi -run 'TestHandler(SubmitsLengthBoundParameterSecret|RejectsUnboundParameterSecret|RejectsTenantPrefixCollisionParameterSecret|SubmitsImmutableTenantIdentityAndReturnsSanitizedObject)' -count=1 -v`
   和 `go test ./hack/production/internal/operationapi -count=1` 均通过。
+- A808 收紧既有 Operation 对象读取校验：
+  A798/A805 已覆盖 claim 候选 spec 与 Submit lost-response 回读 type meta，但通用
+  `Get` 和参数读取路径仍会返回/使用直接从 Kubernetes 取回的对象；旧对象或恢复漂移若
+  带错误 `apiVersion/kind`、缺 audit finalizer 或非法 immutable spec，仍可能被 API
+  当作当前 Operation 展示，或在参数 Secret 读取前绕过对象形态校验。现在持久 Operation
+  读取统一要求请求名匹配、`dbaas.kubebrain.io/v1alpha1` / `KubeBrainOperation` 和合法
+  spec；非终态对象还必须保留 audit finalizer，已归档终态对象允许 finalizer 被释放。
+  `Parameters`、`ParametersForWorker` 与 claim 候选复用同一校验。回归覆盖 `Get` 拒绝
+  type meta/finalizer/spec 漂移、已归档终态对象无 finalizer 仍可读取、参数读取在
+  Operation 漂移时不触发 Secret API，以及 claim 候选漂移不会创建 Lease 或写 Running
+  status。
+  `go test ./hack/production/internal/operationqueue -run 'TestQueue(GetRejectsStoredOperationDrift|GetAllowsArchivedTerminalOperationWithoutFinalizer|ParametersRejectsOperationDriftBeforeSecretAPI|RejectsMalformedClaimCandidatesBeforeLease|LoadsDigestBoundImmutableParameters|OnlyLoadsParametersForCurrentTypeBoundWorker)' -count=1 -v`
+  和 `go test ./hack/production/internal/operationqueue -count=1` 均通过。
 
 ### P2：运维兼容和长期验证
 

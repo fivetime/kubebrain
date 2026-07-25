@@ -285,7 +285,7 @@ func (q *Queue) Claim(ctx context.Context, owner, operationType string, lease ti
 		if phase == PhaseSucceeded || phase == PhaseFailed {
 			continue
 		}
-		if err := validateClaimCandidate(candidate.GetName(), spec, phase, attempt, leaseUntil); err != nil {
+		if err := validateClaimCandidate(candidate, phase, attempt, leaseUntil); err != nil {
 			lastInvalid = err
 			continue
 		}
@@ -938,7 +938,14 @@ func (q *Queue) Get(ctx context.Context, name string) (*unstructured.Unstructure
 	if err := ValidateOperationName(name); err != nil {
 		return nil, err
 	}
-	return q.resource.Get(ctx, name, metav1.GetOptions{})
+	object, err := q.resource.Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return nil, err
+	}
+	if err := validateStoredOperation(name, object); err != nil {
+		return nil, err
+	}
+	return object, nil
 }
 
 func (q *Queue) Parameters(ctx context.Context, name string) ([]byte, error) {
@@ -950,6 +957,9 @@ func (q *Queue) Parameters(ctx context.Context, name string) ([]byte, error) {
 	}
 	object, err := q.resource.Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
+		return nil, err
+	}
+	if err := validateStoredOperation(name, object); err != nil {
 		return nil, err
 	}
 	return q.parameters(ctx, object)
@@ -972,6 +982,9 @@ func (q *Queue) ParametersForWorker(
 	}
 	object, err := q.resource.Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
+		return nil, err
+	}
+	if err := validateStoredOperation(name, object); err != nil {
 		return nil, err
 	}
 	actualType, _, _ := unstructured.NestedString(object.Object, "spec", "type")
@@ -1209,12 +1222,12 @@ func validateOperationSpec(name string, spec Spec) error {
 }
 
 func validateClaimCandidate(
-	name string,
-	spec Spec,
+	object *unstructured.Unstructured,
 	phase string,
 	attempt, leaseUntil int64,
 ) error {
-	if err := validateOperationSpec(name, spec); err != nil {
+	name := object.GetName()
+	if err := validateStoredOperation(name, object); err != nil {
 		return fmt.Errorf("listed operation %s is invalid: %w", name, err)
 	}
 	switch phase {
@@ -1230,6 +1243,27 @@ func validateClaimCandidate(
 		return nil
 	default:
 		return fmt.Errorf("listed operation %s has invalid phase %q", name, phase)
+	}
+	return nil
+}
+
+func validateStoredOperation(name string, object *unstructured.Unstructured) error {
+	if object == nil {
+		return invalidSpecError("operation object is missing")
+	}
+	if object.GetName() != name {
+		return invalidSpecError("operation object name does not match request")
+	}
+	if !operationTypeMetaMatches(object) {
+		return invalidSpecError("operation type metadata is invalid")
+	}
+	if err := validateOperationSpec(name, specFromObject(object)); err != nil {
+		return err
+	}
+	phase, _, _ := unstructured.NestedString(object.Object, "status", "phase")
+	if phase != PhaseSucceeded && phase != PhaseFailed &&
+		!containsString(object.GetFinalizers(), operationaudit.Finalizer) {
+		return invalidSpecError("operation is missing the audit finalizer")
 	}
 	return nil
 }
@@ -1254,10 +1288,10 @@ func specFromObject(object *unstructured.Unstructured) Spec {
 }
 
 func claimFrom(object *unstructured.Unstructured) (*Claim, error) {
-	spec := specFromObject(object)
-	if err := validateOperationSpec(object.GetName(), spec); err != nil {
+	if err := validateStoredOperation(object.GetName(), object); err != nil {
 		return nil, err
 	}
+	spec := specFromObject(object)
 	owner, _, _ := unstructured.NestedString(object.Object, "status", "owner")
 	attempt, _, _ := unstructured.NestedInt64(object.Object, "status", "attempt")
 	leaseUntil, _, _ := unstructured.NestedInt64(object.Object, "status", "leaseUntilUnix")

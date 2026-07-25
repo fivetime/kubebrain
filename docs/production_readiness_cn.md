@@ -1772,7 +1772,9 @@ CEL 保证创建后不可变。当前类型覆盖 Backup、BackupDeletion、Rest
 PostRestoreAudit、CertificateRotation 和 Destroy。Go 队列层也会在 submit 时拒绝
 CRD enum 外的 type，要求 operation ID/instance/maxAttempts/参数 Secret 引用满足
 CRD schema，并要求参数 digest 为小写 hex SHA-256；成功 finish 同样要求 receipt
-digest 为小写 hex SHA-256，不能只依赖 apiserver admission 才发现错误。
+digest 为小写 hex SHA-256，不能只依赖 apiserver admission 才发现错误。读取既有
+Operation、读取参数和 claim 候选时也会重新要求当前 `apiVersion/kind`、合法 spec；
+非终态对象还必须保留 audit finalizer，旧对象或恢复漂移不能被当作可执行 Operation。
 所有 shell operation runner 在把参数 JSON 转成 TSV 环境变量前，必须先拒绝空必填字段；
 可选 kube context/path 或 metrics output 使用哨兵占位，避免 Bash whitespace IFS 把中间空
 字段左移并误绑定后续参数。
