@@ -224,6 +224,52 @@ func TestPostRestoreAuditOperationRejectsEmptyRequiredParameters(t *testing.T) {
 	require.NotContains(t, log, "--action succeed")
 }
 
+func TestPostRestoreAuditOperationRejectsInvalidIdentityBeforeAudit(t *testing.T) {
+	tests := []struct {
+		name string
+		from string
+		to   string
+		want string
+	}{
+		{
+			name: "service namespace",
+			from: `"service_namespace":"ns-a"`,
+			to:   `"service_namespace":"ns_a"`,
+			want: "audit identity parameter contains unsupported characters",
+		},
+		{
+			name: "service name",
+			from: `"service_name":"kubebrain"`,
+			to:   `"service_name":"kubebrain/main"`,
+			want: "audit identity parameter contains unsupported characters",
+		},
+		{
+			name: "target instance",
+			from: `"target_instance":"target"`,
+			to:   `"target_instance":"target/main"`,
+			want: "audit identity parameter contains unsupported characters",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			f := newOperationRunnerFixture(t)
+			parameters := strings.Replace(
+				string(mustRead(t, f.parameters)),
+				test.from,
+				test.to,
+				1,
+			)
+			require.NoError(t, os.WriteFile(f.parameters, []byte(parameters), 0o600))
+
+			f.run(t, false, "CLAIM_DIGEST="+fileDigest(t, f.parameters), test.want)
+			log := f.log(t)
+			require.NotContains(t, log, "--action retry")
+			require.NotContains(t, log, "--action succeed")
+			require.NoFileExists(t, filepath.Join(f.dir, "audit.log"))
+		})
+	}
+}
+
 func TestPostRestoreAuditOperationLoadsManagedParameters(t *testing.T) {
 	f := newOperationRunnerFixture(t)
 	env := make([]string, 0, len(f.env))

@@ -131,6 +131,23 @@ validate_audit_prefix_json() {
 validate_audit_prefix_json ||
   { echo "audit prefix must be an absolute key prefix without control characters" >&2; exit 2; }
 
+validate_audit_identity_json() {
+  "$JQ" -e '
+    def resource_id:
+      type == "string" and
+      (length == 0 or test("^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"));
+    def namespace_id:
+      type == "string" and
+      (length == 0 or test("^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$"));
+    (.service_namespace | namespace_id) and
+    (.service_name | resource_id) and
+    (.target_instance | resource_id)' \
+    "$PARAMETERS_INPUT" >/dev/null
+}
+
+validate_audit_identity_json ||
+  { echo "audit identity parameter contains unsupported characters" >&2; exit 2; }
+
 parameters="$("$JQ" -er '[
   .state_dir, .cutover_state_input, .cutover_state_sha256,
   .cutover_receipt_input, .cutover_receipt_sha256,
@@ -157,6 +174,12 @@ for value in "$state_dir" "$cutover_state" "$cutover_receipt" "$service_namespac
   "$service_name" "$target_instance" "$public_endpoint" "$audit_prefix" "$receipt_output"; do
   [[ -n "$value" ]] || { echo "audit parameters contain an empty required field" >&2; exit 2; }
 done
+for value in "$operation_id" "$instance" "$service_namespace" "$service_name" "$target_instance"; do
+  [[ "$value" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] ||
+    { echo "audit identity parameter contains unsupported characters" >&2; exit 2; }
+done
+[[ "$service_namespace" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] ||
+  { echo "audit service_namespace must be a lowercase DNS label of at most 63 characters" >&2; exit 2; }
 
 validate_audit_prefix() {
   local prefix="$1" trimmed

@@ -12816,6 +12816,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go vet ./hack/production`、`go test ./hack/production -count=1 -timeout=12m`
   （315.303 秒）、`bash -n hack/production/run-destroy-operation.sh` 和
   `git diff --check` 通过；当前环境未安装 `shellcheck`，未运行 ShellCheck。
+- A855 前移 PostRestoreAudit runner 的 Service/target 身份校验：
+  `audit-restored-instance.sh` 会拒绝非法 operation/instance、Service namespace/name 和
+  target instance，但 `run-post-restore-audit-operation.sh` 原先只在子审计前独立校验
+  audit prefix、证据 digest 和空必填字段；可替换的 `AUDIT_COMMAND` 可以在非法 Service
+  或 target 身份下执行真实探针或发布本地 receipt。现在 runner 对冻结参数先做 JSON
+  类型/值 preflight，再在 TSV 解析后复核 claim 与参数组合出的 operation/instance、
+  Service namespace/name 和 target instance；Service namespace 必须是 lowercase DNS
+  label，其他标识匹配 direct audit 脚本支持的资源标识格式。回归注入非法 service
+  namespace、service name 和 target instance，确认不启动 audit 子命令，也不
+  retry/succeed。`go test ./hack/production -run
+  'TestPostRestoreAuditOperation(RejectsInvalidIdentityBeforeAudit|RejectsEmptyRequiredParameters|RejectsUnsafeAuditPrefix)'
+  -count=1 -v`、`go test ./hack/production -run TestPostRestoreAuditOperation -count=1
+  -v`、`go vet ./hack/production`、`go test ./hack/production -count=1 -timeout=12m`
+  （316.047 秒）、`bash -n hack/production/run-post-restore-audit-operation.sh` 和
+  `git diff --check` 通过；当前环境未安装 `shellcheck`，未运行 ShellCheck。
 
 ### P2：运维兼容和长期验证
 
