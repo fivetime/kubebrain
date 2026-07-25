@@ -13348,6 +13348,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   NOT_EQUAL 仍选中 Failure；reference etcd compare matrix 同步加入
   `from-key-empty-version-equal-zero` 与 `from-key-empty-value-not-equal`，避免把 from-key
   空结果误当作普通 absent point 或客户端前缀空结果。
+- A901 固定 txn 选中分支执行校验顺序：
+  上游 `checkTxn` 对已选中分支按 op 顺序校验 `checkPut`/`checkRange`，因此同一 txn 中
+  缺失 lease Put 放在 future revision Range 前时应返回 `requested lease not found`，反向
+  顺序应先返回 future revision。新增本地回归固定这两个错误外观；既有
+  `TestTxnExecutionValidationOrderDifferentialAgainstReferenceEtcd` 继续用 reference etcd
+  黑盒差分覆盖同一顺序矩阵。
 
 ### P2：运维兼容和长期验证
 

@@ -3386,6 +3386,38 @@ func TestTxnRejectsInvalidRequestOps(t *testing.T) {
 	}
 }
 
+func TestTxnSelectedOperationValidationOrderMatchesEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	missingLeasePut := &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestPut{
+		RequestPut: &etcdserverpb.PutRequest{
+			Key:   []byte("/registry/generic-txn/validation-order/missing-lease"),
+			Value: []byte("value"),
+			Lease: 987654321,
+		},
+	}}
+	futureRange := &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestRange{
+		RequestRange: &etcdserverpb.RangeRequest{
+			Key:      []byte("/registry/generic-txn/validation-order/future"),
+			Revision: math.MaxInt64,
+		},
+	}}
+
+	_, err := server.Txn(context.Background(), &etcdserverpb.TxnRequest{
+		Success: []*etcdserverpb.RequestOp{missingLeasePut, futureRange},
+	})
+	require.Error(t, err)
+	require.Equal(t, "etcdserver: requested lease not found", status.Convert(err).Message())
+
+	_, err = server.Txn(context.Background(), &etcdserverpb.TxnRequest{
+		Success: []*etcdserverpb.RequestOp{futureRange, missingLeasePut},
+	})
+	require.Error(t, err)
+	require.Equal(t, codes.OutOfRange, status.Code(err))
+	require.Equal(t, "etcdserver: mvcc: required revision is a future revision", status.Convert(err).Message())
+}
+
 func TestTxnValidatesBothBranchesBeforeDuplicateKeys(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
