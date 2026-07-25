@@ -13400,6 +13400,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   future revision。既有本地测试覆盖 logical zero/negative/future/repeated，本轮补齐
   `Physical=true` 的 zero/negative/max-int 错误 code/message，防止同步物理 compaction
   路径绕开 revision 边界校验。
+- A910 固定 DeleteRange empty interval no-op revision：
+  `delete_range_boundary` reference differential 证明 equal/reverse empty range 不删除、不返回
+  PrevKv，且 response header 停留在当前 revision，不因为 no-op 删除制造新 MVCC revision。
+  既有本地测试只覆盖 equal empty 的不删除，本轮扩展为 equal/reverse 矩阵，并断言
+  Header.Revision 与 backend current revision 均不前进。
 
 ### P2：运维兼容和长期验证
 

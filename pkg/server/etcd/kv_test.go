@@ -1861,27 +1861,45 @@ func TestDeleteRangeEmptyNonFromKeyRangeDoesNotDelete(t *testing.T) {
 	defer closeFn()
 
 	ctx := context.Background()
-	key := []byte("/registry/configmaps/empty-delete/a")
-	_, err := server.Put(ctx, &etcdserverpb.PutRequest{
-		Key:   key,
-		Value: []byte("value"),
-	})
-	require.NoError(t, err)
+	keys := [][]byte{
+		[]byte("/registry/configmaps/empty-delete/a"),
+		[]byte("/registry/configmaps/empty-delete/b"),
+	}
+	for _, key := range keys {
+		_, err := server.Put(ctx, &etcdserverpb.PutRequest{
+			Key: key, Value: []byte("value-" + string(key[len(key)-1])),
+		})
+		require.NoError(t, err)
+	}
+	before := int64(server.backend.GetCurrentRevision())
 
-	deleteResp, err := server.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{
-		Key:      key,
-		RangeEnd: key,
-		PrevKv:   true,
-	})
-	require.NoError(t, err)
-	require.Equal(t, int64(0), deleteResp.Deleted)
-	require.Empty(t, deleteResp.PrevKvs)
-	require.NotNil(t, deleteResp.Header)
+	tests := []struct {
+		name     string
+		key      []byte
+		rangeEnd []byte
+	}{
+		{name: "equal", key: keys[0], rangeEnd: keys[0]},
+		{name: "reverse", key: keys[1], rangeEnd: keys[0]},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			deleteResp, err := server.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{
+				Key: tt.key, RangeEnd: tt.rangeEnd, PrevKv: true,
+			})
+			require.NoError(t, err)
+			require.Equal(t, int64(0), deleteResp.Deleted)
+			require.Empty(t, deleteResp.PrevKvs)
+			require.NotNil(t, deleteResp.Header)
+			require.Equal(t, before, deleteResp.Header.Revision)
+			require.Equal(t, uint64(before), server.backend.GetCurrentRevision())
+		})
+	}
 
-	getResp, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: key})
-	require.NoError(t, err)
-	require.Equal(t, int64(1), getResp.Count)
-	require.Equal(t, []byte("value"), getResp.Kvs[0].Value)
+	for _, key := range keys {
+		getResp, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: key})
+		require.NoError(t, err)
+		require.Equal(t, int64(1), getResp.Count)
+	}
 }
 
 func TestTxnDeleteRangeEmptyNonFromKeyRangeDoesNotDelete(t *testing.T) {
