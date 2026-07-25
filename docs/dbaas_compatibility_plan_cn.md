@@ -13647,6 +13647,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   point delete 即使带 PrevKv 也不能推进 revision，Deleted 与 PrevKvs 都为空。本轮新增
   本地 KV 服务层端到端回归，固定 delete fast path、generic range delete 和 no-op
   delete 的 header 语义，防止 Kubernetes delete/relist 依赖的 revision 单调性被破坏。
+- A948 固定 Put differential 的 lease/ignore/error 优先级链路：
+  `put` reference differential 证明普通 create、lease rebind、`IgnoreValue` 和
+  `IgnoreLease` 必须连续推进 revision，并在 PrevKv 中暴露迁移前的 value/lease；
+  `IgnoreValue` 只能保留旧 value 并迁移 lease，`IgnoreLease` 只能更新 value 并保留
+  当前 lease，最终 key 的 create/mod/version/lease 必须与 etcd 一致。同时 missing
+  lease、missing key + IgnoreValue、missing key + missing lease、empty key 以及
+  ignore option 非法组合的 gRPC code/message 必须维持 etcd 的错误优先级。本轮新增
+  本地 KV 服务层端到端回归，防止 Put fast path、lease attachment 索引或 validation
+  order 改动破坏 apiserver CAS/lease 迁移行为。
 
 ### P2：运维兼容和长期验证
 

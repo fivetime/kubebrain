@@ -583,6 +583,127 @@ func TestPutIgnoreValueUpdatesLeasePreservesValue(t *testing.T) {
 	require.Equal(t, [][]byte{key}, ttlTwo.Keys)
 }
 
+func TestPutDifferentialScenarioMatchesEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	ctx := context.Background()
+	prefix := "/registry/pods/put-differential/"
+	key := []byte(prefix + "key")
+	missing := []byte(prefix + "missing")
+	base, err := server.Range(ctx, &etcdserverpb.RangeRequest{
+		Key: []byte(prefix), RangeEnd: []byte("/registry/pods/put-differential0"),
+	})
+	require.NoError(t, err)
+	baseRev := base.Header.Revision
+	leaseA, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 300, ID: 62001})
+	require.NoError(t, err)
+	leaseB, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 300, ID: 62002})
+	require.NoError(t, err)
+
+	create, err := server.Put(ctx, &etcdserverpb.PutRequest{
+		Key: key, Value: []byte("one"), Lease: leaseA.ID, PrevKv: true,
+	})
+	require.NoError(t, err)
+	require.Equal(t, int64(1), create.Header.Revision-baseRev)
+	require.Nil(t, create.PrevKv)
+
+	rebind, err := server.Put(ctx, &etcdserverpb.PutRequest{
+		Key: key, Value: []byte("two"), Lease: leaseB.ID, PrevKv: true,
+	})
+	require.NoError(t, err)
+	require.Equal(t, int64(2), rebind.Header.Revision-baseRev)
+	require.NotNil(t, rebind.PrevKv)
+	require.Equal(t, []byte("one"), rebind.PrevKv.Value)
+	require.Equal(t, leaseA.ID, rebind.PrevKv.Lease)
+
+	ignoreValue, err := server.Put(ctx, &etcdserverpb.PutRequest{
+		Key: key, Lease: leaseA.ID, IgnoreValue: true, PrevKv: true,
+	})
+	require.NoError(t, err)
+	require.Equal(t, int64(3), ignoreValue.Header.Revision-baseRev)
+	require.NotNil(t, ignoreValue.PrevKv)
+	require.Equal(t, []byte("two"), ignoreValue.PrevKv.Value)
+	require.Equal(t, leaseB.ID, ignoreValue.PrevKv.Lease)
+
+	ignoreLease, err := server.Put(ctx, &etcdserverpb.PutRequest{
+		Key: key, Value: []byte("three"), IgnoreLease: true, PrevKv: true,
+	})
+	require.NoError(t, err)
+	require.Equal(t, int64(4), ignoreLease.Header.Revision-baseRev)
+	require.NotNil(t, ignoreLease.PrevKv)
+	require.Equal(t, []byte("two"), ignoreLease.PrevKv.Value)
+	require.Equal(t, leaseA.ID, ignoreLease.PrevKv.Lease)
+
+	current, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: key})
+	require.NoError(t, err)
+	require.Len(t, current.Kvs, 1)
+	require.Equal(t, []byte("three"), current.Kvs[0].Value)
+	require.Equal(t, leaseA.ID, current.Kvs[0].Lease)
+	require.Equal(t, create.Header.Revision, current.Kvs[0].CreateRevision)
+	require.Equal(t, ignoreLease.Header.Revision, current.Kvs[0].ModRevision)
+	require.Equal(t, int64(4), current.Kvs[0].Version)
+
+	ttlA, err := server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: leaseA.ID, Keys: true})
+	require.NoError(t, err)
+	require.Equal(t, [][]byte{key}, ttlA.Keys)
+	ttlB, err := server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: leaseB.ID, Keys: true})
+	require.NoError(t, err)
+	require.Empty(t, ttlB.Keys)
+
+	tests := []struct {
+		name        string
+		req         *etcdserverpb.PutRequest
+		wantCode    codes.Code
+		wantMessage string
+	}{
+		{
+			name:        "missing lease",
+			req:         &etcdserverpb.PutRequest{Key: key, Value: []byte("bad"), Lease: 62999},
+			wantCode:    codes.NotFound,
+			wantMessage: "etcdserver: requested lease not found",
+		},
+		{
+			name:        "missing ignore value key",
+			req:         &etcdserverpb.PutRequest{Key: missing, IgnoreValue: true},
+			wantCode:    codes.InvalidArgument,
+			wantMessage: "etcdserver: key not found",
+		},
+		{
+			name:        "missing key and lease",
+			req:         &etcdserverpb.PutRequest{Key: missing, Lease: 62999, IgnoreValue: true},
+			wantCode:    codes.NotFound,
+			wantMessage: "etcdserver: requested lease not found",
+		},
+		{
+			name:        "empty key",
+			req:         &etcdserverpb.PutRequest{Value: []byte("bad")},
+			wantCode:    codes.InvalidArgument,
+			wantMessage: "etcdserver: key is not provided",
+		},
+		{
+			name:        "value with ignore value",
+			req:         &etcdserverpb.PutRequest{Key: key, Value: []byte("bad"), IgnoreValue: true},
+			wantCode:    codes.InvalidArgument,
+			wantMessage: "etcdserver: value is provided",
+		},
+		{
+			name:        "lease with ignore lease",
+			req:         &etcdserverpb.PutRequest{Key: key, Lease: leaseA.ID, IgnoreLease: true},
+			wantCode:    codes.InvalidArgument,
+			wantMessage: "etcdserver: lease is provided",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := server.Put(ctx, tt.req)
+			require.Error(t, err)
+			require.Equal(t, tt.wantCode, status.Code(err))
+			require.Equal(t, tt.wantMessage, status.Convert(err).Message())
+		})
+	}
+}
+
 func TestPutRejectsInvalidRequest(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
