@@ -3954,6 +3954,66 @@ func TestTxnIntervalExecutionMatchesEtcdEdgeRanges(t *testing.T) {
 	}
 }
 
+func TestTxnDuplicateIntervalValidationMatrixMatchesEtcd(t *testing.T) {
+	prefix := "/registry/generic-txn/duplicate-interval/"
+	key := []byte(prefix + "abc")
+	put := &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestPut{
+		RequestPut: &etcdserverpb.PutRequest{Key: key, Value: []byte("value")},
+	}}
+	deleteKey := &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestDeleteRange{
+		RequestDeleteRange: &etcdserverpb.DeleteRangeRequest{Key: key},
+	}}
+	deleteContaining := &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestDeleteRange{
+		RequestDeleteRange: &etcdserverpb.DeleteRangeRequest{Key: []byte(prefix + "a"), RangeEnd: []byte(prefix + "b")},
+	}}
+	deleteBefore := &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestDeleteRange{
+		RequestDeleteRange: &etcdserverpb.DeleteRangeRequest{Key: []byte(prefix + "abb"), RangeEnd: key},
+	}}
+	txnOp := func(success, failure []*etcdserverpb.RequestOp) *etcdserverpb.RequestOp {
+		return &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestTxn{
+			RequestTxn: &etcdserverpb.TxnRequest{Success: success, Failure: failure},
+		}}
+	}
+	nestedDelete := txnOp([]*etcdserverpb.RequestOp{deleteContaining}, nil)
+	nestedDeleteBoth := txnOp(
+		[]*etcdserverpb.RequestOp{deleteContaining},
+		[]*etcdserverpb.RequestOp{deleteContaining},
+	)
+	nestedPut := txnOp([]*etcdserverpb.RequestOp{put}, nil)
+	nestedPutBoth := txnOp(
+		[]*etcdserverpb.RequestOp{put},
+		[]*etcdserverpb.RequestOp{put},
+	)
+
+	for _, tc := range []struct {
+		name    string
+		ops     []*etcdserverpb.RequestOp
+		wantErr bool
+	}{
+		{name: "duplicate-put", ops: []*etcdserverpb.RequestOp{put, put}, wantErr: true},
+		{name: "put-and-point-delete", ops: []*etcdserverpb.RequestOp{put, deleteKey}, wantErr: true},
+		{name: "put-and-containing-delete", ops: []*etcdserverpb.RequestOp{put, deleteContaining}, wantErr: true},
+		{name: "put-and-nested-containing-delete", ops: []*etcdserverpb.RequestOp{put, nestedDelete}, wantErr: true},
+		{name: "containing-delete-and-nested-put", ops: []*etcdserverpb.RequestOp{deleteContaining, nestedPut}, wantErr: true},
+		{name: "duplicate-sibling-nested-put", ops: []*etcdserverpb.RequestOp{nestedPutBoth, nestedPutBoth}, wantErr: true},
+		{name: "disjoint-delete-and-mutually-exclusive-put", ops: []*etcdserverpb.RequestOp{deleteBefore, nestedPutBoth}},
+		{name: "nested-overlapping-deletes", ops: []*etcdserverpb.RequestOp{nestedDelete, nestedDeleteBoth}},
+		{name: "repeated-overlapping-deletes", ops: []*etcdserverpb.RequestOp{deleteKey, deleteContaining, deleteKey, deleteContaining}},
+		{name: "put-and-disjoint-delete", ops: []*etcdserverpb.RequestOp{put, deleteBefore}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateTxnRequest(&etcdserverpb.TxnRequest{Success: tc.ops})
+			if tc.wantErr {
+				require.Error(t, err)
+				require.Equal(t, codes.InvalidArgument, status.Code(err))
+				require.Contains(t, err.Error(), "duplicate key")
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}
+
 func TestTxnAllowsSameKeyInDifferentBranches(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

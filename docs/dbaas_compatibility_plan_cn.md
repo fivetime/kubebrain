@@ -13449,6 +13449,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   和反向区间 delete 都必须与 etcd 一致。本轮新增本地 raw RPC 回归，用 64 字节
   `0xff` 前缀固定 `{0}` sentinel、空/反向区间 no-op 和有序执行结果，防止后续
   Txn interval 校验或 staged mutation 重排把合法请求误拒或误删。
+- A918 固定 Txn duplicate interval validation 矩阵：
+  `txn_duplicate_interval` reference differential 证明重复 Put、Put+point delete、
+  Put+containing delete、父/子 Txn 交叉重叠以及 sibling nested duplicate Put 都必须
+  返回 `InvalidArgument: duplicate key given in txn request`；但 end-exclusive 的
+  disjoint delete、then/else 互斥 Put、nested overlapping deletes 和 repeated
+  overlapping deletes 必须允许。本轮新增本地 validation 矩阵，防止递归收集
+  success/failure interval 时把互斥分支误判为重复，或漏拒父子层级中的真实重叠 Put。
 
 ### P2：运维兼容和长期验证
 
