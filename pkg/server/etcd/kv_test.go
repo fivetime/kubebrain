@@ -1380,6 +1380,53 @@ func TestCompactNegativeRevisionCannotDiscardHistory(t *testing.T) {
 	require.Equal(t, []byte("v1"), historical.Kvs[0].Value)
 }
 
+func TestCompactPhysicalRevisionBoundariesMatchEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	ctx := context.Background()
+	putResp, err := server.Put(ctx, &etcdserverpb.PutRequest{
+		Key: []byte("/registry/pods/compact-physical-boundary"), Value: []byte("value"),
+	})
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		return server.backend.GetCurrentRevision() >= uint64(putResp.Header.Revision)
+	}, time.Second, 10*time.Millisecond)
+	_, err = server.Compact(ctx, &etcdserverpb.CompactionRequest{Revision: putResp.Header.Revision})
+	require.NoError(t, err)
+
+	tests := []struct {
+		name        string
+		revision    int64
+		wantMessage string
+	}{
+		{
+			name:        "zero",
+			wantMessage: "etcdserver: mvcc: required revision has been compacted",
+		},
+		{
+			name:        "negative",
+			revision:    -1,
+			wantMessage: "etcdserver: mvcc: required revision has been compacted",
+		},
+		{
+			name:        "max-int",
+			revision:    math.MaxInt64,
+			wantMessage: "etcdserver: mvcc: required revision is a future revision",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := server.Compact(ctx, &etcdserverpb.CompactionRequest{
+				Revision: tt.revision, Physical: true,
+			})
+			require.Error(t, err)
+			require.Equal(t, codes.OutOfRange, status.Code(err))
+			require.Equal(t, tt.wantMessage, status.Convert(err).Message())
+		})
+	}
+}
+
 func TestRangeNegativeRevisionFollowsFirstRevision(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

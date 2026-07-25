@@ -13394,6 +13394,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `math.MinInt64`、`math.MaxInt64` 作为合法 watch ID，created/canceled response 都必须保留
   原 ID，未知 cancel 继续静默忽略。既有本地测试已覆盖 duplicate/empty range/自动 ID，本轮
   补齐 signed ID 本地状态机回归，避免 future refactor 把 watch ID 误收窄为非负或 unsigned。
+- A909 固定 Compact physical revision 边界：
+  `compact_revision_boundary` reference differential 证明 logical/physical compact 在已存在
+  compact marker 后对 `Revision=0`、负 revision 返回 compacted，对 `math.MaxInt64` 返回
+  future revision。既有本地测试覆盖 logical zero/negative/future/repeated，本轮补齐
+  `Physical=true` 的 zero/negative/max-int 错误 code/message，防止同步物理 compaction
+  路径绕开 revision 边界校验。
 
 ### P2：运维兼容和长期验证
 
