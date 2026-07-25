@@ -348,7 +348,8 @@ validate_audit_receipt() {
     "$state_instance" == "$instance" && "$state_namespace" == "$service_namespace" &&
     "$state_service" == "$service_name" && "$state_target" == "$target_instance" &&
     -n "$state_service_uid" && "$artifact_sha" =~ ^[a-f0-9]{64}$ &&
-    "$snapshot_revision" =~ ^[1-9][0-9]*$ ]] || return 1
+    "$snapshot_revision" =~ ^[1-9][0-9]*$ &&
+    "$source_prefix" == /* && "$target_prefix" == /* && "$source_prefix" != "$target_prefix" ]] || return 1
   cutover_state_digest_matches "$state_sha" || return 1
   cutover_receipt_sha="$(validated_source_cutover_receipt_digest "$state_sha" "$cutover_operation" \
     "$source_instance" "$state_service_uid" "$artifact_sha" "$snapshot_revision")" || return 1

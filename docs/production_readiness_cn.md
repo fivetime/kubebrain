@@ -1822,7 +1822,8 @@ Ready/Serving/非 Terminating，且 targetRef Pod UID 集精确等于冻结的�
 verify 和 complete 都通过公开 Service endpoint 对完整 logical artifact 再做逐 key/value
 及 lease 校验，结果的前九个稳定字段必须与 prepare receipt 一致。complete 才签发不可
 覆盖的 `kubebrain.restore-cutover.receipt.v1`；receipt 还包含 cutover state 文件
-SHA-256，将冻结的 Service/Pod UID 行绑定到完成证据。rollback 使用相同 CAS 从目标切回源，并
+SHA-256，将冻结的 Service/Pod UID 行和绝对且不同的 source/target prefix 绑定到完成证据。
+rollback 使用相同 CAS 从目标切回源，并
 要求 EndpointSlice 精确恢复到冻结的源 Pod UID 集；已 complete 的 operation 禁止回滚，
 已 rollback 的 operation 禁止 complete。所有状态、marker 和 receipt 均为 0600、
 file/directory `fsync` 且不覆盖发布；已有 cutover/verify/rollback marker 复用或被后续
@@ -2305,7 +2306,8 @@ complete 驱动，每阶段独立续租。prepare 失败可 retry；从 cutover 
 worker 接管时依据 A189 持久证据恢复：只有 state 从 cutover 继续，有 cutover marker 从
 verify 继续，已有 receipt 则重做 complete 在线复检后提交；rollback marker 直接记 Failed。
 cutover、verified 和 rollback marker 在接管判定或最终提交 succeed 前都必须通过 A189
-单行封闭 schema 校验，不能仅凭文件存在推进 operation。heartbeat fencing 时旧 worker
+单行封闭 schema 校验；cutover state header 的 source/target prefix 必须继续是绝对且不同的
+key prefix，不能仅凭文件存在推进 operation。heartbeat fencing 时旧 worker
 终止子进程且不再回滚或提交，由新 owner/attempt 接管。
 A189 rollback 允许仅凭 prepare state 运行：这覆盖 Service JSON Patch 已提交、但等待
 EndpointSlice 失败而尚未生成 cutover marker 的窗口；rollback 仍用 UID/resourceVersion

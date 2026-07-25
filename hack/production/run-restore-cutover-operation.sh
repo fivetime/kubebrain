@@ -369,7 +369,8 @@ validate_cutover_receipt() {
     "$state_namespace" == "$service_namespace" && "$state_service" == "$service_name" &&
     "$source_state" == "$source_instance" && "$state_target" == "$target_instance" &&
     -n "$state_service_uid" && "$artifact_sha" =~ ^[a-f0-9]{64}$ &&
-    "$snapshot_revision" =~ ^[1-9][0-9]*$ ]] || return 1
+    "$snapshot_revision" =~ ^[1-9][0-9]*$ &&
+    "$source_prefix" == /* && "$target_prefix" == /* && "$source_prefix" != "$target_prefix" ]] || return 1
   state_sha="$(sha256sum "$state_file" | cut -d ' ' -f1)"
   "$JQ" -e --arg operation "$operation_id" --arg instance "$instance" \
     --arg namespace "$service_namespace" --arg service "$service_name" \

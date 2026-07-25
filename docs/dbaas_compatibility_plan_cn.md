@@ -12649,6 +12649,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `BASE_SECURE_PORT=port`、非法 `OBJECTS=0`、非法 `APISERVER_IMAGES='@bad'`、同一 pinned
   ShellCheck 镜像检查 `hack/dev/common.sh hack/dev/apiserver-version-matrix.sh` 和
   `git diff --check` 通过。
+- A838 收紧 restore cutover state prefix 复核并恢复全仓 ShellCheck：
+  全仓 ShellCheck 暴露 `run-restore-cutover-operation.sh` 与
+  `run-post-restore-audit-operation.sh` 读取 cutover state header 的 source/target prefix 后没有
+  使用。现在两个 runner 在验证 cutover receipt/audit receipt 前都会要求 state header 中的
+  source/target prefix 为绝对 key prefix 且二者不同；测试分别构造 state 与 receipt digest
+  一起更新的篡改场景，确认不会被普通 digest 绑定绕过。`bash -n`、`go test ./hack/production
+  -run 'Test(RestoreCutoverOperationRejectsStateWithInvalidPrefixes|PostRestoreAuditOperationRejectsCutoverStateWithInvalidPrefixes)' -count=1 -v`、
+  完整 `go test ./hack/production -count=1 -timeout=12m`（309.374 秒）、`go vet ./hack/production`、
+  相关脚本 ShellCheck、全仓 ShellCheck 和 `git diff --check` 通过。
 
 ### P2：运维兼容和长期验证
 

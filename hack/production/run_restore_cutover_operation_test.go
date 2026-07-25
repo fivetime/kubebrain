@@ -69,6 +69,14 @@ func TestRestoreCutoverOperationRejectsNonCanonicalStateBeforeSucceed(t *testing
 	require.NotContains(t, log, "--action succeed")
 }
 
+func TestRestoreCutoverOperationRejectsStateWithInvalidPrefixes(t *testing.T) {
+	f := newCutoverRunnerFixture(t)
+	f.run(t, false, "TAMPER_STATE_PREFIX_BEFORE_RECEIPT=true", "invalid receipt")
+	log := f.log(t)
+	require.Contains(t, log, "--action fail")
+	require.NotContains(t, log, "--action succeed")
+}
+
 func TestRestoreCutoverOperationRejectsNonCanonicalMarkersBeforeSucceed(t *testing.T) {
 	for _, tc := range []struct {
 		name, env string
@@ -359,6 +367,7 @@ case "$ACTION" in
     artifact_sha="`+runnerCutoverArtifactSHA256+`"
     [[ "${INVALID_CUTOVER_RECEIPT:-false}" != true ]] || artifact_sha=abc123
     [[ "${TAMPER_STATE_BEFORE_RECEIPT:-false}" != true ]] || printf 'UNKNOWN\trow\n' >>"$state_file"
+    [[ "${TAMPER_STATE_PREFIX_BEFORE_RECEIPT:-false}" != true ]] || sed -i 's#\t/registry\t/restored#\trelative\t/restored#' "$state_file"
     [[ "${TAMPER_CUTOVER_MARKER_BEFORE_RECEIPT:-false}" != true ]] || printf 'UNKNOWN\trow\n' >>"$STATE_DIR/$OPERATION_ID.cutover"
     [[ "${TAMPER_VERIFIED_MARKER_BEFORE_RECEIPT:-false}" != true ]] || printf 'UNKNOWN\trow\n' >>"$STATE_DIR/$OPERATION_ID.verified"
     state_sha="$(sha256sum "$state_file" | cut -d ' ' -f1)"

@@ -83,6 +83,26 @@ func TestPostRestoreAuditOperationRejectsNonCanonicalCutoverState(t *testing.T) 
 	require.NotContains(t, log, "--action succeed")
 }
 
+func TestPostRestoreAuditOperationRejectsCutoverStateWithInvalidPrefixes(t *testing.T) {
+	f := newOperationRunnerFixture(t)
+	statePath := filepath.Join(f.dir, "cutover.state")
+	state := strings.Replace(string(mustRead(t, statePath)), "\t/registry\t/restored", "\trelative\t/restored", 1)
+	require.NoError(t, os.WriteFile(statePath, []byte(state), 0o600))
+	newStateSHA := fileDigest(t, statePath)
+
+	receipt := strings.Replace(string(mustRead(t, f.cutoverReceipt)), f.cutoverStateSHA, newStateSHA, 1)
+	require.NoError(t, os.WriteFile(f.cutoverReceipt, []byte(receipt), 0o600))
+	newReceiptSHA := fileDigest(t, f.cutoverReceipt)
+
+	parameters := strings.ReplaceAll(string(mustRead(t, f.parameters)), f.cutoverStateSHA, newStateSHA)
+	parameters = strings.ReplaceAll(parameters, f.cutoverReceiptSHA, newReceiptSHA)
+	require.NoError(t, os.WriteFile(f.parameters, []byte(parameters), 0o600))
+	f.run(t, false, "CLAIM_DIGEST="+fileDigest(t, f.parameters), "invalid receipt")
+	log := f.log(t)
+	require.Contains(t, log, "--action retry")
+	require.NotContains(t, log, "--action succeed")
+}
+
 func TestPostRestoreAuditOperationRejectsCutoverEvidenceDriftAfterAudit(t *testing.T) {
 	for _, tc := range []struct {
 		name, env string
