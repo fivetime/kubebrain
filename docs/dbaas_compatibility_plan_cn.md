@@ -13509,6 +13509,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   attached keys；`LeaseLeases` 必须包含该 live ID，且列表中不得出现 0 ID。本轮新增
   本地服务层回归，固定 TTL/GrantedTTL 范围、key 集合、LeaseLeases header 和 non-zero
   ID 约束，防止 lease read fast path 或 attachment index 重建后出现读契约漂移。
+- A927 固定 LeaseGrant 最大 TTL 和自动 ID 边界：
+  `lease_grant_boundary` reference differential 证明 TTL 恰好等于 `9_000_000_000`
+  必须成功并按原值回显，`max+1`/`math.MaxInt64` 才返回 `too large lease TTL`；
+  `ID=0` 的自动分配必须返回非零 ID。本轮新增本地服务层回归，固定最大 TTL 的
+  Grant/TimeToLive `GrantedTTL`，以及自动 ID 的非零和 TTL 回显，补齐此前只覆盖
+  small TTL clamp、duplicate ID 和 over-max 错误的本地边界。
 
 ### P2：运维兼容和长期验证
 

@@ -747,6 +747,28 @@ func TestLeaseGrantClampsSmallTTLLikeEtcd(t *testing.T) {
 	}
 }
 
+func TestLeaseGrantMaximumTTLAndAutomaticIDMatchEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	ctx := context.Background()
+	maximum, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: maxLeaseTTL, ID: 5110})
+	require.NoError(t, err)
+	require.Equal(t, int64(5110), maximum.ID)
+	require.Equal(t, maxLeaseTTL, maximum.TTL)
+	maxTTL, err := server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: maximum.ID})
+	require.NoError(t, err)
+	require.Equal(t, maxLeaseTTL, maxTTL.GrantedTTL)
+
+	automatic, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 10})
+	require.NoError(t, err)
+	require.NotZero(t, automatic.ID)
+	require.Equal(t, int64(10), automatic.TTL)
+	autoTTL, err := server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: automatic.ID})
+	require.NoError(t, err)
+	require.Equal(t, int64(10), autoTTL.GrantedTTL)
+}
+
 func TestLeaseTimeToLiveZeroIDMatchesEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
