@@ -65,8 +65,10 @@ KubeBrain/PD/TiKV 均不可达。任何失败都返回非零，trap 清理所有
 会被拒绝而非复用。该门禁只证明 TCP/CNI enforcement，仍须随后运行 endpoint health 和
 实际 Put/Get/Delete，不能把端口连通替代 etcd 语义验证。
 
-`--advertise-host` 是副本间选主/转发身份，不能同时充当 clientv3 Sync/AutoSync 的公开
-地址。生产必须单独设置 `--advertise-client-urls`：仓库基线使用集群内 client Service；
+`--advertise-host` 是副本间选主/转发身份，必须是可组成 `host:peerPort` 的 IPv4、FQDN
+或 bracketed IPv6，且不能包含控制字符、DEL、引号或反斜杠；它不能同时充当
+clientv3 Sync/AutoSync 的公开地址。生产必须单独设置 `--advertise-client-urls`：
+仓库基线使用集群内 client Service；
 向集群外提供 DBaaS endpoint 时，平台必须替换为所有目标客户端可解析、可路由的公共
 `http(s)` URL。TLS URL 的主机名必须存在于服务端证书 SAN，并与客户端验证名称一致；
 MemberList 会把该列表交给 clientv3 替换原 endpoint 集合，错误的内部 DNS 会使已成功

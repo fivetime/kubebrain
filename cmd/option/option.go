@@ -272,6 +272,9 @@ func (o *KubeBrainOption) Validate() error {
 	}
 
 	if o.advertiseHost != "" {
+		if containsUnsafeAdvertiseHostChar(o.advertiseHost) {
+			return fmt.Errorf("--advertise-host %q contains unsupported characters", o.advertiseHost)
+		}
 		// It is combined with the peer port into a host:port identity downstream
 		// (SplitHostPort'd by the etcd proxy); a bare IPv6 without brackets would
 		// parse wrong. Fail loudly here instead of dialing a mangled address.
@@ -350,6 +353,15 @@ func (o *KubeBrainOption) Validate() error {
 	}
 
 	return o.storageConfig.validate()
+}
+
+func containsUnsafeAdvertiseHostChar(value string) bool {
+	for _, r := range value {
+		if r < 0x20 || r == 0x7f || r == '"' || r == '\\' {
+			return true
+		}
+	}
+	return false
 }
 
 func initialClusterContainsPeerIdentity(members []*etcdserverpb.Member, identity string) bool {

@@ -118,6 +118,26 @@ func TestValidateRejectsUnbracketedIPv6AdvertiseHost(t *testing.T) {
 	require.Contains(t, err.Error(), "advertise-host")
 }
 
+func TestValidateRejectsUnsafeAdvertiseHostCharacters(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		host string
+	}{
+		{name: "newline", host: "10.32.32.101\nshadow"},
+		{name: "tab", host: "10.32.32.101\tshadow"},
+		{name: "quote", host: `10.32.32.101"shadow`},
+		{name: "backslash", host: `10.32.32.101\shadow`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			o := NewOptions()
+			o.advertiseHost = tc.host
+			err := o.Validate()
+			require.ErrorContains(t, err, "advertise-host")
+			require.ErrorContains(t, err, "unsupported characters")
+		})
+	}
+}
+
 func TestValidateAcceptsBracketedIPv6AndIPv4(t *testing.T) {
 	// These must pass the advertise-host check specifically. We assert that the
 	// error, if any, is NOT the advertise-host error (storage validation may

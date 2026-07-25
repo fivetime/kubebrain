@@ -13160,6 +13160,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   可能到 discovery、JWKS fetch 或 HTTP transport 阶段才失败。现在 OIDC URL admission
   在任何外部请求前拒绝控制字符、DEL、引号和反斜杠，保留合法 path issuer（例如 realm
   路径）语义不变。回归覆盖换行、tab、引号、反斜杠和带 path 的 HTTPS issuer。
+- A884 收紧 advertise-host 选主身份字符边界：
+  `--advertise-host` 会直接参与 leader-election holder identity、follower dial 地址和
+  `--initial-cluster` self identity 校验；旧校验只把它与 peer port 拼成 `host:port`
+  后交给 `net.SplitHostPort`，可能接受带控制字符、引号或反斜杠的 host，并把畸形
+  identity 写入运行时协调路径。现在 option 校验在 host:port 形状检查前拒绝控制字符、
+  DEL、引号和反斜杠；IPv4 与 bracketed IPv6 正例、未括号 IPv6 拒绝和 self identity
+  校验语义保持不变。
 
 ### P2：运维兼容和长期验证
 
