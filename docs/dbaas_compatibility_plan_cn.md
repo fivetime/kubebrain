@@ -12658,6 +12658,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   -run 'Test(RestoreCutoverOperationRejectsStateWithInvalidPrefixes|PostRestoreAuditOperationRejectsCutoverStateWithInvalidPrefixes)' -count=1 -v`、
   完整 `go test ./hack/production -count=1 -timeout=12m`（309.374 秒）、`go vet ./hack/production`、
   相关脚本 ShellCheck、全仓 ShellCheck 和 `git diff --check` 通过。
+- A839 将 restore verification prefix 约束前移到切流 prepare：
+  `switch-restore-traffic.sh` 原先只要求 restore verification receipt 的 `source_prefix` 和
+  `target_prefix` 非空且不同，可能把相对 prefix 写入 cutover state，再由后续 runner 拒绝。
+  现在 prepare 阶段直接要求两者均以 `/` 开头且不同；测试覆盖 source 相对、target 相对和两者
+  相同三种非法 receipt，确认不会生成 prepare state。`go test ./hack/production -run
+  TestRestoreTrafficCutoverRejectsRestoreReceiptWithInvalidPrefixes -count=1 -v`、
+  `go test ./hack/production -run TestRestoreTrafficCutover -count=1 -v`、相关脚本 ShellCheck 和
+  `git diff --check` 通过。
 
 ### P2：运维兼容和长期验证
 

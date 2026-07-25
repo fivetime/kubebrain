@@ -141,6 +141,42 @@ func TestRestoreTrafficCutoverRejectsRestoreReceiptWithInvalidDigest(t *testing.
 	}
 }
 
+func TestRestoreTrafficCutoverRejectsRestoreReceiptWithInvalidPrefixes(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		edit func(string) string
+	}{
+		{
+			name: "relative source",
+			edit: func(receipt string) string {
+				return strings.Replace(receipt, `"source_prefix":"/registry"`, `"source_prefix":"registry"`, 1)
+			},
+		},
+		{
+			name: "relative target",
+			edit: func(receipt string) string {
+				return strings.Replace(receipt, `"target_prefix":"/restored"`, `"target_prefix":"restored"`, 1)
+			},
+		},
+		{
+			name: "same prefixes",
+			edit: func(receipt string) string {
+				return strings.Replace(receipt, `"target_prefix":"/restored"`, `"target_prefix":"/registry"`, 1)
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newTrafficFixture(t)
+			path := filepath.Join(f.dir, "restore.json")
+			receipt := tc.edit(strings.TrimSpace(string(mustRead(t, path)))) + "\n"
+			require.NoError(t, os.WriteFile(path, []byte(receipt), 0o600))
+
+			f.run(t, "prepare", false, "", "restore verification receipt is invalid")
+			require.NoFileExists(t, filepath.Join(f.state, "restore-1.state"))
+		})
+	}
+}
+
 func TestRestoreTrafficCutoverRejectsNonCanonicalState(t *testing.T) {
 	f := newTrafficFixture(t)
 	f.run(t, "prepare", true, "")
