@@ -88,6 +88,10 @@ func TestValidateExecutable(t *testing.T) {
 	if err := ValidateExecutable(ok); err != nil {
 		t.Fatalf("ValidateExecutable returned error: %v", err)
 	}
+	fifo := filepath.Join(dir, "fifo")
+	if err := syscall.Mkfifo(fifo, 0o755); err != nil {
+		t.Fatal(err)
+	}
 
 	for _, tc := range []struct {
 		name string
@@ -96,6 +100,7 @@ func TestValidateExecutable(t *testing.T) {
 		{name: "relative", path: "relative"},
 		{name: "missing", path: filepath.Join(dir, "missing")},
 		{name: "directory", path: dir},
+		{name: "non-regular", path: fifo},
 		{name: "not executable", path: filepath.Join(dir, "not-executable")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

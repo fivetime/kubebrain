@@ -39,7 +39,7 @@ func ValidateExecutable(path string) error {
 	if err != nil {
 		return fmt.Errorf("stat executor: %w", err)
 	}
-	if info.IsDir() || info.Mode()&0o111 == 0 {
+	if !info.Mode().IsRegular() || info.Mode()&0o111 == 0 {
 		return errors.New("executor must be an executable file")
 	}
 	return nil

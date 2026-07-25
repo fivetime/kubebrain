@@ -173,6 +173,37 @@ func TestProductionRuntimeExecutorCommandsUseProcessGroupAndBoundedOutput(t *tes
 	}
 }
 
+func TestProductionExecutorEntrypointsValidateExecutable(t *testing.T) {
+	for _, tc := range []struct {
+		sourceFile string
+		variable   string
+	}{
+		{sourceFile: filepath.Join("cmd", "metering-archive", "main.go"), variable: "executor"},
+		{sourceFile: filepath.Join("cmd", "metering-charge", "main.go"), variable: "executor"},
+		{sourceFile: filepath.Join("cmd", "metering-invoice-finalize", "main.go"), variable: "executor"},
+		{sourceFile: filepath.Join("cmd", "metering-invoice-number", "main.go"), variable: "executor"},
+		{sourceFile: filepath.Join("cmd", "metering-ledger-export", "main.go"), variable: "executor"},
+		{sourceFile: filepath.Join("cmd", "metering-payment-ledger", "main.go"), variable: "executor"},
+		{sourceFile: filepath.Join("cmd", "metering-price-publish", "main.go"), variable: "executor"},
+		{sourceFile: filepath.Join("cmd", "metering-provider-reconcile", "main.go"), variable: "executor"},
+		{sourceFile: filepath.Join("cmd", "metering-provider-statement", "main.go"), variable: "executor"},
+		{sourceFile: filepath.Join("cmd", "metering-rollup", "main.go"), variable: "executor"},
+		{sourceFile: filepath.Join("cmd", "metering-settlement-publish", "main.go"), variable: "executor"},
+		{sourceFile: filepath.Join("cmd", "metering-storage-archive", "main.go"), variable: "executor"},
+		{sourceFile: filepath.Join("cmd", "metering-storage-rollup", "main.go"), variable: "executor"},
+		{sourceFile: filepath.Join("cmd", "operation-archiver", "main.go"), variable: "executor"},
+		{sourceFile: filepath.Join("cmd", "operation-worker", "main.go"), variable: "executable"},
+	} {
+		t.Run(tc.sourceFile, func(t *testing.T) {
+			data, err := os.ReadFile(tc.sourceFile)
+			require.NoError(t, err)
+			text := string(data)
+			require.Contains(t, text, "processgroup.ValidateExecutable("+tc.variable+")")
+			require.Contains(t, text, "flag.StringVar(&"+tc.variable)
+		})
+	}
+}
+
 func TestProductionOperationWorkerStreamsExecutorWithProcessGroup(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("cmd", "operation-worker", "main.go"))
 	require.NoError(t, err)

@@ -12162,6 +12162,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./hack/production/cmd/operation-worker -count=1 -v`、
   `go test ./hack/production -run 'TestProduction(OperationWorkerStreamsExecutorWithProcessGroup|RuntimeExecutorCommandsUseProcessGroupAndBoundedOutput|TestCommandHelpersUseWaitDelay)' -count=1 -v`、
   `git diff --check`、`go vet ./...` 和 `go test ./... -count=1 -p 1` 均通过。
+- A789 收紧 production executor 可执行文件入口：
+  A783-A788 已固定 executor 的进程组、输出和等待边界，但入口校验只排除目录和无执行位路径；
+  若配置误指向 FIFO、设备文件等非常规文件，失败会延迟到运行期并削弱发布前 fail-closed 证据。
+  现在 `processgroup.ValidateExecutable` 要求 executor 是绝对路径、存在、为常规文件且有执行位；
+  单测新增 FIFO 负例。生产静态门禁同步枚举所有 metering/operation archiver/worker CLI，要求其
+  暴露 executor flag 并调用 `processgroup.ValidateExecutable`，防止后续新增入口绕过校验。
+  `go test ./hack/production/internal/processgroup -count=1 -v`、
+  `go test ./hack/production -run 'TestProduction(ExecutorEntrypointsValidateExecutable|OperationWorkerStreamsExecutorWithProcessGroup|RuntimeExecutorCommandsUseProcessGroupAndBoundedOutput)' -count=1 -v`、
+  `git diff --check`、`go vet ./...` 和 `go test ./... -count=1 -p 1` 均通过。
 
 ### P2：运维兼容和长期验证
 
