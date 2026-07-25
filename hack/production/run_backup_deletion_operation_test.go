@@ -272,6 +272,34 @@ func TestBackupDeletionOperationRejectsDriftAndInvalidEvidence(t *testing.T) {
 		require.NotContains(t, log, "--action retry")
 		require.NotContains(t, log, "--action succeed")
 	})
+	t.Run("s3 endpoint unsafe identity", func(t *testing.T) {
+		for _, tc := range []struct {
+			name     string
+			endpoint string
+		}{
+			{name: "control character", endpoint: "https://s3.example\nother"},
+			{name: "quote", endpoint: `https://s3.example"other`},
+			{name: "backslash", endpoint: `https://s3.example\other`},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				f := newBackupDeletionFixture(t)
+				parameters := strings.Replace(
+					string(mustRead(t, f.parameters)),
+					`"s3_endpoint":"https://s3.example"`,
+					fmt.Sprintf(`"s3_endpoint":%q`, tc.endpoint),
+					1,
+				)
+				require.NoError(t, os.WriteFile(f.parameters, []byte(parameters), 0o600))
+
+				f.run(t, false, "CLAIM_DIGEST="+fileDigest(t, f.parameters),
+					"backup deletion s3_endpoint identity is invalid")
+				log := f.log(t)
+				require.NotContains(t, log, "object ")
+				require.NotContains(t, log, "--action retry")
+				require.NotContains(t, log, "--action succeed")
+			})
+		}
+	})
 	t.Run("manifest bytes", func(t *testing.T) {
 		f := newBackupDeletionFixture(t)
 		require.NoError(t, os.WriteFile(f.preManifest, append(mustRead(t, f.preManifest), '\n'), 0o600))

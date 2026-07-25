@@ -839,7 +839,8 @@ version 已不存在”补发/复用 receipt；保留期内提前消失则 fail 
 backup receipt、pre/post inventory manifest、pre/post inventory receipt 和 deletion receipt
 执行同样的 strict schema 与字段绑定校验；参数中的 object store ID、manifest
 prefix/entry 以及 source backup receipt 的 bucket/object key/version 必须通过安全对象身份
-校验，危险对象身份不会进入 inventory/delete 子流程。
+校验，S3 endpoint 不能包含控制字符、引号或反斜杠，危险参数不会进入 inventory/delete
+子流程。
 这样即使本地删除 receipt 随 Pod 丢失，重建后的 canonical JSON 和 SHA 也保持稳定。
 bucket 生命周期规则只能作为调度器，不能替代该完成证据。`DeleteObject` 返回错误也不等于
 服务端未提交：工具使用不继承原请求取消信号的独立 5 秒预算 Head 指定 version；只有

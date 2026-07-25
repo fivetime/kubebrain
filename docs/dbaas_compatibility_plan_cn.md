@@ -12939,6 +12939,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   ./hack/production`、`go test ./hack/production -count=1 -timeout=12m`（326.082 秒）、
   `bash -n hack/production/run-backup-operation.sh` 和 `git diff --check` 通过；当前环境未安装
   `shellcheck`，未运行 ShellCheck。
+- A870 前移 BackupDeletion runner 的 S3 endpoint 字符边界：
+  BackupDeletion runner 旧逻辑只要求 `s3_endpoint` 非空，随后交给 inventory/delete object
+  workflow；含换行、tab、引号或反斜杠的 endpoint 应是 operation 参数错误，而不是进入对象
+  子流程或被 requeue。现在 runner 对冻结 JSON 先拒绝危险 `s3_endpoint` 字符，再在 TSV
+  展开后重复守卫；空 endpoint 仍保留原有 required-field 错误分类。回归覆盖换行、引号和
+  反斜杠 endpoint，确认不进入 object workflow，也不 retry/succeed。`go test
+  ./hack/production -run
+  'TestBackupDeletionOperationRejectsDriftAndInvalidEvidence/(empty_required_parameter|s3_endpoint_unsafe_identity)'
+  -count=1 -v`、`go test ./hack/production -run TestBackupDeletionOperation -count=1
+  -v`、`go vet ./hack/production`、`go test ./hack/production -count=1 -timeout=12m`
+  （327.854 秒）、`bash -n
+  hack/production/run-backup-deletion-operation.sh` 和 `git diff --check` 通过；当前环境未安装
+  `shellcheck`，未运行 ShellCheck。
 - A855 前移 PostRestoreAudit runner 的 Service/target 身份校验：
   `audit-restored-instance.sh` 会拒绝非法 operation/instance、Service namespace/name 和
   target instance，但 `run-post-restore-audit-operation.sh` 原先只在子审计前独立校验
