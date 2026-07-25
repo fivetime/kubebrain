@@ -12774,6 +12774,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./hack/production -run TestBackupDeletionOperation -count=1 -v`、`go vet
   ./hack/production`、`go test ./hack/production -count=1 -timeout=12m`、相关脚本 ShellCheck 和
   `git diff --check` 通过。
+- A852 前移 BackupDeletion runner 的 inventory manifest identity 校验：
+  A846 已让 objectstore inventory 命令拒绝危险 manifest prefix 和 entry identity，但
+  `run-backup-deletion-operation.sh` 的 manifest gate 旧逻辑只检查目标 version 是否存在或缺失；
+  pre/post manifest 若夹带额外危险 entry，runner 仍会启动 inventory/delete workflow，然后把
+  子流程或 receipt gate 失败当作可重试工作流错误。现在 runner 在远端 inventory 前要求
+  manifest 顶层字段、object store/bucket、规范相对 prefix、entry key/version/digest/retention
+  全部通过身份 preflight；目标 version 的 present/absent 语义仍由后续 gate 独立检查。回归在
+  pre manifest 中保留合法目标 backup，同时插入 `../evil.json` entry，确认不进入 object workflow、
+  不 retry/succeed。`go test ./hack/production -run
+  'TestBackupDeletionOperationRejectsDriftAndInvalidEvidence/pre_manifest_unsafe_entry_identity' -count=1 -v`、
+  `go test ./hack/production -run TestBackupDeletionOperation -count=1 -v`、`go vet
+  ./hack/production`、`go test ./hack/production -count=1 -timeout=12m`（314.244 秒）、
+  `bash -n hack/production/run-backup-deletion-operation.sh`、相关脚本 ShellCheck 和
+  `git diff --check` 通过。
 
 ### P2：运维兼容和长期验证
 

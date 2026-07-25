@@ -238,6 +238,38 @@ IFS=$'\t' read -r bucket object_key version_id artifact_sha retention_mode retai
 
 manifest_gate() {
   local manifest="$1" manifest_sha="$2" mode="$3"
+  "$JQ" -e --arg store "$object_store_id" --arg bucket "$bucket" '
+    def safe_scope:
+      type == "string" and length > 0 and (test("\\s") | not);
+    def relative_key:
+      safe_scope and
+      (startswith("/") | not) and
+      . != "." and . != ".." and
+      (startswith("../") | not) and
+      (split("/") | all(. != "" and . != "." and . != ".."));
+    def relative_prefix:
+      safe_scope and
+      (startswith("/") | not) and
+      (rtrimstr("/") as $trimmed |
+        $trimmed != "" and $trimmed != "." and $trimmed != ".." and
+        ($trimmed | startswith("../") | not) and
+        (($trimmed | split("/")) | all(. != "" and . != "." and . != "..")));
+    keys == ["bucket","entries","format","object_store_id","prefix"] and
+    .format == "kubebrain.object-inventory-manifest.v1" and
+    .object_store_id == $store and .bucket == $bucket and
+    (.prefix | relative_prefix) and
+    (.prefix as $prefix |
+      (.entries | type == "array") and
+      (.entries | all(
+        keys == ["artifact_format","artifact_sha256","object_bytes","object_key","retain_until_unix","retention_mode","version_id"] and
+        (.artifact_format == "kubebrain.logical.v2" or .artifact_format == "kubebrain.operation-audit.v1") and
+        (.object_key | relative_key) and (.object_key | startswith($prefix)) and
+        (.version_id | safe_scope) and (.artifact_sha256 | test("^[a-f0-9]{64}$")) and
+        (.object_bytes | type == "number" and . > 0 and . == floor) and
+        (.retention_mode == "COMPLIANCE" or .retention_mode == "GOVERNANCE") and
+        (.retain_until_unix | type == "number" and . > 0 and . == floor))))' \
+    "$manifest" >/dev/null ||
+    { echo "${mode} inventory manifest identity is invalid" >&2; return 1; }
   "$JQ" -e --arg store "$object_store_id" --arg bucket "$bucket" \
     --arg key "$object_key" --arg version "$version_id" --arg artifact "$artifact_sha" \
     --arg mode "$mode" '

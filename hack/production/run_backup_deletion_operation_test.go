@@ -325,6 +325,27 @@ func TestBackupDeletionOperationRejectsDriftAndInvalidEvidence(t *testing.T) {
 		require.NotContains(t, log, "--action retry")
 		require.NotContains(t, log, "--action succeed")
 	})
+	t.Run("pre manifest unsafe entry identity", func(t *testing.T) {
+		f := newBackupDeletionFixture(t)
+		unsafeEntry := fmt.Sprintf(
+			`,{"artifact_format":"kubebrain.logical.v2","object_key":"../evil.json","version_id":"version-z","artifact_sha256":"%s","object_bytes":1,"retention_mode":"COMPLIANCE","retain_until_unix":2}`,
+			strings.Repeat("b", 64),
+		)
+		manifest := strings.Replace(
+			string(mustRead(t, f.preManifest)),
+			`}]}`,
+			unsafeEntry+`}]}`,
+			1,
+		)
+		require.NoError(t, os.WriteFile(f.preManifest, []byte(manifest), 0o600))
+		f.rewriteParameters(t)
+
+		f.run(t, false, "", "present inventory manifest identity is invalid")
+		log := f.log(t)
+		require.NotContains(t, log, "object ")
+		require.NotContains(t, log, "--action retry")
+		require.NotContains(t, log, "--action succeed")
+	})
 	t.Run("pre inventory receipt unknown field", func(t *testing.T) {
 		f := newBackupDeletionFixture(t)
 		f.run(t, false, "EXTRA_PRE_RECEIPT=true", "pre-delete inventory receipt is invalid")
