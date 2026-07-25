@@ -12752,6 +12752,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./hack/production -run 'TestBackupOperationRejects(UnsafeObjectIdentity|InvalidPrefix)' -count=1 -v`、
   `go test ./hack/production -run TestBackupOperation -count=1 -v`、相关脚本 ShellCheck 和
   `git diff --check` 通过。
+- A850 收紧 BackupDeletion runner 的 source receipt object identity：
+  A845/A848 已让 Go deletion 子命令在危险 object identity 下 fail closed，但
+  `run-backup-deletion-operation.sh` 仍会把 source receipt 里的危险 bucket/key/version 解析
+  后交给 inventory/delete gate，最终表现为可重试子流程失败。现在 runner 在解析冻结的 source
+  backup receipt 时要求 bucket/version 是安全 scope、object key 是规范化相对路径；非法时
+  直接退出，不进入 inventory/delete，也不 retry/succeed。回归覆盖 source receipt 的
+  `../` object key。`go test ./hack/production -run
+  'TestBackupDeletionOperationRejectsDriftAndInvalidEvidence/source_receipt_unsafe_object_identity' -count=1 -v`、
+  `go test ./hack/production -run TestBackupDeletionOperation -count=1 -v`、相关脚本
+  ShellCheck 和 `git diff --check` 通过。
 
 ### P2：运维兼容和长期验证
 

@@ -283,6 +283,23 @@ func TestBackupDeletionOperationRejectsDriftAndInvalidEvidence(t *testing.T) {
 		f.run(t, false, "INVALID_DELETE_RECEIPT=true", "deletion receipt is invalid")
 		require.NotContains(t, f.log(t), "--action succeed")
 	})
+	t.Run("source receipt unsafe object identity", func(t *testing.T) {
+		f := newBackupDeletionFixture(t)
+		source := strings.Replace(
+			string(mustRead(t, f.sourceReceipt)),
+			`"object_key":"instance-a/backup-1.jsonl"`,
+			`"object_key":"../backup-1.jsonl"`,
+			1,
+		)
+		require.NoError(t, os.WriteFile(f.sourceReceipt, []byte(source), 0o600))
+		f.rewriteParameters(t)
+
+		f.run(t, false, "", "source backup receipt object identity is invalid")
+		log := f.log(t)
+		require.NotContains(t, log, "object ")
+		require.NotContains(t, log, "--action retry")
+		require.NotContains(t, log, "--action succeed")
+	})
 	t.Run("pre inventory receipt unknown field", func(t *testing.T) {
 		f := newBackupDeletionFixture(t)
 		f.run(t, false, "EXTRA_PRE_RECEIPT=true", "pre-delete inventory receipt is invalid")

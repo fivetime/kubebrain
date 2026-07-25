@@ -822,7 +822,8 @@ version 已不存在”补发/复用 receipt；保留期内提前消失则 fail 
 时间由上层 BackupDeletion operation receipt 记录；已有上层 operation receipt 复用前
 必须按严格 JSON 顶层字段集合、类型和值复核。BackupDeletion runner 还会对 source
 backup receipt、pre/post inventory receipt 和 deletion receipt 执行同样的 strict schema
-与字段绑定校验。这样即使本地删除 receipt 随 Pod
+与字段绑定校验；source backup receipt 的 bucket/object key/version 必须通过安全对象身份
+校验，危险对象路径不会进入 inventory/delete 子流程。这样即使本地删除 receipt 随 Pod
 丢失，重建后的 canonical JSON 和 SHA 也保持稳定。bucket 生命周期规则只能作为调度器，
 不能替代该完成证据。`DeleteObject` 返回错误也不等于服务端未提交：工具使用不继承原
 请求取消信号的独立 5 秒预算 Head 指定 version；只有 NotFound 才确认提交并发布 receipt。
