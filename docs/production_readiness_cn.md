@@ -698,6 +698,9 @@ ETCDCTL_CACERT=<ca> ETCDCTL_CERT=<client-cert> ETCDCTL_KEY=<client-key> \
   hack/backup/cold-restore-verify.sh
 ```
 
+`cold-restore-verify.sh` 在启动 Go verifier 前会拒绝缺失或含控制字符、引号、反斜杠的
+`ENDPOINT`，保持冷恢复语义验证入口与 logical backup/restore wrapper 的 endpoint 边界一致。
+
 门禁先校验 witness→snapshot receipt→restore receipt 的双 SHA-256 链，再分别在 witness revision
 与当前 revision 全量分页读取 prefix，要求 key/value/create revision/mod revision/version/lease ID
 及记录数完全一致。restore receipt 中的 manifest digest 只接受小写 hex SHA-256，不能用大小写宽松

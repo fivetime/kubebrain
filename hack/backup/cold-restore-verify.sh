@@ -28,5 +28,15 @@ EOF
     ;;
 esac
 
+ENDPOINT="${ENDPOINT:-}"
+if [[ -z "$ENDPOINT" ]]; then
+  echo "ENDPOINT is required" >&2
+  exit 2
+fi
+if [[ "$ENDPOINT" == *[$'\t\r\n"\\']* ]]; then
+  echo "ENDPOINT contains unsupported characters" >&2
+  exit 2
+fi
+
 cd "$ROOT_DIR"
 go run ./hack/backup/cmd/cold-restore-verify

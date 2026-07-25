@@ -12917,6 +12917,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   ./hack/production`、`go test ./hack/production -count=1 -timeout=12m`（326.161 秒）、
   `bash -n hack/production/validate-instance-ready.sh` 和 `git diff --check` 通过；当前环境未安装
   `shellcheck`，未运行 ShellCheck。
+- A868 收紧 cold restore verifier wrapper 的 endpoint 字符边界：
+  `cold-restore-verify.sh` 直接入口旧逻辑没有 shell 层 endpoint preflight，会把缺失或含换行、
+  tab、引号、反斜杠的 `ENDPOINT` 直接交给 Go verifier；冷恢复语义验证入口应和 logical
+  backup/restore wrapper 保持一致，在启动 verifier 前把确定性参数错误挡住。现在 wrapper
+  先要求非空 endpoint，并拒绝危险字符；回归覆盖换行、引号和反斜杠 endpoint，确认不发布
+  semantic receipt。`go test ./hack/production -run
+  TestColdRestoreVerifyWrapperRejectsUnsafeEndpoint -count=1 -v`、`go test ./hack/production
+  -count=1 -timeout=12m`（322.754 秒）、`bash -n hack/backup/cold-restore-verify.sh`、`go vet
+  ./hack/production` 和 `git diff --check` 通过；当前环境未安装 `shellcheck`，未运行
+  ShellCheck。
 - A855 前移 PostRestoreAudit runner 的 Service/target 身份校验：
   `audit-restored-instance.sh` 会拒绝非法 operation/instance、Service namespace/name 和
   target instance，但 `run-post-restore-audit-operation.sh` 原先只在子审计前独立校验
