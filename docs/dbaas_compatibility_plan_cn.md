@@ -13372,6 +13372,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   空 request、nil create、nil cancel、nil progress，再发送有效 create，确认只产生后续
   watch 的 created response，流语义保持可恢复；`watch_control` reference differential 同步
   加入同一 wire-level 场景，避免只依赖内部 fake stream。
+- A905 固定 Maintenance.HashKV future revision 错误契约：
+  `HashKV` 虽然与 Range 共用 revision 边界校验，但它是独立 Maintenance RPC，etcdctl
+  endpoint hashkv 和 corruption checker 会直接调用。既有 reference differential 已覆盖
+  negative/current/future/max-int，本轮补齐本地 gRPC 回归：future revision 与 `math.MaxInt64`
+  均返回 `OutOfRange`，消息为 `etcdserver: mvcc: required revision is a future revision`，
+  防止 HashKV 路径绕过 `checkRequestedRevision` 后退化成 backend 私有错误。
 
 ### P2：运维兼容和长期验证
 

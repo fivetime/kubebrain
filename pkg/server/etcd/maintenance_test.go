@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -213,6 +214,33 @@ func TestMaintenanceBasicDiagnostics(t *testing.T) {
 	defragResp, err := server.Defragment(ctx, &etcdserverpb.DefragmentRequest{})
 	require.NoError(t, err)
 	require.Nil(t, defragResp.Header)
+}
+
+func TestMaintenanceHashKVFutureRevisionMatchesEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	ctx := context.Background()
+	put, err := server.Put(ctx, &etcdserverpb.PutRequest{
+		Key: []byte("/registry/maintenance/hashkv-future"), Value: []byte("value"),
+	})
+	require.NoError(t, err)
+
+	tests := []struct {
+		name     string
+		revision int64
+	}{
+		{name: "future", revision: put.Header.Revision + 1},
+		{name: "max-int", revision: math.MaxInt64},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := server.HashKV(ctx, &etcdserverpb.HashKVRequest{Revision: tt.revision})
+			require.Error(t, err)
+			require.Equal(t, codes.OutOfRange, status.Code(err))
+			require.Equal(t, "etcdserver: mvcc: required revision is a future revision", status.Convert(err).Message())
+		})
+	}
 }
 
 func TestPeerHashKVHandler(t *testing.T) {
