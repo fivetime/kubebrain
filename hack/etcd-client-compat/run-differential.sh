@@ -25,12 +25,19 @@ need() {
   fi
 }
 
-need curl
-need go
-need jq
-if [[ -n "$ETCDCTL_EXEC_POD" ]]; then
-  need "$KUBECTL"
-fi
+validate_bool_flag() {
+  local name="$1"
+  local value="${!name}"
+  case "$value" in
+    true|false) ;;
+    *)
+      echo "${name} must be true or false, got ${value}" >&2
+      exit 2
+      ;;
+  esac
+}
+
+validate_bool_flag ALLOW_DESTRUCTIVE_DIFFERENTIAL
 
 if [ -z "$KUBEBRAIN_ENDPOINT" ]; then
   echo "set KUBEBRAIN_ETCD_ENDPOINT to the KubeBrain endpoint under test" >&2
@@ -40,6 +47,12 @@ if [ "$ALLOW_DESTRUCTIVE_DIFFERENTIAL" != true ]; then
   echo "refusing destructive differential suite: Compact advances the target instance's global compact revision" >&2
   echo "use a disposable KubeBrain instance and set ALLOW_DESTRUCTIVE_DIFFERENTIAL=true" >&2
   exit 1
+fi
+need curl
+need go
+need jq
+if [[ -n "$ETCDCTL_EXEC_POD" ]]; then
+  need "$KUBECTL"
 fi
 if [[ -n "$ETCDCTL_EXEC_CONTAINER" && -z "$ETCDCTL_EXEC_POD" ]]; then
   echo "ETCDCTL_EXEC_CONTAINER requires ETCDCTL_EXEC_POD" >&2

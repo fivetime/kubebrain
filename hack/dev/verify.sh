@@ -7,6 +7,7 @@ IMAGE_NAME="${IMAGE_NAME:-kubebrain:dev}"
 RUN_GO_TEST="${RUN_GO_TEST:-true}"
 RUN_BASIC_SMOKE="${RUN_BASIC_SMOKE:-true}"
 RUN_ETCD_CLIENT_COMPAT="${RUN_ETCD_CLIENT_COMPAT:-false}"
+RUN_ETCD_CLIENT_DIFFERENTIAL="${RUN_ETCD_CLIENT_DIFFERENTIAL:-false}"
 RUN_TIKV_PERSISTENCE_SMOKE="${RUN_TIKV_PERSISTENCE_SMOKE:-false}"
 RUN_RESTART_PERSISTENCE_SMOKE="${RUN_RESTART_PERSISTENCE_SMOKE:-false}"
 RUN_K3S_DATASTORE_SMOKE="${RUN_K3S_DATASTORE_SMOKE:-false}"
@@ -47,6 +48,7 @@ RUN_FLAGS=(
   RUN_GO_TEST
   RUN_BASIC_SMOKE
   RUN_ETCD_CLIENT_COMPAT
+  RUN_ETCD_CLIENT_DIFFERENTIAL
   RUN_TIKV_PERSISTENCE_SMOKE
   RUN_RESTART_PERSISTENCE_SMOKE
   RUN_K3S_DATASTORE_SMOKE
@@ -151,6 +153,10 @@ fi
 if [ "$RUN_ETCD_CLIENT_COMPAT" = "true" ]; then
   need go
   run_step "official etcd Kubernetes client compatibility" env ENDPOINT="$ENDPOINT" hack/etcd-client-compat/run.sh
+fi
+
+if [ "$RUN_ETCD_CLIENT_DIFFERENTIAL" = "true" ]; then
+  run_step "official etcd reference differential" env KUBEBRAIN_ETCD_ENDPOINT="$ENDPOINT" hack/etcd-client-compat/run-differential.sh
 fi
 
 if [ "$RUN_TIKV_PERSISTENCE_SMOKE" = "true" ]; then

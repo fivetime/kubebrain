@@ -1639,6 +1639,22 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   分别落到不同 revision。兼容差分在 `hack/etcd-client-compat` 独立 Go module 内运行，
   需要显式设置 `REFERENCE_ETCD_ENDPOINT` 和目标 `KUBEBRAIN_ETCD_ENDPOINT`；根模块
   `go test ./...` 不会覆盖该 module。
+  官方 reference etcd 双端差分也可通过统一入口显式运行。该矩阵包含 `Compact`，会推进目标实例
+  全局 compact revision，必须只用于一次性或已停流实例：
+
+  ```shell
+  RUN_ETCD_CLIENT_DIFFERENTIAL=true \
+  ALLOW_DESTRUCTIVE_DIFFERENTIAL=true \
+  RUN_GO_TEST=false \
+  RUN_BASIC_SMOKE=false \
+  RUN_HA_SMOKE=false \
+  RUN_APISERVER_SMOKE=false \
+  RUN_TLS_SMOKE=false \
+  hack/dev/verify.sh
+  ```
+
+  未设置 `ALLOW_DESTRUCTIVE_DIFFERENTIAL=true` 或拼错该值时，差分脚本必须在依赖检查和
+  reference etcd 启动前 fail closed。
   发布验证还必须让未 Unlock/Resign 的自动 lease 自然过期，确认内部 keepalive 已停止、
   lease TTL 最终为 -1 且键自动删除。到期前最后一秒 TTL=0 在 JSON 中会省略 `TTL`
   字段但仍保留 `grantedTTL=60`，不能将该瞬间误判为 lease 已不存在。

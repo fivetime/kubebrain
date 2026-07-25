@@ -12542,6 +12542,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `RUN_K8S_VERSION_MATRIX=false RUN_GO_TEST=false RUN_BASIC_SMOKE=false RUN_HA_SMOKE=false RUN_APISERVER_SMOKE=false RUN_TLS_SMOKE=false hack/dev/verify.sh`、
   `RUN_K8S_VERSION_MATRIX=tru RUN_GO_TEST=false RUN_BASIC_SMOKE=false RUN_HA_SMOKE=false RUN_APISERVER_SMOKE=false RUN_TLS_SMOKE=false hack/dev/verify.sh`
   通过。
+- A827 将官方 etcd 双端差分纳入统一 verify 入口：
+  `hack/etcd-client-compat/run-differential.sh` 会启动 reference etcd 并运行 destructive
+  Differential 矩阵，包含 Compact，因此必须在一次性 KubeBrain 实例上显式批准。此前统一
+  `verify.sh` 只能跑普通 compat module，发布执行者容易漏掉 reference etcd 差分。现在新增
+  `RUN_ETCD_CLIENT_DIFFERENTIAL=true hack/dev/verify.sh`，默认关闭；启用时仍由差分脚本要求
+  `ALLOW_DESTRUCTIVE_DIFFERENTIAL=true`。差分脚本同时把该批准开关的精确 `true`/`false`
+  admission 前移到 curl/go/jq/kubectl 依赖检查之前，未批准或拼错会直接 fail closed。
+  `bash -n hack/dev/verify.sh`、`bash -n hack/etcd-client-compat/run-differential.sh`、
+  `RUN_ETCD_CLIENT_DIFFERENTIAL=false RUN_GO_TEST=false RUN_BASIC_SMOKE=false RUN_HA_SMOKE=false RUN_APISERVER_SMOKE=false RUN_TLS_SMOKE=false hack/dev/verify.sh`、
+  `RUN_ETCD_CLIENT_DIFFERENTIAL=tru RUN_GO_TEST=false RUN_BASIC_SMOKE=false RUN_HA_SMOKE=false RUN_APISERVER_SMOKE=false RUN_TLS_SMOKE=false hack/dev/verify.sh`、
+  `ALLOW_DESTRUCTIVE_DIFFERENTIAL=maybe hack/etcd-client-compat/run-differential.sh`
+  以及 compat runner 回归通过。
 
 ### P2：运维兼容和长期验证
 

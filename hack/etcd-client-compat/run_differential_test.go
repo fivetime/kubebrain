@@ -8,6 +8,30 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestDifferentialRunnerRejectsInvalidDestructiveApprovalBeforeDependencies(t *testing.T) {
+	dir := t.TempDir()
+	env := []string{
+		"PATH=" + dir + ":/usr/bin:/bin",
+		"ALLOW_DESTRUCTIVE_DIFFERENTIAL=maybe",
+	}
+	output, err := runDifferentialScript(t, env)
+	require.Error(t, err)
+	require.Contains(t, string(output), "ALLOW_DESTRUCTIVE_DIFFERENTIAL must be true or false, got maybe")
+	require.NotContains(t, string(output), "missing required command")
+}
+
+func TestDifferentialRunnerRejectsMissingDestructiveApprovalBeforeDependencies(t *testing.T) {
+	dir := t.TempDir()
+	env := []string{
+		"PATH=" + dir + ":/usr/bin:/bin",
+		"KUBEBRAIN_ETCD_ENDPOINT=127.0.0.1:22379",
+	}
+	output, err := runDifferentialScript(t, env)
+	require.Error(t, err)
+	require.Contains(t, string(output), "refusing destructive differential suite")
+	require.NotContains(t, string(output), "missing required command")
+}
+
 func TestDifferentialRunnerRejectsUnreachableAdvertisedClientURL(t *testing.T) {
 	dir := t.TempDir()
 	fakeEtcdctl := filepath.Join(dir, "etcdctl")
