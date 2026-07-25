@@ -13535,6 +13535,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   live ID；revoke 后再次 TimeToLive 返回同 ID、`TTL=-1`、`GrantedTTL=0` 且 keys 为空。
   本轮新增本地服务层矩阵，补齐此前 keepalive/revoke signed-ID 之外的 TTL/List/read
   contract，防止 signed int64 ID 在读路径被当成哨兵或 unsigned 值处理。
+- A931 固定 HashKV negative revision 的空窗口 hash 常量：
+  `hashkv_revision_boundary` reference differential 已证明 `HashKV(-1)` 的
+  `HashRevision=-1`、header 留在 current revision，且空 MVCC revision window 的 hash
+  精确为 `0x40a4756d`。本轮把该常量加入本地 Maintenance 回归，不再只断言它不同于
+  current hash，防止后续 HashKV 编码、排序或 CRC 输入集合调整时悄悄破坏 etcd 兼容
+  negative revision 语义。
 
 ### P2：运维兼容和长期验证
 

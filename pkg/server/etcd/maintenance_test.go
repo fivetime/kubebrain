@@ -188,6 +188,7 @@ func TestMaintenanceBasicDiagnostics(t *testing.T) {
 	require.Equal(t, int64(-1), negativeHash.HashRevision)
 	require.Equal(t, hashResp.Header.Revision, negativeHash.Header.Revision)
 	require.Equal(t, int64(-1), negativeHash.CompactRevision)
+	require.Equal(t, uint32(0x40a4756d), negativeHash.Hash)
 	require.NotEqual(t, hashResp.Hash, negativeHash.Hash)
 
 	_, err = server.Put(ctx, &etcdserverpb.PutRequest{
