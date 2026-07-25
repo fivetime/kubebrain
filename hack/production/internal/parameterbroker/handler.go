@@ -1,9 +1,12 @@
 package parameterbroker
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -102,9 +105,26 @@ func (h *Handler) ServeHTTP(response http.ResponseWriter, request *http.Request)
 		http.Error(response, "parameters unavailable", http.StatusForbidden)
 		return
 	}
+	if err := validateParametersJSON(parameters); err != nil {
+		http.Error(response, "parameters unavailable", http.StatusForbidden)
+		return
+	}
 	response.Header().Set("Content-Type", "application/json")
 	response.WriteHeader(http.StatusOK)
 	_, _ = response.Write(parameters)
+}
+
+func validateParametersJSON(parameters []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(parameters))
+	decoder.UseNumber()
+	var document map[string]any
+	if err := decoder.Decode(&document); err != nil || document == nil {
+		return errors.New("operation parameters must be a JSON object")
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return errors.New("operation parameters must contain one JSON object")
+	}
+	return nil
 }
 
 func parameterIdentityFromQuery(query url.Values) (parameterRequestIdentity, error) {

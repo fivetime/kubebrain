@@ -12250,6 +12250,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./hack/production/internal/operationqueue -run 'TestQueue(RejectsMalformedClaimCandidatesBeforeLease|LifecycleAndExpiredLeaseFencing|RejectsSpecDriftAndInvalidCompletion)' -count=1 -v`、
   `go test ./hack/production/internal/operationqueue -run 'TestQueue(LoadsDigestBoundImmutableParameters|RejectsMalformedParameterReferenceBeforeSecretAPI|OnlyLoadsParametersForCurrentTypeBoundWorker|StopsAfterMaximumAttempts|MarksRequeuedExhaustionWithAuditCompleteStatus|RequeueConsumesAttemptAndFiltersType)' -count=1 -v`
   和 `go test ./hack/production/internal/operationqueue -count=1` 均通过。
+- A799 收紧 operation parameter broker 的参数 JSON 形态：
+  worker 参数 broker 成功响应声明 `Content-Type: application/json`，但旧路径只校验
+  Secret 数据的 SHA-256，没有在 broker 端确认参数内容确实是 executor 期望的单个 JSON
+  object；非 JSON、`null`、array 或拼接 JSON 只能由后续脚本的 `jq`/digest 兜底。现在
+  broker 在返回参数前使用 JSON decoder 校验单个 object 文档，失败时返回 403 且不泄露
+  Secret 内容。回归覆盖非 JSON、trailing JSON、`null` 和 array。
+  `go test ./hack/production/internal/parameterbroker -run 'TestHandler(ReturnsOnlyCurrentTypeBoundWorkerParameters|RejectsNonJSONObjectParameters|RejectsAmbiguousRequiredQueryParameters|FailsClosedForIdentityTypeAudienceAndFencing)' -count=1 -v`
+  和 `go test ./hack/production/internal/parameterbroker -count=1` 均通过。
 
 ### P2：运维兼容和长期验证
 

@@ -76,6 +76,38 @@ func TestHandlerRejectsAmbiguousRequiredQueryParameters(t *testing.T) {
 	}
 }
 
+func TestHandlerRejectsNonJSONObjectParameters(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		parameters []byte
+	}{
+		{name: "not json", parameters: []byte("not-json")},
+		{name: "trailing json", parameters: []byte("{}{}")},
+		{name: "null", parameters: []byte("null")},
+		{name: "array", parameters: []byte("[]")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dynamicClient, claim, _ := claimedOperationWithParameters(t, tc.parameters)
+			handler, err := NewHandler(
+				tokenClient("system:serviceaccount:test:kubebrain-post-restore-audit-executor",
+					[]string{testAudience}, true),
+				dynamicClient, "test", testAudience, time.Second,
+			)
+			require.NoError(t, err)
+
+			request := httptest.NewRequest(http.MethodGet,
+				fmt.Sprintf("/v1/parameters?namespace=test&name=%s&owner=%s&attempt=%d",
+					claim.Name, claim.Owner, claim.Attempt), nil)
+			request.Header.Set("Authorization", "Bearer valid")
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			require.Equal(t, http.StatusForbidden, response.Code)
+			requireNoStoreHeaders(t, response)
+			require.NotContains(t, response.Body.String(), string(tc.parameters))
+		})
+	}
+}
+
 func TestHandlerRejectsMalformedQueryBeforeAuthenticationAndOperationAPI(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -317,6 +349,14 @@ func TestNewHandlerRejectsInvalidNamespaceBeforeAPI(t *testing.T) {
 
 func claimedOperation(t *testing.T) (*fake.FakeDynamicClient, *operationqueue.Claim, []byte) {
 	t.Helper()
+	return claimedOperationWithParameters(t, []byte("{\"audit\":\"bound\"}\n"))
+}
+
+func claimedOperationWithParameters(
+	t *testing.T,
+	parameters []byte,
+) (*fake.FakeDynamicClient, *operationqueue.Claim, []byte) {
+	t.Helper()
 	client := fake.NewSimpleDynamicClientWithCustomListKinds(
 		runtime.NewScheme(), map[schema.GroupVersionResource]string{
 			operationqueue.Resource:       "KubeBrainOperationList",
@@ -325,7 +365,6 @@ func claimedOperation(t *testing.T) (*fake.FakeDynamicClient, *operationqueue.Cl
 		},
 	)
 	queue := operationqueue.New(client, "test")
-	parameters := []byte("{\"audit\":\"bound\"}\n")
 	digest := fmt.Sprintf("%x", sha256.Sum256(parameters))
 	_, err := client.Resource(operationqueue.SecretResource).Namespace("test").Create(
 		context.Background(), &unstructured.Unstructured{Object: map[string]any{
