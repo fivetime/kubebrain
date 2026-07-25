@@ -270,6 +270,14 @@ KIND_NODE_IMAGES="kindest/node:v1.35.4 kindest/node:v1.36.1" \
 hack/dev/k8s-version-matrix.sh
 ```
 
+也可以通过统一 verify 入口运行同一矩阵：
+
+```shell
+RUN_K8S_VERSION_MATRIX=true \
+KIND_NODE_IMAGES="kindest/node:v1.35.4 kindest/node:v1.36.1" \
+hack/dev/verify.sh
+```
+
 矩阵脚本会为每个 node image 创建独立 kind 集群，并默认启用 standalone kube-apiserver list/watch soak。正式支持窗口应至少覆盖当前生产版本、计划升级版本和一个回滚版本。
 
 完整 kind 矩阵耗时较长。日常兼容回归可以先运行轻量 standalone kube-apiserver 矩阵，它直接从官方 kube-apiserver 镜像提取二进制并指向当前 KubeBrain/TiKV endpoint：

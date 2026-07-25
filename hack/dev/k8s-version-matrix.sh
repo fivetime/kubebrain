@@ -68,6 +68,7 @@ for node_image in $KIND_NODE_IMAGES; do
     RUN_BACKUP_DRILL="$RUN_BACKUP_DRILL" \
     RUN_FAULT_SMOKE="$RUN_FAULT_SMOKE" \
     RUN_WATCH_SOAK="$RUN_WATCH_SOAK" \
+    RUN_K8S_VERSION_MATRIX=false \
     "$VERIFY_COMMAND"
 
   echo "Kubernetes matrix entry completed: ${node_image}"

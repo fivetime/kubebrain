@@ -12532,6 +12532,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `RUN_AUTH_TTL_ONLY=maybe RUN_GO_TEST=false RUN_BASIC_SMOKE=false RUN_HA_SMOKE=false RUN_APISERVER_SMOKE=false RUN_TLS_SMOKE=false hack/dev/verify.sh` 与
   `RUN_UNKNOWN_SMOKE=true RUN_GO_TEST=false RUN_BASIC_SMOKE=false RUN_HA_SMOKE=false RUN_APISERVER_SMOKE=false RUN_TLS_SMOKE=false hack/dev/verify.sh`
   通过。
+- A826 将 Kubernetes node version matrix 纳入统一 verify 入口：
+  仓库已有 `hack/dev/k8s-version-matrix.sh`，但顶层 `verify.sh` 只暴露 apiserver binary
+  matrix；发布执行者若依赖统一入口容易漏掉 kind node image 维度。现在新增
+  `RUN_K8S_VERSION_MATRIX=true hack/dev/verify.sh`，默认关闭；启用后调用现有矩阵脚本。
+  为避免矩阵脚本每轮再调用 `verify.sh` 时继承该变量并递归创建集群，顶层调用和矩阵脚本
+  内层 verify 调用都会显式传入 `RUN_K8S_VERSION_MATRIX=false`。回归覆盖：
+  `bash -n hack/dev/verify.sh`、`bash -n hack/dev/k8s-version-matrix.sh`、
+  `RUN_K8S_VERSION_MATRIX=false RUN_GO_TEST=false RUN_BASIC_SMOKE=false RUN_HA_SMOKE=false RUN_APISERVER_SMOKE=false RUN_TLS_SMOKE=false hack/dev/verify.sh`、
+  `RUN_K8S_VERSION_MATRIX=tru RUN_GO_TEST=false RUN_BASIC_SMOKE=false RUN_HA_SMOKE=false RUN_APISERVER_SMOKE=false RUN_TLS_SMOKE=false hack/dev/verify.sh`
+  通过。
 
 ### P2：运维兼容和长期验证
 
