@@ -13287,6 +13287,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   AUDIT_PREFIX/VERIFY_PREFIX 的 DEL 用例。`go test ./hack/production/cmd/etcd-audit-probe -run
   TestValidateAuditPrefix -count=1 -v` 与 `go test ./hack/backup/cmd/cold-restore-verify -run
   TestValidateProbePrefix -count=1 -v` 通过。
+- A893 收紧 Backup/Destroy operation prefix 控制字符边界：
+  `run-backup-operation.sh` 和 `run-destroy-operation.sh` 的 prefix 错误契约要求拒绝控制字符，
+  但 JSON 预检与 shell 兜底只覆盖换行、回车和 tab。现在 JSON 预检用 `explode` 拒绝
+  `<32` 与 `127`，shell 兜底用 `[[:cntrl:]]`，避免 `BACKUP_PREFIX` 或 destroy
+  `backup_prefix` 带 DEL 进入参数冻结、artifact 校验和后续 executor；回归新增两个 operation
+  的 DEL prefix 用例并保留相对路径/空值/换行用例。`go test ./hack/production -run
+  'TestBackupOperationRejectsInvalidPrefix|TestDestroyOperationRejectsInvalidBackupPrefix' -count=1 -v`
+  通过。
 
 ### P2：运维兼容和长期验证
 

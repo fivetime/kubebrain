@@ -151,13 +151,14 @@ func TestBackupOperationRejectsInvalidPrefix(t *testing.T) {
 	}{
 		{name: "relative", prefix: "registry"},
 		{name: "control character", prefix: "/registry\tshadow"},
+		{name: "del", prefix: "/registry\x7fshadow"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newBackupRunnerFixture(t, false)
 			parameters := strings.Replace(
 				string(mustRead(t, f.parameters)),
 				`"prefix":"/registry"`,
-				fmt.Sprintf(`"prefix":%q`, tc.prefix),
+				`"prefix":`+testJSONLiteral(t, tc.prefix),
 				1,
 			)
 			require.NoError(t, os.WriteFile(f.parameters, []byte(parameters), 0o600))

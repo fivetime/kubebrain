@@ -184,13 +184,14 @@ func TestDestroyOperationRejectsInvalidBackupPrefix(t *testing.T) {
 		{name: "empty", prefix: ""},
 		{name: "relative", prefix: "registry"},
 		{name: "control character", prefix: "/registry\tshadow"},
+		{name: "del", prefix: "/registry\x7fshadow"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newDestroyRunnerFixture(t, true)
 			parameters := strings.Replace(
 				string(mustRead(t, f.parameters)),
 				`"backup_prefix":"/registry"`,
-				fmt.Sprintf(`"backup_prefix":%q`, tc.prefix),
+				`"backup_prefix":`+testJSONLiteral(t, tc.prefix),
 				1,
 			)
 			require.NoError(t, os.WriteFile(f.parameters, []byte(parameters), 0o600))

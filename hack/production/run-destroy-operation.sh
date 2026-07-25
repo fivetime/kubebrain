@@ -131,14 +131,14 @@ PARAMETERS_INPUT="$frozen_parameters"
 validate_backup_prefix_json() {
   "$JQ" -e '
     .backup_prefix | type == "string" and length > 0 and startswith("/") and
-    ((contains("\n") or contains("\r") or contains("\t")) | not)' \
+    (explode | all(. >= 32 and . != 127))' \
     "$PARAMETERS_INPUT" >/dev/null
 }
 
 validate_backup_prefix() {
   local value="$1"
   if [[ -z "$value" || "$value" != /* ||
-    "$value" == *$'\n'* || "$value" == *$'\r'* || "$value" == *$'\t'* ]]; then
+    "$value" == *[[:cntrl:]]* ]]; then
     echo "destroy backup_prefix must be an absolute key prefix without control characters" >&2
     exit 2
   fi
