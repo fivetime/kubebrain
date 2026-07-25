@@ -54,6 +54,9 @@ func ArchiveBlob(ctx context.Context, client S3API, request BlobRequest) (BlobRe
 		request.ObjectKey == "" || request.ReceiptOutput == "" || request.RetainUntilUnix <= 0 {
 		return BlobReceipt{}, errors.New("immutable blob archive request is incomplete")
 	}
+	if !validObjectRequestIdentity(request.ObjectStoreID, request.Bucket, request.ObjectKey) {
+		return BlobReceipt{}, errors.New("immutable blob archive request is incomplete")
+	}
 	mode, err := objectLockMode(request.RetentionMode)
 	if err != nil {
 		return BlobReceipt{}, err
@@ -141,6 +144,9 @@ func ArchiveBlob(ctx context.Context, client S3API, request BlobRequest) (BlobRe
 	if versionID == "" {
 		return BlobReceipt{}, errors.New("object store did not return a version ID; Object Lock/versioning is required")
 	}
+	if !validObjectScopeValue(versionID) {
+		return BlobReceipt{}, errors.New("object store returned an invalid version ID")
+	}
 	archivedAtUnix, err := exactVersionModifiedAt(
 		verificationCtx, client, request.Bucket, request.ObjectKey, versionID,
 		metadata, int64(len(body)), retainUntil,
@@ -176,6 +182,9 @@ func ReadBlob(ctx context.Context, client S3API, request BlobReadRequest) (BlobR
 	if request.Output == "" || request.ArtifactID == "" ||
 		request.Instance == "" || request.ObjectStoreID == "" || request.Bucket == "" ||
 		request.ObjectKey == "" || request.MinRetainUntilUnix <= 0 {
+		return BlobReadReceipt{}, errors.New("immutable blob read request is incomplete")
+	}
+	if !validObjectRequestIdentity(request.ObjectStoreID, request.Bucket, request.ObjectKey) {
 		return BlobReadReceipt{}, errors.New("immutable blob read request is incomplete")
 	}
 	versions, deleteMarkers, err := listAllVersions(ctx, client, request.Bucket, request.ObjectKey)

@@ -127,6 +127,21 @@ func TestArchiveBlobRejectsEmptyOversizedAndNonCanonicalReceipt(t *testing.T) {
 	require.ErrorContains(t, err, "not canonical")
 }
 
+func TestArchiveBlobRejectsUnsafeObjectIdentityBeforeS3(t *testing.T) {
+	now := time.Unix(2_000_000_000, 0).UTC()
+	client := &fakeS3{}
+
+	_, err := ArchiveBlob(context.Background(), client, BlobRequest{
+		Input: "sample.json", ArtifactFormat: "sample.v1", ArtifactID: "slot-100",
+		Instance: "instance-a", ObjectStoreID: "store-a", Bucket: "metering",
+		ObjectKey: "/samples/slot-100.json", RetentionMode: "COMPLIANCE",
+		RetainUntilUnix: now.Add(time.Hour).Unix(),
+		ReceiptOutput:   filepath.Join(t.TempDir(), "receipt.json"), Now: now,
+	})
+	require.ErrorContains(t, err, "immutable blob archive request is incomplete")
+	require.Zero(t, client.putCalls)
+}
+
 func TestReadBlobRequiresOneProtectedExactVersion(t *testing.T) {
 	now := time.Unix(2_000_000_000, 0).UTC()
 	body := []byte("{\"format\":\"sample.v1\"}\n")
@@ -196,6 +211,20 @@ func TestReadBlobOutputWriterTreatsConcurrentIdenticalLinkAsIdempotent(t *testin
 	got, err := os.ReadFile(output)
 	require.NoError(t, err)
 	require.Equal(t, body, got)
+}
+
+func TestReadBlobRejectsUnsafeObjectIdentityBeforeS3(t *testing.T) {
+	now := time.Unix(2_000_000_000, 0).UTC()
+	client := &fakeS3{}
+
+	_, err := ReadBlob(context.Background(), client, BlobReadRequest{
+		Output:         filepath.Join(t.TempDir(), "download.json"),
+		ArtifactFormat: "sample.v1", ArtifactID: "slot-100",
+		Instance: "instance-a", ObjectStoreID: "store-a", Bucket: "metering",
+		ObjectKey: "samples//slot-100.json", MinRetainUntilUnix: now.Add(time.Hour).Unix(),
+	})
+	require.ErrorContains(t, err, "immutable blob read request is incomplete")
+	require.Zero(t, client.listCalls)
 }
 
 func TestReadBlobFailsClosedOnVersionRetentionAndContentDrift(t *testing.T) {

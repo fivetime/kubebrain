@@ -12734,6 +12734,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   ID 也必须是安全 scope 值。回归覆盖 request prefix 空白、远端非规范 key、allowlist
   控制字符、receipt store/bucket/prefix/format 污染。`cd hack/backup/objectstore && go test
   ./... -count=1`、`cd hack/backup/objectstore && go vet ./...` 和 `git diff --check` 通过。
+- A848 将对象写入 request identity 校验前移到 S3 调用前：
+  A845 已让 receipt schema 拒绝危险 object identity，但 `Upload`、`ArchiveAudit` 和
+  `ArchiveBlob` 仍可能在 PutObject 成功后才因为 receipt 校验失败而留下无凭据对象；
+  `ReadBlob` 也会把危险 object key 传入 version listing。现在 backup upload、operation
+  audit archive、immutable blob archive/read 在任何 S3 Put/List/Get 前先校验 request 的
+  object store ID、bucket 和 object key，Put 返回的 version ID 也必须是安全 scope 值。
+  回归确认非法 identity 时 fake S3 的 Put/List 调用数为 0。`cd hack/backup/objectstore &&
+  go test ./... -count=1`、`cd hack/backup/objectstore && go vet ./...` 和 `git diff --check`
+  通过。
 
 ### P2：运维兼容和长期验证
 

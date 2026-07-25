@@ -176,6 +176,22 @@ func TestUploadDoesNotPublishReceiptForCorruptRemoteBody(t *testing.T) {
 	require.ErrorIs(t, statErr, os.ErrNotExist)
 }
 
+func TestUploadRejectsUnsafeObjectIdentityBeforeS3(t *testing.T) {
+	artifact := writeArtifact(t)
+	now := time.Unix(2_000_000_000, 0)
+	client := &fakeS3{}
+
+	_, err := Upload(context.Background(), client, UploadRequest{
+		Input: artifact, Instance: "instance-a", BackupID: "backup-1",
+		ObjectStoreID: "store-a", Bucket: "backups", ObjectKey: "../backup-1.jsonl",
+		RetentionMode: "COMPLIANCE", RetainUntilUnix: now.Add(time.Minute).Unix(),
+		ExpectedPrefix: "/registry", MinRecords: 1, MaxAgeSeconds: 1_000_000_000,
+		ReceiptOutput: filepath.Join(t.TempDir(), "receipt.json"), Now: now,
+	})
+	require.ErrorContains(t, err, "upload request is incomplete")
+	require.Zero(t, client.putCalls)
+}
+
 func TestUploadDoesNotPublishReceiptWithoutExactVersionTimestamp(t *testing.T) {
 	artifact := writeArtifact(t)
 	receiptPath := filepath.Join(t.TempDir(), "receipt.json")

@@ -176,6 +176,21 @@ func TestArchiveAuditRejectsOversizedArtifactBeforeS3(t *testing.T) {
 	require.Zero(t, client.putCalls)
 }
 
+func TestArchiveAuditRejectsUnsafeObjectIdentityBeforeS3(t *testing.T) {
+	input := writeAuditArtifact(t)
+	now := time.Unix(2_000_000_000, 0).UTC()
+	client := &fakeS3{}
+
+	_, err := ArchiveAudit(context.Background(), client, AuditRequest{
+		Input: input, ObjectStoreID: "store-a", Bucket: "audit bucket",
+		ObjectKey: "instance-a/operation-1.json", RetentionMode: "COMPLIANCE",
+		RetainUntilUnix: now.Add(time.Hour).Unix(),
+		ReceiptOutput:   filepath.Join(t.TempDir(), "receipt.json"), Now: now,
+	})
+	require.ErrorContains(t, err, "operation audit request is incomplete")
+	require.Zero(t, client.putCalls)
+}
+
 func writeAuditArtifact(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "audit.json")

@@ -47,6 +47,7 @@ type UploadRequest struct {
 func Upload(ctx context.Context, client S3API, request UploadRequest) (Receipt, error) {
 	if request.Input == "" || request.Instance == "" || request.BackupID == "" || request.ObjectStoreID == "" ||
 		request.Bucket == "" || request.ObjectKey == "" || request.ReceiptOutput == "" ||
+		!validObjectRequestIdentity(request.ObjectStoreID, request.Bucket, request.ObjectKey) ||
 		request.RetainUntilUnix <= 0 || request.ExpectedPrefix == "" ||
 		request.MinRecords < 0 || request.MaxAgeSeconds <= 0 {
 		return Receipt{}, errors.New("upload request is incomplete")
@@ -156,6 +157,9 @@ func Upload(ctx context.Context, client S3API, request UploadRequest) (Receipt, 
 	}
 	if versionID == "" {
 		return Receipt{}, errors.New("object store did not return a version ID; Object Lock/versioning is required")
+	}
+	if !validObjectScopeValue(versionID) {
+		return Receipt{}, errors.New("object store returned an invalid version ID")
 	}
 	uploadedAtUnix, err := exactVersionModifiedAt(
 		verificationCtx, client, request.Bucket, request.ObjectKey, versionID,

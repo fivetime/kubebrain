@@ -227,6 +227,12 @@ func validRelativeObjectPrefix(value string) bool {
 	return path.Clean(trimmed) == trimmed
 }
 
+func validObjectRequestIdentity(objectStoreID, bucket, objectKey string) bool {
+	return validObjectScopeValue(objectStoreID) &&
+		validObjectScopeValue(bucket) &&
+		validRelativeObjectKey(objectKey)
+}
+
 func ReadAuditReceipt(path string) (AuditReceipt, error) {
 	var receipt AuditReceipt
 	data, err := readBoundedObjectStoreJSONFile(path, "object operation audit receipt")

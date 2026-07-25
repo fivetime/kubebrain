@@ -782,7 +782,9 @@ receipt 的 `artifact_sha256` 也必须是真实 64 位 digest，不能只是非
 scope 字段（object store ID、bucket、version ID）不能包含空白或控制字符；object key
 必须是规范化相对路径，拒绝绝对路径、`.`/`..` 和路径清理后会改变的形式。inventory
 manifest/receipt 使用同一 scope 规则，manifest prefix 允许尾随 `/`，但仍必须是规范化
-相对 prefix；每个 entry 的 object key/version 也要通过相同身份校验。
+相对 prefix；每个 entry 的 object key/version 也要通过相同身份校验。backup upload、
+operation audit archive、immutable blob archive/read 会在任何 S3 Put/List/Get 前先校验
+request object identity，避免远端已经写入后才因 receipt schema 失败。
 
 本地 receipt 丢失后的跨进程恢复还必须 Head 精确 version，复核 version ID、metadata、
 size，并用远端 `LastModified` 固化 `uploaded_at_unix`；不得使用当前重试时间。缺失或

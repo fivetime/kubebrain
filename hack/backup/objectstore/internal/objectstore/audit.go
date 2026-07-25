@@ -34,6 +34,9 @@ func ArchiveAudit(ctx context.Context, client S3API, request AuditRequest) (Audi
 		request.ObjectKey == "" || request.ReceiptOutput == "" || request.RetainUntilUnix <= 0 {
 		return AuditReceipt{}, errors.New("operation audit request is incomplete")
 	}
+	if !validObjectRequestIdentity(request.ObjectStoreID, request.Bucket, request.ObjectKey) {
+		return AuditReceipt{}, errors.New("operation audit request is incomplete")
+	}
 	mode, err := objectLockMode(request.RetentionMode)
 	if err != nil {
 		return AuditReceipt{}, err
@@ -120,6 +123,9 @@ func ArchiveAudit(ctx context.Context, client S3API, request AuditRequest) (Audi
 	}
 	if versionID == "" {
 		return AuditReceipt{}, errors.New("object store did not return a version ID; Object Lock/versioning is required")
+	}
+	if !validObjectScopeValue(versionID) {
+		return AuditReceipt{}, errors.New("object store returned an invalid version ID")
 	}
 	archivedAtUnix, err := exactVersionModifiedAt(
 		verificationCtx, client, request.Bucket, request.ObjectKey, versionID,
