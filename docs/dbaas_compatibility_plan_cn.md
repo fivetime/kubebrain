@@ -12840,6 +12840,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go vet ./hack/production`、`go test ./hack/production -count=1 -timeout=12m`
   （321.171 秒）、`bash -n hack/production/run-destroy-operation.sh` 和
   `git diff --check` 通过；当前环境未安装 `shellcheck`，未运行 ShellCheck。
+- A860 前移 RestoreCutover runner 的 claim 身份校验：
+  RestoreCutover runner 旧逻辑虽然会在启动子状态机前校验 `operation_id` 和 `instance`，
+  但校验发生在参数获取、冻结和 TSV 解析之后；其它高风险 runner 已经统一在 claim 解析后
+  立即拒绝非法身份。现在 runner 在 claim 后立即要求 operation ID 与 instance 匹配受控
+  资源标识格式，非法时不进入 prepare/cutover/verify/complete phase，也不 retry/fail/
+  succeed。回归覆盖非法 operation ID 和非法 instance。`go test ./hack/production -run
+  'TestRestoreCutoverOperationRejects(InvalidClaimIdentityBeforePhases|InvalidIdentityParameters|EmptyRequiredParameters)'
+  -count=1 -v`、`go test ./hack/production -run TestRestoreCutoverOperation -count=1
+  -v`、`go vet ./hack/production`、`go test ./hack/production -count=1 -timeout=12m`
+  （321.112 秒）、`bash -n hack/production/run-restore-cutover-operation.sh` 和
+  `git diff --check` 通过；当前环境未安装 `shellcheck`，未运行 ShellCheck。
 - A855 前移 PostRestoreAudit runner 的 Service/target 身份校验：
   `audit-restored-instance.sh` 会拒绝非法 operation/instance、Service namespace/name 和
   target instance，但 `run-post-restore-audit-operation.sh` 原先只在子审计前独立校验

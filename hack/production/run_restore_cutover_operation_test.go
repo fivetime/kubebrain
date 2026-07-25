@@ -250,6 +250,26 @@ func TestRestoreCutoverOperationRejectsInvalidIdentityParameters(t *testing.T) {
 	}
 }
 
+func TestRestoreCutoverOperationRejectsInvalidClaimIdentityBeforePhases(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		env  string
+	}{
+		{name: "operation id", env: "CLAIM_OPERATION_ID=cutover/1"},
+		{name: "instance", env: "CLAIM_INSTANCE=instance/a"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newCutoverRunnerFixture(t)
+			f.run(t, false, tc.env, "cutover claim identity contains unsupported characters")
+			log := f.log(t)
+			require.NotContains(t, log, "phase ")
+			require.NotContains(t, log, "--action retry")
+			require.NotContains(t, log, "--action fail")
+			require.NotContains(t, log, "--action succeed")
+		})
+	}
+}
+
 func TestRestoreCutoverOperationStopsWhenHeartbeatIsFenced(t *testing.T) {
 	f := newCutoverRunnerFixture(t)
 	f.run(t, false, "SLEEP_PHASE=prepare", "heartbeat failed")
@@ -356,7 +376,9 @@ set -euo pipefail
 printf 'operationctl %s\n' "$*" >>"$FAKE_DIR/actions.log"
 if [[ " $* " == *" --action claim "* ]]; then
   digest="${CLAIM_DIGEST:-$PARAMETERS_DIGEST}"
-  printf '{"namespace":"tenant-a-operations","name":"cutover-1","uid":"uid-op","resource_version":"1","operation_id":"cutover-1","instance":"instance-a","type":"RestoreCutover","parameters_sha256":"%s","owner":"worker-a","attempt":1,"lease_until_unix":999999}\n' "$digest"
+  operation_id="${CLAIM_OPERATION_ID:-cutover-1}"
+  instance="${CLAIM_INSTANCE:-instance-a}"
+  printf '{"namespace":"tenant-a-operations","name":"cutover-1","uid":"uid-op","resource_version":"1","operation_id":"%s","instance":"%s","type":"RestoreCutover","parameters_sha256":"%s","owner":"worker-a","attempt":1,"lease_until_unix":999999}\n' "$operation_id" "$instance" "$digest"
 elif [[ " $* " == *" --action heartbeat "* && "${HEARTBEAT_FAIL:-true}" == true ]]; then
   exit 1
 else
@@ -433,8 +455,10 @@ esac
 func (f *cutoverRunnerFixture) run(t *testing.T, ok bool, extra string, outputs ...string) {
 	t.Helper()
 	env := append([]string{}, f.env...)
-	if extra != "" {
-		env = append(env, extra)
+	for _, item := range strings.Split(extra, "\n") {
+		if item != "" {
+			env = append(env, item)
+		}
 	}
 	out, err := runProductionRunnerCommand(t, "run-restore-cutover-operation.sh", env)
 	if ok {
