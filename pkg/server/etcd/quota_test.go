@@ -198,6 +198,48 @@ func TestQuotaRPCAlarmMutationNoOpsMatchEtcd(t *testing.T) {
 	require.Equal(t, activate.Alarms, deactivate.Alarms)
 }
 
+func TestQuotaRPCZeroMemberAlarmRoundTripMatchesEtcd(t *testing.T) {
+	server := newQuotaRPCServer(t, 0)
+	ctx := context.Background()
+
+	activate, err := server.Alarm(ctx, &etcdserverpb.AlarmRequest{
+		Action: etcdserverpb.AlarmRequest_ACTIVATE,
+		Alarm:  etcdserverpb.AlarmType_NOSPACE,
+	})
+	require.NoError(t, err)
+	require.Equal(t, []uint64{0}, noSpaceAlarmMembers(activate.Alarms))
+
+	list, err := server.Alarm(ctx, &etcdserverpb.AlarmRequest{
+		Action: etcdserverpb.AlarmRequest_GET,
+		Alarm:  etcdserverpb.AlarmType_NOSPACE,
+	})
+	require.NoError(t, err)
+	require.Equal(t, []uint64{0}, noSpaceAlarmMembers(list.Alarms))
+
+	deactivate, err := server.Alarm(ctx, &etcdserverpb.AlarmRequest{
+		Action: etcdserverpb.AlarmRequest_DEACTIVATE,
+		Alarm:  etcdserverpb.AlarmType_NOSPACE,
+	})
+	require.NoError(t, err)
+	require.Equal(t, []uint64{0}, noSpaceAlarmMembers(deactivate.Alarms))
+	final, err := server.Alarm(ctx, &etcdserverpb.AlarmRequest{
+		Action: etcdserverpb.AlarmRequest_GET,
+		Alarm:  etcdserverpb.AlarmType_NOSPACE,
+	})
+	require.NoError(t, err)
+	require.Empty(t, final.Alarms)
+}
+
+func noSpaceAlarmMembers(alarms []*etcdserverpb.AlarmMember) []uint64 {
+	members := make([]uint64, 0, len(alarms))
+	for _, alarm := range alarms {
+		if alarm.Alarm == etcdserverpb.AlarmType_NOSPACE {
+			members = append(members, alarm.MemberID)
+		}
+	}
+	return members
+}
+
 func TestQuotaRPCAlarmActivationPersistsRequestedMember(t *testing.T) {
 	server := newQuotaRPCServer(t, 6)
 	ctx := context.Background()

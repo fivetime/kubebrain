@@ -13593,6 +13593,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   推进 1。本轮新增本地 KV 服务层回归，直接固定这三个 delta，防止后续把空 delete
   错当成写 revision、或让 read-only Txn 返回 stale/future header，破坏 informer 与
   apiserver CAS retry 对 revision 单调性的判断。
+- A940 固定 NOSPACE zero-member alarm 的完整 round-trip：
+  `alarm_zero_member` reference differential 证明省略 MemberID 的
+  `Alarm(ACTIVATE,NOSPACE)` 必须持久保存并返回 member `0`，后续 GET 仍列出 `0`，
+  不带 MemberID 的 DEACTIVATE 也必须删除该 alarm，最终 GET 为空。本轮新增本地 quota
+  服务层回归，补齐此前只验证局部激活/解除或后端编码的缺口，防止 zero member 被
+  later owner fallback、member filtering 或集合编码重写误吞。
 
 ### P2：运维兼容和长期验证
 
