@@ -165,6 +165,46 @@ func TestBackupOperationRejectsInvalidPrefix(t *testing.T) {
 	}
 }
 
+func TestBackupOperationRejectsUnsafeObjectIdentity(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		edit func(string) string
+	}{
+		{
+			name: "bucket whitespace",
+			edit: func(parameters string) string {
+				return strings.Replace(parameters, `"s3_bucket":"backups"`, `"s3_bucket":"backup bucket"`, 1)
+			},
+		},
+		{
+			name: "object key parent",
+			edit: func(parameters string) string {
+				return strings.Replace(parameters, `"s3_object_key":"instance-a/backup-1.jsonl"`, `"s3_object_key":"../backup-1.jsonl"`, 1)
+			},
+		},
+		{
+			name: "object key control character",
+			edit: func(parameters string) string {
+				return strings.Replace(parameters, `"s3_object_key":"instance-a/backup-1.jsonl"`, `"s3_object_key":"instance-a/backup-1\t.jsonl"`, 1)
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newBackupRunnerFixture(t, false)
+			parameters := tc.edit(string(mustRead(t, f.parameters)))
+			require.NoError(t, os.WriteFile(f.parameters, []byte(parameters), 0o600))
+
+			f.run(t, false, "CLAIM_DIGEST="+fileDigest(t, f.parameters),
+				"backup object identity must use safe object store scope and normalized relative key")
+			log := f.log(t)
+			require.NotContains(t, log, "export\n")
+			require.NotContains(t, log, "object\n")
+			require.NotContains(t, log, "--action retry")
+			require.NotContains(t, log, "--action succeed")
+		})
+	}
+}
+
 func TestBackupOperationLoadsManagedParameters(t *testing.T) {
 	f := newBackupRunnerFixture(t, false)
 	f.env = append(f.env, "MANAGED_PARAMETERS="+f.parameters, "PARAMETERS_INPUT=")

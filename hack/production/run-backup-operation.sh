@@ -141,6 +141,35 @@ validate_backup_prefix() {
 validate_backup_prefix_json ||
   { echo "backup prefix must be an absolute key prefix without control characters" >&2; exit 2; }
 
+validate_object_identity_json() {
+  "$JQ" -e '
+    def safe_scope:
+      type == "string" and length > 0 and (test("\\s") | not);
+    def relative_key:
+      safe_scope and
+      (startswith("/") | not) and
+      . != "." and . != ".." and
+      (split("/") | all(. != "" and . != "." and . != ".."));
+    (.object_store_id | safe_scope) and
+    (.s3_bucket | safe_scope) and
+    (.s3_object_key | relative_key)' "$PARAMETERS_INPUT" >/dev/null
+}
+
+validate_object_identity() {
+  local object_key="$3"
+  for value in "$1" "$2" "$object_key"; do
+    [[ -n "$value" && ! "$value" =~ [[:space:]] ]] ||
+      { echo "backup object identity must use safe object store scope and normalized relative key" >&2; exit 2; }
+  done
+  [[ "$object_key" != /* && "$object_key" != "." && "$object_key" != ".." &&
+    "$object_key" != *"//"* && "$object_key" != *"/./"* && "$object_key" != *"/../"* &&
+    "$object_key" != */. && "$object_key" != */.. ]] ||
+    { echo "backup object identity must use safe object store scope and normalized relative key" >&2; exit 2; }
+}
+
+validate_object_identity_json ||
+  { echo "backup object identity must use safe object store scope and normalized relative key" >&2; exit 2; }
+
 parameters="$("$JQ" -er '[
   .endpoint, .prefix, .artifact_output, (.batch_size|tostring),
   (if (.metrics_output // "") == "" then "-" else .metrics_output end),
@@ -169,6 +198,7 @@ for value in "$endpoint" "$prefix" "$artifact_output" "$backup_id" "$object_stor
   [[ -n "$value" ]] || { echo "backup parameters contain an empty required field" >&2; exit 2; }
 done
 validate_backup_prefix "$prefix"
+validate_object_identity "$object_store_id" "$s3_bucket" "$s3_object_key"
 [[ "$backup_id" == "$operation_id" ]] ||
   { echo "backup_id must equal the claimed operation ID" >&2; exit 2; }
 

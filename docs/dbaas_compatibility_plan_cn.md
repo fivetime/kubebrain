@@ -12743,6 +12743,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   回归确认非法 identity 时 fake S3 的 Put/List 调用数为 0。`cd hack/backup/objectstore &&
   go test ./... -count=1`、`cd hack/backup/objectstore && go vet ./...` 和 `git diff --check`
   通过。
+- A849 前移 Backup runner 的对象身份参数校验：
+  A848 已防止 Go 子命令在非法 object identity 下写入 S3，但 `run-backup-operation.sh` 仍会
+  把这种参数错误当成子流程失败并 requeue。现在 runner 在冻结参数后、TSV 展开前用原始 JSON
+  校验 object store ID、bucket 和 object key：scope 不得包含空白，object key 必须是规范化
+  相对路径且不能包含空段、`.` 或 `..` 段；Bash 展开后再做二次守卫。回归覆盖 bucket 空白、
+  object key 路径穿越和 object key tab，确认不会进入 export/object，也不会 retry/succeed。
+  `go test ./hack/production -run 'TestBackupOperationRejects(UnsafeObjectIdentity|InvalidPrefix)' -count=1 -v`、
+  `go test ./hack/production -run TestBackupOperation -count=1 -v`、相关脚本 ShellCheck 和
+  `git diff --check` 通过。
 
 ### P2：运维兼容和长期验证
 
