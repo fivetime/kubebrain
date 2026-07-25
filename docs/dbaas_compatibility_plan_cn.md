@@ -13310,6 +13310,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   覆盖 source/target 的 tab 与 DEL，并保留相对路径和 source/target 相同用例。`go test
   ./hack/production -run TestRestoreTrafficCutoverRejectsRestoreReceiptWithInvalidPrefixes -count=1 -v`
   通过。
+- A896 同步生产手册 DEL 边界：
+  cold restore wrapper、BackupDeletion S3 endpoint、backup smoke endpoint 和 operationctl broker
+  origin 的实现/回归均已拒绝 DEL，但生产手册部分段落仍只写“控制字符、引号、反斜杠”。
+  现统一补充 DEL，避免预生产演练照旧文档误判边界。
 
 ### P2：运维兼容和长期验证
 

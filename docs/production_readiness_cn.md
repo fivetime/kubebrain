@@ -702,7 +702,7 @@ ETCDCTL_CACERT=<ca> ETCDCTL_CERT=<client-cert> ETCDCTL_KEY=<client-key> \
   hack/backup/cold-restore-verify.sh
 ```
 
-`cold-restore-verify.sh` 在启动 Go verifier 前会拒绝缺失或含控制字符、引号、反斜杠的
+`cold-restore-verify.sh` 在启动 Go verifier 前会拒绝缺失或含控制字符、DEL、引号、反斜杠的
 `ENDPOINT`，保持冷恢复语义验证入口与 logical backup/restore wrapper、备份演练 smoke
 入口的 endpoint 边界一致。
 
@@ -850,7 +850,7 @@ version 已不存在”补发/复用 receipt；保留期内提前消失则 fail 
 backup receipt、pre/post inventory manifest、pre/post inventory receipt 和 deletion receipt
 执行同样的 strict schema 与字段绑定校验；参数中的 object store ID、manifest
 prefix/entry 以及 source backup receipt 的 bucket/object key/version 必须通过安全对象身份
-校验，S3 endpoint 不能包含控制字符、引号或反斜杠，危险参数不会进入 inventory/delete
+校验，S3 endpoint 不能包含控制字符、DEL、引号或反斜杠，危险参数不会进入 inventory/delete
 子流程。
 这样即使本地删除 receipt 随 Pod 丢失，重建后的 canonical JSON 和 SHA 也保持稳定。
 bucket 生命周期规则只能作为调度器，不能替代该完成证据。`DeleteObject` 返回错误也不等于
@@ -1246,7 +1246,7 @@ ENDPOINT=127.0.0.1:3379 hack/backup/lease-restore-smoke.sh
 
 `logical-drill.sh` 以及 `backup-integrity-smoke.sh`、`restore-guard-smoke.sh`、
 `restore-rollback-smoke.sh`、`lease-restore-smoke.sh`、`verify-content-smoke.sh`
-会在创建备份 artifact、日志或调用 `prefix-tool` 修改实例前拒绝含控制字符、引号、反斜杠的
+会在创建备份 artifact、日志或调用 `prefix-tool` 修改实例前拒绝含控制字符、DEL、引号、反斜杠的
 `ENDPOINT`。
 
 非覆盖恢复会先用只读 Txn 按批检查全部目标 key，再创建 lease 和写数据；每个写批仍
@@ -2457,7 +2457,7 @@ queue worker identity audit text 规则。`/v1/parameters` 不接受 request bod
 identity 与 body 形状校验发生在 TokenReview 前，
 畸形请求不能消耗认证、Operation 或 Secret API；该边界同时避免代理、审计日志或客户端对
 重复参数取值不一致。`operationctl --action parameters`
-只接受不含 userinfo、path、query、fragment、控制字符、引号或反斜杠的 HTTPS broker
+只接受不含 userinfo、path、query、fragment、控制字符、DEL、引号或反斜杠的 HTTPS broker
 origin；从 broker 读取的响应超过
 4 MiB、`Content-Type` 不是 `application/json`，projected token 为空、包含空白或超过 16 KiB，或 broker
 CA bundle 超过 1 MiB 时必须 fail closed，不能把 `LimitReader` 截断结果或 HTML 错误页写成
