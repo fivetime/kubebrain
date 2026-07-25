@@ -13303,6 +13303,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./hack/production -run
   'TestPostRestoreAuditOperationRejectsUnsafeAuditPrefix|TestPostRestoreAuditRejectsUnsafeAuditPrefix' -count=1 -v`
   通过。
+- A895 收紧 restore traffic receipt prefix 控制字符边界：
+  `switch-restore-traffic.sh` 在校验 restore verification receipt 时只拒绝 source/target prefix
+  的换行、回车和 tab，DEL 或其它 C0 控制字符仍可能通过 prepare 阶段并写入状态证据。现在
+  source/target prefix 的 jq 校验统一用 `explode` 拒绝 `<32` 与 `127`；回归用有效 JSON
+  覆盖 source/target 的 tab 与 DEL，并保留相对路径和 source/target 相同用例。`go test
+  ./hack/production -run TestRestoreTrafficCutoverRejectsRestoreReceiptWithInvalidPrefixes -count=1 -v`
+  通过。
 
 ### P2：运维兼容和长期验证
 

@@ -2392,7 +2392,8 @@ namespace 会按设计停在 Terminating，禁止绕过 admission 强删 finaliz
 restore receipt、logical artifact、A189 state/receipt 路径、Service、源/目标 instance、
 replicas、公开 endpoint 和 Kubernetes context；runner 在启动子状态机前先校验
 claim operation/instance、Service/source/target 身份字符集、Service namespace DNS label
-以及 source/target 必须不同；公开 endpoint 不能包含控制字符、DEL、引号或反斜杠。执行器按
+以及 source/target 必须不同；restore receipt 的 source/target prefix 不能包含控制字符或
+DEL，公开 endpoint 不能包含控制字符、DEL、引号或反斜杠。执行器按
 prepare、cutover、verify、complete 驱动，每阶段独立续租。prepare 失败可 retry；从 cutover 调用开始，任何失败都必须执行 rollback 并写
 Failed 终态，避免已改 selector 的操作被当成普通重试。
 直接 cutover 脚本同样会在 verify/complete 公开数据校验前拒绝危险 public endpoint。

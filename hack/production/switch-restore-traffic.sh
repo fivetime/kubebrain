@@ -158,9 +158,9 @@ receipt_fields() {
       ((has("artifact_created_at_unix") | not) or
         (.artifact_created_at_unix | type == "number" and . > 0 and . == floor)) and
       (.source_prefix | type == "string" and startswith("/") and
-        ((contains("\n") or contains("\r") or contains("\t")) | not)) and
+        (explode | all(. >= 32 and . != 127))) and
       (.target_prefix | type == "string" and startswith("/") and
-        ((contains("\n") or contains("\r") or contains("\t")) | not)) and
+        (explode | all(. >= 32 and . != 127))) and
       .source_prefix != .target_prefix and
       (.records | type == "number" and . >= 0 and . == floor) and
       (.artifact_leases | type == "number" and . >= 0 and . == floor) and

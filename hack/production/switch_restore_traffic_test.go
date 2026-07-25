@@ -176,7 +176,13 @@ func TestRestoreTrafficCutoverRejectsRestoreReceiptWithInvalidPrefixes(t *testin
 		{
 			name: "source with control character",
 			edit: func(receipt string) string {
-				return strings.Replace(receipt, `"source_prefix":"/registry"`, `"source_prefix":"/registry\tshadow"`, 1)
+				return replaceRestoreReceiptFieldForTest(t, receipt, "source_prefix", "/registry\tshadow")
+			},
+		},
+		{
+			name: "source with del",
+			edit: func(receipt string) string {
+				return replaceRestoreReceiptFieldForTest(t, receipt, "source_prefix", "/registry\x7fshadow")
 			},
 		},
 		{
@@ -188,7 +194,13 @@ func TestRestoreTrafficCutoverRejectsRestoreReceiptWithInvalidPrefixes(t *testin
 		{
 			name: "target with control character",
 			edit: func(receipt string) string {
-				return strings.Replace(receipt, `"target_prefix":"/restored"`, `"target_prefix":"/restored\tshadow"`, 1)
+				return replaceRestoreReceiptFieldForTest(t, receipt, "target_prefix", "/restored\tshadow")
+			},
+		},
+		{
+			name: "target with del",
+			edit: func(receipt string) string {
+				return replaceRestoreReceiptFieldForTest(t, receipt, "target_prefix", "/restored\x7fshadow")
 			},
 		},
 		{
@@ -208,6 +220,16 @@ func TestRestoreTrafficCutoverRejectsRestoreReceiptWithInvalidPrefixes(t *testin
 			require.NoFileExists(t, filepath.Join(f.state, "restore-1.state"))
 		})
 	}
+}
+
+func replaceRestoreReceiptFieldForTest(t *testing.T, receipt, field, value string) string {
+	t.Helper()
+	var document map[string]any
+	require.NoError(t, json.Unmarshal([]byte(receipt), &document))
+	document[field] = value
+	encoded, err := json.Marshal(document)
+	require.NoError(t, err)
+	return string(encoded)
 }
 
 func TestRestoreTrafficCutoverRejectsNonCanonicalState(t *testing.T) {
