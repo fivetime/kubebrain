@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -104,6 +105,22 @@ func TestArchiverValidationRejectsUnsafeRetentionAndPrefix(t *testing.T) {
 	archiver.RetentionDuration = 365 * 24 * time.Hour
 	archiver.Prefix = "/"
 	require.Error(t, archiver.Validate())
+}
+
+func TestRunCommandReturnsContextErrorOnCancellation(t *testing.T) {
+	executable := blockingExecutor(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+
+	_, err := runCommand(ctx, executable, nil)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+}
+
+func blockingExecutor(t *testing.T) string {
+	t.Helper()
+	executable := filepath.Join(t.TempDir(), "blocking-executor")
+	require.NoError(t, os.WriteFile(executable, []byte("#!/bin/sh\nsleep 30\n"), 0o755))
+	return executable
 }
 
 func validArchiver(collector *Collector) *Archiver {

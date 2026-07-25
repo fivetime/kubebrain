@@ -12171,6 +12171,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./hack/production/internal/processgroup -count=1 -v`、
   `go test ./hack/production -run 'TestProduction(ExecutorEntrypointsValidateExecutable|OperationWorkerStreamsExecutorWithProcessGroup|RuntimeExecutorCommandsUseProcessGroupAndBoundedOutput)' -count=1 -v`、
   `git diff --check`、`go vet ./...` 和 `go test ./... -count=1 -p 1` 均通过。
+- A790 统一 production metering executor 取消错误语义：
+  `meteringstorage` 与 `operationarchiver` 的 runtime wrapper 已在 ctx 取消后返回
+  `context.Canceled/DeadlineExceeded`，但 `meteringarchive` 与 `meteringbilling` 直接透传
+  `exec` signal error；这会让上层日志、重试分类和超时 SLO 统计把主动取消误判为 executor
+  自身失败。现在两个包的默认 `runCommand` 在 bounded output 返回后优先检查 `ctx.Err()`，
+  与现有 storage/archiver 语义一致；新增真实 blocking executor 回归，确认超时返回
+  `context.DeadlineExceeded`。生产静态门禁同步要求所有 runtime executor wrapper 保留
+  `ctx.Err()` 分支。
+  `go test ./hack/production/internal/meteringarchive ./hack/production/internal/meteringbilling -run TestRunCommandReturnsContextErrorOnCancellation -count=1 -v`、
+  `go test ./hack/production -run 'TestProductionRuntimeExecutorCommandsUseProcessGroupAndBoundedOutput' -count=1 -v`、
+  `git diff --check`、`go vet ./...` 和 `go test ./... -count=1 -p 1` 均通过。
 
 ### P2：运维兼容和长期验证
 

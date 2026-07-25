@@ -168,6 +168,7 @@ func TestProductionRuntimeExecutorCommandsUseProcessGroupAndBoundedOutput(t *tes
 			require.Contains(t, text, "processgroup.Configure(command)")
 			require.Contains(t, text, "command.WaitDelay = processgroup.DefaultWaitDelay")
 			require.Contains(t, text, "processgroup.CombinedOutput(command, processgroup.DefaultOutputLimitBytes)")
+			require.Contains(t, text, "ctx.Err()")
 			require.NotContains(t, text, ".CombinedOutput()")
 		})
 	}

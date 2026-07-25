@@ -102,6 +102,16 @@ func TestBillerFailsBeforeChargeOnMissingCatalogAndRejectsFuturePeriod(t *testin
 	require.ErrorContains(t, err, "not eligible")
 }
 
+func TestRunCommandReturnsContextErrorOnCancellation(t *testing.T) {
+	executable := filepath.Join(t.TempDir(), "blocking-executor")
+	require.NoError(t, os.WriteFile(executable, []byte("#!/bin/sh\nsleep 30\n"), 0o755))
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+
+	_, err := runCommand(ctx, executable, nil)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+}
+
 func TestBillerReadImmutableRejectsOversizedDownloadedArtifact(t *testing.T) {
 	biller := validBiller(time.Date(2026, 7, 20, 1, 17, 0, 0, time.UTC))
 	biller.Run = func(_ context.Context, _ string, environment []string) ([]byte, error) {
