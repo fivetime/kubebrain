@@ -12481,6 +12481,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `bash -n hack/dev/verify.sh` 与
   `RUN_GO_TEST=false RUN_BASIC_SMOKE=false RUN_HA_SMOKE=false RUN_APISERVER_SMOKE=false RUN_TLS_SMOKE=false hack/dev/verify.sh`
   通过。
+- A821 让 dev verify 的 RUN 开关 fail closed：
+  统一验证脚本包含大量可选发布门禁，若 `RUN_*` 环境变量拼错为 `ture`、`1` 或大小写变体，
+  旧逻辑会静默按 false 处理，发布执行者可能误以为门禁已经执行。现在 `hack/dev/verify.sh`
+  在运行任何步骤前集中校验全部 `RUN_*` flag，只接受精确 `true` 或 `false`，非法值直接
+  退出 2 并打印变量名和值。回归覆盖全关离线成功与非法 flag 拒绝：
+  `bash -n hack/dev/verify.sh`、
+  `RUN_GO_TEST=false RUN_BASIC_SMOKE=false RUN_HA_SMOKE=false RUN_APISERVER_SMOKE=false RUN_TLS_SMOKE=false hack/dev/verify.sh`、
+  `RUN_GO_TEST=tru RUN_BASIC_SMOKE=false RUN_HA_SMOKE=false RUN_APISERVER_SMOKE=false RUN_TLS_SMOKE=false hack/dev/verify.sh`
+  通过。
 
 ### P2：运维兼容和长期验证
 
