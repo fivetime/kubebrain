@@ -13587,6 +13587,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   ResourceExhausted 但 delete Txn 可以释放空间；最后解除 NOSPACE 后写入恢复。本轮新增
   本地 Maintenance/Quota 服务层回归，固定这一完整状态机，防止告警检查重排、Txn
   分类或 lease grant 门禁改动让生产故障恢复路径偏离 etcd。
+- A939 固定 Txn header revision 的读/空写/实写差值：
+  `txn_compare_header_revision` 中的 revision differential 证明 seed 后 read-only Txn
+  和命中 0 行的 delete Txn 都不能推进 header revision，只有实际 Put Txn 才把 header
+  推进 1。本轮新增本地 KV 服务层回归，直接固定这三个 delta，防止后续把空 delete
+  错当成写 revision、或让 read-only Txn 返回 stale/future header，破坏 informer 与
+  apiserver CAS retry 对 revision 单调性的判断。
 
 ### P2：运维兼容和长期验证
 

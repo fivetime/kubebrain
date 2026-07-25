@@ -2404,6 +2404,44 @@ func TestTxnCreateWithoutFailureRangeReturnsEmptyFailureResponse(t *testing.T) {
 	require.Empty(t, resp.Responses)
 }
 
+func TestTxnHeaderRevisionDeltasMatchEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	ctx := context.Background()
+	prefix := []byte("/registry/generic-txn/revision-delta/")
+	key := append([]byte(nil), prefix...)
+	key = append(key, []byte("key")...)
+	missingKey := append([]byte(nil), prefix...)
+	missingKey = append(missingKey, []byte("missing")...)
+	seed, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("one")})
+	require.NoError(t, err)
+
+	readOnly, err := server.Txn(ctx, &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{{
+		Request: &etcdserverpb.RequestOp_RequestRange{
+			RequestRange: &etcdserverpb.RangeRequest{Key: key},
+		},
+	}}})
+	require.NoError(t, err)
+	require.Equal(t, seed.Header.Revision, readOnly.Header.Revision)
+
+	emptyDelete, err := server.Txn(ctx, &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{{
+		Request: &etcdserverpb.RequestOp_RequestDeleteRange{
+			RequestDeleteRange: &etcdserverpb.DeleteRangeRequest{Key: missingKey},
+		},
+	}}})
+	require.NoError(t, err)
+	require.Equal(t, seed.Header.Revision, emptyDelete.Header.Revision)
+
+	write, err := server.Txn(ctx, &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{{
+		Request: &etcdserverpb.RequestOp_RequestPut{
+			RequestPut: &etcdserverpb.PutRequest{Key: key, Value: []byte("two")},
+		},
+	}}})
+	require.NoError(t, err)
+	require.Equal(t, seed.Header.Revision+1, write.Header.Revision)
+}
+
 func TestTxnCreateWithPrevKVReturnsNilPrevKV(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
