@@ -38,8 +38,14 @@ ENDPOINT="${ENDPOINT:-127.0.0.1:3379}"
 PREFIX="${PREFIX:-/registry}"
 OUTPUT="${OUTPUT:-kubebrain-logical-backup.jsonl}"
 BATCH_SIZE="${BATCH_SIZE:-1000}"
-[[ "$ENDPOINT" != *[$'\t\r\n"\\']* ]] ||
-  { echo "ENDPOINT contains unsupported characters" >&2; exit 2; }
+contains_unsafe_endpoint_char() {
+  local value="$1"
+  [[ "$value" == *[[:cntrl:]]* || "$value" == *\"* || "$value" == *\\* ]]
+}
+if contains_unsafe_endpoint_char "$ENDPOINT"; then
+  echo "ENDPOINT contains unsupported characters" >&2
+  exit 2
+fi
 
 cd "$ROOT_DIR"
 ENDPOINT="$ENDPOINT" PREFIX="$PREFIX" OUTPUT="$OUTPUT" BATCH_SIZE="$BATCH_SIZE" \

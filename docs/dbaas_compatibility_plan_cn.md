@@ -13186,6 +13186,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `PUBLIC_ENDPOINT` 仍允许为空，等 verify/rollback 等需要它的阶段再要求非空。
   回归覆盖发布验证、证书轮换、恢复流量切换和恢复后审计中的 DEL endpoint，并保留
   既有换行、引号和反斜杠用例。
+- A887 收紧备份 wrapper endpoint 字符边界：
+  A886 覆盖了生产发布/恢复流量入口后，继续审计 direct backup wrapper，发现
+  `logical-export.sh`、`logical-restore.sh`、`logical-verify.sh`、各类 backup smoke、
+  `cold-restore-verify.sh` 和 `logical-object.sh` 仍只拒绝 tab/CR/LF、引号和反斜杠。
+  这些入口会直接启动 Go backup command、prefix tool 或 Object Lock executor；
+  `DEL` 或其他控制字符可能进入 etcd/S3 endpoint、日志或错误输出。现在所有
+  `hack/backup/*.sh` endpoint wrapper 在启动子命令前统一拒绝 `[[:cntrl:]]`、引号和
+  反斜杠；`S3_ENDPOINT` 采用同一 helper，保持 direct object 工具与 operation runner
+  边界一致。集中 wrapper 回归新增 DEL 覆盖，并保留换行、引号和反斜杠用例。
 
 ### P2：运维兼容和长期验证
 

@@ -59,7 +59,11 @@ if [[ -z "$S3_ENDPOINT" ]]; then
   echo "S3_ENDPOINT is required" >&2
   exit 2
 fi
-if [[ "$S3_ENDPOINT" == *[$'\t\r\n"\\']* ]]; then
+contains_unsafe_endpoint_char() {
+  local value="$1"
+  [[ "$value" == *[[:cntrl:]]* || "$value" == *\"* || "$value" == *\\* ]]
+}
+if contains_unsafe_endpoint_char "$S3_ENDPOINT"; then
   echo "S3_ENDPOINT contains unsupported characters" >&2
   exit 2
 fi

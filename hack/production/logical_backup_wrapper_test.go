@@ -13,6 +13,7 @@ func TestLogicalBackupWrappersRejectUnsafeEndpoint(t *testing.T) {
 		endpoint string
 	}{
 		{name: "control character", endpoint: "https://service:2379\nother"},
+		{name: "DEL", endpoint: "https://service:2379\x7fother"},
 		{name: "quote", endpoint: `https://service:2379"other`},
 		{name: "backslash", endpoint: `https://service:2379\other`},
 	} {
@@ -48,6 +49,7 @@ func TestBackupSmokeWrappersRejectUnsafeEndpoint(t *testing.T) {
 		endpoint string
 	}{
 		{name: "control character", endpoint: "https://service:2379\nother"},
+		{name: "DEL", endpoint: "https://service:2379\x7fother"},
 		{name: "quote", endpoint: `https://service:2379"other`},
 		{name: "backslash", endpoint: `https://service:2379\other`},
 	} {
@@ -93,6 +95,7 @@ func TestColdRestoreVerifyWrapperRejectsUnsafeEndpoint(t *testing.T) {
 		endpoint string
 	}{
 		{name: "control character", endpoint: "https://restored:2379\nother"},
+		{name: "DEL", endpoint: "https://restored:2379\x7fother"},
 		{name: "quote", endpoint: `https://restored:2379"other`},
 		{name: "backslash", endpoint: `https://restored:2379\other`},
 	} {
@@ -123,6 +126,7 @@ func TestLogicalObjectWrapperRejectsUnsafeS3Endpoint(t *testing.T) {
 		endpoint string
 	}{
 		{name: "control character", endpoint: "https://s3.example\nother"},
+		{name: "DEL", endpoint: "https://s3.example\x7fother"},
 		{name: "quote", endpoint: `https://s3.example"other`},
 		{name: "backslash", endpoint: `https://s3.example\other`},
 	} {

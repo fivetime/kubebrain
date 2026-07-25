@@ -29,7 +29,11 @@ case "${1:-}" in
 esac
 
 ENDPOINT="${ENDPOINT:-127.0.0.1:3379}"
-if [[ "$ENDPOINT" == *[$'\t\r\n"\\']* ]]; then
+contains_unsafe_endpoint_char() {
+  local value="$1"
+  [[ "$value" == *[[:cntrl:]]* || "$value" == *\"* || "$value" == *\\* ]]
+}
+if contains_unsafe_endpoint_char "$ENDPOINT"; then
   echo "ENDPOINT contains unsupported characters" >&2
   exit 2
 fi
