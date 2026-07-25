@@ -1668,6 +1668,24 @@ func TestRangeNegativeRevisionFollowsFirstRevision(t *testing.T) {
 		Success: []*etcdserverpb.RequestOp{rangeOp(-1)},
 	})
 	require.ErrorIs(t, err, rpctypes.ErrGRPCCompacted)
+
+	txnResp, err = server.Txn(ctx, &etcdserverpb.TxnRequest{
+		Compare: []*etcdserverpb.Compare{{
+			Key: key, Target: etcdserverpb.Compare_VERSION, Result: etcdserverpb.Compare_GREATER,
+			TargetUnion: &etcdserverpb.Compare_Version{Version: 0},
+		}},
+		Success: []*etcdserverpb.RequestOp{rangeOp(0)},
+		Failure: []*etcdserverpb.RequestOp{rangeOp(-1)},
+	})
+	require.NoError(t, err)
+	require.True(t, txnResp.Succeeded)
+
+	_, err = server.Txn(ctx, &etcdserverpb.TxnRequest{
+		Success: []*etcdserverpb.RequestOp{rangeOp(math.MaxInt64)},
+	})
+	require.Error(t, err)
+	require.Equal(t, codes.OutOfRange, status.Code(err))
+	require.Equal(t, "etcdserver: mvcc: required revision is a future revision", status.Convert(err).Message())
 }
 
 func TestCompactOlderRevisionReturnsCurrentHeader(t *testing.T) {

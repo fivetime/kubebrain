@@ -13620,6 +13620,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   本地 KV 回归，固定 current/historical/Txn 三个 header+value 组合，防止 follower
   fast path 或历史读优化把 header 错写成 requested revision，影响客户端 revision
   cache 和 relist 判断。
+- A944 固定 Range revision 边界在 Txn selected branch 才生效：
+  `range_revision_boundary` reference differential 证明普通 Range 对 negative revision
+  仍可按 etcd 读旧窗口，但 Txn 中 selected `Revision=-1` 在 compact 后必须返回
+  compacted；同一个 negative Range 若位于未选中分支则不能提前校验失败；selected
+  `math.MaxInt64` 必须返回 future revision。本轮扩展本地 KV 回归，固定 compact 后
+  selected/unselected negative 和 MaxInt64 三个分支，防止 Txn validation order
+  过早扫描未执行分支或漏掉 selected future revision。
 
 ### P2：运维兼容和长期验证
 
