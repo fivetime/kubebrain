@@ -13627,6 +13627,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `math.MaxInt64` 必须返回 future revision。本轮扩展本地 KV 回归，固定 compact 后
   selected/unselected negative 和 MaxInt64 三个分支，防止 Txn validation order
   过早扫描未执行分支或漏掉 selected future revision。
+- A945 固定 Compact reference differential 的完整状态链：
+  `compact` differential 证明压缩第二次写入 revision 后，边界 revision 仍能读到 v2，
+  更早历史读、重复 compact、older compact 和 negative compact 都必须返回 compacted，
+  future compact 必须返回 future revision，且当前读仍返回 v2。本轮新增本地 KV
+  服务层端到端回归，把此前分散的 compact 单点断言收束为同一条场景链，防止
+  compact marker、header revision 或历史窗口判定在后续重构中相互漂移。
 
 ### P2：运维兼容和长期验证
 

@@ -1516,6 +1516,57 @@ func TestCompactFutureAndRepeatedRevisionMatchEtcd(t *testing.T) {
 	require.Contains(t, err.Error(), "required revision has been compacted")
 }
 
+func TestCompactDifferentialScenarioMatchesEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	ctx := context.Background()
+	key := []byte("/registry/pods/compact-differential")
+	first, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("v1")})
+	require.NoError(t, err)
+	second, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("v2")})
+	require.NoError(t, err)
+	third, err := server.Put(ctx, &etcdserverpb.PutRequest{
+		Key: []byte("/registry/pods/compact-differential-tail"), Value: []byte("tail"),
+	})
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		return server.backend.GetCurrentRevision() >= uint64(third.Header.Revision)
+	}, time.Second, 10*time.Millisecond)
+
+	compact, err := server.Compact(ctx, &etcdserverpb.CompactionRequest{Revision: second.Header.Revision})
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, compact.Header.Revision, second.Header.Revision)
+	require.LessOrEqual(t, compact.Header.Revision, third.Header.Revision)
+
+	boundary, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: key, Revision: second.Header.Revision})
+	require.NoError(t, err)
+	require.Len(t, boundary.Kvs, 1)
+	require.Equal(t, []byte("v2"), boundary.Kvs[0].Value)
+
+	_, err = server.Range(ctx, &etcdserverpb.RangeRequest{Key: key, Revision: first.Header.Revision})
+	require.Error(t, err)
+	require.Equal(t, codes.OutOfRange, status.Code(err))
+	require.Equal(t, "etcdserver: mvcc: required revision has been compacted", status.Convert(err).Message())
+
+	for _, revision := range []int64{second.Header.Revision, first.Header.Revision, -1} {
+		_, err := server.Compact(ctx, &etcdserverpb.CompactionRequest{Revision: revision})
+		require.Error(t, err)
+		require.Equal(t, codes.OutOfRange, status.Code(err))
+		require.Equal(t, "etcdserver: mvcc: required revision has been compacted", status.Convert(err).Message())
+	}
+
+	_, err = server.Compact(ctx, &etcdserverpb.CompactionRequest{Revision: third.Header.Revision + 1000})
+	require.Error(t, err)
+	require.Equal(t, codes.OutOfRange, status.Code(err))
+	require.Equal(t, "etcdserver: mvcc: required revision is a future revision", status.Convert(err).Message())
+
+	current, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: key})
+	require.NoError(t, err)
+	require.Len(t, current.Kvs, 1)
+	require.Equal(t, []byte("v2"), current.Kvs[0].Value)
+}
+
 func TestCompactZeroPreservesHistoryAndIsDurablyRepeatable(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
