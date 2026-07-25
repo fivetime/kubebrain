@@ -12499,6 +12499,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `RUN_GO_TEST=false RUN_BASIC_SMOKE=false RUN_HA_SMOKE=false RUN_APISERVER_SMOKE=false RUN_TLS_SMOKE=false hack/dev/verify.sh`、
   `RUN_UNKNOWN_SMOKE=true RUN_GO_TEST=false RUN_BASIC_SMOKE=false RUN_HA_SMOKE=false RUN_APISERVER_SMOKE=false RUN_TLS_SMOKE=false hack/dev/verify.sh`
   通过。
+- A823 收紧版本矩阵脚本的 RUN flag 校验：
+  `hack/dev/apiserver-version-matrix.sh` 和 `hack/dev/k8s-version-matrix.sh` 也使用
+  `RUN_*` 控制矩阵内的 apiserver smoke/watch soak、backup drill、fault/watch smoke。
+  这些脚本此前没有布尔 admission，`RUN_APISERVER_WATCH_SOAK=flase` 会在拉镜像或建集群后
+  静默跳过目标步骤。现在矩阵脚本在依赖检查、镜像拉取和 kind 集群创建前校验自身声明的
+  布尔开关，只接受精确 `true`/`false` 并以退出码 2 fail closed；未知 `RUN_*` 仍由顶层
+  `verify.sh` 处理，避免子脚本误拒绝外层继承的合法发布开关。
+  `bash -n hack/dev/apiserver-version-matrix.sh`、
+  `bash -n hack/dev/k8s-version-matrix.sh`、
+  `RUN_APISERVER_SMOKE=tru hack/dev/apiserver-version-matrix.sh` 与
+  `RUN_FAULT_SMOKE=maybe hack/dev/k8s-version-matrix.sh`
+  通过。
 
 ### P2：运维兼容和长期验证
 

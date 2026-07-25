@@ -20,6 +20,18 @@ need() {
   fi
 }
 
+validate_bool_flag() {
+  local name="$1"
+  local value="${!name}"
+  case "$value" in
+    true|false) ;;
+    *)
+      echo "${name} must be true or false, got ${value}" >&2
+      exit 2
+      ;;
+  esac
+}
+
 safe_name() {
   echo "$1" | tr '/:@.' '-----' | tr -cd '[:alnum:]-' | tr '[:upper:]' '[:lower:]'
 }
@@ -45,6 +57,9 @@ extract_kube_apiserver() {
   docker cp "${cid}:/usr/local/bin/kube-apiserver" "$out"
   chmod +x "$out"
 }
+
+validate_bool_flag RUN_APISERVER_SMOKE
+validate_bool_flag RUN_APISERVER_WATCH_SOAK
 
 need docker
 need kubectl
