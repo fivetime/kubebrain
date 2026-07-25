@@ -13317,8 +13317,9 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
 - A897 固定 range compare 选中 DeleteRange 分支：
   etcd `Compare.range_end` 会把比较目标扩展到 `[key, range_end)`，且选中的 Success/Failure
   分支仍要按普通 txn 语义执行 DeleteRange。新增本地回归覆盖 range compare 成立后执行
-  ranged DeleteRange、返回两个 PrevKv、且失败分支不写入；新增 reference etcd differential
-  覆盖同一行为，记录 Succeeded/Deleted/PrevKeys/Remaining。`go test ./pkg/server/etcd -run
+  ranged DeleteRange、返回两个 PrevKv、且 compare 不成立时只执行 Failure Put、不删除原范围；
+  新增 reference etcd differential 覆盖同一行为，记录
+  Succeeded/Deleted/PrevKeys/Remaining/MissSucceeded/MissRemaining。`go test ./pkg/server/etcd -run
   TestTxnRangeCompareSelectsDeleteRangeBranch -count=1 -v` 通过；`cd hack/etcd-client-compat &&
   go test . -run TestTxnRangeCompareDeleteDifferentialAgainstReferenceEtcd -count=1 -v` 编译通过，
   未设置 `REFERENCE_ETCD_ENDPOINT` 时按预期 skip。

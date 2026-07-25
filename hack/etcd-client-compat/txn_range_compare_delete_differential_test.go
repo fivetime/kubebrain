@@ -21,6 +21,9 @@ type txnRangeCompareDeleteOutcome struct {
 	Deleted   int64
 	PrevKeys  []string
 	Remaining []string
+
+	MissSucceeded bool
+	MissRemaining []string
 }
 
 func TestTxnRangeCompareDeleteDifferentialAgainstReferenceEtcd(t *testing.T) {
@@ -86,11 +89,41 @@ func runTxnRangeCompareDeleteScenario(t *testing.T, endpoint, instance string) t
 
 	remaining, err := kv.Range(ctx, &etcdserverpb.RangeRequest{Key: []byte(prefix), RangeEnd: rangeEnd})
 	require.NoError(t, err)
+	missPrefix := prefix + "miss/"
+	missEnd := []byte(clientv3.GetPrefixRangeEnd(missPrefix))
+	for _, suffix := range []string{"a", "b"} {
+		_, err := kv.Put(ctx, &etcdserverpb.PutRequest{
+			Key: []byte(missPrefix + suffix), Value: []byte("v-" + suffix),
+		})
+		require.NoError(t, err)
+	}
+	missResp, err := kv.Txn(ctx, &etcdserverpb.TxnRequest{
+		Compare: []*etcdserverpb.Compare{{
+			Key: []byte(missPrefix), RangeEnd: missEnd,
+			Target: etcdserverpb.Compare_VALUE, Result: etcdserverpb.Compare_EQUAL,
+			TargetUnion: &etcdserverpb.Compare_Value{Value: []byte("not-present")},
+		}},
+		Success: []*etcdserverpb.RequestOp{{
+			Request: &etcdserverpb.RequestOp_RequestDeleteRange{
+				RequestDeleteRange: &etcdserverpb.DeleteRangeRequest{Key: []byte(missPrefix), RangeEnd: missEnd},
+			},
+		}},
+		Failure: []*etcdserverpb.RequestOp{{
+			Request: &etcdserverpb.RequestOp_RequestPut{
+				RequestPut: &etcdserverpb.PutRequest{Key: []byte(missPrefix + "failure"), Value: []byte("selected")},
+			},
+		}},
+	})
+	require.NoError(t, err)
+	missRemaining, err := kv.Range(ctx, &etcdserverpb.RangeRequest{Key: []byte(missPrefix), RangeEnd: missEnd})
+	require.NoError(t, err)
 	return txnRangeCompareDeleteOutcome{
-		Succeeded: resp.Succeeded,
-		Deleted:   deleteResp.Deleted,
-		PrevKeys:  trimTxnRangeCompareDeleteKeys(deleteResp.PrevKvs, prefix),
-		Remaining: trimTxnRangeCompareDeleteKeys(remaining.Kvs, prefix),
+		Succeeded:     resp.Succeeded,
+		Deleted:       deleteResp.Deleted,
+		PrevKeys:      trimTxnRangeCompareDeleteKeys(deleteResp.PrevKvs, prefix),
+		Remaining:     trimTxnRangeCompareDeleteKeys(remaining.Kvs, prefix),
+		MissSucceeded: missResp.Succeeded,
+		MissRemaining: trimTxnRangeCompareDeleteKeys(missRemaining.Kvs, missPrefix),
 	}
 }
 

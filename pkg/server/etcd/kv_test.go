@@ -2266,6 +2266,42 @@ func TestTxnRangeCompareSelectsDeleteRangeBranch(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, int64(1), current.Count)
 	require.Equal(t, []byte(prefix+"a"), current.Kvs[0].Key)
+
+	missPrefix := "/registry/range-compare-delete-miss/"
+	missEnd := []byte("/registry/range-compare-delete-miss0")
+	for _, suffix := range []string{"a", "b"} {
+		_, err = server.Put(ctx, &etcdserverpb.PutRequest{
+			Key: []byte(missPrefix + suffix), Value: []byte("v-" + suffix),
+		})
+		require.NoError(t, err)
+	}
+	response, err = server.Txn(ctx, &etcdserverpb.TxnRequest{
+		Compare: []*etcdserverpb.Compare{{
+			Key: []byte(missPrefix), RangeEnd: missEnd,
+			Target: etcdserverpb.Compare_VALUE, Result: etcdserverpb.Compare_EQUAL,
+			TargetUnion: &etcdserverpb.Compare_Value{Value: []byte("not-present")},
+		}},
+		Success: []*etcdserverpb.RequestOp{{
+			Request: &etcdserverpb.RequestOp_RequestDeleteRange{
+				RequestDeleteRange: &etcdserverpb.DeleteRangeRequest{Key: []byte(missPrefix), RangeEnd: missEnd},
+			},
+		}},
+		Failure: []*etcdserverpb.RequestOp{{
+			Request: &etcdserverpb.RequestOp_RequestPut{
+				RequestPut: &etcdserverpb.PutRequest{Key: []byte(missPrefix + "failure"), Value: []byte("selected")},
+			},
+		}},
+	})
+	require.NoError(t, err)
+	require.False(t, response.Succeeded)
+	require.NotNil(t, response.Responses[0].GetResponsePut())
+
+	current, err = server.Range(ctx, &etcdserverpb.RangeRequest{Key: []byte(missPrefix), RangeEnd: missEnd})
+	require.NoError(t, err)
+	require.Equal(t, int64(3), current.Count)
+	require.Equal(t, []byte(missPrefix+"a"), current.Kvs[0].Key)
+	require.Equal(t, []byte(missPrefix+"b"), current.Kvs[1].Key)
+	require.Equal(t, []byte(missPrefix+"failure"), current.Kvs[2].Key)
 }
 
 func TestTxnComparePutWithPrevKV(t *testing.T) {
