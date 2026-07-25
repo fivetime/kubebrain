@@ -1139,6 +1139,49 @@ func TestRangeMaxIntLimitDoesNotOverflow(t *testing.T) {
 	require.False(t, resp.More)
 }
 
+func TestRangeNegativeLimitMatchesEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	ctx := context.Background()
+	prefix := "/registry/pods/negative-limit/"
+	end := []byte("/registry/pods/negative-limit0")
+	for _, suffix := range []string{"c", "a", "b"} {
+		_, err := server.Put(ctx, &etcdserverpb.PutRequest{
+			Key: []byte(prefix + suffix), Value: []byte("value-" + suffix),
+		})
+		require.NoError(t, err)
+	}
+
+	resp, err := server.Range(ctx, &etcdserverpb.RangeRequest{
+		Key: []byte(prefix), RangeEnd: end, Limit: -1,
+		SortOrder: etcdserverpb.RangeRequest_ASCEND, SortTarget: etcdserverpb.RangeRequest_KEY,
+	})
+	require.NoError(t, err)
+	require.Equal(t, int64(3), resp.Count)
+	require.False(t, resp.More)
+	require.Equal(t, [][]byte{[]byte(prefix + "a"), []byte(prefix + "b"), []byte(prefix + "c")}, [][]byte{
+		resp.Kvs[0].Key, resp.Kvs[1].Key, resp.Kvs[2].Key,
+	})
+
+	txn, err := server.Txn(ctx, &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{{
+		Request: &etcdserverpb.RequestOp_RequestRange{
+			RequestRange: &etcdserverpb.RangeRequest{
+				Key: []byte(prefix), RangeEnd: end, Limit: -1,
+				SortOrder: etcdserverpb.RangeRequest_DESCEND, SortTarget: etcdserverpb.RangeRequest_KEY,
+			},
+		},
+	}}})
+	require.NoError(t, err)
+	require.Len(t, txn.Responses, 1)
+	txnRange := txn.Responses[0].GetResponseRange()
+	require.Equal(t, int64(3), txnRange.Count)
+	require.False(t, txnRange.More)
+	require.Equal(t, [][]byte{[]byte(prefix + "c"), []byte(prefix + "b"), []byte(prefix + "a")}, [][]byte{
+		txnRange.Kvs[0].Key, txnRange.Kvs[1].Key, txnRange.Kvs[2].Key,
+	})
+}
+
 func TestTxnRangeNonKeyNoneSortUsesEtcdLimitLookahead(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

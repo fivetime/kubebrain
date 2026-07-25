@@ -13663,6 +13663,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   empty value、NOT_EQUAL 或 unknown result，也必须统一失败并执行 failure 分支。本轮
   新增本地 KV 服务层回归，固定六个 case 的 `Succeeded` 和最终写入 value，防止 compare
   enum 清理、protobuf default 处理或 absent-value 优化改变客户端可观测分支结果。
+- A950 固定 Range/Txn Range 的 negative limit 语义：
+  `range` 与 `range_matrix` reference differential 都覆盖 `Limit=-1`，证明 etcd 不把
+  negative limit 视为非法参数，而是按无限制读取、返回完整 Count/Kvs 且 `More=false`。
+  本轮新增本地 KV 服务层回归，分别固定普通 Range 的升序结果和 Txn Range 的降序结果，
+  防止后续 limit validation、分页 lookahead 或 Txn staged range 复用路径把负数 limit
+  误判为错误或截断结果。
 
 ### P2：运维兼容和长期验证
 
