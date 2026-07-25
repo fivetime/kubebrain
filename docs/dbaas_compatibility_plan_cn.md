@@ -12292,6 +12292,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   policy list，不读取模板或创建 Secret。
   `go test ./hack/production/internal/backupscheduler -run 'TestReconcileRejectsPolicyMetadataBeforeTemplateRead|TestReconcileIsDeterministicAcrossReplicas' -count=1 -v`
   和 `go test ./hack/production/internal/backupscheduler -count=1` 均通过。
+- A804 收紧 backup scheduler 已存在参数 Secret 的 data 形态：
+  多副本 scheduler 幂等恢复允许同名 generated params Secret 已存在，但旧校验只比较
+  `data.parameters.json`、immutable 和 ownerReference；同 ownerRef 的预置 Secret 若夹带
+  `token`、`tls.key` 等额外 data key 仍会被接受，扩大 parameter broker 可读 Secret 的内容面。
+  现在 AlreadyExists 路径要求 Secret `data` 恰好只有 `parameters.json` 一项且值完全等于
+  当前渲染参数，额外 key、缺 key 或非 string data 均 fail closed，并且不会提交 Operation。
+  回归覆盖同 ownerRef/immutable/正确参数但额外 `token` key 的 Secret。
+  `go test ./hack/production/internal/backupscheduler -run 'TestReconcileRejectsPreexistingParameterSecretWith(ExtraData|WrongOwner)|TestReconcileIsDeterministicAcrossReplicas' -count=1 -v`
+  和 `go test ./hack/production/internal/backupscheduler -count=1` 均通过。
 
 ### P2：运维兼容和长期验证
 

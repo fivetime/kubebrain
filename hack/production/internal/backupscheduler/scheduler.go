@@ -416,9 +416,10 @@ func (s *Scheduler) ensureParametersSecret(
 	if !parameterSecretOwnedByPolicy(existing, policy) {
 		return errors.New("existing parameter Secret has different immutable ownership")
 	}
-	actual, _, _ := unstructured.NestedString(existing.Object, "data", parametersKey)
 	isImmutable, _, _ := unstructured.NestedBool(existing.Object, "immutable")
-	if !isImmutable || actual != base64.StdEncoding.EncodeToString(parameters) {
+	data, found, err := unstructured.NestedStringMap(existing.Object, "data")
+	if err != nil || !found || !isImmutable || len(data) != 1 ||
+		data[parametersKey] != base64.StdEncoding.EncodeToString(parameters) {
 		return errors.New("existing parameter Secret has different immutable content")
 	}
 	return nil
