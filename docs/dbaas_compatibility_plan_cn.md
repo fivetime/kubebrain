@@ -12410,6 +12410,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `/v3beta/kv/range`，断言请求解码到 fake KV server。
   `go test ./pkg/endpoint -run 'TestHTTPAccessControllerRewritesV3BetaGatewayPrefix|TestGRPCGatewayAcceptsV3BetaCompatibilityPrefix' -count=1 -v`
   通过。
+- A815 对齐 generated gateway WebSocket streaming：
+  对照 `/root/etcd/server/embed/serve.go` 的 `createMux`，etcd 会把 `/v3/` generated
+  gateway 包在 `github.com/tmc/grpc-websocket-proxy/wsproxy.WebsocketProxy` 中，并用
+  request mutator 将 WebSocket upgrade 后的内部请求改成 POST。KubeBrain 旧 gateway
+  只接受普通 HTTP POST/streaming，WebSocket upgrade 到 `/v3/watch` 会落到普通
+  generated route 或失败，旧浏览器代理、websocket 流式客户端无法按 etcd wire contract
+  收到 newline-delimited JSON 帧。现在 `newGRPCGatewayMux` 保留可审计的 generated
+  ServeMux 构造函数，外层按 etcd 加 WebSocket proxy、POST mutator、`MaxInt32`
+  响应帧 buffer 和 klog logger；非 WebSocket 请求仍原样走 generated gateway，
+  `/v3beta/*` rewrite 仍在 access controller 中先执行。回归使用真实 bufconn gRPC
+  后端和 gorilla WebSocket 客户端对 `/v3/watch` 发送 create request，断言收到 created
+  与 event 两个 JSON 帧，同时固定 `Sec-Websocket-Protocol: Bearer, token` 转换出的
+  `Authorization` metadata 以及 gateway marker。
+  `go test ./pkg/endpoint -run 'TestGRPCGateway(RouteSurfaceIsExplicit|StreamsWatchAndElectionResponses|SupportsWebsocketWatch|UsesGeneratedEtcdJSONContract|AcceptsV3BetaCompatibilityPrefix|RootServerRoutesHTTP2GatewayAndGRPCByContentType)' -count=1 -v`
+  通过。
 
 ### P2：运维兼容和长期验证
 

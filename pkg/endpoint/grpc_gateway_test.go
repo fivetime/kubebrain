@@ -27,6 +27,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/authpb"
@@ -139,8 +140,10 @@ type gatewayLockServer struct {
 
 type gatewayWatchServer struct {
 	etcdserverpb.UnimplementedWatchServer
-	md   metadata.MD
-	next <-chan struct{}
+	request                  *etcdserverpb.WatchRequest
+	md                       metadata.MD
+	next                     <-chan struct{}
+	sendCreatedBeforeBodyEOF bool
 }
 
 func (s *gatewayWatchServer) Watch(stream etcdserverpb.Watch_WatchServer) error {
@@ -151,11 +154,14 @@ func (s *gatewayWatchServer) Watch(stream etcdserverpb.Watch_WatchServer) error 
 	if err != nil {
 		return err
 	}
+	s.request = request
 	if request.GetCreateRequest() == nil {
 		return nil
 	}
-	if _, err := stream.Recv(); err != io.EOF {
-		return err
+	if !s.sendCreatedBeforeBodyEOF {
+		if _, err := stream.Recv(); err != io.EOF {
+			return err
+		}
 	}
 	if err := stream.Send(&etcdserverpb.WatchResponse{
 		Header: &etcdserverpb.ResponseHeader{Revision: 31}, WatchId: 7, Created: true,
@@ -837,10 +843,9 @@ func TestGRPCGatewayRouteSurfaceIsExplicit(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, conn.Close()) })
 
-	handler, err := newGRPCGatewayMux(context.Background(), conn)
+	mux, err := newGRPCGatewayServeMux(context.Background(), conn)
 	require.NoError(t, err)
-	mux, ok := handler.(*runtime.ServeMux)
-	require.True(t, ok, "newGRPCGatewayMux must return the generated gateway ServeMux")
+	var handler http.Handler = mux
 
 	expectedRoutes := []string{
 		"/v3/auth/authenticate",
@@ -1756,6 +1761,62 @@ func TestGRPCGatewayStreamsWatchAndElectionResponses(t *testing.T) {
 	require.ErrorIs(t, err, io.EOF)
 	require.Equal(t, []string{grpcGatewayRequestMarkerValue}, leaseServer.md.Get(grpcGatewayRequestMarkerKey))
 	require.Equal(t, []string{"Bearer lease-token"}, leaseServer.md.Get(rpctypes.TokenFieldNameSwagger))
+}
+
+func TestGRPCGatewaySupportsWebsocketWatch(t *testing.T) {
+	listener := bufconn.Listen(1024 * 1024)
+	grpcServer := grpc.NewServer()
+	watchNext := make(chan struct{})
+	watchServer := &gatewayWatchServer{
+		next:                     watchNext,
+		sendCreatedBeforeBodyEOF: true,
+	}
+	etcdserverpb.RegisterWatchServer(grpcServer, watchServer)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///bufnet",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return listener.Dial() }),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	handler, err := newGRPCGatewayMux(context.Background(), conn)
+	require.NoError(t, err)
+	httpServer := httptest.NewServer(handler)
+	t.Cleanup(httpServer.Close)
+
+	target := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/v3/watch"
+	wsConn, response, err := websocket.DefaultDialer.Dial(target, http.Header{
+		"Sec-Websocket-Protocol": []string{"Bearer, watch-token"},
+	})
+	require.NoError(t, err)
+	defer func() { require.NoError(t, wsConn.Close()) }()
+	defer response.Body.Close()
+	require.Equal(t, http.StatusSwitchingProtocols, response.StatusCode)
+	require.Equal(t, "Bearer", wsConn.Subprotocol())
+
+	require.NoError(t, wsConn.WriteMessage(websocket.TextMessage,
+		[]byte(`{"create_request":{"key":"d2F0Y2gtd3M="}}`)))
+	require.NoError(t, wsConn.SetReadDeadline(time.Now().Add(2*time.Second)))
+	_, message, err := wsConn.ReadMessage()
+	require.NoError(t, err)
+	require.JSONEq(t, `{
+		"result":{"header":{"revision":"31"},"watch_id":"7","created":true}
+	}`, string(message))
+	close(watchNext)
+	_, message, err = wsConn.ReadMessage()
+	require.NoError(t, err)
+	require.JSONEq(t, `{
+		"result":{"header":{"revision":"32"},"watch_id":"7","events":[{
+			"kv":{"key":"d2F0Y2gta2V5","mod_revision":"32","value":"d2F0Y2gtdmFsdWU="}
+		}]}
+	}`, string(message))
+	require.NotNil(t, watchServer.request)
+	require.NotNil(t, watchServer.request.GetCreateRequest())
+	require.Equal(t, []byte("watch-ws"), watchServer.request.GetCreateRequest().Key)
+	require.Equal(t, []string{grpcGatewayRequestMarkerValue}, watchServer.md.Get(grpcGatewayRequestMarkerKey))
+	require.Equal(t, []string{"Bearer watch-token"}, watchServer.md.Get(rpctypes.TokenFieldNameSwagger))
 }
 
 func TestGRPCGatewayPropagatesConcurrencyRequestCancellation(t *testing.T) {

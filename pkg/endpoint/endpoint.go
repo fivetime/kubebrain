@@ -28,6 +28,7 @@ import (
 	// EnablePprof in pprof.go (#32).
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
+	"github.com/tmc/grpc-websocket-proxy/wsproxy"
 	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -253,6 +254,22 @@ func (e *Endpoint) buildGRPCGateway(ctx context.Context) (http.Handler, *grpc.Cl
 }
 
 func newGRPCGatewayMux(ctx context.Context, conn *grpc.ClientConn) (http.Handler, error) {
+	mux, err := newGRPCGatewayServeMux(ctx, conn)
+	if err != nil {
+		return nil, err
+	}
+	return wsproxy.WebsocketProxy(
+		mux,
+		wsproxy.WithRequestMutator(func(_ *http.Request, outgoing *http.Request) *http.Request {
+			outgoing.Method = http.MethodPost
+			return outgoing
+		}),
+		wsproxy.WithMaxRespBodyBufferSize(math.MaxInt32),
+		wsproxy.WithLogger(wsProxyKlogLogger{}),
+	), nil
+}
+
+func newGRPCGatewayServeMux(ctx context.Context, conn *grpc.ClientConn) (*runtime.ServeMux, error) {
 	mux := runtime.NewServeMux(
 		runtime.WithMarshalerOption(runtime.MIMEWildcard, &runtime.HTTPBodyMarshaler{
 			Marshaler: &runtime.JSONPb{
@@ -277,6 +294,16 @@ func newGRPCGatewayMux(ctx context.Context, conn *grpc.ClientConn) (http.Handler
 		}
 	}
 	return mux, nil
+}
+
+type wsProxyKlogLogger struct{}
+
+func (wsProxyKlogLogger) Warnln(args ...interface{}) {
+	klog.Warning(args...)
+}
+
+func (wsProxyKlogLogger) Debugln(args ...interface{}) {
+	klog.V(6).Info(args...)
 }
 
 func (e *Endpoint) buildPeerHTTPHandler() http.Handler {

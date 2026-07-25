@@ -1524,6 +1524,10 @@ hack/dev/verify.sh
   不得再用 cmux `HTTP2()` 把所有 HTTP/2 连接先交给 gRPC listener，否则 h2c curl、
   Go `net/http` unencrypted HTTP/2 客户端或代理上的 `/v3/*` JSON 请求会绕不过 gateway。
   发布门禁必须同时覆盖 h2c `/v3/kv/range` JSON 成功和同端口官方 gRPC `Range` 成功。
+  generated gateway 还必须像 etcd 一样把 `/v3/*` WebSocket upgrade 包装为
+  newline-delimited JSON streaming，并在 upgrade 后把内部请求改写为 POST；Watch/Observe
+  这类 streaming route 的发布门禁必须覆盖 WebSocket JSON 帧、`Sec-Websocket-Protocol`
+  bearer token 转换和 gateway marker metadata。
   发布门禁还必须让静态 API surface 测试同时覆盖 core etcd 服务与 Lock/Election
   service descriptor，确保新增公开 RPC 都有显式实现或显式拒绝分类；generated
   HTTP gateway 的注册 service 列表也必须固定为同一公开集合，避免 `/v3/*`
