@@ -13708,6 +13708,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `MinCreateRevision=txnRevision` 和 `MaxCreateRevision=seedRevision` 读取同一前缀，
   固定 staged 新 key 与事务前旧 key 的过滤结果，防止 Txn staged range 漏用 create
   metadata 或把 Count 误算成过滤后数量。
+- A957 固定 MemberList header revision 语义：
+  `memberlist_sync` reference differential 证明普通与 `Linearizable=true` 的
+  `Cluster.MemberList` 响应 header 都不能暴露 MVCC revision，即使数据面 revision 已经
+  前进也必须保持 `Header.Revision=0`。本轮新增本地 cluster 回归，先推进一次 KV
+  revision，再分别调用普通和 linearizable MemberList，并确认 linearizable 路径确实经过
+  read barrier，同时两次响应的 header revision 均为 0，防止把 Range/Status header
+  语义误套到 membership API 上。
 
 ### P2：运维兼容和长期验证
 

@@ -455,6 +455,34 @@ func TestMemberListLinearizableUsesReadBarrier(t *testing.T) {
 	require.EqualValues(t, 1, calls.Load())
 }
 
+func TestMemberListLinearizableHeaderRevisionMatchesEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	var calls atomic.Int32
+	server.peers = testPeerService{isLeader: true, syncReadFn: func(context.Context) error {
+		calls.Add(1)
+		return nil
+	}}
+
+	ctx := context.Background()
+	put, err := server.Put(ctx, &etcdserverpb.PutRequest{
+		Key: []byte("/registry/cluster/member-list-header"), Value: []byte("value"),
+	})
+	require.NoError(t, err)
+	require.Positive(t, put.Header.Revision)
+
+	for _, linearizable := range []bool{false, true} {
+		resp, err := server.MemberList(ctx, &etcdserverpb.MemberListRequest{Linearizable: linearizable})
+		require.NoError(t, err)
+		require.NotNil(t, resp.Header)
+		require.Zero(t, resp.Header.Revision, "etcd MemberList headers do not expose MVCC revision")
+		require.NotZero(t, resp.Header.ClusterId)
+		require.NotZero(t, resp.Header.MemberId)
+		require.NotEmpty(t, resp.Members)
+	}
+	require.EqualValues(t, 1, calls.Load())
+}
+
 func TestMemberListLinearizablePreservesBarrierStatus(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
