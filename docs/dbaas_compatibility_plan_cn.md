@@ -12342,6 +12342,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   status。
   `go test ./hack/production/internal/operationqueue -run 'TestQueue(GetRejectsStoredOperationDrift|GetAllowsArchivedTerminalOperationWithoutFinalizer|ParametersRejectsOperationDriftBeforeSecretAPI|RejectsMalformedClaimCandidatesBeforeLease|LoadsDigestBoundImmutableParameters|OnlyLoadsParametersForCurrentTypeBoundWorker)' -count=1 -v`
   和 `go test ./hack/production/internal/operationqueue -count=1` 均通过。
+- A809 收紧 parameter broker 未知 query 参数：
+  A504/A707/A709 已要求 `/v1/parameters` 的 `namespace`、`name`、`owner` 和 `attempt`
+  各出现一次并在 TokenReview 前校验形状，但旧 parser 仍允许额外 query key；代理、
+  客户端或审计链路若把未知身份字段附加到请求上，broker 会忽略它们并继续读取参数。
+  现在 broker 只接受这四个 query key，未知 key 与缺失、重复、非法 namespace/name/owner
+  或非正 attempt 一样在认证和 Operation/Secret API 前返回 400。回归覆盖带 `debug=true`
+  的请求不会触发 TokenReview 或 dynamic client action。
+  `go test ./hack/production/internal/parameterbroker -run 'TestHandler(RejectsMalformedQueryBeforeAuthenticationAndOperationAPI|RejectsAmbiguousRequiredQueryParameters|ReturnsOnlyCurrentTypeBoundWorkerParameters|FailsClosedForIdentityTypeAudienceAndFencing)' -count=1 -v`
+  和 `go test ./hack/production/internal/parameterbroker -count=1` 均通过。
 
 ### P2：运维兼容和长期验证
 

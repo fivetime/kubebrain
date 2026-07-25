@@ -128,6 +128,9 @@ func validateParametersJSON(parameters []byte) error {
 }
 
 func parameterIdentityFromQuery(query url.Values) (parameterRequestIdentity, error) {
+	if len(query) != 4 {
+		return parameterRequestIdentity{}, errors.New("parameter request identity is invalid")
+	}
 	name, nameOK := requiredQueryValue(query, "name")
 	namespace, namespaceOK := requiredQueryValue(query, "namespace")
 	owner, ownerOK := requiredQueryValue(query, "owner")

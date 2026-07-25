@@ -2263,8 +2263,8 @@ Secret list/watch、Operation list/watch/status 或 Lease 权限。projected tok
 解析 `Authorization` 时对 Bearer scheme 大小写不敏感，但会在 TokenReview 前拒绝空 token、
 含空白的 token 和超过 16 KiB 的 token，不能把畸形 header 静默 trim 成有效凭据。broker
 不可用、CA 错误、token 失效或 worker Lease 过期时 executor 必须 fail closed 并 requeue，
-不得回退为直接读取 Secret。`/v1/parameters` 的 `namespace`、`name`、`owner` 和
-`attempt` 必需 query 参数必须各恰好出现一次；缺失、重复或非正 attempt 都应返回 400，
+不得回退为直接读取 Secret。`/v1/parameters` 只能携带 `namespace`、`name`、`owner` 和
+`attempt` 四个 query 参数且必须各恰好出现一次；缺失、重复、未知参数或非正 attempt 都应返回 400，
 `namespace` 必须是 DNS label，`name` 必须是 DNS subdomain，`owner` 必须符合 operation
 queue worker identity audit text 规则。query identity 形状校验发生在 TokenReview 前，
 畸形请求不能消耗认证、Operation 或 Secret API；该边界同时避免代理、审计日志或客户端对

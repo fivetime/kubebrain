@@ -117,6 +117,7 @@ func TestHandlerRejectsMalformedQueryBeforeAuthenticationAndOperationAPI(t *test
 		{name: "name", query: "namespace=test&name=audit/1&owner=audit-worker&attempt=1"},
 		{name: "owner", query: "namespace=test&name=audit-1&owner=audit%0Aworker&attempt=1"},
 		{name: "attempt", query: "namespace=test&name=audit-1&owner=audit-worker&attempt=0"},
+		{name: "unknown", query: "namespace=test&name=audit-1&owner=audit-worker&attempt=1&debug=true"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dynamicClient, _, _ := claimedOperation(t)
