@@ -50,8 +50,14 @@ for variable in ACTION OPERATION_ID INSTANCE STATE_DIR RESTORE_RECEIPT_INPUT SER
 done
 [[ "$ACTION" =~ ^(prepare|cutover|verify|rollback|complete)$ ]] ||
   { echo "ACTION must be prepare, cutover, verify, rollback, or complete" >&2; exit 2; }
-[[ -z "$PUBLIC_ENDPOINT" || "$PUBLIC_ENDPOINT" != *[$'\t\r\n"\\']* ]] ||
-  { echo "PUBLIC_ENDPOINT contains unsupported characters" >&2; exit 2; }
+contains_unsafe_endpoint_char() {
+  local value="$1"
+  [[ "$value" == *[[:cntrl:]]* || "$value" == *\"* || "$value" == *\\* ]]
+}
+if [[ -n "$PUBLIC_ENDPOINT" ]] && contains_unsafe_endpoint_char "$PUBLIC_ENDPOINT"; then
+  echo "PUBLIC_ENDPOINT contains unsupported characters" >&2
+  exit 2
+fi
 for variable in OPERATION_ID INSTANCE SERVICE_NAMESPACE SERVICE_NAME SOURCE_INSTANCE TARGET_INSTANCE; do
   [[ "${!variable}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] ||
     { echo "${variable} contains unsupported characters" >&2; exit 2; }

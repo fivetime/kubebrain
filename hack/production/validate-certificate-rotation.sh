@@ -57,7 +57,11 @@ if [[ ! "$KUBEBRAIN_NAMESPACE" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]]; then
   echo "KUBEBRAIN_NAMESPACE must be a lowercase DNS label of at most 63 characters" >&2
   exit 2
 fi
-if [[ "$ENDPOINT" == *[$'\t\r\n\"\\']* ]]; then
+contains_unsafe_endpoint_char() {
+  local value="$1"
+  [[ "$value" == *[[:cntrl:]]* || "$value" == *\"* || "$value" == *\\* ]]
+}
+if contains_unsafe_endpoint_char "$ENDPOINT"; then
   echo "ENDPOINT must not contain control characters, quotes, or backslashes" >&2
   exit 2
 fi

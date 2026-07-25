@@ -90,7 +90,11 @@ if [[ -z "$ENDPOINT" ]]; then
   echo "ENDPOINT is required" >&2
   exit 2
 fi
-if [[ "$ENDPOINT" == *[$'\t\r\n"\\']* ]]; then
+contains_unsafe_endpoint_char() {
+  local value="$1"
+  [[ "$value" == *[[:cntrl:]]* || "$value" == *\"* || "$value" == *\\* ]]
+}
+if contains_unsafe_endpoint_char "$ENDPOINT"; then
   echo "ENDPOINT contains unsupported characters" >&2
   exit 2
 fi

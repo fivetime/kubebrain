@@ -13175,6 +13175,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   access controller 的匹配集合，并可能污染日志、诊断或 CORS header 生成边界。现在
   `endpoint.Config.Validate` 在 TLS/auth 初始化前拒绝 `--cors` 与 `--host-whitelist`
   中的控制字符和 DEL；`*`、普通 Origin 和 Host 精确匹配保持兼容。
+- A886 收紧生产脚本 endpoint 字符边界：
+  A881-A885 已把二进制和管理 API 中会进入 URL、Host、identity 或 HTTP header 的
+  字符边界统一到控制字符/DEL/引号/反斜杠 fail closed；但 shell 发布验证链仍只拒绝
+  tab/CR/LF、引号和反斜杠，`DEL` 或其他控制字符可能随 `ENDPOINT`/`PUBLIC_ENDPOINT`
+  进入 `etcdctl`、逻辑验证器、审计探针或错误输出。现在
+  `validate-instance-ready.sh`、`validate-certificate-rotation.sh`、
+  `switch-restore-traffic.sh` 和 `audit-restored-instance.sh` 使用同一 bash helper
+  在任何外部工具调用前拒绝 `[[:cntrl:]]`、引号和反斜杠；可选
+  `PUBLIC_ENDPOINT` 仍允许为空，等 verify/rollback 等需要它的阶段再要求非空。
+  回归覆盖发布验证、证书轮换、恢复流量切换和恢复后审计中的 DEL endpoint，并保留
+  既有换行、引号和反斜杠用例。
 
 ### P2：运维兼容和长期验证
 

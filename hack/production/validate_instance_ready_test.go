@@ -1117,6 +1117,7 @@ func TestValidateInstanceReadyRequiresImmutableInputs(t *testing.T) {
 		{name: "image required", key: "EXPECTED_IMAGE", want: "EXPECTED_IMAGE is required"},
 		{name: "immutable image", key: "EXPECTED_IMAGE", value: "kubebrain:dev", want: "EXPECTED_IMAGE must be an immutable image reference"},
 		{name: "endpoint control character", key: "ENDPOINT", value: "https://instance.example:2379\nother", want: "ENDPOINT contains unsupported characters"},
+		{name: "endpoint DEL", key: "ENDPOINT", value: "https://instance.example:2379\x7fother", want: "ENDPOINT contains unsupported characters"},
 		{name: "endpoint quote", key: "ENDPOINT", value: `https://instance.example:2379"other`, want: "ENDPOINT contains unsupported characters"},
 		{name: "endpoint backslash", key: "ENDPOINT", value: `https://instance.example:2379\other`, want: "ENDPOINT contains unsupported characters"},
 		{name: "quota required", key: "EXPECTED_QUOTA_BACKEND_BYTES", want: "EXPECTED_QUOTA_BACKEND_BYTES is required"},

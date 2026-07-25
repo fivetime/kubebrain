@@ -172,6 +172,7 @@ func TestPostRestoreAuditRejectsUnsafePublicEndpoint(t *testing.T) {
 		endpoint string
 	}{
 		{name: "control character", endpoint: "https://service:2379\nother"},
+		{name: "DEL", endpoint: "https://service:2379\x7fother"},
 		{name: "quote", endpoint: `https://service:2379"other`},
 		{name: "backslash", endpoint: `https://service:2379\other`},
 	} {

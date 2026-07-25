@@ -2021,6 +2021,9 @@ Operation `get/create`，验证外部 GET 与 readiness 按 `404/204 -> 503/503 
 验证器通过 OIDC discovery 获取 JWKS，未知 kid 会触发刷新；缓存过期且刷新失败时拒绝
 token，不继续信任可能已撤下的旧 key。除 loopback 测试外 issuer/JWKS 必须使用 HTTPS；
 issuer/JWKS URL 在任何 discovery 或 JWKS 请求前拒绝控制字符、DEL、引号和反斜杠。
+发布验证、证书轮换、恢复流量切换和恢复后审计脚本中的公开 KubeBrain endpoint
+环境变量同样在调用 `kubectl`、`etcdctl` 或逻辑验证器前拒绝控制字符、DEL、引号和
+反斜杠。
 API ServiceAccount 仅有 namespaced operation `create/get`，没有 list/watch、status、
 Secret、Lease、update 或 delete 权限。API 未显式传入 kubeconfig 时先使用 Pod
 ServiceAccount 的 in-cluster 配置；仅在非集群本地执行且 in-cluster 不可用时才回落

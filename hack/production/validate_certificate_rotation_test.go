@@ -166,9 +166,19 @@ func TestValidateCertificateRotationFailsClosed(t *testing.T) {
 }
 
 func TestValidateCertificateRotationRejectsUnsafeEvidenceFields(t *testing.T) {
-	fixture := newRotationFixture(t)
-	fixture.env = append(fixture.env, "ENDPOINT=https://example.invalid/\"bad")
-	fixture.run(t, "begin", false, "", "must not contain control characters")
+	for _, tc := range []struct {
+		name     string
+		endpoint string
+	}{
+		{name: "quote", endpoint: "https://example.invalid/\"bad"},
+		{name: "DEL", endpoint: "https://example.invalid/\x7fbad"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := newRotationFixture(t)
+			fixture.env = append(fixture.env, "ENDPOINT="+tc.endpoint)
+			fixture.run(t, "begin", false, "", "must not contain control characters")
+		})
+	}
 }
 
 type rotationFixture struct {

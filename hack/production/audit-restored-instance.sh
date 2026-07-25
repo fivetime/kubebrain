@@ -45,7 +45,11 @@ for variable in OPERATION_ID INSTANCE STATE_DIR CUTOVER_STATE_INPUT CUTOVER_RECE
   SERVICE_NAMESPACE SERVICE_NAME TARGET_INSTANCE PUBLIC_ENDPOINT; do
   [[ -n "${!variable:-}" ]] || { echo "${variable} is required" >&2; usage; }
 done
-[[ "$PUBLIC_ENDPOINT" != *[$'\t\r\n"\\']* ]] ||
+contains_unsafe_endpoint_char() {
+  local value="$1"
+  [[ "$value" == *[[:cntrl:]]* || "$value" == *\"* || "$value" == *\\* ]]
+}
+! contains_unsafe_endpoint_char "$PUBLIC_ENDPOINT" ||
   { echo "PUBLIC_ENDPOINT contains unsupported characters" >&2; exit 2; }
 for variable in OPERATION_ID INSTANCE SERVICE_NAMESPACE SERVICE_NAME TARGET_INSTANCE; do
   [[ "${!variable}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] ||
