@@ -13383,6 +13383,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `GrantedTTL=0` 且无 keys；`Keys=true` 不能改变该响应外观。既有
   `lease_read_boundary` reference differential 覆盖零 ID 与 live lease/list 组合，本轮补齐
   本地 gRPC 回归，防止把 ID=0 误判为非法请求或在 `Keys=true` 时泄漏空 lease 的特殊处理。
+- A907 固定 LeaseKeepAlive/Revoke signed ID 边界：
+  `lease_keepalive_revoke_boundary` reference differential 证明 etcd 接受显式 `-1`、
+  `math.MinInt64`、`math.MaxInt64` lease ID 的 grant/keepalive/revoke；未知或 ID=0 的
+  keepalive 返回同 ID 且 `TTL=0`，而 revoke 未知/重复/ID=0 返回
+  `NotFound: etcdserver: requested lease not found`。本轮补齐本地矩阵，防止后续把 lease
+  ID 当作 unsigned/positive-only 或把 stream keepalive 的缺失 lease 转成硬错误。
 
 ### P2：运维兼容和长期验证
 

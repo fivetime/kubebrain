@@ -496,6 +496,53 @@ func TestLeaseKeepAliveUnknownLeaseMatchesEtcd(t *testing.T) {
 	require.Equal(t, int64(server.backend.GetCurrentRevision()), stream.sent[0].Header.Revision)
 }
 
+func TestLeaseKeepAliveAndRevokeSignedIDBoundariesMatchEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+
+	liveIDs := []int64{-1, math.MinInt64, math.MaxInt64}
+	for _, id := range liveIDs {
+		grant, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{ID: id, TTL: 30})
+		require.NoError(t, err)
+		require.Equal(t, id, grant.ID)
+	}
+
+	stream := &fakeLeaseKeepAliveServer{requests: []*etcdserverpb.LeaseKeepAliveRequest{
+		{ID: 0},
+		{ID: -1},
+		{ID: math.MinInt64},
+		{ID: math.MaxInt64},
+	}}
+	require.NoError(t, server.LeaseKeepAlive(stream))
+	require.Len(t, stream.sent, 4)
+	require.Equal(t, int64(0), stream.sent[0].ID)
+	require.Zero(t, stream.sent[0].TTL)
+	require.Positive(t, stream.sent[0].Header.Revision)
+	for i, id := range liveIDs {
+		response := stream.sent[i+1]
+		require.Equal(t, id, response.ID)
+		require.Positive(t, response.TTL)
+		require.LessOrEqual(t, response.TTL, int64(30))
+		require.Positive(t, response.Header.Revision)
+	}
+
+	for _, id := range liveIDs {
+		revoked, err := server.LeaseRevoke(ctx, &etcdserverpb.LeaseRevokeRequest{ID: id})
+		require.NoError(t, err)
+		require.Positive(t, revoked.Header.Revision)
+
+		_, err = server.LeaseRevoke(ctx, &etcdserverpb.LeaseRevokeRequest{ID: id})
+		require.Error(t, err)
+		require.Equal(t, codes.NotFound, status.Code(err))
+		require.Equal(t, "etcdserver: requested lease not found", status.Convert(err).Message())
+	}
+	_, err := server.LeaseRevoke(ctx, &etcdserverpb.LeaseRevokeRequest{ID: 0})
+	require.Error(t, err)
+	require.Equal(t, codes.NotFound, status.Code(err))
+	require.Equal(t, "etcdserver: requested lease not found", status.Convert(err).Message())
+}
+
 func TestLeaseKeepAliveCannotResurrectExpiredLease(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
