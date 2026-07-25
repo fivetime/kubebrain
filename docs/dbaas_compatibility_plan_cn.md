@@ -13503,6 +13503,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Range 都必须看到 txn 内新建的 `d`。本轮新增本地 raw RPC 回归，固定 delete response
   header、PrevKV、Range header、final Range 和 create/mod revision 标记，防止 staged
   view 或 from-key sentinel 合并时把后续 Put 提前纳入前序 DeleteRange。
+- A926 固定 LeaseTimeToLive live keys 与 LeaseLeases 边界：
+  `lease_read_boundary` reference differential 证明 ID=0 的 TTL read 已对齐后，live
+  lease 的 `LeaseTimeToLive(Keys=false)` 必须省略 keys，`Keys=true` 必须返回全部
+  attached keys；`LeaseLeases` 必须包含该 live ID，且列表中不得出现 0 ID。本轮新增
+  本地服务层回归，固定 TTL/GrantedTTL 范围、key 集合、LeaseLeases header 和 non-zero
+  ID 约束，防止 lease read fast path 或 attachment index 重建后出现读契约漂移。
 
 ### P2：运维兼容和长期验证
 

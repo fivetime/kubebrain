@@ -771,6 +771,56 @@ func TestLeaseTimeToLiveZeroIDMatchesEtcd(t *testing.T) {
 	require.Equal(t, int64(server.backend.GetCurrentRevision()), withoutKeys.Header.Revision)
 }
 
+func TestLeaseTimeToLiveLiveKeysAndLeaseListBoundary(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	ctx := context.Background()
+	const leaseID int64 = 5160
+	grant, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 300, ID: leaseID})
+	require.NoError(t, err)
+	require.Equal(t, leaseID, grant.ID)
+	keys := [][]byte{
+		[]byte("/registry/leases/read-boundary/z"),
+		[]byte("/registry/leases/read-boundary/a"),
+	}
+	for _, key := range keys {
+		_, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("value"), Lease: leaseID})
+		require.NoError(t, err)
+	}
+
+	withoutKeys, err := server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: leaseID})
+	require.NoError(t, err)
+	require.Equal(t, leaseID, withoutKeys.ID)
+	require.Positive(t, withoutKeys.TTL)
+	require.LessOrEqual(t, withoutKeys.TTL, int64(300))
+	require.Equal(t, int64(300), withoutKeys.GrantedTTL)
+	require.Empty(t, withoutKeys.Keys)
+	require.NotNil(t, withoutKeys.Header)
+	require.Positive(t, withoutKeys.Header.Revision)
+
+	withKeys, err := server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: leaseID, Keys: true})
+	require.NoError(t, err)
+	require.Equal(t, leaseID, withKeys.ID)
+	require.Positive(t, withKeys.TTL)
+	require.LessOrEqual(t, withKeys.TTL, int64(300))
+	require.Equal(t, int64(300), withKeys.GrantedTTL)
+	sort.Slice(keys, func(i, j int) bool { return string(keys[i]) < string(keys[j]) })
+	sort.Slice(withKeys.Keys, func(i, j int) bool { return string(withKeys.Keys[i]) < string(withKeys.Keys[j]) })
+	require.Equal(t, keys, withKeys.Keys)
+
+	list, err := server.LeaseLeases(ctx, &etcdserverpb.LeaseLeasesRequest{})
+	require.NoError(t, err)
+	require.NotNil(t, list.Header)
+	require.Positive(t, list.Header.Revision)
+	containsLive := false
+	for _, status := range list.Leases {
+		require.NotZero(t, status.ID)
+		containsLive = containsLive || status.ID == leaseID
+	}
+	require.True(t, containsLive)
+}
+
 func TestCorruptAlarmDefersNaturalLeaseExpiry(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
