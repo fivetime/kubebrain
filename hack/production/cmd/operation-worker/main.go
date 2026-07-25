@@ -59,6 +59,9 @@ func main() {
 func run(ctx context.Context, executable string) error {
 	command := exec.CommandContext(ctx, executable)
 	processgroup.Configure(command)
+	defer func() {
+		_ = command.Cancel()
+	}()
 	command.WaitDelay = processgroup.DefaultWaitDelay
 	command.Stdin = os.Stdin
 	command.Stdout = os.Stdout

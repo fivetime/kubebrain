@@ -12152,6 +12152,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./hack/production/internal/processgroup -count=1 -v`、
   `cd hack/etcd-client-compat && go test -run 'TestCompat(CombinedOutputCleansProcessGroupDescendantsAfterParentExit|CommandHelpersUseWaitDelay|FailoverCommandsUseBoundedHelpers|KubernetesRestartCommandsUseBoundedHelpers|MakeMirrorCommandsUseBoundedHelpers)' -count=1 -v`、
   `git diff --check`、`go vet ./...` 和 `go test ./... -count=1 -p 1` 均通过。
+- A788 清理 operation-worker 流式 executor 的后台后代进程：
+  A787 只覆盖 captured-output helper；`operation-worker` 为保留长日志仍直接把 stdin/stdout/stderr
+  透传给 executor 并调用 `command.Run()`，因此 executor 父进程正常退出但留下同进程组后台子进程时，
+  worker 会返回成功且残留后代继续运行。现在 worker 在配置 process group 后注册返回清理，`Run`
+  结束时仍调用进程组 cancel；新增 daemonized executor 回归，父进程退出后延迟写文件的后台子进程
+  会被清理。静态门禁同步要求 operation-worker 保留 process group、wait delay、流式透传和返回清理，
+  且继续禁止切到 bounded capture。
+  `go test ./hack/production/cmd/operation-worker -count=1 -v`、
+  `go test ./hack/production -run 'TestProduction(OperationWorkerStreamsExecutorWithProcessGroup|RuntimeExecutorCommandsUseProcessGroupAndBoundedOutput|TestCommandHelpersUseWaitDelay)' -count=1 -v`、
+  `git diff --check`、`go vet ./...` 和 `go test ./... -count=1 -p 1` 均通过。
 
 ### P2：运维兼容和长期验证
 

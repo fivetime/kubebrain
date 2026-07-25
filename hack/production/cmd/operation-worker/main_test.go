@@ -54,3 +54,16 @@ func TestRunCancellationKillsExecutorDescendants(t *testing.T) {
 	_, err := os.Stat(survived)
 	require.ErrorIs(t, err, os.ErrNotExist)
 }
+
+func TestRunCleansExecutorDescendantsAfterParentExit(t *testing.T) {
+	dir := t.TempDir()
+	survived := filepath.Join(dir, "survived")
+	daemonize := filepath.Join(dir, "daemonize")
+	require.NoError(t, os.WriteFile(daemonize, []byte(
+		"#!/bin/sh\n(sleep 0.2; echo survived > "+survived+") &\nexit 0\n",
+	), 0o700))
+	require.NoError(t, run(context.Background(), daemonize))
+	time.Sleep(300 * time.Millisecond)
+	_, err := os.Stat(survived)
+	require.ErrorIs(t, err, os.ErrNotExist)
+}
