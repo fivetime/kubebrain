@@ -1852,7 +1852,8 @@ API 每 30 秒在线重载 `kubebrain-operation-api-tls`。轮换契约与 param
 后必须逐 Pod 验证新 serial、UID 不变和零重启。更换签发 CA 时，外部负载均衡器、调用方
 和探针必须先进入旧/新 CA 双信任窗口，再更新 API 叶证书，最后撤旧 CA。
 
-`/readyz` 只接受 GET，其他 method 在证书或依赖探测前返回 405。GET `/readyz` 还会在
+Operation API 和 parameter broker 的 `/readyz` 只接受不带 query/body 的 GET，其他
+method 在证书或依赖探测前返回 405，带 query 或 body 的 GET 在探测前返回 400。GET `/readyz` 还会在
 `--dependency-request-timeout=5s` 内 GET 一个固定不存在的 Operation，只接受带精确探测
 名称的 NotFound；CRD 路由缺失、RBAC、transport、timeout 或 API 过载均返回 503 并摘流。
 OIDC/JWKS 和业务 Operation 请求使用相同 deadline：JWKS provider

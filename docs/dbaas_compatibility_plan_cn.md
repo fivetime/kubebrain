@@ -12371,6 +12371,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./hack/production/internal/parameterbroker -run 'TestHandler(RejectsUnexpectedBodyBeforeAuthenticationAndOperationAPI|RejectsMalformedQueryBeforeAuthenticationAndOperationAPI|ReturnsOnlyCurrentTypeBoundWorkerParameters)' -count=1 -v`、
   `go test ./hack/production/internal/operationapi ./hack/production/internal/parameterbroker -count=1`
   均通过。
+- A812 收紧 Operation API/parameter broker `/readyz` 请求形状：
+  A712 已要求两个生产 `/readyz` 只接受 GET 并在证书/依赖探测前拒绝其他 method，但带
+  query 或 request body 的 GET 仍会继续执行 TLS 证书和 Kubernetes 依赖探测。readiness
+  是 Service 接流门禁，不应让畸形探测消耗依赖或让代理/探针对探测语义产生分歧。现在
+  `kubebrain-operation-api` 与 `kubebrain-operation-parameter-broker` 的 `/readyz` 均只接受
+  不带 query/body 的 GET；query/body 在任何证书或依赖检查前返回 400，非 GET 仍返回 405
+  和 `Allow: GET`。回归使用计数 certificate/dependency fake 覆盖 query 和 body 均不会
+  触发探测。
+  `go test ./hack/production/cmd/operation-api ./hack/production/cmd/operation-parameter-broker -run 'TestReadyzHandler(RejectsMalformedRequestBeforeDependencyChecks|RejectsNonGETBeforeDependencyChecks|SetsNoStoreHeaders)' -count=1 -v`
+  和 `go test ./hack/production/cmd/operation-api ./hack/production/cmd/operation-parameter-broker -count=1`
+  均通过。
 
 ### P2：运维兼容和长期验证
 

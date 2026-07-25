@@ -144,6 +144,10 @@ func readyzHandler(certificate readyCertificate, dependency readyDependency) htt
 			http.Error(response, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
+		if request.URL.RawQuery != "" || requestHasBody(request) {
+			http.Error(response, "malformed readiness request", http.StatusBadRequest)
+			return
+		}
 		if err := certificate.ValidAt(time.Now()); err != nil {
 			http.Error(response, "TLS certificate is not ready", http.StatusServiceUnavailable)
 			return
@@ -155,6 +159,10 @@ func readyzHandler(certificate readyCertificate, dependency readyDependency) htt
 		}
 		response.WriteHeader(http.StatusNoContent)
 	}
+}
+
+func requestHasBody(request *http.Request) bool {
+	return request.ContentLength != 0 || len(request.TransferEncoding) != 0
 }
 
 func kubernetesConfig(kubeconfig string) (*rest.Config, error) {

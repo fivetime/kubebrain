@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -123,6 +124,32 @@ func TestReadyzHandlerRejectsNonGETBeforeDependencyChecks(t *testing.T) {
 	require.Equal(t, "nosniff", response.Header().Get("X-Content-Type-Options"))
 	require.Zero(t, certificate.calls)
 	require.Zero(t, dependency.calls)
+}
+
+func TestReadyzHandlerRejectsMalformedRequestBeforeDependencyChecks(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		target string
+		body   string
+	}{
+		{name: "query", target: "/readyz?debug=true"},
+		{name: "body", target: "/readyz", body: "debug"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			certificate := &countingReadyCertificate{}
+			dependency := &countingReadyDependency{}
+			response := httptest.NewRecorder()
+			readyzHandler(certificate, dependency)(
+				response, httptest.NewRequest(http.MethodGet, tc.target, strings.NewReader(tc.body)),
+			)
+
+			require.Equal(t, http.StatusBadRequest, response.Code)
+			require.Equal(t, "no-store", response.Header().Get("Cache-Control"))
+			require.Equal(t, "nosniff", response.Header().Get("X-Content-Type-Options"))
+			require.Zero(t, certificate.calls)
+			require.Zero(t, dependency.calls)
+		})
+	}
 }
 
 func TestKubernetesConfigPrefersInClusterWhenKubeconfigIsEmpty(t *testing.T) {
