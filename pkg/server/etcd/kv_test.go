@@ -4218,6 +4218,58 @@ func TestTxnCompareValueAlwaysFailsForAbsentKey(t *testing.T) {
 	}
 }
 
+func TestTxnCompareEnumDifferentialScenarioMatchesEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	tests := []struct {
+		name          string
+		target        etcdserverpb.Compare_CompareTarget
+		result        etcdserverpb.Compare_CompareResult
+		compareValue  []byte
+		wantSucceeded bool
+		wantValue     []byte
+	}{
+		{name: "unknown-result", target: etcdserverpb.Compare_MOD, result: 99, wantSucceeded: true, wantValue: []byte("success")},
+		{name: "unknown-target-equal", target: 99, result: etcdserverpb.Compare_EQUAL, wantSucceeded: true, wantValue: []byte("success")},
+		{name: "unknown-target-not-equal", target: 99, result: etcdserverpb.Compare_NOT_EQUAL, wantValue: []byte("failure")},
+		{name: "absent-value-equal-empty", target: etcdserverpb.Compare_VALUE, result: etcdserverpb.Compare_EQUAL, wantValue: []byte("failure")},
+		{name: "absent-value-not-equal", target: etcdserverpb.Compare_VALUE, result: etcdserverpb.Compare_NOT_EQUAL, compareValue: []byte("value"), wantValue: []byte("failure")},
+		{name: "absent-value-unknown-result", target: etcdserverpb.Compare_VALUE, result: 99, wantValue: []byte("failure")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			key := []byte("/registry/generic-txn/compare-enum/" + tt.name)
+			compare := &etcdserverpb.Compare{
+				Key:         key,
+				Target:      tt.target,
+				Result:      tt.result,
+				TargetUnion: &etcdserverpb.Compare_ModRevision{ModRevision: 0},
+			}
+			if tt.target == etcdserverpb.Compare_VALUE {
+				compare.TargetUnion = &etcdserverpb.Compare_Value{Value: tt.compareValue}
+			}
+
+			resp, err := server.Txn(context.Background(), &etcdserverpb.TxnRequest{
+				Compare: []*etcdserverpb.Compare{compare},
+				Success: []*etcdserverpb.RequestOp{{Request: &etcdserverpb.RequestOp_RequestPut{
+					RequestPut: &etcdserverpb.PutRequest{Key: key, Value: []byte("success")},
+				}}},
+				Failure: []*etcdserverpb.RequestOp{{Request: &etcdserverpb.RequestOp_RequestPut{
+					RequestPut: &etcdserverpb.PutRequest{Key: key, Value: []byte("failure")},
+				}}},
+			})
+			require.NoError(t, err)
+			require.Equal(t, tt.wantSucceeded, resp.Succeeded)
+
+			ranged, err := server.Range(context.Background(), &etcdserverpb.RangeRequest{Key: key})
+			require.NoError(t, err)
+			require.Len(t, ranged.Kvs, 1)
+			require.Equal(t, tt.wantValue, ranged.Kvs[0].Value)
+		})
+	}
+}
+
 func TestTxnRejectsEmptyCompareKey(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

@@ -13656,6 +13656,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   ignore option 非法组合的 gRPC code/message 必须维持 etcd 的错误优先级。本轮新增
   本地 KV 服务层端到端回归，防止 Put fast path、lease attachment 索引或 validation
   order 改动破坏 apiserver CAS/lease 迁移行为。
+- A949 固定 Txn Compare enum 的分支选择语义：
+  `txn_compare_enum` reference differential 证明 unknown result 对非 VALUE compare
+  会按 etcd fallthrough 选中 success，unknown target + EQUAL 也选中 success，但
+  unknown target + NOT_EQUAL 选中 failure；对于 absent key 的 VALUE compare，即使是
+  empty value、NOT_EQUAL 或 unknown result，也必须统一失败并执行 failure 分支。本轮
+  新增本地 KV 服务层回归，固定六个 case 的 `Succeeded` 和最终写入 value，防止 compare
+  enum 清理、protobuf default 处理或 absent-value 优化改变客户端可观测分支结果。
 
 ### P2：运维兼容和长期验证
 
