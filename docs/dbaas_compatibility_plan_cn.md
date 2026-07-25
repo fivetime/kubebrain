@@ -13295,6 +13295,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   的 DEL prefix 用例并保留相对路径/空值/换行用例。`go test ./hack/production -run
   'TestBackupOperationRejectsInvalidPrefix|TestDestroyOperationRejectsInvalidBackupPrefix' -count=1 -v`
   通过。
+- A894 收紧 PostRestoreAudit prefix 控制字符边界：
+  直接审计脚本和 operation wrapper 都声明 audit prefix 不得包含控制字符，但 direct env 校验、
+  operation JSON 预检和 shell 兜底只覆盖换行、回车与 tab。现在 direct/operation 入口都用
+  `[[:cntrl:]]` 兜底，operation JSON 预检用 `explode` 拒绝 `<32` 与 `127`；回归新增
+  `AUDIT_PREFIX` 与 `audit_prefix` 的 DEL 用例，并继续固定 root、`/registry` 与相对路径拒绝。
+  `go test ./hack/production -run
+  'TestPostRestoreAuditOperationRejectsUnsafeAuditPrefix|TestPostRestoreAuditRejectsUnsafeAuditPrefix' -count=1 -v`
+  通过。
 
 ### P2：运维兼容和长期验证
 

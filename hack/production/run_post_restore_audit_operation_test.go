@@ -338,6 +338,7 @@ func TestPostRestoreAuditOperationRejectsUnsafeAuditPrefix(t *testing.T) {
 	}{
 		{name: "relative", prefix: "relative", want: "absolute key prefix"},
 		{name: "control character", prefix: "/audit\tshadow", want: "absolute key prefix"},
+		{name: "del", prefix: "/audit\x7fshadow", want: "absolute key prefix"},
 		{name: "root", prefix: "/", want: "must not target"},
 		{name: "registry", prefix: "/registry", want: "must not target"},
 		{name: "registry child", prefix: "/registry/pods", want: "must not target"},

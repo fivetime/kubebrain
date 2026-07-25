@@ -156,6 +156,7 @@ func TestPostRestoreAuditRejectsUnsafeAuditPrefix(t *testing.T) {
 		{name: "registry", prefix: "/registry", want: "must not target"},
 		{name: "registry child", prefix: "/registry/pods", want: "must not target"},
 		{name: "control", prefix: "/__kubebrain/audit\nprobe", want: "control characters"},
+		{name: "del", prefix: "/__kubebrain/audit\x7fprobe", want: "control characters"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newAuditFixture(t)

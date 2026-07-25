@@ -1911,7 +1911,7 @@ prefix 绝对且不同，并把 receipt 的 source instance 精确绑定到冻�
 Pod name/UID/restart/Ready 快照和 EndpointSlice targetRef UID 集。每个样本经公开 endpoint
 执行 60 秒 lease grant、`createRevision=0` 条件 Put、线性 Get（核对 value 与 lease）、
 value 条件 Delete、删除确认和 lease revoke；探针 key 使用加密随机 nonce，失败时也由
-lease 限制残留时间。直接审计入口会在任何拓扑或探针操作前拒绝含控制字符、引号或反斜杠的
+lease 限制残留时间。直接审计入口会在任何拓扑或探针操作前拒绝含控制字符、DEL、引号或反斜杠的
 public endpoint。跨样本 revision 必须单调不降，持续时间使用单调时钟计算。
 
 窗口内任一拓扑或数据检查失败都不发布成功凭据。完整持续时间及最少样本均满足后，才以

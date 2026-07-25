@@ -67,7 +67,7 @@ done
 validate_audit_prefix() {
   local prefix="$1" trimmed
   if [[ -z "$prefix" || "$prefix" != /* ||
-    "$prefix" == *$'\n'* || "$prefix" == *$'\r'* || "$prefix" == *$'\t'* ]]; then
+    "$prefix" == *[[:cntrl:]]* ]]; then
     echo "AUDIT_PREFIX must be an absolute key prefix without control characters" >&2
     exit 2
   fi

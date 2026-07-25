@@ -141,7 +141,7 @@ PARAMETERS_INPUT="$frozen_parameters"
 validate_audit_prefix_json() {
   "$JQ" -e '
     .audit_prefix | type == "string" and length > 0 and startswith("/") and
-    ((contains("\n") or contains("\r") or contains("\t")) | not)' \
+    (explode | all(. >= 32 and . != 127))' \
     "$PARAMETERS_INPUT" >/dev/null
 }
 
@@ -214,7 +214,7 @@ done
 validate_audit_prefix() {
   local prefix="$1" trimmed
   if [[ -z "$prefix" || "$prefix" != /* ||
-    "$prefix" == *$'\n'* || "$prefix" == *$'\r'* || "$prefix" == *$'\t'* ]]; then
+    "$prefix" == *[[:cntrl:]]* ]]; then
     echo "audit prefix must be an absolute key prefix without control characters" >&2
     exit 2
   fi
