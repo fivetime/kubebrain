@@ -92,6 +92,33 @@ func waitForEndpointHealth(t *testing.T, client *http.Client, url string) {
 	t.Fatalf("endpoint %s did not become healthy: %s", url, last)
 }
 
+func waitForEndpointHealthProto(t *testing.T, client *http.Client, url string, protoMajor int) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	var last string
+	for time.Now().Before(deadline) {
+		resp, err := client.Get(url)
+		if err != nil {
+			last = err.Error()
+			time.Sleep(50 * time.Millisecond)
+			continue
+		}
+		body, readErr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if readErr != nil {
+			last = readErr.Error()
+			time.Sleep(50 * time.Millisecond)
+			continue
+		}
+		if string(body) == server.HealthResponse && resp.ProtoMajor == protoMajor {
+			return
+		}
+		last = fmt.Sprintf("proto=%s body=%q", resp.Proto, body)
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("endpoint %s did not become healthy over HTTP/%d: %s", url, protoMajor, last)
+}
+
 func TestRunEndpoint(t *testing.T) {
 	if raceDetectorEnabled {
 		// This trips a known data race INSIDE vendored github.com/soheilhy/cmux
@@ -155,6 +182,17 @@ func TestRunEndpoint(t *testing.T) {
 		t.Logf("testing url %s", url)
 		waitForEndpointHealth(t, client, url)
 	}
+
+	protocols := new(http.Protocols)
+	protocols.SetHTTP2(true)
+	h2Client := &http.Client{
+		Timeout: 1 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: conf.PeerSecurityConfig.getClientTLSConfig(),
+			Protocols:       protocols,
+		},
+	}
+	waitForEndpointHealthProto(t, h2Client, fmt.Sprintf("https://127.0.0.1:%d/health", clientPort), 2)
 }
 
 func TestRunEndpointBindFailureStopsBackgroundWorkBeforeBackendClose(t *testing.T) {

@@ -12382,6 +12382,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./hack/production/cmd/operation-api ./hack/production/cmd/operation-parameter-broker -run 'TestReadyzHandler(RejectsMalformedRequestBeforeDependencyChecks|RejectsNonGETBeforeDependencyChecks|SetsNoStoreHeaders)' -count=1 -v`
   和 `go test ./hack/production/cmd/operation-api ./hack/production/cmd/operation-parameter-broker -count=1`
   均通过。
+- A813 修正 HTTP/2 JSON gateway 与 gRPC 入口分流：
+  对照 `/root/etcd/server/embed/serve.go` 的 `grpcHandlerFunc` 和 `registerGateway`，etcd 在
+  HTTP server 内仅把 HTTP/2 且 `Content-Type` 包含 `application/grpc` 的请求交给
+  gRPC server，其余 HTTP/2 请求继续进入 generated gateway。KubeBrain 旧入口用 cmux
+  `HTTP2()` 直接匹配 gRPC listener，导致明文 HTTP/2 JSON 客户端对 `/v3/kv/range`
+  发送 `application/json` 时不会进入 gateway，而是被误送到 gRPC server 或超时。现在
+  client/peer 端口改为单个 `http+grpc` exposed server：HTTP server 显式启用
+  HTTP/1、TLS HTTP/2 与 unencrypted HTTP/2，handler 内按 `application/grpc`
+  content-type 分派到 gRPC，否则走原 HTTP/gateway handler；CORS、Host whitelist、
+  readiness/health 和 gateway marker 仍在同一 HTTP 包装链内执行。回归用真实
+  `newRootServer`/cmux 端口强制 h2c POST `/v3/kv/range`，断言响应为 HTTP/2 JSON 并命中
+  fake KV server，同时再用官方 gRPC client 对同端口执行 Range，证明普通 gRPC 未被
+  fallback 抢走；`TestRunEndpoint` 额外强制 TLS HTTP/2 `/health`，确认 TLS wrapper 后的
+  组合 HTTP server 仍保留 h2。
+  `go test ./pkg/endpoint -run 'TestRootServerRoutesHTTP2GatewayAndGRPCByContentType|TestNewHttpServerBoundsHeaderAdmission|TestGRPCGatewayUsesGeneratedEtcdJSONContract' -count=1`
+  和 `go test ./pkg/endpoint -run TestRunEndpoint -count=1` 均通过。
 
 ### P2：运维兼容和长期验证
 

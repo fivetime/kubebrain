@@ -17,6 +17,7 @@ package endpoint
 import (
 	"bufio"
 	"context"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -912,6 +913,93 @@ func TestGRPCGatewayRouteSurfaceIsExplicit(t *testing.T) {
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	require.Equal(t, http.StatusNotFound, response.Code)
+}
+
+func TestRootServerRoutesHTTP2GatewayAndGRPCByContentType(t *testing.T) {
+	if raceDetectorEnabled {
+		t.Skip("skipping under -race: vendored cmux data race, not KubeBrain code")
+	}
+	port, _ := reserveEndpointTestPorts(t)
+	grpcServer := grpc.NewServer()
+	kvServer := &gatewayKVServer{}
+	etcdserverpb.RegisterKVServer(grpcServer, kvServer)
+
+	target := fmt.Sprintf("127.0.0.1:%d", port)
+	gatewayConn, err := grpc.NewClient("passthrough:///"+target, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, gatewayConn.Close()) })
+
+	gateway, err := newGRPCGatewayMux(context.Background(), gatewayConn)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- newRootServer(port, newGRPCMuxedHTTPServer(grpcServer, gateway)).run(ctx)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		require.NoError(t, <-done)
+	})
+
+	protocols := new(http.Protocols)
+	protocols.SetUnencryptedHTTP2(true)
+	httpClient := &http.Client{
+		Timeout:   2 * time.Second,
+		Transport: &http.Transport{Protocols: protocols},
+	}
+
+	var (
+		httpBody  string
+		httpProto int
+		lastErr   error
+	)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		request, err := http.NewRequest(http.MethodPost, "http://"+target+"/v3/kv/range",
+			strings.NewReader(`{"key":"aDI=","limit":"1"}`))
+		require.NoError(t, err)
+		request.Header.Set("Content-Type", "application/json")
+		response, err := httpClient.Do(request)
+		if err != nil {
+			lastErr = err
+			time.Sleep(50 * time.Millisecond)
+			continue
+		}
+		body, readErr := io.ReadAll(response.Body)
+		response.Body.Close()
+		if readErr != nil {
+			lastErr = readErr
+			time.Sleep(50 * time.Millisecond)
+			continue
+		}
+		if response.StatusCode != http.StatusOK {
+			lastErr = fmt.Errorf("gateway returned %s: %s", response.Status, body)
+			time.Sleep(50 * time.Millisecond)
+			continue
+		}
+		lastErr = nil
+		httpBody = string(body)
+		httpProto = response.ProtoMajor
+		break
+	}
+	require.NoError(t, lastErr)
+	require.Equal(t, 2, httpProto)
+	require.JSONEq(t, `{
+		"header":{"cluster_id":"11","member_id":"12","revision":"13","raft_term":"14"},
+		"kvs":[{"key":"YQ==","create_revision":"2","mod_revision":"3","version":"4","value":"dmFsdWU="}],
+		"count":"1"
+	}`, httpBody)
+	require.Equal(t, []byte("h2"), kvServer.request.Key)
+
+	directConn, err := grpc.NewClient("passthrough:///"+target, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, directConn.Close()) })
+	directResponse, err := etcdserverpb.NewKVClient(directConn).Range(context.Background(),
+		&etcdserverpb.RangeRequest{Key: []byte("grpc")})
+	require.NoError(t, err)
+	require.Equal(t, int64(1), directResponse.Count)
+	require.Equal(t, []byte("grpc"), kvServer.request.Key)
 }
 
 func registeredGatewayPOSTRouteCount(t *testing.T, mux *runtime.ServeMux) int {

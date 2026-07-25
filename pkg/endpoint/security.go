@@ -64,8 +64,8 @@ func (t *secureServer) name() string {
 	return "tls"
 }
 
-func (t *secureServer) matcher() cmux.Matcher {
-	return cmux.TLS()
+func (t *secureServer) matchWriters() []cmux.MatchWriter {
+	return matchersToMatchWriters(cmux.TLS())
 }
 
 func (t *secureServer) serve(listener net.Listener) (err error) {

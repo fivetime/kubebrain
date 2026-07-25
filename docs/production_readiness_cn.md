@@ -1518,6 +1518,12 @@ hack/dev/verify.sh
   endpoint HTTP/1 server 必须限制 header admission：`ReadHeaderTimeout=5s`、
   `IdleTimeout=2m`、`MaxHeaderBytes=32KiB`；不要设置全局 `ReadTimeout` 或
   `WriteTimeout`，以免截断 Watch/Lease gateway 的合法长流。
+  client/peer 端口的 gRPC 与 HTTP/gateway 入口必须像 etcd 一样在 HTTP server 内按
+  HTTP/2 `Content-Type: application/grpc*` 分派：gRPC 请求进入 `grpc.Server.ServeHTTP`，
+  明文 HTTP/2 JSON、TLS HTTP/2 JSON 和 HTTP/1 请求继续进入 HTTP/gateway handler。
+  不得再用 cmux `HTTP2()` 把所有 HTTP/2 连接先交给 gRPC listener，否则 h2c curl、
+  Go `net/http` unencrypted HTTP/2 客户端或代理上的 `/v3/*` JSON 请求会绕不过 gateway。
+  发布门禁必须同时覆盖 h2c `/v3/kv/range` JSON 成功和同端口官方 gRPC `Range` 成功。
   发布门禁还必须让静态 API surface 测试同时覆盖 core etcd 服务与 Lock/Election
   service descriptor，确保新增公开 RPC 都有显式实现或显式拒绝分类；generated
   HTTP gateway 的注册 service 列表也必须固定为同一公开集合，避免 `/v3/*`

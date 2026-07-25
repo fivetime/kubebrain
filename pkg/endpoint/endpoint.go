@@ -140,7 +140,8 @@ func (e *Endpoint) buildExposedServers(sc *SecurityConfig, servers ...exposedSer
 }
 
 func (e *Endpoint) runClientServer(ctx context.Context) error {
-	clientHttp, gatewayConn, err := e.buildClientHttpServer(ctx)
+	clientGrpc := e.buildClientGrpcServer()
+	clientHTTPHandler, gatewayConn, err := e.buildClientHTTPHandler(ctx)
 	if err != nil {
 		return err
 	}
@@ -151,16 +152,17 @@ func (e *Endpoint) runClientServer(ctx context.Context) error {
 			}
 		}()
 	}
-	clientGrpc := e.buildClientGrpcServer()
-	exposedServers := e.buildExposedServers(e.config.ClientSecurityConfig, clientHttp, clientGrpc)
+	exposedServers := e.buildExposedServers(e.config.ClientSecurityConfig,
+		newGRPCMuxedHTTPServer(clientGrpc, clientHTTPHandler))
 	clientServiceGroup := newRootServer(e.config.Port, exposedServers...)
 	return clientServiceGroup.run(ctx)
 }
 
 func (e *Endpoint) runPeerServer(ctx context.Context) error {
-	peerHttp := e.buildPeerHttpServer()
 	peerGrpc := e.buildPeerGrpcServer()
-	exposedServers := e.buildExposedServers(e.config.PeerSecurityConfig, peerHttp, peerGrpc)
+	peerHTTPHandler := e.buildPeerHTTPHandler()
+	exposedServers := e.buildExposedServers(e.config.PeerSecurityConfig,
+		newGRPCMuxedHTTPServer(peerGrpc, peerHTTPHandler))
 	peerServiceGroup := newRootServer(e.config.PeerPort, exposedServers...)
 	return peerServiceGroup.run(ctx)
 }
@@ -175,7 +177,7 @@ func (e *Endpoint) runMetricsServer(ctx context.Context) error {
 	return infoServiceGroup.run(ctx)
 }
 
-func (e *Endpoint) buildClientHttpServer(ctx context.Context) (exposedServer, *grpc.ClientConn, error) {
+func (e *Endpoint) buildClientHTTPHandler(ctx context.Context) (http.Handler, *grpc.ClientConn, error) {
 	// The client port is the production data plane reachable by every etcd client.
 	// It must NOT expose /metrics or /debug/pprof there: those are unauthenticated
 	// info-disclosure and (pprof) CPU/heap DoS vectors. Metrics and (opt-in) pprof
@@ -194,7 +196,7 @@ func (e *Endpoint) buildClientHttpServer(ctx context.Context) (exposedServer, *g
 		handlersMaps = append(handlersMaps, map[string]http.Handler{"/": gateway})
 	}
 
-	return newHTTPAccessControlledServer(e.config.CORS, e.config.HostWhitelist, handlersMaps...), gatewayConn, nil
+	return newHTTPAccessControlledHandler(e.config.CORS, e.config.HostWhitelist, handlersMaps...), gatewayConn, nil
 }
 
 type gatewayRegisterFunc func(context.Context, *runtime.ServeMux, *grpc.ClientConn) error
@@ -277,12 +279,12 @@ func newGRPCGatewayMux(ctx context.Context, conn *grpc.ClientConn) (http.Handler
 	return mux, nil
 }
 
-func (e *Endpoint) buildPeerHttpServer() exposedServer {
+func (e *Endpoint) buildPeerHTTPHandler() http.Handler {
 	handlersMaps := []map[string]http.Handler{
 		e.server.GetPeerHttpHandlers(),
 	}
 
-	return newHttpServerWithHandlers(handlersMaps...)
+	return newHTTPMuxWithHandlers(handlersMaps...)
 }
 
 // grpcTransportOptions matches etcd's HTTP/2 stream and keepalive posture. etcd
@@ -322,10 +324,10 @@ func grpcTransportOptions(config *Config) []grpc.ServerOption {
 	return opts
 }
 
-func (e *Endpoint) buildClientGrpcServer() exposedServer {
+func (e *Endpoint) buildClientGrpcServer() *grpc.Server {
 	grpcServer := grpc.NewServer(e.clientGrpcServerOptions()...)
 	e.server.RegisterClient(grpcServer)
-	return newGrpcServer(grpcServer)
+	return grpcServer
 }
 
 func (e *Endpoint) clientGrpcServerOptions() []grpc.ServerOption {
@@ -342,10 +344,10 @@ func (e *Endpoint) clientGrpcServerOptions() []grpc.ServerOption {
 	return opts
 }
 
-func (e *Endpoint) buildPeerGrpcServer() exposedServer {
+func (e *Endpoint) buildPeerGrpcServer() *grpc.Server {
 	grpcServer := grpc.NewServer(e.peerGrpcServerOptions()...)
 	e.server.RegisterPeer(grpcServer)
-	return newGrpcServer(grpcServer)
+	return grpcServer
 }
 
 func (e *Endpoint) peerGrpcServerOptions() []grpc.ServerOption {

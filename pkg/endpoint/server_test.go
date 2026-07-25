@@ -30,8 +30,10 @@ type closeErrorServer struct {
 	err error
 }
 
-func (s closeErrorServer) name() string             { return "close-error" }
-func (s closeErrorServer) matcher() cmux.Matcher    { return cmux.Any() }
+func (s closeErrorServer) name() string { return "close-error" }
+func (s closeErrorServer) matchWriters() []cmux.MatchWriter {
+	return matchersToMatchWriters(cmux.Any())
+}
 func (s closeErrorServer) serve(net.Listener) error { return nil }
 func (s closeErrorServer) close() error             { return s.err }
 
@@ -71,6 +73,9 @@ func TestNewHttpServerBoundsHeaderAdmission(t *testing.T) {
 	require.Equal(t, httpReadHeaderTimeout, server.svr.ReadHeaderTimeout)
 	require.Equal(t, httpIdleTimeout, server.svr.IdleTimeout)
 	require.Equal(t, httpMaxHeaderBytes, server.svr.MaxHeaderBytes)
+	require.True(t, server.svr.Protocols.HTTP1())
+	require.True(t, server.svr.Protocols.HTTP2())
+	require.True(t, server.svr.Protocols.UnencryptedHTTP2())
 	require.Zero(t, server.svr.ReadTimeout)
 	require.Zero(t, server.svr.WriteTimeout)
 }
