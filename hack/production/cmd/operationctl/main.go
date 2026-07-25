@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -261,7 +262,23 @@ func brokerParameters(
 	if len(body) > maxBrokerParametersBytes {
 		return nil, fmt.Errorf("parameter broker response exceeds %d bytes", maxBrokerParametersBytes)
 	}
+	if err := validateBrokerParametersJSON(body); err != nil {
+		return nil, err
+	}
 	return body, nil
+}
+
+func validateBrokerParametersJSON(parameters []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(parameters))
+	decoder.UseNumber()
+	var document map[string]any
+	if err := decoder.Decode(&document); err != nil || document == nil {
+		return errors.New("parameter broker returned invalid parameter JSON")
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return errors.New("parameter broker returned multiple JSON documents")
+	}
+	return nil
 }
 
 func readBrokerCA(path string) ([]byte, error) {

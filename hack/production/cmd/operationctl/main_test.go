@@ -156,6 +156,43 @@ func TestBrokerParametersRejectsNonJSONSuccessResponse(t *testing.T) {
 	require.NotContains(t, err.Error(), "not parameters")
 }
 
+func TestBrokerParametersRejectsMalformedJSONSuccessResponse(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body []byte
+		want string
+	}{
+		{name: "not json", body: []byte("not-json"), want: "invalid parameter JSON"},
+		{name: "trailing json", body: []byte("{}{}"), want: "multiple JSON documents"},
+		{name: "null", body: []byte("null"), want: "invalid parameter JSON"},
+		{name: "array", body: []byte("[]"), want: "invalid parameter JSON"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewTLSServer(http.HandlerFunc(func(
+				response http.ResponseWriter, _ *http.Request,
+			) {
+				response.Header().Set("Content-Type", "application/json")
+				response.WriteHeader(http.StatusOK)
+				_, _ = response.Write(tc.body)
+			}))
+			defer server.Close()
+			dir := t.TempDir()
+			tokenPath := filepath.Join(dir, "token")
+			caPath := filepath.Join(dir, "ca.crt")
+			require.NoError(t, os.WriteFile(tokenPath, []byte("token"), 0o600))
+			require.NoError(t, os.WriteFile(caPath, pem.EncodeToMemory(&pem.Block{
+				Type: "CERTIFICATE", Bytes: server.Certificate().Raw,
+			}), 0o600))
+			_, err := brokerParameters(
+				t.Context(), server.URL, tokenPath, caPath,
+				"tenant-a", "backup-1", "worker-a", 1,
+			)
+			require.ErrorContains(t, err, tc.want)
+			require.NotContains(t, err.Error(), string(tc.body))
+		})
+	}
+}
+
 func TestBrokerParametersRejectsOversizedResponse(t *testing.T) {
 	server := httptest.NewTLSServer(http.HandlerFunc(func(
 		response http.ResponseWriter, _ *http.Request,

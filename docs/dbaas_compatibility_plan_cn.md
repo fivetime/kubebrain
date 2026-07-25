@@ -12258,6 +12258,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Secret 内容。回归覆盖非 JSON、trailing JSON、`null` 和 array。
   `go test ./hack/production/internal/parameterbroker -run 'TestHandler(ReturnsOnlyCurrentTypeBoundWorkerParameters|RejectsNonJSONObjectParameters|RejectsAmbiguousRequiredQueryParameters|FailsClosedForIdentityTypeAudienceAndFencing)' -count=1 -v`
   和 `go test ./hack/production/internal/parameterbroker -count=1` 均通过。
+- A800 收紧 operationctl broker 参数响应 JSON 形态：
+  broker 端已校验参数 JSON，但 operationctl 也可能连接到旧 broker、错误代理或测试替身。
+  旧客户端在 HTTP 200 且 `Content-Type: application/json` 后会把 body 原样写 stdout，
+  非 JSON、`null`、array 或拼接 JSON 只能由 executor 脚本兜底。现在
+  `brokerParameters` 在大小上限和 media type 后继续要求单个 JSON object，错误信息不带
+  响应 body。回归覆盖非 JSON、trailing JSON、`null` 和 array。
+  `go test ./hack/production/cmd/operationctl -run 'TestBrokerParameters|TestDefaultKubeconfig' -count=1 -v`
+  和 `go test ./hack/production/cmd/operationctl -count=1` 均通过。
 
 ### P2：运维兼容和长期验证
 
