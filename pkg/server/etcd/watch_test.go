@@ -544,6 +544,78 @@ func TestWatchSignedIDCreateAndCancelBoundariesMatchEtcd(t *testing.T) {
 	}
 }
 
+func TestWatchInvalidCreateAutomaticIDAndUnknownCancelKeepStreamAlive(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	stream := &scriptedWatchServer{
+		fakeWatchServer: &fakeWatchServer{ctx: context.Background()},
+		reqs: []*etcdserverpb.WatchRequest{
+			{RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{
+				CreateRequest: &etcdserverpb.WatchCreateRequest{
+					Key: []byte("/watch/id-range/equal"), RangeEnd: []byte("/watch/id-range/equal"), WatchId: 101,
+				},
+			}},
+			{RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{
+				CreateRequest: &etcdserverpb.WatchCreateRequest{
+					Key: []byte("/watch/id-range/after-error"), WatchId: 102,
+				},
+			}},
+			{RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{
+				CreateRequest: &etcdserverpb.WatchCreateRequest{
+					Key: []byte("/watch/id-range/automatic"),
+				},
+			}},
+			{RequestUnion: &etcdserverpb.WatchRequest_CancelRequest{
+				CancelRequest: &etcdserverpb.WatchCancelRequest{WatchId: 102},
+			}},
+			{RequestUnion: &etcdserverpb.WatchRequest_CancelRequest{
+				CancelRequest: &etcdserverpb.WatchCancelRequest{WatchId: 0},
+			}},
+			{RequestUnion: &etcdserverpb.WatchRequest_CancelRequest{
+				CancelRequest: &etcdserverpb.WatchCancelRequest{WatchId: 999},
+			}},
+			{RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{
+				CreateRequest: &etcdserverpb.WatchCreateRequest{
+					Key: []byte("/watch/id-range/final"), WatchId: 103,
+				},
+			}},
+			{RequestUnion: &etcdserverpb.WatchRequest_CancelRequest{
+				CancelRequest: &etcdserverpb.WatchCancelRequest{WatchId: 103},
+			}},
+		},
+	}
+
+	require.Equal(t, codes.Canceled, status.Code(server.Watch(stream)))
+	require.Len(t, stream.sent, 7)
+
+	invalid := stream.sent[0]
+	require.True(t, invalid.Created)
+	require.True(t, invalid.Canceled)
+	require.Equal(t, int64(-1), invalid.WatchId)
+	require.Equal(t, "mvcc: watcher range is empty", invalid.CancelReason)
+	require.NotNil(t, invalid.Header)
+
+	require.True(t, stream.sent[1].Created)
+	require.False(t, stream.sent[1].Canceled)
+	require.Equal(t, int64(102), stream.sent[1].WatchId)
+
+	require.True(t, stream.sent[2].Created)
+	require.False(t, stream.sent[2].Canceled)
+	require.Equal(t, int64(0), stream.sent[2].WatchId)
+
+	require.True(t, stream.sent[3].Canceled)
+	require.Equal(t, int64(102), stream.sent[3].WatchId)
+	require.True(t, stream.sent[4].Canceled)
+	require.Equal(t, int64(0), stream.sent[4].WatchId)
+
+	require.True(t, stream.sent[5].Created)
+	require.False(t, stream.sent[5].Canceled)
+	require.Equal(t, int64(103), stream.sent[5].WatchId)
+	require.True(t, stream.sent[6].Canceled)
+	require.Equal(t, int64(103), stream.sent[6].WatchId)
+}
+
 func TestClientWatchCancelHeaderUsesCurrentRevisionBeforeEventsPublish(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

@@ -13541,6 +13541,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   精确为 `0x40a4756d`。本轮把该常量加入本地 Maintenance 回归，不再只断言它不同于
   current hash，防止后续 HashKV 编码、排序或 CRC 输入集合调整时悄悄破坏 etcd 兼容
   negative revision 语义。
+- A932 固定 Watch invalid create 后的 ID/range 流恢复：
+  `watch_id_range_boundary` reference differential 证明同一 Watch stream 中，empty/equal
+  range 等 invalid create 只返回 `Created+Canceled` 且 `WatchId=-1`，不能关闭或毒化
+  后续 create/cancel；显式 watch ID、自动 ID=0、unknown cancel 后继续 create 都必须
+  保持可用。本轮新增本地 scripted stream 回归，固定 equal-range error 后仍能创建
+  watch 102、自动 watch 0，分别 cancel 后忽略 unknown cancel，再创建并 cancel 103，
+  防止 watch 控制循环把单个 invalid create 升级为整条流失败。
 
 ### P2：运维兼容和长期验证
 
