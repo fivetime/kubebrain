@@ -13469,6 +13469,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   lookahead，再在响应中清空 value。本轮新增本地 Range 回归，用 `z/n/m/a` value
   和 DESC VALUE + Limit=2 固定返回 key `a/d` 且 value 为空，防止后续 value elision
   提前发生而破坏 etcd 排序语义。
+- A921 固定 Txn operation validation 的错误优先级和消息：
+  `txn_operation_validation` reference differential 证明 Txn 内 Put/Range/Delete/空
+  RequestOp 的校验必须按 etcd 顺序返回精确错误：empty key 先于 ignore-value、
+  ignore-value 先于 ignore-lease、ignore-lease+lease 返回 `lease is provided`，
+  missing lease 的执行期错误先于 missing ignore-value key，Range empty key 先于
+  invalid sort enum，空 RequestOp 返回 `key not found`。本轮新增本地 raw RPC
+  矩阵，固定 status code 和 message，防止后续重排 validation 或 generic Txn fast path
+  造成 client 可见错误漂移。
 
 ### P2：运维兼容和长期验证
 
