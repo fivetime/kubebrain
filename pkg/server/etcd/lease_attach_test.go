@@ -688,6 +688,58 @@ func TestTxnCompareDeleteRangeRemovesLeaseAttachments(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestLeasedDeleteRangeFromKeyRemovesAttachments(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	const leaseID int64 = 77040
+	base := "\xff\xff/registry/events/leased-from-key/"
+	keys := []string{
+		base + "a",
+		base + "m",
+		base + "n",
+		base + "z",
+	}
+	_, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 300, ID: leaseID})
+	require.NoError(t, err)
+	for index, key := range keys {
+		_, err = server.Put(ctx, &etcdserverpb.PutRequest{
+			Key: []byte(key), Value: []byte(fmt.Sprintf("value-%d", index)), Lease: leaseID,
+		})
+		require.NoError(t, err)
+	}
+
+	deleted, err := server.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{
+		Key: []byte(keys[1]), RangeEnd: []byte{0}, PrevKv: true,
+	})
+	require.NoError(t, err)
+	require.Equal(t, int64(3), deleted.Deleted)
+	require.Len(t, deleted.PrevKvs, 3)
+	require.Equal(t, [][]byte{[]byte(keys[1]), []byte(keys[2]), []byte(keys[3])}, [][]byte{
+		deleted.PrevKvs[0].Key, deleted.PrevKvs[1].Key, deleted.PrevKvs[2].Key,
+	})
+	for _, prev := range deleted.PrevKvs {
+		require.Equal(t, leaseID, prev.Lease)
+		require.Less(t, prev.ModRevision, deleted.Header.Revision)
+	}
+
+	remaining, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: []byte(base), RangeEnd: []byte{0}})
+	require.NoError(t, err)
+	require.Len(t, remaining.Kvs, 1)
+	require.Equal(t, []byte(keys[0]), remaining.Kvs[0].Key)
+	require.Equal(t, leaseID, remaining.Kvs[0].Lease)
+
+	ttl, err := server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: leaseID, Keys: true})
+	require.NoError(t, err)
+	require.Equal(t, [][]byte{[]byte(keys[0])}, ttl.Keys)
+	_, err = server.backend.InternalGet(ctx, leaseAttachKey(keys[0]))
+	require.NoError(t, err)
+	for _, key := range keys[1:] {
+		_, err = server.backend.InternalGet(ctx, leaseAttachKey(key))
+		require.Error(t, err)
+	}
+}
+
 func TestLargeLeasedDeleteRangeUsesOneRevision(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

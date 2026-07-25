@@ -13669,6 +13669,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   本轮新增本地 KV 服务层回归，分别固定普通 Range 的升序结果和 Txn Range 的降序结果，
   防止后续 limit validation、分页 lookahead 或 Txn staged range 复用路径把负数 limit
   误判为错误或截断结果。
+- A951 固定 leased FromKey DeleteRange 的 attachment 清理：
+  `leasing_from_key_delete` reference differential 证明从中间 key 发起 `WithFromKey`
+  delete 时，目标区间内的 leased data key 必须在同一删除结果中返回 PrevKv，并同步清理
+  lease attachment/cache；起点之前的 leased key 和 owner 记录不能被误删。本轮新增本地
+  lease attachment 回归，直接固定 `RangeEnd={0}` 删除 m/n/z 后只保留 a，TTL(Keys)
+  只返回 a，且被删 key 的 attachment 均不可读，防止 from-key 区间转换或 attachment
+  批处理漏删导致 lease revoke/list 观察到幽灵绑定。
 
 ### P2：运维兼容和长期验证
 
