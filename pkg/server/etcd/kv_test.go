@@ -822,6 +822,47 @@ func TestRangeSortsByValueAscending(t *testing.T) {
 	})
 }
 
+func TestRangeKeysOnlySortsByValueBeforeElidingValues(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	ctx := context.Background()
+	prefix := "/registry/pods/keys-only-sort-value/"
+	for _, seed := range []struct {
+		key   string
+		value string
+	}{
+		{key: "a", value: "z"},
+		{key: "b", value: "m"},
+		{key: "c", value: "a"},
+		{key: "d", value: "n"},
+	} {
+		_, err := server.Put(ctx, &etcdserverpb.PutRequest{
+			Key: []byte(prefix + seed.key), Value: []byte(seed.value),
+		})
+		require.NoError(t, err)
+	}
+
+	var resp *etcdserverpb.RangeResponse
+	require.Eventually(t, func() bool {
+		var err error
+		resp, err = server.Range(ctx, &etcdserverpb.RangeRequest{
+			Key: []byte(prefix), RangeEnd: []byte("/registry/pods/keys-only-sort-value0"),
+			Limit: 2, KeysOnly: true,
+			SortOrder:  etcdserverpb.RangeRequest_DESCEND,
+			SortTarget: etcdserverpb.RangeRequest_VALUE,
+		})
+		return err == nil && resp.Count == 4 && len(resp.Kvs) == 2
+	}, time.Second, 10*time.Millisecond)
+	require.True(t, resp.More)
+	require.Equal(t, [][]byte{[]byte(prefix + "a"), []byte(prefix + "d")}, [][]byte{
+		resp.Kvs[0].Key,
+		resp.Kvs[1].Key,
+	})
+	require.Empty(t, resp.Kvs[0].Value)
+	require.Empty(t, resp.Kvs[1].Value)
+}
+
 func TestRangeNonKeyNoneSortUsesEtcdLimitLookahead(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

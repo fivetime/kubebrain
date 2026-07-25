@@ -13463,6 +13463,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   必须不删除、不返回 PrevKV，并且后续 Range 的 header revision 与 delete response
   一致。本轮新增本地 raw RPC 回归，防止 sentinel、prefixEnd 或空区间处理在高位
   binary keyspace 下退化。
+- A920 固定 KeysOnly 与 VALUE sort 的执行顺序：
+  `range_option_interaction` reference differential 证明 `KeysOnly=true` 并不会让
+  `SortTarget=VALUE` 退化为按 key 排序；服务端必须先用原始 value 完成排序和 limit
+  lookahead，再在响应中清空 value。本轮新增本地 Range 回归，用 `z/n/m/a` value
+  和 DESC VALUE + Limit=2 固定返回 key `a/d` 且 value 为空，防止后续 value elision
+  提前发生而破坏 etcd 排序语义。
 
 ### P2：运维兼容和长期验证
 
