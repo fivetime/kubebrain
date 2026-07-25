@@ -417,7 +417,7 @@ member name 聚合后再比对运行时拓扑；最后通过官方
 `etcdctl endpoint health` 对 bootstrap `ENDPOINT` 和每个 advertised client URL 分别提交
 线性化 proposal。缺少 `EXPECTED_IMAGE`/
 `EXPECTED_KUBEBRAIN_STATEFULSET_UID`/`EXPECTED_KUBEBRAIN_CLIENT_SERVICE_UID`/`EXPECTED_KEYSPACE`/`EXPECTED_PD_ADDRS`/`EXPECTED_TIDB_CLUSTER_UID`/`EXPECTED_CLUSTER_ID`/`EXPECTED_INITIAL_CLUSTER`/`EXPECTED_QUOTA_BACKEND_BYTES`/`EXPECTED_ADVERTISE_CLIENT_URLS`/`ENDPOINT`、任一状态
-缺失、旧 revision、错误拓扑、错误镜像、Pod owner/revision/Ready/终止状态漂移、quota/client URL/listener port/advertise-host/兼容开关/count-index/存储指标/txn/request size/stream/inflight/限流/watch/delete-range/keepalive/auth/TLS 上限或基线缺失/重复/不匹配，未期望 advertise-host 或 TLS 时出现对应 args，或 endpoint
+缺失、入口 endpoint 含控制字符/引号/反斜杠、旧 revision、错误拓扑、错误镜像、Pod owner/revision/Ready/终止状态漂移、quota/client URL/listener port/advertise-host/兼容开关/count-index/存储指标/txn/request size/stream/inflight/限流/watch/delete-range/keepalive/auth/TLS 上限或基线缺失/重复/不匹配，未期望 advertise-host 或 TLS 时出现对应 args，或 endpoint
 不健康、KubeBrain StatefulSet/client Service/TidbCluster UID 或 TidbCluster/MemberList cluster ID 漂移、EndpointSlice Pod 集合漂移、initial cluster 成员/peer URL 为空或重复、MemberList 缺失/重复/不完整/与声明不一致、advertised URL 列表含空/重复成员或任一地址
 从门禁网络不可达都会 fail closed。脚本使用可覆盖的 `JQ`（默认 `jq`）结构化解析 JSON，
 不得用文本匹配替代成员身份和 URL 集合检查。

@@ -12907,6 +12907,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   hack/backup/logical-export.sh hack/backup/logical-verify.sh hack/backup/logical-restore.sh`、
   `go vet ./hack/production` 和 `git diff --check` 通过；当前环境未安装 `shellcheck`，未运行
   ShellCheck。
+- A867 收紧 instance release gate 的 endpoint 字符边界：
+  `validate-instance-ready.sh` 旧逻辑只要求 `ENDPOINT` 非空，然后把它传给 `etcdctl
+  --endpoints` 和 advertised URL 探测；含换行、tab、引号或反斜杠的 endpoint 应在发布门禁
+  参数层确定性失败，而不是进入 etcdctl 或日志输出。现在 release gate 在任何 Kubernetes/
+  etcdctl 调用前拒绝危险 endpoint 字符；回归覆盖换行、引号和反斜杠 endpoint。`go test
+  ./hack/production -run TestValidateInstanceReadyRequiresImmutableInputs -count=1 -v`、
+  `go test ./hack/production -run TestValidateInstanceReady -count=1 -v`、`go vet
+  ./hack/production`、`go test ./hack/production -count=1 -timeout=12m`（326.161 秒）、
+  `bash -n hack/production/validate-instance-ready.sh` 和 `git diff --check` 通过；当前环境未安装
+  `shellcheck`，未运行 ShellCheck。
 - A855 前移 PostRestoreAudit runner 的 Service/target 身份校验：
   `audit-restored-instance.sh` 会拒绝非法 operation/instance、Service namespace/name 和
   target instance，但 `run-post-restore-audit-operation.sh` 原先只在子审计前独立校验
