@@ -109,6 +109,54 @@ func TestDestroyOperationRejectsEmptyRequiredParameters(t *testing.T) {
 	require.NotContains(t, log, "--action succeed")
 }
 
+func TestDestroyOperationRejectsInvalidIdentityBeforePhases(t *testing.T) {
+	tests := []struct {
+		name string
+		from string
+		to   string
+	}{
+		{
+			name: "kubebrain namespace",
+			from: `"kubebrain_namespace":"instance-a"`,
+			to:   `"kubebrain_namespace":"instance_a"`,
+		},
+		{
+			name: "tidb namespace",
+			from: `"tidb_namespace":"storage-a"`,
+			to:   `"tidb_namespace":"storage.a"`,
+		},
+		{
+			name: "kubebrain statefulset",
+			from: `"kubebrain_statefulset":"kubebrain"`,
+			to:   `"kubebrain_statefulset":"kubebrain/primary"`,
+		},
+		{
+			name: "tidb cluster",
+			from: `"tidb_cluster":"kb"`,
+			to:   `"tidb_cluster":"kb/primary"`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			f := newDestroyRunnerFixture(t, true)
+			parameters := strings.Replace(
+				string(mustRead(t, f.parameters)),
+				test.from,
+				test.to,
+				1,
+			)
+			require.NoError(t, os.WriteFile(f.parameters, []byte(parameters), 0o600))
+
+			f.run(t, false, "CLAIM_DIGEST="+fileDigest(t, f.parameters),
+				"destroy namespace or resource identity is invalid")
+			log := f.log(t)
+			require.NotContains(t, log, "phase ")
+			require.NotContains(t, log, "--action retry")
+			require.NotContains(t, log, "--action succeed")
+		})
+	}
+}
+
 func TestDestroyOperationRejectsInvalidBackupPrefix(t *testing.T) {
 	for _, tc := range []struct {
 		name   string

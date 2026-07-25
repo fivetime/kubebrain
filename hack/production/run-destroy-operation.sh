@@ -135,6 +135,24 @@ validate_backup_prefix() {
 validate_backup_prefix_json ||
   { echo "destroy backup_prefix must be an absolute key prefix without control characters" >&2; exit 2; }
 
+validate_destroy_identity_json() {
+  "$JQ" -e '
+    def resource_id:
+      type == "string" and
+      (length == 0 or test("^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"));
+    def namespace_id:
+      type == "string" and
+      (length == 0 or test("^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$"));
+    (.kubebrain_namespace | namespace_id) and
+    (.tidb_namespace | namespace_id) and
+    (.kubebrain_statefulset | resource_id) and
+    (.tidb_cluster | resource_id)' \
+    "$PARAMETERS_INPUT" >/dev/null
+}
+
+validate_destroy_identity_json ||
+  { echo "destroy namespace or resource identity is invalid" >&2; exit 2; }
+
 parameters="$("$JQ" -er '[
   .state_dir, .backup_input, .backup_file_sha256, .backup_prefix,
   (.backup_max_age_seconds|tostring), (.backup_min_records|tostring),
@@ -158,6 +176,14 @@ done
 for value in "$backup_min_records" "$expected_pvcs" "$poll_seconds"; do
   [[ "$value" =~ ^[0-9]+$ ]] ||
     { echo "destroy parameters contain an invalid non-negative integer" >&2; exit 2; }
+done
+for value in "$kubebrain_namespace" "$tidb_namespace"; do
+  [[ "$value" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] ||
+    { echo "destroy namespace or resource identity is invalid" >&2; exit 2; }
+done
+for value in "$kubebrain_statefulset" "$tidb_cluster"; do
+  [[ "$value" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] ||
+    { echo "destroy namespace or resource identity is invalid" >&2; exit 2; }
 done
 validate_backup_prefix "$backup_prefix"
 [[ -f "$backup_input" ]] || { echo "destroy backup input does not exist" >&2; exit 2; }

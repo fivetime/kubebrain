@@ -12801,6 +12801,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go vet ./hack/production`、`go test ./hack/production -count=1 -timeout=12m`
   （315.500 秒）、`bash -n hack/production/run-certificate-rotation-operation.sh` 和
   `git diff --check` 通过；当前环境未安装 `shellcheck`，未重新运行 ShellCheck。
+- A854 前移 Destroy runner 的销毁目标身份校验：
+  `destroy-instance.sh` 会拒绝非法 KubeBrain/TiDB namespace 和资源标识，但
+  `run-destroy-operation.sh` 原先在调用可替换的 `DESTROY_COMMAND` 前只独立校验
+  `backup_prefix`、整数、备份 digest 和确认 token；自定义销毁子命令可在非法目标身份下
+  进入 prepare/quiesce/destroy/complete phase。现在 runner 对冻结参数先做 JSON 类型/值
+  preflight，再对 TSV 解析结果重复校验：KubeBrain/TiDB namespace 必须是 lowercase
+  DNS label，KubeBrain StatefulSet 与 TiDB cluster 必须匹配 direct destroy 脚本支持的
+  资源标识格式。回归注入非法 KubeBrain namespace、TiDB namespace、StatefulSet 名称和
+  TiDB cluster 名称，确认不进入任何 phase，也不 retry/succeed。`go test
+  ./hack/production -run
+  'TestDestroyOperation(RejectsInvalidIdentityBeforePhases|RejectsEmptyRequiredParameters|RejectsInvalidBackupPrefix)'
+  -count=1 -v`、`go test ./hack/production -run TestDestroyOperation -count=1 -v`、
+  `go vet ./hack/production`、`go test ./hack/production -count=1 -timeout=12m`
+  （315.303 秒）、`bash -n hack/production/run-destroy-operation.sh` 和
+  `git diff --check` 通过；当前环境未安装 `shellcheck`，未运行 ShellCheck。
 
 ### P2：运维兼容和长期验证
 

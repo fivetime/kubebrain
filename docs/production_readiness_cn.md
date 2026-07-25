@@ -520,6 +520,11 @@ StatefulSet、client/peer Service、PDB、ServiceAccount、
 TidbCluster、PD/TiKV PDB/metrics Service 及每块 PD/TiKV PVC 的 UID。PVC 数量必须精确
 等于 `EXPECTED_PVCS`，component 只能是 `pd` 或 `tikv`。
 
+`run-destroy-operation.sh` 在调用任何可替换的 `DESTROY_COMMAND` 前会独立校验冻结参数：
+KubeBrain/TiDB namespace 必须是 lowercase DNS label，KubeBrain StatefulSet 与
+TiDB cluster 名称必须匹配 `destroy-instance.sh` 支持的资源标识格式。非法身份不会进入
+prepare/quiesce/destroy/complete phase，也不会被记录为可重试的远端销毁失败。
+
 `quiesce` 只有在确认令牌精确等于 `destroy:<INSTANCE>:<OPERATION_ID>` 时才把
 KubeBrain StatefulSet 缩到 0，并等待 ready replicas 与实例 Pod 都归零。备份最大年龄
 表示该套餐接受的销毁 RPO；状态机不把“最近一小时备份”宣称成零数据损失。要求 RPO=0
