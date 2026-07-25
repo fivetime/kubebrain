@@ -949,7 +949,7 @@ sample/rollup 原子写入在比较已存在文件时只读取目标 canonical �
 使用 `ReadSampleStatus` 已验证的 bytes/digest 与 blob-read receipt 比对，不再为了二次
 校验 receipt 而重新无界读取 sample 文件。
 `kubebrain-metering-archive --prometheus-url` 必须是不含 userinfo、query、fragment、
-控制字符、引号或反斜杠的 HTTP/HTTPS base URL；Prometheus 凭据只通过 bearer token
+控制字符、DEL、引号或反斜杠的 HTTP/HTTPS base URL；Prometheus 凭据只通过 bearer token
 文件、CA 文件和可选 TLS server name 注入，不能嵌入 URL。
 `kubebrain-metering-archive` 在采样和启动 Object Lock executor 前还会校验
 `--object-store-id`、`--bucket` 与 `--object-prefix`：store/bucket 不得含空白或控制字符，

@@ -87,6 +87,7 @@ func TestNewCollectorRejectsUnsafePrometheusURL(t *testing.T) {
 		want string
 	}{
 		{name: "control character", raw: "https://prometheus.example\nother", want: "unsupported characters"},
+		{name: "DEL", raw: "https://prometheus.example\x7fother", want: "unsupported characters"},
 		{name: "quote", raw: `https://prometheus.example"other`, want: "unsupported characters"},
 		{name: "backslash", raw: `https://prometheus.example\other`, want: "unsupported characters"},
 		{name: "credentials", raw: "https://user:pass@prometheus.example", want: "credentials"},

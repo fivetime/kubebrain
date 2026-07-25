@@ -95,7 +95,7 @@ type Collector struct {
 }
 
 func NewCollector(rawURL string, client *http.Client, bearerToken string, maxStaleness time.Duration) (*Collector, error) {
-	if strings.ContainsAny(rawURL, "\t\r\n\"\\") {
+	if containsUnsafePrometheusURLChar(rawURL) {
 		return nil, errors.New("prometheus URL contains unsupported characters")
 	}
 	base, err := url.Parse(rawURL)
@@ -124,6 +124,12 @@ func NewCollectorV3(rawURL string, client *http.Client, bearerToken string, maxS
 	}
 	collector.Format = FormatV3
 	return collector, nil
+}
+
+func containsUnsafePrometheusURLChar(value string) bool {
+	return strings.IndexFunc(value, func(r rune) bool {
+		return r < 0x20 || r == 0x7f || r == '"' || r == '\\'
+	}) >= 0
 }
 
 func (c *Collector) Collect(ctx context.Context, instance string, slotStart, slotEnd time.Time) (Sample, error) {

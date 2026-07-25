@@ -13262,6 +13262,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   和 `bash -n hack/production/run-restore-cutover-operation.sh
   hack/production/run-post-restore-audit-operation.sh
   hack/production/run-certificate-rotation-operation.sh` 通过。
+- A890 收紧 metering Prometheus URL 字符边界：
+  A874 已把 metering sample collector 的 Prometheus URL 在发起 HTTP 请求前限制为
+  HTTP/HTTPS base URL，并拒绝 userinfo、query、fragment、换行、引号和反斜杠；但实现仍
+  只用 `strings.ContainsAny("\t\r\n\"\\")`，漏掉 DEL 和其它控制字符。畸形 URL 会在
+  `net/url.Parse` 或 transport 阶段失败，晚于生产清单要求的本地 fail closed 边界。现在
+  `meteringarchive.NewCollector` 在解析前统一拒绝全部控制字符、DEL、引号和反斜杠；
+  回归新增 DEL Prometheus URL 用例，保留 credentials/query/fragment 和合法 HTTPS path
+  语义。`go test ./hack/production/internal/meteringarchive -run
+  'TestNewCollectorRejectsUnsafePrometheusURL|TestCollectorBuildsCanonicalCompleteSample' -count=1 -v`
+  通过。
 
 ### P2：运维兼容和长期验证
 
