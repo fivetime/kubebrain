@@ -13246,6 +13246,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   JSON 预检和 TSV 解包后 bash 兜底同时覆盖，避免畸形 endpoint 被写入工作流后续阶段。
   回归新增 Backup etcd endpoint、Backup S3 endpoint 和 BackupDeletion S3 endpoint 的
   DEL 用例，并保留换行、引号和反斜杠用例。
+- A889 前移 RestoreCutover/PostRestoreAudit/CertificateRotation endpoint 参数校验：
+  A888 覆盖了备份类 protected runner 后，继续审计恢复切流、恢复后审计和证书轮换
+  runner，发现 `.public_endpoint`/`.endpoint` 的 JSON 预检与 TSV 解包兜底仍只拒绝
+  tab/CR/LF、引号和反斜杠；`DEL` 或其它控制字符会在 claim、参数冻结、证据捕获或凭据
+  摘要校验后才进入 cutover/audit/rotation 子命令。现在三类 runner 在任何子阶段或 hook
+  前统一拒绝全部控制字符、DEL、引号和反斜杠；JSON 预检按 codepoint 校验，bash 兜底
+  使用同一 `[[:cntrl:]]` helper。回归新增 RestoreCutover public endpoint、
+  PostRestoreAudit public endpoint 和 CertificateRotation endpoint 的 DEL 用例，并确认
+  不进入 phase、audit、hook 或 operation 终态提交路径。
+  `go test ./hack/production -run
+  'Test(RestoreCutoverOperationRejectsInvalidPublicEndpointBeforePhases|PostRestoreAuditOperationRejectsInvalidPublicEndpointBeforeAudit|CertificateRotationOperationRejectsInvalidIdentityBeforeSteps)'
+  -count=1 -v`、`go test ./hack/production -run
+  'Test(RestoreCutoverOperation|PostRestoreAuditOperation|CertificateRotationOperation)' -count=1`
+  和 `bash -n hack/production/run-restore-cutover-operation.sh
+  hack/production/run-post-restore-audit-operation.sh
+  hack/production/run-certificate-rotation-operation.sh` 通过。
 
 ### P2：运维兼容和长期验证
 

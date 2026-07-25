@@ -114,6 +114,11 @@ file_sha256() {
   printf '%s' "$digest"
 }
 
+contains_unsupported_endpoint_characters() {
+  local value="$1"
+  [[ "$value" == *[[:cntrl:]]* || "$value" == *\"* || "$value" == *\\* ]]
+}
+
 if [[ -z "$PARAMETERS_INPUT" ]]; then
   managed_parameters="${managed_credentials_dir}/managed-parameters.json"
   PARAMETERS_INPUT="$managed_parameters"
@@ -148,7 +153,7 @@ validate_rotation_identity_json() {
       test("^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$")) and
     (.endpoint |
       type == "string" and
-      ((test("[\\t\\r\\n\"\\\\]")) | not))' \
+      all(explode[]; . >= 32 and . != 127 and . != 34 and . != 92))' \
     "$PARAMETERS_INPUT" >/dev/null
 }
 
@@ -175,7 +180,7 @@ receipt_input="$receipt_output"
 [[ "$data_kubeconfig" == "-" ]] && data_kubeconfig=""
 [[ "$kubebrain_namespace" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] ||
   { echo "rotation namespace or endpoint identity is invalid" >&2; exit 2; }
-[[ "$endpoint" != *[$'\t\r\n"\\']* ]] ||
+! contains_unsupported_endpoint_characters "$endpoint" ||
   { echo "rotation namespace or endpoint identity is invalid" >&2; exit 2; }
 [[ "$expected_replicas" =~ ^[1-9][0-9]*$ ]] ||
   { echo "expected_replicas must be a positive integer" >&2; exit 2; }

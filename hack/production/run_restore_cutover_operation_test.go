@@ -276,6 +276,7 @@ func TestRestoreCutoverOperationRejectsInvalidPublicEndpointBeforePhases(t *test
 		endpoint string
 	}{
 		{name: "control character", endpoint: "https://service:2379\nother"},
+		{name: "DEL", endpoint: "https://service:2379\x7fother"},
 		{name: "quote", endpoint: `https://service:2379"other`},
 		{name: "backslash", endpoint: `https://service:2379\other`},
 	} {
@@ -284,7 +285,7 @@ func TestRestoreCutoverOperationRejectsInvalidPublicEndpointBeforePhases(t *test
 			parameters := strings.Replace(
 				string(mustRead(t, f.parameters)),
 				`"public_endpoint":"https://service:2379"`,
-				fmt.Sprintf(`"public_endpoint":%q`, tc.endpoint),
+				fmt.Sprintf(`"public_endpoint":%s`, testJSONLiteral(t, tc.endpoint)),
 				1,
 			)
 			require.NoError(t, os.WriteFile(f.parameters, []byte(parameters), 0o600))

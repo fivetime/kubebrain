@@ -1967,7 +1967,7 @@ SHA。
 终止本地进程，审计失败 requeue，成功才将 receipt 摘要写入 Succeeded。runner 会先拒绝
 空的 state/receipt 路径、Service 身份、target instance、public endpoint、audit prefix
 和 receipt output；audit prefix 必须是绝对 key prefix、不能包含换行/回车/tab，且不能
-指向根或 Kubernetes `/registry` 数据；public endpoint 不能包含控制字符、引号或反斜杠。
+指向根或 Kubernetes `/registry` 数据；public endpoint 不能包含控制字符、DEL、引号或反斜杠。
 runner 在调用任何可替换的 `AUDIT_COMMAND` 前还会
 独立校验 claim operation/instance、Service namespace/name 和 target instance 身份：
 Service namespace 必须是 lowercase DNS label，其余标识必须匹配 direct audit 脚本支持的
@@ -2392,7 +2392,7 @@ namespace 会按设计停在 Terminating，禁止绕过 admission 强删 finaliz
 restore receipt、logical artifact、A189 state/receipt 路径、Service、源/目标 instance、
 replicas、公开 endpoint 和 Kubernetes context；runner 在启动子状态机前先校验
 claim operation/instance、Service/source/target 身份字符集、Service namespace DNS label
-以及 source/target 必须不同；公开 endpoint 不能包含控制字符、引号或反斜杠。执行器按
+以及 source/target 必须不同；公开 endpoint 不能包含控制字符、DEL、引号或反斜杠。执行器按
 prepare、cutover、verify、complete 驱动，每阶段独立续租。prepare 失败可 retry；从 cutover 调用开始，任何失败都必须执行 rollback 并写
 Failed 终态，避免已改 selector 的操作被当成普通重试。
 直接 cutover 脚本同样会在 verify/complete 公开数据校验前拒绝危险 public endpoint。
@@ -2413,7 +2413,7 @@ CAS 并要求源 Pod UID 集恢复。
 worker 镜像配置受控、可执行且必须幂等的 `PUBLISH_OVERLAP_COMMAND` 与
 `PUBLISH_FINAL_COMMAND`。hook 只接收固定 operation/instance/参数文件环境。runner
 还会在任何 gate 或 hook 前独立校验数据面 namespace 是 DNS label，且 endpoint 不含
-控制字符、引号或反斜杠；claim 返回的 rotation ID 和 instance 也必须匹配受控资源
+控制字符、DEL、引号或反斜杠；claim 返回的 rotation ID 和 instance 也必须匹配受控资源
 标识格式。该边界不依赖可替换的 rotation 子命令自行实现。
 
 完整顺序为 begin gate、发布双 CA、overlap gate、发布仅新 CA/叶证书、complete gate。

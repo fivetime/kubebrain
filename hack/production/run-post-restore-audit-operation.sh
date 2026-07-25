@@ -66,6 +66,11 @@ file_sha256() {
   printf '%s' "$digest"
 }
 
+contains_unsupported_endpoint_characters() {
+  local value="$1"
+  [[ "$value" == *[[:cntrl:]]* || "$value" == *\"* || "$value" == *\\* ]]
+}
+
 operationctl=()
 if [[ -n "$OPERATIONCTL" ]]; then
   operationctl=("$OPERATIONCTL")
@@ -164,7 +169,7 @@ validate_audit_endpoint_json() {
   "$JQ" -e '
     .public_endpoint |
       type == "string" and
-      ((test("[\\t\\r\\n\"\\\\]")) | not)' \
+      all(explode[]; . >= 32 and . != 127 and . != 34 and . != 92)' \
     "$PARAMETERS_INPUT" >/dev/null
 }
 
@@ -197,7 +202,7 @@ for value in "$state_dir" "$cutover_state" "$cutover_receipt" "$service_namespac
   "$service_name" "$target_instance" "$public_endpoint" "$audit_prefix" "$receipt_output"; do
   [[ -n "$value" ]] || { echo "audit parameters contain an empty required field" >&2; exit 2; }
 done
-[[ "$public_endpoint" != *[$'\t\r\n"\\']* ]] ||
+! contains_unsupported_endpoint_characters "$public_endpoint" ||
   { echo "audit public_endpoint identity is invalid" >&2; exit 2; }
 for value in "$operation_id" "$instance" "$service_namespace" "$service_name" "$target_instance"; do
   [[ "$value" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] ||

@@ -131,6 +131,11 @@ func TestCertificateRotationOperationRejectsInvalidIdentityBeforeSteps(t *testin
 			from: `"endpoint":"https://instance.example:2379"`,
 			to:   `"endpoint":"https://instance.example:2379\nother"`,
 		},
+		{
+			name: "endpoint DEL",
+			from: `"endpoint":"https://instance.example:2379"`,
+			to:   `"endpoint":"https://instance.example:2379\u007fother"`,
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
