@@ -263,6 +263,46 @@ func TestHandlerRejectsMalformedGetNameBeforeAuthentication(t *testing.T) {
 	require.Zero(t, store.gets)
 }
 
+func TestHandlerRejectsUnexpectedQueryBeforeAuthentication(t *testing.T) {
+	validBody := `{
+		"name":"backup-1","operation_id":"backup-1","tenant":"tenant-a",
+		"instance":"instance-a","type":"Backup",
+		"parameters_sha256":"` + strings.Repeat("a", 64) + `","max_attempts":3
+	}`
+	for _, tc := range []struct {
+		name        string
+		method      string
+		target      string
+		body        string
+		contentType string
+	}{
+		{
+			name: "submit", method: http.MethodPost, target: "/v1/operations?debug=true",
+			body: validBody, contentType: "application/json",
+		},
+		{name: "get", method: http.MethodGet, target: "/v1/operations/backup-1?debug=true"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			authenticator := &countingAuthenticator{principal: authorizedPrincipal()}
+			store := &memoryOperationStore{objects: make(map[string]*unstructured.Unstructured)}
+			handler, err := NewHandler(authenticator, store, time.Second)
+			require.NoError(t, err)
+			request := httptest.NewRequest(tc.method, tc.target, strings.NewReader(tc.body))
+			if tc.contentType != "" {
+				request.Header.Set("Content-Type", tc.contentType)
+			}
+			request.Header.Set("Authorization", "Bearer token")
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+
+			require.Equal(t, http.StatusBadRequest, response.Code)
+			require.Zero(t, authenticator.calls)
+			require.Empty(t, store.objects)
+			require.Zero(t, store.gets)
+		})
+	}
+}
+
 func TestHandlerRejectsUnboundParameterSecret(t *testing.T) {
 	store := &memoryOperationStore{objects: make(map[string]*unstructured.Unstructured)}
 	handler, err := NewHandler(staticAuthenticator{principal: authorizedPrincipal()}, store, time.Second)

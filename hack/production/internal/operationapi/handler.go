@@ -134,6 +134,9 @@ func (h *Handler) principal(response http.ResponseWriter, request *http.Request)
 }
 
 func (h *Handler) submit(response http.ResponseWriter, request *http.Request) {
+	if !validateNoQuery(response, request) {
+		return
+	}
 	input, ok := decodeSubmitRequest(response, request)
 	if !ok {
 		return
@@ -214,6 +217,9 @@ func authorizedParameterSecretPrefix(tenant string) string {
 }
 
 func (h *Handler) get(response http.ResponseWriter, request *http.Request) {
+	if !validateNoQuery(response, request) {
+		return
+	}
 	name := request.PathValue("name")
 	if !validateRequestOperationName(response, name) {
 		return
@@ -240,6 +246,14 @@ func (h *Handler) get(response http.ResponseWriter, request *http.Request) {
 		return
 	}
 	writeJSON(response, http.StatusOK, summarizeOperation(object))
+}
+
+func validateNoQuery(response http.ResponseWriter, request *http.Request) bool {
+	if request.URL.RawQuery != "" {
+		writeJSON(response, http.StatusBadRequest, errorResponse{Error: "query parameters are not supported"})
+		return false
+	}
+	return true
 }
 
 func validateRequestOperationName(response http.ResponseWriter, name string) bool {

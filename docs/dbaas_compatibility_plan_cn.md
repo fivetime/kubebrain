@@ -12351,6 +12351,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   的请求不会触发 TokenReview 或 dynamic client action。
   `go test ./hack/production/internal/parameterbroker -run 'TestHandler(RejectsMalformedQueryBeforeAuthenticationAndOperationAPI|RejectsAmbiguousRequiredQueryParameters|ReturnsOnlyCurrentTypeBoundWorkerParameters|FailsClosedForIdentityTypeAudienceAndFencing)' -count=1 -v`
   和 `go test ./hack/production/internal/parameterbroker -count=1` 均通过。
+- A810 收紧 Operation API 业务端点 query 形状：
+  `POST /v1/operations` 和 `GET /v1/operations/{name}` 没有定义 query 参数，但旧 handler
+  会忽略 `?debug=true` 等附加参数并继续执行 JSON 解码、OIDC 认证和 store 访问。代理、
+  客户端和审计日志若对 query 是否参与身份/目标解释不一致，会造成请求语义歧义。现在两个
+  业务端点在认证、请求体读取和 Operation store 前拒绝任何 query 参数并返回 400；`/healthz`
+  保持无依赖健康检查。回归覆盖 submit/get 带 query 时不会调用 authenticator 或 store。
+  `go test ./hack/production/internal/operationapi -run 'TestHandler(RejectsUnexpectedQueryBeforeAuthentication|RejectsMalformedSubmitBeforeAuthentication|RejectsMalformedGetNameBeforeAuthentication|SubmitsImmutableTenantIdentityAndReturnsSanitizedObject)' -count=1 -v`
+  和 `go test ./hack/production/internal/operationapi -count=1` 均通过。
 
 ### P2：运维兼容和长期验证
 

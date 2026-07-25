@@ -1829,7 +1829,8 @@ instance 必须在数组中；数组元素只接受 `*` 或 CRD `spec.instance` 
 immutable `requestedBy`，tenant 同样进入 spec、worker claim 和终态审计 artifact。
 `POST /v1/operations` 在 OIDC 验签前先拒绝非 `application/json`、超过 64 KiB、
 unknown field 或 trailing JSON 的请求体；提交 body 的 `name` 和
-`GET /v1/operations/{name}` 的 path name 必须是 Kubernetes DNS subdomain。畸形提交或
+`GET /v1/operations/{name}` 的 path name 必须是 Kubernetes DNS subdomain。两个业务
+端点都不接受 query 参数，带 query 的请求会在认证和存储访问前返回 400。畸形提交或
 查询不能消耗 OIDC/JWKS 或 Operation API；畸形 Bearer header 也必须在本地拒绝，即使
 JWKS cache 已过期也不能触发 JWKS refresh。
 参数 Secret 只能引用受信控制面预置的 `params-l<tenant字节长度>-<tenant>-*` 对象
