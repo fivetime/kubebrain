@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"go.etcd.io/etcd/api/v3/authpb"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	"go.etcd.io/etcd/server/v3/etcdserver/api/v3election/v3electionpb"
@@ -373,6 +374,103 @@ func TestDedicatedConcurrencyUnaryAuthFailuresReturnUnknown(t *testing.T) {
 	leaderKV, err := server.Range(auth.root, &etcdserverpb.RangeRequest{Key: campaign.Leader.Key})
 	require.NoError(t, err)
 	require.Len(t, leaderKV.Kvs, 1)
+}
+
+func TestDedicatedConcurrencyAuthorizationTracksRoleAndTokenLifecycle(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer func() {
+		_ = server.concurrencyClient.Close()
+		closeFn()
+	}()
+
+	ctx := context.Background()
+	const (
+		rootPassword  = "root-secret"
+		alicePassword = "alice-secret"
+		aliceNewPass  = "alice-new-secret"
+		aliceRole     = "concurrency-authz"
+		allowedPrefix = "/a966/concurrency/allowed/"
+		deniedPrefix  = "/a966/concurrency/denied/"
+	)
+	permission := &authpb.Permission{
+		PermType: authpb.READWRITE,
+		Key:      []byte(allowedPrefix),
+		RangeEnd: []byte("/a966/concurrency/allowed0"),
+	}
+	require.NoError(t, server.auth.userAdd(ctx, &etcdserverpb.AuthUserAddRequest{Name: "root", Password: rootPassword}))
+	require.NoError(t, server.auth.roleAdd(ctx, "root"))
+	require.NoError(t, server.auth.userGrantRole(ctx, "root", "root"))
+	require.NoError(t, server.auth.userAdd(ctx, &etcdserverpb.AuthUserAddRequest{Name: "alice", Password: alicePassword}))
+	require.NoError(t, server.auth.roleAdd(ctx, aliceRole))
+	require.NoError(t, server.auth.roleGrantPermission(ctx, aliceRole, permission))
+	require.NoError(t, server.auth.userGrantRole(ctx, "alice", aliceRole))
+	lockLease, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 30})
+	require.NoError(t, err)
+	electionLease, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 30})
+	require.NoError(t, err)
+	require.NoError(t, server.auth.enable(ctx))
+
+	rootAuth, err := server.Authenticate(ctx, &etcdserverpb.AuthenticateRequest{Name: "root", Password: rootPassword})
+	require.NoError(t, err)
+	rootCtx := metadata.NewIncomingContext(ctx, metadata.Pairs(rpctypes.TokenFieldNameGRPC, rootAuth.Token))
+	aliceAuth, err := server.Authenticate(ctx, &etcdserverpb.AuthenticateRequest{Name: "alice", Password: alicePassword})
+	require.NoError(t, err)
+	aliceCtx := metadata.NewIncomingContext(ctx, metadata.Pairs(rpctypes.TokenFieldNameGRPC, aliceAuth.Token))
+
+	lockServer := newLockServer(server.concurrencyClient)
+	electionServer := newElectionServer(server.concurrencyClient)
+	lockName := []byte(allowedPrefix + "lock")
+	locked, err := lockServer.Lock(aliceCtx, &v3lockpb.LockRequest{Name: lockName, Lease: lockLease.ID})
+	require.NoError(t, err)
+	require.NotEmpty(t, locked.Key)
+	_, err = lockServer.Unlock(aliceCtx, &v3lockpb.UnlockRequest{Key: locked.Key})
+	require.NoError(t, err)
+	_, err = lockServer.Lock(aliceCtx, &v3lockpb.LockRequest{Name: []byte(deniedPrefix + "lock"), Lease: lockLease.ID})
+	require.Equal(t, codes.Unknown, status.Code(err))
+	require.Equal(t, status.Convert(rpctypes.ErrPermissionDenied).Message(), status.Convert(err).Message())
+
+	campaign, err := electionServer.Campaign(aliceCtx, &v3electionpb.CampaignRequest{
+		Name:  []byte(allowedPrefix + "election"),
+		Lease: electionLease.ID,
+		Value: []byte("first"),
+	})
+	require.NoError(t, err)
+	leader, err := electionServer.Leader(aliceCtx, &v3electionpb.LeaderRequest{Name: []byte(allowedPrefix + "election")})
+	require.NoError(t, err)
+	require.Equal(t, []byte("first"), leader.Kv.Value)
+	_, err = electionServer.Proclaim(aliceCtx, &v3electionpb.ProclaimRequest{Leader: campaign.Leader, Value: []byte("second")})
+	require.NoError(t, err)
+	_, err = electionServer.Resign(aliceCtx, &v3electionpb.ResignRequest{Leader: campaign.Leader})
+	require.NoError(t, err)
+	_, err = electionServer.Campaign(aliceCtx, &v3electionpb.CampaignRequest{
+		Name:  []byte(deniedPrefix + "election"),
+		Lease: electionLease.ID,
+		Value: []byte("denied"),
+	})
+	require.Equal(t, codes.Unknown, status.Code(err))
+	require.Equal(t, status.Convert(rpctypes.ErrPermissionDenied).Message(), status.Convert(err).Message())
+
+	_, err = server.RoleRevokePermission(rootCtx, &etcdserverpb.AuthRoleRevokePermissionRequest{
+		Role: aliceRole, Key: permission.Key, RangeEnd: permission.RangeEnd,
+	})
+	require.NoError(t, err)
+	_, err = lockServer.Lock(aliceCtx, &v3lockpb.LockRequest{Name: lockName, Lease: lockLease.ID})
+	require.Equal(t, codes.Unknown, status.Code(err))
+	require.Equal(t, status.Convert(rpctypes.ErrPermissionDenied).Message(), status.Convert(err).Message())
+	_, err = server.RoleGrantPermission(rootCtx, &etcdserverpb.AuthRoleGrantPermissionRequest{Name: aliceRole, Perm: permission})
+	require.NoError(t, err)
+	locked, err = lockServer.Lock(aliceCtx, &v3lockpb.LockRequest{Name: lockName, Lease: lockLease.ID})
+	require.NoError(t, err)
+	_, err = lockServer.Unlock(aliceCtx, &v3lockpb.UnlockRequest{Key: locked.Key})
+	require.NoError(t, err)
+
+	_, err = server.UserChangePassword(rootCtx, &etcdserverpb.AuthUserChangePasswordRequest{
+		Name: "alice", Password: aliceNewPass,
+	})
+	require.NoError(t, err)
+	_, err = lockServer.Lock(aliceCtx, &v3lockpb.LockRequest{Name: lockName, Lease: lockLease.ID})
+	require.Equal(t, codes.Unknown, status.Code(err))
+	require.Equal(t, status.Convert(rpctypes.ErrInvalidAuthToken).Message(), status.Convert(err).Message())
 }
 
 func TestDedicatedConcurrencyServiceErrorsMatchEtcd(t *testing.T) {

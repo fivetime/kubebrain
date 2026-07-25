@@ -13767,6 +13767,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   namespaced nested Txn 和带 `WithPrevKV` 的 Watch，断言所有 event/PrevKV key 已去前缀且
   三个事务事件同一 revision，防止服务端 key 编码、watch event 转换或 client namespace
   组合路径回退。
+- A966 固定 concurrency API 的 authz/token 生命周期语义：
+  `http_gateway_concurrency_authz` differential 证明 `/v3/lock/*` 与 `/v3/election/*`
+  在同一用户 token 下必须即时观察角色权限撤销和重新授权，且用户改密后旧 token 必须按
+  `invalid auth token` 拒绝。本轮新增本地 `newLockServer/newElectionServer` 回归，覆盖
+  允许前缀下 Lock/Unlock/Campaign/Leader/Proclaim/Resign 成功、拒绝前缀报
+  `permission denied`、撤销权限后同 token 失败、重新授权后同 token 恢复、改密后同 token
+  失效，防止 dedicated concurrency wrapper、auth snapshot cache 或 gateway metadata
+  转发路径缓存过期权限。
 
 ### P2：运维兼容和长期验证
 
