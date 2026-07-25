@@ -13442,6 +13442,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   当前读返回 11 个 live keys 且 value 全为空。本轮新增本地 raw RPC 回归，固定
   tombstone hole、历史快照和 KeysOnly value elision 的组合，防止分页 lookahead 或
   count-index 优化把历史 live 集合与当前 live 集合混用。
+- A917 固定 Txn delete interval 与 put 的边界执行顺序：
+  `txn_interval` reference differential 证明 Txn success 列表中的 from-key delete
+  与 Put 可以共存并按 staged 顺序执行：delete 后 put 会留下 key，put 后 from-key
+  delete 会删除同一 key；高位 `0xff` 前缀、put-before-range、空区间 delete
+  和反向区间 delete 都必须与 etcd 一致。本轮新增本地 raw RPC 回归，用 64 字节
+  `0xff` 前缀固定 `{0}` sentinel、空/反向区间 no-op 和有序执行结果，防止后续
+  Txn interval 校验或 staged mutation 重排把合法请求误拒或误删。
 
 ### P2：运维兼容和长期验证
 

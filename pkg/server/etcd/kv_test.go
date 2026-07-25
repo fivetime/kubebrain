@@ -3865,6 +3865,95 @@ func TestTxnIntervalValidationMatchesEtcdFromKeySentinel(t *testing.T) {
 	}
 }
 
+func TestTxnIntervalExecutionMatchesEtcdEdgeRanges(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	putOp := func(key []byte) *etcdserverpb.RequestOp {
+		return &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestPut{
+			RequestPut: &etcdserverpb.PutRequest{Key: key, Value: []byte("value")},
+		}}
+	}
+	deleteOp := func(key, end []byte) *etcdserverpb.RequestOp {
+		return &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestDeleteRange{
+			RequestDeleteRange: &etcdserverpb.DeleteRangeRequest{Key: key, RangeEnd: end},
+		}}
+	}
+
+	for _, tc := range []struct {
+		name    string
+		ops     func(prefix string) ([]*etcdserverpb.RequestOp, []byte)
+		wantKey bool
+	}{
+		{
+			name: "from-key-delete-before-put-in-range",
+			ops: func(prefix string) ([]*etcdserverpb.RequestOp, []byte) {
+				key := []byte(prefix + "z")
+				return []*etcdserverpb.RequestOp{
+					deleteOp([]byte(prefix+"m"), []byte{0}),
+					putOp(key),
+				}, key
+			},
+			wantKey: true,
+		},
+		{
+			name: "put-before-from-key-delete-in-range",
+			ops: func(prefix string) ([]*etcdserverpb.RequestOp, []byte) {
+				key := []byte(prefix + "z")
+				return []*etcdserverpb.RequestOp{
+					putOp(key),
+					deleteOp([]byte(prefix+"m"), []byte{0}),
+				}, key
+			},
+		},
+		{
+			name: "from-key-delete-with-put-before-range",
+			ops: func(prefix string) ([]*etcdserverpb.RequestOp, []byte) {
+				key := []byte(prefix + "a")
+				return []*etcdserverpb.RequestOp{
+					deleteOp([]byte(prefix+"m"), []byte{0}),
+					putOp(key),
+				}, key
+			},
+			wantKey: true,
+		},
+		{
+			name: "empty-range-with-put-at-start",
+			ops: func(prefix string) ([]*etcdserverpb.RequestOp, []byte) {
+				key := []byte(prefix + "m")
+				return []*etcdserverpb.RequestOp{
+					deleteOp(key, key),
+					putOp(key),
+				}, key
+			},
+			wantKey: true,
+		},
+		{
+			name: "reversed-range-with-put-at-start",
+			ops: func(prefix string) ([]*etcdserverpb.RequestOp, []byte) {
+				key := []byte(prefix + "z")
+				return []*etcdserverpb.RequestOp{
+					deleteOp(key, []byte(prefix+"m")),
+					putOp(key),
+				}, key
+			},
+			wantKey: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			prefix := string(bytes.Repeat([]byte{0xff}, 64)) + "/registry/generic-txn/edge-interval/" + tc.name + "/"
+			ops, key := tc.ops(prefix)
+			resp, err := server.Txn(context.Background(), &etcdserverpb.TxnRequest{Success: ops})
+			require.NoError(t, err)
+			require.True(t, resp.Succeeded)
+
+			stored, err := server.Range(context.Background(), &etcdserverpb.RangeRequest{Key: key})
+			require.NoError(t, err)
+			require.Equal(t, tc.wantKey, len(stored.Kvs) == 1)
+		})
+	}
+}
+
 func TestTxnAllowsSameKeyInDifferentBranches(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
