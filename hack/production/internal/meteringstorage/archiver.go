@@ -14,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/kubewharf/kubebrain/hack/production/internal/processgroup"
 )
@@ -53,8 +55,13 @@ func (a *Archiver) Validate() error {
 		a.RetentionDuration <= a.SlotDuration+a.FinalizationDelay {
 		return errors.New("object storage sample archiver configuration is incomplete")
 	}
+	if !validObjectScopeValue(a.SourceObjectStoreID) || !validObjectScopeValue(a.MeteringObjectStoreID) ||
+		!validObjectScopeValue(a.SourceBucket) || !validObjectScopeValue(a.MeteringBucket) ||
+		!validRelativeObjectPrefix(a.SourcePrefix) || !validRelativeObjectPrefix(a.SnapshotPrefix) {
+		return errors.New("object storage sample object identity is invalid")
+	}
 	for i, format := range a.AllowedFormats {
-		if format == "" || (i > 0 && format <= a.AllowedFormats[i-1]) {
+		if !validObjectScopeValue(format) || (i > 0 && format <= a.AllowedFormats[i-1]) {
 			return errors.New("object storage sample formats must be unique and sorted")
 		}
 	}
@@ -65,6 +72,26 @@ func (a *Archiver) Validate() error {
 		a.Run = runCommand
 	}
 	return nil
+}
+
+func validObjectScopeValue(value string) bool {
+	if value == "" || !utf8.ValidString(value) {
+		return false
+	}
+	return strings.IndexFunc(value, func(r rune) bool {
+		return unicode.IsSpace(r) || unicode.IsControl(r)
+	}) == -1
+}
+
+func validRelativeObjectPrefix(value string) bool {
+	if !validObjectScopeValue(value) || strings.HasPrefix(value, "/") {
+		return false
+	}
+	trimmed := strings.TrimSuffix(value, "/")
+	if trimmed == "" || trimmed == "." || trimmed == ".." || strings.HasPrefix(trimmed, "../") {
+		return false
+	}
+	return path.Clean(trimmed) == trimmed
 }
 
 func (a *Archiver) Process(ctx context.Context) (Snapshot, []byte, error) {

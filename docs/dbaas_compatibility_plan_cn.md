@@ -13000,6 +13000,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   ./hack/production/internal/meteringarchive ./hack/production/cmd/metering-archive` 和
   `go test ./hack/production/... ./deploy/production -count=1`（根 production 包 325.602 秒）、
   `go vet ./hack/production/... ./deploy/production`、`git diff --check` 通过。
+- A875 前移 metering archive/storage archive 的对象身份校验：
+  logical-object executor 已校验 object store、bucket、object key/prefix，但 metering
+  sample archiver 和 object-storage sample archiver 自身只做非空和 trim；危险 store、
+  bucket、prefix 或 allowed format 会在 Prometheus/usage scan、临时 artifact 写入或子
+  executor 启动后才由下游失败。现在 `meteringarchive.Archiver.Validate` 和
+  `meteringstorage.Archiver.Validate` 在任何采样、usage scan 或 object executor 之前拒绝
+  含空白/控制字符的 scope，以及非规范相对 prefix（空段、`.`、`..`、父目录逃逸）。
+  回归覆盖 archive store control、bucket whitespace、prefix parent/unclean，以及 storage
+  source/metering scope、prefix 和 allowed format。`go test
+  ./hack/production/internal/meteringarchive -run
+  'TestArchiverValidationRejectsUnsafe(ObjectIdentity|RetentionAndPrefix)|TestArchiverUsesStableSlotIdentityAndVerifiedReceipt'
+  -count=20`、`go test ./hack/production/internal/meteringstorage -run
+  'TestArchiverValidationRejectsUnsafeObjectIdentity|TestArchiverMeasuresBeforeArchivingAndIsDeterministic'
+  -count=20`、`go test ./hack/production/internal/meteringarchive
+  ./hack/production/internal/meteringstorage -count=1`、`go vet
+  ./hack/production/internal/meteringarchive ./hack/production/internal/meteringstorage`、
+  `go test ./hack/production/... ./deploy/production -count=1`（根 production 包 328.967 秒）、
+  `go vet ./hack/production/... ./deploy/production` 和 `git diff --check` 通过。
 - A855 前移 PostRestoreAudit runner 的 Service/target 身份校验：
   `audit-restored-instance.sh` 会拒绝非法 operation/instance、Service namespace/name 和
   target instance，但 `run-post-restore-audit-operation.sh` 原先只在子审计前独立校验

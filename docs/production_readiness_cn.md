@@ -944,6 +944,9 @@ sample/rollup 原子写入在比较已存在文件时只读取目标 canonical �
 `kubebrain-metering-archive --prometheus-url` 必须是不含 userinfo、query、fragment、
 控制字符、引号或反斜杠的 HTTP/HTTPS base URL；Prometheus 凭据只通过 bearer token
 文件、CA 文件和可选 TLS server name 注入，不能嵌入 URL。
+`kubebrain-metering-archive` 在采样和启动 Object Lock executor 前还会校验
+`--object-store-id`、`--bucket` 与 `--object-prefix`：store/bucket 不得含空白或控制字符，
+prefix 必须是规范化相对对象前缀，不能包含空段、`.` 或 `..`。
 
 `deploy/production/kubebrain-metering-rollup.yaml` 每日 UTC 00:47 处理前一完整 UTC 日，
 且只从不可变小时对象读取，不重新查询 Prometheus。每个对象键由实例和 slot 确定；
@@ -1064,6 +1067,9 @@ artifact digest metadata、COMPLIANCE/GOVERNANCE mode 与 retain-until。总字�
 `kubebrain-metering-storage-archive --allowed-formats-json` 必须是单一 JSON string array，
 拒绝 `null` 和尾随第二个 JSON 值；空数组、重复、未排序或空 format 会在 archiver 配置
 校验中 fail closed。
+source/metering 两套 store、bucket、source prefix、snapshot prefix 和 allowed formats
+都会在 usage scan 或 sample archive executor 启动前按对象 scope/prefix 规则校验；非法
+值不能等到下游 object 工具或 receipt gate 才失败。
 `SOURCE_S3_FORCE_PATH_STYLE` 与 `METERING_S3_FORCE_PATH_STYLE` 可留空表示 false；非空时
 必须是合法布尔值，非法值要让 archive CLI fail closed，不能静默降级为 false 后访问错误的
 对象存储路径风格。

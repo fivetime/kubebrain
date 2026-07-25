@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/kubewharf/kubebrain/hack/production/internal/processgroup"
 )
@@ -47,6 +49,10 @@ func (a *Archiver) Validate() error {
 	if a.RetentionDuration <= a.FinalizationDelay+a.SlotDuration {
 		return errors.New("metering retention must exceed the slot and finalization delay")
 	}
+	if !validObjectScopeValue(a.ObjectStoreID) || !validObjectScopeValue(a.Bucket) ||
+		!validRelativeObjectPrefix(a.Prefix) {
+		return errors.New("metering archive object identity is invalid")
+	}
 	if a.Now == nil {
 		a.Now = time.Now
 	}
@@ -54,6 +60,26 @@ func (a *Archiver) Validate() error {
 		a.Run = runCommand
 	}
 	return nil
+}
+
+func validObjectScopeValue(value string) bool {
+	if value == "" || !utf8.ValidString(value) {
+		return false
+	}
+	return strings.IndexFunc(value, func(r rune) bool {
+		return unicode.IsSpace(r) || unicode.IsControl(r)
+	}) == -1
+}
+
+func validRelativeObjectPrefix(value string) bool {
+	if !validObjectScopeValue(value) || strings.HasPrefix(value, "/") {
+		return false
+	}
+	trimmed := strings.TrimSuffix(value, "/")
+	if trimmed == "" || trimmed == "." || trimmed == ".." || strings.HasPrefix(trimmed, "../") {
+		return false
+	}
+	return path.Clean(trimmed) == trimmed
 }
 
 func (a *Archiver) Process(ctx context.Context) (Sample, []byte, error) {

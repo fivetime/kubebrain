@@ -123,6 +123,57 @@ func TestUsageReceiptRejectsOversizedInput(t *testing.T) {
 	require.ErrorContains(t, err, "object usage receipt exceeds")
 }
 
+func TestArchiverValidationRejectsUnsafeObjectIdentity(t *testing.T) {
+	now := time.Unix(1_784_510_820, 0).UTC()
+	for _, tc := range []struct {
+		name   string
+		mutate func(*Archiver)
+		want   string
+	}{
+		{
+			name: "source store control",
+			mutate: func(a *Archiver) {
+				a.SourceObjectStoreID = "backup-store\nother"
+			},
+			want: "object identity",
+		},
+		{
+			name: "metering bucket whitespace",
+			mutate: func(a *Archiver) {
+				a.MeteringBucket = "metering bucket"
+			},
+			want: "object identity",
+		},
+		{
+			name: "source prefix parent",
+			mutate: func(a *Archiver) {
+				a.SourcePrefix = "../instance-a"
+			},
+			want: "object identity",
+		},
+		{
+			name: "snapshot prefix unclean",
+			mutate: func(a *Archiver) {
+				a.SnapshotPrefix = "metering-storage-samples//hourly"
+			},
+			want: "object identity",
+		},
+		{
+			name: "allowed format whitespace",
+			mutate: func(a *Archiver) {
+				a.AllowedFormats = []string{"kubebrain logical"}
+			},
+			want: "formats",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			archiver := validArchiver(now, nil)
+			tc.mutate(archiver)
+			require.ErrorContains(t, archiver.Validate(), tc.want)
+		})
+	}
+}
+
 func TestUsageReceiptReadersUseSnapshotSchema(t *testing.T) {
 	valid := validUsageReceipt()
 	valid.CheckedAtUnix = 1_784_509_201

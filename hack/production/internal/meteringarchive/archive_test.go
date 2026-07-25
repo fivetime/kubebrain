@@ -107,6 +107,28 @@ func TestArchiverValidationRejectsUnsafeRetentionAndPrefix(t *testing.T) {
 	require.Error(t, archiver.Validate())
 }
 
+func TestArchiverValidationRejectsUnsafeObjectIdentity(t *testing.T) {
+	server := completePrometheusServer(t, 1_700_006_390)
+	defer server.Close()
+	collector, err := NewCollector(server.URL, server.Client(), "", time.Minute)
+	require.NoError(t, err)
+	for _, tc := range []struct {
+		name   string
+		mutate func(*Archiver)
+	}{
+		{name: "object store control", mutate: func(a *Archiver) { a.ObjectStoreID = "store-a\nother" }},
+		{name: "bucket whitespace", mutate: func(a *Archiver) { a.Bucket = "metering bucket" }},
+		{name: "prefix parent", mutate: func(a *Archiver) { a.Prefix = "../samples" }},
+		{name: "prefix unclean", mutate: func(a *Archiver) { a.Prefix = "samples//hourly" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			archiver := validArchiver(collector)
+			tc.mutate(archiver)
+			require.ErrorContains(t, archiver.Validate(), "object identity")
+		})
+	}
+}
+
 func TestRunCommandReturnsContextErrorOnCancellation(t *testing.T) {
 	executable := blockingExecutor(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
