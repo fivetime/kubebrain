@@ -13599,6 +13599,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   不带 MemberID 的 DEACTIVATE 也必须删除该 alarm，最终 GET 为空。本轮新增本地 quota
   服务层回归，补齐此前只验证局部激活/解除或后端编码的缺口，防止 zero member 被
   later owner fallback、member filtering 或集合编码重写误吞。
+- A941 固定 Txn IgnoreValue/IgnoreLease 的 lease 迁移链：
+  `txn_ignore_lease` reference differential 证明 Txn 内 `IgnoreValue+LeaseB`
+  必须保留旧 value 但把 key 迁移到 leaseB，后续 `IgnoreLease` 只能更新 value 并继续
+  保留 leaseB；PrevKV 要显示迁移前后的 lease，staged Range 要看到同一 Txn 内的新
+  lease 绑定，revoke leaseA 不得删除 key，revoke leaseB 才删除。本轮新增本地 KV
+  服务层回归，固定这条端到端链路，防止 ignore option 与 lease attachment 索引在
+  Txn atomic/staged 路径中分叉。
 
 ### P2：运维兼容和长期验证
 

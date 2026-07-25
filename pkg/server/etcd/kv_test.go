@@ -2789,6 +2789,64 @@ func TestTxnComparePutIgnoreValueUpdatesLeasePreservesValue(t *testing.T) {
 	require.Equal(t, [][]byte{key}, ttlTwo.Keys)
 }
 
+func TestTxnIgnoreValueThenIgnoreLeasePreservesNewLeaseBinding(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	ctx := context.Background()
+	key := []byte("/registry/generic-txn/ignore-lease-chain")
+	leaseA, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 300, ID: 24701})
+	require.NoError(t, err)
+	leaseB, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 300, ID: 24702})
+	require.NoError(t, err)
+	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("old"), Lease: leaseA.ID})
+	require.NoError(t, err)
+
+	ignoreValue, err := server.Txn(ctx, &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+		{Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{
+			Key: key, Lease: leaseB.ID, IgnoreValue: true, PrevKv: true,
+		}}},
+		{Request: &etcdserverpb.RequestOp_RequestRange{RequestRange: &etcdserverpb.RangeRequest{Key: key}}},
+	}})
+	require.NoError(t, err)
+	putIgnoreValue := ignoreValue.Responses[0].GetResponsePut()
+	require.NotNil(t, putIgnoreValue.PrevKv)
+	require.Equal(t, []byte("old"), putIgnoreValue.PrevKv.Value)
+	require.Equal(t, leaseA.ID, putIgnoreValue.PrevKv.Lease)
+	staged := ignoreValue.Responses[1].GetResponseRange()
+	require.Len(t, staged.Kvs, 1)
+	require.Equal(t, []byte("old"), staged.Kvs[0].Value)
+	require.Equal(t, leaseB.ID, staged.Kvs[0].Lease)
+
+	ignoreLease, err := server.Txn(ctx, &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+		{Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{
+			Key: key, Value: []byte("new"), IgnoreLease: true, PrevKv: true,
+		}}},
+	}})
+	require.NoError(t, err)
+	putIgnoreLease := ignoreLease.Responses[0].GetResponsePut()
+	require.NotNil(t, putIgnoreLease.PrevKv)
+	require.Equal(t, []byte("old"), putIgnoreLease.PrevKv.Value)
+	require.Equal(t, leaseB.ID, putIgnoreLease.PrevKv.Lease)
+	final, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: key})
+	require.NoError(t, err)
+	require.Len(t, final.Kvs, 1)
+	require.Equal(t, []byte("new"), final.Kvs[0].Value)
+	require.Equal(t, leaseB.ID, final.Kvs[0].Lease)
+
+	_, err = server.LeaseRevoke(ctx, &etcdserverpb.LeaseRevokeRequest{ID: leaseA.ID})
+	require.NoError(t, err)
+	afterA, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: key})
+	require.NoError(t, err)
+	require.Len(t, afterA.Kvs, 1)
+	require.Equal(t, leaseB.ID, afterA.Kvs[0].Lease)
+	_, err = server.LeaseRevoke(ctx, &etcdserverpb.LeaseRevokeRequest{ID: leaseB.ID})
+	require.NoError(t, err)
+	afterB, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: key})
+	require.NoError(t, err)
+	require.Empty(t, afterB.Kvs)
+}
+
 func TestTxnCompareDeleteWithoutFailureRange(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
