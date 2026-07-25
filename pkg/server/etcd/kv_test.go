@@ -6074,6 +6074,49 @@ func TestTxnCompareVersionChecksExistence(t *testing.T) {
 	require.True(t, resp.Succeeded)
 }
 
+func TestTxnRangeAfterPutReportsSameTxnVersion(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	ctx := context.Background()
+	key := []byte("/registry/generic-txn/intra-version")
+	_, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("exists")})
+	require.NoError(t, err)
+
+	resp, err := server.Txn(ctx, &etcdserverpb.TxnRequest{
+		Compare: []*etcdserverpb.Compare{{
+			Key:         key,
+			Target:      etcdserverpb.Compare_VERSION,
+			Result:      etcdserverpb.Compare_EQUAL,
+			TargetUnion: &etcdserverpb.Compare_Version{Version: 1},
+		}},
+		Success: []*etcdserverpb.RequestOp{
+			{Request: &etcdserverpb.RequestOp_RequestPut{
+				RequestPut: &etcdserverpb.PutRequest{Key: key, Value: []byte("version-matched")},
+			}},
+			{Request: &etcdserverpb.RequestOp_RequestRange{
+				RequestRange: &etcdserverpb.RangeRequest{Key: key},
+			}},
+		},
+		Failure: []*etcdserverpb.RequestOp{
+			{Request: &etcdserverpb.RequestOp_RequestPut{
+				RequestPut: &etcdserverpb.PutRequest{Key: key, Value: []byte("version-not-matched")},
+			}},
+		},
+	})
+	require.NoError(t, err)
+	require.True(t, resp.Succeeded)
+	require.Len(t, resp.Responses, 2)
+
+	rangeResp := resp.Responses[1].GetResponseRange()
+	require.NotNil(t, rangeResp)
+	require.Len(t, rangeResp.Kvs, 1)
+	require.Equal(t, []byte("version-matched"), rangeResp.Kvs[0].Value)
+	require.Equal(t, int64(2), rangeResp.Kvs[0].Version)
+	require.Equal(t, resp.Header.Revision, rangeResp.Header.Revision)
+	require.Equal(t, resp.Header.Revision, rangeResp.Kvs[0].ModRevision)
+}
+
 func TestTxnCompareLeaseRunsSelectedBranch(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

@@ -13748,6 +13748,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   泄漏 `PrevKv`。既有本地回归已覆盖单次更新，本轮扩展为 `v0->v1->v2->v3` 三轮更新，
   逐轮检查 current/previous value，防止 watch event 复用、过滤或批量分发优化在后续
   事件中重新污染 mixed streams。
+- A963 固定 Txn 内 Put 后 Range 的 version 可见性：
+  `txn_version_semantics` compat 测试证明 Compare 仍基于事务前 committed state，但同一
+  Then block 中跟在 Put 后面的 Range 必须读取事务内写入，且返回 bumped `Version=2`。
+  本轮新增本地服务层回归，先创建 version 1 key，再执行 `Version(key)==1` 的 Txn，
+  Success 中依次 Put 和 Range，断言 Range value、version、header revision 和 mod revision
+  都来自同一事务 revision，防止 staged view 或 atomic txn path 退回到事务前快照。
 
 ### P2：运维兼容和长期验证
 
