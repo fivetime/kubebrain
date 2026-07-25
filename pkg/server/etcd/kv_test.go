@@ -1954,6 +1954,95 @@ func TestRangePreservesBinaryUserKeyOrdering(t *testing.T) {
 	})
 }
 
+func TestTxnBinaryMutationScenarioMatchesEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	ctx := context.Background()
+	keys := [][]byte{
+		{0x00},
+		{0x00, 0x00},
+		{0x00, 0x01},
+		{0x01},
+		{0xfe},
+		{0xfe, 0x00},
+		{0xfe, 0x01},
+		{0xff},
+	}
+	for i, key := range keys {
+		_, err := server.Put(ctx, &etcdserverpb.PutRequest{
+			Key: key, Value: []byte{byte('a' + i)},
+		})
+		require.NoError(t, err)
+	}
+
+	txnRange, err := server.Txn(ctx, &etcdserverpb.TxnRequest{
+		Success: []*etcdserverpb.RequestOp{{
+			Request: &etcdserverpb.RequestOp_RequestRange{
+				RequestRange: &etcdserverpb.RangeRequest{
+					Key: []byte{0x00}, RangeEnd: []byte{0x01},
+				},
+			},
+		}},
+	})
+	require.NoError(t, err)
+	require.Len(t, txnRange.Responses, 1)
+	ranged := txnRange.Responses[0].GetResponseRange()
+	require.Len(t, ranged.Kvs, 3)
+	require.Equal(t, [][]byte{{0x00}, {0x00, 0x00}, {0x00, 0x01}}, [][]byte{
+		ranged.Kvs[0].Key, ranged.Kvs[1].Key, ranged.Kvs[2].Key,
+	})
+	require.Equal(t, [][]byte{[]byte("a"), []byte("b"), []byte("c")}, [][]byte{
+		ranged.Kvs[0].Value, ranged.Kvs[1].Value, ranged.Kvs[2].Value,
+	})
+
+	txnDelete, err := server.Txn(ctx, &etcdserverpb.TxnRequest{
+		Success: []*etcdserverpb.RequestOp{{
+			Request: &etcdserverpb.RequestOp_RequestDeleteRange{
+				RequestDeleteRange: &etcdserverpb.DeleteRangeRequest{
+					Key: []byte{0x00}, RangeEnd: []byte{0x01}, PrevKv: true,
+				},
+			},
+		}},
+	})
+	require.NoError(t, err)
+	require.Len(t, txnDelete.Responses, 1)
+	deleted := txnDelete.Responses[0].GetResponseDeleteRange()
+	require.Equal(t, int64(3), deleted.Deleted)
+	require.Len(t, deleted.PrevKvs, 3)
+	require.Equal(t, [][]byte{{0x00}, {0x00, 0x00}, {0x00, 0x01}}, [][]byte{
+		deleted.PrevKvs[0].Key, deleted.PrevKvs[1].Key, deleted.PrevKvs[2].Key,
+	})
+	require.Equal(t, [][]byte{[]byte("a"), []byte("b"), []byte("c")}, [][]byte{
+		deleted.PrevKvs[0].Value, deleted.PrevKvs[1].Value, deleted.PrevKvs[2].Value,
+	})
+
+	afterTxnDelete, err := server.Range(ctx, &etcdserverpb.RangeRequest{
+		Key: []byte{0x00}, RangeEnd: []byte{0x01},
+	})
+	require.NoError(t, err)
+	require.Empty(t, afterTxnDelete.Kvs)
+
+	standaloneDelete, err := server.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{
+		Key: []byte{0xfe}, RangeEnd: []byte{0xff}, PrevKv: true,
+	})
+	require.NoError(t, err)
+	require.Equal(t, int64(3), standaloneDelete.Deleted)
+	require.Len(t, standaloneDelete.PrevKvs, 3)
+	require.Equal(t, [][]byte{{0xfe}, {0xfe, 0x00}, {0xfe, 0x01}}, [][]byte{
+		standaloneDelete.PrevKvs[0].Key, standaloneDelete.PrevKvs[1].Key, standaloneDelete.PrevKvs[2].Key,
+	})
+	require.Equal(t, [][]byte{[]byte("e"), []byte("f"), []byte("g")}, [][]byte{
+		standaloneDelete.PrevKvs[0].Value, standaloneDelete.PrevKvs[1].Value, standaloneDelete.PrevKvs[2].Value,
+	})
+
+	afterStandaloneDelete, err := server.Range(ctx, &etcdserverpb.RangeRequest{
+		Key: []byte{0xfe}, RangeEnd: []byte{0xff},
+	})
+	require.NoError(t, err)
+	require.Empty(t, afterStandaloneDelete.Kvs)
+}
+
 func TestDeleteRangeWithFromKeyMatchesEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

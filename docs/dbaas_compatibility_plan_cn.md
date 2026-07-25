@@ -13633,6 +13633,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   future compact 必须返回 future revision，且当前读仍返回 v2。本轮新增本地 KV
   服务层端到端回归，把此前分散的 compact 单点断言收束为同一条场景链，防止
   compact marker、header revision 或历史窗口判定在后续重构中相互漂移。
+- A946 固定二进制 key 的 Txn mutation 场景：
+  `binary_mutation` reference differential 证明 `0x00` 前缀和 `0xfe` 高位前缀不能被
+  字符串路径、namespace 拼接或 RangeEnd `{0}` 特判破坏；Txn Range `[00,01)` 必须按
+  原始 byte 顺序返回三项，Txn Delete `[00,01)` 带 PrevKv 必须返回同序旧值并清空该
+  区间，standalone Delete `[fe,ff)` 也要返回三项 PrevKv 后清空。本轮新增本地 KV
+  服务层回归，固定 binary Range/Txn/Delete 的组合语义，防止后续编码层或区间转换
+  把任意二进制 user key 误当 UTF-8/路径 key 处理。
 
 ### P2：运维兼容和长期验证
 
