@@ -1122,9 +1122,10 @@ func TestRangeMaxIntLimitDoesNotOverflow(t *testing.T) {
 
 	ctx := context.Background()
 	prefix := "/registry/pods/max-int-limit/"
-	for _, suffix := range []string{"a", "b", "c"} {
+	values := map[string]string{"a": "z", "b": "a", "c": "m"}
+	for suffix, value := range values {
 		_, err := server.Put(ctx, &etcdserverpb.PutRequest{
-			Key: []byte(prefix + suffix), Value: []byte(suffix),
+			Key: []byte(prefix + suffix), Value: []byte(value),
 		})
 		require.NoError(t, err)
 	}
@@ -1137,6 +1138,36 @@ func TestRangeMaxIntLimitDoesNotOverflow(t *testing.T) {
 	require.Equal(t, int64(3), resp.Count)
 	require.Len(t, resp.Kvs, 3)
 	require.False(t, resp.More)
+
+	valueSorted, err := server.Range(ctx, &etcdserverpb.RangeRequest{
+		Key: []byte(prefix), RangeEnd: []byte("/registry/pods/max-int-limit0"),
+		Limit: math.MaxInt64, SortTarget: etcdserverpb.RangeRequest_VALUE,
+	})
+	require.NoError(t, err)
+	require.Equal(t, int64(3), valueSorted.Count)
+	require.Len(t, valueSorted.Kvs, 3)
+	require.False(t, valueSorted.More)
+	require.Equal(t, [][]byte{[]byte(prefix + "b"), []byte(prefix + "c"), []byte(prefix + "a")}, [][]byte{
+		valueSorted.Kvs[0].Key, valueSorted.Kvs[1].Key, valueSorted.Kvs[2].Key,
+	})
+
+	txn, err := server.Txn(ctx, &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{{
+		Request: &etcdserverpb.RequestOp_RequestRange{
+			RequestRange: &etcdserverpb.RangeRequest{
+				Key: []byte(prefix), RangeEnd: []byte("/registry/pods/max-int-limit0"),
+				Limit: math.MaxInt64, SortTarget: etcdserverpb.RangeRequest_VALUE,
+			},
+		},
+	}}})
+	require.NoError(t, err)
+	require.Len(t, txn.Responses, 1)
+	txnRange := txn.Responses[0].GetResponseRange()
+	require.Equal(t, int64(3), txnRange.Count)
+	require.Len(t, txnRange.Kvs, 3)
+	require.False(t, txnRange.More)
+	require.Equal(t, [][]byte{[]byte(prefix + "b"), []byte(prefix + "c"), []byte(prefix + "a")}, [][]byte{
+		txnRange.Kvs[0].Key, txnRange.Kvs[1].Key, txnRange.Kvs[2].Key,
+	})
 }
 
 func TestRangeNegativeLimitMatchesEtcd(t *testing.T) {

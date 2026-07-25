@@ -13676,6 +13676,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   lease attachment 回归，直接固定 `RangeEnd={0}` 删除 m/n/z 后只保留 a，TTL(Keys)
   只返回 a，且被删 key 的 attachment 均不可读，防止 from-key 区间转换或 attachment
   批处理漏删导致 lease revoke/list 观察到幽灵绑定。
+- A952 固定 `math.MaxInt64` limit 与非 key sort 的组合：
+  `range_option_interaction` reference differential 证明 `Limit=math.MaxInt64` 不仅在
+  默认 key sort 下不能溢出，在 VALUE sort 以及 Txn Range 中也必须返回完整集合、
+  `Count` 为总匹配数且 `More=false`。本轮扩展本地 Range 回归，固定普通 Range 和
+  Txn Range 的 VALUE ascending 结果顺序，防止 limit lookahead、int 转换或 non-key
+  sort 分页路径在极大 limit 下错误截断或溢出。
 
 ### P2：运维兼容和长期验证
 
