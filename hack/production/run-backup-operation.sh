@@ -122,6 +122,25 @@ if [[ "$captured_digest" != "$expected_digest" || "$current_digest" != "$expecte
 fi
 PARAMETERS_INPUT="$frozen_parameters"
 
+validate_backup_prefix_json() {
+  "$JQ" -e '
+    .prefix | type == "string" and length > 0 and startswith("/") and
+    ((contains("\n") or contains("\r") or contains("\t")) | not)' \
+    "$PARAMETERS_INPUT" >/dev/null
+}
+
+validate_backup_prefix() {
+  local value="$1"
+  if [[ -z "$value" || "$value" != /* ||
+    "$value" == *$'\n'* || "$value" == *$'\r'* || "$value" == *$'\t'* ]]; then
+    echo "backup prefix must be an absolute key prefix without control characters" >&2
+    exit 2
+  fi
+}
+
+validate_backup_prefix_json ||
+  { echo "backup prefix must be an absolute key prefix without control characters" >&2; exit 2; }
+
 parameters="$("$JQ" -er '[
   .endpoint, .prefix, .artifact_output, (.batch_size|tostring),
   (if (.metrics_output // "") == "" then "-" else .metrics_output end),
@@ -149,6 +168,7 @@ for value in "$endpoint" "$prefix" "$artifact_output" "$backup_id" "$object_stor
   "$s3_endpoint" "$s3_bucket" "$s3_object_key" "$aws_region" "$receipt_output"; do
   [[ -n "$value" ]] || { echo "backup parameters contain an empty required field" >&2; exit 2; }
 done
+validate_backup_prefix "$prefix"
 [[ "$backup_id" == "$operation_id" ]] ||
   { echo "backup_id must equal the claimed operation ID" >&2; exit 2; }
 

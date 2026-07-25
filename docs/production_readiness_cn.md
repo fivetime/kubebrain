@@ -1968,10 +1968,11 @@ kubectl -n kubebrain-operations scale deployment/kubebrain-operation-api --repli
 
 `hack/production/run-backup-operation.sh` 接入受保护 Backup。参数文件固定 endpoint、
 prefix、operation 专属 artifact/receipt 路径、分页大小、Object Store ID、bucket/object
-key、绝对 retain-until、retention mode 与 completion gate。首次执行导出逻辑 v2
-artifact；崩溃重试若 artifact 已存在则不覆盖，而是重新校验 exact prefix、最少记录数
-与 freshness 后继续。Object Lock upload 会重新下载 exact version 并核对 digest、
-revision、records、retention，成功后 operation status 绑定 object receipt SHA-256。
+key、绝对 retain-until、retention mode 与 completion gate；prefix 必须是绝对 key
+prefix 且不能包含换行、回车或 tab。首次执行导出逻辑 v2 artifact；崩溃重试若
+artifact 已存在则不覆盖，而是重新校验 exact prefix、最少记录数与 freshness 后继续。
+Object Lock upload 会重新下载 exact version 并核对 digest、revision、records、retention，
+成功后 operation status 绑定 object receipt SHA-256。
 整个导出/上传期间维持 operation heartbeat；失败 requeue，fencing 时终止本地流程。
 S3 access key/secret 和 etcd TLS 凭据只通过 worker Secret/env 注入，不进入参数文件或 CR。
 

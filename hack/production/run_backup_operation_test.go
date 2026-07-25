@@ -136,6 +136,35 @@ func TestBackupOperationRejectsEmptyRequiredParameters(t *testing.T) {
 	require.NotContains(t, log, "--action succeed")
 }
 
+func TestBackupOperationRejectsInvalidPrefix(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		prefix string
+	}{
+		{name: "relative", prefix: "registry"},
+		{name: "control character", prefix: "/registry\tshadow"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newBackupRunnerFixture(t, false)
+			parameters := strings.Replace(
+				string(mustRead(t, f.parameters)),
+				`"prefix":"/registry"`,
+				fmt.Sprintf(`"prefix":%q`, tc.prefix),
+				1,
+			)
+			require.NoError(t, os.WriteFile(f.parameters, []byte(parameters), 0o600))
+
+			f.run(t, false, "CLAIM_DIGEST="+fileDigest(t, f.parameters),
+				"backup prefix must be an absolute key prefix without control characters")
+			log := f.log(t)
+			require.NotContains(t, log, "export\n")
+			require.NotContains(t, log, "object\n")
+			require.NotContains(t, log, "--action retry")
+			require.NotContains(t, log, "--action succeed")
+		})
+	}
+}
+
 func TestBackupOperationLoadsManagedParameters(t *testing.T) {
 	f := newBackupRunnerFixture(t, false)
 	f.env = append(f.env, "MANAGED_PARAMETERS="+f.parameters, "PARAMETERS_INPUT=")

@@ -12666,6 +12666,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   TestRestoreTrafficCutoverRejectsRestoreReceiptWithInvalidPrefixes -count=1 -v`、
   `go test ./hack/production -run TestRestoreTrafficCutover -count=1 -v`、相关脚本 ShellCheck 和
   `git diff --check` 通过。
+- A840 收紧 Backup runner 的 prefix 参数入口：
+  `run-backup-operation.sh` 原先只要求 Backup 参数里的 `prefix` 非空，非法相对 prefix 或带
+  控制字符的 prefix 会进入导出、状态校验或对象上传链路后才失败。现在 runner 在冻结参数后
+  先基于原始 JSON 拒绝非绝对 key prefix 以及换行、回车、tab，再对 Bash 变量做二次守卫；
+  回归覆盖相对 prefix 和带 tab prefix，确认不会启动 export/object，也不会把参数错误 requeue
+  成可重试失败。`go test ./hack/production -run TestBackupOperationRejectsInvalidPrefix -count=1 -v`、
+  `go test ./hack/production -run TestBackupOperation -count=1 -v`、相关脚本 ShellCheck 和
+  `git diff --check` 通过。
 
 ### P2：运维兼容和长期验证
 
