@@ -13360,6 +13360,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   PrevKv 和租约解绑语义。新增本地 trap backend 回归：point MOD compare 成功后执行
   ranged DeleteRange，确认未调用 CompareDelete fast path，且按 etcd 语义删除并返回三个
   PrevKv。
+- A903 固定 compare-delete ranged delete 的租约附件清理：
+  A902 证明 ranged DeleteRange 不走 point fast path 后，继续覆盖 generic path 的 lease
+  side effect：point MOD compare 成功后删除同一 lease 下的两个 key，DeleteRange PrevKv
+  保留原 lease ID，`LeaseTimeToLive(Keys=true)` 只剩范围外 key，且被删 key 的 durable
+  attachment 已移除。该回归防止后续优化 ranged compare-delete 时只删除用户 key、遗漏租约
+  元数据。
 
 ### P2：运维兼容和长期验证
 

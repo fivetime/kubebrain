@@ -599,6 +599,58 @@ func TestDeleteRangeAtomicallyRemovesLeaseAttachments(t *testing.T) {
 	require.Empty(t, ttl.Keys)
 }
 
+func TestTxnCompareDeleteRangeRemovesLeaseAttachments(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	const leaseID int64 = 77036
+	prefix := "/registry/events/txn-compare-delete-range/"
+	guardKey := []byte(prefix + "0guard")
+	_, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 300, ID: leaseID})
+	require.NoError(t, err)
+	guard, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: guardKey, Value: []byte("guard")})
+	require.NoError(t, err)
+	for _, suffix := range []string{"a", "b", "z"} {
+		_, err = server.Put(ctx, &etcdserverpb.PutRequest{
+			Key: []byte(prefix + suffix), Value: []byte("leased-" + suffix), Lease: leaseID,
+		})
+		require.NoError(t, err)
+	}
+
+	resp, err := server.Txn(ctx, &etcdserverpb.TxnRequest{
+		Compare: []*etcdserverpb.Compare{{
+			Key:         guardKey,
+			Target:      etcdserverpb.Compare_MOD,
+			Result:      etcdserverpb.Compare_EQUAL,
+			TargetUnion: &etcdserverpb.Compare_ModRevision{ModRevision: guard.Header.Revision},
+		}},
+		Success: []*etcdserverpb.RequestOp{{
+			Request: &etcdserverpb.RequestOp_RequestDeleteRange{
+				RequestDeleteRange: &etcdserverpb.DeleteRangeRequest{
+					Key: []byte(prefix + "a"), RangeEnd: []byte(prefix + "c"), PrevKv: true,
+				},
+			},
+		}},
+	})
+	require.NoError(t, err)
+	require.True(t, resp.Succeeded)
+	deleteResp := resp.Responses[0].GetResponseDeleteRange()
+	require.Equal(t, int64(2), deleteResp.Deleted)
+	require.Len(t, deleteResp.PrevKvs, 2)
+	require.Equal(t, leaseID, deleteResp.PrevKvs[0].Lease)
+	require.Equal(t, leaseID, deleteResp.PrevKvs[1].Lease)
+
+	ttl, err := server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: leaseID, Keys: true})
+	require.NoError(t, err)
+	require.ElementsMatch(t, [][]byte{[]byte(prefix + "z")}, ttl.Keys)
+	for _, suffix := range []string{"a", "b"} {
+		_, err = server.backend.InternalGet(ctx, leaseAttachKey(prefix+suffix))
+		require.Error(t, err)
+	}
+	_, err = server.backend.InternalGet(ctx, leaseAttachKey(prefix+"z"))
+	require.NoError(t, err)
+}
+
 func TestLargeLeasedDeleteRangeUsesOneRevision(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
