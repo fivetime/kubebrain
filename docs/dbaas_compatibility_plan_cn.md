@@ -13729,6 +13729,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   即使带 `Limit=1` 也必须返回完整 live-key count、不返回任何 KV、且 `More=false`，防止
   count-index 或 limit lookahead 优化把 tombstone hole 误算进数量或把 CountOnly 当成
   普通分页 Range。
+- A960 固定 Txn compare failure branch 的 header revision：
+  `txn_compare_header_revision` reference differential 关注 compare 与并发 Put 交错时的
+  response header 可见性，失败的 compare 不能返回落后于致使失败写入的 revision。本轮
+  新增本地确定性回归，先写入 key 后执行 `Version(key)==0` 的 Txn，使其进入 Failure
+  Range；事务 header、子 Range header、返回 KV 的 create/mod revision 都必须等于 seed
+  revision，防止 compare 失败分支把旧 base revision、空 header 或 Success 分支写入
+  revision 误传播给客户端重试逻辑。
 
 ### P2：运维兼容和长期验证
 

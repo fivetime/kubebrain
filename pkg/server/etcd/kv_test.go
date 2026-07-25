@@ -3042,6 +3042,47 @@ func TestTxnCreateWithoutFailureRangeReturnsEmptyFailureResponse(t *testing.T) {
 	require.Empty(t, resp.Responses)
 }
 
+func TestTxnCompareFailureRangeHeaderMatchesCurrentRevision(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	ctx := context.Background()
+	key := []byte("/registry/generic-txn/compare-failure-header")
+	seed, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("exists")})
+	require.NoError(t, err)
+
+	resp, err := server.Txn(ctx, &etcdserverpb.TxnRequest{
+		Compare: []*etcdserverpb.Compare{{
+			Key:         key,
+			Target:      etcdserverpb.Compare_VERSION,
+			Result:      etcdserverpb.Compare_EQUAL,
+			TargetUnion: &etcdserverpb.Compare_Version{Version: 0},
+		}},
+		Success: []*etcdserverpb.RequestOp{{
+			Request: &etcdserverpb.RequestOp_RequestPut{
+				RequestPut: &etcdserverpb.PutRequest{Key: key, Value: []byte("created")},
+			},
+		}},
+		Failure: []*etcdserverpb.RequestOp{{
+			Request: &etcdserverpb.RequestOp_RequestRange{
+				RequestRange: &etcdserverpb.RangeRequest{Key: key},
+			},
+		}},
+	})
+	require.NoError(t, err)
+	require.False(t, resp.Succeeded)
+	require.Equal(t, seed.Header.Revision, resp.Header.Revision)
+	require.Len(t, resp.Responses, 1)
+
+	failureRange := resp.Responses[0].GetResponseRange()
+	require.NotNil(t, failureRange)
+	require.Equal(t, seed.Header.Revision, failureRange.Header.Revision)
+	require.Len(t, failureRange.Kvs, 1)
+	require.Equal(t, seed.Header.Revision, failureRange.Kvs[0].CreateRevision)
+	require.Equal(t, seed.Header.Revision, failureRange.Kvs[0].ModRevision)
+	require.Equal(t, []byte("exists"), failureRange.Kvs[0].Value)
+}
+
 func TestTxnHeaderRevisionDeltasMatchEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
