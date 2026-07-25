@@ -13801,6 +13801,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   幸存者 Leave 要继续完成并清空 waiters。本轮新增 bufconn clientv3 回归，注册真实
   KV/Watch/Lease gRPC 服务并直接运行 `experimental/recipes.DoubleBarrier`，防止
   waiter CreateRevision 排序、ready key watch 或 lease revoke 删除事件破坏 barrier 协议。
+- A971 固定 clientv3 STM 的官方高层路径：
+  `stm` differential 覆盖 `concurrency.NewSTM` 的 RepeatableReads 新建、abort context
+  不提交、并发删除触发 compare retry，以及 Serializable 多 key snapshot 不得观察到同一
+  批量 Txn 的 split value。本轮新增 bufconn clientv3 回归，注册真实 KV gRPC 服务并直接
+  运行 STM，断言新建 key version、abort 后无残留、删除冲突至少重试一次且最终写入空读结果，
+  以及连续批量更新后的 Serializable STM 在回调内读取到一致 snapshot，防止 Txn compare、
+  read set 校验或 serializable read-only Txn 路径回退。
 
 ### P2：运维兼容和长期验证
 
