@@ -12961,6 +12961,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./hack/production -count=1 -timeout=12m`（329.939 秒）、`bash -n
   hack/backup/logical-object.sh`、`go vet ./hack/production` 和 `git diff --check` 通过；
   当前环境未安装 `shellcheck`，未运行 ShellCheck。
+- A872 收紧 backup drill/smoke 入口的 endpoint 字符边界：
+  A866 已保护 logical export/restore/verify wrapper，但 `logical-drill.sh`、
+  `backup-integrity-smoke.sh`、`restore-guard-smoke.sh`、`restore-rollback-smoke.sh`、
+  `lease-restore-smoke.sh` 和 `verify-content-smoke.sh` 会在调用 wrapper 前先用
+  `prefix-tool` 写入、计数或清理 prefix；危险 `ENDPOINT` 可能先进入直接 mutation
+  子命令。现在这些演练入口在创建 artifact/log 和任何 prefix-tool 调用前拒绝含换行、
+  tab、引号或反斜杠的 endpoint；回归覆盖换行、引号和反斜杠，确认不产生 artifact
+  或日志。`go test ./hack/production -run TestBackupSmokeWrappersRejectUnsafeEndpoint
+  -count=1 -v`、`go test ./hack/production -count=1 -timeout=12m`（327.737 秒）、
+  `bash -n hack/backup/logical-drill.sh hack/backup/backup-integrity-smoke.sh
+  hack/backup/restore-guard-smoke.sh hack/backup/restore-rollback-smoke.sh
+  hack/backup/lease-restore-smoke.sh hack/backup/verify-content-smoke.sh`、`go vet
+  ./hack/production` 和 `git diff --check` 通过；当前环境未安装 `shellcheck`，未运行
+  ShellCheck。
 - A855 前移 PostRestoreAudit runner 的 Service/target 身份校验：
   `audit-restored-instance.sh` 会拒绝非法 operation/instance、Service namespace/name 和
   target instance，但 `run-post-restore-audit-operation.sh` 原先只在子审计前独立校验

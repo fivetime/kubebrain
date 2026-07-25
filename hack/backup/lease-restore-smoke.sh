@@ -28,6 +28,10 @@ case "${1:-}" in
 esac
 
 ENDPOINT="${ENDPOINT:-127.0.0.1:3379}"
+if [[ "$ENDPOINT" == *[$'\t\r\n"\\']* ]]; then
+  echo "ENDPOINT contains unsupported characters" >&2
+  exit 2
+fi
 PREFIX="${PREFIX:-/registry/backup-lease-$(date +%s)-$$}"
 RESTORE_PREFIX="${RESTORE_PREFIX:-/kubebrain-lease-restore-$(date +%s)-$$}"
 LEASE_TTL="${LEASE_TTL:-120}"

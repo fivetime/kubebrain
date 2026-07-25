@@ -31,6 +31,10 @@ case "${1:-}" in
 esac
 
 ENDPOINT="${ENDPOINT:-127.0.0.1:3379}"
+if [[ "$ENDPOINT" == *[$'\t\r\n"\\']* ]]; then
+  echo "ENDPOINT contains unsupported characters" >&2
+  exit 2
+fi
 PREFIX="${PREFIX:-/registry/backup-guard-smoke-$(date +%s)}"
 RESTORE_PREFIX="${RESTORE_PREFIX:-/registry-restore${PREFIX}}"
 if [[ -z "${OUTPUT:-}" ]]; then

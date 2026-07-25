@@ -42,6 +42,51 @@ func TestLogicalBackupWrappersRejectUnsafeEndpoint(t *testing.T) {
 	}
 }
 
+func TestBackupSmokeWrappersRejectUnsafeEndpoint(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		endpoint string
+	}{
+		{name: "control character", endpoint: "https://service:2379\nother"},
+		{name: "quote", endpoint: `https://service:2379"other`},
+		{name: "backslash", endpoint: `https://service:2379\other`},
+	} {
+		for _, script := range []string{
+			"../backup/logical-drill.sh",
+			"../backup/backup-integrity-smoke.sh",
+			"../backup/restore-guard-smoke.sh",
+			"../backup/restore-rollback-smoke.sh",
+			"../backup/lease-restore-smoke.sh",
+			"../backup/verify-content-smoke.sh",
+		} {
+			t.Run(script+"/"+tc.name, func(t *testing.T) {
+				dir := t.TempDir()
+				output := filepath.Join(dir, "artifact.jsonl")
+				corruptOutput := filepath.Join(dir, "corrupt.jsonl")
+				restoreLog := filepath.Join(dir, "restore.log")
+				verifyLog := filepath.Join(dir, "verify.log")
+				env := []string{
+					"ENDPOINT=" + tc.endpoint,
+					"PREFIX=/__kubebrain/smoke/source",
+					"RESTORE_PREFIX=/__kubebrain/smoke/restore",
+					"OUTPUT=" + output,
+					"CORRUPT_OUTPUT=" + corruptOutput,
+					"RESTORE_LOG=" + restoreLog,
+					"VERIFY_LOG=" + verifyLog,
+				}
+
+				out, err := runProductionScriptCommand(t, script, env)
+				require.Error(t, err, string(out))
+				require.Contains(t, string(out), "ENDPOINT contains unsupported characters")
+				require.NoFileExists(t, output)
+				require.NoFileExists(t, corruptOutput)
+				require.NoFileExists(t, restoreLog)
+				require.NoFileExists(t, verifyLog)
+			})
+		}
+	}
+}
+
 func TestColdRestoreVerifyWrapperRejectsUnsafeEndpoint(t *testing.T) {
 	for _, tc := range []struct {
 		name     string

@@ -35,6 +35,10 @@ case "${1:-}" in
 esac
 
 ENDPOINT="${ENDPOINT:-127.0.0.1:3379}"
+if [[ "$ENDPOINT" == *[$'\t\r\n"\\']* ]]; then
+  echo "ENDPOINT contains unsupported characters" >&2
+  exit 2
+fi
 PREFIX="${PREFIX:-/registry}"
 RESTORE_PREFIX="${RESTORE_PREFIX:-/kubebrain-restore-drill-$(date +%s)-$$}"
 if [[ -z "${OUTPUT:-}" ]]; then

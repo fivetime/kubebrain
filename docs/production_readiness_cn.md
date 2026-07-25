@@ -699,7 +699,8 @@ ETCDCTL_CACERT=<ca> ETCDCTL_CERT=<client-cert> ETCDCTL_KEY=<client-key> \
 ```
 
 `cold-restore-verify.sh` 在启动 Go verifier 前会拒绝缺失或含控制字符、引号、反斜杠的
-`ENDPOINT`，保持冷恢复语义验证入口与 logical backup/restore wrapper 的 endpoint 边界一致。
+`ENDPOINT`，保持冷恢复语义验证入口与 logical backup/restore wrapper、备份演练 smoke
+入口的 endpoint 边界一致。
 
 门禁先校验 witness→snapshot receipt→restore receipt 的双 SHA-256 链，再分别在 witness revision
 与当前 revision 全量分页读取 prefix，要求 key/value/create revision/mod revision/version/lease ID
@@ -1214,6 +1215,11 @@ ENDPOINT=127.0.0.1:3379 PREFIX=/registry \
 ```shell
 ENDPOINT=127.0.0.1:3379 hack/backup/lease-restore-smoke.sh
 ```
+
+`logical-drill.sh` 以及 `backup-integrity-smoke.sh`、`restore-guard-smoke.sh`、
+`restore-rollback-smoke.sh`、`lease-restore-smoke.sh`、`verify-content-smoke.sh`
+会在创建备份 artifact、日志或调用 `prefix-tool` 修改实例前拒绝含控制字符、引号、反斜杠的
+`ENDPOINT`。
 
 非覆盖恢复会先用只读 Txn 按批检查全部目标 key，再创建 lease 和写数据；每个写批仍
 保留 `Version(key)==0` compare，关闭预检后的并发写竞争。`BATCH_SIZE` 不得超过目标
