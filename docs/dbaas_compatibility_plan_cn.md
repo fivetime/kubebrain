@@ -12472,6 +12472,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `bash -n hack/dev/verify.sh` 与
   `bash -n hack/dev/countindex-failover-smoke.sh`
   通过。
+- A820 收紧 dev verify 的依赖 admission 边界：
+  `hack/dev/verify.sh` 原先启动时无条件要求 `go` 和 `kubectl`，即使调用者已经关闭
+  cluster smoke、只想执行离线验证或检查脚本，也会因为无关依赖缺失提前失败。现在移除
+  全局 `kubectl` admission，并仅在根模块 `go test`、basic client smoke 和 compat module
+  被启用时提前检查 `go`；其余子脚本继续保留自身依赖自检。默认 release gate 行为不变，
+  但局部验证可以精确表达所需环境。
+  `bash -n hack/dev/verify.sh` 与
+  `RUN_GO_TEST=false RUN_BASIC_SMOKE=false RUN_HA_SMOKE=false RUN_APISERVER_SMOKE=false RUN_TLS_SMOKE=false hack/dev/verify.sh`
+  通过。
 
 ### P2：运维兼容和长期验证
 

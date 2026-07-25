@@ -56,20 +56,20 @@ run_step() {
   "$@"
 }
 
-need go
-need kubectl
-
 cd "$ROOT_DIR"
 
 if [ "$RUN_GO_TEST" = "true" ]; then
+  need go
   run_step "go test ./..." go test ./...
 fi
 
 if [ "$RUN_BASIC_SMOKE" = "true" ]; then
+  need go
   run_step "basic etcd client smoke" env ENDPOINT="$ENDPOINT" hack/dev/smoke-etcd-client.sh
 fi
 
 if [ "$RUN_ETCD_CLIENT_COMPAT" = "true" ]; then
+  need go
   run_step "official etcd Kubernetes client compatibility" env ENDPOINT="$ENDPOINT" hack/etcd-client-compat/run.sh
 fi
 
