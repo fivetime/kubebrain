@@ -13682,6 +13682,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `Count` 为总匹配数且 `More=false`。本轮扩展本地 Range 回归，固定普通 Range 和
   Txn Range 的 VALUE ascending 结果顺序，防止 limit lookahead、int 转换或 non-key
   sort 分页路径在极大 limit 下错误截断或溢出。
+- A953 固定互相矛盾的 mod revision filter 语义：
+  `range_option_interaction` reference differential 的 `contradictory-filters` 场景证明
+  `MinModRevision > MaxModRevision` 时，etcd 会保留原始 key range 的 `Count`，但过滤后
+  不返回任何 Kvs，且即使带 `Limit=1` 也不会设置 `More`。本轮新增本地 Range 和 Txn
+  Range 回归，固定普通读与事务读共用的过滤/limit 顺序，防止后续把 Count 误改成过滤后
+  数量、或让 contradictory filter 触发错误分页。
 
 ### P2：运维兼容和长期验证
 

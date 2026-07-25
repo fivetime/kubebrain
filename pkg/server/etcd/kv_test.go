@@ -1316,6 +1316,62 @@ func TestRangeFiltersByModRevision(t *testing.T) {
 	require.Empty(t, countResp.Kvs)
 }
 
+func TestRangeContradictoryModRevisionFiltersPreserveEtcdCount(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	ctx := context.Background()
+	prefix := "/registry/pods/filter-mod-contradictory/"
+	for _, seed := range []struct {
+		key   string
+		value string
+	}{
+		{key: "a", value: "a"},
+		{key: "b", value: "old"},
+		{key: "c", value: "c"},
+	} {
+		_, err := server.Put(ctx, &etcdserverpb.PutRequest{
+			Key: []byte(prefix + seed.key), Value: []byte(seed.value),
+		})
+		require.NoError(t, err)
+	}
+	updateB, err := server.Put(ctx, &etcdserverpb.PutRequest{
+		Key: []byte(prefix + "b"), Value: []byte("new"),
+	})
+	require.NoError(t, err)
+
+	var rangeResp *etcdserverpb.RangeResponse
+	require.Eventually(t, func() bool {
+		var err error
+		rangeResp, err = server.Range(ctx, &etcdserverpb.RangeRequest{
+			Key: []byte(prefix), RangeEnd: []byte("/registry/pods/filter-mod-contradictory0"),
+			MinModRevision: updateB.Header.Revision,
+			MaxModRevision: updateB.Header.Revision - 1,
+			Limit:          1,
+		})
+		return err == nil && rangeResp.Count == 3
+	}, time.Second, 10*time.Millisecond)
+	require.Empty(t, rangeResp.Kvs)
+	require.False(t, rangeResp.More)
+
+	txn, err := server.Txn(ctx, &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{{
+		Request: &etcdserverpb.RequestOp_RequestRange{
+			RequestRange: &etcdserverpb.RangeRequest{
+				Key: []byte(prefix), RangeEnd: []byte("/registry/pods/filter-mod-contradictory0"),
+				MinModRevision: updateB.Header.Revision,
+				MaxModRevision: updateB.Header.Revision - 1,
+				Limit:          1,
+			},
+		},
+	}}})
+	require.NoError(t, err)
+	require.Len(t, txn.Responses, 1)
+	txnRange := txn.Responses[0].GetResponseRange()
+	require.Equal(t, int64(3), txnRange.Count)
+	require.Empty(t, txnRange.Kvs)
+	require.False(t, txnRange.More)
+}
+
 func TestRangeAppliesLimitAfterModRevisionFilter(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
