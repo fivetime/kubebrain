@@ -48,6 +48,25 @@ func TestHTTPAccessControllerMatchesEtcdDefaultsAndPreflight(t *testing.T) {
 	require.Equal(t, "*", response.Header().Get("Access-Control-Allow-Origin"))
 }
 
+func TestHTTPAccessControllerRewritesV3BetaGatewayPrefix(t *testing.T) {
+	var seenPath, seenQuery string
+	handler := newHTTPAccessController(nil, nil, http.HandlerFunc(
+		func(w http.ResponseWriter, req *http.Request) {
+			seenPath = req.URL.Path
+			seenQuery = req.URL.RawQuery
+			w.WriteHeader(http.StatusNoContent)
+		},
+	))
+
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost,
+		"http://etcd.example/v3beta/kv/range?serializable=true", nil))
+
+	require.Equal(t, http.StatusNoContent, response.Code)
+	require.Equal(t, "/v3/kv/range", seenPath)
+	require.Equal(t, "serializable=true", seenQuery)
+}
+
 func TestHTTPAccessControllerEnforcesConfiguredOriginAndPlaintextHost(t *testing.T) {
 	handler := newHTTPAccessController(
 		[]string{"https://console.example"},

@@ -1528,7 +1528,9 @@ hack/dev/verify.sh
   service descriptor，确保新增公开 RPC 都有显式实现或显式拒绝分类；generated
   HTTP gateway 的注册 service 列表也必须固定为同一公开集合，避免 `/v3/*`
   surface 在升级或重构中漏注册或无审查扩大；当前 51 条 generated POST route 必须逐条命中
-  且未知 `/v3/*` route 保持 404。protobuf 字段升级门禁应以字段名和 wire
+  且未知 `/v3/*` route 保持 404。旧 `/v3beta/*` 前缀必须在 access controller 中先改写为
+  `/v3/*`，保留 method/body/query 后再进入同一 generated gateway；发布门禁必须覆盖
+  `/v3beta/kv/range` 成功命中和未知 `/v3beta/*` 仍保持 404。protobuf 字段升级门禁应以字段名和 wire
   number 精确覆盖 core KV/Watch/Lease/Txn、`RangeStreamResponse`、MVCC
   `KeyValue`/`Event`、Cluster、Maintenance、Auth、Auth 持久化 `authpb.User`/
   `Role`/`Permission`，以及 Lock/Election request、response 和 nested `LeaderKey`，

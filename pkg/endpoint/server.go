@@ -131,6 +131,10 @@ func requestHostname(req *http.Request) string {
 }
 
 func (ac *httpAccessController) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	if req.URL != nil && strings.HasPrefix(req.URL.Path, "/v3beta/") {
+		req.URL.Path = strings.Replace(req.URL.Path, "/v3beta/", "/v3/", 1)
+	}
+
 	host := requestHostname(req)
 	if req.TLS == nil && !allows(ac.hostWhitelist, host) {
 		http.Error(w, fmt.Sprintf(`

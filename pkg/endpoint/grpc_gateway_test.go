@@ -1002,6 +1002,47 @@ func TestRootServerRoutesHTTP2GatewayAndGRPCByContentType(t *testing.T) {
 	require.Equal(t, []byte("grpc"), kvServer.request.Key)
 }
 
+func TestGRPCGatewayAcceptsV3BetaCompatibilityPrefix(t *testing.T) {
+	listener := bufconn.Listen(1024 * 1024)
+	grpcServer := grpc.NewServer()
+	kvServer := &gatewayKVServer{}
+	etcdserverpb.RegisterKVServer(grpcServer, kvServer)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///bufnet",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return listener.Dial() }),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+
+	gateway, err := newGRPCGatewayMux(context.Background(), conn)
+	require.NoError(t, err)
+	handler := newHTTPAccessControlledHandler(nil, nil, map[string]http.Handler{"/": gateway})
+
+	request := httptest.NewRequest(http.MethodPost, "/v3beta/kv/range",
+		strings.NewReader(`{"key":"djNiZXRh","limit":"1"}`))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	require.JSONEq(t, `{
+		"header":{"cluster_id":"11","member_id":"12","revision":"13","raft_term":"14"},
+		"kvs":[{"key":"YQ==","create_revision":"2","mod_revision":"3","version":"4","value":"dmFsdWU="}],
+		"count":"1"
+	}`, response.Body.String())
+	require.NotNil(t, kvServer.request)
+	require.Equal(t, []byte("v3beta"), kvServer.request.Key)
+
+	request = httptest.NewRequest(http.MethodPost, "/v3beta/unclassified/generated-route", strings.NewReader("{"))
+	request.Header.Set("Content-Type", "application/json")
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	require.Equal(t, http.StatusNotFound, response.Code)
+}
+
 func registeredGatewayPOSTRouteCount(t *testing.T, mux *runtime.ServeMux) int {
 	t.Helper()
 	handlersField := reflect.ValueOf(mux).Elem().FieldByName("handlers")

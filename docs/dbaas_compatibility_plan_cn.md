@@ -12398,6 +12398,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   组合 HTTP server 仍保留 h2。
   `go test ./pkg/endpoint -run 'TestRootServerRoutesHTTP2GatewayAndGRPCByContentType|TestNewHttpServerBoundsHeaderAdmission|TestGRPCGatewayUsesGeneratedEtcdJSONContract' -count=1`
   和 `go test ./pkg/endpoint -run TestRunEndpoint -count=1` 均通过。
+- A814 恢复 `/v3beta/` gateway 兼容前缀：
+  对照 `/root/etcd/server/embed/serve.go` access controller 的 backward compatibility
+  rewrite，以及上游 changelog 中 `/v3beta` 到 `/v3` 的过渡说明，当前 etcd 仍会把
+  `/v3beta/*` 在服务端改写为 `/v3/*` 后进入 generated gateway。KubeBrain 旧 HTTP
+  access controller 没有该 rewrite，旧 curl/代理或仍使用 `/v3beta/kv/range` 的客户端会
+  收到 404，而不是和 etcd 一样命中 `/v3/kv/range`。现在 access controller 在 Host/CORS
+  和 route 分发前将 `/v3beta/` 精确替换为 `/v3/`，保留 query string 和原 method/body；
+  unknown `/v3beta/*` 仍按改写后的 unknown `/v3/*` 返回 404，不新增有效路由。回归覆盖
+  通用 HTTP access controller 的 path/query rewrite，并用真实 generated gateway 调用
+  `/v3beta/kv/range`，断言请求解码到 fake KV server。
+  `go test ./pkg/endpoint -run 'TestHTTPAccessControllerRewritesV3BetaGatewayPrefix|TestGRPCGatewayAcceptsV3BetaCompatibilityPrefix' -count=1 -v`
+  通过。
 
 ### P2：运维兼容和长期验证
 
