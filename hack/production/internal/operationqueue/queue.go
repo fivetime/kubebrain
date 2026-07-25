@@ -193,8 +193,8 @@ func (q *Queue) Submit(ctx context.Context, name string, spec Spec) (*unstructur
 		return nil, invalidSpecError("parameter secret name and key must be specified together")
 	}
 	if spec.ParametersSecret != "" {
-		if errs := validation.IsDNS1123Subdomain(spec.ParametersSecret); len(errs) > 0 {
-			return nil, invalidSpecError("invalid parameter secret name: %s", errs[0])
+		if !ValidParameterSecretName(spec.ParametersSecret) {
+			return nil, invalidSpecError("invalid parameter secret name")
 		}
 		if !ValidParameterSecretKey(spec.ParametersKey) {
 			return nil, invalidSpecError("invalid parameter secret key")
@@ -603,6 +603,12 @@ func ValidParameterSecretKey(key string) bool {
 		}
 	}
 	return true
+}
+
+// ValidParameterSecretName mirrors the KubeBrainOperation CRD's parameter
+// Secret reference name schema.
+func ValidParameterSecretName(name string) bool {
+	return len(validation.IsDNS1123Subdomain(name)) == 0
 }
 
 // ValidateRequester validates the KubeBrainOperation spec.requestedBy audit text.

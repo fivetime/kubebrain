@@ -204,7 +204,8 @@ func authorizedParametersSecret(input submitRequest, tenant string) bool {
 	}
 	return input.ParametersSecret != "" &&
 		input.ParametersKey == "parameters.json" &&
-		strings.HasPrefix(input.ParametersSecret, "params-"+tenant+"-")
+		strings.HasPrefix(input.ParametersSecret, "params-"+tenant+"-") &&
+		operationqueue.ValidParameterSecretName(input.ParametersSecret)
 }
 
 func (h *Handler) get(response http.ResponseWriter, request *http.Request) {

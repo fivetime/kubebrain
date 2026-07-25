@@ -12221,6 +12221,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   后续 CRD/audit artifact 的审计文本约束；回归覆盖控制字符 subject。
   `go test ./hack/production/internal/operationapi -run TestOIDCAuthenticatorFailsClosed -count=1 -v`、
   `git diff --check`、`go vet ./...` 和 `go test ./... -count=1 -p 1` 均通过。
+- A796 前移 operation API 参数 Secret 名称校验：
+  外部 submit API 已要求参数 Secret 前缀绑定租户且 key 固定为 `parameters.json`，但
+  Secret 名称是否满足 DNS subdomain 仍主要依赖 queue/store 层拒绝；测试中的内存 store
+  会暴露这种隐式依赖。现在 operationqueue 暴露 `ValidParameterSecretName`，handler 的
+  `authorizedParametersSecret` 在认证后、提交前同步拒绝非法 Secret 名称，确保任意 store
+  实现前方的 API 边界一致 fail closed；回归覆盖带大写字符的租户前缀 Secret。
+  `go test ./hack/production/internal/operationapi ./hack/production/internal/operationqueue -run 'TestHandlerRejectsUnboundParameterSecret|TestQueueRejects(SpecDriftAndInvalidCompletion|MalformedParameterReferenceBeforeSecretAPI)' -count=1 -v`、
+  `git diff --check`、`go vet ./...` 和 `go test ./... -count=1 -p 1` 均通过。
 
 ### P2：运维兼容和长期验证
 

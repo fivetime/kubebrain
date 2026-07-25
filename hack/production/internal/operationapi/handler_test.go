@@ -247,6 +247,7 @@ func TestHandlerRejectsUnboundParameterSecret(t *testing.T) {
 	for _, fields := range []string{
 		`"parameters_secret":"params-tenant-b-backup","parameters_key":"parameters.json",`,
 		`"parameters_secret":"params-tenant-a-backup","parameters_key":"token",`,
+		`"parameters_secret":"params-tenant-a-Invalid","parameters_key":"parameters.json",`,
 		`"parameters_secret":"params-tenant-a-backup",`,
 	} {
 		body := `{
