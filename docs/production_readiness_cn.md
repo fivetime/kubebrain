@@ -2001,7 +2001,8 @@ kubectl -n kubebrain-operations scale deployment/kubebrain-operation-api --repli
 `hack/production/run-backup-operation.sh` 接入受保护 Backup。参数文件固定 endpoint、
 prefix、operation 专属 artifact/receipt 路径、分页大小、Object Store ID、bucket/object
 key、绝对 retain-until、retention mode 与 completion gate；prefix 必须是绝对 key
-prefix 且不能包含换行、回车或 tab；object store ID、bucket 和 object key 必须通过安全
+prefix 且不能包含换行、回车或 tab；endpoint 不能包含控制字符、引号或反斜杠；object
+store ID、bucket 和 object key 必须通过安全
 对象身份校验，非法对象路径不会进入导出或上传子流程。首次执行导出逻辑 v2 artifact；
 崩溃重试若 artifact 已存在则不覆盖，而是重新校验 exact prefix、最少记录数与 freshness 后
 继续。Object Lock upload 会重新下载 exact version 并核对 digest、revision、records、

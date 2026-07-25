@@ -12927,6 +12927,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   -count=1 -timeout=12m`（322.754 秒）、`bash -n hack/backup/cold-restore-verify.sh`、`go vet
   ./hack/production` 和 `git diff --check` 通过；当前环境未安装 `shellcheck`，未运行
   ShellCheck。
+- A869 前移 Backup runner 的 endpoint 字符边界：
+  A866 已让 logical backup wrapper 拒绝危险 `ENDPOINT`，但 `run-backup-operation.sh` 仍会把
+  参数里的 endpoint 交给可替换的 export 子命令；含换行、tab、引号或反斜杠的 endpoint 应在
+  operation 参数层确定性失败，而不是进入 export workflow 或被 requeue。现在 Backup runner
+  对冻结 JSON 先拒绝危险 endpoint 字符，再在 TSV 展开后重复守卫；空 endpoint 仍保留原有
+  required-field 错误分类。回归覆盖换行、引号和反斜杠 endpoint，确认不启动 export/object，
+  也不 retry/succeed。`go test ./hack/production -run
+  'TestBackupOperationRejects(InvalidEndpoint|InvalidPrefix|EmptyRequiredParameters)' -count=1
+  -v`、`go test ./hack/production -run TestBackupOperation -count=1 -v`、`go vet
+  ./hack/production`、`go test ./hack/production -count=1 -timeout=12m`（326.082 秒）、
+  `bash -n hack/production/run-backup-operation.sh` 和 `git diff --check` 通过；当前环境未安装
+  `shellcheck`，未运行 ShellCheck。
 - A855 前移 PostRestoreAudit runner 的 Service/target 身份校验：
   `audit-restored-instance.sh` 会拒绝非法 operation/instance、Service namespace/name 和
   target instance，但 `run-post-restore-audit-operation.sh` 原先只在子审计前独立校验

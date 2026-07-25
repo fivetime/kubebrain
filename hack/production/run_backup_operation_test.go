@@ -165,6 +165,35 @@ func TestBackupOperationRejectsInvalidPrefix(t *testing.T) {
 	}
 }
 
+func TestBackupOperationRejectsInvalidEndpoint(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		endpoint string
+	}{
+		{name: "control character", endpoint: "https://etcd:2379\nother"},
+		{name: "quote", endpoint: `https://etcd:2379"other`},
+		{name: "backslash", endpoint: `https://etcd:2379\other`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newBackupRunnerFixture(t, false)
+			parameters := strings.Replace(
+				string(mustRead(t, f.parameters)),
+				`"endpoint":"https://etcd:2379"`,
+				fmt.Sprintf(`"endpoint":%q`, tc.endpoint),
+				1,
+			)
+			require.NoError(t, os.WriteFile(f.parameters, []byte(parameters), 0o600))
+
+			f.run(t, false, "CLAIM_DIGEST="+fileDigest(t, f.parameters), "backup endpoint identity is invalid")
+			log := f.log(t)
+			require.NotContains(t, log, "export\n")
+			require.NotContains(t, log, "object\n")
+			require.NotContains(t, log, "--action retry")
+			require.NotContains(t, log, "--action succeed")
+		})
+	}
+}
+
 func TestBackupOperationRejectsUnsafeObjectIdentity(t *testing.T) {
 	for _, tc := range []struct {
 		name string
