@@ -263,7 +263,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   handler 一样暴露 `/version`。KubeBrain 旧实现只在 client/info 端口返回
   `{"etcdserver","etcdcluster"}`，直接检查 peer URL 的 etcd 工具会得到 404。现在
   `GetPeerHttpHandlers` 复用现有 version handler，peer 端口也返回同一 semver JSON；
-  零值 server 单测固定该 handler map，避免 peer diagnostic 面回退。
+  零值 server 单测固定该 handler map，避免 peer diagnostic 面回退。后续继续对照
+  `/root/etcd/server/etcdserver/api/etcdhttp/version.go` 与
+  `go.etcd.io/etcd/api/v3/version.Versions`，HTTP `/version` 现返回 etcd 3.7 形状：
+  `etcdserver=3.7.0`、`etcdcluster=3.7`、`storage=3.7.0`，与 gRPC
+  `Maintenance.Status.Version/StorageVersion` 及 `ClusterVersion` 常量一致。
 - **Cluster peer /members（2026-07-25）**：继续对照
   `/root/etcd/server/etcdserver/api/etcdhttp/peer.go:peerMembersHandler`，上游 peer
   URL 可用 `GET /members` 读取成员数组并带 `X-Etcd-Cluster-ID`。KubeBrain 此前只在

@@ -300,7 +300,7 @@ pd-ctl -u http://10.32.32.101:2379 service-gc-safepoint
 **5) 确认 /version 端点**(kubeadm 外部 etcd 预检 `ExternalEtcdVersion` 依赖):
 
 ```bash
-curl -s http://10.32.32.101:3379/version    # 应返回 {"etcdserver":"3.7.0","etcdcluster":"3.7.0"}
+curl -s http://10.32.32.101:3379/version    # 应返回 {"etcdserver":"3.7.0","etcdcluster":"3.7","storage":"3.7.0"}
 ```
 
 > 📌 **leader-only 指标提醒**:`compact{}`、`count_index_keys`、`storage_gc_safepoint` 只在 **leader** 的 `:8080/metrics` 上出现/推进——在 follower 上查不到它们是正常现象,不是故障。先用 `curl :8080/election` 找到 leader 再看指标。

@@ -26,10 +26,10 @@ import (
 	"github.com/kubewharf/kubebrain/pkg/server/etcd"
 )
 
-// The /version endpoint must return etcd's {"etcdserver","etcdcluster"} shape so
-// kubeadm's ExternalEtcdVersion preflight parses it (a 404 body "404 page not
-// found" is mis-read as the JSON number 404). The handler uses no server state,
-// so a zero-value server exercises it.
+// The /version endpoint must return etcd's {"etcdserver","etcdcluster","storage"}
+// shape so kubeadm's ExternalEtcdVersion preflight parses it (a 404 body "404
+// page not found" is mis-read as the JSON number 404). The handler uses no
+// server state, so a zero-value server exercises it.
 func TestVersionHandlerReturnsEtcdShape(t *testing.T) {
 	rec := httptest.NewRecorder()
 	(&server{}).versionHandler(rec, httptest.NewRequest(http.MethodGet, "/version", nil))
@@ -40,10 +40,12 @@ func TestVersionHandlerReturnsEtcdShape(t *testing.T) {
 	var body struct {
 		EtcdServer  string `json:"etcdserver"`
 		EtcdCluster string `json:"etcdcluster"`
+		Storage     string `json:"storage"`
 	}
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
 	require.Equal(t, etcd.Version, body.EtcdServer)
-	require.Equal(t, etcd.Version, body.EtcdCluster)
+	require.Equal(t, etcd.ClusterVersion, body.EtcdCluster)
+	require.Equal(t, etcd.Version, body.Storage)
 
 	// Must be semver-parseable and satisfy the apiserver RequestWatchProgress
 	// floor (>= 3.5.13), the same guarantee maintenance_test enforces on the gRPC
@@ -72,5 +74,8 @@ func TestPeerHTTPHandlersExposeVersion(t *testing.T) {
 	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/version", nil))
 
 	require.Equal(t, http.StatusOK, rec.Code)
-	require.JSONEq(t, fmt.Sprintf(`{"etcdserver":%q,"etcdcluster":%q}`, etcd.Version, etcd.Version), rec.Body.String())
+	require.JSONEq(t, fmt.Sprintf(
+		`{"etcdserver":%q,"etcdcluster":%q,"storage":%q}`,
+		etcd.Version, etcd.ClusterVersion, etcd.Version,
+	), rec.Body.String())
 }

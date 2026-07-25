@@ -422,8 +422,8 @@ type healthResponse struct {
 // versionHandler serves the etcd-compatible GET /version endpoint. kubeadm's
 // ExternalEtcdVersion preflight (and other etcd tooling) GETs this and parses
 // {"etcdserver":...,"etcdcluster":...}; without it the 404 body "404 page not
-// found" is mis-parsed as the JSON number 404. The version string is the same
-// single source of truth reported by the Maintenance.Status gRPC (etcd.Version).
+// found" is mis-parsed as the JSON number 404. etcd 3.7 also includes
+// {"storage":...}; keep it aligned with Maintenance.Status.StorageVersion.
 func (s *server) versionHandler(w http.ResponseWriter, req *http.Request) {
 	if req.Method != http.MethodGet {
 		w.Header().Set("Allow", http.MethodGet)
@@ -434,7 +434,8 @@ func (s *server) versionHandler(w http.ResponseWriter, req *http.Request) {
 	respBytes, _ := json.Marshal(struct {
 		EtcdServer  string `json:"etcdserver"`
 		EtcdCluster string `json:"etcdcluster"`
-	}{EtcdServer: etcd.Version, EtcdCluster: etcd.Version})
+		Storage     string `json:"storage"`
+	}{EtcdServer: etcd.Version, EtcdCluster: etcd.ClusterVersion, Storage: etcd.Version})
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(respBytes)
