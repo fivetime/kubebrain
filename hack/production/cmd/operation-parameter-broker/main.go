@@ -73,16 +73,7 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/readyz", readyzHandler(certificate, handler))
 	mux.Handle("/", handler)
-	server := &http.Server{
-		Addr: address, Handler: mux,
-		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second,
-		WriteTimeout: 15 * time.Second, IdleTimeout: time.Minute,
-		MaxHeaderBytes: 16 << 10,
-		TLSConfig: &tls.Config{
-			MinVersion:     tls.VersionTLS12,
-			GetCertificate: certificate.GetCertificate,
-		},
-	}
+	server := newHTTPServer(address, mux, certificate)
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	go func() {
@@ -104,6 +95,23 @@ func main() {
 			log.Printf("graceful shutdown failed: %v", err)
 			_ = server.Close()
 		}
+	}
+}
+
+type serverCertificate interface {
+	GetCertificate(*tls.ClientHelloInfo) (*tls.Certificate, error)
+}
+
+func newHTTPServer(address string, handler http.Handler, certificate serverCertificate) *http.Server {
+	return &http.Server{
+		Addr: address, Handler: handler,
+		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second,
+		WriteTimeout: 15 * time.Second, IdleTimeout: time.Minute,
+		MaxHeaderBytes: 16 << 10,
+		TLSConfig: &tls.Config{
+			MinVersion:     tls.VersionTLS12,
+			GetCertificate: certificate.GetCertificate,
+		},
 	}
 }
 

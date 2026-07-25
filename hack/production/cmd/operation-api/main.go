@@ -85,16 +85,7 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/readyz", readyzHandler(certificate, handler))
 	mux.Handle("/", handler)
-	server := &http.Server{
-		Addr: address, Handler: mux,
-		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second,
-		WriteTimeout: 30 * time.Second, IdleTimeout: 2 * time.Minute,
-		MaxHeaderBytes: 32 << 10,
-		TLSConfig: &tls.Config{
-			MinVersion:     tls.VersionTLS12,
-			GetCertificate: certificate.GetCertificate,
-		},
-	}
+	server := newHTTPServer(address, mux, certificate)
 	go func() {
 		_ = certificate.Run(ctx, certReloadInterval, func(err error) {
 			log.Printf("TLS certificate reload failed; retaining previous certificate: %v", err)
@@ -116,6 +107,23 @@ func main() {
 			log.Printf("graceful shutdown failed: %v", err)
 			_ = server.Close()
 		}
+	}
+}
+
+type serverCertificate interface {
+	GetCertificate(*tls.ClientHelloInfo) (*tls.Certificate, error)
+}
+
+func newHTTPServer(address string, handler http.Handler, certificate serverCertificate) *http.Server {
+	return &http.Server{
+		Addr: address, Handler: handler,
+		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second,
+		WriteTimeout: 30 * time.Second, IdleTimeout: 2 * time.Minute,
+		MaxHeaderBytes: 32 << 10,
+		TLSConfig: &tls.Config{
+			MinVersion:     tls.VersionTLS12,
+			GetCertificate: certificate.GetCertificate,
+		},
 	}
 }
 

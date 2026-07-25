@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -49,6 +50,12 @@ func (d *countingReadyDependency) Ready(context.Context) error {
 	return nil
 }
 
+type fakeServerCertificate struct{}
+
+func (fakeServerCertificate) GetCertificate(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+	return &tls.Certificate{}, nil
+}
+
 func TestMainRejectsInvalidNamespaceBeforeKubeconfig(t *testing.T) {
 	output, err := testcommand.GoRun(t, ".",
 		"--namespace", "ops.ns",
@@ -57,6 +64,24 @@ func TestMainRejectsInvalidNamespaceBeforeKubeconfig(t *testing.T) {
 	)
 	require.Error(t, err)
 	require.Contains(t, string(output), "invalid namespace ops.ns")
+}
+
+func TestNewHTTPServerUsesHardenedTLSAndTimeouts(t *testing.T) {
+	handler := http.NewServeMux()
+	server := newHTTPServer("127.0.0.1:8443", handler, fakeServerCertificate{})
+
+	require.Equal(t, "127.0.0.1:8443", server.Addr)
+	require.Same(t, handler, server.Handler)
+	require.Equal(t, 5*time.Second, server.ReadHeaderTimeout)
+	require.Equal(t, 15*time.Second, server.ReadTimeout)
+	require.Equal(t, 15*time.Second, server.WriteTimeout)
+	require.Equal(t, time.Minute, server.IdleTimeout)
+	require.Equal(t, 16<<10, server.MaxHeaderBytes)
+	require.NotNil(t, server.TLSConfig)
+	require.Equal(t, uint16(tls.VersionTLS12), server.TLSConfig.MinVersion)
+	certificate, err := server.TLSConfig.GetCertificate(nil)
+	require.NoError(t, err)
+	require.NotNil(t, certificate)
 }
 
 func TestReadyzHandlerSetsNoStoreHeaders(t *testing.T) {

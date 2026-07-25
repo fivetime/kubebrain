@@ -12182,6 +12182,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./hack/production/internal/meteringarchive ./hack/production/internal/meteringbilling -run TestRunCommandReturnsContextErrorOnCancellation -count=1 -v`、
   `go test ./hack/production -run 'TestProductionRuntimeExecutorCommandsUseProcessGroupAndBoundedOutput' -count=1 -v`、
   `git diff --check`、`go vet ./...` 和 `go test ./... -count=1 -p 1` 均通过。
+- A791 固定 operation HTTPS server 硬化构造：
+  `operation-api` 和 `operation-parameter-broker` 已使用 TLS-only、动态 `GetCertificate`、
+  request timeout 与 max-header 限制，但这些值原本直接内联在 `main` 中，单测只覆盖
+  readiness/kubeconfig 分支；重构入口时可能静默丢失 TLS 1.2 下限、header timeout 或
+  证书热加载回调。现在两个命令都把 `http.Server` 构造提取为 `newHTTPServer`，单元测试
+  固定监听地址、handler、`ReadHeaderTimeout`、`ReadTimeout`、`WriteTimeout`、`IdleTimeout`、
+  `MaxHeaderBytes`、TLS 1.2 下限以及动态证书回调。
+  `go test ./hack/production/cmd/operation-api ./hack/production/cmd/operation-parameter-broker -run TestNewHTTPServerUsesHardenedTLSAndTimeouts -count=1 -v`、
+  `git diff --check`、`go vet ./...` 和 `go test ./... -count=1 -p 1` 均通过。
 
 ### P2：运维兼容和长期验证
 
