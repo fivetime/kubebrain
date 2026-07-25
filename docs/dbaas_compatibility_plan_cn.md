@@ -13314,6 +13314,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   cold restore wrapper、BackupDeletion S3 endpoint、backup smoke endpoint 和 operationctl broker
   origin 的实现/回归均已拒绝 DEL，但生产手册部分段落仍只写“控制字符、引号、反斜杠”。
   现统一补充 DEL，避免预生产演练照旧文档误判边界。
+- A897 固定 range compare 选中 DeleteRange 分支：
+  etcd `Compare.range_end` 会把比较目标扩展到 `[key, range_end)`，且选中的 Success/Failure
+  分支仍要按普通 txn 语义执行 DeleteRange。新增本地回归覆盖 range compare 成立后执行
+  ranged DeleteRange、返回两个 PrevKv、且失败分支不写入；新增 reference etcd differential
+  覆盖同一行为，记录 Succeeded/Deleted/PrevKeys/Remaining。`go test ./pkg/server/etcd -run
+  TestTxnRangeCompareSelectsDeleteRangeBranch -count=1 -v` 通过；`cd hack/etcd-client-compat &&
+  go test . -run TestTxnRangeCompareDeleteDifferentialAgainstReferenceEtcd -count=1 -v` 编译通过，
+  未设置 `REFERENCE_ETCD_ENDPOINT` 时按预期 skip。
 
 ### P2：运维兼容和长期验证
 

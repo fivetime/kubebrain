@@ -2219,6 +2219,55 @@ func TestTxnCrossKeyCompareMutationsUseGenericPath(t *testing.T) {
 	})
 }
 
+func TestTxnRangeCompareSelectsDeleteRangeBranch(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	ctx := context.Background()
+	prefix := "/registry/range-compare-delete/"
+	end := []byte("/registry/range-compare-delete0")
+	for _, suffix := range []string{"a", "b", "c"} {
+		_, err := server.Put(ctx, &etcdserverpb.PutRequest{
+			Key: []byte(prefix + suffix), Value: []byte("v-" + suffix),
+		})
+		require.NoError(t, err)
+	}
+
+	response, err := server.Txn(ctx, &etcdserverpb.TxnRequest{
+		Compare: []*etcdserverpb.Compare{{
+			Key: []byte(prefix), RangeEnd: end,
+			Target: etcdserverpb.Compare_VERSION, Result: etcdserverpb.Compare_GREATER,
+			TargetUnion: &etcdserverpb.Compare_Version{Version: 0},
+		}},
+		Success: []*etcdserverpb.RequestOp{{
+			Request: &etcdserverpb.RequestOp_RequestDeleteRange{
+				RequestDeleteRange: &etcdserverpb.DeleteRangeRequest{
+					Key: []byte(prefix + "b"), RangeEnd: end, PrevKv: true,
+				},
+			},
+		}},
+		Failure: []*etcdserverpb.RequestOp{{
+			Request: &etcdserverpb.RequestOp_RequestPut{
+				RequestPut: &etcdserverpb.PutRequest{Key: []byte(prefix + "failure"), Value: []byte("unexpected")},
+			},
+		}},
+	})
+	require.NoError(t, err)
+	require.True(t, response.Succeeded)
+	require.Len(t, response.Responses, 1)
+	deleteResp := response.Responses[0].GetResponseDeleteRange()
+	require.NotNil(t, deleteResp)
+	require.Equal(t, int64(2), deleteResp.Deleted)
+	require.Len(t, deleteResp.PrevKvs, 2)
+	require.Equal(t, []byte(prefix+"b"), deleteResp.PrevKvs[0].Key)
+	require.Equal(t, []byte(prefix+"c"), deleteResp.PrevKvs[1].Key)
+
+	current, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: []byte(prefix), RangeEnd: end})
+	require.NoError(t, err)
+	require.Equal(t, int64(1), current.Count)
+	require.Equal(t, []byte(prefix+"a"), current.Kvs[0].Key)
+}
+
 func TestTxnComparePutWithPrevKV(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
