@@ -2,6 +2,7 @@ package production_test
 
 import (
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,6 +13,13 @@ import (
 )
 
 const backupArtifactSHA256 = "abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd"
+
+func testJSONLiteral(t *testing.T, value string) string {
+	t.Helper()
+	encoded, err := json.Marshal(value)
+	require.NoError(t, err)
+	return string(encoded)
+}
 
 func TestBackupOperationCompletesProtectedUpload(t *testing.T) {
 	f := newBackupRunnerFixture(t, false)
@@ -171,6 +179,7 @@ func TestBackupOperationRejectsInvalidEndpoint(t *testing.T) {
 		endpoint string
 	}{
 		{name: "control character", endpoint: "https://etcd:2379\nother"},
+		{name: "DEL", endpoint: "https://etcd:2379\x7fother"},
 		{name: "quote", endpoint: `https://etcd:2379"other`},
 		{name: "backslash", endpoint: `https://etcd:2379\other`},
 	} {
@@ -179,12 +188,42 @@ func TestBackupOperationRejectsInvalidEndpoint(t *testing.T) {
 			parameters := strings.Replace(
 				string(mustRead(t, f.parameters)),
 				`"endpoint":"https://etcd:2379"`,
-				fmt.Sprintf(`"endpoint":%q`, tc.endpoint),
+				fmt.Sprintf(`"endpoint":%s`, testJSONLiteral(t, tc.endpoint)),
 				1,
 			)
 			require.NoError(t, os.WriteFile(f.parameters, []byte(parameters), 0o600))
 
 			f.run(t, false, "CLAIM_DIGEST="+fileDigest(t, f.parameters), "backup endpoint identity is invalid")
+			log := f.log(t)
+			require.NotContains(t, log, "export\n")
+			require.NotContains(t, log, "object\n")
+			require.NotContains(t, log, "--action retry")
+			require.NotContains(t, log, "--action succeed")
+		})
+	}
+}
+
+func TestBackupOperationRejectsInvalidS3Endpoint(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		endpoint string
+	}{
+		{name: "control character", endpoint: "https://s3.example\nother"},
+		{name: "DEL", endpoint: "https://s3.example\x7fother"},
+		{name: "quote", endpoint: `https://s3.example"other`},
+		{name: "backslash", endpoint: `https://s3.example\other`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newBackupRunnerFixture(t, false)
+			parameters := strings.Replace(
+				string(mustRead(t, f.parameters)),
+				`"s3_endpoint":"https://s3.example"`,
+				fmt.Sprintf(`"s3_endpoint":%s`, testJSONLiteral(t, tc.endpoint)),
+				1,
+			)
+			require.NoError(t, os.WriteFile(f.parameters, []byte(parameters), 0o600))
+
+			f.run(t, false, "CLAIM_DIGEST="+fileDigest(t, f.parameters), "backup s3_endpoint identity is invalid")
 			log := f.log(t)
 			require.NotContains(t, log, "export\n")
 			require.NotContains(t, log, "object\n")

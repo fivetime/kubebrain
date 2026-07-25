@@ -155,16 +155,36 @@ validate_backup_prefix() {
 validate_backup_prefix_json ||
   { echo "backup prefix must be an absolute key prefix without control characters" >&2; exit 2; }
 
+contains_unsafe_endpoint_char() {
+  local value="$1"
+  [[ "$value" == *[[:cntrl:]]* || "$value" == *\"* || "$value" == *\\* ]]
+}
+
 validate_backup_endpoint_json() {
   "$JQ" -e '
-    .endpoint |
+    def safe_endpoint:
       type == "string" and
-      ((test("[\\t\\r\\n\"\\\\]")) | not)' \
+      all(explode[]; (. >= 32 and . != 127 and . != 34 and . != 92));
+    .endpoint |
+      safe_endpoint' \
     "$PARAMETERS_INPUT" >/dev/null
 }
 
 validate_backup_endpoint_json ||
   { echo "backup endpoint identity is invalid" >&2; exit 2; }
+
+validate_backup_s3_endpoint_json() {
+  "$JQ" -e '
+    def safe_endpoint:
+      type == "string" and
+      all(explode[]; (. >= 32 and . != 127 and . != 34 and . != 92));
+    .s3_endpoint |
+      safe_endpoint' \
+    "$PARAMETERS_INPUT" >/dev/null
+}
+
+validate_backup_s3_endpoint_json ||
+  { echo "backup s3_endpoint identity is invalid" >&2; exit 2; }
 
 validate_object_identity_json() {
   "$JQ" -e '
@@ -223,8 +243,14 @@ for value in "$endpoint" "$prefix" "$artifact_output" "$backup_id" "$object_stor
   [[ -n "$value" ]] || { echo "backup parameters contain an empty required field" >&2; exit 2; }
 done
 validate_backup_prefix "$prefix"
-[[ "$endpoint" != *[$'\t\r\n"\\']* ]] ||
-  { echo "backup endpoint identity is invalid" >&2; exit 2; }
+if contains_unsafe_endpoint_char "$endpoint"; then
+  echo "backup endpoint identity is invalid" >&2
+  exit 2
+fi
+if contains_unsafe_endpoint_char "$s3_endpoint"; then
+  echo "backup s3_endpoint identity is invalid" >&2
+  exit 2
+fi
 validate_object_identity "$object_store_id" "$s3_bucket" "$s3_object_key"
 [[ "$backup_id" == "$operation_id" ]] ||
   { echo "backup_id must equal the claimed operation ID" >&2; exit 2; }

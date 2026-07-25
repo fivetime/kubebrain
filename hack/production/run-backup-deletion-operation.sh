@@ -148,11 +148,18 @@ validate_object_store_identity() {
 validate_object_store_identity_json ||
   { echo "backup deletion object store identity must use a safe scope" >&2; exit 2; }
 
+contains_unsafe_endpoint_char() {
+  local value="$1"
+  [[ "$value" == *[[:cntrl:]]* || "$value" == *\"* || "$value" == *\\* ]]
+}
+
 validate_s3_endpoint_json() {
   "$JQ" -e '
-    .s3_endpoint |
+    def safe_endpoint:
       type == "string" and
-      ((test("[\\t\\r\\n\"\\\\]")) | not)' \
+      all(explode[]; (. >= 32 and . != 127 and . != 34 and . != 92));
+    .s3_endpoint |
+      safe_endpoint' \
     "$PARAMETERS_INPUT" >/dev/null
 }
 
@@ -182,8 +189,10 @@ for value in "$object_store_id" "$s3_endpoint" "$aws_region" "$source_receipt" \
   [[ -n "$value" ]] || { echo "backup deletion parameters contain an empty required field" >&2; exit 2; }
 done
 validate_object_store_identity "$object_store_id"
-[[ "$s3_endpoint" != *[$'\t\r\n"\\']* ]] ||
-  { echo "backup deletion s3_endpoint identity is invalid" >&2; exit 2; }
+if contains_unsafe_endpoint_char "$s3_endpoint"; then
+  echo "backup deletion s3_endpoint identity is invalid" >&2
+  exit 2
+fi
 for digest in "$source_sha" "$pre_manifest_sha" "$post_manifest_sha"; do
   [[ "$digest" =~ ^[a-f0-9]{64}$ ]] ||
     { echo "backup deletion evidence digest is invalid" >&2; exit 2; }

@@ -278,6 +278,7 @@ func TestBackupDeletionOperationRejectsDriftAndInvalidEvidence(t *testing.T) {
 			endpoint string
 		}{
 			{name: "control character", endpoint: "https://s3.example\nother"},
+			{name: "DEL", endpoint: "https://s3.example\x7fother"},
 			{name: "quote", endpoint: `https://s3.example"other`},
 			{name: "backslash", endpoint: `https://s3.example\other`},
 		} {
@@ -286,7 +287,7 @@ func TestBackupDeletionOperationRejectsDriftAndInvalidEvidence(t *testing.T) {
 				parameters := strings.Replace(
 					string(mustRead(t, f.parameters)),
 					`"s3_endpoint":"https://s3.example"`,
-					fmt.Sprintf(`"s3_endpoint":%q`, tc.endpoint),
+					fmt.Sprintf(`"s3_endpoint":%s`, testJSONLiteral(t, tc.endpoint)),
 					1,
 				)
 				require.NoError(t, os.WriteFile(f.parameters, []byte(parameters), 0o600))

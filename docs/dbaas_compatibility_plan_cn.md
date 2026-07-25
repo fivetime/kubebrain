@@ -13195,6 +13195,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `hack/backup/*.sh` endpoint wrapper 在启动子命令前统一拒绝 `[[:cntrl:]]`、引号和
   反斜杠；`S3_ENDPOINT` 采用同一 helper，保持 direct object 工具与 operation runner
   边界一致。集中 wrapper 回归新增 DEL 覆盖，并保留换行、引号和反斜杠用例。
+- A888 前移 Backup/BackupDeletion endpoint 参数校验：
+  A887 收紧了 direct wrapper，但 protected Backup runner 自身仍只在参数 JSON 中拒绝
+  tab/CR/LF、引号和反斜杠；`DEL` 或其他控制字符会在 claim、参数冻结和 digest 校验后
+  才交给 export/object 子命令失败。现在 `run-backup-operation.sh` 对 `.endpoint` 和
+  `.s3_endpoint`、`run-backup-deletion-operation.sh` 对 `.s3_endpoint` 均在任何
+  export/status/Object Lock executor 调用前执行同一 `[[:cntrl:]]`/引号/反斜杠门禁；
+  JSON 预检和 TSV 解包后 bash 兜底同时覆盖，避免畸形 endpoint 被写入工作流后续阶段。
+  回归新增 Backup etcd endpoint、Backup S3 endpoint 和 BackupDeletion S3 endpoint 的
+  DEL 用例，并保留换行、引号和反斜杠用例。
 
 ### P2：运维兼容和长期验证
 
