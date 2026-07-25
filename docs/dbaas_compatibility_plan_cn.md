@@ -13378,6 +13378,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   negative/current/future/max-int，本轮补齐本地 gRPC 回归：future revision 与 `math.MaxInt64`
   均返回 `OutOfRange`，消息为 `etcdserver: mvcc: required revision is a future revision`，
   防止 HashKV 路径绕过 `checkRequestedRevision` 后退化成 backend 私有错误。
+- A906 固定 LeaseTimeToLive ID=0 读边界：
+  上游 `LeaseTimeToLive` 对空请求等价查询未知 lease 0，返回 `ID=0`、`TTL=-1`、
+  `GrantedTTL=0` 且无 keys；`Keys=true` 不能改变该响应外观。既有
+  `lease_read_boundary` reference differential 覆盖零 ID 与 live lease/list 组合，本轮补齐
+  本地 gRPC 回归，防止把 ID=0 误判为非法请求或在 `Keys=true` 时泄漏空 lease 的特殊处理。
 
 ### P2：运维兼容和长期验证
 

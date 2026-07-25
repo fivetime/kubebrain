@@ -700,6 +700,30 @@ func TestLeaseGrantClampsSmallTTLLikeEtcd(t *testing.T) {
 	}
 }
 
+func TestLeaseTimeToLiveZeroIDMatchesEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	ctx := context.Background()
+	withoutKeys, err := server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{})
+	require.NoError(t, err)
+	withKeys, err := server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{Keys: true})
+	require.NoError(t, err)
+
+	require.Equal(t, int64(0), withoutKeys.ID)
+	require.Equal(t, int64(-1), withoutKeys.TTL)
+	require.Equal(t, int64(0), withoutKeys.GrantedTTL)
+	require.Empty(t, withoutKeys.Keys)
+	require.Empty(t, withKeys.Keys)
+	require.Equal(t, withoutKeys.ID, withKeys.ID)
+	require.Equal(t, withoutKeys.TTL, withKeys.TTL)
+	require.Equal(t, withoutKeys.GrantedTTL, withKeys.GrantedTTL)
+	require.NotNil(t, withoutKeys.Header)
+	require.NotNil(t, withKeys.Header)
+	require.Equal(t, withoutKeys.Header.Revision, withKeys.Header.Revision)
+	require.Equal(t, int64(server.backend.GetCurrentRevision()), withoutKeys.Header.Revision)
+}
+
 func TestCorruptAlarmDefersNaturalLeaseExpiry(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
