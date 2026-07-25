@@ -58,7 +58,7 @@ KubeBrain 的目标不是"内部函数看起来对"，而是**"对 Kubernetes �
   → hack/dev/up.sh 从宿主 git 注入版本、提交 SHA 和 UTC build date 后执行 docker build
   → kind load docker-image kubebrain:dev --name kubebrain-dev
   → kubectl -n kubebrain-dev rollout restart deploy/kubebrain
-  → 黑盒验证：KUBEBRAIN_ETCD_ENDPOINT=<node-ip>:30079 go test ./hack/etcd-client-compat/...
+  → 黑盒验证：ENDPOINT=<node-ip>:30079 hack/etcd-client-compat/run.sh
   → 需要真实控制面时：hack/dev/apiserver-smoke.sh（或 k3s-datastore-smoke.sh）
 ```
 

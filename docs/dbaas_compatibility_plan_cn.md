@@ -12584,6 +12584,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `bash -n hack/etcd-client-compat/run.sh` 与
   `cd hack/etcd-client-compat && go test -run 'TestCompatSuiteRunnerRejectsReferenceDifferentialOptIns|TestCompatCommandHelpersUseWaitDelay' -count=1 -v`
   通过。
+- A831 将 `go vet` 纳入 CI 质量门禁：
+  主 CI 在 `go build ./...` 后执行根模块 `go vet ./...`，兼容性嵌套模块的 compile-only job
+  在剥离本地 `replace` 并 `go mod tidy` 后也执行 `go vet ./...`，避免本地手工质量门禁与
+  GitHub Actions 不一致。测试策略中的开发闭环同步改为通过
+  `ENDPOINT=<node-ip>:30079 hack/etcd-client-compat/run.sh` 跑普通黑盒兼容套件，不再建议从根模块
+  直接 `go test ./hack/etcd-client-compat/...` 绕过 runner 的 destructive/reference opt-in
+  防护。`go vet ./...`、`cd hack/etcd-client-compat && go vet ./...` 和 `git diff --check`
+  通过。
 
 ### P2：运维兼容和长期验证
 
