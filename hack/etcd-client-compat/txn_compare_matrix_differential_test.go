@@ -104,8 +104,12 @@ func runCompareMatrixScenario(t *testing.T, endpoint, instance string) []compare
 		{"empty-range-value-not-equal", valueCompare(emptyKey, emptyEnd, etcdserverpb.Compare_NOT_EQUAL, "value")},
 		{"multi-version-greater-zero", intCompare([]byte(prefix), rangeEnd, etcdserverpb.Compare_VERSION, etcdserverpb.Compare_GREATER, 0)},
 		{"multi-version-equal-one", intCompare([]byte(prefix), rangeEnd, etcdserverpb.Compare_VERSION, etcdserverpb.Compare_EQUAL, 1)},
+		{"multi-create-equal-first", intCompare([]byte(prefix), rangeEnd, etcdserverpb.Compare_CREATE, etcdserverpb.Compare_EQUAL, putA.Header.Revision)},
+		{"multi-create-less-after-update", intCompare([]byte(prefix), rangeEnd, etcdserverpb.Compare_CREATE, etcdserverpb.Compare_LESS, updateA.Header.Revision+1)},
 		{"multi-value-not-equal-missing", valueCompare([]byte(prefix), rangeEnd, etcdserverpb.Compare_NOT_EQUAL, "missing")},
 		{"multi-value-equal-same", valueCompare([]byte(prefix), rangeEnd, etcdserverpb.Compare_EQUAL, "same")},
+		{"multi-lease-equal-grant", intCompare([]byte(prefix), rangeEnd, etcdserverpb.Compare_LEASE, etcdserverpb.Compare_EQUAL, grant.ID)},
+		{"multi-lease-not-equal-zero", intCompare([]byte(prefix), rangeEnd, etcdserverpb.Compare_LEASE, etcdserverpb.Compare_NOT_EQUAL, 0)},
 	}
 
 	outcomes := make([]compareMatrixOutcome, 0, len(tests))

@@ -3758,6 +3758,108 @@ func TestTxnRangeCompareModRevisionRequiresAllKeysToMatch(t *testing.T) {
 	require.Len(t, resp.Responses[0].GetResponseRange().Kvs, 2)
 }
 
+func TestTxnRangeCompareCreateRevisionRequiresAllKeysToMatch(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	ctx := context.Background()
+	prefix := "/registry/generic-txn/range-compare-create/"
+	end := []byte("/registry/generic-txn/range-compare-create0")
+	putA, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: []byte(prefix + "a"), Value: []byte("v1")})
+	require.NoError(t, err)
+	putB, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: []byte(prefix + "b"), Value: []byte("v2")})
+	require.NoError(t, err)
+
+	resp, err := server.Txn(ctx, &etcdserverpb.TxnRequest{
+		Compare: []*etcdserverpb.Compare{{
+			Key:         []byte(prefix),
+			RangeEnd:    end,
+			Target:      etcdserverpb.Compare_CREATE,
+			Result:      etcdserverpb.Compare_EQUAL,
+			TargetUnion: &etcdserverpb.Compare_CreateRevision{CreateRevision: putA.Header.Revision},
+		}},
+		Success: []*etcdserverpb.RequestOp{{Request: &etcdserverpb.RequestOp_RequestPut{
+			RequestPut: &etcdserverpb.PutRequest{Key: []byte(prefix + "should-not-write"), Value: []byte("bad")},
+		}}},
+		Failure: []*etcdserverpb.RequestOp{{Request: &etcdserverpb.RequestOp_RequestRange{
+			RequestRange: &etcdserverpb.RangeRequest{Key: []byte(prefix), RangeEnd: end},
+		}}},
+	})
+	require.NoError(t, err)
+	require.False(t, resp.Succeeded)
+	require.Len(t, resp.Responses[0].GetResponseRange().Kvs, 2)
+
+	resp, err = server.Txn(ctx, &etcdserverpb.TxnRequest{
+		Compare: []*etcdserverpb.Compare{{
+			Key:         []byte(prefix),
+			RangeEnd:    end,
+			Target:      etcdserverpb.Compare_CREATE,
+			Result:      etcdserverpb.Compare_LESS,
+			TargetUnion: &etcdserverpb.Compare_CreateRevision{CreateRevision: putB.Header.Revision + 1},
+		}},
+		Success: []*etcdserverpb.RequestOp{{Request: &etcdserverpb.RequestOp_RequestRange{
+			RequestRange: &etcdserverpb.RangeRequest{Key: []byte(prefix), RangeEnd: end},
+		}}},
+	})
+	require.NoError(t, err)
+	require.True(t, resp.Succeeded)
+	require.Len(t, resp.Responses[0].GetResponseRange().Kvs, 2)
+}
+
+func TestTxnRangeCompareLeaseRequiresAllKeysToMatch(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	ctx := context.Background()
+	prefix := "/registry/generic-txn/range-compare-lease/"
+	end := []byte("/registry/generic-txn/range-compare-lease0")
+	leaseResp, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 30})
+	require.NoError(t, err)
+	for _, suffix := range []string{"a", "b"} {
+		_, err = server.Put(ctx, &etcdserverpb.PutRequest{
+			Key: []byte(prefix + suffix), Value: []byte("leased"), Lease: leaseResp.ID,
+		})
+		require.NoError(t, err)
+	}
+	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: []byte(prefix + "c"), Value: []byte("unleased")})
+	require.NoError(t, err)
+
+	resp, err := server.Txn(ctx, &etcdserverpb.TxnRequest{
+		Compare: []*etcdserverpb.Compare{{
+			Key:         []byte(prefix),
+			RangeEnd:    end,
+			Target:      etcdserverpb.Compare_LEASE,
+			Result:      etcdserverpb.Compare_EQUAL,
+			TargetUnion: &etcdserverpb.Compare_Lease{Lease: leaseResp.ID},
+		}},
+		Success: []*etcdserverpb.RequestOp{{Request: &etcdserverpb.RequestOp_RequestPut{
+			RequestPut: &etcdserverpb.PutRequest{Key: []byte(prefix + "should-not-write"), Value: []byte("bad")},
+		}}},
+		Failure: []*etcdserverpb.RequestOp{{Request: &etcdserverpb.RequestOp_RequestRange{
+			RequestRange: &etcdserverpb.RangeRequest{Key: []byte(prefix), RangeEnd: end},
+		}}},
+	})
+	require.NoError(t, err)
+	require.False(t, resp.Succeeded)
+	require.Len(t, resp.Responses[0].GetResponseRange().Kvs, 3)
+
+	resp, err = server.Txn(ctx, &etcdserverpb.TxnRequest{
+		Compare: []*etcdserverpb.Compare{{
+			Key:         []byte(prefix),
+			RangeEnd:    []byte(prefix + "c"),
+			Target:      etcdserverpb.Compare_LEASE,
+			Result:      etcdserverpb.Compare_EQUAL,
+			TargetUnion: &etcdserverpb.Compare_Lease{Lease: leaseResp.ID},
+		}},
+		Success: []*etcdserverpb.RequestOp{{Request: &etcdserverpb.RequestOp_RequestRange{
+			RequestRange: &etcdserverpb.RangeRequest{Key: []byte(prefix), RangeEnd: []byte(prefix + "c")},
+		}}},
+	})
+	require.NoError(t, err)
+	require.True(t, resp.Succeeded)
+	require.Len(t, resp.Responses[0].GetResponseRange().Kvs, 2)
+}
+
 func TestTxnRangeCompareValueFailsForEmptyRange(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

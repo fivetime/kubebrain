@@ -13323,6 +13323,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   TestTxnRangeCompareSelectsDeleteRangeBranch -count=1 -v` 通过；`cd hack/etcd-client-compat &&
   go test . -run TestTxnRangeCompareDeleteDifferentialAgainstReferenceEtcd -count=1 -v` 编译通过，
   未设置 `REFERENCE_ETCD_ENDPOINT` 时按预期 skip。
+- A898 扩展 range compare target all-match 覆盖：
+  上游 `TestTxnCompareRange` 要求带 `range_end` 的 compare 对范围内所有 key 同时成立，
+  不能只看首个 key。既有本地测试已覆盖 MOD/VALUE，本轮新增 CREATE 与 LEASE 的 all-match
+  回归：mixed create_revision 等值必须失败、全范围 create_revision 小于上界可成功；mixed
+  leased/unleased range 的 LEASE 等值必须失败，只含同 lease 的子范围可成功。reference etcd
+  compare matrix 同步加入 multi-create 与 multi-lease outcomes。`go test ./pkg/server/etcd -run
+  'TestTxnRangeCompare(CreateRevision|Lease)RequiresAllKeysToMatch' -count=1 -v` 通过；`cd
+  hack/etcd-client-compat && go test . -run TestTxnCompareMatrixDifferentialAgainstReferenceEtcd
+  -count=1 -v` 编译通过，未设置 `REFERENCE_ETCD_ENDPOINT` 时按预期 skip。
 
 ### P2：运维兼容和长期验证
 
