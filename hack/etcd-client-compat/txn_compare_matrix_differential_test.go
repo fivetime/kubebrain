@@ -110,6 +110,8 @@ func runCompareMatrixScenario(t *testing.T, endpoint, instance string) []compare
 		{"multi-value-equal-same", valueCompare([]byte(prefix), rangeEnd, etcdserverpb.Compare_EQUAL, "same")},
 		{"multi-lease-equal-grant", intCompare([]byte(prefix), rangeEnd, etcdserverpb.Compare_LEASE, etcdserverpb.Compare_EQUAL, grant.ID)},
 		{"multi-lease-not-equal-zero", intCompare([]byte(prefix), rangeEnd, etcdserverpb.Compare_LEASE, etcdserverpb.Compare_NOT_EQUAL, 0)},
+		{"from-key-version-greater-zero", intCompare(keyB, []byte{0}, etcdserverpb.Compare_VERSION, etcdserverpb.Compare_GREATER, 0)},
+		{"from-key-value-equal-different", valueCompare(keyB, []byte{0}, etcdserverpb.Compare_EQUAL, "different")},
 	}
 
 	outcomes := make([]compareMatrixOutcome, 0, len(tests))

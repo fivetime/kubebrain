@@ -3860,6 +3860,55 @@ func TestTxnRangeCompareLeaseRequiresAllKeysToMatch(t *testing.T) {
 	require.Len(t, resp.Responses[0].GetResponseRange().Kvs, 2)
 }
 
+func TestTxnRangeCompareFromKeySentinelMatchesEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	ctx := context.Background()
+	prefix := "/registry/generic-txn/range-compare-from-key/"
+	for _, suffix := range []string{"a", "b", "c"} {
+		_, err := server.Put(ctx, &etcdserverpb.PutRequest{
+			Key: []byte(prefix + suffix), Value: []byte("v-" + suffix),
+		})
+		require.NoError(t, err)
+	}
+
+	resp, err := server.Txn(ctx, &etcdserverpb.TxnRequest{
+		Compare: []*etcdserverpb.Compare{{
+			Key:         []byte(prefix + "b"),
+			RangeEnd:    []byte{0},
+			Target:      etcdserverpb.Compare_VERSION,
+			Result:      etcdserverpb.Compare_GREATER,
+			TargetUnion: &etcdserverpb.Compare_Version{Version: 0},
+		}},
+		Success: []*etcdserverpb.RequestOp{{Request: &etcdserverpb.RequestOp_RequestRange{
+			RequestRange: &etcdserverpb.RangeRequest{Key: []byte(prefix), RangeEnd: []byte(prefix + "d")},
+		}}},
+	})
+	require.NoError(t, err)
+	require.True(t, resp.Succeeded)
+	require.Len(t, resp.Responses[0].GetResponseRange().Kvs, 3)
+
+	resp, err = server.Txn(ctx, &etcdserverpb.TxnRequest{
+		Compare: []*etcdserverpb.Compare{{
+			Key:         []byte(prefix + "b"),
+			RangeEnd:    []byte{0},
+			Target:      etcdserverpb.Compare_VALUE,
+			Result:      etcdserverpb.Compare_EQUAL,
+			TargetUnion: &etcdserverpb.Compare_Value{Value: []byte("v-b")},
+		}},
+		Success: []*etcdserverpb.RequestOp{{Request: &etcdserverpb.RequestOp_RequestPut{
+			RequestPut: &etcdserverpb.PutRequest{Key: []byte(prefix + "should-not-write"), Value: []byte("bad")},
+		}}},
+		Failure: []*etcdserverpb.RequestOp{{Request: &etcdserverpb.RequestOp_RequestRange{
+			RequestRange: &etcdserverpb.RangeRequest{Key: []byte(prefix), RangeEnd: []byte(prefix + "d")},
+		}}},
+	})
+	require.NoError(t, err)
+	require.False(t, resp.Succeeded)
+	require.Len(t, resp.Responses[0].GetResponseRange().Kvs, 3)
+}
+
 func TestTxnRangeCompareValueFailsForEmptyRange(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

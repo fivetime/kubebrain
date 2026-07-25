@@ -13332,6 +13332,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   'TestTxnRangeCompare(CreateRevision|Lease)RequiresAllKeysToMatch' -count=1 -v` 通过；`cd
   hack/etcd-client-compat && go test . -run TestTxnCompareMatrixDifferentialAgainstReferenceEtcd
   -count=1 -v` 编译通过，未设置 `REFERENCE_ETCD_ENDPOINT` 时按预期 skip。
+- A899 固定 range compare from-key sentinel：
+  上游 `mkGteRange` 把 `range_end == "\x00"` 解释为 `[key, ∞)`；KubeBrain 已覆盖普通
+  Range/Delete/Txn interval，但 range compare 缺少显式 from-key 证据。新增本地回归覆盖
+  from-key VERSION all-match 成功，以及 from-key VALUE 等值因后续 key 不同而失败；reference
+  etcd compare matrix 同步加入 `from-key-version-greater-zero` 与
+  `from-key-value-equal-different`。`go test ./pkg/server/etcd -run
+  TestTxnRangeCompareFromKeySentinelMatchesEtcd -count=1 -v` 通过；`cd hack/etcd-client-compat &&
+  go test . -run TestTxnCompareMatrixDifferentialAgainstReferenceEtcd -count=1 -v` 编译通过，
+  未设置 `REFERENCE_ETCD_ENDPOINT` 时按预期 skip。
 
 ### P2：运维兼容和长期验证
 
