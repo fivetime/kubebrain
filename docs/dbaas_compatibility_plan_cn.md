@@ -12699,6 +12699,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   destroy phase，也不会把参数错误 requeue。`go test ./hack/production -run
   TestDestroyOperationRejectsInvalidBackupPrefix -count=1 -v`、`go test ./hack/production -run
   TestDestroyOperation -count=1 -v`、相关脚本 ShellCheck 和 `git diff --check` 通过。
+- A844 前移 RestoreCutover runner 的身份参数校验：
+  `switch-restore-traffic.sh` 会拒绝非法 Service namespace、非法身份字符和相同的
+  source/target instance，但 `run-restore-cutover-operation.sh` 原先只检查这些参数非空，测试
+  fake 子命令也会直接进入 phase。现在 runner 在捕获外部证据前要求 operation/instance/
+  Service/source/target 身份符合子状态机字符集、Service namespace 是小写 DNS label，并且
+  source/target instance 不同；回归覆盖非法 namespace 和相同 source/target，确认不会进入
+  任何 cutover phase，也不会把参数错误 retry/fail 成状态机失败。`go test ./hack/production
+  -run TestRestoreCutoverOperationRejectsInvalidIdentityParameters -count=1 -v`、`go test
+  ./hack/production -run TestRestoreCutoverOperation -count=1 -v`、相关脚本 ShellCheck 和
+  `git diff --check` 通过。
 
 ### P2：运维兼容和长期验证
 

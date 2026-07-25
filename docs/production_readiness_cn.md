@@ -2304,9 +2304,11 @@ namespace 会按设计停在 Terminating，禁止绕过 admission 强删 finaliz
 
 `hack/production/run-restore-cutover-operation.sh` 接入 RestoreCutover。参数绑定 A184
 restore receipt、logical artifact、A189 state/receipt 路径、Service、源/目标 instance、
-replicas、公开 endpoint 和 Kubernetes context。执行器按 prepare、cutover、verify、
-complete 驱动，每阶段独立续租。prepare 失败可 retry；从 cutover 调用开始，任何失败都
-必须执行 rollback 并写 Failed 终态，避免已改 selector 的操作被当成普通重试。
+replicas、公开 endpoint 和 Kubernetes context；runner 在启动子状态机前先校验
+operation/instance/Service/source/target 身份字符集、Service namespace DNS label 以及
+source/target 必须不同。执行器按 prepare、cutover、verify、complete 驱动，每阶段独立
+续租。prepare 失败可 retry；从 cutover 调用开始，任何失败都必须执行 rollback 并写
+Failed 终态，避免已改 selector 的操作被当成普通重试。
 
 worker 接管时依据 A189 持久证据恢复：只有 state 从 cutover 继续，有 cutover marker 从
 verify 继续，已有 receipt 则重做 complete 在线复检后提交；rollback marker 直接记 Failed。

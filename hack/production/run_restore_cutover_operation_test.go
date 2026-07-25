@@ -214,6 +214,42 @@ func TestRestoreCutoverOperationRejectsEmptyRequiredParameters(t *testing.T) {
 	require.NotContains(t, log, "--action succeed")
 }
 
+func TestRestoreCutoverOperationRejectsInvalidIdentityParameters(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		edit func(string) string
+		want string
+	}{
+		{
+			name: "invalid service namespace",
+			edit: func(parameters string) string {
+				return strings.Replace(parameters, `"service_namespace":"ns-a"`, `"service_namespace":"Bad_Namespace"`, 1)
+			},
+			want: "service_namespace must be a lowercase DNS label",
+		},
+		{
+			name: "same source and target",
+			edit: func(parameters string) string {
+				return strings.Replace(parameters, `"target_instance":"target"`, `"target_instance":"source"`, 1)
+			},
+			want: "source_instance and target_instance must differ",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newCutoverRunnerFixture(t)
+			parameters := tc.edit(string(mustRead(t, f.parameters)))
+			require.NoError(t, os.WriteFile(f.parameters, []byte(parameters), 0o600))
+
+			f.run(t, false, "CLAIM_DIGEST="+fileDigest(t, f.parameters), tc.want)
+			log := f.log(t)
+			require.NotContains(t, log, "phase ")
+			require.NotContains(t, log, "--action retry")
+			require.NotContains(t, log, "--action fail")
+			require.NotContains(t, log, "--action succeed")
+		})
+	}
+}
+
 func TestRestoreCutoverOperationStopsWhenHeartbeatIsFenced(t *testing.T) {
 	f := newCutoverRunnerFixture(t)
 	f.run(t, false, "SLEEP_PHASE=prepare", "heartbeat failed")

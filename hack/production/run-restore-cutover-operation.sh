@@ -146,6 +146,15 @@ for value in "$state_dir" "$restore_receipt" "$backup_input" "$service_namespace
   "$service_name" "$source_instance" "$target_instance" "$public_endpoint" "$receipt_output"; do
   [[ -n "$value" ]] || { echo "cutover parameters contain an empty required field" >&2; exit 2; }
 done
+for value in "$operation_id" "$instance" "$service_namespace" "$service_name" \
+  "$source_instance" "$target_instance"; do
+  [[ "$value" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] ||
+    { echo "cutover identity parameter contains unsupported characters" >&2; exit 2; }
+done
+[[ "$service_namespace" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] ||
+  { echo "cutover service_namespace must be a lowercase DNS label of at most 63 characters" >&2; exit 2; }
+[[ "$source_instance" != "$target_instance" ]] ||
+  { echo "cutover source_instance and target_instance must differ" >&2; exit 2; }
 for digest in "$restore_receipt_sha" "$backup_file_sha"; do
   [[ "$digest" =~ ^[a-f0-9]{64}$ ]] ||
     { echo "cutover evidence digest is invalid" >&2; exit 2; }
