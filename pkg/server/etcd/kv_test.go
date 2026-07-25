@@ -1116,6 +1116,63 @@ func TestRangeNonKeyNoneSortUsesEtcdLimitLookahead(t *testing.T) {
 	})
 }
 
+func TestRangeCreateAndModNoneSortUseEtcdLimitLookahead(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	ctx := context.Background()
+	prefix := "/registry/pods/sort-create-mod-limit/"
+	for _, seed := range []struct {
+		key   string
+		value string
+	}{
+		{key: "d", value: "n"},
+		{key: "c", value: "a"},
+		{key: "b", value: "m"},
+		{key: "a", value: "z"},
+	} {
+		_, err := server.Put(ctx, &etcdserverpb.PutRequest{
+			Key: []byte(prefix + seed.key), Value: []byte(seed.value),
+		})
+		require.NoError(t, err)
+	}
+	_, err := server.Put(ctx, &etcdserverpb.PutRequest{
+		Key: []byte(prefix + "b"), Value: []byte("y"),
+	})
+	require.NoError(t, err)
+
+	for _, tc := range []struct {
+		name       string
+		sortTarget etcdserverpb.RangeRequest_SortTarget
+		wantKeys   [][]byte
+	}{
+		{
+			name:       "create",
+			sortTarget: etcdserverpb.RangeRequest_CREATE,
+			wantKeys:   [][]byte{[]byte(prefix + "c"), []byte(prefix + "b")},
+		},
+		{
+			name:       "mod",
+			sortTarget: etcdserverpb.RangeRequest_MOD,
+			wantKeys:   [][]byte{[]byte(prefix + "c"), []byte(prefix + "a")},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var resp *etcdserverpb.RangeResponse
+			require.Eventually(t, func() bool {
+				var err error
+				resp, err = server.Range(ctx, &etcdserverpb.RangeRequest{
+					Key: []byte(prefix), RangeEnd: []byte("/registry/pods/sort-create-mod-limit0"),
+					Limit: 2, SortTarget: tc.sortTarget,
+				})
+				return err == nil && resp.Count == 4 && len(resp.Kvs) == 2
+			}, time.Second, 10*time.Millisecond)
+			require.True(t, resp.More)
+			require.Equal(t, tc.wantKeys, [][]byte{resp.Kvs[0].Key, resp.Kvs[1].Key})
+		})
+	}
+}
+
 func TestRangeMaxIntLimitDoesNotOverflow(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

@@ -13688,6 +13688,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   不返回任何 Kvs，且即使带 `Limit=1` 也不会设置 `More`。本轮新增本地 Range 和 Txn
   Range 回归，固定普通读与事务读共用的过滤/limit 顺序，防止后续把 Count 误改成过滤后
   数量、或让 contradictory filter 触发错误分页。
+- A954 固定 CREATE/MOD 的 non-key NONE sort lookahead：
+  `range_option_interaction` reference differential 的 `create-none-limit-lookahead` 与
+  `mod-none-limit-lookahead` 场景证明，etcd 在计算底层 `rangeLimit` 时仍把
+  `SortOrder=NONE` 当默认 key scan，因此先读取 `Limit+1` 个 key-ordered 候选，再把
+  非 KEY target 规范化为 ASCEND 做排序和最终截断。本轮新增本地 Range 回归，分别固定
+  CREATE 返回 `c,b`、MOD 返回 `c,a` 的候选内排序结果，防止后续把该路径误改成全量排序
+  或先按 key 直接截断成最终结果。
 
 ### P2：运维兼容和长期验证
 
