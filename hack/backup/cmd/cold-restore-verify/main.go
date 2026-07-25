@@ -804,7 +804,7 @@ func runWatchProbe(ctx context.Context, cli *clientv3.Client, prefix string) (in
 }
 
 func validateProbePrefix(prefix string) error {
-	if prefix == "" || !strings.HasPrefix(prefix, "/") || strings.ContainsAny(prefix, "\x00\n\r\t") {
+	if prefix == "" || !strings.HasPrefix(prefix, "/") || containsControlCharacter(prefix) {
 		return errors.New("VERIFY_PREFIX must be an absolute key prefix without control characters")
 	}
 	trimmed := strings.TrimRight(prefix, "/")
@@ -812,6 +812,12 @@ func validateProbePrefix(prefix string) error {
 		return errors.New("VERIFY_PREFIX must not target Kubernetes /registry data")
 	}
 	return nil
+}
+
+func containsControlCharacter(value string) bool {
+	return strings.IndexFunc(value, func(r rune) bool {
+		return r < 0x20 || r == 0x7f
+	}) >= 0
 }
 
 func randomHex(bytesCount int) (string, error) {

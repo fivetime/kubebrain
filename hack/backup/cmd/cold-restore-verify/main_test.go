@@ -379,6 +379,7 @@ func TestValidateProbePrefix(t *testing.T) {
 		{name: "registry", prefix: "/registry", message: "must not target"},
 		{name: "registry child", prefix: "/registry/pods", message: "must not target"},
 		{name: "control", prefix: "/__kubebrain/cold\nrestore", message: "control characters"},
+		{name: "del", prefix: "/__kubebrain/cold\x7frestore", message: "control characters"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			require.ErrorContains(t, validateProbePrefix(tc.prefix), tc.message)

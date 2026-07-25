@@ -13280,6 +13280,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   DEL、引号和反斜杠；回归新增两个变量的 DEL endpoint 用例。`go test
   ./hack/production/cmd/metering-storage-archive -run TestValidateObjectStoreEndpoint -count=1 -v`
   通过。
+- A892 收紧审计/冷恢复探针 key prefix 控制字符边界：
+  `validateAuditPrefix` 和 `validateProbePrefix` 的错误契约均要求 prefix 不含控制字符，但实现
+  只拒绝 NUL、换行、回车和 tab，漏掉 DEL 与其它 C0 控制字符。现在两个探针入口都按 rune
+  拒绝 `<0x20` 与 `0x7f`，避免畸形 prefix 进入 etcd key 空间或审计日志；回归分别新增
+  AUDIT_PREFIX/VERIFY_PREFIX 的 DEL 用例。`go test ./hack/production/cmd/etcd-audit-probe -run
+  TestValidateAuditPrefix -count=1 -v` 与 `go test ./hack/backup/cmd/cold-restore-verify -run
+  TestValidateProbePrefix -count=1 -v` 通过。
 
 ### P2：运维兼容和长期验证
 

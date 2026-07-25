@@ -31,6 +31,7 @@ func TestValidateAuditPrefix(t *testing.T) {
 		{name: "registry trailing", prefix: "/registry/", message: "must not target"},
 		{name: "registry child", prefix: "/registry/pods", message: "must not target"},
 		{name: "control", prefix: "/__kubebrain/audit\nprobe", message: "control characters"},
+		{name: "del", prefix: "/__kubebrain/audit\x7fprobe", message: "control characters"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := validateAuditPrefix(tc.prefix)
