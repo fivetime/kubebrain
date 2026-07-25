@@ -113,6 +113,21 @@ func TestBrokerParametersRejectsInsecureEndpointAndNonSuccess(t *testing.T) {
 		})
 	}
 
+	for _, endpoint := range []string{
+		"https://parameters.example\nother",
+		"https://parameters.example\tother",
+		`https://parameters.example"other`,
+		`https://parameters.example\other`,
+	} {
+		t.Run(endpoint, func(t *testing.T) {
+			_, err := brokerParameters(
+				t.Context(), endpoint, "missing", "missing",
+				"tenant-a", "backup-1", "worker-a", 1,
+			)
+			require.ErrorContains(t, err, "unsupported characters")
+		})
+	}
+
 	server := httptest.NewTLSServer(http.HandlerFunc(func(
 		response http.ResponseWriter, _ *http.Request,
 	) {

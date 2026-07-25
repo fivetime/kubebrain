@@ -13133,6 +13133,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   -count=1 -v`、`go test ./hack/production/internal/meteringstorage
   ./hack/production/cmd/metering-storage-archive ./hack/production/cmd/metering-storage-rollup
   -count=1` 和对应 `go vet` 通过。
+- A881 收紧 operationctl parameter broker endpoint 字符边界：
+  A506/A801 已把 `operationctl --action parameters` 的 broker endpoint 限制为 HTTPS
+  origin，并拒绝 userinfo、path、query 和 fragment；但 `net/url.Parse` 仍会接受
+  `https://broker.example"other` 这类带引号的 host，客户端随后才读取 token/CA 或在
+  request/dial 阶段失败。现在 `brokerParameters` 在 URL 解析前拒绝控制字符、DEL、引号
+  和反斜杠，保证畸形 broker origin 在读取 projected token/CA 前 fail closed。回归覆盖
+  换行、tab、引号和反斜杠 endpoint，并保留 TLS Bearer/fencing 成功路径。
+  `go test ./hack/production/cmd/operationctl -run
+  'TestBrokerParametersRejectsInsecureEndpointAndNonSuccess|TestBrokerParametersUsesTLSBearerAndFencingIdentity'
+  -count=1 -v`、`go test ./hack/production/cmd/operationctl -count=1` 和
+  `go vet ./hack/production/cmd/operationctl` 通过。
 
 ### P2：运维兼容和长期验证
 

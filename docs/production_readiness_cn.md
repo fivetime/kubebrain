@@ -2437,7 +2437,8 @@ queue worker identity audit text 规则。`/v1/parameters` 不接受 request bod
 identity 与 body 形状校验发生在 TokenReview 前，
 畸形请求不能消耗认证、Operation 或 Secret API；该边界同时避免代理、审计日志或客户端对
 重复参数取值不一致。`operationctl --action parameters`
-只接受不含 userinfo、query 或 fragment 的 HTTPS broker origin；从 broker 读取的响应超过
+只接受不含 userinfo、path、query、fragment、控制字符、引号或反斜杠的 HTTPS broker
+origin；从 broker 读取的响应超过
 4 MiB、`Content-Type` 不是 `application/json`，projected token 为空、包含空白或超过 16 KiB，或 broker
 CA bundle 超过 1 MiB 时必须 fail closed，不能把 `LimitReader` 截断结果或 HTML 错误页写成
 参数文件再依赖后续 digest 校验兜底，也不能构造超大 Authorization header 或无界读取错误

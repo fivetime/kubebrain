@@ -208,6 +208,9 @@ func brokerParameters(
 	if name == "" || owner == "" || attempt <= 0 {
 		return nil, errors.New("broker parameters require name, owner, and positive attempt")
 	}
+	if containsUnsafeEndpointChar(endpoint) {
+		return nil, errors.New("parameters endpoint contains unsupported characters")
+	}
 	base, err := url.Parse(endpoint)
 	if err != nil || base.Scheme != "https" || base.Host == "" ||
 		base.User != nil || (base.Path != "" && base.Path != "/") ||
@@ -267,6 +270,12 @@ func brokerParameters(
 		return nil, err
 	}
 	return body, nil
+}
+
+func containsUnsafeEndpointChar(value string) bool {
+	return strings.IndexFunc(value, func(r rune) bool {
+		return r < 0x20 || r == 0x7f || r == '"' || r == '\\'
+	}) >= 0
 }
 
 func validateBrokerParametersJSON(parameters []byte) error {
