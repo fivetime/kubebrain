@@ -58,3 +58,25 @@ func TestParseOptionalBoolEnvRejectsInvalidValue(t *testing.T) {
 	require.ErrorContains(t, err, "METERING_STORAGE_BOOL must be a boolean")
 	require.False(t, value)
 }
+
+func TestValidateObjectStoreEndpoint(t *testing.T) {
+	require.NoError(t, validateObjectStoreEndpoint("SOURCE_S3_ENDPOINT", "https://s3.example"))
+}
+
+func TestValidateObjectStoreEndpointRejectsUnsafeIdentity(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		endpoint string
+	}{
+		{name: "control character", endpoint: "https://s3.example\nother"},
+		{name: "quote", endpoint: `https://s3.example"other`},
+		{name: "backslash", endpoint: `https://s3.example\other`},
+	} {
+		for _, variable := range []string{"SOURCE_S3_ENDPOINT", "METERING_S3_ENDPOINT"} {
+			t.Run(variable+"/"+tc.name, func(t *testing.T) {
+				err := validateObjectStoreEndpoint(variable, tc.endpoint)
+				require.ErrorContains(t, err, variable+" contains unsupported characters")
+			})
+		}
+	}
+}

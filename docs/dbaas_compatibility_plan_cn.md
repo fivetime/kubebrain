@@ -12975,6 +12975,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   hack/backup/lease-restore-smoke.sh hack/backup/verify-content-smoke.sh`、`go vet
   ./hack/production` 和 `git diff --check` 通过；当前环境未安装 `shellcheck`，未运行
   ShellCheck。
+- A873 收紧 metering storage archive 的 S3 endpoint 字符边界：
+  A871 已保护 direct `logical-object.sh`，但 `kubebrain-metering-storage-archive` 会把
+  `SOURCE_S3_ENDPOINT` 和 `METERING_S3_ENDPOINT` 组装成 source/metering object executor
+  环境；危险 endpoint 应在 archive CLI 入口先 fail closed，而不是只依赖下游 wrapper。
+  现在 CLI 在构造 executor env 前拒绝含换行、tab、引号或反斜杠的 source/metering
+  S3 endpoint；回归覆盖两个变量的换行、引号和反斜杠。`go test
+  ./hack/production/cmd/metering-storage-archive -run
+  'TestValidateObjectStoreEndpoint|TestParseOptionalBoolEnv|TestParseJSONStringArray' -count=20`、
+  `go test ./hack/production/... ./deploy/production`（根 production 包 325.507 秒）、
+  `go vet ./hack/production/cmd/metering-storage-archive`、`go vet ./hack/production/...
+  ./deploy/production` 和 `git diff --check` 通过。
 - A855 前移 PostRestoreAudit runner 的 Service/target 身份校验：
   `audit-restored-instance.sh` 会拒绝非法 operation/instance、Service namespace/name 和
   target instance，但 `run-post-restore-audit-operation.sh` 原先只在子审计前独立校验

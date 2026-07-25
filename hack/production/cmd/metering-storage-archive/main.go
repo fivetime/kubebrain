@@ -63,6 +63,12 @@ func main() {
 		meteringEndpoint == "" || meteringRegion == "" || meteringAccessKey == "" || meteringSecretKey == "" {
 		log.Fatal("instance, source and metering object store settings, and a positive timeout are required")
 	}
+	if err := validateObjectStoreEndpoint("SOURCE_S3_ENDPOINT", sourceEndpoint); err != nil {
+		log.Fatal(err)
+	}
+	if err := validateObjectStoreEndpoint("METERING_S3_ENDPOINT", meteringEndpoint); err != nil {
+		log.Fatal(err)
+	}
 	if err := processgroup.ValidateExecutable(executor); err != nil {
 		log.Fatal(err)
 	}
@@ -113,6 +119,13 @@ func objectStoreEnvironment(endpoint, region, accessKey, secretKey, token string
 		"AWS_SESSION_TOKEN=" + token,
 		"S3_FORCE_PATH_STYLE=" + strconv.FormatBool(pathStyle),
 	}
+}
+
+func validateObjectStoreEndpoint(name, value string) error {
+	if strings.ContainsAny(value, "\t\r\n\"\\") {
+		return fmt.Errorf("%s contains unsupported characters", name)
+	}
+	return nil
 }
 
 func parseOptionalBoolEnv(name string) (bool, error) {
