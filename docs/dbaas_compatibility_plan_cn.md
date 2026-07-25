@@ -12831,6 +12831,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   -v`、`go vet ./hack/production`、`go test ./hack/production -count=1 -timeout=12m`
   （316.047 秒）、`bash -n hack/production/run-post-restore-audit-operation.sh` 和
   `git diff --check` 通过；当前环境未安装 `shellcheck`，未运行 ShellCheck。
+- A856 前移 Backup runner 的 claim 身份校验：
+  `run-backup-operation.sh` 旧逻辑信任 operation claim 返回的 `operation_id` 和 `instance`，
+  只在参数解析后要求 `backup_id` 等于 claimed operation ID；若 claim/参数同时漂移成
+  `backup/1` 这类非法 ID，runner 仍可能启动逻辑导出、artifact status 和对象上传，并把
+  非法 instance 传入对象 receipt 绑定。现在 Backup runner 在 claim 解析后立即要求
+  operation ID 与 instance 匹配受控资源标识格式，非法时不读取/运行备份 workflow，也不
+  retry/succeed。回归覆盖非法 instance，以及非法 operation ID 与参数 `backup_id`
+  一致的绕过场景。`go test ./hack/production -run
+  'TestBackupOperationRejects(InvalidClaimIdentityBeforeWorkflow|UnsafeObjectIdentity|InvalidPrefix)'
+  -count=1 -v`、`go test ./hack/production -run TestBackupOperation -count=1 -v`、
+  `go vet ./hack/production`、`go test ./hack/production -count=1 -timeout=12m`
+  （318.901 秒）、`bash -n hack/production/run-backup-operation.sh` 和
+  `git diff --check` 通过；当前环境未安装 `shellcheck`，未运行 ShellCheck。
 
 ### P2：运维兼容和长期验证
 
