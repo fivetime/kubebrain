@@ -2,47 +2,14 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
+# shellcheck source=hack/dev/common.sh
+source "${ROOT_DIR}/hack/dev/common.sh"
+
 CLUSTER_NAME="${CLUSTER_NAME:-kubebrain-dev}"
 IMAGE_NAME="${IMAGE_NAME:-kubebrain:dev}"
 KIND_NODE_IMAGE="${KIND_NODE_IMAGE:-}"
 TIDB_OPERATOR_VERSION="${TIDB_OPERATOR_VERSION:-v1.6.5}"
 KUBEBRAIN_REPLICAS="${KUBEBRAIN_REPLICAS:-1}"
-
-validate_name_token() {
-  local name="$1"
-  local value="${!name}"
-  if [[ ! "$value" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]]; then
-    echo "${name} must contain only letters, digits, dot, underscore, or dash, start with a letter or digit, and be at most 128 characters" >&2
-    exit 2
-  fi
-}
-
-validate_image_reference() {
-  local name="$1"
-  local value="${!name}"
-  if [[ ! "$value" =~ ^[A-Za-z0-9._:@/-]+$ ]]; then
-    echo "${name} must be a non-empty image reference without whitespace or shell metacharacters" >&2
-    exit 2
-  fi
-}
-
-validate_positive_integer() {
-  local name="$1"
-  local value="${!name}"
-  if [[ ! "$value" =~ ^[1-9][0-9]*$ ]]; then
-    echo "${name} must be a positive integer" >&2
-    exit 2
-  fi
-}
-
-validate_version_token() {
-  local name="$1"
-  local value="${!name}"
-  if [[ ! "$value" =~ ^[A-Za-z0-9._+-]+$ ]]; then
-    echo "${name} must be a tag-like version without whitespace or path separators" >&2
-    exit 2
-  fi
-}
 
 need() {
   if ! command -v "$1" >/dev/null 2>&1; then

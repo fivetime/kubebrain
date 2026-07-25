@@ -36,7 +36,8 @@ hack/dev/down.sh
 KIND_NODE_IMAGE=kindest/node:v1.36.1 KUBEBRAIN_REPLICAS=3 hack/dev/up.sh
 ```
 
-`hack/dev/up.sh` 会在检查 docker/kind/kubectl/helm 依赖和创建集群前校验 `CLUSTER_NAME`、
+`hack/dev/up.sh`、`hack/dev/down.sh` 和 `hack/dev/version-info.sh` 会在检查
+docker/kind/kubectl/helm 依赖和访问集群前校验 `CLUSTER_NAME`；`up.sh` 还会校验
 `IMAGE_NAME`、`KIND_NODE_IMAGE`、`TIDB_OPERATOR_VERSION` 和 `KUBEBRAIN_REPLICAS`；
 副本数必须是正整数，镜像和版本参数不能包含空白或 shell 元字符。`KIND_NODE_IMAGE`
 只在新建 kind 集群时生效；已有集群不会被原地改 Kubernetes server 版本。当前环境版本可以这样记录：

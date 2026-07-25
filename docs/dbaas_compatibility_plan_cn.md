@@ -12621,6 +12621,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `TIDB_OPERATOR_VERSION='../v1.6.5'` 均在依赖/集群操作前退出 2；
   `docker run --rm -v "$PWD:/mnt" -w /mnt koalaman/shellcheck:v0.11.0@sha256:61862eba1fcf09a484ebcc6feea46f1782532571a34ed51fedf90dd25f925a8d --severity=warning hack/dev/up.sh`
   与 `git diff --check` 通过。
+- A835 复用 dev stack 输入校验并覆盖 teardown/诊断入口：
+  新增 `hack/dev/common.sh` 承载 dev 脚本共享的 token、image reference、正整数和版本 token
+  校验函数；`up.sh` 改为 source 该文件，`down.sh` 和 `version-info.sh` 也在依赖检查前校验
+  `CLUSTER_NAME`，`version-info.sh` 额外校验可覆盖的 `NODE_NAME`。这避免 integration teardown
+  或版本记录阶段接受与创建阶段不同的 cluster name 规则。`bash -n`、非法
+  `CLUSTER_NAME='bad name' hack/dev/down.sh`、非法
+  `CLUSTER_NAME='bad name' hack/dev/version-info.sh`、非法
+  `NODE_NAME='bad node' hack/dev/version-info.sh`、同一 pinned ShellCheck 镜像检查
+  `hack/dev/common.sh hack/dev/up.sh hack/dev/down.sh hack/dev/version-info.sh` 和
+  `git diff --check` 通过。
 
 ### P2：运维兼容和长期验证
 

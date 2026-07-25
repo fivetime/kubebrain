@@ -1,8 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+# shellcheck source=hack/dev/common.sh
+source "${SCRIPT_DIR}/common.sh"
+
 CLUSTER_NAME="${CLUSTER_NAME:-kubebrain-dev}"
 NODE_NAME="${NODE_NAME:-${CLUSTER_NAME}-control-plane}"
+
+validate_name_token CLUSTER_NAME
+validate_name_token NODE_NAME
 
 need() {
   if ! command -v "$1" >/dev/null 2>&1; then
