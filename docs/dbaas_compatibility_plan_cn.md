@@ -12851,6 +12851,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   -v`、`go vet ./hack/production`、`go test ./hack/production -count=1 -timeout=12m`
   （321.112 秒）、`bash -n hack/production/run-restore-cutover-operation.sh` 和
   `git diff --check` 通过；当前环境未安装 `shellcheck`，未运行 ShellCheck。
+- A862 前移 RestoreCutover runner 的 public endpoint 字符边界：
+  RestoreCutover runner 旧逻辑只要求 `public_endpoint` 非空，可能把含换行、tab、引号或
+  反斜杠的 endpoint 传给 verify/complete 子流程和公开数据校验；该错误应是确定性参数
+  错误，而不是切流后可重试 workflow 失败。现在 runner 对冻结 JSON 先拒绝危险 endpoint
+  字符，再在 TSV 展开后重复守卫；空 endpoint 仍保留原有 required-field 错误分类。回归覆盖
+  换行、引号和反斜杠 endpoint，确认不进入任何 phase，也不 retry/fail/succeed。`go test
+  ./hack/production -run
+  'TestRestoreCutoverOperationRejects(InvalidPublicEndpointBeforePhases|EmptyRequiredParameters|InvalidIdentityParameters)'
+  -count=1 -v`、`go test ./hack/production -run TestRestoreCutoverOperation -count=1
+  -v`、`go vet ./hack/production`、`go test ./hack/production -count=1 -timeout=12m`
+  （320.701 秒）、`bash -n hack/production/run-restore-cutover-operation.sh` 和
+  `git diff --check` 通过；当前环境未安装 `shellcheck`，未运行 ShellCheck。
 - A855 前移 PostRestoreAudit runner 的 Service/target 身份校验：
   `audit-restored-instance.sh` 会拒绝非法 operation/instance、Service namespace/name 和
   target instance，但 `run-post-restore-audit-operation.sh` 原先只在子审计前独立校验

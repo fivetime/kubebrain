@@ -124,6 +124,17 @@ if [[ "$captured_digest" != "$expected_digest" || "$current_digest" != "$expecte
 fi
 PARAMETERS_INPUT="$frozen_parameters"
 
+validate_cutover_endpoint_json() {
+  "$JQ" -e '
+    .public_endpoint |
+      type == "string" and
+      ((test("[\\t\\r\\n\"\\\\]")) | not)' \
+    "$PARAMETERS_INPUT" >/dev/null
+}
+
+validate_cutover_endpoint_json ||
+  { echo "cutover public_endpoint identity is invalid" >&2; exit 2; }
+
 parameters="$("$JQ" -er '[
   .state_dir, .restore_receipt_input, .restore_receipt_sha256,
   .backup_input, .backup_file_sha256,
@@ -150,6 +161,8 @@ for value in "$state_dir" "$restore_receipt" "$backup_input" "$service_namespace
   "$service_name" "$source_instance" "$target_instance" "$public_endpoint" "$receipt_output"; do
   [[ -n "$value" ]] || { echo "cutover parameters contain an empty required field" >&2; exit 2; }
 done
+[[ "$public_endpoint" != *[$'\t\r\n"\\']* ]] ||
+  { echo "cutover public_endpoint identity is invalid" >&2; exit 2; }
 for value in "$operation_id" "$instance" "$service_namespace" "$service_name" \
   "$source_instance" "$target_instance"; do
   [[ "$value" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] ||

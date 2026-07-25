@@ -270,6 +270,36 @@ func TestRestoreCutoverOperationRejectsInvalidClaimIdentityBeforePhases(t *testi
 	}
 }
 
+func TestRestoreCutoverOperationRejectsInvalidPublicEndpointBeforePhases(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		endpoint string
+	}{
+		{name: "control character", endpoint: "https://service:2379\nother"},
+		{name: "quote", endpoint: `https://service:2379"other`},
+		{name: "backslash", endpoint: `https://service:2379\other`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newCutoverRunnerFixture(t)
+			parameters := strings.Replace(
+				string(mustRead(t, f.parameters)),
+				`"public_endpoint":"https://service:2379"`,
+				fmt.Sprintf(`"public_endpoint":%q`, tc.endpoint),
+				1,
+			)
+			require.NoError(t, os.WriteFile(f.parameters, []byte(parameters), 0o600))
+
+			f.run(t, false, "CLAIM_DIGEST="+fileDigest(t, f.parameters),
+				"cutover public_endpoint identity is invalid")
+			log := f.log(t)
+			require.NotContains(t, log, "phase ")
+			require.NotContains(t, log, "--action retry")
+			require.NotContains(t, log, "--action fail")
+			require.NotContains(t, log, "--action succeed")
+		})
+	}
+}
+
 func TestRestoreCutoverOperationStopsWhenHeartbeatIsFenced(t *testing.T) {
 	f := newCutoverRunnerFixture(t)
 	f.run(t, false, "SLEEP_PHASE=prepare", "heartbeat failed")
