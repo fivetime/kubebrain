@@ -12896,6 +12896,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./hack/production -count=1 -timeout=12m`（322.307 秒）、
   `bash -n hack/production/switch-restore-traffic.sh` 和 `git diff --check` 通过；当前环境未安装
   `shellcheck`，未运行 ShellCheck。
+- A866 收紧 logical backup wrapper 的 endpoint 字符边界：
+  RestoreCutover/PostRestoreAudit 已在 runner 与 direct production 脚本层拒绝危险公开
+  endpoint，但 `logical-export.sh`、`logical-verify.sh` 和 `logical-restore.sh` 直接入口仍会把
+  含换行、tab、引号或反斜杠的 `ENDPOINT` 原样传给 Go 子命令；直接演练或自定义 runner
+  绕过 operation 参数边界时会留下不一致。现在三个 wrapper 在启动 Go command 前拒绝危险
+  endpoint 字符；回归覆盖三类字符和三个 wrapper，确认不生成 artifact/receipt。`go test
+  ./hack/production -run TestLogicalBackupWrappersRejectUnsafeEndpoint -count=1 -v`、
+  `go test ./hack/production -count=1 -timeout=12m`（328.169 秒）、`bash -n
+  hack/backup/logical-export.sh hack/backup/logical-verify.sh hack/backup/logical-restore.sh`、
+  `go vet ./hack/production` 和 `git diff --check` 通过；当前环境未安装 `shellcheck`，未运行
+  ShellCheck。
 - A855 前移 PostRestoreAudit runner 的 Service/target 身份校验：
   `audit-restored-instance.sh` 会拒绝非法 operation/instance、Service namespace/name 和
   target instance，但 `run-post-restore-audit-operation.sh` 原先只在子审计前独立校验

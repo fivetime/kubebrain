@@ -1762,7 +1762,7 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
 
 ## 逻辑备份和恢复演练
 
-逻辑备份脚本会运行仓库内 Go command，依赖随主 `go.mod` 管理，不会在每次演练时创建临时 Go module 或动态拉取依赖。默认请求超时时间为 `10m`，大集群演练可以通过 `TIMEOUT=30m` 这类 Go duration 字符串调整导出、恢复、count、内容校验和清理超时。所有 `hack/backup/*.sh` 脚本都支持 `--help` 查看参数。
+逻辑备份脚本会运行仓库内 Go command，依赖随主 `go.mod` 管理，不会在每次演练时创建临时 Go module 或动态拉取依赖。默认请求超时时间为 `10m`，大集群演练可以通过 `TIMEOUT=30m` 这类 Go duration 字符串调整导出、恢复、count、内容校验和清理超时。logical export/verify/restore wrapper 在启动 Go command 前会拒绝含控制字符、引号或反斜杠的 `ENDPOINT`，避免直接调用绕过 operation runner 的公开 endpoint 边界。所有 `hack/backup/*.sh` 脚本都支持 `--help` 查看参数。
 
 当前格式为 `kubebrain.logical.v2`：首行 manifest 固定源 prefix、snapshot revision
 与导出开始时间，

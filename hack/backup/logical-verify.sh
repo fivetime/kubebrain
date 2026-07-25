@@ -37,6 +37,8 @@ INPUT="${INPUT:-kubebrain-logical-backup.jsonl}"
 REWRITE_FROM="${REWRITE_FROM:-}"
 REWRITE_TO="${REWRITE_TO:-}"
 RECEIPT_OUTPUT="${RECEIPT_OUTPUT:-}"
+[[ "$ENDPOINT" != *[$'\t\r\n"\\']* ]] ||
+  { echo "ENDPOINT contains unsupported characters" >&2; exit 2; }
 
 cd "$ROOT_DIR"
 ENDPOINT="$ENDPOINT" INPUT="$INPUT" REWRITE_FROM="$REWRITE_FROM" REWRITE_TO="$REWRITE_TO" \
