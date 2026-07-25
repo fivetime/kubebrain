@@ -13088,6 +13088,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   -v`、`go vet ./hack/production`、`go test ./hack/production -count=1 -timeout=12m`
   （317.895 秒）、`bash -n hack/production/run-backup-deletion-operation.sh` 和
   `git diff --check` 通过；当前环境未安装 `shellcheck`，未运行 ShellCheck。
+- A877 固定 HTTP access controller 的 nil request 防御：
+  对照 `/root/etcd/server/embed/serve.go`，etcd 在 client HTTP access controller 入口
+  对 nil request 返回 400，而不是继续访问 `req.URL` 或 `req.Host`。KubeBrain 旧实现
+  在测试 harness、wrapper 或异常调用传入 nil 时会 panic，可能把进程级崩溃暴露给
+  控制面组合测试。现在 `httpAccessController.ServeHTTP` 先返回
+  `400 Request is nil`，`requestHostname` 同步 nil-safe；正常 net/http 流量、
+  `/v3beta/*` rewrite、CORS 和 plaintext Host 白名单语义不变。回归测试固定不 panic、
+  不进入后端 handler，并匹配 upstream 的 400 外观。
 
 ### P2：运维兼容和长期验证
 

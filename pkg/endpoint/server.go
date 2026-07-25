@@ -123,6 +123,9 @@ func allows(set map[string]struct{}, value string) bool {
 }
 
 func requestHostname(req *http.Request) string {
+	if req == nil {
+		return ""
+	}
 	host, _, err := net.SplitHostPort(req.Host)
 	if err == nil {
 		return host
@@ -131,6 +134,11 @@ func requestHostname(req *http.Request) string {
 }
 
 func (ac *httpAccessController) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	if req == nil {
+		http.Error(w, "Request is nil", http.StatusBadRequest)
+		return
+	}
+
 	if req.URL != nil && strings.HasPrefix(req.URL.Path, "/v3beta/") {
 		req.URL.Path = strings.Replace(req.URL.Path, "/v3beta/", "/v3/", 1)
 	}

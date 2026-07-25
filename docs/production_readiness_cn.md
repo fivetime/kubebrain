@@ -1605,7 +1605,8 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   限制 Host，未知 Host 返回 421，防止 DNS rebinding；TLS 请求不依赖 Host
   allowlist。生产若允许浏览器或不可信网络访问 client 端口，应同时启用 TLS、收紧
   CORS 和 Host，而不是保留兼容默认 `*`。这些控制只包装 client HTTP，不向
-  peer 或 info/metrics 端口扩散。
+  peer 或 info/metrics 端口扩散。HTTP access controller 入口必须像 etcd 一样对
+  nil request 返回 400，不能让异常 wrapper/test harness 调用触发 panic。
 - client HTTP 入口默认启用 etcd v3 JSON gateway，支持 KV、Watch、Lease、Cluster、
   Maintenance、Auth、Lock 和 Election generated routes。请求经本机 gRPC 回环，
   仍受数据面认证、admission、metrics、请求大小和并发/速率限制；TLS-only 与

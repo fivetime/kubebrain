@@ -48,6 +48,25 @@ func TestHTTPAccessControllerMatchesEtcdDefaultsAndPreflight(t *testing.T) {
 	require.Equal(t, "*", response.Header().Get("Access-Control-Allow-Origin"))
 }
 
+func TestHTTPAccessControllerRejectsNilRequestLikeEtcd(t *testing.T) {
+	called := 0
+	handler := newHTTPAccessController([]string{"*"}, []string{"*"}, http.HandlerFunc(
+		func(w http.ResponseWriter, _ *http.Request) {
+			called++
+			w.WriteHeader(http.StatusNoContent)
+		},
+	))
+
+	response := httptest.NewRecorder()
+	require.NotPanics(t, func() {
+		handler.ServeHTTP(response, nil)
+	})
+	require.Equal(t, http.StatusBadRequest, response.Code)
+	require.Equal(t, 0, called)
+	require.Contains(t, response.Body.String(), "Request is nil")
+	require.Equal(t, "", requestHostname(nil))
+}
+
 func TestHTTPAccessControllerRewritesV3BetaGatewayPrefix(t *testing.T) {
 	var seenPath, seenQuery string
 	handler := newHTTPAccessController(nil, nil, http.HandlerFunc(
