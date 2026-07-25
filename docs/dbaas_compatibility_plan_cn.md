@@ -12229,6 +12229,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   实现前方的 API 边界一致 fail closed；回归覆盖带大写字符的租户前缀 Secret。
   `go test ./hack/production/internal/operationapi ./hack/production/internal/operationqueue -run 'TestHandlerRejectsUnboundParameterSecret|TestQueueRejects(SpecDriftAndInvalidCompletion|MalformedParameterReferenceBeforeSecretAPI)' -count=1 -v`、
   `git diff --check`、`go vet ./...` 和 `go test ./... -count=1 -p 1` 均通过。
+- A797 移除 backend 测试关闭阶段的 TiKV mock 前缀扫描：
+  全仓回归曾在 `pkg/backend` 的 `TestBackend/.../resource_lock` 通过业务断言后，
+  于 suite 关闭清理阶段卡入 TiKV mock scanner/backoff，直到 600s 包级超时。每个
+  `newTestSuites` 和 compact consistency 用例都拥有独立测试存储实例，关闭前再次
+  扫描删除全局前缀不提供隔离价值，反而扩大 CI 伪失败面。现在 suite 关闭与 compact
+  consistency 测试都先停止 backend worker，再关闭存储实例，不再执行冗余 `clear`
+  扫描。
+  `go test ./pkg/backend -count=1 -p 1`、`git diff --check`、`go vet ./...` 和
+  `go test ./... -count=1 -p 1` 均通过。
 
 ### P2：运维兼容和长期验证
 

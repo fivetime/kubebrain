@@ -205,7 +205,10 @@ func testCompactConsistence(t *testing.T, deleteErrorIndexes []int64) {
 		Identity: getStorageIdentity(),
 	}
 	b := NewBackend(store, config, metricsClient)
-	defer clear(ast, store, prefix)
+	defer func() {
+		ast.NoError(store.Close())
+	}()
+	defer stopBackendWorkersForTest(b)
 
 	initRevision := b.GetCurrentRevision()
 	ctx, cancel := context.WithCancel(context.Background())

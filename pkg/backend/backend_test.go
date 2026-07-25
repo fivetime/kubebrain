@@ -18,7 +18,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"io"
 	"path"
 	"regexp"
 	"sort"
@@ -162,7 +161,9 @@ func newTestSuites(t *testing.T, st storageType) (s suite, close func()) {
 		cancel()
 		stopBackendWorkersForTest(backend)
 		ctrl.Finish()
-		clear(ast, s.kv, prefix)
+		// Each suite owns its storage instance. Closing it is sufficient and
+		// avoids mock TiKV cleanup scans that can back off until the package
+		// timeout after the test logic has already passed.
 		err := kv.Close()
 		ast.NoError(err)
 	}
@@ -329,65 +330,6 @@ func newDelRequest(revision uint64, key string) *proto.DeleteRequest {
 func encodeRevisionKey(userKey []byte) (internalKey []byte) {
 	cdr := coder.DefaultKeyspace().NewCoder()
 	return cdr.EncodeObjectKey(userKey, 0)
-}
-
-// clear list all key-value pairs with given prefix and delete them to reset data set in storage
-func clear(ast *assert.Assertions, st storage.KvStorage, prefix string) {
-	// remove key with given prefix in storage
-	ctx := context.Background()
-	iter, err := openClearIterWithRetry(ctx, st, prefix)
-	ast.NoError(err)
-	if err != nil {
-		// ast.NoError records the failure but does NOT stop execution; walking on
-		// with a nil iterator SIGSEGVs the whole test binary and buries the real
-		// storage error (seen in CI when its TiKV threw "region unavailable").
-		return
-	}
-	defer func() {
-		ast.NoError(iter.Close())
-	}()
-	for {
-		err = iter.Next(ctx)
-		if err != nil {
-			ast.Equal(io.EOF, err)
-			return
-		}
-		klog.InfoS("clear", "key", string(iter.Key()))
-		batch := st.BeginBatchWrite()
-		batch.DelCurrent(iter)
-		err = batch.Commit(ctx)
-		ast.NoError(err)
-	}
-}
-
-func openClearIterWithRetry(ctx context.Context, st storage.KvStorage, prefix string) (storage.Iter, error) {
-	start := encodeRevisionKey([]byte(prefix))
-	end := encodeRevisionKey(PrefixEnd([]byte(prefix)))
-	var err error
-	for attempt := 0; attempt < 20; attempt++ {
-		var iter storage.Iter
-		iter, err = st.Iter(ctx, start, end, 0, 0)
-		if err == nil {
-			return iter, nil
-		}
-		if !retryableTestClearError(err) {
-			return nil, err
-		}
-		delay := time.Duration(attempt+1) * 10 * time.Millisecond
-		if delay > 200*time.Millisecond {
-			delay = 200 * time.Millisecond
-		}
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-time.After(delay):
-		}
-	}
-	return nil, err
-}
-
-func retryableTestClearError(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "region unavailable")
 }
 
 func getEnd(prefix []byte) (end []byte) {
