@@ -223,6 +223,110 @@ func TestClientExperimentalLockRecipesOrderingAndSessionCleanup(t *testing.T) {
 	require.True(t, victimErr == nil || errors.Is(victimErr, concurrency.ErrSessionExpired), victimErr)
 }
 
+func TestClientExperimentalDoubleBarrierEnterLeaveAndSessionCleanup(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterWatchServer(grpcServer, server)
+	etcdserverpb.RegisterLeaseServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+	newSession := func() *concurrency.Session {
+		session, sessionErr := concurrency.NewSession(client, concurrency.WithTTL(10))
+		require.NoError(t, sessionErr)
+		return session
+	}
+
+	normalName := "/a970/double-barrier/normal"
+	sessions := []*concurrency.Session{newSession(), newSession(), newSession()}
+	for _, session := range sessions {
+		t.Cleanup(session.Orphan)
+	}
+	barriers := make([]*recipe.DoubleBarrier, 0, len(sessions))
+	for _, session := range sessions {
+		barriers = append(barriers, recipe.NewDoubleBarrier(session, normalName, len(sessions)))
+	}
+	enterResults := make(chan error, len(barriers))
+	go func() { enterResults <- barriers[0].Enter() }()
+	go func() { enterResults <- barriers[1].Enter() }()
+	require.Eventually(t, func() bool {
+		return recipePrefixCount(ctx, client, normalName+"/waiters") == 2
+	}, 5*time.Second, 20*time.Millisecond)
+	time.Sleep(100 * time.Millisecond)
+	require.Empty(t, enterResults, "first two clients must wait until the barrier reaches its count")
+	go func() { enterResults <- barriers[2].Enter() }()
+	for range barriers {
+		require.NoError(t, waitRecipeResult(ctx, enterResults, "barrier enter"))
+	}
+
+	extraSession := newSession()
+	t.Cleanup(extraSession.Orphan)
+	require.ErrorIs(t, recipe.NewDoubleBarrier(extraSession, normalName, len(sessions)).Enter(), recipe.ErrTooManyClients)
+
+	leaveResults := make(chan error, len(barriers))
+	go func() { leaveResults <- barriers[0].Leave() }()
+	go func() { leaveResults <- barriers[1].Leave() }()
+	time.Sleep(100 * time.Millisecond)
+	require.Empty(t, leaveResults, "first two leavers must wait for the last participant")
+	go func() { leaveResults <- barriers[2].Leave() }()
+	for range barriers {
+		require.NoError(t, waitRecipeResult(ctx, leaveResults, "barrier leave"))
+	}
+	require.Equal(t, 0, recipePrefixCount(ctx, client, normalName+"/waiters"))
+
+	failoverName := "/a970/double-barrier/failover"
+	failoverSessions := []*concurrency.Session{newSession(), newSession(), newSession()}
+	t.Cleanup(failoverSessions[1].Orphan)
+	t.Cleanup(failoverSessions[2].Orphan)
+	failoverBarriers := make([]*recipe.DoubleBarrier, 0, len(failoverSessions))
+	for _, session := range failoverSessions {
+		failoverBarriers = append(failoverBarriers, recipe.NewDoubleBarrier(session, failoverName, len(failoverSessions)))
+	}
+	failoverEnter := make(chan error, len(failoverBarriers))
+	go func() { failoverEnter <- failoverBarriers[0].Enter() }()
+	require.Eventually(t, func() bool {
+		return recipePrefixCount(ctx, client, failoverName+"/waiters") == 1
+	}, 5*time.Second, 20*time.Millisecond)
+	go func() { failoverEnter <- failoverBarriers[1].Enter() }()
+	require.Eventually(t, func() bool {
+		return recipePrefixCount(ctx, client, failoverName+"/waiters") == 2
+	}, 5*time.Second, 20*time.Millisecond)
+	go func() { failoverEnter <- failoverBarriers[2].Enter() }()
+	for range failoverBarriers {
+		require.NoError(t, waitRecipeResult(ctx, failoverEnter, "failover enter"))
+	}
+
+	failoverLeave := make(chan error, 2)
+	go func() { failoverLeave <- failoverBarriers[1].Leave() }()
+	go func() { failoverLeave <- failoverBarriers[2].Leave() }()
+	require.Eventually(t, func() bool {
+		return recipePrefixCount(ctx, client, failoverName+"/waiters") == 1
+	}, 5*time.Second, 20*time.Millisecond)
+	require.NoError(t, failoverSessions[0].Close())
+	for range 2 {
+		require.NoError(t, waitRecipeResult(ctx, failoverLeave, "failover leave"))
+	}
+	require.Equal(t, 0, recipePrefixCount(ctx, client, failoverName+"/waiters"))
+}
+
 func recipePrefixCount(ctx context.Context, client *clientv3.Client, prefix string) int {
 	response, err := client.Get(ctx, prefix, clientv3.WithPrefix())
 	if err != nil {

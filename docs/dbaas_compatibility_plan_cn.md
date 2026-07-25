@@ -13795,6 +13795,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   注册真实 KV/Watch/Lease gRPC 服务，直接运行 RWMutex 与 Mutex recipe，固定 waiter key
   数、获取顺序、session close 后的等待者清理和最终 keyspace 清空，防止 watch delete
   唤醒、CreateRevision 排序或 lease revoke 组合语义回退。
+- A970 固定 clientv3 DoubleBarrier recipe 的 enter/leave 与 failover 语义：
+  `double_barrier` differential 证明前两个 Enter 必须阻塞到 count 达成、超额 client
+  必须返回 `ErrTooManyClients`、前两个 Leave 必须等待最后参与者，且参与者 session 关闭后
+  幸存者 Leave 要继续完成并清空 waiters。本轮新增 bufconn clientv3 回归，注册真实
+  KV/Watch/Lease gRPC 服务并直接运行 `experimental/recipes.DoubleBarrier`，防止
+  waiter CreateRevision 排序、ready key watch 或 lease revoke 删除事件破坏 barrier 协议。
 
 ### P2：运维兼容和长期验证
 
