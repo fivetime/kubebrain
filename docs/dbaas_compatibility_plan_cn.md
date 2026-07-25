@@ -13775,6 +13775,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `permission denied`、撤销权限后同 token 失败、重新授权后同 token 恢复、改密后同 token
   失效，防止 dedicated concurrency wrapper、auth snapshot cache 或 gateway metadata
   转发路径缓存过期权限。
+- A967 固定 clientv3 naming endpoint manager 路径：
+  `naming` differential 证明 `endpoints.Manager` 的事务批量 Update、List、前缀隔离和
+  lease 绑定 endpoint 删除事件必须与 etcd 一致。本轮新增 bufconn clientv3 回归，注册真实
+  KV/Watch/Lease gRPC 服务，走 `endpoints.NewManager` 执行两个 add 的 atomic Update、
+  delete+add replacement、相邻 manager prefix 隔离，以及 `WithLease` endpoint 在
+  `Revoke` 后产生 delete watch update，防止服务端 Txn/watch/lease 组合语义只在底层单测
+  覆盖而 client recipe 路径回退。
 
 ### P2：运维兼容和长期验证
 
