@@ -13370,7 +13370,8 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   上游 `serverWatchStream.recvLoop` 对 nil/未知 union、nil create/cancel/progress request
   只忽略并继续读取，不因客户端发出畸形控制消息而关闭整个 Watch 流。新增本地回归先发送
   空 request、nil create、nil cancel、nil progress，再发送有效 create，确认只产生后续
-  watch 的 created response，流语义保持可恢复。
+  watch 的 created response，流语义保持可恢复；`watch_control` reference differential 同步
+  加入同一 wire-level 场景，避免只依赖内部 fake stream。
 
 ### P2：运维兼容和长期验证
 

@@ -39,6 +39,10 @@ func TestWatchControlDifferentialAgainstReferenceEtcd(t *testing.T) {
 		runWatchFilterEnumScenario(t, reference, "reference"),
 		runWatchFilterEnumScenario(t, compatEndpoint(), "kubebrain"),
 	)
+	require.Equal(t,
+		runWatchInvalidControlScenario(t, reference, "reference"),
+		runWatchInvalidControlScenario(t, compatEndpoint(), "kubebrain"),
+	)
 	referenceFragments := runWatchFragmentScenario(t, reference, "reference")
 	kubebrainFragments := runWatchFragmentScenario(t, compatEndpoint(), "kubebrain")
 	require.Equal(t, referenceFragments, kubebrainFragments)
@@ -47,6 +51,44 @@ func TestWatchControlDifferentialAgainstReferenceEtcd(t *testing.T) {
 type watchFilterEnumOutcome struct {
 	UnknownTypes   []int32
 	DuplicateTypes []int32
+}
+
+func runWatchInvalidControlScenario(t *testing.T, endpoint, instance string) watchControlOutcome {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	conn, err := grpc.NewClient(grpcTarget(endpoint), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	key := []byte(fmt.Sprintf("/dbaas-watch-invalid-control/%s/%d", instance, time.Now().UnixNano()))
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_, _ = etcdserverpb.NewKVClient(conn).DeleteRange(cleanupCtx, &etcdserverpb.DeleteRangeRequest{Key: key})
+	})
+
+	stream, err := etcdserverpb.NewWatchClient(conn).Watch(ctx)
+	require.NoError(t, err)
+	for _, request := range []*etcdserverpb.WatchRequest{
+		{},
+		{RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{}},
+		{RequestUnion: &etcdserverpb.WatchRequest_CancelRequest{}},
+		{RequestUnion: &etcdserverpb.WatchRequest_ProgressRequest{}},
+		{RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{
+			CreateRequest: &etcdserverpb.WatchCreateRequest{Key: key, WatchId: 404},
+		}},
+	} {
+		require.NoError(t, stream.Send(request))
+	}
+
+	resp, err := stream.Recv()
+	require.NoError(t, err)
+	require.NoError(t, stream.CloseSend())
+	return watchControlOutcome{
+		WatchID: resp.WatchId, Created: resp.Created,
+		Canceled: resp.Canceled, CancelReason: resp.CancelReason,
+		HeaderZero: resp.Header == nil || resp.Header.Revision == 0,
+	}
 }
 
 func runWatchFilterEnumScenario(t *testing.T, endpoint, instance string) watchFilterEnumOutcome {
