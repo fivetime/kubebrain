@@ -13808,6 +13808,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   运行 STM，断言新建 key version、abort 后无残留、删除冲突至少重试一次且最终写入空读结果，
   以及连续批量更新后的 Serializable STM 在回调内读取到一致 snapshot，防止 Txn compare、
   read set 校验或 serializable read-only Txn 路径回退。
+- A972 固定 concurrency 等待请求取消后的清理语义：
+  `http_gateway_concurrency_cancel` differential 证明等待中的 `/v3/lock/lock` 与
+  `/v3/election/campaign` 请求在 client context 取消后必须返回取消错误、删除自身排队键，
+  且不能阻塞后继 lock/campaign。本轮新增本地 `newLockServer/newElectionServer` 回归，
+  在真实 KubeBrain backend 上先确认等待者入队，再取消 context 并等待 prefix key count
+  回落，随后释放 owner 并验证 successor 可立即获得 lock/leader，防止 dedicated
+  concurrency wrapper、watch wait 或 lease cleanup 路径遗留幽灵 waiter。
 
 ### P2：运维兼容和长期验证
 

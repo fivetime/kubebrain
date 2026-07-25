@@ -16,6 +16,7 @@ package etcd
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -471,6 +472,120 @@ func TestDedicatedConcurrencyAuthorizationTracksRoleAndTokenLifecycle(t *testing
 	_, err = lockServer.Lock(aliceCtx, &v3lockpb.LockRequest{Name: lockName, Lease: lockLease.ID})
 	require.Equal(t, codes.Unknown, status.Code(err))
 	require.Equal(t, status.Convert(rpctypes.ErrInvalidAuthToken).Message(), status.Convert(err).Message())
+}
+
+func TestDedicatedConcurrencyCancellationRemovesWaiters(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer func() {
+		_ = server.concurrencyClient.Close()
+		closeFn()
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	lockServer := newLockServer(server.concurrencyClient)
+	electionServer := newElectionServer(server.concurrencyClient)
+	leaseIDs := make([]int64, 6)
+	for i := range leaseIDs {
+		lease, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 30})
+		require.NoError(t, err)
+		leaseIDs[i] = lease.ID
+	}
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		for _, leaseID := range leaseIDs {
+			_, _ = server.LeaseRevoke(cleanupCtx, &etcdserverpb.LeaseRevokeRequest{ID: leaseID})
+		}
+	})
+	prefixCount := func(prefix []byte) int64 {
+		t.Helper()
+		response, err := server.Range(ctx, &etcdserverpb.RangeRequest{
+			Key:       prefix,
+			RangeEnd:  prefixEnd(prefix),
+			CountOnly: true,
+		})
+		require.NoError(t, err)
+		return response.Count
+	}
+	waitForPrefixCount := func(prefix []byte, expected int64) {
+		t.Helper()
+		require.Eventually(t, func() bool { return prefixCount(prefix) == expected },
+			5*time.Second, 10*time.Millisecond, "prefix %q did not reach count %d", prefix, expected)
+	}
+	waitForError := func(done <-chan error, operation string) error {
+		t.Helper()
+		select {
+		case err := <-done:
+			return err
+		case <-ctx.Done():
+			t.Fatalf("%s did not finish after context cancellation: %v", operation, ctx.Err())
+			return nil
+		}
+	}
+	requireCanceled := func(err error) {
+		t.Helper()
+		require.True(t,
+			errors.Is(err, context.Canceled) || status.Code(err) == codes.Canceled,
+			"expected cancellation error, got %v", err,
+		)
+	}
+
+	lockName := []byte("/a972/concurrency-cancel/lock")
+	lockOwner, err := lockServer.Lock(ctx, &v3lockpb.LockRequest{Name: lockName, Lease: leaseIDs[0]})
+	require.NoError(t, err)
+	lockWaitCtx, cancelLockWait := context.WithCancel(ctx)
+	lockWaitDone := make(chan error, 1)
+	go func() {
+		_, lockErr := lockServer.Lock(lockWaitCtx, &v3lockpb.LockRequest{Name: lockName, Lease: leaseIDs[1]})
+		lockWaitDone <- lockErr
+	}()
+	waitForPrefixCount(lockName, 2)
+	cancelLockWait()
+	requireCanceled(waitForError(lockWaitDone, "lock waiter"))
+	waitForPrefixCount(lockName, 1)
+	_, err = lockServer.Unlock(ctx, &v3lockpb.UnlockRequest{Key: lockOwner.Key})
+	require.NoError(t, err)
+	lockSuccessor, err := lockServer.Lock(ctx, &v3lockpb.LockRequest{Name: lockName, Lease: leaseIDs[2]})
+	require.NoError(t, err)
+	require.NotEmpty(t, lockSuccessor.Key)
+	_, err = lockServer.Unlock(ctx, &v3lockpb.UnlockRequest{Key: lockSuccessor.Key})
+	require.NoError(t, err)
+	waitForPrefixCount(lockName, 0)
+
+	electionName := []byte("/a972/concurrency-cancel/election")
+	electionOwner, err := electionServer.Campaign(ctx, &v3electionpb.CampaignRequest{
+		Name:  electionName,
+		Lease: leaseIDs[3],
+		Value: []byte("owner"),
+	})
+	require.NoError(t, err)
+	electionWaitCtx, cancelElectionWait := context.WithCancel(ctx)
+	electionWaitDone := make(chan error, 1)
+	go func() {
+		_, campaignErr := electionServer.Campaign(electionWaitCtx, &v3electionpb.CampaignRequest{
+			Name:  electionName,
+			Lease: leaseIDs[4],
+			Value: []byte("canceled"),
+		})
+		electionWaitDone <- campaignErr
+	}()
+	waitForPrefixCount(electionName, 2)
+	cancelElectionWait()
+	requireCanceled(waitForError(electionWaitDone, "election waiter"))
+	waitForPrefixCount(electionName, 1)
+	_, err = electionServer.Resign(ctx, &v3electionpb.ResignRequest{Leader: electionOwner.Leader})
+	require.NoError(t, err)
+	electionSuccessor, err := electionServer.Campaign(ctx, &v3electionpb.CampaignRequest{
+		Name:  electionName,
+		Lease: leaseIDs[5],
+		Value: []byte("successor"),
+	})
+	require.NoError(t, err)
+	require.NotNil(t, electionSuccessor.Leader)
+	_, err = electionServer.Resign(ctx, &v3electionpb.ResignRequest{Leader: electionSuccessor.Leader})
+	require.NoError(t, err)
+	waitForPrefixCount(electionName, 0)
 }
 
 func TestDedicatedConcurrencyServiceErrorsMatchEtcd(t *testing.T) {
