@@ -153,9 +153,21 @@ func TestRestoreTrafficCutoverRejectsRestoreReceiptWithInvalidPrefixes(t *testin
 			},
 		},
 		{
+			name: "source with control character",
+			edit: func(receipt string) string {
+				return strings.Replace(receipt, `"source_prefix":"/registry"`, `"source_prefix":"/registry\tshadow"`, 1)
+			},
+		},
+		{
 			name: "relative target",
 			edit: func(receipt string) string {
 				return strings.Replace(receipt, `"target_prefix":"/restored"`, `"target_prefix":"restored"`, 1)
+			},
+		},
+		{
+			name: "target with control character",
+			edit: func(receipt string) string {
+				return strings.Replace(receipt, `"target_prefix":"/restored"`, `"target_prefix":"/restored\tshadow"`, 1)
 			},
 		},
 		{

@@ -12683,6 +12683,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   ./hack/production -run TestPostRestoreAuditOperationRejectsUnsafeAuditPrefix -count=1 -v`、
   `go test ./hack/production -run TestPostRestoreAuditOperation -count=1 -v`、相关脚本
   ShellCheck 和 `git diff --check` 通过。
+- A842 收紧 restore verification receipt 的 prefix 字符集：
+  A839 已要求 `switch-restore-traffic.sh` 的 source/target prefix 以 `/` 开头且不同，但
+  JSON prefix 中的 tab/换行/回车会在 `@tsv` 输出前被转义，可能把经过变形的 prefix 写入
+  cutover state。现在 receipt schema 直接拒绝 source/target prefix 中的控制字符；回归覆盖
+  source 和 target 两侧的 tab prefix，确认 prepare 失败且不会生成 state。`go test
+  ./hack/production -run TestRestoreTrafficCutoverRejectsRestoreReceiptWithInvalidPrefixes -count=1 -v`、
+  `go test ./hack/production -run TestRestoreTrafficCutover -count=1 -v`、相关脚本 ShellCheck
+  和 `git diff --check` 通过。
 
 ### P2：运维兼容和长期验证
 

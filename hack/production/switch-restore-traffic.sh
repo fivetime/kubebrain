@@ -149,8 +149,10 @@ receipt_fields() {
       (.snapshot_revision | type == "number" and . > 0 and . == floor) and
       ((has("artifact_created_at_unix") | not) or
         (.artifact_created_at_unix | type == "number" and . > 0 and . == floor)) and
-      (.source_prefix | type == "string" and startswith("/")) and
-      (.target_prefix | type == "string" and startswith("/")) and
+      (.source_prefix | type == "string" and startswith("/") and
+        ((contains("\n") or contains("\r") or contains("\t")) | not)) and
+      (.target_prefix | type == "string" and startswith("/") and
+        ((contains("\n") or contains("\r") or contains("\t")) | not)) and
       .source_prefix != .target_prefix and
       (.records | type == "number" and . >= 0 and . == floor) and
       (.artifact_leases | type == "number" and . >= 0 and . == floor) and
