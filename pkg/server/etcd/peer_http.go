@@ -67,6 +67,12 @@ func (s *RPCServer) peerHashKVHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// KubeBrain stores one logical MVCC keyspace in TiKV, while each service
+	// replica caches the latest committed revision. Refresh when possible so
+	// peer diagnostics do not falsely report a known revision as future on an
+	// idle follower; keep etcd's local-diagnostic availability when the leader is
+	// unavailable.
+	_ = s.peers.SyncReadRevision(r.Context())
 	result, err := s.backend.HashKV(r.Context(), req.GetRevision())
 	if err != nil {
 		if errors.Is(err, backend.ErrHashKVCompacted) {

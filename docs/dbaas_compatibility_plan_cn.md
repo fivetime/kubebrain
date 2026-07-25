@@ -254,8 +254,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   endpoint：仅允许 `GET`，请求体解析 `HashKVRequest`，`X-Etcd-Cluster-ID` 使用
   backend ClusterID 的 etcd hex 字符串防止串集群，成功返回 JSON `HashKVResponse` 并带
   同名响应 header；compacted/future revision 映射为包含 etcd MVCC 文案的 400，便于
-  etcd peer hash 客户端识别。新增单元测试覆盖成功响应、错误方法、bad path、cluster
-  mismatch、坏 JSON 以及 compact/future 错误。
+  etcd peer hash 客户端识别。和 gRPC HashKV 一样，handler 在 hash 前尽力刷新
+  revision cache，避免空闲 follower 在共享 TiKV keyspace 上把已存在 revision 误报为
+  future；刷新失败不阻断本地诊断。新增单元测试覆盖成功响应、错误方法、bad path、
+  cluster mismatch、坏 JSON、compact/future 错误，以及 refresh-before-hash 顺序。
 - **ClusterId 稳定性（2026-07-16）**：`MemberList` 不再把当前 leader 地址的
   CRC 当作 ClusterId，改为与所有其他 RPC 一致地使用 backend 从 PD/TiKV
   cluster identity 和 keyspace 派生的稳定 ID，避免换主时客户端把同一实例误判

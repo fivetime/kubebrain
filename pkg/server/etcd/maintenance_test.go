@@ -66,8 +66,19 @@ type alarmReadErrorBackendShim struct {
 	err error
 }
 
+type requireSyncBeforeHashBackendShim struct {
+	BackendShim
+	t      *testing.T
+	synced func() bool
+}
+
 func (b *alarmReadErrorBackendShim) NoSpaceAlarms(context.Context) ([]uint64, error) {
 	return nil, b.err
+}
+
+func (b *requireSyncBeforeHashBackendShim) HashKV(ctx context.Context, revision int64) (backend.HashKVResult, error) {
+	require.True(b.t, b.synced(), "peer HashKV should refresh the revision cache before hashing")
+	return b.BackendShim.HashKV(ctx, revision)
 }
 
 func (b *compactBeforeHashBackendShim) HashKV(ctx context.Context, revision int64) (backend.HashKVResult, error) {
@@ -231,6 +242,36 @@ func TestPeerHashKVHandler(t *testing.T) {
 	require.Equal(t, put.Header.Revision, resp.HashRevision)
 	require.Equal(t, put.Header.Revision, resp.Header.Revision)
 	require.NotZero(t, resp.Hash)
+}
+
+func TestPeerHashKVHandlerRefreshesRevisionBeforeHash(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	ctx := context.Background()
+	put, err := server.Put(ctx, &etcdserverpb.PutRequest{
+		Key: []byte("/registry/maintenance/peer-hash-refresh"), Value: []byte("value"),
+	})
+	require.NoError(t, err)
+	synced := false
+	server.peers = testPeerService{isLeader: true, syncReadFn: func(context.Context) error {
+		synced = true
+		return errors.New("leader unavailable")
+	}}
+	server.backend = &requireSyncBeforeHashBackendShim{
+		BackendShim: server.backend,
+		t:           t,
+		synced:      func() bool { return synced },
+	}
+
+	body, err := json.Marshal(&etcdserverpb.HashKVRequest{Revision: put.Header.Revision})
+	require.NoError(t, err)
+	req := httptest.NewRequest(http.MethodGet, PeerHashKVPath, bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	server.peerHashKVHandler(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
 }
 
 func TestPeerHashKVHandlerRejectsBadPeerRequests(t *testing.T) {
