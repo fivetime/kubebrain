@@ -12213,6 +12213,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   与 `host:port` 同时一致；回归覆盖不同端口和不同 scheme。
   `go test ./hack/production/internal/operationapi -run TestOIDCAuthenticatorRejectsLoopbackHTTPJWKSOnDifferentOrigin -count=1 -v`、
   `git diff --check`、`go vet ./...` 和 `go test ./... -count=1 -p 1` 均通过。
+- A795 在 OIDC 认证边界校验审计 subject：
+  operation submit 写 CRD 时已经由 `operationqueue.ValidateRequester` 拒绝控制字符、非法
+  UTF-8 和过长 requester，但 OIDC authenticator 只验证 `sub` 非空与字节长度；因此非法
+  subject 可能先作为已认证 principal 进入 handler，再依赖具体 store fail closed。现在
+  authenticator 复用 queue 层 requester 校验，确保 `Principal.Subject` 在认证边界即满足
+  后续 CRD/audit artifact 的审计文本约束；回归覆盖控制字符 subject。
+  `go test ./hack/production/internal/operationapi -run TestOIDCAuthenticatorFailsClosed -count=1 -v`、
+  `git diff --check`、`go vet ./...` 和 `go test ./... -count=1 -p 1` 均通过。
 
 ### P2：运维兼容和长期验证
 

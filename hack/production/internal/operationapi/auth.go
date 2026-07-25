@@ -324,7 +324,8 @@ func (a *OIDCAuthenticator) Authenticate(ctx context.Context, authorization stri
 	}
 	subject, _ := claims["sub"].(string)
 	tenant, _ := claims[a.config.TenantClaim].(string)
-	if subject == "" || len(subject) > 253 || len(validation.IsDNS1123Label(tenant)) != 0 {
+	if subject == "" || operationqueue.ValidateRequester(subject) != nil ||
+		len(validation.IsDNS1123Label(tenant)) != 0 {
 		return Principal{}, errors.New("OIDC identity claims are invalid")
 	}
 	instances := make(map[string]struct{})

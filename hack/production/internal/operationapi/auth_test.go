@@ -133,11 +133,13 @@ func TestOIDCAuthenticatorFailsClosed(t *testing.T) {
 		name      string
 		header    string
 		audience  string
+		subject   string
 		tenant    string
 		instances any
 	}{
 		{name: "missing bearer"},
 		{name: "wrong audience", audience: "wrong", tenant: "tenant-a", instances: []string{"instance-a"}},
+		{name: "invalid subject", audience: "expected", subject: "user\ncontrol", tenant: "tenant-a", instances: []string{"instance-a"}},
 		{name: "invalid tenant", audience: "expected", tenant: "Tenant_A", instances: []string{"instance-a"}},
 		{name: "missing instances", audience: "expected", tenant: "tenant-a"},
 		{name: "mixed instance types", audience: "expected", tenant: "tenant-a", instances: []any{"instance-a", 3}},
@@ -148,8 +150,12 @@ func TestOIDCAuthenticatorFailsClosed(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			header := test.header
 			if test.audience != "" {
-				header = "Bearer " + signOIDCToken(
-					t, key, "key", server.URL, test.audience, test.tenant, test.instances,
+				subject := test.subject
+				if subject == "" {
+					subject = "user-123"
+				}
+				header = "Bearer " + signOIDCTokenForSubject(
+					t, key, "key", server.URL, test.audience, subject, test.tenant, test.instances,
 				)
 			}
 			_, err := authenticator.Authenticate(context.Background(), header)
