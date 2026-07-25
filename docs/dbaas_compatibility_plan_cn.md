@@ -13522,6 +13522,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   的 fallthrough 行为，并把 absent value 的 equal-empty、not-equal、unknown-result
   三个边界都落到 failure branch，防止后续只保留布尔结果而让 Txn branch side effect
   与 etcd 漂移。
+- A929 固定 lease switch 后旧 revoke 不得删除新绑定：
+  `lease_switch` reference differential 反复执行 key 从 lease A 切到 lease B，同时 revoke
+  lease A，要求新 value 与新 lease ID 保留、旧 lease 消失，并且 revoke lease B 才删除
+  key。本轮新增本地服务层回归，用顺序化的最小 case 固定同一外部契约：旧 lease revoke
+  后 Range 仍返回 `lease-b` 且 `Lease=leaseB`，`LeaseTimeToLive(leaseA)` 为 `-1`，
+  最后 revoke lease B 清空 key，防止 attachment 删除路径把已重绑的生产写误删。
 
 ### P2：运维兼容和长期验证
 

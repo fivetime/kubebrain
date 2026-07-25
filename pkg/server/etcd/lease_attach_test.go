@@ -491,6 +491,43 @@ func TestLeaseRevokeWaitsForAdmittedLeasedPut(t *testing.T) {
 	require.Empty(t, resp.Kvs, "revoke must delete a leased put admitted before it")
 }
 
+func TestLeaseSwitchOldRevokePreservesNewLeaseBinding(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+
+	const leaseA int64 = 9041
+	const leaseB int64 = 9042
+	key := []byte("/registry/lease-fence/switch")
+	_, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 300, ID: leaseA})
+	require.NoError(t, err)
+	_, err = server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 300, ID: leaseB})
+	require.NoError(t, err)
+	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("lease-a"), Lease: leaseA})
+	require.NoError(t, err)
+
+	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("lease-b"), Lease: leaseB})
+	require.NoError(t, err)
+	_, err = server.LeaseRevoke(ctx, &etcdserverpb.LeaseRevokeRequest{ID: leaseA})
+	require.NoError(t, err)
+
+	current, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: key})
+	require.NoError(t, err)
+	require.Len(t, current.Kvs, 1)
+	require.Equal(t, []byte("lease-b"), current.Kvs[0].Value)
+	require.Equal(t, leaseB, current.Kvs[0].Lease)
+
+	oldTTL, err := server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: leaseA})
+	require.NoError(t, err)
+	require.Equal(t, int64(-1), oldTTL.TTL)
+
+	_, err = server.LeaseRevoke(ctx, &etcdserverpb.LeaseRevokeRequest{ID: leaseB})
+	require.NoError(t, err)
+	after, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: key})
+	require.NoError(t, err)
+	require.Empty(t, after.Kvs)
+}
+
 func (s *demoteBeforeTxnApplyShim) TxnApply(ctx context.Context, ops []backend.TxnWriteOp, guards []backend.TxnGuard, prevKV []bool) ([]*etcdserverpb.ResponseOp, uint64, []backend.TxnWriteResult, error) {
 	s.demote()
 	return s.BackendShim.TxnApply(ctx, ops, guards, prevKV)
