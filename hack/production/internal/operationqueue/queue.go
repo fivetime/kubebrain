@@ -27,6 +27,9 @@ var Resource = schema.GroupVersionResource{
 	Group: "dbaas.kubebrain.io", Version: "v1alpha1", Resource: "kubebrainoperations",
 }
 
+const operationAPIVersion = "dbaas.kubebrain.io/v1alpha1"
+const operationKind = "KubeBrainOperation"
+
 var LeaseResource = schema.GroupVersionResource{
 	Group: "coordination.k8s.io", Version: "v1", Resource: "leases",
 }
@@ -183,8 +186,8 @@ func (q *Queue) Submit(ctx context.Context, name string, spec Spec) (*unstructur
 		}
 	}
 	object := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "dbaas.kubebrain.io/v1alpha1",
-		"kind":       "KubeBrainOperation",
+		"apiVersion": operationAPIVersion,
+		"kind":       operationKind,
 		"metadata": map[string]any{
 			"name": name,
 		},
@@ -205,6 +208,9 @@ func (q *Queue) Submit(ctx context.Context, name string, spec Spec) (*unstructur
 		return nil, errors.Join(
 			err, fmt.Errorf("inspect operation after failed submit: %w", getErr),
 		)
+	}
+	if !operationTypeMetaMatches(existing) {
+		return nil, errors.New("existing operation has invalid type metadata")
 	}
 	if !specMatches(existing, spec) {
 		return nil, errors.New("existing operation has a different immutable spec")
@@ -1279,6 +1285,10 @@ func specMatches(object *unstructured.Unstructured, spec Spec) bool {
 		operationType == spec.Type && digest == spec.ParametersSHA256 &&
 		maxAttempts == spec.MaxAttempts && secret == spec.ParametersSecret &&
 		key == spec.ParametersKey
+}
+
+func operationTypeMetaMatches(object *unstructured.Unstructured) bool {
+	return object.GetAPIVersion() == operationAPIVersion && object.GetKind() == operationKind
 }
 
 func isSHA256Hex(value string) bool {

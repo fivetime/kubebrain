@@ -1255,6 +1255,28 @@ func TestSubmitRejectsCommittedObjectWithoutAuditFinalizer(t *testing.T) {
 	require.ErrorContains(t, err, "missing the audit finalizer")
 }
 
+func TestSubmitRejectsCommittedObjectWithTypeMetadataDrift(t *testing.T) {
+	for _, mutate := range []func(*unstructured.Unstructured){
+		func(object *unstructured.Unstructured) { object.SetAPIVersion("dbaas.kubebrain.io/v1beta1") },
+		func(object *unstructured.Unstructured) { object.SetKind("Operation") },
+	} {
+		client := fakeQueueClient()
+		queue := New(client, "test")
+		client.PrependReactor("create", Resource.Resource, func(
+			action clientgotesting.Action,
+		) (bool, runtime.Object, error) {
+			object := action.(clientgotesting.CreateAction).GetObject().(*unstructured.Unstructured).DeepCopy()
+			mutate(object)
+			require.NoError(t, client.Tracker().Create(Resource, object, "test"))
+			return true, nil, errors.New("submit response lost after commit")
+		})
+
+		created, err := queue.Submit(context.Background(), "backup-1", validSpec())
+		require.Nil(t, created)
+		require.ErrorContains(t, err, "invalid type metadata")
+	}
+}
+
 func TestQueueRejectsSpecDriftAndInvalidCompletion(t *testing.T) {
 	queue := newFakeQueue()
 	ctx := context.Background()

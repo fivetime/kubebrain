@@ -12301,6 +12301,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   回归覆盖同 ownerRef/immutable/正确参数但额外 `token` key 的 Secret。
   `go test ./hack/production/internal/backupscheduler -run 'TestReconcileRejectsPreexistingParameterSecretWith(ExtraData|WrongOwner)|TestReconcileIsDeterministicAcrossReplicas' -count=1 -v`
   和 `go test ./hack/production/internal/backupscheduler -count=1` 均通过。
+- A805 收紧 Operation Submit 幂等回读的 type meta：
+  Submit 的不确定提交补偿会在 Create 返回错误后回读同名对象，并在 immutable spec 与
+  audit finalizer 匹配时按成功返回；但旧路径没有检查回读对象的 `apiVersion/kind`。
+  fake-client、旧对象或恢复漂移若带错误 type meta，仍可能被外部 Operation API 或 scheduler
+  视为当前 `KubeBrainOperation`。现在 Submit 恢复路径只接受
+  `dbaas.kubebrain.io/v1alpha1` / `KubeBrainOperation`，否则 fail closed。回归覆盖
+  apiVersion 与 kind 漂移的 lost-response 提交。
+  `go test ./hack/production/internal/operationqueue -run 'TestSubmit(ReconcilesCommittedCreateAfterLostResponse|RejectsCommittedObjectWithTypeMetadataDrift|RejectsMismatchedCommittedObject|RejectsCommittedObjectWithoutAuditFinalizer)|TestQueueRejectsSpecDriftAndInvalidCompletion' -count=1 -v`
+  和 `go test ./hack/production/internal/operationqueue -count=1` 均通过。
 
 ### P2：运维兼容和长期验证
 
