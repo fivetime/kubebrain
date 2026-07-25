@@ -13782,6 +13782,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   delete+add replacement、相邻 manager prefix 隔离，以及 `WithLease` endpoint 在
   `Revoke` 后产生 delete watch update，防止服务端 Txn/watch/lease 组合语义只在底层单测
   覆盖而 client recipe 路径回退。
+- A968 固定 clientv3 experimental recipes 的 Barrier/Queue 语义：
+  `recipes` differential 覆盖 Barrier double-hold 拒绝、Release 前 waiters 阻塞、相邻
+  prefix 不能误阻塞不存在的 exact barrier、FIFO Queue 出队顺序和 PriorityQueue 同优先级
+  FIFO。本轮新增 bufconn clientv3 回归，注册真实 KV/Watch gRPC 服务并直接运行
+  `experimental/recipes`，防止 Range end 计算、watch 唤醒或 Txn revision 变化破坏上层
+  recipe 可观察契约。
 
 ### P2：运维兼容和长期验证
 
