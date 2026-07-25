@@ -13562,6 +13562,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   TTL、header 都有效，再 revoke 同一 lease，确认绑定 key 删除、TTL=-1，且后续同 ID
   keepalive 只返回 `TTL=0`，防止 buffered keepalive 或 unknown-lease renewal 路径复活
   已 revoke 的 lease/key。
+- A935 固定 Maintenance.Hash 的稳定性与写后变化：
+  `hash` reference differential 证明 raw Maintenance `Hash` 在无写入时 header revision
+  和 hash 都保持稳定；后续 Put 后 header revision 必须前进到写入 revision 之后，hash
+  也必须变化。本轮新增本地 Maintenance 回归，区别于 HashKV revision/hash 常量测试，
+  直接固定 `Hash` 这个老接口的 client 可见契约，防止实现改动只维护 HashKV 而让
+  raw Hash 退化为不稳定诊断值或不随 MVCC 内容更新。
 
 ### P2：运维兼容和长期验证
 

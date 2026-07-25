@@ -244,6 +244,37 @@ func TestMaintenanceHashKVFutureRevisionMatchesEtcd(t *testing.T) {
 	}
 }
 
+func TestMaintenanceHashStableUntilWriteAndChangesAfterWrite(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	ctx := context.Background()
+	put, err := server.Put(ctx, &etcdserverpb.PutRequest{
+		Key: []byte("/registry/maintenance/hash-stability"), Value: []byte("before"),
+	})
+	require.NoError(t, err)
+
+	first, err := server.Hash(ctx, &etcdserverpb.HashRequest{})
+	require.NoError(t, err)
+	require.NotZero(t, first.Hash)
+	require.GreaterOrEqual(t, first.Header.Revision, put.Header.Revision)
+
+	second, err := server.Hash(ctx, &etcdserverpb.HashRequest{})
+	require.NoError(t, err)
+	require.Equal(t, first.Header.Revision, second.Header.Revision)
+	require.Equal(t, first.Hash, second.Hash)
+
+	update, err := server.Put(ctx, &etcdserverpb.PutRequest{
+		Key: []byte("/registry/maintenance/hash-stability"), Value: []byte("after"),
+	})
+	require.NoError(t, err)
+	third, err := server.Hash(ctx, &etcdserverpb.HashRequest{})
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, third.Header.Revision, update.Header.Revision)
+	require.Greater(t, third.Header.Revision, second.Header.Revision)
+	require.NotEqual(t, second.Hash, third.Hash)
+}
+
 func TestPeerHashKVHandler(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
