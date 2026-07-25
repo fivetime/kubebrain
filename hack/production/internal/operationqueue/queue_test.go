@@ -187,6 +187,72 @@ func TestQueueRejectsUnsupportedClaimTypeBeforeAPI(t *testing.T) {
 	require.Empty(t, client.Actions(), "unsupported claim type must fail before queue listing")
 }
 
+func TestQueueRejectsMalformedClaimCandidatesBeforeLease(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		mutate func(*testing.T, *unstructured.Unstructured)
+		want   string
+	}{
+		{
+			name: "invalid digest",
+			mutate: func(t *testing.T, object *unstructured.Unstructured) {
+				t.Helper()
+				require.NoError(t, unstructured.SetNestedField(
+					object.Object, strings.Repeat("g", 64), "spec", "parametersSHA256",
+				))
+			},
+			want: "parameters digest",
+		},
+		{
+			name: "unsupported type",
+			mutate: func(t *testing.T, object *unstructured.Unstructured) {
+				t.Helper()
+				require.NoError(t, unstructured.SetNestedField(
+					object.Object, "Unsupported", "spec", "type",
+				))
+			},
+			want: "unsupported operation type",
+		},
+		{
+			name: "invalid parameter secret",
+			mutate: func(t *testing.T, object *unstructured.Unstructured) {
+				t.Helper()
+				require.NoError(t, unstructured.SetNestedField(
+					object.Object,
+					map[string]any{"name": "Invalid_Secret", "key": "parameters.json"},
+					"spec", "parametersSecretRef",
+				))
+			},
+			want: "invalid parameter secret name",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			queue := newFakeQueue()
+			ctx := context.Background()
+			created, err := queue.Submit(ctx, "backup-1", validSpec())
+			require.NoError(t, err)
+			malformed := created.DeepCopy()
+			test.mutate(t, malformed)
+			_, err = queue.resource.Update(ctx, malformed, metav1.UpdateOptions{})
+			require.NoError(t, err)
+
+			claim, err := queue.Claim(ctx, "worker-a", "", time.Minute)
+			require.Nil(t, claim)
+			require.ErrorIs(t, err, ErrInvalidSpec)
+			require.ErrorContains(t, err, "listed operation backup-1 is invalid")
+			require.ErrorContains(t, err, test.want)
+			leases, err := queue.leases.List(ctx, metav1.ListOptions{})
+			require.NoError(t, err)
+			require.Empty(t, leases.Items)
+			current, err := queue.Get(ctx, "backup-1")
+			require.NoError(t, err)
+			phase, _, err := unstructured.NestedString(current.Object, "status", "phase")
+			require.NoError(t, err)
+			require.Empty(t, phase)
+		})
+	}
+}
+
 func TestClaimAcrossNamespacesRejectsUnsupportedTypeBeforeAPI(t *testing.T) {
 	client := fakeQueueClient()
 	claim, err := ClaimAcrossNamespaces(

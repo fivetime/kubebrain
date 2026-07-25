@@ -12238,6 +12238,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   扫描。
   `go test ./pkg/backend -count=1 -p 1`、`git diff --check`、`go vet ./...` 和
   `go test ./... -count=1 -p 1` 均通过。
+- A798 加固 worker claim 的已入队对象校验：
+  Submit 和 CRD 会校验 operation spec，但生产中仍可能遇到手工写入、旧版本对象或
+  admission 漂移。以前 `Claim` 在 list 后主要按 phase/attempt 判断候选，`claimFrom`
+  只检查最小字段存在；若非法 digest、unsupported type 或非法参数 Secret 引用绕过
+  提交流程，worker 边界可能先抢 Lease/写 Running，再在 claim 构造时失败。现在 Submit
+  和 claim 共享同一套 spec 校验，`Claim` 在抢实例 Lease 前跳过并上报非法候选，
+  `claimFrom` 也重新验证 spec、worker identity 和 lease 字段；若 API 返回的已 claim
+  对象仍不合法，会释放已抢到的 Lease 后 fail closed。回归覆盖篡改 digest、type、
+  参数 Secret 的已入队对象，确认不会创建 Lease 或写 Running status。
+  `go test ./hack/production/internal/operationqueue -run 'TestQueue(RejectsMalformedClaimCandidatesBeforeLease|LifecycleAndExpiredLeaseFencing|RejectsSpecDriftAndInvalidCompletion)' -count=1 -v`、
+  `go test ./hack/production/internal/operationqueue -run 'TestQueue(LoadsDigestBoundImmutableParameters|RejectsMalformedParameterReferenceBeforeSecretAPI|OnlyLoadsParametersForCurrentTypeBoundWorker|StopsAfterMaximumAttempts|MarksRequeuedExhaustionWithAuditCompleteStatus|RequeueConsumesAttemptAndFiltersType)' -count=1 -v`
+  和 `go test ./hack/production/internal/operationqueue -count=1` 均通过。
 
 ### P2：运维兼容和长期验证
 

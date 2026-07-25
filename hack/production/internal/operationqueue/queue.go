@@ -160,45 +160,8 @@ func (q *Queue) Submit(ctx context.Context, name string, spec Spec) (*unstructur
 	if err := q.validateNamespace(); err != nil {
 		return nil, err
 	}
-	if err := ValidateOperationName(name); err != nil {
-		return nil, invalidSpecError("%s", err)
-	}
-	if spec.OperationID == "" || spec.Instance == "" || spec.Type == "" || spec.MaxAttempts <= 0 {
-		return nil, invalidSpecError("operation spec is incomplete")
-	}
-	if !validOperationIdentifier(spec.OperationID) {
-		return nil, invalidSpecError("invalid operation ID")
-	}
-	if !ValidInstanceName(spec.Instance) {
-		return nil, invalidSpecError("invalid operation instance")
-	}
-	if !isSupportedOperationType(spec.Type) {
-		return nil, invalidSpecError("unsupported operation type: %s", spec.Type)
-	}
-	if spec.MaxAttempts > MaxOperationAttempts {
-		return nil, invalidSpecError("operation maxAttempts cannot exceed %d", MaxOperationAttempts)
-	}
-	if !isSHA256Hex(spec.ParametersSHA256) {
-		return nil, invalidSpecError("operation spec requires a lowercase SHA-256 parameters digest")
-	}
-	if spec.Tenant != "" {
-		if errs := validation.IsDNS1123Label(spec.Tenant); len(errs) > 0 {
-			return nil, invalidSpecError("invalid operation tenant: %s", errs[0])
-		}
-	}
-	if err := ValidateRequester(spec.RequestedBy); err != nil {
-		return nil, invalidSpecError("%s", err)
-	}
-	if (spec.ParametersSecret == "") != (spec.ParametersKey == "") {
-		return nil, invalidSpecError("parameter secret name and key must be specified together")
-	}
-	if spec.ParametersSecret != "" {
-		if !ValidParameterSecretName(spec.ParametersSecret) {
-			return nil, invalidSpecError("invalid parameter secret name")
-		}
-		if !ValidParameterSecretKey(spec.ParametersKey) {
-			return nil, invalidSpecError("invalid parameter secret key")
-		}
+	if err := validateOperationSpec(name, spec); err != nil {
+		return nil, err
 	}
 	specObject := map[string]any{
 		"operationID":      spec.OperationID,
@@ -300,26 +263,33 @@ func (q *Queue) Claim(ctx context.Context, owner, operationType string, lease ti
 	nowTime := q.now()
 	now := nowTime.Unix()
 	var lastConflict error
+	var lastInvalid error
 	for i := range list.Items {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
 		candidate := &list.Items[i]
-		candidateType, _, _ := unstructured.NestedString(candidate.Object, "spec", "type")
-		if operationType != "" && candidateType != operationType {
-			continue
-		}
-		if requiresApproval(candidateType) && !isApproved(candidate) {
+		spec := specFromObject(candidate)
+		if operationType != "" && spec.Type != operationType {
 			continue
 		}
 		phase, _, _ := unstructured.NestedString(candidate.Object, "status", "phase")
 		attempt, _, _ := unstructured.NestedInt64(candidate.Object, "status", "attempt")
 		leaseUntil, _, _ := unstructured.NestedInt64(candidate.Object, "status", "leaseUntilUnix")
-		maxAttempts, _, _ := unstructured.NestedInt64(candidate.Object, "spec", "maxAttempts")
+		if phase == PhaseSucceeded || phase == PhaseFailed {
+			continue
+		}
+		if err := validateClaimCandidate(candidate.GetName(), spec, phase, attempt, leaseUntil); err != nil {
+			lastInvalid = err
+			continue
+		}
+		if requiresApproval(spec.Type) && !isApproved(candidate) {
+			continue
+		}
 		if phase != "" && phase != PhasePending && !(phase == PhaseRunning && leaseUntil < now) {
 			continue
 		}
-		if (phase == "" || phase == PhasePending) && attempt >= maxAttempts {
+		if (phase == "" || phase == PhasePending) && attempt >= spec.MaxAttempts {
 			exhausted := q.exhaustedFailureStatus(
 				candidate, owner, "maximum attempts exhausted", nowTime,
 			)
@@ -333,7 +303,7 @@ func (q *Queue) Claim(ctx context.Context, owner, operationType string, lease ti
 			}
 			continue
 		}
-		if phase == PhaseRunning && leaseUntil < now && attempt >= maxAttempts {
+		if phase == PhaseRunning && leaseUntil < now && attempt >= spec.MaxAttempts {
 			exhausted := q.exhaustedFailureStatus(
 				candidate, owner, "maximum attempts exhausted", nowTime,
 			)
@@ -385,13 +355,21 @@ func (q *Queue) Claim(ctx context.Context, owner, operationType string, lease ti
 			)
 		}
 		claim, claimErr := claimFrom(claimed)
-		if claimErr == nil {
-			claim.Namespace = q.namespace
+		if claimErr != nil {
+			releaseErr := q.releaseInstanceLeaseForCleanup(ctx, instance, holder)
+			return nil, errors.Join(
+				claimErr,
+				wrapIfError("release instance lease after invalid claim", releaseErr),
+			)
 		}
-		return claim, claimErr
+		claim.Namespace = q.namespace
+		return claim, nil
 	}
 	if lastConflict != nil {
 		return nil, fmt.Errorf("%w: claim conflicts exhausted: %v", ErrNoOperation, lastConflict)
+	}
+	if lastInvalid != nil {
+		return nil, lastInvalid
 	}
 	return nil, ErrNoOperation
 }
@@ -1173,26 +1151,115 @@ func (q *Queue) requireWorker(object *unstructured.Unstructured, owner string, a
 	return nil
 }
 
-func claimFrom(object *unstructured.Unstructured) (*Claim, error) {
+func validateOperationSpec(name string, spec Spec) error {
+	if err := ValidateOperationName(name); err != nil {
+		return invalidSpecError("%s", err)
+	}
+	if spec.OperationID == "" || spec.Instance == "" || spec.Type == "" || spec.MaxAttempts <= 0 {
+		return invalidSpecError("operation spec is incomplete")
+	}
+	if !validOperationIdentifier(spec.OperationID) {
+		return invalidSpecError("invalid operation ID")
+	}
+	if !ValidInstanceName(spec.Instance) {
+		return invalidSpecError("invalid operation instance")
+	}
+	if !isSupportedOperationType(spec.Type) {
+		return invalidSpecError("unsupported operation type: %s", spec.Type)
+	}
+	if spec.MaxAttempts > MaxOperationAttempts {
+		return invalidSpecError("operation maxAttempts cannot exceed %d", MaxOperationAttempts)
+	}
+	if !isSHA256Hex(spec.ParametersSHA256) {
+		return invalidSpecError("operation spec requires a lowercase SHA-256 parameters digest")
+	}
+	if spec.Tenant != "" {
+		if errs := validation.IsDNS1123Label(spec.Tenant); len(errs) > 0 {
+			return invalidSpecError("invalid operation tenant: %s", errs[0])
+		}
+	}
+	if err := ValidateRequester(spec.RequestedBy); err != nil {
+		return invalidSpecError("%s", err)
+	}
+	if (spec.ParametersSecret == "") != (spec.ParametersKey == "") {
+		return invalidSpecError("parameter secret name and key must be specified together")
+	}
+	if spec.ParametersSecret != "" {
+		if !ValidParameterSecretName(spec.ParametersSecret) {
+			return invalidSpecError("invalid parameter secret name")
+		}
+		if !ValidParameterSecretKey(spec.ParametersKey) {
+			return invalidSpecError("invalid parameter secret key")
+		}
+	}
+	return nil
+}
+
+func validateClaimCandidate(
+	name string,
+	spec Spec,
+	phase string,
+	attempt, leaseUntil int64,
+) error {
+	if err := validateOperationSpec(name, spec); err != nil {
+		return fmt.Errorf("listed operation %s is invalid: %w", name, err)
+	}
+	switch phase {
+	case "", PhasePending:
+		if attempt < 0 || leaseUntil < 0 {
+			return fmt.Errorf("listed operation %s has invalid pending status", name)
+		}
+	case PhaseRunning:
+		if attempt <= 0 || leaseUntil <= 0 {
+			return fmt.Errorf("listed operation %s has invalid running status", name)
+		}
+	case PhaseSucceeded, PhaseFailed:
+		return nil
+	default:
+		return fmt.Errorf("listed operation %s has invalid phase %q", name, phase)
+	}
+	return nil
+}
+
+func specFromObject(object *unstructured.Unstructured) Spec {
 	operationID, _, _ := unstructured.NestedString(object.Object, "spec", "operationID")
 	tenant, _, _ := unstructured.NestedString(object.Object, "spec", "tenant")
 	requestedBy, _, _ := unstructured.NestedString(object.Object, "spec", "requestedBy")
 	instance, _, _ := unstructured.NestedString(object.Object, "spec", "instance")
 	operationType, _, _ := unstructured.NestedString(object.Object, "spec", "type")
 	digest, _, _ := unstructured.NestedString(object.Object, "spec", "parametersSHA256")
-	secret, _, _ := unstructured.NestedString(object.Object, "spec", "parametersSecretRef", "name")
+	secret, _, _ := unstructured.NestedString(
+		object.Object, "spec", "parametersSecretRef", "name",
+	)
 	key, _, _ := unstructured.NestedString(object.Object, "spec", "parametersSecretRef", "key")
+	maxAttempts, _, _ := unstructured.NestedInt64(object.Object, "spec", "maxAttempts")
+	return Spec{
+		OperationID: operationID, Tenant: tenant, RequestedBy: requestedBy,
+		Instance: instance, Type: operationType, ParametersSHA256: digest,
+		ParametersSecret: secret, ParametersKey: key, MaxAttempts: maxAttempts,
+	}
+}
+
+func claimFrom(object *unstructured.Unstructured) (*Claim, error) {
+	spec := specFromObject(object)
+	if err := validateOperationSpec(object.GetName(), spec); err != nil {
+		return nil, err
+	}
 	owner, _, _ := unstructured.NestedString(object.Object, "status", "owner")
 	attempt, _, _ := unstructured.NestedInt64(object.Object, "status", "attempt")
 	leaseUntil, _, _ := unstructured.NestedInt64(object.Object, "status", "leaseUntilUnix")
-	if operationID == "" || instance == "" || operationType == "" || owner == "" || attempt <= 0 {
-		return nil, errors.New("claimed operation is incomplete")
+	if err := ValidateWorkerIdentity(owner, attempt); err != nil {
+		return nil, err
+	}
+	if leaseUntil <= 0 {
+		return nil, errors.New("claimed operation lease is missing")
 	}
 	return &Claim{
 		Name: object.GetName(), UID: string(object.GetUID()), ResourceVersion: object.GetResourceVersion(),
-		OperationID: operationID, Tenant: tenant, RequestedBy: requestedBy,
-		Instance: instance, Type: operationType,
-		ParametersSHA256: digest, ParametersSecret: secret, ParametersKey: key,
+		OperationID: spec.OperationID, Tenant: spec.Tenant, RequestedBy: spec.RequestedBy,
+		Instance: spec.Instance, Type: spec.Type,
+		ParametersSHA256: spec.ParametersSHA256,
+		ParametersSecret: spec.ParametersSecret, ParametersKey: spec.ParametersKey,
 		Owner: owner, Attempt: attempt, LeaseUntilUnix: leaseUntil,
 	}, nil
 }
