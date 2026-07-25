@@ -2350,7 +2350,8 @@ CAS 并要求源 Pod UID 集恢复。
 worker 镜像配置受控、可执行且必须幂等的 `PUBLISH_OVERLAP_COMMAND` 与
 `PUBLISH_FINAL_COMMAND`。hook 只接收固定 operation/instance/参数文件环境。runner
 还会在任何 gate 或 hook 前独立校验数据面 namespace 是 DNS label，且 endpoint 不含
-控制字符、引号或反斜杠；该边界不依赖可替换的 rotation 子命令自行实现。
+控制字符、引号或反斜杠；claim 返回的 rotation ID 和 instance 也必须匹配受控资源
+标识格式。该边界不依赖可替换的 rotation 子命令自行实现。
 
 完整顺序为 begin gate、发布双 CA、overlap gate、发布仅新 CA/叶证书、complete gate。
 state-only 接管从双 CA 发布继续，overlap marker 从最终发布继续，已有 receipt 则重做

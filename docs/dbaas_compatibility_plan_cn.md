@@ -12801,6 +12801,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go vet ./hack/production`、`go test ./hack/production -count=1 -timeout=12m`
   （315.500 秒）、`bash -n hack/production/run-certificate-rotation-operation.sh` 和
   `git diff --check` 通过；当前环境未安装 `shellcheck`，未重新运行 ShellCheck。
+- A858 前移 CertificateRotation runner 的 claim 身份校验：
+  CertificateRotation runner 旧逻辑信任 claim 返回的 `operation_id` 和 `instance`，并把它们
+  作为 `ROTATION_ID`/`INSTANCE` 传给 begin/overlap/complete gate、publish hook 和最终
+  receipt 复检；非法 claim 身份可能在参数合法时启动证书轮换流程。现在 runner 在 claim
+  解析后立即要求 rotation ID 与 instance 匹配受控资源标识格式，非法时不进入 gate/hook，
+  也不 retry/succeed。回归覆盖非法 rotation ID 和非法 instance。`go test
+  ./hack/production -run
+  'TestCertificateRotationOperationRejects(InvalidClaimIdentityBeforeSteps|InvalidIdentityBeforeSteps|EmptyRequiredParameters)'
+  -count=1 -v`、`go test ./hack/production -run TestCertificateRotationOperation -count=1
+  -v`、`go vet ./hack/production`、`go test ./hack/production -count=1 -timeout=12m`
+  （317.202 秒）、`bash -n hack/production/run-certificate-rotation-operation.sh` 和
+  `git diff --check` 通过；当前环境未安装 `shellcheck`，未运行 ShellCheck。
 - A854 前移 Destroy runner 的销毁目标身份校验：
   `destroy-instance.sh` 会拒绝非法 KubeBrain/TiDB namespace 和资源标识，但
   `run-destroy-operation.sh` 原先在调用可替换的 `DESTROY_COMMAND` 前只独立校验

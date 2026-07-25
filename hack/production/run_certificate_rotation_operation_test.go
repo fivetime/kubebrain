@@ -158,6 +158,26 @@ func TestCertificateRotationOperationRejectsInvalidIdentityBeforeSteps(t *testin
 	}
 }
 
+func TestCertificateRotationOperationRejectsInvalidClaimIdentityBeforeSteps(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		env  string
+	}{
+		{name: "rotation id", env: "CLAIM_OPERATION_ID=rotation/1"},
+		{name: "instance", env: "CLAIM_INSTANCE=instance/a"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newRotationRunnerFixture(t)
+			f.run(t, false, tc.env, "certificate rotation claim identity contains unsupported characters")
+			log := f.log(t)
+			require.NotContains(t, log, "gate ")
+			require.NotContains(t, log, "hook ")
+			require.NotContains(t, log, "--action retry")
+			require.NotContains(t, log, "--action succeed")
+		})
+	}
+}
+
 func TestCertificateRotationOperationRejectsInvalidReceipt(t *testing.T) {
 	f := newRotationRunnerFixture(t)
 	f.run(t, false, "INVALID_RECEIPT=1", "invalid receipt")
@@ -245,7 +265,9 @@ set -euo pipefail
 printf 'operationctl %s\n' "$*" >>"$FAKE_DIR/actions.log"
 if [[ " $* " == *" --action claim "* ]]; then
   digest="${CLAIM_DIGEST:-$PARAMETERS_DIGEST}"
-  printf '{"namespace":"tenant-a-operations","name":"rotation-1","uid":"uid-op","resource_version":"1","operation_id":"rotation-1","instance":"instance-a","type":"CertificateRotation","parameters_sha256":"%s","owner":"worker-a","attempt":1,"lease_until_unix":999999}\n' "$digest"
+  operation_id="${CLAIM_OPERATION_ID:-rotation-1}"
+  instance="${CLAIM_INSTANCE:-instance-a}"
+  printf '{"namespace":"tenant-a-operations","name":"rotation-1","uid":"uid-op","resource_version":"1","operation_id":"%s","instance":"%s","type":"CertificateRotation","parameters_sha256":"%s","owner":"worker-a","attempt":1,"lease_until_unix":999999}\n' "$operation_id" "$instance" "$digest"
 elif [[ " $* " == *" --action heartbeat "* && ( "${HEARTBEAT_FAIL:-false}" == true || -n "${SLEEP_STEP:-}" ) ]]; then
   exit 1
 else
@@ -331,8 +353,10 @@ printf 'hook final\n' >>"$FAKE_DIR/actions.log"
 func (f *rotationRunnerFixture) run(t *testing.T, ok bool, extra string, outputs ...string) {
 	t.Helper()
 	env := append([]string{}, f.env...)
-	if extra != "" {
-		env = append(env, extra)
+	for _, item := range strings.Split(extra, "\n") {
+		if item != "" {
+			env = append(env, item)
+		}
 	}
 	out, err := runProductionRunnerCommand(t, "run-certificate-rotation-operation.sh", env)
 	if ok {

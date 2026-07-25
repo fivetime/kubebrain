@@ -84,6 +84,10 @@ fi
 name="$("$JQ" -er '.name' <<<"$claim")"
 rotation_id="$("$JQ" -er '.operation_id' <<<"$claim")"
 instance="$("$JQ" -er '.instance' <<<"$claim")"
+for value in "$rotation_id" "$instance"; do
+  [[ "$value" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] ||
+    { echo "certificate rotation claim identity contains unsupported characters" >&2; exit 2; }
+done
 attempt="$("$JQ" -er '.attempt | select(. > 0)' <<<"$claim")"
 expected_digest="$("$JQ" -er '.parameters_sha256 | select(test("^[a-f0-9]{64}$"))' <<<"$claim")"
 managed_parameters=""
