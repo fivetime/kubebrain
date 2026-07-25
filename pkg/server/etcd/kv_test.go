@@ -2197,6 +2197,84 @@ func TestDeleteRangeMissingPointDoesNotConsumeRevision(t *testing.T) {
 	}
 }
 
+func TestDeleteRangeDifferentialScenarioMatchesEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	ctx := context.Background()
+	prefix := "/registry/delete-differential/"
+	rangeEnd := []byte("/registry/delete-differential0")
+	empty, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: []byte(prefix), RangeEnd: rangeEnd})
+	require.NoError(t, err)
+	baseRev := empty.Header.Revision
+
+	putA, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: []byte(prefix + "a"), Value: []byte("va")})
+	require.NoError(t, err)
+	putB, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: []byte(prefix + "b"), Value: []byte("vb")})
+	require.NoError(t, err)
+	putC, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: []byte(prefix + "c"), Value: []byte("vc")})
+	require.NoError(t, err)
+	updateB, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: []byte(prefix + "b"), Value: []byte("vb2")})
+	require.NoError(t, err)
+	require.Equal(t, []int64{1, 2, 3, 4}, []int64{
+		putA.Header.Revision - baseRev,
+		putB.Header.Revision - baseRev,
+		putC.Header.Revision - baseRev,
+		updateB.Header.Revision - baseRev,
+	})
+
+	deleted, err := server.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{
+		Key: []byte(prefix + "a"), RangeEnd: []byte(prefix + "c"), PrevKv: true,
+	})
+	require.NoError(t, err)
+	require.Equal(t, int64(5), deleted.Header.Revision-baseRev)
+	require.Equal(t, int64(2), deleted.Deleted)
+	require.Len(t, deleted.PrevKvs, 2)
+	require.Equal(t, [][]byte{[]byte(prefix + "a"), []byte(prefix + "b")}, [][]byte{
+		deleted.PrevKvs[0].Key, deleted.PrevKvs[1].Key,
+	})
+	require.Equal(t, [][]byte{[]byte("va"), []byte("vb2")}, [][]byte{
+		deleted.PrevKvs[0].Value, deleted.PrevKvs[1].Value,
+	})
+
+	historical, err := server.Range(ctx, &etcdserverpb.RangeRequest{
+		Key: []byte(prefix), RangeEnd: rangeEnd, Revision: deleted.Header.Revision - 1,
+		SortOrder: etcdserverpb.RangeRequest_ASCEND, SortTarget: etcdserverpb.RangeRequest_KEY,
+	})
+	require.NoError(t, err)
+	require.Len(t, historical.Kvs, 3)
+	require.Equal(t, [][]byte{[]byte(prefix + "a"), []byte(prefix + "b"), []byte(prefix + "c")}, [][]byte{
+		historical.Kvs[0].Key, historical.Kvs[1].Key, historical.Kvs[2].Key,
+	})
+	require.Equal(t, [][]byte{[]byte("va"), []byte("vb2"), []byte("vc")}, [][]byte{
+		historical.Kvs[0].Value, historical.Kvs[1].Value, historical.Kvs[2].Value,
+	})
+
+	current, err := server.Range(ctx, &etcdserverpb.RangeRequest{
+		Key: []byte(prefix), RangeEnd: rangeEnd,
+		SortOrder: etcdserverpb.RangeRequest_ASCEND, SortTarget: etcdserverpb.RangeRequest_KEY,
+	})
+	require.NoError(t, err)
+	require.Len(t, current.Kvs, 1)
+	require.Equal(t, []byte(prefix+"c"), current.Kvs[0].Key)
+
+	emptyRange, err := server.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{
+		Key: []byte(prefix + "c"), RangeEnd: []byte(prefix + "c"), PrevKv: true,
+	})
+	require.NoError(t, err)
+	require.Equal(t, deleted.Header.Revision, emptyRange.Header.Revision)
+	require.Equal(t, int64(0), emptyRange.Deleted)
+	require.Empty(t, emptyRange.PrevKvs)
+
+	missing, err := server.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{
+		Key: []byte(prefix + "missing"), PrevKv: true,
+	})
+	require.NoError(t, err)
+	require.Equal(t, deleted.Header.Revision, missing.Header.Revision)
+	require.Equal(t, int64(0), missing.Deleted)
+	require.Empty(t, missing.PrevKvs)
+}
+
 func TestDeleteRangeRejectsEmptyKey(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

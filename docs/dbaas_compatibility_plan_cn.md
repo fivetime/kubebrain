@@ -13640,6 +13640,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   区间，standalone Delete `[fe,ff)` 也要返回三项 PrevKv 后清空。本轮新增本地 KV
   服务层回归，固定 binary Range/Txn/Delete 的组合语义，防止后续编码层或区间转换
   把任意二进制 user key 误当 UTF-8/路径 key 处理。
+- A947 固定 DeleteRange differential 的 revision/PrevKv 链路：
+  `delete` reference differential 证明连续 put/update 后，实际删除 `[a,c)` 必须只
+  删除 a/b 并把 header revision 推进 1，PrevKv 返回 a 与更新后的 b；删除前一个
+  revision 的历史 Range 仍能看到 a/b/c，当前 Range 只剩 c；空区间 `[c,c)` 和 missing
+  point delete 即使带 PrevKv 也不能推进 revision，Deleted 与 PrevKvs 都为空。本轮新增
+  本地 KV 服务层端到端回归，固定 delete fast path、generic range delete 和 no-op
+  delete 的 header 语义，防止 Kubernetes delete/relist 依赖的 revision 单调性被破坏。
 
 ### P2：运维兼容和长期验证
 
