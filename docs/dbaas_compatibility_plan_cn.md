@@ -13568,6 +13568,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   也必须变化。本轮新增本地 Maintenance 回归，区别于 HashKV revision/hash 常量测试，
   直接固定 `Hash` 这个老接口的 client 可见契约，防止实现改动只维护 HashKV 而让
   raw Hash 退化为不稳定诊断值或不随 MVCC 内容更新。
+- A936 固定 Alarm GET 的 unknown filter 边界：
+  `alarm_get` reference differential 证明 Alarm GET 对 all、NOSPACE、CORRUPT、
+  未知 alarm enum，以及 `MemberID=math.MaxUint64` 都必须返回 OK，空 alarm 集合也要
+  带上不落后于当前写入的 header revision。本轮新增本地 Maintenance 回归，固定
+  unknown alarm 和极大 member filter 不应返回 Unimplemented/InvalidArgument，防止
+  管理面探测或未来 enum 扩展被错误拒绝。
 
 ### P2：运维兼容和长期验证
 

@@ -275,6 +275,39 @@ func TestMaintenanceHashStableUntilWriteAndChangesAfterWrite(t *testing.T) {
 	require.NotEqual(t, second.Hash, third.Hash)
 }
 
+func TestAlarmGetFiltersUnknownAlarmAndMaxMemberLikeEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	ctx := context.Background()
+	put, err := server.Put(ctx, &etcdserverpb.PutRequest{
+		Key: []byte("/registry/maintenance/alarm-get-filter"), Value: []byte("value"),
+	})
+	require.NoError(t, err)
+
+	for _, tc := range []struct {
+		name     string
+		memberID uint64
+		alarm    etcdserverpb.AlarmType
+	}{
+		{name: "all"},
+		{name: "nospace", alarm: etcdserverpb.AlarmType_NOSPACE},
+		{name: "corrupt", alarm: etcdserverpb.AlarmType_CORRUPT},
+		{name: "unknown-alarm", alarm: etcdserverpb.AlarmType(127)},
+		{name: "max-member", memberID: math.MaxUint64},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resp, err := server.Alarm(ctx, &etcdserverpb.AlarmRequest{
+				Action: etcdserverpb.AlarmRequest_GET, MemberID: tc.memberID, Alarm: tc.alarm,
+			})
+			require.NoError(t, err)
+			require.Empty(t, resp.Alarms)
+			require.NotNil(t, resp.Header)
+			require.GreaterOrEqual(t, resp.Header.Revision, put.Header.Revision)
+		})
+	}
+}
+
 func TestPeerHashKVHandler(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
