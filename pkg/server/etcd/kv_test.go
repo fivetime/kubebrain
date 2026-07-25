@@ -624,6 +624,56 @@ func TestRangeKeysOnlyOmitsValuesForList(t *testing.T) {
 	}
 }
 
+func TestRangeKeysOnlyLimitedCurrentAndHistoricalRevisions(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	ctx := context.Background()
+	prefix := "/registry/pods/keys-only-limit-hole/"
+	end := []byte("/registry/pods/keys-only-limit-hole0")
+	var historicalRevision int64
+	for _, suffix := range []string{"00", "01", "02", "03", "04", "05", "06", "07"} {
+		response, err := server.Put(ctx, &etcdserverpb.PutRequest{
+			Key: []byte(prefix + suffix), Value: []byte("initial-" + suffix),
+		})
+		require.NoError(t, err)
+		historicalRevision = response.Header.Revision
+	}
+	for _, suffix := range []string{"08", "09", "10", "11"} {
+		_, err := server.Put(ctx, &etcdserverpb.PutRequest{
+			Key: []byte(prefix + suffix), Value: []byte("later-" + suffix),
+		})
+		require.NoError(t, err)
+	}
+	_, err := server.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{
+		Key: []byte(prefix + "02"),
+	})
+	require.NoError(t, err)
+
+	assertRange := func(name string, revision, limit int64, wantSuffixes []string, wantCount int64, wantMore bool) {
+		t.Helper()
+		var response *etcdserverpb.RangeResponse
+		require.Eventually(t, func() bool {
+			var rangeErr error
+			response, rangeErr = server.Range(ctx, &etcdserverpb.RangeRequest{
+				Key: []byte(prefix), RangeEnd: end, Revision: revision,
+				Limit: limit, KeysOnly: true,
+			})
+			return rangeErr == nil && response.Count == wantCount && len(response.Kvs) == len(wantSuffixes)
+		}, time.Second, 10*time.Millisecond, name)
+		require.Equal(t, wantMore, response.More, name)
+		for i, suffix := range wantSuffixes {
+			require.Equal(t, []byte(prefix+suffix), response.Kvs[i].Key, name)
+			require.Empty(t, response.Kvs[i].Value, name)
+		}
+	}
+
+	assertRange("current page skips deleted key", 0, 3, []string{"00", "01", "03"}, 11, true)
+	assertRange("historical page includes then-live key", historicalRevision, 3, []string{"00", "01", "02"}, 8, true)
+	assertRange("current large page reports full count", 0, 20,
+		[]string{"00", "01", "03", "04", "05", "06", "07", "08", "09", "10", "11"}, 11, false)
+}
+
 func TestRangeCountOnlyTakesPrecedenceOverKeysOnly(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
@@ -1806,7 +1856,7 @@ func TestNamespacedEmptyKeyFromKeyDeleteMatchesEtcd(t *testing.T) {
 	prefix := []byte("/registry/namespace-empty-key/")
 	for _, suffix := range []byte{'a', 'b'} {
 		_, err := server.Put(ctx, &etcdserverpb.PutRequest{
-			Key: append(append([]byte{}, prefix...), suffix),
+			Key:   append(append([]byte{}, prefix...), suffix),
 			Value: []byte{'v', suffix},
 		})
 		require.NoError(t, err)

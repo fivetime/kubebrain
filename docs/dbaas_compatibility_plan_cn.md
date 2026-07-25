@@ -13435,6 +13435,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   但 `PrevKv=nil`。既有本地测试只覆盖 `withoutWatchPrevKvs` 不 mutate shared events，
   本轮新增 bufconn gRPC 端到端 Watch/KV 回归，固定两个真实 Watch RPC stream 对同一更新
   的不同 PrevKv 外观，防止后续事件复用或过滤优化污染其他 watcher。
+- A916 固定 KeysOnly+Limit 在当前/历史 revision 的分页语义：
+  `range_keys_limit` reference differential 证明 `WithKeysOnly()+WithLimit(3)` 在当前
+  revision 遇到已删除的 `02` 时必须返回 `00/01/03`、`Count=11`、`More=true`，
+  而同一请求回读删除前历史 revision 必须返回 `00/01/02`、`Count=8`；大 limit
+  当前读返回 11 个 live keys 且 value 全为空。本轮新增本地 raw RPC 回归，固定
+  tombstone hole、历史快照和 KeysOnly value elision 的组合，防止分页 lookahead 或
+  count-index 优化把历史 live 集合与当前 live 集合混用。
 
 ### P2：运维兼容和长期验证
 
