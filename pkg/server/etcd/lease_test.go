@@ -1665,6 +1665,48 @@ func TestKeepAliveDoesNotWriteStorage(t *testing.T) {
 	require.Equal(t, beforeMeta, afterMeta, "keepalive must not rewrite lease metadata")
 }
 
+func TestLeaseKeepAliveRevokeBufferBoundaryMatchesEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	ctx := context.Background()
+	grantResp, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 30, ID: 8102})
+	require.NoError(t, err)
+	key := []byte("/registry/leases/keepalive-revoke-buffer")
+	_, err = server.Put(ctx, &etcdserverpb.PutRequest{
+		Key: key, Value: []byte("value"), Lease: grantResp.ID,
+	})
+	require.NoError(t, err)
+
+	stream := &fakeLeaseKeepAliveServer{requests: []*etcdserverpb.LeaseKeepAliveRequest{
+		{ID: grantResp.ID},
+		{ID: grantResp.ID},
+		{ID: grantResp.ID},
+	}}
+	require.NoError(t, server.LeaseKeepAlive(stream))
+	require.Len(t, stream.sent, 3)
+	for _, response := range stream.sent {
+		require.Equal(t, grantResp.ID, response.ID)
+		require.Positive(t, response.TTL)
+		require.NotNil(t, response.Header)
+	}
+
+	_, err = server.LeaseRevoke(ctx, &etcdserverpb.LeaseRevokeRequest{ID: grantResp.ID})
+	require.NoError(t, err)
+	current, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: key})
+	require.NoError(t, err)
+	require.Empty(t, current.Kvs)
+	ttl, err := server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: grantResp.ID})
+	require.NoError(t, err)
+	require.Equal(t, int64(-1), ttl.TTL)
+
+	afterRevoke := &fakeLeaseKeepAliveServer{requests: []*etcdserverpb.LeaseKeepAliveRequest{{ID: grantResp.ID}}}
+	require.NoError(t, server.LeaseKeepAlive(afterRevoke))
+	require.Len(t, afterRevoke.sent, 1)
+	require.Equal(t, grantResp.ID, afterRevoke.sent[0].ID)
+	require.Zero(t, afterRevoke.sent[0].TTL)
+}
+
 func TestLeaseCheckpointBoundsReloadAndRenewClearsIt(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

@@ -13555,6 +13555,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   failure branch Put 以及 LeaseGrant 返回 ResourceExhausted；Deactivate 后写恢复。
   本轮扩展本地 quota 回归，覆盖这些服务层路径，防止手动 alarm 只拦截 unary Put
   或遗漏 lease grant / Txn branch 的生产写入面。
+- A934 固定 LeaseKeepAlive 多响应后 revoke 的边界：
+  `lease_keepalive_revoke_buffer` reference differential 证明 clientv3 KeepAlive 在 Revoke
+  后可以消费到已缓冲的合法响应，但最终通道必须关闭，key 被删除且 TimeToLive 显示
+  lease missing。本轮新增本地服务层回归，先连续发送多条 keepalive 并验证响应 ID、
+  TTL、header 都有效，再 revoke 同一 lease，确认绑定 key 删除、TTL=-1，且后续同 ID
+  keepalive 只返回 `TTL=0`，防止 buffered keepalive 或 unknown-lease renewal 路径复活
+  已 revoke 的 lease/key。
 
 ### P2：运维兼容和长期验证
 
