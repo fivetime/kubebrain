@@ -303,6 +303,24 @@ func TestHandlerRejectsUnexpectedQueryBeforeAuthentication(t *testing.T) {
 	}
 }
 
+func TestHandlerRejectsUnexpectedGetBodyBeforeAuthentication(t *testing.T) {
+	authenticator := &countingAuthenticator{principal: authorizedPrincipal()}
+	store := &memoryOperationStore{objects: make(map[string]*unstructured.Unstructured)}
+	handler, err := NewHandler(authenticator, store, time.Second)
+	require.NoError(t, err)
+	request := httptest.NewRequest(
+		http.MethodGet, "/v1/operations/backup-1", strings.NewReader(`{"debug":true}`),
+	)
+	request.Header.Set("Authorization", "Bearer token")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	require.Equal(t, http.StatusBadRequest, response.Code)
+	require.Zero(t, authenticator.calls)
+	require.Empty(t, store.objects)
+	require.Zero(t, store.gets)
+}
+
 func TestHandlerRejectsUnboundParameterSecret(t *testing.T) {
 	store := &memoryOperationStore{objects: make(map[string]*unstructured.Unstructured)}
 	handler, err := NewHandler(staticAuthenticator{principal: authorizedPrincipal()}, store, time.Second)

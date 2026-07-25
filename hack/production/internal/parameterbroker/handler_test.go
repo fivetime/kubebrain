@@ -142,6 +142,33 @@ func TestHandlerRejectsMalformedQueryBeforeAuthenticationAndOperationAPI(t *test
 	}
 }
 
+func TestHandlerRejectsUnexpectedBodyBeforeAuthenticationAndOperationAPI(t *testing.T) {
+	dynamicClient, claim, _ := claimedOperation(t)
+	tokens := tokenClient(
+		"system:serviceaccount:test:kubebrain-post-restore-audit-executor",
+		[]string{testAudience}, true,
+	)
+	handler, err := NewHandler(tokens, dynamicClient, "test", testAudience, time.Second)
+	require.NoError(t, err)
+	dynamicClient.ClearActions()
+	tokens.ClearActions()
+
+	request := httptest.NewRequest(
+		http.MethodGet,
+		fmt.Sprintf("/v1/parameters?namespace=test&name=%s&owner=%s&attempt=%d",
+			claim.Name, claim.Owner, claim.Attempt),
+		strings.NewReader(`{"debug":true}`),
+	)
+	request.Header.Set("Authorization", "Bearer valid")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	require.Equal(t, http.StatusBadRequest, response.Code)
+	require.Empty(t, tokens.Actions())
+	require.Empty(t, dynamicClient.Actions())
+	requireNoStoreHeaders(t, response)
+}
+
 func TestHandlerFailsClosedForIdentityTypeAudienceAndFencing(t *testing.T) {
 	tests := []struct {
 		name          string

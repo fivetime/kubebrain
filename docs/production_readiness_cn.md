@@ -1830,8 +1830,9 @@ immutable `requestedBy`，tenant 同样进入 spec、worker claim 和终态审�
 `POST /v1/operations` 在 OIDC 验签前先拒绝非 `application/json`、超过 64 KiB、
 unknown field 或 trailing JSON 的请求体；提交 body 的 `name` 和
 `GET /v1/operations/{name}` 的 path name 必须是 Kubernetes DNS subdomain。两个业务
-端点都不接受 query 参数，带 query 的请求会在认证和存储访问前返回 400。畸形提交或
-查询不能消耗 OIDC/JWKS 或 Operation API；畸形 Bearer header 也必须在本地拒绝，即使
+端点都不接受 query 参数，`GET /v1/operations/{name}` 也不接受 request body；带 query
+或 GET body 的请求会在认证和存储访问前返回 400。畸形提交或查询不能消耗 OIDC/JWKS
+或 Operation API；畸形 Bearer header 也必须在本地拒绝，即使
 JWKS cache 已过期也不能触发 JWKS refresh。
 参数 Secret 只能引用受信控制面预置的 `params-l<tenant字节长度>-<tenant>-*` 对象
 （例如 `tenant-a` 使用 `params-l8-tenant-a-*`），且 key 固定为 `parameters.json`；
@@ -2267,7 +2268,8 @@ Secret list/watch、Operation list/watch/status 或 Lease 权限。projected tok
 不得回退为直接读取 Secret。`/v1/parameters` 只能携带 `namespace`、`name`、`owner` 和
 `attempt` 四个 query 参数且必须各恰好出现一次；缺失、重复、未知参数或非正 attempt 都应返回 400，
 `namespace` 必须是 DNS label，`name` 必须是 DNS subdomain，`owner` 必须符合 operation
-queue worker identity audit text 规则。query identity 形状校验发生在 TokenReview 前，
+queue worker identity audit text 规则。`/v1/parameters` 不接受 request body。query
+identity 与 body 形状校验发生在 TokenReview 前，
 畸形请求不能消耗认证、Operation 或 Secret API；该边界同时避免代理、审计日志或客户端对
 重复参数取值不一致。`operationctl --action parameters`
 只接受不含 userinfo、query 或 fragment 的 HTTPS broker origin；从 broker 读取的响应超过

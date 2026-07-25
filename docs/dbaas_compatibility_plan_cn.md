@@ -12359,6 +12359,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   保持无依赖健康检查。回归覆盖 submit/get 带 query 时不会调用 authenticator 或 store。
   `go test ./hack/production/internal/operationapi -run 'TestHandler(RejectsUnexpectedQueryBeforeAuthentication|RejectsMalformedSubmitBeforeAuthentication|RejectsMalformedGetNameBeforeAuthentication|SubmitsImmutableTenantIdentityAndReturnsSanitizedObject)' -count=1 -v`
   和 `go test ./hack/production/internal/operationapi -count=1` 均通过。
+- A811 收紧 GET 业务端点 request body 形状：
+  `GET /v1/operations/{name}` 和 parameter broker 的 `GET /v1/parameters` 都不定义 request
+  body，但旧 handler 会忽略 body 并继续认证和读取 Operation/Secret。代理、WAF 或审计链路
+  若记录/解释 body，而服务端忽略 body，会造成请求语义不一致，也可能让误发的敏感调试
+  payload 进入不该进入的请求路径。现在这两个 GET 业务端点在认证、TokenReview、
+  Operation store 和 Secret API 前拒绝任何带 `Content-Length` 或 Transfer-Encoding body
+  的请求并返回 400。回归覆盖 Operation API GET body 不调用 authenticator/store，以及
+  parameter broker GET body 不调用 TokenReview/dynamic client。
+  `go test ./hack/production/internal/operationapi -run 'TestHandler(RejectsUnexpectedGetBodyBeforeAuthentication|RejectsUnexpectedQueryBeforeAuthentication)' -count=1 -v`、
+  `go test ./hack/production/internal/parameterbroker -run 'TestHandler(RejectsUnexpectedBodyBeforeAuthenticationAndOperationAPI|RejectsMalformedQueryBeforeAuthenticationAndOperationAPI|ReturnsOnlyCurrentTypeBoundWorkerParameters)' -count=1 -v`、
+  `go test ./hack/production/internal/operationapi ./hack/production/internal/parameterbroker -count=1`
+  均通过。
 
 ### P2：运维兼容和长期验证
 

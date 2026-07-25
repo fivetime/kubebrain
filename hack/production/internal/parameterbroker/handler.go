@@ -81,6 +81,10 @@ func (h *Handler) ServeHTTP(response http.ResponseWriter, request *http.Request)
 		http.Error(response, "not found", http.StatusNotFound)
 		return
 	}
+	if requestHasBody(request) {
+		http.Error(response, "request body is not supported", http.StatusBadRequest)
+		return
+	}
 	ctx, cancel := context.WithTimeout(request.Context(), h.requestTimeout)
 	defer cancel()
 	request = request.WithContext(ctx)
@@ -159,6 +163,10 @@ func requiredQueryValue(query url.Values, name string) (string, bool) {
 		return "", false
 	}
 	return values[0], true
+}
+
+func requestHasBody(request *http.Request) bool {
+	return request.ContentLength != 0 || len(request.TransferEncoding) != 0
 }
 
 // Ready verifies every Kubernetes API path required to serve a parameter

@@ -220,6 +220,9 @@ func (h *Handler) get(response http.ResponseWriter, request *http.Request) {
 	if !validateNoQuery(response, request) {
 		return
 	}
+	if !validateNoBody(response, request) {
+		return
+	}
 	name := request.PathValue("name")
 	if !validateRequestOperationName(response, name) {
 		return
@@ -254,6 +257,18 @@ func validateNoQuery(response http.ResponseWriter, request *http.Request) bool {
 		return false
 	}
 	return true
+}
+
+func validateNoBody(response http.ResponseWriter, request *http.Request) bool {
+	if requestHasBody(request) {
+		writeJSON(response, http.StatusBadRequest, errorResponse{Error: "request body is not supported"})
+		return false
+	}
+	return true
+}
+
+func requestHasBody(request *http.Request) bool {
+	return request.ContentLength != 0 || len(request.TransferEncoding) != 0
 }
 
 func validateRequestOperationName(response http.ResponseWriter, name string) bool {
