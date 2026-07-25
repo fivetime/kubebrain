@@ -1798,6 +1798,49 @@ func TestDeleteRangeRejectsEmptyKey(t *testing.T) {
 	require.Equal(t, codes.InvalidArgument, status.Code(err))
 }
 
+func TestNamespacedEmptyKeyFromKeyDeleteMatchesEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	ctx := context.Background()
+	prefix := []byte("/registry/namespace-empty-key/")
+	for _, suffix := range []byte{'a', 'b'} {
+		_, err := server.Put(ctx, &etcdserverpb.PutRequest{
+			Key: append(append([]byte{}, prefix...), suffix),
+			Value: []byte{'v', suffix},
+		})
+		require.NoError(t, err)
+	}
+
+	_, err := server.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{})
+	require.Error(t, err)
+	require.Equal(t, codes.InvalidArgument, status.Code(err))
+	require.Equal(t, "etcdserver: key is not provided", status.Convert(err).Message())
+
+	visible, err := server.Range(ctx, &etcdserverpb.RangeRequest{
+		Key: prefix, RangeEnd: []byte{0},
+	})
+	require.NoError(t, err)
+	require.Len(t, visible.Kvs, 2)
+	require.Equal(t, [][]byte{
+		append(append([]byte{}, prefix...), 'a'),
+		append(append([]byte{}, prefix...), 'b'),
+	}, [][]byte{visible.Kvs[0].Key, visible.Kvs[1].Key})
+
+	deleted, err := server.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{
+		Key: prefix, RangeEnd: []byte{0}, PrevKv: true,
+	})
+	require.NoError(t, err)
+	require.Equal(t, int64(2), deleted.Deleted)
+	require.Len(t, deleted.PrevKvs, 2)
+
+	remaining, err := server.Range(ctx, &etcdserverpb.RangeRequest{
+		Key: prefix, RangeEnd: []byte{0},
+	})
+	require.NoError(t, err)
+	require.Empty(t, remaining.Kvs)
+}
+
 func TestDeleteRangeDeletesRange(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

@@ -13405,6 +13405,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   PrevKv，且 response header 停留在当前 revision，不因为 no-op 删除制造新 MVCC revision。
   既有本地测试只覆盖 equal empty 的不删除，本轮扩展为 equal/reverse 矩阵，并断言
   Header.Revision 与 backend current revision 均不前进。
+- A911 固定 namespaced empty-key from-key 行为：
+  `empty_key_namespace` reference differential 证明裸 `Delete("")` 仍按 etcd 返回
+  `InvalidArgument: key is not provided`，但 clientv3 namespace 包装后的逻辑空 key
+  `WithFromKey()` 会变成非空物理前缀，可见并删除该 namespace 下全部 key。新增本地 raw
+  gRPC 等价回归，防止把 empty-key 校验错误地套到已经加 namespace prefix 的 from-key
+  Range/DeleteRange 请求上。
 
 ### P2：运维兼容和长期验证
 
