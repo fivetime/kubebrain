@@ -1916,7 +1916,8 @@ SHA。
 终止本地进程，审计失败 requeue，成功才将 receipt 摘要写入 Succeeded。runner 会先拒绝
 空的 state/receipt 路径、Service 身份、target instance、public endpoint、audit prefix
 和 receipt output；audit prefix 必须是绝对 key prefix、不能包含换行/回车/tab，且不能
-指向根或 Kubernetes `/registry` 数据。runner 在调用任何可替换的 `AUDIT_COMMAND` 前还会
+指向根或 Kubernetes `/registry` 数据；public endpoint 不能包含控制字符、引号或反斜杠。
+runner 在调用任何可替换的 `AUDIT_COMMAND` 前还会
 独立校验 claim operation/instance、Service namespace/name 和 target instance 身份：
 Service namespace 必须是 lowercase DNS label，其余标识必须匹配 direct audit 脚本支持的
 资源标识格式。runner 不能把缺失或危险必填参数传给子审计脚本后再依赖下游失败。

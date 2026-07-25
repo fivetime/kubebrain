@@ -152,6 +152,17 @@ validate_audit_identity_json() {
 validate_audit_identity_json ||
   { echo "audit identity parameter contains unsupported characters" >&2; exit 2; }
 
+validate_audit_endpoint_json() {
+  "$JQ" -e '
+    .public_endpoint |
+      type == "string" and
+      ((test("[\\t\\r\\n\"\\\\]")) | not)' \
+    "$PARAMETERS_INPUT" >/dev/null
+}
+
+validate_audit_endpoint_json ||
+  { echo "audit public_endpoint identity is invalid" >&2; exit 2; }
+
 parameters="$("$JQ" -er '[
   .state_dir, .cutover_state_input, .cutover_state_sha256,
   .cutover_receipt_input, .cutover_receipt_sha256,
@@ -178,6 +189,8 @@ for value in "$state_dir" "$cutover_state" "$cutover_receipt" "$service_namespac
   "$service_name" "$target_instance" "$public_endpoint" "$audit_prefix" "$receipt_output"; do
   [[ -n "$value" ]] || { echo "audit parameters contain an empty required field" >&2; exit 2; }
 done
+[[ "$public_endpoint" != *[$'\t\r\n"\\']* ]] ||
+  { echo "audit public_endpoint identity is invalid" >&2; exit 2; }
 for value in "$operation_id" "$instance" "$service_namespace" "$service_name" "$target_instance"; do
   [[ "$value" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] ||
     { echo "audit identity parameter contains unsupported characters" >&2; exit 2; }
