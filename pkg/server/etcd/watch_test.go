@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"math"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -397,6 +398,64 @@ func TestWatchRequestedIDDuplicateAndUnknownCancelMatchEtcd(t *testing.T) {
 	require.Len(t, stream.sent, 4, "backend close after client cancellation must not emit a second response")
 	require.True(t, stream.sent[3].Canceled)
 	require.Empty(t, stream.sent[3].CancelReason)
+}
+
+func TestWatchSignedIDCreateAndCancelBoundariesMatchEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	_, err := server.Put(context.Background(), &etcdserverpb.PutRequest{
+		Key: []byte("/watch/signed-id-seed"), Value: []byte("seed"),
+	})
+	require.NoError(t, err)
+
+	ids := []int64{-1, math.MinInt64, math.MaxInt64}
+
+	reqs := make([]*etcdserverpb.WatchRequest, 0, len(ids)*2+1)
+	for _, id := range ids {
+		reqs = append(reqs, &etcdserverpb.WatchRequest{
+			RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{
+				CreateRequest: &etcdserverpb.WatchCreateRequest{
+					Key: []byte("/watch/signed-id"), WatchId: id,
+				},
+			},
+		})
+	}
+	reqs = append(reqs, &etcdserverpb.WatchRequest{
+		RequestUnion: &etcdserverpb.WatchRequest_CancelRequest{
+			CancelRequest: &etcdserverpb.WatchCancelRequest{WatchId: 999},
+		},
+	})
+	for _, id := range ids {
+		reqs = append(reqs, &etcdserverpb.WatchRequest{
+			RequestUnion: &etcdserverpb.WatchRequest_CancelRequest{
+				CancelRequest: &etcdserverpb.WatchCancelRequest{WatchId: id},
+			},
+		})
+	}
+	stream := &scriptedWatchServer{
+		fakeWatchServer: &fakeWatchServer{ctx: context.Background()},
+		reqs:            reqs,
+	}
+
+	require.Equal(t, codes.Canceled, status.Code(server.Watch(stream)))
+	require.Len(t, stream.sent, len(ids)*2)
+	for i, id := range ids {
+		require.True(t, stream.sent[i].Created)
+		require.False(t, stream.sent[i].Canceled)
+		require.Equal(t, id, stream.sent[i].WatchId)
+		require.NotNil(t, stream.sent[i].Header)
+		require.Positive(t, stream.sent[i].Header.Revision)
+	}
+
+	for i, id := range ids {
+		response := stream.sent[len(ids)+i]
+		require.True(t, response.Canceled)
+		require.False(t, response.Created)
+		require.Equal(t, id, response.WatchId)
+		require.Empty(t, response.CancelReason)
+		require.NotNil(t, response.Header)
+		require.Positive(t, response.Header.Revision)
+	}
 }
 
 func TestClientWatchCancelHeaderUsesCurrentRevisionBeforeEventsPublish(t *testing.T) {

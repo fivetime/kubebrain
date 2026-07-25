@@ -13389,6 +13389,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   keepalive 返回同 ID 且 `TTL=0`，而 revoke 未知/重复/ID=0 返回
   `NotFound: etcdserver: requested lease not found`。本轮补齐本地矩阵，防止后续把 lease
   ID 当作 unsigned/positive-only 或把 stream keepalive 的缺失 lease 转成硬错误。
+- A908 固定 Watch signed ID create/cancel 边界：
+  `watch_id_range_boundary` reference differential 证明 raw Watch stream 接受显式 `-1`、
+  `math.MinInt64`、`math.MaxInt64` 作为合法 watch ID，created/canceled response 都必须保留
+  原 ID，未知 cancel 继续静默忽略。既有本地测试已覆盖 duplicate/empty range/自动 ID，本轮
+  补齐 signed ID 本地状态机回归，避免 future refactor 把 watch ID 误收窄为非负或 unsigned。
 
 ### P2：运维兼容和长期验证
 
