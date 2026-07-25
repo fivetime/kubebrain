@@ -617,6 +617,96 @@ func TestCorruptAlarmBlocksEtcdApplierSurfaceOverGRPC(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestCombinedAlarmsPreferCorruptThenRecoverToNoSpace(t *testing.T) {
+	server := newQuotaRPCServer(t, 0)
+	ctx := context.Background()
+	const (
+		noSpaceOwner = uint64(700001)
+		corruptOwner = uint64(700002)
+	)
+	key := []byte("combined-alarm-key")
+	type alarmSummary struct {
+		memberID uint64
+		alarm    etcdserverpb.AlarmType
+	}
+	summarize := func(alarms []*etcdserverpb.AlarmMember) []alarmSummary {
+		result := make([]alarmSummary, 0, len(alarms))
+		for _, alarm := range alarms {
+			result = append(result, alarmSummary{memberID: alarm.MemberID, alarm: alarm.Alarm})
+		}
+		return result
+	}
+
+	_, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("before")})
+	require.NoError(t, err)
+	noSpace, err := server.Alarm(ctx, &etcdserverpb.AlarmRequest{
+		Action: etcdserverpb.AlarmRequest_ACTIVATE, Alarm: etcdserverpb.AlarmType_NOSPACE, MemberID: noSpaceOwner,
+	})
+	require.NoError(t, err)
+	require.Equal(t, []alarmSummary{{memberID: noSpaceOwner, alarm: etcdserverpb.AlarmType_NOSPACE}}, summarize(noSpace.Alarms))
+	corrupt, err := server.Alarm(ctx, &etcdserverpb.AlarmRequest{
+		Action: etcdserverpb.AlarmRequest_ACTIVATE, Alarm: etcdserverpb.AlarmType_CORRUPT, MemberID: corruptOwner,
+	})
+	require.NoError(t, err)
+	require.Equal(t, []alarmSummary{{memberID: corruptOwner, alarm: etcdserverpb.AlarmType_CORRUPT}}, summarize(corrupt.Alarms))
+
+	list, err := server.Alarm(ctx, &etcdserverpb.AlarmRequest{Action: etcdserverpb.AlarmRequest_GET})
+	require.NoError(t, err)
+	require.ElementsMatch(t, []alarmSummary{
+		{memberID: noSpaceOwner, alarm: etcdserverpb.AlarmType_NOSPACE},
+		{memberID: corruptOwner, alarm: etcdserverpb.AlarmType_CORRUPT},
+	}, summarize(list.Alarms))
+	statusResp, err := server.Status(ctx, &etcdserverpb.StatusRequest{})
+	require.NoError(t, err)
+	require.ElementsMatch(t, []string{noSpace.Alarms[0].String(), corrupt.Alarms[0].String()}, statusResp.Errors)
+
+	_, err = server.Range(ctx, &etcdserverpb.RangeRequest{Key: key})
+	require.NoError(t, err)
+	_, err = server.Txn(ctx, &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{{
+		Request: &etcdserverpb.RequestOp_RequestRange{
+			RequestRange: &etcdserverpb.RangeRequest{Key: key},
+		},
+	}}})
+	require.NoError(t, err)
+	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("blocked-by-corrupt")})
+	require.Equal(t, codes.DataLoss, status.Code(err))
+	_, err = server.Txn(ctx, &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{{
+		Request: &etcdserverpb.RequestOp_RequestDeleteRange{
+			RequestDeleteRange: &etcdserverpb.DeleteRangeRequest{Key: key},
+		},
+	}}})
+	require.Equal(t, codes.DataLoss, status.Code(err))
+	_, err = server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 30})
+	require.Equal(t, codes.DataLoss, status.Code(err))
+
+	deactivatedCorrupt, err := server.Alarm(ctx, &etcdserverpb.AlarmRequest{
+		Action: etcdserverpb.AlarmRequest_DEACTIVATE, Alarm: etcdserverpb.AlarmType_CORRUPT, MemberID: corruptOwner,
+	})
+	require.NoError(t, err)
+	require.Equal(t, summarize(corrupt.Alarms), summarize(deactivatedCorrupt.Alarms))
+	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("blocked-by-nospace")})
+	require.Equal(t, codes.ResourceExhausted, status.Code(err))
+	_, err = server.Txn(ctx, &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{{
+		Request: &etcdserverpb.RequestOp_RequestDeleteRange{
+			RequestDeleteRange: &etcdserverpb.DeleteRangeRequest{Key: key},
+		},
+	}}})
+	require.NoError(t, err)
+	_, err = server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 30})
+	require.Equal(t, codes.ResourceExhausted, status.Code(err))
+
+	deactivatedNoSpace, err := server.Alarm(ctx, &etcdserverpb.AlarmRequest{
+		Action: etcdserverpb.AlarmRequest_DEACTIVATE, Alarm: etcdserverpb.AlarmType_NOSPACE, MemberID: noSpaceOwner,
+	})
+	require.NoError(t, err)
+	require.Equal(t, summarize(noSpace.Alarms), summarize(deactivatedNoSpace.Alarms))
+	empty, err := server.Alarm(ctx, &etcdserverpb.AlarmRequest{Action: etcdserverpb.AlarmRequest_GET})
+	require.NoError(t, err)
+	require.Empty(t, empty.Alarms)
+	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("restored")})
+	require.NoError(t, err)
+}
+
 func TestCorruptAlarmMemberSetConcurrentCAS(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

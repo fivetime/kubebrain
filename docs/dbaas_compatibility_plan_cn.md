@@ -13580,6 +13580,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   一个 member 后重复 deactivate 只能返回空集合，不能误删其它 member 或伪造已移除项。
   本轮扩展本地 quota 回归，在已有 multi-member/list/deactivate 覆盖上补齐重复
   activate/deactivate 的返回契约，防止 alarm set CAS 或去重逻辑漂移。
+- A938 固定 NOSPACE+CORRUPT 组合告警的错误优先级和恢复顺序：
+  `combined_alarm` reference differential 证明双告警同时存在时，Alarm GET/Status 必须
+  暴露两个 alarm；Range 和 read-only Txn 继续成功；Put、delete Txn 和 LeaseGrant
+  优先返回 CORRUPT 的 DataLoss；解除 CORRUPT 后 NOSPACE 仍在，Put/LeaseGrant 返回
+  ResourceExhausted 但 delete Txn 可以释放空间；最后解除 NOSPACE 后写入恢复。本轮新增
+  本地 Maintenance/Quota 服务层回归，固定这一完整状态机，防止告警检查重排、Txn
+  分类或 lease grant 门禁改动让生产故障恢复路径偏离 etcd。
 
 ### P2：运维兼容和长期验证
 
