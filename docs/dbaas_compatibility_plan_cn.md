@@ -13822,6 +13822,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   让 fake LeaseKeepAlive 对第二个 ID 返回 TTL=0，断言 HTTP chunked JSON 帧只含
   header/ID 且最终读取到 `io.EOF`，防止 gateway/protojson 选项升级后把未知租约错误编码为
   `"TTL":"0"`、丢失 ID 或保持流挂起。
+- A974 固定 JWT auth provider 的 RPC/KV 旧 token 失效链路：
+  `auth_jwt` differential 证明 `--auth-token=jwt,...` 签发的 token 必须是三段 JWT，
+  初始 token 可执行受保护 KV 写；任一 auth revision mutation 后旧 JWT 必须被拒绝，
+  重新 Authenticate 后新 token 恢复写读。本轮新增本地 RPC/KV 回归，使用 HS256 provider
+  走 `AuthEnable`、`Authenticate`、`Put`、`RoleAdd`、旧 token `Range` 和 reauth
+  `Put/Range`，防止仅低层 token manager 测试通过而公开 Auth/KV handler 忘记应用
+  JWT revision invalidation。
 
 ### P2：运维兼容和长期验证
 

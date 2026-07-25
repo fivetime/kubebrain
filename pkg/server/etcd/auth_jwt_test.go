@@ -228,6 +228,55 @@ func TestJWTManagerUsesAuthRevisionAndRejectsOldToken(t *testing.T) {
 	require.ErrorIs(t, err, rpctypes.ErrAuthOldRevision)
 }
 
+func TestJWTAuthRPCInvalidatesOldTokenAfterAuthMutation(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	ctx := context.Background()
+	secret := writeJWTKey(t, "secret", []byte("shared-secret"))
+	require.NoError(t, server.tokens.configureProvider("jwt,sign-method=HS256,priv-key="+secret))
+	now := time.Unix(2_000_000_000, 0)
+	server.tokens.now = func() time.Time { return now }
+	require.NoError(t, server.auth.userAdd(ctx, &etcdserverpb.AuthUserAddRequest{
+		Name: "root", Password: "root-secret",
+	}))
+	require.NoError(t, server.auth.roleAdd(ctx, "root"))
+	require.NoError(t, server.auth.userGrantRole(ctx, "root", "root"))
+	require.NoError(t, server.auth.enable(ctx))
+
+	authenticated, err := server.Authenticate(ctx, &etcdserverpb.AuthenticateRequest{
+		Name: "root", Password: "root-secret",
+	})
+	require.NoError(t, err)
+	require.Len(t, strings.Split(authenticated.Token, "."), 3)
+	oldCtx := metadata.NewIncomingContext(ctx, metadata.Pairs(
+		rpctypes.TokenFieldNameGRPC, authenticated.Token,
+	))
+	key := []byte("/a974/jwt-auth/revision")
+	_, err = server.Put(oldCtx, &etcdserverpb.PutRequest{Key: key, Value: []byte("initial")})
+	require.NoError(t, err)
+
+	_, err = server.RoleAdd(oldCtx, &etcdserverpb.AuthRoleAddRequest{Name: "jwt-revision-invalidator"})
+	require.NoError(t, err)
+	_, err = server.Range(oldCtx, &etcdserverpb.RangeRequest{Key: key})
+	require.ErrorIs(t, err, rpctypes.ErrAuthOldRevision)
+
+	reauthenticated, err := server.Authenticate(ctx, &etcdserverpb.AuthenticateRequest{
+		Name: "root", Password: "root-secret",
+	})
+	require.NoError(t, err)
+	require.NotEqual(t, authenticated.Token, reauthenticated.Token)
+	newCtx := metadata.NewIncomingContext(ctx, metadata.Pairs(
+		rpctypes.TokenFieldNameGRPC, reauthenticated.Token,
+	))
+	_, err = server.Put(newCtx, &etcdserverpb.PutRequest{Key: key, Value: []byte("reauthenticated")})
+	require.NoError(t, err)
+	ranged, err := server.Range(newCtx, &etcdserverpb.RangeRequest{Key: key})
+	require.NoError(t, err)
+	require.Len(t, ranged.Kvs, 1)
+	require.Equal(t, []byte("reauthenticated"), ranged.Kvs[0].Value)
+}
+
 func TestJWTEmptyAndZeroClaimsMatchEtcdAuthorization(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
