@@ -12674,6 +12674,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   成可重试失败。`go test ./hack/production -run TestBackupOperationRejectsInvalidPrefix -count=1 -v`、
   `go test ./hack/production -run TestBackupOperation -count=1 -v`、相关脚本 ShellCheck 和
   `git diff --check` 通过。
+- A841 前移 PostRestoreAudit runner 的 audit prefix 控制字符校验：
+  `run-post-restore-audit-operation.sh` 已有 Bash 侧 audit prefix 校验，但参数读取使用
+  `jq @tsv`，JSON 字符串里的 tab/换行/回车会先被转义，导致控制字符检查无法观察到原始
+  值。现在 runner 在冻结参数后、TSV 展开前先基于原始 JSON 拒绝非绝对 key prefix 和控制
+  字符；既有 root 与 `/registry` 禁止规则继续由统一 prefix validator 处理。回归覆盖带
+  tab 的 audit prefix，确认不会启动子审计，也不会把参数错误 requeue。`go test
+  ./hack/production -run TestPostRestoreAuditOperationRejectsUnsafeAuditPrefix -count=1 -v`、
+  `go test ./hack/production -run TestPostRestoreAuditOperation -count=1 -v`、相关脚本
+  ShellCheck 和 `git diff --check` 通过。
 
 ### P2：运维兼容和长期验证
 

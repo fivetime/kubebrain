@@ -1834,7 +1834,7 @@ file/directory `fsync` 且不覆盖发布；已有 cutover/verify/rollback marke
 切流完成后使用 `hack/production/audit-restored-instance.sh` 运行持续观察窗口。默认持续
 3600 秒、间隔 60 秒且至少 10 个样本；生产控制面应按实例 SLO 调大窗口。脚本先按严格
 JSON 顶层字段集合、类型和值核对 A189 state SHA-256 与 cutover receipt，同时要求 source instance 非空且不同于 target、source/target
-prefix 非空且不同，并把 receipt 的 source instance 精确绑定到冻结 state；再在每个样本前后检查 Service UID/精确 selector、目标
+prefix 绝对且不同，并把 receipt 的 source instance 精确绑定到冻结 state；再在每个样本前后检查 Service UID/精确 selector、目标
 Pod name/UID/restart/Ready 快照和 EndpointSlice targetRef UID 集。每个样本经公开 endpoint
 执行 60 秒 lease grant、`createRevision=0` 条件 Put、线性 Get（核对 value 与 lease）、
 value 条件 Delete、删除确认和 lease revoke；探针 key 使用加密随机 nonce，失败时也由
@@ -1892,7 +1892,9 @@ SHA。
 只 claim PostRestoreAudit，核对参数 JSON 摘要，在子审计运行期间续租；heartbeat 失败会
 终止本地进程，审计失败 requeue，成功才将 receipt 摘要写入 Succeeded。runner 会先拒绝
 空的 state/receipt 路径、Service 身份、target instance、public endpoint、audit prefix
-和 receipt output，不能把缺失必填参数传给子审计脚本后再依赖下游失败。
+和 receipt output；audit prefix 必须是绝对 key prefix、不能包含换行/回车/tab，且不能
+指向根或 Kubernetes `/registry` 数据。runner 不能把缺失或危险必填参数传给子审计脚本后
+再依赖下游失败。
 
 `kubebrain-operation-worker` 把每次 executor 放入独立进程组。Pod SIGTERM、supervisor
 context 取消或 heartbeat 触发的脚本退出必须终止 shell 及仍在同组的全部后代，避免备份、

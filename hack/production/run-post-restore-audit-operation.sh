@@ -121,6 +121,16 @@ if [[ "$captured_digest" != "$expected_digest" || "$current_digest" != "$expecte
 fi
 PARAMETERS_INPUT="$frozen_parameters"
 
+validate_audit_prefix_json() {
+  "$JQ" -e '
+    .audit_prefix | type == "string" and length > 0 and startswith("/") and
+    ((contains("\n") or contains("\r") or contains("\t")) | not)' \
+    "$PARAMETERS_INPUT" >/dev/null
+}
+
+validate_audit_prefix_json ||
+  { echo "audit prefix must be an absolute key prefix without control characters" >&2; exit 2; }
+
 parameters="$("$JQ" -er '[
   .state_dir, .cutover_state_input, .cutover_state_sha256,
   .cutover_receipt_input, .cutover_receipt_sha256,
