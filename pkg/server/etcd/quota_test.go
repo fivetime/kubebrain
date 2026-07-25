@@ -247,6 +247,11 @@ func TestQuotaRPCManualActivationCapsWritesWithoutConfiguredQuota(t *testing.T) 
 	server := newQuotaRPCServer(t, 0)
 	ctx := context.Background()
 	const memberID uint64 = 424242
+	lease, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 30})
+	require.NoError(t, err)
+	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: []byte("seed"), Value: []byte("value")})
+	require.NoError(t, err)
+
 	activated, err := server.Alarm(ctx, &etcdserverpb.AlarmRequest{
 		Action:   etcdserverpb.AlarmRequest_ACTIVATE,
 		MemberID: memberID,
@@ -254,9 +259,48 @@ func TestQuotaRPCManualActivationCapsWritesWithoutConfiguredQuota(t *testing.T) 
 	})
 	require.NoError(t, err)
 	require.Equal(t, memberID, activated.Alarms[0].MemberID)
+
+	_, err = server.Range(ctx, &etcdserverpb.RangeRequest{Key: []byte("seed")})
+	require.NoError(t, err)
+	_, err = server.Txn(ctx, &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{{
+		Request: &etcdserverpb.RequestOp_RequestRange{
+			RequestRange: &etcdserverpb.RangeRequest{Key: []byte("seed")},
+		},
+	}}})
+	require.NoError(t, err)
+
 	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: []byte("blocked"), Value: []byte("value")})
 	require.Equal(t, codes.ResourceExhausted, status.Code(err))
+	_, err = server.Txn(ctx, &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{{
+		Request: &etcdserverpb.RequestOp_RequestPut{
+			RequestPut: &etcdserverpb.PutRequest{Key: []byte("blocked-txn"), Value: []byte("value")},
+		},
+	}}})
+	require.Equal(t, codes.ResourceExhausted, status.Code(err))
+	_, err = server.Txn(ctx, &etcdserverpb.TxnRequest{
+		Compare: []*etcdserverpb.Compare{{
+			Key: []byte("seed"), Result: etcdserverpb.Compare_EQUAL,
+		}},
+		Failure: []*etcdserverpb.RequestOp{{
+			Request: &etcdserverpb.RequestOp_RequestPut{
+				RequestPut: &etcdserverpb.PutRequest{Key: []byte("blocked-failure"), Value: []byte("value")},
+			},
+		}},
+	})
+	require.Equal(t, codes.ResourceExhausted, status.Code(err))
+	_, err = server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 30})
+	require.Equal(t, codes.ResourceExhausted, status.Code(err))
+	ttl, err := server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: lease.ID})
+	require.NoError(t, err)
+	require.Equal(t, lease.ID, ttl.ID)
+
 	_, err = server.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{Key: []byte("blocked")})
+	require.NoError(t, err)
+	_, err = server.Txn(ctx, &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{{
+		Request: &etcdserverpb.RequestOp_RequestDeleteRange{
+			RequestDeleteRange: &etcdserverpb.DeleteRangeRequest{Key: []byte("seed")},
+		},
+	}}})
 	require.NoError(t, err)
 	_, err = server.Alarm(ctx, &etcdserverpb.AlarmRequest{
 		Action:   etcdserverpb.AlarmRequest_DEACTIVATE,

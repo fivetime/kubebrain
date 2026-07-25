@@ -13548,6 +13548,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   保持可用。本轮新增本地 scripted stream 回归，固定 equal-range error 后仍能创建
   watch 102、自动 watch 0，分别 cancel 后忽略 unknown cancel，再创建并 cancel 103，
   防止 watch 控制循环把单个 invalid create 升级为整条流失败。
+- A933 固定手动 NOSPACE alarm 在无 quota 配置下的门禁矩阵：
+  `alarm_without_quota` reference differential 证明即使 backend quota 为 0，手动
+  `Alarm(ACTIVATE,NOSPACE)` 也必须把写路径置为 capped：Range、read-only Txn、
+  LeaseTimeToLive、DeleteRange 和 delete Txn 继续成功，而 Put、含 Put 的 Txn、
+  failure branch Put 以及 LeaseGrant 返回 ResourceExhausted；Deactivate 后写恢复。
+  本轮扩展本地 quota 回归，覆盖这些服务层路径，防止手动 alarm 只拦截 unary Put
+  或遗漏 lease grant / Txn branch 的生产写入面。
 
 ### P2：运维兼容和长期验证
 
