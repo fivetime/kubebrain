@@ -13760,6 +13760,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   compacted` 终止，且收到的 key 数应大于 0 但小于全集。本轮加强本地
   `TestRangeStreamPartialThenCompacted`，累计所有已发送 chunk 的 KV 数并断言 `<20`，
   防止后续把 compact 检查移到 terminal chunk 或错误地把完整快照发送完再返回错误。
+- A965 固定 clientv3 namespace 的 Txn/Watch 去前缀语义：
+  `namespace` differential 证明 `namespace.NewKV/NewWatcher` 下，Txn response 的 nested
+  PrevKV、Delete PrevKV、Watch event key 和 Watch PrevKV 都必须暴露租户内 key，不能泄漏
+  物理 `tenantPrefix`。本轮新增 bufconn clientv3 回归，走真实 gRPC KV/Watch client、
+  namespaced nested Txn 和带 `WithPrevKV` 的 Watch，断言所有 event/PrevKV key 已去前缀且
+  三个事务事件同一 revision，防止服务端 key 编码、watch event 转换或 client namespace
+  组合路径回退。
 
 ### P2：运维兼容和长期验证
 

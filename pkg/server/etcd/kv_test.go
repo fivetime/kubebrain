@@ -19,6 +19,7 @@ import (
 	"context"
 	"errors"
 	"math"
+	"net"
 	"sync"
 	"testing"
 	"time"
@@ -28,8 +29,13 @@ import (
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
+	clientv3 "go.etcd.io/etcd/client/v3"
+	"go.etcd.io/etcd/client/v3/namespace"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
+	"google.golang.org/grpc/test/bufconn"
 
 	"github.com/kubewharf/kubebrain/pkg/backend"
 	"github.com/kubewharf/kubebrain/pkg/metrics/mock"
@@ -2690,6 +2696,99 @@ func TestNamespacedFromKeyPrefixEndPreservesAdjacentKeys(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, adjacent.Kvs, 1)
 	require.Equal(t, []byte("outside"), adjacent.Kvs[0].Value)
+}
+
+func TestClientNamespaceTxnWatchStripsPrefixes(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterWatchServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	tenantPrefix := "/registry/client-namespace/tenant/"
+	namespacedKV := namespace.NewKV(client.KV, tenantPrefix)
+	namespacedWatcher := namespace.NewWatcher(client.Watcher, tenantPrefix)
+	for _, key := range []string{"a", "b", "c"} {
+		_, err = namespacedKV.Put(ctx, key, "seed-"+key)
+		require.NoError(t, err)
+	}
+	initial, err := namespacedKV.Get(ctx, "", clientv3.WithFromKey())
+	require.NoError(t, err)
+
+	watchCtx, watchCancel := context.WithCancel(ctx)
+	defer watchCancel()
+	watch := namespacedWatcher.Watch(watchCtx, "",
+		clientv3.WithPrefix(), clientv3.WithRev(initial.Header.Revision+1), clientv3.WithPrevKV())
+	txn, err := namespacedKV.Txn(ctx).
+		If(clientv3.Compare(clientv3.Value("a"), "=", "seed-a")).
+		Then(
+			clientv3.OpTxn(nil, []clientv3.Op{
+				clientv3.OpPut("a", "updated-a", clientv3.WithPrevKV()),
+				clientv3.OpPut("d", "created-d"),
+			}, nil),
+			clientv3.OpDelete("b", clientv3.WithPrevKV()),
+		).
+		Commit()
+	require.NoError(t, err)
+	require.True(t, txn.Succeeded)
+	require.Len(t, txn.Responses, 2)
+
+	nested := txn.Responses[0].GetResponseTxn()
+	require.NotNil(t, nested)
+	require.Len(t, nested.Responses, 2)
+	nestedPut := nested.Responses[0].GetResponsePut()
+	require.NotNil(t, nestedPut)
+	require.NotNil(t, nestedPut.PrevKv)
+	require.Equal(t, []byte("a"), nestedPut.PrevKv.Key)
+	deleted := txn.Responses[1].GetResponseDeleteRange()
+	require.NotNil(t, deleted)
+	require.Len(t, deleted.PrevKvs, 1)
+	require.Equal(t, []byte("b"), deleted.PrevKvs[0].Key)
+
+	events := make(map[string]string)
+	prevKeys := make(map[string]string)
+	for len(events) < 3 {
+		select {
+		case response, ok := <-watch:
+			require.True(t, ok)
+			require.NoError(t, response.Err())
+			for _, event := range response.Events {
+				key := string(event.Kv.Key)
+				events[key] = string(event.Kv.Value)
+				if event.PrevKv != nil {
+					prevKeys[key] = string(event.PrevKv.Key)
+				}
+				require.False(t, bytes.HasPrefix(event.Kv.Key, []byte(tenantPrefix)))
+				if event.PrevKv != nil {
+					require.False(t, bytes.HasPrefix(event.PrevKv.Key, []byte(tenantPrefix)))
+				}
+				require.Equal(t, txn.Header.Revision, event.Kv.ModRevision)
+			}
+		case <-ctx.Done():
+			t.Fatalf("timed out waiting for namespace watch events: %v", ctx.Err())
+		}
+	}
+	require.Equal(t, map[string]string{"a": "updated-a", "b": "", "d": "created-d"}, events)
+	require.Equal(t, map[string]string{"a": "a", "b": "b"}, prevKeys)
 }
 
 func TestDeleteRangeDeletesRange(t *testing.T) {
