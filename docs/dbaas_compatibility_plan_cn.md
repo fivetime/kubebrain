@@ -13736,6 +13736,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Range；事务 header、子 Range header、返回 KV 的 create/mod revision 都必须等于 seed
   revision，防止 compare 失败分支把旧 base revision、空 header 或 Success 分支写入
   revision 误传播给客户端重试逻辑。
+- A961 固定 info HTTP `/version` 的 CORS/OPTIONS 包装：
+  A958 已把 client/info handler map 出口统一包上 etcd CORS 行为，但本地回归只显式覆盖
+  client `/health`。本轮补充 info 端口 `/version` 测试，确认 OPTIONS 直接返回 200 和
+  `Access-Control-Allow-*` headers，GET 仍返回 etcd 版本 JSON 且带 `Access-Control-Allow-Origin:*`；
+  这固定 kubeadm ExternalEtcd HTTP preflight 在独立 info 端口上的行为，防止后续调整
+  handler map 时只保留 client 端口兼容。
 
 ### P2：运维兼容和长期验证
 

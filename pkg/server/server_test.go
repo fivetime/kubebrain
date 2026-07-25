@@ -334,6 +334,25 @@ func TestClientHTTPHandlersExposeEtcdCORSOptions(t *testing.T) {
 	require.Equal(t, "*", get.Header().Get("Access-Control-Allow-Origin"))
 }
 
+func TestInfoHTTPVersionHandlerExposeEtcdCORSOptions(t *testing.T) {
+	versionHandler := (&server{}).GetInfoHttpHandlers()["/version"]
+	require.NotNil(t, versionHandler)
+
+	options := httptest.NewRecorder()
+	versionHandler.ServeHTTP(options, httptest.NewRequest(http.MethodOptions, "/version", nil))
+	require.Equal(t, http.StatusOK, options.Code)
+	require.Empty(t, options.Body.String())
+	require.Equal(t, "POST, GET, OPTIONS, PUT, DELETE", options.Header().Get("Access-Control-Allow-Methods"))
+	require.Equal(t, "*", options.Header().Get("Access-Control-Allow-Origin"))
+	require.Equal(t, "accept, content-type, authorization", options.Header().Get("Access-Control-Allow-Headers"))
+
+	get := httptest.NewRecorder()
+	versionHandler.ServeHTTP(get, httptest.NewRequest(http.MethodGet, "/version", nil))
+	require.Equal(t, http.StatusOK, get.Code)
+	require.Contains(t, get.Body.String(), `"etcdserver"`)
+	require.Equal(t, "*", get.Header().Get("Access-Control-Allow-Origin"))
+}
+
 func TestHTTPHealthMatchesEtcdNoSpaceAlarmSemantics(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	m := mock.NewMinimalMetrics(ctrl)
