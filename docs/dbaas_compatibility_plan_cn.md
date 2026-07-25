@@ -13477,6 +13477,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   invalid sort enum，空 RequestOp 返回 `key not found`。本轮新增本地 raw RPC
   矩阵，固定 status code 和 message，防止后续重排 validation 或 generic Txn fast path
   造成 client 可见错误漂移。
+- A922 固定 Txn operation budget 与嵌套预算：
+  `txn_operation_validation` 的 budget differential 证明 128 个 top-level op 可以执行，
+  129 个必须返回 `too many operations in txn request`；嵌套 Txn 只能消费父层剩余预算，
+  Compare 数量达到 128 时不额外扣 success Range child，且未选中的 failure 分支也必须
+  在执行前做预算校验。本轮新增本地 raw RPC 矩阵，固定 top-level、nested exact/over、
+  compare-max 和 unselected failure over-budget 场景，防止 future validation 只检查
+  选中分支或把 Compare/child op 预算算错。
 
 ### P2：运维兼容和长期验证
 

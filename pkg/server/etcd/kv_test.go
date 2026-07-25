@@ -3980,6 +3980,77 @@ func TestTxnRejectsTooManyNestedOpsLikeEtcd(t *testing.T) {
 	require.Contains(t, err.Error(), "etcdserver: too many operations in txn request")
 }
 
+func TestTxnOperationBudgetMatrixMatchesEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	rangeOp := func(suffix byte) *etcdserverpb.RequestOp {
+		key := append([]byte("/registry/generic-txn/budget/"), suffix)
+		return &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestRange{
+			RequestRange: &etcdserverpb.RangeRequest{Key: key},
+		}}
+	}
+	rangeOps := func(n int) []*etcdserverpb.RequestOp {
+		ops := make([]*etcdserverpb.RequestOp, n)
+		for i := range ops {
+			ops[i] = rangeOp(byte(i))
+		}
+		return ops
+	}
+	nested := func(ops []*etcdserverpb.RequestOp) *etcdserverpb.RequestOp {
+		return &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestTxn{
+			RequestTxn: &etcdserverpb.TxnRequest{Success: ops},
+		}}
+	}
+	compares := make([]*etcdserverpb.Compare, defaultMaxTxnOps)
+	for i := range compares {
+		compares[i] = &etcdserverpb.Compare{
+			Key:         append([]byte("/registry/generic-txn/budget-cmp/"), byte(i)),
+			Result:      etcdserverpb.Compare_EQUAL,
+			Target:      etcdserverpb.Compare_VERSION,
+			TargetUnion: &etcdserverpb.Compare_Version{Version: 0},
+		}
+	}
+
+	for _, tc := range []struct {
+		name          string
+		txn           *etcdserverpb.TxnRequest
+		wantErr       bool
+		wantSucceeded bool
+	}{
+		{name: "top-level-at-limit", txn: &etcdserverpb.TxnRequest{Success: rangeOps(defaultMaxTxnOps)}, wantSucceeded: true},
+		{name: "top-level-over-limit", txn: &etcdserverpb.TxnRequest{Success: rangeOps(defaultMaxTxnOps + 1)}, wantErr: true},
+		{name: "nested-exact-remaining-budget", txn: &etcdserverpb.TxnRequest{
+			Success: append(rangeOps(defaultMaxTxnOps-2), nested(rangeOps(1))),
+		}, wantSucceeded: true},
+		{name: "nested-over-remaining-budget", txn: &etcdserverpb.TxnRequest{
+			Success: append(rangeOps(defaultMaxTxnOps-1), nested(rangeOps(1))),
+		}, wantErr: true},
+		{name: "compare-max-does-not-charge-range-child", txn: &etcdserverpb.TxnRequest{
+			Compare: compares,
+			Success: []*etcdserverpb.RequestOp{rangeOp(0)},
+		}, wantSucceeded: true},
+		{name: "unselected-failure-nested-over-budget", txn: &etcdserverpb.TxnRequest{
+			Success: rangeOps(1),
+			Failure: append(rangeOps(defaultMaxTxnOps-1), nested(rangeOps(1))),
+		}, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resp, err := server.Txn(context.Background(), tc.txn)
+			if tc.wantErr {
+				require.Nil(t, resp)
+				require.Error(t, err)
+				require.Equal(t, codes.InvalidArgument, status.Code(err))
+				require.Equal(t, "etcdserver: too many operations in txn request", status.Convert(err).Message())
+				return
+			}
+			require.NoError(t, err)
+			require.NotNil(t, resp)
+			require.Equal(t, tc.wantSucceeded, resp.Succeeded)
+		})
+	}
+}
+
 func TestTxnRejectsDuplicatePutKeys(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
