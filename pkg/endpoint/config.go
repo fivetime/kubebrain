@@ -271,6 +271,12 @@ func (c *Config) Validate() error {
 	if (c.MaxRequestRate == 0) != (c.RequestRateBurst == 0) {
 		return fmt.Errorf("max request rate and request rate burst must both be zero or both be positive")
 	}
+	if err := validateHTTPAccessValues("--cors", c.CORS); err != nil {
+		return err
+	}
+	if err := validateHTTPAccessValues("--host-whitelist", c.HostWhitelist); err != nil {
+		return err
+	}
 	if err := etcdserver.ValidateAuthTokenProvider(c.AuthToken); err != nil {
 		return err
 	}
@@ -322,6 +328,24 @@ func (c *Config) Validate() error {
 		}
 	}
 	return nil
+}
+
+func validateHTTPAccessValues(name string, values []string) error {
+	for _, value := range values {
+		if containsHTTPAccessControlChar(value) {
+			return fmt.Errorf("%s value %q contains unsupported characters", name, value)
+		}
+	}
+	return nil
+}
+
+func containsHTTPAccessControlChar(value string) bool {
+	for _, r := range value {
+		if r < 0x20 || r == 0x7f {
+			return true
+		}
+	}
+	return false
 }
 
 func parseTLSVersion(version string) (uint16, error) {

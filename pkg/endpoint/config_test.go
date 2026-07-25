@@ -107,6 +107,70 @@ func TestRequestRateLimitRequiresRateAndBurstTogether(t *testing.T) {
 	}
 }
 
+func TestHTTPAccessControlValuesRejectControlCharacters(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		update func(*Config)
+		want   string
+	}{
+		{
+			name: "cors newline",
+			update: func(config *Config) {
+				config.CORS = []string{"https://console.example\nshadow"}
+			},
+			want: "--cors",
+		},
+		{
+			name: "cors delete",
+			update: func(config *Config) {
+				config.CORS = []string{"https://console.example" + string(rune(0x7f))}
+			},
+			want: "--cors",
+		},
+		{
+			name: "host whitelist tab",
+			update: func(config *Config) {
+				config.HostWhitelist = []string{"etcd.internal\tshadow"}
+			},
+			want: "--host-whitelist",
+		},
+		{
+			name: "host whitelist delete",
+			update: func(config *Config) {
+				config.HostWhitelist = []string{"etcd.internal" + string(rune(0x7f))}
+			},
+			want: "--host-whitelist",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			config := &Config{
+				Port:                 2379,
+				PeerPort:             2380,
+				ClientSecurityConfig: &SecurityConfig{},
+				PeerSecurityConfig:   &SecurityConfig{},
+				CORS:                 []string{"*"},
+				HostWhitelist:        []string{"*"},
+			}
+			tc.update(config)
+			err := config.Validate()
+			require.ErrorContains(t, err, tc.want)
+			require.ErrorContains(t, err, "unsupported characters")
+		})
+	}
+}
+
+func TestHTTPAccessControlValuesAllowEtcdDefaultsAndExactMatches(t *testing.T) {
+	config := &Config{
+		Port:                 2379,
+		PeerPort:             2380,
+		ClientSecurityConfig: &SecurityConfig{},
+		PeerSecurityConfig:   &SecurityConfig{},
+		CORS:                 []string{"*", "https://console.example"},
+		HostWhitelist:        []string{"*", "etcd.internal"},
+	}
+	require.NoError(t, config.Validate())
+}
+
 func TestEmptySecurityConfigDoesNotInitializeTLS(t *testing.T) {
 	config := &Config{
 		Port:                 2379,

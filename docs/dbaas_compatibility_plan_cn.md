@@ -13167,6 +13167,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   identity 写入运行时协调路径。现在 option 校验在 host:port 形状检查前拒绝控制字符、
   DEL、引号和反斜杠；IPv4 与 bracketed IPv6 正例、未括号 IPv6 拒绝和 self identity
   校验语义保持不变。
+- A885 收紧 client HTTP access-control 配置字符边界：
+  对照 `/root/etcd/server/embed/serve.go` 的 CORS header 反射与
+  `/root/etcd/server/etcdserver/server_access_control.go` 的精确匹配语义，KubeBrain
+  已实现 `--cors`/`--host-whitelist` 的默认 `*`、OPTIONS 短路、plaintext Host 421
+  和 TLS Host 绕过。但配置入口此前没有拒绝控制字符或 DEL，错误 allowlist 值会进入
+  access controller 的匹配集合，并可能污染日志、诊断或 CORS header 生成边界。现在
+  `endpoint.Config.Validate` 在 TLS/auth 初始化前拒绝 `--cors` 与 `--host-whitelist`
+  中的控制字符和 DEL；`*`、普通 Origin 和 Host 精确匹配保持兼容。
 
 ### P2：运维兼容和长期验证
 
