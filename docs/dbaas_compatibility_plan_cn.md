@@ -13695,6 +13695,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   非 KEY target 规范化为 ASCEND 做排序和最终截断。本轮新增本地 Range 回归，分别固定
   CREATE 返回 `c,b`、MOD 返回 `c,a` 的候选内排序结果，防止后续把该路径误改成全量排序
   或先按 key 直接截断成最终结果。
+- A955 固定手动 NOSPACE alarm 的 Status 可见性：
+  `status_alarm` reference differential 证明手动激活指定 member 的 NOSPACE alarm 后，
+  `Maintenance.Status` 必须在 `Errors` 中返回同一个 `AlarmMember.String()`，解除同一
+  alarm 后 `Errors` 必须清空。本轮新增本地 maintenance 服务层回归，固定 member
+  424242 的 activate/status/deactivate/status 链路，防止 quota 自动告警路径之外的
+  手动 alarm 在 Status 汇总中漏报、或解除后残留错误。
 
 ### P2：运维兼容和长期验证
 

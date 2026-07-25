@@ -707,6 +707,41 @@ func TestCombinedAlarmsPreferCorruptThenRecoverToNoSpace(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestStatusManualNoSpaceAlarmDifferentialScenarioMatchesEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+
+	const memberID uint64 = 424242
+	activated, err := server.Alarm(ctx, &etcdserverpb.AlarmRequest{
+		Action:   etcdserverpb.AlarmRequest_ACTIVATE,
+		MemberID: memberID,
+		Alarm:    etcdserverpb.AlarmType_NOSPACE,
+	})
+	require.NoError(t, err)
+	require.Len(t, activated.Alarms, 1)
+	require.Equal(t, memberID, activated.Alarms[0].MemberID)
+	require.Equal(t, etcdserverpb.AlarmType_NOSPACE, activated.Alarms[0].Alarm)
+
+	active, err := server.Status(ctx, &etcdserverpb.StatusRequest{})
+	require.NoError(t, err)
+	require.Equal(t, []string{activated.Alarms[0].String()}, active.Errors)
+
+	deactivated, err := server.Alarm(ctx, &etcdserverpb.AlarmRequest{
+		Action:   etcdserverpb.AlarmRequest_DEACTIVATE,
+		MemberID: memberID,
+		Alarm:    etcdserverpb.AlarmType_NOSPACE,
+	})
+	require.NoError(t, err)
+	require.Len(t, deactivated.Alarms, 1)
+	require.Equal(t, memberID, deactivated.Alarms[0].MemberID)
+	require.Equal(t, etcdserverpb.AlarmType_NOSPACE, deactivated.Alarms[0].Alarm)
+
+	disarmed, err := server.Status(ctx, &etcdserverpb.StatusRequest{})
+	require.NoError(t, err)
+	require.Empty(t, disarmed.Errors)
+}
+
 func TestCorruptAlarmMemberSetConcurrentCAS(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
