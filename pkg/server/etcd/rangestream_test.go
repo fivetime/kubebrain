@@ -671,6 +671,12 @@ func TestRangeStreamPartialThenCompacted(t *testing.T) {
 	require.Equal(t, codes.OutOfRange, status.Code(err))
 	require.ErrorContains(t, err, "required revision has been compacted")
 	require.NotEmpty(t, stream.sent[0].RangeResponse.Kvs)
+	received := 0
+	for _, chunk := range stream.sent {
+		received += len(chunk.RangeResponse.Kvs)
+	}
+	require.Positive(t, received)
+	require.Less(t, received, 20, "a compacted RangeStream must not finish the pinned snapshot after a partial response")
 }
 
 // TestWatchNegativeStartRevisionCanceledInStream pins the black-magic retirement: a

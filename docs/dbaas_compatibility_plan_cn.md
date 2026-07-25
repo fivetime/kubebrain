@@ -13754,6 +13754,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   本轮新增本地服务层回归，先创建 version 1 key，再执行 `Version(key)==1` 的 Txn，
   Success 中依次 Put 和 Range，断言 Range value、version、header revision 和 mod revision
   都来自同一事务 revision，防止 staged view 或 atomic txn path 退回到事务前快照。
+- A964 固定 RangeStream partial compaction 不可完整成功：
+  `rangestream_compaction` differential 证明一个 RangeStream 在已经发送部分 chunk 后，如果
+  pinned revision 被 physical compact，必须以 `OutOfRange`/`required revision has been
+  compacted` 终止，且收到的 key 数应大于 0 但小于全集。本轮加强本地
+  `TestRangeStreamPartialThenCompacted`，累计所有已发送 chunk 的 KV 数并断言 `<20`，
+  防止后续把 compact 检查移到 terminal chunk 或错误地把完整快照发送完再返回错误。
 
 ### P2：运维兼容和长期验证
 
