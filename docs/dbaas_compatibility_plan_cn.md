@@ -12828,6 +12828,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go vet ./hack/production`、`go test ./hack/production -count=1 -timeout=12m`
   （315.303 秒）、`bash -n hack/production/run-destroy-operation.sh` 和
   `git diff --check` 通过；当前环境未安装 `shellcheck`，未运行 ShellCheck。
+- A859 前移 Destroy runner 的 claim 身份校验：
+  Destroy runner 旧逻辑信任 claim 返回的 `operation_id` 和 `instance`，并把它们用于
+  `CONFIRM_DESTROY=destroy:<instance>:<operation>`、prepare/quiesce/destroy/complete phase
+  环境、durable state 路径和最终 receipt 复检；非法 claim 身份可能在参数合法时启动销毁
+  workflow。现在 runner 在 claim 解析后立即要求 operation ID 与 instance 匹配受控资源
+  标识格式，非法时不进入任何 phase，也不 retry/succeed。回归覆盖非法 operation ID 和
+  非法 instance。`go test ./hack/production -run
+  'TestDestroyOperationRejects(InvalidClaimIdentityBeforePhases|InvalidIdentityBeforePhases|InvalidBackupPrefix)'
+  -count=1 -v`、`go test ./hack/production -run TestDestroyOperation -count=1 -v`、
+  `go vet ./hack/production`、`go test ./hack/production -count=1 -timeout=12m`
+  （321.171 秒）、`bash -n hack/production/run-destroy-operation.sh` 和
+  `git diff --check` 通过；当前环境未安装 `shellcheck`，未运行 ShellCheck。
 - A855 前移 PostRestoreAudit runner 的 Service/target 身份校验：
   `audit-restored-instance.sh` 会拒绝非法 operation/instance、Service namespace/name 和
   target instance，但 `run-post-restore-audit-operation.sh` 原先只在子审计前独立校验
