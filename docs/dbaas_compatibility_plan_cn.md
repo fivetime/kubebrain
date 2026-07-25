@@ -12199,6 +12199,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   回归，拒绝发生在 JWKS 拉取前。
   `go test ./hack/production/internal/operationapi -run TestOIDCAuthenticatorRejectsLoopbackHTTPJWKSOnDifferentPort -count=1 -v`、
   `git diff --check`、`go vet ./...` 和 `go test ./... -count=1 -p 1` 均通过。
+- A793 拒绝弱 OIDC JWKS RSA key：
+  operation API 已要求 OIDC token 使用 RS256 和显式 `kid`，并筛选 `kty/use/alg`；但
+  JWK 解析只验证 modulus/exponent 结构，没有最小 RSA key size，错误配置的 1024-bit
+  provider key 会被纳入信任集。现在 JWKS RSA modulus 必须至少 2048 bit，弱 key 在
+  初始 discovery/refresh 阶段 fail closed；新增 1024-bit JWKS 回归。
+  `go test ./hack/production/internal/operationapi -run TestOIDCAuthenticatorRejectsWeakJWKSRSAKey -count=1 -v`、
+  `git diff --check`、`go vet ./...` 和 `go test ./... -count=1 -p 1` 均通过。
 
 ### P2：运维兼容和长期验证
 

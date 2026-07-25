@@ -26,6 +26,7 @@ import (
 const (
 	oidcDocumentLimit   = 1 << 20
 	maxBearerTokenBytes = 16 << 10
+	minOIDCRSABits      = 2048
 )
 
 var ErrOIDCUnavailable = errors.New("OIDC provider unavailable")
@@ -234,7 +235,11 @@ func rsaJWK(raw jwk) (*rsa.PublicKey, error) {
 	if exponent < 3 || exponent%2 == 0 {
 		return nil, errors.New("invalid RSA exponent")
 	}
-	return &rsa.PublicKey{N: new(big.Int).SetBytes(modulus), E: exponent}, nil
+	modulusValue := new(big.Int).SetBytes(modulus)
+	if modulusValue.BitLen() < minOIDCRSABits {
+		return nil, errors.New("RSA modulus is too small")
+	}
+	return &rsa.PublicKey{N: modulusValue, E: exponent}, nil
 }
 
 func (a *OIDCAuthenticator) key(ctx context.Context, kid string) (*rsa.PublicKey, error) {

@@ -391,6 +391,36 @@ func TestOIDCAuthenticatorRejectsInsecureRemoteIssuer(t *testing.T) {
 	require.ErrorContains(t, err, "HTTPS")
 }
 
+func TestOIDCAuthenticatorRejectsWeakJWKSRSAKey(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 1024)
+	require.NoError(t, err)
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/.well-known/openid-configuration":
+			response.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(response).Encode(discoveryDocument{
+				Issuer: server.URL, JWKSURL: server.URL + "/keys",
+			})
+		case "/keys":
+			response.Header().Set("Content-Type", "application/jwk-set+json")
+			_ = json.NewEncoder(response).Encode(jwksDocument{Keys: []jwk{{
+				Kid: "weak", Kty: "RSA", Use: "sig", Alg: "RS256",
+				N: base64.RawURLEncoding.EncodeToString(key.N.Bytes()),
+				E: base64.RawURLEncoding.EncodeToString(big.NewInt(int64(key.E)).Bytes()),
+			}}})
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer server.Close()
+
+	_, err = NewOIDCAuthenticator(context.Background(), OIDCConfig{
+		Issuer: server.URL, Audience: "audience",
+	})
+	require.ErrorContains(t, err, "too small")
+}
+
 func TestOIDCAuthenticatorRejectsLoopbackHTTPJWKSOnDifferentPort(t *testing.T) {
 	var server *httptest.Server
 	server = httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
