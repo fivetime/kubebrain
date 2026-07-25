@@ -19,6 +19,7 @@ import (
 	"errors"
 	"io"
 	"math"
+	"net"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -29,9 +30,12 @@ import (
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	clientv3 "go.etcd.io/etcd/client/v3"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+	"google.golang.org/grpc/test/bufconn"
 	gproto "google.golang.org/protobuf/proto"
 
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
@@ -307,6 +311,88 @@ func TestWithoutWatchPrevKvsDoesNotMutateSharedEvents(t *testing.T) {
 	require.Nil(t, withoutPrev[2].PrevKv)
 	require.NotNil(t, events[0].PrevKv, "source event is shared with PrevKv watchers")
 	require.NotNil(t, events[2].PrevKv, "source event is shared with PrevKv watchers")
+}
+
+func TestWatchMixedPrevKVStreamsKeepEventsIsolated(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterWatchServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///watch-mixed-prevkv",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	kv := etcdserverpb.NewKVClient(conn)
+	watchClient := etcdserverpb.NewWatchClient(conn)
+	key := []byte("/registry/watch/mixed-prevkv")
+	_, err = kv.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("v0")})
+	require.NoError(t, err)
+
+	withPrev, err := watchClient.Watch(ctx)
+	require.NoError(t, err)
+	withoutPrev, err := watchClient.Watch(ctx)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = withPrev.CloseSend() })
+	t.Cleanup(func() { _ = withoutPrev.CloseSend() })
+	require.NoError(t, withPrev.Send(&etcdserverpb.WatchRequest{
+		RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{
+			CreateRequest: &etcdserverpb.WatchCreateRequest{Key: key, WatchId: 1, PrevKv: true},
+		},
+	}))
+	require.NoError(t, withoutPrev.Send(&etcdserverpb.WatchRequest{
+		RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{
+			CreateRequest: &etcdserverpb.WatchCreateRequest{Key: key, WatchId: 2},
+		},
+	}))
+	requireWatchCreated(t, withPrev, 1)
+	requireWatchCreated(t, withoutPrev, 2)
+
+	_, err = kv.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("v1")})
+	require.NoError(t, err)
+
+	withPrevEvent := requireSingleWatchEvent(t, withPrev, 1)
+	require.Equal(t, key, withPrevEvent.Kv.Key)
+	require.Equal(t, []byte("v1"), withPrevEvent.Kv.Value)
+	require.NotNil(t, withPrevEvent.PrevKv)
+	require.Equal(t, key, withPrevEvent.PrevKv.Key)
+	require.Equal(t, []byte("v0"), withPrevEvent.PrevKv.Value)
+
+	withoutPrevEvent := requireSingleWatchEvent(t, withoutPrev, 2)
+	require.Equal(t, key, withoutPrevEvent.Kv.Key)
+	require.Equal(t, []byte("v1"), withoutPrevEvent.Kv.Value)
+	require.Nil(t, withoutPrevEvent.PrevKv)
+}
+
+func requireWatchCreated(t *testing.T, stream etcdserverpb.Watch_WatchClient, watchID int64) {
+	t.Helper()
+	resp, err := stream.Recv()
+	require.NoError(t, err)
+	require.True(t, resp.Created)
+	require.False(t, resp.Canceled)
+	require.Equal(t, watchID, resp.WatchId)
+}
+
+func requireSingleWatchEvent(t *testing.T, stream etcdserverpb.Watch_WatchClient, watchID int64) *mvccpb.Event {
+	t.Helper()
+	resp, err := stream.Recv()
+	require.NoError(t, err)
+	require.False(t, resp.Created)
+	require.False(t, resp.Canceled)
+	require.Equal(t, watchID, resp.WatchId)
+	require.Len(t, resp.Events, 1)
+	return resp.Events[0]
 }
 
 func TestNormalizeWatchCreateRequestMatchesEtcd(t *testing.T) {

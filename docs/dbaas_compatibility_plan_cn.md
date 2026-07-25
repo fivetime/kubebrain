@@ -13429,6 +13429,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   和 revision filter 返回 `Unimplemented`；custom sort 与 filter 同时存在时 custom sort
   错误优先。本轮扩展本地 RangeStream unsupported-shape 矩阵，防止 3.7 流式 Range
   校验路径把协议非法请求误报为平台未实现。
+- A915 固定 mixed Watch PrevKv stream 隔离：
+  `watch_mixed_prevkv_streams` reference differential 证明同一 key 的并发 Watch 流中，
+  只有带 `WithPrevKV()` 的流能收到前值，不带 PrevKV 的流必须保留相同 current event
+  但 `PrevKv=nil`。既有本地测试只覆盖 `withoutWatchPrevKvs` 不 mutate shared events，
+  本轮新增 bufconn gRPC 端到端 Watch/KV 回归，固定两个真实 Watch RPC stream 对同一更新
+  的不同 PrevKv 外观，防止后续事件复用或过滤优化污染其他 watcher。
 
 ### P2：运维兼容和长期验证
 
