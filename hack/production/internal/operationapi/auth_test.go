@@ -404,6 +404,7 @@ func TestSecureURLRejectsUnsafeCharacters(t *testing.T) {
 	}{
 		{name: "newline", raw: "https://issuer.example\n/realms/a"},
 		{name: "tab", raw: "https://issuer.example\t/realms/a"},
+		{name: "DEL", raw: "https://issuer.example\x7f/realms/a"},
 		{name: "quote", raw: `https://issuer.example"/realms/a`},
 		{name: "backslash", raw: `https://issuer.example\realms\a`},
 	} {

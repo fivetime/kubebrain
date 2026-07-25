@@ -374,6 +374,7 @@ func TestValidateAdvertiseClientURLsRejectsUnsafeCharacters(t *testing.T) {
 	}{
 		{name: "newline", urls: []string{"https://etcd.example.com\n:2379"}},
 		{name: "tab", urls: []string{"https://etcd.example.com\t:2379"}},
+		{name: "DEL", urls: []string{"https://etcd.example.com\x7f:2379"}},
 		{name: "quote", urls: []string{"https://etcd.example.com\":2379"}},
 		{name: "backslash", urls: []string{"https://etcd.example.com\\:2379"}},
 	} {
@@ -405,6 +406,7 @@ func TestParseInitialClusterRejectsUnsafePeerURLCharacters(t *testing.T) {
 	}{
 		{name: "newline", spec: "a=http://10.0.0.1\n:2380"},
 		{name: "tab", spec: "a=http://10.0.0.1\t:2380"},
+		{name: "DEL", spec: "a=http://10.0.0.1\x7f:2380"},
 		{name: "quote", spec: "a=http://10.0.0.1\":2380"},
 		{name: "backslash", spec: "a=http://10.0.0.1\\:2380"},
 	} {

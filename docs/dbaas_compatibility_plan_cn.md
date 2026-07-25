@@ -13193,7 +13193,7 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   可能在成员拓扑解析后才以不可拨号地址进入 MemberList，随后被 clientv3 Sync/AutoSync
   扩散给已 bootstrap 的客户端。现在 Cluster URL 入口统一拒绝控制字符、DEL、引号和
   反斜杠；peer URL 在生成静态成员前失败，advertised client URL 在发布给 MemberList
-  前失败。回归覆盖换行、tab、引号和反斜杠的 peer/client URL，并保留 canonical URL
+  前失败。回归覆盖换行、tab、DEL、引号和反斜杠的 peer/client URL，并保留 canonical URL
   去尾斜杠、IPv6、重复 URL 与 repeated-name initial-cluster 语义。
 - A883 收紧 Operation API OIDC URL 字符边界：
   外部管理 API 的 OIDC issuer/JWKS 校验已要求 HTTPS（仅 loopback HTTP 测试例外）、
@@ -13201,7 +13201,7 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `secureURL` 仍只依赖 `net/url.Parse`，带控制字符、引号或反斜杠的 issuer/JWKS
   可能到 discovery、JWKS fetch 或 HTTP transport 阶段才失败。现在 OIDC URL admission
   在任何外部请求前拒绝控制字符、DEL、引号和反斜杠，保留合法 path issuer（例如 realm
-  路径）语义不变。回归覆盖换行、tab、引号、反斜杠和带 path 的 HTTPS issuer。
+  路径）语义不变。回归覆盖换行、tab、DEL、引号、反斜杠和带 path 的 HTTPS issuer。
 - A884 收紧 advertise-host 选主身份字符边界：
   `--advertise-host` 会直接参与 leader-election holder identity、follower dial 地址和
   `--initial-cluster` self identity 校验；旧校验只把它与 peer port 拼成 `host:port`
