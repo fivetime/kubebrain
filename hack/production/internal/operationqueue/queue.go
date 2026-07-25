@@ -1009,9 +1009,16 @@ func (q *Queue) parameters(
 		return nil, err
 	}
 	immutable, _, _ := unstructured.NestedBool(secret.Object, "immutable")
-	encoded, found, err := unstructured.NestedString(secret.Object, "data", key)
-	if err != nil || !found || !immutable {
-		return nil, errors.New("parameter secret must be immutable and contain the referenced key")
+	if !immutable {
+		return nil, errors.New("parameter secret must be immutable")
+	}
+	secretData, found, err := unstructured.NestedStringMap(secret.Object, "data")
+	if err != nil || !found || len(secretData) != 1 {
+		return nil, errors.New("parameter secret data must contain exactly the referenced key")
+	}
+	encoded, found := secretData[key]
+	if !found {
+		return nil, errors.New("parameter secret data must contain exactly the referenced key")
 	}
 	data, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil {

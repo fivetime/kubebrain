@@ -12310,6 +12310,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   apiVersion 与 kind 漂移的 lost-response 提交。
   `go test ./hack/production/internal/operationqueue -run 'TestSubmit(ReconcilesCommittedCreateAfterLostResponse|RejectsCommittedObjectWithTypeMetadataDrift|RejectsMismatchedCommittedObject|RejectsCommittedObjectWithoutAuditFinalizer)|TestQueueRejectsSpecDriftAndInvalidCompletion' -count=1 -v`
   和 `go test ./hack/production/internal/operationqueue -count=1` 均通过。
+- A806 收紧 Operation 参数 Secret 的 data 形态：
+  backup scheduler 已对生成参数 Secret 的 AlreadyExists 恢复路径做精确 data 校验，但
+  operation queue 通用读取路径仍只验证引用 key、immutable 和 SHA-256；手工预置或旧控制面
+  创建的参数 Secret 若夹带 `token`、`tls.key` 等额外 data key，仍会扩大 parameter broker
+  可读取的 Secret 内容面。现在 `Parameters` 与 `ParametersForWorker` 共享的读取入口要求
+  Secret `data` 恰好只有被 `parametersSecretRef.key` 引用的一项，缺 key、额外 key 或非
+  string data 均 fail closed，然后才解码并做 digest 绑定。回归覆盖 immutable 且 digest
+  正确但额外携带 `token` key 的 Secret。
+  `go test ./hack/production/internal/operationqueue -run 'TestQueue(LoadsDigestBoundImmutableParameters|RejectsParameterSecretWithExtraData|RejectsMalformedParameterReferenceBeforeSecretAPI|OnlyLoadsParametersForCurrentTypeBoundWorker)' -count=1 -v`
+  和 `go test ./hack/production/internal/operationqueue -count=1` 均通过。
 
 ### P2：运维兼容和长期验证
 

@@ -1434,6 +1434,31 @@ func TestQueueLoadsDigestBoundImmutableParameters(t *testing.T) {
 	require.ErrorContains(t, err, "must be immutable")
 }
 
+func TestQueueRejectsParameterSecretWithExtraData(t *testing.T) {
+	queue := newFakeQueue()
+	ctx := context.Background()
+	parameters := []byte("{\"backup_id\":\"backup-1\"}\n")
+	spec := validSpec()
+	spec.ParametersSHA256 = fmt.Sprintf("%x", sha256.Sum256(parameters))
+	spec.ParametersSecret = "backup-1-parameters"
+	spec.ParametersKey = "parameters.json"
+	_, err := queue.secrets.Create(ctx, &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "v1", "kind": "Secret",
+		"metadata":  map[string]any{"name": spec.ParametersSecret},
+		"immutable": true,
+		"data": map[string]any{
+			spec.ParametersKey: base64.StdEncoding.EncodeToString(parameters),
+			"token":            base64.StdEncoding.EncodeToString([]byte("not-an-operation-parameter")),
+		},
+	}}, metav1.CreateOptions{})
+	require.NoError(t, err)
+	_, err = queue.Submit(ctx, "backup-1", spec)
+	require.NoError(t, err)
+
+	_, err = queue.Parameters(ctx, "backup-1")
+	require.ErrorContains(t, err, "exactly the referenced key")
+}
+
 func TestQueueRejectsMalformedParameterReferenceBeforeSecretAPI(t *testing.T) {
 	for _, test := range []struct {
 		name       string
