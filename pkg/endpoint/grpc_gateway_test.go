@@ -1763,7 +1763,7 @@ func TestGRPCGatewayStreamsWatchAndElectionResponses(t *testing.T) {
 	require.Equal(t, []string{"Bearer lease-token"}, leaseServer.md.Get(rpctypes.TokenFieldNameSwagger))
 }
 
-func TestGRPCGatewaySupportsWebsocketWatch(t *testing.T) {
+func TestGRPCGatewaySupportsWebsocketWatchAndKeepAliveStreams(t *testing.T) {
 	listener := bufconn.Listen(1024 * 1024)
 	grpcServer := grpc.NewServer()
 	watchNext := make(chan struct{})
@@ -1771,7 +1771,9 @@ func TestGRPCGatewaySupportsWebsocketWatch(t *testing.T) {
 		next:                     watchNext,
 		sendCreatedBeforeBodyEOF: true,
 	}
+	leaseServer := &gatewayLeaseServer{}
 	etcdserverpb.RegisterWatchServer(grpcServer, watchServer)
+	etcdserverpb.RegisterLeaseServer(grpcServer, leaseServer)
 	go func() { _ = grpcServer.Serve(listener) }()
 	t.Cleanup(grpcServer.Stop)
 
@@ -1786,19 +1788,29 @@ func TestGRPCGatewaySupportsWebsocketWatch(t *testing.T) {
 	httpServer := httptest.NewServer(handler)
 	t.Cleanup(httpServer.Close)
 
-	target := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/v3/watch"
-	wsConn, response, err := websocket.DefaultDialer.Dial(target, http.Header{
-		"Sec-Websocket-Protocol": []string{"Bearer, watch-token"},
-	})
-	require.NoError(t, err)
-	defer func() { require.NoError(t, wsConn.Close()) }()
-	defer response.Body.Close()
-	require.Equal(t, http.StatusSwitchingProtocols, response.StatusCode)
-	require.Equal(t, "Bearer", wsConn.Subprotocol())
+	openWebsocket := func(path, token string) *websocket.Conn {
+		t.Helper()
+		target := "ws" + strings.TrimPrefix(httpServer.URL, "http") + path
+		wsConn, response, err := websocket.DefaultDialer.Dial(target, http.Header{
+			"Sec-Websocket-Protocol": []string{"Bearer, " + token},
+		})
+		require.NoError(t, err)
+		t.Cleanup(func() {
+			_ = wsConn.WriteControl(websocket.CloseMessage,
+				websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
+				time.Now().Add(time.Second))
+			_ = wsConn.Close()
+		})
+		defer response.Body.Close()
+		require.Equal(t, http.StatusSwitchingProtocols, response.StatusCode)
+		require.Equal(t, "Bearer", wsConn.Subprotocol())
+		require.NoError(t, wsConn.SetReadDeadline(time.Now().Add(2*time.Second)))
+		return wsConn
+	}
 
+	wsConn := openWebsocket("/v3/watch", "watch-token")
 	require.NoError(t, wsConn.WriteMessage(websocket.TextMessage,
 		[]byte(`{"create_request":{"key":"d2F0Y2gtd3M="}}`)))
-	require.NoError(t, wsConn.SetReadDeadline(time.Now().Add(2*time.Second)))
 	_, message, err := wsConn.ReadMessage()
 	require.NoError(t, err)
 	require.JSONEq(t, `{
@@ -1817,6 +1829,18 @@ func TestGRPCGatewaySupportsWebsocketWatch(t *testing.T) {
 	require.Equal(t, []byte("watch-ws"), watchServer.request.GetCreateRequest().Key)
 	require.Equal(t, []string{grpcGatewayRequestMarkerValue}, watchServer.md.Get(grpcGatewayRequestMarkerKey))
 	require.Equal(t, []string{"Bearer watch-token"}, watchServer.md.Get(rpctypes.TokenFieldNameSwagger))
+
+	wsConn = openWebsocket("/v3/lease/keepalive", "lease-ws-token")
+	require.NoError(t, wsConn.WriteMessage(websocket.TextMessage, []byte(`{"ID":"3"}`)))
+	_, message, err = wsConn.ReadMessage()
+	require.NoError(t, err)
+	require.JSONEq(t, `{"result":{"header":{"revision":"53"},"ID":"3","TTL":"13"}}`, string(message))
+	require.NoError(t, wsConn.WriteMessage(websocket.TextMessage, []byte(`{"ID":"4"}`)))
+	_, message, err = wsConn.ReadMessage()
+	require.NoError(t, err)
+	require.JSONEq(t, `{"result":{"header":{"revision":"54"},"ID":"4","TTL":"14"}}`, string(message))
+	require.Equal(t, []string{grpcGatewayRequestMarkerValue}, leaseServer.md.Get(grpcGatewayRequestMarkerKey))
+	require.Equal(t, []string{"Bearer lease-ws-token"}, leaseServer.md.Get(rpctypes.TokenFieldNameSwagger))
 }
 
 func TestGRPCGatewayPropagatesConcurrencyRequestCancellation(t *testing.T) {

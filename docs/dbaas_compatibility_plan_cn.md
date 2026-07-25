@@ -12423,7 +12423,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   后端和 gorilla WebSocket 客户端对 `/v3/watch` 发送 create request，断言收到 created
   与 event 两个 JSON 帧，同时固定 `Sec-Websocket-Protocol: Bearer, token` 转换出的
   `Authorization` metadata 以及 gateway marker。
-  `go test ./pkg/endpoint -run 'TestGRPCGateway(RouteSurfaceIsExplicit|StreamsWatchAndElectionResponses|SupportsWebsocketWatch|UsesGeneratedEtcdJSONContract|AcceptsV3BetaCompatibilityPrefix|RootServerRoutesHTTP2GatewayAndGRPCByContentType)' -count=1 -v`
+  `go test ./pkg/endpoint -run 'TestGRPCGateway(RouteSurfaceIsExplicit|StreamsWatchAndElectionResponses|SupportsWebsocketWatchAndKeepAliveStreams|UsesGeneratedEtcdJSONContract|AcceptsV3BetaCompatibilityPrefix|RootServerRoutesHTTP2GatewayAndGRPCByContentType)' -count=1 -v`
+  通过。
+- A816 扩展 WebSocket streaming gateway 门禁到 LeaseKeepAlive：
+  复核 generated gateway 后确认，`/v3/election/observe` 是 server-streaming
+  single-request route，生成代码会在调用上游 `Observe` 前完整解码并 drain request body；
+  WebSocket upgrade 不会自然提供 EOF，不能把它作为可靠的 WebSocket 往返门禁。
+  现在 WebSocket 回归改为覆盖真正逐帧解码的双向/client-streaming 路径：
+  `/v3/watch` 和 `/v3/lease/keepalive`，分别断言 request JSON frame 解码、response
+  JSON frame、Bearer subprotocol token metadata 和 gateway marker；Observe 继续由
+  `TestGRPCGatewayStreamsWatchAndElectionResponses` 的普通 HTTP chunked streaming
+  合同覆盖。
+  `go test ./pkg/endpoint -run 'TestGRPCGatewaySupportsWebsocketWatchAndKeepAliveStreams|TestGRPCGatewayStreamsWatchAndElectionResponses' -count=1 -v`
   通过。
 
 ### P2：运维兼容和长期验证
