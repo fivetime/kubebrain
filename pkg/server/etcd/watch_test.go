@@ -1782,6 +1782,79 @@ func TestFilteredWatchAdvancesThroughFullBatchRevision(t *testing.T) {
 	<-done
 }
 
+func TestWatchFilterEnumUnknownAndDuplicateMatchEtcd(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		filters   []etcdserverpb.WatchCreateRequest_FilterType
+		wantTypes []mvccpb.Event_EventType
+	}{
+		{
+			name: "unknown filter is ignored",
+			filters: []etcdserverpb.WatchCreateRequest_FilterType{
+				etcdserverpb.WatchCreateRequest_FilterType(99),
+			},
+			wantTypes: []mvccpb.Event_EventType{mvccpb.PUT, mvccpb.DELETE},
+		},
+		{
+			name: "duplicate noput filters put once",
+			filters: []etcdserverpb.WatchCreateRequest_FilterType{
+				etcdserverpb.WatchCreateRequest_NOPUT,
+				etcdserverpb.WatchCreateRequest_NOPUT,
+			},
+			wantTypes: []mvccpb.Event_EventType{mvccpb.DELETE},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server, closeFn := newTestRPCServer(t)
+			defer closeFn()
+
+			fed := make(chan etcdproxy.WatchResult)
+			server.peers = testPeerService{
+				isLeader:     false,
+				proxyEnabled: true,
+				watchFn: func(context.Context, []byte, []byte, uint64) (<-chan etcdproxy.WatchResult, error) {
+					return fed, nil
+				},
+			}
+
+			stream := &fakeWatchServer{ctx: context.Background()}
+			w := &watcher{
+				backend:     server.backend,
+				watchServer: stream,
+				grpcServer:  server,
+				watches:     map[int64]*watch{17: {start: "/registry/watch/filter-enum/"}},
+				metricCli:   server.metricCli,
+			}
+			w.wg.Add(1)
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				w.Watch(context.Background(), 17, &etcdserverpb.WatchCreateRequest{
+					Key: []byte("/registry/watch/filter-enum/"), RangeEnd: []byte("/registry/watch/filter-enum0"),
+					StartRevision: 1, Filters: tc.filters,
+				})
+			}()
+
+			fed <- etcdproxy.WatchResult{
+				Revision: 3,
+				Events: []*mvccpb.Event{
+					{Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{Key: []byte("/registry/watch/filter-enum/a"), ModRevision: 2}},
+					{Type: mvccpb.DELETE, Kv: &mvccpb.KeyValue{Key: []byte("/registry/watch/filter-enum/a"), ModRevision: 3}},
+				},
+			}
+			require.Eventually(t, func() bool { return len(stream.sent) == 1 }, time.Second, time.Millisecond)
+			require.Len(t, stream.sent[0].Events, len(tc.wantTypes))
+			for i, want := range tc.wantTypes {
+				require.Equal(t, want, stream.sent[0].Events[i].Type)
+			}
+			require.Equal(t, int64(3), stream.sent[0].Header.Revision)
+
+			close(fed)
+			<-done
+		})
+	}
+}
+
 // TestRewrittenFromNowWatchPreservesPublishedProgressFloor pins both sides of
 // follower registration: the backend resumes from published+1 to close the
 // create gap, while progress retains the client's original revision-zero floor.

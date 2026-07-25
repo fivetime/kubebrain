@@ -13484,6 +13484,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   在执行前做预算校验。本轮新增本地 raw RPC 矩阵，固定 top-level、nested exact/over、
   compare-max 和 unselected failure over-budget 场景，防止 future validation 只检查
   选中分支或把 Compare/child op 预算算错。
+- A923 固定 Watch filter enum 的未知值和重复值语义：
+  `watch_control` reference differential 证明未知 filter enum 必须被忽略，PUT/DELETE
+  都继续投递；重复 `NOPUT` 不应造成额外副作用，只过滤 PUT 并保留 DELETE。本轮新增
+  本地 watcher 回归，直接注入同一 batch 的 PUT/DELETE 事件并固定输出 event type
+  顺序和 header revision，防止后续 filter 解析把未知 enum 当成拒绝请求或让重复
+  filter 改变 watch 流语义。
 
 ### P2：运维兼容和长期验证
 
