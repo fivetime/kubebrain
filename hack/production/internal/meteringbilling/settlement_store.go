@@ -30,6 +30,7 @@ func (p *SettlementPublisher) Publish(ctx context.Context) ([]byte, error) {
 	p.AdjustmentPrefix = strings.Trim(p.AdjustmentPrefix, "/")
 	p.PlanPrefix = strings.Trim(p.PlanPrefix, "/")
 	if p.Input == "" || p.Executor == "" || p.ObjectStoreID == "" || p.Bucket == "" ||
+		!validObjectIdentity(p.ObjectStoreID, p.Bucket) ||
 		(p.RetentionMode != "COMPLIANCE" && p.RetentionMode != "GOVERNANCE") ||
 		p.RetentionDuration <= 0 {
 		return nil, errors.New("settlement publisher configuration is incomplete")
@@ -53,6 +54,9 @@ func (p *SettlementPublisher) Publish(ctx context.Context) ([]byte, error) {
 		if p.AdjustmentPrefix == "" {
 			return nil, errors.New("adjustment prefix is empty")
 		}
+		if !validRelativeObjectPrefix(p.AdjustmentPrefix) {
+			return nil, errors.New("adjustment prefix is invalid")
+		}
 		status, err := ReadAdjustment(p.Input)
 		if err != nil {
 			return nil, err
@@ -69,6 +73,9 @@ func (p *SettlementPublisher) Publish(ctx context.Context) ([]byte, error) {
 	case "plan":
 		if p.PlanPrefix == "" {
 			return nil, errors.New("invoice plan prefix is empty")
+		}
+		if !validRelativeObjectPrefix(p.PlanPrefix) {
+			return nil, errors.New("invoice plan prefix is invalid")
 		}
 		status, err := ReadInvoicePlan(p.Input)
 		if err != nil {
@@ -143,6 +150,8 @@ func (f *InvoiceFinalizer) Validate() error {
 		f.ChargePrefix == "" || f.AdjustmentPrefix == "" || f.PlanPrefix == "" ||
 		f.InvoicePrefix == "" || hasDuplicateString(
 		f.ChargePrefix, f.AdjustmentPrefix, f.PlanPrefix, f.InvoicePrefix,
+	) || !validObjectIdentity(
+		f.ObjectStoreID, f.Bucket, f.ChargePrefix, f.AdjustmentPrefix, f.PlanPrefix, f.InvoicePrefix,
 	) || (f.RetentionMode != "COMPLIANCE" && f.RetentionMode != "GOVERNANCE") ||
 		f.RetentionDuration <= 24*time.Hour {
 		return errors.New("invoice finalizer configuration is incomplete")

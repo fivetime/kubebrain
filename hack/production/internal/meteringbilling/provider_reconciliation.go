@@ -333,6 +333,9 @@ func (r *ProviderReconciler) Validate() error {
 		r.Executor == "" || r.ObjectStoreID == "" || r.Bucket == "" ||
 		r.ProviderPrefix == "" || r.InvoicePrefix == "" || r.ReconciliationPrefix == "" ||
 		hasDuplicateString(r.ProviderPrefix, r.InvoicePrefix, r.ReconciliationPrefix) ||
+		!validObjectIdentity(
+			r.ObjectStoreID, r.Bucket, r.ProviderPrefix, r.InvoicePrefix, r.ReconciliationPrefix,
+		) ||
 		(r.RetentionMode != "COMPLIANCE" && r.RetentionMode != "GOVERNANCE") ||
 		r.RetentionDuration <= 24*time.Hour {
 		return errors.New("provider reconciler configuration is incomplete")

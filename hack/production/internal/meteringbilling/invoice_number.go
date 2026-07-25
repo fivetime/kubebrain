@@ -150,6 +150,8 @@ func (a *InvoiceNumberAssigner) Validate() error {
 		a.InvoicePrefix == "" || a.AssignedAtUnix <= 0 ||
 		a.RetentionDuration <= 24*time.Hour ||
 		(a.Publish && a.NumberPrefix == "") ||
+		!validObjectIdentity(a.ObjectStoreID, a.Bucket, a.InvoicePrefix) ||
+		(a.Publish && !validRelativeObjectPrefix(a.NumberPrefix)) ||
 		(a.RetentionMode != "COMPLIANCE" && a.RetentionMode != "GOVERNANCE") {
 		return errors.New("invoice number assigner configuration is incomplete")
 	}

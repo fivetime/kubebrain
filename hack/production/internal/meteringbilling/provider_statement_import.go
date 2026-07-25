@@ -140,6 +140,7 @@ func (p *ProviderStatementPublisher) Publish(ctx context.Context) (SettlementSta
 	p.ProviderPrefix = strings.Trim(p.ProviderPrefix, "/")
 	if p.Input == "" || p.Executor == "" || p.ObjectStoreID == "" || p.Bucket == "" ||
 		p.ProviderPrefix == "" ||
+		!validObjectIdentity(p.ObjectStoreID, p.Bucket, p.ProviderPrefix) ||
 		(p.RetentionMode != "COMPLIANCE" && p.RetentionMode != "GOVERNANCE") ||
 		p.RetentionDuration <= 24*time.Hour {
 		return SettlementStatus[ProviderStatement]{}, nil, errors.New("provider statement publisher configuration is incomplete")

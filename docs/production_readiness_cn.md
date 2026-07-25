@@ -1031,6 +1031,9 @@ closed，不能为了校验 receipt 而无界读取异常大的本地文件。
 同一 source helper 也用于 invoice finalization、invoice number assignment、provider
 reconciliation、payment ledger 和 general ledger export 的 exact-read 输入校验；这些
 路径按各自 read receipt 的大小上限复算 digest 后才构造下游 canonical artifact。
+所有 billing 读写 Object Lock executor 的入口还必须在启动 executor 前校验
+`object_store_id`、`bucket` 和各 object prefix：字段必须是有效 UTF-8、非空且不含空白/
+控制字符，prefix 必须是规范相对对象前缀，不能包含绝对路径、`.`/`..` 段或重复分隔符。
 charge canonical JSON 本地读取最多接受 1 MiB；超限会在 invoice plan/final invoice 的
 schema 解码、canonical 比对和 source 绑定校验前 fail closed。
 `kubebrain.metering-charge.v1` 内嵌 rollup 和 catalog 的 key、version ID、digest、

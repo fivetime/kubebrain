@@ -28,6 +28,7 @@ func (p *Publisher) Publish(ctx context.Context) (CatalogStatus, []byte, error) 
 	p.PricePrefix = strings.Trim(p.PricePrefix, "/")
 	if p.Input == "" || !versionPattern.MatchString(p.PriceScope) || p.Executor == "" ||
 		p.ObjectStoreID == "" || p.Bucket == "" || p.PricePrefix == "" ||
+		!validObjectIdentity(p.ObjectStoreID, p.Bucket, p.PricePrefix) ||
 		(p.RetentionMode != "COMPLIANCE" && p.RetentionMode != "GOVERNANCE") ||
 		p.RetentionDuration <= 0 {
 		return CatalogStatus{}, nil, errors.New("metering price publisher configuration is incomplete")

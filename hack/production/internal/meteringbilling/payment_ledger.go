@@ -323,6 +323,8 @@ func (p *PaymentLedgerProcessor) Validate() error {
 		p.ObjectStoreID == "" || p.Bucket == "" || p.InvoicePrefix == "" ||
 		p.RetentionDuration <= 24*time.Hour ||
 		(p.Publish && p.PaymentPrefix == "") ||
+		!validObjectIdentity(p.ObjectStoreID, p.Bucket, p.InvoicePrefix) ||
+		(p.Publish && !validRelativeObjectPrefix(p.PaymentPrefix)) ||
 		(p.RetentionMode != "COMPLIANCE" && p.RetentionMode != "GOVERNANCE") {
 		return errors.New("payment ledger processor configuration is incomplete")
 	}
@@ -443,6 +445,7 @@ func (p *PaymentLedgerPublisher) Publish(ctx context.Context) (SettlementStatus[
 	p.PaymentPrefix = strings.Trim(p.PaymentPrefix, "/")
 	if p.Input == "" || p.Executor == "" || p.ObjectStoreID == "" || p.Bucket == "" ||
 		p.PaymentPrefix == "" ||
+		!validObjectIdentity(p.ObjectStoreID, p.Bucket, p.PaymentPrefix) ||
 		(p.RetentionMode != "COMPLIANCE" && p.RetentionMode != "GOVERNANCE") ||
 		p.RetentionDuration <= 24*time.Hour {
 		return SettlementStatus[PaymentLedger]{}, nil, errors.New("payment ledger publisher configuration is incomplete")

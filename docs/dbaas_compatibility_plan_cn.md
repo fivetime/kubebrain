@@ -13096,6 +13096,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `400 Request is nil`，`requestHostname` 同步 nil-safe；正常 net/http 流量、
   `/v3beta/*` rewrite、CORS 和 plaintext Host 白名单语义不变。回归测试固定不 panic、
   不进入后端 handler，并匹配 upstream 的 400 外观。
+- A878 前移 metering billing 对象身份校验：
+  A875 已保护 metering sample/storage archive 的对象 scope，但
+  `meteringbilling` 的 price publisher、Biller、settlement publisher/finalizer、
+  provider statement publisher、provider reconciler、payment ledger、general ledger
+  和 invoice number assigner 仍只要求 Object Lock executor 的 object store、bucket
+  与 prefix 非空；带空白、控制字符、Unicode 空白、路径穿越或重复分隔符的配置会先进入
+  读写 executor，再依赖 receipt/schema 后续失败。现在 billing 包复用统一对象身份门禁：
+  store/bucket 必须是有效 UTF-8、非空且不含空白/控制字符，prefix 必须是规范相对对象
+  前缀；所有读写 Object Lock 的配置入口在启动 executor 前 fail closed。回归覆盖
+  price、settlement、charge、invoice finalizer、provider、payment、general ledger 和
+  invoice number 路径，确认非法身份不调用 executor。`go test
+  ./hack/production/internal/meteringbilling -run 'TestBillingObject' -count=1 -v`
+  和 `go test ./hack/production/internal/meteringbilling -count=1` 通过。
 
 ### P2：运维兼容和长期验证
 

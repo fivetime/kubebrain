@@ -307,6 +307,10 @@ func (g *GeneralLedgerExporter) Validate() error {
 		(g.ProviderReconciliationID != "" && g.ProviderReconciliationPrefix == "") ||
 		(g.PaymentLedgerID != "" && g.PaymentPrefix == "") ||
 		(g.Publish && g.LedgerPrefix == "") ||
+		!validObjectIdentity(g.ObjectStoreID, g.Bucket, g.InvoicePrefix) ||
+		(g.ProviderReconciliationID != "" && !validRelativeObjectPrefix(g.ProviderReconciliationPrefix)) ||
+		(g.PaymentLedgerID != "" && !validRelativeObjectPrefix(g.PaymentPrefix)) ||
+		(g.Publish && !validRelativeObjectPrefix(g.LedgerPrefix)) ||
 		(g.RetentionMode != "COMPLIANCE" && g.RetentionMode != "GOVERNANCE") {
 		return errors.New("general ledger exporter configuration is incomplete")
 	}

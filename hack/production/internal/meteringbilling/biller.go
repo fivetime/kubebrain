@@ -57,12 +57,14 @@ func (b *Biller) Validate() error {
 		b.Bucket == "" || b.RollupPrefix == "" || b.PricePrefix == "" || b.ChargePrefix == "" ||
 		b.RollupPrefix == b.PricePrefix || b.RollupPrefix == b.ChargePrefix ||
 		b.PricePrefix == b.ChargePrefix ||
+		!validObjectIdentity(b.ObjectStoreID, b.Bucket, b.RollupPrefix, b.PricePrefix, b.ChargePrefix) ||
 		(b.PriceCatalogFormat != CatalogFormat && b.PriceCatalogFormat != CatalogFormatV2 &&
 			b.PriceCatalogFormat != CatalogFormatV3) ||
 		((b.PriceCatalogFormat == CatalogFormatV2 || b.PriceCatalogFormat == CatalogFormatV3) &&
 			(b.StorageRollupPrefix == "" ||
 				b.StorageRollupPrefix == b.RollupPrefix || b.StorageRollupPrefix == b.PricePrefix ||
-				b.StorageRollupPrefix == b.ChargePrefix)) ||
+				b.StorageRollupPrefix == b.ChargePrefix ||
+				!validRelativeObjectPrefix(b.StorageRollupPrefix))) ||
 		(b.RetentionMode != "COMPLIANCE" && b.RetentionMode != "GOVERNANCE") ||
 		b.RetentionDuration <= 0 || b.PeriodDuration != 24*time.Hour ||
 		b.FinalizationDelay < 0 || b.RetentionDuration <= b.FinalizationDelay+b.PeriodDuration {
