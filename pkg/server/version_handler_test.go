@@ -62,3 +62,15 @@ func TestVersionHandlerRejectsNonGet(t *testing.T) {
 	require.Equal(t, http.StatusMethodNotAllowed, rec.Code)
 	require.Equal(t, http.MethodGet, rec.Header().Get("Allow"))
 }
+
+func TestPeerHTTPHandlersExposeVersion(t *testing.T) {
+	handlers := (&server{}).GetPeerHttpHandlers()
+	handler, ok := handlers["/version"]
+	require.True(t, ok)
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/version", nil))
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.JSONEq(t, fmt.Sprintf(`{"etcdserver":%q,"etcdcluster":%q}`, etcd.Version, etcd.Version), rec.Body.String())
+}

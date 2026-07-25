@@ -258,6 +258,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   revision cache，避免空闲 follower 在共享 TiKV keyspace 上把已存在 revision 误报为
   future；刷新失败不阻断本地诊断。新增单元测试覆盖成功响应、错误方法、bad path、
   cluster mismatch、坏 JSON、compact/future 错误，以及 refresh-before-hash 顺序。
+- **Endpoint peer /version（2026-07-25）**：对照
+  `/root/etcd/server/etcdserver/api/etcdhttp/peer.go`，上游 peer handler 与 client
+  handler 一样暴露 `/version`。KubeBrain 旧实现只在 client/info 端口返回
+  `{"etcdserver","etcdcluster"}`，直接检查 peer URL 的 etcd 工具会得到 404。现在
+  `GetPeerHttpHandlers` 复用现有 version handler，peer 端口也返回同一 semver JSON；
+  零值 server 单测固定该 handler map，避免 peer diagnostic 面回退。
 - **ClusterId 稳定性（2026-07-16）**：`MemberList` 不再把当前 leader 地址的
   CRC 当作 ClusterId，改为与所有其他 RPC 一致地使用 backend 从 PD/TiKV
   cluster identity 和 keyspace 派生的稳定 ID，避免换主时客户端把同一实例误判

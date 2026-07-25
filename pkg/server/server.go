@@ -348,7 +348,8 @@ func (s *server) GetClientHttpHandlers() map[string]http.Handler {
 // GetPeerHttpHandlers implements Server interface
 func (s *server) GetPeerHttpHandlers() map[string]http.Handler {
 	handlers := map[string]http.Handler{
-		"/status": http.HandlerFunc(s.revisionHandler),
+		"/status":  http.HandlerFunc(s.revisionHandler),
+		"/version": http.HandlerFunc(s.versionHandler),
 	}
 	if s.etcdServer != nil {
 		for path, handler := range s.etcdServer.GetPeerHttpHandlers() {
