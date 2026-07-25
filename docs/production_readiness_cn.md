@@ -2336,6 +2336,7 @@ claim operation/instance、Service/source/target 身份字符集、Service names
 以及 source/target 必须不同；公开 endpoint 不能包含控制字符、引号或反斜杠。执行器按
 prepare、cutover、verify、complete 驱动，每阶段独立续租。prepare 失败可 retry；从 cutover 调用开始，任何失败都必须执行 rollback 并写
 Failed 终态，避免已改 selector 的操作被当成普通重试。
+直接 cutover 脚本同样会在 verify/complete 公开数据校验前拒绝危险 public endpoint。
 
 worker 接管时依据 A189 持久证据恢复：只有 state 从 cutover 继续，有 cutover marker 从
 verify 继续，已有 receipt 则重做 complete 在线复检后提交；rollback marker 直接记 Failed。

@@ -89,6 +89,26 @@ func TestRestoreTrafficCutoverPassesFrozenBackupToVerify(t *testing.T) {
 	f.run(t, "verify", true, "ASSERT_FROZEN_BACKUP_INPUT=true")
 }
 
+func TestRestoreTrafficCutoverRejectsUnsafePublicEndpoint(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		endpoint string
+	}{
+		{name: "control character", endpoint: "https://service:2379\nother"},
+		{name: "quote", endpoint: `https://service:2379"other`},
+		{name: "backslash", endpoint: `https://service:2379\other`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newTrafficFixture(t)
+			f.run(t, "prepare", true, "")
+			f.run(t, "cutover", true, "")
+			f.run(t, "verify", false, "PUBLIC_ENDPOINT="+tc.endpoint,
+				"PUBLIC_ENDPOINT contains unsupported characters")
+			require.NoFileExists(t, filepath.Join(f.state, "restore-1.verified"))
+		})
+	}
+}
+
 func TestRestoreTrafficCutoverRejectsExistingReceiptWithUnknownFields(t *testing.T) {
 	f := newTrafficFixture(t)
 	f.run(t, "prepare", true, "")

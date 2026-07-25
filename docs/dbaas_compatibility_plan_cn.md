@@ -12885,6 +12885,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   ./hack/production`、`go test ./hack/production -count=1 -timeout=12m`（319.960 秒）、
   `bash -n hack/production/audit-restored-instance.sh` 和
   `git diff --check` 通过；当前环境未安装 `shellcheck`，未运行 ShellCheck。
+- A865 收紧直接 RestoreCutover 脚本的 public endpoint 字符边界：
+  A862 已前移 operation runner 的 endpoint 校验，但直接运行 `switch-restore-traffic.sh`
+  时仍只在 verify 阶段要求 `PUBLIC_ENDPOINT` 非空，可能把含换行、tab、引号或反斜杠的
+  endpoint 传给公开数据校验。现在 direct cutover 入口只要收到非空 endpoint 就先拒绝危险
+  字符；不改变 prepare/cutover/rollback 可不传 endpoint 的调用形态。回归覆盖 verify 阶段
+  换行、引号和反斜杠 endpoint，确认不会生成 verified marker。`go test ./hack/production
+  -run TestRestoreTrafficCutoverRejectsUnsafePublicEndpoint -count=1 -v`、`go test
+  ./hack/production -run TestRestoreTrafficCutover -count=1 -v`、`go vet ./hack/production`、
+  `go test ./hack/production -count=1 -timeout=12m`（322.307 秒）、
+  `bash -n hack/production/switch-restore-traffic.sh` 和 `git diff --check` 通过；当前环境未安装
+  `shellcheck`，未运行 ShellCheck。
 - A855 前移 PostRestoreAudit runner 的 Service/target 身份校验：
   `audit-restored-instance.sh` 会拒绝非法 operation/instance、Service namespace/name 和
   target instance，但 `run-post-restore-audit-operation.sh` 原先只在子审计前独立校验
