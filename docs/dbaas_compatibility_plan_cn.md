@@ -13456,6 +13456,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   disjoint delete、then/else 互斥 Put、nested overlapping deletes 和 repeated
   overlapping deletes 必须允许。本轮新增本地 validation 矩阵，防止递归收集
   success/failure interval 时把互斥分支误判为重复，或漏拒父子层级中的真实重叠 Put。
+- A919 固定 DeleteRange boundary 在高位 keyspace 的 from-key/空区间语义：
+  `delete_range_boundary` reference differential 证明 64 字节 `0xff` 前缀下，
+  `RangeEnd={0}` from-key delete 必须删除 `b/c`、返回两个有序 PrevKV、推进到同一
+  header revision，且只保留 `a`；`RangeEnd==Key` 和反向 `[c,b)` empty range
+  必须不删除、不返回 PrevKV，并且后续 Range 的 header revision 与 delete response
+  一致。本轮新增本地 raw RPC 回归，防止 sentinel、prefixEnd 或空区间处理在高位
+  binary keyspace 下退化。
 
 ### P2：运维兼容和长期验证
 

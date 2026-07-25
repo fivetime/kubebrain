@@ -1795,6 +1795,71 @@ func TestDeleteRangeWithFromKeyMatchesEtcd(t *testing.T) {
 	}, time.Second, 10*time.Millisecond)
 }
 
+func TestDeleteRangeBoundaryHighPrefixMatchesEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name           string
+		start          string
+		rangeEnd       func(prefix string) []byte
+		wantDeleted    int64
+		wantPrev       []string
+		wantRemaining  []string
+		wantAdvanceRev bool
+	}{
+		{
+			name: "from-key", start: "b", rangeEnd: func(string) []byte { return []byte{0} },
+			wantDeleted: 2, wantPrev: []string{"b", "c"}, wantRemaining: []string{"a"},
+			wantAdvanceRev: true,
+		},
+		{
+			name: "equal-empty", start: "b", rangeEnd: func(prefix string) []byte { return []byte(prefix + "b") },
+			wantRemaining: []string{"a", "b", "c"},
+		},
+		{
+			name: "reverse-empty", start: "c", rangeEnd: func(prefix string) []byte { return []byte(prefix + "b") },
+			wantRemaining: []string{"a", "b", "c"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			prefix := string(bytes.Repeat([]byte{0xff}, 64)) + "/registry/delete-boundary/" + tc.name + "/"
+			end := prefixEnd([]byte(prefix))
+			var lastPutRevision int64
+			for _, suffix := range []string{"a", "b", "c"} {
+				put, err := server.Put(ctx, &etcdserverpb.PutRequest{
+					Key: []byte(prefix + suffix), Value: []byte("value-" + suffix),
+				})
+				require.NoError(t, err)
+				lastPutRevision = put.Header.Revision
+			}
+
+			deleted, err := server.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{
+				Key: []byte(prefix + tc.start), RangeEnd: tc.rangeEnd(prefix), PrevKv: true,
+			})
+			require.NoError(t, err)
+			require.Equal(t, tc.wantDeleted, deleted.Deleted)
+			require.Equal(t, tc.wantAdvanceRev, deleted.Header.Revision > lastPutRevision)
+			require.Len(t, deleted.PrevKvs, len(tc.wantPrev))
+			for i, suffix := range tc.wantPrev {
+				require.Equal(t, []byte(prefix+suffix), deleted.PrevKvs[i].Key)
+				require.Equal(t, []byte("value-"+suffix), deleted.PrevKvs[i].Value)
+				require.Less(t, deleted.PrevKvs[i].ModRevision, deleted.Header.Revision)
+			}
+
+			remaining, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: []byte(prefix), RangeEnd: end})
+			require.NoError(t, err)
+			require.Equal(t, deleted.Header.Revision, remaining.Header.Revision)
+			require.Len(t, remaining.Kvs, len(tc.wantRemaining))
+			for i, suffix := range tc.wantRemaining {
+				require.Equal(t, []byte(prefix+suffix), remaining.Kvs[i].Key)
+				require.Equal(t, []byte("value-"+suffix), remaining.Kvs[i].Value)
+			}
+		})
+	}
+}
+
 func TestDeleteRangeDeletesSingleKey(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
