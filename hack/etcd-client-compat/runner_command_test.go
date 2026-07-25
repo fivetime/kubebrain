@@ -26,6 +26,11 @@ func runDifferentialScript(t *testing.T, env []string) ([]byte, error) {
 	return runCompatScriptCommand(t, "run-differential.sh", env)
 }
 
+func runCompatSuiteScript(t *testing.T, env []string) ([]byte, error) {
+	t.Helper()
+	return runCompatScriptCommand(t, "run.sh", env)
+}
+
 func runCompatScriptCommand(t *testing.T, script string, env []string) ([]byte, error) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), compatScriptCommandTimeout)
@@ -302,4 +307,22 @@ func TestCompatCommandHelpersUseWaitDelay(t *testing.T) {
 	text := string(data)
 	require.Contains(t, text, "const compatCommandWaitDelay = 5 * time.Second")
 	require.GreaterOrEqual(t, strings.Count(text, "command.WaitDelay = compatCommandWaitDelay"), 2)
+}
+
+func TestCompatSuiteRunnerRejectsReferenceDifferentialOptIns(t *testing.T) {
+	for _, envVar := range []string{
+		"REFERENCE_ETCD_ENDPOINT",
+		"REFERENCE_ETCD_GATEWAY_ENDPOINT",
+		"REFERENCE_QUOTA_ETCD_ENDPOINT",
+		"REFERENCE_JWT_ETCD_ENDPOINT",
+		"ETCD_AUTH_DIFF_ENDPOINT",
+		"KUBEBRAIN_AUTH_DIFF_ENDPOINT",
+	} {
+		t.Run(envVar, func(t *testing.T) {
+			output, err := runCompatSuiteScript(t, []string{envVar + "=127.0.0.1:12379"})
+			require.Error(t, err)
+			require.Contains(t, string(output), "run.sh refuses reference/differential opt-in "+envVar)
+			require.Contains(t, string(output), "run-differential.sh")
+		})
+	}
 }

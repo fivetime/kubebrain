@@ -12574,6 +12574,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `APISERVER_IMAGES='   ' hack/dev/apiserver-version-matrix.sh` 与
   `KIND_NODE_IMAGES='   ' hack/dev/k8s-version-matrix.sh`
   通过。
+- A830 防止普通 compat runner 误跑 reference 差分：
+  `hack/etcd-client-compat/run.sh` 原本直接 `go test ./...`，如果调用环境残留
+  `REFERENCE_ETCD_ENDPOINT`、gateway/quota/JWT reference 端点或 auth diff 端点，就会把普通
+  `RUN_ETCD_CLIENT_COMPAT=true` 变成双端 Differential 执行；其中 Compact 会推进目标实例的
+  全局 compact revision，绕过 A827 的 destructive approval。现在普通 runner 在进入 Go test 前
+  拒绝这些 reference/differential opt-in 环境变量，提示改用 `run-differential.sh` 或直接对
+  一次性端点执行 focused `go test`。回归覆盖所有拒绝变量，确认不会进入 `go test`。
+  `bash -n hack/etcd-client-compat/run.sh` 与
+  `cd hack/etcd-client-compat && go test -run 'TestCompatSuiteRunnerRejectsReferenceDifferentialOptIns|TestCompatCommandHelpersUseWaitDelay' -count=1 -v`
+  通过。
 
 ### P2：运维兼容和长期验证
 
