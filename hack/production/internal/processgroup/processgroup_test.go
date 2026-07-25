@@ -6,7 +6,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -53,6 +55,30 @@ func TestCombinedOutputPreservesExitError(t *testing.T) {
 	}
 }
 
+func TestCombinedOutputCleansProcessGroupDescendantsAfterParentExit(t *testing.T) {
+	command := processgroupHelperCommand("daemonize")
+	Configure(command)
+	output, err := CombinedOutput(command, DefaultOutputLimitBytes)
+	if err != nil {
+		t.Fatalf("CombinedOutput returned error: %v, output=%q", err, string(output))
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(output)))
+	if err != nil {
+		t.Fatalf("helper output %q did not contain child pid: %v", string(output), err)
+	}
+	t.Cleanup(func() {
+		_ = syscall.Kill(pid, syscall.SIGKILL)
+	})
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if !processExists(pid) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("descendant process %d still exists after CombinedOutput returned", pid)
+}
+
 func TestValidateExecutable(t *testing.T) {
 	dir := t.TempDir()
 	ok := filepath.Join(dir, "ok")
@@ -85,6 +111,11 @@ func TestValidateExecutable(t *testing.T) {
 	}
 }
 
+func processExists(pid int) bool {
+	err := syscall.Kill(pid, 0)
+	return err == nil || !errors.Is(err, syscall.ESRCH)
+}
+
 func processgroupHelperCommand(mode string) *exec.Cmd {
 	command := exec.CommandContext(context.Background(), os.Args[0], "-test.run=TestProcessgroupHelper", "--", mode)
 	command.Env = append(os.Environ(), "KUBEBRAIN_PROCESSGROUP_HELPER=1")
@@ -107,6 +138,16 @@ func TestProcessgroupHelper(t *testing.T) {
 	case "fail":
 		_, _ = os.Stderr.WriteString("failure detail\n")
 		os.Exit(7)
+	case "daemonize":
+		child := exec.Command(os.Args[0], "-test.run=TestProcessgroupHelper", "--", "park")
+		child.Env = append(os.Environ(), "KUBEBRAIN_PROCESSGROUP_HELPER=1")
+		if err := child.Start(); err != nil {
+			_, _ = os.Stderr.WriteString("start child: " + err.Error() + "\n")
+			os.Exit(3)
+		}
+		_, _ = os.Stdout.WriteString(strconv.Itoa(child.Process.Pid) + "\n")
+	case "park":
+		time.Sleep(30 * time.Second)
 	default:
 		os.Exit(2)
 	}

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -107,6 +108,11 @@ func compatCombinedOutput(command *exec.Cmd, limit int64) ([]byte, error) {
 	if command.Stderr != nil {
 		return nil, errors.New("exec: Stderr already set")
 	}
+	if usesCompatProcessGroup(command) && command.Cancel != nil {
+		defer func() {
+			_ = command.Cancel()
+		}()
+	}
 	output := &compatBoundedOutput{limit: limit, cancel: command.Cancel}
 	command.Stdout = output
 	command.Stderr = output
@@ -115,6 +121,10 @@ func compatCombinedOutput(command *exec.Cmd, limit int64) ([]byte, error) {
 		return output.bytes(), fmt.Errorf("process output exceeds %d bytes", limit)
 	}
 	return output.bytes(), err
+}
+
+func usesCompatProcessGroup(command *exec.Cmd) bool {
+	return command.SysProcAttr != nil && command.SysProcAttr.Setpgid
 }
 
 type compatBoundedOutput struct {
@@ -160,6 +170,54 @@ func (o *compatBoundedOutput) exceeded() bool {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	return o.over
+}
+
+func TestCompatCombinedOutputCleansProcessGroupDescendantsAfterParentExit(t *testing.T) {
+	command := compatHelperCommand("daemonize")
+	configureCompatProcessGroup(command)
+	output, err := compatCombinedOutput(command, compatScriptOutputLimitBytes)
+	require.NoError(t, err, "output=%q", string(output))
+	pid, err := strconv.Atoi(strings.TrimSpace(string(output)))
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_ = syscall.Kill(pid, syscall.SIGKILL)
+	})
+	require.Eventually(t, func() bool {
+		return !compatProcessExists(pid)
+	}, 2*time.Second, 10*time.Millisecond, "descendant process %d still exists after compatCombinedOutput returned", pid)
+}
+
+func compatProcessExists(pid int) bool {
+	err := syscall.Kill(pid, 0)
+	return err == nil || !errors.Is(err, syscall.ESRCH)
+}
+
+func compatHelperCommand(mode string) *exec.Cmd {
+	command := exec.CommandContext(context.Background(), os.Args[0], "-test.run=TestCompatCommandHelper", "--", mode)
+	command.Env = append(os.Environ(), "KUBEBRAIN_COMPAT_COMMAND_HELPER=1")
+	return command
+}
+
+func TestCompatCommandHelper(t *testing.T) {
+	if os.Getenv("KUBEBRAIN_COMPAT_COMMAND_HELPER") != "1" {
+		return
+	}
+	mode := os.Args[len(os.Args)-1]
+	switch mode {
+	case "daemonize":
+		child := exec.Command(os.Args[0], "-test.run=TestCompatCommandHelper", "--", "park")
+		child.Env = append(os.Environ(), "KUBEBRAIN_COMPAT_COMMAND_HELPER=1")
+		if err := child.Start(); err != nil {
+			_, _ = os.Stderr.WriteString("start child: " + err.Error() + "\n")
+			os.Exit(3)
+		}
+		_, _ = os.Stdout.WriteString(strconv.Itoa(child.Process.Pid) + "\n")
+	case "park":
+		time.Sleep(30 * time.Second)
+	default:
+		os.Exit(2)
+	}
+	os.Exit(0)
 }
 
 func TestCompatFailoverCommandsUseBoundedHelpers(t *testing.T) {

@@ -57,6 +57,11 @@ func CombinedOutput(command *exec.Cmd, limit int64) ([]byte, error) {
 	if command.Stderr != nil {
 		return nil, errors.New("exec: Stderr already set")
 	}
+	if usesProcessGroup(command) && command.Cancel != nil {
+		defer func() {
+			_ = command.Cancel()
+		}()
+	}
 	output := &boundedOutput{limit: limit, cancel: command.Cancel}
 	command.Stdout = output
 	command.Stderr = output
@@ -65,6 +70,10 @@ func CombinedOutput(command *exec.Cmd, limit int64) ([]byte, error) {
 		return output.bytes(), fmt.Errorf("process output exceeds %d bytes", limit)
 	}
 	return output.bytes(), err
+}
+
+func usesProcessGroup(command *exec.Cmd) bool {
+	return command.SysProcAttr != nil && command.SysProcAttr.Setpgid
 }
 
 type boundedOutput struct {

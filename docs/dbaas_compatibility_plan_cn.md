@@ -12143,6 +12143,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./hack/production/internal/processgroup ./hack/production/cmd/operation-worker ./hack/production/internal/testcommand -count=1 -v`、
   `go test ./hack/production -run 'TestProduction(OperationWorkerStreamsExecutorWithProcessGroup|RuntimeExecutorCommandsUseProcessGroupAndBoundedOutput|TestCommandHelpersUseWaitDelay)' -count=1 -v`、
   `git diff --check`、`go vet ./...` 和 `go test ./... -count=1 -p 1` 均通过。
+- A787 清理 bounded command helper 的后台后代进程：
+  A783-A786 已覆盖取消、输出上限和 `WaitDelay`，但如果 executor 父进程正常退出后留下同进程组
+  后台子进程，`processgroup.CombinedOutput` 和 compat 本地副本会返回成功，后代可继续占用资源或
+  干扰后续发布门禁。现在配置了 process group 的 bounded output helper 在 `Run` 返回后仍调用
+  进程组 cancel 清理残留后代；production `processgroup` 与 `hack/etcd-client-compat` 均新增
+  daemonized 子进程回归，证明父进程退出后后台子进程会被清理。
+  `go test ./hack/production/internal/processgroup -count=1 -v`、
+  `cd hack/etcd-client-compat && go test -run 'TestCompat(CombinedOutputCleansProcessGroupDescendantsAfterParentExit|CommandHelpersUseWaitDelay|FailoverCommandsUseBoundedHelpers|KubernetesRestartCommandsUseBoundedHelpers|MakeMirrorCommandsUseBoundedHelpers)' -count=1 -v`、
+  `git diff --check`、`go vet ./...` 和 `go test ./... -count=1 -p 1` 均通过。
 
 ### P2：运维兼容和长期验证
 
