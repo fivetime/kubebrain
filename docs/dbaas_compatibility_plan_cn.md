@@ -12461,6 +12461,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `bash -n hack/dev/verify.sh` 与
   `bash -n hack/dev/backend-quorum-fault-smoke.sh`
   通过。
+- A819 将 count-index failover smoke 纳入统一 verify 入口：
+  A164/A168 已把 production count-index 默认参数和 leader-maintained CountOnly fast
+  path 门禁固化为 `hack/dev/countindex-failover-smoke.sh`，但统一 verify 入口没有对应开关。
+  现在新增 `RUN_COUNTINDEX_FAILOVER_SMOKE=true hack/dev/verify.sh`，默认关闭；启用后脚本会在
+  CREATE-only 写负载中反复 force delete 当前 count-index leader，让读端用新连接经
+  load-balancing endpoint 交替命中 leader fast CountOnly 与 follower/storage scan，要求
+  rebuild 期间 fast count 不能明显低估，quiesce 后 index 与 scan 完全一致，且 Pod
+  restartCount 不增加。
+  `bash -n hack/dev/verify.sh` 与
+  `bash -n hack/dev/countindex-failover-smoke.sh`
+  通过。
 
 ### P2：运维兼容和长期验证
 

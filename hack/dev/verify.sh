@@ -23,6 +23,7 @@ RUN_RESTORE_GUARD_SMOKE="${RUN_RESTORE_GUARD_SMOKE:-false}"
 RUN_VERIFY_CONTENT_SMOKE="${RUN_VERIFY_CONTENT_SMOKE:-false}"
 RUN_FAULT_SMOKE="${RUN_FAULT_SMOKE:-false}"
 RUN_BACKEND_QUORUM_FAULT_SMOKE="${RUN_BACKEND_QUORUM_FAULT_SMOKE:-false}"
+RUN_COUNTINDEX_FAILOVER_SMOKE="${RUN_COUNTINDEX_FAILOVER_SMOKE:-false}"
 RUN_LEASE_EXPIRY_SMOKE="${RUN_LEASE_EXPIRY_SMOKE:-false}"
 RUN_LEASE_FAULT_SMOKE="${RUN_LEASE_FAULT_SMOKE:-false}"
 RUN_LEASE_RENEWAL_FAILOVER_SMOKE="${RUN_LEASE_RENEWAL_FAILOVER_SMOKE:-false}"
@@ -134,6 +135,10 @@ fi
 
 if [ "$RUN_BACKEND_QUORUM_FAULT_SMOKE" = "true" ]; then
   run_step "backend quorum fault smoke" env ENDPOINT="$ENDPOINT" hack/dev/backend-quorum-fault-smoke.sh
+fi
+
+if [ "$RUN_COUNTINDEX_FAILOVER_SMOKE" = "true" ]; then
+  run_step "count index failover smoke" env ENDPOINT="$ENDPOINT" hack/dev/countindex-failover-smoke.sh
 fi
 
 if [ "$RUN_LEASE_EXPIRY_SMOKE" = "true" ]; then

@@ -1297,6 +1297,18 @@ RUN_BACKEND_QUORUM_FAULT_SMOKE=true hack/dev/verify.sh
 proposal 操作，瞬态后端窗口只能表现为可重试错误；每轮故障后必须重新等待 TidbCluster
 Ready 并留出 settle 窗口，避免只验证 Pod Ready 而漏掉 region/PD client routing 恢复。
 
+可选 count-index failover smoke：
+
+```shell
+RUN_COUNTINDEX_FAILOVER_SMOKE=true hack/dev/verify.sh
+```
+
+该门禁要求生产参数已启用 `--enable-count-index=true`。脚本在持续 CREATE-only 写入期间反复
+force delete 当前 count-index leader，并让读端用新连接经负载均衡 endpoint 交替命中 leader
+fast CountOnly 与 follower/storage scan；故障和重建期间 fast count 不能出现明显低估，写入
+静止并等待索引 settle 后，index 和 scan 的 CountOnly 结果必须完全一致，且 KubeBrain Pod
+restartCount 不得增加。
+
 三副本 StatefulSet 还必须验证官方 clientv3 自身的 endpoint balancer，而不只验证 Service：
 
 ```shell
