@@ -12197,7 +12197,7 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `http://127.0.0.1:other-port/keys`，把本地另一个进程纳入信任发现链。现在 loopback
   HTTP 模式要求 issuer 与 JWKS 使用完全相同的 `host:port` origin；新增不同端口 JWKS
   回归，拒绝发生在 JWKS 拉取前。
-  `go test ./hack/production/internal/operationapi -run TestOIDCAuthenticatorRejectsLoopbackHTTPJWKSOnDifferentPort -count=1 -v`、
+  `go test ./hack/production/internal/operationapi -run 'TestOIDCAuthenticatorRejectsLoopbackHTTPJWKSOnDifferentOrigin/different_port' -count=1 -v`、
   `git diff --check`、`go vet ./...` 和 `go test ./... -count=1 -p 1` 均通过。
 - A793 拒绝弱 OIDC JWKS RSA key：
   operation API 已要求 OIDC token 使用 RS256 和显式 `kid`，并筛选 `kty/use/alg`；但
@@ -12205,6 +12205,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   provider key 会被纳入信任集。现在 JWKS RSA modulus 必须至少 2048 bit，弱 key 在
   初始 discovery/refresh 阶段 fail closed；新增 1024-bit JWKS 回归。
   `go test ./hack/production/internal/operationapi -run TestOIDCAuthenticatorRejectsWeakJWKSRSAKey -count=1 -v`、
+  `git diff --check`、`go vet ./...` 和 `go test ./... -count=1 -p 1` 均通过。
+- A794 精确比较 loopback OIDC origin：
+  A792 已把 HTTP loopback issuer/JWKS 从同 hostname 收紧为同 `host:port`，但 origin
+  还包含 scheme；`http://127.0.0.1:port` 指向 `https://127.0.0.1:port/keys` 本应在
+  discovery 阶段按策略拒绝，而不是等到 TLS 请求失败。现在 loopback HTTP 例外要求 scheme
+  与 `host:port` 同时一致；回归覆盖不同端口和不同 scheme。
+  `go test ./hack/production/internal/operationapi -run TestOIDCAuthenticatorRejectsLoopbackHTTPJWKSOnDifferentOrigin -count=1 -v`、
   `git diff --check`、`go vet ./...` 和 `go test ./... -count=1 -p 1` 均通过。
 
 ### P2：运维兼容和长期验证

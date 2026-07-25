@@ -121,7 +121,8 @@ func NewOIDCAuthenticator(ctx context.Context, config OIDCConfig) (*OIDCAuthenti
 	if err != nil {
 		return nil, fmt.Errorf("invalid OIDC JWKS URL: %w", err)
 	}
-	if issuerURL.Scheme == "http" && jwksURL.Host != issuerURL.Host {
+	if issuerURL.Scheme == "http" &&
+		(jwksURL.Scheme != issuerURL.Scheme || jwksURL.Host != issuerURL.Host) {
 		return nil, errors.New("loopback HTTP OIDC issuer and JWKS must use the same origin")
 	}
 	authenticator := &OIDCAuthenticator{config: config, jwksURL: jwksURL.String()}

@@ -421,22 +421,42 @@ func TestOIDCAuthenticatorRejectsWeakJWKSRSAKey(t *testing.T) {
 	require.ErrorContains(t, err, "too small")
 }
 
-func TestOIDCAuthenticatorRejectsLoopbackHTTPJWKSOnDifferentPort(t *testing.T) {
-	var server *httptest.Server
-	server = httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
-		issuerURL, err := url.Parse(server.URL)
-		require.NoError(t, err)
-		response.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(response).Encode(discoveryDocument{
-			Issuer:  server.URL,
-			JWKSURL: "http://" + net.JoinHostPort(issuerURL.Hostname(), "1") + "/keys",
-		})
-	}))
-	defer server.Close()
+func TestOIDCAuthenticatorRejectsLoopbackHTTPJWKSOnDifferentOrigin(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		jwks func(*url.URL) string
+	}{
+		{
+			name: "different port",
+			jwks: func(issuerURL *url.URL) string {
+				return "http://" + net.JoinHostPort(issuerURL.Hostname(), "1") + "/keys"
+			},
+		},
+		{
+			name: "different scheme",
+			jwks: func(issuerURL *url.URL) string {
+				return "https://" + issuerURL.Host + "/keys"
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var server *httptest.Server
+			server = httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+				issuerURL, err := url.Parse(server.URL)
+				require.NoError(t, err)
+				response.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(response).Encode(discoveryDocument{
+					Issuer:  server.URL,
+					JWKSURL: tc.jwks(issuerURL),
+				})
+			}))
+			defer server.Close()
 
-	_, err := NewOIDCAuthenticator(context.Background(), OIDCConfig{
-		Issuer: server.URL, Audience: "audience",
-	})
-	require.ErrorContains(t, err, "same")
-	require.ErrorContains(t, err, "origin")
+			_, err := NewOIDCAuthenticator(context.Background(), OIDCConfig{
+				Issuer: server.URL, Audience: "audience",
+			})
+			require.ErrorContains(t, err, "same")
+			require.ErrorContains(t, err, "origin")
+		})
+	}
 }
