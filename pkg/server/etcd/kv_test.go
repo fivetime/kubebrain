@@ -4220,6 +4220,118 @@ func TestTxnIntervalExecutionMatchesEtcdEdgeRanges(t *testing.T) {
 	}
 }
 
+func TestTxnFromKeyExecutionHighPrefixMatchesEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	ctx := context.Background()
+	putOp := func(key []byte, value string) *etcdserverpb.RequestOp {
+		return &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestPut{
+			RequestPut: &etcdserverpb.PutRequest{Key: key, Value: []byte(value)},
+		}}
+	}
+	deleteOp := func(key []byte) *etcdserverpb.RequestOp {
+		return &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestDeleteRange{
+			RequestDeleteRange: &etcdserverpb.DeleteRangeRequest{Key: key, RangeEnd: []byte{0}, PrevKv: true},
+		}}
+	}
+	rangeOp := func(prefix, end []byte) *etcdserverpb.RequestOp {
+		return &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestRange{
+			RequestRange: &etcdserverpb.RangeRequest{Key: prefix, RangeEnd: end},
+		}}
+	}
+
+	for _, tc := range []struct {
+		name          string
+		putFirst      bool
+		wantDeleted   int64
+		wantPrev      []string
+		wantTxnRange  []string
+		wantFinal     []string
+		wantTxnKeyIn  map[string]struct{}
+		deleteOpIndex int
+	}{
+		{
+			name: "put-then-delete", putFirst: true, deleteOpIndex: 1,
+			wantDeleted: 3, wantPrev: []string{"b", "c", "d"}, wantTxnRange: []string{"a"}, wantFinal: []string{"a"},
+			wantTxnKeyIn: map[string]struct{}{"d": {}},
+		},
+		{
+			name:        "delete-then-put",
+			wantDeleted: 2, wantPrev: []string{"b", "c"}, wantTxnRange: []string{"a", "d"}, wantFinal: []string{"a", "d"},
+			wantTxnKeyIn: map[string]struct{}{"d": {}},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			prefix := append(bytes.Repeat([]byte{0xff}, 64), []byte("/registry/generic-txn/from-key-exec/"+tc.name+"/")...)
+			end := prefixEnd(prefix)
+			t.Cleanup(func() {
+				_, _ = server.DeleteRange(context.Background(), &etcdserverpb.DeleteRangeRequest{Key: prefix, RangeEnd: end})
+			})
+			for _, suffix := range []string{"a", "b", "c"} {
+				_, err := server.Put(ctx, &etcdserverpb.PutRequest{
+					Key: append(append([]byte{}, prefix...), suffix...), Value: []byte("seed-" + suffix),
+				})
+				require.NoError(t, err)
+			}
+
+			put := putOp(append(append([]byte{}, prefix...), 'd'), "txn-d")
+			del := deleteOp(append(append([]byte{}, prefix...), 'b'))
+			ops := []*etcdserverpb.RequestOp{del, put}
+			if tc.putFirst {
+				ops = []*etcdserverpb.RequestOp{put, del}
+			}
+			ops = append(ops, rangeOp(prefix, end))
+
+			resp, err := server.Txn(ctx, &etcdserverpb.TxnRequest{Success: ops})
+			require.NoError(t, err)
+			require.True(t, resp.Succeeded)
+			require.Len(t, resp.Responses, 3)
+			deleted := resp.Responses[tc.deleteOpIndex].GetResponseDeleteRange()
+			require.NotNil(t, deleted)
+			require.Equal(t, resp.Header.Revision, deleted.Header.Revision)
+			require.Equal(t, tc.wantDeleted, deleted.Deleted)
+			requireTxnFromKeySuffixes(t, prefix, deleted.PrevKvs, tc.wantPrev, resp.Header.Revision, tc.wantTxnKeyIn)
+
+			txnRange := resp.Responses[2].GetResponseRange()
+			require.NotNil(t, txnRange)
+			require.Equal(t, resp.Header.Revision, txnRange.Header.Revision)
+			requireTxnFromKeySuffixes(t, prefix, txnRange.Kvs, tc.wantTxnRange, resp.Header.Revision, tc.wantTxnKeyIn)
+
+			final, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: prefix, RangeEnd: end})
+			require.NoError(t, err)
+			require.GreaterOrEqual(t, final.Header.Revision, resp.Header.Revision)
+			requireTxnFromKeySuffixes(t, prefix, final.Kvs, tc.wantFinal, resp.Header.Revision, tc.wantTxnKeyIn)
+		})
+	}
+}
+
+func requireTxnFromKeySuffixes(
+	t *testing.T,
+	prefix []byte,
+	kvs []*mvccpb.KeyValue,
+	wantSuffixes []string,
+	txnRevision int64,
+	wantTxnKeys map[string]struct{},
+) {
+	t.Helper()
+	require.Len(t, kvs, len(wantSuffixes))
+	for i, suffix := range wantSuffixes {
+		kv := kvs[i]
+		require.Equal(t, []byte(suffix), bytes.TrimPrefix(kv.Key, prefix))
+		if _, ok := wantTxnKeys[suffix]; ok {
+			require.Equal(t, []byte("txn-"+suffix), kv.Value)
+			require.Equal(t, txnRevision, kv.CreateRevision)
+			require.Equal(t, txnRevision, kv.ModRevision)
+		} else {
+			require.Equal(t, []byte("seed-"+suffix), kv.Value)
+			require.NotEqual(t, txnRevision, kv.CreateRevision)
+			require.NotEqual(t, txnRevision, kv.ModRevision)
+		}
+		require.Equal(t, int64(1), kv.Version)
+	}
+}
+
 func TestTxnDuplicateIntervalValidationMatrixMatchesEtcd(t *testing.T) {
 	prefix := "/registry/generic-txn/duplicate-interval/"
 	key := []byte(prefix + "abc")

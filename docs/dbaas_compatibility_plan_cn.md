@@ -13496,6 +13496,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   仍正常返回 created response。本轮加强本地 scripted Watch 回归，固定只产生一条
   watch id 404 的 created/non-canceled 响应、cancel reason 为空且 header 存在，防止
   receive-loop 后续把无效 control message 当成终止流或错误响应。
+- A925 固定 Txn from-key delete 与 staged Put 的执行顺序：
+  `txn_from_key_execution` reference differential 证明高位 `0xff` 前缀下，Txn 内
+  `Put(d)` 后 `DeleteRange(b,{0},PrevKV)` 会把新建的 `d` 一并删除并返回 PrevKV；
+  而 `DeleteRange(b,{0},PrevKV)` 后 `Put(d)` 只删除 seed `b/c`，后续 Range 和 final
+  Range 都必须看到 txn 内新建的 `d`。本轮新增本地 raw RPC 回归，固定 delete response
+  header、PrevKV、Range header、final Range 和 create/mod revision 标记，防止 staged
+  view 或 from-key sentinel 合并时把后续 Put 提前纳入前序 DeleteRange。
 
 ### P2：运维兼容和长期验证
 
