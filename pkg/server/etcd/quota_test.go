@@ -213,6 +213,14 @@ func TestQuotaRPCAlarmActivationPersistsRequestedMember(t *testing.T) {
 		MemberID: requestedOwner,
 		Alarm:    etcdserverpb.AlarmType_NOSPACE,
 	}}, activate.Alarms)
+	again, err := server.Alarm(ctx, &etcdserverpb.AlarmRequest{
+		Action:   etcdserverpb.AlarmRequest_ACTIVATE,
+		MemberID: requestedOwner,
+		Alarm:    etcdserverpb.AlarmType_NOSPACE,
+	})
+	require.NoError(t, err)
+	require.Equal(t, activate.Alarms, again.Alarms)
+
 	second, err := server.Alarm(ctx, &etcdserverpb.AlarmRequest{
 		Action:   etcdserverpb.AlarmRequest_ACTIVATE,
 		MemberID: secondOwner,
@@ -241,6 +249,13 @@ func TestQuotaRPCAlarmActivationPersistsRequestedMember(t *testing.T) {
 	list, err = server.Alarm(ctx, &etcdserverpb.AlarmRequest{Action: etcdserverpb.AlarmRequest_GET})
 	require.NoError(t, err)
 	require.Equal(t, second.Alarms, list.Alarms)
+	deactivateAgain, err := server.Alarm(ctx, &etcdserverpb.AlarmRequest{
+		Action:   etcdserverpb.AlarmRequest_DEACTIVATE,
+		MemberID: requestedOwner,
+		Alarm:    etcdserverpb.AlarmType_NOSPACE,
+	})
+	require.NoError(t, err)
+	require.Empty(t, deactivateAgain.Alarms)
 }
 
 func TestQuotaRPCManualActivationCapsWritesWithoutConfiguredQuota(t *testing.T) {

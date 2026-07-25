@@ -13574,6 +13574,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   带上不落后于当前写入的 header revision。本轮新增本地 Maintenance 回归，固定
   unknown alarm 和极大 member filter 不应返回 Unimplemented/InvalidArgument，防止
   管理面探测或未来 enum 扩展被错误拒绝。
+- A937 固定 NOSPACE alarm member set 的幂等返回：
+  `alarm_member_set` reference differential 证明显式 member 激活 NOSPACE 后，重复
+  activate 必须返回同一个 alarm member；多个 member 的 GET 必须保留完整集合；移除
+  一个 member 后重复 deactivate 只能返回空集合，不能误删其它 member 或伪造已移除项。
+  本轮扩展本地 quota 回归，在已有 multi-member/list/deactivate 覆盖上补齐重复
+  activate/deactivate 的返回契约，防止 alarm set CAS 或去重逻辑漂移。
 
 ### P2：运维兼容和长期验证
 
