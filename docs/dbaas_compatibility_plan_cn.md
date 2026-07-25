@@ -12436,6 +12436,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   合同覆盖。
   `go test ./pkg/endpoint -run 'TestGRPCGatewaySupportsWebsocketWatchAndKeepAliveStreams|TestGRPCGatewayStreamsWatchAndElectionResponses' -count=1 -v`
   通过。
+- A817 将 lease renewal leader failover smoke 纳入统一 verify 入口：
+  A447 已把 8 个 client、64 条 `clientv3.KeepAlive` lease、连续三次当前 leader
+  Pod replacement 的门禁固化为 `hack/dev/lease-renewal-failover-smoke.sh`，但
+  `hack/dev/verify.sh` 尚无开关，发布执行者容易只跑 lease expiry/fault smoke 而漏掉
+  keepalive 跨 leader reload 的长连接场景。现在新增
+  `RUN_LEASE_RENEWAL_FAILOVER_SMOKE=true hack/dev/verify.sh`，保持默认关闭，但可在同一
+  release gate 中显式调用；生产清单同步记录 3/3 StatefulSet Ready、动态识别当前
+  leader、逐轮有效 TTL response、attached key 仍绑定原 lease，以及收尾 Revoke 后
+  TTL=-1/Leases/前缀无残留的验收条件。
+  `bash -n hack/dev/verify.sh` 与
+  `bash -n hack/dev/lease-renewal-failover-smoke.sh`
+  通过。
 
 ### P2：运维兼容和长期验证
 

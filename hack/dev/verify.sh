@@ -24,6 +24,7 @@ RUN_VERIFY_CONTENT_SMOKE="${RUN_VERIFY_CONTENT_SMOKE:-false}"
 RUN_FAULT_SMOKE="${RUN_FAULT_SMOKE:-false}"
 RUN_LEASE_EXPIRY_SMOKE="${RUN_LEASE_EXPIRY_SMOKE:-false}"
 RUN_LEASE_FAULT_SMOKE="${RUN_LEASE_FAULT_SMOKE:-false}"
+RUN_LEASE_RENEWAL_FAILOVER_SMOKE="${RUN_LEASE_RENEWAL_FAILOVER_SMOKE:-false}"
 RUN_WATCH_SOAK="${RUN_WATCH_SOAK:-false}"
 RUN_LOAD_SMOKE="${RUN_LOAD_SMOKE:-false}"
 RUN_INCLUSTER_LOAD_SMOKE="${RUN_INCLUSTER_LOAD_SMOKE:-false}"
@@ -136,6 +137,10 @@ fi
 
 if [ "$RUN_LEASE_FAULT_SMOKE" = "true" ]; then
   run_step "lease fault smoke" env ENDPOINT="$ENDPOINT" hack/dev/lease-fault-smoke.sh
+fi
+
+if [ "$RUN_LEASE_RENEWAL_FAILOVER_SMOKE" = "true" ]; then
+  run_step "lease renewal failover smoke" env ENDPOINT="$ENDPOINT" hack/dev/lease-renewal-failover-smoke.sh
 fi
 
 if [ "$RUN_WATCH_SOAK" = "true" ]; then
