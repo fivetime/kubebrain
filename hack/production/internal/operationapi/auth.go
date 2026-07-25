@@ -133,6 +133,9 @@ func NewOIDCAuthenticator(ctx context.Context, config OIDCConfig) (*OIDCAuthenti
 }
 
 func secureURL(raw string) (*url.URL, error) {
+	if containsUnsafeURLChar(raw) {
+		return nil, errors.New("URL contains unsupported characters")
+	}
 	parsed, err := url.Parse(raw)
 	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
 		return nil, errors.New("URL must be an absolute origin without credentials, query, or fragment")
@@ -145,6 +148,15 @@ func secureURL(raw string) (*url.URL, error) {
 		return parsed, nil
 	}
 	return nil, errors.New("URL must use HTTPS")
+}
+
+func containsUnsafeURLChar(value string) bool {
+	for _, r := range value {
+		if r < 0x20 || r == 0x7f || r == '"' || r == '\\' {
+			return true
+		}
+	}
+	return false
 }
 
 func getJSON(ctx context.Context, client *http.Client, endpoint string, target any) error {

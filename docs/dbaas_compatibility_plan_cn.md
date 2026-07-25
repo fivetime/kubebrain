@@ -13153,6 +13153,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   反斜杠；peer URL 在生成静态成员前失败，advertised client URL 在发布给 MemberList
   前失败。回归覆盖换行、tab、引号和反斜杠的 peer/client URL，并保留 canonical URL
   去尾斜杠、IPv6、重复 URL 与 repeated-name initial-cluster 语义。
+- A883 收紧 Operation API OIDC URL 字符边界：
+  外部管理 API 的 OIDC issuer/JWKS 校验已要求 HTTPS（仅 loopback HTTP 测试例外）、
+  无 credentials/query/fragment，并限制 loopback issuer/JWKS 同 origin；但
+  `secureURL` 仍只依赖 `net/url.Parse`，带控制字符、引号或反斜杠的 issuer/JWKS
+  可能到 discovery、JWKS fetch 或 HTTP transport 阶段才失败。现在 OIDC URL admission
+  在任何外部请求前拒绝控制字符、DEL、引号和反斜杠，保留合法 path issuer（例如 realm
+  路径）语义不变。回归覆盖换行、tab、引号、反斜杠和带 path 的 HTTPS issuer。
 
 ### P2：运维兼容和长期验证
 

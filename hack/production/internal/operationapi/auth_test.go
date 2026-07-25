@@ -397,6 +397,27 @@ func TestOIDCAuthenticatorRejectsInsecureRemoteIssuer(t *testing.T) {
 	require.ErrorContains(t, err, "HTTPS")
 }
 
+func TestSecureURLRejectsUnsafeCharacters(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		raw  string
+	}{
+		{name: "newline", raw: "https://issuer.example\n/realms/a"},
+		{name: "tab", raw: "https://issuer.example\t/realms/a"},
+		{name: "quote", raw: `https://issuer.example"/realms/a`},
+		{name: "backslash", raw: `https://issuer.example\realms\a`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := secureURL(tc.raw)
+			require.ErrorContains(t, err, "unsupported characters")
+		})
+	}
+
+	got, err := secureURL("https://issuer.example/realms/a")
+	require.NoError(t, err)
+	require.Equal(t, "/realms/a", got.Path)
+}
+
 func TestOIDCAuthenticatorRejectsWeakJWKSRSAKey(t *testing.T) {
 	key, err := rsa.GenerateKey(rand.Reader, 1024)
 	require.NoError(t, err)
