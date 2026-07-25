@@ -13722,6 +13722,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   等价包装，OPTIONS 直接返回 200，并在 GET 响应上附带允许方法、origin 和 headers；
   新增本地 server 回归固定 `/health` OPTIONS 与 GET 的 header，防止 kubeadm、探针或
   网关客户端依赖的 HTTP preflight 行为和 etcd 漂移。
+- A959 固定历史 Range 的 CountOnly+Limit tombstone 语义：
+  `range_tombstone_limit` reference differential 已证明历史 revision 在删除前、删除后和
+  重建后的 `KeysOnly+Limit` 只分页 live key，并保持 `Count` 为该 revision 的 live key
+  总数。本轮继续补充本地 CountOnly 回归：同一 tombstone/重建序列下，`CountOnly=true`
+  即使带 `Limit=1` 也必须返回完整 live-key count、不返回任何 KV、且 `More=false`，防止
+  count-index 或 limit lookahead 优化把 tombstone hole 误算进数量或把 CountOnly 当成
+  普通分页 Range。
 
 ### P2：运维兼容和长期验证
 
