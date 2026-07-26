@@ -14451,6 +14451,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   revision delta、PrevKV lease/value、最终 KV create/mod/version/lease，以及 attached key
   从 leaseB 回到 leaseA；再断言上述错误路径的 clientv3 code/message，补齐服务层
   `PutDifferentialScenarioMatchesEtcd` 与 Txn Ignore* 覆盖之外的公开 Put wrapper 门禁。
+- A1052 固定 clientv3 DeleteRange 普通差异场景：
+  `delete_differential` 证明连续 Put/update 后的半开区间 DeleteRange+PrevKV 必须只删除
+  `[a,c)`，PrevKV 要携带正确 create/mod/version，删除前历史 revision 仍可读到 a/b/c，
+  当前只剩 c；equal empty range 和 missing key delete 不推进 revision、Deleted=0 且无
+  PrevKV。本轮新增官方 clientv3 bufconn 回归，用 `client.Delete` 复现普通半开区间删除、
+  历史读取、当前读取、equal empty range 和 missing key，断言 header revision、Deleted、
+  PrevKV 与最终状态，补齐 A1043 高位边界之外的日常 DeleteRange wrapper 门禁。
 
 ### P2：运维兼容和长期验证
 
