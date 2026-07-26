@@ -382,6 +382,94 @@ func TestClientRangeKeysOnlyLimitDifferentialPages(t *testing.T) {
 		[]string{"00", "01", "03", "04", "05", "06", "07", "08", "09", "10", "11"}, 11, false)
 }
 
+func TestClientDeleteRangeBoundaryHighPrefixMatchesEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	tests := []struct {
+		name              string
+		deleteKeySuffix   string
+		opts              func(prefix string) []clientv3.OpOption
+		wantDeleted       int64
+		wantAdvanced      bool
+		wantPrevKeys      []string
+		wantRemainingKeys []string
+	}{
+		{
+			name: "from-key", deleteKeySuffix: "b",
+			opts: func(string) []clientv3.OpOption {
+				return []clientv3.OpOption{clientv3.WithFromKey(), clientv3.WithPrevKV()}
+			},
+			wantDeleted: 2, wantAdvanced: true, wantPrevKeys: []string{"b", "c"},
+			wantRemainingKeys: []string{"a"},
+		},
+		{
+			name: "equal-empty", deleteKeySuffix: "b",
+			opts: func(prefix string) []clientv3.OpOption {
+				return []clientv3.OpOption{clientv3.WithRange(prefix + "b"), clientv3.WithPrevKV()}
+			},
+			wantPrevKeys: []string{}, wantRemainingKeys: []string{"a", "b", "c"},
+		},
+		{
+			name: "reverse-empty", deleteKeySuffix: "c",
+			opts: func(prefix string) []clientv3.OpOption {
+				return []clientv3.OpOption{clientv3.WithRange(prefix + "b"), clientv3.WithPrevKV()}
+			},
+			wantPrevKeys: []string{}, wantRemainingKeys: []string{"a", "b", "c"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			prefix := strings.Repeat("\xff", 64) +
+				fmt.Sprintf("/a1043/delete-boundary/%d/%s/", time.Now().UnixNano(), tt.name)
+			var lastPutRevision int64
+			for _, suffix := range []string{"a", "b", "c"} {
+				put, putErr := client.Put(ctx, prefix+suffix, "value-"+suffix)
+				require.NoError(t, putErr)
+				lastPutRevision = put.Header.Revision
+			}
+
+			deleted, deleteErr := client.Delete(ctx, prefix+tt.deleteKeySuffix, tt.opts(prefix)...)
+			require.NoError(t, deleteErr)
+			require.Equal(t, tt.wantDeleted, deleted.Deleted)
+			require.Equal(t, tt.wantAdvanced, deleted.Header.Revision > lastPutRevision)
+			require.Equal(t, tt.wantPrevKeys, rangeClientRelativeKeys(deleted.PrevKvs, prefix))
+			for _, kv := range deleted.PrevKvs {
+				require.Less(t, kv.ModRevision, deleted.Header.Revision)
+			}
+
+			remaining, getErr := client.Get(ctx, prefix, clientv3.WithPrefix())
+			require.NoError(t, getErr)
+			require.Equal(t, deleted.Header.Revision, remaining.Header.Revision)
+			require.Equal(t, tt.wantRemainingKeys, rangeClientRelativeKeys(remaining.Kvs, prefix))
+			for _, kv := range remaining.Kvs {
+				require.Equal(t, "value-"+strings.TrimPrefix(string(kv.Key), prefix), string(kv.Value))
+			}
+		})
+	}
+}
+
 func TestRawGRPCRangeKeysOnlyLimitAcrossTombstones(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

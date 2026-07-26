@@ -14375,6 +14375,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   官方 clientv3 bufconn 回归，写入 8 个历史 key、追加 4 个新 key 后删除中间 key，
   分别断言 current limited、historical limited 和 current wide-limit 的 key 序列、
   Count、More 以及空 value，补齐此前小规模 tombstone page 覆盖之外的公开客户端分页面。
+- A1043 固定 clientv3 DeleteRange 高位前缀边界：
+  `delete_range_boundary` differential 证明 64 字节 `0xff` 高位前缀下，`WithFromKey`
+  必须从起点删除到 keyspace 末尾并返回删除前的 PrevKV（其 `ModRevision` 小于 delete
+  header revision）；equal empty range 与 reverse empty range 则不删除、不返回 PrevKV，
+  响应 header 仍与随后 Range 的当前 revision 对齐。本轮新增官方 clientv3 bufconn 回归，
+  用 `clientv3.Delete` 分别构造 `WithFromKey()+WithPrevKV`、
+  `WithRange(same)+WithPrevKV` 和反向 `WithRange`，断言 Deleted、PrevKvs、header
+  advancement 和 remaining key/value，补齐 raw/server 层之外的官方客户端删除边界面。
 
 ### P2：运维兼容和长期验证
 
