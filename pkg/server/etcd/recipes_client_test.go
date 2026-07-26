@@ -180,6 +180,80 @@ func TestClientExperimentalRecipesBarrierAndQueues(t *testing.T) {
 	}, concurrentValues)
 }
 
+func TestClientConcurrencyMutexAndElectionRecipes(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterWatchServer(grpcServer, server)
+	etcdserverpb.RegisterLeaseServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+	newSession := func() *concurrency.Session {
+		session, sessionErr := concurrency.NewSession(client, concurrency.WithTTL(10))
+		require.NoError(t, sessionErr)
+		t.Cleanup(session.Orphan)
+		return session
+	}
+
+	mutexOwner, mutexWaiter := newSession(), newSession()
+	mutexName := "/a1113/concurrency/mutex"
+	ownerMutex := concurrency.NewMutex(mutexOwner, mutexName)
+	waiterMutex := concurrency.NewMutex(mutexWaiter, mutexName)
+	require.NoError(t, ownerMutex.Lock(ctx))
+	require.ErrorIs(t, waiterMutex.TryLock(ctx), concurrency.ErrLocked)
+	require.NoError(t, mutexOwner.Close())
+	require.NoError(t, waiterMutex.Lock(ctx))
+	require.NoError(t, waiterMutex.Unlock(ctx))
+
+	electionOwner, electionWaiter := newSession(), newSession()
+	electionName := "/a1113/concurrency/election"
+	ownerElection := concurrency.NewElection(electionOwner, electionName)
+	waiterElection := concurrency.NewElection(electionWaiter, electionName)
+	require.NoError(t, ownerElection.Campaign(ctx, "candidate-1"))
+	observe := waiterElection.Observe(ctx)
+	initial := <-observe
+	require.Len(t, initial.Kvs, 1)
+	require.Equal(t, "candidate-1", string(initial.Kvs[0].Value))
+	require.NoError(t, ownerElection.Proclaim(ctx, "candidate-1-updated"))
+	select {
+	case updated := <-observe:
+		require.Len(t, updated.Kvs, 1)
+		require.Equal(t, "candidate-1-updated", string(updated.Kvs[0].Value))
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+
+	waiterWon := make(chan error, 1)
+	go func() { waiterWon <- waiterElection.Campaign(ctx, "candidate-2") }()
+	time.Sleep(100 * time.Millisecond)
+	require.Empty(t, waiterWon, "second candidate must wait for the owner to resign")
+	require.NoError(t, ownerElection.Resign(ctx))
+	require.NoError(t, waitRecipeResult(ctx, waiterWon, "election handoff"))
+	leader, err := waiterElection.Leader(ctx)
+	require.NoError(t, err)
+	require.Len(t, leader.Kvs, 1)
+	require.Equal(t, "candidate-2", string(leader.Kvs[0].Value))
+	require.NoError(t, waiterElection.Resign(ctx))
+}
+
 func TestClientExperimentalLockRecipesOrderingAndSessionCleanup(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

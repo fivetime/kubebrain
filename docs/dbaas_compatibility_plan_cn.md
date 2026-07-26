@@ -14912,6 +14912,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   CompactRevision 和 `Header.Revision == HashRevision` 稳定。该门禁防止 TiKV 历史版本
   清理、HashKV compact revision 填充或维护面快照选择让 `endpoint hashkv` 在 compaction
   期间产生二次漂移。
+- A1113 固定 official client/v3 concurrency Mutex/Election recipe：
+  A17 已用外部 `concurrency_recipes` 双端测试证明 Mutex session Close 后 lease-backed
+  release、Election Observe/Proclaim、Resign 后竞争者接棒均对齐 `/root/etcd`；本地此前
+  已覆盖 dedicated concurrency service、HTTP gateway 和 experimental recipes，但缺少直接
+  运行 `go.etcd.io/etcd/client/v3/concurrency` 高层 wrapper 的 bufconn 门禁。本轮新增真实
+  KV/Watch/Lease 服务回归，创建两个 `concurrency.Session` 后断言 Mutex owner `Close`
+  无需显式 Unlock 即允许 waiter `Lock`；Election owner `Campaign` 后 observer 先收到
+  `candidate-1`，`Proclaim` 后收到更新值，第二 candidate 在 `Resign` 前阻塞、Resign 后
+  成为 `Leader` 并可正常退出。该门禁防止 Txn compare、watch handoff、lease revoke 或
+  session keepalive 重构破坏 Kubernetes 生态中常用的官方 concurrency wrapper。
 
 ### P2：运维兼容和长期验证
 
