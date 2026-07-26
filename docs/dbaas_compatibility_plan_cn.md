@@ -15429,6 +15429,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   新增 raw bufconn 回归，直接调用 `Maintenance.Snapshot` 并读取 stream 错误，防止 stream
   context、auth wrapper 或 gRPC adapter 重构把平台替代路径退化成 EOF、默认 Unimplemented 或
   无说明的 transport 错误。
+- A1184 固定 raw gRPC MoveLeader/Downgrade 平台替代外观：
+  延续 A1108 的 official clientv3 platform-managed RPC contract 到 generated
+  `etcdserverpb.MaintenanceClient`，`MoveLeader` 必须指向 DBaaS rollout/failover，
+  `Downgrade` 必须指向版本化 rollout/rollback，二者都返回 `codes.Unimplemented` 和可操作
+  平台提示。本轮新增 raw bufconn 回归，直接调用两个 Maintenance RPC，防止 generated client
+  调用方绕过 clientv3 adapter 后只看到默认 unsupported 文案或丢失 DBaaS 替代路径。
 
 ### P2：运维兼容和长期验证
 

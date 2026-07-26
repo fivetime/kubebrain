@@ -150,6 +150,41 @@ func TestClientPlatformManagedOperationsReturnActionableErrors(t *testing.T) {
 	requirePlatformError(err, downgradeUnsupportedMessage)
 }
 
+func TestRawGRPCPlatformManagedMaintenanceReturnsActionableErrors(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterMaintenanceServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///platform-maintenance-client",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	maintenance := etcdserverpb.NewMaintenanceClient(conn)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	requirePlatformError := func(err error, message string) {
+		t.Helper()
+		require.Equal(t, codes.Unimplemented, status.Code(err))
+		require.Equal(t, message, status.Convert(err).Message())
+	}
+	_, err = maintenance.MoveLeader(ctx, &etcdserverpb.MoveLeaderRequest{TargetID: 1})
+	requirePlatformError(err, moveLeaderUnsupportedMessage)
+	_, err = maintenance.Downgrade(ctx, &etcdserverpb.DowngradeRequest{
+		Action:  etcdserverpb.DowngradeRequest_VALIDATE,
+		Version: "3.7.0",
+	})
+	requirePlatformError(err, downgradeUnsupportedMessage)
+}
+
 func TestClientDefragmentReturnsEtcdNilHeaderNoOp(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
