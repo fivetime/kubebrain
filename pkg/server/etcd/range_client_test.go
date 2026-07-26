@@ -1133,6 +1133,10 @@ func TestClientRangeRevisionBoundaries(t *testing.T) {
 	require.Len(t, keysOnly.Kvs, 1)
 	require.Empty(t, keysOnly.Kvs[0].Value)
 
+	_, err = client.Get(ctx, key, clientv3.WithRev(current.Header.Revision-1))
+	requireClientRangeError(t, err, codes.Unknown, "etcdserver: mvcc: required revision has been compacted")
+	require.ErrorIs(t, err, rpctypes.ErrCompacted)
+
 	_, err = client.Get(ctx, key, clientv3.WithRev(math.MaxInt64))
 	requireClientRangeError(t, err, codes.Unknown, "etcdserver: mvcc: required revision is a future revision")
 	require.ErrorIs(t, err, rpctypes.ErrFutureRev)

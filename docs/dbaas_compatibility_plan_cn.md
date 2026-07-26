@@ -15600,6 +15600,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   断言 `duplicate key given in txn request`、`key is not provided`、`invalid sort option` 和
   `too many operations in txn request`。该门禁防止 DBaaS Txn adapter 或 gRPC error mapping
   重构后只保留 `errors.Is`，却让 apiserver/etcdctl 日志和错误分类看到不同 code/message。
+- A1210 固定 official clientv3 Range compacted revision 三件套：
+  A998/A1132 已分别覆盖 direct Get compacted 的 code/message 与 GetStream compacted 的 typed
+  error，本轮把 direct `clientv3.Get(..., WithRev(compacted))` 也固定为同时满足
+  `errors.Is(..., rpctypes.ErrCompacted)`、`codes.Unknown` 和
+  `etcdserver: mvcc: required revision has been compacted`。该门禁防止 Range adapter 或
+  compaction recheck 重构后只保留文本或只保留 typed error，破坏 LIST/watch 初始化失败分类。
 
 ### P2：运维兼容和长期验证
 
