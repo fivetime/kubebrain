@@ -569,7 +569,7 @@ func TestLeaseRevokeIsFencedAcrossLeadershipChange(t *testing.T) {
 		},
 	}
 	_, err = server.LeaseRevoke(ctx, &etcdserverpb.LeaseRevokeRequest{ID: leaseID})
-	require.Equal(t, codes.Unavailable, status.Code(err))
+	requireLeaseAttachStatusError(t, err, codes.Unavailable, "write rejected: leadership changed during commit, retry on current leader")
 
 	stored, err := server.backend.Get(ctx, &etcdserverpb.RangeRequest{Key: key})
 	require.NoError(t, err)
@@ -1074,8 +1074,7 @@ func TestReloadLeasesRejectsFollower(t *testing.T) {
 	server.peers = testPeerService{isLeader: false}
 
 	err := server.ReloadLeases(context.Background())
-	require.Error(t, err)
-	require.Equal(t, codes.Unavailable, status.Code(err))
+	requireLeaseAttachStatusError(t, err, codes.Unavailable, "etcdserver: leadership lost during lease reload")
 }
 
 func TestUncertainLeaseReconcileCannotOverwriteReloadedGeneration(t *testing.T) {
@@ -1140,4 +1139,11 @@ func requireLeaseAttachTooManyRequestsError(t *testing.T, err error) {
 	require.ErrorIs(t, err, rpctypes.ErrGRPCRequestTooManyRequests)
 	require.Equal(t, codes.ResourceExhausted, status.Code(err))
 	require.Equal(t, "etcdserver: too many requests", status.Convert(err).Message())
+}
+
+func requireLeaseAttachStatusError(t *testing.T, err error, code codes.Code, message string) {
+	t.Helper()
+	require.Error(t, err)
+	require.Equal(t, code, status.Code(err))
+	require.Equal(t, message, status.Convert(err).Message())
 }

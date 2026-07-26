@@ -15929,6 +15929,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   本地 negative/invalid/duplicate/cancel 控制响应之后的下一次 fence failure，以及 quota
   reservation 创建失败释放路径统一到 exact `codes.Unavailable` message helper。该门禁防止
   watch revision-fence/proxy-disabled 重构后只保留 Unavailable，漏掉客户端重试诊断语义。
+- A1269 固定 lease attachment fencing/reload Unavailable exact message：
+  A1248/A1254 已覆盖 lease reload 与 follower stale-read，本轮把 lease revoke durable
+  attachment commit-time leadership fence，以及 follower 调用 `ReloadLeases` 的拒绝统一到
+  exact `codes.Unavailable` message helper。该门禁防止 lease attachment/reload 重构后只保留
+  Unavailable，漏掉 successor 可重试和 stale follower snapshot 诊断语义。
 
 ### P2：运维兼容和长期验证
 
