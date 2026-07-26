@@ -16067,6 +16067,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   witness/revision/lease/watch 校验结果不再只靠 receipt SHA 间接追溯目标集群身份，
   后续审计或不可变归档可直接确认语义验证绑定的是哪一次隔离恢复和哪个 restored
   storage 对象。该证据增强仍不替代真实 CSI 隔离恢复演练或 PITR。
+- A1293 固定 cold semantic verify receipt 发布前自校验：
+  A1292 增强 final receipt 身份字段后，本轮在 `cold-restore-verify` 写入前新增
+  `validateSemanticReceipt`，要求 format、operation、四个 SHA-256、restore completed
+  time、witness revision/records、target/source/restored UID、cluster ID、watch probe
+  revision 顺序，以及 historical/current/lease/watch 四个证明布尔值都完整且成功。
+  该门禁防止未来重构把缺身份、未完成探针或未成功语义比较的 receipt 原子发布为
+  不可变恢复证据；它仍只是候选 cold restore 证据链的一部分，不关闭 PITR 缺口。
 
 ### P2：运维兼容和长期验证
 

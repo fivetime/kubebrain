@@ -268,6 +268,9 @@ func main() {
 		LeaseIdentityExact: true, WatchProbeSucceeded: true, ProbePutRevision: putRevision,
 		ProbeDeleteRevision: deleteRevision, VerifiedAtUnix: time.Now().UTC().Unix(),
 	}
+	if err := validateSemanticReceipt(receipt); err != nil {
+		fatal(err)
+	}
 	if err := writeAtomic(output, receipt); err != nil {
 		fatal(err)
 	}
@@ -910,6 +913,38 @@ func validDigest(value string) bool {
 		}
 	}
 	return true
+}
+
+func validateSemanticReceipt(receipt semanticReceipt) error {
+	if receipt.Format != "kubebrain.cold-physical-semantic-verify.v1" ||
+		receipt.OperationID == "" ||
+		!validDigest(receipt.RestoreReceiptSHA256) ||
+		!validDigest(receipt.SnapshotReceiptSHA256) ||
+		!validDigest(receipt.WitnessSHA256) ||
+		!validDigest(receipt.RestoreManifestSHA256) ||
+		receipt.WitnessFormat != backupfile.Format ||
+		receipt.WitnessRevision <= 0 ||
+		receipt.WitnessRecords <= 0 ||
+		receipt.WitnessLeases < 0 ||
+		receipt.RestoredClusterID == "" ||
+		receipt.TargetKubeSystemUID == "" ||
+		receipt.TargetNamespaceUID == "" ||
+		receipt.SourceTidbClusterUID == "" ||
+		receipt.RestoredTidbClusterUID == "" ||
+		receipt.SourceTidbClusterUID == receipt.RestoredTidbClusterUID ||
+		receipt.ProbePutRevision <= 0 ||
+		receipt.ProbeDeleteRevision <= receipt.ProbePutRevision ||
+		receipt.VerifiedAtUnix <= 0 ||
+		!receipt.HistoricalExact ||
+		!receipt.CurrentExact ||
+		!receipt.LeaseIdentityExact ||
+		!receipt.WatchProbeSucceeded {
+		return errors.New("cold physical semantic receipt is incomplete")
+	}
+	if _, err := time.Parse(time.RFC3339, receipt.RestoreCompletedAt); err != nil {
+		return errors.New("cold physical semantic receipt restore_completed_at is invalid")
+	}
+	return nil
 }
 
 func writeAtomic(path string, value any) error {

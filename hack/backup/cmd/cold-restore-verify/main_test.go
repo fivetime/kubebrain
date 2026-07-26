@@ -423,6 +423,60 @@ func TestWriteAtomicSemanticReceipt(t *testing.T) {
 	require.Equal(t, original, data)
 }
 
+func TestValidateSemanticReceiptRequiresCompleteIdentity(t *testing.T) {
+	require.NoError(t, validateSemanticReceipt(validSemanticReceipt()))
+
+	for _, tc := range []struct {
+		name   string
+		mutate func(*semanticReceipt)
+	}{
+		{name: "bad format", mutate: func(r *semanticReceipt) { r.Format = "other" }},
+		{name: "bad restore digest", mutate: func(r *semanticReceipt) { r.RestoreReceiptSHA256 = strings.ToUpper(r.RestoreReceiptSHA256) }},
+		{name: "bad completed time", mutate: func(r *semanticReceipt) { r.RestoreCompletedAt = "not-a-time" }},
+		{name: "source target UID reuse", mutate: func(r *semanticReceipt) { r.RestoredTidbClusterUID = r.SourceTidbClusterUID }},
+		{name: "missing namespace UID", mutate: func(r *semanticReceipt) { r.TargetNamespaceUID = "" }},
+		{name: "bad witness revision", mutate: func(r *semanticReceipt) { r.WitnessRevision = 0 }},
+		{name: "missing historical proof", mutate: func(r *semanticReceipt) { r.HistoricalExact = false }},
+		{name: "missing watch proof", mutate: func(r *semanticReceipt) { r.WatchProbeSucceeded = false }},
+		{name: "delete before put", mutate: func(r *semanticReceipt) { r.ProbeDeleteRevision = r.ProbePutRevision }},
+		{name: "missing verified time", mutate: func(r *semanticReceipt) { r.VerifiedAtUnix = 0 }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			receipt := validSemanticReceipt()
+			tc.mutate(&receipt)
+			require.ErrorContains(t, validateSemanticReceipt(receipt), "semantic receipt")
+		})
+	}
+}
+
+func validSemanticReceipt() semanticReceipt {
+	return semanticReceipt{
+		Format:                 "kubebrain.cold-physical-semantic-verify.v1",
+		OperationID:            "restore-test",
+		RestoreReceiptSHA256:   strings.Repeat("a", 64),
+		SnapshotReceiptSHA256:  strings.Repeat("b", 64),
+		RestoreCompletedAt:     "2026-07-21T00:05:00Z",
+		WitnessFormat:          backupfile.Format,
+		WitnessSHA256:          strings.Repeat("c", 64),
+		WitnessRevision:        100,
+		WitnessRecords:         1,
+		WitnessLeases:          0,
+		RestoreManifestSHA256:  strings.Repeat("d", 64),
+		TargetKubeSystemUID:    "uid-kube-system",
+		TargetNamespaceUID:     "uid-namespace",
+		SourceTidbClusterUID:   "uid-source-tidb",
+		RestoredTidbClusterUID: "uid-restored-tidb",
+		RestoredClusterID:      "12345",
+		HistoricalExact:        true,
+		CurrentExact:           true,
+		LeaseIdentityExact:     true,
+		WatchProbeSucceeded:    true,
+		ProbePutRevision:       101,
+		ProbeDeleteRevision:    102,
+		VerifiedAtUnix:         1_784_509_200,
+	}
+}
+
 func TestReadBoundedJSONFileRejectsOversizedInput(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "restore.json")
 	require.NoError(t, os.WriteFile(path, make([]byte, maxColdRestoreJSONBytes+1), 0o600))
