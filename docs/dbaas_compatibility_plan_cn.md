@@ -15316,6 +15316,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   server-side `rpctypes.ErrRequestTooLarge`。本轮新增小尺寸 bufconn official clientv3 回归，
   与 A1162 client-side send limit 和 A1146 server-side request-too-large typed error
   形成成对护栏。
+- A1166 固定 clientv3 Watch RequestProgress zero-watcher 语义：
+  对照 `/root/etcd/tests/integration/clientv3/watch/watch_test.go:TestWatchRequestProgress` 的
+  `0-watcher` 子场景，同一 client 尚未创建任何 watch channel 时，`RequestProgress` 仍必须成功
+  返回，而不能把没有待通知 watcher 误处理成错误。本轮新增 bufconn official clientv3 回归，
+  先推进 revision，再在 zero-watcher 状态下调用 `RequestProgress` 固定该空集语义。
 
 ### P2：运维兼容和长期验证
 
