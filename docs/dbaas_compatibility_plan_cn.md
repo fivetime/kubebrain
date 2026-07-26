@@ -15309,6 +15309,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   且 progress header revision 至少覆盖请求前已提交但不匹配该 watch 前缀的写入。本轮新增
   bufconn official clientv3 双 watcher 回归，先消费各自事件，再写入非 watched key 并请求
   progress，固定所有 watcher 都收到空事件的 progress response。
+- A1165 固定 clientv3 Range client-side receive limit error：
+  对照 `/root/etcd/tests/integration/clientv3/kv_test.go:TestKVLargeRequests` 的 client-side
+  `MaxCallRecvMsgSize` 分支，写入成功后若 `Get` 响应超过客户端接收上限，客户端必须返回 gRPC
+  `ResourceExhausted` 且错误文本以 `received message larger than max` 标识，而不能误映射成
+  server-side `rpctypes.ErrRequestTooLarge`。本轮新增小尺寸 bufconn official clientv3 回归，
+  与 A1162 client-side send limit 和 A1146 server-side request-too-large typed error
+  形成成对护栏。
 
 ### P2：运维兼容和长期验证
 

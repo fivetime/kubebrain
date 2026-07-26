@@ -642,6 +642,54 @@ func TestClientRangeCountOnlyTakesPrecedenceOverKeysOnly(t *testing.T) {
 	require.False(t, response.More)
 }
 
+func TestClientRangeClientSideRecvLimitIsResourceExhausted(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	server.Register(grpcServer)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	newClient := func(maxRecv int) *clientv3.Client {
+		t.Helper()
+		cfg := clientv3.Config{
+			Endpoints:   []string{"bufnet"},
+			DialTimeout: time.Second,
+			DialOptions: []grpc.DialOption{
+				grpc.WithTransportCredentials(insecure.NewCredentials()),
+				grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+					return listener.Dial()
+				}),
+			},
+		}
+		if maxRecv > 0 {
+			cfg.MaxCallRecvMsgSize = maxRecv
+		}
+		client, err := clientv3.New(cfg)
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, client.Close()) })
+		return client
+	}
+
+	writer := newClient(0)
+	reader := newClient(512)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	key := "/a1165/range-client-side-recv-limit"
+	_, err := writer.Put(ctx, key, strings.Repeat("a", 2048))
+	require.NoError(t, err)
+
+	resp, err := reader.Get(ctx, key)
+	require.Nil(t, resp)
+	require.Error(t, err)
+	require.Equal(t, codes.ResourceExhausted, status.Code(err))
+	require.Contains(t, err.Error(), "received message larger than max")
+	require.False(t, errors.Is(err, rpctypes.ErrRequestTooLarge))
+}
+
 func TestClientRangeKeysOnlyLimitDifferentialPages(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
