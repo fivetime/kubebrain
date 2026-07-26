@@ -14611,6 +14611,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   流式读取成功、对 protected prefix 暴露 `Unknown: permission denied`，root 对
   `/a1071/` prefix 的 `GetStream` 返回 2 个 KV 且 Count=2，补齐大 LIST/RangeStream
   public Auth wrapper 门禁。
+- A1072 固定 clientv3 Auth LeaseList 对 inaccessible attachments 的保护：
+  `auth` differential 覆盖 auth enabled 后匿名 `Leases` 返回 user empty，只要存在一个
+  挂载到普通用户无权 key 的 lease，普通用户 `Leases` 必须返回 permission denied，root
+  可枚举该 lease；普通用户对受保护 lease 的 `Revoke` 也必须拒绝且不能删除受保护 key，
+  当 root 撤销受保护 lease 后普通用户枚举自己 allowed prefix 上的 lease 恢复成功。本轮
+  新增官方 clientv3 bufconn 回归，固定上述 `Leases`/`Revoke` public wrapper 外观，并确认
+  被拒绝 revoke 后 `/a1072/protected/leased` 仍保持原值，补齐租约枚举防泄露门禁。
 
 ### P2：运维兼容和长期验证
 
