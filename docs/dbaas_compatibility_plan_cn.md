@@ -15914,6 +15914,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   落后 requested revision，以及 leadership fence commit-time 拒绝两条 retryable Compact 路径
   统一到 exact `codes.Unavailable` message helper。该门禁防止物理 compact 或 fencing 重构后
   只保留 Unavailable/substring，漏掉生产重试诊断语义。
+- A1266 固定 Txn compare/legacy invalid-op admission 错误三件套：
+  A1263 已覆盖 Txn operation validation matrix，本轮补齐 empty compare key 和 legacy
+  invalid request-op smoke table 的 empty key、value provided、invalid sort、empty operation
+  typed errors。该门禁防止 Txn compare gate 或旧 smoke table 只保留 InvalidArgument，
+  漏掉调用方可识别的 etcd typed error。
 
 ### P2：运维兼容和长期验证
 

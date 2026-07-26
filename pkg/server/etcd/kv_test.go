@@ -4709,8 +4709,7 @@ func TestTxnRejectsEmptyCompareKey(t *testing.T) {
 			TargetUnion: &etcdserverpb.Compare_ModRevision{ModRevision: 1},
 		}},
 	})
-	require.Error(t, err)
-	require.Equal(t, codes.InvalidArgument, status.Code(err))
+	requireDirectKVError(t, err, rpctypes.ErrGRPCEmptyKey, codes.InvalidArgument, "etcdserver: key is not provided")
 }
 
 func TestTxnUnknownCompareEnumsMatchEtcdFallthrough(t *testing.T) {
@@ -4806,36 +4805,48 @@ func TestTxnRejectsInvalidRequestOps(t *testing.T) {
 	defer closeFn()
 
 	tests := []struct {
-		name string
-		op   *etcdserverpb.RequestOp
+		name        string
+		op          *etcdserverpb.RequestOp
+		wantErr     error
+		wantMessage string
 	}{
 		{
 			name: "put empty key",
 			op: &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestPut{
 				RequestPut: &etcdserverpb.PutRequest{Value: []byte("v1")},
 			}},
+			wantErr:     rpctypes.ErrGRPCEmptyKey,
+			wantMessage: "etcdserver: key is not provided",
 		},
 		{
 			name: "put ignore value with value",
 			op: &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestPut{
 				RequestPut: &etcdserverpb.PutRequest{Key: []byte("/registry/generic-txn/invalid-op"), Value: []byte("v1"), IgnoreValue: true},
 			}},
+			wantErr:     rpctypes.ErrGRPCValueProvided,
+			wantMessage: "etcdserver: value is provided",
 		},
 		{
 			name: "range invalid sort",
 			op: &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestRange{
 				RequestRange: &etcdserverpb.RangeRequest{Key: []byte("/registry/generic-txn/invalid-op"), SortOrder: etcdserverpb.RangeRequest_SortOrder(99)},
 			}},
+			wantErr:     rpctypes.ErrGRPCInvalidSortOption,
+			wantMessage: "etcdserver: invalid sort option",
 		},
 		{
 			name: "delete empty key",
 			op: &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestDeleteRange{
 				RequestDeleteRange: &etcdserverpb.DeleteRangeRequest{},
 			}},
+			wantErr:     rpctypes.ErrGRPCEmptyKey,
+			wantMessage: "etcdserver: key is not provided",
 		},
 		{
-			name: "empty operation",
-			op:   &etcdserverpb.RequestOp{},
+			name:        "empty operation",
+			op:          &etcdserverpb.RequestOp{},
+			wantErr:     rpctypes.ErrGRPCKeyNotFound,
+			wantMessage: "etcdserver: key not found",
 		},
 	}
 
@@ -4844,8 +4855,7 @@ func TestTxnRejectsInvalidRequestOps(t *testing.T) {
 			_, err := server.Txn(context.Background(), &etcdserverpb.TxnRequest{
 				Success: []*etcdserverpb.RequestOp{tt.op},
 			})
-			require.Error(t, err)
-			require.Equal(t, codes.InvalidArgument, status.Code(err))
+			requireDirectKVError(t, err, tt.wantErr, codes.InvalidArgument, tt.wantMessage)
 		})
 	}
 }
