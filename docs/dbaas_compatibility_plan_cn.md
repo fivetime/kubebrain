@@ -15619,6 +15619,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   rpctypes.ErrLeaseTTLTooLarge)`、`codes.Unknown` 和 `etcdserver: too large lease TTL`。
   该门禁防止 Lease metadata adapter 或 client error mapping 重构后只保留 raw
   `OutOfRange` 外观或只保留 typed error，破坏租约配额/TTL 配置错误的可诊断性。
+- A1213 固定 official clientv3 Put server-side request-too-large 三件套：
+  A1146 已覆盖服务端 request limit 下 `clientv3.Put` 可由 `errors.Is(...,
+  rpctypes.ErrRequestTooLarge)` 识别，本轮同步固定 public wrapper code/message：
+  server-side 请求过大必须返回 `codes.Unknown` 和 `etcdserver: request is too large`，区别于
+  A1162/A1165 的 client-side send/recv `ResourceExhausted`。该门禁防止 admission/request
+  limit 或 client error mapping 重构后混淆服务端 validation 与 transport 大小限制。
 
 ### P2：运维兼容和长期验证
 

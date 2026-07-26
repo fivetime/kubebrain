@@ -247,6 +247,8 @@ func TestClientPutServerSideRequestTooLargeIsTyped(t *testing.T) {
 	defer cancel()
 	_, err = client.Put(ctx, "/a1146/put-too-large", string(make([]byte, 1024)))
 	require.ErrorIs(t, err, rpctypes.ErrRequestTooLarge)
+	require.Equal(t, codes.Unknown, status.Code(err))
+	require.Equal(t, "etcdserver: request is too large", status.Convert(err).Message())
 }
 
 func TestClientPutNoSpaceIsTyped(t *testing.T) {
