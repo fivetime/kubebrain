@@ -126,24 +126,29 @@ type snapshotReceipt struct {
 }
 
 type semanticReceipt struct {
-	Format                string `json:"format"`
-	OperationID           string `json:"operation_id"`
-	RestoreReceiptSHA256  string `json:"restore_receipt_sha256"`
-	SnapshotReceiptSHA256 string `json:"snapshot_receipt_sha256"`
-	WitnessFormat         string `json:"witness_format"`
-	WitnessSHA256         string `json:"witness_sha256"`
-	WitnessRevision       int64  `json:"witness_revision"`
-	WitnessRecords        int    `json:"witness_records"`
-	WitnessLeases         int    `json:"witness_leases"`
-	RestoreManifestSHA256 string `json:"restore_manifest_sha256"`
-	RestoredClusterID     string `json:"restored_cluster_id"`
-	HistoricalExact       bool   `json:"historical_exact"`
-	CurrentExact          bool   `json:"current_exact"`
-	LeaseIdentityExact    bool   `json:"lease_identity_exact"`
-	WatchProbeSucceeded   bool   `json:"watch_probe_succeeded"`
-	ProbePutRevision      int64  `json:"probe_put_revision"`
-	ProbeDeleteRevision   int64  `json:"probe_delete_revision"`
-	VerifiedAtUnix        int64  `json:"verified_at_unix"`
+	Format                 string `json:"format"`
+	OperationID            string `json:"operation_id"`
+	RestoreReceiptSHA256   string `json:"restore_receipt_sha256"`
+	SnapshotReceiptSHA256  string `json:"snapshot_receipt_sha256"`
+	RestoreCompletedAt     string `json:"restore_completed_at"`
+	WitnessFormat          string `json:"witness_format"`
+	WitnessSHA256          string `json:"witness_sha256"`
+	WitnessRevision        int64  `json:"witness_revision"`
+	WitnessRecords         int    `json:"witness_records"`
+	WitnessLeases          int    `json:"witness_leases"`
+	RestoreManifestSHA256  string `json:"restore_manifest_sha256"`
+	TargetKubeSystemUID    string `json:"target_kube_system_uid"`
+	TargetNamespaceUID     string `json:"target_namespace_uid"`
+	SourceTidbClusterUID   string `json:"source_tidbcluster_uid"`
+	RestoredTidbClusterUID string `json:"restored_tidbcluster_uid"`
+	RestoredClusterID      string `json:"restored_cluster_id"`
+	HistoricalExact        bool   `json:"historical_exact"`
+	CurrentExact           bool   `json:"current_exact"`
+	LeaseIdentityExact     bool   `json:"lease_identity_exact"`
+	WatchProbeSucceeded    bool   `json:"watch_probe_succeeded"`
+	ProbePutRevision       int64  `json:"probe_put_revision"`
+	ProbeDeleteRevision    int64  `json:"probe_delete_revision"`
+	VerifiedAtUnix         int64  `json:"verified_at_unix"`
 }
 
 func main() {
@@ -251,10 +256,15 @@ func main() {
 	receipt := semanticReceipt{
 		Format: "kubebrain.cold-physical-semantic-verify.v1", OperationID: restore.OperationID,
 		RestoreReceiptSHA256: digest(restoreData), SnapshotReceiptSHA256: digest(snapshotData),
-		WitnessFormat: status.Format, WitnessSHA256: status.SHA256,
+		RestoreCompletedAt: restore.CompletedAt,
+		WitnessFormat:      status.Format, WitnessSHA256: status.SHA256,
 		WitnessRevision: status.Revision, WitnessRecords: status.Records, WitnessLeases: status.Leases,
-		RestoreManifestSHA256: restore.RestoreManifest.SHA256,
-		RestoredClusterID:     restore.Target.ClusterID, HistoricalExact: true, CurrentExact: true,
+		RestoreManifestSHA256:  restore.RestoreManifest.SHA256,
+		TargetKubeSystemUID:    restore.Target.KubeSystemUID,
+		TargetNamespaceUID:     restore.Target.NamespaceUID,
+		SourceTidbClusterUID:   snapshotRecord.Inventory.Storage.UID,
+		RestoredTidbClusterUID: restore.Target.TidbClusterUID,
+		RestoredClusterID:      restore.Target.ClusterID, HistoricalExact: true, CurrentExact: true,
 		LeaseIdentityExact: true, WatchProbeSucceeded: true, ProbePutRevision: putRevision,
 		ProbeDeleteRevision: deleteRevision, VerifiedAtUnix: time.Now().UTC().Unix(),
 	}

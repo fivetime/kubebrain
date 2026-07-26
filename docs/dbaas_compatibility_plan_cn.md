@@ -16060,6 +16060,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   本轮把 `completed_at` 纳入严格 schema 并要求 RFC3339，同时要求 restored
   TidbCluster UID 不得等于 source TidbCluster UID，防止伪造或误用源集群对象作为
   隔离恢复完成证据。该门禁仍不关闭真实 CSI 隔离恢复或 PITR 缺口。
+- A1292 固定 cold semantic verify receipt 身份证据：
+  A1291 让 verifier 能接受真实 restore receipt 后，本轮把 restore `completed_at`、
+  target kube-system UID、target namespace UID、source TidbCluster UID 和 restored
+  TidbCluster UID 写入最终 `kubebrain.cold-physical-semantic-verify.v1`。这样
+  witness/revision/lease/watch 校验结果不再只靠 receipt SHA 间接追溯目标集群身份，
+  后续审计或不可变归档可直接确认语义验证绑定的是哪一次隔离恢复和哪个 restored
+  storage 对象。该证据增强仍不替代真实 CSI 隔离恢复演练或 PITR。
 
 ### P2：运维兼容和长期验证
 

@@ -396,12 +396,26 @@ func TestValidateRestoreManifestBinding(t *testing.T) {
 func TestWriteAtomicSemanticReceipt(t *testing.T) {
 	directory := t.TempDir()
 	path := filepath.Join(directory, "receipt.json")
-	require.NoError(t, writeAtomic(path, semanticReceipt{Format: "test"}))
+	require.NoError(t, writeAtomic(path, semanticReceipt{
+		Format:                 "test",
+		RestoreCompletedAt:     "2026-07-21T00:05:00Z",
+		TargetKubeSystemUID:    "uid-kube-system",
+		TargetNamespaceUID:     "uid-namespace",
+		SourceTidbClusterUID:   "uid-source-tidb",
+		RestoredTidbClusterUID: "uid-restored-tidb",
+	}))
 	info, err := os.Stat(path)
 	require.NoError(t, err)
 	require.Equal(t, os.FileMode(0o600), info.Mode().Perm())
 	original, err := os.ReadFile(path)
 	require.NoError(t, err)
+	var receipt map[string]any
+	require.NoError(t, json.Unmarshal(original, &receipt))
+	require.Equal(t, "2026-07-21T00:05:00Z", receipt["restore_completed_at"])
+	require.Equal(t, "uid-kube-system", receipt["target_kube_system_uid"])
+	require.Equal(t, "uid-namespace", receipt["target_namespace_uid"])
+	require.Equal(t, "uid-source-tidb", receipt["source_tidbcluster_uid"])
+	require.Equal(t, "uid-restored-tidb", receipt["restored_tidbcluster_uid"])
 	require.Error(t, writeAtomic(filepath.Join(directory, "missing", "receipt.json"), semanticReceipt{}))
 	require.ErrorContains(t, writeAtomic(path, semanticReceipt{Format: "other"}), "already exists")
 	data, err := os.ReadFile(path)
