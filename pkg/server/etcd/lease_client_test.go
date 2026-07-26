@@ -121,6 +121,54 @@ func TestClientLeaseReadBoundaryAndAttachedKeys(t *testing.T) {
 	require.True(t, containsLive)
 }
 
+func TestClientLeaseTimeToLiveReportsZeroBeforeExpiry(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterLeaseServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 7*time.Second)
+	defer cancel()
+	grant, err := client.Grant(ctx, 2)
+	require.NoError(t, err)
+
+	observedZero := false
+	for {
+		ttl, ttlErr := client.TimeToLive(ctx, grant.ID)
+		require.NoError(t, ttlErr)
+		require.Equal(t, grant.ID, ttl.ID)
+		if ttl.TTL == 0 {
+			observedZero = true
+		}
+		if ttl.TTL == -1 {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal("lease did not expire before timeout")
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+	require.True(t, observedZero, "live lease must report TTL=0 before TTL=-1")
+}
+
 func TestRawGRPCLeaseReadBoundaryAndList(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

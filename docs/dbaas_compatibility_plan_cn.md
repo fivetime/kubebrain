@@ -14295,6 +14295,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   clientv3 bufconn 回归，通过真实 KV/Watch 服务创建带 created-notify 的 NOPUT watch，
   写入被过滤 key 后主动 request progress，断言响应无 Events 且 header 覆盖写 revision，
   防止服务层 watermark 正确但公开客户端流无法观察 filtered revision 进度。
+- A1032 固定 clientv3 Lease TTL 亚秒边界：
+  `lease_ttl_boundary` compatibility 用例证明 etcd 在 lease 最后一个仍存活的亚秒窗口
+  会把 `TimeToLive` 截断为 `TTL=0`，只有 lessor 真正移除 lease 后才返回 `TTL=-1`。
+  本轮新增官方 clientv3 bufconn 回归，Grant 2 秒 lease 后以 20ms 间隔轮询
+  `TimeToLive`，要求先观察到 live `TTL=0` 再观察到 expired `TTL=-1`，防止内部
+  `remainingTTL` 单元测试通过但公开 Lease RPC/客户端路径把亚秒 live lease 过早报告为删除。
 
 ### P2：运维兼容和长期验证
 
