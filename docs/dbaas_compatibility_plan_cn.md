@@ -14561,6 +14561,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `KeepAliveOnce` 成功，root `RoleRevokePermission` 后 alice `KeepAliveOnce` 经 high-level
   wrapper 暴露 `Unknown: permission denied`，再 `RoleGrantPermission` 后确认同一 lease
   keepalive 继续返回正 TTL，补齐 public Lease/Auth 动态授权门禁。
+- A1066 固定 clientv3 Auth Watch stream 动态权限：
+  `auth` differential 覆盖同一 Watch stream 中，已有 watch 在 role permission 被撤销后
+  仍按 etcd 行为继续接收后续事件，新建 watch create 必须以 permission denied canceled
+  response 返回，重新授权后新建 watch 成功且新旧 watch 都能 fanout。本轮新增通过官方
+  clientv3 连接建立的 raw Watch bufconn 回归，alice 先创建 watch ID `106601`，root 撤销
+  `/a1066/allowed/` 权限后发送第二个 create，断言 canceled response 的 watch ID 为 `-1`
+  且 CancelReason 为 `PermissionDenied` gRPC 字符串；root 写入期间值时旧 watch 仍收到
+  事件，重新授予 readwrite 后 watch ID `106603` 创建成功，后续写入同时 fanout 到新旧
+  watch，补齐 Watch/Auth multiplex stream 的 public wire 门禁。
 
 ### P2：运维兼容和长期验证
 

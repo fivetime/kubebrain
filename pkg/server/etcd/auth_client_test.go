@@ -22,6 +22,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -670,6 +671,141 @@ func TestClientAuthLeaseKeepAliveTracksPermissionChanges(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, lease.ID, restoredKeepAlive.ID)
 	require.Positive(t, restoredKeepAlive.TTL)
+}
+
+func TestClientAuthWatchStreamTracksPermissionChanges(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterAuthServer(grpcServer, server)
+	etcdserverpb.RegisterWatchServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	dialOptions := []grpc.DialOption{
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}),
+	}
+	newClient := func(username, password string) *clientv3.Client {
+		t.Helper()
+		client, err := clientv3.New(clientv3.Config{
+			Endpoints:   []string{"bufnet"},
+			DialTimeout: time.Second,
+			Username:    username,
+			Password:    password,
+			DialOptions: dialOptions,
+		})
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, client.Close()) })
+		return client
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	bootstrap := newClient("", "")
+	require.NoError(t, addAuthUserRoleAndPermission(ctx, bootstrap, "root", "root-secret", "root", "", ""))
+	require.NoError(t, addAuthUserRoleAndPermission(
+		ctx,
+		bootstrap,
+		"alice",
+		"alice-secret",
+		"a1066-allowed",
+		"/a1066/allowed/",
+		clientv3.GetPrefixRangeEnd("/a1066/allowed/"),
+	))
+	_, err := bootstrap.RoleGrantPermission(
+		ctx,
+		"a1066-allowed",
+		"/a1066/allowed/",
+		clientv3.GetPrefixRangeEnd("/a1066/allowed/"),
+		clientv3.PermissionType(clientv3.PermReadWrite),
+	)
+	require.NoError(t, err)
+	_, err = bootstrap.AuthEnable(ctx)
+	require.NoError(t, err)
+
+	root := newClient("root", "root-secret")
+	alice := newClient("alice", "alice-secret")
+	stream, err := etcdserverpb.NewWatchClient(alice.ActiveConnection()).Watch(ctx)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = stream.CloseSend() })
+	watchCreate := func(id int64) *etcdserverpb.WatchRequest {
+		return &etcdserverpb.WatchRequest{RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{
+			CreateRequest: &etcdserverpb.WatchCreateRequest{
+				Key:     []byte("/a1066/allowed/key"),
+				WatchId: id,
+			},
+		}}
+	}
+
+	const (
+		firstWatchID    = int64(106601)
+		deniedWatchID   = int64(106602)
+		restoredWatchID = int64(106603)
+	)
+	require.NoError(t, stream.Send(watchCreate(firstWatchID)))
+	firstCreated, err := stream.Recv()
+	require.NoError(t, err)
+	require.True(t, firstCreated.Created)
+	require.False(t, firstCreated.Canceled)
+	require.Equal(t, firstWatchID, firstCreated.WatchId)
+
+	_, err = root.RoleRevokePermission(
+		ctx,
+		"a1066-allowed",
+		"/a1066/allowed/",
+		clientv3.GetPrefixRangeEnd("/a1066/allowed/"),
+	)
+	require.NoError(t, err)
+	require.NoError(t, stream.Send(watchCreate(deniedWatchID)))
+	deniedCreated, err := stream.Recv()
+	require.NoError(t, err)
+	require.True(t, deniedCreated.Created)
+	require.True(t, deniedCreated.Canceled)
+	require.Equal(t, int64(-1), deniedCreated.WatchId)
+	require.Equal(t, rpctypes.ErrGRPCPermissionDenied.Error(), deniedCreated.CancelReason)
+
+	_, err = root.Put(ctx, "/a1066/allowed/key", "during-revoke")
+	require.NoError(t, err)
+	existingEvent, err := stream.Recv()
+	require.NoError(t, err)
+	require.Equal(t, firstWatchID, existingEvent.WatchId)
+	require.Len(t, existingEvent.Events, 1)
+	require.Equal(t, "during-revoke", string(existingEvent.Events[0].Kv.Value))
+
+	_, err = root.RoleGrantPermission(
+		ctx,
+		"a1066-allowed",
+		"/a1066/allowed/",
+		clientv3.GetPrefixRangeEnd("/a1066/allowed/"),
+		clientv3.PermissionType(clientv3.PermReadWrite),
+	)
+	require.NoError(t, err)
+	require.NoError(t, stream.Send(watchCreate(restoredWatchID)))
+	restoredCreated, err := stream.Recv()
+	require.NoError(t, err)
+	require.True(t, restoredCreated.Created)
+	require.False(t, restoredCreated.Canceled)
+	require.Equal(t, restoredWatchID, restoredCreated.WatchId)
+
+	_, err = root.Put(ctx, "/a1066/allowed/key", "after-restore")
+	require.NoError(t, err)
+	received := make(map[int64]bool, 2)
+	for range 2 {
+		response, recvErr := stream.Recv()
+		require.NoError(t, recvErr)
+		if len(response.Events) == 1 &&
+			string(response.Events[0].Kv.Value) == "after-restore" {
+			received[response.WatchId] = true
+		}
+	}
+	require.True(t, received[firstWatchID])
+	require.True(t, received[restoredWatchID])
 }
 
 func addAuthUserRoleAndPermission(
