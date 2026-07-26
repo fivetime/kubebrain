@@ -185,6 +185,50 @@ func TestRawGRPCPlatformManagedMaintenanceReturnsActionableErrors(t *testing.T) 
 	requirePlatformError(err, downgradeUnsupportedMessage)
 }
 
+func TestRawGRPCPlatformManagedMemberMutationsReturnActionableErrors(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterClusterServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///platform-cluster-client",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	cluster := etcdserverpb.NewClusterClient(conn)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	requireMemberMutationError := func(err error) {
+		t.Helper()
+		require.Equal(t, codes.Unimplemented, status.Code(err))
+		require.Equal(t, memberMutationUnsupportedMessage, status.Convert(err).Message())
+	}
+	_, err = cluster.MemberAdd(ctx, &etcdserverpb.MemberAddRequest{PeerURLs: []string{"http://127.0.0.1:12380"}})
+	requireMemberMutationError(err)
+	_, err = cluster.MemberAdd(ctx, &etcdserverpb.MemberAddRequest{
+		PeerURLs:  []string{"http://127.0.0.1:12381"},
+		IsLearner: true,
+	})
+	requireMemberMutationError(err)
+	_, err = cluster.MemberRemove(ctx, &etcdserverpb.MemberRemoveRequest{ID: 1})
+	requireMemberMutationError(err)
+	_, err = cluster.MemberUpdate(ctx, &etcdserverpb.MemberUpdateRequest{
+		ID:       1,
+		PeerURLs: []string{"http://127.0.0.1:12380"},
+	})
+	requireMemberMutationError(err)
+	_, err = cluster.MemberPromote(ctx, &etcdserverpb.MemberPromoteRequest{ID: 1})
+	requireMemberMutationError(err)
+}
+
 func TestClientDefragmentReturnsEtcdNilHeaderNoOp(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

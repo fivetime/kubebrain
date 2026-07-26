@@ -15435,6 +15435,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `Downgrade` 必须指向版本化 rollout/rollback，二者都返回 `codes.Unimplemented` 和可操作
   平台提示。本轮新增 raw bufconn 回归，直接调用两个 Maintenance RPC，防止 generated client
   调用方绕过 clientv3 adapter 后只看到默认 unsupported 文案或丢失 DBaaS 替代路径。
+- A1185 固定 raw gRPC member mutation 平台替代外观：
+  延续 A1108/A1123 的 official clientv3 member mutation contract 到 generated
+  `etcdserverpb.ClusterClient`，`MemberAdd`、learner add、`MemberRemove`、`MemberUpdate`
+  和 `MemberPromote` 都必须返回 `codes.Unimplemented` 以及指向 DBaaS control plane
+  扩缩/重配置的可操作提示。本轮新增 raw bufconn 回归，直接调用 Cluster mutation RPC，
+  防止绕过 clientv3 adapter 的调用方看到默认 unsupported 文案，或 learner 分支与普通 add
+  分支发生漂移。
 
 ### P2：运维兼容和长期验证
 
