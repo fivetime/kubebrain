@@ -15818,6 +15818,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   和 `Txn(DeleteRange)` key-limit 拒绝统一到 `ErrGRPCRequestTooManyRequests`、
   `codes.ResourceExhausted` 和 reference message helper，同时继续断言 mutation 未发生。
   该门禁防止删除保护重构后只返回 ResourceExhausted，漏掉 etcd 兼容 too-many-requests 外观。
+- A1247 固定 LeaseGrant duplicate/TTL 边界错误三件套：
+  A1231/A1243 已覆盖 lease not-found 与 NOSPACE，本轮把 direct 和 raw gRPC client 的
+  duplicate lease ID、超过 max TTL 拒绝统一到 `ErrGRPCLeaseExist`/`ErrGRPCLeaseTTLTooLarge`、
+  reference code 和 message helper。该门禁防止 lease grant admission 或 client wrapper
+  重构后只保留 code/message，漏掉可由调用方 `errors.Is` 识别的 etcd typed error。
 
 ### P2：运维兼容和长期验证
 

@@ -28,6 +28,7 @@ import (
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
@@ -793,14 +794,10 @@ func TestLeaseGrantDuplicateAndTooLargeTTLMatchEtcdErrors(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 30, ID: 5001})
-	require.Error(t, err)
-	require.Equal(t, codes.FailedPrecondition, status.Code(err))
-	require.Contains(t, err.Error(), "etcdserver: lease already exists")
+	requireDirectLeaseError(t, err, rpctypes.ErrGRPCLeaseExist, codes.FailedPrecondition, "etcdserver: lease already exists")
 
 	_, err = server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: maxLeaseTTL + 1, ID: 5002})
-	require.Error(t, err)
-	require.Equal(t, codes.OutOfRange, status.Code(err))
-	require.Contains(t, err.Error(), "etcdserver: too large lease TTL")
+	requireDirectLeaseError(t, err, rpctypes.ErrGRPCLeaseTTLTooLarge, codes.OutOfRange, "etcdserver: too large lease TTL")
 }
 
 func TestLeaseGrantClampsSmallTTLLikeEtcd(t *testing.T) {
@@ -1970,4 +1967,11 @@ func TestKeptAliveLeaseSurvivesLeaderChangeWithFreshDeadline(t *testing.T) {
 	rangeResp, err := newLeader.Range(ctx, &etcdserverpb.RangeRequest{Key: []byte("/registry/leases/failover-survive")})
 	require.NoError(t, err)
 	require.Len(t, rangeResp.Kvs, 1, "bound key of a kept-alive lease must survive leader change")
+}
+
+func requireDirectLeaseError(t *testing.T, err error, want error, code codes.Code, message string) {
+	t.Helper()
+	require.ErrorIs(t, err, want)
+	require.Equal(t, code, status.Code(err))
+	require.Equal(t, message, status.Convert(err).Message())
 }
