@@ -4209,9 +4209,7 @@ func TestTxnExecutionValidationFollowsSelectedOperationOrder(t *testing.T) {
 	_, err = server.Txn(context.Background(), &etcdserverpb.TxnRequest{
 		Success: []*etcdserverpb.RequestOp{read, put},
 	})
-	require.Error(t, err)
-	require.Equal(t, codes.OutOfRange, status.Code(err))
-	require.Equal(t, "etcdserver: mvcc: required revision is a future revision", status.Convert(err).Message())
+	requireDirectKVError(t, err, rpctypes.ErrGRPCFutureRev, codes.OutOfRange, "etcdserver: mvcc: required revision is a future revision")
 }
 
 func TestTxnSimpleSuccessPutWithLeaseIsRevoked(t *testing.T) {
@@ -4462,9 +4460,7 @@ func TestTxnRangeFutureRevisionIsCheckedBeforeWrites(t *testing.T) {
 		},
 	})
 	require.Nil(t, resp)
-	require.Error(t, err)
-	require.Equal(t, codes.OutOfRange, status.Code(err))
-	require.Contains(t, err.Error(), "etcdserver: mvcc: required revision is a future revision")
+	requireDirectKVError(t, err, rpctypes.ErrGRPCFutureRev, codes.OutOfRange, "etcdserver: mvcc: required revision is a future revision")
 
 	getResp, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: key})
 	require.NoError(t, err)
@@ -4499,9 +4495,7 @@ func TestTxnRangeCompactedRevisionIsCheckedBeforeWrites(t *testing.T) {
 		},
 	})
 	require.Nil(t, resp)
-	require.Error(t, err)
-	require.Equal(t, codes.OutOfRange, status.Code(err))
-	require.Contains(t, err.Error(), "etcdserver: mvcc: required revision has been compacted")
+	requireDirectKVError(t, err, rpctypes.ErrGRPCCompacted, codes.OutOfRange, "etcdserver: mvcc: required revision has been compacted")
 
 	getResp, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: key})
 	require.NoError(t, err)
@@ -4533,9 +4527,7 @@ func TestTxnNestedRangeFutureRevisionIsCheckedBeforeWrites(t *testing.T) {
 		},
 	})
 	require.Nil(t, resp)
-	require.Error(t, err)
-	require.Equal(t, codes.OutOfRange, status.Code(err))
-	require.Contains(t, err.Error(), "etcdserver: mvcc: required revision is a future revision")
+	requireDirectKVError(t, err, rpctypes.ErrGRPCFutureRev, codes.OutOfRange, "etcdserver: mvcc: required revision is a future revision")
 
 	getResp, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: key})
 	require.NoError(t, err)
@@ -4980,9 +4972,7 @@ func TestTxnSelectedOperationValidationOrderMatchesEtcd(t *testing.T) {
 	_, err = server.Txn(context.Background(), &etcdserverpb.TxnRequest{
 		Success: []*etcdserverpb.RequestOp{futureRange, missingLeasePut},
 	})
-	require.Error(t, err)
-	require.Equal(t, codes.OutOfRange, status.Code(err))
-	require.Equal(t, "etcdserver: mvcc: required revision is a future revision", status.Convert(err).Message())
+	requireDirectKVError(t, err, rpctypes.ErrGRPCFutureRev, codes.OutOfRange, "etcdserver: mvcc: required revision is a future revision")
 }
 
 func TestTxnValidatesBothBranchesBeforeDuplicateKeys(t *testing.T) {

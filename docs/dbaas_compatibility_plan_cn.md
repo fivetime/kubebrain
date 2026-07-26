@@ -15893,6 +15893,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `Authenticate` 密码校验前 read barrier，以及 auth-enabled `Range`/`RangeStream`
   auth-before-barrier 顺序门禁统一到 exact `codes.Unavailable` message helper。该门禁防止
   auth service 或 KV auth gate 重构后只保留 Unavailable，漏掉 leader-read-barrier 诊断信息。
+- A1262 固定 Txn 内 Range revision 边界错误三件套：
+  A1260 已覆盖 direct `Range`/`Compact` revision 边界，本轮把 Txn execution validation
+  order、write-before-range 原子拒绝、nested Txn Range，以及 selected operation validation
+  中的 future/compacted revision 统一到 `ErrGRPCFutureRev` 或 `ErrGRPCCompacted`、reference
+  code 和 exact message helper。该门禁防止 Txn validator 重排后只保留 OutOfRange，漏掉
+  调用方可识别的 etcd typed error。
 
 ### P2：运维兼容和长期验证
 
