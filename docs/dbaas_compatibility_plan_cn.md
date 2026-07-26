@@ -15347,6 +15347,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   client adapter 暴露的 `Unknown` / `etcdserver: key is not provided` 外观。本轮新增小尺寸
   bufconn official clientv3 回归，补齐 raw KV validation 的 `InvalidArgument` 外观与 Txn
   empty-key typed error 之外的直接 KV Put 入口护栏。
+- A1171 固定 clientv3 Delete empty-key typed error：
+  对照 `/root/etcd/api/v3rpc/rpctypes/error.go` 的 empty-key validation 映射，并延续
+  official clientv3 对服务端 typed error 的 adapter 外观，`Delete(ctx, "")` 必须可由
+  `errors.Is(..., rpctypes.ErrEmptyKey)` 识别，并保持 `Unknown` /
+  `etcdserver: key is not provided`。本轮新增 bufconn official clientv3 回归，和 A1170
+  Put、A1169 Txn empty-key 护栏一起覆盖核心 KV 直接入口。
 
 ### P2：运维兼容和长期验证
 

@@ -22,9 +22,12 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/mvccpb"
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 )
 
@@ -178,6 +181,37 @@ func TestClientDeleteFromKeyRemovesAllUserKeys(t *testing.T) {
 	remaining, err := client.Get(ctx, "a", clientv3.WithFromKey())
 	require.NoError(t, err)
 	require.Empty(t, remaining.Kvs)
+}
+
+func TestClientDeleteEmptyKeyIsTyped(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	server.Register(grpcServer)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err = client.Delete(ctx, "")
+	require.ErrorIs(t, err, rpctypes.ErrEmptyKey)
+	require.Equal(t, codes.Unknown, status.Code(err))
+	require.Equal(t, "etcdserver: key is not provided", status.Convert(err).Message())
 }
 
 type deleteClientKV struct {
