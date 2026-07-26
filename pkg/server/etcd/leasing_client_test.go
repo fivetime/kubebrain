@@ -928,6 +928,158 @@ func TestClientLeasingPutGetDeleteConcurrentProgress(t *testing.T) {
 	require.Empty(t, directFinal.Kvs)
 }
 
+func TestClientLeasingAtomicTxnCacheStaysConsistent(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterWatchServer(grpcServer, server)
+	etcdserverpb.RegisterLeaseServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	prefix := fmt.Sprintf("/a986/leasing-atomic-cache/%d/", time.Now().UnixNano())
+	dataPrefix := prefix + "data/"
+	leased, closeLeased, err := leasing.NewKV(client, prefix+"owners/")
+	require.NoError(t, err)
+	t.Cleanup(closeLeased)
+
+	const (
+		keyCount    = 4
+		writerCount = 2
+		readerCount = 2
+		iterations  = 4
+	)
+	keys := make([]string, keyCount)
+	initialPuts := make([]clientv3.Op, keyCount)
+	gets := make([]clientv3.Op, keyCount)
+	for index := range keys {
+		keys[index] = fmt.Sprintf("%s%02d", dataPrefix, index)
+		initialPuts[index] = clientv3.OpPut(keys[index], "generation-0")
+		gets[index] = clientv3.OpGet(keys[index])
+	}
+	_, err = client.Txn(ctx).Then(initialPuts...).Commit()
+	require.NoError(t, err)
+	for _, get := range gets {
+		_, err = leased.Do(ctx, get)
+		require.NoError(t, err)
+	}
+
+	start := make(chan struct{})
+	writersDone := make(chan struct{})
+	errs := make(chan error, writerCount+readerCount)
+	var writerTransactions atomic.Int64
+	var readerTransactions atomic.Int64
+	var mixedRevisionReads atomic.Int64
+	var writers sync.WaitGroup
+	var readers sync.WaitGroup
+	for writer := 0; writer < writerCount; writer++ {
+		writers.Add(1)
+		go func(writer int) {
+			defer writers.Done()
+			<-start
+			for iteration := 0; iteration < iterations; iteration++ {
+				generation := fmt.Sprintf("writer-%d-generation-%d", writer, iteration)
+				puts := make([]clientv3.Op, keyCount)
+				for index := range keys {
+					puts[index] = clientv3.OpPut(keys[index], generation)
+				}
+				if _, commitErr := leased.Txn(ctx).Then(puts...).Commit(); commitErr != nil {
+					errs <- commitErr
+					return
+				}
+				writerTransactions.Add(1)
+			}
+		}(writer)
+	}
+	for reader := 0; reader < readerCount; reader++ {
+		readers.Add(1)
+		go func() {
+			defer readers.Done()
+			<-start
+			for {
+				response, commitErr := leased.Txn(ctx).Then(gets...).Commit()
+				if commitErr != nil {
+					errs <- commitErr
+					return
+				}
+				readerTransactions.Add(1)
+				if !clientLeasingTxnResponseHasSingleRevision(response, keyCount) {
+					mixedRevisionReads.Add(1)
+				}
+				select {
+				case <-writersDone:
+					return
+				default:
+				}
+			}
+		}()
+	}
+	close(start)
+	writers.Wait()
+	close(writersDone)
+	readers.Wait()
+	close(errs)
+	for runErr := range errs {
+		require.NoError(t, runErr)
+	}
+	require.Equal(t, int64(writerCount*iterations), writerTransactions.Load())
+	require.Positive(t, readerTransactions.Load())
+	require.Zero(t, mixedRevisionReads.Load())
+
+	final, err := leased.Txn(ctx).Then(gets...).Commit()
+	require.NoError(t, err)
+	require.True(t, clientLeasingTxnResponseHasSingleRevision(final, keyCount))
+	var finalValue string
+	for index, response := range final.Responses {
+		kvs := response.GetResponseRange().Kvs
+		require.Len(t, kvs, 1)
+		if index == 0 {
+			finalValue = string(kvs[0].Value)
+			continue
+		}
+		require.Equal(t, finalValue, string(kvs[0].Value))
+	}
+}
+
+func clientLeasingTxnResponseHasSingleRevision(response *clientv3.TxnResponse, expected int) bool {
+	if len(response.Responses) != expected {
+		return false
+	}
+	var revision int64
+	for index, operation := range response.Responses {
+		kvs := operation.GetResponseRange().Kvs
+		if len(kvs) != 1 {
+			return false
+		}
+		if index == 0 {
+			revision = kvs[0].ModRevision
+			continue
+		}
+		if kvs[0].ModRevision != revision {
+			return false
+		}
+	}
+	return revision > 0
+}
+
 func TestClientLeasingRangeOwnershipAndDelete(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

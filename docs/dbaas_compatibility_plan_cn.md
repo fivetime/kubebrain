@@ -13918,6 +13918,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   6 个 goroutine 共享 owner prefix，并发完成 36 条 Put/Get/Delete 序列；测试显式统计
   每条序列完成，最后分别通过 leasing wrapper 与直连 KV 确认目标 key 均为空，防止
   本地 owner cache 或 revoke/抢占路径在并发包装操作下卡住、漏删或遗留 stale final view。
+- A986 固定 clientv3 leasing.NewKV 的原子 Txn cache 一致性路径：
+  A212 `leasing_atomic_cache` differential 覆盖多 key leasing Txn 并发读写。本轮新增
+  轻量 bufconn clientv3 回归，4 个 key 先由 leasing wrapper 建立 cache，再用 2 个 writer
+  并发提交整组 key 的 Txn Put、2 个 reader 循环提交整组 key 的 Txn Get；测试要求所有
+  writer Txn 完成、reader 有进展、每次 reader 结果都来自单一 mod revision，最终整组 key
+  值一致，防止 leasing cache 在原子多 key 更新期间暴露混合 revision 或不一致最终视图。
 
 ### P2：运维兼容和长期验证
 
