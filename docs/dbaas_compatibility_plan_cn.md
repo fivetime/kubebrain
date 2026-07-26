@@ -15442,6 +15442,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   扩缩/重配置的可操作提示。本轮新增 raw bufconn 回归，直接调用 Cluster mutation RPC，
   防止绕过 clientv3 adapter 的调用方看到默认 unsupported 文案，或 learner 分支与普通 add
   分支发生漂移。
+- A1186 固定 raw gRPC MemberList header/barrier/advertised URL：
+  对照 `/root/etcd/tests/integration/clientv3/cluster_test.go:TestMemberList` 与 A48/A990
+  对 Cluster response header 和 DBaaS advertised client URL 的约束，generated
+  `etcdserverpb.ClusterClient.MemberList` 也必须返回 `Header.Revision=0`、非零 ClusterID/MemberID，
+  serializable 请求不走 read barrier，`Linearizable=true` 请求走一次 read barrier，并暴露
+  `--initial-cluster`/client port 派生的 client URLs。本轮新增 raw bufconn 回归，防止只维护
+  official clientv3 `MemberList`/`Sync` 外观而让直接 Cluster API 调用方看到错误 revision、
+  不可拨号 URL 或错误的 barrier 语义。
 
 ### P2：运维兼容和长期验证
 

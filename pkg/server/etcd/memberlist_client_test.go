@@ -18,6 +18,7 @@ import (
 	"context"
 	"net"
 	"sort"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -30,6 +31,57 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/test/bufconn"
 )
+
+func TestRawGRPCMemberListHeaderAndBarrierMatchEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	members, err := ParseInitialCluster(
+		"kb-2=http://10.0.3.2:2380,kb-1=http://10.0.3.1:2380,kb-3=http://10.0.3.3:2380",
+		2379,
+		false,
+	)
+	require.NoError(t, err)
+	server.SetStaticMembers(members)
+	var barriers atomic.Int32
+	server.peers = testPeerService{
+		isLeader: true,
+		syncReadFn: func(context.Context) error {
+			barriers.Add(1)
+			return nil
+		},
+	}
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterClusterServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///memberlist-client",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	cluster := etcdserverpb.NewClusterClient(conn)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	serializable, err := cluster.MemberList(ctx, &etcdserverpb.MemberListRequest{})
+	require.NoError(t, err)
+	requireRawMemberListResponse(t, serializable, []string{
+		"http://10.0.3.1:2379",
+		"http://10.0.3.2:2379",
+		"http://10.0.3.3:2379",
+	})
+	require.Zero(t, barriers.Load())
+
+	linearizable, err := cluster.MemberList(ctx, &etcdserverpb.MemberListRequest{Linearizable: true})
+	require.NoError(t, err)
+	requireRawMemberListResponse(t, linearizable, memberListClientURLs(serializable.Members))
+	require.EqualValues(t, 1, barriers.Load())
+}
 
 func TestClientMemberListAndSyncUseAdvertisedClientURLs(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
@@ -178,4 +230,15 @@ func memberListClientURLs(members []*etcdserverpb.Member) []string {
 	}
 	sort.Strings(urls)
 	return urls
+}
+
+func requireRawMemberListResponse(t *testing.T, response *etcdserverpb.MemberListResponse, expectedClientURLs []string) {
+	t.Helper()
+	require.NotNil(t, response)
+	require.NotNil(t, response.Header)
+	require.Zero(t, response.Header.Revision)
+	require.NotZero(t, response.Header.ClusterId)
+	require.NotZero(t, response.Header.MemberId)
+	require.Len(t, response.Members, len(expectedClientURLs))
+	require.Equal(t, expectedClientURLs, memberListClientURLs(response.Members))
 }
