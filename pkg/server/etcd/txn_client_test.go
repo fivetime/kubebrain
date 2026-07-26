@@ -422,6 +422,79 @@ func TestRawGRPCTxnFromKeyExecutionStagedView(t *testing.T) {
 	}
 }
 
+func TestRawGRPCTxnDuplicateIntervalValidation(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///txn-duplicate-interval-client",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	kv := etcdserverpb.NewKVClient(conn)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	prefix := fmt.Sprintf("/a1007/txn-duplicate-interval/%d/", time.Now().UnixNano())
+	key := []byte(prefix + "abc")
+	put := txnClientPutOp(&etcdserverpb.PutRequest{Key: key, Value: []byte("value")})
+	deleteKey := txnClientDeleteOp(&etcdserverpb.DeleteRangeRequest{Key: key})
+	deleteContaining := txnClientDeleteOp(&etcdserverpb.DeleteRangeRequest{
+		Key: []byte(prefix + "a"), RangeEnd: []byte(prefix + "b"),
+	})
+	deleteBefore := txnClientDeleteOp(&etcdserverpb.DeleteRangeRequest{
+		Key: []byte(prefix + "abb"), RangeEnd: key,
+	})
+	nestedDelete := txnClientTxnOp([]*etcdserverpb.RequestOp{deleteContaining}, nil)
+	nestedDeleteBoth := txnClientTxnOp(
+		[]*etcdserverpb.RequestOp{deleteContaining},
+		[]*etcdserverpb.RequestOp{deleteContaining},
+	)
+	nestedPut := txnClientTxnOp([]*etcdserverpb.RequestOp{put}, nil)
+	nestedPutBoth := txnClientTxnOp(
+		[]*etcdserverpb.RequestOp{put},
+		[]*etcdserverpb.RequestOp{put},
+	)
+
+	tests := []struct {
+		name    string
+		ops     []*etcdserverpb.RequestOp
+		wantErr bool
+	}{
+		{name: "duplicate-put", ops: []*etcdserverpb.RequestOp{put, put}, wantErr: true},
+		{name: "put-and-point-delete", ops: []*etcdserverpb.RequestOp{put, deleteKey}, wantErr: true},
+		{name: "put-and-containing-delete", ops: []*etcdserverpb.RequestOp{put, deleteContaining}, wantErr: true},
+		{name: "put-and-nested-containing-delete", ops: []*etcdserverpb.RequestOp{put, nestedDelete}, wantErr: true},
+		{name: "containing-delete-and-nested-put", ops: []*etcdserverpb.RequestOp{deleteContaining, nestedPut}, wantErr: true},
+		{name: "duplicate-sibling-nested-put", ops: []*etcdserverpb.RequestOp{nestedPutBoth, nestedPutBoth}, wantErr: true},
+		{name: "disjoint-delete-and-mutually-exclusive-put", ops: []*etcdserverpb.RequestOp{deleteBefore, nestedPutBoth}},
+		{name: "nested-overlapping-deletes", ops: []*etcdserverpb.RequestOp{nestedDelete, nestedDeleteBoth}},
+		{name: "repeated-overlapping-deletes", ops: []*etcdserverpb.RequestOp{deleteKey, deleteContaining, deleteKey, deleteContaining}},
+		{name: "put-and-disjoint-delete", ops: []*etcdserverpb.RequestOp{put, deleteBefore}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp, callErr := kv.Txn(ctx, &etcdserverpb.TxnRequest{Success: tt.ops})
+			if tt.wantErr {
+				require.Nil(t, resp)
+				requireRawGRPCTxnError(t, callErr, codes.InvalidArgument, "etcdserver: duplicate key given in txn request")
+				return
+			}
+			require.NoError(t, callErr)
+			require.NotNil(t, resp)
+			require.True(t, resp.Succeeded)
+		})
+	}
+}
+
 func txnClientValueCompare(
 	key, rangeEnd []byte,
 	result etcdserverpb.Compare_CompareResult,
@@ -463,6 +536,12 @@ func txnClientRangeOp(request *etcdserverpb.RangeRequest) *etcdserverpb.RequestO
 
 func txnClientDeleteOp(request *etcdserverpb.DeleteRangeRequest) *etcdserverpb.RequestOp {
 	return &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestDeleteRange{RequestDeleteRange: request}}
+}
+
+func txnClientTxnOp(success, failure []*etcdserverpb.RequestOp) *etcdserverpb.RequestOp {
+	return &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestTxn{
+		RequestTxn: &etcdserverpb.TxnRequest{Success: success, Failure: failure},
+	}}
 }
 
 func requireRawGRPCTxnError(t *testing.T, err error, code codes.Code, message string) {

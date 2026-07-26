@@ -14100,6 +14100,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Range 能看见新写入的 `d`；同时断言 PrevKv 的 create/mod revision 标记和最终 Range
   状态，防止 from-key sentinel、staged mutation overlay 或 raw gRPC request-op 执行顺序
   在 DBaaS 数据面中回退。
+- A1007 固定 raw gRPC Txn duplicate interval validation 的错误外观：
+  `txn_duplicate_interval` differential 证明 Txn 中同一执行分支里的 Put、point Delete、
+  range Delete、nested Txn 之间必须检测重叠写区间并返回 reference etcd 的 duplicate key
+  错误，但互斥 nested 分支、重复 overlapping deletes 和不相交 delete/put 应允许。本轮新增
+  bufconn raw gRPC 回归，直接通过 `etcdserverpb.KVClient.Txn` 覆盖 duplicate put、put+
+  point delete、put+containing delete、parent/nested 重叠、sibling nested duplicate put，
+  以及 disjoint delete+mutually-exclusive put、nested overlapping deletes、repeated
+  overlapping deletes、put+disjoint delete 的成功路径，固定 raw gRPC code/message，
+  防止 admission interval 合并或 nested branch 分析回退。
 
 ### P2：运维兼容和长期验证
 
