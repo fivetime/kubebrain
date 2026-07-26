@@ -15456,6 +15456,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `codes.Unavailable`，已分类 gRPC status 必须原样保留 code/message，不能在 raw gRPC 层退化为
   `Unknown` 或返回可能陈旧的成员列表。本轮新增 raw bufconn 回归，分别注入普通错误和
   `ResourceExhausted` status 错误，固定直接 Cluster API 调用方看到的 retryable 错误外观。
+- A1188 固定 raw gRPC Cluster auth 与平台边界：
+  延续 A1154/A1157 的 auth 错误映射和 A1185 的 member mutation 平台替代外观到 generated
+  `etcdserverpb.ClusterClient`：auth enabled 后匿名 `MemberList` 必须返回 raw gRPC
+  user-empty status，普通用户 `MemberList` 成功且 header revision 仍为 0，普通用户
+  `MemberAdd` 返回 `PermissionDenied`，root 用户 `MemberAdd` 再进入 DBaaS control-plane
+  `Unimplemented` 提示。本轮加强既有 official clientv3 cluster/maintenance auth 回归，防止
+  raw Cluster API 调用方绕过 client adapter 后看到错误的 auth-before-platform 顺序。
 
 ### P2：运维兼容和长期验证
 

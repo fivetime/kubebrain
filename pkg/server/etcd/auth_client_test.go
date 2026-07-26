@@ -1097,6 +1097,23 @@ func TestClientAuthClusterAndMaintenanceAuthorization(t *testing.T) {
 	memberList, err := alice.MemberList(ctx)
 	require.NoError(t, err)
 	require.NotNil(t, memberList.Header)
+	rawAnonymousCluster := etcdserverpb.NewClusterClient(bootstrap.ActiveConnection())
+	_, rawAnonymousMemberListErr := rawAnonymousCluster.MemberList(ctx, &etcdserverpb.MemberListRequest{})
+	requireAuthClientError(t, rawAnonymousMemberListErr, codes.InvalidArgument, "etcdserver: user name is empty")
+	rawAliceCluster := etcdserverpb.NewClusterClient(alice.ActiveConnection())
+	rawMemberList, err := rawAliceCluster.MemberList(ctx, &etcdserverpb.MemberListRequest{})
+	require.NoError(t, err)
+	require.NotNil(t, rawMemberList.Header)
+	require.Zero(t, rawMemberList.Header.Revision)
+	_, rawMemberAddErr := rawAliceCluster.MemberAdd(ctx, &etcdserverpb.MemberAddRequest{
+		PeerURLs: []string{"http://127.0.0.1:12380"},
+	})
+	requireAuthClientError(t, rawMemberAddErr, codes.PermissionDenied, "etcdserver: permission denied")
+	rawRootCluster := etcdserverpb.NewClusterClient(root.ActiveConnection())
+	_, rawRootMemberAddErr := rawRootCluster.MemberAdd(ctx, &etcdserverpb.MemberAddRequest{
+		PeerURLs: []string{"http://127.0.0.1:12381"},
+	})
+	requireAuthClientError(t, rawRootMemberAddErr, codes.Unimplemented, memberMutationUnsupportedMessage)
 	alarmList, err := alice.AlarmList(ctx)
 	require.NoError(t, err)
 	require.NotNil(t, alarmList.Header)
