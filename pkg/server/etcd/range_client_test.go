@@ -697,10 +697,7 @@ func TestClientRangeClientSideRecvLimitIsResourceExhausted(t *testing.T) {
 
 	resp, err := reader.Get(ctx, key)
 	require.Nil(t, resp)
-	require.Error(t, err)
-	require.Equal(t, codes.ResourceExhausted, status.Code(err))
-	require.Contains(t, err.Error(), "received message larger than max")
-	require.False(t, errors.Is(err, rpctypes.ErrRequestTooLarge))
+	requireClientRangeTransportLimitError(t, err, "received message larger than max")
 }
 
 func TestClientRangeKeysOnlyLimitDifferentialPages(t *testing.T) {
@@ -1316,4 +1313,12 @@ func rangeClientAtRevision(kvs []*mvccpb.KeyValue, revision int64) []bool {
 		matches = append(matches, kv.ModRevision == revision)
 	}
 	return matches
+}
+
+func requireClientRangeTransportLimitError(t *testing.T, err error, messageFragment string) {
+	t.Helper()
+	require.Error(t, err)
+	require.Equal(t, codes.ResourceExhausted, status.Code(err))
+	require.Contains(t, err.Error(), messageFragment)
+	require.False(t, errors.Is(err, rpctypes.ErrRequestTooLarge))
 }

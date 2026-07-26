@@ -306,10 +306,7 @@ func TestClientPutClientSideSendLimitIsResourceExhausted(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_, err = client.Put(ctx, "/a1162/put-client-side-send-limit", strings.Repeat("a", 2048))
-	require.Error(t, err)
-	require.Equal(t, codes.ResourceExhausted, status.Code(err))
-	require.Contains(t, err.Error(), "trying to send message larger than max")
-	require.False(t, errors.Is(err, rpctypes.ErrRequestTooLarge))
+	requireClientPutTransportLimitError(t, err, "trying to send message larger than max")
 }
 
 func TestClientPutDroppedRequestDoesNotCommitAndGetReconnects(t *testing.T) {
@@ -471,4 +468,12 @@ func requireClientPutError(t *testing.T, err error, code codes.Code, message str
 	}
 	require.Equal(t, code, status.Code(err))
 	require.Equal(t, message, status.Convert(err).Message())
+}
+
+func requireClientPutTransportLimitError(t *testing.T, err error, messageFragment string) {
+	t.Helper()
+	require.Error(t, err)
+	require.Equal(t, codes.ResourceExhausted, status.Code(err))
+	require.Contains(t, err.Error(), messageFragment)
+	require.False(t, errors.Is(err, rpctypes.ErrRequestTooLarge))
 }

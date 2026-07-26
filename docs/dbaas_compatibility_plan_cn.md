@@ -15833,6 +15833,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Put、transport allowance 以及 watch stream logical payload 超限统一到
   `ErrGRPCRequestTooLarge`、reference code 和 message helper。该门禁防止入口限流或
   gRPC transport allowance 重构后只保留 code/message，漏掉调用方可识别的 typed error。
+- A1250 固定 client-side gRPC message limit 与 etcd request limit 的区分：
+  A1249 已覆盖服务端 logical request-too-large，本轮把 official clientv3 的 Put send-limit
+  和 Range recv-limit transport 错误统一到 `codes.ResourceExhausted`、gRPC message fragment，
+  并明确断言不能 `errors.Is(ErrRequestTooLarge)`。该门禁防止 client wrapper 或 interceptor
+  重构后把 transport message-size 错误误映射成 etcd logical request-too-large。
 
 ### P2：运维兼容和长期验证
 
