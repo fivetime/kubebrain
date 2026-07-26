@@ -15868,6 +15868,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   失败，以及 response header stamp 阶段读取 leadership term 失败统一到 `codes.Unavailable`
   和 exact coordination message helper。该门禁防止独立 PD/TiKV 数据面的读屏障或 term
   协调路径重构后只保留 Unavailable，漏掉生产诊断 message。
+- A1257 固定 Maintenance HashKV 与 alarm-before-admission 错误三件套：
+  A1235/A1251 已覆盖 HashKV compacted 和 KV empty-key admission，本轮把 Maintenance `HashKV`
+  future revision 边界统一到 `ErrGRPCFutureRev`，并固定 CORRUPT alarm 激活后空 `Put`、
+  `DeleteRange`、`Txn(Put)` 仍优先返回 `ErrGRPCEmptyKey`。该门禁防止 maintenance guard
+  或 alarm guard 重构后吞掉 etcd 基础 admission typed error。
 
 ### P2：运维兼容和长期验证
 

@@ -237,9 +237,7 @@ func TestMaintenanceHashKVFutureRevisionMatchesEtcd(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			_, err := server.HashKV(ctx, &etcdserverpb.HashKVRequest{Revision: tt.revision})
-			require.Error(t, err)
-			require.Equal(t, codes.OutOfRange, status.Code(err))
-			require.Equal(t, "etcdserver: mvcc: required revision is a future revision", status.Convert(err).Message())
+			requireMaintenanceDirectError(t, err, rpctypes.ErrGRPCFutureRev, codes.OutOfRange, "etcdserver: mvcc: required revision is a future revision")
 		})
 	}
 }
@@ -529,13 +527,13 @@ func TestCorruptAlarmBlocksEtcdApplierSurfaceOverGRPC(t *testing.T) {
 	require.Contains(t, statusResp.Errors, activated.Alarms[0].String())
 	require.Contains(t, statusResp.Errors, get.Alarms[0].String())
 	_, err = kv.Put(ctx, &etcdserverpb.PutRequest{})
-	require.Equal(t, codes.InvalidArgument, status.Code(err))
+	requireMaintenanceDirectError(t, err, rpctypes.ErrGRPCEmptyKey, codes.InvalidArgument, "etcdserver: key is not provided")
 	_, err = kv.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{})
-	require.Equal(t, codes.InvalidArgument, status.Code(err))
+	requireMaintenanceDirectError(t, err, rpctypes.ErrGRPCEmptyKey, codes.InvalidArgument, "etcdserver: key is not provided")
 	_, err = kv.Txn(ctx, &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{{
 		Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{}},
 	}}})
-	require.Equal(t, codes.InvalidArgument, status.Code(err))
+	requireMaintenanceDirectError(t, err, rpctypes.ErrGRPCEmptyKey, codes.InvalidArgument, "etcdserver: key is not provided")
 
 	calls := []struct {
 		name string
