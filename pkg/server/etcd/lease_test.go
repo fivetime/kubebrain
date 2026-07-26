@@ -114,6 +114,15 @@ func (b *rejectedLeaseMetadataBackend) InternalPut(context.Context, []byte, []by
 	return b.err
 }
 
+type failedLeaseMetadataReadbackBackend struct {
+	rejectedLeaseMetadataBackend
+	readErr error
+}
+
+func (b *failedLeaseMetadataReadbackBackend) InternalGet(context.Context, []byte) ([]byte, error) {
+	return nil, b.readErr
+}
+
 func (b *failAtomicLeaseRevokeBackend) TxnApply(ctx context.Context, ops []backend.TxnWriteOp, guards []backend.TxnGuard, prevKV []bool) ([]*etcdserverpb.ResponseOp, uint64, []backend.TxnWriteResult, error) {
 	for _, op := range ops {
 		if op.Delete && op.Internal && string(op.Key) == string(leaseStorageKey(b.leaseID)) {
@@ -1793,21 +1802,50 @@ func TestLeaseRenewClearsCommittedCheckpointAfterLostWriteResponse(t *testing.T)
 }
 
 func TestLeaseMetadataFailedWriteRequiresExactReadback(t *testing.T) {
-	server, closeFn := newTestRPCServer(t)
-	defer closeFn()
-	ctx := context.Background()
-	const leaseID int64 = 8204
-	_, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 600, ID: leaseID})
-	require.NoError(t, err)
-
 	writeErr := errors.New("lease metadata write rejected")
-	server.backend = &rejectedLeaseMetadataBackend{
-		BackendShim: server.backend,
-		err:         writeErr,
+	readErr := errors.New("lease metadata read rejected")
+	tests := []struct {
+		name    string
+		wrap    func(BackendShim) BackendShim
+		want    string
+		wantErr error
+	}{
+		{
+			name: "different_readback",
+			wrap: func(base BackendShim) BackendShim {
+				return &rejectedLeaseMetadataBackend{BackendShim: base, err: writeErr}
+			},
+			want:    "lease metadata write rejected\nlease metadata differs after failed write",
+			wantErr: writeErr,
+		},
+		{
+			name: "readback_error",
+			wrap: func(base BackendShim) BackendShim {
+				return &failedLeaseMetadataReadbackBackend{
+					rejectedLeaseMetadataBackend: rejectedLeaseMetadataBackend{BackendShim: base, err: writeErr},
+					readErr:                      readErr,
+				}
+			},
+			want:    "lease metadata write rejected\ninspect lease metadata after failed write: lease metadata read rejected",
+			wantErr: readErr,
+		},
 	}
-	err = server.persistLeaseCheckpoint(ctx, leaseID, 600, 240)
-	require.ErrorIs(t, err, writeErr)
-	require.ErrorContains(t, err, "lease metadata differs after failed write")
+	for index, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server, closeFn := newTestRPCServer(t)
+			defer closeFn()
+			ctx := context.Background()
+			leaseID := int64(8204 + index)
+			_, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 600, ID: leaseID})
+			require.NoError(t, err)
+
+			server.backend = test.wrap(server.backend)
+			err = server.persistLeaseCheckpoint(ctx, leaseID, 600, 240)
+			require.ErrorIs(t, err, writeErr)
+			require.ErrorIs(t, err, test.wantErr)
+			require.EqualError(t, err, test.want)
+		})
+	}
 }
 
 func TestSpreadLeaseExpiriesMatchesEtcdPromotionRate(t *testing.T) {

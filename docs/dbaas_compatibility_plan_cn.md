@@ -15987,6 +15987,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   legacy user-MVCC lease metadata、internal lease metadata 的 malformed JSON/非法 ID
   从 fragment 断言收紧为 exact error，固定 key、lease ID 和底层 decoder/strconv 原因。
   该门禁防止恢复路径重构后只报告笼统失败，丢失定位损坏记录的生产排障信息。
+- A1280 固定 lease checkpoint failed-write reconciliation 错误文本：
+  A1279 已覆盖重启加载 metadata，本轮把 `persistLeaseCheckpoint` 写失败后的 readback
+  reconciliation 扩展为两个 exact error 分支：读回内容不等必须同时保留原写错误和
+  `lease metadata differs after failed write`；读回本身失败必须保留原写错误、readback
+  wrapper 和底层读错误。该门禁防止 TiKV commit response 丢失/取消的歧义处理被重构后
+  丢失可诊断原因或误把未确认 checkpoint 当作成功。
 
 ### P2：运维兼容和长期验证
 
