@@ -15783,6 +15783,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   direct `MemberAdd/Remove/Update/Promote` 以及 root token/client-cert 鉴权后进入平台替代的
   `MemberAdd` 统一到 `codes.Unimplemented` 和 DBaaS control-plane 指引 helper。该门禁防止
   direct service 层只检查 code，漏掉 unsupported message 退化。
+- A1240 收敛 privileged Maintenance auth-before-platform helper：
+  A1220/A1183/A1184 已覆盖 Maintenance auth-before-platform 顺序，本轮把 root 授权后进入
+  `Snapshot`、`MoveLeader` 和 `Downgrade` 平台替代的 direct 错误统一到 `codes.Unimplemented`
+  和 DBaaS 替代指引 helper。该门禁防止 privileged maintenance 路径只检查 code，漏掉
+  Snapshot/rollout/downgrade 的可操作 unsupported message 回归。
 
 ### P2：运维兼容和长期验证
 

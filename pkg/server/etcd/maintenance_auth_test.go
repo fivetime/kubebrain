@@ -65,19 +65,16 @@ func TestMaintenanceAuthorizationMatchesEtcd(t *testing.T) {
 	err = server.Snapshot(&etcdserverpb.SnapshotRequest{}, &maintenanceSnapshotServer{ctx: aliceCtx})
 	requireMaintenanceAuthError(t, err, rpctypes.ErrPermissionDenied, codes.Unknown, "etcdserver: permission denied")
 	err = server.Snapshot(&etcdserverpb.SnapshotRequest{}, &maintenanceSnapshotServer{ctx: rootCtx})
-	require.Equal(t, codes.Unimplemented, status.Code(err))
-	require.Equal(t, snapshotUnsupportedMessage, status.Convert(err).Message())
+	requireMaintenancePlatformReplacementError(t, err, snapshotUnsupportedMessage)
 
 	_, err = server.MoveLeader(aliceCtx, &etcdserverpb.MoveLeaderRequest{})
 	requireMaintenanceAuthError(t, err, rpctypes.ErrPermissionDenied, codes.Unknown, "etcdserver: permission denied")
 	_, err = server.MoveLeader(rootCtx, &etcdserverpb.MoveLeaderRequest{})
-	require.Equal(t, codes.Unimplemented, status.Code(err))
-	require.Equal(t, moveLeaderUnsupportedMessage, status.Convert(err).Message())
+	requireMaintenancePlatformReplacementError(t, err, moveLeaderUnsupportedMessage)
 	_, err = server.Downgrade(aliceCtx, &etcdserverpb.DowngradeRequest{})
 	requireMaintenanceAuthError(t, err, rpctypes.ErrPermissionDenied, codes.Unknown, "etcdserver: permission denied")
 	_, err = server.Downgrade(rootCtx, &etcdserverpb.DowngradeRequest{})
-	require.Equal(t, codes.Unimplemented, status.Code(err))
-	require.Equal(t, downgradeUnsupportedMessage, status.Convert(err).Message())
+	requireMaintenancePlatformReplacementError(t, err, downgradeUnsupportedMessage)
 }
 
 func TestMaintenanceRootAuthorizationClientCertificateErrorsMatchEtcd(t *testing.T) {
@@ -101,5 +98,11 @@ func requireMaintenanceAuthError(t *testing.T, err error, want error, code codes
 	t.Helper()
 	require.ErrorIs(t, err, want)
 	require.Equal(t, code, status.Code(err))
+	require.Equal(t, message, status.Convert(err).Message())
+}
+
+func requireMaintenancePlatformReplacementError(t *testing.T, err error, message string) {
+	t.Helper()
+	require.Equal(t, codes.Unimplemented, status.Code(err))
 	require.Equal(t, message, status.Convert(err).Message())
 }
