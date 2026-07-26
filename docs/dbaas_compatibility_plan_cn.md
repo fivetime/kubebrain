@@ -16366,6 +16366,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `errNoPasswordUser` 通过 auth gRPC mapper 后必须保留原始 etcd error 字符串、
   `codes.Unknown` status code 和 message。该门禁延续 etcd 对 no-password 用户的兼容行为，
   防止认证错误包装层仅返回任意非空错误却丢失公开 RPC 语义。
+- A1342 固定 response header Raft term 读取失败错误契约：
+  当本地 term cache 为空且 TiKV election record 读取失败时，stampUnary 必须返回完整
+  `codes.Unavailable` gRPC error 字符串，并保留底层 failure message。该门禁防止 header
+  stamping 在 leader/term 记录不可用时把控制面不可用误分类成普通 handler error。
 
 ### P2：运维兼容和长期验证
 
