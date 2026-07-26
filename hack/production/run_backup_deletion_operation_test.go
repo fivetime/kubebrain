@@ -426,6 +426,17 @@ func TestBackupDeletionOperationRejectsInvalidClaimIdentityBeforeWorkflow(t *tes
 	}
 }
 
+func TestBackupDeletionOperationRejectsInvalidClaimNamespaceBeforeWorkflow(t *testing.T) {
+	f := newBackupDeletionFixture(t)
+	f.run(t, false, "CLAIM_NAMESPACE=tenant/a", "OPERATION_NAMESPACE must be a lowercase DNS label")
+	log := f.log(t)
+	require.Contains(t, log, "--namespace ops --action claim")
+	require.NotContains(t, log, "object ")
+	require.NotContains(t, log, "--action retry")
+	require.NotContains(t, log, "--action succeed")
+	require.NoFileExists(t, f.operationReceipt)
+}
+
 type backupDeletionFixture struct {
 	dir, parameters, sourceReceipt, preManifest, postManifest  string
 	preInventoryReceipt, deletionReceipt, postInventoryReceipt string
@@ -466,7 +477,8 @@ if [[ " $* " == *" --action claim "* ]]; then
   digest="${CLAIM_DIGEST:-$PARAMETERS_DIGEST}"
   operation_id="${CLAIM_OPERATION_ID:-delete-1}"
   instance="${CLAIM_INSTANCE:-instance-a}"
-  printf '{"namespace":"tenant-a-operations","name":"delete-1","operation_id":"%s","instance":"%s","parameters_sha256":"%s","attempt":1}\n' "$operation_id" "$instance" "$digest"
+  namespace="${CLAIM_NAMESPACE:-tenant-a-operations}"
+  printf '{"namespace":"%s","name":"delete-1","operation_id":"%s","instance":"%s","parameters_sha256":"%s","attempt":1}\n' "$namespace" "$operation_id" "$instance" "$digest"
 elif [[ " $* " == *" --action heartbeat "* && "${HEARTBEAT_FAIL:-false}" == true ]]; then
   exit 1
 else

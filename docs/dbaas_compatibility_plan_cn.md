@@ -16223,6 +16223,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   本轮让 `run_backup_operation_test` fixture 支持模拟 claim namespace，并新增
   `TestBackupOperationRejectsInvalidClaimNamespaceBeforeWorkflow`。该门禁防止备份对象上传、
   Object Lock receipt 和 operation 状态更新在 operation API 异常时落入非预期 namespace。
+- A1315 固定 Destroy/BackupDeletion claim namespace 可信边界：
+  destroy 与 backup deletion worker 是删除性生产操作，claim 响应里的实际 namespace 若
+  非法必须在 quiesce/destroy 或 inventory/delete 前 fail closed。本轮让
+  `run_destroy_operation_test` 与 `run_backup_deletion_operation_test` fixture 支持模拟
+  claim namespace，并新增对应非法 namespace 回归；测试同时要求不进入删除 phase、不记录
+  retry/succeed、不生成删除 operation receipt。该门禁防止 operation API 异常时把实例销毁
+  或对象备份删除推进到非预期 namespace。
 
 ### P2：运维兼容和长期验证
 

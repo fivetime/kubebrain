@@ -176,6 +176,16 @@ func TestDestroyOperationRejectsInvalidClaimIdentityBeforePhases(t *testing.T) {
 	}
 }
 
+func TestDestroyOperationRejectsInvalidClaimNamespaceBeforePhases(t *testing.T) {
+	f := newDestroyRunnerFixture(t, true)
+	f.run(t, false, "CLAIM_NAMESPACE=tenant/a", "OPERATION_NAMESPACE must be a lowercase DNS label")
+	log := f.log(t)
+	require.Contains(t, log, "--namespace ops --action claim")
+	require.NotContains(t, log, "phase ")
+	require.NotContains(t, log, "--action retry")
+	require.NotContains(t, log, "--action succeed")
+}
+
 func TestDestroyOperationRejectsInvalidBackupPrefix(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -289,7 +299,8 @@ if [[ " $* " == *" --action claim "* ]]; then
   digest="${CLAIM_DIGEST:-$PARAMETERS_DIGEST}"
   operation_id="${CLAIM_OPERATION_ID:-destroy-1}"
   instance="${CLAIM_INSTANCE:-instance-a}"
-  printf '{"namespace":"tenant-a-operations","name":"destroy-1","uid":"uid-op","resource_version":"1","operation_id":"%s","instance":"%s","type":"Destroy","parameters_sha256":"%s","owner":"worker-a","attempt":1,"lease_until_unix":999999}\n' "$operation_id" "$instance" "$digest"
+  namespace="${CLAIM_NAMESPACE:-tenant-a-operations}"
+  printf '{"namespace":"%s","name":"destroy-1","uid":"uid-op","resource_version":"1","operation_id":"%s","instance":"%s","type":"Destroy","parameters_sha256":"%s","owner":"worker-a","attempt":1,"lease_until_unix":999999}\n' "$namespace" "$operation_id" "$instance" "$digest"
 elif [[ " $* " == *" --action heartbeat "* && -n "${SLEEP_PHASE:-}" ]]; then
   exit 1
 else
