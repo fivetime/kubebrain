@@ -14288,6 +14288,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   返回上一版 value。本轮新增官方 clientv3 bufconn 回归，先创建 key，再从
   `createRev+1` watch 并执行更新，直接验证 `IsCreate()==false`、revision 关系和 PrevKV
   外观，防止后端转换层覆盖存在但公开客户端管线回退。
+- A1031 固定 clientv3 filtered watch progress 覆盖：
+  `watch_filter_progress` differential 证明 `WithFilterPut()` watch 必须完全抑制 PUT
+  事件，但被过滤写仍要推进 watch 已覆盖 revision；客户端随后调用 `RequestProgress`
+  时，返回的空 progress response header 必须不低于该 PUT revision。本轮新增官方
+  clientv3 bufconn 回归，通过真实 KV/Watch 服务创建带 created-notify 的 NOPUT watch，
+  写入被过滤 key 后主动 request progress，断言响应无 Events 且 header 覆盖写 revision，
+  防止服务层 watermark 正确但公开客户端流无法观察 filtered revision 进度。
 
 ### P2：运维兼容和长期验证
 

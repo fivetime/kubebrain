@@ -283,6 +283,59 @@ func TestClientWatchUpdateReportsUpdateNotCreate(t *testing.T) {
 	require.Equal(t, create.Header.Revision, event.PrevKv.ModRevision)
 }
 
+func TestClientFilteredWatchProgressCoversSuppressedPut(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterWatchServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	key := fmt.Sprintf("/a1031/watch-filter-progress/%d", time.Now().UnixNano())
+	watchCtx, watchCancel := context.WithCancel(ctx)
+	defer watchCancel()
+	watch := client.Watch(watchCtx, key, clientv3.WithCreatedNotify(), clientv3.WithFilterPut())
+	requireClientWatchCreated(t, ctx, watch)
+
+	put, err := client.Put(ctx, key, "filtered")
+	require.NoError(t, err)
+	require.NoError(t, client.RequestProgress(ctx))
+
+	for {
+		select {
+		case response, ok := <-watch:
+			require.True(t, ok)
+			require.NoError(t, response.Err())
+			require.False(t, response.Created)
+			require.Empty(t, response.Events, "NOPUT watch must suppress the PUT")
+			require.NotNil(t, response.Header)
+			if response.Header.Revision >= put.Header.Revision {
+				return
+			}
+		case <-ctx.Done():
+			t.Fatalf("timed out waiting for progress covering filtered revision %d: %v", put.Header.Revision, ctx.Err())
+		}
+	}
+}
+
 func TestRawGRPCWatchIDRangeBoundariesKeepStreamAlive(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
