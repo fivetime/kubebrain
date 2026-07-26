@@ -73,6 +73,51 @@ func TestClientSnapshotAPIsReturnPlatformUnsupported(t *testing.T) {
 	require.NoError(t, legacy.Close())
 }
 
+func TestClientPlatformManagedOperationsReturnActionableErrors(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterClusterServer(grpcServer, server)
+	etcdserverpb.RegisterMaintenanceServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	requirePlatformError := func(err error, message string) {
+		t.Helper()
+		require.Equal(t, codes.Unimplemented, status.Code(err))
+		require.Equal(t, message, status.Convert(err).Message())
+	}
+	_, err = client.MemberAdd(ctx, []string{"http://127.0.0.1:12380"})
+	requirePlatformError(err, memberMutationUnsupportedMessage)
+	_, err = client.MemberRemove(ctx, 1)
+	requirePlatformError(err, memberMutationUnsupportedMessage)
+	_, err = client.MemberUpdate(ctx, 1, []string{"http://127.0.0.1:12380"})
+	requirePlatformError(err, memberMutationUnsupportedMessage)
+	_, err = client.MemberPromote(ctx, 1)
+	requirePlatformError(err, memberMutationUnsupportedMessage)
+	_, err = client.MoveLeader(ctx, 1)
+	requirePlatformError(err, moveLeaderUnsupportedMessage)
+	_, err = client.Downgrade(ctx, clientv3.DowngradeValidate, "3.7.0")
+	requirePlatformError(err, downgradeUnsupportedMessage)
+}
+
 func TestRawGRPCAlarmGetAndZeroMemberRoundTrip(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

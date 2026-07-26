@@ -14869,6 +14869,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `WithCreatedNotify` 的 `Watch`，再写入 leased key 并断言 watch 收到同 revision/value
   事件。该门禁防止 require-leader metadata 在拦截器、follower 判定或 stream 建立路径中
   被误判为无 leader，影响 Kubernetes/Cilium 等依赖该选项的客户端。
+- A1108 固定 clientv3 平台管理 RPC 的 DBaaS 替代提示：
+  `maintenance_semantics` compat 已要求 MemberAdd/Remove/Update/Promote、MoveLeader 和
+  Downgrade 对普通未启用 auth 的 official clientv3 返回 `Unimplemented` 与可操作平台提示；
+  本地此前仅有服务层 member mutation、Snapshot 和 auth-before-unsupported 覆盖。本轮新增
+  bufconn official clientv3 回归，注册真实 Cluster/Maintenance 服务后逐条调用上述六个 RPC，
+  断言 member mutation 指向 DBaaS 扩缩/重配置，MoveLeader 指向 rollout/failover，
+  Downgrade 指向版本化 rollout/rollback。该门禁防止 generated client、错误归一化或显式
+  unsupported surface 重构把平台替代外观退化成默认 gRPC `Unimplemented` 或不可操作文案。
 
 ### P2：运维兼容和长期验证
 
