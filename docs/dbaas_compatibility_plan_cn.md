@@ -16217,6 +16217,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `run_restore_cutover_operation_test` fixture 支持模拟 claim namespace，并新增
   `TestRestoreCutoverOperationRejectsInvalidClaimNamespaceBeforePhases`。该门禁防止
   operation API 或参数代理异常时把高风险恢复流量切换操作推进到非预期 namespace。
+- A1314 固定 Backup claim namespace 可信边界：
+  backup worker 同样允许 claim 响应覆盖实际 operation namespace，但非法 namespace 必须
+  在 export/status/object 上传前 fail closed，且不得向错误 namespace 记录 retry/succeed。
+  本轮让 `run_backup_operation_test` fixture 支持模拟 claim namespace，并新增
+  `TestBackupOperationRejectsInvalidClaimNamespaceBeforeWorkflow`。该门禁防止备份对象上传、
+  Object Lock receipt 和 operation 状态更新在 operation API 异常时落入非预期 namespace。
 
 ### P2：运维兼容和长期验证
 

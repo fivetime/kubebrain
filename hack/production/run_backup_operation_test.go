@@ -315,6 +315,18 @@ func TestBackupOperationRejectsInvalidClaimIdentityBeforeWorkflow(t *testing.T) 
 	}
 }
 
+func TestBackupOperationRejectsInvalidClaimNamespaceBeforeWorkflow(t *testing.T) {
+	f := newBackupRunnerFixture(t, false)
+	f.run(t, false, "CLAIM_NAMESPACE=tenant/a", "OPERATION_NAMESPACE must be a lowercase DNS label")
+	log := f.log(t)
+	require.Contains(t, log, "--namespace ops --action claim")
+	require.NotContains(t, log, "export\n")
+	require.NotContains(t, log, "status\n")
+	require.NotContains(t, log, "object\n")
+	require.NotContains(t, log, "--action retry")
+	require.NotContains(t, log, "--action succeed")
+}
+
 func TestBackupOperationLoadsManagedParameters(t *testing.T) {
 	f := newBackupRunnerFixture(t, false)
 	f.env = append(f.env, "MANAGED_PARAMETERS="+f.parameters, "PARAMETERS_INPUT=")
@@ -366,7 +378,8 @@ if [[ " $* " == *" --action claim "* ]]; then
   digest="${CLAIM_DIGEST:-$PARAMETERS_DIGEST}"
   operation_id="${CLAIM_OPERATION_ID:-backup-1}"
   instance="${CLAIM_INSTANCE:-instance-a}"
-  printf '{"namespace":"tenant-a-operations","name":"backup-1","uid":"uid-op","resource_version":"1","operation_id":"%s","instance":"%s","type":"Backup","parameters_sha256":"%s","owner":"worker-a","attempt":1,"lease_until_unix":999999}\n' "$operation_id" "$instance" "$digest"
+  namespace="${CLAIM_NAMESPACE:-tenant-a-operations}"
+  printf '{"namespace":"%s","name":"backup-1","uid":"uid-op","resource_version":"1","operation_id":"%s","instance":"%s","type":"Backup","parameters_sha256":"%s","owner":"worker-a","attempt":1,"lease_until_unix":999999}\n' "$namespace" "$operation_id" "$instance" "$digest"
 elif [[ " $* " == *" --action parameters "* ]]; then
   cat "$MANAGED_PARAMETERS"
 elif [[ " $* " == *" --action heartbeat "* && "${HEARTBEAT_FAIL:-true}" == true ]]; then
