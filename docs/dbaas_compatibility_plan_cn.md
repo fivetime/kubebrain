@@ -13972,6 +13972,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `WatchResponse` 暴露，因此门禁固定的是小接收窗口下完整交付而非 fragment flag 本身，
   防止 sendWatchFragments、max request bytes 或 gRPC message sizing 变更导致大 watch
   批次只能在超大接收窗口下工作。
+- A993 固定 clientv3 Range revision filter/count 与 Txn staged view：
+  `range_revision_filter_count` differential 证明 `MinModRevision` 等 revision filter 只过滤
+  返回的 KVs，`Count` 仍报告未过滤的范围总数；`CountOnly` 也必须保留该总数，并且 Txn
+  子 Range 要能看到同一 Txn 中先前 Put 的 staged write。本轮新增 bufconn clientv3 回归，
+  注册真实 KV gRPC 服务，写入 `a/b` 并更新 `b` 后，用官方 `Get(..., WithMinModRev())`
+  断言 `Count=2` 但 KVs 只含 `b`；`WithCountOnly` 返回 `Count=2` 且无 KVs；随后 Txn
+  内先 Put `c` 再 Range `MinModRev(updateB+1)`，断言 `Count=3`、KVs 只含 staged `c`，
+  防止 public client 入口把 revision filter 错当成 Count 过滤器，或 Txn 子 Range
+  漏读同事务内的 staged mutation。
 
 ### P2：运维兼容和长期验证
 
