@@ -16,6 +16,7 @@ package etcd
 
 import (
 	"context"
+	"io"
 	"net"
 	"testing"
 	"time"
@@ -1364,6 +1365,36 @@ func TestClientAuthRangeStreamAuthorization(t *testing.T) {
 		response, err := clientv3.GetStreamToGetResponse(stream)
 		return (*clientv3.GetResponse)(response), err
 	}
+	rawRangeStream := func(client *clientv3.Client, key, rangeEnd string) (*etcdserverpb.RangeResponse, error) {
+		t.Helper()
+		stream, err := etcdserverpb.NewKVClient(client.ActiveConnection()).RangeStream(ctx, &etcdserverpb.RangeRequest{
+			Key:      []byte(key),
+			RangeEnd: []byte(rangeEnd),
+		})
+		if err != nil {
+			return nil, err
+		}
+		merged := &etcdserverpb.RangeResponse{}
+		for {
+			chunk, recvErr := stream.Recv()
+			if recvErr != nil {
+				if recvErr == io.EOF {
+					return merged, nil
+				}
+				return nil, recvErr
+			}
+			response := chunk.GetRangeResponse()
+			if response == nil {
+				continue
+			}
+			merged.Kvs = append(merged.Kvs, response.Kvs...)
+			if response.Header != nil {
+				merged.Header = response.Header
+				merged.Count = response.Count
+				merged.More = response.More
+			}
+		}
+	}
 
 	bootstrap := newClient("", "")
 	_, err := bootstrap.Put(ctx, "/a1071/allowed/key", "allowed")
@@ -1385,19 +1416,33 @@ func TestClientAuthRangeStreamAuthorization(t *testing.T) {
 
 	_, anonymousErr := getStream(bootstrap, "/a1071/allowed/", clientv3.WithPrefix())
 	requireAuthClientError(t, anonymousErr, codes.Unknown, "etcdserver: user name is empty", rpctypes.ErrUserEmpty)
+	_, rawAnonymousErr := rawRangeStream(bootstrap, "/a1071/allowed/", clientv3.GetPrefixRangeEnd("/a1071/allowed/"))
+	requireAuthClientError(t, rawAnonymousErr, codes.InvalidArgument, "etcdserver: user name is empty")
+
 	alice := newClient("alice", "alice-secret")
 	allowed, err := getStream(alice, "/a1071/allowed/", clientv3.WithPrefix())
 	require.NoError(t, err)
 	require.Len(t, allowed.Kvs, 1)
 	require.Equal(t, "allowed", string(allowed.Kvs[0].Value))
+	rawAllowed, err := rawRangeStream(alice, "/a1071/allowed/", clientv3.GetPrefixRangeEnd("/a1071/allowed/"))
+	require.NoError(t, err)
+	require.Len(t, rawAllowed.Kvs, 1)
+	require.Equal(t, "allowed", string(rawAllowed.Kvs[0].Value))
+
 	_, deniedErr := getStream(alice, "/a1071/protected/", clientv3.WithPrefix())
 	requireAuthClientError(t, deniedErr, codes.Unknown, "etcdserver: permission denied", rpctypes.ErrPermissionDenied)
+	_, rawDeniedErr := rawRangeStream(alice, "/a1071/protected/", clientv3.GetPrefixRangeEnd("/a1071/protected/"))
+	requireAuthClientError(t, rawDeniedErr, codes.PermissionDenied, "etcdserver: permission denied")
 
 	root := newClient("root", "root-secret")
 	all, err := getStream(root, "/a1071/", clientv3.WithPrefix())
 	require.NoError(t, err)
 	require.Len(t, all.Kvs, 2)
 	require.Equal(t, int64(2), all.Count)
+	rawAll, err := rawRangeStream(root, "/a1071/", clientv3.GetPrefixRangeEnd("/a1071/"))
+	require.NoError(t, err)
+	require.Len(t, rawAll.Kvs, 2)
+	require.Equal(t, int64(2), rawAll.Count)
 }
 
 func TestClientAuthLeaseListProtectsInaccessibleAttachments(t *testing.T) {

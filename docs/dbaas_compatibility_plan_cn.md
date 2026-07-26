@@ -15482,6 +15482,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   role 的 key range 权限，下一条 keepalive request 必须立即返回 raw `PermissionDenied`。
   本轮加强既有 clientv3 KeepAlive permission-change 回归，防止长期 keepalive stream 在 RBAC
   变更后继续续租受保护 lease。
+- A1192 固定 raw gRPC RangeStream auth 外观：
+  延续 A1071 的 public `GetStream` 授权契约到 generated `etcdserverpb.KVClient`：
+  auth enabled 后匿名 raw `RangeStream` 必须返回 user-empty gRPC status，普通用户对已授权
+  prefix 可流式读取 KV，对未授权 prefix 返回 raw `PermissionDenied`，root 对完整范围读取
+  成功且 terminal `Count` 保持完整。本轮加强既有 RangeStream auth 回归，防止直接 KV
+  streaming 调用方绕过 clientv3 adapter 后看到错误的 status code、message 或 terminal
+  metadata。
 
 ### P2：运维兼容和长期验证
 
