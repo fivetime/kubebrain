@@ -2725,14 +2725,26 @@ func TestClientNamespaceTxnWatchStripsPrefixes(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	tenantPrefix := "/registry/client-namespace/tenant/"
+	outsideKey := "/registry/client-namespace/tenant0/outside"
 	namespacedKV := namespace.NewKV(client.KV, tenantPrefix)
 	namespacedWatcher := namespace.NewWatcher(client.Watcher, tenantPrefix)
 	for _, key := range []string{"a", "b", "c"} {
 		_, err = namespacedKV.Put(ctx, key, "seed-"+key)
 		require.NoError(t, err)
 	}
-	initial, err := namespacedKV.Get(ctx, "", clientv3.WithFromKey())
+	_, err = client.Put(ctx, outsideKey, "outside")
 	require.NoError(t, err)
+	namespacedKeys := func(kvs []*mvccpb.KeyValue) []string {
+		keys := make([]string, 0, len(kvs))
+		for _, kv := range kvs {
+			keys = append(keys, string(kv.Key))
+		}
+		return keys
+	}
+
+	initial, err := namespacedKV.Get(ctx, "", clientv3.WithFromKey(), clientv3.WithSort(clientv3.SortByKey, clientv3.SortAscend))
+	require.NoError(t, err)
+	require.Equal(t, []string{"a", "b", "c"}, namespacedKeys(initial.Kvs))
 
 	watchCtx, watchCancel := context.WithCancel(ctx)
 	defer watchCancel()
@@ -2789,6 +2801,22 @@ func TestClientNamespaceTxnWatchStripsPrefixes(t *testing.T) {
 	}
 	require.Equal(t, map[string]string{"a": "updated-a", "b": "", "d": "created-d"}, events)
 	require.Equal(t, map[string]string{"a": "a", "b": "b"}, prevKeys)
+
+	postTxn, err := namespacedKV.Get(ctx, "", clientv3.WithFromKey(), clientv3.WithSort(clientv3.SortByKey, clientv3.SortAscend))
+	require.NoError(t, err)
+	require.Equal(t, []string{"a", "c", "d"}, namespacedKeys(postTxn.Kvs))
+	deletedAll, err := namespacedKV.Delete(ctx, "", clientv3.WithFromKey(), clientv3.WithPrevKV())
+	require.NoError(t, err)
+	require.Equal(t, int64(3), deletedAll.Deleted)
+	require.Equal(t, []string{"a", "c", "d"}, namespacedKeys(deletedAll.PrevKvs))
+
+	empty, err := namespacedKV.Get(ctx, "", clientv3.WithFromKey())
+	require.NoError(t, err)
+	require.Empty(t, empty.Kvs)
+	outside, err := client.Get(ctx, outsideKey)
+	require.NoError(t, err)
+	require.Len(t, outside.Kvs, 1)
+	require.Equal(t, "outside", string(outside.Kvs[0].Value))
 }
 
 func TestClientNamespaceEmptyKeyFromKeyDeleteMatchesEtcd(t *testing.T) {

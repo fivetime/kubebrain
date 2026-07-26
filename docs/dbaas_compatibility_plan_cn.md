@@ -14799,6 +14799,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   推送。本轮在本地 official clientv3 naming bufconn 黑盒补齐“先写两 endpoint、再建
   watch、随后 Txn 删除两 endpoint”的同形门禁，防止初始化 list/watch 桥接拆 revision
   或漏发多事件。
+- A1099 强化 clientv3 namespace FromKey delete-all 边界：
+  `namespace` differential 要求 namespaced KV/Watcher 对客户端隐藏 tenant prefix；
+  `Get("", WithFromKey)` 只能枚举当前 namespace，Txn nested PrevKV 和 watch PrevKV 都必须
+  去前缀，同 namespace delete-all 必须只删除租户内键并返回去前缀 PrevKV，不能误删右邻
+  `tenant0/...`。本轮扩展本地 official clientv3 namespace 黑盒，在 Txn/watch 断言后继续
+  校验 post-txn key 集合、`Delete("", WithFromKey(), WithPrevKV())` 删除/PrevKV 集合以及
+  邻接非 namespace key 保留，锁住 prefix end 与 PrevKV stripping 的组合语义。
 
 ### P2：运维兼容和长期验证
 
