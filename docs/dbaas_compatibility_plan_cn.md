@@ -14480,6 +14480,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `client.Txn().If(...).Then(...)` 复现 create/update/delete/stale guard 四种形状，断言
   Succeeded、DeleteRange.Deleted、target value/version 和 stale target 缺失，补齐 STM/Txn
   recipe 差分之外的 public Txn wrapper 门禁。
+- A1056 固定 experimental Queue 并发 enqueue/dequeue 外观：
+  `recipes` differential 除 Barrier/FIFO/Priority 外还覆盖 3 个 writer 并发 enqueue、3 个
+  reader 并发 dequeue 的集合完整性；这会同时经过 Queue 的 Txn 顺序号分配、Range 排序和
+  watch 唤醒路径。A968 已固定 Barrier、FIFO 和 PriorityQueue，本轮扩展官方 clientv3
+  experimental recipes bufconn 回归，直接运行 `recipe.NewQueue` 的并发写读矩阵，并按集合
+  排序断言 9 个 writer item 全部出现且无重复/丢失，补齐 recipes differential 剩余公开
+  wrapper 门禁。
 
 ### P2：运维兼容和长期验证
 

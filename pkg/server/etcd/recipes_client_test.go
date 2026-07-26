@@ -19,6 +19,8 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"sort"
+	"sync"
 	"testing"
 	"time"
 
@@ -117,6 +119,64 @@ func TestClientExperimentalRecipesBarrierAndQueues(t *testing.T) {
 		require.NoError(t, dequeueErr)
 		require.Equal(t, want, got)
 	}
+
+	concurrent := recipe.NewQueue(client, fmt.Sprintf("/a1056/recipes/concurrent/%d", time.Now().UnixNano()))
+	const writerCount = 3
+	const itemsPerWriter = 3
+	var writers sync.WaitGroup
+	writerErrors := make(chan error, writerCount)
+	for writer := range writerCount {
+		writers.Add(1)
+		go func(writer int) {
+			defer writers.Done()
+			for item := range itemsPerWriter {
+				if enqueueErr := concurrent.Enqueue(fmt.Sprintf("writer-%d-item-%d", writer, item)); enqueueErr != nil {
+					writerErrors <- enqueueErr
+					return
+				}
+			}
+		}(writer)
+	}
+	writers.Wait()
+	close(writerErrors)
+	for writerErr := range writerErrors {
+		require.NoError(t, writerErr)
+	}
+
+	const readerCount = 3
+	values := make(chan string, writerCount*itemsPerWriter)
+	readerErrors := make(chan error, readerCount)
+	var readers sync.WaitGroup
+	for range readerCount {
+		readers.Add(1)
+		go func() {
+			defer readers.Done()
+			for range itemsPerWriter {
+				value, dequeueErr := concurrent.Dequeue()
+				if dequeueErr != nil {
+					readerErrors <- dequeueErr
+					return
+				}
+				values <- value
+			}
+		}()
+	}
+	readers.Wait()
+	close(readerErrors)
+	close(values)
+	for readerErr := range readerErrors {
+		require.NoError(t, readerErr)
+	}
+	concurrentValues := make([]string, 0, writerCount*itemsPerWriter)
+	for value := range values {
+		concurrentValues = append(concurrentValues, value)
+	}
+	sort.Strings(concurrentValues)
+	require.Equal(t, []string{
+		"writer-0-item-0", "writer-0-item-1", "writer-0-item-2",
+		"writer-1-item-0", "writer-1-item-1", "writer-1-item-2",
+		"writer-2-item-0", "writer-2-item-1", "writer-2-item-2",
+	}, concurrentValues)
 }
 
 func TestClientExperimentalLockRecipesOrderingAndSessionCleanup(t *testing.T) {
