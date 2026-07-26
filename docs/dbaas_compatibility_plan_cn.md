@@ -15838,6 +15838,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   和 Range recv-limit transport 错误统一到 `codes.ResourceExhausted`、gRPC message fragment，
   并明确断言不能 `errors.Is(ErrRequestTooLarge)`。该门禁防止 client wrapper 或 interceptor
   重构后把 transport message-size 错误误映射成 etcd logical request-too-large。
+- A1251 固定 direct KV 基础 admission 错误三件套：
+  A1228/A1249 已覆盖 KV revision 与 request-size 错误，本轮把 direct `Put` 的 missing lease、
+  missing key、empty key、value/lease provided，以及 direct `DeleteRange` empty key 统一到
+  对应 `rpctypes.ErrGRPC*`、reference code 和 message helper。该门禁防止 KV admission
+  重构后只检查 code/message，漏掉 typed error 或 namespace empty-key 外观漂移。
 
 ### P2：运维兼容和长期验证
 

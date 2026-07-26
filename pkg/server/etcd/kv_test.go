@@ -660,42 +660,49 @@ func TestPutDifferentialScenarioMatchesEtcd(t *testing.T) {
 	tests := []struct {
 		name        string
 		req         *etcdserverpb.PutRequest
+		wantErr     error
 		wantCode    codes.Code
 		wantMessage string
 	}{
 		{
 			name:        "missing lease",
 			req:         &etcdserverpb.PutRequest{Key: key, Value: []byte("bad"), Lease: 62999},
+			wantErr:     rpctypes.ErrGRPCLeaseNotFound,
 			wantCode:    codes.NotFound,
 			wantMessage: "etcdserver: requested lease not found",
 		},
 		{
 			name:        "missing ignore value key",
 			req:         &etcdserverpb.PutRequest{Key: missing, IgnoreValue: true},
+			wantErr:     rpctypes.ErrGRPCKeyNotFound,
 			wantCode:    codes.InvalidArgument,
 			wantMessage: "etcdserver: key not found",
 		},
 		{
 			name:        "missing key and lease",
 			req:         &etcdserverpb.PutRequest{Key: missing, Lease: 62999, IgnoreValue: true},
+			wantErr:     rpctypes.ErrGRPCLeaseNotFound,
 			wantCode:    codes.NotFound,
 			wantMessage: "etcdserver: requested lease not found",
 		},
 		{
 			name:        "empty key",
 			req:         &etcdserverpb.PutRequest{Value: []byte("bad")},
+			wantErr:     rpctypes.ErrGRPCEmptyKey,
 			wantCode:    codes.InvalidArgument,
 			wantMessage: "etcdserver: key is not provided",
 		},
 		{
 			name:        "value with ignore value",
 			req:         &etcdserverpb.PutRequest{Key: key, Value: []byte("bad"), IgnoreValue: true},
+			wantErr:     rpctypes.ErrGRPCValueProvided,
 			wantCode:    codes.InvalidArgument,
 			wantMessage: "etcdserver: value is provided",
 		},
 		{
 			name:        "lease with ignore lease",
 			req:         &etcdserverpb.PutRequest{Key: key, Lease: leaseA.ID, IgnoreLease: true},
+			wantErr:     rpctypes.ErrGRPCLeaseProvided,
 			wantCode:    codes.InvalidArgument,
 			wantMessage: "etcdserver: lease is provided",
 		},
@@ -703,9 +710,7 @@ func TestPutDifferentialScenarioMatchesEtcd(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			_, err := server.Put(ctx, tt.req)
-			require.Error(t, err)
-			require.Equal(t, tt.wantCode, status.Code(err))
-			require.Equal(t, tt.wantMessage, status.Convert(err).Message())
+			requireDirectKVError(t, err, tt.wantErr, tt.wantCode, tt.wantMessage)
 		})
 	}
 }
@@ -2594,8 +2599,7 @@ func TestDeleteRangeRejectsEmptyKey(t *testing.T) {
 	defer closeFn()
 
 	_, err := server.DeleteRange(context.Background(), &etcdserverpb.DeleteRangeRequest{})
-	require.Error(t, err)
-	require.Equal(t, codes.InvalidArgument, status.Code(err))
+	requireDirectKVError(t, err, rpctypes.ErrGRPCEmptyKey, codes.InvalidArgument, "etcdserver: key is not provided")
 }
 
 func TestNamespacedEmptyKeyFromKeyDeleteMatchesEtcd(t *testing.T) {
@@ -2613,9 +2617,7 @@ func TestNamespacedEmptyKeyFromKeyDeleteMatchesEtcd(t *testing.T) {
 	}
 
 	_, err := server.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{})
-	require.Error(t, err)
-	require.Equal(t, codes.InvalidArgument, status.Code(err))
-	require.Equal(t, "etcdserver: key is not provided", status.Convert(err).Message())
+	requireDirectKVError(t, err, rpctypes.ErrGRPCEmptyKey, codes.InvalidArgument, "etcdserver: key is not provided")
 
 	visible, err := server.Range(ctx, &etcdserverpb.RangeRequest{
 		Key: prefix, RangeEnd: []byte{0},
