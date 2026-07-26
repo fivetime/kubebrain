@@ -128,7 +128,7 @@ func TestCommittedUncertainLeasedPutReconcilesIndexBeforeRevoke(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, got.Kvs, "revoke must delete the committed-uncertain leased key")
 	_, err = shim.InternalGet(ctx, leaseAttachKey(string(key)))
-	require.Error(t, err, "revoke must remove the durable attachment")
+	require.ErrorIs(t, err, storage.ErrKeyNotFound, "revoke must remove the durable attachment")
 }
 
 func TestLeasedPutReturnsPrevKV(t *testing.T) {
@@ -393,7 +393,7 @@ func TestTxnFastShapesMutateLeaseAttachmentsAtomically(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, absent.Kvs)
 	_, err = shim.InternalGet(ctx, leaseAttachKey(string(key)))
-	require.Error(t, err, "failed create must not leave an attachment")
+	require.ErrorIs(t, err, storage.ErrKeyNotFound, "failed create must not leave an attachment")
 
 	shim.fail = false
 	created, err := server.Txn(ctx, create)
@@ -432,7 +432,7 @@ func TestTxnFastShapesMutateLeaseAttachmentsAtomically(t *testing.T) {
 	require.Equal(t, []byte("value"), deleteResponse.PrevKvs[0].Value)
 	require.Equal(t, leaseID, deleteResponse.PrevKvs[0].Lease)
 	_, err = shim.InternalGet(ctx, leaseAttachKey(string(key)))
-	require.Error(t, err, "successful delete must remove its attachment")
+	require.ErrorIs(t, err, storage.ErrKeyNotFound, "successful delete must remove its attachment")
 }
 
 func (s *blockLeasedPutShim) TxnApply(ctx context.Context, ops []backend.TxnWriteOp, guards []backend.TxnGuard, prevKV []bool) ([]*etcdserverpb.ResponseOp, uint64, []backend.TxnWriteResult, error) {
@@ -631,7 +631,7 @@ func TestDeleteRangeAtomicallyRemovesLeaseAttachments(t *testing.T) {
 	require.Equal(t, []byte("leased"), response.PrevKvs[0].Value)
 	require.Equal(t, leaseID, response.PrevKvs[0].Lease)
 	_, err = shim.InternalGet(ctx, leaseAttachKey(leasedKey))
-	require.Error(t, err, "successful batch must remove the attachment")
+	require.ErrorIs(t, err, storage.ErrKeyNotFound, "successful batch must remove the attachment")
 	ttl, err := server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: leaseID, Keys: true})
 	require.NoError(t, err)
 	require.Empty(t, ttl.Keys)

@@ -16181,6 +16181,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   从只要求有错误收紧为 `storage.ErrKeyNotFound`。该门禁防止批量删除/事务删除路径在
   维护 lease TTL key 列表时漏清附件、误吞底层读错，或让 expired/revoke sweep 误判
   已删除 key 仍挂在 lease 上。
+- A1309 固定 uncertain/atomic lease attachment 清理错误语义：
+  committed-uncertain put 的 revoke 修复、Txn fast-shape 原子 put/delete，以及
+  DeleteRange 原子批删除，都必须把已删除 key 的 attachment 清理到真实不存在。本轮把
+  `TestCommittedUncertainLeasedPutReconcilesIndexBeforeRevoke`、
+  `TestTxnFastShapesMutateLeaseAttachmentsAtomically` 和
+  `TestDeleteRangeAtomicallyRemovesLeaseAttachments` 中相关内部读取断言收紧为
+  `storage.ErrKeyNotFound`。该门禁防止 uncertain commit reconciliation 和原子删除
+  路径把残留 attachment、损坏元数据或底层读错误判为成功清理。
 
 ### P2：运维兼容和长期验证
 
