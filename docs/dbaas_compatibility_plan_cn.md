@@ -15549,6 +15549,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   但 root 用户通过 `UserGrantRole(root, root)` 仍拥有隐式 admin 能力，可在 auth enabled 后执行
   raw `UserAdd`。本轮加强既有 clientv3 implicit-root 回归，防止直接 Auth API 调用方看到
   不存在的 root role 或 root admin 能力漂移。
+- A1202 固定 raw gRPC Auth delete/re-add 与密码轮换生命周期：
+  延续 A1136 的 user lifecycle 契约到 generated `etcdserverpb.AuthClient`：root raw `UserAdd`
+  后旧密码可 raw `Authenticate`，raw `UserDelete` 后旧密码必须返回 `InvalidArgument`/
+  authentication failed；同名用户 raw re-add 后旧密码恢复；连续 raw `UserChangePassword`
+  到 second、third 后，first/second 均失效且只有 third 可认证。本轮加强既有 clientv3
+  delete/re-add 与密码轮换回归，防止直接 Auth API 调用方看到用户代际或密码版本漂移。
 
 ### P2：运维兼容和长期验证
 
