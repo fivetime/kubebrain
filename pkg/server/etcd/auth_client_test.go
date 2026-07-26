@@ -1114,6 +1114,83 @@ func TestClientAuthPrivilegedMaintenanceAuthorizationPrecedesUnsupported(t *test
 	requireAuthClientError(t, rootDowngradeErr, codes.Unimplemented, downgradeUnsupportedMessage)
 }
 
+func TestClientAuthRangeStreamAuthorization(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterAuthServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	dialOptions := []grpc.DialOption{
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}),
+	}
+	newClient := func(username, password string) *clientv3.Client {
+		t.Helper()
+		client, err := clientv3.New(clientv3.Config{
+			Endpoints:   []string{"bufnet"},
+			DialTimeout: time.Second,
+			Username:    username,
+			Password:    password,
+			DialOptions: dialOptions,
+		})
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, client.Close()) })
+		return client
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	getStream := func(client *clientv3.Client, key string, options ...clientv3.OpOption) (*clientv3.GetResponse, error) {
+		t.Helper()
+		stream, err := client.GetStream(ctx, key, options...)
+		if err != nil {
+			return nil, err
+		}
+		response, err := clientv3.GetStreamToGetResponse(stream)
+		return (*clientv3.GetResponse)(response), err
+	}
+
+	bootstrap := newClient("", "")
+	_, err := bootstrap.Put(ctx, "/a1071/allowed/key", "allowed")
+	require.NoError(t, err)
+	_, err = bootstrap.Put(ctx, "/a1071/protected/key", "protected")
+	require.NoError(t, err)
+	require.NoError(t, addAuthUserRoleAndPermission(ctx, bootstrap, "root", "root-secret", "root", "", ""))
+	require.NoError(t, addAuthUserRoleAndPermission(
+		ctx,
+		bootstrap,
+		"alice",
+		"alice-secret",
+		"a1071-reader",
+		"/a1071/allowed/",
+		clientv3.GetPrefixRangeEnd("/a1071/allowed/"),
+	))
+	_, err = bootstrap.AuthEnable(ctx)
+	require.NoError(t, err)
+
+	_, anonymousErr := getStream(bootstrap, "/a1071/allowed/", clientv3.WithPrefix())
+	requireAuthClientError(t, anonymousErr, codes.Unknown, "etcdserver: user name is empty")
+	alice := newClient("alice", "alice-secret")
+	allowed, err := getStream(alice, "/a1071/allowed/", clientv3.WithPrefix())
+	require.NoError(t, err)
+	require.Len(t, allowed.Kvs, 1)
+	require.Equal(t, "allowed", string(allowed.Kvs[0].Value))
+	_, deniedErr := getStream(alice, "/a1071/protected/", clientv3.WithPrefix())
+	requireAuthClientError(t, deniedErr, codes.Unknown, "etcdserver: permission denied")
+
+	root := newClient("root", "root-secret")
+	all, err := getStream(root, "/a1071/", clientv3.WithPrefix())
+	require.NoError(t, err)
+	require.Len(t, all.Kvs, 2)
+	require.Equal(t, int64(2), all.Count)
+}
+
 func addAuthUserRoleAndPermission(
 	ctx context.Context,
 	client *clientv3.Client,

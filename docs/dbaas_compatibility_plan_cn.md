@@ -14602,6 +14602,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `PermissionDenied`，root `SnapshotWithVersion` 返回平台 `Unimplemented`；alice
   `MoveLeader`/`Downgrade` 暴露 `Unknown: permission denied`，root 则返回 KubeBrain
   对应的 `Unimplemented` 替代文案，补齐 public 特权运维面 Auth-before-unsupported 门禁。
+- A1071 固定 clientv3 Auth RangeStream 授权外观：
+  `auth` differential 覆盖 auth enabled 后匿名 RangeStream 返回 user empty，普通用户对
+  未授权 prefix 返回 permission denied，root 可读取完整范围；服务层已覆盖 raw
+  RangeStream 鉴权。本轮新增官方 clientv3 `GetStream` bufconn 回归，先写入
+  `/a1071/allowed/key` 和 `/a1071/protected/key`，alice 仅拥有 allowed prefix 读权限；
+  断言匿名 `GetStream` 暴露 `Unknown: user name is empty`，alice 对 allowed prefix
+  流式读取成功、对 protected prefix 暴露 `Unknown: permission denied`，root 对
+  `/a1071/` prefix 的 `GetStream` 返回 2 个 KV 且 Count=2，补齐大 LIST/RangeStream
+  public Auth wrapper 门禁。
 
 ### P2：运维兼容和长期验证
 
