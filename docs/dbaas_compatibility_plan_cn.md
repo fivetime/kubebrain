@@ -16020,6 +16020,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   interval validation 统一补齐 `ErrGRPCLeaseNotFound`、`ErrGRPCFutureRev`、
   `ErrGRPCTooManyOps` 和 `ErrGRPCDuplicateKey` 断言。该门禁防止 Txn raw protobuf
   调用方只看到 code/message，而丢失上游 v3rpc typed admission error。
+- A1286 固定 JWT ttl/key-size 启动配置错误文本：
+  A1277/A1278 已覆盖 JWT provider syntax、key mismatch 和 unsupported provider，本轮把
+  invalid `ttl` 与 oversized `priv-key`/`pub-key` 文件从 substring 断言收紧为 exact
+  error，固定 fail-closed 文案和 1 MiB 上限。该门禁防止认证启动配置重构后放宽
+  Secret/参数错误诊断，导致生产安装只看到模糊的 JWT provider failure。
 
 ### P2：运维兼容和长期验证
 

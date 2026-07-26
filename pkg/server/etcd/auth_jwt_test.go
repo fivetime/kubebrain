@@ -191,21 +191,21 @@ func TestJWTProviderNonPositiveTTLMatchesEtcd(t *testing.T) {
 		})
 	}
 
-	require.ErrorContains(t,
+	require.EqualError(t,
 		ValidateAuthTokenProvider("jwt,sign-method=HS256,priv-key="+secret+",ttl=forever"),
-		"invalid JWT ttl",
+		`invalid JWT ttl "forever"`,
 	)
 }
 
 func TestJWTProviderRejectsOversizedKeyFiles(t *testing.T) {
 	oversized := writeJWTKey(t, "oversized", make([]byte, maxJWTKeyBytes+1))
-	require.ErrorContains(t,
+	require.EqualError(t,
 		ValidateAuthTokenProvider("jwt,sign-method=HS256,priv-key="+oversized),
-		"read JWT priv-key: key file exceeds",
+		"read JWT priv-key: key file exceeds 1048576 bytes",
 	)
-	require.ErrorContains(t,
+	require.EqualError(t,
 		ValidateAuthTokenProvider("jwt,sign-method=RS256,pub-key="+oversized),
-		"read JWT pub-key: key file exceeds",
+		"read JWT pub-key: key file exceeds 1048576 bytes",
 	)
 }
 
