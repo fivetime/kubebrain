@@ -379,6 +379,52 @@ func TestClientRangeCountOnlyLimitAcrossTombstones(t *testing.T) {
 	assertCountOnly("after-recreate", 0, 4)
 }
 
+func TestClientRangeCountOnlyTakesPrecedenceOverKeysOnly(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	prefix := fmt.Sprintf("/a1053/range-count-keys-client/%d/", time.Now().UnixNano())
+	for _, key := range []string{"a", "b", "c"} {
+		_, err = client.Put(ctx, prefix+key, "")
+		require.NoError(t, err)
+	}
+
+	response, err := client.Get(
+		ctx,
+		prefix,
+		clientv3.WithPrefix(),
+		clientv3.WithKeysOnly(),
+		clientv3.WithCountOnly(),
+		clientv3.WithLimit(1),
+	)
+	require.NoError(t, err)
+	require.NotNil(t, response.Header)
+	require.Equal(t, int64(3), response.Count)
+	require.Empty(t, response.Kvs)
+	require.False(t, response.More)
+}
+
 func TestClientRangeKeysOnlyLimitDifferentialPages(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

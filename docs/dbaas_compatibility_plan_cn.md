@@ -14458,6 +14458,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   PrevKV。本轮新增官方 clientv3 bufconn 回归，用 `client.Delete` 复现普通半开区间删除、
   历史读取、当前读取、equal empty range 和 missing key，断言 header revision、Deleted、
   PrevKV 与最终状态，补齐 A1043 高位边界之外的日常 DeleteRange wrapper 门禁。
+- A1053 固定 clientv3 CountOnly 优先于 KeysOnly/Limit：
+  `range_keys_count` differential 与上游 `TestKVGetKeysOnlyWithCountOnly` 证明
+  CountOnly 必须抑制 KV payload，即使请求同时携带 KeysOnly；CountOnly 还必须忽略 Limit，
+  返回完整 Count 且 `More=false`。A1020 已补服务层和 raw gRPC 请求，本轮新增官方
+  clientv3 bufconn 回归，通过 `client.Get(prefix, WithPrefix(), WithKeysOnly(),
+  WithCountOnly(), WithLimit(1))` 断言 `Count=3`、无 KVs、`More=false` 和 header 非空，
+  防止 public option builder 或 wrapper 层把 KeysOnly/Limit 优先级错误地压过 CountOnly。
 
 ### P2：运维兼容和长期验证
 
