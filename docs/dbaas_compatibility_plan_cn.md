@@ -15691,6 +15691,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   missing/duplicate user/role 等 repository 边界固定为同时满足 `errors.Is`、direct
   `codes.Unknown` 和 reference message。该门禁防止 auth repository 或 manager helper 重构后
   只保留 typed error，导致上层 direct caller 在映射到 raw/clientv3 前已经出现 message 漂移。
+- A1224 固定 Auth authorizer direct 错误三件套：
+  A1222 已覆盖 KV/Txn 服务层 auth 错误外观，本轮把更底层 `authCaller`/authorizer 的 token
+  解析、重复 metadata 首 token、缺身份、permission union/gap、auth revision race、client
+  certificate gateway 禁用和 follower proxy 当前权限检查等拒绝路径固定为同时满足
+  `errors.Is`、direct `codes.Unknown` 和 reference message。该门禁防止 auth metadata 解析、
+  permission merge 或 certificate identity forwarding 重构后只保留 typed error，导致服务层
+  入口之前的错误 message 漂移。
 
 ### P2：运维兼容和长期验证
 

@@ -12,9 +12,11 @@ import (
 	"go.etcd.io/etcd/api/v3/authpb"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/peer"
+	"google.golang.org/grpc/status"
 
 	"github.com/kubewharf/kubebrain/pkg/transportidentity"
 )
@@ -93,9 +95,9 @@ func TestAuthCallerAndPermissionRangeUnion(t *testing.T) {
 	caller, err := server.authCallerFromContext(metadata.NewIncomingContext(ctx, metadata.Pairs(rpctypes.TokenFieldNameGRPC, token)))
 	require.NoError(t, err)
 	require.NoError(t, caller.require([]byte("b"), []byte("y"), authpb.READ), "adjacent permissions from separate roles must merge")
-	require.ErrorIs(t, caller.require([]byte("b"), []byte("y"), authpb.WRITE), rpctypes.ErrPermissionDenied)
+	requireAuthAuthorizerError(t, caller.require([]byte("b"), []byte("y"), authpb.WRITE), rpctypes.ErrPermissionDenied, codes.Unknown, "etcdserver: permission denied")
 	require.NoError(t, caller.require([]byte("m"), nil, authpb.WRITE))
-	require.ErrorIs(t, caller.require([]byte("z"), nil, authpb.READ), rpctypes.ErrPermissionDenied)
+	requireAuthAuthorizerError(t, caller.require([]byte("z"), nil, authpb.READ), rpctypes.ErrPermissionDenied, codes.Unknown, "etcdserver: permission denied")
 }
 
 func TestAuthCallerAcceptsBearerPrefixedToken(t *testing.T) {
@@ -128,7 +130,7 @@ func TestAuthCallerAcceptsBearerPrefixedToken(t *testing.T) {
 		ctx, metadata.Pairs(rpctypes.TokenFieldNameGRPC, "bearer "+token),
 	)
 	_, err := server.authCallerFromContext(incoming)
-	require.ErrorIs(t, err, rpctypes.ErrInvalidAuthToken)
+	requireAuthAuthorizerError(t, err, rpctypes.ErrInvalidAuthToken, codes.Unknown, "etcdserver: invalid auth token")
 }
 
 func TestAuthCallerUsesFirstRepeatedMetadataToken(t *testing.T) {
@@ -154,7 +156,7 @@ func TestAuthCallerUsesFirstRepeatedMetadataToken(t *testing.T) {
 		ctx, metadata.Pairs(rpctypes.TokenFieldNameGRPC, "", rpctypes.TokenFieldNameGRPC, token),
 	)
 	_, err := server.authCallerFromContext(incoming)
-	require.ErrorIs(t, err, rpctypes.ErrInvalidAuthToken)
+	requireAuthAuthorizerError(t, err, rpctypes.ErrInvalidAuthToken, codes.Unknown, "etcdserver: invalid auth token")
 }
 
 func TestAuthCallerFailsClosedAndDisabledBypasses(t *testing.T) {
@@ -167,7 +169,7 @@ func TestAuthCallerFailsClosedAndDisabledBypasses(t *testing.T) {
 
 	_, _ = bootstrapAuthForToken(t, server)
 	_, err = server.authCallerFromContext(ctx)
-	require.ErrorIs(t, err, rpctypes.ErrUserEmpty)
+	requireAuthAuthorizerError(t, err, rpctypes.ErrUserEmpty, codes.Unknown, "etcdserver: user name is empty")
 }
 
 func TestAuthorizedRangeRejectsAuthMutationDuringRead(t *testing.T) {
@@ -185,10 +187,10 @@ func TestAuthorizedRangeRejectsAuthMutationDuringRead(t *testing.T) {
 	server.backend = shim
 
 	_, err = server.Range(aliceCtx, &etcdserverpb.RangeRequest{Key: []byte("/allowed/a")})
-	require.ErrorIs(t, err, rpctypes.ErrAuthOldRevision)
+	requireAuthAuthorizerError(t, err, rpctypes.ErrAuthOldRevision, codes.Unknown, "etcdserver: revision of auth store is old")
 	require.NoError(t, mutationErr)
 	_, err = server.Range(aliceCtx, &etcdserverpb.RangeRequest{Key: []byte("/allowed/a")})
-	require.ErrorIs(t, err, rpctypes.ErrPermissionDenied)
+	requireAuthAuthorizerError(t, err, rpctypes.ErrPermissionDenied, codes.Unknown, "etcdserver: permission denied")
 }
 
 func TestAuthorizedRangeStreamRejectsAuthMutationDuringRead(t *testing.T) {
@@ -206,7 +208,7 @@ func TestAuthorizedRangeStreamRejectsAuthMutationDuringRead(t *testing.T) {
 	server.backend = shim
 	stream := &fakeRangeStreamServer{ctx: aliceCtx}
 	err = server.RangeStream(&etcdserverpb.RangeRequest{Key: []byte("/allowed/"), RangeEnd: []byte("/allowed0")}, stream)
-	require.ErrorIs(t, err, rpctypes.ErrAuthOldRevision)
+	requireAuthAuthorizerError(t, err, rpctypes.ErrAuthOldRevision, codes.Unknown, "etcdserver: revision of auth store is old")
 	require.NoError(t, mutationErr)
 	require.NotEmpty(t, stream.sent, "the mutation must occur after streaming has begun")
 }
@@ -223,7 +225,7 @@ func TestAuthorizedPutAtomicallyRejectsAuthMutationBeforeCommit(t *testing.T) {
 	}
 	server.backend = shim
 	_, err := server.Put(aliceCtx, &etcdserverpb.PutRequest{Key: []byte("/allowed/raced"), Value: []byte("must-not-commit")})
-	require.ErrorIs(t, err, rpctypes.ErrAuthOldRevision)
+	requireAuthAuthorizerError(t, err, rpctypes.ErrAuthOldRevision, codes.Unknown, "etcdserver: revision of auth store is old")
 	require.NoError(t, mutationErr)
 
 	stored, err := server.backend.Get(context.Background(), &etcdserverpb.RangeRequest{Key: []byte("/allowed/raced")})
@@ -278,7 +280,7 @@ func TestAuthCallerDoesNotFallbackFromInvalidTokenToClientCertificate(t *testing
 	ctx := verifiedTLSContext(context.Background(), "alice")
 	ctx = metadata.NewIncomingContext(ctx, metadata.Pairs(rpctypes.TokenFieldNameGRPC, "invalid"))
 	_, err := server.authCallerFromContext(ctx)
-	require.ErrorIs(t, err, rpctypes.ErrInvalidAuthToken)
+	requireAuthAuthorizerError(t, err, rpctypes.ErrInvalidAuthToken, codes.Unknown, "etcdserver: invalid auth token")
 }
 
 func TestAuthCallerPreservesUnknownCertificateIdentityForAuthorization(t *testing.T) {
@@ -290,7 +292,7 @@ func TestAuthCallerPreservesUnknownCertificateIdentityForAuthorization(t *testin
 	caller, err := server.authCallerFromContext(verifiedTLSContext(context.Background(), "external-cn"))
 	require.NoError(t, err)
 	require.Equal(t, "external-cn", caller.username)
-	require.ErrorIs(t, caller.require([]byte("/allowed/key"), nil, authpb.READ), rpctypes.ErrPermissionDenied)
+	requireAuthAuthorizerError(t, caller.require([]byte("/allowed/key"), nil, authpb.READ), rpctypes.ErrPermissionDenied, codes.Unknown, "etcdserver: permission denied")
 	forwarded, err := server.forwardAuthToken(context.Background(), caller)
 	require.NoError(t, err)
 	md, ok := metadata.FromOutgoingContext(forwarded)
@@ -312,7 +314,7 @@ func TestAuthCallerRejectsClientCertificateOnGRPCGatewayRequest(t *testing.T) {
 	ctx := verifiedTLSContext(context.Background(), "alice")
 	ctx = metadata.NewIncomingContext(ctx, metadata.Pairs("grpcgateway-accept", "application/json"))
 	_, err := server.authCallerFromContext(ctx)
-	require.ErrorIs(t, err, rpctypes.ErrUserEmpty)
+	requireAuthAuthorizerError(t, err, rpctypes.ErrUserEmpty, codes.Unknown, "etcdserver: user name is empty")
 }
 
 func TestClientCertificateIdentitySurvivesFollowerProxy(t *testing.T) {
@@ -367,7 +369,7 @@ func TestForwardedCertificateIdentityUsesCurrentPermissions(t *testing.T) {
 	leaderCaller, err := server.authCallerFromContext(forwardedCtx)
 	require.NoError(t, err, "certificate identity must survive unrelated auth revision changes")
 	require.Equal(t, "alice", leaderCaller.username)
-	require.ErrorIs(t, leaderCaller.require([]byte("/allowed/key"), nil, authpb.WRITE), rpctypes.ErrPermissionDenied)
+	requireAuthAuthorizerError(t, leaderCaller.require([]byte("/allowed/key"), nil, authpb.WRITE), rpctypes.ErrPermissionDenied, codes.Unknown, "etcdserver: permission denied")
 }
 
 func TestAuthPermissionOpenEndedAndGap(t *testing.T) {
@@ -382,4 +384,11 @@ func TestAuthPermissionOpenEndedAndGap(t *testing.T) {
 	require.True(t, caller.permits([]byte("zz"), nil, authpb.READ))
 	require.False(t, caller.permits([]byte("b"), []byte("z"), authpb.READ), "a gap between m and n must deny the whole range")
 	require.False(t, caller.permits([]byte("n"), []byte{0}, authpb.WRITE))
+}
+
+func requireAuthAuthorizerError(t *testing.T, err error, want error, code codes.Code, message string) {
+	t.Helper()
+	require.ErrorIs(t, err, want)
+	require.Equal(t, code, status.Code(err))
+	require.Equal(t, message, status.Convert(err).Message())
 }
