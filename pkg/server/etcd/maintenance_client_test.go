@@ -468,6 +468,52 @@ func TestRawGRPCCombinedAlarmBlocksWritesAndRecovers(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestRawGRPCHashStabilityAndWriteSensitivity(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterMaintenanceServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///hash-client",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	kv := etcdserverpb.NewKVClient(conn)
+	maintenance := etcdserverpb.NewMaintenanceClient(conn)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	key := []byte("/a1094/hash-client/key")
+	put, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("before")})
+	require.NoError(t, err)
+
+	first, err := maintenance.Hash(ctx, &etcdserverpb.HashRequest{})
+	require.NoError(t, err)
+	require.NotZero(t, first.Hash)
+	requireRawHashKVHeaderAtOrAfter(t, first.Header, put.Header.Revision)
+
+	second, err := maintenance.Hash(ctx, &etcdserverpb.HashRequest{})
+	require.NoError(t, err)
+	require.Equal(t, first.Header.Revision, second.Header.Revision)
+	require.Equal(t, first.Hash, second.Hash)
+
+	update, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("after")})
+	require.NoError(t, err)
+	third, err := maintenance.Hash(ctx, &etcdserverpb.HashRequest{})
+	require.NoError(t, err)
+	requireRawHashKVHeaderAtOrAfter(t, third.Header, update.Header.Revision)
+	require.Greater(t, third.Header.Revision, second.Header.Revision)
+	require.NotEqual(t, second.Hash, third.Hash)
+}
+
 func TestRawGRPCHashKVRevisionBoundaries(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

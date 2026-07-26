@@ -14767,6 +14767,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   必须保留 `0xff`。本轮在 raw gRPC 与 official clientv3 二进制 mutation 回归中，补充
   Txn 删除 NUL 前缀后的 `0x01` point read 断言，与既有 `0xff` 保留断言配对，锁住
   用户 key 编码和左闭右开 range end 语义。
+- A1094 固定 raw gRPC Maintenance.Hash 稳定性与写入敏感性门禁：
+  `hash` differential 要求 legacy `Maintenance.Hash` 在无写入时 header revision/hash
+  保持稳定，写入后 header revision 必须覆盖新写入且 hash 改变；这与 HashKV 数值契约
+  不同，主要保护旧客户端的健康检查和一致性探测路径。本轮新增 raw gRPC bufconn 回归：
+  Put 初值后连续两次 Hash 断言 revision/hash 不变，再更新同 key 并断言第三次 Hash 的
+  header revision 前进且 hash 不同。
 
 ### P2：运维兼容和长期验证
 
