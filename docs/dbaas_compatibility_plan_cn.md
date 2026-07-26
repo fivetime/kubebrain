@@ -15489,6 +15489,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   成功且 terminal `Count` 保持完整。本轮加强既有 RangeStream auth 回归，防止直接 KV
   streaming 调用方绕过 clientv3 adapter 后看到错误的 status code、message 或 terminal
   metadata。
+- A1193 固定 raw gRPC KV/Txn permission denied 外观：
+  延续 A1063 的 clientv3 数据不改写契约到 generated `etcdserverpb.KVClient`：alice 对授权
+  key 的 raw `Range` 成功；对未授权 key 的 raw `Range`、`Put`、`DeleteRange(PrevKv)` 以及
+  两层嵌套 raw `Txn` Put/DeleteRange 必须返回 `PermissionDenied`，且 root 随后读取原值不变。
+  本轮加强既有 KV/Txn auth 回归，防止直接 protobuf 请求绕过 clientv3 wrapper 后破坏
+  status code、递归 request-op 授权或拒绝写的原子性。
 
 ### P2：运维兼容和长期验证
 

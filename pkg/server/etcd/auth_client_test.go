@@ -598,6 +598,7 @@ func TestClientAuthKVDeniedOperationsPreserveData(t *testing.T) {
 
 	root := newClient("root", "root-secret")
 	alice := newClient("alice", "alice-secret")
+	rawAliceKV := etcdserverpb.NewKVClient(alice.ActiveConnection())
 	_, err = root.Put(ctx, "/a1063/allowed/key", "allowed")
 	require.NoError(t, err)
 	_, err = root.Put(ctx, "/a1063/denied/put", "before-put")
@@ -613,27 +614,65 @@ func TestClientAuthKVDeniedOperationsPreserveData(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, allowed.Kvs, 1)
 	require.Equal(t, "allowed", string(allowed.Kvs[0].Value))
+	rawAllowed, err := rawAliceKV.Range(ctx, &etcdserverpb.RangeRequest{Key: []byte("/a1063/allowed/key")})
+	require.NoError(t, err)
+	require.Len(t, rawAllowed.Kvs, 1)
+	require.Equal(t, "allowed", string(rawAllowed.Kvs[0].Value))
 
 	_, deniedGetErr := alice.Get(ctx, "/a1063/denied/put")
 	requireAuthClientError(t, deniedGetErr, codes.Unknown, "etcdserver: permission denied", rpctypes.ErrPermissionDenied)
+	_, rawDeniedRangeErr := rawAliceKV.Range(ctx, &etcdserverpb.RangeRequest{Key: []byte("/a1063/denied/put")})
+	requireAuthClientError(t, rawDeniedRangeErr, codes.PermissionDenied, "etcdserver: permission denied")
+
 	_, deniedPutErr := alice.Put(ctx, "/a1063/denied/put", "after-put")
 	requireAuthClientError(t, deniedPutErr, codes.Unknown, "etcdserver: permission denied", rpctypes.ErrPermissionDenied)
+	_, rawDeniedPutErr := rawAliceKV.Put(ctx, &etcdserverpb.PutRequest{
+		Key:   []byte("/a1063/denied/put"),
+		Value: []byte("after-raw-put"),
+	})
+	requireAuthClientError(t, rawDeniedPutErr, codes.PermissionDenied, "etcdserver: permission denied")
+
 	_, deniedDeleteErr := alice.Delete(ctx, "/a1063/denied/delete", clientv3.WithPrevKV())
 	requireAuthClientError(t, deniedDeleteErr, codes.Unknown, "etcdserver: permission denied", rpctypes.ErrPermissionDenied)
+	_, rawDeniedDeleteErr := rawAliceKV.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{
+		Key:    []byte("/a1063/denied/delete"),
+		PrevKv: true,
+	})
+	requireAuthClientError(t, rawDeniedDeleteErr, codes.PermissionDenied, "etcdserver: permission denied")
 
 	twoLevelNested := func(op clientv3.Op) clientv3.Op {
 		return clientv3.OpTxn(nil, []clientv3.Op{
 			clientv3.OpTxn(nil, []clientv3.Op{op}, nil),
 		}, nil)
 	}
+	rawTwoLevelNested := func(op *etcdserverpb.RequestOp) *etcdserverpb.TxnRequest {
+		return &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{{
+			Request: &etcdserverpb.RequestOp_RequestTxn{RequestTxn: &etcdserverpb.TxnRequest{
+				Success: []*etcdserverpb.RequestOp{op},
+			}},
+		}}}
+	}
 	_, nestedDeniedPutErr := alice.Txn(ctx).Then(
 		twoLevelNested(clientv3.OpPut("/a1063/denied/txn-put", "after-txn-put")),
 	).Commit()
 	requireAuthClientError(t, nestedDeniedPutErr, codes.Unknown, "etcdserver: permission denied", rpctypes.ErrPermissionDenied)
+	_, rawNestedDeniedPutErr := rawAliceKV.Txn(ctx, rawTwoLevelNested(rawGRPCPutRequestOp(&etcdserverpb.PutRequest{
+		Key:   []byte("/a1063/denied/txn-put"),
+		Value: []byte("after-raw-txn-put"),
+	})))
+	requireAuthClientError(t, rawNestedDeniedPutErr, codes.PermissionDenied, "etcdserver: permission denied")
+
 	_, nestedDeniedDeleteErr := alice.Txn(ctx).Then(
 		twoLevelNested(clientv3.OpDelete("/a1063/denied/txn-delete", clientv3.WithPrevKV())),
 	).Commit()
 	requireAuthClientError(t, nestedDeniedDeleteErr, codes.Unknown, "etcdserver: permission denied", rpctypes.ErrPermissionDenied)
+	_, rawNestedDeniedDeleteErr := rawAliceKV.Txn(ctx, rawTwoLevelNested(&etcdserverpb.RequestOp{
+		Request: &etcdserverpb.RequestOp_RequestDeleteRange{RequestDeleteRange: &etcdserverpb.DeleteRangeRequest{
+			Key:    []byte("/a1063/denied/txn-delete"),
+			PrevKv: true,
+		}},
+	}))
+	requireAuthClientError(t, rawNestedDeniedDeleteErr, codes.PermissionDenied, "etcdserver: permission denied")
 
 	for key, value := range map[string]string{
 		"/a1063/denied/put":        "before-put",
