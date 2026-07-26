@@ -15955,6 +15955,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   service 的 missing token、invalid token、permission denied、RBAC permission revoke 后拒绝，
   以及 token 代际失效统一到 high-level `rpctypes.Err*`、reference code 和 exact message helper。
   该门禁防止 concurrency wrapper 重构后只保留 Unknown/message，漏掉 clientv3 可识别 typed error。
+- A1274 固定 concurrency/auth generic status 错误非空门禁：
+  A1273 已覆盖 concurrency service auth typed errors，本轮把 Lock/Election 参数缺失、
+  election no-leader 等非 typed generic errors，以及 auth no-password 特例统一到
+  exact status helper。该门禁防止 concurrency service 或 authGRPCError 重构后返回 nil
+  或漂移 code/message，破坏 etcd 兼容的 generic error 外观。
 
 ### P2：运维兼容和长期验证
 

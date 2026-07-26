@@ -36,8 +36,14 @@ func TestAuthGRPCErrorMapsPublicStatusCodes(t *testing.T) {
 
 func TestAuthGRPCErrorPreservesEtcdNoPasswordBehavior(t *testing.T) {
 	err := authGRPCError(errNoPasswordUser)
-	require.Equal(t, codes.Unknown, status.Code(err))
-	require.Equal(t, errNoPasswordUser.Error(), status.Convert(err).Message())
+	requireAuthGRPCStatusError(t, err, codes.Unknown, errNoPasswordUser.Error())
+}
+
+func requireAuthGRPCStatusError(t *testing.T, err error, code codes.Code, message string) {
+	t.Helper()
+	require.Error(t, err)
+	require.Equal(t, code, status.Code(err))
+	require.Equal(t, message, status.Convert(err).Message())
 }
 
 func TestDedicatedConcurrencyMethodClassification(t *testing.T) {

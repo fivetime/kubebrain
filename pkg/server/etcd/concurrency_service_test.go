@@ -479,6 +479,13 @@ func requireConcurrencyClientError(t *testing.T, err error, want error, code cod
 	require.Equal(t, message, status.Convert(err).Message())
 }
 
+func requireConcurrencyStatusError(t *testing.T, err error, code codes.Code, message string) {
+	t.Helper()
+	require.Error(t, err)
+	require.Equal(t, code, status.Code(err))
+	require.Equal(t, message, status.Convert(err).Message())
+}
+
 func TestDedicatedConcurrencyCancellationRemovesWaiters(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer func() {
@@ -662,8 +669,7 @@ func TestDedicatedConcurrencyServiceErrorsMatchEtcd(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			err := test.call()
-			require.Equal(t, codes.Unknown, status.Code(err))
-			require.Equal(t, test.message, status.Convert(err).Message())
+			requireConcurrencyStatusError(t, err, codes.Unknown, test.message)
 		})
 	}
 }
