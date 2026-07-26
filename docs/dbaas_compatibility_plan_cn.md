@@ -14161,6 +14161,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   event 的 response header、event mod revision 都等于 revoke header revision，事件按
   key 顺序返回并携带原 lease PrevKV，防止 lease revoke 实现退回逐 key 多 revision 删除、
   watch 翻译丢失 PrevKV，或 client wrapper 暴露非原子删除历史。
+- A1014 固定 raw gRPC LeaseKeepAlive/Revoke 边界外观：
+  `lease_keepalive_revoke_boundary` differential 证明 raw streaming KeepAlive 对 0 和未知
+  lease ID 不返回错误而返回同 ID、`TTL=0`、正 header；对 `-1`、`math.MinInt64`、
+  `math.MaxInt64` live lease 返回正 TTL；Revoke 成功后重复 Revoke、0 和未知 ID 必须是
+  raw `NotFound` 与 `etcdserver: requested lease not found`。本轮新增 bufconn raw gRPC
+  回归，注册真实 Lease 服务后对三类 signed ID grant，复用同一 `LeaseKeepAlive` stream
+  依次验证 missing/live 响应，再执行 Revoke/重复 Revoke/zero/unknown 矩阵，并在 revoke
+  后新开 keepalive stream 断言 signed ID 退化为 missing TTL=0，防止 streaming handler、
+  signed ID 边界或 revoke 错误映射与 reference etcd 分叉。
 
 ### P2：运维兼容和长期验证
 

@@ -28,7 +28,9 @@ import (
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 )
 
@@ -283,6 +285,94 @@ func TestRawGRPCLeaseSignedIDBoundaries(t *testing.T) {
 			require.GreaterOrEqual(t, unknown.Header.Revision, put.Header.Revision)
 		})
 	}
+}
+
+func TestRawGRPCLeaseKeepAliveRevokeBoundaries(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterLeaseServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///lease-keepalive-boundary-client",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	lease := etcdserverpb.NewLeaseClient(conn)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	liveIDs := []int64{-1, math.MinInt64, math.MaxInt64}
+	for _, id := range liveIDs {
+		grant, grantErr := lease.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{ID: id, TTL: 30})
+		require.NoError(t, grantErr)
+		require.Equal(t, id, grant.ID)
+		requireClientLeaseHeaderWellFormed(t, grant.Header)
+		t.Cleanup(func() {
+			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cleanupCancel()
+			_, _ = lease.LeaseRevoke(cleanupCtx, &etcdserverpb.LeaseRevokeRequest{ID: id})
+		})
+	}
+
+	stream, err := lease.LeaseKeepAlive(ctx)
+	require.NoError(t, err)
+	for _, tt := range []struct {
+		name string
+		id   int64
+		live bool
+	}{
+		{name: "zero", id: 0},
+		{name: "unknown", id: 13_400},
+		{name: "negative-one", id: -1, live: true},
+		{name: "minimum", id: math.MinInt64, live: true},
+		{name: "maximum", id: math.MaxInt64, live: true},
+	} {
+		t.Run("keepalive-"+tt.name, func(t *testing.T) {
+			require.NoError(t, stream.Send(&etcdserverpb.LeaseKeepAliveRequest{ID: tt.id}))
+			response, recvErr := stream.Recv()
+			require.NoError(t, recvErr)
+			require.Equal(t, tt.id, response.ID)
+			requireClientLeaseHeaderWellFormed(t, response.Header)
+			if tt.live {
+				require.Positive(t, response.TTL)
+				require.LessOrEqual(t, response.TTL, int64(30))
+			} else {
+				require.Zero(t, response.TTL)
+			}
+		})
+	}
+	require.NoError(t, stream.CloseSend())
+
+	for _, id := range liveIDs {
+		revoked, err := lease.LeaseRevoke(ctx, &etcdserverpb.LeaseRevokeRequest{ID: id})
+		require.NoError(t, err)
+		requireClientLeaseHeaderWellFormed(t, revoked.Header)
+		_, err = lease.LeaseRevoke(ctx, &etcdserverpb.LeaseRevokeRequest{ID: id})
+		require.Equal(t, codes.NotFound, status.Code(err))
+		require.Equal(t, "etcdserver: requested lease not found", status.Convert(err).Message())
+	}
+	for _, id := range []int64{0, 13_400} {
+		_, err := lease.LeaseRevoke(ctx, &etcdserverpb.LeaseRevokeRequest{ID: id})
+		require.Equal(t, codes.NotFound, status.Code(err))
+		require.Equal(t, "etcdserver: requested lease not found", status.Convert(err).Message())
+	}
+
+	afterRevoke, err := lease.LeaseKeepAlive(ctx)
+	require.NoError(t, err)
+	require.NoError(t, afterRevoke.Send(&etcdserverpb.LeaseKeepAliveRequest{ID: -1}))
+	missing, err := afterRevoke.Recv()
+	require.NoError(t, err)
+	require.Equal(t, int64(-1), missing.ID)
+	require.Zero(t, missing.TTL)
+	requireClientLeaseHeaderWellFormed(t, missing.Header)
+	require.NoError(t, afterRevoke.CloseSend())
 }
 
 func requireClientLeaseHeaderWellFormed(t *testing.T, header *etcdserverpb.ResponseHeader) {
