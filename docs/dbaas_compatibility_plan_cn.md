@@ -14994,6 +14994,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `Lock` 后首次 `Unlock` 成功并删除 mutex key；再次 `Unlock` 仍返回
   `ErrLockReleased`。该门禁防止 lock key cleanup、local mutex key 缓存或 error wrapping
   重构破坏上层 recipe 对重复释放/未持锁释放的可判定错误语义。
+- A1122 固定 raw gRPC RangeStream 分块 Limit/Count 终端语义：
+  对照 `/root/etcd/tests/integration/v3_grpc_test.go:TestV3RangeStreamCount`，A102/A244-A246
+  已在服务层和 clientv3 common shape 中覆盖 RangeStream 分块、Limit 和大值进展，但缺少
+  直接 raw gRPC `KVClient.RangeStream` 的 wire 外观门禁。本轮新增 bufconn raw gRPC 回归，
+  将 `maxRequestBytes` 压到 256 后写入 12 个约 100B value，并以 `Limit=5` 流式读取；
+  要求中间 chunk 不带 header/Count/More，返回 key 只含前 5 个，最终 header-only chunk
+  回显 `Count=12` 且 `More=true`。该门禁防止 server-streaming 拆包、bounded scanner 或
+  terminal metadata 封装重构让 kube-apiserver 大 LIST 在分页边界看到错误总数或误判是否还有数据。
 
 ### P2：运维兼容和长期验证
 

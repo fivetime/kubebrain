@@ -17,6 +17,7 @@ package etcd
 import (
 	"context"
 	"fmt"
+	"io"
 	"math"
 	"net"
 	"testing"
@@ -237,6 +238,81 @@ func TestClientRangeStreamValidationErrorsMatchEtcd(t *testing.T) {
 			require.Equal(t, test.message, status.Convert(err).Message())
 		})
 	}
+}
+
+func TestRawGRPCRangeStreamLimitCountAcrossChunks(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	server.SetRequestLimits(defaultMaxTxnOps, 256)
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///bufnet",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	client := etcdserverpb.NewKVClient(conn)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	prefix := fmt.Sprintf("/a1122/rangestream-count/%d/", time.Now().UnixNano())
+	rangeEnd := clientv3.GetPrefixRangeEnd(prefix)
+	const totalKeys = 12
+	for index := 0; index < totalKeys; index++ {
+		_, err = client.Put(ctx, &etcdserverpb.PutRequest{
+			Key:   []byte(fmt.Sprintf("%s%02d", prefix, index)),
+			Value: []byte(fmt.Sprintf("value-%02d-%090d", index, index)),
+		})
+		require.NoError(t, err)
+	}
+
+	stream, err := client.RangeStream(ctx, &etcdserverpb.RangeRequest{
+		Key:      []byte(prefix),
+		RangeEnd: []byte(rangeEnd),
+		Limit:    5,
+	})
+	require.NoError(t, err)
+
+	var keys []string
+	chunks := 0
+	var terminal *etcdserverpb.RangeResponse
+	for {
+		chunk, recvErr := stream.Recv()
+		if recvErr != nil {
+			require.ErrorIs(t, recvErr, io.EOF)
+			break
+		}
+		chunks++
+		response := chunk.GetRangeResponse()
+		require.NotNil(t, response)
+		if response.Header == nil {
+			require.Zero(t, response.Count)
+			require.False(t, response.More)
+		} else {
+			require.Nil(t, terminal, "RangeStream must send one terminal metadata chunk")
+			terminal = response
+		}
+		for _, kv := range response.Kvs {
+			keys = append(keys, string(kv.Key))
+		}
+	}
+	require.Greater(t, chunks, 1)
+	require.Len(t, keys, 5)
+	for index, key := range keys {
+		require.Equal(t, fmt.Sprintf("%s%02d", prefix, index), key)
+	}
+	require.NotNil(t, terminal)
+	require.Equal(t, int64(totalKeys), terminal.Count)
+	require.True(t, terminal.More)
+	require.Empty(t, terminal.Kvs)
 }
 
 func TestClientRangeStreamRevisionBoundaries(t *testing.T) {
