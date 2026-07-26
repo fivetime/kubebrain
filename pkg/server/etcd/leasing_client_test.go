@@ -126,3 +126,165 @@ func TestClientLeasingFromKeyDeleteRemovesOwnerCache(t *testing.T) {
 		require.Len(t, owner.Kvs, 1)
 	}
 }
+
+func TestClientLeasingCachedCompareTypedDoAndNestedBranches(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterWatchServer(grpcServer, server)
+	etcdserverpb.RegisterLeaseServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	prefix := fmt.Sprintf("/a978/leasing-branching/%d/", time.Now().UnixNano())
+	leased, closeLeased, err := leasing.NewKV(client, prefix+"owners/")
+	require.NoError(t, err)
+	t.Cleanup(closeLeased)
+
+	compareKey := prefix + "compare"
+	_, err = client.Put(ctx, compareKey, "abc")
+	require.NoError(t, err)
+	cached, err := leased.Get(ctx, compareKey)
+	require.NoError(t, err)
+	require.Len(t, cached.Kvs, 1)
+	cachedKV := cached.Kvs[0]
+	comparisons := []struct {
+		compare clientv3.Cmp
+		want    bool
+	}{
+		{clientv3.Compare(clientv3.Value(compareKey), "=", "abc"), true},
+		{clientv3.Compare(clientv3.CreateRevision(compareKey), "=", cachedKV.CreateRevision), true},
+		{clientv3.Compare(clientv3.ModRevision(compareKey), "=", cachedKV.ModRevision), true},
+		{clientv3.Compare(clientv3.Version(compareKey), "=", cachedKV.Version), true},
+		{clientv3.Compare(clientv3.Value(compareKey), ">", "abc"), false},
+		{clientv3.Compare(clientv3.CreateRevision(compareKey), ">", cachedKV.CreateRevision), false},
+		{clientv3.Compare(clientv3.ModRevision(compareKey), "<", cachedKV.ModRevision), false},
+		{clientv3.Compare(clientv3.Version(compareKey), "<", cachedKV.Version), false},
+	}
+	for index, comparison := range comparisons {
+		response, compareErr := leased.Txn(ctx).
+			If(comparison.compare).
+			Then(clientv3.OpGet(compareKey)).
+			Commit()
+		require.NoError(t, compareErr, "comparison %d", index)
+		require.Equal(t, comparison.want, response.Succeeded, "comparison %d", index)
+		expectedResponses := 0
+		if comparison.want {
+			expectedResponses = 1
+		}
+		require.Len(t, response.Responses, expectedResponses, "comparison %d", index)
+	}
+
+	typedKey := prefix + "typed/value"
+	typedOps := []clientv3.Op{
+		clientv3.OpTxn(nil, nil, nil),
+		clientv3.OpGet(typedKey),
+		clientv3.OpPut(typedKey, "typed"),
+		clientv3.OpDelete(prefix+"typed/", clientv3.WithPrefix()),
+		clientv3.OpTxn(nil, nil, nil),
+	}
+	for index, operation := range typedOps {
+		response, doErr := leased.Do(ctx, operation)
+		require.NoError(t, doErr, "typed operation %d", index)
+		switch {
+		case operation.IsTxn():
+			require.NotNil(t, response.Txn(), "typed operation %d", index)
+		case operation.IsGet():
+			require.NotNil(t, response.Get(), "typed operation %d", index)
+		case operation.IsPut():
+			require.NotNil(t, response.Put(), "typed operation %d", index)
+		case operation.IsDelete():
+			require.NotNil(t, response.Del(), "typed operation %d", index)
+		}
+	}
+
+	treePrefix := prefix + "tree/"
+	next := 0
+	expected := make(map[string]string)
+	treeOperation := deterministicLeasingTree(treePrefix, 3, &next, expected)
+	require.Equal(t, 15, next)
+	require.Len(t, expected, 4)
+	for index := 0; index < next; index++ {
+		key := fmt.Sprintf("%s%02d", treePrefix, index)
+		_, err = client.Put(ctx, key, "initial")
+		require.NoError(t, err)
+		_, err = leased.Get(ctx, key)
+		require.NoError(t, err)
+	}
+	treeResponse, err := leased.Do(ctx, treeOperation)
+	require.NoError(t, err)
+	require.NotNil(t, treeResponse.Txn())
+	treeRevision := treeResponse.Txn().Header.Revision
+	require.Positive(t, treeRevision)
+
+	for index := 0; index < next; index++ {
+		key := fmt.Sprintf("%s%02d", treePrefix, index)
+		leasedResponse, leasedErr := leased.Get(ctx, key)
+		directResponse, directErr := client.Get(ctx, key)
+		require.NoError(t, leasedErr)
+		require.NoError(t, directErr)
+		require.Len(t, leasedResponse.Kvs, 1)
+		require.Len(t, directResponse.Kvs, 1)
+		require.Equal(t, directResponse.Kvs[0], leasedResponse.Kvs[0])
+		expectedValue, selected := expected[key]
+		if selected {
+			require.Equal(t, expectedValue, string(directResponse.Kvs[0].Value))
+			require.Equal(t, treeRevision, directResponse.Kvs[0].ModRevision)
+			continue
+		}
+		require.Equal(t, "initial", string(directResponse.Kvs[0].Value))
+	}
+}
+
+func deterministicLeasingTree(prefix string, depth int, next *int, expected map[string]string) clientv3.Op {
+	index := *next
+	*next = *next + 1
+	key := fmt.Sprintf("%s%02d", prefix, index)
+	if depth == 0 {
+		expected[key] = "leaf"
+		return clientv3.OpPut(key, "leaf")
+	}
+
+	thenExpected := make(map[string]string)
+	thenOperation := deterministicLeasingTree(prefix, depth-1, next, thenExpected)
+	elseExpected := make(map[string]string)
+	elseOperation := deterministicLeasingTree(prefix, depth-1, next, elseExpected)
+	if index%2 == 0 {
+		for selectedKey, value := range thenExpected {
+			expected[selectedKey] = value
+		}
+		expected[key] = "then"
+		return clientv3.OpTxn(
+			[]clientv3.Cmp{clientv3.Compare(clientv3.Version(prefix+"missing"), "=", 0)},
+			[]clientv3.Op{thenOperation, clientv3.OpPut(key, "then")},
+			[]clientv3.Op{elseOperation, clientv3.OpPut(key, "else")},
+		)
+	}
+	for selectedKey, value := range elseExpected {
+		expected[selectedKey] = value
+	}
+	expected[key] = "else"
+	return clientv3.OpTxn(
+		[]clientv3.Cmp{clientv3.Compare(clientv3.Version(prefix+"missing"), ">", 0)},
+		[]clientv3.Op{thenOperation, clientv3.OpPut(key, "then")},
+		[]clientv3.Op{elseOperation, clientv3.OpPut(key, "else")},
+	)
+}

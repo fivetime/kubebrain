@@ -13850,6 +13850,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   event 共用 delete header revision、起点前 data/owner 保留、起点后的 data 与 cache
   清空但 owner metadata 按官方 leasing 语义继续留到 lease 生命周期处理，防止底层
   DeleteRange 正确但 leasing owner/cache 包装路径回退。
+- A978 固定 clientv3 leasing.NewKV 的 cached compare、typed Do 和 nested branch：
+  `leasing_branching` differential 覆盖 owner cache compare、`Do` 的 typed response
+  和深层 nested Txn 选择路径。本轮新增 bufconn clientv3 回归，注册真实 KV/Watch/Lease
+  gRPC 服务并通过官方 `leasing.NewKV` 缓存 compare key，验证 VALUE/CREATE/MOD/VERSION
+  的 true/false compare 选择、Txn/Get/Put/Delete typed response、深度 3 nested Txn
+  只更新选中路径且选中 key 共用顶层 revision，并断言 leasing cache 与直读 KV 元数据一致。
+  该门禁防止底层 Txn 测试通过但 leasing wrapper 的本地 compare、response 解包或嵌套
+  branch cache 更新路径回退。
 
 ### P2：运维兼容和长期验证
 
