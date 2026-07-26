@@ -15077,6 +15077,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   分别构造 duplicate put 和 `defaultMaxTxnOps+1` 个 put 的事务，固定 typed error 外观。该
   门禁防止 txn validation、raw gRPC 到 clientv3 错误映射或最大 op 限制重构破坏 apiserver
   及控制器对事务失败原因的分类处理。
+- A1132 固定 clientv3 GetStream compacted typed error：
+  对照 `/root/etcd/tests/integration/clientv3/kv_test.go:TestKVGetStreamCompactedError`，
+  `GetStreamToGetResponse` 必须像普通 `Get` 一样把 compacted revision 转成可由
+  `errors.Is(..., rpctypes.ErrCompacted)` 识别的错误，不能把 raw gRPC status 泄漏给调用方。
+  本轮新增 bufconn official clientv3 回归，多次写同一 key 后 compact 到最新 revision，
+  再分别用旧 revision 调用 `Get` 和 `GetStream`，要求两者都返回 typed compacted error。该
+  门禁防止 RangeStream 错误归一化、client adapter 或 compaction 边界重构破坏 informer LIST
+  失败后的可恢复判断。
 
 ### P2：运维兼容和长期验证
 

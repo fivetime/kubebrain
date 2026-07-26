@@ -16,6 +16,7 @@ package etcd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -25,6 +26,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -363,6 +365,50 @@ func TestClientRangeStreamRevisionBoundaries(t *testing.T) {
 	require.NoError(t, err)
 	_, err = clientv3.GetStreamToGetResponse(stream)
 	requireClientRangeStreamError(t, err, codes.Unknown, "etcdserver: mvcc: required revision is a future revision")
+}
+
+func TestClientRangeStreamCompactedErrorIsTyped(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	key := fmt.Sprintf("/a1132/rangestream-compacted/%d", time.Now().UnixNano())
+	first, err := client.Put(ctx, key, "one")
+	require.NoError(t, err)
+	var latest *clientv3.PutResponse
+	for i := 0; i < 4; i++ {
+		latest, err = client.Put(ctx, key, fmt.Sprintf("value-%d", i))
+		require.NoError(t, err)
+	}
+	_, err = client.Compact(ctx, latest.Header.Revision)
+	require.NoError(t, err)
+
+	_, err = client.Get(ctx, key, clientv3.WithRev(first.Header.Revision))
+	require.True(t, errors.Is(err, rpctypes.ErrCompacted), "Get returned %T %v", err, err)
+	stream, err := client.GetStream(ctx, key, clientv3.WithRev(first.Header.Revision))
+	require.NoError(t, err)
+	_, err = clientv3.GetStreamToGetResponse(stream)
+	require.True(t, errors.Is(err, rpctypes.ErrCompacted), "GetStream returned %T %v", err, err)
 }
 
 func TestRawGRPCRangeStreamCancelAfterPartialChunkKeepsConnectionUsable(t *testing.T) {
