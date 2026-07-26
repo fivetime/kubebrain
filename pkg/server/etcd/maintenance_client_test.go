@@ -818,6 +818,14 @@ func TestClientHashKVRevisionBoundaries(t *testing.T) {
 		requireClientHashKVError(t, hashErr, codes.Unknown, "etcdserver: mvcc: required revision is a future revision")
 		require.ErrorIs(t, hashErr, rpctypes.ErrFutureRev)
 	}
+
+	update, err := client.Put(ctx, "/a1044/hashkv-client/key", "updated")
+	require.NoError(t, err)
+	_, err = client.Compact(ctx, update.Header.Revision)
+	require.NoError(t, err)
+	_, hashErr := client.HashKV(ctx, "bufnet", put.Header.Revision)
+	requireClientHashKVError(t, hashErr, codes.Unknown, "etcdserver: mvcc: required revision has been compacted")
+	require.ErrorIs(t, hashErr, rpctypes.ErrCompacted)
 }
 
 func TestClientHashKVLatestHeaderTracksHashedSnapshotUnderWrites(t *testing.T) {

@@ -15400,6 +15400,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   customized quota 分支，official clientv3 `Status` 必须把配置的 backend quota 原样暴露到
   `DbSizeQuota`，而不是回退到默认 quota。本轮复用 quota RPC server 构造自定义 quota 的
   bufconn 黑盒回归，补齐默认 quota protocol metadata 之外的配置传播护栏。
+- A1180 固定 clientv3 HashKV compacted revision typed error：
+  对照 `/root/etcd/tests/integration/clientv3/maintenance_test.go:TestMaintenanceHashKV` 的
+  public maintenance API 外观，并延续 Range/Compact 对 compacted revision 的 typed error
+  契约，`HashKV` 读取已被 compact 的历史 revision 时必须可由
+  `errors.Is(..., rpctypes.ErrCompacted)` 识别。本轮加强既有 bufconn official clientv3
+  HashKV revision boundary 回归，先写入更新并 compact 到新 revision，再请求旧 revision，
+  固定 status/message 与 typed error 外观，防止 maintenance client adapter 或 backend hash
+  compaction recheck 重构把该错误退化成普通字符串错误。
 
 ### P2：运维兼容和长期验证
 
