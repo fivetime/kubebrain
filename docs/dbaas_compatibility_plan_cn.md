@@ -13954,6 +13954,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   id 非零、ClientURLs 为 advertised `http://10.0.0.{1,2,3}:2379`；随后执行官方
   `client.Sync`，确认 `client.Endpoints()` 被替换为 MemberList 暴露的 ClientURLs，再恢复
   bootstrap endpoint 完成 Put/Get，防止服务层 MemberList 正确但公开 client discovery 路径回退。
+- A991 固定 clientv3 serializable read 的当前/历史/Txn 公开路径：
+  `serializable_read` differential 已覆盖官方 clientv3 在当前 serializable Get、指定
+  revision 的 historical serializable Get，以及 Txn branch 内 `OpGet(..., WithSerializable())`
+  的 value/header revision 行为。本轮新增 bufconn clientv3 回归，注册真实 KV gRPC 服务，
+  先写入同一 key 的 v1/v2，再断言当前 serializable Get 读到 v2、historical serializable
+  Get 在第一写 revision 读到 v1，且两者 header revision 都等于第二写 revision；Txn 内
+  serializable OpGet 也必须成功选择 Then branch、返回 v2，并保持 Txn/header 与嵌套 Range
+  header revision 一致，防止 follower/readonly 快路径或公开 gRPC 转换绕过 serializable
+  flag、误用 historical revision 作为 response header，或在 Txn 子操作中丢失该选项。
 
 ### P2：运维兼容和长期验证
 
