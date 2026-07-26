@@ -15108,6 +15108,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   lease 后要求第 1/3 个 channel 继续收到正 TTL 响应，而被撤销 lease 的 channel 关闭。该门禁
   防止 keepalive stream fanout、lease revoke 或 not-found 处理重构造成生产 session/lock
   因相邻 stale lease 被撤销而级联失效。
+- A1136 固定 clientv3 Auth delete/re-add 与密码轮换生命周期：
+  对照 `/root/etcd/tests/integration/clientv3/user_test.go:TestAddUserAfterDelete`，用户删除后
+  旧凭据必须立即无法 `Authenticate`，同名用户重新添加后新生命周期可重新认证；连续
+  `UserChangePassword` 后只有最后一次密码有效，任何中间旧密码都不能继续登录。本轮新增
+  bufconn official clientv3 回归，在 auth enabled 下用 root client 执行 add/auth/delete、
+  re-add/auth、两次改密和三组 `Authenticate` 断言。该门禁防止 auth storage generation、
+  bcrypt hash 替换或 token/auth revision 重构破坏 DBaaS 租户凭据轮换与回收的确定性。
 
 ### P2：运维兼容和长期验证
 
