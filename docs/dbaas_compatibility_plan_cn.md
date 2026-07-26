@@ -16044,6 +16044,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   exact `etcdserver: watch canceled` message。该门禁防止 Watch loop/stream adapter
   重构后把可预期的客户端关闭降级成普通/模糊 status 错误，影响 auth create cancel 后
   继续复用 multiplexed stream、quota 回收和 informer watch 重连判断。
+- A1290 固定 cold restore manifest 语义绑定：
+  A388/A391 已明确 cold physical snapshot 仍只是候选能力，物理 full snapshot/PITR
+  不能宣称完成。本轮加强 `cold-restore-verify` 对 canonical restore manifest 的二次
+  语义校验：即使攻击者或错误 executor 同步更新 restore receipt SHA，也必须保留
+  VolumeSnapshotContent/VolumeSnapshot/PVC/TidbCluster 的 apiVersion、operation label、
+  VolumeSnapshotRef kind/apiVersion、PVC dataSource apiGroup、storage/volume 基本字段和
+  cold-restore operation annotation。该门禁防止隔离恢复后的语义验证只相信 hash 绑定，
+  漏掉 Kubernetes 对象被重写到错误 controller/namespace/operation 的生产风险。
 
 ### P2：运维兼容和长期验证
 

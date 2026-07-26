@@ -229,9 +229,13 @@ func TestValidateRestoreManifestBinding(t *testing.T) {
 		"kind":       "List",
 		"items": []any{
 			map[string]any{
-				"kind": "VolumeSnapshotContent",
+				"apiVersion": "snapshot.storage.k8s.io/v1",
+				"kind":       "VolumeSnapshotContent",
 				"metadata": map[string]any{
 					"name": objectName,
+					"labels": map[string]any{
+						"kubebrain.io/operation-id": "restore-test",
+					},
 				},
 				"spec": map[string]any{
 					"deletionPolicy":          "Retain",
@@ -239,34 +243,51 @@ func TestValidateRestoreManifestBinding(t *testing.T) {
 					"volumeSnapshotClassName": "target-snapshots",
 					"source":                  map[string]any{"snapshotHandle": "handle-pd-0"},
 					"volumeSnapshotRef": map[string]any{
+						"apiVersion": "snapshot.storage.k8s.io/v1", "kind": "VolumeSnapshot",
 						"name": objectName, "namespace": "tidb-cluster",
 					},
 				},
 			},
 			map[string]any{
-				"kind": "VolumeSnapshot",
+				"apiVersion": "snapshot.storage.k8s.io/v1",
+				"kind":       "VolumeSnapshot",
 				"metadata": map[string]any{
 					"name": objectName, "namespace": "tidb-cluster",
+					"labels": map[string]any{
+						"kubebrain.io/operation-id": "restore-test",
+					},
 				},
 				"spec": map[string]any{
-					"source": map[string]any{"volumeSnapshotContentName": objectName},
+					"volumeSnapshotClassName": "target-snapshots",
+					"source":                  map[string]any{"volumeSnapshotContentName": objectName},
 				},
 			},
 			map[string]any{
-				"kind": "PersistentVolumeClaim",
+				"apiVersion": "v1",
+				"kind":       "PersistentVolumeClaim",
 				"metadata": map[string]any{
 					"name": "pd-kb-pd-0", "namespace": "tidb-cluster",
-					"labels": map[string]any{"app.kubernetes.io/component": "pd"},
+					"labels": map[string]any{
+						"app.kubernetes.io/component": "pd",
+						"kubebrain.io/operation-id":   "restore-test",
+					},
 				},
 				"spec": map[string]any{
-					"dataSource": map[string]any{"kind": "VolumeSnapshot", "name": objectName},
+					"accessModes":      []any{"ReadWriteOnce"},
+					"volumeMode":       "Filesystem",
+					"storageClassName": "target-storage",
+					"dataSource": map[string]any{
+						"apiGroup": "snapshot.storage.k8s.io", "kind": "VolumeSnapshot", "name": objectName,
+					},
 				},
 			},
 			map[string]any{
-				"kind": "TidbCluster",
+				"apiVersion": "pingcap.com/v1alpha1",
+				"kind":       "TidbCluster",
 				"metadata": map[string]any{
 					"name": "kb", "namespace": "tidb-cluster",
 					"annotations": map[string]any{
+						"kubebrain.io/cold-restore-operation": "restore-test",
 						"kubebrain.io/source-cluster-id":      "12345",
 						"kubebrain.io/source-tidbcluster-uid": "uid-tidb",
 					},
@@ -281,6 +302,55 @@ func TestValidateRestoreManifestBinding(t *testing.T) {
 	pretty, err := json.MarshalIndent(manifest, "", "  ")
 	require.NoError(t, err)
 	require.NoError(t, validateRestoreManifestBinding(pretty, restore, snapshot))
+
+	for _, tc := range []struct {
+		name    string
+		mutate  func(map[string]any)
+		message string
+	}{
+		{
+			name: "missing VSC operation label",
+			mutate: func(value map[string]any) {
+				vsc := value["items"].([]any)[0].(map[string]any)
+				vsc["metadata"].(map[string]any)["labels"] = map[string]any{}
+			},
+			message: "VolumeSnapshotContent",
+		},
+		{
+			name: "wrong VSC ref kind",
+			mutate: func(value map[string]any) {
+				vsc := value["items"].([]any)[0].(map[string]any)
+				vsc["spec"].(map[string]any)["volumeSnapshotRef"].(map[string]any)["kind"] = "ConfigMap"
+			},
+			message: "VolumeSnapshotContent",
+		},
+		{
+			name: "missing PVC dataSource apiGroup",
+			mutate: func(value map[string]any) {
+				pvc := value["items"].([]any)[2].(map[string]any)
+				delete(pvc["spec"].(map[string]any)["dataSource"].(map[string]any), "apiGroup")
+			},
+			message: "PVC",
+		},
+		{
+			name: "missing restore operation annotation",
+			mutate: func(value map[string]any) {
+				tidb := value["items"].([]any)[3].(map[string]any)
+				delete(tidb["metadata"].(map[string]any)["annotations"].(map[string]any), "kubebrain.io/cold-restore-operation")
+			},
+			message: "TidbCluster",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var changed map[string]any
+			require.NoError(t, json.Unmarshal(canonical, &changed))
+			tc.mutate(changed)
+			tampered, err := json.Marshal(changed)
+			require.NoError(t, err)
+			restore.RestoreManifest.SHA256 = digest(tampered)
+			require.ErrorContains(t, validateRestoreManifestBinding(tampered, restore, snapshot), tc.message)
+		})
+	}
 
 	manifest["items"].([]any)[3] = map[string]any{"kind": "ConfigMap"}
 	tampered, err := json.Marshal(manifest)

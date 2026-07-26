@@ -561,9 +561,15 @@ func validateRestoreManifestContent(items []any, snapshotRecord snapshotReceipt)
 			if err != nil {
 				return err
 			}
+			labels, _ := metadata["labels"].(map[string]any)
 			if spec["deletionPolicy"] != "Retain" ||
+				item["apiVersion"] != "snapshot.storage.k8s.io/v1" ||
+				labels["kubebrain.io/operation-id"] != snapshotRecord.OperationID ||
 				spec["driver"] != snapshotRecord.Inventory.VolumeSnapshotClass.Driver ||
+				spec["volumeSnapshotClassName"] == "" ||
 				nestedString(spec, "source", "snapshotHandle") != mapping.handle ||
+				nestedString(spec, "volumeSnapshotRef", "apiVersion") != "snapshot.storage.k8s.io/v1" ||
+				nestedString(spec, "volumeSnapshotRef", "kind") != "VolumeSnapshot" ||
 				nestedString(spec, "volumeSnapshotRef", "name") != mapping.name ||
 				nestedString(spec, "volumeSnapshotRef", "namespace") != snapshotRecord.Inventory.Storage.Namespace {
 				return errors.New("restore manifest VolumeSnapshotContent does not match snapshot receipt")
@@ -575,7 +581,11 @@ func validateRestoreManifestContent(items []any, snapshotRecord snapshotReceipt)
 			if err != nil {
 				return err
 			}
-			if metadata["namespace"] != snapshotRecord.Inventory.Storage.Namespace ||
+			labels, _ := metadata["labels"].(map[string]any)
+			if item["apiVersion"] != "snapshot.storage.k8s.io/v1" ||
+				metadata["namespace"] != snapshotRecord.Inventory.Storage.Namespace ||
+				labels["kubebrain.io/operation-id"] != snapshotRecord.OperationID ||
+				spec["volumeSnapshotClassName"] == "" ||
 				nestedString(spec, "source", "volumeSnapshotContentName") != mapping.name {
 				return errors.New("restore manifest VolumeSnapshot does not match snapshot receipt")
 			}
@@ -588,8 +598,14 @@ func validateRestoreManifestContent(items []any, snapshotRecord snapshotReceipt)
 				return errors.New("restore manifest PVC does not match snapshot receipt")
 			}
 			labels, _ := metadata["labels"].(map[string]any)
-			if metadata["namespace"] != snapshotRecord.Inventory.Storage.Namespace ||
+			if item["apiVersion"] != "v1" ||
+				metadata["namespace"] != snapshotRecord.Inventory.Storage.Namespace ||
 				labels["app.kubernetes.io/component"] != mapping.component ||
+				labels["kubebrain.io/operation-id"] != snapshotRecord.OperationID ||
+				spec["storageClassName"] == "" ||
+				spec["volumeMode"] == "" ||
+				len(nestedArray(spec, "accessModes")) == 0 ||
+				nestedString(spec, "dataSource", "apiGroup") != "snapshot.storage.k8s.io" ||
 				nestedString(spec, "dataSource", "name") != mapping.name ||
 				nestedString(spec, "dataSource", "kind") != "VolumeSnapshot" {
 				return errors.New("restore manifest PVC does not match snapshot receipt")
@@ -598,8 +614,10 @@ func validateRestoreManifestContent(items []any, snapshotRecord snapshotReceipt)
 		case "TidbCluster":
 			tidbClusters++
 			annotations, _ := metadata["annotations"].(map[string]any)
-			if metadata["name"] != snapshotRecord.Inventory.Storage.TidbCluster ||
+			if item["apiVersion"] != "pingcap.com/v1alpha1" ||
+				metadata["name"] != snapshotRecord.Inventory.Storage.TidbCluster ||
 				metadata["namespace"] != snapshotRecord.Inventory.Storage.Namespace ||
+				annotations["kubebrain.io/cold-restore-operation"] != snapshotRecord.OperationID ||
 				annotations["kubebrain.io/source-cluster-id"] != snapshotRecord.Inventory.Storage.ClusterID ||
 				annotations["kubebrain.io/source-tidbcluster-uid"] != snapshotRecord.Inventory.Storage.UID ||
 				spec["paused"] != true {
@@ -628,6 +646,11 @@ func restoreManifestSourceFromName(metadata map[string]any, expected map[string]
 func nestedString(parent map[string]any, first, second string) string {
 	child, _ := parent[first].(map[string]any)
 	value, _ := child[second].(string)
+	return value
+}
+
+func nestedArray(parent map[string]any, key string) []any {
+	value, _ := parent[key].([]any)
 	return value
 }
 
