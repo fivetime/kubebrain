@@ -14416,6 +14416,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   可达，断言 AutoSync 后 `client.Endpoints()` 精确等于 advertised ClientURLs，并验证
   同一 authenticated client 对授权前缀的 `Get` 成功，补齐 A990 普通 MemberList/Sync 与
   cluster auth 顺序覆盖之外的认证自动同步面。
+- A1048 固定 clientv3 Status alarm errors 外观：
+  `status_alarm` differential 证明手动激活 NOSPACE alarm 后，Maintenance `Status.Errors`
+  必须暴露 alarm member 的字符串表示，解除 alarm 后 `Errors` 必须清空。服务层和 raw gRPC
+  已覆盖该语义，本轮新增官方 clientv3 bufconn 回归，用 raw Maintenance 激活指定
+  memberID 的 NOSPACE alarm，通过 `client.Status(ctx, "bufnet")` 断言 public wrapper 看到
+  精确 `Errors` 列表，再用 `client.AlarmDisarm` 解除并确认后续 `Status` 为空，补齐运维
+  采集/探活常用 clientv3 入口的 alarm 可见性门禁。
 
 ### P2：运维兼容和长期验证
 
