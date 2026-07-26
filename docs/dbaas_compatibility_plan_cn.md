@@ -14902,6 +14902,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   header revision 不落后于 base 且严格等于 HashRevision。该门禁防止 TiKV snapshot
   选择、HashKV wrapper 或维护面 header 填充重构让 `etcdctl endpoint hashkv` 在活跃写入
   下报告无法对应到实际 hash 快照的 revision。
+- A1112 固定 clientv3 HashKV compaction 后逻辑哈希稳定性：
+  `maintenance_semantics` compat 已证明 repeated Put 产生多版本 key 后，`Compact(rev)`
+  必须让 latest `HashKV(0)` 的 `CompactRevision` 指向 compact rev，并因旧版本被逻辑移除
+  而改变 hash；之后后台 physical GC/compaction 进度不应继续改变这个 logical hash。本轮新增
+  本地 bufconn official clientv3 回归，写入同一 key 的 8 个版本后取 latest HashKV，
+  执行 `client.Compact(ctx, before.HashRevision)`，断言 compact 后 hash 改变、
+  `CompactRevision == before.HashRevision`，再多轮短间隔重复 `HashKV(0)`，要求 Hash、
+  CompactRevision 和 `Header.Revision == HashRevision` 稳定。该门禁防止 TiKV 历史版本
+  清理、HashKV compact revision 填充或维护面快照选择让 `endpoint hashkv` 在 compaction
+  期间产生二次漂移。
 
 ### P2：运维兼容和长期验证
 

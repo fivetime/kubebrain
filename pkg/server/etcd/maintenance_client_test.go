@@ -834,6 +834,59 @@ func TestClientHashKVLatestHeaderTracksHashedSnapshotUnderWrites(t *testing.T) {
 	require.NoError(t, <-writerDone)
 }
 
+func TestClientHashKVStableAcrossCompactionProgress(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterMaintenanceServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	key := "/a1112/hashkv-compact/key"
+	for i := 0; i < 8; i++ {
+		_, err = client.Put(ctx, key, strconv.Itoa(i))
+		require.NoError(t, err)
+	}
+	before, err := client.HashKV(ctx, "bufnet", 0)
+	require.NoError(t, err)
+	require.Equal(t, before.Header.Revision, before.HashRevision)
+
+	_, err = client.Compact(ctx, before.HashRevision)
+	require.NoError(t, err)
+	afterLogical, err := client.HashKV(ctx, "bufnet", 0)
+	require.NoError(t, err)
+	require.Equal(t, before.HashRevision, afterLogical.CompactRevision)
+	require.NotEqual(t, before.Hash, afterLogical.Hash)
+
+	for i := 0; i < 4; i++ {
+		time.Sleep(25 * time.Millisecond)
+		afterProgress, hashErr := client.HashKV(ctx, "bufnet", 0)
+		require.NoError(t, hashErr)
+		require.Equal(t, afterLogical.Hash, afterProgress.Hash)
+		require.Equal(t, afterLogical.CompactRevision, afterProgress.CompactRevision)
+		require.Equal(t, afterProgress.Header.Revision, afterProgress.HashRevision)
+		require.GreaterOrEqual(t, afterProgress.HashRevision, afterProgress.CompactRevision)
+	}
+}
+
 func requireRawHashKVHeaderAtOrAfter(t *testing.T, header *etcdserverpb.ResponseHeader, revision int64) {
 	t.Helper()
 	require.NotNil(t, header)
