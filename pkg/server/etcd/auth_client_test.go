@@ -29,6 +29,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 )
@@ -155,6 +156,17 @@ func TestClientAuthPasswordChangeInvalidatesOldPasswordAndToken(t *testing.T) {
 
 	oldAuth, err := bootstrap.Authenticate(ctx, "alice", "alice-secret")
 	require.NoError(t, err)
+	rawAuth := etcdserverpb.NewAuthClient(bootstrap.ActiveConnection())
+	rawOldAuth, err := rawAuth.Authenticate(ctx, &etcdserverpb.AuthenticateRequest{Name: "alice", Password: "alice-secret"})
+	require.NoError(t, err)
+	require.NotEmpty(t, rawOldAuth.Token)
+	rawKV := etcdserverpb.NewKVClient(bootstrap.ActiveConnection())
+	rawOldTokenCtx := metadata.AppendToOutgoingContext(ctx, rpctypes.TokenFieldNameGRPC, rawOldAuth.Token)
+	rawBeforeChange, err := rawKV.Range(rawOldTokenCtx, &etcdserverpb.RangeRequest{Key: []byte("/a1058/auth-client/key")})
+	require.NoError(t, err)
+	require.Len(t, rawBeforeChange.Kvs, 1)
+	require.Equal(t, "secret", string(rawBeforeChange.Kvs[0].Value))
+
 	aliceOldToken := newTokenClient(oldAuth.Token)
 	beforeChange, err := aliceOldToken.Get(ctx, "/a1058/auth-client/key")
 	require.NoError(t, err)
@@ -165,6 +177,8 @@ func TestClientAuthPasswordChangeInvalidatesOldPasswordAndToken(t *testing.T) {
 	require.NoError(t, err)
 	_, oldTokenErr := aliceOldToken.Get(ctx, "/a1058/auth-client/key")
 	requireAuthClientError(t, oldTokenErr, codes.Unknown, "etcdserver: invalid auth token", rpctypes.ErrInvalidAuthToken)
+	_, rawOldTokenErr := rawKV.Range(rawOldTokenCtx, &etcdserverpb.RangeRequest{Key: []byte("/a1058/auth-client/key")})
+	requireAuthClientError(t, rawOldTokenErr, codes.Unauthenticated, "etcdserver: invalid auth token")
 
 	_, oldPasswordErr := clientv3.New(clientv3.Config{
 		Endpoints:   []string{"bufnet"},
@@ -174,6 +188,15 @@ func TestClientAuthPasswordChangeInvalidatesOldPasswordAndToken(t *testing.T) {
 		DialOptions: dialOptions,
 	})
 	requireAuthClientError(t, oldPasswordErr, codes.Unknown, "etcdserver: authentication failed, invalid user ID or password", rpctypes.ErrAuthFailed)
+	_, rawOldPasswordErr := rawAuth.Authenticate(ctx, &etcdserverpb.AuthenticateRequest{Name: "alice", Password: "alice-secret"})
+	requireAuthClientError(t, rawOldPasswordErr, codes.InvalidArgument, "etcdserver: authentication failed, invalid user ID or password")
+	rawNewAuth, err := rawAuth.Authenticate(ctx, &etcdserverpb.AuthenticateRequest{Name: "alice", Password: "alice-changed"})
+	require.NoError(t, err)
+	rawNewTokenCtx := metadata.AppendToOutgoingContext(ctx, rpctypes.TokenFieldNameGRPC, rawNewAuth.Token)
+	rawAfterChange, err := rawKV.Range(rawNewTokenCtx, &etcdserverpb.RangeRequest{Key: []byte("/a1058/auth-client/key")})
+	require.NoError(t, err)
+	require.Len(t, rawAfterChange.Kvs, 1)
+	require.Equal(t, "secret", string(rawAfterChange.Kvs[0].Value))
 
 	aliceNewPassword := newClient("alice", "alice-changed")
 	afterChange, err := aliceNewPassword.Get(ctx, "/a1058/auth-client/key")

@@ -15515,6 +15515,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   返回 `FailedPrecondition`，非法 range grant 返回 `InvalidArgument`，删除 role 后 raw
   `UserGet` 中 alice 的 role 绑定被清理。本轮加强既有 clientv3 管理面回归，防止直接 Auth API
   调用方看到错误 status code、权限覆盖漂移或残留 role 绑定。
+- A1197 固定 raw gRPC Auth password/token 生命周期：
+  延续 A1058 的用户改密契约到 generated `etcdserverpb.AuthClient`/`KVClient`：alice 旧密码 raw
+  `Authenticate` 可签发 token，携带该 token 的 raw `Range` 可读授权 key；root 改密后，同一
+  raw token 的 `Range` 必须返回 `Unauthenticated`/`invalid auth token`，旧密码 raw
+  `Authenticate` 返回 `InvalidArgument`/authentication failed，新密码 raw `Authenticate`
+  签发的新 token 可再次读取授权 key。本轮加强既有 clientv3 token lifecycle 回归，防止直接
+  protobuf 调用方绕过 client adapter 后看到错误 code 或旧 token 未失效。
 
 ### P2：运维兼容和长期验证
 
