@@ -355,17 +355,20 @@ func TestValidateAdvertiseClientURLs(t *testing.T) {
 		"https://etcd.example.com:2379", "http://[2001:db8::1]:2379",
 	}, got)
 
-	for _, urls := range [][]string{
-		{"etcd.example.com:2379"},
-		{"ftp://etcd.example.com:2379"},
-		{"https://etcd.example.com"},
-		{"https://user@etcd.example.com:2379"},
-		{"https://etcd.example.com:2379/v3"},
-		{"https://etcd.example.com:2379?tenant=a"},
-		{"https://etcd.example.com:2379", "https://etcd.example.com:2379/"},
+	for _, tc := range []struct {
+		urls []string
+		want string
+	}{
+		{urls: []string{"etcd.example.com:2379"}, want: `invalid advertised client URL "etcd.example.com:2379"`},
+		{urls: []string{"ftp://etcd.example.com:2379"}, want: `invalid advertised client URL "ftp://etcd.example.com:2379"`},
+		{urls: []string{"https://etcd.example.com"}, want: `invalid advertised client URL "https://etcd.example.com": host and port are required`},
+		{urls: []string{"https://user@etcd.example.com:2379"}, want: `invalid advertised client URL "https://user@etcd.example.com:2379"`},
+		{urls: []string{"https://etcd.example.com:2379/v3"}, want: `invalid advertised client URL "https://etcd.example.com:2379/v3"`},
+		{urls: []string{"https://etcd.example.com:2379?tenant=a"}, want: `invalid advertised client URL "https://etcd.example.com:2379?tenant=a"`},
+		{urls: []string{"https://etcd.example.com:2379", "https://etcd.example.com:2379/"}, want: `duplicate advertised client URL "https://etcd.example.com:2379"`},
 	} {
-		_, err := ValidateAdvertiseClientURLs(urls)
-		require.Error(t, err, "urls=%v", urls)
+		_, err := ValidateAdvertiseClientURLs(tc.urls)
+		require.EqualError(t, err, tc.want)
 	}
 }
 
@@ -388,16 +391,19 @@ func TestValidateAdvertiseClientURLsRejectsUnsafeCharacters(t *testing.T) {
 }
 
 func TestParseInitialClusterRejectsInvalidConfiguration(t *testing.T) {
-	for _, spec := range []string{
-		"missing-url",
-		"a=10.0.0.1:2380",
-		"a=http://10.0.0.1",
-		"a=http://10.0.0.1:2380/path",
-		"a=http://10.0.0.1:2380,a=http://10.0.0.1:2380",
-		"a=http://10.0.0.1:2380,b=http://10.0.0.1:2380",
+	for _, tc := range []struct {
+		spec string
+		want string
+	}{
+		{spec: "missing-url", want: `invalid initial-cluster entry "missing-url": want name=http[s]://host:peerPort`},
+		{spec: "a=10.0.0.1:2380", want: `invalid peer URL "10.0.0.1:2380" for member "a"`},
+		{spec: "a=http://10.0.0.1", want: `invalid peer URL "http://10.0.0.1" for member "a": host and port are required`},
+		{spec: "a=http://10.0.0.1:2380/path", want: `invalid peer URL "http://10.0.0.1:2380/path" for member "a"`},
+		{spec: "a=http://10.0.0.1:2380,a=http://10.0.0.1:2380", want: `duplicate initial-cluster peer identity "10.0.0.1:2380"`},
+		{spec: "a=http://10.0.0.1:2380,b=http://10.0.0.1:2380", want: `duplicate initial-cluster peer identity "10.0.0.1:2380"`},
 	} {
-		_, err := ParseInitialCluster(spec, 2379, false)
-		require.Error(t, err, "spec %q", spec)
+		_, err := ParseInitialCluster(tc.spec, 2379, false)
+		require.EqualError(t, err, tc.want)
 	}
 }
 

@@ -16025,6 +16025,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   invalid `ttl` 与 oversized `priv-key`/`pub-key` 文件从 substring 断言收紧为 exact
   error，固定 fail-closed 文案和 1 MiB 上限。该门禁防止认证启动配置重构后放宽
   Secret/参数错误诊断，导致生产安装只看到模糊的 JWT provider failure。
+- A1287 固定 cluster advertise/initial-cluster 配置错误文本：
+  A1278 已覆盖 unsafe character，本轮把 advertise client URL 的 scheme/host-port/
+  user/path/query/duplicate，以及 initial-cluster entry、peer URL 和重复 peer identity
+  从“只要有错”收紧为 exact error。该门禁防止 DBaaS 安装参数或 manifest 生成器出错时
+  丢失具体 URL/member/identity 诊断，导致 MemberList/AutoSync 生产配置难以排障。
 
 ### P2：运维兼容和长期验证
 
