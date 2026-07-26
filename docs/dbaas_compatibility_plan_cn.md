@@ -14346,6 +14346,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `GetStreamToGetResponse` 验证当前 KV，再用 `WithRev(math.MaxInt64)` 验证 official
   clientv3 暴露的 `Unknown` code 和 future revision message，补齐 RangeStream 在
   clientv3 包装层的 revision 边界覆盖。
+- A1039 固定 raw gRPC Txn compare enum fallthrough：
+  `txn_compare_enum` differential 证明 etcd 对未知 Compare result/target enum 并不返回
+  参数错误，而是沿用内部 fallthrough 语义选择 success/failure 分支；对不存在 key 的
+  VALUE compare 也有特定的 empty/not-equal 行为。本轮新增 bufconn raw gRPC 回归，
+  直接用 `etcdserverpb.KVClient.Txn` 发送未知 result、未知 target、absent VALUE
+  equal/not-equal 和 absent VALUE unknown-result 六种 compare，断言 `TxnResponse.Succeeded`
+  与最终写入 value 均与差分场景一致，补齐此前服务层覆盖之外的公开 protobuf/RPC 面。
 
 ### P2：运维兼容和长期验证
 

@@ -318,6 +318,74 @@ func TestRawGRPCTxnExecutionValidationOrderAndBudget(t *testing.T) {
 	}
 }
 
+func TestRawGRPCTxnCompareEnumFallthroughMatchesEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///txn-compare-enum-client",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	kv := etcdserverpb.NewKVClient(conn)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	tests := []struct {
+		name         string
+		target       etcdserverpb.Compare_CompareTarget
+		result       etcdserverpb.Compare_CompareResult
+		compareValue []byte
+		succeeded    bool
+		value        []byte
+	}{
+		{name: "unknown-result", target: etcdserverpb.Compare_MOD, result: 99, succeeded: true, value: []byte("success")},
+		{name: "unknown-target-equal", target: 99, result: etcdserverpb.Compare_EQUAL, succeeded: true, value: []byte("success")},
+		{name: "unknown-target-not-equal", target: 99, result: etcdserverpb.Compare_NOT_EQUAL, value: []byte("failure")},
+		{name: "absent-value-equal-empty", target: etcdserverpb.Compare_VALUE, result: etcdserverpb.Compare_EQUAL, value: []byte("failure")},
+		{name: "absent-value-not-equal", target: etcdserverpb.Compare_VALUE, result: etcdserverpb.Compare_NOT_EQUAL, compareValue: []byte("value"), value: []byte("failure")},
+		{name: "absent-value-unknown-result", target: etcdserverpb.Compare_VALUE, result: 99, value: []byte("failure")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			key := []byte(fmt.Sprintf("/a1039/txn-compare-enum/%s/%d", tt.name, time.Now().UnixNano()))
+			compare := &etcdserverpb.Compare{
+				Key:         key,
+				Target:      tt.target,
+				Result:      tt.result,
+				TargetUnion: &etcdserverpb.Compare_ModRevision{ModRevision: 0},
+			}
+			if tt.target == etcdserverpb.Compare_VALUE {
+				compare.TargetUnion = &etcdserverpb.Compare_Value{Value: tt.compareValue}
+			}
+			response, txnErr := kv.Txn(ctx, &etcdserverpb.TxnRequest{
+				Compare: []*etcdserverpb.Compare{compare},
+				Success: []*etcdserverpb.RequestOp{
+					txnClientPutOp(&etcdserverpb.PutRequest{Key: key, Value: []byte("success")}),
+				},
+				Failure: []*etcdserverpb.RequestOp{
+					txnClientPutOp(&etcdserverpb.PutRequest{Key: key, Value: []byte("failure")}),
+				},
+			})
+			require.NoError(t, txnErr)
+			require.Equal(t, tt.succeeded, response.Succeeded)
+
+			got, rangeErr := kv.Range(ctx, &etcdserverpb.RangeRequest{Key: key})
+			require.NoError(t, rangeErr)
+			require.Len(t, got.Kvs, 1)
+			require.Equal(t, tt.value, got.Kvs[0].Value)
+		})
+	}
+}
+
 func TestRawGRPCTxnFromKeyExecutionStagedView(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
