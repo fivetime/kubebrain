@@ -14036,6 +14036,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   cluster/member/term 且 revision 不低于写入；future 与 max-int revision 返回 raw
   `OutOfRange` 和 `required revision is a future revision`，防止维护面 raw gRPC
   revision 选择、snapshot hash 或 header stamping 回退。
+- A1000 固定 raw gRPC Range revision boundary：
+  `range_revision_boundary` differential 证明 raw Range 对 negative revision 的特殊语义、
+  max-int future error，以及 Txn selected/unselected branch 中 revision validation 的顺序
+  必须与 reference etcd 一致。本轮新增 bufconn raw gRPC 回归，注册真实 KV 服务，写入并
+  compact 当前 revision 后，直接用 `etcdserverpb.KVClient` 断言 point/range/count-only/
+  keys-only 的 negative revision Range 仍成功，max-int Range 返回 raw `OutOfRange` 和
+  future message；Txn selected negative Range 返回 compacted error，unselected negative
+  branch 不执行且 Txn 成功，selected max-int Range 返回 future error，防止 handler 直调
+  正确但真实 gRPC/TXN request-op 转换或分支选择 validation 顺序回退。
 
 ### P2：运维兼容和长期验证
 

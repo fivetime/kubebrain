@@ -17,6 +17,7 @@ package etcd
 import (
 	"context"
 	"fmt"
+	"math"
 	"net"
 	"strings"
 	"testing"
@@ -27,7 +28,9 @@ import (
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 )
 
@@ -158,6 +161,89 @@ func TestClientRangeKeysOnlyLimitAcrossTombstones(t *testing.T) {
 	assertPage("before-deletes", beforeDeletes, 2, []string{"a", "b"}, 4, true)
 	assertPage("after-deletes", deleted.Header.Revision, 1, []string{"a"}, 2, true)
 	assertPage("after-recreate", 0, 2, []string{"a", "b"}, 4, true)
+}
+
+func TestRawGRPCRangeRevisionBoundaries(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///range-revision-client",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	kv := etcdserverpb.NewKVClient(conn)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	prefix := []byte(fmt.Sprintf("/a1000/range-revision-client/%d/", time.Now().UnixNano()))
+	end := []byte(clientv3.GetPrefixRangeEnd(string(prefix)))
+	key := append(append([]byte{}, prefix...), 'a')
+	_, err = kv.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("value")})
+	require.NoError(t, err)
+	current, err := kv.Range(ctx, &etcdserverpb.RangeRequest{Key: key})
+	require.NoError(t, err)
+	_, err = kv.Compact(ctx, &etcdserverpb.CompactionRequest{Revision: current.Header.Revision})
+	require.NoError(t, err)
+
+	for _, req := range []*etcdserverpb.RangeRequest{
+		{Key: key, Revision: -1},
+		{Key: key, Revision: -2},
+		{Key: prefix, RangeEnd: end, Revision: -1},
+		{Key: prefix, RangeEnd: end, Revision: -1, CountOnly: true},
+		{Key: prefix, RangeEnd: end, Revision: -1, KeysOnly: true},
+	} {
+		_, rangeErr := kv.Range(ctx, req)
+		require.NoError(t, rangeErr)
+	}
+	_, err = kv.Range(ctx, &etcdserverpb.RangeRequest{Key: key, Revision: math.MaxInt64})
+	requireRawGRPCRangeRevisionError(t, err, codes.OutOfRange, "etcdserver: mvcc: required revision is a future revision")
+
+	selectedNegative := &etcdserverpb.TxnRequest{
+		Success: []*etcdserverpb.RequestOp{rawGRPCRangeRequestOp(&etcdserverpb.RangeRequest{
+			Key: key, Revision: -1,
+		})},
+	}
+	_, err = kv.Txn(ctx, selectedNegative)
+	requireRawGRPCRangeRevisionError(t, err, codes.OutOfRange, "etcdserver: mvcc: required revision has been compacted")
+
+	unselectedNegative := &etcdserverpb.TxnRequest{
+		Compare: []*etcdserverpb.Compare{{
+			Key: key, Target: etcdserverpb.Compare_VERSION, Result: etcdserverpb.Compare_GREATER,
+			TargetUnion: &etcdserverpb.Compare_Version{Version: 0},
+		}},
+		Success: []*etcdserverpb.RequestOp{rawGRPCRangeRequestOp(&etcdserverpb.RangeRequest{Key: key})},
+		Failure: []*etcdserverpb.RequestOp{rawGRPCRangeRequestOp(&etcdserverpb.RangeRequest{Key: key, Revision: -1})},
+	}
+	_, err = kv.Txn(ctx, unselectedNegative)
+	require.NoError(t, err)
+
+	selectedMaximum := &etcdserverpb.TxnRequest{
+		Success: []*etcdserverpb.RequestOp{rawGRPCRangeRequestOp(&etcdserverpb.RangeRequest{
+			Key: key, Revision: math.MaxInt64,
+		})},
+	}
+	_, err = kv.Txn(ctx, selectedMaximum)
+	requireRawGRPCRangeRevisionError(t, err, codes.OutOfRange, "etcdserver: mvcc: required revision is a future revision")
+}
+
+func rawGRPCRangeRequestOp(request *etcdserverpb.RangeRequest) *etcdserverpb.RequestOp {
+	return &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestRange{RequestRange: request}}
+}
+
+func requireRawGRPCRangeRevisionError(t *testing.T, err error, code codes.Code, message string) {
+	t.Helper()
+	require.Error(t, err)
+	require.Equal(t, code, status.Code(err))
+	require.Equal(t, message, status.Convert(err).Message())
 }
 
 func rangeClientRelativeKeys(kvs []*mvccpb.KeyValue, prefix string) []string {
