@@ -15909,6 +15909,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   nested Txn delete/put overlap、parent/nested delete overlap 和 nested sibling duplicate put
   统一到 `ErrGRPCDuplicateKey`、reference code 和 exact message helper。该门禁防止
   Txn interval validator 重构后只保留 InvalidArgument 或 substring，漏掉 etcd typed error。
+- A1265 固定 Compact retryable Unavailable exact message：
+  A1260 已覆盖 Compact future/compacted revision typed errors，本轮把 backend compact watermark
+  落后 requested revision，以及 leadership fence commit-time 拒绝两条 retryable Compact 路径
+  统一到 exact `codes.Unavailable` message helper。该门禁防止物理 compact 或 fencing 重构后
+  只保留 Unavailable/substring，漏掉生产重试诊断语义。
 
 ### P2：运维兼容和长期验证
 

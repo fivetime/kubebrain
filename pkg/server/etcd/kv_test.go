@@ -2105,9 +2105,7 @@ func TestCompactReturnsRetryableErrorWhenBackendCompactsBelowRequestedRevision(t
 	// Physical=true routes to the synchronous Compact that compactLagShim
 	// overrides to report a below-requested compacted revision.
 	_, err := server.Compact(context.Background(), &etcdserverpb.CompactionRequest{Revision: 10, Physical: true})
-	require.Error(t, err)
-	require.Equal(t, codes.Unavailable, status.Code(err))
-	require.Contains(t, err.Error(), "pending behind requested revision")
+	requireDirectKVStatusError(t, err, codes.Unavailable, "etcdserver: mvcc: compact revision 9 is pending behind requested revision 10")
 }
 
 func TestCompactIsFencedAcrossLeadershipChange(t *testing.T) {
@@ -2129,9 +2127,7 @@ func TestCompactIsFencedAcrossLeadershipChange(t *testing.T) {
 	// before opening its CAS batch.
 	server.backend.(*backendShim).backend.SetLeadershipFence(func() (uint64, bool) { return 1, true })
 	_, err = server.Compact(ctx, &etcdserverpb.CompactionRequest{Revision: put.Header.Revision})
-	require.Error(t, err)
-	require.Equal(t, codes.Unavailable, status.Code(err))
-	require.Contains(t, err.Error(), backend.ErrLeadershipFenced.Error())
+	requireDirectKVStatusError(t, err, codes.Unavailable, "write rejected: leadership changed during commit, retry on current leader")
 
 	hasMarker, markerErr := server.backend.HasCompactRevision(ctx)
 	require.NoError(t, markerErr)
@@ -6448,6 +6444,13 @@ func compactTxn(expectVersion int64, rev string) *etcdserverpb.TxnRequest {
 func requireDirectKVError(t *testing.T, err error, want error, code codes.Code, message string) {
 	t.Helper()
 	require.ErrorIs(t, err, want)
+	require.Equal(t, code, status.Code(err))
+	require.Equal(t, message, status.Convert(err).Message())
+}
+
+func requireDirectKVStatusError(t *testing.T, err error, code codes.Code, message string) {
+	t.Helper()
+	require.Error(t, err)
 	require.Equal(t, code, status.Code(err))
 	require.Equal(t, message, status.Convert(err).Message())
 }
