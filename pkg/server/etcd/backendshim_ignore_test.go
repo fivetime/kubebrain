@@ -21,6 +21,7 @@ import (
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -170,6 +171,7 @@ func TestBackendShimIgnoreOptionsRequireExistingKey(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := tc.run()
+			require.ErrorIs(t, err, rpctypes.ErrGRPCKeyNotFound)
 			require.Equal(t, codes.InvalidArgument, status.Code(err))
 			require.Equal(t, "etcdserver: key not found", status.Convert(err).Message())
 		})

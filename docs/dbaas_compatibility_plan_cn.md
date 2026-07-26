@@ -15878,6 +15878,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   失败，以及 auth 通过后才触发 read barrier 的失败路径统一到 `codes.Unavailable` 和 exact
   message helper。该门禁防止 Cluster service 线性读屏障或 auth-before-barrier 顺序重构后
   只保留 Unavailable，漏掉生产诊断 message。
+- A1259 固定 Put ignore option 基础错误三件套：
+  A1251 已覆盖部分 direct `Put` admission，本轮把 standalone invalid `Put` 的 empty key、
+  value-with-ignore-value、lease-with-ignore-lease，以及 backend shim 展开 ignore option 时的
+  missing key 统一到对应 `rpctypes.ErrGRPC*`、reference code 和 message。该门禁防止
+  ignore option staging/shim 重构后只保留 code/message，漏掉 typed error。
 
 ### P2：运维兼容和长期验证
 

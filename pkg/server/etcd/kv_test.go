@@ -720,28 +720,35 @@ func TestPutRejectsInvalidRequest(t *testing.T) {
 	defer closeFn()
 
 	tests := []struct {
-		name string
-		req  *etcdserverpb.PutRequest
+		name        string
+		req         *etcdserverpb.PutRequest
+		wantErr     error
+		wantMessage string
 	}{
 		{
-			name: "empty key",
-			req:  &etcdserverpb.PutRequest{Value: []byte("v1")},
+			name:        "empty key",
+			req:         &etcdserverpb.PutRequest{Value: []byte("v1")},
+			wantErr:     rpctypes.ErrGRPCEmptyKey,
+			wantMessage: "etcdserver: key is not provided",
 		},
 		{
-			name: "ignore value with value",
-			req:  &etcdserverpb.PutRequest{Key: []byte("/registry/pods/invalid-put"), Value: []byte("v1"), IgnoreValue: true},
+			name:        "ignore value with value",
+			req:         &etcdserverpb.PutRequest{Key: []byte("/registry/pods/invalid-put"), Value: []byte("v1"), IgnoreValue: true},
+			wantErr:     rpctypes.ErrGRPCValueProvided,
+			wantMessage: "etcdserver: value is provided",
 		},
 		{
-			name: "ignore lease with lease",
-			req:  &etcdserverpb.PutRequest{Key: []byte("/registry/pods/invalid-put"), Lease: 123, IgnoreLease: true},
+			name:        "ignore lease with lease",
+			req:         &etcdserverpb.PutRequest{Key: []byte("/registry/pods/invalid-put"), Lease: 123, IgnoreLease: true},
+			wantErr:     rpctypes.ErrGRPCLeaseProvided,
+			wantMessage: "etcdserver: lease is provided",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			_, err := server.Put(context.Background(), tt.req)
-			require.Error(t, err)
-			require.Equal(t, codes.InvalidArgument, status.Code(err))
+			requireDirectKVError(t, err, tt.wantErr, codes.InvalidArgument, tt.wantMessage)
 		})
 	}
 }
