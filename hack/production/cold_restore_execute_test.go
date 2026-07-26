@@ -14,6 +14,27 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestProductionReadinessColdRestoreExecuteExampleRequiresExplicitTarget(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "docs", "production_readiness_cn.md"))
+	require.NoError(t, err)
+	doc := string(data)
+
+	end := strings.Index(doc, "hack/backup/cold-restore-execute.sh")
+	require.NotEqual(t, -1, end, "cold restore execute command is missing")
+	start := strings.LastIndex(doc[:end], "```shell")
+	require.NotEqual(t, -1, start, "cold restore execute shell example is missing")
+	example := doc[start:end]
+	for _, required := range []string{
+		"KUBE_CONTEXT=",
+		"EXPECTED_TARGET_KUBE_SYSTEM_UID=",
+		"EXPECTED_TARGET_NAMESPACE_UID=",
+		"ALLOW_COLD_PHYSICAL_RESTORE=true",
+	} {
+		require.Contains(t, example, required)
+	}
+	require.Contains(t, doc, "不能隐式使用当前 context")
+}
+
 func TestColdRestoreExecute(t *testing.T) {
 	for _, tc := range []struct {
 		name                           string
@@ -149,6 +170,52 @@ func TestColdRestoreExecute(t *testing.T) {
 			if tc.sourceReceiptDriftDuringRender {
 				require.FileExists(t, logPath+".source-receipt-render-tampered")
 			}
+		})
+	}
+}
+
+func TestColdRestoreExecuteRequiresExplicitAdmissionBeforeTargetAccess(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		omit    string
+		message string
+	}{
+		{name: "approval", omit: "ALLOW_COLD_PHYSICAL_RESTORE", message: "set ALLOW_COLD_PHYSICAL_RESTORE=true"},
+		{name: "context", omit: "KUBE_CONTEXT", message: "KUBE_CONTEXT is required; the current context is never accepted implicitly"},
+		{name: "kube system uid", omit: "EXPECTED_TARGET_KUBE_SYSTEM_UID", message: "EXPECTED_TARGET_KUBE_SYSTEM_UID is required"},
+		{name: "namespace uid", omit: "EXPECTED_TARGET_NAMESPACE_UID", message: "EXPECTED_TARGET_NAMESPACE_UID is required"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			receiptPath := filepath.Join(dir, "snapshot.json")
+			manifestPath := filepath.Join(dir, "restore.json")
+			restoreReceiptPath := filepath.Join(dir, "restore-receipt.json")
+			require.NoError(t, os.WriteFile(receiptPath, coldRestoreSnapshotReceipt(t), 0o600))
+			renderOutput, err := runColdRestoreRender(t, receiptPath, manifestPath)
+			require.NoError(t, err, string(renderOutput))
+
+			envByName := map[string]string{
+				"KUBECTL":                         "/does/not/exist",
+				"KUBE_CONTEXT":                    "isolated-target",
+				"RECEIPT_FILE":                    receiptPath,
+				"RESTORE_MANIFEST":                manifestPath,
+				"RESTORE_RECEIPT_FILE":            restoreReceiptPath,
+				"EXPECTED_TARGET_KUBE_SYSTEM_UID": "uid-kube-system-target",
+				"EXPECTED_TARGET_NAMESPACE_UID":   "uid-target-namespace",
+				"ALLOW_COLD_PHYSICAL_RESTORE":     "true",
+			}
+			env := make([]string, 0, len(envByName)-1)
+			for name, value := range envByName {
+				if name == tc.omit {
+					continue
+				}
+				env = append(env, name+"="+value)
+			}
+
+			output, err := runColdRestoreExecute(t, env)
+			require.Error(t, err, string(output))
+			require.Contains(t, string(output), tc.message)
+			require.NoFileExists(t, restoreReceiptPath)
 		})
 	}
 }

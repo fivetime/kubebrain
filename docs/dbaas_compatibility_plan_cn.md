@@ -16098,6 +16098,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   调用方重新设置 `ALLOW_COLD_PHYSICAL_SNAPSHOT=true`，不能只继承 preflight 阶段批准；
   生产文档固定两个示例和说明。该门禁只收紧候选冷快照执行边界，仍不关闭真实 CSI
   隔离恢复或 PITR 缺口。
+- A1297 固定 cold restore execute 入口 admission 回归：
+  `cold-restore-execute.sh` 已要求恢复批准、显式 `KUBE_CONTEXT` 和目标 kube-system/
+  namespace UID，但既有 production 测试主要覆盖恢复成功、manifest/receipt 漂移和
+  恢复后 emergency fence，缺少入口 admission 负例。本轮新增回归测试，证明缺
+  `ALLOW_COLD_PHYSICAL_RESTORE=true`、`KUBE_CONTEXT`、`EXPECTED_TARGET_KUBE_SYSTEM_UID`
+  或 `EXPECTED_TARGET_NAMESPACE_UID` 时直接 fail closed，不访问目标 kubectl、也不发布
+  restore receipt；同时固定生产文档示例必须列出这些目标绑定输入。该门禁防止候选
+  隔离恢复执行器未来重构时退回隐式目标或弱批准，不关闭真实 CSI/PITR 缺口。
 
 ### P2：运维兼容和长期验证
 
