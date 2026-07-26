@@ -196,8 +196,7 @@ func TestDedicatedLockServicePreservesCallerAuthentication(t *testing.T) {
 
 	lockServer := newLockServer(server.concurrencyClient)
 	_, err = lockServer.Lock(ctx, &v3lockpb.LockRequest{Name: []byte("/a356/auth"), Lease: lease.ID})
-	require.Equal(t, codes.Unknown, status.Code(err))
-	require.Equal(t, status.Convert(rpctypes.ErrUserEmpty).Message(), status.Convert(err).Message())
+	requireConcurrencyClientError(t, err, rpctypes.ErrUserEmpty, codes.Unknown, status.Convert(rpctypes.ErrUserEmpty).Message())
 
 	authenticated, err := server.Authenticate(ctx, &etcdserverpb.AuthenticateRequest{
 		Name: "root", Password: "secret",
@@ -278,11 +277,13 @@ func TestDedicatedConcurrencyUnaryAuthFailuresReturnUnknown(t *testing.T) {
 	authFailures := []struct {
 		name    string
 		ctx     context.Context
+		wantErr error
 		message string
 	}{
 		{
 			name:    "missing token",
 			ctx:     auth.anonymous,
+			wantErr: rpctypes.ErrUserEmpty,
 			message: status.Convert(rpctypes.ErrUserEmpty).Message(),
 		},
 		{
@@ -290,11 +291,13 @@ func TestDedicatedConcurrencyUnaryAuthFailuresReturnUnknown(t *testing.T) {
 			ctx: metadata.NewIncomingContext(auth.anonymous, metadata.Pairs(
 				rpctypes.TokenFieldNameGRPC, "invalid-token",
 			)),
+			wantErr: rpctypes.ErrInvalidAuthToken,
 			message: status.Convert(rpctypes.ErrInvalidAuthToken).Message(),
 		},
 		{
 			name:    "permission denied",
 			ctx:     auth.limited,
+			wantErr: rpctypes.ErrPermissionDenied,
 			message: status.Convert(rpctypes.ErrPermissionDenied).Message(),
 		},
 	}
@@ -362,8 +365,7 @@ func TestDedicatedConcurrencyUnaryAuthFailuresReturnUnknown(t *testing.T) {
 			for _, authFailure := range authFailures {
 				t.Run(authFailure.name, func(t *testing.T) {
 					err := call.call(authFailure.ctx)
-					require.Equal(t, codes.Unknown, status.Code(err))
-					require.Equal(t, authFailure.message, status.Convert(err).Message())
+					requireConcurrencyClientError(t, err, authFailure.wantErr, codes.Unknown, authFailure.message)
 				})
 			}
 		})
@@ -427,8 +429,7 @@ func TestDedicatedConcurrencyAuthorizationTracksRoleAndTokenLifecycle(t *testing
 	_, err = lockServer.Unlock(aliceCtx, &v3lockpb.UnlockRequest{Key: locked.Key})
 	require.NoError(t, err)
 	_, err = lockServer.Lock(aliceCtx, &v3lockpb.LockRequest{Name: []byte(deniedPrefix + "lock"), Lease: lockLease.ID})
-	require.Equal(t, codes.Unknown, status.Code(err))
-	require.Equal(t, status.Convert(rpctypes.ErrPermissionDenied).Message(), status.Convert(err).Message())
+	requireConcurrencyClientError(t, err, rpctypes.ErrPermissionDenied, codes.Unknown, status.Convert(rpctypes.ErrPermissionDenied).Message())
 
 	campaign, err := electionServer.Campaign(aliceCtx, &v3electionpb.CampaignRequest{
 		Name:  []byte(allowedPrefix + "election"),
@@ -448,16 +449,14 @@ func TestDedicatedConcurrencyAuthorizationTracksRoleAndTokenLifecycle(t *testing
 		Lease: electionLease.ID,
 		Value: []byte("denied"),
 	})
-	require.Equal(t, codes.Unknown, status.Code(err))
-	require.Equal(t, status.Convert(rpctypes.ErrPermissionDenied).Message(), status.Convert(err).Message())
+	requireConcurrencyClientError(t, err, rpctypes.ErrPermissionDenied, codes.Unknown, status.Convert(rpctypes.ErrPermissionDenied).Message())
 
 	_, err = server.RoleRevokePermission(rootCtx, &etcdserverpb.AuthRoleRevokePermissionRequest{
 		Role: aliceRole, Key: permission.Key, RangeEnd: permission.RangeEnd,
 	})
 	require.NoError(t, err)
 	_, err = lockServer.Lock(aliceCtx, &v3lockpb.LockRequest{Name: lockName, Lease: lockLease.ID})
-	require.Equal(t, codes.Unknown, status.Code(err))
-	require.Equal(t, status.Convert(rpctypes.ErrPermissionDenied).Message(), status.Convert(err).Message())
+	requireConcurrencyClientError(t, err, rpctypes.ErrPermissionDenied, codes.Unknown, status.Convert(rpctypes.ErrPermissionDenied).Message())
 	_, err = server.RoleGrantPermission(rootCtx, &etcdserverpb.AuthRoleGrantPermissionRequest{Name: aliceRole, Perm: permission})
 	require.NoError(t, err)
 	locked, err = lockServer.Lock(aliceCtx, &v3lockpb.LockRequest{Name: lockName, Lease: lockLease.ID})
@@ -470,8 +469,14 @@ func TestDedicatedConcurrencyAuthorizationTracksRoleAndTokenLifecycle(t *testing
 	})
 	require.NoError(t, err)
 	_, err = lockServer.Lock(aliceCtx, &v3lockpb.LockRequest{Name: lockName, Lease: lockLease.ID})
-	require.Equal(t, codes.Unknown, status.Code(err))
-	require.Equal(t, status.Convert(rpctypes.ErrInvalidAuthToken).Message(), status.Convert(err).Message())
+	requireConcurrencyClientError(t, err, rpctypes.ErrInvalidAuthToken, codes.Unknown, status.Convert(rpctypes.ErrInvalidAuthToken).Message())
+}
+
+func requireConcurrencyClientError(t *testing.T, err error, want error, code codes.Code, message string) {
+	t.Helper()
+	require.ErrorIs(t, err, want)
+	require.Equal(t, code, status.Code(err))
+	require.Equal(t, message, status.Convert(err).Message())
 }
 
 func TestDedicatedConcurrencyCancellationRemovesWaiters(t *testing.T) {

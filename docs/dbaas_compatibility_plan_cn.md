@@ -15950,6 +15950,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Delete 映射到 `ErrEmptyKey`，以及 direct `Put`/Txn selected operation order 中 missing lease
   映射到 `ErrGRPCLeaseNotFound`。该门禁防止 namespace wrapper 或 Txn validator 重构后只保留
   code/message，漏掉 high-level client 与 raw gRPC 各自可识别的 etcd typed error。
+- A1273 固定 concurrency service auth 错误三件套：
+  A1272 已覆盖 KV client high-level typed error，本轮把 dedicated Lock/Election concurrency
+  service 的 missing token、invalid token、permission denied、RBAC permission revoke 后拒绝，
+  以及 token 代际失效统一到 high-level `rpctypes.Err*`、reference code 和 exact message helper。
+  该门禁防止 concurrency wrapper 重构后只保留 Unknown/message，漏掉 clientv3 可识别 typed error。
 
 ### P2：运维兼容和长期验证
 
