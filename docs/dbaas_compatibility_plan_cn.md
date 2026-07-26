@@ -15232,6 +15232,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   本轮加强既有 bufconn official clientv3 Txn ignore-lease/bad-lease 回归，保留 status/message
   和未写入断言，同时新增 typed error 断言。该门禁防止 txn 分支校验或 client adapter
   重构把 lease not found 错误文本化，破坏 session、mutex 或控制器对永久 lease 错误的分类。
+- A1153 固定 clientv3 Put missing lease typed error：
+  对照 `/root/etcd/tests/integration/clientv3/lease/lease_test.go:TestLeaseNotFoundError`，
+  普通 `Put(..., WithLease(missing))` 必须可由 `errors.Is(..., rpctypes.ErrLeaseNotFound)`
+  识别。本轮加强既有 bufconn official clientv3 Put ignore-value/ignore-lease 错误矩阵，
+  对直接 missing lease 与 missing-key+missing-lease 两个分支同时保留 status/message 并新增
+  typed error 断言。该门禁防止 Put validation、lease lookup 或 client adapter 重构把
+  lease not found 降级为只能字符串匹配的错误。
 
 ### P2：运维兼容和长期验证
 

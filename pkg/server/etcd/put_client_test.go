@@ -121,6 +121,7 @@ func TestClientPutIgnoreValueIgnoreLeaseAndErrors(t *testing.T) {
 		call        func() error
 		wantCode    codes.Code
 		wantMessage string
+		wantErrorIs error
 	}{
 		{
 			name: "missing lease",
@@ -130,6 +131,7 @@ func TestClientPutIgnoreValueIgnoreLeaseAndErrors(t *testing.T) {
 			},
 			wantCode:    codes.Unknown,
 			wantMessage: "etcdserver: requested lease not found",
+			wantErrorIs: rpctypes.ErrLeaseNotFound,
 		},
 		{
 			name: "missing ignore value key",
@@ -148,6 +150,7 @@ func TestClientPutIgnoreValueIgnoreLeaseAndErrors(t *testing.T) {
 			},
 			wantCode:    codes.Unknown,
 			wantMessage: "etcdserver: requested lease not found",
+			wantErrorIs: rpctypes.ErrLeaseNotFound,
 		},
 		{
 			name: "value with ignore value",
@@ -172,6 +175,9 @@ func TestClientPutIgnoreValueIgnoreLeaseAndErrors(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			err := tt.call()
 			require.Error(t, err)
+			if tt.wantErrorIs != nil {
+				require.ErrorIs(t, err, tt.wantErrorIs)
+			}
 			require.Equal(t, tt.wantCode, status.Code(err))
 			require.Equal(t, tt.wantMessage, status.Convert(err).Message())
 		})
