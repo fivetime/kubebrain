@@ -17,6 +17,7 @@ package etcd
 import (
 	"context"
 	"fmt"
+	"math"
 	"net"
 	"strings"
 	"testing"
@@ -24,6 +25,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -90,4 +92,126 @@ func TestClientWatchFragmentDeliversLargeBatchWithSmallRecvLimit(t *testing.T) {
 		}
 	}
 	require.Equal(t, eventCount, events)
+}
+
+func TestRawGRPCWatchIDRangeBoundariesKeepStreamAlive(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	_, err := server.Put(context.Background(), &etcdserverpb.PutRequest{
+		Key: []byte("/a1021/watch-id/seed"), Value: []byte("seed"),
+	})
+	require.NoError(t, err)
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterWatchServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///bufnet",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	stream, err := etcdserverpb.NewWatchClient(conn).Watch(ctx)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = stream.CloseSend() })
+
+	create := func(key string, end []byte, id, revision int64) *etcdserverpb.WatchResponse {
+		require.NoError(t, stream.Send(&etcdserverpb.WatchRequest{
+			RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{
+				CreateRequest: &etcdserverpb.WatchCreateRequest{
+					Key: []byte(key), RangeEnd: end, WatchId: id, StartRevision: revision,
+				},
+			},
+		}))
+		response, recvErr := stream.Recv()
+		require.NoError(t, recvErr)
+		requireRawWatchHeaderWellFormed(t, response)
+		return response
+	}
+	cancelWatch := func(id int64) *etcdserverpb.WatchResponse {
+		require.NoError(t, stream.Send(&etcdserverpb.WatchRequest{
+			RequestUnion: &etcdserverpb.WatchRequest_CancelRequest{
+				CancelRequest: &etcdserverpb.WatchCancelRequest{WatchId: id},
+			},
+		}))
+		response, recvErr := stream.Recv()
+		require.NoError(t, recvErr)
+		requireRawWatchHeaderWellFormed(t, response)
+		return response
+	}
+
+	for _, id := range []int64{-1, math.MinInt64, math.MaxInt64} {
+		response := create(fmt.Sprintf("/a1021/watch-id/%d", id), nil, id, 0)
+		require.True(t, response.Created)
+		require.False(t, response.Canceled)
+		require.Equal(t, id, response.WatchId)
+	}
+
+	response := create("/a1021/watch-id/negative-duplicate-and-empty",
+		[]byte("/a1021/watch-id/negative-duplicate-and-empty"), math.MaxInt64, -1)
+	require.True(t, response.Created)
+	require.True(t, response.Canceled)
+	require.Equal(t, int64(-1), response.WatchId)
+	require.Equal(t, rpctypes.ErrCompacted.Error(), response.CancelReason)
+
+	response = create("/a1021/watch-id/duplicate-and-empty",
+		[]byte("/a1021/watch-id/duplicate-and-empty"), math.MaxInt64, 0)
+	require.True(t, response.Created)
+	require.True(t, response.Canceled)
+	require.Equal(t, int64(-1), response.WatchId)
+	require.Equal(t, "mvcc: watcher range is empty", response.CancelReason)
+
+	response = create("/a1021/watch-id/duplicate", nil, math.MaxInt64, 0)
+	require.True(t, response.Created)
+	require.True(t, response.Canceled)
+	require.Equal(t, int64(-1), response.WatchId)
+	require.Equal(t, "mvcc: duplicate watch ID provided on the WatchStream", response.CancelReason)
+
+	response = create("/a1021/watch-id/after-errors", nil, 102, 0)
+	require.True(t, response.Created)
+	require.False(t, response.Canceled)
+	require.Equal(t, int64(102), response.WatchId)
+
+	response = create("/a1021/watch-id/automatic", nil, 0, 0)
+	require.True(t, response.Created)
+	require.False(t, response.Canceled)
+	require.Equal(t, int64(0), response.WatchId)
+
+	for _, id := range []int64{-1, math.MinInt64, math.MaxInt64, 102, 0} {
+		response = cancelWatch(id)
+		require.False(t, response.Created)
+		require.True(t, response.Canceled)
+		require.Equal(t, id, response.WatchId)
+		require.Empty(t, response.CancelReason)
+	}
+
+	require.NoError(t, stream.Send(&etcdserverpb.WatchRequest{
+		RequestUnion: &etcdserverpb.WatchRequest_CancelRequest{
+			CancelRequest: &etcdserverpb.WatchCancelRequest{WatchId: 999},
+		},
+	}))
+	response = create("/a1021/watch-id/after-unknown-cancel", nil, 103, 0)
+	require.True(t, response.Created)
+	require.False(t, response.Canceled)
+	require.Equal(t, int64(103), response.WatchId)
+
+	response = cancelWatch(103)
+	require.False(t, response.Created)
+	require.True(t, response.Canceled)
+	require.Equal(t, int64(103), response.WatchId)
+	require.Empty(t, response.CancelReason)
+}
+
+func requireRawWatchHeaderWellFormed(t *testing.T, response *etcdserverpb.WatchResponse) {
+	t.Helper()
+	require.NotNil(t, response.Header)
+	require.Positive(t, response.Header.Revision)
 }

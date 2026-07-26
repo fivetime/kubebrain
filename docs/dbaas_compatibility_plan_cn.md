@@ -14216,6 +14216,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   直接用 `etcdserverpb.KVClient.Range` 发送 `CountOnly=true, KeysOnly=true, Limit=1`
   的 prefix 请求，断言 `Count=3`、`Kvs` 为空、`More=false`、header 良好，防止服务层
   Count 快路径正确但 raw response shaping 或未来请求选项组合重构破坏该公开语义。
+- A1021 固定 raw gRPC Watch ID/range 边界流语义：
+  `watch_id_range_boundary` differential 证明 signed watch ID（`-1`、`math.MinInt64`、
+  `math.MaxInt64`）可以正常创建和取消；负 `StartRevision` 优先返回 compacted cancel，
+  空/倒置 range 返回 `mvcc: watcher range is empty`，重复 ID 返回
+  `mvcc: duplicate watch ID provided on the WatchStream`，未知 cancel 静默忽略且不关闭
+  multiplexed Watch stream。本轮新增 bufconn raw gRPC 回归，注册真实 Watch 服务后直接
+  使用 `etcdserverpb.WatchClient.Watch` 双向流覆盖这些边界，并断言每个可见响应都有良好
+  header，防止单元 fake stream 正确但公开 gRPC 编解码、控制帧顺序或错误后续流存活语义回退。
 
 ### P2：运维兼容和长期验证
 
