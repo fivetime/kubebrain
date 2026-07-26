@@ -14109,6 +14109,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   以及 disjoint delete+mutually-exclusive put、nested overlapping deletes、repeated
   overlapping deletes、put+disjoint delete 的成功路径，固定 raw gRPC code/message，
   防止 admission interval 合并或 nested branch 分析回退。
+- A1008 固定 clientv3 nested Txn 的公开响应形态和最终状态：
+  `txn_generated_nested` differential 证明官方 clientv3 `OpTxn` 的多层 Then/Else、PrevKV、
+  子 Txn `Succeeded`、嵌套 response op 顺序和最终 keyspace 必须与 reference etcd 一致。
+  本轮新增 bufconn clientv3 回归，注册真实 KV gRPC 服务后构造两条确定性嵌套事务：outer
+  Then -> middle Then -> inner Else 会 delete `c` 并返回 PrevKV，outer Else -> failure
+  Txn Success 会 Put `failure-put` 并 Range `b`；同时断言外层 response range 的 revision
+  等于 Txn revision、PrevKV 未错误标记为本 Txn 创建、public client 最终 Get 与 Txn 内
+  Range 的 key 集一致，防止嵌套 Txn response wrapping、branch selection 或 staged view
+  只在 raw/service 层正确。
 
 ### P2：运维兼容和长期验证
 

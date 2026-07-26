@@ -495,6 +495,144 @@ func TestRawGRPCTxnDuplicateIntervalValidation(t *testing.T) {
 	}
 }
 
+func TestClientNestedTxnResponseAndFinalState(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for _, tt := range []struct {
+		name                  string
+		outerValue            string
+		cValue                string
+		wantOuterSucceeded    bool
+		wantMiddle            bool
+		wantInnerSucceeded    bool
+		wantFinalRelativeKeys []string
+	}{
+		{
+			name:                  "outer-then-middle-then-inner-failure",
+			outerValue:            "yes",
+			cValue:                "other",
+			wantOuterSucceeded:    true,
+			wantMiddle:            true,
+			wantFinalRelativeKeys: []string{"a", "b", "ctrl", "middle-put"},
+		},
+		{
+			name:                  "outer-else-failure-txn-success",
+			outerValue:            "no",
+			cValue:                "inner",
+			wantOuterSucceeded:    false,
+			wantInnerSucceeded:    true,
+			wantFinalRelativeKeys: []string{"a", "b", "c", "ctrl", "failure-put"},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			prefix := fmt.Sprintf("/a1008/client-nested-txn/%d/%s/", time.Now().UnixNano(), tt.name)
+			ctrl, a, b, c := prefix+"ctrl", prefix+"a", prefix+"b", prefix+"c"
+			_, err = client.Txn(ctx).Then(
+				clientv3.OpPut(ctrl, tt.outerValue),
+				clientv3.OpPut(a, "middle"),
+				clientv3.OpPut(b, "seed-b"),
+				clientv3.OpPut(c, tt.cValue),
+			).Commit()
+			require.NoError(t, err)
+
+			inner := clientv3.OpTxn(
+				[]clientv3.Cmp{clientv3.Compare(clientv3.Value(c), "=", "inner")},
+				[]clientv3.Op{
+					clientv3.OpPut(prefix+"inner-put", "inner-value", clientv3.WithPrevKV()),
+					clientv3.OpGet(prefix, clientv3.WithPrefix()),
+				},
+				[]clientv3.Op{clientv3.OpDelete(c, clientv3.WithPrevKV())},
+			)
+			middle := clientv3.OpTxn(
+				[]clientv3.Cmp{clientv3.Compare(clientv3.Value(a), "=", "middle")},
+				[]clientv3.Op{
+					inner,
+					clientv3.OpPut(prefix+"middle-put", "middle-value", clientv3.WithPrevKV()),
+				},
+				[]clientv3.Op{
+					clientv3.OpDelete(b, clientv3.WithPrevKV()),
+					clientv3.OpGet(prefix, clientv3.WithPrefix()),
+				},
+			)
+			failure := clientv3.OpTxn(
+				[]clientv3.Cmp{clientv3.Compare(clientv3.Version(prefix+"missing"), "=", 0)},
+				[]clientv3.Op{
+					clientv3.OpPut(prefix+"failure-put", "failure-value", clientv3.WithPrevKV()),
+					clientv3.OpGet(b),
+				},
+				[]clientv3.Op{clientv3.OpDelete(a, clientv3.WithPrevKV())},
+			)
+			txn, err := client.Txn(ctx).
+				If(clientv3.Compare(clientv3.Value(ctrl), "=", "yes")).
+				Then(middle, clientv3.OpGet(prefix, clientv3.WithPrefix())).
+				Else(failure, clientv3.OpGet(prefix, clientv3.WithPrefix())).
+				Commit()
+			require.NoError(t, err)
+			require.Equal(t, tt.wantOuterSucceeded, txn.Succeeded)
+			require.Len(t, txn.Responses, 2)
+
+			nested := txn.Responses[0].GetResponseTxn()
+			require.NotNil(t, nested)
+			require.NotZero(t, txn.Header.Revision)
+			if tt.wantMiddle {
+				require.True(t, nested.Succeeded)
+				require.Len(t, nested.Responses, 2)
+				innerResponse := nested.Responses[0].GetResponseTxn()
+				require.NotNil(t, innerResponse)
+				require.Equal(t, tt.wantInnerSucceeded, innerResponse.Succeeded)
+				require.Len(t, innerResponse.Responses, 1)
+				deleted := innerResponse.Responses[0].GetResponseDeleteRange()
+				require.NotNil(t, deleted)
+				require.Equal(t, int64(1), deleted.Deleted)
+				require.Equal(t, []txnClientKV{{Key: "c", Value: tt.cValue, Version: 1}}, txnClientKVs(deleted.PrevKvs, prefix, txn.Header.Revision))
+				put := nested.Responses[1].GetResponsePut()
+				require.NotNil(t, put)
+				require.Nil(t, put.PrevKv)
+			} else {
+				require.Equal(t, tt.wantInnerSucceeded, nested.Succeeded)
+				require.Len(t, nested.Responses, 2)
+				put := nested.Responses[0].GetResponsePut()
+				require.NotNil(t, put)
+				require.Nil(t, put.PrevKv)
+				gotB := nested.Responses[1].GetResponseRange()
+				require.NotNil(t, gotB)
+				require.Equal(t, []txnClientKV{{Key: "b", Value: "seed-b", Version: 1}}, txnClientKVs(gotB.Kvs, prefix, txn.Header.Revision))
+			}
+			rangeResponse := txn.Responses[1].GetResponseRange()
+			require.NotNil(t, rangeResponse)
+			require.Equal(t, txn.Header.Revision, rangeResponse.Header.Revision)
+			require.Equal(t, tt.wantFinalRelativeKeys, txnClientKVKeys(txnClientKVs(rangeResponse.Kvs, prefix, txn.Header.Revision)))
+
+			final, err := client.Get(ctx, prefix, clientv3.WithPrefix(), clientv3.WithSort(clientv3.SortByKey, clientv3.SortAscend))
+			require.NoError(t, err)
+			require.GreaterOrEqual(t, final.Header.Revision, txn.Header.Revision)
+			require.Equal(t, tt.wantFinalRelativeKeys, txnClientKVKeys(txnClientKVs(final.Kvs, prefix, txn.Header.Revision)))
+		})
+	}
+}
+
 func txnClientValueCompare(
 	key, rangeEnd []byte,
 	result etcdserverpb.Compare_CompareResult,
@@ -571,4 +709,12 @@ func txnClientKVs(kvs []*mvccpb.KeyValue, prefix string, txnRevision int64) []tx
 		})
 	}
 	return out
+}
+
+func txnClientKVKeys(kvs []txnClientKV) []string {
+	keys := make([]string, 0, len(kvs))
+	for _, kv := range kvs {
+		keys = append(keys, kv.Key)
+	}
+	return keys
 }
