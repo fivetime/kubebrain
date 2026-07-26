@@ -14465,6 +14465,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   clientv3 bufconn 回归，通过 `client.Get(prefix, WithPrefix(), WithKeysOnly(),
   WithCountOnly(), WithLimit(1))` 断言 `Count=3`、无 KVs、`More=false` 和 header 非空，
   防止 public option builder 或 wrapper 层把 KeysOnly/Limit 优先级错误地压过 CountOnly。
+- A1054 固定 clientv3 Auth header revision 外观：
+  `auth_header` differential 证明 AuthStatus、RoleAdd、RoleGet 的 response header revision
+  必须等于当前 user revision，而不是 auth store revision 或本次 auth 管理 RPC 自行推进的
+  revision；cluster/member ID 必须非零且 raft term 为正。A930 已补 raw gRPC 双端覆盖，本轮
+  新增官方 clientv3 bufconn 回归，先通过 `client.Put` 固定当前 revision，再用
+  `client.AuthStatus`、`client.RoleAdd`、`client.RoleGet` 断言 high-level wrapper 暴露的
+  Header revision/cluster/member/raft term 与 raw 语义一致，补齐 Auth public client 入口。
 
 ### P2：运维兼容和长期验证
 
