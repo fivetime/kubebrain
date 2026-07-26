@@ -15138,6 +15138,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   再用 `foo/` 的 create revision 做 prefix compare，要求事务 `Succeeded=false` 且只写入
   failure 结果。该门禁防止 range compare evaluator、TiKV scanner 或 client op 转换重构把
   prefix CAS 误降级为单 key CAS，导致控制器批量条件更新在部分对象不匹配时仍错误提交。
+- A1140 固定 clientv3 Range WithFromKey 全 keyspace 读取外观：
+  对照 `/root/etcd/tests/integration/clientv3/kv_test.go:TestKVRange`，从 NUL 哨兵执行
+  `Get("\x00", WithFromKey(), WithSort(SortByKey, SortAscend))` 必须返回全部用户 key，
+  header 与同一 revision 的普通 point get 保持一致，重复写同一 key 后只暴露最新 value
+  和正确 version/mod revision。本轮新增 bufconn official clientv3 回归，写入 `a`、`b`、
+  三次 `c`、`foo`、`foo/abc`、`fop` 后，要求返回 6 个 key 的字节序列表，并固定 `a`
+  与 `c` 的 create/mod/version 元数据。该门禁防止 RangeEnd=0 翻译、排序或 MVCC collapse
+  重构破坏全量 LIST 和灾备扫描的 etcd 兼容外观。
 
 ### P2：运维兼容和长期验证
 

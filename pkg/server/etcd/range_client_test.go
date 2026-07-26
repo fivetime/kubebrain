@@ -255,6 +255,65 @@ func TestClientRangeRevisionFilterCountAndTxnStagedView(t *testing.T) {
 	require.Equal(t, "new-c", string(txnRange.Kvs[0].Value))
 }
 
+func TestClientRangeFromKeyReturnsWholeUserKeyspace(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	putRevisions := map[string]int64{}
+	keySet := []string{"a", "b", "c", "c", "c", "foo", "foo/abc", "fop"}
+	for _, key := range keySet {
+		put, putErr := client.Put(ctx, key, "")
+		require.NoError(t, putErr)
+		putRevisions[key] = put.Header.Revision
+	}
+	single, err := client.Get(ctx, "a")
+	require.NoError(t, err)
+	require.Len(t, single.Kvs, 1)
+
+	response, err := client.Get(ctx, "\x00",
+		clientv3.WithFromKey(),
+		clientv3.WithSort(clientv3.SortByKey, clientv3.SortAscend),
+	)
+	require.NoError(t, err)
+	require.Equal(t, single.Header, response.Header)
+	require.Equal(t, int64(6), response.Count)
+	require.False(t, response.More)
+	require.Equal(t, []string{"a", "b", "c", "foo", "foo/abc", "fop"}, rangeClientRelativeKeys(response.Kvs, ""))
+
+	byKey := make(map[string]*mvccpb.KeyValue, len(response.Kvs))
+	for _, kv := range response.Kvs {
+		byKey[string(kv.Key)] = kv
+		require.Empty(t, kv.Value)
+	}
+	require.Equal(t, putRevisions["a"], byKey["a"].CreateRevision)
+	require.Equal(t, putRevisions["a"], byKey["a"].ModRevision)
+	require.Equal(t, int64(1), byKey["a"].Version)
+	require.Equal(t, putRevisions["c"]-2, byKey["c"].CreateRevision)
+	require.Equal(t, putRevisions["c"], byKey["c"].ModRevision)
+	require.Equal(t, int64(3), byKey["c"].Version)
+}
+
 func TestClientRangeOptionInteractionsMatchEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
