@@ -14495,6 +14495,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   和 `client.RequestProgress` 固定 public Watch channel 的 created notification、事件
   value/ModRevision 以及 future progress suppression；created response 的 header 仍由 raw
   gRPC 门禁固定，避免把 SDK wrapper 未承诺字段当成公开契约。
+- A1058 固定 clientv3 Auth password/token 生命周期：
+  `auth` differential 证明用户改密后，旧密码认证必须失败，改密前已签发的该用户 token
+  必须按 `invalid auth token` 失效，新密码重新 Authenticate 后恢复授权范围内读取。低层
+  token manager 已覆盖 per-user invalidation，本轮新增官方 clientv3 bufconn 回归，完整走
+  `UserAdd`、`RoleGrantPermission`、`AuthEnable`、旧 alice client 首次 Range、root
+  `UserChangePassword`、旧 token Range、旧密码重连 Range 和新密码 Range，固定 high-level
+  client 暴露的旧 token `Unknown`+`invalid auth token` message、旧密码重连
+  `Unknown`+认证失败 message 以及最终访问恢复。
 
 ### P2：运维兼容和长期验证
 
