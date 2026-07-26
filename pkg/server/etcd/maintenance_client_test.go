@@ -763,6 +763,17 @@ func TestRawGRPCHashKVRevisionBoundaries(t *testing.T) {
 		require.Equal(t, codes.OutOfRange, status.Code(hashErr))
 		require.Equal(t, "etcdserver: mvcc: required revision is a future revision", status.Convert(hashErr).Message())
 	}
+
+	update, err := kv.Put(ctx, &etcdserverpb.PutRequest{
+		Key: []byte("/a999/hashkv-client/key"), Value: []byte("updated"),
+	})
+	require.NoError(t, err)
+	_, err = kv.Compact(ctx, &etcdserverpb.CompactionRequest{Revision: update.Header.Revision})
+	require.NoError(t, err)
+	_, hashErr := maintenance.HashKV(ctx, &etcdserverpb.HashKVRequest{Revision: put.Header.Revision})
+	require.Error(t, hashErr)
+	require.Equal(t, codes.OutOfRange, status.Code(hashErr))
+	require.Equal(t, "etcdserver: mvcc: required revision has been compacted", status.Convert(hashErr).Message())
 }
 
 func TestClientHashKVRevisionBoundaries(t *testing.T) {

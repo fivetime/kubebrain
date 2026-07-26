@@ -15408,6 +15408,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   HashKV revision boundary 回归，先写入更新并 compact 到新 revision，再请求旧 revision，
   固定 status/message 与 typed error 外观，防止 maintenance client adapter 或 backend hash
   compaction recheck 重构把该错误退化成普通字符串错误。
+- A1181 固定 raw gRPC HashKV compacted revision 错误外观：
+  对照 `/root/etcd/server/etcdserver/api/v3rpc/maintenance.go:HashKV` 的裸 gRPC contract，
+  `etcdserverpb.MaintenanceClient.HashKV` 在请求已 compact 的历史 revision 时必须返回
+  `codes.OutOfRange` 和 `etcdserver: mvcc: required revision has been compacted`，与 future
+  revision 分支同属 maintenance RPC 的 revision boundary。本轮加强 raw bufconn
+  `HashKV` 矩阵，先写入更新并 compact 到新 revision，再请求旧 revision，防止服务端错误映射
+  或 backend compaction recheck 重构破坏非 clientv3 调用方看到的 gRPC 外观。
 
 ### P2：运维兼容和长期验证
 
