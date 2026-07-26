@@ -14969,6 +14969,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   lease 仍可 `TimeToLive` 为 live；随后用 `WithTTL(7)` 创建 session，要求
   `LeaseTimeToLive` 回显 `GrantedTTL=7` 且当前 TTL 为正。该门禁防止 session keepalive、
   orphan close 或 TTL option 变更破坏上层 lock/election recipe 的基础生命周期契约。
+- A1119 固定 clientv3 concurrency ResumeElection 观察路径：
+  对照 `/root/etcd/tests/integration/clientv3/concurrency/election_test.go:TestResumeElection`，
+  A1113 已覆盖普通 Election Campaign/Observe/Proclaim/Resign/handoff，但缺少用已知 leader
+  key/create revision 恢复 election 的公开路径。本轮新增 bufconn official clientv3 回归：
+  先 `Campaign(candidate-1)` 并读取 leader，再用 `concurrency.ResumeElection` 复建 election；
+  `Observe` 启动后写入 election prefix 外部 key，短窗口内不得产生新 leader 观察；随后
+  `Resign` 并 `Campaign(candidate-2)`，Observe 必须返回 election prefix 下的新 leader。
+  该门禁防止 resume key/revision、watch prefix 或 Observe 过滤重构让无关写入误触发
+  election 变更，或让恢复后的 leader handoff 丢事件。
+- A1120 稳定 clientv3 naming watch 批量事件门禁：
+  A1119 完整 `pkg/server/etcd` JSON 门禁暴露 `TestClientNamingManagerUpdateListWatchAndLeaseDeletion`
+  偶发只读取到同一 endpoint manager `Update` 的第一条 add 事件；单测复跑通过，说明服务端
+  watch 语义未丢事件，但 `endpoints.WatchChannel` 允许把同一批 endpoint update 拆成多次
+  channel 投递。本轮将 naming 测试 helper 从“读取一次 WatchChannel”改为“聚合到期望事件数”，
+  继续精确断言 add/delete/List/lease deletion 内容，同时消除合法拆批导致的 full-package
+  flaky failure。该门禁提升生产发布前回归信号质量，避免把 watch channel 调度差异误判为
+  naming 兼容性回退。
 
 ### P2：运维兼容和长期验证
 

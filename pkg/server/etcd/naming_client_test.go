@@ -76,7 +76,7 @@ func TestClientNamingManagerUpdateListWatchAndLeaseDeletion(t *testing.T) {
 	require.Equal(t, []string{
 		"add:e1:127.0.0.1:2001:metadata-1",
 		"add:e2:127.0.0.1:2002:metadata-2",
-	}, namingClientUpdates(t, receiveNamingClientUpdates(t, ctx, updates), managerPrefix))
+	}, namingClientUpdates(t, receiveNamingClientUpdates(t, ctx, updates, 2), managerPrefix))
 	listed, err := manager.List(ctx)
 	require.NoError(t, err)
 	require.Equal(t, []string{
@@ -91,7 +91,7 @@ func TestClientNamingManagerUpdateListWatchAndLeaseDeletion(t *testing.T) {
 	require.Equal(t, []string{
 		"add:e3:127.0.0.1:2003:metadata-3",
 		"delete:e1::",
-	}, namingClientUpdates(t, receiveNamingClientUpdates(t, ctx, updates), managerPrefix))
+	}, namingClientUpdates(t, receiveNamingClientUpdates(t, ctx, updates, 2), managerPrefix))
 	listed, err = manager.List(ctx)
 	require.NoError(t, err)
 	require.Equal(t, []string{
@@ -119,11 +119,11 @@ func TestClientNamingManagerUpdateListWatchAndLeaseDeletion(t *testing.T) {
 	require.NoError(t, manager.AddEndpoint(ctx, leaseKey,
 		endpoints.Endpoint{Addr: "127.0.0.1:2010", Metadata: "leased"}, clientv3.WithLease(lease.ID)))
 	require.Equal(t, []string{"add:leased:127.0.0.1:2010:leased"},
-		namingClientUpdates(t, receiveNamingClientUpdates(t, ctx, updates), managerPrefix))
+		namingClientUpdates(t, receiveNamingClientUpdates(t, ctx, updates, 1), managerPrefix))
 	_, err = client.Revoke(ctx, lease.ID)
 	require.NoError(t, err)
 	require.Equal(t, []string{"delete:leased::"},
-		namingClientUpdates(t, receiveNamingClientUpdates(t, ctx, updates), managerPrefix))
+		namingClientUpdates(t, receiveNamingClientUpdates(t, ctx, updates, 1), managerPrefix))
 }
 
 func TestClientNamingManagerInitialAtomicWatchAndTxnDelete(t *testing.T) {
@@ -167,7 +167,7 @@ func TestClientNamingManagerInitialAtomicWatchAndTxnDelete(t *testing.T) {
 	require.Equal(t, []string{
 		"add:host1:127.0.0.1:2101:",
 		"add:host2:127.0.0.1:2102:",
-	}, namingClientUpdates(t, receiveNamingClientUpdates(t, ctx, updates), managerPrefix))
+	}, namingClientUpdates(t, receiveNamingClientUpdates(t, ctx, updates, 2), managerPrefix))
 
 	deleteResponse, err := client.Txn(ctx).Then(
 		clientv3.OpDelete(managerPrefix+"/host1"),
@@ -178,7 +178,7 @@ func TestClientNamingManagerInitialAtomicWatchAndTxnDelete(t *testing.T) {
 	require.Equal(t, []string{
 		"delete:host1::",
 		"delete:host2::",
-	}, namingClientUpdates(t, receiveNamingClientUpdates(t, ctx, updates), managerPrefix))
+	}, namingClientUpdates(t, receiveNamingClientUpdates(t, ctx, updates, 2), managerPrefix))
 }
 
 func TestClientNamingResolverSwitchesAfterEndpointDelete(t *testing.T) {
@@ -254,17 +254,21 @@ func TestClientNamingResolverSwitchesAfterEndpointDelete(t *testing.T) {
 }
 
 func receiveNamingClientUpdates(
-	t *testing.T, ctx context.Context, updates endpoints.WatchChannel,
+	t *testing.T, ctx context.Context, updates endpoints.WatchChannel, want int,
 ) []*endpoints.Update {
 	t.Helper()
-	select {
-	case update, ok := <-updates:
-		require.True(t, ok, "endpoint watch closed")
-		return update
-	case <-ctx.Done():
-		t.Fatalf("endpoint watch update timed out: %v", ctx.Err())
-		return nil
+	result := make([]*endpoints.Update, 0, want)
+	for len(result) < want {
+		select {
+		case update, ok := <-updates:
+			require.True(t, ok, "endpoint watch closed")
+			result = append(result, update...)
+		case <-ctx.Done():
+			t.Fatalf("endpoint watch update timed out after %d/%d updates: %v", len(result), want, ctx.Err())
+			return nil
+		}
 	}
+	return result
 }
 
 func namingClientUpdates(t *testing.T, updates []*endpoints.Update, prefix string) []string {
