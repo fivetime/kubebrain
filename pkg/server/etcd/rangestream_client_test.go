@@ -16,7 +16,6 @@ package etcd
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -405,11 +404,13 @@ func TestClientRangeStreamCompactedErrorIsTyped(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = client.Get(ctx, key, clientv3.WithRev(first.Header.Revision))
-	require.True(t, errors.Is(err, rpctypes.ErrCompacted), "Get returned %T %v", err, err)
+	require.ErrorIs(t, err, rpctypes.ErrCompacted)
+	requireClientRangeStreamError(t, err, codes.Unknown, "etcdserver: mvcc: required revision has been compacted")
 	stream, err := client.GetStream(ctx, key, clientv3.WithRev(first.Header.Revision))
 	require.NoError(t, err)
 	_, err = clientv3.GetStreamToGetResponse(stream)
-	require.True(t, errors.Is(err, rpctypes.ErrCompacted), "GetStream returned %T %v", err, err)
+	require.ErrorIs(t, err, rpctypes.ErrCompacted)
+	requireClientRangeStreamError(t, err, codes.Unknown, "etcdserver: mvcc: required revision has been compacted")
 }
 
 func TestRawGRPCRangeStreamCancelAfterPartialChunkKeepsConnectionUsable(t *testing.T) {

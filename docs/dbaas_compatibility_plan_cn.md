@@ -15631,6 +15631,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   固定为同时满足对应 `errors.Is`、`codes.Unknown` 和 reference etcd message。该门禁防止
   auth repository 或 client adapter 重构后让 etcdctl/operator 看到只保留 typed error、但
   code/message 漂移的管理面错误。
+- A1215 固定 official clientv3 RangeStream compacted 三件套：
+  A1132 已覆盖 `GetStream` compacted typed error，本轮把 direct `Get` 和
+  `GetStreamToGetResponse` 的 compacted revision 错误同时固定为
+  `errors.Is(..., rpctypes.ErrCompacted)`、`codes.Unknown` 和
+  `etcdserver: mvcc: required revision has been compacted`。该门禁防止 RangeStream adapter
+  或 stream 聚合 helper 重构后只保留 typed error，破坏 apiserver LIST/镜像初始化错误分类。
 
 ### P2：运维兼容和长期验证
 
