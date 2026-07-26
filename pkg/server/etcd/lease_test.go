@@ -216,7 +216,7 @@ func TestLeaseKeepAliveCancellationInterruptsBlockedReceive(t *testing.T) {
 	go func() { done <- server.LeaseKeepAlive(stream) }()
 	<-recvStarted
 	cancel()
-	require.Equal(t, codes.Canceled, status.Code(<-done))
+	requireLeaseCanceled(t, <-done)
 	close(unblockRecv)
 }
 
@@ -725,7 +725,7 @@ func TestExpiredLeaseKeepAliveWaitHonorsStreamCancellation(t *testing.T) {
 	case <-time.After(50 * time.Millisecond):
 	}
 	cancel()
-	require.Equal(t, codes.Canceled, status.Code(<-done))
+	requireLeaseCanceled(t, <-done)
 	require.Empty(t, stream.sent)
 }
 
@@ -1490,8 +1490,14 @@ func TestLeaseFollowerKeepAlivePreservesClientCancellation(t *testing.T) {
 	<-forwarding
 	cancel()
 
-	require.Equal(t, codes.Canceled, status.Code(<-done))
+	requireLeaseCanceled(t, <-done)
 	require.Empty(t, stream.sent)
+}
+
+func requireLeaseCanceled(t *testing.T, err error) {
+	t.Helper()
+	require.Equal(t, codes.Canceled, status.Code(err))
+	require.Equal(t, "context canceled", status.Convert(err).Message())
 }
 
 func TestLeaseFollowerDoesNotExpireKeys(t *testing.T) {

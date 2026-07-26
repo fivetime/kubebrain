@@ -16113,6 +16113,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `context canceled` message，同时继续验证同一连接后续 Range 可用。该门禁防止
   RangeStream adapter 后续重构把客户端主动取消退化为模糊 Canceled 错误或其他业务
   cancel reason；长期 leader replacement/网络半断 soak 仍属 P1。
+- A1299 固定 LeaseKeepAlive 客户端取消错误外观：
+  LeaseKeepAlive 的 blocked receive、expired lease wait 和 follower proxy cancellation
+  回归原先只断言 gRPC `Canceled` code。本轮新增 `requireLeaseCanceled`，要求这些正常
+  客户端取消路径同时返回 exact `context canceled` message，并继续验证没有发送多余
+  keepalive response。该门禁防止 lease stream 重构后把客户端取消混同为 lease missing、
+  proxy transport 或业务权限错误；批量 renewal/leader replacement 长时 soak 仍属 P1。
 
 ### P2：运维兼容和长期验证
 
