@@ -444,7 +444,8 @@ func TestHandlerReadyRequiresNamedOperationNotFound(t *testing.T) {
 	handler.store = &memoryOperationStore{getErr: apierrors.NewNotFound(
 		schema.GroupResource{Group: "dbaas.kubebrain.io", Resource: "kubebrainoperations"}, "",
 	)}
-	require.Error(t, handler.Ready(context.Background()), "a missing CRD route must not pass readiness")
+	require.ErrorContains(t, handler.Ready(context.Background()), `kubebrainoperations.dbaas.kubebrain.io "" not found`,
+		"a missing CRD route must not pass readiness")
 }
 
 func TestHandlerDependencyDeadlineReturnsServiceUnavailable(t *testing.T) {

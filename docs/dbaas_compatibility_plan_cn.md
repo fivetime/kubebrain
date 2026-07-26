@@ -16296,6 +16296,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   的拒绝现在固定到 `bearer token is invalid|required`，并继续断言这些 malformed header
   不触发 JWKS refresh。该门禁防止认证入口在请求头解析错误时访问外部 IdP，扩大依赖面或把
   本地 401 误分类为 OIDC dependency 问题。
+- A1328 固定 operation API readiness 缺 CRD 路由错误契约：
+  readiness probe 只接受指定 probe operation 的 NotFound；若 dynamic client 返回的是
+  `kubebrainoperations.dbaas.kubebrain.io "" not found` 这类缺 CRD/路由错误，必须保持失败。
+  该门禁防止管理 API 在 CRD 未安装、RBAC 路由错误或 discovery 漂移时错误报告 ready。
 
 ### P2：运维兼容和长期验证
 
