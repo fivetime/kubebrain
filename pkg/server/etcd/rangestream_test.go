@@ -276,8 +276,7 @@ func TestSerializableRangeStreamBypassesLeaderRevisionSync(t *testing.T) {
 
 	linearizable := &fakeRangeStreamServer{ctx: ctx}
 	err = server.RangeStream(&etcdserverpb.RangeRequest{Key: []byte("/stream/"), RangeEnd: []byte("/stream0")}, linearizable)
-	require.Error(t, err)
-	require.Equal(t, codes.Unavailable, status.Code(err))
+	requireReadBarrierUnavailable(t, err, syncErr.Error())
 }
 
 func TestHistoricalRangeStreamUsesDurableFollowerWatermark(t *testing.T) {
@@ -634,8 +633,7 @@ func TestRangeStreamRejectsPrematureBackendClose(t *testing.T) {
 	err := server.RangeStream(&etcdserverpb.RangeRequest{
 		Key: []byte("/premature/"), RangeEnd: []byte("/premature0"),
 	}, stream)
-	require.Equal(t, codes.Unavailable, status.Code(err))
-	require.Equal(t, "range stream ended without terminal metadata", status.Convert(err).Message())
+	requireRangeStreamStatusError(t, err, codes.Unavailable, "range stream ended without terminal metadata")
 	require.Len(t, stream.sent, 1,
 		"the partial chunk may already be on the wire, but the terminal status must invalidate it")
 }
@@ -676,8 +674,7 @@ func TestRangeStreamPartialThenCompacted(t *testing.T) {
 	close(stream.release)
 
 	err = <-done
-	require.Equal(t, codes.OutOfRange, status.Code(err))
-	require.ErrorContains(t, err, "required revision has been compacted")
+	requireRangeStreamError(t, err, rpctypes.ErrGRPCCompacted, codes.OutOfRange, "etcdserver: mvcc: required revision has been compacted")
 	require.NotEmpty(t, stream.sent[0].RangeResponse.Kvs)
 	received := 0
 	for _, chunk := range stream.sent {
@@ -685,6 +682,20 @@ func TestRangeStreamPartialThenCompacted(t *testing.T) {
 	}
 	require.Positive(t, received)
 	require.Less(t, received, 20, "a compacted RangeStream must not finish the pinned snapshot after a partial response")
+}
+
+func requireRangeStreamError(t *testing.T, err error, want error, code codes.Code, message string) {
+	t.Helper()
+	require.ErrorIs(t, err, want)
+	require.Equal(t, code, status.Code(err))
+	require.Equal(t, message, status.Convert(err).Message())
+}
+
+func requireRangeStreamStatusError(t *testing.T, err error, code codes.Code, message string) {
+	t.Helper()
+	require.Error(t, err)
+	require.Equal(t, code, status.Code(err))
+	require.Equal(t, message, status.Convert(err).Message())
 }
 
 // TestWatchNegativeStartRevisionCanceledInStream pins the black-magic retirement: a

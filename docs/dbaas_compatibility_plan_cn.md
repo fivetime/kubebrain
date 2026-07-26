@@ -15919,6 +15919,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   invalid request-op smoke table 的 empty key、value provided、invalid sort、empty operation
   typed errors。该门禁防止 Txn compare gate 或旧 smoke table 只保留 InvalidArgument，
   漏掉调用方可识别的 etcd typed error。
+- A1267 固定 RangeStream retry/compaction 错误契约：
+  A1261 已覆盖 auth-enabled RangeStream read barrier，本轮把 plain RangeStream 的
+  linearizable read-barrier failure、premature backend close，以及 partial response 后
+  snapshot 被 compact 的边界统一到 exact Unavailable message 或 `ErrGRPCCompacted` 三件套。
+  该门禁防止流式读路径重构后只保留 code/substring，漏掉客户端重试和 compact 诊断语义。
 
 ### P2：运维兼容和长期验证
 
