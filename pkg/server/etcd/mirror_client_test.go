@@ -25,6 +25,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/mvccpb"
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/client/v3/mirror"
 	"google.golang.org/grpc"
@@ -247,6 +248,7 @@ func TestClientMirrorSyncHistoricalRevisionAndCompactedError(t *testing.T) {
 		}
 	}
 	require.Error(t, compactedErr)
+	require.ErrorIs(t, compactedErr, rpctypes.ErrCompacted)
 	require.Equal(t, codes.Unknown, status.Code(compactedErr))
 	require.Equal(t, "etcdserver: mvcc: required revision has been compacted", status.Convert(compactedErr).Message())
 }
@@ -322,6 +324,7 @@ func TestClientMirrorSyncerUsesAuthenticatedPrefixPermissions(t *testing.T) {
 		}
 	}
 	require.Error(t, anonymousErr)
+	require.ErrorIs(t, anonymousErr, rpctypes.ErrUserEmpty)
 	require.Equal(t, codes.Unknown, status.Code(anonymousErr))
 	require.Equal(t, "etcdserver: user name is empty", status.Convert(anonymousErr).Message())
 

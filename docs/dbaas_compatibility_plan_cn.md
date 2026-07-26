@@ -15993,6 +15993,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `lease metadata differs after failed write`；读回本身失败必须保留原写错误、readback
   wrapper 和底层读错误。该门禁防止 TiKV commit response 丢失/取消的歧义处理被重构后
   丢失可诊断原因或误把未确认 checkpoint 当作成功。
+- A1281 固定 clientv3 mirror Syncer typed errors：
+  A1104/A1105 已固定 mirror Syncer compacted revision 与匿名 auth 的 code/message，本轮
+  补齐 `errors.Is` 可识别的 `rpctypes.ErrCompacted` 与 `rpctypes.ErrUserEmpty` 断言。
+  该门禁防止 mirror package 或 clientv3 错误转换重构后只保留字符串，导致 etcdctl
+  make-mirror 或外部同步器无法按 typed error 做 fail-closed 分支。
 
 ### P2：运维兼容和长期验证
 
