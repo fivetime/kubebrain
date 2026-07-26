@@ -171,7 +171,7 @@ func TestUploadDoesNotPublishReceiptForCorruptRemoteBody(t *testing.T) {
 		ExpectedPrefix: "/registry", MinRecords: 1, MaxAgeSeconds: 1_000_000_000,
 		ReceiptOutput: receiptPath, Now: time.Unix(2_000_000_000, 0),
 	})
-	require.Error(t, err)
+	require.ErrorContains(t, err, "remote object file SHA-256 mismatch")
 	_, statErr := os.Stat(receiptPath)
 	require.ErrorIs(t, statErr, os.ErrNotExist)
 }

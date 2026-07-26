@@ -16260,6 +16260,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   对 invalid-sort sentinel 的负断言，同时保留 custom-sort 优先级。该门禁防止 Kubernetes
   EtcdRangeStream 调用方或运维诊断把“需要降级到 unary Range 的过滤形态”误判成非法排序
   参数。
+- A1321 固定 objectstore 备份证据损坏错误契约：
+  `TestUploadDoesNotPublishReceiptForCorruptRemoteBody` 现在要求远端对象 body 损坏必须报告
+  `remote object file SHA-256 mismatch`，且仍不得发布 upload receipt；用量 receipt 被篡改为
+  负 `total_object_bytes` 时必须报告 `object usage receipt is incomplete`。该门禁防止
+  Object Lock 归档、上传重试或用量审计路径把远端内容漂移和 receipt 字段篡改降级成笼统失败，
+  影响备份可恢复性与计量排障。
 
 ### P2：运维兼容和长期验证
 

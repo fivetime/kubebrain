@@ -163,7 +163,7 @@ func TestUsageReceiptRejectsTamperAndNonCanonicalJSON(t *testing.T) {
 		string(data), `"total_object_bytes":303`, `"total_object_bytes":-1`, 1,
 	)), 0o600))
 	_, err = ReadUsageReceipt(path)
-	require.Error(t, err)
+	require.ErrorContains(t, err, "object usage receipt is incomplete")
 }
 
 func TestUsageReceiptRejectsImpossibleVersionByteTotals(t *testing.T) {
