@@ -14518,6 +14518,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   角色均暴露为 `Unknown: invalid auth management`；底层 raw gRPC 仍保留 etcd 兼容
   `FailedPrecondition`/`InvalidArgument` 映射，并确认 root user/role 仍可读取，补齐 public
   Auth admin wrapper 门禁。
+- A1061 固定 clientv3 Auth role permission lifecycle 外观：
+  `auth` differential 覆盖同一 key/range permission 的覆盖语义、缺失 permission revoke、
+  非法 permission range，以及删除 role 后用户侧 role 绑定清理；低层 manager 已覆盖同 key
+  搜索和 root 保护，本轮新增官方 clientv3 bufconn 回归，启用 auth 后用 root client 先将
+  `a1061-lifecycle` 的 `/a1061/` prefix 权限从 read 覆盖为 write，断言 `RoleGet`
+  只暴露单条 write permission；再断言缺失 revoke 暴露
+  `Unknown: permission is not granted to the role`，反向 range 暴露
+  `Unknown: invalid auth management`，最后确认删除 role 会从 `alice` 的 `UserGet` 结果中
+  清除该 role，补齐 public Auth permission 管理 wrapper 门禁。
 
 ### P2：运维兼容和长期验证
 

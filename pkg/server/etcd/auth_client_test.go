@@ -237,6 +237,97 @@ func TestClientAuthRootProtectionAndDuplicateRoleErrors(t *testing.T) {
 	require.NotNil(t, rootRole)
 }
 
+func TestClientAuthRolePermissionLifecycleErrors(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterAuthServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	dialOptions := []grpc.DialOption{
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}),
+	}
+	newClient := func(username, password string) *clientv3.Client {
+		t.Helper()
+		client, err := clientv3.New(clientv3.Config{
+			Endpoints:   []string{"bufnet"},
+			DialTimeout: time.Second,
+			Username:    username,
+			Password:    password,
+			DialOptions: dialOptions,
+		})
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, client.Close()) })
+		return client
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	bootstrap := newClient("", "")
+	require.NoError(t, addAuthUserRoleAndPermission(ctx, bootstrap, "root", "root-secret", "root", "", ""))
+	_, err := bootstrap.UserAdd(ctx, "alice", "alice-secret")
+	require.NoError(t, err)
+	_, err = bootstrap.AuthEnable(ctx)
+	require.NoError(t, err)
+
+	root := newClient("root", "root-secret")
+	_, err = root.RoleAdd(ctx, "a1061-lifecycle")
+	require.NoError(t, err)
+	_, err = root.RoleGrantPermission(
+		ctx,
+		"a1061-lifecycle",
+		"/a1061/",
+		clientv3.GetPrefixRangeEnd("/a1061/"),
+		clientv3.PermissionType(clientv3.PermRead),
+	)
+	require.NoError(t, err)
+	_, err = root.RoleGrantPermission(
+		ctx,
+		"a1061-lifecycle",
+		"/a1061/",
+		clientv3.GetPrefixRangeEnd("/a1061/"),
+		clientv3.PermissionType(clientv3.PermWrite),
+	)
+	require.NoError(t, err)
+	role, err := root.RoleGet(ctx, "a1061-lifecycle")
+	require.NoError(t, err)
+	require.Len(t, role.Perm, 1)
+	require.Equal(t, clientv3.PermissionType(clientv3.PermWrite), clientv3.PermissionType(role.Perm[0].PermType))
+
+	_, missingPermissionErr := root.RoleRevokePermission(
+		ctx,
+		"a1061-lifecycle",
+		"/missing/",
+		clientv3.GetPrefixRangeEnd("/missing/"),
+	)
+	requireAuthClientError(t, missingPermissionErr, codes.Unknown, "etcdserver: permission is not granted to the role")
+	_, invalidRangeErr := root.RoleGrantPermission(
+		ctx,
+		"a1061-lifecycle",
+		"z",
+		"a",
+		clientv3.PermissionType(clientv3.PermRead),
+	)
+	requireAuthClientError(t, invalidRangeErr, codes.Unknown, "etcdserver: invalid auth management")
+
+	_, err = root.UserGrantRole(ctx, "alice", "a1061-lifecycle")
+	require.NoError(t, err)
+	aliceBeforeDelete, err := root.UserGet(ctx, "alice")
+	require.NoError(t, err)
+	require.Contains(t, aliceBeforeDelete.Roles, "a1061-lifecycle")
+	_, err = root.RoleDelete(ctx, "a1061-lifecycle")
+	require.NoError(t, err)
+	aliceAfterDelete, err := root.UserGet(ctx, "alice")
+	require.NoError(t, err)
+	require.NotContains(t, aliceAfterDelete.Roles, "a1061-lifecycle")
+}
+
 func addAuthUserRoleAndPermission(
 	ctx context.Context,
 	client *clientv3.Client,
