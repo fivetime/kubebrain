@@ -14353,6 +14353,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   直接用 `etcdserverpb.KVClient.Txn` 发送未知 result、未知 target、absent VALUE
   equal/not-equal 和 absent VALUE unknown-result 六种 compare，断言 `TxnResponse.Succeeded`
   与最终写入 value 均与差分场景一致，补齐此前服务层覆盖之外的公开 protobuf/RPC 面。
+- A1040 固定 clientv3 Txn duplicate interval 错误外观：
+  `txn_duplicate_interval` differential 证明 Txn 中同一 key 的重复 Put、Put 与覆盖该 key
+  的 DeleteRange、以及 nested txn 中互相重叠的写 interval 都必须返回 duplicate key
+  错误；真正不相交的 DeleteRange+Put 仍应成功。本轮新增官方 clientv3 bufconn 回归，
+  用 `clientv3.OpTxn` 构造 nested put/delete 场景，断言 duplicate interval 通过
+  `clientv3.Txn.Commit` 暴露 `Unknown` code 和 `etcdserver: duplicate key given in txn request`
+  message，同时验证 disjoint delete+put 成功，补齐 raw gRPC 覆盖之外的官方客户端面。
 
 ### P2：运维兼容和长期验证
 

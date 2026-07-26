@@ -563,6 +563,66 @@ func TestRawGRPCTxnDuplicateIntervalValidation(t *testing.T) {
 	}
 }
 
+func TestClientTxnNestedDuplicateIntervalValidation(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	prefix := fmt.Sprintf("/a1040/txn-duplicate-interval/%d/", time.Now().UnixNano())
+	key := prefix + "abc"
+	deleteContaining := clientv3.OpDelete(prefix+"a", clientv3.WithRange(prefix+"b"))
+	nestedDelete := clientv3.OpTxn(nil, []clientv3.Op{deleteContaining}, nil)
+	nestedPut := clientv3.OpTxn(nil, []clientv3.Op{clientv3.OpPut(key, "value")}, nil)
+
+	tests := []struct {
+		name    string
+		ops     []clientv3.Op
+		wantErr bool
+	}{
+		{name: "duplicate-put", ops: []clientv3.Op{clientv3.OpPut(key, "one"), clientv3.OpPut(key, "two")}, wantErr: true},
+		{name: "put-and-containing-delete", ops: []clientv3.Op{clientv3.OpPut(key, "value"), deleteContaining}, wantErr: true},
+		{name: "put-and-nested-containing-delete", ops: []clientv3.Op{clientv3.OpPut(key, "value"), nestedDelete}, wantErr: true},
+		{name: "containing-delete-and-nested-put", ops: []clientv3.Op{deleteContaining, nestedPut}, wantErr: true},
+		{name: "put-and-disjoint-delete", ops: []clientv3.Op{
+			clientv3.OpPut(key, "value"),
+			clientv3.OpDelete(prefix+"abb", clientv3.WithRange(key)),
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			txn, txnErr := client.Txn(ctx).Then(tt.ops...).Commit()
+			if tt.wantErr {
+				requireClientTxnError(t, txnErr, codes.Unknown, "etcdserver: duplicate key given in txn request")
+				require.Nil(t, txn)
+				return
+			}
+			require.NoError(t, txnErr)
+			require.NotNil(t, txn)
+			require.True(t, txn.Succeeded)
+		})
+	}
+}
+
 func TestClientNestedTxnResponseAndFinalState(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
