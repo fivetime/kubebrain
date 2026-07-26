@@ -14209,6 +14209,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   a/b/c/d、删除 b/d、更新 c、重建 b、新建 e 的序列，并以 `RangeRequest{KeysOnly,Limit,
   Revision}` 验证 before-delete、after-delete 和 current after-recreate 三个阶段，防止
   clientv3 wrapper 正确但 raw request conversion、tombstone 过滤或 limit lookahead 回退。
+- A1020 固定 raw gRPC Range CountOnly 优先于 KeysOnly/Limit：
+  上游 `TestKVGetKeysOnlyWithCountOnly` 与本地 `range_keys_count` 兼容测试证明
+  CountOnly 必须抑制 KV payload，即使请求同时带 KeysOnly；CountOnly 还必须忽略 Limit，
+  返回完整 Count 且 `More=false`。本轮新增 bufconn raw gRPC 回归，注册真实 KV 服务后
+  直接用 `etcdserverpb.KVClient.Range` 发送 `CountOnly=true, KeysOnly=true, Limit=1`
+  的 prefix 请求，断言 `Count=3`、`Kvs` 为空、`More=false`、header 良好，防止服务层
+  Count 快路径正确但 raw response shaping 或未来请求选项组合重构破坏该公开语义。
 
 ### P2：运维兼容和长期验证
 

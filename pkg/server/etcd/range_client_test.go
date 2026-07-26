@@ -224,6 +224,46 @@ func TestRawGRPCRangeKeysOnlyLimitAcrossTombstones(t *testing.T) {
 	assertPage("after-recreate", 0, 2, []string{"a", "b"}, 4, true)
 }
 
+func TestRawGRPCRangeCountOnlyTakesPrecedenceOverKeysOnly(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///range-keys-count-client",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	kv := etcdserverpb.NewKVClient(conn)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	prefix := fmt.Sprintf("/a1020/range-keys-count/%d/", time.Now().UnixNano())
+	end := []byte(clientv3.GetPrefixRangeEnd(prefix))
+	for _, suffix := range []string{"a", "b", "c"} {
+		_, err = kv.Put(ctx, &etcdserverpb.PutRequest{
+			Key: []byte(prefix + suffix), Value: []byte("hidden-" + suffix),
+		})
+		require.NoError(t, err)
+	}
+
+	response, err := kv.Range(ctx, &etcdserverpb.RangeRequest{
+		Key: []byte(prefix), RangeEnd: end, CountOnly: true, KeysOnly: true, Limit: 1,
+	})
+	require.NoError(t, err)
+	require.Equal(t, int64(3), response.Count)
+	require.Empty(t, response.Kvs)
+	require.False(t, response.More)
+	requireClientRangeHeaderWellFormed(t, response.Header)
+}
+
 func TestRawGRPCRangeRevisionBoundaries(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
@@ -429,6 +469,15 @@ func requireRawGRPCRangeRevisionError(t *testing.T, err error, code codes.Code, 
 	require.Error(t, err)
 	require.Equal(t, code, status.Code(err))
 	require.Equal(t, message, status.Convert(err).Message())
+}
+
+func requireClientRangeHeaderWellFormed(t *testing.T, header *etcdserverpb.ResponseHeader) {
+	t.Helper()
+	require.NotNil(t, header)
+	require.NotZero(t, header.ClusterId)
+	require.NotZero(t, header.MemberId)
+	require.Positive(t, header.Revision)
+	require.Positive(t, header.RaftTerm)
 }
 
 func rangeClientRelativeKeys(kvs []*mvccpb.KeyValue, prefix string) []string {
