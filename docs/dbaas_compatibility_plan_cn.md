@@ -14072,6 +14072,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   value 排序再清空 value，矛盾 mod-revision filter 返回空 KVs 但保留 Count；同时在 Txn
   中验证 staged Put 对后续 Range 可见、CountOnly 看见同一 Txn 内更新，防止公开 gRPC
   request-op 转换或 staged snapshot 逻辑只在服务层单测中正确。
+- A1004 固定 raw gRPC Txn compare matrix 的分支选择语义：
+  `txn_compare_matrix` differential 证明 Txn compare 对 VALUE/VERSION/CREATE/MOD/LEASE、
+  缺失 key、空 range、多 key range 和 from-key sentinel 的 `Succeeded` 判定必须与
+  reference etcd 一致。本轮新增 bufconn raw gRPC 回归，注册真实 KV/Lease 服务后直接通过
+  `etcdserverpb.KVClient.Txn` 构造 compare-only 请求，覆盖 point compare、leased key、
+  absent key 的零值/空 value 特例、empty range、multi-key range 的 all-keys 语义、from-key
+  非空和 from-key 空范围，防止 compare evaluator 或 gRPC request conversion 在 DBaaS
+  数据面中把 range compare 简化为任一 key 匹配、把缺失 value 当作空 value，或错误处理
+  `{0}` from-key sentinel。
 
 ### P2：运维兼容和长期验证
 
