@@ -14736,6 +14736,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   与差分同阶的 6 个 watcher/8 次更新，并通过 outgoing metadata 强制拆分 gRPC
   watch stream；每轮同时校验当前 key/value、PrevKV 前值和无 PrevKV stream 的 nil
   约束。
+- A1089 固定 clientv3 from-now watch registration fence：
+  `watch_registration` differential 证明 `WithCreatedNotify` 返回 Created 后立即提交的
+  写入，必须由同一个 from-now watch stream 收到，服务端不能在 Created 响应与后端
+  watch 注册之间留下丢事件窗口。本轮在既有 raw callback 回归外新增 official
+  clientv3 bufconn 黑盒，连续 50 轮创建 from-now watch、等待 Created、立即 Put，
+  并断言收到的事件 key/value 与 Put revision 完全一致。
 
 ### P2：运维兼容和长期验证
 

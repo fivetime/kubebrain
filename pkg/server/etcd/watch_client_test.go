@@ -264,6 +264,47 @@ func TestClientWatchMixedPrevKVStreamsKeepEventsIsolated(t *testing.T) {
 	}
 }
 
+func TestClientFromNowWatchDoesNotLoseImmediatePostCreateWrite(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterWatchServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	for index := 0; index < 50; index++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		key := fmt.Sprintf("/a1089/watch-registration/%d/%d", time.Now().UnixNano(), index)
+		watch := client.Watch(ctx, key, clientv3.WithCreatedNotify())
+		created := requireClientWatchCreatedResponse(t, ctx, watch)
+		require.NotNil(t, created.Header)
+
+		put, err := client.Put(ctx, key, "immediate")
+		require.NoError(t, err)
+		event := requireSingleClientWatchEvent(t, ctx, watch)
+		require.Equal(t, key, string(event.Kv.Key))
+		require.Equal(t, "immediate", string(event.Kv.Value))
+		require.Equal(t, put.Header.Revision, event.Kv.ModRevision)
+		cancel()
+	}
+}
+
 func TestClientWatchUpdateReportsUpdateNotCreate(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
