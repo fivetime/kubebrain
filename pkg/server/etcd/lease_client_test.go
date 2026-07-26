@@ -1829,13 +1829,11 @@ func TestRawGRPCLeaseKeepAliveRevokeBoundaries(t *testing.T) {
 		require.NoError(t, err)
 		requireClientLeaseHeaderWellFormed(t, revoked.Header)
 		_, err = lease.LeaseRevoke(ctx, &etcdserverpb.LeaseRevokeRequest{ID: id})
-		require.Equal(t, codes.NotFound, status.Code(err))
-		require.Equal(t, "etcdserver: requested lease not found", status.Convert(err).Message())
+		requireRawLeaseError(t, err, rpctypes.ErrGRPCLeaseNotFound, codes.NotFound, "etcdserver: requested lease not found")
 	}
 	for _, id := range []int64{0, 13_400} {
 		_, err := lease.LeaseRevoke(ctx, &etcdserverpb.LeaseRevokeRequest{ID: id})
-		require.Equal(t, codes.NotFound, status.Code(err))
-		require.Equal(t, "etcdserver: requested lease not found", status.Convert(err).Message())
+		requireRawLeaseError(t, err, rpctypes.ErrGRPCLeaseNotFound, codes.NotFound, "etcdserver: requested lease not found")
 	}
 
 	afterRevoke, err := lease.LeaseKeepAlive(ctx)
@@ -1950,6 +1948,13 @@ func requireClientLeaseError(t *testing.T, err error, code codes.Code, message s
 	for _, want := range wantErrorIs {
 		require.ErrorIs(t, err, want)
 	}
+	require.Equal(t, code, status.Code(err))
+	require.Equal(t, message, status.Convert(err).Message())
+}
+
+func requireRawLeaseError(t *testing.T, err error, want error, code codes.Code, message string) {
+	t.Helper()
+	require.ErrorIs(t, err, want)
 	require.Equal(t, code, status.Code(err))
 	require.Equal(t, message, status.Convert(err).Message())
 }

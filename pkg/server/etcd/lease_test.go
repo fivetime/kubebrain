@@ -447,9 +447,7 @@ func TestLeaseRejectsUnknownLease(t *testing.T) {
 		Value: []byte("value"),
 		Lease: 9999,
 	})
-	require.Error(t, err)
-	require.Equal(t, codes.NotFound, status.Code(err))
-	require.Contains(t, err.Error(), "etcdserver: requested lease not found")
+	requireDirectLeaseError(t, err, rpctypes.ErrGRPCLeaseNotFound, codes.NotFound, "etcdserver: requested lease not found")
 }
 
 func TestLeaseTimeToLiveUnknownLeaseMatchesEtcd(t *testing.T) {
@@ -534,14 +532,10 @@ func TestLeaseKeepAliveAndRevokeSignedIDBoundariesMatchEtcd(t *testing.T) {
 		require.Positive(t, revoked.Header.Revision)
 
 		_, err = server.LeaseRevoke(ctx, &etcdserverpb.LeaseRevokeRequest{ID: id})
-		require.Error(t, err)
-		require.Equal(t, codes.NotFound, status.Code(err))
-		require.Equal(t, "etcdserver: requested lease not found", status.Convert(err).Message())
+		requireDirectLeaseError(t, err, rpctypes.ErrGRPCLeaseNotFound, codes.NotFound, "etcdserver: requested lease not found")
 	}
 	_, err := server.LeaseRevoke(ctx, &etcdserverpb.LeaseRevokeRequest{ID: 0})
-	require.Error(t, err)
-	require.Equal(t, codes.NotFound, status.Code(err))
-	require.Equal(t, "etcdserver: requested lease not found", status.Convert(err).Message())
+	requireDirectLeaseError(t, err, rpctypes.ErrGRPCLeaseNotFound, codes.NotFound, "etcdserver: requested lease not found")
 }
 
 func TestLeaseSignedIDReadBoundariesMatchEtcd(t *testing.T) {
@@ -1102,8 +1096,7 @@ func TestLeaseGrantPublishesOnlyAfterMetadataCommit(t *testing.T) {
 	_, err := server.Put(ctx, &etcdserverpb.PutRequest{
 		Key: []byte("/registry/leases/pending"), Value: []byte("value"), Lease: 5201,
 	})
-	require.Equal(t, codes.NotFound, status.Code(err))
-	require.Equal(t, "etcdserver: requested lease not found", status.Convert(err).Message())
+	requireDirectLeaseError(t, err, rpctypes.ErrGRPCLeaseNotFound, codes.NotFound, "etcdserver: requested lease not found")
 	_, err = server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 30, ID: 5201})
 	require.Equal(t, codes.FailedPrecondition, status.Code(err), "pending ID must reject a duplicate grant")
 

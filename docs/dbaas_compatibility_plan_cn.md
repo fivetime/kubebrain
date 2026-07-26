@@ -15939,6 +15939,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   platform replacement helper 和 ordering `GetStream` unsupported 断言补齐 `require.Error`
   前置校验。该门禁防止未来错误路径被误改为 nil response 时，code/message 断言因默认
   `status.Code(nil)==OK` 外观而漏检。
+- A1271 固定 direct/raw LeaseNotFound 错误三件套：
+  A1251/A1266 已覆盖 KV/Txn admission typed errors，本轮把 direct `Put` missing lease、
+  direct `LeaseRevoke` repeated/zero-ID revoke、pending grant 期间的 leased `Put`，以及 raw
+  gRPC `LeaseRevoke` missing lease 统一到 `ErrGRPCLeaseNotFound`、reference code 和 exact
+  message helper。该门禁防止 lease manager 或 raw lease service 重构后只保留 NotFound/message，
+  漏掉调用方可识别的 etcd typed error。
 
 ### P2：运维兼容和长期验证
 
