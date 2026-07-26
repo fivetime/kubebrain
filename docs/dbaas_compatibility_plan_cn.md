@@ -16206,6 +16206,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `TestLeaseGrantDoesNotPublishAcrossLeaseStateReset` 的 code/message。该门禁防止
   lease reload、leader demotion 或 shutdown 竞态把未发布 lease 误判为可写，或让客户端
   对 fencing 错误做错误分类。
+- A1312 固定 pending LeaseGrant duplicate 的 etcd sentinel：
+  A1311 已固定 pending duplicate grant 的 code/message，本轮进一步要求该错误必须
+  `errors.Is(..., rpctypes.ErrGRPCLeaseExist)`。该门禁防止显式 lease ID 在 metadata commit
+  阻塞窗口内被重复申请时只返回相同文本、但丢失官方 client/v3 可识别的 etcd sentinel。
 
 ### P2：运维兼容和长期验证
 

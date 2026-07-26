@@ -1110,7 +1110,7 @@ func TestLeaseGrantPublishesOnlyAfterMetadataCommit(t *testing.T) {
 	})
 	requireDirectLeaseError(t, err, rpctypes.ErrGRPCLeaseNotFound, codes.NotFound, "etcdserver: requested lease not found")
 	_, err = server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 30, ID: 5201})
-	requireDirectLeaseStatusError(t, err, codes.FailedPrecondition, "etcdserver: lease already exists")
+	requireDirectLeaseError(t, err, rpctypes.ErrGRPCLeaseExist, codes.FailedPrecondition, "etcdserver: lease already exists")
 
 	close(shim.release)
 	require.NoError(t, <-grantDone)
