@@ -275,19 +275,20 @@ func TestBearerTokenParsingIsStrictAndCaseInsensitive(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		header string
+		want   string
 	}{
-		{name: "missing", header: ""},
-		{name: "wrong scheme", header: "Basic projected.jwt"},
-		{name: "empty token", header: "Bearer "},
-		{name: "leading token space", header: "Bearer  projected.jwt"},
-		{name: "trailing token space", header: "Bearer projected.jwt "},
-		{name: "embedded token space", header: "Bearer projected jwt"},
-		{name: "tab separator", header: "Bearer\tprojected.jwt"},
-		{name: "oversized", header: "Bearer " + strings.Repeat("x", maxTokenBytes+1)},
+		{name: "missing", header: "", want: "bearer token is required"},
+		{name: "wrong scheme", header: "Basic projected.jwt", want: "bearer token is required"},
+		{name: "empty token", header: "Bearer ", want: "invalid bearer token"},
+		{name: "leading token space", header: "Bearer  projected.jwt", want: "invalid bearer token"},
+		{name: "trailing token space", header: "Bearer projected.jwt ", want: "invalid bearer token"},
+		{name: "embedded token space", header: "Bearer projected jwt", want: "invalid bearer token"},
+		{name: "tab separator", header: "Bearer\tprojected.jwt", want: "bearer token is required"},
+		{name: "oversized", header: "Bearer " + strings.Repeat("x", maxTokenBytes+1), want: "invalid bearer token"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := bearerToken(tc.header)
-			require.Error(t, err)
+			require.ErrorContains(t, err, tc.want)
 		})
 	}
 }
@@ -316,16 +317,18 @@ func TestReadyFailsClosedWhenAnyCriticalAPIIsUnavailable(t *testing.T) {
 		resource string
 		tokens   bool
 		err      error
+		want     string
 	}{
-		{name: "operation API", resource: "kubebrainoperations", err: errors.New("dependency unavailable")},
-		{name: "Secret API", resource: "secrets", err: errors.New("dependency unavailable")},
+		{name: "operation API", resource: "kubebrainoperations", err: errors.New("dependency unavailable"), want: "probe operation API: dependency unavailable"},
+		{name: "Secret API", resource: "secrets", err: errors.New("dependency unavailable"), want: "probe Secret API: dependency unavailable"},
 		{
 			name: "operation CRD route", resource: "kubebrainoperations",
 			err: apierrors.NewNotFound(schema.GroupResource{
 				Group: operationqueue.Resource.Group, Resource: operationqueue.Resource.Resource,
 			}, ""),
+			want: `probe operation API: kubebrainoperations.dbaas.kubebrain.io "" not found`,
 		},
-		{name: "TokenReview API", tokens: true},
+		{name: "TokenReview API", tokens: true, want: "probe TokenReview API: dependency unavailable"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -352,7 +355,7 @@ func TestReadyFailsClosedWhenAnyCriticalAPIIsUnavailable(t *testing.T) {
 			}
 			handler, err := NewHandler(tokens, dynamicClient, "test", testAudience, time.Second)
 			require.NoError(t, err)
-			require.Error(t, handler.Ready(context.Background()))
+			require.ErrorContains(t, handler.Ready(context.Background()), tc.want)
 		})
 	}
 }

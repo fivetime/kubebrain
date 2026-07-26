@@ -16321,6 +16321,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `archive operation <namespace>/<name>: ...`，并继续处理同批其他候选；namespace inventory
   非法时必须在列出 tenant operation 前以 `decode namespace inventory` 失败退出。该门禁防止
   审计归档控制器丢失失败 operation 身份，或在全局 namespace allowlist 损坏时跨租户扫描。
+- A1333 固定 operation parameter broker 入口错误契约：
+  parameter broker 的 bearer header 解析现在固定 `bearer token is required` 与
+  `invalid bearer token` 分类；readiness 对 operation API、Secret API、TokenReview API 和
+  缺 CRD 路由的失败也固定到 `probe ...` 前缀。该门禁防止参数代理在 malformed token 或
+  Kubernetes 依赖不可用时把本地请求错误、鉴权错误和依赖故障混淆，影响生产 operation
+  参数读取的安全审计。
 
 ### P2：运维兼容和长期验证
 
