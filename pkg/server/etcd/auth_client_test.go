@@ -16,6 +16,7 @@ package etcd
 
 import (
 	"context"
+	"encoding/base64"
 	"io"
 	"net"
 	"testing"
@@ -26,6 +27,7 @@ import (
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	clientv3 "go.etcd.io/etcd/client/v3"
+	"golang.org/x/crypto/bcrypt"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -303,6 +305,28 @@ func TestClientAuthAddUserAfterDeleteAndPasswordRotation(t *testing.T) {
 	requireAuthClientError(t, rawInitialAfterEmptyErr, codes.InvalidArgument, "etcdserver: authentication failed, invalid user ID or password")
 	_, rawEmptyPasswordErr := rawAuth.Authenticate(ctx, &etcdserverpb.AuthenticateRequest{Name: "a585-raw-empty-password", Password: ""})
 	requireAuthClientError(t, rawEmptyPasswordErr, codes.InvalidArgument, "etcdserver: authentication failed, invalid user ID or password")
+
+	_, err = rawRootAuth.UserAdd(ctx, &etcdserverpb.AuthUserAddRequest{Name: "a1207-raw-hashed-password", Password: "plain"})
+	require.NoError(t, err)
+	_, err = rawAuth.Authenticate(ctx, &etcdserverpb.AuthenticateRequest{Name: "a1207-raw-hashed-password", Password: "plain"})
+	require.NoError(t, err)
+	_, rawInvalidHashedChangeErr := rawRootAuth.UserChangePassword(ctx, &etcdserverpb.AuthUserChangePasswordRequest{
+		Name:           "a1207-raw-hashed-password",
+		HashedPassword: "%%%",
+	})
+	requireAuthClientError(t, rawInvalidHashedChangeErr, codes.Unknown, "auth: authentication failed, password was given for no password user")
+
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte("hashed"), bcrypt.MinCost)
+	require.NoError(t, err)
+	_, err = rawRootAuth.UserChangePassword(ctx, &etcdserverpb.AuthUserChangePasswordRequest{
+		Name:           "a1207-raw-hashed-password",
+		HashedPassword: base64.StdEncoding.EncodeToString(hashedPassword),
+	})
+	require.NoError(t, err)
+	_, rawPlainAfterHashErr := rawAuth.Authenticate(ctx, &etcdserverpb.AuthenticateRequest{Name: "a1207-raw-hashed-password", Password: "plain"})
+	requireAuthClientError(t, rawPlainAfterHashErr, codes.InvalidArgument, "etcdserver: authentication failed, invalid user ID or password")
+	_, err = rawAuth.Authenticate(ctx, &etcdserverpb.AuthenticateRequest{Name: "a1207-raw-hashed-password", Password: "hashed"})
+	require.NoError(t, err)
 }
 
 func TestClientAuthDisabledAllowsCredentialedClient(t *testing.T) {

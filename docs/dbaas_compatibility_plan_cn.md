@@ -15580,6 +15580,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   但空 key 返回 `FailedPrecondition`/permission is not granted；既有 missing range 断言继续
   覆盖正常 key/range miss。本轮防止 raw Auth API 在 revoke 路径错误套用 grant validation、
   错误拒绝空 key 或返回 clientv3 wrapper 风格 code。
+- A1207 固定 raw gRPC UserChangePassword hashed password 语义：
+  延续 manager 层 A585/A1136 的 password lifecycle 到 generated `etcdserverpb.AuthClient`：
+  非 no-password 用户传非法 `HashedPassword` 必须保留 reference etcd 的
+  `Unknown`/`auth: authentication failed, password was given for no password user` 外观；传入
+  base64 编码 bcrypt hash 时必须能切换到 hash 对应明文，旧明文 raw Authenticate 返回
+  `InvalidArgument`/auth failed，新明文成功。本轮防止 raw Auth API 忽略
+  `HashedPassword`、把 hash 当明文、或把 legacy no-password 错误错误重映射。
 
 ### P2：运维兼容和长期验证
 
