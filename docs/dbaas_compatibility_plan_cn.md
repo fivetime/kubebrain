@@ -16189,6 +16189,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `TestDeleteRangeAtomicallyRemovesLeaseAttachments` 中相关内部读取断言收紧为
   `storage.ErrKeyNotFound`。该门禁防止 uncertain commit reconciliation 和原子删除
   路径把残留 attachment、损坏元数据或底层读错误判为成功清理。
+- A1310 固定 client 传输层大小限制的 status message：
+  client-side send/recv message limit 是 gRPC transport 错误，应保持
+  `ResourceExhausted`，且不能被误映射成 server-side `ErrRequestTooLarge`。本轮把
+  `requireClientPutTransportLimitError` 和 `requireClientRangeTransportLimitError`
+  从匹配完整 `err.Error()` 收紧到匹配 `status.Convert(err).Message()`，继续固定
+  send 侧 `trying to send message larger than max` 与 recv 侧
+  `received message larger than max`。该门禁防止 wrapper 文本变化、code 前缀或
+  interceptor 包装掩盖真正的 gRPC payload 分类。
 
 ### P2：运维兼容和长期验证
 

@@ -1322,6 +1322,6 @@ func requireClientRangeTransportLimitError(t *testing.T, err error, messageFragm
 	t.Helper()
 	require.Error(t, err)
 	require.Equal(t, codes.ResourceExhausted, status.Code(err))
-	require.Contains(t, err.Error(), messageFragment)
+	require.Contains(t, status.Convert(err).Message(), messageFragment)
 	require.False(t, errors.Is(err, rpctypes.ErrRequestTooLarge))
 }
