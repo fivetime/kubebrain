@@ -15613,6 +15613,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   future compact 必须同时满足 `errors.Is(..., rpctypes.ErrFutureRev)`、`codes.Unknown` 和
   future revision message。该门禁防止 compaction adapter 重构后让历史 LIST/Watch 初始化错误
   在 typed error 与用户可见 status 之间漂移。
+- A1212 固定 official clientv3 LeaseGrant TTL-too-large 三件套：
+  A1016/A1151 已分别覆盖 raw gRPC `LeaseGrant` TTL 边界和 public typed error，本轮把
+  `clientv3.Grant(MaxLeaseTTL+1)` 固定为同时满足 `errors.Is(...,
+  rpctypes.ErrLeaseTTLTooLarge)`、`codes.Unknown` 和 `etcdserver: too large lease TTL`。
+  该门禁防止 Lease metadata adapter 或 client error mapping 重构后只保留 raw
+  `OutOfRange` 外观或只保留 typed error，破坏租约配额/TTL 配置错误的可诊断性。
 
 ### P2：运维兼容和长期验证
 

@@ -300,6 +300,8 @@ func TestClientLeaseGrantTooLargeTTLIsTyped(t *testing.T) {
 	defer cancel()
 	_, err = client.Grant(ctx, clientv3.MaxLeaseTTL+1)
 	require.ErrorIs(t, err, rpctypes.ErrLeaseTTLTooLarge)
+	require.Equal(t, codes.Unknown, status.Code(err))
+	require.Equal(t, "etcdserver: too large lease TTL", status.Convert(err).Message())
 }
 
 func TestClientLeaseGrantNoSpaceIsTyped(t *testing.T) {
