@@ -13999,6 +13999,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   分别断言删除前历史页返回 `a,b`/Count=4/More，删除后历史页返回 `a`/Count=2/More，
   当前页返回 `a,b`/Count=4/More，且所有 KVs value 为空，防止 public client 入口或
   lookahead/count-index 优化把 tombstone、已删除 key 或重建 key 错算进分页窗口。
+- A996 固定 raw gRPC binary Range/Txn/Delete 的 wire-level 边界：
+  `binary_key` 与 `binary_mutation` differential 证明原始字节 keyspace 中，`0x00`
+  前缀、`0xfe` 高位前缀和 `0xff` 点 key 不能被字符串编码、prefix end 或 `{0}`
+  sentinel 误处理。本轮新增 bufconn raw gRPC 回归，直接用 `etcdserverpb.KVClient`
+  写入 `00/0000/0001/01/fe/fe00/fe01/ff`，断言 Txn Range `[00,01)` 返回前三个 key，
+  Txn Delete `[00,01)` 带 PrevKv 删除同一批 key，standalone Delete `[fe,ff)` 只删除
+  `fe*` 且保留点 key `ff`。该门禁补足服务层 binary 回归之外的真实 gRPC 编码路径，
+  防止后续 endpoint/interceptor 或 range conversion 重构破坏非 UTF-8/高位 key 的语义。
 
 ### P2：运维兼容和长期验证
 
