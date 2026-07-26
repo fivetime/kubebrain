@@ -14360,6 +14360,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   用 `clientv3.OpTxn` 构造 nested put/delete 场景，断言 duplicate interval 通过
   `clientv3.Txn.Commit` 暴露 `Unknown` code 和 `etcdserver: duplicate key given in txn request`
   message，同时验证 disjoint delete+put 成功，补齐 raw gRPC 覆盖之外的官方客户端面。
+- A1041 固定 clientv3 Range option interaction 外观：
+  `range_option_interaction` differential 证明 revision filter 必须先于 limit 应用但
+  `Count` 保持未过滤基数、`CountOnly` 忽略 limit 且不返回 KV、contradictory revision
+  filter 返回空 KV 但保留 etcd count，`SortNone`+VALUE、KeysOnly+VALUE DESC、
+  VERSION DESC 和 `math.MaxInt64` limit 也必须保持 etcd 的排序/lookahead 外观。本轮新增
+  官方 clientv3 bufconn 回归，用 `clientv3.Get` 和 `clientv3.Txn.Then(OpGet...)`
+  构造这些可由公开客户端表达的组合，断言 Count/More/KV/KeysOnly/staged revision，
+  补齐 A1003 raw protobuf 覆盖之外的官方客户端选项映射面。
 
 ### P2：运维兼容和长期验证
 

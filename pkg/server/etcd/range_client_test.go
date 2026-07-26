@@ -98,6 +98,160 @@ func TestClientRangeRevisionFilterCountAndTxnStagedView(t *testing.T) {
 	require.Equal(t, "new-c", string(txnRange.Kvs[0].Value))
 }
 
+func TestClientRangeOptionInteractionsMatchEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	prefix := fmt.Sprintf("/a1041/range-options-client/%d/", time.Now().UnixNano())
+	for _, seed := range []struct {
+		key   string
+		value string
+	}{
+		{key: "d", value: "n"},
+		{key: "c", value: "a"},
+		{key: "b", value: "m"},
+		{key: "a", value: "z"},
+	} {
+		_, err = client.Put(ctx, prefix+seed.key, seed.value)
+		require.NoError(t, err)
+	}
+	updateB, err := client.Put(ctx, prefix+"b", "y")
+	require.NoError(t, err)
+
+	filtered, err := client.Get(ctx, prefix,
+		clientv3.WithPrefix(),
+		clientv3.WithMinModRev(updateB.Header.Revision),
+		clientv3.WithLimit(1),
+		clientv3.WithSort(clientv3.SortByKey, clientv3.SortAscend),
+	)
+	require.NoError(t, err)
+	require.Equal(t, int64(4), filtered.Count)
+	require.False(t, filtered.More)
+	require.Equal(t, []string{"b"}, rangeClientRelativeKeys(filtered.Kvs, prefix))
+	require.Equal(t, []string{"y"}, rangeClientValues(filtered.Kvs))
+
+	counted, err := client.Get(ctx, prefix,
+		clientv3.WithPrefix(),
+		clientv3.WithMinModRev(updateB.Header.Revision),
+		clientv3.WithLimit(1),
+		clientv3.WithCountOnly(),
+	)
+	require.NoError(t, err)
+	require.Equal(t, int64(4), counted.Count)
+	require.Empty(t, counted.Kvs)
+	require.False(t, counted.More)
+
+	contradictory, err := client.Get(ctx, prefix,
+		clientv3.WithPrefix(),
+		clientv3.WithMinModRev(updateB.Header.Revision),
+		clientv3.WithMaxModRev(updateB.Header.Revision-1),
+		clientv3.WithLimit(1),
+	)
+	require.NoError(t, err)
+	require.Equal(t, int64(4), contradictory.Count)
+	require.Empty(t, contradictory.Kvs)
+	require.False(t, contradictory.More)
+
+	valueSorted, err := client.Get(ctx, prefix,
+		clientv3.WithPrefix(),
+		clientv3.WithLimit(2),
+		clientv3.WithSort(clientv3.SortByValue, clientv3.SortNone),
+	)
+	require.NoError(t, err)
+	require.Equal(t, int64(4), valueSorted.Count)
+	require.True(t, valueSorted.More)
+	require.Equal(t, []string{"c", "b"}, rangeClientRelativeKeys(valueSorted.Kvs, prefix))
+	require.Equal(t, []string{"a", "y"}, rangeClientValues(valueSorted.Kvs))
+
+	keysOnlyValueSorted, err := client.Get(ctx, prefix,
+		clientv3.WithPrefix(),
+		clientv3.WithLimit(2),
+		clientv3.WithKeysOnly(),
+		clientv3.WithSort(clientv3.SortByValue, clientv3.SortDescend),
+	)
+	require.NoError(t, err)
+	require.Equal(t, int64(4), keysOnlyValueSorted.Count)
+	require.True(t, keysOnlyValueSorted.More)
+	require.Equal(t, []string{"a", "b"}, rangeClientRelativeKeys(keysOnlyValueSorted.Kvs, prefix))
+	for _, kv := range keysOnlyValueSorted.Kvs {
+		require.Empty(t, kv.Value)
+	}
+
+	versionSorted, err := client.Get(ctx, prefix,
+		clientv3.WithPrefix(),
+		clientv3.WithSort(clientv3.SortByVersion, clientv3.SortDescend),
+	)
+	require.NoError(t, err)
+	require.Equal(t, int64(4), versionSorted.Count)
+	require.False(t, versionSorted.More)
+	require.Len(t, versionSorted.Kvs, 4)
+	require.Equal(t, prefix+"b", string(versionSorted.Kvs[0].Key))
+	require.Equal(t, int64(2), versionSorted.Kvs[0].Version)
+
+	maxLimit, err := client.Get(ctx, prefix,
+		clientv3.WithPrefix(),
+		clientv3.WithLimit(math.MaxInt64),
+		clientv3.WithSort(clientv3.SortByValue, clientv3.SortNone),
+	)
+	require.NoError(t, err)
+	require.Equal(t, int64(4), maxLimit.Count)
+	require.False(t, maxLimit.More)
+	require.Equal(t, []string{"c", "d", "b", "a"}, rangeClientRelativeKeys(maxLimit.Kvs, prefix))
+
+	txn, err := client.Txn(ctx).Then(
+		clientv3.OpPut(prefix+"e", "0"),
+		clientv3.OpGet(prefix,
+			clientv3.WithPrefix(),
+			clientv3.WithMinModRev(updateB.Header.Revision+1),
+			clientv3.WithLimit(1),
+			clientv3.WithSort(clientv3.SortByKey, clientv3.SortAscend),
+		),
+		clientv3.OpPut(prefix+"b", "updated"),
+		clientv3.OpGet(prefix,
+			clientv3.WithPrefix(),
+			clientv3.WithMinModRev(updateB.Header.Revision+1),
+			clientv3.WithLimit(1),
+			clientv3.WithCountOnly(),
+		),
+	).Commit()
+	require.NoError(t, err)
+	require.True(t, txn.Succeeded)
+	require.Len(t, txn.Responses, 4)
+	stagedFiltered := txn.Responses[1].GetResponseRange()
+	require.NotNil(t, stagedFiltered)
+	require.Equal(t, int64(5), stagedFiltered.Count)
+	require.False(t, stagedFiltered.More)
+	require.Equal(t, []string{"e"}, rangeClientRelativeKeys(stagedFiltered.Kvs, prefix))
+	require.Equal(t, []bool{true}, rangeClientAtRevision(stagedFiltered.Kvs, txn.Header.Revision))
+
+	stagedCounted := txn.Responses[3].GetResponseRange()
+	require.NotNil(t, stagedCounted)
+	require.Equal(t, int64(5), stagedCounted.Count)
+	require.Empty(t, stagedCounted.Kvs)
+	require.False(t, stagedCounted.More)
+}
+
 func TestClientRangeKeysOnlyLimitAcrossTombstones(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
