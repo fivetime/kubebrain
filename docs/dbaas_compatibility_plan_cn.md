@@ -15698,6 +15698,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `errors.Is`、direct `codes.Unknown` 和 reference message。该门禁防止 auth metadata 解析、
   permission merge 或 certificate identity forwarding 重构后只保留 typed error，导致服务层
   入口之前的错误 message 漂移。
+- A1225 固定 Auth RPC service-level 错误三件套：
+  A1196/A1204 已覆盖 raw gRPC Auth 管理面与 admin/self 规则，本轮把 direct service 层的
+  `AuthEnable` 缺 root user、`AuthDisable` 缺身份、enabled 后未认证 `UserList`、普通用户
+  访问 root/admin 资源、无身份 `UserGet`、client-cert empty/unknown/non-root CN 等拒绝路径
+  固定为同时满足 `errors.Is`、direct `codes.Unknown` 和 reference message。该门禁防止 Auth
+  RPC service handler 重构后只保留 typed error，导致 raw/clientv3 映射前 message 已漂移。
 
 ### P2：运维兼容和长期验证
 
