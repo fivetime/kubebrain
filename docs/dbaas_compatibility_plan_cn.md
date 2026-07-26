@@ -14650,6 +14650,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   compare key，leased client 先缓存该 key，随后 blackhole owner 连接并逐一执行 8 个
   cached compare，断言成功/失败分支与 response 数量均符合预期，补齐断网 cache
   compare 语义。
+- A1077 固定 clientv3 Put dropped request 后 Get retry：
+  `put_failure_get_retry` differential 证明当 Put 请求字节在到达服务端前被网络丢弃时，
+  clientv3 只能以 deadline exceeded 观察到失败；该 key 不能被提交，连接恢复后的同
+  client Get 也必须能重连并继续读到空结果。本轮新增真实 TCP gRPC + request blackhole
+  回归，先通过 bridged Get 预热连接，再连续 3 次丢弃 Put 请求、断言超时、由直连
+  client 确认 key 不存在，最后恢复桥接并要求 bridged Get 也为空，防止失败写被误提交
+  或读重试路径卡死。
 
 ### P2：运维兼容和长期验证
 

@@ -16,6 +16,8 @@ package etcd
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"math"
 	"net"
 	"testing"
@@ -172,6 +174,71 @@ func TestClientPutIgnoreValueIgnoreLeaseAndErrors(t *testing.T) {
 			require.Equal(t, tt.wantCode, status.Code(err))
 			require.Equal(t, tt.wantMessage, status.Convert(err).Message())
 		})
+	}
+}
+
+func TestClientPutDroppedRequestDoesNotCommitAndGetReconnects(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	server.Register(grpcServer)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(func() {
+		grpcServer.Stop()
+		_ = listener.Close()
+	})
+
+	directEndpoint := listener.Addr().String()
+	bridge := newClientLeasingTCPBridge(t, directEndpoint)
+	newClient := func(endpoint string) *clientv3.Client {
+		client, newErr := clientv3.New(clientv3.Config{
+			Endpoints:   []string{endpoint},
+			DialTimeout: time.Second,
+		})
+		require.NoError(t, newErr)
+		t.Cleanup(func() { require.NoError(t, client.Close()) })
+		return client
+	}
+	throughBridge := newClient(bridge.Endpoint())
+	direct := newClient(directEndpoint)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	prefix := fmt.Sprintf("/a1077/put-failure-get-retry/%d/", time.Now().UnixNano())
+
+	const attempts = 3
+	for attempt := 0; attempt < attempts; attempt++ {
+		key := fmt.Sprintf("%skey-%d", prefix, attempt)
+		warm, err := throughBridge.Get(ctx, key)
+		require.NoError(t, err)
+		require.Empty(t, warm.Kvs)
+
+		droppedBefore := bridge.DroppedBytes()
+		bridge.Blackhole()
+		callCtx, callCancel := context.WithTimeout(ctx, 750*time.Millisecond)
+		_, putErr := throughBridge.Put(callCtx, key, "must-not-commit")
+		callCancel()
+		require.True(t,
+			errors.Is(putErr, context.DeadlineExceeded) ||
+				status.Code(putErr) == codes.DeadlineExceeded,
+			"attempt %d returned unexpected error: %v", attempt, putErr)
+		require.Eventually(t, func() bool {
+			return bridge.DroppedBytes() > droppedBefore
+		}, 2*time.Second, 10*time.Millisecond)
+
+		directRead, err := direct.Get(ctx, key)
+		require.NoError(t, err)
+		require.Empty(t, directRead.Kvs, "attempt %d committed despite dropped request", attempt)
+
+		bridge.Unblackhole()
+		retryCtx, retryCancel := context.WithTimeout(ctx, 5*time.Second)
+		retryRead, retryErr := throughBridge.Get(retryCtx, key)
+		retryCancel()
+		require.NoError(t, retryErr, "attempt %d failed to reconnect for Get", attempt)
+		require.Empty(t, retryRead.Kvs)
 	}
 }
 
