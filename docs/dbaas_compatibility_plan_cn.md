@@ -15321,6 +15321,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `0-watcher` 子场景，同一 client 尚未创建任何 watch channel 时，`RequestProgress` 仍必须成功
   返回，而不能把没有待通知 watcher 误处理成错误。本轮新增 bufconn official clientv3 回归，
   先推进 revision，再在 zero-watcher 状态下调用 `RequestProgress` 固定该空集语义。
+- A1167 固定 clientv3 Watch event response 形状：
+  对照 `/root/etcd/tests/integration/clientv3/watch/watch_test.go` 中 watch event、filter、
+  revision boundary 和 progress 测试对事件响应的公共外观，普通事件响应必须是非 created、
+  非 canceled、非 progress notify，且只携带预期事件。本轮收紧 shared bufconn official
+  clientv3 event helper，使 registration、filter、RequestProgress 广播、历史/未来 revision
+  等现有事件路径同时固定该响应形状。
 
 ### P2：运维兼容和长期验证
 

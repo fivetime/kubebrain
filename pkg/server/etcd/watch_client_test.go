@@ -1618,6 +1618,8 @@ func requireSingleClientWatchEvent(t *testing.T, ctx context.Context, watch clie
 		require.True(t, ok)
 		require.NoError(t, response.Err())
 		require.False(t, response.Created)
+		require.False(t, response.Canceled)
+		require.False(t, response.IsProgressNotify())
 		require.Len(t, response.Events, 1)
 		return response.Events[0]
 	case <-ctx.Done():
