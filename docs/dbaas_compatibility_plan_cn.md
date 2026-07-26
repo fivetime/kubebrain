@@ -15637,6 +15637,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `errors.Is(..., rpctypes.ErrCompacted)`、`codes.Unknown` 和
   `etcdserver: mvcc: required revision has been compacted`。该门禁防止 RangeStream adapter
   或 stream 聚合 helper 重构后只保留 typed error，破坏 apiserver LIST/镜像初始化错误分类。
+- A1216 固定 official clientv3 RangeStream future revision 三件套：
+  A1038 已覆盖 `GetStream` future revision typed error，本轮把同一 future revision
+  场景下 direct `Get` 和 `GetStreamToGetResponse` 的错误同时固定为
+  `errors.Is(..., rpctypes.ErrFutureRev)`、`codes.Unknown` 和
+  `etcdserver: mvcc: required revision is a future revision`。该门禁防止 RangeStream adapter、
+  range fast path 或 stream 聚合 helper 重构后让控制器把未来 revision 误分类为普通 transport
+  失败或丢失 reference etcd message。
 
 ### P2：运维兼容和长期验证
 

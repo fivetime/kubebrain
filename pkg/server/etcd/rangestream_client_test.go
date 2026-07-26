@@ -360,6 +360,10 @@ func TestClientRangeStreamRevisionBoundaries(t *testing.T) {
 	require.Equal(t, key, string(negative.Kvs[0].Key))
 	require.Equal(t, "value", string(negative.Kvs[0].Value))
 
+	_, err = client.Get(ctx, key, clientv3.WithRev(math.MaxInt64))
+	requireClientRangeStreamError(t, err, codes.Unknown, "etcdserver: mvcc: required revision is a future revision")
+	require.ErrorIs(t, err, rpctypes.ErrFutureRev)
+
 	stream, err = client.GetStream(ctx, key, clientv3.WithRev(math.MaxInt64))
 	require.NoError(t, err)
 	_, err = clientv3.GetStreamToGetResponse(stream)
