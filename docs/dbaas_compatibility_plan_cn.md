@@ -15671,6 +15671,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   同时满足 `errors.Is`、direct `codes.Unknown` 和 reference message。该门禁防止 maintenance
   authorizer 或 direct service caller 重构后只保留 typed error，导致管理面 `UserEmpty`、
   `UserNotFound`、`PermissionDenied` message 漂移。
+- A1221 固定 Cluster auth 服务层错误三件套：
+  A1188 已覆盖 raw gRPC Cluster auth 与平台边界，本轮把 direct service 层的匿名
+  `MemberList`、普通用户 `MemberAdd`、linearizable `MemberList` auth-before-barrier，以及
+  client-cert auth 下 `MemberAdd` 的 empty CN、unknown CN 和 non-root CN 拒绝路径固定为
+  同时满足 `errors.Is`、direct `codes.Unknown` 和 reference message。该门禁防止 cluster
+  authorizer、linearizable barrier 顺序或 direct service caller 重构后只保留 typed error，
+  导致 `MemberList`/member mutation 管理面错误分类或 message 漂移。
 
 ### P2：运维兼容和长期验证
 

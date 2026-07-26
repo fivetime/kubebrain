@@ -514,7 +514,7 @@ func TestMemberListLinearizableAuthenticatesBeforeReadBarrier(t *testing.T) {
 	}}
 
 	_, err := server.MemberList(context.Background(), &etcdserverpb.MemberListRequest{Linearizable: true})
-	require.ErrorIs(t, err, rpctypes.ErrUserEmpty)
+	requireClusterAuthError(t, err, rpctypes.ErrUserEmpty, codes.Unknown, "etcdserver: user name is empty")
 	require.Zero(t, calls.Load())
 
 	_, err = server.MemberList(aliceCtx, &etcdserverpb.MemberListRequest{Linearizable: true})
@@ -530,11 +530,11 @@ func TestMemberAuthorizationMatchesEtcd(t *testing.T) {
 	plain := context.Background()
 
 	_, err := server.MemberList(plain, &etcdserverpb.MemberListRequest{})
-	require.ErrorIs(t, err, rpctypes.ErrUserEmpty)
+	requireClusterAuthError(t, err, rpctypes.ErrUserEmpty, codes.Unknown, "etcdserver: user name is empty")
 	_, err = server.MemberList(aliceCtx, &etcdserverpb.MemberListRequest{})
 	require.NoError(t, err)
 	_, err = server.MemberAdd(aliceCtx, &etcdserverpb.MemberAddRequest{})
-	require.ErrorIs(t, err, rpctypes.ErrPermissionDenied)
+	requireClusterAuthError(t, err, rpctypes.ErrPermissionDenied, codes.Unknown, "etcdserver: permission denied")
 
 	rootToken, err := server.tokens.authenticate(plain, "root", "root-secret")
 	require.NoError(t, err)
@@ -551,11 +551,18 @@ func TestMemberRootAuthorizationClientCertificateErrorsMatchEtcd(t *testing.T) {
 	ctx := context.Background()
 
 	_, err := server.MemberAdd(verifiedTLSContext(ctx, ""), &etcdserverpb.MemberAddRequest{})
-	require.ErrorIs(t, err, rpctypes.ErrUserEmpty)
+	requireClusterAuthError(t, err, rpctypes.ErrUserEmpty, codes.Unknown, "etcdserver: user name is empty")
 	_, err = server.MemberAdd(verifiedTLSContext(ctx, "external-cn"), &etcdserverpb.MemberAddRequest{})
-	require.ErrorIs(t, err, rpctypes.ErrUserNotFound)
+	requireClusterAuthError(t, err, rpctypes.ErrUserNotFound, codes.Unknown, "etcdserver: user name not found")
 	_, err = server.MemberAdd(verifiedTLSContext(ctx, "alice"), &etcdserverpb.MemberAddRequest{})
-	require.ErrorIs(t, err, rpctypes.ErrPermissionDenied)
+	requireClusterAuthError(t, err, rpctypes.ErrPermissionDenied, codes.Unknown, "etcdserver: permission denied")
 	_, err = server.MemberAdd(verifiedTLSContext(ctx, "root"), &etcdserverpb.MemberAddRequest{})
 	require.Equal(t, codes.Unimplemented, status.Code(err))
+}
+
+func requireClusterAuthError(t *testing.T, err error, want error, code codes.Code, message string) {
+	t.Helper()
+	require.ErrorIs(t, err, want)
+	require.Equal(t, code, status.Code(err))
+	require.Equal(t, message, status.Convert(err).Message())
 }
