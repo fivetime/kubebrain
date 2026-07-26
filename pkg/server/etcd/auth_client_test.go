@@ -337,18 +337,40 @@ func TestClientAuthUserErrorsMatchEtcd(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	rawAuth := etcdserverpb.NewAuthClient(client.ActiveConnection())
 	_, err = client.UserAdd(ctx, "a1129-user", "secret")
+	require.NoError(t, err)
+	_, err = rawAuth.UserAdd(ctx, &etcdserverpb.AuthUserAddRequest{Name: "a1129-raw-user", Password: "secret"})
 	require.NoError(t, err)
 	_, err = client.UserAdd(ctx, "a1129-user", "secret")
 	require.ErrorIs(t, err, rpctypes.ErrUserAlreadyExist)
+	_, rawDuplicateUserErr := rawAuth.UserAdd(ctx, &etcdserverpb.AuthUserAddRequest{Name: "a1129-raw-user", Password: "secret"})
+	requireAuthClientError(t, rawDuplicateUserErr, codes.FailedPrecondition, "etcdserver: user name already exists")
+
 	_, err = client.UserDelete(ctx, "a1129-missing-user")
 	require.ErrorIs(t, err, rpctypes.ErrUserNotFound)
+	_, rawMissingUserErr := rawAuth.UserDelete(ctx, &etcdserverpb.AuthUserDeleteRequest{Name: "a1129-raw-missing-user"})
+	requireAuthClientError(t, rawMissingUserErr, codes.FailedPrecondition, "etcdserver: user name not found")
+
 	_, err = client.UserGrantRole(ctx, "a1129-user", "a1129-missing-role")
 	require.ErrorIs(t, err, rpctypes.ErrRoleNotFound)
+	_, rawMissingRoleErr := rawAuth.UserGrantRole(ctx, &etcdserverpb.AuthUserGrantRoleRequest{
+		User: "a1129-raw-user",
+		Role: "a1129-raw-missing-role",
+	})
+	requireAuthClientError(t, rawMissingRoleErr, codes.FailedPrecondition, "etcdserver: role name not found")
+
 	_, err = client.RoleAdd(ctx, "a1129-unused-role")
+	require.NoError(t, err)
+	_, err = rawAuth.RoleAdd(ctx, &etcdserverpb.AuthRoleAddRequest{Name: "a1129-raw-unused-role"})
 	require.NoError(t, err)
 	_, err = client.UserRevokeRole(ctx, "a1129-user", "a1129-unused-role")
 	require.ErrorIs(t, err, rpctypes.ErrRoleNotGranted)
+	_, rawRoleNotGrantedErr := rawAuth.UserRevokeRole(ctx, &etcdserverpb.AuthUserRevokeRoleRequest{
+		Name: "a1129-raw-user",
+		Role: "a1129-raw-unused-role",
+	})
+	requireAuthClientError(t, rawRoleNotGrantedErr, codes.FailedPrecondition, "etcdserver: role is not granted to the user")
 }
 
 func TestClientAuthRootProtectionAndDuplicateRoleErrors(t *testing.T) {

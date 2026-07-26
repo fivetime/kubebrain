@@ -15529,6 +15529,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `Enabled=true`，匿名 raw `AuthDisable` 返回 user-empty，普通用户 raw `AuthDisable` 返回
   `PermissionDenied`，root raw `AuthDisable` 成功并让后续 raw `AuthStatus` 回到 disabled。本轮
   加强既有 clientv3 auth 启停回归，防止直接 Auth API 调用方看到错误 root-only 语义或状态漂移。
+- A1199 固定 raw gRPC Auth user 基础错误外观：
+  延续 A1129 的 user management typed-error 契约到 generated `etcdserverpb.AuthClient`：raw
+  `UserAdd` 首次成功后重复添加返回 `FailedPrecondition`/user already exists；删除不存在用户
+  返回 `FailedPrecondition`/user not found；给已有用户授予不存在 role 返回
+  `FailedPrecondition`/role not found；撤销未授予的已有 role 返回
+  `FailedPrecondition`/role is not granted。本轮加强既有 clientv3 user error 回归，防止直接
+  Auth API 调用方看到错误 status code 或 user-role 关系校验漂移。
 
 ### P2：运维兼容和长期验证
 
