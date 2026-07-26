@@ -15285,6 +15285,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   客户端调用 `UserAdd` 必须可由 `errors.Is(..., rpctypes.ErrUserEmpty)` 识别。本轮在既有
   bufconn official clientv3 auth 回归中补齐该 auth-management 入口，和匿名 maintenance、lease、
   range stream API 的 user-empty typed error 护栏保持一致。
+- A1161 固定 clientv3 RangeStream future revision typed error：
+  对照 `/root/etcd/tests/integration/clientv3/kv_test.go:TestKVGetStreamCompactedError` 对
+  GetStream 错误映射的 public client 契约，并延续 Range/HashKV future revision typed error
+  护栏，`GetStream(..., WithRev(math.MaxInt64))` 在合并响应时必须可由
+  `errors.Is(..., rpctypes.ErrFutureRev)` 识别。本轮加强既有 bufconn official clientv3
+  RangeStream revision boundary 回归，防止 stream adapter 把 future revision 降级为只可文本匹配。
 
 ### P2：运维兼容和长期验证
 

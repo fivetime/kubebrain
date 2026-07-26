@@ -365,6 +365,7 @@ func TestClientRangeStreamRevisionBoundaries(t *testing.T) {
 	require.NoError(t, err)
 	_, err = clientv3.GetStreamToGetResponse(stream)
 	requireClientRangeStreamError(t, err, codes.Unknown, "etcdserver: mvcc: required revision is a future revision")
+	require.ErrorIs(t, err, rpctypes.ErrFutureRev)
 }
 
 func TestClientRangeStreamCompactedErrorIsTyped(t *testing.T) {
