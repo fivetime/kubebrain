@@ -1721,9 +1721,7 @@ func TestRangeFutureRevisionMatchesEtcd(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			_, err := server.Range(ctx, tt.req)
-			require.Error(t, err)
-			require.Equal(t, codes.OutOfRange, status.Code(err))
-			require.Contains(t, err.Error(), "etcdserver: mvcc: required revision is a future revision")
+			requireDirectKVError(t, err, rpctypes.ErrGRPCFutureRev, codes.OutOfRange, "etcdserver: mvcc: required revision is a future revision")
 		})
 	}
 }
@@ -1799,9 +1797,7 @@ func TestRangeCompactedRevisionMatchesEtcd(t *testing.T) {
 		Key:      []byte("/registry/pods/compacted"),
 		Revision: compactRev - 1,
 	})
-	require.Error(t, err)
-	require.Equal(t, codes.OutOfRange, status.Code(err))
-	require.Contains(t, err.Error(), "required revision has been compacted")
+	requireDirectKVError(t, err, rpctypes.ErrGRPCCompacted, codes.OutOfRange, "etcdserver: mvcc: required revision has been compacted")
 
 	resp, err := server.Range(ctx, &etcdserverpb.RangeRequest{
 		Key:      []byte("/registry/pods/compacted"),
@@ -1827,17 +1823,13 @@ func TestCompactFutureAndRepeatedRevisionMatchEtcd(t *testing.T) {
 	compactRev := putResp.Header.Revision
 
 	_, err = server.Compact(ctx, &etcdserverpb.CompactionRequest{Revision: compactRev + 1})
-	require.Error(t, err)
-	require.Equal(t, codes.OutOfRange, status.Code(err))
-	require.Contains(t, err.Error(), "required revision is a future revision")
+	requireDirectKVError(t, err, rpctypes.ErrGRPCFutureRev, codes.OutOfRange, "etcdserver: mvcc: required revision is a future revision")
 
 	_, err = server.Compact(ctx, &etcdserverpb.CompactionRequest{Revision: compactRev})
 	require.NoError(t, err)
 
 	_, err = server.Compact(ctx, &etcdserverpb.CompactionRequest{Revision: compactRev})
-	require.Error(t, err)
-	require.Equal(t, codes.OutOfRange, status.Code(err))
-	require.Contains(t, err.Error(), "required revision has been compacted")
+	requireDirectKVError(t, err, rpctypes.ErrGRPCCompacted, codes.OutOfRange, "etcdserver: mvcc: required revision has been compacted")
 }
 
 func TestCompactDifferentialScenarioMatchesEtcd(t *testing.T) {
@@ -1869,21 +1861,15 @@ func TestCompactDifferentialScenarioMatchesEtcd(t *testing.T) {
 	require.Equal(t, []byte("v2"), boundary.Kvs[0].Value)
 
 	_, err = server.Range(ctx, &etcdserverpb.RangeRequest{Key: key, Revision: first.Header.Revision})
-	require.Error(t, err)
-	require.Equal(t, codes.OutOfRange, status.Code(err))
-	require.Equal(t, "etcdserver: mvcc: required revision has been compacted", status.Convert(err).Message())
+	requireDirectKVError(t, err, rpctypes.ErrGRPCCompacted, codes.OutOfRange, "etcdserver: mvcc: required revision has been compacted")
 
 	for _, revision := range []int64{second.Header.Revision, first.Header.Revision, -1} {
 		_, err := server.Compact(ctx, &etcdserverpb.CompactionRequest{Revision: revision})
-		require.Error(t, err)
-		require.Equal(t, codes.OutOfRange, status.Code(err))
-		require.Equal(t, "etcdserver: mvcc: required revision has been compacted", status.Convert(err).Message())
+		requireDirectKVError(t, err, rpctypes.ErrGRPCCompacted, codes.OutOfRange, "etcdserver: mvcc: required revision has been compacted")
 	}
 
 	_, err = server.Compact(ctx, &etcdserverpb.CompactionRequest{Revision: third.Header.Revision + 1000})
-	require.Error(t, err)
-	require.Equal(t, codes.OutOfRange, status.Code(err))
-	require.Equal(t, "etcdserver: mvcc: required revision is a future revision", status.Convert(err).Message())
+	requireDirectKVError(t, err, rpctypes.ErrGRPCFutureRev, codes.OutOfRange, "etcdserver: mvcc: required revision is a future revision")
 
 	current, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: key})
 	require.NoError(t, err)
@@ -1958,20 +1944,24 @@ func TestCompactPhysicalRevisionBoundariesMatchEtcd(t *testing.T) {
 	tests := []struct {
 		name        string
 		revision    int64
+		wantErr     error
 		wantMessage string
 	}{
 		{
 			name:        "zero",
+			wantErr:     rpctypes.ErrGRPCCompacted,
 			wantMessage: "etcdserver: mvcc: required revision has been compacted",
 		},
 		{
 			name:        "negative",
 			revision:    -1,
+			wantErr:     rpctypes.ErrGRPCCompacted,
 			wantMessage: "etcdserver: mvcc: required revision has been compacted",
 		},
 		{
 			name:        "max-int",
 			revision:    math.MaxInt64,
+			wantErr:     rpctypes.ErrGRPCFutureRev,
 			wantMessage: "etcdserver: mvcc: required revision is a future revision",
 		},
 	}
@@ -1980,9 +1970,7 @@ func TestCompactPhysicalRevisionBoundariesMatchEtcd(t *testing.T) {
 			_, err := server.Compact(ctx, &etcdserverpb.CompactionRequest{
 				Revision: tt.revision, Physical: true,
 			})
-			require.Error(t, err)
-			require.Equal(t, codes.OutOfRange, status.Code(err))
-			require.Equal(t, tt.wantMessage, status.Convert(err).Message())
+			requireDirectKVError(t, err, tt.wantErr, codes.OutOfRange, tt.wantMessage)
 		})
 	}
 }
@@ -2058,9 +2046,7 @@ func TestRangeNegativeRevisionFollowsFirstRevision(t *testing.T) {
 	_, err = server.Txn(ctx, &etcdserverpb.TxnRequest{
 		Success: []*etcdserverpb.RequestOp{rangeOp(math.MaxInt64)},
 	})
-	require.Error(t, err)
-	require.Equal(t, codes.OutOfRange, status.Code(err))
-	require.Equal(t, "etcdserver: mvcc: required revision is a future revision", status.Convert(err).Message())
+	requireDirectKVError(t, err, rpctypes.ErrGRPCFutureRev, codes.OutOfRange, "etcdserver: mvcc: required revision is a future revision")
 }
 
 func TestCompactOlderRevisionReturnsCurrentHeader(t *testing.T) {
