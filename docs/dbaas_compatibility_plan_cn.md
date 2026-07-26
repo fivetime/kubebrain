@@ -14407,6 +14407,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `client.Get(..., WithCountOnly(), WithLimit(1), WithRev(...))` 覆盖 before-deletes、
   after-deletes 和 current-after-recreate 三个阶段，补齐服务层 CountOnly 断言之外的官方
   客户端计数面。
+- A1047 固定 authenticated clientv3 MemberList AutoSync 外观：
+  `memberlist_autosync_auth` differential 证明启用认证后，带用户名密码的官方 clientv3
+  仍必须能调用 `MemberList`，并由 `AutoSyncInterval` 将 seed endpoint 替换为
+  MemberList 暴露的 advertised ClientURLs；端点替换后同一客户端还必须继续携带凭据完成
+  授权范围内的 Range。本轮新增官方 clientv3 bufconn 回归，注册 KV/Cluster/Auth 服务，
+  为 alice 授予 `/a1047/autosync-auth/` 只读权限，通过自定义 dialer 让 advertised URL
+  可达，断言 AutoSync 后 `client.Endpoints()` 精确等于 advertised ClientURLs，并验证
+  同一 authenticated client 对授权前缀的 `Get` 成功，补齐 A990 普通 MemberList/Sync 与
+  cluster auth 顺序覆盖之外的认证自动同步面。
 
 ### P2：运维兼容和长期验证
 

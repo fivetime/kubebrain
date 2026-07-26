@@ -21,7 +21,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.etcd.io/etcd/api/v3/authpb"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc"
@@ -93,6 +95,77 @@ func TestClientMemberListAndSyncUseAdvertisedClientURLs(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, got.Kvs, 1)
 	require.Equal(t, "ok", string(got.Kvs[0].Value))
+}
+
+func TestClientAuthenticatedMemberListAutoSyncUsesAdvertisedClientURLs(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	members, err := ParseInitialCluster(
+		"kb-2=http://10.0.2.2:2380,kb-1=http://10.0.2.1:2380,kb-3=http://10.0.2.3:2380",
+		2379,
+		false,
+	)
+	require.NoError(t, err)
+	server.SetStaticMembers(members)
+
+	ctx := context.Background()
+	authManager := server.auth
+	require.NoError(t, authManager.userAdd(ctx, &etcdserverpb.AuthUserAddRequest{Name: "root", Password: "root-secret"}))
+	require.NoError(t, authManager.roleAdd(ctx, "root"))
+	require.NoError(t, authManager.userGrantRole(ctx, "root", "root"))
+	require.NoError(t, authManager.userAdd(ctx, &etcdserverpb.AuthUserAddRequest{Name: "alice", Password: "alice-secret"}))
+	require.NoError(t, authManager.roleAdd(ctx, "autosync-reader"))
+	require.NoError(t, authManager.userGrantRole(ctx, "alice", "autosync-reader"))
+	require.NoError(t, authManager.roleGrantPermission(ctx, "autosync-reader", &authpb.Permission{
+		PermType: authpb.READ, Key: []byte("/a1047/autosync-auth/"), RangeEnd: []byte("/a1047/autosync-auth0"),
+	}))
+	require.NoError(t, authManager.enable(ctx))
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterClusterServer(grpcServer, server)
+	etcdserverpb.RegisterAuthServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	dialOptions := []grpc.DialOption{
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}),
+	}
+	alice, err := clientv3.New(clientv3.Config{
+		Endpoints:        []string{"bufnet"},
+		DialTimeout:      time.Second,
+		Username:         "alice",
+		Password:         "alice-secret",
+		AutoSyncInterval: 25 * time.Millisecond,
+		DialOptions:      dialOptions,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, alice.Close()) })
+
+	clientCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	list, err := alice.MemberList(clientCtx)
+	require.NoError(t, err)
+	expected := memberListClientURLs(list.Members)
+	require.Equal(t, []string{
+		"http://10.0.2.1:2379",
+		"http://10.0.2.2:2379",
+		"http://10.0.2.3:2379",
+	}, expected)
+
+	require.EventuallyWithT(t, func(c *assert.CollectT) {
+		actual := alice.Endpoints()
+		sort.Strings(actual)
+		require.Equal(c, expected, actual)
+	}, 5*time.Second, 25*time.Millisecond)
+
+	got, err := alice.Get(clientCtx, "/a1047/autosync-auth/missing")
+	require.NoError(t, err)
+	require.Empty(t, got.Kvs)
 }
 
 func memberListClientURLs(members []*etcdserverpb.Member) []string {
