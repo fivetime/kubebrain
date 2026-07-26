@@ -15501,6 +15501,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   raw `Txn` Put(PrevKv) 都必须返回 `PermissionDenied`，且 root 读取仍为原值 `before`。
   本轮加强既有 clientv3 Txn PrevKV 回归，防止直接 protobuf mutation 通过 PrevKV 读取旧值、
   绕过递归授权或在拒绝路径产生部分写入。
+- A1195 固定 raw gRPC Compact root-only 外观：
+  延续 A1069 的 compact root-only 契约到 generated `etcdserverpb.KVClient`：auth enabled 后
+  匿名 raw `Compact` 必须返回 user-empty gRPC status，普通用户 raw `Compact` 返回
+  `PermissionDenied`，root raw `Compact` 成功并返回有效 header；随后 official clientv3 root
+  compact 仍可在更新 revision 上成功。本轮加强既有 compact auth 回归，防止直接 KV API 调用方
+  绕过 client adapter 后看到错误 status code 或 root-only 授权顺序。
 
 ### P2：运维兼容和长期验证
 

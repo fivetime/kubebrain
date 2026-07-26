@@ -1269,14 +1269,30 @@ func TestClientAuthCompactRequiresRoot(t *testing.T) {
 
 	alice := newClient("alice", "alice-secret")
 	root := newClient("root", "root-secret")
+	second, err := root.Put(ctx, "/a1069/compact/second", "value")
+	require.NoError(t, err)
 	_, anonymousCompactErr := bootstrap.Compact(ctx, first.Header.Revision)
 	requireAuthClientError(t, anonymousCompactErr, codes.Unknown, "etcdserver: user name is empty", rpctypes.ErrUserEmpty)
+	rawAnonymousKV := etcdserverpb.NewKVClient(bootstrap.ActiveConnection())
+	_, rawAnonymousCompactErr := rawAnonymousKV.Compact(ctx, &etcdserverpb.CompactionRequest{Revision: first.Header.Revision})
+	requireAuthClientError(t, rawAnonymousCompactErr, codes.InvalidArgument, "etcdserver: user name is empty")
+
 	_, userCompactErr := alice.Compact(ctx, first.Header.Revision)
 	requireAuthClientError(t, userCompactErr, codes.Unknown, "etcdserver: permission denied", rpctypes.ErrPermissionDenied)
-	compact, err := root.Compact(ctx, first.Header.Revision)
+	rawAliceKV := etcdserverpb.NewKVClient(alice.ActiveConnection())
+	_, rawUserCompactErr := rawAliceKV.Compact(ctx, &etcdserverpb.CompactionRequest{Revision: first.Header.Revision})
+	requireAuthClientError(t, rawUserCompactErr, codes.PermissionDenied, "etcdserver: permission denied")
+
+	rawRootKV := etcdserverpb.NewKVClient(root.ActiveConnection())
+	rawCompact, err := rawRootKV.Compact(ctx, &etcdserverpb.CompactionRequest{Revision: first.Header.Revision})
+	require.NoError(t, err)
+	require.NotNil(t, rawCompact.Header)
+	require.GreaterOrEqual(t, rawCompact.Header.Revision, first.Header.Revision)
+
+	compact, err := root.Compact(ctx, second.Header.Revision)
 	require.NoError(t, err)
 	require.NotNil(t, compact.Header)
-	require.GreaterOrEqual(t, compact.Header.Revision, first.Header.Revision)
+	require.GreaterOrEqual(t, compact.Header.Revision, second.Header.Revision)
 }
 
 func TestClientAuthPrivilegedMaintenanceAuthorizationPrecedesUnsupported(t *testing.T) {
