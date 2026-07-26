@@ -969,6 +969,7 @@ func TestLoadLeaseRecordsRejectsInvalidAttachmentMetadata(t *testing.T) {
 	tests := []struct {
 		name  string
 		write func(context.Context, *RPCServer) error
+		want  string
 	}{
 		{
 			name: "legacy_user_mvcc_attachment",
@@ -979,12 +980,14 @@ func TestLoadLeaseRecordsRejectsInvalidAttachmentMetadata(t *testing.T) {
 				})
 				return err
 			},
+			want: `decode lease attachment for key "/lease/bad-legacy": strconv.ParseInt: parsing "not-an-id": invalid syntax`,
 		},
 		{
 			name: "internal_attachment",
 			write: func(ctx context.Context, server *RPCServer) error {
 				return server.backend.InternalPut(ctx, leaseAttachKey("/lease/bad-internal"), []byte("not-an-id"))
 			},
+			want: `decode lease attachment for key "/lease/bad-internal": strconv.ParseInt: parsing "not-an-id": invalid syntax`,
 		},
 	}
 	for _, test := range tests {
@@ -995,7 +998,7 @@ func TestLoadLeaseRecordsRejectsInvalidAttachmentMetadata(t *testing.T) {
 			require.NoError(t, test.write(ctx, server))
 
 			_, _, err := server.loadLeaseRecords(ctx)
-			require.ErrorContains(t, err, "decode lease attachment")
+			require.EqualError(t, err, test.want)
 		})
 	}
 }
@@ -1014,7 +1017,7 @@ func TestLoadLeaseRecordsRejectsMalformedLeaseMetadata(t *testing.T) {
 				_, err := server.backend.Put(ctx, &etcdserverpb.PutRequest{Key: leaseStorageKey(id), Value: raw})
 				return err
 			},
-			want: "decode legacy lease metadata",
+			want: `decode legacy lease metadata for key "\x00kubebrain/leases/7100": json: unknown field "unexpected"`,
 		},
 		{
 			name: "legacy_user_mvcc_trailing_json",
@@ -1023,7 +1026,7 @@ func TestLoadLeaseRecordsRejectsMalformedLeaseMetadata(t *testing.T) {
 				_, err := server.backend.Put(ctx, &etcdserverpb.PutRequest{Key: leaseStorageKey(id), Value: raw})
 				return err
 			},
-			want: "lease metadata contains trailing JSON",
+			want: `decode legacy lease metadata for key "\x00kubebrain/leases/7101": lease metadata contains trailing JSON`,
 		},
 		{
 			name: "internal_unknown_field",
@@ -1031,7 +1034,7 @@ func TestLoadLeaseRecordsRejectsMalformedLeaseMetadata(t *testing.T) {
 			write: func(ctx context.Context, server *RPCServer, id int64, raw []byte) error {
 				return server.backend.InternalPut(ctx, leaseStorageKey(id), raw)
 			},
-			want: "decode lease metadata",
+			want: `decode lease metadata: json: unknown field "unexpected"`,
 		},
 		{
 			name: "internal_trailing_json",
@@ -1039,7 +1042,7 @@ func TestLoadLeaseRecordsRejectsMalformedLeaseMetadata(t *testing.T) {
 			write: func(ctx context.Context, server *RPCServer, id int64, raw []byte) error {
 				return server.backend.InternalPut(ctx, leaseStorageKey(id), raw)
 			},
-			want: "lease metadata contains trailing JSON",
+			want: `decode lease metadata: lease metadata contains trailing JSON`,
 		},
 	}
 	for index, test := range tests {
@@ -1051,7 +1054,7 @@ func TestLoadLeaseRecordsRejectsMalformedLeaseMetadata(t *testing.T) {
 			require.NoError(t, test.write(ctx, server, id, test.raw(t, id)))
 
 			_, _, err := server.loadLeaseRecords(ctx)
-			require.ErrorContains(t, err, test.want)
+			require.EqualError(t, err, test.want)
 		})
 	}
 }

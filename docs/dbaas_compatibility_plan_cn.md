@@ -15982,6 +15982,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   client URL unsafe character、initial-cluster peer URL unsafe character 从 fragment
   断言收紧为 exact error。该门禁防止成员发现或认证启动配置重构后丢失具体字段、URL 和
   member name，降低生产安装排障和拒绝不安全输入的确定性。
+- A1279 固定 lease restore metadata 解码错误文本：
+  A66/A312/A535 已覆盖 lease deadline/renewal 语义，本轮把重启加载 lease attachment、
+  legacy user-MVCC lease metadata、internal lease metadata 的 malformed JSON/非法 ID
+  从 fragment 断言收紧为 exact error，固定 key、lease ID 和底层 decoder/strconv 原因。
+  该门禁防止恢复路径重构后只报告笼统失败，丢失定位损坏记录的生产排障信息。
 
 ### P2：运维兼容和长期验证
 
