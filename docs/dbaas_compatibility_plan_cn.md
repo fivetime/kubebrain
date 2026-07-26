@@ -15327,6 +15327,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   非 canceled、非 progress notify，且只携带预期事件。本轮收紧 shared bufconn official
   clientv3 event helper，使 registration、filter、RequestProgress 广播、历史/未来 revision
   等现有事件路径同时固定该响应形状。
+- A1168 固定 clientv3 Put IgnoreValue/IgnoreLease validation typed errors：
+  对照 `/root/etcd/tests/integration/clientv3/kv_test.go:TestKVPutWithIgnoreValue` 与
+  `TestKVPutWithIgnoreLease`，`WithIgnoreValue` 缺 key 必须可由 `rpctypes.ErrKeyNotFound`
+  识别；同时按照 `/root/etcd/api/v3rpc/rpctypes/error.go` 的 validation 映射，携带 value 的
+  `WithIgnoreValue` 和携带 lease 的 `WithIgnoreLease` 必须分别可由 `rpctypes.ErrValueProvided`
+  与 `rpctypes.ErrLeaseProvided` 识别。本轮加强既有 bufconn official clientv3 Put ignore
+  回归，保留 status/message 断言并补齐 typed error 护栏。
 
 ### P2：运维兼容和长期验证
 

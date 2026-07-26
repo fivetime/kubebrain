@@ -142,6 +142,7 @@ func TestClientPutIgnoreValueIgnoreLeaseAndErrors(t *testing.T) {
 			},
 			wantCode:    codes.Unknown,
 			wantMessage: "etcdserver: key not found",
+			wantErrorIs: rpctypes.ErrKeyNotFound,
 		},
 		{
 			name: "missing key and lease",
@@ -161,6 +162,7 @@ func TestClientPutIgnoreValueIgnoreLeaseAndErrors(t *testing.T) {
 			},
 			wantCode:    codes.Unknown,
 			wantMessage: "etcdserver: value is provided",
+			wantErrorIs: rpctypes.ErrValueProvided,
 		},
 		{
 			name: "lease with ignore lease",
@@ -170,6 +172,7 @@ func TestClientPutIgnoreValueIgnoreLeaseAndErrors(t *testing.T) {
 			},
 			wantCode:    codes.Unknown,
 			wantMessage: "etcdserver: lease is provided",
+			wantErrorIs: rpctypes.ErrLeaseProvided,
 		},
 	}
 	for _, tt := range tests {
