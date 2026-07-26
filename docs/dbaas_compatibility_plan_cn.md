@@ -15334,6 +15334,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `WithIgnoreValue` 和携带 lease 的 `WithIgnoreLease` 必须分别可由 `rpctypes.ErrValueProvided`
   与 `rpctypes.ErrLeaseProvided` 识别。本轮加强既有 bufconn official clientv3 Put ignore
   回归，保留 status/message 断言并补齐 typed error 护栏。
+- A1169 固定 clientv3 Txn range validation typed errors：
+  对照 `/root/etcd/tests/integration/clientv3/txn_test.go:TestTxnError` 的 official clientv3
+  typed error 契约，并延续 `/root/etcd/api/v3rpc/rpctypes/error.go` 的 range validation 映射，
+  Txn 内 `OpGet("")` 必须可由 `rpctypes.ErrEmptyKey` 识别，Txn 内非法 sort enum 的
+  `OpGet` 必须可由 `rpctypes.ErrInvalidSortOption` 识别。本轮加强既有 bufconn official
+  clientv3 Txn basic error 回归，与 raw gRPC Txn validation message 护栏形成 client adapter
+  层面的 typed error 覆盖。
 
 ### P2：运维兼容和长期验证
 

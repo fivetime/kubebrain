@@ -350,6 +350,15 @@ func TestClientTxnBasicErrorsMatchEtcd(t *testing.T) {
 		Commit()
 	require.ErrorIs(t, err, rpctypes.ErrDuplicateKey)
 
+	_, err = client.Txn(ctx).Then(clientv3.OpGet("")).Commit()
+	require.ErrorIs(t, err, rpctypes.ErrEmptyKey)
+
+	_, err = client.Txn(ctx).
+		Then(clientv3.OpGet("/a1169/txn/basic-error/invalid-sort",
+			clientv3.WithSort(clientv3.SortTarget(99), clientv3.SortOrder(99)))).
+		Commit()
+	require.ErrorIs(t, err, rpctypes.ErrInvalidSortOption)
+
 	ops := make([]clientv3.Op, defaultMaxTxnOps+1)
 	for i := range ops {
 		ops[i] = clientv3.OpPut(fmt.Sprintf("/a1131/txn/basic-error/too-many/%d", i), "")
