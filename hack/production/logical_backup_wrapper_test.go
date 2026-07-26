@@ -148,6 +148,48 @@ func TestColdRestoreVerifyWrapperRejectsUnsafeEndpoint(t *testing.T) {
 	}
 }
 
+func TestColdRestoreVerifyWrapperRequiresRecoveryInputs(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		omit    string
+		message string
+	}{
+		{name: "witness", omit: "WITNESS_FILE", message: "WITNESS_FILE is required"},
+		{name: "snapshot receipt", omit: "SNAPSHOT_RECEIPT_FILE", message: "SNAPSHOT_RECEIPT_FILE is required"},
+		{name: "restore receipt", omit: "RESTORE_RECEIPT_FILE", message: "RESTORE_RECEIPT_FILE is required"},
+		{name: "restore manifest", omit: "RESTORE_MANIFEST_FILE", message: "RESTORE_MANIFEST_FILE is required"},
+		{name: "semantic receipt", omit: "SEMANTIC_RECEIPT_FILE", message: "SEMANTIC_RECEIPT_FILE is required"},
+		{name: "probe prefix", omit: "VERIFY_PREFIX", message: "VERIFY_PREFIX is required"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			receipt := filepath.Join(dir, "semantic-receipt.json")
+			envByName := map[string]string{
+				"ENDPOINT":              "https://restored:2379",
+				"WITNESS_FILE":          filepath.Join(dir, "witness.jsonl"),
+				"SNAPSHOT_RECEIPT_FILE": filepath.Join(dir, "snapshot.json"),
+				"RESTORE_RECEIPT_FILE":  filepath.Join(dir, "restore.json"),
+				"RESTORE_MANIFEST_FILE": filepath.Join(dir, "manifest.json"),
+				"SEMANTIC_RECEIPT_FILE": receipt,
+				"VERIFY_PREFIX":         "/__kubebrain/cold-restore-verify/test",
+			}
+			env := make([]string, 0, len(envByName)-1)
+			for name, value := range envByName {
+				if name == tc.omit {
+					continue
+				}
+				env = append(env, name+"="+value)
+			}
+
+			out, err := runProductionScriptCommand(t, "../backup/cold-restore-verify.sh", env)
+			require.Error(t, err, string(out))
+			require.Contains(t, string(out), tc.message)
+			require.NoFileExists(t, receipt)
+			require.NotContains(t, string(out), "go: downloading")
+		})
+	}
+}
+
 func TestLogicalObjectWrapperRejectsUnsafeS3Endpoint(t *testing.T) {
 	for _, tc := range []struct {
 		name     string

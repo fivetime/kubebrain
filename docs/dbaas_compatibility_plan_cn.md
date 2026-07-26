@@ -16081,6 +16081,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   证据字段说明，并新增 production 文档回归测试，要求 cold restore verify 示例持续包含
   witness、snapshot receipt、restore receipt、restore manifest、semantic receipt 和
   probe prefix 六个输入。该门禁防止候选恢复演练 runbook 漂移，但仍不关闭真实 CSI/PITR 缺口。
+- A1295 固定 cold restore verify wrapper 必填输入门禁：
+  A1294 让生产文档列出六个恢复语义验证输入后，`cold-restore-verify.sh` 仍只在 shell
+  入口检查 `ENDPOINT`，缺 witness、snapshot receipt、restore receipt、restore manifest、
+  semantic receipt 或 probe prefix 时要等 Go verifier 启动后才失败。本轮把六个必填输入
+  前移到 wrapper fail-closed，并新增 production wrapper 回归测试，要求缺任一输入时直接
+  拒绝且不发布 final semantic receipt。该门禁减少演练入口漂移，不替代 verifier 对
+  JSON/digest/revision/lease/watch 的深层语义校验，也不关闭真实 CSI/PITR 缺口。
 
 ### P2：运维兼容和长期验证
 

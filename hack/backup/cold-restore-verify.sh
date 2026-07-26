@@ -33,6 +33,12 @@ if [[ -z "$ENDPOINT" ]]; then
   echo "ENDPOINT is required" >&2
   exit 2
 fi
+for required in WITNESS_FILE SNAPSHOT_RECEIPT_FILE RESTORE_RECEIPT_FILE RESTORE_MANIFEST_FILE SEMANTIC_RECEIPT_FILE VERIFY_PREFIX; do
+  if [[ -z "${!required:-}" ]]; then
+    echo "${required} is required" >&2
+    exit 2
+  fi
+done
 contains_unsafe_endpoint_char() {
   local value="$1"
   [[ "$value" == *[[:cntrl:]]* || "$value" == *\"* || "$value" == *\\* ]]
