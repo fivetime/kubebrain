@@ -14224,6 +14224,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   multiplexed Watch stream。本轮新增 bufconn raw gRPC 回归，注册真实 Watch 服务后直接
   使用 `etcdserverpb.WatchClient.Watch` 双向流覆盖这些边界，并断言每个可见响应都有良好
   header，防止单元 fake stream 正确但公开 gRPC 编解码、控制帧顺序或错误后续流存活语义回退。
+- A1022 固定 raw gRPC Watch 空控制帧语义：
+  `watch_control` differential 证明空 union `WatchRequest{}` 被忽略；wire-level 空
+  `CreateRequest{}` 不是非法帧，而是按 etcd 归一化为最小 key `\x00` 的自动 ID watch；
+  空 `CancelRequest{}` 会取消该自动 ID，空 `ProgressRequest{}` 在无 active watch 时不产生
+  progress response，后续显式 create 必须继续成功。本轮新增 bufconn raw gRPC 回归，直接用
+  `etcdserverpb.WatchClient.Watch` 发送上述控制帧序列并验证 `0` 与 `404` 两个 watch 的
+  created/canceled 外观和 header，防止只依赖 fake stream 时误把 protobuf 空 create/cancel
+  当作 nil 子消息而漏掉真实公开协议语义。
 
 ### P2：运维兼容和长期验证
 

@@ -210,6 +210,78 @@ func TestRawGRPCWatchIDRangeBoundariesKeepStreamAlive(t *testing.T) {
 	require.Empty(t, response.CancelReason)
 }
 
+func TestRawGRPCWatchEmptyControlFramesMatchEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	_, err := server.Put(context.Background(), &etcdserverpb.PutRequest{
+		Key: []byte("/a1022/watch-invalid-control/seed"), Value: []byte("seed"),
+	})
+	require.NoError(t, err)
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterWatchServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///bufnet",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	stream, err := etcdserverpb.NewWatchClient(conn).Watch(ctx)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = stream.CloseSend() })
+
+	require.NoError(t, stream.Send(&etcdserverpb.WatchRequest{}))
+	require.NoError(t, stream.Send(&etcdserverpb.WatchRequest{
+		RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{},
+	}))
+
+	response, err := stream.Recv()
+	require.NoError(t, err)
+	requireRawWatchHeaderWellFormed(t, response)
+	require.True(t, response.Created)
+	require.False(t, response.Canceled)
+	require.Equal(t, int64(0), response.WatchId)
+	require.Empty(t, response.CancelReason)
+
+	require.NoError(t, stream.Send(&etcdserverpb.WatchRequest{
+		RequestUnion: &etcdserverpb.WatchRequest_CancelRequest{},
+	}))
+	response, err = stream.Recv()
+	require.NoError(t, err)
+	requireRawWatchHeaderWellFormed(t, response)
+	require.False(t, response.Created)
+	require.True(t, response.Canceled)
+	require.Equal(t, int64(0), response.WatchId)
+	require.Empty(t, response.CancelReason)
+
+	require.NoError(t, stream.Send(&etcdserverpb.WatchRequest{
+		RequestUnion: &etcdserverpb.WatchRequest_ProgressRequest{},
+	}))
+	require.NoError(t, stream.Send(&etcdserverpb.WatchRequest{
+		RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{
+			CreateRequest: &etcdserverpb.WatchCreateRequest{
+				Key: []byte("/a1022/watch-invalid-control/live"), WatchId: 404,
+			},
+		},
+	}))
+	response, err = stream.Recv()
+	require.NoError(t, err)
+	requireRawWatchHeaderWellFormed(t, response)
+	require.True(t, response.Created)
+	require.False(t, response.Canceled)
+	require.Equal(t, int64(404), response.WatchId)
+	require.Empty(t, response.CancelReason)
+}
+
 func requireRawWatchHeaderWellFormed(t *testing.T, response *etcdserverpb.WatchResponse) {
 	t.Helper()
 	require.NotNil(t, response.Header)
