@@ -201,6 +201,77 @@ func classifyLeaseRenewStressError(err error, notFound, other *atomic.Int64) {
 	other.Add(1)
 }
 
+func TestClientLeaseSwitchConcurrentOldRevokePreservesNewBinding(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterLeaseServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	prefix := fmt.Sprintf("/a1084/lease-switch/%d/", time.Now().UnixNano())
+
+	const rounds = 8
+	for round := 0; round < rounds; round++ {
+		leaseA, err := client.Grant(ctx, 300)
+		require.NoError(t, err)
+		leaseB, err := client.Grant(ctx, 300)
+		require.NoError(t, err)
+		key := fmt.Sprintf("%s%02d", prefix, round)
+		_, err = client.Put(ctx, key, "lease-a", clientv3.WithLease(leaseA.ID))
+		require.NoError(t, err)
+
+		start := make(chan struct{})
+		results := make(chan error, 2)
+		go func() {
+			<-start
+			_, putErr := client.Put(ctx, key, "lease-b", clientv3.WithLease(leaseB.ID))
+			results <- putErr
+		}()
+		go func() {
+			<-start
+			_, revokeErr := client.Revoke(ctx, leaseA.ID)
+			results <- revokeErr
+		}()
+		close(start)
+		require.NoError(t, <-results)
+		require.NoError(t, <-results)
+
+		current, err := client.Get(ctx, key)
+		require.NoError(t, err)
+		require.Len(t, current.Kvs, 1)
+		require.Equal(t, "lease-b", string(current.Kvs[0].Value))
+		require.Equal(t, int64(leaseB.ID), current.Kvs[0].Lease)
+		oldTTL, err := client.TimeToLive(ctx, leaseA.ID)
+		require.NoError(t, err)
+		require.Equal(t, int64(-1), oldTTL.TTL)
+
+		_, err = client.Revoke(ctx, leaseB.ID)
+		require.NoError(t, err)
+		after, err := client.Get(ctx, key)
+		require.NoError(t, err)
+		require.Empty(t, after.Kvs)
+	}
+}
+
 func TestClientLeaseTimeToLiveReportsZeroBeforeExpiry(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

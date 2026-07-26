@@ -14699,6 +14699,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   在同一 client 的 renew/read/revoke 链路中必须保持可见直到显式 Revoke 成功。本轮新增
   bufconn 官方 clientv3 回归，12 个 goroutine 各执行 5 轮生命周期，断言全部 60 轮完成，
   live KeepAliveOnce 未返回 TTL=0，且没有 transient not-found 或其他错误。
+- A1084 固定 clientv3 Lease switch concurrent old revoke：
+  `lease_switch` differential 证明 key 从 lease A 切换到 lease B 的同时，旧 lease A 被
+  并发 Revoke 时，旧 lease 的删除流程不能删除已经重新绑定到新 lease 的 key；新值和
+  新 lease binding 必须保留，随后 Revoke 新 lease 才能删除该 key。本轮新增 bufconn
+  官方 clientv3 回归，连续 8 轮并发执行 `Put(key, lease-b)` 与 `Revoke(lease-a)`，
+  断言最终 value 为 `lease-b`、key 绑定 lease B、lease A TTL=-1，且 Revoke lease B 后
+  key 消失。
 
 ### P2：运维兼容和长期验证
 
