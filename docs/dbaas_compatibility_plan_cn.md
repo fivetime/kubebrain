@@ -14693,6 +14693,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   本轮新增真实 TCP gRPC + owner request/response blackhole 回归，先由 owner 缓存 key，
   黑洞 owner 连接后取消 writer 的 non-owner Txn，断言直连读仍为 initial，并在恢复后要求
   owner `Get` 继续读到 initial。
+- A1083 固定 clientv3 Lease concurrent renew lifecycle：
+  `lease_renew_stress` differential 证明并发 Grant→KeepAliveOnce→TimeToLive→Revoke
+  生命周期不能短暂返回 TTL=0、`ErrLeaseNotFound` 或其他错误；freshly granted lease
+  在同一 client 的 renew/read/revoke 链路中必须保持可见直到显式 Revoke 成功。本轮新增
+  bufconn 官方 clientv3 回归，12 个 goroutine 各执行 5 轮生命周期，断言全部 60 轮完成，
+  live KeepAliveOnce 未返回 TTL=0，且没有 transient not-found 或其他错误。
 
 ### P2：运维兼容和长期验证
 

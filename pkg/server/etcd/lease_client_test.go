@@ -22,6 +22,7 @@ import (
 	"net"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -122,6 +123,82 @@ func TestClientLeaseReadBoundaryAndAttachedKeys(t *testing.T) {
 		containsLive = containsLive || status.ID == leaseID
 	}
 	require.True(t, containsLive)
+}
+
+func TestClientLeaseConcurrentRenewLifecycleHasNoTransientNotFound(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterLeaseServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	const workers = 12
+	const rounds = 5
+	var completed, zeroTTL, notFound, otherErrors atomic.Int64
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for range workers {
+		go func() {
+			defer wg.Done()
+			for range rounds {
+				grant, grantErr := client.Grant(ctx, 60)
+				if grantErr != nil {
+					classifyLeaseRenewStressError(grantErr, &notFound, &otherErrors)
+					continue
+				}
+				keepAlive, keepAliveErr := client.KeepAliveOnce(ctx, grant.ID)
+				if keepAliveErr != nil {
+					classifyLeaseRenewStressError(keepAliveErr, &notFound, &otherErrors)
+					continue
+				}
+				if keepAlive.TTL == 0 {
+					zeroTTL.Add(1)
+				}
+				if _, ttlErr := client.TimeToLive(ctx, grant.ID); ttlErr != nil {
+					classifyLeaseRenewStressError(ttlErr, &notFound, &otherErrors)
+					continue
+				}
+				if _, revokeErr := client.Revoke(ctx, grant.ID); revokeErr != nil {
+					classifyLeaseRenewStressError(revokeErr, &notFound, &otherErrors)
+					continue
+				}
+				completed.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+	require.NoError(t, ctx.Err())
+	require.Equal(t, int64(workers*rounds), completed.Load())
+	require.Zero(t, zeroTTL.Load(), "live KeepAliveOnce must not return TTL=0")
+	require.Zero(t, notFound.Load(), "freshly granted leases must not disappear during renew lifecycle")
+	require.Zero(t, otherErrors.Load())
+}
+
+func classifyLeaseRenewStressError(err error, notFound, other *atomic.Int64) {
+	if errors.Is(err, rpctypes.ErrLeaseNotFound) {
+		notFound.Add(1)
+		return
+	}
+	other.Add(1)
 }
 
 func TestClientLeaseTimeToLiveReportsZeroBeforeExpiry(t *testing.T) {
