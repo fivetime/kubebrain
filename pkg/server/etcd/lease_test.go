@@ -1110,7 +1110,7 @@ func TestLeaseGrantPublishesOnlyAfterMetadataCommit(t *testing.T) {
 	})
 	requireDirectLeaseError(t, err, rpctypes.ErrGRPCLeaseNotFound, codes.NotFound, "etcdserver: requested lease not found")
 	_, err = server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 30, ID: 5201})
-	require.Equal(t, codes.FailedPrecondition, status.Code(err), "pending ID must reject a duplicate grant")
+	requireDirectLeaseStatusError(t, err, codes.FailedPrecondition, "etcdserver: lease already exists")
 
 	close(shim.release)
 	require.NoError(t, <-grantDone)
@@ -1170,7 +1170,7 @@ func TestLeaseGrantDoesNotPublishAcrossLeaseStateReset(t *testing.T) {
 	<-shim.entered
 	server.stopLeases()
 	close(shim.release)
-	require.Equal(t, codes.Unavailable, status.Code(<-grantDone))
+	requireDirectLeaseStatusError(t, <-grantDone, codes.Unavailable, "write rejected: leadership changed during commit, retry on current leader")
 
 	server.leaseMu.Lock()
 	_, active := server.leases[5201]

@@ -16197,6 +16197,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   send 侧 `trying to send message larger than max` 与 recv 侧
   `received message larger than max`。该门禁防止 wrapper 文本变化、code 前缀或
   interceptor 包装掩盖真正的 gRPC payload 分类。
+- A1311 固定 LeaseGrant pending/reset 错误语义：
+  LeaseGrant 在 metadata commit 前必须只占用 pending reservation，不得提前发布为可用
+  lease；重复显式 ID grant 应返回 `FailedPrecondition` 的
+  `etcdserver: lease already exists`。如果 lease state 在 metadata commit 与内存发布之间
+  reset，则必须返回 `Unavailable` 的 leadership-fenced retry message，而不是把旧 grant
+  发布到新 generation。本轮收紧 `TestLeaseGrantPublishesOnlyAfterMetadataCommit` 和
+  `TestLeaseGrantDoesNotPublishAcrossLeaseStateReset` 的 code/message。该门禁防止
+  lease reload、leader demotion 或 shutdown 竞态把未发布 lease 误判为可写，或让客户端
+  对 fencing 错误做错误分类。
 
 ### P2：运维兼容和长期验证
 
