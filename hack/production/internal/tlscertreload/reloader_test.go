@@ -51,7 +51,7 @@ func TestReloaderRotatesCertificateAndRetainsLastValidPair(t *testing.T) {
 	require.Equal(t, int64(2), peerSerial(t, listener.Addr().String()))
 
 	require.NoError(t, os.WriteFile(keyFile, []byte("not a private key"), 0o600))
-	require.Error(t, reloader.Reload())
+	require.ErrorContains(t, reloader.Reload(), "load TLS certificate")
 	require.Equal(t, int64(2), peerSerial(t, listener.Addr().String()))
 }
 
@@ -114,16 +114,16 @@ func TestReloaderRunReloadsAndReportsInvalidUpdates(t *testing.T) {
 
 func TestReloaderRejectsInvalidConfigurationAndInterval(t *testing.T) {
 	_, err := New("", "")
-	require.Error(t, err)
+	require.ErrorContains(t, err, "certificate and key files are required")
 
 	certFile := filepath.Join(t.TempDir(), "tls.crt")
 	keyFile := filepath.Join(filepath.Dir(certFile), "tls.key")
 	writeCertificate(t, certFile, keyFile, 1)
 	reloader, err := New(certFile, keyFile)
 	require.NoError(t, err)
-	require.Error(t, reloader.Run(context.Background(), 0, nil))
+	require.ErrorContains(t, reloader.Run(context.Background(), 0, nil), "TLS certificate reload interval must be positive")
 	require.NoError(t, reloader.ValidAt(time.Now()))
-	require.Error(t, reloader.ValidAt(time.Now().Add(2*time.Hour)))
+	require.ErrorContains(t, reloader.ValidAt(time.Now().Add(2*time.Hour)), "TLS certificate expired at")
 }
 
 func currentSerial(t *testing.T, reloader *Reloader) int64 {

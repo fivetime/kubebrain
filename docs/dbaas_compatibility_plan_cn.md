@@ -16327,6 +16327,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   缺 CRD 路由的失败也固定到 `probe ...` 前缀。该门禁防止参数代理在 malformed token 或
   Kubernetes 依赖不可用时把本地请求错误、鉴权错误和依赖故障混淆，影响生产 operation
   参数读取的安全审计。
+- A1334 固定 TLS certificate hot-reload 错误契约：
+  证书热加载遇到损坏 private key 必须报告 `load TLS certificate` 并继续服务上一个有效证书；
+  空配置、非正 reload interval 和过期证书检查分别固定到对应错误文本。该门禁防止证书轮换
+  sidecar/服务端在 Secret 损坏或调度参数错误时丢失最后有效证书，或把过期窗口误判为普通
+  reload 失败。
 
 ### P2：运维兼容和长期验证
 
