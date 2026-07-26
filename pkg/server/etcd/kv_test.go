@@ -5457,9 +5457,7 @@ func TestTxnDuplicateIntervalValidationMatrixMatchesEtcd(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			err := validateTxnRequest(&etcdserverpb.TxnRequest{Success: tc.ops})
 			if tc.wantErr {
-				require.Error(t, err)
-				require.Equal(t, codes.InvalidArgument, status.Code(err))
-				require.Contains(t, err.Error(), "duplicate key")
+				requireDirectKVError(t, err, rpctypes.ErrGRPCDuplicateKey, codes.InvalidArgument, "etcdserver: duplicate key given in txn request")
 				return
 			}
 			require.NoError(t, err)
@@ -5523,9 +5521,7 @@ func TestTxnIntervalValidationRecursesIntoNestedTxn(t *testing.T) {
 			}},
 		},
 	})
-	require.Error(t, err)
-	require.Equal(t, codes.InvalidArgument, status.Code(err))
-	require.Contains(t, err.Error(), "duplicate key")
+	requireDirectKVError(t, err, rpctypes.ErrGRPCDuplicateKey, codes.InvalidArgument, "etcdserver: duplicate key given in txn request")
 }
 
 func TestTxnIntervalValidationAllowsNestedThenElseSameKey(t *testing.T) {
@@ -5575,9 +5571,7 @@ func TestTxnIntervalValidationRejectsParentPutAndNestedDeleteInEitherOrder(t *te
 		{nestedDelete, put},
 	} {
 		err := validateTxnRequest(&etcdserverpb.TxnRequest{Success: ops})
-		require.Error(t, err)
-		require.Equal(t, codes.InvalidArgument, status.Code(err))
-		require.Contains(t, err.Error(), "duplicate key")
+		requireDirectKVError(t, err, rpctypes.ErrGRPCDuplicateKey, codes.InvalidArgument, "etcdserver: duplicate key given in txn request")
 	}
 }
 
@@ -5606,9 +5600,7 @@ func TestTxnIntervalValidationRejectsDuplicateNestedSiblingPuts(t *testing.T) {
 			}},
 		},
 	})
-	require.Error(t, err)
-	require.Equal(t, codes.InvalidArgument, status.Code(err))
-	require.Contains(t, err.Error(), "duplicate key")
+	requireDirectKVError(t, err, rpctypes.ErrGRPCDuplicateKey, codes.InvalidArgument, "etcdserver: duplicate key given in txn request")
 }
 
 func TestTxnRangeCompareModRevisionRequiresAllKeysToMatch(t *testing.T) {

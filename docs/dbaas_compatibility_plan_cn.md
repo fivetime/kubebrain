@@ -15904,6 +15904,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Txn staged ignore-value missing key，以及 Txn operation validation matrix 的 empty key、
   value/lease provided、missing lease、invalid sort 和 empty op typed errors。该门禁防止
   Txn admission 表或 ignore option 展开重构后只校验 code/message，漏掉 etcd typed error。
+- A1264 固定 Txn interval duplicate-key 错误三件套：
+  A1253 已覆盖 direct duplicate put/delete overlap，本轮把 interval validation matrix、
+  nested Txn delete/put overlap、parent/nested delete overlap 和 nested sibling duplicate put
+  统一到 `ErrGRPCDuplicateKey`、reference code 和 exact message helper。该门禁防止
+  Txn interval validator 重构后只保留 InvalidArgument 或 substring，漏掉 etcd typed error。
 
 ### P2：运维兼容和长期验证
 
