@@ -232,8 +232,9 @@ func TestOIDCAuthenticatorRejectsExpiredCacheWhenRefreshFails(t *testing.T) {
 	fixture.mu.Unlock()
 	token := signOIDCToken(t, key, "key", server.URL, "expected", "tenant-a", []string{"instance-a"})
 	_, err = authenticator.Authenticate(context.Background(), "Bearer "+token)
-	require.Error(t, err, "an expired JWKS cache must not keep trusting a removed key when refresh fails")
 	require.ErrorIs(t, err, ErrOIDCUnavailable)
+	require.ErrorContains(t, err, "OIDC provider unavailable",
+		"an expired JWKS cache must not keep trusting a removed key when refresh fails")
 }
 
 func TestOIDCAuthenticatorCollapsesConcurrentUnknownKeyRefresh(t *testing.T) {
@@ -268,7 +269,7 @@ func TestOIDCAuthenticatorCollapsesConcurrentUnknownKeyRefresh(t *testing.T) {
 	workers.Wait()
 	close(errs)
 	for callErr := range errs {
-		require.Error(t, callErr)
+		require.ErrorContains(t, callErr, "OIDC token is invalid")
 	}
 	known := signOIDCToken(t, key, "known", server.URL, "expected", "tenant-a", []string{"instance-a"})
 	principal, err := authenticator.Authenticate(context.Background(), "Bearer "+known)

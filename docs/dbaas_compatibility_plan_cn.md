@@ -16352,6 +16352,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `OIDC token is invalid`，不能泄漏底层 signing-key 细节或误报 `ErrOIDCUnavailable`；同时
   已过期的已知 key 仍必须绕过 unrelated unknown-key backoff 触发 refresh。该门禁防止 IdP
   key rotation/探测流量影响合法 key 刷新，且保持认证失败分类稳定。
+- A1339 固定 OIDC JWKS refresh fail-closed 错误契约：
+  已过期 JWKS cache 刷新失败时必须保留 `ErrOIDCUnavailable`/`OIDC provider unavailable`，
+  并发 unknown-key refresh collapse 的所有调用则必须对外报告 `OIDC token is invalid`。
+  该门禁防止 IdP 不可用与非法 token 两类认证失败互相污染，保证 operation API 的 401/503
+  分类和审计语义稳定。
 
 ### P2：运维兼容和长期验证
 
