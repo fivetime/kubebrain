@@ -15739,6 +15739,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `ErrFutureRev` 的 `errors.Is` 校验并入各自 helper，让 Range、RangeStream 和 Compact client
   revision 错误统一由单个三件套断言表达。该门禁防止后续新增用例只检查 typed error 或只检查
   status 外观，漏掉 clientv3 retry/translation 层的任一维度漂移。
+- A1232 收敛 official clientv3 Txn 错误三件套：
+  A1230 已覆盖 direct Txn validation/revision 错误，本轮把 official clientv3 Txn 的 duplicate key、
+  empty key、invalid sort、too many ops、NOSPACE、selected missing lease、compacted revision 和
+  future revision 拒绝路径统一到 `errors.Is`、client `codes.Unknown` 和 reference message helper。
+  该门禁防止 Txn client wrapper、request validation 或 selected-branch validation 重构后只保留
+  某一类断言，漏掉 typed error、status code 或 message 的漂移。
 
 ### P2：运维兼容和长期验证
 

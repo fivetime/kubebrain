@@ -348,27 +348,23 @@ func TestClientTxnBasicErrorsMatchEtcd(t *testing.T) {
 	_, err = client.Txn(ctx).
 		Then(clientv3.OpPut("/a1131/txn/basic-error/duplicate", "one"), clientv3.OpPut("/a1131/txn/basic-error/duplicate", "two")).
 		Commit()
-	require.ErrorIs(t, err, rpctypes.ErrDuplicateKey)
-	requireClientTxnError(t, err, codes.Unknown, "etcdserver: duplicate key given in txn request")
+	requireClientTxnError(t, err, codes.Unknown, "etcdserver: duplicate key given in txn request", rpctypes.ErrDuplicateKey)
 
 	_, err = client.Txn(ctx).Then(clientv3.OpGet("")).Commit()
-	require.ErrorIs(t, err, rpctypes.ErrEmptyKey)
-	requireClientTxnError(t, err, codes.Unknown, "etcdserver: key is not provided")
+	requireClientTxnError(t, err, codes.Unknown, "etcdserver: key is not provided", rpctypes.ErrEmptyKey)
 
 	_, err = client.Txn(ctx).
 		Then(clientv3.OpGet("/a1169/txn/basic-error/invalid-sort",
 			clientv3.WithSort(clientv3.SortTarget(99), clientv3.SortOrder(99)))).
 		Commit()
-	require.ErrorIs(t, err, rpctypes.ErrInvalidSortOption)
-	requireClientTxnError(t, err, codes.Unknown, "etcdserver: invalid sort option")
+	requireClientTxnError(t, err, codes.Unknown, "etcdserver: invalid sort option", rpctypes.ErrInvalidSortOption)
 
 	ops := make([]clientv3.Op, defaultMaxTxnOps+1)
 	for i := range ops {
 		ops[i] = clientv3.OpPut(fmt.Sprintf("/a1131/txn/basic-error/too-many/%d", i), "")
 	}
 	_, err = client.Txn(ctx).Then(ops...).Commit()
-	require.ErrorIs(t, err, rpctypes.ErrTooManyOps)
-	requireClientTxnError(t, err, codes.Unknown, "etcdserver: too many operations in txn request")
+	requireClientTxnError(t, err, codes.Unknown, "etcdserver: too many operations in txn request", rpctypes.ErrTooManyOps)
 }
 
 func TestClientTxnNoSpaceIsTyped(t *testing.T) {
@@ -399,9 +395,7 @@ func TestClientTxnNoSpaceIsTyped(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = client.Txn(ctx).Then(clientv3.OpPut("x", "y")).Commit()
-	require.ErrorIs(t, err, rpctypes.ErrNoSpace)
-	require.Equal(t, codes.Unknown, status.Code(err))
-	require.Equal(t, "etcdserver: mvcc: database space exceeded", status.Convert(err).Message())
+	requireClientTxnError(t, err, codes.Unknown, "etcdserver: mvcc: database space exceeded", rpctypes.ErrNoSpace)
 }
 
 func TestRawGRPCTxnCompareEnumFallthroughMatchesEtcd(t *testing.T) {
@@ -1092,10 +1086,7 @@ func TestClientTxnIgnoreLeaseAndBadLeaseBranches(t *testing.T) {
 		Then(clientv3.OpPut(branchKey, "valid")).
 		Else(clientv3.OpPut(branchKey, "invalid", clientv3.WithLease(clientv3.LeaseID(math.MaxInt64)))).
 		Commit()
-	require.Error(t, selectedBadLeaseErr)
-	require.ErrorIs(t, selectedBadLeaseErr, rpctypes.ErrLeaseNotFound)
-	require.Equal(t, codes.Unknown, status.Code(selectedBadLeaseErr))
-	require.Equal(t, "etcdserver: requested lease not found", status.Convert(selectedBadLeaseErr).Message())
+	requireClientTxnError(t, selectedBadLeaseErr, codes.Unknown, "etcdserver: requested lease not found", rpctypes.ErrLeaseNotFound)
 	afterBadLease, err := client.Get(ctx, branchKey)
 	require.NoError(t, err)
 	require.Empty(t, afterBadLease.Kvs)
@@ -1217,8 +1208,7 @@ func TestClientTxnRangeRevisionBoundaries(t *testing.T) {
 			clientv3.OpPut(writeKey, "must-not-commit"),
 		).
 		Commit()
-	requireClientTxnError(t, err, codes.Unknown, "etcdserver: mvcc: required revision has been compacted")
-	require.ErrorIs(t, err, rpctypes.ErrCompacted)
+	requireClientTxnError(t, err, codes.Unknown, "etcdserver: mvcc: required revision has been compacted", rpctypes.ErrCompacted)
 	afterCompacted, err := client.Get(ctx, writeKey)
 	require.NoError(t, err)
 	require.Empty(t, afterCompacted.Kvs)
@@ -1239,8 +1229,7 @@ func TestClientTxnRangeRevisionBoundaries(t *testing.T) {
 			clientv3.OpPut(writeKey, "must-not-commit"),
 		).
 		Commit()
-	requireClientTxnError(t, err, codes.Unknown, "etcdserver: mvcc: required revision is a future revision")
-	require.ErrorIs(t, err, rpctypes.ErrFutureRev)
+	requireClientTxnError(t, err, codes.Unknown, "etcdserver: mvcc: required revision is a future revision", rpctypes.ErrFutureRev)
 	afterFuture, err := client.Get(ctx, writeKey)
 	require.NoError(t, err)
 	require.Empty(t, afterFuture.Kvs)
@@ -1474,9 +1463,12 @@ func requireRawGRPCTxnError(t *testing.T, err error, code codes.Code, message st
 	require.Equal(t, message, status.Convert(err).Message())
 }
 
-func requireClientTxnError(t *testing.T, err error, code codes.Code, message string) {
+func requireClientTxnError(t *testing.T, err error, code codes.Code, message string, wantErrorIs ...error) {
 	t.Helper()
 	require.Error(t, err)
+	for _, want := range wantErrorIs {
+		require.ErrorIs(t, err, want)
+	}
 	require.Equal(t, code, status.Code(err))
 	require.Equal(t, message, status.Convert(err).Message())
 }
