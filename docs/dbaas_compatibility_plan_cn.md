@@ -13981,6 +13981,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   内先 Put `c` 再 Range `MinModRev(updateB+1)`，断言 `Count=3`、KVs 只含 staged `c`，
   防止 public client 入口把 revision filter 错当成 Count 过滤器，或 Txn 子 Range
   漏读同事务内的 staged mutation。
+- A994 固定 clientv3 Lease read boundary 与 attached keys 公开路径：
+  `lease_read_boundary`、`lease_grant_boundary` 与 `lease_signed_id` differential 已覆盖
+  TTL=0、live lease、LeaseLeases header、fixed/signed ID 和 TTL clamp/error 行为；服务层
+  也已有对应边界测试。本轮新增 bufconn clientv3 回归，注册真实 KV/Lease gRPC 服务，
+  用官方 `TimeToLive(ctx, 0)` 和 `WithAttachedKeys()` 断言未知 lease 返回 `ID=0`、
+  `TTL=-1`、`GrantedTTL=0` 且 keys 为空；随后用 high-level `Grant` 自动 ID 创建 300 秒
+  lease，绑定两个 key，断言普通 TTL 不带 keys、attached TTL 返回完整 key 集合、TTL 在
+  grant 范围内、GrantedTTL 保留 300，并且 `Leases()` 列表包含该 lease 且所有 response
+  header 都带 cluster/member/revision/term，防止公开 clientv3 lessor wrapper 或 gRPC
+  header stamping 重构后只剩 handler 直调路径正确。
 
 ### P2：运维兼容和长期验证
 
