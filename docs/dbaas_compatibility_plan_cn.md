@@ -16094,8 +16094,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   缩容 KubeBrain/TiKV/PD 并创建 Retain snapshot，不能依赖交互终端状态。本轮让
   `cold-snapshot-preflight.sh` 和 `cold-snapshot-execute.sh` 都在入口要求显式
   `KUBE_CONTEXT`，execute 向内部 preflight 传递同一 context，并新增 production 回归测试
-  证明缺 context 时不会触发 kubectl mutation 或发布 receipt；生产文档也固定示例和说明。
-  该门禁只收紧候选冷快照执行边界，仍不关闭真实 CSI 隔离恢复或 PITR 缺口。
+  证明缺 context 时不会触发 kubectl mutation 或发布 receipt。同时 execute 入口也要求
+  调用方重新设置 `ALLOW_COLD_PHYSICAL_SNAPSHOT=true`，不能只继承 preflight 阶段批准；
+  生产文档固定两个示例和说明。该门禁只收紧候选冷快照执行边界，仍不关闭真实 CSI
+  隔离恢复或 PITR 缺口。
 
 ### P2：运维兼容和长期验证
 

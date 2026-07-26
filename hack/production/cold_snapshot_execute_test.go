@@ -53,6 +53,7 @@ func TestColdSnapshotExecuteAndRollback(t *testing.T) {
 				"REAL_GO=" + realGo,
 				"KUBECTL=" + fakeKubectl,
 				"KUBE_CONTEXT=preproduction",
+				"ALLOW_COLD_PHYSICAL_SNAPSHOT=true",
 				"PREFLIGHT_FILE=" + inventoryFile,
 				"RECEIPT_FILE=" + receiptFile,
 				"OPERATION_ID=op-20260721",
@@ -138,6 +139,7 @@ fi
 		"REAL_SHA256SUM=" + realSHA,
 		"KUBECTL=" + fakeKubectl,
 		"KUBE_CONTEXT=preproduction",
+		"ALLOW_COLD_PHYSICAL_SNAPSHOT=true",
 		"PREFLIGHT_FILE=" + inventoryFile,
 		"RECEIPT_FILE=" + receiptFile,
 		"OPERATION_ID=op-witness-drift",
@@ -175,6 +177,7 @@ func TestColdSnapshotExecuteRejectsLegacyLeaseWitnessBeforeMutation(t *testing.T
 	env := []string{
 		"KUBECTL=" + fakeKubectl,
 		"KUBE_CONTEXT=preproduction",
+		"ALLOW_COLD_PHYSICAL_SNAPSHOT=true",
 		"PREFLIGHT_FILE=" + inventoryFile,
 		"RECEIPT_FILE=" + receiptFile,
 		"OPERATION_ID=op-legacy-witness",
@@ -204,6 +207,7 @@ func TestColdSnapshotExecuteRequiresExplicitContextBeforeMutation(t *testing.T) 
 
 	env := []string{
 		"KUBECTL=/does/not/exist",
+		"ALLOW_COLD_PHYSICAL_SNAPSHOT=true",
 		"PREFLIGHT_FILE=" + inventoryFile,
 		"RECEIPT_FILE=" + receiptFile,
 		"OPERATION_ID=op-missing-context",
@@ -214,6 +218,32 @@ func TestColdSnapshotExecuteRequiresExplicitContextBeforeMutation(t *testing.T) 
 	output, err := runColdSnapshotExecute(t, env)
 	require.Error(t, err, string(output))
 	require.Contains(t, string(output), "KUBE_CONTEXT is required; the current context is never accepted implicitly")
+	require.NoFileExists(t, receiptFile)
+	require.NoFileExists(t, logFile)
+}
+
+func TestColdSnapshotExecuteRequiresExplicitApprovalBeforeMutation(t *testing.T) {
+	dir := t.TempDir()
+	inventoryFile := filepath.Join(dir, "inventory.json")
+	receiptFile := filepath.Join(dir, "receipt.json")
+	witnessFile := filepath.Join(dir, "witness.jsonl")
+	logFile := filepath.Join(dir, "kubectl.log")
+	require.NoError(t, os.WriteFile(inventoryFile, coldSnapshotInventory(t), 0o600))
+	require.NoError(t, os.WriteFile(witnessFile, coldSemanticWitness(t, "/registry"), 0o600))
+
+	env := []string{
+		"KUBECTL=/does/not/exist",
+		"KUBE_CONTEXT=preproduction",
+		"PREFLIGHT_FILE=" + inventoryFile,
+		"RECEIPT_FILE=" + receiptFile,
+		"OPERATION_ID=op-missing-approval",
+		"SEMANTIC_WITNESS_FILE=" + witnessFile,
+		"EXPECTED_WITNESS_PREFIX=/registry",
+		"FAKE_LOG=" + logFile,
+	}
+	output, err := runColdSnapshotExecute(t, env)
+	require.Error(t, err, string(output))
+	require.Contains(t, string(output), "set ALLOW_COLD_PHYSICAL_SNAPSHOT=true")
 	require.NoFileExists(t, receiptFile)
 	require.NoFileExists(t, logFile)
 }

@@ -107,8 +107,10 @@ func TestProductionReadinessColdSnapshotExamplesRequireExplicitContext(t *testin
 		start := strings.LastIndex(doc[:end], "```shell")
 		require.NotEqual(t, -1, start, "cold snapshot shell example is missing")
 		require.Contains(t, doc[start:end], "KUBE_CONTEXT=")
+		require.Contains(t, doc[start:end], "ALLOW_COLD_PHYSICAL_SNAPSHOT=true")
 	}
 	require.Contains(t, doc, "当前 kubectl context 永不作为默认值接受")
+	require.Contains(t, doc, "不能只依赖 preflight 阶段的批准")
 }
 
 func TestColdSnapshotPreflightRequiresExplicitApproval(t *testing.T) {

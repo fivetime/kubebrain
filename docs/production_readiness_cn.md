@@ -592,7 +592,8 @@ cluster ID，以及全部 3+3 Bound PD/TiKV PVC 的 name/UID/PV/storage class/vo
 access modes 和 requested storage，作为后续 operation 的不可变恢复蓝图。旧 v1 清单缺少这些
 字段，当前执行器明确拒绝，不能补默认值后继续。
 缺少 CSI API 的集群必须 fail closed。preflight 和 execute 都必须显式传入 `KUBE_CONTEXT`，
-当前 kubectl context 永不作为默认值接受。
+当前 kubectl context 永不作为默认值接受；execute 还必须再次显式设置
+`ALLOW_COLD_PHYSICAL_SNAPSHOT=true`，不能只依赖 preflight 阶段的批准。
 
 具备 CSI snapshot 能力的隔离预生产集群可使用候选执行器消费该不可变清单：
 
@@ -603,6 +604,7 @@ RECEIPT_FILE=cold-snapshot-receipt.json \
 SEMANTIC_WITNESS_FILE=cold-snapshot-witness.jsonl \
 EXPECTED_WITNESS_PREFIX=/registry \
 KUBE_CONTEXT=preproduction \
+ALLOW_COLD_PHYSICAL_SNAPSHOT=true \
   hack/backup/cold-snapshot-execute.sh
 ```
 

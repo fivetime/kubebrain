@@ -7,12 +7,15 @@ RECEIPT_FILE="${RECEIPT_FILE:-}"
 SEMANTIC_WITNESS_FILE="${SEMANTIC_WITNESS_FILE:-}"
 EXPECTED_WITNESS_PREFIX="${EXPECTED_WITNESS_PREFIX:-}"
 KUBE_CONTEXT="${KUBE_CONTEXT:-}"
+ALLOW_COLD_PHYSICAL_SNAPSHOT="${ALLOW_COLD_PHYSICAL_SNAPSHOT:-false}"
 WITNESS_MAX_AGE_SECONDS="${WITNESS_MAX_AGE_SECONDS:-300}"
 WAIT_TIMEOUT="${WAIT_TIMEOUT:-10m}"
 FENCE_SETTLE_SECONDS="${FENCE_SETTLE_SECONDS:-5}"
 KUBECTL="${KUBECTL:-kubectl}"
 
 fail_input() { echo "$1" >&2; exit 2; }
+[[ "$ALLOW_COLD_PHYSICAL_SNAPSHOT" == "true" ]] ||
+  fail_input "set ALLOW_COLD_PHYSICAL_SNAPSHOT=true only for a dedicated, disposable or approved maintenance window"
 [[ -f "$PREFLIGHT_FILE" ]] || fail_input "PREFLIGHT_FILE must name a readable preflight inventory"
 [[ "$OPERATION_ID" =~ ^[a-z0-9]([-a-z0-9]{0,38}[a-z0-9])?$ ]] ||
   fail_input "OPERATION_ID must be a lowercase DNS label of at most 40 characters"
