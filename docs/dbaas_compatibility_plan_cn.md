@@ -14553,6 +14553,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   不返回 attached key，`TimeToLive(... WithAttachedKeys)`、`Put(... WithLease)` 和嵌套
   Txn leased Put 均暴露 `Unknown: permission denied`，root 带 keys TTL 能看到受保护 key，
   且 allowed prefix 未产生越权写入，补齐 public Lease/Auth wrapper 门禁。
+- A1065 固定 clientv3 Auth Lease keepalive 动态权限：
+  `auth` differential 覆盖普通用户对自己创建并挂载到授权 prefix 的 lease 首次 keepalive
+  成功，root 撤销该 prefix 权限后后续 keepalive 必须返回 permission denied，重新授予
+  readwrite 权限后 keepalive 恢复。服务层已覆盖 raw LeaseKeepAlive 每请求重新鉴权，本轮
+  新增官方 clientv3 bufconn 回归，alice 创建 `/a1065/allowed/leased` lease 并
+  `KeepAliveOnce` 成功，root `RoleRevokePermission` 后 alice `KeepAliveOnce` 经 high-level
+  wrapper 暴露 `Unknown: permission denied`，再 `RoleGrantPermission` 后确认同一 lease
+  keepalive 继续返回正 TTL，补齐 public Lease/Auth 动态授权门禁。
 
 ### P2：运维兼容和长期验证
 

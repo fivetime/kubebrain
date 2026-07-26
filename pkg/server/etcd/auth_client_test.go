@@ -581,6 +581,97 @@ func TestClientAuthLeaseKeyVisibilityAndLeasedPutDenials(t *testing.T) {
 	require.Empty(t, allowedKeys.Kvs)
 }
 
+func TestClientAuthLeaseKeepAliveTracksPermissionChanges(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterAuthServer(grpcServer, server)
+	etcdserverpb.RegisterLeaseServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	dialOptions := []grpc.DialOption{
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}),
+	}
+	newClient := func(username, password string) *clientv3.Client {
+		t.Helper()
+		client, err := clientv3.New(clientv3.Config{
+			Endpoints:   []string{"bufnet"},
+			DialTimeout: time.Second,
+			Username:    username,
+			Password:    password,
+			DialOptions: dialOptions,
+		})
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, client.Close()) })
+		return client
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	bootstrap := newClient("", "")
+	require.NoError(t, addAuthUserRoleAndPermission(ctx, bootstrap, "root", "root-secret", "root", "", ""))
+	require.NoError(t, addAuthUserRoleAndPermission(
+		ctx,
+		bootstrap,
+		"alice",
+		"alice-secret",
+		"a1065-allowed",
+		"/a1065/allowed/",
+		clientv3.GetPrefixRangeEnd("/a1065/allowed/"),
+	))
+	_, err := bootstrap.RoleGrantPermission(
+		ctx,
+		"a1065-allowed",
+		"/a1065/allowed/",
+		clientv3.GetPrefixRangeEnd("/a1065/allowed/"),
+		clientv3.PermissionType(clientv3.PermReadWrite),
+	)
+	require.NoError(t, err)
+	_, err = bootstrap.AuthEnable(ctx)
+	require.NoError(t, err)
+
+	root := newClient("root", "root-secret")
+	alice := newClient("alice", "alice-secret")
+	lease, err := alice.Grant(ctx, 60)
+	require.NoError(t, err)
+	_, err = alice.Put(ctx, "/a1065/allowed/leased", "value", clientv3.WithLease(lease.ID))
+	require.NoError(t, err)
+	keepAlive, err := alice.KeepAliveOnce(ctx, lease.ID)
+	require.NoError(t, err)
+	require.Equal(t, lease.ID, keepAlive.ID)
+	require.Positive(t, keepAlive.TTL)
+
+	_, err = root.RoleRevokePermission(
+		ctx,
+		"a1065-allowed",
+		"/a1065/allowed/",
+		clientv3.GetPrefixRangeEnd("/a1065/allowed/"),
+	)
+	require.NoError(t, err)
+	_, revokedKeepAliveErr := alice.KeepAliveOnce(ctx, lease.ID)
+	requireAuthClientError(t, revokedKeepAliveErr, codes.Unknown, "etcdserver: permission denied")
+
+	_, err = root.RoleGrantPermission(
+		ctx,
+		"a1065-allowed",
+		"/a1065/allowed/",
+		clientv3.GetPrefixRangeEnd("/a1065/allowed/"),
+		clientv3.PermissionType(clientv3.PermReadWrite),
+	)
+	require.NoError(t, err)
+	restoredKeepAlive, err := alice.KeepAliveOnce(ctx, lease.ID)
+	require.NoError(t, err)
+	require.Equal(t, lease.ID, restoredKeepAlive.ID)
+	require.Positive(t, restoredKeepAlive.TTL)
+}
+
 func addAuthUserRoleAndPermission(
 	ctx context.Context,
 	client *clientv3.Client,
