@@ -15522,6 +15522,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `Authenticate` 返回 `InvalidArgument`/authentication failed，新密码 raw `Authenticate`
   签发的新 token 可再次读取授权 key。本轮加强既有 clientv3 token lifecycle 回归，防止直接
   protobuf 调用方绕过 client adapter 后看到错误 code 或旧 token 未失效。
+- A1198 固定 raw gRPC Auth enable/disable 状态边界：
+  延续 A1126/A1062 的 auth disabled 与 implicit root 契约到 generated `etcdserverpb.AuthClient`：
+  auth disabled 时 credentialed raw `AuthStatus` 必须返回 `Enabled=false`，raw `AuthDisable`
+  必须成功且不影响后续 credentialed KV 访问；auth enabled 后匿名 raw `AuthStatus` 仍可读
+  `Enabled=true`，匿名 raw `AuthDisable` 返回 user-empty，普通用户 raw `AuthDisable` 返回
+  `PermissionDenied`，root raw `AuthDisable` 成功并让后续 raw `AuthStatus` 回到 disabled。本轮
+  加强既有 clientv3 auth 启停回归，防止直接 Auth API 调用方看到错误 root-only 语义或状态漂移。
 
 ### P2：运维兼容和长期验证
 

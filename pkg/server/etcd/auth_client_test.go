@@ -296,6 +296,12 @@ func TestClientAuthDisabledAllowsCredentialedClient(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	rawAuth := etcdserverpb.NewAuthClient(client.ActiveConnection())
+	rawStatus, err := rawAuth.AuthStatus(ctx, &etcdserverpb.AuthStatusRequest{})
+	require.NoError(t, err)
+	require.False(t, rawStatus.Enabled)
+	_, err = rawAuth.AuthDisable(ctx, &etcdserverpb.AuthDisableRequest{})
+	require.NoError(t, err)
 	_, err = client.AuthDisable(ctx)
 	require.NoError(t, err)
 	_, err = client.Put(ctx, "/a1126/auth-disabled/key", "value")
@@ -573,9 +579,15 @@ func TestClientAuthImplicitRootRoleAndCredentialErrors(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, statusResponse.Enabled)
 	require.Positive(t, statusResponse.AuthRevision)
+	rawAnonymousAuth := etcdserverpb.NewAuthClient(client.ActiveConnection())
+	rawStatus, err := rawAnonymousAuth.AuthStatus(ctx, &etcdserverpb.AuthStatusRequest{})
+	require.NoError(t, err)
+	require.True(t, rawStatus.Enabled)
 
 	_, anonymousUserAddErr := client.UserAdd(ctx, "anonymous", "secret")
 	requireAuthClientError(t, anonymousUserAddErr, codes.Unknown, "etcdserver: user name is empty", rpctypes.ErrUserEmpty)
+	_, rawAnonymousDisableErr := rawAnonymousAuth.AuthDisable(ctx, &etcdserverpb.AuthDisableRequest{})
+	requireAuthClientError(t, rawAnonymousDisableErr, codes.InvalidArgument, "etcdserver: user name is empty")
 
 	rootClient, err := clientv3.New(clientv3.Config{
 		Endpoints:   []string{"bufnet"},
@@ -590,6 +602,18 @@ func TestClientAuthImplicitRootRoleAndCredentialErrors(t *testing.T) {
 	requireAuthClientError(t, rootRoleAfterEnableErr, codes.Unknown, "etcdserver: role name not found", rpctypes.ErrRoleNotFound)
 	_, err = rootClient.UserAdd(ctx, "alice", "alice-secret")
 	require.NoError(t, err)
+	aliceClient, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		Username:    "alice",
+		Password:    "alice-secret",
+		DialOptions: dialOptions,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, aliceClient.Close()) })
+	rawAliceAuth := etcdserverpb.NewAuthClient(aliceClient.ActiveConnection())
+	_, rawAliceDisableErr := rawAliceAuth.AuthDisable(ctx, &etcdserverpb.AuthDisableRequest{})
+	requireAuthClientError(t, rawAliceDisableErr, codes.PermissionDenied, "etcdserver: permission denied")
 
 	_, wrongCredentialsErr := client.Authenticate(ctx, "missing", "wrong")
 	requireAuthClientError(
@@ -606,6 +630,13 @@ func TestClientAuthImplicitRootRoleAndCredentialErrors(t *testing.T) {
 		codes.Unknown,
 		"auth: authentication failed, password was given for no password user",
 	)
+	rawRootAuth := etcdserverpb.NewAuthClient(rootClient.ActiveConnection())
+	disableResponse, err := rawRootAuth.AuthDisable(ctx, &etcdserverpb.AuthDisableRequest{})
+	require.NoError(t, err)
+	require.NotNil(t, disableResponse.Header)
+	disabledStatus, err := rawAnonymousAuth.AuthStatus(ctx, &etcdserverpb.AuthStatusRequest{})
+	require.NoError(t, err)
+	require.False(t, disabledStatus.Enabled)
 }
 
 func TestClientAuthKVDeniedOperationsPreserveData(t *testing.T) {
