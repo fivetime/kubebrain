@@ -14152,6 +14152,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   LeaseLeases、Revoke 和 revoke 后 TTL(Keys=true)，断言 Grant header 保持当前 revision、
   attached keys 精确返回、list 包含 signed ID、unknown TTL 为 `-1` 且 keys 为空，
   防止 lease ID 被错误归一化为 unsigned/auto ID，或 gRPC 层丢失 signed 边界值。
+- A1013 固定 clientv3 LeaseRevoke attached key 原子删除：
+  `lease_revoke_atomic` differential 证明同一 lease 下多个 attached key 被 Revoke 删除时，
+  clientv3 Watch 从最后一次 Put 之后开始回放必须看到同一 revoke revision 下的 delete
+  events，且 `PrevKV` 保留原 lease；revoke 后前缀为空，TTL(Keys=true) 返回 unknown
+  lease 外观。本轮新增 bufconn clientv3 回归，注册真实 KV/Lease/Watch 服务后创建两个
+  attached key，启动 WithPrefix/WithRev/WithPrevKV watch，再执行 Revoke，断言所有 delete
+  event 的 response header、event mod revision 都等于 revoke header revision，事件按
+  key 顺序返回并携带原 lease PrevKV，防止 lease revoke 实现退回逐 key 多 revision 删除、
+  watch 翻译丢失 PrevKV，或 client wrapper 暴露非原子删除历史。
 
 ### P2：运维兼容和长期验证
 

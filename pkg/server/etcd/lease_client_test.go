@@ -25,6 +25,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
+	"go.etcd.io/etcd/api/v3/mvccpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -116,6 +117,86 @@ func TestClientLeaseReadBoundaryAndAttachedKeys(t *testing.T) {
 		containsLive = containsLive || status.ID == leaseID
 	}
 	require.True(t, containsLive)
+}
+
+func TestClientLeaseRevokeDeletesAttachedKeysAtOneRevision(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterLeaseServer(grpcServer, server)
+	etcdserverpb.RegisterWatchServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	prefix := fmt.Sprintf("/a1013/lease-revoke-atomic/%d/", time.Now().UnixNano())
+	grant, err := client.Grant(ctx, 30)
+	require.NoError(t, err)
+	_, err = client.Put(ctx, prefix+"b", "value-b", clientv3.WithLease(grant.ID))
+	require.NoError(t, err)
+	lastPut, err := client.Put(ctx, prefix+"a", "value-a", clientv3.WithLease(grant.ID))
+	require.NoError(t, err)
+
+	watchCtx, watchCancel := context.WithCancel(ctx)
+	defer watchCancel()
+	watch := client.Watch(
+		watchCtx,
+		prefix,
+		clientv3.WithPrefix(),
+		clientv3.WithRev(lastPut.Header.Revision+1),
+		clientv3.WithPrevKV(),
+	)
+	revoke, err := client.Revoke(ctx, grant.ID)
+	require.NoError(t, err)
+	require.Greater(t, revoke.Header.Revision, lastPut.Header.Revision)
+
+	events := make([]*clientv3.Event, 0, 2)
+	for len(events) < 2 {
+		select {
+		case response, ok := <-watch:
+			require.True(t, ok)
+			require.NoError(t, response.Err())
+			require.Equal(t, revoke.Header.Revision, response.Header.Revision)
+			events = append(events, response.Events...)
+		case <-ctx.Done():
+			t.Fatalf("lease revoke delete events not received: %v", ctx.Err())
+		}
+	}
+	require.Len(t, events, 2)
+	for _, event := range events {
+		require.Equal(t, mvccpb.DELETE, event.Type)
+		require.Equal(t, revoke.Header.Revision, event.Kv.ModRevision)
+		require.NotNil(t, event.PrevKv)
+		require.Equal(t, int64(grant.ID), event.PrevKv.Lease)
+		require.Contains(t, []string{"value-a", "value-b"}, string(event.PrevKv.Value))
+	}
+	require.Equal(t, prefix+"a", string(events[0].Kv.Key))
+	require.Equal(t, prefix+"b", string(events[1].Kv.Key))
+
+	got, err := client.Get(ctx, prefix, clientv3.WithPrefix())
+	require.NoError(t, err)
+	require.Empty(t, got.Kvs)
+	ttl, err := client.TimeToLive(ctx, grant.ID, clientv3.WithAttachedKeys())
+	require.NoError(t, err)
+	require.Equal(t, int64(-1), ttl.TTL)
+	require.Empty(t, ttl.Keys)
 }
 
 func TestRawGRPCLeaseSignedIDBoundaries(t *testing.T) {
