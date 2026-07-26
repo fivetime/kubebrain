@@ -539,6 +539,74 @@ func TestRawGRPCWatchFutureRevisionSuppressesProgressUntilEvent(t *testing.T) {
 	require.GreaterOrEqual(t, progress.Header.Revision, startRevision)
 }
 
+func TestRawGRPCWatchMaximumStartRevisionCancelsWithoutEvents(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	_, err := server.Put(context.Background(), &etcdserverpb.PutRequest{
+		Key: []byte("/a1026/watch-maximum/seed"), Value: []byte("seed"),
+	})
+	require.NoError(t, err)
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterWatchServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///bufnet",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	kv := etcdserverpb.NewKVClient(conn)
+	key := []byte(fmt.Sprintf("/a1026/watch-maximum/%d", time.Now().UnixNano()))
+	base, err := kv.Range(ctx, &etcdserverpb.RangeRequest{Key: key})
+	require.NoError(t, err)
+	requireRawRangeHeaderWellFormed(t, base)
+
+	stream, err := etcdserverpb.NewWatchClient(conn).Watch(ctx)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = stream.CloseSend() })
+	require.NoError(t, stream.Send(&etcdserverpb.WatchRequest{
+		RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{
+			CreateRequest: &etcdserverpb.WatchCreateRequest{
+				Key: key, WatchId: 304, StartRevision: math.MaxInt64,
+			},
+		},
+	}))
+	created, err := stream.Recv()
+	require.NoError(t, err)
+	requireRawWatchHeaderWellFormed(t, created)
+	require.True(t, created.Created)
+	require.False(t, created.Canceled)
+	require.Equal(t, int64(304), created.WatchId)
+	require.GreaterOrEqual(t, created.Header.Revision, base.Header.Revision)
+
+	put, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("below-maximum")})
+	require.NoError(t, err)
+	require.NoError(t, stream.Send(&etcdserverpb.WatchRequest{
+		RequestUnion: &etcdserverpb.WatchRequest_CancelRequest{
+			CancelRequest: &etcdserverpb.WatchCancelRequest{WatchId: 304},
+		},
+	}))
+	canceled, err := stream.Recv()
+	require.NoError(t, err)
+	requireRawWatchHeaderWellFormed(t, canceled)
+	require.False(t, canceled.Created)
+	require.True(t, canceled.Canceled)
+	require.Equal(t, int64(304), canceled.WatchId)
+	require.Empty(t, canceled.Events)
+	require.Empty(t, canceled.CancelReason)
+	require.GreaterOrEqual(t, canceled.Header.Revision, put.Header.Revision)
+}
+
 func requireRawWatchHeaderWellFormed(t *testing.T, response *etcdserverpb.WatchResponse) {
 	t.Helper()
 	require.NotNil(t, response.Header)

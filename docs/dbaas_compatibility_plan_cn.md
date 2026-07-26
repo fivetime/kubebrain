@@ -14254,6 +14254,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   header revision 不低于 start revision。本轮新增 bufconn raw gRPC 回归，注册真实 KV/Watch
   服务后直接覆盖 create、早期 progress 抑制、无关写、目标写、事件交付和后续 progress，
   防止服务层 future-watch watermark 正确但公开 gRPC 时序或 progress header 回退。
+- A1026 固定 raw gRPC Watch `math.MaxInt64` start revision 边界：
+  `watch_revision_boundary` differential 证明 `StartRevision=math.MaxInt64` 的 watch create
+  应成功并带当前 header；低于最大 revision 的后续 Put 不应作为事件返回；客户端取消该 watch
+  时必须收到 `Canceled=true`、空 reason、空 events 的 cancel response，且 cancel header
+  revision 不低于取消前 Put 的 revision。本轮新增 bufconn raw gRPC 回归，注册真实 KV/Watch
+  服务后直接覆盖最大 revision create、低 revision 写入和显式 cancel，防止公开 gRPC 层把
+  极大 start revision 误判为错误、泄漏低 revision 事件或返回陈旧 cancel header。
 
 ### P2：运维兼容和长期验证
 
