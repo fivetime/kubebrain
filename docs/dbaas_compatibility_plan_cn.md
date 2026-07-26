@@ -14441,6 +14441,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `client.Delete` 删除 `0xfe` 半开区间并断言 PrevKV 顺序和值，最后确认 NUL/`0xfe`
   区间已空但 `0xff` 点 key 保留，补齐 raw gRPC 二进制 mutation 覆盖之外的 clientv3
   wrapper 门禁。
+- A1051 固定 clientv3 Put IgnoreValue/IgnoreLease 外观：
+  `put_differential` 证明 Put create/rebind、`IgnoreValue` 切换 lease 且保留 value、
+  `IgnoreLease` 更新 value 且保留 lease、PrevKV、version/revision 和 lease attached keys
+  都必须匹配 etcd；缺失 lease、缺失 key 的 IgnoreValue、value+IgnoreValue、
+  lease+IgnoreLease 等错误在 high-level clientv3 Put 中会以 public `Unknown` code 暴露，
+  但 message 保持 `etcdserver: ...` 文案。本轮新增官方 clientv3 bufconn 回归，注册真实
+  KV/Lease 服务后通过 `client.Put`/`client.Grant`/`client.TimeToLive` 验证四次 Put 的
+  revision delta、PrevKV lease/value、最终 KV create/mod/version/lease，以及 attached key
+  从 leaseB 回到 leaseA；再断言上述错误路径的 clientv3 code/message，补齐服务层
+  `PutDifferentialScenarioMatchesEtcd` 与 Txn Ignore* 覆盖之外的公开 Put wrapper 门禁。
 
 ### P2：运维兼容和长期验证
 
