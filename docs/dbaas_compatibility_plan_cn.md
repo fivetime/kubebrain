@@ -14239,6 +14239,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   已交付事件 revision，而不是复用用户 watch ID。本轮新增 bufconn raw gRPC 回归，注册真实
   KV/Watch 服务后直接用 `etcdserverpb` 客户端 create watch、Put 触发事件、再 RequestProgress，
   防止服务层 progress watermark 正确但公开 gRPC 控制响应 ID、header 或事件外观回退。
+- A1024 固定 raw gRPC Watch filter enum 兼容：
+  `watch_control` differential 证明未知 filter enum 值应被忽略并同时返回 PUT/DELETE；
+  重复 `NOPUT` filter 不应叠加副作用，只过滤 PUT 并保留 DELETE。本轮新增 bufconn raw gRPC
+  回归，注册真实 KV/Watch 服务后先写入并删除 key，再从 PUT revision 创建历史 watch，
+  直接发送 `FilterType(99)` 与重复 `NOPUT` 的 `WatchCreateRequest.Filters`，断言返回事件
+  类型序列分别为 `PUT,DELETE` 和 `DELETE`，防止服务层 filter 函数正确但 raw request enum
+  解析、历史 catch-up 或事件序列整形回退。
 
 ### P2：运维兼容和长期验证
 

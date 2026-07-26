@@ -354,6 +354,85 @@ func TestRawGRPCWatchProgressRequestUsesStreamWideID(t *testing.T) {
 	require.GreaterOrEqual(t, progress.Header.Revision, put.Header.Revision)
 }
 
+func TestRawGRPCWatchFilterEnumUnknownAndDuplicateMatchEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterWatchServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///bufnet",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	kv := etcdserverpb.NewKVClient(conn)
+
+	run := func(
+		name string,
+		filters []etcdserverpb.WatchCreateRequest_FilterType,
+		want []int32,
+	) {
+		t.Helper()
+		key := []byte(fmt.Sprintf("/a1024/watch-filter/%s/%d", name, time.Now().UnixNano()))
+		put, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("value")})
+		require.NoError(t, err)
+		_, err = kv.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{Key: key})
+		require.NoError(t, err)
+
+		stream, err := etcdserverpb.NewWatchClient(conn).Watch(ctx)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = stream.CloseSend() })
+		require.NoError(t, stream.Send(&etcdserverpb.WatchRequest{
+			RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{
+				CreateRequest: &etcdserverpb.WatchCreateRequest{
+					Key: key, StartRevision: put.Header.Revision, Filters: filters,
+				},
+			},
+		}))
+		created, err := stream.Recv()
+		require.NoError(t, err)
+		requireRawWatchHeaderWellFormed(t, created)
+		require.True(t, created.Created)
+		require.False(t, created.Canceled)
+
+		got := make([]int32, 0, len(want))
+		for len(got) < len(want) {
+			response, recvErr := stream.Recv()
+			require.NoError(t, recvErr)
+			requireRawWatchHeaderWellFormed(t, response)
+			for _, event := range response.Events {
+				got = append(got, int32(event.Type))
+			}
+		}
+		require.Equal(t, want, got)
+	}
+
+	run("unknown",
+		[]etcdserverpb.WatchCreateRequest_FilterType{
+			etcdserverpb.WatchCreateRequest_FilterType(99),
+		},
+		[]int32{0, 1},
+	)
+	run("duplicate-noput",
+		[]etcdserverpb.WatchCreateRequest_FilterType{
+			etcdserverpb.WatchCreateRequest_NOPUT,
+			etcdserverpb.WatchCreateRequest_NOPUT,
+		},
+		[]int32{1},
+	)
+}
+
 func requireRawWatchHeaderWellFormed(t *testing.T, response *etcdserverpb.WatchResponse) {
 	t.Helper()
 	require.NotNil(t, response.Header)
