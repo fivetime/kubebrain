@@ -16119,6 +16119,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   客户端取消路径同时返回 exact `context canceled` message，并继续验证没有发送多余
   keepalive response。该门禁防止 lease stream 重构后把客户端取消混同为 lease missing、
   proxy transport 或业务权限错误；批量 renewal/leader replacement 长时 soak 仍属 P1。
+- A1300 固定异步 Watch 客户端取消错误外观：
+  `TestWatchHalfCloseKeepsResponseStreamAlive` 和
+  `TestAuthorizedFollowerWatchForwardsAuthToken` 原先只断言最终 gRPC `Canceled` code。
+  本轮改用 `requireWatchCanceled`，要求 half-close 后仍可继续收事件、以及 follower proxy
+  auth-token 转发完成后的客户端取消都返回 exact `etcdserver: watch canceled` message。
+  该门禁延续 A1289 到异步 done-channel Watch 路径，避免 HTTP/gRPC stream adapter 或
+  follower proxy 重构时把正常客户端取消改成模糊 Canceled 外观。
 
 ### P2：运维兼容和长期验证
 

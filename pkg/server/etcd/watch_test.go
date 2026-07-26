@@ -2089,7 +2089,7 @@ func TestWatchHalfCloseKeepsResponseStreamAlive(t *testing.T) {
 	}, 2*time.Second, time.Millisecond)
 
 	cancel()
-	require.Equal(t, codes.Canceled, status.Code(<-done))
+	requireWatchCanceled(t, <-done)
 	require.Zero(t, server.activeWatches)
 }
 
@@ -2134,7 +2134,7 @@ func TestAuthorizedFollowerWatchForwardsAuthToken(t *testing.T) {
 	}
 
 	cancel()
-	require.Equal(t, codes.Canceled, status.Code(<-done))
+	requireWatchCanceled(t, <-done)
 }
 
 // TestQuietWatchProgressAdvancesWhileOtherKeysWritten is the headline repro of
