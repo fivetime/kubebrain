@@ -15685,6 +15685,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Delete PrevKV 和 Txn Put PrevKV 拒绝路径固定为同时满足 `errors.Is`、direct `codes.Unknown`
   和 reference message。该门禁防止 KV authorizer、auth revision fence、PrevKV read guard 或
   lease attachment 二次校验重构后只保留 typed error，导致服务层错误分类或 message 漂移。
+- A1223 固定 Auth manager direct 错误三件套：
+  A1196-A1207 已覆盖 raw gRPC Auth 管理面错误外观，本轮把 private auth manager 的 enable
+  bootstrap 缺 root user/role、root 用户/角色保护、非法 permission range、空 user/role、
+  missing/duplicate user/role 等 repository 边界固定为同时满足 `errors.Is`、direct
+  `codes.Unknown` 和 reference message。该门禁防止 auth repository 或 manager helper 重构后
+  只保留 typed error，导致上层 direct caller 在映射到 raw/clientv3 前已经出现 message 漂移。
 
 ### P2：运维兼容和长期验证
 

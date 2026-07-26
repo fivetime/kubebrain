@@ -13,6 +13,8 @@ import (
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	"golang.org/x/crypto/bcrypt"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/kubewharf/kubebrain/pkg/storage"
 )
@@ -45,9 +47,9 @@ func TestAuthManagerBootstrapPersistsWithIndependentRevision(t *testing.T) {
 	ctx := context.Background()
 	before := server.backend.GetCurrentRevision()
 
-	require.ErrorIs(t, manager.enable(ctx), rpctypes.ErrRootUserNotExist)
+	requireAuthManagerError(t, manager.enable(ctx), rpctypes.ErrRootUserNotExist, codes.Unknown, "etcdserver: root user does not exist")
 	require.NoError(t, manager.userAdd(ctx, &etcdserverpb.AuthUserAddRequest{Name: "root", Password: "secret"}))
-	require.ErrorIs(t, manager.enable(ctx), rpctypes.ErrRootRoleNotExist)
+	requireAuthManagerError(t, manager.enable(ctx), rpctypes.ErrRootRoleNotExist, codes.Unknown, "etcdserver: root user does not have root role")
 	require.NoError(t, manager.roleAdd(ctx, "root"))
 	require.NoError(t, manager.userGrantRole(ctx, "root", "root"))
 	require.NoError(t, manager.enable(ctx))
@@ -165,9 +167,9 @@ func TestAuthManagerProtectsRootWhileEnabled(t *testing.T) {
 	require.NoError(t, manager.roleAdd(ctx, "root"))
 	require.NoError(t, manager.userGrantRole(ctx, "root", "root"))
 	require.NoError(t, manager.enable(ctx))
-	require.ErrorIs(t, manager.userDelete(ctx, "root"), rpctypes.ErrInvalidAuthMgmt)
-	require.ErrorIs(t, manager.roleDelete(ctx, "root"), rpctypes.ErrInvalidAuthMgmt)
-	require.ErrorIs(t, manager.userRevokeRole(ctx, "root", "root"), rpctypes.ErrInvalidAuthMgmt)
+	requireAuthManagerError(t, manager.userDelete(ctx, "root"), rpctypes.ErrInvalidAuthMgmt, codes.Unknown, "etcdserver: invalid auth management")
+	requireAuthManagerError(t, manager.roleDelete(ctx, "root"), rpctypes.ErrInvalidAuthMgmt, codes.Unknown, "etcdserver: invalid auth management")
+	requireAuthManagerError(t, manager.userRevokeRole(ctx, "root", "root"), rpctypes.ErrInvalidAuthMgmt, codes.Unknown, "etcdserver: invalid auth management")
 	require.NoError(t, manager.disable(ctx))
 	require.NoError(t, manager.userDelete(ctx, "root"))
 }
@@ -179,8 +181,8 @@ func TestAuthManagerRejectsInvalidPermissionRanges(t *testing.T) {
 	ctx := context.Background()
 	require.NoError(t, manager.roleAdd(ctx, "reader"))
 	require.ErrorIs(t, manager.roleGrantPermission(ctx, "reader", nil), rpctypes.ErrGRPCPermissionNotGiven)
-	require.ErrorIs(t, manager.roleGrantPermission(ctx, "reader", &authpb.Permission{}), rpctypes.ErrInvalidAuthMgmt)
-	require.ErrorIs(t, manager.roleGrantPermission(ctx, "reader", &authpb.Permission{Key: []byte("z"), RangeEnd: []byte("a")}), rpctypes.ErrInvalidAuthMgmt)
+	requireAuthManagerError(t, manager.roleGrantPermission(ctx, "reader", &authpb.Permission{}), rpctypes.ErrInvalidAuthMgmt, codes.Unknown, "etcdserver: invalid auth management")
+	requireAuthManagerError(t, manager.roleGrantPermission(ctx, "reader", &authpb.Permission{Key: []byte("z"), RangeEnd: []byte("a")}), rpctypes.ErrInvalidAuthMgmt, codes.Unknown, "etcdserver: invalid auth management")
 	require.NoError(t, manager.roleGrantPermission(ctx, "reader", &authpb.Permission{Key: []byte("z"), RangeEnd: []byte{0}}))
 }
 
@@ -190,15 +192,15 @@ func TestAuthManagerBootstrapErrors(t *testing.T) {
 	manager := newAuthManager(server.backend)
 	ctx := context.Background()
 
-	require.ErrorIs(t, manager.userAdd(ctx, &etcdserverpb.AuthUserAddRequest{}), rpctypes.ErrUserEmpty)
-	require.ErrorIs(t, manager.roleAdd(ctx, ""), rpctypes.ErrRoleEmpty)
-	require.ErrorIs(t, manager.userGrantRole(ctx, "missing", "missing"), rpctypes.ErrUserNotFound)
+	requireAuthManagerError(t, manager.userAdd(ctx, &etcdserverpb.AuthUserAddRequest{}), rpctypes.ErrUserEmpty, codes.Unknown, "etcdserver: user name is empty")
+	requireAuthManagerError(t, manager.roleAdd(ctx, ""), rpctypes.ErrRoleEmpty, codes.Unknown, "etcdserver: role name is empty")
+	requireAuthManagerError(t, manager.userGrantRole(ctx, "missing", "missing"), rpctypes.ErrUserNotFound, codes.Unknown, "etcdserver: user name not found")
 	require.NoError(t, manager.userAdd(ctx, &etcdserverpb.AuthUserAddRequest{Name: "alice", Password: "pw"}))
-	require.ErrorIs(t, manager.userAdd(ctx, &etcdserverpb.AuthUserAddRequest{Name: "alice", Password: "pw"}), rpctypes.ErrUserAlreadyExist)
-	require.ErrorIs(t, manager.userGrantRole(ctx, "alice", "missing"), rpctypes.ErrRoleNotFound)
+	requireAuthManagerError(t, manager.userAdd(ctx, &etcdserverpb.AuthUserAddRequest{Name: "alice", Password: "pw"}), rpctypes.ErrUserAlreadyExist, codes.Unknown, "etcdserver: user name already exists")
+	requireAuthManagerError(t, manager.userGrantRole(ctx, "alice", "missing"), rpctypes.ErrRoleNotFound, codes.Unknown, "etcdserver: role name not found")
 	require.ErrorIs(t, manager.userChangePassword(ctx, "alice", "", "%%%"), errNoPasswordUser)
 	require.NoError(t, manager.roleAdd(ctx, "reader"))
-	require.ErrorIs(t, manager.roleAdd(ctx, "reader"), rpctypes.ErrRoleAlreadyExist)
+	requireAuthManagerError(t, manager.roleAdd(ctx, "reader"), rpctypes.ErrRoleAlreadyExist, codes.Unknown, "etcdserver: role name already exists")
 	require.NoError(t, manager.userGrantRole(ctx, "alice", "reader"))
 	require.NoError(t, manager.userGrantRole(ctx, "alice", "reader"), "grant role must be idempotent")
 }
@@ -321,4 +323,11 @@ func TestAuthManagerRootRoleIsImplicit(t *testing.T) {
 	afterDisable, err := manager.repo.load(ctx)
 	require.NoError(t, err)
 	require.Equal(t, afterEnable.Config.Revision+1, afterDisable.Config.Revision)
+}
+
+func requireAuthManagerError(t *testing.T, err error, want error, code codes.Code, message string) {
+	t.Helper()
+	require.ErrorIs(t, err, want)
+	require.Equal(t, code, status.Code(err))
+	require.Equal(t, message, status.Convert(err).Message())
 }
