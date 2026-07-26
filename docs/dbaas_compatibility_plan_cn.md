@@ -14186,6 +14186,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   本轮新增 bufconn raw gRPC 回归，注册真实 Lease 服务后直接用 `etcdserverpb.LeaseClient`
   覆盖 TTL clamp、最大值、过大错误、自动 ID、重复 ID，并用 TTL 读取确认 GrantedTTL，
   防止服务层正确但 gRPC 错误映射、header、自动 ID 或 TTL 归一化在公开协议面回退。
+- A1017 固定 raw gRPC LeaseTimeToLive/LeaseLeases 读边界：
+  `lease_read_boundary` differential 证明 raw TTL 空请求等价 ID=0 unknown lease，Keys=false
+  与 Keys=true 都应返回 `ID=0`、`TTL=-1`、`GrantedTTL=0`、空 Keys 和良好 header；
+  live lease 的 TTL(Keys=false) 必须省略 keys，TTL(Keys=true) 返回完整 attached keys，
+  LeaseLeases 必须包含 live ID 且列表中不得出现 0。本轮新增 bufconn raw gRPC 回归，
+  注册真实 KV/Lease 服务后直接用 `etcdserverpb` 客户端覆盖 zero TTL 两种请求、显式 live
+  lease Grant + 两个 attached Put、TTL with/without keys 和 LeaseLeases header/list 外观，
+  防止 clientv3 wrapper 正确但 raw gRPC 响应、Keys flag 或 list 过滤出现兼容回退。
 
 ### P2：运维兼容和长期验证
 

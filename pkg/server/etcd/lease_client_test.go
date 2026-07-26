@@ -121,6 +121,95 @@ func TestClientLeaseReadBoundaryAndAttachedKeys(t *testing.T) {
 	require.True(t, containsLive)
 }
 
+func TestRawGRPCLeaseReadBoundaryAndList(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterLeaseServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///lease-read-boundary-client",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	kv := etcdserverpb.NewKVClient(conn)
+	lease := etcdserverpb.NewLeaseClient(conn)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	zeroWithoutKeys, err := lease.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{})
+	require.NoError(t, err)
+	zeroWithKeys, err := lease.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{Keys: true})
+	require.NoError(t, err)
+	require.Equal(t, int64(0), zeroWithoutKeys.ID)
+	require.Equal(t, int64(-1), zeroWithoutKeys.TTL)
+	require.Zero(t, zeroWithoutKeys.GrantedTTL)
+	require.Empty(t, zeroWithoutKeys.Keys)
+	require.Empty(t, zeroWithKeys.Keys)
+	require.Equal(t, zeroWithoutKeys.ID, zeroWithKeys.ID)
+	require.Equal(t, zeroWithoutKeys.TTL, zeroWithKeys.TTL)
+	require.Equal(t, zeroWithoutKeys.GrantedTTL, zeroWithKeys.GrantedTTL)
+	requireClientLeaseHeaderWellFormed(t, zeroWithoutKeys.Header)
+	requireClientLeaseHeaderWellFormed(t, zeroWithKeys.Header)
+
+	leaseID := time.Now().UnixNano() & ((1 << 62) - 1)
+	grant, err := lease.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{ID: leaseID, TTL: 300})
+	require.NoError(t, err)
+	require.Equal(t, leaseID, grant.ID)
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_, _ = lease.LeaseRevoke(cleanupCtx, &etcdserverpb.LeaseRevokeRequest{ID: leaseID})
+	})
+	prefix := fmt.Sprintf("/a1017/lease-read-boundary/%d/", time.Now().UnixNano())
+	keys := []string{prefix + "z", prefix + "a"}
+	for _, key := range keys {
+		_, err = kv.Put(ctx, &etcdserverpb.PutRequest{
+			Key: []byte(key), Value: []byte("value"), Lease: leaseID,
+		})
+		require.NoError(t, err)
+	}
+
+	liveWithoutKeys, err := lease.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: leaseID})
+	require.NoError(t, err)
+	require.Equal(t, leaseID, liveWithoutKeys.ID)
+	require.Positive(t, liveWithoutKeys.TTL)
+	require.LessOrEqual(t, liveWithoutKeys.TTL, int64(300))
+	require.Equal(t, int64(300), liveWithoutKeys.GrantedTTL)
+	require.Empty(t, liveWithoutKeys.Keys)
+	requireClientLeaseHeaderWellFormed(t, liveWithoutKeys.Header)
+
+	liveWithKeys, err := lease.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: leaseID, Keys: true})
+	require.NoError(t, err)
+	require.Equal(t, leaseID, liveWithKeys.ID)
+	require.Positive(t, liveWithKeys.TTL)
+	require.LessOrEqual(t, liveWithKeys.TTL, int64(300))
+	require.Equal(t, int64(300), liveWithKeys.GrantedTTL)
+	gotKeys := make([]string, 0, len(liveWithKeys.Keys))
+	for _, key := range liveWithKeys.Keys {
+		gotKeys = append(gotKeys, string(key))
+	}
+	slices.Sort(keys)
+	slices.Sort(gotKeys)
+	require.Equal(t, keys, gotKeys)
+	requireClientLeaseHeaderWellFormed(t, liveWithKeys.Header)
+
+	list, err := lease.LeaseLeases(ctx, &etcdserverpb.LeaseLeasesRequest{})
+	require.NoError(t, err)
+	require.Contains(t, leaseIDsFromList(list), leaseID)
+	for _, status := range list.Leases {
+		require.NotZero(t, status.ID)
+	}
+	requireClientLeaseHeaderWellFormed(t, list.Header)
+}
+
 func TestClientLeaseRevokeDeletesAttachedKeysAtOneRevision(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
