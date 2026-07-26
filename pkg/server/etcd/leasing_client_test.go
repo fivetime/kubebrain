@@ -26,6 +26,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
+	"go.etcd.io/etcd/client/v3/concurrency"
 	"go.etcd.io/etcd/client/v3/leasing"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -753,6 +754,92 @@ func TestClientLeasingRangeBoundsAndContention(t *testing.T) {
 			require.Equal(t, direct.Count, cached.Count, "%s key %q count differs", mode.name, key)
 		}
 	}
+}
+
+func TestClientLeasingSessionExpiryRefreshesOwnerCache(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterWatchServer(grpcServer, server)
+	etcdserverpb.RegisterLeaseServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	newClient := func() *clientv3.Client {
+		client, err := clientv3.New(clientv3.Config{
+			Endpoints:   []string{"bufnet"},
+			DialTimeout: time.Second,
+			DialOptions: []grpc.DialOption{
+				grpc.WithTransportCredentials(insecure.NewCredentials()),
+				grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+					return listener.Dial()
+				}),
+			},
+		})
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, client.Close()) })
+		return client
+	}
+	first := newClient()
+	second := newClient()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	prefix := fmt.Sprintf("/a984/leasing-session/%d/", time.Now().UnixNano())
+	key := prefix + "data"
+	ownerPrefix := prefix + "owners/"
+	firstKV, closeFirst, err := leasing.NewKV(first, ownerPrefix, concurrency.WithTTL(2))
+	require.NoError(t, err)
+	t.Cleanup(closeFirst)
+	secondKV, closeSecond, err := leasing.NewKV(second, ownerPrefix, concurrency.WithTTL(2))
+	require.NoError(t, err)
+	t.Cleanup(closeSecond)
+
+	_, err = first.Put(ctx, key, "old")
+	require.NoError(t, err)
+	initial, err := firstKV.Get(ctx, key)
+	require.NoError(t, err)
+	require.Len(t, initial.Kvs, 1)
+	require.Equal(t, []byte("old"), initial.Kvs[0].Value)
+
+	owners, err := first.Get(ctx, ownerPrefix, clientv3.WithPrefix())
+	require.NoError(t, err)
+	require.Len(t, owners.Kvs, 1)
+	oldLease := clientv3.LeaseID(owners.Kvs[0].Lease)
+	require.NotZero(t, oldLease)
+	_, err = second.Revoke(ctx, oldLease)
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		response, getErr := first.Get(ctx, ownerPrefix, clientv3.WithPrefix())
+		return getErr == nil && len(response.Kvs) == 0
+	}, 5*time.Second, 20*time.Millisecond)
+
+	_, err = secondKV.Put(ctx, key, "new")
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		response, getErr := firstKV.Get(ctx, key)
+		return getErr == nil && len(response.Kvs) == 1 && string(response.Kvs[0].Value) == "new"
+	}, 10*time.Second, 20*time.Millisecond)
+	require.Eventually(t, func() bool {
+		_, getErr := firstKV.Get(ctx, key)
+		if getErr != nil {
+			return false
+		}
+		newOwners, getErr := first.Get(ctx, ownerPrefix, clientv3.WithPrefix())
+		if getErr != nil {
+			return false
+		}
+		for _, owner := range newOwners.Kvs {
+			leaseID := clientv3.LeaseID(owner.Lease)
+			if leaseID != 0 && leaseID != oldLease {
+				return true
+			}
+		}
+		return false
+	}, 5*time.Second, 20*time.Millisecond)
 }
 
 func TestClientLeasingRangeOwnershipAndDelete(t *testing.T) {

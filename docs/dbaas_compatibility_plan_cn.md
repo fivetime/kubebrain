@@ -13905,6 +13905,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   每种模式下 writer leasing client 先对 4 个 key 完成至少一次 Put/Get，再与删除重叠；
   删除返回 typed Delete/Txn response 后，writer cache 对每个 key 的 KVs/Count 必须与
   直连 KV 完全一致，防止 range ownership revoke 越界或争用后 cache 残留旧视图。
+- A984 固定 clientv3 leasing.NewKV 的 session expiry/recovery 路径：
+  A210 `leasing_session_expiry` differential 覆盖短 TTL leasing owner session 失效与
+  cache 恢复。本轮新增 bufconn clientv3 回归，两个官方 `leasing.NewKV` 实例都使用
+  `concurrency.WithTTL(2)`：第一个 client 读取旧值并建立 owner lease 后，由第二个
+  client 显式 Revoke 该 lease，测试轮询确认 owner metadata 已删除；第二个 leasing
+  client 写入新值后，第一个 client 必须丢弃旧缓存、最终读取到新值，并异步建立不同于
+  旧 lease 的新 owner，防止 session 失效后继续服务 stale owner cache。
 
 ### P2：运维兼容和长期验证
 
