@@ -13897,6 +13897,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   prefix watch 看到 3 个 PUT event 全部使用顶层 Txn header revision，原 owner 再读
   每个 key 时必须与直连 KV 的 value/mod revision 完全一致，防止 nested write 只刷新
   顶层 operation 或不能撤销其他 client owner cache。
+- A983 固定 clientv3 leasing.NewKV 的 range delete bounds/contention 路径：
+  A217 `leasing_range_contention` differential 覆盖 range ownership 边界和 prefix
+  Delete 与 writer 并发争用。本轮新增轻量 bufconn clientv3 回归：reader leasing client
+  缓存边界外 `j/m`，deleter 删除 `k*` 后必须只删除目标 key，`j/m` value 与 owner
+  metadata 均保留。随后分别执行直接 prefix Delete 和 nested Txn 内 prefix Delete，
+  每种模式下 writer leasing client 先对 4 个 key 完成至少一次 Put/Get，再与删除重叠；
+  删除返回 typed Delete/Txn response 后，writer cache 对每个 key 的 KVs/Count 必须与
+  直连 KV 完全一致，防止 range ownership revoke 越界或争用后 cache 残留旧视图。
 
 ### P2：运维兼容和长期验证
 
