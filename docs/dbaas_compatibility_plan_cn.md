@@ -15100,6 +15100,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   response header 形状正确，返回 ID 列表与 grant 顺序完全一致。该门禁补齐服务层/raw gRPC
   LeaseLeases 排序门禁到 public wrapper，防止 lease manager、expiry heap 或 client adapter
   重构让运维工具枚举 lease 时漏项或顺序漂移。
+- A1135 固定 clientv3 KeepAlive revoked lease 隔离：
+  对照 `/root/etcd/tests/integration/clientv3/lease/lease_test.go:TestLeaseKeepAliveNotFound`，
+  同一 client 上多个 keepalive channel 共享底层 stream 时，撤销其中一个 lease 只能关闭对应
+  channel，不能让其他 live lease 的 keepalive channel 误关闭。本轮新增 bufconn official
+  clientv3 回归，创建 3 个 lease 并各自启动 `KeepAlive`，先确认均收到初始响应，撤销中间
+  lease 后要求第 1/3 个 channel 继续收到正 TTL 响应，而被撤销 lease 的 channel 关闭。该门禁
+  防止 keepalive stream fanout、lease revoke 或 not-found 处理重构造成生产 session/lock
+  因相邻 stale lease 被撤销而级联失效。
 
 ### P2：运维兼容和长期验证
 

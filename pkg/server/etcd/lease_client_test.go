@@ -267,6 +267,80 @@ func TestClientLeaseLeasesListsGrantedIDsInOrder(t *testing.T) {
 	require.Equal(t, wantIDs, gotIDs)
 }
 
+func TestClientLeaseKeepAliveNotFoundDoesNotCloseOtherLeases(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterLeaseServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	type leaseChannel struct {
+		id clientv3.LeaseID
+		ch <-chan *clientv3.LeaseKeepAliveResponse
+	}
+	channels := make([]leaseChannel, 0, 3)
+	for i := 0; i < 3; i++ {
+		grant, grantErr := client.Grant(ctx, 3)
+		require.NoError(t, grantErr)
+		keepAlive, keepAliveErr := client.KeepAlive(ctx, grant.ID)
+		require.NoError(t, keepAliveErr)
+		channels = append(channels, leaseChannel{id: grant.ID, ch: keepAlive})
+	}
+	for _, lease := range channels {
+		response, ok := receiveClientKeepAlive(t, ctx, lease.ch)
+		require.True(t, ok)
+		require.Equal(t, lease.id, response.ID)
+		require.Positive(t, response.TTL)
+	}
+
+	_, err = client.Revoke(ctx, channels[1].id)
+	require.NoError(t, err)
+
+	response, ok := receiveClientKeepAlive(t, ctx, channels[0].ch)
+	require.True(t, ok, "revoking a different lease closed the first keepalive channel")
+	require.Equal(t, channels[0].id, response.ID)
+	require.Positive(t, response.TTL)
+	response, ok = receiveClientKeepAlive(t, ctx, channels[2].ch)
+	require.True(t, ok, "revoking a different lease closed the third keepalive channel")
+	require.Equal(t, channels[2].id, response.ID)
+	require.Positive(t, response.TTL)
+	_, ok = receiveClientKeepAlive(t, ctx, channels[1].ch)
+	require.False(t, ok, "revoked lease keepalive channel remained open")
+}
+
+func receiveClientKeepAlive(
+	t *testing.T,
+	ctx context.Context,
+	ch <-chan *clientv3.LeaseKeepAliveResponse,
+) (*clientv3.LeaseKeepAliveResponse, bool) {
+	t.Helper()
+	select {
+	case response, ok := <-ch:
+		return response, ok
+	case <-ctx.Done():
+		t.Fatalf("timed out waiting for lease keepalive response: %v", ctx.Err())
+	}
+	return nil, false
+}
+
 func TestClientNamespaceLeaseTimeToLiveFiltersAttachedKeys(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
