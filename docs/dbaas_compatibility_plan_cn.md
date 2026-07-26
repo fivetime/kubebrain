@@ -16384,6 +16384,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Snapshot、MemberAdd/Remove/Update/Promote、MoveLeader 和 Downgrade 等由 DBaaS 平台托管的
   etcd 操作必须返回完整 `codes.Unimplemented` status error 字符串，并保留可操作的替代说明。
   该门禁防止通用数据面把平台生命周期操作误暴露为可执行接口，或丢失迁移到 DBaaS API 的提示。
+- A1346 固定 Cluster service 平台替代、read-barrier 与 auth 错误字符串：
+  Cluster service 的 member mutation 平台替代必须保留完整 `codes.Unimplemented` status error；
+  read barrier 失败必须保留完整 `codes.Unavailable` status error；认证失败则必须保留原始 etcd
+  message、typed `ErrorIs` 和公开 status code。该门禁防止集群成员只读 facade 在控制面不可用、
+  TLS CN 映射和权限失败时漂移公开错误语义。
 
 ### P2：运维兼容和长期验证
 

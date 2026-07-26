@@ -565,20 +565,21 @@ func TestMemberRootAuthorizationClientCertificateErrorsMatchEtcd(t *testing.T) {
 
 func requireClusterPlatformReplacementError(t *testing.T, err error) {
 	t.Helper()
-	require.Error(t, err)
+	require.EqualError(t, err, status.Error(codes.Unimplemented, memberMutationUnsupportedMessage).Error())
 	require.Equal(t, codes.Unimplemented, status.Code(err))
 	require.Equal(t, memberMutationUnsupportedMessage, status.Convert(err).Message())
 }
 
 func requireClusterReadBarrierError(t *testing.T, err error, message string) {
 	t.Helper()
-	require.Error(t, err)
+	require.EqualError(t, err, status.Error(codes.Unavailable, message).Error())
 	require.Equal(t, codes.Unavailable, status.Code(err))
 	require.Equal(t, message, status.Convert(err).Message())
 }
 
 func requireClusterAuthError(t *testing.T, err error, want error, code codes.Code, message string) {
 	t.Helper()
+	require.EqualError(t, err, message)
 	require.ErrorIs(t, err, want)
 	require.Equal(t, code, status.Code(err))
 	require.Equal(t, message, status.Convert(err).Message())
