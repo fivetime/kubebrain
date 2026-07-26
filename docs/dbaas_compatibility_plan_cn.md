@@ -16291,6 +16291,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   claims、超长 subject 等拒绝路径现在固定到具体错误文本。该门禁防止生产操作 API 在认证
   claim 漂移、JWT audience 错配或实例授权 claim 损坏时只返回笼统失败，影响安全审计和
   dependency-unavailable 与 unauthorized 的区分。
+- A1327 固定 malformed bearer header 快速失败契约：
+  OIDC authenticator 对 leading/trailing/embedded 空格、tab separator 和超大 bearer token
+  的拒绝现在固定到 `bearer token is invalid|required`，并继续断言这些 malformed header
+  不触发 JWKS refresh。该门禁防止认证入口在请求头解析错误时访问外部 IdP，扩大依赖面或把
+  本地 401 误分类为 OIDC dependency 问题。
 
 ### P2：运维兼容和长期验证
 

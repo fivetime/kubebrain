@@ -194,17 +194,18 @@ func TestOIDCAuthenticatorRejectsMalformedBearerHeader(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		header string
+		want   string
 	}{
-		{name: "leading header space", header: " Bearer " + token},
-		{name: "extra token separator", header: "Bearer  " + token},
-		{name: "trailing token space", header: "Bearer " + token + " "},
-		{name: "embedded token space", header: "Bearer " + token + " extra"},
-		{name: "tab separator", header: "Bearer\t" + token},
-		{name: "oversized token", header: "Bearer " + strings.Repeat("x", maxBearerTokenBytes+1)},
+		{name: "leading header space", header: " Bearer " + token, want: "bearer token is invalid"},
+		{name: "extra token separator", header: "Bearer  " + token, want: "bearer token is invalid"},
+		{name: "trailing token space", header: "Bearer " + token + " ", want: "bearer token is invalid"},
+		{name: "embedded token space", header: "Bearer " + token + " extra", want: "bearer token is invalid"},
+		{name: "tab separator", header: "Bearer\t" + token, want: "bearer token is required"},
+		{name: "oversized token", header: "Bearer " + strings.Repeat("x", maxBearerTokenBytes+1), want: "bearer token is invalid"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := authenticator.Authenticate(context.Background(), tc.header)
-			require.Error(t, err)
+			require.ErrorContains(t, err, tc.want)
 			fixture.mu.RLock()
 			defer fixture.mu.RUnlock()
 			require.Equal(t, initialJWKSRequests, fixture.jwksRequests,
