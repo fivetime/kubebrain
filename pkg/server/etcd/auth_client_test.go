@@ -1035,6 +1035,85 @@ func TestClientAuthCompactRequiresRoot(t *testing.T) {
 	require.GreaterOrEqual(t, compact.Header.Revision, first.Header.Revision)
 }
 
+func TestClientAuthPrivilegedMaintenanceAuthorizationPrecedesUnsupported(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterAuthServer(grpcServer, server)
+	etcdserverpb.RegisterMaintenanceServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	dialOptions := []grpc.DialOption{
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}),
+	}
+	newClient := func(username, password string) *clientv3.Client {
+		t.Helper()
+		client, err := clientv3.New(clientv3.Config{
+			Endpoints:   []string{"bufnet"},
+			DialTimeout: time.Second,
+			Username:    username,
+			Password:    password,
+			DialOptions: dialOptions,
+		})
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, client.Close()) })
+		return client
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	bootstrap := newClient("", "")
+	require.NoError(t, addAuthUserRoleAndPermission(ctx, bootstrap, "root", "root-secret", "root", "", ""))
+	require.NoError(t, addAuthUserRoleAndPermission(
+		ctx,
+		bootstrap,
+		"alice",
+		"alice-secret",
+		"a1070-reader",
+		"/a1070/allowed/",
+		clientv3.GetPrefixRangeEnd("/a1070/allowed/"),
+	))
+	_, err := bootstrap.AuthEnable(ctx)
+	require.NoError(t, err)
+
+	alice := newClient("alice", "alice-secret")
+	root := newClient("root", "root-secret")
+	_, anonymousDefragErr := bootstrap.Defragment(ctx, bootstrap.Endpoints()[0])
+	requireAuthClientError(t, anonymousDefragErr, codes.Unknown, "etcdserver: user name is empty")
+	_, userDefragErr := alice.Defragment(ctx, alice.Endpoints()[0])
+	requireAuthClientError(t, userDefragErr, codes.Unknown, "etcdserver: permission denied")
+	_, err = root.Defragment(ctx, root.Endpoints()[0])
+	require.NoError(t, err)
+
+	snapshotReader, userSnapshotErr := alice.SnapshotWithVersion(ctx)
+	if snapshotReader != nil && snapshotReader.Snapshot != nil {
+		require.NoError(t, snapshotReader.Snapshot.Close())
+	}
+	requireAuthClientError(t, userSnapshotErr, codes.PermissionDenied, "etcdserver: permission denied")
+	rootSnapshot, rootSnapshotErr := root.SnapshotWithVersion(ctx)
+	if rootSnapshot != nil && rootSnapshot.Snapshot != nil {
+		require.NoError(t, rootSnapshot.Snapshot.Close())
+	}
+	requireAuthClientError(t, rootSnapshotErr, codes.Unimplemented, snapshotUnsupportedMessage)
+
+	_, userMoveLeaderErr := alice.MoveLeader(ctx, 0)
+	requireAuthClientError(t, userMoveLeaderErr, codes.Unknown, "etcdserver: permission denied")
+	_, rootMoveLeaderErr := root.MoveLeader(ctx, 0)
+	requireAuthClientError(t, rootMoveLeaderErr, codes.Unimplemented, moveLeaderUnsupportedMessage)
+
+	_, userDowngradeErr := alice.Downgrade(ctx, clientv3.DowngradeValidate, "3.6")
+	requireAuthClientError(t, userDowngradeErr, codes.Unknown, "etcdserver: permission denied")
+	_, rootDowngradeErr := root.Downgrade(ctx, clientv3.DowngradeValidate, "3.6")
+	requireAuthClientError(t, rootDowngradeErr, codes.Unimplemented, downgradeUnsupportedMessage)
+}
+
 func addAuthUserRoleAndPermission(
 	ctx context.Context,
 	client *clientv3.Client,

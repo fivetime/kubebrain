@@ -14593,6 +14593,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `client.Compact` 暴露 `Unknown: user name is empty`，alice `client.Compact` 暴露
   `Unknown: permission denied`，root `client.Compact` 成功且 response header revision
   不落后于目标 revision，补齐 public KV maintenance wrapper 的 compaction 授权门禁。
+- A1070 固定 clientv3 Auth 特权 Maintenance 鉴权优先级：
+  `auth` differential 覆盖 Defragment、Snapshot、MoveLeader、Downgrade 在 auth enabled
+  后必须先区分匿名 user empty、普通用户 permission denied，再让 root 进入成功或平台
+  unsupported 路径。本轮新增官方 clientv3 bufconn 回归，匿名 `Defragment` 暴露
+  `Unknown: user name is empty`，alice `Defragment` 暴露 `Unknown: permission denied`，
+  root `Defragment` 成功；alice `SnapshotWithVersion` 作为流式接口保留 gRPC
+  `PermissionDenied`，root `SnapshotWithVersion` 返回平台 `Unimplemented`；alice
+  `MoveLeader`/`Downgrade` 暴露 `Unknown: permission denied`，root 则返回 KubeBrain
+  对应的 `Unimplemented` 替代文案，补齐 public 特权运维面 Auth-before-unsupported 门禁。
 
 ### P2：运维兼容和长期验证
 
