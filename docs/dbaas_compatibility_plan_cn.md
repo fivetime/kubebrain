@@ -14331,6 +14331,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   当前结果，再用 `WithRev(math.MaxInt64)` 验证 official clientv3 暴露的 `Unknown` code
   与 future revision message（raw protobuf 层仍由 A1000 覆盖 `OutOfRange`），补齐此前
   raw protobuf 层覆盖之外的官方客户端面。
+- A1037 固定 clientv3 Txn 内 Range revision 边界：
+  `range_revision_boundary` differential 证明 Txn 只验证被选中的分支：选中分支内
+  `Revision=-1` 的 Range 在 compact 后必须返回 compacted 错误并阻止后续写入；未选中
+  分支内同样的坏 Range 不应被执行或验证；选中分支内 `math.MaxInt64` Range 必须返回
+  future revision 错误并阻止写入。本轮新增官方 clientv3 bufconn 回归，分别覆盖
+  selected-compacted、unselected-compacted 和 selected-future 三种路径，并断言
+  `clientv3.Txn` 暴露的 `Unknown` code/message 及失败事务无部分提交。
 
 ### P2：运维兼容和长期验证
 

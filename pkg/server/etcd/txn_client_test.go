@@ -825,6 +825,72 @@ func TestClientTxnHeaderRevisions(t *testing.T) {
 	require.Equal(t, write.Header.Revision, failureRange.Kvs[0].ModRevision)
 }
 
+func TestClientTxnRangeRevisionBoundaries(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	prefix := fmt.Sprintf("/a1037/txn-range-revision/%d/", time.Now().UnixNano())
+	key := prefix + "key"
+	writeKey := prefix + "write"
+	seed, err := client.Put(ctx, key, "value")
+	require.NoError(t, err)
+	_, err = client.Compact(ctx, seed.Header.Revision)
+	require.NoError(t, err)
+
+	_, err = client.Txn(ctx).
+		Then(
+			clientv3.OpGet(key, clientv3.WithRev(-1)),
+			clientv3.OpPut(writeKey, "must-not-commit"),
+		).
+		Commit()
+	requireClientTxnError(t, err, codes.Unknown, "etcdserver: mvcc: required revision has been compacted")
+	afterCompacted, err := client.Get(ctx, writeKey)
+	require.NoError(t, err)
+	require.Empty(t, afterCompacted.Kvs)
+
+	unselected, err := client.Txn(ctx).
+		If(clientv3.Compare(clientv3.Version(key), "=", 0)).
+		Then(clientv3.OpGet(key, clientv3.WithRev(-1))).
+		Else(clientv3.OpGet(key)).
+		Commit()
+	require.NoError(t, err)
+	require.False(t, unselected.Succeeded)
+	require.Len(t, unselected.Responses, 1)
+	require.Len(t, unselected.Responses[0].GetResponseRange().Kvs, 1)
+
+	_, err = client.Txn(ctx).
+		Then(
+			clientv3.OpGet(key, clientv3.WithRev(math.MaxInt64)),
+			clientv3.OpPut(writeKey, "must-not-commit"),
+		).
+		Commit()
+	requireClientTxnError(t, err, codes.Unknown, "etcdserver: mvcc: required revision is a future revision")
+	afterFuture, err := client.Get(ctx, writeKey)
+	require.NoError(t, err)
+	require.Empty(t, afterFuture.Kvs)
+}
+
 func TestClientTxnIntraTxnVersionSemantics(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
@@ -953,6 +1019,13 @@ func txnClientTxnOp(success, failure []*etcdserverpb.RequestOp) *etcdserverpb.Re
 }
 
 func requireRawGRPCTxnError(t *testing.T, err error, code codes.Code, message string) {
+	t.Helper()
+	require.Error(t, err)
+	require.Equal(t, code, status.Code(err))
+	require.Equal(t, message, status.Convert(err).Message())
+}
+
+func requireClientTxnError(t *testing.T, err error, code codes.Code, message string) {
 	t.Helper()
 	require.Error(t, err)
 	require.Equal(t, code, status.Code(err))
