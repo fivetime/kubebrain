@@ -14986,6 +14986,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   继续精确断言 add/delete/List/lease deletion 内容，同时消除合法拆批导致的 full-package
   flaky failure。该门禁提升生产发布前回归信号质量，避免把 watch channel 调度差异误判为
   naming 兼容性回退。
+- A1121 固定 clientv3 concurrency Mutex Unlock 错误外观：
+  对照 `/root/etcd/tests/integration/clientv3/concurrency/mutex_test.go:TestMutexUnlock`，
+  A1113/A1114 已覆盖 Mutex Lock/TryLock、owner close release 和 orphan expiry handoff，
+  但缺少 Unlock 自身错误状态机的 official clientv3 回归。本轮新增 bufconn 回归：同一
+  `concurrency.NewMutex` 在未持锁时 `Unlock` 必须返回 `concurrency.ErrLockReleased`；
+  `Lock` 后首次 `Unlock` 成功并删除 mutex key；再次 `Unlock` 仍返回
+  `ErrLockReleased`。该门禁防止 lock key cleanup、local mutex key 缓存或 error wrapping
+  重构破坏上层 recipe 对重复释放/未持锁释放的可判定错误语义。
 
 ### P2：运维兼容和长期验证
 

@@ -393,6 +393,48 @@ func TestClientConcurrencyResumeElectionIgnoresOutsideUpdates(t *testing.T) {
 	require.NoError(t, resumed.Resign(ctx))
 }
 
+func TestClientConcurrencyMutexUnlockErrorsMatchEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterWatchServer(grpcServer, server)
+	etcdserverpb.RegisterLeaseServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	session, err := concurrency.NewSession(client, concurrency.WithTTL(10))
+	require.NoError(t, err)
+	t.Cleanup(session.Orphan)
+
+	mutex := concurrency.NewMutex(session, fmt.Sprintf("/a1121/mutex-unlock/%d", time.Now().UnixNano()))
+	require.ErrorIs(t, mutex.Unlock(ctx), concurrency.ErrLockReleased)
+	require.NoError(t, mutex.Lock(ctx))
+	require.NoError(t, mutex.Unlock(ctx))
+	require.ErrorIs(t, mutex.Unlock(ctx), concurrency.ErrLockReleased)
+
+	remaining, err := client.Get(ctx, mutex.Key())
+	require.NoError(t, err)
+	require.Empty(t, remaining.Kvs)
+}
+
 func TestClientConcurrencyOrphanedSessionExpiresAndHandsOff(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
