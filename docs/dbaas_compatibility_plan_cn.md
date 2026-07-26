@@ -13842,6 +13842,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   该 namespace 下的键。本轮新增 bufconn clientv3 回归，直接使用官方 `namespace.NewKV`
   执行 Put、Get("", WithFromKey) 和 Delete("", WithFromKey)，防止后续把低层 empty-key
   校验错误套到已加前缀的 namespace 请求，或让 response key 泄露物理租户前缀。
+- A977 固定 clientv3 leasing.NewKV 的 FromKey owner-delete 公开路径：
+  A221/A951 已证明 `leasing_from_key_delete` differential 与本地 attachment 清理，但
+  官方 leasing wrapper 自身还需要持续门禁。本轮新增 bufconn clientv3 回归，注册真实
+  KV/Watch/Lease gRPC 服务并通过 `leasing.NewKV` 先建立 owner cache，再执行
+  `Do(OpDelete(key, WithFromKey))`。测试断言 typed Delete response、三条 DELETE watch
+  event 共用 delete header revision、起点前 data/owner 保留、起点后的 data 与 cache
+  清空但 owner metadata 按官方 leasing 语义继续留到 lease 生命周期处理，防止底层
+  DeleteRange 正确但 leasing owner/cache 包装路径回退。
 
 ### P2：运维兼容和长期验证
 
