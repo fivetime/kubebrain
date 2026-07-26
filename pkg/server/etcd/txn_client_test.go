@@ -633,6 +633,121 @@ func TestClientNestedTxnResponseAndFinalState(t *testing.T) {
 	}
 }
 
+func TestClientTxnIgnoreLeaseAndBadLeaseBranches(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterLeaseServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	key := fmt.Sprintf("/a1009/client-txn-ignore-lease/%d", time.Now().UnixNano())
+	leaseA, err := client.Grant(ctx, 300)
+	require.NoError(t, err)
+	leaseB, err := client.Grant(ctx, 300)
+	require.NoError(t, err)
+	revokedA, revokedB := false, false
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		if !revokedA {
+			_, _ = client.Revoke(cleanupCtx, leaseA.ID)
+		}
+		if !revokedB {
+			_, _ = client.Revoke(cleanupCtx, leaseB.ID)
+		}
+	})
+
+	_, err = client.Put(ctx, key, "old", clientv3.WithLease(leaseA.ID))
+	require.NoError(t, err)
+	ignoreValue, err := client.Txn(ctx).Then(
+		clientv3.OpPut(key, "", clientv3.WithIgnoreValue(), clientv3.WithLease(leaseB.ID), clientv3.WithPrevKV()),
+		clientv3.OpGet(key),
+	).Commit()
+	require.NoError(t, err)
+	require.True(t, ignoreValue.Succeeded)
+	require.Len(t, ignoreValue.Responses, 2)
+	ignoreValuePrev := ignoreValue.Responses[0].GetResponsePut().PrevKv
+	require.NotNil(t, ignoreValuePrev)
+	require.Equal(t, "old", string(ignoreValuePrev.Value))
+	require.Equal(t, int64(leaseA.ID), ignoreValuePrev.Lease)
+	staged := ignoreValue.Responses[1].GetResponseRange()
+	require.NotNil(t, staged)
+	require.Len(t, staged.Kvs, 1)
+	require.Equal(t, "old", string(staged.Kvs[0].Value))
+	require.Equal(t, int64(leaseB.ID), staged.Kvs[0].Lease)
+
+	ignoreLease, err := client.Txn(ctx).Then(
+		clientv3.OpPut(key, "new", clientv3.WithIgnoreLease(), clientv3.WithPrevKV()),
+	).Commit()
+	require.NoError(t, err)
+	require.True(t, ignoreLease.Succeeded)
+	require.Len(t, ignoreLease.Responses, 1)
+	ignoreLeasePrev := ignoreLease.Responses[0].GetResponsePut().PrevKv
+	require.NotNil(t, ignoreLeasePrev)
+	require.Equal(t, "old", string(ignoreLeasePrev.Value))
+	require.Equal(t, int64(leaseB.ID), ignoreLeasePrev.Lease)
+	final, err := client.Get(ctx, key)
+	require.NoError(t, err)
+	require.Len(t, final.Kvs, 1)
+	require.Equal(t, "new", string(final.Kvs[0].Value))
+	require.Equal(t, int64(leaseB.ID), final.Kvs[0].Lease)
+
+	_, err = client.Revoke(ctx, leaseA.ID)
+	require.NoError(t, err)
+	revokedA = true
+	afterA, err := client.Get(ctx, key)
+	require.NoError(t, err)
+	require.Len(t, afterA.Kvs, 1)
+	require.Equal(t, int64(leaseB.ID), afterA.Kvs[0].Lease)
+	_, err = client.Revoke(ctx, leaseB.ID)
+	require.NoError(t, err)
+	revokedB = true
+	afterB, err := client.Get(ctx, key)
+	require.NoError(t, err)
+	require.Empty(t, afterB.Kvs)
+
+	branchKey := key + "/branch"
+	unselectedBadLease, err := client.Txn(ctx).
+		If(clientv3.Compare(clientv3.Version(branchKey), "=", 0)).
+		Then(clientv3.OpPut(branchKey, "valid")).
+		Else(clientv3.OpPut(branchKey, "invalid", clientv3.WithLease(clientv3.LeaseID(math.MaxInt64)))).
+		Commit()
+	require.NoError(t, err)
+	require.True(t, unselectedBadLease.Succeeded)
+	_, err = client.Delete(ctx, branchKey)
+	require.NoError(t, err)
+	_, selectedBadLeaseErr := client.Txn(ctx).
+		If(clientv3.Compare(clientv3.Version(branchKey), ">", 0)).
+		Then(clientv3.OpPut(branchKey, "valid")).
+		Else(clientv3.OpPut(branchKey, "invalid", clientv3.WithLease(clientv3.LeaseID(math.MaxInt64)))).
+		Commit()
+	require.Error(t, selectedBadLeaseErr)
+	require.Equal(t, codes.Unknown, status.Code(selectedBadLeaseErr))
+	require.Equal(t, "etcdserver: requested lease not found", status.Convert(selectedBadLeaseErr).Message())
+	afterBadLease, err := client.Get(ctx, branchKey)
+	require.NoError(t, err)
+	require.Empty(t, afterBadLease.Kvs)
+}
+
 func txnClientValueCompare(
 	key, rangeEnd []byte,
 	result etcdserverpb.Compare_CompareResult,

@@ -14118,6 +14118,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   等于 Txn revision、PrevKV 未错误标记为本 Txn 创建、public client 最终 Get 与 Txn 内
   Range 的 key 集一致，防止嵌套 Txn response wrapping、branch selection 或 staged view
   只在 raw/service 层正确。
+- A1009 固定 clientv3 Txn IgnoreValue/IgnoreLease 与 bad lease 分支外观：
+  `txn_ignore_lease` differential 证明 Txn 内 IgnoreValue 可以保留旧 value 并切换 lease，
+  后续 IgnoreLease 必须保留新的 lease 绑定，PrevKV 要反映切换前状态；撤销旧 lease 不应
+  删除 key，撤销新 lease 应删除 key；未选中的 bad lease 分支不报错，选中 bad lease 分支
+  返回 public clientv3 包装后的错误 code/message。本轮新增 bufconn clientv3 回归，注册
+  KV/Lease 服务，依次验证 leaseA -> leaseB 的 staged view、final value/lease、revoke A/B
+  后存在性，以及 bad lease Else 分支的 unselected OK 与 selected `Unknown`/`requested
+  lease not found` 外观，防止 lease attachment cache 或 client wrapper 行为回退。
 
 ### P2：运维兼容和长期验证
 
