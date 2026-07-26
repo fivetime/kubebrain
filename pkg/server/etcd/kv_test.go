@@ -2791,6 +2791,57 @@ func TestClientNamespaceTxnWatchStripsPrefixes(t *testing.T) {
 	require.Equal(t, map[string]string{"a": "a", "b": "b"}, prevKeys)
 }
 
+func TestClientNamespaceEmptyKeyFromKeyDeleteMatchesEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	tenantPrefix := string(bytes.Repeat([]byte{0xff}, 16)) + "/registry/client-namespace-empty-key/"
+	tenantEnd := clientv3.GetPrefixRangeEnd(tenantPrefix)
+	namespacedKV := namespace.NewKV(client.KV, tenantPrefix)
+	for _, key := range []string{"a", "b"} {
+		_, err = namespacedKV.Put(ctx, key, "value-"+key)
+		require.NoError(t, err)
+	}
+
+	_, err = client.Delete(ctx, "")
+	require.Equal(t, codes.Unknown, status.Code(err))
+	require.Equal(t, "etcdserver: key is not provided", status.Convert(err).Message())
+
+	visible, err := namespacedKV.Get(ctx, "", clientv3.WithFromKey())
+	require.NoError(t, err)
+	require.Len(t, visible.Kvs, 2)
+	require.Equal(t, [][]byte{[]byte("a"), []byte("b")}, [][]byte{visible.Kvs[0].Key, visible.Kvs[1].Key})
+
+	deleted, err := namespacedKV.Delete(ctx, "", clientv3.WithFromKey())
+	require.NoError(t, err)
+	require.Equal(t, int64(2), deleted.Deleted)
+
+	remaining, err := client.Get(ctx, tenantPrefix, clientv3.WithRange(tenantEnd))
+	require.NoError(t, err)
+	require.Empty(t, remaining.Kvs)
+}
+
 func TestDeleteRangeDeletesRange(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

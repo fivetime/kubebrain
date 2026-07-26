@@ -13835,6 +13835,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `raft_term` 都不能为 0。本轮新增 bufconn gRPC 回归，注册 KV/Auth 服务，先 Put 取得
   revision，再通过 Auth client 调用三类 RPC 并断言完整 header，防止只在 handler 内填
   revision、但 interceptor/header stamping 重构后管理面响应丢失集群身份字段。
+- A976 固定 clientv3 namespace empty-key from-key delete 的公开客户端路径：
+  `empty_key_namespace` differential 证明普通 clientv3 `Delete("")` 必须被拒绝并暴露
+  `etcdserver: key is not provided`，但经 `namespace.NewKV` 包装后，空 key 加
+  `WithFromKey` 应被转换为租户前缀范围，Range/Delete response 暴露逻辑 key 且只删除
+  该 namespace 下的键。本轮新增 bufconn clientv3 回归，直接使用官方 `namespace.NewKV`
+  执行 Put、Get("", WithFromKey) 和 Delete("", WithFromKey)，防止后续把低层 empty-key
+  校验错误套到已加前缀的 namespace 请求，或让 response key 泄露物理租户前缀。
 
 ### P2：运维兼容和长期验证
 
