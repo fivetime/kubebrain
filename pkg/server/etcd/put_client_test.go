@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -175,6 +176,36 @@ func TestClientPutIgnoreValueIgnoreLeaseAndErrors(t *testing.T) {
 			require.Equal(t, tt.wantMessage, status.Convert(err).Message())
 		})
 	}
+}
+
+func TestClientPutServerSideRequestTooLargeIsTyped(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	server.SetRequestLimits(defaultMaxTxnOps, 256)
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	server.Register(grpcServer)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err = client.Put(ctx, "/a1146/put-too-large", string(make([]byte, 1024)))
+	require.ErrorIs(t, err, rpctypes.ErrRequestTooLarge)
 }
 
 func TestClientPutDroppedRequestDoesNotCommitAndGetReconnects(t *testing.T) {
