@@ -180,7 +180,7 @@ func TestAuthRPCHeaderFailsClosedWhenRevisionBarrierFails(t *testing.T) {
 
 	response, err := server.AuthStatus(context.Background(), &etcdserverpb.AuthStatusRequest{})
 	require.Nil(t, response)
-	require.Equal(t, codes.Unavailable, status.Code(err))
+	requireReadBarrierUnavailable(t, err, storage.ErrUnavailable.Error())
 }
 
 func TestAuthenticateReadBarrierPrecedesPasswordCheck(t *testing.T) {
@@ -198,8 +198,7 @@ func TestAuthenticateReadBarrierPrecedesPasswordCheck(t *testing.T) {
 
 	response, err := server.Authenticate(ctx, &etcdserverpb.AuthenticateRequest{Name: "root", Password: "wrong"})
 	require.Nil(t, response)
-	require.Equal(t, codes.Unavailable, status.Code(err))
-	require.Equal(t, barrierErr.Error(), status.Convert(err).Message())
+	requireReadBarrierUnavailable(t, err, barrierErr.Error())
 }
 
 func TestAuthStatusRejectsInvalidTokenWhenEnabled(t *testing.T) {

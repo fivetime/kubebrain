@@ -68,8 +68,7 @@ func TestAuthRangeReadBarrierPrecedesAuthLikeEtcd(t *testing.T) {
 	}}
 
 	_, err := server.Range(plain, &etcdserverpb.RangeRequest{Key: []byte("/allowed/a")})
-	require.Equal(t, codes.Unavailable, status.Code(err))
-	require.Equal(t, barrierErr.Error(), status.Convert(err).Message())
+	requireReadBarrierUnavailable(t, err, barrierErr.Error())
 	require.Equal(t, 1, barrierCalls)
 
 	_, err = server.Range(plain, &etcdserverpb.RangeRequest{Key: []byte("/allowed/a"), Serializable: true})
@@ -78,8 +77,7 @@ func TestAuthRangeReadBarrierPrecedesAuthLikeEtcd(t *testing.T) {
 
 	stream := &fakeRangeStreamServer{ctx: plain}
 	err = server.RangeStream(&etcdserverpb.RangeRequest{Key: []byte("/allowed/"), RangeEnd: []byte("/allowed0")}, stream)
-	require.Equal(t, codes.Unavailable, status.Code(err))
-	require.Equal(t, barrierErr.Error(), status.Convert(err).Message())
+	requireReadBarrierUnavailable(t, err, barrierErr.Error())
 	require.Equal(t, 2, barrierCalls)
 
 	stream = &fakeRangeStreamServer{ctx: plain}
