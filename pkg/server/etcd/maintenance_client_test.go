@@ -25,6 +25,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -783,6 +784,7 @@ func TestClientHashKVRevisionBoundaries(t *testing.T) {
 	for _, revision := range []int64{put.Header.Revision + 100, math.MaxInt64} {
 		_, hashErr := client.HashKV(ctx, "bufnet", revision)
 		requireClientHashKVError(t, hashErr, codes.Unknown, "etcdserver: mvcc: required revision is a future revision")
+		require.ErrorIs(t, hashErr, rpctypes.ErrFutureRev)
 	}
 }
 

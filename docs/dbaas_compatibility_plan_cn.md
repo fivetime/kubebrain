@@ -15206,6 +15206,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   create/modify/delete/leased-create/lease-expire 序列并固定事件分类。该门禁防止 watch 事件
   转换、lease expiry 删除或 CreateRevision/ModRevision 填充重构破坏 informer 对 add/update/delete
   的分类。
+- A1149 固定 clientv3 HashKV future revision typed error：
+  对照 `/root/etcd/tests/integration/clientv3/maintenance_test.go:TestMaintenanceHashKV` 的
+  public maintenance API 外观，并延续 KV/Txn future revision typed error 契约，`HashKV`
+  读取未来 revision 时必须可由 `errors.Is(..., rpctypes.ErrFutureRev)` 识别。本轮加强既有
+  bufconn official clientv3 HashKV revision boundary 回归，保留 status/message 断言并新增
+  typed error 断言。该门禁防止 maintenance client adapter 或 backend hash revision 检查
+  重构导致运维校验工具无法分类“请求未来 revision”。
 
 ### P2：运维兼容和长期验证
 
