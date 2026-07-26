@@ -14026,6 +14026,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   会把这些 server `OutOfRange` 映射成 client-side `Unknown` code 但保留 etcd message，
   因此本门禁固定 public client 层 contract，防止只验证 handler/raw gRPC 而遗漏 clientv3
   包装后的生产可观察行为。
+- A999 固定 raw gRPC HashKV revision boundary：
+  `hashkv_revision_boundary` differential 证明 HashKV 对 `Revision=-1`、latest/current、
+  future 和 max-int 的 hash revision、compact revision、header revision 与错误消息必须
+  对齐 reference etcd。本轮新增 bufconn raw gRPC 回归，注册真实 KV/Maintenance 服务，
+  写入一个 key 后用 `etcdserverpb.MaintenanceClient.HashKV` 断言 negative revision 返回
+  `HashRevision=-1` 和 reference 常量 hash `0x40a4756d`，latest hash revision 不早于写入
+  revision，current hash revision 等于请求 revision，三类成功 response header 都带
+  cluster/member/term 且 revision 不低于写入；future 与 max-int revision 返回 raw
+  `OutOfRange` 和 `required revision is a future revision`，防止维护面 raw gRPC
+  revision 选择、snapshot hash 或 header stamping 回退。
 
 ### P2：运维兼容和长期验证
 

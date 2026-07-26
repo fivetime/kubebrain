@@ -24,7 +24,9 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 )
 
@@ -88,4 +90,68 @@ func TestRawGRPCAlarmGetAndZeroMemberRoundTrip(t *testing.T) {
 	require.Equal(t, []uint64{0}, members(etcdserverpb.AlarmRequest_GET))
 	require.Equal(t, []uint64{0}, members(etcdserverpb.AlarmRequest_DEACTIVATE))
 	require.Empty(t, members(etcdserverpb.AlarmRequest_GET))
+}
+
+func TestRawGRPCHashKVRevisionBoundaries(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterMaintenanceServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///hashkv-client",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	kv := etcdserverpb.NewKVClient(conn)
+	maintenance := etcdserverpb.NewMaintenanceClient(conn)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	put, err := kv.Put(ctx, &etcdserverpb.PutRequest{
+		Key: []byte("/a999/hashkv-client/key"), Value: []byte("value"),
+	})
+	require.NoError(t, err)
+
+	negative, err := maintenance.HashKV(ctx, &etcdserverpb.HashKVRequest{Revision: -1})
+	require.NoError(t, err)
+	require.Equal(t, int64(-1), negative.HashRevision)
+	require.Equal(t, uint32(0x40a4756d), negative.Hash)
+	requireRawHashKVHeaderAtOrAfter(t, negative.Header, put.Header.Revision)
+	require.True(t, negative.CompactRevision == -1 || negative.CompactRevision > 0)
+
+	latest, err := maintenance.HashKV(ctx, &etcdserverpb.HashKVRequest{})
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, latest.HashRevision, put.Header.Revision)
+	requireRawHashKVHeaderAtOrAfter(t, latest.Header, put.Header.Revision)
+	require.True(t, latest.CompactRevision == -1 || latest.CompactRevision > 0)
+
+	current, err := maintenance.HashKV(ctx, &etcdserverpb.HashKVRequest{Revision: put.Header.Revision})
+	require.NoError(t, err)
+	require.Equal(t, put.Header.Revision, current.HashRevision)
+	requireRawHashKVHeaderAtOrAfter(t, current.Header, put.Header.Revision)
+	require.True(t, current.CompactRevision == -1 || current.CompactRevision > 0)
+
+	for _, revision := range []int64{put.Header.Revision + 100, math.MaxInt64} {
+		_, hashErr := maintenance.HashKV(ctx, &etcdserverpb.HashKVRequest{Revision: revision})
+		require.Error(t, hashErr)
+		require.Equal(t, codes.OutOfRange, status.Code(hashErr))
+		require.Equal(t, "etcdserver: mvcc: required revision is a future revision", status.Convert(hashErr).Message())
+	}
+}
+
+func requireRawHashKVHeaderAtOrAfter(t *testing.T, header *etcdserverpb.ResponseHeader, revision int64) {
+	t.Helper()
+	require.NotNil(t, header)
+	require.NotZero(t, header.ClusterId)
+	require.NotZero(t, header.MemberId)
+	require.Positive(t, header.RaftTerm)
+	require.GreaterOrEqual(t, header.Revision, revision)
 }
