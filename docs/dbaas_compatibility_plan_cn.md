@@ -16311,6 +16311,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `restore verification receipt is incomplete`，对已发布 receipt 的二次写入必须保留
   `os.ErrExist`，且不得替换已有证据。该门禁防止逻辑恢复验证证据链在失败或重复执行时被
   覆盖、误发布或丢失可恢复的文件系统错误分类。
+- A1331 固定 logical backup 截断/损坏 artifact 错误契约：
+  `OpenVerified` 对截断 JSONL、损坏 record value 和 footer 后追加数据分别固定为
+  `invalid backup line`、`invalid backup record 1 value` 和
+  `backup contains data after footer`。该门禁防止恢复前校验把截断备份、base64 损坏和
+  footer 后注入混成笼统失败，提升备份不可变证据链的定位能力。
 
 ### P2：运维兼容和长期验证
 

@@ -132,20 +132,23 @@ func TestOpenVerifiedRejectsTruncatedAndCorruptBackup(t *testing.T) {
 	complete, err := os.ReadFile(path)
 	require.NoError(t, err)
 
-	tests := map[string][]byte{
-		"missing footer": complete[:len(complete)/2],
-		"corrupt record": []byte(`{"type":"kubebrain.logical.v1","prefix":"/registry","revision":42}
+	tests := map[string]struct {
+		contents []byte
+		want     string
+	}{
+		"missing footer": {contents: complete[:len(complete)/2], want: "invalid backup line"},
+		"corrupt record": {contents: []byte(`{"type":"kubebrain.logical.v1","prefix":"/registry","revision":42}
 {"key":"L3JlZ2lzdHJ5L2E=","value":"corrupt","mod_revision":0,"create_revision":0,"version":0,"lease":0}
 {"type":"footer","records":1,"sha256":"bad"}
-`),
-		"trailing data": append(append([]byte(nil), complete...), []byte("{}\n")...),
+`), want: "invalid backup record 1 value"},
+		"trailing data": {contents: append(append([]byte(nil), complete...), []byte("{}\n")...), want: "backup contains data after footer"},
 	}
-	for name, contents := range tests {
+	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
 			corruptPath := filepath.Join(t.TempDir(), "corrupt.jsonl")
-			require.NoError(t, os.WriteFile(corruptPath, contents, 0o600))
+			require.NoError(t, os.WriteFile(corruptPath, tc.contents, 0o600))
 			_, err := OpenVerified(corruptPath)
-			require.Error(t, err)
+			require.ErrorContains(t, err, tc.want)
 		})
 	}
 }
