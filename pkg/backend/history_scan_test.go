@@ -346,7 +346,7 @@ func TestHistoryScanWaiterHonorsOwnCtx(t *testing.T) {
 	start := time.Now()
 	_, err = b.historyWatchEvents(wctx, baseKey, createA.Header.Revision, cur, 0)
 	elapsed := time.Since(start)
-	require.Error(t, err)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
 	require.Less(t, elapsed, 2*time.Second, "waiter must return on its own ctx, not wait for the shared scan")
 
 	close(gkv.release)

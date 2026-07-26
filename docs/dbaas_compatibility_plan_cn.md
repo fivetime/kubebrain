@@ -16152,6 +16152,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   收紧到 `txn compare guard conflict`，metadata read 注入故障收紧到
   `injected iter failure`。该门禁防止后台 revision collector 修复退化成吞错、错分
   compaction/guard conflict，或把瞬时 storage 故障伪装成成功。
+- A1305 固定 history watch 失败原因：
+  low-cache watch 回退到 storage history scan 时，瞬时 `Iter` 故障不能被伪装成 compaction。
+  本轮把 `TestBackendWatchLowCacheTransientFailureNotCompaction` 收紧为必须包含
+  `injected iter failure`，并把 `TestHistoryScanWaiterHonorsOwnCtx` 收紧为等待共享 scan
+  的 waiter 必须返回自身 `context.DeadlineExceeded`。该门禁防止 history scan singleflight
+  和 low-cache fallback 重构时错分瞬时存储故障、压住调用方 deadline 或诱导客户端错误 relist。
 
 ### P2：运维兼容和长期验证
 

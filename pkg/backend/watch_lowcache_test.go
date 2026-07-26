@@ -65,7 +65,7 @@ func TestBackendWatchLowCacheTransientFailureNotCompaction(t *testing.T) {
 	atomic.StoreInt32(&fkv.remaining, 1)
 
 	ch, err := b.Watch(ctx, baseKey, createA.Header.Revision)
-	require.Error(t, err)
+	require.ErrorContains(t, err, "injected iter failure")
 	require.Nil(t, ch)
 	require.NotContains(t, err.Error(), "compacted",
 		"a transient history-scan failure must not be reported as compaction")
