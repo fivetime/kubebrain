@@ -27,6 +27,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/mvccpb"
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -1073,6 +1074,7 @@ func TestClientRangeRevisionBoundaries(t *testing.T) {
 
 	_, err = client.Get(ctx, key, clientv3.WithRev(math.MaxInt64))
 	requireClientRangeError(t, err, codes.Unknown, "etcdserver: mvcc: required revision is a future revision")
+	require.ErrorIs(t, err, rpctypes.ErrFutureRev)
 }
 
 func TestRawGRPCRangeOptionInteractions(t *testing.T) {

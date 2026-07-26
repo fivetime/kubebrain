@@ -15213,6 +15213,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   bufconn official clientv3 HashKV revision boundary 回归，保留 status/message 断言并新增
   typed error 断言。该门禁防止 maintenance client adapter 或 backend hash revision 检查
   重构导致运维校验工具无法分类“请求未来 revision”。
+- A1150 固定 clientv3 Range future revision typed error：
+  对照 `/root/etcd/tests/integration/clientv3/kv_test.go:TestKVCompactError` 对 future revision
+  错误的 typed 外观，普通 `Get(..., WithRev(math.MaxInt64))` 必须可由 `errors.Is(...,
+  rpctypes.ErrFutureRev)` 识别。本轮加强既有 bufconn official clientv3 Range revision boundary
+  回归，保留 status/message 断言并新增 typed error 断言。该门禁防止 range client adapter
+  或 revision validation 重构把 future revision 错误降级成不可分类的普通 gRPC status。
 
 ### P2：运维兼容和长期验证
 
