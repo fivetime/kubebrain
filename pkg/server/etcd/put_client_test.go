@@ -214,9 +214,7 @@ func TestClientPutEmptyKeyIsTyped(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_, err = client.Put(ctx, "", "value")
-	require.ErrorIs(t, err, rpctypes.ErrEmptyKey)
-	require.Equal(t, codes.Unknown, status.Code(err))
-	require.Equal(t, "etcdserver: key is not provided", status.Convert(err).Message())
+	requireClientPutError(t, err, codes.Unknown, "etcdserver: key is not provided", rpctypes.ErrEmptyKey)
 }
 
 func TestClientPutServerSideRequestTooLargeIsTyped(t *testing.T) {
@@ -246,9 +244,7 @@ func TestClientPutServerSideRequestTooLargeIsTyped(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_, err = client.Put(ctx, "/a1146/put-too-large", string(make([]byte, 1024)))
-	require.ErrorIs(t, err, rpctypes.ErrRequestTooLarge)
-	require.Equal(t, codes.Unknown, status.Code(err))
-	require.Equal(t, "etcdserver: request is too large", status.Convert(err).Message())
+	requireClientPutError(t, err, codes.Unknown, "etcdserver: request is too large", rpctypes.ErrRequestTooLarge)
 }
 
 func TestClientPutNoSpaceIsTyped(t *testing.T) {
@@ -279,9 +275,7 @@ func TestClientPutNoSpaceIsTyped(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = client.Put(ctx, "x", "y")
-	require.ErrorIs(t, err, rpctypes.ErrNoSpace)
-	require.Equal(t, codes.Unknown, status.Code(err))
-	require.Equal(t, "etcdserver: mvcc: database space exceeded", status.Convert(err).Message())
+	requireClientPutError(t, err, codes.Unknown, "etcdserver: mvcc: database space exceeded", rpctypes.ErrNoSpace)
 }
 
 func TestClientPutClientSideSendLimitIsResourceExhausted(t *testing.T) {
@@ -467,4 +461,14 @@ func leaseClientAttachedKeys(keys [][]byte) []string {
 		out = append(out, string(key))
 	}
 	return out
+}
+
+func requireClientPutError(t *testing.T, err error, code codes.Code, message string, wantErrorIs ...error) {
+	t.Helper()
+	require.Error(t, err)
+	for _, want := range wantErrorIs {
+		require.ErrorIs(t, err, want)
+	}
+	require.Equal(t, code, status.Code(err))
+	require.Equal(t, message, status.Convert(err).Message())
 }

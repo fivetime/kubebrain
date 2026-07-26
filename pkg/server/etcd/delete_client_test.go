@@ -209,9 +209,7 @@ func TestClientDeleteEmptyKeyIsTyped(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_, err = client.Delete(ctx, "")
-	require.ErrorIs(t, err, rpctypes.ErrEmptyKey)
-	require.Equal(t, codes.Unknown, status.Code(err))
-	require.Equal(t, "etcdserver: key is not provided", status.Convert(err).Message())
+	requireClientDeleteError(t, err, codes.Unknown, "etcdserver: key is not provided", rpctypes.ErrEmptyKey)
 }
 
 type deleteClientKV struct {
@@ -234,4 +232,14 @@ func deleteClientKVs(kvs []*mvccpb.KeyValue, prefix string) []deleteClientKV {
 		})
 	}
 	return out
+}
+
+func requireClientDeleteError(t *testing.T, err error, code codes.Code, message string, wantErrorIs ...error) {
+	t.Helper()
+	require.Error(t, err)
+	for _, want := range wantErrorIs {
+		require.ErrorIs(t, err, want)
+	}
+	require.Equal(t, code, status.Code(err))
+	require.Equal(t, message, status.Convert(err).Message())
 }

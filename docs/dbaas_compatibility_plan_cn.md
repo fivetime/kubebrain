@@ -15745,6 +15745,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   future revision 拒绝路径统一到 `errors.Is`、client `codes.Unknown` 和 reference message helper。
   该门禁防止 Txn client wrapper、request validation 或 selected-branch validation 重构后只保留
   某一类断言，漏掉 typed error、status code 或 message 的漂移。
+- A1233 收敛 official clientv3 Put/Delete 错误三件套：
+  A1213 已覆盖 Put request-too-large，A1232 已覆盖 Txn 写路径错误外观，本轮把 clientv3
+  Put 的 empty key、server-side request-too-large、NOSPACE，以及 Delete empty key 统一到
+  `errors.Is`、client `codes.Unknown` 和 reference message helper。该门禁防止 KV client wrapper、
+  request-size admission 或 quota guard 重构后只保留部分断言，漏掉 typed error/code/message 漂移。
 
 ### P2：运维兼容和长期验证
 
