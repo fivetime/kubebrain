@@ -20,7 +20,9 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 )
 
 type jwtTestKeys struct {
@@ -93,7 +95,7 @@ func TestJWTProviderAlgorithmsAndExpiry(t *testing.T) {
 			require.Equal(t, "root", claims.Username)
 			require.Equal(t, uint64(17), claims.Revision)
 			_, err = provider.verify(token, now.Add(2*time.Second))
-			require.ErrorIs(t, err, rpctypes.ErrInvalidAuthToken)
+			requireJWTError(t, err, rpctypes.ErrInvalidAuthToken, codes.Unknown, "etcdserver: invalid auth token")
 		})
 	}
 }
@@ -225,7 +227,7 @@ func TestJWTManagerUsesAuthRevisionAndRejectsOldToken(t *testing.T) {
 
 	require.NoError(t, manager.roleAdd(context.Background(), "reader"))
 	_, err = server.Range(ctx, &etcdserverpb.RangeRequest{Key: []byte("revision-check")})
-	require.ErrorIs(t, err, rpctypes.ErrAuthOldRevision)
+	requireJWTError(t, err, rpctypes.ErrAuthOldRevision, codes.Unknown, "etcdserver: revision of auth store is old")
 }
 
 func TestJWTAuthRPCInvalidatesOldTokenAfterAuthMutation(t *testing.T) {
@@ -259,7 +261,7 @@ func TestJWTAuthRPCInvalidatesOldTokenAfterAuthMutation(t *testing.T) {
 	_, err = server.RoleAdd(oldCtx, &etcdserverpb.AuthRoleAddRequest{Name: "jwt-revision-invalidator"})
 	require.NoError(t, err)
 	_, err = server.Range(oldCtx, &etcdserverpb.RangeRequest{Key: key})
-	require.ErrorIs(t, err, rpctypes.ErrAuthOldRevision)
+	requireJWTError(t, err, rpctypes.ErrAuthOldRevision, codes.Unknown, "etcdserver: revision of auth store is old")
 
 	reauthenticated, err := server.Authenticate(ctx, &etcdserverpb.AuthenticateRequest{
 		Name: "root", Password: "root-secret",
@@ -291,9 +293,9 @@ func TestJWTEmptyAndZeroClaimsMatchEtcdAuthorization(t *testing.T) {
 	require.NoError(t, err)
 	emptyCtx := metadata.NewIncomingContext(context.Background(), metadata.Pairs(rpctypes.TokenFieldNameGRPC, emptyUser))
 	_, err = server.Range(emptyCtx, &etcdserverpb.RangeRequest{Key: []byte("empty-user")})
-	require.ErrorIs(t, err, rpctypes.ErrPermissionDenied)
+	requireJWTError(t, err, rpctypes.ErrPermissionDenied, codes.Unknown, "etcdserver: permission denied")
 	_, err = server.AuthDisable(emptyCtx, &etcdserverpb.AuthDisableRequest{})
-	require.ErrorIs(t, err, rpctypes.ErrUserEmpty)
+	requireJWTError(t, err, rpctypes.ErrUserEmpty, codes.Unknown, "etcdserver: user name is empty")
 
 	rootZero, err := server.tokens.jwt.issue("root", 0, now)
 	require.NoError(t, err)
@@ -302,7 +304,7 @@ func TestJWTEmptyAndZeroClaimsMatchEtcdAuthorization(t *testing.T) {
 	require.Equal(t, uint64(0), claims.Revision)
 	zeroCtx := metadata.NewIncomingContext(context.Background(), metadata.Pairs(rpctypes.TokenFieldNameGRPC, rootZero))
 	_, err = server.Range(zeroCtx, &etcdserverpb.RangeRequest{Key: []byte("zero-revision")})
-	require.ErrorIs(t, err, rpctypes.ErrUserEmpty)
+	requireJWTError(t, err, rpctypes.ErrUserEmpty, codes.Unknown, "etcdserver: user name is empty")
 	_, err = server.AuthDisable(zeroCtx, &etcdserverpb.AuthDisableRequest{})
 	require.NoError(t, err)
 }
@@ -320,5 +322,12 @@ func TestJWTProviderRejectsMalformedOptionsAndWrongAlgorithm(t *testing.T) {
 	token, err := hs512.issue("root", 1, time.Now())
 	require.NoError(t, err)
 	_, err = hs256.verify(token, time.Now())
-	require.ErrorIs(t, err, rpctypes.ErrInvalidAuthToken)
+	requireJWTError(t, err, rpctypes.ErrInvalidAuthToken, codes.Unknown, "etcdserver: invalid auth token")
+}
+
+func requireJWTError(t *testing.T, err error, want error, code codes.Code, message string) {
+	t.Helper()
+	require.ErrorIs(t, err, want)
+	require.Equal(t, code, status.Code(err))
+	require.Equal(t, message, status.Convert(err).Message())
 }

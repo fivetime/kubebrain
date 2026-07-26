@@ -15711,6 +15711,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   拒绝路径固定为同时满足 `errors.Is`、direct `codes.Unknown` 和 reference message。该门禁防止
   token provider、signing key 持久化或 password generation 重构后只保留 typed error，导致 Auth
   RPC 映射前的 token failure message 漂移。
+- A1227 固定 Auth JWT direct 错误三件套：
+  A1197/A1200/A1226 已覆盖 password/token 生命周期和 simple provider direct 错误外观，本轮把
+  JWT provider 过期 token、sign method mismatch、auth mutation 后旧 revision token、空用户名
+  claims 和零 revision claims 触发的 direct 拒绝路径固定为同时满足 `errors.Is`、direct
+  `codes.Unknown` 和 reference message。该门禁防止 JWT provider、claim coercion 或 auth
+  revision fence 重构后只保留 typed error，导致 raw/clientv3 映射前的 JWT failure message 漂移。
 
 ### P2：运维兼容和长期验证
 
