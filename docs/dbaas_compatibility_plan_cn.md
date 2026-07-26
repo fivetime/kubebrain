@@ -15266,6 +15266,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   official clientv3 auth 回归的剩余可映射 permission-denied 路径；直接以
   `codes.PermissionDenied` 暴露的 raw Alarm/Snapshot 路径继续按 status/message 固定，避免把
   未经 client adapter 包装的外观误标为 typed 契约。
+- A1158 固定 clientv3 Auth invalid-token/auth-failed typed error：
+  对照 `/root/etcd/tests/integration/clientv3/user_test.go:TestUserErrorAuth` 与
+  `/root/etcd/api/v3rpc/rpctypes/error.go` 的认证错误映射，密码变更后旧 token 访问必须可由
+  `errors.Is(..., rpctypes.ErrInvalidAuthToken)` 识别，旧密码、已删除用户和已轮换密码的
+  `Authenticate` 失败必须可由 `errors.Is(..., rpctypes.ErrAuthFailed)` 识别。本轮加强既有
+  bufconn official clientv3 auth 生命周期回归，保留 status/message 与新密码成功访问断言，
+  同时固定可分类认证错误外观。
 
 ### P2：运维兼容和长期验证
 

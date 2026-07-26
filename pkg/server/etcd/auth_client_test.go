@@ -162,7 +162,7 @@ func TestClientAuthPasswordChangeInvalidatesOldPasswordAndToken(t *testing.T) {
 	_, err = root.UserChangePassword(ctx, "alice", "alice-changed")
 	require.NoError(t, err)
 	_, oldTokenErr := aliceOldToken.Get(ctx, "/a1058/auth-client/key")
-	requireAuthClientError(t, oldTokenErr, codes.Unknown, "etcdserver: invalid auth token")
+	requireAuthClientError(t, oldTokenErr, codes.Unknown, "etcdserver: invalid auth token", rpctypes.ErrInvalidAuthToken)
 
 	_, oldPasswordErr := clientv3.New(clientv3.Config{
 		Endpoints:   []string{"bufnet"},
@@ -171,7 +171,7 @@ func TestClientAuthPasswordChangeInvalidatesOldPasswordAndToken(t *testing.T) {
 		Password:    "alice-secret",
 		DialOptions: dialOptions,
 	})
-	requireAuthClientError(t, oldPasswordErr, codes.Unknown, "etcdserver: authentication failed, invalid user ID or password")
+	requireAuthClientError(t, oldPasswordErr, codes.Unknown, "etcdserver: authentication failed, invalid user ID or password", rpctypes.ErrAuthFailed)
 
 	aliceNewPassword := newClient("alice", "alice-changed")
 	afterChange, err := aliceNewPassword.Get(ctx, "/a1058/auth-client/key")
@@ -225,7 +225,7 @@ func TestClientAuthAddUserAfterDeleteAndPasswordRotation(t *testing.T) {
 	_, err = root.UserDelete(ctx, "a1136-user")
 	require.NoError(t, err)
 	_, err = bootstrap.Authenticate(ctx, "a1136-user", "first")
-	requireAuthClientError(t, err, codes.Unknown, "etcdserver: authentication failed, invalid user ID or password")
+	requireAuthClientError(t, err, codes.Unknown, "etcdserver: authentication failed, invalid user ID or password", rpctypes.ErrAuthFailed)
 
 	_, err = root.UserAdd(ctx, "a1136-user", "first")
 	require.NoError(t, err)
@@ -236,9 +236,9 @@ func TestClientAuthAddUserAfterDeleteAndPasswordRotation(t *testing.T) {
 	_, err = root.UserChangePassword(ctx, "a1136-user", "third")
 	require.NoError(t, err)
 	_, err = bootstrap.Authenticate(ctx, "a1136-user", "first")
-	requireAuthClientError(t, err, codes.Unknown, "etcdserver: authentication failed, invalid user ID or password")
+	requireAuthClientError(t, err, codes.Unknown, "etcdserver: authentication failed, invalid user ID or password", rpctypes.ErrAuthFailed)
 	_, err = bootstrap.Authenticate(ctx, "a1136-user", "second")
-	requireAuthClientError(t, err, codes.Unknown, "etcdserver: authentication failed, invalid user ID or password")
+	requireAuthClientError(t, err, codes.Unknown, "etcdserver: authentication failed, invalid user ID or password", rpctypes.ErrAuthFailed)
 	_, err = bootstrap.Authenticate(ctx, "a1136-user", "third")
 	require.NoError(t, err)
 }
