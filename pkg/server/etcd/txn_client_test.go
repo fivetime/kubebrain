@@ -756,6 +756,51 @@ func TestClientTxnCrossKeyFastShapeMatchesEtcd(t *testing.T) {
 	require.Empty(t, stale.Kvs)
 }
 
+func TestClientTxnPrefixCompareRequiresAllKeysToMatch(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	prefix := fmt.Sprintf("/a1139/txn-prefix-compare/%d/foo/", time.Now().UnixNano())
+	foo, err := client.Put(ctx, prefix, "bar")
+	require.NoError(t, err)
+	_, err = client.Put(ctx, prefix+"a", "baz")
+	require.NoError(t, err)
+
+	txn, err := client.Txn(ctx).
+		If(clientv3.Compare(clientv3.CreateRevision(prefix), "=", foo.Header.Revision).WithPrefix()).
+		Then(clientv3.OpPut(prefix+"result", "success")).
+		Else(clientv3.OpPut(prefix+"result", "failure")).
+		Commit()
+	require.NoError(t, err)
+	require.False(t, txn.Succeeded)
+
+	result, err := client.Get(ctx, prefix+"result")
+	require.NoError(t, err)
+	require.Len(t, result.Kvs, 1)
+	require.Equal(t, "failure", string(result.Kvs[0].Value))
+}
+
 func TestClientNestedTxnResponseAndFinalState(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

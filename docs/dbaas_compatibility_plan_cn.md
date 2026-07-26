@@ -15130,6 +15130,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `a`、`b`、`c`、`c/abc`、`d` 复刻 etcd 场景，固定全范围删除、prevKV 顺序和删除后
   空范围外观。该门禁防止 range-end 转换、二进制下界处理或 delete scanner 重构让控制器
   清理流程漏删用户 key 或打乱审计依赖的 prevKV 顺序。
+- A1139 固定 clientv3 Txn prefix compare 必须全量匹配：
+  对照 `/root/etcd/tests/integration/clientv3/txn_test.go:TestTxnCompareRange`，
+  `Compare(CreateRevision(key), "=", rev).WithPrefix()` 不能只比较前缀范围的第一个
+  key；只要范围内任一 key 的 create revision 不等于目标 revision，事务就必须走
+  failure 分支。本轮新增 bufconn official clientv3 回归，先写入 `foo/` 和 `foo/a`，
+  再用 `foo/` 的 create revision 做 prefix compare，要求事务 `Succeeded=false` 且只写入
+  failure 结果。该门禁防止 range compare evaluator、TiKV scanner 或 client op 转换重构把
+  prefix CAS 误降级为单 key CAS，导致控制器批量条件更新在部分对象不匹配时仍错误提交。
 
 ### P2：运维兼容和长期验证
 
