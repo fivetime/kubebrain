@@ -15122,6 +15122,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   回归，先建立连接并写入 key，记录 `ActiveConnection`，随后用 canceled context 调用 `Get`
   断言 nil response、typed cancel error 和连接对象不变，再做一次正常读取。该门禁防止
   read barrier、retry loop 或 interceptor 重构把调用方取消误升级为连接级失败。
+- A1138 固定 clientv3 Delete WithFromKey 全范围删除外观：
+  对照 `/root/etcd/tests/integration/clientv3/kv_test.go:TestKVDeleteRange`，
+  `Delete("\x00", WithFromKey())` 必须删除 NUL 哨兵之后的全部用户 key，返回精确
+  `Deleted` 计数，并在 `WithPrevKV` 下按 key 字节序暴露 `PrevKvs`；随后
+  `Get("a", WithFromKey())` 应为空。本轮新增 bufconn official clientv3 回归，用
+  `a`、`b`、`c`、`c/abc`、`d` 复刻 etcd 场景，固定全范围删除、prevKV 顺序和删除后
+  空范围外观。该门禁防止 range-end 转换、二进制下界处理或 delete scanner 重构让控制器
+  清理流程漏删用户 key 或打乱审计依赖的 prevKV 顺序。
 
 ### P2：运维兼容和长期验证
 

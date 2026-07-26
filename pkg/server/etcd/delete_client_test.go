@@ -134,6 +134,52 @@ func TestClientDeleteRangeDifferentialScenario(t *testing.T) {
 	}, deleteClientKVs(final.Kvs, prefix))
 }
 
+func TestClientDeleteFromKeyRemovesAllUserKeys(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	server.Register(grpcServer)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	keys := []string{"a", "b", "c", "c/abc", "d"}
+	for _, key := range keys {
+		_, err = client.Put(ctx, key, "value-"+key)
+		require.NoError(t, err)
+	}
+
+	deleted, err := client.Delete(ctx, "\x00", clientv3.WithFromKey(), clientv3.WithPrevKV())
+	require.NoError(t, err)
+	require.Equal(t, int64(len(keys)), deleted.Deleted)
+	require.Len(t, deleted.PrevKvs, len(keys))
+	gotPrevKeys := make([]string, 0, len(deleted.PrevKvs))
+	for _, kv := range deleted.PrevKvs {
+		gotPrevKeys = append(gotPrevKeys, string(kv.Key))
+	}
+	require.Equal(t, keys, gotPrevKeys)
+
+	remaining, err := client.Get(ctx, "a", clientv3.WithFromKey())
+	require.NoError(t, err)
+	require.Empty(t, remaining.Kvs)
+}
+
 type deleteClientKV struct {
 	key            string
 	value          string
