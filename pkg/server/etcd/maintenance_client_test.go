@@ -92,6 +92,70 @@ func TestRawGRPCAlarmGetAndZeroMemberRoundTrip(t *testing.T) {
 	require.Empty(t, members(etcdserverpb.AlarmRequest_GET))
 }
 
+func TestRawGRPCAlarmMemberSetRoundTrip(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterMaintenanceServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///alarm-member-set-client",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	maintenance := etcdserverpb.NewMaintenanceClient(conn)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	const (
+		first  = uint64(0xa1003)
+		second = uint64(0xa1004)
+	)
+	nospaceMembers := func(response *etcdserverpb.AlarmResponse) []uint64 {
+		t.Helper()
+		members := make([]uint64, 0, len(response.Alarms))
+		for _, alarm := range response.Alarms {
+			require.Equal(t, etcdserverpb.AlarmType_NOSPACE, alarm.Alarm)
+			members = append(members, alarm.MemberID)
+		}
+		return members
+	}
+	alarmCall := func(action etcdserverpb.AlarmRequest_AlarmAction, memberID uint64) []uint64 {
+		t.Helper()
+		resp, callErr := maintenance.Alarm(ctx, &etcdserverpb.AlarmRequest{
+			Action: action, Alarm: etcdserverpb.AlarmType_NOSPACE, MemberID: memberID,
+		})
+		require.NoError(t, callErr)
+		return nospaceMembers(resp)
+	}
+	list := func() []uint64 {
+		t.Helper()
+		resp, callErr := maintenance.Alarm(ctx, &etcdserverpb.AlarmRequest{
+			Action: etcdserverpb.AlarmRequest_GET, Alarm: etcdserverpb.AlarmType_NOSPACE,
+		})
+		require.NoError(t, callErr)
+		return nospaceMembers(resp)
+	}
+
+	require.Empty(t, alarmCall(etcdserverpb.AlarmRequest_DEACTIVATE, first))
+	require.Empty(t, alarmCall(etcdserverpb.AlarmRequest_DEACTIVATE, second))
+	require.Equal(t, []uint64{first}, alarmCall(etcdserverpb.AlarmRequest_ACTIVATE, first))
+	require.Equal(t, []uint64{first}, alarmCall(etcdserverpb.AlarmRequest_ACTIVATE, first))
+	require.Equal(t, []uint64{second}, alarmCall(etcdserverpb.AlarmRequest_ACTIVATE, second))
+	require.ElementsMatch(t, []uint64{first, second}, list())
+	require.Equal(t, []uint64{first}, alarmCall(etcdserverpb.AlarmRequest_DEACTIVATE, first))
+	require.Equal(t, []uint64{second}, list())
+	require.Empty(t, alarmCall(etcdserverpb.AlarmRequest_DEACTIVATE, first))
+	require.Equal(t, []uint64{second}, alarmCall(etcdserverpb.AlarmRequest_DEACTIVATE, second))
+	require.Empty(t, list())
+}
+
 func TestRawGRPCCombinedAlarmBlocksWritesAndRecovers(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

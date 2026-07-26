@@ -14055,6 +14055,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   下返回 raw `DataLoss`，解除 CORRUPT 后 Put/LeaseGrant 返回 `ResourceExhausted` 而
   delete-only Txn 成功，最终解除 NOSPACE 后 Put 恢复成功，防止维护面服务层正确但真实
   gRPC client、interceptor 或 alarm 状态恢复路径回退。
+- A1002 固定 raw gRPC alarm member set 的幂等集合语义：
+  `alarm_member_set` differential 证明同一 NOSPACE alarm 可以同时绑定多个 memberID，
+  重复 activate 只返回该 member，GET NOSPACE 返回完整集合，deactivate 只解除请求的
+  member，重复 deactivate 返回空且不会影响其他 member。本轮新增 bufconn raw gRPC
+  回归，直接通过 `etcdserverpb.MaintenanceClient` 对两个显式 memberID 执行
+  deactivate 清理、activate/idempotent activate、GET、局部 deactivate、重复 deactivate、
+  final deactivate 和 final GET，断言返回 member 集合与 reference contract 一致，
+  防止 alarm 存储或 gRPC handler 重构把 NOSPACE 简化成单全局布尔状态。
 
 ### P2：运维兼容和长期验证
 
