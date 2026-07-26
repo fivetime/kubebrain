@@ -1332,15 +1332,13 @@ func TestRangeRejectsInvalidSortOptions(t *testing.T) {
 		Key:       []byte("/registry/pods/invalid-sort"),
 		SortOrder: etcdserverpb.RangeRequest_SortOrder(99),
 	})
-	require.Error(t, err)
-	require.Equal(t, codes.InvalidArgument, status.Code(err))
+	requireDirectKVError(t, err, rpctypes.ErrGRPCInvalidSortOption, codes.InvalidArgument, "etcdserver: invalid sort option")
 
 	_, err = server.Range(context.Background(), &etcdserverpb.RangeRequest{
 		Key:        []byte("/registry/pods/invalid-sort"),
 		SortTarget: etcdserverpb.RangeRequest_SortTarget(99),
 	})
-	require.Error(t, err)
-	require.Equal(t, codes.InvalidArgument, status.Code(err))
+	requireDirectKVError(t, err, rpctypes.ErrGRPCInvalidSortOption, codes.InvalidArgument, "etcdserver: invalid sort option")
 }
 
 func TestRangeFiltersByModRevision(t *testing.T) {

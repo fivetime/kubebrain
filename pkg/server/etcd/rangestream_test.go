@@ -25,6 +25,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/mvccpb"
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
@@ -323,24 +324,28 @@ func TestRangeStreamRejectsUnsupportedShapes(t *testing.T) {
 	cases := []struct {
 		name    string
 		req     *etcdserverpb.RangeRequest
+		wantErr error
 		code    codes.Code
 		message string
 	}{
 		{
 			name:    "emptyKey",
 			req:     &etcdserverpb.RangeRequest{},
+			wantErr: rpctypes.ErrGRPCEmptyKey,
 			code:    codes.InvalidArgument,
 			message: "etcdserver: key is not provided",
 		},
 		{
 			name:    "invalidSortOrder",
 			req:     &etcdserverpb.RangeRequest{Key: []byte("/a"), SortOrder: etcdserverpb.RangeRequest_SortOrder(99)},
+			wantErr: rpctypes.ErrGRPCInvalidSortOption,
 			code:    codes.InvalidArgument,
 			message: "etcdserver: invalid sort option",
 		},
 		{
 			name:    "invalidSortTarget",
 			req:     &etcdserverpb.RangeRequest{Key: []byte("/a"), SortTarget: etcdserverpb.RangeRequest_SortTarget(99)},
+			wantErr: rpctypes.ErrGRPCInvalidSortOption,
 			code:    codes.InvalidArgument,
 			message: "etcdserver: invalid sort option",
 		},
@@ -372,6 +377,9 @@ func TestRangeStreamRejectsUnsupportedShapes(t *testing.T) {
 			rs := &fakeRangeStreamServer{ctx: ctx}
 			err := server.RangeStream(c.req, rs)
 			require.Error(t, err)
+			if c.wantErr != nil {
+				require.ErrorIs(t, err, c.wantErr)
+			}
 			require.Equal(t, c.code, status.Code(err))
 			require.Equal(t, c.message, status.Convert(err).Message())
 			require.Empty(t, rs.sent, "no chunks on a rejected request")

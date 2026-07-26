@@ -15843,6 +15843,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   missing key、empty key、value/lease provided，以及 direct `DeleteRange` empty key 统一到
   对应 `rpctypes.ErrGRPC*`、reference code 和 message helper。该门禁防止 KV admission
   重构后只检查 code/message，漏掉 typed error 或 namespace empty-key 外观漂移。
+- A1252 固定 Range/RangeStream sort admission 错误三件套：
+  A1251 已覆盖 Put/DeleteRange 基础 admission，本轮把 direct `Range` 的 invalid sort order/target
+  和 `RangeStream` 的 empty key、invalid sort order/target 统一到 `ErrGRPCEmptyKey` 或
+  `ErrGRPCInvalidSortOption`、reference code 和 message。该门禁防止 Range option 校验或
+  RangeStream 入口复用重构后只保留 code/message，漏掉 etcd typed error 兼容性。
 
 ### P2：运维兼容和长期验证
 
