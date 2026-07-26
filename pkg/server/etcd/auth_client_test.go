@@ -645,6 +645,14 @@ func TestClientAuthImplicitRootRoleAndCredentialErrors(t *testing.T) {
 		"etcdserver: authentication failed, invalid user ID or password",
 		rpctypes.ErrAuthFailed,
 	)
+	_, rawWrongCredentialsErr := rawAnonymousAuth.Authenticate(ctx, &etcdserverpb.AuthenticateRequest{Name: "missing", Password: "wrong"})
+	requireAuthClientError(
+		t,
+		rawWrongCredentialsErr,
+		codes.InvalidArgument,
+		"etcdserver: authentication failed, invalid user ID or password",
+	)
+
 	_, noPasswordErr := client.Authenticate(ctx, "nopass", "password")
 	requireAuthClientError(
 		t,
@@ -652,6 +660,14 @@ func TestClientAuthImplicitRootRoleAndCredentialErrors(t *testing.T) {
 		codes.Unknown,
 		"auth: authentication failed, password was given for no password user",
 	)
+	_, rawNoPasswordErr := rawAnonymousAuth.Authenticate(ctx, &etcdserverpb.AuthenticateRequest{Name: "nopass", Password: "password"})
+	requireAuthClientError(
+		t,
+		rawNoPasswordErr,
+		codes.Unknown,
+		"auth: authentication failed, password was given for no password user",
+	)
+
 	rawRootAuth := etcdserverpb.NewAuthClient(rootClient.ActiveConnection())
 	disableResponse, err := rawRootAuth.AuthDisable(ctx, &etcdserverpb.AuthDisableRequest{})
 	require.NoError(t, err)

@@ -15536,6 +15536,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `FailedPrecondition`/role not found；撤销未授予的已有 role 返回
   `FailedPrecondition`/role is not granted。本轮加强既有 clientv3 user error 回归，防止直接
   Auth API 调用方看到错误 status code 或 user-role 关系校验漂移。
+- A1200 固定 raw gRPC Auth credential 错误外观：
+  延续 A1062/A1154 的 credential 契约到 generated `etcdserverpb.AuthClient`：missing user
+  raw `Authenticate` 必须返回 `InvalidArgument`/authentication failed；NoPassword 用户携带
+  password 的 raw `Authenticate` 必须保持 etcd 的 `Unknown` code 和
+  `auth: authentication failed, password was given for no password user` 文案。本轮加强既有
+  clientv3 credential error 回归，防止直接 Auth API 调用方看到错误 code 或 NoPassword 特例被
+  误归一化。
 
 ### P2：运维兼容和长期验证
 
