@@ -16030,6 +16030,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   user/path/query/duplicate，以及 initial-cluster entry、peer URL 和重复 peer identity
   从“只要有错”收紧为 exact error。该门禁防止 DBaaS 安装参数或 manifest 生成器出错时
   丢失具体 URL/member/identity 诊断，导致 MemberList/AutoSync 生产配置难以排障。
+- A1288 固定 RangeStream admission typed-error 边界：
+  A1252 已覆盖 RangeStream empty-key 与 invalid sort option 的 etcd typed error，本轮把
+  raw gRPC/clientv3 RangeStream admission helper 继续收紧：empty key 和非法 sort
+  必须保留 `ErrGRPCEmptyKey`/`ErrGRPCInvalidSortOption`，但 KubeBrain 扩展 RPC
+  暂不支持的 custom sort order 不能被误归类为 etcd 的 invalid sort option sentinel。
+  该门禁防止 RangeStream adapter 重构后把扩展能力缺口伪装成 etcd 原生参数错误，
+  影响 informer/list 客户端的降级判断和生产排障。
 
 ### P2：运维兼容和长期验证
 

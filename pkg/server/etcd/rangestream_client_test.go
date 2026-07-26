@@ -16,6 +16,7 @@ package etcd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -176,24 +177,29 @@ func TestClientRangeStreamValidationErrorsMatchEtcd(t *testing.T) {
 	tests := []struct {
 		name    string
 		req     *etcdserverpb.RangeRequest
+		wantErr error
+		notErr  error
 		code    codes.Code
 		message string
 	}{
 		{
 			name:    "empty-key",
 			req:     &etcdserverpb.RangeRequest{},
+			wantErr: rpctypes.ErrGRPCEmptyKey,
 			code:    codes.InvalidArgument,
 			message: "etcdserver: key is not provided",
 		},
 		{
 			name:    "invalid-sort-order",
 			req:     &etcdserverpb.RangeRequest{Key: []byte("/a989/rangestream-validation"), SortOrder: etcdserverpb.RangeRequest_SortOrder(99)},
+			wantErr: rpctypes.ErrGRPCInvalidSortOption,
 			code:    codes.InvalidArgument,
 			message: "etcdserver: invalid sort option",
 		},
 		{
 			name:    "invalid-sort-target",
 			req:     &etcdserverpb.RangeRequest{Key: []byte("/a989/rangestream-validation"), SortTarget: etcdserverpb.RangeRequest_SortTarget(99)},
+			wantErr: rpctypes.ErrGRPCInvalidSortOption,
 			code:    codes.InvalidArgument,
 			message: "etcdserver: invalid sort option",
 		},
@@ -203,6 +209,7 @@ func TestClientRangeStreamValidationErrorsMatchEtcd(t *testing.T) {
 				Key: []byte("/a989/rangestream-validation"), RangeEnd: []byte("/a989/rangestream-validation0"),
 				SortOrder: etcdserverpb.RangeRequest_DESCEND, SortTarget: etcdserverpb.RangeRequest_KEY,
 			},
+			notErr:  rpctypes.ErrGRPCInvalidSortOption,
 			code:    codes.Unimplemented,
 			message: "RangeStream does not support custom sort orders",
 		},
@@ -222,6 +229,7 @@ func TestClientRangeStreamValidationErrorsMatchEtcd(t *testing.T) {
 				SortOrder: etcdserverpb.RangeRequest_DESCEND, SortTarget: etcdserverpb.RangeRequest_KEY,
 				MinModRevision: 1,
 			},
+			notErr:  rpctypes.ErrGRPCInvalidSortOption,
 			code:    codes.Unimplemented,
 			message: "RangeStream does not support custom sort orders",
 		},
@@ -235,6 +243,12 @@ func TestClientRangeStreamValidationErrorsMatchEtcd(t *testing.T) {
 				_, err = stream.Recv()
 			}
 			require.Error(t, err)
+			if test.wantErr != nil {
+				require.ErrorIs(t, err, test.wantErr)
+			}
+			if test.notErr != nil {
+				require.False(t, errors.Is(err, test.notErr))
+			}
 			require.Equal(t, test.code, status.Code(err))
 			require.Equal(t, test.message, status.Convert(err).Message())
 		})

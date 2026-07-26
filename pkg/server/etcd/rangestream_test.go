@@ -324,6 +324,7 @@ func TestRangeStreamRejectsUnsupportedShapes(t *testing.T) {
 		name    string
 		req     *etcdserverpb.RangeRequest
 		wantErr error
+		notErr  error
 		code    codes.Code
 		message string
 	}{
@@ -357,6 +358,7 @@ func TestRangeStreamRejectsUnsupportedShapes(t *testing.T) {
 		{
 			name:    "sortOrder",
 			req:     &etcdserverpb.RangeRequest{Key: []byte("/a"), RangeEnd: []byte("/b"), SortOrder: etcdserverpb.RangeRequest_DESCEND, SortTarget: etcdserverpb.RangeRequest_KEY},
+			notErr:  rpctypes.ErrGRPCInvalidSortOption,
 			code:    codes.Unimplemented,
 			message: "RangeStream does not support custom sort orders",
 		},
@@ -367,6 +369,7 @@ func TestRangeStreamRejectsUnsupportedShapes(t *testing.T) {
 				SortOrder: etcdserverpb.RangeRequest_DESCEND, SortTarget: etcdserverpb.RangeRequest_KEY,
 				MinModRevision: 5,
 			},
+			notErr:  rpctypes.ErrGRPCInvalidSortOption,
 			code:    codes.Unimplemented,
 			message: "RangeStream does not support custom sort orders",
 		},
@@ -378,6 +381,9 @@ func TestRangeStreamRejectsUnsupportedShapes(t *testing.T) {
 			require.Error(t, err)
 			if c.wantErr != nil {
 				require.ErrorIs(t, err, c.wantErr)
+			}
+			if c.notErr != nil {
+				require.False(t, errors.Is(err, c.notErr))
 			}
 			require.Equal(t, c.code, status.Code(err))
 			require.Equal(t, c.message, status.Convert(err).Message())
