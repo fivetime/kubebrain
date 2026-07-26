@@ -1381,15 +1381,15 @@ func TestLeaseFollowerRejectsWriteRPCs(t *testing.T) {
 
 	ctx := context.Background()
 	_, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 30, ID: 4001})
-	require.Error(t, err)
+	requireLeaseFollowerUnavailable(t, err, "lease grant error addr is follower-test-peer leader test-peer")
 
 	_, err = server.LeaseRevoke(ctx, &etcdserverpb.LeaseRevokeRequest{ID: 4001})
-	require.Error(t, err)
+	requireLeaseFollowerUnavailable(t, err, "lease revoke error addr is follower-test-peer leader test-peer")
 
 	stream := &fakeLeaseKeepAliveServer{
 		requests: []*etcdserverpb.LeaseKeepAliveRequest{{ID: 4001}},
 	}
-	require.Error(t, server.LeaseKeepAlive(stream))
+	requireLeaseFollowerUnavailable(t, server.LeaseKeepAlive(stream), "lease keepalive error addr is follower-test-peer leader test-peer")
 }
 
 func TestLeaseFollowerProxiesUnaryGrant(t *testing.T) {

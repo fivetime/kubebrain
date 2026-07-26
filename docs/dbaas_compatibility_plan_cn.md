@@ -16166,6 +16166,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   有错误收紧为必须透传 `ErrGRPCKeyNotFound` 的 gRPC code/message。该门禁防止
   请求限流层在边界重构时吞掉真实业务错误、误报 request too large，或破坏官方
   client/v3 对 etcd 错误契约的判断。
+- A1307 固定 follower lease 写请求 demotion 错误：
+  follower 在 proxy 关闭时必须拒绝 LeaseGrant、LeaseRevoke 和 LeaseKeepAlive 写路径，
+  并以 `Unavailable` 携带具体 `lease ... error addr is ... leader ...` 信息，而不是
+  泛化成任意失败。本轮把 `TestLeaseFollowerRejectsWriteRPCs` 从只断言错误收紧为分别
+  固定 grant/revoke/keepalive 的 gRPC code/message。该门禁防止 lease 写路径在控制面
+  demotion、leader freshness 或 proxy 开关重构时把 follower 写误报为权限、not found、
+  canceled 或普通 backend 错误。
 
 ### P2：运维兼容和长期验证
 
