@@ -126,6 +126,45 @@ func TestClientLeaseReadBoundaryAndAttachedKeys(t *testing.T) {
 	require.True(t, containsLive)
 }
 
+func TestClientLeaseTimeToLiveRevokedLeaseReturnsMinusOne(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterLeaseServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	grant, err := client.Grant(ctx, 10)
+	require.NoError(t, err)
+	_, err = client.Revoke(ctx, grant.ID)
+	require.NoError(t, err)
+
+	ttl, err := client.TimeToLive(ctx, grant.ID, clientv3.WithAttachedKeys())
+	require.NoError(t, err)
+	require.NotNil(t, ttl.ResponseHeader)
+	require.Equal(t, grant.ID, ttl.ID)
+	require.Equal(t, int64(-1), ttl.TTL)
+	require.Zero(t, ttl.GrantedTTL)
+	require.Empty(t, ttl.Keys)
+}
+
 func TestClientLeaseOperationsAfterCloseAreBoundedAndDoNotCommit(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

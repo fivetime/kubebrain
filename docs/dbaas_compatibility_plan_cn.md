@@ -15170,6 +15170,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   clientv3 回归，用两个不可比较 context 对同一 lease 建立 keepalive，分别验证初始 TTL
   响应、单 context cancel 隔离和 client close 后关闭。该门禁防止 keepalive map key、
   stream fanout 或 client teardown 重构让 session/lock 续租 goroutine 泄漏或互相误关。
+- A1144 固定 clientv3 Lease TimeToLive revoked lease 外观：
+  对照 `/root/etcd/tests/integration/clientv3/lease/lease_test.go:TestLeaseTimeToLiveLeaseNotFound`，
+  对已 revoke 的 lease 调用 `TimeToLive` 不能返回 NotFound 错误；必须返回带 header 的响应，
+  `ID` 保持请求 lease ID，`TTL=-1`，`GrantedTTL=0`，`WithAttachedKeys` 下 keys 为空。本轮新增
+  bufconn official clientv3 回归，grant 后立即 revoke，再查询 TTL 并固定上述外观。该门禁防止
+  lease metadata 清理、错误映射或 client adapter 重构破坏控制器对“租约已消失”的无错误探测路径。
 
 ### P2：运维兼容和长期验证
 
