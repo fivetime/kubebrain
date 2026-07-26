@@ -1045,7 +1045,7 @@ func TestRawGRPCRangeRevisionBoundaries(t *testing.T) {
 		require.NoError(t, rangeErr)
 	}
 	_, err = kv.Range(ctx, &etcdserverpb.RangeRequest{Key: key, Revision: math.MaxInt64})
-	requireRawGRPCRangeRevisionError(t, err, codes.OutOfRange, "etcdserver: mvcc: required revision is a future revision")
+	requireRawGRPCRangeRevisionError(t, err, codes.OutOfRange, "etcdserver: mvcc: required revision is a future revision", rpctypes.ErrGRPCFutureRev)
 
 	selectedNegative := &etcdserverpb.TxnRequest{
 		Success: []*etcdserverpb.RequestOp{rawGRPCRangeRequestOp(&etcdserverpb.RangeRequest{
@@ -1053,7 +1053,7 @@ func TestRawGRPCRangeRevisionBoundaries(t *testing.T) {
 		})},
 	}
 	_, err = kv.Txn(ctx, selectedNegative)
-	requireRawGRPCRangeRevisionError(t, err, codes.OutOfRange, "etcdserver: mvcc: required revision has been compacted")
+	requireRawGRPCRangeRevisionError(t, err, codes.OutOfRange, "etcdserver: mvcc: required revision has been compacted", rpctypes.ErrGRPCCompacted)
 
 	unselectedNegative := &etcdserverpb.TxnRequest{
 		Compare: []*etcdserverpb.Compare{{
@@ -1072,7 +1072,7 @@ func TestRawGRPCRangeRevisionBoundaries(t *testing.T) {
 		})},
 	}
 	_, err = kv.Txn(ctx, selectedMaximum)
-	requireRawGRPCRangeRevisionError(t, err, codes.OutOfRange, "etcdserver: mvcc: required revision is a future revision")
+	requireRawGRPCRangeRevisionError(t, err, codes.OutOfRange, "etcdserver: mvcc: required revision is a future revision", rpctypes.ErrGRPCFutureRev)
 }
 
 func TestClientRangeRevisionBoundaries(t *testing.T) {
@@ -1265,9 +1265,12 @@ func rawGRPCPutRequestOp(request *etcdserverpb.PutRequest) *etcdserverpb.Request
 	return &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: request}}
 }
 
-func requireRawGRPCRangeRevisionError(t *testing.T, err error, code codes.Code, message string) {
+func requireRawGRPCRangeRevisionError(t *testing.T, err error, code codes.Code, message string, wantErrorIs ...error) {
 	t.Helper()
 	require.Error(t, err)
+	for _, want := range wantErrorIs {
+		require.ErrorIs(t, err, want)
+	}
 	require.Equal(t, code, status.Code(err))
 	require.Equal(t, message, status.Convert(err).Message())
 }

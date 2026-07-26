@@ -16004,6 +16004,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   revision 边界的 `ErrGRPCFutureRev`/`ErrGRPCCompacted` 断言，同时保留 OutOfRange
   code 和 exact message。该门禁防止 raw protobuf 调用方只看到 code/message，却丢失
   与 `/root/etcd/api/v3rpc/rpctypes/error.go` 对齐的 typed gRPC error。
+- A1283 固定 raw gRPC Range/Txn revision typed errors：
+  A1282 已覆盖 raw HashKV/Compact，本轮把 raw `KV.Range` future revision，以及
+  raw `KV.Txn` selected Range 的 compacted/future revision 错误补齐
+  `ErrGRPCFutureRev`/`ErrGRPCCompacted` 断言，并继续保留 OutOfRange code 与 exact
+  message。该门禁防止 raw protobuf Range/Txn 调用方在 revision 边界上只看到文本，
+  漏掉与上游 v3rpc 映射一致的 typed gRPC error。
 
 ### P2：运维兼容和长期验证
 
