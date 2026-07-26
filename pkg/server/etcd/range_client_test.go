@@ -317,6 +317,71 @@ func TestClientRangeKeysOnlyLimitAcrossTombstones(t *testing.T) {
 	assertPage("after-recreate", 0, 2, []string{"a", "b"}, 4, true)
 }
 
+func TestClientRangeKeysOnlyLimitDifferentialPages(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	prefix := fmt.Sprintf("/a1042/keys-limit/%d/", time.Now().UnixNano())
+	for i := 0; i < 8; i++ {
+		_, err = client.Put(ctx, fmt.Sprintf("%s%02d", prefix, i), strings.Repeat("value", 100))
+		require.NoError(t, err)
+	}
+	historical, err := client.Get(ctx, prefix, clientv3.WithPrefix(), clientv3.WithLimit(1))
+	require.NoError(t, err)
+	for i := 8; i < 12; i++ {
+		_, err = client.Put(ctx, fmt.Sprintf("%s%02d", prefix, i), strings.Repeat("later", 100))
+		require.NoError(t, err)
+	}
+	_, err = client.Delete(ctx, prefix+"02")
+	require.NoError(t, err)
+
+	assertKeysOnlyPage := func(name string, opts []clientv3.OpOption, wantKeys []string, wantCount int64, wantMore bool) {
+		t.Helper()
+		response, getErr := client.Get(ctx, prefix, opts...)
+		require.NoError(t, getErr, name)
+		require.Equal(t, wantCount, response.Count, name)
+		require.Equal(t, wantMore, response.More, name)
+		require.Equal(t, wantKeys, rangeClientRelativeKeys(response.Kvs, prefix), name)
+		for _, kv := range response.Kvs {
+			require.Empty(t, kv.Value, name)
+		}
+	}
+
+	assertKeysOnlyPage("current-limited",
+		[]clientv3.OpOption{clientv3.WithPrefix(), clientv3.WithKeysOnly(), clientv3.WithLimit(3)},
+		[]string{"00", "01", "03"}, 11, true)
+	assertKeysOnlyPage("historical-limited",
+		[]clientv3.OpOption{
+			clientv3.WithPrefix(), clientv3.WithKeysOnly(), clientv3.WithLimit(3),
+			clientv3.WithRev(historical.Header.Revision),
+		},
+		[]string{"00", "01", "02"}, 8, true)
+	assertKeysOnlyPage("current-wide-limit",
+		[]clientv3.OpOption{clientv3.WithPrefix(), clientv3.WithKeysOnly(), clientv3.WithLimit(20)},
+		[]string{"00", "01", "03", "04", "05", "06", "07", "08", "09", "10", "11"}, 11, false)
+}
+
 func TestRawGRPCRangeKeysOnlyLimitAcrossTombstones(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

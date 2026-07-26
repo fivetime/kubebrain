@@ -14368,6 +14368,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   官方 clientv3 bufconn 回归，用 `clientv3.Get` 和 `clientv3.Txn.Then(OpGet...)`
   构造这些可由公开客户端表达的组合，断言 Count/More/KV/KeysOnly/staged revision，
   补齐 A1003 raw protobuf 覆盖之外的官方客户端选项映射面。
+- A1042 固定 clientv3 KeysOnly+Limit 历史分页：
+  `range_keys_limit` differential 证明 KeysOnly range 在当前 revision 遇到 tombstone 时
+  必须跳过已删除 key 继续填满 limit，`Count`/`More` 仍按匹配集合报告；带历史 revision
+  时必须读到删除前的 key 集合，宽 limit 则返回全部当前 key 且 `More=false`。本轮新增
+  官方 clientv3 bufconn 回归，写入 8 个历史 key、追加 4 个新 key 后删除中间 key，
+  分别断言 current limited、historical limited 和 current wide-limit 的 key 序列、
+  Count、More 以及空 value，补齐此前小规模 tombstone page 覆盖之外的公开客户端分页面。
 
 ### P2：运维兼容和长期验证
 
