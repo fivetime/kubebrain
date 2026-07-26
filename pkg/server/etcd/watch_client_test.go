@@ -731,6 +731,59 @@ func TestClientWatchProgressNotifySuppressesTickAfterEvent(t *testing.T) {
 	require.True(t, response.IsProgressNotify(), "the following progress tick must rearm")
 }
 
+func TestClientWatchRequestProgressNotifiesAllWatchers(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterWatchServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	prefix := fmt.Sprintf("/a1164/watch-progress-all/%d/", time.Now().UnixNano())
+	watches := []clientv3.WatchChan{
+		client.Watch(ctx, prefix, clientv3.WithPrefix()),
+		client.Watch(ctx, prefix, clientv3.WithPrefix()),
+	}
+
+	watched, err := client.Put(ctx, prefix+"watched", "1")
+	require.NoError(t, err)
+	for _, watch := range watches {
+		event := requireSingleClientWatchEvent(t, ctx, watch)
+		require.Equal(t, watched.Header.Revision, event.Kv.ModRevision)
+		require.Equal(t, prefix+"watched", string(event.Kv.Key))
+	}
+
+	unwatched, err := client.Put(ctx, prefix[:len(prefix)-1]+"-unwatched", "1")
+	require.NoError(t, err)
+	require.NoError(t, client.RequestProgress(ctx))
+
+	for _, watch := range watches {
+		response := requireClientWatchResponse(t, ctx, watch)
+		require.True(t, response.IsProgressNotify())
+		require.Empty(t, response.Events)
+		require.NotNil(t, response.Header)
+		require.GreaterOrEqual(t, response.Header.Revision, unwatched.Header.Revision)
+	}
+}
+
 func TestClientWatchRevisionBoundariesMatchEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

@@ -15303,6 +15303,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `Canceled=false`，且不能被误标为 progress notify。本轮收紧 shared bufconn official
   clientv3 watch helper，使 registration、filter、progress、历史/未来 revision 等所有 created
   notification 回归同时固定该响应形状。
+- A1164 固定 clientv3 Watch RequestProgress 广播语义：
+  对照 `/root/etcd/tests/integration/clientv3/watch/watch_test.go:TestWatchRequestProgress`，
+  `RequestProgress` 必须让同一客户端上的所有活跃 watch channel 都收到 progress notify，
+  且 progress header revision 至少覆盖请求前已提交但不匹配该 watch 前缀的写入。本轮新增
+  bufconn official clientv3 双 watcher 回归，先消费各自事件，再写入非 watched key 并请求
+  progress，固定所有 watcher 都收到空事件的 progress response。
 
 ### P2：运维兼容和长期验证
 
