@@ -60,21 +60,21 @@ func TestFollowerLeaseReadsDoNotServeStaleState(t *testing.T) {
 	server.leaseMu.Unlock()
 
 	_, err := server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: 123, Keys: true})
-	require.Error(t, err, "follower must not serve LeaseTimeToLive from stale local state")
-	require.Equal(t, codes.Unavailable, status.Code(err))
+	requireLeaseFollowerUnavailable(t, err, "lease time-to-live error addr is follower-peer leader test-peer")
 
 	_, err = server.LeaseLeases(ctx, &etcdserverpb.LeaseLeasesRequest{})
-	require.Error(t, err, "follower must not serve LeaseLeases from stale local state")
-	require.Equal(t, codes.Unavailable, status.Code(err))
+	requireLeaseFollowerUnavailable(t, err, "lease leases error addr is follower-peer leader test-peer")
 }
 
 func TestLeaseReadsRejectDemotionAfterInitialLeaderCheck(t *testing.T) {
 	tests := []struct {
 		name string
+		op   string
 		call func(*RPCServer) error
 	}{
 		{
 			name: "time-to-live",
+			op:   "lease time-to-live",
 			call: func(server *RPCServer) error {
 				_, err := server.LeaseTimeToLive(context.Background(), &etcdserverpb.LeaseTimeToLiveRequest{ID: 123})
 				return err
@@ -82,6 +82,7 @@ func TestLeaseReadsRejectDemotionAfterInitialLeaderCheck(t *testing.T) {
 		},
 		{
 			name: "list",
+			op:   "lease leases",
 			call: func(server *RPCServer) error {
 				_, err := server.LeaseLeases(context.Background(), &etcdserverpb.LeaseLeasesRequest{})
 				return err
@@ -126,10 +127,17 @@ func TestLeaseReadsRejectDemotionAfterInitialLeaderCheck(t *testing.T) {
 			leading.Store(false)
 			server.leaseMu.Unlock()
 
-			require.Equal(t, codes.Unavailable, status.Code(<-done),
-				"a lease read that loses leadership while waiting for the snapshot must retry")
+			requireLeaseFollowerUnavailable(t, <-done,
+				tt.op+" error addr is lease-read-demotion-"+tt.name+" leader test-peer")
 		})
 	}
+}
+
+func requireLeaseFollowerUnavailable(t *testing.T, err error, message string) {
+	t.Helper()
+	require.Error(t, err)
+	require.Equal(t, codes.Unavailable, status.Code(err))
+	require.Equal(t, message, status.Convert(err).Message())
 }
 
 // TestFollowerLeaseReadsProxyWhenEnabled confirms that with the proxy enabled a

@@ -15853,6 +15853,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   operation budget matrix 失败分支，以及 duplicate put key、DeleteRange+Put overlap 统一到
   `ErrGRPCTooManyOps`/`ErrGRPCDuplicateKey`、reference code 和 message helper。该门禁防止
   Txn validator 或 nested budget 重构后只保留 code/substring，漏掉 typed error 兼容性。
+- A1254 固定 lease follower stale-read Unavailable message：
+  A1248 已覆盖 lease reload window，本轮把 proxy disabled follower 的 `LeaseTimeToLive`、
+  `LeaseLeases` stale snapshot 拒绝，以及读锁等待期间 demotion 的拒绝统一到精确
+  `codes.Unavailable` message。该门禁防止独立 TiKV/PD leader handoff 保护重构后返回
+  普通 Unavailable，丢失 op、local identity 和 leader identity 诊断信息。
 
 ### P2：运维兼容和长期验证
 
