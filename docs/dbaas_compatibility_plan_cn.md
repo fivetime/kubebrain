@@ -14854,6 +14854,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   并继续通过同一个 syncer 的 `SyncUpdates` 收到后续 PUT/DELETE。该门禁防止 mirror
   客户端路径绕过 auth metadata、错误复用匿名连接，或把 prefix range 权限错误扩大到右邻
   keyspace。
+- A1106 固定 clientv3 repeated LeaseKeepAlive deadline 滚动：
+  A535 已用外部 Porcupine 模型表达多次 renewal 后 deadline 必须反复向后滚动；本轮补齐
+  本地 official clientv3 bufconn 黑盒。TTL=2 的 leased key 连续 4 次每 1.2 秒
+  `KeepAliveOnce`，总耗时跨过多个原始 grant deadline；每轮续租前 key 必须仍绑定原 lease，
+  续租后 TTL/GrantedTTL 必须恢复为 etcd 外观，最终继续读取到同一 key/lease。该门禁防止
+  旧 deadline callback、checkpoint 清零或 timer reset 回归把已续租 lease 按最初 deadline
+  删除。
 
 ### P2：运维兼容和长期验证
 

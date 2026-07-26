@@ -650,6 +650,75 @@ func TestClientLeaseKeepAliveAtZeroTTLSurvivesOriginalDeadline(t *testing.T) {
 	require.Equal(t, int64(grant.ID), got.Kvs[0].Lease)
 }
 
+func TestClientLeaseRepeatedKeepAliveExtendsDeadlineAcrossWindows(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterLeaseServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+	defer cancel()
+	key := fmt.Sprintf("/a1106/lease-repeated-renewal/%d", time.Now().UnixNano())
+	grant, err := client.Grant(ctx, 2)
+	require.NoError(t, err)
+	_, err = client.Put(ctx, key, "value", clientv3.WithLease(grant.ID))
+	require.NoError(t, err)
+
+	start := time.Now()
+	for round := 0; round < 4; round++ {
+		select {
+		case <-time.After(1200 * time.Millisecond):
+		case <-ctx.Done():
+			t.Fatalf("timed out before renewal round %d: %v", round+1, ctx.Err())
+		}
+
+		beforeRenew, err := client.Get(ctx, key)
+		require.NoError(t, err)
+		require.Len(t, beforeRenew.Kvs, 1)
+		require.Equal(t, int64(grant.ID), beforeRenew.Kvs[0].Lease)
+
+		renewed, err := client.KeepAliveOnce(ctx, grant.ID)
+		require.NoError(t, err)
+		require.Equal(t, grant.ID, renewed.ID)
+		require.Equal(t, int64(2), renewed.TTL)
+
+		ttl, err := client.TimeToLive(ctx, grant.ID)
+		require.NoError(t, err)
+		require.Equal(t, grant.ID, ttl.ID)
+		require.Positive(t, ttl.TTL)
+		require.Equal(t, int64(2), ttl.GrantedTTL)
+	}
+	require.Greater(t, time.Since(start), 4*time.Second)
+
+	select {
+	case <-time.After(1200 * time.Millisecond):
+	case <-ctx.Done():
+		t.Fatalf("timed out after repeated renewals: %v", ctx.Err())
+	}
+	got, err := client.Get(ctx, key)
+	require.NoError(t, err)
+	require.Len(t, got.Kvs, 1)
+	require.Equal(t, int64(grant.ID), got.Kvs[0].Lease)
+}
+
 func TestClientExpiredKeepAliveResponseFollowsKeyDeletion(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
