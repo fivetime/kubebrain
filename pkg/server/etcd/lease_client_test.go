@@ -180,6 +180,51 @@ func TestClientLeaseOperationsAfterCloseAreBoundedAndDoNotCommit(t *testing.T) {
 	require.Positive(t, ttl.TTL)
 }
 
+func TestClientLeaseNotFoundErrorsMatchEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterLeaseServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err = client.Put(ctx, "/a1130/lease-not-found/missing", "value", clientv3.WithLease(500))
+	require.ErrorIs(t, err, rpctypes.ErrLeaseNotFound)
+
+	grant, err := client.Grant(ctx, 10)
+	require.NoError(t, err)
+	_, err = client.Revoke(ctx, grant.ID)
+	require.NoError(t, err)
+	_, err = client.Put(ctx, "/a1130/lease-not-found/revoked", "value", clientv3.WithLease(grant.ID))
+	require.ErrorIs(t, err, rpctypes.ErrLeaseNotFound)
+	_, err = client.KeepAliveOnce(ctx, 0)
+	require.ErrorIs(t, err, rpctypes.ErrLeaseNotFound)
+
+	ttl, err := client.TimeToLive(ctx, grant.ID)
+	require.NoError(t, err)
+	require.NotNil(t, ttl.ResponseHeader)
+	require.Equal(t, grant.ID, ttl.ID)
+	require.Equal(t, int64(-1), ttl.TTL)
+}
+
 func TestClientNamespaceLeaseTimeToLiveFiltersAttachedKeys(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

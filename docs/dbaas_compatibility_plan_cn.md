@@ -15060,6 +15060,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `UserAdd` 必须 `ErrUserAlreadyExist`，删除不存在用户必须 `ErrUserNotFound`，给已存在用户
   授权不存在 role 必须 `ErrRoleNotFound`。该门禁防止 auth manager 错误映射、interceptor
   或未启用 auth 的管理路径重构破坏 etcdctl/operator 对用户生命周期错误的可编程判断。
+- A1130 固定 clientv3 Lease not-found 错误外观：
+  对照 `/root/etcd/tests/integration/clientv3/lease/lease_test.go` 的
+  `TestLeaseNotFoundError`、`TestLeaseRevoke`、`TestLeaseKeepAliveOnce` 和
+  `TestLeaseTimeToLiveLeaseNotFound`，不存在或已撤销 lease 的公开行为不能混淆：带不存在
+  lease 的 `Put`、已撤销 lease 的 `Put` 和 `KeepAliveOnce(0)` 必须返回可由
+  `errors.Is(..., rpctypes.ErrLeaseNotFound)` 识别的错误，而 `TimeToLive` 查询已撤销 lease
+  必须成功返回 `TTL=-1`。本轮新增 bufconn official clientv3 回归固定这组 typed error 与
+  TTL 哨兵值，防止 lease index、Put 校验或 keepalive stream 重构破坏控制器对 stale lease
+  的可恢复判断。
 
 ### P2：运维兼容和长期验证
 
