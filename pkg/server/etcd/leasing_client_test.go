@@ -416,6 +416,94 @@ func TestClientLeasingPointKeyInvalidationPrevKVAndConcurrency(t *testing.T) {
 	}, time.Second, 10*time.Millisecond)
 }
 
+func TestClientLeasingCacheIsolationAndGetOptions(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterWatchServer(grpcServer, server)
+	etcdserverpb.RegisterLeaseServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	prefix := fmt.Sprintf("/a981/leasing-cache-contract/%d/", time.Now().UnixNano())
+	key := prefix + "cached"
+	leased, closeLeased, err := leasing.NewKV(client, prefix+"owners/")
+	require.NoError(t, err)
+	t.Cleanup(closeLeased)
+
+	_, err = client.Put(ctx, key, "initial")
+	require.NoError(t, err)
+	first, err := leased.Get(ctx, key)
+	require.NoError(t, err)
+	require.Len(t, first.Kvs, 1)
+	first.Kvs[0].Key[0] ^= 0xff
+	first.Kvs[0].Value[0] ^= 0xff
+	isolated, err := leased.Get(ctx, key)
+	require.NoError(t, err)
+	require.Len(t, isolated.Kvs, 1)
+	require.Equal(t, []byte(key), isolated.Kvs[0].Key)
+	require.Equal(t, []byte("initial"), isolated.Kvs[0].Value)
+
+	put, err := leased.Put(ctx, key, "offline")
+	require.NoError(t, err)
+	require.NotNil(t, put.Header)
+	offline, err := leased.Get(ctx, key)
+	require.NoError(t, err)
+	require.Len(t, offline.Kvs, 1)
+	require.Equal(t, []byte("offline"), offline.Kvs[0].Value)
+	require.Equal(t, put.Header.Revision, offline.Kvs[0].ModRevision)
+
+	keysOnly, err := leased.Get(ctx, key, clientv3.WithKeysOnly())
+	require.NoError(t, err)
+	require.Len(t, keysOnly.Kvs, 1)
+	require.Empty(t, keysOnly.Kvs[0].Value)
+	countOnly, err := leased.Get(ctx, key, clientv3.WithCountOnly())
+	require.NoError(t, err)
+	require.Empty(t, countOnly.Kvs)
+	require.Equal(t, int64(1), countOnly.Count)
+	limited, err := leased.Get(ctx, key, clientv3.WithLimit(1))
+	require.NoError(t, err)
+	require.Len(t, limited.Kvs, 1)
+	sorted, err := leased.Get(ctx, key, clientv3.WithSort(clientv3.SortByKey, clientv3.SortAscend))
+	require.NoError(t, err)
+	require.Len(t, sorted.Kvs, 1)
+	require.Equal(t, []byte("offline"), sorted.Kvs[0].Value)
+	minModFiltered, err := leased.Get(ctx, key, clientv3.WithMinModRev(put.Header.Revision+1))
+	require.NoError(t, err)
+	require.Empty(t, minModFiltered.Kvs)
+	maxModFiltered, err := leased.Get(ctx, key, clientv3.WithMaxModRev(put.Header.Revision-1))
+	require.NoError(t, err)
+	require.Empty(t, maxModFiltered.Kvs)
+	minCreateFiltered, err := leased.Get(ctx, key, clientv3.WithMinCreateRev(offline.Kvs[0].CreateRevision+1))
+	require.NoError(t, err)
+	require.Empty(t, minCreateFiltered.Kvs)
+	maxCreateFiltered, err := leased.Get(ctx, key, clientv3.WithMaxCreateRev(offline.Kvs[0].CreateRevision-1))
+	require.NoError(t, err)
+	require.Empty(t, maxCreateFiltered.Kvs)
+	serializable, err := leased.Get(ctx, key, clientv3.WithSerializable())
+	require.NoError(t, err)
+	require.Len(t, serializable.Kvs, 1)
+	require.Equal(t, []byte("offline"), serializable.Kvs[0].Value)
+}
+
 func TestClientLeasingRangeOwnershipAndDelete(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

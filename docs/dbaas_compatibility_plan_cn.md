@@ -13879,6 +13879,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   revision；再由第二个 client Delete 并确认原 owner 读取为空，防止点 key leasing
   wrapper 在失效通知、历史读或并发 owner 更新上回退。精确 Version/Deleted 数值由
   `leasing_client` differential 继续与参考 etcd 对齐，因为 owner 抢占/重试会产生额外写入。
+- A981 固定 clientv3 leasing.NewKV 的 owner cache isolation/options 路径：
+  A219 `leasing_cache_contract` differential 已覆盖 response alias 隔离、owner Put 后的
+  离线 cache 读取、Get option 本地过滤，以及带业务 lease key 必须回源的 TTL bypass。
+  本轮新增 bufconn clientv3 回归，注册真实 KV/Watch/Lease gRPC 服务，通过官方
+  `leasing.NewKV` 取得 key ownership 后篡改第一次 Get 返回对象的 key/value byte slice，
+  再次 Get 必须仍返回原始 key/value，证明调用方不能污染 wrapper 内部缓存。随后 owner
+  Put 后连续验证 `WithKeysOnly`、`WithCountOnly`、`WithLimit`、key sort、min/max
+  mod revision、min/max create revision 和 `WithSerializable` 都由 owner cache 返回与
+  官方 wrapper 一致的结果；TTL blackhole 子场景继续由差分测试覆盖，避免主包依赖 TCP
+  bridge。
 
 ### P2：运维兼容和长期验证
 
