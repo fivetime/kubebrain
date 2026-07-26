@@ -131,7 +131,7 @@ func TestInventoryManifestRequiresCanonicalSortedUniqueEntries(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(fixture.request.Input, append([]byte(" "), data...), 0o600))
 	_, err = InspectInventoryManifest(fixture.request.Input)
-	require.Error(t, err)
+	require.ErrorContains(t, err, "inventory manifest is not canonical")
 }
 
 func TestInventoryManifestRejectsUnsafeObjectIdentity(t *testing.T) {

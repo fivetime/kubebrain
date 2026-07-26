@@ -16337,6 +16337,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   非法 DNS label、非数组 JSON 和损坏 JSON 的拒绝现在固定到 namespace inventory 的具体错误
   文本，并继续断言在错误 inventory 下不会创建任何 backup operation。该门禁防止定时备份
   控制器在全局租户清单损坏时误扫 tenant namespace 或生成错误备份请求。
+- A1336 固定 objectstore inventory manifest canonical 错误契约：
+  object inventory manifest 若 entries 未按 key/version 排序必须报告 sorted，若 JSON 不是
+  canonical form 必须报告 `inventory manifest is not canonical`。该门禁防止备份对象清单在
+  归档或对账前接受重排、带前缀空白或其他非规范 JSON，保证 manifest SHA 与不可变对象版本
+  对账具有稳定语义。
 
 ### P2：运维兼容和长期验证
 
