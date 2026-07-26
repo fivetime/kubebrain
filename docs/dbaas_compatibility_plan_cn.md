@@ -15028,6 +15028,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `Get`、`Put` 和只读 `Txn`，均要求返回 `IsConnCanceled` 可识别的错误或调用 deadline；
   随后直接查服务端确认关闭后的 `Put` 没有提交。该门禁防止连接生命周期、interceptor 或
   retry loop 重构导致关闭后的 DBaaS 客户端 goroutine 长时间挂起或产生幽灵写入。
+- A1126 固定 auth disabled 下 credentialed client 外观：
+  对照 `/root/etcd/tests/integration/clientv3/user_test.go:TestGetTokenWithoutAuth`，auth
+  关闭时客户端即使配置了 `Username/Password` 也必须能建立连接并执行普通 KV；服务端不能
+  误把凭据存在解释为必须获取 token。本轮新增 bufconn official clientv3 回归，注册 KV/Auth
+  服务但不启用 auth，用带 `root/unused` 凭据的 client 调用 `AuthDisable`、`Put` 和 `Get`，
+  要求全部成功且数据可读。该门禁防止 auth interceptor、Authenticate fallback 或 client
+  初始化重构让未启用 auth 的 DBaaS 实例拒绝带凭据的通用 etcd 客户端。
 
 ### P2：运维兼容和长期验证
 
