@@ -411,6 +411,66 @@ func TestClientFilteredWatchProgressCoversSuppressedPut(t *testing.T) {
 	}
 }
 
+func TestClientWatchProgressNotifySuppressesTickAfterEvent(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterWatchServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	prefix := fmt.Sprintf("/a1115/watch-progress-cadence/%d/", time.Now().UnixNano())
+	watchCtx, watchCancel := context.WithCancel(ctx)
+	defer watchCancel()
+	watch := client.Watch(
+		watchCtx, prefix,
+		clientv3.WithPrefix(), clientv3.WithCreatedNotify(), clientv3.WithProgressNotify(),
+	)
+	requireClientWatchCreated(t, ctx, watch)
+
+	put, err := client.Put(ctx, prefix+"event", "value")
+	require.NoError(t, err)
+	for {
+		response := requireClientWatchResponse(t, ctx, watch)
+		require.False(t, response.IsProgressNotify(), "progress must not overtake the event")
+		if len(response.Events) == 0 {
+			continue
+		}
+		require.Len(t, response.Events, 1)
+		require.Equal(t, clientv3.EventTypePut, response.Events[0].Type)
+		require.Equal(t, put.Header.Revision, response.Events[0].Kv.ModRevision)
+		break
+	}
+
+	select {
+	case response := <-watch:
+		t.Fatalf("next progress tick after an event must be suppressed, got %+v", response)
+	case <-time.After(1200 * time.Millisecond):
+	case <-ctx.Done():
+		t.Fatalf("timed out while checking suppressed progress tick: %v", ctx.Err())
+	}
+	response := requireClientWatchResponse(t, ctx, watch)
+	require.True(t, response.IsProgressNotify(), "the following progress tick must rearm")
+}
+
 func TestClientWatchRevisionBoundariesMatchEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
@@ -1115,6 +1175,19 @@ func requireClientWatchCreated(t *testing.T, ctx context.Context, watch clientv3
 	t.Helper()
 	response := requireClientWatchCreatedResponse(t, ctx, watch)
 	require.NotNil(t, response.Header)
+}
+
+func requireClientWatchResponse(t *testing.T, ctx context.Context, watch clientv3.WatchChan) clientv3.WatchResponse {
+	t.Helper()
+	select {
+	case response, ok := <-watch:
+		require.True(t, ok)
+		require.NoError(t, response.Err())
+		return response
+	case <-ctx.Done():
+		t.Fatalf("timed out waiting for watch response: %v", ctx.Err())
+		return clientv3.WatchResponse{}
+	}
 }
 
 func requireClientWatchCreatedResponse(t *testing.T, ctx context.Context, watch clientv3.WatchChan) clientv3.WatchResponse {

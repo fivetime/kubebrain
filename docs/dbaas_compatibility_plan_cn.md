@@ -14931,6 +14931,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `TTL=-1`，Election leader 变为 contender 并能正常 `Resign`。该门禁防止 session
   orphan 被误实现为立即 revoke、自然过期 watch 删除事件丢失，或 lease expiry 清理未能
   唤醒官方 Mutex/Election waiter。
+- A1115 固定 clientv3 Watch ProgressNotify event 后 cadence：
+  A58 的外部 `TestWatchProgressNotifySuppressesTickAfterEvent` 已证明
+  `WithProgressNotify` watch 在发出真实事件后必须压制下一次周期 progress tick，随后下一
+  tick 再重新启用 progress；本地此前只有 `periodicProgressState` 单元测试和 raw/follower
+  路径门禁，缺少 official client channel 外观。本轮新增 bufconn official clientv3 回归，
+  创建 `WithCreatedNotify()+WithProgressNotify()` prefix watch 后立即写入事件，用该事件
+  建立 watch 的 synced revision，断言 progress 不会越过事件、事件后 1.2s 内没有下一次
+  progress，而后续 response 必须重新成为 progress notify。该门禁防止 progress ticker、
+  watch channel buffering 或 eventSent 状态重构让 kube-apiserver cache watch 在事件后收到
+  过密或乱序的 progress。
 
 ### P2：运维兼容和长期验证
 
