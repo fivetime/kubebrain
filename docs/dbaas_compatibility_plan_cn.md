@@ -15728,6 +15728,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   携带坏 token 的 direct 拒绝路径，固定为 `ErrInvalidAuthToken`、`codes.Unknown` 和
   `etcdserver: invalid auth token`；同时把 official clientv3 管理面 user/role 错误断言统一
   收敛到三件套 helper，避免重复裸 `ErrorIs` 掩盖 code/message 回归。
+- A1230 固定 direct KV/Txn compacted 与 too-many-ops 错误三件套：
+  A1210/A1211/A1215/A1216 已覆盖 official clientv3 的 revision 错误外观，本轮把 direct
+  `Compact` 的 zero/negative revision compacted、`Txn` 嵌套 Range 负 revision compacted，以及
+  Txn op 计数上限和嵌套 op 计数上限拒绝路径固定为同时满足 `errors.Is`、direct code 和
+  reference message。该门禁防止 KV/Txn request validation 或 compaction boundary 重构后只保留
+  typed error，导致核心数据面错误外观在 client 映射前漂移。
 
 ### P2：运维兼容和长期验证
 

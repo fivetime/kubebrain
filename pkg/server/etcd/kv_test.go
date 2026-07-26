@@ -1904,7 +1904,7 @@ func TestCompactZeroPreservesHistoryAndIsDurablyRepeatable(t *testing.T) {
 	require.Equal(t, []byte("v1"), historical.Kvs[0].Value)
 
 	_, err = server.Compact(ctx, &etcdserverpb.CompactionRequest{Revision: 0})
-	require.ErrorIs(t, err, rpctypes.ErrGRPCCompacted)
+	requireDirectKVError(t, err, rpctypes.ErrGRPCCompacted, codes.OutOfRange, "etcdserver: mvcc: required revision has been compacted")
 }
 
 func TestCompactNegativeRevisionCannotDiscardHistory(t *testing.T) {
@@ -1919,7 +1919,7 @@ func TestCompactNegativeRevisionCannotDiscardHistory(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = server.Compact(ctx, &etcdserverpb.CompactionRequest{Revision: -1})
-	require.ErrorIs(t, err, rpctypes.ErrGRPCCompacted)
+	requireDirectKVError(t, err, rpctypes.ErrGRPCCompacted, codes.OutOfRange, "etcdserver: mvcc: required revision has been compacted")
 	hasMarker, err := server.backend.HasCompactRevision(ctx)
 	require.NoError(t, err)
 	require.False(t, hasMarker)
@@ -2010,7 +2010,7 @@ func TestRangeNegativeRevisionFollowsFirstRevision(t *testing.T) {
 	_, err = server.Txn(ctx, &etcdserverpb.TxnRequest{
 		Success: []*etcdserverpb.RequestOp{rangeOp(-2)},
 	})
-	require.ErrorIs(t, err, rpctypes.ErrGRPCCompacted)
+	requireDirectKVError(t, err, rpctypes.ErrGRPCCompacted, codes.OutOfRange, "etcdserver: mvcc: required revision has been compacted")
 
 	txnResp, err = server.Txn(ctx, &etcdserverpb.TxnRequest{
 		Compare: []*etcdserverpb.Compare{{
@@ -2032,7 +2032,7 @@ func TestRangeNegativeRevisionFollowsFirstRevision(t *testing.T) {
 	_, err = server.Txn(ctx, &etcdserverpb.TxnRequest{
 		Success: []*etcdserverpb.RequestOp{rangeOp(-1)},
 	})
-	require.ErrorIs(t, err, rpctypes.ErrGRPCCompacted)
+	requireDirectKVError(t, err, rpctypes.ErrGRPCCompacted, codes.OutOfRange, "etcdserver: mvcc: required revision has been compacted")
 
 	txnResp, err = server.Txn(ctx, &etcdserverpb.TxnRequest{
 		Compare: []*etcdserverpb.Compare{{
@@ -5049,7 +5049,7 @@ func TestTxnHonorsConfiguredMaxOperations(t *testing.T) {
 	_, err = server.Txn(context.Background(), &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
 		op("/registry/limit/one"), op("/registry/limit/two"), op("/registry/limit/three"),
 	}})
-	require.ErrorIs(t, err, rpctypes.ErrGRPCTooManyOps)
+	requireDirectKVError(t, err, rpctypes.ErrGRPCTooManyOps, codes.InvalidArgument, "etcdserver: too many operations in txn request")
 
 	nested := &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestTxn{
 		RequestTxn: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{op("/registry/limit/nested")}},
@@ -5057,7 +5057,7 @@ func TestTxnHonorsConfiguredMaxOperations(t *testing.T) {
 	_, err = server.Txn(context.Background(), &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
 		op("/registry/limit/outer"), nested,
 	}})
-	require.ErrorIs(t, err, rpctypes.ErrGRPCTooManyOps)
+	requireDirectKVError(t, err, rpctypes.ErrGRPCTooManyOps, codes.InvalidArgument, "etcdserver: too many operations in txn request")
 }
 
 func TestTxnRejectsTooManyNestedOpsLikeEtcd(t *testing.T) {
@@ -6481,4 +6481,11 @@ func compactTxn(expectVersion int64, rev string) *etcdserverpb.TxnRequest {
 			},
 		}},
 	}
+}
+
+func requireDirectKVError(t *testing.T, err error, want error, code codes.Code, message string) {
+	t.Helper()
+	require.ErrorIs(t, err, want)
+	require.Equal(t, code, status.Code(err))
+	require.Equal(t, message, status.Convert(err).Message())
 }
