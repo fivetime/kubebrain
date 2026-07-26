@@ -15899,6 +15899,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   中的 future/compacted revision 统一到 `ErrGRPCFutureRev` 或 `ErrGRPCCompacted`、reference
   code 和 exact message helper。该门禁防止 Txn validator 重排后只保留 OutOfRange，漏掉
   调用方可识别的 etcd typed error。
+- A1263 固定 Txn/Put ignore 与 operation validation 错误三件套：
+  A1259 已覆盖 standalone Put ignore option，本轮补齐 direct `Put` ignore-lease missing key、
+  Txn staged ignore-value missing key，以及 Txn operation validation matrix 的 empty key、
+  value/lease provided、missing lease、invalid sort 和 empty op typed errors。该门禁防止
+  Txn admission 表或 ignore option 展开重构后只校验 code/message，漏掉 etcd typed error。
 
 ### P2：运维兼容和长期验证
 

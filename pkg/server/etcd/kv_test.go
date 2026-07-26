@@ -4039,8 +4039,7 @@ func TestTxnIgnoreOptionsUseStagedAtomicValidation(t *testing.T) {
 		{Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{Key: missing, IgnoreValue: true}}},
 	}})
 	require.Nil(t, resp)
-	require.Equal(t, codes.InvalidArgument, status.Code(err))
-	require.Equal(t, "etcdserver: key not found", status.Convert(err).Message())
+	requireDirectKVError(t, err, rpctypes.ErrGRPCKeyNotFound, codes.InvalidArgument, "etcdserver: key not found")
 	get, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: mustNotLand})
 	require.NoError(t, err)
 	require.Empty(t, get.Kvs)
@@ -4149,8 +4148,7 @@ func TestPutIgnoreLeaseRequiresExistingKey(t *testing.T) {
 		Key: key, Value: []byte("must-not-create"), IgnoreLease: true,
 	})
 	require.Nil(t, resp)
-	require.Equal(t, codes.InvalidArgument, status.Code(err))
-	require.Equal(t, "etcdserver: key not found", status.Convert(err).Message())
+	requireDirectKVError(t, err, rpctypes.ErrGRPCKeyNotFound, codes.InvalidArgument, "etcdserver: key not found")
 	get, err := server.Range(context.Background(), &etcdserverpb.RangeRequest{Key: key})
 	require.NoError(t, err)
 	require.Empty(t, get.Kvs)
@@ -4864,6 +4862,7 @@ func TestTxnOperationValidationMessagesMatchEtcd(t *testing.T) {
 	tests := []struct {
 		name        string
 		op          *etcdserverpb.RequestOp
+		wantErr     error
 		wantCode    codes.Code
 		wantMessage string
 	}{
@@ -4872,7 +4871,7 @@ func TestTxnOperationValidationMessagesMatchEtcd(t *testing.T) {
 			op: &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestPut{
 				RequestPut: &etcdserverpb.PutRequest{Value: []byte("value"), IgnoreValue: true},
 			}},
-			wantCode: codes.InvalidArgument, wantMessage: "etcdserver: key is not provided",
+			wantErr: rpctypes.ErrGRPCEmptyKey, wantCode: codes.InvalidArgument, wantMessage: "etcdserver: key is not provided",
 		},
 		{
 			name: "put-ignore-value-precedes-ignore-lease",
@@ -4881,54 +4880,54 @@ func TestTxnOperationValidationMessagesMatchEtcd(t *testing.T) {
 					Key: key, Value: []byte("value"), Lease: 1, IgnoreValue: true, IgnoreLease: true,
 				},
 			}},
-			wantCode: codes.InvalidArgument, wantMessage: "etcdserver: value is provided",
+			wantErr: rpctypes.ErrGRPCValueProvided, wantCode: codes.InvalidArgument, wantMessage: "etcdserver: value is provided",
 		},
 		{
 			name: "put-ignore-lease-with-lease",
 			op: &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestPut{
 				RequestPut: &etcdserverpb.PutRequest{Key: key, Lease: 1, IgnoreLease: true},
 			}},
-			wantCode: codes.InvalidArgument, wantMessage: "etcdserver: lease is provided",
+			wantErr: rpctypes.ErrGRPCLeaseProvided, wantCode: codes.InvalidArgument, wantMessage: "etcdserver: lease is provided",
 		},
 		{
 			name: "put-missing-lease-precedes-missing-ignore-value-key",
 			op: &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestPut{
 				RequestPut: &etcdserverpb.PutRequest{Key: key, Lease: 987654321, IgnoreValue: true},
 			}},
-			wantCode: codes.NotFound, wantMessage: "etcdserver: requested lease not found",
+			wantErr: rpctypes.ErrGRPCLeaseNotFound, wantCode: codes.NotFound, wantMessage: "etcdserver: requested lease not found",
 		},
 		{
 			name: "range-empty-key-precedes-invalid-sort",
 			op: &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestRange{
 				RequestRange: &etcdserverpb.RangeRequest{SortOrder: 99, SortTarget: 99},
 			}},
-			wantCode: codes.InvalidArgument, wantMessage: "etcdserver: key is not provided",
+			wantErr: rpctypes.ErrGRPCEmptyKey, wantCode: codes.InvalidArgument, wantMessage: "etcdserver: key is not provided",
 		},
 		{
 			name: "range-invalid-order-precedes-target",
 			op: &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestRange{
 				RequestRange: &etcdserverpb.RangeRequest{Key: key, SortOrder: 99, SortTarget: 99},
 			}},
-			wantCode: codes.InvalidArgument, wantMessage: "etcdserver: invalid sort option",
+			wantErr: rpctypes.ErrGRPCInvalidSortOption, wantCode: codes.InvalidArgument, wantMessage: "etcdserver: invalid sort option",
 		},
 		{
 			name: "range-invalid-target",
 			op: &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestRange{
 				RequestRange: &etcdserverpb.RangeRequest{Key: key, SortTarget: 99},
 			}},
-			wantCode: codes.InvalidArgument, wantMessage: "etcdserver: invalid sort option",
+			wantErr: rpctypes.ErrGRPCInvalidSortOption, wantCode: codes.InvalidArgument, wantMessage: "etcdserver: invalid sort option",
 		},
 		{
 			name: "delete-empty-key",
 			op: &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestDeleteRange{
 				RequestDeleteRange: &etcdserverpb.DeleteRangeRequest{RangeEnd: []byte{0}},
 			}},
-			wantCode: codes.InvalidArgument, wantMessage: "etcdserver: key is not provided",
+			wantErr: rpctypes.ErrGRPCEmptyKey, wantCode: codes.InvalidArgument, wantMessage: "etcdserver: key is not provided",
 		},
 		{
-			name:     "empty-operation",
-			op:       &etcdserverpb.RequestOp{},
-			wantCode: codes.InvalidArgument, wantMessage: "etcdserver: key not found",
+			name:    "empty-operation",
+			op:      &etcdserverpb.RequestOp{},
+			wantErr: rpctypes.ErrGRPCKeyNotFound, wantCode: codes.InvalidArgument, wantMessage: "etcdserver: key not found",
 		},
 	}
 
@@ -4938,9 +4937,7 @@ func TestTxnOperationValidationMessagesMatchEtcd(t *testing.T) {
 				Success: []*etcdserverpb.RequestOp{tt.op},
 			})
 			require.Nil(t, resp)
-			require.Error(t, err)
-			require.Equal(t, tt.wantCode, status.Code(err))
-			require.Equal(t, tt.wantMessage, status.Convert(err).Message())
+			requireDirectKVError(t, err, tt.wantErr, tt.wantCode, tt.wantMessage)
 		})
 	}
 }
