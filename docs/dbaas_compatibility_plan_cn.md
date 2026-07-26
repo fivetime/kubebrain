@@ -15258,6 +15258,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   识别。本轮加强既有 bufconn official clientv3 auth KV/TXN 回归，在保留 status/message 和
   数据未被改写断言的同时新增 typed error 断言。该门禁防止 authz、txn nested op 校验或
   client adapter 重构破坏控制器对权限拒绝的分类。
+- A1157 固定 clientv3 Auth lease/maintenance/range permission denied typed error：
+  延续 `/root/etcd/api/v3rpc/rpctypes/error.go` 的权限拒绝映射，带 auth 的 Lease
+  TTL-with-keys、leased Put、KeepAliveOnce、HashKV、Compact、Defrag、MoveLeader、
+  Downgrade、Range stream、Leases/Revoke 等客户端路径返回 `etcdserver: permission denied`
+  时，必须可由 `errors.Is(..., rpctypes.ErrPermissionDenied)` 识别。本轮补齐既有 bufconn
+  official clientv3 auth 回归的剩余可映射 permission-denied 路径；直接以
+  `codes.PermissionDenied` 暴露的 raw Alarm/Snapshot 路径继续按 status/message 固定，避免把
+  未经 client adapter 包装的外观误标为 typed 契约。
 
 ### P2：运维兼容和长期验证
 

@@ -700,19 +700,19 @@ func TestClientAuthLeaseKeyVisibilityAndLeasedPutDenials(t *testing.T) {
 	require.Empty(t, userTTL.Keys)
 
 	_, userTTLWithKeysErr := alice.TimeToLive(ctx, lease.ID, clientv3.WithAttachedKeys())
-	requireAuthClientError(t, userTTLWithKeysErr, codes.Unknown, "etcdserver: permission denied")
+	requireAuthClientError(t, userTTLWithKeysErr, codes.Unknown, "etcdserver: permission denied", rpctypes.ErrPermissionDenied)
 	rootTTLWithKeys, err := root.TimeToLive(ctx, lease.ID, clientv3.WithAttachedKeys())
 	require.NoError(t, err)
 	require.Contains(t, byteSlicesToStrings(rootTTLWithKeys.Keys), "/a1064/protected/leased")
 
 	_, leasedPutErr := alice.Put(ctx, "/a1064/allowed/leased-put", "value", clientv3.WithLease(lease.ID))
-	requireAuthClientError(t, leasedPutErr, codes.Unknown, "etcdserver: permission denied")
+	requireAuthClientError(t, leasedPutErr, codes.Unknown, "etcdserver: permission denied", rpctypes.ErrPermissionDenied)
 	_, nestedLeasedPutErr := alice.Txn(ctx).Then(clientv3.OpTxn(
 		nil,
 		[]clientv3.Op{clientv3.OpPut("/a1064/allowed/nested-leased", "value", clientv3.WithLease(lease.ID))},
 		nil,
 	)).Commit()
-	requireAuthClientError(t, nestedLeasedPutErr, codes.Unknown, "etcdserver: permission denied")
+	requireAuthClientError(t, nestedLeasedPutErr, codes.Unknown, "etcdserver: permission denied", rpctypes.ErrPermissionDenied)
 
 	allowedKeys, err := root.Get(ctx, "/a1064/allowed/", clientv3.WithPrefix())
 	require.NoError(t, err)
@@ -794,7 +794,7 @@ func TestClientAuthLeaseKeepAliveTracksPermissionChanges(t *testing.T) {
 	)
 	require.NoError(t, err)
 	_, revokedKeepAliveErr := alice.KeepAliveOnce(ctx, lease.ID)
-	requireAuthClientError(t, revokedKeepAliveErr, codes.Unknown, "etcdserver: permission denied")
+	requireAuthClientError(t, revokedKeepAliveErr, codes.Unknown, "etcdserver: permission denied", rpctypes.ErrPermissionDenied)
 
 	_, err = root.RoleGrantPermission(
 		ctx,
@@ -1105,7 +1105,7 @@ func TestClientAuthClusterAndMaintenanceAuthorization(t *testing.T) {
 	)
 	requireAuthClientError(t, rawActivateErr, codes.PermissionDenied, "etcdserver: permission denied")
 	_, userHashErr := alice.HashKV(ctx, alice.Endpoints()[0], 0)
-	requireAuthClientError(t, userHashErr, codes.Unknown, "etcdserver: permission denied")
+	requireAuthClientError(t, userHashErr, codes.Unknown, "etcdserver: permission denied", rpctypes.ErrPermissionDenied)
 	rootHash, err := root.HashKV(ctx, root.Endpoints()[0], 0)
 	require.NoError(t, err)
 	require.NotNil(t, rootHash.Header)
@@ -1165,7 +1165,7 @@ func TestClientAuthCompactRequiresRoot(t *testing.T) {
 	_, anonymousCompactErr := bootstrap.Compact(ctx, first.Header.Revision)
 	requireAuthClientError(t, anonymousCompactErr, codes.Unknown, "etcdserver: user name is empty", rpctypes.ErrUserEmpty)
 	_, userCompactErr := alice.Compact(ctx, first.Header.Revision)
-	requireAuthClientError(t, userCompactErr, codes.Unknown, "etcdserver: permission denied")
+	requireAuthClientError(t, userCompactErr, codes.Unknown, "etcdserver: permission denied", rpctypes.ErrPermissionDenied)
 	compact, err := root.Compact(ctx, first.Header.Revision)
 	require.NoError(t, err)
 	require.NotNil(t, compact.Header)
@@ -1225,7 +1225,7 @@ func TestClientAuthPrivilegedMaintenanceAuthorizationPrecedesUnsupported(t *test
 	_, anonymousDefragErr := bootstrap.Defragment(ctx, bootstrap.Endpoints()[0])
 	requireAuthClientError(t, anonymousDefragErr, codes.Unknown, "etcdserver: user name is empty", rpctypes.ErrUserEmpty)
 	_, userDefragErr := alice.Defragment(ctx, alice.Endpoints()[0])
-	requireAuthClientError(t, userDefragErr, codes.Unknown, "etcdserver: permission denied")
+	requireAuthClientError(t, userDefragErr, codes.Unknown, "etcdserver: permission denied", rpctypes.ErrPermissionDenied)
 	_, err = root.Defragment(ctx, root.Endpoints()[0])
 	require.NoError(t, err)
 
@@ -1241,12 +1241,12 @@ func TestClientAuthPrivilegedMaintenanceAuthorizationPrecedesUnsupported(t *test
 	requireAuthClientError(t, rootSnapshotErr, codes.Unimplemented, snapshotUnsupportedMessage)
 
 	_, userMoveLeaderErr := alice.MoveLeader(ctx, 0)
-	requireAuthClientError(t, userMoveLeaderErr, codes.Unknown, "etcdserver: permission denied")
+	requireAuthClientError(t, userMoveLeaderErr, codes.Unknown, "etcdserver: permission denied", rpctypes.ErrPermissionDenied)
 	_, rootMoveLeaderErr := root.MoveLeader(ctx, 0)
 	requireAuthClientError(t, rootMoveLeaderErr, codes.Unimplemented, moveLeaderUnsupportedMessage)
 
 	_, userDowngradeErr := alice.Downgrade(ctx, clientv3.DowngradeValidate, "3.6")
-	requireAuthClientError(t, userDowngradeErr, codes.Unknown, "etcdserver: permission denied")
+	requireAuthClientError(t, userDowngradeErr, codes.Unknown, "etcdserver: permission denied", rpctypes.ErrPermissionDenied)
 	_, rootDowngradeErr := root.Downgrade(ctx, clientv3.DowngradeValidate, "3.6")
 	requireAuthClientError(t, rootDowngradeErr, codes.Unimplemented, downgradeUnsupportedMessage)
 }
@@ -1319,7 +1319,7 @@ func TestClientAuthRangeStreamAuthorization(t *testing.T) {
 	require.Len(t, allowed.Kvs, 1)
 	require.Equal(t, "allowed", string(allowed.Kvs[0].Value))
 	_, deniedErr := getStream(alice, "/a1071/protected/", clientv3.WithPrefix())
-	requireAuthClientError(t, deniedErr, codes.Unknown, "etcdserver: permission denied")
+	requireAuthClientError(t, deniedErr, codes.Unknown, "etcdserver: permission denied", rpctypes.ErrPermissionDenied)
 
 	root := newClient("root", "root-secret")
 	all, err := getStream(root, "/a1071/", clientv3.WithPrefix())
@@ -1393,13 +1393,13 @@ func TestClientAuthLeaseListProtectsInaccessibleAttachments(t *testing.T) {
 	_, anonymousLeasesErr := bootstrap.Leases(ctx)
 	requireAuthClientError(t, anonymousLeasesErr, codes.Unknown, "etcdserver: user name is empty", rpctypes.ErrUserEmpty)
 	_, userLeasesErr := alice.Leases(ctx)
-	requireAuthClientError(t, userLeasesErr, codes.Unknown, "etcdserver: permission denied")
+	requireAuthClientError(t, userLeasesErr, codes.Unknown, "etcdserver: permission denied", rpctypes.ErrPermissionDenied)
 	rootLeases, err := root.Leases(ctx)
 	require.NoError(t, err)
 	require.Contains(t, leaseIDs(rootLeases.Leases), protectedLease.ID)
 
 	_, revokeErr := alice.Revoke(ctx, protectedLease.ID)
-	requireAuthClientError(t, revokeErr, codes.Unknown, "etcdserver: permission denied")
+	requireAuthClientError(t, revokeErr, codes.Unknown, "etcdserver: permission denied", rpctypes.ErrPermissionDenied)
 	protected, err := root.Get(ctx, "/a1072/protected/leased")
 	require.NoError(t, err)
 	require.Len(t, protected.Kvs, 1)
