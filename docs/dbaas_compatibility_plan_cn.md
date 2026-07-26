@@ -15359,6 +15359,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   range 起点而不是 empty-key validation，且 `CountOnly` 优先于 `KeysOnly`：只返回 count、
   不返回 KVs、`More=false`。本轮加强既有 bufconn official clientv3 CountOnly/KeysOnly
   回归，把 prefix 场景扩展到 full-keyspace 空 key 入口。
+- A1173 固定 clientv3 Put no-space typed error：
+  对照 `/root/etcd/tests/integration/clientv3/kv_test.go:TestKVPutError` 的 quota 分支，
+  当 backend quota 已满并触发 NOSPACE alarm 后，official clientv3 `Put` 必须可由
+  `errors.Is(..., rpctypes.ErrNoSpace)` 识别，并保持 client adapter 暴露的 `Unknown` /
+  `etcdserver: mvcc: database space exceeded` 外观。本轮复用 quota RPC server 构造小 quota
+  bufconn 黑盒回归，补齐 server-side request-too-large 之外的写入容量类 typed error。
 
 ### P2：运维兼容和长期验证
 
