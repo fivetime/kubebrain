@@ -15415,6 +15415,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   revision 分支同属 maintenance RPC 的 revision boundary。本轮加强 raw bufconn
   `HashKV` 矩阵，先写入更新并 compact 到新 revision，再请求旧 revision，防止服务端错误映射
   或 backend compaction recheck 重构破坏非 clientv3 调用方看到的 gRPC 外观。
+- A1182 固定 clientv3 Defragment no-op 不改变 HashKV：
+  对照 `/root/etcd/tests/integration/clientv3/maintenance_test.go:TestCompactionHash` 中
+  `hashTestCase.Defrag` 参与 hash 稳定性流程的 public maintenance 语义，KubeBrain 在 TiKV/PD
+  数据面下把 Defragment 作为 no-op 平台替代时，不能推进 revision、改变 HashKV hash、
+  HashRevision 或 CompactRevision。本轮新增 official clientv3 bufconn 黑盒回归，写入 key 后
+  比较 Defragment 前后的 latest `HashKV(0)`，并保留 `DefragmentResponse.Header == nil`，
+  防止 no-op 入口后续引入可见 MVCC 副作用。
 
 ### P2：运维兼容和长期验证
 
