@@ -14846,6 +14846,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   对已 compacted 的 revision 调用 `SyncBase` 必须从错误通道返回 canonical
   `etcdserver: mvcc: required revision has been compacted`，防止 make-mirror 与客户端
   mirror 包在历史恢复/压缩边界上产生不可见漂移。
+- A1105 固定 authenticated clientv3 mirror Syncer RBAC 门禁：
+  A228 已用真实 `etcdctl make-mirror` 双端认证差分证明 `--user`/`--dest-user` 下的受限
+  prefix 同步；本轮补齐本地 official clientv3 mirror 包回归。启用 auth 后，匿名
+  `SyncBase` 必须从错误通道返回 canonical `etcdserver: user name is empty`；只拥有目标
+  prefix ReadWrite 权限的 `mirror-syncer` 能够完成 `SyncBase`、排除邻接 `prefix0` key，
+  并继续通过同一个 syncer 的 `SyncUpdates` 收到后续 PUT/DELETE。该门禁防止 mirror
+  客户端路径绕过 auth metadata、错误复用匿名连接，或把 prefix range 权限错误扩大到右邻
+  keyspace。
 
 ### P2：运维兼容和长期验证
 

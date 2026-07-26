@@ -250,3 +250,146 @@ func TestClientMirrorSyncHistoricalRevisionAndCompactedError(t *testing.T) {
 	require.Equal(t, codes.Unknown, status.Code(compactedErr))
 	require.Equal(t, "etcdserver: mvcc: required revision has been compacted", status.Convert(compactedErr).Message())
 }
+
+func TestClientMirrorSyncerUsesAuthenticatedPrefixPermissions(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterWatchServer(grpcServer, server)
+	etcdserverpb.RegisterAuthServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	dialOptions := []grpc.DialOption{
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}),
+	}
+	newClient := func(username, password string) *clientv3.Client {
+		t.Helper()
+		client, err := clientv3.New(clientv3.Config{
+			Endpoints:   []string{"bufnet"},
+			DialTimeout: time.Second,
+			Username:    username,
+			Password:    password,
+			DialOptions: dialOptions,
+		})
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, client.Close()) })
+		return client
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	base := fmt.Sprintf("/a1105/auth-mirror/%d/", time.Now().UnixNano())
+	prefix := base + "prefix/"
+	neighborKey := base + "prefix0/neighbor"
+	bootstrap := newClient("", "")
+	require.NoError(t, addAuthUserRoleAndPermission(ctx, bootstrap, "root", "root-secret", "root", "", ""))
+	require.NoError(t, addAuthUserRoleAndPermission(
+		ctx,
+		bootstrap,
+		"mirror-syncer",
+		"sync-secret",
+		"a1105-mirror-syncer",
+		prefix,
+		clientv3.GetPrefixRangeEnd(prefix),
+	))
+	_, err := bootstrap.RoleGrantPermission(
+		ctx,
+		"a1105-mirror-syncer",
+		prefix,
+		clientv3.GetPrefixRangeEnd(prefix),
+		clientv3.PermissionType(clientv3.PermReadWrite),
+	)
+	require.NoError(t, err)
+	_, err = bootstrap.AuthEnable(ctx)
+	require.NoError(t, err)
+
+	anonymousSyncer := mirror.NewSyncer(bootstrap, prefix, 0)
+	anonymousResponses, anonymousErrors := anonymousSyncer.SyncBase(ctx)
+	for response := range anonymousResponses {
+		require.Empty(t, response.Kvs)
+	}
+	var anonymousErr error
+	for syncErr := range anonymousErrors {
+		if syncErr != nil {
+			anonymousErr = syncErr
+		}
+	}
+	require.Error(t, anonymousErr)
+	require.Equal(t, codes.Unknown, status.Code(anonymousErr))
+	require.Equal(t, "etcdserver: user name is empty", status.Convert(anonymousErr).Message())
+
+	syncerClient := newClient("mirror-syncer", "sync-secret")
+	_, err = syncerClient.Txn(ctx).Then(
+		clientv3.OpPut(prefix+"a", "seed-a"),
+		clientv3.OpPut(prefix+"b", "seed-b"),
+	).Commit()
+	require.NoError(t, err)
+	root := newClient("root", "root-secret")
+	_, err = root.Put(ctx, neighborKey, "outside")
+	require.NoError(t, err)
+
+	authSyncer := mirror.NewSyncer(syncerClient, prefix, 0)
+	baseResponses, baseErrors := authSyncer.SyncBase(ctx)
+	snapshot := map[string]string{}
+	var baseRevision int64
+	for response := range baseResponses {
+		require.NotNil(t, response.Header)
+		if baseRevision == 0 {
+			baseRevision = response.Header.Revision
+		}
+		require.Equal(t, baseRevision, response.Header.Revision)
+		for _, kv := range response.Kvs {
+			key := string(kv.Key)
+			require.True(t, strings.HasPrefix(key, prefix))
+			require.NotEqual(t, neighborKey, key)
+			snapshot[key] = string(kv.Value)
+		}
+	}
+	for syncErr := range baseErrors {
+		require.NoError(t, syncErr)
+	}
+	require.Equal(t, map[string]string{
+		prefix + "a": "seed-a",
+		prefix + "b": "seed-b",
+	}, snapshot)
+
+	updates := authSyncer.SyncUpdates(ctx)
+	update, err := syncerClient.Txn(ctx).Then(
+		clientv3.OpPut(prefix+"a", "updated-a"),
+		clientv3.OpDelete(prefix+"b"),
+	).Commit()
+	require.NoError(t, err)
+	require.True(t, update.Succeeded)
+
+	seen := map[string]mvccpb.Event_EventType{}
+	for len(seen) < 2 {
+		select {
+		case response, ok := <-updates:
+			require.True(t, ok, "authenticated mirror update watch closed")
+			require.NoError(t, response.Err())
+			for _, event := range response.Events {
+				key := string(event.Kv.Key)
+				require.True(t, strings.HasPrefix(key, prefix))
+				require.Greater(t, event.Kv.ModRevision, baseRevision)
+				seen[key] = event.Type
+			}
+		case <-ctx.Done():
+			t.Fatalf("timed out waiting for authenticated mirror updates: %v", ctx.Err())
+		}
+	}
+	require.Equal(t, mvccpb.PUT, seen[prefix+"a"])
+	require.Equal(t, mvccpb.DELETE, seen[prefix+"b"])
+
+	final, err := syncerClient.Get(ctx, prefix, clientv3.WithPrefix())
+	require.NoError(t, err)
+	require.Len(t, final.Kvs, 1)
+	require.Equal(t, prefix+"a", string(final.Kvs[0].Key))
+	require.Equal(t, "updated-a", string(final.Kvs[0].Value))
+}
