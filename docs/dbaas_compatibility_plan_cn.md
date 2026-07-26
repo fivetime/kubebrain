@@ -15773,6 +15773,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   拒绝路径固定为同时满足 `errors.Is`、admission code 和 reference message。该门禁防止入口
   interceptor、stream wrapper 或 metadata validation 重构后只保留 typed error，漏掉客户端可见
   status code/message 漂移。
+- A1238 收敛 platform replacement Unimplemented helper：
+  A1093/A1101/A1108/A1123/A1183-A1185 已覆盖 official/raw client 的 member mutation、
+  Snapshot、MoveLeader 和 Downgrade 平台替代外观，本轮把这些路径的 `codes.Unimplemented`
+  与可操作 DBaaS 替代文案统一到共享 helper。该门禁防止后续新增平台替代用例只检查
+  gRPC code 或局部 message，漏掉默认 Unimplemented、空文案或错误控制面指引回归。
 
 ### P2：运维兼容和长期验证
 

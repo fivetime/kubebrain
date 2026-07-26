@@ -63,15 +63,13 @@ func TestClientSnapshotAPIsReturnPlatformUnsupported(t *testing.T) {
 	if versioned != nil && versioned.Snapshot != nil {
 		require.NoError(t, versioned.Snapshot.Close())
 	}
-	require.Equal(t, codes.Unimplemented, status.Code(err))
-	require.Equal(t, snapshotUnsupportedMessage, status.Convert(err).Message())
+	requirePlatformReplacementError(t, err, snapshotUnsupportedMessage)
 
 	legacy, err := client.Snapshot(ctx)
 	require.NoError(t, err)
 	require.NotNil(t, legacy)
 	_, err = io.ReadAll(legacy)
-	require.Equal(t, codes.Unimplemented, status.Code(err))
-	require.Equal(t, snapshotUnsupportedMessage, status.Convert(err).Message())
+	requirePlatformReplacementError(t, err, snapshotUnsupportedMessage)
 	require.NoError(t, legacy.Close())
 }
 
@@ -99,8 +97,7 @@ func TestRawGRPCSnapshotReturnsPlatformUnsupported(t *testing.T) {
 	stream, err := maintenance.Snapshot(ctx, &etcdserverpb.SnapshotRequest{})
 	require.NoError(t, err)
 	_, err = stream.Recv()
-	require.Equal(t, codes.Unimplemented, status.Code(err))
-	require.Equal(t, snapshotUnsupportedMessage, status.Convert(err).Message())
+	requirePlatformReplacementError(t, err, snapshotUnsupportedMessage)
 }
 
 func TestClientPlatformManagedOperationsReturnActionableErrors(t *testing.T) {
@@ -129,25 +126,20 @@ func TestClientPlatformManagedOperationsReturnActionableErrors(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	requirePlatformError := func(err error, message string) {
-		t.Helper()
-		require.Equal(t, codes.Unimplemented, status.Code(err))
-		require.Equal(t, message, status.Convert(err).Message())
-	}
 	_, err = client.MemberAdd(ctx, []string{"http://127.0.0.1:12380"})
-	requirePlatformError(err, memberMutationUnsupportedMessage)
+	requirePlatformReplacementError(t, err, memberMutationUnsupportedMessage)
 	_, err = client.MemberAddAsLearner(ctx, []string{"http://127.0.0.1:12381"})
-	requirePlatformError(err, memberMutationUnsupportedMessage)
+	requirePlatformReplacementError(t, err, memberMutationUnsupportedMessage)
 	_, err = client.MemberRemove(ctx, 1)
-	requirePlatformError(err, memberMutationUnsupportedMessage)
+	requirePlatformReplacementError(t, err, memberMutationUnsupportedMessage)
 	_, err = client.MemberUpdate(ctx, 1, []string{"http://127.0.0.1:12380"})
-	requirePlatformError(err, memberMutationUnsupportedMessage)
+	requirePlatformReplacementError(t, err, memberMutationUnsupportedMessage)
 	_, err = client.MemberPromote(ctx, 1)
-	requirePlatformError(err, memberMutationUnsupportedMessage)
+	requirePlatformReplacementError(t, err, memberMutationUnsupportedMessage)
 	_, err = client.MoveLeader(ctx, 1)
-	requirePlatformError(err, moveLeaderUnsupportedMessage)
+	requirePlatformReplacementError(t, err, moveLeaderUnsupportedMessage)
 	_, err = client.Downgrade(ctx, clientv3.DowngradeValidate, "3.7.0")
-	requirePlatformError(err, downgradeUnsupportedMessage)
+	requirePlatformReplacementError(t, err, downgradeUnsupportedMessage)
 }
 
 func TestRawGRPCPlatformManagedMaintenanceReturnsActionableErrors(t *testing.T) {
@@ -171,18 +163,13 @@ func TestRawGRPCPlatformManagedMaintenanceReturnsActionableErrors(t *testing.T) 
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	requirePlatformError := func(err error, message string) {
-		t.Helper()
-		require.Equal(t, codes.Unimplemented, status.Code(err))
-		require.Equal(t, message, status.Convert(err).Message())
-	}
 	_, err = maintenance.MoveLeader(ctx, &etcdserverpb.MoveLeaderRequest{TargetID: 1})
-	requirePlatformError(err, moveLeaderUnsupportedMessage)
+	requirePlatformReplacementError(t, err, moveLeaderUnsupportedMessage)
 	_, err = maintenance.Downgrade(ctx, &etcdserverpb.DowngradeRequest{
 		Action:  etcdserverpb.DowngradeRequest_VALIDATE,
 		Version: "3.7.0",
 	})
-	requirePlatformError(err, downgradeUnsupportedMessage)
+	requirePlatformReplacementError(t, err, downgradeUnsupportedMessage)
 }
 
 func TestRawGRPCPlatformManagedMemberMutationsReturnActionableErrors(t *testing.T) {
@@ -206,27 +193,22 @@ func TestRawGRPCPlatformManagedMemberMutationsReturnActionableErrors(t *testing.
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	requireMemberMutationError := func(err error) {
-		t.Helper()
-		require.Equal(t, codes.Unimplemented, status.Code(err))
-		require.Equal(t, memberMutationUnsupportedMessage, status.Convert(err).Message())
-	}
 	_, err = cluster.MemberAdd(ctx, &etcdserverpb.MemberAddRequest{PeerURLs: []string{"http://127.0.0.1:12380"}})
-	requireMemberMutationError(err)
+	requirePlatformReplacementError(t, err, memberMutationUnsupportedMessage)
 	_, err = cluster.MemberAdd(ctx, &etcdserverpb.MemberAddRequest{
 		PeerURLs:  []string{"http://127.0.0.1:12381"},
 		IsLearner: true,
 	})
-	requireMemberMutationError(err)
+	requirePlatformReplacementError(t, err, memberMutationUnsupportedMessage)
 	_, err = cluster.MemberRemove(ctx, &etcdserverpb.MemberRemoveRequest{ID: 1})
-	requireMemberMutationError(err)
+	requirePlatformReplacementError(t, err, memberMutationUnsupportedMessage)
 	_, err = cluster.MemberUpdate(ctx, &etcdserverpb.MemberUpdateRequest{
 		ID:       1,
 		PeerURLs: []string{"http://127.0.0.1:12380"},
 	})
-	requireMemberMutationError(err)
+	requirePlatformReplacementError(t, err, memberMutationUnsupportedMessage)
 	_, err = cluster.MemberPromote(ctx, &etcdserverpb.MemberPromoteRequest{ID: 1})
-	requireMemberMutationError(err)
+	requirePlatformReplacementError(t, err, memberMutationUnsupportedMessage)
 }
 
 func TestClientDefragmentReturnsEtcdNilHeaderNoOp(t *testing.T) {
@@ -1107,5 +1089,11 @@ func requireClientHashKVError(t *testing.T, err error, code codes.Code, message 
 		require.ErrorIs(t, err, want)
 	}
 	require.Equal(t, code, status.Code(err))
+	require.Equal(t, message, status.Convert(err).Message())
+}
+
+func requirePlatformReplacementError(t *testing.T, err error, message string) {
+	t.Helper()
+	require.Equal(t, codes.Unimplemented, status.Code(err))
 	require.Equal(t, message, status.Convert(err).Message())
 }
