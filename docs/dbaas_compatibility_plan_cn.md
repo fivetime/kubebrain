@@ -14823,6 +14823,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `etcd snapshot is unavailable on TiKV; use the DBaaS logical backup and restore workflow`，
   以及 legacy `Snapshot(ctx)` 的 reader `ReadAll` 返回同一 `Unimplemented` code/message，
   防止旧客户端入口绕过平台替代提示。
+- A1102 固定 clientv3 prefixed NUL range end 边界：
+  etcd 只把精确单字节 `{0}` 解释为 `WithFromKey` 开放上界；`ownerPrefix+"\x00"` 这类
+  带业务前缀的 NUL range end 必须按普通 byte range 处理，并在 `key >= range_end` 时表现为
+  反向空区间。本轮新增 official clientv3 bufconn 回归，通过 `Get` 与
+  `Delete(... WithPrevKV())` 直接发送 `WithRange(ownerPrefix+"\x00")`，断言不返回 KV、
+  不删除数据、不给 PrevKV，且同一 owner prefix 下的现有 key 全部保留，防止 from-key
+  sentinel 判定被错误放宽成“任意 NUL 结尾”。
 
 ### P2：运维兼容和长期验证
 
