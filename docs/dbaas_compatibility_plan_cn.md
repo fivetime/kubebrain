@@ -15002,6 +15002,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   要求中间 chunk 不带 header/Count/More，返回 key 只含前 5 个，最终 header-only chunk
   回显 `Count=12` 且 `More=true`。该门禁防止 server-streaming 拆包、bounded scanner 或
   terminal metadata 封装重构让 kube-apiserver 大 LIST 在分页边界看到错误总数或误判是否还有数据。
+- A1123 补齐 clientv3 MemberAddAsLearner 平台边界：
+  `/root/etcd/tests/integration/clientv3/cluster_test.go` 除普通 `MemberAdd` 外还覆盖
+  `MemberAddAsLearner`；DBaaS 数据面不直接扩缩 KubeBrain/PD/TiKV 成员，所有成员 mutation
+  都必须清晰指向控制面替代。A1093 已覆盖 `MemberAdd/Remove/Update/Promote`、`MoveLeader`
+  和 `Downgrade` 的 official clientv3 unsupported 外观，本轮把 `MemberAddAsLearner`
+  加入同一 bufconn 平台管理矩阵，要求返回相同 `Unimplemented` 和
+  `memberMutationUnsupportedMessage`。该门禁防止升级 clientv3 或 Cluster service 时让 learner
+  add 漏回默认 gRPC unimplemented 或产生误导性的部分成功。
 
 ### P2：运维兼容和长期验证
 

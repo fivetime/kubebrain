@@ -107,6 +107,8 @@ func TestClientPlatformManagedOperationsReturnActionableErrors(t *testing.T) {
 	}
 	_, err = client.MemberAdd(ctx, []string{"http://127.0.0.1:12380"})
 	requirePlatformError(err, memberMutationUnsupportedMessage)
+	_, err = client.MemberAddAsLearner(ctx, []string{"http://127.0.0.1:12381"})
+	requirePlatformError(err, memberMutationUnsupportedMessage)
 	_, err = client.MemberRemove(ctx, 1)
 	requirePlatformError(err, memberMutationUnsupportedMessage)
 	_, err = client.MemberUpdate(ctx, 1, []string{"http://127.0.0.1:12380"})
