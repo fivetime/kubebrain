@@ -254,6 +254,8 @@ func TestClientLeaseNotFoundErrorsMatchEtcd(t *testing.T) {
 	require.NoError(t, err)
 	_, err = client.Put(ctx, "/a1130/lease-not-found/revoked", "value", clientv3.WithLease(grant.ID))
 	require.ErrorIs(t, err, rpctypes.ErrLeaseNotFound)
+	_, err = client.Revoke(ctx, 0)
+	require.ErrorIs(t, err, rpctypes.ErrLeaseNotFound)
 	_, err = client.KeepAliveOnce(ctx, 0)
 	require.ErrorIs(t, err, rpctypes.ErrLeaseNotFound)
 
