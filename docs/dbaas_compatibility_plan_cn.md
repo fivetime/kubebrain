@@ -15280,6 +15280,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   撤销未授予权限必须可由 `rpctypes.ErrPermissionNotGranted` 识别，AuthEnable 前后隐式 root
   role 查询失败必须可由 `rpctypes.ErrRoleNotFound` 识别。本轮加强既有 bufconn official
   clientv3 auth management 回归，防止 auth repository 或 client adapter 重构丢失可分类错误类型。
+- A1160 固定 clientv3 Auth 匿名 UserAdd user-empty typed error：
+  对照 `/root/etcd/tests/integration/clientv3/user_test.go:TestUserErrorAuth`，认证开启后匿名
+  客户端调用 `UserAdd` 必须可由 `errors.Is(..., rpctypes.ErrUserEmpty)` 识别。本轮在既有
+  bufconn official clientv3 auth 回归中补齐该 auth-management 入口，和匿名 maintenance、lease、
+  range stream API 的 user-empty typed error 护栏保持一致。
 
 ### P2：运维兼容和长期验证
 

@@ -508,6 +508,9 @@ func TestClientAuthImplicitRootRoleAndCredentialErrors(t *testing.T) {
 	require.True(t, statusResponse.Enabled)
 	require.Positive(t, statusResponse.AuthRevision)
 
+	_, anonymousUserAddErr := client.UserAdd(ctx, "anonymous", "secret")
+	requireAuthClientError(t, anonymousUserAddErr, codes.Unknown, "etcdserver: user name is empty", rpctypes.ErrUserEmpty)
+
 	rootClient, err := clientv3.New(clientv3.Config{
 		Endpoints:   []string{"bufnet"},
 		DialTimeout: time.Second,
