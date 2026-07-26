@@ -441,6 +441,116 @@ func TestClientCorruptAlarmDefersNaturalLeaseExpiryUntilDisarm(t *testing.T) {
 	require.Equal(t, int64(-1), unknown.TTL)
 }
 
+func TestRawGRPCCorruptAlarmKeepAliveLiveAndExpiredLeases(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterLeaseServer(grpcServer, server)
+	etcdserverpb.RegisterMaintenanceServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///corrupt-lease-keepalive",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return listener.Dial() }))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	kv := etcdserverpb.NewKVClient(conn)
+	lease := etcdserverpb.NewLeaseClient(conn)
+	maintenance := etcdserverpb.NewMaintenanceClient(conn)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+	defer cancel()
+	statusResp, err := maintenance.Status(ctx, &etcdserverpb.StatusRequest{})
+	require.NoError(t, err)
+	memberID := statusResp.Header.MemberId
+	require.NotZero(t, memberID)
+	prefix := fmt.Sprintf("/a1087/corrupt-lease-keepalive/%d/", time.Now().UnixNano())
+	liveKey := []byte(prefix + "live")
+	expiredKey := []byte(prefix + "expired")
+	live, err := lease.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 3})
+	require.NoError(t, err)
+	expired, err := lease.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 2})
+	require.NoError(t, err)
+	_, err = kv.Put(ctx, &etcdserverpb.PutRequest{Key: liveKey, Value: []byte("live"), Lease: live.ID})
+	require.NoError(t, err)
+	_, err = kv.Put(ctx, &etcdserverpb.PutRequest{Key: expiredKey, Value: []byte("expired"), Lease: expired.ID})
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_, _ = maintenance.Alarm(cleanupCtx, &etcdserverpb.AlarmRequest{
+			Action: etcdserverpb.AlarmRequest_DEACTIVATE, Alarm: etcdserverpb.AlarmType_CORRUPT, MemberID: memberID,
+		})
+		_, _ = kv.DeleteRange(cleanupCtx, &etcdserverpb.DeleteRangeRequest{
+			Key: []byte(prefix), RangeEnd: []byte(clientv3.GetPrefixRangeEnd(prefix)),
+		})
+	})
+
+	_, err = maintenance.Alarm(ctx, &etcdserverpb.AlarmRequest{
+		Action: etcdserverpb.AlarmRequest_ACTIVATE, Alarm: etcdserverpb.AlarmType_CORRUPT, MemberID: memberID,
+	})
+	require.NoError(t, err)
+	time.Sleep(2 * time.Second)
+	liveStream, err := lease.LeaseKeepAlive(ctx)
+	require.NoError(t, err)
+	require.NoError(t, liveStream.Send(&etcdserverpb.LeaseKeepAliveRequest{ID: live.ID}))
+	liveRenew, err := liveStream.Recv()
+	require.NoError(t, err)
+	require.Equal(t, live.ID, liveRenew.ID)
+	require.Positive(t, liveRenew.TTL)
+	require.LessOrEqual(t, liveRenew.TTL, int64(3))
+	require.NoError(t, liveStream.CloseSend())
+
+	time.Sleep(2 * time.Second)
+	liveRead, err := kv.Range(ctx, &etcdserverpb.RangeRequest{Key: liveKey})
+	require.NoError(t, err)
+	require.Len(t, liveRead.Kvs, 1)
+	expiredRead, err := kv.Range(ctx, &etcdserverpb.RangeRequest{Key: expiredKey})
+	require.NoError(t, err)
+	require.Len(t, expiredRead.Kvs, 1)
+
+	expiredStream, err := lease.LeaseKeepAlive(ctx)
+	require.NoError(t, err)
+	require.NoError(t, expiredStream.Send(&etcdserverpb.LeaseKeepAliveRequest{ID: expired.ID}))
+	type keepAliveResult struct {
+		response *etcdserverpb.LeaseKeepAliveResponse
+		err      error
+	}
+	renewed := make(chan keepAliveResult, 1)
+	go func() {
+		response, recvErr := expiredStream.Recv()
+		renewed <- keepAliveResult{response: response, err: recvErr}
+	}()
+	select {
+	case result := <-renewed:
+		t.Fatalf("expired keepalive returned before corrupt alarm was disarmed: response=%v err=%v", result.response, result.err)
+	case <-time.After(500 * time.Millisecond):
+	}
+
+	_, err = maintenance.Alarm(ctx, &etcdserverpb.AlarmRequest{
+		Action: etcdserverpb.AlarmRequest_DEACTIVATE, Alarm: etcdserverpb.AlarmType_CORRUPT, MemberID: memberID,
+	})
+	require.NoError(t, err)
+	select {
+	case result := <-renewed:
+		require.NoError(t, result.err)
+		require.NotNil(t, result.response)
+		require.Equal(t, expired.ID, result.response.ID)
+		require.Zero(t, result.response.TTL)
+	case <-time.After(5 * time.Second):
+		t.Fatal("expired keepalive did not finish after corrupt alarm was disarmed")
+	}
+	require.NoError(t, expiredStream.CloseSend())
+	require.Eventually(t, func() bool {
+		read, rangeErr := kv.Range(ctx, &etcdserverpb.RangeRequest{Key: expiredKey})
+		return rangeErr == nil && len(read.Kvs) == 0
+	}, 5*time.Second, 50*time.Millisecond)
+}
+
 func TestClientLeaseTimeToLiveReportsZeroBeforeExpiry(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

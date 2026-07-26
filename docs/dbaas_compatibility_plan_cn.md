@@ -14720,6 +14720,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   使用 Maintenance gRPC 激活 alarm，等待 2s lease 超时后断言 key 仍可读且 TTL<0，
   随后 disarm 并等待 key 删除、TimeToLive 返回 TTL=-1，补齐公开客户端入口的告警
   与 lease worker 交互契约。
+- A1087 固定 CORRUPT alarm 下 LeaseKeepAlive live/expired 分支：
+  `corrupt_alarm` differential 同时证明，alarm 激活后尚未真正过期的 lease 仍可
+  KeepAlive 并把 key 保留到原 deadline 之后；已经过期但因 CORRUPT 被延后删除的
+  lease，其 KeepAlive 不能提前返回，必须阻塞到 disarm 后再以 TTL=0 响应。本轮新增
+  raw gRPC bufconn 回归，分别创建 TTL=3 的 live lease 和 TTL=2 的 expired lease，
+  激活 alarm 后先续租 live lease 并确认 key 存活，再对 expired lease 发起
+  LeaseKeepAlive，断言 500ms 内无响应，disarm 后返回同 ID、TTL=0，并最终删除
+  expired key。
 
 ### P2：运维兼容和长期验证
 
