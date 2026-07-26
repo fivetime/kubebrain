@@ -14761,6 +14761,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   official clientv3 二进制 key 回归中，除 NUL 前缀外继续对 `0xfe..0xff` RangeStream
   和 `0xff` WithFromKey+Limit RangeStream 做合并断言，校验 Count、More、key 顺序和值
   都与 unary Range 一致，防止用户 key 编码或 from-key 上界处理在流式读取路径退化。
+- A1093 强化 binary mutation 左闭右开删除边界：
+  `binary_mutation` differential 要求 `DeleteRange([0x00,0x01))` 和 Txn 内部的
+  DeleteRange 只能删除 NUL 前缀族，不能误删右端点 `0x01`；高位区间 `[0xfe,0xff)` 同理
+  必须保留 `0xff`。本轮在 raw gRPC 与 official clientv3 二进制 mutation 回归中，补充
+  Txn 删除 NUL 前缀后的 `0x01` point read 断言，与既有 `0xff` 保留断言配对，锁住
+  用户 key 编码和左闭右开 range end 语义。
 
 ### P2：运维兼容和长期验证
 

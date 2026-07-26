@@ -100,6 +100,10 @@ func TestRawGRPCBinaryRangeTxnAndDeleteBoundaries(t *testing.T) {
 	require.NoError(t, err)
 	require.Zero(t, afterTxn.Count)
 	require.Empty(t, afterTxn.Kvs)
+	pointOne, err := client.Range(ctx, &etcdserverpb.RangeRequest{Key: []byte{0x01}})
+	require.NoError(t, err)
+	require.Equal(t, []string{"01"}, binaryClientKeys(pointOne.Kvs))
+	require.Equal(t, []string{"d"}, binaryClientValues(pointOne.Kvs))
 
 	standalone, err := client.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{
 		Key: []byte{0xfe}, RangeEnd: []byte{0xff}, PrevKv: true,
@@ -295,6 +299,10 @@ func TestClientBinaryKeyTxnAndDeleteMutations(t *testing.T) {
 	require.NoError(t, err)
 	require.Zero(t, afterTxnDelete.Count)
 	require.Empty(t, afterTxnDelete.Kvs)
+	pointOne, err := client.Get(ctx, string([]byte{0x01}))
+	require.NoError(t, err)
+	require.Equal(t, []string{"01"}, binaryClientKeys(pointOne.Kvs))
+	require.Equal(t, []string{"d"}, binaryClientValues(pointOne.Kvs))
 
 	standaloneDelete, err := client.Delete(
 		ctx,
