@@ -15873,6 +15873,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   future revision 边界统一到 `ErrGRPCFutureRev`，并固定 CORRUPT alarm 激活后空 `Put`、
   `DeleteRange`、`Txn(Put)` 仍优先返回 `ErrGRPCEmptyKey`。该门禁防止 maintenance guard
   或 alarm guard 重构后吞掉 etcd 基础 admission typed error。
+- A1258 收敛 Cluster MemberList read-barrier 错误 helper：
+  A1256 已覆盖 KV/Maintenance read barrier，本轮把 linearizable `MemberList` 的 read barrier
+  失败，以及 auth 通过后才触发 read barrier 的失败路径统一到 `codes.Unavailable` 和 exact
+  message helper。该门禁防止 Cluster service 线性读屏障或 auth-before-barrier 顺序重构后
+  只保留 Unavailable，漏掉生产诊断 message。
 
 ### P2：运维兼容和长期验证
 

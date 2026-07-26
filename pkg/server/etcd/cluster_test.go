@@ -446,8 +446,7 @@ func TestMemberListLinearizableUsesReadBarrier(t *testing.T) {
 	require.NoError(t, err)
 	require.Zero(t, calls.Load())
 	_, err = server.MemberList(context.Background(), &etcdserverpb.MemberListRequest{Linearizable: true})
-	require.Equal(t, codes.Unavailable, status.Code(err))
-	require.Equal(t, wantErr.Error(), status.Convert(err).Message())
+	requireClusterReadBarrierError(t, err, wantErr.Error())
 	require.EqualValues(t, 1, calls.Load())
 }
 
@@ -514,8 +513,7 @@ func TestMemberListLinearizableAuthenticatesBeforeReadBarrier(t *testing.T) {
 	require.Zero(t, calls.Load())
 
 	_, err = server.MemberList(aliceCtx, &etcdserverpb.MemberListRequest{Linearizable: true})
-	require.Equal(t, codes.Unavailable, status.Code(err))
-	require.Equal(t, barrierErr.Error(), status.Convert(err).Message())
+	requireClusterReadBarrierError(t, err, barrierErr.Error())
 	require.EqualValues(t, 1, calls.Load())
 }
 
@@ -560,6 +558,13 @@ func requireClusterPlatformReplacementError(t *testing.T, err error) {
 	t.Helper()
 	require.Equal(t, codes.Unimplemented, status.Code(err))
 	require.Equal(t, memberMutationUnsupportedMessage, status.Convert(err).Message())
+}
+
+func requireClusterReadBarrierError(t *testing.T, err error, message string) {
+	t.Helper()
+	require.Error(t, err)
+	require.Equal(t, codes.Unavailable, status.Code(err))
+	require.Equal(t, message, status.Convert(err).Message())
 }
 
 func requireClusterAuthError(t *testing.T, err error, want error, code codes.Code, message string) {
