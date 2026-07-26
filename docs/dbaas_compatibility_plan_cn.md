@@ -15044,6 +15044,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `Grant`、`Revoke`、`TimeToLive`、`Leases` 和 `KeepAliveOnce`，要求全部有界失败；
   随后直接查服务端确认 key 仍存在且 lease 仍 live。该门禁防止 lease client 生命周期、
   keepalive stream 或 interceptor 重构在生产客户端滚动重连/关闭路径上产生悬挂调用或幽灵撤销。
+- A1128 固定 clientv3 Watch close 后取消外观：
+  对照 `/root/etcd/tests/integration/clientv3/watch/watch_test.go` 的
+  `TestWatchErrConnClosed` 和 `TestWatchAfterClose`，watcher 在 client/connection 关闭后
+  必须快速结束，已创建 watcher 不能挂住等待事件，关闭后的新 `Watch` 也不能阻塞调用方。
+  本轮新增 bufconn official clientv3 回归，先用 `WithCreatedNotify` 建立 active watch，
+  关闭 client 后要求 watch channel 在 deadline 内关闭或返回可识别 cancel 响应；随后在已
+  关闭 client 上再次创建 `Watch`，要求同样有界关闭。该门禁防止 watch stream teardown、
+  client watcher goroutine 或服务端 cancel response 重构导致生产控制器关闭/重建连接时
+  泄漏 goroutine 或卡住 informer resync。
 
 ### P2：运维兼容和长期验证
 

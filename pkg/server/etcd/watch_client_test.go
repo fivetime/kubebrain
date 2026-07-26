@@ -95,6 +95,70 @@ func TestClientWatchFragmentDeliversLargeBatchWithSmallRecvLimit(t *testing.T) {
 	require.Equal(t, eventCount, events)
 }
 
+func TestClientWatchAfterCloseIsBoundedAndCanceled(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterWatchServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	active := client.Watch(ctx, "/a1128/watch/active", clientv3.WithCreatedNotify())
+	created := requireWatchClientResponse(t, ctx, active)
+	require.NoError(t, created.Err())
+	require.True(t, created.Created)
+	require.NoError(t, client.Close())
+	requireWatchClientCanceledOrClosed(t, ctx, active)
+
+	closedCtx, closedCancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer closedCancel()
+	afterClose := client.Watch(closedCtx, "/a1128/watch/after-close")
+	requireWatchClientCanceledOrClosed(t, closedCtx, afterClose)
+}
+
+func requireWatchClientResponse(t *testing.T, ctx context.Context, responses clientv3.WatchChan) clientv3.WatchResponse {
+	t.Helper()
+	select {
+	case response, ok := <-responses:
+		require.True(t, ok, "watch channel closed before response")
+		return response
+	case <-ctx.Done():
+		t.Fatalf("timed out waiting for watch response: %v", ctx.Err())
+	}
+	return clientv3.WatchResponse{}
+}
+
+func requireWatchClientCanceledOrClosed(t *testing.T, ctx context.Context, responses clientv3.WatchChan) {
+	t.Helper()
+	select {
+	case response, ok := <-responses:
+		if !ok {
+			return
+		}
+		require.True(t, response.Canceled || isExpectedWatchCloseError(response.Err()),
+			"watch close response canceled=%v err=%v", response.Canceled, response.Err())
+	case <-ctx.Done():
+		t.Fatalf("timed out waiting for watch close: %v", ctx.Err())
+	}
+}
+
 func TestRawGRPCWatchFragmentPreservesPrevKV(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
