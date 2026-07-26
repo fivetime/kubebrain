@@ -183,7 +183,7 @@ func TestRollupRejectsMutationAndNonCanonicalInput(t *testing.T) {
 	)
 	require.NoError(t, err)
 	rollup.Quantities[0].Name = "other"
-	require.Error(t, rollup.Validate())
+	require.ErrorContains(t, rollup.Validate(), "metering rollup contains an invalid quantity")
 
 	valid, err := BuildRollup(
 		"instance-a", start, start.Add(24*time.Hour),

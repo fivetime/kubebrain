@@ -16271,6 +16271,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   要求失败，而是固定到对应记录号、lease ID、key 和 manifest prefix。该门禁防止逻辑备份
   文件校验器在恢复前审计中丢失定位信息，避免损坏备份被报告成笼统格式错误或难以追踪的
   完整性失败。
+- A1323 固定 metering sample/rollup 校验错误契约：
+  sample 校验现在固定 metric 顺序错误、slot/instance metadata 不完整、非法 Prometheus URL
+  scheme 的具体错误文本；rollup quantity 被篡改时也固定为 invalid quantity。该门禁防止
+  计量归档和账单 rollup 在输入漂移、采样 slot 错位或 URL 配置错误时只返回笼统失败，影响
+  DBaaS 生产用量审计与账单纠错。
 
 ### P2：运维兼容和长期验证
 

@@ -322,15 +322,15 @@ func TestSampleValidationPinsMetricOrderAndSlot(t *testing.T) {
 	reordered := sample
 	reordered.Metrics = append([]MetricValue(nil), sample.Metrics...)
 	reordered.Metrics[0], reordered.Metrics[1] = reordered.Metrics[1], reordered.Metrics[0]
-	require.Error(t, reordered.Validate(5*time.Minute))
+	require.ErrorContains(t, reordered.Validate(5*time.Minute), "metering sample contains an invalid metric")
 
 	badSlot := sample
 	badSlot.QueryUnix++
-	require.Error(t, badSlot.Validate(5*time.Minute))
+	require.ErrorContains(t, badSlot.Validate(5*time.Minute), "metering sample is incomplete")
 
-	require.Error(t, sampleWithInstance("tenant/escape").Validate(5*time.Minute))
+	require.ErrorContains(t, sampleWithInstance("tenant/escape").Validate(5*time.Minute), "metering sample is incomplete")
 	_, err := NewCollector("file:///metrics", http.DefaultClient, "", time.Minute)
-	require.Error(t, err)
+	require.ErrorContains(t, err, "prometheus URL must be an absolute http or https URL")
 }
 
 func validSample() Sample {
