@@ -15858,6 +15858,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `LeaseLeases` stale snapshot 拒绝，以及读锁等待期间 demotion 的拒绝统一到精确
   `codes.Unavailable` message。该门禁防止独立 TiKV/PD leader handoff 保护重构后返回
   普通 Unavailable，丢失 op、local identity 和 leader identity 诊断信息。
+- A1255 固定 count proxy index-not-ready fast-reject message：
+  follower 代理 CountOnly 到 leader 时，如果 leader 的 count index 不能服务，必须返回
+  `codes.Unavailable` 和 `count index not ready (rebuilding); fall back locally`，让 follower
+  本地回退扫描。本轮把普通 CountOnly 和 revision-pinned CountOnly 两条 proxied 路径统一到
+  helper，防止 count index rebuild/proxy 重构后只保留 Unavailable，漏掉可操作 fallback 语义。
 
 ### P2：运维兼容和长期验证
 

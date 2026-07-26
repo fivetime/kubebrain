@@ -131,12 +131,17 @@ func TestCountProxyFastRejectsWhenIndexNotReady(t *testing.T) {
 	// Follower-proxied count (marker present) the index cannot serve: fast-reject.
 	proxyCtx := metadata.NewIncomingContext(ctx, metadata.Pairs(countProxyMarkerKey, "1"))
 	_, err = shim.Count(proxyCtx, req)
-	require.Error(t, err)
-	require.Equal(t, codes.Unavailable, status.Code(err), "a proxied count the index cannot serve must fast-reject")
+	requireCountProxyIndexNotReady(t, err)
 
 	// Same for a revision-pinned proxied count.
 	reqRev := &etcdserverpb.RangeRequest{Key: []byte(pfx + "/"), RangeEnd: []byte(pfx + "0"), CountOnly: true, Revision: int64(be.GetCurrentRevision())}
 	_, err = shim.Count(proxyCtx, reqRev)
+	requireCountProxyIndexNotReady(t, err)
+}
+
+func requireCountProxyIndexNotReady(t *testing.T, err error) {
+	t.Helper()
 	require.Error(t, err)
 	require.Equal(t, codes.Unavailable, status.Code(err))
+	require.Equal(t, "count index not ready (rebuilding); fall back locally", status.Convert(err).Message())
 }
