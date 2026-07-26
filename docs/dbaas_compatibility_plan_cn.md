@@ -15606,6 +15606,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `errors.Is(..., rpctypes.ErrCompacted)`、`codes.Unknown` 和
   `etcdserver: mvcc: required revision has been compacted`。该门禁防止 Range adapter 或
   compaction recheck 重构后只保留文本或只保留 typed error，破坏 LIST/watch 初始化失败分类。
+- A1211 固定 official clientv3 Compact compacted/future 三件套：
+  A998/A1145 已分别覆盖 `Compact` 边界 code/message 与 typed error，本轮把 public
+  `clientv3.Compact` 的重复 compact 与 future compact 断言合并为三件套：重复 compact 必须
+  同时满足 `errors.Is(..., rpctypes.ErrCompacted)`、`codes.Unknown` 和 compacted message；
+  future compact 必须同时满足 `errors.Is(..., rpctypes.ErrFutureRev)`、`codes.Unknown` 和
+  future revision message。该门禁防止 compaction adapter 重构后让历史 LIST/Watch 初始化错误
+  在 typed error 与用户可见 status 之间漂移。
 
 ### P2：运维兼容和长期验证
 
