@@ -26,8 +26,11 @@ import (
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/client/v3/naming/endpoints"
+	etcdresolver "go.etcd.io/etcd/client/v3/naming/resolver"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/health"
+	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/test/bufconn"
 )
 
@@ -123,6 +126,78 @@ func TestClientNamingManagerUpdateListWatchAndLeaseDeletion(t *testing.T) {
 		namingClientUpdates(t, receiveNamingClientUpdates(t, ctx, updates), managerPrefix))
 }
 
+func TestClientNamingResolverSwitchesAfterEndpointDelete(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterWatchServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	servingAddr, stopServing := startNamingClientHealthServer(t, healthpb.HealthCheckResponse_SERVING)
+	defer stopServing()
+	notServingAddr, stopNotServing := startNamingClientHealthServer(t, healthpb.HealthCheckResponse_NOT_SERVING)
+	defer stopNotServing()
+
+	resolverPrefix := fmt.Sprintf("/a1075/naming-resolver/%d", time.Now().UnixNano())
+	manager, err := endpoints.NewManager(client, resolverPrefix)
+	require.NoError(t, err)
+	require.NoError(t, manager.Update(ctx, []*endpoints.UpdateWithOpts{
+		endpoints.NewAddUpdateOpts(resolverPrefix+"/serving", endpoints.Endpoint{Addr: servingAddr}),
+		endpoints.NewAddUpdateOpts(resolverPrefix+"/not-serving", endpoints.Endpoint{Addr: notServingAddr}),
+	}))
+
+	builder, err := etcdresolver.NewBuilder(client)
+	require.NoError(t, err)
+	connection, err := grpc.NewClient("etcd:///"+resolverPrefix,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithResolvers(builder),
+		grpc.WithDefaultServiceConfig(`{"loadBalancingPolicy":"pick_first"}`))
+	require.NoError(t, err)
+	defer func() { require.NoError(t, connection.Close()) }()
+	healthClient := healthpb.NewHealthClient(connection)
+
+	initialStatus := namingClientHealthStatus(t, ctx, healthClient)
+	switch initialStatus {
+	case healthpb.HealthCheckResponse_SERVING.String():
+		require.NoError(t, manager.DeleteEndpoint(ctx, resolverPrefix+"/serving"))
+	case healthpb.HealthCheckResponse_NOT_SERVING.String():
+		require.NoError(t, manager.DeleteEndpoint(ctx, resolverPrefix+"/not-serving"))
+	default:
+		t.Fatalf("unexpected initial resolver health status %q", initialStatus)
+	}
+	wantStatus := healthpb.HealthCheckResponse_SERVING.String()
+	if initialStatus == wantStatus {
+		wantStatus = healthpb.HealthCheckResponse_NOT_SERVING.String()
+	}
+	require.Eventually(t, func() bool {
+		callCtx, callCancel := context.WithTimeout(ctx, time.Second)
+		defer callCancel()
+		response, callErr := healthClient.Check(
+			callCtx, &healthpb.HealthCheckRequest{}, grpc.WaitForReady(true),
+		)
+		return callErr == nil && response.Status.String() == wantStatus
+	}, 5*time.Second, 20*time.Millisecond)
+}
+
 func receiveNamingClientUpdates(
 	t *testing.T, ctx context.Context, updates endpoints.WatchChannel,
 ) []*endpoints.Update {
@@ -154,6 +229,33 @@ func namingClientUpdates(t *testing.T, updates []*endpoints.Update, prefix strin
 	}
 	sort.Strings(result)
 	return result
+}
+
+func startNamingClientHealthServer(
+	t *testing.T,
+	status healthpb.HealthCheckResponse_ServingStatus,
+) (string, func()) {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	server := grpc.NewServer()
+	healthServer := health.NewServer()
+	healthServer.SetServingStatus("", status)
+	healthpb.RegisterHealthServer(server, healthServer)
+	go func() { _ = server.Serve(listener) }()
+	return listener.Addr().String(), func() {
+		server.Stop()
+		_ = listener.Close()
+	}
+}
+
+func namingClientHealthStatus(t *testing.T, ctx context.Context, client healthpb.HealthClient) string {
+	t.Helper()
+	callCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	response, err := client.Check(callCtx, &healthpb.HealthCheckRequest{}, grpc.WaitForReady(true))
+	require.NoError(t, err)
+	return response.Status.String()
 }
 
 func namingClientList(values endpoints.Key2EndpointMap, prefix string) []string {

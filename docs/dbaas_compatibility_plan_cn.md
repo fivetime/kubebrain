@@ -14634,6 +14634,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   偶数 key，并对 8 个 key 分别在 Get 期间注入连接 churn，断言每次 response 与 direct
   `Get` 的 key/value/revision/version/lease 完全一致，补齐 client 断线重连路径的
   leasing cache 回归。
+- A1075 固定 client/v3 naming resolver endpoint 删除切换：
+  `naming` differential 除 EndpointManager Update/List/Watch/lease deletion 外，还覆盖
+  `go.etcd.io/etcd/client/v3/naming/resolver` 消费 endpoint prefix watch 并驱动真实
+  gRPC 连接更新。既有本地回归只固定了 manager 层，本轮新增 resolver public wrapper
+  回归：测试进程启动 SERVING 与 NOT_SERVING 两个本地 gRPC health server，通过
+  `endpoints.Manager` 注册到同一 resolver prefix，建立 `etcd:///` + `pick_first`
+  连接，识别当前实际后端后删除对应 endpoint，并要求 health check 最终切换到另一个
+  status，防止 Watch/delete 事件或 resolver 地址更新路径回退。
 
 ### P2：运维兼容和长期验证
 
