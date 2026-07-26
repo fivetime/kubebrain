@@ -504,6 +504,100 @@ func TestClientLeasingCacheIsolationAndGetOptions(t *testing.T) {
 	require.Equal(t, []byte("offline"), serializable.Kvs[0].Value)
 }
 
+func TestClientLeasingNestedNonOwnerTxnInvalidatesOwnerCache(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterWatchServer(grpcServer, server)
+	etcdserverpb.RegisterLeaseServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	newClient := func() *clientv3.Client {
+		client, err := clientv3.New(clientv3.Config{
+			Endpoints:   []string{"bufnet"},
+			DialTimeout: time.Second,
+			DialOptions: []grpc.DialOption{
+				grpc.WithTransportCredentials(insecure.NewCredentials()),
+				grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+					return listener.Dial()
+				}),
+			},
+		})
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, client.Close()) })
+		return client
+	}
+	ownerClient := newClient()
+	writerClient := newClient()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	prefix := fmt.Sprintf("/a982/leasing-non-owner-nested/%d/", time.Now().UnixNano())
+	keys := []string{prefix + "a", prefix + "b", prefix + "c"}
+	ownerKV, closeOwner, err := leasing.NewKV(ownerClient, prefix+"owners/")
+	require.NoError(t, err)
+	t.Cleanup(closeOwner)
+	writerKV, closeWriter, err := leasing.NewKV(writerClient, prefix+"owners/")
+	require.NoError(t, err)
+	t.Cleanup(closeWriter)
+
+	for index, key := range keys {
+		_, err = writerClient.Put(ctx, key, fmt.Sprintf("initial-%d", index))
+		require.NoError(t, err)
+		cached, getErr := ownerKV.Get(ctx, key)
+		require.NoError(t, getErr)
+		require.Len(t, cached.Kvs, 1)
+		require.Equal(t, []byte(fmt.Sprintf("initial-%d", index)), cached.Kvs[0].Value)
+	}
+
+	watchCtx, watchCancel := context.WithTimeout(ctx, 5*time.Second)
+	defer watchCancel()
+	watch := writerClient.Watch(watchCtx, prefix, clientv3.WithPrefix())
+	txn, err := writerKV.Txn(ctx).Then(
+		clientv3.OpTxn(nil, []clientv3.Op{
+			clientv3.OpPut(keys[1], "updated-1"),
+		}, nil),
+		clientv3.OpPut(keys[0], "updated-0"),
+		clientv3.OpPut(keys[2], "updated-2"),
+	).Commit()
+	require.NoError(t, err)
+	require.True(t, txn.Succeeded)
+	require.Len(t, txn.Responses, 3)
+
+	eventsAtRevision := 0
+	for eventsAtRevision < len(keys) {
+		select {
+		case response, ok := <-watch:
+			require.True(t, ok)
+			require.NoError(t, response.Err())
+			for _, event := range response.Events {
+				if event.Kv.ModRevision == txn.Header.Revision {
+					eventsAtRevision++
+				}
+			}
+		case <-watchCtx.Done():
+			t.Fatalf("timed out after %d/%d events at revision %d", eventsAtRevision, len(keys), txn.Header.Revision)
+		}
+	}
+
+	for index, key := range keys {
+		want := fmt.Sprintf("updated-%d", index)
+		owner, getErr := ownerKV.Get(ctx, key)
+		require.NoError(t, getErr)
+		require.Len(t, owner.Kvs, 1)
+		direct, getErr := writerClient.Get(ctx, key)
+		require.NoError(t, getErr)
+		require.Len(t, direct.Kvs, 1)
+		require.Equal(t, []byte(want), owner.Kvs[0].Value)
+		require.Equal(t, direct.Kvs[0], owner.Kvs[0])
+		require.Equal(t, txn.Header.Revision, direct.Kvs[0].ModRevision)
+	}
+}
+
 func TestClientLeasingRangeOwnershipAndDelete(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

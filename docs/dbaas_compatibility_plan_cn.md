@@ -13889,6 +13889,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   mod revision、min/max create revision 和 `WithSerializable` 都由 owner cache 返回与
   官方 wrapper 一致的结果；TTL blackhole 子场景继续由差分测试覆盖，避免主包依赖 TCP
   bridge。
+- A982 固定 clientv3 leasing.NewKV 的 nested non-owner Txn cache invalidation 路径：
+  A220 `leasing_txn_cancel_non_owner` differential 同时覆盖取消/blackhole 与非 owner
+  nested Txn 原子失效。本轮新增 bufconn clientv3 回归，使用两个官方 `leasing.NewKV`
+  实例共享 owner 前缀：owner client 先缓存 3 个 key，writer client 随后在单笔 Txn
+  中执行一个 nested Txn Put 和两个顶层 Put。测试断言 Txn 成功并保留 3 个 response、
+  prefix watch 看到 3 个 PUT event 全部使用顶层 Txn header revision，原 owner 再读
+  每个 key 时必须与直连 KV 的 value/mod revision 完全一致，防止 nested write 只刷新
+  顶层 operation 或不能撤销其他 client owner cache。
 
 ### P2：运维兼容和长期验证
 
