@@ -232,6 +232,57 @@ func TestClientWatchMixedPrevKVStreamsKeepEventsIsolated(t *testing.T) {
 	}
 }
 
+func TestClientWatchUpdateReportsUpdateNotCreate(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterWatchServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	key := fmt.Sprintf("/a1030/watch-update/%d", time.Now().UnixNano())
+	create, err := client.Put(ctx, key, "v1")
+	require.NoError(t, err)
+
+	watchCtx, watchCancel := context.WithCancel(ctx)
+	defer watchCancel()
+	watch := client.Watch(watchCtx, key, clientv3.WithRev(create.Header.Revision+1), clientv3.WithPrevKV())
+
+	update, err := client.Put(ctx, key, "v2")
+	require.NoError(t, err)
+	event := requireSingleClientWatchEvent(t, ctx, watch)
+	require.Equal(t, clientv3.EventTypePut, event.Type)
+	require.False(t, event.IsCreate(), "watch update must not be reported as a create")
+	require.Equal(t, key, string(event.Kv.Key))
+	require.Equal(t, "v2", string(event.Kv.Value))
+	require.Equal(t, create.Header.Revision, event.Kv.CreateRevision)
+	require.Equal(t, update.Header.Revision, event.Kv.ModRevision)
+	require.Less(t, event.Kv.CreateRevision, event.Kv.ModRevision)
+	require.NotNil(t, event.PrevKv)
+	require.Equal(t, key, string(event.PrevKv.Key))
+	require.Equal(t, "v1", string(event.PrevKv.Value))
+	require.Equal(t, create.Header.Revision, event.PrevKv.CreateRevision)
+	require.Equal(t, create.Header.Revision, event.PrevKv.ModRevision)
+}
+
 func TestRawGRPCWatchIDRangeBoundariesKeepStreamAlive(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

@@ -14281,6 +14281,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   必须持续没有 PrevKv，两个流不能共享并污染事件对象。本轮新增官方 clientv3 bufconn 回归，
   通过真实 KV/Watch 服务创建两个 created-notify watcher，连续三次 Put 验证当前 value、
   previous value 和 nil PrevKv 外观，补齐此前 raw gRPC 服务层覆盖之外的官方客户端黑盒面。
+- A1030 固定 clientv3 Watch update/create 判定：
+  `watch_update` differential 证明对已存在 key 的后续 PUT watch 事件必须在官方
+  `clientv3.Event.IsCreate()` 下报告为 update，而不是 create；事件 `CreateRevision`
+  必须保持 key 的创建 revision，`ModRevision` 使用本次更新 revision，且 `WithPrevKV()`
+  返回上一版 value。本轮新增官方 clientv3 bufconn 回归，先创建 key，再从
+  `createRev+1` watch 并执行更新，直接验证 `IsCreate()==false`、revision 关系和 PrevKV
+  外观，防止后端转换层覆盖存在但公开客户端管线回退。
 
 ### P2：运维兼容和长期验证
 
