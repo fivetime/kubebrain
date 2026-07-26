@@ -15750,6 +15750,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Put 的 empty key、server-side request-too-large、NOSPACE，以及 Delete empty key 统一到
   `errors.Is`、client `codes.Unknown` 和 reference message helper。该门禁防止 KV client wrapper、
   request-size admission 或 quota guard 重构后只保留部分断言，漏掉 typed error/code/message 漂移。
+- A1234 收敛 official clientv3 Lease 错误三件套：
+  A1212/A1217/A1218 已覆盖 Lease TTL-too-large 和 auth 服务层外观，本轮把 clientv3 Lease
+  missing/revoked lease、Revoke/KeepAlive unknown lease、Grant TTL-too-large、Put/LeaseGrant
+  NOSPACE 拒绝路径统一到 `errors.Is`、client `codes.Unknown` 和 reference message helper。
+  该门禁防止 lease client wrapper、TTL validation、attachment validation 或 quota guard 重构后
+  只保留部分断言，漏掉 typed error/code/message 漂移。
 
 ### P2：运维兼容和长期验证
 

@@ -245,26 +245,20 @@ func TestClientLeaseNotFoundErrorsMatchEtcd(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	requireClientLeaseNotFound := func(err error) {
-		t.Helper()
-		require.ErrorIs(t, err, rpctypes.ErrLeaseNotFound)
-		require.Equal(t, codes.Unknown, status.Code(err))
-		require.Equal(t, "etcdserver: requested lease not found", status.Convert(err).Message())
-	}
 
 	_, err = client.Put(ctx, "/a1130/lease-not-found/missing", "value", clientv3.WithLease(500))
-	requireClientLeaseNotFound(err)
+	requireClientLeaseError(t, err, codes.Unknown, "etcdserver: requested lease not found", rpctypes.ErrLeaseNotFound)
 
 	grant, err := client.Grant(ctx, 10)
 	require.NoError(t, err)
 	_, err = client.Revoke(ctx, grant.ID)
 	require.NoError(t, err)
 	_, err = client.Put(ctx, "/a1130/lease-not-found/revoked", "value", clientv3.WithLease(grant.ID))
-	requireClientLeaseNotFound(err)
+	requireClientLeaseError(t, err, codes.Unknown, "etcdserver: requested lease not found", rpctypes.ErrLeaseNotFound)
 	_, err = client.Revoke(ctx, 0)
-	requireClientLeaseNotFound(err)
+	requireClientLeaseError(t, err, codes.Unknown, "etcdserver: requested lease not found", rpctypes.ErrLeaseNotFound)
 	_, err = client.KeepAliveOnce(ctx, 0)
-	requireClientLeaseNotFound(err)
+	requireClientLeaseError(t, err, codes.Unknown, "etcdserver: requested lease not found", rpctypes.ErrLeaseNotFound)
 
 	ttl, err := client.TimeToLive(ctx, grant.ID)
 	require.NoError(t, err)
@@ -299,9 +293,7 @@ func TestClientLeaseGrantTooLargeTTLIsTyped(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_, err = client.Grant(ctx, clientv3.MaxLeaseTTL+1)
-	require.ErrorIs(t, err, rpctypes.ErrLeaseTTLTooLarge)
-	require.Equal(t, codes.Unknown, status.Code(err))
-	require.Equal(t, "etcdserver: too large lease TTL", status.Convert(err).Message())
+	requireClientLeaseError(t, err, codes.Unknown, "etcdserver: too large lease TTL", rpctypes.ErrLeaseTTLTooLarge)
 }
 
 func TestClientLeaseGrantNoSpaceIsTyped(t *testing.T) {
@@ -331,12 +323,10 @@ func TestClientLeaseGrantNoSpaceIsTyped(t *testing.T) {
 	_, err = client.Put(ctx, "key", "123")
 	require.NoError(t, err)
 	_, err = client.Put(ctx, "x", "y")
-	require.ErrorIs(t, err, rpctypes.ErrNoSpace)
+	requireClientLeaseError(t, err, codes.Unknown, "etcdserver: mvcc: database space exceeded", rpctypes.ErrNoSpace)
 
 	_, err = client.Grant(ctx, 30)
-	require.ErrorIs(t, err, rpctypes.ErrNoSpace)
-	require.Equal(t, codes.Unknown, status.Code(err))
-	require.Equal(t, "etcdserver: mvcc: database space exceeded", status.Convert(err).Message())
+	requireClientLeaseError(t, err, codes.Unknown, "etcdserver: mvcc: database space exceeded", rpctypes.ErrNoSpace)
 }
 
 func TestClientLeaseLeasesListsGrantedIDsInOrder(t *testing.T) {
@@ -1954,6 +1944,16 @@ func requireClientLeaseHeaderWellFormed(t *testing.T, header *etcdserverpb.Respo
 	require.NotZero(t, header.MemberId)
 	require.Positive(t, header.Revision)
 	require.Positive(t, header.RaftTerm)
+}
+
+func requireClientLeaseError(t *testing.T, err error, code codes.Code, message string, wantErrorIs ...error) {
+	t.Helper()
+	require.Error(t, err)
+	for _, want := range wantErrorIs {
+		require.ErrorIs(t, err, want)
+	}
+	require.Equal(t, code, status.Code(err))
+	require.Equal(t, message, status.Convert(err).Message())
 }
 
 func requireClientLeaseKeepAliveResponse(
