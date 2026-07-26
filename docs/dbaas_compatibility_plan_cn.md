@@ -16210,6 +16210,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   A1311 已固定 pending duplicate grant 的 code/message，本轮进一步要求该错误必须
   `errors.Is(..., rpctypes.ErrGRPCLeaseExist)`。该门禁防止显式 lease ID 在 metadata commit
   阻塞窗口内被重复申请时只返回相同文本、但丢失官方 client/v3 可识别的 etcd sentinel。
+- A1313 固定 RestoreCutover claim namespace 可信边界：
+  restore cutover worker 允许 operation API 在 claim 响应中返回实际 operation namespace，
+  但该 namespace 必须仍是合法 DNS label，且非法值不得进入 prepare/cutover/verify/complete
+  任一数据面阶段，也不得向错误 namespace 记录 retry/fail/succeed。本轮让
+  `run_restore_cutover_operation_test` fixture 支持模拟 claim namespace，并新增
+  `TestRestoreCutoverOperationRejectsInvalidClaimNamespaceBeforePhases`。该门禁防止
+  operation API 或参数代理异常时把高风险恢复流量切换操作推进到非预期 namespace。
 
 ### P2：运维兼容和长期验证
 

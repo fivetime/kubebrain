@@ -270,6 +270,17 @@ func TestRestoreCutoverOperationRejectsInvalidClaimIdentityBeforePhases(t *testi
 	}
 }
 
+func TestRestoreCutoverOperationRejectsInvalidClaimNamespaceBeforePhases(t *testing.T) {
+	f := newCutoverRunnerFixture(t)
+	f.run(t, false, "CLAIM_NAMESPACE=tenant/a", "OPERATION_NAMESPACE must be a lowercase DNS label")
+	log := f.log(t)
+	require.Contains(t, log, "--namespace ops --action claim")
+	require.NotContains(t, log, "phase ")
+	require.NotContains(t, log, "--action retry")
+	require.NotContains(t, log, "--action fail")
+	require.NotContains(t, log, "--action succeed")
+}
+
 func TestRestoreCutoverOperationRejectsInvalidPublicEndpointBeforePhases(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -409,7 +420,8 @@ if [[ " $* " == *" --action claim "* ]]; then
   digest="${CLAIM_DIGEST:-$PARAMETERS_DIGEST}"
   operation_id="${CLAIM_OPERATION_ID:-cutover-1}"
   instance="${CLAIM_INSTANCE:-instance-a}"
-  printf '{"namespace":"tenant-a-operations","name":"cutover-1","uid":"uid-op","resource_version":"1","operation_id":"%s","instance":"%s","type":"RestoreCutover","parameters_sha256":"%s","owner":"worker-a","attempt":1,"lease_until_unix":999999}\n' "$operation_id" "$instance" "$digest"
+  namespace="${CLAIM_NAMESPACE:-tenant-a-operations}"
+  printf '{"namespace":"%s","name":"cutover-1","uid":"uid-op","resource_version":"1","operation_id":"%s","instance":"%s","type":"RestoreCutover","parameters_sha256":"%s","owner":"worker-a","attempt":1,"lease_until_unix":999999}\n' "$namespace" "$operation_id" "$instance" "$digest"
 elif [[ " $* " == *" --action heartbeat "* && "${HEARTBEAT_FAIL:-true}" == true ]]; then
   exit 1
 else
