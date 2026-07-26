@@ -363,6 +363,84 @@ func TestClientLeaseNaturalExpiryWatchPrevKVMatchesEtcd(t *testing.T) {
 	}
 }
 
+func TestClientCorruptAlarmDefersNaturalLeaseExpiryUntilDisarm(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterLeaseServer(grpcServer, server)
+	etcdserverpb.RegisterMaintenanceServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	dialer := func(context.Context, string) (net.Conn, error) { return listener.Dial() }
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(dialer),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+	conn, err := grpc.NewClient("passthrough:///corrupt-lease-expiry",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(dialer))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	maintenance := etcdserverpb.NewMaintenanceClient(conn)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	statusResp, err := maintenance.Status(ctx, &etcdserverpb.StatusRequest{})
+	require.NoError(t, err)
+	memberID := statusResp.Header.MemberId
+	require.NotZero(t, memberID)
+	key := fmt.Sprintf("/a1086/corrupt-lease-expiry/%d", time.Now().UnixNano())
+	grant, err := client.Grant(ctx, 2)
+	require.NoError(t, err)
+	_, err = client.Put(ctx, key, "leased", clientv3.WithLease(grant.ID))
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_, _ = maintenance.Alarm(cleanupCtx, &etcdserverpb.AlarmRequest{
+			Action: etcdserverpb.AlarmRequest_DEACTIVATE, Alarm: etcdserverpb.AlarmType_CORRUPT, MemberID: memberID,
+		})
+		_, _ = client.Delete(cleanupCtx, key)
+	})
+
+	activated, err := maintenance.Alarm(ctx, &etcdserverpb.AlarmRequest{
+		Action: etcdserverpb.AlarmRequest_ACTIVATE, Alarm: etcdserverpb.AlarmType_CORRUPT, MemberID: memberID,
+	})
+	require.NoError(t, err)
+	require.Len(t, activated.Alarms, 1)
+	time.Sleep(3 * time.Second)
+	duringAlarm, err := client.Get(ctx, key)
+	require.NoError(t, err)
+	require.Len(t, duringAlarm.Kvs, 1)
+	require.Equal(t, "leased", string(duringAlarm.Kvs[0].Value))
+	ttl, err := client.TimeToLive(ctx, grant.ID)
+	require.NoError(t, err)
+	require.Negative(t, ttl.TTL)
+
+	deactivated, err := maintenance.Alarm(ctx, &etcdserverpb.AlarmRequest{
+		Action: etcdserverpb.AlarmRequest_DEACTIVATE, Alarm: etcdserverpb.AlarmType_CORRUPT, MemberID: memberID,
+	})
+	require.NoError(t, err)
+	require.Len(t, deactivated.Alarms, 1)
+	require.Eventually(t, func() bool {
+		after, getErr := client.Get(ctx, key)
+		return getErr == nil && len(after.Kvs) == 0
+	}, 5*time.Second, 50*time.Millisecond)
+	unknown, err := client.TimeToLive(ctx, grant.ID)
+	require.NoError(t, err)
+	require.Equal(t, int64(-1), unknown.TTL)
+}
+
 func TestClientLeaseTimeToLiveReportsZeroBeforeExpiry(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

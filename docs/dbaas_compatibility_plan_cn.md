@@ -14713,6 +14713,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   列出该 lease。本轮新增 bufconn 官方 clientv3 + Watch 回归，反向写入 `b` 再写 `a`，
   从最后 Put 后的 revision 开始 watch，断言事件顺序为 `a,b`、两个 DELETE 共享同一
   ModRevision、PrevKV 保留原值和原 lease，随后确认 keyspace 清空且 lease 完全消失。
+- A1086 固定 clientv3 CORRUPT alarm 下的自然 lease 过期延后：
+  `corrupt_alarm` differential 证明 CORRUPT alarm 激活期间，已过期 lease 的删除流程
+  必须被阻断并保留 key，读取仍成功且 TTL 可为负；解除 CORRUPT alarm 后，延后的
+  lease expiry 必须继续执行并删除绑定 key。本轮新增 bufconn official clientv3 回归，
+  使用 Maintenance gRPC 激活 alarm，等待 2s lease 超时后断言 key 仍可读且 TTL<0，
+  随后 disarm 并等待 key 删除、TimeToLive 返回 TTL=-1，补齐公开客户端入口的告警
+  与 lease worker 交互契约。
 
 ### P2：运维兼容和长期验证
 
