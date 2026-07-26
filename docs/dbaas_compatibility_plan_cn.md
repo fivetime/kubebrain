@@ -14487,6 +14487,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   experimental recipes bufconn 回归，直接运行 `recipe.NewQueue` 的并发写读矩阵，并按集合
   排序断言 9 个 writer item 全部出现且无重复/丢失，补齐 recipes differential 剩余公开
   wrapper 门禁。
+- A1057 固定 clientv3 Watch revision boundary 外观：
+  `watch_revision_boundary` differential 证明 `StartRevision=0` 从当前 revision 后开始、
+  `StartRevision=current` 必须回放当前写入事件，future start revision 在未达到前要抑制
+  progress response，达到后再发送目标事件。A1025-A1027 已补 raw gRPC watch stream 覆盖，
+  本轮新增官方 clientv3 bufconn 回归，通过 `client.Watch(... WithCreatedNotify/WithRev)`
+  和 `client.RequestProgress` 固定 public Watch channel 的 created notification、事件
+  value/ModRevision 以及 future progress suppression；created response 的 header 仍由 raw
+  gRPC 门禁固定，避免把 SDK wrapper 未承诺字段当成公开契约。
 
 ### P2：运维兼容和长期验证
 

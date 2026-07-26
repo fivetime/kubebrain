@@ -336,6 +336,94 @@ func TestClientFilteredWatchProgressCoversSuppressedPut(t *testing.T) {
 	}
 }
 
+func TestClientWatchRevisionBoundariesMatchEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterWatchServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	prefix := fmt.Sprintf("/a1057/watch-revision-client/%d/", time.Now().UnixNano())
+
+	latestKey := prefix + "latest"
+	base, err := client.Get(ctx, latestKey)
+	require.NoError(t, err)
+	latestCtx, latestCancel := context.WithCancel(ctx)
+	defer latestCancel()
+	latest := client.Watch(latestCtx, latestKey, clientv3.WithCreatedNotify())
+	require.NotZero(t, base.Header.Revision)
+	requireClientWatchCreated(t, ctx, latest)
+	latestPut, err := client.Put(ctx, latestKey, "after-create")
+	require.NoError(t, err)
+	latestEvent := requireSingleClientWatchEvent(t, ctx, latest)
+	require.Equal(t, clientv3.EventTypePut, latestEvent.Type)
+	require.Equal(t, latestKey, string(latestEvent.Kv.Key))
+	require.Equal(t, "after-create", string(latestEvent.Kv.Value))
+	require.Equal(t, latestPut.Header.Revision, latestEvent.Kv.ModRevision)
+
+	historicalKey := prefix + "historical"
+	historicalPut, err := client.Put(ctx, historicalKey, "seed")
+	require.NoError(t, err)
+	historicalCtx, historicalCancel := context.WithCancel(ctx)
+	defer historicalCancel()
+	historical := client.Watch(
+		historicalCtx, historicalKey, clientv3.WithRev(historicalPut.Header.Revision), clientv3.WithCreatedNotify(),
+	)
+	requireClientWatchCreated(t, ctx, historical)
+	historicalEvent := requireSingleClientWatchEvent(t, ctx, historical)
+	require.Equal(t, clientv3.EventTypePut, historicalEvent.Type)
+	require.Equal(t, historicalKey, string(historicalEvent.Kv.Key))
+	require.Equal(t, "seed", string(historicalEvent.Kv.Value))
+	require.Equal(t, historicalPut.Header.Revision, historicalEvent.Kv.ModRevision)
+
+	futureKey := prefix + "future"
+	futureBase, err := client.Get(ctx, futureKey)
+	require.NoError(t, err)
+	startRevision := futureBase.Header.Revision + 2
+	futureCtx, futureCancel := context.WithCancel(ctx)
+	defer futureCancel()
+	future := client.Watch(futureCtx, futureKey, clientv3.WithRev(startRevision), clientv3.WithCreatedNotify())
+	requireClientWatchCreated(t, ctx, future)
+	require.NoError(t, client.RequestProgress(ctx))
+	select {
+	case response := <-future:
+		require.NoError(t, response.Err())
+		t.Fatalf("future watch emitted early response before start revision %d: %+v", startRevision, response)
+	case <-time.After(150 * time.Millisecond):
+	case <-ctx.Done():
+		t.Fatalf("timed out while checking future watch progress suppression: %v", ctx.Err())
+	}
+
+	_, err = client.Put(ctx, prefix+"future-unrelated", "advance")
+	require.NoError(t, err)
+	futurePut, err := client.Put(ctx, futureKey, "future")
+	require.NoError(t, err)
+	futureEvent := requireSingleClientWatchEvent(t, ctx, future)
+	require.Equal(t, clientv3.EventTypePut, futureEvent.Type)
+	require.Equal(t, futureKey, string(futureEvent.Kv.Key))
+	require.Equal(t, "future", string(futureEvent.Kv.Value))
+	require.Equal(t, futurePut.Header.Revision, futureEvent.Kv.ModRevision)
+}
+
 func TestRawGRPCWatchIDRangeBoundariesKeepStreamAlive(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
@@ -950,14 +1038,22 @@ func requireRawWatchHeaderWellFormed(t *testing.T, response *etcdserverpb.WatchR
 
 func requireClientWatchCreated(t *testing.T, ctx context.Context, watch clientv3.WatchChan) {
 	t.Helper()
+	response := requireClientWatchCreatedResponse(t, ctx, watch)
+	require.NotNil(t, response.Header)
+}
+
+func requireClientWatchCreatedResponse(t *testing.T, ctx context.Context, watch clientv3.WatchChan) clientv3.WatchResponse {
+	t.Helper()
 	select {
 	case response, ok := <-watch:
 		require.True(t, ok)
 		require.NoError(t, response.Err())
 		require.True(t, response.Created)
 		require.Empty(t, response.Events)
+		return response
 	case <-ctx.Done():
 		t.Fatalf("timed out waiting for watch created response: %v", ctx.Err())
+		return clientv3.WatchResponse{}
 	}
 }
 
