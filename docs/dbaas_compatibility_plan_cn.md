@@ -13858,6 +13858,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   只更新选中路径且选中 key 共用顶层 revision，并断言 leasing cache 与直读 KV 元数据一致。
   该门禁防止底层 Txn 测试通过但 leasing wrapper 的本地 compare、response 解包或嵌套
   branch cache 更新路径回退。
+- A979 固定 clientv3 leasing.NewKV 的 range ownership 路径：
+  `leasing_range` differential 覆盖 prefix cache、range compare、nested non-owner put、
+  range delete、watch history 与跨 client cache invalidation。本轮新增 bufconn clientv3
+  回归，使用两个官方 `leasing.NewKV` 实例缓存 4-key prefix，其中一个 key 升到
+  Version=2 后确认 `Version(prefix)==1` compare 失败；随后另一个 leasing client 通过
+  nested Txn 同 revision 更新已有 key 并创建新 key，原 owner 读取 prefix 必须看到最新
+  5 个值。最后执行 prefix Delete，断言 Deleted=5、历史 watch 的 DELETE event 全部使用
+  delete header revision、原 owner prefix cache 为空且范围外 sentinel 保留，防止 range
+  ownership revoke、staged range Txn 或 watch history 任一路径回退。
 
 ### P2：运维兼容和长期验证
 

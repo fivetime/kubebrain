@@ -288,3 +288,132 @@ func deterministicLeasingTree(prefix string, depth int, next *int, expected map[
 		[]clientv3.Op{elseOperation, clientv3.OpPut(key, "else")},
 	)
 }
+
+func TestClientLeasingRangeOwnershipAndDelete(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterWatchServer(grpcServer, server)
+	etcdserverpb.RegisterLeaseServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	newClient := func() *clientv3.Client {
+		client, err := clientv3.New(clientv3.Config{
+			Endpoints:   []string{"bufnet"},
+			DialTimeout: time.Second,
+			DialOptions: []grpc.DialOption{
+				grpc.WithTransportCredentials(insecure.NewCredentials()),
+				grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+					return listener.Dial()
+				}),
+			},
+		})
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, client.Close()) })
+		return client
+	}
+	first := newClient()
+	second := newClient()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	prefix := fmt.Sprintf("/a979/leasing-range/%d/", time.Now().UnixNano())
+	dataPrefix := prefix + "data/"
+	outsideKey := prefix + "outside"
+	firstKV, closeFirst, err := leasing.NewKV(first, prefix+"owners/")
+	require.NoError(t, err)
+	t.Cleanup(closeFirst)
+	secondKV, closeSecond, err := leasing.NewKV(second, prefix+"owners/")
+	require.NoError(t, err)
+	t.Cleanup(closeSecond)
+
+	const initialKeys = 4
+	for index := 0; index < initialKeys; index++ {
+		key := fmt.Sprintf("%s%d", dataPrefix, index)
+		_, err = first.Put(ctx, key, fmt.Sprintf("initial-%d", index))
+		require.NoError(t, err)
+	}
+	_, err = first.Put(ctx, dataPrefix+"1", "version-two")
+	require.NoError(t, err)
+	_, err = first.Put(ctx, outsideKey, "outside")
+	require.NoError(t, err)
+
+	cached, err := firstKV.Get(ctx, dataPrefix, clientv3.WithPrefix())
+	require.NoError(t, err)
+	require.Len(t, cached.Kvs, initialKeys)
+	rangeCompare, err := firstKV.Txn(ctx).
+		If(clientv3.Compare(clientv3.Version(dataPrefix).WithPrefix(), "=", 1)).
+		Commit()
+	require.NoError(t, err)
+	require.False(t, rangeCompare.Succeeded)
+
+	nested, err := secondKV.Txn(ctx).Then(clientv3.OpTxn(
+		nil,
+		[]clientv3.Op{
+			clientv3.OpPut(dataPrefix+"0", "nested-zero"),
+			clientv3.OpPut(dataPrefix+"4", "nested-four"),
+		},
+		nil,
+	)).Commit()
+	require.NoError(t, err)
+	require.Len(t, nested.Responses, 1)
+	nestedResponse := nested.Responses[0].GetResponseTxn()
+	require.NotNil(t, nestedResponse)
+	require.Len(t, nestedResponse.Responses, 2)
+	for _, response := range nestedResponse.Responses {
+		require.Equal(t, nested.Header.Revision, response.GetResponsePut().Header.Revision)
+	}
+
+	afterNested, err := firstKV.Get(ctx, dataPrefix, clientv3.WithPrefix())
+	require.NoError(t, err)
+	require.Len(t, afterNested.Kvs, initialKeys+1)
+	require.Equal(t, [][]byte{
+		[]byte("nested-zero"),
+		[]byte("version-two"),
+		[]byte("initial-2"),
+		[]byte("initial-3"),
+		[]byte("nested-four"),
+	}, [][]byte{
+		afterNested.Kvs[0].Value,
+		afterNested.Kvs[1].Value,
+		afterNested.Kvs[2].Value,
+		afterNested.Kvs[3].Value,
+		afterNested.Kvs[4].Value,
+	})
+
+	deleted, err := secondKV.Delete(ctx, dataPrefix, clientv3.WithPrefix())
+	require.NoError(t, err)
+	require.Equal(t, int64(initialKeys+1), deleted.Deleted)
+	watchCtx, watchCancel := context.WithTimeout(ctx, 5*time.Second)
+	defer watchCancel()
+	watch := second.Watch(
+		watchCtx, dataPrefix, clientv3.WithPrefix(), clientv3.WithRev(deleted.Header.Revision),
+	)
+	deleteEvents := 0
+	for deleteEvents < initialKeys+1 {
+		select {
+		case response, ok := <-watch:
+			require.True(t, ok)
+			require.NoError(t, response.Err())
+			for _, event := range response.Events {
+				require.Equal(t, clientv3.EventTypeDelete, event.Type)
+				require.Equal(t, deleted.Header.Revision, event.Kv.ModRevision)
+				deleteEvents++
+			}
+		case <-watchCtx.Done():
+			t.Fatalf("timed out after %d/%d delete events at revision %d", deleteEvents, initialKeys+1, deleted.Header.Revision)
+		}
+	}
+
+	afterDelete, err := firstKV.Get(ctx, dataPrefix, clientv3.WithPrefix())
+	require.NoError(t, err)
+	require.Empty(t, afterDelete.Kvs)
+	outside, err := first.Get(ctx, outsideKey)
+	require.NoError(t, err)
+	require.Len(t, outside.Kvs, 1)
+	require.Equal(t, []byte("outside"), outside.Kvs[0].Value)
+}
