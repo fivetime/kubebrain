@@ -16158,6 +16158,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `injected iter failure`，并把 `TestHistoryScanWaiterHonorsOwnCtx` 收紧为等待共享 scan
   的 waiter 必须返回自身 `context.DeadlineExceeded`。该门禁防止 history scan singleflight
   和 low-cache fallback 重构时错分瞬时存储故障、压住调用方 deadline 或诱导客户端错误 relist。
+- A1306 固定请求大小边界错误透传：
+  unary 请求大小拦截器必须在超过 etcd payload 边界时返回
+  `ErrGRPCRequestTooLarge`，但刚好等于限制值的请求必须进入 storage handler，
+  且不得改写 handler 返回的 etcd gRPC 错误。本轮把
+  `TestUnaryRequestLimitUsesEtcdPayloadBoundaryAndError` 的 admitted 分支从只断言
+  有错误收紧为必须透传 `ErrGRPCKeyNotFound` 的 gRPC code/message。该门禁防止
+  请求限流层在边界重构时吞掉真实业务错误、误报 request too large，或破坏官方
+  client/v3 对 etcd 错误契约的判断。
 
 ### P2：运维兼容和长期验证
 

@@ -49,7 +49,7 @@ func TestUnaryRequestLimitUsesEtcdPayloadBoundaryAndError(t *testing.T) {
 	server.maxRequestBytes = size
 	_, err = server.stampUnary(context.Background(), request, &grpc.UnaryServerInfo{}, handler)
 	require.True(t, called, "a request exactly at the limit must be admitted")
-	require.Error(t, err)
+	requireHandlerEtcdError(t, err, rpctypes.ErrGRPCKeyNotFound)
 }
 
 func TestResponseHeadersIncludeSharedRaftTerm(t *testing.T) {
@@ -244,6 +244,13 @@ func requireRequestTooLargeError(t *testing.T, err error) {
 	require.ErrorIs(t, err, rpctypes.ErrGRPCRequestTooLarge)
 	require.Equal(t, status.Code(rpctypes.ErrGRPCRequestTooLarge), status.Code(err))
 	require.Equal(t, status.Convert(rpctypes.ErrGRPCRequestTooLarge).Message(), status.Convert(err).Message())
+}
+
+func requireHandlerEtcdError(t *testing.T, err error, want error) {
+	t.Helper()
+	require.ErrorIs(t, err, want)
+	require.Equal(t, status.Code(want), status.Code(err))
+	require.Equal(t, status.Convert(want).Message(), status.Convert(err).Message())
 }
 
 func requireRaftTermUnavailable(t *testing.T, err error, message string) {
