@@ -107,8 +107,7 @@ func TestClientAdmissionLimitsAcrossConnectionsAndReservesPeer(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	_, err := second.Check(ctx, &healthpb.HealthCheckRequest{})
 	cancel()
-	require.Equal(t, codes.ResourceExhausted, status.Code(err))
-	require.Equal(t, "etcdserver: too many requests", status.Convert(err).Message())
+	requireAdmissionError(t, err, rpctypes.ErrGRPCRequestTooManyRequests, codes.ResourceExhausted, "etcdserver: too many requests")
 
 	peerHealth := health.NewServer()
 	peerHealth.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
@@ -152,7 +151,7 @@ func TestClientAdmissionCountsStreamLifetime(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	_, err = unaryClient.Check(ctx, &healthpb.HealthCheckRequest{})
 	cancel()
-	require.Equal(t, codes.ResourceExhausted, status.Code(err))
+	requireAdmissionError(t, err, rpctypes.ErrGRPCRequestTooManyRequests, codes.ResourceExhausted, "etcdserver: too many requests")
 
 	cancelWatch()
 	require.Error(t, <-recvDone)
@@ -435,8 +434,7 @@ func TestClientRequestRateLimitsUnaryAndReservesPeer(t *testing.T) {
 		require.Equal(t, healthpb.HealthCheckResponse_SERVING, response.Status)
 	}
 	_, err := client.Check(context.Background(), &healthpb.HealthCheckRequest{})
-	require.Equal(t, codes.ResourceExhausted, status.Code(err))
-	require.Equal(t, "etcdserver: too many requests", status.Convert(err).Message())
+	requireAdmissionError(t, err, rpctypes.ErrGRPCRequestTooManyRequests, codes.ResourceExhausted, "etcdserver: too many requests")
 
 	peerHealth := health.NewServer()
 	peerHealth.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
@@ -487,8 +485,7 @@ func TestClientRequestRateCountsEveryWatchStreamMessage(t *testing.T) {
 		},
 	})
 	_, err = stream.Recv()
-	require.Equal(t, codes.ResourceExhausted, status.Code(err))
-	require.Equal(t, "etcdserver: too many requests", status.Convert(err).Message())
+	requireAdmissionError(t, err, rpctypes.ErrGRPCRequestTooManyRequests, codes.ResourceExhausted, "etcdserver: too many requests")
 }
 
 func TestClientRequestRateDisabledDoesNotReject(t *testing.T) {

@@ -15808,6 +15808,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   触发 fragment 断言，本轮把测试输入扩大为 4 个大 PrevKv 删除事件，并继续校验 observed
   event 数和每个 PrevKv value size。该门禁防止分片测试卡在事件批次边界，降低生产 CI
   中与兼容逻辑无关的偶发失败。
+- A1245 固定 admission too-many-requests 错误三件套：
+  A1237 已覆盖 require-leader 与 metadata admission 错误，本轮把 client listener 的
+  max-in-flight unary/stream lifetime 拒绝，以及 request-rate unary/watch stream 拒绝统一到
+  `ErrGRPCRequestTooManyRequests`、`codes.ResourceExhausted` 和 reference message helper。
+  该门禁防止 DBaaS admission 限流重构后只保留 code，漏掉客户端可见 typed error/message。
 
 ### P2：运维兼容和长期验证
 
