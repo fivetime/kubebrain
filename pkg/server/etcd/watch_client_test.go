@@ -607,6 +607,99 @@ func TestRawGRPCWatchMaximumStartRevisionCancelsWithoutEvents(t *testing.T) {
 	require.GreaterOrEqual(t, canceled.Header.Revision, put.Header.Revision)
 }
 
+func TestRawGRPCWatchRevisionZeroAndHistoricalCurrent(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	_, err := server.Put(context.Background(), &etcdserverpb.PutRequest{
+		Key: []byte("/a1027/watch-revision/seed"), Value: []byte("seed"),
+	})
+	require.NoError(t, err)
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterWatchServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///bufnet",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	kv := etcdserverpb.NewKVClient(conn)
+	watch := etcdserverpb.NewWatchClient(conn)
+
+	fromNowKey := []byte(fmt.Sprintf("/a1027/watch-revision/latest/%d", time.Now().UnixNano()))
+	base, err := kv.Range(ctx, &etcdserverpb.RangeRequest{Key: fromNowKey})
+	require.NoError(t, err)
+	requireRawRangeHeaderWellFormed(t, base)
+	fromNow, err := watch.Watch(ctx)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = fromNow.CloseSend() })
+	require.NoError(t, fromNow.Send(&etcdserverpb.WatchRequest{
+		RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{
+			CreateRequest: &etcdserverpb.WatchCreateRequest{Key: fromNowKey, WatchId: 301},
+		},
+	}))
+	created, err := fromNow.Recv()
+	require.NoError(t, err)
+	requireRawWatchHeaderWellFormed(t, created)
+	require.True(t, created.Created)
+	require.False(t, created.Canceled)
+	require.Equal(t, int64(301), created.WatchId)
+	require.GreaterOrEqual(t, created.Header.Revision, base.Header.Revision)
+
+	put, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: fromNowKey, Value: []byte("after-create")})
+	require.NoError(t, err)
+	event, err := fromNow.Recv()
+	require.NoError(t, err)
+	requireRawWatchHeaderWellFormed(t, event)
+	require.False(t, event.Created)
+	require.False(t, event.Canceled)
+	require.Equal(t, int64(301), event.WatchId)
+	require.Len(t, event.Events, 1)
+	require.Equal(t, []byte("after-create"), event.Events[0].Kv.Value)
+	require.Equal(t, put.Header.Revision, event.Events[0].Kv.ModRevision)
+
+	historicalKey := []byte(fmt.Sprintf("/a1027/watch-revision/historical/%d", time.Now().UnixNano()))
+	historicalPut, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: historicalKey, Value: []byte("seed")})
+	require.NoError(t, err)
+	historical, err := watch.Watch(ctx)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = historical.CloseSend() })
+	require.NoError(t, historical.Send(&etcdserverpb.WatchRequest{
+		RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{
+			CreateRequest: &etcdserverpb.WatchCreateRequest{
+				Key: historicalKey, WatchId: 302, StartRevision: historicalPut.Header.Revision,
+			},
+		},
+	}))
+	historicalCreated, err := historical.Recv()
+	require.NoError(t, err)
+	requireRawWatchHeaderWellFormed(t, historicalCreated)
+	require.True(t, historicalCreated.Created)
+	require.False(t, historicalCreated.Canceled)
+	require.Equal(t, int64(302), historicalCreated.WatchId)
+	require.GreaterOrEqual(t, historicalCreated.Header.Revision, historicalPut.Header.Revision)
+
+	historicalEvent, err := historical.Recv()
+	require.NoError(t, err)
+	requireRawWatchHeaderWellFormed(t, historicalEvent)
+	require.False(t, historicalEvent.Created)
+	require.False(t, historicalEvent.Canceled)
+	require.Equal(t, int64(302), historicalEvent.WatchId)
+	require.Len(t, historicalEvent.Events, 1)
+	require.Equal(t, []byte("seed"), historicalEvent.Events[0].Kv.Value)
+	require.Equal(t, historicalPut.Header.Revision, historicalEvent.Events[0].Kv.ModRevision)
+}
+
 func requireRawWatchHeaderWellFormed(t *testing.T, response *etcdserverpb.WatchResponse) {
 	t.Helper()
 	require.NotNil(t, response.Header)
