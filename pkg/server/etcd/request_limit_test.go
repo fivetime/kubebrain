@@ -44,8 +44,7 @@ func TestUnaryRequestLimitUsesEtcdPayloadBoundaryAndError(t *testing.T) {
 
 	_, err := server.stampUnary(context.Background(), request, &grpc.UnaryServerInfo{}, handler)
 	require.False(t, called, "an oversized request must not reach storage handlers")
-	require.Equal(t, status.Code(rpctypes.ErrGRPCRequestTooLarge), status.Code(err))
-	require.Equal(t, status.Convert(rpctypes.ErrGRPCRequestTooLarge).Message(), status.Convert(err).Message())
+	requireRequestTooLargeError(t, err)
 
 	server.maxRequestBytes = size
 	_, err = server.stampUnary(context.Background(), request, &grpc.UnaryServerInfo{}, handler)
@@ -183,8 +182,7 @@ func TestRequestLimitReturnsEtcdErrorOverGRPC(t *testing.T) {
 
 	request := &etcdserverpb.PutRequest{Key: []byte("key"), Value: make([]byte, 64)}
 	_, err = etcdserverpb.NewKVClient(conn).Put(context.Background(), request)
-	require.Equal(t, status.Code(rpctypes.ErrGRPCRequestTooLarge), status.Code(err))
-	require.Equal(t, status.Convert(rpctypes.ErrGRPCRequestTooLarge).Message(), status.Convert(err).Message())
+	requireRequestTooLargeError(t, err)
 }
 
 func TestRequestLimitTransportAllowanceMatchesEtcd(t *testing.T) {
@@ -205,8 +203,7 @@ func TestRequestLimitTransportAllowanceMatchesEtcd(t *testing.T) {
 	// transport window, but remains within etcd's max+512-KiB allowance.
 	request := &etcdserverpb.PutRequest{Key: []byte("key"), Value: make([]byte, 256*1024)}
 	_, err = etcdserverpb.NewKVClient(conn).Put(context.Background(), request)
-	require.Equal(t, status.Code(rpctypes.ErrGRPCRequestTooLarge), status.Code(err))
-	require.Equal(t, status.Convert(rpctypes.ErrGRPCRequestTooLarge).Message(), status.Convert(err).Message())
+	requireRequestTooLargeError(t, err)
 }
 
 func TestStreamRequestLimitUsesEtcdPayloadBoundaryAndError(t *testing.T) {
@@ -240,6 +237,12 @@ func TestStreamRequestLimitUsesEtcdPayloadBoundaryAndError(t *testing.T) {
 	require.NoError(t, stream.Send(request),
 		"the message fits etcd's transport allowance and must reach the logical payload check")
 	_, err = stream.Recv()
+	requireRequestTooLargeError(t, err)
+}
+
+func requireRequestTooLargeError(t *testing.T, err error) {
+	t.Helper()
+	require.ErrorIs(t, err, rpctypes.ErrGRPCRequestTooLarge)
 	require.Equal(t, status.Code(rpctypes.ErrGRPCRequestTooLarge), status.Code(err))
 	require.Equal(t, status.Convert(rpctypes.ErrGRPCRequestTooLarge).Message(), status.Convert(err).Message())
 }

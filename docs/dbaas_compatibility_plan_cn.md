@@ -15828,6 +15828,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `Put(Lease)`、`LeaseTimeToLive` 和 `LeaseGrant` 的拒绝统一到 `codes.Unavailable` 与
   `etcdserver: lease state is reloading` helper。该门禁防止 lease reload/handoff 重构后
   返回普通 Unavailable 或空 message，导致生产控制器无法区分短暂 reload 保护。
+- A1249 固定 request-too-large 入口错误三件套：
+  A1245/A1246 已覆盖 too-many-requests admission，本轮把 unary logical payload、raw gRPC
+  Put、transport allowance 以及 watch stream logical payload 超限统一到
+  `ErrGRPCRequestTooLarge`、reference code 和 message helper。该门禁防止入口限流或
+  gRPC transport allowance 重构后只保留 code/message，漏掉调用方可识别的 typed error。
 
 ### P2：运维兼容和长期验证
 
