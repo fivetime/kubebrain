@@ -179,6 +179,64 @@ func TestClientAuthPasswordChangeInvalidatesOldPasswordAndToken(t *testing.T) {
 	require.Equal(t, "secret", string(afterChange.Kvs[0].Value))
 }
 
+func TestClientAuthRootProtectionAndDuplicateRoleErrors(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterAuthServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	dialOptions := []grpc.DialOption{
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}),
+	}
+	newClient := func(username, password string) *clientv3.Client {
+		t.Helper()
+		client, err := clientv3.New(clientv3.Config{
+			Endpoints:   []string{"bufnet"},
+			DialTimeout: time.Second,
+			Username:    username,
+			Password:    password,
+			DialOptions: dialOptions,
+		})
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, client.Close()) })
+		return client
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	bootstrap := newClient("", "")
+	require.NoError(t, addAuthUserRoleAndPermission(ctx, bootstrap, "root", "root-secret", "root", "", ""))
+	_, err := bootstrap.AuthEnable(ctx)
+	require.NoError(t, err)
+
+	root := newClient("root", "root-secret")
+	_, err = root.RoleAdd(ctx, "a1060-reader")
+	require.NoError(t, err)
+	_, duplicateRoleErr := root.RoleAdd(ctx, "a1060-reader")
+	requireAuthClientError(t, duplicateRoleErr, codes.Unknown, "etcdserver: role name already exists")
+
+	_, deleteRootUserErr := root.UserDelete(ctx, "root")
+	requireAuthClientError(t, deleteRootUserErr, codes.Unknown, "etcdserver: invalid auth management")
+	_, revokeRootRoleErr := root.UserRevokeRole(ctx, "root", "root")
+	requireAuthClientError(t, revokeRootRoleErr, codes.Unknown, "etcdserver: invalid auth management")
+	_, deleteRootRoleErr := root.RoleDelete(ctx, "root")
+	requireAuthClientError(t, deleteRootRoleErr, codes.Unknown, "etcdserver: invalid auth management")
+
+	users, err := root.UserList(ctx)
+	require.NoError(t, err)
+	require.Contains(t, users.Users, "root")
+	rootRole, err := root.RoleGet(ctx, "root")
+	require.NoError(t, err)
+	require.NotNil(t, rootRole)
+}
+
 func addAuthUserRoleAndPermission(
 	ctx context.Context,
 	client *clientv3.Client,

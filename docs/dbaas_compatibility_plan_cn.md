@@ -14510,6 +14510,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   AlarmList/Disarm。本轮新增官方 clientv3 bufconn 回归，先用 KV Put 推进 user revision，
   再调用空 `client.AlarmList`，断言 Alarms 为空但 header revision 不落后于 Put，且
   cluster/member/raft term 均完整。
+- A1060 固定 clientv3 Auth root 保护和重复角色错误：
+  `auth` differential 覆盖 duplicate RoleAdd、root user delete、root role revoke/delete
+  三类管理面安全边界；服务层已覆盖 root 保护，本轮新增官方 clientv3 bufconn 回归，启用
+  auth 后用 root client 断言重复 RoleAdd 经 high-level wrapper 暴露为
+  `Unknown: role name already exists`，删除 root 用户、撤销 root/root 绑定、删除 root
+  角色均暴露为 `Unknown: invalid auth management`；底层 raw gRPC 仍保留 etcd 兼容
+  `FailedPrecondition`/`InvalidArgument` 映射，并确认 root user/role 仍可读取，补齐 public
+  Auth admin wrapper 门禁。
 
 ### P2：运维兼容和长期验证
 
