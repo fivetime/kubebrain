@@ -16370,6 +16370,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   当本地 term cache 为空且 TiKV election record 读取失败时，stampUnary 必须返回完整
   `codes.Unavailable` gRPC error 字符串，并保留底层 failure message。该门禁防止 header
   stamping 在 leader/term 记录不可用时把控制面不可用误分类成普通 handler error。
+- A1343 固定 clientv3 compact/delete typed 错误字符串：
+  official clientv3 的 Compact out-of-range/future revision 与 Delete 空 key 错误现在同时固定
+  `err.Error()`、`ErrorIs`、gRPC code 和 message；raw gRPC Compact 边界则固定完整
+  `rpc error: code = OutOfRange ...` 字符串。该门禁防止 TiKV-backed etcd facade 在 MVCC
+  compaction 边界或空 key 校验上只保持 typed status，却漂移公开错误文本。
 
 ### P2：运维兼容和长期验证
 

@@ -177,14 +177,24 @@ func TestRawGRPCCompactRevisionBoundaryErrorsMatchEtcd(t *testing.T) {
 				Revision: tt.revision,
 				Physical: tt.physical,
 			})
-			requireCompactClientError(t, compactErr, codes.OutOfRange, tt.message, tt.wantErr)
+			requireRawGRPCCompactClientError(t, compactErr, codes.OutOfRange, tt.message, tt.wantErr)
 		})
 	}
 }
 
 func requireCompactClientError(t *testing.T, err error, code codes.Code, message string, wantErrorIs ...error) {
 	t.Helper()
-	require.Error(t, err)
+	require.EqualError(t, err, message)
+	for _, want := range wantErrorIs {
+		require.ErrorIs(t, err, want)
+	}
+	require.Equal(t, code, status.Code(err))
+	require.Equal(t, message, status.Convert(err).Message())
+}
+
+func requireRawGRPCCompactClientError(t *testing.T, err error, code codes.Code, message string, wantErrorIs ...error) {
+	t.Helper()
+	require.EqualError(t, err, status.Error(code, message).Error())
 	for _, want := range wantErrorIs {
 		require.ErrorIs(t, err, want)
 	}

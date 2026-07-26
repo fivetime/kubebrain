@@ -236,7 +236,7 @@ func deleteClientKVs(kvs []*mvccpb.KeyValue, prefix string) []deleteClientKV {
 
 func requireClientDeleteError(t *testing.T, err error, code codes.Code, message string, wantErrorIs ...error) {
 	t.Helper()
-	require.Error(t, err)
+	require.EqualError(t, err, message)
 	for _, want := range wantErrorIs {
 		require.ErrorIs(t, err, want)
 	}
