@@ -1,11 +1,39 @@
 package production_test
 
 import (
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
+
+func TestProductionReadinessColdRestoreVerifyExampleIncludesRequiredInputs(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "docs", "production_readiness_cn.md"))
+	require.NoError(t, err)
+	doc := string(data)
+
+	start := strings.Index(doc, "ENDPOINT=https://restored-kubebrain:2379")
+	require.NotEqual(t, -1, start, "cold restore verify example is missing")
+	end := strings.Index(doc[start:], "hack/backup/cold-restore-verify.sh")
+	require.NotEqual(t, -1, end, "cold restore verify command is missing")
+	example := doc[start : start+end]
+
+	for _, required := range []string{
+		"WITNESS_FILE=",
+		"SNAPSHOT_RECEIPT_FILE=",
+		"RESTORE_RECEIPT_FILE=",
+		"RESTORE_MANIFEST_FILE=",
+		"SEMANTIC_RECEIPT_FILE=",
+		"VERIFY_PREFIX=",
+	} {
+		require.Contains(t, example, required)
+	}
+	require.Contains(t, doc, "target kube-system/namespace UID")
+	require.Contains(t, doc, "source/restored TidbCluster UID")
+	require.Contains(t, doc, "写入前缺任一项都会 fail closed")
+}
 
 func TestLogicalBackupWrappersRejectUnsafeEndpoint(t *testing.T) {
 	for _, tc := range []struct {

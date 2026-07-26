@@ -16074,6 +16074,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   revision 顺序，以及 historical/current/lease/watch 四个证明布尔值都完整且成功。
   该门禁防止未来重构把缺身份、未完成探针或未成功语义比较的 receipt 原子发布为
   不可变恢复证据；它仍只是候选 cold restore 证据链的一部分，不关闭 PITR 缺口。
+- A1294 固定 cold restore verify 生产文档示例：
+  A1291-A1293 收紧 verifier schema 后，`docs/production_readiness_cn.md` 的示例仍缺
+  必需的 `RESTORE_MANIFEST_FILE`，照文档执行会在入口直接失败，且 final semantic receipt
+  新增的 target/source/restored UID 与发布前自校验未写入生产操作说明。本轮补齐示例和
+  证据字段说明，并新增 production 文档回归测试，要求 cold restore verify 示例持续包含
+  witness、snapshot receipt、restore receipt、restore manifest、semantic receipt 和
+  probe prefix 六个输入。该门禁防止候选恢复演练 runbook 漂移，但仍不关闭真实 CSI/PITR 缺口。
 
 ### P2：运维兼容和长期验证
 
