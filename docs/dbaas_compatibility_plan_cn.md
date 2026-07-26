@@ -15934,6 +15934,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   attachment commit-time leadership fence，以及 follower 调用 `ReloadLeases` 的拒绝统一到
   exact `codes.Unavailable` message helper。该门禁防止 lease attachment/reload 重构后只保留
   Unavailable，漏掉 successor 可重试和 stale follower snapshot 诊断语义。
+- A1270 加固平台替代/unsupported helper 的非空错误门禁：
+  A1210/A1231 已覆盖 DBaaS platform replacement message，本轮给 Cluster、Maintenance
+  platform replacement helper 和 ordering `GetStream` unsupported 断言补齐 `require.Error`
+  前置校验。该门禁防止未来错误路径被误改为 nil response 时，code/message 断言因默认
+  `status.Code(nil)==OK` 外观而漏检。
 
 ### P2：运维兼容和长期验证
 

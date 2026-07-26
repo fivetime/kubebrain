@@ -556,6 +556,7 @@ func TestMemberRootAuthorizationClientCertificateErrorsMatchEtcd(t *testing.T) {
 
 func requireClusterPlatformReplacementError(t *testing.T, err error) {
 	t.Helper()
+	require.Error(t, err)
 	require.Equal(t, codes.Unimplemented, status.Code(err))
 	require.Equal(t, memberMutationUnsupportedMessage, status.Convert(err).Message())
 }

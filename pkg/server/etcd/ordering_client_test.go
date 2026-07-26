@@ -96,6 +96,12 @@ func TestClientOrderingWrapperGetTxnAndUnsupportedStream(t *testing.T) {
 
 	stream, err := orderedKV.GetStream(ctx, key)
 	require.Nil(t, stream)
-	require.Equal(t, codes.Unimplemented, status.Code(err))
-	require.Equal(t, "GetStream is not supported by kvOrdering", status.Convert(err).Message())
+	requireOrderingStatusError(t, err, codes.Unimplemented, "GetStream is not supported by kvOrdering")
+}
+
+func requireOrderingStatusError(t *testing.T, err error, code codes.Code, message string) {
+	t.Helper()
+	require.Error(t, err)
+	require.Equal(t, code, status.Code(err))
+	require.Equal(t, message, status.Convert(err).Message())
 }

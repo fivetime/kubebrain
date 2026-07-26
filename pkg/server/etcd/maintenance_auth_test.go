@@ -103,6 +103,7 @@ func requireMaintenanceAuthError(t *testing.T, err error, want error, code codes
 
 func requireMaintenancePlatformReplacementError(t *testing.T, err error, message string) {
 	t.Helper()
+	require.Error(t, err)
 	require.Equal(t, codes.Unimplemented, status.Code(err))
 	require.Equal(t, message, status.Convert(err).Message())
 }
