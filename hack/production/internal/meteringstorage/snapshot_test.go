@@ -71,10 +71,10 @@ func TestSnapshotWriterRejectsOversizedNewOutputBeforeLink(t *testing.T) {
 func TestSnapshotRejectsInvalidEvidenceAndSlot(t *testing.T) {
 	snapshot := validSnapshot()
 	snapshot.DeleteMarkers = 1
-	require.Error(t, snapshot.Validate())
+	require.ErrorContains(t, snapshot.Validate(), "object storage sample is incomplete")
 	snapshot = validSnapshot()
 	snapshot.CheckedAtUnix = snapshot.SlotEndUnix + 2701
-	require.Error(t, snapshot.Validate())
+	require.ErrorContains(t, snapshot.Validate(), "object storage sample is incomplete")
 }
 
 func TestSnapshotRejectsImpossibleVersionByteTotals(t *testing.T) {

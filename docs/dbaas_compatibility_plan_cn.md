@@ -16281,6 +16281,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   报告 archiver 配置不完整；daily roller 的非 24h period 和 sample/rollup prefix 重叠必须
   报告 roller 配置不完整。该门禁防止生产计量归档入口把保留期、对象 key 前缀和日汇总窗口
   配置错误降级成笼统失败，降低上线前配置审计和排障质量。
+- A1325 固定 object storage metering snapshot 证据错误契约：
+  object storage sample snapshot 若包含 delete markers，或 checked_at 超过 slot end 的允许
+  finalization delay，必须报告 `object storage sample is incomplete`。该门禁防止对象存储用量
+  样本把删除标记残留、采样延迟越界等不可计费证据误报为可用 snapshot，保障后续 rollup 和
+  账单输入只接受完整样本。
 
 ### P2：运维兼容和长期验证
 
