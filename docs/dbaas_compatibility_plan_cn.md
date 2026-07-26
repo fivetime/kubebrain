@@ -15383,6 +15383,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   的 `Revoke` 必须可由 `errors.Is(..., rpctypes.ErrLeaseNotFound)` 识别。本轮加强既有
   bufconn official clientv3 lease not-found 回归，和 leased Put、KeepAliveOnce、TTL=-1
   语义一起固定 unknown lease 的客户端外观。
+- A1177 固定 clientv3 Auth RoleAdd empty typed error：
+  对照 `/root/etcd/tests/common/role_test.go:TestRoleAdd_Error`，official clientv3
+  `RoleAdd("")` 必须可由 `errors.Is(..., rpctypes.ErrRoleEmpty)` 识别，并保持 client adapter
+  暴露的 `Unknown` / `etcdserver: role name is empty` 外观。本轮加强既有 bufconn official
+  clientv3 auth role management 回归，补齐 duplicate role、root 保护之外的空 role validation
+  typed error 护栏。
 
 ### P2：运维兼容和长期验证
 

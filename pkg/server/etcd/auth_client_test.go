@@ -354,6 +354,8 @@ func TestClientAuthRootProtectionAndDuplicateRoleErrors(t *testing.T) {
 	require.NoError(t, err)
 
 	root := newClient("root", "root-secret")
+	_, emptyRoleErr := root.RoleAdd(ctx, "")
+	requireAuthClientError(t, emptyRoleErr, codes.Unknown, "etcdserver: role name is empty", rpctypes.ErrRoleEmpty)
 	_, err = root.RoleAdd(ctx, "a1060-reader")
 	require.NoError(t, err)
 	_, duplicateRoleErr := root.RoleAdd(ctx, "a1060-reader")
