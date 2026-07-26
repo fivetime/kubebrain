@@ -670,6 +670,10 @@ func TestClientAuthImplicitRootRoleAndCredentialErrors(t *testing.T) {
 	require.NoError(t, err)
 	_, err = rawRootAuth.UserAdd(ctx, &etcdserverpb.AuthUserAddRequest{Name: "raw-alice", Password: "raw-alice-secret"})
 	require.NoError(t, err)
+	_, err = rawRootAuth.RoleAdd(ctx, &etcdserverpb.AuthRoleAddRequest{Name: "a1204-allowed"})
+	require.NoError(t, err)
+	_, err = rawRootAuth.UserGrantRole(ctx, &etcdserverpb.AuthUserGrantRoleRequest{User: "alice", Role: "a1204-allowed"})
+	require.NoError(t, err)
 	aliceClient, err := clientv3.New(clientv3.Config{
 		Endpoints:   []string{"bufnet"},
 		DialTimeout: time.Second,
@@ -682,6 +686,23 @@ func TestClientAuthImplicitRootRoleAndCredentialErrors(t *testing.T) {
 	rawAliceAuth := etcdserverpb.NewAuthClient(aliceClient.ActiveConnection())
 	_, rawAliceDisableErr := rawAliceAuth.AuthDisable(ctx, &etcdserverpb.AuthDisableRequest{})
 	requireAuthClientError(t, rawAliceDisableErr, codes.PermissionDenied, "etcdserver: permission denied")
+	rawAliceSelf, err := rawAliceAuth.UserGet(ctx, &etcdserverpb.AuthUserGetRequest{Name: "alice"})
+	require.NoError(t, err)
+	require.Contains(t, rawAliceSelf.Roles, "a1204-allowed")
+	_, rawAliceRootUserErr := rawAliceAuth.UserGet(ctx, &etcdserverpb.AuthUserGetRequest{Name: "root"})
+	requireAuthClientError(t, rawAliceRootUserErr, codes.PermissionDenied, "etcdserver: permission denied")
+	rawAliceRole, err := rawAliceAuth.RoleGet(ctx, &etcdserverpb.AuthRoleGetRequest{Role: "a1204-allowed"})
+	require.NoError(t, err)
+	require.Empty(t, rawAliceRole.Perm)
+	_, rawAliceRootRoleErr := rawAliceAuth.RoleGet(ctx, &etcdserverpb.AuthRoleGetRequest{Role: "root"})
+	requireAuthClientError(t, rawAliceRootRoleErr, codes.PermissionDenied, "etcdserver: permission denied")
+	_, rawAliceUserListErr := rawAliceAuth.UserList(ctx, &etcdserverpb.AuthUserListRequest{})
+	requireAuthClientError(t, rawAliceUserListErr, codes.PermissionDenied, "etcdserver: permission denied")
+	_, rawAliceRoleListErr := rawAliceAuth.RoleList(ctx, &etcdserverpb.AuthRoleListRequest{})
+	requireAuthClientError(t, rawAliceRoleListErr, codes.PermissionDenied, "etcdserver: permission denied")
+	rawRootRoles, err := rawRootAuth.RoleList(ctx, &etcdserverpb.AuthRoleListRequest{})
+	require.NoError(t, err)
+	require.Contains(t, rawRootRoles.Roles, "a1204-allowed")
 
 	_, wrongCredentialsErr := client.Authenticate(ctx, "missing", "wrong")
 	requireAuthClientError(

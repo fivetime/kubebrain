@@ -15561,6 +15561,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `Authenticate` 都必须返回 `InvalidArgument`/authentication failed，不能把空字符串重新 hash
   成可登录密码。本轮加强既有 manager 层空密码回归，防止直接 Auth API 调用方触发的公开
   password change 路径回退。
+- A1204 固定 raw gRPC Auth admin/self 查询规则：
+  延续 A584 的 auth admin/self 契约到 generated `etcdserverpb.AuthClient`：普通用户 raw
+  `UserGet(self)` 与 `RoleGet(own role)` 成功，`UserGet(root)`、`RoleGet(root)`、`UserList`
+  和 `RoleList` 均返回 `PermissionDenied`；root raw `RoleList` 仍可枚举普通 role。本轮加强
+  既有服务层 admin/self 回归，防止直接 Auth API 调用方绕过 clientv3 后看到错误的 root-only
+  或 self-exception 语义。
 
 ### P2：运维兼容和长期验证
 
