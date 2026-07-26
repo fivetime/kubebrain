@@ -19,6 +19,7 @@ import (
 	"io"
 	"math"
 	"net"
+	"strconv"
 	"testing"
 	"time"
 
@@ -781,6 +782,56 @@ func TestClientHashKVRevisionBoundaries(t *testing.T) {
 		_, hashErr := client.HashKV(ctx, "bufnet", revision)
 		requireClientHashKVError(t, hashErr, codes.Unknown, "etcdserver: mvcc: required revision is a future revision")
 	}
+}
+
+func TestClientHashKVLatestHeaderTracksHashedSnapshotUnderWrites(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterMaintenanceServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	prefix := "/a1111/hashkv-snapshot/"
+	base, err := client.Put(ctx, prefix+"key", "base")
+	require.NoError(t, err)
+
+	writerDone := make(chan error, 1)
+	go func() {
+		for i := 0; i < 64; i++ {
+			if _, putErr := client.Put(ctx, prefix+"key", strconv.Itoa(i)); putErr != nil {
+				writerDone <- putErr
+				return
+			}
+		}
+		writerDone <- nil
+	}()
+
+	for i := 0; i < 64; i++ {
+		resp, hashErr := client.HashKV(ctx, "bufnet", 0)
+		require.NoError(t, hashErr)
+		requireRawHashKVHeaderAtOrAfter(t, resp.Header, base.Header.Revision)
+		require.Equal(t, resp.HashRevision, resp.Header.Revision)
+	}
+	require.NoError(t, <-writerDone)
 }
 
 func requireRawHashKVHeaderAtOrAfter(t *testing.T, header *etcdserverpb.ResponseHeader, revision int64) {

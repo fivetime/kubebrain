@@ -14893,6 +14893,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `client.Status(ctx, "bufnet")` 断言 header revision 覆盖写入、cluster/member/raft term
   非零、版本与 quota 精确匹配且无 active errors。该门禁防止 Status wrapper、版本常量或
   诊断面重构让 DBaaS 数据面在 Kubernetes feature gate 和 etcdctl status 下退化。
+- A1111 固定 clientv3 HashKV(0) 并发写入快照 header：
+  `maintenance_semantics` compat 已证明 official clientv3 在持续写入下反复执行
+  `HashKV(ctx, endpoint, 0)` 时，response `Header.Revision` 必须等于 `HashRevision`，
+  即 header 精确标识被 hash 的 latest 快照，而不是返回 hash 开始前或完成后的另一个
+  current revision。本轮新增本地 bufconn official clientv3 回归，注册真实 KV/Maintenance
+  服务后先写入 base revision，再并发执行 64 次 Put 与 64 次 `HashKV(0)`，逐次断言
+  header revision 不落后于 base 且严格等于 HashRevision。该门禁防止 TiKV snapshot
+  选择、HashKV wrapper 或维护面 header 填充重构让 `etcdctl endpoint hashkv` 在活跃写入
+  下报告无法对应到实际 hash 快照的 revision。
 
 ### P2：运维兼容和长期验证
 
