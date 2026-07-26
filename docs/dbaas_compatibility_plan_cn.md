@@ -14194,6 +14194,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   注册真实 KV/Lease 服务后直接用 `etcdserverpb` 客户端覆盖 zero TTL 两种请求、显式 live
   lease Grant + 两个 attached Put、TTL with/without keys 和 LeaseLeases header/list 外观，
   防止 clientv3 wrapper 正确但 raw gRPC 响应、Keys flag 或 list 过滤出现兼容回退。
+- A1018 固定 raw gRPC LeaseLeases expiry 排序：
+  A52 对照 upstream `TestV3LeaseLeases` 证明 lease list 不能暴露 Go map 随机顺序，
+  必须按 lessor expiry deadline 排序，同 deadline 再按 lease ID 升序稳定输出。本轮新增
+  bufconn raw gRPC 回归，注册真实 Lease 服务后以非排序 ID 顺序 Grant 四个 lease，再在
+  测试内构造 `10s/20s/20s/30s` deadline，直接通过 `etcdserverpb.LeaseClient.LeaseLeases`
+  断言返回 ID 顺序为 `30001,30002,30004,30003` 且 header 良好，防止服务层排序正确但
+  gRPC response assembly、slice 复用或未来重构重新暴露非确定性 lease list。
 
 ### P2：运维兼容和长期验证
 

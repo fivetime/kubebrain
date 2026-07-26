@@ -210,6 +210,51 @@ func TestRawGRPCLeaseReadBoundaryAndList(t *testing.T) {
 	requireClientLeaseHeaderWellFormed(t, list.Header)
 }
 
+func TestRawGRPCLeaseLeasesOrdersByExpiry(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterLeaseServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///lease-list-order-client",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	lease := etcdserverpb.NewLeaseClient(conn)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for _, id := range []int64{30_003, 30_001, 30_004, 30_002} {
+		_, err = lease.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 300, ID: id})
+		require.NoError(t, err)
+		t.Cleanup(func() {
+			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cleanupCancel()
+			_, _ = lease.LeaseRevoke(cleanupCtx, &etcdserverpb.LeaseRevokeRequest{ID: id})
+		})
+	}
+
+	server.leaseMu.Lock()
+	now := time.Now()
+	server.leases[30_003].deadline = now.Add(30 * time.Second)
+	server.leases[30_001].deadline = now.Add(10 * time.Second)
+	server.leases[30_004].deadline = now.Add(20 * time.Second)
+	server.leases[30_002].deadline = now.Add(20 * time.Second)
+	server.leaseMu.Unlock()
+
+	list, err := lease.LeaseLeases(ctx, &etcdserverpb.LeaseLeasesRequest{})
+	require.NoError(t, err)
+	requireClientLeaseHeaderWellFormed(t, list.Header)
+	require.Equal(t, []int64{30_001, 30_002, 30_004, 30_003}, leaseIDsFromList(list))
+}
+
 func TestClientLeaseRevokeDeletesAttachedKeysAtOneRevision(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
