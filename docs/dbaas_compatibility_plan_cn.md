@@ -14959,6 +14959,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   返回全部物理 key，`namespace.NewLease` TTL 只能返回 `alpha/beta` 两个逻辑 key，
   不带 `WithAttachedKeys` 时仍不泄露 keys。该门禁防止租户前缀过滤、key stripping 或
   lease attachment 枚举重构让 DBaaS 多租户 lease 元数据跨 namespace 泄露。
+- A1118 固定 clientv3 concurrency Session option/context 外观：
+  对照 `/root/etcd/tests/integration/clientv3/concurrency/session_test.go` 的
+  `TestSessionOptions`、`TestSessionTTLOptions` 和 `TestSessionCtx`，本地此前已有
+  Mutex/Election recipe、orphan 自然过期接棒和 STM 门禁，但缺少裸 Session 选项与上下文
+  生命周期的 official clientv3 回归。本轮新增 bufconn Lease-only 回归：先用外部
+  `Grant` 的 lease 创建 `concurrency.NewSession(... WithLease)` 并断言 `Session.Lease`
+  回显；`Orphan` 后 `Session.Done` 与 `Session.Ctx` 派生 child context 必须关闭，但底层
+  lease 仍可 `TimeToLive` 为 live；随后用 `WithTTL(7)` 创建 session，要求
+  `LeaseTimeToLive` 回显 `GrantedTTL=7` 且当前 TTL 为正。该门禁防止 session keepalive、
+  orphan close 或 TTL option 变更破坏上层 lock/election recipe 的基础生命周期契约。
 
 ### P2：运维兼容和长期验证
 

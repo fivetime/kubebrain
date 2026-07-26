@@ -254,6 +254,68 @@ func TestClientConcurrencyMutexAndElectionRecipes(t *testing.T) {
 	require.NoError(t, waiterElection.Resign(ctx))
 }
 
+func TestClientConcurrencySessionOptionsAndContext(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterLeaseServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	externalLease, err := client.Grant(ctx, 30)
+	require.NoError(t, err)
+	attached, err := concurrency.NewSession(client, concurrency.WithLease(externalLease.ID))
+	require.NoError(t, err)
+	require.Equal(t, externalLease.ID, attached.Lease())
+
+	childCtx, childCancel := context.WithCancel(attached.Ctx())
+	defer childCancel()
+	attached.Orphan()
+	select {
+	case <-attached.Done():
+	case <-ctx.Done():
+		t.Fatalf("session Done did not close after orphan: %v", ctx.Err())
+	}
+	select {
+	case <-childCtx.Done():
+		require.ErrorIs(t, childCtx.Err(), context.Canceled)
+	case <-ctx.Done():
+		t.Fatalf("session child context did not cancel after orphan: %v", ctx.Err())
+	}
+	ttl, err := client.TimeToLive(ctx, externalLease.ID)
+	require.NoError(t, err)
+	require.Equal(t, externalLease.ID, ttl.ID)
+	require.Positive(t, ttl.TTL)
+
+	const sessionTTL = 7
+	tuned, err := concurrency.NewSession(client, concurrency.WithTTL(sessionTTL))
+	require.NoError(t, err)
+	defer tuned.Orphan()
+	tunedTTL, err := client.TimeToLive(ctx, tuned.Lease())
+	require.NoError(t, err)
+	require.Equal(t, tuned.Lease(), tunedTTL.ID)
+	require.Equal(t, int64(sessionTTL), tunedTTL.GrantedTTL)
+	require.Positive(t, tunedTTL.TTL)
+	require.LessOrEqual(t, tunedTTL.TTL, int64(sessionTTL))
+}
+
 func TestClientConcurrencyOrphanedSessionExpiresAndHandsOff(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
