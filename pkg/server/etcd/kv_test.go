@@ -4962,8 +4962,7 @@ func TestTxnSelectedOperationValidationOrderMatchesEtcd(t *testing.T) {
 	_, err := server.Txn(context.Background(), &etcdserverpb.TxnRequest{
 		Success: []*etcdserverpb.RequestOp{missingLeasePut, futureRange},
 	})
-	require.Error(t, err)
-	require.Equal(t, "etcdserver: requested lease not found", status.Convert(err).Message())
+	requireDirectKVError(t, err, rpctypes.ErrGRPCLeaseNotFound, codes.NotFound, "etcdserver: requested lease not found")
 
 	_, err = server.Txn(context.Background(), &etcdserverpb.TxnRequest{
 		Success: []*etcdserverpb.RequestOp{futureRange, missingLeasePut},

@@ -15960,6 +15960,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   election no-leader 等非 typed generic errors，以及 auth no-password 特例统一到
   exact status helper。该门禁防止 concurrency service 或 authGRPCError 重构后返回 nil
   或漂移 code/message，破坏 etcd 兼容的 generic error 外观。
+- A1275 补齐 Txn selected validation order missing-lease typed error：
+  A1272 已覆盖 direct Txn execution order 的 missing lease，本轮补齐 selected operation
+  validation order 表中 missing lease 先于 future revision 的路径，统一到
+  `ErrGRPCLeaseNotFound`、reference code 和 exact message helper。该门禁防止 Txn validator
+  顺序重构后只保留 message，漏掉 NotFound code 与 typed error。
 
 ### P2：运维兼容和长期验证
 
