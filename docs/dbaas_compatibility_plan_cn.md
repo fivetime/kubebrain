@@ -15977,6 +15977,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   signing method 以及 unsupported provider 从“只要有错/包含片段”收紧为 exact error。该
   门禁防止启动配置解析重构后放宽 fail-closed 文案，影响生产安装时对错误 Secret、参数拼接
   或 provider 名称的可诊断性。
+- A1278 固定启动配置 unsafe URL/key mismatch 错误文本：
+  A1277 已覆盖 JWT provider option syntax，本轮继续把 JWT 公私钥不匹配、advertise
+  client URL unsafe character、initial-cluster peer URL unsafe character 从 fragment
+  断言收紧为 exact error。该门禁防止成员发现或认证启动配置重构后丢失具体字段、URL 和
+  member name，降低生产安装排障和拒绝不安全输入的确定性。
 
 ### P2：运维兼容和长期验证
 

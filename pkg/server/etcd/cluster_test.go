@@ -18,10 +18,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sort"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -380,7 +382,7 @@ func TestValidateAdvertiseClientURLsRejectsUnsafeCharacters(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := ValidateAdvertiseClientURLs(tc.urls)
-			require.ErrorContains(t, err, "unsupported characters")
+			require.EqualError(t, err, fmt.Sprintf("invalid advertised client URL %q: unsupported characters", tc.urls[0]))
 		})
 	}
 }
@@ -412,7 +414,8 @@ func TestParseInitialClusterRejectsUnsafePeerURLCharacters(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := ParseInitialCluster(tc.spec, 2379, false)
-			require.ErrorContains(t, err, "unsupported characters")
+			rawURL := strings.TrimPrefix(tc.spec, "a=")
+			require.EqualError(t, err, fmt.Sprintf("invalid peer URL %q for member %q: unsupported characters", rawURL, "a"))
 		})
 	}
 }

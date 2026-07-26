@@ -118,7 +118,7 @@ func TestJWTProviderPublicOnlyAndKeyMismatch(t *testing.T) {
 
 	other := generateJWTTestKeys(t)
 	mismatch := "jwt,sign-method=RS256,priv-key=" + privatePath + ",pub-key=" + writeJWTKey(t, "other-public.pem", other.rsaPublic)
-	require.ErrorContains(t, ValidateAuthTokenProvider(mismatch), "don't match")
+	require.EqualError(t, ValidateAuthTokenProvider(mismatch), "auth: public and private keys don't match")
 }
 
 func TestJWTProviderRevisionFloatCoercionMatchesEtcd(t *testing.T) {
