@@ -977,8 +977,7 @@ func TestClientHashKVRevisionBoundaries(t *testing.T) {
 
 	for _, revision := range []int64{put.Header.Revision + 100, math.MaxInt64} {
 		_, hashErr := client.HashKV(ctx, "bufnet", revision)
-		requireClientHashKVError(t, hashErr, codes.Unknown, "etcdserver: mvcc: required revision is a future revision")
-		require.ErrorIs(t, hashErr, rpctypes.ErrFutureRev)
+		requireClientHashKVError(t, hashErr, codes.Unknown, "etcdserver: mvcc: required revision is a future revision", rpctypes.ErrFutureRev)
 	}
 
 	update, err := client.Put(ctx, "/a1044/hashkv-client/key", "updated")
@@ -986,8 +985,7 @@ func TestClientHashKVRevisionBoundaries(t *testing.T) {
 	_, err = client.Compact(ctx, update.Header.Revision)
 	require.NoError(t, err)
 	_, hashErr := client.HashKV(ctx, "bufnet", put.Header.Revision)
-	requireClientHashKVError(t, hashErr, codes.Unknown, "etcdserver: mvcc: required revision has been compacted")
-	require.ErrorIs(t, hashErr, rpctypes.ErrCompacted)
+	requireClientHashKVError(t, hashErr, codes.Unknown, "etcdserver: mvcc: required revision has been compacted", rpctypes.ErrCompacted)
 }
 
 func TestClientHashKVLatestHeaderTracksHashedSnapshotUnderWrites(t *testing.T) {
@@ -1102,9 +1100,12 @@ func requireRawHashKVHeaderAtOrAfter(t *testing.T, header *etcdserverpb.Response
 	require.GreaterOrEqual(t, header.Revision, revision)
 }
 
-func requireClientHashKVError(t *testing.T, err error, code codes.Code, message string) {
+func requireClientHashKVError(t *testing.T, err error, code codes.Code, message string, wantErrorIs ...error) {
 	t.Helper()
 	require.Error(t, err)
+	for _, want := range wantErrorIs {
+		require.ErrorIs(t, err, want)
+	}
 	require.Equal(t, code, status.Code(err))
 	require.Equal(t, message, status.Convert(err).Message())
 }

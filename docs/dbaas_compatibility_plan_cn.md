@@ -15762,6 +15762,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   direct CORRUPT guard 和 HashKV compacted 拒绝路径固定为 `errors.Is`、direct code 和 reference
   message。该门禁防止 watch cancellation、alarm guard 或 HashKV revision boundary 重构后只保留
   typed error，漏掉 status code/message 漂移。
+- A1236 收敛 official clientv3 HashKV revision 错误三件套：
+  A1235 已覆盖 direct HashKV compacted boundary，本轮把 Maintenance client `HashKV` 的 future
+  revision 和 compacted revision 错误统一到 `errors.Is`、client `codes.Unknown` 和 reference
+  message helper。该门禁防止 HashKV client wrapper 或 revision boundary 处理重构后只保留
+  code/message 断言，漏掉 clientv3 typed error translation 漂移。
 
 ### P2：运维兼容和长期验证
 
