@@ -15291,6 +15291,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   护栏，`GetStream(..., WithRev(math.MaxInt64))` 在合并响应时必须可由
   `errors.Is(..., rpctypes.ErrFutureRev)` 识别。本轮加强既有 bufconn official clientv3
   RangeStream revision boundary 回归，防止 stream adapter 把 future revision 降级为只可文本匹配。
+- A1162 固定 clientv3 Put client-side send limit error：
+  对照 `/root/etcd/tests/integration/clientv3/kv_test.go:TestKVLargeRequests` 的 client-side
+  `MaxCallSendMsgSize` 分支，客户端发送上限先触发时，`Put` 必须返回 gRPC
+  `ResourceExhausted` 且错误文本以 `trying to send message larger than max` 标识，而不能误映射成
+  server-side `rpctypes.ErrRequestTooLarge`。本轮新增小尺寸 bufconn official clientv3 回归，
+  与 A1146 server-side request-too-large typed error 形成成对护栏。
 
 ### P2：运维兼容和长期验证
 

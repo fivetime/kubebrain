@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"math"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -212,6 +213,40 @@ func TestClientPutServerSideRequestTooLargeIsTyped(t *testing.T) {
 	defer cancel()
 	_, err = client.Put(ctx, "/a1146/put-too-large", string(make([]byte, 1024)))
 	require.ErrorIs(t, err, rpctypes.ErrRequestTooLarge)
+}
+
+func TestClientPutClientSideSendLimitIsResourceExhausted(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	server.Register(grpcServer)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:          []string{"bufnet"},
+		DialTimeout:        time.Second,
+		MaxCallSendMsgSize: 512,
+		MaxCallRecvMsgSize: 4096,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err = client.Put(ctx, "/a1162/put-client-side-send-limit", strings.Repeat("a", 2048))
+	require.Error(t, err)
+	require.Equal(t, codes.ResourceExhausted, status.Code(err))
+	require.Contains(t, err.Error(), "trying to send message larger than max")
+	require.False(t, errors.Is(err, rpctypes.ErrRequestTooLarge))
 }
 
 func TestClientPutDroppedRequestDoesNotCommitAndGetReconnects(t *testing.T) {
