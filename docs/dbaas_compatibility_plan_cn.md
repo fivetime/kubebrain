@@ -15803,6 +15803,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   sticky alarm、解除后重新触发、手动 NOSPACE alarm 对 Put/Txn/LeaseGrant 的拒绝统一到
   `ErrGRPCNoSpace`、`codes.ResourceExhausted` 和 reference message helper。该门禁防止
   quota guard 或 alarm re-arm 逻辑重构后只返回 ResourceExhausted，漏掉 etcd 兼容 message。
+- A1244 去抖 raw gRPC watch PrevKv fragment 门禁：
+  完整包测试暴露 `TestRawGRPCWatchFragmentPreservesPrevKV` 曾因只有一个大事件批次而没有
+  触发 fragment 断言，本轮把测试输入扩大为 4 个大 PrevKv 删除事件，并继续校验 observed
+  event 数和每个 PrevKv value size。该门禁防止分片测试卡在事件批次边界，降低生产 CI
+  中与兼容逻辑无关的偶发失败。
 
 ### P2：运维兼容和长期验证
 

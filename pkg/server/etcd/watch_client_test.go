@@ -241,7 +241,9 @@ func TestRawGRPCWatchFragmentPreservesPrevKV(t *testing.T) {
 	prefix := fmt.Sprintf("/a1028/watch-fragment/%d/", time.Now().UnixNano())
 	value := []byte(strings.Repeat("x", 600*1024))
 	var revision int64
-	for _, key := range []string{prefix + "a", prefix + "b"} {
+	const wantEvents = 4
+	for index := 0; index < wantEvents; index++ {
+		key := fmt.Sprintf("%s%d", prefix, index)
 		resp, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: []byte(key), Value: value})
 		require.NoError(t, err)
 		revision = resp.Header.Revision
@@ -289,9 +291,9 @@ func TestRawGRPCWatchFragmentPreservesPrevKV(t *testing.T) {
 	require.NoError(t, err)
 
 	var (
-		responses  int
-		eventCount int
-		prevBytes  []int
+		responses      int
+		observedEvents int
+		prevBytes      []int
 	)
 	for {
 		response, recvErr := stream.Recv()
@@ -302,15 +304,18 @@ func TestRawGRPCWatchFragmentPreservesPrevKV(t *testing.T) {
 		for _, event := range response.Events {
 			require.NotNil(t, event.PrevKv)
 			prevBytes = append(prevBytes, len(event.PrevKv.Value))
-			eventCount++
+			observedEvents++
 		}
 		if !response.Fragment {
 			break
 		}
 	}
 	require.Greater(t, responses, 1, "large prev-kv watch response must fragment")
-	require.Equal(t, 2, eventCount)
-	require.Equal(t, []int{len(value), len(value)}, prevBytes)
+	require.Equal(t, wantEvents, observedEvents)
+	require.Len(t, prevBytes, wantEvents)
+	for _, size := range prevBytes {
+		require.Equal(t, len(value), size)
+	}
 }
 
 func TestClientWatchMixedPrevKVStreamsKeepEventsIsolated(t *testing.T) {
