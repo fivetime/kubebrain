@@ -15341,6 +15341,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `OpGet` 必须可由 `rpctypes.ErrInvalidSortOption` 识别。本轮加强既有 bufconn official
   clientv3 Txn basic error 回归，与 raw gRPC Txn validation message 护栏形成 client adapter
   层面的 typed error 覆盖。
+- A1170 固定 clientv3 Put empty-key typed error：
+  对照 `/root/etcd/tests/integration/clientv3/kv_test.go:TestKVPutError`，official clientv3
+  `Put("", value)` 必须可由 `errors.Is(..., rpctypes.ErrEmptyKey)` 识别，并保持
+  client adapter 暴露的 `Unknown` / `etcdserver: key is not provided` 外观。本轮新增小尺寸
+  bufconn official clientv3 回归，补齐 raw KV validation 的 `InvalidArgument` 外观与 Txn
+  empty-key typed error 之外的直接 KV Put 入口护栏。
 
 ### P2：运维兼容和长期验证
 
