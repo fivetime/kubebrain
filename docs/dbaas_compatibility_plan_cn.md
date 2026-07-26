@@ -14686,6 +14686,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   request/response blackhole 回归：owner 先缓存 missing key，断网期间由直连 client
   推进 revision 并 Compact，再恢复连接并由另一个 leasing writer 写入目标 key，最终要求
   原 owner `Get` 与 direct `Get` 的 key/value/revision/version/lease 完全一致。
+- A1082 固定 client/v3/leasing non-owner Txn cancellation：
+  `leasing_txn_cancel_non_owner` differential 证明 key 已由另一个 owner cache 持有时，
+  非 owner `leasing.NewKV` Txn 在等待 owner 路径期间如果调用方取消 context，必须返回
+  `context.Canceled`，且目标 Put 不能提交；owner 连接恢复后 cache 仍应保持取消前的值。
+  本轮新增真实 TCP gRPC + owner request/response blackhole 回归，先由 owner 缓存 key，
+  黑洞 owner 连接后取消 writer 的 non-owner Txn，断言直连读仍为 initial，并在恢复后要求
+  owner `Get` 继续读到 initial。
 
 ### P2：运维兼容和长期验证
 

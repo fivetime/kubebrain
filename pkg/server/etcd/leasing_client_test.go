@@ -603,6 +603,77 @@ func TestClientLeasingNestedNonOwnerTxnInvalidatesOwnerCache(t *testing.T) {
 	}
 }
 
+func TestClientLeasingCanceledNonOwnerTxnDoesNotCommit(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	server.Register(grpcServer)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(func() {
+		grpcServer.Stop()
+		_ = listener.Close()
+	})
+
+	directEndpoint := listener.Addr().String()
+	ownerBridge := newClientLeasingTCPBridge(t, directEndpoint)
+	ownerClient, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{ownerBridge.Endpoint()},
+		DialTimeout: time.Second,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, ownerClient.Close()) })
+	writerClient, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{directEndpoint},
+		DialTimeout: time.Second,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, writerClient.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	prefix := fmt.Sprintf("/a1082/leasing-cancel-non-owner/%d/", time.Now().UnixNano())
+	key := prefix + "key"
+	ownerKV, closeOwner, err := leasing.NewKV(ownerClient, prefix+"owners/")
+	require.NoError(t, err)
+	t.Cleanup(closeOwner)
+	writerKV, closeWriter, err := leasing.NewKV(writerClient, prefix+"owners/")
+	require.NoError(t, err)
+	t.Cleanup(closeWriter)
+
+	_, err = writerClient.Put(ctx, key, "initial")
+	require.NoError(t, err)
+	cached, err := ownerKV.Get(ctx, key)
+	require.NoError(t, err)
+	require.Len(t, cached.Kvs, 1)
+	require.Equal(t, "initial", string(cached.Kvs[0].Value))
+
+	droppedBefore := ownerBridge.DroppedBytes()
+	ownerBridge.Blackhole()
+	cancelCtx, cancelTxn := context.WithCancel(ctx)
+	cancelTimer := time.AfterFunc(250*time.Millisecond, cancelTxn)
+	_, cancelErr := writerKV.Txn(cancelCtx).Then(clientv3.OpPut(key, "must-not-commit")).Commit()
+	cancelTimer.Stop()
+	cancelTxn()
+	require.ErrorIs(t, cancelErr, context.Canceled)
+	require.Eventually(t, func() bool {
+		return ownerBridge.DroppedBytes() > droppedBefore
+	}, 2*time.Second, 10*time.Millisecond)
+
+	afterCancel, err := writerClient.Get(ctx, key)
+	require.NoError(t, err)
+	require.Len(t, afterCancel.Kvs, 1)
+	require.Equal(t, "initial", string(afterCancel.Kvs[0].Value))
+
+	ownerBridge.Unblackhole()
+	require.Eventually(t, func() bool {
+		response, getErr := ownerKV.Get(ctx, key)
+		return getErr == nil && len(response.Kvs) == 1 && string(response.Kvs[0].Value) == "initial"
+	}, 5*time.Second, 20*time.Millisecond)
+}
+
 func TestClientLeasingRangeBoundsAndContention(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
