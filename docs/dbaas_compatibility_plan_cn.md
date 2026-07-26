@@ -14301,6 +14301,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   本轮新增官方 clientv3 bufconn 回归，Grant 2 秒 lease 后以 20ms 间隔轮询
   `TimeToLive`，要求先观察到 live `TTL=0` 再观察到 expired `TTL=-1`，防止内部
   `remainingTTL` 单元测试通过但公开 Lease RPC/客户端路径把亚秒 live lease 过早报告为删除。
+- A1033 固定 clientv3 Lease final-subsecond KeepAlive：
+  `lease_keepalive_expiry_race` compatibility 用例证明 lease 已进入 `TTL=0` 但仍存活时，
+  `KeepAliveOnce` 必须续到原 granted TTL，并且已经排队或即将触发的旧 deadline 不得在续租
+  后删除该 lease 的 attached key。本轮新增官方 clientv3 bufconn 回归，Grant 2 秒 lease
+  并绑定 key，等待 `TimeToLive` 返回 0 后执行 `KeepAliveOnce`，再等待超过旧 deadline
+  检查 TTL 仍非 `-1` 且 key 仍绑定原 lease，防止服务层过期/续租竞态覆盖存在但公开
+  clientv3 路径回退。
 
 ### P2：运维兼容和长期验证
 

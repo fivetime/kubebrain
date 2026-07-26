@@ -169,6 +169,57 @@ func TestClientLeaseTimeToLiveReportsZeroBeforeExpiry(t *testing.T) {
 	require.True(t, observedZero, "live lease must report TTL=0 before TTL=-1")
 }
 
+func TestClientLeaseKeepAliveAtZeroTTLSurvivesOriginalDeadline(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterLeaseServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	key := fmt.Sprintf("/a1033/lease-keepalive-zero-ttl/%d", time.Now().UnixNano())
+	grant, err := client.Grant(ctx, 2)
+	require.NoError(t, err)
+	_, err = client.Put(ctx, key, "value", clientv3.WithLease(grant.ID))
+	require.NoError(t, err)
+
+	require.Eventually(t, func() bool {
+		ttl, ttlErr := client.TimeToLive(ctx, grant.ID)
+		return ttlErr == nil && ttl.TTL == 0
+	}, 3*time.Second, 20*time.Millisecond, "lease never entered its live final subsecond")
+
+	renewed, err := client.KeepAliveOnce(ctx, grant.ID)
+	require.NoError(t, err)
+	require.Equal(t, int64(2), renewed.TTL)
+
+	time.Sleep(1200 * time.Millisecond)
+	ttl, err := client.TimeToLive(ctx, grant.ID)
+	require.NoError(t, err)
+	require.NotEqual(t, int64(-1), ttl.TTL)
+	got, err := client.Get(ctx, key)
+	require.NoError(t, err)
+	require.Len(t, got.Kvs, 1)
+	require.Equal(t, int64(grant.ID), got.Kvs[0].Lease)
+}
+
 func TestRawGRPCLeaseReadBoundaryAndList(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
