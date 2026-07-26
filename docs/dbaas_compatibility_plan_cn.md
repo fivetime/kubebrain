@@ -16253,6 +16253,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   使用完整 `EqualError`，而不是只匹配子串。该门禁防止协调锁记录解析在重构时悄悄接受
   附加字段、忽略尾随 payload，或把损坏元数据包装成不稳定错误文本，从而影响 DBaaS
   数据面 leader fencing 的故障可诊断性。
+- A1320 固定 RangeStream revision-filter 拒绝分类：
+  RangeStream 暂不支持 `Min/Max{Mod,Create}Revision` 过滤，但该拒绝必须是
+  `Unimplemented` 的 RangeStream 能力边界，不得误映射为 etcd 的
+  `ErrGRPCInvalidSortOption`。本轮在 raw server 和 client/v3 侧都补上 revision-filter
+  对 invalid-sort sentinel 的负断言，同时保留 custom-sort 优先级。该门禁防止 Kubernetes
+  EtcdRangeStream 调用方或运维诊断把“需要降级到 unary Range 的过滤形态”误判成非法排序
+  参数。
 
 ### P2：运维兼容和长期验证
 

@@ -352,6 +352,7 @@ func TestRangeStreamRejectsUnsupportedShapes(t *testing.T) {
 		{
 			name:    "modRevisionFilter",
 			req:     &etcdserverpb.RangeRequest{Key: []byte("/a"), RangeEnd: []byte("/b"), MinModRevision: 5},
+			notErr:  rpctypes.ErrGRPCInvalidSortOption,
 			code:    codes.Unimplemented,
 			message: "RangeStream does not support revision filters",
 		},

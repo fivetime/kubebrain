@@ -219,6 +219,7 @@ func TestClientRangeStreamValidationErrorsMatchEtcd(t *testing.T) {
 				Key: []byte("/a989/rangestream-validation"), RangeEnd: []byte("/a989/rangestream-validation0"),
 				MinModRevision: 1,
 			},
+			notErr:  rpctypes.ErrGRPCInvalidSortOption,
 			code:    codes.Unimplemented,
 			message: "RangeStream does not support revision filters",
 		},
