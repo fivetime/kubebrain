@@ -14837,6 +14837,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   canonical `codes.Unknown` 错误，逐条断言 `/v3/lock/*`、`/v3/election/*` route 暴露
   HTTP 500、`application/json` 与 `{code:2,message}`，防止 gateway 更新或错误归一化把
   dedicated concurrency 的 etcd JSON 外观改成 404、501 或错误 envelope。
+- A1104 固定 clientv3 mirror Syncer 历史 revision 与 compacted 错误：
+  A229 已用真实 `etcdctl make-mirror --rev` 差分固定历史 replay 和 compacted revision
+  外观；本轮补齐本地 official clientv3 bufconn 门禁，直接覆盖
+  `go.etcd.io/etcd/client/v3/mirror.NewSyncer`。`SyncBase` 在固定 revision 下必须只返回
+  该 revision 的 prefix 快照并排除邻接 `prefix0` key；`SyncUpdates` 从同一历史 revision
+  创建 watch 时必须重放之后已提交的 PUT/DELETE，且事件 revision 落在历史 revision 之后；
+  对已 compacted 的 revision 调用 `SyncBase` 必须从错误通道返回 canonical
+  `etcdserver: mvcc: required revision has been compacted`，防止 make-mirror 与客户端
+  mirror 包在历史恢复/压缩边界上产生不可见漂移。
 
 ### P2：运维兼容和长期验证
 

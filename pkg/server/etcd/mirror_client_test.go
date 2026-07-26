@@ -28,7 +28,9 @@ import (
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/client/v3/mirror"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 )
 
@@ -128,4 +130,123 @@ func TestClientMirrorSyncBasePaginationAndUpdates(t *testing.T) {
 	require.Equal(t, mvccpb.PUT, seen[updateKey])
 	require.Equal(t, mvccpb.DELETE, seen[deleteKey])
 	require.Greater(t, put.Header.Revision, baseRevision)
+}
+
+func TestClientMirrorSyncHistoricalRevisionAndCompactedError(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterWatchServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	base := fmt.Sprintf("/a1104/mirror/%d/", time.Now().UnixNano())
+	prefix := base + "prefix/"
+	neighborKey := base + "prefix0/neighbor"
+
+	_, err = client.Txn(ctx).Then(
+		clientv3.OpPut(prefix+"a", "base-a"),
+		clientv3.OpPut(prefix+"b", "base-b"),
+		clientv3.OpPut(neighborKey, "outside"),
+	).Commit()
+	require.NoError(t, err)
+	update, err := client.Txn(ctx).Then(
+		clientv3.OpPut(prefix+"a", "updated-a"),
+		clientv3.OpPut(prefix+"c", "created-c"),
+	).Commit()
+	require.NoError(t, err)
+	historicalRevision := update.Header.Revision
+
+	baseSyncer := mirror.NewSyncer(client, prefix, historicalRevision)
+	baseResponses, baseErrors := baseSyncer.SyncBase(ctx)
+	snapshot := map[string]string{}
+	for response := range baseResponses {
+		for _, kv := range response.Kvs {
+			key := string(kv.Key)
+			require.True(t, strings.HasPrefix(key, prefix))
+			require.NotEqual(t, neighborKey, key)
+			snapshot[key] = string(kv.Value)
+			require.LessOrEqual(t, kv.ModRevision, historicalRevision)
+		}
+	}
+	for syncErr := range baseErrors {
+		require.NoError(t, syncErr)
+	}
+	require.Equal(t, map[string]string{
+		prefix + "a": "updated-a",
+		prefix + "b": "base-b",
+		prefix + "c": "created-c",
+	}, snapshot)
+
+	postBase, err := client.Txn(ctx).Then(
+		clientv3.OpDelete(prefix+"b"),
+		clientv3.OpPut(prefix+"d", "post-base-d"),
+		clientv3.OpPut(neighborKey, "still-outside"),
+	).Commit()
+	require.NoError(t, err)
+
+	updateSyncer := mirror.NewSyncer(client, prefix, historicalRevision)
+	updates := updateSyncer.SyncUpdates(ctx)
+	seen := map[string]mvccpb.Event_EventType{}
+	for len(seen) < 2 {
+		select {
+		case response, ok := <-updates:
+			require.True(t, ok, "mirror historical update watch closed")
+			require.NoError(t, response.Err())
+			require.NotEqual(t, int64(0), response.Header.Revision)
+			for _, event := range response.Events {
+				key := string(event.Kv.Key)
+				require.True(t, strings.HasPrefix(key, prefix))
+				require.NotEqual(t, neighborKey, key)
+				require.Greater(t, event.Kv.ModRevision, historicalRevision)
+				require.LessOrEqual(t, event.Kv.ModRevision, postBase.Header.Revision)
+				seen[key] = event.Type
+			}
+		case <-ctx.Done():
+			t.Fatalf("timed out waiting for historical mirror updates: %v", ctx.Err())
+		}
+	}
+	require.Equal(t, mvccpb.DELETE, seen[prefix+"b"])
+	require.Equal(t, mvccpb.PUT, seen[prefix+"d"])
+
+	compactedPrefix := base + "compacted/"
+	compacted, err := client.Put(ctx, compactedPrefix+"key", "value")
+	require.NoError(t, err)
+	_, err = client.Put(ctx, compactedPrefix+"newer", "newer")
+	require.NoError(t, err)
+	_, err = client.Compact(ctx, compacted.Header.Revision)
+	require.NoError(t, err)
+
+	compactedSyncer := mirror.NewSyncer(client, compactedPrefix, compacted.Header.Revision-1)
+	compactedResponses, compactedErrors := compactedSyncer.SyncBase(ctx)
+	for response := range compactedResponses {
+		require.Empty(t, response.Kvs)
+	}
+	var compactedErr error
+	for syncErr := range compactedErrors {
+		if syncErr != nil {
+			compactedErr = syncErr
+		}
+	}
+	require.Error(t, compactedErr)
+	require.Equal(t, codes.Unknown, status.Code(compactedErr))
+	require.Equal(t, "etcdserver: mvcc: required revision has been compacted", status.Convert(compactedErr).Message())
 }
