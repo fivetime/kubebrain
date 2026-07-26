@@ -15389,6 +15389,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   暴露的 `Unknown` / `etcdserver: role name is empty` 外观。本轮加强既有 bufconn official
   clientv3 auth role management 回归，补齐 duplicate role、root 保护之外的空 role validation
   typed error 护栏。
+- A1178 固定 clientv3 Auth UserRevokeRole not-granted typed error：
+  对照 `/root/etcd/api/v3rpc/rpctypes/error.go` 的 auth management 映射，user 和 role 均存在
+  但 role 未授予该 user 时，official clientv3 `UserRevokeRole` 必须可由
+  `errors.Is(..., rpctypes.ErrRoleNotGranted)` 识别。本轮加强既有 bufconn official clientv3
+  user error 回归，补齐 user already exists、user not found、role not found 之外的 grant
+  relationship validation typed error。
 
 ### P2：运维兼容和长期验证
 

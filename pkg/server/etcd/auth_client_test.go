@@ -314,6 +314,10 @@ func TestClientAuthUserErrorsMatchEtcd(t *testing.T) {
 	require.ErrorIs(t, err, rpctypes.ErrUserNotFound)
 	_, err = client.UserGrantRole(ctx, "a1129-user", "a1129-missing-role")
 	require.ErrorIs(t, err, rpctypes.ErrRoleNotFound)
+	_, err = client.RoleAdd(ctx, "a1129-unused-role")
+	require.NoError(t, err)
+	_, err = client.UserRevokeRole(ctx, "a1129-user", "a1129-unused-role")
+	require.ErrorIs(t, err, rpctypes.ErrRoleNotGranted)
 }
 
 func TestClientAuthRootProtectionAndDuplicateRoleErrors(t *testing.T) {
