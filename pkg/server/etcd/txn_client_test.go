@@ -17,6 +17,7 @@ package etcd
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"net"
@@ -1188,6 +1189,100 @@ func TestClientTxnIntraTxnVersionSemantics(t *testing.T) {
 	require.Equal(t, int64(1), createdRead.Kvs[0].Version)
 	require.Equal(t, txn.Header.Revision, createdRead.Kvs[0].CreateRevision)
 	require.Equal(t, txn.Header.Revision, createdRead.Kvs[0].ModRevision)
+}
+
+func TestClientTxnAmbiguousResponseCommitsAtMostOnce(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	server.Register(grpcServer)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(func() {
+		grpcServer.Stop()
+		_ = listener.Close()
+	})
+
+	directEndpoint := listener.Addr().String()
+	bridge := newClientLeasingTCPBridge(t, directEndpoint)
+	newClient := func(endpoint string) *clientv3.Client {
+		client, newErr := clientv3.New(clientv3.Config{
+			Endpoints:   []string{endpoint},
+			DialTimeout: time.Second,
+		})
+		require.NoError(t, newErr)
+		t.Cleanup(func() { require.NoError(t, client.Close()) })
+		return client
+	}
+	throughBridge := newClient(bridge.Endpoint())
+	direct := newClient(directEndpoint)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	prefix := fmt.Sprintf("/a1078/txn-at-most-once/%d/", time.Now().UnixNano())
+	keys := []string{prefix + "a", prefix + "b", prefix + "c"}
+	seed, err := direct.Txn(ctx).Then(
+		clientv3.OpPut(keys[0], "seed"),
+		clientv3.OpPut(keys[1], "seed"),
+		clientv3.OpPut(keys[2], "seed"),
+	).Commit()
+	require.NoError(t, err)
+	require.True(t, seed.Succeeded)
+	previousVersions := []int64{1, 1, 1}
+
+	const attempts = 3
+	for attempt := 0; attempt < attempts; attempt++ {
+		warm, warmErr := throughBridge.Get(ctx, prefix, clientv3.WithPrefix())
+		require.NoError(t, warmErr)
+		require.Len(t, warm.Kvs, len(keys))
+
+		value := fmt.Sprintf("attempt-%d", attempt)
+		droppedBefore := bridge.DroppedBytes()
+		bridge.BlackholeResponses()
+		callCtx, callCancel := context.WithTimeout(ctx, 750*time.Millisecond)
+		_, txnErr := throughBridge.Txn(callCtx).Then(
+			clientv3.OpTxn(nil, []clientv3.Op{
+				clientv3.OpPut(keys[0], value),
+				clientv3.OpPut(keys[1], value),
+			}, nil),
+			clientv3.OpPut(keys[2], value),
+		).Commit()
+		callCancel()
+		require.True(t,
+			errors.Is(txnErr, context.DeadlineExceeded) ||
+				status.Code(txnErr) == codes.DeadlineExceeded,
+			"attempt %d returned unexpected error: %v", attempt, txnErr)
+		require.Eventually(t, func() bool {
+			return bridge.DroppedBytes() > droppedBefore
+		}, 2*time.Second, 10*time.Millisecond)
+		bridge.Unblackhole()
+		bridge.DropConnections()
+
+		observed := make([]*clientv3.GetResponse, 0, len(keys))
+		require.Eventually(t, func() bool {
+			observed = observed[:0]
+			for _, key := range keys {
+				response, getErr := direct.Get(ctx, key)
+				if getErr != nil || len(response.Kvs) != 1 || string(response.Kvs[0].Value) != value {
+					return false
+				}
+				observed = append(observed, response)
+			}
+			return true
+		}, 5*time.Second, 20*time.Millisecond)
+
+		revision := observed[0].Kvs[0].ModRevision
+		for index, response := range observed {
+			kv := response.Kvs[0]
+			require.Equal(t, previousVersions[index]+1, kv.Version,
+				"attempt %d key %d advanced more than once", attempt, index)
+			require.Equal(t, revision, kv.ModRevision,
+				"attempt %d committed keys at different revisions", attempt)
+			previousVersions[index] = kv.Version
+		}
+	}
 }
 
 func txnClientValueCompare(

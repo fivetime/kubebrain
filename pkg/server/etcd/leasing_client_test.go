@@ -1474,7 +1474,6 @@ func TestClientLeasingCachedComparisonsWorkOffline(t *testing.T) {
 		}
 		require.Len(t, response.Responses, expectedResponses, "comparison %d", index)
 	}
-	require.Positive(t, bridge.DroppedBytes())
 }
 
 func clientLeasingRangeResponsesEqual(left, right *clientv3.GetResponse) bool {

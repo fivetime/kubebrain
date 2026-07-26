@@ -14657,6 +14657,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   回归，先通过 bridged Get 预热连接，再连续 3 次丢弃 Put 请求、断言超时、由直连
   client 确认 key 不存在，最后恢复桥接并要求 bridged Get 也为空，防止失败写被误提交
   或读重试路径卡死。
+- A1078 固定 clientv3 nested Txn ambiguous response 的 at-most-once：
+  `txn_at_most_once` differential 证明嵌套多键 Txn 已提交但响应被网络丢弃时，clientv3
+  会以 deadline exceeded 观察到不确定结果；服务端不能因为客户端重连或 wrapper 重试
+  把同一 Txn 重放，所有目标 key 每轮只能 version +1，且同一轮提交必须共享同一
+  ModRevision。本轮新增真实 TCP gRPC + response blackhole 回归，先 seed 三个 key，
+  每轮执行含 nested Txn 的三键写并丢弃响应，随后用直连 client 等待目标 value 可见，
+  断言三键 version 只递增一次且 revision 完全一致，补齐生产网络抖动下事务写入
+  exactly-once 可观察契约。
 
 ### P2：运维兼容和长期验证
 
