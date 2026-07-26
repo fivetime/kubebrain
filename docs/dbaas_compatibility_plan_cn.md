@@ -15154,6 +15154,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   后要求 no-put watcher 收到 DELETE，并通过 `RequestProgress` 证明被过滤方向没有滞留事件。
   该门禁防止 watch filter 映射、server fanout 或 progress 覆盖逻辑重构导致 informer 接收
   到不该出现的事件，或在过滤事件后无法向前推进 revision。
+- A1142 固定 clientv3 Watch compacted revision 取消外观：
+  对照 `/root/etcd/tests/integration/clientv3/watch/watch_test.go:TestWatchCompactRevision`，
+  从已 compact 的旧 revision 启动 watch 时，official clientv3 必须收到 `Canceled=true`
+  的 response，`Err()` 可由 `rpctypes.ErrCompacted` 识别，`CompactRevision` 等于实际
+  compact revision，随后 watch channel 必须关闭。本轮新增 bufconn official clientv3 回归，
+  连续写入同一 key 后 compact 到第 4 次写入的 revision，再从更旧 revision 建立 watch，
+  固定 typed compacted error、compact revision 和关闭外观。该门禁防止 watch compaction
+  边界、错误归一化或 channel teardown 重构让 informer 在过期 resourceVersion 上挂起或误判。
 
 ### P2：运维兼容和长期验证
 

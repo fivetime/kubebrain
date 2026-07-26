@@ -743,6 +743,53 @@ func TestClientWatchRevisionBoundariesMatchEtcd(t *testing.T) {
 	require.Equal(t, futurePut.Header.Revision, futureEvent.Kv.ModRevision)
 }
 
+func TestClientWatchCompactedRevisionCancelsAndCloses(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterWatchServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	key := fmt.Sprintf("/a1142/watch-compacted/%d", time.Now().UnixNano())
+	var compactRevision int64
+	for index := 0; index < 5; index++ {
+		put, putErr := client.Put(ctx, key, fmt.Sprintf("value-%d", index))
+		require.NoError(t, putErr)
+		if index == 3 {
+			compactRevision = put.Header.Revision
+		}
+	}
+	_, err = client.Compact(ctx, compactRevision)
+	require.NoError(t, err)
+
+	watch := client.Watch(ctx, key, clientv3.WithRev(compactRevision-2))
+	response := requireClientWatchCanceledResponse(t, ctx, watch)
+	require.True(t, response.Canceled)
+	require.ErrorIs(t, response.Err(), rpctypes.ErrCompacted)
+	require.Equal(t, compactRevision, response.CompactRevision)
+	require.Empty(t, response.Events)
+	requireWatchClientClosed(t, ctx, watch)
+}
+
 func TestRawGRPCWatchIDRangeBoundariesKeepStreamAlive(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
@@ -1370,6 +1417,19 @@ func requireClientWatchResponse(t *testing.T, ctx context.Context, watch clientv
 		return response
 	case <-ctx.Done():
 		t.Fatalf("timed out waiting for watch response: %v", ctx.Err())
+		return clientv3.WatchResponse{}
+	}
+}
+
+func requireClientWatchCanceledResponse(t *testing.T, ctx context.Context, watch clientv3.WatchChan) clientv3.WatchResponse {
+	t.Helper()
+	select {
+	case response, ok := <-watch:
+		require.True(t, ok)
+		require.True(t, response.Canceled)
+		return response
+	case <-ctx.Done():
+		t.Fatalf("timed out waiting for canceled watch response: %v", ctx.Err())
 		return clientv3.WatchResponse{}
 	}
 }
