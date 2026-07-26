@@ -14527,6 +14527,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `Unknown: permission is not granted to the role`，反向 range 暴露
   `Unknown: invalid auth management`，最后确认删除 role 会从 `alice` 的 `UserGet` 结果中
   清除该 role，补齐 public Auth permission 管理 wrapper 门禁。
+- A1062 固定 clientv3 Auth 隐式 root role 和认证失败外观：
+  `auth` differential 记录了未显式 `RoleAdd("root")` 时 `RoleGet("root")` 的 not-found
+  外观、`AuthEnable` 后 root 用户仍通过隐式 root role 获得 admin 能力，以及 missing user
+  与 no-password 用户认证失败文案。本轮新增官方 clientv3 bufconn 回归，只创建 root 用户并
+  `UserGrantRole(root, root)`，断言启用前和启用后 `RoleGet("root")` 均经 high-level
+  wrapper 暴露 `Unknown: role name not found`，但 root credential 可以执行 `UserAdd`；
+  同时固定 missing user 认证失败为 `Unknown: authentication failed, invalid user ID or
+  password`，no-password 用户带密码认证失败为 `Unknown: auth: authentication failed,
+  password was given for no password user`，补齐 public Auth bootstrap/credential 门禁。
 
 ### P2：运维兼容和长期验证
 

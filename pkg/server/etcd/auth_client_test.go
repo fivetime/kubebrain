@@ -328,6 +328,79 @@ func TestClientAuthRolePermissionLifecycleErrors(t *testing.T) {
 	require.NotContains(t, aliceAfterDelete.Roles, "a1061-lifecycle")
 }
 
+func TestClientAuthImplicitRootRoleAndCredentialErrors(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterAuthServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	dialOptions := []grpc.DialOption{
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}),
+	}
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: dialOptions,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err = client.UserAdd(ctx, "root", "root-secret")
+	require.NoError(t, err)
+	_, err = client.UserGrantRole(ctx, "root", "root")
+	require.NoError(t, err)
+	_, err = client.UserAddWithOptions(ctx, "nopass", "", &clientv3.UserAddOptions{NoPassword: true})
+	require.NoError(t, err)
+
+	_, rootRoleBeforeEnableErr := client.RoleGet(ctx, "root")
+	requireAuthClientError(t, rootRoleBeforeEnableErr, codes.Unknown, "etcdserver: role name not found")
+
+	_, err = client.AuthEnable(ctx)
+	require.NoError(t, err)
+	statusResponse, err := client.AuthStatus(ctx)
+	require.NoError(t, err)
+	require.True(t, statusResponse.Enabled)
+	require.Positive(t, statusResponse.AuthRevision)
+
+	rootClient, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		Username:    "root",
+		Password:    "root-secret",
+		DialOptions: dialOptions,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, rootClient.Close()) })
+	_, rootRoleAfterEnableErr := rootClient.RoleGet(ctx, "root")
+	requireAuthClientError(t, rootRoleAfterEnableErr, codes.Unknown, "etcdserver: role name not found")
+	_, err = rootClient.UserAdd(ctx, "alice", "alice-secret")
+	require.NoError(t, err)
+
+	_, wrongCredentialsErr := client.Authenticate(ctx, "missing", "wrong")
+	requireAuthClientError(
+		t,
+		wrongCredentialsErr,
+		codes.Unknown,
+		"etcdserver: authentication failed, invalid user ID or password",
+	)
+	_, noPasswordErr := client.Authenticate(ctx, "nopass", "password")
+	requireAuthClientError(
+		t,
+		noPasswordErr,
+		codes.Unknown,
+		"auth: authentication failed, password was given for no password user",
+	)
+}
+
 func addAuthUserRoleAndPermission(
 	ctx context.Context,
 	client *clientv3.Client,
