@@ -64,14 +64,15 @@ func TestClientExperimentalRecipesBarrierAndQueues(t *testing.T) {
 	barrier := recipe.NewBarrier(client, "/a968/recipes/barrier")
 	require.NoError(t, barrier.Hold())
 	require.Error(t, barrier.Hold())
-	waitResults := make(chan error, 3)
-	for range 3 {
+	const barrierWaiters = 5
+	waitResults := make(chan error, barrierWaiters)
+	for range barrierWaiters {
 		go func() { waitResults <- recipe.NewBarrier(client, "/a968/recipes/barrier").Wait() }()
 	}
 	time.Sleep(100 * time.Millisecond)
 	require.Empty(t, waitResults, "barrier waiters must block until Release")
 	require.NoError(t, barrier.Release())
-	for range 3 {
+	for range barrierWaiters {
 		select {
 		case waitErr := <-waitResults:
 			require.NoError(t, waitErr)
@@ -92,10 +93,10 @@ func TestClientExperimentalRecipesBarrierAndQueues(t *testing.T) {
 	}
 
 	fifo := recipe.NewQueue(client, "/a968/recipes/fifo")
-	for _, value := range []string{"zero", "one", "two", "three"} {
+	for _, value := range []string{"zero", "one", "two", "three", "four"} {
 		require.NoError(t, fifo.Enqueue(value))
 	}
-	for _, want := range []string{"zero", "one", "two", "three"} {
+	for _, want := range []string{"zero", "one", "two", "three", "four"} {
 		got, dequeueErr := fifo.Dequeue()
 		require.NoError(t, dequeueErr)
 		require.Equal(t, want, got)
