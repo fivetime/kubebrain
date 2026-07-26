@@ -13912,6 +13912,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   client 显式 Revoke 该 lease，测试轮询确认 owner metadata 已删除；第二个 leasing
   client 写入新值后，第一个 client 必须丢弃旧缓存、最终读取到新值，并异步建立不同于
   旧 lease 的新 owner，防止 session 失效后继续服务 stale owner cache。
+- A985 固定 clientv3 leasing.NewKV 的 Put/Get/Delete 并发进展路径：
+  A218 `leasing_put_get_delete_concurrency` differential 使用 16x16 官方 leasing client
+  序列验证并发进展。本轮新增轻量 bufconn clientv3 回归，6 个 `leasing.NewKV` 实例与
+  6 个 goroutine 共享 owner prefix，并发完成 36 条 Put/Get/Delete 序列；测试显式统计
+  每条序列完成，最后分别通过 leasing wrapper 与直连 KV 确认目标 key 均为空，防止
+  本地 owner cache 或 revoke/抢占路径在并发包装操作下卡住、漏删或遗留 stale final view。
 
 ### P2：运维兼容和长期验证
 

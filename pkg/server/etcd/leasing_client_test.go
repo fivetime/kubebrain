@@ -842,6 +842,92 @@ func TestClientLeasingSessionExpiryRefreshesOwnerCache(t *testing.T) {
 	}, 5*time.Second, 20*time.Millisecond)
 }
 
+func TestClientLeasingPutGetDeleteConcurrentProgress(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterWatchServer(grpcServer, server)
+	etcdserverpb.RegisterLeaseServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	prefix := fmt.Sprintf("/a985/leasing-put-get-delete/%d/", time.Now().UnixNano())
+	key := prefix + "data"
+	ownerPrefix := prefix + "owners/"
+
+	const (
+		clients = 6
+		workers = 6
+	)
+	leased := make([]clientv3.KV, clients)
+	for index := range leased {
+		kv, closeKV, newErr := leasing.NewKV(client, ownerPrefix)
+		require.NoError(t, newErr)
+		t.Cleanup(closeKV)
+		leased[index] = kv
+	}
+
+	start := make(chan struct{})
+	errs := make(chan error, workers)
+	var completed atomic.Int64
+	var wait sync.WaitGroup
+	for worker := 0; worker < workers; worker++ {
+		wait.Add(1)
+		go func(worker int) {
+			defer wait.Done()
+			<-start
+			for clientIndex, kv := range leased {
+				value := fmt.Sprintf("worker-%02d-client-%02d", worker, clientIndex)
+				if _, putErr := kv.Put(ctx, key, value); putErr != nil {
+					errs <- putErr
+					return
+				}
+				if _, getErr := kv.Get(ctx, key); getErr != nil {
+					errs <- getErr
+					return
+				}
+				if _, deleteErr := kv.Delete(ctx, key); deleteErr != nil {
+					errs <- deleteErr
+					return
+				}
+				completed.Add(1)
+			}
+		}(worker)
+	}
+	close(start)
+	wait.Wait()
+	close(errs)
+	for operationErr := range errs {
+		require.NoError(t, operationErr)
+	}
+	require.Equal(t, int64(clients*workers), completed.Load())
+
+	leasedFinal, err := leased[0].Get(ctx, key)
+	require.NoError(t, err)
+	directFinal, err := client.Get(ctx, key)
+	require.NoError(t, err)
+	require.Empty(t, leasedFinal.Kvs)
+	require.Empty(t, directFinal.Kvs)
+}
+
 func TestClientLeasingRangeOwnershipAndDelete(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
