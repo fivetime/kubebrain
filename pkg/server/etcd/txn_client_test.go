@@ -748,6 +748,83 @@ func TestClientTxnIgnoreLeaseAndBadLeaseBranches(t *testing.T) {
 	require.Empty(t, afterBadLease.Kvs)
 }
 
+func TestClientTxnHeaderRevisions(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	prefix := fmt.Sprintf("/a1010/client-txn-revision/%d/", time.Now().UnixNano())
+	key := prefix + "key"
+	seed, err := client.Put(ctx, key, "one")
+	require.NoError(t, err)
+
+	readOnly, err := client.Txn(ctx).Then(clientv3.OpGet(key)).Commit()
+	require.NoError(t, err)
+	require.True(t, readOnly.Succeeded)
+	require.Equal(t, seed.Header.Revision, readOnly.Header.Revision)
+	require.Len(t, readOnly.Responses, 1)
+	readRange := readOnly.Responses[0].GetResponseRange()
+	require.NotNil(t, readRange)
+	require.Equal(t, seed.Header.Revision, readRange.Header.Revision)
+	require.Len(t, readRange.Kvs, 1)
+	require.Equal(t, seed.Header.Revision, readRange.Kvs[0].ModRevision)
+
+	emptyDelete, err := client.Txn(ctx).Then(clientv3.OpDelete(prefix + "missing")).Commit()
+	require.NoError(t, err)
+	require.True(t, emptyDelete.Succeeded)
+	require.Equal(t, seed.Header.Revision, emptyDelete.Header.Revision)
+	require.Len(t, emptyDelete.Responses, 1)
+	emptyDeleteResp := emptyDelete.Responses[0].GetResponseDeleteRange()
+	require.NotNil(t, emptyDeleteResp)
+	require.Zero(t, emptyDeleteResp.Deleted)
+	require.Equal(t, seed.Header.Revision, emptyDeleteResp.Header.Revision)
+
+	write, err := client.Txn(ctx).Then(clientv3.OpPut(key, "two")).Commit()
+	require.NoError(t, err)
+	require.True(t, write.Succeeded)
+	require.Equal(t, seed.Header.Revision+1, write.Header.Revision)
+	require.Len(t, write.Responses, 1)
+	putResp := write.Responses[0].GetResponsePut()
+	require.NotNil(t, putResp)
+	require.Equal(t, write.Header.Revision, putResp.Header.Revision)
+
+	failure, err := client.Txn(ctx).
+		If(clientv3.Compare(clientv3.Version(key), "=", 0)).
+		Then(clientv3.OpPut(key, "created")).
+		Else(clientv3.OpGet(key)).
+		Commit()
+	require.NoError(t, err)
+	require.False(t, failure.Succeeded)
+	require.Equal(t, write.Header.Revision, failure.Header.Revision)
+	require.Len(t, failure.Responses, 1)
+	failureRange := failure.Responses[0].GetResponseRange()
+	require.NotNil(t, failureRange)
+	require.Equal(t, write.Header.Revision, failureRange.Header.Revision)
+	require.Len(t, failureRange.Kvs, 1)
+	require.Equal(t, "two", string(failureRange.Kvs[0].Value))
+	require.Equal(t, write.Header.Revision, failureRange.Kvs[0].ModRevision)
+}
+
 func txnClientValueCompare(
 	key, rangeEnd []byte,
 	result etcdserverpb.Compare_CompareResult,

@@ -14126,6 +14126,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   KV/Lease 服务，依次验证 leaseA -> leaseB 的 staged view、final value/lease、revoke A/B
   后存在性，以及 bad lease Else 分支的 unselected OK 与 selected `Unknown`/`requested
   lease not found` 外观，防止 lease attachment cache 或 client wrapper 行为回退。
+- A1010 固定 clientv3 Txn header revision 和 failure range revision：
+  `txn_compare_header_revision` 与 `txn_revision` differential 证明 read-only Txn 和空 delete
+  Txn 不应推进 revision，写 Txn 才推进 revision；compare failure 分支中的 Range header
+  必须反映当前 revision，并且不能和并发/后续写入的 revision 交叉污染。本轮新增 bufconn
+  clientv3 回归，注册真实 KV gRPC 服务后验证 read-only Get、empty Delete、write Put 的
+  Txn header/子 response header revision delta；随后构造 compare failure + Else Get，
+  断言 outer Txn header、failure Range header 与返回 KV mod revision 都等于最新写 revision，
+  防止 Txn revision stamping 或 public client response wrapping 回退。
 
 ### P2：运维兼容和长期验证
 
