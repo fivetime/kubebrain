@@ -16052,6 +16052,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   VolumeSnapshotRef kind/apiVersion、PVC dataSource apiGroup、storage/volume 基本字段和
   cold-restore operation annotation。该门禁防止隔离恢复后的语义验证只相信 hash 绑定，
   漏掉 Kubernetes 对象被重写到错误 controller/namespace/operation 的生产风险。
+- A1291 固定 cold restore receipt 与 semantic verify 格式契约：
+  A1290 复核时发现 `cold-restore-execute.sh` 发布的
+  `kubebrain.cold-physical-restore.v1` receipt 含 `completed_at`，但
+  `cold-restore-verify` 的严格 decoder 未声明该字段，真实执行后的 receipt 会被
+  unknown-field 拒绝，导致恢复后的 witness/revision/lease/watch 语义验证链路断开。
+  本轮把 `completed_at` 纳入严格 schema 并要求 RFC3339，同时要求 restored
+  TidbCluster UID 不得等于 source TidbCluster UID，防止伪造或误用源集群对象作为
+  隔离恢复完成证据。该门禁仍不关闭真实 CSI 隔离恢复或 PITR 缺口。
 
 ### P2：运维兼容和长期验证
 

@@ -105,6 +105,7 @@ func TestValidateReceiptChain(t *testing.T) {
 	snapshotData, err := json.Marshal(snapshot)
 	require.NoError(t, err)
 	restore := restoreReceipt{Format: "kubebrain.cold-physical-restore.v1", OperationID: snapshot.OperationID, SourceReceiptSHA: digest(snapshotData)}
+	restore.CompletedAt = "2026-07-21T00:05:00Z"
 	restore.Target.KubeSystemUID = "uid-kube-system"
 	restore.Target.NamespaceUID = "uid-namespace"
 	restore.Target.Namespace = snapshot.Inventory.Storage.Namespace
@@ -193,6 +194,20 @@ func TestValidateReceiptChain(t *testing.T) {
 
 	brokenRestore = restore
 	brokenRestore.Target.ClusterID = "54321"
+	brokenData, err = json.Marshal(brokenRestore)
+	require.NoError(t, err)
+	_, _, err = validateReceiptChain(status, witnessFileSHA, snapshotData, brokenData)
+	require.ErrorContains(t, err, "target")
+
+	brokenRestore = restore
+	brokenRestore.CompletedAt = "not-a-time"
+	brokenData, err = json.Marshal(brokenRestore)
+	require.NoError(t, err)
+	_, _, err = validateReceiptChain(status, witnessFileSHA, snapshotData, brokenData)
+	require.ErrorContains(t, err, "completed_at")
+
+	brokenRestore = restore
+	brokenRestore.Target.TidbClusterUID = snapshot.Inventory.Storage.UID
 	brokenData, err = json.Marshal(brokenRestore)
 	require.NoError(t, err)
 	_, _, err = validateReceiptChain(status, witnessFileSHA, snapshotData, brokenData)

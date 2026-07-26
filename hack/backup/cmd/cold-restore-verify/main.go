@@ -59,6 +59,7 @@ type restoreReceipt struct {
 	Format           string `json:"format"`
 	OperationID      string `json:"operation_id"`
 	SourceReceiptSHA string `json:"source_receipt_sha256"`
+	CompletedAt      string `json:"completed_at"`
 	RestoreManifest  struct {
 		Format                 string `json:"format"`
 		SHA256                 string `json:"sha256"`
@@ -286,6 +287,9 @@ func validateReceiptChain(status backupfile.Status, witnessFileSHA string, snaps
 	if err := decodeStrictJSON(restoreData, &restore, "restore receipt"); err != nil {
 		return snapshotReceipt{}, restoreReceipt{}, err
 	}
+	if _, err := time.Parse(time.RFC3339, restore.CompletedAt); err != nil {
+		return snapshotReceipt{}, restoreReceipt{}, errors.New("cold physical restore receipt completed_at is invalid")
+	}
 	if restore.Format != "kubebrain.cold-physical-restore.v1" || restore.OperationID == "" || restore.Target.ClusterID == "" ||
 		restore.OperationID != snapshotRecord.OperationID || restore.SourceReceiptSHA != digest(snapshotData) {
 		return snapshotReceipt{}, restoreReceipt{}, errors.New("cold physical restore receipt does not bind the snapshot receipt")
@@ -413,6 +417,7 @@ func validateRestoreReceiptInventory(restore restoreReceipt, snapshotRecord snap
 		snapshotRecord.Inventory.VolumeSnapshotClass.Driver == "" ||
 		restore.Target.KubeSystemUID == "" || restore.Target.NamespaceUID == "" ||
 		restore.Target.TidbClusterUID == "" ||
+		restore.Target.TidbClusterUID == snapshotRecord.Inventory.Storage.UID ||
 		restore.Target.Namespace != snapshotRecord.Inventory.Storage.Namespace ||
 		restore.Target.TidbCluster != snapshotRecord.Inventory.Storage.TidbCluster ||
 		restore.Target.ClusterID != snapshotRecord.Inventory.Storage.ClusterID {
