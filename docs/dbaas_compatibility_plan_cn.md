@@ -14472,6 +14472,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   新增官方 clientv3 bufconn 回归，先通过 `client.Put` 固定当前 revision，再用
   `client.AuthStatus`、`client.RoleAdd`、`client.RoleGet` 断言 high-level wrapper 暴露的
   Header revision/cluster/member/raft term 与 raw 语义一致，补齐 Auth public client 入口。
+- A1055 固定 clientv3 cross-key Txn fast-shape 外观：
+  `stm_differential` 中的 `TxnCrossKeyFastShape` 证明 Txn compare key 与 mutation target
+  key 不同时，缺失 create guard 仍可更新已存在 target，精确 ModRevision guard 可创建或
+  删除另一个 key，且 compare key 被删除后旧 ModRevision 必须使事务走失败分支，不得创建
+  target。A205 和服务层已覆盖 generic path，本轮新增官方 clientv3 bufconn 回归，通过
+  `client.Txn().If(...).Then(...)` 复现 create/update/delete/stale guard 四种形状，断言
+  Succeeded、DeleteRange.Deleted、target value/version 和 stale target 缺失，补齐 STM/Txn
+  recipe 差分之外的 public Txn wrapper 门禁。
 
 ### P2：运维兼容和长期验证
 

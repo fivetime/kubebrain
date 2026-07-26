@@ -623,6 +623,99 @@ func TestClientTxnNestedDuplicateIntervalValidation(t *testing.T) {
 	}
 }
 
+func TestClientTxnCrossKeyFastShapeMatchesEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	prefix := fmt.Sprintf("/a1055/client-txn-cross-key/%d/", time.Now().UnixNano())
+
+	createGuard := prefix + "create-guard"
+	createTarget := prefix + "create-target"
+	_, err = client.Put(ctx, createTarget, "old")
+	require.NoError(t, err)
+	createTxn, err := client.Txn(ctx).
+		If(clientv3.Compare(clientv3.ModRevision(createGuard), "=", 0)).
+		Then(clientv3.OpPut(createTarget, "updated")).
+		Commit()
+	require.NoError(t, err)
+	require.True(t, createTxn.Succeeded)
+	created, err := client.Get(ctx, createTarget)
+	require.NoError(t, err)
+	require.Len(t, created.Kvs, 1)
+	require.Equal(t, "updated", string(created.Kvs[0].Value))
+	require.Equal(t, int64(2), created.Kvs[0].Version)
+
+	updateGuard := prefix + "update-guard"
+	updateTarget := prefix + "update-target"
+	guard, err := client.Put(ctx, updateGuard, "guard")
+	require.NoError(t, err)
+	updateTxn, err := client.Txn(ctx).
+		If(clientv3.Compare(clientv3.ModRevision(updateGuard), "=", guard.Header.Revision)).
+		Then(clientv3.OpPut(updateTarget, "created")).
+		Commit()
+	require.NoError(t, err)
+	require.True(t, updateTxn.Succeeded)
+	updated, err := client.Get(ctx, updateTarget)
+	require.NoError(t, err)
+	require.Len(t, updated.Kvs, 1)
+	require.Equal(t, "created", string(updated.Kvs[0].Value))
+
+	deleteGuard := prefix + "delete-guard"
+	deleteTarget := prefix + "delete-target"
+	guard, err = client.Put(ctx, deleteGuard, "guard")
+	require.NoError(t, err)
+	_, err = client.Put(ctx, deleteTarget, "target")
+	require.NoError(t, err)
+	deleteTxn, err := client.Txn(ctx).
+		If(clientv3.Compare(clientv3.ModRevision(deleteGuard), "=", guard.Header.Revision)).
+		Then(clientv3.OpDelete(deleteTarget)).
+		Commit()
+	require.NoError(t, err)
+	require.True(t, deleteTxn.Succeeded)
+	require.Len(t, deleteTxn.Responses, 1)
+	require.Equal(t, int64(1), deleteTxn.Responses[0].GetResponseDeleteRange().Deleted)
+	deleted, err := client.Get(ctx, deleteTarget)
+	require.NoError(t, err)
+	require.Empty(t, deleted.Kvs)
+
+	staleGuard := prefix + "stale-guard"
+	staleTarget := prefix + "stale-target"
+	guard, err = client.Put(ctx, staleGuard, "guard")
+	require.NoError(t, err)
+	_, err = client.Delete(ctx, staleGuard)
+	require.NoError(t, err)
+	staleTxn, err := client.Txn(ctx).
+		If(clientv3.Compare(clientv3.ModRevision(staleGuard), "=", guard.Header.Revision)).
+		Then(clientv3.OpPut(staleTarget, "must-not-create")).
+		Commit()
+	require.NoError(t, err)
+	require.False(t, staleTxn.Succeeded)
+	stale, err := client.Get(ctx, staleTarget)
+	require.NoError(t, err)
+	require.Empty(t, stale.Kvs)
+}
+
 func TestClientNestedTxnResponseAndFinalState(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
