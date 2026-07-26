@@ -433,7 +433,119 @@ func TestRawGRPCWatchFilterEnumUnknownAndDuplicateMatchEtcd(t *testing.T) {
 	)
 }
 
+func TestRawGRPCWatchFutureRevisionSuppressesProgressUntilEvent(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	_, err := server.Put(context.Background(), &etcdserverpb.PutRequest{
+		Key: []byte("/a1025/watch-future/seed"), Value: []byte("seed"),
+	})
+	require.NoError(t, err)
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterWatchServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///bufnet",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	kv := etcdserverpb.NewKVClient(conn)
+	watch := etcdserverpb.NewWatchClient(conn)
+	key := []byte(fmt.Sprintf("/a1025/watch-future/%d", time.Now().UnixNano()))
+	base, err := kv.Range(ctx, &etcdserverpb.RangeRequest{Key: key})
+	require.NoError(t, err)
+	requireRawRangeHeaderWellFormed(t, base)
+	startRevision := base.Header.Revision + 2
+
+	stream, err := watch.Watch(ctx)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = stream.CloseSend() })
+	require.NoError(t, stream.Send(&etcdserverpb.WatchRequest{
+		RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{
+			CreateRequest: &etcdserverpb.WatchCreateRequest{
+				Key: key, WatchId: 303, StartRevision: startRevision,
+			},
+		},
+	}))
+	created, err := stream.Recv()
+	require.NoError(t, err)
+	requireRawWatchHeaderWellFormed(t, created)
+	require.True(t, created.Created)
+	require.False(t, created.Canceled)
+	require.Equal(t, int64(303), created.WatchId)
+
+	require.NoError(t, stream.Send(&etcdserverpb.WatchRequest{
+		RequestUnion: &etcdserverpb.WatchRequest_ProgressRequest{
+			ProgressRequest: &etcdserverpb.WatchProgressRequest{},
+		},
+	}))
+	type watchReceiveResult struct {
+		response *etcdserverpb.WatchResponse
+		err      error
+	}
+	pending := make(chan watchReceiveResult, 1)
+	go func() {
+		response, recvErr := stream.Recv()
+		pending <- watchReceiveResult{response: response, err: recvErr}
+	}()
+	select {
+	case received := <-pending:
+		require.NoError(t, received.err)
+		t.Fatalf("future watch emitted early response before reaching start revision: %v", received.response)
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	_, err = kv.Put(ctx, &etcdserverpb.PutRequest{
+		Key:   []byte(fmt.Sprintf("/a1025/watch-future/unrelated/%d", time.Now().UnixNano())),
+		Value: []byte("advance"),
+	})
+	require.NoError(t, err)
+	put, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("future")})
+	require.NoError(t, err)
+
+	received := <-pending
+	require.NoError(t, received.err)
+	event := received.response
+	requireRawWatchHeaderWellFormed(t, event)
+	require.False(t, event.Created)
+	require.False(t, event.Canceled)
+	require.Equal(t, int64(303), event.WatchId)
+	require.Len(t, event.Events, 1)
+	require.Equal(t, []byte("future"), event.Events[0].Kv.Value)
+	require.Equal(t, put.Header.Revision, event.Events[0].Kv.ModRevision)
+
+	require.NoError(t, stream.Send(&etcdserverpb.WatchRequest{
+		RequestUnion: &etcdserverpb.WatchRequest_ProgressRequest{
+			ProgressRequest: &etcdserverpb.WatchProgressRequest{},
+		},
+	}))
+	progress, err := stream.Recv()
+	require.NoError(t, err)
+	requireRawWatchHeaderWellFormed(t, progress)
+	require.False(t, progress.Created)
+	require.False(t, progress.Canceled)
+	require.Equal(t, int64(-1), progress.WatchId)
+	require.Empty(t, progress.Events)
+	require.GreaterOrEqual(t, progress.Header.Revision, startRevision)
+}
+
 func requireRawWatchHeaderWellFormed(t *testing.T, response *etcdserverpb.WatchResponse) {
+	t.Helper()
+	require.NotNil(t, response.Header)
+	require.Positive(t, response.Header.Revision)
+}
+
+func requireRawRangeHeaderWellFormed(t *testing.T, response *etcdserverpb.RangeResponse) {
 	t.Helper()
 	require.NotNil(t, response.Header)
 	require.Positive(t, response.Header.Revision)

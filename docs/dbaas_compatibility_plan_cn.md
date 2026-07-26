@@ -14246,6 +14246,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   直接发送 `FilterType(99)` 与重复 `NOPUT` 的 `WatchCreateRequest.Filters`，断言返回事件
   类型序列分别为 `PUT,DELETE` 和 `DELETE`，防止服务层 filter 函数正确但 raw request enum
   解析、历史 catch-up 或事件序列整形回退。
+- A1025 固定 raw gRPC Watch future revision progress 边界：
+  `watch_revision_boundary` differential 证明 `StartRevision=base+2` 的 future watch 在目标
+  revision 到达前收到 `WatchProgressRequest{}` 不应提前返回 progress；无关写只推进全局
+  revision 也不能绕过该 watch 的已交付 watermark；目标 key 事件到达后才返回 watch ID 的
+  PUT 事件，随后再次 RequestProgress 才返回 `WatchId=-1` 的 stream-wide progress，且
+  header revision 不低于 start revision。本轮新增 bufconn raw gRPC 回归，注册真实 KV/Watch
+  服务后直接覆盖 create、早期 progress 抑制、无关写、目标写、事件交付和后续 progress，
+  防止服务层 future-watch watermark 正确但公开 gRPC 时序或 progress header 回退。
 
 ### P2：运维兼容和长期验证
 
