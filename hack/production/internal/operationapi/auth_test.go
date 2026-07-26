@@ -136,15 +136,16 @@ func TestOIDCAuthenticatorFailsClosed(t *testing.T) {
 		subject   string
 		tenant    string
 		instances any
+		want      string
 	}{
-		{name: "missing bearer"},
-		{name: "wrong audience", audience: "wrong", tenant: "tenant-a", instances: []string{"instance-a"}},
-		{name: "invalid subject", audience: "expected", subject: "user\ncontrol", tenant: "tenant-a", instances: []string{"instance-a"}},
-		{name: "invalid tenant", audience: "expected", tenant: "Tenant_A", instances: []string{"instance-a"}},
-		{name: "missing instances", audience: "expected", tenant: "tenant-a"},
-		{name: "mixed instance types", audience: "expected", tenant: "tenant-a", instances: []any{"instance-a", 3}},
-		{name: "invalid instance claim", audience: "expected", tenant: "tenant-a", instances: []string{".invalid"}},
-		{name: "too long instance claim", audience: "expected", tenant: "tenant-a", instances: []string{string(make([]byte, 129))}},
+		{name: "missing bearer", want: "bearer token is required"},
+		{name: "wrong audience", audience: "wrong", tenant: "tenant-a", instances: []string{"instance-a"}, want: "OIDC token is invalid"},
+		{name: "invalid subject", audience: "expected", subject: "user\ncontrol", tenant: "tenant-a", instances: []string{"instance-a"}, want: "OIDC identity claims are invalid"},
+		{name: "invalid tenant", audience: "expected", tenant: "Tenant_A", instances: []string{"instance-a"}, want: "OIDC identity claims are invalid"},
+		{name: "missing instances", audience: "expected", tenant: "tenant-a", want: "OIDC instance claims are missing"},
+		{name: "mixed instance types", audience: "expected", tenant: "tenant-a", instances: []any{"instance-a", 3}, want: "OIDC instance claims are invalid"},
+		{name: "invalid instance claim", audience: "expected", tenant: "tenant-a", instances: []string{".invalid"}, want: "OIDC instance claims are invalid"},
+		{name: "too long instance claim", audience: "expected", tenant: "tenant-a", instances: []string{string(make([]byte, 129))}, want: "OIDC instance claims are invalid"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -159,7 +160,7 @@ func TestOIDCAuthenticatorFailsClosed(t *testing.T) {
 				)
 			}
 			_, err := authenticator.Authenticate(context.Background(), header)
-			require.Error(t, err)
+			require.ErrorContains(t, err, test.want)
 		})
 	}
 
@@ -167,7 +168,7 @@ func TestOIDCAuthenticatorFailsClosed(t *testing.T) {
 		t, key, "key", server.URL, "expected", string(make([]byte, 254)), "tenant-a", []string{"instance-a"},
 	)
 	_, err = authenticator.Authenticate(context.Background(), "Bearer "+tooLongSubject)
-	require.Error(t, err)
+	require.ErrorContains(t, err, "OIDC identity claims are invalid")
 }
 
 func TestOIDCAuthenticatorRejectsMalformedBearerHeader(t *testing.T) {

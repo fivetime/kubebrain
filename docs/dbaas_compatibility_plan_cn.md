@@ -16286,6 +16286,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   finalization delay，必须报告 `object storage sample is incomplete`。该门禁防止对象存储用量
   样本把删除标记残留、采样延迟越界等不可计费证据误报为可用 snapshot，保障后续 rollup 和
   账单输入只接受完整样本。
+- A1326 固定 operation API OIDC fail-closed 错误契约：
+  OIDC authenticator 的缺失 bearer、错误 audience、非法 subject/tenant、缺失或非法 instance
+  claims、超长 subject 等拒绝路径现在固定到具体错误文本。该门禁防止生产操作 API 在认证
+  claim 漂移、JWT audience 错配或实例授权 claim 损坏时只返回笼统失败，影响安全审计和
+  dependency-unavailable 与 unauthorized 的区分。
 
 ### P2：运维兼容和长期验证
 
