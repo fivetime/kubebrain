@@ -14016,6 +14016,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   随后验证 NOSPACE zero-member 的 activate、GET、deactivate 返回 `[0]`，最终 GET 为空，
   防止维护面 handler 直调正确但真实 gRPC header stamping、alarm filter 或默认 memberID
   转换路径回退。
+- A998 固定 clientv3 Compact/Get 的 compacted/future public 错误外观：
+  `compact` 与 `compact_revision_boundary` differential 已证明 raw gRPC compact 边界在
+  repeated/older/negative/future revision 上的错误消息。本轮新增 bufconn clientv3 回归，
+  注册真实 KV gRPC 服务，先写入 v1/v2/tail 并 compact 到 v2 revision，断言 boundary
+  `Get(..., WithRev(v2))` 仍返回 v2，历史 v1 read、重复 compact、旧 revision compact
+  和 negative compact 都返回 `required revision has been compacted`，future compact 返回
+  `required revision is a future revision`，当前 Get 仍返回 v2。官方 high-level clientv3
+  会把这些 server `OutOfRange` 映射成 client-side `Unknown` code 但保留 etcd message，
+  因此本门禁固定 public client 层 contract，防止只验证 handler/raw gRPC 而遗漏 clientv3
+  包装后的生产可观察行为。
 
 ### P2：运维兼容和长期验证
 
