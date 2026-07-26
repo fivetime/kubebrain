@@ -15767,6 +15767,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   revision 和 compacted revision 错误统一到 `errors.Is`、client `codes.Unknown` 和 reference
   message helper。该门禁防止 HashKV client wrapper 或 revision boundary 处理重构后只保留
   code/message 断言，漏掉 clientv3 typed error translation 漂移。
+- A1237 固定 admission require-leader 与 client API version 错误三件套：
+  A104/A154 已覆盖 admission UTF-8 与 request admission 基础门禁，本轮把 require-leader unary/stream
+  no-leader 拒绝、leader loss stream close，以及非法 `client-api-version` metadata 的 unary/stream
+  拒绝路径固定为同时满足 `errors.Is`、admission code 和 reference message。该门禁防止入口
+  interceptor、stream wrapper 或 metadata validation 重构后只保留 typed error，漏掉客户端可见
+  status code/message 漂移。
 
 ### P2：运维兼容和长期验证
 

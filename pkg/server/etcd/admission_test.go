@@ -233,12 +233,12 @@ func TestClientRequireLeaderRejectsUnaryAndStreamWithoutKnownLeader(t *testing.T
 		rpctypes.MetadataRequireLeaderKey, rpctypes.MetadataHasLeader,
 	))
 	_, err := client.Check(requireLeaderCtx, &healthpb.HealthCheckRequest{})
-	require.ErrorIs(t, err, rpctypes.ErrGRPCNoLeader)
+	requireAdmissionError(t, err, rpctypes.ErrGRPCNoLeader, codes.Unavailable, "etcdserver: no leader")
 
 	stream, err := client.Watch(requireLeaderCtx, &healthpb.HealthCheckRequest{})
 	require.NoError(t, err)
 	_, err = stream.Recv()
-	require.ErrorIs(t, err, rpctypes.ErrGRPCNoLeader)
+	requireAdmissionError(t, err, rpctypes.ErrGRPCNoLeader, codes.Unavailable, "etcdserver: no leader")
 
 	response, err := client.Check(context.Background(), &healthpb.HealthCheckRequest{})
 	require.NoError(t, err)
@@ -293,7 +293,7 @@ func TestClientRequireLeaderStreamClosesWhenLeaderIsLost(t *testing.T) {
 	hasLeader.Store(false)
 	select {
 	case err = <-recvDone:
-		require.ErrorIs(t, err, rpctypes.ErrGRPCNoLeader)
+		requireAdmissionError(t, err, rpctypes.ErrGRPCNoLeader, codes.Unavailable, "etcdserver: no leader")
 	case <-ctx.Done():
 		t.Fatal("require-leader stream did not close after leader loss")
 	}
@@ -328,7 +328,7 @@ func TestClientAPIVersionMetadataValidation(t *testing.T) {
 					return &healthpb.HealthCheckResponse{}, nil
 				})
 			if tc.wantErr {
-				require.ErrorIs(t, err, rpctypes.ErrGRPCInvalidClientAPIVersion)
+				requireAdmissionError(t, err, rpctypes.ErrGRPCInvalidClientAPIVersion, codes.InvalidArgument, "etcdserver: invalid client api version")
 				require.False(t, unaryCalled)
 				require.Zero(t, rpc.requestsInFlight)
 				return
@@ -403,7 +403,7 @@ func TestPeerClientAPIVersionMetadataRejectsUnaryAndStream(t *testing.T) {
 			called = true
 			return nil, nil
 		})
-	require.ErrorIs(t, err, rpctypes.ErrGRPCInvalidClientAPIVersion)
+	requireAdmissionError(t, err, rpctypes.ErrGRPCInvalidClientAPIVersion, codes.InvalidArgument, "etcdserver: invalid client api version")
 	require.False(t, called)
 
 	stream := &serverStreamWithContext{ctx: ctx}
@@ -412,7 +412,7 @@ func TestPeerClientAPIVersionMetadataRejectsUnaryAndStream(t *testing.T) {
 			called = true
 			return nil
 		})
-	require.ErrorIs(t, err, rpctypes.ErrGRPCInvalidClientAPIVersion)
+	requireAdmissionError(t, err, rpctypes.ErrGRPCInvalidClientAPIVersion, codes.InvalidArgument, "etcdserver: invalid client api version")
 	require.False(t, called)
 }
 
@@ -530,4 +530,11 @@ func TestClientRequestRateBurstIsAtomicAcrossConnections(t *testing.T) {
 		}
 	}
 	require.Equal(t, burst, admitted)
+}
+
+func requireAdmissionError(t *testing.T, err error, want error, code codes.Code, message string) {
+	t.Helper()
+	require.ErrorIs(t, err, want)
+	require.Equal(t, code, status.Code(err))
+	require.Equal(t, message, status.Convert(err).Message())
 }
