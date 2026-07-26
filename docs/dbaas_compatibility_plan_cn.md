@@ -15965,6 +15965,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   validation order 表中 missing lease 先于 future revision 的路径，统一到
   `ErrGRPCLeaseNotFound`、reference code 和 exact message helper。该门禁防止 Txn validator
   顺序重构后只保留 message，漏掉 NotFound code 与 typed error。
+- A1276 固定物理恢复/PITR 不得误关闭的发布门禁：
+  P2 明确 transactional TiKV 物理 full snapshot 和日志型 PITR 仍未完成，且不得用
+  TiDB BR full/PITR 的成功状态关闭该缺口。本轮新增兼容计划回归测试，要求文档持续保留
+  真实 CSI 隔离恢复不被替代、PITR 缺口不被关闭、以及 TiDB BR 不能替代 KubeBrain
+  transactional TiKV 物理恢复的警示语，避免后续整理文档或发布说明时误把候选能力标为
+  生产已完成。
 
 ### P2：运维兼容和长期验证
 
