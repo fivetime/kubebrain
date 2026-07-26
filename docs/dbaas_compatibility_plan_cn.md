@@ -15085,6 +15085,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   再分别用旧 revision 调用 `Get` 和 `GetStream`，要求两者都返回 typed compacted error。该
   门禁防止 RangeStream 错误归一化、client adapter 或 compaction 边界重构破坏 informer LIST
   失败后的可恢复判断。
+- A1133 固定 clientv3 Watch context cancel 关闭外观：
+  对照 `/root/etcd/tests/integration/clientv3/watch/watch_test.go` 的
+  `TestWatchCancelImmediate`、`TestWatchCancelInit` 和 `TestWatchCancelRunning`，调用方取消
+  watch context 后，official clientv3 暴露的 watch channel 必须有界关闭：已取消 context
+  创建 watch 应立即返回 closed channel，未收到事件时取消必须关闭，已经可能收到事件的 watcher
+  在事件后也必须关闭。本轮新增 bufconn official clientv3 回归固定这三种状态，防止 watch
+  stream cancel、client watcher goroutine 或 server cancel response 重构让生产 informer 在
+  resync/stop 路径泄漏 goroutine 或阻塞 shutdown。
 
 ### P2：运维兼容和长期验证
 

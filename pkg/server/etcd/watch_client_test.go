@@ -133,6 +133,49 @@ func TestClientWatchAfterCloseIsBoundedAndCanceled(t *testing.T) {
 	requireWatchClientCanceledOrClosed(t, closedCtx, afterClose)
 }
 
+func TestClientWatchContextCancelClosesChannel(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterWatchServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	canceledCtx, canceledCancel := context.WithCancel(context.Background())
+	canceledCancel()
+	requireWatchClientClosed(t, context.Background(), client.Watch(canceledCtx, "/a1133/watch/immediate"))
+
+	initCtx, initCancel := context.WithCancel(context.Background())
+	initWatch := client.Watch(initCtx, "/a1133/watch/init")
+	initCancel()
+	requireWatchClientClosed(t, context.Background(), initWatch)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	runningCtx, runningCancel := context.WithCancel(ctx)
+	runningWatch := client.Watch(runningCtx, "/a1133/watch/running")
+	_, err = client.Put(ctx, "/a1133/watch/running", "value")
+	require.NoError(t, err)
+	runningCancel()
+	requireWatchClientClosedAfterOptionalEvent(t, ctx, runningWatch)
+}
+
 func requireWatchClientResponse(t *testing.T, ctx context.Context, responses clientv3.WatchChan) clientv3.WatchResponse {
 	t.Helper()
 	select {
@@ -143,6 +186,34 @@ func requireWatchClientResponse(t *testing.T, ctx context.Context, responses cli
 		t.Fatalf("timed out waiting for watch response: %v", ctx.Err())
 	}
 	return clientv3.WatchResponse{}
+}
+
+func requireWatchClientClosed(t *testing.T, parent context.Context, responses clientv3.WatchChan) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(parent, time.Second)
+	defer cancel()
+	select {
+	case response, ok := <-responses:
+		require.False(t, ok, "expected closed watch channel, got response=%+v err=%v", response, response.Err())
+	case <-ctx.Done():
+		t.Fatalf("timed out waiting for closed watch channel: %v", ctx.Err())
+	}
+}
+
+func requireWatchClientClosedAfterOptionalEvent(t *testing.T, ctx context.Context, responses clientv3.WatchChan) {
+	t.Helper()
+	select {
+	case response, ok := <-responses:
+		if !ok {
+			return
+		}
+		require.NoError(t, response.Err())
+		require.False(t, response.Canceled)
+		require.NotEmpty(t, response.Events)
+	case <-ctx.Done():
+		t.Fatalf("timed out waiting for watch event or close: %v", ctx.Err())
+	}
+	requireWatchClientClosed(t, ctx, responses)
 }
 
 func requireWatchClientCanceledOrClosed(t *testing.T, ctx context.Context, responses clientv3.WatchChan) {
