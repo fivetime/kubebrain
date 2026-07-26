@@ -14806,6 +14806,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `tenant0/...`。本轮扩展本地 official clientv3 namespace 黑盒，在 Txn/watch 断言后继续
   校验 post-txn key 集合、`Delete("", WithFromKey(), WithPrevKV())` 删除/PrevKV 集合以及
   邻接非 namespace key 保留，锁住 prefix end 与 PrevKV stripping 的组合语义。
+- A1100 固定 clientv3 mirror Syncer 本地黑盒门禁：
+  对照 `/root/etcd/client/v3/mirror/syncer.go` 和
+  `/root/etcd/tests/integration/clientv3/mirror_test.go`，`mirror.NewSyncer` 的
+  `SyncBase` 必须在固定 revision 上按 key 升序分页扫描 prefix，超过 1000 key 时跨页
+  不漏不重，且 `SyncUpdates` 必须从 base revision+1 继续 watch 增量 PUT/DELETE。本轮新增
+  official clientv3 bufconn 回归，写入 1005 个 mirror prefix key 和邻接 `prefix0`
+  key，断言 base scan 至少两页、只包含目标 prefix、首尾 key 正确，并继续验证增量
+  PUT/DELETE revision 都大于 base revision，补齐 make-mirror 外部门禁之外的本地高层 API
+  覆盖。
 
 ### P2：运维兼容和长期验证
 
