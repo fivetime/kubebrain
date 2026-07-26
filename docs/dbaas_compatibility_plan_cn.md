@@ -15470,6 +15470,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `PermissionDenied`，root 用户再进入 Snapshot/MoveLeader/Downgrade 的 DBaaS
   `Unimplemented` 平台替代提示。本轮加强 privileged maintenance auth 回归，覆盖 unary 与
   server-streaming 两种 raw gRPC 调用方看到的错误外观。
+- A1190 固定 raw gRPC Lease auth key-visibility 外观：
+  延续 A1157 和 `/root/etcd/server/etcdserver/v3_server.go` 的 lease auth check 到 generated
+  `etcdserverpb.LeaseClient`：匿名 `LeaseLeases` 返回 raw user-empty status；普通用户查询受保护
+  lease 的 TTL without keys 成功且不泄露 key，TTL with keys、LeaseLeases 和 LeaseRevoke 返回
+  raw `PermissionDenied`，且拒绝的 revoke 不删除受保护 key。本轮加强既有 clientv3 lease
+  visibility 回归，防止直接 Lease API 调用方绕过 wrapper 后看到错误的授权外观或 key 泄露。
 
 ### P2：运维兼容和长期验证
 

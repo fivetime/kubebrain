@@ -1457,9 +1457,27 @@ func TestClientAuthLeaseListProtectsInaccessibleAttachments(t *testing.T) {
 	rootLeases, err := root.Leases(ctx)
 	require.NoError(t, err)
 	require.Contains(t, leaseIDs(rootLeases.Leases), protectedLease.ID)
+	rawAnonymousLease := etcdserverpb.NewLeaseClient(bootstrap.ActiveConnection())
+	_, rawAnonymousLeasesErr := rawAnonymousLease.LeaseLeases(ctx, &etcdserverpb.LeaseLeasesRequest{})
+	requireAuthClientError(t, rawAnonymousLeasesErr, codes.InvalidArgument, "etcdserver: user name is empty")
+	rawAliceLease := etcdserverpb.NewLeaseClient(alice.ActiveConnection())
+	rawTTL, err := rawAliceLease.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: int64(protectedLease.ID)})
+	require.NoError(t, err)
+	require.Equal(t, int64(protectedLease.ID), rawTTL.ID)
+	require.Positive(t, rawTTL.TTL)
+	require.Empty(t, rawTTL.Keys)
+	_, rawTTLWithKeysErr := rawAliceLease.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{
+		ID:   int64(protectedLease.ID),
+		Keys: true,
+	})
+	requireAuthClientError(t, rawTTLWithKeysErr, codes.PermissionDenied, "etcdserver: permission denied")
+	_, rawUserLeasesErr := rawAliceLease.LeaseLeases(ctx, &etcdserverpb.LeaseLeasesRequest{})
+	requireAuthClientError(t, rawUserLeasesErr, codes.PermissionDenied, "etcdserver: permission denied")
 
 	_, revokeErr := alice.Revoke(ctx, protectedLease.ID)
 	requireAuthClientError(t, revokeErr, codes.Unknown, "etcdserver: permission denied", rpctypes.ErrPermissionDenied)
+	_, rawRevokeErr := rawAliceLease.LeaseRevoke(ctx, &etcdserverpb.LeaseRevokeRequest{ID: int64(protectedLease.ID)})
+	requireAuthClientError(t, rawRevokeErr, codes.PermissionDenied, "etcdserver: permission denied")
 	protected, err := root.Get(ctx, "/a1072/protected/leased")
 	require.NoError(t, err)
 	require.Len(t, protected.Kvs, 1)
