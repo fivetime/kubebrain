@@ -15813,6 +15813,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   max-in-flight unary/stream lifetime 拒绝，以及 request-rate unary/watch stream 拒绝统一到
   `ErrGRPCRequestTooManyRequests`、`codes.ResourceExhausted` 和 reference message helper。
   该门禁防止 DBaaS admission 限流重构后只保留 code，漏掉客户端可见 typed error/message。
+- A1246 固定 lease attach delete-range key-limit 错误三件套：
+  A1245 已覆盖 listener admission 限流，本轮把 lease attach 保护的 direct `DeleteRange`
+  和 `Txn(DeleteRange)` key-limit 拒绝统一到 `ErrGRPCRequestTooManyRequests`、
+  `codes.ResourceExhausted` 和 reference message helper，同时继续断言 mutation 未发生。
+  该门禁防止删除保护重构后只返回 ResourceExhausted，漏掉 etcd 兼容 too-many-requests 外观。
 
 ### P2：运维兼容和长期验证
 

@@ -28,6 +28,7 @@ import (
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -873,8 +874,7 @@ func TestDeleteRangeKeyLimitRejectsBeforeMutation(t *testing.T) {
 	_, err := server.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{
 		Key: []byte(prefix), RangeEnd: prefixEnd([]byte(prefix)),
 	})
-	require.Equal(t, codes.ResourceExhausted, status.Code(err))
-	require.Equal(t, "etcdserver: too many requests", status.Convert(err).Message())
+	requireLeaseAttachTooManyRequestsError(t, err)
 	require.Equal(t, int64(4), recorder.limit, "admission scan must stop at limit+1")
 	require.Equal(t, before, server.backend.GetCurrentRevision())
 	remaining, err := server.Range(ctx, &etcdserverpb.RangeRequest{
@@ -907,7 +907,7 @@ func TestTxnDeleteRangeCannotBypassKeyLimit(t *testing.T) {
 			},
 		}},
 	})
-	require.Equal(t, codes.ResourceExhausted, status.Code(err))
+	requireLeaseAttachTooManyRequestsError(t, err)
 	require.Equal(t, before, server.backend.GetCurrentRevision())
 	remaining, err := server.Range(ctx, &etcdserverpb.RangeRequest{
 		Key: []byte(prefix), RangeEnd: prefixEnd([]byte(prefix)),
@@ -1133,4 +1133,11 @@ func TestUncertainLeaseReconcileCannotOverwriteReloadedGeneration(t *testing.T) 
 	<-done
 	require.Equal(t, newLease, server.leaseIDForKey(key),
 		"an old-term uncertain reconciliation must not overwrite the reloaded lease snapshot")
+}
+
+func requireLeaseAttachTooManyRequestsError(t *testing.T, err error) {
+	t.Helper()
+	require.ErrorIs(t, err, rpctypes.ErrGRPCRequestTooManyRequests)
+	require.Equal(t, codes.ResourceExhausted, status.Code(err))
+	require.Equal(t, "etcdserver: too many requests", status.Convert(err).Message())
 }
