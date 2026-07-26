@@ -24,6 +24,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/mvccpb"
+	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/test/bufconn"
@@ -116,6 +117,99 @@ func TestRawGRPCBinaryRangeTxnAndDeleteBoundaries(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []string{"ff"}, binaryClientKeys(pointFF.Kvs))
 	require.Equal(t, []string{"h"}, binaryClientValues(pointFF.Kvs))
+}
+
+func TestClientBinaryKeyRangeStreamAndHistoricalRead(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	keys := [][]byte{
+		{0x00},
+		{0x00, 0x00},
+		{0x00, 0x01},
+		{0x7f, 0x00},
+		{0xfe},
+		{0xfe, 0x00},
+		{0xfe, 0x01},
+		{0xff},
+		{0xff, 0x00},
+		{0xff, 0x01},
+	}
+	for index, key := range keys {
+		_, err = client.Put(ctx, string(key), string([]byte{byte('a' + index)}))
+		require.NoError(t, err)
+	}
+
+	nul, err := client.Get(ctx, string([]byte{0x00}), clientv3.WithRange(string([]byte{0x01})))
+	require.NoError(t, err)
+	require.Equal(t, int64(3), nul.Count)
+	require.Equal(t, []string{"00", "0000", "0001"}, binaryClientKeys(nul.Kvs))
+	require.Equal(t, []string{"a", "b", "c"}, binaryClientValues(nul.Kvs))
+	nulStream, err := client.GetStream(ctx, string([]byte{0x00}), clientv3.WithRange(string([]byte{0x01})))
+	require.NoError(t, err)
+	nulMerged, err := clientv3.GetStreamToGetResponse(nulStream)
+	require.NoError(t, err)
+	require.Equal(t, nul.Count, nulMerged.Count)
+	require.Equal(t, binaryClientKeys(nul.Kvs), binaryClientKeys(nulMerged.Kvs))
+	require.Equal(t, binaryClientValues(nul.Kvs), binaryClientValues(nulMerged.Kvs))
+
+	highPrefix, err := client.Get(ctx, string([]byte{0xfe}), clientv3.WithRange(string([]byte{0xff})))
+	require.NoError(t, err)
+	require.Equal(t, int64(3), highPrefix.Count)
+	require.Equal(t, []string{"fe", "fe00", "fe01"}, binaryClientKeys(highPrefix.Kvs))
+	require.Equal(t, []string{"e", "f", "g"}, binaryClientValues(highPrefix.Kvs))
+
+	fromFF, err := client.Get(ctx, string([]byte{0xff}), clientv3.WithFromKey(), clientv3.WithLimit(2))
+	require.NoError(t, err)
+	require.Equal(t, int64(3), fromFF.Count)
+	require.True(t, fromFF.More)
+	require.Equal(t, []string{"ff", "ff00"}, binaryClientKeys(fromFF.Kvs))
+	require.Equal(t, []string{"h", "i"}, binaryClientValues(fromFF.Kvs))
+
+	descendingFF, err := client.Get(ctx, string([]byte{0xff}),
+		clientv3.WithFromKey(),
+		clientv3.WithLimit(2),
+		clientv3.WithSort(clientv3.SortByKey, clientv3.SortDescend),
+	)
+	require.NoError(t, err)
+	require.Equal(t, int64(3), descendingFF.Count)
+	require.True(t, descendingFF.More)
+	require.Equal(t, []string{"ff01", "ff00"}, binaryClientKeys(descendingFF.Kvs))
+	require.Equal(t, []string{"j", "i"}, binaryClientValues(descendingFF.Kvs))
+
+	beforeDelete, err := client.Get(ctx, string([]byte{0xff}))
+	require.NoError(t, err)
+	require.Len(t, beforeDelete.Kvs, 1)
+	_, err = client.Delete(ctx, string([]byte{0xff}))
+	require.NoError(t, err)
+	current, err := client.Get(ctx, string([]byte{0xff}))
+	require.NoError(t, err)
+	require.Empty(t, current.Kvs)
+	historical, err := client.Get(ctx, string([]byte{0xff}), clientv3.WithRev(beforeDelete.Header.Revision))
+	require.NoError(t, err)
+	require.Equal(t, []string{"ff"}, binaryClientKeys(historical.Kvs))
+	require.Equal(t, []string{"h"}, binaryClientValues(historical.Kvs))
 }
 
 func binaryClientKeys(kvs []*mvccpb.KeyValue) []string {

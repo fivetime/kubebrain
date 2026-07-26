@@ -14423,6 +14423,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   memberID 的 NOSPACE alarm，通过 `client.Status(ctx, "bufnet")` 断言 public wrapper 看到
   精确 `Errors` 列表，再用 `client.AlarmDisarm` 解除并确认后续 `Status` 为空，补齐运维
   采集/探活常用 clientv3 入口的 alarm 可见性门禁。
+- A1049 固定 clientv3 binary key 高位边界外观：
+  `binary_key` differential 证明 NUL 前缀、embedded NUL、`0xfe` 高位半开区间、
+  `0xff` from-key 和删除后的历史点读都必须按 etcd 的 bytewise keyspace 处理，不能被
+  UTF-8/string 边界或 from-key range end 破坏。服务层与 raw gRPC 已覆盖 Range/Txn/Delete
+  主路径，本轮新增官方 clientv3 bufconn 回归，用 `client.Put/Get/GetStream/Delete`
+  写入 `0x00`、`0xfe`、`0xff` 系列二进制 key，断言 NUL RangeStream 与 unary Range 一致、
+  `0xfe` prefix 只返回高位半开区间、`0xff WithFromKey` 的 limit/more/count 与倒序排序正确，
+  并验证删除 `0xff` 后当前点读为空但 `WithRev` 历史点读仍返回旧值，补齐公开客户端 bytes
+  到 protobuf request 映射面的门禁。
 
 ### P2：运维兼容和长期验证
 
