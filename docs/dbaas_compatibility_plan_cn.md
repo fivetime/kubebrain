@@ -14665,6 +14665,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   每轮执行含 nested Txn 的三键写并丢弃响应，随后用直连 client 等待目标 value 可见，
   断言三键 version 只递增一次且 revision 完全一致，补齐生产网络抖动下事务写入
   exactly-once 可观察契约。
+- A1079 固定 clientv3 Put ambiguous response 的 at-most-once：
+  `put_at_most_once` differential 证明单 key Put 已提交但响应被网络丢弃时，clientv3
+  会以 deadline exceeded 观察到不确定结果；服务端不能在连接恢复或客户端重试路径上
+  把同一 Put 重放。本轮新增真实 TCP gRPC + response blackhole 回归，先 seed 目标 key，
+  每轮通过 bridged client 发起 Put 并丢弃服务端响应，直连 client 等待目标 value 可见后
+  断言 version 只递增一次且 ModRevision 单调推进，补齐普通写入在生产网络抖动下的
+  at-most-once 可观察契约。
 
 ### P2：运维兼容和长期验证
 

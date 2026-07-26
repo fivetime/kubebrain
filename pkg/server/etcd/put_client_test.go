@@ -242,6 +242,84 @@ func TestClientPutDroppedRequestDoesNotCommitAndGetReconnects(t *testing.T) {
 	}
 }
 
+func TestClientPutAmbiguousResponseCommitsAtMostOnce(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	server.Register(grpcServer)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(func() {
+		grpcServer.Stop()
+		_ = listener.Close()
+	})
+
+	directEndpoint := listener.Addr().String()
+	bridge := newClientLeasingTCPBridge(t, directEndpoint)
+	newClient := func(endpoint string) *clientv3.Client {
+		client, newErr := clientv3.New(clientv3.Config{
+			Endpoints:   []string{endpoint},
+			DialTimeout: time.Second,
+		})
+		require.NoError(t, newErr)
+		t.Cleanup(func() { require.NoError(t, client.Close()) })
+		return client
+	}
+	throughBridge := newClient(bridge.Endpoint())
+	direct := newClient(directEndpoint)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	key := fmt.Sprintf("/a1079/put-at-most-once/%d/key", time.Now().UnixNano())
+	seed, err := direct.Put(ctx, key, "seed")
+	require.NoError(t, err)
+	previousVersion := int64(1)
+	previousRevision := seed.Header.Revision
+
+	const attempts = 3
+	for attempt := 0; attempt < attempts; attempt++ {
+		warm, warmErr := throughBridge.Get(ctx, key)
+		require.NoError(t, warmErr)
+		require.Len(t, warm.Kvs, 1)
+		require.Equal(t, previousVersion, warm.Kvs[0].Version)
+
+		value := fmt.Sprintf("attempt-%d", attempt)
+		droppedBefore := bridge.DroppedBytes()
+		bridge.BlackholeResponses()
+		callCtx, callCancel := context.WithTimeout(ctx, 750*time.Millisecond)
+		_, putErr := throughBridge.Put(callCtx, key, value)
+		callCancel()
+		require.True(t,
+			errors.Is(putErr, context.DeadlineExceeded) ||
+				status.Code(putErr) == codes.DeadlineExceeded,
+			"attempt %d returned unexpected error: %v", attempt, putErr)
+		require.Eventually(t, func() bool {
+			return bridge.DroppedBytes() > droppedBefore
+		}, 2*time.Second, 10*time.Millisecond)
+		bridge.Unblackhole()
+		bridge.DropConnections()
+
+		var observed *clientv3.GetResponse
+		require.Eventually(t, func() bool {
+			response, getErr := direct.Get(ctx, key)
+			if getErr != nil || len(response.Kvs) != 1 || string(response.Kvs[0].Value) != value {
+				return false
+			}
+			observed = response
+			return true
+		}, 5*time.Second, 20*time.Millisecond)
+
+		kv := observed.Kvs[0]
+		require.Equal(t, previousVersion+1, kv.Version,
+			"attempt %d advanced more than once", attempt)
+		require.Greater(t, kv.ModRevision, previousRevision)
+		previousVersion = kv.Version
+		previousRevision = kv.ModRevision
+	}
+}
+
 func leaseClientAttachedKeys(keys [][]byte) []string {
 	out := make([]string, 0, len(keys))
 	for _, key := range keys {
