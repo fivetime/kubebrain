@@ -15463,6 +15463,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `MemberAdd` 返回 `PermissionDenied`，root 用户 `MemberAdd` 再进入 DBaaS control-plane
   `Unimplemented` 提示。本轮加强既有 official clientv3 cluster/maintenance auth 回归，防止
   raw Cluster API 调用方绕过 client adapter 后看到错误的 auth-before-platform 顺序。
+- A1189 固定 raw gRPC Maintenance auth 与平台边界：
+  延续 A1155/A1157 和 A1183/A1184 的 Maintenance auth-before-platform contract 到 generated
+  `etcdserverpb.MaintenanceClient`：匿名 `Status` 返回 raw user-empty status，普通用户
+  `Status` 成功；普通用户 `Snapshot`、`MoveLeader`、`Downgrade` 返回 raw
+  `PermissionDenied`，root 用户再进入 Snapshot/MoveLeader/Downgrade 的 DBaaS
+  `Unimplemented` 平台替代提示。本轮加强 privileged maintenance auth 回归，覆盖 unary 与
+  server-streaming 两种 raw gRPC 调用方看到的错误外观。
 
 ### P2：运维兼容和长期验证
 

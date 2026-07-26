@@ -1254,6 +1254,15 @@ func TestClientAuthPrivilegedMaintenanceAuthorizationPrecedesUnsupported(t *test
 	requireAuthClientError(t, userDefragErr, codes.Unknown, "etcdserver: permission denied", rpctypes.ErrPermissionDenied)
 	_, err = root.Defragment(ctx, root.Endpoints()[0])
 	require.NoError(t, err)
+	rawAnonymousMaintenance := etcdserverpb.NewMaintenanceClient(bootstrap.ActiveConnection())
+	_, rawAnonymousStatusErr := rawAnonymousMaintenance.Status(ctx, &etcdserverpb.StatusRequest{})
+	requireAuthClientError(t, rawAnonymousStatusErr, codes.InvalidArgument, "etcdserver: user name is empty")
+	rawAliceMaintenance := etcdserverpb.NewMaintenanceClient(alice.ActiveConnection())
+	rawStatus, err := rawAliceMaintenance.Status(ctx, &etcdserverpb.StatusRequest{})
+	require.NoError(t, err)
+	require.NotNil(t, rawStatus.Header)
+	require.NotEmpty(t, rawStatus.Version)
+	rawRootMaintenance := etcdserverpb.NewMaintenanceClient(root.ActiveConnection())
 
 	snapshotReader, userSnapshotErr := alice.SnapshotWithVersion(ctx)
 	if snapshotReader != nil && snapshotReader.Snapshot != nil {
@@ -1265,16 +1274,41 @@ func TestClientAuthPrivilegedMaintenanceAuthorizationPrecedesUnsupported(t *test
 		require.NoError(t, rootSnapshot.Snapshot.Close())
 	}
 	requireAuthClientError(t, rootSnapshotErr, codes.Unimplemented, snapshotUnsupportedMessage)
+	rawSnapshotErr := func(client etcdserverpb.MaintenanceClient) error {
+		t.Helper()
+		stream, streamErr := client.Snapshot(ctx, &etcdserverpb.SnapshotRequest{})
+		if streamErr != nil {
+			return streamErr
+		}
+		_, recvErr := stream.Recv()
+		return recvErr
+	}
+	requireAuthClientError(t, rawSnapshotErr(rawAliceMaintenance), codes.PermissionDenied, "etcdserver: permission denied")
+	requireAuthClientError(t, rawSnapshotErr(rawRootMaintenance), codes.Unimplemented, snapshotUnsupportedMessage)
 
 	_, userMoveLeaderErr := alice.MoveLeader(ctx, 0)
 	requireAuthClientError(t, userMoveLeaderErr, codes.Unknown, "etcdserver: permission denied", rpctypes.ErrPermissionDenied)
 	_, rootMoveLeaderErr := root.MoveLeader(ctx, 0)
 	requireAuthClientError(t, rootMoveLeaderErr, codes.Unimplemented, moveLeaderUnsupportedMessage)
+	_, rawUserMoveLeaderErr := rawAliceMaintenance.MoveLeader(ctx, &etcdserverpb.MoveLeaderRequest{})
+	requireAuthClientError(t, rawUserMoveLeaderErr, codes.PermissionDenied, "etcdserver: permission denied")
+	_, rawRootMoveLeaderErr := rawRootMaintenance.MoveLeader(ctx, &etcdserverpb.MoveLeaderRequest{})
+	requireAuthClientError(t, rawRootMoveLeaderErr, codes.Unimplemented, moveLeaderUnsupportedMessage)
 
 	_, userDowngradeErr := alice.Downgrade(ctx, clientv3.DowngradeValidate, "3.6")
 	requireAuthClientError(t, userDowngradeErr, codes.Unknown, "etcdserver: permission denied", rpctypes.ErrPermissionDenied)
 	_, rootDowngradeErr := root.Downgrade(ctx, clientv3.DowngradeValidate, "3.6")
 	requireAuthClientError(t, rootDowngradeErr, codes.Unimplemented, downgradeUnsupportedMessage)
+	_, rawUserDowngradeErr := rawAliceMaintenance.Downgrade(ctx, &etcdserverpb.DowngradeRequest{
+		Action:  etcdserverpb.DowngradeRequest_VALIDATE,
+		Version: "3.6",
+	})
+	requireAuthClientError(t, rawUserDowngradeErr, codes.PermissionDenied, "etcdserver: permission denied")
+	_, rawRootDowngradeErr := rawRootMaintenance.Downgrade(ctx, &etcdserverpb.DowngradeRequest{
+		Action:  etcdserverpb.DowngradeRequest_VALIDATE,
+		Version: "3.6",
+	})
+	requireAuthClientError(t, rawRootDowngradeErr, codes.Unimplemented, downgradeUnsupportedMessage)
 }
 
 func TestClientAuthRangeStreamAuthorization(t *testing.T) {
