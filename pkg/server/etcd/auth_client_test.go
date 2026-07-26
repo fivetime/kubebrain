@@ -218,6 +218,41 @@ func TestClientAuthDisabledAllowsCredentialedClient(t *testing.T) {
 	require.Equal(t, "value", string(got.Kvs[0].Value))
 }
 
+func TestClientAuthUserErrorsMatchEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterAuthServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err = client.UserAdd(ctx, "a1129-user", "secret")
+	require.NoError(t, err)
+	_, err = client.UserAdd(ctx, "a1129-user", "secret")
+	require.ErrorIs(t, err, rpctypes.ErrUserAlreadyExist)
+	_, err = client.UserDelete(ctx, "a1129-missing-user")
+	require.ErrorIs(t, err, rpctypes.ErrUserNotFound)
+	_, err = client.UserGrantRole(ctx, "a1129-user", "a1129-missing-role")
+	require.ErrorIs(t, err, rpctypes.ErrRoleNotFound)
+}
+
 func TestClientAuthRootProtectionAndDuplicateRoleErrors(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

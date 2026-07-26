@@ -15053,6 +15053,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   关闭 client 上再次创建 `Watch`，要求同样有界关闭。该门禁防止 watch stream teardown、
   client watcher goroutine 或服务端 cancel response 重构导致生产控制器关闭/重建连接时
   泄漏 goroutine 或卡住 informer resync。
+- A1129 固定 clientv3 Auth user 基础错误外观：
+  对照 `/root/etcd/tests/integration/clientv3/user_test.go:TestUserError`，auth 未启用时
+  用户管理 API 仍需返回 etcd 公开 rpctypes 错误，而不是普通 gRPC Unknown 文本或误判为
+  鉴权失败。本轮新增 bufconn official clientv3 回归，先成功 `UserAdd`，随后重复
+  `UserAdd` 必须 `ErrUserAlreadyExist`，删除不存在用户必须 `ErrUserNotFound`，给已存在用户
+  授权不存在 role 必须 `ErrRoleNotFound`。该门禁防止 auth manager 错误映射、interceptor
+  或未启用 auth 的管理路径重构破坏 etcdctl/operator 对用户生命周期错误的可编程判断。
 
 ### P2：运维兼容和长期验证
 
