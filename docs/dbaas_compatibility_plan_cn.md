@@ -13867,6 +13867,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   5 个值。最后执行 prefix Delete，断言 Deleted=5、历史 watch 的 DELETE event 全部使用
   delete header revision、原 owner prefix cache 为空且范围外 sentinel 保留，防止 range
   ownership revoke、staged range Txn 或 watch history 任一路径回退。
+- A980 固定 clientv3 leasing.NewKV 的 point-key client 路径：
+  `leasing_client` differential 已覆盖缺失 key acquire、跨 client cache invalidation、
+  `WithPrevKV`、历史 revision 读取、并发 Put 最终版本和 delete invalidation。本轮新增
+  bufconn clientv3 回归，使用两个官方 `leasing.NewKV` 实例共享 owner 前缀：先断言缺失
+  key 为空，再由两个 client 交替 Put/Get，确认原 owner cache 被非 owner Put 更新到
+  最新值；随后执行带 `WithPrevKV` 的 leasing Put，并按官方 wrapper 对外暴露的
+  `PrevKv.ModRevision` 做历史读，确认历史值与返回的 `PrevKv` 视图一致。最后 8 个
+  goroutine 并发 Put，断言 leasing wrapper 和直读底层 KV 的最终值来自 worker、底层
+  Version 至少覆盖所有用户写入阶段，且 ModRevision 等于所有 Put response 的最大
+  revision；再由第二个 client Delete 并确认原 owner 读取为空，防止点 key leasing
+  wrapper 在失效通知、历史读或并发 owner 更新上回退。精确 Version/Deleted 数值由
+  `leasing_client` differential 继续与参考 etcd 对齐，因为 owner 抢占/重试会产生额外写入。
 
 ### P2：运维兼容和长期验证
 

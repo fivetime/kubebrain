@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -287,6 +288,132 @@ func deterministicLeasingTree(prefix string, depth int, next *int, expected map[
 		[]clientv3.Op{thenOperation, clientv3.OpPut(key, "then")},
 		[]clientv3.Op{elseOperation, clientv3.OpPut(key, "else")},
 	)
+}
+
+func TestClientLeasingPointKeyInvalidationPrevKVAndConcurrency(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterWatchServer(grpcServer, server)
+	etcdserverpb.RegisterLeaseServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	newClient := func() *clientv3.Client {
+		client, err := clientv3.New(clientv3.Config{
+			Endpoints:   []string{"bufnet"},
+			DialTimeout: time.Second,
+			DialOptions: []grpc.DialOption{
+				grpc.WithTransportCredentials(insecure.NewCredentials()),
+				grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+					return listener.Dial()
+				}),
+			},
+		})
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, client.Close()) })
+		return client
+	}
+	first := newClient()
+	second := newClient()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	prefix := fmt.Sprintf("/a980/leasing-client/%d/", time.Now().UnixNano())
+	key := prefix + "data/key"
+	firstKV, closeFirst, err := leasing.NewKV(first, prefix+"owners/")
+	require.NoError(t, err)
+	t.Cleanup(closeFirst)
+	secondKV, closeSecond, err := leasing.NewKV(second, prefix+"owners/")
+	require.NoError(t, err)
+	t.Cleanup(closeSecond)
+
+	missing, err := firstKV.Get(ctx, key)
+	require.NoError(t, err)
+	require.Empty(t, missing.Kvs)
+
+	_, err = firstKV.Put(ctx, key, "one")
+	require.NoError(t, err)
+	remote, err := secondKV.Get(ctx, key)
+	require.NoError(t, err)
+	require.Len(t, remote.Kvs, 1)
+	require.Equal(t, []byte("one"), remote.Kvs[0].Value)
+
+	cached, err := firstKV.Get(ctx, key)
+	require.NoError(t, err)
+	require.Len(t, cached.Kvs, 1)
+	require.Equal(t, []byte("one"), cached.Kvs[0].Value)
+
+	_, err = secondKV.Put(ctx, key, "two")
+	require.NoError(t, err)
+	invalidated, err := firstKV.Get(ctx, key)
+	require.NoError(t, err)
+	require.Len(t, invalidated.Kvs, 1)
+	require.Equal(t, []byte("two"), invalidated.Kvs[0].Value)
+
+	previous, err := firstKV.Put(ctx, key, "three", clientv3.WithPrevKV())
+	require.NoError(t, err)
+	require.NotNil(t, previous.PrevKv)
+	require.Equal(t, []byte("three"), previous.PrevKv.Value)
+	historical, err := firstKV.Get(ctx, key, clientv3.WithRev(previous.PrevKv.ModRevision))
+	require.NoError(t, err)
+	require.Len(t, historical.Kvs, 1)
+	require.Equal(t, previous.PrevKv.Value, historical.Kvs[0].Value)
+
+	const workers = 8
+	responses := make(chan *clientv3.PutResponse, workers)
+	errors := make(chan error, workers)
+	var wait sync.WaitGroup
+	for worker := 0; worker < workers; worker++ {
+		wait.Add(1)
+		go func(worker int) {
+			defer wait.Done()
+			response, putErr := firstKV.Put(ctx, key, fmt.Sprintf("worker-%d", worker))
+			if putErr != nil {
+				errors <- putErr
+				return
+			}
+			responses <- response
+		}(worker)
+	}
+	wait.Wait()
+	close(responses)
+	close(errors)
+	for err := range errors {
+		require.NoError(t, err)
+	}
+	var maxRevision int64
+	for response := range responses {
+		require.NotNil(t, response.Header)
+		if response.Header.Revision > maxRevision {
+			maxRevision = response.Header.Revision
+		}
+	}
+	require.Positive(t, maxRevision)
+
+	current, err := firstKV.Get(ctx, key)
+	require.NoError(t, err)
+	require.Len(t, current.Kvs, 1)
+	require.GreaterOrEqual(t, len(current.Kvs[0].Value), len("worker-"))
+	require.Equal(t, "worker-", string(current.Kvs[0].Value[:len("worker-")]))
+	require.Equal(t, maxRevision, current.Kvs[0].ModRevision)
+	directCurrent, err := first.Get(ctx, key)
+	require.NoError(t, err)
+	require.Len(t, directCurrent.Kvs, 1)
+	require.Equal(t, current.Kvs[0].Value, directCurrent.Kvs[0].Value)
+	require.GreaterOrEqual(t, directCurrent.Kvs[0].Version, int64(workers+3))
+	require.Equal(t, maxRevision, directCurrent.Kvs[0].ModRevision)
+
+	deleted, err := secondKV.Delete(ctx, key)
+	require.NoError(t, err)
+	require.NotNil(t, deleted.Header)
+	require.Eventually(t, func() bool {
+		afterDelete, getErr := firstKV.Get(ctx, key)
+		return getErr == nil && len(afterDelete.Kvs) == 0
+	}, time.Second, 10*time.Millisecond)
 }
 
 func TestClientLeasingRangeOwnershipAndDelete(t *testing.T) {
