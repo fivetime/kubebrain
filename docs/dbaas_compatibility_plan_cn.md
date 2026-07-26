@@ -15495,6 +15495,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   两层嵌套 raw `Txn` Put/DeleteRange 必须返回 `PermissionDenied`，且 root 随后读取原值不变。
   本轮加强既有 KV/Txn auth 回归，防止直接 protobuf 请求绕过 clientv3 wrapper 后破坏
   status code、递归 request-op 授权或拒绝写的原子性。
+- A1194 固定 raw gRPC Put PrevKV write-only 泄露防护：
+  延续 A1067 的 write-only role 契约到 generated `etcdserverpb.KVClient`：writer 只有目标 key
+  的 write 权限时，raw standalone `Put(PrevKv)`、raw single-level `Txn` Put(PrevKv) 和两层嵌套
+  raw `Txn` Put(PrevKv) 都必须返回 `PermissionDenied`，且 root 读取仍为原值 `before`。
+  本轮加强既有 clientv3 Txn PrevKV 回归，防止直接 protobuf mutation 通过 PrevKV 读取旧值、
+  绕过递归授权或在拒绝路径产生部分写入。
 
 ### P2：运维兼容和长期验证
 

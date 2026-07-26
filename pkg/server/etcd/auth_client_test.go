@@ -1060,22 +1060,51 @@ func TestClientAuthTxnPutWithPrevKVDeniedForWriteOnlyRole(t *testing.T) {
 
 	root := newClient("root", "root-secret")
 	writer := newClient("writer", "writer-secret")
+	rawWriterKV := etcdserverpb.NewKVClient(writer.ActiveConnection())
 	_, err = root.Put(ctx, "/a1067/write-only/key", "before")
 	require.NoError(t, err)
+	_, rawPutPrevKVErr := rawWriterKV.Put(ctx, &etcdserverpb.PutRequest{
+		Key:    []byte("/a1067/write-only/key"),
+		Value:  []byte("raw-after"),
+		PrevKv: true,
+	})
+	requireAuthClientError(t, rawPutPrevKVErr, codes.PermissionDenied, "etcdserver: permission denied")
+
 	_, prevKVErr := writer.Txn(ctx).Then(
 		clientv3.OpPut("/a1067/write-only/key", "after", clientv3.WithPrevKV()),
 	).Commit()
 	requireAuthClientError(t, prevKVErr, codes.Unknown, "etcdserver: permission denied", rpctypes.ErrPermissionDenied)
+	_, rawPrevKVErr := rawWriterKV.Txn(ctx, &etcdserverpb.TxnRequest{
+		Success: []*etcdserverpb.RequestOp{rawGRPCPutRequestOp(&etcdserverpb.PutRequest{
+			Key:    []byte("/a1067/write-only/key"),
+			Value:  []byte("raw-txn-after"),
+			PrevKv: true,
+		})},
+	})
+	requireAuthClientError(t, rawPrevKVErr, codes.PermissionDenied, "etcdserver: permission denied")
 
 	twoLevelNested := func(op clientv3.Op) clientv3.Op {
 		return clientv3.OpTxn(nil, []clientv3.Op{
 			clientv3.OpTxn(nil, []clientv3.Op{op}, nil),
 		}, nil)
 	}
+	rawTwoLevelNested := func(op *etcdserverpb.RequestOp) *etcdserverpb.TxnRequest {
+		return &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{{
+			Request: &etcdserverpb.RequestOp_RequestTxn{RequestTxn: &etcdserverpb.TxnRequest{
+				Success: []*etcdserverpb.RequestOp{op},
+			}},
+		}}}
+	}
 	_, nestedPrevKVErr := writer.Txn(ctx).Then(
 		twoLevelNested(clientv3.OpPut("/a1067/write-only/key", "nested-after", clientv3.WithPrevKV())),
 	).Commit()
 	requireAuthClientError(t, nestedPrevKVErr, codes.Unknown, "etcdserver: permission denied", rpctypes.ErrPermissionDenied)
+	_, rawNestedPrevKVErr := rawWriterKV.Txn(ctx, rawTwoLevelNested(rawGRPCPutRequestOp(&etcdserverpb.PutRequest{
+		Key:    []byte("/a1067/write-only/key"),
+		Value:  []byte("raw-nested-after"),
+		PrevKv: true,
+	})))
+	requireAuthClientError(t, rawNestedPrevKVErr, codes.PermissionDenied, "etcdserver: permission denied")
 
 	value, err := root.Get(ctx, "/a1067/write-only/key")
 	require.NoError(t, err)
