@@ -367,6 +367,39 @@ func TestClientTxnBasicErrorsMatchEtcd(t *testing.T) {
 	require.ErrorIs(t, err, rpctypes.ErrTooManyOps)
 }
 
+func TestClientTxnNoSpaceIsTyped(t *testing.T) {
+	server := newQuotaRPCServer(t, 6)
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	server.Register(grpcServer)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err = client.Put(ctx, "key", "123")
+	require.NoError(t, err)
+
+	_, err = client.Txn(ctx).Then(clientv3.OpPut("x", "y")).Commit()
+	require.ErrorIs(t, err, rpctypes.ErrNoSpace)
+	require.Equal(t, codes.Unknown, status.Code(err))
+	require.Equal(t, "etcdserver: mvcc: database space exceeded", status.Convert(err).Message())
+}
+
 func TestRawGRPCTxnCompareEnumFallthroughMatchesEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
