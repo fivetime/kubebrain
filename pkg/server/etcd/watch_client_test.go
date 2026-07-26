@@ -94,6 +94,86 @@ func TestClientWatchFragmentDeliversLargeBatchWithSmallRecvLimit(t *testing.T) {
 	require.Equal(t, eventCount, events)
 }
 
+func TestRawGRPCWatchFragmentPreservesPrevKV(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	ctx := context.Background()
+	prefix := fmt.Sprintf("/a1028/watch-fragment/%d/", time.Now().UnixNano())
+	value := []byte(strings.Repeat("x", 600*1024))
+	var revision int64
+	for _, key := range []string{prefix + "a", prefix + "b"} {
+		resp, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: []byte(key), Value: value})
+		require.NoError(t, err)
+		revision = resp.Header.Revision
+	}
+	server.SetRequestLimits(defaultMaxTxnOps, 1024)
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterWatchServer(grpcServer, server)
+	listener := bufconn.Listen(4 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///bufnet",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+
+	callCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	stream, err := etcdserverpb.NewWatchClient(conn).Watch(callCtx)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = stream.CloseSend() })
+	require.NoError(t, stream.Send(&etcdserverpb.WatchRequest{
+		RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{
+			CreateRequest: &etcdserverpb.WatchCreateRequest{
+				Key: []byte(prefix), RangeEnd: []byte(clientv3.GetPrefixRangeEnd(prefix)),
+				StartRevision: revision + 1, PrevKv: true, Fragment: true,
+			},
+		},
+	}))
+	created, err := stream.Recv()
+	require.NoError(t, err)
+	requireRawWatchHeaderWellFormed(t, created)
+	require.True(t, created.Created)
+	require.False(t, created.Canceled)
+
+	_, err = etcdserverpb.NewKVClient(conn).DeleteRange(callCtx, &etcdserverpb.DeleteRangeRequest{
+		Key: []byte(prefix), RangeEnd: []byte(clientv3.GetPrefixRangeEnd(prefix)), PrevKv: true,
+	})
+	require.NoError(t, err)
+
+	var (
+		responses  int
+		eventCount int
+		prevBytes  []int
+	)
+	for {
+		response, recvErr := stream.Recv()
+		require.NoError(t, recvErr)
+		requireRawWatchHeaderWellFormed(t, response)
+		require.NotEmpty(t, response.Events)
+		responses++
+		for _, event := range response.Events {
+			require.NotNil(t, event.PrevKv)
+			prevBytes = append(prevBytes, len(event.PrevKv.Value))
+			eventCount++
+		}
+		if !response.Fragment {
+			break
+		}
+	}
+	require.Greater(t, responses, 1, "large prev-kv watch response must fragment")
+	require.Equal(t, 2, eventCount)
+	require.Equal(t, []int{len(value), len(value)}, prevBytes)
+}
+
 func TestRawGRPCWatchIDRangeBoundariesKeepStreamAlive(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

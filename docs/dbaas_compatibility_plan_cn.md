@@ -14268,6 +14268,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   本轮新增 bufconn raw gRPC 回归，注册真实 KV/Watch 服务后直接覆盖 revision-zero create+
   后续事件，以及从当前写入 revision 开始的历史回放，防止公开 gRPC 层错误改写 start revision、
   漏发当前 revision 事件或返回陈旧 create/event header。
+- A1028 固定 raw gRPC Watch Fragment+PrevKV 删除批次：
+  `watch_control` differential 证明带 `PrevKv=true, Fragment=true` 的 watch 在大 value
+  `DeleteRange(PrevKv=true)` 后必须按 etcd 分片返回事件，非末尾响应 `Fragment=true`，
+  末尾响应 `Fragment=false`，并且每个 DELETE 事件都保留完整 PrevKv value。本轮新增 bufconn
+  raw gRPC 回归，先直接写入两条 600KiB value，再降低 watch fragment 阈值并通过真实
+  `etcdserverpb.WatchClient`/`KVClient.DeleteRange` 验证分片数量、事件数和 PrevKv byte 数，
+  防止 clientv3 wrapper 正确但公开 raw Watch response 分片标志或 PrevKv payload 回退。
 
 ### P2：运维兼容和长期验证
 
