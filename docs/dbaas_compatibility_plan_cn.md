@@ -15115,6 +15115,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   bufconn official clientv3 回归，在 auth enabled 下用 root client 执行 add/auth/delete、
   re-add/auth、两次改密和三组 `Authenticate` 断言。该门禁防止 auth storage generation、
   bcrypt hash 替换或 token/auth revision 重构破坏 DBaaS 租户凭据轮换与回收的确定性。
+- A1137 固定 clientv3 Get 已取消 context 外观：
+  对照 `/root/etcd/tests/integration/clientv3/kv_test.go:TestKVGetCancel`，用已经取消的
+  context 发起 `Get` 必须直接返回 `context.Canceled`，且不能破坏 client 的 active gRPC
+  connection；后续同一 client 的正常 `Get` 仍应成功。本轮新增 bufconn official clientv3
+  回归，先建立连接并写入 key，记录 `ActiveConnection`，随后用 canceled context 调用 `Get`
+  断言 nil response、typed cancel error 和连接对象不变，再做一次正常读取。该门禁防止
+  read barrier、retry loop 或 interceptor 重构把调用方取消误升级为连接级失败。
 
 ### P2：运维兼容和长期验证
 
