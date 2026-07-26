@@ -1134,12 +1134,10 @@ func TestClientRangeRevisionBoundaries(t *testing.T) {
 	require.Empty(t, keysOnly.Kvs[0].Value)
 
 	_, err = client.Get(ctx, key, clientv3.WithRev(current.Header.Revision-1))
-	requireClientRangeError(t, err, codes.Unknown, "etcdserver: mvcc: required revision has been compacted")
-	require.ErrorIs(t, err, rpctypes.ErrCompacted)
+	requireClientRangeError(t, err, codes.Unknown, "etcdserver: mvcc: required revision has been compacted", rpctypes.ErrCompacted)
 
 	_, err = client.Get(ctx, key, clientv3.WithRev(math.MaxInt64))
-	requireClientRangeError(t, err, codes.Unknown, "etcdserver: mvcc: required revision is a future revision")
-	require.ErrorIs(t, err, rpctypes.ErrFutureRev)
+	requireClientRangeError(t, err, codes.Unknown, "etcdserver: mvcc: required revision is a future revision", rpctypes.ErrFutureRev)
 }
 
 func TestRawGRPCRangeOptionInteractions(t *testing.T) {
@@ -1277,9 +1275,12 @@ func requireRawGRPCRangeRevisionError(t *testing.T, err error, code codes.Code, 
 	require.Equal(t, message, status.Convert(err).Message())
 }
 
-func requireClientRangeError(t *testing.T, err error, code codes.Code, message string) {
+func requireClientRangeError(t *testing.T, err error, code codes.Code, message string, wantErrorIs ...error) {
 	t.Helper()
 	require.Error(t, err)
+	for _, want := range wantErrorIs {
+		require.ErrorIs(t, err, want)
+	}
 	require.Equal(t, code, status.Code(err))
 	require.Equal(t, message, status.Convert(err).Message())
 }

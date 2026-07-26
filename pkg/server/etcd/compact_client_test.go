@@ -126,11 +126,9 @@ func TestClientCompactTypedErrorsMatchEtcd(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = client.Compact(ctx, compactRevision)
-	require.ErrorIs(t, err, rpctypes.ErrCompacted)
-	requireCompactClientError(t, err, codes.Unknown, "etcdserver: mvcc: required revision has been compacted")
+	requireCompactClientError(t, err, codes.Unknown, "etcdserver: mvcc: required revision has been compacted", rpctypes.ErrCompacted)
 	_, err = client.Compact(ctx, compactRevision+1000)
-	require.ErrorIs(t, err, rpctypes.ErrFutureRev)
-	requireCompactClientError(t, err, codes.Unknown, "etcdserver: mvcc: required revision is a future revision")
+	requireCompactClientError(t, err, codes.Unknown, "etcdserver: mvcc: required revision is a future revision", rpctypes.ErrFutureRev)
 }
 
 func TestRawGRPCCompactRevisionBoundaryErrorsMatchEtcd(t *testing.T) {
@@ -185,9 +183,12 @@ func TestRawGRPCCompactRevisionBoundaryErrorsMatchEtcd(t *testing.T) {
 	}
 }
 
-func requireCompactClientError(t *testing.T, err error, code codes.Code, message string) {
+func requireCompactClientError(t *testing.T, err error, code codes.Code, message string, wantErrorIs ...error) {
 	t.Helper()
 	require.Error(t, err)
+	for _, want := range wantErrorIs {
+		require.ErrorIs(t, err, want)
+	}
 	require.Equal(t, code, status.Code(err))
 	require.Equal(t, message, status.Convert(err).Message())
 }

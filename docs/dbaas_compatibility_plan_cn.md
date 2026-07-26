@@ -15734,6 +15734,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Txn op 计数上限和嵌套 op 计数上限拒绝路径固定为同时满足 `errors.Is`、direct code 和
   reference message。该门禁防止 KV/Txn request validation 或 compaction boundary 重构后只保留
   typed error，导致核心数据面错误外观在 client 映射前漂移。
+- A1231 收敛 official clientv3 Range/RangeStream/Compact revision 错误三件套：
+  A1210/A1211/A1215/A1216 已覆盖这些路径的 client code/message，本轮把 `ErrCompacted` 和
+  `ErrFutureRev` 的 `errors.Is` 校验并入各自 helper，让 Range、RangeStream 和 Compact client
+  revision 错误统一由单个三件套断言表达。该门禁防止后续新增用例只检查 typed error 或只检查
+  status 外观，漏掉 clientv3 retry/translation 层的任一维度漂移。
 
 ### P2：运维兼容和长期验证
 
