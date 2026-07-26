@@ -163,12 +163,13 @@ func TestRawGRPCCompactRevisionBoundaryErrorsMatchEtcd(t *testing.T) {
 		revision int64
 		physical bool
 		message  string
+		wantErr  error
 	}{
-		{name: "zero-logical", message: "etcdserver: mvcc: required revision has been compacted"},
-		{name: "zero-physical", physical: true, message: "etcdserver: mvcc: required revision has been compacted"},
-		{name: "negative-physical", revision: -1, physical: true, message: "etcdserver: mvcc: required revision has been compacted"},
-		{name: "max-logical", revision: math.MaxInt64, message: "etcdserver: mvcc: required revision is a future revision"},
-		{name: "max-physical", revision: math.MaxInt64, physical: true, message: "etcdserver: mvcc: required revision is a future revision"},
+		{name: "zero-logical", message: "etcdserver: mvcc: required revision has been compacted", wantErr: rpctypes.ErrGRPCCompacted},
+		{name: "zero-physical", physical: true, message: "etcdserver: mvcc: required revision has been compacted", wantErr: rpctypes.ErrGRPCCompacted},
+		{name: "negative-physical", revision: -1, physical: true, message: "etcdserver: mvcc: required revision has been compacted", wantErr: rpctypes.ErrGRPCCompacted},
+		{name: "max-logical", revision: math.MaxInt64, message: "etcdserver: mvcc: required revision is a future revision", wantErr: rpctypes.ErrGRPCFutureRev},
+		{name: "max-physical", revision: math.MaxInt64, physical: true, message: "etcdserver: mvcc: required revision is a future revision", wantErr: rpctypes.ErrGRPCFutureRev},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -176,9 +177,7 @@ func TestRawGRPCCompactRevisionBoundaryErrorsMatchEtcd(t *testing.T) {
 				Revision: tt.revision,
 				Physical: tt.physical,
 			})
-			require.Error(t, compactErr)
-			require.Equal(t, codes.OutOfRange, status.Code(compactErr))
-			require.Equal(t, tt.message, status.Convert(compactErr).Message())
+			requireCompactClientError(t, compactErr, codes.OutOfRange, tt.message, tt.wantErr)
 		})
 	}
 }

@@ -15998,6 +15998,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   补齐 `errors.Is` 可识别的 `rpctypes.ErrCompacted` 与 `rpctypes.ErrUserEmpty` 断言。
   该门禁防止 mirror package 或 clientv3 错误转换重构后只保留字符串，导致 etcdctl
   make-mirror 或外部同步器无法按 typed error 做 fail-closed 分支。
+- A1282 固定 raw gRPC HashKV/Compact revision typed errors：
+  A1149/A1180/A1231 已覆盖 public clientv3 typed error，本轮补齐 raw gRPC
+  `Maintenance.HashKV` future/compacted revision 与 raw `KV.Compact` logical/physical
+  revision 边界的 `ErrGRPCFutureRev`/`ErrGRPCCompacted` 断言，同时保留 OutOfRange
+  code 和 exact message。该门禁防止 raw protobuf 调用方只看到 code/message，却丢失
+  与 `/root/etcd/api/v3rpc/rpctypes/error.go` 对齐的 typed gRPC error。
 
 ### P2：运维兼容和长期验证
 
