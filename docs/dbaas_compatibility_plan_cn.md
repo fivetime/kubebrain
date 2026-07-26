@@ -13931,6 +13931,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Txn Put、Txn Delete、Do Put 和 Do Delete 五种 mutation form；每个 case 都要求 typed
   response 正确、mutation 后 leasing Get 的 key/value/revision/version/lease 与直连 KV
   完全一致，防止确定性 mutation 包装路径已经回退但只能在外部 blackhole 差分中暴露。
+- A988 固定 clientv3 GetStream 的 RangeStream common shapes：
+  `rangestream` 与 `rangestream_common` differential 已覆盖公开 client/v3 `GetStream` 与
+  raw `RangeStream` 在 reference etcd 上的 point/miss/equal/reverse/prefix/historical/from-key
+  形态。本轮新增 bufconn clientv3 回归，注册真实 KV gRPC 服务并通过官方 `GetStream`
+  覆盖 point hit、point miss、equal empty、reverse empty、prefix limit、historical revision、
+  from-key、keys-only 和 count-only+limit；每个 case 都用 `GetStreamToGetResponse` 合并后
+  与 unary `Get` 的 header revision、Count、More、KVs 完整元数据一致，防止 RangeStream
+  chunking、empty interval 或 high-key from-key 路径只在服务层单测中覆盖而公开客户端回退。
 
 ### P2：运维兼容和长期验证
 
