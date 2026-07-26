@@ -500,6 +500,87 @@ func TestClientAuthKVDeniedOperationsPreserveData(t *testing.T) {
 	}
 }
 
+func TestClientAuthLeaseKeyVisibilityAndLeasedPutDenials(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterAuthServer(grpcServer, server)
+	etcdserverpb.RegisterLeaseServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	dialOptions := []grpc.DialOption{
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}),
+	}
+	newClient := func(username, password string) *clientv3.Client {
+		t.Helper()
+		client, err := clientv3.New(clientv3.Config{
+			Endpoints:   []string{"bufnet"},
+			DialTimeout: time.Second,
+			Username:    username,
+			Password:    password,
+			DialOptions: dialOptions,
+		})
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, client.Close()) })
+		return client
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	bootstrap := newClient("", "")
+	require.NoError(t, addAuthUserRoleAndPermission(ctx, bootstrap, "root", "root-secret", "root", "", ""))
+	require.NoError(t, addAuthUserRoleAndPermission(
+		ctx,
+		bootstrap,
+		"alice",
+		"alice-secret",
+		"a1064-allowed",
+		"/a1064/allowed/",
+		clientv3.GetPrefixRangeEnd("/a1064/allowed/"),
+	))
+	_, err := bootstrap.AuthEnable(ctx)
+	require.NoError(t, err)
+
+	root := newClient("root", "root-secret")
+	alice := newClient("alice", "alice-secret")
+	lease, err := root.Grant(ctx, 60)
+	require.NoError(t, err)
+	_, err = root.Put(ctx, "/a1064/protected/leased", "secret", clientv3.WithLease(lease.ID))
+	require.NoError(t, err)
+
+	userTTL, err := alice.TimeToLive(ctx, lease.ID)
+	require.NoError(t, err)
+	require.Equal(t, lease.ID, userTTL.ID)
+	require.Positive(t, userTTL.TTL)
+	require.Empty(t, userTTL.Keys)
+
+	_, userTTLWithKeysErr := alice.TimeToLive(ctx, lease.ID, clientv3.WithAttachedKeys())
+	requireAuthClientError(t, userTTLWithKeysErr, codes.Unknown, "etcdserver: permission denied")
+	rootTTLWithKeys, err := root.TimeToLive(ctx, lease.ID, clientv3.WithAttachedKeys())
+	require.NoError(t, err)
+	require.Contains(t, byteSlicesToStrings(rootTTLWithKeys.Keys), "/a1064/protected/leased")
+
+	_, leasedPutErr := alice.Put(ctx, "/a1064/allowed/leased-put", "value", clientv3.WithLease(lease.ID))
+	requireAuthClientError(t, leasedPutErr, codes.Unknown, "etcdserver: permission denied")
+	_, nestedLeasedPutErr := alice.Txn(ctx).Then(clientv3.OpTxn(
+		nil,
+		[]clientv3.Op{clientv3.OpPut("/a1064/allowed/nested-leased", "value", clientv3.WithLease(lease.ID))},
+		nil,
+	)).Commit()
+	requireAuthClientError(t, nestedLeasedPutErr, codes.Unknown, "etcdserver: permission denied")
+
+	allowedKeys, err := root.Get(ctx, "/a1064/allowed/", clientv3.WithPrefix())
+	require.NoError(t, err)
+	require.Empty(t, allowedKeys.Kvs)
+}
+
 func addAuthUserRoleAndPermission(
 	ctx context.Context,
 	client *clientv3.Client,
@@ -522,6 +603,14 @@ func addAuthUserRoleAndPermission(
 	}
 	_, err := client.UserGrantRole(ctx, user, role)
 	return err
+}
+
+func byteSlicesToStrings(values [][]byte) []string {
+	strings := make([]string, 0, len(values))
+	for _, value := range values {
+		strings = append(strings, string(value))
+	}
+	return strings
 }
 
 func requireAuthClientError(t *testing.T, err error, code codes.Code, message string) {

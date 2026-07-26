@@ -14544,6 +14544,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   和二层嵌套 Txn Put/Delete 经 high-level wrapper 均暴露
   `Unknown: permission denied`，最后用 root 读取所有 denied key，确认 standalone 和
   nested mutation 均未改写或删除原值，补齐 public KV/Auth wrapper 的数据保护门禁。
+- A1064 固定 clientv3 Auth Lease attached-key 可见性和 leased mutation 拒绝：
+  `auth` differential 覆盖普通用户对含受保护 key 的 lease 可读取无 keys TTL，但
+  `WithAttachedKeys`、跨权限 leased Put 和嵌套 Txn leased Put 必须返回 permission denied，
+  且不能泄露或写入未授权 key。服务层已覆盖 LeaseTimeToLive、KeepAlive 和并发 attachment
+  授权，本轮新增官方 clientv3 bufconn 回归，root 创建挂载 `/a1064/protected/leased` 的
+  lease，alice 仅有 `/a1064/allowed/` read 权限；断言 alice `TimeToLive` 无 keys 成功且
+  不返回 attached key，`TimeToLive(... WithAttachedKeys)`、`Put(... WithLease)` 和嵌套
+  Txn leased Put 均暴露 `Unknown: permission denied`，root 带 keys TTL 能看到受保护 key，
+  且 allowed prefix 未产生越权写入，补齐 public Lease/Auth wrapper 门禁。
 
 ### P2：运维兼容和长期验证
 
