@@ -80,28 +80,37 @@ func TestOpenVerifiedReadsV2WithoutCreationTimestamp(t *testing.T) {
 }
 
 func TestOpenVerifiedRejectsInvalidLeaseMetadata(t *testing.T) {
-	tests := map[string]func(*AtomicWriter) error{
-		"undeclared lease": func(writer *AtomicWriter) error {
-			return writer.Add(record.Record{Key: "L3JlZ2lzdHJ5L2E=", Value: "YQ==", Lease: 123})
+	tests := map[string]struct {
+		populate func(*AtomicWriter) error
+		want     string
+	}{
+		"undeclared lease": {
+			populate: func(writer *AtomicWriter) error {
+				return writer.Add(record.Record{Key: "L3JlZ2lzdHJ5L2E=", Value: "YQ==", Lease: 123})
+			},
+			want: "backup record 1 references undeclared lease 123",
 		},
-		"duplicate lease": func(writer *AtomicWriter) error {
-			if err := writer.AddLease(record.Lease{ID: 123, TTL: 30}); err != nil {
-				return err
-			}
-			return writer.AddLease(record.Lease{ID: 123, TTL: 30})
+		"duplicate lease": {
+			populate: func(writer *AtomicWriter) error {
+				if err := writer.AddLease(record.Lease{ID: 123, TTL: 30}); err != nil {
+					return err
+				}
+				return writer.AddLease(record.Lease{ID: 123, TTL: 30})
+			},
+			want: "duplicate backup lease 123",
 		},
 	}
-	for name, populate := range tests {
+	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "backup.jsonl")
 			writer, err := NewAtomicWriter(path, "/registry", 42)
 			require.NoError(t, err)
-			require.NoError(t, populate(writer))
+			require.NoError(t, tc.populate(writer))
 			_, err = writer.Commit()
 			require.NoError(t, err)
 
 			_, err = OpenVerified(path)
-			require.Error(t, err)
+			require.ErrorContains(t, err, tc.want)
 		})
 	}
 }
@@ -193,28 +202,35 @@ func TestCommitDoesNotOverwriteExistingBackup(t *testing.T) {
 }
 
 func TestOpenVerifiedRejectsManifestMismatchAndDuplicateKeys(t *testing.T) {
-	tests := map[string][]record.Record{
+	tests := map[string]struct {
+		records []record.Record
+		want    string
+	}{
 		"outside prefix": {
-			{Key: "L291dHNpZGUva2V5", Value: "YQ=="},
+			records: []record.Record{{Key: "L291dHNpZGUva2V5", Value: "YQ=="}},
+			want:    `backup record 1 key "/outside/key" is outside manifest prefix "/registry"`,
 		},
 		"duplicate key": {
-			{Key: "L3JlZ2lzdHJ5L2tleQ==", Value: "YQ=="},
-			{Key: "L3JlZ2lzdHJ5L2tleQ==", Value: "Yg=="},
+			records: []record.Record{
+				{Key: "L3JlZ2lzdHJ5L2tleQ==", Value: "YQ=="},
+				{Key: "L3JlZ2lzdHJ5L2tleQ==", Value: "Yg=="},
+			},
+			want: `duplicate backup key "/registry/key"`,
 		},
 	}
-	for name, records := range tests {
+	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "backup.jsonl")
 			writer, err := NewAtomicWriter(path, "/registry", 42)
 			require.NoError(t, err)
-			for _, rec := range records {
+			for _, rec := range tc.records {
 				require.NoError(t, writer.Add(rec))
 			}
 			_, err = writer.Commit()
 			require.NoError(t, err)
 
 			_, err = OpenVerified(path)
-			require.Error(t, err)
+			require.ErrorContains(t, err, tc.want)
 		})
 	}
 }

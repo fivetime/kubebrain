@@ -16266,6 +16266,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   负 `total_object_bytes` 时必须报告 `object usage receipt is incomplete`。该门禁防止
   Object Lock 归档、上传重试或用量审计路径把远端内容漂移和 receipt 字段篡改降级成笼统失败，
   影响备份可恢复性与计量排障。
+- A1322 固定 logical backup file verifier 错误契约：
+  `OpenVerified` 对未声明 lease、重复 lease、manifest prefix 越界和重复 key 的拒绝不再只
+  要求失败，而是固定到对应记录号、lease ID、key 和 manifest prefix。该门禁防止逻辑备份
+  文件校验器在恢复前审计中丢失定位信息，避免损坏备份被报告成笼统格式错误或难以追踪的
+  完整性失败。
 
 ### P2：运维兼容和长期验证
 
