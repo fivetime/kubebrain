@@ -63,10 +63,16 @@ func TestReadBarrierFailuresAreRetryableForClusterRPCs(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			err := test.call()
-			require.Equal(t, codes.Unavailable, status.Code(err))
-			require.Equal(t, barrierErr.Error(), status.Convert(err).Message())
+			requireReadBarrierUnavailable(t, err, barrierErr.Error())
 		})
 	}
+}
+
+func requireReadBarrierUnavailable(t *testing.T, err error, message string) {
+	t.Helper()
+	require.Error(t, err)
+	require.Equal(t, codes.Unavailable, status.Code(err))
+	require.Equal(t, message, status.Convert(err).Message())
 }
 
 func TestReadBarrierStatusPreservation(t *testing.T) {

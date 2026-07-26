@@ -15863,6 +15863,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `codes.Unavailable` 和 `count index not ready (rebuilding); fall back locally`，让 follower
   本地回退扫描。本轮把普通 CountOnly 和 revision-pinned CountOnly 两条 proxied 路径统一到
   helper，防止 count index rebuild/proxy 重构后只保留 Unavailable，漏掉可操作 fallback 语义。
+- A1256 收敛 read-barrier/raft-term 协调错误 helper：
+  A1255 已覆盖 count proxy fallback，本轮把 Range/Compact/DeleteRange/AlarmGet 的 read barrier
+  失败，以及 response header stamp 阶段读取 leadership term 失败统一到 `codes.Unavailable`
+  和 exact coordination message helper。该门禁防止独立 PD/TiKV 数据面的读屏障或 term
+  协调路径重构后只保留 Unavailable，漏掉生产诊断 message。
 
 ### P2：运维兼容和长期验证
 

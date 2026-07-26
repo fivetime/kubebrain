@@ -162,8 +162,7 @@ func TestResponseRaftTermUsesCacheAndClassifiesInitialReadFailure(t *testing.T) 
 	}
 	reply, err = server.stampUnary(context.Background(), &etcdserverpb.RangeRequest{}, &grpc.UnaryServerInfo{}, handler)
 	require.Nil(t, reply)
-	require.Equal(t, codes.Unavailable, status.Code(err))
-	require.Equal(t, termErr.Error(), status.Convert(err).Message())
+	requireRaftTermUnavailable(t, err, termErr.Error())
 }
 
 func TestRequestLimitReturnsEtcdErrorOverGRPC(t *testing.T) {
@@ -245,4 +244,11 @@ func requireRequestTooLargeError(t *testing.T, err error) {
 	require.ErrorIs(t, err, rpctypes.ErrGRPCRequestTooLarge)
 	require.Equal(t, status.Code(rpctypes.ErrGRPCRequestTooLarge), status.Code(err))
 	require.Equal(t, status.Convert(rpctypes.ErrGRPCRequestTooLarge).Message(), status.Convert(err).Message())
+}
+
+func requireRaftTermUnavailable(t *testing.T, err error, message string) {
+	t.Helper()
+	require.Error(t, err)
+	require.Equal(t, codes.Unavailable, status.Code(err))
+	require.Equal(t, message, status.Convert(err).Message())
 }
