@@ -15788,6 +15788,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `Snapshot`、`MoveLeader` 和 `Downgrade` 平台替代的 direct 错误统一到 `codes.Unimplemented`
   和 DBaaS 替代指引 helper。该门禁防止 privileged maintenance 路径只检查 code，漏掉
   Snapshot/rollout/downgrade 的可操作 unsupported message 回归。
+- A1241 固定组合 alarm 优先级恢复错误三件套：
+  A1235 已覆盖 CORRUPT direct guard，本轮把 NOSPACE+CORRUPT 同时存在时的写入、写事务和
+  lease grant 拒绝，以及解除 CORRUPT 后继续由 NOSPACE 拒绝的路径统一到 `errors.Is`、
+  direct code 和 reference message helper。该门禁防止 alarm guard 或 disarm 状态机重构后
+  只保留 gRPC code，漏掉 sticky alarm typed error/message 漂移。
 
 ### P2：运维兼容和长期验证
 
