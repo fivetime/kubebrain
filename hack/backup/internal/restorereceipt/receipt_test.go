@@ -38,7 +38,7 @@ func TestWriteAtomicRejectsIncompleteReceiptWithoutReplacingEvidence(t *testing.
 	path := filepath.Join(dir, "restore-receipt.json")
 	require.NoError(t, os.WriteFile(path, []byte("previous\n"), 0o600))
 
-	require.Error(t, WriteAtomic(path, Receipt{}))
+	require.ErrorContains(t, WriteAtomic(path, Receipt{}), "restore verification receipt is incomplete")
 	data, err := os.ReadFile(path)
 	require.NoError(t, err)
 	require.Equal(t, "previous\n", string(data))
@@ -56,7 +56,7 @@ func TestWriteAtomicDoesNotReplacePublishedReceipt(t *testing.T) {
 
 	second := first
 	second.ArtifactSHA256 = "second"
-	require.Error(t, WriteAtomic(path, second))
+	require.ErrorIs(t, WriteAtomic(path, second), os.ErrExist)
 	data, err := os.ReadFile(path)
 	require.NoError(t, err)
 	var actual Receipt

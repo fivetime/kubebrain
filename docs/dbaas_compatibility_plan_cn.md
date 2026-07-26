@@ -16306,6 +16306,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   ConfigMap 名称和 data key 校验也固定为对应字段错误。该门禁防止全局 namespace inventory
   配置损坏时被误判为空列表或普通解析失败，影响跨 namespace 调度、operation runner claim
   边界和审计清单。
+- A1330 固定 restore verification receipt 原子发布错误契约：
+  `WriteAtomic` 对不完整 restore verification receipt 必须报告
+  `restore verification receipt is incomplete`，对已发布 receipt 的二次写入必须保留
+  `os.ErrExist`，且不得替换已有证据。该门禁防止逻辑恢复验证证据链在失败或重复执行时被
+  覆盖、误发布或丢失可恢复的文件系统错误分类。
 
 ### P2：运维兼容和长期验证
 
