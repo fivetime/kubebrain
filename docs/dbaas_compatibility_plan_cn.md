@@ -14503,6 +14503,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `UserChangePassword`、旧 token Range、旧密码重连 Range 和新密码 Range，固定 high-level
   client 暴露的旧 token `Unknown`+`invalid auth token` message、旧密码重连
   `Unknown`+认证失败 message 以及最终访问恢复。
+- A1059 固定 clientv3 AlarmList 空集合 header 外观：
+  `alarm_get` differential 证明 Alarm GET 即使没有 active alarm，也必须返回带当前 user
+  revision 的 well-formed response header；A997 已固定 raw gRPC GET 的 all/NOSPACE/
+  CORRUPT/unknown/max-member 形状，A1045 已覆盖 active zero-member 的 clientv3
+  AlarmList/Disarm。本轮新增官方 clientv3 bufconn 回归，先用 KV Put 推进 user revision，
+  再调用空 `client.AlarmList`，断言 Alarms 为空但 header revision 不落后于 Put，且
+  cluster/member/raft term 均完整。
 
 ### P2：运维兼容和长期验证
 
