@@ -17,6 +17,7 @@ package etcd
 import (
 	"context"
 	"fmt"
+	"math"
 	"net"
 	"testing"
 	"time"
@@ -86,6 +87,58 @@ func TestClientCompactBoundaryErrorsMatchEtcd(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, current.Kvs, 1)
 	require.Equal(t, "v2", string(current.Kvs[0].Value))
+}
+
+func TestRawGRPCCompactRevisionBoundaryErrorsMatchEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///compact-client",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	kv := etcdserverpb.NewKVClient(conn)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	key := []byte(fmt.Sprintf("/a1095/compact-client/%d", time.Now().UnixNano()))
+	put, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("value")})
+	require.NoError(t, err)
+	_, err = kv.Compact(ctx, &etcdserverpb.CompactionRequest{Revision: put.Header.Revision})
+	require.NoError(t, err)
+
+	tests := []struct {
+		name     string
+		revision int64
+		physical bool
+		message  string
+	}{
+		{name: "zero-logical", message: "etcdserver: mvcc: required revision has been compacted"},
+		{name: "zero-physical", physical: true, message: "etcdserver: mvcc: required revision has been compacted"},
+		{name: "negative-physical", revision: -1, physical: true, message: "etcdserver: mvcc: required revision has been compacted"},
+		{name: "max-logical", revision: math.MaxInt64, message: "etcdserver: mvcc: required revision is a future revision"},
+		{name: "max-physical", revision: math.MaxInt64, physical: true, message: "etcdserver: mvcc: required revision is a future revision"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, compactErr := kv.Compact(ctx, &etcdserverpb.CompactionRequest{
+				Revision: tt.revision,
+				Physical: tt.physical,
+			})
+			require.Error(t, compactErr)
+			require.Equal(t, codes.OutOfRange, status.Code(compactErr))
+			require.Equal(t, tt.message, status.Convert(compactErr).Message())
+		})
+	}
 }
 
 func requireCompactClientError(t *testing.T, err error, code codes.Code, message string) {

@@ -14773,6 +14773,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   不同，主要保护旧客户端的健康检查和一致性探测路径。本轮新增 raw gRPC bufconn 回归：
   Put 初值后连续两次 Hash 断言 revision/hash 不变，再更新同 key 并断言第三次 Hash 的
   header revision 前进且 hash 不同。
+- A1095 固定 raw gRPC Compact revision 边界错误契约：
+  `compact_revision_boundary` differential 要求已经 compaction 后，后续 Compact(0)、
+  Compact(0, physical)、Compact(-1, physical) 都返回 `codes.OutOfRange` +
+  `required revision has been compacted`，而 Compact(MaxInt64) 的 logical/physical
+  分支都返回 `required revision is a future revision`。本轮在既有 official clientv3
+  compact 边界回归外新增 raw gRPC bufconn 回归，直接断言原始 gRPC code/message，
+  防止 clientv3 的 Unknown 包装掩盖服务端协议错误。
 
 ### P2：运维兼容和长期验证
 
