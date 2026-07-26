@@ -16132,6 +16132,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   路径，则必须同时满足 `Canceled` code 和 exact `etcdserver: watch canceled` message。
   该门禁防止 Lock/Election waiter 清理路径未来把正常等待取消误包装成模糊 stream
   取消、transport 错误或业务失败，同时继续验证取消后队列 key 被清理。
+- A1302 固定 corrupt alarm metadata fail-closed 原因：
+  `TestCorruptAlarmMetadataRejectsInvalidJSON` 原先只要求坏 `alarms/corrupt` metadata 报错。
+  本轮按 null、object、trailing JSON、重复 member ID 和降序 member ID 分别固定错误原因，
+  要求 strict JSON array、无尾随 JSON、member ID 严格递增。该门禁防止维护面 corrupt
+  alarm metadata 解析被放宽后把损坏告警集合静默当作空集合、旧格式或部分有效集合。
 
 ### P2：运维兼容和长期验证
 

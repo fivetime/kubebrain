@@ -791,12 +791,13 @@ func TestCorruptAlarmMetadataRejectsInvalidJSON(t *testing.T) {
 	tests := []struct {
 		name string
 		raw  string
+		err  string
 	}{
-		{name: "null", raw: "null"},
-		{name: "object", raw: `{"members":[1]}`},
-		{name: "trailing", raw: `[1]{"members":[2]}`},
-		{name: "duplicate", raw: `[1,1]`},
-		{name: "descending", raw: `[2,1]`},
+		{name: "null", raw: "null", err: "corrupt alarm metadata must be a JSON array"},
+		{name: "object", raw: `{"members":[1]}`, err: "decode corrupt alarm metadata"},
+		{name: "trailing", raw: `[1]{"members":[2]}`, err: "corrupt alarm metadata contains trailing JSON"},
+		{name: "duplicate", raw: `[1,1]`, err: "corrupt alarm metadata is not strictly ordered"},
+		{name: "descending", raw: `[2,1]`, err: "corrupt alarm metadata is not strictly ordered"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -807,7 +808,7 @@ func TestCorruptAlarmMetadataRejectsInvalidJSON(t *testing.T) {
 				Key: []byte("alarms/corrupt"), Value: []byte(test.raw),
 			}}))
 			_, err := server.backend.CorruptAlarms(ctx)
-			require.Error(t, err)
+			require.ErrorContains(t, err, test.err)
 		})
 	}
 }
