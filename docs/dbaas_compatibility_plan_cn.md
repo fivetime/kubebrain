@@ -15371,6 +15371,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   必须可由 `errors.Is(..., rpctypes.ErrNoSpace)` 识别，并保持 client adapter 暴露的
   `Unknown` / `etcdserver: mvcc: database space exceeded` 外观。本轮复用 quota RPC server
   构造小 quota bufconn 黑盒回归，补齐 Put 之外的事务写入容量类 typed error。
+- A1175 固定 clientv3 LeaseGrant no-space typed error：
+  延续 `/root/etcd/tests/integration/clientv3/kv_test.go:TestKVPutError` 的 NOSPACE public
+  typed error 契约到 Lease 写入入口：backend quota 已满时，official clientv3 `Grant`
+  必须可由 `errors.Is(..., rpctypes.ErrNoSpace)` 识别，并保持 client adapter 暴露的
+  `Unknown` / `etcdserver: mvcc: database space exceeded` 外观。本轮复用 quota RPC server
+  构造小 quota bufconn 黑盒回归，补齐 Put、Txn 之外的 Lease metadata 写入容量类 typed error。
 
 ### P2：运维兼容和长期验证
 
