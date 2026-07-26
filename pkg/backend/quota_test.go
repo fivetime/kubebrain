@@ -376,12 +376,21 @@ func TestArmNoSpaceConcurrentActivationPersistsEveryMember(t *testing.T) {
 func TestQuotaAlarmSetEncodingRejectsNonCanonicalMetadata(t *testing.T) {
 	require.Equal(t, []uint64{7}, mustDecodeQuotaAlarms(t, encodeQuotaAlarms([]uint64{7})))
 	require.Equal(t, []uint64{7, 9}, mustDecodeQuotaAlarms(t, encodeQuotaAlarms([]uint64{7, 9})))
-	for _, malformed := range [][]byte{
-		{}, {quotaAlarmSetTag}, append([]byte{quotaAlarmSetTag}, make([]byte, 8)...),
-		encodeQuotaAlarms([]uint64{9, 7}), encodeQuotaAlarms([]uint64{7, 7}),
+	for _, test := range []struct {
+		name string
+		raw  []byte
+		err  string
+	}{
+		{name: "empty", raw: nil, err: "invalid NOSPACE alarm metadata length 0"},
+		{name: "tag only", raw: []byte{quotaAlarmSetTag}, err: "invalid NOSPACE alarm metadata length 1"},
+		{name: "single set member", raw: append([]byte{quotaAlarmSetTag}, make([]byte, 8)...), err: "invalid NOSPACE alarm metadata length 9"},
+		{name: "descending", raw: encodeQuotaAlarms([]uint64{9, 7}), err: "NOSPACE alarm members are not strictly ordered"},
+		{name: "duplicate", raw: encodeQuotaAlarms([]uint64{7, 7}), err: "NOSPACE alarm members are not strictly ordered"},
 	} {
-		_, err := decodeQuotaAlarms(malformed)
-		require.Error(t, err)
+		t.Run(test.name, func(t *testing.T) {
+			_, err := decodeQuotaAlarms(test.raw)
+			require.ErrorContains(t, err, test.err)
+		})
 	}
 }
 
