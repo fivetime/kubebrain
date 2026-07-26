@@ -15273,6 +15273,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `Authenticate` 失败必须可由 `errors.Is(..., rpctypes.ErrAuthFailed)` 识别。本轮加强既有
   bufconn official clientv3 auth 生命周期回归，保留 status/message 与新密码成功访问断言，
   同时固定可分类认证错误外观。
+- A1159 固定 clientv3 Auth role/management typed errors：
+  对照 `/root/etcd/api/v3rpc/rpctypes/error.go` 与 `/root/etcd/tests/common/role_test.go` 的
+  auth management 错误外观，重复 RoleAdd 必须可由 `rpctypes.ErrRoleAlreadyExist` 识别，
+  root 用户/角色保护与非法 permission range 必须可由 `rpctypes.ErrInvalidAuthMgmt` 识别，
+  撤销未授予权限必须可由 `rpctypes.ErrPermissionNotGranted` 识别，AuthEnable 前后隐式 root
+  role 查询失败必须可由 `rpctypes.ErrRoleNotFound` 识别。本轮加强既有 bufconn official
+  clientv3 auth management 回归，防止 auth repository 或 client adapter 重构丢失可分类错误类型。
 
 ### P2：运维兼容和长期验证
 
