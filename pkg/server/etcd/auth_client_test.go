@@ -605,11 +605,11 @@ func TestClientAuthKVDeniedOperationsPreserveData(t *testing.T) {
 	require.Equal(t, "allowed", string(allowed.Kvs[0].Value))
 
 	_, deniedGetErr := alice.Get(ctx, "/a1063/denied/put")
-	requireAuthClientError(t, deniedGetErr, codes.Unknown, "etcdserver: permission denied")
+	requireAuthClientError(t, deniedGetErr, codes.Unknown, "etcdserver: permission denied", rpctypes.ErrPermissionDenied)
 	_, deniedPutErr := alice.Put(ctx, "/a1063/denied/put", "after-put")
-	requireAuthClientError(t, deniedPutErr, codes.Unknown, "etcdserver: permission denied")
+	requireAuthClientError(t, deniedPutErr, codes.Unknown, "etcdserver: permission denied", rpctypes.ErrPermissionDenied)
 	_, deniedDeleteErr := alice.Delete(ctx, "/a1063/denied/delete", clientv3.WithPrevKV())
-	requireAuthClientError(t, deniedDeleteErr, codes.Unknown, "etcdserver: permission denied")
+	requireAuthClientError(t, deniedDeleteErr, codes.Unknown, "etcdserver: permission denied", rpctypes.ErrPermissionDenied)
 
 	twoLevelNested := func(op clientv3.Op) clientv3.Op {
 		return clientv3.OpTxn(nil, []clientv3.Op{
@@ -619,11 +619,11 @@ func TestClientAuthKVDeniedOperationsPreserveData(t *testing.T) {
 	_, nestedDeniedPutErr := alice.Txn(ctx).Then(
 		twoLevelNested(clientv3.OpPut("/a1063/denied/txn-put", "after-txn-put")),
 	).Commit()
-	requireAuthClientError(t, nestedDeniedPutErr, codes.Unknown, "etcdserver: permission denied")
+	requireAuthClientError(t, nestedDeniedPutErr, codes.Unknown, "etcdserver: permission denied", rpctypes.ErrPermissionDenied)
 	_, nestedDeniedDeleteErr := alice.Txn(ctx).Then(
 		twoLevelNested(clientv3.OpDelete("/a1063/denied/txn-delete", clientv3.WithPrevKV())),
 	).Commit()
-	requireAuthClientError(t, nestedDeniedDeleteErr, codes.Unknown, "etcdserver: permission denied")
+	requireAuthClientError(t, nestedDeniedDeleteErr, codes.Unknown, "etcdserver: permission denied", rpctypes.ErrPermissionDenied)
 
 	for key, value := range map[string]string{
 		"/a1063/denied/put":        "before-put",
@@ -1004,7 +1004,7 @@ func TestClientAuthTxnPutWithPrevKVDeniedForWriteOnlyRole(t *testing.T) {
 	_, prevKVErr := writer.Txn(ctx).Then(
 		clientv3.OpPut("/a1067/write-only/key", "after", clientv3.WithPrevKV()),
 	).Commit()
-	requireAuthClientError(t, prevKVErr, codes.Unknown, "etcdserver: permission denied")
+	requireAuthClientError(t, prevKVErr, codes.Unknown, "etcdserver: permission denied", rpctypes.ErrPermissionDenied)
 
 	twoLevelNested := func(op clientv3.Op) clientv3.Op {
 		return clientv3.OpTxn(nil, []clientv3.Op{
@@ -1014,7 +1014,7 @@ func TestClientAuthTxnPutWithPrevKVDeniedForWriteOnlyRole(t *testing.T) {
 	_, nestedPrevKVErr := writer.Txn(ctx).Then(
 		twoLevelNested(clientv3.OpPut("/a1067/write-only/key", "nested-after", clientv3.WithPrevKV())),
 	).Commit()
-	requireAuthClientError(t, nestedPrevKVErr, codes.Unknown, "etcdserver: permission denied")
+	requireAuthClientError(t, nestedPrevKVErr, codes.Unknown, "etcdserver: permission denied", rpctypes.ErrPermissionDenied)
 
 	value, err := root.Get(ctx, "/a1067/write-only/key")
 	require.NoError(t, err)

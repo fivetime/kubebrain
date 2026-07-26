@@ -15251,6 +15251,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   empty` 也必须可由 `errors.Is(..., rpctypes.ErrUserEmpty)` 识别。本轮补齐既有 bufconn
   official clientv3 auth 运维权限回归中的剩余匿名错误断言。该门禁防止不同 RPC service 的
   auth preflight 分支漂移成仅文本相同、typed error 不同的外观。
+- A1156 固定 clientv3 Auth KV/TXN permission denied typed error：
+  对照 `/root/etcd/server/v3@v3.7.0/etcdserver/apply/auth_test.go` 与
+  `/root/etcd/api/v3rpc/rpctypes/error.go` 的权限拒绝映射，认证开启后无权限的 Get、Put、
+  Delete 以及 Txn/nested Txn 写入必须可由 `errors.Is(..., rpctypes.ErrPermissionDenied)`
+  识别。本轮加强既有 bufconn official clientv3 auth KV/TXN 回归，在保留 status/message 和
+  数据未被改写断言的同时新增 typed error 断言。该门禁防止 authz、txn nested op 校验或
+  client adapter 重构破坏控制器对权限拒绝的分类。
 
 ### P2：运维兼容和长期验证
 
