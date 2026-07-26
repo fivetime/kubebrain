@@ -116,6 +116,32 @@ func TestClientSTMCreateAbortRetryAndSerializableSnapshot(t *testing.T) {
 	require.Len(t, retryResponse.Kvs, 1)
 	require.Equal(t, "-committed", string(retryResponse.Kvs[0].Value))
 
+	snapshotReadKey := "/a971/stm/snapshot-read"
+	snapshotWriteKey := "/a971/stm/snapshot-write"
+	_, err = client.Put(ctx, snapshotReadKey, "stable")
+	require.NoError(t, err)
+	snapshotAttempts := 0
+	applySnapshot := func(stm concurrency.STM) error {
+		snapshotAttempts++
+		stm.Get(snapshotReadKey)
+		stm.Put(snapshotWriteKey, "value")
+		return nil
+	}
+	_, err = concurrency.NewSTM(
+		client, applySnapshot, concurrency.WithIsolation(concurrency.SerializableSnapshot),
+	)
+	require.NoError(t, err)
+	_, err = concurrency.NewSTM(
+		client, applySnapshot, concurrency.WithIsolation(concurrency.SerializableSnapshot),
+	)
+	require.NoError(t, err)
+	require.Equal(t, 2, snapshotAttempts)
+	snapshotResponse, err := client.Get(ctx, snapshotWriteKey)
+	require.NoError(t, err)
+	require.Len(t, snapshotResponse.Kvs, 1)
+	require.Equal(t, "value", string(snapshotResponse.Kvs[0].Value))
+	require.Equal(t, int64(2), snapshotResponse.Kvs[0].Version)
+
 	serializePrefix := "/a971/stm/serializable/"
 	serializeKeys := make([]string, 4)
 	for index := range serializeKeys {

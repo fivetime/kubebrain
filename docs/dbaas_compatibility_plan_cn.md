@@ -14786,6 +14786,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   concurrent queue 保持稳定。本轮将本地 official clientv3 recipes 回归从 3 个 barrier
   waiter/4 个 FIFO item 提升到差分同阶的 5/5，继续覆盖 prefix-neighbor 不误阻塞、
   priority 顺序和并发 enqueue/dequeue。
+- A1097 固定 clientv3 STM SerializableSnapshot 写冲突版本门禁：
+  对照 `/root/etcd/tests/integration/v3_stm_test.go:TestSTMSerializableSnapshotPut`
+  与 `stm_differential`，`concurrency.SerializableSnapshot` 必须同时检查读集和写集冲突；
+  连续两次读取稳定 key 并写入同一目标 key 的 STM 都应成功，且目标 key 最终 version
+  必须为 2。本轮在本地 official clientv3 STM bufconn 黑盒中补齐该分支，防止实现把
+  `SerializableSnapshot` 退化为普通 `Serializable` 或误判第二次写冲突。
 
 ### P2：运维兼容和长期验证
 
