@@ -14315,6 +14315,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   客户端再异步删除 key。本轮新增官方 clientv3 bufconn 回归，创建 16 个 2 秒 lease
   及对应 key，过期边界并发 keepalive+get，按 etcd 客户端错误语义验证续租成功和 not-found
   两条路径的 key 可见性，防止 lessor 删除顺序在公开客户端面回退。
+- A1035 固定 clientv3 Lease 跨 physical compaction 存活：
+  `lease_compaction` compatibility 用例证明 lease 元数据位于 KubeBrain 内部 MVCC
+  keyspace 后，physical compaction 只能清理 superseded lease record 版本，不能删除 live
+  lease 或其 key 绑定。本轮新增官方 clientv3 bufconn 回归，Grant 300 秒 lease、绑定 key、
+  连续 `KeepAliveOnce` 产生多个 lease record 版本后，对当前 revision 执行
+  `Compact(..., WithCompactPhysical())`，再验证 key 仍存在且带原 lease、`TimeToLive`
+  仍返回正 TTL 和 attached key、后续 keepalive 仍成功，防止 compaction GC 误扫 live
+  lease 元数据。
 
 ### P2：运维兼容和长期验证
 

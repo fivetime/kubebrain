@@ -304,6 +304,63 @@ func TestClientExpiredKeepAliveResponseFollowsKeyDeletion(t *testing.T) {
 	}
 }
 
+func TestClientLeaseSurvivesCompaction(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterLeaseServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	grant, err := client.Grant(ctx, 300)
+	require.NoError(t, err)
+	key := fmt.Sprintf("/a1035/lease-compaction/%d/leased", time.Now().UnixNano())
+	_, err = client.Put(ctx, key, "value", clientv3.WithLease(grant.ID))
+	require.NoError(t, err)
+	for index := 0; index < 5; index++ {
+		keepAlive, keepAliveErr := client.KeepAliveOnce(ctx, grant.ID)
+		require.NoError(t, keepAliveErr)
+		require.Equal(t, grant.ID, keepAlive.ID)
+		require.Positive(t, keepAlive.TTL)
+	}
+
+	current, err := client.Get(ctx, key)
+	require.NoError(t, err)
+	require.Len(t, current.Kvs, 1)
+	_, err = client.Compact(ctx, current.Header.Revision, clientv3.WithCompactPhysical())
+	require.NoError(t, err)
+
+	got, err := client.Get(ctx, key)
+	require.NoError(t, err)
+	require.Len(t, got.Kvs, 1, "bound key must survive compaction")
+	require.Equal(t, int64(grant.ID), got.Kvs[0].Lease)
+	ttl, err := client.TimeToLive(ctx, grant.ID, clientv3.WithAttachedKeys())
+	require.NoError(t, err)
+	require.Positive(t, ttl.TTL)
+	require.Contains(t, byteKeysToStrings(ttl.Keys), key)
+	keepAlive, err := client.KeepAliveOnce(ctx, grant.ID)
+	require.NoError(t, err)
+	require.Positive(t, keepAlive.TTL)
+}
+
 func TestRawGRPCLeaseReadBoundaryAndList(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
@@ -854,4 +911,12 @@ func requireClientLeaseHeaderWellFormed(t *testing.T, header *etcdserverpb.Respo
 	require.NotZero(t, header.MemberId)
 	require.Positive(t, header.Revision)
 	require.Positive(t, header.RaftTerm)
+}
+
+func byteKeysToStrings(keys [][]byte) []string {
+	out := make([]string, 0, len(keys))
+	for _, key := range keys {
+		out = append(out, string(key))
+	}
+	return out
 }
