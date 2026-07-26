@@ -93,7 +93,7 @@ func TestMeteringChargeAgainstObjectLockStore(t *testing.T) {
 	require.NoError(t, err, string(output))
 	biller.PriceVersion = repriced.Version
 	_, output, err = biller.Process(ctx)
-	require.Error(t, err, string(output))
+	require.ErrorContains(t, err, "metering charge Object Lock executor failed", string(output))
 }
 
 func TestMeteringChargeV3AgainstObjectLockStore(t *testing.T) {
@@ -188,7 +188,7 @@ func TestMeteringChargeV3AgainstObjectLockStore(t *testing.T) {
 	require.NoError(t, err, string(output))
 	biller.PriceVersion = repriced.Version
 	_, output, err = biller.Process(ctx)
-	require.Error(t, err, string(output))
+	require.ErrorContains(t, err, "metering charge Object Lock executor failed", string(output))
 }
 
 func TestMeteringSettlementAgainstObjectLockStore(t *testing.T) {
@@ -290,7 +290,7 @@ func TestMeteringSettlementAgainstObjectLockStore(t *testing.T) {
 	require.NoError(t, err)
 	publisher.Input = conflictPath
 	_, err = publisher.Publish(ctx)
-	require.Error(t, err)
+	require.ErrorContains(t, err, "settlement Object Lock publisher failed")
 }
 
 func archiveForIntegration(

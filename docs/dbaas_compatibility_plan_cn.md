@@ -16357,6 +16357,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   并发 unknown-key refresh collapse 的所有调用则必须对外报告 `OIDC token is invalid`。
   该门禁防止 IdP 不可用与非法 token 两类认证失败互相污染，保证 operation API 的 401/503
   分类和审计语义稳定。
+- A1340 固定 metering/billing Object Lock 集成冲突错误契约：
+  S3/Object Lock 集成测试中的重定价 charge 冲突必须报告
+  `metering charge Object Lock executor failed`，settlement invoice plan 重写冲突必须报告
+  `settlement Object Lock publisher failed`。该门禁防止真实对象锁环境下 charge/settlement
+  不可变证据被错误重写时只以任意失败通过测试，保证账单重算和结算计划冲突有稳定告警边界。
 
 ### P2：运维兼容和长期验证
 
