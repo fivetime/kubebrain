@@ -14672,6 +14672,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   每轮通过 bridged client 发起 Put 并丢弃服务端响应，直连 client 等待目标 value 可见后
   断言 version 只递增一次且 ModRevision 单调推进，补齐普通写入在生产网络抖动下的
   at-most-once 可观察契约。
+- A1080 固定 clientv3 Get cancel after response loss 的连接复用：
+  `get_cancel_connection` differential 证明 Range/Get 的响应字节已从服务端返回但被网络
+  丢弃时，调用方取消 context 应返回 context canceled；同一个 client 的 active gRPC
+  connection 与底层 TCP transport 仍必须可继续服务后续 Put/Get，不能因为单次 canceled
+  read 污染连接状态。本轮扩展本地 TCP bridge 支持只恢复流量不主动断连接，并新增真实
+  TCP gRPC 回归：连续丢弃 Get 响应、取消请求、断言 active connection 未替换且 bridge
+  未主动 drop transport，再执行后续 Put/Get 验证同连接继续可用。
 
 ### P2：运维兼容和长期验证
 

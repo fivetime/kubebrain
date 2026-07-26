@@ -1561,6 +1561,10 @@ func (b *clientLeasingTCPBridge) Unblackhole() {
 	b.dropConnections()
 }
 
+func (b *clientLeasingTCPBridge) Resume() {
+	b.blackhole.Store(0)
+}
+
 func (b *clientLeasingTCPBridge) DroppedBytes() int64 {
 	return b.droppedBytes.Load()
 }

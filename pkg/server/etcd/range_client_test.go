@@ -34,6 +34,72 @@ import (
 	"google.golang.org/grpc/test/bufconn"
 )
 
+func TestClientGetCanceledAfterResponseLossKeepsConnectionUsable(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	server.Register(grpcServer)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(func() {
+		grpcServer.Stop()
+		_ = listener.Close()
+	})
+
+	bridge := newClientLeasingTCPBridge(t, listener.Addr().String())
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{bridge.Endpoint()},
+		DialTimeout: time.Second,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	key := fmt.Sprintf("/a1080/get-cancel-connection/%d/key", time.Now().UnixNano())
+	_, err = client.Put(ctx, key, "seed")
+	require.NoError(t, err)
+	activeConnection := client.ActiveConnection()
+
+	const attempts = 3
+	for attempt := 0; attempt < attempts; attempt++ {
+		droppedBytesBefore := bridge.DroppedBytes()
+		droppedConnsBefore := bridge.DroppedConnections()
+		bridge.BlackholeResponses()
+
+		callCtx, callCancel := context.WithCancel(ctx)
+		result := make(chan error, 1)
+		go func() {
+			_, getErr := client.Get(callCtx, key)
+			result <- getErr
+		}()
+		require.Eventually(t, func() bool {
+			return bridge.DroppedBytes() > droppedBytesBefore
+		}, 2*time.Second, 10*time.Millisecond)
+		callCancel()
+		getErr := <-result
+		require.ErrorIs(t, getErr, context.Canceled)
+
+		bridge.Resume()
+		require.True(t, client.ActiveConnection() == activeConnection,
+			"attempt %d replaced the active gRPC connection", attempt)
+		require.Equal(t, droppedConnsBefore, bridge.DroppedConnections(),
+			"attempt %d dropped the TCP transport", attempt)
+
+		value := fmt.Sprintf("after-cancel-%d", attempt)
+		followUpCtx, followUpCancel := context.WithTimeout(ctx, 5*time.Second)
+		_, putErr := client.Put(followUpCtx, key, value)
+		read, readErr := client.Get(followUpCtx, key)
+		followUpCancel()
+		require.NoError(t, putErr, "attempt %d follow-up Put failed", attempt)
+		require.NoError(t, readErr, "attempt %d follow-up Get failed", attempt)
+		require.Len(t, read.Kvs, 1)
+		require.Equal(t, value, string(read.Kvs[0].Value))
+	}
+}
+
 func TestClientRangeRevisionFilterCountAndTxnStagedView(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
