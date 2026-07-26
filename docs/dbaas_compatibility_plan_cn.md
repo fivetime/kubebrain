@@ -14536,6 +14536,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   同时固定 missing user 认证失败为 `Unknown: authentication failed, invalid user ID or
   password`，no-password 用户带密码认证失败为 `Unknown: auth: authentication failed,
   password was given for no password user`，补齐 public Auth bootstrap/credential 门禁。
+- A1063 固定 clientv3 Auth KV/Txn 权限拒绝不改写数据：
+  `auth` differential 覆盖普通用户越权 Range、Put、Delete，以及二层嵌套 Txn 中越权
+  Put/Delete 必须返回 permission denied 且原值保持不变；服务层已覆盖递归 Txn 授权与
+  raw gRPC 权限码，本轮新增官方 clientv3 bufconn 回归，给 alice 仅授予
+  `/a1063/allowed/` prefix 读权限，先确认授权 key 可读，再断言未授权 Get/Put/Delete
+  和二层嵌套 Txn Put/Delete 经 high-level wrapper 均暴露
+  `Unknown: permission denied`，最后用 root 读取所有 denied key，确认 standalone 和
+  nested mutation 均未改写或删除原值，补齐 public KV/Auth wrapper 的数据保护门禁。
 
 ### P2：运维兼容和长期验证
 

@@ -401,6 +401,105 @@ func TestClientAuthImplicitRootRoleAndCredentialErrors(t *testing.T) {
 	)
 }
 
+func TestClientAuthKVDeniedOperationsPreserveData(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterAuthServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	dialOptions := []grpc.DialOption{
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}),
+	}
+	newClient := func(username, password string) *clientv3.Client {
+		t.Helper()
+		client, err := clientv3.New(clientv3.Config{
+			Endpoints:   []string{"bufnet"},
+			DialTimeout: time.Second,
+			Username:    username,
+			Password:    password,
+			DialOptions: dialOptions,
+		})
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, client.Close()) })
+		return client
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	bootstrap := newClient("", "")
+	require.NoError(t, addAuthUserRoleAndPermission(ctx, bootstrap, "root", "root-secret", "root", "", ""))
+	require.NoError(t, addAuthUserRoleAndPermission(
+		ctx,
+		bootstrap,
+		"alice",
+		"alice-secret",
+		"a1063-allowed",
+		"/a1063/allowed/",
+		clientv3.GetPrefixRangeEnd("/a1063/allowed/"),
+	))
+	_, err := bootstrap.AuthEnable(ctx)
+	require.NoError(t, err)
+
+	root := newClient("root", "root-secret")
+	alice := newClient("alice", "alice-secret")
+	_, err = root.Put(ctx, "/a1063/allowed/key", "allowed")
+	require.NoError(t, err)
+	_, err = root.Put(ctx, "/a1063/denied/put", "before-put")
+	require.NoError(t, err)
+	_, err = root.Put(ctx, "/a1063/denied/delete", "before-delete")
+	require.NoError(t, err)
+	_, err = root.Put(ctx, "/a1063/denied/txn-put", "before-txn-put")
+	require.NoError(t, err)
+	_, err = root.Put(ctx, "/a1063/denied/txn-delete", "before-txn-delete")
+	require.NoError(t, err)
+
+	allowed, err := alice.Get(ctx, "/a1063/allowed/key")
+	require.NoError(t, err)
+	require.Len(t, allowed.Kvs, 1)
+	require.Equal(t, "allowed", string(allowed.Kvs[0].Value))
+
+	_, deniedGetErr := alice.Get(ctx, "/a1063/denied/put")
+	requireAuthClientError(t, deniedGetErr, codes.Unknown, "etcdserver: permission denied")
+	_, deniedPutErr := alice.Put(ctx, "/a1063/denied/put", "after-put")
+	requireAuthClientError(t, deniedPutErr, codes.Unknown, "etcdserver: permission denied")
+	_, deniedDeleteErr := alice.Delete(ctx, "/a1063/denied/delete", clientv3.WithPrevKV())
+	requireAuthClientError(t, deniedDeleteErr, codes.Unknown, "etcdserver: permission denied")
+
+	twoLevelNested := func(op clientv3.Op) clientv3.Op {
+		return clientv3.OpTxn(nil, []clientv3.Op{
+			clientv3.OpTxn(nil, []clientv3.Op{op}, nil),
+		}, nil)
+	}
+	_, nestedDeniedPutErr := alice.Txn(ctx).Then(
+		twoLevelNested(clientv3.OpPut("/a1063/denied/txn-put", "after-txn-put")),
+	).Commit()
+	requireAuthClientError(t, nestedDeniedPutErr, codes.Unknown, "etcdserver: permission denied")
+	_, nestedDeniedDeleteErr := alice.Txn(ctx).Then(
+		twoLevelNested(clientv3.OpDelete("/a1063/denied/txn-delete", clientv3.WithPrevKV())),
+	).Commit()
+	requireAuthClientError(t, nestedDeniedDeleteErr, codes.Unknown, "etcdserver: permission denied")
+
+	for key, value := range map[string]string{
+		"/a1063/denied/put":        "before-put",
+		"/a1063/denied/delete":     "before-delete",
+		"/a1063/denied/txn-put":    "before-txn-put",
+		"/a1063/denied/txn-delete": "before-txn-delete",
+	} {
+		response, getErr := root.Get(ctx, key)
+		require.NoError(t, getErr)
+		require.Len(t, response.Kvs, 1, key)
+		require.Equal(t, value, string(response.Kvs[0].Value), key)
+	}
+}
+
 func addAuthUserRoleAndPermission(
 	ctx context.Context,
 	client *clientv3.Client,
