@@ -885,6 +885,95 @@ func TestClientAuthTxnPutWithPrevKVDeniedForWriteOnlyRole(t *testing.T) {
 	require.Equal(t, "before", string(value.Kvs[0].Value))
 }
 
+func TestClientAuthClusterAndMaintenanceAuthorization(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterAuthServer(grpcServer, server)
+	etcdserverpb.RegisterClusterServer(grpcServer, server)
+	etcdserverpb.RegisterMaintenanceServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	dialOptions := []grpc.DialOption{
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}),
+	}
+	newClient := func(username, password string) *clientv3.Client {
+		t.Helper()
+		client, err := clientv3.New(clientv3.Config{
+			Endpoints:   []string{"bufnet"},
+			DialTimeout: time.Second,
+			Username:    username,
+			Password:    password,
+			DialOptions: dialOptions,
+		})
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, client.Close()) })
+		return client
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	bootstrap := newClient("", "")
+	require.NoError(t, addAuthUserRoleAndPermission(ctx, bootstrap, "root", "root-secret", "root", "", ""))
+	require.NoError(t, addAuthUserRoleAndPermission(
+		ctx,
+		bootstrap,
+		"alice",
+		"alice-secret",
+		"a1068-reader",
+		"/a1068/allowed/",
+		clientv3.GetPrefixRangeEnd("/a1068/allowed/"),
+	))
+	_, err := bootstrap.Put(ctx, "/a1068/allowed/key", "value")
+	require.NoError(t, err)
+	_, err = bootstrap.AuthEnable(ctx)
+	require.NoError(t, err)
+
+	root := newClient("root", "root-secret")
+	alice := newClient("alice", "alice-secret")
+	_, anonymousStatusErr := bootstrap.Status(ctx, bootstrap.Endpoints()[0])
+	requireAuthClientError(t, anonymousStatusErr, codes.Unknown, "etcdserver: user name is empty")
+	_, anonymousMemberListErr := bootstrap.MemberList(ctx)
+	requireAuthClientError(t, anonymousMemberListErr, codes.Unknown, "etcdserver: user name is empty")
+	_, anonymousAlarmListErr := bootstrap.AlarmList(ctx)
+	requireAuthClientError(t, anonymousAlarmListErr, codes.Unknown, "etcdserver: user name is empty")
+
+	statusResponse, err := alice.Status(ctx, alice.Endpoints()[0])
+	require.NoError(t, err)
+	require.NotNil(t, statusResponse.Header)
+	memberList, err := alice.MemberList(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, memberList.Header)
+	alarmList, err := alice.AlarmList(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, alarmList.Header)
+	require.Empty(t, alarmList.Alarms)
+
+	alarmDisarm, err := alice.AlarmDisarm(ctx, &clientv3.AlarmMember{})
+	require.NoError(t, err)
+	require.Empty(t, alarmDisarm.Alarms)
+	_, rawActivateErr := etcdserverpb.NewMaintenanceClient(alice.ActiveConnection()).Alarm(
+		ctx,
+		&etcdserverpb.AlarmRequest{
+			Action: etcdserverpb.AlarmRequest_ACTIVATE,
+			Alarm:  etcdserverpb.AlarmType_NOSPACE,
+		},
+	)
+	requireAuthClientError(t, rawActivateErr, codes.PermissionDenied, "etcdserver: permission denied")
+	_, userHashErr := alice.HashKV(ctx, alice.Endpoints()[0], 0)
+	requireAuthClientError(t, userHashErr, codes.Unknown, "etcdserver: permission denied")
+	rootHash, err := root.HashKV(ctx, root.Endpoints()[0], 0)
+	require.NoError(t, err)
+	require.NotNil(t, rootHash.Header)
+}
+
 func addAuthUserRoleAndPermission(
 	ctx context.Context,
 	client *clientv3.Client,

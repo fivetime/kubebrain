@@ -14577,6 +14577,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   仅拥有 `/a1067/write-only/key` 的 write 权限，直接 Txn Put+PrevKV 和二层嵌套
   Txn Put+PrevKV 均经 high-level wrapper 暴露 `Unknown: permission denied`，最后 root
   点读确认值仍为 `before`，补齐 public Txn/Auth wrapper 的 PrevKV 泄露防护门禁。
+- A1068 固定 clientv3 Auth Cluster/Maintenance 读写边界：
+  `auth` differential 覆盖 auth enabled 后匿名 Status/MemberList/AlarmList 返回 user empty，
+  普通用户 Status、MemberList、AlarmList 可用，Alarm ACTIVATE、HashKV 等 root-only 管理面
+  返回 permission denied，root HashKV 成功。本轮新增官方 clientv3 bufconn 回归，注册
+  KV/Auth/Cluster/Maintenance 服务后，断言匿名 client 的 Status/MemberList/AlarmList 经
+  high-level wrapper 暴露 `Unknown: user name is empty`；alice 的 Status、MemberList、
+  AlarmList 成功，空集合 `AlarmDisarm` 成功且无 alarms；raw Maintenance Alarm ACTIVATE
+  返回 gRPC `PermissionDenied`，alice `HashKV` 暴露 `Unknown: permission denied`，root
+  `HashKV` 成功，补齐 public 运维/集群面 Auth wrapper 门禁。
 
 ### P2：运维兼容和长期验证
 
