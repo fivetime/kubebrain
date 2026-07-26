@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"go.etcd.io/etcd/api/v3/authpb"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	clientv3 "go.etcd.io/etcd/client/v3"
@@ -361,17 +362,31 @@ func TestClientAuthRootProtectionAndDuplicateRoleErrors(t *testing.T) {
 	root := newClient("root", "root-secret")
 	_, emptyRoleErr := root.RoleAdd(ctx, "")
 	requireAuthClientError(t, emptyRoleErr, codes.Unknown, "etcdserver: role name is empty", rpctypes.ErrRoleEmpty)
+	rawRootAuth := etcdserverpb.NewAuthClient(root.ActiveConnection())
+	_, rawEmptyRoleErr := rawRootAuth.RoleAdd(ctx, &etcdserverpb.AuthRoleAddRequest{Name: ""})
+	requireAuthClientError(t, rawEmptyRoleErr, codes.InvalidArgument, "etcdserver: role name is empty")
+
 	_, err = root.RoleAdd(ctx, "a1060-reader")
 	require.NoError(t, err)
 	_, duplicateRoleErr := root.RoleAdd(ctx, "a1060-reader")
 	requireAuthClientError(t, duplicateRoleErr, codes.Unknown, "etcdserver: role name already exists", rpctypes.ErrRoleAlreadyExist)
+	_, rawDuplicateRoleErr := rawRootAuth.RoleAdd(ctx, &etcdserverpb.AuthRoleAddRequest{Name: "a1060-reader"})
+	requireAuthClientError(t, rawDuplicateRoleErr, codes.FailedPrecondition, "etcdserver: role name already exists")
 
 	_, deleteRootUserErr := root.UserDelete(ctx, "root")
 	requireAuthClientError(t, deleteRootUserErr, codes.Unknown, "etcdserver: invalid auth management", rpctypes.ErrInvalidAuthMgmt)
+	_, rawDeleteRootUserErr := rawRootAuth.UserDelete(ctx, &etcdserverpb.AuthUserDeleteRequest{Name: "root"})
+	requireAuthClientError(t, rawDeleteRootUserErr, codes.InvalidArgument, "etcdserver: invalid auth management")
+
 	_, revokeRootRoleErr := root.UserRevokeRole(ctx, "root", "root")
 	requireAuthClientError(t, revokeRootRoleErr, codes.Unknown, "etcdserver: invalid auth management", rpctypes.ErrInvalidAuthMgmt)
+	_, rawRevokeRootRoleErr := rawRootAuth.UserRevokeRole(ctx, &etcdserverpb.AuthUserRevokeRoleRequest{Name: "root", Role: "root"})
+	requireAuthClientError(t, rawRevokeRootRoleErr, codes.InvalidArgument, "etcdserver: invalid auth management")
+
 	_, deleteRootRoleErr := root.RoleDelete(ctx, "root")
 	requireAuthClientError(t, deleteRootRoleErr, codes.Unknown, "etcdserver: invalid auth management", rpctypes.ErrInvalidAuthMgmt)
+	_, rawDeleteRootRoleErr := rawRootAuth.RoleDelete(ctx, &etcdserverpb.AuthRoleDeleteRequest{Role: "root"})
+	requireAuthClientError(t, rawDeleteRootRoleErr, codes.InvalidArgument, "etcdserver: invalid auth management")
 
 	users, err := root.UserList(ctx)
 	require.NoError(t, err)
@@ -421,6 +436,7 @@ func TestClientAuthRolePermissionLifecycleErrors(t *testing.T) {
 	require.NoError(t, err)
 
 	root := newClient("root", "root-secret")
+	rawRootAuth := etcdserverpb.NewAuthClient(root.ActiveConnection())
 	_, err = root.RoleAdd(ctx, "a1061-lifecycle")
 	require.NoError(t, err)
 	_, err = root.RoleGrantPermission(
@@ -443,6 +459,10 @@ func TestClientAuthRolePermissionLifecycleErrors(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, role.Perm, 1)
 	require.Equal(t, clientv3.PermissionType(clientv3.PermWrite), clientv3.PermissionType(role.Perm[0].PermType))
+	rawRole, err := rawRootAuth.RoleGet(ctx, &etcdserverpb.AuthRoleGetRequest{Role: "a1061-lifecycle"})
+	require.NoError(t, err)
+	require.Len(t, rawRole.Perm, 1)
+	require.Equal(t, authpb.WRITE, rawRole.Perm[0].PermType)
 
 	_, missingPermissionErr := root.RoleRevokePermission(
 		ctx,
@@ -451,6 +471,13 @@ func TestClientAuthRolePermissionLifecycleErrors(t *testing.T) {
 		clientv3.GetPrefixRangeEnd("/missing/"),
 	)
 	requireAuthClientError(t, missingPermissionErr, codes.Unknown, "etcdserver: permission is not granted to the role", rpctypes.ErrPermissionNotGranted)
+	_, rawMissingPermissionErr := rawRootAuth.RoleRevokePermission(ctx, &etcdserverpb.AuthRoleRevokePermissionRequest{
+		Role:     "a1061-lifecycle",
+		Key:      []byte("/missing/"),
+		RangeEnd: []byte(clientv3.GetPrefixRangeEnd("/missing/")),
+	})
+	requireAuthClientError(t, rawMissingPermissionErr, codes.FailedPrecondition, "etcdserver: permission is not granted to the role")
+
 	_, invalidRangeErr := root.RoleGrantPermission(
 		ctx,
 		"a1061-lifecycle",
@@ -459,6 +486,15 @@ func TestClientAuthRolePermissionLifecycleErrors(t *testing.T) {
 		clientv3.PermissionType(clientv3.PermRead),
 	)
 	requireAuthClientError(t, invalidRangeErr, codes.Unknown, "etcdserver: invalid auth management", rpctypes.ErrInvalidAuthMgmt)
+	_, rawInvalidRangeErr := rawRootAuth.RoleGrantPermission(ctx, &etcdserverpb.AuthRoleGrantPermissionRequest{
+		Name: "a1061-lifecycle",
+		Perm: &authpb.Permission{
+			PermType: authpb.READ,
+			Key:      []byte("z"),
+			RangeEnd: []byte("a"),
+		},
+	})
+	requireAuthClientError(t, rawInvalidRangeErr, codes.InvalidArgument, "etcdserver: invalid auth management")
 
 	_, err = root.UserGrantRole(ctx, "alice", "a1061-lifecycle")
 	require.NoError(t, err)
@@ -467,7 +503,7 @@ func TestClientAuthRolePermissionLifecycleErrors(t *testing.T) {
 	require.Contains(t, aliceBeforeDelete.Roles, "a1061-lifecycle")
 	_, err = root.RoleDelete(ctx, "a1061-lifecycle")
 	require.NoError(t, err)
-	aliceAfterDelete, err := root.UserGet(ctx, "alice")
+	aliceAfterDelete, err := rawRootAuth.UserGet(ctx, &etcdserverpb.AuthUserGetRequest{Name: "alice"})
 	require.NoError(t, err)
 	require.NotContains(t, aliceAfterDelete.Roles, "a1061-lifecycle")
 }

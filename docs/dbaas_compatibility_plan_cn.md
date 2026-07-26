@@ -15507,6 +15507,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `PermissionDenied`，root raw `Compact` 成功并返回有效 header；随后 official clientv3 root
   compact 仍可在更新 revision 上成功。本轮加强既有 compact auth 回归，防止直接 KV API 调用方
   绕过 client adapter 后看到错误 status code 或 root-only 授权顺序。
+- A1196 固定 raw gRPC Auth management 错误外观：
+  延续 A1060/A1061 的 auth 管理面契约到 generated `etcdserverpb.AuthClient`：root raw
+  `RoleAdd("")` 返回 `InvalidArgument`，重复 role 返回 `FailedPrecondition`，删除 root 用户、
+  撤销 root/root 绑定和删除 root role 均返回 `InvalidArgument` 的 invalid auth management；
+  role permission 覆盖后 raw `RoleGet` 只暴露最终 write permission，缺失 permission revoke
+  返回 `FailedPrecondition`，非法 range grant 返回 `InvalidArgument`，删除 role 后 raw
+  `UserGet` 中 alice 的 role 绑定被清理。本轮加强既有 clientv3 管理面回归，防止直接 Auth API
+  调用方看到错误 status code、权限覆盖漂移或残留 role 绑定。
 
 ### P2：运维兼容和长期验证
 
