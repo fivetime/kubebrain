@@ -126,6 +126,61 @@ func TestClientNamingManagerUpdateListWatchAndLeaseDeletion(t *testing.T) {
 		namingClientUpdates(t, receiveNamingClientUpdates(t, ctx, updates), managerPrefix))
 }
 
+func TestClientNamingManagerInitialAtomicWatchAndTxnDelete(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterWatchServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	managerPrefix := "/a1098/naming/atomic"
+	manager, err := endpoints.NewManager(client, managerPrefix)
+	require.NoError(t, err)
+	require.NoError(t, manager.Update(ctx, []*endpoints.UpdateWithOpts{
+		endpoints.NewAddUpdateOpts(managerPrefix+"/host1", endpoints.Endpoint{Addr: "127.0.0.1:2101"}),
+		endpoints.NewAddUpdateOpts(managerPrefix+"/host2", endpoints.Endpoint{Addr: "127.0.0.1:2102"}),
+	}))
+
+	watchCtx, watchCancel := context.WithCancel(ctx)
+	defer watchCancel()
+	updates, err := manager.NewWatchChannel(watchCtx)
+	require.NoError(t, err)
+	require.Equal(t, []string{
+		"add:host1:127.0.0.1:2101:",
+		"add:host2:127.0.0.1:2102:",
+	}, namingClientUpdates(t, receiveNamingClientUpdates(t, ctx, updates), managerPrefix))
+
+	deleteResponse, err := client.Txn(ctx).Then(
+		clientv3.OpDelete(managerPrefix+"/host1"),
+		clientv3.OpDelete(managerPrefix+"/host2"),
+	).Commit()
+	require.NoError(t, err)
+	require.True(t, deleteResponse.Succeeded)
+	require.Equal(t, []string{
+		"delete:host1::",
+		"delete:host2::",
+	}, namingClientUpdates(t, receiveNamingClientUpdates(t, ctx, updates), managerPrefix))
+}
+
 func TestClientNamingResolverSwitchesAfterEndpointDelete(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

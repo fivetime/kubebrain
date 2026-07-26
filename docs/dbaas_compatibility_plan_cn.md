@@ -14792,6 +14792,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   连续两次读取稳定 key 并写入同一目标 key 的 STM 都应成功，且目标 key 最终 version
   必须为 2。本轮在本地 official clientv3 STM bufconn 黑盒中补齐该分支，防止实现把
   `SerializableSnapshot` 退化为普通 `Serializable` 或误判第二次写冲突。
+- A1098 固定 clientv3 naming EndpointManager 初始化原子 watch：
+  对照 `/root/etcd/tests/integration/clientv3/naming/endpoints_test.go:TestEndpointManagerAtomicity`，
+  resolver 依赖 `NewWatchChannel` 在已有多个 endpoint 时先原子返回当前 endpoint 集合，
+  且同一 Txn revision 内删除多个 endpoint 时 watch channel 也必须以同批 delete 更新
+  推送。本轮在本地 official clientv3 naming bufconn 黑盒补齐“先写两 endpoint、再建
+  watch、随后 Txn 删除两 endpoint”的同形门禁，防止初始化 list/watch 桥接拆 revision
+  或漏发多事件。
 
 ### P2：运维兼容和长期验证
 
