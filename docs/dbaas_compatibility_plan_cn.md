@@ -15422,6 +15422,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   HashRevision 或 CompactRevision。本轮新增 official clientv3 bufconn 黑盒回归，写入 key 后
   比较 Defragment 前后的 latest `HashKV(0)`，并保留 `DefragmentResponse.Header == nil`，
   防止 no-op 入口后续引入可见 MVCC 副作用。
+- A1183 固定 raw gRPC Snapshot 平台替代外观：
+  延续 A1101 的 legacy/`SnapshotWithVersion` official clientv3 contract 到 generated
+  `etcdserverpb.MaintenanceClient`：KubeBrain 不伪造 etcd bbolt snapshot，裸 stream 第一次
+  `Recv` 必须返回 `codes.Unimplemented` 和 DBaaS logical backup/restore 的可操作提示。本轮
+  新增 raw bufconn 回归，直接调用 `Maintenance.Snapshot` 并读取 stream 错误，防止 stream
+  context、auth wrapper 或 gRPC adapter 重构把平台替代路径退化成 EOF、默认 Unimplemented 或
+  无说明的 transport 错误。
 
 ### P2：运维兼容和长期验证
 

@@ -75,6 +75,34 @@ func TestClientSnapshotAPIsReturnPlatformUnsupported(t *testing.T) {
 	require.NoError(t, legacy.Close())
 }
 
+func TestRawGRPCSnapshotReturnsPlatformUnsupported(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterMaintenanceServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///snapshot-client",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	maintenance := etcdserverpb.NewMaintenanceClient(conn)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	stream, err := maintenance.Snapshot(ctx, &etcdserverpb.SnapshotRequest{})
+	require.NoError(t, err)
+	_, err = stream.Recv()
+	require.Equal(t, codes.Unimplemented, status.Code(err))
+	require.Equal(t, snapshotUnsupportedMessage, status.Convert(err).Message())
+}
+
 func TestClientPlatformManagedOperationsReturnActionableErrors(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
