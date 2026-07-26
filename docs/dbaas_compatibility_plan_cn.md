@@ -13963,6 +13963,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   serializable OpGet 也必须成功选择 Then branch、返回 v2，并保持 Txn/header 与嵌套 Range
   header revision 一致，防止 follower/readonly 快路径或公开 gRPC 转换绕过 serializable
   flag、误用 historical revision 作为 response header，或在 Txn 子操作中丢失该选项。
+- A992 固定 clientv3 Watch fragment 的小接收窗口公开路径：
+  `watch_fragment` differential 使用官方 `clientv3.Watcher`、`WithFragment()` 和较小
+  `MaxCallRecvMsgSize` 证明大事件批次必须靠服务端 fragment 成功交付。本轮新增 bufconn
+  clientv3 回归，注册真实 KV/Watch gRPC 服务，先写入 10 个 1MiB value，再用
+  `MaxCallRecvMsgSize=1536KiB` 的 watcher 从历史 revision 读取 prefix；测试断言 public
+  watch channel 无错误并完整收到 10 个事件。官方 client 会把底层 fragment 合并成
+  `WatchResponse` 暴露，因此门禁固定的是小接收窗口下完整交付而非 fragment flag 本身，
+  防止 sendWatchFragments、max request bytes 或 gRPC message sizing 变更导致大 watch
+  批次只能在超大接收窗口下工作。
 
 ### P2：运维兼容和长期验证
 
