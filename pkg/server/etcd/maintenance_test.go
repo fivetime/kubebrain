@@ -573,7 +573,9 @@ func TestCorruptAlarmBlocksEtcdApplierSurfaceOverGRPC(t *testing.T) {
 		{name: "lease revoke", call: func() error { _, err := lease.LeaseRevoke(ctx, &etcdserverpb.LeaseRevokeRequest{ID: 1}); return err }},
 	}
 	for _, tc := range calls {
-		t.Run(tc.name, func(t *testing.T) { require.ErrorIs(t, tc.call(), rpctypes.ErrGRPCCorrupt) })
+		t.Run(tc.name, func(t *testing.T) {
+			requireMaintenanceDirectError(t, tc.call(), rpctypes.ErrGRPCCorrupt, codes.DataLoss, "etcdserver: corrupt cluster")
+		})
 	}
 	_, err = kv.Range(ctx, &etcdserverpb.RangeRequest{Key: []byte("key")})
 	require.NoError(t, err)
@@ -597,7 +599,7 @@ func TestCorruptAlarmBlocksEtcdApplierSurfaceOverGRPC(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, wrong.Alarms)
 	_, err = kv.Put(ctx, &etcdserverpb.PutRequest{Key: []byte("key"), Value: []byte("blocked")})
-	require.ErrorIs(t, err, rpctypes.ErrGRPCCorrupt)
+	requireMaintenanceDirectError(t, err, rpctypes.ErrGRPCCorrupt, codes.DataLoss, "etcdserver: corrupt cluster")
 
 	deactivated, err := maintenance.Alarm(ctx, &etcdserverpb.AlarmRequest{
 		Action: etcdserverpb.AlarmRequest_DEACTIVATE, Alarm: etcdserverpb.AlarmType_CORRUPT, MemberID: memberID,
@@ -607,7 +609,7 @@ func TestCorruptAlarmBlocksEtcdApplierSurfaceOverGRPC(t *testing.T) {
 	require.Equal(t, memberID, deactivated.Alarms[0].MemberID)
 	require.Equal(t, etcdserverpb.AlarmType_CORRUPT, deactivated.Alarms[0].Alarm)
 	_, err = kv.Put(ctx, &etcdserverpb.PutRequest{Key: []byte("key"), Value: []byte("value")})
-	require.ErrorIs(t, err, rpctypes.ErrGRPCCorrupt)
+	requireMaintenanceDirectError(t, err, rpctypes.ErrGRPCCorrupt, codes.DataLoss, "etcdserver: corrupt cluster")
 	last, err := maintenance.Alarm(ctx, &etcdserverpb.AlarmRequest{
 		Action: etcdserverpb.AlarmRequest_DEACTIVATE, Alarm: etcdserverpb.AlarmType_CORRUPT, MemberID: 7,
 	})
@@ -900,7 +902,7 @@ func TestMaintenanceHashKVRechecksCompactionInsideHashedSnapshot(t *testing.T) {
 		target:      uint64(second.Header.Revision),
 	}
 	_, err = server.HashKV(ctx, &etcdserverpb.HashKVRequest{Revision: first.Header.Revision})
-	require.ErrorIs(t, err, rpctypes.ErrGRPCCompacted)
+	requireMaintenanceDirectError(t, err, rpctypes.ErrGRPCCompacted, codes.OutOfRange, "etcdserver: mvcc: required revision has been compacted")
 }
 
 func TestStatusReportsNoLeaderInsteadOfClaimingSelf(t *testing.T) {
@@ -1009,4 +1011,11 @@ func TestStatusUsesCachedLeadershipTerm(t *testing.T) {
 	resp, err := server.Status(context.Background(), &etcdserverpb.StatusRequest{})
 	require.NoError(t, err)
 	require.Equal(t, uint64(9), resp.RaftTerm)
+}
+
+func requireMaintenanceDirectError(t *testing.T, err error, want error, code codes.Code, message string) {
+	t.Helper()
+	require.ErrorIs(t, err, want)
+	require.Equal(t, code, status.Code(err))
+	require.Equal(t, message, status.Convert(err).Message())
 }

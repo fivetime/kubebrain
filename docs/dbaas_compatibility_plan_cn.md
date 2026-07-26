@@ -15756,6 +15756,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   NOSPACE 拒绝路径统一到 `errors.Is`、client `codes.Unknown` 和 reference message helper。
   该门禁防止 lease client wrapper、TTL validation、attachment validation 或 quota guard 重构后
   只保留部分断言，漏掉 typed error/code/message 漂移。
+- A1235 固定 Watch compacted 与 Maintenance direct 错误三件套：
+  A1219 已覆盖 Watch compacted client 外观，本轮把 watch canceled response 的 compacted `Err()`
+  收敛到 `errors.Is`、client `codes.Unknown` 和 reference message helper；同时把 Maintenance/KV/Lease
+  direct CORRUPT guard 和 HashKV compacted 拒绝路径固定为 `errors.Is`、direct code 和 reference
+  message。该门禁防止 watch cancellation、alarm guard 或 HashKV revision boundary 重构后只保留
+  typed error，漏掉 status code/message 漂移。
 
 ### P2：运维兼容和长期验证
 

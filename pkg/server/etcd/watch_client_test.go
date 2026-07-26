@@ -946,9 +946,7 @@ func TestClientWatchCompactedRevisionCancelsAndCloses(t *testing.T) {
 	watch := client.Watch(ctx, key, clientv3.WithRev(compactRevision-2))
 	response := requireClientWatchCanceledResponse(t, ctx, watch)
 	require.True(t, response.Canceled)
-	require.ErrorIs(t, response.Err(), rpctypes.ErrCompacted)
-	require.Equal(t, codes.Unknown, status.Code(response.Err()))
-	require.Equal(t, "etcdserver: mvcc: required revision has been compacted", status.Convert(response.Err()).Message())
+	requireClientWatchError(t, response.Err(), codes.Unknown, "etcdserver: mvcc: required revision has been compacted", rpctypes.ErrCompacted)
 	require.Equal(t, compactRevision, response.CompactRevision)
 	require.Empty(t, response.Events)
 	requireWatchClientClosed(t, ctx, watch)
@@ -1596,6 +1594,16 @@ func requireClientWatchCanceledResponse(t *testing.T, ctx context.Context, watch
 		t.Fatalf("timed out waiting for canceled watch response: %v", ctx.Err())
 		return clientv3.WatchResponse{}
 	}
+}
+
+func requireClientWatchError(t *testing.T, err error, code codes.Code, message string, wantErrorIs ...error) {
+	t.Helper()
+	require.Error(t, err)
+	for _, want := range wantErrorIs {
+		require.ErrorIs(t, err, want)
+	}
+	require.Equal(t, code, status.Code(err))
+	require.Equal(t, message, status.Convert(err).Message())
 }
 
 func requireClientWatchCreatedResponse(t *testing.T, ctx context.Context, watch clientv3.WatchChan) clientv3.WatchResponse {
