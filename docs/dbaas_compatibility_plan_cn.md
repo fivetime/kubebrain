@@ -14201,6 +14201,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   测试内构造 `10s/20s/20s/30s` deadline，直接通过 `etcdserverpb.LeaseClient.LeaseLeases`
   断言返回 ID 顺序为 `30001,30002,30004,30003` 且 header 良好，防止服务层排序正确但
   gRPC response assembly、slice 复用或未来重构重新暴露非确定性 lease list。
+- A1019 固定 raw gRPC Range KeysOnly+Limit 跨 tombstone/recreate：
+  `range_tombstone_limit` differential 证明历史 revision 在删除前要返回当时存活 key，
+  删除后要跳过 tombstone hole，重建后当前 revision 要重新纳入新 key；`KeysOnly` 必须清空
+  value，`Limit` 只按目标 revision 下可见 key 消耗，`Count` 保留完整可见范围总数。本轮
+  新增 bufconn raw gRPC 回归，注册真实 KV 服务后直接用 `etcdserverpb.KVClient` 构造
+  a/b/c/d、删除 b/d、更新 c、重建 b、新建 e 的序列，并以 `RangeRequest{KeysOnly,Limit,
+  Revision}` 验证 before-delete、after-delete 和 current after-recreate 三个阶段，防止
+  clientv3 wrapper 正确但 raw request conversion、tombstone 过滤或 limit lookahead 回退。
 
 ### P2：运维兼容和长期验证
 

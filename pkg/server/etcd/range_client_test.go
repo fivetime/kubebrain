@@ -163,6 +163,67 @@ func TestClientRangeKeysOnlyLimitAcrossTombstones(t *testing.T) {
 	assertPage("after-recreate", 0, 2, []string{"a", "b"}, 4, true)
 }
 
+func TestRawGRPCRangeKeysOnlyLimitAcrossTombstones(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///range-tombstone-client",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	kv := etcdserverpb.NewKVClient(conn)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	prefix := fmt.Sprintf("/a1019/range-tombstone-raw/%d/", time.Now().UnixNano())
+	end := []byte(clientv3.GetPrefixRangeEnd(prefix))
+	var beforeDeletes int64
+	for _, suffix := range []string{"a", "b", "c", "d"} {
+		response, putErr := kv.Put(ctx, &etcdserverpb.PutRequest{
+			Key: []byte(prefix + suffix), Value: []byte("value-" + suffix),
+		})
+		require.NoError(t, putErr)
+		beforeDeletes = response.Header.Revision
+	}
+	_, err = kv.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{Key: []byte(prefix + "b")})
+	require.NoError(t, err)
+	deleted, err := kv.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{Key: []byte(prefix + "d")})
+	require.NoError(t, err)
+	_, err = kv.Put(ctx, &etcdserverpb.PutRequest{Key: []byte(prefix + "c"), Value: []byte("updated-c")})
+	require.NoError(t, err)
+	_, err = kv.Put(ctx, &etcdserverpb.PutRequest{Key: []byte(prefix + "b"), Value: []byte("recreated-b")})
+	require.NoError(t, err)
+	_, err = kv.Put(ctx, &etcdserverpb.PutRequest{Key: []byte(prefix + "e"), Value: []byte("value-e")})
+	require.NoError(t, err)
+
+	assertPage := func(stage string, revision, limit int64, wantKeys []string, wantCount int64, wantMore bool) {
+		t.Helper()
+		response, getErr := kv.Range(ctx, &etcdserverpb.RangeRequest{
+			Key: []byte(prefix), RangeEnd: end, Revision: revision,
+			Limit: limit, KeysOnly: true,
+		})
+		require.NoError(t, getErr, stage)
+		require.Equal(t, wantCount, response.Count, stage)
+		require.Equal(t, wantMore, response.More, stage)
+		require.Equal(t, wantKeys, rangeClientRelativeKeys(response.Kvs, prefix), stage)
+		for _, item := range response.Kvs {
+			require.Empty(t, item.Value, stage)
+		}
+	}
+	assertPage("before-deletes", beforeDeletes, 2, []string{"a", "b"}, 4, true)
+	assertPage("after-deletes", deleted.Header.Revision, 1, []string{"a"}, 2, true)
+	assertPage("after-recreate", 0, 2, []string{"a", "b"}, 4, true)
+}
+
 func TestRawGRPCRangeRevisionBoundaries(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
