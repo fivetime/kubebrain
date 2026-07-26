@@ -15573,6 +15573,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   携带空 `authpb.Permission{}` 时必须返回 `InvalidArgument`/invalid auth management；非法
   range grant 的既有 raw 断言继续保持。本轮加强 manager 层 permission validation 回归，
   防止直接 Auth API 调用方传空 protobuf 时看到错误 code 或默认授权。
+- A1206 固定 raw gRPC RoleRevokePermission 基础错误外观：
+  对照 reference etcd 的 `authStore.RoleRevokePermission`，revoke 不复用 grant 的 range
+  validation，而是按 role/key/range 精确删除。新增 generated `etcdserverpb.AuthClient`
+  回归固定空 role 与缺失 role 均返回 `FailedPrecondition`/role name not found，已存在 role
+  但空 key 返回 `FailedPrecondition`/permission is not granted；既有 missing range 断言继续
+  覆盖正常 key/range miss。本轮防止 raw Auth API 在 revoke 路径错误套用 grant validation、
+  错误拒绝空 key 或返回 clientv3 wrapper 风格 code。
 
 ### P2：运维兼容和长期验证
 
