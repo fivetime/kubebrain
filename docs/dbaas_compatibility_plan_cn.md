@@ -14861,6 +14861,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   续租后 TTL/GrantedTTL 必须恢复为 etcd 外观，最终继续读取到同一 key/lease。该门禁防止
   旧 deadline callback、checkpoint 清零或 timer reset 回归把已续租 lease 按最初 deadline
   删除。
+- A1107 固定 clientv3 WithRequireLeader 数据面成功路径：
+  A153/A235 已固定 `require-leader` metadata 的 admission 拒绝与真实差分成功路径，但本地
+  服务端包此前主要覆盖 health/admission 层，缺少 official clientv3 直接访问真实
+  KV/Lease/Watch 服务的黑盒。本轮新增 bufconn 回归，使用
+  `clientv3.WithRequireLeader(ctx)` 依次执行 `Get`、`Grant`、`KeepAliveOnce` 和带
+  `WithCreatedNotify` 的 `Watch`，再写入 leased key 并断言 watch 收到同 revision/value
+  事件。该门禁防止 require-leader metadata 在拦截器、follower 判定或 stream 建立路径中
+  被误判为无 leader，影响 Kubernetes/Cilium 等依赖该选项的客户端。
 
 ### P2：运维兼容和长期验证
 
