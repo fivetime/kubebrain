@@ -14134,6 +14134,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Txn header/子 response header revision delta；随后构造 compare failure + Else Get，
   断言 outer Txn header、failure Range header 与返回 KV mod revision 都等于最新写 revision，
   防止 Txn revision stamping 或 public client response wrapping 回退。
+- A1011 固定 clientv3 Txn intra-txn version 语义：
+  `txn_version_semantics` differential 证明 compare 只基于事务前 committed state 判定，
+  但同一 Then 分支内后续 Range 必须读到前序 Put 的 staged write，并报告本事务 revision
+  下的 value/version/mod revision。本轮新增 bufconn clientv3 回归，注册真实 KV gRPC 服务
+  后先创建 version=1 key，再执行 `If Version==1` 的 Txn：Then 内更新已有 key 后立即
+  Get，断言 value 为新值、version 从 1 升到 2、create revision 保持 seed revision、
+  mod/header revision 等于 Txn revision；同时在同一 Txn 中创建新 key 后立即 Get，
+  断言 version=1 且 create/mod revision 均为 Txn revision，防止 staged range 只返回旧
+  snapshot 或 public client response wrapper 丢失事务内版本元数据。
 
 ### P2：运维兼容和长期验证
 

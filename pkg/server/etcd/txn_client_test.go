@@ -825,6 +825,84 @@ func TestClientTxnHeaderRevisions(t *testing.T) {
 	require.Equal(t, write.Header.Revision, failureRange.Kvs[0].ModRevision)
 }
 
+func TestClientTxnIntraTxnVersionSemantics(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	prefix := fmt.Sprintf("/a1011/client-txn-version/%d/", time.Now().UnixNano())
+	key := prefix + "key"
+	created := prefix + "created"
+	seed, err := client.Put(ctx, key, "one")
+	require.NoError(t, err)
+
+	initial, err := client.Get(ctx, key)
+	require.NoError(t, err)
+	require.Len(t, initial.Kvs, 1)
+	require.Equal(t, int64(1), initial.Kvs[0].Version)
+	require.Equal(t, seed.Header.Revision, initial.Kvs[0].CreateRevision)
+	require.Equal(t, seed.Header.Revision, initial.Kvs[0].ModRevision)
+
+	txn, err := client.Txn(ctx).
+		If(clientv3.Compare(clientv3.Version(key), "=", 1)).
+		Then(
+			clientv3.OpPut(key, "two"),
+			clientv3.OpGet(key),
+			clientv3.OpPut(created, "new"),
+			clientv3.OpGet(created),
+		).
+		Else(clientv3.OpPut(prefix+"unexpected", "bad")).
+		Commit()
+	require.NoError(t, err)
+	require.True(t, txn.Succeeded)
+	require.Equal(t, seed.Header.Revision+1, txn.Header.Revision)
+	require.Len(t, txn.Responses, 4)
+
+	updatePut := txn.Responses[0].GetResponsePut()
+	require.NotNil(t, updatePut)
+	require.Equal(t, txn.Header.Revision, updatePut.Header.Revision)
+	updatedRead := txn.Responses[1].GetResponseRange()
+	require.NotNil(t, updatedRead)
+	require.Equal(t, txn.Header.Revision, updatedRead.Header.Revision)
+	require.Len(t, updatedRead.Kvs, 1)
+	require.Equal(t, "two", string(updatedRead.Kvs[0].Value))
+	require.Equal(t, int64(2), updatedRead.Kvs[0].Version)
+	require.Equal(t, seed.Header.Revision, updatedRead.Kvs[0].CreateRevision)
+	require.Equal(t, txn.Header.Revision, updatedRead.Kvs[0].ModRevision)
+
+	createPut := txn.Responses[2].GetResponsePut()
+	require.NotNil(t, createPut)
+	require.Equal(t, txn.Header.Revision, createPut.Header.Revision)
+	createdRead := txn.Responses[3].GetResponseRange()
+	require.NotNil(t, createdRead)
+	require.Equal(t, txn.Header.Revision, createdRead.Header.Revision)
+	require.Len(t, createdRead.Kvs, 1)
+	require.Equal(t, "new", string(createdRead.Kvs[0].Value))
+	require.Equal(t, int64(1), createdRead.Kvs[0].Version)
+	require.Equal(t, txn.Header.Revision, createdRead.Kvs[0].CreateRevision)
+	require.Equal(t, txn.Header.Revision, createdRead.Kvs[0].ModRevision)
+}
+
 func txnClientValueCompare(
 	key, rangeEnd []byte,
 	result etcdserverpb.Compare_CompareResult,
