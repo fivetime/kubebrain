@@ -15717,6 +15717,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   claims 和零 revision claims 触发的 direct 拒绝路径固定为同时满足 `errors.Is`、direct
   `codes.Unknown` 和 reference message。该门禁防止 JWT provider、claim coercion 或 auth
   revision fence 重构后只保留 typed error，导致 raw/clientv3 映射前的 JWT failure message 漂移。
+- A1228 补齐 Auth manager direct 错误三件套：
+  A1223 已固定 bootstrap 和基础 repository 边界，本轮把 permission revoke missing、user role
+  revoke missing、nil permission、空密码变更后的 Authenticate 拒绝，以及并发重复 role add
+  路径固定为同时满足 `errors.Is`、direct code 和 reference message。该门禁防止 manager
+  lifecycle helper、permission matcher 或并发 auth mutation retry 重构后只保留 typed error，
+  导致管理面错误 code/message 在 RPC 映射前漂移。
 
 ### P2：运维兼容和长期验证
 

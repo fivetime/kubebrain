@@ -105,9 +105,9 @@ func TestAuthManagerUserRolePermissionLifecycle(t *testing.T) {
 	snapshot, err = manager.repo.load(ctx)
 	require.NoError(t, err)
 	require.NoError(t, bcrypt.CompareHashAndPassword(snapshot.Users["alice"].Password, []byte("new")))
-	require.ErrorIs(t, manager.roleRevokePermission(ctx, "reader", []byte("missing"), nil), rpctypes.ErrPermissionNotGranted)
+	requireAuthManagerError(t, manager.roleRevokePermission(ctx, "reader", []byte("missing"), nil), rpctypes.ErrPermissionNotGranted, codes.Unknown, "etcdserver: permission is not granted to the role")
 	require.NoError(t, manager.roleRevokePermission(ctx, "reader", permission.Key, permission.RangeEnd))
-	require.ErrorIs(t, manager.userRevokeRole(ctx, "alice", "missing"), rpctypes.ErrRoleNotGranted)
+	requireAuthManagerError(t, manager.userRevokeRole(ctx, "alice", "missing"), rpctypes.ErrRoleNotGranted, codes.Unknown, "etcdserver: role is not granted to the user")
 	require.NoError(t, manager.userRevokeRole(ctx, "alice", "reader"))
 	require.NoError(t, manager.userGrantRole(ctx, "alice", "reader"))
 
@@ -180,7 +180,7 @@ func TestAuthManagerRejectsInvalidPermissionRanges(t *testing.T) {
 	manager := newAuthManager(server.backend)
 	ctx := context.Background()
 	require.NoError(t, manager.roleAdd(ctx, "reader"))
-	require.ErrorIs(t, manager.roleGrantPermission(ctx, "reader", nil), rpctypes.ErrGRPCPermissionNotGiven)
+	requireAuthManagerError(t, manager.roleGrantPermission(ctx, "reader", nil), rpctypes.ErrGRPCPermissionNotGiven, codes.InvalidArgument, "etcdserver: permission not given")
 	requireAuthManagerError(t, manager.roleGrantPermission(ctx, "reader", &authpb.Permission{}), rpctypes.ErrInvalidAuthMgmt, codes.Unknown, "etcdserver: invalid auth management")
 	requireAuthManagerError(t, manager.roleGrantPermission(ctx, "reader", &authpb.Permission{Key: []byte("z"), RangeEnd: []byte("a")}), rpctypes.ErrInvalidAuthMgmt, codes.Unknown, "etcdserver: invalid auth management")
 	require.NoError(t, manager.roleGrantPermission(ctx, "reader", &authpb.Permission{Key: []byte("z"), RangeEnd: []byte{0}}))
@@ -246,9 +246,9 @@ func TestAuthManagerEmptyPasswordChangeMatchesEtcd(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, manager.userChangePassword(ctx, "root", "", ""))
 	_, err = server.Authenticate(ctx, &etcdserverpb.AuthenticateRequest{Name: "root", Password: ""})
-	require.ErrorIs(t, err, rpctypes.ErrAuthFailed)
+	requireAuthManagerError(t, err, rpctypes.ErrAuthFailed, codes.Unknown, "etcdserver: authentication failed, invalid user ID or password")
 	_, err = server.Authenticate(ctx, &etcdserverpb.AuthenticateRequest{Name: "root", Password: "secret"})
-	require.ErrorIs(t, err, rpctypes.ErrAuthFailed)
+	requireAuthManagerError(t, err, rpctypes.ErrAuthFailed, codes.Unknown, "etcdserver: authentication failed, invalid user ID or password")
 }
 
 func TestAuthManagerConcurrentDistinctMutationsHaveNoLostRevision(t *testing.T) {
@@ -286,7 +286,7 @@ func TestAuthManagerConcurrentDuplicateMutationCommitsOnce(t *testing.T) {
 			succeeded++
 			continue
 		}
-		require.ErrorIs(t, err, rpctypes.ErrRoleAlreadyExist)
+		requireAuthManagerError(t, err, rpctypes.ErrRoleAlreadyExist, codes.Unknown, "etcdserver: role name already exists")
 	}
 	require.Equal(t, 1, succeeded)
 	snapshot, err := manager.repo.load(ctx)
