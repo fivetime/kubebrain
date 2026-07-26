@@ -1171,6 +1171,7 @@ func TestClientTxnRangeRevisionBoundaries(t *testing.T) {
 		).
 		Commit()
 	requireClientTxnError(t, err, codes.Unknown, "etcdserver: mvcc: required revision has been compacted")
+	require.ErrorIs(t, err, rpctypes.ErrCompacted)
 	afterCompacted, err := client.Get(ctx, writeKey)
 	require.NoError(t, err)
 	require.Empty(t, afterCompacted.Kvs)
@@ -1192,6 +1193,7 @@ func TestClientTxnRangeRevisionBoundaries(t *testing.T) {
 		).
 		Commit()
 	requireClientTxnError(t, err, codes.Unknown, "etcdserver: mvcc: required revision is a future revision")
+	require.ErrorIs(t, err, rpctypes.ErrFutureRev)
 	afterFuture, err := client.Get(ctx, writeKey)
 	require.NoError(t, err)
 	require.Empty(t, afterFuture.Kvs)

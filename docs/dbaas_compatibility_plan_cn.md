@@ -15190,6 +15190,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   本轮新增 bufconn official clientv3 回归，将 server `maxRequestBytes` 降到 256，再发送 1KiB
   value，固定 typed request-too-large 外观。该门禁防止 request admission、gRPC transport
   allowance 或 client error adapter 重构破坏 apiserver 对大对象写入失败原因的分类。
+- A1147 固定 clientv3 Txn selected range revision typed error：
+  对照 `/root/etcd/tests/integration/clientv3/txn_test.go` 的 txn 读路径错误契约，并延续
+  `/root/etcd/tests/integration/clientv3/kv_test.go:TestKVCompactError` 的 typed revision error
+  外观，事务中被选中分支的 `OpGet(..., WithRev(compacted))` 必须可由 `errors.Is(...,
+  rpctypes.ErrCompacted)` 识别，`OpGet(..., WithRev(future))` 必须可由 `errors.Is(...,
+  rpctypes.ErrFutureRev)` 识别，且同一 txn 中后续写入不能提交。本轮加强既有 bufconn
+  official clientv3 回归，保留 status/message 和未提交断言，同时新增 typed error 断言。
+  该门禁防止 txn executor 或 client adapter 在事务读错误上丢失可分类错误类型。
 
 ### P2：运维兼容和长期验证
 
