@@ -15353,6 +15353,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `errors.Is(..., rpctypes.ErrEmptyKey)` 识别，并保持 `Unknown` /
   `etcdserver: key is not provided`。本轮新增 bufconn official clientv3 回归，和 A1170
   Put、A1169 Txn empty-key 护栏一起覆盖核心 KV 直接入口。
+- A1172 固定 clientv3 Range full-keyspace CountOnly/KeysOnly 组合：
+  对照 `/root/etcd/tests/integration/clientv3/kv_test.go:TestKVGetKeysOnlyWithCountOnly`，
+  `Get("", WithFromKey(), WithCountOnly(), WithKeysOnly())` 必须把空 key 作为 full-keyspace
+  range 起点而不是 empty-key validation，且 `CountOnly` 优先于 `KeysOnly`：只返回 count、
+  不返回 KVs、`More=false`。本轮加强既有 bufconn official clientv3 CountOnly/KeysOnly
+  回归，把 prefix 场景扩展到 full-keyspace 空 key 入口。
 
 ### P2：运维兼容和长期验证
 

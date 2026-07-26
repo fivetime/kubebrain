@@ -640,6 +640,19 @@ func TestClientRangeCountOnlyTakesPrecedenceOverKeysOnly(t *testing.T) {
 	require.Equal(t, int64(3), response.Count)
 	require.Empty(t, response.Kvs)
 	require.False(t, response.More)
+
+	fullKeyspace, err := client.Get(
+		ctx,
+		"",
+		clientv3.WithFromKey(),
+		clientv3.WithKeysOnly(),
+		clientv3.WithCountOnly(),
+	)
+	require.NoError(t, err)
+	require.Equal(t, response.Header, fullKeyspace.Header)
+	require.Equal(t, int64(3), fullKeyspace.Count)
+	require.Empty(t, fullKeyspace.Kvs)
+	require.False(t, fullKeyspace.More)
 }
 
 func TestClientRangeClientSideRecvLimitIsResourceExhausted(t *testing.T) {
