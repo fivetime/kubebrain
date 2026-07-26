@@ -237,6 +237,38 @@ func (s *gatewayBlockingElectionServer) Campaign(ctx context.Context, _ *v3elect
 	return nil, ctx.Err()
 }
 
+type gatewayConcurrencyErrorLockServer struct {
+	v3lockpb.UnimplementedLockServer
+}
+
+func (s *gatewayConcurrencyErrorLockServer) Lock(context.Context, *v3lockpb.LockRequest) (*v3lockpb.LockResponse, error) {
+	return nil, status.Error(codes.Unknown, "etcdserver: requested lease not found")
+}
+
+func (s *gatewayConcurrencyErrorLockServer) Unlock(context.Context, *v3lockpb.UnlockRequest) (*v3lockpb.UnlockResponse, error) {
+	return nil, status.Error(codes.Unknown, "etcdserver: key is not provided")
+}
+
+type gatewayConcurrencyErrorElectionServer struct {
+	v3electionpb.UnimplementedElectionServer
+}
+
+func (s *gatewayConcurrencyErrorElectionServer) Campaign(context.Context, *v3electionpb.CampaignRequest) (*v3electionpb.CampaignResponse, error) {
+	return nil, status.Error(codes.Unknown, "etcdserver: requested lease not found")
+}
+
+func (s *gatewayConcurrencyErrorElectionServer) Proclaim(context.Context, *v3electionpb.ProclaimRequest) (*v3electionpb.ProclaimResponse, error) {
+	return nil, status.Error(codes.Unknown, `"leader" field must be provided`)
+}
+
+func (s *gatewayConcurrencyErrorElectionServer) Resign(context.Context, *v3electionpb.ResignRequest) (*v3electionpb.ResignResponse, error) {
+	return nil, status.Error(codes.Unknown, `"leader" field must be provided`)
+}
+
+func (s *gatewayConcurrencyErrorElectionServer) Leader(context.Context, *v3electionpb.LeaderRequest) (*v3electionpb.LeaderResponse, error) {
+	return nil, status.Error(codes.Unknown, "election: no leader")
+}
+
 func (s *gatewayLeaseServer) LeaseKeepAlive(stream etcdserverpb.Lease_LeaseKeepAliveServer) error {
 	if md, ok := metadata.FromIncomingContext(stream.Context()); ok {
 		s.md = md.Copy()
@@ -1846,6 +1878,50 @@ func TestGRPCGatewaySupportsWebsocketWatchAndKeepAliveStreams(t *testing.T) {
 	require.JSONEq(t, `{"result":{"header":{"revision":"54"},"ID":"4","TTL":"14"}}`, string(message))
 	require.Equal(t, []string{grpcGatewayRequestMarkerValue}, leaseServer.md.Get(grpcGatewayRequestMarkerKey))
 	require.Equal(t, []string{"Bearer lease-ws-token"}, leaseServer.md.Get(rpctypes.TokenFieldNameSwagger))
+}
+
+func TestGRPCGatewayConcurrencyErrorsMatchEtcdJSONContract(t *testing.T) {
+	listener := bufconn.Listen(1024 * 1024)
+	grpcServer := grpc.NewServer()
+	v3lockpb.RegisterLockServer(grpcServer, &gatewayConcurrencyErrorLockServer{})
+	v3electionpb.RegisterElectionServer(grpcServer, &gatewayConcurrencyErrorElectionServer{})
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///bufnet",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return listener.Dial() }),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	handler, err := newGRPCGatewayMux(context.Background(), conn)
+	require.NoError(t, err)
+
+	tests := []struct {
+		name    string
+		path    string
+		body    string
+		message string
+	}{
+		{name: "lock-missing-lease", path: "/v3/lock/lock", body: `{"name":"L2EzNjAvbG9jaw==","lease":"999999"}`, message: "etcdserver: requested lease not found"},
+		{name: "unlock-empty-key", path: "/v3/lock/unlock", body: `{"key":""}`, message: "etcdserver: key is not provided"},
+		{name: "campaign-missing-lease", path: "/v3/election/campaign", body: `{"name":"L2EzNjAvZWxlY3Rpb24=","lease":"999999","value":"dg=="}`, message: "etcdserver: requested lease not found"},
+		{name: "proclaim-missing-leader", path: "/v3/election/proclaim", body: `{}`, message: `"leader" field must be provided`},
+		{name: "resign-missing-leader", path: "/v3/election/resign", body: `{}`, message: `"leader" field must be provided`},
+		{name: "leader-not-found", path: "/v3/election/leader", body: `{"name":"L2EzNjAvbm8tbGVhZGVy"}`, message: "election: no leader"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodPost, tt.path, strings.NewReader(tt.body))
+			request.Header.Set("Content-Type", "application/json")
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+
+			require.Equal(t, http.StatusInternalServerError, response.Code)
+			require.Equal(t, "application/json", response.Header().Get("Content-Type"))
+			require.JSONEq(t, fmt.Sprintf(`{"code":2,"message":%q}`, tt.message), response.Body.String())
+		})
+	}
 }
 
 func TestGRPCGatewayPropagatesConcurrencyRequestCancellation(t *testing.T) {

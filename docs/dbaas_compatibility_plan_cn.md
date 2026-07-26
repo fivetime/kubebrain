@@ -14830,6 +14830,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `Delete(... WithPrevKV())` 直接发送 `WithRange(ownerPrefix+"\x00")`，断言不返回 KV、
   不删除数据、不给 PrevKV，且同一 owner prefix 下的现有 key 全部保留，防止 from-key
   sentinel 判定被错误放宽成“任意 NUL 结尾”。
+- A1103 固定 generated HTTP gateway concurrency 错误外观：
+  A360 已在真实 HTTP gateway 差分中固定 Lock/Election 缺失 lease、空 unlock key、
+  缺失 leader 和无 leader 的错误矩阵；本地 endpoint 测试此前主要覆盖成功路径、stream
+  和取消传播。本轮新增 generated gateway bufconn 回归，用 fake Lock/Election server 返回
+  canonical `codes.Unknown` 错误，逐条断言 `/v3/lock/*`、`/v3/election/*` route 暴露
+  HTTP 500、`application/json` 与 `{code:2,message}`，防止 gateway 更新或错误归一化把
+  dedicated concurrency 的 etcd JSON 外观改成 404、501 或错误 envelope。
 
 ### P2：运维兼容和长期验证
 
