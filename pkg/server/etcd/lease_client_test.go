@@ -126,6 +126,60 @@ func TestClientLeaseReadBoundaryAndAttachedKeys(t *testing.T) {
 	require.True(t, containsLive)
 }
 
+func TestClientLeaseOperationsAfterCloseAreBoundedAndDoNotCommit(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterLeaseServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+
+	setupCtx, setupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer setupCancel()
+	grant, err := client.Grant(setupCtx, 60)
+	require.NoError(t, err)
+	key := "/a1127/closed-lease/key"
+	_, err = client.Put(setupCtx, key, "value", clientv3.WithLease(grant.ID))
+	require.NoError(t, err)
+	require.NoError(t, client.Close())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	_, err = client.Grant(ctx, 5)
+	requireClientClosedError(t, err, "Lease.Grant")
+	_, err = client.Revoke(ctx, grant.ID)
+	requireClientClosedError(t, err, "Lease.Revoke")
+	_, err = client.TimeToLive(ctx, grant.ID)
+	requireClientClosedError(t, err, "Lease.TimeToLive")
+	_, err = client.Leases(ctx)
+	requireClientClosedError(t, err, "Lease.Leases")
+	_, err = client.KeepAliveOnce(ctx, grant.ID)
+	requireClientClosedError(t, err, "Lease.KeepAliveOnce")
+
+	committed, err := server.Range(context.Background(), &etcdserverpb.RangeRequest{Key: []byte(key)})
+	require.NoError(t, err)
+	require.Len(t, committed.Kvs, 1)
+	require.Equal(t, "value", string(committed.Kvs[0].Value))
+	ttl, err := server.LeaseTimeToLive(context.Background(), &etcdserverpb.LeaseTimeToLiveRequest{ID: int64(grant.ID)})
+	require.NoError(t, err)
+	require.Positive(t, ttl.TTL)
+}
+
 func TestClientNamespaceLeaseTimeToLiveFiltersAttachedKeys(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

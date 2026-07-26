@@ -15035,6 +15035,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   服务但不启用 auth，用带 `root/unused` 凭据的 client 调用 `AuthDisable`、`Put` 和 `Get`，
   要求全部成功且数据可读。该门禁防止 auth interceptor、Authenticate fallback 或 client
   初始化重构让未启用 auth 的 DBaaS 实例拒绝带凭据的通用 etcd 客户端。
+- A1127 固定 clientv3 Lease close 后有界失败与无提交：
+  对照 `/root/etcd/tests/integration/clientv3/lease/lease_test.go` 的
+  `TestLeaseGrantErrConnClosed`、`TestLeaseGrantNewAfterClose` 和
+  `TestLeaseRevokeNewAfterClose`，客户端 `Close` 后的 lease API 必须快速返回可识别的
+  连接关闭错误，不能挂住 retry loop，也不能让关闭后的 `Revoke` 误提交删除。本轮新增
+  bufconn official clientv3 回归，先创建 leased key，关闭 client 后分别调用
+  `Grant`、`Revoke`、`TimeToLive`、`Leases` 和 `KeepAliveOnce`，要求全部有界失败；
+  随后直接查服务端确认 key 仍存在且 lease 仍 live。该门禁防止 lease client 生命周期、
+  keepalive stream 或 interceptor 重构在生产客户端滚动重连/关闭路径上产生悬挂调用或幽灵撤销。
 
 ### P2：运维兼容和长期验证
 
