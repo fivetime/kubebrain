@@ -14178,6 +14178,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   响应，再 Revoke lease；测试循环允许调度相关的 buffered positive TTL 响应，但要求最终
   channel 关闭，并断言 key 已消失、`TimeToLive` 返回 `TTL=-1`，防止 keepalive stream
   在 revoke 后泄漏、返回 malformed buffered response，或把已撤销 lease 重新续活。
+- A1016 固定 raw gRPC LeaseGrant TTL/ID 边界：
+  `lease_grant_boundary` differential 证明 TTL 为 `math.MinInt64`、负数、0、1 时不会报错，
+  而是提升到 etcd 的 `minLeaseTTL=2`；`maxLeaseTTL=9_000_000_000` 必须成功并回显，
+  `max+1` 和 `math.MaxInt64` 返回 raw `OutOfRange` 与 `etcdserver: too large lease TTL`；
+  自动 ID 必须非零，重复显式 ID 返回 raw `FailedPrecondition` 与 `lease already exists`。
+  本轮新增 bufconn raw gRPC 回归，注册真实 Lease 服务后直接用 `etcdserverpb.LeaseClient`
+  覆盖 TTL clamp、最大值、过大错误、自动 ID、重复 ID，并用 TTL 读取确认 GrantedTTL，
+  防止服务层正确但 gRPC 错误映射、header、自动 ID 或 TTL 归一化在公开协议面回退。
 
 ### P2：运维兼容和长期验证
 

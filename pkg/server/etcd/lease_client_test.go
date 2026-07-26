@@ -442,6 +442,94 @@ func TestRawGRPCLeaseKeepAliveRevokeBoundaries(t *testing.T) {
 	require.NoError(t, afterRevoke.CloseSend())
 }
 
+func TestRawGRPCLeaseGrantTTLAndIDBoundaries(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterLeaseServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///lease-grant-boundary-client",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	lease := etcdserverpb.NewLeaseClient(conn)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	granted := make([]int64, 0, 8)
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		for _, id := range granted {
+			_, _ = lease.LeaseRevoke(cleanupCtx, &etcdserverpb.LeaseRevokeRequest{ID: id})
+		}
+	})
+
+	for _, tt := range []struct {
+		name    string
+		id      int64
+		ttl     int64
+		wantTTL int64
+	}{
+		{name: "minimum-int64", id: 13_301, ttl: math.MinInt64, wantTTL: minLeaseTTL},
+		{name: "negative-one", id: 13_302, ttl: -1, wantTTL: minLeaseTTL},
+		{name: "zero", id: 13_303, ttl: 0, wantTTL: minLeaseTTL},
+		{name: "one", id: 13_304, ttl: 1, wantTTL: minLeaseTTL},
+		{name: "minimum", id: 13_305, ttl: minLeaseTTL, wantTTL: minLeaseTTL},
+		{name: "maximum", id: 13_306, ttl: maxLeaseTTL, wantTTL: maxLeaseTTL},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			grant, err := lease.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{ID: tt.id, TTL: tt.ttl})
+			require.NoError(t, err)
+			require.Equal(t, tt.id, grant.ID)
+			require.Equal(t, tt.wantTTL, grant.TTL)
+			requireClientLeaseHeaderWellFormed(t, grant.Header)
+			granted = append(granted, grant.ID)
+
+			ttl, err := lease.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: grant.ID})
+			require.NoError(t, err)
+			require.Equal(t, tt.wantTTL, ttl.GrantedTTL)
+		})
+	}
+
+	for _, tt := range []struct {
+		name string
+		id   int64
+		ttl  int64
+	}{
+		{name: "above-maximum", id: 13_307, ttl: maxLeaseTTL + 1},
+		{name: "maximum-int64", id: 13_308, ttl: math.MaxInt64},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := lease.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{ID: tt.id, TTL: tt.ttl})
+			require.Equal(t, codes.OutOfRange, status.Code(err))
+			require.Equal(t, "etcdserver: too large lease TTL", status.Convert(err).Message())
+		})
+	}
+
+	automatic, err := lease.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 10})
+	require.NoError(t, err)
+	require.NotZero(t, automatic.ID)
+	require.Equal(t, int64(10), automatic.TTL)
+	requireClientLeaseHeaderWellFormed(t, automatic.Header)
+	granted = append(granted, automatic.ID)
+
+	const duplicateID = int64(13_309)
+	first, err := lease.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{ID: duplicateID, TTL: 10})
+	require.NoError(t, err)
+	granted = append(granted, first.ID)
+	_, err = lease.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{ID: duplicateID, TTL: 20})
+	require.Equal(t, codes.FailedPrecondition, status.Code(err))
+	require.Equal(t, "etcdserver: lease already exists", status.Convert(err).Message())
+}
+
 func requireClientLeaseHeaderWellFormed(t *testing.T, header *etcdserverpb.ResponseHeader) {
 	t.Helper()
 	require.NotNil(t, header)
