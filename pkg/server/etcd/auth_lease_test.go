@@ -245,7 +245,7 @@ func TestAuthLeaseKeepAliveRequiresWritePermissionOnEveryRequest(t *testing.T) {
 	denied := &fakeLeaseKeepAliveServer{
 		ctx: aliceCtx, requests: []*etcdserverpb.LeaseKeepAliveRequest{{ID: deniedLease.ID}},
 	}
-	require.ErrorIs(t, server.LeaseKeepAlive(denied), rpctypes.ErrPermissionDenied)
+	requireAuthLeaseError(t, server.LeaseKeepAlive(denied), rpctypes.ErrPermissionDenied, codes.Unknown, "etcdserver: permission denied")
 	require.Empty(t, denied.sent)
 
 	var revokeErr error
@@ -258,7 +258,7 @@ func TestAuthLeaseKeepAliveRequiresWritePermissionOnEveryRequest(t *testing.T) {
 			revokeErr = server.auth.roleRevokePermission(plain, "allowed", []byte("/allowed/"), []byte("/allowed0"))
 		},
 	}
-	require.ErrorIs(t, server.LeaseKeepAlive(allowed), rpctypes.ErrPermissionDenied)
+	requireAuthLeaseError(t, server.LeaseKeepAlive(allowed), rpctypes.ErrPermissionDenied, codes.Unknown, "etcdserver: permission denied")
 	require.NoError(t, revokeErr)
 	require.Len(t, allowed.sent, 1, "the second request on the same stream must observe revoked permission")
 

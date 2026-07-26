@@ -15651,6 +15651,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   route 的 `PermissionDenied` transport code 继续由 A1190 覆盖。该门禁防止 auth authorizer、
   lease visibility check 或 direct service caller 重构后只保留 typed error，导致服务层
   `UserEmpty`/`PermissionDenied` 分类或 message 漂移。
+- A1218 固定 LeaseKeepAlive auth 服务层错误三件套：
+  A1191 已覆盖 raw gRPC `LeaseKeepAlive` 每消息重新鉴权，本轮把 direct service stream
+  的首个无权限 lease 和同一 stream 上撤权后的下一次 keepalive 拒绝都固定为
+  `errors.Is(..., rpctypes.ErrPermissionDenied)`、direct `codes.Unknown` 和
+  `etcdserver: permission denied`。该门禁防止 streaming lease auth 重构后只在 raw transport
+  层保持正确，服务层 fixture、follower proxy 或内部调用方却丢失可分类的授权错误外观。
 
 ### P2：运维兼容和长期验证
 
