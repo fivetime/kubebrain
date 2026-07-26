@@ -14877,6 +14877,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   断言 member mutation 指向 DBaaS 扩缩/重配置，MoveLeader 指向 rollout/failover，
   Downgrade 指向版本化 rollout/rollback。该门禁防止 generated client、错误归一化或显式
   unsupported surface 重构把平台替代外观退化成默认 gRPC `Unimplemented` 或不可操作文案。
+- A1109 固定 clientv3 Defragment no-op nil header：
+  A49 和 `maintenance_semantics` compat 已证明 etcd `Defragment` 成功返回空
+  `DefragmentResponse{}`，Header 为 nil；KubeBrain 在 TiKV/PD 数据面下不执行 bbolt
+  defrag，但必须保留该 official clientv3 外观。本轮新增 bufconn clientv3 回归，注册真实
+  Maintenance 服务后调用 `client.Defragment(ctx, "bufnet")`，断言无错误且
+  `response.Header == nil`。该门禁防止 no-op 实现以后合成 current revision header，
+  破坏依赖空响应判定的 `etcdctl defrag`/运维探测兼容性。
 
 ### P2：运维兼容和长期验证
 
