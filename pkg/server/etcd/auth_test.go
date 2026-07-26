@@ -17,14 +17,19 @@ package etcd
 import (
 	"context"
 	"errors"
+	"net"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+	"google.golang.org/grpc/test/bufconn"
 
 	"github.com/kubewharf/kubebrain/pkg/storage"
 )
@@ -98,6 +103,57 @@ func TestAuthRPCHeadersTrackCurrentUserRevision(t *testing.T) {
 	roleGetResponse, err := server.RoleGet(ctx, &etcdserverpb.AuthRoleGetRequest{Role: "header-role"})
 	require.NoError(t, err)
 	require.Equal(t, int64(revision), roleGetResponse.Header.Revision)
+}
+
+func TestAuthRPCHeadersOverGRPCMatchEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterAuthServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///bufnet",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	kvClient := etcdserverpb.NewKVClient(conn)
+	authClient := etcdserverpb.NewAuthClient(conn)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	put, err := kvClient.Put(ctx, &etcdserverpb.PutRequest{
+		Key: []byte("/a975/auth-header/key"), Value: []byte("value"),
+	})
+	require.NoError(t, err)
+	require.NotNil(t, put.Header)
+	roleName := "a975-auth-header-role"
+
+	statusResponse, err := authClient.AuthStatus(ctx, &etcdserverpb.AuthStatusRequest{})
+	require.NoError(t, err)
+	roleAddResponse, err := authClient.RoleAdd(ctx, &etcdserverpb.AuthRoleAddRequest{Name: roleName})
+	require.NoError(t, err)
+	roleGetResponse, err := authClient.RoleGet(ctx, &etcdserverpb.AuthRoleGetRequest{Role: roleName})
+	require.NoError(t, err)
+
+	for _, header := range []*etcdserverpb.ResponseHeader{
+		statusResponse.Header,
+		roleAddResponse.Header,
+		roleGetResponse.Header,
+	} {
+		require.NotNil(t, header)
+		require.Equal(t, put.Header.Revision, header.Revision)
+		require.NotZero(t, header.ClusterId)
+		require.NotZero(t, header.MemberId)
+		require.Positive(t, header.RaftTerm)
+	}
 }
 
 func TestAuthRPCHeaderWaitsForLeaderRevision(t *testing.T) {

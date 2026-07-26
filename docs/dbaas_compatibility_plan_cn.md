@@ -13829,6 +13829,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   走 `AuthEnable`、`Authenticate`、`Put`、`RoleAdd`、旧 token `Range` 和 reauth
   `Put/Range`，防止仅低层 token manager 测试通过而公开 Auth/KV handler 忘记应用
   JWT revision invalidation。
+- A975 固定 Auth RPC response header 的真实 gRPC 外观：
+  `auth_header` differential 证明 AuthStatus、RoleAdd、RoleGet 的 response header revision
+  必须等于当前用户 KV revision，且经真实 gRPC 响应路径后 `cluster_id`、`member_id` 和
+  `raft_term` 都不能为 0。本轮新增 bufconn gRPC 回归，注册 KV/Auth 服务，先 Put 取得
+  revision，再通过 Auth client 调用三类 RPC 并断言完整 header，防止只在 handler 内填
+  revision、但 interceptor/header stamping 重构后管理面响应丢失集群身份字段。
 
 ### P2：运维兼容和长期验证
 
