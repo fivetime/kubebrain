@@ -14626,6 +14626,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   官方 clientv3 回归，逐一丢弃上述 mutation 响应，先由直连 client 确认提交已经生效，
   再恢复桥接连接并要求 `leasing.Get` 与 direct `Get` 的 key/value/revision/version/lease
   完全一致，补齐生产网络抖动下 leasing wrapper 的缓存一致性门禁。
+- A1074 固定 client/v3/leasing reconnect operation 语义：
+  `leasing_reconnect_operations` differential 证明 `leasing.NewKV` 在 owner watch/连接被
+  反复断开时，missing-key Txn 必须可重试成功并返回空 range；随后对已存在和缺失 key
+  的多次 `Get` 必须与直连 KV 完全一致，不能因 owner cache 重建而丢失已缓存写入或把
+  缺失 key 误认为存在。本轮复用真实 TCP bridge，先在 Txn 期间连续 drop 连接，再写入
+  偶数 key，并对 8 个 key 分别在 Get 期间注入连接 churn，断言每次 response 与 direct
+  `Get` 的 key/value/revision/version/lease 完全一致，补齐 client 断线重连路径的
+  leasing cache 回归。
 
 ### P2：运维兼容和长期验证
 

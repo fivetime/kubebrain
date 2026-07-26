@@ -1317,6 +1317,88 @@ func TestClientLeasingAmbiguousMutationsConvergeAfterResponseLoss(t *testing.T) 
 	}
 }
 
+func TestClientLeasingReconnectOperationsMatchDirectKV(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterWatchServer(grpcServer, server)
+	etcdserverpb.RegisterLeaseServer(grpcServer, server)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(func() {
+		grpcServer.Stop()
+		_ = listener.Close()
+	})
+
+	directEndpoint := listener.Addr().String()
+	bridge := newClientLeasingTCPBridge(t, directEndpoint)
+	newClient := func(endpoint string) *clientv3.Client {
+		client, newErr := clientv3.New(clientv3.Config{
+			Endpoints:   []string{endpoint},
+			DialTimeout: time.Second,
+		})
+		require.NoError(t, newErr)
+		t.Cleanup(func() { require.NoError(t, client.Close()) })
+		return client
+	}
+	throughBridge := newClient(bridge.Endpoint())
+	direct := newClient(directEndpoint)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	prefix := fmt.Sprintf("/a1074/leasing-reconnect-operations/%d/", time.Now().UnixNano())
+	dataPrefix := prefix + "data/"
+	leased, closeLeased, err := leasing.NewKV(throughBridge, prefix+"owners/")
+	require.NoError(t, err)
+	t.Cleanup(closeLeased)
+
+	missingKey := dataPrefix + "txn-missing"
+	_, err = leased.Get(ctx, missingKey)
+	require.NoError(t, err)
+	txnCtx, txnCancel := context.WithTimeout(ctx, 5*time.Second)
+	txnDropsBefore := bridge.DroppedConnections()
+	txnChurn := clientLeasingChurnTCPBridge(bridge, 5, 10*time.Millisecond)
+	<-txnChurn.started
+	txn, err := leased.Txn(txnCtx).
+		If(clientv3.Compare(clientv3.Version(missingKey), "=", 0)).
+		Then(clientv3.OpGet(missingKey)).
+		Commit()
+	txnCancel()
+	<-txnChurn.done
+	require.Greater(t, bridge.DroppedConnections(), txnDropsBefore)
+	require.NoError(t, err)
+	require.True(t, txn.Succeeded)
+	require.Len(t, txn.Responses, 1)
+	require.Empty(t, txn.Responses[0].GetResponseRange().Kvs)
+
+	const keys = 8
+	for index := 0; index < keys; index += 2 {
+		key := fmt.Sprintf("%s%02d", dataPrefix, index)
+		_, err = leased.Put(ctx, key, fmt.Sprintf("value-%02d", index))
+		require.NoError(t, err)
+	}
+	for index := 0; index < keys; index++ {
+		key := fmt.Sprintf("%s%02d", dataPrefix, index)
+		getCtx, getCancel := context.WithTimeout(ctx, 5*time.Second)
+		getDropsBefore := bridge.DroppedConnections()
+		getChurn := clientLeasingChurnTCPBridge(bridge, 3, 10*time.Millisecond)
+		<-getChurn.started
+		leasedResponse, leasedErr := leased.Get(getCtx, key)
+		getCancel()
+		<-getChurn.done
+		require.Greater(t, bridge.DroppedConnections(), getDropsBefore)
+		require.NoError(t, leasedErr)
+		directResponse, directErr := direct.Get(ctx, key)
+		require.NoError(t, directErr)
+		require.True(t,
+			clientLeasingRangeResponsesEqual(leasedResponse, directResponse),
+			"key %q differs after reconnect", key)
+	}
+}
+
 func clientLeasingRangeResponsesEqual(left, right *clientv3.GetResponse) bool {
 	if len(left.Kvs) != len(right.Kvs) {
 		return false
@@ -1362,6 +1444,7 @@ type clientLeasingTCPBridge struct {
 	target       string
 	blackhole    atomic.Int32
 	droppedBytes atomic.Int64
+	droppedConns atomic.Int64
 	closed       atomic.Bool
 	mu           sync.Mutex
 	conns        map[net.Conn]struct{}
@@ -1399,6 +1482,14 @@ func (b *clientLeasingTCPBridge) Unblackhole() {
 
 func (b *clientLeasingTCPBridge) DroppedBytes() int64 {
 	return b.droppedBytes.Load()
+}
+
+func (b *clientLeasingTCPBridge) DropConnections() {
+	b.dropConnections()
+}
+
+func (b *clientLeasingTCPBridge) DroppedConnections() int64 {
+	return b.droppedConns.Load()
 }
 
 func (b *clientLeasingTCPBridge) Close() {
@@ -1490,9 +1581,35 @@ func (b *clientLeasingTCPBridge) dropConnections() {
 		connections = append(connections, connection)
 	}
 	b.mu.Unlock()
+	b.droppedConns.Add(int64(len(connections)))
 	for _, connection := range connections {
 		_ = connection.Close()
 	}
+}
+
+type clientLeasingTCPBridgeChurn struct {
+	started <-chan struct{}
+	done    <-chan struct{}
+}
+
+func clientLeasingChurnTCPBridge(
+	bridge *clientLeasingTCPBridge,
+	drops int,
+	interval time.Duration,
+) clientLeasingTCPBridgeChurn {
+	started := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for drop := 0; drop < drops; drop++ {
+			bridge.DropConnections()
+			if drop == 0 {
+				close(started)
+			}
+			time.Sleep(interval)
+		}
+	}()
+	return clientLeasingTCPBridgeChurn{started: started, done: done}
 }
 
 func TestClientLeasingRangeOwnershipAndDelete(t *testing.T) {
