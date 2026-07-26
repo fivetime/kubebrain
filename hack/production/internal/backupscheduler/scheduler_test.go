@@ -557,25 +557,28 @@ func TestDynamicNamespaceInventoryAppliesWithoutSchedulerRestart(t *testing.T) {
 }
 
 func TestDynamicNamespaceInventoryFailsClosedBeforePolicyAccess(t *testing.T) {
-	for _, raw := range []string{
-		`[]`,
-		`[""]`,
-		`["tenant-a","tenant-a"]`,
-		`["Tenant_A"]`,
-		`{"namespace":"tenant-a"}`,
-		`not-json`,
+	for _, tc := range []struct {
+		raw  string
+		want string
+	}{
+		{raw: `[]`, want: "namespace allowlist must not be empty"},
+		{raw: `[""]`, want: "namespace allowlist contains an empty value"},
+		{raw: `["tenant-a","tenant-a"]`, want: "namespace allowlist contains duplicate tenant-a"},
+		{raw: `["Tenant_A"]`, want: "invalid namespace Tenant_A"},
+		{raw: `{"namespace":"tenant-a"}`, want: "cannot unmarshal object into Go value of type []string"},
+		{raw: `not-json`, want: "invalid character"},
 	} {
-		t.Run(raw, func(t *testing.T) {
+		t.Run(tc.raw, func(t *testing.T) {
 			client := fakeClient()
 			createTemplateIn(t, client, "tenant-a", validTemplate())
 			createPolicyIn(t, client, "tenant-a", false)
-			createInventory(t, client, raw)
+			createInventory(t, client, tc.raw)
 
 			count, err := NewForInventory(
 				client, "control", "scheduler-inventory", DefaultInventoryKey,
 			).Reconcile(context.Background())
 			require.Zero(t, count)
-			require.Error(t, err)
+			require.ErrorContains(t, err, tc.want)
 			operations, listErr := client.Resource(operationqueue.Resource).Namespace("tenant-a").
 				List(context.Background(), metav1.ListOptions{})
 			require.NoError(t, listErr)

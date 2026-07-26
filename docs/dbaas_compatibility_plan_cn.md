@@ -16332,6 +16332,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   空配置、非正 reload interval 和过期证书检查分别固定到对应错误文本。该门禁防止证书轮换
   sidecar/服务端在 Secret 损坏或调度参数错误时丢失最后有效证书，或把过期窗口误判为普通
   reload 失败。
+- A1335 固定 backup scheduler 动态 namespace inventory fail-closed 契约：
+  backup scheduler 使用动态 namespace inventory 时，对空 allowlist、空 namespace、重复项、
+  非法 DNS label、非数组 JSON 和损坏 JSON 的拒绝现在固定到 namespace inventory 的具体错误
+  文本，并继续断言在错误 inventory 下不会创建任何 backup operation。该门禁防止定时备份
+  控制器在全局租户清单损坏时误扫 tenant namespace 或生成错误备份请求。
 
 ### P2：运维兼容和长期验证
 
