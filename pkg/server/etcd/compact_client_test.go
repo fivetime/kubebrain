@@ -24,6 +24,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -87,6 +88,47 @@ func TestClientCompactBoundaryErrorsMatchEtcd(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, current.Kvs, 1)
 	require.Equal(t, "v2", string(current.Kvs[0].Value))
+}
+
+func TestClientCompactTypedErrorsMatchEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	key := fmt.Sprintf("/a1145/compact-typed/%d", time.Now().UnixNano())
+	var compactRevision int64
+	for index := 0; index < 5; index++ {
+		put, putErr := client.Put(ctx, key, fmt.Sprintf("value-%d", index))
+		require.NoError(t, putErr)
+		compactRevision = put.Header.Revision
+	}
+	_, err = client.Compact(ctx, compactRevision)
+	require.NoError(t, err)
+
+	_, err = client.Compact(ctx, compactRevision)
+	require.ErrorIs(t, err, rpctypes.ErrCompacted)
+	_, err = client.Compact(ctx, compactRevision+1000)
+	require.ErrorIs(t, err, rpctypes.ErrFutureRev)
 }
 
 func TestRawGRPCCompactRevisionBoundaryErrorsMatchEtcd(t *testing.T) {

@@ -15176,6 +15176,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `ID` 保持请求 lease ID，`TTL=-1`，`GrantedTTL=0`，`WithAttachedKeys` 下 keys 为空。本轮新增
   bufconn official clientv3 回归，grant 后立即 revoke，再查询 TTL 并固定上述外观。该门禁防止
   lease metadata 清理、错误映射或 client adapter 重构破坏控制器对“租约已消失”的无错误探测路径。
+- A1145 固定 clientv3 Compact typed error 外观：
+  对照 `/root/etcd/tests/integration/clientv3/kv_test.go:TestKVCompactError` 和
+  `TestKVCompact`，重复 compact 已 compact revision 必须可由 `errors.Is(...,
+  rpctypes.ErrCompacted)` 识别，compact 未来 revision 必须可由 `errors.Is(...,
+  rpctypes.ErrFutureRev)` 识别。本轮新增 bufconn official clientv3 回归，连续写入后 compact
+  到最新 revision，再分别触发重复 compact 和未来 compact，固定 typed error 外观。该门禁防止
+  compaction 错误从 raw gRPC status 透出或被文本化，破坏控制器对历史 LIST/compact 失败原因的分类。
 
 ### P2：运维兼容和长期验证
 
