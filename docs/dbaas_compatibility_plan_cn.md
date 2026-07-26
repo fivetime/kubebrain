@@ -14618,6 +14618,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   当 root 撤销受保护 lease 后普通用户枚举自己 allowed prefix 上的 lease 恢复成功。本轮
   新增官方 clientv3 bufconn 回归，固定上述 `Leases`/`Revoke` public wrapper 外观，并确认
   被拒绝 revoke 后 `/a1072/protected/leased` 仍保持原值，补齐租约枚举防泄露门禁。
+- A1073 固定 client/v3/leasing ambiguous mutation 后缓存收敛：
+  `leasing_ambiguous_mutations` differential 证明官方 `leasing.NewKV` 在 Delete、Txn
+  Put/Delete、Do Put/Delete 已提交但响应被网络丢弃时，调用方会以 deadline exceeded
+  观察到不确定结果；连接恢复后 owner cache 必须通过 watch/reconnect 与直连 KV 收敛，
+  不能继续返回旧值或遗漏已提交删除。本轮新增真实 TCP gRPC + response blackhole 的
+  官方 clientv3 回归，逐一丢弃上述 mutation 响应，先由直连 client 确认提交已经生效，
+  再恢复桥接连接并要求 `leasing.Get` 与 direct `Get` 的 key/value/revision/version/lease
+  完全一致，补齐生产网络抖动下 leasing wrapper 的缓存一致性门禁。
 
 ### P2：运维兼容和长期验证
 

@@ -16,6 +16,7 @@ package etcd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"sync"
@@ -29,7 +30,9 @@ import (
 	"go.etcd.io/etcd/client/v3/concurrency"
 	"go.etcd.io/etcd/client/v3/leasing"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 )
 
@@ -1174,6 +1177,146 @@ func TestClientLeasingMutationFormsRefreshOwnerCache(t *testing.T) {
 	}
 }
 
+func TestClientLeasingAmbiguousMutationsConvergeAfterResponseLoss(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterWatchServer(grpcServer, server)
+	etcdserverpb.RegisterLeaseServer(grpcServer, server)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(func() {
+		grpcServer.Stop()
+		_ = listener.Close()
+	})
+
+	directEndpoint := listener.Addr().String()
+	bridge := newClientLeasingTCPBridge(t, directEndpoint)
+	newClient := func(endpoint string) *clientv3.Client {
+		client, newErr := clientv3.New(clientv3.Config{
+			Endpoints:   []string{endpoint},
+			DialTimeout: time.Second,
+		})
+		require.NoError(t, newErr)
+		t.Cleanup(func() { require.NoError(t, client.Close()) })
+		return client
+	}
+	owner := newClient(bridge.Endpoint())
+	direct := newClient(directEndpoint)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	prefix := fmt.Sprintf("/a1073/leasing-ambiguous-mutations/%d/", time.Now().UnixNano())
+	leased, closeLeased, err := leasing.NewKV(owner, prefix+"owners/")
+	require.NoError(t, err)
+	t.Cleanup(closeLeased)
+
+	cases := []struct {
+		name     string
+		expected string
+		apply    func(context.Context, clientv3.KV, string, string) error
+	}{
+		{
+			name: "delete",
+			apply: func(callCtx context.Context, kv clientv3.KV, key, _ string) error {
+				_, callErr := kv.Delete(callCtx, key)
+				return callErr
+			},
+		},
+		{
+			name:     "txn-put",
+			expected: "txn-put-applied",
+			apply: func(callCtx context.Context, kv clientv3.KV, key, expected string) error {
+				_, callErr := kv.Txn(callCtx).Then(
+					clientv3.OpGet(key),
+					clientv3.OpPut(key, expected),
+				).Commit()
+				return callErr
+			},
+		},
+		{
+			name: "txn-delete",
+			apply: func(callCtx context.Context, kv clientv3.KV, key, _ string) error {
+				_, callErr := kv.Txn(callCtx).Then(
+					clientv3.OpGet(key),
+					clientv3.OpDelete(key),
+				).Commit()
+				return callErr
+			},
+		},
+		{
+			name:     "do-put",
+			expected: "do-put-applied",
+			apply: func(callCtx context.Context, kv clientv3.KV, key, expected string) error {
+				_, callErr := kv.Do(callCtx, clientv3.OpPut(key, expected))
+				return callErr
+			},
+		},
+		{
+			name: "do-delete",
+			apply: func(callCtx context.Context, kv clientv3.KV, key, _ string) error {
+				_, callErr := kv.Do(callCtx, clientv3.OpDelete(key))
+				return callErr
+			},
+		},
+	}
+	for index, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			key := fmt.Sprintf("%sdata/%02d", prefix, index)
+			_, err = leased.Put(ctx, key, "initial")
+			require.NoError(t, err)
+			_, err = leased.Get(ctx, key)
+			require.NoError(t, err)
+
+			droppedBefore := bridge.DroppedBytes()
+			bridge.BlackholeResponses()
+			callCtx, callCancel := context.WithTimeout(ctx, 750*time.Millisecond)
+			callDone := make(chan error, 1)
+			go func() {
+				callDone <- testCase.apply(callCtx, leased, key, testCase.expected)
+			}()
+
+			require.Eventually(t, func() bool {
+				response, getErr := direct.Get(ctx, key)
+				if getErr != nil {
+					return false
+				}
+				if testCase.expected == "" {
+					return len(response.Kvs) == 0
+				}
+				return len(response.Kvs) == 1 && string(response.Kvs[0].Value) == testCase.expected
+			}, 5*time.Second, 10*time.Millisecond)
+			require.Eventually(t, func() bool {
+				return bridge.DroppedBytes() > droppedBefore
+			}, 5*time.Second, 10*time.Millisecond)
+
+			var callErr error
+			select {
+			case callErr = <-callDone:
+			case <-ctx.Done():
+				t.Fatalf("ambiguous leasing mutation did not observe caller deadline: %v", ctx.Err())
+			}
+			callCancel()
+			require.True(t,
+				errors.Is(callErr, context.DeadlineExceeded) ||
+					status.Code(callErr) == codes.DeadlineExceeded,
+				"unexpected ambiguous mutation error: %v", callErr)
+			bridge.Unblackhole()
+
+			require.Eventually(t, func() bool {
+				cached, cacheErr := leased.Get(ctx, key)
+				directResponse, directErr := direct.Get(ctx, key)
+				return cacheErr == nil &&
+					directErr == nil &&
+					clientLeasingRangeResponsesEqual(cached, directResponse)
+			}, 10*time.Second, 20*time.Millisecond)
+		})
+	}
+}
+
 func clientLeasingRangeResponsesEqual(left, right *clientv3.GetResponse) bool {
 	if len(left.Kvs) != len(right.Kvs) {
 		return false
@@ -1212,6 +1355,144 @@ func clientLeasingTxnResponseHasSingleRevision(response *clientv3.TxnResponse, e
 		}
 	}
 	return revision > 0
+}
+
+type clientLeasingTCPBridge struct {
+	listener     net.Listener
+	target       string
+	blackhole    atomic.Int32
+	droppedBytes atomic.Int64
+	closed       atomic.Bool
+	mu           sync.Mutex
+	conns        map[net.Conn]struct{}
+	acceptWG     sync.WaitGroup
+	connWG       sync.WaitGroup
+}
+
+func newClientLeasingTCPBridge(t *testing.T, target string) *clientLeasingTCPBridge {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	bridge := &clientLeasingTCPBridge{
+		listener: listener,
+		target:   target,
+		conns:    make(map[net.Conn]struct{}),
+	}
+	bridge.acceptWG.Add(1)
+	go bridge.accept()
+	t.Cleanup(bridge.Close)
+	return bridge
+}
+
+func (b *clientLeasingTCPBridge) Endpoint() string {
+	return b.listener.Addr().String()
+}
+
+func (b *clientLeasingTCPBridge) BlackholeResponses() {
+	b.blackhole.Store(1)
+}
+
+func (b *clientLeasingTCPBridge) Unblackhole() {
+	b.blackhole.Store(0)
+	b.dropConnections()
+}
+
+func (b *clientLeasingTCPBridge) DroppedBytes() int64 {
+	return b.droppedBytes.Load()
+}
+
+func (b *clientLeasingTCPBridge) Close() {
+	if !b.closed.CompareAndSwap(false, true) {
+		return
+	}
+	_ = b.listener.Close()
+	b.acceptWG.Wait()
+	b.dropConnections()
+	b.connWG.Wait()
+}
+
+func (b *clientLeasingTCPBridge) accept() {
+	defer b.acceptWG.Done()
+	for {
+		inbound, err := b.listener.Accept()
+		if err != nil {
+			return
+		}
+		outbound, err := net.DialTimeout("tcp", b.target, 3*time.Second)
+		if err != nil {
+			_ = inbound.Close()
+			continue
+		}
+		if b.closed.Load() {
+			_ = inbound.Close()
+			_ = outbound.Close()
+			return
+		}
+		b.track(inbound)
+		b.track(outbound)
+		b.connWG.Add(1)
+		go b.forwardPair(inbound, outbound)
+	}
+}
+
+func (b *clientLeasingTCPBridge) forwardPair(inbound, outbound net.Conn) {
+	defer b.connWG.Done()
+	var copies sync.WaitGroup
+	copies.Add(2)
+	go func() {
+		defer copies.Done()
+		b.copy(outbound, inbound, false)
+	}()
+	go func() {
+		defer copies.Done()
+		b.copy(inbound, outbound, true)
+	}()
+	copies.Wait()
+	_ = inbound.Close()
+	_ = outbound.Close()
+	b.untrack(inbound)
+	b.untrack(outbound)
+}
+
+func (b *clientLeasingTCPBridge) copy(destination, source net.Conn, response bool) {
+	buffer := make([]byte, 32*1024)
+	for {
+		read, err := source.Read(buffer)
+		if read > 0 {
+			if response && b.blackhole.Load() != 0 {
+				b.droppedBytes.Add(int64(read))
+			} else if _, writeErr := destination.Write(buffer[:read]); writeErr != nil {
+				return
+			}
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
+func (b *clientLeasingTCPBridge) track(connection net.Conn) {
+	b.mu.Lock()
+	b.conns[connection] = struct{}{}
+	b.mu.Unlock()
+}
+
+func (b *clientLeasingTCPBridge) untrack(connection net.Conn) {
+	b.mu.Lock()
+	delete(b.conns, connection)
+	b.mu.Unlock()
+}
+
+func (b *clientLeasingTCPBridge) dropConnections() {
+	b.mu.Lock()
+	connections := make([]net.Conn, 0, len(b.conns))
+	for connection := range b.conns {
+		connections = append(connections, connection)
+	}
+	b.mu.Unlock()
+	for _, connection := range connections {
+		_ = connection.Close()
+	}
 }
 
 func TestClientLeasingRangeOwnershipAndDelete(t *testing.T) {
