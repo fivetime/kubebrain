@@ -15555,6 +15555,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   authentication failed；同名用户 raw re-add 后旧密码恢复；连续 raw `UserChangePassword`
   到 second、third 后，first/second 均失效且只有 third 可认证。本轮加强既有 clientv3
   delete/re-add 与密码轮换回归，防止直接 Auth API 调用方看到用户代际或密码版本漂移。
+- A1203 固定 raw gRPC UserChangePassword 空密码语义：
+  延续 A585 的 empty password change 契约到 generated `etcdserverpb.AuthClient`：root raw
+  `UserChangePassword` 携带空明文和空 hash 时应成功提交，但随后旧密码和空密码 raw
+  `Authenticate` 都必须返回 `InvalidArgument`/authentication failed，不能把空字符串重新 hash
+  成可登录密码。本轮加强既有 manager 层空密码回归，防止直接 Auth API 调用方触发的公开
+  password change 路径回退。
 
 ### P2：运维兼容和长期验证
 

@@ -292,6 +292,17 @@ func TestClientAuthAddUserAfterDeleteAndPasswordRotation(t *testing.T) {
 	requireAuthClientError(t, rawSecondPasswordErr, codes.InvalidArgument, "etcdserver: authentication failed, invalid user ID or password")
 	_, err = rawAuth.Authenticate(ctx, &etcdserverpb.AuthenticateRequest{Name: "a1136-raw-user", Password: "third"})
 	require.NoError(t, err)
+
+	_, err = rawRootAuth.UserAdd(ctx, &etcdserverpb.AuthUserAddRequest{Name: "a585-raw-empty-password", Password: "initial"})
+	require.NoError(t, err)
+	_, err = rawAuth.Authenticate(ctx, &etcdserverpb.AuthenticateRequest{Name: "a585-raw-empty-password", Password: "initial"})
+	require.NoError(t, err)
+	_, err = rawRootAuth.UserChangePassword(ctx, &etcdserverpb.AuthUserChangePasswordRequest{Name: "a585-raw-empty-password"})
+	require.NoError(t, err)
+	_, rawInitialAfterEmptyErr := rawAuth.Authenticate(ctx, &etcdserverpb.AuthenticateRequest{Name: "a585-raw-empty-password", Password: "initial"})
+	requireAuthClientError(t, rawInitialAfterEmptyErr, codes.InvalidArgument, "etcdserver: authentication failed, invalid user ID or password")
+	_, rawEmptyPasswordErr := rawAuth.Authenticate(ctx, &etcdserverpb.AuthenticateRequest{Name: "a585-raw-empty-password", Password: ""})
+	requireAuthClientError(t, rawEmptyPasswordErr, codes.InvalidArgument, "etcdserver: authentication failed, invalid user ID or password")
 }
 
 func TestClientAuthDisabledAllowsCredentialedClient(t *testing.T) {
