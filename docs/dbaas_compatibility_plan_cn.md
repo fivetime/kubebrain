@@ -15245,6 +15245,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   的 `Authenticate` 必须可由 `errors.Is(..., rpctypes.ErrAuthFailed)` 识别。本轮加强既有 bufconn
   official clientv3 auth 回归，在保留 status/message 外观的同时新增 typed error 断言。该门禁
   防止 auth interceptor、token bootstrap 或 client adapter 重构破坏租户控制器对未认证与认证失败的分类。
+- A1155 固定 clientv3 Auth 匿名运维/lease API 的 user-empty typed error：
+  延续 `/root/etcd/tests/integration/clientv3/user_test.go:TestUserErrorAuth` 的 public client
+  错误外观，认证开启后匿名调用 Compact、Defrag、Alarm、Lease 等受保护 API 时，`user name is
+  empty` 也必须可由 `errors.Is(..., rpctypes.ErrUserEmpty)` 识别。本轮补齐既有 bufconn
+  official clientv3 auth 运维权限回归中的剩余匿名错误断言。该门禁防止不同 RPC service 的
+  auth preflight 分支漂移成仅文本相同、typed error 不同的外观。
 
 ### P2：运维兼容和长期验证
 
