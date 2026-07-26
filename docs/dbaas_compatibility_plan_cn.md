@@ -16242,6 +16242,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `claimed_namespace` 的 runner 都必须有 `RejectsInvalidClaimNamespace` 测试和
   `CLAIM_NAMESPACE=tenant/a` fixture。该门禁防止未来新增或重构 operation runner 时重新
   引入“信任 claim namespace 但没有 fail-closed 测试”的生产缺口。
+- A1318 固定 backend keyspace 跨租户解码错误契约：
+  `TestKeyspaceCoderRejectsForeignKeys` 不再只要求跨 keyspace 对象 key 和 event log key
+  解码失败，而是分别固定为 object coder 的 magic mismatch 与 event-log coder 的
+  `not an event log key`。该门禁防止未来重构 keyspace magic 或 event log 前缀时把
+  外租户数据误分类为格式损坏、边界成功或其他可重试错误，从而削弱多租户物理 keyspace
+  隔离的可观测契约。
 
 ### P2：运维兼容和长期验证
 

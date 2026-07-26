@@ -100,11 +100,11 @@ func TestKeyspaceCoderRejectsForeignKeys(t *testing.T) {
 	b, _ := NewKeyspace("tenant-b")
 	foreign := b.NewCoder().EncodeObjectKey([]byte("/registry/pods/p"), 42)
 	_, _, err := a.NewCoder().Decode(foreign)
-	require.Error(t, err)
+	require.ErrorContains(t, err, "magic number not right for object key")
 	_, ok := a.NewCoder().RevisionBoundaryForBorder(foreign)
 	require.False(t, ok)
 	_, _, err = a.DecodeEventLogKey(b.EncodeEventLogKey(42, []byte("k")))
-	require.Error(t, err)
+	require.ErrorContains(t, err, "not an event log key:")
 }
 
 func TestIsInternalStorageKey(t *testing.T) {
