@@ -15924,6 +15924,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   linearizable read-barrier failure、premature backend close，以及 partial response 后
   snapshot 被 compact 的边界统一到 exact Unavailable message 或 `ErrGRPCCompacted` 三件套。
   该门禁防止流式读路径重构后只保留 code/substring，漏掉客户端重试和 compact 诊断语义。
+- A1268 固定 follower Watch revision-fence Unavailable exact message：
+  A1267 已覆盖 RangeStream retry 语义，本轮把 follower Watch 创建前 read-barrier failure、
+  本地 negative/invalid/duplicate/cancel 控制响应之后的下一次 fence failure，以及 quota
+  reservation 创建失败释放路径统一到 exact `codes.Unavailable` message helper。该门禁防止
+  watch revision-fence/proxy-disabled 重构后只保留 Unavailable，漏掉客户端重试诊断语义。
 
 ### P2：运维兼容和长期验证
 

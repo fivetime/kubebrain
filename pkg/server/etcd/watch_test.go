@@ -1021,8 +1021,7 @@ func TestFollowerWatchReadBarrierFailureIsRetryable(t *testing.T) {
 		}},
 	}
 	err := server.Watch(stream)
-	require.Equal(t, codes.Unavailable, status.Code(err))
-	require.Equal(t, barrierErr.Error(), status.Convert(err).Message())
+	requireWatchStatusError(t, err, codes.Unavailable, barrierErr.Error())
 	require.Empty(t, stream.sent, "a watch without a revision fence must not be created")
 }
 
@@ -1054,7 +1053,7 @@ func TestFollowerWatchLocalRejectionsPrecedeReadBarrier(t *testing.T) {
 		},
 	}
 	err := server.Watch(stream)
-	require.Equal(t, codes.Unavailable, status.Code(err))
+	requireWatchStatusError(t, err, codes.Unavailable, barrierErr.Error())
 	require.Equal(t, int64(1), barrierCalls.Load(), "only the valid create should enter the read barrier")
 	require.Len(t, stream.sent, 2)
 	require.Equal(t, rpctypes.ErrCompacted.Error(), stream.sent[0].CancelReason)
@@ -1101,7 +1100,7 @@ func TestFollowerWatchDuplicateIDPrecedesReadBarrier(t *testing.T) {
 		},
 	}
 	err := server.Watch(stream)
-	require.Equal(t, codes.Unavailable, status.Code(err))
+	requireWatchStatusError(t, err, codes.Unavailable, barrierErr.Error())
 	require.Equal(t, int64(2), barrierCalls.Load(), "duplicate ID must not enter the read barrier")
 	require.GreaterOrEqual(t, len(stream.sent), 2)
 	require.True(t, stream.sent[0].Created)
@@ -1166,7 +1165,7 @@ func TestFollowerWatchCancelPrecedesReadBarrier(t *testing.T) {
 		},
 	}
 	err = server.Watch(stream)
-	require.Equal(t, codes.Unavailable, status.Code(err))
+	requireWatchStatusError(t, err, codes.Unavailable, barrierErr.Error())
 	require.Equal(t, int64(2), barrierCalls.Load(), "client cancel must not enter the read barrier")
 	require.Len(t, stream.sent, 2)
 	require.True(t, stream.sent[0].Created)
@@ -1223,9 +1222,10 @@ func TestFollowerWatchQuotaReservationReleasedOnCreateFailure(t *testing.T) {
 	for _, test := range []struct {
 		name       string
 		barrierErr error
+		wantErr    string
 	}{
-		{name: "read barrier failure", barrierErr: errors.New("leader revision transport failed")},
-		{name: "proxy disabled after barrier"},
+		{name: "read barrier failure", barrierErr: errors.New("leader revision transport failed"), wantErr: "leader revision transport failed"},
+		{name: "proxy disabled after barrier", wantErr: "watch error addr is test-peer leader test-peer"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			server, closeFn := newTestRPCServer(t)
@@ -1246,12 +1246,19 @@ func TestFollowerWatchQuotaReservationReleasedOnCreateFailure(t *testing.T) {
 				}},
 			}
 			err := server.Watch(stream)
-			require.Equal(t, codes.Unavailable, status.Code(err))
+			requireWatchStatusError(t, err, codes.Unavailable, test.wantErr)
 			require.Zero(t, server.activeWatches)
 			require.True(t, server.acquireWatch(), "failed create must return its reserved watch slot")
 			server.releaseWatch()
 		})
 	}
+}
+
+func requireWatchStatusError(t *testing.T, err error, code codes.Code, message string) {
+	t.Helper()
+	require.Error(t, err)
+	require.Equal(t, code, status.Code(err))
+	require.Equal(t, message, status.Convert(err).Message())
 }
 
 func TestLeaderFromNowWatchReplaysWriteDuringCreatedResponse(t *testing.T) {
