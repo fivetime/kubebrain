@@ -15594,6 +15594,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   rpctypes.ErrLeaseNotFound)`、`codes.Unknown` 和 `etcdserver: requested lease not found`。
   该门禁防止 DBaaS lease adapter 或 gRPC error mapping 重构后仅保留 typed error，却改变
   控制器和 etcdctl 依赖的用户可见错误外观。
+- A1209 固定 official clientv3 Txn 基础错误 code/message：
+  A1131/A1169 已覆盖 duplicate key、empty key、invalid sort 与 too-many-ops 的 typed error，
+  本轮把 public `clientv3.Txn().Commit()` 的 wrapper 外观也固定为 `codes.Unknown`，并分别
+  断言 `duplicate key given in txn request`、`key is not provided`、`invalid sort option` 和
+  `too many operations in txn request`。该门禁防止 DBaaS Txn adapter 或 gRPC error mapping
+  重构后只保留 `errors.Is`，却让 apiserver/etcdctl 日志和错误分类看到不同 code/message。
 
 ### P2：运维兼容和长期验证
 

@@ -349,15 +349,18 @@ func TestClientTxnBasicErrorsMatchEtcd(t *testing.T) {
 		Then(clientv3.OpPut("/a1131/txn/basic-error/duplicate", "one"), clientv3.OpPut("/a1131/txn/basic-error/duplicate", "two")).
 		Commit()
 	require.ErrorIs(t, err, rpctypes.ErrDuplicateKey)
+	requireClientTxnError(t, err, codes.Unknown, "etcdserver: duplicate key given in txn request")
 
 	_, err = client.Txn(ctx).Then(clientv3.OpGet("")).Commit()
 	require.ErrorIs(t, err, rpctypes.ErrEmptyKey)
+	requireClientTxnError(t, err, codes.Unknown, "etcdserver: key is not provided")
 
 	_, err = client.Txn(ctx).
 		Then(clientv3.OpGet("/a1169/txn/basic-error/invalid-sort",
 			clientv3.WithSort(clientv3.SortTarget(99), clientv3.SortOrder(99)))).
 		Commit()
 	require.ErrorIs(t, err, rpctypes.ErrInvalidSortOption)
+	requireClientTxnError(t, err, codes.Unknown, "etcdserver: invalid sort option")
 
 	ops := make([]clientv3.Op, defaultMaxTxnOps+1)
 	for i := range ops {
@@ -365,6 +368,7 @@ func TestClientTxnBasicErrorsMatchEtcd(t *testing.T) {
 	}
 	_, err = client.Txn(ctx).Then(ops...).Commit()
 	require.ErrorIs(t, err, rpctypes.ErrTooManyOps)
+	requireClientTxnError(t, err, codes.Unknown, "etcdserver: too many operations in txn request")
 }
 
 func TestClientTxnNoSpaceIsTyped(t *testing.T) {
