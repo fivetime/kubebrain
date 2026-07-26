@@ -14570,6 +14570,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   且 CancelReason 为 `PermissionDenied` gRPC 字符串；root 写入期间值时旧 watch 仍收到
   事件，重新授予 readwrite 后 watch ID `106603` 创建成功，后续写入同时 fanout 到新旧
   watch，补齐 Watch/Auth multiplex stream 的 public wire 门禁。
+- A1067 固定 clientv3 Auth Txn Put PrevKV 对 write-only role 的拒绝：
+  `auth` differential 覆盖只有 write 权限的用户执行 Txn `OpPut(... WithPrevKV)` 必须
+  返回 permission denied，避免通过 PrevKV 泄露旧值；二层嵌套 Txn 也必须递归应用相同规则，
+  且原值保持不变。服务层已覆盖递归 Txn 授权，本轮新增官方 clientv3 bufconn 回归，writer
+  仅拥有 `/a1067/write-only/key` 的 write 权限，直接 Txn Put+PrevKV 和二层嵌套
+  Txn Put+PrevKV 均经 high-level wrapper 暴露 `Unknown: permission denied`，最后 root
+  点读确认值仍为 `before`，补齐 public Txn/Auth wrapper 的 PrevKV 泄露防护门禁。
 
 ### P2：运维兼容和长期验证
 

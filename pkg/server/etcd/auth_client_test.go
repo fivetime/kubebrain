@@ -808,6 +808,83 @@ func TestClientAuthWatchStreamTracksPermissionChanges(t *testing.T) {
 	require.True(t, received[restoredWatchID])
 }
 
+func TestClientAuthTxnPutWithPrevKVDeniedForWriteOnlyRole(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterAuthServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	dialOptions := []grpc.DialOption{
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}),
+	}
+	newClient := func(username, password string) *clientv3.Client {
+		t.Helper()
+		client, err := clientv3.New(clientv3.Config{
+			Endpoints:   []string{"bufnet"},
+			DialTimeout: time.Second,
+			Username:    username,
+			Password:    password,
+			DialOptions: dialOptions,
+		})
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, client.Close()) })
+		return client
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	bootstrap := newClient("", "")
+	require.NoError(t, addAuthUserRoleAndPermission(ctx, bootstrap, "root", "root-secret", "root", "", ""))
+	_, err := bootstrap.UserAdd(ctx, "writer", "writer-secret")
+	require.NoError(t, err)
+	_, err = bootstrap.RoleAdd(ctx, "a1067-write-only")
+	require.NoError(t, err)
+	_, err = bootstrap.RoleGrantPermission(
+		ctx,
+		"a1067-write-only",
+		"/a1067/write-only/key",
+		"",
+		clientv3.PermissionType(clientv3.PermWrite),
+	)
+	require.NoError(t, err)
+	_, err = bootstrap.UserGrantRole(ctx, "writer", "a1067-write-only")
+	require.NoError(t, err)
+	_, err = bootstrap.AuthEnable(ctx)
+	require.NoError(t, err)
+
+	root := newClient("root", "root-secret")
+	writer := newClient("writer", "writer-secret")
+	_, err = root.Put(ctx, "/a1067/write-only/key", "before")
+	require.NoError(t, err)
+	_, prevKVErr := writer.Txn(ctx).Then(
+		clientv3.OpPut("/a1067/write-only/key", "after", clientv3.WithPrevKV()),
+	).Commit()
+	requireAuthClientError(t, prevKVErr, codes.Unknown, "etcdserver: permission denied")
+
+	twoLevelNested := func(op clientv3.Op) clientv3.Op {
+		return clientv3.OpTxn(nil, []clientv3.Op{
+			clientv3.OpTxn(nil, []clientv3.Op{op}, nil),
+		}, nil)
+	}
+	_, nestedPrevKVErr := writer.Txn(ctx).Then(
+		twoLevelNested(clientv3.OpPut("/a1067/write-only/key", "nested-after", clientv3.WithPrevKV())),
+	).Commit()
+	requireAuthClientError(t, nestedPrevKVErr, codes.Unknown, "etcdserver: permission denied")
+
+	value, err := root.Get(ctx, "/a1067/write-only/key")
+	require.NoError(t, err)
+	require.Len(t, value.Kvs, 1)
+	require.Equal(t, "before", string(value.Kvs[0].Value))
+}
+
 func addAuthUserRoleAndPermission(
 	ctx context.Context,
 	client *clientv3.Client,
