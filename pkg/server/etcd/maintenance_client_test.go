@@ -148,6 +148,49 @@ func TestClientDefragmentReturnsEtcdNilHeaderNoOp(t *testing.T) {
 	require.Nil(t, response.Header)
 }
 
+func TestClientStatusProtocolMetadataMatchesEtcdContract(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterMaintenanceServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	put, err := client.Put(ctx, "/a1110/status-client/probe", "value")
+	require.NoError(t, err)
+	response, err := client.Status(ctx, "bufnet")
+	require.NoError(t, err)
+	require.NotNil(t, response.Header)
+	require.GreaterOrEqual(t, response.Header.Revision, put.Header.Revision)
+	require.NotZero(t, response.Header.ClusterId)
+	require.NotZero(t, response.Header.MemberId)
+	require.Positive(t, response.Header.RaftTerm)
+	require.Equal(t, Version, response.Version)
+	require.Equal(t, Version, response.StorageVersion)
+	require.Equal(t, defaultEtcdBackendQuota, response.DbSizeQuota)
+	require.NotNil(t, response.DowngradeInfo)
+	require.False(t, response.DowngradeInfo.Enabled)
+	require.Empty(t, response.Errors)
+}
+
 func TestRawGRPCAlarmGetAndZeroMemberRoundTrip(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

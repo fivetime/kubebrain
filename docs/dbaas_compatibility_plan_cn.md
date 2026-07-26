@@ -14884,6 +14884,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Maintenance 服务后调用 `client.Defragment(ctx, "bufnet")`，断言无错误且
   `response.Header == nil`。该门禁防止 no-op 实现以后合成 current revision header，
   破坏依赖空响应判定的 `etcdctl defrag`/运维探测兼容性。
+- A1110 固定 clientv3 Status 协议 metadata：
+  A33/A49 和 `maintenance_semantics` compat 已要求 `Maintenance.Status` 暴露可被
+  kube-apiserver 与运维工具解析的 `Version=3.7.0`、`StorageVersion=3.7.0`、
+  `DbSizeQuota`、非空 header/raft term 以及 `DowngradeInfo{Enabled:false}`；本地此前
+  主要在服务层断言这些字段，public clientv3 只覆盖 alarm errors。本轮新增 bufconn
+  official clientv3 回归，先写入 probe key 推进 revision，再调用
+  `client.Status(ctx, "bufnet")` 断言 header revision 覆盖写入、cluster/member/raft term
+  非零、版本与 quota 精确匹配且无 active errors。该门禁防止 Status wrapper、版本常量或
+  诊断面重构让 DBaaS 数据面在 Kubernetes feature gate 和 etcdctl status 下退化。
 
 ### P2：运维兼容和长期验证
 
