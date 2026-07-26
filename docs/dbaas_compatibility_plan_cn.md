@@ -14232,6 +14232,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `etcdserverpb.WatchClient.Watch` 发送上述控制帧序列并验证 `0` 与 `404` 两个 watch 的
   created/canceled 外观和 header，防止只依赖 fake stream 时误把 protobuf 空 create/cancel
   当作 nil 子消息而漏掉真实公开协议语义。
+- A1023 固定 raw gRPC Watch RequestProgress stream-wide 响应：
+  `watch_control` differential 证明单个 watch id=51 已接收事件后发送
+  `WatchProgressRequest{}`，etcd 返回的是 stream-wide progress response：`WatchId=-1`、
+  `Created=false`、`Canceled=false`、无 Events、无 CancelReason 且 header revision 不低于
+  已交付事件 revision，而不是复用用户 watch ID。本轮新增 bufconn raw gRPC 回归，注册真实
+  KV/Watch 服务后直接用 `etcdserverpb` 客户端 create watch、Put 触发事件、再 RequestProgress，
+  防止服务层 progress watermark 正确但公开 gRPC 控制响应 ID、header 或事件外观回退。
 
 ### P2：运维兼容和长期验证
 

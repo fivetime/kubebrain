@@ -282,6 +282,78 @@ func TestRawGRPCWatchEmptyControlFramesMatchEtcd(t *testing.T) {
 	require.Empty(t, response.CancelReason)
 }
 
+func TestRawGRPCWatchProgressRequestUsesStreamWideID(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	_, err := server.Put(context.Background(), &etcdserverpb.PutRequest{
+		Key: []byte("/a1023/watch-progress/seed"), Value: []byte("seed"),
+	})
+	require.NoError(t, err)
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterWatchServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///bufnet",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	stream, err := etcdserverpb.NewWatchClient(conn).Watch(ctx)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = stream.CloseSend() })
+
+	key := []byte(fmt.Sprintf("/a1023/watch-progress/%d", time.Now().UnixNano()))
+	require.NoError(t, stream.Send(&etcdserverpb.WatchRequest{
+		RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{
+			CreateRequest: &etcdserverpb.WatchCreateRequest{Key: key, WatchId: 51},
+		},
+	}))
+	created, err := stream.Recv()
+	require.NoError(t, err)
+	requireRawWatchHeaderWellFormed(t, created)
+	require.True(t, created.Created)
+	require.False(t, created.Canceled)
+	require.Equal(t, int64(51), created.WatchId)
+
+	put, err := etcdserverpb.NewKVClient(conn).Put(ctx, &etcdserverpb.PutRequest{
+		Key: key, Value: []byte("value"),
+	})
+	require.NoError(t, err)
+	events, err := stream.Recv()
+	require.NoError(t, err)
+	requireRawWatchHeaderWellFormed(t, events)
+	require.False(t, events.Created)
+	require.False(t, events.Canceled)
+	require.Equal(t, int64(51), events.WatchId)
+	require.Len(t, events.Events, 1)
+	require.Equal(t, put.Header.Revision, events.Events[0].Kv.ModRevision)
+
+	require.NoError(t, stream.Send(&etcdserverpb.WatchRequest{
+		RequestUnion: &etcdserverpb.WatchRequest_ProgressRequest{
+			ProgressRequest: &etcdserverpb.WatchProgressRequest{},
+		},
+	}))
+	progress, err := stream.Recv()
+	require.NoError(t, err)
+	requireRawWatchHeaderWellFormed(t, progress)
+	require.False(t, progress.Created)
+	require.False(t, progress.Canceled)
+	require.Equal(t, int64(-1), progress.WatchId)
+	require.Empty(t, progress.Events)
+	require.Empty(t, progress.CancelReason)
+	require.GreaterOrEqual(t, progress.Header.Revision, put.Header.Revision)
+}
+
 func requireRawWatchHeaderWellFormed(t *testing.T, response *etcdserverpb.WatchResponse) {
 	t.Helper()
 	require.NotNil(t, response.Header)
