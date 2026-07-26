@@ -14815,6 +14815,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   key，断言 base scan 至少两页、只包含目标 prefix、首尾 key 正确，并继续验证增量
   PUT/DELETE revision 都大于 base revision，补齐 make-mirror 外部门禁之外的本地高层 API
   覆盖。
+- A1101 固定 clientv3 legacy Snapshot 平台替代外观：
+  KubeBrain 不伪造 etcd bbolt snapshot，`SnapshotWithVersion` 已作为 DBaaS 平台替代路径
+  返回 canonical `Unimplemented`。官方 clientv3 仍保留旧 `Snapshot(ctx)` API；该方法会先
+  返回 reader，再在读取 stream 时暴露服务端错误。本轮新增本地 official clientv3
+  maintenance bufconn 回归，同时断言 `SnapshotWithVersion` 立即返回
+  `etcd snapshot is unavailable on TiKV; use the DBaaS logical backup and restore workflow`，
+  以及 legacy `Snapshot(ctx)` 的 reader `ReadAll` 返回同一 `Unimplemented` code/message，
+  防止旧客户端入口绕过平台替代提示。
 
 ### P2：运维兼容和长期验证
 

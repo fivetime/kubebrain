@@ -16,6 +16,7 @@ package etcd
 
 import (
 	"context"
+	"io"
 	"math"
 	"net"
 	"testing"
@@ -30,6 +31,47 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 )
+
+func TestClientSnapshotAPIsReturnPlatformUnsupported(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterMaintenanceServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	versioned, err := client.SnapshotWithVersion(ctx)
+	if versioned != nil && versioned.Snapshot != nil {
+		require.NoError(t, versioned.Snapshot.Close())
+	}
+	require.Equal(t, codes.Unimplemented, status.Code(err))
+	require.Equal(t, snapshotUnsupportedMessage, status.Convert(err).Message())
+
+	legacy, err := client.Snapshot(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, legacy)
+	_, err = io.ReadAll(legacy)
+	require.Equal(t, codes.Unimplemented, status.Code(err))
+	require.Equal(t, snapshotUnsupportedMessage, status.Convert(err).Message())
+	require.NoError(t, legacy.Close())
+}
 
 func TestRawGRPCAlarmGetAndZeroMemberRoundTrip(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
