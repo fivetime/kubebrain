@@ -15704,6 +15704,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   访问 root/admin 资源、无身份 `UserGet`、client-cert empty/unknown/non-root CN 等拒绝路径
   固定为同时满足 `errors.Is`、direct `codes.Unknown` 和 reference message。该门禁防止 Auth
   RPC service handler 重构后只保留 typed error，导致 raw/clientv3 映射前 message 已漂移。
+- A1226 固定 Auth token direct 错误三件套：
+  A1197/A1200/A1202/A1203 已覆盖 raw gRPC Auth password/token 生命周期和 credential 外观，
+  本轮把 direct token manager 的错误密码、密码变更后的旧 token/旧密码、篡改 token、
+  unknown/trailing claims、缺失 signing key、过期 token、auth disabled 和 empty token provider
+  拒绝路径固定为同时满足 `errors.Is`、direct `codes.Unknown` 和 reference message。该门禁防止
+  token provider、signing key 持久化或 password generation 重构后只保留 typed error，导致 Auth
+  RPC 映射前的 token failure message 漂移。
 
 ### P2：运维兼容和长期验证
 

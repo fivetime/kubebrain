@@ -13,6 +13,8 @@ import (
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	"golang.org/x/crypto/bcrypt"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/kubewharf/kubebrain/pkg/backend"
 	"github.com/kubewharf/kubebrain/pkg/storage"
@@ -36,7 +38,7 @@ func TestAuthTokenUsesPerUserInvalidation(t *testing.T) {
 	ctx := context.Background()
 
 	_, err := tokens.authenticate(ctx, "root", "wrong")
-	require.ErrorIs(t, err, rpctypes.ErrAuthFailed)
+	requireAuthTokenError(t, err, rpctypes.ErrAuthFailed, codes.Unknown, "etcdserver: authentication failed, invalid user ID or password")
 	require.NoError(t, manager.userAdd(ctx, &etcdserverpb.AuthUserAddRequest{
 		Name: "nopass", Options: &authpb.UserAddOptions{NoPassword: true},
 	}))
@@ -55,9 +57,9 @@ func TestAuthTokenUsesPerUserInvalidation(t *testing.T) {
 	// Password changes invalidate only this user's existing tokens.
 	require.NoError(t, manager.userChangePassword(ctx, "root", "changed", ""))
 	_, err = tokens.verify(ctx, token)
-	require.ErrorIs(t, err, rpctypes.ErrInvalidAuthToken)
+	requireAuthTokenError(t, err, rpctypes.ErrInvalidAuthToken, codes.Unknown, "etcdserver: invalid auth token")
 	_, err = tokens.authenticate(ctx, "root", "secret")
-	require.ErrorIs(t, err, rpctypes.ErrAuthFailed)
+	requireAuthTokenError(t, err, rpctypes.ErrAuthFailed, codes.Unknown, "etcdserver: authentication failed, invalid user ID or password")
 	newToken, err := tokens.authenticate(ctx, "root", "changed")
 	require.NoError(t, err)
 	require.NotEqual(t, token, newToken)
@@ -72,7 +74,7 @@ func TestAuthTokenUsesPerUserInvalidation(t *testing.T) {
 	}
 	tampered := parts[0] + "." + replacement + parts[1][1:]
 	_, err = tokens.verify(ctx, tampered)
-	require.ErrorIs(t, err, rpctypes.ErrInvalidAuthToken)
+	requireAuthTokenError(t, err, rpctypes.ErrInvalidAuthToken, codes.Unknown, "etcdserver: invalid auth token")
 }
 
 func TestAuthTokenAuthenticateRetriesAfterAuthRevisionChange(t *testing.T) {
@@ -89,7 +91,7 @@ func TestAuthTokenAuthenticateRetriesAfterAuthRevisionChange(t *testing.T) {
 		}
 
 		_, err := tokens.authenticate(ctx, "root", "secret")
-		require.ErrorIs(t, err, rpctypes.ErrAuthFailed)
+		requireAuthTokenError(t, err, rpctypes.ErrAuthFailed, codes.Unknown, "etcdserver: authentication failed, invalid user ID or password")
 		token, err := tokens.authenticate(ctx, "root", "changed")
 		require.NoError(t, err)
 		_, err = tokens.verify(ctx, token)
@@ -136,11 +138,11 @@ func TestAuthTokenRejectsSignedUnknownOrTrailingClaims(t *testing.T) {
 	unknownPayload := append([]byte{}, payload[:len(payload)-1]...)
 	unknownPayload = append(unknownPayload, []byte(`,"x":true}`)...)
 	_, err = tokens.verify(ctx, signedAuthTokenForPayload(t, server, unknownPayload))
-	require.ErrorIs(t, err, rpctypes.ErrInvalidAuthToken)
+	requireAuthTokenError(t, err, rpctypes.ErrInvalidAuthToken, codes.Unknown, "etcdserver: invalid auth token")
 
 	trailingPayload := append(append([]byte{}, payload...), []byte(`{"u":"root"}`)...)
 	_, err = tokens.verify(ctx, signedAuthTokenForPayload(t, server, trailingPayload))
-	require.ErrorIs(t, err, rpctypes.ErrInvalidAuthToken)
+	requireAuthTokenError(t, err, rpctypes.ErrInvalidAuthToken, codes.Unknown, "etcdserver: invalid auth token")
 }
 
 func signedAuthTokenForPayload(t *testing.T, server *RPCServer, payload []byte) string {
@@ -165,7 +167,7 @@ func TestAuthTokenVerificationFailsClosedWithoutSigningKey(t *testing.T) {
 		Key: authTokenSigningKey, Expected: key, ExpectedExists: true, Delete: true,
 	}}))
 	_, err = tokens.verify(ctx, token)
-	require.ErrorIs(t, err, rpctypes.ErrInvalidAuthToken)
+	requireAuthTokenError(t, err, rpctypes.ErrInvalidAuthToken, codes.Unknown, "etcdserver: invalid auth token")
 	_, err = server.backend.InternalGet(ctx, authTokenSigningKey)
 	require.ErrorIs(t, err, storage.ErrKeyNotFound, "verification must not silently rotate a missing signing key")
 }
@@ -186,7 +188,7 @@ func TestAuthTokenSigningKeySurvivesManagerRecreationAndExpires(t *testing.T) {
 	require.NoError(t, err, "persisted signing key must verify after process-local manager recreation")
 	recreated.now = func() time.Time { return now.Add(authTokenTTL + time.Second) }
 	_, err = recreated.verify(ctx, token)
-	require.ErrorIs(t, err, rpctypes.ErrInvalidAuthToken)
+	requireAuthTokenError(t, err, rpctypes.ErrInvalidAuthToken, codes.Unknown, "etcdserver: invalid auth token")
 }
 
 func TestAuthTokenUsesConfiguredTTL(t *testing.T) {
@@ -208,7 +210,7 @@ func TestAuthTokenUsesConfiguredTTL(t *testing.T) {
 	require.NoError(t, err)
 	server.tokens.now = func() time.Time { return now.Add(2 * time.Second) }
 	_, err = server.tokens.verify(ctx, token)
-	require.ErrorIs(t, err, rpctypes.ErrInvalidAuthToken)
+	requireAuthTokenError(t, err, rpctypes.ErrInvalidAuthToken, codes.Unknown, "etcdserver: invalid auth token")
 }
 
 func TestAuthTokenRejectsWhileDisabled(t *testing.T) {
@@ -216,7 +218,7 @@ func TestAuthTokenRejectsWhileDisabled(t *testing.T) {
 	defer closeFn()
 	tokens := newAuthTokenManager(server.backend)
 	_, err := tokens.authenticate(context.Background(), "root", "secret")
-	require.ErrorIs(t, err, rpctypes.ErrAuthNotEnabled)
+	requireAuthTokenError(t, err, rpctypes.ErrAuthNotEnabled, codes.Unknown, "etcdserver: authentication is not enabled")
 }
 
 func TestAuthTokenEmptyProviderMatchesEtcdNop(t *testing.T) {
@@ -230,11 +232,11 @@ func TestAuthTokenEmptyProviderMatchesEtcdNop(t *testing.T) {
 	require.NoError(t, server.auth.enable(ctx))
 
 	_, err := server.tokens.authenticate(ctx, "root", "wrong")
-	require.ErrorIs(t, err, rpctypes.ErrAuthFailed)
+	requireAuthTokenError(t, err, rpctypes.ErrAuthFailed, codes.Unknown, "etcdserver: authentication failed, invalid user ID or password")
 	_, err = server.tokens.authenticate(ctx, "root", "secret")
-	require.ErrorIs(t, err, rpctypes.ErrAuthFailed)
+	requireAuthTokenError(t, err, rpctypes.ErrAuthFailed, codes.Unknown, "etcdserver: authentication failed, invalid user ID or password")
 	_, err = server.tokens.verify(ctx, "anything")
-	require.ErrorIs(t, err, rpctypes.ErrInvalidAuthToken)
+	requireAuthTokenError(t, err, rpctypes.ErrInvalidAuthToken, codes.Unknown, "etcdserver: invalid auth token")
 }
 
 func TestAuthTokenLazilyMigratesLegacyUserGeneration(t *testing.T) {
@@ -265,4 +267,11 @@ func TestAuthTokenLazilyMigratesLegacyUserGeneration(t *testing.T) {
 	require.Len(t, after.TokenGenerations["root"].Password, authUserTokenGenerationBytes)
 	_, err = tokens.verify(ctx, token)
 	require.NoError(t, err)
+}
+
+func requireAuthTokenError(t *testing.T, err error, want error, code codes.Code, message string) {
+	t.Helper()
+	require.ErrorIs(t, err, want)
+	require.Equal(t, code, status.Code(err))
+	require.Equal(t, message, status.Convert(err).Message())
 }
