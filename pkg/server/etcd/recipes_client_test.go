@@ -254,6 +254,71 @@ func TestClientConcurrencyMutexAndElectionRecipes(t *testing.T) {
 	require.NoError(t, waiterElection.Resign(ctx))
 }
 
+func TestClientConcurrencyOrphanedSessionExpiresAndHandsOff(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterWatchServer(grpcServer, server)
+	etcdserverpb.RegisterLeaseServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	owner, err := concurrency.NewSession(client, concurrency.WithTTL(2))
+	require.NoError(t, err)
+	contender, err := concurrency.NewSession(client, concurrency.WithTTL(10))
+	require.NoError(t, err)
+	t.Cleanup(contender.Orphan)
+	prefix := "/a1114/concurrency/orphan/"
+	ownerMutex := concurrency.NewMutex(owner, prefix+"mutex")
+	contenderMutex := concurrency.NewMutex(contender, prefix+"mutex")
+	ownerElection := concurrency.NewElection(owner, prefix+"election")
+	contenderElection := concurrency.NewElection(contender, prefix+"election")
+	require.NoError(t, ownerMutex.Lock(ctx))
+	require.NoError(t, ownerElection.Campaign(ctx, "owner"))
+
+	mutexWon := make(chan error, 1)
+	electionWon := make(chan error, 1)
+	go func() { mutexWon <- contenderMutex.Lock(ctx) }()
+	go func() { electionWon <- contenderElection.Campaign(ctx, "contender") }()
+	requireConcurrencyBlocked(t, mutexWon, "mutex before orphan")
+	requireConcurrencyBlocked(t, electionWon, "election before orphan")
+
+	ownerLease := owner.Lease()
+	owner.Orphan()
+	requireConcurrencyBlocked(t, mutexWon, "mutex immediately after orphan")
+	requireConcurrencyBlocked(t, electionWon, "election immediately after orphan")
+	require.NoError(t, waitRecipeResult(ctx, mutexWon, "mutex natural-expiry handoff"))
+	require.NoError(t, waitRecipeResult(ctx, electionWon, "election natural-expiry handoff"))
+
+	ttl, err := client.TimeToLive(ctx, ownerLease)
+	require.NoError(t, err)
+	require.Equal(t, int64(-1), ttl.TTL)
+	leader, err := contenderElection.Leader(ctx)
+	require.NoError(t, err)
+	require.Len(t, leader.Kvs, 1)
+	require.Equal(t, "contender", string(leader.Kvs[0].Value))
+	require.NoError(t, contenderElection.Resign(ctx))
+	require.NoError(t, contenderMutex.Unlock(ctx))
+}
+
 func TestClientExperimentalLockRecipesOrderingAndSessionCleanup(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
@@ -476,5 +541,14 @@ func waitRecipeResult(ctx context.Context, result <-chan error, phase string) er
 		return err
 	case <-ctx.Done():
 		return fmt.Errorf("%s did not complete: %w", phase, ctx.Err())
+	}
+}
+
+func requireConcurrencyBlocked(t *testing.T, result <-chan error, phase string) {
+	t.Helper()
+	select {
+	case err := <-result:
+		t.Fatalf("%s completed before it should: %v", phase, err)
+	case <-time.After(300 * time.Millisecond):
 	}
 }

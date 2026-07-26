@@ -14922,6 +14922,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `candidate-1`，`Proclaim` 后收到更新值，第二 candidate 在 `Resign` 前阻塞、Resign 后
   成为 `Leader` 并可正常退出。该门禁防止 Txn compare、watch handoff、lease revoke 或
   session keepalive 重构破坏 Kubernetes 生态中常用的官方 concurrency wrapper。
+- A1114 固定 official client/v3 concurrency orphan session 自然过期接棒：
+  A35 的外部 `TestConcurrencyOrphanedSessionExpiresAndHandsOff` 证明 `Session.Orphan`
+  只停止 keepalive、不主动 revoke；Mutex/Election 的等待者必须在 orphan 后继续阻塞，
+  直到 TTL=2 的 owner lease 自然过期才接棒。本轮新增本地 bufconn official concurrency
+  回归，owner session 同时持有 Mutex 和 Election，contender 的 `Lock`/`Campaign` 在
+  owner orphan 前后均短窗口阻塞；自然过期后两者完成，旧 owner lease `TimeToLive` 返回
+  `TTL=-1`，Election leader 变为 contender 并能正常 `Resign`。该门禁防止 session
+  orphan 被误实现为立即 revoke、自然过期 watch 删除事件丢失，或 lease expiry 清理未能
+  唤醒官方 Mutex/Election waiter。
 
 ### P2：运维兼容和长期验证
 
