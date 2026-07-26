@@ -16342,6 +16342,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   canonical form 必须报告 `inventory manifest is not canonical`。该门禁防止备份对象清单在
   归档或对账前接受重排、带前缀空白或其他非规范 JSON，保证 manifest SHA 与不可变对象版本
   对账具有稳定语义。
+- A1337 固定 billing Object Lock publisher 输入校验错误契约：
+  price catalog、settlement adjustment 和 provider statement publisher 在输入为非完整
+  canonical artifact 时必须分别报告 `metering price catalog is incomplete`、
+  `metering adjustment is incomplete` 和 `provider statement is incomplete`，且不得调用
+  Object Lock executor。该门禁防止账单/供应商成本证据在坏输入下被上传为不可变对象。
 
 ### P2：运维兼容和长期验证
 

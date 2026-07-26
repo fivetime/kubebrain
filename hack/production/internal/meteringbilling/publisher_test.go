@@ -101,6 +101,6 @@ func TestPublisherRejectsNonCanonicalCatalogBeforeExecutor(t *testing.T) {
 		},
 	}
 	_, _, err := publisher.Publish(context.Background())
-	require.Error(t, err)
+	require.ErrorContains(t, err, "metering price catalog is incomplete")
 	require.False(t, called)
 }

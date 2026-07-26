@@ -28,7 +28,7 @@ func TestSettlementPublisherValidatesBeforeObjectStore(t *testing.T) {
 	}
 	require.NoError(t, os.WriteFile(publisher.Input, []byte("{}\n"), 0o600))
 	_, err := publisher.Publish(context.Background())
-	require.Error(t, err)
+	require.ErrorContains(t, err, "metering adjustment is incomplete")
 	require.Zero(t, calls)
 
 	start := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)

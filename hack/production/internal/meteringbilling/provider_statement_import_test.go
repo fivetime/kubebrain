@@ -151,7 +151,7 @@ func TestProviderStatementPublisherRejectsNonCanonicalOrFutureStatementBeforeExe
 		},
 	}
 	_, _, err := publisher.Publish(context.Background())
-	require.Error(t, err)
+	require.ErrorContains(t, err, "provider statement is incomplete")
 	require.False(t, called)
 
 	future := validProviderStatement(start)
