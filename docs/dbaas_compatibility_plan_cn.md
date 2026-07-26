@@ -15778,6 +15778,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Snapshot、MoveLeader 和 Downgrade 平台替代外观，本轮把这些路径的 `codes.Unimplemented`
   与可操作 DBaaS 替代文案统一到共享 helper。该门禁防止后续新增平台替代用例只检查
   gRPC code 或局部 message，漏掉默认 Unimplemented、空文案或错误控制面指引回归。
+- A1239 固定 direct Cluster member mutation 平台替代 helper：
+  A1221/A1185/A1238 已覆盖 Cluster auth 与 raw/clientv3 成员 mutation 平台替代外观，本轮把
+  direct `MemberAdd/Remove/Update/Promote` 以及 root token/client-cert 鉴权后进入平台替代的
+  `MemberAdd` 统一到 `codes.Unimplemented` 和 DBaaS control-plane 指引 helper。该门禁防止
+  direct service 层只检查 code，漏掉 unsupported message 退化。
 
 ### P2：运维兼容和长期验证
 

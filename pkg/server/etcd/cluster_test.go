@@ -423,17 +423,13 @@ func TestMemberMutationIsUnsupported(t *testing.T) {
 
 	ctx := context.Background()
 	_, err := server.MemberAdd(ctx, &etcdserverpb.MemberAddRequest{})
-	require.Equal(t, codes.Unimplemented, status.Code(err))
-	require.Equal(t, memberMutationUnsupportedMessage, status.Convert(err).Message())
+	requireClusterPlatformReplacementError(t, err)
 	_, err = server.MemberRemove(ctx, &etcdserverpb.MemberRemoveRequest{})
-	require.Equal(t, codes.Unimplemented, status.Code(err))
-	require.Equal(t, memberMutationUnsupportedMessage, status.Convert(err).Message())
+	requireClusterPlatformReplacementError(t, err)
 	_, err = server.MemberUpdate(ctx, &etcdserverpb.MemberUpdateRequest{})
-	require.Equal(t, codes.Unimplemented, status.Code(err))
-	require.Equal(t, memberMutationUnsupportedMessage, status.Convert(err).Message())
+	requireClusterPlatformReplacementError(t, err)
 	_, err = server.MemberPromote(ctx, &etcdserverpb.MemberPromoteRequest{})
-	require.Equal(t, codes.Unimplemented, status.Code(err))
-	require.Equal(t, memberMutationUnsupportedMessage, status.Convert(err).Message())
+	requireClusterPlatformReplacementError(t, err)
 }
 
 func TestMemberListLinearizableUsesReadBarrier(t *testing.T) {
@@ -540,7 +536,7 @@ func TestMemberAuthorizationMatchesEtcd(t *testing.T) {
 	require.NoError(t, err)
 	rootCtx := metadata.NewIncomingContext(plain, metadata.Pairs(rpctypes.TokenFieldNameGRPC, rootToken))
 	_, err = server.MemberAdd(rootCtx, &etcdserverpb.MemberAddRequest{})
-	require.Equal(t, codes.Unimplemented, status.Code(err))
+	requireClusterPlatformReplacementError(t, err)
 }
 
 func TestMemberRootAuthorizationClientCertificateErrorsMatchEtcd(t *testing.T) {
@@ -557,7 +553,13 @@ func TestMemberRootAuthorizationClientCertificateErrorsMatchEtcd(t *testing.T) {
 	_, err = server.MemberAdd(verifiedTLSContext(ctx, "alice"), &etcdserverpb.MemberAddRequest{})
 	requireClusterAuthError(t, err, rpctypes.ErrPermissionDenied, codes.Unknown, "etcdserver: permission denied")
 	_, err = server.MemberAdd(verifiedTLSContext(ctx, "root"), &etcdserverpb.MemberAddRequest{})
+	requireClusterPlatformReplacementError(t, err)
+}
+
+func requireClusterPlatformReplacementError(t *testing.T, err error) {
+	t.Helper()
 	require.Equal(t, codes.Unimplemented, status.Code(err))
+	require.Equal(t, memberMutationUnsupportedMessage, status.Convert(err).Message())
 }
 
 func requireClusterAuthError(t *testing.T, err error, want error, code codes.Code, message string) {
