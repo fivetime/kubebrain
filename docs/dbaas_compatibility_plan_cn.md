@@ -14950,6 +14950,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   仍存在且 TTL 未过期，未续租项 key 消失且 `TimeToLive` 返回 `TTL=-1`。该门禁防止
   lease timer reset、批量 expiry scan 或 deadline callback 复用导致“续租项按旧 deadline
   被删”或“未续租项被同批续租错误保活”。
+- A1117 固定 clientv3 namespace.NewLease attached-key 过滤：
+  上游 `client/v3/namespace.NewLease` 会在 `TimeToLive(..., WithAttachedKeys())`
+  中只保留匹配 tenant prefix 的 attached keys，并对调用方去掉物理 prefix；KV/Watch
+  已有 namespace 去前缀门禁，但 Lease wrapper 的 attached-key 信息边界此前只由普通
+  `LeaseTimeToLive` 覆盖。本轮新增 bufconn official clientv3 回归，用同一个 lease 绑定
+  两个 namespace 内 key、一个右邻 `tenant0` key 和一个更短外部 key；裸 client TTL 必须
+  返回全部物理 key，`namespace.NewLease` TTL 只能返回 `alpha/beta` 两个逻辑 key，
+  不带 `WithAttachedKeys` 时仍不泄露 keys。该门禁防止租户前缀过滤、key stripping 或
+  lease attachment 枚举重构让 DBaaS 多租户 lease 元数据跨 namespace 泄露。
 
 ### P2：运维兼容和长期验证
 

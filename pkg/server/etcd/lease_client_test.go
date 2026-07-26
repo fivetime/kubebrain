@@ -31,6 +31,7 @@ import (
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	clientv3 "go.etcd.io/etcd/client/v3"
+	"go.etcd.io/etcd/client/v3/namespace"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -123,6 +124,82 @@ func TestClientLeaseReadBoundaryAndAttachedKeys(t *testing.T) {
 		containsLive = containsLive || status.ID == leaseID
 	}
 	require.True(t, containsLive)
+}
+
+func TestClientNamespaceLeaseTimeToLiveFiltersAttachedKeys(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterLeaseServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	tenantPrefix := fmt.Sprintf("/a1117/namespace-lease/%d/tenant/", time.Now().UnixNano())
+	adjacentKey := tenantPrefix[:len(tenantPrefix)-1] + "0/outside"
+	namespacedKV := namespace.NewKV(client.KV, tenantPrefix)
+	namespacedLease := namespace.NewLease(client.Lease, tenantPrefix)
+
+	grant, err := client.Grant(ctx, 30)
+	require.NoError(t, err)
+	for _, key := range []string{"alpha", "beta"} {
+		_, err = namespacedKV.Put(ctx, key, "tenant-"+key, clientv3.WithLease(grant.ID))
+		require.NoError(t, err)
+	}
+	_, err = client.Put(ctx, adjacentKey, "outside", clientv3.WithLease(grant.ID))
+	require.NoError(t, err)
+	_, err = client.Put(ctx, "/a1117/short", "short", clientv3.WithLease(grant.ID))
+	require.NoError(t, err)
+
+	raw, err := client.TimeToLive(ctx, grant.ID, clientv3.WithAttachedKeys())
+	require.NoError(t, err)
+	rawKeys := make([]string, 0, len(raw.Keys))
+	for _, key := range raw.Keys {
+		rawKeys = append(rawKeys, string(key))
+	}
+	slices.Sort(rawKeys)
+	wantRawKeys := []string{
+		"/a1117/short",
+		adjacentKey,
+		tenantPrefix + "alpha",
+		tenantPrefix + "beta",
+	}
+	slices.Sort(wantRawKeys)
+	require.Equal(t, wantRawKeys, rawKeys)
+
+	filtered, err := namespacedLease.TimeToLive(ctx, grant.ID, clientv3.WithAttachedKeys())
+	require.NoError(t, err)
+	filteredKeys := make([]string, 0, len(filtered.Keys))
+	for _, key := range filtered.Keys {
+		filteredKeys = append(filteredKeys, string(key))
+	}
+	slices.Sort(filteredKeys)
+	require.Equal(t, grant.ID, filtered.ID)
+	require.Equal(t, int64(30), filtered.GrantedTTL)
+	require.Positive(t, filtered.TTL)
+	require.Equal(t, []string{"alpha", "beta"}, filteredKeys)
+
+	withoutKeys, err := namespacedLease.TimeToLive(ctx, grant.ID)
+	require.NoError(t, err)
+	require.Equal(t, grant.ID, withoutKeys.ID)
+	require.Empty(t, withoutKeys.Keys)
 }
 
 func TestClientLeaseConcurrentRenewLifecycleHasNoTransientNotFound(t *testing.T) {
