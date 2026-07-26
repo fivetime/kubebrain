@@ -15225,6 +15225,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   识别。本轮新增 bufconn official clientv3 回归，调用 `Grant(MaxLeaseTTL+1)` 并固定 typed
   error 外观。该门禁防止 lease grant validation 或 client adapter 重构把 TTL 超限错误文本化，
   破坏 session/lock 上层对参数错误与后端临时失败的区分。
+- A1152 固定 clientv3 Txn selected bad lease typed error：
+  对照 `/root/etcd/tests/integration/clientv3/lease/lease_test.go:TestLeaseNotFoundError` 的
+  public client 错误外观，事务中被选中分支的 `OpPut(..., WithLease(missing))` 必须可由
+  `errors.Is(..., rpctypes.ErrLeaseNotFound)` 识别；未选中的坏 lease 分支仍不能影响提交。
+  本轮加强既有 bufconn official clientv3 Txn ignore-lease/bad-lease 回归，保留 status/message
+  和未写入断言，同时新增 typed error 断言。该门禁防止 txn 分支校验或 client adapter
+  重构把 lease not found 错误文本化，破坏 session、mutex 或控制器对永久 lease 错误的分类。
 
 ### P2：运维兼容和长期验证
 

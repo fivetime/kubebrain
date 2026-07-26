@@ -1047,6 +1047,7 @@ func TestClientTxnIgnoreLeaseAndBadLeaseBranches(t *testing.T) {
 		Else(clientv3.OpPut(branchKey, "invalid", clientv3.WithLease(clientv3.LeaseID(math.MaxInt64)))).
 		Commit()
 	require.Error(t, selectedBadLeaseErr)
+	require.ErrorIs(t, selectedBadLeaseErr, rpctypes.ErrLeaseNotFound)
 	require.Equal(t, codes.Unknown, status.Code(selectedBadLeaseErr))
 	require.Equal(t, "etcdserver: requested lease not found", status.Convert(selectedBadLeaseErr).Message())
 	afterBadLease, err := client.Get(ctx, branchKey)
