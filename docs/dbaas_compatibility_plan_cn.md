@@ -14275,6 +14275,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   raw gRPC 回归，先直接写入两条 600KiB value，再降低 watch fragment 阈值并通过真实
   `etcdserverpb.WatchClient`/`KVClient.DeleteRange` 验证分片数量、事件数和 PrevKv byte 数，
   防止 clientv3 wrapper 正确但公开 raw Watch response 分片标志或 PrevKv payload 回退。
+- A1029 固定 clientv3 mixed PrevKV watch 流隔离：
+  `watch_mixed_prevkv_streams` differential 证明同一 key 上带 `WithPrevKV()` 和不带 PrevKV
+  的多个 watcher 可并存；每次更新中 PrevKV watcher 必须看到上一版 value，普通 watcher
+  必须持续没有 PrevKv，两个流不能共享并污染事件对象。本轮新增官方 clientv3 bufconn 回归，
+  通过真实 KV/Watch 服务创建两个 created-notify watcher，连续三次 Put 验证当前 value、
+  previous value 和 nil PrevKv 外观，补齐此前 raw gRPC 服务层覆盖之外的官方客户端黑盒面。
 
 ### P2：运维兼容和长期验证
 

@@ -174,6 +174,64 @@ func TestRawGRPCWatchFragmentPreservesPrevKV(t *testing.T) {
 	require.Equal(t, []int{len(value), len(value)}, prevBytes)
 }
 
+func TestClientWatchMixedPrevKVStreamsKeepEventsIsolated(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterWatchServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	key := fmt.Sprintf("/a1029/watch-mixed-prevkv/%d", time.Now().UnixNano())
+	_, err = client.Put(ctx, key, "v0")
+	require.NoError(t, err)
+
+	watchCtx, watchCancel := context.WithCancel(ctx)
+	defer watchCancel()
+	withPrev := client.Watch(watchCtx, key, clientv3.WithCreatedNotify(), clientv3.WithPrevKV())
+	withoutPrev := client.Watch(watchCtx, key, clientv3.WithCreatedNotify())
+	requireClientWatchCreated(t, ctx, withPrev)
+	requireClientWatchCreated(t, ctx, withoutPrev)
+
+	previous := "v0"
+	for update := 1; update <= 3; update++ {
+		current := fmt.Sprintf("v%d", update)
+		_, err = client.Put(ctx, key, current)
+		require.NoError(t, err)
+
+		withPrevEvent := requireSingleClientWatchEvent(t, ctx, withPrev)
+		require.Equal(t, key, string(withPrevEvent.Kv.Key))
+		require.Equal(t, current, string(withPrevEvent.Kv.Value))
+		require.NotNil(t, withPrevEvent.PrevKv)
+		require.Equal(t, key, string(withPrevEvent.PrevKv.Key))
+		require.Equal(t, previous, string(withPrevEvent.PrevKv.Value))
+
+		withoutPrevEvent := requireSingleClientWatchEvent(t, ctx, withoutPrev)
+		require.Equal(t, key, string(withoutPrevEvent.Kv.Key))
+		require.Equal(t, current, string(withoutPrevEvent.Kv.Value))
+		require.Nil(t, withoutPrevEvent.PrevKv)
+		previous = current
+	}
+}
+
 func TestRawGRPCWatchIDRangeBoundariesKeepStreamAlive(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
@@ -784,6 +842,34 @@ func requireRawWatchHeaderWellFormed(t *testing.T, response *etcdserverpb.WatchR
 	t.Helper()
 	require.NotNil(t, response.Header)
 	require.Positive(t, response.Header.Revision)
+}
+
+func requireClientWatchCreated(t *testing.T, ctx context.Context, watch clientv3.WatchChan) {
+	t.Helper()
+	select {
+	case response, ok := <-watch:
+		require.True(t, ok)
+		require.NoError(t, response.Err())
+		require.True(t, response.Created)
+		require.Empty(t, response.Events)
+	case <-ctx.Done():
+		t.Fatalf("timed out waiting for watch created response: %v", ctx.Err())
+	}
+}
+
+func requireSingleClientWatchEvent(t *testing.T, ctx context.Context, watch clientv3.WatchChan) *clientv3.Event {
+	t.Helper()
+	select {
+	case response, ok := <-watch:
+		require.True(t, ok)
+		require.NoError(t, response.Err())
+		require.False(t, response.Created)
+		require.Len(t, response.Events, 1)
+		return response.Events[0]
+	case <-ctx.Done():
+		t.Fatalf("timed out waiting for watch event: %v", ctx.Err())
+		return nil
+	}
 }
 
 func requireRawRangeHeaderWellFormed(t *testing.T, response *etcdserverpb.RangeResponse) {
