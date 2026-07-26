@@ -5027,9 +5027,7 @@ func TestTxnRejectsTooManyOpsLikeEtcd(t *testing.T) {
 	}
 
 	_, err := server.Txn(context.Background(), &etcdserverpb.TxnRequest{Success: ops})
-	require.Error(t, err)
-	require.Equal(t, codes.InvalidArgument, status.Code(err))
-	require.Contains(t, err.Error(), "etcdserver: too many operations in txn request")
+	requireDirectKVError(t, err, rpctypes.ErrGRPCTooManyOps, codes.InvalidArgument, "etcdserver: too many operations in txn request")
 }
 
 func TestTxnHonorsConfiguredMaxOperations(t *testing.T) {
@@ -5080,9 +5078,7 @@ func TestTxnRejectsTooManyNestedOpsLikeEtcd(t *testing.T) {
 	err := validateTxnRequest(&etcdserverpb.TxnRequest{
 		Success: ops,
 	})
-	require.Error(t, err)
-	require.Equal(t, codes.InvalidArgument, status.Code(err))
-	require.Contains(t, err.Error(), "etcdserver: too many operations in txn request")
+	requireDirectKVError(t, err, rpctypes.ErrGRPCTooManyOps, codes.InvalidArgument, "etcdserver: too many operations in txn request")
 }
 
 func TestTxnOperationBudgetMatrixMatchesEtcd(t *testing.T) {
@@ -5144,9 +5140,7 @@ func TestTxnOperationBudgetMatrixMatchesEtcd(t *testing.T) {
 			resp, err := server.Txn(context.Background(), tc.txn)
 			if tc.wantErr {
 				require.Nil(t, resp)
-				require.Error(t, err)
-				require.Equal(t, codes.InvalidArgument, status.Code(err))
-				require.Equal(t, "etcdserver: too many operations in txn request", status.Convert(err).Message())
+				requireDirectKVError(t, err, rpctypes.ErrGRPCTooManyOps, codes.InvalidArgument, "etcdserver: too many operations in txn request")
 				return
 			}
 			require.NoError(t, err)
@@ -5170,9 +5164,7 @@ func TestTxnRejectsDuplicatePutKeys(t *testing.T) {
 			}},
 		},
 	})
-	require.Error(t, err)
-	require.Equal(t, codes.InvalidArgument, status.Code(err))
-	require.Contains(t, err.Error(), "duplicate key")
+	requireDirectKVError(t, err, rpctypes.ErrGRPCDuplicateKey, codes.InvalidArgument, "etcdserver: duplicate key given in txn request")
 }
 
 func TestTxnRejectsPutOverlappingDeleteRange(t *testing.T) {
@@ -5192,9 +5184,7 @@ func TestTxnRejectsPutOverlappingDeleteRange(t *testing.T) {
 			}},
 		},
 	})
-	require.Error(t, err)
-	require.Equal(t, codes.InvalidArgument, status.Code(err))
-	require.Contains(t, err.Error(), "duplicate key")
+	requireDirectKVError(t, err, rpctypes.ErrGRPCDuplicateKey, codes.InvalidArgument, "etcdserver: duplicate key given in txn request")
 }
 
 func TestTxnIntervalValidationMatchesEtcdFromKeySentinel(t *testing.T) {

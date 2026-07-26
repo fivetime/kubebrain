@@ -15848,6 +15848,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   和 `RangeStream` 的 empty key、invalid sort order/target 统一到 `ErrGRPCEmptyKey` 或
   `ErrGRPCInvalidSortOption`、reference code 和 message。该门禁防止 Range option 校验或
   RangeStream 入口复用重构后只保留 code/message，漏掉 etcd typed error 兼容性。
+- A1253 固定 direct Txn operation-budget/duplicate-key 错误三件套：
+  A1251/A1252 已覆盖 KV 基础 admission，本轮把 direct `Txn` 的 top-level/nested too-many-ops、
+  operation budget matrix 失败分支，以及 duplicate put key、DeleteRange+Put overlap 统一到
+  `ErrGRPCTooManyOps`/`ErrGRPCDuplicateKey`、reference code 和 message helper。该门禁防止
+  Txn validator 或 nested budget 重构后只保留 code/substring，漏掉 typed error 兼容性。
 
 ### P2：运维兼容和长期验证
 
