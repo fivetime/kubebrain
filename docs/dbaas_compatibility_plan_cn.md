@@ -15567,6 +15567,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   和 `RoleList` 均返回 `PermissionDenied`；root raw `RoleList` 仍可枚举普通 role。本轮加强
   既有服务层 admin/self 回归，防止直接 Auth API 调用方绕过 clientv3 后看到错误的 root-only
   或 self-exception 语义。
+- A1205 固定 raw gRPC RoleGrantPermission 空 permission 边界：
+  延续 A175/A594 的 permission validation 契约到 generated `etcdserverpb.AuthClient`：root raw
+  `RoleGrantPermission` 未携带 `Perm` 时必须返回 `InvalidArgument`/permission not given，
+  携带空 `authpb.Permission{}` 时必须返回 `InvalidArgument`/invalid auth management；非法
+  range grant 的既有 raw 断言继续保持。本轮加强 manager 层 permission validation 回归，
+  防止直接 Auth API 调用方传空 protobuf 时看到错误 code 或默认授权。
 
 ### P2：运维兼容和长期验证
 

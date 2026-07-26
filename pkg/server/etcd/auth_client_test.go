@@ -574,6 +574,15 @@ func TestClientAuthRolePermissionLifecycleErrors(t *testing.T) {
 		clientv3.PermissionType(clientv3.PermRead),
 	)
 	requireAuthClientError(t, invalidRangeErr, codes.Unknown, "etcdserver: invalid auth management", rpctypes.ErrInvalidAuthMgmt)
+	_, rawNilPermissionErr := rawRootAuth.RoleGrantPermission(ctx, &etcdserverpb.AuthRoleGrantPermissionRequest{
+		Name: "a1061-lifecycle",
+	})
+	requireAuthClientError(t, rawNilPermissionErr, codes.InvalidArgument, "etcdserver: permission not given")
+	_, rawEmptyPermissionErr := rawRootAuth.RoleGrantPermission(ctx, &etcdserverpb.AuthRoleGrantPermissionRequest{
+		Name: "a1061-lifecycle",
+		Perm: &authpb.Permission{},
+	})
+	requireAuthClientError(t, rawEmptyPermissionErr, codes.InvalidArgument, "etcdserver: invalid auth management")
 	_, rawInvalidRangeErr := rawRootAuth.RoleGrantPermission(ctx, &etcdserverpb.AuthRoleGrantPermissionRequest{
 		Name: "a1061-lifecycle",
 		Perm: &authpb.Permission{
