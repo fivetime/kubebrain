@@ -15219,6 +15219,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   rpctypes.ErrFutureRev)` 识别。本轮加强既有 bufconn official clientv3 Range revision boundary
   回归，保留 status/message 断言并新增 typed error 断言。该门禁防止 range client adapter
   或 revision validation 重构把 future revision 错误降级成不可分类的普通 gRPC status。
+- A1151 固定 clientv3 Lease Grant TTL too-large typed error：
+  对照 `/root/etcd/tests/integration/clientv3/lease/lease_test.go:TestLeaseGrant`，超过
+  `clientv3.MaxLeaseTTL` 的 `Grant` 必须可由 `errors.Is(..., rpctypes.ErrLeaseTTLTooLarge)`
+  识别。本轮新增 bufconn official clientv3 回归，调用 `Grant(MaxLeaseTTL+1)` 并固定 typed
+  error 外观。该门禁防止 lease grant validation 或 client adapter 重构把 TTL 超限错误文本化，
+  破坏 session/lock 上层对参数错误与后端临时失败的区分。
 
 ### P2：运维兼容和长期验证
 
