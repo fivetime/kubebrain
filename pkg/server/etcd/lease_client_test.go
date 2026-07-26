@@ -225,6 +225,48 @@ func TestClientLeaseNotFoundErrorsMatchEtcd(t *testing.T) {
 	require.Equal(t, int64(-1), ttl.TTL)
 }
 
+func TestClientLeaseLeasesListsGrantedIDsInOrder(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterLeaseServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	wantIDs := make([]clientv3.LeaseID, 0, 5)
+	for i := 0; i < 5; i++ {
+		grant, grantErr := client.Grant(ctx, 30+int64(i))
+		require.NoError(t, grantErr)
+		wantIDs = append(wantIDs, grant.ID)
+	}
+
+	list, err := client.Leases(ctx)
+	require.NoError(t, err)
+	requireClientLeaseHeaderWellFormed(t, list.ResponseHeader)
+	gotIDs := make([]clientv3.LeaseID, 0, len(list.Leases))
+	for _, status := range list.Leases {
+		gotIDs = append(gotIDs, status.ID)
+	}
+	require.Equal(t, wantIDs, gotIDs)
+}
+
 func TestClientNamespaceLeaseTimeToLiveFiltersAttachedKeys(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

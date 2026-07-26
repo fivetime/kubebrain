@@ -15093,6 +15093,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   在事件后也必须关闭。本轮新增 bufconn official clientv3 回归固定这三种状态，防止 watch
   stream cancel、client watcher goroutine 或 server cancel response 重构让生产 informer 在
   resync/stop 路径泄漏 goroutine 或阻塞 shutdown。
+- A1134 固定 clientv3 LeaseLeases 列表顺序与完整性：
+  对照 `/root/etcd/tests/integration/clientv3/lease/lease_test.go:TestLeaseLeases`，公开
+  `client.Leases()` 必须列出全部 live lease，并保持 etcd 按 grant/expiry 暴露的稳定顺序。
+  本轮新增 bufconn official clientv3 回归，连续创建 5 个 lease 后调用 `Leases`，要求
+  response header 形状正确，返回 ID 列表与 grant 顺序完全一致。该门禁补齐服务层/raw gRPC
+  LeaseLeases 排序门禁到 public wrapper，防止 lease manager、expiry heap 或 client adapter
+  重构让运维工具枚举 lease 时漏项或顺序漂移。
 
 ### P2：运维兼容和长期验证
 
