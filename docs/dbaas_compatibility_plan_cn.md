@@ -14391,6 +14391,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `client.HashKV(ctx, "bufnet", rev)` 走 official maintenance dial path，断言 Hash、
   HashRevision、CompactRevision、header revision 和 clientv3 错误外观，补齐 A999 raw
   gRPC 覆盖之外的官方客户端面。
+- A1045 固定 clientv3 AlarmList/AlarmDisarm zero-member 外观：
+  `alarm_zero_member` differential 证明省略 MemberID 激活 NOSPACE 会产生 member 0 alarm，
+  GET 必须返回 member 0，DEACTIVATE 也必须返回 member 0，最终 GET 为空。clientv3
+  maintenance wrapper 不暴露 activate API，但公开 `AlarmList`/`AlarmDisarm` 需要保持同一
+  wire 语义。本轮新增官方 clientv3 bufconn 回归，先用 raw Maintenance 激活 member 0
+  NOSPACE，再通过 `client.AlarmList` 观察 header 与 alarm，调用
+  `client.AlarmDisarm(&clientv3.AlarmMember{MemberID:0, Alarm:NOSPACE})` 解除并确认最终列表
+  为空，补齐 raw alarm 覆盖之外的 official wrapper 面。
 
 ### P2：运维兼容和长期验证
 

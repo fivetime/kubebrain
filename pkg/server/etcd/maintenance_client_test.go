@@ -93,6 +93,81 @@ func TestRawGRPCAlarmGetAndZeroMemberRoundTrip(t *testing.T) {
 	require.Empty(t, members(etcdserverpb.AlarmRequest_GET))
 }
 
+func TestClientAlarmListDisarmZeroMemberRoundTrip(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterMaintenanceServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	rawConn, err := grpc.NewClient("passthrough:///alarm-clientv3-zero-member",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, rawConn.Close()) })
+	rawMaintenance := etcdserverpb.NewMaintenanceClient(rawConn)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	deactivateZero := func() {
+		_, _ = rawMaintenance.Alarm(context.Background(), &etcdserverpb.AlarmRequest{
+			Action: etcdserverpb.AlarmRequest_DEACTIVATE,
+			Alarm:  etcdserverpb.AlarmType_NOSPACE,
+		})
+	}
+	deactivateZero()
+	t.Cleanup(deactivateZero)
+
+	activated, err := rawMaintenance.Alarm(ctx, &etcdserverpb.AlarmRequest{
+		Action: etcdserverpb.AlarmRequest_ACTIVATE,
+		Alarm:  etcdserverpb.AlarmType_NOSPACE,
+	})
+	require.NoError(t, err)
+	require.Len(t, activated.Alarms, 1)
+	require.Equal(t, uint64(0), activated.Alarms[0].MemberID)
+	require.Equal(t, etcdserverpb.AlarmType_NOSPACE, activated.Alarms[0].Alarm)
+
+	listed, err := client.AlarmList(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, listed.Header)
+	require.GreaterOrEqual(t, listed.Header.Revision, activated.Header.Revision)
+	require.Len(t, listed.Alarms, 1)
+	require.Equal(t, uint64(0), listed.Alarms[0].MemberID)
+	require.Equal(t, etcdserverpb.AlarmType_NOSPACE, listed.Alarms[0].Alarm)
+
+	disarmed, err := client.AlarmDisarm(ctx, &clientv3.AlarmMember{
+		MemberID: 0,
+		Alarm:    etcdserverpb.AlarmType_NOSPACE,
+	})
+	require.NoError(t, err)
+	require.Len(t, disarmed.Alarms, 1)
+	require.Equal(t, uint64(0), disarmed.Alarms[0].MemberID)
+	require.Equal(t, etcdserverpb.AlarmType_NOSPACE, disarmed.Alarms[0].Alarm)
+
+	final, err := client.AlarmList(ctx)
+	require.NoError(t, err)
+	require.Empty(t, final.Alarms)
+	require.NotNil(t, final.Header)
+}
+
 func TestRawGRPCAlarmMemberSetRoundTrip(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
