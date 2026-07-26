@@ -25,6 +25,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
+	"go.etcd.io/etcd/api/v3/mvccpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc"
@@ -489,6 +490,81 @@ func TestClientWatchUpdateReportsUpdateNotCreate(t *testing.T) {
 	require.Equal(t, "v1", string(event.PrevKv.Value))
 	require.Equal(t, create.Header.Revision, event.PrevKv.CreateRevision)
 	require.Equal(t, create.Header.Revision, event.PrevKv.ModRevision)
+}
+
+func TestClientWatchEventTypesCreateModifyDeleteAndExpire(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterLeaseServer(grpcServer, server)
+	etcdserverpb.RegisterWatchServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	prefix := fmt.Sprintf("/a1148/watch-event-type/%d/", time.Now().UnixNano())
+	watchCtx, watchCancel := context.WithCancel(ctx)
+	defer watchCancel()
+	watch := client.Watch(watchCtx, prefix, clientv3.WithPrefix(), clientv3.WithCreatedNotify())
+	requireClientWatchCreated(t, ctx, watch)
+
+	key := prefix + "key"
+	_, err = client.Put(ctx, key, "create")
+	require.NoError(t, err)
+	_, err = client.Put(ctx, key, "modify")
+	require.NoError(t, err)
+	_, err = client.Delete(ctx, key)
+	require.NoError(t, err)
+	lease, err := client.Grant(ctx, 1)
+	require.NoError(t, err)
+	expireKey := prefix + "expire"
+	_, err = client.Put(ctx, expireKey, "lease", clientv3.WithLease(lease.ID))
+	require.NoError(t, err)
+
+	type wantEvent struct {
+		key      string
+		event    mvccpb.Event_EventType
+		create   bool
+		modified bool
+	}
+	want := []wantEvent{
+		{key: key, event: clientv3.EventTypePut, create: true},
+		{key: key, event: clientv3.EventTypePut, modified: true},
+		{key: key, event: clientv3.EventTypeDelete},
+		{key: expireKey, event: clientv3.EventTypePut, create: true},
+		{key: expireKey, event: clientv3.EventTypeDelete},
+	}
+	events := make([]*clientv3.Event, 0, len(want))
+	for len(events) < len(want) {
+		response := requireClientWatchResponse(t, ctx, watch)
+		require.False(t, response.Created)
+		events = append(events, response.Events...)
+	}
+	require.Len(t, events, len(want))
+	for index, expected := range want {
+		event := events[index]
+		require.Equalf(t, expected.event, event.Type, "event %d", index)
+		require.Equalf(t, expected.key, string(event.Kv.Key), "event %d", index)
+		require.Equalf(t, expected.create, event.IsCreate(), "event %d", index)
+		require.Equalf(t, expected.modified, event.IsModify(), "event %d", index)
+	}
 }
 
 func TestClientFilteredWatchProgressCoversSuppressedPut(t *testing.T) {

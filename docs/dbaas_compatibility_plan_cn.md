@@ -15198,6 +15198,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   rpctypes.ErrFutureRev)` 识别，且同一 txn 中后续写入不能提交。本轮加强既有 bufconn
   official clientv3 回归，保留 status/message 和未提交断言，同时新增 typed error 断言。
   该门禁防止 txn executor 或 client adapter 在事务读错误上丢失可分类错误类型。
+- A1148 固定 clientv3 Watch event type / IsCreate / IsModify 外观：
+  对照 `/root/etcd/tests/integration/clientv3/watch/watch_test.go:TestWatchEventType`，
+  watch 必须按顺序把首次 PUT 暴露为 `EventTypePut` 且 `IsCreate=true`，后续 PUT 暴露为
+  `IsModify=true`，显式 DELETE 暴露为 `EventTypeDelete`，带 lease 的首次 PUT 仍是 create，
+  自然过期删除必须暴露为 DELETE。本轮新增 bufconn official clientv3 回归，对独立前缀执行
+  create/modify/delete/leased-create/lease-expire 序列并固定事件分类。该门禁防止 watch 事件
+  转换、lease expiry 删除或 CreateRevision/ModRevision 填充重构破坏 informer 对 add/update/delete
+  的分类。
 
 ### P2：运维兼容和长期验证
 
