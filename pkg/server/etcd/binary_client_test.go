@@ -179,6 +179,13 @@ func TestClientBinaryKeyRangeStreamAndHistoricalRead(t *testing.T) {
 	require.Equal(t, int64(3), highPrefix.Count)
 	require.Equal(t, []string{"fe", "fe00", "fe01"}, binaryClientKeys(highPrefix.Kvs))
 	require.Equal(t, []string{"e", "f", "g"}, binaryClientValues(highPrefix.Kvs))
+	highPrefixStream, err := client.GetStream(ctx, string([]byte{0xfe}), clientv3.WithRange(string([]byte{0xff})))
+	require.NoError(t, err)
+	highPrefixMerged, err := clientv3.GetStreamToGetResponse(highPrefixStream)
+	require.NoError(t, err)
+	require.Equal(t, highPrefix.Count, highPrefixMerged.Count)
+	require.Equal(t, binaryClientKeys(highPrefix.Kvs), binaryClientKeys(highPrefixMerged.Kvs))
+	require.Equal(t, binaryClientValues(highPrefix.Kvs), binaryClientValues(highPrefixMerged.Kvs))
 
 	fromFF, err := client.Get(ctx, string([]byte{0xff}), clientv3.WithFromKey(), clientv3.WithLimit(2))
 	require.NoError(t, err)
@@ -186,6 +193,14 @@ func TestClientBinaryKeyRangeStreamAndHistoricalRead(t *testing.T) {
 	require.True(t, fromFF.More)
 	require.Equal(t, []string{"ff", "ff00"}, binaryClientKeys(fromFF.Kvs))
 	require.Equal(t, []string{"h", "i"}, binaryClientValues(fromFF.Kvs))
+	fromFFStream, err := client.GetStream(ctx, string([]byte{0xff}), clientv3.WithFromKey(), clientv3.WithLimit(2))
+	require.NoError(t, err)
+	fromFFMerged, err := clientv3.GetStreamToGetResponse(fromFFStream)
+	require.NoError(t, err)
+	require.Equal(t, fromFF.Count, fromFFMerged.Count)
+	require.Equal(t, fromFF.More, fromFFMerged.More)
+	require.Equal(t, binaryClientKeys(fromFF.Kvs), binaryClientKeys(fromFFMerged.Kvs))
+	require.Equal(t, binaryClientValues(fromFF.Kvs), binaryClientValues(fromFFMerged.Kvs))
 
 	descendingFF, err := client.Get(ctx, string([]byte{0xff}),
 		clientv3.WithFromKey(),

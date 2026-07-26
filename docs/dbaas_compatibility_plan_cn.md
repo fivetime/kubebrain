@@ -14755,6 +14755,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   写入 8 个大 value，并用测试 backend shim 阻塞终端 chunk，确认第一包是非终包
   partial chunk，随后 cancel context、drain 到 stream 终态并断言返回 `codes.Canceled`；
   最后在同一连接上执行 CountOnly Range，确认完整 keyspace 仍可读。
+- A1092 强化 binary key RangeStream 高位边界：
+  `binary_key` differential 要求 raw 二进制 keyspace 中 NUL 前缀、`0xfe` 高位前缀以及
+  `0xff` from-key 读取在 unary Range 与 RangeStream 合并结果之间完全一致。本轮在既有
+  official clientv3 二进制 key 回归中，除 NUL 前缀外继续对 `0xfe..0xff` RangeStream
+  和 `0xff` WithFromKey+Limit RangeStream 做合并断言，校验 Count、More、key 顺序和值
+  都与 unary Range 一致，防止用户 key 编码或 from-key 上界处理在流式读取路径退化。
 
 ### P2：运维兼容和长期验证
 
