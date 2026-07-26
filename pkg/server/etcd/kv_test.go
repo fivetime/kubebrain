@@ -2842,8 +2842,7 @@ func TestClientNamespaceEmptyKeyFromKeyDeleteMatchesEtcd(t *testing.T) {
 	}
 
 	_, err = client.Delete(ctx, "")
-	require.Equal(t, codes.Unknown, status.Code(err))
-	require.Equal(t, "etcdserver: key is not provided", status.Convert(err).Message())
+	requireClientKVError(t, err, rpctypes.ErrEmptyKey, codes.Unknown, "etcdserver: key is not provided")
 
 	visible, err := namespacedKV.Get(ctx, "", clientv3.WithFromKey())
 	require.NoError(t, err)
@@ -4160,9 +4159,7 @@ func TestPutMissingLeasePrecedesMissingIgnoreValueKey(t *testing.T) {
 		IgnoreValue: true,
 	}
 	_, putErr := server.Put(context.Background(), req)
-	require.Error(t, putErr)
-	require.Equal(t, codes.NotFound, status.Code(putErr))
-	require.Equal(t, "etcdserver: requested lease not found", status.Convert(putErr).Message())
+	requireDirectKVError(t, putErr, rpctypes.ErrGRPCLeaseNotFound, codes.NotFound, "etcdserver: requested lease not found")
 
 	_, txnErr := server.Txn(context.Background(), &etcdserverpb.TxnRequest{
 		Success: []*etcdserverpb.RequestOp{{
@@ -4173,9 +4170,7 @@ func TestPutMissingLeasePrecedesMissingIgnoreValueKey(t *testing.T) {
 			}},
 		}},
 	})
-	require.Error(t, txnErr)
-	require.Equal(t, codes.NotFound, status.Code(txnErr))
-	require.Equal(t, "etcdserver: requested lease not found", status.Convert(txnErr).Message())
+	requireDirectKVError(t, txnErr, rpctypes.ErrGRPCLeaseNotFound, codes.NotFound, "etcdserver: requested lease not found")
 }
 
 func TestTxnExecutionValidationFollowsSelectedOperationOrder(t *testing.T) {
@@ -4196,9 +4191,7 @@ func TestTxnExecutionValidationFollowsSelectedOperationOrder(t *testing.T) {
 	_, err := server.Txn(context.Background(), &etcdserverpb.TxnRequest{
 		Success: []*etcdserverpb.RequestOp{put, read},
 	})
-	require.Error(t, err)
-	require.Equal(t, codes.NotFound, status.Code(err))
-	require.Equal(t, "etcdserver: requested lease not found", status.Convert(err).Message())
+	requireDirectKVError(t, err, rpctypes.ErrGRPCLeaseNotFound, codes.NotFound, "etcdserver: requested lease not found")
 
 	_, err = server.Txn(context.Background(), &etcdserverpb.TxnRequest{
 		Success: []*etcdserverpb.RequestOp{read, put},
@@ -6461,6 +6454,13 @@ func requireDirectKVError(t *testing.T, err error, want error, code codes.Code, 
 func requireDirectKVStatusError(t *testing.T, err error, code codes.Code, message string) {
 	t.Helper()
 	require.Error(t, err)
+	require.Equal(t, code, status.Code(err))
+	require.Equal(t, message, status.Convert(err).Message())
+}
+
+func requireClientKVError(t *testing.T, err error, want error, code codes.Code, message string) {
+	t.Helper()
+	require.ErrorIs(t, err, want)
 	require.Equal(t, code, status.Code(err))
 	require.Equal(t, message, status.Convert(err).Message())
 }
