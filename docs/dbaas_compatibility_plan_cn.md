@@ -15010,6 +15010,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   加入同一 bufconn 平台管理矩阵，要求返回相同 `Unimplemented` 和
   `memberMutationUnsupportedMessage`。该门禁防止升级 clientv3 或 Cluster service 时让 learner
   add 漏回默认 gRPC unimplemented 或产生误导性的部分成功。
+- A1124 固定 clientv3 ordering.NewKV 本地 wrapper 入口：
+  对照 `/root/etcd/tests/integration/clientv3/ordering_kv_test.go`，外部门禁 A230/A250 已在
+  多副本 UID replacement/leader change 中验证 ordering violation 检测，但本地 bufconn
+  还缺少 official `ordering.NewKV` 与 KubeBrain response header 的基础契约。本轮新增
+  official clientv3 回归：先通过普通 KV 连续 Put，再经 `ordering.NewKV` 执行线性 Get、
+  serializable Get 和 Txn Get，要求 header revision 单调不回退、violation callback 不触发；
+  同时固定 `GetStream` 返回 `Unimplemented: GetStream is not supported by kvOrdering`。该门禁
+  防止 header stamping、serializable read 或 Txn response revision 重构破坏多 endpoint
+  客户端的 ordering wrapper 基础假设。
 
 ### P2：运维兼容和长期验证
 
