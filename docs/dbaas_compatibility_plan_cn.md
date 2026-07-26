@@ -14323,6 +14323,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `Compact(..., WithCompactPhysical())`，再验证 key 仍存在且带原 lease、`TimeToLive`
   仍返回正 TTL 和 attached key、后续 keepalive 仍成功，防止 compaction GC 误扫 live
   lease 元数据。
+- A1036 固定 clientv3 Range revision 边界：
+  `range_revision_boundary` differential 证明 raw Range 中负 revision（包括 `-1` 与小于
+  `-1`）按当前 revision 读取并返回 OK，即使 compact revision 已等于当前 key revision；
+  `math.MaxInt64` revision 则必须返回 future revision `OutOfRange`。本轮新增官方
+  clientv3 bufconn 回归，执行 point/prefix/count-only/keys-only 负 revision 读取并验证
+  当前结果，再用 `WithRev(math.MaxInt64)` 验证 official clientv3 暴露的 `Unknown` code
+  与 future revision message（raw protobuf 层仍由 A1000 覆盖 `OutOfRange`），补齐此前
+  raw protobuf 层覆盖之外的官方客户端面。
 
 ### P2：运维兼容和长期验证
 

@@ -336,6 +336,65 @@ func TestRawGRPCRangeRevisionBoundaries(t *testing.T) {
 	requireRawGRPCRangeRevisionError(t, err, codes.OutOfRange, "etcdserver: mvcc: required revision is a future revision")
 }
 
+func TestClientRangeRevisionBoundaries(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	prefix := fmt.Sprintf("/a1036/range-revision-client/%d/", time.Now().UnixNano())
+	key := prefix + "a"
+	_, err = client.Put(ctx, key, "value")
+	require.NoError(t, err)
+	current, err := client.Get(ctx, key)
+	require.NoError(t, err)
+	require.Len(t, current.Kvs, 1)
+	_, err = client.Compact(ctx, current.Header.Revision)
+	require.NoError(t, err)
+
+	point, err := client.Get(ctx, key, clientv3.WithRev(-1))
+	require.NoError(t, err)
+	require.Len(t, point.Kvs, 1)
+	require.Equal(t, "value", string(point.Kvs[0].Value))
+	belowNegativeOne, err := client.Get(ctx, key, clientv3.WithRev(-2))
+	require.NoError(t, err)
+	require.Len(t, belowNegativeOne.Kvs, 1)
+	prefixRange, err := client.Get(ctx, prefix, clientv3.WithPrefix(), clientv3.WithRev(-1))
+	require.NoError(t, err)
+	require.Equal(t, int64(1), prefixRange.Count)
+	countOnly, err := client.Get(ctx, prefix, clientv3.WithPrefix(), clientv3.WithRev(-1), clientv3.WithCountOnly())
+	require.NoError(t, err)
+	require.Equal(t, int64(1), countOnly.Count)
+	require.Empty(t, countOnly.Kvs)
+	keysOnly, err := client.Get(ctx, prefix, clientv3.WithPrefix(), clientv3.WithRev(-1), clientv3.WithKeysOnly())
+	require.NoError(t, err)
+	require.Equal(t, int64(1), keysOnly.Count)
+	require.Len(t, keysOnly.Kvs, 1)
+	require.Empty(t, keysOnly.Kvs[0].Value)
+
+	_, err = client.Get(ctx, key, clientv3.WithRev(math.MaxInt64))
+	requireClientRangeError(t, err, codes.Unknown, "etcdserver: mvcc: required revision is a future revision")
+}
+
 func TestRawGRPCRangeOptionInteractions(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
@@ -465,6 +524,13 @@ func rawGRPCPutRequestOp(request *etcdserverpb.PutRequest) *etcdserverpb.Request
 }
 
 func requireRawGRPCRangeRevisionError(t *testing.T, err error, code codes.Code, message string) {
+	t.Helper()
+	require.Error(t, err)
+	require.Equal(t, code, status.Code(err))
+	require.Equal(t, message, status.Convert(err).Message())
+}
+
+func requireClientRangeError(t *testing.T, err error, code codes.Code, message string) {
 	t.Helper()
 	require.Error(t, err)
 	require.Equal(t, code, status.Code(err))
