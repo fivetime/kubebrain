@@ -64,7 +64,7 @@ func TestResourceLockRejectsMalformedElectionMetadata(t *testing.T) {
 				Timeout:  time.Second,
 			}, kv).GetResourceLock()
 			_, _, err := lock.Get(context.Background())
-			require.ErrorContains(t, err, tc.want)
+			require.EqualError(t, err, tc.want)
 		})
 	}
 }

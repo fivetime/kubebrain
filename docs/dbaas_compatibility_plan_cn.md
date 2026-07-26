@@ -16248,6 +16248,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `not an event log key`。该门禁防止未来重构 keyspace magic 或 event log 前缀时把
   外租户数据误分类为格式损坏、边界成功或其他可重试错误，从而削弱多租户物理 keyspace
   隔离的可观测契约。
+- A1319 固定 leader-election 元数据严格解析错误契约：
+  `TestResourceLockRejectsMalformedElectionMetadata` 现在对未知 JSON 字段和 trailing JSON
+  使用完整 `EqualError`，而不是只匹配子串。该门禁防止协调锁记录解析在重构时悄悄接受
+  附加字段、忽略尾随 payload，或把损坏元数据包装成不稳定错误文本，从而影响 DBaaS
+  数据面 leader fencing 的故障可诊断性。
 
 ### P2：运维兼容和长期验证
 
