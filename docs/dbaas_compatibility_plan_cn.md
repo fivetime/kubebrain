@@ -15723,6 +15723,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   路径固定为同时满足 `errors.Is`、direct code 和 reference message。该门禁防止 manager
   lifecycle helper、permission matcher 或并发 auth mutation retry 重构后只保留 typed error，
   导致管理面错误 code/message 在 RPC 映射前漂移。
+- A1229 固定 AuthStatus invalid-token 与 client 管理错误门禁：
+  A1225 已覆盖 Auth RPC service-level 管理错误，本轮补上 auth enabled 后 `AuthStatus`
+  携带坏 token 的 direct 拒绝路径，固定为 `ErrInvalidAuthToken`、`codes.Unknown` 和
+  `etcdserver: invalid auth token`；同时把 official clientv3 管理面 user/role 错误断言统一
+  收敛到三件套 helper，避免重复裸 `ErrorIs` 掩盖 code/message 回归。
 
 ### P2：运维兼容和长期验证
 

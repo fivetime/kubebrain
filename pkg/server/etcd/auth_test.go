@@ -215,7 +215,7 @@ func TestAuthStatusRejectsInvalidTokenWhenEnabled(t *testing.T) {
 	badCtx := metadata.NewIncomingContext(plain, metadata.Pairs(rpctypes.TokenFieldNameGRPC, "not-a-valid-token"))
 	response, err = server.AuthStatus(badCtx, &etcdserverpb.AuthStatusRequest{})
 	require.Nil(t, response)
-	require.ErrorIs(t, err, rpctypes.ErrInvalidAuthToken)
+	requireAuthRPCError(t, err, rpctypes.ErrInvalidAuthToken, codes.Unknown, "etcdserver: invalid auth token")
 
 	goodAuth, err := server.Authenticate(plain, &etcdserverpb.AuthenticateRequest{Name: "root", Password: "root-secret"})
 	require.NoError(t, err)
