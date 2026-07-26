@@ -1508,6 +1508,69 @@ func TestClientLeaseKeepAliveClosesAfterRevoke(t *testing.T) {
 	}
 }
 
+func TestClientLeaseKeepAliveContextCancelIsolationAndClose(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterLeaseServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = client.Close() })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	grant, err := client.Grant(ctx, 10)
+	require.NoError(t, err)
+
+	type uncomparableCtx struct {
+		context.Context
+		_ func()
+	}
+	firstCtx, firstCancel := context.WithCancel(ctx)
+	defer firstCancel()
+	first, err := client.KeepAlive(uncomparableCtx{Context: firstCtx}, grant.ID)
+	require.NoError(t, err)
+	firstResponse := requireClientLeaseKeepAliveResponse(t, ctx, first)
+	require.Equal(t, grant.ID, firstResponse.ID)
+	require.Positive(t, firstResponse.TTL)
+
+	secondCtx, secondCancel := context.WithCancel(ctx)
+	second, err := client.KeepAlive(uncomparableCtx{Context: secondCtx}, grant.ID)
+	require.NoError(t, err)
+	secondResponse := requireClientLeaseKeepAliveResponse(t, ctx, second)
+	require.Equal(t, grant.ID, secondResponse.ID)
+	require.Positive(t, secondResponse.TTL)
+
+	secondCancel()
+	requireClientLeaseKeepAliveClosed(t, ctx, second)
+	select {
+	case response, ok := <-first:
+		require.True(t, ok, "canceling second keepalive context must not close the first channel")
+		require.NotNil(t, response)
+		require.Equal(t, grant.ID, response.ID)
+		require.Positive(t, response.TTL)
+	default:
+	}
+
+	require.NoError(t, client.Close())
+	requireClientLeaseKeepAliveClosed(t, ctx, first)
+}
+
 func TestRawGRPCLeaseSignedIDBoundaries(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
@@ -1777,6 +1840,37 @@ func requireClientLeaseHeaderWellFormed(t *testing.T, header *etcdserverpb.Respo
 	require.NotZero(t, header.MemberId)
 	require.Positive(t, header.Revision)
 	require.Positive(t, header.RaftTerm)
+}
+
+func requireClientLeaseKeepAliveResponse(
+	t *testing.T,
+	ctx context.Context,
+	ch <-chan *clientv3.LeaseKeepAliveResponse,
+) *clientv3.LeaseKeepAliveResponse {
+	t.Helper()
+	select {
+	case response, ok := <-ch:
+		require.True(t, ok, "keepalive channel closed before response")
+		require.NotNil(t, response)
+		return response
+	case <-ctx.Done():
+		t.Fatalf("timed out waiting for keepalive response: %v", ctx.Err())
+		return nil
+	}
+}
+
+func requireClientLeaseKeepAliveClosed(
+	t *testing.T,
+	ctx context.Context,
+	ch <-chan *clientv3.LeaseKeepAliveResponse,
+) {
+	t.Helper()
+	select {
+	case response, ok := <-ch:
+		require.False(t, ok, "expected closed keepalive channel, got response=%+v", response)
+	case <-ctx.Done():
+		t.Fatalf("timed out waiting for keepalive channel close: %v", ctx.Err())
+	}
 }
 
 func byteKeysToStrings(keys [][]byte) []string {

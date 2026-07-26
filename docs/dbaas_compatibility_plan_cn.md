@@ -15162,6 +15162,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   连续写入同一 key 后 compact 到第 4 次写入的 revision，再从更旧 revision 建立 watch，
   固定 typed compacted error、compact revision 和关闭外观。该门禁防止 watch compaction
   边界、错误归一化或 channel teardown 重构让 informer 在过期 resourceVersion 上挂起或误判。
+- A1143 固定 clientv3 Lease KeepAlive context/channel 隔离：
+  对照 `/root/etcd/tests/integration/clientv3/lease/lease_test.go:TestLeaseKeepAlive`，
+  `KeepAlive` 必须接受不可比较的 context wrapper；同一 lease 上多个 keepalive channel
+  共享底层 client 时，取消其中一个 context 只能关闭对应 channel，不能影响另一个 live
+  channel；`client.Close()` 必须关闭剩余 keepalive channel。本轮新增 bufconn official
+  clientv3 回归，用两个不可比较 context 对同一 lease 建立 keepalive，分别验证初始 TTL
+  响应、单 context cancel 隔离和 client close 后关闭。该门禁防止 keepalive map key、
+  stream fanout 或 client teardown 重构让 session/lock 续租 goroutine 泄漏或互相误关。
 
 ### P2：运维兼容和长期验证
 
