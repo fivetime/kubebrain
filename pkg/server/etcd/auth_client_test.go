@@ -528,6 +528,7 @@ func TestClientAuthImplicitRootRoleAndCredentialErrors(t *testing.T) {
 		wrongCredentialsErr,
 		codes.Unknown,
 		"etcdserver: authentication failed, invalid user ID or password",
+		rpctypes.ErrAuthFailed,
 	)
 	_, noPasswordErr := client.Authenticate(ctx, "nopass", "password")
 	requireAuthClientError(
@@ -1075,11 +1076,11 @@ func TestClientAuthClusterAndMaintenanceAuthorization(t *testing.T) {
 	root := newClient("root", "root-secret")
 	alice := newClient("alice", "alice-secret")
 	_, anonymousStatusErr := bootstrap.Status(ctx, bootstrap.Endpoints()[0])
-	requireAuthClientError(t, anonymousStatusErr, codes.Unknown, "etcdserver: user name is empty")
+	requireAuthClientError(t, anonymousStatusErr, codes.Unknown, "etcdserver: user name is empty", rpctypes.ErrUserEmpty)
 	_, anonymousMemberListErr := bootstrap.MemberList(ctx)
-	requireAuthClientError(t, anonymousMemberListErr, codes.Unknown, "etcdserver: user name is empty")
+	requireAuthClientError(t, anonymousMemberListErr, codes.Unknown, "etcdserver: user name is empty", rpctypes.ErrUserEmpty)
 	_, anonymousAlarmListErr := bootstrap.AlarmList(ctx)
-	requireAuthClientError(t, anonymousAlarmListErr, codes.Unknown, "etcdserver: user name is empty")
+	requireAuthClientError(t, anonymousAlarmListErr, codes.Unknown, "etcdserver: user name is empty", rpctypes.ErrUserEmpty)
 
 	statusResponse, err := alice.Status(ctx, alice.Endpoints()[0])
 	require.NoError(t, err)
@@ -1455,9 +1456,12 @@ func byteSlicesToStrings(values [][]byte) []string {
 	return strings
 }
 
-func requireAuthClientError(t *testing.T, err error, code codes.Code, message string) {
+func requireAuthClientError(t *testing.T, err error, code codes.Code, message string, wantErrorIs ...error) {
 	t.Helper()
 	require.Error(t, err)
+	for _, want := range wantErrorIs {
+		require.ErrorIs(t, err, want)
+	}
 	require.Equal(t, code, status.Code(err))
 	require.Equal(t, message, status.Convert(err).Message())
 }

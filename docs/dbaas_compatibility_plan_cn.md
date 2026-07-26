@@ -15239,6 +15239,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   对直接 missing lease 与 missing-key+missing-lease 两个分支同时保留 status/message 并新增
   typed error 断言。该门禁防止 Put validation、lease lookup 或 client adapter 重构把
   lease not found 降级为只能字符串匹配的错误。
+- A1154 固定 clientv3 Auth user-empty/auth-failed typed error：
+  对照 `/root/etcd/tests/integration/clientv3/user_test.go:TestUserErrorAuth`，认证开启后未带
+  用户身份调用受保护 API 必须可由 `errors.Is(..., rpctypes.ErrUserEmpty)` 识别，错误用户或密码
+  的 `Authenticate` 必须可由 `errors.Is(..., rpctypes.ErrAuthFailed)` 识别。本轮加强既有 bufconn
+  official clientv3 auth 回归，在保留 status/message 外观的同时新增 typed error 断言。该门禁
+  防止 auth interceptor、token bootstrap 或 client adapter 重构破坏租户控制器对未认证与认证失败的分类。
 
 ### P2：运维兼容和长期验证
 
