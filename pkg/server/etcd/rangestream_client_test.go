@@ -25,7 +25,9 @@ import (
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 )
 
@@ -106,5 +108,93 @@ func requireClientRangeStreamMatchesUnary(t *testing.T, streamed, unary *clientv
 		require.Equal(t, unary.Kvs[index].ModRevision, streamed.Kvs[index].ModRevision)
 		require.Equal(t, unary.Kvs[index].Version, streamed.Kvs[index].Version)
 		require.Equal(t, unary.Kvs[index].Lease, streamed.Kvs[index].Lease)
+	}
+}
+
+func TestClientRangeStreamValidationErrorsMatchEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///bufnet",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	client := etcdserverpb.NewKVClient(conn)
+
+	tests := []struct {
+		name    string
+		req     *etcdserverpb.RangeRequest
+		code    codes.Code
+		message string
+	}{
+		{
+			name:    "empty-key",
+			req:     &etcdserverpb.RangeRequest{},
+			code:    codes.InvalidArgument,
+			message: "etcdserver: key is not provided",
+		},
+		{
+			name:    "invalid-sort-order",
+			req:     &etcdserverpb.RangeRequest{Key: []byte("/a989/rangestream-validation"), SortOrder: etcdserverpb.RangeRequest_SortOrder(99)},
+			code:    codes.InvalidArgument,
+			message: "etcdserver: invalid sort option",
+		},
+		{
+			name:    "invalid-sort-target",
+			req:     &etcdserverpb.RangeRequest{Key: []byte("/a989/rangestream-validation"), SortTarget: etcdserverpb.RangeRequest_SortTarget(99)},
+			code:    codes.InvalidArgument,
+			message: "etcdserver: invalid sort option",
+		},
+		{
+			name: "custom-sort",
+			req: &etcdserverpb.RangeRequest{
+				Key: []byte("/a989/rangestream-validation"), RangeEnd: []byte("/a989/rangestream-validation0"),
+				SortOrder: etcdserverpb.RangeRequest_DESCEND, SortTarget: etcdserverpb.RangeRequest_KEY,
+			},
+			code:    codes.Unimplemented,
+			message: "RangeStream does not support custom sort orders",
+		},
+		{
+			name: "revision-filter",
+			req: &etcdserverpb.RangeRequest{
+				Key: []byte("/a989/rangestream-validation"), RangeEnd: []byte("/a989/rangestream-validation0"),
+				MinModRevision: 1,
+			},
+			code:    codes.Unimplemented,
+			message: "RangeStream does not support revision filters",
+		},
+		{
+			name: "custom-sort-before-revision-filter",
+			req: &etcdserverpb.RangeRequest{
+				Key: []byte("/a989/rangestream-validation"), RangeEnd: []byte("/a989/rangestream-validation0"),
+				SortOrder: etcdserverpb.RangeRequest_DESCEND, SortTarget: etcdserverpb.RangeRequest_KEY,
+				MinModRevision: 1,
+			},
+			code:    codes.Unimplemented,
+			message: "RangeStream does not support custom sort orders",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			stream, err := client.RangeStream(ctx, test.req)
+			if err == nil {
+				_, err = stream.Recv()
+			}
+			require.Error(t, err)
+			require.Equal(t, test.code, status.Code(err))
+			require.Equal(t, test.message, status.Convert(err).Message())
+		})
 	}
 }

@@ -13939,6 +13939,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   from-key、keys-only 和 count-only+limit；每个 case 都用 `GetStreamToGetResponse` 合并后
   与 unary `Get` 的 header revision、Count、More、KVs 完整元数据一致，防止 RangeStream
   chunking、empty interval 或 high-key from-key 路径只在服务层单测中覆盖而公开客户端回退。
+- A989 固定 raw gRPC RangeStream validation 的 wire-level 错误：
+  `rangestream_validation` differential 已证明 empty key、invalid sort enum、自定义 sort 与
+  revision filter 的 code/message 必须与 reference etcd 一致。本轮新增 bufconn raw gRPC
+  回归，直接用 `etcdserverpb.KVClient.RangeStream` 创建 server stream 并在 `Recv` 处读取
+  terminal error，固定 `InvalidArgument` 的 empty key/invalid sort、`Unimplemented` 的
+  custom sort/revision filter，以及 custom sort 优先于 revision filter 的错误优先级，防止
+  validation 只在服务层直接调用中正确但公开 streaming RPC 转换出错。
 
 ### P2：运维兼容和长期验证
 
