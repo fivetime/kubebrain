@@ -14045,6 +14045,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   future message；Txn selected negative Range 返回 compacted error，unselected negative
   branch 不执行且 Txn 成功，selected max-int Range 返回 future error，防止 handler 直调
   正确但真实 gRPC/TXN request-op 转换或分支选择 validation 顺序回退。
+- A1001 固定 raw gRPC combined alarm 的写入阻断和恢复路径：
+  `combined_alarm` 与 `alarm_member_set` differential 证明 NOSPACE/CORRUPT 同时存在时，
+  GET all、`Status.Errors`、读请求放行、写请求错误优先级、NOSPACE 恢复后的 delete-only
+  Txn 行为和最终恢复必须与 reference etcd 对齐。本轮新增 bufconn raw gRPC 回归，注册真实
+  KV/Lease/Maintenance 服务，直接通过 `etcdserverpb.MaintenanceClient` 激活 NOSPACE 后
+  重复激活验证幂等，再激活 CORRUPT 并断言 all alarms 与 Status errors 同时包含两类 alarm；
+  随后验证 Range/read-only Txn 放行，Put/delete-only Txn/LeaseGrant 在 CORRUPT+NOSPACE
+  下返回 raw `DataLoss`，解除 CORRUPT 后 Put/LeaseGrant 返回 `ResourceExhausted` 而
+  delete-only Txn 成功，最终解除 NOSPACE 后 Put 恢复成功，防止维护面服务层正确但真实
+  gRPC client、interceptor 或 alarm 状态恢复路径回退。
 
 ### P2：运维兼容和长期验证
 
