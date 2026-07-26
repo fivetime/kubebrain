@@ -1594,14 +1594,13 @@ func TestLeaseSnapshotIsUnavailableUntilReloadCompletes(t *testing.T) {
 	_, err = server.Put(ctx, &etcdserverpb.PutRequest{
 		Key: []byte("/registry/leases/reloading"), Value: []byte("value"), Lease: lease.ID,
 	})
-	require.Equal(t, codes.Unavailable, status.Code(err))
-	require.Contains(t, err.Error(), "lease state is reloading")
+	requireDirectLeaseStatusError(t, err, codes.Unavailable, "etcdserver: lease state is reloading")
 
 	_, err = server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: lease.ID})
-	require.Equal(t, codes.Unavailable, status.Code(err))
+	requireDirectLeaseStatusError(t, err, codes.Unavailable, "etcdserver: lease state is reloading")
 
 	_, err = server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 300, ID: 7102})
-	require.Equal(t, codes.Unavailable, status.Code(err))
+	requireDirectLeaseStatusError(t, err, codes.Unavailable, "etcdserver: lease state is reloading")
 
 	require.NoError(t, server.ReloadLeases(ctx))
 	_, err = server.Put(ctx, &etcdserverpb.PutRequest{
@@ -1972,6 +1971,13 @@ func TestKeptAliveLeaseSurvivesLeaderChangeWithFreshDeadline(t *testing.T) {
 func requireDirectLeaseError(t *testing.T, err error, want error, code codes.Code, message string) {
 	t.Helper()
 	require.ErrorIs(t, err, want)
+	require.Equal(t, code, status.Code(err))
+	require.Equal(t, message, status.Convert(err).Message())
+}
+
+func requireDirectLeaseStatusError(t *testing.T, err error, code codes.Code, message string) {
+	t.Helper()
+	require.Error(t, err)
 	require.Equal(t, code, status.Code(err))
 	require.Equal(t, message, status.Convert(err).Message())
 }

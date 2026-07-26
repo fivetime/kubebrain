@@ -15823,6 +15823,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   duplicate lease ID、超过 max TTL 拒绝统一到 `ErrGRPCLeaseExist`/`ErrGRPCLeaseTTLTooLarge`、
   reference code 和 message helper。该门禁防止 lease grant admission 或 client wrapper
   重构后只保留 code/message，漏掉可由调用方 `errors.Is` 识别的 etcd typed error。
+- A1248 固定 lease reload window Unavailable message：
+  独立 TiKV/PD 模式下 follower 升主需要先撤销 stale lease snapshot，本轮把 reload 完成前
+  `Put(Lease)`、`LeaseTimeToLive` 和 `LeaseGrant` 的拒绝统一到 `codes.Unavailable` 与
+  `etcdserver: lease state is reloading` helper。该门禁防止 lease reload/handoff 重构后
+  返回普通 Unavailable 或空 message，导致生产控制器无法区分短暂 reload 保护。
 
 ### P2：运维兼容和长期验证
 
