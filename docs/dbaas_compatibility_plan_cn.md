@@ -15450,6 +15450,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `--initial-cluster`/client port 派生的 client URLs。本轮新增 raw bufconn 回归，防止只维护
   official clientv3 `MemberList`/`Sync` 外观而让直接 Cluster API 调用方看到错误 revision、
   不可拨号 URL 或错误的 barrier 语义。
+- A1187 固定 raw gRPC MemberList linearizable barrier error 外观：
+  延续 A104/A105 的 read-barrier failure classification 到 generated
+  `etcdserverpb.ClusterClient.MemberList`：`Linearizable=true` 时普通 barrier 失败必须映射为
+  `codes.Unavailable`，已分类 gRPC status 必须原样保留 code/message，不能在 raw gRPC 层退化为
+  `Unknown` 或返回可能陈旧的成员列表。本轮新增 raw bufconn 回归，分别注入普通错误和
+  `ResourceExhausted` status 错误，固定直接 Cluster API 调用方看到的 retryable 错误外观。
 
 ### P2：运维兼容和长期验证
 

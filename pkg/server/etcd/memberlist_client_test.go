@@ -16,6 +16,7 @@ package etcd
 
 import (
 	"context"
+	"errors"
 	"net"
 	"sort"
 	"sync/atomic"
@@ -28,7 +29,9 @@ import (
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 )
 
@@ -81,6 +84,58 @@ func TestRawGRPCMemberListHeaderAndBarrierMatchEtcd(t *testing.T) {
 	require.NoError(t, err)
 	requireRawMemberListResponse(t, linearizable, memberListClientURLs(serializable.Members))
 	require.EqualValues(t, 1, barriers.Load())
+}
+
+func TestRawGRPCMemberListLinearizableBarrierErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		barrierErr  error
+		wantCode    codes.Code
+		wantMessage string
+	}{
+		{
+			name:        "plain error",
+			barrierErr:  errors.New("leader revision transport failed"),
+			wantCode:    codes.Unavailable,
+			wantMessage: "leader revision transport failed",
+		},
+		{
+			name:        "status error",
+			barrierErr:  status.Error(codes.ResourceExhausted, "barrier overloaded"),
+			wantCode:    codes.ResourceExhausted,
+			wantMessage: "barrier overloaded",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server, closeFn := newTestRPCServer(t)
+			defer closeFn()
+			server.peers = testPeerService{
+				isLeader:   true,
+				syncReadFn: func(context.Context) error { return tc.barrierErr },
+			}
+
+			grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+			etcdserverpb.RegisterClusterServer(grpcServer, server)
+			listener := bufconn.Listen(1 << 20)
+			go func() { _ = grpcServer.Serve(listener) }()
+			t.Cleanup(grpcServer.Stop)
+
+			conn, err := grpc.NewClient("passthrough:///memberlist-barrier-client",
+				grpc.WithTransportCredentials(insecure.NewCredentials()),
+				grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+					return listener.Dial()
+				}))
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, conn.Close()) })
+			cluster := etcdserverpb.NewClusterClient(conn)
+
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_, err = cluster.MemberList(ctx, &etcdserverpb.MemberListRequest{Linearizable: true})
+			require.Equal(t, tc.wantCode, status.Code(err))
+			require.Equal(t, tc.wantMessage, status.Convert(err).Message())
+		})
+	}
 }
 
 func TestClientMemberListAndSyncUseAdvertisedClientURLs(t *testing.T) {
