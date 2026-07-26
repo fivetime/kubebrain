@@ -15543,6 +15543,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `auth: authentication failed, password was given for no password user` 文案。本轮加强既有
   clientv3 credential error 回归，防止直接 Auth API 调用方看到错误 code 或 NoPassword 特例被
   误归一化。
+- A1201 固定 raw gRPC implicit root role 外观：
+  延续 A1062 的隐式 root role 契约到 generated `etcdserverpb.AuthClient`：未显式 `RoleAdd("root")`
+  时，auth enabled 前后 raw `RoleGet("root")` 都必须返回 `FailedPrecondition`/role not found；
+  但 root 用户通过 `UserGrantRole(root, root)` 仍拥有隐式 admin 能力，可在 auth enabled 后执行
+  raw `UserAdd`。本轮加强既有 clientv3 implicit-root 回归，防止直接 Auth API 调用方看到
+  不存在的 root role 或 root admin 能力漂移。
 
 ### P2：运维兼容和长期验证
 

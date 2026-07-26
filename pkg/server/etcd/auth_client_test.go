@@ -594,6 +594,9 @@ func TestClientAuthImplicitRootRoleAndCredentialErrors(t *testing.T) {
 
 	_, rootRoleBeforeEnableErr := client.RoleGet(ctx, "root")
 	requireAuthClientError(t, rootRoleBeforeEnableErr, codes.Unknown, "etcdserver: role name not found", rpctypes.ErrRoleNotFound)
+	rawBootstrapAuth := etcdserverpb.NewAuthClient(client.ActiveConnection())
+	_, rawRootRoleBeforeEnableErr := rawBootstrapAuth.RoleGet(ctx, &etcdserverpb.AuthRoleGetRequest{Role: "root"})
+	requireAuthClientError(t, rawRootRoleBeforeEnableErr, codes.FailedPrecondition, "etcdserver: role name not found")
 
 	_, err = client.AuthEnable(ctx)
 	require.NoError(t, err)
@@ -622,7 +625,13 @@ func TestClientAuthImplicitRootRoleAndCredentialErrors(t *testing.T) {
 	t.Cleanup(func() { require.NoError(t, rootClient.Close()) })
 	_, rootRoleAfterEnableErr := rootClient.RoleGet(ctx, "root")
 	requireAuthClientError(t, rootRoleAfterEnableErr, codes.Unknown, "etcdserver: role name not found", rpctypes.ErrRoleNotFound)
+	rawRootAuth := etcdserverpb.NewAuthClient(rootClient.ActiveConnection())
+	_, rawRootRoleAfterEnableErr := rawRootAuth.RoleGet(ctx, &etcdserverpb.AuthRoleGetRequest{Role: "root"})
+	requireAuthClientError(t, rawRootRoleAfterEnableErr, codes.FailedPrecondition, "etcdserver: role name not found")
+
 	_, err = rootClient.UserAdd(ctx, "alice", "alice-secret")
+	require.NoError(t, err)
+	_, err = rawRootAuth.UserAdd(ctx, &etcdserverpb.AuthUserAddRequest{Name: "raw-alice", Password: "raw-alice-secret"})
 	require.NoError(t, err)
 	aliceClient, err := clientv3.New(clientv3.Config{
 		Endpoints:   []string{"bufnet"},
@@ -668,7 +677,6 @@ func TestClientAuthImplicitRootRoleAndCredentialErrors(t *testing.T) {
 		"auth: authentication failed, password was given for no password user",
 	)
 
-	rawRootAuth := etcdserverpb.NewAuthClient(rootClient.ActiveConnection())
 	disableResponse, err := rawRootAuth.AuthDisable(ctx, &etcdserverpb.AuthDisableRequest{})
 	require.NoError(t, err)
 	require.NotNil(t, disableResponse.Header)
