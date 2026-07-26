@@ -66,7 +66,7 @@ func TestUpdateWithHugeClientRevisionDoesNotStallPipeline(t *testing.T) {
 		Value:    []byte("v2"),
 		Revision: uint64(1) << 62,
 	}})
-	require.Error(t, err)
+	require.ErrorIs(t, err, ErrRevisionDriftBack)
 
 	// The pipeline must advance past the leaked revision.
 	after, err := s.backend.Create(s.ctx, &proto.CreateRequest{Key: []byte(prefix + "/leak/drift/b"), Value: []byte("v")})
@@ -87,7 +87,7 @@ func TestDeleteWithHugeClientRevisionDoesNotStallPipeline(t *testing.T) {
 		Key:      key,
 		Revision: uint64(1) << 62,
 	})
-	require.Error(t, err)
+	require.ErrorIs(t, err, ErrRevisionDriftBack)
 
 	after, err := s.backend.Create(s.ctx, &proto.CreateRequest{Key: []byte(prefix + "/leak/deldrift/b"), Value: []byte("v")})
 	require.NoError(t, err)
@@ -114,7 +114,7 @@ func TestDeleteRangeCommitConflictDoesNotStallPipeline(t *testing.T) {
 		{Key: key1, Value: []byte("v1"), Revision: c1.Header.Revision},
 		{Key: key2, Value: []byte("v2"), Revision: c2.Header.Revision + 12345},
 	})
-	require.Error(t, err)
+	require.ErrorContains(t, err, "txn compare guard conflict")
 
 	after, err := s.backend.Create(s.ctx, &proto.CreateRequest{Key: []byte(prefix + "/leak/dr/c"), Value: []byte("v")})
 	require.NoError(t, err)
@@ -161,7 +161,7 @@ func TestUpdateMetadataReadFailureDoesNotStallPipeline(t *testing.T) {
 		Value:    []byte("v2"),
 		Revision: createResp.Header.Revision,
 	}})
-	require.Error(t, err)
+	require.ErrorContains(t, err, "injected iter failure")
 	require.Zero(t, atomic.LoadInt32(&fkv.remaining), "injected failure was not consumed by the metadata read")
 
 	after, err := b.Create(ctx, &proto.CreateRequest{Key: []byte(prefix + "/leak/meta/b"), Value: []byte("v")})

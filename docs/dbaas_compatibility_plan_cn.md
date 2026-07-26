@@ -16145,6 +16145,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `TestQuotaAlarmSetEncodingRejectsNonCanonicalMetadata` 从只断错误扩展为逐类固定低层
   decoder 错误。该门禁防止 quota alarm 状态损坏后被误解为 legacy owner、空 alarm
   或部分有序集合。
+- A1304 固定 revision leak 失败原因：
+  revision pipeline 不得因为已经 deal revision 的失败写而卡住。既有
+  `revision_leak_test` 只要求错误发生后 pipeline 继续前进，未固定失败原因。本轮把巨大
+  client revision 的 Update/Delete 收紧到 `ErrRevisionDriftBack`，DeleteRange CAS 冲突
+  收紧到 `txn compare guard conflict`，metadata read 注入故障收紧到
+  `injected iter failure`。该门禁防止后台 revision collector 修复退化成吞错、错分
+  compaction/guard conflict，或把瞬时 storage 故障伪装成成功。
 
 ### P2：运维兼容和长期验证
 
