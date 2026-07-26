@@ -14308,6 +14308,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   并绑定 key，等待 `TimeToLive` 返回 0 后执行 `KeepAliveOnce`，再等待超过旧 deadline
   检查 TTL 仍非 `-1` 且 key 仍绑定原 lease，防止服务层过期/续租竞态覆盖存在但公开
   clientv3 路径回退。
+- A1034 固定 clientv3 expired KeepAlive 与 key 删除顺序：
+  `lease_keepalive_expiry_race` compatibility 用例证明多个短 lease 过期边界并发
+  `KeepAliveOnce` 时，若续租成功则 attached key 必须仍存在并绑定同一 lease；若返回
+  `ErrLeaseNotFound`，该 lease 的 attached key 必须已经删除，不能先把 not found 暴露给
+  客户端再异步删除 key。本轮新增官方 clientv3 bufconn 回归，创建 16 个 2 秒 lease
+  及对应 key，过期边界并发 keepalive+get，按 etcd 客户端错误语义验证续租成功和 not-found
+  两条路径的 key 可见性，防止 lessor 删除顺序在公开客户端面回退。
 
 ### P2：运维兼容和长期验证
 

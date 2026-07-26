@@ -16,16 +16,19 @@ package etcd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"net"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/mvccpb"
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -218,6 +221,87 @@ func TestClientLeaseKeepAliveAtZeroTTLSurvivesOriginalDeadline(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, got.Kvs, 1)
 	require.Equal(t, int64(grant.ID), got.Kvs[0].Lease)
+}
+
+func TestClientExpiredKeepAliveResponseFollowsKeyDeletion(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterLeaseServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	const leases = 16
+	type leasedKey struct {
+		id  clientv3.LeaseID
+		key string
+	}
+	items := make([]leasedKey, 0, leases)
+	prefix := fmt.Sprintf("/a1034/lease-expired-keepalive-order/%d/", time.Now().UnixNano())
+	for index := 0; index < leases; index++ {
+		grant, grantErr := client.Grant(ctx, 2)
+		require.NoError(t, grantErr)
+		key := fmt.Sprintf("%s%02d", prefix, index)
+		_, putErr := client.Put(ctx, key, "value", clientv3.WithLease(grant.ID))
+		require.NoError(t, putErr)
+		items = append(items, leasedKey{id: grant.ID, key: key})
+	}
+
+	time.Sleep(2 * time.Second)
+	var wg sync.WaitGroup
+	errs := make(chan error, leases)
+	for _, item := range items {
+		item := item
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			renewed, keepAliveErr := client.KeepAliveOnce(ctx, item.id)
+			got, getErr := client.Get(ctx, item.key)
+			if getErr != nil {
+				errs <- fmt.Errorf("get %q: %w", item.key, getErr)
+				return
+			}
+			switch {
+			case keepAliveErr == nil:
+				if renewed == nil || renewed.TTL <= 0 || len(got.Kvs) != 1 {
+					errs <- fmt.Errorf("successful renewal %d returned %+v with %d keys", item.id, renewed, len(got.Kvs))
+					return
+				}
+				if got.Kvs[0].Lease != int64(item.id) {
+					errs <- fmt.Errorf("renewed key %q carries lease %d, want %d", item.key, got.Kvs[0].Lease, item.id)
+				}
+			case errors.Is(keepAliveErr, rpctypes.ErrLeaseNotFound):
+				if len(got.Kvs) != 0 {
+					errs <- fmt.Errorf("not-found renewal %d returned before attached key deletion", item.id)
+				}
+			default:
+				errs <- fmt.Errorf("keepalive %d: %w", item.id, keepAliveErr)
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		require.NoError(t, err)
+	}
 }
 
 func TestRawGRPCLeaseReadBoundaryAndList(t *testing.T) {
