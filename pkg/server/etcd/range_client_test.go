@@ -95,6 +95,71 @@ func TestClientRangeRevisionFilterCountAndTxnStagedView(t *testing.T) {
 	require.Equal(t, "new-c", string(txnRange.Kvs[0].Value))
 }
 
+func TestClientRangeKeysOnlyLimitAcrossTombstones(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	prefix := fmt.Sprintf("/a995/range-tombstone-client/%d/", time.Now().UnixNano())
+	var beforeDeletes int64
+	for _, suffix := range []string{"a", "b", "c", "d"} {
+		response, putErr := client.Put(ctx, prefix+suffix, "value-"+suffix)
+		require.NoError(t, putErr)
+		beforeDeletes = response.Header.Revision
+	}
+	_, err = client.Delete(ctx, prefix+"b")
+	require.NoError(t, err)
+	deleted, err := client.Delete(ctx, prefix+"d")
+	require.NoError(t, err)
+	_, err = client.Put(ctx, prefix+"c", "updated-c")
+	require.NoError(t, err)
+	_, err = client.Put(ctx, prefix+"b", "recreated-b")
+	require.NoError(t, err)
+	_, err = client.Put(ctx, prefix+"e", "value-e")
+	require.NoError(t, err)
+
+	assertPage := func(stage string, revision, limit int64, wantKeys []string, wantCount int64, wantMore bool) {
+		t.Helper()
+		options := []clientv3.OpOption{
+			clientv3.WithPrefix(), clientv3.WithKeysOnly(), clientv3.WithLimit(limit),
+		}
+		if revision != 0 {
+			options = append(options, clientv3.WithRev(revision))
+		}
+		response, getErr := client.Get(ctx, prefix, options...)
+		require.NoError(t, getErr, stage)
+		require.Equal(t, wantCount, response.Count, stage)
+		require.Equal(t, wantMore, response.More, stage)
+		require.Equal(t, wantKeys, rangeClientRelativeKeys(response.Kvs, prefix), stage)
+		for _, kv := range response.Kvs {
+			require.Empty(t, kv.Value, stage)
+		}
+	}
+	assertPage("before-deletes", beforeDeletes, 2, []string{"a", "b"}, 4, true)
+	assertPage("after-deletes", deleted.Header.Revision, 1, []string{"a"}, 2, true)
+	assertPage("after-recreate", 0, 2, []string{"a", "b"}, 4, true)
+}
+
 func rangeClientRelativeKeys(kvs []*mvccpb.KeyValue, prefix string) []string {
 	keys := make([]string, 0, len(kvs))
 	for _, kv := range kvs {

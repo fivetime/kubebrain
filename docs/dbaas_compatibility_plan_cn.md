@@ -13991,6 +13991,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   grant 范围内、GrantedTTL 保留 300，并且 `Leases()` 列表包含该 lease 且所有 response
   header 都带 cluster/member/revision/term，防止公开 clientv3 lessor wrapper 或 gRPC
   header stamping 重构后只剩 handler 直调路径正确。
+- A995 固定 clientv3 Range KeysOnly+Limit 跨 tombstone/recreate 的公开路径：
+  A942/A959 与 `range_tombstone_limit` differential 已证明历史 revision 和当前 revision
+  下，`WithKeysOnly()+WithLimit()` 的分页只消耗目标 revision 可见的 live keys，Count
+  报告目标 revision 下存活总数，value 必须被省略。本轮新增 bufconn clientv3 回归，注册
+  真实 KV gRPC 服务，按 `a/b/c/d`、删除 `b/d`、更新 `c`、重建 `b`、新增 `e` 的序列，
+  分别断言删除前历史页返回 `a,b`/Count=4/More，删除后历史页返回 `a`/Count=2/More，
+  当前页返回 `a,b`/Count=4/More，且所有 KVs value 为空，防止 public client 入口或
+  lookahead/count-index 优化把 tombstone、已删除 key 或重建 key 错算进分页窗口。
 
 ### P2：运维兼容和长期验证
 
