@@ -405,16 +405,19 @@ func TestClientAuthUserErrorsMatchEtcd(t *testing.T) {
 	require.NoError(t, err)
 	_, err = client.UserAdd(ctx, "a1129-user", "secret")
 	require.ErrorIs(t, err, rpctypes.ErrUserAlreadyExist)
+	requireAuthClientError(t, err, codes.Unknown, "etcdserver: user name already exists", rpctypes.ErrUserAlreadyExist)
 	_, rawDuplicateUserErr := rawAuth.UserAdd(ctx, &etcdserverpb.AuthUserAddRequest{Name: "a1129-raw-user", Password: "secret"})
 	requireAuthClientError(t, rawDuplicateUserErr, codes.FailedPrecondition, "etcdserver: user name already exists")
 
 	_, err = client.UserDelete(ctx, "a1129-missing-user")
 	require.ErrorIs(t, err, rpctypes.ErrUserNotFound)
+	requireAuthClientError(t, err, codes.Unknown, "etcdserver: user name not found", rpctypes.ErrUserNotFound)
 	_, rawMissingUserErr := rawAuth.UserDelete(ctx, &etcdserverpb.AuthUserDeleteRequest{Name: "a1129-raw-missing-user"})
 	requireAuthClientError(t, rawMissingUserErr, codes.FailedPrecondition, "etcdserver: user name not found")
 
 	_, err = client.UserGrantRole(ctx, "a1129-user", "a1129-missing-role")
 	require.ErrorIs(t, err, rpctypes.ErrRoleNotFound)
+	requireAuthClientError(t, err, codes.Unknown, "etcdserver: role name not found", rpctypes.ErrRoleNotFound)
 	_, rawMissingRoleErr := rawAuth.UserGrantRole(ctx, &etcdserverpb.AuthUserGrantRoleRequest{
 		User: "a1129-raw-user",
 		Role: "a1129-raw-missing-role",
@@ -427,6 +430,7 @@ func TestClientAuthUserErrorsMatchEtcd(t *testing.T) {
 	require.NoError(t, err)
 	_, err = client.UserRevokeRole(ctx, "a1129-user", "a1129-unused-role")
 	require.ErrorIs(t, err, rpctypes.ErrRoleNotGranted)
+	requireAuthClientError(t, err, codes.Unknown, "etcdserver: role is not granted to the user", rpctypes.ErrRoleNotGranted)
 	_, rawRoleNotGrantedErr := rawAuth.UserRevokeRole(ctx, &etcdserverpb.AuthUserRevokeRoleRequest{
 		Name: "a1129-raw-user",
 		Role: "a1129-raw-unused-role",

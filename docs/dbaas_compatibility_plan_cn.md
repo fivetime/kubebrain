@@ -15625,6 +15625,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   server-side 请求过大必须返回 `codes.Unknown` 和 `etcdserver: request is too large`，区别于
   A1162/A1165 的 client-side send/recv `ResourceExhausted`。该门禁防止 admission/request
   limit 或 client error mapping 重构后混淆服务端 validation 与 transport 大小限制。
+- A1214 固定 official clientv3 Auth user 基础错误三件套：
+  A1129/A1199 已覆盖 user management typed error 与 raw gRPC code/message，本轮把 public
+  `clientv3.Auth` wrapper 的 duplicate user、missing user、missing role、role-not-granted
+  固定为同时满足对应 `errors.Is`、`codes.Unknown` 和 reference etcd message。该门禁防止
+  auth repository 或 client adapter 重构后让 etcdctl/operator 看到只保留 typed error、但
+  code/message 漂移的管理面错误。
 
 ### P2：运维兼容和长期验证
 
