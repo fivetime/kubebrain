@@ -15,6 +15,7 @@
 package etcd
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"math"
@@ -24,6 +25,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
+	"go.etcd.io/etcd/api/v3/mvccpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -316,6 +318,110 @@ func TestRawGRPCTxnExecutionValidationOrderAndBudget(t *testing.T) {
 	}
 }
 
+func TestRawGRPCTxnFromKeyExecutionStagedView(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///txn-from-key-execution-client",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	kv := etcdserverpb.NewKVClient(conn)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for _, tt := range []struct {
+		name           string
+		putFirst       bool
+		wantDeleted    int64
+		wantPrev       []txnClientKV
+		wantTxnRange   []txnClientKV
+		wantFinalRange []txnClientKV
+	}{
+		{
+			name:        "put-then-delete",
+			putFirst:    true,
+			wantDeleted: 3,
+			wantPrev: []txnClientKV{
+				{Key: "b", Value: "seed-b", Version: 1},
+				{Key: "c", Value: "seed-c", Version: 1},
+				{Key: "d", Value: "txn-d", Version: 1, CreatedInTxn: true, ModifiedInTxn: true},
+			},
+			wantTxnRange:   []txnClientKV{{Key: "a", Value: "seed-a", Version: 1}},
+			wantFinalRange: []txnClientKV{{Key: "a", Value: "seed-a", Version: 1}},
+		},
+		{
+			name:        "delete-then-put",
+			wantDeleted: 2,
+			wantPrev: []txnClientKV{
+				{Key: "b", Value: "seed-b", Version: 1},
+				{Key: "c", Value: "seed-c", Version: 1},
+			},
+			wantTxnRange: []txnClientKV{
+				{Key: "a", Value: "seed-a", Version: 1},
+				{Key: "d", Value: "txn-d", Version: 1, CreatedInTxn: true, ModifiedInTxn: true},
+			},
+			wantFinalRange: []txnClientKV{
+				{Key: "a", Value: "seed-a", Version: 1},
+				{Key: "d", Value: "txn-d", Version: 1, CreatedInTxn: true, ModifiedInTxn: true},
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			prefix := string(bytes.Repeat([]byte{0xff}, 64)) +
+				fmt.Sprintf("/a1006/txn-from-key-execution/%d/%s/", time.Now().UnixNano(), tt.name)
+			end := []byte(clientv3.GetPrefixRangeEnd(prefix))
+			for _, suffix := range []string{"a", "b", "c"} {
+				_, putErr := kv.Put(ctx, &etcdserverpb.PutRequest{
+					Key: []byte(prefix + suffix), Value: []byte("seed-" + suffix),
+				})
+				require.NoError(t, putErr)
+			}
+
+			put := txnClientPutOp(&etcdserverpb.PutRequest{Key: []byte(prefix + "d"), Value: []byte("txn-d")})
+			del := txnClientDeleteOp(&etcdserverpb.DeleteRangeRequest{
+				Key: []byte(prefix + "b"), RangeEnd: []byte{0}, PrevKv: true,
+			})
+			ops := []*etcdserverpb.RequestOp{del, put}
+			deleteIndex := 0
+			if tt.putFirst {
+				ops = []*etcdserverpb.RequestOp{put, del}
+				deleteIndex = 1
+			}
+			ops = append(ops, txnClientRangeOp(&etcdserverpb.RangeRequest{
+				Key: []byte(prefix), RangeEnd: end,
+			}))
+			txn, txnErr := kv.Txn(ctx, &etcdserverpb.TxnRequest{Success: ops})
+			require.NoError(t, txnErr)
+			require.True(t, txn.Succeeded)
+			require.Len(t, txn.Responses, 3)
+			deleted := txn.Responses[deleteIndex].GetResponseDeleteRange()
+			txnRange := txn.Responses[2].GetResponseRange()
+			require.NotNil(t, deleted)
+			require.NotNil(t, txnRange)
+			require.Equal(t, tt.wantDeleted, deleted.Deleted)
+			require.Equal(t, txn.Header.Revision, deleted.Header.Revision)
+			require.Equal(t, txn.Header.Revision, txnRange.Header.Revision)
+			require.Equal(t, tt.wantPrev, txnClientKVs(deleted.PrevKvs, prefix, txn.Header.Revision))
+			require.Equal(t, tt.wantTxnRange, txnClientKVs(txnRange.Kvs, prefix, txn.Header.Revision))
+
+			final, finalErr := kv.Range(ctx, &etcdserverpb.RangeRequest{Key: []byte(prefix), RangeEnd: end})
+			require.NoError(t, finalErr)
+			require.GreaterOrEqual(t, final.Header.Revision, txn.Header.Revision)
+			require.Equal(t, tt.wantFinalRange, txnClientKVs(final.Kvs, prefix, txn.Header.Revision))
+		})
+	}
+}
+
 func txnClientValueCompare(
 	key, rangeEnd []byte,
 	result etcdserverpb.Compare_CompareResult,
@@ -355,9 +461,35 @@ func txnClientRangeOp(request *etcdserverpb.RangeRequest) *etcdserverpb.RequestO
 	return &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestRange{RequestRange: request}}
 }
 
+func txnClientDeleteOp(request *etcdserverpb.DeleteRangeRequest) *etcdserverpb.RequestOp {
+	return &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestDeleteRange{RequestDeleteRange: request}}
+}
+
 func requireRawGRPCTxnError(t *testing.T, err error, code codes.Code, message string) {
 	t.Helper()
 	require.Error(t, err)
 	require.Equal(t, code, status.Code(err))
 	require.Equal(t, message, status.Convert(err).Message())
+}
+
+type txnClientKV struct {
+	Key           string
+	Value         string
+	Version       int64
+	CreatedInTxn  bool
+	ModifiedInTxn bool
+}
+
+func txnClientKVs(kvs []*mvccpb.KeyValue, prefix string, txnRevision int64) []txnClientKV {
+	out := make([]txnClientKV, 0, len(kvs))
+	for _, kv := range kvs {
+		out = append(out, txnClientKV{
+			Key:           string(bytes.TrimPrefix(kv.Key, []byte(prefix))),
+			Value:         string(kv.Value),
+			Version:       kv.Version,
+			CreatedInTxn:  kv.CreateRevision == txnRevision,
+			ModifiedInTxn: kv.ModRevision == txnRevision,
+		})
+	}
+	return out
 }

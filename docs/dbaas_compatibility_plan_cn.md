@@ -14091,6 +14091,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   top-level 128 ops 边界、129 ops 拒绝、nested exact/overflow、128 compare 不消耗 range
   child 预算，以及未选 failure 分支仍参与预算校验，防止 gRPC 层或 DBaaS admission 重构
   改变 etcd 客户端可观察错误。
+- A1006 固定 raw gRPC Txn from-key delete execution 的 staged view：
+  `txn_from_key_execution` differential 证明 Txn 内 `RangeEnd={0}` from-key delete 与同一
+  Txn 内 Put 的先后顺序会改变删除集、PrevKv、后续 Range 和最终状态，并且 Delete/Range
+  response header revision 必须等于 Txn revision。本轮新增 bufconn raw gRPC 回归，使用
+  64 字节 `0xff` 高位前缀构造 keyspace，分别覆盖 put-then-delete 与 delete-then-put：
+  前者 from-key delete 会删除同 Txn 新写入的 `d`，后者 delete 只删除已有 `b/c` 且后续
+  Range 能看见新写入的 `d`；同时断言 PrevKv 的 create/mod revision 标记和最终 Range
+  状态，防止 from-key sentinel、staged mutation overlay 或 raw gRPC request-op 执行顺序
+  在 DBaaS 数据面中回退。
 
 ### P2：运维兼容和长期验证
 
