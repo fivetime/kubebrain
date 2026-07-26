@@ -14399,6 +14399,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   NOSPACE，再通过 `client.AlarmList` 观察 header 与 alarm，调用
   `client.AlarmDisarm(&clientv3.AlarmMember{MemberID:0, Alarm:NOSPACE})` 解除并确认最终列表
   为空，补齐 raw alarm 覆盖之外的 official wrapper 面。
+- A1046 固定 clientv3 CountOnly+Limit 跨 tombstone 历史计数：
+  `range_tombstone_limit` differential 与 A959 本地回归证明同一 tombstone/recreate 序列下，
+  CountOnly range 必须忽略 limit、只统计目标 revision 存活 key，删除前历史 revision 返回
+  4，删除后历史 revision 返回 2，当前重建后返回 4，且始终不返回 KV、`More=false`。A1042
+  已固定 KeysOnly 分页面，本轮新增官方 clientv3 bufconn 回归，用
+  `client.Get(..., WithCountOnly(), WithLimit(1), WithRev(...))` 覆盖 before-deletes、
+  after-deletes 和 current-after-recreate 三个阶段，补齐服务层 CountOnly 断言之外的官方
+  客户端计数面。
 
 ### P2：运维兼容和长期验证
 
