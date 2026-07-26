@@ -43,12 +43,12 @@ func TestAuthKVUnaryHandlersEnforcePermissions(t *testing.T) {
 	_, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: []byte("/allowed/a"), Value: []byte("ok")})
 	require.NoError(t, err)
 	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: []byte("/denied/a"), Value: []byte("no")})
-	require.ErrorIs(t, err, rpctypes.ErrPermissionDenied)
+	requireAuthKVError(t, err, rpctypes.ErrPermissionDenied, codes.Unknown, "etcdserver: permission denied")
 	resp, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: []byte("/allowed/a")})
 	require.NoError(t, err)
 	require.Len(t, resp.Kvs, 1)
 	_, err = server.Range(ctx, &etcdserverpb.RangeRequest{Key: []byte("/denied/a")})
-	require.ErrorIs(t, err, rpctypes.ErrPermissionDenied)
+	requireAuthKVError(t, err, rpctypes.ErrPermissionDenied, codes.Unknown, "etcdserver: permission denied")
 
 	denied, err := server.backend.Get(context.Background(), &etcdserverpb.RangeRequest{Key: []byte("/denied/a")})
 	require.NoError(t, err)
@@ -73,7 +73,7 @@ func TestAuthRangeReadBarrierPrecedesAuthLikeEtcd(t *testing.T) {
 	require.Equal(t, 1, barrierCalls)
 
 	_, err = server.Range(plain, &etcdserverpb.RangeRequest{Key: []byte("/allowed/a"), Serializable: true})
-	require.ErrorIs(t, err, rpctypes.ErrUserEmpty)
+	requireAuthKVError(t, err, rpctypes.ErrUserEmpty, codes.Unknown, "etcdserver: user name is empty")
 	require.Equal(t, 1, barrierCalls)
 
 	stream := &fakeRangeStreamServer{ctx: plain}
@@ -84,7 +84,7 @@ func TestAuthRangeReadBarrierPrecedesAuthLikeEtcd(t *testing.T) {
 
 	stream = &fakeRangeStreamServer{ctx: plain}
 	err = server.RangeStream(&etcdserverpb.RangeRequest{Key: []byte("/allowed/"), RangeEnd: []byte("/allowed0"), Serializable: true}, stream)
-	require.ErrorIs(t, err, rpctypes.ErrUserEmpty)
+	requireAuthKVError(t, err, rpctypes.ErrUserEmpty, codes.Unknown, "etcdserver: user name is empty")
 	require.Equal(t, 2, barrierCalls)
 }
 
@@ -164,7 +164,7 @@ func TestAuthKVFutureJWTRevisionAllowsWritesButNotSerializedReads(t *testing.T) 
 				require.Equal(t, tc.want, stored.Kvs[0].Value)
 			}
 			_, err = server.Range(ctx, &etcdserverpb.RangeRequest{Key: []byte("/allowed/read-back"), Serializable: true})
-			require.ErrorIs(t, err, rpctypes.ErrAuthOldRevision)
+			requireAuthKVError(t, err, rpctypes.ErrAuthOldRevision, codes.Unknown, "etcdserver: revision of auth store is old")
 		})
 	}
 }
@@ -182,7 +182,7 @@ func TestAuthTxnChecksBothBranchesBeforeWriting(t *testing.T) {
 		}}},
 	}
 	_, err := server.Txn(ctx, txn)
-	require.ErrorIs(t, err, rpctypes.ErrPermissionDenied)
+	requireAuthKVError(t, err, rpctypes.ErrPermissionDenied, codes.Unknown, "etcdserver: permission denied")
 	stored, err := server.backend.Get(context.Background(), &etcdserverpb.RangeRequest{Key: []byte("/allowed/created")})
 	require.NoError(t, err)
 	require.Empty(t, stored.Kvs, "authorization must reject the full txn before its selected branch writes")
@@ -201,7 +201,7 @@ func TestAuthTxnChecksNestedCompare(t *testing.T) {
 		},
 	}}}}
 	_, err := server.Txn(ctx, txn)
-	require.ErrorIs(t, err, rpctypes.ErrPermissionDenied)
+	requireAuthKVError(t, err, rpctypes.ErrPermissionDenied, codes.Unknown, "etcdserver: permission denied")
 	stored, err := server.backend.Get(context.Background(), &etcdserverpb.RangeRequest{Key: []byte("/allowed/nested")})
 	require.NoError(t, err)
 	require.Empty(t, stored.Kvs)
@@ -274,7 +274,7 @@ func TestAuthLeasedPutRechecksAttachmentsAfterLeaderAdmission(t *testing.T) {
 			// this request was between admission authorization and the lease lock.
 			server.bindKeyToLease(context.Background(), lease.ID, "/denied/concurrent")
 			close(release)
-			require.ErrorIs(t, <-done, rpctypes.ErrPermissionDenied)
+			requireAuthKVError(t, <-done, rpctypes.ErrPermissionDenied, codes.Unknown, "etcdserver: permission denied")
 
 			key := []byte("/allowed/put")
 			if tc.name == "nested txn put" {
@@ -306,7 +306,7 @@ func TestAuthDeletePrevKVRequiresReadAndWrite(t *testing.T) {
 	ctx = metadata.NewIncomingContext(ctx, metadata.Pairs(rpctypes.TokenFieldNameGRPC, token))
 
 	_, err = server.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{Key: []byte("key"), PrevKv: true})
-	require.ErrorIs(t, err, rpctypes.ErrPermissionDenied)
+	requireAuthKVError(t, err, rpctypes.ErrPermissionDenied, codes.Unknown, "etcdserver: permission denied")
 	stored, err := server.backend.Get(context.Background(), &etcdserverpb.RangeRequest{Key: []byte("key")})
 	require.NoError(t, err)
 	require.Len(t, stored.Kvs, 1, "read denial for PrevKV must happen before deletion")
@@ -361,11 +361,18 @@ func TestAuthTxnPutPrevKVRequiresReadAndWrite(t *testing.T) {
 			_, err = server.Txn(writerCtx, tc.txn(&etcdserverpb.PutRequest{
 				Key: []byte("key"), Value: []byte("after"), PrevKv: true,
 			}))
-			require.ErrorIs(t, err, rpctypes.ErrPermissionDenied)
+			requireAuthKVError(t, err, rpctypes.ErrPermissionDenied, codes.Unknown, "etcdserver: permission denied")
 			stored, err := server.backend.Get(context.Background(), &etcdserverpb.RangeRequest{Key: []byte("key")})
 			require.NoError(t, err)
 			require.Len(t, stored.Kvs, 1)
 			require.Equal(t, []byte("before"), stored.Kvs[0].Value, "read denial for PrevKV must happen before txn mutation")
 		})
 	}
+}
+
+func requireAuthKVError(t *testing.T, err error, want error, code codes.Code, message string) {
+	t.Helper()
+	require.ErrorIs(t, err, want)
+	require.Equal(t, code, status.Code(err))
+	require.Equal(t, message, status.Convert(err).Message())
 }

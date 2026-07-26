@@ -15678,6 +15678,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   同时满足 `errors.Is`、direct `codes.Unknown` 和 reference message。该门禁防止 cluster
   authorizer、linearizable barrier 顺序或 direct service caller 重构后只保留 typed error，
   导致 `MemberList`/member mutation 管理面错误分类或 message 漂移。
+- A1222 固定 KV/Txn auth 服务层错误三件套：
+  A1192/A1193/A1194 已覆盖 raw gRPC KV/RangeStream/Txn auth 外观，本轮把 direct service
+  层的 unauthorized `Put`、`Range`、serializable `Range`/`RangeStream` user-empty、future
+  auth revision 的 serializable read、Txn 两分支/嵌套 compare 授权、leased Put 二次检查、
+  Delete PrevKV 和 Txn Put PrevKV 拒绝路径固定为同时满足 `errors.Is`、direct `codes.Unknown`
+  和 reference message。该门禁防止 KV authorizer、auth revision fence、PrevKV read guard 或
+  lease attachment 二次校验重构后只保留 typed error，导致服务层错误分类或 message 漂移。
 
 ### P2：运维兼容和长期验证
 
