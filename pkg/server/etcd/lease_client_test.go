@@ -245,19 +245,26 @@ func TestClientLeaseNotFoundErrorsMatchEtcd(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	requireClientLeaseNotFound := func(err error) {
+		t.Helper()
+		require.ErrorIs(t, err, rpctypes.ErrLeaseNotFound)
+		require.Equal(t, codes.Unknown, status.Code(err))
+		require.Equal(t, "etcdserver: requested lease not found", status.Convert(err).Message())
+	}
+
 	_, err = client.Put(ctx, "/a1130/lease-not-found/missing", "value", clientv3.WithLease(500))
-	require.ErrorIs(t, err, rpctypes.ErrLeaseNotFound)
+	requireClientLeaseNotFound(err)
 
 	grant, err := client.Grant(ctx, 10)
 	require.NoError(t, err)
 	_, err = client.Revoke(ctx, grant.ID)
 	require.NoError(t, err)
 	_, err = client.Put(ctx, "/a1130/lease-not-found/revoked", "value", clientv3.WithLease(grant.ID))
-	require.ErrorIs(t, err, rpctypes.ErrLeaseNotFound)
+	requireClientLeaseNotFound(err)
 	_, err = client.Revoke(ctx, 0)
-	require.ErrorIs(t, err, rpctypes.ErrLeaseNotFound)
+	requireClientLeaseNotFound(err)
 	_, err = client.KeepAliveOnce(ctx, 0)
-	require.ErrorIs(t, err, rpctypes.ErrLeaseNotFound)
+	requireClientLeaseNotFound(err)
 
 	ttl, err := client.TimeToLive(ctx, grant.ID)
 	require.NoError(t, err)

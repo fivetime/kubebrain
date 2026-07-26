@@ -15587,6 +15587,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   base64 编码 bcrypt hash 时必须能切换到 hash 对应明文，旧明文 raw Authenticate 返回
   `InvalidArgument`/auth failed，新明文成功。本轮防止 raw Auth API 忽略
   `HashedPassword`、把 hash 当明文、或把 legacy no-password 错误错误重映射。
+- A1208 固定 official clientv3 LeaseNotFound 错误外观：
+  A1014/A1130 已覆盖 raw gRPC LeaseRevoke/KeepAlive 与 client typed error，本轮把 public
+  `clientv3` wrapper 的 code/message 也钉住：Put with unknown lease、Put with revoked lease、
+  `Revoke(0)` 与 `KeepAliveOnce(0)` 必须同时满足 `errors.Is(...,
+  rpctypes.ErrLeaseNotFound)`、`codes.Unknown` 和 `etcdserver: requested lease not found`。
+  该门禁防止 DBaaS lease adapter 或 gRPC error mapping 重构后仅保留 typed error，却改变
+  控制器和 etcdctl 依赖的用户可见错误外观。
 
 ### P2：运维兼容和长期验证
 
