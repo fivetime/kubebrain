@@ -16106,6 +16106,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   或 `EXPECTED_TARGET_NAMESPACE_UID` 时直接 fail closed，不访问目标 kubectl、也不发布
   restore receipt；同时固定生产文档示例必须列出这些目标绑定输入。该门禁防止候选
   隔离恢复执行器未来重构时退回隐式目标或弱批准，不关闭真实 CSI/PITR 缺口。
+- A1298 固定 RangeStream 客户端取消错误外观：
+  `TestRawGRPCRangeStreamCancelAfterPartialChunkKeepsConnectionUsable` 原先只断言客户端
+  取消 partial chunk stream 后 `Recv` 返回 gRPC `Canceled` code，未固定 message。对照
+  watch 侧 A1289 的取消错误三件套，本轮把 RangeStream 客户端取消收紧为 exact
+  `context canceled` message，同时继续验证同一连接后续 Range 可用。该门禁防止
+  RangeStream adapter 后续重构把客户端主动取消退化为模糊 Canceled 错误或其他业务
+  cancel reason；长期 leader replacement/网络半断 soak 仍属 P1。
 
 ### P2：运维兼容和长期验证
 

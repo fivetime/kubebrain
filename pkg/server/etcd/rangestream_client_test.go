@@ -499,6 +499,7 @@ func TestRawGRPCRangeStreamCancelAfterPartialChunkKeepsConnectionUsable(t *testi
 		}
 	}
 	require.Equal(t, codes.Canceled, status.Code(err))
+	require.Equal(t, "context canceled", status.Convert(err).Message())
 
 	rangeResp, err := client.Range(ctx, &etcdserverpb.RangeRequest{
 		Key:       []byte(prefix),
