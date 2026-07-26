@@ -17,6 +17,7 @@ package etcd
 import (
 	"context"
 	"fmt"
+	"math"
 	"net"
 	"slices"
 	"testing"
@@ -115,6 +116,92 @@ func TestClientLeaseReadBoundaryAndAttachedKeys(t *testing.T) {
 		containsLive = containsLive || status.ID == leaseID
 	}
 	require.True(t, containsLive)
+}
+
+func TestRawGRPCLeaseSignedIDBoundaries(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterLeaseServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///lease-signed-id-client",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	kv := etcdserverpb.NewKVClient(conn)
+	lease := etcdserverpb.NewLeaseClient(conn)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for _, tt := range []struct {
+		name string
+		id   int64
+	}{
+		{name: "negative-one", id: -1},
+		{name: "minimum", id: math.MinInt64},
+		{name: "maximum", id: math.MaxInt64},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			key := []byte(fmt.Sprintf("/a1012/lease-signed-id/%d/%s", time.Now().UnixNano(), tt.name))
+			before, err := kv.Range(ctx, &etcdserverpb.RangeRequest{Key: key})
+			require.NoError(t, err)
+			grant, err := lease.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{ID: tt.id, TTL: 300})
+			require.NoError(t, err)
+			require.Equal(t, tt.id, grant.ID)
+			require.Equal(t, before.Header.Revision, grant.Header.Revision)
+			requireClientLeaseHeaderWellFormed(t, grant.Header)
+			t.Cleanup(func() {
+				cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cleanupCancel()
+				_, _ = lease.LeaseRevoke(cleanupCtx, &etcdserverpb.LeaseRevokeRequest{ID: tt.id})
+			})
+
+			put, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("value"), Lease: tt.id})
+			require.NoError(t, err)
+			requireClientLeaseHeaderWellFormed(t, put.Header)
+
+			withoutKeys, err := lease.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: tt.id})
+			require.NoError(t, err)
+			require.Equal(t, tt.id, withoutKeys.ID)
+			require.Positive(t, withoutKeys.TTL)
+			require.LessOrEqual(t, withoutKeys.TTL, int64(300))
+			require.Equal(t, int64(300), withoutKeys.GrantedTTL)
+			require.Empty(t, withoutKeys.Keys)
+			requireClientLeaseHeaderWellFormed(t, withoutKeys.Header)
+
+			withKeys, err := lease.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: tt.id, Keys: true})
+			require.NoError(t, err)
+			require.Equal(t, tt.id, withKeys.ID)
+			require.Positive(t, withKeys.TTL)
+			require.LessOrEqual(t, withKeys.TTL, int64(300))
+			require.Equal(t, int64(300), withKeys.GrantedTTL)
+			require.Equal(t, [][]byte{key}, withKeys.Keys)
+			requireClientLeaseHeaderWellFormed(t, withKeys.Header)
+
+			list, err := lease.LeaseLeases(ctx, &etcdserverpb.LeaseLeasesRequest{})
+			require.NoError(t, err)
+			require.Contains(t, leaseIDsFromList(list), tt.id)
+			requireClientLeaseHeaderWellFormed(t, list.Header)
+
+			_, err = lease.LeaseRevoke(ctx, &etcdserverpb.LeaseRevokeRequest{ID: tt.id})
+			require.NoError(t, err)
+			unknown, err := lease.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: tt.id, Keys: true})
+			require.NoError(t, err)
+			require.Equal(t, tt.id, unknown.ID)
+			require.Equal(t, int64(-1), unknown.TTL)
+			require.Zero(t, unknown.GrantedTTL)
+			require.Empty(t, unknown.Keys)
+			require.GreaterOrEqual(t, unknown.Header.Revision, put.Header.Revision)
+		})
+	}
 }
 
 func requireClientLeaseHeaderWellFormed(t *testing.T, header *etcdserverpb.ResponseHeader) {

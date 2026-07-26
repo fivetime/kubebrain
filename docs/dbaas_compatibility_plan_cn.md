@@ -14143,6 +14143,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   mod/header revision 等于 Txn revision；同时在同一 Txn 中创建新 key 后立即 Get，
   断言 version=1 且 create/mod revision 均为 Txn revision，防止 staged range 只返回旧
   snapshot 或 public client response wrapper 丢失事务内版本元数据。
+- A1012 固定 raw gRPC signed lease ID 读写边界：
+  `lease_signed_id` differential 证明显式 lease ID 可以使用 `-1`、`math.MinInt64` 和
+  `math.MaxInt64`，Grant 不推进 revision，TTL/WithAttachedKeys/List/Revoke 后 unknown
+  TTL 的 ID、TTL、GrantedTTL、Keys 和 header revision 外观必须与 reference etcd 一致。
+  本轮新增 bufconn raw gRPC 回归，注册真实 KV/Lease 服务后直接通过 `etcdserverpb`
+  客户端对三类 signed ID 执行 Grant、带 lease Put、TTL without keys、TTL with keys、
+  LeaseLeases、Revoke 和 revoke 后 TTL(Keys=true)，断言 Grant header 保持当前 revision、
+  attached keys 精确返回、list 包含 signed ID、unknown TTL 为 `-1` 且 keys 为空，
+  防止 lease ID 被错误归一化为 unsigned/auto ID，或 gRPC 层丢失 signed 边界值。
 
 ### P2：运维兼容和长期验证
 
