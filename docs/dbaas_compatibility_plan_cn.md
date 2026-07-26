@@ -16137,6 +16137,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   本轮按 null、object、trailing JSON、重复 member ID 和降序 member ID 分别固定错误原因，
   要求 strict JSON array、无尾随 JSON、member ID 严格递增。该门禁防止维护面 corrupt
   alarm metadata 解析被放宽后把损坏告警集合静默当作空集合、旧格式或部分有效集合。
+- A1303 固定 NOSPACE alarm metadata fail-closed 原因：
+  backend quota 测试原先覆盖 NOSPACE alarm 正常持久化、legacy 单 owner 和多 owner 排序，
+  但缺少损坏 metadata 的负例。本轮新增 `TestNoSpaceAlarmRejectsInvalidMetadata`，固定
+  空值、错误 tag、截断长度、重复 member ID 和降序 member ID 的错误原因，并要求
+  `NoSpaceAlarm` 在错误时不返回 active=true。该门禁防止 quota alarm 状态损坏后被误解为
+  legacy owner、空 alarm 或部分有序集合。
 
 ### P2：运维兼容和长期验证
 

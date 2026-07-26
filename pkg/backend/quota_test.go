@@ -3,6 +3,7 @@ package backend
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -262,6 +263,39 @@ func TestNoSpaceAlarmPersistsOwnerAndGuardsDisarm(t *testing.T) {
 	removed, err = b.DisarmNoSpace(ctx, ^uint64(0))
 	require.NoError(t, err)
 	require.True(t, removed, "legacy metadata accepts any owner during rolling upgrade")
+}
+
+func TestNoSpaceAlarmRejectsInvalidMetadata(t *testing.T) {
+	encodedMembers := func(members ...uint64) []byte {
+		value := make([]byte, 1+8*len(members))
+		value[0] = quotaAlarmSetTag
+		for i, memberID := range members {
+			binary.BigEndian.PutUint64(value[1+8*i:], memberID)
+		}
+		return value
+	}
+	for _, test := range []struct {
+		name string
+		raw  []byte
+		err  string
+	}{
+		{name: "empty", raw: nil, err: "invalid NOSPACE alarm metadata length 0"},
+		{name: "bad tag", raw: append([]byte{0}, encodedMembers(1, 2)[1:]...), err: "invalid NOSPACE alarm metadata length 17"},
+		{name: "truncated", raw: []byte{quotaAlarmSetTag, 0, 1}, err: "invalid NOSPACE alarm metadata length 3"},
+		{name: "duplicate", raw: encodedMembers(7, 7), err: "NOSPACE alarm members are not strictly ordered"},
+		{name: "descending", raw: encodedMembers(8, 7), err: "NOSPACE alarm members are not strictly ordered"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			b, ctx := newQuotaBackend(t, 10)
+			require.NoError(t, b.InternalPut(ctx, quotaAlarmKey, test.raw))
+
+			_, err := b.NoSpaceAlarms(ctx)
+			require.ErrorContains(t, err, test.err)
+			_, active, err := b.NoSpaceAlarm(ctx)
+			require.ErrorContains(t, err, test.err)
+			require.False(t, active)
+		})
+	}
 }
 
 func TestArmNoSpacePreservesExplicitZeroMember(t *testing.T) {
