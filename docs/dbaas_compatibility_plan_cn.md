@@ -14748,6 +14748,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   误以为 watch 还停留在旧 revision。本轮将本地 official clientv3 回归从单轮扩展为
   25 轮独立 key/watch：每轮等待 Created、执行被 NOPUT 过滤的 Put、立即请求
   progress，并断言收到的无事件响应 header revision 覆盖该 Put revision。
+- A1091 固定 raw gRPC RangeStream partial cancel 边界：
+  `rangestream_cancel_live` differential 要求客户端在 RangeStream 已收到部分 chunk 后
+  取消 stream，服务端必须立即结束该 stream、释放扫描上下文，并且不能污染同一 gRPC
+  连接上的后续 KV 请求。本轮新增 raw gRPC bufconn 回归，将 `maxRequestBytes` 降低后
+  写入 8 个大 value，并用测试 backend shim 阻塞终端 chunk，确认第一包是非终包
+  partial chunk，随后 cancel context、drain 到 stream 终态并断言返回 `codes.Canceled`；
+  最后在同一连接上执行 CountOnly Range，确认完整 keyspace 仍可读。
 
 ### P2：运维兼容和长期验证
 

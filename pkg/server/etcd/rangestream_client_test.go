@@ -32,6 +32,45 @@ import (
 	"google.golang.org/grpc/test/bufconn"
 )
 
+type cancelBlockingRangeStreamShim struct {
+	BackendShim
+	firstForwarded chan struct{}
+	release        chan struct{}
+}
+
+func (b *cancelBlockingRangeStreamShim) RangeStreamChan(
+	ctx context.Context, startKey, endKey []byte, revision uint64,
+) (<-chan rangeStreamChunk, error) {
+	input, err := b.BackendShim.RangeStreamChan(ctx, startKey, endKey, revision)
+	if err != nil {
+		return nil, err
+	}
+	output := make(chan rangeStreamChunk)
+	go func() {
+		defer close(output)
+		first := true
+		for chunk := range input {
+			if !first {
+				select {
+				case <-b.release:
+				case <-ctx.Done():
+					return
+				}
+			}
+			select {
+			case output <- chunk:
+			case <-ctx.Done():
+				return
+			}
+			if first {
+				first = false
+				close(b.firstForwarded)
+			}
+		}
+	}()
+	return output, nil
+}
+
 func TestClientRangeStreamCommonShapesMatchUnaryRange(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
@@ -248,6 +287,88 @@ func TestClientRangeStreamRevisionBoundaries(t *testing.T) {
 	require.NoError(t, err)
 	_, err = clientv3.GetStreamToGetResponse(stream)
 	requireClientRangeStreamError(t, err, codes.Unknown, "etcdserver: mvcc: required revision is a future revision")
+}
+
+func TestRawGRPCRangeStreamCancelAfterPartialChunkKeepsConnectionUsable(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	blockingBackend := &cancelBlockingRangeStreamShim{
+		BackendShim:    server.backend,
+		firstForwarded: make(chan struct{}),
+		release:        release,
+	}
+	server.backend = blockingBackend
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///bufnet",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	client := etcdserverpb.NewKVClient(conn)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	prefix := fmt.Sprintf("/a1091/rangestream-cancel/%d/", time.Now().UnixNano())
+	value := make([]byte, 1024)
+	for i := range value {
+		value[i] = byte('a' + i%26)
+	}
+	const keyCount = 8
+	for i := 0; i < keyCount; i++ {
+		_, err = client.Put(ctx, &etcdserverpb.PutRequest{
+			Key:   []byte(fmt.Sprintf("%s%03d", prefix, i)),
+			Value: value,
+		})
+		require.NoError(t, err)
+	}
+	server.SetRequestLimits(defaultMaxTxnOps, 512)
+
+	streamCtx, streamCancel := context.WithCancel(ctx)
+	defer streamCancel()
+	stream, err := client.RangeStream(streamCtx, &etcdserverpb.RangeRequest{
+		Key:      []byte(prefix),
+		RangeEnd: []byte(clientv3.GetPrefixRangeEnd(prefix)),
+	})
+	require.NoError(t, err)
+	first, err := stream.Recv()
+	require.NoError(t, err)
+	select {
+	case <-blockingBackend.firstForwarded:
+	case <-ctx.Done():
+		require.NoError(t, ctx.Err())
+	}
+	require.NotNil(t, first.RangeResponse)
+	require.NotEmpty(t, first.RangeResponse.Kvs)
+	require.Nil(t, first.RangeResponse.Header)
+	require.Less(t, len(first.RangeResponse.Kvs), keyCount)
+
+	streamCancel()
+	for {
+		_, err = stream.Recv()
+		if err != nil {
+			break
+		}
+	}
+	require.Equal(t, codes.Canceled, status.Code(err))
+
+	rangeResp, err := client.Range(ctx, &etcdserverpb.RangeRequest{
+		Key:       []byte(prefix),
+		RangeEnd:  []byte(clientv3.GetPrefixRangeEnd(prefix)),
+		CountOnly: true,
+	})
+	require.NoError(t, err)
+	require.EqualValues(t, keyCount, rangeResp.Count)
 }
 
 func requireClientRangeStreamError(t *testing.T, err error, code codes.Code, message string) {
