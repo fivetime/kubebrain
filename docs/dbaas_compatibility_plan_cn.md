@@ -14081,6 +14081,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   非空和 from-key 空范围，防止 compare evaluator 或 gRPC request conversion 在 DBaaS
   数据面中把 range compare 简化为任一 key 匹配、把缺失 value 当作空 value，或错误处理
   `{0}` from-key sentinel。
+- A1005 固定 raw gRPC Txn operation validation 的错误外观和预算矩阵：
+  `txn_operation_validation` 与 `txn_validation_order` differential 证明 Txn 内 Put/Range/
+  Delete RequestOp 的 validation 顺序、gRPC code/message、selected operation 的执行期错误
+  顺序，以及 nested Txn operation budget 必须与 reference etcd 一致。本轮新增 bufconn
+  raw gRPC 回归，直接通过 `etcdserverpb.KVClient.Txn` 覆盖空 key 优先于 ignore-value、
+  ignore-value 优先于 ignore-lease、missing lease、invalid sort、empty RequestOp、delete
+  empty key 的 code/message；同时验证 missing lease 与 future revision Range 的执行顺序、
+  top-level 128 ops 边界、129 ops 拒绝、nested exact/overflow、128 compare 不消耗 range
+  child 预算，以及未选 failure 分支仍参与预算校验，防止 gRPC 层或 DBaaS admission 重构
+  改变 etcd 客户端可观察错误。
 
 ### P2：运维兼容和长期验证
 
