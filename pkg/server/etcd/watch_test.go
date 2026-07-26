@@ -527,7 +527,7 @@ func TestWatchSignedIDCreateAndCancelBoundariesMatchEtcd(t *testing.T) {
 		reqs:            reqs,
 	}
 
-	require.Equal(t, codes.Canceled, status.Code(server.Watch(stream)))
+	requireWatchCanceled(t, server.Watch(stream))
 	require.Len(t, stream.sent, len(ids)*2)
 	for i, id := range ids {
 		require.True(t, stream.sent[i].Created)
@@ -590,7 +590,7 @@ func TestWatchInvalidCreateAutomaticIDAndUnknownCancelKeepStreamAlive(t *testing
 		},
 	}
 
-	require.Equal(t, codes.Canceled, status.Code(server.Watch(stream)))
+	requireWatchCanceled(t, server.Watch(stream))
 	require.Len(t, stream.sent, 7)
 
 	invalid := stream.sent[0]
@@ -806,7 +806,7 @@ func TestNegativeWatchRevisionPrecedesRangeAndDuplicateWithoutClosingStream(t *t
 			{RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{CreateRequest: &etcdserverpb.WatchCreateRequest{Key: []byte("/watch/next"), WatchId: 71}}},
 		},
 	}
-	require.Equal(t, codes.Canceled, status.Code(server.Watch(stream)))
+	requireWatchCanceled(t, server.Watch(stream))
 	require.GreaterOrEqual(t, len(stream.sent), 3)
 	require.True(t, stream.sent[0].Created)
 	require.False(t, stream.sent[0].Canceled)
@@ -996,7 +996,7 @@ func TestFollowerFromNowWatchUsesSynchronizedRevisionFence(t *testing.T) {
 	}
 	err := server.Watch(stream)
 	cancel()
-	require.Equal(t, codes.Canceled, status.Code(err))
+	requireWatchCanceled(t, err)
 	require.Equal(t, uint64(51), watchedRevision, "from-now follower watch must subscribe at synchronized R+1")
 	require.GreaterOrEqual(t, len(stream.sent), 1)
 	require.Equal(t, int64(50), stream.sent[0].Header.Revision)
@@ -1208,7 +1208,7 @@ func TestFollowerWatchQuotaRejectionPrecedesReadBarrier(t *testing.T) {
 		}},
 	}
 	err := server.Watch(stream)
-	require.Equal(t, codes.Canceled, status.Code(err))
+	requireWatchCanceled(t, err)
 	require.Zero(t, barrierCalls.Load(), "a locally full watch quota must not enter the read barrier")
 	require.Len(t, stream.sent, 1)
 	require.True(t, stream.sent[0].Created)
@@ -1259,6 +1259,13 @@ func requireWatchStatusError(t *testing.T, err error, code codes.Code, message s
 	require.Error(t, err)
 	require.Equal(t, code, status.Code(err))
 	require.Equal(t, message, status.Convert(err).Message())
+}
+
+func requireWatchCanceled(t *testing.T, err error) {
+	t.Helper()
+	require.Error(t, err)
+	require.Equal(t, codes.Canceled, status.Code(err))
+	require.Equal(t, "etcdserver: watch canceled", status.Convert(err).Message())
 }
 
 func TestLeaderFromNowWatchReplaysWriteDuringCreatedResponse(t *testing.T) {
@@ -1522,7 +1529,7 @@ func TestWatchIgnoresInvalidControlMessagesAndKeepsStreamAlive(t *testing.T) {
 	}
 
 	err := server.Watch(stream)
-	require.Equal(t, codes.Canceled, status.Code(err))
+	requireWatchCanceled(t, err)
 	require.Len(t, stream.sent, 1)
 	require.Equal(t, int64(404), stream.sent[0].WatchId)
 	require.True(t, stream.sent[0].Created)

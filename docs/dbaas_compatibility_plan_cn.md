@@ -16037,6 +16037,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   暂不支持的 custom sort order 不能被误归类为 etcd 的 invalid sort option sentinel。
   该门禁防止 RangeStream adapter 重构后把扩展能力缺口伪装成 etcd 原生参数错误，
   影响 informer/list 客户端的降级判断和生产排障。
+- A1289 固定 Watch scripted stream 结束错误链：
+  auth-enabled Watch、显式/自动 WatchID、负 revision、本地 quota 和 invalid control
+  等 scripted Watch 回归原先只校验最终 gRPC code 为 `Canceled`。本轮统一引入
+  `requireWatchCanceled`，要求这些正常客户端断开路径同时保留 Canceled code 和
+  exact `etcdserver: watch canceled` message。该门禁防止 Watch loop/stream adapter
+  重构后把可预期的客户端关闭降级成普通/模糊 status 错误，影响 auth create cancel 后
+  继续复用 multiplexed stream、quota 回收和 informer watch 重连判断。
 
 ### P2：运维兼容和长期验证
 
