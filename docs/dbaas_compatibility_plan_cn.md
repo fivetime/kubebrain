@@ -13946,6 +13946,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   terminal error，固定 `InvalidArgument` 的 empty key/invalid sort、`Unimplemented` 的
   custom sort/revision filter，以及 custom sort 优先于 revision filter 的错误优先级，防止
   validation 只在服务层直接调用中正确但公开 streaming RPC 转换出错。
+- A990 固定 clientv3 MemberList/Sync 的 advertised endpoint 路径：
+  `memberlist_sync` 与 `memberlist_autosync_auth` differential 已证明 MemberList header
+  revision、linearizable flag 和官方 client Sync/AutoSync endpoint 替换行为。本轮新增
+  bufconn clientv3 回归，注册真实 KV/Cluster gRPC 服务并配置 3 个 static member，分别用
+  serializable 与 linearizable `client.MemberList` 断言 header revision 为 0、cluster/member
+  id 非零、ClientURLs 为 advertised `http://10.0.0.{1,2,3}:2379`；随后执行官方
+  `client.Sync`，确认 `client.Endpoints()` 被替换为 MemberList 暴露的 ClientURLs，再恢复
+  bootstrap endpoint 完成 Put/Get，防止服务层 MemberList 正确但公开 client discovery 路径回退。
 
 ### P2：运维兼容和长期验证
 
