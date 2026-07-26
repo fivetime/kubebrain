@@ -14170,6 +14170,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   依次验证 missing/live 响应，再执行 Revoke/重复 Revoke/zero/unknown 矩阵，并在 revoke
   后新开 keepalive stream 断言 signed ID 退化为 missing TTL=0，防止 streaming handler、
   signed ID 边界或 revoke 错误映射与 reference etcd 分叉。
+- A1015 固定 clientv3 KeepAlive revoke buffer 行为：
+  `lease_keepalive_revoke_buffer` differential 证明官方 clientv3 KeepAlive channel 在 Revoke
+  返回后可能短暂交付已缓冲响应，但这些响应必须仍是同 lease ID 的正 TTL，随后 channel
+  必须关闭；attached key 要被删除，TTL 要变成 unknown lease。本轮新增 bufconn clientv3
+  回归，注册真实 KV/Lease 服务后 Grant + Put attached key，启动 `KeepAlive` 并等待初始
+  响应，再 Revoke lease；测试循环允许调度相关的 buffered positive TTL 响应，但要求最终
+  channel 关闭，并断言 key 已消失、`TimeToLive` 返回 `TTL=-1`，防止 keepalive stream
+  在 revoke 后泄漏、返回 malformed buffered response，或把已撤销 lease 重新续活。
 
 ### P2：运维兼容和长期验证
 

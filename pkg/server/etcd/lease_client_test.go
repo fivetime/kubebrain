@@ -201,6 +201,73 @@ func TestClientLeaseRevokeDeletesAttachedKeysAtOneRevision(t *testing.T) {
 	require.Empty(t, ttl.Keys)
 }
 
+func TestClientLeaseKeepAliveClosesAfterRevoke(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterLeaseServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	grant, err := client.Grant(ctx, 10)
+	require.NoError(t, err)
+	key := fmt.Sprintf("/a1015/lease-keepalive-revoke-buffer/%d", time.Now().UnixNano())
+	_, err = client.Put(ctx, key, "value", clientv3.WithLease(grant.ID))
+	require.NoError(t, err)
+
+	keepAlive, err := client.KeepAlive(ctx, grant.ID)
+	require.NoError(t, err)
+	var initial *clientv3.LeaseKeepAliveResponse
+	select {
+	case initial = <-keepAlive:
+	case <-ctx.Done():
+		t.Fatalf("initial keepalive response not received: %v", ctx.Err())
+	}
+	require.NotNil(t, initial)
+	require.Equal(t, grant.ID, initial.ID)
+	require.Positive(t, initial.TTL)
+
+	_, err = client.Revoke(ctx, grant.ID)
+	require.NoError(t, err)
+	for {
+		select {
+		case response, ok := <-keepAlive:
+			if !ok {
+				got, getErr := client.Get(ctx, key)
+				require.NoError(t, getErr)
+				require.Empty(t, got.Kvs)
+				ttl, ttlErr := client.TimeToLive(ctx, grant.ID)
+				require.NoError(t, ttlErr)
+				require.Equal(t, int64(-1), ttl.TTL)
+				return
+			}
+			require.NotNil(t, response)
+			require.Equal(t, grant.ID, response.ID)
+			require.Positive(t, response.TTL)
+		case <-ctx.Done():
+			t.Fatalf("keepalive channel did not close after revoke: %v", ctx.Err())
+		}
+	}
+}
+
 func TestRawGRPCLeaseSignedIDBoundaries(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
