@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -66,6 +67,7 @@ fi
 			}
 			env := []string{
 				"KUBECTL=" + fakeKubectl,
+				"KUBE_CONTEXT=preproduction",
 				"ALLOW_COLD_PHYSICAL_SNAPSHOT=true",
 				"VOLUME_SNAPSHOT_CLASS=retained",
 				"EXPECTED_KUBEBRAIN_STATEFULSET_UID=uid-kubebrain",
@@ -91,11 +93,43 @@ fi
 	}
 }
 
+func TestProductionReadinessColdSnapshotExamplesRequireExplicitContext(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "docs", "production_readiness_cn.md"))
+	require.NoError(t, err)
+	doc := string(data)
+
+	for _, command := range []string{
+		"hack/backup/cold-snapshot-preflight.sh",
+		"hack/backup/cold-snapshot-execute.sh",
+	} {
+		end := strings.Index(doc, command)
+		require.NotEqual(t, -1, end, "cold snapshot command is missing")
+		start := strings.LastIndex(doc[:end], "```shell")
+		require.NotEqual(t, -1, start, "cold snapshot shell example is missing")
+		require.Contains(t, doc[start:end], "KUBE_CONTEXT=")
+	}
+	require.Contains(t, doc, "当前 kubectl context 永不作为默认值接受")
+}
+
 func TestColdSnapshotPreflightRequiresExplicitApproval(t *testing.T) {
 	env := []string{"ALLOW_COLD_PHYSICAL_SNAPSHOT=false"}
 	output, err := runColdSnapshotPreflight(t, env)
 	require.Error(t, err)
 	require.Contains(t, string(output), "ALLOW_COLD_PHYSICAL_SNAPSHOT=true")
+}
+
+func TestColdSnapshotPreflightRequiresExplicitContext(t *testing.T) {
+	env := []string{
+		"ALLOW_COLD_PHYSICAL_SNAPSHOT=true",
+		"VOLUME_SNAPSHOT_CLASS=retained",
+		"EXPECTED_KUBEBRAIN_STATEFULSET_UID=uid-kubebrain",
+		"EXPECTED_TIDB_CLUSTER_UID=uid-tidb",
+		"EXPECTED_TIKV_CLUSTER_ID=7662961163671170154",
+		"KUBECTL=/does/not/exist",
+	}
+	output, err := runColdSnapshotPreflight(t, env)
+	require.Error(t, err)
+	require.Contains(t, string(output), "KUBE_CONTEXT is required; the current context is never accepted implicitly")
 }
 
 func runColdSnapshotPreflight(t *testing.T, env []string) ([]byte, error) {

@@ -22,6 +22,7 @@ fail_input() {
 
 [[ "$ALLOW_COLD_PHYSICAL_SNAPSHOT" == "true" ]] ||
   fail_input "set ALLOW_COLD_PHYSICAL_SNAPSHOT=true only for a dedicated, disposable or approved maintenance window"
+[[ -n "$KUBE_CONTEXT" ]] || fail_input "KUBE_CONTEXT is required; the current context is never accepted implicitly"
 [[ -n "$VOLUME_SNAPSHOT_CLASS" ]] || fail_input "VOLUME_SNAPSHOT_CLASS is required"
 [[ -n "$EXPECTED_KUBEBRAIN_STATEFULSET_UID" ]] || fail_input "EXPECTED_KUBEBRAIN_STATEFULSET_UID is required"
 [[ -n "$EXPECTED_TIDB_CLUSTER_UID" ]] || fail_input "EXPECTED_TIDB_CLUSTER_UID is required"

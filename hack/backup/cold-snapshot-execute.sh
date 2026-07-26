@@ -6,6 +6,7 @@ OPERATION_ID="${OPERATION_ID:-}"
 RECEIPT_FILE="${RECEIPT_FILE:-}"
 SEMANTIC_WITNESS_FILE="${SEMANTIC_WITNESS_FILE:-}"
 EXPECTED_WITNESS_PREFIX="${EXPECTED_WITNESS_PREFIX:-}"
+KUBE_CONTEXT="${KUBE_CONTEXT:-}"
 WITNESS_MAX_AGE_SECONDS="${WITNESS_MAX_AGE_SECONDS:-300}"
 WAIT_TIMEOUT="${WAIT_TIMEOUT:-10m}"
 FENCE_SETTLE_SECONDS="${FENCE_SETTLE_SECONDS:-5}"
@@ -18,6 +19,7 @@ fail_input() { echo "$1" >&2; exit 2; }
 [[ -n "$RECEIPT_FILE" && ! -e "$RECEIPT_FILE" ]] || fail_input "RECEIPT_FILE must name a new file"
 [[ -f "$SEMANTIC_WITNESS_FILE" ]] || fail_input "SEMANTIC_WITNESS_FILE must name a verified logical.v2 witness"
 [[ -n "$EXPECTED_WITNESS_PREFIX" ]] || fail_input "EXPECTED_WITNESS_PREFIX is required"
+[[ -n "$KUBE_CONTEXT" ]] || fail_input "KUBE_CONTEXT is required; the current context is never accepted implicitly"
 [[ "$WITNESS_MAX_AGE_SECONDS" =~ ^[1-9][0-9]*$ ]] || fail_input "WITNESS_MAX_AGE_SECONDS must be a positive integer"
 [[ "$WAIT_TIMEOUT" =~ ^[1-9][0-9]*(s|m|h)$ ]] || fail_input "WAIT_TIMEOUT must be a positive kubectl duration"
 [[ "$FENCE_SETTLE_SECONDS" =~ ^[0-9]+$ ]] || fail_input "FENCE_SETTLE_SECONDS must be a non-negative integer"
@@ -66,7 +68,7 @@ EXPECTED_TIKV_PVCS="$(jq '.tikv_pvcs | length' <<<"$inventory")"
 export KUBEBRAIN_NAMESPACE KUBEBRAIN_STATEFULSET EXPECTED_KUBEBRAIN_STATEFULSET_UID
 export TIDB_NAMESPACE TIDB_CLUSTER EXPECTED_TIDB_CLUSTER_UID EXPECTED_TIKV_CLUSTER_ID
 export VOLUME_SNAPSHOT_CLASS EXPECTED_PD_PVCS EXPECTED_TIKV_PVCS
-export ALLOW_COLD_PHYSICAL_SNAPSHOT=true KUBECTL
+export ALLOW_COLD_PHYSICAL_SNAPSHOT=true KUBECTL KUBE_CONTEXT
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 fresh_inventory="$("$script_dir/cold-snapshot-preflight.sh" | jq -cS .)"
