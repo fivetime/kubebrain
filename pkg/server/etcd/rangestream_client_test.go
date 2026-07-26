@@ -17,6 +17,7 @@ package etcd
 import (
 	"context"
 	"fmt"
+	"math"
 	"net"
 	"testing"
 	"time"
@@ -197,4 +198,61 @@ func TestClientRangeStreamValidationErrorsMatchEtcd(t *testing.T) {
 			require.Equal(t, test.message, status.Convert(err).Message())
 		})
 	}
+}
+
+func TestClientRangeStreamRevisionBoundaries(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	prefix := fmt.Sprintf("/a1038/rangestream-revision/%d/", time.Now().UnixNano())
+	key := prefix + "a"
+	_, err = client.Put(ctx, key, "value")
+	require.NoError(t, err)
+	current, err := client.Get(ctx, key)
+	require.NoError(t, err)
+	require.Len(t, current.Kvs, 1)
+	_, err = client.Compact(ctx, current.Header.Revision)
+	require.NoError(t, err)
+
+	stream, err := client.GetStream(ctx, prefix, clientv3.WithPrefix(), clientv3.WithRev(-1))
+	require.NoError(t, err)
+	negative, err := clientv3.GetStreamToGetResponse(stream)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), negative.Count)
+	require.Len(t, negative.Kvs, 1)
+	require.Equal(t, key, string(negative.Kvs[0].Key))
+	require.Equal(t, "value", string(negative.Kvs[0].Value))
+
+	stream, err = client.GetStream(ctx, key, clientv3.WithRev(math.MaxInt64))
+	require.NoError(t, err)
+	_, err = clientv3.GetStreamToGetResponse(stream)
+	requireClientRangeStreamError(t, err, codes.Unknown, "etcdserver: mvcc: required revision is a future revision")
+}
+
+func requireClientRangeStreamError(t *testing.T, err error, code codes.Code, message string) {
+	t.Helper()
+	require.Error(t, err)
+	require.Equal(t, code, status.Code(err))
+	require.Equal(t, message, status.Convert(err).Message())
 }

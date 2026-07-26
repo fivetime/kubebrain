@@ -14338,6 +14338,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   future revision 错误并阻止写入。本轮新增官方 clientv3 bufconn 回归，分别覆盖
   selected-compacted、unselected-compacted 和 selected-future 三种路径，并断言
   `clientv3.Txn` 暴露的 `Unknown` code/message 及失败事务无部分提交。
+- A1038 固定 clientv3 RangeStream revision 边界：
+  `range_revision_boundary` 与 RangeStream common-shape differential 共同约束了流式 Range
+  与 unary Range 的 revision 语义：负 revision 应按当前 revision 读取并成功返回，
+  `math.MaxInt64` 应在流读取阶段暴露 future revision 错误。本轮新增官方 clientv3
+  `GetStream` bufconn 回归，compact 当前 key 后用 `WithRev(-1)` 读取 prefix 并通过
+  `GetStreamToGetResponse` 验证当前 KV，再用 `WithRev(math.MaxInt64)` 验证 official
+  clientv3 暴露的 `Unknown` code 和 future revision message，补齐 RangeStream 在
+  clientv3 包装层的 revision 边界覆盖。
 
 ### P2：运维兼容和长期验证
 
