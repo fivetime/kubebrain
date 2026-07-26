@@ -14432,6 +14432,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `0xfe` prefix 只返回高位半开区间、`0xff WithFromKey` 的 limit/more/count 与倒序排序正确，
   并验证删除 `0xff` 后当前点读为空但 `WithRev` 历史点读仍返回旧值，补齐公开客户端 bytes
   到 protobuf request 映射面的门禁。
+- A1050 固定 clientv3 binary mutation 外观：
+  `binary_mutation` differential 证明官方请求中的二进制 key 在 Txn Range、Txn
+  DeleteRange+PrevKV、standalone DeleteRange+PrevKV 和删除后 Range 中必须保持 bytewise
+  边界，不得因字符串转换、NUL 截断或 `0xfe`/`0xff` 高位区间处理错误而误删或漏删。A1049
+  已覆盖公开客户端读取面，本轮新增官方 clientv3 bufconn 回归，用 `client.Txn().Then`
+  构造 NUL 前缀 `OpGet` 与 `OpDelete(... WithPrevKV)`，再用 standalone
+  `client.Delete` 删除 `0xfe` 半开区间并断言 PrevKV 顺序和值，最后确认 NUL/`0xfe`
+  区间已空但 `0xff` 点 key 保留，补齐 raw gRPC 二进制 mutation 覆盖之外的 clientv3
+  wrapper 门禁。
 
 ### P2：运维兼容和长期验证
 

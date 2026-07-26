@@ -212,6 +212,96 @@ func TestClientBinaryKeyRangeStreamAndHistoricalRead(t *testing.T) {
 	require.Equal(t, []string{"h"}, binaryClientValues(historical.Kvs))
 }
 
+func TestClientBinaryKeyTxnAndDeleteMutations(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	keys := [][]byte{
+		{0x00},
+		{0x00, 0x00},
+		{0x00, 0x01},
+		{0x01},
+		{0xfe},
+		{0xfe, 0x00},
+		{0xfe, 0x01},
+		{0xff},
+	}
+	for index, key := range keys {
+		_, err = client.Put(ctx, string(key), string([]byte{byte('a' + index)}))
+		require.NoError(t, err)
+	}
+
+	txnRange, err := client.Txn(ctx).Then(clientv3.OpGet(
+		string([]byte{0x00}),
+		clientv3.WithRange(string([]byte{0x01})),
+	)).Commit()
+	require.NoError(t, err)
+	require.True(t, txnRange.Succeeded)
+	require.Len(t, txnRange.Responses, 1)
+	nulRange := txnRange.Responses[0].GetResponseRange()
+	require.Equal(t, []string{"00", "0000", "0001"}, binaryClientKeys(nulRange.Kvs))
+	require.Equal(t, []string{"a", "b", "c"}, binaryClientValues(nulRange.Kvs))
+
+	txnDelete, err := client.Txn(ctx).Then(clientv3.OpDelete(
+		string([]byte{0x00}),
+		clientv3.WithRange(string([]byte{0x01})),
+		clientv3.WithPrevKV(),
+	)).Commit()
+	require.NoError(t, err)
+	require.True(t, txnDelete.Succeeded)
+	require.Len(t, txnDelete.Responses, 1)
+	deletedNUL := txnDelete.Responses[0].GetResponseDeleteRange()
+	require.Equal(t, int64(3), deletedNUL.Deleted)
+	require.Equal(t, []string{"00", "0000", "0001"}, binaryClientKeys(deletedNUL.PrevKvs))
+	require.Equal(t, []string{"a", "b", "c"}, binaryClientValues(deletedNUL.PrevKvs))
+
+	afterTxnDelete, err := client.Get(ctx, string([]byte{0x00}), clientv3.WithRange(string([]byte{0x01})))
+	require.NoError(t, err)
+	require.Zero(t, afterTxnDelete.Count)
+	require.Empty(t, afterTxnDelete.Kvs)
+
+	standaloneDelete, err := client.Delete(
+		ctx,
+		string([]byte{0xfe}),
+		clientv3.WithRange(string([]byte{0xff})),
+		clientv3.WithPrevKV(),
+	)
+	require.NoError(t, err)
+	require.Equal(t, int64(3), standaloneDelete.Deleted)
+	require.Equal(t, []string{"fe", "fe00", "fe01"}, binaryClientKeys(standaloneDelete.PrevKvs))
+	require.Equal(t, []string{"e", "f", "g"}, binaryClientValues(standaloneDelete.PrevKvs))
+
+	afterStandaloneDelete, err := client.Get(ctx, string([]byte{0xfe}), clientv3.WithRange(string([]byte{0xff})))
+	require.NoError(t, err)
+	require.Zero(t, afterStandaloneDelete.Count)
+	require.Empty(t, afterStandaloneDelete.Kvs)
+	pointFF, err := client.Get(ctx, string([]byte{0xff}))
+	require.NoError(t, err)
+	require.Equal(t, []string{"ff"}, binaryClientKeys(pointFF.Kvs))
+	require.Equal(t, []string{"h"}, binaryClientValues(pointFF.Kvs))
+}
+
 func binaryClientKeys(kvs []*mvccpb.KeyValue) []string {
 	keys := make([]string, 0, len(kvs))
 	for _, kv := range kvs {
