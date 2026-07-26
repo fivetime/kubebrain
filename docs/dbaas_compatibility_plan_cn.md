@@ -16276,6 +16276,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   scheme 的具体错误文本；rollup quantity 被篡改时也固定为 invalid quantity。该门禁防止
   计量归档和账单 rollup 在输入漂移、采样 slot 错位或 URL 配置错误时只返回笼统失败，影响
   DBaaS 生产用量审计与账单纠错。
+- A1324 固定 metering archiver/roller 配置错误契约：
+  sample archiver 的 retention 太短必须报告 slot/finalization delay 边界，空归档 prefix 必须
+  报告 archiver 配置不完整；daily roller 的非 24h period 和 sample/rollup prefix 重叠必须
+  报告 roller 配置不完整。该门禁防止生产计量归档入口把保留期、对象 key 前缀和日汇总窗口
+  配置错误降级成笼统失败，降低上线前配置审计和排障质量。
 
 ### P2：运维兼容和长期验证
 

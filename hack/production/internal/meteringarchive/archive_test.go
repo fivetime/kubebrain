@@ -101,10 +101,10 @@ func TestArchiverValidationRejectsUnsafeRetentionAndPrefix(t *testing.T) {
 	require.NoError(t, err)
 	archiver := validArchiver(collector)
 	archiver.RetentionDuration = archiver.SlotDuration
-	require.Error(t, archiver.Validate())
+	require.ErrorContains(t, archiver.Validate(), "metering retention must exceed the slot and finalization delay")
 	archiver.RetentionDuration = 365 * 24 * time.Hour
 	archiver.Prefix = "/"
-	require.Error(t, archiver.Validate())
+	require.ErrorContains(t, archiver.Validate(), "metering archiver configuration is incomplete")
 }
 
 func TestArchiverValidationRejectsUnsafeObjectIdentity(t *testing.T) {

@@ -148,10 +148,10 @@ func TestRollerValidationPinsDailyPeriodAndSeparatePrefixes(t *testing.T) {
 	roller := validRoller(time.Now())
 	require.NoError(t, roller.Validate())
 	roller.PeriodDuration = 12 * time.Hour
-	require.Error(t, roller.Validate())
+	require.ErrorContains(t, roller.Validate(), "metering roller configuration is incomplete")
 	roller = validRoller(time.Now())
 	roller.RollupPrefix = roller.SamplePrefix
-	require.Error(t, roller.Validate())
+	require.ErrorContains(t, roller.Validate(), "metering roller configuration is incomplete")
 
 	roller = validRoller(time.Date(2026, 7, 20, 0, 47, 0, 0, time.UTC))
 	roller.PeriodEnd = time.Date(2026, 7, 18, 0, 0, 0, 0, time.UTC)
