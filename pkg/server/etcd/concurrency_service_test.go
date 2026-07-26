@@ -537,10 +537,11 @@ func TestDedicatedConcurrencyCancellationRemovesWaiters(t *testing.T) {
 	}
 	requireCanceled := func(err error) {
 		t.Helper()
-		require.True(t,
-			errors.Is(err, context.Canceled) || status.Code(err) == codes.Canceled,
-			"expected cancellation error, got %v", err,
-		)
+		if errors.Is(err, context.Canceled) {
+			return
+		}
+		require.Equal(t, codes.Canceled, status.Code(err))
+		require.Equal(t, "etcdserver: watch canceled", status.Convert(err).Message())
 	}
 
 	lockName := []byte("/a972/concurrency-cancel/lock")

@@ -16126,6 +16126,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   auth-token 转发完成后的客户端取消都返回 exact `etcdserver: watch canceled` message。
   该门禁延续 A1289 到异步 done-channel Watch 路径，避免 HTTP/gRPC stream adapter 或
   follower proxy 重构时把正常客户端取消改成模糊 Canceled 外观。
+- A1301 固定 dedicated concurrency 等待取消错误外观：
+  `TestDedicatedConcurrencyCancellationRemovesWaiters` 原先允许 Go `context.Canceled` 或任意
+  gRPC `Canceled` code。本轮保留直接 `context.Canceled`，但若错误来自内部 Watch/gRPC
+  路径，则必须同时满足 `Canceled` code 和 exact `etcdserver: watch canceled` message。
+  该门禁防止 Lock/Election waiter 清理路径未来把正常等待取消误包装成模糊 stream
+  取消、transport 错误或业务失败，同时继续验证取消后队列 key 被清理。
 
 ### P2：运维兼容和长期验证
 
