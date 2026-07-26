@@ -16347,6 +16347,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   canonical artifact 时必须分别报告 `metering price catalog is incomplete`、
   `metering adjustment is incomplete` 和 `provider statement is incomplete`，且不得调用
   Object Lock executor。该门禁防止账单/供应商成本证据在坏输入下被上传为不可变对象。
+- A1338 固定 OIDC unknown-key backoff 对外错误契约：
+  operation API OIDC authenticator 在遇到 unknown `kid` 时对外必须保持
+  `OIDC token is invalid`，不能泄漏底层 signing-key 细节或误报 `ErrOIDCUnavailable`；同时
+  已过期的已知 key 仍必须绕过 unrelated unknown-key backoff 触发 refresh。该门禁防止 IdP
+  key rotation/探测流量影响合法 key 刷新，且保持认证失败分类稳定。
 
 ### P2：运维兼容和长期验证
 

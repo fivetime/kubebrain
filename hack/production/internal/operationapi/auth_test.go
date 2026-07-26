@@ -381,7 +381,7 @@ func TestOIDCAuthenticatorUnknownKeyBackoffDoesNotBlockKnownKeyRefresh(t *testin
 	require.NoError(t, err)
 	unknown := signOIDCToken(t, key, "unknown", server.URL, "expected", "tenant-a", []string{"instance-a"})
 	_, err = authenticator.Authenticate(context.Background(), "Bearer "+unknown)
-	require.Error(t, err)
+	require.ErrorContains(t, err, "OIDC token is invalid")
 
 	time.Sleep(15 * time.Millisecond)
 	known := signOIDCToken(t, key, "known", server.URL, "expected", "tenant-a", []string{"instance-a"})
