@@ -195,6 +195,38 @@ func TestClientStatusProtocolMetadataMatchesEtcdContract(t *testing.T) {
 	require.Empty(t, response.Errors)
 }
 
+func TestClientStatusReportsConfiguredQuota(t *testing.T) {
+	const quota = int64(300010002000)
+	server := newQuotaRPCServer(t, quota)
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterMaintenanceServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	response, err := client.Status(ctx, "bufnet")
+	require.NoError(t, err)
+	require.NotNil(t, response.Header)
+	require.Equal(t, quota, response.DbSizeQuota)
+	require.Empty(t, response.Errors)
+}
+
 func TestRawGRPCAlarmGetAndZeroMemberRoundTrip(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

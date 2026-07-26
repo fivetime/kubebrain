@@ -15395,6 +15395,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `errors.Is(..., rpctypes.ErrRoleNotGranted)` 识别。本轮加强既有 bufconn official clientv3
   user error 回归，补齐 user already exists、user not found、role not found 之外的 grant
   relationship validation typed error。
+- A1179 固定 clientv3 Maintenance Status customized quota：
+  对照 `/root/etcd/tests/integration/clientv3/maintenance_test.go:TestMaintenanceStatus` 的
+  customized quota 分支，official clientv3 `Status` 必须把配置的 backend quota 原样暴露到
+  `DbSizeQuota`，而不是回退到默认 quota。本轮复用 quota RPC server 构造自定义 quota 的
+  bufconn 黑盒回归，补齐默认 quota protocol metadata 之外的配置传播护栏。
 
 ### P2：运维兼容和长期验证
 
