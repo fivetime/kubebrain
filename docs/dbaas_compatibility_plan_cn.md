@@ -15644,6 +15644,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `etcdserver: mvcc: required revision is a future revision`。该门禁防止 RangeStream adapter、
   range fast path 或 stream 聚合 helper 重构后让控制器把未来 revision 误分类为普通 transport
   失败或丢失 reference etcd message。
+- A1217 固定 Lease auth 服务层错误三件套：
+  A1157/A1190 已覆盖 Lease auth 的 key visibility 与 raw gRPC 外观，本轮把服务层
+  `LeaseRevoke`、`LeaseTimeToLive(Keys=true)`、`LeaseLeases` 和匿名 `LeaseGrant` 的拒绝路径
+  固定为同时满足 `errors.Is`、direct `status.Code` 和 reference message；raw generated gRPC
+  route 的 `PermissionDenied` transport code 继续由 A1190 覆盖。该门禁防止 auth authorizer、
+  lease visibility check 或 direct service caller 重构后只保留 typed error，导致服务层
+  `UserEmpty`/`PermissionDenied` 分类或 message 漂移。
 
 ### P2：运维兼容和长期验证
 

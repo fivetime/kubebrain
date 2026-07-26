@@ -12,7 +12,9 @@ import (
 	"go.etcd.io/etcd/api/v3/authpb"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 
 	"github.com/kubewharf/kubebrain/pkg/backend"
 )
@@ -62,25 +64,25 @@ func TestAuthLeaseRequiresCallerAndProtectsBoundKeys(t *testing.T) {
 	ctx := setupAuthKVUser(t, server)
 
 	_, err = server.LeaseRevoke(ctx, &etcdserverpb.LeaseRevokeRequest{ID: lease.ID})
-	require.ErrorIs(t, err, rpctypes.ErrPermissionDenied)
+	requireAuthLeaseError(t, err, rpctypes.ErrPermissionDenied, codes.Unknown, "etcdserver: permission denied")
 	_, err = server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: lease.ID})
 	require.NoError(t, err, "TTL without attached keys does not reveal protected key names")
 	_, err = server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: lease.ID, Keys: true})
-	require.ErrorIs(t, err, rpctypes.ErrPermissionDenied)
+	requireAuthLeaseError(t, err, rpctypes.ErrPermissionDenied, codes.Unknown, "etcdserver: permission denied")
 	_, err = server.LeaseLeases(ctx, &etcdserverpb.LeaseLeasesRequest{})
-	require.ErrorIs(t, err, rpctypes.ErrPermissionDenied)
+	requireAuthLeaseError(t, err, rpctypes.ErrPermissionDenied, codes.Unknown, "etcdserver: permission denied")
 	stored, err := server.backend.Get(plain, &etcdserverpb.RangeRequest{Key: []byte("/denied/leased")})
 	require.NoError(t, err)
 	require.Len(t, stored.Kvs, 1, "denied lease revoke must not delete protected keys")
 
 	_, err = server.LeaseGrant(plain, &etcdserverpb.LeaseGrantRequest{TTL: 60})
-	require.ErrorIs(t, err, rpctypes.ErrUserEmpty)
+	requireAuthLeaseError(t, err, rpctypes.ErrUserEmpty, codes.Unknown, "etcdserver: user name is empty")
 	allowed, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 60})
 	require.NoError(t, err)
 	_, err = server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: allowed.ID})
 	require.NoError(t, err)
 	_, err = server.LeaseLeases(ctx, &etcdserverpb.LeaseLeasesRequest{})
-	require.ErrorIs(t, err, rpctypes.ErrPermissionDenied, "one inaccessible attached key denies the all-leases listing like etcd")
+	requireAuthLeaseError(t, err, rpctypes.ErrPermissionDenied, codes.Unknown, "etcdserver: permission denied")
 }
 
 func TestAuthLeaseFutureJWTRevisionMatchesEtcd(t *testing.T) {
@@ -418,8 +420,15 @@ func TestAuthLeaseRevokeChecksKeysAfterAdmittedPut(t *testing.T) {
 		revokeErr = <-revokeDone
 	}
 	require.False(t, completedEarly, "revoke bypassed admitted leased Put")
-	require.ErrorIs(t, revokeErr, rpctypes.ErrPermissionDenied)
+	requireAuthLeaseError(t, revokeErr, rpctypes.ErrPermissionDenied, codes.Unknown, "etcdserver: permission denied")
 	stored, err := server.backend.Get(context.Background(), &etcdserverpb.RangeRequest{Key: key})
 	require.NoError(t, err)
 	require.Len(t, stored.Kvs, 1, "denied revoke must leave the newly protected key intact")
+}
+
+func requireAuthLeaseError(t *testing.T, err error, want error, code codes.Code, message string) {
+	t.Helper()
+	require.ErrorIs(t, err, want)
+	require.Equal(t, code, status.Code(err))
+	require.Equal(t, message, status.Convert(err).Message())
 }
