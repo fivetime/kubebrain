@@ -141,7 +141,7 @@ func TestCountProxyFastRejectsWhenIndexNotReady(t *testing.T) {
 
 func requireCountProxyIndexNotReady(t *testing.T, err error) {
 	t.Helper()
-	require.Error(t, err)
+	require.EqualError(t, err, status.Error(codes.Unavailable, "count index not ready (rebuilding); fall back locally").Error())
 	require.Equal(t, codes.Unavailable, status.Code(err))
 	require.Equal(t, "count index not ready (rebuilding); fall back locally", status.Convert(err).Message())
 }

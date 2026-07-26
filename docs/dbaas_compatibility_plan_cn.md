@@ -16389,6 +16389,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   read barrier 失败必须保留完整 `codes.Unavailable` status error；认证失败则必须保留原始 etcd
   message、typed `ErrorIs` 和公开 status code。该门禁防止集群成员只读 facade 在控制面不可用、
   TLS CN 映射和权限失败时漂移公开错误语义。
+- A1347 固定 follower count proxy index-not-ready 错误字符串：
+  follower-proxied `CountOnly` 请求在 count index 重建期间必须返回完整 `codes.Unavailable`
+  status error，并保留 `fall back locally` 提示。该门禁防止 DBaaS 读扩展路径在索引未就绪时
+  误做 leader fallback 或丢失客户端可恢复提示。
 
 ### P2：运维兼容和长期验证
 
