@@ -1399,6 +1399,80 @@ func TestClientLeasingReconnectOperationsMatchDirectKV(t *testing.T) {
 	}
 }
 
+func TestClientLeasingReconnectsAfterCompactedOwnerWatch(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	server.Register(grpcServer)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(func() {
+		grpcServer.Stop()
+		_ = listener.Close()
+	})
+
+	directEndpoint := listener.Addr().String()
+	bridge := newClientLeasingTCPBridge(t, directEndpoint)
+	first, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{bridge.Endpoint()},
+		DialTimeout: time.Second,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, first.Close()) })
+	second, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{directEndpoint},
+		DialTimeout: time.Second,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, second.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	prefix := fmt.Sprintf("/a1081/leasing-reconnect-compact/%d/", time.Now().UnixNano())
+	key := prefix + "data"
+	firstKV, closeFirst, err := leasing.NewKV(first, prefix+"owners/")
+	require.NoError(t, err)
+	t.Cleanup(closeFirst)
+	secondKV, closeSecond, err := leasing.NewKV(second, prefix+"owners/")
+	require.NoError(t, err)
+	t.Cleanup(closeSecond)
+
+	initial, err := firstKV.Get(ctx, key)
+	require.NoError(t, err)
+	require.Empty(t, initial.Kvs)
+
+	droppedBefore := bridge.DroppedBytes()
+	bridge.Blackhole()
+	_, err = second.Put(ctx, prefix+"advance", "one")
+	require.NoError(t, err)
+	advanced, err := second.Put(ctx, prefix+"advance", "two")
+	require.NoError(t, err)
+	_, err = second.Compact(ctx, advanced.Header.Revision)
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		return bridge.DroppedBytes() > droppedBefore
+	}, 10*time.Second, 20*time.Millisecond)
+	bridge.Unblackhole()
+
+	_, err = secondKV.Put(ctx, key, "recovered")
+	require.NoError(t, err)
+	var recovered *clientv3.GetResponse
+	require.Eventually(t, func() bool {
+		response, getErr := firstKV.Get(ctx, key)
+		if getErr != nil || len(response.Kvs) != 1 || string(response.Kvs[0].Value) != "recovered" {
+			return false
+		}
+		recovered = response
+		return true
+	}, 10*time.Second, 20*time.Millisecond)
+	direct, err := second.Get(ctx, key)
+	require.NoError(t, err)
+	require.Len(t, direct.Kvs, 1)
+	require.True(t, clientLeasingRangeResponsesEqual(recovered, direct))
+}
+
 func TestClientLeasingCachedComparisonsWorkOffline(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

@@ -14679,6 +14679,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   read 污染连接状态。本轮扩展本地 TCP bridge 支持只恢复流量不主动断连接，并新增真实
   TCP gRPC 回归：连续丢弃 Get 响应、取消请求、断言 active connection 未替换且 bridge
   未主动 drop transport，再执行后续 Put/Get 验证同连接继续可用。
+- A1081 固定 client/v3/leasing owner watch compacted reconnect：
+  `leasing_reconnect_compaction` differential 证明 `leasing.NewKV` 的 owner 连接在网络
+  黑洞期间可能错过数据 revision，并且该 watch 起点随后被 Compact；连接恢复后 owner
+  cache 必须重新同步，不能因 compacted watch 停留在缺失值。本轮新增真实 TCP gRPC +
+  request/response blackhole 回归：owner 先缓存 missing key，断网期间由直连 client
+  推进 revision 并 Compact，再恢复连接并由另一个 leasing writer 写入目标 key，最终要求
+  原 owner `Get` 与 direct `Get` 的 key/value/revision/version/lease 完全一致。
 
 ### P2：运维兼容和长期验证
 
