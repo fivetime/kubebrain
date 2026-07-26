@@ -546,6 +546,55 @@ func TestClientFilteredWatchProgressCoversSuppressedPut(t *testing.T) {
 	}
 }
 
+func TestClientWatchFiltersPutAndDeleteEvents(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterWatchServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	key := fmt.Sprintf("/a1141/watch-filter/%d", time.Now().UnixNano())
+	noPut := client.Watch(ctx, key, clientv3.WithCreatedNotify(), clientv3.WithFilterPut())
+	noDelete := client.Watch(ctx, key, clientv3.WithCreatedNotify(), clientv3.WithFilterDelete())
+	requireClientWatchCreated(t, ctx, noPut)
+	requireClientWatchCreated(t, ctx, noDelete)
+
+	_, err = client.Put(ctx, key, "value")
+	require.NoError(t, err)
+	putEvent := requireSingleClientWatchEvent(t, ctx, noDelete)
+	require.Equal(t, clientv3.EventTypePut, putEvent.Type)
+	require.Equal(t, key, string(putEvent.Kv.Key))
+	require.Equal(t, "value", string(putEvent.Kv.Value))
+
+	_, err = client.Delete(ctx, key)
+	require.NoError(t, err)
+	deleteEvent := requireSingleClientWatchEvent(t, ctx, noPut)
+	require.Equal(t, clientv3.EventTypeDelete, deleteEvent.Type)
+	require.Equal(t, key, string(deleteEvent.Kv.Key))
+
+	requireNoClientWatchEventBeforeProgress(t, ctx, client, noPut)
+	requireNoClientWatchEventBeforeProgress(t, ctx, client, noDelete)
+}
+
 func TestClientWatchProgressNotifySuppressesTickAfterEvent(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
@@ -1353,6 +1402,20 @@ func requireSingleClientWatchEvent(t *testing.T, ctx context.Context, watch clie
 		t.Fatalf("timed out waiting for watch event: %v", ctx.Err())
 		return nil
 	}
+}
+
+func requireNoClientWatchEventBeforeProgress(
+	t *testing.T,
+	ctx context.Context,
+	client *clientv3.Client,
+	watch clientv3.WatchChan,
+) {
+	t.Helper()
+	require.NoError(t, client.RequestProgress(ctx))
+	response := requireClientWatchResponse(t, ctx, watch)
+	require.False(t, response.Created)
+	require.Empty(t, response.Events)
+	require.True(t, response.IsProgressNotify())
 }
 
 func requireRawRangeHeaderWellFormed(t *testing.T, response *etcdserverpb.RangeResponse) {

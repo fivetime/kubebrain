@@ -15146,6 +15146,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   三次 `c`、`foo`、`foo/abc`、`fop` 后，要求返回 6 个 key 的字节序列表，并固定 `a`
   与 `c` 的 create/mod/version 元数据。该门禁防止 RangeEnd=0 翻译、排序或 MVCC collapse
   重构破坏全量 LIST 和灾备扫描的 etcd 兼容外观。
+- A1141 固定 clientv3 Watch PUT/DELETE filter 外观：
+  对照 `/root/etcd/tests/integration/clientv3/watch/watch_test.go:TestWatchWithFilter`，
+  `WithFilterPut()` watcher 必须只抑制 PUT 而继续接收 DELETE，`WithFilterDelete()` watcher
+  必须只抑制 DELETE 而继续接收 PUT。本轮新增 bufconn official clientv3 回归，在同一 key
+  上建立两个带 `WithCreatedNotify` 的 watcher，写入后要求 no-delete watcher 收到 PUT，删除
+  后要求 no-put watcher 收到 DELETE，并通过 `RequestProgress` 证明被过滤方向没有滞留事件。
+  该门禁防止 watch filter 映射、server fanout 或 progress 覆盖逻辑重构导致 informer 接收
+  到不该出现的事件，或在过滤事件后无法向前推进 revision。
 
 ### P2：运维兼容和长期验证
 
