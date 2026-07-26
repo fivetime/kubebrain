@@ -14383,6 +14383,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   用 `clientv3.Delete` 分别构造 `WithFromKey()+WithPrevKV`、
   `WithRange(same)+WithPrevKV` 和反向 `WithRange`，断言 Deleted、PrevKvs、header
   advancement 和 remaining key/value，补齐 raw/server 层之外的官方客户端删除边界面。
+- A1044 固定 clientv3 Maintenance HashKV revision 边界：
+  `hashkv_revision_boundary` differential 证明 HashKV 对 `Revision=-1` 必须返回固定的
+  empty-hash `0x40a4756d` 且 `HashRevision=-1`，`Revision=0` 选择最新快照，当前 revision
+  回显请求 revision；future revision 与 `math.MaxInt64` 必须暴露 future revision 错误。
+  本轮新增官方 clientv3 bufconn 回归，注册真实 KV/Maintenance 服务后通过
+  `client.HashKV(ctx, "bufnet", rev)` 走 official maintenance dial path，断言 Hash、
+  HashRevision、CompactRevision、header revision 和 clientv3 错误外观，补齐 A999 raw
+  gRPC 覆盖之外的官方客户端面。
 
 ### P2：运维兼容和长期验证
 

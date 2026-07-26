@@ -23,6 +23,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
+	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -340,6 +341,60 @@ func TestRawGRPCHashKVRevisionBoundaries(t *testing.T) {
 	}
 }
 
+func TestClientHashKVRevisionBoundaries(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterMaintenanceServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	put, err := client.Put(ctx, "/a1044/hashkv-client/key", "value")
+	require.NoError(t, err)
+
+	negative, err := client.HashKV(ctx, "bufnet", -1)
+	require.NoError(t, err)
+	require.Equal(t, int64(-1), negative.HashRevision)
+	require.Equal(t, uint32(0x40a4756d), negative.Hash)
+	requireRawHashKVHeaderAtOrAfter(t, negative.Header, put.Header.Revision)
+	require.True(t, negative.CompactRevision == -1 || negative.CompactRevision > 0)
+
+	latest, err := client.HashKV(ctx, "bufnet", 0)
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, latest.HashRevision, put.Header.Revision)
+	requireRawHashKVHeaderAtOrAfter(t, latest.Header, put.Header.Revision)
+	require.True(t, latest.CompactRevision == -1 || latest.CompactRevision > 0)
+
+	current, err := client.HashKV(ctx, "bufnet", put.Header.Revision)
+	require.NoError(t, err)
+	require.Equal(t, put.Header.Revision, current.HashRevision)
+	requireRawHashKVHeaderAtOrAfter(t, current.Header, put.Header.Revision)
+	require.True(t, current.CompactRevision == -1 || current.CompactRevision > 0)
+
+	for _, revision := range []int64{put.Header.Revision + 100, math.MaxInt64} {
+		_, hashErr := client.HashKV(ctx, "bufnet", revision)
+		requireClientHashKVError(t, hashErr, codes.Unknown, "etcdserver: mvcc: required revision is a future revision")
+	}
+}
+
 func requireRawHashKVHeaderAtOrAfter(t *testing.T, header *etcdserverpb.ResponseHeader, revision int64) {
 	t.Helper()
 	require.NotNil(t, header)
@@ -347,4 +402,11 @@ func requireRawHashKVHeaderAtOrAfter(t *testing.T, header *etcdserverpb.Response
 	require.NotZero(t, header.MemberId)
 	require.Positive(t, header.RaftTerm)
 	require.GreaterOrEqual(t, header.Revision, revision)
+}
+
+func requireClientHashKVError(t *testing.T, err error, code codes.Code, message string) {
+	t.Helper()
+	require.Error(t, err)
+	require.Equal(t, code, status.Code(err))
+	require.Equal(t, message, status.Convert(err).Message())
 }
