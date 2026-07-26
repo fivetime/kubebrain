@@ -15019,6 +15019,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   同时固定 `GetStream` 返回 `Unimplemented: GetStream is not supported by kvOrdering`。该门禁
   防止 header stamping、serializable read 或 Txn response revision 重构破坏多 endpoint
   客户端的 ordering wrapper 基础假设。
+- A1125 固定 clientv3 KV close 后有界失败与无提交：
+  对照 `/root/etcd/tests/integration/clientv3/kv_test.go:TestKVGetErrConnClosed` 与
+  `TestKVNewAfterClose`，官方 client 在 `Close` 后的 KV 调用必须有界返回，而不是形成
+  无法退出的 retry goroutine；不同 transport 状态下可能表现为 gRPC canceled 或调用 context
+  deadline。
+  本轮新增 bufconn official clientv3 回归，注册真实 KV 服务后先关闭 client，再分别调用
+  `Get`、`Put` 和只读 `Txn`，均要求返回 `IsConnCanceled` 可识别的错误或调用 deadline；
+  随后直接查服务端确认关闭后的 `Put` 没有提交。该门禁防止连接生命周期、interceptor 或
+  retry loop 重构导致关闭后的 DBaaS 客户端 goroutine 长时间挂起或产生幽灵写入。
 
 ### P2：运维兼容和长期验证
 

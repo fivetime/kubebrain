@@ -16,6 +16,7 @@ package etcd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"net"
@@ -98,6 +99,53 @@ func TestClientGetCanceledAfterResponseLossKeepsConnectionUsable(t *testing.T) {
 		require.Len(t, read.Kvs, 1)
 		require.Equal(t, value, string(read.Kvs[0].Value))
 	}
+}
+
+func TestClientKVOperationsAfterCloseAreBoundedAndDoNotCommit(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	require.NoError(t, client.Close())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	_, err = client.Get(ctx, "/a1125/closed/get")
+	requireClientClosedError(t, err, "Get")
+	_, err = client.Put(ctx, "/a1125/closed/put", "value")
+	requireClientClosedError(t, err, "Put")
+	_, err = client.Txn(ctx).Then(clientv3.OpGet("/a1125/closed/txn")).Commit()
+	requireClientClosedError(t, err, "Txn")
+
+	committed, err := server.Range(context.Background(), &etcdserverpb.RangeRequest{
+		Key: []byte("/a1125/closed/put"),
+	})
+	require.NoError(t, err)
+	require.Empty(t, committed.Kvs)
+}
+
+func requireClientClosedError(t *testing.T, err error, operation string) {
+	t.Helper()
+	require.Error(t, err, "%s after Close unexpectedly succeeded", operation)
+	require.True(t,
+		clientv3.IsConnCanceled(err) || errors.Is(err, context.DeadlineExceeded),
+		"%s after Close error = %v", operation, err)
 }
 
 func TestClientRangeRevisionFilterCountAndTxnStagedView(t *testing.T) {
