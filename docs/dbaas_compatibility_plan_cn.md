@@ -16316,6 +16316,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `invalid backup line`、`invalid backup record 1 value` 和
   `backup contains data after footer`。该门禁防止恢复前校验把截断备份、base64 损坏和
   footer 后注入混成笼统失败，提升备份不可变证据链的定位能力。
+- A1332 固定 operation audit archiver 错误定位契约：
+  operation archiver 遇到单个 operation 归档失败时必须报告
+  `archive operation <namespace>/<name>: ...`，并继续处理同批其他候选；namespace inventory
+  非法时必须在列出 tenant operation 前以 `decode namespace inventory` 失败退出。该门禁防止
+  审计归档控制器丢失失败 operation 身份，或在全局 namespace allowlist 损坏时跨租户扫描。
 
 ### P2：运维兼容和长期验证
 

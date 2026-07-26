@@ -90,8 +90,7 @@ func TestControllerIsolatesNamespaceAndOperationFailures(t *testing.T) {
 	require.NoError(t, err)
 
 	processed, err := controller.Reconcile(context.Background())
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "remote unavailable")
+	require.ErrorContains(t, err, "archive operation tenant-a/bad: remote unavailable")
 	require.Equal(t, 1, processed)
 	require.Equal(t, []string{"tenant-a/bad", "tenant-a/good"}, processor.names)
 }
@@ -198,7 +197,7 @@ func TestControllerFailsClosedBeforeListingOnInvalidInventory(t *testing.T) {
 	require.NoError(t, err)
 
 	processed, err := controller.Reconcile(context.Background())
-	require.Error(t, err)
+	require.ErrorContains(t, err, "decode namespace inventory")
 	require.Zero(t, processed)
 	require.Empty(t, processor.names)
 }
