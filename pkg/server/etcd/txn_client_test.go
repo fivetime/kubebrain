@@ -255,9 +255,9 @@ func TestRawGRPCTxnExecutionValidationOrderAndBudget(t *testing.T) {
 		Key: []byte("/a1005/txn-validation-order/future"), Revision: math.MaxInt64,
 	})
 	_, err = kv.Txn(ctx, &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{missingLeasePut, futureRange}})
-	requireRawGRPCTxnError(t, err, codes.NotFound, "etcdserver: requested lease not found")
+	requireRawGRPCTxnError(t, err, codes.NotFound, "etcdserver: requested lease not found", rpctypes.ErrGRPCLeaseNotFound)
 	_, err = kv.Txn(ctx, &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{futureRange, missingLeasePut}})
-	requireRawGRPCTxnError(t, err, codes.OutOfRange, "etcdserver: mvcc: required revision is a future revision")
+	requireRawGRPCTxnError(t, err, codes.OutOfRange, "etcdserver: mvcc: required revision is a future revision", rpctypes.ErrGRPCFutureRev)
 
 	rangeOp := func(suffix byte) *etcdserverpb.RequestOp {
 		key := append([]byte("/a1005/txn-budget/"), suffix)
@@ -310,7 +310,7 @@ func TestRawGRPCTxnExecutionValidationOrderAndBudget(t *testing.T) {
 			resp, callErr := kv.Txn(ctx, tt.txn)
 			if tt.wantErr {
 				require.Nil(t, resp)
-				requireRawGRPCTxnError(t, callErr, codes.InvalidArgument, "etcdserver: too many operations in txn request")
+				requireRawGRPCTxnError(t, callErr, codes.InvalidArgument, "etcdserver: too many operations in txn request", rpctypes.ErrGRPCTooManyOps)
 				return
 			}
 			require.NoError(t, callErr)
@@ -633,7 +633,7 @@ func TestRawGRPCTxnDuplicateIntervalValidation(t *testing.T) {
 			resp, callErr := kv.Txn(ctx, &etcdserverpb.TxnRequest{Success: tt.ops})
 			if tt.wantErr {
 				require.Nil(t, resp)
-				requireRawGRPCTxnError(t, callErr, codes.InvalidArgument, "etcdserver: duplicate key given in txn request")
+				requireRawGRPCTxnError(t, callErr, codes.InvalidArgument, "etcdserver: duplicate key given in txn request", rpctypes.ErrGRPCDuplicateKey)
 				return
 			}
 			require.NoError(t, callErr)
@@ -1456,9 +1456,12 @@ func txnClientTxnOp(success, failure []*etcdserverpb.RequestOp) *etcdserverpb.Re
 	}}
 }
 
-func requireRawGRPCTxnError(t *testing.T, err error, code codes.Code, message string) {
+func requireRawGRPCTxnError(t *testing.T, err error, code codes.Code, message string, wantErrorIs ...error) {
 	t.Helper()
 	require.Error(t, err)
+	for _, want := range wantErrorIs {
+		require.ErrorIs(t, err, want)
+	}
 	require.Equal(t, code, status.Code(err))
 	require.Equal(t, message, status.Convert(err).Message())
 }

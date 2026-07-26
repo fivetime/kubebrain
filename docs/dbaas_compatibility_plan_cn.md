@@ -16014,6 +16014,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   A104 已固定 `MemberList(linearizable=true)` barrier failure 的 code/message，本轮把
   raw gRPC 负例统一到 helper 并补齐 `require.Error`，防止 read-barrier 重构后返回 nil
   或仅保留 status.Code 默认值，导致 cluster discovery 的线性化失败路径不再 fail closed。
+- A1285 固定 raw gRPC Txn admission typed errors：
+  A1283 已覆盖 raw Txn selected Range revision，本轮把 raw `KV.Txn` validation order
+  的 missing lease/future revision、operation budget too-many-ops、以及 duplicate key
+  interval validation 统一补齐 `ErrGRPCLeaseNotFound`、`ErrGRPCFutureRev`、
+  `ErrGRPCTooManyOps` 和 `ErrGRPCDuplicateKey` 断言。该门禁防止 Txn raw protobuf
+  调用方只看到 code/message，而丢失上游 v3rpc typed admission error。
 
 ### P2：运维兼容和长期验证
 
