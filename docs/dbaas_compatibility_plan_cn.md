@@ -14007,6 +14007,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Txn Delete `[00,01)` 带 PrevKv 删除同一批 key，standalone Delete `[fe,ff)` 只删除
   `fe*` 且保留点 key `ff`。该门禁补足服务层 binary 回归之外的真实 gRPC 编码路径，
   防止后续 endpoint/interceptor 或 range conversion 重构破坏非 UTF-8/高位 key 的语义。
+- A997 固定 raw gRPC Alarm GET/filter 与 zero-member round trip：
+  `alarm_get` 与 `alarm_zero_member` differential 证明 Alarm GET 对 all/NOSPACE/CORRUPT/
+  unknown alarm/max member 均应成功返回，并且空 member 的 NOSPACE alarm 必须以 memberID=0
+  完成 activate/list/deactivate/final 流程。本轮新增 bufconn raw gRPC 回归，注册真实
+  KV/Maintenance 服务，先 Put 推进 revision，再通过 `etcdserverpb.MaintenanceClient`
+  验证各类 GET response header revision 不低于当前 KV revision 且空 alarm 集不报错；
+  随后验证 NOSPACE zero-member 的 activate、GET、deactivate 返回 `[0]`，最终 GET 为空，
+  防止维护面 handler 直调正确但真实 gRPC header stamping、alarm filter 或默认 memberID
+  转换路径回退。
 
 ### P2：运维兼容和长期验证
 
