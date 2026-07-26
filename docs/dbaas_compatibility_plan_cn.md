@@ -14642,6 +14642,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `endpoints.Manager` 注册到同一 resolver prefix，建立 `etcd:///` + `pick_first`
   连接，识别当前实际后端后删除对应 endpoint，并要求 health check 最终切换到另一个
   status，防止 Watch/delete 事件或 resolver 地址更新路径回退。
+- A1076 固定 client/v3/leasing 离线 cached compare：
+  `leasing_branching` differential 证明 `leasing.NewKV` 在 owner 连接完全不可达时，
+  已缓存 key 的 VALUE、CREATE、MOD、VERSION compare 仍必须由本地 cache 得出与 etcd
+  一致的 Txn 成败和 response 数量，不能退化为远端读超时或错误命中。本轮扩展本地
+  TCP bridge 支持请求/响应全 blackhole，并新增官方 clientv3 回归：直连 client 写入
+  compare key，leased client 先缓存该 key，随后 blackhole owner 连接并逐一执行 8 个
+  cached compare，断言成功/失败分支与 response 数量均符合预期，补齐断网 cache
+  compare 语义。
 
 ### P2：运维兼容和长期验证
 

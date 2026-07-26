@@ -1399,6 +1399,84 @@ func TestClientLeasingReconnectOperationsMatchDirectKV(t *testing.T) {
 	}
 }
 
+func TestClientLeasingCachedComparisonsWorkOffline(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterWatchServer(grpcServer, server)
+	etcdserverpb.RegisterLeaseServer(grpcServer, server)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(func() {
+		grpcServer.Stop()
+		_ = listener.Close()
+	})
+
+	directEndpoint := listener.Addr().String()
+	bridge := newClientLeasingTCPBridge(t, directEndpoint)
+	owner, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{bridge.Endpoint()},
+		DialTimeout: time.Second,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, owner.Close()) })
+	direct, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{directEndpoint},
+		DialTimeout: time.Second,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, direct.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	prefix := fmt.Sprintf("/a1076/leasing-offline-compare/%d/", time.Now().UnixNano())
+	leased, closeLeased, err := leasing.NewKV(owner, prefix+"owners/")
+	require.NoError(t, err)
+	t.Cleanup(closeLeased)
+
+	compareKey := prefix + "compare"
+	_, err = direct.Put(ctx, compareKey, "abc")
+	require.NoError(t, err)
+	cached, err := leased.Get(ctx, compareKey)
+	require.NoError(t, err)
+	require.Len(t, cached.Kvs, 1)
+	cachedKV := cached.Kvs[0]
+
+	bridge.Blackhole()
+	defer bridge.Unblackhole()
+	for index, testCase := range []struct {
+		compare clientv3.Cmp
+		want    bool
+	}{
+		{clientv3.Compare(clientv3.Value(compareKey), "=", "abc"), true},
+		{clientv3.Compare(clientv3.CreateRevision(compareKey), "=", cachedKV.CreateRevision), true},
+		{clientv3.Compare(clientv3.ModRevision(compareKey), "=", cachedKV.ModRevision), true},
+		{clientv3.Compare(clientv3.Version(compareKey), "=", cachedKV.Version), true},
+		{clientv3.Compare(clientv3.Value(compareKey), ">", "abc"), false},
+		{clientv3.Compare(clientv3.CreateRevision(compareKey), ">", cachedKV.CreateRevision), false},
+		{clientv3.Compare(clientv3.ModRevision(compareKey), "<", cachedKV.ModRevision), false},
+		{clientv3.Compare(clientv3.Version(compareKey), "<", cachedKV.Version), false},
+	} {
+		compareCtx, compareCancel := context.WithTimeout(ctx, time.Second)
+		response, compareErr := leased.Txn(compareCtx).
+			If(testCase.compare).
+			Then(clientv3.OpGet(compareKey)).
+			Commit()
+		compareCancel()
+		require.NoError(t, compareErr, "comparison %d", index)
+		require.Equal(t, testCase.want, response.Succeeded, "comparison %d", index)
+		expectedResponses := 0
+		if testCase.want {
+			expectedResponses = 1
+		}
+		require.Len(t, response.Responses, expectedResponses, "comparison %d", index)
+	}
+	require.Positive(t, bridge.DroppedBytes())
+}
+
 func clientLeasingRangeResponsesEqual(left, right *clientv3.GetResponse) bool {
 	if len(left.Kvs) != len(right.Kvs) {
 		return false
@@ -1473,6 +1551,10 @@ func (b *clientLeasingTCPBridge) Endpoint() string {
 
 func (b *clientLeasingTCPBridge) BlackholeResponses() {
 	b.blackhole.Store(1)
+}
+
+func (b *clientLeasingTCPBridge) Blackhole() {
+	b.blackhole.Store(2)
 }
 
 func (b *clientLeasingTCPBridge) Unblackhole() {
@@ -1550,7 +1632,8 @@ func (b *clientLeasingTCPBridge) copy(destination, source net.Conn, response boo
 	for {
 		read, err := source.Read(buffer)
 		if read > 0 {
-			if response && b.blackhole.Load() != 0 {
+			mode := b.blackhole.Load()
+			if mode == 2 || (mode == 1 && response) {
 				b.droppedBytes.Add(int64(read))
 			} else if _, writeErr := destination.Write(buffer[:read]); writeErr != nil {
 				return
