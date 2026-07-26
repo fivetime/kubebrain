@@ -14706,6 +14706,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   官方 clientv3 回归，连续 8 轮并发执行 `Put(key, lease-b)` 与 `Revoke(lease-a)`，
   断言最终 value 为 `lease-b`、key 绑定 lease B、lease A TTL=-1，且 Revoke lease B 后
   key 消失。
+- A1085 固定 clientv3 Lease natural expiry watch/TTL 边界：
+  `lease_expiry` differential 证明自然过期必须像 etcd lessor 一样，以单个用户
+  revision 按词典序删除同一 lease 下的所有 key，并向 watch 返回 DELETE + PrevKV；
+  过期后 Range 为空、TimeToLive 返回 TTL=-1 且 attached keys 为空，LeaseList 不再
+  列出该 lease。本轮新增 bufconn 官方 clientv3 + Watch 回归，反向写入 `b` 再写 `a`，
+  从最后 Put 后的 revision 开始 watch，断言事件顺序为 `a,b`、两个 DELETE 共享同一
+  ModRevision、PrevKV 保留原值和原 lease，随后确认 keyspace 清空且 lease 完全消失。
 
 ### P2：运维兼容和长期验证
 

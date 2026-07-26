@@ -272,6 +272,97 @@ func TestClientLeaseSwitchConcurrentOldRevokePreservesNewBinding(t *testing.T) {
 	}
 }
 
+func TestClientLeaseNaturalExpiryWatchPrevKVMatchesEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterLeaseServer(grpcServer, server)
+	etcdserverpb.RegisterWatchServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	prefix := fmt.Sprintf("/a1085/lease-expiry-watch/%d/", time.Now().UnixNano())
+	base, err := client.Get(ctx, prefix, clientv3.WithPrefix())
+	require.NoError(t, err)
+	grant, err := client.Grant(ctx, 2)
+	require.NoError(t, err)
+	require.Equal(t, int64(2), grant.TTL)
+
+	putB, err := client.Put(ctx, prefix+"b", "value-b", clientv3.WithLease(grant.ID))
+	require.NoError(t, err)
+	putA, err := client.Put(ctx, prefix+"a", "value-a", clientv3.WithLease(grant.ID))
+	require.NoError(t, err)
+	require.Equal(t, putB.Header.Revision+1, putA.Header.Revision)
+
+	watchCtx, watchCancel := context.WithCancel(ctx)
+	defer watchCancel()
+	watch := client.Watch(watchCtx, prefix, clientv3.WithPrefix(), clientv3.WithRev(putA.Header.Revision+1), clientv3.WithPrevKV())
+
+	var events []*clientv3.Event
+	var watchRevision int64
+	for len(events) < 2 {
+		select {
+		case response, ok := <-watch:
+			require.True(t, ok, "watch closed before natural lease expiry")
+			require.NoError(t, response.Err())
+			watchRevision = response.Header.Revision
+			events = append(events, response.Events...)
+		case <-ctx.Done():
+			t.Fatalf("lease did not expire before timeout: %v", ctx.Err())
+		}
+	}
+	watchCancel()
+	require.Len(t, events, 2)
+	require.Equal(t, []string{prefix + "a", prefix + "b"}, []string{string(events[0].Kv.Key), string(events[1].Kv.Key)})
+	require.Equal(t, []string{"value-a", "value-b"}, []string{string(events[0].PrevKv.Value), string(events[1].PrevKv.Value)})
+	for _, event := range events {
+		require.Equal(t, mvccpb.DELETE, event.Type)
+		require.NotNil(t, event.PrevKv)
+		require.Equal(t, watchRevision, event.Kv.ModRevision)
+		require.Zero(t, event.Kv.Lease)
+		require.Equal(t, int64(grant.ID), event.PrevKv.Lease)
+		require.Equal(t, int64(1), event.PrevKv.Version)
+		require.Positive(t, event.PrevKv.CreateRevision)
+		require.Greater(t, event.PrevKv.CreateRevision, base.Header.Revision)
+	}
+	require.Equal(t, watchRevision, events[0].Kv.ModRevision)
+	require.Equal(t, watchRevision, events[1].Kv.ModRevision)
+
+	after, err := client.Get(ctx, prefix, clientv3.WithPrefix())
+	require.NoError(t, err)
+	require.Empty(t, after.Kvs)
+	require.Equal(t, watchRevision, after.Header.Revision)
+	unknown, err := client.TimeToLive(ctx, grant.ID, clientv3.WithAttachedKeys())
+	require.NoError(t, err)
+	require.Equal(t, grant.ID, unknown.ID)
+	require.Equal(t, int64(-1), unknown.TTL)
+	require.Zero(t, unknown.GrantedTTL)
+	require.Empty(t, unknown.Keys)
+	leases, err := client.Leases(ctx)
+	require.NoError(t, err)
+	for _, lease := range leases.Leases {
+		require.NotEqual(t, grant.ID, lease.ID)
+	}
+}
+
 func TestClientLeaseTimeToLiveReportsZeroBeforeExpiry(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
