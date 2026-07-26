@@ -132,8 +132,7 @@ func TestRawGRPCMemberListLinearizableBarrierErrors(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			_, err = cluster.MemberList(ctx, &etcdserverpb.MemberListRequest{Linearizable: true})
-			require.Equal(t, tc.wantCode, status.Code(err))
-			require.Equal(t, tc.wantMessage, status.Convert(err).Message())
+			requireRawMemberListError(t, err, tc.wantCode, tc.wantMessage)
 		})
 	}
 }
@@ -296,4 +295,11 @@ func requireRawMemberListResponse(t *testing.T, response *etcdserverpb.MemberLis
 	require.NotZero(t, response.Header.MemberId)
 	require.Len(t, response.Members, len(expectedClientURLs))
 	require.Equal(t, expectedClientURLs, memberListClientURLs(response.Members))
+}
+
+func requireRawMemberListError(t *testing.T, err error, code codes.Code, message string) {
+	t.Helper()
+	require.Error(t, err)
+	require.Equal(t, code, status.Code(err))
+	require.Equal(t, message, status.Convert(err).Message())
 }

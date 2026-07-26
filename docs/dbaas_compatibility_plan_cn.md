@@ -16010,6 +16010,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `ErrGRPCFutureRev`/`ErrGRPCCompacted` 断言，并继续保留 OutOfRange code 与 exact
   message。该门禁防止 raw protobuf Range/Txn 调用方在 revision 边界上只看到文本，
   漏掉与上游 v3rpc 映射一致的 typed gRPC error。
+- A1284 收敛 raw MemberList linearizable barrier 错误 helper：
+  A104 已固定 `MemberList(linearizable=true)` barrier failure 的 code/message，本轮把
+  raw gRPC 负例统一到 helper 并补齐 `require.Error`，防止 read-barrier 重构后返回 nil
+  或仅保留 status.Code 默认值，导致 cluster discovery 的线性化失败路径不再 fail closed。
 
 ### P2：运维兼容和长期验证
 
