@@ -380,32 +380,34 @@ func TestClientFilteredWatchProgressCoversSuppressedPut(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, client.Close()) })
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	key := fmt.Sprintf("/a1031/watch-filter-progress/%d", time.Now().UnixNano())
-	watchCtx, watchCancel := context.WithCancel(ctx)
-	defer watchCancel()
-	watch := client.Watch(watchCtx, key, clientv3.WithCreatedNotify(), clientv3.WithFilterPut())
-	requireClientWatchCreated(t, ctx, watch)
+	for index := 0; index < 25; index++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		key := fmt.Sprintf("/a1090/watch-filter-progress/%d/%d", time.Now().UnixNano(), index)
+		watch := client.Watch(ctx, key, clientv3.WithCreatedNotify(), clientv3.WithFilterPut())
+		requireClientWatchCreated(t, ctx, watch)
 
-	put, err := client.Put(ctx, key, "filtered")
-	require.NoError(t, err)
-	require.NoError(t, client.RequestProgress(ctx))
+		put, err := client.Put(ctx, key, "filtered")
+		require.NoError(t, err)
+		require.NoError(t, client.RequestProgress(ctx))
 
-	for {
-		select {
-		case response, ok := <-watch:
-			require.True(t, ok)
-			require.NoError(t, response.Err())
-			require.False(t, response.Created)
-			require.Empty(t, response.Events, "NOPUT watch must suppress the PUT")
-			require.NotNil(t, response.Header)
-			if response.Header.Revision >= put.Header.Revision {
-				return
+		covered := false
+		for !covered {
+			select {
+			case response, ok := <-watch:
+				require.True(t, ok)
+				require.NoError(t, response.Err())
+				require.False(t, response.Created)
+				require.Empty(t, response.Events, "NOPUT watch must suppress the PUT")
+				require.NotNil(t, response.Header)
+				if response.Header.Revision >= put.Header.Revision {
+					covered = true
+				}
+			case <-ctx.Done():
+				cancel()
+				t.Fatalf("timed out waiting for progress covering filtered revision %d: %v", put.Header.Revision, ctx.Err())
 			}
-		case <-ctx.Done():
-			t.Fatalf("timed out waiting for progress covering filtered revision %d: %v", put.Header.Revision, ctx.Err())
 		}
+		cancel()
 	}
 }
 

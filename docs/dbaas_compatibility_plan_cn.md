@@ -14742,6 +14742,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   watch 注册之间留下丢事件窗口。本轮在既有 raw callback 回归外新增 official
   clientv3 bufconn 黑盒，连续 50 轮创建 from-now watch、等待 Created、立即 Put，
   并断言收到的事件 key/value 与 Put revision 完全一致。
+- A1090 强化 clientv3 filtered watch progress 覆盖 suppressed writes：
+  `watch_filter_progress` differential 证明带 `WithFilterPut()` 的 watch 必须完全抑制
+  PUT event，但显式 `RequestProgress` 仍要推进到被过滤写入的 revision，不能让客户端
+  误以为 watch 还停留在旧 revision。本轮将本地 official clientv3 回归从单轮扩展为
+  25 轮独立 key/watch：每轮等待 Created、执行被 NOPUT 过滤的 Put、立即请求
+  progress，并断言收到的无事件响应 header revision 覆盖该 Put revision。
 
 ### P2：运维兼容和长期验证
 

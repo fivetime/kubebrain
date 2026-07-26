@@ -380,7 +380,7 @@ func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) (err error) {
 			w.CancelRequest(msg.GetCancelRequest().WatchId)
 		} else if msg.GetProgressRequest() != nil {
 			s.metricCli.EmitCounter("watch.progress.request", 1)
-			targetRevision := s.backend.GetPublishedRevision()
+			targetRevision := s.backend.GetCurrentRevision()
 			// Kick one immediate marker fan-out so the watermark converges NOW
 			// rather than on the next ticker beat. The snapshot answered below is
 			// still the current (possibly one-interval-stale) value — markers ride
@@ -395,7 +395,7 @@ func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) (err error) {
 				for _, rev := range snapshot {
 					singleRev = rev
 				}
-				if singleRev > 0 {
+				if singleRev > 0 && singleRev >= targetRevision {
 					if err := w.SendControl(&etcdserverpb.WatchResponse{
 						Header: txnHeader(int64(singleRev)), WatchId: -1,
 					}); err != nil {
