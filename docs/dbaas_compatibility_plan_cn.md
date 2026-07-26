@@ -15476,6 +15476,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   lease 的 TTL without keys 成功且不泄露 key，TTL with keys、LeaseLeases 和 LeaseRevoke 返回
   raw `PermissionDenied`，且拒绝的 revoke 不删除受保护 key。本轮加强既有 clientv3 lease
   visibility 回归，防止直接 Lease API 调用方绕过 wrapper 后看到错误的授权外观或 key 泄露。
+- A1191 固定 raw gRPC LeaseKeepAlive 每消息重新鉴权：
+  延续 A725/A1157 的 streaming lease auth contract 到 generated `etcdserverpb.LeaseClient`：
+  同一 raw `LeaseKeepAlive` stream 不能只在建流时鉴权，首个有权限请求成功后，若 root 撤销该
+  role 的 key range 权限，下一条 keepalive request 必须立即返回 raw `PermissionDenied`。
+  本轮加强既有 clientv3 KeepAlive permission-change 回归，防止长期 keepalive stream 在 RBAC
+  变更后继续续租受保护 lease。
 
 ### P2：运维兼容和长期验证
 

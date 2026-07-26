@@ -794,6 +794,15 @@ func TestClientAuthLeaseKeepAliveTracksPermissionChanges(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, lease.ID, keepAlive.ID)
 	require.Positive(t, keepAlive.TTL)
+	rawAliceLease := etcdserverpb.NewLeaseClient(alice.ActiveConnection())
+	rawKeepAlive, err := rawAliceLease.LeaseKeepAlive(ctx)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = rawKeepAlive.CloseSend() })
+	require.NoError(t, rawKeepAlive.Send(&etcdserverpb.LeaseKeepAliveRequest{ID: int64(lease.ID)}))
+	rawKeepAliveResponse, err := rawKeepAlive.Recv()
+	require.NoError(t, err)
+	require.Equal(t, int64(lease.ID), rawKeepAliveResponse.ID)
+	require.Positive(t, rawKeepAliveResponse.TTL)
 
 	_, err = root.RoleRevokePermission(
 		ctx,
@@ -804,6 +813,9 @@ func TestClientAuthLeaseKeepAliveTracksPermissionChanges(t *testing.T) {
 	require.NoError(t, err)
 	_, revokedKeepAliveErr := alice.KeepAliveOnce(ctx, lease.ID)
 	requireAuthClientError(t, revokedKeepAliveErr, codes.Unknown, "etcdserver: permission denied", rpctypes.ErrPermissionDenied)
+	require.NoError(t, rawKeepAlive.Send(&etcdserverpb.LeaseKeepAliveRequest{ID: int64(lease.ID)}))
+	_, rawRevokedKeepAliveErr := rawKeepAlive.Recv()
+	requireAuthClientError(t, rawRevokedKeepAliveErr, codes.PermissionDenied, "etcdserver: permission denied")
 
 	_, err = root.RoleGrantPermission(
 		ctx,
