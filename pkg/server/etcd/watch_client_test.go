@@ -29,8 +29,10 @@ import (
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 )
 
@@ -945,6 +947,8 @@ func TestClientWatchCompactedRevisionCancelsAndCloses(t *testing.T) {
 	response := requireClientWatchCanceledResponse(t, ctx, watch)
 	require.True(t, response.Canceled)
 	require.ErrorIs(t, response.Err(), rpctypes.ErrCompacted)
+	require.Equal(t, codes.Unknown, status.Code(response.Err()))
+	require.Equal(t, "etcdserver: mvcc: required revision has been compacted", status.Convert(response.Err()).Message())
 	require.Equal(t, compactRevision, response.CompactRevision)
 	require.Empty(t, response.Events)
 	requireWatchClientClosed(t, ctx, watch)

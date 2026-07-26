@@ -15657,6 +15657,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `errors.Is(..., rpctypes.ErrPermissionDenied)`、direct `codes.Unknown` 和
   `etcdserver: permission denied`。该门禁防止 streaming lease auth 重构后只在 raw transport
   层保持正确，服务层 fixture、follower proxy 或内部调用方却丢失可分类的授权错误外观。
+- A1219 固定 official clientv3 Watch compacted 错误三件套：
+  A1142 已覆盖从 compacted revision 建立 watch 时会收到 canceled response、typed
+  `ErrCompacted`、正确 `CompactRevision` 并关闭 channel，本轮把 `WatchResponse.Err()` 进一步
+  固定为 `errors.Is(..., rpctypes.ErrCompacted)`、`codes.Unknown` 和
+  `etcdserver: mvcc: required revision has been compacted`。该门禁防止 watch client adapter、
+  cancel reason 映射或 channel teardown 重构后让 informer 只看到取消响应，却丢失可分类的
+  compacted 错误外观。
 
 ### P2：运维兼容和长期验证
 
