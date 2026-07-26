@@ -16380,6 +16380,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `codes.Unknown`；raw Maintenance/KV/Lease gRPC 的 HashKV、CORRUPT 和 NOSPACE 错误必须保留完整
   status error 字符串。该门禁防止维护接口在 hash、alarm 和 quota/corrupt 状态下发生
   client wrapper 与 raw gRPC 错误形态漂移。
+- A1345 固定 platform-managed maintenance/cluster 替代错误字符串：
+  Snapshot、MemberAdd/Remove/Update/Promote、MoveLeader 和 Downgrade 等由 DBaaS 平台托管的
+  etcd 操作必须返回完整 `codes.Unimplemented` status error 字符串，并保留可操作的替代说明。
+  该门禁防止通用数据面把平台生命周期操作误暴露为可执行接口，或丢失迁移到 DBaaS API 的提示。
 
 ### P2：运维兼容和长期验证
 
