@@ -15664,6 +15664,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `etcdserver: mvcc: required revision has been compacted`。该门禁防止 watch client adapter、
   cancel reason 映射或 channel teardown 重构后让 informer 只看到取消响应，却丢失可分类的
   compacted 错误外观。
+- A1220 固定 Maintenance auth 服务层错误三件套：
+  A1069/A1189 已覆盖 official clientv3 和 raw gRPC 维护面 root-only 授权外观，本轮把 direct
+  service 层的 `Status` 匿名拒绝、`Alarm(ACTIVATE)`、`Hash/HashKV`、`Compact`、`Defragment`、
+  `Snapshot`、`MoveLeader`、`Downgrade` 以及 client-cert auth 下的 `Defragment` 拒绝路径固定为
+  同时满足 `errors.Is`、direct `codes.Unknown` 和 reference message。该门禁防止 maintenance
+  authorizer 或 direct service caller 重构后只保留 typed error，导致管理面 `UserEmpty`、
+  `UserNotFound`、`PermissionDenied` message 漂移。
 
 ### P2：运维兼容和长期验证
 
