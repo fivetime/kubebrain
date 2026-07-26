@@ -16236,6 +16236,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   retry/succeed。本轮让 `run_certificate_rotation_operation_test` 与
   `run_post_restore_audit_operation_test` fixture 支持模拟 claim namespace，并新增对应
   回归。该门禁补齐所有当前 operation runner 对 operation API namespace 覆盖的生产边界。
+- A1317 固定 operation runner claim namespace 测试覆盖门禁：
+  A1313-A1316 已补齐六类 runner 的非法 claim namespace 回归。本轮新增
+  `TestOperationRunnersThatTrustClaimNamespaceHaveFailClosedTests`，静态要求每个读取
+  `claimed_namespace` 的 runner 都必须有 `RejectsInvalidClaimNamespace` 测试和
+  `CLAIM_NAMESPACE=tenant/a` fixture。该门禁防止未来新增或重构 operation runner 时重新
+  引入“信任 claim namespace 但没有 fail-closed 测试”的生产缺口。
 
 ### P2：运维兼容和长期验证
 

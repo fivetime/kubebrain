@@ -51,6 +51,34 @@ func TestOperationRunnerTestsUseBoundedCommandHelper(t *testing.T) {
 	}
 }
 
+func TestOperationRunnersThatTrustClaimNamespaceHaveFailClosedTests(t *testing.T) {
+	for _, tc := range []struct {
+		testFile string
+		script   string
+	}{
+		{testFile: "run_backup_operation_test.go", script: "run-backup-operation.sh"},
+		{testFile: "run_backup_deletion_operation_test.go", script: "run-backup-deletion-operation.sh"},
+		{testFile: "run_certificate_rotation_operation_test.go", script: "run-certificate-rotation-operation.sh"},
+		{testFile: "run_destroy_operation_test.go", script: "run-destroy-operation.sh"},
+		{testFile: "run_post_restore_audit_operation_test.go", script: "run-post-restore-audit-operation.sh"},
+		{testFile: "run_restore_cutover_operation_test.go", script: "run-restore-cutover-operation.sh"},
+	} {
+		t.Run(tc.script, func(t *testing.T) {
+			script, err := os.ReadFile(filepath.Join(".", tc.script))
+			require.NoError(t, err)
+			test, err := os.ReadFile(filepath.Join(".", tc.testFile))
+			require.NoError(t, err)
+
+			require.Contains(t, string(script), "claimed_namespace",
+				"operation runner must explicitly validate the namespace returned by claim")
+			require.Contains(t, string(test), "RejectsInvalidClaimNamespace",
+				"tests must prove invalid claim namespace fails before workflow side effects")
+			require.Contains(t, string(test), "CLAIM_NAMESPACE=tenant/a",
+				"fixture must exercise a namespace that cannot be accepted as a DNS label")
+		})
+	}
+}
+
 func TestReleaseGateScriptTestsUseBoundedCommandHelper(t *testing.T) {
 	for _, tc := range []struct {
 		testFile string
