@@ -14063,6 +14063,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   deactivate 清理、activate/idempotent activate、GET、局部 deactivate、重复 deactivate、
   final deactivate 和 final GET，断言返回 member 集合与 reference contract 一致，
   防止 alarm 存储或 gRPC handler 重构把 NOSPACE 简化成单全局布尔状态。
+- A1003 固定 raw gRPC Range option interaction 的组合语义：
+  `range_option_interaction` differential 证明 Range 的 revision filter、Limit、CountOnly、
+  non-key sort、KeysOnly 和 Txn staged view 的执行顺序必须与 reference etcd 一致。本轮新增
+  bufconn raw gRPC 回归，注册真实 KV 服务并直接使用 `etcdserverpb.KVClient` 构造种子数据，
+  断言 MinModRevision 在 Limit 前生效但 Count 保留完整 range count，CountOnly 忽略 Limit
+  且不返回 KVs，VALUE 默认升序与 Limit lookahead 返回正确 `More`，KeysOnly 必须先按原始
+  value 排序再清空 value，矛盾 mod-revision filter 返回空 KVs 但保留 Count；同时在 Txn
+  中验证 staged Put 对后续 Range 可见、CountOnly 看见同一 Txn 内更新，防止公开 gRPC
+  request-op 转换或 staged snapshot 逻辑只在服务层单测中正确。
 
 ### P2：运维兼容和长期验证
 

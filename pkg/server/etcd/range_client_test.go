@@ -235,8 +235,132 @@ func TestRawGRPCRangeRevisionBoundaries(t *testing.T) {
 	requireRawGRPCRangeRevisionError(t, err, codes.OutOfRange, "etcdserver: mvcc: required revision is a future revision")
 }
 
+func TestRawGRPCRangeOptionInteractions(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///range-options-client",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	kv := etcdserverpb.NewKVClient(conn)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	prefix := fmt.Sprintf("/a1003/range-options-client/%d/", time.Now().UnixNano())
+	end := clientv3.GetPrefixRangeEnd(prefix)
+	for _, seed := range []struct {
+		key   string
+		value string
+	}{
+		{key: "d", value: "n"},
+		{key: "c", value: "a"},
+		{key: "b", value: "m"},
+		{key: "a", value: "z"},
+	} {
+		_, err = kv.Put(ctx, &etcdserverpb.PutRequest{
+			Key: []byte(prefix + seed.key), Value: []byte(seed.value),
+		})
+		require.NoError(t, err)
+	}
+	updateB, err := kv.Put(ctx, &etcdserverpb.PutRequest{
+		Key: []byte(prefix + "b"), Value: []byte("y"),
+	})
+	require.NoError(t, err)
+
+	filtered, err := kv.Range(ctx, &etcdserverpb.RangeRequest{
+		Key: []byte(prefix), RangeEnd: []byte(end), MinModRevision: updateB.Header.Revision,
+		Limit: 1, SortOrder: etcdserverpb.RangeRequest_ASCEND, SortTarget: etcdserverpb.RangeRequest_KEY,
+	})
+	require.NoError(t, err)
+	require.Equal(t, int64(4), filtered.Count)
+	require.False(t, filtered.More)
+	require.Equal(t, []string{"b"}, rangeClientRelativeKeys(filtered.Kvs, prefix))
+	require.Equal(t, []string{"y"}, rangeClientValues(filtered.Kvs))
+
+	counted, err := kv.Range(ctx, &etcdserverpb.RangeRequest{
+		Key: []byte(prefix), RangeEnd: []byte(end), MinModRevision: updateB.Header.Revision,
+		Limit: 1, CountOnly: true,
+	})
+	require.NoError(t, err)
+	require.Equal(t, int64(4), counted.Count)
+	require.Empty(t, counted.Kvs)
+	require.False(t, counted.More)
+
+	valueSorted, err := kv.Range(ctx, &etcdserverpb.RangeRequest{
+		Key: []byte(prefix), RangeEnd: []byte(end), Limit: 2,
+		SortTarget: etcdserverpb.RangeRequest_VALUE,
+	})
+	require.NoError(t, err)
+	require.Equal(t, int64(4), valueSorted.Count)
+	require.True(t, valueSorted.More)
+	require.Equal(t, []string{"c", "b"}, rangeClientRelativeKeys(valueSorted.Kvs, prefix))
+	require.Equal(t, []string{"a", "y"}, rangeClientValues(valueSorted.Kvs))
+
+	keysOnlyValueSorted, err := kv.Range(ctx, &etcdserverpb.RangeRequest{
+		Key: []byte(prefix), RangeEnd: []byte(end), Limit: 2, KeysOnly: true,
+		SortOrder: etcdserverpb.RangeRequest_DESCEND, SortTarget: etcdserverpb.RangeRequest_VALUE,
+	})
+	require.NoError(t, err)
+	require.Equal(t, int64(4), keysOnlyValueSorted.Count)
+	require.True(t, keysOnlyValueSorted.More)
+	require.Equal(t, []string{"a", "b"}, rangeClientRelativeKeys(keysOnlyValueSorted.Kvs, prefix))
+	for _, got := range keysOnlyValueSorted.Kvs {
+		require.Empty(t, got.Value)
+	}
+
+	contradictory, err := kv.Range(ctx, &etcdserverpb.RangeRequest{
+		Key: []byte(prefix), RangeEnd: []byte(end),
+		MinModRevision: updateB.Header.Revision, MaxModRevision: updateB.Header.Revision - 1, Limit: 1,
+	})
+	require.NoError(t, err)
+	require.Equal(t, int64(4), contradictory.Count)
+	require.Empty(t, contradictory.Kvs)
+	require.False(t, contradictory.More)
+
+	txn, err := kv.Txn(ctx, &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+		rawGRPCPutRequestOp(&etcdserverpb.PutRequest{Key: []byte(prefix + "e"), Value: []byte("0")}),
+		rawGRPCRangeRequestOp(&etcdserverpb.RangeRequest{
+			Key: []byte(prefix), RangeEnd: []byte(end), MinModRevision: updateB.Header.Revision + 1,
+			Limit: 1, SortOrder: etcdserverpb.RangeRequest_ASCEND, SortTarget: etcdserverpb.RangeRequest_KEY,
+		}),
+		rawGRPCPutRequestOp(&etcdserverpb.PutRequest{Key: []byte(prefix + "b"), Value: []byte("updated")}),
+		rawGRPCRangeRequestOp(&etcdserverpb.RangeRequest{
+			Key: []byte(prefix), RangeEnd: []byte(end), MinModRevision: updateB.Header.Revision + 1,
+			Limit: 1, CountOnly: true,
+		}),
+	}})
+	require.NoError(t, err)
+	require.Len(t, txn.Responses, 4)
+	stagedFiltered := txn.Responses[1].GetResponseRange()
+	require.NotNil(t, stagedFiltered)
+	require.Equal(t, int64(5), stagedFiltered.Count)
+	require.False(t, stagedFiltered.More)
+	require.Equal(t, []string{"e"}, rangeClientRelativeKeys(stagedFiltered.Kvs, prefix))
+	require.Equal(t, []bool{true}, rangeClientAtRevision(stagedFiltered.Kvs, txn.Header.Revision))
+
+	stagedCounted := txn.Responses[3].GetResponseRange()
+	require.NotNil(t, stagedCounted)
+	require.Equal(t, int64(5), stagedCounted.Count)
+	require.Empty(t, stagedCounted.Kvs)
+	require.False(t, stagedCounted.More)
+}
+
 func rawGRPCRangeRequestOp(request *etcdserverpb.RangeRequest) *etcdserverpb.RequestOp {
 	return &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestRange{RequestRange: request}}
+}
+
+func rawGRPCPutRequestOp(request *etcdserverpb.PutRequest) *etcdserverpb.RequestOp {
+	return &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: request}}
 }
 
 func requireRawGRPCRangeRevisionError(t *testing.T, err error, code codes.Code, message string) {
@@ -252,4 +376,20 @@ func rangeClientRelativeKeys(kvs []*mvccpb.KeyValue, prefix string) []string {
 		keys = append(keys, strings.TrimPrefix(string(kv.Key), prefix))
 	}
 	return keys
+}
+
+func rangeClientValues(kvs []*mvccpb.KeyValue) []string {
+	values := make([]string, 0, len(kvs))
+	for _, kv := range kvs {
+		values = append(values, string(kv.Value))
+	}
+	return values
+}
+
+func rangeClientAtRevision(kvs []*mvccpb.KeyValue, revision int64) []bool {
+	matches := make([]bool, 0, len(kvs))
+	for _, kv := range kvs {
+		matches = append(matches, kv.ModRevision == revision)
+	}
+	return matches
 }
