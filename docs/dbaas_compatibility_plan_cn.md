@@ -13924,6 +13924,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   并发提交整组 key 的 Txn Put、2 个 reader 循环提交整组 key 的 Txn Get；测试要求所有
   writer Txn 完成、reader 有进展、每次 reader 结果都来自单一 mod revision，最终整组 key
   值一致，防止 leasing cache 在原子多 key 更新期间暴露混合 revision 或不一致最终视图。
+- A987 固定 clientv3 leasing.NewKV 的 mutation form cache 刷新路径：
+  A213/A214 `leasing_ambiguous_write` 与 `leasing_ambiguous_mutations` differential 继续覆盖
+  TCP response blackhole 下 mutation 已提交但调用超时的歧义窗口。本轮新增不依赖网络故障的
+  bufconn clientv3 回归，先由官方 `leasing.NewKV` 建立 owner cache，再分别执行 Delete、
+  Txn Put、Txn Delete、Do Put 和 Do Delete 五种 mutation form；每个 case 都要求 typed
+  response 正确、mutation 后 leasing Get 的 key/value/revision/version/lease 与直连 KV
+  完全一致，防止确定性 mutation 包装路径已经回退但只能在外部 blackhole 差分中暴露。
 
 ### P2：运维兼容和长期验证
 

@@ -1059,6 +1059,140 @@ func TestClientLeasingAtomicTxnCacheStaysConsistent(t *testing.T) {
 	}
 }
 
+func TestClientLeasingMutationFormsRefreshOwnerCache(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterWatchServer(grpcServer, server)
+	etcdserverpb.RegisterLeaseServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	prefix := fmt.Sprintf("/a987/leasing-mutations/%d/", time.Now().UnixNano())
+	leased, closeLeased, err := leasing.NewKV(client, prefix+"owners/")
+	require.NoError(t, err)
+	t.Cleanup(closeLeased)
+
+	cases := []struct {
+		name     string
+		expected string
+		apply    func(context.Context, clientv3.KV, string, string)
+	}{
+		{
+			name: "delete",
+			apply: func(callCtx context.Context, kv clientv3.KV, key, _ string) {
+				response, callErr := kv.Delete(callCtx, key)
+				require.NoError(t, callErr)
+				require.Equal(t, int64(1), response.Deleted)
+			},
+		},
+		{
+			name:     "txn-put",
+			expected: "txn-put-applied",
+			apply: func(callCtx context.Context, kv clientv3.KV, key, expected string) {
+				response, callErr := kv.Txn(callCtx).Then(
+					clientv3.OpGet(key),
+					clientv3.OpPut(key, expected),
+				).Commit()
+				require.NoError(t, callErr)
+				require.True(t, response.Succeeded)
+				require.Len(t, response.Responses, 2)
+			},
+		},
+		{
+			name: "txn-delete",
+			apply: func(callCtx context.Context, kv clientv3.KV, key, _ string) {
+				response, callErr := kv.Txn(callCtx).Then(
+					clientv3.OpGet(key),
+					clientv3.OpDelete(key),
+				).Commit()
+				require.NoError(t, callErr)
+				require.True(t, response.Succeeded)
+				require.Len(t, response.Responses, 2)
+				require.Equal(t, int64(1), response.Responses[1].GetResponseDeleteRange().Deleted)
+			},
+		},
+		{
+			name:     "do-put",
+			expected: "do-put-applied",
+			apply: func(callCtx context.Context, kv clientv3.KV, key, expected string) {
+				response, callErr := kv.Do(callCtx, clientv3.OpPut(key, expected))
+				require.NoError(t, callErr)
+				require.NotNil(t, response.Put())
+			},
+		},
+		{
+			name: "do-delete",
+			apply: func(callCtx context.Context, kv clientv3.KV, key, _ string) {
+				response, callErr := kv.Do(callCtx, clientv3.OpDelete(key))
+				require.NoError(t, callErr)
+				require.NotNil(t, response.Del())
+				require.Equal(t, int64(1), response.Del().Deleted)
+			},
+		},
+	}
+	for index, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			key := fmt.Sprintf("%sdata/%02d", prefix, index)
+			_, err = leased.Put(ctx, key, "initial")
+			require.NoError(t, err)
+			initial, err := leased.Get(ctx, key)
+			require.NoError(t, err)
+			require.Len(t, initial.Kvs, 1)
+
+			testCase.apply(ctx, leased, key, testCase.expected)
+			direct, err := client.Get(ctx, key)
+			require.NoError(t, err)
+			cached, err := leased.Get(ctx, key)
+			require.NoError(t, err)
+			require.True(t, clientLeasingRangeResponsesEqual(cached, direct), testCase.name)
+			if testCase.expected == "" {
+				require.Empty(t, cached.Kvs)
+				return
+			}
+			require.Len(t, cached.Kvs, 1)
+			require.Equal(t, testCase.expected, string(cached.Kvs[0].Value))
+		})
+	}
+}
+
+func clientLeasingRangeResponsesEqual(left, right *clientv3.GetResponse) bool {
+	if len(left.Kvs) != len(right.Kvs) {
+		return false
+	}
+	for index := range left.Kvs {
+		leftKV := left.Kvs[index]
+		rightKV := right.Kvs[index]
+		if string(leftKV.Key) != string(rightKV.Key) ||
+			string(leftKV.Value) != string(rightKV.Value) ||
+			leftKV.CreateRevision != rightKV.CreateRevision ||
+			leftKV.ModRevision != rightKV.ModRevision ||
+			leftKV.Version != rightKV.Version ||
+			leftKV.Lease != rightKV.Lease {
+			return false
+		}
+	}
+	return true
+}
+
 func clientLeasingTxnResponseHasSingleRevision(response *clientv3.TxnResponse, expected int) bool {
 	if len(response.Responses) != expected {
 		return false
