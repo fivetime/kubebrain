@@ -752,15 +752,15 @@ func TestRawGRPCCombinedAlarmBlocksWritesAndRecovers(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, readOnly.Responses, 1)
 	_, err = kv.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("blocked-by-corrupt")})
-	require.Equal(t, codes.DataLoss, status.Code(err))
+	requireMaintenanceClientError(t, err, rpctypes.ErrGRPCCorrupt, codes.DataLoss, "etcdserver: corrupt cluster")
 	_, err = kv.Txn(ctx, &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{{
 		Request: &etcdserverpb.RequestOp_RequestDeleteRange{
 			RequestDeleteRange: &etcdserverpb.DeleteRangeRequest{Key: key},
 		},
 	}}})
-	require.Equal(t, codes.DataLoss, status.Code(err))
+	requireMaintenanceClientError(t, err, rpctypes.ErrGRPCCorrupt, codes.DataLoss, "etcdserver: corrupt cluster")
 	_, err = lease.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 30})
-	require.Equal(t, codes.DataLoss, status.Code(err))
+	requireMaintenanceClientError(t, err, rpctypes.ErrGRPCCorrupt, codes.DataLoss, "etcdserver: corrupt cluster")
 
 	deactivatedCorrupt, err := maintenance.Alarm(ctx, &etcdserverpb.AlarmRequest{
 		Action: etcdserverpb.AlarmRequest_DEACTIVATE, Alarm: etcdserverpb.AlarmType_CORRUPT, MemberID: corruptOwner,
@@ -773,7 +773,7 @@ func TestRawGRPCCombinedAlarmBlocksWritesAndRecovers(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, noSpaceSummary, summarizeAlarms(remaining.Alarms))
 	_, err = kv.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("blocked-by-nospace")})
-	require.Equal(t, codes.ResourceExhausted, status.Code(err))
+	requireMaintenanceClientError(t, err, rpctypes.ErrGRPCNoSpace, codes.ResourceExhausted, "etcdserver: mvcc: database space exceeded")
 	_, err = kv.Txn(ctx, &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{{
 		Request: &etcdserverpb.RequestOp_RequestDeleteRange{
 			RequestDeleteRange: &etcdserverpb.DeleteRangeRequest{Key: key},
@@ -781,7 +781,7 @@ func TestRawGRPCCombinedAlarmBlocksWritesAndRecovers(t *testing.T) {
 	}}})
 	require.NoError(t, err)
 	_, err = lease.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 30})
-	require.Equal(t, codes.ResourceExhausted, status.Code(err))
+	requireMaintenanceClientError(t, err, rpctypes.ErrGRPCNoSpace, codes.ResourceExhausted, "etcdserver: mvcc: database space exceeded")
 
 	deactivatedNoSpace, err := maintenance.Alarm(ctx, &etcdserverpb.AlarmRequest{
 		Action: etcdserverpb.AlarmRequest_DEACTIVATE, Alarm: etcdserverpb.AlarmType_NOSPACE, MemberID: noSpaceOwner,
@@ -1088,6 +1088,13 @@ func requireClientHashKVError(t *testing.T, err error, code codes.Code, message 
 	for _, want := range wantErrorIs {
 		require.ErrorIs(t, err, want)
 	}
+	require.Equal(t, code, status.Code(err))
+	require.Equal(t, message, status.Convert(err).Message())
+}
+
+func requireMaintenanceClientError(t *testing.T, err error, want error, code codes.Code, message string) {
+	t.Helper()
+	require.ErrorIs(t, err, want)
 	require.Equal(t, code, status.Code(err))
 	require.Equal(t, message, status.Convert(err).Message())
 }

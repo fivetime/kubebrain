@@ -15793,6 +15793,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   lease grant 拒绝，以及解除 CORRUPT 后继续由 NOSPACE 拒绝的路径统一到 `errors.Is`、
   direct code 和 reference message helper。该门禁防止 alarm guard 或 disarm 状态机重构后
   只保留 gRPC code，漏掉 sticky alarm typed error/message 漂移。
+- A1242 固定 raw gRPC client 组合 alarm 错误三件套：
+  A1001/A1241 已覆盖 raw gRPC 组合告警流程和 direct service 三件套，本轮把 raw gRPC KV/Lease
+  client 在 CORRUPT 优先、解除后回落 NOSPACE 的拒绝路径统一到 `errors.Is`、client code
+  和 reference message helper。该门禁防止 gRPC transport/client wrapper 改动后只保留 code，
+  漏掉 client-visible typed error/message 漂移。
 
 ### P2：运维兼容和长期验证
 
