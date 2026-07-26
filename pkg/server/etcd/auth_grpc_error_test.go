@@ -41,7 +41,7 @@ func TestAuthGRPCErrorPreservesEtcdNoPasswordBehavior(t *testing.T) {
 
 func requireAuthGRPCStatusError(t *testing.T, err error, code codes.Code, message string) {
 	t.Helper()
-	require.Error(t, err)
+	require.EqualError(t, err, message)
 	require.Equal(t, code, status.Code(err))
 	require.Equal(t, message, status.Convert(err).Message())
 }

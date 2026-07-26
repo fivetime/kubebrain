@@ -16362,6 +16362,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `metering charge Object Lock executor failed`，settlement invoice plan 重写冲突必须报告
   `settlement Object Lock publisher failed`。该门禁防止真实对象锁环境下 charge/settlement
   不可变证据被错误重写时只以任意失败通过测试，保证账单重算和结算计划冲突有稳定告警边界。
+- A1341 固定 auth gRPC no-password 用户错误契约：
+  `errNoPasswordUser` 通过 auth gRPC mapper 后必须保留原始 etcd error 字符串、
+  `codes.Unknown` status code 和 message。该门禁延续 etcd 对 no-password 用户的兼容行为，
+  防止认证错误包装层仅返回任意非空错误却丢失公开 RPC 语义。
 
 ### P2：运维兼容和长期验证
 
