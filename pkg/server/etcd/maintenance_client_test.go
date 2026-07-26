@@ -1080,7 +1080,7 @@ func requireRawHashKVHeaderAtOrAfter(t *testing.T, header *etcdserverpb.Response
 
 func requireClientHashKVError(t *testing.T, err error, code codes.Code, message string, wantErrorIs ...error) {
 	t.Helper()
-	require.Error(t, err)
+	require.EqualError(t, err, message)
 	for _, want := range wantErrorIs {
 		require.ErrorIs(t, err, want)
 	}
@@ -1090,6 +1090,7 @@ func requireClientHashKVError(t *testing.T, err error, code codes.Code, message 
 
 func requireMaintenanceClientError(t *testing.T, err error, want error, code codes.Code, message string) {
 	t.Helper()
+	require.EqualError(t, err, status.Error(code, message).Error())
 	require.ErrorIs(t, err, want)
 	require.Equal(t, code, status.Code(err))
 	require.Equal(t, message, status.Convert(err).Message())

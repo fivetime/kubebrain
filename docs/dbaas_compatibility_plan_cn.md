@@ -16375,6 +16375,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `err.Error()`、`ErrorIs`、gRPC code 和 message；raw gRPC Compact 边界则固定完整
   `rpc error: code = OutOfRange ...` 字符串。该门禁防止 TiKV-backed etcd facade 在 MVCC
   compaction 边界或空 key 校验上只保持 typed status，却漂移公开错误文本。
+- A1344 固定 maintenance HashKV/alarm typed 错误字符串：
+  clientv3 `HashKV` future/compacted revision 必须保留裸 etcd message、typed `ErrorIs` 和
+  `codes.Unknown`；raw Maintenance/KV/Lease gRPC 的 HashKV、CORRUPT 和 NOSPACE 错误必须保留完整
+  status error 字符串。该门禁防止维护接口在 hash、alarm 和 quota/corrupt 状态下发生
+  client wrapper 与 raw gRPC 错误形态漂移。
 
 ### P2：运维兼容和长期验证
 
