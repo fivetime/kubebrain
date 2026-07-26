@@ -15,6 +15,7 @@ import (
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -60,7 +61,7 @@ func TestQuotaRPCNoSpaceRecoveryAndStatus(t *testing.T) {
 	require.Equal(t, statusResp.DbSize, statusResp.DbSizeInUse)
 
 	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: []byte("x"), Value: []byte("y")})
-	require.Equal(t, codes.ResourceExhausted, status.Code(err))
+	requireQuotaNoSpaceError(t, err)
 	alarmResp, err := server.Alarm(ctx, &etcdserverpb.AlarmRequest{Action: etcdserverpb.AlarmRequest_GET})
 	require.NoError(t, err)
 	require.Len(t, alarmResp.Alarms, 1)
@@ -70,15 +71,15 @@ func TestQuotaRPCNoSpaceRecoveryAndStatus(t *testing.T) {
 	require.Equal(t, []string{alarmResp.Alarms[0].String()}, statusResp.Errors)
 
 	_, err = server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 30})
-	require.Equal(t, codes.ResourceExhausted, status.Code(err))
+	requireQuotaNoSpaceError(t, err)
 	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: []byte("key"), Value: []byte("1")})
-	require.Equal(t, codes.ResourceExhausted, status.Code(err), "sticky alarm rejects shrinking puts")
+	requireQuotaNoSpaceError(t, err)
 	_, err = server.Txn(ctx, &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{{
 		Request: &etcdserverpb.RequestOp_RequestPut{
 			RequestPut: &etcdserverpb.PutRequest{Key: []byte("z"), Value: []byte("1")},
 		},
 	}}})
-	require.Equal(t, codes.ResourceExhausted, status.Code(err))
+	requireQuotaNoSpaceError(t, err)
 
 	deactivate, err := server.Alarm(ctx, &etcdserverpb.AlarmRequest{
 		Action:   etcdserverpb.AlarmRequest_DEACTIVATE,
@@ -88,7 +89,7 @@ func TestQuotaRPCNoSpaceRecoveryAndStatus(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, deactivate.Alarms, 1, "etcd allows disarm while usage is at the limit")
 	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: []byte("key"), Value: []byte("1")})
-	require.Equal(t, codes.ResourceExhausted, status.Code(err))
+	requireQuotaNoSpaceError(t, err)
 	alarmResp, err = server.Alarm(ctx, &etcdserverpb.AlarmRequest{Action: etcdserverpb.AlarmRequest_GET})
 	require.NoError(t, err)
 	require.Len(t, alarmResp.Alarms, 1, "the first Put after disarm must re-arm NOSPACE")
@@ -126,7 +127,7 @@ func TestQuotaRPCNoSpaceRecoveryAndStatus(t *testing.T) {
 	require.Len(t, activate.Alarms, 1)
 	require.Zero(t, activate.Alarms[0].MemberID)
 	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: []byte("m"), Value: []byte("x")})
-	require.Equal(t, codes.ResourceExhausted, status.Code(err))
+	requireQuotaNoSpaceError(t, err)
 	deactivate, err = server.Alarm(ctx, &etcdserverpb.AlarmRequest{
 		Action:   etcdserverpb.AlarmRequest_DEACTIVATE,
 		MemberID: activate.Alarms[0].MemberID,
@@ -327,13 +328,13 @@ func TestQuotaRPCManualActivationCapsWritesWithoutConfiguredQuota(t *testing.T) 
 	require.NoError(t, err)
 
 	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: []byte("blocked"), Value: []byte("value")})
-	require.Equal(t, codes.ResourceExhausted, status.Code(err))
+	requireQuotaNoSpaceError(t, err)
 	_, err = server.Txn(ctx, &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{{
 		Request: &etcdserverpb.RequestOp_RequestPut{
 			RequestPut: &etcdserverpb.PutRequest{Key: []byte("blocked-txn"), Value: []byte("value")},
 		},
 	}}})
-	require.Equal(t, codes.ResourceExhausted, status.Code(err))
+	requireQuotaNoSpaceError(t, err)
 	_, err = server.Txn(ctx, &etcdserverpb.TxnRequest{
 		Compare: []*etcdserverpb.Compare{{
 			Key: []byte("seed"), Result: etcdserverpb.Compare_EQUAL,
@@ -344,9 +345,9 @@ func TestQuotaRPCManualActivationCapsWritesWithoutConfiguredQuota(t *testing.T) 
 			},
 		}},
 	})
-	require.Equal(t, codes.ResourceExhausted, status.Code(err))
+	requireQuotaNoSpaceError(t, err)
 	_, err = server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 30})
-	require.Equal(t, codes.ResourceExhausted, status.Code(err))
+	requireQuotaNoSpaceError(t, err)
 	ttl, err := server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: lease.ID})
 	require.NoError(t, err)
 	require.Equal(t, lease.ID, ttl.ID)
@@ -386,4 +387,11 @@ func TestTxnContainsPutAcrossBranchesAndNesting(t *testing.T) {
 			Failure: []*etcdserverpb.RequestOp{put()},
 		}},
 	}}}))
+}
+
+func requireQuotaNoSpaceError(t *testing.T, err error) {
+	t.Helper()
+	require.ErrorIs(t, err, rpctypes.ErrGRPCNoSpace)
+	require.Equal(t, codes.ResourceExhausted, status.Code(err))
+	require.Equal(t, "etcdserver: mvcc: database space exceeded", status.Convert(err).Message())
 }

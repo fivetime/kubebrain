@@ -15798,6 +15798,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   client 在 CORRUPT 优先、解除后回落 NOSPACE 的拒绝路径统一到 `errors.Is`、client code
   和 reference message helper。该门禁防止 gRPC transport/client wrapper 改动后只保留 code，
   漏掉 client-visible typed error/message 漂移。
+- A1243 固定 quota/NOSPACE direct 错误三件套：
+  A1241/A1242 已覆盖手动组合 alarm 的 direct/client 外观，本轮把 quota 触发的 NOSPACE、
+  sticky alarm、解除后重新触发、手动 NOSPACE alarm 对 Put/Txn/LeaseGrant 的拒绝统一到
+  `ErrGRPCNoSpace`、`codes.ResourceExhausted` 和 reference message helper。该门禁防止
+  quota guard 或 alarm re-arm 逻辑重构后只返回 ResourceExhausted，漏掉 etcd 兼容 message。
 
 ### P2：运维兼容和长期验证
 
