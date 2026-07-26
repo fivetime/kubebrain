@@ -29,6 +29,7 @@ import (
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/test/bufconn"
 )
 
@@ -204,30 +205,61 @@ func TestClientWatchMixedPrevKVStreamsKeepEventsIsolated(t *testing.T) {
 	_, err = client.Put(ctx, key, "v0")
 	require.NoError(t, err)
 
-	watchCtx, watchCancel := context.WithCancel(ctx)
-	defer watchCancel()
-	withPrev := client.Watch(watchCtx, key, clientv3.WithCreatedNotify(), clientv3.WithPrevKV())
-	withoutPrev := client.Watch(watchCtx, key, clientv3.WithCreatedNotify())
-	requireClientWatchCreated(t, ctx, withPrev)
-	requireClientWatchCreated(t, ctx, withoutPrev)
+	const (
+		watcherCount  = 6
+		withPrevCount = watcherCount / 2
+		updateCount   = 8
+	)
+	type watchCase struct {
+		withPrev bool
+		cancel   context.CancelFunc
+		channel  clientv3.WatchChan
+	}
+	watches := make([]watchCase, 0, watcherCount)
+	for index := 0; index < watcherCount; index++ {
+		streamCtx := metadata.NewOutgoingContext(
+			ctx,
+			metadata.Pairs("dbaas-watch-stream-id", fmt.Sprintf("a1088-%d", index)),
+		)
+		watchCtx, watchCancel := context.WithCancel(streamCtx)
+		options := []clientv3.OpOption{clientv3.WithCreatedNotify()}
+		withPrev := index < withPrevCount
+		if withPrev {
+			options = append(options, clientv3.WithPrevKV())
+		}
+		watches = append(watches, watchCase{
+			withPrev: withPrev,
+			cancel:   watchCancel,
+			channel:  client.Watch(watchCtx, key, options...),
+		})
+	}
+	t.Cleanup(func() {
+		for _, watch := range watches {
+			watch.cancel()
+		}
+	})
+	for _, watch := range watches {
+		requireClientWatchCreated(t, ctx, watch.channel)
+	}
 
 	previous := "v0"
-	for update := 1; update <= 3; update++ {
+	for update := 1; update <= updateCount; update++ {
 		current := fmt.Sprintf("v%d", update)
 		_, err = client.Put(ctx, key, current)
 		require.NoError(t, err)
 
-		withPrevEvent := requireSingleClientWatchEvent(t, ctx, withPrev)
-		require.Equal(t, key, string(withPrevEvent.Kv.Key))
-		require.Equal(t, current, string(withPrevEvent.Kv.Value))
-		require.NotNil(t, withPrevEvent.PrevKv)
-		require.Equal(t, key, string(withPrevEvent.PrevKv.Key))
-		require.Equal(t, previous, string(withPrevEvent.PrevKv.Value))
-
-		withoutPrevEvent := requireSingleClientWatchEvent(t, ctx, withoutPrev)
-		require.Equal(t, key, string(withoutPrevEvent.Kv.Key))
-		require.Equal(t, current, string(withoutPrevEvent.Kv.Value))
-		require.Nil(t, withoutPrevEvent.PrevKv)
+		for index, watch := range watches {
+			event := requireSingleClientWatchEvent(t, ctx, watch.channel)
+			require.Equalf(t, key, string(event.Kv.Key), "watcher %d update %d", index, update)
+			require.Equalf(t, current, string(event.Kv.Value), "watcher %d update %d", index, update)
+			if watch.withPrev {
+				require.NotNilf(t, event.PrevKv, "watcher %d update %d", index, update)
+				require.Equal(t, key, string(event.PrevKv.Key))
+				require.Equalf(t, previous, string(event.PrevKv.Value), "watcher %d update %d", index, update)
+			} else {
+				require.Nilf(t, event.PrevKv, "watcher %d update %d", index, update)
+			}
+		}
 		previous = current
 	}
 }

@@ -14728,6 +14728,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   激活 alarm 后先续租 live lease 并确认 key 存活，再对 expired lease 发起
   LeaseKeepAlive，断言 500ms 内无响应，disarm 后返回同 ID、TTL=0，并最终删除
   expired key。
+- A1088 强化 clientv3 mixed PrevKV 独立 stream 永久门禁：
+  `watch_mixed_prevkv_streams` differential 要求同一 key 上多条独立 watch stream
+  同时存在时，请求 `WithPrevKV` 的 stream 必须持续收到精确前值，未请求的 stream
+  必须持续保持 `PrevKv=nil`，不能因为共享 backend event 被某个 stream 原地改写而
+  污染其他 stream。本轮将本地 official clientv3 回归从 2 个 watcher/3 次更新扩展到
+  与差分同阶的 6 个 watcher/8 次更新，并通过 outgoing metadata 强制拆分 gRPC
+  watch stream；每轮同时校验当前 key/value、PrevKV 前值和无 PrevKV stream 的 nil
+  约束。
 
 ### P2：运维兼容和长期验证
 
