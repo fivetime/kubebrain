@@ -14586,6 +14586,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   AlarmList 成功，空集合 `AlarmDisarm` 成功且无 alarms；raw Maintenance Alarm ACTIVATE
   返回 gRPC `PermissionDenied`，alice `HashKV` 暴露 `Unknown: permission denied`，root
   `HashKV` 成功，补齐 public 运维/集群面 Auth wrapper 门禁。
+- A1069 固定 clientv3 Auth Compact root-only 外观：
+  `auth` differential 覆盖 auth enabled 后匿名 Compact 返回 user empty，普通用户 Compact
+  返回 permission denied，root Compact 成功；服务层已覆盖 `Compact` 的 root 授权。本轮
+  新增官方 clientv3 bufconn 回归，在启用 auth 前写入一个 revision，启用后断言匿名
+  `client.Compact` 暴露 `Unknown: user name is empty`，alice `client.Compact` 暴露
+  `Unknown: permission denied`，root `client.Compact` 成功且 response header revision
+  不落后于目标 revision，补齐 public KV maintenance wrapper 的 compaction 授权门禁。
 
 ### P2：运维兼容和长期验证
 

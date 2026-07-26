@@ -974,6 +974,67 @@ func TestClientAuthClusterAndMaintenanceAuthorization(t *testing.T) {
 	require.NotNil(t, rootHash.Header)
 }
 
+func TestClientAuthCompactRequiresRoot(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterAuthServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	dialOptions := []grpc.DialOption{
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}),
+	}
+	newClient := func(username, password string) *clientv3.Client {
+		t.Helper()
+		client, err := clientv3.New(clientv3.Config{
+			Endpoints:   []string{"bufnet"},
+			DialTimeout: time.Second,
+			Username:    username,
+			Password:    password,
+			DialOptions: dialOptions,
+		})
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, client.Close()) })
+		return client
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	bootstrap := newClient("", "")
+	first, err := bootstrap.Put(ctx, "/a1069/compact/first", "value")
+	require.NoError(t, err)
+	require.NoError(t, addAuthUserRoleAndPermission(ctx, bootstrap, "root", "root-secret", "root", "", ""))
+	require.NoError(t, addAuthUserRoleAndPermission(
+		ctx,
+		bootstrap,
+		"alice",
+		"alice-secret",
+		"a1069-reader",
+		"/a1069/compact/",
+		clientv3.GetPrefixRangeEnd("/a1069/compact/"),
+	))
+	_, err = bootstrap.AuthEnable(ctx)
+	require.NoError(t, err)
+
+	alice := newClient("alice", "alice-secret")
+	root := newClient("root", "root-secret")
+	_, anonymousCompactErr := bootstrap.Compact(ctx, first.Header.Revision)
+	requireAuthClientError(t, anonymousCompactErr, codes.Unknown, "etcdserver: user name is empty")
+	_, userCompactErr := alice.Compact(ctx, first.Header.Revision)
+	requireAuthClientError(t, userCompactErr, codes.Unknown, "etcdserver: permission denied")
+	compact, err := root.Compact(ctx, first.Header.Revision)
+	require.NoError(t, err)
+	require.NotNil(t, compact.Header)
+	require.GreaterOrEqual(t, compact.Header.Revision, first.Header.Revision)
+}
+
 func addAuthUserRoleAndPermission(
 	ctx context.Context,
 	client *clientv3.Client,
