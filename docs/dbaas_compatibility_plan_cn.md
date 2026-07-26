@@ -14941,6 +14941,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   progress，而后续 response 必须重新成为 progress notify。该门禁防止 progress ticker、
   watch channel buffering 或 eventSent 状态重构让 kube-apiserver cache watch 在事件后收到
   过密或乱序的 progress。
+- A1116 固定 clientv3 Lease batch partial renewal original-deadline 隔离：
+  `lease_batch_renewal_linearizability` 模型证明批量 lease 中只续租部分成员时，续租项不能被
+  自己的原始 grant deadline 删除，未续租项也不能因同批其他 lease 的 renewal 被错误保留；
+  本地此前已有单 lease final-subsecond 与 repeated renewal 门禁，但缺少同一时间窗口内多
+  lease 部分续租矩阵。本轮新增 bufconn official clientv3 回归，创建 4 个 TTL=2 的 leased
+  key，1.2s 后只对偶数项 `KeepAliveOnce`，再越过原始 deadline；要求续租项 key/lease
+  仍存在且 TTL 未过期，未续租项 key 消失且 `TimeToLive` 返回 `TTL=-1`。该门禁防止
+  lease timer reset、批量 expiry scan 或 deadline callback 复用导致“续租项按旧 deadline
+  被删”或“未续租项被同批续租错误保活”。
 
 ### P2：运维兼容和长期验证
 

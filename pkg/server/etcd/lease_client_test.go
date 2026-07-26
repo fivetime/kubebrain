@@ -719,6 +719,84 @@ func TestClientLeaseRepeatedKeepAliveExtendsDeadlineAcrossWindows(t *testing.T) 
 	require.Equal(t, int64(grant.ID), got.Kvs[0].Lease)
 }
 
+func TestClientLeaseBatchPartialRenewalIsolatesOriginalDeadlines(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterLeaseServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	type leaseItem struct {
+		id      clientv3.LeaseID
+		key     string
+		value   string
+		renewed bool
+	}
+	const leaseCount = 4
+	prefix := fmt.Sprintf("/a1116/lease-batch-renewal/%d/", time.Now().UnixNano())
+	items := make([]leaseItem, 0, leaseCount)
+	for index := 0; index < leaseCount; index++ {
+		grant, grantErr := client.Grant(ctx, 2)
+		require.NoError(t, grantErr)
+		item := leaseItem{
+			id:      grant.ID,
+			key:     fmt.Sprintf("%s%02d", prefix, index),
+			value:   fmt.Sprintf("value-%d", index),
+			renewed: index%2 == 0,
+		}
+		_, putErr := client.Put(ctx, item.key, item.value, clientv3.WithLease(item.id))
+		require.NoError(t, putErr)
+		items = append(items, item)
+	}
+
+	time.Sleep(1200 * time.Millisecond)
+	for _, item := range items {
+		if !item.renewed {
+			continue
+		}
+		renewed, renewErr := client.KeepAliveOnce(ctx, item.id)
+		require.NoError(t, renewErr)
+		require.Equal(t, item.id, renewed.ID)
+		require.Equal(t, int64(2), renewed.TTL)
+	}
+	time.Sleep(1200 * time.Millisecond)
+
+	for _, item := range items {
+		got, getErr := client.Get(ctx, item.key)
+		require.NoError(t, getErr)
+		ttl, ttlErr := client.TimeToLive(ctx, item.id)
+		require.NoError(t, ttlErr)
+		if item.renewed {
+			require.Len(t, got.Kvs, 1, "renewed lease key expired at its original deadline")
+			require.Equal(t, item.value, string(got.Kvs[0].Value))
+			require.Equal(t, int64(item.id), got.Kvs[0].Lease)
+			require.NotEqual(t, int64(-1), ttl.TTL)
+			continue
+		}
+		require.Empty(t, got.Kvs, "unrenewed lease key survived past its original deadline")
+		require.Equal(t, int64(-1), ttl.TTL)
+	}
+}
+
 func TestClientExpiredKeepAliveResponseFollowsKeyDeletion(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
