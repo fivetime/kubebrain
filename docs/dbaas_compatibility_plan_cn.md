@@ -15971,6 +15971,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   真实 CSI 隔离恢复不被替代、PITR 缺口不被关闭、以及 TiDB BR 不能替代 KubeBrain
   transactional TiKV 物理恢复的警示语，避免后续整理文档或发布说明时误把候选能力标为
   生产已完成。
+- A1277 固定 JWT auth-token 启动配置错误文本：
+  A588/A591/A1227 已覆盖 JWT option 分解、TTL 和 direct auth failure，本轮把
+  verify-only signer、simple/JWT malformed option、duplicate option、缺签名方法、none
+  signing method 以及 unsupported provider 从“只要有错/包含片段”收紧为 exact error。该
+  门禁防止启动配置解析重构后放宽 fail-closed 文案，影响生产安装时对错误 Secret、参数拼接
+  或 provider 名称的可诊断性。
 
 ### P2：运维兼容和长期验证
 

@@ -114,7 +114,7 @@ func TestJWTProviderPublicOnlyAndKeyMismatch(t *testing.T) {
 	_, err = verifier.verify(token, now)
 	require.NoError(t, err)
 	_, err = verifier.issue("root", 7, now)
-	require.ErrorContains(t, err, "verify-only")
+	require.EqualError(t, err, "auth: JWT token provider is verify-only")
 
 	other := generateJWTTestKeys(t)
 	mismatch := "jwt,sign-method=RS256,priv-key=" + privatePath + ",pub-key=" + writeJWTKey(t, "other-public.pem", other.rsaPublic)
@@ -153,9 +153,10 @@ func TestJWTProviderOptionSyntaxMatchesEtcd(t *testing.T) {
 	secret := filepath.Join(dir, "hmac=secret")
 	require.NoError(t, os.WriteFile(secret, []byte("shared-secret"), 0o600))
 
-	require.ErrorContains(t,
-		ValidateAuthTokenProvider("jwt,sign-method=HS256,priv-key="+secret),
-		"invalid auth token option",
+	specWithEqualsPath := "jwt,sign-method=HS256,priv-key=" + secret
+	require.EqualError(t,
+		ValidateAuthTokenProvider(specWithEqualsPath),
+		fmt.Sprintf("invalid auth token option %q", "priv-key="+secret),
 	)
 
 	plainSecret := writeJWTKey(t, "secret", []byte("shared-secret"))
@@ -173,9 +174,9 @@ func TestAuthTokenProviderSimpleOptionsMatchEtcd(t *testing.T) {
 	require.Nil(t, provider)
 	require.NoError(t, ValidateAuthTokenProvider("simple,foo=bar"))
 
-	require.ErrorContains(t, ValidateAuthTokenProvider("simple,foo"), "invalid auth token option")
-	require.ErrorContains(t, ValidateAuthTokenProvider("simple,foo=bar=baz"), "invalid auth token option")
-	require.ErrorContains(t, ValidateAuthTokenProvider("simple,foo=bar,foo=baz"), "duplicate auth token option")
+	require.EqualError(t, ValidateAuthTokenProvider("simple,foo"), `invalid auth token option "foo"`)
+	require.EqualError(t, ValidateAuthTokenProvider("simple,foo=bar=baz"), `invalid auth token option "foo=bar=baz"`)
+	require.EqualError(t, ValidateAuthTokenProvider("simple,foo=bar,foo=baz"), `duplicate auth token option "foo"`)
 }
 
 func TestJWTProviderNonPositiveTTLMatchesEtcd(t *testing.T) {
@@ -310,9 +311,11 @@ func TestJWTEmptyAndZeroClaimsMatchEtcdAuthorization(t *testing.T) {
 }
 
 func TestJWTProviderRejectsMalformedOptionsAndWrongAlgorithm(t *testing.T) {
-	require.Error(t, ValidateAuthTokenProvider("jwt,sign-method=RS256,broken"))
-	require.Error(t, ValidateAuthTokenProvider("jwt,sign-method=RS256,sign-method=PS256"))
-	require.Error(t, ValidateAuthTokenProvider("jwt,sign-method=none"))
+	require.EqualError(t, ValidateAuthTokenProvider("jwt,sign-method=RS256,broken"), `invalid auth token option "broken"`)
+	require.EqualError(t, ValidateAuthTokenProvider("jwt,sign-method=RS256,sign-method=PS256"), `duplicate auth token option "sign-method"`)
+	require.EqualError(t, ValidateAuthTokenProvider("jwt"), "auth: invalid auth signature method")
+	require.EqualError(t, ValidateAuthTokenProvider("jwt,sign-method=none"), "unsupported JWT signing method *jwt.signingMethodNone")
+	require.EqualError(t, ValidateAuthTokenProvider("bearer"), `auth token provider "bearer" is unsupported`)
 
 	secret := writeJWTKey(t, "secret", []byte("shared-secret"))
 	hs256, err := parseAuthTokenProvider("jwt,sign-method=HS256,priv-key=" + secret)
