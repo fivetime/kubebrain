@@ -15297,6 +15297,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `ResourceExhausted` 且错误文本以 `trying to send message larger than max` 标识，而不能误映射成
   server-side `rpctypes.ErrRequestTooLarge`。本轮新增小尺寸 bufconn official clientv3 回归，
   与 A1146 server-side request-too-large typed error 形成成对护栏。
+- A1163 固定 clientv3 Watch created notification 响应形状：
+  对照 `/root/etcd/tests/integration/clientv3/watch/watch_test.go:TestWatchWithCreatedNotification`，
+  `WithCreatedNotify` 的首个响应必须是纯 created notification：`Created=true`、无错误、无事件、
+  `Canceled=false`，且不能被误标为 progress notify。本轮收紧 shared bufconn official
+  clientv3 watch helper，使 registration、filter、progress、历史/未来 revision 等所有 created
+  notification 回归同时固定该响应形状。
 
 ### P2：运维兼容和长期验证
 

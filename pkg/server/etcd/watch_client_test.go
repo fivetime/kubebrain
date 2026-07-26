@@ -1517,6 +1517,8 @@ func requireClientWatchCreatedResponse(t *testing.T, ctx context.Context, watch 
 		require.True(t, ok)
 		require.NoError(t, response.Err())
 		require.True(t, response.Created)
+		require.False(t, response.Canceled)
+		require.False(t, response.IsProgressNotify())
 		require.Empty(t, response.Events)
 		return response
 	case <-ctx.Done():
