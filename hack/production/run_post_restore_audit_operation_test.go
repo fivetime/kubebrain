@@ -319,6 +319,16 @@ func TestPostRestoreAuditOperationRejectsInvalidClaimIdentityBeforeAudit(t *test
 	}
 }
 
+func TestPostRestoreAuditOperationRejectsInvalidClaimNamespaceBeforeAudit(t *testing.T) {
+	f := newOperationRunnerFixture(t)
+	f.run(t, false, "CLAIM_NAMESPACE=tenant/a", "OPERATION_NAMESPACE must be a lowercase DNS label")
+	log := f.log(t)
+	require.Contains(t, log, "--namespace ops --action claim")
+	require.NotContains(t, log, "--action retry")
+	require.NotContains(t, log, "--action succeed")
+	require.NoFileExists(t, filepath.Join(f.dir, "audit.log"))
+}
+
 func TestPostRestoreAuditOperationLoadsManagedParameters(t *testing.T) {
 	f := newOperationRunnerFixture(t)
 	env := make([]string, 0, len(f.env))
@@ -391,7 +401,8 @@ if [[ " $* " == *" --action claim "* ]]; then
   digest="${CLAIM_DIGEST:-$PARAMETERS_DIGEST}"
   operation_id="${CLAIM_OPERATION_ID:-audit-1}"
   instance="${CLAIM_INSTANCE:-instance-a}"
-  printf '{"namespace":"tenant-a-operations","name":"audit-1","uid":"uid-op","resource_version":"1","operation_id":"%s","instance":"%s","type":"PostRestoreAudit","parameters_sha256":"%s","owner":"worker-a","attempt":1,"lease_until_unix":999999}\n' "$operation_id" "$instance" "$digest"
+  namespace="${CLAIM_NAMESPACE:-tenant-a-operations}"
+  printf '{"namespace":"%s","name":"audit-1","uid":"uid-op","resource_version":"1","operation_id":"%s","instance":"%s","type":"PostRestoreAudit","parameters_sha256":"%s","owner":"worker-a","attempt":1,"lease_until_unix":999999}\n' "$namespace" "$operation_id" "$instance" "$digest"
 elif [[ " $* " == *" --action parameters "* ]]; then
   cat "$MANAGED_PARAMETERS"
 else

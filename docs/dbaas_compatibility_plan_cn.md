@@ -16230,6 +16230,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   claim namespace，并新增对应非法 namespace 回归；测试同时要求不进入删除 phase、不记录
   retry/succeed、不生成删除 operation receipt。该门禁防止 operation API 异常时把实例销毁
   或对象备份删除推进到非预期 namespace。
+- A1316 固定 CertificateRotation/PostRestoreAudit claim namespace 可信边界：
+  证书轮换和恢复后审计 worker 也必须在 claim namespace 非法时 fail closed。证书轮换不得
+  进入任何 gate/hook，恢复后审计不得启动 audit 命令，二者均不得向错误 namespace 写入
+  retry/succeed。本轮让 `run_certificate_rotation_operation_test` 与
+  `run_post_restore_audit_operation_test` fixture 支持模拟 claim namespace，并新增对应
+  回归。该门禁补齐所有当前 operation runner 对 operation API namespace 覆盖的生产边界。
 
 ### P2：运维兼容和长期验证
 

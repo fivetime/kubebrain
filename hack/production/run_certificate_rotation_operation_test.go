@@ -183,6 +183,17 @@ func TestCertificateRotationOperationRejectsInvalidClaimIdentityBeforeSteps(t *t
 	}
 }
 
+func TestCertificateRotationOperationRejectsInvalidClaimNamespaceBeforeSteps(t *testing.T) {
+	f := newRotationRunnerFixture(t)
+	f.run(t, false, "CLAIM_NAMESPACE=tenant/a", "OPERATION_NAMESPACE must be a lowercase DNS label")
+	log := f.log(t)
+	require.Contains(t, log, "--namespace ops --action claim")
+	require.NotContains(t, log, "gate ")
+	require.NotContains(t, log, "hook ")
+	require.NotContains(t, log, "--action retry")
+	require.NotContains(t, log, "--action succeed")
+}
+
 func TestCertificateRotationOperationRejectsInvalidReceipt(t *testing.T) {
 	f := newRotationRunnerFixture(t)
 	f.run(t, false, "INVALID_RECEIPT=1", "invalid receipt")
@@ -272,7 +283,8 @@ if [[ " $* " == *" --action claim "* ]]; then
   digest="${CLAIM_DIGEST:-$PARAMETERS_DIGEST}"
   operation_id="${CLAIM_OPERATION_ID:-rotation-1}"
   instance="${CLAIM_INSTANCE:-instance-a}"
-  printf '{"namespace":"tenant-a-operations","name":"rotation-1","uid":"uid-op","resource_version":"1","operation_id":"%s","instance":"%s","type":"CertificateRotation","parameters_sha256":"%s","owner":"worker-a","attempt":1,"lease_until_unix":999999}\n' "$operation_id" "$instance" "$digest"
+  namespace="${CLAIM_NAMESPACE:-tenant-a-operations}"
+  printf '{"namespace":"%s","name":"rotation-1","uid":"uid-op","resource_version":"1","operation_id":"%s","instance":"%s","type":"CertificateRotation","parameters_sha256":"%s","owner":"worker-a","attempt":1,"lease_until_unix":999999}\n' "$namespace" "$operation_id" "$instance" "$digest"
 elif [[ " $* " == *" --action heartbeat "* && ( "${HEARTBEAT_FAIL:-false}" == true || -n "${SLEEP_STEP:-}" ) ]]; then
   exit 1
 else
