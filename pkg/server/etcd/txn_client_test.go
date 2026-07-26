@@ -27,6 +27,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/mvccpb"
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -317,6 +318,44 @@ func TestRawGRPCTxnExecutionValidationOrderAndBudget(t *testing.T) {
 			require.Equal(t, tt.wantSucceeded, resp.Succeeded)
 		})
 	}
+}
+
+func TestClientTxnBasicErrorsMatchEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err = client.Txn(ctx).
+		Then(clientv3.OpPut("/a1131/txn/basic-error/duplicate", "one"), clientv3.OpPut("/a1131/txn/basic-error/duplicate", "two")).
+		Commit()
+	require.ErrorIs(t, err, rpctypes.ErrDuplicateKey)
+
+	ops := make([]clientv3.Op, defaultMaxTxnOps+1)
+	for i := range ops {
+		ops[i] = clientv3.OpPut(fmt.Sprintf("/a1131/txn/basic-error/too-many/%d", i), "")
+	}
+	_, err = client.Txn(ctx).Then(ops...).Commit()
+	require.ErrorIs(t, err, rpctypes.ErrTooManyOps)
 }
 
 func TestRawGRPCTxnCompareEnumFallthroughMatchesEtcd(t *testing.T) {

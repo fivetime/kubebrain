@@ -15069,6 +15069,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   必须成功返回 `TTL=-1`。本轮新增 bufconn official clientv3 回归固定这组 typed error 与
   TTL 哨兵值，防止 lease index、Put 校验或 keepalive stream 重构破坏控制器对 stale lease
   的可恢复判断。
+- A1131 固定 clientv3 Txn 基础错误外观：
+  对照 `/root/etcd/tests/integration/clientv3/txn_test.go:TestTxnError`，普通 clientv3
+  `Txn.Commit` 不能只返回文本匹配的 gRPC 错误；同一 txn 分支重复写同一 key 必须可由
+  `errors.Is(..., rpctypes.ErrDuplicateKey)` 识别，超过最大 txn op 数必须可由
+  `errors.Is(..., rpctypes.ErrTooManyOps)` 识别。本轮新增 bufconn official clientv3 回归，
+  分别构造 duplicate put 和 `defaultMaxTxnOps+1` 个 put 的事务，固定 typed error 外观。该
+  门禁防止 txn validation、raw gRPC 到 clientv3 错误映射或最大 op 限制重构破坏 apiserver
+  及控制器对事务失败原因的分类处理。
 
 ### P2：运维兼容和长期验证
 
