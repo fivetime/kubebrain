@@ -31,17 +31,26 @@ func TestLoadFailsClosedForUnsafeInventory(t *testing.T) {
 	}
 	tooManyRaw, err := json.Marshal(tooMany)
 	require.NoError(t, err)
-	for _, raw := range []string{
-		`[]`, `null`, `[""]`, `["tenant-a","tenant-a"]`, `["Tenant_A"]`,
-		`{"namespace":"tenant-a"}`, `not-json`, string(tooManyRaw),
-		`["tenant-a"] {"trailing":true}`,
+	for _, tc := range []struct {
+		raw  string
+		want string
+	}{
+		{raw: `[]`, want: "namespace allowlist must not be empty"},
+		{raw: `null`, want: "must be a JSON string array, not null"},
+		{raw: `[""]`, want: "namespace allowlist contains an empty value"},
+		{raw: `["tenant-a","tenant-a"]`, want: "namespace allowlist contains duplicate tenant-a"},
+		{raw: `["Tenant_A"]`, want: "invalid namespace Tenant_A"},
+		{raw: `{"namespace":"tenant-a"}`, want: "cannot unmarshal object into Go value of type []string"},
+		{raw: `not-json`, want: "invalid character"},
+		{raw: string(tooManyRaw), want: "namespace allowlist exceeds 256 entries"},
+		{raw: `["tenant-a"] {"trailing":true}`, want: "contains trailing JSON"},
 	} {
-		t.Run(raw, func(t *testing.T) {
+		t.Run(tc.raw, func(t *testing.T) {
 			_, err := Load(
-				context.Background(), inventoryClient(t, raw),
+				context.Background(), inventoryClient(t, tc.raw),
 				"control", "inventory", DefaultKey,
 			)
-			require.Error(t, err)
+			require.ErrorContains(t, err, tc.want)
 		})
 	}
 }
@@ -50,7 +59,7 @@ func TestValidateOneRequiresDNSLabelNamespace(t *testing.T) {
 	require.NoError(t, ValidateOne("tenant-a"))
 	for _, namespace := range []string{"", "tenant.a", "Tenant-A", "-tenant", "tenant-", strings.Repeat("a", 64)} {
 		t.Run(namespace, func(t *testing.T) {
-			require.Error(t, ValidateOne(namespace))
+			require.ErrorContains(t, ValidateOne(namespace), "namespace")
 		})
 	}
 }
@@ -59,7 +68,7 @@ func TestValidateConfigMapNameRequiresDNSSubdomain(t *testing.T) {
 	require.NoError(t, ValidateConfigMapName("tenant-a.inventory"))
 	for _, name := range []string{"", "Tenant-A", "-inventory", "inventory-", "inventory/name", strings.Repeat("a", 254)} {
 		t.Run(name, func(t *testing.T) {
-			require.Error(t, ValidateConfigMapName(name))
+			require.ErrorContains(t, ValidateConfigMapName(name), "ConfigMap name")
 		})
 	}
 }
@@ -72,7 +81,7 @@ func TestValidateDataKeyRequiresConfigMapKey(t *testing.T) {
 	}
 	for _, key := range []string{"", "namespaces/json", "../namespaces.json", "namespaces json", strings.Repeat("a", 254)} {
 		t.Run(key, func(t *testing.T) {
-			require.Error(t, ValidateDataKey(key))
+			require.ErrorContains(t, ValidateDataKey(key), "data key")
 		})
 	}
 }

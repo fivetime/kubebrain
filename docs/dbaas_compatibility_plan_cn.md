@@ -16300,6 +16300,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   readiness probe 只接受指定 probe operation 的 NotFound；若 dynamic client 返回的是
   `kubebrainoperations.dbaas.kubebrain.io "" not found` 这类缺 CRD/路由错误，必须保持失败。
   该门禁防止管理 API 在 CRD 未安装、RBAC 路由错误或 discovery 漂移时错误报告 ready。
+- A1329 固定 namespace inventory fail-closed 错误契约：
+  多租户 namespace allowlist 对空数组、null、空值、重复 namespace、非法 DNS label、非数组
+  JSON、超出 256 项和 trailing JSON 的拒绝现在固定到具体错误文本；单 namespace、
+  ConfigMap 名称和 data key 校验也固定为对应字段错误。该门禁防止全局 namespace inventory
+  配置损坏时被误判为空列表或普通解析失败，影响跨 namespace 调度、operation runner claim
+  边界和审计清单。
 
 ### P2：运维兼容和长期验证
 
