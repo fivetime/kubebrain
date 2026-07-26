@@ -16173,6 +16173,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   固定 grant/revoke/keepalive 的 gRPC code/message。该门禁防止 lease 写路径在控制面
   demotion、leader freshness 或 proxy 开关重构时把 follower 写误报为权限、not found、
   canceled 或普通 backend 错误。
+- A1308 固定 lease attachment 删除后的内部错误语义：
+  DeleteRange 和 Txn 内嵌 DeleteRange 删除带租约 key 时，attachment 元数据必须被真正
+  删除，而不是残留损坏记录或暴露任意 storage 错误。本轮把
+  `TestTxnCompareDeleteRangeRemovesLeaseAttachments` 和
+  `TestLeasedDeleteRangeFromKeyRemovesAttachments` 中已删除 attachment 的内部读取断言
+  从只要求有错误收紧为 `storage.ErrKeyNotFound`。该门禁防止批量删除/事务删除路径在
+  维护 lease TTL key 列表时漏清附件、误吞底层读错，或让 expired/revoke sweep 误判
+  已删除 key 仍挂在 lease 上。
 
 ### P2：运维兼容和长期验证
 

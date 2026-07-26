@@ -683,7 +683,7 @@ func TestTxnCompareDeleteRangeRemovesLeaseAttachments(t *testing.T) {
 	require.ElementsMatch(t, [][]byte{[]byte(prefix + "z")}, ttl.Keys)
 	for _, suffix := range []string{"a", "b"} {
 		_, err = server.backend.InternalGet(ctx, leaseAttachKey(prefix+suffix))
-		require.Error(t, err)
+		require.ErrorIs(t, err, storage.ErrKeyNotFound)
 	}
 	_, err = server.backend.InternalGet(ctx, leaseAttachKey(prefix+"z"))
 	require.NoError(t, err)
@@ -737,7 +737,7 @@ func TestLeasedDeleteRangeFromKeyRemovesAttachments(t *testing.T) {
 	require.NoError(t, err)
 	for _, key := range keys[1:] {
 		_, err = server.backend.InternalGet(ctx, leaseAttachKey(key))
-		require.Error(t, err)
+		require.ErrorIs(t, err, storage.ErrKeyNotFound)
 	}
 }
 
