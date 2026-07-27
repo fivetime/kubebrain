@@ -864,6 +864,22 @@ func TestLeaseGrantAutomaticIDRewritesBeforeTTLValidationLikeEtcd(t *testing.T) 
 	require.Positive(t, request.ID)
 }
 
+func TestLeaseGrantAutomaticIDRewritesBeforeNoSpaceLikeEtcd(t *testing.T) {
+	server := newQuotaRPCServer(t, 6)
+
+	ctx := context.Background()
+	_, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: []byte("key"), Value: []byte("123")})
+	require.NoError(t, err)
+	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: []byte("x"), Value: []byte("y")})
+	requireQuotaNoSpaceError(t, err)
+
+	request := &etcdserverpb.LeaseGrantRequest{TTL: 30}
+	response, err := server.LeaseGrant(ctx, request)
+	require.Nil(t, response)
+	requireQuotaNoSpaceError(t, err)
+	require.Positive(t, request.ID)
+}
+
 func TestLeaseTimeToLiveZeroIDMatchesEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

@@ -16736,6 +16736,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   A1414 的实现同样覆盖 upstream “自动 ID 先于 TTL validation”的顺序；本轮新增服务端
   回归，使用 `ID=0, TTL=maxLeaseTTL+1` 固定返回 `ErrLeaseTTLTooLarge` 时请求对象已经
   获得正 lease ID，防止未来重构把自动 ID 分配重新移动到 TTL 检查之后。
+- A1417 加固 LeaseGrant 自动 ID 的 NOSPACE 失败分支：
+  A1414 的同一入口顺序还要求自动 ID 先于后续 backend/admission gate。新增 quota 服务端
+  回归先触发 sticky NOSPACE，再以 `ID=0` 调用 `LeaseGrant`，固定 direct error 仍为
+  `ErrGRPCNoSpace`/`ResourceExhausted`，但调用方持有的 request 已被写回正 lease ID。
+  该用例补齐 A1175/A1243 只验证 public/direct no-space 错误外观而未覆盖 protobuf request
+  生命周期的空白。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
