@@ -16875,6 +16875,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `defaultMaxTxnOps` 且每个 compare 都为空 key 时仍返回
   `InvalidArgument`/`too many operations in txn request`，防止后续重构把 compare 空 key
   检查前移，改变官方错误外观。
+- A1441 固定 raw gRPC Txn compare 超限与空 key 的 wire-level 外观：
+  在 A1440 的服务端直连基础上，本轮补齐 `etcdserverpb.KV.Txn` raw gRPC budget matrix：
+  `Compare` 长度超过 `defaultMaxTxnOps` 且 compare key 为空时，客户端必须收到
+  `InvalidArgument`/`etcdserver: too many operations in txn request`，并能匹配
+  `rpctypes.ErrGRPCTooManyOps`，防止 gRPC 包装层或预算矩阵重构把该组合暴露为空 key。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户

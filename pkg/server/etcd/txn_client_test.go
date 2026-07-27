@@ -290,6 +290,13 @@ func TestRawGRPCTxnExecutionValidationOrderAndBudget(t *testing.T) {
 			TargetUnion: &etcdserverpb.Compare_Version{Version: 0},
 		}
 	}
+	emptyCompares := func(n int) []*etcdserverpb.Compare {
+		compares := make([]*etcdserverpb.Compare, n)
+		for i := range compares {
+			compares[i] = &etcdserverpb.Compare{}
+		}
+		return compares
+	}
 	tests := []struct {
 		name          string
 		txn           *etcdserverpb.TxnRequest
@@ -307,6 +314,9 @@ func TestRawGRPCTxnExecutionValidationOrderAndBudget(t *testing.T) {
 		{name: "compare-max-does-not-charge-range-child", txn: &etcdserverpb.TxnRequest{
 			Compare: compares, Success: []*etcdserverpb.RequestOp{rangeOp(0)},
 		}, wantSucceeded: true},
+		{name: "compare-over-limit-precedes-empty-key", txn: &etcdserverpb.TxnRequest{
+			Compare: emptyCompares(defaultMaxTxnOps + 1),
+		}, wantErr: true},
 		{name: "unselected-failure-nested-over-budget", txn: &etcdserverpb.TxnRequest{
 			Success: rangeOps(1), Failure: append(rangeOps(defaultMaxTxnOps-1), nested(rangeOps(1))),
 		}, wantErr: true},
