@@ -301,6 +301,56 @@ func TestAuthReadRPCsReloadSnapshotAfterBarrier(t *testing.T) {
 	})
 }
 
+func TestAuthReadRPCsReauthorizeAfterBarrier(t *testing.T) {
+	t.Run("user list admin revoked", func(t *testing.T) {
+		server, closeFn := newTestRPCServer(t)
+		defer closeFn()
+		ctx := context.Background()
+		setupAuthKVUser(t, server)
+		rootAuth, err := server.Authenticate(ctx, &etcdserverpb.AuthenticateRequest{
+			Name: "root", Password: "root-secret",
+		})
+		require.NoError(t, err)
+		rootCtx := metadata.NewIncomingContext(ctx, metadata.Pairs(
+			rpctypes.TokenFieldNameGRPC, rootAuth.Token,
+		))
+		_, err = server.UserAdd(rootCtx, &etcdserverpb.AuthUserAddRequest{
+			Name: "operator", Password: "operator-secret",
+		})
+		require.NoError(t, err)
+		_, err = server.UserGrantRole(rootCtx, &etcdserverpb.AuthUserGrantRoleRequest{
+			User: "operator", Role: "root",
+		})
+		require.NoError(t, err)
+		operatorAuth, err := server.Authenticate(ctx, &etcdserverpb.AuthenticateRequest{
+			Name: "operator", Password: "operator-secret",
+		})
+		require.NoError(t, err)
+		operatorCtx := metadata.NewIncomingContext(ctx, metadata.Pairs(
+			rpctypes.TokenFieldNameGRPC, operatorAuth.Token,
+		))
+		server.peers = testPeerService{syncReadFn: func(context.Context) error {
+			return server.auth.userRevokeRole(ctx, "operator", "root")
+		}}
+
+		_, err = server.UserList(operatorCtx, &etcdserverpb.AuthUserListRequest{})
+		requireAuthRPCError(t, err, rpctypes.ErrPermissionDenied, codes.Unknown, "etcdserver: permission denied")
+	})
+
+	t.Run("role get membership revoked", func(t *testing.T) {
+		server, closeFn := newTestRPCServer(t)
+		defer closeFn()
+		ctx := context.Background()
+		aliceCtx := setupAuthKVUser(t, server)
+		server.peers = testPeerService{syncReadFn: func(context.Context) error {
+			return server.auth.userRevokeRole(ctx, "alice", "allowed")
+		}}
+
+		_, err := server.RoleGet(aliceCtx, &etcdserverpb.AuthRoleGetRequest{Role: "allowed"})
+		requireAuthRPCError(t, err, rpctypes.ErrPermissionDenied, codes.Unknown, "etcdserver: permission denied")
+	})
+}
+
 func TestAuthRPCBootstrapAndEnabledSafetyBoundary(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

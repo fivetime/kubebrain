@@ -16695,6 +16695,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   auth revision 驱动的 TiKV snapshot，最终响应只使用第二次快照。确定性测试在 barrier 内
   enable auth 或新增 user/role，五个 RPC 必须立即观察到；官方 client RoleGet 黑盒还在
   barrier 内授予 permission，响应必须包含新权限，证明修复穿透完整 gRPC 路径。
+- A1409 固定 Auth 读请求 barrier 后重新授权：
+  A1408 的第二次 snapshot 读取不能只刷新返回数据而沿用旧权限。确定性测试让拥有 root
+  role 的非 root 用户在 UserList barrier 内被撤销 root，并让 alice 在 RoleGet barrier
+  内失去目标 role；两者必须在返回任何管理数据前得到精确 PermissionDenied。该门禁防止
+  auth revision 前进窗口内旧 admin/role 能力多放行一次请求。
 
 ### P2：运维兼容和长期验证
 
