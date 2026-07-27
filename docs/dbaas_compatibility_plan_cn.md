@@ -16675,6 +16675,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `IsLearner=false`、`DowngradeInfo.Enabled=false` 和空 `TargetVersion`。该门禁防止 TiKV
   revision、DBaaS 选主 term 与通用 response-header stamping 在重构后分别前进而产生
   自相矛盾的 endpoint status。
+- A1406 隔离 Alarm GET filter 的后端读取故障：
+  对照 upstream `AlarmStore.Get(filter)`，GET 现在只读取 filter 对应的 TiKV alarm 元数据：
+  `CORRUPT` 不再先调用无关的 `QuotaStatus`，未知 AlarmType 在 read barrier 后直接成功返回
+  空列表；`NONE`/`NOSPACE` 仍必须读取 quota 状态并传播其故障。修复前 quota 元数据不可用
+  会错误阻断 CORRUPT 故障诊断及未知 filter 的 etcd 兼容空响应。确定性回归在持久
+  CORRUPT 已激活后注入 quota read error，证明 CORRUPT/unknown 隔离成功且
+  NONE/NOSPACE 继续 fail closed；raw gRPC 黑盒同步固定相同响应与错误外观。
 
 ### P2：运维兼容和长期验证
 

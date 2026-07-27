@@ -16,6 +16,7 @@ package etcd
 
 import (
 	"context"
+	"errors"
 	"io"
 	"math"
 	"net"
@@ -426,6 +427,43 @@ func TestRawGRPCAlarmGetAndZeroMemberRoundTrip(t *testing.T) {
 	require.Equal(t, []uint64{0}, members(etcdserverpb.AlarmRequest_GET))
 	require.Equal(t, []uint64{0}, members(etcdserverpb.AlarmRequest_DEACTIVATE))
 	require.Empty(t, members(etcdserverpb.AlarmRequest_GET))
+
+	const corruptMemberID = uint64(42)
+	_, err = maintenance.Alarm(ctx, &etcdserverpb.AlarmRequest{
+		Action:   etcdserverpb.AlarmRequest_ACTIVATE,
+		Alarm:    etcdserverpb.AlarmType_CORRUPT,
+		MemberID: corruptMemberID,
+	})
+	require.NoError(t, err)
+	quotaErr := errors.New("quota metadata unavailable")
+	server.backend = &quotaStatusErrorBackendShim{BackendShim: server.backend, err: quotaErr}
+
+	corrupt, err := maintenance.Alarm(ctx, &etcdserverpb.AlarmRequest{
+		Action: etcdserverpb.AlarmRequest_GET,
+		Alarm:  etcdserverpb.AlarmType_CORRUPT,
+	})
+	require.NoError(t, err)
+	require.Equal(t, []*etcdserverpb.AlarmMember{{
+		MemberID: corruptMemberID,
+		Alarm:    etcdserverpb.AlarmType_CORRUPT,
+	}}, corrupt.Alarms)
+	unknown, err := maintenance.Alarm(ctx, &etcdserverpb.AlarmRequest{
+		Action: etcdserverpb.AlarmRequest_GET,
+		Alarm:  etcdserverpb.AlarmType(127),
+	})
+	require.NoError(t, err)
+	require.Empty(t, unknown.Alarms)
+	for _, filter := range []etcdserverpb.AlarmType{
+		etcdserverpb.AlarmType_NONE,
+		etcdserverpb.AlarmType_NOSPACE,
+	} {
+		_, callErr := maintenance.Alarm(ctx, &etcdserverpb.AlarmRequest{
+			Action: etcdserverpb.AlarmRequest_GET,
+			Alarm:  filter,
+		})
+		require.Equal(t, codes.Unknown, status.Code(callErr))
+		require.Equal(t, quotaErr.Error(), status.Convert(callErr).Message())
+	}
 }
 
 func TestClientAlarmListDisarmZeroMemberRoundTrip(t *testing.T) {

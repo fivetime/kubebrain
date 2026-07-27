@@ -67,6 +67,11 @@ type alarmReadErrorBackendShim struct {
 	err error
 }
 
+type quotaStatusErrorBackendShim struct {
+	BackendShim
+	err error
+}
+
 type requireSyncBeforeHashBackendShim struct {
 	BackendShim
 	t      *testing.T
@@ -75,6 +80,10 @@ type requireSyncBeforeHashBackendShim struct {
 
 func (b *alarmReadErrorBackendShim) NoSpaceAlarms(context.Context) ([]uint64, error) {
 	return nil, b.err
+}
+
+func (b *quotaStatusErrorBackendShim) QuotaStatus(context.Context) (int64, int64, bool, error) {
+	return 0, 0, false, b.err
 }
 
 func (b *requireSyncBeforeHashBackendShim) HashKV(ctx context.Context, revision int64) (backend.HashKVResult, error) {
@@ -303,6 +312,51 @@ func TestAlarmGetFiltersUnknownAlarmAndMaxMemberLikeEtcd(t *testing.T) {
 			require.NotNil(t, resp.Header)
 			require.GreaterOrEqual(t, resp.Header.Revision, put.Header.Revision)
 		})
+	}
+}
+
+func TestAlarmGetIsolatesFiltersFromUnrelatedQuotaFailure(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	ctx := context.Background()
+	const memberID = uint64(42)
+	_, err := server.Alarm(ctx, &etcdserverpb.AlarmRequest{
+		Action:   etcdserverpb.AlarmRequest_ACTIVATE,
+		Alarm:    etcdserverpb.AlarmType_CORRUPT,
+		MemberID: memberID,
+	})
+	require.NoError(t, err)
+
+	wantErr := errors.New("quota metadata unavailable")
+	server.backend = &quotaStatusErrorBackendShim{BackendShim: server.backend, err: wantErr}
+
+	corrupt, err := server.Alarm(ctx, &etcdserverpb.AlarmRequest{
+		Action: etcdserverpb.AlarmRequest_GET,
+		Alarm:  etcdserverpb.AlarmType_CORRUPT,
+	})
+	require.NoError(t, err)
+	require.Equal(t, []*etcdserverpb.AlarmMember{{
+		MemberID: memberID,
+		Alarm:    etcdserverpb.AlarmType_CORRUPT,
+	}}, corrupt.Alarms)
+
+	unknown, err := server.Alarm(ctx, &etcdserverpb.AlarmRequest{
+		Action: etcdserverpb.AlarmRequest_GET,
+		Alarm:  etcdserverpb.AlarmType(127),
+	})
+	require.NoError(t, err)
+	require.Empty(t, unknown.Alarms)
+
+	for _, filter := range []etcdserverpb.AlarmType{
+		etcdserverpb.AlarmType_NONE,
+		etcdserverpb.AlarmType_NOSPACE,
+	} {
+		_, err := server.Alarm(ctx, &etcdserverpb.AlarmRequest{
+			Action: etcdserverpb.AlarmRequest_GET,
+			Alarm:  filter,
+		})
+		require.ErrorIs(t, err, wantErr)
 	}
 }
 

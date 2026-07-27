@@ -152,25 +152,32 @@ func (s *RPCServer) Alarm(ctx context.Context, req *etcdserverpb.AlarmRequest) (
 		}
 		return nil, status.Error(codes.Unimplemented, alarmMutationUnsupportedMessage)
 	}
-	_, _, noSpace, err := s.backend.QuotaStatus(ctx)
-	if err != nil {
-		return nil, err
-	}
 	response := &etcdserverpb.AlarmResponse{Header: s.maintenanceHeader()}
-	if noSpace && (req.GetAlarm() == etcdserverpb.AlarmType_NONE ||
-		req.GetAlarm() == etcdserverpb.AlarmType_NOSPACE) {
-		memberIDs, alarmErr := s.backend.NoSpaceAlarms(ctx)
-		if alarmErr != nil {
-			return nil, alarmErr
+	filter := req.GetAlarm()
+	if filter != etcdserverpb.AlarmType_NONE &&
+		filter != etcdserverpb.AlarmType_NOSPACE &&
+		filter != etcdserverpb.AlarmType_CORRUPT {
+		return response, nil
+	}
+	if filter == etcdserverpb.AlarmType_NONE || filter == etcdserverpb.AlarmType_NOSPACE {
+		_, _, noSpace, err := s.backend.QuotaStatus(ctx)
+		if err != nil {
+			return nil, err
 		}
-		for _, memberID := range memberIDs {
-			response.Alarms = append(response.Alarms, &etcdserverpb.AlarmMember{
-				MemberID: memberID,
-				Alarm:    etcdserverpb.AlarmType_NOSPACE,
-			})
+		if noSpace {
+			memberIDs, alarmErr := s.backend.NoSpaceAlarms(ctx)
+			if alarmErr != nil {
+				return nil, alarmErr
+			}
+			for _, memberID := range memberIDs {
+				response.Alarms = append(response.Alarms, &etcdserverpb.AlarmMember{
+					MemberID: memberID,
+					Alarm:    etcdserverpb.AlarmType_NOSPACE,
+				})
+			}
 		}
 	}
-	if req.GetAlarm() == etcdserverpb.AlarmType_NONE || req.GetAlarm() == etcdserverpb.AlarmType_CORRUPT {
+	if filter == etcdserverpb.AlarmType_NONE || filter == etcdserverpb.AlarmType_CORRUPT {
 		memberIDs, alarmErr := s.backend.CorruptAlarms(ctx)
 		if alarmErr != nil {
 			return nil, alarmErr
