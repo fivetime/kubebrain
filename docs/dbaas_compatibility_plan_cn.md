@@ -16407,6 +16407,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   边界错误必须保留完整 status error 字符串；official clientv3 `Txn` 对应 typed 错误必须保留
   裸 etcd message、typed `ErrorIs` 和公开 status code。该门禁防止事务路径在嵌套 op、
   MVCC revision 和 quota/lease 错误上漂移 etcd 兼容错误形态。
+- A1351 固定 clientv3 ordering wrapper unsupported stream 错误字符串：
+  `ordering.NewKV` 包装后的 `GetStream` 必须返回完整 `codes.Unimplemented` status error 字符串。
+  该门禁防止 ordering wrapper 在 KubeBrain facade 上误暴露未实现 streaming read，或只保留
+  status code 而漂移客户端可见错误文本。
 
 ### P2：运维兼容和长期验证
 
