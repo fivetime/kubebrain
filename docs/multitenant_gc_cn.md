@@ -37,21 +37,29 @@ KubeBrain 把自己的 MVCC 编进 key 里,每次快照读都用当前时间戳,
 
 ---
 
-## 修复:每 keyspace 一条 service safepoint
+## 修复:每 keyspace 一条 service safepoint + 读全表取 min
 
-现在 service 名按 keyspace 派生:
+> ⚠️ 第一版修复("每 keyspace 一条独立 service safepoint,靠 `UpdateServiceGCSafePoint` 返回的 min 来 clamp")经真 PD **实测无效**:PD 会把它自留的 `gc_worker` 占位记录(值=0、无限 TTL)算进那个 min,于是在 KubeBrain 独占集群上返回的 min 恒为 0,clamp 从不生效,激进租户照样推高**唯一的**集群 safepoint、踩掉保守租户的版本。下面是修好的 **Option A**。
 
-| keyspace | PD service 名 | TTL | 说明 |
-|---|---|---|---|
-| `""`(默认/单租户) | `gc_worker` | 无限 | 保留 `gc_worker` 特殊角色,**行为与修复前逐字节一致** |
-| 命名(如 `tenant-a`) | `kubebrain-ks-tenant-a` | 有限(30min) | 每租户独立一条 |
+**两步机制**:
+
+1. **每租户注册自己的 per-keyspace service safepoint**(名字按 keyspace 派生),让自己的保留地板对所有共库租户**可见**:
+
+   | keyspace | PD service 名 | TTL | 说明 |
+   |---|---|---|---|
+   | `""`(默认/单租户) | `gc_worker` | 无限 | 保留 `gc_worker` 特殊角色,**行为与修复前逐字节一致** |
+   | 命名(如 `tenant-a`) | `kubebrain-ks-tenant-a` | 有限(30min) | 每租户独立一条 |
+
+2. **推进集群 safepoint 前,读 PD 的 service-safepoint 全表**(HTTP `GET /pd/api/v1/gc/safepoint`),对**真实地板**(`safe_point > 0` 且未过期)取 min,把这个 min 作为要推进的目标。这一步**绕开** `gc_worker=0` 占位,也**跳过**已过期(退役)租户。
 
 效果:
 
-- **各租户地板都进 min**:`UpdateServiceGCSafePoint` 返回的 min 现在横跨所有共库租户,clamp 会保护每个租户的保留线,激进租户**再也删不掉别人的版本**。
-- **死租户会自愈**:命名记录带**有限 TTL = 3 × 最大续租间隔(10min)= 30min**。一个下线/退役的租户,其地板在最后一次续租后 ~30min 过期,不会**永久顶住全 cell 的回收**。这正是命名记录**不能**用无限 TTL 的原因(默认 `gc_worker` 用无限 TTL 是安全的,因为一套集群只有一个这种角色)。
+- **保守租户不被踩**:唯一的集群 safepoint 落在**最保守的活租户**那条地板 → 任何租户的激进 lifetime 都删不掉别人还需要的版本。**真 PD/TiKV 实测通过**(见 [multitenant_gc_lab_validation_cn.md](./multitenant_gc_lab_validation_cn.md))。
+- **单租户 / 默认 keyspace 零变化**:全表里只有自己那条地板 → 推进目标 = 自己的 target,与修复前逐字节一致。
+- **死租户会自愈**:命名记录带**有限 TTL = 3 × 最大续租间隔(10min)= 30min**。退役租户的地板在最后一次续租后 ~30min 过期,被"取 min"时跳过,不再**永久顶住全 cell 的回收**。默认 `gc_worker` 用无限 TTL 是安全的(一套集群只有一个这种角色)。
+- **读全表失败时**:降级为单 service min(那一轮跨租户保护失效),并打 warning 日志——持续失败可见,不静默。
 
-续租由 **leader** 每 `min(--storage-gc-lifetime, 10min)` 做一次;30min 的 TTL 给了约 3 个续租周期的裕量,足以扛过一次 leader 故障切换(秒级)或一轮被拖慢的 GC。
+续租由 **leader** 每 `min(--storage-gc-lifetime, 10min)` 做一次;30min TTL 给约 3 个续租周期裕量,扛得过一次 leader 故障切换(秒级)或一轮被拖慢的 GC。
 
 ---
 
@@ -74,14 +82,19 @@ KubeBrain 把自己的 MVCC 编进 key 里,每次快照读都用当前时间戳,
 
 - 该 flag 控制 MVCC 保留时长,`0` = 关闭 GC 驱动。
 - 裸 PD+TiKV 上,如果**所有**租户都关掉 GC(且没有 TiDB 在推),版本会无限堆积、读恶化。共库里**至少要有 GC 驱动在跑**。
-- 各租户可以配**不同**的 lifetime——这正是本次修复解锁的能力(修复前不同 lifetime 会互相踩)。但注意下面那条物理边界。
+- 各租户可以配**不同**的 lifetime——Option A 保证不同 lifetime 下**不互相踩**(保守租户不被删)。但注意下面那条物理边界。
 
 ### 3. 记住物理回收边界
 
 即使每租户配了不同 lifetime,**TiKV 实际物理回收到的线 = 所有租户 min(now - lifetime_i)**。
 
 - 例:A 配 1h、B 配 7d,则集群 safepoint 停在 7d 前。A 那些 1h~7d 之间的墓碑/旧版本**照样占着空间**,得等到 B 的 7d 线推过去才放。
-- 结论:**per-keyspace safepoint 给的是"配置隔离/正确性",不是"物理回收隔离"**。
+- 结论:**Option A 给的是"配置隔离 / 正确性(不误删)",不是"物理回收隔离"**。要各租户独立回收节奏,只能上 cell。
+
+### 4. 两个已知边界(设计使然)
+
+- **冷启动竞态**:集群 safepoint 单调只增。若某激进租户在某保守租户**从未注册过地板之前**就先推进了 safepoint,则那一下会卡住(单调回不来),保守租户在该窗口内的历史会被回收;之后在**约一个保守-lifetime 内自愈**。稳态(保守租户已在跑,激进租户后加入)**无此问题**——实测覆盖的就是稳态。
+- **每租户各推一次 GC**:每个租户的 leader 都会调 `KVStore.GC`(全键空间 resolve-locks)。租户数很多时是重复开销(正确性无碍,是性能项)。
 
 ---
 

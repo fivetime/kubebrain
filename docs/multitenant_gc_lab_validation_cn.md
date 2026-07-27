@@ -1,6 +1,13 @@
 # 多租户 GC 隔离 —— Lab 验证方案(cherry-pick 进 main 前的门禁)
 
-对应改动:`fix(gc): scope PD GC service safepoint per keyspace (#76)`(dbaas `19cb507c`)。
+对应改动:`#76`,dbaas `19cb507c`(v1) + `22672ddb`(Option A)。
+
+> **验证结果(2026-07-27)**:本机 docker 起单节点 `pingcap/pd`+`pingcap/tikv` v7.5.1,用直连真 PD 的 Go harness 调真 `store.GC()`。
+> - **v1(`19cb507c`)= FAIL**:PD 自留的 `gc_worker=0` 占位污染 `UpdateServiceGCSafePoint` 返回的 min → clamp 从不生效 → 命名-only 部署里激进租户把集群 safepoint 推到自己的点、**踩掉保守租户**(STOMP CONFIRMED)。
+> - **Option A(`22672ddb`)= ALL PASS**:改为读 PD service-safepoint 全表、对 `>0` 的真实地板取 min → 集群 safepoint 落在**最保守活租户**,激进租户不再踩;Test 1(独立记录+有限 TTL)、Test 4(默认 keyspace `gc_worker`/无限 TTL)同过。`minLiveFloor` 过滤逻辑另有确定性单测。
+> - 已知边界:冷启动竞态(单调 safepoint,约一个保守-lifetime 内自愈)+ 每租户各推一次 GC(性能项)。详见 [multitenant_gc_cn.md](./multitenant_gc_cn.md) 部署约束 §4。
+>
+> 下面是原始方案(仍是现场复验用的参考步骤)。
 
 ## 为什么只验这一块
 
