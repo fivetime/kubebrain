@@ -637,6 +637,50 @@ func TestClientNamespaceGetMaxCreateRevisionFilterReturnsLogicalKeys(t *testing.
 	require.Equal(t, [][]byte{[]byte("value-a"), []byte("value-b")}, [][]byte{txnGet.Kvs[0].Value, txnGet.Kvs[1].Value})
 }
 
+func TestClientNamespaceGetFirstCreateReturnsLogicalKey(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	tenantPrefix := "/a1479/namespace-first-create/tenant/"
+	namespacedKV := namespace.NewKV(client.KV, tenantPrefix)
+	for _, key := range []string{"b", "a", "c"} {
+		_, err = namespacedKV.Put(ctx, key, "value-"+key)
+		require.NoError(t, err)
+	}
+	_, err = client.Put(ctx, "/a1479/namespace-first-create/tenant0/outside", "outside")
+	require.NoError(t, err)
+
+	resp, err := namespacedKV.Get(ctx, "", clientv3.WithFirstCreate()...)
+	require.NoError(t, err)
+	require.NotNil(t, resp.Header)
+	require.Equal(t, int64(3), resp.Count)
+	require.True(t, resp.More)
+	require.Len(t, resp.Kvs, 1)
+	require.Equal(t, []byte("b"), resp.Kvs[0].Key)
+	require.Equal(t, []byte("value-b"), resp.Kvs[0].Value)
+}
+
 func TestClientNamespaceTxnGetValidationErrorsMatchEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
