@@ -17186,6 +17186,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   prefix，返回 logical `items/a`、`Count=3`、`More=true`，并排除同 tenant 其他 prefix 与相邻
   物理 namespace。该回归防止 top-helper 的 lexical key 排序在 namespace adapter 中泄露物理
   prefix。
+- A1487 固定官方 client/v3 namespace.NewKV Do(Get) 的 `WithFirstKey()` 非空 logical prefix
+  外观：A1486 固定 `Get` 专用入口后，本轮补齐通用
+  `Do(OpGet("items/", WithFirstKey()...))`。该路径必须同样经 namespace `prefixOp` 收窄到
+  当前 tenant 的 `items/` logical prefix，并在 `ResponseRange` 中返回 logical `items/a`、
+  `Count=3`、`More=true`，排除同 tenant 其他 prefix 与相邻物理 namespace。该回归防止通用
+  `Do(Get)` 在 lexical top-helper 路径上漏做 unprefix。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
