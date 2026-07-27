@@ -17983,6 +17983,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `items/b`、`items/a` 及历史 values，`Count=3`、`More=true`，并排除后续 update/delete/new key、
   upper bound 外 `z/final` 和相邻 tenant。该回归补齐 A1594 historical serializable 默认顺序
   与 A1616/A1617 historical serializable value-sort 之外的显式 key 降序分页路径。
+- A1619 固定官方 client/v3 namespace.NewKV nested OpTxn 的 empty logical start 显式 range
+  historical serializable key-asc 分页外观：nested `OpGet("", WithRange("z"),
+  WithRev(historyRev), WithSerializable(), WithLimit(2), WithSort(SortByKey, SortAscend))`
+  必须在指定历史 revision 上按 key 升序分页当前 namespace logical `[ "", "z" )`，返回
+  `alpha/a`、`items/a` 及历史 values，`Count=3`、`More=true`，并排除后续 delete/update/new key、
+  upper bound 外 `z/final` 和相邻 tenant。该回归补齐 A1618 historical serializable key-desc
+  对侧，以及 A1614 KeysOnly page 之外的显式 key 升序 value payload 分页路径。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
