@@ -2010,6 +2010,7 @@ func TestKeptAliveLeaseSurvivesLeaderChangeWithFreshDeadline(t *testing.T) {
 
 func requireDirectLeaseError(t *testing.T, err error, want error, code codes.Code, message string) {
 	t.Helper()
+	require.EqualError(t, err, status.Error(code, message).Error())
 	require.ErrorIs(t, err, want)
 	require.Equal(t, code, status.Code(err))
 	require.Equal(t, message, status.Convert(err).Message())
@@ -2017,7 +2018,7 @@ func requireDirectLeaseError(t *testing.T, err error, want error, code codes.Cod
 
 func requireDirectLeaseStatusError(t *testing.T, err error, code codes.Code, message string) {
 	t.Helper()
-	require.Error(t, err)
+	require.EqualError(t, err, status.Error(code, message).Error())
 	require.Equal(t, code, status.Code(err))
 	require.Equal(t, message, status.Convert(err).Message())
 }

@@ -16461,6 +16461,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   message 必须保留稳定的大小限制片段，并保持 `codes.ResourceExhausted`，同时不能误映射为
   etcd server-side `ErrRequestTooLarge`。该门禁防止客户端传输层超限和服务端逻辑请求超限
   两类错误在 DBaaS 数据面上混淆。
+- A1363 固定 raw Lease service 错误字符串：
+  raw Lease service 的 not-found、duplicate lease、TTL too large、lease state reloading 和
+  leadership-change retry 错误必须保留完整 status error 字符串，并在 typed lease 错误上保留
+  `ErrorIs`。该门禁防止 lease 生命周期和 leader 切换期间的直接 RPC 错误漂移。
 
 ### P2：运维兼容和长期验证
 
