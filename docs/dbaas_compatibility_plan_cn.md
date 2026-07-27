@@ -16790,6 +16790,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   manager 回归在 A1422 的 root role-name/no-role-record 状态下删除 root 用户，固定错误
   仍为 invalid auth management，防止未来把 root 用户保护与 root role record lifecycle
   错误耦合。
+- A1426 固定 RoleList 只枚举 role records 而不合成 root role-name：
+  upstream `authStore.RoleList` 直接遍历 roles bucket；即使 root 用户已通过特殊
+  `UserGrantRole("root","root")` 拥有 root role-name，只要 roles bucket 中没有 root role
+  record，`RoleList` 就不应合成 `"root"`。本轮收紧 A1422 回归，显式断言该状态下
+  `authRoleNames` 为空，防止未来为了展示 root 权限而把用户 role-name 误并入 role list。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户

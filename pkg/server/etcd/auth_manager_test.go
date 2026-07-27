@@ -79,6 +79,7 @@ func TestAuthManagerUserGrantRootRoleDoesNotRequireRoleRecordLikeEtcd(t *testing
 	require.NoError(t, err)
 	require.Nil(t, snapshot.Roles["root"])
 	require.Equal(t, []string{"root"}, snapshot.Users["root"].Roles)
+	require.Empty(t, authRoleNames(snapshot))
 	require.True(t, snapshot.Config.Enabled)
 }
 
