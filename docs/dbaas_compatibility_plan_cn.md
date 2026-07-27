@@ -17026,6 +17026,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `unprefixTxnResponse` 保持 `CountOnly` 优先、`Kvs` 为空、`More=false`。该回归防止
   namespace Txn response adapter 在 range/count-only 路径上与专用 Get、通用 Do(Get)
   漂移。
+- A1464 固定官方 client/v3 namespace.NewKV Get 的 KeysOnly/Limit full-range 外观：
+  对照 upstream `namespace.kvPrefix.Get` 的 full-range prefixing，以及既有
+  range keys-only/limit 兼容门禁，`namespace.NewKV(...).Get("", WithFromKey(),
+  WithKeysOnly(), WithLimit(2), WithSort(SortByKey, SortAscend))` 必须只分页当前 namespace：
+  `Count` 保持匹配总数、`More=true`、返回 key 为 logical key，且 `KeysOnly` 清空 value。
+  新增 official clientv3 bufconn 回归同时放置相邻物理 namespace key，防止分页从物理
+  keyspace 泄露相邻 tenant 或返回未剥离 prefix 的 key。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
