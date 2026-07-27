@@ -17572,6 +17572,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `alpha/a`、`items/a`、`z/final` 及 values，`Count=3`、`More=false`，并排除相邻 tenant keys。
   该回归补齐 A1548 empty-prefix delete 之外的 read path，防止 nested Range adapter 泄漏物理
   namespace prefix 或把空 logical prefix 当作全局 keyspace。
+- A1550 固定官方 client/v3 namespace.NewKV nested OpTxn 的 empty-key prefix count-only 外观：
+  nested `OpGet("", WithPrefix(), WithCountOnly(), WithLimit(1))` 必须只统计当前 namespace
+  全前缀内的 3 个 logical key，`CountOnly` 仍按 etcd 语义忽略 limit、不返回 KVs，且排除相邻
+  tenant。该回归补齐 A1549 empty-prefix range 的 option 组合，防止 CountOnly/Limit 处理在
+  namespace nested Range 中错误扫描全局 keyspace 或提前应用 limit。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户

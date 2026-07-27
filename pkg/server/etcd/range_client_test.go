@@ -4266,6 +4266,63 @@ func TestClientNamespaceNestedTxnGetEmptyPrefixStaysWithinNamespace(t *testing.T
 	require.Equal(t, int64(2), outsideTenant.Count)
 }
 
+func TestClientNamespaceNestedTxnGetEmptyPrefixCountOnlyIgnoresLimitWithinNamespace(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	tenantPrefix := "/a1550/namespace-nested-txn-empty-prefix-count-only/tenant/"
+	namespacedKV := namespace.NewKV(client.KV, tenantPrefix)
+	for _, key := range []string{"alpha/a", "items/a", "z/final"} {
+		_, err = namespacedKV.Put(ctx, key, "value-"+key)
+		require.NoError(t, err)
+	}
+	_, err = client.Put(ctx, "/a1550/namespace-nested-txn-empty-prefix-count-only/tenant0/items/a", "outside-tenant")
+	require.NoError(t, err)
+
+	txnResp, err := namespacedKV.Txn(ctx).
+		Then(clientv3.OpTxn(nil,
+			[]clientv3.Op{clientv3.OpGet("", clientv3.WithPrefix(), clientv3.WithCountOnly(), clientv3.WithLimit(1))},
+			nil)).
+		Commit()
+	require.NoError(t, err)
+	require.True(t, txnResp.Succeeded)
+	require.Len(t, txnResp.Responses, 1)
+	nestedTxn := txnResp.Responses[0].GetResponseTxn()
+	require.NotNil(t, nestedTxn)
+	require.True(t, nestedTxn.Succeeded)
+	require.Len(t, nestedTxn.Responses, 1)
+	nestedGet := nestedTxn.Responses[0].GetResponseRange()
+	require.NotNil(t, nestedGet)
+	require.Equal(t, int64(3), nestedGet.Count)
+	require.False(t, nestedGet.More)
+	require.Empty(t, nestedGet.Kvs)
+
+	outsideTenant, err := client.Get(ctx, "/a1550/namespace-nested-txn-empty-prefix-count-only/tenant0/", clientv3.WithPrefix())
+	require.NoError(t, err)
+	require.Equal(t, int64(1), outsideTenant.Count)
+}
+
 func TestClientNamespaceTxnGetValidationErrorsMatchEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
