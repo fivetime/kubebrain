@@ -1914,7 +1914,7 @@ func TestRawGRPCLeaseGrantTTLAndIDBoundaries(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			_, err := lease.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{ID: tt.id, TTL: tt.ttl})
-			requireClientLeaseError(t, err, codes.OutOfRange, "etcdserver: too large lease TTL", rpctypes.ErrGRPCLeaseTTLTooLarge)
+			requireRawGRPCLeaseError(t, err, codes.OutOfRange, "etcdserver: too large lease TTL", rpctypes.ErrGRPCLeaseTTLTooLarge)
 		})
 	}
 
@@ -1930,7 +1930,7 @@ func TestRawGRPCLeaseGrantTTLAndIDBoundaries(t *testing.T) {
 	require.NoError(t, err)
 	granted = append(granted, first.ID)
 	_, err = lease.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{ID: duplicateID, TTL: 20})
-	requireClientLeaseError(t, err, codes.FailedPrecondition, "etcdserver: lease already exists", rpctypes.ErrGRPCLeaseExist)
+	requireRawGRPCLeaseError(t, err, codes.FailedPrecondition, "etcdserver: lease already exists", rpctypes.ErrGRPCLeaseExist)
 }
 
 func requireClientLeaseHeaderWellFormed(t *testing.T, header *etcdserverpb.ResponseHeader) {
@@ -1944,7 +1944,17 @@ func requireClientLeaseHeaderWellFormed(t *testing.T, header *etcdserverpb.Respo
 
 func requireClientLeaseError(t *testing.T, err error, code codes.Code, message string, wantErrorIs ...error) {
 	t.Helper()
-	require.Error(t, err)
+	require.EqualError(t, err, message)
+	for _, want := range wantErrorIs {
+		require.ErrorIs(t, err, want)
+	}
+	require.Equal(t, code, status.Code(err))
+	require.Equal(t, message, status.Convert(err).Message())
+}
+
+func requireRawGRPCLeaseError(t *testing.T, err error, code codes.Code, message string, wantErrorIs ...error) {
+	t.Helper()
+	require.EqualError(t, err, status.Error(code, message).Error())
 	for _, want := range wantErrorIs {
 		require.ErrorIs(t, err, want)
 	}

@@ -16415,6 +16415,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Range、Compact、DeleteRange 和 Alarm GET 在 leader read barrier 失败时必须返回完整
   `codes.Unavailable` status error 字符串，并保留底层同步失败 message。该门禁防止独立
   TiKV/PD 数据面在读屏障不可用时把可重试控制面故障误分类或漂移公开文本。
+- A1353 固定 Lease typed 错误字符串：
+  official clientv3 Lease 的 not-found、TTL too large 和 NOSPACE 错误必须保留裸 etcd message、
+  typed `ErrorIs` 和公开 status code；raw gRPC `LeaseGrant` 的超大 TTL 与重复 lease ID 必须
+  保留完整 status error 字符串。该门禁防止 lease 生命周期路径混淆 client wrapper 与 raw
+  gRPC 的错误形态。
 
 ### P2：运维兼容和长期验证
 
