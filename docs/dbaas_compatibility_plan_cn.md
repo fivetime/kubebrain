@@ -16784,6 +16784,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   bucket 中是否存在 root role record。新增 auth manager 回归复用 A1422 可达状态，
   验证 `UserRevokeRole("root","root")` 返回 invalid auth management，防止未来把 root
   role-name 保护错误改写成需要 role lookup 或普通 revoke 流程。
+- A1425 固定 UserDelete 的 root 保护不依赖 root role record：
+  upstream `authStore.UserDelete` 在 auth enabled 且目标用户为 `"root"` 时先返回
+  `ErrInvalidAuthMgmt`，该保护不要求 roles bucket 中存在 root role record。新增 auth
+  manager 回归在 A1422 的 root role-name/no-role-record 状态下删除 root 用户，固定错误
+  仍为 invalid auth management，防止未来把 root 用户保护与 root role record lifecycle
+  错误耦合。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
