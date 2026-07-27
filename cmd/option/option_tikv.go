@@ -69,11 +69,13 @@ func (s *storageConfig) validate() error {
 	return nil
 }
 
-func (s *storageConfig) buildStorage() (storage.KvStorage, error) {
+func (s *storageConfig) buildStorage(keyspace string) (storage.KvStorage, error) {
+	// keyspace scopes the PD GC service safepoint so co-tenants on a shared
+	// PD/TiKV cluster do not GC each other's MVCC history (#76).
 	return storagetikv.NewKvStorage(s.pdAddrs, s.clientNum, storagetikv.Security{
 		CAPath:   s.caFile,
 		CertPath: s.certFile,
 		KeyPath:  s.keyFile,
 		VerifyCN: s.verifyCN,
-	})
+	}, storagetikv.WithKeyspace(keyspace))
 }

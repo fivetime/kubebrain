@@ -58,7 +58,25 @@ type clientBalancer struct {
 // multiplies PD load and fragments TSO batching rather than adding throughput.
 const defaultClientNum = 16
 
-func NewKvStorage(pdAddrs []string, clientNum int, sec Security) (storage.KvStorage, error) {
+// Option configures a store at construction. Options are variadic so existing
+// callers (and tests) keep compiling; the only production option today is
+// WithKeyspace, which scopes the PD GC service safepoint per tenant (#76).
+type Option func(*storeOptions)
+
+type storeOptions struct {
+	keyspace string
+}
+
+// WithKeyspace names the tenant this store serves on a shared PD/TiKV cluster.
+// It selects the PD GC service-safepoint identity: the default ("") keyspace
+// keeps the reserved "gc_worker" record; a named keyspace gets its own record
+// so co-tenants neither GC each other's still-needed MVCC nor pin the whole
+// cluster's GC forever. See resolveGCService.
+func WithKeyspace(name string) Option {
+	return func(o *storeOptions) { o.keyspace = name }
+}
+
+func NewKvStorage(pdAddrs []string, clientNum int, sec Security, opts ...Option) (storage.KvStorage, error) {
 	if clientNum <= 0 {
 		clientNum = defaultClientNum
 	}
@@ -79,22 +97,29 @@ func NewKvStorage(pdAddrs []string, clientNum int, sec Security) (storage.KvStor
 		}
 		clients = append(clients, txnClient)
 	}
-	s := NewKvStoreWithClient(clients)
+	s := NewKvStoreWithClient(clients, opts...)
 	return s, nil
 }
 
-func NewKvStoreWithStorage(sts []*tikv.KVStore) storage.KvStorage {
+func NewKvStoreWithStorage(sts []*tikv.KVStore, opts ...Option) storage.KvStorage {
 	clients := make([]*txnkv.Client, 0, len(sts))
 	for _, st := range sts {
 		clients = append(clients, &txnkv.Client{KVStore: st})
 	}
-	return NewKvStoreWithClient(clients)
+	return NewKvStoreWithClient(clients, opts...)
 }
 
-func NewKvStoreWithClient(clients []*txnkv.Client) storage.KvStorage {
+func NewKvStoreWithClient(clients []*txnkv.Client, opts ...Option) storage.KvStorage {
+	var cfg storeOptions
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+	gcServiceID, gcServiceSafePointTTL := resolveGCService(cfg.keyspace)
 	s := &store{
-		clientBalancer: &clientBalancer{clients: clients},
-		closed:         make(chan struct{}),
+		clientBalancer:        &clientBalancer{clients: clients},
+		closed:                make(chan struct{}),
+		gcServiceID:           gcServiceID,
+		gcServiceSafePointTTL: gcServiceSafePointTTL,
 	}
 	return s
 }
@@ -118,6 +143,11 @@ func (c *clientBalancer) getClient() *txnkv.Client {
 type store struct {
 	*clientBalancer
 	closed chan struct{}
+
+	// gcServiceID and gcServiceSafePointTTL identify this tenant's PD GC
+	// service safepoint; resolveGCService derives them from the keyspace.
+	gcServiceID           string
+	gcServiceSafePointTTL int64
 }
 
 func (s *store) Del(ctx context.Context, key []byte) (err error) {
@@ -133,17 +163,52 @@ func (s *store) DelCurrent(ctx context.Context, iter storage.Iter) (err error) {
 }
 
 const (
-	// gcServiceID is the reserved PD service name of THE GC owner. KubeBrain
-	// assumes the gc_worker role on clusters where no TiDB drives GC, so it
-	// updates that same record rather than registering a side service: PD
-	// special-cases "gc_worker" (its record cannot be deleted and its TTL must
-	// be infinite), and a departed TiDB's stale gc_worker record would
-	// otherwise pin the service-minimum forever with no way to clear it.
-	// Sharing the name is also the correct handoff semantics: whichever GC
-	// owner updated last defines the target, and the min across OTHER services
-	// (CDC, BR) still clamps both.
-	gcServiceID = "gc_worker"
+	// defaultGCServiceID is the reserved PD service name of THE GC owner. On the
+	// default ("") keyspace KubeBrain assumes the gc_worker role for clusters
+	// where no TiDB drives GC, so it updates that same record rather than
+	// registering a side service: PD special-cases "gc_worker" (its record
+	// cannot be deleted and its TTL must be infinite), and a departed TiDB's
+	// stale gc_worker record would otherwise pin the service-minimum forever
+	// with no way to clear it. Sharing the name is also the correct handoff
+	// semantics: whichever GC owner updated last defines the target, and the
+	// min across OTHER services (CDC, BR) still clamps both.
+	defaultGCServiceID = "gc_worker"
+
+	// namedKeyspaceGCServicePrefix prefixes the per-keyspace GC service-safepoint
+	// name so a named tenant (#76) registers its OWN record instead of stomping
+	// the shared gc_worker one. Distinct records mean UpdateServiceGCSafePoint's
+	// returned minimum spans every co-tenant, so no tenant's aggressive GC can
+	// reclaim MVCC another tenant still needs.
+	namedKeyspaceGCServicePrefix = "kubebrain-ks-"
+
+	// maxGCRenewalInterval mirrors the interval cap in backend.runStorageGC: the
+	// leader re-pushes its service safepoint at most this often (more often for a
+	// shorter --storage-gc-lifetime). It bounds how stale a live tenant's record
+	// can get between renewals, and thus sizes the named-keyspace TTL.
+	maxGCRenewalInterval = 10 * time.Minute
+
+	// namedKeyspaceSafePointRenewCycles is how many renewal intervals of slack a
+	// named keyspace's service safepoint gets before it expires. Long enough that
+	// a leader failover (seconds) or a backlogged GC cycle never drops this
+	// tenant's retention floor out of the cluster minimum; finite so a DEPARTED
+	// tenant's floor expires instead of pinning every co-tenant's GC forever —
+	// the exact opposite trade-off from the never-expiring default gc_worker,
+	// which is safe there because there is only one such owner per cluster.
+	namedKeyspaceSafePointRenewCycles = 3
 )
+
+// resolveGCService maps a tenant keyspace to its PD GC service-safepoint
+// identity and TTL (seconds). The default ("") keyspace keeps the reserved,
+// never-expiring gc_worker record — identical to pre-#76 behavior, so every
+// existing single-tenant deployment is untouched. A named keyspace gets its
+// own finite-TTL record so co-tenants on one PD/TiKV are isolated for GC.
+func resolveGCService(keyspace string) (serviceID string, ttlSeconds int64) {
+	if keyspace == "" {
+		return defaultGCServiceID, math.MaxInt64
+	}
+	ttl := int64((maxGCRenewalInterval * namedKeyspaceSafePointRenewCycles).Seconds())
+	return namedKeyspaceGCServicePrefix + keyspace, ttl
+}
 
 // GC implements storage.GarbageCollector: advances the TiKV cluster GC
 // safepoint to (PD-now - lifetime) via client-go's KVStore.GC, which resolves
@@ -154,12 +219,13 @@ const (
 //
 // Shared-cluster safety: before publishing, KubeBrain registers its target as
 // its own service safepoint and receives the minimum across ALL services
-// (TiDB CDC changefeeds, BR backups, another GC owner...) — the same protocol
-// TiDB's gc_worker follows. The published safepoint is clamped to that
-// minimum, so co-tenants needing longer MVCC retention are never GC'd out
-// from under them. On a KubeBrain-exclusive cluster (the recommended
-// deployment) the minimum is simply KubeBrain's own target and the clamp is a
-// no-op.
+// (TiDB CDC changefeeds, BR backups, another GC owner, and — on a shared
+// PD/TiKV — every OTHER KubeBrain keyspace tenant, each under its own
+// per-keyspace service name; see resolveGCService) — the same protocol TiDB's
+// gc_worker follows. The published safepoint is clamped to that minimum, so
+// co-tenants needing longer MVCC retention are never GC'd out from under them.
+// On a KubeBrain-exclusive single-tenant cluster (the recommended deployment)
+// the minimum is simply KubeBrain's own target and the clamp is a no-op.
 func (s *store) GC(ctx context.Context, lifetime time.Duration) (uint64, error) {
 	ts, err := s.GetTimestampOracle(ctx)
 	if err != nil {
@@ -171,7 +237,7 @@ func (s *store) GC(ctx context.Context, lifetime time.Duration) (uint64, error) 
 	}
 	target := oracle.ComposeTS(physical, 0)
 	minServiceSP, err := s.getClient().GetPDClient().UpdateServiceGCSafePoint(
-		ctx, gcServiceID, math.MaxInt64, target)
+		ctx, s.gcServiceID, s.gcServiceSafePointTTL, target)
 	if err != nil {
 		return 0, errors.Wrap(err, "gc: update service safepoint")
 	}
