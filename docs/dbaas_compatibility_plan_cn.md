@@ -17389,6 +17389,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   必须在第二层 `ResponseTxn` 的 `ResponseRange` 中返回 logical `range/a,b,c` 与原始 values，
   并排除 upper bound 与相邻 tenant。该回归防止 nested Txn adapter 只递归一层，导致更深
   wrapper 下泄漏物理 namespace prefix。
+- A1516 固定官方 client/v3 namespace.NewKV nested OpTxn 的 `WithFromKey` 开放范围外观：
+  nested `OpGet("range/b", WithFromKey())` 必须被 namespace adapter 映射为当前 namespace
+  内从 logical `range/b` 到 namespace 末尾的 bounded physical range，返回 logical
+  `range/b` 与 `z/final`，排除 start 前 key 和相邻 tenant。该回归防止 nested OpTxn 中
+  `WithFromKey` 被错误保留为全局开放 range 或响应 key 未递归 unprefix。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
