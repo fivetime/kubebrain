@@ -16760,6 +16760,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   回归在 fake peer 中断言 forwarded request 已携带正 ID，并让响应 ID 等于该 ID，最终
   验证调用方原始 request 与响应一致，防止未来重构让 leader 看到 `ID=0` 或 follower
   本地 request 生命周期与成功响应脱节。
+- A1421 固定 RoleGrantPermission 的 permission 校验先于 role lookup：
+  对照 upstream `authStore.RoleGrantPermission`，`Perm == nil` 与 invalid permission range
+  必须在查找 role 前返回，因此即使目标 role 不存在，也应优先暴露
+  `ErrGRPCPermissionNotGiven`/`ErrInvalidAuthMgmt`，只有 permission 合法时才返回
+  `ErrRoleNotFound`。新增 auth manager 回归覆盖 missing role 与 nil/empty/invalid/valid
+  permission 的组合，防止未来把 role lookup 提前后改变 etcd 可观察错误顺序。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户

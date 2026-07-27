@@ -186,6 +186,18 @@ func TestAuthManagerRejectsInvalidPermissionRanges(t *testing.T) {
 	require.NoError(t, manager.roleGrantPermission(ctx, "reader", &authpb.Permission{Key: []byte("z"), RangeEnd: []byte{0}}))
 }
 
+func TestAuthManagerRoleGrantPermissionValidationPrecedesRoleLookupLikeEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	manager := newAuthManager(server.backend)
+	ctx := context.Background()
+
+	requireAuthManagerError(t, manager.roleGrantPermission(ctx, "missing", nil), rpctypes.ErrGRPCPermissionNotGiven, codes.InvalidArgument, "etcdserver: permission not given")
+	requireAuthManagerError(t, manager.roleGrantPermission(ctx, "missing", &authpb.Permission{}), rpctypes.ErrInvalidAuthMgmt, codes.Unknown, "etcdserver: invalid auth management")
+	requireAuthManagerError(t, manager.roleGrantPermission(ctx, "missing", &authpb.Permission{Key: []byte("z"), RangeEnd: []byte("a")}), rpctypes.ErrInvalidAuthMgmt, codes.Unknown, "etcdserver: invalid auth management")
+	requireAuthManagerError(t, manager.roleGrantPermission(ctx, "missing", &authpb.Permission{Key: []byte("a")}), rpctypes.ErrRoleNotFound, codes.Unknown, "etcdserver: role name not found")
+}
+
 func TestAuthManagerBootstrapErrors(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
