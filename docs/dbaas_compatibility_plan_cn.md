@@ -17757,6 +17757,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   logical `[ "", "z" )` range 内全部 `alpha/a`、`items/a`、`items/b`，`Count=3`、
   `More=false`，并排除 upper bound 外的 `z/final` 和相邻 tenant。该回归防止 adapter 把
   显式 0 limit 错误实现为空页或错误设置 `More`。
+- A1584 固定官方 client/v3 namespace.NewKV nested OpTxn 的 empty logical start 显式 range
+  负 `WithLimit(-1)` 外观：nested `OpGet("", WithRange("z"), WithLimit(-1),
+  WithSort(SortByKey, SortAscend))` 必须沿用 A950 的 etcd 兼容语义，把负 limit 视为无限制，
+  返回当前 namespace logical `[ "", "z" )` range 内全部 `alpha/a`、`items/a`、`items/b`，
+  `Count=3`、`More=false`，并排除 upper bound 外的 `z/final` 和相邻 tenant。该回归防止
+  namespace/nested adapter 对负 limit 进行额外非法化或空页化处理。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
