@@ -1039,6 +1039,21 @@ func TestClientNamespaceGetFirstRevWithLogicalPrefixReturnsLogicalKey(t *testing
 	require.Len(t, doGet.Kvs, 1)
 	require.Equal(t, []byte("queue/a"), doGet.Kvs[0].Key)
 	require.Equal(t, []byte("value-queue/a"), doGet.Kvs[0].Value)
+
+	txnResp, err := namespacedKV.Txn(ctx).
+		Then(clientv3.OpGet("queue/", clientv3.WithFirstRev()...)).
+		Commit()
+	require.NoError(t, err)
+	require.True(t, txnResp.Succeeded)
+	require.Len(t, txnResp.Responses, 1)
+	txnGet := txnResp.Responses[0].GetResponseRange()
+	require.NotNil(t, txnGet)
+	require.NotNil(t, txnGet.Header)
+	require.Equal(t, int64(3), txnGet.Count)
+	require.True(t, txnGet.More)
+	require.Len(t, txnGet.Kvs, 1)
+	require.Equal(t, []byte("queue/a"), txnGet.Kvs[0].Key)
+	require.Equal(t, []byte("value-queue/a"), txnGet.Kvs[0].Value)
 }
 
 func TestClientNamespaceTxnGetValidationErrorsMatchEtcd(t *testing.T) {
