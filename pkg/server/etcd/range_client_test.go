@@ -2187,6 +2187,64 @@ func TestClientNamespaceNestedTxnDeleteFromKeyStaysWithinNamespace(t *testing.T)
 	require.Equal(t, int64(2), outsideTenant.Count)
 }
 
+func TestClientNamespaceNestedTxnFromKeyCompareStaysWithinNamespace(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	tenantPrefix := "/a1518/namespace-nested-txn-compare-from-key/tenant/"
+	namespacedKV := namespace.NewKV(client.KV, tenantPrefix)
+	_, err = client.Put(ctx, "/a1518/namespace-nested-txn-compare-from-key/tenant0/range/b", "outside-tenant")
+	require.NoError(t, err)
+	_, err = client.Put(ctx, "/a1518/namespace-nested-txn-compare-from-key/tenant0/z/final", "outside-tenant-z")
+	require.NoError(t, err)
+
+	txnResp, err := namespacedKV.Txn(ctx).
+		Then(clientv3.OpTxn(
+			[]clientv3.Cmp{clientv3.Compare(clientv3.Version("range/b").WithRange("\x00"), ">", 0)},
+			[]clientv3.Op{clientv3.OpPut("compare/result", "then")},
+			[]clientv3.Op{clientv3.OpPut("compare/result", "else")},
+		)).
+		Commit()
+	require.NoError(t, err)
+	require.True(t, txnResp.Succeeded)
+	require.Len(t, txnResp.Responses, 1)
+	nestedTxn := txnResp.Responses[0].GetResponseTxn()
+	require.NotNil(t, nestedTxn)
+	require.False(t, nestedTxn.Succeeded)
+	require.Len(t, nestedTxn.Responses, 1)
+	require.NotNil(t, nestedTxn.Responses[0].GetResponsePut())
+
+	result, err := namespacedKV.Get(ctx, "compare/result")
+	require.NoError(t, err)
+	require.Len(t, result.Kvs, 1)
+	require.Equal(t, []byte("compare/result"), result.Kvs[0].Key)
+	require.Equal(t, []byte("else"), result.Kvs[0].Value)
+	outsideTenant, err := client.Get(ctx, "/a1518/namespace-nested-txn-compare-from-key/tenant0/", clientv3.WithPrefix())
+	require.NoError(t, err)
+	require.Equal(t, int64(2), outsideTenant.Count)
+}
+
 func TestClientNamespaceTxnGetValidationErrorsMatchEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

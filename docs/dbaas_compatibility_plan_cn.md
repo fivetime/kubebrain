@@ -17399,6 +17399,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `range/b` 到 namespace 末尾的 keys，`ResponseDeleteRange.PrevKvs` 返回 logical
   `range/b` 与 `z/final`，保留 start 前 `range/a` 和相邻 tenant 数据。该回归防止 nested
   delete 的开放 range 泄漏到全局 keyspace，或 PrevKV response 漏做递归 unprefix。
+- A1518 固定官方 client/v3 namespace.NewKV nested OpTxn 的 `Compare(... WithRange("\x00"))`
+  开放 compare range 外观：当当前 namespace 从 logical `range/b` 到 namespace 末尾为空，
+  但相邻 tenant 存在同名后继 keys 时，nested compare 必须失败并执行 Else branch。该回归
+  防止 nested `prefixCmps` 对 `WithFromKey`/`\x00` range end 处理不当，把全局后继 keyspace
+  纳入 leasing range guard。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
