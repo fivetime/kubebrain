@@ -475,6 +475,10 @@ func TestClientAuthUserErrorsMatchEtcd(t *testing.T) {
 
 	_, err = client.UserDelete(ctx, "a1129-missing-user")
 	requireAuthClientError(t, err, codes.Unknown, "etcdserver: user name not found", rpctypes.ErrUserNotFound)
+	_, err = client.UserDelete(ctx, "")
+	requireAuthClientError(t, err, codes.Unknown, "etcdserver: user name not found", rpctypes.ErrUserNotFound)
+	_, err = client.UserChangePassword(ctx, "", "")
+	requireAuthClientError(t, err, codes.Unknown, "etcdserver: user name not found", rpctypes.ErrUserNotFound)
 	_, rawMissingUserErr := rawAuth.UserDelete(ctx, &etcdserverpb.AuthUserDeleteRequest{Name: "a1129-raw-missing-user"})
 	requireAuthClientError(t, rawMissingUserErr, codes.FailedPrecondition, "etcdserver: user name not found")
 	_, rawEmptyUserDeleteErr := rawAuth.UserDelete(ctx, &etcdserverpb.AuthUserDeleteRequest{Name: ""})
