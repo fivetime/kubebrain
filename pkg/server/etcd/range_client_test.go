@@ -223,6 +223,19 @@ func TestClientNamespaceGetCountOnlyKeysOnlyCountsTenantKeys(t *testing.T) {
 	require.Empty(t, doGet.Kvs)
 	require.False(t, doGet.More)
 
+	txnResp, err := namespacedKV.Txn(ctx).
+		Then(clientv3.OpGet("", clientv3.WithFromKey(), clientv3.WithCountOnly(), clientv3.WithKeysOnly())).
+		Commit()
+	require.NoError(t, err)
+	require.True(t, txnResp.Succeeded)
+	require.Len(t, txnResp.Responses, 1)
+	txnGet := txnResp.Responses[0].GetResponseRange()
+	require.NotNil(t, txnGet)
+	require.NotNil(t, txnGet.Header)
+	require.Equal(t, int64(3), txnGet.Count)
+	require.Empty(t, txnGet.Kvs)
+	require.False(t, txnGet.More)
+
 	visible, err := namespacedKV.Get(ctx, "", clientv3.WithFromKey(), clientv3.WithSort(clientv3.SortByKey, clientv3.SortAscend))
 	require.NoError(t, err)
 	require.Equal(t, int64(3), visible.Count)
