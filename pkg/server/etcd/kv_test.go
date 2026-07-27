@@ -1359,17 +1359,46 @@ func TestRangeRejectsInvalidSortOptions(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
 
-	_, err := server.Range(context.Background(), &etcdserverpb.RangeRequest{
-		Key:       []byte("/registry/pods/invalid-sort"),
-		SortOrder: etcdserverpb.RangeRequest_SortOrder(99),
-	})
-	requireDirectKVError(t, err, rpctypes.ErrGRPCInvalidSortOption, codes.InvalidArgument, "etcdserver: invalid sort option")
-
-	_, err = server.Range(context.Background(), &etcdserverpb.RangeRequest{
-		Key:        []byte("/registry/pods/invalid-sort"),
-		SortTarget: etcdserverpb.RangeRequest_SortTarget(99),
-	})
-	requireDirectKVError(t, err, rpctypes.ErrGRPCInvalidSortOption, codes.InvalidArgument, "etcdserver: invalid sort option")
+	tests := []struct {
+		name        string
+		req         *etcdserverpb.RangeRequest
+		wantErr     error
+		wantMessage string
+	}{
+		{
+			name: "empty key precedes invalid sort",
+			req: &etcdserverpb.RangeRequest{
+				SortOrder:  etcdserverpb.RangeRequest_SortOrder(99),
+				SortTarget: etcdserverpb.RangeRequest_SortTarget(99),
+			},
+			wantErr:     rpctypes.ErrGRPCEmptyKey,
+			wantMessage: "etcdserver: key is not provided",
+		},
+		{
+			name: "invalid sort order",
+			req: &etcdserverpb.RangeRequest{
+				Key:       []byte("/registry/pods/invalid-sort"),
+				SortOrder: etcdserverpb.RangeRequest_SortOrder(99),
+			},
+			wantErr:     rpctypes.ErrGRPCInvalidSortOption,
+			wantMessage: "etcdserver: invalid sort option",
+		},
+		{
+			name: "invalid sort target",
+			req: &etcdserverpb.RangeRequest{
+				Key:        []byte("/registry/pods/invalid-sort"),
+				SortTarget: etcdserverpb.RangeRequest_SortTarget(99),
+			},
+			wantErr:     rpctypes.ErrGRPCInvalidSortOption,
+			wantMessage: "etcdserver: invalid sort option",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := server.Range(context.Background(), tt.req)
+			requireDirectKVError(t, err, tt.wantErr, codes.InvalidArgument, tt.wantMessage)
+		})
+	}
 }
 
 func TestRangeFiltersByModRevision(t *testing.T) {
