@@ -27,6 +27,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	clientv3 "go.etcd.io/etcd/client/v3"
+	"go.etcd.io/etcd/client/v3/namespace"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -62,6 +63,7 @@ func TestClientPutIgnoreValueIgnoreLeaseAndErrors(t *testing.T) {
 	prefix := "/a1051/client-put/"
 	key := prefix + "key"
 	missing := prefix + "missing"
+	namespacedKV := namespace.NewKV(client.KV, "/a1450/namespace-put/")
 	base, err := client.Get(ctx, prefix, clientv3.WithPrefix())
 	require.NoError(t, err)
 	baseRev := base.Header.Revision
@@ -198,6 +200,36 @@ func TestClientPutIgnoreValueIgnoreLeaseAndErrors(t *testing.T) {
 			name: "ignore value precedes ignore lease conflict",
 			call: func() error {
 				_, err := client.Put(ctx, key, "bad", clientv3.WithIgnoreValue(), clientv3.WithIgnoreLease(), clientv3.WithLease(leaseA.ID))
+				return err
+			},
+			wantCode:    codes.Unknown,
+			wantMessage: "etcdserver: value is provided",
+			wantErrorIs: rpctypes.ErrValueProvided,
+		},
+		{
+			name: "namespace empty key precedes ignore value conflict",
+			call: func() error {
+				_, err := namespacedKV.Put(ctx, "", "bad", clientv3.WithIgnoreValue())
+				return err
+			},
+			wantCode:    codes.Unknown,
+			wantMessage: "etcdserver: key is not provided",
+			wantErrorIs: rpctypes.ErrEmptyKey,
+		},
+		{
+			name: "namespace empty key precedes ignore lease conflict",
+			call: func() error {
+				_, err := namespacedKV.Put(ctx, "", "bad", clientv3.WithIgnoreLease(), clientv3.WithLease(leaseA.ID))
+				return err
+			},
+			wantCode:    codes.Unknown,
+			wantMessage: "etcdserver: key is not provided",
+			wantErrorIs: rpctypes.ErrEmptyKey,
+		},
+		{
+			name: "namespace valid key ignore value conflict",
+			call: func() error {
+				_, err := namespacedKV.Put(ctx, "key", "bad", clientv3.WithIgnoreValue())
 				return err
 			},
 			wantCode:    codes.Unknown,

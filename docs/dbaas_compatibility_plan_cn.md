@@ -16932,6 +16932,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   同一 op 携带 invalid sort 时，由于 server 看到的 key 已非空，必须返回
   `Unknown`/`etcdserver: invalid sort option` 并匹配 `rpctypes.ErrInvalidSortOption`。
   该回归防止把 namespace.Get 的 empty-key-first wrapper 语义误套到 namespace Txn。
+- A1450 固定官方 client/v3 namespace.NewKV Put 的 validation 外观：
+  upstream `namespace.kvPrefix.Put` 在 prefix/发送 RPC 前直接拒绝 logical empty key；
+  因此 `namespace.NewKV(...).Put("", value, WithIgnoreValue())` 与携带
+  `WithIgnoreLease()+WithLease(...)` 时都必须暴露 public `Unknown`/
+  `etcdserver: key is not provided` 并匹配 `rpctypes.ErrEmptyKey`。合法 logical key 仍先被
+  prefix 后走普通 server Put validation，`WithIgnoreValue`+value 必须匹配
+  `rpctypes.ErrValueProvided`。该回归防止 namespace Put wrapper 与普通 Put/Txn Put 路径
+  的错误来源和顺序混淆。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
