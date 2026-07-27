@@ -16428,6 +16428,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   follower 在 lease read proxy 未启用或读过程中失去 leader 身份时，LeaseTimeToLive/LeaseLeases
   必须返回完整 `codes.Unavailable` status error 字符串，并保留目标 leader 地址提示。该门禁
   防止 lease 读路径在多副本 DBaaS 拓扑中静默走本地旧快照或漂移可重试错误文本。
+- A1356 固定 Maintenance service auth 与平台替代错误字符串：
+  Maintenance service 的 Status、Alarm、HashKV、Hash、Compact、Defragment、Snapshot、
+  MoveLeader 和 Downgrade 认证失败必须保留原始 etcd message、typed `ErrorIs` 和公开
+  status code；root 执行平台托管操作时必须保留完整 `codes.Unimplemented` status error。
+  该门禁防止维护面在权限失败和 DBaaS 平台替代边界上漂移客户端可见错误语义。
 
 ### P2：运维兼容和长期验证
 

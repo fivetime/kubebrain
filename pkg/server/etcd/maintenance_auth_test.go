@@ -96,6 +96,7 @@ func TestMaintenanceRootAuthorizationClientCertificateErrorsMatchEtcd(t *testing
 
 func requireMaintenanceAuthError(t *testing.T, err error, want error, code codes.Code, message string) {
 	t.Helper()
+	require.EqualError(t, err, message)
 	require.ErrorIs(t, err, want)
 	require.Equal(t, code, status.Code(err))
 	require.Equal(t, message, status.Convert(err).Message())
@@ -103,7 +104,7 @@ func requireMaintenanceAuthError(t *testing.T, err error, want error, code codes
 
 func requireMaintenancePlatformReplacementError(t *testing.T, err error, message string) {
 	t.Helper()
-	require.Error(t, err)
+	require.EqualError(t, err, status.Error(codes.Unimplemented, message).Error())
 	require.Equal(t, codes.Unimplemented, status.Code(err))
 	require.Equal(t, message, status.Convert(err).Message())
 }
