@@ -18850,6 +18850,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   写入产生的 latest revision，并排除后续更新但早创建的 `items/a`、同 tenant 相邻 prefix 和相邻
   tenant。该回归补齐 A1681 historical prefix MinCreateRev filter 与 A1707 explicit range current
   MinCreateRev 之外的 current prefix 路径。
+- A1766 固定官方 client/v3 namespace.NewKV nested OpTxn 的 non-empty prefix current
+  serializable MaxCreateRev filter 外观：nested `OpGet("items/", WithPrefix(), WithSerializable(),
+  WithMaxCreateRev(createRev-1), WithSort(SortByKey, SortAscend))` 必须在最新 revision 上统计当前
+  namespace logical prefix 全量 `Count=3`，但只返回 create revision 满足上界的
+  `items/a=updated-items/a`、`items/b=value-items/b`、`More=false`，response header revision 必须等于
+  后续同 tenant 相邻 prefix 写入产生的 latest revision，并排除较晚创建的 `items/c`、同 tenant
+  相邻 prefix 和相邻 tenant。该回归补齐 A1682 historical prefix MaxCreateRev filter 与 A1708
+  explicit range current MaxCreateRev 之外的 current prefix 路径。
 - A1705 固定官方 client/v3 namespace.NewKV nested OpTxn 的显式 logical range current
   serializable MinModRev filter 外观：nested `OpGet("range/a", WithRange("range/d"),
   WithSerializable(), WithMinModRev(updateRev), WithSort(SortByKey, SortAscend))` 必须在最新
