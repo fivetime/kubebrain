@@ -880,6 +880,25 @@ func TestLeaseGrantAutomaticIDRewritesBeforeNoSpaceLikeEtcd(t *testing.T) {
 	require.Positive(t, request.ID)
 }
 
+func TestLeaseGrantAutomaticIDRewritesBeforeCorruptLikeEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	ctx := context.Background()
+	_, err := server.Alarm(ctx, &etcdserverpb.AlarmRequest{
+		Action:   etcdserverpb.AlarmRequest_ACTIVATE,
+		Alarm:    etcdserverpb.AlarmType_CORRUPT,
+		MemberID: 42,
+	})
+	require.NoError(t, err)
+
+	request := &etcdserverpb.LeaseGrantRequest{TTL: 30}
+	response, err := server.LeaseGrant(ctx, request)
+	require.Nil(t, response)
+	requireMaintenanceDirectError(t, err, rpctypes.ErrGRPCCorrupt, codes.DataLoss, "etcdserver: corrupt cluster")
+	require.Positive(t, request.ID)
+}
+
 func TestLeaseTimeToLiveZeroIDMatchesEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

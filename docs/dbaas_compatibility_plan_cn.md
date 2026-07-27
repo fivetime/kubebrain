@@ -16742,6 +16742,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `ErrGRPCNoSpace`/`ResourceExhausted`，但调用方持有的 request 已被写回正 lease ID。
   该用例补齐 A1175/A1243 只验证 public/direct no-space 错误外观而未覆盖 protobuf request
   生命周期的空白。
+- A1418 加固 LeaseGrant 自动 ID 的 CORRUPT 失败分支：
+  复核 `/root/etcd/server/etcdserver/v3_server.go:LeaseGrant` 与
+  `server/etcdserver/apply/corrupt.go` 后确认，上游在进入 raft/apply 前已经把自动 ID 写回
+  request，CORRUPT 只是在 apply 层拒绝。新增服务端回归先激活 CORRUPT alarm，再以
+  `ID=0` 调用 `LeaseGrant`，固定返回 `ErrGRPCCorrupt`/`DataLoss` 时 request 仍已获得正
+  lease ID，补齐既有 CORRUPT 优先级测试未覆盖的 protobuf request 生命周期。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
