@@ -16402,6 +16402,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   error 字符串；official clientv3 `Get`/Range 对应错误则必须保留裸 etcd message、typed
   `ErrorIs` 和公开 status code。该门禁防止读路径在 MVCC revision 边界上混淆 raw gRPC 与
   client wrapper 的错误形态。
+- A1350 固定 Txn validation/revision typed 错误字符串：
+  raw gRPC `Txn` 的 validation、too-many-ops、duplicate-key、lease-not-found 和 revision
+  边界错误必须保留完整 status error 字符串；official clientv3 `Txn` 对应 typed 错误必须保留
+  裸 etcd message、typed `ErrorIs` 和公开 status code。该门禁防止事务路径在嵌套 op、
+  MVCC revision 和 quota/lease 错误上漂移 etcd 兼容错误形态。
 
 ### P2：运维兼容和长期验证
 

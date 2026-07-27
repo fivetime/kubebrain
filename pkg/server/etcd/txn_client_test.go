@@ -220,7 +220,7 @@ func TestRawGRPCTxnOperationValidationMessages(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			resp, callErr := kv.Txn(ctx, &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{tt.op}})
 			require.Nil(t, resp)
-			require.Error(t, callErr)
+			require.EqualError(t, callErr, status.Error(tt.wantCode, tt.wantMessage).Error())
 			require.Equal(t, tt.wantCode, status.Code(callErr))
 			require.Equal(t, tt.wantMessage, status.Convert(callErr).Message())
 		})
@@ -1458,7 +1458,7 @@ func txnClientTxnOp(success, failure []*etcdserverpb.RequestOp) *etcdserverpb.Re
 
 func requireRawGRPCTxnError(t *testing.T, err error, code codes.Code, message string, wantErrorIs ...error) {
 	t.Helper()
-	require.Error(t, err)
+	require.EqualError(t, err, status.Error(code, message).Error())
 	for _, want := range wantErrorIs {
 		require.ErrorIs(t, err, want)
 	}
@@ -1468,7 +1468,7 @@ func requireRawGRPCTxnError(t *testing.T, err error, code codes.Code, message st
 
 func requireClientTxnError(t *testing.T, err error, code codes.Code, message string, wantErrorIs ...error) {
 	t.Helper()
-	require.Error(t, err)
+	require.EqualError(t, err, message)
 	for _, want := range wantErrorIs {
 		require.ErrorIs(t, err, want)
 	}
