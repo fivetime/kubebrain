@@ -16548,6 +16548,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   计量归档 sample 的对象请求整数、metric 顺序、slot/instance、Prometheus URL 校验，
   以及日 rollup 的 v3 source、对象请求整数、quantity 和 canonical 错误，必须返回精确文本。
   该门禁防止 Prometheus 原始样本与日汇总证据被篡改时退化为模糊错误。
+- A1382 固定 metering storage archiver/roller 收据错误字符串：
+  对象存储 sample archive receipt、usage stdout/receipt 匹配、rollup archive receipt
+  和 sample read receipt 的漂移，以及 archiver/roller object identity 校验，必须返回精确文本。
+  该门禁防止对象存储计量归档在不可变对象收据或配置身份损坏时只暴露模糊错误。
 
 ### P2：运维兼容和长期验证
 

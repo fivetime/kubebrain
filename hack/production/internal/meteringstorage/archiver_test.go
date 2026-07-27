@@ -86,7 +86,7 @@ func TestValidateObjectStorageSampleArchiveReceiptRejectsRetentionModeDrift(t *t
 
 	err = validateBlobReceipt(data, artifactID, "instance-a", "metering-store",
 		"metering", objectKey, "COMPLIANCE", retainUntil, status)
-	require.ErrorContains(t, err, "does not match artifact")
+	require.EqualError(t, err, "object storage sample archive receipt does not match artifact")
 
 	receipt.RetentionMode = "COMPLIANCE"
 	data, err = json.Marshal(receipt)
@@ -112,7 +112,7 @@ func TestArchiverRejectsUsageReceiptMismatchBeforeArchive(t *testing.T) {
 		return output, nil
 	}
 	_, _, err := validArchiver(now, run).Process(context.Background())
-	require.ErrorContains(t, err, "stdout")
+	require.EqualError(t, err, "object storage usage stdout does not match receipt")
 	require.Zero(t, archiveCalls)
 }
 
@@ -135,41 +135,41 @@ func TestArchiverValidationRejectsUnsafeObjectIdentity(t *testing.T) {
 			mutate: func(a *Archiver) {
 				a.SourceObjectStoreID = "backup-store\nother"
 			},
-			want: "object identity",
+			want: "object storage sample object identity is invalid",
 		},
 		{
 			name: "metering bucket whitespace",
 			mutate: func(a *Archiver) {
 				a.MeteringBucket = "metering bucket"
 			},
-			want: "object identity",
+			want: "object storage sample object identity is invalid",
 		},
 		{
 			name: "source prefix parent",
 			mutate: func(a *Archiver) {
 				a.SourcePrefix = "../instance-a"
 			},
-			want: "object identity",
+			want: "object storage sample object identity is invalid",
 		},
 		{
 			name: "snapshot prefix unclean",
 			mutate: func(a *Archiver) {
 				a.SnapshotPrefix = "metering-storage-samples//hourly"
 			},
-			want: "object identity",
+			want: "object storage sample object identity is invalid",
 		},
 		{
 			name: "allowed format whitespace",
 			mutate: func(a *Archiver) {
 				a.AllowedFormats = []string{"kubebrain logical"}
 			},
-			want: "formats",
+			want: "object storage sample formats must be unique and sorted",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			archiver := validArchiver(now, nil)
 			tc.mutate(archiver)
-			require.ErrorContains(t, archiver.Validate(), tc.want)
+			require.EqualError(t, archiver.Validate(), tc.want)
 		})
 	}
 }

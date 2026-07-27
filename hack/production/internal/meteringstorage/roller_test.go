@@ -98,7 +98,7 @@ func TestValidateObjectStorageRollupArchiveReceiptRejectsRetentionModeAndTrailin
 
 	err = validateRollupBlobReceipt(data, artifactID, "instance-a", "metering-store",
 		"metering", objectKey, "COMPLIANCE", retainUntil, status)
-	require.ErrorContains(t, err, "does not match artifact")
+	require.EqualError(t, err, "object storage rollup archive receipt does not match artifact")
 
 	receipt.RetentionMode = "COMPLIANCE"
 	data, err = json.Marshal(receipt)
@@ -109,7 +109,7 @@ func TestValidateObjectStorageRollupArchiveReceiptRejectsRetentionModeAndTrailin
 	data = append(data, []byte(`{"trailing":true}`)...)
 	err = validateRollupBlobReceipt(data, artifactID, "instance-a", "metering-store",
 		"metering", objectKey, "COMPLIANCE", retainUntil, status)
-	require.ErrorContains(t, err, "trailing JSON")
+	require.EqualError(t, err, "object storage rollup archive receipt contains trailing JSON")
 }
 
 func TestParseObjectStorageSampleReadReceiptRejectsRetainUntilBelowMinimum(t *testing.T) {
@@ -130,7 +130,7 @@ func TestParseObjectStorageSampleReadReceiptRejectsRetainUntilBelowMinimum(t *te
 
 	_, err = parseBlobReadReceipt(data, SnapshotFormat, artifactID, "instance-a",
 		"metering-store", "metering", objectKey, minRetainUntil)
-	require.ErrorContains(t, err, "does not match request")
+	require.EqualError(t, err, "object storage sample read receipt does not match request")
 
 	receipt.RetainUntilUnix = minRetainUntil
 	data, err = json.Marshal(receipt)
@@ -156,7 +156,7 @@ func TestStorageRollerValidationRejectsUnsafeObjectIdentity(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			roller := validStorageRoller(time.Now())
 			tt.mutate(roller)
-			require.ErrorContains(t, roller.Validate(), "object identity")
+			require.EqualError(t, roller.Validate(), "object storage roller object identity is invalid")
 		})
 	}
 }
