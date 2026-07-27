@@ -16638,6 +16638,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   返回精确 `ok\n`；单项 `/livez/serializable_read?exclude=serializable_read` 必须忽略
   exclude、实际探测存储并返回 503 及失败原因。该门禁与 A1398 共同固定 exclude 只属于
   聚合根路径，避免 liveness 单项诊断被意外绕过。
+- A1400 固定 livez/readyz 失败响应字节与 header：
+  upstream 把已带尾换行的 check reason 交给 `http.Error`，因此单项失败 body 必须保留
+  精确双换行。storage unavailable 的 livez root/subcheck 返回
+  `[-]serializable_read failed: storage unavailable\n\n`，CORRUPT readyz subcheck 返回
+  `[-]data_corruption failed: alarm activated: CORRUPT\n\n`，并带
+  `text/plain; charset=utf-8` 与 `nosniff`。该门禁防止 HTTP helper 重构改变探针诊断外观。
 
 ### P2：运维兼容和长期验证
 

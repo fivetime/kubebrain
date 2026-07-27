@@ -510,12 +510,14 @@ func TestHTTPHealthAndReadyzExposeCorruptAlarm(t *testing.T) {
 	handlers["/readyz/data_corruption"].ServeHTTP(recorder,
 		httptest.NewRequest(http.MethodGet, "/readyz/data_corruption?verbose", nil))
 	require.Equal(t, http.StatusServiceUnavailable, recorder.Code)
-	require.Contains(t, recorder.Body.String(), "[-]data_corruption failed: alarm activated: CORRUPT")
+	require.Equal(t, "[-]data_corruption failed: alarm activated: CORRUPT\n\n", recorder.Body.String())
+	require.Equal(t, "text/plain; charset=utf-8", recorder.Header().Get("Content-Type"))
+	require.Equal(t, "nosniff", recorder.Header().Get("X-Content-Type-Options"))
 	recorder = httptest.NewRecorder()
 	handlers["/readyz/data_corruption"].ServeHTTP(recorder,
 		httptest.NewRequest(http.MethodGet, "/readyz/data_corruption?exclude=data_corruption", nil))
 	require.Equal(t, http.StatusServiceUnavailable, recorder.Code)
-	require.Contains(t, recorder.Body.String(), "[-]data_corruption failed: alarm activated: CORRUPT")
+	require.Equal(t, "[-]data_corruption failed: alarm activated: CORRUPT\n\n", recorder.Body.String())
 	recorder = httptest.NewRecorder()
 	handlers["/readyz"].ServeHTTP(recorder,
 		httptest.NewRequest(http.MethodGet, "/readyz?exclude=data_corruption", nil))
@@ -652,7 +654,9 @@ func TestEtcdLivezAndReadyzChecks(t *testing.T) {
 	recorder = httptest.NewRecorder()
 	handlers["/livez"].ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/livez", nil))
 	require.Equal(t, http.StatusServiceUnavailable, recorder.Code)
-	require.Contains(t, recorder.Body.String(), "[-]serializable_read failed: storage unavailable\n")
+	require.Equal(t, "[-]serializable_read failed: storage unavailable\n\n", recorder.Body.String())
+	require.Equal(t, "text/plain; charset=utf-8", recorder.Header().Get("Content-Type"))
+	require.Equal(t, "nosniff", recorder.Header().Get("X-Content-Type-Options"))
 
 	recorder = httptest.NewRecorder()
 	handlers["/livez"].ServeHTTP(recorder,
@@ -664,7 +668,7 @@ func TestEtcdLivezAndReadyzChecks(t *testing.T) {
 	handlers["/livez/serializable_read"].ServeHTTP(recorder,
 		httptest.NewRequest(http.MethodGet, "/livez/serializable_read?exclude=serializable_read", nil))
 	require.Equal(t, http.StatusServiceUnavailable, recorder.Code)
-	require.Contains(t, recorder.Body.String(), "[-]serializable_read failed: storage unavailable\n")
+	require.Equal(t, "[-]serializable_read failed: storage unavailable\n\n", recorder.Body.String())
 
 	recorder = httptest.NewRecorder()
 	handlers["/ping"].ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/ping", nil))
