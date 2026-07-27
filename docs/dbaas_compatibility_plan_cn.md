@@ -16456,6 +16456,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   future/compacted revision 错误必须保留裸 etcd message、typed `ErrorIs` 和公开 status code。
   该门禁防止流式读路径在 unsupported option 和 MVCC revision 边界上混淆 raw gRPC 与 client
   wrapper 错误形态。
+- A1362 固定 client-side transport limit 错误片段：
+  clientv3 Put/Range 在 gRPC transport message size 限制触发时，`err.Error()` 与 status
+  message 必须保留稳定的大小限制片段，并保持 `codes.ResourceExhausted`，同时不能误映射为
+  etcd server-side `ErrRequestTooLarge`。该门禁防止客户端传输层超限和服务端逻辑请求超限
+  两类错误在 DBaaS 数据面上混淆。
 
 ### P2：运维兼容和长期验证
 

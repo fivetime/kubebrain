@@ -472,7 +472,7 @@ func requireClientPutError(t *testing.T, err error, code codes.Code, message str
 
 func requireClientPutTransportLimitError(t *testing.T, err error, messageFragment string) {
 	t.Helper()
-	require.Error(t, err)
+	require.ErrorContains(t, err, messageFragment)
 	require.Equal(t, codes.ResourceExhausted, status.Code(err))
 	require.Contains(t, status.Convert(err).Message(), messageFragment)
 	require.False(t, errors.Is(err, rpctypes.ErrRequestTooLarge))
