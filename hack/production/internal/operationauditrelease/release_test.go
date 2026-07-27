@@ -58,7 +58,7 @@ func TestReleaseRejectsReceiptAndCurrentOperationDrift(t *testing.T) {
 		receipt.OperationUID = "other"
 		writeCanonicalJSON(t, receiptPath, receipt)
 		_, err = releaseWithExpected(context.Background(), client, "operations", "backup-1", artifactPath, receiptPath)
-		require.ErrorContains(t, err, "does not match")
+		require.EqualError(t, err, "archive receipt does not match the operation audit artifact")
 	})
 	t.Run("receipt archived before completion", func(t *testing.T) {
 		object := archivedOperation()
@@ -71,7 +71,7 @@ func TestReleaseRejectsReceiptAndCurrentOperationDrift(t *testing.T) {
 		receipt.ArchivedAtUnix = 100
 		writeCanonicalJSON(t, receiptPath, receipt)
 		_, err = releaseWithExpected(context.Background(), client, "operations", "backup-1", artifactPath, receiptPath)
-		require.ErrorContains(t, err, "predates terminal operation completion")
+		require.EqualError(t, err, "archive receipt predates terminal operation completion")
 		current, getErr := client.Resource(operationqueue.Resource).Namespace("operations").
 			Get(context.Background(), "backup-1", metav1.GetOptions{})
 		require.NoError(t, getErr)
@@ -85,7 +85,7 @@ func TestReleaseRejectsReceiptAndCurrentOperationDrift(t *testing.T) {
 			context.Background(), releaseClient(object), "operations", "backup-1",
 			artifactPath, receiptPath,
 		)
-		require.ErrorContains(t, err, "current terminal operation does not match")
+		require.EqualError(t, err, "current terminal operation does not match the archived artifact")
 	})
 }
 
@@ -98,7 +98,7 @@ func TestReleaseWithExpectedReceiptRejectsScopeDrift(t *testing.T) {
 		context.Background(), client, "operations", "backup-1", artifactPath, receiptPath,
 		ExpectedArchiveReceipt{},
 	)
-	require.ErrorContains(t, err, "scope is incomplete")
+	require.EqualError(t, err, "expected archive receipt scope is incomplete")
 
 	_, err = ReleaseWithExpectedReceipt(
 		context.Background(), client, "operations", "backup-1", artifactPath, receiptPath,
@@ -107,7 +107,16 @@ func TestReleaseWithExpectedReceiptRejectsScopeDrift(t *testing.T) {
 			RetentionMode: "COMPLIANCE", RetainUntilUnix: 200,
 		},
 	)
-	require.ErrorContains(t, err, "expected object")
+	require.EqualError(t, err, "archive receipt does not match expected object")
+
+	_, err = ReleaseWithExpectedReceipt(
+		context.Background(), client, "operations", "backup-1", artifactPath, receiptPath,
+		ExpectedArchiveReceipt{
+			ObjectStoreID: "store-a", Bucket: "audits", ObjectKey: "instance-a/backup-1.json",
+			RetentionMode: "GOVERNANCE", RetainUntilUnix: 200,
+		},
+	)
+	require.EqualError(t, err, "archive receipt does not match expected retention")
 
 	result, err := ReleaseWithExpectedReceipt(
 		context.Background(), client, "operations", "backup-1", artifactPath, receiptPath,

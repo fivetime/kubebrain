@@ -16506,6 +16506,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   校验必须返回精确 fail-closed 错误文本，并继续保留 `ErrInvalidSpec` typed error。该门禁
   防止管理面队列在 operation ID、instance、type、digest、参数 Secret、状态 owner/message
   或 receipt SHA 边界上退化为模糊错误，削弱生产排障和审计证据。
+- A1373 固定 operation audit release 错误字符串：
+  operation audit finalizer release 在 archive receipt 与 artifact 不匹配、receipt 早于
+  terminal completion、当前 terminal operation 漂移、expected scope/object/retention
+  漂移时，必须返回精确 fail-closed 错误文本。该门禁防止审计归档释放路径在证据不一致时
+  退化为模糊错误或误释放 finalizer。
 
 ### P2：运维兼容和长期验证
 
