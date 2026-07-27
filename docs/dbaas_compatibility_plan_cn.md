@@ -17342,6 +17342,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   存在数据时，`Compare(Version("range/a").WithRange("range/d"), ">", 0)` 必须失败并执行
   `Else(OpGet(...))` 返回空 `ResponseRange`。该回归防止 `prefixCmps` 把相邻物理 namespace 或
   相邻 logical range 纳入 compare，导致 leasing range guard 误通过。
+- A1509 固定官方 client/v3 namespace.NewKV nested OpTxn 的显式 logical range get 外观：
+  对照 upstream leasing `serverTxn` 会把用户事务包成 nested `OpTxn` 后提交给底层 KV，且
+  upstream namespace `unprefixTxnResponse` 对 `ResponseTxn` 递归 unprefix。本轮新增 official
+  clientv3 bufconn 回归固定
+  `namespace.NewKV(...).Txn(...).Then(OpTxn(nil, []Op{OpGet("range/a",
+  WithRange("range/d"), WithKeysOnly())}, nil)).Commit()` 必须在 nested `ResponseTxn` 的
+  `ResponseRange` 中返回 logical `range/a,b,c`、空 values、`Count=3`、`More=false`，并排除
+  upper bound、同 tenant 相邻 range 与相邻 tenant。该回归防止 nested Txn response adapter 漏
+  做递归 unprefix。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
