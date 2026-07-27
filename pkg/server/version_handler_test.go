@@ -36,6 +36,10 @@ func TestVersionHandlerReturnsEtcdShape(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.Equal(t, "application/json", rec.Header().Get("Content-Type"))
+	require.Equal(t, fmt.Sprintf(
+		`{"etcdserver":%q,"etcdcluster":%q,"storage":%q}`,
+		etcd.Version, etcd.ClusterVersion, etcd.Version,
+	), rec.Body.String())
 
 	var body struct {
 		EtcdServer  string `json:"etcdserver"`
@@ -59,10 +63,23 @@ func TestVersionHandlerReturnsEtcdShape(t *testing.T) {
 }
 
 func TestVersionHandlerRejectsNonGet(t *testing.T) {
-	rec := httptest.NewRecorder()
-	(&server{}).versionHandler(rec, httptest.NewRequest(http.MethodPost, "/version", nil))
-	require.Equal(t, http.StatusMethodNotAllowed, rec.Code)
-	require.Equal(t, http.MethodGet, rec.Header().Get("Allow"))
+	for _, method := range []string{
+		http.MethodConnect,
+		http.MethodTrace,
+		http.MethodPut,
+		http.MethodPost,
+		http.MethodHead,
+	} {
+		t.Run(method, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			(&server{}).versionHandler(rec, httptest.NewRequest(method, "/version", nil))
+			require.Equal(t, http.StatusMethodNotAllowed, rec.Code)
+			require.Equal(t, http.MethodGet, rec.Header().Get("Allow"))
+			require.Equal(t, "Method Not Allowed\n", rec.Body.String())
+			require.Equal(t, "text/plain; charset=utf-8", rec.Header().Get("Content-Type"))
+			require.Equal(t, "nosniff", rec.Header().Get("X-Content-Type-Options"))
+		})
+	}
 }
 
 func TestPeerHTTPHandlersExposeVersion(t *testing.T) {

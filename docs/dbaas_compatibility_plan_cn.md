@@ -16617,6 +16617,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   区分大小写。NOSPACE+CORRUPT 并存时只排除一个必须报告另一个；两者均排除、重复排除，
   以及夹带空值/未知值后仍精确排除两者必须返回 200；小写 `nospace`/`corrupt` 不得匹配。
   该门禁防止探针代理重排或重复 query 后丢失排除项，或宽松匹配意外隐藏真实告警。
+- A1396 固定 `/version` 字节级响应与方法拒绝契约：
+  对照 `/root/etcd/server/etcdserver/api/etcdhttp/version.go` 及其测试，GET 必须按
+  `etcdserver`、`etcdcluster`、`storage` 顺序输出无尾换行的精确 JSON；CONNECT、TRACE、
+  PUT、POST、HEAD 均必须返回 405、`Allow: GET`、精确 `Method Not Allowed\n`，
+  `text/plain; charset=utf-8` 和 `X-Content-Type-Options: nosniff`。该门禁防止 kubeadm
+  版本探测或 HTTP 代理遇到 handler 重构后看到字段/方法外观漂移。
 
 ### P2：运维兼容和长期验证
 
