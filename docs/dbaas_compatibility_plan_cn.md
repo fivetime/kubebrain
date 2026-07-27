@@ -18787,6 +18787,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   revision 必须等于后续同 prefix 写入产生的 latest revision，并排除同 tenant 相邻 prefix 和相邻
   tenant。该回归补齐 A1671 historical prefix create-revision desc 普通分页与 A1754-A1756 current
   prefix key-sort 之外的 current create-revision sort 路径。
+- A1758 固定官方 client/v3 namespace.NewKV nested OpTxn 的 non-empty prefix current
+  serializable mod-revision desc sort 分页外观：nested `OpGet("items/", WithPrefix(),
+  WithSerializable(), WithLimit(2), WithSort(SortByModRevision, SortDescend))` 必须在最新
+  revision 上按当前 namespace logical prefix 内 mod revision 降序分页，返回
+  `items/a=updated-items/a`、`items/b=updated-items/b`、`Count=3`、`More=true`，response header
+  revision 必须等于后续同 prefix 写入产生的 latest revision，并排除同 tenant 相邻 prefix 和相邻
+  tenant。该回归补齐 A1672 historical prefix mod-revision desc 普通分页与 A1757 current
+  prefix create-revision desc 的对侧路径。
 - A1705 固定官方 client/v3 namespace.NewKV nested OpTxn 的显式 logical range current
   serializable MinModRev filter 外观：nested `OpGet("range/a", WithRange("range/d"),
   WithSerializable(), WithMinModRev(updateRev), WithSort(SortByKey, SortAscend))` 必须在最新
