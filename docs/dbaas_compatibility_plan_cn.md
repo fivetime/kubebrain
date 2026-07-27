@@ -17654,6 +17654,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   当前 namespace 的 logical `[ "", "z" )` range，返回范围内最新修改的 `items/a=updated-items/a`，
   排除 upper bound 外的 `z/final` 和相邻 tenant key，并保持 `Count=2`、`More=true`。该回归
   补齐 A1528 非空 start 显式 range 之外的 empty-start 路径，防止 range end 映射或 unprefix 泄漏。
+- A1565 固定官方 client/v3 namespace.NewKV nested OpTxn 的 empty logical start 显式 range
+  delete 外观：nested `OpDelete("", WithRange("z"), WithPrevKV())` 必须只删除当前 namespace 的
+  logical `[ "", "z" )` range，PrevKV 返回 logical `alpha/a`、`items/a`，保留 upper bound 外的
+  `z/final` 和相邻 tenant keys。该回归补齐 A1548 empty-prefix delete 与 A1564 empty-start
+  read 之外的 delete range 路径，防止 DeleteRange adapter 泄漏物理 prefix 或错误扩大 range。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
