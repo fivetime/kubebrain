@@ -264,6 +264,57 @@ func TestClientRequireLeaderAcceptsKnownRemoteLeader(t *testing.T) {
 	require.Equal(t, healthpb.HealthCheckResponse_SERVING, response.Status)
 }
 
+func TestClientRequireLeaderUsesFirstMetadataValue(t *testing.T) {
+	rpc, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	rpc.peers = testPeerService{isLeader: false, noLeader: true}
+
+	healthServer := health.NewServer()
+	healthServer.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
+	listener := startAdmissionServer(t, rpc.ClientServerOptions(), healthServer)
+	client := admissionClient(t, listener)
+
+	for _, test := range []struct {
+		name    string
+		values  []string
+		rejects bool
+	}{
+		{
+			name:   "later require-leader value is ignored",
+			values: []string{"invalid", rpctypes.MetadataHasLeader},
+		},
+		{
+			name:    "first require-leader value is authoritative",
+			values:  []string{rpctypes.MetadataHasLeader, "invalid"},
+			rejects: true,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			md := metadata.MD{}
+			md.Set(rpctypes.MetadataRequireLeaderKey, test.values...)
+			ctx := metadata.NewOutgoingContext(context.Background(), md)
+
+			response, err := client.Check(ctx, &healthpb.HealthCheckRequest{})
+			if test.rejects {
+				requireAdmissionError(t, err, rpctypes.ErrGRPCNoLeader, codes.Unavailable, "etcdserver: no leader")
+			} else {
+				require.NoError(t, err)
+				require.Equal(t, healthpb.HealthCheckResponse_SERVING, response.Status)
+			}
+
+			stream, err := client.Watch(ctx, &healthpb.HealthCheckRequest{})
+			require.NoError(t, err)
+			response, err = stream.Recv()
+			if test.rejects {
+				requireAdmissionError(t, err, rpctypes.ErrGRPCNoLeader, codes.Unavailable, "etcdserver: no leader")
+			} else {
+				require.NoError(t, err)
+				require.Equal(t, healthpb.HealthCheckResponse_SERVING, response.Status)
+			}
+		})
+	}
+}
+
 func TestClientRequireLeaderStreamClosesWhenLeaderIsLost(t *testing.T) {
 	rpc, closeFn := newTestRPCServer(t)
 	defer closeFn()

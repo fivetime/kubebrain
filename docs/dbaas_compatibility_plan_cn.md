@@ -16578,6 +16578,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   price catalog executor 失败必须保留读取阶段、context error 和 executor 输出；provider statement
   instance 漂移，以及 payment ledger invoice receipt 与下载 bytes 不一致，必须返回精确错误文本。
   该门禁防止账单输入读取失败丢失阶段上下文，或身份/收据漂移只以模糊错误通过。
+- A1389 固定 require-leader 多值 metadata 顺序语义：
+  对照 `/root/etcd/server/etcdserver/api/v3rpc/interceptor.go`，unary 与 stream admission
+  对 `etcd-server-leader` 均只解释第一个 metadata value；首值不是 `true` 时即使后续值为
+  `true` 也必须放行，首值为 `true` 时即使后续值非法也必须在无 leader 时返回精确
+  `Unavailable: etcdserver: no leader`。该门禁防止代理重复注入 header 后 KubeBrain 使用
+  “任一值匹配”而偏离 etcd 的顺序契约。
 
 ### P2：运维兼容和长期验证
 
