@@ -1473,7 +1473,8 @@ func TestLeaseFollowerProxiesUnaryGrant(t *testing.T) {
 		leaseGrantFn: func(ctx context.Context, req *etcdserverpb.LeaseGrantRequest) (*etcdserverpb.LeaseGrantResponse, error) {
 			called = true
 			require.Equal(t, int64(30), req.TTL)
-			return &etcdserverpb.LeaseGrantResponse{ID: 6001, TTL: req.TTL}, nil
+			require.Positive(t, req.ID)
+			return &etcdserverpb.LeaseGrantResponse{ID: req.ID, TTL: req.TTL}, nil
 		},
 	})
 	defer func() {
@@ -1482,10 +1483,12 @@ func TestLeaseFollowerProxiesUnaryGrant(t *testing.T) {
 		ctrl.Finish()
 	}()
 
-	resp, err := server.LeaseGrant(context.Background(), &etcdserverpb.LeaseGrantRequest{TTL: 30})
+	request := &etcdserverpb.LeaseGrantRequest{TTL: 30}
+	resp, err := server.LeaseGrant(context.Background(), request)
 	require.NoError(t, err)
 	require.True(t, called)
-	require.Equal(t, int64(6001), resp.ID)
+	require.Positive(t, request.ID)
+	require.Equal(t, request.ID, resp.ID)
 }
 
 func TestLeaseFollowerProxiesKeepAlive(t *testing.T) {

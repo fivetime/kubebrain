@@ -16754,6 +16754,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   的 follower 写拒绝测试原先只覆盖显式 ID；本轮加入自动 ID grant，固定返回
   leader unavailable 错误时 `LeaseGrantRequest.ID` 已被改写，防止未来把自动 ID 分配移到
   leader/forwarding admission 之后。
+- A1420 加固 LeaseGrant 自动 ID 的 follower forwarding 分支：
+  A1419 覆盖 proxy disabled 的本地拒绝路径后，本轮继续收紧 proxy enabled 分支。follower
+  收到 `ID=0` 的 `LeaseGrant` 时必须先写回正 lease ID，再把同一 request 转发给 leader；
+  回归在 fake peer 中断言 forwarded request 已携带正 ID，并让响应 ID 等于该 ID，最终
+  验证调用方原始 request 与响应一致，防止未来重构让 leader 看到 `ID=0` 或 follower
+  本地 request 生命周期与成功响应脱节。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
