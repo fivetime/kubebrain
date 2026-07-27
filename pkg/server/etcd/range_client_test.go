@@ -15473,6 +15473,88 @@ func TestClientNamespaceNestedTxnGetSerializableLogicalRangeWithFirstKeyReturnsL
 	require.Equal(t, int64(1), outsideTenant.Count)
 }
 
+func TestClientNamespaceNestedTxnGetSerializableLogicalRangeWithLastKeyReturnsLogicalKey(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	tenantPrefix := "/a1712/namespace-nested-txn-serializable-logical-range-last-key/tenant/"
+	namespacedKV := namespace.NewKV(client.KV, tenantPrefix)
+	_, err = client.Put(ctx, "/a1712/namespace-nested-txn-serializable-logical-range-last-key/tenant/range0/outside", "same-tenant-outside-range")
+	require.NoError(t, err)
+	_, err = client.Put(ctx, "/a1712/namespace-nested-txn-serializable-logical-range-last-key/tenant0/range/z", "outside-tenant")
+	require.NoError(t, err)
+	for _, key := range []string{"range/a", "range/b", "range/c"} {
+		_, err = namespacedKV.Put(ctx, key, "value-"+key)
+		require.NoError(t, err)
+	}
+	_, err = namespacedKV.Put(ctx, "range/d", "outside-upper-bound")
+	require.NoError(t, err)
+	latest, err := namespacedKV.Put(ctx, "other/newer", "other")
+	require.NoError(t, err)
+
+	getOpts := append(clientv3.WithLastKey(),
+		clientv3.WithRange("range/d"),
+		clientv3.WithSerializable())
+	txnResp, err := namespacedKV.Txn(ctx).
+		Then(clientv3.OpTxn(nil,
+			[]clientv3.Op{clientv3.OpGet("range/a", getOpts...)},
+			nil)).
+		Commit()
+	require.NoError(t, err)
+	require.True(t, txnResp.Succeeded)
+	require.Equal(t, latest.Header.Revision, txnResp.Header.Revision)
+	require.Len(t, txnResp.Responses, 1)
+	nestedTxn := txnResp.Responses[0].GetResponseTxn()
+	require.NotNil(t, nestedTxn)
+	require.True(t, nestedTxn.Succeeded)
+	require.Len(t, nestedTxn.Responses, 1)
+	nestedGet := nestedTxn.Responses[0].GetResponseRange()
+	require.NotNil(t, nestedGet)
+	require.NotNil(t, nestedGet.Header)
+	require.Equal(t, latest.Header.Revision, nestedGet.Header.Revision)
+	require.Equal(t, int64(3), nestedGet.Count)
+	require.True(t, nestedGet.More)
+	require.Len(t, nestedGet.Kvs, 1)
+	require.Equal(t, []byte("range/c"), nestedGet.Kvs[0].Key)
+	require.Equal(t, []byte("value-range/c"), nestedGet.Kvs[0].Value)
+
+	current, err := namespacedKV.Get(ctx, "range/a", clientv3.WithRange("range/d"))
+	require.NoError(t, err)
+	require.Equal(t, int64(3), current.Count)
+	require.Equal(t, [][]byte{[]byte("range/a"), []byte("range/b"), []byte("range/c")},
+		[][]byte{current.Kvs[0].Key, current.Kvs[1].Key, current.Kvs[2].Key})
+	upperBound, err := namespacedKV.Get(ctx, "range/d")
+	require.NoError(t, err)
+	require.Equal(t, int64(1), upperBound.Count)
+	outsideSameTenantRange, err := client.Get(ctx, "/a1712/namespace-nested-txn-serializable-logical-range-last-key/tenant/range0/", clientv3.WithPrefix())
+	require.NoError(t, err)
+	require.Equal(t, int64(1), outsideSameTenantRange.Count)
+	outsideTenant, err := client.Get(ctx, "/a1712/namespace-nested-txn-serializable-logical-range-last-key/tenant0/", clientv3.WithPrefix())
+	require.NoError(t, err)
+	require.Equal(t, int64(1), outsideTenant.Count)
+}
+
 func TestClientNamespaceNestedTxnGetHistoricalSerializablePrefixSortByCreateRevisionDescReturnsLogicalPage(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
