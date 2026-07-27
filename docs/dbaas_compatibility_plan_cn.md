@@ -17622,6 +17622,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   其中早创建但后更新的 `alpha/a` 返回当前 value；阈值之后创建的 `items/b`、`z/final` 和
   相邻 tenant key 都不能进入响应，并保持 `Count` 的 etcd Range 外观。该回归补齐 A1557
   MinCreateRev 对侧边界，防止 empty-prefix create revision filter 扩大到物理/全局 keyspace。
+- A1559 固定官方 client/v3 namespace.NewKV nested OpTxn 的 empty-key prefix `WithFirstCreate()`
+  top-helper 外观：nested `OpGet("", WithFirstCreate()...)` 必须按 helper 展开后的 prefix +
+  create revision 升序 + limit 1 只扫描当前 namespace 全前缀；即使相邻 tenant 更早创建，也必须
+  返回 logical `alpha/oldest`，并保持 `Count=3`、`More=true`。该回归补齐 A1523 非空 prefix
+  `WithFirstCreate()` 之外的 empty-prefix 路径，防止 top-helper 展开选项泄漏物理/全局 keyspace。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
