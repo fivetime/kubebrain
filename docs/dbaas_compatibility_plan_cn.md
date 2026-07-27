@@ -17488,6 +17488,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `items/a=old-a`，但 response header revision 保持当前 latest revision，且相邻 prefix/tenant
   不可见。该回归防止 nested Txn 子 Range 丢失 `Serializable` flag、误用历史 revision 作为
   response header，或在 historical serializable 路径上泄漏物理 namespace prefix。
+- A1536 固定官方 client/v3 namespace.NewKV nested OpTxn 的 current serializable prefix range
+  外观：nested `OpGet("items/", WithPrefix(), WithSerializable())` 必须返回当前 namespace logical
+  `items/a,b,c` 及 values，`Count=3`、`More=false`，且 response header revision 为当前 latest
+  revision。该回归防止 nested serializable Range 丢失 namespace prefix/unprefix 处理或把相邻
+  prefix/tenant 纳入当前读。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
