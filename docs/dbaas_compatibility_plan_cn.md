@@ -17675,6 +17675,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   内按 value 降序分页，返回 logical `items/b`、`items/a` 及 values，`Count=3`、`More=true`，
   并排除 upper bound 外的 `z/final` 和相邻 tenant。该回归补齐 A1552 empty-prefix value sort
   与 A1567 empty-start KeysOnly page 之外的 explicit range sort 路径。
+- A1569 固定官方 client/v3 namespace.NewKV nested OpTxn 的 empty logical start 显式 range
+  historical revision 外观：nested `OpGet("", WithRange("z"), WithRev(historyRev))` 必须在指定历史
+  revision 上只读取当前 namespace 的 logical `[ "", "z" )` range，返回旧 `alpha/a`、`items/a`
+  及 values；之后的更新、删除、新增、upper bound 外 `z/final` 和相邻 tenant 不得污染历史响应。
+  该回归补齐 A1553 empty-prefix historical 之外的 empty-start explicit range 历史路径。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
