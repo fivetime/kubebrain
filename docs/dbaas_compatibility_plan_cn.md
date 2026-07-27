@@ -17473,6 +17473,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   nested `OpGet("items/", WithPrefix(), WithMinModRev(rev+1), WithMaxModRev(rev), WithLimit(1))`
   必须只统计当前 namespace logical prefix，返回空 KVs、`Count=3`、`More=false`。该回归防止
   nested filter 组合在无匹配结果时把 limit 当成 Count、或把相邻 prefix/tenant 纳入统计。
+- A1533 固定官方 client/v3 namespace.NewKV nested OpTxn 的 historical revision 外观：
+  nested `OpGet("items/", WithPrefix(), WithRev(firstRev))` 必须在指定历史 revision 上只读取当前
+  namespace 的 logical prefix，返回 logical `items/a=old-a`、`Count=1`、`More=false`，后续
+  update/new key、同 tenant 相邻 prefix 与相邻 tenant 均不可见。该回归防止 nested historical
+  range 在递归 prefix/unprefix 路径上使用当前 revision 或泄漏物理 prefix。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
