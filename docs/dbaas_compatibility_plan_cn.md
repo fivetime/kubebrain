@@ -16483,6 +16483,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   client admission 的长流请求在占用 in-flight slot 后被调用方取消时，`Recv()` 必须返回完整
   `codes.Canceled` status error，并保留 `context canceled` message。该门禁防止 admission
   slot 生命周期测试只验证“有错误”，却漏掉 stream 取消路径的客户端可观测错误漂移。
+- A1368 固定 raw Watch RPC 终止错误字符串：
+  raw Watch RPC 的 barrier/proxy unavailable 与 watch canceled 路径必须返回完整
+  `status.Error(code, message)` 字符串，并继续保持原有 gRPC code/message。该门禁防止
+  服务端 Watch 流在 read barrier、leader proxy 和 cancel 边界上只校验分类、不校验最终错误文本。
 
 ### P2：运维兼容和长期验证
 

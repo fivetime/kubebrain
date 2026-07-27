@@ -1256,14 +1256,14 @@ func TestFollowerWatchQuotaReservationReleasedOnCreateFailure(t *testing.T) {
 
 func requireWatchStatusError(t *testing.T, err error, code codes.Code, message string) {
 	t.Helper()
-	require.Error(t, err)
+	require.EqualError(t, err, status.Error(code, message).Error())
 	require.Equal(t, code, status.Code(err))
 	require.Equal(t, message, status.Convert(err).Message())
 }
 
 func requireWatchCanceled(t *testing.T, err error) {
 	t.Helper()
-	require.Error(t, err)
+	require.EqualError(t, err, status.Error(codes.Canceled, "etcdserver: watch canceled").Error())
 	require.Equal(t, codes.Canceled, status.Code(err))
 	require.Equal(t, "etcdserver: watch canceled", status.Convert(err).Message())
 }
