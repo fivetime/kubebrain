@@ -804,6 +804,17 @@ func TestClientNamespaceGetLastCreateWithMaxCreateRevisionReturnsLogicalKey(t *t
 	require.Len(t, resp.Kvs, 1)
 	require.Equal(t, []byte("waiters/b"), resp.Kvs[0].Key)
 	require.Equal(t, []byte("value-waiters/b"), resp.Kvs[0].Value)
+
+	doResp, err := namespacedKV.Do(ctx, clientv3.OpGet("waiters/", getOpts...))
+	require.NoError(t, err)
+	doGet := doResp.Get()
+	require.NotNil(t, doGet)
+	require.NotNil(t, doGet.Header)
+	require.Equal(t, int64(3), doGet.Count)
+	require.True(t, doGet.More)
+	require.Len(t, doGet.Kvs, 1)
+	require.Equal(t, []byte("waiters/b"), doGet.Kvs[0].Key)
+	require.Equal(t, []byte("value-waiters/b"), doGet.Kvs[0].Value)
 }
 
 func TestClientNamespaceTxnGetValidationErrorsMatchEtcd(t *testing.T) {
