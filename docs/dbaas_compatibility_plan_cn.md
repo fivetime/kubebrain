@@ -16918,6 +16918,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `Unknown`/`etcdserver: key is not provided` 并匹配 `rpctypes.ErrEmptyKey`，而合法 key
   的 invalid sort 仍匹配 `rpctypes.ErrInvalidSortOption`。该回归防止把单独 Get wrapper
   的本地 sort prevalidation 错误地套用到 Txn path。
+- A1448 固定官方 client/v3 namespace.NewKV Get 的 validation 外观：
+  upstream `namespace.kvPrefix.Get` 先检查空 key（除非 `WithFromKey`/`WithPrefix`），再执行
+  `OpGet(...).IsSortOptionValid()`。因此 `namespace.NewKV(...).Get("", invalid sort)` 必须
+  先返回 public `Unknown`/`etcdserver: key is not provided` 并匹配 `rpctypes.ErrEmptyKey`；
+  `Get("", invalid sort, WithPrefix())` 与合法 key invalid sort 则必须返回
+  `rpctypes.ErrInvalidSortOption`。该回归把 namespace wrapper 与普通 `clientv3.Get`、
+  Txn 内 `OpGet` 的三种 validation 顺序明确区分开。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户

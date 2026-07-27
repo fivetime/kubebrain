@@ -29,6 +29,7 @@ import (
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	clientv3 "go.etcd.io/etcd/client/v3"
+	"go.etcd.io/etcd/client/v3/namespace"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -133,6 +134,42 @@ func TestClientGetValidationErrorsMatchEtcd(t *testing.T) {
 
 	_, err = client.Get(ctx, "",
 		clientv3.WithSort(clientv3.SortTarget(99), clientv3.SortOrder(99)))
+	requireClientKVError(t, err, rpctypes.ErrInvalidSortOption, codes.Unknown, "etcdserver: invalid sort option")
+}
+
+func TestClientNamespaceGetValidationErrorsMatchEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	namespacedKV := namespace.NewKV(client.KV, "/a1448/namespace/")
+	invalidSort := []clientv3.OpOption{clientv3.WithSort(clientv3.SortTarget(99), clientv3.SortOrder(99))}
+
+	_, err = namespacedKV.Get(ctx, "", invalidSort...)
+	requireClientKVError(t, err, rpctypes.ErrEmptyKey, codes.Unknown, "etcdserver: key is not provided")
+	_, err = namespacedKV.Get(ctx, "", append(invalidSort, clientv3.WithPrefix())...)
+	requireClientKVError(t, err, rpctypes.ErrInvalidSortOption, codes.Unknown, "etcdserver: invalid sort option")
+	_, err = namespacedKV.Get(ctx, "key", invalidSort...)
 	requireClientKVError(t, err, rpctypes.ErrInvalidSortOption, codes.Unknown, "etcdserver: invalid sort option")
 }
 
