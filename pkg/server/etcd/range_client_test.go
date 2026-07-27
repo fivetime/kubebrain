@@ -1107,6 +1107,17 @@ func TestClientNamespaceGetLastRevWithMaxModRevisionReturnsLogicalKey(t *testing
 	require.Len(t, resp.Kvs, 1)
 	require.Equal(t, []byte("locks/b"), resp.Kvs[0].Key)
 	require.Equal(t, []byte("updated-locks/b"), resp.Kvs[0].Value)
+
+	doResp, err := namespacedKV.Do(ctx, clientv3.OpGet("locks/", getOpts...))
+	require.NoError(t, err)
+	doGet := doResp.Get()
+	require.NotNil(t, doGet)
+	require.NotNil(t, doGet.Header)
+	require.Equal(t, int64(3), doGet.Count)
+	require.True(t, doGet.More)
+	require.Len(t, doGet.Kvs, 1)
+	require.Equal(t, []byte("locks/b"), doGet.Kvs[0].Key)
+	require.Equal(t, []byte("updated-locks/b"), doGet.Kvs[0].Value)
 }
 
 func TestClientNamespaceTxnGetValidationErrorsMatchEtcd(t *testing.T) {
