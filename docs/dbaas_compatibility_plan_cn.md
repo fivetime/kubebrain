@@ -17404,6 +17404,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   但相邻 tenant 存在同名后继 keys 时，nested compare 必须失败并执行 Else branch。该回归
   防止 nested `prefixCmps` 对 `WithFromKey`/`\x00` range end 处理不当，把全局后继 keyspace
   纳入 leasing range guard。
+- A1519 固定官方 client/v3 namespace.NewKV nested OpTxn 的 revision filter range get 外观：
+  nested `OpGet("items/", WithPrefix(), WithMinModRev(rev))` 必须在当前 namespace 的 logical
+  prefix 内应用 filter，只返回符合 revision 条件的 logical `items/b=new-b`，`Count` 保持该
+  logical prefix 当前 key 数，并排除同 tenant 相邻 prefix 与相邻 tenant。该回归防止 nested
+  response adapter 在 revision filter 场景泄漏物理 prefix 或扩大过滤范围。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
