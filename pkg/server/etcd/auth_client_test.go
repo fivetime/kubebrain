@@ -674,6 +674,8 @@ func TestClientAuthRolePermissionLifecycleErrors(t *testing.T) {
 		clientv3.GetPrefixRangeEnd("/missing/"),
 	)
 	requireAuthClientError(t, missingPermissionErr, codes.Unknown, "etcdserver: permission is not granted to the role", rpctypes.ErrPermissionNotGranted)
+	_, emptyRoleRevokePermissionErr := root.RoleRevokePermission(ctx, "", "/a1061/", clientv3.GetPrefixRangeEnd("/a1061/"))
+	requireAuthClientError(t, emptyRoleRevokePermissionErr, codes.Unknown, "etcdserver: role name not found", rpctypes.ErrRoleNotFound)
 	_, rawEmptyRoleRevokeErr := rawRootAuth.RoleRevokePermission(ctx, &etcdserverpb.AuthRoleRevokePermissionRequest{
 		Role: "",
 		Key:  []byte("/a1061/"),

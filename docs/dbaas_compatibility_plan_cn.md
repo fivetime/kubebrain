@@ -16847,6 +16847,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `RoleDelete(ctx, "")` 与 valid permission 的 `RoleGrantPermission(ctx, "", ...)`
   都必须暴露 `Unknown`/role not found；`RoleAdd(ctx, "")` 仍保持 role empty。该回归
   覆盖常用官方客户端路径，防止 role management 的空名语义在 wrapper 层漂移。
+- A1436 固定 A1430 在官方 client/v3 RoleRevokePermission 上的错误外观：
+  raw gRPC 已覆盖 empty role-name revoke permission 返回 role not found，本轮补齐
+  `clientv3.Auth.RoleRevokePermission(ctx, "", ...)` 包装层，固定其暴露
+  `Unknown`/role not found，而不是 permission-not-granted 或 role-empty。该回归完成
+  A1430 在常用官方客户端 role permission management API 上的外观闭环。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
