@@ -51,17 +51,17 @@ func TestBuildChargeRejectsPriceCoverageSourceAndOrderDrift(t *testing.T) {
 	catalog := validCatalog()
 	catalog.EffectiveStartUnix = rollup.PeriodStartUnix + 1
 	_, err := BuildCharge(rollup, rollupSource, catalog, catalogSource)
-	require.ErrorContains(t, err, "does not cover")
+	require.EqualError(t, err, "price catalog does not cover the complete metering period")
 
 	catalog = validCatalog()
 	catalog.Rates[0], catalog.Rates[1] = catalog.Rates[1], catalog.Rates[0]
 	_, err = BuildCharge(rollup, rollupSource, catalog, catalogSource)
-	require.ErrorContains(t, err, "invalid rate")
+	require.EqualError(t, err, "metering price catalog contains an invalid rate")
 
 	catalog = validCatalog()
 	rollupSource.VersionID = ""
 	_, err = BuildCharge(rollup, rollupSource, catalog, catalogSource)
-	require.ErrorContains(t, err, "rollup source")
+	require.EqualError(t, err, "rollup source: immutable source is incomplete")
 }
 
 func TestCatalogAndChargeRejectNonCanonicalOrMutatedArtifacts(t *testing.T) {
@@ -76,7 +76,7 @@ func TestCatalogAndChargeRejectNonCanonicalOrMutatedArtifacts(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(catalogPath, append([]byte(" "), data...), 0o600))
 	_, err = ReadCatalog(catalogPath)
-	require.ErrorContains(t, err, "not canonical")
+	require.EqualError(t, err, "metering price catalog is not canonical")
 
 	charge, err := BuildCharge(
 		validRollup(),
@@ -85,7 +85,7 @@ func TestCatalogAndChargeRejectNonCanonicalOrMutatedArtifacts(t *testing.T) {
 	)
 	require.NoError(t, err)
 	charge.TotalMicros++
-	require.ErrorContains(t, charge.Validate(), "total")
+	require.EqualError(t, charge.Validate(), "metering charge total does not match line amounts")
 }
 
 func TestCanonicalWriterTreatsConcurrentIdenticalLinkAsIdempotent(t *testing.T) {
@@ -204,7 +204,7 @@ func TestBuildChargeV3PricesExactObjectRequests(t *testing.T) {
 		storage, validSource(meteringstorage.RollupFormat, artifactID, "storage-rollup"),
 		catalog, validSource(CatalogFormatV3, catalog.Version, "catalog"),
 	)
-	require.ErrorContains(t, err, "requires metering rollup v3")
+	require.EqualError(t, err, "price catalog v3 requires metering rollup v3")
 }
 
 func TestBuildChargeV3WithStatusesRejectsSourceBytesDrift(t *testing.T) {
@@ -253,21 +253,21 @@ func TestBuildChargeV3WithStatusesRejectsSourceBytesDrift(t *testing.T) {
 	_, err = BuildChargeV3WithStatuses(
 		rollupStatus, badRollupSource, storageStatus, storageSource, catalogStatus, catalogSource,
 	)
-	require.ErrorContains(t, err, "rollup source")
+	require.EqualError(t, err, "rollup source does not match artifact bytes")
 
 	badStorageSource := storageSource
 	badStorageSource.ArtifactSHA256 = strings.Repeat("b", 64)
 	_, err = BuildChargeV3WithStatuses(
 		rollupStatus, rollupSource, storageStatus, badStorageSource, catalogStatus, catalogSource,
 	)
-	require.ErrorContains(t, err, "storage rollup source")
+	require.EqualError(t, err, "storage rollup source does not match artifact bytes")
 
 	badCatalogSource := catalogSource
 	badCatalogSource.ArtifactSHA256 = strings.Repeat("b", 64)
 	_, err = BuildChargeV3WithStatuses(
 		rollupStatus, rollupSource, storageStatus, storageSource, catalogStatus, badCatalogSource,
 	)
-	require.ErrorContains(t, err, "catalog source")
+	require.EqualError(t, err, "catalog source does not match artifact bytes")
 }
 
 func validCatalog() Catalog {

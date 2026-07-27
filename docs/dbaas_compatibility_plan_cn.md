@@ -16535,6 +16535,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   发票编号 assignment 在 invoice source identity 漂移、invoice bytes 漂移和 display number
   被篡改时，必须返回精确错误文本。该门禁防止正式发票编号发布前的 invoice 证据绑定和
   series/sequence display number 契约退化为模糊错误。
+- A1379 固定 metering charge/catalog 错误字符串：
+  计量 charge 生成在 price catalog 覆盖不足、rate 顺序漂移、rollup source 缺失、
+  catalog canonical 漂移、charge total 篡改、v3 rollup 格式不匹配和 rollup/storage/catalog
+  source bytes 漂移时，必须返回精确错误文本。该门禁防止金额生成阶段在价格或输入证据异常时
+  只暴露模糊错误。
 
 ### P2：运维兼容和长期验证
 
