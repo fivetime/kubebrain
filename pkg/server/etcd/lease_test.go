@@ -853,6 +853,17 @@ func TestLeaseGrantAutomaticIDRewritesBeforeAuthLikeEtcd(t *testing.T) {
 	require.Positive(t, request.ID)
 }
 
+func TestLeaseGrantAutomaticIDRewritesBeforeTTLValidationLikeEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	request := &etcdserverpb.LeaseGrantRequest{TTL: maxLeaseTTL + 1}
+	response, err := server.LeaseGrant(context.Background(), request)
+	require.Nil(t, response)
+	requireDirectLeaseError(t, err, rpctypes.ErrGRPCLeaseTTLTooLarge, codes.OutOfRange, "etcdserver: too large lease TTL")
+	require.Positive(t, request.ID)
+}
+
 func TestLeaseTimeToLiveZeroIDMatchesEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

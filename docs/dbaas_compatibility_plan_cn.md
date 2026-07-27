@@ -16732,6 +16732,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   之前改写自动 ID；即使请求随后因 auth 未携带身份而失败，调用方复用的 protobuf request
   也已不再保持 `ID=0`。回归在 auth 开启后用匿名自动 LeaseGrant 固定 `ErrUserEmpty`
   与请求 ID 已生成，同时保留 A1413 的成功路径和 raw gRPC TTL/ID 边界。
+- A1415 加固 LeaseGrant 自动 ID 的 TTL 失败分支：
+  A1414 的实现同样覆盖 upstream “自动 ID 先于 TTL validation”的顺序；本轮新增服务端
+  回归，使用 `ID=0, TTL=maxLeaseTTL+1` 固定返回 `ErrLeaseTTLTooLarge` 时请求对象已经
+  获得正 lease ID，防止未来重构把自动 ID 分配重新移动到 TTL 检查之后。
 
 ### P2：运维兼容和长期验证
 
