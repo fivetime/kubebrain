@@ -16491,6 +16491,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   direct KV service 在 compact metadata pending 和 leadership-changed retry 等 status-only
   错误路径上，必须返回完整 `status.Error(code, message)` 字符串。该门禁防止没有 typed
   `rpctypes` sentinel 的 KV 失败只校验 code/message，却漂移最终 RPC 错误文本。
+- A1370 固定 lease attachment 缺失与 reload status 错误：
+  lease attachment 清理、orphan sweep 回收和旧任期 migration/reconcile 路径必须以
+  `storage.ErrKeyNotFound` 表示 durable attachment/metadata 已不存在；lease reload 的
+  follower/leadership-change status-only 错误必须返回完整 `status.Error(code, message)`。
+  该门禁防止租约索引内部一致性测试只验证“有错误”，却漏掉 durable record 缺失语义漂移。
 
 ### P2：运维兼容和长期验证
 

@@ -23,6 +23,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
+
+	"github.com/kubewharf/kubebrain/pkg/storage"
 )
 
 type blockingOrphanSweepReadBackend struct {
@@ -105,7 +107,7 @@ func TestOrphanLeaseSweepReconciles(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, gone.Kvs, 0, "orphaned leased key must be collected by the sweep")
 	_, err = server.backend.InternalGet(ctx, leaseAttachKey(string(orphanKey)))
-	require.Error(t, err, "stale attachment record must be reclaimed")
+	require.ErrorIs(t, err, storage.ErrKeyNotFound, "stale attachment record must be reclaimed")
 
 	// The key bound to a still-live lease is untouched.
 	kept, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: liveKey})
@@ -154,7 +156,7 @@ func TestOrphanLeaseSweepReclaimsStaleRecordButKeepsRebound(t *testing.T) {
 	require.Len(t, kept.Kvs, 1, "a rebound/leaseless key must not be deleted by the sweep")
 	require.Equal(t, int64(0), kept.Kvs[0].Lease)
 	_, err = server.backend.InternalGet(ctx, leaseAttachKey(string(key)))
-	require.Error(t, err, "stale attachment record must be reclaimed")
+	require.ErrorIs(t, err, storage.ErrKeyNotFound, "stale attachment record must be reclaimed")
 }
 
 func TestOrphanLeaseSweeperCancelsInFlightScanWithLeadership(t *testing.T) {

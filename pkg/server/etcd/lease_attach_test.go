@@ -1060,9 +1060,9 @@ func TestLegacyLeaseMigrationFencedAcrossLeadershipEpoch(t *testing.T) {
 	require.NoError(t, <-done, "migration is best effort; the durable legacy record remains retryable")
 
 	_, err = b.InternalGet(ctx, leaseAttachKey(legacyKey))
-	require.Error(t, err, "the old term must not create an attachment")
+	require.ErrorIs(t, err, storage.ErrKeyNotFound, "the old term must not create an attachment")
 	_, err = b.InternalGet(ctx, leaseStorageKey(leaseID))
-	require.Error(t, err, "the old term must not create replacement lease metadata")
+	require.ErrorIs(t, err, storage.ErrKeyNotFound, "the old term must not create replacement lease metadata")
 	legacy, err := server.backend.Get(ctx, &etcdserverpb.RangeRequest{Key: leaseStorageKey(leaseID)})
 	require.NoError(t, err)
 	require.Len(t, legacy.Kvs, 1, "the retryable legacy source must remain durable")
@@ -1143,7 +1143,7 @@ func requireLeaseAttachTooManyRequestsError(t *testing.T, err error) {
 
 func requireLeaseAttachStatusError(t *testing.T, err error, code codes.Code, message string) {
 	t.Helper()
-	require.Error(t, err)
+	require.EqualError(t, err, status.Error(code, message).Error())
 	require.Equal(t, code, status.Code(err))
 	require.Equal(t, message, status.Convert(err).Message())
 }

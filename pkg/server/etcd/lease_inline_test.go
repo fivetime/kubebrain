@@ -25,6 +25,7 @@ import (
 
 	"github.com/kubewharf/kubebrain/pkg/backend"
 	"github.com/kubewharf/kubebrain/pkg/metrics/mock"
+	"github.com/kubewharf/kubebrain/pkg/storage"
 	"github.com/kubewharf/kubebrain/pkg/storage/memkv"
 )
 
@@ -149,7 +150,7 @@ func TestLeasedPutWritesAttachmentAtomically(t *testing.T) {
 	require.Equal(t, putLeased.Header.Revision+1, putClear.Header.Revision)
 	require.Eventually(t, func() bool { return server.backend.GetCurrentRevision() >= uint64(putClear.Header.Revision) }, 5*time.Second, 2*time.Millisecond)
 	_, err = server.backend.InternalGet(ctx, leaseAttachKey(string(key)))
-	require.Error(t, err, "clearing the lease must remove the attachment record")
+	require.ErrorIs(t, err, storage.ErrKeyNotFound, "clearing the lease must remove the attachment record")
 
 	latest, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: key})
 	require.NoError(t, err)
