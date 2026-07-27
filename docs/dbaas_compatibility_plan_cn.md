@@ -16531,6 +16531,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   ledger 的 invoice/reconciliation/payment source bytes、payment ledger invoice 绑定、line
   source、排序和平衡错误，必须返回精确错误文本。该门禁防止付款总账与总分类账闭环在
   artifact/source 漂移或账务不平衡时只暴露模糊错误。
+- A1378 固定 invoice number assignment 错误字符串：
+  发票编号 assignment 在 invoice source identity 漂移、invoice bytes 漂移和 display number
+  被篡改时，必须返回精确错误文本。该门禁防止正式发票编号发布前的 invoice 证据绑定和
+  series/sequence display number 契约退化为模糊错误。
 
 ### P2：运维兼容和长期验证
 

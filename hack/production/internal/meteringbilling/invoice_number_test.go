@@ -49,7 +49,7 @@ func TestInvoiceNumberAssignmentRejectsSourceAndDisplayTamper(t *testing.T) {
 			Sequence: 7, AssignedAtUnix: invoice.FinalizedAtUnix + 1,
 		},
 	)
-	require.ErrorContains(t, err, "invoice source")
+	require.EqualError(t, err, "invoice source: immutable source is incomplete")
 
 	assignment, err := BuildInvoiceNumberAssignment(
 		invoice,
@@ -61,7 +61,7 @@ func TestInvoiceNumberAssignmentRejectsSourceAndDisplayTamper(t *testing.T) {
 	)
 	require.NoError(t, err)
 	assignment.DisplayNumber = "kb-us-2026-000000000008"
-	require.ErrorContains(t, assignment.Validate(), "incomplete")
+	require.EqualError(t, assignment.Validate(), "invoice number assignment is incomplete")
 }
 
 func TestBuildInvoiceNumberAssignmentWithInvoiceStatusRejectsSourceBytesDrift(t *testing.T) {
@@ -78,7 +78,7 @@ func TestBuildInvoiceNumberAssignmentWithInvoiceStatusRejectsSourceBytesDrift(t 
 			Sequence: 7, AssignedAtUnix: invoice.FinalizedAtUnix + 1,
 		},
 	)
-	require.ErrorContains(t, err, "invoice bytes")
+	require.EqualError(t, err, "invoice number source does not match invoice bytes")
 }
 
 func TestInvoiceNumberAssignerReadsExactInvoiceAndArchivesResult(t *testing.T) {
