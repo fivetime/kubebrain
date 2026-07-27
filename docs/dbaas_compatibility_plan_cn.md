@@ -17769,6 +17769,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   在当前 namespace logical `[ "", "z" )` range 内按 value 升序返回全部 `items/a`、`items/b`、
   `alpha/a`，`Count=3`、`More=false`，并排除 upper bound 外的 `z/final` 和相邻 tenant。
   该回归补齐 zero/negative limit 之外的极大 limit explicit range 路径。
+- A1586 固定官方 client/v3 namespace.NewKV nested OpTxn 的 empty logical start 显式 range
+  future revision 错误外观：nested 选中分支内 `OpGet("", WithRange("z"),
+  WithRev(math.MaxInt64))` 必须在映射到当前 namespace 的 logical `[ "", "z" )` range 后返回
+  `ErrFutureRev`/`etcdserver: mvcc: required revision is a future revision`，并阻止同一 nested
+  OpTxn 后续 `OpPut` 提交；upper bound 外 key 和相邻 tenant 不影响错误外观。该回归补齐
+  A1537 point-key future revision 之外的 empty-start explicit range 路径。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
