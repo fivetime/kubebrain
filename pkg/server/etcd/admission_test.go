@@ -247,6 +247,41 @@ func TestClientRequireLeaderRejectsUnaryAndStreamWithoutKnownLeader(t *testing.T
 	require.Equal(t, healthpb.HealthCheckResponse_SERVING, response.Status)
 }
 
+func TestClientRequireLeaderPrecedesOverloadAdmission(t *testing.T) {
+	rpc, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	rpc.peers = testPeerService{isLeader: false, noLeader: true}
+	rpc.SetRequestRateLimit(1, 1)
+	rpc.SetMaxRequestsInFlight(1)
+	require.True(t, rpc.allowRequestRate("/occupied", "unary"))
+	require.True(t, rpc.acquireRequest("/occupied", "unary"))
+	t.Cleanup(rpc.releaseRequest)
+
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs(
+		rpctypes.MetadataRequireLeaderKey, rpctypes.MetadataHasLeader,
+	))
+	unaryCalled := false
+	_, err := rpc.admitUnary(ctx, nil, &grpc.UnaryServerInfo{FullMethod: "/test.Unary"},
+		func(context.Context, any) (any, error) {
+			unaryCalled = true
+			return nil, nil
+		})
+	requireAdmissionError(t, err, rpctypes.ErrGRPCNoLeader, codes.Unavailable, "etcdserver: no leader")
+	require.False(t, unaryCalled)
+	require.Equal(t, int64(1), rpc.requestsInFlight)
+
+	streamCalled := false
+	err = rpc.admitStream(nil, &serverStreamWithContext{ctx: ctx},
+		&grpc.StreamServerInfo{FullMethod: "/test.Stream"},
+		func(any, grpc.ServerStream) error {
+			streamCalled = true
+			return nil
+		})
+	requireAdmissionError(t, err, rpctypes.ErrGRPCNoLeader, codes.Unavailable, "etcdserver: no leader")
+	require.False(t, streamCalled)
+	require.Equal(t, int64(1), rpc.requestsInFlight)
+}
+
 func TestClientRequireLeaderAcceptsKnownRemoteLeader(t *testing.T) {
 	rpc, closeFn := newTestRPCServer(t)
 	defer closeFn()

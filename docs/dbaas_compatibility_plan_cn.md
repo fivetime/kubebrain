@@ -16595,6 +16595,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   unary/stream 均必须先返回精确 `InvalidArgument: etcdserver: invalid client api version`，
   handler 不得执行，不能被 `Unavailable: etcdserver: no leader` 覆盖。该门禁防止入口
   interceptor 重排后漂移客户端依赖的确定性错误分类。
+- A1392 固定 require-leader 与过载 admission 错误优先级：
+  public QPS token 和并发 slot 均已耗尽时，带 `etcd-server-leader=true` 的 unary/stream
+  在无 leader 状态仍必须先返回精确 `Unavailable: etcdserver: no leader`，不得执行 handler、
+  不得额外占用 slot，也不能被 KubeBrain 自有的 `ResourceExhausted: etcdserver: too many
+  requests` 覆盖。该门禁保持 upstream require-leader 语义优先于数据面保护策略，使官方
+  client 能按 leader 故障而非过载执行正确重试。
 
 ### P2：运维兼容和长期验证
 
