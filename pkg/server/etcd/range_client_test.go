@@ -291,6 +291,20 @@ func TestClientNamespaceGetKeysOnlyLimitReturnsLogicalKeys(t *testing.T) {
 	require.Equal(t, [][]byte{[]byte("a"), []byte("b")}, [][]byte{resp.Kvs[0].Key, resp.Kvs[1].Key})
 	require.Empty(t, resp.Kvs[0].Value)
 	require.Empty(t, resp.Kvs[1].Value)
+
+	doResp, err := namespacedKV.Do(ctx, clientv3.OpGet("",
+		clientv3.WithFromKey(), clientv3.WithKeysOnly(), clientv3.WithLimit(2),
+		clientv3.WithSort(clientv3.SortByKey, clientv3.SortAscend)))
+	require.NoError(t, err)
+	doGet := doResp.Get()
+	require.NotNil(t, doGet)
+	require.NotNil(t, doGet.Header)
+	require.Equal(t, int64(3), doGet.Count)
+	require.True(t, doGet.More)
+	require.Len(t, doGet.Kvs, 2)
+	require.Equal(t, [][]byte{[]byte("a"), []byte("b")}, [][]byte{doGet.Kvs[0].Key, doGet.Kvs[1].Key})
+	require.Empty(t, doGet.Kvs[0].Value)
+	require.Empty(t, doGet.Kvs[1].Value)
 }
 
 func TestClientNamespaceTxnGetValidationErrorsMatchEtcd(t *testing.T) {

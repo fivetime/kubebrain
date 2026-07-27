@@ -17033,6 +17033,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `Count` 保持匹配总数、`More=true`、返回 key 为 logical key，且 `KeysOnly` 清空 value。
   新增 official clientv3 bufconn 回归同时放置相邻物理 namespace key，防止分页从物理
   keyspace 泄露相邻 tenant 或返回未剥离 prefix 的 key。
+- A1465 固定官方 client/v3 namespace.NewKV Do(Get) 的 KeysOnly/Limit full-range 外观：
+  A1464 固定 `Get` 专用入口后，本轮补齐通用 `Do(OpGet("", WithFromKey(),
+  WithKeysOnly(), WithLimit(2), WithSort(SortByKey, SortAscend)))`。upstream
+  `namespace.kvPrefix.Do` 会先对 `OpGet` 做 namespace `prefixOp`，再对 `ResponseRange`
+  调用 `unprefixGetResponse`；因此分页返回的 `Kvs` 必须是 logical keys、value 为空，
+  同时保持 `Count` 和 `More`。该回归防止通用 `Do(Get)` 在 keys-only/limit 路径上泄露
+  物理 prefix 或与专用 `Get` 入口分页语义漂移。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
