@@ -4050,6 +4050,89 @@ func TestClientNamespaceNestedTxnPutIgnoreValueAndIgnoreLeaseKeepsLogicalPrevKV(
 	require.Equal(t, []byte("outside-tenant"), outsideTenant.Kvs[0].Value)
 }
 
+func TestClientNamespaceNestedTxnUnselectedPutIgnoreOptionErrorsAreTypedAndDoNotCommit(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	tenantPrefix := "/a1547/namespace-nested-txn-put-ignore-errors/tenant/"
+	namespacedKV := namespace.NewKV(client.KV, tenantPrefix)
+	_, err = namespacedKV.Put(ctx, "items/a", "value-a")
+	require.NoError(t, err)
+	_, err = client.Put(ctx, "/a1547/namespace-nested-txn-put-ignore-errors/tenant0/items/a", "outside-tenant")
+	require.NoError(t, err)
+
+	tests := []struct {
+		name        string
+		key         string
+		op          clientv3.Op
+		wantMessage string
+		wantErr     error
+	}{
+		{
+			name:        "value-with-ignore-value",
+			key:         "items/bad-ignore-value",
+			op:          clientv3.OpPut("items/bad-ignore-value", "bad", clientv3.WithIgnoreValue()),
+			wantMessage: "etcdserver: value is provided",
+			wantErr:     rpctypes.ErrValueProvided,
+		},
+		{
+			name:        "lease-with-ignore-lease",
+			key:         "items/bad-ignore-lease",
+			op:          clientv3.OpPut("items/bad-ignore-lease", "bad", clientv3.WithIgnoreLease(), clientv3.WithLease(clientv3.LeaseID(12345))),
+			wantMessage: "etcdserver: lease is provided",
+			wantErr:     rpctypes.ErrLeaseProvided,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := namespacedKV.Txn(ctx).
+				Then(clientv3.OpTxn(
+					[]clientv3.Cmp{clientv3.Compare(clientv3.Version("missing"), "=", 1)},
+					[]clientv3.Op{tt.op},
+					[]clientv3.Op{clientv3.OpPut("items/else-"+tt.name, "must-not-commit")},
+				)).
+				Commit()
+			requireClientTxnError(t, err, codes.Unknown, tt.wantMessage, tt.wantErr)
+
+			badKey, err := namespacedKV.Get(ctx, tt.key)
+			require.NoError(t, err)
+			require.Empty(t, badKey.Kvs)
+			elsePut, err := namespacedKV.Get(ctx, "items/else-"+tt.name)
+			require.NoError(t, err)
+			require.Empty(t, elsePut.Kvs)
+			current, err := namespacedKV.Get(ctx, "items/a")
+			require.NoError(t, err)
+			require.Len(t, current.Kvs, 1)
+			require.Equal(t, []byte("value-a"), current.Kvs[0].Value)
+			outsideTenant, err := client.Get(ctx, "/a1547/namespace-nested-txn-put-ignore-errors/tenant0/items/a")
+			require.NoError(t, err)
+			require.Len(t, outsideTenant.Kvs, 1)
+			require.Equal(t, []byte("outside-tenant"), outsideTenant.Kvs[0].Value)
+		})
+	}
+}
+
 func TestClientNamespaceTxnGetValidationErrorsMatchEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

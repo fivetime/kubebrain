@@ -17553,6 +17553,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `OpPut("items/a", "new-a", WithIgnoreLease(), WithPrevKV())` 必须更新 value、保留 leaseB，
   PrevKv 仍为 logical key。该回归防止 namespace nested Txn 的 Put request adapter、lease
   attachment 更新和 PrevKV unprefix 处理发生组合偏移。
+- A1547 固定官方 client/v3 namespace.NewKV nested OpTxn 的未选中 `OpPut` ignore-option
+  validation 外观：Put request 参数校验属于 Txn 请求级静态校验；即使 nested `OpTxn` compare
+  会失败，未选中 Then branch 中 `OpPut(..., WithIgnoreValue())` 携带 value 必须暴露可由
+  `errors.Is(..., rpctypes.ErrValueProvided)` 识别的 public error，`WithIgnoreLease()` 携带
+  lease 必须暴露 `rpctypes.ErrLeaseProvided`，且 bad key、Else branch、原 logical key 与相邻
+  tenant key 都不得被错误提交或污染。该回归防止 namespace nested Txn 在 Put 参数校验和 branch
+  选择之间偏离 etcd。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
