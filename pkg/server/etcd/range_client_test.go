@@ -5696,6 +5696,68 @@ func TestClientNamespaceNestedTxnGetEmptyStartRangeFutureRevisionReturnsTypedErr
 	require.Equal(t, int64(1), outsideTenant.Count)
 }
 
+func TestClientNamespaceNestedTxnGetEmptyStartRangeCompactedRevisionReturnsTypedErrorAndDoesNotCommit(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	tenantPrefix := "/a1587/namespace-nested-txn-empty-start-range-compacted-rev/tenant/"
+	namespacedKV := namespace.NewKV(client.KV, tenantPrefix)
+	seed, err := namespacedKV.Put(ctx, "alpha/a", "old-alpha/a")
+	require.NoError(t, err)
+	_, err = namespacedKV.Put(ctx, "items/a", "value-items/a")
+	require.NoError(t, err)
+	latest, err := namespacedKV.Put(ctx, "alpha/a", "new-alpha/a")
+	require.NoError(t, err)
+	_, err = namespacedKV.Put(ctx, "z/final", "value-z/final")
+	require.NoError(t, err)
+	_, err = client.Compact(ctx, latest.Header.Revision)
+	require.NoError(t, err)
+	_, err = client.Put(ctx, "/a1587/namespace-nested-txn-empty-start-range-compacted-rev/tenant0/items/a", "outside-tenant")
+	require.NoError(t, err)
+
+	_, err = namespacedKV.Txn(ctx).
+		Then(clientv3.OpTxn(nil,
+			[]clientv3.Op{
+				clientv3.OpGet("", clientv3.WithRange("z"), clientv3.WithRev(seed.Header.Revision)),
+				clientv3.OpPut("items/after-compacted", "must-not-commit"),
+			},
+			nil)).
+		Commit()
+	requireClientTxnError(t, err, codes.Unknown, "etcdserver: mvcc: required revision has been compacted", rpctypes.ErrCompacted)
+
+	afterCompacted, err := namespacedKV.Get(ctx, "items/after-compacted")
+	require.NoError(t, err)
+	require.Empty(t, afterCompacted.Kvs)
+	current, err := namespacedKV.Get(ctx, "alpha/a")
+	require.NoError(t, err)
+	require.Len(t, current.Kvs, 1)
+	require.Equal(t, []byte("new-alpha/a"), current.Kvs[0].Value)
+	outsideTenant, err := client.Get(ctx, "/a1587/namespace-nested-txn-empty-start-range-compacted-rev/tenant0/", clientv3.WithPrefix())
+	require.NoError(t, err)
+	require.Equal(t, int64(1), outsideTenant.Count)
+}
+
 func TestClientNamespaceNestedTxnGetEmptyStartRangeSortByValueDescReturnsLogicalPage(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
