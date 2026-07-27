@@ -384,6 +384,11 @@ func TestClientTxnBasicErrorsMatchEtcd(t *testing.T) {
 			clientv3.WithSort(clientv3.SortTarget(99), clientv3.SortOrder(99)))).
 		Commit()
 	requireClientTxnError(t, err, codes.Unknown, "etcdserver: invalid sort option", rpctypes.ErrInvalidSortOption)
+	_, err = client.Txn(ctx).
+		Then(clientv3.OpGet("",
+			clientv3.WithSort(clientv3.SortTarget(99), clientv3.SortOrder(99)))).
+		Commit()
+	requireClientTxnError(t, err, codes.Unknown, "etcdserver: key is not provided", rpctypes.ErrEmptyKey)
 
 	ops := make([]clientv3.Op, defaultMaxTxnOps+1)
 	for i := range ops {

@@ -16911,6 +16911,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `rpctypes.ErrInvalidSortOption`。该回归明确区分 A1439 的 raw/server `checkRangeRequest`
   顺序与官方 high-level client 的本地 sort 校验，防止 adapter 把 wrapper 外观误改为空
   key 优先。
+- A1447 固定官方 client/v3 Txn 内 OpGet 的 Range validation 外观：
+  与 A1446 的单独 `clientv3.Get` 不同，upstream `clientv3.Txn.Then` 只把 `OpGet` 转成
+  `RequestOp`，`Commit` 直接发送 `TxnRequest`，不会先执行 `op.IsSortOptionValid()`。
+  因此 Txn 内 `OpGet("", WithSort(99,99))` 必须按 server `checkRangeRequest` 暴露
+  `Unknown`/`etcdserver: key is not provided` 并匹配 `rpctypes.ErrEmptyKey`，而合法 key
+  的 invalid sort 仍匹配 `rpctypes.ErrInvalidSortOption`。该回归防止把单独 Get wrapper
+  的本地 sort prevalidation 错误地套用到 Txn path。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
