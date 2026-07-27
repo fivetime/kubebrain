@@ -17261,6 +17261,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   namespace 的 logical prefix，并在 nested `ResponseRange` 中返回 logical `locks/b`、
   `Count=3`、`More=true`。该回归防止 namespace Txn response adapter 在 rwmutex waitOnLastRev
   相关 top-helper + mod revision filter 组合路径上漏做 unprefix 或跨 prefix/tenant 计数。
+- A1498 固定官方 client/v3 namespace.NewKV Get 的 `WithLastRev()` 非空 logical prefix
+  外观：对照 upstream `WithLastRev()` 展开为 `WithPrefix()+SortByModRevision(Descend)+Limit(1)`，
+  A1495-A1497 已覆盖该 helper 叠加 `WithMaxModRev` 的 rwmutex 路径，本轮补齐基础 top-helper
+  外观。新增 official clientv3 bufconn 回归固定
+  `namespace.NewKV(...).Get("queue/", WithLastRev()...)` 只扫描当前 tenant 的 `queue/` logical
+  prefix；在先创建 `queue/a/b/c`、再更新 `queue/b` 后，必须返回当前 mod revision 最新的
+  logical `queue/b`、`Count=3`、`More=true`，并排除同 tenant 相邻 prefix 与相邻物理
+  namespace。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
