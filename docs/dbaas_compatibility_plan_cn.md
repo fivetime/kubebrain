@@ -18303,6 +18303,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `Count=3`，`More=false` 且不返回任何 KVs，response header revision 等于相邻 tenant 写入产生的
   latest revision，并排除同 tenant 相邻 prefix 和相邻 tenant。该回归补齐 A1529 prefix CountOnly
   与 A1536 prefix serializable 之外的 CountOnly+serializable 优先级路径。
+- A1665 固定官方 client/v3 namespace.NewKV nested OpTxn 的 non-empty prefix historical
+  serializable 外观：nested `OpGet("items/", WithPrefix(), WithRev(historyRev),
+  WithSerializable())` 必须在指定历史 revision 上只返回当前 namespace logical prefix 的历史
+  `items/a=old-a`、`items/b=old-b`、`items/c=old-c`，`Count=3`、`More=false`，但 response
+  header revision 必须保持当前 latest revision，并排除后续 update/delete/new key、同 tenant
+  相邻 prefix 和相邻 tenant。该回归补齐 A1533 prefix historical 与 A1535 point historical
+  serializable 之外的 prefix+historical+serializable 叠加路径。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
