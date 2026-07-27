@@ -1262,6 +1262,17 @@ func TestClientNamespaceGetLastRevWithLogicalRangeReturnsLogicalKey(t *testing.T
 	require.Len(t, resp.Kvs, 1)
 	require.Equal(t, []byte("range/b"), resp.Kvs[0].Key)
 	require.Equal(t, []byte("updated-range/b"), resp.Kvs[0].Value)
+
+	doResp, err := namespacedKV.Do(ctx, clientv3.OpGet("range/a", getOpts...))
+	require.NoError(t, err)
+	doGet := doResp.Get()
+	require.NotNil(t, doGet)
+	require.NotNil(t, doGet.Header)
+	require.Equal(t, int64(3), doGet.Count)
+	require.True(t, doGet.More)
+	require.Len(t, doGet.Kvs, 1)
+	require.Equal(t, []byte("range/b"), doGet.Kvs[0].Key)
+	require.Equal(t, []byte("updated-range/b"), doGet.Kvs[0].Value)
 }
 
 func TestClientNamespaceTxnGetValidationErrorsMatchEtcd(t *testing.T) {
