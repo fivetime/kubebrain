@@ -559,6 +559,54 @@ func TestClientNamespaceGetCreateRevisionFilterReturnsLogicalKeys(t *testing.T) 
 	require.Equal(t, []byte("value-c"), txnGet.Kvs[0].Value)
 }
 
+func TestClientNamespaceGetMaxCreateRevisionFilterReturnsLogicalKeys(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	tenantPrefix := "/a1476/namespace-max-create-filter/tenant/"
+	namespacedKV := namespace.NewKV(client.KV, tenantPrefix)
+	for _, key := range []string{"a", "b"} {
+		_, err = namespacedKV.Put(ctx, key, "value-"+key)
+		require.NoError(t, err)
+	}
+	createC, err := namespacedKV.Put(ctx, "c", "value-c")
+	require.NoError(t, err)
+	_, err = client.Put(ctx, "/a1476/namespace-max-create-filter/tenant0/outside", "outside")
+	require.NoError(t, err)
+
+	resp, err := namespacedKV.Get(ctx, "", clientv3.WithFromKey(),
+		clientv3.WithMaxCreateRev(createC.Header.Revision-1),
+		clientv3.WithSort(clientv3.SortByKey, clientv3.SortAscend))
+	require.NoError(t, err)
+	require.NotNil(t, resp.Header)
+	require.Equal(t, int64(3), resp.Count)
+	require.False(t, resp.More)
+	require.Len(t, resp.Kvs, 2)
+	require.Equal(t, [][]byte{[]byte("a"), []byte("b")}, [][]byte{resp.Kvs[0].Key, resp.Kvs[1].Key})
+	require.Equal(t, [][]byte{[]byte("value-a"), []byte("value-b")}, [][]byte{resp.Kvs[0].Value, resp.Kvs[1].Value})
+}
+
 func TestClientNamespaceTxnGetValidationErrorsMatchEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
