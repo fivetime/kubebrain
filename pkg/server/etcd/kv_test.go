@@ -2955,6 +2955,22 @@ func TestClientNamespaceEmptyKeyFromKeyDeleteMatchesEtcd(t *testing.T) {
 	remaining, err = client.Get(ctx, tenantPrefix, clientv3.WithRange(tenantEnd))
 	require.NoError(t, err)
 	require.Empty(t, remaining.Kvs)
+
+	for _, key := range []string{"g", "h"} {
+		_, err = namespacedKV.Put(ctx, key, "value-"+key)
+		require.NoError(t, err)
+	}
+	deleteFromKeyOpResponse, err := namespacedKV.Do(ctx, clientv3.OpDelete("", clientv3.WithFromKey(), clientv3.WithPrevKV()))
+	require.NoError(t, err)
+	deleteFromKeyOp := deleteFromKeyOpResponse.Del()
+	require.NotNil(t, deleteFromKeyOp)
+	require.Equal(t, int64(2), deleteFromKeyOp.Deleted)
+	require.Len(t, deleteFromKeyOp.PrevKvs, 2)
+	require.Equal(t, [][]byte{[]byte("g"), []byte("h")}, [][]byte{deleteFromKeyOp.PrevKvs[0].Key, deleteFromKeyOp.PrevKvs[1].Key})
+
+	remaining, err = client.Get(ctx, tenantPrefix, clientv3.WithRange(tenantEnd))
+	require.NoError(t, err)
+	require.Empty(t, remaining.Kvs)
 }
 
 func TestDeleteRangeDeletesRange(t *testing.T) {

@@ -16986,6 +16986,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `namespace.kvPrefix.prefixOp` 收窄到当前 namespace 范围；返回的 `Kvs` 必须剥离物理
   prefix 并只暴露 logical keys，防止通用 `Do(Get)` 入口漏做 unprefix 或越过 namespace
   边界。
+- A1458 固定官方 client/v3 namespace.NewKV Do(Delete) 空 key WithFromKey 成功路径：
+  A1453 已覆盖 `Do(OpDelete(""))` 的 wrapper-level empty-key 错误和
+  `Do(OpDelete("", WithPrefix(), WithPrevKV()))` 的 namespace 范围删除；本轮补齐
+  `Do(OpDelete("", WithFromKey(), WithPrevKV()))`。upstream `clientv3.OpDelete` 会把空
+  logical key 改写为 `\x00` 起点和 `\x00` range end，再由 namespace wrapper 转为当前
+  namespace 的物理 `[prefix, prefixEnd)` 区间；删除计数和 PrevKV 必须只暴露 logical
+  keys，防止 `Do(Delete)` 的 from-key 路径删除相邻 namespace 或泄露物理 prefix。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
