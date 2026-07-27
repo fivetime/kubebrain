@@ -52,6 +52,7 @@ func (s *RPCServer) membersSnapshot() []*etcdserverpb.Member {
 		for i := range s.staticMembers {
 			members[i] = proto.Clone(s.staticMembers[i]).(*etcdserverpb.Member)
 		}
+		sort.Slice(members, func(i, j int) bool { return members[i].ID < members[j].ID })
 		return members
 	}
 	addresses := []string{s.backend.GetResourceLock().Identity(), s.peers.GetLeaderInfo()}
@@ -78,6 +79,7 @@ func (s *RPCServer) membersSnapshot() []*etcdserverpb.Member {
 			IsLearner:  false,
 		})
 	}
+	sort.Slice(members, func(i, j int) bool { return members[i].ID < members[j].ID })
 	return members
 }
 

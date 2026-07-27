@@ -16657,6 +16657,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `X-Etcd-Cluster-ID`；方法错误仍在 cluster header 写入前返回 405，不能携带该 header。
   修复 KubeBrain 此前把 cluster header 放在 path 校验之后的差异，使 peer 诊断即使请求
   路径错误也能确认响应端集群身份。
+- A1403 对齐成员列表按 ID 的确定性排序：
+  upstream `RaftCluster.Members()` 使用 `MembersByID` 升序排序，因此 gRPC `MemberList`
+  和 peer `/members` 共享稳定顺序。KubeBrain 现在也在共享 `membersSnapshot()` 中按
+  `Member.ID` 升序排列控制面注入视图和本机/leader 降级视图；排序仅作用于克隆快照，
+  不修改 DBaaS 控制面注册表。该修复消除控制面输入顺序或 leader 变化造成的列表抖动，
+  避免客户端 AutoSync、诊断 diff 和成员缓存观察到非 etcd 的无意义重排。
 
 ### P2：运维兼容和长期验证
 

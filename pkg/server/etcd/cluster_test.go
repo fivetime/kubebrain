@@ -151,6 +151,44 @@ func TestPeerMembersHandlerReturnsEtcdPeerJSON(t *testing.T) {
 	require.NotContains(t, raw[0], "ID")
 }
 
+func TestMemberListAndPeerMembersSortControlPlaneMembersByID(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	server.SetStaticMembers([]*etcdserverpb.Member{
+		{ID: 30, Name: "third", PeerURLs: []string{"http://third:2380"}},
+		{ID: 10, Name: "first", PeerURLs: []string{"http://first:2380"}},
+		{ID: 20, Name: "second", PeerURLs: []string{"http://second:2380"}},
+	})
+
+	resp, err := server.MemberList(context.Background(), &etcdserverpb.MemberListRequest{})
+	require.NoError(t, err)
+	require.Len(t, resp.Members, 3)
+	require.Equal(t, []uint64{10, 20, 30}, []uint64{
+		resp.Members[0].ID,
+		resp.Members[1].ID,
+		resp.Members[2].ID,
+	})
+
+	rec := httptest.NewRecorder()
+	server.peerMembersHandler(rec, httptest.NewRequest(http.MethodGet, "/members", nil))
+	require.Equal(t, http.StatusOK, rec.Code)
+	var peerMembers []peerHTTPMember
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &peerMembers))
+	require.Len(t, peerMembers, 3)
+	require.Equal(t, []uint64{10, 20, 30}, []uint64{
+		peerMembers[0].ID,
+		peerMembers[1].ID,
+		peerMembers[2].ID,
+	})
+
+	// Sorting snapshots must not mutate the DBaaS control-plane registry.
+	require.Equal(t, []uint64{30, 10, 20}, []uint64{
+		server.staticMembers[0].ID,
+		server.staticMembers[1].ID,
+		server.staticMembers[2].ID,
+	})
+}
+
 func TestPeerMembersHandlerRejectsBadRequests(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
