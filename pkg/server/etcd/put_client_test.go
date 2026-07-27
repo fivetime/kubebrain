@@ -178,7 +178,7 @@ func TestClientPutIgnoreValueIgnoreLeaseAndErrors(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := tt.call()
-			require.Error(t, err)
+			require.EqualError(t, err, tt.wantMessage)
 			if tt.wantErrorIs != nil {
 				require.ErrorIs(t, err, tt.wantErrorIs)
 			}
@@ -462,7 +462,7 @@ func leaseClientAttachedKeys(keys [][]byte) []string {
 
 func requireClientPutError(t *testing.T, err error, code codes.Code, message string, wantErrorIs ...error) {
 	t.Helper()
-	require.Error(t, err)
+	require.EqualError(t, err, message)
 	for _, want := range wantErrorIs {
 		require.ErrorIs(t, err, want)
 	}

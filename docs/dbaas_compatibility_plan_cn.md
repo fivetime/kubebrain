@@ -16393,6 +16393,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   follower-proxied `CountOnly` 请求在 count index 重建期间必须返回完整 `codes.Unavailable`
   status error，并保留 `fall back locally` 提示。该门禁防止 DBaaS 读扩展路径在索引未就绪时
   误做 leader fallback 或丢失客户端可恢复提示。
+- A1348 固定 official clientv3 Put typed 错误字符串：
+  `Put` 的空 key、request too large、NOSPACE、lease not found、ignore value/lease 冲突等
+  typed 错误必须同时保留裸 etcd `err.Error()`、`ErrorIs`、公开 status code 和 message。
+  该门禁防止写路径在 TiKV-backed facade 上只保持错误分类，却漂移 clientv3 可见文本。
 
 ### P2：运维兼容和长期验证
 
