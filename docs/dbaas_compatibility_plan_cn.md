@@ -16411,6 +16411,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `ordering.NewKV` 包装后的 `GetStream` 必须返回完整 `codes.Unimplemented` status error 字符串。
   该门禁防止 ordering wrapper 在 KubeBrain facade 上误暴露未实现 streaming read，或只保留
   status code 而漂移客户端可见错误文本。
+- A1352 固定 read barrier retryable Unavailable 错误字符串：
+  Range、Compact、DeleteRange 和 Alarm GET 在 leader read barrier 失败时必须返回完整
+  `codes.Unavailable` status error 字符串，并保留底层同步失败 message。该门禁防止独立
+  TiKV/PD 数据面在读屏障不可用时把可重试控制面故障误分类或漂移公开文本。
 
 ### P2：运维兼容和长期验证
 

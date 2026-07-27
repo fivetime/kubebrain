@@ -70,7 +70,7 @@ func TestReadBarrierFailuresAreRetryableForClusterRPCs(t *testing.T) {
 
 func requireReadBarrierUnavailable(t *testing.T, err error, message string) {
 	t.Helper()
-	require.Error(t, err)
+	require.EqualError(t, err, status.Error(codes.Unavailable, message).Error())
 	require.Equal(t, codes.Unavailable, status.Code(err))
 	require.Equal(t, message, status.Convert(err).Message())
 }
