@@ -154,7 +154,10 @@ func TestClientAdmissionCountsStreamLifetime(t *testing.T) {
 	requireAdmissionError(t, err, rpctypes.ErrGRPCRequestTooManyRequests, codes.ResourceExhausted, "etcdserver: too many requests")
 
 	cancelWatch()
-	require.Error(t, <-recvDone)
+	err = <-recvDone
+	require.EqualError(t, err, status.Error(codes.Canceled, context.Canceled.Error()).Error())
+	require.Equal(t, codes.Canceled, status.Code(err))
+	require.Equal(t, context.Canceled.Error(), status.Convert(err).Message())
 	require.Eventually(t, func() bool {
 		rpc.admissionMu.Lock()
 		defer rpc.admissionMu.Unlock()
