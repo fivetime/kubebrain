@@ -12329,6 +12329,86 @@ func TestClientNamespaceNestedTxnGetSerializablePrefixSortByVersionDescReturnsLo
 	require.Equal(t, int64(1), outsideTenant.Count)
 }
 
+func TestClientNamespaceNestedTxnGetSerializablePrefixSortByCreateRevisionReturnsLogicalPage(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	tenantPrefix := "/a1760/namespace-nested-txn-serializable-prefix-create-sort-none/tenant/"
+	namespacedKV := namespace.NewKV(client.KV, tenantPrefix)
+	_, err = client.Put(ctx, "/a1760/namespace-nested-txn-serializable-prefix-create-sort-none/tenant/items0/outside", "same-tenant-outside-prefix")
+	require.NoError(t, err)
+	_, err = client.Put(ctx, "/a1760/namespace-nested-txn-serializable-prefix-create-sort-none/tenant0/items/a", "outside-tenant")
+	require.NoError(t, err)
+	for _, key := range []string{"items/b", "items/a"} {
+		_, err = namespacedKV.Put(ctx, key, "value-"+key)
+		require.NoError(t, err)
+	}
+	latest, err := namespacedKV.Put(ctx, "items/c", "value-items/c")
+	require.NoError(t, err)
+
+	txnResp, err := namespacedKV.Txn(ctx).
+		Then(clientv3.OpTxn(nil,
+			[]clientv3.Op{clientv3.OpGet("items/",
+				clientv3.WithPrefix(),
+				clientv3.WithSerializable(),
+				clientv3.WithLimit(2),
+				clientv3.WithSort(clientv3.SortByCreateRevision, clientv3.SortNone),
+			)},
+			nil)).
+		Commit()
+	require.NoError(t, err)
+	require.True(t, txnResp.Succeeded)
+	require.Equal(t, latest.Header.Revision, txnResp.Header.Revision)
+	require.Len(t, txnResp.Responses, 1)
+	nestedTxn := txnResp.Responses[0].GetResponseTxn()
+	require.NotNil(t, nestedTxn)
+	require.True(t, nestedTxn.Succeeded)
+	require.Len(t, nestedTxn.Responses, 1)
+	nestedGet := nestedTxn.Responses[0].GetResponseRange()
+	require.NotNil(t, nestedGet)
+	require.NotNil(t, nestedGet.Header)
+	require.Equal(t, latest.Header.Revision, nestedGet.Header.Revision)
+	require.Equal(t, int64(3), nestedGet.Count)
+	require.True(t, nestedGet.More)
+	require.Len(t, nestedGet.Kvs, 2)
+	require.Equal(t, [][]byte{[]byte("items/b"), []byte("items/a")},
+		[][]byte{nestedGet.Kvs[0].Key, nestedGet.Kvs[1].Key})
+	require.Equal(t, [][]byte{[]byte("value-items/b"), []byte("value-items/a")},
+		[][]byte{nestedGet.Kvs[0].Value, nestedGet.Kvs[1].Value})
+	require.Less(t, nestedGet.Kvs[0].CreateRevision, nestedGet.Kvs[1].CreateRevision)
+
+	current, err := namespacedKV.Get(ctx, "items/", clientv3.WithPrefix())
+	require.NoError(t, err)
+	require.Equal(t, int64(3), current.Count)
+	outsideSameTenantPrefix, err := client.Get(ctx, "/a1760/namespace-nested-txn-serializable-prefix-create-sort-none/tenant/items0/", clientv3.WithPrefix())
+	require.NoError(t, err)
+	require.Equal(t, int64(1), outsideSameTenantPrefix.Count)
+	outsideTenant, err := client.Get(ctx, "/a1760/namespace-nested-txn-serializable-prefix-create-sort-none/tenant0/", clientv3.WithPrefix())
+	require.NoError(t, err)
+	require.Equal(t, int64(1), outsideTenant.Count)
+}
+
 func TestClientNamespaceNestedTxnGetSerializablePrefixKeysOnlySortByValueDescWithLimitReturnsLogicalKeys(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
