@@ -111,6 +111,11 @@ func (s *RPCServer) Authenticate(ctx context.Context, request *etcdserverpb.Auth
 	if err := s.peers.SyncReadRevision(ctx); err != nil {
 		return nil, readBarrierStatusErr(err)
 	}
+	defer func() {
+		if request != nil {
+			request.Password = ""
+		}
+	}()
 	for {
 		if err := ctx.Err(); err != nil {
 			return nil, err

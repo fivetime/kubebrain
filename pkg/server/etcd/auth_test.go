@@ -198,9 +198,30 @@ func TestAuthenticateReadBarrierPrecedesPasswordCheck(t *testing.T) {
 		return barrierErr
 	}}
 
-	response, err := server.Authenticate(ctx, &etcdserverpb.AuthenticateRequest{Name: "root", Password: "wrong"})
+	request := &etcdserverpb.AuthenticateRequest{Name: "root", Password: "wrong"}
+	response, err := server.Authenticate(ctx, request)
 	require.Nil(t, response)
 	requireReadBarrierUnavailable(t, err, barrierErr.Error())
+	require.Equal(t, "wrong", request.Password, "upstream installs password cleanup only after the read barrier")
+}
+
+func TestAuthenticateClearsPasswordAfterReadBarrier(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	setupAuthKVUser(t, server)
+
+	success := &etcdserverpb.AuthenticateRequest{Name: "root", Password: "root-secret"}
+	response, err := server.Authenticate(ctx, success)
+	require.NoError(t, err)
+	require.NotEmpty(t, response.Token)
+	require.Empty(t, success.Password)
+
+	failure := &etcdserverpb.AuthenticateRequest{Name: "root", Password: "wrong"}
+	response, err = server.Authenticate(ctx, failure)
+	require.Nil(t, response)
+	requireAuthRPCError(t, err, rpctypes.ErrAuthFailed, codes.Unknown, "etcdserver: authentication failed, invalid user ID or password")
+	require.Empty(t, failure.Password)
 }
 
 func TestAuthStatusRejectsInvalidTokenWhenEnabled(t *testing.T) {

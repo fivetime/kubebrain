@@ -16708,6 +16708,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   测试在第二次 barrier 内分别修改 root 密码和新增无关 role：旧密码必须 AuthFailed，新密码
   成功；无关 mutation 后返回 token 必须携带最新 revision。官方 client/v3 黑盒进一步用
   返回的新 token 调用 AuthStatus，证明线上不会交付 born-stale token。
+- A1411 对齐 Authenticate 明文密码生命周期：
+  对照 upstream 为 CVE-2021-28235 加入的清理逻辑，首次 read barrier 成功后立即注册
+  deferred cleanup，无论认证成功还是密码错误，返回前都把 protobuf request 的 `Password`
+  清空，避免后续日志、trace 或对象复用保留明文。barrier 本身失败时 upstream 尚未安装
+  defer，因此请求字段保持不变；回归同时固定这一精确执行顺序。
 
 ### P2：运维兼容和长期验证
 
