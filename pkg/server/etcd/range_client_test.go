@@ -305,6 +305,24 @@ func TestClientNamespaceGetKeysOnlyLimitReturnsLogicalKeys(t *testing.T) {
 	require.Equal(t, [][]byte{[]byte("a"), []byte("b")}, [][]byte{doGet.Kvs[0].Key, doGet.Kvs[1].Key})
 	require.Empty(t, doGet.Kvs[0].Value)
 	require.Empty(t, doGet.Kvs[1].Value)
+
+	txnResp, err := namespacedKV.Txn(ctx).
+		Then(clientv3.OpGet("",
+			clientv3.WithFromKey(), clientv3.WithKeysOnly(), clientv3.WithLimit(2),
+			clientv3.WithSort(clientv3.SortByKey, clientv3.SortAscend))).
+		Commit()
+	require.NoError(t, err)
+	require.True(t, txnResp.Succeeded)
+	require.Len(t, txnResp.Responses, 1)
+	txnGet := txnResp.Responses[0].GetResponseRange()
+	require.NotNil(t, txnGet)
+	require.NotNil(t, txnGet.Header)
+	require.Equal(t, int64(3), txnGet.Count)
+	require.True(t, txnGet.More)
+	require.Len(t, txnGet.Kvs, 2)
+	require.Equal(t, [][]byte{[]byte("a"), []byte("b")}, [][]byte{txnGet.Kvs[0].Key, txnGet.Kvs[1].Key})
+	require.Empty(t, txnGet.Kvs[0].Value)
+	require.Empty(t, txnGet.Kvs[1].Value)
 }
 
 func TestClientNamespaceTxnGetValidationErrorsMatchEtcd(t *testing.T) {
