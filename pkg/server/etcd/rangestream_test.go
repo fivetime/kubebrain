@@ -736,5 +736,5 @@ func TestWatchNegativeStartRevisionCanceledInStream(t *testing.T) {
 	require.NotEmpty(t, resp.CancelReason)
 
 	cancel()
-	require.Error(t, <-done)
+	require.EqualError(t, <-done, status.Error(codes.Canceled, "etcdserver: watch canceled").Error())
 }
