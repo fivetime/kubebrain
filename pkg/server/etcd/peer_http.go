@@ -57,12 +57,12 @@ func (s *RPCServer) peerMembersHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	clusterID := strconv.FormatUint(s.backend.ClusterID(), 16)
+	w.Header().Set(etcdClusterIDHeader, clusterID)
 	if r.URL.Path != "/members" {
 		http.Error(w, "bad path", http.StatusBadRequest)
 		return
 	}
-	clusterID := strconv.FormatUint(s.backend.ClusterID(), 16)
-	w.Header().Set(etcdClusterIDHeader, clusterID)
 
 	members := s.membersSnapshot()
 	resp := make([]peerHTTPMember, 0, len(members))
@@ -87,11 +87,11 @@ func (s *RPCServer) peerDowngradeEnabledHandler(w http.ResponseWriter, r *http.R
 		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	w.Header().Set(etcdClusterIDHeader, strconv.FormatUint(s.backend.ClusterID(), 16))
 	if r.URL.Path != "/downgrade/enabled" {
 		http.Error(w, "bad path", http.StatusBadRequest)
 		return
 	}
-	w.Header().Set(etcdClusterIDHeader, strconv.FormatUint(s.backend.ClusterID(), 16))
 	w.Header().Set("Content-Type", "text/plain")
 	_, _ = w.Write([]byte("false"))
 }

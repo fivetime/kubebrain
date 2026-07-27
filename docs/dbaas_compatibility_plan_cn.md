@@ -16650,6 +16650,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   所有拒绝均带 `text/plain; charset=utf-8` 与 `nosniff`，只有 method 错误带
   `Allow: GET`，且错误响应不能回显本地 cluster ID。该门禁避免 corruption checker 因
   handler 校验重排而误判 peer 身份或请求编码故障。
+- A1402 对齐 peer 只读端点错误路径的 ClusterID header：
+  对照 upstream `peerMembersHandler.ServeHTTP` 与
+  `downgradeEnabledHandler.ServeHTTP`，`GET /members/extra` 和
+  `GET /downgrade/enabled/extra` 必须在返回 400 `bad path` 时仍携带本地
+  `X-Etcd-Cluster-ID`；方法错误仍在 cluster header 写入前返回 405，不能携带该 header。
+  修复 KubeBrain 此前把 cluster header 放在 path 校验之后的差异，使 peer 诊断即使请求
+  路径错误也能确认响应端集群身份。
 
 ### P2：运维兼容和长期验证
 

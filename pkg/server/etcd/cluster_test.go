@@ -155,14 +155,15 @@ func TestPeerMembersHandlerRejectsBadRequests(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
 	tests := []struct {
-		name       string
-		method     string
-		target     string
-		wantStatus int
-		wantBody   string
+		name          string
+		method        string
+		target        string
+		wantStatus    int
+		wantBody      string
+		wantClusterID bool
 	}{
 		{name: "wrong method", method: http.MethodPost, target: "/members", wantStatus: http.StatusMethodNotAllowed, wantBody: "Method Not Allowed"},
-		{name: "wrong path", method: http.MethodGet, target: "/members/extra", wantStatus: http.StatusBadRequest, wantBody: "bad path"},
+		{name: "wrong path", method: http.MethodGet, target: "/members/extra", wantStatus: http.StatusBadRequest, wantBody: "bad path", wantClusterID: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -170,6 +171,11 @@ func TestPeerMembersHandlerRejectsBadRequests(t *testing.T) {
 			server.peerMembersHandler(rec, httptest.NewRequest(tt.method, tt.target, nil))
 			require.Equal(t, tt.wantStatus, rec.Code)
 			require.Contains(t, rec.Body.String(), tt.wantBody)
+			if tt.wantClusterID {
+				require.Equal(t, strconv.FormatUint(server.backend.ClusterID(), 16), rec.Header().Get(etcdClusterIDHeader))
+			} else {
+				require.Empty(t, rec.Header().Get(etcdClusterIDHeader))
+			}
 		})
 	}
 }
@@ -192,14 +198,15 @@ func TestPeerDowngradeEnabledHandlerRejectsBadRequests(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
 	tests := []struct {
-		name       string
-		method     string
-		target     string
-		wantStatus int
-		wantBody   string
+		name          string
+		method        string
+		target        string
+		wantStatus    int
+		wantBody      string
+		wantClusterID bool
 	}{
 		{name: "wrong method", method: http.MethodPost, target: "/downgrade/enabled", wantStatus: http.StatusMethodNotAllowed, wantBody: "Method Not Allowed"},
-		{name: "wrong path", method: http.MethodGet, target: "/downgrade/enabled/extra", wantStatus: http.StatusBadRequest, wantBody: "bad path"},
+		{name: "wrong path", method: http.MethodGet, target: "/downgrade/enabled/extra", wantStatus: http.StatusBadRequest, wantBody: "bad path", wantClusterID: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -207,6 +214,11 @@ func TestPeerDowngradeEnabledHandlerRejectsBadRequests(t *testing.T) {
 			server.peerDowngradeEnabledHandler(rec, httptest.NewRequest(tt.method, tt.target, nil))
 			require.Equal(t, tt.wantStatus, rec.Code)
 			require.Contains(t, rec.Body.String(), tt.wantBody)
+			if tt.wantClusterID {
+				require.Equal(t, strconv.FormatUint(server.backend.ClusterID(), 16), rec.Header().Get(etcdClusterIDHeader))
+			} else {
+				require.Empty(t, rec.Header().Get(etcdClusterIDHeader))
+			}
 		})
 	}
 }
