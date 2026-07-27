@@ -16451,6 +16451,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   必须保留原始错误字符串、公开 `codes.Unknown`，并在 auth typed 错误上保留 `ErrorIs`。
   该门禁防止 DBaaS concurrency facade 在 lock/election 错误路径上漂移 clientv3 recipes 依赖的
   可见错误语义。
+- A1361 固定 RangeStream validation/revision 错误字符串：
+  raw `RangeStream` validation 错误必须保留完整 status error 字符串；clientv3 `GetStream`
+  future/compacted revision 错误必须保留裸 etcd message、typed `ErrorIs` 和公开 status code。
+  该门禁防止流式读路径在 unsupported option 和 MVCC revision 边界上混淆 raw gRPC 与 client
+  wrapper 错误形态。
 
 ### P2：运维兼容和长期验证
 
