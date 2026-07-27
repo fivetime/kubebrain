@@ -17520,6 +17520,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `errors.Is(..., rpctypes.ErrDuplicateKey)` 识别的 public error，且重复写入、Else branch 与相邻
   tenant key 都不得被错误提交或污染。该回归防止 namespace nested Txn 在分支选择前后的 duplicate
   interval 校验顺序偏离 etcd。
+- A1542 固定官方 client/v3 namespace.NewKV nested OpTxn 的 missing lease 分支选择外观：
+  nested `OpTxn` compare 失败时，未选中 branch 中
+  `OpPut("items/bad-lease", ..., WithLease(missingLease))` 不得触发 lease-not-found，必须执行
+  Else branch 并返回 logical `items/a=value-a`；同一 missing lease `OpPut` 处于选中分支时，
+  `clientv3.Txn.Commit` 必须返回可由 `errors.Is(..., rpctypes.ErrLeaseNotFound)` 识别的 public
+  error，且 bad-lease key、原 logical key 与相邻 tenant key 的最终状态保持 etcd 兼容。该回归
+  防止 namespace nested Txn 在 lease lookup、branch 选择和错误映射之间发生顺序漂移。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户

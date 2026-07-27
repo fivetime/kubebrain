@@ -3705,6 +3705,82 @@ func TestClientNamespaceNestedTxnUnselectedDuplicateWriteBranchReturnsTypedError
 	require.Equal(t, []byte("outside-tenant"), outsideTenant.Kvs[0].Value)
 }
 
+func TestClientNamespaceNestedTxnMissingLeaseBranchSelectionMatchesEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	tenantPrefix := "/a1542/namespace-nested-txn-missing-lease/tenant/"
+	namespacedKV := namespace.NewKV(client.KV, tenantPrefix)
+	missingLease := clientv3.LeaseID(math.MaxInt64)
+	_, err = namespacedKV.Put(ctx, "items/a", "value-a")
+	require.NoError(t, err)
+	_, err = client.Put(ctx, "/a1542/namespace-nested-txn-missing-lease/tenant0/items/a", "outside-tenant")
+	require.NoError(t, err)
+
+	unselectedBadLease, err := namespacedKV.Txn(ctx).
+		Then(clientv3.OpTxn(
+			[]clientv3.Cmp{clientv3.Compare(clientv3.Version("missing"), "=", 1)},
+			[]clientv3.Op{clientv3.OpPut("items/bad-lease", "must-not-commit", clientv3.WithLease(missingLease))},
+			[]clientv3.Op{clientv3.OpGet("items/a")},
+		)).
+		Commit()
+	require.NoError(t, err)
+	require.True(t, unselectedBadLease.Succeeded)
+	require.Len(t, unselectedBadLease.Responses, 1)
+	nestedTxn := unselectedBadLease.Responses[0].GetResponseTxn()
+	require.NotNil(t, nestedTxn)
+	require.False(t, nestedTxn.Succeeded)
+	require.Len(t, nestedTxn.Responses, 1)
+	nestedGet := nestedTxn.Responses[0].GetResponseRange()
+	require.NotNil(t, nestedGet)
+	require.Equal(t, int64(1), nestedGet.Count)
+	require.Len(t, nestedGet.Kvs, 1)
+	require.Equal(t, []byte("items/a"), nestedGet.Kvs[0].Key)
+	require.Equal(t, []byte("value-a"), nestedGet.Kvs[0].Value)
+
+	_, err = namespacedKV.Txn(ctx).
+		Then(clientv3.OpTxn(
+			nil,
+			[]clientv3.Op{clientv3.OpPut("items/bad-lease", "must-not-commit", clientv3.WithLease(missingLease))},
+			nil,
+		)).
+		Commit()
+	requireClientTxnError(t, err, codes.Unknown, "etcdserver: requested lease not found", rpctypes.ErrLeaseNotFound)
+
+	badLease, err := namespacedKV.Get(ctx, "items/bad-lease")
+	require.NoError(t, err)
+	require.Empty(t, badLease.Kvs)
+	current, err := namespacedKV.Get(ctx, "items/a")
+	require.NoError(t, err)
+	require.Len(t, current.Kvs, 1)
+	require.Equal(t, []byte("value-a"), current.Kvs[0].Value)
+	outsideTenant, err := client.Get(ctx, "/a1542/namespace-nested-txn-missing-lease/tenant0/items/a")
+	require.NoError(t, err)
+	require.Len(t, outsideTenant.Kvs, 1)
+	require.Equal(t, []byte("outside-tenant"), outsideTenant.Kvs[0].Value)
+}
+
 func TestClientNamespaceTxnGetValidationErrorsMatchEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
