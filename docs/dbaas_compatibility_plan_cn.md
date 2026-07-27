@@ -16721,6 +16721,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   “不信任客户端自带 hash”的边界，仅由 RPC 预处理调用可信 hashed apply 入口；服务端回归
   固定成功、失败与 NoPassword 分支，既有官方 client/v3 密码新增、删除重建和连续轮换黑盒
   证明预处理后的 hash 可真实认证且旧密码失效。
+- A1413 对齐自动 LeaseGrant 请求 ID 生命周期：
+  对照 upstream `EtcdServer.LeaseGrant` 在 `ID==NoLease` 时把生成的正 int64 ID 写回
+  protobuf request 再进入 apply，KubeBrain 自动分配 lease ID 后同步回填 `LeaseGrantRequest.ID`，
+  同时保留显式 ID、重复 ID、TTL clamp 和过大 TTL 的既有错误契约。服务端回归扩展
+  maximum TTL/automatic ID 用例，固定响应 ID、请求对象 ID 与后续 TTL 查询使用同一 lease。
 
 ### P2：运维兼容和长期验证
 

@@ -830,9 +830,11 @@ func TestLeaseGrantMaximumTTLAndAutomaticIDMatchEtcd(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, maxLeaseTTL, maxTTL.GrantedTTL)
 
-	automatic, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 10})
+	automaticRequest := &etcdserverpb.LeaseGrantRequest{TTL: 10}
+	automatic, err := server.LeaseGrant(ctx, automaticRequest)
 	require.NoError(t, err)
 	require.NotZero(t, automatic.ID)
+	require.Equal(t, automatic.ID, automaticRequest.ID)
 	require.Equal(t, int64(10), automatic.TTL)
 	autoTTL, err := server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: automatic.ID})
 	require.NoError(t, err)

@@ -145,6 +145,7 @@ func (m *leaseManager) LeaseGrant(ctx context.Context, req *etcdserverpb.LeaseGr
 		ttl = minLeaseTTL
 	}
 
+	explicitID := req.ID != 0
 	id := req.ID
 	var grantGeneration uint64
 	for {
@@ -157,11 +158,14 @@ func (m *leaseManager) LeaseGrant(ctx context.Context, req *etcdserverpb.LeaseGr
 		if !active && !pending {
 			grantGeneration = m.leaseGeneration
 			m.pendingLeases[id] = grantGeneration
+			if !explicitID {
+				req.ID = id
+			}
 			m.leaseMu.Unlock()
 			break
 		}
 		m.leaseMu.Unlock()
-		if req.ID != 0 {
+		if explicitID {
 			return nil, status.Error(codes.FailedPrecondition, "etcdserver: lease already exists")
 		}
 		id = 0
