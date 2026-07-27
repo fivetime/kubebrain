@@ -17787,6 +17787,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   failure 分支必须正常读取当前 namespace logical `[ "", "z" )` range，返回 `alpha/a`、
   `items/a`，并保持相邻 tenant 隔离。该回归补齐 A1539 point-key 未选中 future revision
   之外的 empty-start explicit range validation-order 路径。
+- A1589 固定官方 client/v3 namespace.NewKV nested OpTxn 的未选中 empty logical start 显式
+  range compacted revision 分支外观：nested `OpTxn` success 分支中的 `OpGet("", WithRange("z"),
+  WithRev(compactedRev))` 若未被内部 compare 选中，不得提前校验或返回 compacted revision error；
+  failure 分支必须正常读取当前 namespace logical `[ "", "z" )` range，返回当前值
+  `alpha/a=new-alpha/a`、`items/a=value-items/a`，并保持相邻 tenant 隔离。该回归补齐 A1540
+  point-key 未选中 compacted revision 之外的 empty-start explicit range validation-order 路径。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
