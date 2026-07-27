@@ -381,6 +381,13 @@ func TestClientTxnBasicErrorsMatchEtcd(t *testing.T) {
 	}
 	_, err = client.Txn(ctx).Then(ops...).Commit()
 	requireClientTxnError(t, err, codes.Unknown, "etcdserver: too many operations in txn request", rpctypes.ErrTooManyOps)
+
+	cmps := make([]clientv3.Cmp, defaultMaxTxnOps+1)
+	for i := range cmps {
+		cmps[i] = clientv3.Compare(clientv3.Version(""), "=", 0)
+	}
+	_, err = client.Txn(ctx).If(cmps...).Commit()
+	requireClientTxnError(t, err, codes.Unknown, "etcdserver: too many operations in txn request", rpctypes.ErrTooManyOps)
 }
 
 func TestClientTxnNoSpaceIsTyped(t *testing.T) {
