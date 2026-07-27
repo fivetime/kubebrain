@@ -17054,6 +17054,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `namespace.NewKV(...).Get("", WithFromKey(), WithMinModRev(updateRev))` 只统计当前
   namespace 的 3 个 logical keys，只返回被更新的 logical key/value，且不把相邻物理
   namespace 纳入 Count 或结果。
+- A1468 固定官方 client/v3 namespace.NewKV Do(Get) 的 mod revision filter 外观：
+  A1467 固定 `Get` 专用入口后，本轮补齐通用 `Do(OpGet("", WithFromKey(),
+  WithMinModRev(updateRev), WithSort(SortByKey, SortAscend)))`。upstream `namespace.kvPrefix.Do`
+  会对该非空 op 先做 namespace `prefixOp`，再对 `ResponseRange` 调用
+  `unprefixGetResponse`；因此 `Count` 必须只统计当前 namespace，总数不受 mod filter 截断，
+  返回的唯一 KV 也必须是 logical key/value。该回归防止通用 `Do(Get)` 在 revision filter
+  路径上泄露物理 prefix 或跨 tenant 计数。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
