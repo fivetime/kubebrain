@@ -325,6 +325,54 @@ func TestClientNamespaceGetKeysOnlyLimitReturnsLogicalKeys(t *testing.T) {
 	require.Empty(t, txnGet.Kvs[1].Value)
 }
 
+func TestClientNamespaceGetModRevisionFilterReturnsLogicalKeys(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	tenantPrefix := "/a1467/namespace-mod-filter/tenant/"
+	namespacedKV := namespace.NewKV(client.KV, tenantPrefix)
+	for _, key := range []string{"a", "b", "c"} {
+		_, err = namespacedKV.Put(ctx, key, "old-"+key)
+		require.NoError(t, err)
+	}
+	updateB, err := namespacedKV.Put(ctx, "b", "new-b")
+	require.NoError(t, err)
+	_, err = client.Put(ctx, "/a1467/namespace-mod-filter/tenant0/outside", "outside")
+	require.NoError(t, err)
+
+	resp, err := namespacedKV.Get(ctx, "", clientv3.WithFromKey(),
+		clientv3.WithMinModRev(updateB.Header.Revision),
+		clientv3.WithSort(clientv3.SortByKey, clientv3.SortAscend))
+	require.NoError(t, err)
+	require.NotNil(t, resp.Header)
+	require.Equal(t, int64(3), resp.Count)
+	require.False(t, resp.More)
+	require.Len(t, resp.Kvs, 1)
+	require.Equal(t, []byte("b"), resp.Kvs[0].Key)
+	require.Equal(t, []byte("new-b"), resp.Kvs[0].Value)
+}
+
 func TestClientNamespaceTxnGetValidationErrorsMatchEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
