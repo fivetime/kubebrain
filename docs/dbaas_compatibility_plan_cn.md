@@ -18613,6 +18613,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   必须等于后续 outside-range 写入产生的 latest revision，并排除后续更新但早创建的 `range/a`、
   upper-bound key、同 tenant 相邻 range 和相邻 tenant。该回归补齐 A1634 empty-start range current
   serializable MinCreateRev 与 A1705/A1706 explicit range current serializable ModRev 之外的 CreateRev 路径。
+- A1708 固定官方 client/v3 namespace.NewKV nested OpTxn 的显式 logical range current
+  serializable MaxCreateRev filter 外观：nested `OpGet("range/a", WithRange("range/d"),
+  WithSerializable(), WithMaxCreateRev(createRev-1), WithSort(SortByKey, SortAscend))` 必须在最新
+  revision 上统计当前 namespace logical `[range/a, range/d)` 全量 `Count=3`，但只返回 create
+  revision 满足上界的 logical `range/a`、`range/b`，其中早创建后更新的 `range/a` 返回当前
+  value、`More=false`，response header revision 必须等于后续 outside-range 写入产生的 latest
+  revision，并排除阈值后创建的 `range/c`、upper-bound key、同 tenant 相邻 range 和相邻 tenant。
+  该回归补齐 A1635 empty-start range current serializable MaxCreateRev 与 A1707 的对侧路径。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
