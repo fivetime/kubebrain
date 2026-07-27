@@ -841,6 +841,18 @@ func TestLeaseGrantMaximumTTLAndAutomaticIDMatchEtcd(t *testing.T) {
 	require.Equal(t, int64(10), autoTTL.GrantedTTL)
 }
 
+func TestLeaseGrantAutomaticIDRewritesBeforeAuthLikeEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	setupAuthKVUser(t, server)
+
+	request := &etcdserverpb.LeaseGrantRequest{TTL: 30}
+	response, err := server.LeaseGrant(context.Background(), request)
+	require.Nil(t, response)
+	requireAuthLeaseError(t, err, rpctypes.ErrUserEmpty, codes.Unknown, "etcdserver: user name is empty")
+	require.Positive(t, request.ID)
+}
+
 func TestLeaseTimeToLiveZeroIDMatchesEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

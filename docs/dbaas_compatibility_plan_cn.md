@@ -16726,6 +16726,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   protobuf request 再进入 apply，KubeBrain 自动分配 lease ID 后同步回填 `LeaseGrantRequest.ID`，
   同时保留显式 ID、重复 ID、TTL clamp 和过大 TTL 的既有错误契约。服务端回归扩展
   maximum TTL/automatic ID 用例，固定响应 ID、请求对象 ID 与后续 TTL 查询使用同一 lease。
+- A1414 对齐 LeaseGrant 自动 ID 的鉴权前改写顺序：
+  upstream 在 `LeaseGrant` 入口先为 `ID==0` 的请求分配并写回正 int64 ID，然后才执行
+  `requireAuthInfo`。KubeBrain 现在同样在鉴权、CORRUPT/NOSPACE/TTL 检查和持久 apply
+  之前改写自动 ID；即使请求随后因 auth 未携带身份而失败，调用方复用的 protobuf request
+  也已不再保持 `ID=0`。回归在 auth 开启后用匿名自动 LeaseGrant 固定 `ErrUserEmpty`
+  与请求 ID 已生成，同时保留 A1413 的成功路径和 raw gRPC TTL/ID 边界。
 
 ### P2：运维兼容和长期验证
 

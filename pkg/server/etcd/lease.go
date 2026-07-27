@@ -101,6 +101,10 @@ func decodeLeaseRecord(raw []byte) (leaseRecord, error) {
 
 func (m *leaseManager) LeaseGrant(ctx context.Context, req *etcdserverpb.LeaseGrantRequest) (*etcdserverpb.LeaseGrantResponse, error) {
 	m.srv.metricCli.EmitCounter("lease.grant", 1)
+	explicitID := req.ID != 0
+	if !explicitID {
+		req.ID = m.nextLeaseID()
+	}
 	ctx, cancel := withUnaryRequestTimeout(ctx)
 	defer cancel()
 	caller, err := m.srv.authCallerFromContext(ctx)
@@ -145,7 +149,6 @@ func (m *leaseManager) LeaseGrant(ctx context.Context, req *etcdserverpb.LeaseGr
 		ttl = minLeaseTTL
 	}
 
-	explicitID := req.ID != 0
 	id := req.ID
 	var grantGeneration uint64
 	for {
