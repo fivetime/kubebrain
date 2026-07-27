@@ -5902,6 +5902,60 @@ func TestClientNamespaceNestedTxnUnselectedEmptyStartRangeCompactedRevisionIsNot
 	require.Equal(t, int64(1), outsideTenant.Count)
 }
 
+func TestClientNamespaceNestedTxnGetEmptyStartRangeInvalidSortReturnsTypedErrorAndDoesNotCommit(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	tenantPrefix := "/a1590/namespace-nested-txn-empty-start-range-invalid-sort/tenant/"
+	namespacedKV := namespace.NewKV(client.KV, tenantPrefix)
+	for _, key := range []string{"alpha/a", "items/a", "z/final"} {
+		_, err = namespacedKV.Put(ctx, key, "value-"+key)
+		require.NoError(t, err)
+	}
+	_, err = client.Put(ctx, "/a1590/namespace-nested-txn-empty-start-range-invalid-sort/tenant0/items/a", "outside-tenant")
+	require.NoError(t, err)
+
+	_, err = namespacedKV.Txn(ctx).
+		Then(clientv3.OpTxn(nil,
+			[]clientv3.Op{
+				clientv3.OpGet("",
+					clientv3.WithRange("z"),
+					clientv3.WithSort(clientv3.SortTarget(99), clientv3.SortOrder(99))),
+				clientv3.OpPut("items/after-invalid-sort", "must-not-commit"),
+			},
+			nil)).
+		Commit()
+	requireClientTxnError(t, err, codes.Unknown, "etcdserver: invalid sort option", rpctypes.ErrInvalidSortOption)
+
+	afterInvalidSort, err := namespacedKV.Get(ctx, "items/after-invalid-sort")
+	require.NoError(t, err)
+	require.Empty(t, afterInvalidSort.Kvs)
+	outsideTenant, err := client.Get(ctx, "/a1590/namespace-nested-txn-empty-start-range-invalid-sort/tenant0/", clientv3.WithPrefix())
+	require.NoError(t, err)
+	require.Equal(t, int64(1), outsideTenant.Count)
+}
+
 func TestClientNamespaceNestedTxnGetEmptyStartRangeSortByValueDescReturnsLogicalPage(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
