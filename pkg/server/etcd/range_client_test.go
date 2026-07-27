@@ -384,6 +384,23 @@ func TestClientNamespaceGetModRevisionFilterReturnsLogicalKeys(t *testing.T) {
 	require.Len(t, doGet.Kvs, 1)
 	require.Equal(t, []byte("b"), doGet.Kvs[0].Key)
 	require.Equal(t, []byte("new-b"), doGet.Kvs[0].Value)
+
+	txnResp, err := namespacedKV.Txn(ctx).
+		Then(clientv3.OpGet("", clientv3.WithFromKey(),
+			clientv3.WithMinModRev(updateB.Header.Revision),
+			clientv3.WithSort(clientv3.SortByKey, clientv3.SortAscend))).
+		Commit()
+	require.NoError(t, err)
+	require.True(t, txnResp.Succeeded)
+	require.Len(t, txnResp.Responses, 1)
+	txnGet := txnResp.Responses[0].GetResponseRange()
+	require.NotNil(t, txnGet)
+	require.NotNil(t, txnGet.Header)
+	require.Equal(t, int64(3), txnGet.Count)
+	require.False(t, txnGet.More)
+	require.Len(t, txnGet.Kvs, 1)
+	require.Equal(t, []byte("b"), txnGet.Kvs[0].Key)
+	require.Equal(t, []byte("new-b"), txnGet.Kvs[0].Value)
 }
 
 func TestClientNamespaceTxnGetValidationErrorsMatchEtcd(t *testing.T) {
