@@ -17379,6 +17379,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   数据时，nested `Compare(Version("range/a").WithRange("range/d"), ">", 0)` 必须失败并执行
   Else branch，返回空 `ResponseRange`、`Count=0`、`More=false`。该回归防止 nested
   `prefixCmps` 遗漏导致 leasing 嵌套事务的 range guard 被相邻物理数据误通过。
+- A1514 固定官方 client/v3 namespace.NewKV nested OpTxn 的 Else branch response unprefix：
+  在 nested compare 失败且 Else branch 返回实际数据时，`ResponseTxn.Succeeded=false` 下的
+  `ResponseRange` 仍必须递归 unprefix，返回 logical `items/a,b` 与原始 values，并排除相邻
+  tenant 的同名 key。该回归补齐 A1513 空结果以外的 false branch 可见响应外观，防止 nested
+  Txn adapter 只处理成功分支。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
