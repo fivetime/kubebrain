@@ -133,7 +133,7 @@ func TestParseMeteringSampleReadReceiptRejectsRetainUntilBelowMinimum(t *testing
 
 	_, err = parseBlobReadReceipt(data, artifactID, "instance-a", "store-a",
 		"metering", objectKey, minRetainUntil)
-	require.ErrorContains(t, err, "does not match")
+	require.EqualError(t, err, "metering sample read receipt does not match the request")
 
 	receipt.RetainUntilUnix = minRetainUntil
 	data, err = json.Marshal(receipt)
@@ -148,19 +148,19 @@ func TestRollerValidationPinsDailyPeriodAndSeparatePrefixes(t *testing.T) {
 	roller := validRoller(time.Now())
 	require.NoError(t, roller.Validate())
 	roller.PeriodDuration = 12 * time.Hour
-	require.ErrorContains(t, roller.Validate(), "metering roller configuration is incomplete")
+	require.EqualError(t, roller.Validate(), "metering roller configuration is incomplete")
 	roller = validRoller(time.Now())
 	roller.RollupPrefix = roller.SamplePrefix
-	require.ErrorContains(t, roller.Validate(), "metering roller configuration is incomplete")
+	require.EqualError(t, roller.Validate(), "metering roller configuration is incomplete")
 
 	roller = validRoller(time.Date(2026, 7, 20, 0, 47, 0, 0, time.UTC))
 	roller.PeriodEnd = time.Date(2026, 7, 18, 0, 0, 0, 0, time.UTC)
 	roller.Run = func(context.Context, string, []string) ([]byte, error) { return nil, nil }
 	_, _, err := roller.Process(context.Background())
-	require.ErrorContains(t, err, "decode metering sample read receipt")
+	require.EqualError(t, err, "decode metering sample read receipt: EOF")
 	roller.PeriodEnd = time.Date(2026, 7, 20, 0, 0, 1, 0, time.UTC)
 	_, _, err = roller.Process(context.Background())
-	require.ErrorContains(t, err, "not eligible")
+	require.EqualError(t, err, "explicit metering period end is not eligible")
 }
 
 func TestRollerValidationRejectsUnsafeObjectIdentity(t *testing.T) {
@@ -178,7 +178,7 @@ func TestRollerValidationRejectsUnsafeObjectIdentity(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			roller := validRoller(time.Now())
 			tt.mutate(roller)
-			require.ErrorContains(t, roller.Validate(), "object identity")
+			require.EqualError(t, roller.Validate(), "metering roller object identity is invalid")
 		})
 	}
 }

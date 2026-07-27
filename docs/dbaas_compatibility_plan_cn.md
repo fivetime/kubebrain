@@ -16552,6 +16552,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   对象存储 sample archive receipt、usage stdout/receipt 匹配、rollup archive receipt
   和 sample read receipt 的漂移，以及 archiver/roller object identity 校验，必须返回精确文本。
   该门禁防止对象存储计量归档在不可变对象收据或配置身份损坏时只暴露模糊错误。
+- A1383 固定 metering archive archiver/roller 收据错误字符串：
+  Prometheus incomplete、sample Object Lock archive receipt、普通计量 read receipt、retention/config、
+  object identity、空 read receipt decode 和显式 period eligibility 错误，必须返回精确文本。
+  该门禁防止普通计量样本归档与日 rollup 读取/发布链路在收据或配置损坏时退化为模糊错误。
 
 ### P2：运维兼容和长期验证
 

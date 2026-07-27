@@ -81,7 +81,7 @@ func TestArchiverRejectsIncompletePrometheusAndUnverifiedReceipt(t *testing.T) {
 		return nil, nil
 	}
 	_, _, err = archiver.Process(context.Background())
-	require.ErrorContains(t, err, "data is incomplete")
+	require.EqualError(t, err, "metering data is incomplete at 1700006400")
 	require.False(t, called)
 
 	server.Config.Handler = http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
@@ -91,7 +91,7 @@ func TestArchiverRejectsIncompletePrometheusAndUnverifiedReceipt(t *testing.T) {
 		return []byte(`{"format":"wrong"}`), nil
 	}
 	_, _, err = archiver.Process(context.Background())
-	require.ErrorContains(t, err, "receipt")
+	require.EqualError(t, err, "metering archive receipt does not match the sample")
 }
 
 func TestArchiverValidationRejectsUnsafeRetentionAndPrefix(t *testing.T) {
@@ -101,10 +101,10 @@ func TestArchiverValidationRejectsUnsafeRetentionAndPrefix(t *testing.T) {
 	require.NoError(t, err)
 	archiver := validArchiver(collector)
 	archiver.RetentionDuration = archiver.SlotDuration
-	require.ErrorContains(t, archiver.Validate(), "metering retention must exceed the slot and finalization delay")
+	require.EqualError(t, archiver.Validate(), "metering retention must exceed the slot and finalization delay")
 	archiver.RetentionDuration = 365 * 24 * time.Hour
 	archiver.Prefix = "/"
-	require.ErrorContains(t, archiver.Validate(), "metering archiver configuration is incomplete")
+	require.EqualError(t, archiver.Validate(), "metering archiver configuration is incomplete")
 }
 
 func TestArchiverValidationRejectsUnsafeObjectIdentity(t *testing.T) {
@@ -124,7 +124,7 @@ func TestArchiverValidationRejectsUnsafeObjectIdentity(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			archiver := validArchiver(collector)
 			tc.mutate(archiver)
-			require.ErrorContains(t, archiver.Validate(), "object identity")
+			require.EqualError(t, archiver.Validate(), "metering archive object identity is invalid")
 		})
 	}
 }
