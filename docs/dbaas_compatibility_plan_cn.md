@@ -17005,6 +17005,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   随后同样调用 `unprefixPutResponse`；因此 `Put("key", value, WithPrevKV())` 返回的
   `PrevKv.Key` 必须保持 logical key，底层 raw Get 则仍只能看到带 namespace prefix 的物理
   key，防止专用入口和通用 `Do(Put)` 在 response adapter 上漂移。
+- A1461 固定官方 client/v3 namespace.NewKV Get 的 CountOnly/KeysOnly full-range 外观：
+  对照 upstream `namespace.kvPrefix.Get` 允许 empty key 携带 `WithFromKey()`，并通过
+  `prefixOp` 把 full-keyspace 查询收窄到当前 namespace；同时对照
+  `/root/etcd/tests/integration/clientv3/kv_test.go:TestKVGetKeysOnlyWithCountOnly`，当
+  `WithCountOnly()` 与 `WithKeysOnly()` 同时存在时 `CountOnly` 优先、`Kvs` 必须为空。
+  新增 official clientv3 bufconn 回归固定 `namespace.NewKV(...).Get("", WithFromKey(),
+  WithCountOnly(), WithKeysOnly())` 只统计当前 namespace 内的 logical keys，不跨到相邻
+  namespace，也不返回物理 key。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户

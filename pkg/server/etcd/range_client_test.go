@@ -173,6 +173,57 @@ func TestClientNamespaceGetValidationErrorsMatchEtcd(t *testing.T) {
 	requireClientKVError(t, err, rpctypes.ErrInvalidSortOption, codes.Unknown, "etcdserver: invalid sort option")
 }
 
+func TestClientNamespaceGetCountOnlyKeysOnlyCountsTenantKeys(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	tenantPrefix := "/a1461/namespace-count/tenant/"
+	namespacedKV := namespace.NewKV(client.KV, tenantPrefix)
+	for _, key := range []string{"a", "b", "c", "c"} {
+		_, err = namespacedKV.Put(ctx, key, "value-"+key)
+		require.NoError(t, err)
+	}
+	_, err = client.Put(ctx, "/a1461/namespace-count/tenant0/outside", "outside")
+	require.NoError(t, err)
+
+	resp, err := namespacedKV.Get(ctx, "", clientv3.WithFromKey(), clientv3.WithCountOnly(), clientv3.WithKeysOnly())
+	require.NoError(t, err)
+	require.NotNil(t, resp.Header)
+	require.Equal(t, int64(3), resp.Count)
+	require.Empty(t, resp.Kvs)
+	require.False(t, resp.More)
+
+	visible, err := namespacedKV.Get(ctx, "", clientv3.WithFromKey(), clientv3.WithSort(clientv3.SortByKey, clientv3.SortAscend))
+	require.NoError(t, err)
+	require.Equal(t, int64(3), visible.Count)
+	require.Equal(t, [][]byte{[]byte("a"), []byte("b"), []byte("c")}, [][]byte{
+		visible.Kvs[0].Key,
+		visible.Kvs[1].Key,
+		visible.Kvs[2].Key,
+	})
+}
+
 func TestClientNamespaceTxnGetValidationErrorsMatchEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
