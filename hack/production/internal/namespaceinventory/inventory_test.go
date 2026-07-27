@@ -64,6 +64,29 @@ func TestValidateOneRequiresDNSLabelNamespace(t *testing.T) {
 	}
 }
 
+func TestValidateReturnsExactFailClosedErrors(t *testing.T) {
+	tooMany := make([]string, MaxNamespaces+1)
+	for i := range tooMany {
+		tooMany[i] = fmt.Sprintf("tenant-%d", i)
+	}
+	for _, tc := range []struct {
+		name       string
+		namespaces []string
+		want       string
+	}{
+		{name: "empty_allowlist", namespaces: nil, want: "namespace allowlist must not be empty"},
+		{name: "too_many", namespaces: tooMany, want: "namespace allowlist exceeds 256 entries"},
+		{name: "empty_namespace", namespaces: []string{""}, want: "namespace allowlist contains an empty value"},
+		{name: "duplicate", namespaces: []string{"tenant-a", "tenant-a"}, want: "namespace allowlist contains duplicate tenant-a"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := Validate(tc.namespaces)
+			require.Nil(t, got)
+			require.EqualError(t, err, tc.want)
+		})
+	}
+}
+
 func TestValidateConfigMapNameRequiresDNSSubdomain(t *testing.T) {
 	require.NoError(t, ValidateConfigMapName("tenant-a.inventory"))
 	for _, name := range []string{"", "Tenant-A", "-inventory", "inventory-", "inventory/name", strings.Repeat("a", 254)} {

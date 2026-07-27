@@ -16511,6 +16511,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   terminal completion、当前 terminal operation 漂移、expected scope/object/retention
   漂移时，必须返回精确 fail-closed 错误文本。该门禁防止审计归档释放路径在证据不一致时
   退化为模糊错误或误释放 finalizer。
+- A1374 固定 namespace inventory allowlist 错误字符串：
+  多租户 namespace inventory 的空 allowlist、超过 `MaxNamespaces`、空 namespace 和重复
+  namespace 必须返回精确 fail-closed 错误文本。该门禁防止 backup scheduler、
+  operationctl 和 operation archiver 共享的动态租户范围解析在损坏 inventory 上退化为
+  模糊错误或继续跨租户扫描。
 
 ### P2：运维兼容和长期验证
 
