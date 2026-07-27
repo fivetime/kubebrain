@@ -17364,6 +17364,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   WithPrevKV())}, nil)).Commit()` 必须在 nested `ResponseTxn` 的 `ResponsePut.PrevKv` 中返回
   logical key/value `items/a=old-a`，并只更新当前 namespace 的 logical key。该回归防止 nested
   Txn put response adapter 漏做递归 unprefix。
+- A1512 固定官方 client/v3 namespace.NewKV nested OpTxn 的显式 logical range compare 外观：
+  对照 upstream leasing `serverTxn` 会把用户事务包成 nested `OpTxn`，且 upstream namespace
+  `prefixOp` 对 nested `OpTxn` 的 cmps/ops 递归 prefix。本轮新增 official clientv3 bufconn
+  回归固定 `namespace.NewKV(...).Txn(...).Then(OpTxn([]Cmp{Compare(Version("range/a").WithRange("range/d"),
+  ">", 0)}, []Op{OpGet("range/a", WithRange("range/d"), WithKeysOnly())},
+  []Op{OpGet("range/a", WithRange("range/d"))})).Commit()` 必须只比较当前 namespace 的
+  `[range/a, range/d)` logical range，并在 nested `ResponseTxn` 中走 Then branch，返回
+  logical keys-only `range/a,b,c`、`Count=3`、`More=false`。该回归防止 nested Txn compare
+  未经 `prefixCmps` 递归映射或把相邻 range/tenant 纳入判断。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
