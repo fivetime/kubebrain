@@ -64,7 +64,7 @@ func TestClientExperimentalRecipesBarrierAndQueues(t *testing.T) {
 
 	barrier := recipe.NewBarrier(client, "/a968/recipes/barrier")
 	require.NoError(t, barrier.Hold())
-	require.Error(t, barrier.Hold())
+	require.ErrorIs(t, barrier.Hold(), recipe.ErrKeyExists)
 	const barrierWaiters = 5
 	waitResults := make(chan error, barrierWaiters)
 	for range barrierWaiters {

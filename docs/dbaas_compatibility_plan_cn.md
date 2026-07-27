@@ -16437,6 +16437,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `concurrency.NewSTM` 使用 `WithAbortContext` 取消时必须返回 `context.Canceled`，且已 staged
   的 Put 不得提交。该门禁防止 STM abort 被包装成不可分类错误，或在 TiKV-backed 事务重试中
   泄漏已取消事务的写入。
+- A1358 固定 experimental recipes Barrier 二次 Hold 错误契约：
+  `recipe.NewBarrier(...).Hold()` 第一次创建 barrier key 成功后，第二次 Hold 必须返回
+  `recipe.ErrKeyExists`。该门禁防止 experimental recipes 兼容面只验证任意失败，而漏掉
+  barrier key 唯一性和 clientv3 recipe sentinel 的公开契约。
 
 ### P2：运维兼容和长期验证
 
