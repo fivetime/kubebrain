@@ -3957,6 +3957,99 @@ func TestClientNamespaceNestedTxnUnselectedBranchAtRemainingOpBudgetSucceeds(t *
 	require.Equal(t, []byte("outside-tenant"), outsideTenant.Kvs[0].Value)
 }
 
+func TestClientNamespaceNestedTxnPutIgnoreValueAndIgnoreLeaseKeepsLogicalPrevKV(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	server.Register(grpcServer)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	tenantPrefix := "/a1546/namespace-nested-txn-put-ignore/tenant/"
+	namespacedKV := namespace.NewKV(client.KV, tenantPrefix)
+	leaseA, err := client.Grant(ctx, 60)
+	require.NoError(t, err)
+	leaseB, err := client.Grant(ctx, 60)
+	require.NoError(t, err)
+	_, err = namespacedKV.Put(ctx, "items/a", "old-a", clientv3.WithLease(leaseA.ID))
+	require.NoError(t, err)
+	_, err = client.Put(ctx, "/a1546/namespace-nested-txn-put-ignore/tenant0/items/a", "outside-tenant")
+	require.NoError(t, err)
+
+	ignoreValue, err := namespacedKV.Txn(ctx).
+		Then(clientv3.OpTxn(
+			nil,
+			[]clientv3.Op{clientv3.OpPut("items/a", "", clientv3.WithIgnoreValue(), clientv3.WithLease(leaseB.ID), clientv3.WithPrevKV())},
+			nil,
+		)).
+		Commit()
+	require.NoError(t, err)
+	require.True(t, ignoreValue.Succeeded)
+	require.Len(t, ignoreValue.Responses, 1)
+	nestedIgnoreValue := ignoreValue.Responses[0].GetResponseTxn()
+	require.NotNil(t, nestedIgnoreValue)
+	require.True(t, nestedIgnoreValue.Succeeded)
+	require.Len(t, nestedIgnoreValue.Responses, 1)
+	ignoreValuePrev := nestedIgnoreValue.Responses[0].GetResponsePut().PrevKv
+	require.NotNil(t, ignoreValuePrev)
+	require.Equal(t, []byte("items/a"), ignoreValuePrev.Key)
+	require.Equal(t, []byte("old-a"), ignoreValuePrev.Value)
+	require.Equal(t, int64(leaseA.ID), ignoreValuePrev.Lease)
+
+	afterIgnoreValue, err := namespacedKV.Get(ctx, "items/a")
+	require.NoError(t, err)
+	require.Len(t, afterIgnoreValue.Kvs, 1)
+	require.Equal(t, []byte("old-a"), afterIgnoreValue.Kvs[0].Value)
+	require.Equal(t, int64(leaseB.ID), afterIgnoreValue.Kvs[0].Lease)
+
+	ignoreLease, err := namespacedKV.Txn(ctx).
+		Then(clientv3.OpTxn(
+			nil,
+			[]clientv3.Op{clientv3.OpPut("items/a", "new-a", clientv3.WithIgnoreLease(), clientv3.WithPrevKV())},
+			nil,
+		)).
+		Commit()
+	require.NoError(t, err)
+	require.True(t, ignoreLease.Succeeded)
+	require.Len(t, ignoreLease.Responses, 1)
+	nestedIgnoreLease := ignoreLease.Responses[0].GetResponseTxn()
+	require.NotNil(t, nestedIgnoreLease)
+	require.True(t, nestedIgnoreLease.Succeeded)
+	require.Len(t, nestedIgnoreLease.Responses, 1)
+	ignoreLeasePrev := nestedIgnoreLease.Responses[0].GetResponsePut().PrevKv
+	require.NotNil(t, ignoreLeasePrev)
+	require.Equal(t, []byte("items/a"), ignoreLeasePrev.Key)
+	require.Equal(t, []byte("old-a"), ignoreLeasePrev.Value)
+	require.Equal(t, int64(leaseB.ID), ignoreLeasePrev.Lease)
+
+	final, err := namespacedKV.Get(ctx, "items/a")
+	require.NoError(t, err)
+	require.Len(t, final.Kvs, 1)
+	require.Equal(t, []byte("new-a"), final.Kvs[0].Value)
+	require.Equal(t, int64(leaseB.ID), final.Kvs[0].Lease)
+	outsideTenant, err := client.Get(ctx, "/a1546/namespace-nested-txn-put-ignore/tenant0/items/a")
+	require.NoError(t, err)
+	require.Len(t, outsideTenant.Kvs, 1)
+	require.Equal(t, []byte("outside-tenant"), outsideTenant.Kvs[0].Value)
+}
+
 func TestClientNamespaceTxnGetValidationErrorsMatchEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
