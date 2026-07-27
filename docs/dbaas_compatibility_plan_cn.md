@@ -16433,6 +16433,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   MoveLeader 和 Downgrade 认证失败必须保留原始 etcd message、typed `ErrorIs` 和公开
   status code；root 执行平台托管操作时必须保留完整 `codes.Unimplemented` status error。
   该门禁防止维护面在权限失败和 DBaaS 平台替代边界上漂移客户端可见错误语义。
+- A1357 固定 clientv3 STM abort context 错误契约：
+  `concurrency.NewSTM` 使用 `WithAbortContext` 取消时必须返回 `context.Canceled`，且已 staged
+  的 Put 不得提交。该门禁防止 STM abort 被包装成不可分类错误，或在 TiKV-backed 事务重试中
+  泄漏已取消事务的写入。
 
 ### P2：运维兼容和长期验证
 

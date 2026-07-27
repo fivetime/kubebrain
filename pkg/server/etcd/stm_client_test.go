@@ -76,7 +76,7 @@ func TestClientSTMCreateAbortRetryAndSerializableSnapshot(t *testing.T) {
 		stm.Put(abortKey, "still-must-not-commit")
 		return nil
 	}, concurrency.WithIsolation(concurrency.RepeatableReads), concurrency.WithAbortContext(abortCtx))
-	require.Error(t, abortErr)
+	require.ErrorIs(t, abortErr, context.Canceled)
 	abortResponse, err := client.Get(ctx, abortKey)
 	require.NoError(t, err)
 	require.Empty(t, abortResponse.Kvs)
