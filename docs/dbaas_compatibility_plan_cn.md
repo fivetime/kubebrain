@@ -16961,6 +16961,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   namespace 前缀范围。新增回归断言 `Do(OpDelete("", WithPrefix(), WithPrevKV()))`
   只删除当前 namespace 下的 key，且 PrevKV 暴露逻辑 key，防止 namespace `Delete` 与
   通用 `Do(Delete)` 入口语义漂移。
+- A1454 固定官方 client/v3 LeaseGrant 小 TTL clamp 外观：
+  direct/raw LeaseGrant 已覆盖 TTL `math.MinInt64`、`-1`、`0`、`1` 和 `minLeaseTTL`
+  均会被提升到 etcd `minLeaseTTL=2`；本轮补齐 official `clientv3.Grant` 包装层。
+  `Grant(ctx, ttl)` 对上述小 TTL 必须成功返回非零 lease ID、`TTL=2`，随后
+  `TimeToLive` 的 `GrantedTTL` 也必须保持 `2`。该回归防止 high-level lessor wrapper 或
+  DBaaS adapter 把小 TTL 误当作非法参数或只在 raw gRPC 路径 clamp。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户

@@ -296,6 +296,47 @@ func TestClientLeaseGrantTooLargeTTLIsTyped(t *testing.T) {
 	requireClientLeaseError(t, err, codes.Unknown, "etcdserver: too large lease TTL", rpctypes.ErrLeaseTTLTooLarge)
 }
 
+func TestClientLeaseGrantClampsSmallTTLLikeEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterLeaseServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for _, ttl := range []int64{math.MinInt64, -1, 0, 1, minLeaseTTL} {
+		t.Run(fmt.Sprintf("ttl-%d", ttl), func(t *testing.T) {
+			grant, err := client.Grant(ctx, ttl)
+			require.NoError(t, err)
+			t.Cleanup(func() { _, _ = client.Revoke(context.Background(), grant.ID) })
+			require.NotZero(t, grant.ID)
+			require.Equal(t, minLeaseTTL, grant.TTL)
+
+			ttlResp, err := client.TimeToLive(ctx, grant.ID)
+			require.NoError(t, err)
+			require.Equal(t, grant.ID, ttlResp.ID)
+			require.Equal(t, minLeaseTTL, ttlResp.GrantedTTL)
+		})
+	}
+}
+
 func TestClientLeaseGrantNoSpaceIsTyped(t *testing.T) {
 	server := newQuotaRPCServer(t, 6)
 
