@@ -952,6 +952,17 @@ func TestClientNamespaceGetLastKeyWithLogicalPrefixReturnsLogicalKey(t *testing.
 	require.Len(t, resp.Kvs, 1)
 	require.Equal(t, []byte("items/c"), resp.Kvs[0].Key)
 	require.Equal(t, []byte("value-items/c"), resp.Kvs[0].Value)
+
+	doResp, err := namespacedKV.Do(ctx, clientv3.OpGet("items/", clientv3.WithLastKey()...))
+	require.NoError(t, err)
+	doGet := doResp.Get()
+	require.NotNil(t, doGet)
+	require.NotNil(t, doGet.Header)
+	require.Equal(t, int64(3), doGet.Count)
+	require.True(t, doGet.More)
+	require.Len(t, doGet.Kvs, 1)
+	require.Equal(t, []byte("items/c"), doGet.Kvs[0].Key)
+	require.Equal(t, []byte("value-items/c"), doGet.Kvs[0].Value)
 }
 
 func TestClientNamespaceTxnGetValidationErrorsMatchEtcd(t *testing.T) {
