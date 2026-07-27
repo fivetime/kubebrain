@@ -16397,6 +16397,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `Put` 的空 key、request too large、NOSPACE、lease not found、ignore value/lease 冲突等
   typed 错误必须同时保留裸 etcd `err.Error()`、`ErrorIs`、公开 status code 和 message。
   该门禁防止写路径在 TiKV-backed facade 上只保持错误分类，却漂移 clientv3 可见文本。
+- A1349 固定 Range revision typed 错误字符串：
+  raw gRPC `Range`/Txn Range 的 future/compacted revision 必须保留完整 `OutOfRange` status
+  error 字符串；official clientv3 `Get`/Range 对应错误则必须保留裸 etcd message、typed
+  `ErrorIs` 和公开 status code。该门禁防止读路径在 MVCC revision 边界上混淆 raw gRPC 与
+  client wrapper 的错误形态。
 
 ### P2：运维兼容和长期验证
 

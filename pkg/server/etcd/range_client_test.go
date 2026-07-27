@@ -1267,7 +1267,7 @@ func rawGRPCPutRequestOp(request *etcdserverpb.PutRequest) *etcdserverpb.Request
 
 func requireRawGRPCRangeRevisionError(t *testing.T, err error, code codes.Code, message string, wantErrorIs ...error) {
 	t.Helper()
-	require.Error(t, err)
+	require.EqualError(t, err, status.Error(code, message).Error())
 	for _, want := range wantErrorIs {
 		require.ErrorIs(t, err, want)
 	}
@@ -1277,7 +1277,7 @@ func requireRawGRPCRangeRevisionError(t *testing.T, err error, code codes.Code, 
 
 func requireClientRangeError(t *testing.T, err error, code codes.Code, message string, wantErrorIs ...error) {
 	t.Helper()
-	require.Error(t, err)
+	require.EqualError(t, err, message)
 	for _, want := range wantErrorIs {
 		require.ErrorIs(t, err, want)
 	}
