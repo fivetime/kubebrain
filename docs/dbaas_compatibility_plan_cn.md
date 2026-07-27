@@ -16612,6 +16612,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `true,false` 必须执行本地 serializable 探测并返回 200，而 `false,true`、`TRUE`、
   ` true ` 和空首值后接 `true` 均必须保留 503 `RAFT NO LEADER`。该门禁防止 HTTP
   query 被宽松解析后把集群 readiness 误报为本地 liveness。
+- A1395 固定 `/health` exclude 的精确集合语义：
+  对照 upstream `getQuerySet`，重复 `exclude` 参数必须收集全部非空值并去重，且 alarm 名称
+  区分大小写。NOSPACE+CORRUPT 并存时只排除一个必须报告另一个；两者均排除、重复排除，
+  以及夹带空值/未知值后仍精确排除两者必须返回 200；小写 `nospace`/`corrupt` 不得匹配。
+  该门禁防止探针代理重排或重复 query 后丢失排除项，或宽松匹配意外隐藏真实告警。
 
 ### P2：运维兼容和长期验证
 

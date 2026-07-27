@@ -494,6 +494,83 @@ func TestHTTPHealthAndReadyzExposeCorruptAlarm(t *testing.T) {
 	require.Equal(t, http.StatusOK, recorder.Code)
 }
 
+func TestHTTPHealthExcludeCollectsExactNonEmptyAlarmSet(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	m := mock.NewMinimalMetrics(ctrl)
+	kv := imemkv.NewKvStorage()
+	b := backend.NewBackend(kv, backend.Config{
+		Prefix:            "/registry",
+		Identity:          "health-exclude-test",
+		QuotaBackendBytes: 1,
+	}, m)
+	require.NoError(t, b.EnsureQuotaInitialized(context.Background()))
+	defer func() { require.NoError(t, b.(interface{ Close() error }).Close()) }()
+	require.NoError(t, b.ArmCorrupt(context.Background(), 41))
+	_, err := b.ArmNoSpace(context.Background(), 42)
+	require.NoError(t, err)
+	s := &server{
+		healthServer:   health.NewServer(),
+		leaderElection: &leader.Stub{ElectionInfo: leader.ElectionInfo{IsLeader: true}},
+		backend:        b,
+	}
+
+	for _, test := range []struct {
+		name   string
+		target string
+		status int
+		reason string
+	}{
+		{
+			name:   "excluding nospace still reports corrupt",
+			target: "/health?exclude=NOSPACE",
+			status: http.StatusServiceUnavailable,
+			reason: healthCorruptReason,
+		},
+		{
+			name:   "excluding corrupt still reports nospace",
+			target: "/health?exclude=CORRUPT",
+			status: http.StatusServiceUnavailable,
+			reason: healthNoSpaceReason,
+		},
+		{
+			name:   "all alarms excluded",
+			target: "/health?exclude=NOSPACE&exclude=CORRUPT",
+			status: http.StatusOK,
+		},
+		{
+			name:   "repeated alarm names form a set",
+			target: "/health?exclude=CORRUPT&exclude=NOSPACE&exclude=CORRUPT&exclude=NOSPACE",
+			status: http.StatusOK,
+		},
+		{
+			name:   "empty and unknown values do not affect exact exclusions",
+			target: "/health?exclude=&exclude=UNKNOWN&exclude=NOSPACE&exclude=CORRUPT",
+			status: http.StatusOK,
+		},
+		{
+			name:   "alarm names are case sensitive",
+			target: "/health?exclude=nospace&exclude=corrupt",
+			status: http.StatusServiceUnavailable,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			s.httpHealthHandler(recorder, httptest.NewRequest(http.MethodGet, test.target, nil))
+			require.Equal(t, test.status, recorder.Code)
+			if test.status == http.StatusOK {
+				require.JSONEq(t, HealthResponse, recorder.Body.String())
+			} else if test.reason != "" {
+				require.JSONEq(t,
+					`{"health":"false","reason":"`+test.reason+`"}`,
+					recorder.Body.String(),
+				)
+			} else {
+				require.Contains(t, recorder.Body.String(), `"health":"false"`)
+			}
+		})
+	}
+}
+
 func TestEtcdLivezAndReadyzChecks(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	m := mock.NewMinimalMetrics(ctrl)
