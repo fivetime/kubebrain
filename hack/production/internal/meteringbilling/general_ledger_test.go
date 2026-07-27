@@ -72,7 +72,7 @@ func TestBuildGeneralLedgerExportWithStatusesRejectsSourceBytesDrift(t *testing.
 		invoiceStatus, badInvoiceSource, &reconciliationStatus, &reconciliationSource,
 		&ledgerStatus, &ledgerSource, options,
 	)
-	require.ErrorContains(t, err, "invoice bytes")
+	require.EqualError(t, err, "general ledger invoice source does not match invoice bytes")
 
 	badReconciliationSource := reconciliationSource
 	badReconciliationSource.ArtifactSHA256 = strings.Repeat("b", 64)
@@ -80,7 +80,7 @@ func TestBuildGeneralLedgerExportWithStatusesRejectsSourceBytesDrift(t *testing.
 		invoiceStatus, invoiceSource, &reconciliationStatus, &badReconciliationSource,
 		&ledgerStatus, &ledgerSource, options,
 	)
-	require.ErrorContains(t, err, "provider reconciliation source")
+	require.EqualError(t, err, "general ledger provider reconciliation source does not match artifact bytes")
 
 	badLedgerSource := ledgerSource
 	badLedgerSource.ArtifactSHA256 = strings.Repeat("b", 64)
@@ -88,7 +88,7 @@ func TestBuildGeneralLedgerExportWithStatusesRejectsSourceBytesDrift(t *testing.
 		invoiceStatus, invoiceSource, &reconciliationStatus, &reconciliationSource,
 		&ledgerStatus, &badLedgerSource, options,
 	)
-	require.ErrorContains(t, err, "payment ledger source")
+	require.EqualError(t, err, "general ledger payment ledger source does not match artifact bytes")
 }
 
 func TestGeneralLedgerExportRejectsMismatchedInputsAndTamperedTotals(t *testing.T) {
@@ -99,7 +99,7 @@ func TestGeneralLedgerExportRejectsMismatchedInputsAndTamperedTotals(t *testing.
 		invoice, invoiceSource, &reconciliation, &reconciliationSource, &badLedger, &ledgerSource,
 		GeneralLedgerExportOptions{ID: "ledger-july", ExportedAtUnix: ledger.GeneratedAtUnix + 3600},
 	)
-	require.ErrorContains(t, err, "payment ledger")
+	require.EqualError(t, err, "general ledger payment ledger does not match invoice")
 
 	export, err := BuildGeneralLedgerExport(
 		invoice, invoiceSource, &reconciliation, &reconciliationSource, &ledger, &ledgerSource,
@@ -109,15 +109,15 @@ func TestGeneralLedgerExportRejectsMismatchedInputsAndTamperedTotals(t *testing.
 	sourceTamper := export
 	sourceTamper.Lines = append([]GeneralLedgerLine(nil), export.Lines...)
 	sourceTamper.Lines[0].SourceID = "other-invoice"
-	require.ErrorContains(t, sourceTamper.Validate(), "source")
+	require.EqualError(t, sourceTamper.Validate(), "general ledger line source is not bound by the export")
 
 	unsorted := export
 	unsorted.Lines = append([]GeneralLedgerLine(nil), export.Lines...)
 	unsorted.Lines[0], unsorted.Lines[1] = unsorted.Lines[1], unsorted.Lines[0]
-	require.ErrorContains(t, unsorted.Validate(), "sorted")
+	require.EqualError(t, unsorted.Validate(), "general ledger lines are not sorted")
 
 	export.Lines[0].AmountMicros++
-	require.ErrorContains(t, export.Validate(), "balanced")
+	require.EqualError(t, export.Validate(), "general ledger export is not balanced")
 }
 
 func TestGeneralLedgerExporterReadsExactArtifactsAndArchivesResult(t *testing.T) {

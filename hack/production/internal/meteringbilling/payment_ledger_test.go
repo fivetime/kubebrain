@@ -69,7 +69,7 @@ func TestPaymentLedgerRejectsDuplicateFutureOverRefundAndSourceDrift(t *testing.
 		strings.NewReader(duplicate), invoice, invoiceSource,
 		PaymentLedgerImportOptions{ID: "payments-july", GeneratedAtUnix: generated},
 	)
-	require.ErrorContains(t, err, "unique")
+	require.EqualError(t, err, "payment ledger transactions are not unique and sorted")
 
 	overRefund := validLine(
 		fmt.Sprintf("stripe,txn-001,payment,10,%d\n", generated-2) +
@@ -79,14 +79,14 @@ func TestPaymentLedgerRejectsDuplicateFutureOverRefundAndSourceDrift(t *testing.
 		strings.NewReader(overRefund), invoice, invoiceSource,
 		PaymentLedgerImportOptions{ID: "payments-july", GeneratedAtUnix: generated},
 	)
-	require.ErrorContains(t, err, "net paid")
+	require.EqualError(t, err, "payment ledger net paid is invalid")
 
 	future := validLine(fmt.Sprintf("stripe,txn-001,payment,10,%d\n", generated+1))
 	_, err = BuildPaymentLedgerFromCSV(
 		strings.NewReader(future), invoice, invoiceSource,
 		PaymentLedgerImportOptions{ID: "payments-july", GeneratedAtUnix: generated},
 	)
-	require.ErrorContains(t, err, "transaction")
+	require.EqualError(t, err, "payment ledger CSV line 2: payment ledger transaction is incomplete")
 
 	wrongSource := invoiceSource
 	wrongSource.ArtifactID = "other-invoice"
@@ -96,7 +96,7 @@ func TestPaymentLedgerRejectsDuplicateFutureOverRefundAndSourceDrift(t *testing.
 		wrongSource,
 		PaymentLedgerImportOptions{ID: "payments-july", GeneratedAtUnix: generated},
 	)
-	require.ErrorContains(t, err, "invoice source")
+	require.EqualError(t, err, "invoice source: immutable source is incomplete")
 }
 
 func TestBuildPaymentLedgerFromCSVRejectsOversizedInputAndTooManyTransactions(t *testing.T) {
@@ -140,7 +140,7 @@ func TestBuildPaymentLedgerFromCSVWithInvoiceStatusRejectsSourceBytesDrift(t *te
 			ID: "payments-july", GeneratedAtUnix: invoice.FinalizedAtUnix + 2,
 		},
 	)
-	require.ErrorContains(t, err, "invoice bytes")
+	require.EqualError(t, err, "payment ledger invoice source does not match invoice bytes")
 }
 
 func TestPaymentLedgerPublisherArchivesExactReceipt(t *testing.T) {

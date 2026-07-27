@@ -16526,6 +16526,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   reconciliation source bytes 绑定和 provider statement 线性总额校验，必须返回精确错误文本。
   该门禁防止供应商账单导入与客户账单对账在成本行分类、对象存储范围或 artifact bytes 漂移时
   只暴露模糊错误，削弱跨账户成本审计。
+- A1377 固定 payment/general ledger 错误字符串：
+  payment ledger 的重复交易、退款超额、未来交易、invoice source/bytes 漂移，以及 general
+  ledger 的 invoice/reconciliation/payment source bytes、payment ledger invoice 绑定、line
+  source、排序和平衡错误，必须返回精确错误文本。该门禁防止付款总账与总分类账闭环在
+  artifact/source 漂移或账务不平衡时只暴露模糊错误。
 
 ### P2：运维兼容和长期验证
 
