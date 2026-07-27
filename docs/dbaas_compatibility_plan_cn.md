@@ -17454,6 +17454,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   namespace 的 `[range/a, range/d)` logical range，返回最新修改的 `range/b=updated-range/b`，
   并保持 `Count=3`、`More=true`。该回归防止 nested top-helper 在显式 range、upper bound 与
   相邻 tenant 存在时泄漏物理 key 或扩大 logical range。
+- A1529 固定官方 client/v3 namespace.NewKV nested OpTxn 的 `WithCountOnly()` 优先级外观：
+  nested `OpGet("items/", WithPrefix(), WithKeysOnly(), WithCountOnly(), WithLimit(1))` 必须只统计
+  当前 namespace logical prefix，返回 `Count=3`、无 KVs、`More=false`，且 CountOnly 优先于
+  KeysOnly/Limit。该回归防止 nested OpTxn 中 CountOnly 被 limit 或 keys-only payload 影响，
+  或把相邻 prefix/tenant 纳入 Count。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
