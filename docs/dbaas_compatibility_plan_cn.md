@@ -16813,6 +16813,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   解码，因此空 name + 畸形 hash 也不能泄漏 no-password 错误。本轮在 auth manager
   bootstrap errors 中固定这两个分支，防止未来把 UserAdd 的空名校验错误复用到其它
   user management RPC。
+- A1430 固定 RoleDelete/RoleGrantPermission/RoleRevokePermission 空 role-name 的 lookup 语义：
+  upstream 只有 `RoleAdd` 对空 role-name 返回 `ErrRoleEmpty`；delete、grant permission
+  和 revoke permission 都在各自前置校验通过后查 role record，空 role-name 与普通缺失
+  role 一样返回 `ErrRoleNotFound`。本轮新增 auth manager 回归覆盖 empty role delete、
+  valid permission grant 与 permission revoke，防止未来把 RoleAdd 的空名校验错误复用到
+  其它 role management RPC。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户

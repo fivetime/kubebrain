@@ -261,6 +261,9 @@ func TestAuthManagerBootstrapErrors(t *testing.T) {
 
 	requireAuthManagerError(t, manager.userAdd(ctx, &etcdserverpb.AuthUserAddRequest{}), rpctypes.ErrUserEmpty, codes.Unknown, "etcdserver: user name is empty")
 	requireAuthManagerError(t, manager.roleAdd(ctx, ""), rpctypes.ErrRoleEmpty, codes.Unknown, "etcdserver: role name is empty")
+	requireAuthManagerError(t, manager.roleDelete(ctx, ""), rpctypes.ErrRoleNotFound, codes.Unknown, "etcdserver: role name not found")
+	requireAuthManagerError(t, manager.roleGrantPermission(ctx, "", &authpb.Permission{Key: []byte("a")}), rpctypes.ErrRoleNotFound, codes.Unknown, "etcdserver: role name not found")
+	requireAuthManagerError(t, manager.roleRevokePermission(ctx, "", []byte("a"), nil), rpctypes.ErrRoleNotFound, codes.Unknown, "etcdserver: role name not found")
 	requireAuthManagerError(t, manager.userDelete(ctx, ""), rpctypes.ErrUserNotFound, codes.Unknown, "etcdserver: user name not found")
 	requireAuthManagerError(t, manager.userChangePassword(ctx, "", "", "%%%"), rpctypes.ErrUserNotFound, codes.Unknown, "etcdserver: user name not found")
 	requireAuthManagerError(t, manager.userGrantRole(ctx, "missing", "missing"), rpctypes.ErrUserNotFound, codes.Unknown, "etcdserver: user name not found")
