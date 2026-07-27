@@ -1918,7 +1918,11 @@ func byteSlicesToStrings(values [][]byte) []string {
 
 func requireAuthClientError(t *testing.T, err error, code codes.Code, message string, wantErrorIs ...error) {
 	t.Helper()
-	require.Error(t, err)
+	if len(wantErrorIs) > 0 {
+		require.EqualError(t, err, message)
+	} else {
+		require.EqualError(t, err, status.Error(code, message).Error())
+	}
 	for _, want := range wantErrorIs {
 		require.ErrorIs(t, err, want)
 	}

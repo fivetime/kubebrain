@@ -16496,6 +16496,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `storage.ErrKeyNotFound` 表示 durable attachment/metadata 已不存在；lease reload 的
   follower/leadership-change status-only 错误必须返回完整 `status.Error(code, message)`。
   该门禁防止租约索引内部一致性测试只验证“有错误”，却漏掉 durable record 缺失语义漂移。
+- A1371 固定 auth client/raw 错误字符串：
+  auth clientv3 typed 错误必须保持 etcd typed error 文本，raw Auth/KV/Lease/Maintenance
+  RPC auth 错误必须保持完整 `status.Error(code, message)` 字符串，同时继续校验
+  `rpctypes` sentinel、gRPC code 和 message。该门禁防止鉴权错误在 clientv3 unwrap 与 raw
+  gRPC 两条路径之间漂移。
 
 ### P2：运维兼容和长期验证
 
