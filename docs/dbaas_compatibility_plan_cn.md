@@ -16487,6 +16487,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   raw Watch RPC 的 barrier/proxy unavailable 与 watch canceled 路径必须返回完整
   `status.Error(code, message)` 字符串，并继续保持原有 gRPC code/message。该门禁防止
   服务端 Watch 流在 read barrier、leader proxy 和 cancel 边界上只校验分类、不校验最终错误文本。
+- A1369 固定 direct KV status-only 错误字符串：
+  direct KV service 在 compact metadata pending 和 leadership-changed retry 等 status-only
+  错误路径上，必须返回完整 `status.Error(code, message)` 字符串。该门禁防止没有 typed
+  `rpctypes` sentinel 的 KV 失败只校验 code/message，却漂移最终 RPC 错误文本。
 
 ### P2：运维兼容和长期验证
 
