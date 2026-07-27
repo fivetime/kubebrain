@@ -16424,6 +16424,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   raw gRPC `MemberList` 在 linearizable barrier 失败时必须返回完整 status error 字符串，并
   保留底层 failure message。该门禁防止 DBaaS member inventory/autosync 只读兼容面在控制面
   不可用时只保留 code，却漂移客户端可见错误文本。
+- A1355 固定 follower Lease read demotion 错误字符串：
+  follower 在 lease read proxy 未启用或读过程中失去 leader 身份时，LeaseTimeToLive/LeaseLeases
+  必须返回完整 `codes.Unavailable` status error 字符串，并保留目标 leader 地址提示。该门禁
+  防止 lease 读路径在多副本 DBaaS 拓扑中静默走本地旧快照或漂移可重试错误文本。
 
 ### P2：运维兼容和长期验证
 
