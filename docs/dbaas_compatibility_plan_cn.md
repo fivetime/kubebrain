@@ -17328,6 +17328,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `ResponseDeleteRange` 中返回 logical prev keys/values `range/a,b,c`，`Deleted=3`；upper bound
   `range/d`、同 tenant 相邻物理 range 与相邻 tenant 必须保留。该回归防止 namespace Txn delete
   response adapter 在显式 range + PrevKV 路径上漏做 unprefix。
+- A1507 固定官方 client/v3 namespace.NewKV Txn range compare 的显式 logical range 外观：
+  对照 upstream leasing `deleteRangeRPC`/`guardRanges` 在 Txn `If` 中使用
+  `Compare(CreateRevision/ModRevision(key).WithRange(end), ...)` 保护 range 操作，本轮新增
+  official clientv3 bufconn 回归固定
+  `namespace.NewKV(...).Txn(...).If(Compare(Version("range/a").WithRange("range/d"), ">", 0))`
+  必须经 `prefixCmps` 只比较当前 namespace 的 `[range/a, range/d)` logical range；compare 成功
+  后只删除该 range 中的 logical `range/a,b,c`，保留 upper bound、同 tenant 相邻物理 range 与
+  相邻 tenant。该回归防止 namespace Txn compare range 与 Then ops 使用不一致物理边界。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
