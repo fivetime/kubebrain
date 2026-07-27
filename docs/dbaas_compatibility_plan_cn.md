@@ -17088,6 +17088,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   nested `ResponseRange` 中返回 logical `a/c`、tenant `Count=3`、`More=false`。该回归防止
   namespace Txn response adapter 在 max mod revision filter 路径上漏做 unprefix 或跨 tenant
   计数。
+- A1473 固定官方 client/v3 namespace.NewKV Get 的 min create revision filter 外观：
+  对照普通 clientv3 range create revision filter 门禁，`WithMinCreateRev` 会过滤返回的
+  `Kvs`，但 `Count` 保持当前 range 总数；对照 upstream namespace wrapper，empty key 加
+  `WithFromKey()` 必须只扫描当前 tenant。新增 official clientv3 bufconn 回归固定
+  `namespace.NewKV(...).Get("", WithFromKey(), WithMinCreateRev(createRev))` 只统计当前
+  namespace 的 3 个 logical keys，只返回新创建的 logical key/value，且不把相邻物理
+  namespace 纳入 Count 或结果。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
