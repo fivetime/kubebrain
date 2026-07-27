@@ -16601,6 +16601,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   不得额外占用 slot，也不能被 KubeBrain 自有的 `ResourceExhausted: etcdserver: too many
   requests` 覆盖。该门禁保持 upstream require-leader 语义优先于数据面保护策略，使官方
   client 能按 leader 故障而非过载执行正确重试。
+- A1393 固定 require-leader metadata 精确值语义：
+  对照 upstream 的 `ks[0] == rpctypes.MetadataHasLeader`，只有首值精确等于小写 `true`
+  才启用 require-leader；`TRUE`、`1`、` true `、`false` 和空字符串在无 leader 时仍必须
+  放行 unary/stream，不能做大小写折叠、空白裁剪或通用布尔解析。该门禁防止代理的非标准
+  header 值被 KubeBrain 扩张解释，偏离 etcd wire contract。
 
 ### P2：运维兼容和长期验证
 

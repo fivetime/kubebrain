@@ -323,6 +323,26 @@ func TestClientRequireLeaderUsesFirstMetadataValue(t *testing.T) {
 			values:  []string{rpctypes.MetadataHasLeader, "invalid"},
 			rejects: true,
 		},
+		{
+			name:   "uppercase boolean is not require-leader",
+			values: []string{"TRUE"},
+		},
+		{
+			name:   "numeric boolean is not require-leader",
+			values: []string{"1"},
+		},
+		{
+			name:   "whitespace is not trimmed",
+			values: []string{" true "},
+		},
+		{
+			name:   "false is not require-leader",
+			values: []string{"false"},
+		},
+		{
+			name:   "empty value is not require-leader",
+			values: []string{""},
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			md := metadata.MD{}
