@@ -18743,6 +18743,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `Count=4`、`More=false`，response header revision 必须等于后续同 prefix 写入产生的 latest
   revision，并排除同 tenant 相邻 prefix 和相邻 tenant。该回归补齐 A1748 historical prefix
   negative-limit 与 A1750 current prefix limit-zero 的对称边界路径。
+- A1752 固定官方 client/v3 namespace.NewKV nested OpTxn 的 non-empty prefix current
+  serializable `math.MaxInt64` limit 外观：nested `OpGet("items/", WithPrefix(),
+  WithSerializable(), WithLimit(math.MaxInt64), WithSort(SortByValue, SortNone))` 必须在最新
+  revision 上把 MaxInt64 limit 当作无限制且不做溢出 lookahead，在当前 namespace logical prefix
+  内按 value 升序返回完整 KVs `items/b`、`items/c`、`items/a`、`items/d`，`Count=4`、
+  `More=false`，response header revision 必须等于后续同 prefix 写入产生的 latest revision，并排除
+  同 tenant 相邻 prefix 和相邻 tenant。该回归补齐 A1749 historical prefix MaxInt64-limit 与
+  A1750/A1751 current prefix limit 边界路径。
 - A1705 固定官方 client/v3 namespace.NewKV nested OpTxn 的显式 logical range current
   serializable MinModRev filter 外观：nested `OpGet("range/a", WithRange("range/d"),
   WithSerializable(), WithMinModRev(updateRev), WithSort(SortByKey, SortAscend))` 必须在最新
