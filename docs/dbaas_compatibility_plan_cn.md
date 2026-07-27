@@ -16869,6 +16869,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   错误，本轮把普通 `server.Range` 的 invalid-sort 回归改为表驱动并补齐“空 key +
   非法 sort order/target”必须返回 `InvalidArgument`/`key is not provided`，防止直连
   KV 路径未来先报 sort option。
+- A1440 固定 Txn compare 超限与空 key 的 validation 优先级：
+  upstream `checkTxnRequest` 先用 compare/success/failure 三段长度计算 `opc` 并检查
+  `maxTxnOps`，然后才逐项检查 compare key。新增直连 Txn 回归覆盖 `Compare` 长度超过
+  `defaultMaxTxnOps` 且每个 compare 都为空 key 时仍返回
+  `InvalidArgument`/`too many operations in txn request`，防止后续重构把 compare 空 key
+  检查前移，改变官方错误外观。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户

@@ -5059,6 +5059,13 @@ func TestTxnRejectsTooManyOpsLikeEtcd(t *testing.T) {
 
 	_, err := server.Txn(context.Background(), &etcdserverpb.TxnRequest{Success: ops})
 	requireDirectKVError(t, err, rpctypes.ErrGRPCTooManyOps, codes.InvalidArgument, "etcdserver: too many operations in txn request")
+
+	compares := make([]*etcdserverpb.Compare, defaultMaxTxnOps+1)
+	for i := range compares {
+		compares[i] = &etcdserverpb.Compare{}
+	}
+	_, err = server.Txn(context.Background(), &etcdserverpb.TxnRequest{Compare: compares})
+	requireDirectKVError(t, err, rpctypes.ErrGRPCTooManyOps, codes.InvalidArgument, "etcdserver: too many operations in txn request")
 }
 
 func TestTxnHonorsConfiguredMaxOperations(t *testing.T) {
