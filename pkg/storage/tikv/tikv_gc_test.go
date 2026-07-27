@@ -84,3 +84,64 @@ func TestResolveGCService(t *testing.T) {
 		t.Errorf("named keyspace ttl = %ds, want > one renewal interval (%ds) of slack", ttlA, minTTL)
 	}
 }
+
+// TestMinLiveFloor pins the multi-tenant GC floor computation (#76 Option A):
+// the min over REAL tenant floors, skipping PD's reserved gc_worker=0
+// placeholder (the poison that made the first attempt ineffective) and any
+// expired/departed tenant.
+func TestMinLiveFloor(t *testing.T) {
+	const now = int64(1000)
+	cases := []struct {
+		name     string
+		points   []serviceGCSafePoint
+		wantMin  uint64
+		wantOK   bool
+	}{
+		{
+			name:   "empty table",
+			points: nil,
+			wantOK: false,
+		},
+		{
+			name: "only the gc_worker=0 placeholder -> no real floor",
+			points: []serviceGCSafePoint{
+				{ServiceID: "gc_worker", SafePoint: 0, ExpiredAt: 1 << 62},
+			},
+			wantOK: false,
+		},
+		{
+			name: "two named tenants: conservative wins, placeholder ignored",
+			points: []serviceGCSafePoint{
+				{ServiceID: "gc_worker", SafePoint: 0, ExpiredAt: 1 << 62},
+				{ServiceID: "kubebrain-ks-a", SafePoint: 5000, ExpiredAt: now + 1800}, // aggressive (newer)
+				{ServiceID: "kubebrain-ks-b", SafePoint: 4000, ExpiredAt: now + 1800}, // conservative (older)
+			},
+			wantMin: 4000,
+			wantOK:  true,
+		},
+		{
+			name: "departed (expired) conservative tenant is skipped -> aggressive floor wins",
+			points: []serviceGCSafePoint{
+				{ServiceID: "kubebrain-ks-a", SafePoint: 5000, ExpiredAt: now + 1800},
+				{ServiceID: "kubebrain-ks-b", SafePoint: 4000, ExpiredAt: now - 1}, // lapsed
+			},
+			wantMin: 5000,
+			wantOK:  true,
+		},
+		{
+			name: "real gc_worker (TiDB/default tenant) counts",
+			points: []serviceGCSafePoint{
+				{ServiceID: "gc_worker", SafePoint: 3000, ExpiredAt: 1 << 62},
+				{ServiceID: "kubebrain-ks-a", SafePoint: 5000, ExpiredAt: now + 1800},
+			},
+			wantMin: 3000,
+			wantOK:  true,
+		},
+	}
+	for _, c := range cases {
+		gotMin, gotOK := minLiveFloor(c.points, now)
+		if gotOK != c.wantOK || (gotOK && gotMin != c.wantMin) {
+			t.Errorf("%s: minLiveFloor = (%d,%v), want (%d,%v)", c.name, gotMin, gotOK, c.wantMin, c.wantOK)
+		}
+	}
+}
