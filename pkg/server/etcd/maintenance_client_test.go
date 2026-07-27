@@ -164,13 +164,19 @@ func TestRawGRPCPlatformManagedMaintenanceReturnsActionableErrors(t *testing.T) 
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err = maintenance.MoveLeader(ctx, &etcdserverpb.MoveLeaderRequest{TargetID: 1})
-	requirePlatformReplacementError(t, err, moveLeaderUnsupportedMessage)
-	_, err = maintenance.Downgrade(ctx, &etcdserverpb.DowngradeRequest{
-		Action:  etcdserverpb.DowngradeRequest_VALIDATE,
-		Version: "3.7.0",
-	})
-	requirePlatformReplacementError(t, err, downgradeUnsupportedMessage)
+	for _, targetID := range []uint64{0, 1, math.MaxUint64} {
+		_, err = maintenance.MoveLeader(ctx, &etcdserverpb.MoveLeaderRequest{TargetID: targetID})
+		requirePlatformReplacementError(t, err, moveLeaderUnsupportedMessage)
+	}
+	for _, request := range []*etcdserverpb.DowngradeRequest{
+		{Action: etcdserverpb.DowngradeRequest_VALIDATE, Version: "3.7.0"},
+		{Action: etcdserverpb.DowngradeRequest_ENABLE, Version: ""},
+		{Action: etcdserverpb.DowngradeRequest_CANCEL, Version: "not-semver"},
+		{Action: etcdserverpb.DowngradeRequest_DowngradeAction(127), Version: "3.7.0"},
+	} {
+		_, err = maintenance.Downgrade(ctx, request)
+		requirePlatformReplacementError(t, err, downgradeUnsupportedMessage)
+	}
 }
 
 func TestRawGRPCPlatformManagedMemberMutationsReturnActionableErrors(t *testing.T) {

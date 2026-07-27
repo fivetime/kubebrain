@@ -16682,6 +16682,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   会错误阻断 CORRUPT 故障诊断及未知 filter 的 etcd 兼容空响应。确定性回归在持久
   CORRUPT 已激活后注入 quota read error，证明 CORRUPT/unknown 隔离成功且
   NONE/NOSPACE 继续 fail closed；raw gRPC 黑盒同步固定相同响应与错误外观。
+- A1407 固定平台管理型 Maintenance 请求形状边界：
+  raw gRPC 对 `MoveLeader` 的 target 0、1、MaxUint64，以及 `Downgrade` 的
+  VALIDATE/ENABLE/CANCEL/未知 action、空版本和非法 semver，均必须返回精确
+  `codes.Unimplemented` 与对应 DBaaS 平台替代说明。数据面不得因某个枚举或边界 ID
+  恰好通过局部校验而误入不完整的 etcd Raft member/downgrade 状态机；参数验证和实际编排
+  统一属于 DBaaS 控制面。
 
 ### P2：运维兼容和长期验证
 
