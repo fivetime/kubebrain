@@ -16904,6 +16904,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   同时携带 value/lease 两种 ignore 冲突时必须优先暴露
   `Unknown`/`etcdserver: value is provided`。该回归覆盖常用官方客户端路径，防止
   adapter 或 wrapper 层把 Put 错误顺序漂移为 lease/value 冲突优先。
+- A1446 固定官方 client/v3 Get 的 sort pre-validation 错误外观：
+  upstream `clientv3.kv.Do` 在发送 Range RPC 前先执行 `op.IsSortOptionValid()`；因此
+  `clientv3.Get` 携带非法 `WithSort(SortTarget(99), SortOrder(99))` 时，即使 key 为空，
+  也必须由 wrapper 层优先暴露 public `Unknown`/`etcdserver: invalid sort option` 并匹配
+  `rpctypes.ErrInvalidSortOption`。该回归明确区分 A1439 的 raw/server `checkRangeRequest`
+  顺序与官方 high-level client 的本地 sort 校验，防止 adapter 把 wrapper 外观误改为空
+  key 优先。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
