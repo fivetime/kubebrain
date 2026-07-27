@@ -17503,6 +17503,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `errors.Is(..., rpctypes.ErrCompacted)` 识别的 public clientv3 Txn error，且同一 nested Txn
   后续 `OpPut` 不得提交。该回归防止 nested Txn revision validation 漏掉 compacted revision、
   错误提交部分写入，或把 raw gRPC error 外观泄漏给 official client。
+- A1539 固定官方 client/v3 namespace.NewKV nested OpTxn 的未选中 future revision 分支外观：
+  nested `OpTxn` 的 compare 失败时，未选中 Then branch 中的
+  `OpGet("items/a", WithRev(math.MaxInt64))` 不得被验证或返回 future revision error；事务必须执行
+  Else branch，返回 logical `items/a=value-a`，且未选中 branch 后续 `OpPut` 不得提交。该回归
+  防止 nested Txn validation 过早扫描未执行分支。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
