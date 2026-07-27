@@ -17560,6 +17560,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   lease 必须暴露 `rpctypes.ErrLeaseProvided`，且 bad key、Else branch、原 logical key 与相邻
   tenant key 都不得被错误提交或污染。该回归防止 namespace nested Txn 在 Put 参数校验和 branch
   选择之间偏离 etcd。
+- A1548 固定官方 client/v3 namespace.NewKV nested OpTxn 的 empty-key prefix delete 外观：
+  nested `OpDelete("", WithPrefix(), WithPrevKV())` 必须按 upstream namespace wrapper 映射为
+  当前 namespace 全前缀删除，而不是 empty-key validation；nested `ResponseDeleteRange.PrevKvs`
+  必须按 logical key 返回 `alpha/a`、`items/a`、`z/final`，删除后当前 namespace 为空且相邻
+  tenant keys 保留。该回归补齐 A1517 的 from-key delete 外观之外的 empty-prefix delete 分支，
+  防止 nested Delete range adapter 泄漏全局 keyspace 或 PrevKV 物理前缀。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
