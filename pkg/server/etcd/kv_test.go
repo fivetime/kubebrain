@@ -732,8 +732,32 @@ func TestPutRejectsInvalidRequest(t *testing.T) {
 			wantMessage: "etcdserver: key is not provided",
 		},
 		{
+			name:        "empty key precedes ignore value conflict",
+			req:         &etcdserverpb.PutRequest{Value: []byte("v1"), IgnoreValue: true},
+			wantErr:     rpctypes.ErrGRPCEmptyKey,
+			wantMessage: "etcdserver: key is not provided",
+		},
+		{
+			name:        "empty key precedes ignore lease conflict",
+			req:         &etcdserverpb.PutRequest{Lease: 123, IgnoreLease: true},
+			wantErr:     rpctypes.ErrGRPCEmptyKey,
+			wantMessage: "etcdserver: key is not provided",
+		},
+		{
 			name:        "ignore value with value",
 			req:         &etcdserverpb.PutRequest{Key: []byte("/registry/pods/invalid-put"), Value: []byte("v1"), IgnoreValue: true},
+			wantErr:     rpctypes.ErrGRPCValueProvided,
+			wantMessage: "etcdserver: value is provided",
+		},
+		{
+			name: "ignore value precedes ignore lease conflict",
+			req: &etcdserverpb.PutRequest{
+				Key:         []byte("/registry/pods/invalid-put"),
+				Value:       []byte("v1"),
+				Lease:       123,
+				IgnoreValue: true,
+				IgnoreLease: true,
+			},
 			wantErr:     rpctypes.ErrGRPCValueProvided,
 			wantMessage: "etcdserver: value is provided",
 		},

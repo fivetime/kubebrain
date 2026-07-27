@@ -16857,6 +16857,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `InvalidArgument`/`etcdserver: key not found`，不会落到执行阶段的 unsupported transaction
   fallback。既有 raw/differential 回归覆盖空 oneof，本轮补齐 nil op 表项，防止未来
   重构 validation/interval 收集时让 nil op panic 或泄漏非 etcd 错误。
+- A1438 固定直连 Put 的 validation 优先级：
+  对照 upstream `checkPutRequest` 的顺序，`PutRequest` 必须先检查空 key，再检查
+  `IgnoreValue` 携带 value，最后检查 `IgnoreLease` 携带 lease。新增服务端回归覆盖
+  空 key 同时携带 ignore 冲突时仍返回 `InvalidArgument`/`key is not provided`，以及有效
+  key 同时携带 value/lease 冲突时优先返回 `value is provided`。该覆盖防止后续整理
+  Put 参数校验时把可观察错误顺序改成 lease/value 冲突优先。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
