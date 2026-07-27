@@ -16806,6 +16806,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   它先查 user，再按现有 role-name 列表删除匹配项，找不到匹配时返回
   `ErrRoleNotGranted`。本轮在已有 duplicate grant 回归后加入 existing user + empty
   role revoke 断言，防止未来把 revoke path 错误接入 add/grant 的空 role-name 校验。
+- A1429 固定 UserDelete/UserChangePassword 空 user-name 的 lookup 语义：
+  upstream 只有 `UserAdd` 对空 user-name 返回 `ErrUserEmpty`；`UserDelete` 和
+  `UserChangePassword` 都先按 name 查 user，空 name 与普通缺失用户一样返回
+  `ErrUserNotFound`。其中 password change 还要求 user lookup 先于 `HashedPassword`
+  解码，因此空 name + 畸形 hash 也不能泄漏 no-password 错误。本轮在 auth manager
+  bootstrap errors 中固定这两个分支，防止未来把 UserAdd 的空名校验错误复用到其它
+  user management RPC。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户

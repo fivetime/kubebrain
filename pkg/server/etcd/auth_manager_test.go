@@ -261,6 +261,8 @@ func TestAuthManagerBootstrapErrors(t *testing.T) {
 
 	requireAuthManagerError(t, manager.userAdd(ctx, &etcdserverpb.AuthUserAddRequest{}), rpctypes.ErrUserEmpty, codes.Unknown, "etcdserver: user name is empty")
 	requireAuthManagerError(t, manager.roleAdd(ctx, ""), rpctypes.ErrRoleEmpty, codes.Unknown, "etcdserver: role name is empty")
+	requireAuthManagerError(t, manager.userDelete(ctx, ""), rpctypes.ErrUserNotFound, codes.Unknown, "etcdserver: user name not found")
+	requireAuthManagerError(t, manager.userChangePassword(ctx, "", "", "%%%"), rpctypes.ErrUserNotFound, codes.Unknown, "etcdserver: user name not found")
 	requireAuthManagerError(t, manager.userGrantRole(ctx, "missing", "missing"), rpctypes.ErrUserNotFound, codes.Unknown, "etcdserver: user name not found")
 	require.NoError(t, manager.userAdd(ctx, &etcdserverpb.AuthUserAddRequest{Name: "alice", Password: "pw"}))
 	requireAuthManagerError(t, manager.userAdd(ctx, &etcdserverpb.AuthUserAddRequest{Name: "alice", Password: "pw"}), rpctypes.ErrUserAlreadyExist, codes.Unknown, "etcdserver: user name already exists")
