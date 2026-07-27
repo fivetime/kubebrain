@@ -17137,6 +17137,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `namespace.NewKV(...).Get("", WithFirstCreate()...)` 只返回最早创建的 logical key/value，
   `Count` 保持当前 tenant 的 3 个 key、`More=true`，并排除相邻物理 namespace。该路径支撑
   upstream concurrency mutex/election 依赖的 oldest-create 语义。
+- A1480 固定官方 client/v3 namespace.NewKV Get 的 `WithFirstCreate()` 非空 logical prefix
+  外观：对照 upstream concurrency mutex/election 通常以 lock/election prefix 调用
+  `Get(prefix, WithFirstCreate()...)` 选出 oldest waiter，本轮新增 official clientv3 bufconn
+  回归固定 `namespace.NewKV(...).Get("waiters/", WithFirstCreate()...)` 只扫描当前 tenant 的
+  `waiters/` logical prefix，返回最早创建的 logical key/value，`Count=3`、`More=true`，并排除
+  同 tenant 其他 prefix 与相邻物理 namespace。该回归防止 top-helper 的 prefix interval 在
+  namespace adapter 中扩大扫描范围或漏做 unprefix。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
