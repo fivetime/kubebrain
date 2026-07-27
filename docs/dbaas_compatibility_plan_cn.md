@@ -16795,6 +16795,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `UserGrantRole("root","root")` 拥有 root role-name，只要 roles bucket 中没有 root role
   record，`RoleList` 就不应合成 `"root"`。本轮收紧 A1422 回归，显式断言该状态下
   `authRoleNames` 为空，防止未来为了展示 root 权限而把用户 role-name 误并入 role list。
+- A1427 固定 UserGrantRole 空 role-name 的错误外观：
+  upstream `authStore.UserGrantRole` 不对 `Role == ""` 返回 `ErrRoleEmpty`；它先查 user，
+  user 存在后对非 root role-name 执行 role lookup，因此空 role-name 与其它缺失 role
+  一样返回 `ErrRoleNotFound`。本轮在 auth manager bootstrap errors 中加入 existing
+  user + empty role grant 回归，防止未来复用 `RoleAdd` 的空名校验后改变 public etcd
+  错误语义。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户

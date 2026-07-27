@@ -265,6 +265,7 @@ func TestAuthManagerBootstrapErrors(t *testing.T) {
 	require.NoError(t, manager.userAdd(ctx, &etcdserverpb.AuthUserAddRequest{Name: "alice", Password: "pw"}))
 	requireAuthManagerError(t, manager.userAdd(ctx, &etcdserverpb.AuthUserAddRequest{Name: "alice", Password: "pw"}), rpctypes.ErrUserAlreadyExist, codes.Unknown, "etcdserver: user name already exists")
 	requireAuthManagerError(t, manager.userGrantRole(ctx, "alice", "missing"), rpctypes.ErrRoleNotFound, codes.Unknown, "etcdserver: role name not found")
+	requireAuthManagerError(t, manager.userGrantRole(ctx, "alice", ""), rpctypes.ErrRoleNotFound, codes.Unknown, "etcdserver: role name not found")
 	require.ErrorIs(t, manager.userChangePassword(ctx, "alice", "", "%%%"), errNoPasswordUser)
 	require.NoError(t, manager.roleAdd(ctx, "reader"))
 	requireAuthManagerError(t, manager.roleAdd(ctx, "reader"), rpctypes.ErrRoleAlreadyExist, codes.Unknown, "etcdserver: role name already exists")
