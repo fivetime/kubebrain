@@ -392,6 +392,62 @@ func TestClientAPIVersionMetadataValidation(t *testing.T) {
 	}
 }
 
+func TestClientAPIVersionUsesFirstMetadataValue(t *testing.T) {
+	rpc, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	for _, test := range []struct {
+		name    string
+		values  []string
+		rejects bool
+	}{
+		{
+			name:   "later invalid value is ignored",
+			values: []string{"3.7.0", string([]byte{0xff})},
+		},
+		{
+			name:    "first invalid value is authoritative",
+			values:  []string{string([]byte{0xff}), "3.7.0"},
+			rejects: true,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			md := metadata.MD{}
+			md.Set(rpctypes.MetadataClientAPIVersionKey, test.values...)
+			ctx := metadata.NewIncomingContext(context.Background(), md)
+
+			unaryCalled := false
+			_, err := rpc.admitUnary(ctx, nil, &grpc.UnaryServerInfo{FullMethod: "/test.Unary"},
+				func(context.Context, any) (any, error) {
+					unaryCalled = true
+					return &healthpb.HealthCheckResponse{}, nil
+				})
+			if test.rejects {
+				requireAdmissionError(t, err, rpctypes.ErrGRPCInvalidClientAPIVersion, codes.InvalidArgument, "etcdserver: invalid client api version")
+				require.False(t, unaryCalled)
+			} else {
+				require.NoError(t, err)
+				require.True(t, unaryCalled)
+			}
+
+			streamCalled := false
+			err = rpc.admitStream(nil, &serverStreamWithContext{ctx: ctx},
+				&grpc.StreamServerInfo{FullMethod: "/test.Stream"},
+				func(any, grpc.ServerStream) error {
+					streamCalled = true
+					return nil
+				})
+			if test.rejects {
+				requireAdmissionError(t, err, rpctypes.ErrGRPCInvalidClientAPIVersion, codes.InvalidArgument, "etcdserver: invalid client api version")
+				require.False(t, streamCalled)
+			} else {
+				require.NoError(t, err)
+				require.True(t, streamCalled)
+			}
+		})
+	}
+}
+
 func TestClientAPIVersionMetadataOverGRPCMatchesEtcd(t *testing.T) {
 	rpc, closeFn := newTestRPCServer(t)
 	defer closeFn()

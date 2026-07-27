@@ -16584,6 +16584,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `true` 也必须放行，首值为 `true` 时即使后续值非法也必须在无 leader 时返回精确
   `Unavailable: etcdserver: no leader`。该门禁防止代理重复注入 header 后 KubeBrain 使用
   “任一值匹配”而偏离 etcd 的顺序契约。
+- A1390 固定 client-api-version 多值 metadata 顺序语义：
+  对照同一 upstream unary/stream interceptor，`client-api-version` 也只验证第一个 value；
+  首值 `3.7.0` 时后续非法 UTF-8 value 不得影响 admission，首值非法 UTF-8 时后续合法 value
+  不得覆盖拒绝，必须返回精确 `InvalidArgument: etcdserver: invalid client api version`。
+  该门禁防止代理重复注入 header 后 KubeBrain 合并检查全部值或错误采用最后值。
 
 ### P2：运维兼容和长期验证
 
