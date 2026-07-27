@@ -19172,6 +19172,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   header revision 必须等于后续相邻 tenant 写入产生的 latest revision，并排除 start 前
   `range/a` 和相邻 tenant。该回归补齐 A1806 limit-zero 与 A1731/A1761 explicit range/prefix
   negative-limit 之外的 FromKey negative-limit 路径。
+- A1808 固定官方 client/v3 namespace.NewKV nested OpTxn 的 FromKey current serializable
+  `math.MaxInt64` limit 外观：nested `OpGet("range/b", WithFromKey(), WithSerializable(),
+  WithLimit(math.MaxInt64), WithSort(SortByValue, SortNone))` 必须把超大 limit 当作完整扫描，
+  在当前 namespace 的 FromKey range 内返回全部 logical `range/b`、`range/c`、`z/final`，
+  `Count=3`、`More=false`，response header revision 必须等于后续相邻 tenant 写入产生的
+  latest revision，并排除 start 前 `range/a` 和相邻 tenant。该回归补齐 A1806/A1807
+  zero/negative limit 与 A1731/A1762 explicit range/prefix MaxInt64-limit 之外的 FromKey
+  MaxInt64 limit 路径。
 - A1705 固定官方 client/v3 namespace.NewKV nested OpTxn 的显式 logical range current
   serializable MinModRev filter 外观：nested `OpGet("range/a", WithRange("range/d"),
   WithSerializable(), WithMinModRev(updateRev), WithSort(SortByKey, SortAscend))` 必须在最新
