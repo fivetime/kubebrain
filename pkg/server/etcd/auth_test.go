@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"go.etcd.io/etcd/api/v3/authpb"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	"google.golang.org/grpc"
@@ -222,6 +223,82 @@ func TestAuthStatusRejectsInvalidTokenWhenEnabled(t *testing.T) {
 	response, err = server.AuthStatus(goodCtx, &etcdserverpb.AuthStatusRequest{})
 	require.NoError(t, err)
 	require.True(t, response.Enabled)
+}
+
+func TestAuthReadRPCsReloadSnapshotAfterBarrier(t *testing.T) {
+	t.Run("auth status", func(t *testing.T) {
+		server, closeFn := newTestRPCServer(t)
+		defer closeFn()
+		ctx := context.Background()
+		require.NoError(t, server.auth.userAdd(ctx, &etcdserverpb.AuthUserAddRequest{
+			Name: "root", Options: &authpb.UserAddOptions{NoPassword: true},
+		}))
+		require.NoError(t, server.auth.roleAdd(ctx, "root"))
+		require.NoError(t, server.auth.userGrantRole(ctx, "root", "root"))
+		server.peers = testPeerService{syncReadFn: func(context.Context) error {
+			return server.auth.enable(ctx)
+		}}
+
+		response, err := server.AuthStatus(ctx, &etcdserverpb.AuthStatusRequest{})
+		require.NoError(t, err)
+		require.True(t, response.Enabled)
+	})
+
+	t.Run("user get", func(t *testing.T) {
+		server, closeFn := newTestRPCServer(t)
+		defer closeFn()
+		ctx := context.Background()
+		server.peers = testPeerService{syncReadFn: func(context.Context) error {
+			return server.auth.userAdd(ctx, &etcdserverpb.AuthUserAddRequest{
+				Name: "created-during-barrier", Options: &authpb.UserAddOptions{NoPassword: true},
+			})
+		}}
+
+		response, err := server.UserGet(ctx, &etcdserverpb.AuthUserGetRequest{Name: "created-during-barrier"})
+		require.NoError(t, err)
+		require.Empty(t, response.Roles)
+	})
+
+	t.Run("user list", func(t *testing.T) {
+		server, closeFn := newTestRPCServer(t)
+		defer closeFn()
+		ctx := context.Background()
+		server.peers = testPeerService{syncReadFn: func(context.Context) error {
+			return server.auth.userAdd(ctx, &etcdserverpb.AuthUserAddRequest{
+				Name: "listed-after-barrier", Options: &authpb.UserAddOptions{NoPassword: true},
+			})
+		}}
+
+		response, err := server.UserList(ctx, &etcdserverpb.AuthUserListRequest{})
+		require.NoError(t, err)
+		require.Equal(t, []string{"listed-after-barrier"}, response.Users)
+	})
+
+	t.Run("role get", func(t *testing.T) {
+		server, closeFn := newTestRPCServer(t)
+		defer closeFn()
+		ctx := context.Background()
+		server.peers = testPeerService{syncReadFn: func(context.Context) error {
+			return server.auth.roleAdd(ctx, "created-during-barrier")
+		}}
+
+		response, err := server.RoleGet(ctx, &etcdserverpb.AuthRoleGetRequest{Role: "created-during-barrier"})
+		require.NoError(t, err)
+		require.Empty(t, response.Perm)
+	})
+
+	t.Run("role list", func(t *testing.T) {
+		server, closeFn := newTestRPCServer(t)
+		defer closeFn()
+		ctx := context.Background()
+		server.peers = testPeerService{syncReadFn: func(context.Context) error {
+			return server.auth.roleAdd(ctx, "listed-after-barrier")
+		}}
+
+		response, err := server.RoleList(ctx, &etcdserverpb.AuthRoleListRequest{})
+		require.NoError(t, err)
+		require.Equal(t, []string{"listed-after-barrier"}, response.Roles)
+	})
 }
 
 func TestAuthRPCBootstrapAndEnabledSafetyBoundary(t *testing.T) {

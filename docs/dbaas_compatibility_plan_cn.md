@@ -16688,6 +16688,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `codes.Unimplemented` 与对应 DBaaS 平台替代说明。数据面不得因某个枚举或边界 ID
   恰好通过局部校验而误入不完整的 etcd Raft member/downgrade 状态机；参数验证和实际编排
   统一属于 DBaaS 控制面。
+- A1408 修复 Auth 只读 RPC 的 snapshot-before-barrier 竞态：
+  upstream 把 AuthStatus、UserGet/List、RoleGet/List 放在 Raft apply 顺序点读取；KubeBrain
+  旧实现先读取本地 auth snapshot，最后只为 header 执行 revision barrier，可能返回“新 header
+  + 旧用户/角色数据”。现在先鉴权以保持 auth-before-barrier，barrier 成功后重新鉴权并重载
+  auth revision 驱动的 TiKV snapshot，最终响应只使用第二次快照。确定性测试在 barrier 内
+  enable auth 或新增 user/role，五个 RPC 必须立即观察到；官方 client RoleGet 黑盒还在
+  barrier 内授予 permission，响应必须包含新权限，证明修复穿透完整 gRPC 路径。
 
 ### P2：运维兼容和长期验证
 

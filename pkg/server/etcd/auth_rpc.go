@@ -69,7 +69,7 @@ func (s *RPCServer) authAdminSnapshot(ctx context.Context) (*authSnapshot, error
 	return caller.snapshot, nil
 }
 
-func (s *RPCServer) AuthStatus(ctx context.Context, _ *etcdserverpb.AuthStatusRequest) (*etcdserverpb.AuthStatusResponse, error) {
+func (s *RPCServer) authStatusSnapshot(ctx context.Context) (*authSnapshot, error) {
 	snapshot, err := s.tokens.snapshots.current(ctx)
 	if err != nil {
 		return nil, err
@@ -89,7 +89,18 @@ func (s *RPCServer) AuthStatus(ctx context.Context, _ *etcdserverpb.AuthStatusRe
 			}
 		}
 	}
+	return snapshot, nil
+}
+
+func (s *RPCServer) AuthStatus(ctx context.Context, _ *etcdserverpb.AuthStatusRequest) (*etcdserverpb.AuthStatusResponse, error) {
+	if _, err := s.authStatusSnapshot(ctx); err != nil {
+		return nil, err
+	}
 	header, err := s.authRPCHeader(ctx)
+	if err != nil {
+		return nil, err
+	}
+	snapshot, err := s.authStatusSnapshot(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -125,7 +136,7 @@ func (s *RPCServer) UserAdd(ctx context.Context, request *etcdserverpb.AuthUserA
 	return &etcdserverpb.AuthUserAddResponse{Header: header}, nil
 }
 
-func (s *RPCServer) UserGet(ctx context.Context, request *etcdserverpb.AuthUserGetRequest) (*etcdserverpb.AuthUserGetResponse, error) {
+func (s *RPCServer) userReadSnapshot(ctx context.Context, username string) (*authSnapshot, error) {
 	snapshot, err := s.tokens.snapshots.current(ctx)
 	if err != nil {
 		return nil, err
@@ -133,34 +144,48 @@ func (s *RPCServer) UserGet(ctx context.Context, request *etcdserverpb.AuthUserG
 	if snapshot.Config.Enabled {
 		caller, callerErr := s.authCallerFromContext(ctx)
 		if callerErr != nil {
-			if !errors.Is(callerErr, rpctypes.ErrUserEmpty) || request.Name != "" {
+			if !errors.Is(callerErr, rpctypes.ErrUserEmpty) || username != "" {
 				return nil, callerErr
 			}
 			caller = &authCaller{snapshot: snapshot}
 		}
 		adminErr := caller.adminError()
-		if adminErr != nil && caller.username != request.Name {
+		if adminErr != nil && caller.username != username {
 			return nil, adminErr
 		}
 		snapshot = caller.snapshot
+	}
+	return snapshot, nil
+}
+
+func (s *RPCServer) UserGet(ctx context.Context, request *etcdserverpb.AuthUserGetRequest) (*etcdserverpb.AuthUserGetResponse, error) {
+	if _, err := s.userReadSnapshot(ctx, request.Name); err != nil {
+		return nil, err
+	}
+	header, err := s.authRPCHeader(ctx)
+	if err != nil {
+		return nil, err
+	}
+	snapshot, err := s.userReadSnapshot(ctx, request.Name)
+	if err != nil {
+		return nil, err
 	}
 	user := snapshot.Users[request.Name]
 	if user == nil {
 		return nil, rpctypes.ErrUserNotFound
 	}
-	header, err := s.authRPCHeader(ctx)
-	if err != nil {
-		return nil, err
-	}
 	return &etcdserverpb.AuthUserGetResponse{Header: header, Roles: append([]string(nil), user.Roles...)}, nil
 }
 
 func (s *RPCServer) UserList(ctx context.Context, _ *etcdserverpb.AuthUserListRequest) (*etcdserverpb.AuthUserListResponse, error) {
-	snapshot, err := s.authAdminSnapshot(ctx)
-	if err != nil {
+	if _, err := s.authAdminSnapshot(ctx); err != nil {
 		return nil, err
 	}
 	header, err := s.authRPCHeader(ctx)
+	if err != nil {
+		return nil, err
+	}
+	snapshot, err := s.authAdminSnapshot(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -237,7 +262,7 @@ func (s *RPCServer) RoleAdd(ctx context.Context, request *etcdserverpb.AuthRoleA
 	return &etcdserverpb.AuthRoleAddResponse{Header: header}, nil
 }
 
-func (s *RPCServer) RoleGet(ctx context.Context, request *etcdserverpb.AuthRoleGetRequest) (*etcdserverpb.AuthRoleGetResponse, error) {
+func (s *RPCServer) roleReadSnapshot(ctx context.Context, roleName string) (*authSnapshot, error) {
 	snapshot, err := s.tokens.snapshots.current(ctx)
 	if err != nil {
 		return nil, err
@@ -248,10 +273,25 @@ func (s *RPCServer) RoleGet(ctx context.Context, request *etcdserverpb.AuthRoleG
 			return nil, callerErr
 		}
 		adminErr := caller.adminError()
-		if adminErr != nil && !caller.hasRole(request.Role) {
+		if adminErr != nil && !caller.hasRole(roleName) {
 			return nil, adminErr
 		}
 		snapshot = caller.snapshot
+	}
+	return snapshot, nil
+}
+
+func (s *RPCServer) RoleGet(ctx context.Context, request *etcdserverpb.AuthRoleGetRequest) (*etcdserverpb.AuthRoleGetResponse, error) {
+	if _, err := s.roleReadSnapshot(ctx, request.Role); err != nil {
+		return nil, err
+	}
+	header, err := s.authRPCHeader(ctx)
+	if err != nil {
+		return nil, err
+	}
+	snapshot, err := s.roleReadSnapshot(ctx, request.Role)
+	if err != nil {
+		return nil, err
 	}
 	role := snapshot.Roles[request.Role]
 	if role == nil {
@@ -265,19 +305,18 @@ func (s *RPCServer) RoleGet(ctx context.Context, request *etcdserverpb.AuthRoleG
 			permissions = append(permissions, proto.Clone(permission).(*authpb.Permission))
 		}
 	}
-	header, err := s.authRPCHeader(ctx)
-	if err != nil {
-		return nil, err
-	}
 	return &etcdserverpb.AuthRoleGetResponse{Header: header, Perm: permissions}, nil
 }
 
 func (s *RPCServer) RoleList(ctx context.Context, _ *etcdserverpb.AuthRoleListRequest) (*etcdserverpb.AuthRoleListResponse, error) {
-	snapshot, err := s.authAdminSnapshot(ctx)
-	if err != nil {
+	if _, err := s.authAdminSnapshot(ctx); err != nil {
 		return nil, err
 	}
 	header, err := s.authRPCHeader(ctx)
+	if err != nil {
+		return nil, err
+	}
+	snapshot, err := s.authAdminSnapshot(ctx)
 	if err != nil {
 		return nil, err
 	}

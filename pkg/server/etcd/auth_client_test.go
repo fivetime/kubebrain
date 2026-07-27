@@ -19,6 +19,7 @@ import (
 	"encoding/base64"
 	"io"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -88,6 +89,19 @@ func TestClientAuthHeadersTrackCurrentRevision(t *testing.T) {
 	require.NotZero(t, roleAddResponse.Header.MemberId)
 	require.Positive(t, roleAddResponse.Header.RaftTerm)
 
+	permission := &authpb.Permission{
+		PermType: authpb.READ,
+		Key:      []byte("/a1054/auth-client-header/"),
+		RangeEnd: []byte(clientv3.GetPrefixRangeEnd("/a1054/auth-client-header/")),
+	}
+	var grantOnce sync.Once
+	var grantErr error
+	server.peers = testPeerService{syncReadFn: func(context.Context) error {
+		grantOnce.Do(func() {
+			grantErr = server.auth.roleGrantPermission(context.Background(), role, permission)
+		})
+		return grantErr
+	}}
 	roleGetResponse, err := client.RoleGet(ctx, role)
 	require.NoError(t, err)
 	require.NotNil(t, roleGetResponse.Header)
@@ -95,6 +109,7 @@ func TestClientAuthHeadersTrackCurrentRevision(t *testing.T) {
 	require.NotZero(t, roleGetResponse.Header.ClusterId)
 	require.NotZero(t, roleGetResponse.Header.MemberId)
 	require.Positive(t, roleGetResponse.Header.RaftTerm)
+	require.Equal(t, []*authpb.Permission{permission}, roleGetResponse.Perm)
 }
 
 func TestClientAuthPasswordChangeInvalidatesOldPasswordAndToken(t *testing.T) {
