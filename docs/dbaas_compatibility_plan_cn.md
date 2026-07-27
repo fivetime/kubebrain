@@ -17282,6 +17282,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   mod revision 最新的 logical `queue/b`、`Count=3`、`More=true`。该回归防止 namespace Txn
   response adapter 在 reverse mod revision top-helper 路径上漏做 unprefix 或跨 prefix/tenant
   计数。
+- A1501 固定官方 client/v3 namespace.NewKV Get 的显式 logical range + `WithLastRev()`
+  外观：对照 upstream leasing `txnLeasing.guardRanges` 使用
+  `Get(key, append(WithLastRev(), WithRange(end))...)` 读取显式 range 内最新 mod revision，
+  本轮新增 official clientv3 bufconn 回归固定
+  `namespace.NewKV(...).Get("range/a", append(WithLastRev(), WithRange("range/d"))...)` 必须只扫描
+  当前 namespace 的 `[range/a, range/d)` logical range，返回当前 mod revision 最新的 logical
+  `range/b`、`Count=3`、`More=true`，并排除 upper bound `range/d`、同 tenant 相邻物理 range 与
+  相邻 tenant。该回归防止显式 range 经 namespace adapter 映射时扩大边界或泄露物理 prefix。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户

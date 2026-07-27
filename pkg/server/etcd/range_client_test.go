@@ -1211,6 +1211,59 @@ func TestClientNamespaceGetLastRevWithLogicalPrefixReturnsLogicalKey(t *testing.
 	require.Equal(t, []byte("updated-queue/b"), txnGet.Kvs[0].Value)
 }
 
+func TestClientNamespaceGetLastRevWithLogicalRangeReturnsLogicalKey(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	tenantPrefix := "/a1501/namespace-last-rev-range/tenant/"
+	namespacedKV := namespace.NewKV(client.KV, tenantPrefix)
+	for _, key := range []string{"range/a", "range/b", "range/c"} {
+		_, err = namespacedKV.Put(ctx, key, "value-"+key)
+		require.NoError(t, err)
+	}
+	_, err = namespacedKV.Put(ctx, "range/b", "updated-range/b")
+	require.NoError(t, err)
+	_, err = namespacedKV.Put(ctx, "range/d", "outside-upper-bound")
+	require.NoError(t, err)
+	_, err = namespacedKV.Put(ctx, "other/newer", "other")
+	require.NoError(t, err)
+	_, err = client.Put(ctx, "/a1501/namespace-last-rev-range/tenant/range0/outside", "same-tenant-outside-range")
+	require.NoError(t, err)
+	_, err = client.Put(ctx, "/a1501/namespace-last-rev-range/tenant0/range/b", "outside-tenant")
+	require.NoError(t, err)
+
+	getOpts := append(clientv3.WithLastRev(), clientv3.WithRange("range/d"))
+	resp, err := namespacedKV.Get(ctx, "range/a", getOpts...)
+	require.NoError(t, err)
+	require.NotNil(t, resp.Header)
+	require.Equal(t, int64(3), resp.Count)
+	require.True(t, resp.More)
+	require.Len(t, resp.Kvs, 1)
+	require.Equal(t, []byte("range/b"), resp.Kvs[0].Key)
+	require.Equal(t, []byte("updated-range/b"), resp.Kvs[0].Value)
+}
+
 func TestClientNamespaceTxnGetValidationErrorsMatchEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
