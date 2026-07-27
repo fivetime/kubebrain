@@ -23,7 +23,7 @@ func TestSnapshotCanonicalRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(path, append([]byte(" "), data...), 0o600))
 	_, err = ReadSnapshot(path)
-	require.ErrorContains(t, err, "canonical")
+	require.EqualError(t, err, "object storage sample is not canonical")
 }
 
 func TestSnapshotWriterTreatsConcurrentIdenticalLinkAsIdempotent(t *testing.T) {
@@ -71,28 +71,28 @@ func TestSnapshotWriterRejectsOversizedNewOutputBeforeLink(t *testing.T) {
 func TestSnapshotRejectsInvalidEvidenceAndSlot(t *testing.T) {
 	snapshot := validSnapshot()
 	snapshot.DeleteMarkers = 1
-	require.ErrorContains(t, snapshot.Validate(), "object storage sample is incomplete")
+	require.EqualError(t, snapshot.Validate(), "object storage sample is incomplete")
 	snapshot = validSnapshot()
 	snapshot.CheckedAtUnix = snapshot.SlotEndUnix + 2701
-	require.ErrorContains(t, snapshot.Validate(), "object storage sample is incomplete")
+	require.EqualError(t, snapshot.Validate(), "object storage sample is incomplete")
 }
 
 func TestSnapshotRejectsImpossibleVersionByteTotals(t *testing.T) {
 	snapshot := validSnapshot()
 	snapshot.RemoteVersions = 0
 	snapshot.TotalObjectBytes = 1
-	require.ErrorContains(t, snapshot.Validate(), "inconsistent")
+	require.EqualError(t, snapshot.Validate(), "object storage sample version and byte counts are inconsistent")
 
 	snapshot = validSnapshot()
 	snapshot.RemoteVersions = 1
 	snapshot.TotalObjectBytes = 0
-	require.ErrorContains(t, snapshot.Validate(), "inconsistent")
+	require.EqualError(t, snapshot.Validate(), "object storage sample version and byte counts are inconsistent")
 
 	snapshot = validSnapshot()
 	snapshot.RemoteVersions = 0
 	snapshot.TotalObjectBytes = 0
 	snapshot.VersionsSHA256 = strings.Repeat("b", 64)
-	require.ErrorContains(t, snapshot.Validate(), "invalid versions digest")
+	require.EqualError(t, snapshot.Validate(), "empty object storage sample has invalid versions digest")
 
 	snapshot.VersionsSHA256 = emptyUsageVersionsSHA256
 	require.NoError(t, snapshot.Validate())

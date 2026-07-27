@@ -16540,6 +16540,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   catalog canonical 漂移、charge total 篡改、v3 rollup 格式不匹配和 rollup/storage/catalog
   source bytes 漂移时，必须返回精确错误文本。该门禁防止金额生成阶段在价格或输入证据异常时
   只暴露模糊错误。
+- A1380 固定 metering storage sample/rollup 错误字符串：
+  对象存储计量 sample 的 canonical、incomplete、version/bytes 不一致和空样本 digest 错误，
+  以及日 rollup byte-seconds 非整 slot 错误，必须返回精确文本。该门禁防止对象存储原始
+  用量与日汇总在证据损坏时退化为模糊错误，从而削弱后续 charge 与账单审计。
 
 ### P2：运维兼容和长期验证
 

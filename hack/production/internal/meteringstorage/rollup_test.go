@@ -61,9 +61,9 @@ func TestStorageRollupRejectsFractionalSlotByteSeconds(t *testing.T) {
 	require.NoError(t, err)
 
 	rollup.ObjectStorageByteSeconds++
-	require.ErrorContains(t, rollup.Validate(), "incomplete")
+	require.EqualError(t, rollup.Validate(), "object storage rollup is incomplete")
 	_, err = WriteRollupAtomic(filepath.Join(t.TempDir(), "rollup.json"), rollup)
-	require.ErrorContains(t, err, "incomplete")
+	require.EqualError(t, err, "object storage rollup is incomplete")
 }
 
 func TestBuildStorageRollupFailsClosed(t *testing.T) {
