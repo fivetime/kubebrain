@@ -82,6 +82,18 @@ func TestAuthManagerUserGrantRootRoleDoesNotRequireRoleRecordLikeEtcd(t *testing
 	require.True(t, snapshot.Config.Enabled)
 }
 
+func TestAuthManagerRoleDeleteProtectsRootBeforeLookupLikeEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	manager := newAuthManager(server.backend)
+	ctx := context.Background()
+
+	require.NoError(t, manager.userAdd(ctx, &etcdserverpb.AuthUserAddRequest{Name: "root", Password: "secret"}))
+	require.NoError(t, manager.userGrantRole(ctx, "root", "root"))
+	require.NoError(t, manager.enable(ctx))
+	requireAuthManagerError(t, manager.roleDelete(ctx, "root"), rpctypes.ErrInvalidAuthMgmt, codes.Unknown, "etcdserver: invalid auth management")
+}
+
 func TestAuthManagerUsesConfiguredBcryptCost(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

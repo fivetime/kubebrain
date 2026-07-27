@@ -16772,6 +16772,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `AuthEnable` 同样只检查 root 用户的 role-name 列表。新增 auth manager 回归先验证
   普通 missing role 仍返回 `ErrRoleNotFound`，再验证 root 用户可在未创建 root role record
   时授予 `"root"` 并启用 auth，防止未来把所有 role grant 都改成强制 role-record 存在。
+- A1423 固定 RoleDelete 的 root 保护先于 role lookup：
+  A1422 使 enabled auth 下“root 用户拥有 root role-name 但 roles bucket 没有 root role
+  record”的状态与 upstream 一致可达。upstream `authStore.RoleDelete` 在 auth enabled 且
+  目标为 `"root"` 时先返回 `ErrInvalidAuthMgmt`，不会继续查 role record；新增 auth
+  manager 回归在该状态下删除 `"root"`，固定错误为 invalid auth management 而不是
+  `ErrRoleNotFound`，防止保护逻辑被无意移动到 lookup 之后。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
