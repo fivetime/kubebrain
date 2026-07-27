@@ -212,6 +212,12 @@ func TestRawGRPCTxnOperationValidationMessages(t *testing.T) {
 			wantCode:    codes.InvalidArgument,
 			wantMessage: "etcdserver: key not found",
 		},
+		{
+			name:        "nil-operation",
+			op:          nil,
+			wantCode:    codes.InvalidArgument,
+			wantMessage: "etcdserver: key not found",
+		},
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

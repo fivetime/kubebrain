@@ -16852,6 +16852,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `clientv3.Auth.RoleRevokePermission(ctx, "", ...)` 包装层，固定其暴露
   `Unknown`/role not found，而不是 permission-not-granted 或 role-empty。该回归完成
   A1430 在常用官方客户端 role permission management API 上的外观闭环。
+- A1437 固定 Txn nil RequestOp 的 validation 错误：
+  upstream txn validator 对 nil `RequestOp` 与空 oneof `RequestOp{}` 一样返回
+  `InvalidArgument`/`etcdserver: key not found`，不会落到执行阶段的 unsupported transaction
+  fallback。既有 raw/differential 回归覆盖空 oneof，本轮补齐 nil op 表项，防止未来
+  重构 validation/interval 收集时让 nil op panic 或泄漏非 etcd 错误。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
