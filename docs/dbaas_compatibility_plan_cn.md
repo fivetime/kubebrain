@@ -17513,6 +17513,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `OpGet("items/a", WithRev(compactedRev))` 不得被验证或返回 compacted error；事务必须执行 Else
   branch，返回当前 logical `items/a=new-a`，且未选中 branch 后续 `OpPut` 不得提交。该回归防止
   nested Txn validation 过早扫描未执行分支。
+- A1541 固定官方 client/v3 namespace.NewKV nested OpTxn 的未选中 duplicate write 分支外观：
+  duplicate-key 是 Txn 请求级静态校验，不同于只在执行分支触发的 Range revision validation；
+  即使 nested `OpTxn` compare 会失败，未选中 Then branch 中重复
+  `OpPut("items/duplicate", ...)` 也必须通过 `clientv3.Txn.Commit` 暴露可由
+  `errors.Is(..., rpctypes.ErrDuplicateKey)` 识别的 public error，且重复写入、Else branch 与相邻
+  tenant key 都不得被错误提交或污染。该回归防止 namespace nested Txn 在分支选择前后的 duplicate
+  interval 校验顺序偏离 etcd。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户

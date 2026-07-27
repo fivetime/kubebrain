@@ -3648,6 +3648,63 @@ func TestClientNamespaceNestedTxnUnselectedCompactedRevisionRangeIsNotValidated(
 	require.Empty(t, unselectedPut.Kvs)
 }
 
+func TestClientNamespaceNestedTxnUnselectedDuplicateWriteBranchReturnsTypedErrorAndDoesNotCommit(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	tenantPrefix := "/a1541/namespace-nested-txn-unselected-duplicate/tenant/"
+	namespacedKV := namespace.NewKV(client.KV, tenantPrefix)
+	_, err = namespacedKV.Put(ctx, "items/a", "value-a")
+	require.NoError(t, err)
+	_, err = client.Put(ctx, "/a1541/namespace-nested-txn-unselected-duplicate/tenant0/items/a", "outside-tenant")
+	require.NoError(t, err)
+
+	_, err = namespacedKV.Txn(ctx).
+		Then(clientv3.OpTxn(
+			[]clientv3.Cmp{clientv3.Compare(clientv3.Version("missing"), "=", 1)},
+			[]clientv3.Op{
+				clientv3.OpPut("items/duplicate", "one"),
+				clientv3.OpPut("items/duplicate", "two"),
+			},
+			[]clientv3.Op{clientv3.OpGet("items/a")},
+		)).
+		Commit()
+	requireClientTxnError(t, err, codes.Unknown, "etcdserver: duplicate key given in txn request", rpctypes.ErrDuplicateKey)
+
+	duplicate, err := namespacedKV.Get(ctx, "items/duplicate")
+	require.NoError(t, err)
+	require.Empty(t, duplicate.Kvs)
+	current, err := namespacedKV.Get(ctx, "items/a")
+	require.NoError(t, err)
+	require.Len(t, current.Kvs, 1)
+	require.Equal(t, []byte("value-a"), current.Kvs[0].Value)
+	outsideTenant, err := client.Get(ctx, "/a1541/namespace-nested-txn-unselected-duplicate/tenant0/items/a")
+	require.NoError(t, err)
+	require.Len(t, outsideTenant.Kvs, 1)
+	require.Equal(t, []byte("outside-tenant"), outsideTenant.Kvs[0].Value)
+}
+
 func TestClientNamespaceTxnGetValidationErrorsMatchEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
