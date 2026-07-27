@@ -1433,18 +1433,18 @@ func TestQueueRejectsSpecDriftAndInvalidCompletion(t *testing.T) {
 	requesterControl.RequestedBy = "user\n123"
 	_, err = queue.Submit(ctx, "requester-control", requesterControl)
 	require.ErrorIs(t, err, ErrInvalidSpec)
-	require.ErrorContains(t, err, "operation requester")
+	require.EqualError(t, err, "invalid operation spec: invalid operation requester: must not contain control characters")
 	requesterInvalidUTF8 := spec
 	requesterInvalidUTF8.OperationID = "requester-invalid-utf8"
 	requesterInvalidUTF8.RequestedBy = string([]byte{'u', 0xff})
 	_, err = queue.Submit(ctx, "requester-invalid-utf8", requesterInvalidUTF8)
 	require.ErrorIs(t, err, ErrInvalidSpec)
-	require.ErrorContains(t, err, "valid UTF-8")
+	require.EqualError(t, err, "invalid operation spec: invalid operation requester: must be valid UTF-8")
 
 	invalidOperationID := spec
 	invalidOperationID.OperationID = "-invalid"
 	_, err = queue.Submit(ctx, "invalid-operation-id", invalidOperationID)
-	require.ErrorContains(t, err, "invalid operation ID")
+	require.EqualError(t, err, "invalid operation spec: invalid operation ID")
 
 	validCRDIdentifiers := spec
 	validCRDIdentifiers.OperationID = "Operation_1.2"
@@ -1455,7 +1455,7 @@ func TestQueueRejectsSpecDriftAndInvalidCompletion(t *testing.T) {
 	invalidInstance := spec
 	invalidInstance.Instance = ".invalid"
 	_, err = queue.Submit(ctx, "invalid-instance", invalidInstance)
-	require.ErrorContains(t, err, "invalid operation instance")
+	require.EqualError(t, err, "invalid operation spec: invalid operation instance")
 
 	invalidTenant := spec
 	invalidTenant.Tenant = "Invalid_Tenant"
@@ -1467,26 +1467,26 @@ func TestQueueRejectsSpecDriftAndInvalidCompletion(t *testing.T) {
 	invalidType.Type = "Unsupported"
 	_, err = queue.Submit(ctx, "invalid-type", invalidType)
 	require.ErrorIs(t, err, ErrInvalidSpec)
-	require.ErrorContains(t, err, "unsupported operation type")
+	require.EqualError(t, err, "invalid operation spec: unsupported operation type: Unsupported")
 
 	invalidDigest := spec
 	invalidDigest.OperationID = "invalid-digest"
 	invalidDigest.ParametersSHA256 = strings.Repeat("g", 64)
 	_, err = queue.Submit(ctx, "invalid-digest", invalidDigest)
-	require.ErrorContains(t, err, "parameters digest")
+	require.EqualError(t, err, "invalid operation spec: operation spec requires a lowercase SHA-256 parameters digest")
 
 	tooManyAttempts := spec
 	tooManyAttempts.OperationID = "too-many-attempts"
 	tooManyAttempts.MaxAttempts = 101
 	_, err = queue.Submit(ctx, "too-many-attempts", tooManyAttempts)
-	require.ErrorContains(t, err, "maxAttempts")
+	require.EqualError(t, err, "invalid operation spec: operation maxAttempts cannot exceed 100")
 
 	invalidSecret := spec
 	invalidSecret.OperationID = "invalid-secret"
 	invalidSecret.ParametersSecret = "Invalid_Secret"
 	invalidSecret.ParametersKey = "parameters.json"
 	_, err = queue.Submit(ctx, "invalid-secret", invalidSecret)
-	require.ErrorContains(t, err, "invalid parameter secret name")
+	require.EqualError(t, err, "invalid operation spec: invalid parameter secret name")
 
 	invalidSecretKey := spec
 	invalidSecretKey.OperationID = "invalid-secret-key"
@@ -1494,43 +1494,43 @@ func TestQueueRejectsSpecDriftAndInvalidCompletion(t *testing.T) {
 	invalidSecretKey.ParametersKey = "parameters/json"
 	_, err = queue.Submit(ctx, "invalid-secret-key", invalidSecretKey)
 	require.ErrorIs(t, err, ErrInvalidSpec)
-	require.ErrorContains(t, err, "invalid parameter secret key")
+	require.EqualError(t, err, "invalid operation spec: invalid parameter secret key")
 
 	_, err = queue.Claim(ctx, strings.Repeat("w", maxStatusOwnerLength+1), "", time.Minute)
-	require.ErrorContains(t, err, "status owner")
+	require.EqualError(t, err, "operation status owner is invalid: exceeds 253 characters")
 	_, err = queue.Claim(ctx, "worker\ncontrol", "", time.Minute)
-	require.ErrorContains(t, err, "control characters")
+	require.EqualError(t, err, "operation status owner is invalid: must not contain control characters")
 	_, err = queue.Claim(ctx, string([]byte{'w', 0xff}), "", time.Minute)
-	require.ErrorContains(t, err, "valid UTF-8")
+	require.EqualError(t, err, "operation status owner is invalid: must be valid UTF-8")
 
 	claim, err := queue.Claim(ctx, "worker-a", "", time.Minute)
 	require.NoError(t, err)
 	_, err = queue.Heartbeat(ctx, claim.Name, strings.Repeat("w", maxStatusOwnerLength+1), claim.Attempt, time.Minute)
-	require.ErrorContains(t, err, "status owner")
+	require.EqualError(t, err, "operation status owner is invalid: exceeds 253 characters")
 	_, err = queue.Heartbeat(ctx, claim.Name, "worker\ncontrol", claim.Attempt, time.Minute)
-	require.ErrorContains(t, err, "control characters")
+	require.EqualError(t, err, "operation status owner is invalid: must not contain control characters")
 	_, err = queue.Requeue(ctx, claim.Name, claim.Owner, claim.Attempt, strings.Repeat("m", maxStatusMessageLength+1))
-	require.ErrorContains(t, err, "status message")
+	require.EqualError(t, err, "operation status message is invalid: exceeds 4096 characters")
 	_, err = queue.Requeue(ctx, claim.Name, claim.Owner, claim.Attempt, "retry\nlater")
-	require.ErrorContains(t, err, "control characters")
+	require.EqualError(t, err, "operation status message is invalid: must not contain control characters")
 	_, err = queue.Finish(
 		ctx, claim.Name, claim.Owner, claim.Attempt,
 		true, strings.Repeat("a", 64), strings.Repeat("m", maxStatusMessageLength+1),
 	)
-	require.ErrorContains(t, err, "status message")
+	require.EqualError(t, err, "operation status message is invalid: exceeds 4096 characters")
 	_, err = queue.Finish(
 		ctx, claim.Name, claim.Owner, claim.Attempt,
 		true, strings.Repeat("a", 64), string([]byte{'m', 0xff}),
 	)
-	require.ErrorContains(t, err, "valid UTF-8")
+	require.EqualError(t, err, "operation status message is invalid: must be valid UTF-8")
 	_, err = queue.Finish(ctx, claim.Name, claim.Owner, claim.Attempt, false, strings.Repeat("a", 64), "")
-	require.ErrorContains(t, err, "failed operation cannot carry")
+	require.EqualError(t, err, "failed operation cannot carry a receipt SHA-256")
 	_, err = queue.Finish(ctx, claim.Name, claim.Owner, claim.Attempt, false, strings.Repeat("A", 64), "")
-	require.ErrorContains(t, err, "failed operation cannot carry")
+	require.EqualError(t, err, "failed operation cannot carry a receipt SHA-256")
 	_, err = queue.Finish(ctx, claim.Name, claim.Owner, claim.Attempt, true, "", "")
-	require.ErrorContains(t, err, "requires a receipt")
+	require.EqualError(t, err, "successful operation requires a receipt SHA-256 hex digest")
 	_, err = queue.Finish(ctx, claim.Name, claim.Owner, claim.Attempt, true, strings.Repeat("A", 64), "")
-	require.ErrorContains(t, err, "receipt SHA-256 hex digest")
+	require.EqualError(t, err, "operation receipt SHA-256 hex digest must be empty or lowercase")
 }
 
 func TestQueueLoadsDigestBoundImmutableParameters(t *testing.T) {

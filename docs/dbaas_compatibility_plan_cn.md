@@ -16501,6 +16501,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   RPC auth 错误必须保持完整 `status.Error(code, message)` 字符串，同时继续校验
   `rpctypes` sentinel、gRPC code 和 message。该门禁防止鉴权错误在 clientv3 unwrap 与 raw
   gRPC 两条路径之间漂移。
+- A1372 固定 operation queue 输入校验错误字符串：
+  production operation queue 的 spec、worker owner、status message 和 completion receipt
+  校验必须返回精确 fail-closed 错误文本，并继续保留 `ErrInvalidSpec` typed error。该门禁
+  防止管理面队列在 operation ID、instance、type、digest、参数 Secret、状态 owner/message
+  或 receipt SHA 边界上退化为模糊错误，削弱生产排障和审计证据。
 
 ### P2：运维兼容和长期验证
 
