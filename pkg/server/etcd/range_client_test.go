@@ -5114,6 +5114,72 @@ func TestClientNamespaceNestedTxnGetEmptyPrefixWithLastCreateAndMaxCreateRevisio
 	require.Equal(t, int64(1), outsideTenant.Count)
 }
 
+func TestClientNamespaceNestedTxnGetEmptyPrefixWithLastRevAndMaxModRevisionReturnsLogicalKey(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	tenantPrefix := "/a1563/namespace-nested-txn-empty-prefix-last-rev-max-mod/tenant/"
+	namespacedKV := namespace.NewKV(client.KV, tenantPrefix)
+	for _, key := range []string{"alpha/a", "items/a", "z/final"} {
+		_, err = namespacedKV.Put(ctx, key, "value-"+key)
+		require.NoError(t, err)
+	}
+	updateItems, err := namespacedKV.Put(ctx, "items/a", "updated-items/a")
+	require.NoError(t, err)
+	_, err = namespacedKV.Put(ctx, "z/final", "updated-z/final")
+	require.NoError(t, err)
+	_, err = client.Put(ctx, "/a1563/namespace-nested-txn-empty-prefix-last-rev-max-mod/tenant0/newest", "outside-tenant")
+	require.NoError(t, err)
+	_, err = namespacedKV.Put(ctx, "later/new", "value-later/new")
+	require.NoError(t, err)
+
+	getOpts := append(clientv3.WithLastRev(), clientv3.WithMaxModRev(updateItems.Header.Revision))
+	txnResp, err := namespacedKV.Txn(ctx).
+		Then(clientv3.OpTxn(nil,
+			[]clientv3.Op{clientv3.OpGet("", getOpts...)},
+			nil)).
+		Commit()
+	require.NoError(t, err)
+	require.True(t, txnResp.Succeeded)
+	require.Len(t, txnResp.Responses, 1)
+	nestedTxn := txnResp.Responses[0].GetResponseTxn()
+	require.NotNil(t, nestedTxn)
+	require.True(t, nestedTxn.Succeeded)
+	require.Len(t, nestedTxn.Responses, 1)
+	nestedGet := nestedTxn.Responses[0].GetResponseRange()
+	require.NotNil(t, nestedGet)
+	require.Equal(t, int64(4), nestedGet.Count)
+	require.True(t, nestedGet.More)
+	require.Len(t, nestedGet.Kvs, 1)
+	require.Equal(t, []byte("items/a"), nestedGet.Kvs[0].Key)
+	require.Equal(t, []byte("updated-items/a"), nestedGet.Kvs[0].Value)
+
+	outsideTenant, err := client.Get(ctx, "/a1563/namespace-nested-txn-empty-prefix-last-rev-max-mod/tenant0/", clientv3.WithPrefix())
+	require.NoError(t, err)
+	require.Equal(t, int64(1), outsideTenant.Count)
+}
+
 func TestClientNamespaceTxnGetValidationErrorsMatchEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
