@@ -605,6 +605,19 @@ func TestClientNamespaceGetMaxCreateRevisionFilterReturnsLogicalKeys(t *testing.
 	require.Len(t, resp.Kvs, 2)
 	require.Equal(t, [][]byte{[]byte("a"), []byte("b")}, [][]byte{resp.Kvs[0].Key, resp.Kvs[1].Key})
 	require.Equal(t, [][]byte{[]byte("value-a"), []byte("value-b")}, [][]byte{resp.Kvs[0].Value, resp.Kvs[1].Value})
+
+	doResp, err := namespacedKV.Do(ctx, clientv3.OpGet("", clientv3.WithFromKey(),
+		clientv3.WithMaxCreateRev(createC.Header.Revision-1),
+		clientv3.WithSort(clientv3.SortByKey, clientv3.SortAscend)))
+	require.NoError(t, err)
+	doGet := doResp.Get()
+	require.NotNil(t, doGet)
+	require.NotNil(t, doGet.Header)
+	require.Equal(t, int64(3), doGet.Count)
+	require.False(t, doGet.More)
+	require.Len(t, doGet.Kvs, 2)
+	require.Equal(t, [][]byte{[]byte("a"), []byte("b")}, [][]byte{doGet.Kvs[0].Key, doGet.Kvs[1].Key})
+	require.Equal(t, [][]byte{[]byte("value-a"), []byte("value-b")}, [][]byte{doGet.Kvs[0].Value, doGet.Kvs[1].Value})
 }
 
 func TestClientNamespaceTxnGetValidationErrorsMatchEtcd(t *testing.T) {
