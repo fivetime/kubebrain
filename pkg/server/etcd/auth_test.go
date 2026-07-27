@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -348,6 +349,59 @@ func TestAuthReadRPCsReauthorizeAfterBarrier(t *testing.T) {
 
 		_, err := server.RoleGet(aliceCtx, &etcdserverpb.AuthRoleGetRequest{Role: "allowed"})
 		requireAuthRPCError(t, err, rpctypes.ErrPermissionDenied, codes.Unknown, "etcdserver: permission denied")
+	})
+}
+
+func TestAuthenticateRechecksTokenAfterHeaderBarrier(t *testing.T) {
+	t.Run("password changed", func(t *testing.T) {
+		server, closeFn := newTestRPCServer(t)
+		defer closeFn()
+		ctx := context.Background()
+		setupAuthKVUser(t, server)
+		var barriers atomic.Int32
+		server.peers = testPeerService{syncReadFn: func(context.Context) error {
+			if barriers.Add(1) == 2 {
+				return server.auth.userChangePassword(ctx, "root", "changed-secret", "")
+			}
+			return nil
+		}}
+
+		_, err := server.Authenticate(ctx, &etcdserverpb.AuthenticateRequest{
+			Name: "root", Password: "root-secret",
+		})
+		requireAuthRPCError(t, err, rpctypes.ErrAuthFailed, codes.Unknown, "etcdserver: authentication failed, invalid user ID or password")
+
+		response, err := server.Authenticate(ctx, &etcdserverpb.AuthenticateRequest{
+			Name: "root", Password: "changed-secret",
+		})
+		require.NoError(t, err)
+		_, err = server.tokens.verify(ctx, response.Token)
+		require.NoError(t, err)
+	})
+
+	t.Run("unrelated auth mutation", func(t *testing.T) {
+		server, closeFn := newTestRPCServer(t)
+		defer closeFn()
+		ctx := context.Background()
+		setupAuthKVUser(t, server)
+		var barriers atomic.Int32
+		server.peers = testPeerService{syncReadFn: func(context.Context) error {
+			if barriers.Add(1) == 2 {
+				return server.auth.roleAdd(ctx, "created-during-header-barrier")
+			}
+			return nil
+		}}
+
+		response, err := server.Authenticate(ctx, &etcdserverpb.AuthenticateRequest{
+			Name: "root", Password: "root-secret",
+		})
+		require.NoError(t, err)
+		claims, err := server.tokens.verify(ctx, response.Token)
+		require.NoError(t, err)
+		snapshot, err := server.tokens.snapshots.current(ctx)
+		require.NoError(t, err)
+		require.Equal(t, snapshot.Config.Revision, claims.Revision)
+		require.NotNil(t, snapshot.Roles["created-during-header-barrier"])
 	})
 }
 

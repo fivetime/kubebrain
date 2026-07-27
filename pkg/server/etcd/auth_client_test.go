@@ -20,6 +20,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -220,6 +221,55 @@ func TestClientAuthPasswordChangeInvalidatesOldPasswordAndToken(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, afterChange.Kvs, 1)
 	require.Equal(t, "secret", string(afterChange.Kvs[0].Value))
+}
+
+func TestClientAuthenticateRejectsTokenInvalidatedDuringHeaderBarrier(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	setupAuthKVUser(t, server)
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterAuthServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	dialOptions := []grpc.DialOption{
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}),
+	}
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints: []string{"bufnet"}, DialTimeout: time.Second, DialOptions: dialOptions,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var barriers atomic.Int32
+	server.peers = testPeerService{syncReadFn: func(context.Context) error {
+		if barriers.Add(1) == 2 {
+			return server.auth.userChangePassword(context.Background(), "root", "changed-secret", "")
+		}
+		return nil
+	}}
+
+	_, err = client.Authenticate(ctx, "root", "root-secret")
+	requireAuthClientError(t, err, codes.Unknown, "etcdserver: authentication failed, invalid user ID or password", rpctypes.ErrAuthFailed)
+	response, err := client.Authenticate(ctx, "root", "changed-secret")
+	require.NoError(t, err)
+	require.NotEmpty(t, response.Token)
+
+	tokenClient, err := clientv3.New(clientv3.Config{
+		Endpoints: []string{"bufnet"}, DialTimeout: time.Second, Token: response.Token, DialOptions: dialOptions,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, tokenClient.Close()) })
+	statusResponse, err := tokenClient.AuthStatus(ctx)
+	require.NoError(t, err)
+	require.True(t, statusResponse.Enabled)
 }
 
 func TestClientAuthAddUserAfterDeleteAndPasswordRotation(t *testing.T) {

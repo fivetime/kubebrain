@@ -111,15 +111,34 @@ func (s *RPCServer) Authenticate(ctx context.Context, request *etcdserverpb.Auth
 	if err := s.peers.SyncReadRevision(ctx); err != nil {
 		return nil, readBarrierStatusErr(err)
 	}
-	token, err := s.tokens.authenticate(ctx, request.Name, request.Password)
-	if err != nil {
-		return nil, err
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		token, err := s.tokens.authenticate(ctx, request.Name, request.Password)
+		if err != nil {
+			return nil, err
+		}
+		header, err := s.authRPCHeader(ctx)
+		if err != nil {
+			return nil, err
+		}
+		claims, err := s.tokens.verify(ctx, token)
+		if err != nil {
+			if errors.Is(err, rpctypes.ErrInvalidAuthToken) {
+				continue
+			}
+			return nil, err
+		}
+		snapshot, err := s.tokens.snapshots.current(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if claims.Revision != snapshot.Config.Revision {
+			continue
+		}
+		return &etcdserverpb.AuthenticateResponse{Header: header, Token: token}, nil
 	}
-	header, err := s.authRPCHeader(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return &etcdserverpb.AuthenticateResponse{Header: header, Token: token}, nil
 }
 
 func (s *RPCServer) UserAdd(ctx context.Context, request *etcdserverpb.AuthUserAddRequest) (*etcdserverpb.AuthUserAddResponse, error) {

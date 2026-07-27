@@ -16700,6 +16700,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   role 的非 root 用户在 UserList barrier 内被撤销 root，并让 alice 在 RoleGet barrier
   内失去目标 role；两者必须在返回任何管理数据前得到精确 PermissionDenied。该门禁防止
   auth revision 前进窗口内旧 admin/role 能力多放行一次请求。
+- A1410 修复 Authenticate token 与 header barrier 的竞态：
+  upstream 在密码校验和 token apply 后比较 auth revision，变化则重试。KubeBrain 旧实现
+  生成 token 后还会为 response header 执行第二次 barrier，但不验证期间的 auth mutation，
+  可能把刚被密码变更/token generation 失效的 token 返回客户端。现在 barrier 后验证 token
+  并要求 claims revision 等于最新持久 auth revision；失效或 revision 前进则用原凭据重试。
+  测试在第二次 barrier 内分别修改 root 密码和新增无关 role：旧密码必须 AuthFailed，新密码
+  成功；无关 mutation 后返回 token 必须携带最新 revision。官方 client/v3 黑盒进一步用
+  返回的新 token 调用 AuthStatus，证明线上不会交付 born-stale token。
 
 ### P2：运维兼容和长期验证
 
