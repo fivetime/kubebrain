@@ -16589,6 +16589,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   首值 `3.7.0` 时后续非法 UTF-8 value 不得影响 admission，首值非法 UTF-8 时后续合法 value
   不得覆盖拒绝，必须返回精确 `InvalidArgument: etcdserver: invalid client api version`。
   该门禁防止代理重复注入 header 后 KubeBrain 合并检查全部值或错误采用最后值。
+- A1391 固定 client-api-version 与 require-leader 错误优先级：
+  对照 upstream interceptor 的执行顺序，同一请求同时携带非法 UTF-8
+  `client-api-version` 和 `etcd-server-leader=true` 且集群无 leader 时，public/peer 的
+  unary/stream 均必须先返回精确 `InvalidArgument: etcdserver: invalid client api version`，
+  handler 不得执行，不能被 `Unavailable: etcdserver: no leader` 覆盖。该门禁防止入口
+  interceptor 重排后漂移客户端依赖的确定性错误分类。
 
 ### P2：运维兼容和长期验证
 

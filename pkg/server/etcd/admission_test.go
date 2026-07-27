@@ -525,6 +525,41 @@ func TestPeerClientAPIVersionMetadataRejectsUnaryAndStream(t *testing.T) {
 	require.False(t, called)
 }
 
+func TestClientAPIVersionValidationPrecedesRequireLeader(t *testing.T) {
+	rpc, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	rpc.peers = testPeerService{isLeader: false, noLeader: true}
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs(
+		rpctypes.MetadataClientAPIVersionKey, string([]byte{0xff}),
+		rpctypes.MetadataRequireLeaderKey, rpctypes.MetadataHasLeader,
+	))
+
+	unaryCalled := false
+	unaryHandler := func(context.Context, any) (any, error) {
+		unaryCalled = true
+		return nil, nil
+	}
+	_, err := rpc.admitUnary(ctx, nil, &grpc.UnaryServerInfo{FullMethod: "/test.Unary"}, unaryHandler)
+	requireAdmissionError(t, err, rpctypes.ErrGRPCInvalidClientAPIVersion, codes.InvalidArgument, "etcdserver: invalid client api version")
+	require.False(t, unaryCalled)
+	_, err = rpc.requireLeaderUnary(ctx, nil, &grpc.UnaryServerInfo{FullMethod: "/test.Unary"}, unaryHandler)
+	requireAdmissionError(t, err, rpctypes.ErrGRPCInvalidClientAPIVersion, codes.InvalidArgument, "etcdserver: invalid client api version")
+	require.False(t, unaryCalled)
+
+	streamCalled := false
+	streamHandler := func(any, grpc.ServerStream) error {
+		streamCalled = true
+		return nil
+	}
+	stream := &serverStreamWithContext{ctx: ctx}
+	err = rpc.admitStream(nil, stream, &grpc.StreamServerInfo{FullMethod: "/test.Stream"}, streamHandler)
+	requireAdmissionError(t, err, rpctypes.ErrGRPCInvalidClientAPIVersion, codes.InvalidArgument, "etcdserver: invalid client api version")
+	require.False(t, streamCalled)
+	err = rpc.requireLeaderStream(nil, stream, &grpc.StreamServerInfo{FullMethod: "/test.Stream"}, streamHandler)
+	requireAdmissionError(t, err, rpctypes.ErrGRPCInvalidClientAPIVersion, codes.InvalidArgument, "etcdserver: invalid client api version")
+	require.False(t, streamCalled)
+}
+
 func ptr[T any](value T) *T {
 	return &value
 }
