@@ -189,6 +189,44 @@ func TestMemberListAndPeerMembersSortControlPlaneMembersByID(t *testing.T) {
 	})
 }
 
+func TestMemberListAndPeerMembersSortFallbackMembersByID(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	localIdentity := server.backend.GetResourceLock().Identity()
+	localID := server.memberIDForPeerIdentity(localIdentity)
+	var leaderIdentity string
+	for i := 1; i <= 10_000; i++ {
+		candidate := fmt.Sprintf("fallback-leader-%d:2380", i)
+		if server.memberIDForPeerIdentity(candidate) < localID {
+			leaderIdentity = candidate
+			break
+		}
+	}
+	require.NotEmpty(t, leaderIdentity, "test needs a leader whose member ID sorts before the local member")
+	leaderID := server.memberIDForPeerIdentity(leaderIdentity)
+	server.peers = testPeerService{leaderInfo: leaderIdentity}
+
+	resp, err := server.MemberList(context.Background(), &etcdserverpb.MemberListRequest{})
+	require.NoError(t, err)
+	require.Len(t, resp.Members, 2)
+	require.Equal(t, []uint64{leaderID, localID}, []uint64{
+		resp.Members[0].ID,
+		resp.Members[1].ID,
+	})
+
+	rec := httptest.NewRecorder()
+	server.peerMembersHandler(rec, httptest.NewRequest(http.MethodGet, "/members", nil))
+	require.Equal(t, http.StatusOK, rec.Code)
+	var peerMembers []peerHTTPMember
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &peerMembers))
+	require.Len(t, peerMembers, 2)
+	require.Equal(t, []uint64{leaderID, localID}, []uint64{
+		peerMembers[0].ID,
+		peerMembers[1].ID,
+	})
+}
+
 func TestPeerMembersHandlerRejectsBadRequests(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

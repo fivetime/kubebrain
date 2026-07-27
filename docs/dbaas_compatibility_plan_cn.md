@@ -16663,6 +16663,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `Member.ID` 升序排列控制面注入视图和本机/leader 降级视图；排序仅作用于克隆快照，
   不修改 DBaaS 控制面注册表。该修复消除控制面输入顺序或 leader 变化造成的列表抖动，
   避免客户端 AutoSync、诊断 diff 和成员缓存观察到非 etcd 的无意义重排。
+- A1404 固定未配置静态成员时的排序回归：
+  降级视图内部按“本机、leader”发现成员，但公开顺序仍必须遵循 A1403 的 ID 升序。测试
+  刻意选择 `leaderID < localID`，同时验证 gRPC `MemberList` 和 peer `/members` 均返回
+  `[leaderID, localID]`，不能因发现顺序重新变成 local-first。该门禁覆盖 DBaaS 配置缺失
+  或启动过渡期实际使用的 fallback 路径。
 
 ### P2：运维兼容和长期验证
 
