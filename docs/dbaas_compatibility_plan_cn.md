@@ -17336,6 +17336,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   必须经 `prefixCmps` 只比较当前 namespace 的 `[range/a, range/d)` logical range；compare 成功
   后只删除该 range 中的 logical `range/a,b,c`，保留 upper bound、同 tenant 相邻物理 range 与
   相邻 tenant。该回归防止 namespace Txn compare range 与 Then ops 使用不一致物理边界。
+- A1508 固定官方 client/v3 namespace.NewKV Txn range compare 的空 logical range 隔离外观：
+  A1507 固定 compare 成功分支后，本轮补齐失败分支；当当前 namespace 的
+  `[range/a, range/d)` logical range 为空，但 upper bound、同 tenant 相邻 range 与相邻 tenant
+  存在数据时，`Compare(Version("range/a").WithRange("range/d"), ">", 0)` 必须失败并执行
+  `Else(OpGet(...))` 返回空 `ResponseRange`。该回归防止 `prefixCmps` 把相邻物理 namespace 或
+  相邻 logical range 纳入 compare，导致 leasing range guard 误通过。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
