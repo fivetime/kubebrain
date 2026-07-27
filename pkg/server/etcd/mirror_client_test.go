@@ -247,7 +247,7 @@ func TestClientMirrorSyncHistoricalRevisionAndCompactedError(t *testing.T) {
 			compactedErr = syncErr
 		}
 	}
-	require.Error(t, compactedErr)
+	require.EqualError(t, compactedErr, "etcdserver: mvcc: required revision has been compacted")
 	require.ErrorIs(t, compactedErr, rpctypes.ErrCompacted)
 	require.Equal(t, codes.Unknown, status.Code(compactedErr))
 	require.Equal(t, "etcdserver: mvcc: required revision has been compacted", status.Convert(compactedErr).Message())
@@ -323,7 +323,7 @@ func TestClientMirrorSyncerUsesAuthenticatedPrefixPermissions(t *testing.T) {
 			anonymousErr = syncErr
 		}
 	}
-	require.Error(t, anonymousErr)
+	require.EqualError(t, anonymousErr, "etcdserver: user name is empty")
 	require.ErrorIs(t, anonymousErr, rpctypes.ErrUserEmpty)
 	require.Equal(t, codes.Unknown, status.Code(anonymousErr))
 	require.Equal(t, "etcdserver: user name is empty", status.Convert(anonymousErr).Message())

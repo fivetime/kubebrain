@@ -16441,6 +16441,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `recipe.NewBarrier(...).Hold()` 第一次创建 barrier key 成功后，第二次 Hold 必须返回
   `recipe.ErrKeyExists`。该门禁防止 experimental recipes 兼容面只验证任意失败，而漏掉
   barrier key 唯一性和 clientv3 recipe sentinel 的公开契约。
+- A1359 固定 clientv3 mirror SyncBase typed 错误字符串：
+  mirror `SyncBase` 从已 compacted revision 启动时必须返回裸 etcd compacted message、
+  `rpctypes.ErrCompacted` 和 `codes.Unknown`；匿名 client 在 auth enabled 前缀同步时必须返回
+  裸 `etcdserver: user name is empty`、`rpctypes.ErrUserEmpty` 和 `codes.Unknown`。该门禁防止
+  mirror 初始同步在 compaction/auth 边界上只保留错误分类，却漂移 clientv3 可见文本。
 
 ### P2：运维兼容和长期验证
 
