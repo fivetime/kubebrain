@@ -17212,6 +17212,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   tenant 的 `items/` logical prefix，并在 `ResponseRange` 中返回 logical `items/c`、
   `Count=3`、`More=true`，排除同 tenant 相邻 `items0` prefix 与相邻物理 namespace。该回归
   防止通用 `Do(Get)` 在 lexical reverse top-helper 路径上泄露物理 prefix。
+- A1491 固定官方 client/v3 namespace.NewKV Txn OpGet 的 `WithLastKey()` 非空 logical
+  prefix 外观：A1489/A1490 覆盖 `Get` 与 `Do(Get)` 后，本轮补齐 Txn branch：
+  `namespace.NewKV(...).Txn(...).Then(OpGet("items/", WithLastKey()...)).Commit()` 必须经
+  `prefixOps` 收窄到当前 namespace 的 logical prefix，并在 nested `ResponseRange` 中返回
+  logical `items/c`、`Count=3`、`More=true`。该回归防止 namespace Txn response adapter 在
+  lexical reverse top-helper 路径上漏做 unprefix 或跨 prefix/tenant 计数。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
