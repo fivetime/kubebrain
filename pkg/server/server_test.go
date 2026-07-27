@@ -655,6 +655,18 @@ func TestEtcdLivezAndReadyzChecks(t *testing.T) {
 	require.Contains(t, recorder.Body.String(), "[-]serializable_read failed: storage unavailable\n")
 
 	recorder = httptest.NewRecorder()
+	handlers["/livez"].ServeHTTP(recorder,
+		httptest.NewRequest(http.MethodGet, "/livez?exclude=serializable_read", nil))
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Equal(t, "ok\n", recorder.Body.String())
+
+	recorder = httptest.NewRecorder()
+	handlers["/livez/serializable_read"].ServeHTTP(recorder,
+		httptest.NewRequest(http.MethodGet, "/livez/serializable_read?exclude=serializable_read", nil))
+	require.Equal(t, http.StatusServiceUnavailable, recorder.Code)
+	require.Contains(t, recorder.Body.String(), "[-]serializable_read failed: storage unavailable\n")
+
+	recorder = httptest.NewRecorder()
 	handlers["/ping"].ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/ping", nil))
 	require.Equal(t, http.StatusOK, recorder.Code)
 	require.JSONEq(t, HealthResponse, recorder.Body.String())

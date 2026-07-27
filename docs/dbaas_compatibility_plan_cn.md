@@ -16633,6 +16633,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `/readyz/data_corruption` 直接运行已注册检查。CORRUPT 激活时即使请求携带
   `?exclude=data_corruption` 也必须返回 503 和完整失败原因，而 root 使用同一参数返回 200。
   该门禁防止探针把单项诊断 URL 误用成可绕过的 readiness 聚合入口。
+- A1399 固定 livez root/subcheck exclude 对称语义：
+  TiKV 读取失败时 root `/livez?exclude=serializable_read` 必须按 upstream 跳过唯一检查并
+  返回精确 `ok\n`；单项 `/livez/serializable_read?exclude=serializable_read` 必须忽略
+  exclude、实际探测存储并返回 503 及失败原因。该门禁与 A1398 共同固定 exclude 只属于
+  聚合根路径，避免 liveness 单项诊断被意外绕过。
 
 ### P2：运维兼容和长期验证
 
