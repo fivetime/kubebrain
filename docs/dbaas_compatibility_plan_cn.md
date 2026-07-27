@@ -16825,6 +16825,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   found，空 `RoleDelete` 与空 role-name 的 valid `RoleGrantPermission` 返回
   `FailedPrecondition`/role not found；`RoleAdd("")` 仍保持 `InvalidArgument`/role empty。
   该组回归防止 gRPC mapper 或 auth RPC 前置校验重构改变官方 raw client 可观察语义。
+- A1432 固定 A1427/A1428 在 raw gRPC UserGrantRole/UserRevokeRole 上的 code/message：
+  upstream 对 existing user + empty role-name 的 `UserGrantRole` 映射为
+  `FailedPrecondition`/role not found，对 `UserRevokeRole` 映射为
+  `FailedPrecondition`/role is not granted to the user。本轮补齐 raw
+  `etcdserverpb.Auth` 客户端回归，防止未来把空 role-name 错误提前改成
+  `InvalidArgument`/role empty 或统一成 role not found。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
