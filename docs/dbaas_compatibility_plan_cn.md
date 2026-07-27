@@ -16973,6 +16973,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `TTL=MaxLeaseTTL`，随后 `TimeToLive` 的 `GrantedTTL` 也必须保持该最大值。该回归与
   A1151/A1212 的 `MaxLeaseTTL+1` typed error 配套，防止边界比较写成 `>=` 导致最大合法
   TTL 被拒绝。
+- A1456 固定官方 client/v3 LeaseGrant math.MaxInt64 TTL 过大错误：
+  A1455 固定 `MaxLeaseTTL` 合法成功，A1151/A1212 覆盖 `MaxLeaseTTL+1` typed error，
+  raw gRPC 已覆盖 `math.MaxInt64`。本轮补齐 official `clientv3.Grant(ctx, math.MaxInt64)`
+  必须暴露 `codes.Unknown`、`etcdserver: too large lease TTL`，并匹配
+  `rpctypes.ErrLeaseTTLTooLarge`，防止 high-level wrapper/adapter 在极大 TTL 上溢出、
+  截断或只在 raw 路径返回正确错误。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户

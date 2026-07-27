@@ -292,8 +292,18 @@ func TestClientLeaseGrantTooLargeTTLIsTyped(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err = client.Grant(ctx, clientv3.MaxLeaseTTL+1)
-	requireClientLeaseError(t, err, codes.Unknown, "etcdserver: too large lease TTL", rpctypes.ErrLeaseTTLTooLarge)
+	for _, tc := range []struct {
+		name string
+		ttl  int64
+	}{
+		{name: "above-maximum", ttl: clientv3.MaxLeaseTTL + 1},
+		{name: "maximum-int64", ttl: math.MaxInt64},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err = client.Grant(ctx, tc.ttl)
+			requireClientLeaseError(t, err, codes.Unknown, "etcdserver: too large lease TTL", rpctypes.ErrLeaseTTLTooLarge)
+		})
+	}
 }
 
 func TestClientLeaseGrantClampsSmallTTLLikeEtcd(t *testing.T) {
