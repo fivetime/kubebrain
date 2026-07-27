@@ -16644,6 +16644,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `[-]serializable_read failed: storage unavailable\n\n`，CORRUPT readyz subcheck 返回
   `[-]data_corruption failed: alarm activated: CORRUPT\n\n`，并带
   `text/plain; charset=utf-8` 与 `nosniff`。该门禁防止 HTTP helper 重构改变探针诊断外观。
+- A1401 固定 peer `/members/hashkv` admission 错误优先级与 wire contract：
+  对照 upstream `hashKVHandler.ServeHTTP`，同一请求存在多项错误时必须依次按 method、path、
+  `X-Etcd-Cluster-ID`、JSON body 拒绝；对应精确返回 405/400/412/400 和带尾换行的错误文本。
+  所有拒绝均带 `text/plain; charset=utf-8` 与 `nosniff`，只有 method 错误带
+  `Allow: GET`，且错误响应不能回显本地 cluster ID。该门禁避免 corruption checker 因
+  handler 校验重排而误判 peer 身份或请求编码故障。
 
 ### P2：运维兼容和长期验证
 

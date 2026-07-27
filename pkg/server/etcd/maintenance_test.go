@@ -428,6 +428,72 @@ func TestPeerHashKVHandlerRejectsBadPeerRequests(t *testing.T) {
 	}
 }
 
+func TestPeerHashKVHandlerRejectsByEtcdPriority(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	clusterID := strconv.FormatUint(server.backend.ClusterID(), 16)
+	tests := []struct {
+		name       string
+		method     string
+		target     string
+		clusterID  string
+		wantStatus int
+		wantBody   string
+		wantAllow  string
+	}{
+		{
+			name:       "method precedes path cluster and body",
+			method:     http.MethodPost,
+			target:     "/members/hashkv/extra",
+			clusterID:  "deadbeef",
+			wantStatus: http.StatusMethodNotAllowed,
+			wantBody:   "Method Not Allowed\n",
+			wantAllow:  http.MethodGet,
+		},
+		{
+			name:       "path precedes cluster and body",
+			method:     http.MethodGet,
+			target:     "/members/hashkv/extra",
+			clusterID:  "deadbeef",
+			wantStatus: http.StatusBadRequest,
+			wantBody:   "bad path\n",
+		},
+		{
+			name:       "cluster precedes body",
+			method:     http.MethodGet,
+			target:     PeerHashKVPath,
+			clusterID:  "deadbeef",
+			wantStatus: http.StatusPreconditionFailed,
+			wantBody:   "cluster ID mismatch\n",
+		},
+		{
+			name:       "body follows valid admission",
+			method:     http.MethodGet,
+			target:     PeerHashKVPath,
+			clusterID:  clusterID,
+			wantStatus: http.StatusBadRequest,
+			wantBody:   "error unmarshalling request\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(tt.method, tt.target, bytes.NewReader([]byte(`{`)))
+			req.Header.Set(etcdClusterIDHeader, tt.clusterID)
+			rec := httptest.NewRecorder()
+
+			server.peerHashKVHandler(rec, req)
+
+			require.Equal(t, tt.wantStatus, rec.Code)
+			require.Equal(t, tt.wantBody, rec.Body.String())
+			require.Equal(t, tt.wantAllow, rec.Header().Get("Allow"))
+			require.Equal(t, "text/plain; charset=utf-8", rec.Header().Get("Content-Type"))
+			require.Equal(t, "nosniff", rec.Header().Get("X-Content-Type-Options"))
+			require.Empty(t, rec.Header().Get(etcdClusterIDHeader))
+		})
+	}
+}
+
 func TestPeerHashKVHandlerMapsRevisionErrors(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
