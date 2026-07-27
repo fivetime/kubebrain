@@ -16897,6 +16897,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   必须先返回 `OutOfRange`/`etcdserver: too large lease TTL`，而不是 duplicate lease 的
   `FailedPrecondition`/`lease already exists`。新增直连与 raw gRPC 回归覆盖该组合，
   防止 lease grant 预留/去重逻辑重构时把 ID 冲突检查前移。
+- A1445 固定官方 client/v3 Put 的 validation 优先级外观：
+  在 A1438 直连 Put 校验顺序基础上，本轮补齐 `clientv3.Put` 包装层：空 key 同时携带
+  `WithIgnoreValue`+value 或 `WithIgnoreLease`+lease 时必须暴露 public
+  `Unknown`/`etcdserver: key is not provided` 并匹配 `rpctypes.ErrEmptyKey`；有效 key
+  同时携带 value/lease 两种 ignore 冲突时必须优先暴露
+  `Unknown`/`etcdserver: value is provided`。该回归覆盖常用官方客户端路径，防止
+  adapter 或 wrapper 层把 Put 错误顺序漂移为 lease/value 冲突优先。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户

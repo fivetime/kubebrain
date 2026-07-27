@@ -165,6 +165,16 @@ func TestClientPutIgnoreValueIgnoreLeaseAndErrors(t *testing.T) {
 			wantErrorIs: rpctypes.ErrValueProvided,
 		},
 		{
+			name: "empty key precedes ignore value conflict",
+			call: func() error {
+				_, err := client.Put(ctx, "", "bad", clientv3.WithIgnoreValue())
+				return err
+			},
+			wantCode:    codes.Unknown,
+			wantMessage: "etcdserver: key is not provided",
+			wantErrorIs: rpctypes.ErrEmptyKey,
+		},
+		{
 			name: "lease with ignore lease",
 			call: func() error {
 				_, err := client.Put(ctx, key, "bad", clientv3.WithIgnoreLease(), clientv3.WithLease(leaseA.ID))
@@ -173,6 +183,26 @@ func TestClientPutIgnoreValueIgnoreLeaseAndErrors(t *testing.T) {
 			wantCode:    codes.Unknown,
 			wantMessage: "etcdserver: lease is provided",
 			wantErrorIs: rpctypes.ErrLeaseProvided,
+		},
+		{
+			name: "empty key precedes ignore lease conflict",
+			call: func() error {
+				_, err := client.Put(ctx, "", "bad", clientv3.WithIgnoreLease(), clientv3.WithLease(leaseA.ID))
+				return err
+			},
+			wantCode:    codes.Unknown,
+			wantMessage: "etcdserver: key is not provided",
+			wantErrorIs: rpctypes.ErrEmptyKey,
+		},
+		{
+			name: "ignore value precedes ignore lease conflict",
+			call: func() error {
+				_, err := client.Put(ctx, key, "bad", clientv3.WithIgnoreValue(), clientv3.WithIgnoreLease(), clientv3.WithLease(leaseA.ID))
+				return err
+			},
+			wantCode:    codes.Unknown,
+			wantMessage: "etcdserver: value is provided",
+			wantErrorIs: rpctypes.ErrValueProvided,
 		},
 	}
 	for _, tt := range tests {
