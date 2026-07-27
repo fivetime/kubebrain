@@ -2861,7 +2861,7 @@ func TestClientNamespaceTxnWatchStripsPrefixes(t *testing.T) {
 	require.Equal(t, "outside", string(outside.Kvs[0].Value))
 }
 
-func TestClientNamespaceDoPutStripsPrevKVPrefix(t *testing.T) {
+func TestClientNamespacePutResponsesStripPrevKVPrefix(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
 
@@ -2903,6 +2903,17 @@ func TestClientNamespaceDoPutStripsPrevKVPrefix(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, raw.Kvs, 1)
 	require.Equal(t, []byte("new"), raw.Kvs[0].Value)
+
+	putResponse, err := namespacedKV.Put(ctx, "key", "newer", clientv3.WithPrevKV())
+	require.NoError(t, err)
+	require.NotNil(t, putResponse.PrevKv)
+	require.Equal(t, []byte("key"), putResponse.PrevKv.Key)
+	require.Equal(t, []byte("new"), putResponse.PrevKv.Value)
+
+	raw, err = client.Get(ctx, tenantPrefix+"key")
+	require.NoError(t, err)
+	require.Len(t, raw.Kvs, 1)
+	require.Equal(t, []byte("newer"), raw.Kvs[0].Value)
 }
 
 func TestClientNamespaceEmptyKeyFromKeyDeleteMatchesEtcd(t *testing.T) {
