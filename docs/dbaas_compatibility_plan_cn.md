@@ -16979,6 +16979,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   必须暴露 `codes.Unknown`、`etcdserver: too large lease TTL`，并匹配
   `rpctypes.ErrLeaseTTLTooLarge`，防止 high-level wrapper/adapter 在极大 TTL 上溢出、
   截断或只在 raw 路径返回正确错误。
+- A1457 固定官方 client/v3 namespace.NewKV Do(Get) 空 key range option 成功路径：
+  A1451 已覆盖 `Do(OpGet)` wrapper-level empty-key 与 invalid sort 错误顺序；本轮补齐
+  `Do(OpGet("", WithPrefix()))` 和 `Do(OpGet("", WithFromKey()))` 的正向路径。upstream
+  `clientv3.OpGet` 会先把 logical empty key 改写为 `\x00`，随后
+  `namespace.kvPrefix.prefixOp` 收窄到当前 namespace 范围；返回的 `Kvs` 必须剥离物理
+  prefix 并只暴露 logical keys，防止通用 `Do(Get)` 入口漏做 unprefix 或越过 namespace
+  边界。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
