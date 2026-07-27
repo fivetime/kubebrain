@@ -16831,6 +16831,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `FailedPrecondition`/role is not granted to the user。本轮补齐 raw
   `etcdserverpb.Auth` 客户端回归，防止未来把空 role-name 错误提前改成
   `InvalidArgument`/role empty 或统一成 role not found。
+- A1433 固定 A1427/A1428 在官方 client/v3 UserGrantRole/UserRevokeRole 上的错误外观：
+  raw gRPC code 固定后，本轮补齐常用 `clientv3.Auth` 包装层：existing user + empty
+  role-name 的 `UserGrantRole` 必须暴露 `Unknown`/role not found，
+  `UserRevokeRole` 必须暴露 `Unknown`/role is not granted to the user。该回归覆盖
+  apiserver/控制器通常使用的官方客户端路径，防止只保持 raw gRPC 兼容而 clientv3
+  转换层语义漂移。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户

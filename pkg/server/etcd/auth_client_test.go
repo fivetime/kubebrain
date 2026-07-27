@@ -484,6 +484,8 @@ func TestClientAuthUserErrorsMatchEtcd(t *testing.T) {
 
 	_, err = client.UserGrantRole(ctx, "a1129-user", "a1129-missing-role")
 	requireAuthClientError(t, err, codes.Unknown, "etcdserver: role name not found", rpctypes.ErrRoleNotFound)
+	_, err = client.UserGrantRole(ctx, "a1129-user", "")
+	requireAuthClientError(t, err, codes.Unknown, "etcdserver: role name not found", rpctypes.ErrRoleNotFound)
 	_, rawMissingRoleErr := rawAuth.UserGrantRole(ctx, &etcdserverpb.AuthUserGrantRoleRequest{
 		User: "a1129-raw-user",
 		Role: "a1129-raw-missing-role",
@@ -500,6 +502,8 @@ func TestClientAuthUserErrorsMatchEtcd(t *testing.T) {
 	_, err = rawAuth.RoleAdd(ctx, &etcdserverpb.AuthRoleAddRequest{Name: "a1129-raw-unused-role"})
 	require.NoError(t, err)
 	_, err = client.UserRevokeRole(ctx, "a1129-user", "a1129-unused-role")
+	requireAuthClientError(t, err, codes.Unknown, "etcdserver: role is not granted to the user", rpctypes.ErrRoleNotGranted)
+	_, err = client.UserRevokeRole(ctx, "a1129-user", "")
 	requireAuthClientError(t, err, codes.Unknown, "etcdserver: role is not granted to the user", rpctypes.ErrRoleNotGranted)
 	_, rawRoleNotGrantedErr := rawAuth.UserRevokeRole(ctx, &etcdserverpb.AuthUserRevokeRoleRequest{
 		Name: "a1129-raw-user",
