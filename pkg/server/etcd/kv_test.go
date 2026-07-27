@@ -2861,6 +2861,50 @@ func TestClientNamespaceTxnWatchStripsPrefixes(t *testing.T) {
 	require.Equal(t, "outside", string(outside.Kvs[0].Value))
 }
 
+func TestClientNamespaceDoPutStripsPrevKVPrefix(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	tenantPrefix := "/registry/client-namespace-do-put/tenant/"
+	namespacedKV := namespace.NewKV(client.KV, tenantPrefix)
+	_, err = namespacedKV.Put(ctx, "key", "old")
+	require.NoError(t, err)
+
+	putOpResponse, err := namespacedKV.Do(ctx, clientv3.OpPut("key", "new", clientv3.WithPrevKV()))
+	require.NoError(t, err)
+	putOp := putOpResponse.Put()
+	require.NotNil(t, putOp)
+	require.NotNil(t, putOp.PrevKv)
+	require.Equal(t, []byte("key"), putOp.PrevKv.Key)
+	require.Equal(t, []byte("old"), putOp.PrevKv.Value)
+
+	raw, err := client.Get(ctx, tenantPrefix+"key")
+	require.NoError(t, err)
+	require.Len(t, raw.Kvs, 1)
+	require.Equal(t, []byte("new"), raw.Kvs[0].Value)
+}
+
 func TestClientNamespaceEmptyKeyFromKeyDeleteMatchesEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

@@ -16993,6 +16993,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   logical key 改写为 `\x00` 起点和 `\x00` range end，再由 namespace wrapper 转为当前
   namespace 的物理 `[prefix, prefixEnd)` 区间；删除计数和 PrevKV 必须只暴露 logical
   keys，防止 `Do(Delete)` 的 from-key 路径删除相邻 namespace 或泄露物理 prefix。
+- A1459 固定官方 client/v3 namespace.NewKV Do(Put) PrevKV unprefix：
+  对照 upstream `namespace.kvPrefix.Do` 在 `ResponsePut` 分支调用 `unprefixPutResponse`，
+  `namespace.NewKV(...).Do(OpPut("key", value, WithPrevKV()))` 返回的 `PrevKv.Key` 必须是
+  logical key 而不是物理 namespace key。新增 bufconn official clientv3 回归同时验证底层
+  raw key 已写入 namespace 前缀，防止通用 `Do(Put)` 入口漏掉 PutResponse unprefix 而
+  只在 `Put` 专用入口或 Txn nested Put 中保持正确。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
