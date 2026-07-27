@@ -1603,7 +1603,7 @@ func requireClientWatchCanceledResponse(t *testing.T, ctx context.Context, watch
 
 func requireClientWatchError(t *testing.T, err error, code codes.Code, message string, wantErrorIs ...error) {
 	t.Helper()
-	require.Error(t, err)
+	require.EqualError(t, err, message)
 	for _, want := range wantErrorIs {
 		require.ErrorIs(t, err, want)
 	}

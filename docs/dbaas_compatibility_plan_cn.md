@@ -16472,8 +16472,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
 - A1365 固定 retired negative Watch range-stream 关闭错误契约：
   负 `StartRevision` 的旧 Watch-as-range-stream 请求必须以 canceled create response 结束，
   后续外部取消 watch stream 时服务端返回完整 `codes.Canceled` status error
-  `etcdserver: watch canceled`。该门禁防止黑魔法兼容路径在退休后仍吞掉 stream cancel
+  `etcdserver: watch canceled`。该门禁防止遗留兼容路径在退休后仍吞掉 stream cancel
   或返回不可分类错误。
+- A1366 固定 clientv3 Watch compacted typed 错误字符串：
+  clientv3 Watch 在历史 revision 已被 compacted 时，必须在 canceled response 的 `Err()` 中
+  返回 etcd typed compacted 错误文本，同时保持 `codes.Unknown`、原始 MVCC compacted
+  message 和 `rpctypes.ErrCompacted` typed error。该门禁防止客户端 watch compaction 边界
+  在 gRPC status 与 typed error 转换后漂移最终可观测错误文本。
 
 ### P2：运维兼容和长期验证
 
