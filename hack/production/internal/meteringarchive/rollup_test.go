@@ -167,12 +167,12 @@ func TestBuildRollupV3SumsExactObjectRequests(t *testing.T) {
 	forged := rollup
 	forged.Sources = append([]SampleSource(nil), rollup.Sources...)
 	forged.Sources[0].ArtifactFormat = Format
-	require.ErrorContains(t, forged.Validate(), "invalid source")
+	require.EqualError(t, forged.Validate(), "metering rollup contains an invalid source")
 
 	inputs[0].Sample.Metrics[len(Metrics)].Value = 1.5
 	_, err = BuildRollup("instance-a", start, start.Add(24*time.Hour),
 		time.Hour, 5*time.Minute, inputs)
-	require.ErrorContains(t, err, "exact")
+	require.EqualError(t, err, "validate metering sample 0: object request metric must be an exact non-negative integer")
 }
 
 func TestRollupRejectsMutationAndNonCanonicalInput(t *testing.T) {
@@ -183,7 +183,7 @@ func TestRollupRejectsMutationAndNonCanonicalInput(t *testing.T) {
 	)
 	require.NoError(t, err)
 	rollup.Quantities[0].Name = "other"
-	require.ErrorContains(t, rollup.Validate(), "metering rollup contains an invalid quantity")
+	require.EqualError(t, rollup.Validate(), "metering rollup contains an invalid quantity")
 
 	valid, err := BuildRollup(
 		"instance-a", start, start.Add(24*time.Hour),
@@ -197,7 +197,7 @@ func TestRollupRejectsMutationAndNonCanonicalInput(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(output, append([]byte(" "), data...), 0o600))
 	_, err = ReadRollup(output)
-	require.ErrorContains(t, err, "not canonical")
+	require.EqualError(t, err, "metering rollup is not canonical")
 }
 
 func rollupInputs(start time.Time, count int) []VerifiedSample {

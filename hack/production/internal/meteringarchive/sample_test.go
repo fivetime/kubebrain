@@ -152,9 +152,9 @@ func TestCollectorV3RequiresAndArchivesExactObjectRequestCounts(t *testing.T) {
 	require.Equal(t, float64(17), sample.Metrics[len(Metrics)].Value)
 
 	sample.Metrics[len(Metrics)].Value = 1.5
-	require.ErrorContains(t, sample.Validate(5*time.Minute), "exact")
+	require.EqualError(t, sample.Validate(5*time.Minute), "object request metric must be an exact non-negative integer")
 	sample.Metrics[len(Metrics)].Value = float64(1<<53) + 2
-	require.ErrorContains(t, sample.Validate(5*time.Minute), "exact")
+	require.EqualError(t, sample.Validate(5*time.Minute), "object request metric must be an exact non-negative integer")
 }
 
 func TestCollectorV3FailsClosedWithoutRequestCompleteness(t *testing.T) {
@@ -322,15 +322,15 @@ func TestSampleValidationPinsMetricOrderAndSlot(t *testing.T) {
 	reordered := sample
 	reordered.Metrics = append([]MetricValue(nil), sample.Metrics...)
 	reordered.Metrics[0], reordered.Metrics[1] = reordered.Metrics[1], reordered.Metrics[0]
-	require.ErrorContains(t, reordered.Validate(5*time.Minute), "metering sample contains an invalid metric")
+	require.EqualError(t, reordered.Validate(5*time.Minute), "metering sample contains an invalid metric")
 
 	badSlot := sample
 	badSlot.QueryUnix++
-	require.ErrorContains(t, badSlot.Validate(5*time.Minute), "metering sample is incomplete")
+	require.EqualError(t, badSlot.Validate(5*time.Minute), "metering sample is incomplete")
 
-	require.ErrorContains(t, sampleWithInstance("tenant/escape").Validate(5*time.Minute), "metering sample is incomplete")
+	require.EqualError(t, sampleWithInstance("tenant/escape").Validate(5*time.Minute), "metering sample is incomplete")
 	_, err := NewCollector("file:///metrics", http.DefaultClient, "", time.Minute)
-	require.ErrorContains(t, err, "prometheus URL must be an absolute http or https URL")
+	require.EqualError(t, err, "prometheus URL must be an absolute http or https URL")
 }
 
 func validSample() Sample {
