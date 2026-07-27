@@ -16465,6 +16465,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   raw Lease service 的 not-found、duplicate lease、TTL too large、lease state reloading 和
   leadership-change retry 错误必须保留完整 status error 字符串，并在 typed lease 错误上保留
   `ErrorIs`。该门禁防止 lease 生命周期和 leader 切换期间的直接 RPC 错误漂移。
+- A1364 固定 raw RangeStream service 错误字符串：
+  raw RangeStream 服务端 validation、缺失 terminal metadata 和 compacted revision 错误必须
+  保留完整 status error 字符串，并在 compacted 错误上保留 `ErrorIs`。该门禁防止流式读服务端
+  在 unsupported option、异常结束和 MVCC compaction 边界上漂移 gRPC 可见错误形态。
 
 ### P2：运维兼容和长期验证
 

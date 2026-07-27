@@ -379,7 +379,7 @@ func TestRangeStreamRejectsUnsupportedShapes(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			rs := &fakeRangeStreamServer{ctx: ctx}
 			err := server.RangeStream(c.req, rs)
-			require.Error(t, err)
+			require.EqualError(t, err, status.Error(c.code, c.message).Error())
 			if c.wantErr != nil {
 				require.ErrorIs(t, err, c.wantErr)
 			}
@@ -693,6 +693,7 @@ func TestRangeStreamPartialThenCompacted(t *testing.T) {
 
 func requireRangeStreamError(t *testing.T, err error, want error, code codes.Code, message string) {
 	t.Helper()
+	require.EqualError(t, err, status.Error(code, message).Error())
 	require.ErrorIs(t, err, want)
 	require.Equal(t, code, status.Code(err))
 	require.Equal(t, message, status.Convert(err).Message())
@@ -700,7 +701,7 @@ func requireRangeStreamError(t *testing.T, err error, want error, code codes.Cod
 
 func requireRangeStreamStatusError(t *testing.T, err error, code codes.Code, message string) {
 	t.Helper()
-	require.Error(t, err)
+	require.EqualError(t, err, status.Error(code, message).Error())
 	require.Equal(t, code, status.Code(err))
 	require.Equal(t, message, status.Convert(err).Message())
 }
