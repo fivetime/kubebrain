@@ -1748,6 +1748,64 @@ func TestClientNamespaceNestedTxnDeleteWithPrevKVLogicalRange(t *testing.T) {
 	require.Equal(t, []byte("outside-upper-bound"), remaining.Kvs[0].Value)
 }
 
+func TestClientNamespaceNestedTxnPutWithPrevKVReturnsLogicalKey(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	tenantPrefix := "/a1511/namespace-nested-txn-put-prevkv/tenant/"
+	namespacedKV := namespace.NewKV(client.KV, tenantPrefix)
+	_, err = namespacedKV.Put(ctx, "items/a", "old-a")
+	require.NoError(t, err)
+	_, err = client.Put(ctx, "/a1511/namespace-nested-txn-put-prevkv/tenant0/items/a", "outside-tenant")
+	require.NoError(t, err)
+
+	txnResp, err := namespacedKV.Txn(ctx).
+		Then(clientv3.OpTxn(nil,
+			[]clientv3.Op{clientv3.OpPut("items/a", "new-a", clientv3.WithPrevKV())},
+			nil)).
+		Commit()
+	require.NoError(t, err)
+	require.True(t, txnResp.Succeeded)
+	require.Len(t, txnResp.Responses, 1)
+	nestedTxn := txnResp.Responses[0].GetResponseTxn()
+	require.NotNil(t, nestedTxn)
+	require.True(t, nestedTxn.Succeeded)
+	require.Len(t, nestedTxn.Responses, 1)
+	nestedPut := nestedTxn.Responses[0].GetResponsePut()
+	require.NotNil(t, nestedPut)
+	require.NotNil(t, nestedPut.Header)
+	require.NotNil(t, nestedPut.PrevKv)
+	require.Equal(t, []byte("items/a"), nestedPut.PrevKv.Key)
+	require.Equal(t, []byte("old-a"), nestedPut.PrevKv.Value)
+
+	updated, err := namespacedKV.Get(ctx, "items/a")
+	require.NoError(t, err)
+	require.Len(t, updated.Kvs, 1)
+	require.Equal(t, []byte("items/a"), updated.Kvs[0].Key)
+	require.Equal(t, []byte("new-a"), updated.Kvs[0].Value)
+}
+
 func TestClientNamespaceTxnGetValidationErrorsMatchEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

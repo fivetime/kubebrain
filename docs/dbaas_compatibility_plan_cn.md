@@ -17358,6 +17358,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `ResponseDeleteRange` 中返回 logical prev keys/values `range/a,b,c`、`Deleted=3`，并只删除
   当前 namespace 的 `[range/a, range/d)` logical range。该回归防止 nested Txn delete response
   adapter 漏做递归 unprefix 或扩大显式 range。
+- A1511 固定官方 client/v3 namespace.NewKV nested OpTxn 的 `OpPut(..., WithPrevKV())` 外观：
+  A1509/A1510 覆盖 nested range get/delete 后，本轮补齐 nested put response adapter：
+  `namespace.NewKV(...).Txn(...).Then(OpTxn(nil, []Op{OpPut("items/a", "new",
+  WithPrevKV())}, nil)).Commit()` 必须在 nested `ResponseTxn` 的 `ResponsePut.PrevKv` 中返回
+  logical key/value `items/a=old-a`，并只更新当前 namespace 的 logical key。该回归防止 nested
+  Txn put response adapter 漏做递归 unprefix。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
