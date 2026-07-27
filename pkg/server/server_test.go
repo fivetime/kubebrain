@@ -304,6 +304,62 @@ func TestHTTPHealthChecksLeaderAndBackend(t *testing.T) {
 	require.JSONEq(t, HealthResponse, recorder.Body.String())
 }
 
+func TestHTTPHealthSerializableQueryUsesFirstExactValue(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	m := mock.NewMinimalMetrics(ctrl)
+	kv := &healthStorage{KvStorage: imemkv.NewKvStorage()}
+	b := backend.NewBackend(kv, backend.Config{Prefix: "/registry", Identity: "health-query-test"}, m)
+	defer func() { require.NoError(t, b.(interface{ Close() error }).Close()) }()
+	s := &server{
+		healthServer:   health.NewServer(),
+		leaderElection: &leader.Stub{},
+		backend:        b,
+	}
+
+	for _, test := range []struct {
+		name   string
+		target string
+		status int
+	}{
+		{
+			name:   "first true enables serializable",
+			target: "/health?serializable=true&serializable=false",
+			status: http.StatusOK,
+		},
+		{
+			name:   "later true is ignored",
+			target: "/health?serializable=false&serializable=true",
+			status: http.StatusServiceUnavailable,
+		},
+		{
+			name:   "uppercase true is not accepted",
+			target: "/health?serializable=TRUE",
+			status: http.StatusServiceUnavailable,
+		},
+		{
+			name:   "whitespace is not trimmed",
+			target: "/health?serializable=%20true%20",
+			status: http.StatusServiceUnavailable,
+		},
+		{
+			name:   "empty first value is authoritative",
+			target: "/health?serializable=&serializable=true",
+			status: http.StatusServiceUnavailable,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			s.httpHealthHandler(recorder, httptest.NewRequest(http.MethodGet, test.target, nil))
+			require.Equal(t, test.status, recorder.Code)
+			if test.status == http.StatusOK {
+				require.JSONEq(t, HealthResponse, recorder.Body.String())
+			} else {
+				require.JSONEq(t, `{"health":"false","reason":"RAFT NO LEADER"}`, recorder.Body.String())
+			}
+		})
+	}
+}
+
 func TestClientHTTPHandlersExposeEtcdCORSOptions(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	m := mock.NewMinimalMetrics(ctrl)

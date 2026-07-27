@@ -16606,6 +16606,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   才启用 require-leader；`TRUE`、`1`、` true `、`false` 和空字符串在无 leader 时仍必须
   放行 unary/stream，不能做大小写折叠、空白裁剪或通用布尔解析。该门禁防止代理的非标准
   header 值被 KubeBrain 扩张解释，偏离 etcd wire contract。
+- A1394 固定 `/health` serializable query 精确首值语义：
+  对照 `/root/etcd/server/etcdserver/api/etcdhttp/health.go:getSerializableFlag`，
+  `serializable` 使用 `Query().Get()` 的第一个值且只接受精确小写 `true`；在无 leader 时，
+  `true,false` 必须执行本地 serializable 探测并返回 200，而 `false,true`、`TRUE`、
+  ` true ` 和空首值后接 `true` 均必须保留 503 `RAFT NO LEADER`。该门禁防止 HTTP
+  query 被宽松解析后把集群 readiness 误报为本地 liveness。
 
 ### P2：运维兼容和长期验证
 
