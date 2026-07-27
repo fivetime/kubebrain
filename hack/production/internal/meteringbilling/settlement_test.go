@@ -90,7 +90,7 @@ func TestBuildInvoiceWithStatusesRejectsSourceBytesDrift(t *testing.T) {
 		planStatus, badPlanSource, []ChargeStatus{chargeStatus}, []Source{chargeSource},
 		[]SettlementStatus[Adjustment]{adjustmentStatus}, []Source{adjustmentSource}, finalizedAt,
 	)
-	require.ErrorContains(t, err, "plan bytes")
+	require.EqualError(t, err, "metering invoice plan source does not match plan bytes")
 
 	badChargeSource := chargeSource
 	badChargeSource.ArtifactSHA256 = strings.Repeat("b", 64)
@@ -98,7 +98,7 @@ func TestBuildInvoiceWithStatusesRejectsSourceBytesDrift(t *testing.T) {
 		planStatus, planSource, []ChargeStatus{chargeStatus}, []Source{badChargeSource},
 		[]SettlementStatus[Adjustment]{adjustmentStatus}, []Source{adjustmentSource}, finalizedAt,
 	)
-	require.ErrorContains(t, err, "charge bytes")
+	require.EqualError(t, err, "metering invoice charge source does not match charge bytes")
 
 	badAdjustmentSource := adjustmentSource
 	badAdjustmentSource.ArtifactSHA256 = strings.Repeat("b", 64)
@@ -106,7 +106,7 @@ func TestBuildInvoiceWithStatusesRejectsSourceBytesDrift(t *testing.T) {
 		planStatus, planSource, []ChargeStatus{chargeStatus}, []Source{chargeSource},
 		[]SettlementStatus[Adjustment]{adjustmentStatus}, []Source{badAdjustmentSource}, finalizedAt,
 	)
-	require.ErrorContains(t, err, "adjustment bytes")
+	require.EqualError(t, err, "metering invoice adjustment source does not match adjustment bytes")
 }
 
 func TestSettlementRejectsMismatchDuplicateAndTamper(t *testing.T) {
@@ -119,14 +119,14 @@ func TestSettlementRejectsMismatchDuplicateAndTamper(t *testing.T) {
 
 	bad := adjustment
 	bad.Approval.ApprovedBy = "forged"
-	require.ErrorContains(t, bad.Validate(), "approval")
+	require.EqualError(t, bad.Validate(), "billing approval evidence is invalid")
 	bad = adjustment
 	bad.ChargeSource.VersionID = "other"
 	_, err := BuildInvoice(
 		plan, planSource, []Charge{charge}, []Source{chargeSource},
 		[]Adjustment{bad}, []Source{adjustmentSource}, plan.Approval.ApprovedAtUnix+1,
 	)
-	require.ErrorContains(t, err, "different charge")
+	require.EqualError(t, err, "metering invoice adjustment references a different charge")
 
 	bad = adjustment
 	bad.InvoiceID = "another-invoice"
@@ -134,11 +134,11 @@ func TestSettlementRejectsMismatchDuplicateAndTamper(t *testing.T) {
 		plan, planSource, []Charge{charge}, []Source{chargeSource},
 		[]Adjustment{bad}, []Source{adjustmentSource}, plan.Approval.ApprovedAtUnix+1,
 	)
-	require.ErrorContains(t, err, "match plan")
+	require.EqualError(t, err, "metering invoice adjustment does not match plan")
 
 	duplicatePlan := plan
 	duplicatePlan.AdjustmentIDs = []string{"credit-001", "credit-001"}
-	require.ErrorContains(t, duplicatePlan.Validate(), "unique")
+	require.EqualError(t, duplicatePlan.Validate(), "metering invoice plan adjustment IDs are not unique and sorted")
 
 	tooMuchCredit := adjustment
 	tooMuchCredit.AmountMicros = -charge.TotalMicros - 1
@@ -147,7 +147,7 @@ func TestSettlementRejectsMismatchDuplicateAndTamper(t *testing.T) {
 		[]Adjustment{tooMuchCredit}, []Source{adjustmentSource},
 		plan.Approval.ApprovedAtUnix+1,
 	)
-	require.ErrorContains(t, err, "total")
+	require.EqualError(t, err, "metering invoice total is invalid")
 
 	overflow := adjustment
 	overflow.AmountMicros = math.MaxInt64
@@ -156,7 +156,7 @@ func TestSettlementRejectsMismatchDuplicateAndTamper(t *testing.T) {
 		[]Adjustment{overflow}, []Source{adjustmentSource},
 		plan.Approval.ApprovedAtUnix+1,
 	)
-	require.ErrorContains(t, err, "invalid")
+	require.EqualError(t, err, "metering invoice total is invalid")
 
 	path := filepath.Join(t.TempDir(), "adjustment.json")
 	_, err = WriteAdjustmentAtomic(path, adjustment)
@@ -165,7 +165,7 @@ func TestSettlementRejectsMismatchDuplicateAndTamper(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(path, append([]byte(" "), data...), 0o600))
 	_, err = ReadAdjustment(path)
-	require.ErrorContains(t, err, "canonical")
+	require.EqualError(t, err, "metering adjustment is not canonical")
 }
 
 func TestSettlementRejectsOversizedInputs(t *testing.T) {

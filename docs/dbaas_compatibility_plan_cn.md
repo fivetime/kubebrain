@@ -16516,6 +16516,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   namespace 必须返回精确 fail-closed 错误文本。该门禁防止 backup scheduler、
   operationctl 和 operation archiver 共享的动态租户范围解析在损坏 inventory 上退化为
   模糊错误或继续跨租户扫描。
+- A1375 固定 metering settlement/invoice 错误字符串：
+  计量结算的 plan/charge/adjustment source bytes 绑定、approval evidence、adjustment
+  对应 charge/plan、重复 adjustment ID、总额负数/溢出和 canonical adjustment 读取，必须
+  返回精确错误文本。该门禁防止 DBaaS 计量账单证据链在 artifact bytes 漂移或人工调整异常时
+  只暴露模糊错误，削弱账单审计和不可计费区间判定。
 
 ### P2：运维兼容和长期验证
 
