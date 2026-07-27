@@ -16801,6 +16801,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   一样返回 `ErrRoleNotFound`。本轮在 auth manager bootstrap errors 中加入 existing
   user + empty role grant 回归，防止未来复用 `RoleAdd` 的空名校验后改变 public etcd
   错误语义。
+- A1428 固定 UserRevokeRole 空 role-name 的错误外观：
+  upstream `authStore.UserRevokeRole` 同样不对 `Role == ""` 返回 role-empty/role-not-found；
+  它先查 user，再按现有 role-name 列表删除匹配项，找不到匹配时返回
+  `ErrRoleNotGranted`。本轮在已有 duplicate grant 回归后加入 existing user + empty
+  role revoke 断言，防止未来把 revoke path 错误接入 add/grant 的空 role-name 校验。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户

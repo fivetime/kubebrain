@@ -271,6 +271,7 @@ func TestAuthManagerBootstrapErrors(t *testing.T) {
 	requireAuthManagerError(t, manager.roleAdd(ctx, "reader"), rpctypes.ErrRoleAlreadyExist, codes.Unknown, "etcdserver: role name already exists")
 	require.NoError(t, manager.userGrantRole(ctx, "alice", "reader"))
 	require.NoError(t, manager.userGrantRole(ctx, "alice", "reader"), "grant role must be idempotent")
+	requireAuthManagerError(t, manager.userRevokeRole(ctx, "alice", ""), rpctypes.ErrRoleNotGranted, codes.Unknown, "etcdserver: role is not granted to the user")
 }
 
 func TestAuthManagerUserAddIgnoresHashedPasswordLikePublicEtcd(t *testing.T) {
