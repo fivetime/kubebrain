@@ -512,6 +512,11 @@ func TestHTTPHealthAndReadyzExposeCorruptAlarm(t *testing.T) {
 	require.Equal(t, http.StatusServiceUnavailable, recorder.Code)
 	require.Contains(t, recorder.Body.String(), "[-]data_corruption failed: alarm activated: CORRUPT")
 	recorder = httptest.NewRecorder()
+	handlers["/readyz/data_corruption"].ServeHTTP(recorder,
+		httptest.NewRequest(http.MethodGet, "/readyz/data_corruption?exclude=data_corruption", nil))
+	require.Equal(t, http.StatusServiceUnavailable, recorder.Code)
+	require.Contains(t, recorder.Body.String(), "[-]data_corruption failed: alarm activated: CORRUPT")
+	recorder = httptest.NewRecorder()
 	handlers["/readyz"].ServeHTTP(recorder,
 		httptest.NewRequest(http.MethodGet, "/readyz?exclude=data_corruption", nil))
 	require.Equal(t, http.StatusOK, recorder.Code)

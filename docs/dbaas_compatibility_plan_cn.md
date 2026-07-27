@@ -16628,6 +16628,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   均必须在执行 alarm/leader/range 检查前返回 405、`Allow: GET`、精确
   `Method Not Allowed\n`、`text/plain; charset=utf-8` 和 `nosniff`。client/info listener
   的 OPTIONS=200 继续由独立 CORS wrapper 提供，不能因此放宽底层 handler。
+- A1398 固定 readyz 单项路径不接受 exclude：
+  对照 upstream `CheckRegistry`，`exclude` 只由 root `/readyz` 过滤 check list，单项
+  `/readyz/data_corruption` 直接运行已注册检查。CORRUPT 激活时即使请求携带
+  `?exclude=data_corruption` 也必须返回 503 和完整失败原因，而 root 使用同一参数返回 200。
+  该门禁防止探针把单项诊断 URL 误用成可绕过的 readiness 聚合入口。
 
 ### P2：运维兼容和长期验证
 
