@@ -412,7 +412,7 @@ func (o *KubeBrainOption) Run(ctx context.Context) error {
 	o.epsConf.ClusterMembers = members
 	o.epsConf.AdvertiseClientURLs = advertiseClientURLs
 
-	kv, err := o.storageConfig.buildStorage(o.Keyspace)
+	kv, err := o.storageConfig.buildStorage()
 	if err != nil {
 		return err
 	}

@@ -42,8 +42,6 @@ func (s *storageConfig) validate() error {
 	return nil
 }
 
-// keyspace is accepted for signature parity with the TiKV build; the embedded
-// single-node badger engine has no shared PD GC safepoint to scope per tenant.
-func (s *storageConfig) buildStorage(keyspace string) (storage.KvStorage, error) {
+func (s *storageConfig) buildStorage() (storage.KvStorage, error) {
 	return badger.NewKvStorage(s.Config)
 }
