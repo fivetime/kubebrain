@@ -16736,6 +16736,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   A1414 的实现同样覆盖 upstream “自动 ID 先于 TTL validation”的顺序；本轮新增服务端
   回归，使用 `ID=0, TTL=maxLeaseTTL+1` 固定返回 `ErrLeaseTTLTooLarge` 时请求对象已经
   获得正 lease ID，防止未来重构把自动 ID 分配重新移动到 TTL 检查之后。
+- A1416 固定用户密码请求的鉴权失败改写顺序：
+  对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
+  `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
+  缺少 root 权限时也必须先清空 request `Password` 并写入可校验 bcrypt hash，然后返回
+  `ErrPermissionDenied`。本轮新增服务端回归覆盖非 root `UserAdd` 与
+  `UserChangePassword` 的 permission denied 分支，防止未来重构把 admin authorization
+  前移后与 upstream 请求对象生命周期产生可见差异。
 
 ### P2：运维兼容和长期验证
 

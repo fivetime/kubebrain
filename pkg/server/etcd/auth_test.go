@@ -283,6 +283,28 @@ func TestUserPasswordRequestsReplacePlaintextBeforeApply(t *testing.T) {
 	require.NoError(t, bcrypt.CompareHashAndPassword(hashedMissing, []byte("secret")))
 }
 
+func TestUserPasswordRequestsReplacePlaintextBeforeAuthFailureLikeEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	aliceCtx := setupAuthKVUser(t, server)
+
+	add := &etcdserverpb.AuthUserAddRequest{Name: "blocked-add", Password: "add-secret"}
+	_, err := server.UserAdd(aliceCtx, add)
+	requireAuthRPCError(t, err, rpctypes.ErrPermissionDenied, codes.Unknown, "etcdserver: permission denied")
+	require.Empty(t, add.Password)
+	hashedAdd, err := base64.StdEncoding.DecodeString(add.HashedPassword)
+	require.NoError(t, err)
+	require.NoError(t, bcrypt.CompareHashAndPassword(hashedAdd, []byte("add-secret")))
+
+	change := &etcdserverpb.AuthUserChangePasswordRequest{Name: "alice", Password: "change-secret"}
+	_, err = server.UserChangePassword(aliceCtx, change)
+	requireAuthRPCError(t, err, rpctypes.ErrPermissionDenied, codes.Unknown, "etcdserver: permission denied")
+	require.Empty(t, change.Password)
+	hashedChange, err := base64.StdEncoding.DecodeString(change.HashedPassword)
+	require.NoError(t, err)
+	require.NoError(t, bcrypt.CompareHashAndPassword(hashedChange, []byte("change-secret")))
+}
+
 func TestAuthStatusRejectsInvalidTokenWhenEnabled(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
