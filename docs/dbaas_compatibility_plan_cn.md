@@ -16623,6 +16623,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   PUT、POST、HEAD 均必须返回 405、`Allow: GET`、精确 `Method Not Allowed\n`，
   `text/plain; charset=utf-8` 和 `X-Content-Type-Options: nosniff`。该门禁防止 kubeadm
   版本探测或 HTTP 代理遇到 handler 重构后看到字段/方法外观漂移。
+- A1397 固定 `/health` 底层 handler 方法拒绝契约：
+  与 upstream `NewHealthHandler` 的 GET-only 检查一致，CONNECT、TRACE、PUT、POST、HEAD
+  均必须在执行 alarm/leader/range 检查前返回 405、`Allow: GET`、精确
+  `Method Not Allowed\n`、`text/plain; charset=utf-8` 和 `nosniff`。client/info listener
+  的 OPTIONS=200 继续由独立 CORS wrapper 提供，不能因此放宽底层 handler。
 
 ### P2：运维兼容和长期验证
 

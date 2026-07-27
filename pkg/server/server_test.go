@@ -304,6 +304,29 @@ func TestHTTPHealthChecksLeaderAndBackend(t *testing.T) {
 	require.JSONEq(t, HealthResponse, recorder.Body.String())
 }
 
+func TestHTTPHealthHandlerRejectsNonGet(t *testing.T) {
+	for _, method := range []string{
+		http.MethodConnect,
+		http.MethodTrace,
+		http.MethodPut,
+		http.MethodPost,
+		http.MethodHead,
+	} {
+		t.Run(method, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			(&server{}).httpHealthHandler(
+				recorder,
+				httptest.NewRequest(method, "/health", nil),
+			)
+			require.Equal(t, http.StatusMethodNotAllowed, recorder.Code)
+			require.Equal(t, http.MethodGet, recorder.Header().Get("Allow"))
+			require.Equal(t, "Method Not Allowed\n", recorder.Body.String())
+			require.Equal(t, "text/plain; charset=utf-8", recorder.Header().Get("Content-Type"))
+			require.Equal(t, "nosniff", recorder.Header().Get("X-Content-Type-Options"))
+		})
+	}
+}
+
 func TestHTTPHealthSerializableQueryUsesFirstExactValue(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	m := mock.NewMinimalMetrics(ctrl)
