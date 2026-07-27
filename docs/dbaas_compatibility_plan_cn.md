@@ -16947,6 +16947,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   client op option 把 key 改为 `\x00`，绕过 empty-key 检查，随后底层 `KV.Do` 返回
   `rpctypes.ErrInvalidSortOption`。该回归补齐 namespace `Get`、`Do`、`Txn` 三个入口的
   wrapper-level validation 差异。
+- A1452 固定官方 client/v3 namespace.NewKV empty-key prefix delete 路径：
+  A976 已覆盖 `namespace.NewKV.Delete("", WithFromKey())` 会转换为 namespace 范围删除；
+  本轮补齐 `WithPrefix()` 入口。upstream `WithPrefix` 会先把 logical empty key 改写为
+  `\x00` range，再由 `namespace.prefixInterval` 转为物理 namespace 前缀范围，因此
+  `Get("", WithPrefix())` 与 `Delete("", WithPrefix())` 必须暴露逻辑 key、只影响当前
+  namespace，并且不能触发 empty-key 错误。该回归防止把普通 Delete 的空 key 拒绝逻辑
+  误套到 namespace prefix delete。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
