@@ -16967,6 +16967,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `Grant(ctx, ttl)` 对上述小 TTL 必须成功返回非零 lease ID、`TTL=2`，随后
   `TimeToLive` 的 `GrantedTTL` 也必须保持 `2`。该回归防止 high-level lessor wrapper 或
   DBaaS adapter 把小 TTL 误当作非法参数或只在 raw gRPC 路径 clamp。
+- A1455 固定官方 client/v3 LeaseGrant 最大 TTL 成功边界：
+  A1454 补齐小 TTL clamp 后，本轮补齐 high-level 最大值入口：
+  `clientv3.Grant(ctx, clientv3.MaxLeaseTTL)` 必须成功返回非零 lease ID 并回显
+  `TTL=MaxLeaseTTL`，随后 `TimeToLive` 的 `GrantedTTL` 也必须保持该最大值。该回归与
+  A1151/A1212 的 `MaxLeaseTTL+1` typed error 配套，防止边界比较写成 `>=` 导致最大合法
+  TTL 被拒绝。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户

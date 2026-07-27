@@ -337,6 +337,42 @@ func TestClientLeaseGrantClampsSmallTTLLikeEtcd(t *testing.T) {
 	}
 }
 
+func TestClientLeaseGrantMaximumTTLMatchesEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterLeaseServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	grant, err := client.Grant(ctx, clientv3.MaxLeaseTTL)
+	require.NoError(t, err)
+	require.NotZero(t, grant.ID)
+	require.Equal(t, int64(clientv3.MaxLeaseTTL), grant.TTL)
+
+	ttlResp, err := client.TimeToLive(ctx, grant.ID)
+	require.NoError(t, err)
+	require.Equal(t, grant.ID, ttlResp.ID)
+	require.Equal(t, int64(clientv3.MaxLeaseTTL), ttlResp.GrantedTTL)
+}
+
 func TestClientLeaseGrantNoSpaceIsTyped(t *testing.T) {
 	server := newQuotaRPCServer(t, 6)
 
