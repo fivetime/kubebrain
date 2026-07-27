@@ -68,6 +68,24 @@ func (m *authManager) userAdd(ctx context.Context, request *etcdserverpb.AuthUse
 	if err != nil {
 		return err
 	}
+	return m.userAddWithPassword(ctx, request, password)
+}
+
+func (m *authManager) userAddHashed(ctx context.Context, request *etcdserverpb.AuthUserAddRequest) error {
+	if request.Name == "" {
+		return rpctypes.ErrUserEmpty
+	}
+	if request.Options != nil && request.Options.NoPassword {
+		return m.userAddWithPassword(ctx, request, nil)
+	}
+	password, err := base64.StdEncoding.DecodeString(request.HashedPassword)
+	if err != nil {
+		return errNoPasswordUser
+	}
+	return m.userAddWithPassword(ctx, request, password)
+}
+
+func (m *authManager) userAddWithPassword(ctx context.Context, request *etcdserverpb.AuthUserAddRequest, password []byte) error {
 	generation, err := newUserTokenGeneration(request.Name)
 	if err != nil {
 		return err

@@ -2,11 +2,13 @@ package etcd
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 
 	"go.etcd.io/etcd/api/v3/authpb"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
+	"golang.org/x/crypto/bcrypt"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -147,10 +149,18 @@ func (s *RPCServer) Authenticate(ctx context.Context, request *etcdserverpb.Auth
 }
 
 func (s *RPCServer) UserAdd(ctx context.Context, request *etcdserverpb.AuthUserAddRequest) (*etcdserverpb.AuthUserAddResponse, error) {
+	if request.Options == nil || !request.Options.NoPassword {
+		hashedPassword, err := bcrypt.GenerateFromPassword([]byte(request.Password), s.auth.bcryptCost)
+		if err != nil {
+			return nil, err
+		}
+		request.HashedPassword = base64.StdEncoding.EncodeToString(hashedPassword)
+		request.Password = ""
+	}
 	if _, err := s.authAdminSnapshot(ctx); err != nil {
 		return nil, err
 	}
-	if err := s.auth.userAdd(ctx, request); err != nil {
+	if err := s.auth.userAddHashed(ctx, request); err != nil {
 		return nil, err
 	}
 	header, err := s.authRPCHeader(ctx)
@@ -231,6 +241,14 @@ func (s *RPCServer) UserDelete(ctx context.Context, request *etcdserverpb.AuthUs
 }
 
 func (s *RPCServer) UserChangePassword(ctx context.Context, request *etcdserverpb.AuthUserChangePasswordRequest) (*etcdserverpb.AuthUserChangePasswordResponse, error) {
+	if request.Password != "" {
+		hashedPassword, err := bcrypt.GenerateFromPassword([]byte(request.Password), s.auth.bcryptCost)
+		if err != nil {
+			return nil, err
+		}
+		request.HashedPassword = base64.StdEncoding.EncodeToString(hashedPassword)
+		request.Password = ""
+	}
 	if _, err := s.authAdminSnapshot(ctx); err != nil {
 		return nil, err
 	}

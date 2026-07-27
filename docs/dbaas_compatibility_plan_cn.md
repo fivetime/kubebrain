@@ -16713,6 +16713,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   deferred cleanup，无论认证成功还是密码错误，返回前都把 protobuf request 的 `Password`
   清空，避免后续日志、trace 或对象复用保留明文。barrier 本身失败时 upstream 尚未安装
   defer，因此请求字段保持不变；回归同时固定这一精确执行顺序。
+- A1412 对齐用户管理请求的明文密码生命周期：
+  对照 upstream `EtcdServer.UserAdd`/`UserChangePassword`，RPC 层在进入鉴权与持久 apply
+  前完成 bcrypt，把结果写入 `HashedPassword` 并立即清空 `Password`；因此即使后续因用户
+  重复或不存在而失败，请求对象也不再保留明文。`UserAdd(NoPassword=true)` 和
+  `UserChangePassword(Password="")` 则保持 upstream 的未改写分支。实现保留公网入口
+  “不信任客户端自带 hash”的边界，仅由 RPC 预处理调用可信 hashed apply 入口；服务端回归
+  固定成功、失败与 NoPassword 分支，既有官方 client/v3 密码新增、删除重建和连续轮换黑盒
+  证明预处理后的 hash 可真实认证且旧密码失效。
 
 ### P2：运维兼容和长期验证
 

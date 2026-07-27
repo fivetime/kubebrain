@@ -16,6 +16,7 @@ package etcd
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"net"
 	"sync/atomic"
@@ -26,6 +27,7 @@ import (
 	"go.etcd.io/etcd/api/v3/authpb"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
+	"golang.org/x/crypto/bcrypt"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -222,6 +224,63 @@ func TestAuthenticateClearsPasswordAfterReadBarrier(t *testing.T) {
 	require.Nil(t, response)
 	requireAuthRPCError(t, err, rpctypes.ErrAuthFailed, codes.Unknown, "etcdserver: authentication failed, invalid user ID or password")
 	require.Empty(t, failure.Password)
+}
+
+func TestUserPasswordRequestsReplacePlaintextBeforeApply(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+
+	add := &etcdserverpb.AuthUserAddRequest{Name: "alice", Password: "first"}
+	_, err := server.UserAdd(ctx, add)
+	require.NoError(t, err)
+	require.Empty(t, add.Password)
+	hashedAdd, err := base64.StdEncoding.DecodeString(add.HashedPassword)
+	require.NoError(t, err)
+	require.NoError(t, bcrypt.CompareHashAndPassword(hashedAdd, []byte("first")))
+
+	duplicate := &etcdserverpb.AuthUserAddRequest{Name: "alice", Password: "duplicate"}
+	_, err = server.UserAdd(ctx, duplicate)
+	requireAuthRPCError(t, err, rpctypes.ErrUserAlreadyExist, codes.Unknown, "etcdserver: user name already exists")
+	require.Empty(t, duplicate.Password)
+	hashedDuplicate, err := base64.StdEncoding.DecodeString(duplicate.HashedPassword)
+	require.NoError(t, err)
+	require.NoError(t, bcrypt.CompareHashAndPassword(hashedDuplicate, []byte("duplicate")))
+
+	noPassword := &etcdserverpb.AuthUserAddRequest{
+		Name: "nopass", Password: "ignored", Options: &authpb.UserAddOptions{NoPassword: true},
+	}
+	_, err = server.UserAdd(ctx, noPassword)
+	require.NoError(t, err)
+	require.Equal(t, "ignored", noPassword.Password)
+	require.Empty(t, noPassword.HashedPassword)
+
+	change := &etcdserverpb.AuthUserChangePasswordRequest{Name: "alice", Password: "second"}
+	_, err = server.UserChangePassword(ctx, change)
+	require.NoError(t, err)
+	require.Empty(t, change.Password)
+	hashedChange, err := base64.StdEncoding.DecodeString(change.HashedPassword)
+	require.NoError(t, err)
+	require.NoError(t, bcrypt.CompareHashAndPassword(hashedChange, []byte("second")))
+
+	emptyPasswordHash, err := bcrypt.GenerateFromPassword([]byte("third"), bcrypt.MinCost)
+	require.NoError(t, err)
+	emptyPassword := &etcdserverpb.AuthUserChangePasswordRequest{
+		Name:           "alice",
+		HashedPassword: base64.StdEncoding.EncodeToString(emptyPasswordHash),
+	}
+	_, err = server.UserChangePassword(ctx, emptyPassword)
+	require.NoError(t, err)
+	require.Empty(t, emptyPassword.Password)
+	require.Equal(t, base64.StdEncoding.EncodeToString(emptyPasswordHash), emptyPassword.HashedPassword)
+
+	missing := &etcdserverpb.AuthUserChangePasswordRequest{Name: "missing", Password: "secret"}
+	_, err = server.UserChangePassword(ctx, missing)
+	requireAuthRPCError(t, err, rpctypes.ErrUserNotFound, codes.Unknown, "etcdserver: user name not found")
+	require.Empty(t, missing.Password)
+	hashedMissing, err := base64.StdEncoding.DecodeString(missing.HashedPassword)
+	require.NoError(t, err)
+	require.NoError(t, bcrypt.CompareHashAndPassword(hashedMissing, []byte("secret")))
 }
 
 func TestAuthStatusRejectsInvalidTokenWhenEnabled(t *testing.T) {
