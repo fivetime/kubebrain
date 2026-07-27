@@ -297,6 +297,13 @@ func TestRawGRPCTxnExecutionValidationOrderAndBudget(t *testing.T) {
 		}
 		return compares
 	}
+	emptyOps := func(n int) []*etcdserverpb.RequestOp {
+		ops := make([]*etcdserverpb.RequestOp, n)
+		for i := range ops {
+			ops[i] = &etcdserverpb.RequestOp{}
+		}
+		return ops
+	}
 	tests := []struct {
 		name          string
 		txn           *etcdserverpb.TxnRequest
@@ -316,6 +323,9 @@ func TestRawGRPCTxnExecutionValidationOrderAndBudget(t *testing.T) {
 		}, wantSucceeded: true},
 		{name: "compare-over-limit-precedes-empty-key", txn: &etcdserverpb.TxnRequest{
 			Compare: emptyCompares(defaultMaxTxnOps + 1),
+		}, wantErr: true},
+		{name: "success-over-limit-precedes-empty-op", txn: &etcdserverpb.TxnRequest{
+			Success: emptyOps(defaultMaxTxnOps + 1),
 		}, wantErr: true},
 		{name: "unselected-failure-nested-over-budget", txn: &etcdserverpb.TxnRequest{
 			Success: rangeOps(1), Failure: append(rangeOps(defaultMaxTxnOps-1), nested(rangeOps(1))),
