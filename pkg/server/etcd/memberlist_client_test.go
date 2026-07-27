@@ -299,7 +299,7 @@ func requireRawMemberListResponse(t *testing.T, response *etcdserverpb.MemberLis
 
 func requireRawMemberListError(t *testing.T, err error, code codes.Code, message string) {
 	t.Helper()
-	require.Error(t, err)
+	require.EqualError(t, err, status.Error(code, message).Error())
 	require.Equal(t, code, status.Code(err))
 	require.Equal(t, message, status.Convert(err).Message())
 }

@@ -16420,6 +16420,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   typed `ErrorIs` 和公开 status code；raw gRPC `LeaseGrant` 的超大 TTL 与重复 lease ID 必须
   保留完整 status error 字符串。该门禁防止 lease 生命周期路径混淆 client wrapper 与 raw
   gRPC 的错误形态。
+- A1354 固定 raw MemberList read-barrier 错误字符串：
+  raw gRPC `MemberList` 在 linearizable barrier 失败时必须返回完整 status error 字符串，并
+  保留底层 failure message。该门禁防止 DBaaS member inventory/autosync 只读兼容面在控制面
+  不可用时只保留 code，却漂移客户端可见错误文本。
 
 ### P2：运维兼容和长期验证
 
