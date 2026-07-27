@@ -16446,6 +16446,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `rpctypes.ErrCompacted` 和 `codes.Unknown`；匿名 client 在 auth enabled 前缀同步时必须返回
   裸 `etcdserver: user name is empty`、`rpctypes.ErrUserEmpty` 和 `codes.Unknown`。该门禁防止
   mirror 初始同步在 compaction/auth 边界上只保留错误分类，却漂移 clientv3 可见文本。
+- A1360 固定 dedicated concurrency service 错误字符串：
+  v3lock/v3election 直接服务调用在 auth、lease-not-found、missing leader 和 no leader 场景下
+  必须保留原始错误字符串、公开 `codes.Unknown`，并在 auth typed 错误上保留 `ErrorIs`。
+  该门禁防止 DBaaS concurrency facade 在 lock/election 错误路径上漂移 clientv3 recipes 依赖的
+  可见错误语义。
 
 ### P2：运维兼容和长期验证
 

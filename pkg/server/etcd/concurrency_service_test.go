@@ -474,6 +474,7 @@ func TestDedicatedConcurrencyAuthorizationTracksRoleAndTokenLifecycle(t *testing
 
 func requireConcurrencyClientError(t *testing.T, err error, want error, code codes.Code, message string) {
 	t.Helper()
+	require.EqualError(t, err, message)
 	require.ErrorIs(t, err, want)
 	require.Equal(t, code, status.Code(err))
 	require.Equal(t, message, status.Convert(err).Message())
@@ -481,7 +482,7 @@ func requireConcurrencyClientError(t *testing.T, err error, want error, code cod
 
 func requireConcurrencyStatusError(t *testing.T, err error, code codes.Code, message string) {
 	t.Helper()
-	require.Error(t, err)
+	require.EqualError(t, err, message)
 	require.Equal(t, code, status.Code(err))
 	require.Equal(t, message, status.Convert(err).Message())
 }
