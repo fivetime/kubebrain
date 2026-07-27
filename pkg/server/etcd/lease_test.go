@@ -1440,7 +1440,13 @@ func TestLeaseFollowerRejectsWriteRPCs(t *testing.T) {
 	}()
 
 	ctx := context.Background()
-	_, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 30, ID: 4001})
+	automaticGrant := &etcdserverpb.LeaseGrantRequest{TTL: 30}
+	response, err := server.LeaseGrant(ctx, automaticGrant)
+	require.Nil(t, response)
+	requireLeaseFollowerUnavailable(t, err, "lease grant error addr is follower-test-peer leader test-peer")
+	require.Positive(t, automaticGrant.ID)
+
+	_, err = server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 30, ID: 4001})
 	requireLeaseFollowerUnavailable(t, err, "lease grant error addr is follower-test-peer leader test-peer")
 
 	_, err = server.LeaseRevoke(ctx, &etcdserverpb.LeaseRevokeRequest{ID: 4001})

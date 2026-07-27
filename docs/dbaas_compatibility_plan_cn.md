@@ -16748,6 +16748,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   request，CORRUPT 只是在 apply 层拒绝。新增服务端回归先激活 CORRUPT alarm，再以
   `ID=0` 调用 `LeaseGrant`，固定返回 `ErrGRPCCorrupt`/`DataLoss` 时 request 仍已获得正
   lease ID，补齐既有 CORRUPT 优先级测试未覆盖的 protobuf request 生命周期。
+- A1419 加固 LeaseGrant 自动 ID 的 leader admission 失败分支：
+  upstream `LeaseGrant` 在进入 `raftRequest` 前已经为 `ID==0` 写回正 int64 ID，因此即使
+  后续因 no leader/not leader 失败，调用方复用的 request 也不应保持零值。KubeBrain
+  的 follower 写拒绝测试原先只覆盖显式 ID；本轮加入自动 ID grant，固定返回
+  leader unavailable 错误时 `LeaseGrantRequest.ID` 已被改写，防止未来把自动 ID 分配移到
+  leader/forwarding admission 之后。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
