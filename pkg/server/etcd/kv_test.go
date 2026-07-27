@@ -2925,6 +2925,24 @@ func TestClientNamespaceEmptyKeyFromKeyDeleteMatchesEtcd(t *testing.T) {
 	remaining, err = client.Get(ctx, tenantPrefix, clientv3.WithRange(tenantEnd))
 	require.NoError(t, err)
 	require.Empty(t, remaining.Kvs)
+
+	_, err = namespacedKV.Do(ctx, clientv3.OpDelete(""))
+	requireClientKVError(t, err, rpctypes.ErrEmptyKey, codes.Unknown, "etcdserver: key is not provided")
+
+	for _, key := range []string{"e", "f"} {
+		_, err = namespacedKV.Put(ctx, key, "value-"+key)
+		require.NoError(t, err)
+	}
+	deleteOpResponse, err := namespacedKV.Do(ctx, clientv3.OpDelete("", clientv3.WithPrefix(), clientv3.WithPrevKV()))
+	require.NoError(t, err)
+	deleteOp := deleteOpResponse.Del()
+	require.NotNil(t, deleteOp)
+	require.Equal(t, int64(2), deleteOp.Deleted)
+	require.Equal(t, [][]byte{[]byte("e"), []byte("f")}, [][]byte{deleteOp.PrevKvs[0].Key, deleteOp.PrevKvs[1].Key})
+
+	remaining, err = client.Get(ctx, tenantPrefix, clientv3.WithRange(tenantEnd))
+	require.NoError(t, err)
+	require.Empty(t, remaining.Kvs)
 }
 
 func TestDeleteRangeDeletesRange(t *testing.T) {
