@@ -1931,6 +1931,8 @@ func TestRawGRPCLeaseGrantTTLAndIDBoundaries(t *testing.T) {
 	granted = append(granted, first.ID)
 	_, err = lease.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{ID: duplicateID, TTL: 20})
 	requireRawGRPCLeaseError(t, err, codes.FailedPrecondition, "etcdserver: lease already exists", rpctypes.ErrGRPCLeaseExist)
+	_, err = lease.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{ID: duplicateID, TTL: maxLeaseTTL + 1})
+	requireRawGRPCLeaseError(t, err, codes.OutOfRange, "etcdserver: too large lease TTL", rpctypes.ErrGRPCLeaseTTLTooLarge)
 }
 
 func requireClientLeaseHeaderWellFormed(t *testing.T, header *etcdserverpb.ResponseHeader) {

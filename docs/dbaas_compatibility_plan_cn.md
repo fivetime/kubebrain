@@ -16892,6 +16892,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `defaultMaxTxnOps+1` 个空 oneof `RequestOp{}` 时仍返回
   `InvalidArgument`/`etcdserver: too many operations in txn request`，而不是
   `etcdserver: key not found`。该覆盖防止 Txn validation 重构把 operation 内容校验前移。
+- A1444 固定 LeaseGrant duplicate ID 与 TTL too large 的错误优先级：
+  对照 upstream lessor `Grant`，显式 lease ID 已存在但请求 TTL 超过 `MaxLeaseTTL` 时，
+  必须先返回 `OutOfRange`/`etcdserver: too large lease TTL`，而不是 duplicate lease 的
+  `FailedPrecondition`/`lease already exists`。新增直连与 raw gRPC 回归覆盖该组合，
+  防止 lease grant 预留/去重逻辑重构时把 ID 冲突检查前移。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户

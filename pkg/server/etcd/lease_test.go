@@ -799,6 +799,9 @@ func TestLeaseGrantDuplicateAndTooLargeTTLMatchEtcdErrors(t *testing.T) {
 	_, err = server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 30, ID: 5001})
 	requireDirectLeaseError(t, err, rpctypes.ErrGRPCLeaseExist, codes.FailedPrecondition, "etcdserver: lease already exists")
 
+	_, err = server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: maxLeaseTTL + 1, ID: 5001})
+	requireDirectLeaseError(t, err, rpctypes.ErrGRPCLeaseTTLTooLarge, codes.OutOfRange, "etcdserver: too large lease TTL")
+
 	_, err = server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: maxLeaseTTL + 1, ID: 5002})
 	requireDirectLeaseError(t, err, rpctypes.ErrGRPCLeaseTTLTooLarge, codes.OutOfRange, "etcdserver: too large lease TTL")
 }
