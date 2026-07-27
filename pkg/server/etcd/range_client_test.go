@@ -173,6 +173,44 @@ func TestClientNamespaceGetValidationErrorsMatchEtcd(t *testing.T) {
 	requireClientKVError(t, err, rpctypes.ErrInvalidSortOption, codes.Unknown, "etcdserver: invalid sort option")
 }
 
+func TestClientNamespaceTxnGetValidationErrorsMatchEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	namespacedKV := namespace.NewKV(client.KV, "/a1449/namespace-txn/")
+	invalidSort := []clientv3.OpOption{clientv3.WithSort(clientv3.SortTarget(99), clientv3.SortOrder(99))}
+
+	resp, err := namespacedKV.Txn(ctx).Then(clientv3.OpGet("")).Commit()
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.Len(t, resp.Responses, 1)
+	require.Empty(t, resp.Responses[0].GetResponseRange().Kvs)
+
+	_, err = namespacedKV.Txn(ctx).Then(clientv3.OpGet("", invalidSort...)).Commit()
+	requireClientKVError(t, err, rpctypes.ErrInvalidSortOption, codes.Unknown, "etcdserver: invalid sort option")
+}
+
 func TestClientKVGetCanceledContextKeepsConnectionUsable(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
