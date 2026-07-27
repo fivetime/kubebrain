@@ -17799,6 +17799,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `ErrInvalidSortOption`/`etcdserver: invalid sort option`，而不是 empty-key 错误或成功空页；
   同一 nested OpTxn 后续 `OpPut` 不得提交，相邻 tenant 不影响错误外观。该回归补齐
   A1449/A1544 之外的 empty-start explicit range invalid-option 路径。
+- A1591 固定官方 client/v3 namespace.NewKV nested OpTxn 的未选中 empty logical start 显式
+  range invalid sort 分支外观：nested `OpTxn` success 分支中的 `OpGet("", WithRange("z"),
+  WithSort(SortTarget(99), SortOrder(99)))` 即使未被内部 compare 选中，也必须按 etcd
+  admission 顺序提前返回 `ErrInvalidSortOption`/`etcdserver: invalid sort option`，整个 nested
+  OpTxn 不得提交 success/failure 后续操作，并保持相邻 tenant 隔离。该回归补齐 A1590 selected
+  与 A1544 point-key invalid-option validation-order 之外的 empty-start explicit range 路径。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
