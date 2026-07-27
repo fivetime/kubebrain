@@ -16668,6 +16668,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   刻意选择 `leaderID < localID`，同时验证 gRPC `MemberList` 和 peer `/members` 均返回
   `[leaderID, localID]`，不能因发现顺序重新变成 local-first。该门禁覆盖 DBaaS 配置缺失
   或启动过渡期实际使用的 fallback 路径。
+- A1405 固定 Status 选主与应用进度的跨字段一致性：
+  官方 client/v3 黑盒在本机为 leader 时要求 `Leader == Header.MemberId`、
+  `Header.RaftTerm == RaftTerm`、`RaftIndex == RaftAppliedIndex`，且 applied index 不落后于
+  前置 Put revision。KubeBrain 无 etcd learner 与 in-place downgrade，因此同时固定
+  `IsLearner=false`、`DowngradeInfo.Enabled=false` 和空 `TargetVersion`。该门禁防止 TiKV
+  revision、DBaaS 选主 term 与通用 response-header stamping 在重构后分别前进而产生
+  自相矛盾的 endpoint status。
 
 ### P2：运维兼容和长期验证
 
