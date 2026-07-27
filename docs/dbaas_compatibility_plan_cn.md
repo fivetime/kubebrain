@@ -17449,6 +17449,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   必须只扫描当前 namespace logical prefix，在 mod revision 上界内返回最新修改的
   `locks/b=updated-locks/b`，并保持 `Count=3`、`More=true`。该回归防止 nested top-helper
   与 mod revision filter 组合在递归 prefix/unprefix 路径上泄漏相邻 prefix/tenant。
+- A1528 固定官方 client/v3 namespace.NewKV nested OpTxn 的显式 logical range + `WithLastRev()`
+  外观：nested `OpGet("range/a", append(WithLastRev(), WithRange("range/d"))...)` 必须只扫描当前
+  namespace 的 `[range/a, range/d)` logical range，返回最新修改的 `range/b=updated-range/b`，
+  并保持 `Count=3`、`More=true`。该回归防止 nested top-helper 在显式 range、upper bound 与
+  相邻 tenant 存在时泄漏物理 key 或扩大 logical range。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
