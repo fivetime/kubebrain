@@ -564,6 +564,8 @@ func TestClientAuthRootProtectionAndDuplicateRoleErrors(t *testing.T) {
 	rawRootAuth := etcdserverpb.NewAuthClient(root.ActiveConnection())
 	_, rawEmptyRoleErr := rawRootAuth.RoleAdd(ctx, &etcdserverpb.AuthRoleAddRequest{Name: ""})
 	requireAuthClientError(t, rawEmptyRoleErr, codes.InvalidArgument, "etcdserver: role name is empty")
+	_, emptyRoleDeleteErr := root.RoleDelete(ctx, "")
+	requireAuthClientError(t, emptyRoleDeleteErr, codes.Unknown, "etcdserver: role name not found", rpctypes.ErrRoleNotFound)
 	_, rawEmptyRoleDeleteErr := rawRootAuth.RoleDelete(ctx, &etcdserverpb.AuthRoleDeleteRequest{Role: ""})
 	requireAuthClientError(t, rawEmptyRoleDeleteErr, codes.FailedPrecondition, "etcdserver: role name not found")
 
@@ -701,6 +703,14 @@ func TestClientAuthRolePermissionLifecycleErrors(t *testing.T) {
 		clientv3.PermissionType(clientv3.PermRead),
 	)
 	requireAuthClientError(t, invalidRangeErr, codes.Unknown, "etcdserver: invalid auth management", rpctypes.ErrInvalidAuthMgmt)
+	_, emptyRoleGrantErr := root.RoleGrantPermission(
+		ctx,
+		"",
+		"a",
+		"",
+		clientv3.PermissionType(clientv3.PermRead),
+	)
+	requireAuthClientError(t, emptyRoleGrantErr, codes.Unknown, "etcdserver: role name not found", rpctypes.ErrRoleNotFound)
 	_, rawNilPermissionErr := rawRootAuth.RoleGrantPermission(ctx, &etcdserverpb.AuthRoleGrantPermissionRequest{
 		Name: "a1061-lifecycle",
 	})
