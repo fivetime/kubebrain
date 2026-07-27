@@ -42,7 +42,7 @@ func TestBillingObjectExecutorsRejectUnsafeObjectIdentityBeforeRun(t *testing.T)
 			Run: run(&called),
 		}
 		_, _, err := publisher.Publish(context.Background())
-		require.ErrorContains(t, err, "configuration")
+		require.EqualError(t, err, "metering price publisher configuration is incomplete")
 		require.False(t, called)
 	})
 	t.Run("settlement publisher prefix", func(t *testing.T) {
@@ -54,13 +54,13 @@ func TestBillingObjectExecutorsRejectUnsafeObjectIdentityBeforeRun(t *testing.T)
 			Run: run(&called),
 		}
 		_, err := publisher.Publish(context.Background())
-		require.ErrorContains(t, err, "prefix")
+		require.EqualError(t, err, "adjustment prefix is invalid")
 		require.False(t, called)
 	})
 	t.Run("biller", func(t *testing.T) {
 		biller := validBiller(now())
 		biller.PricePrefix = "prices//bad"
-		require.ErrorContains(t, biller.Validate(), "configuration")
+		require.EqualError(t, biller.Validate(), "metering biller configuration is incomplete")
 	})
 	t.Run("invoice finalizer", func(t *testing.T) {
 		finalizer := &InvoiceFinalizer{
@@ -69,7 +69,7 @@ func TestBillingObjectExecutorsRejectUnsafeObjectIdentityBeforeRun(t *testing.T)
 			ChargePrefix: "charges", AdjustmentPrefix: "adjustments", PlanPrefix: "plans", InvoicePrefix: "invoices",
 			RetentionMode: "COMPLIANCE", RetentionDuration: 7 * 24 * time.Hour,
 		}
-		require.ErrorContains(t, finalizer.Validate(), "configuration")
+		require.EqualError(t, finalizer.Validate(), "invoice finalizer configuration is incomplete")
 	})
 	t.Run("provider statement publisher", func(t *testing.T) {
 		called := false
@@ -79,7 +79,7 @@ func TestBillingObjectExecutorsRejectUnsafeObjectIdentityBeforeRun(t *testing.T)
 			RetentionDuration: 7 * 24 * time.Hour, Run: run(&called),
 		}
 		_, _, err := publisher.Publish(context.Background())
-		require.ErrorContains(t, err, "configuration")
+		require.EqualError(t, err, "provider statement publisher configuration is incomplete")
 		require.False(t, called)
 	})
 	t.Run("payment ledger processor", func(t *testing.T) {
@@ -89,7 +89,7 @@ func TestBillingObjectExecutorsRejectUnsafeObjectIdentityBeforeRun(t *testing.T)
 			Executor: "executor", ObjectStoreID: "store", Bucket: "billing",
 			InvoicePrefix: ".", RetentionMode: "COMPLIANCE", RetentionDuration: 7 * 24 * time.Hour,
 		}
-		require.ErrorContains(t, processor.Validate(), "configuration")
+		require.EqualError(t, processor.Validate(), "payment ledger processor configuration is incomplete")
 	})
 	t.Run("payment ledger publisher", func(t *testing.T) {
 		called := false
@@ -99,7 +99,7 @@ func TestBillingObjectExecutorsRejectUnsafeObjectIdentityBeforeRun(t *testing.T)
 			RetentionDuration: 7 * 24 * time.Hour, Run: run(&called),
 		}
 		_, _, err := publisher.Publish(context.Background())
-		require.ErrorContains(t, err, "configuration")
+		require.EqualError(t, err, "payment ledger publisher configuration is incomplete")
 		require.False(t, called)
 	})
 	t.Run("provider reconciler", func(t *testing.T) {
@@ -109,7 +109,7 @@ func TestBillingObjectExecutorsRejectUnsafeObjectIdentityBeforeRun(t *testing.T)
 			ProviderPrefix: "providers", InvoicePrefix: "invoices", ReconciliationPrefix: "reconciliations//bad",
 			RetentionMode: "COMPLIANCE", RetentionDuration: 7 * 24 * time.Hour,
 		}
-		require.ErrorContains(t, reconciler.Validate(), "configuration")
+		require.EqualError(t, reconciler.Validate(), "provider reconciler configuration is incomplete")
 	})
 	t.Run("general ledger exporter optional prefix", func(t *testing.T) {
 		exporter := &GeneralLedgerExporter{
@@ -118,7 +118,7 @@ func TestBillingObjectExecutorsRejectUnsafeObjectIdentityBeforeRun(t *testing.T)
 			InvoicePrefix: "invoices", PaymentPrefix: "payments//bad", ExportedAtUnix: now().Unix(),
 			RetentionMode: "COMPLIANCE", RetentionDuration: 7 * 24 * time.Hour,
 		}
-		require.ErrorContains(t, exporter.Validate(), "configuration")
+		require.EqualError(t, exporter.Validate(), "general ledger exporter configuration is incomplete")
 	})
 	t.Run("invoice number assigner publish prefix", func(t *testing.T) {
 		assigner := &InvoiceNumberAssigner{
@@ -128,6 +128,6 @@ func TestBillingObjectExecutorsRejectUnsafeObjectIdentityBeforeRun(t *testing.T)
 			RetentionMode: "COMPLIANCE", RetentionDuration: 7 * 24 * time.Hour,
 			AssignedAtUnix: now().Unix(), Publish: true,
 		}
-		require.ErrorContains(t, assigner.Validate(), "configuration")
+		require.EqualError(t, assigner.Validate(), "invoice number assigner configuration is incomplete")
 	})
 }

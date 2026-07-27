@@ -253,7 +253,7 @@ func TestProviderReconcilerFailsBeforeArchiveOnIdentityDrift(t *testing.T) {
 		},
 	}
 	_, _, err = reconciler.Process(context.Background())
-	require.ErrorContains(t, err, "identity")
+	require.EqualError(t, err, "provider statement identity does not match request")
 	require.Equal(t, 1, calls)
 }
 

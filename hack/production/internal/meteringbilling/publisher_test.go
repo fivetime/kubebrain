@@ -79,7 +79,7 @@ func TestParseImmutableArchiveReceiptRejectsRetentionModeDrift(t *testing.T) {
 	_, err = parseBlobReceipt(data, CatalogFormat, "price-2026-07", "global",
 		"store-a", "metering", "prices/global/price-2026-07.json",
 		2_000_000_000, receipt.ArtifactSHA256, receipt.ObjectBytes, "COMPLIANCE")
-	require.ErrorContains(t, err, "retention mode")
+	require.EqualError(t, err, "immutable object receipt does not match requested retention mode")
 
 	_, err = parseBlobReceipt(data, CatalogFormat, "price-2026-07", "global",
 		"store-a", "metering", "prices/global/price-2026-07.json",
@@ -101,6 +101,6 @@ func TestPublisherRejectsNonCanonicalCatalogBeforeExecutor(t *testing.T) {
 		},
 	}
 	_, _, err := publisher.Publish(context.Background())
-	require.ErrorContains(t, err, "metering price catalog is incomplete")
+	require.EqualError(t, err, "metering price catalog is incomplete")
 	require.False(t, called)
 }

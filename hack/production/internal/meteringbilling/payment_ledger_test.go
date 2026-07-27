@@ -109,7 +109,7 @@ func TestBuildPaymentLedgerFromCSVRejectsOversizedInputAndTooManyTransactions(t 
 		strings.NewReader(oversized), invoice, invoiceSource,
 		PaymentLedgerImportOptions{ID: "payments-july", GeneratedAtUnix: generated},
 	)
-	require.ErrorContains(t, err, "payment ledger CSV exceeds")
+	require.EqualError(t, err, "payment ledger CSV exceeds 16777216 bytes")
 
 	var many strings.Builder
 	many.Write(EncodePaymentLedgerCSVHeader())
@@ -120,7 +120,7 @@ func TestBuildPaymentLedgerFromCSVRejectsOversizedInputAndTooManyTransactions(t 
 		strings.NewReader(many.String()), invoice, invoiceSource,
 		PaymentLedgerImportOptions{ID: "payments-july", GeneratedAtUnix: generated},
 	)
-	require.ErrorContains(t, err, "transactions")
+	require.EqualError(t, err, "payment ledger CSV exceeds 100000 transactions")
 }
 
 func TestBuildPaymentLedgerFromCSVWithInvoiceStatusRejectsSourceBytesDrift(t *testing.T) {
@@ -298,7 +298,7 @@ func TestPaymentLedgerProcessorFailsBeforeArchiveOnInvoiceReceiptMismatch(t *tes
 		},
 	}
 	_, _, err := processor.Process(context.Background())
-	require.ErrorContains(t, err, "receipt")
+	require.EqualError(t, err, "read invoice: payment ledger invoice receipt does not match downloaded bytes")
 	require.Equal(t, 1, calls)
 	require.NoFileExists(t, outputPath)
 }

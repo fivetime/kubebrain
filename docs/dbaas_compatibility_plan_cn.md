@@ -16556,6 +16556,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Prometheus incomplete、sample Object Lock archive receipt、普通计量 read receipt、retention/config、
   object identity、空 read receipt decode 和显式 period eligibility 错误，必须返回精确文本。
   该门禁防止普通计量样本归档与日 rollup 读取/发布链路在收据或配置损坏时退化为模糊错误。
+- A1384 固定 billing object identity 配置错误字符串：
+  price publisher、settlement publisher、biller、invoice finalizer、provider statement publisher、
+  payment ledger processor/publisher、provider reconciler、general ledger exporter 和 invoice number
+  assigner 的不安全对象身份或前缀配置，必须返回各自组件的精确错误文本。该门禁防止账单发布
+  链路在执行器启动前的配置拒绝退化为不可定位的模糊错误。
+- A1385 固定 metering billing 资源上限与 charge 形状错误字符串：
+  provider statement CSV 的 16 MiB/100000 行上限、price catalog 与 charge 的 1 MiB 上限、
+  v2 charge 缺失对象存储来源，以及 v3 对象请求数量非整数，必须返回包含精确阈值或具体形状的
+  错误文本。该门禁防止超大账单输入和错误版本的 charge 在导入、落盘或计价阶段退化为模糊失败。
+- A1386 固定 payment/settlement 资源上限与 invoice plan 形状错误字符串：
+  payment ledger CSV 的 16 MiB/100000 transaction 上限、adjustment/settlement artifact 的
+  4 MiB 上限，以及 invoice plan 缺失连续日 charge 或 charge 时间序列乱序，必须返回包含精确
+  阈值或具体形状的错误文本。该门禁防止超大支付输入和不连续结算计划进入账单闭环。
+- A1387 固定 settlement publisher 与 immutable read 错误字符串：
+  adjustment 非完整输入、未来 approval、adjustment/charge source 不一致、Object Lock retention
+  mode 漂移、非完整 price catalog、未来 charge period，以及下载对象超过 receipt 声明 bytes，
+  必须返回精确错误文本。该门禁防止结算发布和不可变对象读取只以模糊错误通过，掩盖证据来源、
+  保留策略或对象长度漂移。
+- A1388 固定 biller/reconciliation/payment read 错误字符串：
+  price catalog executor 失败必须保留读取阶段、context error 和 executor 输出；provider statement
+  instance 漂移，以及 payment ledger invoice receipt 与下载 bytes 不一致，必须返回精确错误文本。
+  该门禁防止账单输入读取失败丢失阶段上下文，或身份/收据漂移只以模糊错误通过。
 
 ### P2：运维兼容和长期验证
 

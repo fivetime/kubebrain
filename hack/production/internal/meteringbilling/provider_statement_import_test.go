@@ -79,7 +79,7 @@ func TestBuildProviderStatementFromCSVRejectsOversizedInputAndTooManyLines(t *te
 	oversized := string(EncodeProviderStatementCSVHeader()) +
 		strings.Repeat("x", maxMeteringBillingCSVBytes+1)
 	_, err := BuildProviderStatementFromCSV(strings.NewReader(oversized), options)
-	require.ErrorContains(t, err, "provider statement CSV exceeds")
+	require.EqualError(t, err, "provider statement CSV exceeds 16777216 bytes")
 
 	var many strings.Builder
 	many.Write(EncodeProviderStatementCSVHeader())
@@ -87,7 +87,7 @@ func TestBuildProviderStatementFromCSVRejectsOversizedInputAndTooManyLines(t *te
 		fmt.Fprintf(&many, "aws,acct-a,invoice,line-%06d,compute,,,1\n", i)
 	}
 	_, err = BuildProviderStatementFromCSV(strings.NewReader(many.String()), options)
-	require.ErrorContains(t, err, "line items")
+	require.EqualError(t, err, "provider statement CSV exceeds 100000 line items")
 }
 
 func TestProviderStatementPublisherValidatesCanonicalStatementAndArchivesExactReceipt(t *testing.T) {

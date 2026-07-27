@@ -93,13 +93,13 @@ func TestBillerFailsBeforeChargeOnMissingCatalogAndRejectsFuturePeriod(t *testin
 		return []byte("missing catalog"), context.DeadlineExceeded
 	}
 	_, _, err := biller.Process(context.Background())
-	require.ErrorContains(t, err, "price catalog")
+	require.EqualError(t, err, "read metering price catalog: context deadline exceeded: missing catalog")
 	require.Equal(t, 2, calls)
 
 	biller = validBiller(now)
 	biller.PeriodEnd = time.Date(2026, 7, 21, 0, 0, 0, 0, time.UTC)
 	_, _, err = biller.Process(context.Background())
-	require.ErrorContains(t, err, "not eligible")
+	require.EqualError(t, err, "explicit charge period end is not eligible")
 }
 
 func TestRunCommandReturnsContextErrorOnCancellation(t *testing.T) {
@@ -125,7 +125,7 @@ func TestBillerReadImmutableRejectsOversizedDownloadedArtifact(t *testing.T) {
 		"prices/global/price-2026-07.json", output,
 		time.Date(2033, 7, 20, 0, 0, 0, 0, time.UTC).Unix(),
 	)
-	require.ErrorContains(t, err, "downloaded immutable artifact exceeds")
+	require.EqualError(t, err, "downloaded immutable artifact exceeds 1 bytes")
 }
 
 func TestBillerV2RequiresExactStorageRollup(t *testing.T) {

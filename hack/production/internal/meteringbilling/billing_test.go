@@ -111,19 +111,19 @@ func TestPriceCatalogRejectsOversizedInputs(t *testing.T) {
 	path := filepath.Join(dir, "catalog.json")
 	require.NoError(t, os.WriteFile(path, make([]byte, maxPriceCatalogBytes+1), 0o600))
 	_, err := ReadCatalog(path)
-	require.ErrorContains(t, err, "metering price catalog exceeds")
+	require.EqualError(t, err, "metering price catalog exceeds 1048576 bytes")
 
 	output := filepath.Join(dir, "existing.json")
 	require.NoError(t, os.WriteFile(output, make([]byte, maxPriceCatalogBytes+1), 0o600))
 	_, err = WriteCatalogAtomic(output, validCatalog())
-	require.ErrorContains(t, err, "existing metering price catalog exceeds")
+	require.EqualError(t, err, "existing metering price catalog exceeds 691 bytes")
 }
 
 func TestChargeRejectsOversizedInput(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "charge.json")
 	require.NoError(t, os.WriteFile(path, make([]byte, maxMeteringChargeBytes+1), 0o600))
 	_, err := ReadCharge(path)
-	require.ErrorContains(t, err, "metering charge exceeds")
+	require.EqualError(t, err, "metering charge exceeds 1048576 bytes")
 }
 
 func TestChargeWriterRejectsOversizedNewOutputBeforeLink(t *testing.T) {
@@ -137,7 +137,7 @@ func TestChargeWriterRejectsOversizedNewOutputBeforeLink(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "charge.json")
 
 	_, err = WriteChargeAtomic(path, charge)
-	require.ErrorContains(t, err, "metering charge exceeds")
+	require.EqualError(t, err, "metering charge exceeds 1048576 bytes")
 	_, statErr := os.Stat(path)
 	require.ErrorIs(t, statErr, os.ErrNotExist)
 }
@@ -164,7 +164,7 @@ func TestBuildChargeV2IncludesImmutableObjectStorageUsage(t *testing.T) {
 	require.NoError(t, charge.Validate())
 
 	charge.StorageRollupSource = nil
-	require.ErrorContains(t, charge.Validate(), "storage")
+	require.EqualError(t, charge.Validate(), "metering charge v2 lacks object storage source")
 }
 
 func TestBuildChargeV3PricesExactObjectRequests(t *testing.T) {
@@ -196,7 +196,7 @@ func TestBuildChargeV3PricesExactObjectRequests(t *testing.T) {
 	for _, line := range forged.Lines {
 		forged.TotalMicros += line.AmountMicros
 	}
-	require.ErrorContains(t, forged.Validate(), "inexact")
+	require.EqualError(t, forged.Validate(), "metering charge contains an inexact object request quantity")
 
 	_, err = BuildChargeV3(
 		validRollupForPeriod(start),

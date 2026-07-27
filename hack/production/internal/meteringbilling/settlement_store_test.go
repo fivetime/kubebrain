@@ -28,7 +28,7 @@ func TestSettlementPublisherValidatesBeforeObjectStore(t *testing.T) {
 	}
 	require.NoError(t, os.WriteFile(publisher.Input, []byte("{}\n"), 0o600))
 	_, err := publisher.Publish(context.Background())
-	require.ErrorContains(t, err, "metering adjustment is incomplete")
+	require.EqualError(t, err, "metering adjustment is incomplete")
 	require.Zero(t, calls)
 
 	start := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
@@ -41,7 +41,7 @@ func TestSettlementPublisherValidatesBeforeObjectStore(t *testing.T) {
 	publisher.Input = input
 	publisher.Now = func() time.Time { return start.Add(48 * time.Hour) }
 	_, err = publisher.Publish(context.Background())
-	require.ErrorContains(t, err, "future")
+	require.EqualError(t, err, "settlement approval timestamp is in the future")
 	require.Zero(t, calls)
 }
 
@@ -184,7 +184,7 @@ func TestInvoiceFinalizerFailsBeforeArchiveOnAdjustmentSourceMismatch(t *testing
 		[]Source{settlementSource(AdjustmentFormat, adjustment.ID, "adjustment")},
 		plan.Approval.ApprovedAtUnix,
 	)
-	require.ErrorContains(t, err, "different charge")
+	require.EqualError(t, err, "metering invoice adjustment references a different charge")
 }
 
 func sourceForBytes(format, id, key string, data []byte, retainUntil int64) Source {

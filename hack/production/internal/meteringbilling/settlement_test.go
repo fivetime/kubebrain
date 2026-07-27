@@ -173,21 +173,21 @@ func TestSettlementRejectsOversizedInputs(t *testing.T) {
 	require.NoError(t, os.WriteFile(path, make([]byte, maxSettlementArtifactBytes+1), 0o600))
 
 	_, err := ReadAdjustment(path)
-	require.ErrorContains(t, err, "metering adjustment exceeds")
+	require.EqualError(t, err, "metering adjustment exceeds 4194304 bytes")
 	_, err = DecodeSettlementKind(path)
-	require.ErrorContains(t, err, "settlement artifact exceeds")
+	require.EqualError(t, err, "settlement artifact exceeds 4194304 bytes")
 }
 
 func TestInvoicePlanRequiresContinuousDailyCharges(t *testing.T) {
 	start := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
 	plan := validInvoicePlan(start, ChargeFormatV2, nil)
 	plan.PeriodEndUnix = start.Add(48 * time.Hour).Unix()
-	require.ErrorContains(t, plan.Validate(), "incomplete")
+	require.EqualError(t, plan.Validate(), "metering invoice plan is incomplete")
 	plan.Charges = append(plan.Charges, PlannedCharge{
 		PeriodStartUnix: start.Add(25 * time.Hour).Unix(),
 		PeriodEndUnix:   start.Add(49 * time.Hour).Unix(), ArtifactFormat: ChargeFormatV2,
 	})
-	require.ErrorContains(t, plan.Validate(), "ordered")
+	require.EqualError(t, plan.Validate(), "metering invoice plan charges are not complete and ordered")
 }
 
 func settlementCharge(t *testing.T, start time.Time) (Charge, Source) {
