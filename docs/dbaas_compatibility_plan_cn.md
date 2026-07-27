@@ -16766,6 +16766,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `ErrGRPCPermissionNotGiven`/`ErrInvalidAuthMgmt`，只有 permission 合法时才返回
   `ErrRoleNotFound`。新增 auth manager 回归覆盖 missing role 与 nil/empty/invalid/valid
   permission 的组合，防止未来把 role lookup 提前后改变 etcd 可观察错误顺序。
+- A1422 固定 UserGrantRole 对 root role 的特殊存在性规则：
+  upstream `authStore.UserGrantRole` 只对非 `root` role 执行 role record lookup；
+  授予 `"root"` role 时即使 roles bucket 里尚无 root role 记录也可以成功，后续
+  `AuthEnable` 同样只检查 root 用户的 role-name 列表。新增 auth manager 回归先验证
+  普通 missing role 仍返回 `ErrRoleNotFound`，再验证 root 用户可在未创建 root role record
+  时授予 `"root"` 并启用 auth，防止未来把所有 role grant 都改成强制 role-record 存在。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户

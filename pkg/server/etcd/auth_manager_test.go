@@ -64,6 +64,24 @@ func TestAuthManagerBootstrapPersistsWithIndependentRevision(t *testing.T) {
 	require.NoError(t, bcrypt.CompareHashAndPassword(snapshot.Users["root"].Password, []byte("secret")))
 }
 
+func TestAuthManagerUserGrantRootRoleDoesNotRequireRoleRecordLikeEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	manager := newAuthManager(server.backend)
+	ctx := context.Background()
+
+	require.NoError(t, manager.userAdd(ctx, &etcdserverpb.AuthUserAddRequest{Name: "root", Password: "secret"}))
+	requireAuthManagerError(t, manager.userGrantRole(ctx, "root", "missing"), rpctypes.ErrRoleNotFound, codes.Unknown, "etcdserver: role name not found")
+	require.NoError(t, manager.userGrantRole(ctx, "root", "root"))
+	require.NoError(t, manager.enable(ctx))
+
+	snapshot, err := manager.repo.load(ctx)
+	require.NoError(t, err)
+	require.Nil(t, snapshot.Roles["root"])
+	require.Equal(t, []string{"root"}, snapshot.Users["root"].Roles)
+	require.True(t, snapshot.Config.Enabled)
+}
+
 func TestAuthManagerUsesConfiguredBcryptCost(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
