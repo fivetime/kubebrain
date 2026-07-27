@@ -17493,6 +17493,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `items/a,b,c` 及 values，`Count=3`、`More=false`，且 response header revision 为当前 latest
   revision。该回归防止 nested serializable Range 丢失 namespace prefix/unprefix 处理或把相邻
   prefix/tenant 纳入当前读。
+- A1537 固定官方 client/v3 namespace.NewKV nested OpTxn 的 future revision error 外观：
+  nested `OpTxn` 选中分支内 `OpGet("items/a", WithRev(math.MaxInt64))` 必须返回可由
+  `errors.Is(..., rpctypes.ErrFutureRev)` 识别的 public clientv3 Txn error，且同一 nested Txn 中
+  后续 `OpPut` 不得提交。该回归防止 nested Txn revision validation 漏掉 future revision、
+  错误提交部分写入，或把 raw gRPC error 外观泄漏给 official client。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户

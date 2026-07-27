@@ -3412,6 +3412,57 @@ func TestClientNamespaceNestedTxnGetSerializablePrefixReturnsLogicalKeys(t *test
 		[][]byte{nestedGet.Kvs[0].Value, nestedGet.Kvs[1].Value, nestedGet.Kvs[2].Value})
 }
 
+func TestClientNamespaceNestedTxnFutureRevisionRangeReturnsTypedErrorAndDoesNotCommit(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	tenantPrefix := "/a1537/namespace-nested-txn-future-rev/tenant/"
+	namespacedKV := namespace.NewKV(client.KV, tenantPrefix)
+	_, err = namespacedKV.Put(ctx, "items/a", "value-a")
+	require.NoError(t, err)
+	_, err = client.Put(ctx, "/a1537/namespace-nested-txn-future-rev/tenant0/items/a", "outside-tenant")
+	require.NoError(t, err)
+
+	_, err = namespacedKV.Txn(ctx).
+		Then(clientv3.OpTxn(nil,
+			[]clientv3.Op{
+				clientv3.OpGet("items/a", clientv3.WithRev(math.MaxInt64)),
+				clientv3.OpPut("items/after-future", "must-not-commit"),
+			},
+			nil)).
+		Commit()
+	requireClientTxnError(t, err, codes.Unknown, "etcdserver: mvcc: required revision is a future revision", rpctypes.ErrFutureRev)
+
+	afterFuture, err := namespacedKV.Get(ctx, "items/after-future")
+	require.NoError(t, err)
+	require.Empty(t, afterFuture.Kvs)
+	outsideTenant, err := client.Get(ctx, "/a1537/namespace-nested-txn-future-rev/tenant0/items/a")
+	require.NoError(t, err)
+	require.Len(t, outsideTenant.Kvs, 1)
+	require.Equal(t, []byte("outside-tenant"), outsideTenant.Kvs[0].Value)
+}
+
 func TestClientNamespaceTxnGetValidationErrorsMatchEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
