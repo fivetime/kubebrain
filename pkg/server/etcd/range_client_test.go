@@ -12740,6 +12740,89 @@ func TestClientNamespaceNestedTxnGetSerializablePrefixMaxModRevisionReturnsLogic
 	require.Equal(t, int64(1), outsideTenant.Count)
 }
 
+func TestClientNamespaceNestedTxnGetSerializablePrefixMinCreateRevisionReturnsLogicalKeys(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	tenantPrefix := "/a1765/namespace-nested-txn-serializable-prefix-min-create-rev/tenant/"
+	namespacedKV := namespace.NewKV(client.KV, tenantPrefix)
+	_, err = client.Put(ctx, "/a1765/namespace-nested-txn-serializable-prefix-min-create-rev/tenant/items0/outside", "same-tenant-outside-prefix")
+	require.NoError(t, err)
+	_, err = client.Put(ctx, "/a1765/namespace-nested-txn-serializable-prefix-min-create-rev/tenant0/items/c", "outside-tenant")
+	require.NoError(t, err)
+	_, err = namespacedKV.Put(ctx, "items/a", "value-items/a")
+	require.NoError(t, err)
+	_, err = namespacedKV.Put(ctx, "items/b", "value-items/b")
+	require.NoError(t, err)
+	createC, err := namespacedKV.Put(ctx, "items/c", "value-items/c")
+	require.NoError(t, err)
+	_, err = namespacedKV.Put(ctx, "items/a", "updated-items/a")
+	require.NoError(t, err)
+	latest, err := client.Put(ctx, "/a1765/namespace-nested-txn-serializable-prefix-min-create-rev/tenant/items0/latest", "latest-outside-prefix")
+	require.NoError(t, err)
+
+	txnResp, err := namespacedKV.Txn(ctx).
+		Then(clientv3.OpTxn(nil,
+			[]clientv3.Op{clientv3.OpGet("items/",
+				clientv3.WithPrefix(),
+				clientv3.WithSerializable(),
+				clientv3.WithMinCreateRev(createC.Header.Revision),
+				clientv3.WithSort(clientv3.SortByKey, clientv3.SortAscend),
+			)},
+			nil)).
+		Commit()
+	require.NoError(t, err)
+	require.True(t, txnResp.Succeeded)
+	require.Equal(t, latest.Header.Revision, txnResp.Header.Revision)
+	require.Len(t, txnResp.Responses, 1)
+	nestedTxn := txnResp.Responses[0].GetResponseTxn()
+	require.NotNil(t, nestedTxn)
+	require.True(t, nestedTxn.Succeeded)
+	require.Len(t, nestedTxn.Responses, 1)
+	nestedGet := nestedTxn.Responses[0].GetResponseRange()
+	require.NotNil(t, nestedGet)
+	require.NotNil(t, nestedGet.Header)
+	require.Equal(t, latest.Header.Revision, nestedGet.Header.Revision)
+	require.Equal(t, int64(3), nestedGet.Count)
+	require.False(t, nestedGet.More)
+	require.Len(t, nestedGet.Kvs, 1)
+	require.Equal(t, []byte("items/c"), nestedGet.Kvs[0].Key)
+	require.Equal(t, []byte("value-items/c"), nestedGet.Kvs[0].Value)
+	require.Equal(t, createC.Header.Revision, nestedGet.Kvs[0].CreateRevision)
+
+	current, err := namespacedKV.Get(ctx, "items/", clientv3.WithPrefix())
+	require.NoError(t, err)
+	require.Equal(t, int64(3), current.Count)
+	require.Equal(t, []byte("updated-items/a"), current.Kvs[0].Value)
+	outsideSameTenantPrefix, err := client.Get(ctx, "/a1765/namespace-nested-txn-serializable-prefix-min-create-rev/tenant/items0/", clientv3.WithPrefix())
+	require.NoError(t, err)
+	require.Equal(t, int64(2), outsideSameTenantPrefix.Count)
+	outsideTenant, err := client.Get(ctx, "/a1765/namespace-nested-txn-serializable-prefix-min-create-rev/tenant0/", clientv3.WithPrefix())
+	require.NoError(t, err)
+	require.Equal(t, int64(1), outsideTenant.Count)
+}
+
 func TestClientNamespaceNestedTxnGetSerializablePrefixKeysOnlySortByValueDescWithLimitReturnsLogicalKeys(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
