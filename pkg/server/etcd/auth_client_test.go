@@ -477,6 +477,10 @@ func TestClientAuthUserErrorsMatchEtcd(t *testing.T) {
 	requireAuthClientError(t, err, codes.Unknown, "etcdserver: user name not found", rpctypes.ErrUserNotFound)
 	_, rawMissingUserErr := rawAuth.UserDelete(ctx, &etcdserverpb.AuthUserDeleteRequest{Name: "a1129-raw-missing-user"})
 	requireAuthClientError(t, rawMissingUserErr, codes.FailedPrecondition, "etcdserver: user name not found")
+	_, rawEmptyUserDeleteErr := rawAuth.UserDelete(ctx, &etcdserverpb.AuthUserDeleteRequest{Name: ""})
+	requireAuthClientError(t, rawEmptyUserDeleteErr, codes.FailedPrecondition, "etcdserver: user name not found")
+	_, rawEmptyUserChangeErr := rawAuth.UserChangePassword(ctx, &etcdserverpb.AuthUserChangePasswordRequest{Name: "", HashedPassword: "%%%"})
+	requireAuthClientError(t, rawEmptyUserChangeErr, codes.FailedPrecondition, "etcdserver: user name not found")
 
 	_, err = client.UserGrantRole(ctx, "a1129-user", "a1129-missing-role")
 	requireAuthClientError(t, err, codes.Unknown, "etcdserver: role name not found", rpctypes.ErrRoleNotFound)
@@ -542,6 +546,8 @@ func TestClientAuthRootProtectionAndDuplicateRoleErrors(t *testing.T) {
 	rawRootAuth := etcdserverpb.NewAuthClient(root.ActiveConnection())
 	_, rawEmptyRoleErr := rawRootAuth.RoleAdd(ctx, &etcdserverpb.AuthRoleAddRequest{Name: ""})
 	requireAuthClientError(t, rawEmptyRoleErr, codes.InvalidArgument, "etcdserver: role name is empty")
+	_, rawEmptyRoleDeleteErr := rawRootAuth.RoleDelete(ctx, &etcdserverpb.AuthRoleDeleteRequest{Role: ""})
+	requireAuthClientError(t, rawEmptyRoleDeleteErr, codes.FailedPrecondition, "etcdserver: role name not found")
 
 	_, err = root.RoleAdd(ctx, "a1060-reader")
 	require.NoError(t, err)
@@ -695,6 +701,14 @@ func TestClientAuthRolePermissionLifecycleErrors(t *testing.T) {
 		},
 	})
 	requireAuthClientError(t, rawInvalidRangeErr, codes.InvalidArgument, "etcdserver: invalid auth management")
+	_, rawEmptyRoleGrantErr := rawRootAuth.RoleGrantPermission(ctx, &etcdserverpb.AuthRoleGrantPermissionRequest{
+		Name: "",
+		Perm: &authpb.Permission{
+			PermType: authpb.READ,
+			Key:      []byte("a"),
+		},
+	})
+	requireAuthClientError(t, rawEmptyRoleGrantErr, codes.FailedPrecondition, "etcdserver: role name not found")
 
 	_, err = root.UserGrantRole(ctx, "alice", "a1061-lifecycle")
 	require.NoError(t, err)
