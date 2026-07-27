@@ -102,14 +102,14 @@ func TestBuildProviderReconciliationWithStatusesRejectsSourceBytesDrift(t *testi
 	_, err = BuildProviderReconciliationWithStatuses(
 		"reconcile-july", statementStatus, badStatementSource, invoiceStatus, invoiceSource, reconciledAt,
 	)
-	require.ErrorContains(t, err, "statement bytes")
+	require.EqualError(t, err, "provider reconciliation statement source does not match statement bytes")
 
 	badInvoiceSource := invoiceSource
 	badInvoiceSource.ArtifactSHA256 = strings.Repeat("b", 64)
 	_, err = BuildProviderReconciliationWithStatuses(
 		"reconcile-july", statementStatus, statementSource, invoiceStatus, badInvoiceSource, reconciledAt,
 	)
-	require.ErrorContains(t, err, "invoice bytes")
+	require.EqualError(t, err, "provider reconciliation invoice source does not match invoice bytes")
 }
 
 func TestProviderStatementRejectsUnsortedIncompleteAndTamperedCosts(t *testing.T) {
@@ -120,16 +120,16 @@ func TestProviderStatementRejectsUnsortedIncompleteAndTamperedCosts(t *testing.T
 	unsorted := statement
 	unsorted.Lines = append([]ProviderStatementLine(nil), statement.Lines...)
 	unsorted.Lines[0], unsorted.Lines[1] = unsorted.Lines[1], unsorted.Lines[0]
-	require.ErrorContains(t, unsorted.Validate(), "sorted")
+	require.EqualError(t, unsorted.Validate(), "provider statement lines are not unique and sorted")
 
 	missingBucket := statement
 	missingBucket.Lines = append([]ProviderStatementLine(nil), statement.Lines...)
 	missingBucket.Lines[1].Bucket = ""
-	require.ErrorContains(t, missingBucket.Validate(), "incomplete")
+	require.EqualError(t, missingBucket.Validate(), "provider statement object storage identity is incomplete")
 
 	tampered := statement
 	tampered.TotalMicros++
-	require.ErrorContains(t, tampered.Validate(), "total")
+	require.EqualError(t, tampered.Validate(), "provider statement total does not match lines")
 }
 
 func TestProviderReconcilerReadsExactArtifactsAndArchivesResult(t *testing.T) {

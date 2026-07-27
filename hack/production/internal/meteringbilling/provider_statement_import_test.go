@@ -54,18 +54,18 @@ func TestBuildProviderStatementFromCSVRejectsUnknownHeaderDuplicateAndUnclassifi
 		Currency: "USD", IssuedAtUnix: start.Add(48 * time.Hour).Unix(),
 	}
 	_, err := BuildProviderStatementFromCSV(strings.NewReader("provider,amount_micros\naws,1\n"), options)
-	require.ErrorContains(t, err, "header")
+	require.EqualError(t, err, "provider statement CSV header is unsupported")
 
 	duplicate := string(EncodeProviderStatementCSVHeader()) +
 		"aws,acct-a,invoice,line-001,compute,,,10\n" +
 		"aws,acct-a,invoice,line-001,compute,,,20\n"
 	_, err = BuildProviderStatementFromCSV(strings.NewReader(duplicate), options)
-	require.ErrorContains(t, err, "sorted")
+	require.EqualError(t, err, "provider statement lines are not unique and sorted")
 
 	unclassified := string(EncodeProviderStatementCSVHeader()) +
 		"aws,acct-a,invoice,line-001,object_storage,,,10\n"
 	_, err = BuildProviderStatementFromCSV(strings.NewReader(unclassified), options)
-	require.ErrorContains(t, err, "bucket-scoped")
+	require.EqualError(t, err, "provider statement CSV line 2: provider object storage cost is not bucket-scoped")
 }
 
 func TestBuildProviderStatementFromCSVRejectsOversizedInputAndTooManyLines(t *testing.T) {
@@ -151,7 +151,7 @@ func TestProviderStatementPublisherRejectsNonCanonicalOrFutureStatementBeforeExe
 		},
 	}
 	_, _, err := publisher.Publish(context.Background())
-	require.ErrorContains(t, err, "provider statement is incomplete")
+	require.EqualError(t, err, "provider statement is incomplete")
 	require.False(t, called)
 
 	future := validProviderStatement(start)
@@ -162,7 +162,7 @@ func TestProviderStatementPublisherRejectsNonCanonicalOrFutureStatementBeforeExe
 	publisher.Input = futurePath
 	publisher.Now = func() time.Time { return start.Add(48 * time.Hour) }
 	_, _, err = publisher.Publish(context.Background())
-	require.ErrorContains(t, err, "future")
+	require.EqualError(t, err, "provider statement issue timestamp is in the future")
 	require.False(t, called)
 }
 

@@ -16521,6 +16521,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   对应 charge/plan、重复 adjustment ID、总额负数/溢出和 canonical adjustment 读取，必须
   返回精确错误文本。该门禁防止 DBaaS 计量账单证据链在 artifact bytes 漂移或人工调整异常时
   只暴露模糊错误，削弱账单审计和不可计费区间判定。
+- A1376 固定 provider statement/reconciliation 错误字符串：
+  provider CSV header、重复/未排序 line、object-storage 未绑定 bucket、publisher 前置校验、
+  reconciliation source bytes 绑定和 provider statement 线性总额校验，必须返回精确错误文本。
+  该门禁防止供应商账单导入与客户账单对账在成本行分类、对象存储范围或 artifact bytes 漂移时
+  只暴露模糊错误，削弱跨账户成本审计。
 
 ### P2：运维兼容和长期验证
 
