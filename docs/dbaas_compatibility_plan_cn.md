@@ -22745,6 +22745,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   每个 KV 的 version/create revision/mod revision。该回归补强 A2161/A2169/A2172/A2184
   的 FromKey current serializable key/value sort KeysOnly metadata 断言，对齐 A2372
   FromKey historical serializable key/value sort metadata 对侧。
+- A2378 强化官方 client/v3 namespace.NewKV nested OpTxn 的 FromKey current serializable
+  revision/version sort `KeysOnly+Limit` 多 KV page 元数据外观：`SortByVersion`、
+  `SortByModRevision`、`SortByCreateRevision` 的 desc/none 变体必须在最新 revision 上只
+  清空返回页 value，保留排序命中每个 KV 的 version/create revision/mod revision。该回归
+  补强 A2163/A2165/A2167/A2175/A2178/A2181 的 FromKey current serializable
+  revision/version sort KeysOnly metadata 断言，对齐 A2373 FromKey historical serializable
+  revision/version sort metadata 对侧。
 - A1790 固定官方 client/v3 namespace.NewKV nested OpTxn 的 FromKey historical serializable
   limit 外观：nested `OpGet("range/b", WithFromKey(), WithRev(historyRev), WithSerializable(),
   WithLimit(1), WithSort(SortByKey, SortAscend))` 必须在指定历史 revision 上把开放 range 收窄到
