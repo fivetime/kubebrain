@@ -20924,6 +20924,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   写入产生的 latest revision，并排除 start 前高 value 的 `range/a` 和相邻 tenant 的高 value
   key。该回归补齐 A1516 nested FromKey 基础路径、A1779 FromKey key-order page 与
   A1723/A1753 value-desc sort 之外的 FromKey sort 分页路径。
+- A2161 固定官方 client/v3 namespace.NewKV nested OpTxn 的 FromKey current serializable
+  KeysOnly+value-desc sort 分页外观：nested `OpGet("range/b", WithFromKey(), WithSerializable(),
+  WithKeysOnly(), WithLimit(2), WithSort(SortByValue, SortDescend))` 必须把开放 range 收窄到
+  当前 namespace，从 logical `range/b` 开始统计全量 `Count=3`，仍按当前 namespace 内 value
+  降序分页返回 logical `range/c` 与 `z/final`，但 value 均为空、`More=true`，response header
+  revision 必须等于后续相邻 tenant 写入产生的 latest revision，并排除 start 前高 value 的
+  `range/a` 和相邻 tenant。该回归补齐 A1785 payload、A1779 key-order KeysOnly 与 historical
+  FromKey value-desc KeysOnly 之外的 current FromKey value-desc KeysOnly sort 路径。
+- A2162 固定官方 client/v3 namespace.NewKV nested OpTxn 的 FromKey current serializable
+  CountOnly+value-desc sort 分页外观：nested `OpGet("range/b", WithFromKey(), WithSerializable(),
+  WithCountOnly(), WithLimit(2), WithSort(SortByValue, SortDescend))` 必须把开放 range 收窄到
+  当前 namespace，从 logical `range/b` 开始统计全量 `Count=3`，忽略 limit、不返回任何 KVs、
+  `More=false`，response header revision 必须等于后续相邻 tenant 写入产生的 latest revision，
+  并排除 start 前 `range/a` 和相邻 tenant。该回归补齐 A1785 payload、A1780 CountOnly 与
+  historical FromKey value-desc CountOnly 之外的 current FromKey value-desc CountOnly sort 路径。
 - A1786 固定官方 client/v3 namespace.NewKV nested OpTxn 的 FromKey current serializable
   version-desc sort 分页外观：nested `OpGet("range/b", WithFromKey(), WithSerializable(),
   WithLimit(2), WithSort(SortByVersion, SortDescend))` 必须把开放 range 收窄到当前 namespace，
