@@ -22952,6 +22952,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   logical `[ "", "z" )` range 的完整 count、空 KVs、`More=false`。该回归补强 A1592/A1593 的
   empty-start current non-serializable contradictory filter 基础断言，并对齐 A2408/A2409
   empty-start serializable contradictory filter CountOnly 优先级覆盖。
+- A2440 补强 A2410 官方 client/v3 namespace.NewKV nested OpTxn 的 empty-start current
+  non-serializable explicit range contradictory revision filter 显式 `CountOnly` 优先级外观：
+  `OpGet("", WithRange("z"))` 经过 namespace 裁剪后，`WithMinModRev > WithMaxModRev` 与
+  `WithMinCreateRev > WithMaxCreateRev` 叠加额外 value sort、`KeysOnly`、`Limit(1)` 和
+  `WithCountOnly` 时，nested txn response header 与 nested range response header 都必须保持
+  latest revision，同时仍只返回当前 namespace logical `[ "", "z" )` range 的完整 count、空 KVs、
+  `More=false`。该回归把 current non-serializable empty-start contradictory CountOnly header
+  外观与 A2408 current serializable、A2409 historical serializable 表格对齐。
 - A2411 强化官方 client/v3 namespace.NewKV nested OpTxn 的 empty-start historical non-serializable
   explicit range contradictory revision filter 显式 `CountOnly` 优先级外观：`OpGet("", WithRange("z"))`
   经过 namespace 裁剪后，`WithMinModRev > WithMaxModRev` 与 `WithMinCreateRev > WithMaxCreateRev`
