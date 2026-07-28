@@ -18922,6 +18922,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   delete/update/new key、同 tenant 相邻 range 和相邻 tenant。该回归补齐 A1733 payload key-asc
   sort、A1951 KeysOnly key-desc sort 与 A1821 FromKey KeysOnly key-asc sort 之外的显式
   logical range KeysOnly key-sort 对称路径。
+- A1953 固定官方 client/v3 namespace.NewKV nested OpTxn 的显式 logical range historical
+  serializable `KeysOnly + SortByValueAsc + Limit(2)` 分页外观：nested `OpGet("range/a",
+  WithRange("range/d"), WithRev(historyRev), WithSerializable(), WithKeysOnly(), WithLimit(2),
+  WithSort(SortByValue, SortAscend))` 必须在指定 historical revision 上先按当前 namespace
+  logical `[range/a, range/d)` 内历史 value 升序分页，再剥离 values，仅返回 `range/a` 与
+  `range/b` 两个 logical keys、`Count=3`、`More=true`。response header revision 必须保持当前
+  latest revision，并排除后续 upper-bound key、delete/update/new key、同 tenant 相邻 range 和
+  相邻 tenant。该回归补齐 A1742 KeysOnly value-desc sort、A1735 payload value SortNone 与
+  A1874 FromKey KeysOnly value-asc sort 之外的显式 logical range KeysOnly value-sort 对称路径。
 - A1732 固定官方 client/v3 namespace.NewKV nested OpTxn 的显式 logical range historical
   serializable key-desc sort 分页外观：nested `OpGet("range/a", WithRange("range/d"),
   WithRev(historyRev), WithSerializable(), WithLimit(2), WithSort(SortByKey, SortDescend))`
