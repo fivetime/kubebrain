@@ -24630,11 +24630,11 @@ func TestClientNamespaceNestedTxnGetFromKeyHistoricalSerializableKeysOnlySortByV
 	require.NoError(t, err)
 	_, err = namespacedKV.Put(ctx, "range/a", "before-start-updated")
 	require.NoError(t, err)
-	_, err = namespacedKV.Put(ctx, "range/b", "old-b")
+	putB, err := namespacedKV.Put(ctx, "range/b", "old-b")
 	require.NoError(t, err)
 	_, err = namespacedKV.Put(ctx, "range/c", "old-c")
 	require.NoError(t, err)
-	_, err = namespacedKV.Put(ctx, "z/final", "old-z")
+	createZ, err := namespacedKV.Put(ctx, "z/final", "old-z")
 	require.NoError(t, err)
 	updateZ, err := namespacedKV.Put(ctx, "z/final", "updated-z")
 	require.NoError(t, err)
@@ -24681,6 +24681,10 @@ func TestClientNamespaceNestedTxnGetFromKeyHistoricalSerializableKeysOnlySortByV
 	require.Empty(t, nestedGet.Kvs[0].Value)
 	require.Empty(t, nestedGet.Kvs[1].Value)
 	require.Equal(t, []int64{1, 2}, []int64{nestedGet.Kvs[0].Version, nestedGet.Kvs[1].Version})
+	require.Equal(t, []int64{putB.Header.Revision, createZ.Header.Revision},
+		[]int64{nestedGet.Kvs[0].CreateRevision, nestedGet.Kvs[1].CreateRevision})
+	require.Equal(t, []int64{putB.Header.Revision, updateZ.Header.Revision},
+		[]int64{nestedGet.Kvs[0].ModRevision, nestedGet.Kvs[1].ModRevision})
 	require.Equal(t, updateZ.Header.Revision, nestedGet.Kvs[1].ModRevision)
 
 	current, err := namespacedKV.Get(ctx, "range/b", clientv3.WithFromKey())
@@ -24902,7 +24906,7 @@ func TestClientNamespaceNestedTxnGetFromKeyHistoricalSerializableKeysOnlySortByV
 	require.NoError(t, err)
 	_, err = namespacedKV.Put(ctx, "range/a", "aa-before-start")
 	require.NoError(t, err)
-	_, err = namespacedKV.Put(ctx, "range/b", "b")
+	putB, err := namespacedKV.Put(ctx, "range/b", "b")
 	require.NoError(t, err)
 	_, err = namespacedKV.Put(ctx, "range/c", "z")
 	require.NoError(t, err)
@@ -24946,6 +24950,11 @@ func TestClientNamespaceNestedTxnGetFromKeyHistoricalSerializableKeysOnlySortByV
 		[][]byte{nestedGet.Kvs[0].Key, nestedGet.Kvs[1].Key})
 	require.Empty(t, nestedGet.Kvs[0].Value)
 	require.Empty(t, nestedGet.Kvs[1].Value)
+	require.Equal(t, []int64{1, 1}, []int64{nestedGet.Kvs[0].Version, nestedGet.Kvs[1].Version})
+	require.Equal(t, []int64{putB.Header.Revision, historical.Header.Revision},
+		[]int64{nestedGet.Kvs[0].CreateRevision, nestedGet.Kvs[1].CreateRevision})
+	require.Equal(t, []int64{putB.Header.Revision, historical.Header.Revision},
+		[]int64{nestedGet.Kvs[0].ModRevision, nestedGet.Kvs[1].ModRevision})
 
 	current, err := namespacedKV.Get(ctx, "range/b", clientv3.WithFromKey())
 	require.NoError(t, err)
@@ -25168,7 +25177,7 @@ func TestClientNamespaceNestedTxnGetFromKeyHistoricalSerializableKeysOnlySortByM
 	require.NoError(t, err)
 	_, err = namespacedKV.Put(ctx, "range/c", "old-c")
 	require.NoError(t, err)
-	_, err = namespacedKV.Put(ctx, "z/final", "old-z")
+	createZ, err := namespacedKV.Put(ctx, "z/final", "old-z")
 	require.NoError(t, err)
 	updateZ, err := namespacedKV.Put(ctx, "z/final", "updated-z")
 	require.NoError(t, err)
@@ -25212,6 +25221,9 @@ func TestClientNamespaceNestedTxnGetFromKeyHistoricalSerializableKeysOnlySortByM
 		[][]byte{nestedGet.Kvs[0].Key, nestedGet.Kvs[1].Key})
 	require.Empty(t, nestedGet.Kvs[0].Value)
 	require.Empty(t, nestedGet.Kvs[1].Value)
+	require.Equal(t, []int64{1, 2}, []int64{nestedGet.Kvs[0].Version, nestedGet.Kvs[1].Version})
+	require.Equal(t, []int64{putB.Header.Revision, createZ.Header.Revision},
+		[]int64{nestedGet.Kvs[0].CreateRevision, nestedGet.Kvs[1].CreateRevision})
 	require.Equal(t, []int64{putB.Header.Revision, updateZ.Header.Revision},
 		[]int64{nestedGet.Kvs[0].ModRevision, nestedGet.Kvs[1].ModRevision})
 
@@ -25480,8 +25492,11 @@ func TestClientNamespaceNestedTxnGetFromKeyHistoricalSerializableKeysOnlySortByC
 		[][]byte{nestedGet.Kvs[0].Key, nestedGet.Kvs[1].Key})
 	require.Empty(t, nestedGet.Kvs[0].Value)
 	require.Empty(t, nestedGet.Kvs[1].Value)
+	require.Equal(t, []int64{2, 1}, []int64{nestedGet.Kvs[0].Version, nestedGet.Kvs[1].Version})
 	require.Equal(t, []int64{createB.Header.Revision, createC.Header.Revision},
 		[]int64{nestedGet.Kvs[0].CreateRevision, nestedGet.Kvs[1].CreateRevision})
+	require.Equal(t, []int64{historical.Header.Revision, createC.Header.Revision},
+		[]int64{nestedGet.Kvs[0].ModRevision, nestedGet.Kvs[1].ModRevision})
 
 	current, err := namespacedKV.Get(ctx, "range/b", clientv3.WithFromKey())
 	require.NoError(t, err)
