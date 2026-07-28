@@ -23099,6 +23099,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   logical range 的完整 count、空 KVs、`More=false`，并排除同 tenant 相邻 range、upper bound key
   和相邻 tenant。该回归补齐 A2423 current non-serializable 与 A1949/A1950 historical serializable
   explicit logical range contradictory CountOnly 覆盖之外的 historical non-serializable 对称路径。
+- A2435 强化官方 client/v3 namespace.NewKV nested OpTxn 的 historical serializable explicit
+  logical range contradictory revision filter 显式 `CountOnly` 优先级外观：
+  `OpGet("range/a", WithRange("range/d"))` 经过 namespace 收窄后，`WithMinModRev > WithMaxModRev`
+  与 `WithMinCreateRev > WithMaxCreateRev` 叠加 `WithRev(historyRev)`、`WithSerializable()`、额外
+  value sort、`KeysOnly`、`Limit(1)` 和 `WithCountOnly` 时，仍必须只返回指定 historical revision
+  上当前 namespace logical range 的完整 count、空 KVs、`More=false`，并排除同 tenant 相邻
+  range、upper bound key 和相邻 tenant。该回归补强 A1703/A1704/A1949/A1950 historical
+  serializable explicit logical range contradictory filter 的旧粒度断言，并与 A2424 historical
+  non-serializable、A2434 current serializable precedence 表格对齐。
 - A2425 强化官方 client/v3 namespace.NewKV nested OpTxn 的 current non-serializable explicit
   logical range selector helper 显式 `CountOnly` 优先级外观：`WithFirstKey/WithLastKey`、
   `WithFirstCreate/WithLastCreate`、`WithFirstRev/WithLastRev` 叠加 `WithRange`、额外 value sort、
