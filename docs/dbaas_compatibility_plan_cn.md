@@ -17730,6 +17730,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   WithSort(SortByKey, SortAscend))` 必须只返回当前 namespace 的 logical `[ "", "z" )` range 内
   create revision 不超过阈值的 `alpha/a`、`items/a`，其中早创建后更新的 `alpha/a` 返回当前 value；
   排除阈值后创建的 `items/b`、upper bound 外的 `z/final` 和相邻 tenant。该回归补齐 A1573 对侧边界。
+- A2450 补强 A1574/A1635 官方 client/v3 namespace.NewKV nested OpTxn 的 empty-start current
+  serializable MaxCreateRev 外观：`OpGet("", WithRange("z"), WithSerializable(),
+  WithMaxCreateRev(createRev-1), WithSort(SortByKey, SortAscend))` 只在当前 namespace logical
+  `[ "", "z" )` range 内应用 create revision 上界过滤时，nested txn response header 与 nested
+  range response header 都必须等于 latest revision；同时匹配旧 create key 的 current value、
+  `Count=3`、`More=false` 与相邻 tenant 隔离外观保持不变。该回归把 MaxCreateRev 基础 filter
+  header 合同与 A2449 MinCreateRev 对侧边界对齐。
 - A1575 固定官方 client/v3 namespace.NewKV nested OpTxn 的 empty logical start 显式 range
   `WithFirstKey()` top-helper 外观：nested `OpGet("", append(WithFirstKey(), WithRange("z"))...)`
   必须按 helper 展开的 key 升序 + limit 1 只扫描当前 namespace 的 logical `[ "", "z" )` range，
