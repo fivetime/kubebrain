@@ -20207,6 +20207,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `items/c=new-items/c`、`More=false`，response header revision 必须等于后续同 tenant 相邻 prefix
   写入产生的 latest revision，并排除同 tenant 相邻 prefix 和相邻 tenant。该回归补齐 A1679
   historical prefix MinModRev filter 与 A1705 explicit range current MinModRev 之外的 current prefix 路径。
+- A2121 固定官方 client/v3 namespace.NewKV nested OpTxn 的 non-empty prefix current
+  serializable `KeysOnly+MinModRev` filter 外观：nested `OpGet("items/", WithPrefix(),
+  WithSerializable(), WithKeysOnly(), WithMinModRev(updateRev),
+  WithSort(SortByKey, SortAscend))` 必须在最新 revision 上统计当前 namespace logical prefix 全量
+  `Count=3`，但只返回满足 mod revision 下界的 logical key `items/c`、空 value、`More=false`；
+  response header revision 必须等于后续同 tenant 相邻 prefix 写入产生的 latest revision，并排除同
+  tenant 相邻 prefix 和相邻 tenant。该回归补齐 A1763 current prefix MinModRev payload 与
+  historical/explicit range MinModRev KeysOnly 之外的 current prefix MinModRev KeysOnly 路径。
+- A2122 固定官方 client/v3 namespace.NewKV nested OpTxn 的 non-empty prefix current
+  serializable `CountOnly+MinModRev` filter 外观：nested `OpGet("items/", WithPrefix(),
+  WithSerializable(), WithCountOnly(), WithMinModRev(updateRev),
+  WithSort(SortByKey, SortAscend))` 必须在最新 revision 上只统计当前 namespace logical prefix 全量
+  `Count=3`，并因为 `CountOnly` 覆盖 filter payload 返回空 KVs、`More=false`；response header
+  revision 必须等于后续同 tenant 相邻 prefix 写入产生的 latest revision，并排除同 tenant 相邻
+  prefix 和相邻 tenant。该回归补齐 A1763 current prefix MinModRev payload、A2121 MinModRev
+  KeysOnly 与 historical/explicit range MinModRev CountOnly 之外的 current prefix MinModRev
+  CountOnly 路径。
 - A1764 固定官方 client/v3 namespace.NewKV nested OpTxn 的 non-empty prefix current
   serializable MaxModRev filter 外观：nested `OpGet("items/", WithPrefix(), WithSerializable(),
   WithMaxModRev(updateRev-1), WithSort(SortByKey, SortAscend))` 必须在最新 revision 上统计当前
