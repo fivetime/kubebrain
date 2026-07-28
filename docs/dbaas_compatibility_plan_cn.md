@@ -18452,6 +18452,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   降序分页，返回 `z/final`、`items/a` 及 values、`Count=3`、`More=true`，response header
   revision 等于 `z/final` 写入产生的 latest revision，并排除相邻 tenant。该回归补齐 A1552
   empty-prefix value-sort 与 A1554 empty-prefix serializable 之外的 sort+serializable 叠加路径。
+- A2476 补强 A1659 官方 client/v3 namespace.NewKV nested OpTxn 的 empty-key current serializable
+  value-desc sort 分页外观：`OpGet("", WithPrefix(), WithSerializable(), WithLimit(2),
+  WithSort(SortByValue, SortDescend))` 返回当前 namespace 第一页时，nested txn response header
+  与 nested range response header 都必须等于 latest revision；同时 value-desc page、`Count=3`、
+  `More=true` 与相邻 tenant 隔离外观保持不变。该回归把 empty-prefix sort/page header 合同与
+  A2475 基础 empty-prefix 路径对齐。
 - A1660 固定官方 client/v3 namespace.NewKV nested OpTxn 的 empty-key prefix current serializable
   KeysOnly 分页外观：nested `OpGet("", WithPrefix(), WithSerializable(), WithKeysOnly(),
   WithLimit(2))` 必须在最新 revision 上只分页当前 namespace 全前缀，返回 logical
